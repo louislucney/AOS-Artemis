@@ -228,7 +228,23 @@ export function renderProjectArtemisConfig(args: {
     nodes[key] = value;
   }
 
-  return JSON.stringify({ ...base, default: defaultBlock, nodes }, null, 2) + "\n";
+  const output: Record<string, unknown> = { ...base, default: defaultBlock, nodes };
+
+  if (args.entry.provider !== "google") {
+    // Background helpers are hard-bound to Google lightweight models. The Flash
+    // step summarizer is constructed eagerly (FlashRunner.__init__), so it must
+    // be disabled for custom-only projects; the other Google-bound helpers
+    // (memory chunk capsules, Pro lightweight judges) are lazy/degraded.
+    const agent = { ...((output.agent as Record<string, unknown>) ?? {}) };
+    const flash = { ...((agent.flash as Record<string, unknown>) ?? {}) };
+    const stepSummarizer = { ...((flash.step_summarizer as Record<string, unknown>) ?? {}) };
+    stepSummarizer.enabled = false;
+    flash.step_summarizer = stepSummarizer;
+    agent.flash = flash;
+    output.agent = agent;
+  }
+
+  return JSON.stringify(output, null, 2) + "\n";
 }
 
 export interface EntryChildEnvArgs {

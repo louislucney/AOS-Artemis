@@ -83,6 +83,7 @@ test("llm_switch: auto-pins non-Google nodes, imports to store, restarts on env 
   assert.equal(payload.effects.childRestarted, true);
   assert.equal(proxy.restartCalls, 1);
   assert.ok(payload.warnings.some((warning) => warning.includes("自动重指")));
+  assert.ok(payload.warnings.some((warning) => warning.includes("步骤摘要器已禁用")));
 
   const override = readOverride(dir);
   assert.equal(override.default.provider, "custom");

@@ -398,6 +398,11 @@ export class Runtime {
         "非 Google provider：object_detector/hopper 已自动重指到当前模型（失去 Gemini ER 亚像素定位精度）。"
       );
     }
+    if (target.provider !== "google") {
+      warnings.push(
+        "Flash 步骤摘要器已禁用（其后端硬绑定 Google 轻量模型）；记忆 chunk 压缩与 Pro 轻量裁判在触发时可能降级，需 Google key 才能完全启用。"
+      );
+    }
 
     return {
       ok: true,

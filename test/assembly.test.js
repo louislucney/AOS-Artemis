@@ -15,7 +15,12 @@ const config = {
 
 test("renderProjectArtemisConfig: merges base config and applies entry LLM", () => {
   const baseConfigText = JSON.stringify({
-    agent: { flash: { max_turns: 7 } },
+    agent: {
+      flash: {
+        max_turns: 7,
+        step_summarizer: { enabled: true, model: "gemini-3.5-flash-lite" }
+      }
+    },
     default: {
       provider: "google",
       model: "gemini-3.8-flash",
@@ -39,6 +44,28 @@ test("renderProjectArtemisConfig: merges base config and applies entry LLM", () 
   assert.deepEqual(rendered.nodes.object_detector, { provider: "custom", model: "deepseek-flash" });
   assert.deepEqual(rendered.nodes.hopper, { provider: "custom", model: "deepseek-flash" });
   assert.equal(rendered.agent.flash.max_turns, 7, "non-LLM sections preserved");
+  assert.equal(
+    rendered.agent.flash.step_summarizer.enabled,
+    false,
+    "Google-bound flash summarizer disabled for custom entries"
+  );
+  assert.equal(
+    rendered.agent.flash.step_summarizer.model,
+    "gemini-3.5-flash-lite",
+    "summarizer config otherwise preserved"
+  );
+
+  const googleRendered = JSON.parse(
+    renderProjectArtemisConfig({
+      baseConfigText,
+      entry: { provider: "google", model: "gemini-2.5-flash", baseUrl: null, apiKey: "k" }
+    })
+  );
+  assert.equal(
+    googleRendered.agent.flash.step_summarizer.enabled,
+    true,
+    "summarizer untouched for google entries"
+  );
 });
 
 test("renderProjectArtemisConfig: explicit nodeOverrides win; works without base config", () => {
