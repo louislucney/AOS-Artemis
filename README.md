@@ -130,6 +130,13 @@ figma_generate_tests(url)    # 流程 → .artemis/design/tests.{json,md}（含 
 生成的任务描述会自动带上定位线索（Figma 文本优先、图层名兜底）与页面断言（目标页文本/子元素）：例如
 `1) 点击「立即购买」（设计元素：CTA Button），验证进入「Checkout」（页面应出现「应付 ¥99」…）`。
 
+**平台规则自动区分**：服务会从项目文件检测技术栈（`pubspec.yaml`→Flutter、`react-native`/`expo` 依赖→RN、根级 gradle→原生 Android、`*.xcodeproj`→iOS、前端依赖→Web），并按对应档案选择：
+- 资源/token 扫描目录（如 RN `src/assets/**`+`src/theme/**`、Flutter `assets/**`+`lib/theme/**`、原生 `res/drawable*`+`values/colors.xml`）
+- 测试定位约定（testID / ValueKey / resource-id / data-testid）
+- 代码结构约定（供后续代码生成）
+
+检测结果可在 `aos_status.stack` 查看，`gaps.json` 会记录 `detectedStacks` 与实际采用的 `rules`；显式传 `assetGlobs/tokenFiles` 可覆盖。
+
 ## 客户端安装器
 
 ```bash

@@ -10,6 +10,7 @@ import {
   walk,
   type FigmaNode
 } from "../vendor/design-context-bridge/figma-rest/resolve.js";
+import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
@@ -470,8 +471,15 @@ export async function figmaGapAnalysis(
       colors?: Array<{ hex: string; usageCount?: number }>;
     };
 
-    const assetGlobs = args.assetGlobs?.length ? args.assetGlobs : DEFAULT_ASSET_GLOBS;
-    const tokenGlobs = args.tokenFiles?.length ? args.tokenFiles : DEFAULT_TOKEN_GLOBS;
+    // Scanner rules follow the project's detected stack unless overridden.
+    const stacks = detectProjectStacks(runtime.project.rootDir);
+    const profile = primaryProfile(stacks);
+    const assetGlobs = args.assetGlobs?.length
+      ? args.assetGlobs
+      : (profile?.assetGlobs ?? DEFAULT_ASSET_GLOBS);
+    const tokenGlobs = args.tokenFiles?.length
+      ? args.tokenFiles
+      : (profile?.tokenGlobs ?? DEFAULT_TOKEN_GLOBS);
     const projectAssets = walkProjectFiles(runtime.project.rootDir, assetGlobs);
     const tokenContents = readTokenContents(
       runtime.project.rootDir,
@@ -491,6 +499,17 @@ export async function figmaGapAnalysis(
         assets: designAssets.count ?? designAssets.assets?.length ?? 0,
         colors: designSystem.colors?.length ?? 0
       },
+      detectedStacks: stacks,
+      rules: profile
+        ? {
+            stack: profile.id,
+            displayName: profile.displayName,
+            assetGlobs,
+            tokenGlobs,
+            locatorRules: profile.locatorRules,
+            codeRules: profile.codeRules
+          }
+        : { stack: null, assetGlobs, tokenGlobs },
       project: {
         assetGlobs,
         scannedAssets: gap.projectAssetCount,

@@ -124,7 +124,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_gap_analysis",
     description:
-      "缺口分析：对比 Figma 中应导出的资源（图标/矢量）与色板 vs 项目现有资产（assetGlobs）与 token 文件（tokenFiles），输出缺失清单及建议文件名；落盘 <项目>/.artemis/design/gaps.json。",
+      "缺口分析：对比 Figma 中应导出的资源（图标/矢量）与色板 vs 项目现有资产与 token 文件，输出缺失清单及建议文件名；扫描规则按项目技术栈自动选择（Flutter/React Native/原生 Android/iOS/Web，可用 assetGlobs/tokenFiles 覆盖）；落盘 <项目>/.artemis/design/gaps.json。",
     schema: z.object({
       url: z.string().min(1).describe("Figma 文件 URL"),
       id: z.string().optional().describe("可选：限定分析节点"),

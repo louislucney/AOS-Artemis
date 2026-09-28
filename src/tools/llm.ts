@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { AOS_MCP_VERSION, maskSecret } from "../util.js";
 import { bridgeState } from "../figma/bridge.js";
 import { childLogFilePath, logFilePath } from "../log.js";
+import { detectProjectStacks } from "../projects/stack.js";
 import { entryIssues } from "../llm/registry.js";
 import type { Runtime } from "../runtime.js";
 
@@ -148,6 +149,7 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
       file: logFilePath(),
       childFile: childLogFilePath()
     },
+    stack: detectProjectStacks(runtime.project.rootDir),
     state: runtime.state.read()
   });
 }

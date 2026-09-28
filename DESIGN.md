@@ -242,7 +242,7 @@ env:
 | `aos_tasks` | `{limit?, sync?}` | 任务/调用统计（trace/状态/模型/时间）；默认先向 artemis 同步完成态 |
 | `compare_design_and_device` | `{figmaUrl, nodeId?, deviceSerial?}` | 组合工具：Figma 节点渲染图（PNG@2x）+ 真机截图，一并以 image content 返回供多模态比对 |
 | `figma_extract_flows` | `{url, nodeId?, save?}` | 原型交互 → 流程图（screens/edges/entryScreens/unresolved），落盘 `.artemis/design/flows.json`；供后续"流程→测试生成"消费（M-B） |
-| `figma_gap_analysis` | `{url, id?, assetGlobs?, tokenFiles?, save?}` | 设计资源/色板 vs 项目资产/tokens 缺口（missingAssets/missingColors），落盘 `.artemis/design/gaps.json`；供"资源导入"消费（M-C） |
+| `figma_gap_analysis` | `{url, id?, assetGlobs?, tokenFiles?, save?}` | 设计资源/色板 vs 项目资产/tokens 缺口（missingAssets/missingColors），**扫描规则按检测到的技术栈选择**（`src/projects/stack.ts`：Flutter/RN/原生 Android/iOS/Web 档案，含资产目录/定位与代码约定），落盘 `.artemis/design/gaps.json`；供"资源导入"消费（M-C） |
 | `figma_generate_tests` | `{url?, flowsPath?, maxFlows?, save?}` | 连续交互线性化为端到端流程（entry→…→终态/BACK），生成 artemis 可直接执行的任务描述；落盘 `tests.json` + `tests.md`（M-B，基本目标） |
 
 `setup_required` 语义：无任何可用条目时，`llm_list` 正常返回并带 `setupRequired: true` + 指引；`mobile_run_task` 直接返回结构化 `setup_required` 错误（不调用子进程）；其余 mobile 工具放行。
