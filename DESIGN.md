@@ -4,7 +4,7 @@
 - **日期**: 2026-09-28
 - **状态**: 已按新需求（容器部署 / 多项目 / PG 存储 / 全 OpenAI 兼容端点）重构，待实现
 - **部署形态**: 容器化部署，挂载共享工作区（如 `/workspace`），为公司内部多个项目提供服务
-- **仓库布局**: 三者在同一根目录 —— 本服务源码（根目录 `src/`）、artemis（`artemis/`）、design-context-bridge（`design-context-bridge/`）
+- **仓库布局**: 同一根目录 —— 本服务源码（根目录 `src/`）+ 两个 **git submodule**：`artemis/`（`google/artemis`）、`design-context-bridge/`（`CristinaFores/design-context-bridge`）
 
 > **v0.3 变更摘要**（相对 v0.2）：
 > 1. **项目为一等实体**：每个项目在 PostgreSQL 中有注册记录（路径/名称/时间戳）、多条 LLM 条目（name/base_url/model/key，含明文，按需求）+ active 指针、任务/调用统计。

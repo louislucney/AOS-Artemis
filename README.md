@@ -161,11 +161,14 @@ node dist/cli.js doctor
 
 ```
 AOS-ARTEMIS/
-├── src/ test/             # aos-mcp 服务（本仓库）
-├── artemis/               # artemis 代码副本（统一服务使用；独立 git）
-├── design-context-bridge/ # dcb 副本（M2 vendor 来源；独立 git）
-└── aos.config.jsonc       # 【可选高级层】多档案/nodeOverrides/固定设备
+├── src/ test/            # aos-mcp 服务（本仓库）
+├── artemis/              # git submodule → github.com/google/artemis（Python 子进程依赖）
+├── design-context-bridge/# git submodule → github.com/CristinaFores/design-context-bridge（vendor 参照）
+└── aos.config.jsonc      # 项目配置（无密钥）
 ```
+
+克隆：`git clone --recurse-submodules https://github.com/louislucney/AOS-Artemis.git`
+（已 clone 过的补齐：`git submodule update --init --recursive`）
 
 ## 运行时副本说明（重要）
 

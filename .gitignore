@@ -11,13 +11,6 @@ dist/
 dist-deps/
 .artemis-deps/
 
-# Nested repositories — each keeps its own git history (upstream:
-# github.com/google/artemis and github.com/CristinaFores/design-context-bridge).
-# Edit them in place; their own git tracks changes. dcb code is vendored into
-# src/ during M2 (the clone stays for upstream diffing).
-artemis/
-design-context-bridge/
-
 # OS / editor
 .DS_Store
 *.log

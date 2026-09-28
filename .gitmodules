@@ -1,0 +1,6 @@
+[submodule "artemis"]
+	path = artemis
+	url = https://github.com/google/artemis.git
+[submodule "design-context-bridge"]
+	path = design-context-bridge
+	url = https://github.com/CristinaFores/design-context-bridge.git
