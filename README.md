@@ -129,6 +129,16 @@ figma_export_brief(url)      # 编码事实包 → build-brief.{json,md}（token
 # 视觉断言：compare_design_and_device（失败步骤截图 vs Figma 渲染图）
 ```
 
+**触发方式**
+
+1. **CLI 内自然语言（推荐）**：先 `node dist/cli.js install --targets opencode,claude,cursor,vscode`（会带上 `AOS_PROJECT_DIR`/`AOS_DATABASE_URL`，并透传 `ARTEMIS_ADB_PATH`/`ARTEMIS_TRACES_DIR` 若已设置），重启客户端后直接说：
+   *"用这个 Figma 链接跑设计流水线：<url>"* —— agent 会依次调用下述 5 个工具。
+2. **一条命令**：`node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`（第 ④ 步默认 dryRun，加 `--import` 正式写入）。
+3. **手动逐个调用**（任意 MCP 客户端）：
+   `figma_extract_flows` → `figma_gap_analysis` → `figma_generate_tests` → `figma_import_assets`(dryRun→正式) → `figma_export_brief`(+scaffold)。
+
+前置：`FIGMA_ACCESS_TOKEN` 在项目 `.env`（或 `aos_configure` 写入）；CLI 拉起服务时如 `adb` 不在 PATH，可在客户端 env 设置 `ARTEMIS_ADB_PATH`（如 `~/Library/Android/sdk/platform-tools/adb`）。
+
 生成的任务描述会自动带上定位线索（Figma 文本优先、图层名兜底）与页面断言（目标页文本/子元素）：例如
 `1) 点击「立即购买」（设计元素：CTA Button），验证进入「Checkout」（页面应出现「应付 ¥99」…）`。
 

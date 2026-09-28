@@ -14,6 +14,12 @@ dist/
 dist-deps/
 .artemis-deps/
 
+# Generated client MCP configs (contain machine-local paths)
+/.mcp.json
+/.cursor/mcp.json
+/.vscode/mcp.json
+/opencode.json
+
 # OS / editor
 .DS_Store
 *.log

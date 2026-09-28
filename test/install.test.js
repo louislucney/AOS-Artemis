@@ -80,6 +80,31 @@ test("install local: conflicting existing entry requires --force", () => {
   assert.equal(parsed.mcpServers.aos.command, "node");
 });
 
+test("install local: carries explicit tool-path env vars into client config", () => {
+  const dir = makeTempProject({});
+  const previousAdb = process.env.ARTEMIS_ADB_PATH;
+  const previousDb = process.env.AOS_DATABASE_URL;
+  process.env.ARTEMIS_ADB_PATH = "/opt/android/platform-tools/adb";
+  process.env.AOS_DATABASE_URL = "postgres://u:p@127.0.0.1:5433/aos";
+  try {
+    runInstall(["--project", dir, "--targets", "claude", "--service", service], { log: silent });
+    const claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
+    assert.equal(
+      claude.mcpServers.aos.env.ARTEMIS_ADB_PATH,
+      "/opt/android/platform-tools/adb"
+    );
+    assert.equal(
+      claude.mcpServers.aos.env.AOS_DATABASE_URL,
+      "postgres://u:p@127.0.0.1:5433/aos"
+    );
+  } finally {
+    if (previousAdb === undefined) delete process.env.ARTEMIS_ADB_PATH;
+    else process.env.ARTEMIS_ADB_PATH = previousAdb;
+    if (previousDb === undefined) delete process.env.AOS_DATABASE_URL;
+    else process.env.AOS_DATABASE_URL = previousDb;
+  }
+});
+
 test("install docker: docker exec with project workdir", () => {
   const dir = makeTempProject({});
   runInstall(
