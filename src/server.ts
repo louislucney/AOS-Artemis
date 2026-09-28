@@ -25,6 +25,7 @@ import {
 } from "./figma/flows.js";
 import { figmaGenerateTests, type GenerateTestsArgs } from "./figma/test-gen.js";
 import { figmaImportAssets, type ImportAssetsArgs } from "./figma/import.js";
+import { figmaExportBrief, type ExportBriefArgs } from "./figma/brief.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
@@ -168,6 +169,21 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       save: z.boolean().optional().describe("是否落盘 import-report.json，默认 true")
     }),
     handler: (runtime, args) => figmaImportAssets(runtime, args as unknown as ImportAssetsArgs)
+  },
+  {
+    name: "figma_export_brief",
+    description:
+      "构建简报：把 Figma 文件综合成编码用事实包（tokens/页面路由/组件与变体/流程概览/资源缺口/按栈编码约定），落盘 build-brief.{json,md}；可选 scaffold 按技术栈生成组件骨架文件（幂等）。",
+    schema: z.object({
+      url: z.string().min(1).describe("Figma 文件 URL"),
+      save: z.boolean().optional().describe("是否落盘 build-brief.{json,md}，默认 true"),
+      includeFlows: z.boolean().optional().describe("是否附带交互流程概览，默认 true"),
+      includeGaps: z.boolean().optional().describe("是否附带 gaps.json 缺口摘要，默认 true"),
+      scaffold: z.boolean().optional().describe("是否生成组件骨架文件，默认 false"),
+      maxComponents: z.number().int().positive().max(200).optional().describe("组件清单上限，默认 40"),
+      overwrite: z.boolean().optional().describe("scaffold 命名冲突时是否覆盖，默认 false")
+    }),
+    handler: (runtime, args) => figmaExportBrief(runtime, args as unknown as ExportBriefArgs)
   }
 ];
 

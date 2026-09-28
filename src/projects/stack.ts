@@ -21,7 +21,7 @@ export interface NamingRules {
     preferredDir: string;
     note?: string;
   };
-  componentFile: { style: CaseStyle; extension: string };
+  componentFile: { style: CaseStyle; extension: string; preferredDir: string };
   testFile: { style: CaseStyle; suffix?: string; extension: string };
 }
 
@@ -56,7 +56,7 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
     codeRules: "lib/features/<feature>/ 结构；颜色/字体走 Theme.of(context)（design tokens）",
     naming: {
       assets: { style: "snake", preferredDir: "assets/images" },
-      componentFile: { style: "snake", extension: ".dart" },
+      componentFile: { style: "snake", extension: ".dart", preferredDir: "lib/components" },
       testFile: { style: "snake", suffix: "_test", extension: ".dart" }
     }
   },
@@ -78,7 +78,7 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
     codeRules: "src/components/**、src/screens/**；样式与色板引用 theme/tokens",
     naming: {
       assets: { style: "kebab", preferredDir: "src/assets" },
-      componentFile: { style: "pascal", extension: ".tsx" },
+      componentFile: { style: "pascal", extension: ".tsx", preferredDir: "src/components" },
       testFile: { style: "kebab", extension: ".yaml" }
     }
   },
@@ -106,7 +106,7 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
         preferredDir: "app/src/main/res/drawable",
         note: "Android drawable 名称仅限 [a-z0-9_]；SVG 需转 Vector XML 或导出 PNG"
       },
-      componentFile: { style: "pascal", extension: ".kt" },
+      componentFile: { style: "pascal", extension: ".kt", preferredDir: "app/src/main/java/ui/components" },
       testFile: { style: "pascal", suffix: "Test", extension: ".kt" }
     }
   },
@@ -123,7 +123,7 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
         preferredDir: "Resources/Assets.xcassets",
         note: "推荐进 Asset Catalog（.imageset，Xcode 12+ 支持 SVG）"
       },
-      componentFile: { style: "pascal", extension: ".swift" },
+      componentFile: { style: "pascal", extension: ".swift", preferredDir: "ios/Components" },
       testFile: { style: "pascal", suffix: "UITests", extension: ".swift" }
     }
   },
@@ -144,7 +144,7 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
     codeRules: "src/components/**；样式走设计 tokens / CSS 变量",
     naming: {
       assets: { style: "kebab", preferredDir: "public/assets" },
-      componentFile: { style: "pascal", extension: ".tsx" },
+      componentFile: { style: "pascal", extension: ".tsx", preferredDir: "src/components" },
       testFile: { style: "kebab", suffix: ".spec", extension: ".ts" }
     }
   }
@@ -196,7 +196,11 @@ export function formatAssetFilename(
 }
 
 export function formatComponentFileName(name: string, profile: StackProfile | null): string {
-  const rules = profile?.naming.componentFile ?? { style: "pascal" as const, extension: ".tsx" };
+  const rules = profile?.naming.componentFile ?? {
+    style: "pascal" as const,
+    extension: ".tsx",
+    preferredDir: "src/components"
+  };
   return `${toCase(name, rules.style)}${rules.extension}`;
 }
 

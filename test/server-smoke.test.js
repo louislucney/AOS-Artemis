@@ -42,6 +42,7 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
       "figma_gap_analysis",
       "figma_generate_tests",
       "figma_import_assets",
+      "figma_export_brief",
       "get_current_selection",
       "extract_design_system"
     ]) {
