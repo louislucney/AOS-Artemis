@@ -4,7 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { planImports, safeRelativePath, writeAssetFile } from "../dist/figma/import.js";
+import {
+  buildAssetHashIndex,
+  decideAssetWrite,
+  planImports,
+  safeRelativePath,
+  sha256Buffer,
+  writeAssetFile
+} from "../dist/figma/import.js";
 import { STACK_PROFILES } from "../dist/projects/stack.js";
 
 function tmp() {
@@ -68,4 +75,82 @@ test("writeAssetFile: idempotent write semantics", () => {
   assert.equal(binary.status, "written");
   assert.equal(binary.bytes, 3);
   assert.deepEqual([...fs.readFileSync(path.join(root, "assets/b.png"))], [1, 2, 3]);
+});
+
+test("content-hash uniqueness: index, cross-name duplicates, batch dedupe", () => {
+  const root = tmp();
+  fs.mkdirSync(path.join(root, "assets"), { recursive: true });
+  fs.writeFileSync(path.join(root, "assets/home.svg"), "<svg>home</svg>");
+  fs.writeFileSync(path.join(root, "assets/cart.svg"), "<svg>cart</svg>");
+
+  const index = buildAssetHashIndex(root, ["assets/home.svg", "assets/cart.svg"]);
+  assert.equal(index.size, 2);
+  assert.equal(index.get(sha256Buffer("<svg>home</svg>")), "assets/home.svg");
+
+  const batch = new Map();
+
+  // same content, different filename → duplicate of the existing project file
+  const crossName = decideAssetWrite({
+    rootDir: root,
+    relativePath: "assets/icons/home.svg",
+    content: Buffer.from("<svg>home</svg>"),
+    projectHashes: index,
+    batchHashes: batch,
+    overwrite: false
+  });
+  assert.equal(crossName.status, "duplicate");
+  assert.equal(crossName.duplicateOf, "assets/home.svg");
+
+  // same path + same bytes → unchanged
+  const samePath = decideAssetWrite({
+    rootDir: root,
+    relativePath: "assets/home.svg",
+    content: Buffer.from("<svg>home</svg>"),
+    projectHashes: index,
+    batchHashes: batch,
+    overwrite: false
+  });
+  assert.equal(samePath.status, "unchanged");
+
+  // same path + different bytes → skipped_exists, or written with overwrite
+  const conflict = decideAssetWrite({
+    rootDir: root,
+    relativePath: "assets/home.svg",
+    content: Buffer.from("<svg>v2</svg>"),
+    projectHashes: index,
+    batchHashes: batch,
+    overwrite: false
+  });
+  assert.equal(conflict.status, "skipped_exists");
+  const forced = decideAssetWrite({
+    rootDir: root,
+    relativePath: "assets/home.svg",
+    content: Buffer.from("<svg>v2</svg>"),
+    projectHashes: index,
+    batchHashes: batch,
+    overwrite: true
+  });
+  assert.equal(forced.status, "written");
+
+  // batch dedupe: identical content queued twice at different new paths
+  const first = decideAssetWrite({
+    rootDir: root,
+    relativePath: "assets/a.svg",
+    content: Buffer.from("<svg>a</svg>"),
+    projectHashes: index,
+    batchHashes: batch,
+    overwrite: false
+  });
+  assert.equal(first.status, "written");
+  batch.set(first.sha256, "assets/a.svg");
+  const second = decideAssetWrite({
+    rootDir: root,
+    relativePath: "assets/b.svg",
+    content: Buffer.from("<svg>a</svg>"),
+    projectHashes: index,
+    batchHashes: batch,
+    overwrite: false
+  });
+  assert.equal(second.status, "duplicate");
+  assert.equal(second.duplicateOf, "assets/a.svg");
 });

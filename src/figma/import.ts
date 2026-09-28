@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { restExportImage } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import { formatAssetFilename, detectProjectStacks, primaryProfile, type StackProfile } from "../projects/stack.js";
+import { DEFAULT_ASSET_GLOBS, walkProjectFiles } from "./flows.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
@@ -23,7 +25,13 @@ export interface ImportPlanEntry {
   relativePath: string;
 }
 
-export type ImportStatus = "written" | "unchanged" | "skipped_exists" | "planned" | "error";
+export type ImportStatus =
+  | "written"
+  | "unchanged"
+  | "skipped_exists"
+  | "duplicate"
+  | "planned"
+  | "error";
 
 export interface ImportResultEntry {
   name: string;
@@ -31,6 +39,9 @@ export interface ImportResultEntry {
   file?: string;
   status: ImportStatus;
   bytes?: number;
+  sha256?: string;
+  /** For `duplicate`: the already-present project file with identical content. */
+  duplicateOf?: string;
   error?: string;
 }
 
@@ -83,6 +94,81 @@ export function writeAssetFile(
   fs.writeFileSync(tmp, next);
   fs.renameSync(tmp, absolute);
   return { status: "written", bytes: next.length };
+}
+
+// ---------------------------------------------------------------------------
+// Content-hash uniqueness
+// ---------------------------------------------------------------------------
+
+export function sha256Buffer(content: Buffer | string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+/** Index project assets by content hash (sha256 → relative path) so imports can
+ * detect same-content files regardless of their names. Bounded by file count
+ * and per-file size; unreadable/oversized files are skipped. */
+export function buildAssetHashIndex(
+  rootDir: string,
+  files: string[],
+  options: { maxFiles?: number; maxBytes?: number } = {}
+): Map<string, string> {
+  const index = new Map<string, string>();
+  const maxFiles = options.maxFiles ?? 2000;
+  const maxBytes = options.maxBytes ?? 10 * 1024 * 1024;
+  for (const file of files.slice(0, maxFiles)) {
+    try {
+      const absolute = path.join(rootDir, file);
+      const stat = fs.statSync(absolute);
+      if (!stat.isFile() || stat.size > maxBytes) continue;
+      const hash = sha256Buffer(fs.readFileSync(absolute));
+      if (!index.has(hash)) index.set(hash, file);
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  return index;
+}
+
+export interface WriteDecision {
+  status: Exclude<ImportStatus, "planned" | "error">;
+  sha256: string;
+  bytes: number;
+  duplicateOf?: string;
+}
+
+/** Decide what to do with one exported asset, enforcing content uniqueness:
+ * 1) identical content already queued/written in this batch → duplicate;
+ * 2) same target path: same bytes → unchanged, different bytes → overwrite?;
+ * 3) identical content elsewhere in the project (different name) → duplicate. */
+export function decideAssetWrite(args: {
+  rootDir: string;
+  relativePath: string;
+  content: Buffer;
+  projectHashes: Map<string, string>;
+  batchHashes: Map<string, string>;
+  overwrite: boolean;
+}): WriteDecision {
+  const sha256 = sha256Buffer(args.content);
+  const bytes = args.content.length;
+
+  const batchHit = args.batchHashes.get(sha256);
+  if (batchHit && batchHit !== args.relativePath) {
+    return { status: "duplicate", sha256, bytes, duplicateOf: batchHit };
+  }
+
+  const absolute = path.join(args.rootDir, args.relativePath);
+  if (fs.existsSync(absolute)) {
+    const existing = fs.readFileSync(absolute);
+    if (existing.equals(args.content)) return { status: "unchanged", sha256, bytes };
+    if (!args.overwrite) return { status: "skipped_exists", sha256, bytes };
+  }
+
+  const projectHit = args.projectHashes.get(sha256);
+  if (projectHit && projectHit !== args.relativePath) {
+    return { status: "duplicate", sha256, bytes, duplicateOf: projectHit };
+  }
+
+  return { status: "written", sha256, bytes };
 }
 
 function jsonResult(payload: unknown, isError = false): CallToolResult {
@@ -153,6 +239,13 @@ export async function figmaImportAssets(
     }
 
     const results: ImportResultEntry[] = [];
+    const assetGlobs = profile?.assetGlobs ?? DEFAULT_ASSET_GLOBS;
+    const projectHashes = buildAssetHashIndex(
+      runtime.project.rootDir,
+      walkProjectFiles(runtime.project.rootDir, assetGlobs)
+    );
+    const batchHashes = new Map<string, string>();
+
     for (const entry of plan) {
       const exported = exportedById.get(entry.figmaId);
       if (!exported) {
@@ -180,12 +273,36 @@ export async function figmaImportAssets(
         continue;
       }
 
-      if (args.dryRun) {
-        results.push({ ...entry, status: "planned", bytes: content.length });
+      const decision = decideAssetWrite({
+        rootDir: runtime.project.rootDir,
+        relativePath: entry.relativePath,
+        content,
+        projectHashes,
+        batchHashes,
+        overwrite: args.overwrite === true
+      });
+
+      if (decision.status === "written") {
+        if (args.dryRun !== true) {
+          writeAssetFile(runtime.project.rootDir, entry.relativePath, content, true);
+        }
+        batchHashes.set(decision.sha256, entry.relativePath);
+        results.push({
+          ...entry,
+          status: args.dryRun === true ? "planned" : "written",
+          bytes: decision.bytes,
+          sha256: decision.sha256
+        });
         continue;
       }
-      const written = writeAssetFile(runtime.project.rootDir, entry.relativePath, content, args.overwrite === true);
-      results.push({ ...entry, status: written.status, bytes: written.bytes });
+
+      results.push({
+        ...entry,
+        status: decision.status,
+        bytes: decision.bytes,
+        sha256: decision.sha256,
+        duplicateOf: decision.duplicateOf
+      });
     }
 
     const counts = results.reduce<Record<string, number>>((accumulator, entry) => {
@@ -200,11 +317,15 @@ export async function figmaImportAssets(
       dryRun: args.dryRun === true,
       detectedStacks: stacks,
       counts,
+      uniqueness: {
+        indexedProjectAssets: projectHashes.size,
+        duplicates: results.filter((entry) => entry.status === "duplicate").length
+      },
       results,
       hint:
         args.dryRun === true
-          ? "dryRun 预览：确认路径后去掉 dryRun 正式写入。"
-          : "需要组件接线/转换的场景见结果的 namingNote（如 Android SVG→Vector XML）。"
+          ? "dryRun 预览：确认路径后去掉 dryRun 正式写入；duplicate 表示同内容已存在（duplicateOf 指向现有文件）。"
+          : "duplicate=同内容已存在（跳过，见 duplicateOf）；skipped_exists=同名但内容不同（需 overwrite 或改名）。"
     };
 
     if (args.dryRun !== true && args.save !== false) {

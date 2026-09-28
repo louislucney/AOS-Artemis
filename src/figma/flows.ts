@@ -270,7 +270,7 @@ const SKIP_DIRS = new Set([
   "Pods"
 ]);
 
-const DEFAULT_ASSET_GLOBS = ["**/*.svg", "**/*.png", "**/*.webp", "**/*.jpg", "**/*.jpeg", "**/*.gif"];
+export const DEFAULT_ASSET_GLOBS = ["**/*.svg", "**/*.png", "**/*.webp", "**/*.jpg", "**/*.jpeg", "**/*.gif"];
 const DEFAULT_TOKEN_GLOBS = [
   "**/tokens.json",
   "**/tokens.css",
