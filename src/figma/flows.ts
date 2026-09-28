@@ -517,6 +517,7 @@ export async function figmaGapAnalysis(
 
     const payload: Record<string, unknown> = {
       ok: true,
+      sourceUrl: args.url,
       design: {
         assets: designAssets.count ?? designAssets.assets?.length ?? 0,
         colors: designSystem.colors?.length ?? 0

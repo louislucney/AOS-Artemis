@@ -244,6 +244,7 @@ env:
 | `figma_extract_flows` | `{url, nodeId?, save?}` | 原型交互 → 流程图（screens/edges/entryScreens/unresolved），落盘 `.artemis/design/flows.json`；供后续"流程→测试生成"消费（M-B） |
 | `figma_gap_analysis` | `{url, id?, assetGlobs?, tokenFiles?, save?}` | 设计资源/色板 vs 项目资产/tokens 缺口（missingAssets/missingColors），**扫描规则按检测到的技术栈选择**（`src/projects/stack.ts`：Flutter/RN/原生 Android/iOS/Web 档案，含资产目录/定位/代码/命名约定），缺失资源按栈重命名（如 Android `ic_home.svg`、Flutter `home_icon.svg`）并给出目标目录；落盘 `.artemis/design/gaps.json`；供"资源导入"消费（M-C） |
 | `figma_generate_tests` | `{url?, flowsPath?, maxFlows?, save?}` | 连续交互线性化为端到端流程（entry→…→终态/BACK），生成 artemis 可直接执行的任务描述；落盘 `tests.json` + `tests.md`（M-B，基本目标） |
+| `figma_import_assets` | `{url?, gapPath?, destDir?, ids?, format?, overwrite?, dryRun?, save?}` | 按 gaps.json 导出缺失资源（SVG 内联/PNG 下载）→ 按栈命名与首选目录幂等写入（同内容跳过；不同需 `overwrite`；`dryRun` 预览）；落盘 `import-report.json`（M-C） |
 
 `setup_required` 语义：无任何可用条目时，`llm_list` 正常返回并带 `setupRequired: true` + 指引；`mobile_run_task` 直接返回结构化 `setup_required` 错误（不调用子进程）；其余 mobile 工具放行。
 

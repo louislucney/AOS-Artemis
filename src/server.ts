@@ -24,6 +24,7 @@ import {
   type GapAnalysisArgs
 } from "./figma/flows.js";
 import { figmaGenerateTests, type GenerateTestsArgs } from "./figma/test-gen.js";
+import { figmaImportAssets, type ImportAssetsArgs } from "./figma/import.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
@@ -151,6 +152,22 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       save: z.boolean().optional().describe("是否落盘 tests.json/tests.md，默认 true")
     }),
     handler: (runtime, args) => figmaGenerateTests(runtime, args as unknown as GenerateTestsArgs)
+  },
+  {
+    name: "figma_import_assets",
+    description:
+      "资源导入：按 gaps.json（或 ids 过滤）从 Figma 导出缺失资源（SVG 内联 / PNG 下载），按项目技术栈命名与首选目录幂等写入（同内容跳过；不同需 overwrite）；支持 dryRun 预览；落盘 .artemis/design/import-report.json。",
+    schema: z.object({
+      url: z.string().optional().describe("Figma URL（默认取 gaps.json 的 sourceUrl）"),
+      gapPath: z.string().optional().describe("自定义 gaps.json 路径（相对项目根）"),
+      destDir: z.string().optional().describe("覆盖目标目录（默认按栈档案/建议目录）"),
+      ids: z.array(z.string()).optional().describe("只导入指定 Figma 节点 id（缺省=全部缺失项）"),
+      format: z.enum(["svg", "png"]).optional().describe("导出格式，默认 svg"),
+      overwrite: z.boolean().optional().describe("同名不同内容时是否覆盖，默认 false（跳过）"),
+      dryRun: z.boolean().optional().describe("仅预览不写文件，默认 false"),
+      save: z.boolean().optional().describe("是否落盘 import-report.json，默认 true")
+    }),
+    handler: (runtime, args) => figmaImportAssets(runtime, args as unknown as ImportAssetsArgs)
   }
 ];
 
