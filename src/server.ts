@@ -23,6 +23,7 @@ import {
   type ExtractFlowsArgs,
   type GapAnalysisArgs
 } from "./figma/flows.js";
+import { figmaGenerateTests, type GenerateTestsArgs } from "./figma/test-gen.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
@@ -138,6 +139,18 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       save: z.boolean().optional().describe("是否落盘到 .artemis/design/gaps.json，默认 true")
     }),
     handler: (runtime, args) => figmaGapAnalysis(runtime, args as unknown as GapAnalysisArgs)
+  },
+  {
+    name: "figma_generate_tests",
+    description:
+      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程，生成可直接传给 mobile_run_task 的自然语言任务描述；落盘 tests.json + tests.md。",
+    schema: z.object({
+      url: z.string().optional().describe("Figma URL（可选；不传则用 flows.json）"),
+      flowsPath: z.string().optional().describe("自定义 flows.json 路径（相对项目根）"),
+      maxFlows: z.number().int().positive().max(50).optional().describe("最多生成条数，默认 10"),
+      save: z.boolean().optional().describe("是否落盘 tests.json/tests.md，默认 true")
+    }),
+    handler: (runtime, args) => figmaGenerateTests(runtime, args as unknown as GenerateTestsArgs)
   }
 ];
 

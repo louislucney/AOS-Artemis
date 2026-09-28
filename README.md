@@ -117,6 +117,19 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 - `aos_tasks`：列出本项目 `mobile_run_task` 记录（trace/状态/模型/时间），默认先向 artemis 同步完成态；后台每 30s 自动同步。
 - `compare_design_and_device`：一次调用返回 **Figma 节点渲染图（PNG@2x）+ 当前真机截图**（MCP image content），交给多模态模型比对布局/间距/颜色/文案。
 
+### 设计 → 测试流水线（Figma → 真机）
+
+```
+figma_extract_flows(url)     # 交互流程 → .artemis/design/flows.json
+figma_gap_analysis(url)      # 资源缺口 → .artemis/design/gaps.json
+figma_generate_tests(url)    # 流程 → .artemis/design/tests.{json,md}（含 taskDesc）
+# 执行：mobile_run_task(task_desc = tests.json 中 flows[i].taskDesc)
+# 视觉断言：compare_design_and_device（失败步骤截图 vs Figma 渲染图）
+```
+
+生成的任务描述会自动带上定位线索（Figma 文本优先、图层名兜底）与页面断言（目标页文本/子元素）：例如
+`1) 点击「立即购买」（设计元素：CTA Button），验证进入「Checkout」（页面应出现「应付 ¥99」…）`。
+
 ## 客户端安装器
 
 ```bash
@@ -178,6 +191,7 @@ node dist/cli.js doctor
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
 | `figma_extract_flows` | 解析 Figma 原型交互 → 流程图（screens/edges/entryScreens，支持连续动作与 BACK），落盘 `.artemis/design/flows.json` |
 | `figma_gap_analysis` | 缺口分析：设计资源/色板 vs 项目现有资产/ tokens 文件，落盘 `.artemis/design/gaps.json` |
+| `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md`，内含可直接传给 `mobile_run_task` 的任务描述 |
 | `mobile_*`（5） | 代理 artemis（schema 原样透传）；`mobile_run_task` 在 setup 未完成时返回结构化 `setup_required` |
 | Figma 20 | `get_current_selection` … `export_image`（内嵌 dcb，zod 校验）；插件模式走本地桥（锁定 3055，CORS 白名单），REST 模式需 token（缺失时引导 `aos_configure`） |
 

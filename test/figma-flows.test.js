@@ -29,10 +29,12 @@ function syntheticDocument() {
             name: "Home",
             type: "FRAME",
             children: [
+              { id: "10:5", name: "Welcome Text", type: "TEXT", characters: "Welcome Back" },
               {
                 id: "10:2",
                 name: "CTA Button",
                 type: "INSTANCE",
+                children: [{ id: "10:3", name: "CTA Label", type: "TEXT", characters: "Buy now" }],
                 interactions: [
                   {
                     trigger: { type: "ON_CLICK" },
@@ -54,6 +56,7 @@ function syntheticDocument() {
             name: "Checkout",
             type: "FRAME",
             children: [
+              { id: "11:5", name: "Amount", type: "TEXT", characters: "Pay now" },
               {
                 id: "11:2",
                 name: "Payment Loader",
@@ -74,6 +77,7 @@ function syntheticDocument() {
             name: "Success",
             type: "FRAME",
             children: [
+              { id: "12:5", name: "Done Text", type: "TEXT", characters: "Done" },
               {
                 id: "12:2",
                 name: "Back Link",
@@ -109,6 +113,11 @@ test("flow graph: consecutive interactions produce screens, edges and entry scre
   assert.equal(click.to.name, "Checkout");
   assert.equal(click.element.name, "CTA Button");
   assert.equal(click.navigation, "NAVIGATE");
+  assert.ok(click.textHints.includes("Buy now"), "element text hints captured");
+
+  const home = graph.screens.find((screen) => screen.name === "Home");
+  assert.ok(home.textHints.includes("Welcome Back"), "screen text hints captured");
+  assert.ok(home.childNames.includes("CTA Button"), "screen child names captured");
 
   const timeout = graph.edges.find((edge) => edge.trigger === "AFTER_TIMEOUT");
   assert.equal(timeout.triggerTimeoutMs, 2000);
@@ -122,7 +131,9 @@ test("flow graph: consecutive interactions produce screens, edges and entry scre
 
 test("flow graph: unresolved destinations are reported with a null target", () => {
   const document = syntheticDocument();
-  document.children[0].children[0].children[0].interactions[0].actions[0].destinationId = "99:99";
+  const home = document.children[0].children[0];
+  const cta = home.children.find((child) => child.name === "CTA Button");
+  cta.interactions[0].actions[0].destinationId = "99:99";
 
   const graph = buildFlowGraph(document);
   assert.deepEqual(graph.unresolvedDestinations, ["99:99"]);
@@ -133,9 +144,10 @@ test("flow graph: unresolved destinations are reported with a null target", () =
 
 test("flow graph: nodeId scoping limits the graph and flags outside destinations", () => {
   const graph = buildFlowGraph(syntheticDocument(), { nodeId: "11:1" });
-  assert.deepEqual(graph.screens, [
-    { id: "11:1", name: "Checkout", suggestedRoute: "/checkout" }
-  ]);
+  assert.equal(graph.screens.length, 1);
+  assert.equal(graph.screens[0].id, "11:1");
+  assert.equal(graph.screens[0].name, "Checkout");
+  assert.equal(graph.screens[0].suggestedRoute, "/checkout");
   assert.equal(graph.edges.length, 1);
   assert.deepEqual(graph.unresolvedDestinations, ["12:1"]);
 });

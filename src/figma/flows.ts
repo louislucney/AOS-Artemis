@@ -21,12 +21,18 @@ export interface FlowScreen {
   id: string;
   name: string;
   suggestedRoute: string;
+  /** Direct child layer names — used as visible-element hints for assertions. */
+  childNames: string[];
+  /** First TEXT contents found inside this screen. */
+  textHints: string[];
 }
 
 export interface FlowEdge {
   from: { id: string; name: string };
   to: { id: string; name: string } | null;
   element: { id: string; name: string; type: string };
+  /** First TEXT contents inside the tapped element (locator hints). */
+  textHints: string[];
   trigger: string;
   triggerTimeoutMs?: number;
   navigation?: string;
@@ -95,9 +101,17 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
 
   const edges: FlowEdge[] = [];
   const unresolved = new Set<string>();
+  const elementTextHints = new Map<string, string[]>();
+  const sources: Array<{ node: FigmaNode; interactions: RawInteraction[] }> = [];
   walk(scopeRoot, (node) => {
     const interactions = (node as { interactions?: RawInteraction[] }).interactions;
-    if (!Array.isArray(interactions) || interactions.length === 0) return;
+    if (Array.isArray(interactions) && interactions.length > 0) {
+      sources.push({ node, interactions });
+      elementTextHints.set(node.id, collectTextHints(node, 3));
+    }
+  });
+
+  for (const { node, interactions } of sources) {
     const fromScreen = screenOf(node.id);
     for (const interaction of interactions) {
       const trigger = interaction.trigger?.type ?? "UNKNOWN";
@@ -127,6 +141,7 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
             : { id: node.id, name: node.name },
           to: to ? { id: to.id, name: to.name } : null,
           element: { id: node.id, name: node.name, type: node.type },
+          textHints: elementTextHints.get(node.id) ?? [],
           trigger,
           ...(timeout !== undefined ? { triggerTimeoutMs: timeout } : {}),
           ...(navigation ? { navigation } : {}),
@@ -135,7 +150,7 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
         });
       }
     }
-  });
+  }
 
   const screenNodes: FigmaNode[] = [];
   walk(scopeRoot, (node) => {
@@ -144,10 +159,27 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
   if (screenNodes.length === 0 && scopeRoot.type !== "DOCUMENT" && scopeRoot.type !== "PAGE") {
     screenNodes.push(scopeRoot);
   }
+
+  const screenTextHints = new Map<string, string[]>();
+  for (const node of byId.values()) {
+    if (node.type !== "TEXT") continue;
+    const characters = (node as { characters?: unknown }).characters;
+    if (typeof characters !== "string" || characters.trim() === "") continue;
+    const screen = screenOf(node.id);
+    if (!screen) continue;
+    const list = screenTextHints.get(screen.id) ?? [];
+    if (list.length < 3 && !list.includes(characters.trim())) {
+      list.push(characters.trim());
+      screenTextHints.set(screen.id, list);
+    }
+  }
+
   const screens: FlowScreen[] = screenNodes.map((screen) => ({
     id: screen.id,
     name: screen.name,
-    suggestedRoute: routeFor(screen.name)
+    suggestedRoute: routeFor(screen.name),
+    childNames: (screen.children ?? []).slice(0, 10).map((child) => child.name),
+    textHints: screenTextHints.get(screen.id) ?? []
   }));
 
   const incoming = new Set(edges.filter((edge) => edge.to).map((edge) => edge.to!.id));
@@ -157,6 +189,18 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     entryScreens: screens.filter((screen) => !incoming.has(screen.id)).map((screen) => screen.name),
     unresolvedDestinations: [...unresolved]
   };
+}
+
+function collectTextHints(node: FigmaNode, limit: number): string[] {
+  const hints: string[] = [];
+  walk(node, (candidate) => {
+    if (hints.length >= limit || candidate.type !== "TEXT") return;
+    const characters = (candidate as { characters?: unknown }).characters;
+    if (typeof characters !== "string") return;
+    const text = characters.trim();
+    if (text !== "" && !hints.includes(text)) hints.push(text);
+  });
+  return hints;
 }
 
 function jsonResult(payload: unknown, isError = false): CallToolResult {
