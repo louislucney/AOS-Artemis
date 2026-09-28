@@ -7,6 +7,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { loadProject, defaultArtemisRepo, emptyConfig } from "./config/loader.js";
 import { ensureArtemisDeps, resolveDepsSource } from "./artemis/bootstrap.js";
 import { createProjectStore } from "./db/index.js";
+import { configureLogging, installCrashHandlers } from "./log.js";
 import { startBridge, stopBridge } from "./figma/bridge.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
@@ -68,6 +69,13 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   const workspaceRoot = path.resolve(
     options.workspaceRoot ?? process.env.AOS_WORKSPACE_ROOT ?? process.cwd()
   );
+
+  const logDir =
+    process.env.AOS_LOG_DIR?.trim() || path.join(workspaceRoot, ".aos-mcp", "logs");
+  const logFile = configureLogging({ logDir });
+  installCrashHandlers();
+  log(`aos-mcp ${AOS_MCP_VERSION} 启动（HTTP）workspace=${workspaceRoot}`);
+  if (logFile) log(`日志文件: ${logFile}`);
 
   // Service-level first-run/update bootstrap: the artemis repo is shared by all
   // projects; deps come from env (AOS_ARTEMIS_DEPS_URL) or the default repo.

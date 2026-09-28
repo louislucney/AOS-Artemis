@@ -73,12 +73,14 @@ export class StubProxy {
     running = false,
     tasks = { active: [], queued: [] },
     diagnoseThrows = false,
-    taskStatus = "running"
+    taskStatus = "running",
+    childFingerprint = null
   } = {}) {
     this.running = running;
     this.tasks = tasks;
     this.diagnoseThrows = diagnoseThrows;
     this.taskStatus = taskStatus;
+    this.childFingerprint = childFingerprint;
     this.restartCalls = 0;
     this.disposeCalls = 0;
     this.calls = [];
@@ -129,7 +131,8 @@ export class StubProxy {
       pid: this.running ? 123 : null,
       restarts: 0,
       lastError: null,
-      stderrTail: []
+      stderrTail: [],
+      fingerprint: this.running ? this.childFingerprint : null
     };
   }
 

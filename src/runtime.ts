@@ -4,6 +4,7 @@ import { loadDotenvValues, type LoadedProject } from "./config/loader.js";
 import { makeResolver } from "./config/validate.js";
 import { StateStore } from "./state.js";
 import {
+  buildBareChildSpec,
   buildChildEnvForEntry,
   buildChildSpecForEntry,
   configDirAbs,
@@ -14,6 +15,7 @@ import {
   type ResolvedPython
 } from "./artemis/assembly.js";
 import { ArtemisProxy, type ArtemisProxyLike } from "./artemis/proxy.js";
+import { appendChildLog } from "./log.js";
 import { MemoryStore } from "./db/memory.js";
 import { TERMINAL_TASK_STATUSES } from "./db/types.js";
 import type { ProjectLlmRecord, ProjectRecord, ProjectStore, TaskStatRecord } from "./db/types.js";
@@ -113,7 +115,8 @@ export class Runtime {
             startedAt: new Date().toISOString()
           }
         });
-      }
+      },
+      onStderrLine: (line) => appendChildLog(line)
     });
   }
 
@@ -290,10 +293,15 @@ export class Runtime {
     }
 
     const current = await this.activeEntry();
-    const currentFingerprint = current ? this.envFingerprintForEntry(current) : null;
     const targetFingerprint = this.envFingerprintForEntry(target);
     const running = this.proxy.isRunning();
-    const needsRestart = running && currentFingerprint !== null && currentFingerprint !== targetFingerprint;
+    // Compare against the env the live child actually runs with (falls back to
+    // the current entry when the proxy cannot report it, e.g. test stubs).
+    const runningFingerprint = running ? this.proxy.status().fingerprint : null;
+    const baseline =
+      runningFingerprint ?? (current ? this.envFingerprintForEntry(current) : null);
+    // A bare child (no LLM yet) must be restarted once a real entry activates.
+    const needsRestart = running && baseline !== targetFingerprint;
 
     if (needsRestart && !options.force) {
       const counts = await this.queryTaskCounts();
@@ -485,18 +493,15 @@ export class Runtime {
   }
 
   prepareChildSpec(): ChildSpec {
-    const entry = this.activeCache?.entry;
-    if (!entry) {
-      throw new Error(
-        `SETUP_REQUIRED: 项目尚未配置可用的 LLM。Run: aos-mcp doctor 或调用 aos_configure 工具补全。`
-      );
-    }
-    return buildChildSpecForEntry({
+    const args = {
       config: this.project.config,
       rootDir: this.project.rootDir,
-      entry,
       baseEnv: this.baseEnv
-    });
+    };
+    const entry = this.activeCache?.entry;
+    // No LLM configured yet: spawn a bare child so read-only mobile tools
+    // (diagnose / device state) still work; mobile_run_task is gated upstream.
+    return entry ? buildChildSpecForEntry({ ...args, entry }) : buildBareChildSpec(args);
   }
 
   activeEntryCached(): LlmEntry | null {

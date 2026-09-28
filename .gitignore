@@ -7,6 +7,9 @@ dist/
 # Generated runtime artifacts (override config + state)
 .artemis/
 
+# HTTP mode log dir (when the workspace is this repo)
+.aos-mcp/
+
 # artemis dependency bundle output + first-run cache
 dist-deps/
 .artemis-deps/

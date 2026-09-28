@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -37,6 +38,8 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
       "llm_switch",
       "aos_configure",
       "aos_status",
+      "figma_extract_flows",
+      "figma_gap_analysis",
       "get_current_selection",
       "extract_design_system"
     ]) {
@@ -67,6 +70,13 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
       ["listening", "skipped_occupied"].includes(statusPayload.figma.bridge.status),
       `unexpected bridge status: ${statusPayload.figma.bridge.status}`
     );
+    assert.equal(statusPayload.logs.file, path.join(dir, ".artemis", "logs", "aos-mcp.log"));
+
+    // Log file sink: startup banner + per-tool audit lines.
+    const logText = fs.readFileSync(path.join(dir, ".artemis", "logs", "aos-mcp.log"), "utf-8");
+    assert.match(logText, /启动（stdio）/);
+    assert.match(logText, /tool=llm_list ok=true/);
+    assert.match(logText, /tool=aos_status ok=true/);
   } finally {
     await client.close();
   }

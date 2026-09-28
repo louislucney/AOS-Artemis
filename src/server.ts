@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -9,10 +11,18 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { loadProject } from "./config/loader.js";
+import { configDirAbs } from "./artemis/assembly.js";
 import { ensureArtemisDeps, resolveDepsSource } from "./artemis/bootstrap.js";
 import { createProjectStore } from "./db/index.js";
+import { configureLogging, installCrashHandlers } from "./log.js";
 import { startBridge, stopBridge } from "./figma/bridge.js";
 import { figmaTools, handleFigmaTool, isFigmaTool } from "./figma/registry.js";
+import {
+  figmaExtractFlows,
+  figmaGapAnalysis,
+  type ExtractFlowsArgs,
+  type GapAnalysisArgs
+} from "./figma/flows.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
@@ -98,11 +108,50 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       deviceSerial: z.string().optional().describe("目标设备 serial（默认自动选择）")
     }),
     handler: (runtime, args) => compareDesignAndDevice(runtime, args as unknown as CompareArgs)
+  },
+  {
+    name: "figma_extract_flows",
+    description:
+      "解析 Figma 文件的原型交互 → 流程图：screens（含建议路由）+ edges（元素/触发器/导航/转场，支持 ON_CLICK/AFTER_TIMEOUT/拖拽/BACK 等连续动作）+ entryScreens；落盘 <项目>/.artemis/design/flows.json。REST 模式需 FIGMA_ACCESS_TOKEN。",
+    schema: z.object({
+      url: z.string().min(1).describe("Figma 文件 URL（可选带 node-id 限定范围）"),
+      nodeId: z.string().optional().describe("可选：只解析该节点子树"),
+      save: z.boolean().optional().describe("是否落盘到 .artemis/design/flows.json，默认 true")
+    }),
+    handler: (runtime, args) => figmaExtractFlows(runtime, args as unknown as ExtractFlowsArgs)
+  },
+  {
+    name: "figma_gap_analysis",
+    description:
+      "缺口分析：对比 Figma 中应导出的资源（图标/矢量）与色板 vs 项目现有资产（assetGlobs）与 token 文件（tokenFiles），输出缺失清单及建议文件名；落盘 <项目>/.artemis/design/gaps.json。",
+    schema: z.object({
+      url: z.string().min(1).describe("Figma 文件 URL"),
+      id: z.string().optional().describe("可选：限定分析节点"),
+      assetGlobs: z
+        .array(z.string())
+        .optional()
+        .describe('项目资产匹配模式（默认 ["**/*.svg","**/*.png",…]，忽略 node_modules/dist 等）'),
+      tokenFiles: z
+        .array(z.string())
+        .optional()
+        .describe('token 文件匹配模式（默认 ["**/tokens.json","**/theme.css","**/variables.css",…]）'),
+      save: z.boolean().optional().describe("是否落盘到 .artemis/design/gaps.json，默认 true")
+    }),
+    handler: (runtime, args) => figmaGapAnalysis(runtime, args as unknown as GapAnalysisArgs)
   }
 ];
 
 function errorResult(message: string): CallToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
+}
+
+function resultErrorSummary(result: CallToolResult): string {
+  for (const item of result.content ?? []) {
+    if (item.type === "text" && typeof item.text === "string") {
+      return item.text.replace(/\s+/g, " ").slice(0, 160);
+    }
+  }
+  return "unknown error";
 }
 
 function stripSchemaMeta(schema: unknown): unknown {
@@ -182,7 +231,9 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
     return { tools };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const handleCall = async (request: {
+    params: { name: string; arguments?: Record<string, unknown> };
+  }): Promise<CallToolResult> => {
     const { name, arguments: args } = request.params;
     const native = NATIVE_TOOLS.find((tool) => tool.name === name);
 
@@ -235,6 +286,20 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
     } catch (error) {
       return errorResult(`工具 "${name}" 执行失败: ${errorMessage(error)}`);
     }
+  };
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const started = Date.now();
+    const result = await handleCall(
+      request as { params: { name: string; arguments?: Record<string, unknown> } }
+    );
+    const ok = result.isError !== true;
+    const detail = ok ? "" : ` error=${resultErrorSummary(result)}`;
+    log(
+      `tool=${request.params.name} ok=${ok} ms=${Date.now() - started}${detail}`,
+      ok ? "info" : "warn"
+    );
+    return result;
   });
 
   return server;
@@ -246,6 +311,14 @@ export async function runServer(): Promise<void> {
 
   try {
     const project = loadProject();
+    // Logging first: bootstrap/bridge/tool-call records must land in the log file.
+    const logDir =
+      process.env.AOS_LOG_DIR?.trim() ||
+      path.join(configDirAbs(project.config, project.rootDir), "logs");
+    const logFile = configureLogging({ logDir });
+    installCrashHandlers();
+    log(`aos-mcp ${AOS_MCP_VERSION} 启动（stdio）项目=${project.rootDir}`);
+    if (logFile) log(`日志文件: ${logFile}`);
     // First-run/update bootstrap: installs or refreshes artemis deps when the
     // venv is missing, unmanaged, or stale against uv.lock (no-op when ready).
     const deps = await ensureArtemisDeps({
@@ -268,7 +341,12 @@ export async function runServer(): Promise<void> {
     );
   } catch (error) {
     initError = errorMessage(error);
-    log(`初始化失败: ${initError}`);
+    configureLogging({
+      logDir:
+        process.env.AOS_LOG_DIR?.trim() || path.join(process.cwd(), ".aos-mcp", "logs")
+    });
+    installCrashHandlers();
+    log(`初始化失败: ${initError}`, "error");
   }
 
   if (runtime) {

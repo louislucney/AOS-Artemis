@@ -4,10 +4,8 @@ import path from "node:path";
 
 export const AOS_MCP_VERSION = "0.1.0";
 
-/** stderr logger — stdout is reserved for the stdio MCP protocol. */
-export function log(message: string): void {
-  console.error(`[aos-mcp] ${message}`);
-}
+/** stderr + file logger (see src/log.ts) — stdout is reserved for the MCP protocol. */
+export { log, logDebug, logError, logWarn } from "./log.js";
 
 export function writeFileAtomic(filePath: string, content: string): void {
   const dir = path.dirname(filePath);

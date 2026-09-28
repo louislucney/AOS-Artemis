@@ -235,6 +235,33 @@ test("aos_configure: rejects invalid input", async () => {
   assert.equal(bad.isError, true);
 });
 
+test("runtime: bare child spec works without an LLM (read-only tools stay usable)", async () => {
+  const dir = makeTempProject({});
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const spec = runtime.prepareChildSpec();
+  assert.ok(spec.command);
+  assert.equal(spec.env.ARTEMIS_STANDALONE, "1");
+  assert.equal(spec.env.OPENAI_API_KEY, undefined);
+  assert.equal(spec.env.OPENAI_BASE_URL, undefined);
+});
+
+test("aos_configure: activating over a running bare child restarts it", async () => {
+  const dir = makeTempProject({});
+  const proxy = new StubProxy({ running: true, childFingerprint: "bare-child-fingerprint" });
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+
+  const payload = parseToolResult(
+    await aosConfigure(runtime, {
+      model: "deepseek-flash",
+      baseUrl: "https://api.deepseek.com/v1",
+      apiKey: "sk-bare-123456"
+    })
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.activation.effects.childRestarted, true);
+  assert.equal(proxy.restartCalls, 1);
+});
+
 test("aos_status: reports project, store, child and setup state", async () => {
   const dir = makeTempProject({ config: baseConfig(), dotenv: "GEMINI_API_KEY=gm-abcdef123456\n" });
   const proxy = new StubProxy({ running: true });

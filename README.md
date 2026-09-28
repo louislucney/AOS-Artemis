@@ -56,6 +56,32 @@ node dist/cli.js doctor --install-deps
   3. 离线环境可设 `AOS_DEPS_NO_ONLINE=1` 禁止在线回退（强制刷新依赖包，否则明确失败）。
 - 包按平台构建：Mac 用 `darwin-arm64`，容器/CI 用对应 Linux 包（`scripts/artemis-deps.sh build` 在目标平台或容器内运行）。
 
+## 日志与故障定位
+
+**日志位置**
+
+| 来源 | 位置 |
+|------|------|
+| 服务日志（启停/依赖/桥/每次工具调用审计） | `<项目>/.artemis/logs/aos-mcp.log`（`aos_status.logs.file` 直接返回路径；容器内同路径、随工作区挂载可见；`AOS_LOG_DIR` 可改） |
+| artemis 网关子进程 stderr | `<项目>/.artemis/logs/artemis-child.log`（进程退出也不丢） |
+| HTTP/常驻模式 | 同上 + `docker logs aos-mcp`（stderr 同步输出） |
+| artemis 任务明细（最细粒度） | `artemis/traces/<trace_id>/stdout.log` / `stderr.log` |
+| 客户端侧（stdio） | 服务 stderr 同时被 opencode / Claude Code 捕获进各自 MCP 日志 |
+
+每条工具调用都有审计行，例如：`2026-09-28T15:20:11.123Z INFO  [aos-mcp] tool=mobile_run_task ok=true ms=87`（失败时附错误摘要，级别 WARN）。
+
+**按症状定位**
+
+| 症状 | 排查路径 |
+|------|----------|
+| 工具列表少了 5 个 `mobile_*` / 提示"artemis 子进程未就绪" | `aos-mcp.log` 的 `依赖状态` 行 → `doctor` → `mobile_diagnose` |
+| 任务失败 | `aos_tasks` 取 `trace_id` → `artemis/traces/<trace_id>/stderr.log` 尾部 + `mobile_inspect_trace(view_step_details)`；`mobile_diagnose` 会直接给出 `logs.last_failed_task.recent_errors` |
+| LLM 401/超时/余额 | `llm_list` 看 active 与 key 来源；`artemis-child.log` 与任务 stderr 中的 provider 报错 |
+| Figma 桥不通 | `aos-mcp.log` 的 `[bridge]` 行 + `aos_status.figma.bridge` / `GET /healthz` |
+| MCP 连不上 / 服务秒退 | `aos-mcp.log` 末尾（`uncaughtException` 堆栈会落盘；初始化失败也落盘） |
+
+**日志配置**：`AOS_LOG_LEVEL=debug|info|warn|error`（默认 info）、`AOS_LOG_DIR`（改目录）、`AOS_LOG_DISABLE_FILE=1`（关闭文件输出）、`AOS_LOG_MAX_MB`（轮转阈值，默认 5MB，保留 `.1` 备份）。
+
 ## 本地开发数据库（PostgreSQL）
 
 专用本地实例（Docker，loopback 5433；**不影响**本机 5432 上其他应用的库）：
@@ -150,6 +176,8 @@ node dist/cli.js doctor
 | `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 就绪性 |
 | `aos_tasks` | 任务/调用统计（trace/状态/模型），含完成态同步 |
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
+| `figma_extract_flows` | 解析 Figma 原型交互 → 流程图（screens/edges/entryScreens，支持连续动作与 BACK），落盘 `.artemis/design/flows.json` |
+| `figma_gap_analysis` | 缺口分析：设计资源/色板 vs 项目现有资产/ tokens 文件，落盘 `.artemis/design/gaps.json` |
 | `mobile_*`（5） | 代理 artemis（schema 原样透传）；`mobile_run_task` 在 setup 未完成时返回结构化 `setup_required` |
 | Figma 20 | `get_current_selection` … `export_image`（内嵌 dcb，zod 校验）；插件模式走本地桥（锁定 3055，CORS 白名单），REST 模式需 token（缺失时引导 `aos_configure`） |
 

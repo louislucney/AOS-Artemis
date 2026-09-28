@@ -277,3 +277,17 @@ export function buildChildSpecForEntry(args: EntryChildEnvArgs): ChildSpec {
     fingerprint
   };
 }
+
+/** Bare spec for setup_required projects: no LLM key/baseUrl, so read-only
+ * tools (mobile_diagnose / device state) still work; task execution stays
+ * gated at the server layer (mobile_run_task). */
+export function buildBareChildSpec(args: {
+  config: AosConfig;
+  rootDir: string;
+  baseEnv?: NodeJS.ProcessEnv;
+}): ChildSpec {
+  return buildChildSpecForEntry({
+    ...args,
+    entry: { provider: "custom", model: "", baseUrl: null, apiKey: null }
+  });
+}

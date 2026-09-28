@@ -2,6 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { AOS_MCP_VERSION, maskSecret } from "../util.js";
 import { bridgeState } from "../figma/bridge.js";
+import { childLogFilePath, logFilePath } from "../log.js";
 import { entryIssues } from "../llm/registry.js";
 import type { Runtime } from "../runtime.js";
 
@@ -142,6 +143,10 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
         source: figma.source,
         envVar: runtime.figmaTokenScanVar()
       }
+    },
+    logs: {
+      file: logFilePath(),
+      childFile: childLogFilePath()
     },
     state: runtime.state.read()
   });

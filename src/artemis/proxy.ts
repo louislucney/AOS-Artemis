@@ -19,6 +19,8 @@ export interface ProxyStatus {
   restarts: number;
   lastError: string | null;
   stderrTail: string[];
+  /** Env fingerprint the live child was spawned with (null when not running). */
+  fingerprint: string | null;
 }
 
 /** Test seam: the runtime depends on this interface, not on the concrete class. */
@@ -38,6 +40,8 @@ export interface ArtemisProxyOptions {
   prepare: () => ChildSpec;
   onSpawned?: (info: { pid: number | null; fingerprint: string }) => void;
   onExit?: (info: { expected: boolean }) => void;
+  /** Sink for child stderr lines (persisted by the runtime, e.g. artemis-child.log). */
+  onStderrLine?: (line: string) => void;
   connectTimeoutMs?: number;
 }
 
@@ -54,6 +58,7 @@ export class ArtemisProxy implements ArtemisProxyLike {
   private restarts = 0;
   private lastError: string | null = null;
   private expectedClose = false;
+  private currentFingerprint: string | null = null;
 
   constructor(private readonly options: ArtemisProxyOptions) {}
 
@@ -67,7 +72,8 @@ export class ArtemisProxy implements ArtemisProxyLike {
       pid: this.transport?.pid ?? null,
       restarts: this.restarts,
       lastError: this.lastError,
-      stderrTail: [...this.stderrTail]
+      stderrTail: [...this.stderrTail],
+      fingerprint: this.currentFingerprint
     };
   }
 
@@ -119,6 +125,7 @@ export class ArtemisProxy implements ArtemisProxyLike {
         this.client = null;
         this.transport = null;
         this.cachedTools = null;
+        this.currentFingerprint = null;
       }
       if (!expected) {
         this.restarts += 1;
@@ -131,6 +138,7 @@ export class ArtemisProxy implements ArtemisProxyLike {
     this.transport = transport;
     this.cachedTools = null;
     this.lastError = null;
+    this.currentFingerprint = spec.fingerprint;
     this.options.onSpawned?.({ pid: transport.pid, fingerprint: spec.fingerprint });
   }
 
@@ -167,6 +175,11 @@ export class ArtemisProxy implements ArtemisProxyLike {
     this.stderrTail.push(trimmed);
     if (this.stderrTail.length > STDERR_RING_MAX_LINES) {
       this.stderrTail.splice(0, this.stderrTail.length - STDERR_RING_MAX_LINES);
+    }
+    try {
+      this.options.onStderrLine?.(trimmed);
+    } catch {
+      /* logging sink failures must never break the proxy */
     }
   }
 
@@ -216,12 +229,14 @@ export class ArtemisProxy implements ArtemisProxyLike {
       this.client = null;
       this.transport = null;
       this.cachedTools = null;
+      this.currentFingerprint = null;
     }
   }
 
   disposeSync(): void {
     const pid = this.transport?.pid;
     this.expectedClose = true;
+    this.currentFingerprint = null;
     if (typeof pid === "number") terminateProcessSync(pid);
   }
 }

@@ -241,6 +241,8 @@ env:
 | `aos_status` | `{}` | 项目、DB 状态、条目数、active、子进程、Figma 桥/就绪性、setup 状态 |
 | `aos_tasks` | `{limit?, sync?}` | 任务/调用统计（trace/状态/模型/时间）；默认先向 artemis 同步完成态 |
 | `compare_design_and_device` | `{figmaUrl, nodeId?, deviceSerial?}` | 组合工具：Figma 节点渲染图（PNG@2x）+ 真机截图，一并以 image content 返回供多模态比对 |
+| `figma_extract_flows` | `{url, nodeId?, save?}` | 原型交互 → 流程图（screens/edges/entryScreens/unresolved），落盘 `.artemis/design/flows.json`；供后续"流程→测试生成"消费（M-B） |
+| `figma_gap_analysis` | `{url, id?, assetGlobs?, tokenFiles?, save?}` | 设计资源/色板 vs 项目资产/tokens 缺口（missingAssets/missingColors），落盘 `.artemis/design/gaps.json`；供"资源导入"消费（M-C） |
 
 `setup_required` 语义：无任何可用条目时，`llm_list` 正常返回并带 `setupRequired: true` + 指引；`mobile_run_task` 直接返回结构化 `setup_required` 错误（不调用子进程）；其余 mobile 工具放行。
 
@@ -329,6 +331,7 @@ llm_switch(name, force):
 | dcb 桥（M2） | 端口锁 3055；CORS 收紧；store 前缀命名空间化 |
 | 子进程 | 只杀 mcp_server 直接子进程；detached 任务进程不动；启动孤儿清理 |
 | 降级 | DB 不可用不阻断；但 `aos_status` 明确警告"条目仅会话内有效" |
+| 日志与审计 | `<project>/.artemis/logs/aos-mcp.log`（时间戳/级别/每次工具调用 name+ok+ms+错误摘要；`uncaughtException` 堆栈落盘）+ `artemis-child.log`（子进程 stderr 持久化）；`AOS_LOG_LEVEL/DIR/DISABLE_FILE/MAX_MB` 可配 |
 
 ---
 

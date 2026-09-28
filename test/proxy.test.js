@@ -9,7 +9,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(here, "fixtures", "fake-artemis.mjs");
 const repoRoot = path.resolve(here, "..");
 
-function makeProxy(extraEnv = {}) {
+function makeProxy(extraEnv = {}, hooks = {}) {
   let spawned = 0;
   const proxy = new ArtemisProxy({
     prepare: () => ({
@@ -22,6 +22,7 @@ function makeProxy(extraEnv = {}) {
     onSpawned: () => {
       spawned += 1;
     },
+    onStderrLine: hooks.onStderrLine,
     connectTimeoutMs: 15_000
   });
   return { proxy, spawnedCount: () => spawned };
@@ -58,6 +59,7 @@ test("proxy spawns the child, lists tools verbatim, and calls tools", async () =
     const status = proxy.status();
     assert.equal(status.running, true);
     assert.ok(typeof status.pid === "number" && status.pid > 0);
+    assert.equal(status.fingerprint, "test-fp");
     assert.equal(spawnedCount(), 1);
   } finally {
     await proxy.dispose();
@@ -82,7 +84,8 @@ test("markForRestart stops the child and the next call respawns it", async () =>
 });
 
 test("proxy captures the child stderr ring buffer", async () => {
-  const { proxy } = makeProxy({ FAKE_STDERR: "1" });
+  const lines = [];
+  const { proxy } = makeProxy({ FAKE_STDERR: "1" }, { onStderrLine: (line) => lines.push(line) });
   try {
     await proxy.listTools();
     const deadline = Date.now() + 2000;
@@ -93,6 +96,10 @@ test("proxy captures the child stderr ring buffer", async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.match(tail, /fake-artemis ready/);
+    assert.ok(
+      lines.some((line) => line.includes("fake-artemis ready")),
+      "onStderrLine sink should receive child stderr lines"
+    );
   } finally {
     await proxy.dispose();
   }
