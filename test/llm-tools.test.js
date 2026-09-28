@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -341,6 +342,29 @@ test("aos_tasks: syncs pending tasks against artemis and lists stats", async () 
   assert.equal(payload.tasks[0].trace_id, "trace-1");
   assert.equal(payload.tasks[0].status, "completed");
   assert.ok(payload.tasks[0].finished_at);
+});
+
+test("aos_tasks: syncs from trace status.json without a running child", async () => {
+  const tracesRepo = fs.mkdtempSync(path.join(os.tmpdir(), "aos-traces-"));
+  const traceId = "trace-file-1";
+  fs.mkdirSync(path.join(tracesRepo, "traces", traceId), { recursive: true });
+  fs.writeFileSync(
+    path.join(tracesRepo, "traces", traceId, "status.json"),
+    JSON.stringify({ trace_id: traceId, status: "completed" })
+  );
+
+  const dir = makeTempProject({
+    config: baseConfig({ artemis: { repo: tracesRepo } })
+  });
+  const proxy = new StubProxy({ running: false });
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+  await runtime.recordTaskSubmission({ traceId, model: "Flash", taskDesc: "file-sync" });
+
+  const payload = parseToolResult(await aosTasks(runtime, { limit: 10 }));
+  assert.equal(payload.sync.checked, 1);
+  assert.equal(payload.sync.updated, 1);
+  assert.equal(payload.tasks[0].status, "completed");
+  assert.equal(proxy.calls.length, 0, "no child process needed for file-based sync");
 });
 
 test("aos_tasks: sync=false skips polling and leaves the row pending", async () => {

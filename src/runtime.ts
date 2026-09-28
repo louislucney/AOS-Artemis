@@ -444,29 +444,17 @@ export class Runtime {
   }
 
   /** Poll artemis for pending task_statuses and mark terminal ones finished.
-   * Running detached tasks survive gateway restarts; this only reads status. */
+   * Prefers reading the trace store's status.json directly (works across
+   * sessions, no child process needed); falls back to the live proxy. */
   async syncTaskStatuses(): Promise<{ checked: number; updated: number }> {
-    if (!this.proxy.isRunning()) return { checked: 0, updated: 0 };
     const pending = await this.safeStore(
       () => this.store.listPendingTasks(this.project.rootDir, 20),
       [] as TaskStatRecord[]
     );
     let updated = 0;
     for (const task of pending) {
-      let status: string | null = null;
-      try {
-        const result = await this.proxy.callTool("mobile_manage_task", {
-          action: "status",
-          trace_id: task.traceId
-        });
-        const payload = extractJson(result);
-        if (payload && typeof payload === "object") {
-          const value = (payload as { status?: unknown }).status;
-          if (typeof value === "string") status = value;
-        }
-      } catch {
-        break; // child unavailable — abort this pass; next tick retries
-      }
+      let status = this.readTraceStatus(task.traceId);
+      if (status === null) status = await this.queryTaskStatusViaProxy(task.traceId);
       if (status && (TERMINAL_TASK_STATUSES as readonly string[]).includes(status)) {
         const done = await this.safeStore(
           () => this.store.markTaskFinished(this.project.rootDir, task.traceId, status!),
@@ -476,6 +464,41 @@ export class Runtime {
       }
     }
     return { checked: pending.length, updated };
+  }
+
+  private tracesDir(): string {
+    const override = process.env.ARTEMIS_TRACES_DIR?.trim();
+    return override && override !== ""
+      ? override
+      : path.join(this.project.config.artemis.repo, "traces");
+  }
+
+  private readTraceStatus(traceId: string): string | null {
+    try {
+      const statusPath = path.join(this.tracesDir(), traceId, "status.json");
+      const parsed = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as { status?: unknown };
+      return typeof parsed.status === "string" ? parsed.status : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async queryTaskStatusViaProxy(traceId: string): Promise<string | null> {
+    if (!this.proxy.isRunning()) return null;
+    try {
+      const result = await this.proxy.callTool("mobile_manage_task", {
+        action: "status",
+        trace_id: traceId
+      });
+      const payload = extractJson(result);
+      if (payload && typeof payload === "object") {
+        const value = (payload as { status?: unknown }).status;
+        if (typeof value === "string") return value;
+      }
+    } catch {
+      /* fall through */
+    }
+    return null;
   }
 
   async taskList(limit = 20): Promise<TaskStatRecord[]> {
