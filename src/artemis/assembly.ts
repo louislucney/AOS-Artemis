@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { parse as parseJsonc } from "jsonc-parser";
 
 import type { AosConfig, ArtemisConfig, LlmProfile } from "../config/types.js";
 import { ARTEMIS_KEY_ENV, GOOGLE_KEY_ENV_CANDIDATES } from "../config/types.js";
@@ -158,26 +159,6 @@ export function buildChildSpec(args: BuildChildEnvArgs): ChildSpec {
   };
 }
 
-/** Render the artemis `llm-config.override.jsonc` document for a profile.
- * Deep-merged by artemis over its base config (artemis/config/llm.py). */
-export function buildOverrideDocument(profile: LlmProfile): Record<string, unknown> {
-  const def: Record<string, unknown> = {
-    provider: profile.provider,
-    model: profile.model
-  };
-  if (profile.thinking_level) def.thinking_level = profile.thinking_level;
-  if (typeof profile.thinking_budget === "number") def.thinking_budget = profile.thinking_budget;
-  if (profile.reasoning_effort) def.reasoning_effort = profile.reasoning_effort;
-  if (typeof profile.include_thoughts === "boolean") def.include_thoughts = profile.include_thoughts;
-  if (typeof profile.enable_grounding === "boolean") def.enable_grounding = profile.enable_grounding;
-  def.fallback = profile.fallback ?? { provider: profile.provider, model: profile.model };
-  return { default: def, nodes: profile.nodeOverrides ?? {} };
-}
-
-export function renderOverride(profile: LlmProfile): string {
-  return JSON.stringify(buildOverrideDocument(profile), null, 2) + "\n";
-}
-
 // ---------------------------------------------------------------------------
 // Entry-based assembly (v0.3: unified OpenAI-compatible providers)
 // ---------------------------------------------------------------------------
@@ -200,20 +181,54 @@ export function autoPinnedNodes(entry: EntryLike): Record<string, unknown> | nul
   };
 }
 
-export function buildOverrideDocumentForEntry(entry: EntryLike): Record<string, unknown> {
-  const def: Record<string, unknown> = {
-    provider: entry.provider,
-    model: entry.model,
-    fallback: entry.fallback ?? { provider: entry.provider, model: entry.model }
-  };
+function entryNodes(entry: EntryLike): Record<string, unknown> {
   const explicit = entry.nodeOverrides;
-  const nodes =
-    explicit && Object.keys(explicit).length > 0 ? explicit : (autoPinnedNodes(entry) ?? {});
-  return { default: def, nodes };
+  if (explicit && Object.keys(explicit).length > 0) return explicit;
+  return autoPinnedNodes(entry) ?? {};
 }
 
-export function renderOverrideForEntry(entry: EntryLike): string {
-  return JSON.stringify(buildOverrideDocumentForEntry(entry), null, 2) + "\n";
+/** Render the project-level artemis config (`<project>/.artemis/artemis.jsonc`,
+ * unified `default` + `nodes` format), injected via ARTEMIS_ARTEMIS_JSONC.
+ *
+ * The artemis base config is merged in first so its agent/memory/video sections
+ * are preserved; only the LLM `default` (provider/model/fallback) and the
+ * pinned nodes are project-scoped.
+ *
+ * Note: artemis' `llm-config.override.jsonc` loader deep-merges onto the
+ * already-expanded config and silently ignores `default`/`nodes` keys, which is
+ * why the unified file is used instead. */
+export function renderProjectArtemisConfig(args: {
+  baseConfigText: string | null;
+  entry: EntryLike;
+}): string {
+  let base: Record<string, unknown> = {};
+  if (args.baseConfigText) {
+    try {
+      const parsed = parseJsonc(args.baseConfigText) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        base = parsed as Record<string, unknown>;
+      }
+    } catch {
+      base = {};
+    }
+  }
+
+  const defaultBlock: Record<string, unknown> = {
+    ...((base.default as Record<string, unknown>) ?? {})
+  };
+  defaultBlock.provider = args.entry.provider;
+  defaultBlock.model = args.entry.model;
+  defaultBlock.fallback =
+    args.entry.fallback ?? { provider: args.entry.provider, model: args.entry.model };
+
+  const nodes: Record<string, unknown> = {
+    ...((base.nodes as Record<string, unknown>) ?? {})
+  };
+  for (const [key, value] of Object.entries(entryNodes(args.entry))) {
+    nodes[key] = value;
+  }
+
+  return JSON.stringify({ ...base, default: defaultBlock, nodes }, null, 2) + "\n";
 }
 
 export interface EntryChildEnvArgs {
@@ -237,6 +252,7 @@ export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
   env.ARTEMIS_STANDALONE = "1";
   const configDir = configDirAbs(config, rootDir);
   env.ARTEMIS_CONFIG_DIR = configDir;
+  env.ARTEMIS_ARTEMIS_JSONC = path.join(configDir, "artemis.jsonc");
   if (!env.PYTHONPATH) env.PYTHONPATH = config.artemis.repo;
 
   const keyEnvName = entry.provider === "google" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";

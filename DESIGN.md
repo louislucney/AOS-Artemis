@@ -60,7 +60,7 @@
 
 | 结论 | 证据 |
 |------|------|
-| artemis 的独立任务运行器支持项目级 LLM 配置覆盖 | `artemis/mcp_server/background/task_runner.py:72-110`（`ARTEMIS_CONFIG_DIR` → `llm-config.override.jsonc`）、`:210-214` |
+| artemis 的独立任务运行器支持项目级 LLM 配置覆盖 | `artemis/mcp_server/background/task_runner.py:72-110`（`ARTEMIS_CONFIG_DIR` → `llm-config.override.jsonc`，但该 loader 深合并"已展开"配置、忽略 `default/nodes` 键）、`:210-214`；`artemis/config/paths.py:149-159`（`ARTEMIS_ARTEMIS_JSONC` 环境变量优先，统一格式可正常展开） |
 | 覆盖文件深合并 | `artemis/artemis/config/llm.py:334-373` |
 | **artemis `custom` provider = OpenAI 兼容**：key 读 `OPENAI_API_KEY`、端点读 `OPENAI_BASE_URL` | `artemis/artemis/llm/router.py:369-383`（`ModelProvider.OLLAMA/VLLM/CUSTOM` 分支） |
 | 用户运行时即 `provider: custom` + `deepseek-flash`（`.env`: `DEEPSEEK_API_KEY` + `OPENAI_BASE_URL`） | `/Users/louis/artemis/config/artemis.jsonc` 本地改动 + `.env` 变量名 |
@@ -199,7 +199,8 @@ CREATE TABLE IF NOT EXISTS task_stats (
 <artemis.repo>/.venv/bin/python -m mcp_server     # cwd = <artemis.repo>
 env:
   ARTEMIS_STANDALONE=1
-  ARTEMIS_CONFIG_DIR=<project>/.artemis            # 生成 llm-config.override.jsonc
+  ARTEMIS_CONFIG_DIR=<project>/.artemis            # 生成物目录
+  ARTEMIS_ARTEMIS_JSONC=<project>/.artemis/artemis.jsonc   # 项目级统一配置（见 §5.2）
   OPENAI_API_KEY=<active 条目的 key>
   OPENAI_BASE_URL=<active 条目的 base_url>
   PYTHONUNBUFFERED/PYTHONUTF8=1；PYTHONPATH=<artemis.repo>
@@ -209,23 +210,28 @@ env:
 
 `env 指纹` = hash(provider + key + base_url + configDir + deviceSerial)；**模型/label 变化不触发重启**。
 
-### 5.2 生成的 `llm-config.override.jsonc`
+### 5.2 生成的 `<project>/.artemis/artemis.jsonc`（项目级统一配置）
+
+以 artemis 基础配置（`<repo>/config/artemis.jsonc`）为底，仅替换/合并 LLM 部分后写出；通过 `ARTEMIS_ARTEMIS_JSONC` 注入（`get_config_path` 环境变量优先）。保留底层文件里的 `agent`/`memory`/`video` 等全部非 LLM 段落。
 
 ```jsonc
 {
+  // …基础配置的 agent/memory/… 段落原样保留…
   "default": {
     "provider": "custom",
     "model": "deepseek-flash",
+    "thinking_level": "medium",     // 基础 default 的其余字段保留
     "fallback": { "provider": "custom", "model": "deepseek-flash" }
   },
   "nodes": {
-    // 非 Google 条目自动重指（v0.3：替代 v0.2 的阻断式 H2；附精度警告）
+    // 基础 nodes 原样保留；非 Google 条目自动重指（v0.3 H2 演化；附精度警告）
     "object_detector": { "provider": "custom", "model": "deepseek-flash" },
     "hopper":          { "provider": "custom", "model": "deepseek-flash" }
   }
 }
 ```
-若条目显式提供 `nodeOverrides`（来自 config 高级层或 aos_configure 扩展）→ 以显式值为准。
+
+若条目显式提供 `nodeOverrides`（config 高级层 / aos_configure 扩展）→ 以显式值为准。**不使用** `llm-config.override.jsonc`：该 loader 把 override 深合并到"已展开"的 LLMConfig 上，`default/nodes` 键会被静默忽略（实测任务会回退到 Google 默认并因缺 key 失败）；激活时若发现历史遗留的该文件会被清理。
 
 ---
 
@@ -273,7 +279,7 @@ llm_switch(name, force):
   3) 若条目来自 config/env 且 DB 可用 → 先 upsert 到 PG（动态化）
   4) 计算 env 指纹差异；needsRestart = 子进程运行中 && 指纹变化
   5) needsRestart 且非 force → mobile_diagnose 查 tasks；非空 → 拒绝（提示等待或 force）
-  6) PG 事务：清 active → 置 active；写 .artemis/llm-config.override.jsonc
+  6) PG 事务：清 active → 置 active；写 .artemis/artemis.jsonc（并清理遗留 override 文件）
   7) needsRestart → 优雅停子进程（下次调用惰性重启）
   8) 返回 { active, previous, effects, warnings }
 ```

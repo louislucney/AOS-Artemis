@@ -4,9 +4,7 @@ import test from "node:test";
 import {
   buildChildEnv,
   buildChildEnvForEntry,
-  buildOverrideDocument,
-  buildOverrideDocumentForEntry,
-  renderOverride
+  renderProjectArtemisConfig
 } from "../dist/artemis/assembly.js";
 import { makeResolver } from "../dist/config/validate.js";
 
@@ -15,41 +13,57 @@ const config = {
   artemis: { repo: "/tmp/artemis", configDir: ".artemis" }
 };
 
-test("override: self fallback when missing, optional fields pass through", () => {
-  const doc = buildOverrideDocument({ provider: "openai", model: "deepseek-chat" });
-  assert.deepEqual(doc.default, {
-    provider: "openai",
-    model: "deepseek-chat",
-    fallback: { provider: "openai", model: "deepseek-chat" }
+test("renderProjectArtemisConfig: merges base config and applies entry LLM", () => {
+  const baseConfigText = JSON.stringify({
+    agent: { flash: { max_turns: 7 } },
+    default: {
+      provider: "google",
+      model: "gemini-3.8-flash",
+      thinking_level: "medium",
+      fallback: { provider: "google", model: "gemini-3.7-flash" }
+    },
+    nodes: { planner: { thinking_level: "high" } }
   });
-  assert.deepEqual(doc.nodes, {});
 
-  const doc2 = buildOverrideDocument({
-    provider: "google",
-    model: "gemini-2.5-flash",
-    thinking_level: "high",
-    include_thoughts: true,
-    enable_grounding: true,
-    thinking_budget: 2048,
-    reasoning_effort: "low",
-    fallback: { provider: "google", model: "gemini-2.0-flash" },
-    nodeOverrides: { object_detector: { provider: "google", model: "gemini-robotics-er-2-preview" } }
-  });
-  assert.equal(doc2.default.thinking_level, "high");
-  assert.equal(doc2.default.include_thoughts, true);
-  assert.equal(doc2.default.enable_grounding, true);
-  assert.equal(doc2.default.thinking_budget, 2048);
-  assert.equal(doc2.default.reasoning_effort, "low");
-  assert.deepEqual(doc2.default.fallback, { provider: "google", model: "gemini-2.0-flash" });
-  assert.deepEqual(doc2.nodes, {
-    object_detector: { provider: "google", model: "gemini-robotics-er-2-preview" }
-  });
+  const rendered = JSON.parse(
+    renderProjectArtemisConfig({
+      baseConfigText,
+      entry: { provider: "custom", model: "deepseek-flash", baseUrl: "https://x", apiKey: "k" }
+    })
+  );
+  assert.equal(rendered.default.provider, "custom");
+  assert.equal(rendered.default.model, "deepseek-flash");
+  assert.deepEqual(rendered.default.fallback, { provider: "custom", model: "deepseek-flash" });
+  assert.equal(rendered.default.thinking_level, "medium", "non-LLM default fields preserved");
+  assert.deepEqual(rendered.nodes.planner, { thinking_level: "high" }, "base nodes preserved");
+  assert.deepEqual(rendered.nodes.object_detector, { provider: "custom", model: "deepseek-flash" });
+  assert.deepEqual(rendered.nodes.hopper, { provider: "custom", model: "deepseek-flash" });
+  assert.equal(rendered.agent.flash.max_turns, 7, "non-LLM sections preserved");
 });
 
-test("renderOverride emits parseable JSON with newline", () => {
-  const text = renderOverride({ provider: "google", model: "m" });
-  assert.ok(text.endsWith("\n"));
-  assert.equal(JSON.parse(text).default.provider, "google");
+test("renderProjectArtemisConfig: explicit nodeOverrides win; works without base config", () => {
+  const explicit = JSON.parse(
+    renderProjectArtemisConfig({
+      baseConfigText: null,
+      entry: {
+        provider: "custom",
+        model: "m",
+        baseUrl: null,
+        apiKey: "k",
+        nodeOverrides: { hopper: null }
+      }
+    })
+  );
+  assert.deepEqual(explicit.nodes, { hopper: null });
+  assert.equal(explicit.default.model, "m");
+
+  const googleEntry = JSON.parse(
+    renderProjectArtemisConfig({
+      baseConfigText: null,
+      entry: { provider: "google", model: "gemini-2.5-flash", baseUrl: null, apiKey: "k" }
+    })
+  );
+  assert.deepEqual(googleEntry.nodes, {}, "google entries keep no auto-pins");
 });
 
 test("buildChildEnv injects standalone/config dir/key and strips daemon port", () => {
@@ -160,36 +174,6 @@ test("fingerprint ignores model changes but reacts to key changes", () => {
   assert.notEqual(a.fingerprint, c.fingerprint);
 });
 
-test("entry override: auto-pins non-google nodes; explicit nodeOverrides win", () => {
-  const auto = buildOverrideDocumentForEntry({
-    provider: "custom",
-    model: "deepseek-flash",
-    baseUrl: "https://x/v1",
-    apiKey: "k"
-  });
-  assert.equal(auto.default.provider, "custom");
-  assert.deepEqual(auto.default.fallback, { provider: "custom", model: "deepseek-flash" });
-  assert.deepEqual(auto.nodes.object_detector, { provider: "custom", model: "deepseek-flash" });
-  assert.deepEqual(auto.nodes.hopper, { provider: "custom", model: "deepseek-flash" });
-
-  const explicit = buildOverrideDocumentForEntry({
-    provider: "custom",
-    model: "m",
-    baseUrl: null,
-    apiKey: "k",
-    nodeOverrides: { hopper: null }
-  });
-  assert.deepEqual(explicit.nodes, { hopper: null });
-
-  const google = buildOverrideDocumentForEntry({
-    provider: "google",
-    model: "gemini-2.5-flash",
-    baseUrl: null,
-    apiKey: "k"
-  });
-  assert.deepEqual(google.nodes, {});
-});
-
 test("entry env: injects OPENAI_API_KEY + OPENAI_BASE_URL; fingerprint ignores model", () => {
   const base = { config, rootDir: "/tmp/proj", baseEnv: {} };
   const a = buildChildEnvForEntry({
@@ -203,6 +187,7 @@ test("entry env: injects OPENAI_API_KEY + OPENAI_BASE_URL; fingerprint ignores m
   assert.equal(a.env.OPENAI_API_KEY, "k1");
   assert.equal(a.env.OPENAI_BASE_URL, "https://x/v1");
   assert.equal(a.env.ARTEMIS_STANDALONE, "1");
+  assert.equal(a.env.ARTEMIS_ARTEMIS_JSONC, "/tmp/proj/.artemis/artemis.jsonc");
   assert.equal(a.fingerprint, b.fingerprint);
 
   const c = buildChildEnvForEntry({

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 import { loadDotenvValues, type LoadedProject } from "./config/loader.js";
@@ -8,7 +9,7 @@ import {
   buildChildEnvForEntry,
   buildChildSpecForEntry,
   configDirAbs,
-  renderOverrideForEntry,
+  renderProjectArtemisConfig,
   resolveArtemisPython,
   type ChildSpec,
   type EntryLike,
@@ -168,12 +169,31 @@ export class Runtime {
 
     const active = await this.activeEntry();
     this.activeCache = active ? { name: active.name, entry: active } : null;
-    // Materialize the active entry as the override file: task_runner reads
-    // <configDir>/llm-config.override.jsonc directly, so the first-enable
-    // import must persist it even before any llm_switch/aos_configure call.
+    // Materialize the active entry as the project artemis config: task_runner
+    // reads it through ARTEMIS_ARTEMIS_JSONC, so the first-enable import must
+    // persist it even before any llm_switch/aos_configure call.
     if (active) {
-      const overridePath = path.join(this.configDirAbs, "llm-config.override.jsonc");
-      writeFileAtomic(overridePath, renderOverrideForEntry(active));
+      this.writeActiveConfig(active);
+    }
+  }
+
+  /** Write <configDir>/artemis.jsonc (unified format, merged over the artemis
+   * base config) and drop the legacy llm-config.override.jsonc, whose format
+   * artemis' loader silently ignores. */
+  private writeActiveConfig(entry: LlmEntry): void {
+    const basePath = path.join(this.project.config.artemis.repo, "config", "artemis.jsonc");
+    let baseConfigText: string | null = null;
+    try {
+      baseConfigText = fs.existsSync(basePath) ? fs.readFileSync(basePath, "utf-8") : null;
+    } catch {
+      baseConfigText = null;
+    }
+    const configPath = path.join(this.configDirAbs, "artemis.jsonc");
+    writeFileAtomic(configPath, renderProjectArtemisConfig({ baseConfigText, entry }));
+    try {
+      fs.rmSync(path.join(this.configDirAbs, "llm-config.override.jsonc"), { force: true });
+    } catch {
+      /* best effort */
     }
   }
 
@@ -366,8 +386,8 @@ export class Runtime {
     }
     this.state.write(state);
 
-    const overridePath = path.join(this.configDirAbs, "llm-config.override.jsonc");
-    writeFileAtomic(overridePath, renderOverrideForEntry(target));
+    const configPath = path.join(this.configDirAbs, "artemis.jsonc");
+    this.writeActiveConfig(target);
 
     this.activeCache = { name, entry: { ...target, isActive: true } };
 
@@ -384,7 +404,7 @@ export class Runtime {
       active: name,
       previous: current?.name ?? null,
       effects: {
-        modelConfig: `已写入 ${path.relative(this.project.rootDir, overridePath)}（下一个 mobile_run_task 生效）`,
+        modelConfig: `已写入 ${path.relative(this.project.rootDir, configPath)}（下一个 mobile_run_task 生效）`,
         childRestarted: needsRestart,
         restartReason: needsRestart
           ? "provider/key/base_url 变化"

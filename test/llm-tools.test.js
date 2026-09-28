@@ -15,9 +15,7 @@ import {
 } from "./helpers.js";
 
 function readOverride(dir) {
-  return JSON.parse(
-    fs.readFileSync(path.join(dir, ".artemis", "llm-config.override.jsonc"), "utf-8")
-  );
+  return JSON.parse(fs.readFileSync(path.join(dir, ".artemis", "artemis.jsonc"), "utf-8"));
 }
 
 test("llm_list: config entries, masked keys, active marker, no setup required", async () => {
@@ -123,7 +121,7 @@ test("llm_switch: refuses while tasks are active unless forced", async () => {
 
   // initialize() materializes the active entry (gemini) — capture it so the
   // refusal can be asserted as "no rewrite" instead of "no file".
-  const overridePath = path.join(dir, ".artemis", "llm-config.override.jsonc");
+  const overridePath = path.join(dir, ".artemis", "artemis.jsonc");
   const before = fs.readFileSync(overridePath, "utf-8");
 
   const refused = await llmSwitch(runtime, { name: "deepseek" });
@@ -186,28 +184,41 @@ test("first-enable import: .env LLM is imported into the store and activated", a
   assert.equal(entry.provider, "custom");
 });
 
-test("first-enable import also materializes the override file for task_runner", async () => {
+test("first-enable import also materializes the project artemis config for task_runner", async () => {
   const dir = makeTempProject({
     dotenv:
       "AOS_LLM_MODEL=deepseek-flash\nAOS_LLM_BASE_URL=https://api.deepseek.com\nAOS_LLM_API_KEY=sk-env-123456\n"
   });
   await loadTestRuntime(dir, { proxy: new StubProxy() });
 
-  const override = JSON.parse(
-    fs.readFileSync(path.join(dir, ".artemis", "llm-config.override.jsonc"), "utf-8")
+  const config = JSON.parse(
+    fs.readFileSync(path.join(dir, ".artemis", "artemis.jsonc"), "utf-8")
   );
-  assert.equal(override.default.provider, "custom");
-  assert.equal(override.default.model, "deepseek-flash");
-  assert.deepEqual(override.default.fallback, {
+  assert.equal(config.default.provider, "custom");
+  assert.equal(config.default.model, "deepseek-flash");
+  assert.deepEqual(config.default.fallback, {
     provider: "custom",
     model: "deepseek-flash"
   });
+  assert.equal(config.nodes.hopper.provider, "custom");
 });
 
-test("setup_required project does not write an override file", async () => {
-  const dir = makeTempProject({});
+test("legacy llm-config.override.jsonc is removed (its format is ignored by artemis)", async () => {
+  const dir = makeTempProject({
+    dotenv:
+      "AOS_LLM_MODEL=deepseek-flash\nAOS_LLM_BASE_URL=https://api.deepseek.com\nAOS_LLM_API_KEY=sk-env-123456\n"
+  });
+  fs.mkdirSync(path.join(dir, ".artemis"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".artemis", "llm-config.override.jsonc"), "{}\n");
+
   await loadTestRuntime(dir, { proxy: new StubProxy() });
   assert.ok(!fs.existsSync(path.join(dir, ".artemis", "llm-config.override.jsonc")));
+});
+
+test("setup_required project does not write a project artemis config", async () => {
+  const dir = makeTempProject({});
+  await loadTestRuntime(dir, { proxy: new StubProxy() });
+  assert.ok(!fs.existsSync(path.join(dir, ".artemis", "artemis.jsonc")));
 });
 
 test("first-enable import: legacy names are recognized", async () => {
