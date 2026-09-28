@@ -10,7 +10,7 @@ import {
   walk,
   type FigmaNode
 } from "../vendor/design-context-bridge/figma-rest/resolve.js";
-import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
+import { detectProjectStacks, formatAssetFilename, primaryProfile, type StackProfile } from "../projects/stack.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
@@ -458,6 +458,28 @@ export interface GapAnalysisArgs {
   save?: boolean;
 }
 
+/** Re-target missing-asset filenames to the project's stack naming rules
+ * (Android: ic_home.svg, Flutter: home_icon.svg, RN/Web: home-icon.svg).
+ * The Figma-suggested name is preserved as `figmaSuggestedFilename`. */
+export function applyAssetNaming(
+  missing: GapResult["missingAssets"],
+  profile: StackProfile | null
+): Array<
+  GapResult["missingAssets"][number] & {
+    figmaSuggestedFilename: string;
+    suggestedDir: string | null;
+    namingNote: string | null;
+  }
+> {
+  return missing.map((asset) => ({
+    ...asset,
+    figmaSuggestedFilename: asset.suggestedFilename,
+    suggestedFilename: formatAssetFilename(asset.slug || asset.name, profile, "svg"),
+    suggestedDir: profile?.naming.assets.preferredDir ?? null,
+    namingNote: profile?.naming.assets.note ?? null
+  }));
+}
+
 export async function figmaGapAnalysis(
   runtime: Runtime,
   args: GapAnalysisArgs
@@ -521,7 +543,7 @@ export async function figmaGapAnalysis(
         existingAssets: gap.existingAssets.length,
         missingColors: gap.colorsChecked ? gap.missingColors.length : "not-checked (no token files matched)"
       },
-      missingAssets: gap.missingAssets,
+      missingAssets: applyAssetNaming(gap.missingAssets, profile),
       existingAssets: gap.existingAssets,
       missingColors: gap.missingColors,
       colorsChecked: gap.colorsChecked

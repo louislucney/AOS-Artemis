@@ -6,12 +6,14 @@ import test from "node:test";
 
 import {
   analyzeGapData,
+  applyAssetNaming,
   buildFlowGraph,
   globToRegExp,
   normalizeAssetName,
   routeFor,
   walkProjectFiles
 } from "../dist/figma/flows.js";
+import { STACK_PROFILES } from "../dist/projects/stack.js";
 
 function syntheticDocument() {
   return {
@@ -213,4 +215,24 @@ test("analyzeGapData: colors checked only with token contents; 3-digit hex expan
 test("normalizeAssetName: strips extension and separators", () => {
   assert.equal(normalizeAssetName("Home Icon.svg"), "home-icon");
   assert.equal(normalizeAssetName("ic_cart@2x.png"), "ic-cart-2x");
+});
+
+test("applyAssetNaming: retargets missing-asset filenames to the detected stack", () => {
+  const missing = [
+    { name: "Home Icon", slug: "home-icon", suggestedFilename: "home-icon.svg", figmaId: "1:1" }
+  ];
+
+  const android = applyAssetNaming(missing, STACK_PROFILES["android-native"]);
+  assert.equal(android[0].suggestedFilename, "ic_home.svg");
+  assert.equal(android[0].figmaSuggestedFilename, "home-icon.svg");
+  assert.match(android[0].suggestedDir, /res\/drawable/);
+  assert.ok(android[0].namingNote.includes("a-z0-9_"));
+
+  const rn = applyAssetNaming(missing, STACK_PROFILES["react-native"]);
+  assert.equal(rn[0].suggestedFilename, "home-icon.svg");
+  assert.equal(rn[0].suggestedDir, "src/assets");
+
+  const none = applyAssetNaming(missing, null);
+  assert.equal(none[0].suggestedFilename, "home-icon.svg");
+  assert.equal(none[0].suggestedDir, null);
 });

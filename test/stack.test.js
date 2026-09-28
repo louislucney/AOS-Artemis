@@ -6,8 +6,12 @@ import test from "node:test";
 
 import {
   detectProjectStacks,
+  formatAssetFilename,
+  formatComponentFileName,
+  formatTestFileName,
   primaryProfile,
-  STACK_PROFILES
+  STACK_PROFILES,
+  toCase
 } from "../dist/projects/stack.js";
 
 function tmp() {
@@ -88,5 +92,39 @@ test("profiles expose locator and code rules per stack", () => {
     assert.ok(profile.codeRules.length > 10, `${profile.id} code rules`);
     assert.ok(profile.assetGlobs.length > 0, `${profile.id} asset globs`);
     assert.ok(profile.tokenGlobs.length > 0, `${profile.id} token globs`);
+    assert.ok(profile.naming.assets.preferredDir.length > 0, `${profile.id} asset dir`);
   }
+});
+
+test("naming: toCase handles camelCase and separators", () => {
+  assert.equal(toCase("Home Button", "snake"), "home_button");
+  assert.equal(toCase("Home Button", "kebab"), "home-button");
+  assert.equal(toCase("home_button", "pascal"), "HomeButton");
+  assert.equal(toCase("home-button", "camel"), "homeButton");
+});
+
+test("naming: asset filenames follow stack conventions", () => {
+  // Android: ic_ prefix + snake_case, redundant "icon" word dropped
+  assert.equal(formatAssetFilename("home-icon", STACK_PROFILES["android-native"]), "ic_home.svg");
+  // Flutter: snake_case
+  assert.equal(formatAssetFilename("home-icon", STACK_PROFILES.flutter), "home_icon.svg");
+  // React Native / Web: kebab-case
+  assert.equal(formatAssetFilename("home-icon", STACK_PROFILES["react-native"]), "home-icon.svg");
+  assert.equal(formatAssetFilename("cart", STACK_PROFILES.web), "cart.svg");
+  // No profile → kebab default
+  assert.equal(formatAssetFilename("Home Icon", null), "home-icon.svg");
+  // Extension follows the export format
+  assert.equal(formatAssetFilename("cart", STACK_PROFILES.flutter, "png"), "cart.png");
+});
+
+test("naming: component and test filenames follow stack conventions", () => {
+  assert.equal(formatComponentFileName("Home Button", STACK_PROFILES["react-native"]), "HomeButton.tsx");
+  assert.equal(formatComponentFileName("Home Button", STACK_PROFILES.flutter), "home_button.dart");
+  assert.equal(formatComponentFileName("Home Button", STACK_PROFILES["android-native"]), "HomeButton.kt");
+  assert.equal(formatComponentFileName("Home Button", STACK_PROFILES["ios-native"]), "HomeButton.swift");
+
+  assert.equal(formatTestFileName("home checkout", STACK_PROFILES["react-native"]), "home-checkout.yaml");
+  assert.equal(formatTestFileName("home checkout", STACK_PROFILES.flutter), "home_checkout_test.dart");
+  assert.equal(formatTestFileName("home checkout", STACK_PROFILES["android-native"]), "HomeCheckoutTest.kt");
+  assert.equal(formatTestFileName("home checkout", STACK_PROFILES.web), "home-checkout.spec.ts");
 });
