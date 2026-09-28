@@ -177,6 +177,30 @@ test("first-enable import: .env LLM is imported into the store and activated", a
   assert.equal(entry.provider, "custom");
 });
 
+test("first-enable import also materializes the override file for task_runner", async () => {
+  const dir = makeTempProject({
+    dotenv:
+      "AOS_LLM_MODEL=deepseek-flash\nAOS_LLM_BASE_URL=https://api.deepseek.com\nAOS_LLM_API_KEY=sk-env-123456\n"
+  });
+  await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const override = JSON.parse(
+    fs.readFileSync(path.join(dir, ".artemis", "llm-config.override.jsonc"), "utf-8")
+  );
+  assert.equal(override.default.provider, "custom");
+  assert.equal(override.default.model, "deepseek-flash");
+  assert.deepEqual(override.default.fallback, {
+    provider: "custom",
+    model: "deepseek-flash"
+  });
+});
+
+test("setup_required project does not write an override file", async () => {
+  const dir = makeTempProject({});
+  await loadTestRuntime(dir, { proxy: new StubProxy() });
+  assert.ok(!fs.existsSync(path.join(dir, ".artemis", "llm-config.override.jsonc")));
+});
+
 test("first-enable import: legacy names are recognized", async () => {
   const dir = makeTempProject({
     dotenv:

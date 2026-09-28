@@ -168,6 +168,13 @@ export class Runtime {
 
     const active = await this.activeEntry();
     this.activeCache = active ? { name: active.name, entry: active } : null;
+    // Materialize the active entry as the override file: task_runner reads
+    // <configDir>/llm-config.override.jsonc directly, so the first-enable
+    // import must persist it even before any llm_switch/aos_configure call.
+    if (active) {
+      const overridePath = path.join(this.configDirAbs, "llm-config.override.jsonc");
+      writeFileAtomic(overridePath, renderOverrideForEntry(active));
+    }
   }
 
   // ------------------------------------------------------------------
