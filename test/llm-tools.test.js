@@ -121,12 +121,21 @@ test("llm_switch: refuses while tasks are active unless forced", async () => {
   });
   const { runtime } = await loadTestRuntime(dir, { proxy });
 
+  // initialize() materializes the active entry (gemini) — capture it so the
+  // refusal can be asserted as "no rewrite" instead of "no file".
+  const overridePath = path.join(dir, ".artemis", "llm-config.override.jsonc");
+  const before = fs.readFileSync(overridePath, "utf-8");
+
   const refused = await llmSwitch(runtime, { name: "deepseek" });
   const refusedPayload = parseToolResult(refused);
   assert.equal(refused.isError, true);
   assert.equal(refusedPayload.blockedBy, "active_tasks");
   assert.equal(proxy.restartCalls, 0);
-  assert.ok(!fs.existsSync(path.join(dir, ".artemis", "llm-config.override.jsonc")));
+  assert.equal(
+    fs.readFileSync(overridePath, "utf-8"),
+    before,
+    "refused switch must not rewrite the override"
+  );
 
   const forced = await llmSwitch(runtime, { name: "deepseek", force: true });
   assert.equal(parseToolResult(forced).ok, true);
