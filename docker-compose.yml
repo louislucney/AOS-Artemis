@@ -1,0 +1,58 @@
+# aos-mcp container (single shared container serving multiple projects).
+#
+#   docker compose up -d --build
+#   docker exec -i -w /workspace/<project> aos-mcp node /app/dist/index.js   # MCP stdio
+#
+# Mount the company workspace at /workspace; MCP clients spawn `docker exec`
+# sessions per project (see `aos-mcp install --mode docker`).
+
+services:
+  # 本地开发用 PostgreSQL（可选 profile：docker compose --profile local-db up -d postgres）
+  # 连接串：postgres://aos:aos_local_dev@127.0.0.1:5433/aos
+  postgres:
+    image: postgres:16-alpine
+    container_name: aos-postgres
+    profiles: ["local-db"]
+    environment:
+      POSTGRES_USER: aos
+      POSTGRES_PASSWORD: ${AOS_DB_PASSWORD:-aos_local_dev}
+      POSTGRES_DB: aos
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - aos-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aos -d aos"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  aos-mcp:
+    build: .
+    image: aos-mcp:local
+    container_name: aos-mcp
+    entrypoint: ["sleep", "infinity"]
+    environment:
+      # PostgreSQL registry (required for persistence; degrades to memory if unset)
+      # 本机开发：postgres://aos:aos_local_dev@host.docker.internal:5433/aos
+      # compose 同网络（local-db profile）：postgres://aos:aos_local_dev@postgres:5432/aos
+      - AOS_DATABASE_URL=${AOS_DATABASE_URL:-}
+      # ADB over TCP to the host's adb server (macOS/Windows/Linux desktop).
+      # For USB passthrough on a Linux host, remove these and use `devices:`.
+      - ADB_HOST=host.docker.internal
+      - ADB_PORT=5037
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # Figma plugin talks to http://localhost:3055 — publish the bridge loopback-only.
+      - "127.0.0.1:3055:3055"
+    volumes:
+      - ${AOS_WORKSPACE:-./workspace}:/workspace
+    # Linux hosts with USB-attached devices: uncomment and drop ADB_HOST/PORT.
+    # devices:
+    #   - /dev/bus/usb:/dev/bus/usb
+    restart: unless-stopped
+
+volumes:
+  aos-postgres-data:

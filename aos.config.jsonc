@@ -1,0 +1,22 @@
+{
+  // 【可选高级层】不配置也能工作：
+  // 项目 LLM 由 .env（AOS_LLM_*，见 .env.example）或 aos_configure 工具创建，
+  // 并持久化到 PostgreSQL。本文件用于多档案精细控制 / nodeOverrides / 固定设备等。
+  // 详见 DESIGN.md §4。
+
+  "llm": {
+    "profiles": {}
+  },
+
+  "artemis": {
+    // 留空 = 使用服务安装目录旁的 ./artemis（容器内默认）
+    "repo": "",
+    "mode": "standalone",
+    "configDir": ".artemis",
+    "deviceSerial": null,
+    // 可选：artemis 依赖包地址（scripts/artemis-deps.sh 构建，tar.gz）。
+    // venv 缺失时首次运行自动下载并离线安装；env AOS_ARTEMIS_DEPS_URL 优先。
+    // "depsUrl": "http://files.internal/aos/artemis-deps-darwin-arm64.tar.gz",
+    // "depsSha256": "…"
+  }
+}

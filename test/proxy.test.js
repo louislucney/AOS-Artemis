@@ -1,0 +1,99 @@
+import assert from "node:assert/strict";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { ArtemisProxy } from "../dist/artemis/proxy.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const fixture = path.join(here, "fixtures", "fake-artemis.mjs");
+const repoRoot = path.resolve(here, "..");
+
+function makeProxy(extraEnv = {}) {
+  let spawned = 0;
+  const proxy = new ArtemisProxy({
+    prepare: () => ({
+      command: process.execPath,
+      args: [fixture],
+      cwd: repoRoot,
+      env: { ...process.env, ...extraEnv },
+      fingerprint: "test-fp"
+    }),
+    onSpawned: () => {
+      spawned += 1;
+    },
+    connectTimeoutMs: 15_000
+  });
+  return { proxy, spawnedCount: () => spawned };
+}
+
+test("proxy spawns the child, lists tools verbatim, and calls tools", async () => {
+  const { proxy, spawnedCount } = makeProxy();
+  try {
+    const tools = await proxy.listTools();
+    const names = tools.map((tool) => tool.name).sort();
+    assert.deepEqual(names, [
+      "mobile_diagnose",
+      "mobile_get_device_state",
+      "mobile_inspect_trace",
+      "mobile_manage_task",
+      "mobile_run_task"
+    ]);
+
+    // Passthrough contract: schema is forwarded unchanged.
+    const diagnose = tools.find((tool) => tool.name === "mobile_diagnose");
+    assert.deepEqual(diagnose.inputSchema, {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    });
+
+    const cached = await proxy.listTools();
+    assert.equal(cached, tools, "second listTools call returns the cached array");
+
+    const result = await proxy.callTool("mobile_run_task", { task_desc: "hello world" });
+    assert.equal(result.content[0].type, "text");
+    assert.match(result.content[0].text, /hello world/);
+
+    const status = proxy.status();
+    assert.equal(status.running, true);
+    assert.ok(typeof status.pid === "number" && status.pid > 0);
+    assert.equal(spawnedCount(), 1);
+  } finally {
+    await proxy.dispose();
+  }
+});
+
+test("markForRestart stops the child and the next call respawns it", async () => {
+  const { proxy, spawnedCount } = makeProxy();
+  try {
+    await proxy.listTools();
+    const firstPid = proxy.status().pid;
+    await proxy.markForRestart();
+    assert.equal(proxy.isRunning(), false);
+
+    const tools = await proxy.listTools();
+    assert.equal(tools.length, 5);
+    assert.notEqual(proxy.status().pid, firstPid);
+    assert.equal(spawnedCount(), 2);
+  } finally {
+    await proxy.dispose();
+  }
+});
+
+test("proxy captures the child stderr ring buffer", async () => {
+  const { proxy } = makeProxy({ FAKE_STDERR: "1" });
+  try {
+    await proxy.listTools();
+    const deadline = Date.now() + 2000;
+    let tail = "";
+    while (Date.now() < deadline) {
+      tail = proxy.status().stderrTail.join("\n");
+      if (tail.includes("fake-artemis ready")) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.match(tail, /fake-artemis ready/);
+  } finally {
+    await proxy.dispose();
+  }
+});

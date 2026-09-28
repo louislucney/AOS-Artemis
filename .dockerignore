@@ -1,0 +1,30 @@
+# Build context hygiene for the Dockerfile
+node_modules
+dist
+.git
+.gitignore
+.artemis
+.env
+*.log
+.DS_Store
+
+# Not needed inside the image
+design-context-bridge
+test
+docs
+playground
+scripts
+*.md
+!README.md
+
+# artemis runtime artifacts / heavy dirs
+artemis/.git
+artemis/.venv
+artemis/traces
+artemis/scratch
+artemis/.pytest_cache
+artemis/**/__pycache__
+artemis/**/*.egg-info
+artemis/apps/showcase_ui/node_modules
+artemis/apps/showcase_ui/dist
+artemis/.benchmarks
