@@ -17,6 +17,9 @@ import {
 } from "./artemis/assembly.js";
 import { ArtemisProxy, type ArtemisProxyLike } from "./artemis/proxy.js";
 import { appendChildLog } from "./log.js";
+import { CrashIndexStore } from "./crash/store.js";
+import { CrashScanner } from "./crash/scanner.js";
+import type { CrashCollectorLike, CrashScanReport, CrashScanResult } from "./crash/types.js";
 import { MemoryStore } from "./db/memory.js";
 import { TERMINAL_TASK_STATUSES } from "./db/types.js";
 import type { ProjectLlmRecord, ProjectRecord, ProjectStore, TaskStatRecord } from "./db/types.js";
@@ -39,6 +42,7 @@ import {
 import {
   errorMessage,
   isProcessAlive,
+  logWarn,
   processCmdline,
   terminateProcess,
   writeFileAtomic
@@ -49,6 +53,7 @@ export interface RuntimeOptions {
   proxy?: ArtemisProxyLike;
   baseEnv?: NodeJS.ProcessEnv;
   storeNote?: string | null;
+  crashCollector?: CrashCollectorLike;
 }
 
 export interface ActivateResult {
@@ -82,6 +87,8 @@ export class Runtime {
   readonly storeNote: string | null;
   readonly configDirAbs: string;
   readonly state: StateStore;
+  readonly crashStore: CrashIndexStore;
+  readonly crashScanner: CrashScanner;
 
   private readonly baseEnv: NodeJS.ProcessEnv;
   private scanResult: EnvScanResult;
@@ -90,6 +97,8 @@ export class Runtime {
   private initialized = false;
   private lastStoreError: string | null = null;
   private activationChain: Promise<unknown> = Promise.resolve();
+  private crashScanChain: Promise<unknown> = Promise.resolve();
+  private readonly lockedPackages = new Map<string, string>();
 
   constructor(project: LoadedProject, options: RuntimeOptions = {}) {
     this.project = project;
@@ -99,6 +108,15 @@ export class Runtime {
     this.configDirAbs = configDirAbs(project.config, project.rootDir);
     this.state = new StateStore(path.join(this.configDirAbs, "state.json"));
     this.scanResult = scanProjectEnv(project.resolver);
+    this.crashStore = new CrashIndexStore(path.join(this.configDirAbs, "crashes"), {
+      maxRecords: resolveCrashMaxRecords(this.baseEnv)
+    });
+    this.crashScanner = new CrashScanner({
+      tracesDir: this.tracesDir(),
+      store: this.crashStore,
+      env: this.baseEnv,
+      collector: options.crashCollector
+    });
     this.proxy = options.proxy ?? this.buildDefaultProxy();
   }
 
@@ -430,7 +448,15 @@ export class Runtime {
     model?: string | null;
     profile?: string | null;
     taskDesc?: string | null;
+    lockedAppPackage?: string | null;
   }): Promise<void> {
+    if (input.lockedAppPackage) {
+      this.lockedPackages.set(input.traceId, input.lockedAppPackage);
+      if (this.lockedPackages.size > 200) {
+        const oldest = this.lockedPackages.keys().next().value;
+        if (oldest !== undefined) this.lockedPackages.delete(oldest);
+      }
+    }
     await this.safeStore<void>(async () => {
       await this.store.recordTask({
         rootPath: this.project.rootDir,
@@ -460,10 +486,86 @@ export class Runtime {
           () => this.store.markTaskFinished(this.project.rootDir, task.traceId, status!),
           false
         );
-        if (done) updated += 1;
+        if (done) {
+          updated += 1;
+          this.enqueueCrashScan(task, status);
+        }
       }
     }
     return { checked: pending.length, updated };
+  }
+
+  // ------------------------------------------------------------------
+  // Crash forensics: terminal tasks are scanned for device-side crashes.
+  // ------------------------------------------------------------------
+
+  crashCaptureEnabled(): boolean {
+    return this.crashScanner.enabled();
+  }
+
+  /** Serializes every crash scan (sync-triggered and manual) per runtime. */
+  private enqueueCrashTask<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.crashScanChain.then(fn, fn);
+    this.crashScanChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  /** Await all crash scans enqueued so far (used by tests and the scan tool). */
+  async flushCrashScans(): Promise<void> {
+    await this.crashScanChain;
+  }
+
+  private enqueueCrashScan(task: TaskStatRecord, outcome: string): void {
+    void this.enqueueCrashTask(() =>
+      this.crashScanner.scanTrace({
+        traceId: task.traceId,
+        taskOutcome: outcome,
+        targetPackage: this.lockedPackages.get(task.traceId) ?? null,
+        fallbackStartMs: parseIsoMs(task.submittedAt),
+        fallbackEndMs: parseIsoMs(task.finishedAt)
+      })
+    ).catch((error) => {
+      logWarn(`崩溃取证失败（trace=${task.traceId}）: ${errorMessage(error)}`);
+    });
+  }
+
+  private async scanTraceWithFallbacks(task: TaskStatRecord | null, traceId: string, force: boolean): Promise<CrashScanResult> {
+    return await this.enqueueCrashTask(() =>
+      this.crashScanner.scanTrace({
+        traceId,
+        taskOutcome: task?.status ?? null,
+        targetPackage: this.lockedPackages.get(traceId) ?? null,
+        fallbackStartMs: task ? parseIsoMs(task.submittedAt) : null,
+        fallbackEndMs: task ? parseIsoMs(task.finishedAt) : null,
+        force
+      })
+    );
+  }
+
+  /** Scan one explicit trace (force) or all un-scanned terminal tasks. */
+  async scanTraceForCrashes(input: { traceId?: string; force?: boolean } = {}): Promise<CrashScanReport> {
+    const enabled = this.crashScanner.enabled();
+    const tasks = await this.taskList(200);
+    if (input.traceId) {
+      const task = tasks.find((item) => item.traceId === input.traceId) ?? null;
+      const result = await this.scanTraceWithFallbacks(task, input.traceId, input.force !== false);
+      return { enabled, results: [result] };
+    }
+    const pending = tasks
+      .filter(
+        (task) =>
+          (TERMINAL_TASK_STATUSES as readonly string[]).includes(task.status) &&
+          !this.crashStore.isScanned(task.traceId)
+      )
+      .slice(0, CRASH_SCAN_BATCH);
+    const results: CrashScanResult[] = [];
+    for (const task of pending) {
+      results.push(await this.scanTraceWithFallbacks(task, task.traceId, false));
+    }
+    return { enabled, results };
   }
 
   private tracesDir(): string {
@@ -613,6 +715,21 @@ function extractJson(result: unknown): unknown {
     }
   }
   return null;
+}
+
+const CRASH_SCAN_BATCH = 10;
+const CRASH_MAX_RECORDS_DEFAULT = 200;
+
+function resolveCrashMaxRecords(env: NodeJS.ProcessEnv): number {
+  const raw = Number(env.AOS_CRASH_MAX_RECORDS ?? "");
+  if (!Number.isFinite(raw) || raw <= 0) return CRASH_MAX_RECORDS_DEFAULT;
+  return Math.min(Math.max(Math.trunc(raw), 10), 10_000);
+}
+
+function parseIsoMs(value: string | null): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /** Kill a recorded mcp_server child left behind by a dead ao-mcp instance. */

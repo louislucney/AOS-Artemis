@@ -151,9 +151,9 @@ export class StubProxy {
   }
 }
 
-export async function loadTestRuntime(dir, { proxy, env = {}, store } = {}) {
+export async function loadTestRuntime(dir, { proxy, env = {}, store, baseEnv, crashCollector } = {}) {
   const project = loadProject({ cwd: dir, env });
-  const runtime = new Runtime(project, { proxy, store });
+  const runtime = new Runtime(project, { proxy, store, baseEnv, crashCollector });
   await runtime.initialize();
   return { project, runtime };
 }

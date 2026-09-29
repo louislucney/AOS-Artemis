@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -356,6 +357,20 @@ export function normalizeAssetName(name: string): string {
   );
 }
 
+const GENERIC_LAYER_RE =
+  /^(frame|group|rectangle|ellipse|vector|text|component|instance|auto ?layout|line|image|mask|polygon|star|slice|boolean( operation)?|content|container)([ _-]?\d+)?$/i;
+
+/** True for Figma's auto-generated layer names (`Frame 427`, `Text`, …) that
+ * carry no semantic value for naming assets/keys. */
+export function isGenericLayerName(name: string): boolean {
+  return GENERIC_LAYER_RE.test(name.trim());
+}
+
+function fallbackAssetName(figmaId: string | undefined): string {
+  const seed = figmaId && figmaId !== "" ? figmaId : "unknown";
+  return `asset ${createHash("sha1").update(seed).digest("hex").slice(0, 8)}`;
+}
+
 const ICON_SUFFIXES = ["-icon", "-ic", "-logo", "-glyph"];
 
 export interface GapInput {
@@ -460,7 +475,9 @@ export interface GapAnalysisArgs {
 
 /** Re-target missing-asset filenames to the project's stack naming rules
  * (Android: ic_home.svg, Flutter: home_icon.svg, RN/Web: home-icon.svg).
- * The Figma-suggested name is preserved as `figmaSuggestedFilename`. */
+ * The Figma-suggested name is preserved as `figmaSuggestedFilename`; generic
+ * layer names (`Frame 427`) fall back to a deterministic `asset <figmaId hash>`
+ * name and are flagged `needsRename`. */
 export function applyAssetNaming(
   missing: GapResult["missingAssets"],
   profile: StackProfile | null
@@ -469,15 +486,21 @@ export function applyAssetNaming(
     figmaSuggestedFilename: string;
     suggestedDir: string | null;
     namingNote: string | null;
+    needsRename?: boolean;
   }
 > {
-  return missing.map((asset) => ({
-    ...asset,
-    figmaSuggestedFilename: asset.suggestedFilename,
-    suggestedFilename: formatAssetFilename(asset.slug || asset.name, profile, "svg"),
-    suggestedDir: profile?.naming.assets.preferredDir ?? null,
-    namingNote: profile?.naming.assets.note ?? null
-  }));
+  return missing.map((asset) => {
+    const generic = isGenericLayerName(asset.name);
+    const sourceName = generic ? fallbackAssetName(asset.figmaId) : asset.slug || asset.name;
+    return {
+      ...asset,
+      figmaSuggestedFilename: asset.suggestedFilename,
+      suggestedFilename: formatAssetFilename(sourceName, profile, "svg"),
+      suggestedDir: profile?.naming.assets.preferredDir ?? null,
+      namingNote: profile?.naming.assets.note ?? null,
+      ...(generic ? { needsRename: true } : {})
+    };
+  });
 }
 
 export async function figmaGapAnalysis(

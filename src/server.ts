@@ -25,11 +25,14 @@ import {
 } from "./figma/flows.js";
 import { figmaGenerateTests, type GenerateTestsArgs } from "./figma/test-gen.js";
 import { figmaImportAssets, type ImportAssetsArgs } from "./figma/import.js";
+import { figmaImportStrings, type ImportStringsArgs } from "./figma/import-strings.js";
+import { figmaImportTokens, type ImportTokensArgs } from "./figma/import-tokens.js";
 import { figmaExportBrief, type ExportBriefArgs } from "./figma/brief.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
 import { aosConfigure, type ConfigureArgs } from "./tools/configure.js";
+import { aosCrashes, type AosCrashesArgs } from "./tools/crash.js";
 import {
   aosStatus,
   aosTasks,
@@ -49,6 +52,8 @@ interface NativeToolDefinition {
     args: Record<string, unknown>
   ) => Promise<CallToolResult> | CallToolResult;
 }
+
+const SYNC_INTERVAL_MS = 30_000;
 
 const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
@@ -100,6 +105,21 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       sync: z.boolean().optional().describe("是否先同步任务完成态，默认 true")
     }),
     handler: (runtime, args) => aosTasks(runtime, args as unknown as AosTasksArgs)
+  },
+  {
+    name: "aos_crashes",
+    description:
+      "崩溃取证：任务终态后自动采集设备 crash buffer 并解析为崩溃签名（包名+根因异常+首个应用帧），按栈签名去重计数；list 列出签名，get 取完整栈/日志摘录，scan 手动扫描（指定 traceId 时强制重扫）。",
+    schema: z.object({
+      action: z.enum(["list", "get", "scan"]).describe("list 列表 / get 详情 / scan 手动扫描"),
+      signature: z.string().optional().describe("get 用的崩溃签名 id（见 list 的 records[].id）"),
+      traceId: z.string().optional().describe("scan 时只扫描该 trace（强制重扫）"),
+      package: z.string().optional().describe("list 过滤：应用包名（精确匹配）"),
+      kind: z.enum(["java", "native", "anr", "unknown"]).optional().describe("list 过滤：崩溃类型"),
+      since: z.string().optional().describe("list 过滤：ISO 8601 时间，只返回该时间之后仍出现的签名"),
+      limit: z.number().int().positive().max(100).optional().describe("list 返回条数，默认 20")
+    }),
+    handler: (runtime, args) => aosCrashes(runtime, args as unknown as AosCrashesArgs)
   },
   {
     name: "compare_design_and_device",
@@ -184,6 +204,32 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       overwrite: z.boolean().optional().describe("scaffold 命名冲突时是否覆盖，默认 false")
     }),
     handler: (runtime, args) => figmaExportBrief(runtime, args as unknown as ExportBriefArgs)
+  },
+  {
+    name: "figma_import_tokens",
+    description:
+      "颜色 token 导入：REST 读取 Figma 设计系统颜色（含 alpha，canonical #RRGGBBAA）→ 值冻结的语义命名 → .artemis/design/tokens.json（DTCG，modes 预留）+ 按检测栈生成 token 文件（Android colors.xml / Flutter Dart / RN TS / Web CSS）；输出 new/unchanged/unused、裸色扫描与 enforcement。人工命名用 .artemis/design/token-names.json。",
+    schema: z.object({
+      url: z.string().min(1).describe("Figma 文件 URL"),
+      dryRun: z.boolean().optional().describe("仅预览不写文件，默认 false"),
+      overwrite: z.boolean().optional().describe("允许覆盖非本工具生成的目标文件，默认 false（skipped_unmanaged）"),
+      save: z.boolean().optional().describe("是否落盘 canonical tokens.json，默认 true"),
+      enforcement: z.enum(["report", "warn", "block"]).optional().describe("硬编码/unused 问题级别，默认 report")
+    }),
+    handler: (runtime, args) => figmaImportTokens(runtime, args as unknown as ImportTokensArgs)
+  },
+  {
+    name: "figma_import_strings",
+    description:
+      "文案 i18n 导入：REST 采集 Figma TEXT 节点 → 语义 key（nodeId 冻结映射，图层改名不改 key）→ .artemis/design/strings.json + 按检测栈写入源语言资源（M6b：Android strings.xml / Flutter arb）；输出复用建议、nodeId 迁移建议、source_changed、unused 与硬编码文案扫描；冲突需人工决策（resolutions.json），enforcement=block 可阻断。",
+    schema: z.object({
+      url: z.string().min(1).describe("Figma 文件 URL"),
+      locale: z.string().optional().describe("source locale（BCP-47，默认沿用 strings.json 或 zh）"),
+      dryRun: z.boolean().optional().describe("仅预览不写文件，默认 false"),
+      save: z.boolean().optional().describe("是否落盘 strings.json，默认 true"),
+      enforcement: z.enum(["report", "warn", "block"]).optional().describe("冲突/硬编码问题级别，默认 report")
+    }),
+    handler: (runtime, args) => figmaImportStrings(runtime, args as unknown as ImportStringsArgs)
   }
 ];
 
@@ -325,7 +371,9 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
           traceId: traceId ?? "unknown",
           model: typeof taskArgs.model === "string" ? taskArgs.model : null,
           profile: typeof taskArgs.model === "string" ? taskArgs.model : null,
-          taskDesc: typeof taskArgs.task_desc === "string" ? taskArgs.task_desc : null
+          taskDesc: typeof taskArgs.task_desc === "string" ? taskArgs.task_desc : null,
+          lockedAppPackage:
+            typeof taskArgs.locked_app_package === "string" ? taskArgs.locked_app_package : null
         });
       }
       return result;
@@ -410,6 +458,15 @@ export async function runServer(): Promise<void> {
     }
   }
 
+  // stdio mirror of the HTTP-mode sync loop: terminal tasks are re-checked so
+  // crash forensics fires without waiting for an explicit aos_tasks call.
+  const syncTimer = runtime
+    ? setInterval(() => {
+        void runtime.syncTaskStatuses();
+      }, SYNC_INTERVAL_MS)
+    : null;
+  syncTimer?.unref?.();
+
   try {
     const bridge = await startBridge();
     log(bridge.message || `Figma bridge: ${bridge.status}`);
@@ -423,6 +480,7 @@ export async function runServer(): Promise<void> {
   const shutdown = async (code: number): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    if (syncTimer) clearInterval(syncTimer);
     try {
       await runtime?.proxy.dispose();
     } catch {

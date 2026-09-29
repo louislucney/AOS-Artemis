@@ -227,7 +227,6 @@ test("applyAssetNaming: retargets missing-asset filenames to the detected stack"
   assert.equal(android[0].figmaSuggestedFilename, "home-icon.svg");
   assert.match(android[0].suggestedDir, /res\/drawable/);
   assert.ok(android[0].namingNote.includes("a-z0-9_"));
-
   const rn = applyAssetNaming(missing, STACK_PROFILES["react-native"]);
   assert.equal(rn[0].suggestedFilename, "home-icon.svg");
   assert.equal(rn[0].suggestedDir, "src/assets");
@@ -235,4 +234,20 @@ test("applyAssetNaming: retargets missing-asset filenames to the detected stack"
   const none = applyAssetNaming(missing, null);
   assert.equal(none[0].suggestedFilename, "home-icon.svg");
   assert.equal(none[0].suggestedDir, null);
+});
+
+test("applyAssetNaming: generic layer names fall back to a deterministic asset hash name", () => {
+  const missing = [
+    { name: "Frame 427", slug: "frame-427", suggestedFilename: "frame-427.svg", figmaId: "42:7" }
+  ];
+  const android = applyAssetNaming(missing, STACK_PROFILES["android-native"]);
+  assert.match(android[0].suggestedFilename, /^ic_asset_[0-9a-f]{8}\.svg$/);
+  assert.equal(android[0].needsRename, true);
+  assert.equal(android[0].figmaSuggestedFilename, "frame-427.svg");
+
+  const again = applyAssetNaming(missing, STACK_PROFILES["android-native"]);
+  assert.equal(again[0].suggestedFilename, android[0].suggestedFilename, "fallback name must be deterministic");
+
+  const flutter = applyAssetNaming(missing, STACK_PROFILES.flutter);
+  assert.match(flutter[0].suggestedFilename, /^asset_[0-9a-f]{8}\.svg$/);
 });

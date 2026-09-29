@@ -10,14 +10,18 @@ Scope:    src/core, src/figma-bridge, src/figma-rest, src/mcp-server/tools
 
 Modifications (all files also carry inline PATCH notes):
   1. figma-bridge/store.ts      — temp-file prefix `aos-mcp-figma-` to avoid
-                                  clashing with a stock installation.
+                                   clashing with a stock installation.
   2. figma-bridge/ws-server.ts  — rewritten: CORS origin allowlist (null /
-                                  loopback only), EADDRINUSE reports
-                                  `skipped_occupied` instead of silent file
-                                  sharing, startFigmaBridge() returns a status
-                                  handle and accepts {port, host}.
+                                   loopback only), EADDRINUSE reports
+                                   `skipped_occupied` instead of silent file
+                                   sharing, startFigmaBridge() returns a status
+                                   handle and accepts {port, host}.
   3. figma-rest/client.ts       — token guidance message now points at the
-                                  project .env / aos_configure tool.
+                                   project .env / aos_configure tool.
+  4. figma-rest/analysis.ts     — rgbaToHex keeps #RRGGBBAA alpha (paint opacity
+                                   multiplied into the color's own alpha) so
+                                   translucent colors stay distinct during
+                                   dedup/naming (M6a).
 
 Everything else is unmodified upstream code. The original MIT license and
 copyright notices are preserved in LICENSE.

@@ -25,6 +25,16 @@ export interface NamingRules {
   testFile: { style: CaseStyle; suffix?: string; extension: string };
 }
 
+/** M6 design-resource targets: generated strings/token files and key casing.
+ * `stringsFile` may contain `{locale}` (code) and `{localeDir}` (Android dir suffix). */
+export interface StackI18nRules {
+  stringsFile: string;
+  tokenFile: string | null;
+  keyStyle: CaseStyle;
+  plural: "plurals-xml" | "icu-arb" | "json-icu" | "stringsdict" | "unsupported";
+  sourceLocale: string;
+}
+
 export interface StackProfile {
   id: StackId;
   displayName: string;
@@ -32,6 +42,8 @@ export interface StackProfile {
   assetGlobs: string[];
   /** Where design tokens live (gap analysis color check). */
   tokenGlobs: string[];
+  /** M6a/M6b generated-file targets and key conventions. */
+  i18n: StackI18nRules;
   /** Locator conventions for generated tests. */
   locatorRules: string;
   /** Code layout conventions (M-D code generation). */
@@ -58,6 +70,13 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
       assets: { style: "snake", preferredDir: "assets/images" },
       componentFile: { style: "snake", extension: ".dart", preferredDir: "lib/components" },
       testFile: { style: "snake", suffix: "_test", extension: ".dart" }
+    },
+    i18n: {
+      stringsFile: "lib/l10n/app_{locale}.arb",
+      tokenFile: "lib/theme/aos_tokens.dart",
+      keyStyle: "camel",
+      plural: "icu-arb",
+      sourceLocale: "zh"
     }
   },
   "react-native": {
@@ -80,6 +99,13 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
       assets: { style: "kebab", preferredDir: "src/assets" },
       componentFile: { style: "pascal", extension: ".tsx", preferredDir: "src/components" },
       testFile: { style: "kebab", extension: ".yaml" }
+    },
+    i18n: {
+      stringsFile: "src/i18n/{locale}.json",
+      tokenFile: "src/theme/aos-tokens.ts",
+      keyStyle: "camel",
+      plural: "json-icu",
+      sourceLocale: "zh"
     }
   },
   "android-native": {
@@ -108,6 +134,13 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
       },
       componentFile: { style: "pascal", extension: ".kt", preferredDir: "app/src/main/java/ui/components" },
       testFile: { style: "pascal", suffix: "Test", extension: ".kt" }
+    },
+    i18n: {
+      stringsFile: "app/src/main/res/values{localeDir}/aos_strings.xml",
+      tokenFile: "app/src/main/res/values/aos_tokens.xml",
+      keyStyle: "snake",
+      plural: "plurals-xml",
+      sourceLocale: "zh"
     }
   },
   "ios-native": {
@@ -125,6 +158,13 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
       },
       componentFile: { style: "pascal", extension: ".swift", preferredDir: "ios/Components" },
       testFile: { style: "pascal", suffix: "UITests", extension: ".swift" }
+    },
+    i18n: {
+      stringsFile: "ios/{locale}.lproj/Localizable.strings",
+      tokenFile: null,
+      keyStyle: "camel",
+      plural: "stringsdict",
+      sourceLocale: "zh"
     }
   },
   web: {
@@ -146,6 +186,13 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
       assets: { style: "kebab", preferredDir: "public/assets" },
       componentFile: { style: "pascal", extension: ".tsx", preferredDir: "src/components" },
       testFile: { style: "kebab", suffix: ".spec", extension: ".ts" }
+    },
+    i18n: {
+      stringsFile: "src/locales/{locale}.json",
+      tokenFile: "src/styles/aos-tokens.css",
+      keyStyle: "camel",
+      plural: "json-icu",
+      sourceLocale: "zh"
     }
   }
 };

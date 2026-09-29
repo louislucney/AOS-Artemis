@@ -1,15 +1,19 @@
 import type { FigmaNode } from './resolve.js';
 import { walk } from './resolve.js';
 
-/** Figma colors are 0..1 floats. Convert to #RRGGBB (+ alpha note when < 1). */
+/** Figma colors are 0..1 floats. Convert to #RRGGBB (+ #RRGGBBAA alpha when < 1). */
 interface RGBA { r: number; g: number; b: number; a?: number }
 
 function channel(n: number): string {
   return Math.round(n * 255).toString(16).padStart(2, '0');
 }
 
-export function rgbaToHex(c: RGBA): string {
-  return `#${channel(c.r)}${channel(c.g)}${channel(c.b)}`.toUpperCase();
+// PATCH (aos-mcp): keep the alpha channel so translucent colors do not collapse
+// into their opaque variant during dedup/naming (canonical CSS order #RRGGBBAA).
+export function rgbaToHex(c: RGBA, alpha: number = c.a ?? 1): string {
+  const rgb = `#${channel(c.r)}${channel(c.g)}${channel(c.b)}`.toUpperCase();
+  if (alpha >= 1) return rgb;
+  return `${rgb}${channel(alpha)}`.toUpperCase();
 }
 
 interface Paint {
@@ -23,7 +27,12 @@ function solidHexes(paints: Paint[] | undefined): Array<{ hex: string; opacity: 
   if (!Array.isArray(paints)) return [];
   return paints
     .filter((p) => p.type === 'SOLID' && p.color && p.visible !== false)
-    .map((p) => ({ hex: rgbaToHex(p.color as RGBA), opacity: p.opacity ?? (p.color as RGBA).a ?? 1 }));
+    .map((p) => {
+      // PATCH (aos-mcp): combine paint opacity with the color's own alpha.
+      const paint = p.color as RGBA;
+      const alpha = (p.opacity ?? 1) * (paint.a ?? 1);
+      return { hex: rgbaToHex(paint, alpha), opacity: alpha };
+    });
 }
 
 /**

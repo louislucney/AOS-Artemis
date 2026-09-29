@@ -34,6 +34,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 | 安装/更新依赖 | `node dist/cli.js doctor --install-deps`（serve 首次运行自动执行） |
 | 镜像 | `docker build -t aos-mcp:local .` |
 | 真机验收（手动） | `node scripts/e2e-device.mjs "…"`（需 artemis venv + 已授权设备） |
+| 崩溃取证验收（手动） | `node scripts/e2e-crash.mjs --package <pkg> [--serial S] [--collect-only]`（需 adb + 已授权设备；`am crash` 或手动触发后采集） |
 | 设计流水线（一条命令） | `node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`（无 token 时给出指引并 exit 2） |
 
 ## 硬性约定
@@ -54,6 +55,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 - **Figma 桥**：端口锁定 3055；CORS 白名单（`null` 插件 iframe + loopback）；被占用时 `skipped_occupied` 而非文件共享（`src/vendor/design-context-bridge/figma-bridge/ws-server.ts`）。
 - **双入口**：stdio 与 HTTP 共用 `createServerForRuntime()`（`src/server.ts`）；HTTP 每项目独立 Runtime（`src/http-server.ts`）。
 - **任务统计**：`mobile_run_task` 成功后记录 `task_stats`；完成态由后台 30s 循环 + `aos_tasks` 轮询 `mobile_manage_task(status)` 回写。
+- **崩溃取证**：任务终态自动采集设备 crash buffer → 签名去重（包名+根因异常+首个应用帧）落盘 `<项目>/.artemis/crashes/`；`aos_crashes` list/get/scan；`AOS_CRASH_CAPTURE=0` / `AOS_ADB_PATH` / `AOS_CRASH_TIMEOUT_MS` / `AOS_CRASH_MAX_RECORDS` 可配（`src/crash/`）。
 - **日志**：`<project>/.artemis/logs/aos-mcp.log`（工具调用审计 name/ok/ms + 启停 + 崩溃堆栈）与 `artemis-child.log`（子进程 stderr 落盘）；`AOS_LOG_LEVEL/DIR`、`AOS_LOG_DISABLE_FILE=1`、`AOS_LOG_MAX_MB`（轮转）。
 - **依赖更新检测**：`artemis/.venv/.aos-deps.json` 的 lock 哈希 stamp 对比 `uv.lock`；过期时 serve / `doctor --install-deps` 自动更新（依赖包 `AOS_ARTEMIS_DEPS_URL` 优先，旧包回退在线 `uv sync`；`AOS_DEPS_NO_ONLINE=1` 禁在线）。仅代码更新无需操作（venv 只装依赖，代码从仓库读取）。
 - **技术栈检测**：`src/projects/stack.ts`（Flutter / React Native / 原生 Android / iOS / Web）；gap 扫描规则、定位/代码/文件命名约定按栈选择，`aos_status.stack` 可见。
@@ -62,6 +64,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 
 五个原生 zod 工具，产物都在 `<项目>/.artemis/design/`：
 `figma_extract_flows`（交互→flows.json）→ `figma_gap_analysis`（缺口+技术栈规则→gaps.json）→ `figma_generate_tests`（流程→tests.{json,md}，内含可直接执行的 `mobile_run_task` 任务描述）→ `figma_import_assets`（缺失资源按栈命名/目录写入；路径幂等 + 内容 sha256 去重，重复记 `duplicate_of`；dryRun 可预览）→ `figma_export_brief`（tokens/组件/编码约定→build-brief.{json,md}；`scaffold` 出组件骨架）。
+M6 增补（可选）：`figma_import_tokens`（颜色→tokens.json（DTCG+modes）+ 栈 token 文件 Android/Flutter/RN/Web；值冻结命名；裸色扫描）与 `figma_import_strings`（文案→strings.json + 资源写入 Android/Flutter；key 冻结（改名不改 key）、source_changed/unused/硬编码扫描、conflict 经 resolutions.json 闭环）。
 
 触发：① 客户端挂载后用自然语言（`install` 已生成项目级配置，重启客户端生效）；② 一条命令：`node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`；③ 对话中按序点名上述工具。前置：`FIGMA_ACCESS_TOKEN`（项目 `.env` 或 `aos_configure` 写入）。
 执行生成的用例：`mobile_run_task(task_desc = tests.json 的 flows[i].taskDesc)`；失败步骤用 `compare_design_and_device` 出"设计 vs 真机"双图定位差异。

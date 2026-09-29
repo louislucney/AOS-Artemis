@@ -115,6 +115,7 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 ## 任务统计与组合工具
 
 - `aos_tasks`：列出本项目 `mobile_run_task` 记录（trace/状态/模型/时间），默认先向 artemis 同步完成态；后台每 30s 自动同步。
+- `aos_crashes`：任务终态后自动采集设备 crash buffer，解析为崩溃签名（包名 + 根因异常 + 首个应用帧）并去重计数；`list` 查看、`get` 取完整栈、`scan` 手动扫描。产物在 `.artemis/crashes/`，`AOS_CRASH_CAPTURE=0` 可关闭。
 - `compare_design_and_device`：一次调用返回 **Figma 节点渲染图（PNG@2x）+ 当前真机截图**（MCP image content），交给多模态模型比对布局/间距/颜色/文案。
 
 ### 设计 → 测试流水线（Figma → 真机）
@@ -122,9 +123,11 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 ```
 figma_extract_flows(url)     # 交互流程 → .artemis/design/flows.json
 figma_gap_analysis(url)      # 资源缺口 → .artemis/design/gaps.json
-figma_generate_tests(url)    # 流程 → .artemis/design/tests.{json,md}（含 taskDesc）
+figma_generate_tests(url)    # 流程 → .artemis/design/tests.{json,md}（含 taskDesc；有 strings.json 时附 i18n key）
 figma_import_assets()        # 缺失资源 → 按栈命名/目录写入（import-report.json；dryRun 预览）
 figma_export_brief(url)      # 编码事实包 → build-brief.{json,md}（tokens/组件/约定；scaffold 可出骨架）
+figma_import_tokens(url)     # 可选：颜色 → .artemis/design/tokens.json + 栈 token 文件（tokens 唯一性/裸色扫描）
+figma_import_strings(url)    # 可选：文案 → .artemis/design/strings.json + 资源文件（Android/Flutter；key 冻结/i18n）
 # 执行：mobile_run_task(task_desc = tests.json 中 flows[i].taskDesc)
 # 视觉断言：compare_design_and_device（失败步骤截图 vs Figma 渲染图）
 ```
@@ -169,6 +172,10 @@ node dist/cli.js install --targets claude,cursor,opencode,vscode --force
 ```bash
 node scripts/e2e-device.mjs "Open Settings and report the battery level"
 # 0=completed 1=failed 2=setup_required 3=infra；前置：uv sync + .env + 已授权设备
+
+node scripts/e2e-crash.mjs --package com.example.app
+# 触发真实崩溃（am crash）→ 采集 → 签名 → 写入 .artemis/crashes；0=已捕获 1=未发现 2=infra
+# 手动触发后用 --collect-only 只做采集；多设备用 --serial 指定
 ```
 
 ## 状态
@@ -181,6 +188,8 @@ node scripts/e2e-device.mjs "Open Settings and report the battery level"
 | M2 | Figma 20 工具内嵌（zod）+ 桥安全补丁 + token 引导 | ✅ |
 | M3 | 容器化（Dockerfile/compose）+ `aos-mcp install` + 真机 E2E 脚本 | ✅ |
 | M4 | HTTP 传输（`/mcp/<project>`）+ 任务完成态同步（`aos_tasks`）+ 组合工具（设计 vs 真机） | ✅ |
+| M5 | 崩溃取证：终态自动采集 crash buffer → 签名去重 → `aos_crashes`（`.artemis/crashes/`） | ✅ |
+| M6 | 设计资源唯一性与 i18n 闭环（颜色 tokens / 文本 i18n） | 🚧 部分实施（M6a 完成；M6b/M6c 覆盖 Android/Flutter；DESIGN.md §13.9） |
 
 ## 快速开始
 
@@ -211,12 +220,15 @@ node dist/cli.js doctor
 | `aos_configure` | 写入/更新 LLM 三元组（→ PG + 项目 `.env`）并激活；setup 引导入口 |
 | `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 就绪性 |
 | `aos_tasks` | 任务/调用统计（trace/状态/模型），含完成态同步 |
+| `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
 | `figma_extract_flows` | 解析 Figma 原型交互 → 流程图（screens/edges/entryScreens，支持连续动作与 BACK），落盘 `.artemis/design/flows.json` |
 | `figma_gap_analysis` | 缺口分析：设计资源/色板 vs 项目现有资产/ tokens 文件，落盘 `.artemis/design/gaps.json` |
 | `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md`，内含可直接传给 `mobile_run_task` 的任务描述 |
 | `figma_import_assets` | 资源导入：按 gaps.json 从 Figma 导出缺失资源，按技术栈命名/目录幂等写入（dryRun 可预览）；**唯一性**：内容 sha256 去重（批次内 + 项目资产索引，重复项记 `duplicate_of`） |
 | `figma_export_brief` | 构建简报：tokens/路由/组件变体/流程概览/缺口/栈约定 → `build-brief.{json,md}`；`scaffold` 可选按栈生成组件骨架（幂等） |
+| `figma_import_tokens` | 颜色 token 导入：Figma 颜色（含 alpha）→ `.artemis/design/tokens.json`（DTCG，modes 预留）+ 栈 token 文件（Android/Flutter/RN/Web）；裸色扫描 + enforcement；人工命名 `token-names.json` |
+| `figma_import_strings` | 文案 i18n 导入：Figma 文本 → 冻结 key（改名不改 key）→ `.artemis/design/strings.json` + 资源文件（Android `strings.xml` / Flutter `arb`）；复用/迁移/source_changed/unused/硬编码扫描；conflict 经 `resolutions.json` 闭环 |
 | `mobile_*`（5） | 代理 artemis（schema 原样透传）；`mobile_run_task` 在 setup 未完成时返回结构化 `setup_required` |
 | Figma 20 | `get_current_selection` … `export_image`（内嵌 dcb，zod 校验）；插件模式走本地桥（锁定 3055，CORS 白名单），REST 模式需 token（缺失时引导 `aos_configure`） |
 

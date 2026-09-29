@@ -6,6 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import { buildFlowGraph, type FlowEdge, type FlowGraph } from "./flows.js";
+import { canonicalizePlaceholders, normalizedText } from "./strings.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
@@ -83,11 +84,20 @@ function assertionFor(graph: FlowGraph, edge: FlowEdge): string {
   return hints.length > 0 ? `（页面应出现「${hints.join("」「")}」等）` : "";
 }
 
-function stepFor(graph: FlowGraph, edge: FlowEdge): string {
+function lookupI18nKey(text: string | undefined, i18nKeys: Map<string, string> | undefined): string | null {
+  if (!text || !i18nKeys || i18nKeys.size === 0) return null;
+  const canonical = normalizedText(canonicalizePlaceholders(text).canonicalText);
+  return i18nKeys.get(canonical) ?? i18nKeys.get(normalizedText(text)) ?? null;
+}
+
+function stepFor(graph: FlowGraph, edge: FlowEdge, i18nKeys?: Map<string, string>): string {
   const target = edge.to ? `「${edge.to.name}」` : null;
   const assertion = assertionFor(graph, edge);
   const label = edge.textHints[0] ? `「${edge.textHints[0]}」` : `「${edge.element.name}」`;
-  const elementNote = edge.textHints[0] ? `（设计元素：${edge.element.name}）` : "";
+  const i18nKey = lookupI18nKey(edge.textHints[0], i18nKeys);
+  const elementNote = edge.textHints[0]
+    ? `（设计元素：${edge.element.name}${i18nKey ? `；i18n: ${i18nKey}` : ""}）`
+    : "";
 
   if (edge.trigger === "AFTER_TIMEOUT") {
     const seconds = ((edge.triggerTimeoutMs ?? 0) / 1000).toFixed(1).replace(/\.0$/, "");
@@ -107,10 +117,12 @@ function stepFor(graph: FlowGraph, edge: FlowEdge): string {
   return `触发${label}${elementNote}（${edge.trigger}）${target ? `，验证进入${target}${assertion}` : ""}`;
 }
 
-/** Turn flow paths into test cases with artemis-ready task descriptions. */
+/** Turn flow paths into test cases with artemis-ready task descriptions.
+ * `i18nKeys` maps canonical source text → frozen i18n key (strings.json) so
+ * generated steps can prefer resource keys over locale-dependent literals. */
 export function generateTestCases(
   graph: FlowGraph,
-  options: { maxFlows?: number } = {}
+  options: { maxFlows?: number; i18nKeys?: Map<string, string> } = {}
 ): GeneratedTest[] {
   const flows = linearizeFlows(graph, { maxFlows: options.maxFlows ?? 10 });
   return flows.map((flowPath) => {
@@ -120,7 +132,7 @@ export function generateTestCases(
       const name = edge.to?.name;
       if (name && name !== screens[screens.length - 1]) screens.push(name);
     }
-    const steps = flowPath.map((edge) => stepFor(graph, edge));
+    const steps = flowPath.map((edge) => stepFor(graph, edge, options.i18nKeys));
     const name =
       screens.length <= 4 ? screens.join(" → ") : `${screens.slice(0, 4).join(" → ")} → …`;
     const taskDesc = [
@@ -161,6 +173,25 @@ export interface GenerateTestsArgs {
   save?: boolean;
 }
 
+/** Load the frozen text→key mapping produced by figma_import_strings (M6b). */
+function loadI18nKeys(runtime: Runtime): Map<string, string> {
+  const stringsPath = path.join(runtime.configDirAbs, "design", "strings.json");
+  const map = new Map<string, string>();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(stringsPath, "utf-8")) as {
+      entries?: Array<{ canonicalText?: unknown; key?: unknown; lifecycle?: unknown }>;
+    };
+    for (const entry of parsed.entries ?? []) {
+      if (typeof entry.canonicalText !== "string" || typeof entry.key !== "string") continue;
+      if (entry.lifecycle === "unused") continue;
+      if (!map.has(entry.canonicalText)) map.set(entry.canonicalText, entry.key);
+    }
+  } catch {
+    /* no strings.json yet: literal-only descriptions */
+  }
+  return map;
+}
+
 export async function figmaGenerateTests(
   runtime: Runtime,
   args: GenerateTestsArgs
@@ -190,14 +221,19 @@ export async function figmaGenerateTests(
       source = flowsPath;
     }
 
-    const cases = generateTestCases(graph, { maxFlows: args.maxFlows ?? 10 });
+    const cases = generateTestCases(graph, {
+      maxFlows: args.maxFlows ?? 10,
+      i18nKeys: loadI18nKeys(runtime)
+    });
     const generatedAt = new Date().toISOString();
     const payload: Record<string, unknown> = {
       ok: true,
       source,
       counts: { flows: cases.length, screens: graph.screens.length, edges: graph.edges.length },
       flows: cases,
-      hint: "用 mobile_run_task 执行 flows[].taskDesc；失败步骤可用 compare_design_and_device 做视觉断言。"
+      hint:
+        "用 mobile_run_task 执行 flows[].taskDesc；失败步骤可用 compare_design_and_device 做视觉断言；" +
+        "若已跑过 figma_import_strings，步骤中会附带 i18n key（原文仅在 source locale 兜底）。"
     };
 
     if (args.save !== false) {

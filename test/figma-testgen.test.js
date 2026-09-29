@@ -144,6 +144,15 @@ test("generateTestCases: entry screens with incoming edges are not treated as st
   assert.match(cases[0].steps[0], /点击「Go home」/);
 });
 
+test("generateTestCases: frozen i18n keys are attached when strings.json mapping is provided", () => {
+  const graph = buildFlowGraph(syntheticDocument());
+  const cases = generateTestCases(graph, {
+    i18nKeys: new Map([["Buy now", "home.cta_button"]])
+  });
+  assert.match(cases[0].steps[0], /设计元素：CTA Button；i18n: home\.cta_button/);
+  assert.match(cases[0].taskDesc, /i18n: home\.cta_button/);
+});
+
 test("renderMarkdown: checklist + embedded task descriptions", () => {
   const graph = buildFlowGraph(syntheticDocument());
   const markdown = renderMarkdown(generateTestCases(graph), {
