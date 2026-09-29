@@ -11,13 +11,21 @@ import {
   ensureArtemisDeps,
   hasVenv,
   readDepsStamp,
-  resolveDepsSource
+  resolveDepsSource,
+  venvPythonPath
 } from "../dist/artemis/bootstrap.js";
 
 const silent = () => {};
 
 function tmp(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+/** Fake venv layout matching the current platform (Scripts/ vs bin/). */
+function writeFakeVenvPython(repo) {
+  const pythonPath = venvPythonPath(repo);
+  fs.mkdirSync(path.dirname(pythonPath), { recursive: true });
+  fs.writeFileSync(pythonPath, "#!/bin/sh\n");
 }
 
 function lockShaOf(repo) {
@@ -29,11 +37,7 @@ function lockShaOf(repo) {
 function makeRepo({ withVenv = false, stamp = null, lockContent = "lock-content" } = {}) {
   const repo = tmp("aos-dep-repo-");
   fs.writeFileSync(path.join(repo, "uv.lock"), lockContent);
-  if (withVenv) {
-    const binDir = path.join(repo, ".venv", "bin");
-    fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(path.join(binDir, "python"), "#!/bin/sh\n");
-  }
+  if (withVenv) writeFakeVenvPython(repo);
   if (stamp) {
     fs.writeFileSync(
       path.join(repo, ".venv", ".aos-deps.json"),
@@ -83,11 +87,7 @@ function makeExec({ offlineCode = 0, onlineCode = 0, record } = {}) {
     if (args[0] === "sync") {
       const offline = args.includes("--offline");
       const code = offline ? offlineCode : onlineCode;
-      if (code === 0) {
-        const binDir = path.join(opts.cwd, ".venv", "bin");
-        fs.mkdirSync(binDir, { recursive: true });
-        fs.writeFileSync(path.join(binDir, "python"), "#!/bin/sh\n");
-      }
+      if (code === 0) writeFakeVenvPython(opts.cwd);
       return { code, stderrTail: code ? (offline ? "offline-boom" : "online-boom") : "" };
     }
     return { code: 0, stderrTail: "" };

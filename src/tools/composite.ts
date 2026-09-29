@@ -38,7 +38,8 @@ export function extractDeviceImage(result: CallToolResult): DeviceImage | null {
     } catch {
       /* plain text below */
     }
-    const regex = /(file:\/\/[^\s"'`]+|\/[^\s"'`]+\.(?:png|jpe?g|webp))/gi;
+    const regex =
+      /(file:\/\/[^\s"'`]+|[A-Za-z]:[\\/][^\s"'`]+\.(?:png|jpe?g|webp)|\/[^\s"'`]+\.(?:png|jpe?g|webp))/gi;
     for (const match of text.matchAll(regex)) candidates.push(match[1]!);
 
     for (const candidate of candidates) {
@@ -62,7 +63,7 @@ export function extractDeviceImage(result: CallToolResult): DeviceImage | null {
 function collectPathStrings(value: unknown, out: string[], depth = 0): void {
   if (depth > 4 || value === null || value === undefined) return;
   if (typeof value === "string") {
-    if (/^(file:\/\/|\/)/.test(value) && /\.(png|jpe?g|webp)$/i.test(value)) out.push(value);
+    if (/^(file:\/\/|[A-Za-z]:[\\/]|\/)/.test(value) && /\.(png|jpe?g|webp)$/i.test(value)) out.push(value);
     return;
   }
   if (Array.isArray(value)) {

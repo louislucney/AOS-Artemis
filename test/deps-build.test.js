@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { platformArch } from "../dist/artemis/bootstrap.js";
+import { platformArch, venvPythonPath } from "../dist/artemis/bootstrap.js";
 import { buildDepsBundle } from "../dist/deps-build.js";
 
 function tmp(prefix) {
@@ -16,9 +16,9 @@ function tmp(prefix) {
 function makeFakeRepo() {
   const repo = tmp("aos-build-repo-");
   fs.writeFileSync(path.join(repo, "uv.lock"), "lock-content");
-  const binDir = path.join(repo, ".venv", "bin");
-  fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(path.join(binDir, "python"), "");
+  const pythonPath = venvPythonPath(repo);
+  fs.mkdirSync(path.dirname(pythonPath), { recursive: true });
+  fs.writeFileSync(pythonPath, "");
   return repo;
 }
 
