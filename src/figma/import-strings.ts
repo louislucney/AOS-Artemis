@@ -14,6 +14,8 @@ import {
   platformKey,
   renderAndroidStrings,
   renderFlutterArb,
+  renderIosStrings,
+  renderJsonLocale,
   scanHardcodedStrings,
   serializeStrings,
   StringEntry,
@@ -33,7 +35,7 @@ export interface ImportStringsArgs {
   enforcement?: Enforcement;
 }
 
-const IMPLEMENTED_STACKS = new Set(["android-native", "flutter"]);
+const IMPLEMENTED_STACKS = new Set(["android-native", "flutter", "react-native", "web", "ios-native"]);
 
 function jsonResult(payload: unknown, isError = false): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], isError };
@@ -66,12 +68,6 @@ export async function figmaImportStrings(
       .filter((stack) => IMPLEMENTED_STACKS.has(stack.id))
       .map((stack) => STACK_PROFILES[stack.id]);
     const warnings: string[] = [];
-    const unsupported = stacks.filter((stack) => !IMPLEMENTED_STACKS.has(stack.id));
-    if (unsupported.length > 0) {
-      warnings.push(
-        `暂未实现写入的栈（M6b 范围外）：${unsupported.map((stack) => stack.displayName).join("、")}`
-      );
-    }
 
     const resources: Array<{
       stack: string;
@@ -197,5 +193,11 @@ function renderForStack(
   if (profile.id === "android-native") {
     return renderAndroidStrings(profile, entries, rootDir, "");
   }
-  return renderFlutterArb(profile, entries, rootDir, sourceLocale);
+  if (profile.id === "flutter") {
+    return renderFlutterArb(profile, entries, rootDir, sourceLocale);
+  }
+  if (profile.id === "ios-native") {
+    return renderIosStrings(profile, entries, rootDir, sourceLocale);
+  }
+  return renderJsonLocale(profile, entries, rootDir, sourceLocale);
 }

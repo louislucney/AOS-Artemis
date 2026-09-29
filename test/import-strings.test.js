@@ -129,6 +129,32 @@ test("figma_import_strings: android resources, lifecycle flags, idempotent re-im
   });
 });
 
+test("figma_import_strings: react-native writes src/i18n JSON", async () => {
+  await withFigmaEnv(async () => {
+    const fileKey = "StringsFileC3";
+    const restore = stubFigma(figmaTextsDocument(), fileKey);
+    const dir = makeTempProject({ config: baseConfig() });
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name: "demo", dependencies: { "react-native": "0.74.0" } })
+    );
+    const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+    try {
+      const payload = parseToolResult(
+        await figmaImportStrings(runtime, { url: `https://www.figma.com/design/${fileKey}/Demo` })
+      );
+      assert.deepEqual(payload.stacks, ["react-native"]);
+      assert.equal(payload.resources[0].path, "src/i18n/zh.json");
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, "src/i18n/zh.json"), "utf-8"));
+      assert.equal(parsed.loginTitle, "欢迎登录");
+      assert.ok(!("profileWelcome" in parsed), "needs_context entries are not written");
+    } finally {
+      restore();
+    }
+  });
+});
+
 test("figma_import_strings: conflicts are reported, resolved via resolutions.json, block enforcement", async () => {
   await withFigmaEnv(async () => {
     const fileKey = "StringsFileB2";

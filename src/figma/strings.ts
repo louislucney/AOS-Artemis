@@ -442,6 +442,35 @@ export function canonicalTextToIcu(text: string): string {
   return text;
 }
 
+/** ICU → iOS format value (placeholders, `%` escaping). Quote/backslash escapes
+ * are applied by the writer (`escapeIos`) so merge comparisons stay logical. */
+export function canonicalTextToIos(text: string): string {
+  const names = new Set([...text.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]!));
+  const positions = new Map<string, number>();
+  let out = text.replace(/\{([A-Za-z0-9_]+)\}/g, (_match, name: string) => {
+    if (!positions.has(name)) positions.set(name, positions.size + 1);
+    return names.size > 1 ? `%${positions.get(name)}$@` : "%@";
+  });
+  out = out.replace(/%(?!\d+\$@|@)/g, "%%");
+  return out;
+}
+
+function escapeIos(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
+}
+
+function unescapeIos(value: string): string {
+  return value
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\");
+}
+
 interface ExistingAndroidResource {
   value: string;
   file: string;
@@ -522,7 +551,13 @@ function parseAndroidGeneratedContent(text: string | null): Map<string, string> 
   return map;
 }
 
-export function renderFlutterArb(profile: StackProfile, entries: StringEntry[], rootDir: string, locale: string): ResourceWrite {
+export function renderJsonLocale(
+  profile: StackProfile,
+  entries: StringEntry[],
+  rootDir: string,
+  locale: string,
+  options: { metadata?: boolean } = {}
+): ResourceWrite {
   const relativePath = profile.i18n.stringsFile.replace("{locale}", locale);
   const existingText = readExisting(path.join(rootDir, relativePath));
   let existing: Record<string, unknown> = {};
@@ -534,7 +569,6 @@ export function renderFlutterArb(profile: StackProfile, entries: StringEntry[], 
   }
   const conflicts: ResourceConflict[] = [];
   const merged: Record<string, unknown> = { ...existing };
-  const addedKeys: string[] = [];
 
   for (const entry of entries) {
     if (entry.lifecycle === "conflict" || entry.lifecycle === "needs_context") continue;
@@ -547,8 +581,7 @@ export function renderFlutterArb(profile: StackProfile, entries: StringEntry[], 
       continue;
     }
     merged[key] = value;
-    addedKeys.push(key);
-    if (entry.placeholders.length > 0) {
+    if (options.metadata === true && entry.placeholders.length > 0) {
       const metadata: Record<string, unknown> = {};
       for (const placeholder of entry.placeholders) metadata[placeholder] = { type: "String" };
       merged[`@${key}`] = { placeholders: metadata };
@@ -567,8 +600,61 @@ export function renderFlutterArb(profile: StackProfile, entries: StringEntry[], 
   }
   const content = `${JSON.stringify(ordered, null, 2)}\n`;
   const action: ResourceWrite["action"] = existingText === content ? "unchanged" : "written";
-  void addedKeys;
   return { relativePath, action, conflicts, content };
+}
+
+export function renderFlutterArb(
+  profile: StackProfile,
+  entries: StringEntry[],
+  rootDir: string,
+  locale: string
+): ResourceWrite {
+  return renderJsonLocale(profile, entries, rootDir, locale, { metadata: true });
+}
+
+export function renderIosStrings(
+  profile: StackProfile,
+  entries: StringEntry[],
+  rootDir: string,
+  locale: string
+): ResourceWrite {
+  const relativePath = profile.i18n.stringsFile.replace("{locale}", locale);
+  const existingText = readExisting(path.join(rootDir, relativePath));
+  const existing = parseIosStrings(existingText);
+  const conflicts: ResourceConflict[] = [];
+  const merged = new Map<string, string>(existing);
+
+  for (const entry of entries) {
+    if (entry.lifecycle === "conflict" || entry.lifecycle === "needs_context") continue;
+    const key = platformKey(entry.key, profile.i18n.keyStyle);
+    const value = canonicalTextToIos(entry.canonicalText);
+    const prior = existing.get(key);
+    if (prior !== undefined) {
+      if (prior !== value) {
+        conflicts.push({ key, existing: prior, incoming: value });
+      }
+      continue;
+    }
+    merged.set(key, value);
+  }
+
+  const lines = [`/* ${STRING_FILE_MARKER} — do not edit. */`];
+  for (const [key, value] of [...merged.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    lines.push(`"${key}" = "${escapeIos(value)}";`);
+  }
+  lines.push("");
+  const content = lines.join("\n");
+  const action: ResourceWrite["action"] = existingText === content ? "unchanged" : "written";
+  return { relativePath, action, conflicts, content };
+}
+
+export function parseIosStrings(text: string | null): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!text) return map;
+  for (const match of text.matchAll(/"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"\s*;/g)) {
+    map.set(unescapeIos(match[1]!), unescapeIos(match[2]!));
+  }
+  return map;
 }
 
 function readExisting(absolute: string): string | null {

@@ -64,7 +64,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 
 五个原生 zod 工具，产物都在 `<项目>/.artemis/design/`：
 `figma_extract_flows`（交互→flows.json）→ `figma_gap_analysis`（缺口+技术栈规则→gaps.json）→ `figma_generate_tests`（流程→tests.{json,md}，内含可直接执行的 `mobile_run_task` 任务描述）→ `figma_import_assets`（缺失资源按栈命名/目录写入；路径幂等 + 内容 sha256 去重，重复记 `duplicate_of`；dryRun 可预览）→ `figma_export_brief`（tokens/组件/编码约定→build-brief.{json,md}；`scaffold` 出组件骨架）。
-M6 增补（可选）：`figma_import_tokens`（颜色→tokens.json（DTCG+modes）+ 栈 token 文件 Android/Flutter/RN/Web；值冻结命名；裸色扫描）与 `figma_import_strings`（文案→strings.json + 资源写入 Android/Flutter；key 冻结（改名不改 key）、source_changed/unused/硬编码扫描、conflict 经 resolutions.json 闭环）。
+M6 增补（可选）：`figma_import_tokens`（颜色→tokens.json（DTCG+modes）+ 栈 token 文件 Android/Flutter/RN/Web；值冻结命名；裸色扫描）与 `figma_import_strings`（文案→strings.json + 资源写入 Android/Flutter/RN/Web/iOS；key 冻结（改名不改 key）、source_changed/unused/硬编码扫描、conflict 经 resolutions.json 闭环）。
 
 触发：① 客户端挂载后用自然语言（`install` 已生成项目级配置，重启客户端生效）；② 一条命令：`node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`；③ 对话中按序点名上述工具。前置：`FIGMA_ACCESS_TOKEN`（项目 `.env` 或 `aos_configure` 写入）。
 执行生成的用例：`mobile_run_task(task_desc = tests.json 的 flows[i].taskDesc)`；失败步骤用 `compare_design_and_device` 出"设计 vs 真机"双图定位差异。

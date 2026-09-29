@@ -8,13 +8,17 @@ import test from "node:test";
 import {
   canonicalizePlaceholders,
   canonicalTextToAndroid,
+  canonicalTextToIos,
   collectFigmaTexts,
   deriveCanonicalKey,
   mergeStrings,
+  parseIosStrings,
   parseStrings,
   platformKey,
   renderAndroidStrings,
   renderFlutterArb,
+  renderIosStrings,
+  renderJsonLocale,
   scanHardcodedStrings,
   serializeStrings,
   writeResourceFile
@@ -311,6 +315,63 @@ test("renderFlutterArb: metadata for placeholders, conflicts, idempotency", () =
   const conflict = renderFlutterArb(profile, entries, dir, "zh");
   assert.equal(conflict.conflicts.length, 1);
   assert.equal(JSON.parse(conflict.content).loginWelcome, "已有翻译");
+});
+
+test("canonicalTextToIos: positional placeholders and % escaping", () => {
+  assert.equal(canonicalTextToIos("欢迎, {arg1}"), "欢迎, %@");
+  assert.equal(canonicalTextToIos("{arg1} / {arg2}"), "%1$@ / %2$@");
+  assert.equal(canonicalTextToIos("已节省 50%"), "已节省 50%%");
+});
+
+test("renderJsonLocale: react-native/web JSON additive merge with conflicts", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-strings-json-"));
+  const entries = [entry()];
+
+  const rn = renderJsonLocale(STACK_PROFILES["react-native"], entries, dir, "zh");
+  assert.equal(rn.relativePath, "src/i18n/zh.json");
+  assert.equal(rn.action, "written");
+  assert.equal(JSON.parse(rn.content).loginTitle, "欢迎登录");
+  writeResourceFile(dir, rn);
+  assert.equal(renderJsonLocale(STACK_PROFILES["react-native"], entries, dir, "zh").action, "unchanged");
+
+  fs.mkdirSync(path.join(dir, "src/i18n"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src/i18n/zh.json"), '{"loginTitle":"已有翻译"}');
+  const conflict = renderJsonLocale(STACK_PROFILES["react-native"], entries, dir, "zh");
+  assert.equal(conflict.conflicts.length, 1);
+  assert.equal(JSON.parse(conflict.content).loginTitle, "已有翻译");
+
+  const web = renderJsonLocale(STACK_PROFILES.web, entries, fs.mkdtempSync(path.join(os.tmpdir(), "aos-web-")), "zh");
+  assert.equal(web.relativePath, "src/locales/zh.json");
+});
+
+test("renderIosStrings: escaping, conflicts and idempotent round-trip", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-strings-ios-"));
+  const entries = [
+    entry(),
+    entry({
+      key: "login.note",
+      nodeId: "t9",
+      layer: "Note",
+      sourceText: "It's \"ok\"",
+      canonicalText: "It's \"ok\"\n100%"
+    })
+  ];
+
+  const first = renderIosStrings(STACK_PROFILES["ios-native"], entries, dir, "zh");
+  assert.equal(first.relativePath, "ios/zh.lproj/Localizable.strings");
+  assert.equal(first.action, "written");
+  assert.match(first.content, /"loginTitle" = "欢迎登录";/);
+  assert.match(first.content, /"loginNote" = "It's \\"ok\\"\\n100%%";/);
+  const parsed = parseIosStrings(first.content);
+  assert.equal(parsed.get("loginNote"), "It's \"ok\"\n100%%");
+  writeResourceFile(dir, first);
+  assert.equal(renderIosStrings(STACK_PROFILES["ios-native"], entries, dir, "zh").action, "unchanged");
+
+  fs.mkdirSync(path.join(dir, "ios/zh.lproj"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "ios/zh.lproj/Localizable.strings"), '"loginTitle" = "其他";\n');
+  const conflict = renderIosStrings(STACK_PROFILES["ios-native"], entries, dir, "zh");
+  assert.equal(conflict.conflicts.length, 1);
+  assert.equal(conflict.conflicts[0].key, "loginTitle");
 });
 
 test("scanHardcodedStrings: android layout literals and flutter Text literals", () => {
