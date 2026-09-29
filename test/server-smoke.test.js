@@ -48,6 +48,10 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
       "pen_import_tokens",
       "pen_import_strings",
       "pen_export_brief",
+      "pen_export",
+      "pen_apply_tokens",
+      "pen_apply_strings",
+      "pen_agent",
       "get_current_selection",
       "extract_design_system"
     ]) {

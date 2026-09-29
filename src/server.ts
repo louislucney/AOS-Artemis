@@ -32,6 +32,14 @@ import { penInspect, type PenInspectArgs } from "./pen/inspect.js";
 import { penImportTokens, type PenTokensArgs } from "./pen/tokens.js";
 import { penImportStrings, type PenStringsArgs } from "./pen/strings.js";
 import { penExportBrief, type PenBriefArgs } from "./pen/brief.js";
+import { penExport, type PenExportArgs } from "./pen/export.js";
+import {
+  penApplyStrings,
+  penApplyTokens,
+  type PenApplyStringsArgs,
+  type PenApplyTokensArgs
+} from "./pen/apply.js";
+import { penAgent, type PenAgentArgs } from "./pen/agent.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
@@ -300,6 +308,68 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       overwrite: z.boolean().optional().describe("scaffold 命名冲突时是否覆盖，默认 false")
     }),
     handler: (runtime, args) => penExportBrief(runtime, args as unknown as PenBriefArgs)
+  },
+  {
+    name: "pen_export",
+    description:
+      "pen 渲染导出（headless CLI）：.pen → PNG/JPEG/WEBP/PDF，默认落盘 .artemis/design/pen/<name>.<format>；用于与真机截图对比。需要 pen CLI 已安装并登录（npm i -g @pen.dev/cli → pen login，或 PEN_CLI_KEY；AOS_PEN_CLI_PATH 可指定路径）。",
+    schema: z.object({
+      path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
+      out: z.string().optional().describe("输出路径（相对项目根）；缺省 .artemis/design/pen/<name>.<format>"),
+      format: z.enum(["png", "jpeg", "webp", "pdf"]).optional().describe("导出格式，默认 png"),
+      scale: z.number().optional().describe("图片倍率 1-4，默认 2（pdf 忽略）"),
+      dryRun: z.boolean().optional().describe("仅返回将执行的命令，不调用 CLI，默认 false"),
+      timeoutMs: z.number().int().positive().optional().describe("CLI 超时（毫秒），默认 AOS_PEN_TIMEOUT_MS 或 120s")
+    }),
+    handler: (runtime, args) => penExport(runtime, args as unknown as PenExportArgs)
+  },
+  {
+    name: "pen_apply_tokens",
+    description:
+      "pen 颜色写回（headless CLI）：读取 .artemis/design/tokens.json（含 modes 主题取值）→ .pen 的 SetVariables；默认原位更新（先写临时文件、解析校验变量值后再原子替换，失败不动原文件），可用 out 指定输出文件；别名 token 不单独写入。需要 pen CLI 已安装并登录。",
+    schema: z.object({
+      path: z.string().optional().describe("目标 .pen（相对项目根或绝对路径）；缺省自动选择最新文件"),
+      tokensPath: z.string().optional().describe("自定义 tokens.json 路径（相对项目根），默认 .artemis/design/tokens.json"),
+      out: z.string().optional().describe("输出到新文件（相对项目根）；省略则原位更新"),
+      dryRun: z.boolean().optional().describe("仅返回 cmd，不调用 CLI、不写文件，默认 false"),
+      timeoutMs: z.number().int().positive().optional().describe("CLI 超时（毫秒），默认 AOS_PEN_TIMEOUT_MS 或 120s")
+    }),
+    handler: (runtime, args) => penApplyTokens(runtime, args as unknown as PenApplyTokensArgs)
+  },
+  {
+    name: "pen_apply_strings",
+    description:
+      "pen 文案写回（headless CLI）：读取 .artemis/design/strings.json 的 nodeId→sourceText → .pen 文本节点 Update(content)；默认原位更新（临时文件 + 回读校验后原子替换，失败不动原文件），nodeId 在 .pen 中不存在时记入 notFound；需要 pen CLI 已安装并登录。",
+    schema: z.object({
+      path: z.string().optional().describe("目标 .pen（相对项目根或绝对路径）；缺省自动选择最新文件"),
+      stringsPath: z.string().optional().describe("自定义 strings.json 路径（相对项目根），默认 .artemis/design/strings.json"),
+      out: z.string().optional().describe("输出到新文件（相对项目根）；省略则原位更新"),
+      dryRun: z.boolean().optional().describe("仅返回将执行的 cmd，不调用 CLI、不写文件，默认 false"),
+      timeoutMs: z.number().int().positive().optional().describe("CLI 超时（毫秒），默认 AOS_PEN_TIMEOUT_MS 或 120s")
+    }),
+    handler: (runtime, args) => penApplyStrings(runtime, args as unknown as PenApplyStringsArgs)
+  },
+  {
+    name: "pen_agent",
+    description:
+      "pen agent 生成/修改设计（headless CLI）：自然语言 prompt → .pen（默认原位更新：临时文件→结构校验→原子替换，失败不动原文件；out 可新建/另存，dryRun 只返回命令）。凭证自动复用 AOS active LLM 条目：注入 PEN_AGENT_API_KEY=该 key（不落日志），DeepSeek 自动映射 ANTHROPIC_BASE_URL（https://api.deepseek.com→/anthropic，实测可用）；也兼容 ANTHROPIC_API_KEY 或 pen codex-login。可选 exportPath 顺带出图。",
+    schema: z.object({
+      path: z.string().optional().describe("输入 .pen（相对项目根或绝对路径）；缺省自动选择最新文件；省略且无 out 则报错"),
+      out: z.string().optional().describe("输出 .pen（相对项目根）；提供 path 时省略则原位更新"),
+      prompt: z.string().min(1).describe("自然语言设计指令（自包含、可执行）"),
+      agent: z.enum(["claude", "codex", "gemini"]).optional().describe("agent 类型；与 model 二选一，默认 claude"),
+      model: z.string().optional().describe("模型 id（如 claude-sonnet-5 / gpt-5.6-terra / gemini-3.7-flash）"),
+      effort: z.string().optional().describe("推理力度（claude/codex/gemini 各有取值）"),
+      anthropicBaseUrl: z.string().optional().describe("覆盖 Anthropic 兼容端点（默认按 active LLM 自动推导；AOS_PEN_ANTHROPIC_BASE_URL 亦可）"),
+      custom: z.boolean().optional().describe("claude agent 是否传 --custom（自定义 Claude 模型配置）；默认在有兼容端点时自动开启，false 可关闭"),
+      exportPath: z.string().optional().describe("顺带导出图片/PDF 的路径（相对项目根）"),
+      exportType: z.enum(["png", "jpeg", "webp", "pdf"]).optional().describe("导出格式，默认 png"),
+      exportScale: z.number().optional().describe("图片倍率 1-4"),
+      maxFailedCalls: z.number().int().positive().optional().describe("连续失败工具调用上限（CLI --max-failed-calls）"),
+      dryRun: z.boolean().optional().describe("仅返回将执行的命令，默认 false"),
+      timeoutMs: z.number().int().positive().optional().describe("CLI 超时（毫秒），默认 AOS_PEN_TIMEOUT_MS 或 120s")
+    }),
+    handler: (runtime, args) => penAgent(runtime, args as unknown as PenAgentArgs)
   }
 ];
 
