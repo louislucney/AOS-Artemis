@@ -37,8 +37,10 @@ import {
   aosStatus,
   aosTasks,
   llmList,
+  llmModels,
   llmSwitch,
   type AosTasksArgs,
+  type LlmModelsArgs,
   type LlmSwitchArgs
 } from "./tools/llm.js";
 import { AOS_MCP_VERSION, errorMessage, log } from "./util.js";
@@ -64,6 +66,16 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
     handler: (runtime) => llmList(runtime)
   },
   {
+    name: "llm_models",
+    description:
+      "厂商模型目录：查看/刷新已配置条目的 OpenAI 风格模型列表（GET {baseUrl}/models，缓存到 PostgreSQL；后台每 12h 自动刷新，可用 AOS_MODEL_REFRESH_HOURS 调整）。模型下线时按厂商别名/同族等价自动修复（AOS_LLM_AUTO_REPAIR=0 关闭）；返回 8 家国产厂商预设（DeepSeek/百炼/智谱/Kimi/硅基流动/阶跃/方舟/混元）便于一键配置。",
+    schema: z.object({
+      action: z.enum(["list", "refresh"]).describe("list 读缓存；refresh 立即请求厂商接口"),
+      entry: z.string().optional().describe("只查看/刷新指定条目名（默认全部）")
+    }),
+    handler: (runtime, args) => llmModels(runtime, args as unknown as LlmModelsArgs)
+  },
+  {
     name: "llm_switch",
     description:
       "切换项目激活的 LLM 条目。模型变更对下一个 mobile_run_task 生效；key/base_url 变更会重启 artemis 网关子进程（运行中任务不受影响）。",
@@ -76,11 +88,15 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "aos_configure",
     description:
-      "为当前项目配置 LLM（OpenAI 兼容：model + baseUrl + apiKey）：写入 PostgreSQL 与项目 .env，并可选设为 active。用于 setup_required 引导场景。",
+      "为当前项目配置 LLM（OpenAI 兼容）：写入 PostgreSQL 与项目 .env，并可选设为 active。model/baseUrl 可用 vendor 预设（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）替代：只给 vendor 时自动拉取厂商模型列表并按稳定别名选型。用于 setup_required 引导场景。",
     schema: z.object({
-      model: z.string().min(1).describe("模型名，如 deepseek-flash"),
-      baseUrl: z.string().min(1).describe("OpenAI 兼容端点，如 https://api.deepseek.com/v1"),
       apiKey: z.string().min(1).describe("该项目的 LLM key（费用支付方）"),
+      model: z.string().optional().describe("模型名，如 deepseek-flash；省略时按 vendor 列表自动选择"),
+      baseUrl: z.string().optional().describe("OpenAI 兼容端点，如 https://api.deepseek.com/v1；提供 vendor 时默认用预设"),
+      vendor: z
+        .enum(["deepseek", "qwen", "zhipu", "moonshot", "siliconflow", "stepfun", "ark", "hunyuan"])
+        .optional()
+        .describe("国产厂商预设（自动填 baseUrl / 选取当前模型）"),
       name: z.string().optional().describe("条目名（默认取 model）"),
       makeActive: z.boolean().optional().describe("配置后立即设为 active，默认 true"),
       writeEnv: z.boolean().optional().describe("是否回写项目 .env，默认 true"),
@@ -360,6 +376,12 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
       if (setup.required) {
         return errorResult(JSON.stringify({ ok: false, setup_required: true, ...setup }, null, 2));
       }
+      // Retired-model gate: never let artemis fail mid-task on model_not_found.
+      const preflight = await runtime.ensureActiveModelUsable();
+      if (!preflight.ok) {
+        return errorResult(JSON.stringify(preflight.payload, null, 2));
+      }
+      for (const warning of preflight.warnings) log(`mobile_run_task 预检: ${warning}`, "warn");
     }
 
     try {
@@ -463,9 +485,11 @@ export async function runServer(): Promise<void> {
   const syncTimer = runtime
     ? setInterval(() => {
         void runtime.syncTaskStatuses();
+        runtime.maybeRefreshModels();
       }, SYNC_INTERVAL_MS)
     : null;
   syncTimer?.unref?.();
+  runtime?.maybeRefreshModels();
 
   try {
     const bridge = await startBridge();

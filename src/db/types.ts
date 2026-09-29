@@ -32,6 +32,26 @@ export interface TaskStatRecord {
   finishedAt: string | null;
 }
 
+export interface ModelCacheRecord {
+  id: string;
+  projectId: string;
+  cacheKey: string;
+  baseUrl: string;
+  models: string[];
+  fetchedAt: string | null;
+  lastError: string | null;
+  updatedAt: string;
+}
+
+export interface PutModelCacheInput {
+  cacheKey: string;
+  baseUrl: string;
+  /** Undefined keeps the stored list untouched (used for error-only updates). */
+  models?: string[];
+  fetchedAt?: string | null;
+  lastError?: string | null;
+}
+
 export interface UpsertLlmInput {
   name: string;
   provider?: string;
@@ -59,6 +79,8 @@ export interface ProjectStore {
   listLlms(rootPath: string): Promise<ProjectLlmRecord[]>;
   upsertLlm(rootPath: string, input: UpsertLlmInput): Promise<ProjectLlmRecord>;
   setActiveLlm(rootPath: string, name: string): Promise<boolean>;
+  getModelCache(rootPath: string, cacheKey: string): Promise<ModelCacheRecord | null>;
+  putModelCache(rootPath: string, input: PutModelCacheInput): Promise<ModelCacheRecord>;
   recordTask(input: RecordTaskInput): Promise<void>;
   listTasks(rootPath: string, limit?: number): Promise<TaskStatRecord[]>;
   listPendingTasks(rootPath: string, limit?: number): Promise<TaskStatRecord[]>;

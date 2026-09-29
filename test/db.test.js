@@ -126,3 +126,63 @@ test("PostgresStore: schema, upsert idempotency, exclusive active, task stats (p
   assert.equal(tasks.find((task) => task.traceId === "t1").status, "completed");
   assert.equal((await store.listPendingTasks("/w/p2")).length, 1);
 });
+
+test("model cache: MemoryStore roundtrip, error-only update preserves the list", async () => {
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: "/w/c1", name: "c1" });
+  assert.equal(await store.getModelCache("/w/c1", "key"), null);
+
+  await store.putModelCache("/w/c1", {
+    cacheKey: "key",
+    baseUrl: "https://x/v1",
+    models: ["a", "b"],
+    fetchedAt: "2026-01-01T00:00:00.000Z",
+    lastError: null
+  });
+  let record = await store.getModelCache("/w/c1", "key");
+  assert.deepEqual(record.models, ["a", "b"]);
+  assert.equal(record.fetchedAt, "2026-01-01T00:00:00.000Z");
+
+  await store.putModelCache("/w/c1", { cacheKey: "key", baseUrl: "https://x/v1", lastError: "boom" });
+  record = await store.getModelCache("/w/c1", "key");
+  assert.deepEqual(record.models, ["a", "b"]);
+  assert.equal(record.lastError, "boom");
+});
+
+test("model cache: PostgresStore roundtrip (pg-mem)", async () => {
+  const mem = newDb();
+  const { Pool } = mem.adapters.createPg();
+  const store = new PostgresStore(new Pool());
+  await store.init();
+  await store.upsertProject({ rootPath: "/w/c2", name: "c2" });
+
+  assert.equal(await store.getModelCache("/w/c2", "key"), null);
+  await store.putModelCache("/w/c2", {
+    cacheKey: "key",
+    baseUrl: "https://x/v1",
+    models: ["a", "b"],
+    fetchedAt: "2026-01-01T00:00:00.000Z",
+    lastError: null
+  });
+  let record = await store.getModelCache("/w/c2", "key");
+  assert.deepEqual(record.models, ["a", "b"]);
+  assert.equal(record.lastError, null);
+
+  await store.putModelCache("/w/c2", { cacheKey: "key", baseUrl: "https://x/v1", lastError: "boom" });
+  record = await store.getModelCache("/w/c2", "key");
+  assert.deepEqual(record.models, ["a", "b"]);
+  assert.equal(record.lastError, "boom");
+  assert.equal(record.fetchedAt, "2026-01-01T00:00:00.000Z");
+
+  await store.putModelCache("/w/c2", {
+    cacheKey: "key",
+    baseUrl: "https://x/v1",
+    models: ["c"],
+    fetchedAt: "2026-02-02T00:00:00.000Z",
+    lastError: null
+  });
+  record = await store.getModelCache("/w/c2", "key");
+  assert.deepEqual(record.models, ["c"]);
+  assert.equal(record.lastError, null);
+  assert.equal(record.fetchedAt, "2026-02-02T00:00:00.000Z");
+});

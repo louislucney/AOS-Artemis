@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import type {
+  ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
   ProjectStore,
+  PutModelCacheInput,
   RecordTaskInput,
   TaskStatRecord,
   UpsertLlmInput
@@ -14,6 +16,7 @@ export class MemoryStore implements ProjectStore {
   readonly kind = "memory" as const;
   private projects = new Map<string, ProjectRecord>();
   private llms = new Map<string, ProjectLlmRecord[]>();
+  private modelCaches = new Map<string, ModelCacheRecord>();
   private tasks: TaskStatRecord[] = [];
 
   async upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord> {
@@ -90,6 +93,43 @@ export class MemoryStore implements ProjectStore {
     target.isActive = true;
     target.updatedAt = new Date().toISOString();
     return true;
+  }
+
+  async getModelCache(rootPath: string, cacheKey: string): Promise<ModelCacheRecord | null> {
+    const found = this.modelCaches.get(`${rootPath}\u0000${cacheKey}`);
+    return found ? { ...found, models: [...found.models] } : null;
+  }
+
+  async putModelCache(rootPath: string, input: PutModelCacheInput): Promise<ModelCacheRecord> {
+    const project = this.projects.get(rootPath);
+    if (!project) throw new Error(`MemoryStore: project not registered: ${rootPath}`);
+    const key = `${rootPath}\u0000${input.cacheKey}`;
+    const now = new Date().toISOString();
+    const existing = this.modelCaches.get(key);
+    const record: ModelCacheRecord = existing
+      ? {
+          ...existing,
+          baseUrl: input.baseUrl,
+          models: input.models !== undefined ? [...input.models] : existing.models,
+          fetchedAt:
+            input.models !== undefined
+              ? (input.fetchedAt ?? now)
+              : existing.fetchedAt,
+          lastError: input.lastError ?? null,
+          updatedAt: now
+        }
+      : {
+          id: randomUUID(),
+          projectId: project.id,
+          cacheKey: input.cacheKey,
+          baseUrl: input.baseUrl,
+          models: input.models ? [...input.models] : [],
+          fetchedAt: input.fetchedAt ?? null,
+          lastError: input.lastError ?? null,
+          updatedAt: now
+        };
+    this.modelCaches.set(key, record);
+    return { ...record, models: [...record.models] };
   }
 
   async recordTask(input: RecordTaskInput): Promise<void> {

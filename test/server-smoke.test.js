@@ -17,7 +17,7 @@ async function makeClient(projectDir) {
     command: process.execPath,
     args: [path.join(repoRoot, "dist", "index.js")],
     cwd: repoRoot,
-    env: { ...process.env, AOS_PROJECT_DIR: projectDir }
+    env: { ...process.env, AOS_PROJECT_DIR: projectDir, AOS_MODEL_REFRESH_HOURS: "0" }
   });
   const client = new Client({ name: "aos-mcp-smoke", version: "0.0.1" });
   await client.connect(transport);
@@ -36,6 +36,7 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
     for (const expected of [
       "llm_list",
       "llm_switch",
+      "llm_models",
       "aos_configure",
       "aos_status",
       "figma_extract_flows",

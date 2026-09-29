@@ -91,7 +91,10 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
 
   const runtimes = new Map<string, Runtime>();
   const syncTimer = setInterval(() => {
-    for (const runtime of runtimes.values()) void runtime.syncTaskStatuses();
+    for (const runtime of runtimes.values()) {
+      void runtime.syncTaskStatuses();
+      runtime.maybeRefreshModels();
+    }
   }, SYNC_INTERVAL_MS);
   syncTimer.unref?.();
 
@@ -109,6 +112,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
       });
       runtime = new Runtime(projectContext, { store, storeNote: reason });
       await runtime.initialize();
+      runtime.maybeRefreshModels();
     } catch (error) {
       log(`项目 "${project}" 初始化失败: ${errorMessage(error)}`);
       return null;

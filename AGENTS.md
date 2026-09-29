@@ -51,6 +51,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 - **LLM 首扫导入**：`AOS_LLM_*` 优先，兼容 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `OPENAI_BASE_URL`（`src/projects/scan.ts`）；缺项 → `setup_required`，由 `aos_configure` 补全（写 PG + 项目 `.env`）。
 - **切换语义**：模型变更对下一个任务生效；provider/key/base_url 变更重启网关子进程（只杀直接子进程，detached 任务不动）；运行中任务由 `mobile_diagnose.tasks` 守卫，`force: true` 跳过（`src/runtime.ts`）。
 - **条目优先级**：store(PG) > config（可选高级层 `aos.config.jsonc`）> env（`src/llm/registry.ts`）。
+- **模型目录**：8 家国产厂商预设（`src/llm/providers.ts`）；已配置条目定时 `GET {baseUrl}/models` 缓存到 PG `llm_model_cache`（`AOS_MODEL_REFRESH_HOURS` 默认 12h，0 关闭；读项目 `.env`，进程 env 优先）；模型下线自动修复（别名/同族等价，capability 名不降级；`AOS_LLM_AUTO_REPAIR=0` 关闭）+ `mobile_run_task` 预检拦截；`llm_models` list/refresh；`aos_configure` 支持 `vendor` 一键配置（`src/llm/catalog.ts`）。
 - **自动重指**：非 Google provider 自动覆盖 artemis 钉死的 `object_detector`/`hopper` 节点（附精度警告）。
 - **Figma 桥**：端口锁定 3055；CORS 白名单（`null` 插件 iframe + loopback）；被占用时 `skipped_occupied` 而非文件共享（`src/vendor/design-context-bridge/figma-bridge/ws-server.ts`）。
 - **双入口**：stdio 与 HTTP 共用 `createServerForRuntime()`（`src/server.ts`）；HTTP 每项目独立 Runtime（`src/http-server.ts`）。

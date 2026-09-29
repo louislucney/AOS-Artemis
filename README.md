@@ -211,13 +211,18 @@ node dist/cli.js doctor
 
 未配置 `AOS_DATABASE_URL` 时降级为会话内存存储（`aos_status` 会警告）。
 
+厂商模型会下线（如 DeepSeek 旧名 `deepseek-v4-flash` 已由 `deepseek-flash` 别名接管）：服务会按 `AOS_MODEL_REFRESH_HOURS`（默认 12h）定时刷新已配置厂商的 `/models` 列表，模型下线时自动修复为厂商稳定别名/同族等价模型（`AOS_LLM_AUTO_REPAIR=0` 关闭），并在 `mobile_run_task` 前拦截无法修复的失效模型，避免任务跑到一半才失败。
+
+公司网络需代理出网时：Node 侧请求（模型目录刷新、Figma REST）需 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（Node ≥ 24；Node 的 fetch 默认不读代理变量）。`aos-mcp install` 会把当前 shell 的代理变量带入客户端配置。
+
 ## 工具
 
 | 工具 | 说明 |
 |------|------|
-| `llm_list` | 项目全部 LLM 条目（store/config/env 来源）+ active + masked key + `setupRequired` |
+| `llm_list` | 项目全部 LLM 条目（store/config/env 来源）+ active + masked key + `setupRequired` + 每条目 `models`（厂商列表缓存/是否下线/建议模型） |
 | `llm_switch` | 切换 active（PG 持久化）；模型下个任务生效；key/base_url 变更重启网关（任务守卫，`force: true` 跳过） |
-| `aos_configure` | 写入/更新 LLM 三元组（→ PG + 项目 `.env`）并激活；setup 引导入口 |
+| `llm_models` | 厂商模型目录：`list` 看缓存，`refresh` 立即拉取 `GET {baseUrl}/models`（后台每 12h 自动刷新）；模型下线时自动修复并附 8 家国产厂商预设（`AOS_LLM_AUTO_REPAIR=0` 可关） |
+| `aos_configure` | 写入/更新 LLM（→ PG + 项目 `.env`）并激活；可只给 `vendor`（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）自动选当前模型；setup 引导入口 |
 | `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 就绪性 |
 | `aos_tasks` | 任务/调用统计（trace/状态/模型），含完成态同步 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
@@ -234,7 +239,7 @@ node dist/cli.js doctor
 
 ## PostgreSQL 数据模型（v1）
 
-`projects`（root_path 唯一 / figma_token）、`project_llms`（name/base_url/model/api_key/is_active，应用层保证单 active）、`task_stats`（trace/model/status/时间）。详见 DESIGN.md §4.5。
+`projects`（root_path 唯一 / figma_token）、`project_llms`（name/base_url/model/api_key/is_active，应用层保证单 active）、`task_stats`（trace/model/status/时间）、`llm_model_cache`（厂商模型列表缓存：cache_key/base_url/models/fetched_at/last_error）。详见 DESIGN.md §4.5。
 
 ## 仓库布局
 

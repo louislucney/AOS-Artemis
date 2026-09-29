@@ -9,6 +9,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 import { createAosHttpServer } from "../dist/http-server.js";
 
+process.env.AOS_MODEL_REFRESH_HOURS = "0";
+
 function makeWorkspace() {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "aos-ws-"));
   const projectDir = path.join(workspace, "demo");

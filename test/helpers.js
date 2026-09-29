@@ -151,9 +151,26 @@ export class StubProxy {
   }
 }
 
-export async function loadTestRuntime(dir, { proxy, env = {}, store, baseEnv, crashCollector } = {}) {
+export function modelFetcher(models, options = {}) {
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push({ url, auth: init?.headers?.Authorization });
+    if (options.throwError) throw new Error(options.throwError);
+    const status = options.status ?? 200;
+    return {
+      ok: status < 400,
+      status,
+      json: async () =>
+        options.payload ?? { object: "list", data: models.map((id) => ({ id })) }
+    };
+  };
+  impl.calls = calls;
+  return impl;
+}
+
+export async function loadTestRuntime(dir, { proxy, env = {}, store, baseEnv, crashCollector, modelFetcher } = {}) {
   const project = loadProject({ cwd: dir, env });
-  const runtime = new Runtime(project, { proxy, store, baseEnv, crashCollector });
+  const runtime = new Runtime(project, { proxy, store, baseEnv, crashCollector, modelFetcher });
   await runtime.initialize();
   return { project, runtime };
 }

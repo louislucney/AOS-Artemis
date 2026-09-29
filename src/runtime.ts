@@ -23,6 +23,8 @@ import type { CrashCollectorLike, CrashScanReport, CrashScanResult } from "./cra
 import { MemoryStore } from "./db/memory.js";
 import { TERMINAL_TASK_STATUSES } from "./db/types.js";
 import type { ProjectLlmRecord, ProjectRecord, ProjectStore, TaskStatRecord } from "./db/types.js";
+import { writeEnvUpdates } from "./env-file.js";
+import { ModelCatalog, type FetchLike, type ModelReport, type RefreshReport } from "./llm/catalog.js";
 import {
   entriesFromConfig,
   entryFromEnvScan,
@@ -54,6 +56,7 @@ export interface RuntimeOptions {
   baseEnv?: NodeJS.ProcessEnv;
   storeNote?: string | null;
   crashCollector?: CrashCollectorLike;
+  modelFetcher?: FetchLike;
 }
 
 export interface ActivateResult {
@@ -80,6 +83,12 @@ export interface SetupInfo {
   howToFix: string[];
 }
 
+export interface ModelPreflight {
+  ok: boolean;
+  warnings: string[];
+  payload?: Record<string, unknown>;
+}
+
 export class Runtime {
   readonly project: LoadedProject;
   readonly store: ProjectStore;
@@ -89,6 +98,7 @@ export class Runtime {
   readonly state: StateStore;
   readonly crashStore: CrashIndexStore;
   readonly crashScanner: CrashScanner;
+  readonly modelCatalog: ModelCatalog;
 
   private readonly baseEnv: NodeJS.ProcessEnv;
   private scanResult: EnvScanResult;
@@ -98,6 +108,7 @@ export class Runtime {
   private lastStoreError: string | null = null;
   private activationChain: Promise<unknown> = Promise.resolve();
   private crashScanChain: Promise<unknown> = Promise.resolve();
+  private modelRefreshChain: Promise<unknown> = Promise.resolve();
   private readonly lockedPackages = new Map<string, string>();
 
   constructor(project: LoadedProject, options: RuntimeOptions = {}) {
@@ -108,6 +119,12 @@ export class Runtime {
     this.configDirAbs = configDirAbs(project.config, project.rootDir);
     this.state = new StateStore(path.join(this.configDirAbs, "state.json"));
     this.scanResult = scanProjectEnv(project.resolver);
+    // Model-catalog knobs read project .env first, then the process env
+    // (client-config env wins so fleet-wide policy can override).
+    this.modelCatalog = new ModelCatalog({
+      env: { ...project.dotenvValues, ...this.baseEnv },
+      fetchImpl: options.modelFetcher
+    });
     this.crashStore = new CrashIndexStore(path.join(this.configDirAbs, "crashes"), {
       maxRecords: resolveCrashMaxRecords(this.baseEnv)
     });
@@ -634,6 +651,171 @@ export class Runtime {
 
   storeError(): string | null {
     return this.lastStoreError;
+  }
+
+  // ------------------------------------------------------------------
+  // Model catalog: periodic refresh of vendor model lists + auto repair
+  // ------------------------------------------------------------------
+
+  modelRefreshHours(): number {
+    return this.modelCatalog.ttlHours();
+  }
+
+  modelAutoRepairEnabled(): boolean {
+    return this.modelCatalog.autoRepair();
+  }
+
+  private async catalogEntries(entryNames?: string[]): Promise<LlmEntry[]> {
+    const entries = await this.entries();
+    const wanted = entryNames && entryNames.length > 0 ? new Set(entryNames) : null;
+    return entries.filter(
+      (entry) => this.modelCatalog.appliesTo(entry) && (!wanted || wanted.has(entry.name))
+    );
+  }
+
+  /** Cached-only view (no network); used by llm_list / aos_status annotations. */
+  async modelReports(entryNames?: string[]): Promise<ModelReport[]> {
+    const entries = await this.catalogEntries(entryNames);
+    const reports: ModelReport[] = [];
+    for (const entry of entries) {
+      reports.push(await this.modelCatalog.report(this.store, this.project.rootDir, entry));
+    }
+    return reports;
+  }
+
+  /** Refresh due (or forced) entries and auto-repair retired active models. */
+  async refreshModels(
+    options: { force?: boolean; entryNames?: string[] } = {}
+  ): Promise<RefreshReport[]> {
+    const run = this.modelRefreshChain.then(
+      () => this.doRefreshModels(options),
+      () => this.doRefreshModels(options)
+    );
+    this.modelRefreshChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async doRefreshModels(options: {
+    force?: boolean;
+    entryNames?: string[];
+  }): Promise<RefreshReport[]> {
+    const entries = await this.catalogEntries(options.entryNames);
+    const reports: RefreshReport[] = [];
+    for (const entry of entries) {
+      let report = await this.modelCatalog.refresh(this.store, this.project.rootDir, entry, {
+        force: options.force === true
+      });
+      if (report.deprecated && report.refreshed && this.modelAutoRepairEnabled()) {
+        const repaired = await this.tryAutoRepair(entry, report);
+        if (repaired) report = { ...report, repaired };
+      }
+      reports.push(report);
+    }
+    return reports;
+  }
+
+  /** Non-blocking check for the serve loops (stdio + HTTP). */
+  maybeRefreshModels(): void {
+    if (this.modelRefreshHours() <= 0) return;
+    void this.refreshModels({ force: false }).catch((error) => {
+      logWarn(`模型列表刷新失败: ${errorMessage(error)}`);
+    });
+  }
+
+  /** mobile_run_task gate: stop a retired active model before artemis runs it. */
+  async ensureActiveModelUsable(): Promise<ModelPreflight> {
+    const active = await this.activeEntry();
+    if (!active || !this.modelCatalog.appliesTo(active)) return { ok: true, warnings: [] };
+    const report = await this.modelCatalog.report(this.store, this.project.rootDir, active);
+    if (!report.deprecated) {
+      return {
+        ok: true,
+        warnings: report.error ? [`厂商模型列表刷新失败：${report.error}`] : []
+      };
+    }
+    if (this.modelAutoRepairEnabled() && report.suggestedModel) {
+      const repaired = await this.tryAutoRepair(active, report);
+      if (repaired) {
+        return {
+          ok: true,
+          warnings: [
+            `active 模型 "${repaired.from}" 已下线，已自动修复为 "${repaired.to}"（${repaired.sources.join(" + ")}）。`
+          ]
+        };
+      }
+    }
+    return {
+      ok: false,
+      warnings: [],
+      payload: {
+        ok: false,
+        model_deprecated: true,
+        profile: active.name,
+        model: active.model,
+        baseUrl: active.baseUrl,
+        fetchedAt: report.fetchedAt,
+        availableCount: report.count,
+        availableModels: report.sampleModels,
+        suggestedModel: report.suggestedModel,
+        fix:
+          '调用 llm_models(action="refresh") 查看厂商最新列表，然后用 aos_configure（提供新 model）或编辑项目 .env 修复。'
+      }
+    };
+  }
+
+  private async tryAutoRepair(
+    entry: LlmEntry,
+    report: ModelReport
+  ): Promise<{ from: string; to: string; reason: "alias" | "equivalent"; sources: string[] } | null> {
+    const suggestedModel = report.suggestedModel;
+    if (!suggestedModel || suggestedModel === entry.model) return null;
+    const reason = report.replacementReason ?? "equivalent";
+    const sources: string[] = [];
+
+    const stored = await this.safeStore(
+      () =>
+        this.store.upsertLlm(this.project.rootDir, {
+          name: entry.name,
+          provider: entry.provider,
+          baseUrl: entry.baseUrl,
+          model: suggestedModel,
+          apiKey: entry.apiKey,
+          makeActive: entry.isActive
+        }),
+      null
+    );
+    if (stored) sources.push(this.store.kind === "postgres" ? "PostgreSQL" : "内存存储");
+
+    const dotenv = this.project.resolver.getDotenv();
+    if (this.scanResult.llm?.model === entry.model && dotenv[ENV_LLM_MODEL] !== undefined) {
+      try {
+        writeEnvUpdates(this.project.rootDir, { [ENV_LLM_MODEL]: suggestedModel });
+        sources.push("项目 .env");
+      } catch (error) {
+        logWarn(`模型自动修复写 .env 失败: ${errorMessage(error)}`);
+      }
+      this.refreshProjectEnv();
+    }
+
+    if (this.activeCache?.name === entry.name && this.activeCache.entry.model === entry.model) {
+      this.activeCache = {
+        name: entry.name,
+        entry: { ...entry, model: suggestedModel, isActive: true }
+      };
+      this.writeActiveConfig(this.activeCache.entry);
+      sources.push(".artemis/artemis.jsonc");
+    }
+
+    if (sources.length === 0) return null;
+    const repaired = { from: entry.model, to: suggestedModel, reason, sources };
+    logWarn(
+      `模型 "${entry.model}" 已不在 ${entry.baseUrl} 的最新列表中：已自动修复为 "${suggestedModel}"（` +
+        `${reason === "alias" ? "厂商稳定别名" : "同族等价模型"}；${sources.join(" + ")}）。`
+    );
+    return repaired;
   }
 
   // ------------------------------------------------------------------

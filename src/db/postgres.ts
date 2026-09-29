@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import type {
+  ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
   ProjectStore,
+  PutModelCacheInput,
   RecordTaskInput,
   TaskStatRecord,
   UpsertLlmInput
@@ -50,6 +52,17 @@ const SCHEMA = [
      task_desc TEXT,
      submitted_at TEXT NOT NULL,
      finished_at TEXT
+   )`,
+  `CREATE TABLE IF NOT EXISTS llm_model_cache (
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     cache_key TEXT NOT NULL,
+     base_url TEXT NOT NULL,
+     models TEXT NOT NULL DEFAULT '[]',
+     fetched_at TEXT,
+     last_error TEXT,
+     updated_at TEXT NOT NULL,
+     UNIQUE (project_id, cache_key)
    )`
 ];
 
@@ -199,6 +212,70 @@ export class PostgresStore implements ProjectStore {
     return updated.rows.length > 0;
   }
 
+  async getModelCache(rootPath: string, cacheKey: string): Promise<ModelCacheRecord | null> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return null;
+    const result = await this.pool.query(
+      "SELECT * FROM llm_model_cache WHERE project_id = $1 AND cache_key = $2",
+      [project.id, cacheKey]
+    );
+    return result.rows.length > 0 ? mapModelCache(result.rows[0]!) : null;
+  }
+
+  async putModelCache(rootPath: string, input: PutModelCacheInput): Promise<ModelCacheRecord> {
+    const project = await this.upsertProject({ rootPath, name: projectName(rootPath) });
+    const now = new Date().toISOString();
+    const existing = await this.pool.query(
+      "SELECT id FROM llm_model_cache WHERE project_id = $1 AND cache_key = $2",
+      [project.id, input.cacheKey]
+    );
+    let id: string;
+    if (existing.rows.length > 0) {
+      id = String(existing.rows[0]!.id);
+      if (input.models !== undefined) {
+        await this.pool.query(
+          `UPDATE llm_model_cache
+              SET base_url = $3, models = $4, fetched_at = $5, last_error = $6, updated_at = $7
+            WHERE id = $1 AND project_id = $2`,
+          [
+            id,
+            project.id,
+            input.baseUrl,
+            JSON.stringify(input.models),
+            input.fetchedAt ?? now,
+            input.lastError ?? null,
+            now
+          ]
+        );
+      } else {
+        await this.pool.query(
+          `UPDATE llm_model_cache SET last_error = $3, updated_at = $4
+            WHERE id = $1 AND project_id = $2`,
+          [id, project.id, input.lastError ?? null, now]
+        );
+      }
+    } else {
+      id = randomUUID();
+      await this.pool.query(
+        `INSERT INTO llm_model_cache
+           (id, project_id, cache_key, base_url, models, fetched_at, last_error, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          id,
+          project.id,
+          input.cacheKey,
+          input.baseUrl,
+          JSON.stringify(input.models ?? []),
+          input.fetchedAt ?? null,
+          input.lastError ?? null,
+          now
+        ]
+      );
+    }
+    const result = await this.pool.query("SELECT * FROM llm_model_cache WHERE id = $1", [id]);
+    return mapModelCache(result.rows[0]!);
+  }
+
   async recordTask(input: RecordTaskInput): Promise<void> {
     const project = await this.getProjectByPath(input.rootPath);
     await this.pool.query(
@@ -285,6 +362,31 @@ function mapLlm(row: Record<string, unknown>): ProjectLlmRecord {
     apiKey: row.api_key === null || row.api_key === undefined ? null : String(row.api_key),
     isActive: Boolean(row.is_active),
     createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at)
+  };
+}
+
+function mapModelCache(row: Record<string, unknown>): ModelCacheRecord {
+  let models: string[] = [];
+  const raw = row.models;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        models = parsed.filter((item): item is string => typeof item === "string");
+      }
+    } catch {
+      models = [];
+    }
+  }
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    cacheKey: String(row.cache_key),
+    baseUrl: String(row.base_url),
+    models,
+    fetchedAt: row.fetched_at === null || row.fetched_at === undefined ? null : String(row.fetched_at),
+    lastError: row.last_error === null || row.last_error === undefined ? null : String(row.last_error),
     updatedAt: String(row.updated_at)
   };
 }

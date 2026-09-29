@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { AOS_MCP_VERSION, maskSecret } from "../util.js";
 import { bridgeState } from "../figma/bridge.js";
 import { childLogFilePath, logFilePath } from "../log.js";
+import { PROVIDER_PRESETS, presetSummary } from "../llm/providers.js";
 import { detectProjectStacks } from "../projects/stack.js";
 import { entryIssues } from "../llm/registry.js";
 import type { Runtime } from "../runtime.js";
@@ -10,6 +11,11 @@ import type { Runtime } from "../runtime.js";
 export interface LlmSwitchArgs {
   name: string;
   force?: boolean;
+}
+
+export interface LlmModelsArgs {
+  action: "list" | "refresh";
+  entry?: string;
 }
 
 export interface AosTasksArgs {
@@ -28,26 +34,49 @@ export async function llmList(runtime: Runtime): Promise<CallToolResult> {
   const entries = await runtime.entries();
   const active = await runtime.activeEntry();
   const setup = await runtime.setupInfo();
+  const reports = await runtime.modelReports();
+  const reportByEntry = new Map(reports.map((report) => [report.entry, report]));
 
   const warnings: string[] = [];
   for (const issue of runtime.project.validation.warnings) warnings.push(issue.message);
   if (setup.required) warnings.push(setup.message);
 
-  const llms = entries.map((entry) => ({
-    name: entry.name,
-    provider: entry.provider,
-    model: entry.model,
-    baseUrl: entry.baseUrl,
-    key: {
-      present: entry.apiKey !== null && entry.apiKey !== "",
-      preview: entry.apiKey ? maskSecret(entry.apiKey) : null,
-      envVar: entry.keyEnvName
-    },
-    fallback: entry.fallback ?? { provider: entry.provider, model: entry.model },
-    source: entry.source,
-    isActive: entry.name === active?.name,
-    issues: entryIssues(entry)
-  }));
+  const llms = entries.map((entry) => {
+    const report = reportByEntry.get(entry.name) ?? null;
+    if (report?.deprecated) {
+      warnings.push(
+        `条目 "${entry.name}" 的模型 "${entry.model}" 已不在厂商最新列表中` +
+          (report.suggestedModel ? `（建议：${report.suggestedModel}）` : "")
+      );
+    }
+    return {
+      name: entry.name,
+      provider: entry.provider,
+      model: entry.model,
+      baseUrl: entry.baseUrl,
+      key: {
+        present: entry.apiKey !== null && entry.apiKey !== "",
+        preview: entry.apiKey ? maskSecret(entry.apiKey) : null,
+        envVar: entry.keyEnvName
+      },
+      fallback: entry.fallback ?? { provider: entry.provider, model: entry.model },
+      source: entry.source,
+      isActive: entry.name === active?.name,
+      issues: entryIssues(entry),
+      models: report
+        ? {
+            known: report.known,
+            fetchedAt: report.fetchedAt,
+            stale: report.stale,
+            count: report.count,
+            activeModelAvailable: report.available,
+            deprecated: report.deprecated,
+            suggestedModel: report.suggestedModel,
+            error: report.error
+          }
+        : null
+    };
+  });
 
   return jsonResult({
     ok: true,
@@ -57,11 +86,53 @@ export async function llmList(runtime: Runtime): Promise<CallToolResult> {
     llms,
     setupRequired: setup.required,
     setup: setup.required ? setup : undefined,
+    modelRefresh: {
+      ttlHours: runtime.modelRefreshHours(),
+      autoRepair: runtime.modelAutoRepairEnabled()
+    },
     warnings,
     store: {
       kind: runtime.storeKind(),
       degraded: runtime.storeKind() === "memory",
       note: runtime.storeNote
+    }
+  });
+}
+
+/** Model catalog: cached vendor model lists + on-demand refresh (12h background TTL). */
+export async function llmModels(runtime: Runtime, args: LlmModelsArgs): Promise<CallToolResult> {
+  const entryNames = args.entry ? [args.entry] : undefined;
+  const reports =
+    args.action === "refresh"
+      ? await runtime.refreshModels({ force: true, entryNames })
+      : await runtime.modelReports(entryNames);
+
+  return jsonResult({
+    ok: true,
+    action: args.action,
+    ttlHours: runtime.modelRefreshHours(),
+    autoRepair: runtime.modelAutoRepairEnabled(),
+    entries: reports.map((report) => ({
+      entry: report.entry,
+      model: report.model,
+      baseUrl: report.baseUrl,
+      known: report.known,
+      fetchedAt: report.fetchedAt,
+      stale: report.stale,
+      count: report.count,
+      activeModelAvailable: report.available,
+      deprecated: report.deprecated,
+      suggestedModel: report.suggestedModel,
+      replacementReason: report.replacementReason,
+      error: report.error,
+      models: report.sampleModels,
+      refreshed: "refreshed" in report ? report.refreshed : undefined,
+      repaired: "repaired" in report ? report.repaired : undefined
+    })),
+    providers: PROVIDER_PRESETS.map(presetSummary),
+    store: {
+      kind: runtime.storeKind(),
+      degraded: runtime.storeKind() === "memory"
     }
   });
 }
@@ -125,6 +196,10 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
     },
     activeProfile: active?.name ?? null,
     llmCount: entries.length,
+    modelRefresh: {
+      ttlHours: runtime.modelRefreshHours(),
+      autoRepair: runtime.modelAutoRepairEnabled()
+    },
     setupRequired: setup.required,
     validation: runtime.project.validation,
     artemis: {
