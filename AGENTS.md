@@ -1,12 +1,12 @@
 # AGENTS.md — AOS-ARTEMIS
 
-AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context-bridge）+ ARTEMIS 真机自动化（Python 子进程）+ 项目级 LLM 关联与切换（PostgreSQL）。里程碑 M0–M4 已完成。
+AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context-bridge）+ ARTEMIS 真机自动化（Python 子进程）+ 项目级 LLM 关联与切换（PostgreSQL）。里程碑 M0–M5 与 M7 已完成，M6 部分实施（M6a/M6b/M6c 已落地，其余见 DESIGN.md）。
 
 ## 完工标准
 
 每次改动以达到以下三项为准：
 
-1. `npm run build && npm test && npm run lint` **全绿**（137+ 测试）；
+1. `npm run build && npm test && npm run lint` **全绿**（232+ 测试）；
 2. 行为/接口变更同步更新 `DESIGN.md`（架构与决策的唯一事实源），用法变更同步 `README.md`；
 3. 测试不依赖真实 PG / 设备 / 外网（SQL 用 `pg-mem`，artemis 用假子进程，Figma REST 不打网）。
 
@@ -36,6 +36,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 | 真机验收（手动） | `node scripts/e2e-device.mjs "…"`（需 artemis venv + 已授权设备） |
 | 崩溃取证验收（手动） | `node scripts/e2e-crash.mjs --package <pkg> [--serial S] [--collect-only]`（需 adb + 已授权设备；`am crash` 或手动触发后采集） |
 | 设计流水线（一条命令） | `node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`（无 token 时给出指引并 exit 2） |
+| MCP 工具调试调用（手动） | `node scripts/aos-call.mjs <calls.json> [projectDir]`（stdio 启动 `dist/index.js`，`AOS_PROJECT_DIR` 指向目标项目；`calls.json` 为 `[{name,args,out?}]`，`out` 落盘结果） |
 
 ## 硬性约定
 
