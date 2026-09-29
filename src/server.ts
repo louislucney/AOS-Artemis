@@ -28,6 +28,7 @@ import { figmaImportAssets, type ImportAssetsArgs } from "./figma/import.js";
 import { figmaImportStrings, type ImportStringsArgs } from "./figma/import-strings.js";
 import { figmaImportTokens, type ImportTokensArgs } from "./figma/import-tokens.js";
 import { figmaExportBrief, type ExportBriefArgs } from "./figma/brief.js";
+import { penInspect, type PenInspectArgs } from "./pen/inspect.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
@@ -246,6 +247,16 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       enforcement: z.enum(["report", "warn", "block"]).optional().describe("冲突/硬编码问题级别，默认 report")
     }),
     handler: (runtime, args) => figmaImportStrings(runtime, args as unknown as ImportStringsArgs)
+  },
+  {
+    name: "pen_inspect",
+    description:
+      "pen.dev 离线检查：解析 .pen（开放 JSON 格式，支持 // 注释）→ 结构校验（id 唯一/无斜杠、ref 可解析、$变量可解析）+ 摘要（屏幕/组件/实例/文案/变量与主题/图片资产及缺失文件）；不需账号与网络。path 缺省取 .artemis/design 下最新的 *.pen；save:true 落盘 .artemis/design/pen/summary.json。",
+    schema: z.object({
+      path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
+      save: z.boolean().optional().describe("是否落盘 .artemis/design/pen/summary.json，默认 false")
+    }),
+    handler: (runtime, args) => penInspect(runtime, args as unknown as PenInspectArgs)
   }
 ];
 

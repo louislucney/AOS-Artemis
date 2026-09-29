@@ -22,6 +22,16 @@ Modifications (all files also carry inline PATCH notes):
                                    multiplied into the color's own alpha) so
                                    translucent colors stay distinct during
                                    dedup/naming (M6a).
+  5. figma-rest/client.ts       — rate-limit hardening: bounded Retry-After
+                                   (AOS_FIGMA_RETRY_MAX_WAIT_MS, default 60s —
+                                   longer lockouts fail fast instead of
+                                   sleeping), per-token cooldown memory with
+                                   fail-fast before any request, typed
+                                   FigmaRateLimitError carrying tier
+                                   (`x-figma-rate-limit-type`) and retry-after,
+                                   response cache TTL raised to 10min and made
+                                   configurable (AOS_FIGMA_CACHE_TTL_MS, 0
+                                   disables).
 
 Everything else is unmodified upstream code. The original MIT license and
 copyright notices are preserved in LICENSE.
