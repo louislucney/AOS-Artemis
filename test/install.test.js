@@ -17,7 +17,7 @@ test("install local: writes all four project-level configs", () => {
 
   const claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
   assert.equal(claude.mcpServers.aos.command, "node");
-  assert.deepEqual(claude.mcpServers.aos.args, [service]);
+  assert.deepEqual(claude.mcpServers.aos.args, [path.resolve(service)]);
   assert.equal(claude.mcpServers.aos.env.AOS_PROJECT_DIR, dir);
 
   const cursor = JSON.parse(fs.readFileSync(path.join(dir, ".cursor/mcp.json"), "utf-8"));
@@ -25,11 +25,11 @@ test("install local: writes all four project-level configs", () => {
 
   const vscode = JSON.parse(fs.readFileSync(path.join(dir, ".vscode/mcp.json"), "utf-8"));
   assert.equal(vscode.servers.aos.command, "node");
-  assert.deepEqual(vscode.servers.aos.args, [service]);
+  assert.deepEqual(vscode.servers.aos.args, [path.resolve(service)]);
 
   const opencode = JSON.parse(fs.readFileSync(path.join(dir, "opencode.json"), "utf-8"));
   assert.equal(opencode.mcp.aos.type, "local");
-  assert.deepEqual(opencode.mcp.aos.command, ["node", service]);
+  assert.deepEqual(opencode.mcp.aos.command, ["node", path.resolve(service)]);
   assert.equal(opencode.mcp.aos.environment.AOS_PROJECT_DIR, dir);
   assert.equal(opencode.mcp.aos.enabled, true);
 });
@@ -84,8 +84,10 @@ test("install local: carries explicit tool-path env vars into client config", ()
   const dir = makeTempProject({});
   const previousAdb = process.env.ARTEMIS_ADB_PATH;
   const previousDb = process.env.AOS_DATABASE_URL;
+  const previousProxy = process.env.NODE_USE_ENV_PROXY;
   process.env.ARTEMIS_ADB_PATH = "/opt/android/platform-tools/adb";
   process.env.AOS_DATABASE_URL = "postgres://u:p@127.0.0.1:5433/aos";
+  process.env.NODE_USE_ENV_PROXY = "1";
   try {
     runInstall(["--project", dir, "--targets", "claude", "--service", service], { log: silent });
     const claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
@@ -97,11 +99,14 @@ test("install local: carries explicit tool-path env vars into client config", ()
       claude.mcpServers.aos.env.AOS_DATABASE_URL,
       "postgres://u:p@127.0.0.1:5433/aos"
     );
+    assert.equal(claude.mcpServers.aos.env.NODE_USE_ENV_PROXY, "1");
   } finally {
     if (previousAdb === undefined) delete process.env.ARTEMIS_ADB_PATH;
     else process.env.ARTEMIS_ADB_PATH = previousAdb;
     if (previousDb === undefined) delete process.env.AOS_DATABASE_URL;
     else process.env.AOS_DATABASE_URL = previousDb;
+    if (previousProxy === undefined) delete process.env.NODE_USE_ENV_PROXY;
+    else process.env.NODE_USE_ENV_PROXY = previousProxy;
   }
 });
 
@@ -152,3 +157,19 @@ test("install: invalid JSONC leaves the file untouched", () => {
   assert.equal(status, "invalid");
   assert.equal(fs.readFileSync(file, "utf-8"), "{ not json ");
 });
+
+test("install docker: Codex snippet keeps command out of args", () => {
+  const dir = makeTempProject({});
+  const lines = [];
+  runInstall(
+    ["--project", dir, "--targets", "opencode", "--mode", "docker", "--container", "aos-mcp-test"],
+    { log: (line) => lines.push(line) }
+  );
+  const argsLine = lines.find((line) => line.trim().startsWith("args = "));
+  assert.ok(argsLine, "Codex snippet lists args");
+  const args = JSON.parse(argsLine.trim().slice("args = ".length));
+  assert.equal(args[0], "exec");
+  assert.ok(!args.includes("docker"));
+  assert.ok(args.includes("aos-mcp-test"));
+});
+

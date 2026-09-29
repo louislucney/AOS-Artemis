@@ -132,6 +132,13 @@ function buildServerEntry(options: {
     const value = process.env[key]?.trim();
     if (value) env[key] = value;
   }
+  // Corporate networks: Node's fetch ignores *_PROXY unless NODE_USE_ENV_PROXY
+  // is set (Node >= 24); carry whatever this shell had so model refresh and
+  // Figma REST keep working under the client.
+  for (const key of ["NODE_USE_ENV_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]) {
+    const value = process.env[key]?.trim();
+    if (value) env[key] = value;
+  }
   return { kind: "stdio", command: "node", args: [options.serviceEntry], env };
 }
 
@@ -295,7 +302,7 @@ export function runInstall(argv: string[], defaults: InstallOptions = {}): numbe
     log(`      url = ${JSON.stringify(entry.url)}`);
   } else {
     log(`      command = ${JSON.stringify(entry.command)}`);
-    log(`      args = ${JSON.stringify([entry.command, ...entry.args])}`);
+    log(`      args = ${JSON.stringify(entry.args)}`);
     if (Object.keys(entry.env).length > 0) {
       log("      [mcp_servers.aos.env]");
       for (const [key, value] of Object.entries(entry.env)) {
