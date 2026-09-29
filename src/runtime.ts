@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+
 import { loadDotenvValues, type LoadedProject } from "./config/loader.js";
 import { makeResolver } from "./config/validate.js";
 import { StateStore } from "./state.js";
@@ -9,12 +11,14 @@ import {
   buildChildEnvForEntry,
   buildChildSpecForEntry,
   configDirAbs,
+  projectTracesDir,
   renderProjectArtemisConfig,
   resolveArtemisPython,
   type ChildSpec,
   type EntryLike,
   type ResolvedPython
 } from "./artemis/assembly.js";
+import { mirrorDeviceScreenshots } from "./artemis/artifacts.js";
 import { ArtemisProxy, type ArtemisProxyLike } from "./artemis/proxy.js";
 import { appendChildLog } from "./log.js";
 import { CrashIndexStore } from "./crash/store.js";
@@ -134,7 +138,36 @@ export class Runtime {
       env: this.baseEnv,
       collector: options.crashCollector
     });
-    this.proxy = options.proxy ?? this.buildDefaultProxy();
+    this.proxy = this.withArtifactMirror(options.proxy ?? this.buildDefaultProxy());
+  }
+
+  /** Wrap any proxy so tool results from artemis still get a project-side copy
+   * of live device screenshots (upstream writes them under the artemis repo). */
+  private withArtifactMirror(inner: ArtemisProxyLike): ArtemisProxyLike {
+    return {
+      isRunning: () => inner.isRunning(),
+      ensureStarted: () => inner.ensureStarted(),
+      listTools: (force) => inner.listTools(force),
+      callTool: async (name, args) => {
+        const result = await inner.callTool(name, args);
+        this.mirrorToolArtifacts(name, result);
+        return result;
+      },
+      status: () => inner.status(),
+      markForRestart: () => inner.markForRestart(),
+      dispose: () => inner.dispose(),
+      disposeSync: () => inner.disposeSync()
+    };
+  }
+
+  private mirrorToolArtifacts(name: string, result: CallToolResult): void {
+    if (name !== "mobile_get_device_state") return;
+    try {
+      const { errors } = mirrorDeviceScreenshots(this.project.config, this.project.rootDir, result);
+      for (const error of errors) logWarn(`真机截图镜像失败: ${error}`);
+    } catch (error) {
+      logWarn(`真机截图镜像失败: ${errorMessage(error)}`);
+    }
   }
 
   private buildDefaultProxy(): ArtemisProxyLike {
@@ -586,10 +619,7 @@ export class Runtime {
   }
 
   private tracesDir(): string {
-    const override = process.env.ARTEMIS_TRACES_DIR?.trim();
-    return override && override !== ""
-      ? override
-      : path.join(this.project.config.artemis.repo, "traces");
+    return projectTracesDir(this.project.config, this.project.rootDir, this.baseEnv);
   }
 
   private readTraceStatus(traceId: string): string | null {

@@ -313,6 +313,16 @@ env:
 - **任务拦截**：`mobile_run_task` 前置 `ensureActiveModelUsable()`——新鲜缓存判定模型已下线且无法自动修复时，返回结构化 `model_deprecated` 错误（含 `availableModels` 与 `suggestedModel`），不再等 artemis 跑到一半才报 `model_not_found`。
 - **已知边界**：仅支持 OpenAI 风格 `GET /models` 的厂商（google/anthropic 条目跳过）；预设别名是静态提示，刷新列表才是事实源（别名不在列表中时不采用）；缓存按"项目 + key 指纹"存储，换 key 产生新行（旧行不清理）；Node `fetch` 默认不读代理变量，公司内网需 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（Node ≥24；`install` 会把代理变量带入客户端 env）。
 
+### 6.7 产物落盘路径（项目内）
+
+**决策**：接入项目的一切运行产物默认落在项目自己的 `.artemis/` 下，artemis 仓库不再承载新产物；显式环境变量可覆盖。
+
+- **任务轨迹**：给 artemis 子进程设 `ARTEMIS_TRACES_DIR=<项目>/.artemis/traces`（`src/artemis/assembly.ts` 的 `projectTracesDir()`）。步骤截图（`traces/images/`、`<trace_id>/step_N_overlay.jpg`）、Pro `notes/`（`task_plan.md` / `output.md`）、`stdout.log` / `stderr.log`、`status.json`、`run_outcome.json` 与历史库 `data_engine.db` 全部随之下沉；`mobile_inspect_trace` / `mobile_manage_task` 免改动即读到项目内文件。
+- **覆盖语义**：显式 `ARTEMIS_TRACES_DIR`（客户端/进程 env，`install` 会透传）优先；相对路径按项目根解析，子进程与 AOS 侧（崩溃取证扫描、任务完成态文件同步）共用同一绝对路径。`tracesDir` 纳入子进程 env 指纹——改动会在下次调用时重启网关子进程。
+- **live_screenshot**：上游 `mobile_get_device_state` 把文件写在 artemis 仓库根（返回 `file://<repo>/live_screenshot_<device>.jpg`），AOS 在代理转发后自动复制一份到 `<项目>/.artemis/traces/live_screenshots/`（`src/artemis/artifacts.ts`；工具响应与 schema 原样透传，复制失败只记日志）。`compare_design_and_device` 复用同一文件，同样被镜像。
+- **测试文档**：`figma_generate_tests` 等设计流水线产物仍在 `<项目>/.artemis/design/`（见 §13），本次不变。
+- **注意**：`ARTEMIS_*` 变量属于客户端/进程 env（项目 `.env` 不注入子进程），覆盖要写在 MCP 客户端配置的 env 或 shell 环境。
+
 ---
 
 ## 7. 切换机制（PG 中心）

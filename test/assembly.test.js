@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import {
   buildChildEnv,
   buildChildEnvForEntry,
+  projectTracesDir,
   renderProjectArtemisConfig
 } from "../dist/artemis/assembly.js";
 import { makeResolver } from "../dist/config/validate.js";
@@ -103,7 +105,8 @@ test("buildChildEnv injects standalone/config dir/key and strips daemon port", (
     baseEnv: { PATH: "/usr/bin", ARTEMIS_DAEMON_PORT: "8000" }
   });
   assert.equal(env.ARTEMIS_STANDALONE, "1");
-  assert.equal(env.ARTEMIS_CONFIG_DIR, "/tmp/proj/.artemis");
+  assert.equal(env.ARTEMIS_CONFIG_DIR, path.resolve("/tmp/proj", ".artemis"));
+  assert.equal(env.ARTEMIS_TRACES_DIR, path.resolve("/tmp/proj", ".artemis", "traces"));
   assert.equal(env.PYTHONUNBUFFERED, "1");
   assert.equal(env.GEMINI_API_KEY, "gm-123");
   assert.equal(env.PATH, "/usr/bin");
@@ -214,7 +217,8 @@ test("entry env: injects OPENAI_API_KEY + OPENAI_BASE_URL; fingerprint ignores m
   assert.equal(a.env.OPENAI_API_KEY, "k1");
   assert.equal(a.env.OPENAI_BASE_URL, "https://x/v1");
   assert.equal(a.env.ARTEMIS_STANDALONE, "1");
-  assert.equal(a.env.ARTEMIS_ARTEMIS_JSONC, "/tmp/proj/.artemis/artemis.jsonc");
+  assert.equal(a.env.ARTEMIS_ARTEMIS_JSONC, path.resolve("/tmp/proj", ".artemis", "artemis.jsonc"));
+  assert.equal(a.env.ARTEMIS_TRACES_DIR, path.resolve("/tmp/proj", ".artemis", "traces"));
   assert.equal(a.fingerprint, b.fingerprint);
 
   const c = buildChildEnvForEntry({
@@ -222,4 +226,30 @@ test("entry env: injects OPENAI_API_KEY + OPENAI_BASE_URL; fingerprint ignores m
     entry: { provider: "custom", model: "m1", baseUrl: "https://x/v1", apiKey: "k2" }
   });
   assert.notEqual(a.fingerprint, c.fingerprint);
+});
+
+test("projectTracesDir: defaults into the project; explicit override wins and restarts the child", () => {
+  assert.equal(
+    projectTracesDir(config, "/tmp/proj", {}),
+    path.resolve("/tmp/proj", ".artemis", "traces")
+  );
+  assert.equal(
+    projectTracesDir(config, "/tmp/proj", { ARTEMIS_TRACES_DIR: "custom-traces" }),
+    path.resolve("/tmp/proj", "custom-traces"),
+    "relative overrides resolve against the project root"
+  );
+  assert.equal(
+    projectTracesDir(config, "/tmp/proj", { ARTEMIS_TRACES_DIR: "/var/aos-traces" }),
+    path.resolve("/var/aos-traces")
+  );
+
+  const entry = { provider: "custom", model: "m1", baseUrl: "https://x/v1", apiKey: "k1" };
+  const shared = { config, rootDir: "/tmp/proj", entry };
+  const first = buildChildEnvForEntry({ ...shared, baseEnv: {} });
+  const second = buildChildEnvForEntry({
+    ...shared,
+    baseEnv: { ARTEMIS_TRACES_DIR: "/var/aos-traces" }
+  });
+  assert.equal(second.env.ARTEMIS_TRACES_DIR, path.resolve("/var/aos-traces"));
+  assert.notEqual(first.fingerprint, second.fingerprint);
 });

@@ -78,6 +78,23 @@ export function configDirAbs(config: AosConfig, rootDir: string): string {
   return path.resolve(rootDir, config.artemis.configDir ?? ".artemis");
 }
 
+/** Per-project artemis traces directory: `<configDir>/traces` by default so
+ * task artifacts (step screenshots, notes, stdout/stderr, data_engine.db) live
+ * inside the onboarded project. An explicit ARTEMIS_TRACES_DIR wins; relative
+ * overrides resolve against the project root so the child process and the
+ * crash scanner always agree on one absolute path. */
+export function projectTracesDir(config: AosConfig, rootDir: string, env: NodeJS.ProcessEnv): string {
+  const override = env.ARTEMIS_TRACES_DIR?.trim();
+  if (override) return path.resolve(rootDir, override);
+  return path.join(configDirAbs(config, rootDir), "traces");
+}
+
+/** Project mirror of upstream live screenshots (`mobile_get_device_state` still
+ * writes its own copy under the artemis repo root). */
+export function liveScreenshotsDir(config: AosConfig, rootDir: string): string {
+  return path.join(configDirAbs(config, rootDir), "traces", "live_screenshots");
+}
+
 function resolveBaseUrl(profile: LlmProfile, resolver: ValueResolver): string | null {
   if (profile.baseUrl && profile.baseUrl.trim() !== "") return profile.baseUrl.trim();
   if (profile.baseUrlEnv) {
@@ -105,6 +122,7 @@ export function buildChildEnv(args: BuildChildEnvArgs): ChildEnvResult {
   env.ARTEMIS_STANDALONE = "1";
   const configDir = configDirAbs(config, rootDir);
   env.ARTEMIS_CONFIG_DIR = configDir;
+  env.ARTEMIS_TRACES_DIR = projectTracesDir(config, rootDir, baseEnv);
   if (!env.PYTHONPATH) env.PYTHONPATH = config.artemis.repo;
 
   const key = resolveProfileKey(profile, resolver);
@@ -128,6 +146,7 @@ export function buildChildEnv(args: BuildChildEnvArgs): ChildEnvResult {
         keyValueHash: key ? createHash("sha256").update(key.value).digest("hex") : null,
         baseUrl: baseUrl ?? null,
         configDir,
+        tracesDir: env.ARTEMIS_TRACES_DIR,
         deviceSerial: config.artemis.deviceSerial ?? null
       })
     )
@@ -269,6 +288,7 @@ export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
   const configDir = configDirAbs(config, rootDir);
   env.ARTEMIS_CONFIG_DIR = configDir;
   env.ARTEMIS_ARTEMIS_JSONC = path.join(configDir, "artemis.jsonc");
+  env.ARTEMIS_TRACES_DIR = projectTracesDir(config, rootDir, baseEnv);
   if (!env.PYTHONPATH) env.PYTHONPATH = config.artemis.repo;
 
   const keyEnvName = entry.provider === "google" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
@@ -287,6 +307,7 @@ export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
           : null,
         baseUrl: entry.baseUrl ?? null,
         configDir,
+        tracesDir: env.ARTEMIS_TRACES_DIR,
         deviceSerial: config.artemis.deviceSerial ?? null
       })
     )

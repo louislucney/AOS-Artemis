@@ -237,6 +237,18 @@ node dist/cli.js doctor
 | `mobile_*`（5） | 代理 artemis（schema 原样透传）；`mobile_run_task` 在 setup 未完成时返回结构化 `setup_required` |
 | Figma 20 | `get_current_selection` … `export_image`（内嵌 dcb，zod 校验）；插件模式走本地桥（锁定 3055，CORS 白名单），REST 模式需 token（缺失时引导 `aos_configure`） |
 
+## 产物路径（项目内）
+
+接入项目的运行产物默认都落在项目目录内（`<项目>/.artemis/`），artemis 仓库不再承载新产物：
+
+| 内容 | 路径 |
+|------|------|
+| 任务轨迹（步骤截图 / notes / stdout / stderr / `data_engine.db`） | `.artemis/traces/`（环境变量 `ARTEMIS_TRACES_DIR` 可覆盖，相对路径按项目根解析） |
+| 实时真机截图 | `.artemis/traces/live_screenshots/`（上游在 artemis 仓库根另存一份，AOS 自动镜像；`mobile_get_device_state` 响应不变） |
+| 崩溃取证 | `.artemis/crashes/` |
+| 测试文档（flows / gaps / tests.md / build-brief 等设计产物） | `.artemis/design/` |
+| AOS 日志 | `.artemis/logs/aos-mcp.log`、`artemis-child.log` |
+
 ## PostgreSQL 数据模型（v1）
 
 `projects`（root_path 唯一 / figma_token）、`project_llms`（name/base_url/model/api_key/is_active，应用层保证单 active）、`task_stats`（trace/model/status/时间）、`llm_model_cache`（厂商模型列表缓存：cache_key/base_url/models/fetched_at/last_error）。详见 DESIGN.md §4.5。

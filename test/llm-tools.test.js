@@ -345,17 +345,15 @@ test("aos_tasks: syncs pending tasks against artemis and lists stats", async () 
 });
 
 test("aos_tasks: syncs from trace status.json without a running child", async () => {
-  const tracesRepo = fs.mkdtempSync(path.join(os.tmpdir(), "aos-traces-"));
   const traceId = "trace-file-1";
-  fs.mkdirSync(path.join(tracesRepo, "traces", traceId), { recursive: true });
+  const dir = makeTempProject({ config: baseConfig() });
+  const traceDir = path.join(dir, ".artemis", "traces", traceId);
+  fs.mkdirSync(traceDir, { recursive: true });
   fs.writeFileSync(
-    path.join(tracesRepo, "traces", traceId, "status.json"),
+    path.join(traceDir, "status.json"),
     JSON.stringify({ trace_id: traceId, status: "completed" })
   );
 
-  const dir = makeTempProject({
-    config: baseConfig({ artemis: { repo: tracesRepo } })
-  });
   const proxy = new StubProxy({ running: false });
   const { runtime } = await loadTestRuntime(dir, { proxy });
   await runtime.recordTaskSubmission({ traceId, model: "Flash", taskDesc: "file-sync" });

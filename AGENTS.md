@@ -57,6 +57,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 - **双入口**：stdio 与 HTTP 共用 `createServerForRuntime()`（`src/server.ts`）；HTTP 每项目独立 Runtime（`src/http-server.ts`）。
 - **任务统计**：`mobile_run_task` 成功后记录 `task_stats`；完成态由后台 30s 循环 + `aos_tasks` 轮询 `mobile_manage_task(status)` 回写。
 - **崩溃取证**：任务终态自动采集设备 crash buffer → 签名去重（包名+根因异常+首个应用帧）落盘 `<项目>/.artemis/crashes/`；`aos_crashes` list/get/scan；`AOS_CRASH_CAPTURE=0` / `AOS_ADB_PATH` / `AOS_CRASH_TIMEOUT_MS` / `AOS_CRASH_MAX_RECORDS` 可配（`src/crash/`）。
+- **项目内产物**：任务轨迹/步骤截图/notes/stdout/stderr/data_engine.db 默认写 `<项目>/.artemis/traces/`（子进程 `ARTEMIS_TRACES_DIR`，显式 env 优先、相对项目根解析、纳入指纹）；`mobile_get_device_state` 的 live_screenshot 上游仍写 artemis 仓库根，AOS 自动镜像到 `.artemis/traces/live_screenshots/`（响应透传）；测试文档在 `.artemis/design/`（`src/artemis/artifacts.ts`、DESIGN.md §6.7）。
 - **日志**：`<project>/.artemis/logs/aos-mcp.log`（工具调用审计 name/ok/ms + 启停 + 崩溃堆栈）与 `artemis-child.log`（子进程 stderr 落盘）；`AOS_LOG_LEVEL/DIR`、`AOS_LOG_DISABLE_FILE=1`、`AOS_LOG_MAX_MB`（轮转）。
 - **依赖更新检测**：`artemis/.venv/.aos-deps.json` 的 lock 哈希 stamp 对比 `uv.lock`；过期时 serve / `doctor --install-deps` 自动更新（依赖包 `AOS_ARTEMIS_DEPS_URL` 优先，旧包回退在线 `uv sync`；`AOS_DEPS_NO_ONLINE=1` 禁在线）。仅代码更新无需操作（venv 只装依赖，代码从仓库读取）。
 - **技术栈检测**：`src/projects/stack.ts`（Flutter / React Native / 原生 Android / iOS / Web）；gap 扫描规则、定位/代码/文件命名约定按栈选择，`aos_status.stack` 可见。
