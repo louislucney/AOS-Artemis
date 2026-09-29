@@ -8,13 +8,13 @@ import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
 import {
-  contentHasTokenMarker,
   loadTokenOverrides,
   mergeColorTokens,
   parseCanonicalTokens,
   renderStackTokenFile,
   scanHardcodedColors,
-  serializeTokens
+  serializeTokens,
+  writeStackTokenFile
 } from "./color.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
@@ -66,29 +66,13 @@ export async function figmaImportTokens(
     const warnings: string[] = [];
 
     let stackResult: { relativePath: string; action: string } | null = null;
-    if (stackWrite && profile) {
-      const absolute = path.join(runtime.project.rootDir, stackWrite.relativePath);
-      if (!fs.existsSync(absolute)) {
-        if (args.dryRun !== true) {
-          fs.mkdirSync(path.dirname(absolute), { recursive: true });
-          fs.writeFileSync(absolute, stackWrite.content, "utf-8");
-          stackResult = { relativePath: stackWrite.relativePath, action: "written" };
-        } else {
-          stackResult = { relativePath: stackWrite.relativePath, action: "planned" };
-        }
-      } else {
-        const current = fs.readFileSync(absolute, "utf-8");
-        if (current === stackWrite.content) {
-          stackResult = { relativePath: stackWrite.relativePath, action: "unchanged" };
-        } else if (!contentHasTokenMarker(current) && args.overwrite !== true) {
-          stackResult = { relativePath: stackWrite.relativePath, action: "skipped_unmanaged" };
-          warnings.push(`目标文件非本工具生成，未覆盖：${stackWrite.relativePath}（确认后用 overwrite:true 覆盖）`);
-        } else if (args.dryRun !== true) {
-          fs.writeFileSync(absolute, stackWrite.content, "utf-8");
-          stackResult = { relativePath: stackWrite.relativePath, action: "written" };
-        } else {
-          stackResult = { relativePath: stackWrite.relativePath, action: "planned" };
-        }
+    if (stackWrite) {
+      stackResult = writeStackTokenFile(runtime.project.rootDir, stackWrite, {
+        overwrite: args.overwrite === true,
+        dryRun: args.dryRun === true
+      });
+      if (stackResult.action === "skipped_unmanaged") {
+        warnings.push(`目标文件非本工具生成，未覆盖：${stackWrite.relativePath}（确认后用 overwrite:true 覆盖）`);
       }
     } else if (!profile) {
       warnings.push("未检测到技术栈：仅更新 canonical tokens.json（不生成栈文件）");

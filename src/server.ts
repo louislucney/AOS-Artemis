@@ -29,6 +29,9 @@ import { figmaImportStrings, type ImportStringsArgs } from "./figma/import-strin
 import { figmaImportTokens, type ImportTokensArgs } from "./figma/import-tokens.js";
 import { figmaExportBrief, type ExportBriefArgs } from "./figma/brief.js";
 import { penInspect, type PenInspectArgs } from "./pen/inspect.js";
+import { penImportTokens, type PenTokensArgs } from "./pen/tokens.js";
+import { penImportStrings, type PenStringsArgs } from "./pen/strings.js";
+import { penExportBrief, type PenBriefArgs } from "./pen/brief.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
@@ -257,6 +260,46 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       save: z.boolean().optional().describe("是否落盘 .artemis/design/pen/summary.json，默认 false")
     }),
     handler: (runtime, args) => penInspect(runtime, args as unknown as PenInspectArgs)
+  },
+  {
+    name: "pen_import_tokens",
+    description:
+      "pen 颜色变量导入：.pen 的 color 变量（变量名即 token 名，支持主题取值与 $别名）→ .artemis/design/tokens.json（DTCG，modes 记录主题值）+ 按检测栈生成 token 文件（Android/Flutter/RN/Web）；输出 new/updated/unchanged/unused、裸色扫描与 enforcement；完全离线（无需账号/网络）。",
+    schema: z.object({
+      path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
+      dryRun: z.boolean().optional().describe("仅预览不写文件，默认 false"),
+      overwrite: z.boolean().optional().describe("允许覆盖非本工具生成的目标文件，默认 false（skipped_unmanaged）"),
+      save: z.boolean().optional().describe("是否落盘 canonical tokens.json，默认 true"),
+      enforcement: z.enum(["report", "warn", "block"]).optional().describe("硬编码/unused 问题级别，默认 report")
+    }),
+    handler: (runtime, args) => penImportTokens(runtime, args as unknown as PenTokensArgs)
+  },
+  {
+    name: "pen_import_strings",
+    description:
+      "pen 文案 i18n 导入：.pen 文本节点（nodeId 冻结 key，reusable 组件自成屏幕上下文）→ .artemis/design/strings.json + 按检测栈写入资源（Android strings.xml / Flutter arb / RN·Web JSON / iOS strings）；输出复用建议、source_changed、unused 与硬编码文案扫描；冲突经 resolutions.json 闭环；完全离线。",
+    schema: z.object({
+      path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
+      locale: z.string().optional().describe("source locale（BCP-47，默认沿用 strings.json 或 zh）"),
+      dryRun: z.boolean().optional().describe("仅预览不写文件，默认 false"),
+      save: z.boolean().optional().describe("是否落盘 strings.json，默认 true"),
+      enforcement: z.enum(["report", "warn", "block"]).optional().describe("冲突/硬编码问题级别，默认 report")
+    }),
+    handler: (runtime, args) => penImportStrings(runtime, args as unknown as PenStringsArgs)
+  },
+  {
+    name: "pen_export_brief",
+    description:
+      "pen 构建简报：.pen → build-brief.{json,md}（颜色/字阶/间距/圆角/阴影、屏幕与建议路由、可复用组件、按栈编码约定、可选 gaps 摘要）；可选 scaffold 按技术栈生成组件骨架（幂等）；完全离线。",
+    schema: z.object({
+      path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
+      save: z.boolean().optional().describe("是否落盘 build-brief.{json,md}，默认 true"),
+      includeGaps: z.boolean().optional().describe("是否附带 gaps.json 缺口摘要，默认 true"),
+      scaffold: z.boolean().optional().describe("是否生成组件骨架文件，默认 false"),
+      maxComponents: z.number().int().positive().max(200).optional().describe("组件清单上限，默认 40"),
+      overwrite: z.boolean().optional().describe("scaffold 命名冲突时是否覆盖，默认 false")
+    }),
+    handler: (runtime, args) => penExportBrief(runtime, args as unknown as PenBriefArgs)
   }
 ];
 

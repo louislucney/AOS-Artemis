@@ -18,9 +18,10 @@ import {
   renderJsonLocale,
   scanHardcodedStrings,
   serializeStrings,
-  StringEntry,
   writeResourceFile,
-  type ResourceWrite
+  type FigmaTextRecord,
+  type ResourceWrite,
+  type StringEntry
 } from "./strings.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
@@ -35,7 +36,13 @@ export interface ImportStringsArgs {
   enforcement?: Enforcement;
 }
 
-const IMPLEMENTED_STACKS = new Set(["android-native", "flutter", "react-native", "web", "ios-native"]);
+export const IMPLEMENTED_STRING_STACKS = new Set([
+  "android-native",
+  "flutter",
+  "react-native",
+  "web",
+  "ios-native"
+]);
 
 function jsonResult(payload: unknown, isError = false): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], isError };
@@ -43,6 +50,13 @@ function jsonResult(payload: unknown, isError = false): CallToolResult {
 
 const STRING_HINT =
   "提示：REST 模式需要 FIGMA_ACCESS_TOKEN；M6b 先支持 Android(strings.xml)/Flutter(arb)，其余栈按需铺开。";
+
+export interface StringsImportOptions {
+  locale?: string;
+  dryRun?: boolean;
+  save?: boolean;
+  enforcement?: Enforcement;
+}
 
 export async function figmaImportStrings(
   runtime: Runtime,
@@ -52,8 +66,26 @@ export async function figmaImportStrings(
     const { fileKey } = parseFigmaUrl(args.url);
     const file = (await fetchFile(fileKey)) as { document?: FigmaNode };
     if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
+    return await runStringsImport(runtime, collectFigmaTexts(file.document), args.url, args);
+  } catch (error) {
+    return jsonResult(
+      { ok: false, error: `文案 i18n 导入失败: ${errorMessage(error)}`, hint: STRING_HINT },
+      true
+    );
+  }
+}
 
-    const records = collectFigmaTexts(file.document);
+/** Shared pipeline behind the Figma and pen string importers: merge collected text
+ * records into the frozen mapping, write stack resources (idempotent), scan
+ * hardcoded literals and report conflicts under the requested enforcement. */
+export async function runStringsImport(
+  runtime: Runtime,
+  records: FigmaTextRecord[],
+  sourceUrl: string,
+  args: StringsImportOptions,
+  hint: string = STRING_HINT
+): Promise<CallToolResult> {
+  try {
     const designDir = path.join(runtime.configDirAbs, "design");
     const stringsPath = path.join(designDir, "strings.json");
     const existing = parseStrings(
@@ -65,7 +97,7 @@ export async function figmaImportStrings(
 
     const stacks = detectProjectStacks(runtime.project.rootDir);
     const implemented = stacks
-      .filter((stack) => IMPLEMENTED_STACKS.has(stack.id))
+      .filter((stack) => IMPLEMENTED_STRING_STACKS.has(stack.id))
       .map((stack) => STACK_PROFILES[stack.id]);
     const warnings: string[] = [];
 
@@ -78,7 +110,7 @@ export async function figmaImportStrings(
     const resourceWrites: ResourceWrite[] = [];
 
     for (const profile of implemented) {
-      const write = renderForStack(profile, merge.entries, runtime.project.rootDir, sourceLocale);
+      const write = renderStringsForStack(profile, merge.entries, runtime.project.rootDir, sourceLocale);
       const conflictView = write.conflicts.map((conflict) => ({
         ...conflict,
         resolved: resolved.has(conflict.key)
@@ -141,7 +173,7 @@ export async function figmaImportStrings(
     const payload: Record<string, unknown> = {
       ok: true,
       dryRun: args.dryRun === true,
-      sourceUrl: args.url,
+      sourceUrl,
       sourceLocale,
       stacks: implemented.map((profile) => profile.id),
       counts,
@@ -178,13 +210,13 @@ export async function figmaImportStrings(
     return jsonResult(payload);
   } catch (error) {
     return jsonResult(
-      { ok: false, error: `文案 i18n 导入失败: ${errorMessage(error)}`, hint: STRING_HINT },
+      { ok: false, error: `文案 i18n 导入失败: ${errorMessage(error)}`, hint },
       true
     );
   }
 }
 
-function renderForStack(
+export function renderStringsForStack(
   profile: StackProfile,
   entries: StringEntry[],
   rootDir: string,

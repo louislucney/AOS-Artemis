@@ -43,7 +43,7 @@ export interface ColorToken {
   needsReview: boolean;
 }
 
-export type TokenActionKind = "new" | "unchanged" | "unused";
+export type TokenActionKind = "new" | "unchanged" | "updated" | "unused";
 
 export interface TokenAction {
   name: string;
@@ -423,6 +423,40 @@ export function renderStackTokenFile(profile: StackProfile, tokens: ColorToken[]
 
 export function contentHasTokenMarker(content: string): boolean {
   return content.includes(TOKEN_FILE_MARKER);
+}
+
+export interface StackTokenWriteResult {
+  relativePath: string;
+  action: "written" | "unchanged" | "planned" | "skipped_unmanaged";
+}
+
+/** Idempotent stack-file writer shared by the Figma and pen token importers:
+ * same content → `unchanged`; unmanaged file (no generated marker) is left alone
+ * unless `overwrite`; `dryRun` reports the planned action without touching disk. */
+export function writeStackTokenFile(
+  rootDir: string,
+  write: StackTokenWrite,
+  options: { overwrite?: boolean; dryRun?: boolean } = {}
+): StackTokenWriteResult {
+  const absolute = path.join(rootDir, write.relativePath);
+  if (!fs.existsSync(absolute)) {
+    if (options.dryRun !== true) {
+      fs.mkdirSync(path.dirname(absolute), { recursive: true });
+      fs.writeFileSync(absolute, write.content, "utf-8");
+      return { relativePath: write.relativePath, action: "written" };
+    }
+    return { relativePath: write.relativePath, action: "planned" };
+  }
+  const current = fs.readFileSync(absolute, "utf-8");
+  if (current === write.content) return { relativePath: write.relativePath, action: "unchanged" };
+  if (!contentHasTokenMarker(current) && options.overwrite !== true) {
+    return { relativePath: write.relativePath, action: "skipped_unmanaged" };
+  }
+  if (options.dryRun !== true) {
+    fs.writeFileSync(absolute, write.content, "utf-8");
+    return { relativePath: write.relativePath, action: "written" };
+  }
+  return { relativePath: write.relativePath, action: "planned" };
 }
 
 // ---------------------------------------------------------------------------
