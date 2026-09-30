@@ -6,6 +6,9 @@ import { applyEdits, modify, parse as parseJsonc, type ParseError } from "jsonc-
 export const INSTALL_TARGETS = ["claude", "cursor", "vscode", "opencode"] as const;
 export type InstallTarget = (typeof INSTALL_TARGETS)[number];
 
+export const MCP_SERVER_NAME = "android-testing";
+const LEGACY_SERVER_NAMES = ["aos"];
+
 export interface InstallOptions {
   projectDir?: string;
   targets?: string[];
@@ -147,7 +150,7 @@ function targetPlan(target: InstallTarget, projectDir: string): TargetPlan {
     case "claude":
       return {
         file: path.join(projectDir, ".mcp.json"),
-        jsonPath: ["mcpServers", "aos"],
+        jsonPath: ["mcpServers", MCP_SERVER_NAME],
         toValue: (entry) =>
           entry.kind === "http"
             ? { type: "http", url: entry.url }
@@ -156,7 +159,7 @@ function targetPlan(target: InstallTarget, projectDir: string): TargetPlan {
     case "cursor":
       return {
         file: path.join(projectDir, ".cursor", "mcp.json"),
-        jsonPath: ["mcpServers", "aos"],
+        jsonPath: ["mcpServers", MCP_SERVER_NAME],
         toValue: (entry) =>
           entry.kind === "http"
             ? { url: entry.url }
@@ -165,7 +168,7 @@ function targetPlan(target: InstallTarget, projectDir: string): TargetPlan {
     case "vscode":
       return {
         file: path.join(projectDir, ".vscode", "mcp.json"),
-        jsonPath: ["servers", "aos"],
+        jsonPath: ["servers", MCP_SERVER_NAME],
         toValue: (entry) =>
           entry.kind === "http"
             ? { type: "http", url: entry.url }
@@ -174,7 +177,7 @@ function targetPlan(target: InstallTarget, projectDir: string): TargetPlan {
     case "opencode":
       return {
         file: path.join(projectDir, "opencode.json"),
-        jsonPath: ["mcp", "aos"],
+        jsonPath: ["mcp", MCP_SERVER_NAME],
         toValue: (entry) =>
           entry.kind === "http"
             ? { type: "remote", url: entry.url, enabled: true }
@@ -246,6 +249,24 @@ export function upsertJsoncFile(
   return "written";
 }
 
+export function removeJsoncPath(filePath: string, jsonPath: Array<string>): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  const text = fs.readFileSync(filePath, "utf-8");
+  const base = text.trim() === "" ? "{}\n" : text;
+  let current: { found: boolean; value: unknown };
+  try {
+    current = getValueAt(base, jsonPath);
+  } catch {
+    return false;
+  }
+  if (!current.found) return false;
+  const edits = modify(base, jsonPath, undefined, {
+    formattingOptions: { tabSize: 2, insertSpaces: true, eol: "\n" }
+  });
+  fs.writeFileSync(filePath, applyEdits(base, edits), "utf-8");
+  return true;
+}
+
 export function runInstall(argv: string[], defaults: InstallOptions = {}): number {
   const log = defaults.log ?? ((line: string) => console.log(line));
   let options: ReturnType<typeof parseInstallArgs>;
@@ -276,8 +297,14 @@ export function runInstall(argv: string[], defaults: InstallOptions = {}): numbe
 
   for (const target of options.targets) {
     const plan = targetPlan(target as InstallTarget, options.projectDir);
-    const status = upsertJsoncFile(plan.file, plan.jsonPath, plan.toValue(entry), options.force);
     const relative = path.relative(options.projectDir, plan.file) || plan.file;
+    for (const legacy of LEGACY_SERVER_NAMES) {
+      const legacyPath = [...plan.jsonPath.slice(0, -1), legacy];
+      if (removeJsoncPath(plan.file, legacyPath)) {
+        log(`- ${target.padEnd(9)} → ${relative}（已移除旧键 ${legacy}）`);
+      }
+    }
+    const status = upsertJsoncFile(plan.file, plan.jsonPath, plan.toValue(entry), options.force);
     switch (status) {
       case "written":
         log(`✓ ${target.padEnd(9)} → ${relative}`);
@@ -297,20 +324,20 @@ export function runInstall(argv: string[], defaults: InstallOptions = {}): numbe
   log("");
   log("不可写项目级配置的客户端（手动添加）：");
   log("  • Codex (~/.codex/config.toml):");
-  log("      [mcp_servers.aos]");
+  log(`      [mcp_servers.${MCP_SERVER_NAME}]`);
   if (entry.kind === "http") {
     log(`      url = ${JSON.stringify(entry.url)}`);
   } else {
     log(`      command = ${JSON.stringify(entry.command)}`);
     log(`      args = ${JSON.stringify(entry.args)}`);
     if (Object.keys(entry.env).length > 0) {
-      log("      [mcp_servers.aos.env]");
+      log(`      [mcp_servers.${MCP_SERVER_NAME}.env]`);
       for (const [key, value] of Object.entries(entry.env)) {
         log(`      ${key} = ${JSON.stringify(value)}`);
       }
     }
   }
-  log("  • Claude Desktop / Windsurf：同 Codex 结构（各自全局配置文件的 mcpServers.aos）");
+  log(`  • Claude Desktop / Windsurf：同 Codex 结构（各自全局配置文件的 mcpServers.${MCP_SERVER_NAME}）`);
 
   return 0;
 }

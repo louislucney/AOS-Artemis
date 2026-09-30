@@ -6,7 +6,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 
 每次改动以达到以下三项为准：
 
-1. `npm run build && npm test && npm run lint` **全绿**（255+ 测试）；
+1. `npm run build && npm test && npm run lint` **全绿**（256+ 测试）；
 2. 行为/接口变更同步更新 `DESIGN.md`（架构与决策的唯一事实源），用法变更同步 `README.md`；
 3. 测试不依赖真实 PG / 设备 / 外网（SQL 用 `pg-mem`，artemis 用假子进程，Figma REST 不打网）。
 

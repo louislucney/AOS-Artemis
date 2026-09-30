@@ -611,3 +611,12 @@ llm_switch(name, force):
 - **`.env` 透传（`penEnvFrom`）**：白名单 `PEN_CLI_KEY` / `PEN_AGENT_API_KEY` / `ANTHROPIC_*` / `AOS_PEN_*`，进程 env 优先、active LLM 派生凭证最后覆盖；此前 `PEN_CLI_KEY` 只读进程 env，现在项目 `.env` 写入即可直达 CLI 子进程（不落日志/响应）。
 - **doctor**：新增 pen CLI 状态检查（未安装/未登录为 WARN 计入 degraded，可选不阻塞；含 Node 版本提示），`doctor --install-deps` 联动预装；`aos_status` 语义不变。
 - **边界**：pen.dev 登录态（`pen login`）或 Developer Key 仍需人工一次性提供，MCP 无法自我注册账号；首次自动安装需网络；HTTP/Docker 部署同样走该机制（容器内 home 可写即可）。
+
+### 13.12 实施记录（MCP 服务名更名 android-testing + 旧键迁移）
+
+> 实施于 2026-09-30；新增 `test/install.test.js` 旧键迁移用例、冲突用例改用新键，全量 256 用例通过。
+
+- **决策**：服务名 `aos` 无语义（客户端 MCP 列表与工具名前缀都只显示它），更名为 **`android-testing`**——当前仅支持 Android 真机测试，不溢出到 iOS/泛移动。ASCII 为硬约束：客户端把服务名净化后作为工具名前缀（opencode：非 `[a-zA-Z0-9_-]` → `_`），且模型 API 的工具名同样只接受该字符集，故中文名不可行。
+- **范围**：`install` 生成的四个客户端配置键（`mcpServers.android-testing` / `servers.android-testing` / `mcp.android-testing`）与 Codex 手动片段同步；工具名本身不变（`mobile_run_task` 等照旧）。
+- **旧键迁移（`removeJsoncPath`，`src/install.ts`）**：install 写入前先移除同一父路径下的历史键 `aos`，避免同一客户端同时加载新旧两个 server；仅移除该历史键，不动其他 server 与注释。
+- **部署备注（客户端零配置发现）**：opencode 以工作区目录为 cwd 启动本地 MCP（`connectLocal` 取 `InstanceState.directory`），因此用户级全局配置挂载不带 `AOS_PROJECT_DIR` 的 `android-testing` 条目即可被所有项目发现（AOS 项目识别链回退 cwd）；`install` 仍为按项目精确挂载（写入 `AOS_PROJECT_DIR`）。

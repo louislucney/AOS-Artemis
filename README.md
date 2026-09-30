@@ -175,7 +175,7 @@ node dist/cli.js install --mode http --url http://10.0.0.5:8765
 node dist/cli.js install --targets claude,cursor,opencode,vscode --force
 ```
 
-写入：`.mcp.json`（Claude Code）、`.cursor/mcp.json`、`.vscode/mcp.json`、`opencode.json`（保留注释与其他 server；冲突需 `--force`）；Codex/Claude Desktop/Windsurf 打印手动片段。
+写入：`.mcp.json`（Claude Code）、`.cursor/mcp.json`、`.vscode/mcp.json`、`opencode.json`（服务名 `android-testing`，旧 `aos` 键自动移除；保留注释与其他 server；冲突需 `--force`）；Codex/Claude Desktop/Windsurf 打印手动片段。
 
 ## 真机 E2E 验收
 

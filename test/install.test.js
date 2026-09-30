@@ -8,6 +8,7 @@ import { runInstall, upsertJsoncFile } from "../dist/install.js";
 import { makeTempProject } from "./helpers.js";
 
 const service = "/svc/dist/index.js";
+const SERVER = "android-testing";
 const silent = () => {};
 
 test("install local: writes all four project-level configs", () => {
@@ -16,22 +17,22 @@ test("install local: writes all four project-level configs", () => {
   assert.equal(code, 0);
 
   const claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
-  assert.equal(claude.mcpServers.aos.command, "node");
-  assert.deepEqual(claude.mcpServers.aos.args, [path.resolve(service)]);
-  assert.equal(claude.mcpServers.aos.env.AOS_PROJECT_DIR, dir);
+  assert.equal(claude.mcpServers[SERVER].command, "node");
+  assert.deepEqual(claude.mcpServers[SERVER].args, [path.resolve(service)]);
+  assert.equal(claude.mcpServers[SERVER].env.AOS_PROJECT_DIR, dir);
 
   const cursor = JSON.parse(fs.readFileSync(path.join(dir, ".cursor/mcp.json"), "utf-8"));
-  assert.deepEqual(cursor.mcpServers.aos, claude.mcpServers.aos);
+  assert.deepEqual(cursor.mcpServers[SERVER], claude.mcpServers[SERVER]);
 
   const vscode = JSON.parse(fs.readFileSync(path.join(dir, ".vscode/mcp.json"), "utf-8"));
-  assert.equal(vscode.servers.aos.command, "node");
-  assert.deepEqual(vscode.servers.aos.args, [path.resolve(service)]);
+  assert.equal(vscode.servers[SERVER].command, "node");
+  assert.deepEqual(vscode.servers[SERVER].args, [path.resolve(service)]);
 
   const opencode = JSON.parse(fs.readFileSync(path.join(dir, "opencode.json"), "utf-8"));
-  assert.equal(opencode.mcp.aos.type, "local");
-  assert.deepEqual(opencode.mcp.aos.command, ["node", path.resolve(service)]);
-  assert.equal(opencode.mcp.aos.environment.AOS_PROJECT_DIR, dir);
-  assert.equal(opencode.mcp.aos.enabled, true);
+  assert.equal(opencode.mcp[SERVER].type, "local");
+  assert.deepEqual(opencode.mcp[SERVER].command, ["node", path.resolve(service)]);
+  assert.equal(opencode.mcp[SERVER].environment.AOS_PROJECT_DIR, dir);
+  assert.equal(opencode.mcp[SERVER].enabled, true);
 });
 
 test("install local: idempotent (second run leaves files unchanged)", () => {
@@ -59,25 +60,42 @@ test("install local: preserves unrelated servers and comments", () => {
   assert.match(text, /keep this comment/);
   const parsed = parseJsonc(text);
   assert.equal(parsed.mcpServers.other.command, "foo");
-  assert.equal(parsed.mcpServers.aos.command, "node");
+  assert.equal(parsed.mcpServers[SERVER].command, "node");
 });
 
 test("install local: conflicting existing entry requires --force", () => {
   const dir = makeTempProject({});
   fs.writeFileSync(
     path.join(dir, ".mcp.json"),
-    JSON.stringify({ mcpServers: { aos: { command: "old" } } }, null, 2)
+    JSON.stringify({ mcpServers: { [SERVER]: { command: "old" } } }, null, 2)
   );
   runInstall(["--project", dir, "--targets", "claude", "--service", service], { log: silent });
   let parsed = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
-  assert.equal(parsed.mcpServers.aos.command, "old");
+  assert.equal(parsed.mcpServers[SERVER].command, "old");
 
   runInstall(
     ["--project", dir, "--targets", "claude", "--service", service, "--force"],
     { log: silent }
   );
   parsed = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
-  assert.equal(parsed.mcpServers.aos.command, "node");
+  assert.equal(parsed.mcpServers[SERVER].command, "node");
+});
+
+test("install local: removes legacy aos entry", () => {
+  const dir = makeTempProject({});
+  fs.writeFileSync(
+    path.join(dir, ".mcp.json"),
+    JSON.stringify(
+      { mcpServers: { aos: { command: "node", args: ["legacy.js"] }, other: { command: "foo" } } },
+      null,
+      2
+    )
+  );
+  runInstall(["--project", dir, "--targets", "claude", "--service", service], { log: silent });
+  const parsed = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
+  assert.equal(parsed.mcpServers.aos, undefined);
+  assert.equal(parsed.mcpServers.other.command, "foo");
+  assert.equal(parsed.mcpServers[SERVER].command, "node");
 });
 
 test("install local: carries explicit tool-path env vars into client config", () => {
@@ -92,14 +110,14 @@ test("install local: carries explicit tool-path env vars into client config", ()
     runInstall(["--project", dir, "--targets", "claude", "--service", service], { log: silent });
     const claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
     assert.equal(
-      claude.mcpServers.aos.env.ARTEMIS_ADB_PATH,
+      claude.mcpServers[SERVER].env.ARTEMIS_ADB_PATH,
       "/opt/android/platform-tools/adb"
     );
     assert.equal(
-      claude.mcpServers.aos.env.AOS_DATABASE_URL,
+      claude.mcpServers[SERVER].env.AOS_DATABASE_URL,
       "postgres://u:p@127.0.0.1:5433/aos"
     );
-    assert.equal(claude.mcpServers.aos.env.NODE_USE_ENV_PROXY, "1");
+    assert.equal(claude.mcpServers[SERVER].env.NODE_USE_ENV_PROXY, "1");
   } finally {
     if (previousAdb === undefined) delete process.env.ARTEMIS_ADB_PATH;
     else process.env.ARTEMIS_ADB_PATH = previousAdb;
@@ -117,7 +135,7 @@ test("install docker: docker exec with project workdir", () => {
     { log: silent }
   );
   const opencode = JSON.parse(fs.readFileSync(path.join(dir, "opencode.json"), "utf-8"));
-  const command = opencode.mcp.aos.command;
+  const command = opencode.mcp[SERVER].command;
   assert.deepEqual(command.slice(0, 5), [
     "docker",
     "exec",
@@ -135,25 +153,25 @@ test("install http: remote entries with per-project URL", () => {
     log: silent
   });
   const claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
-  assert.equal(claude.mcpServers.aos.type, "http");
+  assert.equal(claude.mcpServers[SERVER].type, "http");
   assert.equal(
-    claude.mcpServers.aos.url,
+    claude.mcpServers[SERVER].url,
     `http://10.0.0.5:8765/mcp/${path.basename(dir)}`
   );
 
   const opencode = JSON.parse(fs.readFileSync(path.join(dir, "opencode.json"), "utf-8"));
-  assert.equal(opencode.mcp.aos.type, "remote");
-  assert.equal(opencode.mcp.aos.url, claude.mcpServers.aos.url);
+  assert.equal(opencode.mcp[SERVER].type, "remote");
+  assert.equal(opencode.mcp[SERVER].url, claude.mcpServers[SERVER].url);
 
   const vscode = JSON.parse(fs.readFileSync(path.join(dir, ".vscode/mcp.json"), "utf-8"));
-  assert.equal(vscode.servers.aos.type, "http");
+  assert.equal(vscode.servers[SERVER].type, "http");
 });
 
 test("install: invalid JSONC leaves the file untouched", () => {
   const dir = makeTempProject({});
   const file = path.join(dir, ".mcp.json");
   fs.writeFileSync(file, "{ not json ");
-  const status = upsertJsoncFile(file, ["mcpServers", "aos"], { command: "node" }, false);
+  const status = upsertJsoncFile(file, ["mcpServers", SERVER], { command: "node" }, false);
   assert.equal(status, "invalid");
   assert.equal(fs.readFileSync(file, "utf-8"), "{ not json ");
 });
