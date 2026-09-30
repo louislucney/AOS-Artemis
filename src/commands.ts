@@ -6,6 +6,8 @@ import { CONFIG_FILENAME, resolveProject } from "./config/loader.js";
 import { scanProjectEnv } from "./projects/scan.js";
 import { resolveArtemisPython } from "./artemis/assembly.js";
 import { ensureArtemisDeps, depsStatus, resolveDepsSource } from "./artemis/bootstrap.js";
+import { penEnvFrom, penCliStatus } from "./pen/cli.js";
+import { ensurePenCli, penNodeTooOld } from "./pen/install.js";
 import { createProjectStore } from "./db/index.js";
 import { errorMessage } from "./util.js";
 
@@ -196,6 +198,43 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
         title: "Figma token 未配置（可选）",
         details: ["仅影响 Figma REST 模式；调用 REST 工具时会提示提供。"]
       });
+    }
+
+    const penEnv = penEnvFrom(project.dotenvValues, process.env);
+    const pen = await ensurePenCli({
+      env: penEnv,
+      allowInstall: installDeps,
+      log: (line) => console.log(`    ${line}`)
+    });
+    if (!pen.ok) {
+      degraded = true;
+      lines.push({
+        icon: "WARN",
+        title: "pen CLI 未就绪（可选：pen_export / pen_apply_tokens / pen_apply_strings / pen_agent）",
+        details: [
+          pen.error ?? "未安装",
+          ...(penNodeTooOld() ? [`当前 Node ${process.versions.node} 低于 pen CLI 要求的 22.19。`] : []),
+          installDeps
+            ? "自动安装未成功：可手动 npm install -g @pen.dev/cli，或设置 AOS_PEN_CLI_PATH。"
+            : "Run: node dist/cli.js doctor --install-deps（首次调用 pen CLI 工具时也会自动安装）",
+          "登录：pen login，或在项目 .env 设置 PEN_CLI_KEY（pen.dev 组织 Developer Keys）。"
+        ]
+      });
+    } else {
+      const status = await penCliStatus(undefined, { cliPath: pen.path ?? undefined, env: penEnv });
+      if (status.installed && status.authenticated) {
+        lines.push({
+          icon: "OK",
+          title: `pen CLI ${status.version ?? ""}（${status.email ?? "已登录"}）`
+        });
+      } else {
+        degraded = true;
+        lines.push({
+          icon: "WARN",
+          title: "pen CLI 已安装但未登录（可选）",
+          details: ["Run: pen login，或在项目 .env 设置 PEN_CLI_KEY（pen.dev 组织 Developer Keys）。"]
+        });
+      }
     }
   }
 

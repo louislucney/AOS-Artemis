@@ -5,7 +5,9 @@ import test from "node:test";
 
 import {
   detectPenFailure,
+  managedPenBinPath,
   penCliStatus,
+  penEnvFrom,
   resolvePenCliPath,
   runPenInteractive
 } from "../dist/pen/cli.js";
@@ -170,10 +172,28 @@ function stringsFile() {
   )}\n`;
 }
 
+const ensureReady = async () => ({ ok: true, source: "path", path: "pen", installed: false });
+
 test("pen cli: 路径解析、status 解析与失败分类", async () => {
-  assert.deepEqual(resolvePenCliPath({}, "darwin"), { path: "pen", source: "path" });
+  assert.deepEqual(resolvePenCliPath({}, "darwin", { exists: () => false }), { path: "pen", source: "path" });
   assert.deepEqual(resolvePenCliPath({ AOS_PEN_CLI_PATH: "/opt/pen" }, "darwin"), { path: "/opt/pen", source: "env" });
-  assert.deepEqual(resolvePenCliPath({}, "win32"), { path: "pen.cmd", source: "path" });
+  assert.deepEqual(resolvePenCliPath({}, "win32", { exists: () => false }), { path: "pen.cmd", source: "path" });
+  const managedDir = path.resolve("/opt/managed");
+  const managed = managedPenBinPath(managedDir, "darwin");
+  assert.deepEqual(
+    resolvePenCliPath({ AOS_PEN_CLI_DIR: "/opt/managed" }, "darwin", { exists: (candidate) => candidate === managed }),
+    { path: managed, source: "managed" }
+  );
+
+  assert.deepEqual(penEnvFrom({ PEN_CLI_KEY: "dotenv-key" }, { PEN_CLI_KEY: "process-key" }), {
+    PEN_CLI_KEY: "process-key"
+  });
+  assert.deepEqual(penEnvFrom({ PEN_CLI_KEY: "dotenv-key", ANTHROPIC_API_KEY: "a" }, {}), {
+    PEN_CLI_KEY: "dotenv-key",
+    ANTHROPIC_API_KEY: "a"
+  });
+  assert.deepEqual(penEnvFrom({}, {}, { PEN_AGENT_API_KEY: "derived" }), { PEN_AGENT_API_KEY: "derived" });
+  assert.ok(!("AOS_LLM_API_KEY" in penEnvFrom({ AOS_LLM_API_KEY: "secret" }, {})));
 
   const { exec } = fakePen();
   const status = await penCliStatus(exec);
@@ -206,6 +226,7 @@ test("pen cli: 路径解析、status 解析与失败分类", async () => {
     input: "/tmp/in.pen",
     output: "/tmp/out.pen",
     commands: ["get_app_state()"],
+    cliPath: "pen",
     exec: async (command, args, options) => {
       captured.push({ command, args, input: options.input });
       return { code: 0, stdout: "", stderr: "" };
@@ -226,7 +247,7 @@ test("pen_export: dryRun 与导出落盘", async () => {
   assert.deepEqual(preview.command.slice(0, 2), ["pen", "--in"]);
   assert.equal(calls.length, 0);
 
-  const payload = parseToolResult(await penExport(runtime, { format: "png", scale: 2 }, { exec }));
+  const payload = parseToolResult(await penExport(runtime, { format: "png", scale: 2 }, { exec, ensure: ensureReady }));
   assert.equal(payload.ok, true);
   assert.equal(payload.output, path.join(".artemis", "design", "pen", "demo.png"));
   assert.equal(payload.bytes, 4);
@@ -235,7 +256,7 @@ test("pen_export: dryRun 与导出落盘", async () => {
 
   const failing = fakePen({ onInteractive: undefined });
   failing.exec = async () => ({ code: 1, stdout: "", stderr: "not authenticated" });
-  const failed = await penExport(runtime, { out: "render.png" }, { exec: failing.exec });
+  const failed = await penExport(runtime, { out: "render.png" }, { exec: failing.exec, ensure: ensureReady });
   assert.equal(failed.isError, true);
   assert.match(parseToolResult(failed).error, /未登录/);
   assert.ok(!fs.existsSync(path.join(dir, "render.png")));
@@ -254,7 +275,7 @@ test("pen_apply_tokens: 原位写回 modes/别名、校验失败不动原文件�
   assert.deepEqual(preview.skippedAliases, ["color.brand-primary"]);
   assert.match(preview.command, /SetVariables/);
 
-  const payload = parseToolResult(await penApplyTokens(runtime, {}, { exec }));
+  const payload = parseToolResult(await penApplyTokens(runtime, {}, { exec, ensure: ensureReady }));
   assert.equal(payload.ok, true, JSON.stringify(payload));
   assert.equal(payload.inPlace, true);
   assert.equal(payload.variables, 1);
@@ -271,7 +292,7 @@ test("pen_apply_tokens: 原位写回 modes/别名、校验失败不动原文件�
     onInteractive: ({ input, output }) => fs.copyFileSync(input, output)
   });
   const before = fs.readFileSync(penPath, "utf-8");
-  const failed = await penApplyTokens(runtime, {}, { exec: rollback.exec });
+  const failed = await penApplyTokens(runtime, {}, { exec: rollback.exec, ensure: ensureReady });
   assert.equal(failed.isError, true);
   assert.match(parseToolResult(failed).error, /校验失败/);
   assert.equal(fs.readFileSync(penPath, "utf-8"), before);
@@ -293,7 +314,7 @@ test("pen_apply_strings: 写回、notFound、校验失败不动原文件", async
   assert.deepEqual(preview.notFound, ["home.ghost"]);
   assert.equal(preview.commandCount, 1);
 
-  const payload = parseToolResult(await penApplyStrings(runtime, {}, { exec }));
+  const payload = parseToolResult(await penApplyStrings(runtime, {}, { exec, ensure: ensureReady }));
   assert.equal(payload.ok, true, JSON.stringify(payload));
   assert.equal(payload.inPlace, true);
   const doc = JSON.parse(fs.readFileSync(penPath, "utf-8"));
@@ -304,7 +325,7 @@ test("pen_apply_strings: 写回、notFound、校验失败不动原文件", async
     onInteractive: ({ input, output }) => fs.copyFileSync(input, output)
   });
   const before = fs.readFileSync(penPath, "utf-8");
-  const failed = await penApplyStrings(runtime, {}, { exec: rollback.exec });
+  const failed = await penApplyStrings(runtime, {}, { exec: rollback.exec, ensure: ensureReady });
   assert.equal(failed.isError, true);
   assert.match(parseToolResult(failed).error, /校验失败/);
   assert.equal(fs.readFileSync(penPath, "utf-8"), before);
@@ -314,7 +335,7 @@ test("pen_agent: 复用 active LLM key、DeepSeek 端点映射、原位更新与
   const dir = makeTempProject({
     config: baseConfig(),
     dotenv:
-      "AOS_LLM_API_KEY=sk-test-agent\nAOS_LLM_BASE_URL=https://api.deepseek.com/v1\nAOS_LLM_MODEL=deepseek-flash\nAOS_LLM_NAME=deepseek\n"
+      "AOS_LLM_API_KEY=sk-test-agent\nAOS_LLM_BASE_URL=https://api.deepseek.com/v1\nAOS_LLM_MODEL=deepseek-flash\nAOS_LLM_NAME=deepseek\nPEN_CLI_KEY=pen-test-key\n"
   });
   const designDir = path.join(dir, ".artemis", "design");
   fs.mkdirSync(designDir, { recursive: true });
@@ -322,20 +343,29 @@ test("pen_agent: 复用 active LLM key、DeepSeek 端点映射、原位更新与
   fs.writeFileSync(penPath, PEN_SAMPLE, "utf-8");
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
   const { exec, calls } = fakePen();
+  const ensureCalls = [];
+  const ensure = async (options) => {
+    ensureCalls.push(options);
+    return { ok: true, source: "path", path: "pen", installed: false };
+  };
 
-  const preview = parseToolResult(await penAgent(runtime, { prompt: "add a node", dryRun: true }, { exec }));
+  const preview = parseToolResult(await penAgent(runtime, { prompt: "add a node", dryRun: true }, { exec, ensure }));
   assert.equal(preview.dryRun, true);
   assert.equal(preview.anthropicBaseUrl, "https://api.deepseek.com/anthropic");
   assert.deepEqual(preview.command.slice(0, 1), ["pen"]);
   assert.equal(calls.length, 0);
+  assert.equal(ensureCalls.length, 0, "dryRun 不应触发 ensure/安装");
 
-  const payload = parseToolResult(await penAgent(runtime, { prompt: "add a node" }, { exec }));
+  const payload = parseToolResult(await penAgent(runtime, { prompt: "add a node" }, { exec, ensure }));
   assert.equal(payload.ok, true, JSON.stringify(payload));
   assert.equal(payload.inPlace, true);
   assert.equal(calls[0].env.PEN_AGENT_API_KEY, "sk-test-agent");
   assert.equal(calls[0].env.ANTHROPIC_BASE_URL, "https://api.deepseek.com/anthropic");
+  assert.equal(calls[0].env.PEN_CLI_KEY, "pen-test-key");
+  assert.equal(ensureCalls[0].env.PEN_CLI_KEY, "pen-test-key");
   assert.equal(payload.agentResponse, "Done: added Agent.");
   assert.ok(!JSON.stringify(payload).includes("sk-test-agent"), "key must not leak into tool output");
+  assert.ok(!JSON.stringify(payload).includes("pen-test-key"), "PEN_CLI_KEY 不得泄露");
   const doc = JSON.parse(fs.readFileSync(penPath, "utf-8"));
   assert.ok(doc.children.some((child) => child.name === "Agent"));
   assert.ok(!fs.readdirSync(designDir).some((name) => name.includes(".tmp")));
@@ -344,7 +374,7 @@ test("pen_agent: 复用 active LLM key、DeepSeek 端点映射、原位更新与
   const failing = fakePen({
     onAgent: () => ({ code: 1, stdout: "", stderr: "Agent failed: authentication_failed" })
   });
-  const failed = await penAgent(runtime, { prompt: "add a node" }, { exec: failing.exec });
+  const failed = await penAgent(runtime, { prompt: "add a node" }, { exec: failing.exec, ensure });
   assert.equal(failed.isError, true);
   assert.match(parseToolResult(failed).error, /凭证/);
   assert.equal(fs.readFileSync(penPath, "utf-8"), PEN_SAMPLE);
@@ -372,7 +402,7 @@ test("pen_agent: 端点映射/响应提取单元；out 新建与无输入报错"
   const noTarget = await penAgent(runtime, { prompt: "make a page" }, { exec });
   assert.equal(noTarget.isError, true);
 
-  const payload = parseToolResult(await penAgent(runtime, { out: "new.pen", prompt: "make a page" }, { exec }));
+  const payload = parseToolResult(await penAgent(runtime, { out: "new.pen", prompt: "make a page" }, { exec, ensure: ensureReady }));
   assert.equal(payload.ok, true, JSON.stringify(payload));
   assert.equal(payload.source, null);
   assert.equal(payload.inPlace, false);

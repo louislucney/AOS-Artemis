@@ -312,7 +312,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "pen_export",
     description:
-      "pen 渲染导出（headless CLI）：.pen → PNG/JPEG/WEBP/PDF，默认落盘 .artemis/design/pen/<name>.<format>；用于与真机截图对比。需要 pen CLI 已安装并登录（npm i -g @pen.dev/cli → pen login，或 PEN_CLI_KEY；AOS_PEN_CLI_PATH 可指定路径）。",
+      "pen 渲染导出（headless CLI）：.pen → PNG/JPEG/WEBP/PDF，默认落盘 .artemis/design/pen/<name>.<format>；用于与真机截图对比。pen CLI 缺失时自动安装到 ~/.aos/pen-cli（AOS_PEN_NO_INSTALL=1 关闭；AOS_PEN_CLI_PATH/AOS_PEN_CLI_DIR 可覆盖）；登录用 pen login 或在项目 .env 设置 PEN_CLI_KEY（自动透传）。",
     schema: z.object({
       path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
       out: z.string().optional().describe("输出路径（相对项目根）；缺省 .artemis/design/pen/<name>.<format>"),
@@ -326,7 +326,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "pen_apply_tokens",
     description:
-      "pen 颜色写回（headless CLI）：读取 .artemis/design/tokens.json（含 modes 主题取值）→ .pen 的 SetVariables；默认原位更新（先写临时文件、解析校验变量值后再原子替换，失败不动原文件），可用 out 指定输出文件；别名 token 不单独写入。需要 pen CLI 已安装并登录。",
+      "pen 颜色写回（headless CLI）：读取 .artemis/design/tokens.json（含 modes 主题取值）→ .pen 的 SetVariables；默认原位更新（先写临时文件、解析校验变量值后再原子替换，失败不动原文件），可用 out 指定输出文件；别名 token 不单独写入。pen CLI 缺失时自动安装（同 pen_export），需已登录（pen login 或项目 .env 的 PEN_CLI_KEY）。",
     schema: z.object({
       path: z.string().optional().describe("目标 .pen（相对项目根或绝对路径）；缺省自动选择最新文件"),
       tokensPath: z.string().optional().describe("自定义 tokens.json 路径（相对项目根），默认 .artemis/design/tokens.json"),
@@ -339,7 +339,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "pen_apply_strings",
     description:
-      "pen 文案写回（headless CLI）：读取 .artemis/design/strings.json 的 nodeId→sourceText → .pen 文本节点 Update(content)；默认原位更新（临时文件 + 回读校验后原子替换，失败不动原文件），nodeId 在 .pen 中不存在时记入 notFound；需要 pen CLI 已安装并登录。",
+      "pen 文案写回（headless CLI）：读取 .artemis/design/strings.json 的 nodeId→sourceText → .pen 文本节点 Update(content)；默认原位更新（临时文件 + 回读校验后原子替换，失败不动原文件），nodeId 在 .pen 中不存在时记入 notFound；pen CLI 缺失时自动安装（同 pen_export），需已登录。",
     schema: z.object({
       path: z.string().optional().describe("目标 .pen（相对项目根或绝对路径）；缺省自动选择最新文件"),
       stringsPath: z.string().optional().describe("自定义 strings.json 路径（相对项目根），默认 .artemis/design/strings.json"),
@@ -352,7 +352,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "pen_agent",
     description:
-      "pen agent 生成/修改设计（headless CLI）：自然语言 prompt → .pen（默认原位更新：临时文件→结构校验→原子替换，失败不动原文件；out 可新建/另存，dryRun 只返回命令）。凭证自动复用 AOS active LLM 条目：注入 PEN_AGENT_API_KEY=该 key（不落日志），DeepSeek 自动映射 ANTHROPIC_BASE_URL（https://api.deepseek.com→/anthropic，实测可用）；也兼容 ANTHROPIC_API_KEY 或 pen codex-login。可选 exportPath 顺带出图。",
+      "pen agent 生成/修改设计（headless CLI）：自然语言 prompt → .pen（默认原位更新：临时文件→结构校验→原子替换，失败不动原文件；out 可新建/另存，dryRun 只返回命令）。凭证自动复用 AOS active LLM 条目：注入 PEN_AGENT_API_KEY=该 key（不落日志），DeepSeek 自动映射 ANTHROPIC_BASE_URL（https://api.deepseek.com→/anthropic，实测可用）；项目 .env 的 PEN_* / ANTHROPIC_* 会透传（active LLM 派生值优先）；pen CLI 缺失时自动安装（同 pen_export）。可选 exportPath 顺带出图。",
     schema: z.object({
       path: z.string().optional().describe("输入 .pen（相对项目根或绝对路径）；缺省自动选择最新文件；省略且无 out 则报错"),
       out: z.string().optional().describe("输出 .pen（相对项目根）；提供 path 时省略则原位更新"),

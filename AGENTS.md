@@ -6,7 +6,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 
 每次改动以达到以下三项为准：
 
-1. `npm run build && npm test && npm run lint` **全绿**（232+ 测试）；
+1. `npm run build && npm test && npm run lint` **全绿**（255+ 测试）；
 2. 行为/接口变更同步更新 `DESIGN.md`（架构与决策的唯一事实源），用法变更同步 `README.md`；
 3. 测试不依赖真实 PG / 设备 / 外网（SQL 用 `pg-mem`，artemis 用假子进程，Figma REST 不打网）。
 
@@ -62,6 +62,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 - **项目内产物**：任务轨迹/步骤截图/notes/stdout/stderr/data_engine.db 默认写 `<项目>/.artemis/traces/`（子进程 `ARTEMIS_TRACES_DIR`，显式 env 优先、相对项目根解析、纳入指纹）；`mobile_get_device_state` 的 live_screenshot 上游仍写 artemis 仓库根，AOS 自动镜像到 `.artemis/traces/live_screenshots/`（响应透传）；测试文档在 `.artemis/design/`（`src/artemis/artifacts.ts`、DESIGN.md §6.7）。
 - **日志**：`<project>/.artemis/logs/aos-mcp.log`（工具调用审计 name/ok/ms + 启停 + 崩溃堆栈）与 `artemis-child.log`（子进程 stderr 落盘）；`AOS_LOG_LEVEL/DIR`、`AOS_LOG_DISABLE_FILE=1`、`AOS_LOG_MAX_MB`（轮转）。
 - **依赖更新检测**：`artemis/.venv/.aos-deps.json` 的 lock 哈希 stamp 对比 `uv.lock`；过期时 serve / `doctor --install-deps` 自动更新（依赖包 `AOS_ARTEMIS_DEPS_URL` 优先，旧包回退在线 `uv sync`；`AOS_DEPS_NO_ONLINE=1` 禁在线）。仅代码更新无需操作（venv 只装依赖，代码从仓库读取）。
+- **pen CLI 托管**：解析链 `AOS_PEN_CLI_PATH` → 托管目录（`AOS_PEN_CLI_DIR`，默认 `~/.aos/pen-cli`）→ PATH；缺失时首次调用自动安装 `@pen.dev/cli[@AOS_PEN_VERSION]`（Node ≥ 22.19、需网络；`AOS_PEN_NO_INSTALL=1`/`AOS_DEPS_NO_ONLINE=1` 关闭；超时 `AOS_PEN_INSTALL_TIMEOUT_MS` 默认 600s；失败 5min 冷却 + 并发去重；`dryRun` 不触发）；项目 `.env` 白名单透传子进程（`PEN_CLI_KEY`/`PEN_AGENT_API_KEY`/`ANTHROPIC_*`/`AOS_PEN_*`，进程 env 优先、active LLM 凭证最后覆盖）；doctor 显示状态、`--install-deps` 预装（`src/pen/install.ts`、`src/pen/cli.ts`）。
 - **技术栈检测**：`src/projects/stack.ts`（Flutter / React Native / 原生 Android / iOS / Web）；gap 扫描规则、定位/代码/文件命名约定按栈选择，`aos_status.stack` 可见。
 
 ## 设计流水线（Figma → 测试/代码）
@@ -69,7 +70,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 五个原生 zod 工具，产物都在 `<项目>/.artemis/design/`：
 `figma_extract_flows`（交互→flows.json）→ `figma_gap_analysis`（缺口+技术栈规则→gaps.json）→ `figma_generate_tests`（流程→tests.{json,md}，内含可直接执行的 `mobile_run_task` 任务描述）→ `figma_import_assets`（缺失资源按栈命名/目录写入；路径幂等 + 内容 sha256 去重，重复记 `duplicate_of`；dryRun 可预览）→ `figma_export_brief`（tokens/组件/编码约定→build-brief.{json,md}；`scaffold` 出组件骨架）。
 M6 增补（可选）：`figma_import_tokens`（颜色→tokens.json（DTCG+modes）+ 栈 token 文件 Android/Flutter/RN/Web；值冻结命名；裸色扫描）与 `figma_import_strings`（文案→strings.json + 资源写入 Android/Flutter/RN/Web/iOS；key 冻结（改名不改 key）、source_changed/unused/硬编码扫描、conflict 经 resolutions.json 闭环）。
-pen.dev（原 pencil.dev）接入（P1）：离线四件套 `pen_inspect` 解析 `.pen`（id/ref/`$变量` 校验 + 摘要）、`pen_import_tokens`（变量名即 token、modes 主题取值/`$别名`/usage → tokens.json + 栈文件）、`pen_import_strings`（文本 → 冻结 key → strings.json + 五栈资源）、`pen_export_brief`（→ build-brief.{json,md}，scaffold 出骨架）；CLI 四件套（需 `pen` CLI 已安装并登录：`npm i -g @pen.dev/cli` → `pen login`，或 `PEN_CLI_KEY`；`AOS_PEN_CLI_PATH`/`AOS_PEN_TIMEOUT_MS` 可配）：`pen_export`（PNG/JPEG/WEBP/PDF）、`pen_apply_tokens`/`pen_apply_strings`（写回 .pen，原位=临时文件→回读校验→原子替换，失败不动原文件）、`pen_agent`（prompt→.pen；凭证自动复用 active LLM：DeepSeek 自动映射 `ANTHROPIC_BASE_URL=/anthropic`（已实测）；Kimi/Z.AI/百炼 映射 Anthropic 端点 + Bearer + 模型 env（待真实 key 冒烟）；其他 provider 仅注入 `PEN_AGENT_API_KEY`，可 `AOS_PEN_ANTHROPIC_BASE_URL` 覆盖）。Figma→.pen 旁路原型 `scripts/figma-to-pen.mjs`（响应缓存 + 429 退避冷启动安全）。
+pen.dev（原 pencil.dev）接入（P1）：离线四件套 `pen_inspect` 解析 `.pen`（id/ref/`$变量` 校验 + 摘要）、`pen_import_tokens`（变量名即 token、modes 主题取值/`$别名`/usage → tokens.json + 栈文件）、`pen_import_strings`（文本 → 冻结 key → strings.json + 五栈资源）、`pen_export_brief`（→ build-brief.{json,md}，scaffold 出骨架）；CLI 四件套（`pen` CLI 缺失自动托管安装到 `~/.aos/pen-cli`（Node ≥ 22.19、需网络，`AOS_PEN_NO_INSTALL=1` 关闭）；登录用 `pen login` 或项目 `.env` 的 `PEN_CLI_KEY`（自动透传子进程）；`AOS_PEN_CLI_PATH`/`AOS_PEN_CLI_DIR`/`AOS_PEN_VERSION`/`AOS_PEN_TIMEOUT_MS`/`AOS_PEN_INSTALL_TIMEOUT_MS` 可配；doctor 显示状态、`--install-deps` 预装）：`pen_export`（PNG/JPEG/WEBP/PDF）、`pen_apply_tokens`/`pen_apply_strings`（写回 .pen，原位=临时文件→回读校验→原子替换，失败不动原文件）、`pen_agent`（prompt→.pen；凭证自动复用 active LLM：DeepSeek 自动映射 `ANTHROPIC_BASE_URL=/anthropic`（已实测）；Kimi/Z.AI/百炼 映射 Anthropic 端点 + Bearer + 模型 env（待真实 key 冒烟）；其他 provider 仅注入 `PEN_AGENT_API_KEY`，可 `AOS_PEN_ANTHROPIC_BASE_URL` 覆盖）。Figma→.pen 旁路原型 `scripts/figma-to-pen.mjs`（响应缓存 + 429 退避冷启动安全）。
 
 触发：① 客户端挂载后用自然语言（`install` 已生成项目级配置，重启客户端生效）；② 一条命令：`node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`；③ 对话中按序点名上述工具。前置：`FIGMA_ACCESS_TOKEN`（项目 `.env` 或 `aos_configure` 写入）。
 执行生成的用例：`mobile_run_task(task_desc = tests.json 的 flows[i].taskDesc)`；失败步骤用 `compare_design_and_device` 出"设计 vs 真机"双图定位差异。

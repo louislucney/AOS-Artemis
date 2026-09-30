@@ -5,7 +5,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
-import { detectPenFailure, runPenExport, type PenExecFn } from "./cli.js";
+import { detectPenFailure, penEnvFrom, runPenExport, type PenExecFn } from "./cli.js";
+import { ensurePenCli, type PenEnsureFn } from "./install.js";
 import { loadPenDocument, PEN_HINT, penRelativePath, resolvePenTarget } from "./paths.js";
 
 export interface PenExportArgs {
@@ -19,6 +20,7 @@ export interface PenExportArgs {
 
 export interface PenToolDeps {
   exec?: PenExecFn;
+  ensure?: PenEnsureFn;
 }
 
 function jsonResult(payload: unknown, isError = false): CallToolResult {
@@ -57,6 +59,12 @@ export async function penExport(
       return jsonResult({ ...payload, command: ["pen", "--in", target, "--export", output, "--export-scale", String(scale), ...(format !== "png" ? ["--export-type", format] : [])] });
     }
 
+    const env = penEnvFrom(runtime.project.dotenvValues, process.env);
+    const ready = await (deps.ensure ?? ensurePenCli)({ env });
+    if (!ready.ok) {
+      return jsonResult({ ok: false, error: ready.error ?? "pen CLI 不可用", hint: ready.hint }, true);
+    }
+
     const existedBefore = fs.existsSync(output);
     fs.mkdirSync(path.dirname(output), { recursive: true });
     const started = Date.now();
@@ -66,7 +74,9 @@ export async function penExport(
       format,
       scale,
       timeoutMs: args.timeoutMs,
-      exec: deps.exec
+      exec: deps.exec,
+      cliPath: ready.path ?? undefined,
+      env
     });
     const failure = detectPenFailure(run.result, run.log);
     if (failure || !run.saved) {

@@ -5,7 +5,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
-import { detectPenFailure, runPenCli, type PenExecFn } from "./cli.js";
+import { detectPenFailure, penEnvFrom, runPenCli, type PenExecFn } from "./cli.js";
+import { ensurePenCli, type PenEnsureFn } from "./install.js";
 import { loadPenDocument, PEN_HINT, penRelativePath, resolvePenTarget } from "./paths.js";
 import { parsePenText } from "./read.js";
 
@@ -28,6 +29,7 @@ export interface PenAgentArgs {
 
 export interface PenToolDeps {
   exec?: PenExecFn;
+  ensure?: PenEnsureFn;
 }
 
 const AGENT_RESPONSE_MARKER = "--- Agent Response ---";
@@ -165,13 +167,18 @@ export interface AgentLlmEntry {
 export function buildAgentEnv(
   entry: AgentLlmEntry | null,
   args: PenAgentArgs,
-  kind: "claude" | "codex" | "gemini"
+  kind: "claude" | "codex" | "gemini",
+  baseEnv: NodeJS.ProcessEnv = process.env
 ): { env: Record<string, string>; warnings: string[]; credential: Record<string, unknown> } {
   const env: Record<string, string> = {};
   const warnings: string[] = [];
   const key = entry?.apiKey ?? null;
   const model = args.model ?? entry?.model ?? null;
-  const explicitBase = args.anthropicBaseUrl?.trim() || process.env.AOS_PEN_ANTHROPIC_BASE_URL?.trim() || null;
+  const explicitBase =
+    args.anthropicBaseUrl?.trim() ||
+    baseEnv.AOS_PEN_ANTHROPIC_BASE_URL?.trim() ||
+    process.env.AOS_PEN_ANTHROPIC_BASE_URL?.trim() ||
+    null;
   const derived = anthropicBridgeFor(entry?.baseUrl);
   const matched = explicitBase
     ? { bridge: derived?.bridge ?? null, anthropicBaseUrl: explicitBase }
@@ -264,11 +271,14 @@ export async function penAgent(
 
     const entry = await runtime.activeEntry();
     const kind = agentKindFor(args);
-    const { env, warnings, credential } = buildAgentEnv(
+    const penEnv = penEnvFrom(runtime.project.dotenvValues, process.env);
+    const { env: agentEnv, warnings, credential } = buildAgentEnv(
       entry ? { apiKey: entry.apiKey, model: entry.model, baseUrl: entry.baseUrl } : null,
       args,
-      kind
+      kind,
+      penEnv
     );
+    const env = { ...penEnv, ...agentEnv };
     const useCustom = kind === "claude" && credential.anthropicBaseUrl !== null && args.custom !== false;
 
     const inPlace = target !== null && args.out === undefined;
@@ -320,10 +330,20 @@ export async function penAgent(
       return jsonResult({ ...payload, command: ["pen", ...cliArgs] });
     }
 
+    const ready = await (deps.ensure ?? ensurePenCli)({ env });
+    if (!ready.ok) {
+      return jsonResult({ ...payload, ok: false, error: ready.error ?? "pen CLI 不可用", hint: ready.hint }, true);
+    }
+
     const existedBefore = fs.existsSync(output);
     fs.mkdirSync(path.dirname(output), { recursive: true });
     const started = Date.now();
-    const run = await runPenCli(cliArgs, { env, timeoutMs: args.timeoutMs, exec: deps.exec });
+    const run = await runPenCli(cliArgs, {
+      env,
+      timeoutMs: args.timeoutMs,
+      exec: deps.exec,
+      cliPath: ready.path ?? undefined
+    });
     const failure = detectPenFailure(run.result, run.log);
     if (failure || !fs.existsSync(output)) {
       if (!existedBefore) {

@@ -132,10 +132,10 @@ pen_inspect(path?)           # pen.dev 离线检查：.pen（开放 JSON）结�
 pen_import_tokens(path?)     # pen 颜色变量 → tokens.json + 栈 token 文件（变量名即 token；modes/别名）
 pen_import_strings(path?)    # pen 文案 → strings.json + 资源文件（冻结 key；冲突经 resolutions.json）
 pen_export_brief(path?)      # pen 构建简报 → build-brief.{json,md}（scaffold 可出组件骨架）
-pen_export(path?)            # headless 渲染 .pen → PNG/JPEG/WEBP/PDF（需 pen CLI 已登录；用于与真机截图对比）
+pen_export(path?)            # headless 渲染 .pen → PNG/JPEG/WEBP/PDF（CLI 缺失自动安装；需已登录；用于与真机截图对比）
 pen_apply_tokens(path?)      # 写回：tokens.json（含 modes）→ .pen SetVariables（原位安全更新，失败不动原文件）
 pen_apply_strings(path?)     # 写回：strings.json → .pen 文本节点 Update(content)（原位安全更新）
-pen_agent(prompt)            # agent 生成/改设计 → .pen（凭证自动复用 active LLM：PEN_AGENT_API_KEY=其 key；DeepSeek 自动映射 Anthropic 兼容端点）
+pen_agent(prompt)            # agent 生成/改设计 → .pen（凭证自动复用 active LLM；CLI 缺失自动安装；.env PEN_* 透传）
 # 执行：mobile_run_task(task_desc = tests.json 中 flows[i].taskDesc)
 # 视觉断言：compare_design_and_device（失败步骤截图 vs Figma 渲染图）
 ```
@@ -150,7 +150,7 @@ pen_agent(prompt)            # agent 生成/改设计 → .pen（凭证自动复
 
 前置：`FIGMA_ACCESS_TOKEN` 在项目 `.env`（或 `aos_configure` 写入）；CLI 拉起服务时如 `adb` 不在 PATH，可在客户端 env 设置 `ARTEMIS_ADB_PATH`（如 `~/Library/Android/sdk/platform-tools/adb`）。Figma REST 限流（如访客席位的 low 档）会**快速失败并返回 retry-after 提示**，不会长时间挂起；`AOS_FIGMA_RETRY_MAX_WAIT_MS`（默认 60s）与 `AOS_FIGMA_CACHE_TTL_MS`（默认 10min，0 关闭）可调。
 
-pen.dev 写回/导出/agent（`pen_export`/`pen_apply_tokens`/`pen_apply_strings`/`pen_agent`）前置：安装并登录 pen CLI —— `npm install -g @pen.dev/cli`（Node ≥ 22.19）→ `pen login`（或在 pen.dev 组织设置创建 `PEN_CLI_KEY` 写入项目 `.env`）；`AOS_PEN_CLI_PATH`（默认 PATH 的 `pen`）与 `AOS_PEN_TIMEOUT_MS`（默认 120s）可调。写回默认原位更新：先在临时文件上执行 `SetVariables`/`Update`，回读校验后才原子替换，失败时原文件保持不变；`dryRun:true` 只返回将执行的命令。`pen_agent` 的 agent 凭证自动复用 AOS active LLM 条目（只进子进程 env、不落日志）：DeepSeek 自动映射 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`（已实测）；Kimi/Moonshot、Z.AI/智谱、阿里云百炼 按官方文档映射各自 Anthropic 端点并使用 `ANTHROPIC_AUTH_TOKEN` + 模型 env（待真实 key 冒烟）；其他 provider 仅注入 `PEN_AGENT_API_KEY`，可用 `anthropicBaseUrl` 或 `AOS_PEN_ANTHROPIC_BASE_URL` 指定兼容端点。CLI 目前只识别 claude/codex/gemini 模型。离线四件套（`pen_inspect`/`pen_import_*`/`pen_export_brief`）不需要 pen CLI 与账号。
+pen.dev 写回/导出/agent（`pen_export`/`pen_apply_tokens`/`pen_apply_strings`/`pen_agent`）前置：**无需手动安装**——pen CLI 缺失时自动安装到 `~/.aos/pen-cli`（Node ≥ 22.19、需网络；`AOS_PEN_NO_INSTALL=1` 关闭，`AOS_PEN_CLI_PATH`/`AOS_PEN_CLI_DIR`/`AOS_PEN_VERSION`、`AOS_PEN_TIMEOUT_MS` 默认 120s、`AOS_PEN_INSTALL_TIMEOUT_MS` 默认 600s 可调）；只需登录一次：`pen login`，或在 pen.dev 组织设置创建 `PEN_CLI_KEY` 写入项目 `.env`（自动透传子进程，不落日志）。`node dist/cli.js doctor` 显示 pen CLI 状态，`doctor --install-deps` 可预装。写回默认原位更新：先在临时文件上执行 `SetVariables`/`Update`，回读校验后才原子替换，失败时原文件保持不变；`dryRun:true` 只返回将执行的命令。`pen_agent` 的 agent 凭证自动复用 AOS active LLM 条目（只进子进程 env、不落日志）：DeepSeek 自动映射 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`（已实测）；Kimi/Moonshot、Z.AI/智谱、阿里云百炼 按官方文档映射各自 Anthropic 端点并使用 `ANTHROPIC_AUTH_TOKEN` + 模型 env（待真实 key 冒烟）；其他 provider 仅注入 `PEN_AGENT_API_KEY`，可用 `anthropicBaseUrl` 或 `AOS_PEN_ANTHROPIC_BASE_URL` 指定兼容端点。CLI 目前只识别 claude/codex/gemini 模型。离线四件套（`pen_inspect`/`pen_import_*`/`pen_export_brief`）不需要 pen CLI 与账号。
 
 生成的任务描述会自动带上定位线索（Figma 文本优先、图层名兜底）与页面断言（目标页文本/子元素）：例如
 `1) 点击「立即购买」（设计元素：CTA Button），验证进入「Checkout」（页面应出现「应付 ¥99」…）`。
@@ -248,7 +248,7 @@ node dist/cli.js doctor
 | `pen_import_tokens` | pen 颜色变量 → `.artemis/design/tokens.json`（DTCG；变量名即 token，modes 记录主题取值，`$别名` → aliasOf）+ 栈 token 文件（new/updated/unchanged/unused、裸色扫描、enforcement）；完全离线 |
 | `pen_import_strings` | pen 文案 → `.artemis/design/strings.json` + 资源文件（Android/Flutter/RN/Web/iOS；冻结 key、冲突经 `resolutions.json`、source_changed/unused/硬编码扫描）；完全离线 |
 | `pen_export_brief` | pen 构建简报：颜色/字阶/间距/圆角/阴影、屏幕与建议路由、可复用组件、按栈约定 → `build-brief.{json,md}`；`scaffold` 可选生成组件骨架；完全离线 |
-| `pen_export` | headless CLI 渲染导出：`.pen` → PNG/JPEG/WEBP/PDF（默认 `.artemis/design/pen/`；`dryRun` 看命令）；需 `pen` CLI 已安装并登录 |
+| `pen_export` | headless CLI 渲染导出：`.pen` → PNG/JPEG/WEBP/PDF（默认 `.artemis/design/pen/`；`dryRun` 看命令）；pen CLI 缺失时自动安装，需已登录 |
 | `pen_apply_tokens` | CLI 写回：`tokens.json`（含 modes 主题）→ `.pen` `SetVariables`；**原位更新**（临时文件→回读校验→原子替换，失败不动原文件），`out` 可另存 |
 | `pen_apply_strings` | CLI 写回：`strings.json` 的 nodeId→sourceText → `.pen` 文本节点；原位更新与校验语义同上；nodeId 缺失记 `notFound` |
 | `pen_agent` | agent 生成/修改设计：prompt → `.pen`（默认原位安全更新；`out` 新建/另存；`exportPath` 顺带出图）；凭证复用 active LLM（不落日志）并自动桥接 Anthropic 端点：DeepSeek（已实测）、Kimi/Z.AI/百炼（Bearer+模型 env，待冒烟）；其他 provider 可 `anthropicBaseUrl` 指定 |

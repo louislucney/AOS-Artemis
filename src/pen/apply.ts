@@ -7,13 +7,15 @@ import { normalizeHexColor, parseCanonicalTokens } from "../figma/color.js";
 import { normalizedText, parseStrings } from "../figma/strings.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
-import { detectPenFailure, runPenInteractive, type PenExecFn } from "./cli.js";
+import { detectPenFailure, penEnvFrom, runPenInteractive, type PenExecFn } from "./cli.js";
+import { ensurePenCli, type PenEnsureFn } from "./install.js";
 import { loadPenDocument, PEN_HINT, penRelativePath, resolvePenTarget } from "./paths.js";
 import { collectPenNodes, parsePenText } from "./read.js";
 import { penVariableDefaultHex } from "./tokens.js";
 
 export interface PenToolDeps {
   exec?: PenExecFn;
+  ensure?: PenEnsureFn;
 }
 
 export interface PenApplyTokensArgs {
@@ -64,7 +66,13 @@ async function runEdits(
   runtime: Runtime,
   target: string,
   commands: string[],
-  options: { out?: string; timeoutMs?: number; exec?: PenExecFn }
+  options: {
+    out?: string;
+    timeoutMs?: number;
+    exec?: PenExecFn;
+    cliPath?: string;
+    env?: Record<string, string>;
+  }
 ): Promise<{ ok: true; run: ApplyRun } | { ok: false; error: string; log: string }> {
   const inPlace = options.out === undefined;
   const output = inPlace
@@ -78,7 +86,9 @@ async function runEdits(
     output,
     commands,
     timeoutMs: options.timeoutMs,
-    exec: options.exec
+    exec: options.exec,
+    cliPath: options.cliPath,
+    env: options.env
   });
   const failure = detectPenFailure(run.result, run.log);
   if (failure || !run.saved) {
@@ -190,10 +200,18 @@ export async function penApplyTokens(
       return jsonResult({ ok: true, dryRun: true, ...payloadBase, command });
     }
 
+    const env = penEnvFrom(runtime.project.dotenvValues, process.env);
+    const ready = await (deps.ensure ?? ensurePenCli)({ env });
+    if (!ready.ok) {
+      return jsonResult({ ok: false, error: ready.error ?? "pen CLI 不可用", hint: ready.hint }, true);
+    }
+
     const editResult = await runEdits(runtime, target, [command], {
       out: args.out,
       timeoutMs: args.timeoutMs,
-      exec: deps.exec
+      exec: deps.exec,
+      cliPath: ready.path ?? undefined,
+      env
     });
     if (!editResult.ok) {
       return jsonResult(
@@ -298,10 +316,18 @@ export async function penApplyStrings(
       return jsonResult({ ok: true, dryRun: true, ...payloadBase, commandCount: commands.length, commands: commands.slice(0, 3) });
     }
 
+    const env = penEnvFrom(runtime.project.dotenvValues, process.env);
+    const ready = await (deps.ensure ?? ensurePenCli)({ env });
+    if (!ready.ok) {
+      return jsonResult({ ok: false, error: ready.error ?? "pen CLI 不可用", hint: ready.hint }, true);
+    }
+
     const editResult = await runEdits(runtime, target, commands, {
       out: args.out,
       timeoutMs: args.timeoutMs,
-      exec: deps.exec
+      exec: deps.exec,
+      cliPath: ready.path ?? undefined,
+      env
     });
     if (!editResult.ok) {
       return jsonResult(

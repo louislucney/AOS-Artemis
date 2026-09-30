@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { errorMessage } from "../util.js";
 
@@ -24,22 +26,80 @@ export type PenExecFn = (
 
 export interface ResolvedPenCli {
   path: string;
-  source: "env" | "path";
+  source: "env" | "managed" | "path";
 }
 
 export const PEN_CLI_HINT =
-  "pen CLI 需要安装并登录：npm install -g @pen.dev/cli（Node ≥ 22.19）→ pen login（或设置 PEN_CLI_KEY，见 pen.dev 组织设置 Developer Keys）。AOS_PEN_CLI_PATH 可指定二进制路径。";
+  "pen CLI 首次使用会自动安装到 ~/.aos/pen-cli（Node ≥ 22.19，需网络；AOS_PEN_NO_INSTALL=1 关闭，AOS_PEN_CLI_DIR 可换目录），也可 npm install -g @pen.dev/cli 后 pen login（或设置 PEN_CLI_KEY，见 pen.dev 组织设置 Developer Keys）。AOS_PEN_CLI_PATH 可指定二进制路径。";
+
+export const PEN_ENV_PASSTHROUGH = [
+  "PEN_CLI_KEY",
+  "PEN_AGENT_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "AOS_PEN_ANTHROPIC_BASE_URL",
+  "AOS_PEN_CLI_PATH",
+  "AOS_PEN_CLI_DIR",
+  "AOS_PEN_VERSION",
+  "AOS_PEN_TIMEOUT_MS",
+  "AOS_PEN_INSTALL_TIMEOUT_MS",
+  "AOS_PEN_NO_INSTALL"
+] as const;
+
+/** pen 子进程 env：项目 .env 白名单键，进程 env 优先，extra（如 agent 派生凭证）最后覆盖。 */
+export function penEnvFrom(
+  dotenv: Record<string, string>,
+  base: NodeJS.ProcessEnv = process.env,
+  extra: Record<string, string> = {}
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of PEN_ENV_PASSTHROUGH) {
+    const value = dotenv[key]?.trim();
+    if (value) env[key] = value;
+  }
+  for (const key of PEN_ENV_PASSTHROUGH) {
+    const value = base[key]?.trim();
+    if (value) env[key] = value;
+  }
+  return { ...env, ...extra };
+}
+
+export function penCliDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.resolve(env.AOS_PEN_CLI_DIR?.trim() || path.join(os.homedir(), ".aos", "pen-cli"));
+}
+
+export function managedPenBinPath(dir: string, platform: NodeJS.Platform = process.platform): string {
+  return path.join(dir, "node_modules", ".bin", platform === "win32" ? "pen.cmd" : "pen");
+}
+
+export interface ResolvePenCliOptions {
+  managedDir?: string;
+  exists?: (candidate: string) => boolean;
+}
+
+export function resolvePenCliPath(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  options: ResolvePenCliOptions = {}
+): ResolvedPenCli {
+  const explicit = env.AOS_PEN_CLI_PATH?.trim();
+  if (explicit) return { path: explicit, source: "env" };
+  const managed = managedPenBinPath(options.managedDir ?? penCliDir(env), platform);
+  const exists = options.exists ?? fs.existsSync;
+  if (exists(managed)) return { path: managed, source: "managed" };
+  return { path: platform === "win32" ? "pen.cmd" : "pen", source: "path" };
+}
+
+export function penCommandFor(options: { cliPath?: string; env?: NodeJS.ProcessEnv } = {}): string {
+  if (options.cliPath) return options.cliPath;
+  return resolvePenCliPath(options.env ?? process.env).path;
+}
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MIN_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 600_000;
 const STATUS_TIMEOUT_MS = 20_000;
-
-export function resolvePenCliPath(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): ResolvedPenCli {
-  const explicit = env.AOS_PEN_CLI_PATH?.trim();
-  if (explicit) return { path: explicit, source: "env" };
-  return { path: platform === "win32" ? "pen.cmd" : "pen", source: "path" };
-}
 
 export function resolvePenTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.AOS_PEN_TIMEOUT_MS ?? "");
@@ -61,7 +121,7 @@ export function stripAnsi(text: string): string {
   return out;
 }
 
-const defaultPenExec: PenExecFn = (command, args, options = {}) =>
+export const penExec: PenExecFn = (command, args, options = {}) =>
   new Promise((resolve) => {
     const childEnv = options.env ? { ...process.env, ...options.env } : process.env;
     let child: ReturnType<typeof spawn>;
@@ -123,12 +183,12 @@ export interface PenCliStatus {
 }
 
 export async function penCliStatus(
-  exec: PenExecFn = defaultPenExec,
-  options: { timeoutMs?: number } = {}
+  exec: PenExecFn = penExec,
+  options: { timeoutMs?: number; cliPath?: string; env?: NodeJS.ProcessEnv } = {}
 ): Promise<PenCliStatus> {
-  const cli = resolvePenCliPath();
+  const cli = penCommandFor(options);
   const timeoutMs = options.timeoutMs ?? STATUS_TIMEOUT_MS;
-  const versionResult = await exec(cli.path, ["version"], { timeoutMs });
+  const versionResult = await exec(cli, ["version"], { timeoutMs });
   if (versionResult.error === "timeout") {
     return { installed: false, version: null, authenticated: false, email: null, workspace: null, error: "timeout" };
   }
@@ -145,7 +205,7 @@ export async function penCliStatus(
   }
   const version = versionText.split(/\s+/).pop() ?? versionText;
 
-  const statusResult = await exec(cli.path, ["status"], { timeoutMs });
+  const statusResult = await exec(cli, ["status"], { timeoutMs });
   const log = stripAnsi(`${statusResult.stdout}\n${statusResult.stderr}`);
   const email = /Email\s+(\S+@\S+)/.exec(log)?.[1] ?? null;
   const workspaceRaw = /Workspace\s+(.+)$/m.exec(log)?.[1]?.trim() ?? null;
@@ -192,11 +252,11 @@ export interface PenCliRun {
 
 export function runPenCli(
   args: string[],
-  options: { timeoutMs?: number; env?: Record<string, string>; exec?: PenExecFn; input?: string } = {}
+  options: { timeoutMs?: number; env?: Record<string, string>; exec?: PenExecFn; input?: string; cliPath?: string } = {}
 ): Promise<PenCliRun> {
-  const exec = options.exec ?? defaultPenExec;
-  const cli = resolvePenCliPath();
-  return exec(cli.path, args, {
+  const exec = options.exec ?? penExec;
+  const cli = penCommandFor(options);
+  return exec(cli, args, {
     timeoutMs: options.timeoutMs ?? resolvePenTimeoutMs(),
     env: options.env,
     input: options.input
@@ -215,12 +275,15 @@ export function runPenInteractive(options: {
   commands: string[];
   timeoutMs?: number;
   exec?: PenExecFn;
+  cliPath?: string;
+  env?: Record<string, string>;
 }): Promise<PenInteractiveRun> {
-  const exec = options.exec ?? defaultPenExec;
-  const cli = resolvePenCliPath();
+  const exec = options.exec ?? penExec;
+  const cli = penCommandFor(options);
   const input = [...options.commands, "save()", "exit()"].join("\n") + "\n";
-  return exec(cli.path, ["interactive", "-i", options.input, "-o", options.output], {
+  return exec(cli, ["interactive", "-i", options.input, "-o", options.output], {
     timeoutMs: options.timeoutMs ?? resolvePenTimeoutMs(),
+    env: options.env,
     input
   }).then((result) => ({
     result,
@@ -236,13 +299,15 @@ export function runPenExport(options: {
   scale?: number;
   timeoutMs?: number;
   exec?: PenExecFn;
+  cliPath?: string;
+  env?: Record<string, string>;
 }): Promise<PenInteractiveRun> {
-  const exec = options.exec ?? defaultPenExec;
-  const cli = resolvePenCliPath();
+  const exec = options.exec ?? penExec;
+  const cli = penCommandFor(options);
   const args = ["--in", options.input, "--export", options.output];
   if (options.scale !== undefined) args.push("--export-scale", String(options.scale));
   if (options.format !== "png") args.push("--export-type", options.format);
-  return exec(cli.path, args, { timeoutMs: options.timeoutMs ?? resolvePenTimeoutMs() }).then((result) => ({
+  return exec(cli, args, { timeoutMs: options.timeoutMs ?? resolvePenTimeoutMs(), env: options.env }).then((result) => ({
     result,
     log: stripAnsi(`${result.stdout}\n${result.stderr}`),
     saved: fs.existsSync(options.output)
