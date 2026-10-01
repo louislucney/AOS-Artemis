@@ -215,11 +215,11 @@ interface DiffReport {
 
 **Blocked by:** 01（Figma × 实时截图 最小闭环）
 
-- [ ] 设备源新增 `step` 模式：`trace_id` + `step_number` 必填，`image: "post" | "pre"`（默认 post）
-- [ ] 通过上游代理工具取步骤截图路径并读取文件；不直读上游数据库/内部文件布局
-- [ ] 报告 `unit.device` 记录 `mode/traceId/stepNumber/image/serial`
-- [ ] 错误路径：trace 不存在、步骤越界、截图缺失、upstream 报错，均结构化返回并附下一步提示
-- [ ] 测试：StubProxy 返回步骤截图路径的 fixture；错误分支；报告字段断言
+- [x] 设备源新增 `step` 模式：`trace_id` + `step_number` 必填，`image: "post" | "pre"`（默认 post）
+- [x] 通过上游代理工具取步骤截图路径并读取文件；不直读上游数据库/内部文件布局
+- [x] 报告 `unit.device` 记录 `mode/traceId/stepNumber/image/serial`
+- [x] 错误路径：trace 不存在、步骤越界、截图缺失、upstream 报错，均结构化返回并附下一步提示
+- [x] 测试：StubProxy 返回步骤截图路径的 fixture；错误分支；报告字段断言
 
 ### 03 — 差异分类与严重度 + 阈值参数
 

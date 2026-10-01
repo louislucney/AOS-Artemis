@@ -6,13 +6,19 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { fetchFigmaRenderPng, resolveFigmaNodeId } from "../figma/render.js";
 import { errorMessage } from "../util.js";
 import type { Runtime } from "../runtime.js";
-import { extractDeviceImage } from "../tools/composite.js";
 import { renderAnnotatedPng } from "./annotate.js";
+import { captureLiveScreenshot, captureStepScreenshot, type DeviceCapture } from "./device-source.js";
 import { decodeImage, diffScreens, encodePng, type Bbox, type Insets } from "./engine.js";
 
 export interface DesignDeviceDiffArgs {
   design: { figmaUrl: string; nodeId?: string };
-  device?: { mode?: "live"; serial?: string };
+  device?: {
+    mode?: "live" | "step";
+    serial?: string;
+    traceId?: string;
+    stepNumber?: number;
+    image?: "post" | "pre";
+  };
   alignment?: { insets?: Partial<Insets>; ignoreRegions?: Bbox[] };
   diff?: {
     pixelThreshold?: number;
@@ -53,6 +59,21 @@ export async function designDeviceDiff(
       return jsonError("design.figmaUrl 必填：请提供带 ?node-id= 的 Figma 链接，或搭配 nodeId 参数。");
     }
     const started = Date.now();
+    const mode = args.device?.mode ?? "live";
+    if (mode === "step") {
+      if (!args.device?.traceId || !Number.isInteger(args.device.stepNumber) || (args.device.stepNumber ?? 0) <= 0) {
+        return jsonError(
+          "device.mode=step 需要 device.traceId 与正整数 device.stepNumber（截图经 mobile_inspect_trace 获取）。"
+        );
+      }
+    }
+    const stepRequest = mode === "step"
+      ? {
+          traceId: args.device!.traceId!,
+          stepNumber: args.device!.stepNumber!,
+          image: args.device?.image ?? ("post" as const)
+        }
+      : null;
 
     let plannedNodeId: string | null = null;
     try {
@@ -67,7 +88,10 @@ export async function designDeviceDiff(
         ok: true,
         dryRun: true,
         design: { ...args.design, nodeId: plannedNodeId },
-        device: { mode: "live", serial: args.device?.serial ?? null },
+        device:
+          stepRequest !== null
+            ? { mode: "step", traceId: stepRequest.traceId, stepNumber: stepRequest.stepNumber, image: stepRequest.image, serial: args.device?.serial ?? null }
+            : { mode: "live", serial: args.device?.serial ?? null },
         plannedDir: path.join(runtime.configDirAbs, "design", "diffs", `${slug}-<timestamp>`),
         hint: "dryRun 不拉取设计/设备截图、不写盘。"
       });
@@ -80,22 +104,16 @@ export async function designDeviceDiff(
       return jsonResult({ ok: false, error: `Figma 渲染失败: ${errorMessage(error)}`, hint: FIGMA_HINT }, true);
     }
 
-    let deviceBytes: Buffer;
-    let deviceNote: string;
+    let captured: DeviceCapture;
     try {
-      const result = await runtime.proxy.callTool("mobile_get_device_state", {
-        view_type: "screenshot",
-        ...(args.device?.serial ? { device_serial: args.device.serial } : {})
-      });
-      const extracted = extractDeviceImage(result);
-      if (!extracted) {
-        throw new Error("无法从 mobile_get_device_state 结果中解析截图（image 块或本地文件路径）。");
-      }
-      deviceBytes = Buffer.from(extracted.data, "base64");
-      deviceNote = extracted.note;
+      captured = stepRequest !== null
+        ? await captureStepScreenshot(runtime, stepRequest)
+        : await captureLiveScreenshot(runtime, args.device?.serial);
     } catch (error) {
-      return jsonError(`真机截图失败: ${errorMessage(error)}`);
+      return jsonError(stepRequest !== null ? `步骤截图失败: ${errorMessage(error)}` : `真机截图失败: ${errorMessage(error)}`);
     }
+    const deviceBytes = captured.bytes;
+    const deviceNote = captured.note;
 
     let annotated: Buffer;
     let deviceImage: ReturnType<typeof decodeImage>;
@@ -118,10 +136,19 @@ export async function designDeviceDiff(
       schemaVersion: 1 as const,
       unit: {
         design: { source: "figma" as const, nodeId: render.nodeId },
-        device: {
-          mode: "live" as const,
-          ...(args.device?.serial ? { serial: args.device.serial } : {})
-        }
+        device:
+          stepRequest !== null
+            ? {
+                mode: "step" as const,
+                traceId: stepRequest.traceId,
+                stepNumber: stepRequest.stepNumber,
+                image: stepRequest.image,
+                ...(captured.serial ? { serial: captured.serial } : {})
+              }
+            : {
+                mode: "live" as const,
+                ...(args.device?.serial ? { serial: args.device.serial } : {})
+              }
       },
       alignment: diffResult.alignment,
       ignoredRegions: diffResult.ignoredRegions,
@@ -165,7 +192,7 @@ export async function designDeviceDiff(
               ok: true,
               dryRun: false,
               design: { nodeId: render.nodeId, renderUrl: render.renderUrl },
-              device: { source: deviceNote, serial: args.device?.serial ?? "(auto)" },
+              device: { source: deviceNote, serial: captured.serial ?? args.device?.serial ?? "(auto)" },
               alignment: diffResult.alignment,
               ignoredRegions: diffResult.ignoredRegions,
               summary: diffResult.summary,

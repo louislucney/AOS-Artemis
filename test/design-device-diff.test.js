@@ -14,55 +14,12 @@ import {
   makeTempProject,
   parseToolResult,
   StubProxy,
+  stubDevice,
+  stubFigmaFetch,
   toJpeg,
-  toPng
+  toPng,
+  withFigmaToken
 } from "./helpers.js";
-
-function stubFigmaFetch(designPng, nodeId, fileKey) {
-  const original = globalThis.fetch;
-  const calls = [];
-  globalThis.fetch = async (url) => {
-    const href = String(url);
-    calls.push(href);
-    if (href.includes(`/images/${fileKey}`)) {
-      return new Response(JSON.stringify({ err: null, images: { [nodeId]: "https://render.example/test.png" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      });
-    }
-    if (href === "https://render.example/test.png") {
-      return new Response(designPng, { status: 200, headers: { "content-type": "image/png" } });
-    }
-    throw new Error(`unexpected fetch ${href}`);
-  };
-  return {
-    calls,
-    restore: () => {
-      globalThis.fetch = original;
-    }
-  };
-}
-
-function stubDevice(proxy, filePath) {
-  proxy.callTool = async (name, args) => {
-    proxy.calls.push({ name, args });
-    if (name === "mobile_get_device_state") {
-      return { content: [{ type: "text", text: JSON.stringify({ screenshot_path: filePath }) }] };
-    }
-    return { content: [{ type: "text", text: "{}" }] };
-  };
-}
-
-async function withFigmaToken(fn) {
-  const previous = process.env.FIGMA_ACCESS_TOKEN;
-  process.env.FIGMA_ACCESS_TOKEN = "test-token";
-  try {
-    await fn();
-  } finally {
-    if (previous === undefined) delete process.env.FIGMA_ACCESS_TOKEN;
-    else process.env.FIGMA_ACCESS_TOKEN = previous;
-  }
-}
 
 function makeDiffProject({ fileKey }) {
   const dir = makeTempProject({ config: baseConfig() });
