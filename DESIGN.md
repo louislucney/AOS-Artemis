@@ -622,3 +622,14 @@ llm_switch(name, force):
 - **范围**：`install` 生成的四个客户端配置键（`mcpServers.android-testing` / `servers.android-testing` / `mcp.android-testing`）与 Codex 手动片段同步；工具名本身不变（`mobile_run_task` 等照旧）。
 - **旧键迁移（`removeJsoncPath`，`src/install.ts`）**：install 写入前先移除同一父路径下的历史键 `aos`，避免同一客户端同时加载新旧两个 server；仅移除该历史键，不动其他 server 与注释。
 - **部署备注（客户端零配置发现）**：opencode 以工作区目录为 cwd 启动本地 MCP（`connectLocal` 取 `InstanceState.directory`），因此用户级全局配置挂载不带 `AOS_PROJECT_DIR` 的 `android-testing` 条目即可被所有项目发现（AOS 项目识别链回退 cwd）；`install` 仍为按项目精确挂载（写入 `AOS_PROJECT_DIR`）。
+
+### 13.13 实施记录（design_device_diff v1：设计 vs 真机确定性差异）
+
+> 实施于 2026-10-01，对应 spec `.scratch/design-device-diff/spec.md` 与票据 01；新增 `test/diff-engine.test.js`（10 例）与 `test/design-device-diff.test.js`（7 例），全量 272 用例通过。
+
+- **范围（v1 最小闭环）**：Figma 节点 × 实时截图；差异分类与严重度、步骤截图、`.pen` 设计源、`screen_map` 定位按票据 02–07 后续实施。
+- **差异引擎（纯函数，ADR-0002）**：`src/diff/engine.ts`——PNG/JPEG 解码（pngjs/jpeg-js）、设计宽度缩放 + 顶部对齐、insets 裁剪、`ignoreRegions` 判定前屏蔽、默认降采样最长边 1440px（区域坐标按比例还原）、pixelmatch `diffMask` 提取差异像素（默认阈值 0.1、抗锯齿剔除）、扫描线组件合并（聚类间距 8px）、最小面积 0.5% 与区域数上限 20、确定性排序（严重度→面积→坐标；同输入两次运行引擎输出逐字节一致）；`src/diff/annotate.ts` 生成标注图（严重度色框 + 点阵序号）。
+- **工具**：`design_device_diff`（`src/diff/tool.ts`）——设计渲染经 `src/figma/render.ts`（REST PNG@2x；`compare_design_and_device` 同步复用该抽取，行为不变）；真机截图经既有代理通路 `mobile_get_device_state`；默认落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`（`report.json` schemaVersion=1 / `annotated.png` / `design.png` / `device.png`，device 重编码为真 PNG），响应=摘要 JSON + 标注图 image block + 路径；`dryRun` 不取图不写盘；写盘失败清理半成品；判定不依赖 LLM（ADR-0001）。
+- **测试**：合成 golden（JPEG 有损无差异零误报、注入差异区域与容差、确定性、insets、ignoreRegions、降采样坐标还原、最小面积）+ 工具层（temp project + StubProxy + fetch stub、dryRun、错误与清理）；不依赖设备/网络/Python。
+- **评审修订（Standards/Spec 双轴）**：dryRun 预览改用 URL 解析 nodeId（与落盘目录一致）；聚类改扫描线并去掉组件数上限；`device.png` 重编码为真 PNG；补「写盘失败清理」用例；标注拆模块；测试图像工具收进 `test/helpers.js`。
+- **后续（frontier）**：票据 02（步骤截图）与 03（分类与严重度）解锁；04 依赖 02；05 依赖 01；06 依赖 01/03；07 依赖 03。
