@@ -52,7 +52,7 @@ Status: ready-for-agent
 - **设计渲染源抽象**：统一「设计渲染源」接口（输入屏幕/节点标识，输出位图 + 设计侧节点几何 + 名称）。v1 实现两源：Figma（REST 导出 PNG@2x + 节点树几何/文本）与 `.pen`（经 `pen_export` 渲染 + 解析文件节点几何）。`.pen` 渲染缺 CLI/未登录时复用既有错误分类与提示。
 - **设备采集**：两种模式——`live`（经 `runtime.proxy.callTool("mobile_get_device_state")` 取实时截图）与 `step`（显式 `trace_id + step_number`，经 `mobile_inspect_trace(action="view_step_screenshots")` 取图，默认用 post，允许选 pre）。自动锚点模式：仅给 `trace_id` 时，用失败证据文本经 `mobile_inspect_trace(action="search")` 找回步骤；报告记录锚点来源（`explicit` / `search`）；Flash 任务无 `run_outcome`，自动模式返回明确说明而非静默失败（见 ADR-0003）。
 - **差异计算落点**：AOS TypeScript 纯 JS 图像栈（`pngjs` 解设计图、`jpeg-js` 解真机 JPEG、`pixelmatch` 比对；见 ADR-0002）。不新增 Python 通道、不直读上游 SQLite。
-- **对齐与降采样**：以设计宽度缩放 + 顶部对齐为默认锚点；`insets`（top/right/bottom/left，px）显式修正；不自动检测系统栏（后置）。对齐记录（scale/offset/insets/downsampledTo）写入报告；大图先降采样到**默认最长边 1440px（可配）**，区域坐标按比例还原。
+- **对齐与降采样**：以设计宽度缩放 + 顶部对齐为默认锚点；`insets`（top/right/bottom/left，px）显式修正；不自动检测系统栏（后置）。对齐记录（scale/offset/insets/downsampledTo）写入报告；降采样按**设计图最长边**判定（默认 1440px 可配，设备图直接缩放到设计宽度，不参与触发），区域坐标按比例还原；`scale` 为设备像素 → 工作（设计）坐标系比例。
 - **区域屏蔽与抗噪**：`ignoreRegions`（bbox 数组）在判定前屏蔽指定区域（状态栏、视频位、轮播、时钟等动态内容），并在报告中记录 `ignoredRegions`。真机截图为**有损 JPEG**（上游固定编码）：平坦区噪声由 pixelmatch 阈值吸收（默认 0.1，可配），边缘噪声由降采样 + 最小区域面积（0.5%）+ 聚类间距抑制；阈值最终由票据 07 的真实基准校准，不提前拍高。
 - **判定与分类**（见 ADR-0001）：像素差异产生候选区域（pixelmatch 阈值、最小面积占比、聚类间距、区域数上限，均可配且默认 0.1 / 0.5% / 8px / 20）；用设计侧节点几何把候选归入类别 `missing | extra | position-size | color | text | asset`，并映射严重度 `blocker | major | minor | info`（主内容缺失/多余 ≥ major；文本区域差异 major；小面积颜色差异 minor）。输出按「严重度 → 面积 → 坐标」排序，保证确定性。
 - **差异报告形状**（决定性的类型轮廓，供实现与回归对齐）：

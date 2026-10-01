@@ -1,0 +1,46 @@
+{
+  "source": "test/fixtures/diff-bench/device.jpg（真实 Pixel 采集，2026-09-28 ARTEMIS 运行）",
+  "note": "design = device JPEG 按 insets（top 96 / bottom 120）裁剪后双线性降采样到 390px 宽；两个低方差 48x48 窗口重绘（亮窗 #1E40AF、暗窗 #DC2626）作为已知差异；可用 scripts/make-diff-benchmark.mjs <device.jpg> 复现",
+  "insets": {
+    "top": 96,
+    "bottom": 120
+  },
+  "design": {
+    "width": 390,
+    "height": 789
+  },
+  "cases": [
+    {
+      "id": "missing-block",
+      "bbox": {
+        "x": 222,
+        "y": 82,
+        "width": 48,
+        "height": 48
+      },
+      "expectedCategory": "missing",
+      "node": {
+        "id": "bench-bright",
+        "name": "Bench Bright",
+        "type": "rectangle",
+        "parentFill": "#FFFFFFFF"
+      }
+    },
+    {
+      "id": "color-block",
+      "bbox": {
+        "x": 40,
+        "y": 544,
+        "width": 48,
+        "height": 48
+      },
+      "expectedCategory": "color",
+      "node": {
+        "id": "bench-dark",
+        "name": "Bench Dark",
+        "type": "rectangle",
+        "parentFill": "#FFFFFFFF"
+      }
+    }
+  ]
+}

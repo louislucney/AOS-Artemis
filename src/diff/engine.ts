@@ -366,7 +366,7 @@ interface WorkingNode extends DesignNode {
 function classifyRegion(
   bbox: Bbox,
   nodes: WorkingNode[],
-  deviceWork: RgbaImage,
+  comparison: RgbaImage,
   options: { proximity: number; tolerance: number }
 ): { category: DiffCategory; designNode?: { id: string; name: string } } {
   let dominant: WorkingNode | null = null;
@@ -403,7 +403,7 @@ function classifyRegion(
       if (nodeCovered >= NODE_COVERAGE) {
         const parentFill = hexToRgb(dominant.parentFill);
         if (parentFill && parentFill.alpha >= 250) {
-          const mean = meanColor(deviceWork, dominant.wx, dominant.wy, dominant.wx + dominant.ww, dominant.wy + dominant.wh);
+          const mean = meanColor(comparison, dominant.wx, dominant.wy, dominant.wx + dominant.ww, dominant.wy + dominant.wh);
           if (colorMatches(mean, parentFill.rgb, options.tolerance)) return { category: "missing", designNode: reference };
         }
         return { category: "color", designNode: reference };
@@ -443,14 +443,13 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
   const insets = normalizeInsets(options.insets, device);
   const cropped = cropInsets(device, insets);
 
-  const longest = Math.max(design.width, design.height, cropped.width, cropped.height);
-  const factor = longest > maxEdge ? maxEdge / longest : 1;
+  const designLongest = Math.max(design.width, design.height);
+  const factor = designLongest > maxEdge ? maxEdge / designLongest : 1;
   const designWork = factor < 1 ? resize(design, Math.max(1, Math.round(design.width * factor)), Math.max(1, Math.round(design.height * factor))) : design;
-  const deviceWork = factor < 1 ? resize(cropped, Math.max(1, Math.round(cropped.width * factor)), Math.max(1, Math.round(cropped.height * factor))) : cropped;
 
-  const scale = designWork.width / deviceWork.width;
-  const deviceScaledHeight = Math.max(1, Math.round(deviceWork.height * scale));
-  const deviceScaled = resize(deviceWork, designWork.width, deviceScaledHeight);
+  const scale = designWork.width / cropped.width;
+  const deviceScaledHeight = Math.max(1, Math.round(cropped.height * scale));
+  const deviceScaled = resize(cropped, designWork.width, deviceScaledHeight);
 
   const compareHeight = Math.min(designWork.height, deviceScaledHeight);
   const designPart = sliceRows(designWork, compareHeight);
@@ -513,7 +512,7 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
       const ratio = component.count / areaTotal;
       const workingBox: Bbox = { x: component.minX, y: component.minY, width, height };
       const classified = workingNodes.length > 0
-        ? classifyRegion(workingBox, workingNodes, deviceWork, { proximity: nodeProximity, tolerance: colorTolerance })
+        ? classifyRegion(workingBox, workingNodes, deviceScaled, { proximity: nodeProximity, tolerance: colorTolerance })
         : { category: "pixel" as DiffCategory };
       const band = Math.round(designWork.height * systemBandRatio);
       const suspected =

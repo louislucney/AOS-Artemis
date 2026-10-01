@@ -62,6 +62,19 @@ test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + �
         assert.ok(fs.existsSync(path.join(payload.saved.dir, file)), `${file} missing`);
       }
       const report = JSON.parse(fs.readFileSync(payload.saved.report, "utf-8"));
+      assert.deepEqual(Object.keys(report), [
+        "schemaVersion",
+        "unit",
+        "alignment",
+        "designScreens",
+        "ignoredRegions",
+        "designNodes",
+        "thresholds",
+        "warnings",
+        "regions",
+        "summary",
+        "elapsedMs"
+      ]);
       assert.equal(report.schemaVersion, 1);
       assert.equal(report.unit.design.source, "figma");
       assert.equal(report.unit.design.nodeId, "1:2");

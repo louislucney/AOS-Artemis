@@ -83,6 +83,7 @@ test("diffScreens: 大图降采样且区域坐标还原到设计坐标", () => {
 
   const result = diffScreens(design, device, { maxEdge: 1000 });
   assert.equal(result.alignment.downsampledTo, 1000);
+  assert.equal(result.alignment.scale, 0.5);
   assert.ok(result.regions.length >= 1);
   const region = result.regions[0];
   assert.ok(Math.abs(region.bbox.x - 1400) <= 16, `x=${region.bbox.x}`);
@@ -238,4 +239,19 @@ test("diffScreens: 大面积缺失为 blocker，小面积颜色差异为 minor",
   const chip = diffScreens(chipDesign, decodeImage(toJpeg(chipDeviceImage, 90)), { designNodes: [chipNode] });
   assert.equal(chip.regions[0].category, "color");
   assert.equal(chip.regions[0].severity, "minor");
+});
+
+test("diffScreens: 设备图超长不触发降采样（只按设计图），差异不被误滤", () => {
+  const design = createImage(200, 400);
+  const deviceImage = createImage(1000, 2400);
+  fillRect(deviceImage, 400, 1100, 200, 200, [220, 38, 38, 255]);
+  const device = decodeImage(toJpeg(deviceImage, 90));
+
+  const result = diffScreens(design, device, { maxEdge: 1000 });
+  assert.equal(result.alignment.downsampledTo, undefined);
+  assert.equal(result.alignment.scale, 0.2);
+  assert.ok(result.regions.length >= 1, JSON.stringify(result.regions));
+  const region = result.regions[0];
+  assert.ok(Math.abs(region.bbox.x - 80) <= 8, `x=${region.bbox.x}`);
+  assert.ok(Math.abs(region.bbox.y - 220) <= 12, `y=${region.bbox.y}`);
 });
