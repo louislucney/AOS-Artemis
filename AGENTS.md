@@ -81,3 +81,17 @@ pen.dev（原 pencil.dev）接入（P1）：离线四件套 `pen_inspect` 解析
 - `README.md` — 使用方式、本地 PG、容器部署、客户端安装；回答"怎么跑/怎么装"时读。
 - `src/vendor/design-context-bridge/NOTICE` — 内嵌上游代码的修改清单；动 vendor 前读。
 - `.env.example`、`aos.config.jsonc` — 配置契约示例（密钥只写变量名）。
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as local markdown under `.scratch/<feature>/issues/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
