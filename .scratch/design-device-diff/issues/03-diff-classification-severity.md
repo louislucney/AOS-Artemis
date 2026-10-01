@@ -6,9 +6,14 @@
 
 **Status:** ready-for-agent
 
-- [ ] 设计侧几何进入引擎：每个区域可携带设计节点引用（id/name）
-- [ ] 类别判定规则与严重度映射按上述默认实现，且不依赖真机侧结构数据
-- [ ] 工具参数暴露阈值（缺省用默认值），报告记录实际使用的阈值
-- [ ] 落在系统边缘条带、且无对应设计节点的区域标 `suspected: "system-area"`，严重度压到 `info`
-- [ ] 汇总 `byCategory` / `bySeverity` 正确且稳定排序
-- [ ] 测试：合成用例覆盖每一类别与严重度（缺块、位移、变色、文本变化、多余元素）
+- [x] 设计侧几何进入引擎：每个区域可携带设计节点引用（id/name）
+- [x] 类别判定规则与严重度映射按上述默认实现，且不依赖真机侧结构数据
+- [x] 工具参数暴露阈值（缺省用默认值），报告记录实际使用的阈值
+- [x] 落在系统边缘条带、且无对应设计节点的区域标 `suspected: "system-area"`，严重度压到 `info`
+
+## Comments
+
+- 2026-10-01 实施完成：引擎 `designNodes` + `nodeProximity`/`colorTolerance`/`systemBandRatio` 阈值（`thresholds` 入报告）；分类规则（text/asset/missing|color/position-size/extra，无几何回退 `pixel`）与严重度下限（missing/extra/text ≥ major）；`src/figma/render.ts` 新增 `fetchFigmaDesignNodes`（REST `/nodes`，包围盒归一化、SOLID hex、祖先填充 parentFill、500 上限，失败告警降级）；报告/响应新增 `designNodes`/`thresholds`/`warnings`。测试新增 9 例（missing/color/text/asset/position-size/extra/system-area + blocker/minor），全量 287 例通过；DESIGN §6.1/§13.15、README、AGENTS 已同步。
+- code-review 修订：`asset` 补 `line`/`boolean_operation`；近邻 `position-size` 保留 designNode 引用（贴边不误降 system-area）；`parentFill` alpha<250 不做 missing；`systemBandRatio` 进工具参数；阈值项数文档对齐；`FigmaDesignNode` 复用 `DesignNode`、颜色转换复用 vendor `rgbaToHex`、响应共享字段去重。
+- [x] 汇总 `byCategory` / `bySeverity` 正确且稳定排序
+- [x] 测试：合成用例覆盖每一类别与严重度（缺块、位移、变色、文本变化、多余元素）

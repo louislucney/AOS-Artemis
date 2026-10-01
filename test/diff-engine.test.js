@@ -124,3 +124,118 @@ test("renderAnnotatedPng: 输出 PNG 且差异框有标注色", () => {
   const index = (300 * decoded.width + 200) * 4;
   assert.ok(decoded.data[index] > 200 && decoded.data[index + 1] < 80, `pixel=${[...decoded.data.subarray(index, index + 4)]}`);
 });
+
+const DESIGN_NODE = {
+  id: "n1",
+  name: "Card",
+  type: "rectangle",
+  x: 40,
+  y: 80,
+  width: 120,
+  height: 60,
+  fill: "#1F40B0FF",
+  parentFill: "#FFFFFFFF"
+};
+
+function diffWithNodes(deviceImage, nodes = [DESIGN_NODE]) {
+  const design = createImage(400, 800);
+  fillRect(design, 40, 80, 120, 60, [31, 64, 176, 255]);
+  return diffScreens(design, decodeImage(toJpeg(deviceImage, 90)), { designNodes: nodes });
+}
+
+test("diffScreens: 分类 missing（设备显示父级填充色）且严重度达标", () => {
+  const result = diffWithNodes(createImage(400, 800));
+  assert.equal(result.regions.length, 1, JSON.stringify(result.regions));
+  assert.equal(result.regions[0].category, "missing");
+  assert.deepEqual(result.regions[0].designNode, { id: "n1", name: "Card" });
+  assert.equal(result.regions[0].severity, "major");
+  assert.equal(result.summary.byCategory.missing, 1);
+});
+
+test("diffScreens: 分类 color（设备换了颜色，非父级填充）", () => {
+  const deviceImage = createImage(400, 800);
+  fillRect(deviceImage, 40, 80, 120, 60, [220, 38, 38, 255]);
+  const result = diffWithNodes(deviceImage);
+  assert.equal(result.regions[0].category, "color");
+  assert.equal(result.regions[0].designNode.name, "Card");
+});
+
+test("diffScreens: 分类 text（重叠文本节点）", () => {
+  const textNode = { id: "t1", name: "Title", type: "text", x: 40, y: 80, width: 120, height: 30, text: "Hello", fill: "#111827FF", parentFill: "#FFFFFFFF" };
+  const design = createImage(400, 800);
+  fillRect(design, 40, 80, 120, 30, [17, 24, 39, 255]);
+  const device = decodeImage(toJpeg(createImage(400, 800), 90));
+  const result = diffScreens(design, device, { designNodes: [textNode] });
+  assert.equal(result.regions[0].category, "text");
+  assert.equal(result.regions[0].designNode.id, "t1");
+});
+
+test("diffScreens: 分类 position-size（元素位移产生两侧条带）", () => {
+  const deviceImage = createImage(400, 800);
+  fillRect(deviceImage, 90, 80, 120, 60, [31, 64, 176, 255]);
+  const result = diffWithNodes(deviceImage);
+  assert.ok(result.regions.length >= 2, JSON.stringify(result.regions.map((region) => region.bbox)));
+  assert.ok(result.regions.every((region) => region.category === "position-size"), JSON.stringify(result.regions));
+});
+
+test("diffScreens: 分类 extra（设备多出的远处内容）", () => {
+  const deviceImage = createImage(400, 800);
+  fillRect(deviceImage, 40, 80, 120, 60, [31, 64, 176, 255]);
+  fillRect(deviceImage, 250, 450, 80, 60, [220, 38, 38, 255]);
+  const result = diffWithNodes(deviceImage);
+  assert.equal(result.regions.length, 1, JSON.stringify(result.regions));
+  assert.equal(result.regions[0].category, "extra");
+  assert.equal(result.regions[0].severity, "major");
+});
+
+test("diffScreens: 报告记录实际阈值", () => {
+  const result = diffWithNodes(createImage(400, 800));
+  assert.equal(result.thresholds.pixelThreshold, 0.1);
+  assert.equal(result.thresholds.minAreaRatio, 0.005);
+  assert.equal(result.thresholds.clusterGap, 8);
+  assert.equal(result.thresholds.maxRegions, 20);
+  assert.equal(result.thresholds.maxEdge, 1440);
+  assert.equal(result.thresholds.nodeProximity, 24);
+  assert.equal(result.thresholds.colorTolerance, 24);
+  assert.equal(result.thresholds.systemBandRatio, 0.05);
+});
+
+test("diffScreens: 贴边且无设计节点的区域标 system-area 并降为 info", () => {
+  const deviceImage = createImage(400, 800);
+  fillRect(deviceImage, 40, 80, 120, 60, [31, 64, 176, 255]);
+  fillRect(deviceImage, 250, 5, 80, 30, [220, 38, 38, 255]);
+  const result = diffWithNodes(deviceImage);
+  assert.equal(result.regions.length, 1, JSON.stringify(result.regions));
+  assert.equal(result.regions[0].category, "extra");
+  assert.equal(result.regions[0].suspected, "system-area");
+  assert.equal(result.regions[0].severity, "info");
+});
+
+test("diffScreens: 分类 asset（矢量/图标节点，含 BOOLEAN_OPERATION）", () => {
+  const iconNode = { id: "i1", name: "Icon", type: "BOOLEAN_OPERATION", x: 40, y: 80, width: 60, height: 60, parentFill: "#FFFFFFFF" };
+  const design = createImage(400, 800);
+  fillRect(design, 40, 80, 60, 60, [31, 64, 176, 255]);
+  const device = decodeImage(toJpeg(createImage(400, 800), 90));
+  const result = diffScreens(design, device, { designNodes: [iconNode] });
+  assert.equal(result.regions[0].category, "asset");
+  assert.equal(result.regions[0].designNode.id, "i1");
+});
+
+test("diffScreens: 大面积缺失为 blocker，小面积颜色差异为 minor", () => {
+  const heroNode = { id: "h1", name: "Hero", type: "rectangle", x: 20, y: 60, width: 300, height: 400, parentFill: "#FFFFFFFF" };
+  const design = createImage(400, 800);
+  fillRect(design, 20, 60, 300, 400, [31, 64, 176, 255]);
+  const device = decodeImage(toJpeg(createImage(400, 800), 90));
+  const big = diffScreens(design, device, { designNodes: [heroNode] });
+  assert.equal(big.regions[0].category, "missing");
+  assert.equal(big.regions[0].severity, "blocker");
+
+  const chipNode = { id: "c1", name: "Chip", type: "rectangle", x: 40, y: 80, width: 60, height: 60, parentFill: "#FFFFFFFF" };
+  const chipDesign = createImage(400, 800);
+  fillRect(chipDesign, 40, 80, 60, 60, [31, 64, 176, 255]);
+  const chipDeviceImage = createImage(400, 800);
+  fillRect(chipDeviceImage, 40, 80, 60, 60, [220, 38, 38, 255]);
+  const chip = diffScreens(chipDesign, decodeImage(toJpeg(chipDeviceImage, 90)), { designNodes: [chipNode] });
+  assert.equal(chip.regions[0].category, "color");
+  assert.equal(chip.regions[0].severity, "minor");
+});

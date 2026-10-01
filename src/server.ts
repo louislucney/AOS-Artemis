@@ -202,7 +202,10 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
           minAreaRatio: z.number().min(0).max(1).optional().describe("最小区域面积占比，默认 0.005"),
           clusterGap: z.number().int().nonnegative().optional().describe("区域聚类间距（px），默认 8"),
           maxRegions: z.number().int().positive().optional().describe("区域数上限，默认 20"),
-          maxEdge: z.number().int().positive().optional().describe("降采样最长边，默认 1440")
+          maxEdge: z.number().int().positive().optional().describe("降采样最长边，默认 1440"),
+          nodeProximity: z.number().int().nonnegative().optional().describe("无交集区域判为 position-size 的最近节点距离（px），默认 24"),
+          colorTolerance: z.number().int().nonnegative().optional().describe("父级填充色比较容差（0-255），默认 24"),
+          systemBandRatio: z.number().min(0).max(0.25).optional().describe("上下系统边缘条带比例（无节点引用区域降级 system-area），默认 0.05")
         })
         .optional(),
       save: z.boolean().optional().describe("是否落盘产物，默认 true"),

@@ -52,6 +52,11 @@ test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + �
       assert.ok(Math.abs(payload.regions[0].bbox.x - 40) <= 8, `x=${payload.regions[0].bbox.x}`);
       assert.ok(Math.abs(payload.regions[0].bbox.y - 80) <= 8, `y=${payload.regions[0].bbox.y}`);
       assert.equal(payload.alignment.scale, 1);
+      assert.equal(payload.regions[0].category, "missing");
+      assert.deepEqual(payload.regions[0].designNode, { id: "1:2", name: "Card" });
+      assert.equal(payload.designNodes, 1);
+      assert.equal(payload.thresholds.pixelThreshold, 0.1);
+      assert.deepEqual(payload.warnings, []);
 
       for (const file of ["report.json", "annotated.png", "design.png", "device.png"]) {
         assert.ok(fs.existsSync(path.join(payload.saved.dir, file)), `${file} missing`);

@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { fetchFigmaRenderPng, resolveFigmaNodeId } from "../figma/render.js";
+import { fetchFigmaDesignNodes, fetchFigmaRenderPng, resolveFigmaNodeId, type FigmaDesignNode } from "../figma/render.js";
 import { errorMessage } from "../util.js";
 import type { Runtime } from "../runtime.js";
 import { renderAnnotatedPng } from "./annotate.js";
@@ -26,6 +26,9 @@ export interface DesignDeviceDiffArgs {
     clusterGap?: number;
     maxRegions?: number;
     maxEdge?: number;
+    nodeProximity?: number;
+    colorTolerance?: number;
+    systemBandRatio?: number;
   };
   save?: boolean;
   dryRun?: boolean;
@@ -115,6 +118,14 @@ export async function designDeviceDiff(
     const deviceBytes = captured.bytes;
     const deviceNote = captured.note;
 
+    let designNodes: FigmaDesignNode[] = [];
+    let nodeWarning: string | null = null;
+    try {
+      designNodes = await fetchFigmaDesignNodes(args.design.figmaUrl, args.design.nodeId);
+    } catch (error) {
+      nodeWarning = `设计节点几何获取失败（分类降级为 pixel）：${errorMessage(error)}`;
+    }
+
     let annotated: Buffer;
     let deviceImage: ReturnType<typeof decodeImage>;
     let diffResult: ReturnType<typeof diffScreens>;
@@ -125,6 +136,7 @@ export async function designDeviceDiff(
       diffResult = diffScreens(design, device, {
         insets: args.alignment?.insets,
         ignoreRegions: args.alignment?.ignoreRegions,
+        designNodes,
         ...args.diff
       });
       annotated = renderAnnotatedPng(design, diffResult.regions);
@@ -132,6 +144,15 @@ export async function designDeviceDiff(
       return jsonError(`差异计算失败: ${errorMessage(error)}`);
     }
 
+    const shared = {
+      alignment: diffResult.alignment,
+      ignoredRegions: diffResult.ignoredRegions,
+      designNodes: designNodes.length,
+      thresholds: diffResult.thresholds,
+      warnings: nodeWarning ? [nodeWarning] : [],
+      regions: diffResult.regions,
+      summary: diffResult.summary
+    };
     const report = {
       schemaVersion: 1 as const,
       unit: {
@@ -150,10 +171,7 @@ export async function designDeviceDiff(
                 ...(args.device?.serial ? { serial: args.device.serial } : {})
               }
       },
-      alignment: diffResult.alignment,
-      ignoredRegions: diffResult.ignoredRegions,
-      regions: diffResult.regions,
-      summary: diffResult.summary,
+      ...shared,
       elapsedMs: Date.now() - started
     };
 
@@ -193,10 +211,7 @@ export async function designDeviceDiff(
               dryRun: false,
               design: { nodeId: render.nodeId, renderUrl: render.renderUrl },
               device: { source: deviceNote, serial: captured.serial ?? args.device?.serial ?? "(auto)" },
-              alignment: diffResult.alignment,
-              ignoredRegions: diffResult.ignoredRegions,
-              summary: diffResult.summary,
-              regions: diffResult.regions,
+              ...shared,
               saved
             },
             null,

@@ -26,11 +26,29 @@ export const SEVERITY_ORDER = ["blocker", "major", "minor", "info"] as const;
 
 export type Severity = (typeof SEVERITY_ORDER)[number];
 
+export const CATEGORY_ORDER = ["missing", "extra", "text", "asset", "position-size", "color", "pixel"] as const;
+
+export type DiffCategory = (typeof CATEGORY_ORDER)[number];
+
+export interface DesignNode {
+  id: string;
+  name: string;
+  type: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text?: string;
+  parentFill?: string;
+}
+
 export interface DiffRegion {
   bbox: Bbox;
-  category: string;
+  category: DiffCategory;
   severity: Severity;
   pixelDiffRatio: number;
+  designNode?: { id: string; name: string };
+  suspected?: "system-area";
 }
 
 export interface DiffAlignment {
@@ -46,11 +64,23 @@ export interface DiffSummary {
   byCategory: Record<string, number>;
 }
 
+export interface DiffThresholds {
+  pixelThreshold: number;
+  minAreaRatio: number;
+  clusterGap: number;
+  maxRegions: number;
+  maxEdge: number;
+  nodeProximity: number;
+  colorTolerance: number;
+  systemBandRatio: number;
+}
+
 export interface DiffResult {
   alignment: DiffAlignment;
   ignoredRegions: Bbox[];
   regions: DiffRegion[];
   summary: DiffSummary;
+  thresholds: DiffThresholds;
 }
 
 export interface DiffOptions {
@@ -61,6 +91,10 @@ export interface DiffOptions {
   maxEdge?: number;
   insets?: Partial<Insets>;
   ignoreRegions?: Bbox[];
+  designNodes?: DesignNode[];
+  nodeProximity?: number;
+  colorTolerance?: number;
+  systemBandRatio?: number;
 }
 
 const DEFAULTS = {
@@ -68,7 +102,10 @@ const DEFAULTS = {
   minAreaRatio: 0.005,
   clusterGap: 8,
   maxRegions: 20,
-  maxEdge: 1440
+  maxEdge: 1440,
+  nodeProximity: 24,
+  colorTolerance: 24,
+  systemBandRatio: 0.05
 };
 
 export function decodeImage(bytes: Uint8Array): RgbaImage {
@@ -246,12 +283,150 @@ function severityForRatio(ratio: number): Severity {
   return "info";
 }
 
+const CATEGORY_FLOOR: Partial<Record<DiffCategory, Severity>> = {
+  missing: "major",
+  extra: "major",
+  text: "major"
+};
+
+function worseSeverity(a: Severity, b: Severity): Severity {
+  return SEVERITY_ORDER.indexOf(a) <= SEVERITY_ORDER.indexOf(b) ? a : b;
+}
+
+const ASSET_TYPES = new Set([
+  "image",
+  "vector",
+  "path",
+  "ellipse",
+  "polygon",
+  "star",
+  "line",
+  "boolean_operation"
+]);
+
+const NODE_COVERAGE = 0.6;
+
+function hexToRgb(value: string | undefined): { rgb: [number, number, number]; alpha: number } | null {
+  if (!value) return null;
+  const raw = value.replace(/^#/, "");
+  if (!/^[0-9a-fA-F]{6,8}$/.test(raw)) return null;
+  return {
+    rgb: [parseInt(raw.slice(0, 2), 16), parseInt(raw.slice(2, 4), 16), parseInt(raw.slice(4, 6), 16)],
+    alpha: raw.length === 8 ? parseInt(raw.slice(6, 8), 16) : 255
+  };
+}
+
+function colorMatches(a: [number, number, number], b: [number, number, number], tolerance: number): boolean {
+  return (
+    Math.abs(a[0] - b[0]) <= tolerance && Math.abs(a[1] - b[1]) <= tolerance && Math.abs(a[2] - b[2]) <= tolerance
+  );
+}
+
+function meanColor(image: RgbaImage, x0: number, y0: number, x1: number, y1: number): [number, number, number] {
+  const left = Math.max(0, Math.min(x0, x1));
+  const top = Math.max(0, Math.min(y0, y1));
+  const right = Math.min(image.width, Math.max(x0, x1));
+  const bottom = Math.min(image.height, Math.max(y0, y1));
+  if (right <= left || bottom <= top) return [0, 0, 0];
+  const step = Math.max(1, Math.floor(Math.sqrt(((right - left) * (bottom - top)) / 1024)));
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  let count = 0;
+  for (let y = top; y < bottom; y += step) {
+    for (let x = left; x < right; x += step) {
+      const position = (y * image.width + x) * 4;
+      red += image.data[position]!;
+      green += image.data[position + 1]!;
+      blue += image.data[position + 2]!;
+      count += 1;
+    }
+  }
+  return count > 0
+    ? [Math.round(red / count), Math.round(green / count), Math.round(blue / count)]
+    : [0, 0, 0];
+}
+
+interface WorkingNode extends DesignNode {
+  wx: number;
+  wy: number;
+  ww: number;
+  wh: number;
+}
+
+function classifyRegion(
+  bbox: Bbox,
+  nodes: WorkingNode[],
+  deviceWork: RgbaImage,
+  options: { proximity: number; tolerance: number }
+): { category: DiffCategory; designNode?: { id: string; name: string } } {
+  let dominant: WorkingNode | null = null;
+  let bestArea = 0;
+  for (const node of nodes) {
+    const overlapWidth = Math.max(
+      0,
+      Math.min(bbox.x + bbox.width, node.wx + node.ww) - Math.max(bbox.x, node.wx)
+    );
+    const overlapHeight = Math.max(
+      0,
+      Math.min(bbox.y + bbox.height, node.wy + node.wh) - Math.max(bbox.y, node.wy)
+    );
+    const area = overlapWidth * overlapHeight;
+    if (area > bestArea) {
+      bestArea = area;
+      dominant = node;
+    }
+  }
+
+  if (dominant && bestArea > 0) {
+    const reference = { id: dominant.id, name: dominant.name };
+    const coveredByNode = bestArea / (bbox.width * bbox.height);
+    const nodeCovered = bestArea / (dominant.ww * dominant.wh);
+    if (coveredByNode >= NODE_COVERAGE) {
+      const type = dominant.type.toLowerCase();
+      if (type === "text" || (dominant.text && dominant.text.length > 0)) {
+        return { category: "text", designNode: reference };
+      }
+      if (ASSET_TYPES.has(type)) return { category: "asset", designNode: reference };
+      if (nodeCovered >= NODE_COVERAGE) {
+        const parentFill = hexToRgb(dominant.parentFill);
+        if (parentFill && parentFill.alpha >= 250) {
+          const mean = meanColor(deviceWork, dominant.wx, dominant.wy, dominant.wx + dominant.ww, dominant.wy + dominant.wh);
+          if (colorMatches(mean, parentFill.rgb, options.tolerance)) return { category: "missing", designNode: reference };
+        }
+        return { category: "color", designNode: reference };
+      }
+      return { category: "position-size", designNode: reference };
+    }
+    return { category: "position-size", designNode: reference };
+  }
+
+  let nearest = Number.POSITIVE_INFINITY;
+  let nearestNode: WorkingNode | null = null;
+  for (const node of nodes) {
+    const dx = Math.max(node.wx - (bbox.x + bbox.width), bbox.x - (node.wx + node.ww), 0);
+    const dy = Math.max(node.wy - (bbox.y + bbox.height), bbox.y - (node.wy + node.wh), 0);
+    const distance = Math.hypot(dx, dy);
+    if (distance < nearest) {
+      nearest = distance;
+      nearestNode = node;
+    }
+  }
+  if (nearest <= options.proximity && nearestNode) {
+    return { category: "position-size", designNode: { id: nearestNode.id, name: nearestNode.name } };
+  }
+  return { category: "extra" };
+}
+
 export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffOptions = {}): DiffResult {
   const pixelThreshold = options.pixelThreshold ?? DEFAULTS.pixelThreshold;
   const minAreaRatio = options.minAreaRatio ?? DEFAULTS.minAreaRatio;
   const clusterGap = Math.max(0, Math.trunc(options.clusterGap ?? DEFAULTS.clusterGap));
   const maxRegions = Math.max(1, Math.trunc(options.maxRegions ?? DEFAULTS.maxRegions));
   const maxEdge = Math.max(64, Math.trunc(options.maxEdge ?? DEFAULTS.maxEdge));
+  const nodeProximity = Math.max(0, Math.trunc(options.nodeProximity ?? DEFAULTS.nodeProximity));
+  const colorTolerance = Math.max(0, Math.trunc(options.colorTolerance ?? DEFAULTS.colorTolerance));
+  const systemBandRatio = Math.min(0.25, Math.max(0, options.systemBandRatio ?? DEFAULTS.systemBandRatio));
 
   const insets = normalizeInsets(options.insets, device);
   const cropped = cropInsets(device, insets);
@@ -308,6 +483,13 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
   const components = mergeComponents(findComponents(mask, designWork.width, designWork.height), clusterGap);
   const areaTotal = designWork.width * designWork.height;
   const minimumArea = Math.max(1, Math.round(minAreaRatio * areaTotal));
+  const workingNodes: WorkingNode[] = (options.designNodes ?? []).map((node) => ({
+    ...node,
+    wx: node.x * factor,
+    wy: node.y * factor,
+    ww: Math.max(1, node.width * factor),
+    wh: Math.max(1, node.height * factor)
+  }));
 
   const workingRegions = components
     .filter((component) => component.count >= minimumArea)
@@ -317,6 +499,18 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
       const width = component.maxX - component.minX + 1;
       const height = component.maxY - component.minY + 1;
       const ratio = component.count / areaTotal;
+      const workingBox: Bbox = { x: component.minX, y: component.minY, width, height };
+      const classified = workingNodes.length > 0
+        ? classifyRegion(workingBox, workingNodes, deviceWork, { proximity: nodeProximity, tolerance: colorTolerance })
+        : { category: "pixel" as DiffCategory };
+      const band = Math.round(designWork.height * systemBandRatio);
+      const suspected =
+        !classified.designNode && band > 0 && (workingBox.y <= band || workingBox.y + workingBox.height >= designWork.height - band)
+          ? ("system-area" as const)
+          : undefined;
+      const severity = suspected
+        ? "info"
+        : worseSeverity(severityForRatio(ratio), CATEGORY_FLOOR[classified.category] ?? "info");
       return {
         bbox: {
           x: Math.max(0, Math.round(component.minX / factor)),
@@ -324,9 +518,11 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
           width: Math.max(1, Math.round(width / factor)),
           height: Math.max(1, Math.round(height / factor))
         },
-        category: "pixel",
-        severity: severityForRatio(ratio),
-        pixelDiffRatio: Math.min(1, component.count / (width * height))
+        category: classified.category,
+        severity,
+        pixelDiffRatio: Math.min(1, component.count / (width * height)),
+        ...(classified.designNode ? { designNode: classified.designNode } : {}),
+        ...(suspected ? { suspected } : {})
       } satisfies DiffRegion;
     });
 
@@ -356,7 +552,17 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
     },
     ignoredRegions,
     regions: workingRegions,
-    summary: { regions: workingRegions.length, bySeverity, byCategory }
+    summary: { regions: workingRegions.length, bySeverity, byCategory },
+    thresholds: {
+      pixelThreshold,
+      minAreaRatio,
+      clusterGap,
+      maxRegions,
+      maxEdge,
+      nodeProximity,
+      colorTolerance,
+      systemBandRatio
+    }
   };
 }
 

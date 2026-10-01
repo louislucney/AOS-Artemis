@@ -36,7 +36,24 @@ export function toJpeg(image, quality = 85) {
   );
 }
 
-export function stubFigmaFetch(designPng, nodeId, fileKey) {
+export const DEFAULT_FIGMA_NODE_DOCUMENT = {
+  id: "0:1",
+  type: "FRAME",
+  name: "Screen",
+  absoluteBoundingBox: { x: 0, y: 0, width: 390, height: 844 },
+  fills: [{ type: "SOLID", color: { r: 1, g: 1, b: 1, a: 1 } }],
+  children: [
+    {
+      id: "1:2",
+      type: "RECTANGLE",
+      name: "Card",
+      absoluteBoundingBox: { x: 40, y: 80, width: 120, height: 60 },
+      fills: [{ type: "SOLID", color: { r: 0.118, g: 0.251, b: 0.686, a: 1 } }]
+    }
+  ]
+};
+
+export function stubFigmaFetch(designPng, nodeId, fileKey, options = {}) {
   const original = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url) => {
@@ -44,6 +61,13 @@ export function stubFigmaFetch(designPng, nodeId, fileKey) {
     calls.push(href);
     if (href.includes(`/images/${fileKey}`)) {
       return new Response(JSON.stringify({ err: null, images: { [nodeId]: "https://render.example/test.png" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (href.includes(`/files/${fileKey}/nodes`)) {
+      const document = options.document ?? DEFAULT_FIGMA_NODE_DOCUMENT;
+      return new Response(JSON.stringify({ nodes: { [nodeId]: { document } } }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
