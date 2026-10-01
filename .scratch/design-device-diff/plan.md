@@ -264,11 +264,11 @@ interface DiffReport {
 
 **Blocked by:** 03（差异分类与严重度 + 阈值参数）、01（Figma × 实时截图 最小闭环）
 
-- [ ] `screen_map` list：读取并返回映射与 schema 版本；文件缺失返回空表与提示
-- [ ] `screen_map` propose：粗粒度候选（带 `confidence` 与 `unmatched`，不承诺全覆盖；Figma 节点 id 与代码无天然映射），由 agent 复核后 save
-- [ ] `screen_map` save：显式写入、幂等（重复内容不写）、非法输入报错
-- [ ] 差异报告 `localized` 字段：`mapped`（含条目）/ `unmapped`（含候选或原因）
-- [ ] 测试：temp project 上 propose/save/幂等/只读；报告定位字段断言
+- [x] `screen_map` list：读取并返回映射与 schema 版本；文件缺失返回空表与提示
+- [x] `screen_map` propose：粗粒度候选（带 `confidence` 与 `unmatched`，不承诺全覆盖；Figma 节点 id 与代码无天然映射），由 agent 复核后 save
+- [x] `screen_map` save：显式写入、幂等（重复内容不写）、非法输入报错
+- [x] 差异报告 `localized` 字段：`mapped`（含条目）/ `unmapped`（含候选或原因）
+- [x] 测试：temp project 上 propose/save/幂等/只读；报告定位字段断言
 
 ### 07 — 真实基准 fixture 与验收指标
 

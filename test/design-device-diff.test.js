@@ -54,7 +54,7 @@ test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + �
       assert.equal(payload.alignment.scale, 1);
       assert.equal(payload.regions[0].category, "missing");
       assert.deepEqual(payload.regions[0].designNode, { id: "1:2", name: "Card" });
-      assert.equal(payload.designNodes, 1);
+      assert.equal(payload.designNodes, 2);
       assert.equal(payload.thresholds.pixelThreshold, 0.1);
       assert.deepEqual(payload.warnings, []);
 

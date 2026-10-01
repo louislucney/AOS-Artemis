@@ -19,6 +19,8 @@ import {
 } from "./device-source.js";
 import { decodeImage, diffScreens, encodePng, type Bbox, type Insets } from "./engine.js";
 import { renderPenDesign } from "./pen-source.js";
+import { loadScreenMap, localizeRegion, proposeScreenMapEntries, type ProposeResult } from "./screen-map.js";
+import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
 
 export interface DesignSourceArgs {
   source?: "figma" | "pen";
@@ -275,8 +277,28 @@ export async function designDeviceDiff(
         ? [`失败证据命中 ${stepAnchor!.candidates.length} 个步骤，已取首个 Step ${stepAnchor!.stepNumber}；可用 device.stepNumber 显式指定。`]
         : [])
     ];
-    const designScreens = designNodes
-      .filter((node) => (node.depth ?? 0) === 0)
+    const screens = designNodes.filter((node) => (node.depth ?? 0) === 0);
+    const screenMap = loadScreenMap(runtime.configDirAbs);
+    let proposal: ProposeResult | null = null;
+    for (const region of diffResult.regions) {
+      const node = region.designNode
+        ? designNodes.find((candidate) => candidate.id === region.designNode!.id)
+        : undefined;
+      if (proposal === null) {
+        const mapped = localizeRegion(region, node, screens, screenMap.entries, null);
+        if (mapped.status === "mapped") {
+          region.localized = mapped;
+          continue;
+        }
+        proposal = proposeScreenMapEntries(
+          runtime.configDirAbs,
+          primaryProfile(detectProjectStacks(runtime.project.rootDir))
+        );
+      }
+      region.localized = localizeRegion(region, node, screens, screenMap.entries, proposal);
+    }
+
+    const designScreens = screens
       .slice(0, 10)
       .map((node) => ({ id: node.id, name: node.name, width: node.width, height: node.height }));
     const shared = {

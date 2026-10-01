@@ -53,7 +53,19 @@ export async function fetchFigmaDesignNodes(
   if (!document) throw new Error(`Figma 未返回节点数据（node ${targetNode}）`);
   const rootBox = document.absoluteBoundingBox;
   const nodes: FigmaDesignNode[] = [];
-  const visit = (node: RawNode, inheritedFill: string | undefined): void => {
+  if (rootBox && typeof document.id === "string") {
+    nodes.push({
+      id: document.id,
+      name: document.name ?? "",
+      type: document.type ?? "unknown",
+      x: 0,
+      y: 0,
+      width: rootBox.width,
+      height: rootBox.height,
+      depth: 0
+    });
+  }
+  const visit = (node: RawNode, inheritedFill: string | undefined, depth: number): void => {
     if (nodes.length >= MAX_DESIGN_NODES) return;
     const box = node.absoluteBoundingBox;
     if (box && rootBox && typeof node.id === "string") {
@@ -66,15 +78,16 @@ export async function fetchFigmaDesignNodes(
         y: box.y - rootBox.y,
         width: box.width,
         height: box.height,
+        depth,
         ...(node.characters ? { text: node.characters } : {}),
         ...(inheritedFill ? { parentFill: inheritedFill } : {})
       });
-      for (const child of node.children ?? []) visit(child, ownFill ?? inheritedFill);
+      for (const child of node.children ?? []) visit(child, ownFill ?? inheritedFill, depth + 1);
       return;
     }
-    for (const child of node.children ?? []) visit(child, inheritedFill);
+    for (const child of node.children ?? []) visit(child, inheritedFill, depth + 1);
   };
-  for (const child of document.children ?? []) visit(child, solidFillOf(document));
+  for (const child of document.children ?? []) visit(child, solidFillOf(document), 1);
   return nodes;
 }
 

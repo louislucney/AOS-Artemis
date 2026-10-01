@@ -44,6 +44,7 @@ import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
 import { designDeviceDiff, type DesignDeviceDiffArgs } from "./diff/tool.js";
+import { screenMap, type ScreenMapArgs } from "./diff/screen-map.js";
 import { aosConfigure, type ConfigureArgs } from "./tools/configure.js";
 import { aosCrashes, type AosCrashesArgs } from "./tools/crash.js";
 import {
@@ -215,6 +216,20 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       dryRun: z.boolean().optional().describe("仅返回计划，不取图不写盘，默认 false")
     }),
     handler: (runtime, args) => designDeviceDiff(runtime, args as unknown as DesignDeviceDiffArgs)
+  },
+  {
+    name: "screen_map",
+    description:
+      "屏幕映射（持久定位资产）：维护 <项目>/.artemis/design/screen-map.json——设计屏幕/组件 ↔ 路由/组件/文件。action=propose 基于 build-brief + 栈约定给出粗粒度候选（带 confidence 与 unmatched，需复核）；action=save 显式写入（幂等，merge:true 增量合并）；action=list 读取。design_device_diff 报告用该映射为每个差异区域输出 localized（mapped/unmapped/no-candidates）。",
+    schema: z.object({
+      action: z.enum(["list", "propose", "save"]).describe("list 读取 / propose 生成候选 / save 显式写入"),
+      entries: z
+        .array(z.record(z.unknown()))
+        .optional()
+        .describe('save 用：{design:{screen,nodeId?,component?}, code:{route?,component?,file?}} 数组'),
+      merge: z.boolean().optional().describe("save 时按 design key 增量合并已有映射，默认 false（替换）")
+    }),
+    handler: (runtime, args) => screenMap(runtime, args as unknown as ScreenMapArgs)
   },
   {
     name: "figma_extract_flows",

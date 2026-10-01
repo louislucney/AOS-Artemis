@@ -1,4 +1,6 @@
 import { decode as decodeJpeg } from "jpeg-js";
+
+import type { ScreenMapEntry } from "./screen-map.js";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
 
@@ -50,6 +52,12 @@ export interface DiffRegion {
   pixelDiffRatio: number;
   designNode?: { id: string; name: string };
   suspected?: "system-area";
+  localized?: {
+    status: "mapped" | "unmapped" | "no-candidates";
+    mapEntry?: ScreenMapEntry;
+    candidates?: ScreenMapEntry[];
+    reason?: string;
+  };
 }
 
 export interface DiffAlignment {

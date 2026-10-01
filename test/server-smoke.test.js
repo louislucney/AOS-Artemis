@@ -45,6 +45,7 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
       "figma_import_assets",
       "figma_export_brief",
       "design_device_diff",
+      "screen_map",
       "pen_inspect",
       "pen_import_tokens",
       "pen_import_strings",
