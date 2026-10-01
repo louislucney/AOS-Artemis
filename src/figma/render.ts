@@ -78,10 +78,14 @@ export async function fetchFigmaDesignNodes(
   return nodes;
 }
 
-export async function fetchFigmaRenderPng(figmaUrl: string, nodeIdOverride?: string): Promise<FigmaRender> {
+export async function fetchFigmaRenderPng(
+  figmaUrl: string,
+  nodeIdOverride?: string,
+  scale = 2
+): Promise<FigmaRender> {
   const { fileKey } = parseFigmaUrl(figmaUrl);
   const targetNode = resolveFigmaNodeId(figmaUrl, nodeIdOverride);
-  const render = await fetchImages(fileKey, [targetNode], "png", 2);
+  const render = await fetchImages(fileKey, [targetNode], "png", scale);
   const renderUrl = render.images?.[targetNode];
   if (!renderUrl) {
     throw new Error(`Figma 未返回渲染图（node ${targetNode}）${render.err ? `: ${render.err}` : ""}`);

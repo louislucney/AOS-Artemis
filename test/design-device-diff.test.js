@@ -150,7 +150,10 @@ test("design_device_diff: 真机截图失败时报错且不残留产物", async 
 
 test("design_device_diff: 缺 Figma token 时给引导且不写盘", async () => {
   const dir = makeTempProject({ config: baseConfig() });
+  const devicePath = path.join(dir, "device.jpg");
+  fs.writeFileSync(devicePath, toJpeg(createImage(390, 844), 85));
   const proxy = new StubProxy({ running: true });
+  stubDevice(proxy, devicePath);
   const { runtime } = await loadTestRuntime(dir, { proxy });
 
   const previous = process.env.FIGMA_ACCESS_TOKEN;

@@ -38,6 +38,7 @@ export interface DesignNode {
   y: number;
   width: number;
   height: number;
+  depth?: number;
   text?: string;
   parentFill?: string;
 }
@@ -362,6 +363,7 @@ function classifyRegion(
 ): { category: DiffCategory; designNode?: { id: string; name: string } } {
   let dominant: WorkingNode | null = null;
   let bestArea = 0;
+  let bestNodeArea = Number.POSITIVE_INFINITY;
   for (const node of nodes) {
     const overlapWidth = Math.max(
       0,
@@ -372,8 +374,10 @@ function classifyRegion(
       Math.min(bbox.y + bbox.height, node.wy + node.wh) - Math.max(bbox.y, node.wy)
     );
     const area = overlapWidth * overlapHeight;
-    if (area > bestArea) {
+    const nodeArea = node.ww * node.wh;
+    if (area > bestArea || (area === bestArea && area > 0 && nodeArea < bestNodeArea)) {
       bestArea = area;
+      bestNodeArea = nodeArea;
       dominant = node;
     }
   }

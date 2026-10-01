@@ -252,11 +252,11 @@ interface DiffReport {
 
 **Blocked by:** 01（Figma × 实时截图 最小闭环）
 
-- [ ] 设计源参数支持 `.pen` 路径（缺省取项目内最新文件，与既有 pen 工具一致）
-- [ ] 渲染复用既有 CLI 通路（可注入假 exec 供测试），未安装/未登录/超时错误分类一致
-- [ ] 报告 `unit.design.source = "pen"`，并携带设计节点（屏幕/组件）名称与几何
-- [ ] 渲染产物路径可配置，默认落既有 pen 导出目录
-- [ ] 测试：假 CLI exec 产出 fixture 图 + `.pen` fixture；错误分支
+- [x] 设计源参数支持 `.pen` 路径（缺省取项目内最新文件，与既有 pen 工具一致）
+- [x] 渲染复用既有 CLI 通路（可注入假 exec 供测试），未安装/未登录/超时错误分类一致
+- [x] 报告 `unit.design.source = "pen"`，并携带设计节点（屏幕/组件）名称与几何
+- [x] 渲染产物路径可配置，默认落既有 pen 导出目录
+- [x] 测试：假 CLI exec 产出 fixture 图 + `.pen` fixture；错误分支
 
 ### 06 — `screen_map` 工具 + 报告定位
 

@@ -164,11 +164,14 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "design_device_diff",
     description:
-      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG@2x）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId（stepNumber 可选：省略则用失败证据自动检索步骤）指定失败步骤截图，默认 post），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）；响应返回摘要 + 标注图 + 产物路径。dryRun 只回计划；判定不依赖 LLM。",
+      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG@2x，或 `design:{source:\"pen\"}` 经 pen CLI 渲染 .pen）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId（stepNumber 可选：省略则用失败证据自动检索步骤）指定失败步骤截图，默认 post），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）；响应返回摘要 + 标注图 + 产物路径。dryRun 只回计划；判定不依赖 LLM。",
     schema: z.object({
       design: z.object({
-        figmaUrl: z.string().min(1).describe("Figma 文件 URL（建议带 ?node-id=）"),
-        nodeId: z.string().optional().describe("覆盖 URL 中的 node-id")
+        source: z.enum(["figma", "pen"]).optional().describe("设计源；省略时按 figmaUrl/penPath 推断"),
+        figmaUrl: z.string().optional().describe("Figma 文件 URL（建议带 ?node-id=；source=figma 或推断）"),
+        penPath: z.string().optional().describe("相对项目根或绝对路径的 .pen（source=pen；缺省取 .artemis/design 下最新）"),
+        nodeId: z.string().optional().describe("覆盖 URL 中的 node-id"),
+        renderOut: z.string().optional().describe("pen 渲染输出路径（相对项目根；默认 .artemis/design/pen/<name>.png）")
       }),
       device: z
         .object({
