@@ -7,7 +7,7 @@ export const AOS_MCP_VERSION = "0.1.0";
 /** stderr + file logger (see src/log.ts) — stdout is reserved for the MCP protocol. */
 export { log, logDebug, logError, logWarn } from "./log.js";
 
-export function writeFileAtomic(filePath: string, content: string): void {
+export function writeFileAtomic(filePath: string, content: string | Buffer): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}`);

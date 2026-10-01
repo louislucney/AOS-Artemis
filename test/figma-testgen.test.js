@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
+
 import { buildFlowGraph } from "../dist/figma/flows.js";
-import { generateTestCases, linearizeFlows, renderMarkdown } from "../dist/figma/test-gen.js";
+import {
+  figmaGenerateTests,
+  generateTestCases,
+  linearizeFlows,
+  renderMarkdown,
+  renderTestsWorkbook
+} from "../dist/figma/test-gen.js";
+import { baseConfig, loadTestRuntime, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
 
 function syntheticDocument({ extraEntry = false } = {}) {
   const settings = extraEntry
@@ -151,6 +163,250 @@ test("generateTestCases: frozen i18n keys are attached when strings.json mapping
   });
   assert.match(cases[0].steps[0], /设计元素：CTA Button；i18n: home\.cta_button/);
   assert.match(cases[0].taskDesc, /i18n: home\.cta_button/);
+});
+
+test("renderTestsWorkbook: default sheet with header, case rows and readable styling", async () => {
+  const graph = buildFlowGraph(syntheticDocument());
+  const cases = generateTestCases(graph);
+  const buffer = await renderTestsWorkbook(cases, {
+    source: "unit-test",
+    generatedAt: "2026-09-29T00:00:00Z",
+    counts: { cases: 1, screens: 3, edges: 3 }
+  });
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const sheet = workbook.getWorksheet("测试用例");
+  assert.ok(sheet, "default sheet exists");
+  assert.deepEqual(sheet.getRow(1).values.slice(1), [
+    "#",
+    "用例名称",
+    "涉及页面",
+    "步骤",
+    "artemis 任务描述"
+  ]);
+  assert.equal(sheet.getRow(1).font.bold, true);
+  assert.equal(sheet.views[0].state, "frozen");
+  assert.equal(sheet.views[0].ySplit, 1);
+
+  const row = sheet.getRow(2);
+  assert.equal(row.getCell(1).value, 1);
+  assert.equal(row.getCell(2).value, cases[0].name);
+  assert.equal(row.getCell(3).value, cases[0].screens.join(" → "));
+  assert.equal(row.getCell(4).value, cases[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n"));
+  assert.equal(row.getCell(5).value, cases[0].taskDesc);
+  assert.equal(row.getCell(4).alignment?.wrapText, true);
+  assert.equal(row.getCell(5).alignment?.wrapText, true);
+});
+
+function makeFlowsProject() {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  const graph = buildFlowGraph(syntheticDocument());
+  fs.writeFileSync(path.join(designDir, "flows.json"), JSON.stringify(graph), "utf-8");
+  return dir;
+}
+
+test("figma_generate_tests: default run writes tests.xlsx alongside json and md", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(payload.ok, true);
+  assert.ok(payload.savedTo.xlsx.endsWith(`${path.sep}design${path.sep}tests.xlsx`));
+  assert.ok(fs.existsSync(payload.savedTo.xlsx));
+  assert.ok(fs.existsSync(payload.savedTo.json));
+  assert.ok(fs.existsSync(payload.savedTo.markdown));
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(payload.savedTo.xlsx));
+  const sheet = workbook.getWorksheet("测试用例");
+  assert.ok(sheet);
+  assert.equal(sheet.getRow(2).getCell(1).value, 1);
+  assert.equal(sheet.getRow(2).getCell(2).value, payload.flows[0].name);
+  assert.equal(sheet.getRow(2).getCell(3).value, payload.flows[0].screens.join(" → "));
+  assert.equal(
+    sheet.getRow(2).getCell(4).value,
+    payload.flows[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n")
+  );
+  assert.equal(sheet.getRow(2).getCell(5).value, payload.flows[0].taskDesc);
+});
+
+test("figma_generate_tests: excelPath overrides output and save:false writes nothing", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const dry = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(dry.ok, true);
+  assert.equal(dry.savedTo, undefined);
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.xlsx")), false);
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.json")), false);
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.md")), false);
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { excelPath: "qa/cases.xlsx" }));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.savedTo.xlsx, path.join(dir, "qa", "cases.xlsx"));
+  assert.ok(fs.existsSync(payload.savedTo.xlsx));
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(payload.savedTo.xlsx));
+  assert.ok(workbook.getWorksheet("测试用例"));
+});
+
+const TEMPLATE_CASES = [
+  {
+    name: "Home → Checkout",
+    screens: ["Home", "Checkout"],
+    steps: ["点击「Buy now」", "等待 2 秒"],
+    taskDesc: "task one"
+  },
+  { name: "Settings", screens: ["Settings"], steps: ["点击「Go home」"], taskDesc: "task two" }
+];
+
+const TEMPLATE_META = {
+  source: "unit-test",
+  generatedAt: "2026-09-29T00:00:00Z",
+  counts: { cases: 2, screens: 3, edges: 2 }
+};
+
+async function writeTestTemplate(filePath, { withCaseRow = true } = {}) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("用例");
+  sheet.getCell("A1").value = "来源：{{meta.source}}";
+  sheet.getCell("B1").value = "{{counts.cases}} 条";
+  sheet.getRow(2).values = ["用例名", "步骤"];
+  if (withCaseRow) {
+    sheet.getRow(3).values = [
+      "{{index}}",
+      "{{case.name}}",
+      "{{case.steps}}",
+      "{{case.taskDesc}}",
+      "固定说明",
+      "{{unknown.key}}"
+    ];
+    for (let column = 1; column <= 6; column += 1) {
+      sheet.getRow(3).getCell(column).fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFFFF2CC" }
+      };
+    }
+    sheet.getRow(3).getCell(2).font = { bold: true };
+  }
+  await workbook.xlsx.writeFile(filePath);
+  return filePath;
+}
+
+test("renderTestsWorkbook template: meta placeholders, row replication and styles", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-tpl-"));
+  const templatePath = await writeTestTemplate(path.join(dir, "template.xlsx"));
+  const buffer = await renderTestsWorkbook(TEMPLATE_CASES, TEMPLATE_META, { templatePath });
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const sheet = workbook.getWorksheet("用例");
+  assert.equal(sheet.getCell("A1").value, "来源：unit-test");
+  assert.equal(sheet.getCell("B1").value, "2 条");
+
+  assert.equal(sheet.getRow(2).getCell(1).value, "用例名");
+  assert.equal(sheet.getRow(3).getCell(1).value, 1);
+  assert.equal(sheet.getRow(3).getCell(2).value, "Home → Checkout");
+  assert.equal(sheet.getRow(3).getCell(3).value, "1) 点击「Buy now」\n2) 等待 2 秒");
+  assert.equal(sheet.getRow(3).getCell(4).value, "task one");
+  assert.equal(sheet.getRow(3).getCell(5).value, "固定说明");
+  assert.equal(sheet.getRow(3).getCell(6).value, "{{unknown.key}}");
+  assert.equal(sheet.getRow(3).getCell(3).alignment?.wrapText, true);
+
+  assert.equal(sheet.getRow(4).getCell(1).value, 2);
+  assert.equal(sheet.getRow(4).getCell(2).value, "Settings");
+  assert.equal(sheet.getRow(4).getCell(3).value, "1) 点击「Go home」");
+  assert.equal(sheet.getRow(4).getCell(4).value, "task two");
+  assert.equal(sheet.getRow(4).getCell(1).fill.fgColor.argb, "FFFFF2CC");
+  assert.equal(sheet.getRow(4).getCell(2).font.bold, true);
+});
+
+test("renderTestsWorkbook template: rejects a template without case-level placeholders", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-tpl-"));
+  const templatePath = await writeTestTemplate(path.join(dir, "template.xlsx"), { withCaseRow: false });
+  await assert.rejects(
+    () => renderTestsWorkbook(TEMPLATE_CASES, TEMPLATE_META, { templatePath }),
+    /行级占位符/
+  );
+});
+
+test("renderTestsWorkbook template: zero cases removes the template row and keeps meta", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-tpl-"));
+  const templatePath = await writeTestTemplate(path.join(dir, "template.xlsx"));
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(templatePath);
+  workbook.getWorksheet("用例").getCell("A4").value = "底部说明";
+  await workbook.xlsx.writeFile(templatePath);
+
+  const buffer = await renderTestsWorkbook([], { ...TEMPLATE_META, counts: { cases: 0, screens: 0, edges: 0 } }, { templatePath });
+  const rendered = new ExcelJS.Workbook();
+  await rendered.xlsx.load(buffer);
+  const sheet = rendered.getWorksheet("用例");
+  assert.equal(sheet.getCell("A1").value, "来源：unit-test");
+  assert.equal(sheet.getCell("B1").value, "0 条");
+  assert.equal(sheet.getRow(3).getCell(1).value, "底部说明");
+  assert.equal(sheet.rowCount, 3);
+});
+
+test("renderTestsWorkbook template: meta-only sheets are allowed beside a case row sheet", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-tpl-"));
+  const templatePath = path.join(dir, "template.xlsx");
+  const workbook = new ExcelJS.Workbook();
+  const casesSheet = workbook.addWorksheet("用例");
+  casesSheet.getRow(1).values = ["{{index}}", "{{case.name}}"];
+  const metaSheet = workbook.addWorksheet("说明");
+  metaSheet.getCell("A1").value = "共 {{counts.cases}} 条流程";
+  await workbook.xlsx.writeFile(templatePath);
+
+  const buffer = await renderTestsWorkbook(TEMPLATE_CASES, TEMPLATE_META, { templatePath });
+  const rendered = new ExcelJS.Workbook();
+  await rendered.xlsx.load(buffer);
+  assert.equal(rendered.getWorksheet("说明").getCell("A1").value, "共 2 条流程");
+  assert.equal(rendered.getWorksheet("说明").rowCount, 1);
+  assert.equal(rendered.getWorksheet("用例").getRow(2).getCell(2).value, "Settings");
+});
+
+test("figma_generate_tests: excelTemplate fills the workbook and reports the template", async () => {
+  const dir = makeFlowsProject();
+  fs.mkdirSync(path.join(dir, "qa"), { recursive: true });
+  const templatePath = await writeTestTemplate(path.join(dir, "qa", "template.xlsx"));
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { excelTemplate: "qa/template.xlsx" }));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.excel.template, templatePath);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(payload.savedTo.xlsx));
+  const sheet = workbook.getWorksheet("用例");
+  assert.equal(sheet.getCell("A1").value, `来源：${path.join(dir, ".artemis", "design", "flows.json")}`);
+  assert.equal(sheet.getCell("B1").value, `${payload.flows.length} 条`);
+  assert.equal(sheet.getRow(3).getCell(1).value, 1);
+  assert.equal(sheet.getRow(3).getCell(2).value, payload.flows[0].name);
+  assert.equal(
+    sheet.getRow(3).getCell(3).value,
+    payload.flows[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n")
+  );
+});
+
+test("figma_generate_tests: unreadable excelTemplate fails before writing anything", async () => {
+  const dir = makeFlowsProject();
+  fs.mkdirSync(path.join(dir, "qa"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "qa", "broken.xlsx"), "not a workbook", "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  for (const excelTemplate of ["qa/missing.xlsx", "qa/broken.xlsx"]) {
+    const payload = parseToolResult(await figmaGenerateTests(runtime, { excelTemplate }));
+    assert.equal(payload.ok, false);
+    assert.match(payload.error, /模版/);
+  }
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.json")), false);
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.md")), false);
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.xlsx")), false);
 });
 
 test("renderMarkdown: checklist + embedded task descriptions", () => {

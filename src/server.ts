@@ -264,12 +264,20 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_generate_tests",
     description:
-      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程，生成可直接传给 mobile_run_task 的自然语言任务描述；落盘 tests.json + tests.md。",
+      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程，生成可直接传给 mobile_run_task 的自然语言任务描述；落盘 tests.json + tests.md + tests.xlsx（Excel 可用 excelPath 指定路径、excelTemplate 指定 .xlsx 模版）。",
     schema: z.object({
       url: z.string().optional().describe("Figma URL（可选；不传则用 flows.json）"),
       flowsPath: z.string().optional().describe("自定义 flows.json 路径（相对项目根）"),
       maxFlows: z.number().int().positive().max(50).optional().describe("最多生成条数，默认 10"),
-      save: z.boolean().optional().describe("是否落盘 tests.json/tests.md，默认 true")
+      save: z.boolean().optional().describe("是否落盘 tests.json/tests.md/tests.xlsx，默认 true"),
+      excelPath: z
+        .string()
+        .optional()
+        .describe("xlsx 输出路径（相对项目根），默认 .artemis/design/tests.xlsx"),
+      excelTemplate: z
+        .string()
+        .optional()
+        .describe("测试用例 .xlsx 模版路径（相对项目根或绝对），支持 {{meta.*}}/{{counts.*}}/{{case.*}}/{{index}} 占位符")
     }),
     handler: (runtime, args) => figmaGenerateTests(runtime, args as unknown as GenerateTestsArgs)
   },
