@@ -42,6 +42,9 @@ Status: ready-for-agent
 23. 作为移动开发者，我想大图自动降采样且不丢区域坐标，以便长截图/高分辨率设备下仍能对比。
 24. 作为移动开发者，我想对比失败时不留下半成品产物，以便目录干净。
 25. 作为移动开发者，我想报告记录本次对齐参数（scale/offset/insets）与耗时，以便复现同一次判定。
+26. 作为移动开发者，我想屏蔽指定区域（状态栏/视频位/轮播/时钟），以便动态内容不会淹没真实差异。
+27. 作为移动开发者，我想贴边差异被标注为「可能由系统安全区域导致」并降级，以便不把安全区偏移当实现 Bug 修。
+28. 作为移动开发者，我想降采样上限有明确默认值且可配，以便性能与抗噪可预期。
 
 ## Implementation Decisions
 
@@ -49,7 +52,8 @@ Status: ready-for-agent
 - **设计渲染源抽象**：统一「设计渲染源」接口（输入屏幕/节点标识，输出位图 + 设计侧节点几何 + 名称）。v1 实现两源：Figma（REST 导出 PNG@2x + 节点树几何/文本）与 `.pen`（经 `pen_export` 渲染 + 解析文件节点几何）。`.pen` 渲染缺 CLI/未登录时复用既有错误分类与提示。
 - **设备采集**：两种模式——`live`（经 `runtime.proxy.callTool("mobile_get_device_state")` 取实时截图）与 `step`（显式 `trace_id + step_number`，经 `mobile_inspect_trace(action="view_step_screenshots")` 取图，默认用 post，允许选 pre）。自动锚点模式：仅给 `trace_id` 时，用失败证据文本经 `mobile_inspect_trace(action="search")` 找回步骤；报告记录锚点来源（`explicit` / `search`）；Flash 任务无 `run_outcome`，自动模式返回明确说明而非静默失败（见 ADR-0003）。
 - **差异计算落点**：AOS TypeScript 纯 JS 图像栈（`pngjs` 解设计图、`jpeg-js` 解真机 JPEG、`pixelmatch` 比对；见 ADR-0002）。不新增 Python 通道、不直读上游 SQLite。
-- **对齐**：以设计宽度缩放 + 顶部对齐为默认锚点；`insets`（top/right/bottom/left，px）显式修正；不自动检测系统栏（后置）。对齐记录（scale/offset/insets）写入报告；大图先降采样到上限边长，坐标按比例还原。
+- **对齐与降采样**：以设计宽度缩放 + 顶部对齐为默认锚点；`insets`（top/right/bottom/left，px）显式修正；不自动检测系统栏（后置）。对齐记录（scale/offset/insets/downsampledTo）写入报告；大图先降采样到**默认最长边 1440px（可配）**，区域坐标按比例还原。
+- **区域屏蔽与抗噪**：`ignoreRegions`（bbox 数组）在判定前屏蔽指定区域（状态栏、视频位、轮播、时钟等动态内容），并在报告中记录 `ignoredRegions`。真机截图为**有损 JPEG**（上游固定编码）：平坦区噪声由 pixelmatch 阈值吸收（默认 0.1，可配），边缘噪声由降采样 + 最小区域面积（0.5%）+ 聚类间距抑制；阈值最终由票据 07 的真实基准校准，不提前拍高。
 - **判定与分类**（见 ADR-0001）：像素差异产生候选区域（pixelmatch 阈值、最小面积占比、聚类间距、区域数上限，均可配且默认 0.1 / 0.5% / 8px / 20）；用设计侧节点几何把候选归入类别 `missing | extra | position-size | color | text | asset`，并映射严重度 `blocker | major | minor | info`（主内容缺失/多余 ≥ major；文本区域差异 major；小面积颜色差异 minor）。输出按「严重度 → 面积 → 坐标」排序，保证确定性。
 - **差异报告形状**（决定性的类型轮廓，供实现与回归对齐）：
 
@@ -58,7 +62,8 @@ interface DiffReport {
   schemaVersion: 1;
   unit: { design: { source: "figma" | "pen"; nodeId?: string; name?: string }; device: { mode: "live" | "step"; traceId?: string; stepNumber?: number; image: "post" | "pre"; serial?: string } };
   alignment: { scale: number; offset: { x: number; y: number }; insets: { top: number; right: number; bottom: number; left: number }; downsampledTo?: number };
-  regions: Array<{ bbox: { x: number; y: number; width: number; height: number }; category: string; severity: string; pixelDiffRatio: number; designNode?: { id: string; name: string }; localized?: { mapEntry?: object; status: "mapped" | "unmapped" | "no-candidates" } }>;
+  ignoredRegions: Array<{ x: number; y: number; width: number; height: number }>;
+  regions: Array<{ bbox: { x: number; y: number; width: number; height: number }; category: string; severity: string; pixelDiffRatio: number; designNode?: { id: string; name: string }; suspected?: "system-area"; localized?: { mapEntry?: object; status: "mapped" | "unmapped" | "no-candidates" } }>;
   summary: { regions: number; bySeverity: Record<string, number>; byCategory: Record<string, number> };
   elapsedMs: number;
 }
@@ -66,7 +71,7 @@ interface DiffReport {
 
 - **产物落盘**：`<design>/diffs/<screen-slug>-<时间戳>/` 下写 `report.json`（含上结构）、`annotated.png`（差异框 + 编号）、`design.png`、`device.png`。工具响应返回摘要 JSON + 标注图（image block）+ 产物路径；原图不回传，避免 payload 膨胀。失败时不保留半成品目录。
 - **定位**：读取持久 `screen-map.json`（schema 版本化；条目含设计侧屏幕/节点与实现侧 route/component/file）；命中则写入 `localized.mapEntry`，否则 `unmapped`，若存在 build-brief 则附候选。
-- **`screen_map` 工具**：动作 `list` / `propose` / `save`。`propose` 基于 build-brief（组件清单、屏幕）与技术栈约定生成候选；`save` 显式写入（幂等，重复内容不写）。差异工具只读，不自动写映射（见 ADR-0004）。
+- **`screen_map` 工具**：动作 `list` / `propose` / `save`。`propose` 基于 build-brief（组件清单、屏幕）与技术栈约定生成**粗粒度候选**（屏幕名→路由/文件命名、AOS scaffold 过的组件），带 `confidence` 与 `unmatched`，不承诺全覆盖——Figma 节点 id 与代码无天然映射，最终由调用 agent（可带 LLM 推理）复核后 `save`；`save` 显式写入（幂等，重复内容不写）。差异工具只读，不自动写映射（见 ADR-0004）。
 - **解释层**：v1 不做内置 LLM 解释；报告与标注图即交付物（ADR-0001）。
 - **触发**：v1 仅手动调用；失败任务自动触发与全终态自动触发后置。
 - **错误与提示**：复用既有分类——Figma token 缺失、`.pen`/CLI 未登录、无 trace/步骤、无映射；所有错误给出下一步操作提示。
@@ -88,7 +93,8 @@ interface DiffReport {
 - Flash 任务的自动步骤锚点（无 `run_outcome`）。
 - 多步骤/流程级序列对比与视频/录屏差异。
 - 系统栏自动检测（向上游建议暴露 `status_bar_height` 后再评估）。
-- 上游 `run_outcome.failed_items` 增加步骤锚点（backlog）。
+- 特征锚点（中心点）对齐：v1 用 insets + `ignoreRegions` + 贴边 `suspected` 标注兜底；后续评估（live 可用 hierarchy，step 只有图片）。
+- 上游 `run_outcome.failed_items` 增加步骤锚点，以及 Flash 任务在 trace 顶层暴露「最后一步截图」字段（backlog；「最后一步」≠ 失败步骤）。
 - 非 Android 设备的采集路径（仍经 ARTEMIS）。
 
 ## Further Notes
@@ -97,3 +103,4 @@ interface DiffReport {
 - 相关 ADR：0001 判定与解释分离；0002 差异计算落 AOS TS；0003 失败步骤经上游工具编排；0004 屏幕映射持久产物。
 - `run_outcome` 仅 Pro 任务存在；自动锚点属 best-effort，报告需带锚点来源。
 - 视觉判定不依赖 active LLM 的多模态能力；当前 active LLM 为 DeepSeek（非多模态）也应完整可用。
+- 真机截图（live 与 step）都是**有损 JPEG**（上游 `_pil_to_base64(..., "JPEG")` 固定编码）；抗噪参数由票据 07 用真实基准校准，不凭经验拍值。

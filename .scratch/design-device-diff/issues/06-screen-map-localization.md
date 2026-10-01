@@ -7,7 +7,7 @@
 **Status:** ready-for-agent
 
 - [ ] `screen_map` list：读取并返回映射与 schema 版本；文件缺失返回空表与提示
-- [ ] `screen_map` propose：基于设计屏幕/组件与栈约定生成候选（不写盘）
+- [ ] `screen_map` propose：粗粒度候选（带 `confidence` 与 `unmatched`，不承诺全覆盖；Figma 节点 id 与代码无天然映射），由 agent 复核后 save
 - [ ] `screen_map` save：显式写入、幂等（重复内容不写）、非法输入报错
 - [ ] 差异报告 `localized` 字段：`mapped`（含条目）/ `unmapped`（含候选或原因）
 - [ ] 测试：temp project 上 propose/save/幂等/只读；报告定位字段断言
