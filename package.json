@@ -26,15 +26,20 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "dotenv": "^16.4.5",
+    "jpeg-js": "^0.4.4",
     "jsonc-parser": "^3.3.1",
     "pg": "^8.13.0",
+    "pixelmatch": "^7.2.0",
+    "pngjs": "^7.0.0",
     "zod": "^3.25.0",
     "zod-to-json-schema": "^3.24.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@types/jpeg-js": "^0.3.0",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
+    "@types/pngjs": "^6.0.5",
     "eslint": "^9.0.0",
     "pg-mem": "^3.0.0",
     "tsx": "^4.19.0",

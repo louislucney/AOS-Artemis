@@ -1,0 +1,185 @@
+import fs from "node:fs";
+import path from "node:path";
+
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+
+import { fetchFigmaRenderPng, resolveFigmaNodeId } from "../figma/render.js";
+import { errorMessage } from "../util.js";
+import type { Runtime } from "../runtime.js";
+import { extractDeviceImage } from "../tools/composite.js";
+import { renderAnnotatedPng } from "./annotate.js";
+import { decodeImage, diffScreens, encodePng, type Bbox, type Insets } from "./engine.js";
+
+export interface DesignDeviceDiffArgs {
+  design: { figmaUrl: string; nodeId?: string };
+  device?: { mode?: "live"; serial?: string };
+  alignment?: { insets?: Partial<Insets>; ignoreRegions?: Bbox[] };
+  diff?: {
+    pixelThreshold?: number;
+    minAreaRatio?: number;
+    clusterGap?: number;
+    maxRegions?: number;
+    maxEdge?: number;
+  };
+  save?: boolean;
+  dryRun?: boolean;
+}
+
+const FIGMA_HINT =
+  "提示：REST 模式需要 FIGMA_ACCESS_TOKEN（写入项目 .env 或调用 aos_configure 携带 figmaToken）。";
+
+function jsonResult(payload: unknown, isError = false): CallToolResult {
+  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], isError };
+}
+
+function jsonError(message: string): CallToolResult {
+  return jsonResult({ ok: false, error: message }, true);
+}
+
+export function diffSlug(nodeId: string): string {
+  return nodeId.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "screen";
+}
+
+function timestamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+}
+
+export async function designDeviceDiff(
+  runtime: Runtime,
+  args: DesignDeviceDiffArgs
+): Promise<CallToolResult> {
+  try {
+    if (!args.design?.figmaUrl) {
+      return jsonError("design.figmaUrl 必填：请提供带 ?node-id= 的 Figma 链接，或搭配 nodeId 参数。");
+    }
+    const started = Date.now();
+
+    let plannedNodeId: string | null = null;
+    try {
+      plannedNodeId = resolveFigmaNodeId(args.design.figmaUrl, args.design.nodeId);
+    } catch {
+      plannedNodeId = null;
+    }
+
+    if (args.dryRun === true) {
+      const slug = plannedNodeId ? diffSlug(plannedNodeId) : "screen";
+      return jsonResult({
+        ok: true,
+        dryRun: true,
+        design: { ...args.design, nodeId: plannedNodeId },
+        device: { mode: "live", serial: args.device?.serial ?? null },
+        plannedDir: path.join(runtime.configDirAbs, "design", "diffs", `${slug}-<timestamp>`),
+        hint: "dryRun 不拉取设计/设备截图、不写盘。"
+      });
+    }
+
+    let render: Awaited<ReturnType<typeof fetchFigmaRenderPng>>;
+    try {
+      render = await fetchFigmaRenderPng(args.design.figmaUrl, args.design.nodeId);
+    } catch (error) {
+      return jsonResult({ ok: false, error: `Figma 渲染失败: ${errorMessage(error)}`, hint: FIGMA_HINT }, true);
+    }
+
+    let deviceBytes: Buffer;
+    let deviceNote: string;
+    try {
+      const result = await runtime.proxy.callTool("mobile_get_device_state", {
+        view_type: "screenshot",
+        ...(args.device?.serial ? { device_serial: args.device.serial } : {})
+      });
+      const extracted = extractDeviceImage(result);
+      if (!extracted) {
+        throw new Error("无法从 mobile_get_device_state 结果中解析截图（image 块或本地文件路径）。");
+      }
+      deviceBytes = Buffer.from(extracted.data, "base64");
+      deviceNote = extracted.note;
+    } catch (error) {
+      return jsonError(`真机截图失败: ${errorMessage(error)}`);
+    }
+
+    let annotated: Buffer;
+    let deviceImage: ReturnType<typeof decodeImage>;
+    let diffResult: ReturnType<typeof diffScreens>;
+    try {
+      const design = decodeImage(render.png);
+      const device = decodeImage(deviceBytes);
+      deviceImage = device;
+      diffResult = diffScreens(design, device, {
+        insets: args.alignment?.insets,
+        ignoreRegions: args.alignment?.ignoreRegions,
+        ...args.diff
+      });
+      annotated = renderAnnotatedPng(design, diffResult.regions);
+    } catch (error) {
+      return jsonError(`差异计算失败: ${errorMessage(error)}`);
+    }
+
+    const report = {
+      schemaVersion: 1 as const,
+      unit: {
+        design: { source: "figma" as const, nodeId: render.nodeId },
+        device: {
+          mode: "live" as const,
+          ...(args.device?.serial ? { serial: args.device.serial } : {})
+        }
+      },
+      alignment: diffResult.alignment,
+      ignoredRegions: diffResult.ignoredRegions,
+      regions: diffResult.regions,
+      summary: diffResult.summary,
+      elapsedMs: Date.now() - started
+    };
+
+    let saved: Record<string, string> | undefined;
+    if (args.save !== false) {
+      const dir = path.join(runtime.configDirAbs, "design", "diffs", `${diffSlug(render.nodeId)}-${timestamp()}`);
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
+        fs.writeFileSync(path.join(dir, "annotated.png"), annotated);
+        fs.writeFileSync(path.join(dir, "design.png"), render.png);
+        fs.writeFileSync(path.join(dir, "device.png"), encodePng(deviceImage));
+      } catch (error) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+        } catch {
+          /* best effort */
+        }
+        return jsonError(`产物写入失败: ${errorMessage(error)}`);
+      }
+      saved = {
+        dir,
+        report: path.join(dir, "report.json"),
+        annotated: path.join(dir, "annotated.png"),
+        design: path.join(dir, "design.png"),
+        device: path.join(dir, "device.png")
+      };
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              ok: true,
+              dryRun: false,
+              design: { nodeId: render.nodeId, renderUrl: render.renderUrl },
+              device: { source: deviceNote, serial: args.device?.serial ?? "(auto)" },
+              alignment: diffResult.alignment,
+              ignoredRegions: diffResult.ignoredRegions,
+              summary: diffResult.summary,
+              regions: diffResult.regions,
+              saved
+            },
+            null,
+            2
+          )
+        },
+        { type: "image", data: annotated.toString("base64"), mimeType: "image/png" }
+      ]
+    };
+  } catch (error) {
+    return jsonError(`设计 vs 真机对比失败: ${errorMessage(error)}`);
+  }
+}

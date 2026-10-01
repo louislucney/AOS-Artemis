@@ -2,8 +2,39 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { encode as encodeJpeg } from "jpeg-js";
+import { PNG } from "pngjs";
+
 import { loadProject } from "../dist/config/loader.js";
 import { Runtime } from "../dist/runtime.js";
+
+export function createImage(width, height, fill = [255, 255, 255, 255]) {
+  const data = Buffer.alloc(width * height * 4);
+  for (let index = 0; index < width * height; index += 1) {
+    data.set(fill, index * 4);
+  }
+  return { width, height, data };
+}
+
+export function fillRect(image, x, y, width, height, color) {
+  for (let row = y; row < y + height; row += 1) {
+    for (let col = x; col < x + width; col += 1) {
+      image.data.set(color, (row * image.width + col) * 4);
+    }
+  }
+}
+
+export function toPng(image) {
+  const png = new PNG({ width: image.width, height: image.height });
+  png.data = Buffer.from(image.data);
+  return PNG.sync.write(png);
+}
+
+export function toJpeg(image, quality = 85) {
+  return Buffer.from(
+    encodeJpeg({ data: Buffer.from(image.data), width: image.width, height: image.height }, quality).data
+  );
+}
 
 export function makeTempProject({ config, dotenv = "", configFileName = "aos.config.jsonc" } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-mcp-test-"));

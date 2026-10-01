@@ -117,6 +117,7 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 - `aos_tasks`：列出本项目 `mobile_run_task` 记录（trace/状态/模型/时间），默认先向 artemis 同步完成态；后台每 30s 自动同步。
 - `aos_crashes`：任务终态后自动采集设备 crash buffer，解析为崩溃签名（包名 + 根因异常 + 首个应用帧）并去重计数；`list` 查看、`get` 取完整栈、`scan` 手动扫描。产物在 `.artemis/crashes/`，`AOS_CRASH_CAPTURE=0` 可关闭。
 - `compare_design_and_device`：一次调用返回 **Figma 节点渲染图（PNG@2x）+ 当前真机截图**（MCP image content），交给多模态模型比对布局/间距/颜色/文案。
+- `design_device_diff`：**确定性**设计 vs 真机差异（不依赖多模态）：默认取 Figma 节点 + 实时截图，做对齐与像素判定，输出结构化差异报告（区域/严重度/证据）与标注图并落盘；`alignment.ignoreRegions` 可屏蔽状态栏/视频位等动态区域。
 
 ### 设计 → 测试流水线（Figma → 真机）
 
@@ -137,7 +138,7 @@ pen_apply_tokens(path?)      # 写回：tokens.json（含 modes）→ .pen SetVa
 pen_apply_strings(path?)     # 写回：strings.json → .pen 文本节点 Update(content)（原位安全更新）
 pen_agent(prompt)            # agent 生成/改设计 → .pen（凭证自动复用 active LLM；CLI 缺失自动安装；.env PEN_* 透传）
 # 执行：mobile_run_task(task_desc = tests.json 中 flows[i].taskDesc)
-# 视觉断言：compare_design_and_device（失败步骤截图 vs Figma 渲染图）
+# 视觉对比：compare_design_and_device（双图交多模态）或 design_device_diff（确定性差异报告 + 标注图）
 ```
 
 **触发方式**
@@ -237,6 +238,7 @@ node dist/cli.js doctor
 | `aos_tasks` | 任务/调用统计（trace/状态/模型），含完成态同步 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
+| `design_device_diff` | 设计 vs 真机差异（确定性）：Figma 节点 + 实时截图 → 对齐（insets/ignoreRegions/降采样）→ 像素差异判定 → 差异报告 + 标注图，落盘 `.artemis/design/diffs/<node>-<时间戳>/`；`dryRun` 只回计划 |
 | `figma_extract_flows` | 解析 Figma 原型交互 → 流程图（screens/edges/entryScreens，支持连续动作与 BACK），落盘 `.artemis/design/flows.json` |
 | `figma_gap_analysis` | 缺口分析：设计资源/色板 vs 项目现有资产/ tokens 文件，落盘 `.artemis/design/gaps.json` |
 | `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md`，内含可直接传给 `mobile_run_task` 的任务描述 |
@@ -263,6 +265,7 @@ node dist/cli.js doctor
 |------|------|
 | 任务轨迹（步骤截图 / notes / stdout / stderr / `data_engine.db`） | `.artemis/traces/`（环境变量 `ARTEMIS_TRACES_DIR` 可覆盖，相对路径按项目根解析） |
 | 实时真机截图 | `.artemis/traces/live_screenshots/`（上游在 artemis 仓库根另存一份，AOS 自动镜像；`mobile_get_device_state` 响应不变） |
+| 设计 vs 真机差异 | `.artemis/design/diffs/<node>-<时间戳>/`（report.json / annotated.png / design.png / device.png） |
 | 崩溃取证 | `.artemis/crashes/` |
 | 测试文档（flows / gaps / tests.md / build-brief 等设计产物） | `.artemis/design/` |
 | AOS 日志 | `.artemis/logs/aos-mcp.log`、`artemis-child.log` |

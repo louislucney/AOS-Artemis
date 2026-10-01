@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { fetchImages, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
+import { fetchFigmaRenderPng } from "../figma/render.js";
 import { errorMessage } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
@@ -101,24 +101,12 @@ export async function compareDesignAndDevice(
   // 1) Figma render (PNG @2x) via the REST API.
   let figmaImage: { data: string; mimeType: string; source: string; nodeId: string };
   try {
-    const { fileKey, nodeId } = parseFigmaUrl(args.figmaUrl);
-    const targetNode = args.nodeId ?? nodeId;
-    if (!targetNode) {
-      throw new Error('URL 缺少 node-id：请传入带 ?node-id= 的 Figma URL，或提供 nodeId 参数。');
-    }
-    const render = await fetchImages(fileKey, [targetNode], "png", 2);
-    const renderUrl = render.images?.[targetNode];
-    if (!renderUrl) {
-      throw new Error(`Figma 未返回渲染图（node ${targetNode}）${render.err ? `: ${render.err}` : ""}`);
-    }
-    const response = await fetch(renderUrl);
-    if (!response.ok) throw new Error(`下载 Figma 渲染图失败: HTTP ${response.status}`);
-    const bytes = Buffer.from(await response.arrayBuffer());
+    const render = await fetchFigmaRenderPng(args.figmaUrl, args.nodeId);
     figmaImage = {
-      data: bytes.toString("base64"),
+      data: render.png.toString("base64"),
       mimeType: "image/png",
-      source: renderUrl,
-      nodeId: targetNode
+      source: render.renderUrl,
+      nodeId: render.nodeId
     };
   } catch (error) {
     return jsonError(

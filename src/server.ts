@@ -43,6 +43,7 @@ import { penAgent, type PenAgentArgs } from "./pen/agent.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
+import { designDeviceDiff, type DesignDeviceDiffArgs } from "./diff/tool.js";
 import { aosConfigure, type ConfigureArgs } from "./tools/configure.js";
 import { aosCrashes, type AosCrashesArgs } from "./tools/crash.js";
 import {
@@ -159,6 +160,52 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       deviceSerial: z.string().optional().describe("目标设备 serial（默认自动选择）")
     }),
     handler: (runtime, args) => compareDesignAndDevice(runtime, args as unknown as CompareArgs)
+  },
+  {
+    name: "design_device_diff",
+    description:
+      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG@2x）与真机实时截图，做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）；响应返回摘要 + 标注图 + 产物路径。dryRun 只回计划；判定不依赖 LLM。",
+    schema: z.object({
+      design: z.object({
+        figmaUrl: z.string().min(1).describe("Figma 文件 URL（建议带 ?node-id=）"),
+        nodeId: z.string().optional().describe("覆盖 URL 中的 node-id")
+      }),
+      device: z
+        .object({
+          mode: z.enum(["live"]).optional().describe("设备源模式，当前支持 live（实时截图）"),
+          serial: z.string().optional().describe("目标设备 serial（默认自动选择）")
+        })
+        .optional(),
+      alignment: z
+        .object({
+          insets: z
+            .object({
+              top: z.number().optional(),
+              right: z.number().optional(),
+              bottom: z.number().optional(),
+              left: z.number().optional()
+            })
+            .optional()
+            .describe("设备截图边缘裁剪（px），用于系统栏/手势条"),
+          ignoreRegions: z
+            .array(z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }))
+            .optional()
+            .describe("按设计坐标屏蔽的区域（动态内容：视频位/轮播/时钟等）")
+        })
+        .optional(),
+      diff: z
+        .object({
+          pixelThreshold: z.number().min(0).max(1).optional().describe("pixelmatch 阈值，默认 0.1"),
+          minAreaRatio: z.number().min(0).max(1).optional().describe("最小区域面积占比，默认 0.005"),
+          clusterGap: z.number().int().nonnegative().optional().describe("区域聚类间距（px），默认 8"),
+          maxRegions: z.number().int().positive().optional().describe("区域数上限，默认 20"),
+          maxEdge: z.number().int().positive().optional().describe("降采样最长边，默认 1440")
+        })
+        .optional(),
+      save: z.boolean().optional().describe("是否落盘产物，默认 true"),
+      dryRun: z.boolean().optional().describe("仅返回计划，不取图不写盘，默认 false")
+    }),
+    handler: (runtime, args) => designDeviceDiff(runtime, args as unknown as DesignDeviceDiffArgs)
   },
   {
     name: "figma_extract_flows",
