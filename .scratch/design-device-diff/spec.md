@@ -49,7 +49,7 @@ Status: ready-for-agent
 ## Implementation Decisions
 
 - **工具形态**：新增原生工具 `design_device_diff` 与 `screen_map`；现有 `compare_design_and_device` 保持不变（向后兼容）。两者都用 zod schema，符合原生工具约定。
-- **设计渲染源抽象**：统一「设计渲染源」接口（输入屏幕/节点标识，输出位图 + 设计侧节点几何 + 名称）。v1 实现两源：Figma（REST 导出 PNG@2x + 节点树几何/文本）与 `.pen`（经 `pen_export` 渲染 + 解析文件节点几何）。`.pen` 渲染缺 CLI/未登录时复用既有错误分类与提示。
+- **设计渲染源抽象**：统一「设计渲染源」接口（输入屏幕/节点标识，输出位图 + 设计侧节点几何 + 名称）。v1 实现两源：Figma（REST 导出 1× + 节点树几何/文本；`compare_design_and_device` 仍为 2×）与 `.pen`（经 `pen_export` 渲染 1× + 解析文件节点几何）。`.pen` 渲染缺 CLI/未登录时复用既有错误分类与提示。
 - **设备采集**：两种模式——`live`（经 `runtime.proxy.callTool("mobile_get_device_state")` 取实时截图）与 `step`（显式 `trace_id + step_number`，经 `mobile_inspect_trace(action="view_step_screenshots")` 取图，默认用 post，允许选 pre）。自动锚点模式：仅给 `trace_id` 时，用失败证据文本经 `mobile_inspect_trace(action="search")` 找回步骤；报告记录锚点来源（`explicit` / `search`）；Flash 任务无 `run_outcome`，自动模式返回明确说明而非静默失败（见 ADR-0003）。
 - **差异计算落点**：AOS TypeScript 纯 JS 图像栈（`pngjs` 解设计图、`jpeg-js` 解真机 JPEG、`pixelmatch` 比对；见 ADR-0002）。不新增 Python 通道、不直读上游 SQLite。
 - **对齐与降采样**：以设计宽度缩放 + 顶部对齐为默认锚点；`insets`（top/right/bottom/left，px）显式修正；不自动检测系统栏（后置）。对齐记录（scale/offset/insets/downsampledTo）写入报告；降采样按**设计图最长边**判定（默认 1440px 可配，设备图直接缩放到设计宽度，不参与触发），区域坐标按比例还原；`scale` 为设备像素 → 工作（设计）坐标系比例。
@@ -68,6 +68,8 @@ interface DiffReport {
   elapsedMs: number;
 }
 ```
+
+> 实现补充（票据 03–06，`schemaVersion` 保持 1，均为增量字段）：报告顶层增 `designScreens`（顶层屏幕名称/几何，≤10）、`thresholds`（实际生效的 8 项阈值）、`warnings`、仅自动锚点时出现的 `anchor{source,query,candidates,ambiguous}`；region 增 `suspected:"system-area"` 与 `localized{status,mapEntry?,candidates?,reason?}`；`unit.device.image` 仅 step 模式出现（live 模式省略）。
 
 - **产物落盘**：`<design>/diffs/<screen-slug>-<时间戳>/` 下写 `report.json`（含上结构）、`annotated.png`（差异框 + 编号）、`design.png`、`device.png`。工具响应返回摘要 JSON + 标注图（image block）+ 产物路径；原图不回传，避免 payload 膨胀。失败时不保留半成品目录。
 - **定位**：读取持久 `screen-map.json`（schema 版本化；条目含设计侧屏幕/节点与实现侧 route/component/file）；命中则写入 `localized.mapEntry`，否则 `unmapped`，若存在 build-brief 则附候选。

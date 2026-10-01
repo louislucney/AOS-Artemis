@@ -32,6 +32,7 @@ export interface ScreenMapFile {
 
 export interface ProposeResult {
   buildBrief: boolean;
+  error?: string;
   candidates: ScreenMapEntry[];
   unmatched: Array<{ design: string; reason: string }>;
 }
@@ -121,13 +122,20 @@ export function saveScreenMap(configDirAbs: string, map: ScreenMapFile): { actio
 export function proposeScreenMapEntries(configDirAbs: string, profile: StackProfile | null): ProposeResult {
   const briefPath = path.join(configDirAbs, "design", "build-brief.json");
   if (!fs.existsSync(briefPath)) return { buildBrief: false, candidates: [], unmatched: [] };
-  const parsed = JSON.parse(fs.readFileSync(briefPath, "utf-8")) as {
+  let parsed: {
     brief?: {
       screens?: Array<{ name?: string; suggestedRoute?: string }>;
       components?: Array<{ name?: string; type?: string }>;
+      stack?: { componentDir?: string };
     };
   };
-  const componentDir = profile?.naming.componentFile.preferredDir ?? "src/components";
+  try {
+    parsed = JSON.parse(fs.readFileSync(briefPath, "utf-8")) as typeof parsed;
+  } catch {
+    return { buildBrief: false, error: "build-brief.json 无法解析", candidates: [], unmatched: [] };
+  }
+  const componentDir =
+    parsed.brief?.stack?.componentDir ?? profile?.naming.componentFile.preferredDir ?? "src/components";
   const candidates: ScreenMapEntry[] = [];
   const unmatched: Array<{ design: string; reason: string }> = [];
 
@@ -314,7 +322,12 @@ export function localizeRegion(
     if (byScreen) return { status: "mapped", mapEntry: byScreen };
   }
   if (!proposal || !proposal.buildBrief) {
-    return { status: "no-candidates", reason: "没有 build-brief.json，无法生成候选（可运行 figma_export_brief / pen_export_brief）" };
+    return {
+      status: "no-candidates",
+      reason: proposal?.error
+        ? `${proposal.error}（可重新运行 figma_export_brief / pen_export_brief）`
+        : "没有 build-brief.json，无法生成候选（可运行 figma_export_brief / pen_export_brief）"
+    };
   }
   const candidates = proposal.candidates
     .filter(

@@ -197,3 +197,23 @@ test("design_device_diff: post 缺失时提示改用 pre；stepNumber 必须为�
   assert.equal(zeroStep.isError, true);
   assert.match(parseToolResult(zeroStep).error, /正整数/);
 });
+
+test("design_device_diff: 省略 mode 时 traceId 推断为 step；mode=live 带 traceId 报错", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const proxy = new StubProxy({ running: true });
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+
+  const inferred = await designDeviceDiff(runtime, {
+    design: { figmaUrl: "https://www.figma.com/design/StepH8/File?node-id=1-2" },
+    device: { traceId: "trace-1" }
+  });
+  assert.equal(inferred.isError, true);
+  assert.match(parseToolResult(inferred).error, /自动锚点失败/);
+
+  const conflicting = await designDeviceDiff(runtime, {
+    design: { figmaUrl: "https://www.figma.com/design/StepH8/File?node-id=1-2" },
+    device: { mode: "live", traceId: "trace-1" }
+  });
+  assert.equal(conflicting.isError, true);
+  assert.match(parseToolResult(conflicting).error, /mode 不是 step/);
+});

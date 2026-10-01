@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-const root = "/Users/louis/Documents/LLM/AOS-ARTEMIS";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, "..");
 const { decodeImage, resize, encodePng } = await import(`${root}/dist/diff/engine.js`);
 
 const src = process.argv[2] ?? `${root}/test/fixtures/diff-bench/device.jpg`;

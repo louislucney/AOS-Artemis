@@ -189,3 +189,14 @@ test("design_device_diff: 设计源参数校验", async () => {
   assert.equal(dryRun.design.source, "pen");
   assert.match(dryRun.plannedDir, /demo-<timestamp>$/);
 });
+
+test("penDesignNodes: 短 hex（#fff）归一化为 8 位后再作 parentFill", () => {
+  const doc = parsePenText(`{
+    "children": [
+      { "id": "tint", "type": "frame", "name": "Tint", "x": 0, "y": 0, "width": 100, "height": 100, "fill": "#fff", "layout": "none",
+        "children": [{ "id": "child", "type": "rectangle", "name": "Child", "x": 10, "y": 10, "width": 30, "height": 30 }] }
+    ]
+  }`);
+  const child = penDesignNodes(doc).find((node) => node.id === "child");
+  assert.equal(child.parentFill, "#FFFFFFFF");
+});

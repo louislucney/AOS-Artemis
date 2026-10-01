@@ -43,7 +43,7 @@ function solidFillOf(node: RawNode): string | undefined {
 export async function fetchFigmaDesignNodes(
   figmaUrl: string,
   nodeIdOverride?: string
-): Promise<FigmaDesignNode[]> {
+): Promise<{ nodes: FigmaDesignNode[]; truncated: boolean }> {
   const { fileKey } = parseFigmaUrl(figmaUrl);
   const targetNode = resolveFigmaNodeId(figmaUrl, nodeIdOverride);
   const response = (await fetchNodes(fileKey, [targetNode])) as {
@@ -88,7 +88,7 @@ export async function fetchFigmaDesignNodes(
     for (const child of node.children ?? []) visit(child, inheritedFill, depth + 1);
   };
   for (const child of document.children ?? []) visit(child, solidFillOf(document), 1);
-  return nodes;
+  return { nodes, truncated: nodes.length >= MAX_DESIGN_NODES };
 }
 
 export async function fetchFigmaRenderPng(

@@ -7,6 +7,7 @@ import { loadPenDocument, penRelativePath, resolvePenTarget } from "../pen/paths
 import type { PenDocument, PenNode } from "../pen/read.js";
 import { penVariableDefaultHex } from "../pen/tokens.js";
 import type { Runtime } from "../runtime.js";
+import { normalizeHexColor } from "../figma/color.js";
 import type { DesignNode } from "./engine.js";
 
 export interface PenRender {
@@ -31,7 +32,7 @@ function fillHexOf(node: PenNode, variables: Record<string, { type?: string; val
   const fill = node.fill;
   if (typeof fill !== "string") return null;
   if (fill.startsWith("$")) return penVariableDefaultHex(variables[fill.slice(1)], variables);
-  return /^#[0-9a-fA-F]{3,8}$/.test(fill) ? fill : null;
+  return normalizeHexColor(fill);
 }
 
 export function penDesignNodes(doc: PenDocument): DesignNode[] {

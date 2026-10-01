@@ -318,7 +318,7 @@ const NODE_COVERAGE = 0.6;
 function hexToRgb(value: string | undefined): { rgb: [number, number, number]; alpha: number } | null {
   if (!value) return null;
   const raw = value.replace(/^#/, "");
-  if (!/^[0-9a-fA-F]{6,8}$/.test(raw)) return null;
+  if (!/^(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(raw)) return null;
   return {
     rgb: [parseInt(raw.slice(0, 2), 16), parseInt(raw.slice(2, 4), 16), parseInt(raw.slice(4, 6), 16)],
     alpha: raw.length === 8 ? parseInt(raw.slice(6, 8), 16) : 255

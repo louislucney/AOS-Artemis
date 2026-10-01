@@ -86,7 +86,7 @@ function jsonError(message: string): CallToolResult {
   return jsonResult({ ok: false, error: message }, true);
 }
 
-export function diffSlug(nodeId: string): string {
+function diffSlug(nodeId: string): string {
   return nodeId.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "screen";
 }
 
@@ -103,7 +103,10 @@ export async function designDeviceDiff(
     const source = resolveDesignSource(args.design ?? {});
     if ("error" in source) return jsonError(source.error);
     const started = Date.now();
-    const mode = args.device?.mode ?? "live";
+    const mode = args.device?.mode ?? (args.device?.traceId ? "step" : "live");
+    if (args.device?.traceId && mode !== "step") {
+      return jsonError('提供了 device.traceId，但 mode 不是 step：请显式设 device.mode="step"（或省略 mode 让其自动推断）。');
+    }
     if (mode === "step") {
       if (!args.device?.traceId) {
         return jsonError("device.mode=step 需要 device.traceId（截图经 mobile_inspect_trace 获取）。");
@@ -210,7 +213,11 @@ export async function designDeviceDiff(
         return jsonResult({ ok: false, error: `Figma 渲染失败: ${errorMessage(error)}`, hint: FIGMA_HINT }, true);
       }
       try {
-        designNodes = await fetchFigmaDesignNodes(args.design.figmaUrl!, args.design.nodeId);
+        const fetched = await fetchFigmaDesignNodes(args.design.figmaUrl!, args.design.nodeId);
+        designNodes = fetched.nodes;
+        if (fetched.truncated) {
+          nodeWarning = `设计节点超过 ${designNodes.length} 个上限，已截断（分类可能不完整）。`;
+        }
       } catch (error) {
         nodeWarning = `设计节点几何获取失败（分类降级为 pixel）：${errorMessage(error)}`;
       }
@@ -271,12 +278,6 @@ export async function designDeviceDiff(
       return jsonError(`差异计算失败: ${errorMessage(error)}`);
     }
 
-    const warnings = [
-      ...(nodeWarning ? [nodeWarning] : []),
-      ...(anchorAmbiguous
-        ? [`失败证据命中 ${stepAnchor!.candidates.length} 个步骤，已取首个 Step ${stepAnchor!.stepNumber}；可用 device.stepNumber 显式指定。`]
-        : [])
-    ];
     const screens = designNodes.filter((node) => (node.depth ?? 0) === 0);
     const screenMap = loadScreenMap(runtime.configDirAbs);
     let proposal: ProposeResult | null = null;
@@ -298,6 +299,16 @@ export async function designDeviceDiff(
       region.localized = localizeRegion(region, node, screens, screenMap.entries, proposal);
     }
 
+    const noCandidateCount = diffResult.regions.filter((region) => region.localized?.status === "no-candidates").length;
+    const warnings = [
+      ...(nodeWarning ? [nodeWarning] : []),
+      ...(noCandidateCount > 0 && proposal?.buildBrief
+        ? [`${noCandidateCount} 个差异区域未在 build-brief/screen-map 中找到落点（no-candidates）；可补 screen-map.json 或核对屏幕命名。`]
+        : []),
+      ...(anchorAmbiguous
+        ? [`失败证据命中 ${stepAnchor!.candidates.length} 个步骤，已取首个 Step ${stepAnchor!.stepNumber}；可用 device.stepNumber 显式指定。`]
+        : [])
+    ];
     const designScreens = screens
       .slice(0, 10)
       .map((node) => ({ id: node.id, name: node.name, width: node.width, height: node.height }));

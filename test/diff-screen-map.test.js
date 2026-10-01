@@ -37,7 +37,7 @@ const HOME_DOCUMENT = {
   ]
 };
 
-function makeMapProject({ buildBrief = true, flutter = true } = {}) {
+function makeMapProject({ buildBrief = true, flutter = true, componentDir } = {}) {
   const dir = makeTempProject({ config: baseConfig() });
   const designDir = path.join(dir, ".artemis", "design");
   fs.mkdirSync(designDir, { recursive: true });
@@ -49,6 +49,7 @@ function makeMapProject({ buildBrief = true, flutter = true } = {}) {
         ok: true,
         summary: {},
         brief: {
+          stack: componentDir ? { componentDir } : undefined,
           screens: [
             { page: "pen", name: "Home", suggestedRoute: "/" },
             { page: "pen", name: "Frame 427", suggestedRoute: "/frame-427" }
@@ -198,6 +199,35 @@ test("design_device_diff: 未映射区域给候选或 no-candidates", async () =
       );
       assert.equal(payload.regions[0].localized.status, "no-candidates");
       assert.match(payload.regions[0].localized.reason, /build-brief/);
+    } finally {
+      figma.restore();
+    }
+  });
+});
+
+test("screen_map propose: 优先使用 build-brief 的 stack.componentDir", async () => {
+  const dir = makeMapProject({ componentDir: "lib/screens" });
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await screenMap(runtime, { action: "propose" }));
+  const home = payload.candidates.find((entry) => entry.design.screen === "Home");
+  assert.equal(home.code.file, path.join("lib", "screens", "home_screen.dart"));
+});
+
+test("design_device_diff: build-brief 损坏时降级并给出 reason，不阻断对比", async () => {
+  await withFigmaToken(async () => {
+    const dir = makeMapProject({ buildBrief: false });
+    fs.writeFileSync(path.join(dir, ".artemis", "design", "build-brief.json"), "{ not json", "utf-8");
+    const { runtime, figma } = await makeDiffRuntime(dir, { fileKey: "MapE5" });
+    try {
+      const payload = parseToolResult(
+        await designDeviceDiff(runtime, {
+          design: { figmaUrl: "https://www.figma.com/design/MapE5/File?node-id=1-2" }
+        })
+      );
+      assert.equal(payload.ok, true, JSON.stringify(payload));
+      assert.equal(payload.regions[0].localized.status, "no-candidates");
+      assert.match(payload.regions[0].localized.reason, /无法解析/);
+      assert.deepEqual(payload.warnings, []);
     } finally {
       figma.restore();
     }
