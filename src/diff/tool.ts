@@ -7,7 +7,13 @@ import { fetchFigmaDesignNodes, fetchFigmaRenderPng, resolveFigmaNodeId, type Fi
 import { errorMessage } from "../util.js";
 import type { Runtime } from "../runtime.js";
 import { renderAnnotatedPng } from "./annotate.js";
-import { captureLiveScreenshot, captureStepScreenshot, type DeviceCapture } from "./device-source.js";
+import {
+  captureLiveScreenshot,
+  captureStepScreenshot,
+  resolveTraceStepAnchor,
+  type DeviceCapture,
+  type StepAnchor
+} from "./device-source.js";
 import { decodeImage, diffScreens, encodePng, type Bbox, type Insets } from "./engine.js";
 
 export interface DesignDeviceDiffArgs {
@@ -64,16 +70,17 @@ export async function designDeviceDiff(
     const started = Date.now();
     const mode = args.device?.mode ?? "live";
     if (mode === "step") {
-      if (!args.device?.traceId || !Number.isInteger(args.device.stepNumber) || (args.device.stepNumber ?? 0) <= 0) {
-        return jsonError(
-          "device.mode=step 需要 device.traceId 与正整数 device.stepNumber（截图经 mobile_inspect_trace 获取）。"
-        );
+      if (!args.device?.traceId) {
+        return jsonError("device.mode=step 需要 device.traceId（截图经 mobile_inspect_trace 获取）。");
+      }
+      if (args.device.stepNumber !== undefined && (!Number.isInteger(args.device.stepNumber) || args.device.stepNumber <= 0)) {
+        return jsonError("device.stepNumber 必须是正整数（省略则用失败证据自动检索步骤）。");
       }
     }
     const stepRequest = mode === "step"
       ? {
           traceId: args.device!.traceId!,
-          stepNumber: args.device!.stepNumber!,
+          stepNumber: args.device!.stepNumber,
           image: args.device?.image ?? ("post" as const)
         }
       : null;
@@ -93,7 +100,14 @@ export async function designDeviceDiff(
         design: { ...args.design, nodeId: plannedNodeId },
         device:
           stepRequest !== null
-            ? { mode: "step", traceId: stepRequest.traceId, stepNumber: stepRequest.stepNumber, image: stepRequest.image, serial: args.device?.serial ?? null }
+            ? {
+                mode: "step",
+                traceId: stepRequest.traceId,
+                stepNumber: stepRequest.stepNumber ?? null,
+                autoAnchor: stepRequest.stepNumber === undefined,
+                image: stepRequest.image,
+                serial: args.device?.serial ?? null
+              }
             : { mode: "live", serial: args.device?.serial ?? null },
         plannedDir: path.join(runtime.configDirAbs, "design", "diffs", `${slug}-<timestamp>`),
         hint: "dryRun 不拉取设计/设备截图、不写盘。"
@@ -107,16 +121,51 @@ export async function designDeviceDiff(
       return jsonResult({ ok: false, error: `Figma 渲染失败: ${errorMessage(error)}`, hint: FIGMA_HINT }, true);
     }
 
+    let stepAnchor: StepAnchor | null = null;
+    let anchorSource: "explicit" | "search" | null = null;
+    let stepNumber: number | null = null;
+    if (stepRequest !== null) {
+      if (stepRequest.stepNumber !== undefined) {
+        stepNumber = stepRequest.stepNumber;
+        anchorSource = "explicit";
+      } else {
+        try {
+          stepAnchor = await resolveTraceStepAnchor(runtime, stepRequest.traceId);
+        } catch (error) {
+          return jsonError(`自动锚点失败: ${errorMessage(error)}`);
+        }
+        stepNumber = stepAnchor.stepNumber;
+        anchorSource = "search";
+      }
+    }
+
     let captured: DeviceCapture;
     try {
-      captured = stepRequest !== null
-        ? await captureStepScreenshot(runtime, stepRequest)
+      captured = stepRequest !== null && stepNumber !== null
+        ? await captureStepScreenshot(runtime, {
+            traceId: stepRequest.traceId,
+            stepNumber,
+            image: stepRequest.image
+          })
         : await captureLiveScreenshot(runtime, args.device?.serial);
     } catch (error) {
       return jsonError(stepRequest !== null ? `步骤截图失败: ${errorMessage(error)}` : `真机截图失败: ${errorMessage(error)}`);
     }
     const deviceBytes = captured.bytes;
     const deviceNote = captured.note;
+
+    const resolvedStepNumber = stepRequest !== null ? stepNumber : null;
+    const anchorAmbiguous = stepAnchor !== null && stepAnchor.candidates.length > 1;
+    const anchorInfo = stepAnchor
+      ? {
+          source: anchorSource,
+          query: stepAnchor.query,
+          candidates: stepAnchor.candidates.slice(0, 5),
+          ...(anchorAmbiguous ? { ambiguous: true } : {})
+        }
+      : anchorSource
+        ? { source: anchorSource }
+        : null;
 
     let designNodes: FigmaDesignNode[] = [];
     let nodeWarning: string | null = null;
@@ -144,12 +193,19 @@ export async function designDeviceDiff(
       return jsonError(`差异计算失败: ${errorMessage(error)}`);
     }
 
+    const warnings = [
+      ...(nodeWarning ? [nodeWarning] : []),
+      ...(anchorAmbiguous
+        ? [`失败证据命中 ${stepAnchor!.candidates.length} 个步骤，已取首个 Step ${stepAnchor!.stepNumber}；可用 device.stepNumber 显式指定。`]
+        : [])
+    ];
     const shared = {
       alignment: diffResult.alignment,
       ignoredRegions: diffResult.ignoredRegions,
       designNodes: designNodes.length,
       thresholds: diffResult.thresholds,
-      warnings: nodeWarning ? [nodeWarning] : [],
+      warnings,
+      ...(anchorInfo ? { anchor: anchorInfo } : {}),
       regions: diffResult.regions,
       summary: diffResult.summary
     };
@@ -162,8 +218,9 @@ export async function designDeviceDiff(
             ? {
                 mode: "step" as const,
                 traceId: stepRequest.traceId,
-                stepNumber: stepRequest.stepNumber,
+                stepNumber: resolvedStepNumber,
                 image: stepRequest.image,
+                anchor: anchorSource,
                 ...(captured.serial ? { serial: captured.serial } : {})
               }
             : {

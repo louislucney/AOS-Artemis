@@ -164,7 +164,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "design_device_diff",
     description:
-      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG@2x）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId/stepNumber 指定失败步骤截图，默认 post），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）；响应返回摘要 + 标注图 + 产物路径。dryRun 只回计划；判定不依赖 LLM。",
+      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG@2x）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId（stepNumber 可选：省略则用失败证据自动检索步骤）指定失败步骤截图，默认 post），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）；响应返回摘要 + 标注图 + 产物路径。dryRun 只回计划；判定不依赖 LLM。",
     schema: z.object({
       design: z.object({
         figmaUrl: z.string().min(1).describe("Figma 文件 URL（建议带 ?node-id=）"),
@@ -175,7 +175,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
           mode: z.enum(["live", "step"]).optional().describe("设备源模式：live（实时截图，默认）| step（trace 步骤截图）"),
           serial: z.string().optional().describe("目标设备 serial（默认自动选择）"),
           traceId: z.string().optional().describe("mode=step 必填：任务 trace id（mobile_run_task 返回）"),
-          stepNumber: z.number().int().positive().optional().describe("mode=step 必填：步骤号"),
+          stepNumber: z.number().int().positive().optional().describe("mode=step 步骤号；省略则用失败证据自动检索步骤（Pro 任务，best-effort）"),
           image: z.enum(["post", "pre"]).optional().describe("步骤截图选 post（行动后，默认）或 pre（行动前）")
         })
         .optional(),

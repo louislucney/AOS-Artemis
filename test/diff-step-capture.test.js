@@ -71,6 +71,7 @@ test("design_device_diff: mode=step 默认用 post 截图并记录 unit.device",
         traceId: "trace-1",
         stepNumber: 3,
         image: "post",
+        anchor: "explicit",
         serial: "emulator-5554"
       });
 
@@ -106,7 +107,7 @@ test("design_device_diff: image=pre 选择 before 截图", async () => {
   });
 });
 
-test("design_device_diff: mode=step 缺 traceId/stepNumber 时结构化报错", async () => {
+test("design_device_diff: mode=step 缺 traceId 时报错", async () => {
   const dir = makeTempProject({ config: baseConfig() });
   const proxy = new StubProxy({ running: true });
   const { runtime } = await loadTestRuntime(dir, { proxy });
@@ -117,13 +118,6 @@ test("design_device_diff: mode=step 缺 traceId/stepNumber 时结构化报错", 
   });
   assert.equal(missingTrace.isError, true);
   assert.match(parseToolResult(missingTrace).error, /traceId/);
-
-  const missingStep = await designDeviceDiff(runtime, {
-    design: { figmaUrl: "https://www.figma.com/design/StepC3/File?node-id=1-2" },
-    device: { mode: "step", traceId: "trace-1" }
-  });
-  assert.equal(missingStep.isError, true);
-  assert.match(parseToolResult(missingStep).error, /stepNumber/);
   assert.ok(!fs.existsSync(path.join(dir, ".artemis", "design", "diffs")));
 });
 
