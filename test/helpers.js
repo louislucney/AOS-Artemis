@@ -116,8 +116,12 @@ export async function withFigmaToken(fn) {
   }
 }
 
+export function makeTempDir(prefix = "aos-mcp-test-") {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
 export function makeTempProject({ config, dotenv = "", configFileName = "aos.config.jsonc" } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-mcp-test-"));
+  const dir = makeTempDir("aos-mcp-test-");
   if (config !== undefined) {
     const content = typeof config === "string" ? config : JSON.stringify(config, null, 2);
     fs.writeFileSync(path.join(dir, configFileName), content, "utf-8");
@@ -177,6 +181,69 @@ export function deepseekWithOverrides() {
       }
     }
   });
+}
+
+export class SuiteProxy {
+  constructor({ statuses = {}, runError = null, running = true } = {}) {
+    this.statuses = statuses;
+    this.runError = runError;
+    this.running = running;
+    this.calls = [];
+    this.submitted = 0;
+  }
+
+  isRunning() {
+    return this.running;
+  }
+
+  async ensureStarted() {
+    this.running = true;
+  }
+
+  async listTools() {
+    return [];
+  }
+
+  async callTool(name, args) {
+    this.calls.push({ name, args });
+    if (name === "mobile_run_task") {
+      if (this.runError) throw new Error(this.runError);
+      this.submitted += 1;
+      return {
+        content: [{ type: "text", text: JSON.stringify({ trace_id: `trace-${this.submitted}` }) }]
+      };
+    }
+    if (name === "mobile_manage_task") {
+      const entry = this.statuses[args.trace_id] ?? { status: "running" };
+      return {
+        content: [{ type: "text", text: JSON.stringify({ trace_id: args.trace_id, ...entry }) }]
+      };
+    }
+    return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+  }
+
+  status() {
+    return {
+      running: this.running,
+      pid: this.running ? 1 : null,
+      restarts: 0,
+      lastError: null,
+      stderrTail: [],
+      fingerprint: null
+    };
+  }
+
+  async markForRestart() {
+    this.running = false;
+  }
+
+  async dispose() {
+    this.running = false;
+  }
+
+  disposeSync() {
+    this.running = false;
+  }
 }
 
 export class StubProxy {

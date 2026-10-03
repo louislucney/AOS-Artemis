@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { makeTempDir } from "./helpers.js";
+
 import { extractDesignSystem } from "../dist/vendor/design-context-bridge/figma-rest/analysis.js";
 import {
   mergeColorTokens,
@@ -172,7 +174,7 @@ test("stack writers: per-stack formats, alias resolution and marker", () => {
 });
 
 test("scanHardcodedColors: finds #hex and 0xAARRGGBB, skips generated/token files", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-colors-"));
+  const dir = makeTempDir("aos-colors-");
   fs.mkdirSync(path.join(dir, "lib", "theme"), { recursive: true });
   fs.writeFileSync(
     path.join(dir, "lib", "theme", "aos_tokens.dart"),

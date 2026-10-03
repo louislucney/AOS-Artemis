@@ -1,106 +1,23 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir } from "./helpers.js";
+import { syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
 
 import {
   analyzeGapData,
   applyAssetNaming,
-  buildFlowGraph,
   globToRegExp,
   normalizeAssetName,
-  routeFor,
   walkProjectFiles
-} from "../dist/figma/flows.js";
+} from "../dist/figma/gaps.js";
+import { buildFlowGraph, routeFor } from "../dist/figma/flows.js";
 import { STACK_PROFILES } from "../dist/projects/stack.js";
 
-function syntheticDocument() {
-  return {
-    id: "0:0",
-    name: "Doc",
-    type: "DOCUMENT",
-    children: [
-      {
-        id: "1:0",
-        name: "Page 1",
-        type: "PAGE",
-        children: [
-          {
-            id: "10:1",
-            name: "Home",
-            type: "FRAME",
-            children: [
-              { id: "10:5", name: "Welcome Text", type: "TEXT", characters: "Welcome Back" },
-              {
-                id: "10:2",
-                name: "CTA Button",
-                type: "INSTANCE",
-                children: [{ id: "10:3", name: "CTA Label", type: "TEXT", characters: "Buy now" }],
-                interactions: [
-                  {
-                    trigger: { type: "ON_CLICK" },
-                    actions: [
-                      {
-                        type: "NODE",
-                        destinationId: "11:1",
-                        navigation: "NAVIGATE",
-                        transition: { type: "SMART_ANIMATE", duration: 0.3 }
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            id: "11:1",
-            name: "Checkout",
-            type: "FRAME",
-            children: [
-              { id: "11:5", name: "Amount", type: "TEXT", characters: "Pay now" },
-              {
-                id: "11:2",
-                name: "Payment Loader",
-                type: "FRAME",
-                interactions: [
-                  {
-                    trigger: { type: "AFTER_TIMEOUT", timeout: 2000 },
-                    actions: [
-                      { type: "NODE", destinationId: "12:1", navigation: "NAVIGATE" }
-                    ]
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            id: "12:1",
-            name: "Success",
-            type: "FRAME",
-            children: [
-              { id: "12:5", name: "Done Text", type: "TEXT", characters: "Done" },
-              {
-                id: "12:2",
-                name: "Back Link",
-                type: "VECTOR",
-                interactions: [
-                  {
-                    trigger: { type: "ON_CLICK" },
-                    actions: [{ type: "NODE", navigation: "BACK" }]
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      }
-    ]
-  };
-}
-
 test("flow graph: consecutive interactions produce screens, edges and entry screens", () => {
-  const graph = buildFlowGraph(syntheticDocument());
+  const graph = buildFlowGraph(syntheticFlowDocument());
 
   assert.deepEqual(
     graph.screens.map((screen) => screen.name).sort(),
@@ -132,7 +49,7 @@ test("flow graph: consecutive interactions produce screens, edges and entry scre
 });
 
 test("flow graph: unresolved destinations are reported with a null target", () => {
-  const document = syntheticDocument();
+  const document = syntheticFlowDocument();
   const home = document.children[0].children[0];
   const cta = home.children.find((child) => child.name === "CTA Button");
   cta.interactions[0].actions[0].destinationId = "99:99";
@@ -145,7 +62,7 @@ test("flow graph: unresolved destinations are reported with a null target", () =
 });
 
 test("flow graph: nodeId scoping limits the graph and flags outside destinations", () => {
-  const graph = buildFlowGraph(syntheticDocument(), { nodeId: "11:1" });
+  const graph = buildFlowGraph(syntheticFlowDocument(), { nodeId: "11:1" });
   assert.equal(graph.screens.length, 1);
   assert.equal(graph.screens[0].id, "11:1");
   assert.equal(graph.screens[0].name, "Checkout");
@@ -167,7 +84,7 @@ test("globToRegExp + walkProjectFiles: matches and skips heavy dirs", () => {
   assert.ok(!globToRegExp("**/*.svg").test("assets/home.png"));
   assert.ok(globToRegExp("assets/**").test("assets/a/b.png"));
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-scan-"));
+  const root = makeTempDir("aos-scan-");
   fs.mkdirSync(path.join(root, "assets", "icons"), { recursive: true });
   fs.mkdirSync(path.join(root, "src"), { recursive: true });
   fs.mkdirSync(path.join(root, "node_modules", "pkg"), { recursive: true });

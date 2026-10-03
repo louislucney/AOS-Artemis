@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -20,10 +21,12 @@ import {
 } from "./artemis/assembly.js";
 import { mirrorDeviceScreenshots } from "./artemis/artifacts.js";
 import { ArtemisProxy, type ArtemisProxyLike } from "./artemis/proxy.js";
+import { resultPayload, taskStatusFromFile, taskStatusOf, type TaskStatus } from "./artemis/task-result.js";
 import { appendChildLog } from "./log.js";
 import { CrashIndexStore } from "./crash/store.js";
 import { CrashScanner } from "./crash/scanner.js";
 import type { CrashCollectorLike, CrashScanReport, CrashScanResult } from "./crash/types.js";
+import { findGeneratedCaseId } from "./figma/case-index.js";
 import { MemoryStore } from "./db/memory.js";
 import { TERMINAL_TASK_STATUSES } from "./db/types.js";
 import type { ProjectLlmRecord, ProjectRecord, ProjectStore, TaskStatRecord } from "./db/types.js";
@@ -494,14 +497,19 @@ export class Runtime {
   // ------------------------------------------------------------------
 
   async recordTaskSubmission(input: {
-    traceId: string;
+    traceId?: string | null;
     model?: string | null;
     profile?: string | null;
+    status?: string;
     taskDesc?: string | null;
+    caseId?: string | null;
     lockedAppPackage?: string | null;
   }): Promise<void> {
-    if (input.lockedAppPackage) {
-      this.lockedPackages.set(input.traceId, input.lockedAppPackage);
+    const providedTrace = input.traceId?.trim() ?? "";
+    const traceId = providedTrace !== "" ? providedTrace : `local-${randomUUID()}`;
+    const status = providedTrace === "" ? "failed" : input.status ?? "submitted";
+    if (input.lockedAppPackage && status === "submitted") {
+      this.lockedPackages.set(traceId, input.lockedAppPackage);
       if (this.lockedPackages.size > 200) {
         const oldest = this.lockedPackages.keys().next().value;
         if (oldest !== undefined) this.lockedPackages.delete(oldest);
@@ -510,18 +518,58 @@ export class Runtime {
     await this.safeStore<void>(async () => {
       await this.store.recordTask({
         rootPath: this.project.rootDir,
-        traceId: input.traceId,
+        traceId,
         model: input.model ?? null,
         profile: input.profile ?? null,
+        status,
         taskDesc: input.taskDesc ?? null,
-        status: "submitted"
+        caseId: input.caseId ?? null,
+        finishedAt: status === "submitted" ? null : new Date().toISOString()
       });
     }, undefined);
+  }
+
+  async recordTaskResult(input: {
+    isError: boolean;
+    traceId?: string | null;
+    model?: string | null;
+    taskDesc?: string | null;
+    lockedAppPackage?: string | null;
+  }): Promise<void> {
+    const traceId = input.isError ? null : input.traceId?.trim() || null;
+    await this.recordTaskSubmission({
+      traceId,
+      model: input.model ?? null,
+      profile: null,
+      status: input.isError || !traceId ? "failed" : "submitted",
+      taskDesc: input.taskDesc ?? null,
+      caseId: findGeneratedCaseId(this.configDirAbs, input.taskDesc),
+      lockedAppPackage: input.lockedAppPackage ?? null
+    });
   }
 
   /** Poll artemis for pending task_statuses and mark terminal ones finished.
    * Prefers reading the trace store's status.json directly (works across
    * sessions, no child process needed); falls back to the live proxy. */
+  traceDir(traceId: string): string {
+    return path.join(this.tracesDir(), traceId);
+  }
+
+  async traceStatus(traceId: string): Promise<TaskStatus | null> {
+    const fromFile = taskStatusFromFile(path.join(this.traceDir(traceId), "status.json"));
+    if (fromFile?.status) return fromFile;
+    if (!this.proxy.isRunning()) return fromFile;
+    try {
+      const result = await this.proxy.callTool("mobile_manage_task", {
+        action: "status",
+        trace_id: traceId
+      });
+      return taskStatusOf(resultPayload(result)) ?? fromFile;
+    } catch {
+      return fromFile;
+    }
+  }
+
   async syncTaskStatuses(): Promise<{ checked: number; updated: number }> {
     const pending = await this.safeStore(
       () => this.store.listPendingTasks(this.project.rootDir, 20),
@@ -623,13 +671,8 @@ export class Runtime {
   }
 
   private readTraceStatus(traceId: string): string | null {
-    try {
-      const statusPath = path.join(this.tracesDir(), traceId, "status.json");
-      const parsed = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as { status?: unknown };
-      return typeof parsed.status === "string" ? parsed.status : null;
-    } catch {
-      return null;
-    }
+    const statusPath = path.join(this.tracesDir(), traceId, "status.json");
+    return taskStatusFromFile(statusPath)?.status ?? null;
   }
 
   private async queryTaskStatusViaProxy(traceId: string): Promise<string | null> {
@@ -639,11 +682,7 @@ export class Runtime {
         action: "status",
         trace_id: traceId
       });
-      const payload = extractJson(result);
-      if (payload && typeof payload === "object") {
-        const value = (payload as { status?: unknown }).status;
-        if (typeof value === "string") return value;
-      }
+      return taskStatusOf(resultPayload(result))?.status ?? null;
     } catch {
       /* fall through */
     }
@@ -880,8 +919,8 @@ export class Runtime {
   async queryTaskCounts(): Promise<{ active: number; queued: number } | null> {
     try {
       const result = await this.proxy.callTool("mobile_diagnose", {});
-      const payload = extractJson(result);
-      if (!payload || typeof payload !== "object") return null;
+      const payload = resultPayload(result);
+      if (!payload) return null;
       const tasks = (payload as { tasks?: unknown }).tasks;
       if (!tasks || typeof tasks !== "object") return null;
       const active = (tasks as { active?: unknown }).active;
@@ -911,22 +950,6 @@ export class Runtime {
       return fallback;
     }
   }
-}
-
-function extractJson(result: unknown): unknown {
-  const structured = (result as { structuredContent?: unknown }).structuredContent;
-  if (structured !== undefined && structured !== null) return structured;
-  const content = (result as { content?: Array<{ type: string; text?: string }> }).content;
-  for (const item of content ?? []) {
-    if (item.type === "text" && typeof item.text === "string") {
-      try {
-        return JSON.parse(item.text);
-      } catch {
-        return null;
-      }
-    }
-  }
-  return null;
 }
 
 const CRASH_SCAN_BATCH = 10;

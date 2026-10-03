@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir } from "./helpers.js";
 
 import { CrashIndexStore } from "../dist/crash/store.js";
 
 function makeStore(options = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-crash-"));
+  const dir = makeTempDir("aos-crash-");
   return { dir, store: new CrashIndexStore(path.join(dir, "crashes"), options) };
 }
 

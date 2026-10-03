@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { loadProject, resolveProject } from "../dist/config/loader.js";
-import { baseConfig, makeTempProject } from "./helpers.js";
+import { baseConfig, makeTempDir, makeTempProject } from "./helpers.js";
 
 test("discovery: AOS_CONFIG wins over cwd", () => {
   const dir = makeTempProject({ config: baseConfig() });
@@ -26,7 +26,7 @@ test("discovery: AOS_PROJECT_DIR is honored", () => {
 });
 
 test("discovery: AOS_PROJECT_DIR without config yields null config", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-mcp-noconfig-"));
+  const dir = makeTempDir("aos-mcp-noconfig-");
   const resolution = resolveProject({ env: { AOS_PROJECT_DIR: dir }, cwd: os.tmpdir() });
   assert.equal(resolution.rootDir, dir);
   assert.equal(resolution.configPath, null);
@@ -57,7 +57,7 @@ test("jsonc comments and trailing commas parse", () => {
 });
 
 test("missing config is optional: project resolves with null config", () => {
-  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "aos-mcp-empty-"));
+  const empty = makeTempDir("aos-mcp-empty-");
   const project = loadProject({ cwd: empty, env: { AOS_PROJECT_DIR: empty } });
   assert.equal(project.configPath, null);
   assert.equal(Object.keys(project.config.llm.profiles).length, 0);

@@ -9,15 +9,18 @@ import { STACK_PROFILES, detectProjectStacks, type StackProfile } from "../proje
 import {
   collectFigmaTexts,
   loadResolvedConflicts,
+  loadStringContext,
   mergeStrings,
   parseStrings,
   platformKey,
   renderAndroidStrings,
   renderFlutterArb,
   renderIosStrings,
+  renderIosStringsdict,
   renderJsonLocale,
   scanHardcodedStrings,
   serializeStrings,
+  STRING_CONTEXT_FILE,
   writeResourceFile,
   type FigmaTextRecord,
   type ResourceWrite,
@@ -94,6 +97,14 @@ export async function runStringsImport(
     const sourceLocale = args.locale ?? existing.sourceLocale ?? "zh";
     const resolved = loadResolvedConflicts(runtime.configDirAbs);
     const merge = mergeStrings(existing.entries, records);
+    const context = loadStringContext(runtime.configDirAbs);
+    const mergedEntries: StringEntry[] = merge.entries.map((entry) => {
+      const plural = context.contexts.get(entry.key);
+      return plural ? { ...entry, plural } : entry;
+    });
+    const unmatchedContext = [...context.contexts.keys()].filter(
+      (key) => !mergedEntries.some((entry) => entry.key === key)
+    );
 
     const stacks = detectProjectStacks(runtime.project.rootDir);
     const implemented = stacks
@@ -110,21 +121,22 @@ export async function runStringsImport(
     const resourceWrites: ResourceWrite[] = [];
 
     for (const profile of implemented) {
-      const write = renderStringsForStack(profile, merge.entries, runtime.project.rootDir, sourceLocale);
-      const conflictView = write.conflicts.map((conflict) => ({
-        ...conflict,
-        resolved: resolved.has(conflict.key)
-      }));
-      if (args.dryRun !== true && args.save !== false) {
-        writeResourceFile(runtime.project.rootDir, write);
+      for (const write of renderStringsForStack(profile, mergedEntries, runtime.project.rootDir, sourceLocale)) {
+        const conflictView = write.conflicts.map((conflict) => ({
+          ...conflict,
+          resolved: resolved.has(conflict.key)
+        }));
+        if (args.dryRun !== true && args.save !== false) {
+          writeResourceFile(runtime.project.rootDir, write);
+        }
+        resources.push({
+          stack: profile.id,
+          path: write.relativePath,
+          action: args.dryRun === true ? "planned" : write.action,
+          conflicts: conflictView
+        });
+        resourceWrites.push(write);
       }
-      resources.push({
-        stack: profile.id,
-        path: write.relativePath,
-        action: args.dryRun === true ? "planned" : write.action,
-        conflicts: conflictView
-      });
-      resourceWrites.push(write);
     }
 
     const conflictKeys = new Map<string, { resolved: boolean }>();
@@ -133,7 +145,7 @@ export async function runStringsImport(
         conflictKeys.set(conflict.key, { resolved: resolved.has(conflict.key) });
       }
     }
-    const entries: StringEntry[] = merge.entries.map((entry) => {
+    const entries: StringEntry[] = mergedEntries.map((entry) => {
       for (const profile of implemented) {
         const key = platformKey(entry.key, profile.i18n.keyStyle);
         const hit = conflictKeys.get(key);
@@ -159,7 +171,8 @@ export async function runStringsImport(
       sourceChanged: entries.filter((entry) => entry.lifecycle === "source_changed").length,
       conflicts: unresolved,
       resolved: entries.filter((entry) => entry.lifecycle === "resolved").length,
-      needsContext: entries.filter((entry) => entry.lifecycle === "needs_context").length,
+      needsContext: entries.filter((entry) => entry.lifecycle === "needs_context" && !entry.plural).length,
+      pluralized: entries.filter((entry) => entry.plural !== undefined).length,
       needsRename: entries.filter((entry) => entry.lifecycle === "needs_rename").length,
       unused: merge.unused.length
     };
@@ -186,19 +199,29 @@ export async function runStringsImport(
       reuseSuggestions: merge.reuseSuggestions.slice(0, 20),
       unusedStrings: merge.unused,
       sourceChangedKeys: merge.sourceChanged,
+      stringContext: {
+        file: path.join(designDir, STRING_CONTEXT_FILE),
+        pluralKeys: entries.filter((entry) => entry.plural !== undefined).map((entry) => entry.key),
+        unmatched: unmatchedContext,
+        errors: context.errors
+      },
       entries: entries.map((entry) => ({
         key: entry.key,
         nodeId: entry.nodeId,
         screen: entry.screen,
         sourceText: entry.sourceText,
         lifecycle: entry.lifecycle,
-        placeholders: entry.placeholders
+        placeholders: entry.placeholders,
+        ...(entry.plural
+          ? { plural: { variable: entry.plural.variable, quantities: Object.keys(entry.plural.forms) } }
+          : {})
       })),
       enforcement,
       warnings,
       savedTo: args.dryRun !== true && args.save !== false ? stringsPath : undefined,
       hint:
-        "canonical: .artemis/design/strings.json（key 一经分配即冻结）；冲突人工决策后写入 .artemis/design/resolutions.json（{conflicts:{key:{resolvedAt}}}）。"
+        `canonical: .artemis/design/strings.json（key 一经分配即冻结）；冲突人工决策后写入 .artemis/design/resolutions.json（{conflicts:{key:{resolvedAt}}}）；` +
+        `复数/人工上下文写入 .artemis/design/${STRING_CONTEXT_FILE}（{entries:{"<key>":{plural:{variable?,forms:{one,other,...}}}}}）。`
     };
 
     if (enforcement === "block" && violations > 0) {
@@ -216,20 +239,24 @@ export async function runStringsImport(
   }
 }
 
+/** Per-stack resource writers. iOS returns `.strings` plus (when confirmed
+ * plurals exist) the companion `.stringsdict`; `.strings` cannot express them. */
 export function renderStringsForStack(
   profile: StackProfile,
   entries: StringEntry[],
   rootDir: string,
   sourceLocale: string
-): ResourceWrite {
+): ResourceWrite[] {
   if (profile.id === "android-native") {
-    return renderAndroidStrings(profile, entries, rootDir, "");
+    return [renderAndroidStrings(profile, entries, rootDir, "")];
   }
   if (profile.id === "flutter") {
-    return renderFlutterArb(profile, entries, rootDir, sourceLocale);
+    return [renderFlutterArb(profile, entries, rootDir, sourceLocale)];
   }
   if (profile.id === "ios-native") {
-    return renderIosStrings(profile, entries, rootDir, sourceLocale);
+    const strings = renderIosStrings(profile, entries, rootDir, sourceLocale);
+    const stringsdict = renderIosStringsdict(profile, entries, rootDir, sourceLocale);
+    return stringsdict ? [strings, stringsdict] : [strings];
   }
-  return renderJsonLocale(profile, entries, rootDir, sourceLocale);
+  return [renderJsonLocale(profile, entries, rootDir, sourceLocale)];
 }

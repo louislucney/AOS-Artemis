@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir } from "./helpers.js";
 
 import {
   detectProjectStacks,
@@ -15,7 +16,7 @@ import {
 } from "../dist/projects/stack.js";
 
 function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "aos-stack-"));
+  return makeTempDir("aos-stack-");
 }
 
 function write(root, relative, content = "") {

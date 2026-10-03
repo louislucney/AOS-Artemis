@@ -6,7 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { restExportImage } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import { formatAssetFilename, detectProjectStacks, primaryProfile, type StackProfile } from "../projects/stack.js";
-import { DEFAULT_ASSET_GLOBS, walkProjectFiles } from "./flows.js";
+import { DEFAULT_ASSET_GLOBS, walkProjectFiles } from "./gaps.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
@@ -23,6 +23,13 @@ export interface ImportPlanEntry {
   figmaId: string;
   name: string;
   relativePath: string;
+  /** Pixel ratio of the exported bitmap (1/2/3); 0 for generated side files. */
+  scale: number;
+  role: "image" | "contents";
+  /** Density label shown in reports (xhdpi / 2.0x / @2x / 1x). */
+  variant?: string;
+  /** iOS `Contents.json` image filenames (only for `role: "contents"`). */
+  contentsFiles?: Array<{ filename: string; scale: number }>;
 }
 
 export type ImportStatus =
@@ -43,6 +50,99 @@ export interface ImportResultEntry {
   /** For `duplicate`: the already-present project file with identical content. */
   duplicateOf?: string;
   error?: string;
+  scale?: number;
+  role?: "image" | "contents";
+  variant?: string;
+}
+
+const RASTER_FORMATS = new Set(["png", "jpg", "jpeg"]);
+
+function stemAndExt(filename: string): { stem: string; ext: string } {
+  const match = /^(.*?)(\.[A-Za-z0-9]+)$/.exec(filename);
+  return match ? { stem: match[1]!, ext: match[2]! } : { stem: filename, ext: "" };
+}
+
+interface DensityVariant {
+  relativePath: string;
+  scale: number;
+  variant: string;
+}
+
+interface DensityPlan {
+  variants: DensityVariant[];
+  contents?: { relativePath: string; files: Array<{ filename: string; scale: number }> };
+}
+
+/** Per-stack bitmap density layout (spec §13.3): Android xhdpi/xxhdpi,
+ * Flutter 1x/2.0x/3.0x, iOS imageset 1x/2x/3x (+ Contents.json), RN
+ * base/@2x/@3x, Web single 1x. Returns null when no convention applies. */
+function densityPlan(profile: StackProfile | null, dir: string, filename: string): DensityPlan | null {
+  if (!profile) return null;
+  const { stem, ext } = stemAndExt(filename);
+  const base = stem.replace(/@[0-9]+x$/i, "");
+  const file = (suffix = ""): string => `${base}${suffix}${ext}`;
+
+  switch (profile.id) {
+    case "android-native": {
+      const match = /^(.*\/)?(drawable|mipmap)(?:-[a-z0-9]+dpi)?$/.exec(dir);
+      if (!match) return null;
+      const resBase = `${match[1] ?? ""}${match[2]}`;
+      return {
+        variants: [
+          { relativePath: `${resBase}-xhdpi/${file()}`, scale: 2, variant: "xhdpi" },
+          { relativePath: `${resBase}-xxhdpi/${file()}`, scale: 3, variant: "xxhdpi" }
+        ]
+      };
+    }
+    case "flutter":
+      return {
+        variants: [
+          { relativePath: `${dir}/${file()}`, scale: 1, variant: "1.0x" },
+          { relativePath: `${dir}/2.0x/${file()}`, scale: 2, variant: "2.0x" },
+          { relativePath: `${dir}/3.0x/${file()}`, scale: 3, variant: "3.0x" }
+        ]
+      };
+    case "ios-native": {
+      const imageset = `${dir}/${base}.imageset`;
+      const files = [
+        { filename: file(), scale: 1 },
+        { filename: file("@2x"), scale: 2 },
+        { filename: file("@3x"), scale: 3 }
+      ];
+      return {
+        variants: files.map((entry) => ({
+          relativePath: `${imageset}/${entry.filename}`,
+          scale: entry.scale,
+          variant: `${entry.scale}x`
+        })),
+        contents: { relativePath: `${imageset}/Contents.json`, files }
+      };
+    }
+    case "react-native":
+      return {
+        variants: [
+          { relativePath: `${dir}/${file()}`, scale: 1, variant: "1x" },
+          { relativePath: `${dir}/${file("@2x")}`, scale: 2, variant: "@2x" },
+          { relativePath: `${dir}/${file("@3x")}`, scale: 3, variant: "@3x" }
+        ]
+      };
+    case "web":
+      return { variants: [{ relativePath: `${dir}/${file()}`, scale: 1, variant: "1x" }] };
+    default:
+      return null;
+  }
+}
+
+function renderIosContents(files: Array<{ filename: string; scale: number }>): string {
+  const payload = {
+    images: files.map((entry) => ({
+      filename: entry.filename,
+      idiom: "universal",
+      scale: `${entry.scale}x`
+    })),
+    info: { author: "xcode", version: 1 }
+  };
+  return `${JSON.stringify(payload, null, 2)}\n`;
 }
 
 /** Normalize a project-relative destination; rejects absolute paths and any
@@ -56,21 +156,61 @@ export function safeRelativePath(dir: string, filename: string): string | null {
 }
 
 /** Plan target files for the missing assets: stack naming + preferred dirs,
- * with `figmaSuggestedFilename`/explicit overrides taking precedence. */
+ * with `figmaSuggestedFilename`/explicit overrides taking precedence. Raster
+ * assets expand to the stack density set when `densities` is enabled. */
 export function planImports(
   assets: GapAssetEntry[],
   profile: StackProfile | null,
-  options: { destDir?: string; format?: string } = {}
+  options: { destDir?: string; format?: string; densities?: boolean } = {}
 ): ImportPlanEntry[] {
   const format = options.format ?? "svg";
+  const raster = RASTER_FORMATS.has(format);
   const plan: ImportPlanEntry[] = [];
+  const push = (entry: Omit<ImportPlanEntry, "name" | "figmaId"> & { name: string; figmaId: string }): void => {
+    const relativePath = safeRelativePath("", entry.relativePath);
+    if (!relativePath) throw new Error(`非法目标路径: ${entry.relativePath}`);
+    plan.push({ ...entry, relativePath });
+  };
+
   for (const asset of assets) {
     if (!asset.figmaId) continue;
     const filename = asset.suggestedFilename ?? formatAssetFilename(asset.name, profile, format);
     const dir = options.destDir ?? asset.suggestedDir ?? profile?.naming.assets.preferredDir ?? "assets";
-    const relativePath = safeRelativePath(dir, filename);
-    if (!relativePath) throw new Error(`非法目标路径: ${dir}/${filename}`);
-    plan.push({ figmaId: asset.figmaId, name: asset.name, relativePath });
+
+    if (raster && options.densities === true) {
+      const density = densityPlan(profile, dir, filename);
+      if (density) {
+        for (const variant of density.variants) {
+          push({
+            figmaId: asset.figmaId,
+            name: asset.name,
+            relativePath: variant.relativePath,
+            scale: variant.scale,
+            role: "image",
+            variant: variant.variant
+          });
+        }
+        if (density.contents) {
+          push({
+            figmaId: asset.figmaId,
+            name: asset.name,
+            relativePath: density.contents.relativePath,
+            scale: 0,
+            role: "contents",
+            contentsFiles: density.contents.files
+          });
+        }
+        continue;
+      }
+    }
+
+    push({
+      figmaId: asset.figmaId,
+      name: asset.name,
+      relativePath: `${dir}/${filename}`,
+      scale: raster ? 2 : 1,
+      role: "image"
+    });
   }
   return plan;
 }
@@ -184,6 +324,8 @@ export interface ImportAssetsArgs {
   destDir?: string;
   ids?: string[];
   format?: "svg" | "png";
+  /** Export raster assets as the stack density set (default true). */
+  densities?: boolean;
   overwrite?: boolean;
   dryRun?: boolean;
   save?: boolean;
@@ -212,30 +354,34 @@ export async function figmaImportAssets(
     const stacks = detectProjectStacks(runtime.project.rootDir);
     const profile = primaryProfile(stacks);
     const format = args.format ?? "svg";
+    const densities = args.densities !== false;
 
     let missing = gap.missingAssets ?? [];
     if (args.ids?.length) {
       const wanted = new Set(args.ids);
       missing = missing.filter((asset) => asset.figmaId && wanted.has(asset.figmaId));
     }
-    const plan = planImports(missing, profile, { destDir: args.destDir, format });
+    const plan = planImports(missing, profile, { destDir: args.destDir, format, densities });
     if (plan.length === 0) {
       return jsonResult({ ok: true, message: "没有可导入的资源（missingAssets 为空或 ids 不匹配）", results: [] });
     }
 
-    const exportResult = (await restExportImage(
-      url,
-      plan.map((entry) => entry.figmaId),
-      format,
-      2
-    )) as {
-      error?: string;
-      assets?: Array<{ id: string; svg?: string; url?: string; error?: string }>;
-    };
-    if (exportResult.error) throw new Error(exportResult.error);
-    const exportedById = new Map<string, { svg?: string; url?: string; error?: string }>();
-    for (const asset of exportResult.assets ?? []) {
-      exportedById.set(asset.id, asset);
+    const imageIds = [...new Set(plan.filter((entry) => entry.role === "image").map((entry) => entry.figmaId))];
+    const scales = [...new Set(plan.filter((entry) => entry.role === "image").map((entry) => entry.scale))].sort(
+      (a, b) => a - b
+    );
+    const exportedByScale = new Map<number, Map<string, { svg?: string; url?: string; error?: string }>>();
+    for (const scale of scales) {
+      const exportResult = (await restExportImage(url, imageIds, format, scale)) as {
+        error?: string;
+        assets?: Array<{ id: string; svg?: string; url?: string; error?: string }>;
+      };
+      if (exportResult.error) throw new Error(exportResult.error);
+      const byId = new Map<string, { svg?: string; url?: string; error?: string }>();
+      for (const asset of exportResult.assets ?? []) {
+        byId.set(asset.id, asset);
+      }
+      exportedByScale.set(scale, byId);
     }
 
     const results: ImportResultEntry[] = [];
@@ -247,7 +393,18 @@ export async function figmaImportAssets(
     const batchHashes = new Map<string, string>();
 
     for (const entry of plan) {
-      const exported = exportedById.get(entry.figmaId);
+      if (entry.role === "contents") {
+        const content = renderIosContents(entry.contentsFiles ?? []);
+        if (args.dryRun !== true) {
+          const written = writeAssetFile(runtime.project.rootDir, entry.relativePath, content, true);
+          results.push({ ...entry, status: written.status, bytes: written.bytes });
+        } else {
+          results.push({ ...entry, status: "planned", bytes: Buffer.byteLength(content) });
+        }
+        continue;
+      }
+
+      const exported = exportedByScale.get(entry.scale)?.get(entry.figmaId);
       if (!exported) {
         results.push({ ...entry, status: "error", error: "Figma 未返回该节点的导出" });
         continue;
@@ -314,18 +471,24 @@ export async function figmaImportAssets(
       ok: true,
       sourceUrl: url,
       format,
+      densities: format === "svg" ? false : densities,
       dryRun: args.dryRun === true,
       detectedStacks: stacks,
-      counts,
+      counts: {
+        ...counts,
+        assets: new Set(plan.filter((entry) => entry.role === "image").map((entry) => entry.figmaId)).size,
+        files: plan.length
+      },
       uniqueness: {
         indexedProjectAssets: projectHashes.size,
         duplicates: results.filter((entry) => entry.status === "duplicate").length
       },
       results,
       hint:
-        args.dryRun === true
+        (args.dryRun === true
           ? "dryRun 预览：确认路径后去掉 dryRun 正式写入；duplicate 表示同内容已存在（duplicateOf 指向现有文件）。"
-          : "duplicate=同内容已存在（跳过，见 duplicateOf）；skipped_exists=同名但内容不同（需 overwrite 或改名）。"
+          : "duplicate=同内容已存在（跳过，见 duplicateOf）；skipped_exists=同名但内容不同（需 overwrite 或改名）。") +
+        ` 位图按栈倍率集导出（Android drawable-xhdpi/-xxhdpi、Flutter 2.0x/3.0x、iOS imageset、RN @2x/@3x）；densities:false 回退单文件 @2x。`
     };
 
     if (args.dryRun !== true && args.save !== false) {

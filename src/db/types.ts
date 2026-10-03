@@ -24,6 +24,7 @@ export interface TaskStatRecord {
   id: string;
   projectId: string | null;
   traceId: string;
+  caseId: string | null;
   model: string | null;
   profile: string | null;
   status: string;
@@ -68,6 +69,8 @@ export interface RecordTaskInput {
   profile?: string | null;
   status: string;
   taskDesc?: string | null;
+  caseId?: string | null;
+  finishedAt?: string | null;
 }
 
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */

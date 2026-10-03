@@ -152,6 +152,7 @@ export async function aosTasks(runtime: Runtime, args: AosTasksArgs): Promise<Ca
     sync,
     count: tasks.length,
     tasks: tasks.map((task) => ({
+      case_id: task.caseId,
       trace_id: task.traceId,
       status: task.status,
       model: task.model,

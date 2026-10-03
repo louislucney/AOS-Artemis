@@ -138,12 +138,13 @@ export class MemoryStore implements ProjectStore {
       id: randomUUID(),
       projectId: project?.id ?? null,
       traceId: input.traceId,
+      caseId: input.caseId ?? null,
       model: input.model ?? null,
       profile: input.profile ?? null,
       status: input.status,
       taskDesc: input.taskDesc ?? null,
       submittedAt: new Date().toISOString(),
-      finishedAt: null
+      finishedAt: input.finishedAt ?? null
     });
   }
 

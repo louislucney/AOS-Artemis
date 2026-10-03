@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { collectLocalImagePaths, mirrorDeviceScreenshots } from "../dist/artemis/artifacts.js";
-import { baseConfig, loadTestRuntime, makeTempProject, StubProxy } from "./helpers.js";
+import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, StubProxy } from "./helpers.js";
 
 function makeSourceScreenshot(name = "live_screenshot_emulator-5554.jpg") {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "aos-artemis-repo-"));
+  const repo = makeTempDir("aos-artemis-repo-");
   const file = path.join(repo, name);
   fs.writeFileSync(file, Buffer.from("JPEGDATA"));
   return { repo, file };

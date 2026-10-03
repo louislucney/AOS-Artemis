@@ -46,6 +46,7 @@ const SCHEMA = [
      id TEXT PRIMARY KEY,
      project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
      trace_id TEXT NOT NULL,
+     case_id TEXT,
      model TEXT,
      profile TEXT,
      status TEXT NOT NULL,
@@ -62,9 +63,11 @@ const SCHEMA = [
      fetched_at TEXT,
      last_error TEXT,
      updated_at TEXT NOT NULL,
-     UNIQUE (project_id, cache_key)
+      UNIQUE (project_id, cache_key)
    )`
 ];
+
+const MIGRATIONS = [`ALTER TABLE task_stats ADD COLUMN IF NOT EXISTS case_id TEXT`];
 
 export class PostgresStore implements ProjectStore {
   readonly kind = "postgres" as const;
@@ -84,6 +87,13 @@ export class PostgresStore implements ProjectStore {
   async init(): Promise<void> {
     for (const statement of SCHEMA) {
       await this.pool.query(statement);
+    }
+    for (const statement of MIGRATIONS) {
+      try {
+        await this.pool.query(statement);
+      } catch {
+        /* best effort: fresh schema already carries the column */
+      }
     }
   }
 
@@ -280,17 +290,19 @@ export class PostgresStore implements ProjectStore {
     const project = await this.getProjectByPath(input.rootPath);
     await this.pool.query(
       `INSERT INTO task_stats
-         (id, project_id, trace_id, model, profile, status, task_desc, submitted_at, finished_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL)`,
+         (id, project_id, trace_id, case_id, model, profile, status, task_desc, submitted_at, finished_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         randomUUID(),
         project?.id ?? null,
         input.traceId,
+        input.caseId ?? null,
         input.model ?? null,
         input.profile ?? null,
         input.status,
         input.taskDesc ?? null,
-        new Date().toISOString()
+        new Date().toISOString(),
+        input.finishedAt ?? null
       ]
     );
   }
@@ -396,6 +408,7 @@ function mapTask(row: Record<string, unknown>): TaskStatRecord {
     id: String(row.id),
     projectId: row.project_id === null || row.project_id === undefined ? null : String(row.project_id),
     traceId: String(row.trace_id),
+    caseId: row.case_id === null || row.case_id === undefined ? null : String(row.case_id),
     model: row.model === null || row.model === undefined ? null : String(row.model),
     profile: row.profile === null || row.profile === undefined ? null : String(row.profile),
     status: String(row.status),

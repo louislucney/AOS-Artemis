@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS task_stats (
   id           TEXT PRIMARY KEY,
   project_id   TEXT REFERENCES projects(id) ON DELETE SET NULL,
   trace_id     TEXT NOT NULL,
+  case_id      TEXT,
   model        TEXT,
   profile      TEXT,
   status       TEXT NOT NULL,
@@ -269,7 +270,7 @@ env:
 | `figma_extract_flows`       | `{url, nodeId?, save?}`                                                            | 原型交互 → 流程图（screens/edges/entryScreens/unresolved），落盘`.artemis/design/flows.json`；供后续"流程→测试生成"消费（M-B）                                                                                                                                                                                                                                     |
 | `figma_gap_analysis`        | `{url, id?, assetGlobs?, tokenFiles?, save?}`                                      | 设计资源/色板 vs 项目资产/tokens 缺口（missingAssets/missingColors），**扫描规则按检测到的技术栈选择**（`src/projects/stack.ts`：Flutter/RN/原生 Android/iOS/Web 档案，含资产目录/定位/代码/命名约定），缺失资源按栈重命名（如 Android `ic_home.svg`、Flutter `home_icon.svg`）并给出目标目录；落盘 `.artemis/design/gaps.json`；供"资源导入"消费（M-C） |
 | `figma_generate_tests`      | `{url?, flowsPath?, maxFlows?, save?, excelPath?, excelTemplate?}`                 | 连续交互线性化为端到端流程（entry→…→终态/BACK），生成 artemis 可直接执行的任务描述；落盘`tests.json` + `tests.md`（过程文档）+ `tests.xlsx`（每流程一行：用例名/页面链路/步骤/任务描述；默认表，`excelPath` 改路径；`excelTemplate` 传 `.xlsx` 模版时填充 `{{meta.*}}/{{counts.*}}/{{case.*}}/{{index}}` 占位符并复制行模版）（M-B）                                                                                              |
-| `figma_import_assets`       | `{url?, gapPath?, destDir?, ids?, format?, overwrite?, dryRun?, save?}`            | 按 gaps.json 导出缺失资源（SVG 内联/PNG 下载）→ 按栈命名与首选目录写入；**唯一性三层**：命名规范化 → 目标路径幂等（同内容 `unchanged`；异内容 `skipped_exists`/`overwrite`）→ **内容 sha256 去重**（批次内 + 项目资产索引，跨文件同名/异名重复记 `duplicate_of`）；`dryRun` 按同样规则预览；落盘 `import-report.json`（M-C）                |
+| `figma_import_assets`       | `{url?, gapPath?, destDir?, ids?, format?, densities?, overwrite?, dryRun?, save?}`            | 按 gaps.json 导出缺失资源（SVG 内联/PNG 下载）→ 按栈命名与首选目录写入；PNG 默认按栈倍率集（Android xhdpi/xxhdpi、Flutter 2.0x/3.0x、iOS imageset、RN @2x/@3x；`densities:false` 回退单文件 @2x）；**唯一性三层**：命名规范化 → 目标路径幂等（同内容 `unchanged`；异内容 `skipped_exists`/`overwrite`）→ **内容 sha256 去重**（批次内 + 项目资产索引，跨文件同名/异名重复记 `duplicate_of`）；`dryRun` 按同样规则预览；落盘 `import-report.json`（M-C/§13.35）                |
 | `figma_export_brief`        | `{url, save?, includeFlows?, includeGaps?, scaffold?, maxComponents?, overwrite?}` | 构建简报：tokens（颜色/字阶/间距/圆角/阴影）+ 页面路由 + 组件与变体 + 流程概览 + 缺口摘要 + 栈编码约定 →`build-brief.{json,md}`；`scaffold` 按栈生成组件骨架（幂等）（M-D）                                                                                                                                                                                       |
 | `pen_inspect`               | `{path?, save?}`                                                                   | pen.dev 离线检查：解析 `.pen`（开放 JSON，容忍 `//` 注释）→ 结构校验（id 唯一/无 `/`、ref 可解析、`$变量` 可解析）+ 摘要（屏幕/组件/实例/文案/变量与主题/图片资产与缺失）；path 缺省取 `.artemis/design` 下最新 `*.pen`；`save:true` 落盘 `.artemis/design/pen/summary.json`；无账号与网络需求（P1）                                                                              |
 | `pen_import_tokens`         | `{path?, dryRun?, overwrite?, save?, enforcement?}`                                | pen 颜色变量 → canonical `tokens.json`（DTCG；**变量名即 token 名**，主题取值写入 `modes`（`axis=value`），`$别名` → `aliasOf`）+ 按栈 token 文件（复用 `writeStackTokenFile` 幂等写入）；输出 new/updated/unchanged/unused、裸色扫描与 enforcement（语义同 `figma_import_tokens`）；完全离线（P1）                                                                                                                                                                 |
@@ -300,7 +301,7 @@ env:
 
 ### 6.4 任务统计
 
-本服务的 `CallTool` 拦截 `mobile_run_task`：成功后从结果中提取 `trace_id`，向 `task_stats` 记录（项目、trace、model、profile、desc、submitted）。**完成态同步**：后台定时（30s）与 `aos_tasks` 调用时，通过 `mobile_manage_task(status)` 轮询 pending 行，终态（completed/failed/cancelled/orphaned）写回 `finished_at`；网关子进程不在线时跳过本轮，不打断任务。
+本服务的 `CallTool` 拦截 `mobile_run_task`（不再限定成功）：记录（项目、trace、case、model、profile、desc、status）。成功且有 `trace_id` → `submitted`；即时错误或无有效 `trace_id` → 直接 `failed` 终态（`finished_at` 置位，`trace_id` 以 `local-<uuid>` 占位，不进入 pending）。**用例关联**：提交时用 `task_desc` 与 `.artemis/design/tests.json` 的 `taskDesc` 精确匹配，命中写入生成器冻结的 `case_id`（无法匹配留空，不做近似错配）；`aos_tasks` 输出 `case_id`；`model` 取 `mobile_run_task.model`，`profile` 不再混用同值。**完成态同步**：后台定时（30s）与 `aos_tasks` 调用时，通过 `mobile_manage_task(status)` 轮询 pending 行，终态（completed/failed/cancelled/orphaned）写回 `finished_at`；网关子进程不在线时跳过本轮，不打断任务。
 
 ### 6.5 崩溃取证（Crash Triage）
 
@@ -446,9 +447,10 @@ llm_switch(name, force):
 | M3             | 容器化打包（Dockerfile）+ 客户端安装器 + 真机 E2E                                                  | ✅ 已完成（镜像构建 + docker exec 端到端验证：29 工具含容器内 artemis） |
 | M4             | HTTP 传输 + 任务状态同步 + 组合工具                                                                | ✅ 已完成（79 测试全绿；HTTP/stdio 双入口实测）                         |
 | M5             | 崩溃取证（M1 范围：终态采集 → 签名 → 文件索引 →`aos_crashes`）                                | ✅ 已完成（新增 35 用例全绿）                                           |
-| M6             | 设计资源唯一性与 i18n 闭环（颜色 tokens / 图片补强 / 文本 i18n）                                   | 🚧 部分实施（M6a/M6b/M6c 完成；复数/位图倍率/真机验收待后续，见 §13.9） |
+| M6             | 设计资源唯一性与 i18n 闭环（颜色 tokens / 图片补强 / 文本 i18n）                                   | 🚧 部分实施（M6a/M6b/M6c 完成，复数与 iOS stringsdict、位图倍率集均已落地；真机验收待后续，见 §13.9/§13.34/§13.35） |
 | M7             | 厂商模型目录定时刷新 + 模型下线自动修复 +`mobile_run_task` 预检（8 家国产预设、`llm_models`）    | ✅ 已完成（新增 19 用例）                                               |
 | D1             | 设计 vs 真机确定性差异（Figma/.pen × live/step/自动锚点；分类/严重度；screen_map 定位；真实基准） | ✅ 已完成（票据 01–07；307 用例；见 §13.13–13.19）                       |
+| D2             | 测试闭环深化（用例身份台账、状态复位、套件运行器、失败证据/分类、设备基线、运行报告、生成反馈、CLI 接线）   | ✅ 已完成（票据 01–14；389 用例；见 §13.20–13.33）                       |
 
 ---
 
@@ -498,7 +500,7 @@ llm_switch(name, force):
 - 已有：sha256 内容寻址（同图全域唯一）、路径幂等、`duplicate_of`、栈命名规则。
 - 补强：
   - 脏图层名（`Frame 427`）回退 `asset-<sha256前12位>`，碰撞再追加序号；现有幂等写入已保证不会静默覆盖（真实代价是混淆性 `skipped_exists`），加长前缀降低概率。
-  - 导出规格：**SVG 优先**；位图按栈倍率集（iOS @3x、Android xhdpi/xxhdpi），不再统一 @2x（现实现硬编码 @2x，改动点为 `figma_import_assets`）。
+  - 导出规格（2026-10-02 已实施，§13.35）：**SVG 优先**；位图按栈倍率集（Android xhdpi(2x)/xxhdpi(3x)、Flutter 1x/2.0x/3.0x、iOS imageset 1x/2x/3x + Contents.json、RN base/@2x/@3x、Web 单 1x），不再统一 @2x；`densities:false` 回退旧行为。
   - 同内容不同语义名 → 提示合并（不自动改名）。
 
 ### 13.4 文本（i18n）
@@ -510,7 +512,7 @@ llm_switch(name, force):
 3. **内容复用**：同默认文案（NFC 归一化后）+ 同上下文 → 复用同一 key；`common.*` 公共词（确定/取消）只给归并建议（人工确认，限制滥用以免丢上下文）；`(文案, 上下文) → key` 索引用于检测"应复用未复用"。
 4. **占位符规范化**：`{name}` / `%s` / `%d` 归一为 ICU，写入时按栈转换（§13.8）；复数/性别/日期等 Figma 推不出的标 `needs_context`；**混合富文本与设计稿实例值（"Welcome, John" 里的 John）同样归 `needs_context` 人工流**。
 5. **source_changed 检测**：`strings.json` 存源文案指纹（`sha256(NFC(sourceText)) + placeholders 集合`）；源文案变化 → `source_changed` 驱动重译；**语义变化 → 建议新 key**，禁止改义复用旧 key。
-6. **各栈资源写入**（幂等语义与图片一致：同 key 同值 unchanged、同 key 异值 conflict、异 key 同值 reuse 建议；转义/复数/locale 码见 §13.8）：Flutter `.arb`；Android `strings.xml`（复数用 `<plurals>`）；RN JSON；iOS `.strings`（复数需 `.stringsdict` 或 Xcode 15+ `.xcstrings`，待定）；Web JSON。
+6. **各栈资源写入**（幂等语义与图片一致：同 key 同值 unchanged、同 key 异值 conflict、异 key 同值 reuse 建议；转义/复数/locale 码见 §13.8）：Flutter `.arb`；Android `strings.xml`（复数用 `<plurals>`）；RN JSON；iOS `.strings` + `.stringsdict`（复数，2026-10-02 决议；不用 `.xcstrings`）；Web JSON。
 7. **防回归（双向）**：gap 扫描硬编码文案 → `hardcodedStrings`；Figma 删除文案 → `unusedStrings`（仅报告，可能有动态/服务端引用）；`figma_generate_tests` 定位改为"testID/资源 key 优先，原文仅默认 locale 兜底"。
 8. **脏名兜底**：通用图层名（`Text` / `Frame 427`）→ 派生 `nodeId` 短哈希 key（稳定可迁移）+ `needs_rename`，人工重命名后走正常派生；不用递增序号（不稳定）。
 9. **key 平台约束**：Android 资源名限 `[a-z0-9_]` 且有长度上限——超长截断 + 短哈希后缀，写入前校验。
@@ -530,7 +532,7 @@ llm_switch(name, force):
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | M6a | 颜色：alpha 归一化（含 modes schema 预留）+ 语义命名 + `tokens.json`（DTCG）+ 按栈写入 + 裸色扫描 + 确定性输出 | ✅ 已实施（单测：alpha 顺序/别名/modes/幂等/冲突/排序稳定） |
-| M6b | 文本：**先做项目实际使用的 1–2 个栈**（按检测结果）→ 采集 + key 冻结映射 + `strings.json` + 资源写入 + 复用/冲突/占位符/转义；其余栈按需铺开 | ✅ 已实施（五栈写入；复数与 iOS `stringsdict` 后续） |
+| M6b | 文本：**先做项目实际使用的 1–2 个栈**（按检测结果）→ 采集 + key 冻结映射 + `strings.json` + 资源写入 + 复用/冲突/占位符/转义；其余栈按需铺开 | ✅ 已实施（五栈写入；复数与 iOS `stringsdict` 已落地，见 §13.34） |
 | M6c | 强制与联动：硬编码扫描、unusedStrings、test-gen 定位改 key 优先、迁移/冲突闭环报告 | ✅ 已实施（联动范围同 M6b） |
 
 ### 13.7 风险与未决
@@ -538,8 +540,8 @@ llm_switch(name, force):
 | 风险/未决 | 说明 |
 |---|---|
 | source locale 与 key 语言 | 需产品定：source 以设计稿语言为准；key 建议用英文语义名 |
-| iOS 复数格式 | `.stringsdict` 还是 Xcode 15+ `.xcstrings`，M6b 前必须定（`.strings` 表达不了复数） |
-| 复数/上下文确认 | Figma 推不出，需人工确认流（由 `strings.json` 的 `needs_context` 驱动） |
+| iOS 复数格式 | **已决**（2026-10-02）：`.stringsdict`（兼容全版本；不做 `.xcstrings`），见 §13.34 |
+| 复数/上下文确认 | **已实施**（2026-10-02）：`.artemis/design/string-context.json` 人工确认（`{entries:{key:{plural:{variable?,forms}}}}`），见 §13.34 |
 | 颜色别名语义化 | Variables/Styles 缺失（反向工程场景）时命名质量受限，需人工确认 |
 | 强推 i18n | 存量项目可能不用资源文件：`enforcement: report` 渐进接入，不阻断 |
 | 跨栈 key 风格 | 各栈大小写不同（snake/camel）；`strings.json` 存 canonical，写入时按栈转换 |
@@ -584,15 +586,15 @@ llm_switch(name, force):
 - 颜色：vendor `rgbaToHex` alpha 补丁（NOTICE 第 4 条，paint opacity 乘入颜色 alpha）；**值冻结**命名（同值复用旧名；同值多语义样本 → 基础 token + 别名）；`modes` 预留（当前仅 `default`）；栈写入 Android XML（`#AARRGGBB`）/ Flutter Dart（`0xAARRGGBB`）/ RN TS / Web CSS；目标文件带生成标记，无标记且未 `overwrite` → `skipped_unmanaged`；裸色扫描（`#hex` 与 `0xAARRGGBB`）；`enforcement: report|warn|block`。
 - 文本：Figma TEXT 采集（screen/component 上下文；混合样式与动态值 → `needs_context`；通用图层名 → `nodeId` 短哈希 key + `needs_rename`）；**key 冻结**（nodeId 映射，改名/移动不改 key）；node 身份变化时同 key 直接沿用并在 `migrations` 记录建议，key 冲突加后缀并给 `suggested_migration`；`source_changed`（指纹 `sha256(NFC(sourceText)+placeholders)`）；同文重复用建议；`unusedStrings`；写入 Android `values/aos_strings.xml`（专用生成文件；扫描全部 `values*/xml` 检测用户已有 key，异值报 conflict、同值让位用户）、Flutter `app_<locale>.arb`、RN `src/i18n/<locale>.json`、Web `src/locales/<locale>.json`（三者加性合并，不覆盖已有翻译）与 iOS `<locale>.lproj/Localizable.strings`（引号/换行/反斜杠转义；`%@`/位置式占位符）；`needs_context` 不写入、`needs_rename` 写入（hash key）；**overwrite 不解决 conflict**（需 `resolutions.json`）。
 - M6c 联动：`figma_generate_tests` 读取 strings.json，为命中文本的步骤附加 `i18n: <key>`（原文仅 source locale 兜底）；硬编码文案扫描（Android layout `android:text|hint|contentDescription`、Flutter `Text('…')`）；`unusedStrings` 报告。
-- 图片（§13.3 补强之一）：`applyAssetNaming` 对通用图层名（`Frame 427`）回退为确定性 `asset <figmaId hash8>`（按栈命名，如 `ic_asset_1a2b3c4d.svg`）并标 `needsRename`；位图倍率集（不再统一 @2x）待后续。
+- 图片（§13.3 补强之一）：`applyAssetNaming` 对通用图层名（`Frame 427`）回退为确定性 `asset <figmaId hash8>`（按栈命名，如 `ic_asset_1a2b3c4d.svg`）并标 `needsRename`；位图倍率集（不再统一 @2x）已于 2026-10-02 落地（§13.35）。
 
 **与 §13 设计的差异（记录）**
 1. 文案写入已铺开至 Android/Flutter/RN/Web/iOS 五栈（原 M6b 计划先做 1–2 栈，随后补齐）；token 写入含 Android/Flutter/RN/Web，iOS token 文件不支持（返回 null）。
 2. 反向工程场景（无 Variables/Styles）下颜色命名由样例图层名推导并 `needsReview` 标注，人工经 `token-names.json` 修正，不静默猜测。
 3. Android 文案写入专用生成文件（不改用户 `strings.xml`），冲突通过扫描既有资源检出。
 4. `needs_rename` 文本仍写入资源（nodeId hash key）保证可用性，重命名后走正常派生。
-5. 复数（`<plurals>` / ICU plural）与 iOS `.stringsdict`/`.xcstrings` 尚未生成：当前只写普通 string，占位符已完成 ICU→平台转换（§13.8 矩阵已备，属后续）。
-6. 图片兜底名以 figmaId 哈希代替内容 sha256（命名发生在导出下载前），确定性与可迁移性一致；位图倍率（@2x/@3x 集）未改。
+5. 复数（`<plurals>` / ICU plural）与 iOS `.stringsdict` 已生成（2026-10-02，见 §13.34）：人工经 `.artemis/design/string-context.json` 确认 forms；iOS 决议用 `.stringsdict`（不做 `.xcstrings`），占位符按 §13.8 矩阵转换。
+6. 图片兜底名以 figmaId 哈希代替内容 sha256（命名发生在导出下载前），确定性与可迁移性一致；位图倍率集（Android xhdpi/xxhdpi、Flutter 2.0x/3.0x、iOS imageset、RN @2x/@3x）已于 2026-10-02 落地（§13.35）。
 
 ### 13.10 实施记录（pen.dev 离线接入 P1 + Figma REST 限流加固）
 
@@ -701,3 +703,154 @@ llm_switch(name, force):
 - **schema 快照**：引擎结果顶层键、`thresholds`（8 项）、区域键（`bbox/category/designNode/pixelDiffRatio/severity`）与 `alignment/summary` 键集合被快照锁定；工具层 `report.json` 顶层键顺序在 `test/design-device-diff.test.js` 中按原顺序断言。fixture 可由 `scripts/make-diff-benchmark.mjs <device.jpg>` 复现（来源、insets、重绘颜色/尺寸记录在 `ground-truth.json`）。
 - **顺带修复（引擎，行为变更）**：`maxEdge` 原先把设备图（1080×2400）计入最长边，导致设计先被降采样、设备再经「factor 缩放 + 对齐缩放」两次重采样，小块差异被最小面积误滤；现改为**只按设计图最长边**决定是否降采样（`downsampledTo` 仅在设计图超限时出现），设备图直接一次缩放到设计宽度。`alignment.scale` 语义为**设备像素 → 工作（设计）坐标系的比例**（设计降采样时含 factor；旧实现恒为 1× 比例）；区域 `bbox` 仍按 factor 还原到原设计坐标。回归测试锁定：大设备 + 小差异不被误滤、`downsampledTo` 不因设备超长出现、`scale` 含设计降采样因子。
 - **离线约束**：测试只读仓库内 fixture 解码比对，不依赖设备/网络/Python。
+
+### 13.20 实施记录（测试闭环票据 04：用例间状态复位）
+
+> 实施于 2026-10-01；新增 `src/device/adb.ts`（从崩溃采集抽出 adb 解析/执行/失败分类，`src/crash/collect.ts` 导出面不变）与 `src/device/reset.ts`（`resetApp`）；`test/reset.test.js` 9 例；全量 330 例通过。
+
+- **上游语义（代码 + 真机核实）**：`_handle_initial_app_launch` 在锁定应用已在前台时直接返回成功、不重新启动（`artemis/artemis/utils/app_launch_utils.py:369-378`）；`monkey -c LAUNCHER 1` 仅在非前台或重试时调用（`artemis/artemis/drivers/android/adb_driver.py:385-392`），`am force-stop` 仅在启动重试失败时出现（`app_launch_utils.py:299-305`）。emulator-5554 实测：深层页下单独 monkey 可回主 Activity，`force-stop + monkey` 产生全新 task——确认残留状态会被带入下一用例，复位必须显式做。
+- **复位能力**：`resetApp({packageName, serial?})` 顺序执行 `adb [-s serial] shell am force-stop <pkg>` 与 `adb [-s serial] shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1`，包名先按 Android applicationId 规则校验（防注入）；返回 `{ok, reason?, message?, serial, adb:{path,source}, commands}`；失败分类 `invalid-package / adb-not-found / device-offline / timeout / force-stop-failed / launch-failed`，环境类失败降级不抛错（由运行器决定继续或停止）；`AOS_RESET_TIMEOUT_MS` 默认 15s（1s–120s），adb 路径沿用 `AOS_ADB_PATH` / SDK / PATH 解析链。
+- **待消费**：票据 08（最小套件运行器）在每例前调用；云真机/无 adb 部署按 `reason` 降级并在运行报告标注。
+
+### 13.21 实施记录（测试闭环票据 05：用例身份与运行台账）
+
+> 实施于 2026-10-01；`tests.json` 用例新增稳定 `id`（`generateTestCases` 按 name/screens/steps 的 sha256 前 12 位，同输入稳定）；`task_stats` 增 `case_id`（存量库 init 时 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 兼容）；新增 `src/figma/case-index.ts`（精确 `taskDesc` → caseId 查询）；`Runtime.recordTaskResult` 统一提交记录（成功/即时报错/无 trace）。测试 `test/case-ledger.test.js` 4 例 + `test/db.test.js` 台账往返；全量 335 例通过。
+
+- **身份**：生成器冻结 `case-<sha256(name,screens,steps)[0:12]>`；id 不进入 taskDesc（避免污染 LLM 上下文）。
+- **台账语义修复**：即时报错也记录且终态 `failed`；无有效 trace 用 `local-<uuid>` 占位并直接终态（不再有永不收敛的 `unknown` pending）；`profile` 与 `model` 分离（不再同值）；终态行写 `finished_at`。
+- **工具面**：`aos_tasks` 返回 `case_id`，可按用例关联 trace 与后续证据（票据 09/11/12 消费）。
+
+### 13.22 实施记录（测试闭环票据 06：任务结果 codec）
+
+> 实施于 2026-10-01；新增 `src/artemis/task-result.ts`；测试 `test/task-result.test.js` 6 例；全量 341 例通过。
+
+- **一个 module 拥有 MCP 字符串边界**：`resultText`（文本拼接）、`parseJsonObject`（对象 JSON，非法返回 null）、`resultPayload`（structuredContent 优先 → 文本 JSON）、`traceIdOf`（structured/文本字段 + 文本正则回退）、`taskStatusOf`（类型化 `TaskStatus`：trace/status/device/error/message/testSummary.failedItems/notes/stderr/stdout/时间窗秒→毫秒）、`taskStatusFromFile`（status.json 同 codec）。
+- **删除的重复实现**：`Runtime.extractJson`、`server.extractTraceId`、`diff/device-source.parsePayload`+`textContent`、`composite` 内联 `JSON.parse`；`crash/scanner.readTraceStatusInfo` 改由 `taskStatusFromFile` 驱动（状态文件与上游状态响应语义一致）。
+- **约束**：mobile 工具 schema 逐字节透传不变（`test/proxy.test.js` 锁定）；失败步骤自动锚点行为与报错语义保持（`test/diff-auto-anchor.test.js` 锁定）；`test_summary/error` 首次可结构化消费（票据 09/10 使用）。
+
+### 13.23 实施记录（测试闭环票据 07：可执行性预检与覆盖视图）
+
+> 实施于 2026-10-01；新增 `src/figma/preflight.ts`、`linearizeFlowsWithStats`；测试 `test/test-preflight.test.js` 3 例。
+
+- **生成统计不再沉默**：`linearizeFlowsWithStats` 输出 `{maxFlows,maxDepth,entryFallback,exploredPaths,keptPaths,droppedPaths,truncated}`；`figma_generate_tests` 经 `onStats` 回调把 `generation` 写入响应与 tests.json（入口回退、截断、丢弃路径数可见）。
+- **静态预检**（`preflightGeneratedTests(configDirAbs)`，纯读）：弱用例（步骤缺「应」类断言）逐条给出步骤索引与原因；覆盖视图列出未覆盖屏幕与未覆盖边（边以用例 `screens` 的连续对判定）；透传 `generation`；缺 flows.json 时覆盖退化为已生成屏幕；tests.json 缺失/损坏返回 null。
+
+### 13.24 实施记录（测试闭环票据 08：最小套件运行器）
+
+> 实施于 2026-10-01；新增 `src/figma/suite-runner.ts` 与 `Runtime.traceStatus`；测试 `test/suite-runner.test.js` 6 例。
+
+- **运行循环**（`runGeneratedTests(runtime, options)`）：读 tests.json（可 `maxCases`）→ 逐例：可注入复位（默认 04 的 `resetApp`，降级不阻塞）→ 提交 `mobile_run_task`（透传 model/device_serial/locked_app_package，不改 schema）→ 轮询终态（`Runtime.traceStatus`：status.json 优先、代理回退；超时/间隔可配）→ `syncTaskStatuses()` 写回台账并触发崩溃采集。
+- **报告**：逐例 `{caseId,name,status(passed/failed/timeout/submit-error),traceId,error,testSummary,evidence{notesDir,stderrLog,stdoutLog},reset}` + `passed/failed/skipped/total` + `preflight` 摘要；`stopOnFailure` 遇错即停；仅当 0 例提交成功时 `ok:false` 并给出明确 error（无设备/无 adb 场景）。
+- **入口**：当前为模块级入口；MCP 工具 vs CLI 脚本（开放问题 3）待决策后接线（已由 §13.33 决议：CLI）。
+
+### 13.25 实施记录（测试闭环票据 09：失败证据包）
+
+> 实施于 2026-10-01；新增 `src/artemis/evidence.ts` 与 `Runtime.traceDir`；测试 `test/evidence.test.js` 5 例；全量 355 例通过。
+
+- **一次调用聚合**（`traceEvidence(runtime, {traceId, fullTrace?, save?, outputDir?, design?, diffRunner?})`）：任务状态 + 全部 `failed_items` + 崩溃签名（`crashStore` 按 `traceIds` 过滤）+ 锚定失败步骤与截图 + 可选设计差异引用（`design_device_diff` step 模式，`diffRunner` 可注入）。产物默认落 `<项目>/.artemis/design/evidence/<traceId>/`：复制锚定步骤 pre/post（`fullTrace` 复制全部锚点候选步骤，上限 10），`manifest.json` 记录其余 stderr/stdout/notes/status/crash 记录/差异报告为路径引用（不复制）。
+- **降级而非报错**：`trace-status-missing / no-run-outcome（Flash）/ anchor-skipped / anchor-unavailable / design-diff-failed / screenshot-unavailable / evidence-write-failed`；无任何证据时不建目录（`dir:null`、`ok:false`）。
+- **顺带修复（行为变更）**：`resolveTraceStepAnchor` 原先把任务态的 `error` 字段误判为工具调用错误（失败任务带 error 时自动锚点必然失败），现仅在无 `status` 字段时按工具错误处理；由证据用例与既有 anchor 用例共同锁定。
+- **入口**：模块级；MCP 工具 vs CLI 同票据 08 待开放问题 3（已由 §13.33 决议：CLI）。
+
+### 13.26 实施记录（测试闭环票据 10：前置数据假设与失败域分类）
+
+> 实施于 2026-10-02；新增 `src/figma/preconditions.ts`、`src/artemis/failure-taxonomy.ts`；测试 `test/failure-taxonomy.test.js` 7 例 + testgen/suite-runner 增补；全量 370 例通过。
+
+- **生成物显式前置假设**：`deriveCasePreconditions(screens,{entryFallback?})` 确定性产出：应用已安装 → 开始停留入口页（入口推断时附「入口屏未声明」）→ 屏幕名启发式（登录/账号 → 可登录；profile/我的 → 已登录；列表/list/消息/订单/商品/购物车 → 数据非空）；去重保序。每条用例 `preconditions` 进入 `tests.json`、`tests.md`（`- 前置假设：…`）、`tests.xlsx`（默认表新增「前置假设」列；模版占位符新增 `{{case.preconditions}}`）与 taskDesc 行（`前置假设：…；若数据不满足，请停止并报告数据不满足`）；case id 不变（仍哈希 name/screens/steps）。
+- **失败域确定性分类**（`classifyFailure`，纯函数）：优先级 应用缺陷（与 trace 关联的崩溃签名，high）→ 环境（复位 `adb-not-found/device-offline/timeout` 或失败文案含 adb/device/no devices/设备离线 等，high）→ 数据环境（失败文案含登录/账号/数据/列表/网络 等信号；命中前置假设 high，否则 medium）→ 行为或设计差异（有 `failed_items` 且无其它证据，high）→ 用例缺陷（轮询超时 / 提交被拒且文案含参数/格式/task_desc，medium）→ unclassified low 并给出原因；规则固定顺序、固定样本可回归（同输入输出 deepEqual）。
+- **ADR-0001 边界**：分类是解释层，输入不含设计差异结果、输出不参与也不改写 diff 判定；`design_device_diff` 契约未动。
+- **运行器接入**：`SuiteCaseResult.failure`（passed 为 null）；失败终态先 `flushCrashScans()` 再按 trace 过滤 `crashStore` 取崩溃签名，复位降级/提交失败/超时分别入参分类；运行报告即含逐例分类与判定依据（票据 12 导出消费）。
+
+### 13.27 实施记录（测试闭环票据 11：真机基线视觉回归）
+
+> 实施于 2026-10-02；新增 `src/diff/baseline.ts`；测试 `test/baseline.test.js` 6 例；全量 370 例通过。
+
+- **基线与分桶**：`saveBaseline` 从任务步骤截图（`captureStepScreenshot`，pro 步骤证据）复制 `image.png` 并写 `meta.json`（schemaVersion/serial/caseId/stepNumber/image/width/height/dpi/ignoreRegions/traceId/capturedAt）；目录 `<项目>/.artemis/design/baselines/<serial>/<caseId>/step-<N>-<pre|post>/`（段名净化），显式 serial 优先、回退截图设备、再回退 `default`。
+- **设备对设备比较**：`compareBaseline` 用同一 `diffScreens` 引擎（`maxEdge` 4096，基线/当前同分辨率不缩放；`ignoreRegions` 取基线元数据与本次入参并集）；分辨率不同 → `unmapped:resolution-mismatch`，DPI 双方均已知且不同 → `unmapped:dpi-mismatch`（不比对）；无基线 → `no-baseline` 而非报错。
+- **三类判定**：`last-diff.json` 保存上次区域；本次区域按类别 + 中心距 ≤24px 配对 → `new`/`persisting`，未被配对的旧区域 → `fixed`；`summary {regions,new,persisting,fixed}`；同输入判定确定性由 新→持续→修复 生命周期用例锁定。
+- **边界**：与设计 vs 真机 `design_device_diff` 并存、互不替代（复用 `diffScreens` 但不改其契约，diff 用例全量回归）；模块级入口，票据 13 消费（已由 §13.33 接线为 CLI）。
+
+### 13.28 实施记录（测试闭环票据 12：运行报告导出）
+
+> 实施于 2026-10-02；新增 `src/figma/run-report.ts`；测试 `test/run-report.test.js` 3 例；全量 373 例通过。
+
+- **从台账生成**（`buildRunReport(runtime, {limit?,caseIds?,outputDir?,save?,stamp?})`）：读 `store.listTasks`（按 submittedAt 升序、traceId 次序稳定；`caseIds` 过滤），逐行映射 `outcome`（completed→passed / submitted→pending / 其余→failed）；`durationMs` 优先状态文件 `start_time/end_time`，回退台账 submittedAt/finishedAt；证据取 `traceStatus` 的 notes/stderr/stdout + 恒有 `traceDir`；用例名与前置假设按 caseId（回退 taskDesc 精确匹配）关联 `tests.json`；失败行复用票据 10 的 `classifyFailure`（台账无复位/提交错误，依据状态 + trace 崩溃 + 前置假设）。
+- **产物**：xlsx 结果页 `<项目>/.artemis/design/reports/run-<stamp>.xlsx`（#/用例/用例ID/结果/台账状态/耗时(秒)/traceId/失败域/置信度/判定依据/证据路径，冻结表头）与 JUnit XML `run-<stamp>.xml`（`testsuites/testsuite aos-run` 计数与总耗时、`testcase` name/classname/time、failed → `failure type=失败域 message=判定依据`、pending → `skipped`；XML 转义）；不触碰既有 `tests.xlsx` 生成契约与模版语义（testgen 用例全量回归）；`save:false` 不写盘。
+
+### 13.29 实施记录（测试闭环票据 13：执行反馈回生成器）
+
+> 实施于 2026-10-02；新增 `src/figma/generation-feedback.ts`（`RunReportCase` 增 `failedItems` 透出 failed_items）；测试 `test/generation-feedback.test.js` 3 例；全量 376 例通过。
+
+- **只读聚合**（`buildGenerationFeedback(runtime, {limit?,minFailures?})`，minFailures 默认 2）：复用 `buildRunReport(save:false)` 的台账映射 + 票据 10 分类，叠加 `preflightGeneratedTests` 的弱断言与设备基线扫描（`baselines/<serial>/<caseId>/step-*/last-diff.json` 有区域即未消除热点）。输出 `issues`：`screens`（失败用例涉及屏幕计数）、`assertions`（failed_items 的 itemText/evidence 归并）、`data`（分类证据里的 `precondition:*`）、`weakAssertions`（无「应」步骤）、`visualHotspots`（区域数/类别/目录）。
+- **建议与可追踪**：`suggestions[]` 四种 kind——`prompt`（屏幕反复失败加定位/等待/断言）、`data`（前置数据假设总不满足）、`hint`（断言反复失败或基线差异未消除）、`assertion`（弱步骤补断言）；每条带 `targets`（caseId/screen/stepIndex/precondition）与 `caseIds`/`traceIds` 历史回溯；排序计数降序 + 码点次序，同输入确定性。
+- **默认不改写**：不写任何文件、不修改生成物；是否应用由调用方决定（数据/断言标注、提示词调整）。
+
+### 13.30 实施记录（测试闭环票据 01：生成器拆分）
+
+> 实施于 2026-10-02；新增 `src/figma/test-xlsx.ts` 与 `src/figma/gaps.ts`；全量 376 例通过，产物与工具行为不变。
+
+- **xlsx 引擎独立**：`WorkbookMeta`、默认表、模版占位符/样式/行复制、错误语义全部移至 `test-xlsx.ts`（`renderTestsWorkbook` 原样搬移）；`test-gen.ts` 仅保留生成/线性化/markdown 并引用引擎；测试改从 `dist/figma/test-xlsx.js` 导入引擎，断言不变。
+- **缺口分析独立**：`flows.ts` 的项目扫描/命名/缺口工具段（`globToRegExp`、`walkProjectFiles`、`readTokenContents`、`normalizeAssetName`、`isGenericLayerName`、`GapInput/GapResult`、`analyzeGapData`、`applyAssetNaming`、`figmaGapAnalysis`）整体移至 `gaps.ts`；`color.ts`/`strings.ts`/`import.ts`/`server.ts` 改从新 module 导入；`flows.ts` 只留流程图抽取（`buildFlowGraph`/`figmaExtractFlows`）。
+
+### 13.31 实施记录（测试闭环票据 02：契约补全与 Runtime 专项测试）
+
+> 实施于 2026-10-02；新增 `test/runtime.test.js`（6 例）、假子进程工具定义抽到 `test/fixtures/fake-artemis-tools.mjs`；全量 382 例通过。
+
+- **5/5 透传契约**：`test/proxy.test.js` 从假子进程共享的 `UPSTREAM_TOOLS` 逐工具 deepEqual `{name,description,inputSchema}`（含 required/additionalProperties），不再只验 `mobile_diagnose` 一个。
+- **Runtime 专项**：`test/runtime.test.js` 直接断言四条清扫分支——无记录 no-op、死 pid 清 state、owner 存活不动、cmdline 不匹配不杀、`bash exec -a "python -m mcp_server"` 真进程孤儿被终止并回报（跳过 win32）；另断言默认装配（store/state/crashStore/traceDir/惰性代理）与 `dispose`。删除 `sweepStaleChild` 实现或任一分支都会使其变红；不依赖真实 PG/设备/外网。
+
+### 13.32 实施记录（测试闭环票据 03：测试反馈提速）
+
+> 实施于 2026-10-02；全量 382 例通过，语义/断言不变。
+
+- **夹具去重**：`helpers.makeTempDir(prefix)` 收敛全仓 25+ 处 `fs.mkdtempSync(path.join(os.tmpdir(), …))`；`test/fixtures/logcat.mjs`（`logcatTime`/`logcatLine`）收敛 crash-parse/crash-collect/crash-tools 三份时间戳格式化；`test/fixtures/figma-flow-doc.mjs`（`syntheticFlowDocument({extraEntry})`）收敛 figma-flows/figma-testgen 两份合成文档（保留 transition 与入口变体，断言全绿）。
+- **聚焦运行**：`npm run test:file -- <files>`（先构建再跑，不会跑旧 dist）、`npm run test:name -- "<pattern>"`（`sh -c` 包装保证 pattern 位于文件参数之前；恒带 `test/*.test.js`，避免 Node 无参发现扫入 submodule）。
+- **覆盖率**：`npm run test:coverage` = 先构建 + `node --test --experimental-test-coverage test/*.test.js`（Node 内置，无第三方依赖）；当前 lines 91.65%。
+
+### 13.33 实施记录（开放问题 3 决议：测试闭环 CLI 接线）
+
+> 实施于 2026-10-02；新增 `src/suite-command.ts` 与 `aos-mcp suite` 子命令；测试 `test/suite-command.test.js` 7 例；全量 389 例通过。
+
+- **决议**：测试闭环（票据 08/09/11/12/13 的模块）接线为 **CLI 子命令**，不新增 MCP 工具、不动 mobile 透传契约。理由：suite 轮询单次可达数分钟，MCP 同步调用易触发客户端超时；CLI 天然支持长任务、退出码与 CI 门禁，且 `suite run` 失败仍可回到 agent 用 `mobile_run_task`/`suite evidence` 细查。
+- **命令面**（`node dist/cli.js suite …`，公共 `--project <dir>`/`--json`）：`run`（tests.json，`--tests/--max/--stop-on-failure/--device/--app/--model/--poll-timeout`，输出预检摘要 + 逐例 PASS/FAIL + 失败域 + 证据命令）、`evidence <traceId>`（`--full-trace/--out/--no-save/--design-figma|--design-pen/--node`）、`baseline save|compare`（`--case/--step/--trace/--image/--serial/--dpi/--ignore`；compare 支持 `--fail-on new|persisting|any`）、`report`（`--limit/--case/--out/--stamp/--no-save/--no-sync`，默认先同步台账再导出）、`feedback`（`--limit/--min-failures`）。
+- **退出码**：0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误、tests.json 不可读或 `--fail-on` 命中回归。`help` 子命令输出完整用法。
+- **装配**：默认 `loadProject({env: AOS_PROJECT_DIR 覆盖}) → createProjectStore（PG 失败降级内存）→ Runtime.initialize()`，结束 `disposeSync` 子进程并关闭 store；`buildRuntime` 可注入，测试用假 proxy/内存 store 跑 7 条路径（run 全通过/失败分类/缺文件、evidence 聚合与离线降级、baseline 生命周期与门禁、report/feedback 产物与建议、help/未知子命令）。
+- **历史入口指针**：§13.24/§13.25/§13.27 的"模块级入口"已由本节接线。
+
+### 13.34 实施记录（M6 收尾：复数与 iOS stringsdict）
+
+> 实施于 2026-10-02；`src/figma/strings.ts` + `src/figma/import-strings.ts`；测试 `test/strings-plural.test.js` 5 例；全量 394 例通过。决议：iOS 用 `.stringsdict`（兼容全版本，不做 `.xcstrings`）。
+
+- **人工确认流**：`.artemis/design/string-context.json`（`{version,entries:{"<canonical key>":{plural:{variable?="count",forms:{zero|one|two|few|many|other}}}}}`，`other` 必填、forms 仅允许 `{variable}` 占位符）。`loadStringContext` 逐条校验：缺 `other`/非法 quantity/多余占位符/格式错误 → 记入 `stringContext.errors` 并忽略该条；未命中任何 key → `stringContext.unmatched`；报告 `stringContext.pluralKeys`、`counts.pluralized`，`counts.needsContext` 只统计未确认项；hint 给出文件契约。`needs_context` 条目被确认后即写入（`isWritable`），无需改 lifecycle。
+- **各栈写入**：Android 同文件 `<plurals name><item quantity>`（quantity 按 zero/one/two/few/many/other 固定序，`{count}`→`%1$d`，字面 `%`→`%%`、`'`/XML 转义）；Flutter arb/RN/Web JSON 写 ICU `{count, plural, …}`，Flutter `@key.placeholders.count.type="int"`；iOS `.strings` 跳过复数 key，另生成同目录 `Localizable.stringsdict`（`NSStringLocalizedFormatKey=%#@count@`、`NSStringFormatSpecTypeKey=NSStringPluralRuleType`、`NSStringFormatValueTypeKey=d`、`{count}`→`%d`，同 marker；无复数时不建文件）。
+- **幂等与冲突**：复用各栈既有语义（生成文件二次导入 `unchanged`；用户已有同名普通 string/JSON key → 维持 conflict 流程，复数转换不静默覆盖）。
+- **pen 侧自动复用**：`pen_import_strings` 走同一 `runStringsImport`，无需改动。
+
+### 13.35 实施记录（M6 收尾：位图倍率集）
+
+> 实施于 2026-10-02；`src/figma/import.ts` + `figma_import_assets` schema；测试 `test/import-assets.test.js` +3 例（含 Android/iOS 集成）；全量 397 例通过。决议：全栈倍率默认开启。
+
+- **plan 展开**：`planImports(..., {format:"png", densities:true})` 按栈把 1 个资源展开为倍率变体（`scale`/`variant`/`role`）：Android 仅当目录匹配 `…/drawable|mipmap`（含既有 dpi 后缀归一）→ `drawable-xhdpi`(2x)/`drawable-xxhdpi`(3x)；Flutter 基目录 1x + `2.0x`/`3.0x`；iOS `<name>.imageset/` 1x/2x/3x + 生成 `Contents.json`（`role:"contents"`）；RN 同名 `@2x`/`@3x`；Web 单 1x。文件名先剥离既有 `@2x/@3x` 再派生，SVG 始终单文件；`densities:false` 或未知栈回退单文件 @2x（旧行为，兼容）。
+- **导出与写入**：按 plan 中的 scale 集合去重调用 Figma `/images`（每 scale 一次），PNG 每倍率独立渲染（内容不同 → sha256 各自校验）；Contents.json 由 `renderIosContents` 生成并 `writeAssetFile(overwrite)`（幂等）；`dryRun` 只计划；报告新增 `densities`、`counts.assets`/`files` 与逐条 `scale/role/variant`，hint 说明回退开关。
+- **工具面**：`figma_import_assets` 新增 `densities?: boolean`（默认 true）；内容去重、`duplicate_of`、冲突与 `import-report.json` 语义不变。
+
+
+
+
+
+
+
+
+
+
+### 13.36 实施记录（API 错误 → 错误码匹配 → 通用处理判定 → 反馈）
+
+> 实施于 2026-10-02；spec `.scratch/api-error-feedback/spec.md`（票据 01–05）；新增 `src/artemis/api-errors.ts`、`src/device/logcat.ts`，改造 `suite-runner`/`failure-taxonomy`/`run-report`/`generation-feedback`/`suite-command`；全量 412 例通过。
+
+- **错误码注册表（人工先行）**：`.artemis/design/error-codes.json`（`{version,codes:{"<code>":{match,handler?,expect?,handledPattern?}}}`）；`loadApiErrorCatalog` 逐条校验（match 必填且正则合法、handledPattern 可编译），非法条目计入 `errors[]` 并忽略；未配置 → 空表（不阻塞）。
+- **确定性采集**：`AdbLogcatCollector`（`src/device/logcat.ts`）按 trace 时间窗 `logcat -v threadtime -d -T <start-5s>` 拉取主缓冲；设备时钟探测失败按 0 偏差并回传 `clockWarning`；无 adb/无设备/日志为空 → 结构化 `skipped`（`adb-not-found|no-serial|device-offline|log-empty`），不抛错；`formatLogcatTime`/设备列表/时钟探测与崩溃采集共用（`src/crash/collect.ts` 去除重复实现）。
+- **判定**：`matchApiErrors` 逐行匹配并计数、取首个样例与时间；`handledPattern` 命中 → `handled`，声明但未命中 → `unhandled`，未声明 → `observed`。失败域新增 **`api-error`**（仅 `unhandled` 触发）：优先级 崩溃 > 环境 > api-error > 数据环境 > 行为或设计 > 用例缺陷 > 未分类；`handled/observed` 只作证据不改域。
+- **runner 集成**：每例终态（默认开启）采集并匹配，产物 `.artemis/traces/<traceId>/api-errors.json`（含 window/serial/source/degraded/errors）；`SuiteCaseResult.apiErrors + apiErrorsDegraded`；`suite run --no-api-errors` 关闭、`--fail-on api-error` 可让未处理错误使用例 FAIL（默认仅证据，不阻断）；报告 `apiErrorCatalog` 显示规则数与无效条目。
+- **报告/反馈**：`suite report` xlsx 追加「API 错误 / 处理判定」两列（`CODE(verdict ×n)`、`CODE=handler|expect`），JUnit failure 内容追加 `api_error: CODE verdict=... handler=...`；`suite feedback` 对重复未处理错误输出 `kind:"api"` 建议（可追踪 case/trace）。
+- **手动复算**：`node dist/cli.js suite api-errors <traceId> [--serial <s>] [--no-save] [--json]`（注册表缺失 → 退出 2；无状态/采集失败 → 1；成功 → 0）。
+- **非目标**：抓包/代理/HAR、响应体断言、非 Android 栈、按代码自动扫描错误码（后续）。

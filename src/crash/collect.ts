@@ -1,139 +1,37 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
 
 import { errorMessage } from "../util.js";
+import {
+  classifyAdbFailure,
+  defaultExec,
+  resolveAdbPath,
+  type ExecFn,
+  type ExecResult
+} from "../device/adb.js";
+import {
+  boundLogText,
+  formatLogcatTime,
+  listAdbDevices,
+  probeDeviceClock,
+  type DeviceListResult
+} from "../device/logcat.js";
 import type {
   CrashCollectorLike,
   CrashCollectOutcome,
   CrashCollectRequest
 } from "./types.js";
 
+export { resolveAdbPath } from "../device/adb.js";
+export type { DeviceListResult } from "../device/logcat.js";
+export type { ExecFn, ExecResult, ResolvedAdb } from "../device/adb.js";
+
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 120_000;
-const DEVICES_TIMEOUT_MS = 8_000;
-const CLOCK_TIMEOUT_MS = 5_000;
-const MAX_LOG_CHARS = 512 * 1024;
-
-export interface ExecResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  error?: string;
-}
-
-export type ExecFn = (
-  command: string,
-  args: string[],
-  options?: { timeoutMs?: number }
-) => Promise<ExecResult>;
-
-export interface ResolvedAdb {
-  path: string | null;
-  source: "env" | "sdk" | "path" | "missing";
-}
-
-const defaultExec: ExecFn = (command, args, options = {}) =>
-  new Promise((resolve) => {
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(command, args, { windowsHide: true });
-    } catch (error) {
-      resolve({ code: null, stdout: "", stderr: "", error: errorMessage(error) });
-      return;
-    }
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const finish = (result: ExecResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      resolve(result);
-    };
-    const timer = options.timeoutMs
-      ? setTimeout(() => {
-          try {
-            child.kill();
-          } catch {
-            /* already gone */
-          }
-          finish({ code: null, stdout, stderr, error: "timeout" });
-        }, options.timeoutMs)
-      : null;
-    timer?.unref?.();
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf-8");
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf-8");
-    });
-    child.on("error", (error) => {
-      finish({ code: null, stdout, stderr, error: errorMessage(error) });
-    });
-    child.on("close", (code) => {
-      finish({ code, stdout, stderr });
-    });
-  });
-
-export function resolveAdbPath(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-  exists: (candidate: string) => boolean = fs.existsSync
-): ResolvedAdb {
-  const explicit = env.AOS_ADB_PATH?.trim();
-  if (explicit) return { path: explicit, source: "env" };
-
-  const binary = platform === "win32" ? "adb.exe" : "adb";
-  for (const root of [env.ANDROID_HOME, env.ANDROID_SDK_ROOT]) {
-    const trimmed = root?.trim();
-    if (!trimmed) continue;
-    const candidate = path.join(trimmed, "platform-tools", binary);
-    if (exists(candidate)) return { path: candidate, source: "sdk" };
-  }
-  return { path: "adb", source: "path" };
-}
-
 function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = Number(env.AOS_CRASH_TIMEOUT_MS ?? "");
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_TIMEOUT_MS;
   return Math.min(Math.max(Math.trunc(raw), MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
-}
-
-function boundText(text: string): string {
-  return text.length > MAX_LOG_CHARS ? text.slice(text.length - MAX_LOG_CHARS) : text;
-}
-
-function formatLogTime(ms: number): string {
-  const date = new Date(ms);
-  const pad = (value: number, width = 2): string => String(value).padStart(width, "0");
-  return (
-    `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.` +
-    `${pad(date.getMilliseconds(), 3)}`
-  );
-}
-
-function classifyAdbFailure(error: string | undefined): string {
-  const text = (error ?? "").toLowerCase();
-  if (text.includes("enoent")) return "adb-not-found";
-  if (
-    text.includes("device") &&
-    (text.includes("not found") ||
-      text.includes("offline") ||
-      text.includes("no devices") ||
-      text.includes("more than one"))
-  ) {
-    return "device-offline";
-  }
-  return "command-failed";
-}
-
-export interface DeviceListResult {
-  ok: boolean;
-  devices: string[];
-  error?: string;
 }
 
 export interface AdbCrashCollectorOptions {
@@ -162,32 +60,14 @@ export class AdbCrashCollector implements CrashCollectorLike {
   }
 
   async listDevices(adbPath: string): Promise<DeviceListResult> {
-    const result = await this.run(adbPath, ["devices"], DEVICES_TIMEOUT_MS);
-    if (result.error) return { ok: false, devices: [], error: result.error };
-    if (result.code !== 0) {
-      return { ok: false, devices: [], error: result.stderr.trim() || `exit ${result.code}` };
-    }
-    const devices = result.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => /^\S+\tdevice$/.test(line))
-      .map((line) => line.split("\t")[0]!);
-    return { ok: true, devices };
+    return listAdbDevices(this.exec, adbPath);
   }
 
   private async probeClock(
     adbPath: string,
     serial: string
   ): Promise<{ ok: boolean; offsetMs: number }> {
-    const result = await this.run(adbPath, ["-s", serial, "shell", "date", "+%s"], CLOCK_TIMEOUT_MS);
-    if (result.error || result.code !== 0) return { ok: false, offsetMs: 0 };
-    const match = /(\d{9,})/.exec(result.stdout);
-    if (!match) return { ok: false, offsetMs: 0 };
-    const offsetMs = Number(match[1]) * 1000 - this.now();
-    if (!Number.isFinite(offsetMs) || Math.abs(offsetMs) > 86_400_000) {
-      return { ok: false, offsetMs: 0 };
-    }
-    return { ok: true, offsetMs };
+    return probeDeviceClock(this.exec, adbPath, serial, this.now);
   }
 
   private async run(
@@ -236,14 +116,14 @@ export class AdbCrashCollector implements CrashCollectorLike {
       return {
         status: "ok",
         source: "crash-buffer",
-        text: boundText(crashText),
+        text: boundLogText(crashText),
         clockOffsetMs,
         clockWarning: !clock.ok,
         serial
       };
     }
 
-    const since = formatLogTime(request.windowStartMs + clockOffsetMs - 5000);
+    const since = formatLogcatTime(request.windowStartMs + clockOffsetMs - 5000);
     const mainBuffer = await this.run(adb.path, [
       "-s",
       serial,
@@ -258,7 +138,7 @@ export class AdbCrashCollector implements CrashCollectorLike {
       return {
         status: "ok",
         source: "main-buffer",
-        text: boundText(mainBuffer.stdout.trim()),
+        text: boundLogText(mainBuffer.stdout.trim()),
         clockOffsetMs,
         clockWarning: !clock.ok,
         serial

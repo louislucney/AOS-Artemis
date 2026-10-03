@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir } from "./helpers.js";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -12,7 +13,7 @@ import { createAosHttpServer } from "../dist/http-server.js";
 process.env.AOS_MODEL_REFRESH_HOURS = "0";
 
 function makeWorkspace() {
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "aos-ws-"));
+  const workspace = makeTempDir("aos-ws-");
   const projectDir = path.join(workspace, "demo");
   fs.mkdirSync(projectDir);
   fs.writeFileSync(

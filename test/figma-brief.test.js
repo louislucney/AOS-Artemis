@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { makeTempDir } from "./helpers.js";
+
 import {
   detectAndroidPackage,
   renderBriefMarkdown,
@@ -12,7 +14,7 @@ import {
 import { STACK_PROFILES } from "../dist/projects/stack.js";
 
 function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "aos-brief-"));
+  return makeTempDir("aos-brief-");
 }
 
 function write(root, relative, content) {

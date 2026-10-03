@@ -1,10 +1,10 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import { AdbCrashCollector } from "./collect.js";
 import { parseLogcatCrashes } from "./parse.js";
 import type { CrashIndexStore } from "./store.js";
 import type { CrashCollectorLike, CrashScanInput, CrashScanResult } from "./types.js";
+import { taskStatusFromFile } from "../artemis/task-result.js";
 import { logWarn } from "../util.js";
 
 const DEFAULT_SCAN_WINDOW_MS = 15 * 60_000;
@@ -18,24 +18,15 @@ export interface TraceStatusInfo {
 }
 
 export function readTraceStatusInfo(tracesDir: string, traceId: string): TraceStatusInfo | null {
-  const toMs = (value: unknown): number | null =>
-    typeof value === "number" && Number.isFinite(value) ? value * 1000 : null;
-  try {
-    const raw = fs.readFileSync(path.join(tracesDir, traceId, "status.json"), "utf-8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return {
-      status: typeof parsed.status === "string" ? parsed.status : "unknown",
-      deviceSerial:
-        typeof parsed.device_serial === "string" && parsed.device_serial !== ""
-          ? parsed.device_serial
-          : null,
-      startTimeMs: toMs(parsed.start_time),
-      endTimeMs: toMs(parsed.end_time),
-      error: typeof parsed.error === "string" ? parsed.error : null
-    };
-  } catch {
-    return null;
-  }
+  const status = taskStatusFromFile(path.join(tracesDir, traceId, "status.json"));
+  if (!status) return null;
+  return {
+    status: status.status ?? "unknown",
+    deviceSerial: status.deviceSerial,
+    startTimeMs: status.startTimeMs,
+    endTimeMs: status.endTimeMs,
+    error: status.error
+  };
 }
 
 export interface CrashScannerOptions {

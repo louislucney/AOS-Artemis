@@ -4,6 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { ArtemisProxy } from "../dist/artemis/proxy.js";
+import { TOOLS as UPSTREAM_TOOLS } from "./fixtures/fake-artemis-tools.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(here, "fixtures", "fake-artemis.mjs");
@@ -41,13 +42,18 @@ test("proxy spawns the child, lists tools verbatim, and calls tools", async () =
       "mobile_run_task"
     ]);
 
-    // Passthrough contract: schema is forwarded unchanged.
-    const diagnose = tools.find((tool) => tool.name === "mobile_diagnose");
-    assert.deepEqual(diagnose.inputSchema, {
-      type: "object",
-      properties: {},
-      additionalProperties: false
-    });
+    // Passthrough contract: all 5 mobile_* schemas (required /
+    // additionalProperties included) are forwarded byte-identically.
+    assert.equal(UPSTREAM_TOOLS.length, 5);
+    for (const upstream of UPSTREAM_TOOLS) {
+      const forwarded = tools.find((tool) => tool.name === upstream.name);
+      assert.ok(forwarded, `${upstream.name} should be forwarded`);
+      assert.deepEqual(forwarded, {
+        name: upstream.name,
+        description: upstream.description,
+        inputSchema: upstream.inputSchema
+      });
+    }
 
     const cached = await proxy.listTools();
     assert.equal(cached, tools, "second listTools call returns the cached array");

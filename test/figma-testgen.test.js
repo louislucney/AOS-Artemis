@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -11,113 +10,15 @@ import {
   figmaGenerateTests,
   generateTestCases,
   linearizeFlows,
-  renderMarkdown,
-  renderTestsWorkbook
+  renderMarkdown
 } from "../dist/figma/test-gen.js";
-import { baseConfig, loadTestRuntime, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
-
-function syntheticDocument({ extraEntry = false } = {}) {
-  const settings = extraEntry
-    ? [
-        {
-          id: "9:1",
-          name: "Settings",
-          type: "FRAME",
-          children: [
-            {
-              id: "9:2",
-              name: "Open Home",
-              type: "BUTTON",
-              children: [{ id: "9:3", name: "L", type: "TEXT", characters: "Go home" }],
-              interactions: [
-                {
-                  trigger: { type: "ON_CLICK" },
-                  actions: [{ type: "NODE", destinationId: "10:1", navigation: "NAVIGATE" }]
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    : [];
-
-  return {
-    id: "0:0",
-    name: "Doc",
-    type: "DOCUMENT",
-    children: [
-      {
-        id: "1:0",
-        name: "Page 1",
-        type: "PAGE",
-        children: [
-          ...settings,
-          {
-            id: "10:1",
-            name: "Home",
-            type: "FRAME",
-            children: [
-              { id: "10:5", name: "Welcome", type: "TEXT", characters: "Welcome Back" },
-              {
-                id: "10:2",
-                name: "CTA Button",
-                type: "INSTANCE",
-                children: [{ id: "10:3", name: "Label", type: "TEXT", characters: "Buy now" }],
-                interactions: [
-                  {
-                    trigger: { type: "ON_CLICK" },
-                    actions: [{ type: "NODE", destinationId: "11:1", navigation: "NAVIGATE" }]
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            id: "11:1",
-            name: "Checkout",
-            type: "FRAME",
-            children: [
-              { id: "11:5", name: "Amount", type: "TEXT", characters: "Pay now" },
-              {
-                id: "11:2",
-                name: "Payment Loader",
-                type: "FRAME",
-                interactions: [
-                  {
-                    trigger: { type: "AFTER_TIMEOUT", timeout: 2000 },
-                    actions: [{ type: "NODE", destinationId: "12:1", navigation: "NAVIGATE" }]
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            id: "12:1",
-            name: "Success",
-            type: "FRAME",
-            children: [
-              { id: "12:5", name: "Done", type: "TEXT", characters: "Done" },
-              {
-                id: "12:2",
-                name: "Back Link",
-                type: "VECTOR",
-                interactions: [
-                  {
-                    trigger: { type: "ON_CLICK" },
-                    actions: [{ type: "NODE", navigation: "BACK" }]
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      }
-    ]
-  };
-}
+import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
+import { deriveCasePreconditions } from "../dist/figma/preconditions.js";
+import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
+import { syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
 
 test("linearizeFlows: chains consecutive interactions into a path and stops at back edges", () => {
-  const graph = buildFlowGraph(syntheticDocument());
+  const graph = buildFlowGraph(syntheticFlowDocument());
   const flows = linearizeFlows(graph);
   assert.equal(flows.length, 1);
   assert.equal(flows[0].length, 3);
@@ -127,7 +28,7 @@ test("linearizeFlows: chains consecutive interactions into a path and stops at b
 });
 
 test("generateTestCases: artemis task descriptions with locators and assertions", () => {
-  const graph = buildFlowGraph(syntheticDocument());
+  const graph = buildFlowGraph(syntheticFlowDocument());
   const cases = generateTestCases(graph);
 
   assert.equal(cases.length, 1);
@@ -144,10 +45,32 @@ test("generateTestCases: artemis task descriptions with locators and assertions"
   assert.match(testCase.taskDesc, /【设计流程端到端验证】Home → Checkout → Success/);
   assert.match(testCase.taskDesc, /1\) 点击「Buy now」/);
   assert.match(testCase.taskDesc, /PASS\/FAIL/);
+  assert.deepEqual(testCase.preconditions, [
+    "应用已安装且可正常启动",
+    "开始前应用停留在「Home」页"
+  ]);
+  assert.match(
+    testCase.taskDesc,
+    /前置假设：应用已安装且可正常启动；开始前应用停留在「Home」页。/
+  );
+});
+
+test("preconditions: login and list screens add data assumptions deterministically", () => {
+  assert.deepEqual(deriveCasePreconditions(["登录", "商品列表", "Home"]), [
+    "应用已安装且可正常启动",
+    "开始前应用停留在「登录」页",
+    "「登录」需要有效账号可完成登录",
+    "「商品列表」需要已有可操作数据（列表非空）"
+  ]);
+  assert.deepEqual(deriveCasePreconditions(["Home"], { entryFallback: true }), [
+    "应用已安装且可正常启动",
+    "开始前应用停留在「Home」页",
+    "入口屏未声明：起始页按「Home」推断"
+  ]);
 });
 
 test("generateTestCases: entry screens with incoming edges are not treated as starts", () => {
-  const graph = buildFlowGraph(syntheticDocument({ extraEntry: true }));
+  const graph = buildFlowGraph(syntheticFlowDocument({ extraEntry: true }));
   assert.deepEqual(graph.entryScreens, ["Settings"]);
 
   const cases = generateTestCases(graph);
@@ -157,7 +80,7 @@ test("generateTestCases: entry screens with incoming edges are not treated as st
 });
 
 test("generateTestCases: frozen i18n keys are attached when strings.json mapping is provided", () => {
-  const graph = buildFlowGraph(syntheticDocument());
+  const graph = buildFlowGraph(syntheticFlowDocument());
   const cases = generateTestCases(graph, {
     i18nKeys: new Map([["Buy now", "home.cta_button"]])
   });
@@ -166,7 +89,7 @@ test("generateTestCases: frozen i18n keys are attached when strings.json mapping
 });
 
 test("renderTestsWorkbook: default sheet with header, case rows and readable styling", async () => {
-  const graph = buildFlowGraph(syntheticDocument());
+  const graph = buildFlowGraph(syntheticFlowDocument());
   const cases = generateTestCases(graph);
   const buffer = await renderTestsWorkbook(cases, {
     source: "unit-test",
@@ -182,6 +105,7 @@ test("renderTestsWorkbook: default sheet with header, case rows and readable sty
     "#",
     "用例名称",
     "涉及页面",
+    "前置假设",
     "步骤",
     "artemis 任务描述"
   ]);
@@ -193,17 +117,19 @@ test("renderTestsWorkbook: default sheet with header, case rows and readable sty
   assert.equal(row.getCell(1).value, 1);
   assert.equal(row.getCell(2).value, cases[0].name);
   assert.equal(row.getCell(3).value, cases[0].screens.join(" → "));
-  assert.equal(row.getCell(4).value, cases[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n"));
-  assert.equal(row.getCell(5).value, cases[0].taskDesc);
+  assert.equal(row.getCell(4).value, cases[0].preconditions.join("；"));
+  assert.equal(row.getCell(5).value, cases[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n"));
+  assert.equal(row.getCell(6).value, cases[0].taskDesc);
   assert.equal(row.getCell(4).alignment?.wrapText, true);
   assert.equal(row.getCell(5).alignment?.wrapText, true);
+  assert.equal(row.getCell(6).alignment?.wrapText, true);
 });
 
 function makeFlowsProject() {
   const dir = makeTempProject({ config: baseConfig() });
   const designDir = path.join(dir, ".artemis", "design");
   fs.mkdirSync(designDir, { recursive: true });
-  const graph = buildFlowGraph(syntheticDocument());
+  const graph = buildFlowGraph(syntheticFlowDocument());
   fs.writeFileSync(path.join(designDir, "flows.json"), JSON.stringify(graph), "utf-8");
   return dir;
 }
@@ -226,11 +152,12 @@ test("figma_generate_tests: default run writes tests.xlsx alongside json and md"
   assert.equal(sheet.getRow(2).getCell(1).value, 1);
   assert.equal(sheet.getRow(2).getCell(2).value, payload.flows[0].name);
   assert.equal(sheet.getRow(2).getCell(3).value, payload.flows[0].screens.join(" → "));
+  assert.equal(sheet.getRow(2).getCell(4).value, payload.flows[0].preconditions.join("；"));
   assert.equal(
-    sheet.getRow(2).getCell(4).value,
+    sheet.getRow(2).getCell(5).value,
     payload.flows[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n")
   );
-  assert.equal(sheet.getRow(2).getCell(5).value, payload.flows[0].taskDesc);
+  assert.equal(sheet.getRow(2).getCell(6).value, payload.flows[0].taskDesc);
 });
 
 test("figma_generate_tests: excelPath overrides output and save:false writes nothing", async () => {
@@ -258,9 +185,16 @@ const TEMPLATE_CASES = [
     name: "Home → Checkout",
     screens: ["Home", "Checkout"],
     steps: ["点击「Buy now」", "等待 2 秒"],
+    preconditions: ["应用已安装且可正常启动"],
     taskDesc: "task one"
   },
-  { name: "Settings", screens: ["Settings"], steps: ["点击「Go home」"], taskDesc: "task two" }
+  {
+    name: "Settings",
+    screens: ["Settings"],
+    steps: ["点击「Go home」"],
+    preconditions: ["应用已安装且可正常启动"],
+    taskDesc: "task two"
+  }
 ];
 
 const TEMPLATE_META = {
@@ -282,7 +216,8 @@ async function writeTestTemplate(filePath, { withCaseRow = true } = {}) {
       "{{case.steps}}",
       "{{case.taskDesc}}",
       "固定说明",
-      "{{unknown.key}}"
+      "{{unknown.key}}",
+      "{{case.preconditions}}"
     ];
     for (let column = 1; column <= 6; column += 1) {
       sheet.getRow(3).getCell(column).fill = {
@@ -298,7 +233,7 @@ async function writeTestTemplate(filePath, { withCaseRow = true } = {}) {
 }
 
 test("renderTestsWorkbook template: meta placeholders, row replication and styles", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-tpl-"));
+  const dir = makeTempDir("aos-tpl-");
   const templatePath = await writeTestTemplate(path.join(dir, "template.xlsx"));
   const buffer = await renderTestsWorkbook(TEMPLATE_CASES, TEMPLATE_META, { templatePath });
 
@@ -315,6 +250,7 @@ test("renderTestsWorkbook template: meta placeholders, row replication and style
   assert.equal(sheet.getRow(3).getCell(4).value, "task one");
   assert.equal(sheet.getRow(3).getCell(5).value, "固定说明");
   assert.equal(sheet.getRow(3).getCell(6).value, "{{unknown.key}}");
+  assert.equal(sheet.getRow(3).getCell(7).value, "应用已安装且可正常启动");
   assert.equal(sheet.getRow(3).getCell(3).alignment?.wrapText, true);
 
   assert.equal(sheet.getRow(4).getCell(1).value, 2);
@@ -326,7 +262,7 @@ test("renderTestsWorkbook template: meta placeholders, row replication and style
 });
 
 test("renderTestsWorkbook template: rejects a template without case-level placeholders", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-tpl-"));
+  const dir = makeTempDir("aos-tpl-");
   const templatePath = await writeTestTemplate(path.join(dir, "template.xlsx"), { withCaseRow: false });
   await assert.rejects(
     () => renderTestsWorkbook(TEMPLATE_CASES, TEMPLATE_META, { templatePath }),
@@ -335,7 +271,7 @@ test("renderTestsWorkbook template: rejects a template without case-level placeh
 });
 
 test("renderTestsWorkbook template: zero cases removes the template row and keeps meta", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-tpl-"));
+  const dir = makeTempDir("aos-tpl-");
   const templatePath = await writeTestTemplate(path.join(dir, "template.xlsx"));
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(templatePath);
@@ -353,7 +289,7 @@ test("renderTestsWorkbook template: zero cases removes the template row and keep
 });
 
 test("renderTestsWorkbook template: meta-only sheets are allowed beside a case row sheet", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-tpl-"));
+  const dir = makeTempDir("aos-tpl-");
   const templatePath = path.join(dir, "template.xlsx");
   const workbook = new ExcelJS.Workbook();
   const casesSheet = workbook.addWorksheet("用例");
@@ -410,12 +346,13 @@ test("figma_generate_tests: unreadable excelTemplate fails before writing anythi
 });
 
 test("renderMarkdown: checklist + embedded task descriptions", () => {
-  const graph = buildFlowGraph(syntheticDocument());
+  const graph = buildFlowGraph(syntheticFlowDocument());
   const markdown = renderMarkdown(generateTestCases(graph), {
     source: "unit-test",
     generatedAt: "2026-09-29T00:00:00Z"
   });
   assert.match(markdown, /# 设计流程测试用例/);
+  assert.match(markdown, /- 前置假设：应用已安装且可正常启动/);
   assert.match(markdown, /- \[ \] 1\) 点击「Buy now」/);
   assert.match(markdown, /### artemis 任务描述/);
   assert.match(markdown, /```text/);

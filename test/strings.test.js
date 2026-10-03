@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir } from "./helpers.js";
 
 import {
   canonicalizePlaceholders,
@@ -252,7 +253,7 @@ test("android conversion: positional placeholders, %, quotes and XML escaping", 
 });
 
 test("renderAndroidStrings: additive write, conflicts with user files, idempotency", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-strings-android-"));
+  const dir = makeTempDir("aos-strings-android-");
   const profile = STACK_PROFILES["android-native"];
   const entries = [
     entry(),
@@ -289,7 +290,7 @@ test("renderAndroidStrings: additive write, conflicts with user files, idempoten
 });
 
 test("renderFlutterArb: metadata for placeholders, conflicts, idempotency", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-strings-flutter-"));
+  const dir = makeTempDir("aos-strings-flutter-");
   const profile = STACK_PROFILES.flutter;
   const entries = [
     entry({
@@ -324,7 +325,7 @@ test("canonicalTextToIos: positional placeholders and % escaping", () => {
 });
 
 test("renderJsonLocale: react-native/web JSON additive merge with conflicts", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-strings-json-"));
+  const dir = makeTempDir("aos-strings-json-");
   const entries = [entry()];
 
   const rn = renderJsonLocale(STACK_PROFILES["react-native"], entries, dir, "zh");
@@ -340,12 +341,12 @@ test("renderJsonLocale: react-native/web JSON additive merge with conflicts", ()
   assert.equal(conflict.conflicts.length, 1);
   assert.equal(JSON.parse(conflict.content).loginTitle, "已有翻译");
 
-  const web = renderJsonLocale(STACK_PROFILES.web, entries, fs.mkdtempSync(path.join(os.tmpdir(), "aos-web-")), "zh");
+  const web = renderJsonLocale(STACK_PROFILES.web, entries, makeTempDir("aos-web-"), "zh");
   assert.equal(web.relativePath, "src/locales/zh.json");
 });
 
 test("renderIosStrings: escaping, conflicts and idempotent round-trip", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-strings-ios-"));
+  const dir = makeTempDir("aos-strings-ios-");
   const entries = [
     entry(),
     entry({
@@ -375,7 +376,7 @@ test("renderIosStrings: escaping, conflicts and idempotent round-trip", () => {
 });
 
 test("scanHardcodedStrings: android layout literals and flutter Text literals", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-strings-scan-"));
+  const dir = makeTempDir("aos-strings-scan-");
   fs.mkdirSync(path.join(dir, "app/src/main/res/layout"), { recursive: true });
   fs.writeFileSync(
     path.join(dir, "app/src/main/res/layout/activity.xml"),

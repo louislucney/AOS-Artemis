@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir } from "./helpers.js";
 
 import { managedPenBinPath } from "../dist/pen/cli.js";
 import { ensurePenCli, penNodeTooOld } from "../dist/pen/install.js";
 
 function tempDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "aos-pen-install-"));
+  return makeTempDir("aos-pen-install-");
 }
 
 function fakeExec({ onVersion, onNpm } = {}) {

@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { compareDesignAndDevice, extractDeviceImage } from "../dist/tools/composite.js";
-import { baseConfig, loadTestRuntime, makeTempProject, StubProxy } from "./helpers.js";
+import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, StubProxy } from "./helpers.js";
 
 test("extractDeviceImage: MCP image content block", () => {
   const image = extractDeviceImage({
@@ -17,7 +16,7 @@ test("extractDeviceImage: MCP image content block", () => {
 });
 
 test("extractDeviceImage: text payload referencing a local file path", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-shot-"));
+  const dir = makeTempDir("aos-shot-");
   const file = path.join(dir, "screen.png");
   fs.writeFileSync(file, Buffer.from("fake-png-bytes"));
 

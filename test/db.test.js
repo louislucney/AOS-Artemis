@@ -127,6 +127,40 @@ test("PostgresStore: schema, upsert idempotency, exclusive active, task stats (p
   assert.equal((await store.listPendingTasks("/w/p2")).length, 1);
 });
 
+test("task ledger: caseId and terminal finishedAt round-trip (memory + pg-mem)", async () => {
+  const memory = new MemoryStore();
+  await memory.upsertProject({ rootPath: "/w/l1", name: "l1" });
+  await memory.recordTask({
+    rootPath: "/w/l1",
+    traceId: "t-failed",
+    status: "failed",
+    taskDesc: "desc",
+    caseId: "case-1",
+    finishedAt: "2026-10-01T00:00:00.000Z"
+  });
+  const memoryTasks = await memory.listTasks("/w/l1", 5);
+  assert.equal(memoryTasks[0].caseId, "case-1");
+  assert.equal(memoryTasks[0].finishedAt, "2026-10-01T00:00:00.000Z");
+  assert.equal((await memory.listPendingTasks("/w/l1")).length, 0);
+
+  const mem = newDb();
+  const { Pool } = mem.adapters.createPg();
+  const store = new PostgresStore(new Pool());
+  await store.init();
+  await store.upsertProject({ rootPath: "/w/l2", name: "l2" });
+  await store.recordTask({
+    rootPath: "/w/l2",
+    traceId: "t-failed",
+    status: "failed",
+    caseId: "case-2",
+    finishedAt: "2026-10-01T00:00:00.000Z"
+  });
+  const pgTasks = await store.listTasks("/w/l2", 5);
+  assert.equal(pgTasks[0].caseId, "case-2");
+  assert.equal(pgTasks[0].finishedAt, "2026-10-01T00:00:00.000Z");
+  assert.equal((await store.listPendingTasks("/w/l2")).length, 0);
+});
+
 test("model cache: MemoryStore roundtrip, error-only update preserves the list", async () => {
   const store = new MemoryStore();
   await store.upsertProject({ rootPath: "/w/c1", name: "c1" });

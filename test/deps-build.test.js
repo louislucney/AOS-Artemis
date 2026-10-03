@@ -2,15 +2,16 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir } from "./helpers.js";
 
 import { platformArch, venvPythonPath } from "../dist/artemis/bootstrap.js";
 import { buildDepsBundle } from "../dist/deps-build.js";
 
 function tmp(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return makeTempDir(prefix);
 }
 
 function makeFakeRepo() {

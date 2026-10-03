@@ -3,6 +3,7 @@
 容器化 **AOS × ARTEMIS 合并 MCP 服务**：Figma 设计上下文（[design-context-bridge](https://github.com/CristinaFores/design-context-bridge)，MIT）+ ARTEMIS 真机自动化（[google/artemis](https://github.com/google/artemis)，Apache-2.0）+ **项目级 LLM 关联与切换（PostgreSQL）**。
 
 > 设计文档（架构/评审/数据模型）：[DESIGN.md](./DESIGN.md)
+> 运行逻辑与接入指南（其他项目如何挂载与使用）：[docs/接入指南.md](./docs/接入指南.md)
 
 ## 核心模型（v0.3）
 
@@ -114,7 +115,7 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 ## 任务统计与组合工具
 
-- `aos_tasks`：列出本项目 `mobile_run_task` 记录（trace/状态/模型/时间），默认先向 artemis 同步完成态；后台每 30s 自动同步。
+- `aos_tasks`：列出本项目 `mobile_run_task` 记录（case id / trace / 状态 / 模型 / 时间），默认先向 artemis 同步完成态；后台每 30s 自动同步；即时报错也会记为 `failed` 终态，生成用例的 `case_id` 由任务描述精确匹配回填。
 - `aos_crashes`：任务终态后自动采集设备 crash buffer，解析为崩溃签名（包名 + 根因异常 + 首个应用帧）并去重计数；`list` 查看、`get` 取完整栈、`scan` 手动扫描。产物在 `.artemis/crashes/`，`AOS_CRASH_CAPTURE=0` 可关闭。
 - `compare_design_and_device`：一次调用返回 **Figma 节点渲染图（PNG@2x）+ 当前真机截图**（MCP image content），交给多模态模型比对布局/间距/颜色/文案。
 - `design_device_diff`：**确定性**设计 vs 真机差异（不依赖多模态）：默认取 Figma 节点 + 实时截图，做对齐与像素判定，输出结构化差异报告（区域/严重度/证据）与标注图并落盘；`alignment.ignoreRegions` 可屏蔽状态栏/视频位等动态区域；`device:{mode:"step", traceId, stepNumber?, image?}` 可直接复核失败步骤截图（经 `mobile_inspect_trace`，默认 post）；省略 `stepNumber` 时用 `run_outcome` 失败证据检索步骤（Pro，best-effort），报告记录 `anchor`（explicit/search）与候选；设计源 `.pen` 经 pen CLI 渲染（1×，与节点几何对齐），缺 CLI 自动托管安装。
@@ -124,11 +125,11 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 ```
 figma_extract_flows(url)     # 交互流程 → .artemis/design/flows.json
 figma_gap_analysis(url)      # 资源缺口 → .artemis/design/gaps.json
-figma_generate_tests(url)    # 流程 → tests.{json,md} + tests.xlsx（含 taskDesc；有 strings.json 时附 i18n key；excelTemplate 套 .xlsx 模版）
-figma_import_assets()        # 缺失资源 → 按栈命名/目录写入（import-report.json；dryRun 预览）
+figma_generate_tests(url)    # 流程 → tests.{json,md} + tests.xlsx（含 taskDesc、前置假设；有 strings.json 时附 i18n key；excelTemplate 套 .xlsx 模版）
+figma_import_assets()        # 缺失资源 → 按栈命名/目录写入（PNG 默认倍率集；import-report.json；dryRun 预览）
 figma_export_brief(url)      # 编码事实包 → build-brief.{json,md}（tokens/组件/约定；scaffold 可出骨架）
 figma_import_tokens(url)     # 可选：颜色 → .artemis/design/tokens.json + 栈 token 文件（tokens 唯一性/裸色扫描）
-figma_import_strings(url)    # 可选：文案 → .artemis/design/strings.json + 资源文件（Android/Flutter/RN/Web/iOS；key 冻结/i18n）
+figma_import_strings(url)    # 可选：文案 → .artemis/design/strings.json + 资源文件（Android/Flutter/RN/Web/iOS；key 冻结/i18n；复数经 string-context.json）
 pen_inspect(path?)           # pen.dev 离线检查：.pen（开放 JSON）结构校验 + 摘要；无账号/网络需求
 pen_import_tokens(path?)     # pen 颜色变量 → tokens.json + 栈 token 文件（变量名即 token；modes/别名）
 pen_import_strings(path?)    # pen 文案 → strings.json + 资源文件（冻结 key；冲突经 resolutions.json）
@@ -149,14 +150,37 @@ pen_agent(prompt)            # agent 生成/改设计 → .pen（凭证自动复
 3. **手动逐个调用**（任意 MCP 客户端）：
    `figma_extract_flows` → `figma_gap_analysis` → `figma_generate_tests` → `figma_import_assets`(dryRun→正式) → `figma_export_brief`(+scaffold)。
 
+**确定性执行与取证（CLI suite）**：生成用例后可用 `node dist/cli.js suite` 跑完整测试闭环（长任务/CI 友好；退出码 0 全通过 / 1 用例失败 / 2 参数或执行错误、基线回归）：
+
+```bash
+node dist/cli.js suite run [--tests <path>] [--max N] [--stop-on-failure]
+                           [--device <serial>] [--app <pkg>] [--model Flash|Pro]
+                           [--no-api-errors] [--fail-on api-error]
+node dist/cli.js suite evidence <traceId> [--full-trace] [--out <dir>] [--no-save]
+node dist/cli.js suite api-errors <traceId> [--serial <s>] [--no-save] [--json]
+node dist/cli.js suite baseline save|compare --case <id> --step <n> --trace <id> \
+                           [--image post|pre] [--ignore x,y,w,h]... [--fail-on new|persisting|any]
+node dist/cli.js suite report [--limit N] [--case <id>]... [--out <dir>] [--no-sync]
+node dist/cli.js suite feedback [--min-failures N]
+```
+
+- `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/用例缺陷/未分类），失败附 `suite evidence <traceId>` 提示。
+- `evidence`：一次拿到失败项、崩溃签名、锚定失败步骤截图与可选设计差异引用（默认落 `.artemis/design/evidence/<traceId>/`）。
+- `api-errors`：按 trace 时间窗采集设备日志，匹配项目错误码注册表 `.artemis/design/error-codes.json`（`{codes:{"<code>":{match,handler?,expect?,handledPattern?}}}`），判定 `handled/unhandled/observed` 并落 `.artemis/traces/<traceId>/api-errors.json`；默认只作证据，`--fail-on api-error` 才让未处理错误判 FAIL。
+- `baseline`：设备对设备像素回归（last-known-good）；`--fail-on` 触发时退出码 2，可直接做 CI 门禁。
+- `report`：从运行台账导出 xlsx 结果页（含 API 错误/处理判定列）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）。
+- `feedback`：按屏幕/断言/数据/API 错误维度给出可追踪到 case/trace 的改进建议（只读，不自动改写生成物）。
+- 公共选项：`--project <dir>`（项目根，默认 cwd/`AOS_PROJECT_DIR`）、`--json`（机器可读输出）。
+
+
 前置：`FIGMA_ACCESS_TOKEN` 在项目 `.env`（或 `aos_configure` 写入）；CLI 拉起服务时如 `adb` 不在 PATH，可在客户端 env 设置 `ARTEMIS_ADB_PATH`（如 `~/Library/Android/sdk/platform-tools/adb`）。Figma REST 限流（如访客席位的 low 档）会**快速失败并返回 retry-after 提示**，不会长时间挂起；`AOS_FIGMA_RETRY_MAX_WAIT_MS`（默认 60s）与 `AOS_FIGMA_CACHE_TTL_MS`（默认 10min，0 关闭）可调。
 
 pen.dev 写回/导出/agent（`pen_export`/`pen_apply_tokens`/`pen_apply_strings`/`pen_agent`）前置：**无需手动安装**——pen CLI 缺失时自动安装到 `~/.aos/pen-cli`（Node ≥ 22.19、需网络；`AOS_PEN_NO_INSTALL=1` 关闭，`AOS_PEN_CLI_PATH`/`AOS_PEN_CLI_DIR`/`AOS_PEN_VERSION`、`AOS_PEN_TIMEOUT_MS` 默认 120s、`AOS_PEN_INSTALL_TIMEOUT_MS` 默认 600s 可调）；只需登录一次：`pen login`，或在 pen.dev 组织设置创建 `PEN_CLI_KEY` 写入项目 `.env`（自动透传子进程，不落日志）。`node dist/cli.js doctor` 显示 pen CLI 状态，`doctor --install-deps` 可预装。写回默认原位更新：先在临时文件上执行 `SetVariables`/`Update`，回读校验后才原子替换，失败时原文件保持不变；`dryRun:true` 只返回将执行的命令。`pen_agent` 的 agent 凭证自动复用 AOS active LLM 条目（只进子进程 env、不落日志）：DeepSeek 自动映射 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`（已实测）；Kimi/Moonshot、Z.AI/智谱、阿里云百炼 按官方文档映射各自 Anthropic 端点并使用 `ANTHROPIC_AUTH_TOKEN` + 模型 env（待真实 key 冒烟）；其他 provider 仅注入 `PEN_AGENT_API_KEY`，可用 `anthropicBaseUrl` 或 `AOS_PEN_ANTHROPIC_BASE_URL` 指定兼容端点。CLI 目前只识别 claude/codex/gemini 模型。离线四件套（`pen_inspect`/`pen_import_*`/`pen_export_brief`）不需要 pen CLI 与账号。
 
-**测试用例 Excel 导出**：`figma_generate_tests` 默认把用例写入 `.artemis/design/tests.xlsx`（每流程一行：用例名/页面链路/步骤/任务描述），`excelPath` 可改路径。要套用团队表格格式，传 `excelTemplate` 指向一个 `.xlsx` 模版：
+**测试用例 Excel 导出**：`figma_generate_tests` 默认把用例写入 `.artemis/design/tests.xlsx`（每流程一行：用例名/页面链路/前置假设/步骤/任务描述），`excelPath` 可改路径。要套用团队表格格式，传 `excelTemplate` 指向一个 `.xlsx` 模版：
 
 - 元数据占位符（任意单元格内可嵌入文字）：`{{meta.source}}`、`{{meta.generatedAt}}`、`{{counts.cases}}`、`{{counts.screens}}`、`{{counts.edges}}`。
-- 行模版：含以下任一占位符的那一行会按用例数复制（样式保留）并逐行填充：`{{index}}`、`{{case.name}}`、`{{case.screens}}`、`{{case.steps}}`、`{{case.taskDesc}}`；多 sheet 各自可用行模版。
+- 行模版：含以下任一占位符的那一行会按用例数复制（样式保留）并逐行填充：`{{index}}`、`{{case.name}}`、`{{case.screens}}`、`{{case.preconditions}}`、`{{case.steps}}`、`{{case.taskDesc}}`；多 sheet 各自可用行模版。
 - 未识别的占位符原样保留；模版缺少行级占位符会报错且不写盘；`save:false` 三份都不写。
 
 生成的任务描述会自动带上定位线索（Figma 文本优先、图层名兜底）与页面断言（目标页文本/子元素）：例如
@@ -241,7 +265,7 @@ node dist/cli.js doctor
 | `llm_models` | 厂商模型目录：`list` 看缓存，`refresh` 立即拉取 `GET {baseUrl}/models`（后台每 12h 自动刷新）；模型下线时自动修复并附 8 家国产厂商预设（`AOS_LLM_AUTO_REPAIR=0` 可关） |
 | `aos_configure` | 写入/更新 LLM（→ PG + 项目 `.env`）并激活；可只给 `vendor`（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）自动选当前模型；setup 引导入口 |
 | `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 就绪性 |
-| `aos_tasks` | 任务/调用统计（trace/状态/模型），含完成态同步 |
+| `aos_tasks` | 任务/调用统计（case/trace/状态/模型），含完成态同步与错误终态记录 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
 | `design_device_diff` | 设计 vs 真机差异（确定性）：设计源 Figma 节点或 `.pen`（`design:{source:"pen"}`，pen CLI 渲染）+ 截图（`live` 实时，或 `step` + `traceId`（`stepNumber` 可省略→失败证据自动检索）对比失败步骤，默认 post）→ 对齐（insets/ignoreRegions/降采样）→ 像素差异判定 + 设计节点几何分类（missing/extra/text/asset/position-size/color）→ 差异报告 + 标注图，落盘 `.artemis/design/diffs/<node>-<时间戳>/`；`dryRun` 只回计划 |
@@ -249,13 +273,13 @@ node dist/cli.js doctor
 | `figma_extract_flows` | 解析 Figma 原型交互 → 流程图（screens/edges/entryScreens，支持连续动作与 BACK），落盘 `.artemis/design/flows.json` |
 | `figma_gap_analysis` | 缺口分析：设计资源/色板 vs 项目现有资产/ tokens 文件，落盘 `.artemis/design/gaps.json` |
 | `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md` + `tests.xlsx`（可用 `excelPath`/`excelTemplate` 定制 Excel 输出与模版），内含可直接传给 `mobile_run_task` 的任务描述 |
-| `figma_import_assets` | 资源导入：按 gaps.json 从 Figma 导出缺失资源，按技术栈命名/目录幂等写入（dryRun 可预览）；**唯一性**：内容 sha256 去重（批次内 + 项目资产索引，重复项记 `duplicate_of`） |
+| `figma_import_assets` | 资源导入：按 gaps.json 从 Figma 导出缺失资源，按技术栈命名/目录幂等写入（dryRun 可预览）；PNG 默认按栈倍率集导出（Android `drawable-xhdpi/-xxhdpi`、Flutter `2.0x/3.0x`、iOS `.imageset`+Contents.json、RN `@2x/@3x`；`densities:false` 回退单文件 @2x）；**唯一性**：内容 sha256 去重（批次内 + 项目资产索引，重复项记 `duplicate_of`） |
 | `figma_export_brief` | 构建简报：tokens/路由/组件变体/流程概览/缺口/栈约定 → `build-brief.{json,md}`；`scaffold` 可选按栈生成组件骨架（幂等） |
 | `figma_import_tokens` | 颜色 token 导入：Figma 颜色（含 alpha）→ `.artemis/design/tokens.json`（DTCG，modes 预留）+ 栈 token 文件（Android/Flutter/RN/Web）；裸色扫描 + enforcement；人工命名 `token-names.json` |
-| `figma_import_strings` | 文案 i18n 导入：Figma 文本 → 冻结 key（改名不改 key）→ `.artemis/design/strings.json` + 资源文件（Android `strings.xml` / Flutter `arb` / RN·Web JSON / iOS `.strings`）；复用/迁移/source_changed/unused/硬编码扫描；conflict 经 `resolutions.json` 闭环 |
+| `figma_import_strings` | 文案 i18n 导入：Figma 文本 → 冻结 key（改名不改 key）→ `.artemis/design/strings.json` + 资源文件（Android `strings.xml` / Flutter `arb` / RN·Web JSON / iOS `.strings`+`.stringsdict`）；复用/迁移/source_changed/unused/硬编码扫描；conflict 经 `resolutions.json` 闭环；复数经 `string-context.json` 人工确认（Android `<plurals>`、Flutter/RN/Web ICU、iOS `.stringsdict`） |
 | `pen_inspect` | pen.dev 离线检查：解析 `.pen`（开放 JSON，支持注释）→ 结构校验（id 唯一/无斜杠、ref 与 `$变量` 可解析）+ 摘要（屏幕/组件/实例/文案/变量与主题/图片资产与缺失）；无账号/网络需求；`save:true` 落盘 `.artemis/design/pen/summary.json` |
 | `pen_import_tokens` | pen 颜色变量 → `.artemis/design/tokens.json`（DTCG；变量名即 token，modes 记录主题取值，`$别名` → aliasOf）+ 栈 token 文件（new/updated/unchanged/unused、裸色扫描、enforcement）；完全离线 |
-| `pen_import_strings` | pen 文案 → `.artemis/design/strings.json` + 资源文件（Android/Flutter/RN/Web/iOS；冻结 key、冲突经 `resolutions.json`、source_changed/unused/硬编码扫描）；完全离线 |
+| `pen_import_strings` | pen 文案 → `.artemis/design/strings.json` + 资源文件（Android/Flutter/RN/Web/iOS；冻结 key、冲突经 `resolutions.json`、source_changed/unused/硬编码扫描；复数同 Figma 侧经 `string-context.json`）；完全离线 |
 | `pen_export_brief` | pen 构建简报：颜色/字阶/间距/圆角/阴影、屏幕与建议路由、可复用组件、按栈约定 → `build-brief.{json,md}`；`scaffold` 可选生成组件骨架；完全离线 |
 | `pen_export` | headless CLI 渲染导出：`.pen` → PNG/JPEG/WEBP/PDF（默认 `.artemis/design/pen/`；`dryRun` 看命令）；pen CLI 缺失时自动安装，需已登录 |
 | `pen_apply_tokens` | CLI 写回：`tokens.json`（含 modes 主题）→ `.pen` `SetVariables`；**原位更新**（临时文件→回读校验→原子替换，失败不动原文件），`out` 可另存 |
@@ -279,7 +303,7 @@ node dist/cli.js doctor
 
 ## PostgreSQL 数据模型（v1）
 
-`projects`（root_path 唯一 / figma_token）、`project_llms`（name/base_url/model/api_key/is_active，应用层保证单 active）、`task_stats`（trace/model/status/时间）、`llm_model_cache`（厂商模型列表缓存：cache_key/base_url/models/fetched_at/last_error）。详见 DESIGN.md §4.5。
+`projects`（root_path 唯一 / figma_token）、`project_llms`（name/base_url/model/api_key/is_active，应用层保证单 active）、`task_stats`（case/trace/model/profile/status/时间）、`llm_model_cache`（厂商模型列表缓存：cache_key/base_url/models/fetched_at/last_error）。详见 DESIGN.md §4.5。
 
 ## 仓库布局
 
@@ -305,7 +329,10 @@ AOS-ARTEMIS/
 
 ```bash
 npm run build       # tsc
-npm test            # build + node:test（56 个测试：配置/扫描/存储[pg-mem]/代理/工具/协议冒烟）
+npm test            # build + node:test（全量用例；配置/扫描/存储[pg-mem]/代理/工具/设计流水线/协议冒烟）
+npm run test:file -- test/figma.test.js   # 单文件（先构建，不会跑旧 dist）
+npm run test:name -- "<pattern>"          # 按名称过滤（先构建）
+npm run test:coverage                     # Node 内置覆盖率，无第三方依赖
 npm run lint        # eslint
 node dist/cli.js serve   # 直接以 stdio 跑 MCP server
 ```

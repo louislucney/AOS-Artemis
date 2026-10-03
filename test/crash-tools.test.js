@@ -4,23 +4,15 @@ import path from "node:path";
 import test from "node:test";
 
 import { aosCrashes } from "../dist/tools/crash.js";
+import { logcatTime } from "./fixtures/logcat.mjs";
 import { loadTestRuntime, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
-
-function fmt(date) {
-  const pad = (value, width = 2) => String(value).padStart(width, "0");
-  return (
-    `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.` +
-    `${pad(date.getMilliseconds(), 3)}`
-  );
-}
 
 function crashText(date, pkg = "com.example.app") {
   return [
-    `${fmt(date)}  1000  1000 E AndroidRuntime: FATAL EXCEPTION: main`,
-    `${fmt(date)}  1000  1000 E AndroidRuntime: Process: ${pkg}, PID: 1000`,
-    `${fmt(date)}  1000  1000 E AndroidRuntime: java.lang.RuntimeException: boom`,
-    `${fmt(date)}  1000  1000 E AndroidRuntime: \tat ${pkg}.Main.run(Main.kt:1)`
+    `${logcatTime(date)}  1000  1000 E AndroidRuntime: FATAL EXCEPTION: main`,
+    `${logcatTime(date)}  1000  1000 E AndroidRuntime: Process: ${pkg}, PID: 1000`,
+    `${logcatTime(date)}  1000  1000 E AndroidRuntime: java.lang.RuntimeException: boom`,
+    `${logcatTime(date)}  1000  1000 E AndroidRuntime: \tat ${pkg}.Main.run(Main.kt:1)`
   ].join("\n");
 }
 

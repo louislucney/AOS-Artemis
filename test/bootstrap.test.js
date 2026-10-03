@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir } from "./helpers.js";
 
 import {
   depsStatus,
@@ -18,7 +19,7 @@ import {
 const silent = () => {};
 
 function tmp(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return makeTempDir(prefix);
 }
 
 /** Fake venv layout matching the current platform (Scripts/ vs bin/). */

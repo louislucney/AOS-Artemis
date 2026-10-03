@@ -4,6 +4,7 @@ import { runDepsCommand } from "./deps-build.js";
 import { runHttpServer, type HttpServerOptions } from "./http-server.js";
 import { runInstall } from "./install.js";
 import { runServer } from "./server.js";
+import { runSuiteCommand } from "./suite-command.js";
 
 function printUsage(): void {
   console.log(`aos-mcp — AOS × ARTEMIS unified MCP service
@@ -21,6 +22,10 @@ Usage:
                     Build the artemis dependency bundle (cross-platform, per OS/arch):
                     dist-deps/artemis-deps-<os>-<arch>.tar.gz + .sha256
                     options: --out DIR  --repo DIR  --work DIR  --skip-sync  --uv PATH
+  aos-mcp suite <run|evidence|baseline|report|feedback> [options]
+                    Deterministic test loop over .artemis/design/tests.json:
+                    run | evidence <traceId> | baseline save|compare | report | feedback
+                    (see "aos-mcp suite help" for options; exit codes: 0 ok / 1 test failure / 2 error)
 
 install options:
   --project <dir>        Target project (default: cwd)
@@ -73,6 +78,11 @@ void (async () => {
     }
     case "deps": {
       const code = await runDepsCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "suite": {
+      const code = await runSuiteCommand(rest);
       process.exit(code);
       break;
     }

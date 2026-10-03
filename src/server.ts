@@ -12,17 +12,14 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { loadProject } from "./config/loader.js";
 import { configDirAbs } from "./artemis/assembly.js";
+import { traceIdOf } from "./artemis/task-result.js";
 import { ensureArtemisDeps, resolveDepsSource } from "./artemis/bootstrap.js";
 import { createProjectStore } from "./db/index.js";
 import { configureLogging, installCrashHandlers } from "./log.js";
 import { startBridge, stopBridge } from "./figma/bridge.js";
 import { figmaTools, handleFigmaTool, isFigmaTool } from "./figma/registry.js";
-import {
-  figmaExtractFlows,
-  figmaGapAnalysis,
-  type ExtractFlowsArgs,
-  type GapAnalysisArgs
-} from "./figma/flows.js";
+import { figmaExtractFlows, type ExtractFlowsArgs } from "./figma/flows.js";
+import { figmaGapAnalysis, type GapAnalysisArgs } from "./figma/gaps.js";
 import { figmaGenerateTests, type GenerateTestsArgs } from "./figma/test-gen.js";
 import { figmaImportAssets, type ImportAssetsArgs } from "./figma/import.js";
 import { figmaImportStrings, type ImportStringsArgs } from "./figma/import-strings.js";
@@ -284,13 +281,17 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_import_assets",
     description:
-      "资源导入：按 gaps.json（或 ids 过滤）从 Figma 导出缺失资源（SVG 内联 / PNG 下载），按项目技术栈命名与首选目录幂等写入（同内容跳过；不同需 overwrite）；支持 dryRun 预览；落盘 .artemis/design/import-report.json。",
+      "资源导入：按 gaps.json（或 ids 过滤）从 Figma 导出缺失资源（SVG 内联 / PNG 下载），按项目技术栈命名与首选目录幂等写入（同内容跳过；不同需 overwrite）；PNG 默认按栈倍率集导出（Android drawable-xhdpi/-xxhdpi、Flutter 2.0x/3.0x、iOS imageset、RN @2x/@3x；densities:false 回退单文件 @2x）；支持 dryRun 预览；落盘 .artemis/design/import-report.json。",
     schema: z.object({
       url: z.string().optional().describe("Figma URL（默认取 gaps.json 的 sourceUrl）"),
       gapPath: z.string().optional().describe("自定义 gaps.json 路径（相对项目根）"),
       destDir: z.string().optional().describe("覆盖目标目录（默认按栈档案/建议目录）"),
       ids: z.array(z.string()).optional().describe("只导入指定 Figma 节点 id（缺省=全部缺失项）"),
       format: z.enum(["svg", "png"]).optional().describe("导出格式，默认 svg"),
+      densities: z
+        .boolean()
+        .optional()
+        .describe("PNG 是否按栈倍率集导出，默认 true；false 回退单文件 @2x"),
       overwrite: z.boolean().optional().describe("同名不同内容时是否覆盖，默认 false（跳过）"),
       dryRun: z.boolean().optional().describe("仅预览不写文件，默认 false"),
       save: z.boolean().optional().describe("是否落盘 import-report.json，默认 true")
@@ -473,28 +474,6 @@ function stripSchemaMeta(schema: unknown): unknown {
   return schema;
 }
 
-function extractTraceId(result: CallToolResult): string | null {
-  const structured = (result as { structuredContent?: unknown }).structuredContent;
-  const candidates: unknown[] = [structured];
-  for (const item of result.content ?? []) {
-    if (item.type === "text") {
-      try {
-        candidates.push(JSON.parse(item.text));
-      } catch {
-        const match = /trace[_ -]?id["'\s:=]+([0-9a-fA-F-]{8,})/.exec(item.text);
-        if (match) return match[1]!;
-      }
-    }
-  }
-  for (const candidate of candidates) {
-    if (candidate && typeof candidate === "object") {
-      const value = (candidate as { trace_id?: unknown }).trace_id;
-      if (typeof value === "string" && value.length > 0) return value;
-    }
-  }
-  return null;
-}
-
 /** Build a fully wired MCP Server for one project runtime (stdio or HTTP). */
 export function createServerForRuntime(runtime: Runtime | null, initError: string | null): Server {
   const server = new Server(
@@ -589,13 +568,12 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
 
     try {
       const result = await runtime.proxy.callTool(name, (args ?? {}) as Record<string, unknown>);
-      if (name === "mobile_run_task" && result.isError !== true) {
-        const traceId = extractTraceId(result);
+      if (name === "mobile_run_task") {
         const taskArgs = (args ?? {}) as Record<string, unknown>;
-        void runtime.recordTaskSubmission({
-          traceId: traceId ?? "unknown",
+        void runtime.recordTaskResult({
+          isError: result.isError === true,
+          traceId: traceIdOf(result),
           model: typeof taskArgs.model === "string" ? taskArgs.model : null,
-          profile: typeof taskArgs.model === "string" ? taskArgs.model : null,
           taskDesc: typeof taskArgs.task_desc === "string" ? taskArgs.task_desc : null,
           lockedAppPackage:
             typeof taskArgs.locked_app_package === "string" ? taskArgs.locked_app_package : null

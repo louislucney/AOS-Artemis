@@ -4,6 +4,7 @@ import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { fetchFigmaRenderPng } from "../figma/render.js";
+import { parseJsonObject } from "../artemis/task-result.js";
 import { errorMessage } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
@@ -32,12 +33,8 @@ export function extractDeviceImage(result: CallToolResult): DeviceImage | null {
 
   for (const text of texts) {
     const candidates: string[] = [];
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      collectPathStrings(parsed, candidates);
-    } catch {
-      /* plain text below */
-    }
+    const parsed = parseJsonObject(text);
+    if (parsed) collectPathStrings(parsed, candidates);
     const regex =
       /(file:\/\/[^\s"'`]+|[A-Za-z]:[\\/][^\s"'`]+\.(?:png|jpe?g|webp)|\/[^\s"'`]+\.(?:png|jpe?g|webp))/gi;
     for (const match of text.matchAll(regex)) candidates.push(match[1]!);

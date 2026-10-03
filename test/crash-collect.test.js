@@ -4,22 +4,14 @@ import test from "node:test";
 
 import { AdbCrashCollector, resolveAdbPath } from "../dist/crash/collect.js";
 
+import { logcatTime } from "./fixtures/logcat.mjs";
+
 function ok(stdout = "") {
   return { code: 0, stdout, stderr: "" };
 }
 
 function fail(stderr = "", error) {
   return { code: 1, stdout: "", stderr, error };
-}
-
-function fmt(ms) {
-  const date = new Date(ms);
-  const pad = (value, width = 2) => String(value).padStart(width, "0");
-  return (
-    `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.` +
-    `${pad(date.getMilliseconds(), 3)}`
-  );
 }
 
 function makeExec({
@@ -110,7 +102,7 @@ test("collect: empty crash buffer falls back to the main buffer with -T", async 
   assert.equal(result.source, "main-buffer");
   const mainCall = calls.find((call) => call.args.includes("-T"));
   assert.ok(mainCall);
-  assert.equal(mainCall.args[mainCall.args.indexOf("-T") + 1], fmt(windowStartMs - 5000));
+  assert.equal(mainCall.args[mainCall.args.indexOf("-T") + 1], logcatTime(new Date(windowStartMs - 5000)));
 });
 
 test("collect: a failed crash buffer still falls back to the main buffer", async () => {

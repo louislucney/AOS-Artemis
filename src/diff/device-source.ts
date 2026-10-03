@@ -1,7 +1,11 @@
 import fs from "node:fs";
 
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-
+import {
+  resultPayload,
+  resultText,
+  taskStatusOf,
+  type TaskStatus
+} from "../artemis/task-result.js";
 import type { Runtime } from "../runtime.js";
 import { extractDeviceImage } from "../tools/composite.js";
 
@@ -40,38 +44,10 @@ export async function captureLiveScreenshot(runtime: Runtime, serial?: string): 
   return { bytes: Buffer.from(extracted.data, "base64"), note: extracted.note };
 }
 
-function textContent(result: CallToolResult): string {
-  let text = "";
-  for (const item of result.content ?? []) {
-    if (item.type === "text") text += `${item.text}\n`;
-  }
-  return text;
-}
-
-function parsePayload(result: CallToolResult): Record<string, unknown> | null {
-  const text = textContent(result).trim();
-  if (!text) return null;
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function failureQueryOf(payload: Record<string, unknown> | null): string | null {
-  const summary = payload?.test_summary;
-  if (!summary || typeof summary !== "object") return null;
-  const failed = (summary as Record<string, unknown>).failed_items;
-  if (!Array.isArray(failed) || failed.length === 0) return null;
-  const first = failed[0];
-  if (!first || typeof first !== "object") return null;
-  const record = first as Record<string, unknown>;
-  const evidence = typeof record.evidence === "string" ? record.evidence.trim() : "";
-  const itemText = typeof record.item_text === "string" ? record.item_text.trim() : "";
-  const query = (evidence || itemText).replace(/\s+/g, " ").slice(0, 160);
+function failureQueryOf(status: TaskStatus | null): string | null {
+  const first = status?.testSummary?.failedItems[0];
+  if (!first) return null;
+  const query = (first.evidence ?? first.itemText ?? "").replace(/\s+/g, " ").slice(0, 160);
   return query || null;
 }
 
@@ -86,9 +62,9 @@ function stepCandidatesOf(resultsText: string): StepAnchorCandidate[] {
   return candidates;
 }
 
-function upstreamError(prefix: string, payload: Record<string, unknown>): string {
-  const message = typeof payload.message === "string" ? ` - ${payload.message}` : "";
-  return `${prefix}：${String(payload.error)}${message}`;
+function upstreamError(prefix: string, status: TaskStatus): string {
+  const message = status.message ? ` - ${status.message}` : "";
+  return `${prefix}：${status.error}${message}`;
 }
 
 export async function resolveTraceStepAnchor(runtime: Runtime, traceId: string): Promise<StepAnchor> {
@@ -96,19 +72,19 @@ export async function resolveTraceStepAnchor(runtime: Runtime, traceId: string):
     action: "status",
     trace_id: traceId
   });
-  const statusPayload = parsePayload(statusResult);
-  if (statusPayload && typeof statusPayload.error === "string") {
-    throw new Error(upstreamError("读取失败证据失败", statusPayload));
+  const statusPayload = resultPayload(statusResult);
+  const statusInfo = taskStatusOf(statusPayload);
+  if (statusInfo?.error && !statusInfo.status) {
+    throw new Error(upstreamError("读取失败证据失败", statusInfo));
   }
-  const query = failureQueryOf(statusPayload);
+  const query = failureQueryOf(statusInfo);
   if (!query) {
-    const summary = statusPayload?.test_summary;
-    if (summary && typeof summary === "object") {
+    if (statusInfo?.testSummary) {
       throw new Error(
         `trace ${traceId} 的失败项为空（任务可能已通过）；请显式传 device.stepNumber 或确认失败断言。`
       );
     }
-    const status = typeof statusPayload?.status === "string" ? statusPayload.status : "unknown";
+    const status = statusInfo?.status ?? "unknown";
     throw new Error(
       `trace ${traceId} 没有失败证据（status=${status}；Flash 任务没有 run_outcome，或任务运行中/无 check items）；请显式传 device.stepNumber（可用 mobile_inspect_trace 查看步骤）。`
     );
@@ -119,9 +95,10 @@ export async function resolveTraceStepAnchor(runtime: Runtime, traceId: string):
     query,
     max_results: 5
   });
-  const searchPayload = parsePayload(searchResult);
-  if (searchPayload && typeof searchPayload.error === "string") {
-    throw new Error(upstreamError("步骤检索失败", searchPayload));
+  const searchPayload = resultPayload(searchResult);
+  const searchInfo = taskStatusOf(searchPayload);
+  if (searchInfo?.error) {
+    throw new Error(upstreamError("步骤检索失败", searchInfo));
   }
   const resultsText = typeof searchPayload?.results === "string" ? searchPayload.results : "";
   const candidates = stepCandidatesOf(resultsText);
@@ -150,15 +127,16 @@ export async function captureStepScreenshot(
     trace_id: request.traceId,
     step_number: request.stepNumber
   });
-  const payload = parsePayload(result);
+  const payload = resultPayload(result);
   if (!payload) {
-    const text = textContent(result).trim();
+    const text = resultText(result).trim();
     throw new Error(
       `步骤截图获取失败：无法解析上游返回${text ? `（${text.slice(0, 200)}）` : ""}；请确认 traceId 与 stepNumber 是否正确、任务是否已产生轨迹。`
     );
   }
-  if (typeof payload.error === "string") {
-    throw new Error(`${upstreamError("步骤截图获取失败", payload)}；请核对 traceId/stepNumber 后重试。`);
+  const statusInfo = taskStatusOf(payload);
+  if (statusInfo?.error) {
+    throw new Error(`${upstreamError("步骤截图获取失败", statusInfo)}；请核对 traceId/stepNumber 后重试。`);
   }
   const key = request.image === "post" ? "after_screenshot" : "before_screenshot";
   const filePath = pathOf(payload[key]);

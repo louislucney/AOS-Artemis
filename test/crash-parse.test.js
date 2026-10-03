@@ -3,18 +3,7 @@ import test from "node:test";
 
 import { parseLogcatCrashes } from "../dist/crash/parse.js";
 
-function fmt(date) {
-  const pad = (value, width = 2) => String(value).padStart(width, "0");
-  return (
-    `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.` +
-    `${pad(date.getMilliseconds(), 3)}`
-  );
-}
-
-function line(date, level, tag, message, pid = 1000) {
-  return `${fmt(date)}  ${pid}  ${pid} ${level} ${tag}: ${message}`;
-}
+import { logcatLine as line } from "./fixtures/logcat.mjs";
 
 function javaLine(date, message) {
   return line(date, "E", "AndroidRuntime", message);
