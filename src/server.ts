@@ -261,7 +261,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_generate_tests",
     description:
-      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程，生成可直接传给 mobile_run_task 的自然语言任务描述；落盘 tests.json + tests.md + tests.xlsx（Excel 可用 excelPath 指定路径、excelTemplate 指定 .xlsx 模版）。",
+      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程，生成可直接传给 mobile_run_task 的自然语言任务描述；默认（save !== false）三份同时落盘：tests.json + tests.md + tests.xlsx（响应 savedTo 给出三个路径；Excel 可用 excelPath 指定路径、excelTemplate 指定 .xlsx 模版），仅 save:false 才不写任何文件。",
     schema: z.object({
       url: z.string().optional().describe("Figma URL（可选；不传则用 flows.json）"),
       flowsPath: z.string().optional().describe("自定义 flows.json 路径（相对项目根）"),

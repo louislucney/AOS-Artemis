@@ -1,11 +1,25 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const AOS_MCP_VERSION = "0.1.0";
 
 /** stderr + file logger (see src/log.ts) — stdout is reserved for the MCP protocol. */
 export { log, logDebug, logError, logWarn } from "./log.js";
+
+const BUILD_STALE_TOLERANCE_MS = 2000;
+
+/** True when the module on disk is newer than this process (ESM loads code at
+ * start, so a rebuilt `dist/` requires restarting the client to take effect). */
+export function isBuildStale(moduleUrl: string, startedAtMs: number): boolean {
+  try {
+    const file = fileURLToPath(moduleUrl);
+    return fs.statSync(file).mtimeMs > startedAtMs + BUILD_STALE_TOLERANCE_MS;
+  } catch {
+    return false;
+  }
+}
 
 export function writeFileAtomic(filePath: string, content: string | Buffer): void {
   const dir = path.dirname(filePath);

@@ -181,6 +181,14 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
     version: AOS_MCP_VERSION,
     configPath: runtime.project.configPath,
     rootDir: runtime.project.rootDir,
+    build: {
+      module: runtime.build.moduleUrl,
+      startedAt: new Date(runtime.build.startedAtMs).toISOString(),
+      stale: runtime.build.stale,
+      ...(runtime.build.stale
+        ? { note: "dist/ 较本进程新：重启客户端 MCP 会话以加载最新构建。" }
+        : {})
+    },
     project: project
       ? {
           id: project.id,

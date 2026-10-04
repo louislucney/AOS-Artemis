@@ -48,6 +48,8 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 - 密钥只存项目 `.env`（或按产品要求在 PostgreSQL）；工具响应只回 masked 预览（`maskSecret`）；日志不落 key。
 - 用户可见文案与文档用中文；代码标识符用英文。代码不加注释，除非补丁标记（`PATCH (aos-mcp)`）。
 - 测试跑的是 `dist/`：改动后先 `npm run build` 再 `node --test`。
+- **重建后必须重启**：`dist/` 变化后当前 MCP 进程仍执行旧代码（ESM 启动时加载）；重启客户端会话加载新构建，`aos_status.build.stale=true` 会提示（启动日志同时 WARN）。
+- **生成物三件套是强制的**：`figma_generate_tests` 在 `save !== false` 时 tests.json + tests.md + tests.xlsx 同时落盘（响应 `savedTo` 三个路径；模版渲染失败则三份都不写）；"只有 md" 不是预期行为。
 
 ## 关键机制速查
 

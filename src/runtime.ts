@@ -50,6 +50,7 @@ import {
 } from "./projects/scan.js";
 import {
   errorMessage,
+  isBuildStale,
   isProcessAlive,
   logWarn,
   processCmdline,
@@ -106,6 +107,7 @@ export class Runtime {
   readonly crashStore: CrashIndexStore;
   readonly crashScanner: CrashScanner;
   readonly modelCatalog: ModelCatalog;
+  readonly build: { moduleUrl: string; startedAtMs: number; stale: boolean };
 
   private readonly baseEnv: NodeJS.ProcessEnv;
   private scanResult: EnvScanResult;
@@ -125,6 +127,14 @@ export class Runtime {
     this.baseEnv = options.baseEnv ?? process.env;
     this.configDirAbs = configDirAbs(project.config, project.rootDir);
     this.state = new StateStore(path.join(this.configDirAbs, "state.json"));
+    const startedAtMs = Date.now() - Math.round(process.uptime() * 1000);
+    const stale = isBuildStale(import.meta.url, startedAtMs);
+    this.build = { moduleUrl: import.meta.url, startedAtMs, stale };
+    if (stale) {
+      logWarn(
+        "检测到 dist/ 较本进程更新：当前进程仍在运行旧构建，请重启客户端 MCP 会话后生效（aos_status.build.stale）"
+      );
+    }
     this.scanResult = scanProjectEnv(project.resolver);
     // Model-catalog knobs read project .env first, then the process env
     // (client-config env wins so fleet-wide policy can override).
