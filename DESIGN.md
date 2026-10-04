@@ -854,3 +854,10 @@ llm_switch(name, force):
 - **报告/反馈**：`suite report` xlsx 追加「API 错误 / 处理判定」两列（`CODE(verdict ×n)`、`CODE=handler|expect`），JUnit failure 内容追加 `api_error: CODE verdict=... handler=...`；`suite feedback` 对重复未处理错误输出 `kind:"api"` 建议（可追踪 case/trace）。
 - **手动复算**：`node dist/cli.js suite api-errors <traceId> [--serial <s>] [--no-save] [--json]`（注册表缺失 → 退出 2；无状态/采集失败 → 1；成功 → 0）。
 - **非目标**：抓包/代理/HAR、响应体断言、非 Android 栈、按代码自动扫描错误码（后续）。
+
+### 13.37 实施记录（install CLI 参数校验）
+
+> 实施于 2026-10-02；`src/install.ts`；测试 `test/install.test.js` +2（全量 414 例通过）。
+
+- `install --help/-h` → 打印 `installUsage()` 并退出 0，**不写任何文件**；未知 `--flag`、非法 `--targets`（未知 target 名）、非法 `--mode`、缺值参数（`--project/--targets/--container/--url/--service`）→ `参数错误: …` 并退出 1。
+- 修复背景：此前未知参数被 `default: break` 静默忽略，`install --help` 会按默认 `targets=全部` 执行一次完整安装（写四份客户端配置）。

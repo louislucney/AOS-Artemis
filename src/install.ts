@@ -17,6 +17,7 @@ export interface InstallOptions {
   url?: string;
   serviceEntry?: string;
   force?: boolean;
+  help?: boolean;
   log?: (line: string) => void;
 }
 
@@ -36,7 +37,10 @@ function defaultServiceEntry(): string {
 }
 
 export function parseInstallArgs(argv: string[], defaults: InstallOptions = {}): Required<
-  Pick<InstallOptions, "projectDir" | "targets" | "mode" | "container" | "url" | "serviceEntry" | "force">
+  Pick<
+    InstallOptions,
+    "projectDir" | "targets" | "mode" | "container" | "url" | "serviceEntry" | "force" | "help"
+  >
 > {
   const options = {
     projectDir: defaults.projectDir ?? process.cwd(),
@@ -45,57 +49,92 @@ export function parseInstallArgs(argv: string[], defaults: InstallOptions = {}):
     container: defaults.container ?? "aos-mcp",
     url: defaults.url ?? "http://127.0.0.1:8765",
     serviceEntry: defaults.serviceEntry ?? defaultServiceEntry(),
-    force: defaults.force ?? false
+    force: defaults.force ?? false,
+    help: defaults.help ?? false
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     switch (arg) {
+      case "--help":
+      case "-h":
+        options.help = true;
+        break;
       case "--project": {
         const value = argv[++index];
-        if (value) options.projectDir = path.resolve(value);
+        if (!value) throw new Error("--project 需要值");
+        options.projectDir = path.resolve(value);
         break;
       }
       case "--targets": {
         const value = argv[++index];
-        if (value) {
-          options.targets = value
-            .split(",")
-            .map((item) => item.trim())
-            .filter((item): item is InstallTarget =>
-              (INSTALL_TARGETS as readonly string[]).includes(item)
-            );
+        if (!value) throw new Error("--targets 需要值");
+        const requested = value
+          .split(",")
+          .map((item) => item.trim())
+          .filter((item) => item !== "");
+        const invalid = requested.filter(
+          (item) => !(INSTALL_TARGETS as readonly string[]).includes(item)
+        );
+        if (invalid.length > 0) {
+          throw new Error(`未知 target: ${invalid.join(", ")}（可选: ${INSTALL_TARGETS.join(", ")}）`);
         }
+        options.targets = requested as InstallTarget[];
         break;
       }
       case "--mode": {
         const value = argv[++index];
-        if (value === "docker" || value === "local" || value === "http") options.mode = value;
+        if (value !== "docker" && value !== "local" && value !== "http") {
+          throw new Error(`未知 mode: ${value ?? "(缺值)"}（可选: local, docker, http）`);
+        }
+        options.mode = value;
         break;
       }
       case "--container": {
         const value = argv[++index];
-        if (value) options.container = value;
+        if (!value) throw new Error("--container 需要值");
+        options.container = value;
         break;
       }
       case "--url": {
         const value = argv[++index];
-        if (value) options.url = value;
+        if (!value) throw new Error("--url 需要值");
+        options.url = value;
         break;
       }
       case "--service": {
         const value = argv[++index];
-        if (value) options.serviceEntry = path.resolve(value);
+        if (!value) throw new Error("--service 需要值");
+        options.serviceEntry = path.resolve(value);
         break;
       }
       case "--force":
         options.force = true;
         break;
       default:
-        break;
+        throw new Error(`未知参数 ${arg}（用 --help 查看用法）`);
     }
   }
   return options;
+}
+
+export function installUsage(): string {
+  return [
+    "aos-mcp install — 为项目写入 MCP 客户端配置",
+    "",
+    "Usage:",
+    "  aos-mcp install [options]",
+    "",
+    "options:",
+    "  --project <dir>            目标项目（默认 cwd）",
+    `  --targets <list>           逗号列表: ${INSTALL_TARGETS.join(",")}（默认全部）`,
+    "  --mode local|docker|http   （默认 local）",
+    "  --container <name>         docker 模式容器名（默认 aos-mcp）",
+    "  --url <base>               http 模式基址（默认 http://127.0.0.1:8765）",
+    "  --service <path>           local 模式服务入口（默认本安装 dist/index.js）",
+    "  --force                    覆盖已有但不同的 aos 条目",
+    "  -h, --help                 显示本帮助"
+  ].join("\n");
 }
 
 function buildServerEntry(options: {
@@ -275,6 +314,11 @@ export function runInstall(argv: string[], defaults: InstallOptions = {}): numbe
   } catch (error) {
     log(`参数错误: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
+  }
+
+  if (options.help) {
+    log(installUsage());
+    return 0;
   }
 
   if (!fs.existsSync(options.projectDir)) {

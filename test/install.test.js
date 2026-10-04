@@ -191,3 +191,36 @@ test("install docker: Codex snippet keeps command out of args", () => {
   assert.ok(args.includes("aos-mcp-test"));
 });
 
+
+test("install --help: prints usage, writes nothing, exits 0", () => {
+  const dir = makeTempProject({});
+  const logs = [];
+  const code = runInstall(["--project", dir, "--help"], { log: (line) => logs.push(line) });
+  assert.equal(code, 0);
+  assert.ok(logs.some((line) => line.includes("Usage:")));
+  assert.ok(logs.some((line) => line.includes("--targets")));
+  assert.equal(fs.existsSync(path.join(dir, "opencode.json")), false);
+  assert.equal(fs.existsSync(path.join(dir, ".mcp.json")), false);
+  assert.equal(fs.existsSync(path.join(dir, ".cursor")), false);
+});
+
+test("install: unknown flags and invalid values fail fast without writing", () => {
+  const dir = makeTempProject({});
+  const logs = [];
+  const log = (line) => logs.push(line);
+
+  assert.equal(runInstall(["--project", dir, "--bogus"], { log }), 1);
+  assert.ok(logs.some((line) => line.includes("未知参数 --bogus")));
+
+  assert.equal(runInstall(["--project", dir, "--targets", "claude,foo"], { log }), 1);
+  assert.ok(logs.some((line) => line.includes("未知 target: foo")));
+
+  assert.equal(runInstall(["--project", dir, "--mode", "cloud"], { log }), 1);
+  assert.ok(logs.some((line) => line.includes("未知 mode: cloud")));
+
+  assert.equal(runInstall(["--project"], { log }), 1);
+  assert.ok(logs.some((line) => line.includes("--project 需要值")));
+
+  assert.equal(fs.existsSync(path.join(dir, "opencode.json")), false);
+  assert.equal(fs.existsSync(path.join(dir, ".mcp.json")), false);
+});

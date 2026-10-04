@@ -201,6 +201,7 @@ pen.dev 写回/导出/agent（`pen_export`/`pen_apply_tokens`/`pen_apply_strings
 
 ```bash
 node dist/cli.js install                         # 当前项目，四种客户端，local 模式
+node dist/cli.js install --help                  # 查看选项；未知参数/非法值会报错退出（不再静默按默认全客户端执行）
 node dist/cli.js install --mode docker --container aos-mcp
 node dist/cli.js install --mode http --url http://10.0.0.5:8765
 node dist/cli.js install --targets claude,cursor,opencode,vscode --force
