@@ -41,7 +41,13 @@ export interface FailureInput {
   apiErrors?: ApiErrorSignal[];
 }
 
-const ENVIRONMENT_RESET_REASONS = new Set(["adb-not-found", "device-offline", "timeout", "ios-unsupported"]);
+const ENVIRONMENT_RESET_REASONS = new Set([
+  "adb-not-found",
+  "device-offline",
+  "timeout",
+  "ios-unsupported",
+  "launch-failed"
+]);
 const ENVIRONMENT_PATTERN =
   /(adb|device\s+(offline|unauthorized|not\s+found)|no\s+devices?|emulator|设备(离线|未授权|未连接|不可用|不存在)|无可用设备|没有可用设备|找不到设备)/i;
 const LOGIN_PATTERN = /(登录|登陆|log\s?in|sign\s?in|账号|account|credentials?)/i;

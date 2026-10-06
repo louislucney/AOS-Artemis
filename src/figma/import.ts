@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { restExportImage } from "../vendor/design-context-bridge/figma-rest/resolve.js";
-import { formatAssetFilename, detectProjectStacks, primaryProfile, type StackProfile } from "../projects/stack.js";
+import { formatAssetFilename, detectProjectStacks, primaryProfile, skippedStacksWarning, type StackProfile } from "../projects/stack.js";
 import { DEFAULT_ASSET_GLOBS, walkProjectFiles } from "./gaps.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
@@ -30,6 +30,7 @@ export interface ImportPlanEntry {
   variant?: string;
   /** iOS `Contents.json` image filenames (only for `role: "contents"`). */
   contentsFiles?: Array<{ filename: string; scale: number }>;
+  contentsVector?: boolean;
 }
 
 export type ImportStatus =
@@ -133,15 +134,25 @@ function densityPlan(profile: StackProfile | null, dir: string, filename: string
   }
 }
 
-function renderIosContents(files: Array<{ filename: string; scale: number }>): string {
-  const payload = {
-    images: files.map((entry) => ({
-      filename: entry.filename,
-      idiom: "universal",
-      scale: `${entry.scale}x`
-    })),
-    info: { author: "xcode", version: 1 }
-  };
+function renderIosContents(
+  files: Array<{ filename: string; scale: number }>,
+  options: { vector?: boolean } = {}
+): string {
+  const payload =
+    options.vector === true
+      ? {
+          images: files.map((entry) => ({ filename: entry.filename, idiom: "universal" })),
+          info: { author: "xcode", version: 1 },
+          properties: { "preserves-vector-representation": true }
+        }
+      : {
+          images: files.map((entry) => ({
+            filename: entry.filename,
+            idiom: "universal",
+            scale: `${entry.scale}x`
+          })),
+          info: { author: "xcode", version: 1 }
+        };
   return `${JSON.stringify(payload, null, 2)}\n`;
 }
 
@@ -202,6 +213,30 @@ export function planImports(
         }
         continue;
       }
+    }
+
+    if (profile?.id === "ios-native") {
+      const { stem, ext } = stemAndExt(filename);
+      const base = stem.replace(/@[0-9]+x$/i, "");
+      const single = `${base}${ext}`;
+      const imageset = `${dir}/${base}.imageset`;
+      push({
+        figmaId: asset.figmaId,
+        name: asset.name,
+        relativePath: `${imageset}/${single}`,
+        scale: raster ? 2 : 1,
+        role: "image"
+      });
+      push({
+        figmaId: asset.figmaId,
+        name: asset.name,
+        relativePath: `${imageset}/Contents.json`,
+        scale: 0,
+        role: "contents",
+        contentsFiles: [{ filename: single, scale: raster ? 2 : 1 }],
+        contentsVector: !raster
+      });
+      continue;
     }
 
     push({
@@ -385,32 +420,28 @@ export async function figmaImportAssets(
     }
 
     const results: ImportResultEntry[] = [];
+    const imageResults = new Map<string, ImportResultEntry>();
     const assetGlobs = profile?.assetGlobs ?? DEFAULT_ASSET_GLOBS;
     const projectHashes = buildAssetHashIndex(
       runtime.project.rootDir,
       walkProjectFiles(runtime.project.rootDir, assetGlobs)
     );
     const batchHashes = new Map<string, string>();
+    const imageEntries = plan.filter((entry) => entry.role === "image");
+    const contentsEntries = plan.filter((entry) => entry.role === "contents");
 
-    for (const entry of plan) {
-      if (entry.role === "contents") {
-        const content = renderIosContents(entry.contentsFiles ?? []);
-        if (args.dryRun !== true) {
-          const written = writeAssetFile(runtime.project.rootDir, entry.relativePath, content, true);
-          results.push({ ...entry, status: written.status, bytes: written.bytes });
-        } else {
-          results.push({ ...entry, status: "planned", bytes: Buffer.byteLength(content) });
-        }
-        continue;
-      }
-
+    for (const entry of imageEntries) {
       const exported = exportedByScale.get(entry.scale)?.get(entry.figmaId);
       if (!exported) {
-        results.push({ ...entry, status: "error", error: "Figma 未返回该节点的导出" });
+        const result: ImportResultEntry = { ...entry, status: "error", error: "Figma 未返回该节点的导出" };
+        results.push(result);
+        imageResults.set(entry.relativePath, result);
         continue;
       }
       if (exported.error) {
-        results.push({ ...entry, status: "error", error: exported.error });
+        const result: ImportResultEntry = { ...entry, status: "error", error: exported.error };
+        results.push(result);
+        imageResults.set(entry.relativePath, result);
         continue;
       }
 
@@ -420,13 +451,21 @@ export async function figmaImportAssets(
       } else if (exported.url) {
         const response = await fetch(exported.url);
         if (!response.ok) {
-          results.push({ ...entry, status: "error", error: `下载失败: HTTP ${response.status}` });
+          const result: ImportResultEntry = {
+            ...entry,
+            status: "error",
+            error: `下载失败: HTTP ${response.status}`
+          };
+          results.push(result);
+          imageResults.set(entry.relativePath, result);
           continue;
         }
         content = Buffer.from(await response.arrayBuffer());
       }
       if (!content) {
-        results.push({ ...entry, status: "error", error: "导出内容为空" });
+        const result: ImportResultEntry = { ...entry, status: "error", error: "导出内容为空" };
+        results.push(result);
+        imageResults.set(entry.relativePath, result);
         continue;
       }
 
@@ -439,6 +478,62 @@ export async function figmaImportAssets(
         overwrite: args.overwrite === true
       });
 
+      let result: ImportResultEntry;
+      if (decision.status === "written") {
+        if (args.dryRun !== true) {
+          writeAssetFile(runtime.project.rootDir, entry.relativePath, content, true);
+        }
+        batchHashes.set(decision.sha256, entry.relativePath);
+        result = {
+          ...entry,
+          status: args.dryRun === true ? "planned" : "written",
+          bytes: decision.bytes,
+          sha256: decision.sha256
+        };
+      } else {
+        result = {
+          ...entry,
+          status: decision.status,
+          bytes: decision.bytes,
+          sha256: decision.sha256,
+          duplicateOf: decision.duplicateOf
+        };
+      }
+      results.push(result);
+      imageResults.set(entry.relativePath, result);
+    }
+
+    for (const entry of contentsEntries) {
+      const dirOf = (relativePath: string): string => path.posix.dirname(relativePath);
+      const failed = imageEntries.filter((image) => {
+        const result = imageResults.get(image.relativePath);
+        return (
+          image.figmaId === entry.figmaId &&
+          dirOf(image.relativePath) === dirOf(entry.relativePath) &&
+          result !== undefined &&
+          (result.status === "error" || result.status === "duplicate")
+        );
+      });
+      if (failed.length > 0) {
+        results.push({
+          ...entry,
+          status: "error",
+          error: `有图片未写入（${failed.map((image) => image.relativePath).join("、")}），跳过 Contents.json`
+        });
+        continue;
+      }
+      const content = Buffer.from(
+        renderIosContents(entry.contentsFiles ?? [], { vector: entry.contentsVector === true }),
+        "utf-8"
+      );
+      const decision = decideAssetWrite({
+        rootDir: runtime.project.rootDir,
+        relativePath: entry.relativePath,
+        content,
+        projectHashes,
+        batchHashes,
+        overwrite: args.overwrite === true
+      });
       if (decision.status === "written") {
         if (args.dryRun !== true) {
           writeAssetFile(runtime.project.rootDir, entry.relativePath, content, true);
@@ -452,7 +547,6 @@ export async function figmaImportAssets(
         });
         continue;
       }
-
       results.push({
         ...entry,
         status: decision.status,
@@ -467,6 +561,10 @@ export async function figmaImportAssets(
       return accumulator;
     }, {});
 
+    const warnings: string[] = [];
+    const multiStackWarning = skippedStacksWarning(stacks, profile);
+    if (multiStackWarning) warnings.push(multiStackWarning);
+
     const payload: Record<string, unknown> = {
       ok: true,
       sourceUrl: url,
@@ -474,6 +572,7 @@ export async function figmaImportAssets(
       densities: format === "svg" ? false : densities,
       dryRun: args.dryRun === true,
       detectedStacks: stacks,
+      warnings,
       counts: {
         ...counts,
         assets: new Set(plan.filter((entry) => entry.role === "image").map((entry) => entry.figmaId)).size,

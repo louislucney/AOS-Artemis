@@ -161,7 +161,7 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
     },
     i18n: {
       stringsFile: "ios/{locale}.lproj/Localizable.strings",
-      tokenFile: null,
+      tokenFile: "ios/AosTokens.swift",
       keyStyle: "camel",
       plural: "stringsdict",
       sourceLocale: "zh"
@@ -274,13 +274,43 @@ export function detectProjectStacks(rootDir: string): StackDetection[] {
     }
   };
   const hasXcodeProject = (): boolean => {
-    try {
-      return fs
-        .readdirSync(path.join(rootDir, "ios"))
-        .some((entry) => entry.endsWith(".xcodeproj") || entry.endsWith(".xcworkspace"));
-    } catch {
+    const ignored = new Set([
+      "node_modules",
+      "dist",
+      "build",
+      ".git",
+      ".gradle",
+      "Pods",
+      "DerivedData",
+      "vendor"
+    ]);
+    const hasProjectEntry = (dir: string): boolean => {
+      try {
+        return fs
+          .readdirSync(dir)
+          .some((entry) => entry.endsWith(".xcodeproj") || entry.endsWith(".xcworkspace"));
+      } catch {
+        return false;
+      }
+    };
+    const walk = (dir: string, depth: number): boolean => {
+      if (depth === 0) return false;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return false;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || ignored.has(entry.name)) continue;
+        const child = path.join(dir, entry.name);
+        if (hasProjectEntry(child)) return true;
+        if (walk(child, depth - 1)) return true;
+      }
       return false;
-    }
+    };
+    if (hasProjectEntry(rootDir)) return true;
+    return walk(rootDir, 2);
   };
 
   const detections: StackDetection[] = [];
@@ -328,7 +358,7 @@ export function detectProjectStacks(rootDir: string): StackDetection[] {
       detections.push({
         id: "ios-native",
         displayName: STACK_PROFILES["ios-native"].displayName,
-        reason: "ios/*.xcodeproj",
+        reason: "xcodeproj/xcworkspace (≤2 层目录)",
         confidence: 0.8
       });
     }
@@ -348,4 +378,24 @@ export function detectProjectStacks(rootDir: string): StackDetection[] {
 
 export function primaryProfile(detections: StackDetection[]): StackProfile | null {
   return detections.length > 0 ? STACK_PROFILES[detections[0]!.id] : null;
+}
+
+export function skippedStacksWarning(
+  detections: StackDetection[],
+  profile: StackProfile | null
+): string | null {
+  if (!profile) return null;
+  const skipped = detections.filter((detection) => detection.id !== profile.id);
+  if (skipped.length === 0) return null;
+  return `检测到多个技术栈：本次仅按主栈 ${profile.displayName} 产出，跳过 ${skipped
+    .map((detection) => detection.displayName)
+    .join("、")}（全栈分别产出为 backlog）。`;
+}
+
+export function skippedStacksWarnings(
+  detections: StackDetection[],
+  profile: StackProfile | null
+): string[] {
+  const warning = skippedStacksWarning(detections, profile);
+  return warning ? [warning] : [];
 }

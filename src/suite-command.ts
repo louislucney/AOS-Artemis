@@ -10,6 +10,8 @@ import {
 import { loadProject } from "./config/loader.js";
 import { createProjectStore } from "./db/index.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
+import { classifyIosSerial } from "./device/ios.js";
+import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/baseline.js";
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
 import { buildRunReport } from "./figma/run-report.js";
@@ -23,6 +25,8 @@ type LogcatCollector = (request: {
   windowEndMs: number | null;
 }) => Promise<LogcatWindowResult>;
 
+type IosLogCollectorFn = (request: IosLogWindowRequest) => Promise<LogcatWindowResult>;
+
 export interface SuiteCliDeps {
   buildRuntime?: (
     projectDir: string | null
@@ -30,6 +34,7 @@ export interface SuiteCliDeps {
   log?: (line: string) => void;
   errorLog?: (line: string) => void;
   logcatCollector?: LogcatCollector;
+  iosLogCollector?: IosLogCollectorFn;
 }
 
 interface ParsedFlags {
@@ -153,7 +158,7 @@ run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
         [--no-api-errors] [--fail-on api-error]
 evidence: [--full-trace] [--out <dir>] [--no-save] [--design-figma <url>|--design-pen <path>] [--node <id>]
-api-errors: [--serial <s>] [--no-save]
+api-errors: [--serial <s>] [--app <bundleId>] [--no-save] [--json]
 baseline: --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>]
           [--ignore x,y,w,h]... [--no-save] [--fail-on new|persisting|any]
 report: [--limit <n>] [--case <id>]... [--out <dir>] [--stamp <s>] [--no-save] [--no-sync]
@@ -167,7 +172,8 @@ async function suiteRun(
   runtime: Runtime,
   flags: ParsedFlags,
   io: { log: (line: string) => void; errorLog: (line: string) => void },
-  logcatCollector?: LogcatCollector
+  logcatCollector?: LogcatCollector,
+  iosLogCollector?: IosLogCollectorFn
 ): Promise<number> {
   const report = await runGeneratedTests(runtime, {
     testsPath: flags.get("tests") ?? undefined,
@@ -179,7 +185,8 @@ async function suiteRun(
     pollTimeoutMs: intOrNull(flags.get("poll-timeout")) ?? undefined,
     apiErrors: !flags.bool("no-api-errors"),
     failOnApiErrors: flags.get("fail-on") === "api-error",
-    logcatCollector
+    logcatCollector,
+    iosLogCollector
   });
   if (flags.bool("json")) {
     io.log(JSON.stringify(report, null, 2));
@@ -226,11 +233,14 @@ async function suiteApiErrors(
   runtime: Runtime,
   flags: ParsedFlags,
   io: { log: (line: string) => void; errorLog: (line: string) => void },
-  logcatCollector?: LogcatCollector
+  logcatCollector?: LogcatCollector,
+  iosLogCollector?: IosLogCollectorFn
 ): Promise<number> {
   const traceId = flags.positional[1];
   if (!traceId) {
-    io.errorLog("用法: aos-mcp suite api-errors <traceId> [--serial <s>] [--no-save] [--json]");
+    io.errorLog(
+      "用法: aos-mcp suite api-errors <traceId> [--serial <s>] [--app <bundleId>] [--no-save] [--json]"
+    );
     return 2;
   }
   const catalog = loadApiErrorCatalog(runtime.configDirAbs);
@@ -251,16 +261,28 @@ async function suiteApiErrors(
   }
   const windowEndMs = status.endTimeMs ?? Date.now();
   const serial = flags.get("serial") ?? status.deviceSerial;
-  const collector = logcatCollector ?? ((request) => new AdbLogcatCollector().collect(request));
+  const iosTarget = serial !== null && classifyIosSerial(serial) !== null;
+  const appBundle = flags.get("app");
   let collected: LogcatWindowResult;
   try {
-    collected = await collector({ serial, windowStartMs: status.startTimeMs, windowEndMs });
+    if (iosTarget) {
+      const collector = iosLogCollector ?? ((request) => new IosLogCollector().collect(request));
+      collected = await collector({
+        serial,
+        windowStartMs: status.startTimeMs,
+        windowEndMs,
+        processName: appBundle ? appBundle.split(".").pop() ?? null : null
+      });
+    } else {
+      const collector = logcatCollector ?? ((request) => new AdbLogcatCollector().collect(request));
+      collected = await collector({ serial, windowStartMs: status.startTimeMs, windowEndMs });
+    }
   } catch (error) {
-    io.errorLog(`logcat 采集失败: ${errorMessage(error)}`);
+    io.errorLog(`${iosTarget ? "iOS 日志" : "logcat"} 采集失败: ${errorMessage(error)}`);
     return 1;
   }
   if (collected.status !== "ok") {
-    io.errorLog(`logcat 采集失败（${collected.reason ?? "unknown"}）`);
+    io.errorLog(`${iosTarget ? "iOS 日志" : "logcat"} 采集失败（${collected.reason ?? "unknown"}）`);
     return 1;
   }
   const errors = matchApiErrors(collected.text, catalog.rules);
@@ -268,7 +290,7 @@ async function suiteApiErrors(
     traceId,
     serial: collected.serial,
     window: { startMs: status.startTimeMs, endMs: windowEndMs },
-    source: "logcat" as const,
+    source: iosTarget ? ("simctl-log" as const) : ("logcat" as const),
     degraded: null,
     errors
   };
@@ -471,10 +493,18 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
   let built: Awaited<ReturnType<typeof defaultBuildRuntime>> | null = null;
   try {
     built = await buildRuntime(flags.get("project"));
-    if (sub === "run") return await suiteRun(built.runtime, flags, { log, errorLog }, deps.logcatCollector);
+    if (sub === "run") {
+      return await suiteRun(built.runtime, flags, { log, errorLog }, deps.logcatCollector, deps.iosLogCollector);
+    }
     if (sub === "evidence") return await suiteEvidence(built.runtime, flags, { log, errorLog });
     if (sub === "api-errors") {
-      return await suiteApiErrors(built.runtime, flags, { log, errorLog }, deps.logcatCollector);
+      return await suiteApiErrors(
+        built.runtime,
+        flags,
+        { log, errorLog },
+        deps.logcatCollector,
+        deps.iosLogCollector
+      );
     }
     if (sub === "baseline") return await suiteBaseline(built.runtime, flags, { log, errorLog });
     if (sub === "report") return await suiteReport(built.runtime, flags, { log, errorLog });

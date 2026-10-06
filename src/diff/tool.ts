@@ -115,9 +115,6 @@ export async function designDeviceDiff(
     if (args.device?.lossless === true && mode !== "live") {
       return jsonError('device.lossless 仅适用于 mode="live"（步骤截图来自轨迹原图）。');
     }
-    if (args.device?.platform === "ios" && mode !== "live") {
-      return jsonError('device.platform="ios" 仅支持 mode="live"（步骤截图来自 ARTEMIS 轨迹，当前仅 Android）。');
-    }
     if (mode === "step") {
       if (!args.device?.traceId) {
         return jsonError("device.mode=step 需要 device.traceId（截图经 mobile_inspect_trace 获取）。");

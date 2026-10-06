@@ -8,6 +8,7 @@ import {
   detectProjectStacks,
   formatComponentFileName,
   primaryProfile,
+  skippedStacksWarnings,
   toCase,
   type StackProfile
 } from "../projects/stack.js";
@@ -211,7 +212,8 @@ export async function screenMap(runtime: Runtime, args: ScreenMapArgs): Promise<
       });
     }
     if (args.action === "propose") {
-      const profile = primaryProfile(detectProjectStacks(runtime.project.rootDir));
+      const stacks = detectProjectStacks(runtime.project.rootDir);
+      const profile = primaryProfile(stacks);
       const proposal = proposeScreenMapEntries(runtime.configDirAbs, profile);
       if (!proposal.buildBrief) {
         return jsonResult(
@@ -226,6 +228,7 @@ export async function screenMap(runtime: Runtime, args: ScreenMapArgs): Promise<
       return jsonResult({
         ok: true,
         stack: profile?.id ?? null,
+        warnings: skippedStacksWarnings(stacks, profile),
         candidates: proposal.candidates,
         unmatched: proposal.unmatched,
         hint: "候选为粗粒度推导（屏幕名→路由/文件命名、AOS scaffold 组件）；请复核后用 screen_map(action:\"save\", entries:[…]) 落盘。"

@@ -7,6 +7,7 @@ import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import { STACK_PROFILES, detectProjectStacks, type StackProfile } from "../projects/stack.js";
 import {
+  androidLocaleDir,
   collectFigmaTexts,
   loadResolvedConflicts,
   loadStringContext,
@@ -158,7 +159,7 @@ export async function runStringsImport(
 
     const hardcoded: Array<{ file: string; line: number; text: string; stack: string }> = [];
     for (const profile of implemented) {
-      if (profile.id === "android-native" || profile.id === "flutter") {
+      if (profile.id === "android-native" || profile.id === "flutter" || profile.id === "ios-native") {
         hardcoded.push(...scanHardcodedStrings(runtime.project.rootDir, profile.id));
       }
     }
@@ -193,7 +194,11 @@ export async function runStringsImport(
       resources,
       hardcodedStrings: {
         total: hardcoded.length,
-        sample: hardcoded.slice(0, 20)
+        sample: hardcoded.slice(0, 20),
+        heuristic: hardcoded.some((hit) => hit.stack === "ios-native"),
+        ...(hardcoded.some((hit) => hit.stack === "ios-native")
+          ? { note: "Swift 硬编码扫描为启发式规则（白名单 API，可能误报/漏报）" }
+          : {})
       },
       migrations: merge.migrations.slice(0, 20),
       reuseSuggestions: merge.reuseSuggestions.slice(0, 20),
@@ -248,7 +253,7 @@ export function renderStringsForStack(
   sourceLocale: string
 ): ResourceWrite[] {
   if (profile.id === "android-native") {
-    return [renderAndroidStrings(profile, entries, rootDir, "")];
+    return [renderAndroidStrings(profile, entries, rootDir, androidLocaleDir(sourceLocale))];
   }
   if (profile.id === "flutter") {
     return [renderFlutterArb(profile, entries, rootDir, sourceLocale)];

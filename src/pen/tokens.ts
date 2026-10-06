@@ -4,13 +4,14 @@ import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Enforcement } from "../figma/import-tokens.js";
-import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
+import { detectProjectStacks, primaryProfile, skippedStacksWarnings } from "../projects/stack.js";
 import {
   normalizeHexColor,
   parseCanonicalTokens,
   renderStackTokenFile,
   scanHardcodedColors,
   serializeTokens,
+  skippedTokenFiles,
   writeStackTokenFile,
   type ColorToken,
   type TokenAction
@@ -313,6 +314,7 @@ export async function penImportTokens(
     const profile = primaryProfile(stacks);
     const stackWrite = profile ? renderStackTokenFile(profile, merge.tokens) : null;
     const warnings = [...extraction.warnings];
+    warnings.push(...skippedStacksWarnings(stacks, profile));
 
     let stackResult: ReturnType<typeof writeStackTokenFile> | null = null;
     if (stackWrite) {
@@ -320,8 +322,11 @@ export async function penImportTokens(
         overwrite: args.overwrite === true,
         dryRun: args.dryRun === true
       });
-      if (stackResult.action === "skipped_unmanaged") {
-        warnings.push(`目标文件非本工具生成，未覆盖：${stackWrite.relativePath}（确认后用 overwrite:true 覆盖）`);
+      const skippedUnmanaged = skippedTokenFiles(stackResult);
+      if (skippedUnmanaged.length > 0) {
+        warnings.push(
+          `目标文件非本工具生成，未覆盖：${skippedUnmanaged.join("、")}（确认后用 overwrite:true 覆盖）`
+        );
       }
     } else if (!profile) {
       warnings.push("未检测到技术栈：仅更新 canonical tokens.json（不生成栈文件）");
@@ -340,8 +345,7 @@ export async function penImportTokens(
     });
     const unused = merge.actions.filter((action) => action.action === "unused");
     const enforcement = args.enforcement ?? "report";
-    const violations =
-      hardcoded.length + unused.length + (stackResult?.action === "skipped_unmanaged" ? 1 : 0);
+    const violations = hardcoded.length + unused.length + skippedTokenFiles(stackResult).length;
 
     const payload: Record<string, unknown> = {
       ok: true,

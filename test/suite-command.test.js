@@ -390,3 +390,35 @@ test("suite run: --fail-on api-error blocks and prints the API note", async () =
   assert.ok(report.logs.some((line) => line.includes("API 错误 AUTH_401(unhandled)")));
   assert.ok(report.logs.some((line) => line.includes("失败域 api-error")));
 });
+
+test("suite api-errors: iOS UDID 走 simctl 采集并标注 source", async () => {
+  const { runtime } = await setupRun({ cases: null });
+  writeErrorCodes(runtime, {
+    AUTH_401: {
+      match: "HTTP\\s*401",
+      handler: "relogin"
+    }
+  });
+  writeStatus(runtime, "ios-1234", {
+    status: "failed",
+    platform: "ios",
+    device_serial: "65584900-E161-4125-8928-587499DD6457",
+    start_time: 1000,
+    end_time: 1010
+  });
+  const requests = [];
+  const iosCollector = async (request) => {
+    requests.push(request);
+    return { status: "ok", serial: request.serial, text: "HTTP 401 Unauthorized" };
+  };
+  const result = await runCli(runtime, ["api-errors", "ios-1234", "--app", "com.example.MyApp"], {
+    iosLogCollector: iosCollector
+  });
+  assert.equal(result.code, 0);
+  assert.equal(requests[0].processName, "MyApp");
+  const artifact = JSON.parse(
+    fs.readFileSync(path.join(runtime.traceDir("ios-1234"), "api-errors.json"), "utf-8")
+  );
+  assert.equal(artifact.source, "simctl-log");
+  assert.equal(artifact.errors[0].code, "AUTH_401");
+});

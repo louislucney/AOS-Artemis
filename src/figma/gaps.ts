@@ -8,7 +8,7 @@ import {
   restExtractDesignSystem,
   restFindAssets
 } from "../vendor/design-context-bridge/figma-rest/resolve.js";
-import { detectProjectStacks, formatAssetFilename, primaryProfile, type StackProfile } from "../projects/stack.js";
+import { detectProjectStacks, formatAssetFilename, primaryProfile, skippedStacksWarnings, type StackProfile } from "../projects/stack.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
@@ -117,6 +117,7 @@ export function normalizeAssetName(name: string): string {
   return (
     name
       .replace(/\.[a-z0-9]+$/i, "")
+      .replace(/@[23]x$/i, "")
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
@@ -168,6 +169,53 @@ function expandHex(hex: string): string {
   return `#${body}`.toUpperCase();
 }
 
+function componentHex(value: number): string | null {
+  if (!Number.isFinite(value)) return null;
+  const clamped = Math.max(0, Math.min(255, Math.round(value * 255)));
+  return clamped.toString(16).padStart(2, "0").toUpperCase();
+}
+
+function collectColorsetColors(node: unknown, out: Set<string>): void {
+  if (Array.isArray(node)) {
+    for (const item of node) collectColorsetColors(item, out);
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  const record = node as Record<string, unknown>;
+  const color = record.color as Record<string, unknown> | undefined;
+  const components = color?.components as Record<string, unknown> | undefined;
+  if (components) {
+    const red = componentHex(Number(components.red));
+    const green = componentHex(Number(components.green));
+    const blue = componentHex(Number(components.blue));
+    if (red !== null && green !== null && blue !== null) out.add(`#${red}${green}${blue}`);
+  }
+  for (const value of Object.values(record)) collectColorsetColors(value, out);
+}
+
+export function extractProjectColors(text: string): string[] {
+  const colors = new Set<string>();
+  for (const match of text.matchAll(/#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b/g)) {
+    colors.add(expandHex(match[0]));
+  }
+  const swiftColor =
+    /Color\(\s*red:\s*([0-9.]+)\s*,\s*green:\s*([0-9.]+)\s*,\s*blue:\s*([0-9.]+)(?:\s*,\s*opacity:\s*[0-9.]+)?\s*\)/g;
+  for (const match of text.matchAll(swiftColor)) {
+    const red = componentHex(Number(match[1]));
+    const green = componentHex(Number(match[2]));
+    const blue = componentHex(Number(match[3]));
+    if (red !== null && green !== null && blue !== null) colors.add(`#${red}${green}${blue}`);
+  }
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = null;
+  }
+  if (parsed !== null) collectColorsetColors(parsed, colors);
+  return [...colors];
+}
+
 export function analyzeGapData(input: GapInput): GapResult {
   const projectBySlug = new Map<string, string>();
   for (const assetPath of input.projectAssetPaths) {
@@ -213,9 +261,7 @@ export function analyzeGapData(input: GapInput): GapResult {
   const projectColors = new Set<string>();
   if (colorsChecked) {
     for (const text of input.tokenContents!) {
-      for (const match of text.matchAll(/#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b/g)) {
-        projectColors.add(expandHex(match[0]));
-      }
+      for (const color of extractProjectColors(text)) projectColors.add(color);
     }
   }
   const designColorSet = new Set(input.designColors.map((color) => color.toUpperCase()));
@@ -308,6 +354,7 @@ export async function figmaGapAnalysis(
     const payload: Record<string, unknown> = {
       ok: true,
       sourceUrl: args.url,
+      warnings: skippedStacksWarnings(stacks, profile),
       design: {
         assets: designAssets.count ?? designAssets.assets?.length ?? 0,
         colors: designSystem.colors?.length ?? 0

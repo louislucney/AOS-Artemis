@@ -227,7 +227,7 @@ test("design_device_diff: platform=ios 走模拟器截图且不查询 ARTEMIS", 
   });
 });
 
-test("design_device_diff: platform=ios 与 mode=step 冲突时报错", async () => {
+test("design_device_diff: platform=ios 的 step 模式不再被拒绝（进入锚点解析）", async () => {
   const dir = makeTempProject({ config: baseConfig() });
   const proxy = new StubProxy({ running: true });
   const { runtime } = await loadTestRuntime(dir, { proxy });
@@ -237,5 +237,6 @@ test("design_device_diff: platform=ios 与 mode=step 冲突时报错", async () 
   });
   assert.equal(result.isError, true);
   const payload = parseToolResult(result);
-  assert.match(payload.error, /ios/);
+  assert.match(payload.error, /自动锚点失败/);
+  assert.doesNotMatch(payload.error, /仅支持 mode="live"/);
 });

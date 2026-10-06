@@ -24,6 +24,7 @@ import { ArtemisProxy, type ArtemisProxyLike } from "./artemis/proxy.js";
 import { resultPayload, taskStatusFromFile, taskStatusOf, type TaskStatus } from "./artemis/task-result.js";
 import { maybeIosInspectTrace } from "./ios/inspect.js";
 import { maybeIosManageTask, maybeIosRunTask } from "./ios/task-runner.js";
+import { reconcileIosTrace, isIosTraceDir } from "./ios/trace-store.js";
 import { collectIosCrashes } from "./crash/ios.js";
 import { maybeIosDeviceState } from "./tools/ios-state.js";
 import { appendChildLog } from "./log.js";
@@ -58,6 +59,7 @@ import {
   isProcessAlive,
   logWarn,
   processCmdline,
+  sleep,
   terminateProcess,
   writeFileAtomic
 } from "./util.js";
@@ -68,6 +70,8 @@ export interface RuntimeOptions {
   baseEnv?: NodeJS.ProcessEnv;
   storeNote?: string | null;
   crashCollector?: CrashCollectorLike;
+  iosCrashCollector?: typeof collectIosCrashes;
+  iosCrashRetry?: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> };
   modelFetcher?: FetchLike;
   buildModuleUrl?: string;
 }
@@ -125,6 +129,12 @@ export class Runtime {
   private crashScanChain: Promise<unknown> = Promise.resolve();
   private modelRefreshChain: Promise<unknown> = Promise.resolve();
   private readonly lockedPackages = new Map<string, string>();
+  private readonly iosCrashCollector: typeof collectIosCrashes | null;
+  private readonly iosCrashRetry: {
+    attempts: number;
+    delayMs: number;
+    sleep: (ms: number) => Promise<void>;
+  };
 
   /** Build freshness is evaluated on every read, so a rebuild that happens
    * while this process keeps running surfaces in `aos_status.build.stale`. */
@@ -141,6 +151,12 @@ export class Runtime {
     this.store = options.store ?? new MemoryStore();
     this.storeNote = options.storeNote ?? null;
     this.baseEnv = options.baseEnv ?? process.env;
+    this.iosCrashCollector = options.iosCrashCollector ?? null;
+    this.iosCrashRetry = {
+      attempts: Math.max(1, options.iosCrashRetry?.attempts ?? 3),
+      delayMs: Math.max(0, options.iosCrashRetry?.delayMs ?? 2_000),
+      sleep: options.iosCrashRetry?.sleep ?? ((ms) => sleep(ms))
+    };
     this.configDirAbs = configDirAbs(project.config, project.rootDir);
     this.state = new StateStore(path.join(this.configDirAbs, "state.json"));
     this.buildModuleUrl = options.buildModuleUrl ?? import.meta.url;
@@ -180,7 +196,11 @@ export class Runtime {
       listTools: (force) => inner.listTools(force),
       callTool: async (name, args) => {
         const iosResult = await this.maybeIosCall(name, args);
-        const result = iosResult ?? (await inner.callTool(name, args));
+        if (iosResult) {
+          this.mirrorToolArtifacts(name, iosResult);
+          return iosResult;
+        }
+        const result = this.normalizeRunTaskWarnings(name, await inner.callTool(name, args));
         this.mirrorToolArtifacts(name, result);
         return result;
       },
@@ -196,10 +216,31 @@ export class Runtime {
     args: Record<string, unknown>
   ): Promise<CallToolResult | null> {
     if (name === "mobile_run_task") return await maybeIosRunTask(this, args);
-    if (name === "mobile_manage_task") return maybeIosManageTask(args);
+    if (name === "mobile_manage_task") return maybeIosManageTask(this, args);
     if (name === "mobile_get_device_state") return await maybeIosDeviceState(this, args);
-    if (name === "mobile_inspect_trace") return maybeIosInspectTrace(args);
+    if (name === "mobile_inspect_trace") return maybeIosInspectTrace(this, args);
     return null;
+  }
+
+  private normalizeRunTaskWarnings(name: string, result: CallToolResult): CallToolResult {
+    if (name !== "mobile_run_task") return result;
+    const content = result.content;
+    if (!Array.isArray(content) || content.length === 0) return result;
+    const first = content[0];
+    if (first.type !== "text") return result;
+    try {
+      const payload = JSON.parse(first.text) as unknown;
+      if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return result;
+      const record = payload as Record<string, unknown>;
+      if (Array.isArray(record.warnings)) return result;
+      record.warnings = [];
+      return {
+        ...result,
+        content: [{ ...first, text: JSON.stringify(record, null, 2) }, ...content.slice(1)]
+      };
+    } catch {
+      return result;
+    }
   }
 
   private mirrorToolArtifacts(name: string, result: CallToolResult): void {
@@ -595,7 +636,12 @@ export class Runtime {
   }
 
   async traceStatus(traceId: string): Promise<TaskStatus | null> {
-    const fromFile = taskStatusFromFile(path.join(this.traceDir(traceId), "status.json"));
+    const statusPath = path.join(this.traceDir(traceId), "status.json");
+    let fromFile = taskStatusFromFile(statusPath);
+    if (fromFile?.status === "running" || fromFile === null) {
+      const reconciled = reconcileIosTrace(this.traceDir(traceId), traceId);
+      if (reconciled?.status === "orphaned") fromFile = taskStatusFromFile(statusPath) ?? fromFile;
+    }
     if (fromFile?.status) return fromFile;
     if (!this.proxy.isRunning()) return fromFile;
     try {
@@ -625,7 +671,13 @@ export class Runtime {
         );
         if (done) {
           updated += 1;
-          if (!task.traceId.startsWith("ios-")) this.enqueueCrashScan(task, status);
+          void this.scanTraceByPlatform(
+            { ...task, status: status ?? task.status },
+            task.traceId,
+            false
+          ).catch((error) => {
+            logWarn(`崩溃取证失败（trace=${task.traceId}）: ${errorMessage(error)}`);
+          });
         }
       }
     }
@@ -646,7 +698,7 @@ export class Runtime {
     input: { traceId: string; udid: string; processName: string | null; startMs: number; endMs: number },
     deps: { collect?: typeof collectIosCrashes } = {}
   ): Promise<CrashScanResult> {
-    const collect = deps.collect ?? collectIosCrashes;
+    const collect = deps.collect ?? this.iosCrashCollector ?? collectIosCrashes;
     try {
       const collected = collect({
         startMs: input.startMs,
@@ -694,20 +746,6 @@ export class Runtime {
     await this.crashScanChain;
   }
 
-  private enqueueCrashScan(task: TaskStatRecord, outcome: string): void {
-    void this.enqueueCrashTask(() =>
-      this.crashScanner.scanTrace({
-        traceId: task.traceId,
-        taskOutcome: outcome,
-        targetPackage: this.lockedPackages.get(task.traceId) ?? null,
-        fallbackStartMs: parseIsoMs(task.submittedAt),
-        fallbackEndMs: parseIsoMs(task.finishedAt)
-      })
-    ).catch((error) => {
-      logWarn(`崩溃取证失败（trace=${task.traceId}）: ${errorMessage(error)}`);
-    });
-  }
-
   private async scanTraceWithFallbacks(task: TaskStatRecord | null, traceId: string, force: boolean): Promise<CrashScanResult> {
     return await this.enqueueCrashTask(() =>
       this.crashScanner.scanTrace({
@@ -727,7 +765,7 @@ export class Runtime {
     const tasks = await this.taskList(200);
     if (input.traceId) {
       const task = tasks.find((item) => item.traceId === input.traceId) ?? null;
-      const result = await this.scanTraceWithFallbacks(task, input.traceId, input.force !== false);
+      const result = await this.scanTraceByPlatform(task, input.traceId, input.force !== false);
       return { enabled, results: [result] };
     }
     const pending = tasks
@@ -739,9 +777,58 @@ export class Runtime {
       .slice(0, CRASH_SCAN_BATCH);
     const results: CrashScanResult[] = [];
     for (const task of pending) {
-      results.push(await this.scanTraceWithFallbacks(task, task.traceId, false));
+      results.push(await this.scanTraceByPlatform(task, task.traceId, false));
     }
     return { enabled, results };
+  }
+
+  private async scanTraceByPlatform(
+    task: TaskStatRecord | null,
+    traceId: string,
+    force: boolean
+  ): Promise<CrashScanResult> {
+    if (isIosTraceDir(this.traceDir(traceId), traceId)) {
+      return await this.enqueueCrashTask(() => this.scanIosTraceForCrashes(traceId, task));
+    }
+    return await this.scanTraceWithFallbacks(task, traceId, force);
+  }
+
+  private async scanIosTraceForCrashes(
+    traceId: string,
+    task: TaskStatRecord | null
+  ): Promise<CrashScanResult> {
+    if (!this.crashScanner.enabled()) {
+      return { traceId, status: "skipped", reason: "disabled", found: 0 };
+    }
+    const status = await this.traceStatus(traceId);
+    const startMs = status?.startTimeMs ?? (task ? parseIsoMs(task.submittedAt) : null);
+    if (startMs === null) {
+      this.crashStore.recordScan(traceId, {
+        at: new Date().toISOString(),
+        found: 0,
+        skipped: "no-window"
+      });
+      return { traceId, status: "skipped", reason: "no-window", found: 0 };
+    }
+    const endMs =
+      status?.endTimeMs ?? (task?.finishedAt ? parseIsoMs(task.finishedAt) : null) ?? Date.now();
+    const processName = this.lockedPackages.get(traceId)?.split(".").pop() ?? null;
+    const udid = status?.deviceSerial ?? "";
+    let result: CrashScanResult = { traceId, status: "skipped", reason: "unknown", found: 0 };
+    for (let attempt = 1; attempt <= this.iosCrashRetry.attempts; attempt += 1) {
+      result = await this.captureIosCrashes({ traceId, udid, processName, startMs, endMs });
+      if (result.status !== "empty") break;
+      if (attempt < this.iosCrashRetry.attempts) {
+        await this.iosCrashRetry.sleep(this.iosCrashRetry.delayMs);
+      }
+    }
+    const skipped = result.status === "skipped" ? result.reason ?? "collector-skipped" : null;
+    this.crashStore.recordScan(traceId, {
+      at: new Date().toISOString(),
+      found: result.found,
+      ...(skipped ? { skipped } : {})
+    });
+    return result;
   }
 
   private tracesDir(): string {

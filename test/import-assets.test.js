@@ -359,3 +359,105 @@ test("figma_import_assets: iOS writes imageset files plus Contents.json", async 
     }
   });
 });
+
+test("planImports: iOS SVG 默认落 .imageset（vector Contents.json）", () => {
+  const plan = planImports([{ name: "Home Icon", figmaId: "1:9" }], STACK_PROFILES["ios-native"], {
+    format: "svg"
+  });
+  assert.deepEqual(
+    plan.map((entry) => [entry.relativePath, entry.role]),
+    [
+      ["Resources/Assets.xcassets/home_icon.imageset/home_icon.svg", "image"],
+      ["Resources/Assets.xcassets/home_icon.imageset/Contents.json", "contents"]
+    ]
+  );
+  assert.equal(plan[1].contentsVector, true);
+});
+
+test("figma_import_assets: iOS SVG 写入 imageset 且 Contents.json 标注 vector（幂等）", async () => {
+  await withFigmaToken(async () => {
+    const fileKey = "SvgIos1";
+    const dir = makeTempProject({ config: baseConfig() });
+    fs.mkdirSync(path.join(dir, "ios", "Demo.xcodeproj"), { recursive: true });
+    const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+    const designDir = path.join(runtime.configDirAbs, "design");
+    fs.mkdirSync(designDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(designDir, "gaps.json"),
+      JSON.stringify({
+        sourceUrl: `https://www.figma.com/design/${fileKey}/Demo?node-id=1-1`,
+        missingAssets: [{ name: "Home Icon", figmaId: "1:1" }]
+      })
+    );
+    const restore = stubExportFetch(fileKey);
+    try {
+      const payload = parseToolResult(await figmaImportAssets(runtime, { format: "svg" }));
+      const base = "Resources/Assets.xcassets/home_icon.imageset";
+      assert.deepEqual(
+        payload.results.map((entry) => [entry.relativePath, entry.status]),
+        [
+          [`${base}/home_icon.svg`, "written"],
+          [`${base}/Contents.json`, "written"]
+        ]
+      );
+      const contents = JSON.parse(fs.readFileSync(path.join(dir, base, "Contents.json"), "utf-8"));
+      assert.deepEqual(contents.images, [{ filename: "home_icon.svg", idiom: "universal" }]);
+      assert.equal(contents.properties["preserves-vector-representation"], true);
+
+      const second = parseToolResult(await figmaImportAssets(runtime, { format: "svg" }));
+      assert.ok(second.results.every((entry) => entry.status === "unchanged"));
+    } finally {
+      restore();
+    }
+  });
+});
+
+test("figma_import_assets: 图片导出失败时不写 Contents.json", async () => {
+  await withFigmaToken(async () => {
+    const fileKey = "FailIos1";
+    const dir = makeTempProject({ config: baseConfig() });
+    fs.mkdirSync(path.join(dir, "ios", "Demo.xcodeproj"), { recursive: true });
+    const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+    const designDir = path.join(runtime.configDirAbs, "design");
+    fs.mkdirSync(designDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(designDir, "gaps.json"),
+      JSON.stringify({
+        sourceUrl: `https://www.figma.com/design/${fileKey}/Demo?node-id=1-1`,
+        missingAssets: [{ name: "Home Icon", figmaId: "1:1" }]
+      })
+    );
+    const original = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      const href = String(url);
+      if (href.includes(`/images/${fileKey}`)) {
+        return new Response(JSON.stringify({ err: null, images: {} }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (href.includes(`/files/${fileKey}/nodes`)) {
+        return new Response(
+          JSON.stringify({ nodes: { "1:1": { document: { id: "1:1", name: "Home Icon" } } } }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    };
+    try {
+      const payload = parseToolResult(await figmaImportAssets(runtime, { format: "svg" }));
+      assert.deepEqual(
+        payload.results.map((entry) => [entry.role, entry.status]),
+        [
+          ["image", "error"],
+          ["contents", "error"]
+        ]
+      );
+      assert.ok(
+        !fs.existsSync(path.join(dir, "Resources/Assets.xcassets/home_icon.imageset/Contents.json"))
+      );
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});

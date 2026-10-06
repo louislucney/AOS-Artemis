@@ -348,10 +348,19 @@ export function modelFetcher(models, options = {}) {
 
 export async function loadTestRuntime(
   dir,
-  { proxy, env = {}, store, baseEnv, crashCollector, modelFetcher, buildModuleUrl } = {}
+  { proxy, env = {}, store, baseEnv, crashCollector, iosCrashCollector, iosCrashRetry, modelFetcher, buildModuleUrl } = {}
 ) {
   const project = loadProject({ cwd: dir, env });
-  const runtime = new Runtime(project, { proxy, store, baseEnv, crashCollector, modelFetcher, buildModuleUrl });
+  const runtime = new Runtime(project, {
+    proxy,
+    store,
+    baseEnv,
+    crashCollector,
+    iosCrashCollector,
+    iosCrashRetry,
+    modelFetcher,
+    buildModuleUrl
+  });
   await runtime.initialize();
   return { project, runtime };
 }

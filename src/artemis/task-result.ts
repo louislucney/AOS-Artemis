@@ -14,6 +14,7 @@ export interface TaskTestSummary {
   failed: number | null;
   inconclusive: number | null;
   unchecked: number | null;
+  synthesized: boolean;
   failedItems: TaskFailedItem[];
 }
 
@@ -70,6 +71,7 @@ function testSummaryOf(value: unknown): TaskTestSummary | null {
     failed: asNumber(record.failed),
     inconclusive: asNumber(record.inconclusive),
     unchecked: asNumber(record.unchecked),
+    synthesized: record.synthesized === true,
     failedItems: failedItemsOf(record.failed_items)
   };
 }

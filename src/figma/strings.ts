@@ -161,7 +161,7 @@ export interface HardcodedStringHit {
   file: string;
   line: number;
   text: string;
-  stack: "android-native" | "flutter";
+  stack: "android-native" | "flutter" | "ios-native";
 }
 
 export interface ResourceConflict {
@@ -575,6 +575,42 @@ function unescapeIos(value: string): string {
     .replace(/\\\\/g, "\\");
 }
 
+function capitalizeWord(word: string): string {
+  return `${word[0]!.toUpperCase()}${word.slice(1).toLowerCase()}`;
+}
+
+export function iosLocaleDirectory(locale: string): string {
+  const parts = locale.replace(/_/g, "-").split("-").filter(Boolean);
+  const language = (parts[0] ?? "en").toLowerCase();
+  const rest = parts.slice(1);
+  const scriptPart = rest.find((part) => /^[A-Za-z]{4}$/.test(part));
+  const regionPart = rest.find((part) => /^[A-Za-z]{2}$/.test(part) || /^\d{3}$/.test(part));
+  const region = regionPart ? regionPart.toUpperCase() : null;
+  if (language === "zh") {
+    const script = scriptPart
+      ? capitalizeWord(scriptPart)
+      : region && ["TW", "HK", "MO"].includes(region)
+        ? "Hant"
+        : "Hans";
+    return region ? `${language}-${script}-${region}` : `${language}-${script}`;
+  }
+  if (scriptPart) {
+    const script = capitalizeWord(scriptPart);
+    return region ? `${language}-${script}-${region}` : `${language}-${script}`;
+  }
+  return region ? `${language}-${region}` : language;
+}
+
+export function androidLocaleDir(locale: string): string {
+  const parts = locale.replace(/_/g, "-").split("-").filter(Boolean);
+  const language = (parts[0] ?? "en").toLowerCase();
+  const regionPart = parts
+    .slice(1)
+    .find((part) => /^[A-Za-z]{2}$/.test(part) || /^\d{3}$/.test(part));
+  if (!regionPart) return "";
+  return `-${language}-r${regionPart.toUpperCase()}`;
+}
+
 interface ExistingAndroidResource {
   value: string;
   file: string;
@@ -746,9 +782,10 @@ export function renderIosStrings(
   rootDir: string,
   locale: string
 ): ResourceWrite {
-  const relativePath = profile.i18n.stringsFile.replace("{locale}", locale);
+  const relativePath = profile.i18n.stringsFile.replace("{locale}", iosLocaleDirectory(locale));
   const existingText = readExisting(path.join(rootDir, relativePath));
   const existing = parseIosStrings(existingText);
+  const other = parseIosStringsFiles(rootDir, relativePath);
   const conflicts: ResourceConflict[] = [];
   const merged = new Map<string, string>(existing);
 
@@ -756,11 +793,27 @@ export function renderIosStrings(
     if (entry.lifecycle === "conflict") continue;
     const key = platformKey(entry.key, profile.i18n.keyStyle);
     if (entry.plural) {
+      const foreign = other.get(key);
+      if (foreign) {
+        conflicts.push({
+          key,
+          existing: foreign.value,
+          incoming: renderIcuPlural(entry.plural)
+        });
+      }
       merged.delete(key);
       continue;
     }
     if (entry.lifecycle === "needs_context") continue;
     const value = canonicalTextToIos(entry.canonicalText);
+    const foreign = other.get(key);
+    if (foreign) {
+      if (foreign.value !== value) {
+        conflicts.push({ key, existing: foreign.value, incoming: value });
+      }
+      merged.delete(key);
+      continue;
+    }
     const prior = existing.get(key);
     if (prior !== undefined) {
       if (prior !== value) {
@@ -790,6 +843,116 @@ export function parseIosStrings(text: string | null): Map<string, string> {
   return map;
 }
 
+export function parseIosStringsFiles(
+  rootDir: string,
+  excludeFile: string | null
+): Map<string, { value: string; file: string }> {
+  const result = new Map<string, { value: string; file: string }>();
+  const files = walkProjectFiles(rootDir, ["**/*.lproj/Localizable.strings"]);
+  for (const file of files) {
+    if (excludeFile && file === excludeFile) continue;
+    const text = readExisting(path.join(rootDir, file));
+    for (const [key, value] of parseIosStrings(text)) {
+      if (!result.has(key)) result.set(key, { value, file });
+    }
+  }
+  return result;
+}
+
+export interface ParsedStringsdictEntry {
+  variable: string;
+  forms: Record<string, string>;
+}
+
+function extractDictEntries(text: string): Array<{ key: string; body: string }> {
+  const entries: Array<{ key: string; body: string }> = [];
+  const keyRe = /<key>([^<]*)<\/key>\s*<dict>/g;
+  let match: RegExpExecArray | null;
+  while ((match = keyRe.exec(text)) !== null) {
+    const start = keyRe.lastIndex;
+    const dictTag = /<\/?dict>/g;
+    dictTag.lastIndex = start;
+    let depth = 1;
+    let end = start;
+    let tag: RegExpExecArray | null;
+    while (depth > 0 && (tag = dictTag.exec(text)) !== null) {
+      depth += tag[0] === "<dict>" ? 1 : -1;
+      end = dictTag.lastIndex;
+    }
+    if (depth !== 0) break;
+    entries.push({ key: unescapeXml(match[1]!), body: text.slice(start, end - "</dict>".length) });
+    keyRe.lastIndex = end;
+  }
+  return entries;
+}
+
+function canonicalizeIosForm(raw: string, variable: string): string {
+  return unescapeXml(raw).replace(/%%/g, "%").split("%d").join(`{${variable}}`);
+}
+
+export function parseIosStringsdict(text: string | null): Map<string, ParsedStringsdictEntry> {
+  const map = new Map<string, ParsedStringsdictEntry>();
+  if (!text) return map;
+  for (const entry of extractDictEntries(text)) {
+    const formatMatch = /<string>%#@([A-Za-z0-9_]+)@<\/string>/.exec(entry.body);
+    if (!formatMatch) continue;
+    const variable = formatMatch[1]!;
+    const forms: Record<string, string> = {};
+    const quantityRe = /<key>(zero|one|two|few|many|other)<\/key>\s*<string>([\s\S]*?)<\/string>/g;
+    for (const quantity of entry.body.matchAll(quantityRe)) {
+      forms[quantity[1]!] = canonicalizeIosForm(quantity[2]!, variable);
+    }
+    map.set(entry.key, { variable, forms });
+  }
+  return map;
+}
+
+export function parseIosStringsdictFiles(
+  rootDir: string,
+  excludeFile: string | null
+): Map<string, { entry: ParsedStringsdictEntry; file: string }> {
+  const result = new Map<string, { entry: ParsedStringsdictEntry; file: string }>();
+  const files = walkProjectFiles(rootDir, ["**/*.lproj/Localizable.stringsdict"]);
+  for (const file of files) {
+    if (excludeFile && file === excludeFile) continue;
+    const text = readExisting(path.join(rootDir, file));
+    for (const [key, entry] of parseIosStringsdict(text)) {
+      if (!result.has(key)) result.set(key, { entry, file });
+    }
+  }
+  return result;
+}
+
+function sameStringsdictEntry(a: ParsedStringsdictEntry, b: ParsedStringsdictEntry): boolean {
+  if (a.variable !== b.variable) return false;
+  const quantities = new Set([...Object.keys(a.forms), ...Object.keys(b.forms)]);
+  for (const quantity of quantities) {
+    if (a.forms[quantity] !== b.forms[quantity]) return false;
+  }
+  return true;
+}
+
+function describeStringsdictEntry(entry: ParsedStringsdictEntry): string {
+  return `${entry.variable}: ${Object.entries(entry.forms)
+    .map(([quantity, form]) => `${quantity}=${form}`)
+    .join(" ")}`;
+}
+
+function renderStringsdictEntry(key: string, entry: ParsedStringsdictEntry): string[] {
+  const lines = [`  <key>${escapeXml(key)}</key>`, "  <dict>"];
+  lines.push("    <key>NSStringLocalizedFormatKey</key>", `    <string>%#@${entry.variable}@</string>`);
+  lines.push(`    <key>${entry.variable}</key>`, "    <dict>");
+  lines.push("      <key>NSStringFormatSpecTypeKey</key>", "      <string>NSStringPluralRuleType</string>");
+  lines.push("      <key>NSStringFormatValueTypeKey</key>", "      <string>d</string>");
+  for (const quantity of PLURAL_QUANTITIES) {
+    const form = entry.forms[quantity];
+    if (form === undefined) continue;
+    lines.push(`      <key>${quantity}</key>`);
+    lines.push(`      <string>${pluralFormToIos(form, entry.variable)}</string>`);
+  }
+  return [...lines, "    </dict>", "  </dict>"];
+}
+
 /** `.stringsdict` for confirmed plurals (`.strings` cannot express them). Returns
  * null when there is nothing to render, so plural-free projects stay clean. */
 export function renderIosStringsdict(
@@ -804,9 +967,40 @@ export function renderIosStringsdict(
   if (pluralEntries.length === 0) return null;
 
   const relativePath = profile.i18n.stringsFile
-    .replace("{locale}", locale)
+    .replace("{locale}", iosLocaleDirectory(locale))
     .replace(/\.strings$/, ".stringsdict");
   const existingText = readExisting(path.join(rootDir, relativePath));
+  const existingOwn = parseIosStringsdict(existingText);
+  const foreign = parseIosStringsdictFiles(rootDir, relativePath);
+  const conflicts: ResourceConflict[] = [];
+  const merged = new Map<string, ParsedStringsdictEntry>(existingOwn);
+
+  for (const entry of pluralEntries) {
+    const key = platformKey(entry.key, profile.i18n.keyStyle);
+    const incoming: ParsedStringsdictEntry = {
+      variable: entry.plural!.variable,
+      forms: { ...entry.plural!.forms }
+    };
+    const foreignHit = foreign.get(key);
+    if (foreignHit) {
+      if (!sameStringsdictEntry(foreignHit.entry, incoming)) {
+        conflicts.push({
+          key,
+          existing: describeStringsdictEntry(foreignHit.entry),
+          incoming: describeStringsdictEntry(incoming)
+        });
+      }
+      merged.delete(key);
+      continue;
+    }
+    merged.set(key, incoming);
+  }
+
+  if (merged.size === 0) {
+    if (conflicts.length === 0) return null;
+    return { relativePath, action: "unchanged", conflicts, content: existingText ?? "" };
+  }
+
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -814,27 +1008,14 @@ export function renderIosStringsdict(
     '<plist version="1.0">',
     "<dict>"
   ];
-  for (const entry of pluralEntries) {
-    const plural = entry.plural!;
-    const key = platformKey(entry.key, profile.i18n.keyStyle);
-    lines.push(`  <key>${escapeXml(key)}</key>`, "  <dict>");
-    lines.push("    <key>NSStringLocalizedFormatKey</key>", `    <string>%#@${plural.variable}@</string>`);
-    lines.push(`    <key>${plural.variable}</key>`, "    <dict>");
-    lines.push("      <key>NSStringFormatSpecTypeKey</key>", "      <string>NSStringPluralRuleType</string>");
-    lines.push("      <key>NSStringFormatValueTypeKey</key>", "      <string>d</string>");
-    for (const quantity of PLURAL_QUANTITIES) {
-      const form = plural.forms[quantity];
-      if (form === undefined) continue;
-      lines.push(`      <key>${quantity}</key>`);
-      lines.push(`      <string>${pluralFormToIos(form, plural.variable)}</string>`);
-    }
-    lines.push("    </dict>", "  </dict>");
+  for (const key of [...merged.keys()].sort()) {
+    lines.push(...renderStringsdictEntry(key, merged.get(key)!));
   }
   lines.push("</dict>", "</plist>", "");
 
   const content = lines.join("\n");
   const action: ResourceWrite["action"] = existingText === content ? "unchanged" : "written";
-  return { relativePath, action, conflicts: [], content };
+  return { relativePath, action, conflicts, content };
 }
 
 function readExisting(absolute: string): string | null {
@@ -859,7 +1040,7 @@ export function writeResourceFile(rootDir: string, write: ResourceWrite): Resour
 
 export function scanHardcodedStrings(
   rootDir: string,
-  stackId: "android-native" | "flutter",
+  stackId: "android-native" | "flutter" | "ios-native",
   options: { maxHits?: number } = {}
 ): HardcodedStringHit[] {
   const hits: HardcodedStringHit[] = [];
@@ -894,6 +1075,24 @@ export function scanHardcodedStrings(
       scanFile(file, regex);
     }
     return hits.filter((hit) => !hit.text.startsWith("@") && !hit.text.startsWith("?"));
+  }
+
+  if (stackId === "ios-native") {
+    const files = walkProjectFiles(rootDir, ["**/*.swift"]).slice(0, MAX_SCAN_FILES);
+    const textApis = /\b(?:Text|Label)\(\s*"((?:[^"\\]|\\.)*)"/g;
+    const titleApis = /\.navigationTitle\(\s*"((?:[^"\\]|\\.)*)"/g;
+    for (const file of files) {
+      if (hits.length >= maxHits) break;
+      scanFile(file, textApis);
+      if (hits.length >= maxHits) break;
+      scanFile(file, titleApis);
+    }
+    return hits.filter(
+      (hit) =>
+        !/^https?:\/\//i.test(hit.text) &&
+        !hit.text.includes("://") &&
+        !/^[\d\s\p{P}\p{S}]+$/u.test(hit.text)
+    );
   }
 
   const files = walkProjectFiles(rootDir, ["lib/**/*.dart"]).slice(0, MAX_SCAN_FILES);

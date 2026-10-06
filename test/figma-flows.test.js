@@ -129,9 +129,44 @@ test("analyzeGapData: colors checked only with token contents; 3-digit hex expan
   assert.deepEqual(withTokens.missingColors, ["#00FF00"]);
 });
 
-test("normalizeAssetName: strips extension and separators", () => {
+test("normalizeAssetName: strips extension, @2x/@3x scale and separators", () => {
   assert.equal(normalizeAssetName("Home Icon.svg"), "home-icon");
-  assert.equal(normalizeAssetName("ic_cart@2x.png"), "ic-cart-2x");
+  assert.equal(normalizeAssetName("ic_cart@2x.png"), "ic-cart");
+  assert.equal(normalizeAssetName("home_icon@3x.png"), "home-icon");
+});
+
+test("analyzeGapData: @2x-only imageset does not report a false gap", () => {
+  const result = analyzeGapData({
+    designAssets: [{ id: "1:1", name: "Home Icon", suggestedFilename: "home_icon.svg" }],
+    designColors: [],
+    projectAssetPaths: ["Resources/Assets.xcassets/home_icon.imageset/home_icon@2x.png"]
+  });
+  assert.deepEqual(result.missingAssets, []);
+  assert.equal(result.existingAssets[0].matchedPath, "Resources/Assets.xcassets/home_icon.imageset/home_icon@2x.png");
+});
+
+test("analyzeGapData: iOS colorset 与 Swift Color(...) 均计入已有颜色", () => {
+  const colorset = JSON.stringify({
+    colors: [
+      {
+        color: {
+          "color-space": "srgb",
+          components: { red: "1.000", green: "0.000", blue: "0.000", alpha: "1.000" }
+        },
+        idiom: "universal"
+      }
+    ],
+    info: { author: "x", version: 1 }
+  });
+  const swift = ['let c = Color(red: 0.0, green: 1.0, blue: 0.0, opacity: 1.0)'].join("\n");
+  const result = analyzeGapData({
+    designAssets: [],
+    designColors: ["#FF0000", "#00FF00", "#0000FF"],
+    projectAssetPaths: [],
+    tokenContents: [colorset, swift]
+  });
+  assert.equal(result.colorsChecked, true);
+  assert.deepEqual(result.missingColors, ["#0000FF"]);
 });
 
 test("applyAssetNaming: retargets missing-asset filenames to the detected stack", () => {

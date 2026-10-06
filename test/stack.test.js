@@ -11,6 +11,7 @@ import {
   formatComponentFileName,
   formatTestFileName,
   primaryProfile,
+  skippedStacksWarning,
   STACK_PROFILES,
   toCase
 } from "../dist/projects/stack.js";
@@ -74,6 +75,33 @@ test("detects iOS from an xcodeproj", () => {
   const root = tmp();
   fs.mkdirSync(path.join(root, "ios", "App.xcodeproj"), { recursive: true });
   assert.equal(detectProjectStacks(root)[0].id, "ios-native");
+});
+
+test("detects iOS at root, nested depth ≤2, and ignores node_modules", () => {
+  const atRoot = tmp();
+  fs.mkdirSync(path.join(atRoot, "App.xcodeproj"), { recursive: true });
+  assert.equal(detectProjectStacks(atRoot)[0].id, "ios-native");
+
+  const nested = tmp();
+  fs.mkdirSync(path.join(nested, "apps", "ios", "Demo.xcworkspace"), { recursive: true });
+  assert.equal(detectProjectStacks(nested)[0].id, "ios-native");
+
+  const ignored = tmp();
+  fs.mkdirSync(path.join(ignored, "node_modules", "Dep.xcodeproj"), { recursive: true });
+  assert.equal(detectProjectStacks(ignored).length, 0);
+});
+
+test("skippedStacksWarning: 多栈时列出被跳过栈，单栈/无栈为 null", () => {
+  const stacks = [
+    { id: "android-native", displayName: "Android (Kotlin/Java)", reason: "gradle", confidence: 0.85 },
+    { id: "ios-native", displayName: "iOS (Swift)", reason: "xcodeproj", confidence: 0.8 }
+  ];
+  const warning = skippedStacksWarning(stacks, STACK_PROFILES["android-native"]);
+  assert.ok(warning);
+  assert.match(warning, /Android \(Kotlin\/Java\)/);
+  assert.match(warning, /iOS \(Swift\)/);
+  assert.equal(skippedStacksWarning([stacks[0]], STACK_PROFILES["android-native"]), null);
+  assert.equal(skippedStacksWarning(stacks, null), null);
 });
 
 test("detects Web from frontend dependencies", () => {

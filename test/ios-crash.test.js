@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
 import { collectIosCrashes, parseIps } from "../dist/crash/ios.js";
@@ -93,4 +95,87 @@ test("runtime.captureIosCrashes: 入索引并关联 traceId", async () => {
     { collect: () => ({ records: [], scanned: 0, skipped: null }) }
   );
   assert.equal(empty.status, "empty");
+});
+
+test("scanTraceForCrashes: ios- trace 路由 iOS 采集 + 有界重试", async () => {
+  const now = Date.now();
+  const dir = makeTempProject({ config: baseConfig() });
+  const traceDir = path.join(dir, ".artemis", "traces", "ios-scan-1");
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "status.json"),
+    JSON.stringify({
+      trace_id: "ios-scan-1",
+      status: "failed",
+      platform: "ios",
+      device_serial: "UDID-1",
+      start_time: (now - 60_000) / 1000,
+      end_time: now / 1000
+    })
+  );
+  const record = parseIps(IPS);
+  const calls = [];
+  let attempt = 0;
+  const iosCollector = (options) => {
+    calls.push(options);
+    attempt += 1;
+    return attempt >= 2
+      ? { records: [record], scanned: 1, skipped: null }
+      : { records: [], scanned: 0, skipped: null };
+  };
+  const { runtime } = await loadTestRuntime(dir, {
+    proxy: new StubProxy({ running: true }),
+    iosCrashCollector: iosCollector,
+    iosCrashRetry: { attempts: 3, delayMs: 1, sleep: async () => {} }
+  });
+  await runtime.recordTaskSubmission({
+    traceId: "ios-scan-1",
+    lockedAppPackage: "com.example.MyApp",
+    status: "submitted"
+  });
+  const report = await runtime.scanTraceForCrashes({ traceId: "ios-scan-1" });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].processName, "MyApp");
+  assert.equal(report.results[0].status, "captured");
+  assert.equal(report.results[0].source, "diagnostic-reports");
+  const list = runtime.crashStore.list({ limit: 10 });
+  assert.equal(list.records.length, 1);
+  assert.equal(list.records[0].kind, "ios");
+  assert.equal(list.records[0].traceIds[0], "ios-scan-1");
+});
+
+test("syncTaskStatuses: iOS 终态自动补扫（走 iOS 采集与重试路径）", async () => {
+  const now = Date.now();
+  const dir = makeTempProject({ config: baseConfig() });
+  const traceDir = path.join(dir, ".artemis", "traces", "ios-sync-1");
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "status.json"),
+    JSON.stringify({
+      trace_id: "ios-sync-1",
+      status: "failed",
+      platform: "ios",
+      device_serial: "UDID-1",
+      start_time: (now - 60_000) / 1000,
+      end_time: now / 1000
+    })
+  );
+  const record = parseIps(IPS);
+  const calls = [];
+  const { runtime } = await loadTestRuntime(dir, {
+    proxy: new StubProxy({ running: true }),
+    iosCrashCollector: (options) => {
+      calls.push(options);
+      return { records: [record], scanned: 1, skipped: null };
+    },
+    iosCrashRetry: { attempts: 2, delayMs: 1, sleep: async () => {} }
+  });
+  await runtime.recordTaskSubmission({ traceId: "ios-sync-1", status: "submitted", taskDesc: "T" });
+  const sync = await runtime.syncTaskStatuses();
+  assert.equal(sync.updated, 1);
+  await runtime.flushCrashScans();
+  assert.ok(calls.length >= 1);
+  const list = runtime.crashStore.list({ limit: 10 });
+  assert.equal(list.records.length, 1);
+  assert.equal(list.records[0].kind, "ios");
 });

@@ -590,7 +590,7 @@ llm_switch(name, force):
 - 图片（§13.3 补强之一）：`applyAssetNaming` 对通用图层名（`Frame 427`）回退为确定性 `asset <figmaId hash8>`（按栈命名，如 `ic_asset_1a2b3c4d.svg`）并标 `needsRename`；位图倍率集（不再统一 @2x）已于 2026-10-02 落地（§13.35）。
 
 **与 §13 设计的差异（记录）**
-1. 文案写入已铺开至 Android/Flutter/RN/Web/iOS 五栈（原 M6b 计划先做 1–2 栈，随后补齐）；token 写入含 Android/Flutter/RN/Web，iOS token 文件不支持（返回 null）。
+1. 文案写入已铺开至 Android/Flutter/RN/Web/iOS 五栈（原 M6b 计划先做 1–2 栈，随后补齐）；token 写入含 Android/Flutter/RN/Web/iOS（iOS 见 §13.53：`Colors.xcassets` colorsets + `AosTokens.swift`）。
 2. 反向工程场景（无 Variables/Styles）下颜色命名由样例图层名推导并 `needsReview` 标注，人工经 `token-names.json` 修正，不静默猜测。
 3. Android 文案写入专用生成文件（不改用户 `strings.xml`），冲突通过扫描既有资源检出。
 4. `needs_rename` 文本仍写入资源（nodeId hash key）保证可用性，重命名后走正常派生。
@@ -969,3 +969,42 @@ llm_switch(name, force):
 - **语义**：模拟器走 simctl 列表/Booted 校验不变；真机 UDID 跳过 simctl 校验（无 boot 概念），直接交给 idb 后端，连接失败由 idb 报错并带指引；`reset`/`suiteResetFor`/logcat 降级同样识别真机。
 - **未验证**：本机无 iPhone，真机链路（idb 连接、配对隧道、真机截图/动作）为 best-effort，未实测；方案 §3 P3 的签名/配对自动化仍是前置。
 - **风险**：40-hex 与个别 Android 序列号形态可能碰撞（概率低）；如遇误判可用非 UDID 形态 serial 或先 `lldb`/`idb list-targets` 核对。
+
+### 13.50 实施记录（MCP 服务名更名 mobile-testing + 旧键迁移扩展）
+
+> 实施于 2026-10-06；`src/install.ts`（`MCP_SERVER_NAME` + `LEGACY_SERVER_NAMES`）、`test/install.test.js`（旧键迁移用例覆盖 `android-testing`），文档同步 README / 接入指南。
+
+- **决策**：iOS 设备后端（§13.41–§13.49）落地后，服务名 `android-testing`（§13.12 因当时仅支持 Android 而定）不再成立，更名为 **`mobile-testing`**——覆盖 Android + iOS 双端真机/模拟器测试。ASCII 硬约束不变（客户端 MCP 列表与工具名前缀只显示该名，工具名本身不变）。
+- **范围**：`install` 生成的四个客户端配置键（`mcpServers.mobile-testing` / `servers.mobile-testing` / `mcp.mobile-testing`）与 Codex 手动片段同步；协议层 Server name（`aos-mcp`）与 CLI/包名不变（沿用 §13.12 先例）。
+- **旧键迁移**：`LEGACY_SERVER_NAMES = ["aos", "android-testing"]`，install 写入前移除同一父路径下的两个历史键，避免同一客户端同时加载新旧 server；仅移除历史键，不动其他 server 与注释。已挂载客户端执行一次 `install --force`（或手动改键）后重启即生效。
+
+### 13.51 实施记录（iOS trace 跨进程持久化与中断归因）
+
+> 实施于 2026-10-06；新增 `src/ios/trace-store.ts`（磁盘视图 + 归因 + orphan 落盘）；`src/ios/task-runner.ts`（原子写、`status.json` 补 `platform`/`pid`/`process_started_at`、`maybeIosManageTask` 两级查找）；`src/ios/inspect.ts`（签名对齐 `maybeIosDeviceState(runtime,args,deps)`，磁盘 fallback 渲染复用同一视图）；`src/runtime.ts`（`traceStatus` 读路径归因收尾）；`test/ios-trace-store.test.js`（6 例）、`test/ios-task-runner.test.js`/`test/ios-inspect.test.js` 签名适配与落盘字段用例。
+
+- **持久化**：`run.json`/`status.json` 改 `writeFileAtomic`（原子替换，此前为普通写）；两者记录 `platform:"ios"`、`pid`（owner 进程）、`process_started_at`（`now - process.uptime()`，备查 pid 复用）。
+- **两级查找**：`mobile_manage_task`/`mobile_inspect_trace` 先查进程内任务表，未命中再读 trace 目录；平台判据以持久化 `platform` 字段优先，`ios-` 前缀仅作旧 trace fallback（平台字段为其他值或无字段且非 `ios-` 前缀 → ARTEMIS 透传，行为不变）。
+- **归因（orphaned）**：磁盘视图对 `running` 做存活校验——pid 存活保持 `running` 并给 note（超过阈值加 `stale`）；pid 已退出、或无 pid 且 `status.json` 最后写入超过阈值（心跳语义，`AOS_IOS_STALE_MS` 默认 30 分钟）→ 归 `orphaned`（复用既有终态词，`TERMINAL_TASK_STATUSES` 内含）并回写 `status.json`/`run.json`，30s `syncTaskStatuses` 随即把 `aos_tasks` 收尾；磁盘态跨进程 stop/inject 明确返回「无法跨进程操作」，不伪造成功。
+- **边界**：升级前产生的纯内存 iOS trace（无磁盘产物）查不到，属预期行为；pid 复用未做进一步指纹校验（仅记录 `process_started_at` 备查）；`traceStatus` 在读路径上做幂等归因回写。
+- **测试**：磁盘存活/死亡两分支（注入 liveness）、无 pid 超时与未超时（注入 clock）、platform 字段优先/前缀 fallback/android 不接管、inspect 磁盘步骤检索、`runtime.traceStatus` 收尾、运行中任务落盘 `platform`/`pid` 字段。
+
+### 13.52 实施记录（iOS 平台对等 M1：执行与证据链，票据 02–07）
+
+> 实施于 2026-10-06；`src/ios/task-runner.ts`（参数 warnings / app_path 拒绝 / app 锁定 / post 截图 / 屏幕文本 / settle / scale）、`src/ios/overlay.ts`（动作标注）、`src/ios/inspect.ts`、`src/ios/trace-store.ts`、`src/device/ios-log.ts`、`src/figma/suite-runner.ts`、`src/suite-command.ts`、`src/runtime.ts`、`src/diff/tool.ts`；测试新增 `test/ios-overlay.test.js`、`test/ios-log.test.js` 并扩充 ios/suite 系列。
+
+- **参数语义与锁定（票据 03）**：iOS 启动/失败响应恒含机器可读 `warnings[]`（`{code:"param_ignored", field, actual}`；`model` 落实际模型、`conversation_id`=poll-only，其余=unsupported-on-ios）；AOS 代理层对 Android `mobile_run_task` 响应补空 `warnings`（双端同构，纯增量）；`app_path` 结构化拒绝（`code:app_path_unsupported`，启动失败同样写入任务行）；`locked_app_package` 限制 `launch`/`terminate` 仅目标 bundle、禁用 `openUrl`；前台逃逸为已知限制（文档+backlog）。
+- **套件契约（票据 04）**：iOS trace 由执行器单点记账（套件按持久化 `platform` 字段跳过，`ios-` 前缀 fallback）；iOS 复位异常 reason=`launch-failed`（failure-taxonomy 归 environment）；合成 `test_summary` 带 `synthesized:true`（`TaskTestSummary` 同步解析）。
+- **iOS 日志（票据 05）**：`src/device/ios-log.ts`——`xcrun simctl spawn <udid> log show --predicate 'process == "名"'`，超时 15s、行数上限 2000（超限即放弃并降级 `log-over-limit`；`AOS_IOS_LOG_TIMEOUT_MS`/`AOS_IOS_LOG_MAX_LINES`）；非 darwin/no-process/log-empty/log-show-failed 显式降级；套件注入式采集（`iosLogCollector`）与 `suite api-errors --app <bundle>` 接入，成功时 `source:"simctl-log"`。
+- **崩溃路由（票据 06）**：`aos_crashes scan`（显式与批量）按 `platform`/前缀路由 iOS 采集（`processName` 取 lockedPackages、窗口取 status.json/任务台账），`empty` 时有界重试（默认 3 次 × 2s，可注入），结果记入 scan 索引；进程死亡由 `syncTaskStatuses` 对 iOS 终态同样触发该路径（不再按前缀跳过），`captureIosCrashes` 不写 scan 索引、统一由扫描路径收口。
+- **inspect 增强（票据 02）**：每步持久化屏幕文本摘要并纳入 search；动作后（含 done/fail 终态步）经可配置 settle（默认 200ms，0–2000，`AOS_IOS_SETTLE_MS`）补真实 post 截图；动作标注 overlay 按需生成（tap/swipe/text，坐标 point×scale，pngjs 画环，失败显式 `action_overlay_error`）；`view_step_details` 补 `device_serial`；`view_step_screenshots` 的 after 改为同一步 post（与 Android 语义对齐，不再用下一步观察图）。
+- **diff step（票据 07）**：移除 `platform="ios"` 仅 live 的限制；iOS trace 步骤截图可作设备源（跨进程依赖 §13.51 磁盘 fallback）。
+
+### 13.53 实施记录（iOS 平台对等 M2：设计代码化，票据 08–12）
+
+> 实施于 2026-10-06；`src/figma/color.ts`、`src/projects/stack.ts`、`src/figma/import-tokens.ts` / `src/pen/tokens.ts`、`src/figma/gaps.ts`、`src/figma/import.ts`、`src/figma/strings.ts`、`src/figma/import-strings.ts`、`src/figma/brief.ts` / `src/pen/brief.ts`、`src/diff/screen-map.ts`；测试扩充 tokens/import-assets/figma-flows/strings/strings-plural/stack。
+
+- **iOS token 产物（票据 08）**：`ios-native` 的 `i18n.tokenFile`=`ios/AosTokens.swift`；生成 Swift 枚举（`static let colorBrandPrimary = Color("color.brand.primary")`，marker 注释）+ `Resources/Colors.xcassets/<token>.colorset/Contents.json`（sRGB 浮点组件、marker 写入 info.author）；`StackTokenWrite.extraFiles` 与主文件同一幂等/覆盖语义；figma/pen 两路径同行为。
+- **缺口分析（票据 09）**：颜色提取支持 colorset JSON（浮点→hex）与 Swift `Color(red:green:blue:)`（`Color("assetName")` 由同名 colorset 覆盖）；其余形式声明不识别；资产 basename 规范化剥离 `@2x/@3x`，仅 @2x/@3x 的 imageset 不再误报。
+- **资产导入（票据 10）**：iOS 默认 SVG 落 `<dir>/<name>.imageset/` + vector `Contents.json`（`preserves-vector-representation`）；`Contents.json` 仅在图片成功写入后写（error/duplicate 跳过并标注），统一走 hash/`duplicate_of` 幂等；单倍率位图同样收敛进 imageset。
+- **strings（票据 11）**：locale 映射 `iosLocaleDirectory`（zh→zh-Hans、zh-TW→zh-Hant-TW、zh-Hant-HK/pt-BR 保真）与 `androidLocaleDir`（`values-zh-rHK` 旧式，不切 `b+`）；iOS 跨 `.lproj` 冲突检测（用户文件优先，冲突经 resolutions 闭环）；`.stringsdict` 解析/合并/冲突（保留人工条目，冲突时不覆盖、不产生空文件）；Swift 硬编码文案白名单扫描（Text/Label/navigationTitle；排除 URL/数字/符号/NSLocalizedString）。
+- **栈检测与多栈警告（票据 12）**：iOS 检测放宽为限深 ≤2 层搜索 `xcodeproj/xcworkspace`（忽略 node_modules/dist/build/Pods 等）；tokens/assets/brief/gap/screen-map 在跳过非主栈时响应带 `warnings`（列出被跳过栈；全栈分别产出为 backlog）。

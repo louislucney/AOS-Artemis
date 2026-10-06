@@ -151,3 +151,13 @@ test("sweepStaleChild: orphan mcp_server process is terminated and reported", as
     await kill(child);
   }
 });
+
+test("mobile_run_task：Android 透传响应补空 warnings（双端同构）", async () => {
+  const { runtime } = await setup();
+  const result = await runtime.proxy.callTool("mobile_run_task", {
+    task_desc: "x",
+    device_serial: "emulator-5554"
+  });
+  const payload = JSON.parse(result.content[0].text);
+  assert.deepEqual(payload.warnings, []);
+});

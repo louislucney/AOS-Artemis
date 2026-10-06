@@ -95,7 +95,7 @@ async function startFailedTask(runtime, shotPng) {
       await maybeIosRunTask(
         runtime,
         { task_desc: "查找按钮并点击", device_serial: UDID },
-        { entry: ENTRY, device: fakeDevice(shotPng), chat, listSimulators: bootedSims(), stepDelayMs: 0 }
+        { entry: ENTRY, device: fakeDevice(shotPng), chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
       )
     ).content[0].text
   );
@@ -128,7 +128,7 @@ test("view_summary: 步骤与终态", async () => {
   const { runtime } = await makeRuntime();
   const { started, record } = await startFailedTask(runtime, Buffer.from(toPng(createImage(4, 4))));
   const payload = payloadOf(
-    maybeIosInspectTrace({ action: "view_summary", trace_id: started.trace_id })
+    maybeIosInspectTrace(runtime, { action: "view_summary", trace_id: started.trace_id })
   );
   assert.equal(payload.ok, true);
   assert.equal(payload.status, "failed");
@@ -137,37 +137,41 @@ test("view_summary: 步骤与终态", async () => {
   assert.equal(record.result.summary, "未找到按钮");
 });
 
-test("view_step_screenshots: before=本步观察图，after=下一步观察图", async () => {
+test("view_step_screenshots: before/post=同一步截图，overlay 按需生成", async () => {
   const { runtime } = await makeRuntime();
   const { started, record } = await startFailedTask(runtime, Buffer.from(toPng(createImage(4, 4))));
   const first = payloadOf(
-    maybeIosInspectTrace({ action: "view_step_screenshots", trace_id: started.trace_id, step_number: 1 })
+    maybeIosInspectTrace(runtime, { action: "view_step_screenshots", trace_id: started.trace_id, step_number: 1 })
   );
   assert.equal(first.before_screenshot, path.join(record.runDir, "shots/step-1.png"));
-  assert.equal(first.after_screenshot, path.join(record.runDir, "shots/step-2.png"));
-  assert.equal(first.action_overlay_screenshot, null);
+  assert.equal(first.after_screenshot, path.join(record.runDir, "shots/step-1-post.png"));
+  assert.equal(first.action_overlay_screenshot, path.join(record.runDir, "shots/step-1-overlay.png"));
+  assert.ok(fs.existsSync(first.action_overlay_screenshot));
   assert.equal(first.device_serial, UDID);
   assert.ok(fs.existsSync(first.before_screenshot));
 
   const last = payloadOf(
-    maybeIosInspectTrace({ action: "view_step_screenshots", trace_id: started.trace_id, step_number: 2 })
+    maybeIosInspectTrace(runtime, { action: "view_step_screenshots", trace_id: started.trace_id, step_number: 2 })
   );
-  assert.equal(last.after_screenshot, null);
+  assert.equal(last.after_screenshot, path.join(record.runDir, "shots/step-2-post.png"));
+  assert.equal(last.action_overlay_screenshot, null);
+  assert.equal(last.action_overlay_error, "unsupported-action-or-scale");
 });
 
 test("view_step_details: 单步推理/动作/结果", async () => {
   const { runtime } = await makeRuntime();
   const { started } = await startFailedTask(runtime, Buffer.from(toPng(createImage(4, 4))));
   const payload = payloadOf(
-    maybeIosInspectTrace({ action: "view_step_details", trace_id: started.trace_id, step_number: 1 })
+    maybeIosInspectTrace(runtime, { action: "view_step_details", trace_id: started.trace_id, step_number: 1 })
   );
   assert.equal(payload.action, "tap");
+  assert.equal(payload.device_serial, UDID);
   assert.deepEqual(payload.params, { x: 10, y: 20 });
   assert.equal(payload.outcome, "ok");
   assert.equal(payload.perception, "text");
 
   const missing = payloadOf(
-    maybeIosInspectTrace({ action: "view_step_details", trace_id: started.trace_id, step_number: 9 })
+    maybeIosInspectTrace(runtime, { action: "view_step_details", trace_id: started.trace_id, step_number: 9 })
   );
   assert.equal(missing.ok, false);
 });
@@ -176,13 +180,13 @@ test("search: 全文/分词匹配与 step_range", async () => {
   const { runtime } = await makeRuntime();
   const { started } = await startFailedTask(runtime, Buffer.from(toPng(createImage(4, 4))));
   const hit = payloadOf(
-    maybeIosInspectTrace({ action: "search", trace_id: started.trace_id, query: "未找到按钮" })
+    maybeIosInspectTrace(runtime, { action: "search", trace_id: started.trace_id, query: "未找到按钮" })
   );
   assert.equal(hit.matches, 1);
   assert.match(hit.results, /^\[Step 2\]/m);
 
   const ranged = payloadOf(
-    maybeIosInspectTrace({
+    maybeIosInspectTrace(runtime, {
       action: "search",
       trace_id: started.trace_id,
       query: "按钮",
@@ -194,13 +198,19 @@ test("search: 全文/分词匹配与 step_range", async () => {
   assert.match(ranged.results, /^\[Step 1\]/m);
 
   const none = payloadOf(
-    maybeIosInspectTrace({ action: "search", trace_id: started.trace_id, query: "完全不存在的内容" })
+    maybeIosInspectTrace(runtime, { action: "search", trace_id: started.trace_id, query: "完全不存在的内容" })
   );
   assert.equal(none.matches, 0);
+
+  const byScreen = payloadOf(
+    maybeIosInspectTrace(runtime, { action: "search", trace_id: started.trace_id, query: "按钮" })
+  );
+  assert.equal(byScreen.matches, 2);
 });
 
-test("非 iOS trace 不接管", () => {
-  assert.equal(maybeIosInspectTrace({ action: "view_summary", trace_id: "t1" }), null);
+test("非 iOS trace 不接管", async () => {
+  const { runtime } = await makeRuntime();
+  assert.equal(maybeIosInspectTrace(runtime, { action: "view_summary", trace_id: "t1" }), null);
 });
 
 test("design_device_diff：iOS 失败步骤自动锚定 + pre 截图对比", async () => {
@@ -218,7 +228,7 @@ test("design_device_diff：iOS 失败步骤自动锚定 + pre 截图对比", asy
       const payload = parseToolResult(
         await designDeviceDiff(runtime, {
           design: { figmaUrl: "https://www.figma.com/design/IosStep1/File?node-id=1-2" },
-          device: { mode: "step", traceId: started.trace_id, image: "pre" }
+          device: { mode: "step", traceId: started.trace_id, image: "pre", platform: "ios" }
         })
       );
       assert.equal(payload.ok, true, JSON.stringify(payload));

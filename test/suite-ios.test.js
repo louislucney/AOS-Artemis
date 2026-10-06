@@ -51,11 +51,17 @@ test("suiteResetFor: iOS 设备 UDID 用 iOS 复位，其余用 adb", () => {
 test("suite runner: iOS UDID 任务跑通用例并标记 logcat 降级", async () => {
   __resetIosTasks();
   const { dir, proxy, runtime } = await setupIos();
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "error-codes.json"),
+    JSON.stringify({ version: 1, codes: { AUTH_401: { match: "HTTP\\s*401" } } })
+  );
   writeStatus(dir, "trace-1", {
     trace_id: "trace-1",
     status: "completed",
     device_serial: UDID,
-    message: "done"
+    message: "done",
+    start_time: 1000,
+    end_time: 1010
   });
   const resetCalls = [];
   const report = await runGeneratedTests(runtime, {
@@ -67,7 +73,13 @@ test("suite runner: iOS UDID 任务跑通用例并标记 logcat 降级", async (
     },
     sleep: async () => {},
     pollIntervalMs: 0,
-    apiErrors: true
+    apiErrors: true,
+    iosLogCollector: async () => ({
+      status: "skipped",
+      reason: "ios-log-unsupported",
+      text: "",
+      serial: UDID
+    })
   });
   assert.equal(report.ok, true);
   assert.equal(report.passed, 1, JSON.stringify(report.cases));
@@ -105,4 +117,73 @@ test("suite runner: iOS 失败任务（test_summary）走分类", async () => {
   assert.ok(failure, "failure classification present");
   assert.equal(typeof failure.domain, "string");
   assert.equal(report.cases[0].testSummary.failed, 1);
+});
+
+test("suite runner: iOS 复位异常 reason 归 iOS 侧（launch-failed → environment）", async () => {
+  __resetIosTasks();
+  const { dir, runtime } = await setupIos();
+  writeStatus(dir, "trace-1", {
+    trace_id: "trace-1",
+    status: "failed",
+    device_serial: UDID,
+    error: "任务失败"
+  });
+  const report = await runGeneratedTests(runtime, {
+    deviceSerial: UDID,
+    lockedAppPackage: "com.apple.Preferences",
+    reset: async () => {
+      throw new Error("idb boom");
+    },
+    sleep: async () => {},
+    pollIntervalMs: 0,
+    apiErrors: false
+  });
+  assert.equal(report.cases[0].reset.reason, "launch-failed");
+  assert.equal(report.cases[0].failure.domain, "environment");
+  assert.match(report.cases[0].failure.reason, /launch-failed/);
+});
+
+test("suite runner: iOS trace 仅执行器记账（platform 字段优先，不重复）", async () => {
+  __resetIosTasks();
+  const { dir, runtime } = await setupIos();
+  writeStatus(dir, "trace-1", {
+    trace_id: "trace-1",
+    status: "completed",
+    platform: "ios",
+    device_serial: UDID
+  });
+  const report = await runGeneratedTests(runtime, {
+    deviceSerial: UDID,
+    sleep: async () => {},
+    pollIntervalMs: 0,
+    apiErrors: false
+  });
+  assert.equal(report.passed, 1);
+  assert.equal((await runtime.taskList(10)).length, 0);
+});
+
+test("suite runner: ios- 前缀 fallback 同样跳过套件记账", async () => {
+  __resetIosTasks();
+  const dir = makeTempProject({ config: baseConfig() });
+  const traceId = "ios-12345678-1234-4123-8123-123456789012";
+  const proxy = new SuiteProxy({ statuses: { [traceId]: { status: "completed", device_serial: UDID } } });
+  proxy.callTool = async function (name, args) {
+    if (name === "mobile_run_task") {
+      return { content: [{ type: "text", text: JSON.stringify({ trace_id: traceId }) }] };
+    }
+    return SuiteProxy.prototype.callTool.call(this, name, args);
+  };
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+  runtime.proxy = proxy;
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(path.join(designDir, "tests.json"), JSON.stringify({ flows: [caseEntry(1)] }));
+  const report = await runGeneratedTests(runtime, {
+    deviceSerial: UDID,
+    sleep: async () => {},
+    pollIntervalMs: 0,
+    apiErrors: false
+  });
+  assert.equal(report.passed, 1);
+  assert.equal((await runtime.taskList(10)).length, 0);
 });

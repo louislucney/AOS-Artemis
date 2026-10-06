@@ -158,7 +158,7 @@ test("locked_app_package：循环前自动启动应用", async () => {
     await maybeIosRunTask(
       runtime,
       { task_desc: "任务", device_serial: UDID, locked_app_package: "com.apple.Preferences" },
-      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0 }
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
     )
   );
   const record = await waitFor(() => {
@@ -199,7 +199,7 @@ test("完整执行：动作 → done，落盘 run.json/status.json 与截图证�
     await maybeIosRunTask(
       runtime,
       { task_desc: "点击搜索按钮", device_serial: UDID },
-      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0 }
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
     )
   );
   assert.equal(started.status, "running");
@@ -256,7 +256,7 @@ test("层级为空时走视觉模型：截图入参、perception=image、vision 
         visionChat,
         visionTarget,
         listSimulators: bootedSims(),
-        stepDelayMs: 0
+        stepDelayMs: 0, settleMs: 0
       }
     )
   );
@@ -301,7 +301,7 @@ test("视觉调用失败 → 降级纯文本并记录原因", async () => {
         visionChat,
         visionTarget,
         listSimulators: bootedSims(),
-        stepDelayMs: 0
+        stepDelayMs: 0, settleMs: 0
       }
     )
   );
@@ -331,7 +331,7 @@ test("模型输出非法 JSON 记为 invalid 并继续", async () => {
     await maybeIosRunTask(
       runtime,
       { task_desc: "任务", device_serial: UDID },
-      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0 }
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
     )
   );
   const record = await waitFor(() => {
@@ -353,7 +353,7 @@ test("超出步数上限 → failed", async () => {
     await maybeIosRunTask(
       runtime,
       { task_desc: "任务", device_serial: UDID },
-      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, maxSteps: 2 }
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0, maxSteps: 2 }
     )
   );
   const record = await waitFor(() => {
@@ -374,21 +374,21 @@ test("mobile_manage_task：status/stop/inject_instruction/未知 trace", async (
     await maybeIosRunTask(
       runtime,
       { task_desc: "长任务", device_serial: UDID },
-      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 60 }
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 60, settleMs: 0 }
     )
   );
 
-  const status = payloadOf(maybeIosManageTask({ action: "status", trace_id: started.trace_id }));
+  const status = payloadOf(maybeIosManageTask(runtime, { action: "status", trace_id: started.trace_id }));
   assert.equal(status.status, "running");
   assert.equal(status.device_serial, UDID);
   assert.equal(status.task_desc, "长任务");
 
   const injected = payloadOf(
-    maybeIosManageTask({ action: "inject_instruction", trace_id: started.trace_id, instruction: "改为点击搜索" })
+    maybeIosManageTask(runtime, { action: "inject_instruction", trace_id: started.trace_id, instruction: "改为点击搜索" })
   );
   assert.match(injected.message, /已注入/);
 
-  const stopped = payloadOf(maybeIosManageTask({ action: "stop", trace_id: started.trace_id }));
+  const stopped = payloadOf(maybeIosManageTask(runtime, { action: "stop", trace_id: started.trace_id }));
   assert.match(stopped.message, /已请求停止/);
 
   const record = await waitFor(() => {
@@ -397,7 +397,7 @@ test("mobile_manage_task：status/stop/inject_instruction/未知 trace", async (
   });
   assert.equal(record.status, "cancelled");
 
-  assert.equal(maybeIosManageTask({ action: "status", trace_id: "not-ios" }), null);
+  assert.equal(maybeIosManageTask(runtime, { action: "status", trace_id: "not-ios" }), null);
 });
 
 test("LLM 调用失败 → failed 并记录原因", async () => {
@@ -408,7 +408,7 @@ test("LLM 调用失败 → failed 并记录原因", async () => {
     await maybeIosRunTask(
       runtime,
       { task_desc: "任务", device_serial: UDID },
-      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0 }
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
     )
   );
   const record = await waitFor(() => {
@@ -417,4 +417,143 @@ test("LLM 调用失败 → failed 并记录原因", async () => {
   });
   assert.equal(record.status, "failed");
   assert.match(record.result.summary, /LLM 调用失败/);
+  const status = payloadOf(
+    maybeIosManageTask(runtime, { action: "status", trace_id: started.trace_id })
+  );
+  assert.equal(status.test_summary.synthesized, true);
+  assert.equal(status.test_summary.failed, 1);
+});
+
+test("run.json/status.json 记录 platform 与 owner pid（原子写）", async () => {
+  const { runtime } = await makeRuntime();
+  const device = fakeDevice();
+  const { chat } = scriptedChat([
+    JSON.stringify({ thought: "完成", action: "done", success: true, summary: "ok" })
+  ]);
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "任务", device_serial: UDID },
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  const status = JSON.parse(fs.readFileSync(path.join(record.runDir, "status.json"), "utf-8"));
+  const run = JSON.parse(fs.readFileSync(path.join(record.runDir, "run.json"), "utf-8"));
+  assert.equal(status.platform, "ios");
+  assert.equal(status.pid, process.pid);
+  assert.equal(run.platform, "ios");
+  assert.equal(run.pid, process.pid);
+  assert.equal(typeof status.process_started_at, "string");
+  assert.equal(typeof run.process_started_at, "string");
+});
+
+test("参数语义：不适用参数进 warnings（机器可读），无参时空数组", async () => {
+  const { runtime } = await makeRuntime();
+  const device = fakeDevice();
+  const { chat } = scriptedChat([
+    JSON.stringify({ action: "done", success: true, summary: "ok" })
+  ]);
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      {
+        task_desc: "任务",
+        device_serial: UDID,
+        model: "Pro",
+        verification_level: "checkpoints",
+        explorer_mode: "ultra",
+        expected_output_desc: "report",
+        conversation_id: "c1"
+      },
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+    )
+  );
+  assert.deepEqual(
+    started.warnings.map((warning) => warning.field),
+    ["model", "verification_level", "explorer_mode", "expected_output_desc", "conversation_id"]
+  );
+  assert.equal(started.warnings[0].code, "param_ignored");
+  assert.equal(started.warnings[0].actual, "fake-model");
+  assert.equal(started.warnings[4].actual, "poll-only");
+
+  const plainChat = scriptedChat([JSON.stringify({ action: "done", success: true, summary: "ok" })]);
+  const plain = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "任务2", device_serial: UDID },
+      { entry: ENTRY, device: fakeDevice(), chat: plainChat.chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+    )
+  );
+  assert.deepEqual(plain.warnings, []);
+});
+
+test("app_path 明确拒绝并写入任务行", async () => {
+  const { runtime } = await makeRuntime();
+  const rejected = payloadOf(
+    await maybeIosRunTask(runtime, { task_desc: "任务", device_serial: UDID, app_path: "/tmp/app.apk" })
+  );
+  assert.equal(rejected.status, "failed");
+  assert.equal(rejected.code, "app_path_unsupported");
+  assert.match(rejected.error, /locked_app_package/);
+  assert.deepEqual(rejected.warnings, []);
+  const tasks = await runtime.taskList(10);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].status, "failed");
+  assert.equal(tasks[0].taskDesc, "任务");
+});
+
+test("locked_app_package 限制动作：越界 launch 被拒、openUrl 禁止", async () => {
+  const { runtime } = await makeRuntime();
+  const device = fakeDevice();
+  const { chat } = scriptedChat([
+    JSON.stringify({ thought: "逃逸", action: "launch", bundleId: "com.evil" }),
+    JSON.stringify({ thought: "深链", action: "openUrl", url: "https://example.com" }),
+    JSON.stringify({ thought: "完成", action: "done", success: true, summary: "ok" })
+  ]);
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "任务", device_serial: UDID, locked_app_package: "com.example.app" },
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  assert.match(record.steps[0].outcome, /已被 locked_app_package 限制/);
+  assert.match(record.steps[1].outcome, /禁止 openUrl/);
+  const launched = device.calls.filter((call) => call[0] === "launch").map((call) => call[1]);
+  assert.deepEqual(launched, ["com.example.app"]);
+  assert.equal(device.calls.some((call) => call[0] === "openUrl"), false);
+});
+
+test("每步持久化屏幕文本、post 截图与 scale（settle 可注入）", async () => {
+  const { runtime } = await makeRuntime();
+  const device = fakeDevice();
+  const { chat } = scriptedChat([
+    JSON.stringify({ thought: "点", action: "tap", x: 100, y: 200 }),
+    JSON.stringify({ thought: "完成", action: "done", success: true, summary: "ok" })
+  ]);
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "任务", device_serial: UDID },
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  const run = JSON.parse(fs.readFileSync(path.join(record.runDir, "run.json"), "utf-8"));
+  const step1 = run.steps[0];
+  assert.match(step1.screen, /搜索/);
+  assert.ok(step1.postShot.endsWith("step-1-post.png"));
+  assert.ok(fs.existsSync(path.join(record.runDir, step1.postShot)));
+  assert.equal(typeof step1.scale, "number");
 });

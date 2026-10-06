@@ -205,13 +205,13 @@ test("figma_import_strings: iOS writes .stringsdict and keeps it out of .strings
         await figmaImportStrings(runtime, { url: `https://www.figma.com/design/${fileKey}/Demo` })
       );
       const paths = payload.resources.map((resource) => resource.path);
-      assert.deepEqual(paths, ["ios/zh.lproj/Localizable.strings", "ios/zh.lproj/Localizable.stringsdict"]);
+      assert.deepEqual(paths, ["ios/zh-Hans.lproj/Localizable.strings", "ios/zh-Hans.lproj/Localizable.stringsdict"]);
       assert.equal(payload.resources[1].action, "written");
 
-      const strings = fs.readFileSync(path.join(dir, "ios/zh.lproj/Localizable.strings"), "utf-8");
+      const strings = fs.readFileSync(path.join(dir, "ios/zh-Hans.lproj/Localizable.strings"), "utf-8");
       assert.ok(!strings.includes("cartItemCount"));
 
-      const stringsdict = fs.readFileSync(path.join(dir, "ios/zh.lproj/Localizable.stringsdict"), "utf-8");
+      const stringsdict = fs.readFileSync(path.join(dir, "ios/zh-Hans.lproj/Localizable.stringsdict"), "utf-8");
       assert.match(stringsdict, /<key>cartItemCount<\/key>/);
       assert.match(stringsdict, /<key>NSStringLocalizedFormatKey<\/key>\s*<string>%#@count@<\/string>/);
       assert.match(stringsdict, /<key>NSStringFormatSpecTypeKey<\/key>\s*<string>NSStringPluralRuleType<\/string>/);
@@ -250,6 +250,103 @@ test("figma_import_strings: unmatched and invalid context entries are surfaced, 
       assert.equal(payload.stringContext.errors.length, 1);
       assert.match(payload.stringContext.errors[0], /bad\.entry/);
       assert.match(payload.hint, /string-context\.json/);
+    } finally {
+      restore();
+    }
+  });
+});
+
+test("figma_import_strings: iOS stringsdict 跨 .lproj 冲突 → 不覆盖用户条目", async () => {
+  await withFigmaEnv(async () => {
+    const fileKey = "PluralIosConflict";
+    const restore = stubFigma(pluralDocument(), fileKey);
+    const dir = makeIosProject();
+    const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+    writeContext(dir, { "cart.item_count": PLURAL_FORMS });
+    fs.mkdirSync(path.join(dir, "ios/en.lproj"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "ios/en.lproj/Localizable.stringsdict"),
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<plist version="1.0">',
+        "<dict>",
+        "  <key>cartItemCount</key>",
+        "  <dict>",
+        "    <key>NSStringLocalizedFormatKey</key>",
+        "    <string>%#@count@</string>",
+        "    <key>count</key>",
+        "    <dict>",
+        "      <key>other</key>",
+        "      <string>%d custom items</string>",
+        "    </dict>",
+        "  </dict>",
+        "</dict>",
+        "</plist>"
+      ].join("\n")
+    );
+    try {
+      const payload = parseToolResult(
+        await figmaImportStrings(runtime, { url: `https://www.figma.com/design/${fileKey}/Demo` })
+      );
+      const stringsdictResource = payload.resources.find((resource) =>
+        resource.path.endsWith(".stringsdict")
+      );
+      assert.deepEqual(
+        stringsdictResource.conflicts.map((conflict) => conflict.key),
+        ["cartItemCount"]
+      );
+      assert.equal(
+        fs.existsSync(path.join(dir, "ios/zh-Hans.lproj/Localizable.stringsdict")),
+        false
+      );
+    } finally {
+      restore();
+    }
+  });
+});
+
+test("figma_import_strings: iOS stringsdict 保留人工添加的额外条目", async () => {
+  await withFigmaEnv(async () => {
+    const fileKey = "PluralIosMerge";
+    const restore = stubFigma(pluralDocument(), fileKey);
+    const dir = makeIosProject();
+    const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+    writeContext(dir, { "cart.item_count": PLURAL_FORMS });
+    fs.mkdirSync(path.join(dir, "ios/zh-Hans.lproj"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "ios/zh-Hans.lproj/Localizable.stringsdict"),
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<plist version="1.0">',
+        "<dict>",
+        "  <key>legacyCount</key>",
+        "  <dict>",
+        "    <key>NSStringLocalizedFormatKey</key>",
+        "    <string>%#@n@</string>",
+        "    <key>n</key>",
+        "    <dict>",
+        "      <key>other</key>",
+        "      <string>%d legacy</string>",
+        "    </dict>",
+        "  </dict>",
+        "</dict>",
+        "</plist>"
+      ].join("\n")
+    );
+    try {
+      const payload = parseToolResult(
+        await figmaImportStrings(runtime, { url: `https://www.figma.com/design/${fileKey}/Demo` })
+      );
+      const written = fs.readFileSync(
+        path.join(dir, "ios/zh-Hans.lproj/Localizable.stringsdict"),
+        "utf-8"
+      );
+      assert.match(written, /<key>legacyCount<\/key>/);
+      assert.match(written, /<key>cartItemCount<\/key>/);
+      assert.deepEqual(
+        payload.resources.find((resource) => resource.path.endsWith(".stringsdict")).conflicts,
+        []
+      );
     } finally {
       restore();
     }

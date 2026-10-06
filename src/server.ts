@@ -185,7 +185,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
           platform: z
             .enum(["android", "ios"])
             .optional()
-            .describe("设备平台：android（默认）| ios（仅 macOS 模拟器；仅 mode=live，经 idb/simctl 截图）"),
+            .describe("设备平台：android（默认）| ios（macOS 模拟器；live 经 idb/simctl 截图，step 走 iOS trace 截图）"),
           serial: z.string().optional().describe("目标设备 serial（默认自动选择；平台 ios 时为模拟器 UDID）"),
           traceId: z.string().optional().describe("mode=step 必填：任务 trace id（mobile_run_task 返回）"),
           stepNumber: z.number().int().positive().optional().describe("mode=step 步骤号；省略则用失败证据自动检索步骤（Pro 任务，best-effort）"),
@@ -332,7 +332,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_import_tokens",
     description:
-      "颜色 token 导入：REST 读取 Figma 设计系统颜色（含 alpha，canonical #RRGGBBAA）→ 值冻结的语义命名 → .artemis/design/tokens.json（DTCG，modes 预留）+ 按检测栈生成 token 文件（Android colors.xml / Flutter Dart / RN TS / Web CSS）；输出 new/unchanged/unused、裸色扫描与 enforcement。人工命名用 .artemis/design/token-names.json。",
+      "颜色 token 导入：REST 读取 Figma 设计系统颜色（含 alpha，canonical #RRGGBBAA）→ 值冻结的语义命名 → .artemis/design/tokens.json（DTCG，modes 预留）+ 按检测栈生成 token 文件（Android colors.xml / Flutter Dart / RN TS / Web CSS / iOS Colors.xcassets + AosTokens.swift）；输出 new/unchanged/unused、裸色扫描与 enforcement。人工命名用 .artemis/design/token-names.json。",
     schema: z.object({
       url: z.string().min(1).describe("Figma 文件 URL"),
       dryRun: z.boolean().optional().describe("仅预览不写文件，默认 false"),
@@ -345,7 +345,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_import_strings",
     description:
-      "文案 i18n 导入：REST 采集 Figma TEXT 节点 → 语义 key（nodeId 冻结映射，图层改名不改 key）→ .artemis/design/strings.json + 按检测栈写入源语言资源（M6b：Android strings.xml / Flutter arb）；输出复用建议、nodeId 迁移建议、source_changed、unused 与硬编码文案扫描；冲突需人工决策（resolutions.json），enforcement=block 可阻断。",
+      "文案 i18n 导入：REST 采集 Figma TEXT 节点 → 语义 key（nodeId 冻结映射，图层改名不改 key）→ .artemis/design/strings.json + 按检测栈写入源语言资源（Android strings.xml / Flutter arb / iOS .strings+.stringsdict）；输出复用建议、nodeId 迁移建议、source_changed、unused 与硬编码文案扫描（Swift 为启发式白名单）；冲突需人工决策（resolutions.json），enforcement=block 可阻断。",
     schema: z.object({
       url: z.string().min(1).describe("Figma 文件 URL"),
       locale: z.string().optional().describe("source locale（BCP-47，默认沿用 strings.json 或 zh）"),
@@ -368,7 +368,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "pen_import_tokens",
     description:
-      "pen 颜色变量导入：.pen 的 color 变量（变量名即 token 名，支持主题取值与 $别名）→ .artemis/design/tokens.json（DTCG，modes 记录主题值）+ 按检测栈生成 token 文件（Android/Flutter/RN/Web）；输出 new/updated/unchanged/unused、裸色扫描与 enforcement；完全离线（无需账号/网络）。",
+      "pen 颜色变量导入：.pen 的 color 变量（变量名即 token 名，支持主题取值与 $别名）→ .artemis/design/tokens.json（DTCG，modes 记录主题值）+ 按检测栈生成 token 文件（Android/Flutter/RN/Web/iOS）；输出 new/updated/unchanged/unused、裸色扫描与 enforcement；完全离线（无需账号/网络）。",
     schema: z.object({
       path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
       dryRun: z.boolean().optional().describe("仅预览不写文件，默认 false"),

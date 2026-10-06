@@ -22,7 +22,9 @@ import {
 } from "../artemis/task-result.js";
 import { TERMINAL_TASK_STATUSES } from "../db/types.js";
 import { classifyIosSerial } from "../device/ios.js";
+import { IosLogCollector, type IosLogWindowRequest } from "../device/ios-log.js";
 import { resetIosApp } from "../device/ios-reset.js";
+import { isIosTraceDir } from "../ios/trace-store.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "../device/logcat.js";
 import { resetApp, type AppResetOutcome } from "../device/reset.js";
 import type { Runtime } from "../runtime.js";
@@ -90,6 +92,7 @@ export interface SuiteRunOptions {
     windowStartMs: number;
     windowEndMs: number | null;
   }) => Promise<LogcatWindowResult>;
+  iosLogCollector?: (request: IosLogWindowRequest) => Promise<LogcatWindowResult>;
 }
 
 interface GeneratedCaseLike {
@@ -146,14 +149,19 @@ function isTerminal(status: string | null | undefined): boolean {
 }
 
 function resetFailure(error: unknown, serial: string | null): AppResetOutcome {
+  const ios = serial !== null && classifyIosSerial(serial) !== null;
   return {
     ok: false,
-    reason: "force-stop-failed",
+    reason: ios ? "launch-failed" : "force-stop-failed",
     message: errorMessage(error),
     serial,
     adb: { path: null, source: "missing" },
     commands: []
   };
+}
+
+function isIosTrace(runtime: Runtime, traceId: string): boolean {
+  return isIosTraceDir(runtime.traceDir(traceId), traceId);
 }
 
 function emptyEvidence(): SuiteCaseResult["evidence"] {
@@ -196,6 +204,8 @@ export async function runGeneratedTests(
   const apiCatalog = options.apiErrors === false ? null : loadApiErrorCatalog(runtime.configDirAbs);
   const collectLogcat =
     options.logcatCollector ?? ((request) => new AdbLogcatCollector().collect(request));
+  const collectIosLogs =
+    options.iosLogCollector ?? ((request) => new IosLogCollector().collect(request));
 
   const results: SuiteCaseResult[] = [];
   let submitted = 0;
@@ -289,13 +299,15 @@ export async function runGeneratedTests(
     }
 
     submitted += 1;
-    await runtime.recordTaskSubmission({
-      traceId,
-      model: options.model ?? null,
-      taskDesc: testCase.taskDesc,
-      caseId: testCase.id,
-      lockedAppPackage: options.lockedAppPackage ?? null
-    });
+    if (!isIosTrace(runtime, traceId)) {
+      await runtime.recordTaskSubmission({
+        traceId,
+        model: options.model ?? null,
+        taskDesc: testCase.taskDesc,
+        caseId: testCase.id,
+        lockedAppPackage: options.lockedAppPackage ?? null
+      });
+    }
 
     const deadline = now() + pollTimeoutMs;
     let status = await runtime.traceStatus(traceId);
@@ -313,12 +325,30 @@ export async function runGeneratedTests(
     let apiErrors: ApiErrorObservation[] = [];
     let apiErrorsDegraded: string | null = null;
     if (terminal && apiCatalog) {
-      if (traceSerial && classifyIosSerial(traceSerial)) {
-        apiErrorsDegraded = "ios-log-unsupported";
-      } else if (apiCatalog.rules.size === 0) {
+      const iosTarget = traceSerial !== null && classifyIosSerial(traceSerial) !== null;
+      if (apiCatalog.rules.size === 0) {
         apiErrorsDegraded = fs.existsSync(apiCatalog.file) ? "registry-empty" : "registry-missing";
       } else if (windowStartMs === null) {
         apiErrorsDegraded = "no-window";
+      } else if (iosTarget) {
+        const processName = options.lockedAppPackage
+          ? options.lockedAppPackage.split(".").pop() ?? null
+          : null;
+        try {
+          const collected = await collectIosLogs({
+            serial: traceSerial,
+            windowStartMs,
+            windowEndMs: windowEndMs ?? now(),
+            processName
+          });
+          if (collected.status === "ok") {
+            apiErrors = matchApiErrors(collected.text, apiCatalog.rules);
+          } else {
+            apiErrorsDegraded = collected.reason ?? "ios-log-unsupported";
+          }
+        } catch (error) {
+          apiErrorsDegraded = `collector-error: ${errorMessage(error)}`;
+        }
       } else {
         try {
           const collected = await collectLogcat({
@@ -348,7 +378,7 @@ export async function runGeneratedTests(
                 windowStartMs === null
                   ? null
                   : { startMs: windowStartMs, endMs: windowEndMs ?? now() },
-              source: apiErrorsDegraded === null ? "logcat" : "none",
+              source: apiErrorsDegraded !== null ? "none" : iosTarget ? "simctl-log" : "logcat",
               degraded: apiErrorsDegraded,
               errors: apiErrors
             },

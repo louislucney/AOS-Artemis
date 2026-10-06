@@ -14,6 +14,7 @@ import {
   detectProjectStacks,
   formatComponentFileName,
   primaryProfile,
+  skippedStacksWarnings,
   type StackProfile
 } from "../projects/stack.js";
 import { buildFlowGraph } from "./flows.js";
@@ -453,6 +454,7 @@ export async function figmaExportBrief(
 
     const payload: Record<string, unknown> = {
       ok: true,
+      warnings: skippedStacksWarnings(stacks, profile),
       summary: {
         screens: screens.length,
         routes: brief.suggestedRoutes.length,

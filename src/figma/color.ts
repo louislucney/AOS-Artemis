@@ -63,10 +63,14 @@ export interface HardcodedColorHit {
   value: string;
 }
 
-export interface StackTokenWrite {
+export interface StackTokenFileWrite {
   relativePath: string;
   content: string;
-  format: "android-xml" | "dart" | "ts" | "css";
+  format: "android-xml" | "dart" | "ts" | "css" | "swift" | "xcassets-json";
+}
+
+export interface StackTokenWrite extends StackTokenFileWrite {
+  extraFiles?: StackTokenFileWrite[];
 }
 
 const CATEGORY_RULES: Array<{ re: RegExp; category: string }> = [
@@ -359,6 +363,28 @@ function camelMember(name: string): string {
     .replace(/[^A-Za-z0-9_$]/g, "");
 }
 
+function colorsetJson(hex8: string): Record<string, unknown> {
+  const body = hex8.replace(/^#/, "");
+  const channel = (pair: string): string => (Number.parseInt(pair, 16) / 255).toFixed(3);
+  return {
+    colors: [
+      {
+        color: {
+          "color-space": "srgb",
+          components: {
+            red: channel(body.slice(0, 2)),
+            green: channel(body.slice(2, 4)),
+            blue: channel(body.slice(4, 6)),
+            alpha: channel(body.slice(6, 8))
+          }
+        },
+        idiom: "universal"
+      }
+    ],
+    info: { author: TOKEN_FILE_MARKER, version: 1 }
+  };
+}
+
 export function resolveTokenValue(token: ColorToken, tokens: ColorToken[]): string {
   if (!token.aliasOf) return token.value;
   const base = tokens.find((candidate) => candidate.name === token.aliasOf);
@@ -412,6 +438,28 @@ export function renderStackTokenFile(profile: StackProfile, tokens: ColorToken[]
     return { relativePath: target, content: lines.join("\n"), format: "css" };
   }
 
+  if (profile.id === "ios-native") {
+    const lines = [`// ${TOKEN_FILE_MARKER} — do not edit.`, "import SwiftUI", "", "enum AosTokens {"];
+    const extraFiles: StackTokenFileWrite[] = [];
+    for (const token of sorted) {
+      const value = resolveTokenValue(token, tokens);
+      lines.push(`  /// ${token.name}`);
+      lines.push(`  static let ${camelMember(token.name)} = Color("${token.name}")`);
+      extraFiles.push({
+        relativePath: path.posix.join(
+          "Resources",
+          "Colors.xcassets",
+          `${token.name}.colorset`,
+          "Contents.json"
+        ),
+        content: `${JSON.stringify(colorsetJson(value), null, 2)}\n`,
+        format: "xcassets-json"
+      });
+    }
+    lines.push("}", "");
+    return { relativePath: target, content: lines.join("\n"), format: "swift", extraFiles };
+  }
+
   const lines = [`/* ${TOKEN_FILE_MARKER} — do not edit. */`, "export const aosTokens = {"];
   for (const token of sorted) {
     const value = resolveTokenValue(token, tokens);
@@ -428,6 +476,7 @@ export function contentHasTokenMarker(content: string): boolean {
 export interface StackTokenWriteResult {
   relativePath: string;
   action: "written" | "unchanged" | "planned" | "skipped_unmanaged";
+  files?: Array<{ relativePath: string; action: StackTokenWriteResult["action"] }>;
 }
 
 /** Idempotent stack-file writer shared by the Figma and pen token importers:
@@ -437,6 +486,32 @@ export function writeStackTokenFile(
   rootDir: string,
   write: StackTokenWrite,
   options: { overwrite?: boolean; dryRun?: boolean } = {}
+): StackTokenWriteResult {
+  const main = writeStackTokenFileSingle(rootDir, write, options);
+  const extras = (write.extraFiles ?? []).map((file) =>
+    writeStackTokenFileSingle(rootDir, file, options)
+  );
+  if (extras.length === 0) return main;
+  return {
+    ...main,
+    files: [main, ...extras].map(({ relativePath, action }) => ({ relativePath, action }))
+  };
+}
+
+export function skippedTokenFiles(result: StackTokenWriteResult | null): string[] {
+  if (!result) return [];
+  return [
+    ...(result.action === "skipped_unmanaged" ? [result.relativePath] : []),
+    ...(result.files ?? [])
+      .filter((file) => file.action === "skipped_unmanaged")
+      .map((file) => file.relativePath)
+  ];
+}
+
+function writeStackTokenFileSingle(
+  rootDir: string,
+  write: StackTokenFileWrite,
+  options: { overwrite?: boolean; dryRun?: boolean }
 ): StackTokenWriteResult {
   const absolute = path.join(rootDir, write.relativePath);
   if (!fs.existsSync(absolute)) {

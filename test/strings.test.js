@@ -7,13 +7,16 @@ import test from "node:test";
 import { makeTempDir } from "./helpers.js";
 
 import {
+  androidLocaleDir,
   canonicalizePlaceholders,
   canonicalTextToAndroid,
   canonicalTextToIos,
   collectFigmaTexts,
   deriveCanonicalKey,
+  iosLocaleDirectory,
   mergeStrings,
   parseIosStrings,
+  parseIosStringsdict,
   parseStrings,
   platformKey,
   renderAndroidStrings,
@@ -359,7 +362,7 @@ test("renderIosStrings: escaping, conflicts and idempotent round-trip", () => {
   ];
 
   const first = renderIosStrings(STACK_PROFILES["ios-native"], entries, dir, "zh");
-  assert.equal(first.relativePath, "ios/zh.lproj/Localizable.strings");
+  assert.equal(first.relativePath, "ios/zh-Hans.lproj/Localizable.strings");
   assert.equal(first.action, "written");
   assert.match(first.content, /"loginTitle" = "欢迎登录";/);
   assert.match(first.content, /"loginNote" = "It's \\"ok\\"\\n100%%";/);
@@ -368,8 +371,8 @@ test("renderIosStrings: escaping, conflicts and idempotent round-trip", () => {
   writeResourceFile(dir, first);
   assert.equal(renderIosStrings(STACK_PROFILES["ios-native"], entries, dir, "zh").action, "unchanged");
 
-  fs.mkdirSync(path.join(dir, "ios/zh.lproj"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "ios/zh.lproj/Localizable.strings"), '"loginTitle" = "其他";\n');
+  fs.mkdirSync(path.join(dir, "ios/zh-Hans.lproj"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "ios/zh-Hans.lproj/Localizable.strings"), '"loginTitle" = "其他";\n');
   const conflict = renderIosStrings(STACK_PROFILES["ios-native"], entries, dir, "zh");
   assert.equal(conflict.conflicts.length, 1);
   assert.equal(conflict.conflicts[0].key, "loginTitle");
@@ -392,4 +395,86 @@ test("scanHardcodedStrings: android layout literals and flutter Text literals", 
   assert.deepEqual(android.map((hit) => hit.text), ["登录"]);
   const flutter = scanHardcodedStrings(dir, "flutter");
   assert.deepEqual(flutter.map((hit) => hit.text), ["登录"]);
+});
+
+test("locale 目录映射：iOS 补 script，Android 保持 values-<lang>-r<REGION>", () => {
+  assert.equal(iosLocaleDirectory("zh"), "zh-Hans");
+  assert.equal(iosLocaleDirectory("zh-Hans"), "zh-Hans");
+  assert.equal(iosLocaleDirectory("zh-TW"), "zh-Hant-TW");
+  assert.equal(iosLocaleDirectory("zh-Hant-HK"), "zh-Hant-HK");
+  assert.equal(iosLocaleDirectory("pt-BR"), "pt-BR");
+  assert.equal(iosLocaleDirectory("en"), "en");
+
+  assert.equal(androidLocaleDir("zh"), "");
+  assert.equal(androidLocaleDir("zh-Hans"), "");
+  assert.equal(androidLocaleDir("zh-Hant-HK"), "-zh-rHK");
+  assert.equal(androidLocaleDir("pt-BR"), "-pt-rBR");
+  assert.equal(androidLocaleDir("pt-PT"), "-pt-rPT");
+});
+
+test("renderIosStrings: 跨 .lproj 冲突检测与用户优先", () => {
+  const dir = makeTempDir("aos-ios-lproj-");
+  fs.mkdirSync(path.join(dir, "ios/en.lproj"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "ios/en.lproj/Localizable.strings"), '"loginTitle" = "Sign in";\n');
+  const entries = [
+    { key: "loginTitle", canonicalText: "登录", lifecycle: "active" },
+    { key: "logoutTitle", canonicalText: "退出", lifecycle: "active" }
+  ];
+
+  const write = renderIosStrings(STACK_PROFILES["ios-native"], entries, dir, "zh");
+  assert.equal(write.relativePath, "ios/zh-Hans.lproj/Localizable.strings");
+  assert.deepEqual(write.conflicts.map((conflict) => conflict.key), ["loginTitle"]);
+  assert.equal(write.conflicts[0].existing, "Sign in");
+  assert.doesNotMatch(write.content, /"loginTitle"/);
+  assert.match(write.content, /"logoutTitle" = "退出";/);
+});
+
+test("scanHardcodedStrings: Swift 白名单 API 保守扫描", () => {
+  const dir = makeTempDir("aos-ios-scan-");
+  fs.mkdirSync(path.join(dir, "ios"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "ios/ContentView.swift"),
+    [
+      'Text("首页")',
+      'Label("设置", systemImage: "gear")',
+      '.navigationTitle("个人中心")',
+      'Text("http://example.com")',
+      'Text("123")',
+      'Text(NSLocalizedString("brand", comment: ""))',
+      'Text(viewModel.title)'
+    ].join("\n")
+  );
+  const hits = scanHardcodedStrings(dir, "ios-native");
+  assert.deepEqual(hits.map((hit) => hit.text), ["首页", "设置", "个人中心"]);
+});
+
+test("parseIosStringsdict: 解析 variable 与数量形（可回写）", () => {
+  const xml = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    "<plist version=\"1.0\">",
+    "<dict>",
+    "  <key>cartItems</key>",
+    "  <dict>",
+    "    <key>NSStringLocalizedFormatKey</key>",
+    "    <string>%#@count@</string>",
+    "    <key>count</key>",
+    "    <dict>",
+    "      <key>NSStringFormatSpecTypeKey</key>",
+    "      <string>NSStringPluralRuleType</string>",
+    "      <key>NSStringFormatValueTypeKey</key>",
+    "      <string>d</string>",
+    "      <key>one</key>",
+    "      <string>%d item</string>",
+    "      <key>other</key>",
+    "      <string>%d items</string>",
+    "    </dict>",
+    "  </dict>",
+    "</dict>",
+    "</plist>"
+  ].join("\n");
+  const parsed = parseIosStringsdict(xml);
+  assert.deepEqual(parsed.get("cartItems"), {
+    variable: "count",
+    forms: { one: "{count} item", other: "{count} items" }
+  });
 });

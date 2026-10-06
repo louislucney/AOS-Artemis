@@ -15,6 +15,7 @@ import {
   detectProjectStacks,
   formatComponentFileName,
   primaryProfile,
+  skippedStacksWarnings,
   type StackProfile
 } from "../projects/stack.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
@@ -270,6 +271,7 @@ export async function penExportBrief(
 
     const payload: Record<string, unknown> = {
       ok: true,
+      warnings: skippedStacksWarnings(stacks, profile),
       source: relative,
       summary: {
         screens: screens.length,
