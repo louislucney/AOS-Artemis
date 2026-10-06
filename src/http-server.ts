@@ -11,7 +11,8 @@ import { configureLogging, installCrashHandlers } from "./log.js";
 import { startBridge, stopBridge } from "./figma/bridge.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
-import { createServerForRuntime } from "./server.js";
+import { createServerForRuntime, inProcessToolCatalog } from "./server.js";
+import { handleUsageRequest } from "./usage/web.js";
 import { AOS_MCP_VERSION, errorMessage, log } from "./util.js";
 
 export interface HttpServerOptions {
@@ -152,6 +153,21 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               projects: [...runtimes.keys()]
             })
           );
+          return;
+        }
+
+        if (
+          req.method === "GET" &&
+          (url.pathname === "/usage" || url.pathname === "/usage.json")
+        ) {
+          const usageResponse = await handleUsageRequest(url, {
+            store,
+            catalog: inProcessToolCatalog(),
+            storageNote: reason,
+            env: process.env
+          });
+          res.writeHead(usageResponse.status, { "Content-Type": usageResponse.contentType });
+          res.end(usageResponse.body);
           return;
         }
 

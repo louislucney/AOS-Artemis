@@ -33,6 +33,62 @@ export interface TaskStatRecord {
   finishedAt: string | null;
 }
 
+export type UsageEventFamily = "native" | "figma" | "pen" | "mobile" | "unknown";
+
+export type UsageErrorClass =
+  | "validation"
+  | "figma"
+  | "artemis"
+  | "timeout"
+  | "internal"
+  | "unknown";
+
+export interface UsageSignal {
+  code: string;
+  field?: string;
+}
+
+export interface UsageEventRecord {
+  id: string;
+  projectId: string | null;
+  at: string;
+  tool: string;
+  family: UsageEventFamily;
+  ok: boolean;
+  durationMs: number;
+  errorClass: UsageErrorClass | null;
+  errorSummary: string | null;
+  signals: UsageSignal[];
+  argKeys: string[];
+  traceId: string | null;
+}
+
+export interface RecordUsageEventInput {
+  tool: string;
+  family: UsageEventFamily;
+  ok: boolean;
+  durationMs: number;
+  errorClass?: UsageErrorClass | null;
+  errorSummary?: string | null;
+  signals?: UsageSignal[];
+  argKeys?: string[];
+  traceId?: string | null;
+  at?: string;
+}
+
+export interface UsageEventQuery {
+  tool?: string;
+  status?: "ok" | "error";
+  since?: string;
+  until?: string;
+  limit?: number;
+}
+
+export interface UsagePrunePolicy {
+  retentionDays?: number;
+  maxEvents?: number;
+}
+
 export interface ModelCacheRecord {
   id: string;
   projectId: string;
@@ -88,6 +144,13 @@ export interface ProjectStore {
   listTasks(rootPath: string, limit?: number): Promise<TaskStatRecord[]>;
   listPendingTasks(rootPath: string, limit?: number): Promise<TaskStatRecord[]>;
   markTaskFinished(rootPath: string, traceId: string, status: string): Promise<boolean>;
+  recordUsageEvent(
+    rootPath: string,
+    input: RecordUsageEventInput,
+    policy?: UsagePrunePolicy
+  ): Promise<UsageEventRecord>;
+  listUsageEvents(rootPath: string, query?: UsageEventQuery): Promise<UsageEventRecord[]>;
+  listProjects(): Promise<ProjectRecord[]>;
   ping(): Promise<boolean>;
   close(): Promise<void>;
 }

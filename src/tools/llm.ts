@@ -203,6 +203,10 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
       note: runtime.storeNote,
       lastError: runtime.storeError()
     },
+    usage: {
+      enabled: runtime.usageEnabled(),
+      storage: runtime.storeKind()
+    },
     activeProfile: active?.name ?? null,
     llmCount: entries.length,
     modelRefresh: {

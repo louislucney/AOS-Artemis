@@ -39,6 +39,7 @@ import {
 import { penAgent, type PenAgentArgs } from "./pen/agent.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
+import { usageEventInputFrom } from "./usage/capture.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
 import { designDeviceDiff, type DesignDeviceDiffArgs } from "./diff/tool.js";
 import { screenMap, type ScreenMapArgs } from "./diff/screen-map.js";
@@ -54,6 +55,7 @@ import {
   type LlmModelsArgs,
   type LlmSwitchArgs
 } from "./tools/llm.js";
+import { aosUsage, type AosUsageArgs } from "./tools/usage.js";
 import { AOS_MCP_VERSION, errorMessage, log } from "./util.js";
 
 interface NativeToolDefinition {
@@ -147,6 +149,22 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       limit: z.number().int().positive().max(100).optional().describe("list 返回条数，默认 20")
     }),
     handler: (runtime, args) => aosCrashes(runtime, args as unknown as AosCrashesArgs)
+  },
+  {
+    name: "aos_usage",
+    description:
+      "使用统计：客户端工具调用事件的聚合与流水（summary 概览 / signals 信号 / events 事件）。tool/status/days 可筛选；events 支持 limit（≤200）。AOS_USAGE=0 时显式标注采集已关闭，历史数据仍可查。",
+    schema: z.object({
+      action: z
+        .enum(["summary", "signals", "events"])
+        .optional()
+        .describe("summary 概览（默认）/ signals 信号分布 / events 事件流水"),
+      tool: z.string().optional().describe("只统计指定工具（精确匹配）"),
+      status: z.enum(["ok", "error"]).optional().describe("只统计成功或失败调用"),
+      days: z.number().int().positive().optional().describe("只看最近 N 天（默认全部保留期）"),
+      limit: z.number().int().min(1).max(200).optional().describe("events 返回条数（1-200，默认 100）")
+    }),
+    handler: (runtime, args) => aosUsage(runtime, args as unknown as AosUsageArgs)
   },
   {
     name: "compare_design_and_device",
@@ -473,6 +491,12 @@ function errorResult(message: string): CallToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
+export function inProcessToolCatalog(): string[] {
+  const names = new Set(NATIVE_TOOLS.map((tool) => tool.name));
+  for (const tool of figmaTools()) names.add(tool.name);
+  return [...names].sort();
+}
+
 function resultErrorSummary(result: CallToolResult): string {
   for (const item of result.content ?? []) {
     if (item.type === "text" && typeof item.text === "string") {
@@ -606,15 +630,31 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const started = Date.now();
-    const result = await handleCall(
-      request as { params: { name: string; arguments?: Record<string, unknown> } }
-    );
+    const name = request.params.name;
+    let result: CallToolResult;
+    try {
+      result = await handleCall(
+        request as { params: { name: string; arguments?: Record<string, unknown> } }
+      );
+    } catch (error) {
+      result = errorResult(`工具 "${name}" 执行失败: ${errorMessage(error)}`);
+    }
+    const durationMs = Date.now() - started;
+    let usageId: string | null = null;
+    if (runtime && name !== "aos_usage") {
+      try {
+        const event = await runtime.recordUsage(
+          usageEventInputFrom(name, request.params.arguments ?? {}, result, durationMs)
+        );
+        usageId = event?.id ?? null;
+      } catch (error) {
+        log(`使用统计记录失败: ${errorMessage(error)}`, "warn");
+      }
+    }
     const ok = result.isError !== true;
     const detail = ok ? "" : ` error=${resultErrorSummary(result)}`;
-    log(
-      `tool=${request.params.name} ok=${ok} ms=${Date.now() - started}${detail}`,
-      ok ? "info" : "warn"
-    );
+    const usage = usageId === null ? "" : ` usage=${usageId}`;
+    log(`tool=${name} ok=${ok} ms=${durationMs}${usage}${detail}`, ok ? "info" : "warn");
     return result;
   });
 

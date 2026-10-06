@@ -5,6 +5,7 @@ import { runHttpServer, type HttpServerOptions } from "./http-server.js";
 import { runInstall } from "./install.js";
 import { runServer } from "./server.js";
 import { runSuiteCommand } from "./suite-command.js";
+import { runUsageCommand } from "./usage-command.js";
 
 function printUsage(): void {
   console.log(`aos-mcp — AOS × ARTEMIS unified MCP service
@@ -26,6 +27,11 @@ Usage:
                     Deterministic test loop over .artemis/design/tests.json:
                     run | evidence <traceId> | baseline save|compare | report | feedback
                     (see "aos-mcp suite help" for options; exit codes: 0 ok / 1 test failure / 2 error)
+  aos-mcp usage [--json] [--all] [--project <名称>] [--days <n>]
+                    使用统计：默认当前项目摘要（--days 默认 7）；--json 机器可读；
+                    --all 跨项目总览；--project 选择已注册项目
+  aos-mcp usage --web [--port 8766] [--host 127.0.0.1]
+                    只读看板（复用 /usage 与 /usage.json）；端口占用 exit 2
 
 install options:
   --project <dir>        Target project (default: cwd)
@@ -83,6 +89,11 @@ void (async () => {
     }
     case "suite": {
       const code = await runSuiteCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "usage": {
+      const code = await runUsageCommand(rest);
       process.exit(code);
       break;
     }

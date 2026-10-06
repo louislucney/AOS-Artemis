@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  buildUsageEvent,
+  isUsageErrorClass,
+  normalizeUsageLimit,
+  retentionCutoffIso
+} from "./usage-event.js";
+
 import type {
   ModelCacheRecord,
   ProjectLlmRecord,
@@ -7,8 +14,12 @@ import type {
   ProjectStore,
   PutModelCacheInput,
   RecordTaskInput,
+  RecordUsageEventInput,
   TaskStatRecord,
-  UpsertLlmInput
+  UpsertLlmInput,
+  UsageEventQuery,
+  UsageEventRecord,
+  UsagePrunePolicy
 } from "./types.js";
 
 /** Minimal pool surface — lets tests inject `pg-mem` and keeps SQL portable. */
@@ -53,6 +64,20 @@ const SCHEMA = [
      task_desc TEXT,
      submitted_at TEXT NOT NULL,
      finished_at TEXT
+   )`,
+  `CREATE TABLE IF NOT EXISTS usage_events (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     at TEXT NOT NULL,
+     tool TEXT NOT NULL,
+     family TEXT NOT NULL,
+     ok BOOLEAN NOT NULL,
+     duration_ms INTEGER NOT NULL,
+     error_class TEXT,
+     error_summary TEXT,
+     signals TEXT NOT NULL DEFAULT '[]',
+     arg_keys TEXT NOT NULL DEFAULT '[]',
+     trace_id TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS llm_model_cache (
      id TEXT PRIMARY KEY,
@@ -338,6 +363,98 @@ export class PostgresStore implements ProjectStore {
     return updated.rows.length > 0;
   }
 
+  async recordUsageEvent(
+    rootPath: string,
+    input: RecordUsageEventInput,
+    policy: UsagePrunePolicy = {}
+  ): Promise<UsageEventRecord> {
+    const project = await this.getProjectByPath(rootPath);
+    const record = buildUsageEvent(input, project?.id ?? null);
+    await this.pool.query(
+      `INSERT INTO usage_events
+         (id, project_id, at, tool, family, ok, duration_ms, error_class, error_summary, signals, arg_keys, trace_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        record.id,
+        record.projectId,
+        record.at,
+        record.tool,
+        record.family,
+        record.ok,
+        record.durationMs,
+        record.errorClass,
+        record.errorSummary,
+        JSON.stringify(record.signals),
+        JSON.stringify(record.argKeys),
+        record.traceId
+      ]
+    );
+    await this.pruneUsageEvents(record.projectId, policy);
+    return record;
+  }
+
+  async listUsageEvents(rootPath: string, query: UsageEventQuery = {}): Promise<UsageEventRecord[]> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return [];
+    const clauses = ["project_id = $1"];
+    const values: unknown[] = [project.id];
+    if (query.tool) {
+      values.push(query.tool);
+      clauses.push(`tool = $${values.length}`);
+    }
+    if (query.status === "ok") clauses.push("ok = TRUE");
+    if (query.status === "error") clauses.push("ok = FALSE");
+    if (query.since) {
+      values.push(query.since);
+      clauses.push(`at >= $${values.length}`);
+    }
+    if (query.until) {
+      values.push(query.until);
+      clauses.push(`at <= $${values.length}`);
+    }
+    values.push(normalizeUsageLimit(query.limit));
+    const result = await this.pool.query(
+      `SELECT * FROM usage_events WHERE ${clauses.join(" AND ")}
+        ORDER BY at DESC, id DESC LIMIT $${values.length}`,
+      values
+    );
+    return result.rows.map(mapUsageEvent);
+  }
+
+  async listProjects(): Promise<ProjectRecord[]> {
+    const result = await this.pool.query(
+      "SELECT * FROM projects ORDER BY last_seen_at DESC, name ASC"
+    );
+    return result.rows.map(mapProject);
+  }
+
+  private async pruneUsageEvents(
+    projectId: string | null,
+    policy: UsagePrunePolicy
+  ): Promise<void> {
+    const scope =
+      projectId === null
+        ? { sql: "project_id IS NULL", values: [] as unknown[] }
+        : { sql: "project_id = $1", values: [projectId] as unknown[] };
+    const retentionDays = policy.retentionDays ?? 0;
+    if (retentionDays > 0) {
+      await this.pool.query(
+        `DELETE FROM usage_events WHERE ${scope.sql} AND at < $${scope.values.length + 1}`,
+        [...scope.values, retentionCutoffIso(retentionDays)]
+      );
+    }
+    const maxEvents = policy.maxEvents ?? 0;
+    if (maxEvents > 0) {
+      await this.pool.query(
+        `DELETE FROM usage_events WHERE ${scope.sql} AND id NOT IN (
+           SELECT id FROM usage_events WHERE ${scope.sql}
+           ORDER BY at DESC, id DESC LIMIT $${scope.values.length + 1}
+         )`,
+        [...scope.values, maxEvents]
+      );
+    }
+  }
+
   async close(): Promise<void> {
     try {
       await this.pool.end?.();
@@ -350,6 +467,45 @@ export class PostgresStore implements ProjectStore {
 function projectName(rootPath: string): string {
   const parts = rootPath.split("/").filter(Boolean);
   return parts[parts.length - 1] ?? rootPath;
+}
+
+function mapUsageEvent(row: Record<string, unknown>): UsageEventRecord {
+  return {
+    id: String(row.id),
+    projectId:
+      row.project_id === null || row.project_id === undefined ? null : String(row.project_id),
+    at: String(row.at),
+    tool: String(row.tool),
+    family: String(row.family) as UsageEventRecord["family"],
+    ok: Boolean(row.ok),
+    durationMs: Number(row.duration_ms),
+    errorClass: isUsageErrorClass(row.error_class) ? row.error_class : null,
+    errorSummary:
+      row.error_summary === null || row.error_summary === undefined
+        ? null
+        : String(row.error_summary),
+    signals: parseJsonArray(row.signals, isUsageSignal),
+    argKeys: parseJsonArray(row.arg_keys, (item): item is string => typeof item === "string"),
+    traceId: row.trace_id === null || row.trace_id === undefined ? null : String(row.trace_id)
+  };
+}
+
+function isUsageSignal(value: unknown): value is { code: string; field?: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { code?: unknown }).code === "string"
+  );
+}
+
+function parseJsonArray<T>(raw: unknown, guard: (item: unknown) => item is T): T[] {
+  if (typeof raw !== "string" || raw.trim() === "") return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter(guard) : [];
+  } catch {
+    return [];
+  }
 }
 
 function mapProject(row: Record<string, unknown>): ProjectRecord {

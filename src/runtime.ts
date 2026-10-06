@@ -34,7 +34,15 @@ import type { CrashCollectorLike, CrashScanReport, CrashScanResult } from "./cra
 import { findGeneratedCaseId } from "./figma/case-index.js";
 import { MemoryStore } from "./db/memory.js";
 import { TERMINAL_TASK_STATUSES } from "./db/types.js";
-import type { ProjectLlmRecord, ProjectRecord, ProjectStore, TaskStatRecord } from "./db/types.js";
+import type {
+  ProjectLlmRecord,
+  ProjectRecord,
+  ProjectStore,
+  RecordUsageEventInput,
+  TaskStatRecord,
+  UsageEventQuery,
+  UsageEventRecord
+} from "./db/types.js";
 import { writeEnvUpdates } from "./env-file.js";
 import { ModelCatalog, type FetchLike, type ModelReport, type RefreshReport } from "./llm/catalog.js";
 import {
@@ -53,6 +61,7 @@ import {
   scanProjectEnv,
   type EnvScanResult
 } from "./projects/scan.js";
+import { usageEnabledFrom, usageEventSampleLimit, usagePolicyFrom } from "./usage/capture.js";
 import {
   errorMessage,
   isBuildStale,
@@ -885,6 +894,43 @@ export class Runtime {
 
   storeError(): string | null {
     return this.lastStoreError;
+  }
+
+  private lastUsageAtMs = 0;
+
+  usageEnabled(): boolean {
+    return usageEnabledFrom(this.baseEnv);
+  }
+
+  usageSampleLimit(): number {
+    return usageEventSampleLimit(this.baseEnv);
+  }
+
+  async recordUsage(input: RecordUsageEventInput): Promise<UsageEventRecord | null> {
+    if (!this.usageEnabled()) return null;
+    let at = input.at;
+    if (!at) {
+      const atMs = Math.max(Date.now(), this.lastUsageAtMs + 1);
+      this.lastUsageAtMs = atMs;
+      at = new Date(atMs).toISOString();
+    }
+    try {
+      return await this.store.recordUsageEvent(
+        this.project.rootDir,
+        { ...input, at },
+        usagePolicyFrom(this.baseEnv)
+      );
+    } catch (error) {
+      logWarn(`使用统计记录失败: ${errorMessage(error)}`);
+      return null;
+    }
+  }
+
+  async listUsageEvents(query: UsageEventQuery = {}): Promise<UsageEventRecord[]> {
+    return await this.safeStore(
+      () => this.store.listUsageEvents(this.project.rootDir, query),
+      [] as UsageEventRecord[]
+    );
   }
 
   // ------------------------------------------------------------------

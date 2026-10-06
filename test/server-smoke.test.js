@@ -17,7 +17,12 @@ async function makeClient(projectDir) {
     command: process.execPath,
     args: [path.join(repoRoot, "dist", "index.js")],
     cwd: repoRoot,
-    env: { ...process.env, AOS_PROJECT_DIR: projectDir, AOS_MODEL_REFRESH_HOURS: "0" }
+    env: {
+      ...process.env,
+      AOS_PROJECT_DIR: projectDir,
+      AOS_MODEL_REFRESH_HOURS: "0",
+      AOS_USAGE: "1"
+    }
   });
   const client = new Client({ name: "aos-mcp-smoke", version: "0.0.1" });
   await client.connect(transport);
@@ -86,11 +91,11 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
     );
     assert.equal(statusPayload.logs.file, path.join(dir, ".artemis", "logs", "aos-mcp.log"));
 
-    // Log file sink: startup banner + per-tool audit lines.
+    // Log file sink: startup banner + per-tool audit lines with usage correlation.
     const logText = fs.readFileSync(path.join(dir, ".artemis", "logs", "aos-mcp.log"), "utf-8");
     assert.match(logText, /启动（stdio）/);
-    assert.match(logText, /tool=llm_list ok=true/);
-    assert.match(logText, /tool=aos_status ok=true/);
+    assert.match(logText, /tool=llm_list ok=true ms=\d+ usage=[0-9a-f-]{36}/);
+    assert.match(logText, /tool=aos_status ok=true ms=\d+ usage=[0-9a-f-]{36}/);
   } finally {
     await client.close();
   }

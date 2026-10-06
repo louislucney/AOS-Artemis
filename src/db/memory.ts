@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
+
 import type {
   ModelCacheRecord,
   ProjectLlmRecord,
@@ -7,8 +9,12 @@ import type {
   ProjectStore,
   PutModelCacheInput,
   RecordTaskInput,
+  RecordUsageEventInput,
   TaskStatRecord,
-  UpsertLlmInput
+  UpsertLlmInput,
+  UsageEventQuery,
+  UsageEventRecord,
+  UsagePrunePolicy
 } from "./types.js";
 
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
@@ -18,6 +24,7 @@ export class MemoryStore implements ProjectStore {
   private llms = new Map<string, ProjectLlmRecord[]>();
   private modelCaches = new Map<string, ModelCacheRecord>();
   private tasks: TaskStatRecord[] = [];
+  private usageEvents: UsageEventRecord[] = [];
 
   async upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord> {
     const now = new Date().toISOString();
@@ -185,6 +192,68 @@ export class MemoryStore implements ProjectStore {
     return true;
   }
 
+  async recordUsageEvent(
+    rootPath: string,
+    input: RecordUsageEventInput,
+    policy: UsagePrunePolicy = {}
+  ): Promise<UsageEventRecord> {
+    const project = this.projects.get(rootPath);
+    const record = buildUsageEvent(input, project?.id ?? null);
+    this.usageEvents.push(record);
+    this.pruneUsageEvents(record.projectId, policy);
+    return cloneUsageEvent(record);
+  }
+
+  async listUsageEvents(rootPath: string, query: UsageEventQuery = {}): Promise<UsageEventRecord[]> {
+    const project = this.projects.get(rootPath);
+    if (!project) return [];
+    return this.usageEvents
+      .filter((event) => event.projectId === project.id)
+      .filter((event) => !query.tool || event.tool === query.tool)
+      .filter((event) => !query.status || (query.status === "ok" ? event.ok : !event.ok))
+      .filter((event) => !query.since || event.at >= query.since)
+      .filter((event) => !query.until || event.at <= query.until)
+      .sort(byNewestUsageEvent)
+      .slice(0, normalizeUsageLimit(query.limit))
+      .map(cloneUsageEvent);
+  }
+
+  async listProjects(): Promise<ProjectRecord[]> {
+    return [...this.projects.values()]
+      .sort(
+        (a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt) || a.name.localeCompare(b.name)
+      )
+      .map((project) => ({ ...project }));
+  }
+
+  usageEventCount(): number {
+    return this.usageEvents.length;
+  }
+
+  private pruneUsageEvents(projectId: string | null, policy: UsagePrunePolicy): void {
+    const inBucket = (event: UsageEventRecord): boolean => event.projectId === projectId;
+    const retentionDays = policy.retentionDays ?? 0;
+    if (retentionDays > 0) {
+      const cutoff = retentionCutoffIso(retentionDays);
+      this.usageEvents = this.usageEvents.filter(
+        (event) => !inBucket(event) || event.at >= cutoff
+      );
+    }
+    const maxEvents = policy.maxEvents ?? 0;
+    if (maxEvents > 0) {
+      const keep = new Set(
+        this.usageEvents
+          .filter(inBucket)
+          .sort(byNewestUsageEvent)
+          .slice(0, maxEvents)
+          .map((event) => event.id)
+      );
+      this.usageEvents = this.usageEvents.filter(
+        (event) => !inBucket(event) || keep.has(event.id)
+      );
+    }
+  }
+
   async close(): Promise<void> {
     /* nothing to do */
   }
@@ -197,4 +266,16 @@ export class MemoryStore implements ProjectStore {
     const list = this.llms.get(rootPath) ?? [];
     return list.find((entry) => entry.isActive)?.name ?? null;
   }
+}
+
+function byNewestUsageEvent(a: UsageEventRecord, b: UsageEventRecord): number {
+  return b.at.localeCompare(a.at) || b.id.localeCompare(a.id);
+}
+
+function cloneUsageEvent(event: UsageEventRecord): UsageEventRecord {
+  return {
+    ...event,
+    signals: event.signals.map((signal) => ({ ...signal })),
+    argKeys: [...event.argKeys]
+  };
 }

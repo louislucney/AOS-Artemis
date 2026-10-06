@@ -69,7 +69,7 @@ node dist/cli.js doctor --install-deps
 | artemis 任务明细（最细粒度） | `artemis/traces/<trace_id>/stdout.log` / `stderr.log` |
 | 客户端侧（stdio） | 服务 stderr 同时被 opencode / Claude Code 捕获进各自 MCP 日志 |
 
-每条工具调用都有审计行，例如：`2026-09-28T15:20:11.123Z INFO  [aos-mcp] tool=mobile_run_task ok=true ms=87`（失败时附错误摘要，级别 WARN）。
+每条工具调用都有审计行，例如：`2026-09-28T15:20:11.123Z INFO  [aos-mcp] tool=mobile_run_task ok=true ms=87 usage=<id>`（失败时附错误摘要，级别 WARN）；`usage=<id>` 对应使用统计里的调用事件，可从日志直接定位事件。
 
 **按症状定位**
 
@@ -119,6 +119,21 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 - `aos_crashes`：任务终态后自动采集设备 crash buffer，解析为崩溃签名（包名 + 根因异常 + 首个应用帧）并去重计数；`list` 查看、`get` 取完整栈、`scan` 手动扫描。产物在 `.artemis/crashes/`，`AOS_CRASH_CAPTURE=0` 可关闭。
 - `compare_design_and_device`：一次调用返回 **Figma 节点渲染图（PNG@2x）+ 当前真机截图**（MCP image content），交给多模态模型比对布局/间距/颜色/文案。
 - `design_device_diff`：**确定性**设计 vs 真机差异（不依赖多模态）：默认取 Figma 节点 + 实时截图，做对齐与像素判定，输出结构化差异报告（区域/严重度/证据）与标注图并落盘；`alignment.ignoreRegions` 可屏蔽状态栏/视频位等动态区域；`device.platform:"ios"` 时设备侧改走 macOS 模拟器（idb→simctl，无损 PNG；`serial` 传 UDID 或自动取唯一已启动模拟器，仅 `mode:"live"`）；`device:{mode:"step", traceId, stepNumber?, image?}` 可直接复核失败步骤截图（经 `mobile_inspect_trace`，默认 post）；省略 `stepNumber` 时用 `run_outcome` 失败证据检索步骤（Pro，best-effort），报告记录 `anchor`（explicit/search）与候选；设计源 `.pen` 经 pen CLI 渲染（1×，与节点几何对齐），缺 CLI 自动托管安装。
+
+### 使用统计（usage）
+
+每次**客户端通过 MCP 发起**的工具调用（`aos_usage` 自身除外；不含服务内部编排调用，ADR-0006）都会记录一条调用事件：工具/家族/成败/耗时/错误类/信号/参数键集合——参数只记键名、不记录参数值本身（错误摘要为服务端回显片段，≤300 字符，不含凭据）。事件存 PostgreSQL（不可用降级内存，写入时按策略清理），审计日志行附 `usage=<id>` 与事件互链；`aos_usage` 工具、`usage` CLI 与 Web 看板共用同一份聚合。
+
+```bash
+node dist/cli.js usage                        # 当前项目文本摘要（最近 7 天）
+node dist/cli.js usage --json                 # 机器可读（与文本同源）
+node dist/cli.js usage --all                  # 跨项目总览（含合计）
+node dist/cli.js usage --project <名称> --days 30
+node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:8766（端口占用 exit 2）
+```
+
+- Web 看板：`usage --web` 提供 `GET /usage`（HTML）与 `GET /usage.json`（同源 JSON）；HTTP 模式下跟随服务器绑定自动挂载同一路由，`AOS_USAGE_WEB=0` 关闭页面。v1 纯只读、无鉴权（与内网部署口径一致）、无处置标记。
+- 环境变量（进程/客户端 env，不读项目 `.env`）：`AOS_USAGE=0` 关闭采集（历史数据仍可查询与展示）、`AOS_USAGE_RETENTION_DAYS`（保留天数，默认 90，0 不清理）、`AOS_USAGE_MAX_EVENTS`（每项目事件上限，默认 50000，超出丢最旧）、`AOS_USAGE_WEB=0`（关闭 `/usage` 与 `/usage.json` 路由）。
 
 ### 设计 → 测试流水线（Figma → 真机）
 
@@ -285,6 +300,7 @@ node dist/cli.js doctor
 | `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 就绪性 |
 | `aos_tasks` | 任务/调用统计（case/trace/状态/模型），含完成态同步与错误终态记录 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
+| `aos_usage` | 使用统计（调用事件）：`summary` 概览 / `signals` 信号分布 / `events` 流水；`tool`/`status`/`days` 筛选，events `limit` ≤200；只统计客户端发起的调用，`AOS_USAGE=0` 时标注采集已关闭但历史仍可查 |
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
 | `design_device_diff` | 设计 vs 真机差异（确定性）：设计源 Figma 节点或 `.pen`（`design:{source:"pen"}`，pen CLI 渲染）+ 截图（`live` 实时，或 `step` + `traceId`（`stepNumber` 可省略→失败证据自动检索）对比失败步骤，默认 post；`device.platform:"ios"` 走 macOS 模拟器 idb/simctl）→ 对齐（insets/ignoreRegions/降采样）→ 像素差异判定 + 设计节点几何分类（missing/extra/text/asset/position-size/color）→ 差异报告 + 标注图，落盘 `.artemis/design/diffs/<node>-<时间戳>/`；`dryRun` 只回计划 |
 | `screen_map` | 持久屏幕映射 `.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 候选（confidence/unmatched）、`save` 幂等/merge、`list`；差异报告输出 `localized` |

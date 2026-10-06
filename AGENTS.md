@@ -38,6 +38,8 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 | 镜像 | `docker build -t aos-mcp:local .` |
 | 真机验收（手动） | `node scripts/e2e-device.mjs "…"`（需 artemis venv + 已授权设备） |
 | 崩溃取证验收（手动） | `node scripts/e2e-crash.mjs --package <pkg> [--serial S] [--collect-only]`（需 adb + 已授权设备；`am crash` 或手动触发后采集） |
+| 使用统计（CLI） | `node dist/cli.js usage [--json\|--all\|--project <名\|根路径>\|--days <n>]`（默认当前项目摘要、最近 7 天；`AOS_USAGE=0` 标注采集关闭、历史仍可查） |
+| 使用统计看板 | `node dist/cli.js usage --web [--port 8766] [--host 127.0.0.1]`（只读看板复用 `/usage`+`/usage.json`，默认 loopback；端口占用 exit 2） |
 | 设计流水线（一条命令） | `node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`（无 token 时给出指引并 exit 2） |
 | MCP 工具调试调用（手动） | `node scripts/aos-call.mjs <calls.json> [projectDir]`（stdio 启动 `dist/index.js`，`AOS_PROJECT_DIR` 指向目标项目；`calls.json` 为 `[{name,args,out?}]`，`out` 落盘结果） |
 | 设备命令（跨项目复用） | `node scripts/adb-safe.mjs <devices\|wait\|install\|shell\|screencap\|push\|pull>`（硬超时 + 超时杀进程组；默认 push 安装；`shell` 拦截 `pm install`；退出码 0/2/3/4/124/125，`--json`；测试 `test/adb-safe.test.js`） |
@@ -66,7 +68,8 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 - **任务统计**：`mobile_run_task` 每次调用都记入 `task_stats`（成功→submitted；即时报错/无 trace→failed 终态，`local-<uuid>` 占位）；生成用例的 `case_id` 由任务描述精确匹配回填（`aos_tasks` 可见）；完成态由后台 30s 循环 + `aos_tasks` 轮询 `mobile_manage_task(status)` 回写。
 - **崩溃取证**：任务终态自动采集设备 crash buffer → 签名去重（包名+根因异常+首个应用帧）落盘 `<项目>/.artemis/crashes/`；`aos_crashes` list/get/scan；iOS trace 改采宿主机 `~/Library/Logs/DiagnosticReports/*.ips`（kind=`ios`，见 DESIGN §13.48）；`AOS_CRASH_CAPTURE=0` / `AOS_ADB_PATH` / `AOS_CRASH_TIMEOUT_MS` / `AOS_CRASH_MAX_RECORDS` 可配（`src/crash/`）。
 - **项目内产物**：任务轨迹/步骤截图/notes/stdout/stderr/data_engine.db 默认写 `<项目>/.artemis/traces/`（子进程 `ARTEMIS_TRACES_DIR`，显式 env 优先、相对项目根解析、纳入指纹）；`mobile_get_device_state` 的 live_screenshot 上游仍写 artemis 仓库根，AOS 自动镜像到 `.artemis/traces/live_screenshots/`（响应透传）；测试文档在 `.artemis/design/`（`src/artemis/artifacts.ts`、DESIGN.md §6.7）。
-- **日志**：`<project>/.artemis/logs/aos-mcp.log`（工具调用审计 name/ok/ms + 启停 + 崩溃堆栈）与 `artemis-child.log`（子进程 stderr 落盘）；`AOS_LOG_LEVEL/DIR`、`AOS_LOG_DISABLE_FILE=1`、`AOS_LOG_MAX_MB`（轮转）。
+- **日志**：`<project>/.artemis/logs/aos-mcp.log`（工具调用审计 name/ok/ms + `usage=<id>` 事件互链 + 启停 + 崩溃堆栈）与 `artemis-child.log`（子进程 stderr 落盘）；`AOS_LOG_LEVEL/DIR`、`AOS_LOG_DISABLE_FILE=1`、`AOS_LOG_MAX_MB`（轮转）。
+- **使用统计**：客户端经 stdio/HTTP 的每次工具调用（`aos_usage` 自身除外；ADR-0006 只采客户端调用，内部编排直接走 `runtime.proxy.callTool` 不入账）记一条调用事件（工具/族/成败/耗时/错误类/信号/参数键集合——不记参数值本身，错误摘要为回显片段 ≤300），存 PG `usage_events`（不可用降级内存；写入时按 `AOS_USAGE_RETENTION_DAYS` 默认 90 / `AOS_USAGE_MAX_EVENTS` 默认 50000 清理；`AOS_USAGE=0` 停采集但历史仍可查）；审计行 `usage=<id>` 双向可查；三消费面同源——`aos_usage` 工具（summary/signals/events）、`usage` CLI（文本/JSON/`--web`）、HTTP `/usage`+`/usage.json`（`AOS_USAGE_WEB=0` 关闭路由）；`aos_status.usage` 显示 enabled/storage（`src/usage/`、DESIGN §13.54）。
 - **依赖更新检测**：`artemis/.venv/.aos-deps.json` 的 lock 哈希 stamp 对比 `uv.lock`；过期时 serve / `doctor --install-deps` 自动更新（依赖包 `AOS_ARTEMIS_DEPS_URL` 优先，旧包回退在线 `uv sync`；`AOS_DEPS_NO_ONLINE=1` 禁在线）。仅代码更新无需操作（venv 只装依赖，代码从仓库读取）。
 - **pen CLI 托管**：解析链 `AOS_PEN_CLI_PATH` → 托管目录（`AOS_PEN_CLI_DIR`，默认 `~/.aos/pen-cli`）→ PATH；缺失时首次调用自动安装 `@pen.dev/cli[@AOS_PEN_VERSION]`（Node ≥ 22.19、需网络；`AOS_PEN_NO_INSTALL=1`/`AOS_DEPS_NO_ONLINE=1` 关闭；超时 `AOS_PEN_INSTALL_TIMEOUT_MS` 默认 600s；失败 5min 冷却 + 并发去重；`dryRun` 不触发）；项目 `.env` 白名单透传子进程（`PEN_CLI_KEY`/`PEN_AGENT_API_KEY`/`ANTHROPIC_*`/`AOS_PEN_*`，进程 env 优先、active LLM 凭证最后覆盖）；doctor 显示状态、`--install-deps` 预装（`src/pen/install.ts`、`src/pen/cli.ts`）。
 - **技术栈检测**：`src/projects/stack.ts`（Flutter / React Native / 原生 Android / iOS / Web）；gap 扫描规则、定位/代码/文件命名约定按栈选择，`aos_status.stack` 可见。
