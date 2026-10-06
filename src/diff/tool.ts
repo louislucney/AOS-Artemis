@@ -15,6 +15,7 @@ import {
   captureStepScreenshot,
   resolveTraceStepAnchor,
   type DeviceCapture,
+  type LiveCaptureOptions,
   type StepAnchor
 } from "./device-source.js";
 import { decodeImage, diffScreens, encodePng, type Bbox, type Insets } from "./engine.js";
@@ -34,10 +35,12 @@ export interface DesignDeviceDiffArgs {
   design: DesignSourceArgs;
   device?: {
     mode?: "live" | "step";
+    platform?: "android" | "ios";
     serial?: string;
     traceId?: string;
     stepNumber?: number;
     image?: "post" | "pre";
+    lossless?: boolean;
   };
   alignment?: { insets?: Partial<Insets>; ignoreRegions?: Bbox[] };
   diff?: {
@@ -57,6 +60,8 @@ export interface DesignDeviceDiffArgs {
 export interface DesignDeviceDiffDeps {
   exec?: PenExecFn;
   ensure?: PenEnsureFn;
+  capturePng?: LiveCaptureOptions["capturePng"];
+  captureIosPng?: LiveCaptureOptions["captureIosPng"];
 }
 
 function resolveDesignSource(design: DesignSourceArgs): { kind: "figma" } | { kind: "pen" } | { error: string } {
@@ -106,6 +111,12 @@ export async function designDeviceDiff(
     const mode = args.device?.mode ?? (args.device?.traceId ? "step" : "live");
     if (args.device?.traceId && mode !== "step") {
       return jsonError('提供了 device.traceId，但 mode 不是 step：请显式设 device.mode="step"（或省略 mode 让其自动推断）。');
+    }
+    if (args.device?.lossless === true && mode !== "live") {
+      return jsonError('device.lossless 仅适用于 mode="live"（步骤截图来自轨迹原图）。');
+    }
+    if (args.device?.platform === "ios" && mode !== "live") {
+      return jsonError('device.platform="ios" 仅支持 mode="live"（步骤截图来自 ARTEMIS 轨迹，当前仅 Android）。');
     }
     if (mode === "step") {
       if (!args.device?.traceId) {
@@ -157,7 +168,11 @@ export async function designDeviceDiff(
                 image: stepRequest.image,
                 serial: args.device?.serial ?? null
               }
-            : { mode: "live", serial: args.device?.serial ?? null },
+            : {
+                mode: "live",
+                ...(args.device?.platform === "ios" ? { platform: "ios" } : {}),
+                serial: args.device?.serial ?? null
+              },
         plannedDir: path.join(runtime.configDirAbs, "design", "diffs", `${slug}-<timestamp>`),
         hint: "dryRun 不拉取设计/设备截图、不写盘。"
       });
@@ -189,7 +204,12 @@ export async function designDeviceDiff(
             stepNumber,
             image: stepRequest.image
           })
-        : await captureLiveScreenshot(runtime, args.device?.serial);
+        : await captureLiveScreenshot(runtime, args.device?.serial, {
+            platform: args.device?.platform === "ios" ? "ios" : undefined,
+            lossless: args.device?.lossless === true,
+            capturePng: deps.capturePng,
+            captureIosPng: deps.captureIosPng
+          });
     } catch (error) {
       return jsonError(stepRequest !== null ? `步骤截图失败: ${errorMessage(error)}` : `真机截图失败: ${errorMessage(error)}`);
     }
@@ -339,6 +359,7 @@ export async function designDeviceDiff(
               }
             : {
                 mode: "live" as const,
+                ...(args.device?.platform === "ios" ? { platform: "ios" } : {}),
                 ...(args.device?.serial ? { serial: args.device.serial } : {})
               }
       },
@@ -381,7 +402,11 @@ export async function designDeviceDiff(
               ok: true,
               dryRun: false,
               design: designResponse,
-              device: { source: deviceNote, serial: captured.serial ?? args.device?.serial ?? "(auto)" },
+              device: {
+                source: deviceNote,
+                serial: captured.serial ?? args.device?.serial ?? "(auto)",
+                ...(args.device?.platform === "ios" ? { platform: "ios" } : {})
+              },
               ...shared,
               saved
             },

@@ -97,3 +97,59 @@ export function classifyAdbFailure(error: string | undefined): string {
   }
   return "command-failed";
 }
+
+export interface ExecBufferResult {
+  code: number | null;
+  stdout: Buffer;
+  stderr: string;
+  error?: string;
+}
+
+export type ExecBufferFn = (
+  command: string,
+  args: string[],
+  options?: { timeoutMs?: number }
+) => Promise<ExecBufferResult>;
+
+export const defaultExecBuffer: ExecBufferFn = (command, args, options = {}) =>
+  new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, args, { windowsHide: true });
+    } catch (error) {
+      resolve({ code: null, stdout: Buffer.alloc(0), stderr: "", error: errorMessage(error) });
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    let settled = false;
+    const finish = (result: ExecBufferResult): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = options.timeoutMs
+      ? setTimeout(() => {
+          try {
+            child.kill();
+          } catch {
+            /* already gone */
+          }
+          finish({ code: null, stdout: Buffer.concat(chunks), stderr, error: "timeout" });
+        }, options.timeoutMs)
+      : null;
+    timer?.unref?.();
+    child.stdout?.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf-8");
+    });
+    child.on("error", (error) => {
+      finish({ code: null, stdout: Buffer.concat(chunks), stderr, error: errorMessage(error) });
+    });
+    child.on("close", (code) => {
+      finish({ code, stdout: Buffer.concat(chunks), stderr });
+    });
+  });

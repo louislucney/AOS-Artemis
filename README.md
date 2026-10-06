@@ -118,7 +118,7 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 - `aos_tasks`：列出本项目 `mobile_run_task` 记录（case id / trace / 状态 / 模型 / 时间），默认先向 artemis 同步完成态；后台每 30s 自动同步；即时报错也会记为 `failed` 终态，生成用例的 `case_id` 由任务描述精确匹配回填。
 - `aos_crashes`：任务终态后自动采集设备 crash buffer，解析为崩溃签名（包名 + 根因异常 + 首个应用帧）并去重计数；`list` 查看、`get` 取完整栈、`scan` 手动扫描。产物在 `.artemis/crashes/`，`AOS_CRASH_CAPTURE=0` 可关闭。
 - `compare_design_and_device`：一次调用返回 **Figma 节点渲染图（PNG@2x）+ 当前真机截图**（MCP image content），交给多模态模型比对布局/间距/颜色/文案。
-- `design_device_diff`：**确定性**设计 vs 真机差异（不依赖多模态）：默认取 Figma 节点 + 实时截图，做对齐与像素判定，输出结构化差异报告（区域/严重度/证据）与标注图并落盘；`alignment.ignoreRegions` 可屏蔽状态栏/视频位等动态区域；`device:{mode:"step", traceId, stepNumber?, image?}` 可直接复核失败步骤截图（经 `mobile_inspect_trace`，默认 post）；省略 `stepNumber` 时用 `run_outcome` 失败证据检索步骤（Pro，best-effort），报告记录 `anchor`（explicit/search）与候选；设计源 `.pen` 经 pen CLI 渲染（1×，与节点几何对齐），缺 CLI 自动托管安装。
+- `design_device_diff`：**确定性**设计 vs 真机差异（不依赖多模态）：默认取 Figma 节点 + 实时截图，做对齐与像素判定，输出结构化差异报告（区域/严重度/证据）与标注图并落盘；`alignment.ignoreRegions` 可屏蔽状态栏/视频位等动态区域；`device.platform:"ios"` 时设备侧改走 macOS 模拟器（idb→simctl，无损 PNG；`serial` 传 UDID 或自动取唯一已启动模拟器，仅 `mode:"live"`）；`device:{mode:"step", traceId, stepNumber?, image?}` 可直接复核失败步骤截图（经 `mobile_inspect_trace`，默认 post）；省略 `stepNumber` 时用 `run_outcome` 失败证据检索步骤（Pro，best-effort），报告记录 `anchor`（explicit/search）与候选；设计源 `.pen` 经 pen CLI 渲染（1×，与节点几何对齐），缺 CLI 自动托管安装。
 
 ### 设计 → 测试流水线（Figma → 真机）
 
@@ -164,7 +164,7 @@ node dist/cli.js suite report [--limit N] [--case <id>]... [--out <dir>] [--no-s
 node dist/cli.js suite feedback [--min-failures N]
 ```
 
-- `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/用例缺陷/未分类），失败附 `suite evidence <traceId>` 提示。
+- `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/用例缺陷/未分类），失败附 `suite evidence <traceId>` 提示；`--device` 为 iOS 模拟器 UDID 时用例由 AOS iOS 执行器运行（`--app` 经 idb terminate+launch 复位；日志采集标 `ios-log-unsupported` 降级）。
 - `evidence`：一次拿到失败项、崩溃签名、锚定失败步骤截图与可选设计差异引用（默认落 `.artemis/design/evidence/<traceId>/`）。
 - `api-errors`：按 trace 时间窗采集设备日志，匹配项目错误码注册表 `.artemis/design/error-codes.json`（`{codes:{"<code>":{match,handler?,expect?,handledPattern?}}}`），判定 `handled/unhandled/observed` 并落 `.artemis/traces/<traceId>/api-errors.json`；默认只作证据，`--fail-on api-error` 才让未处理错误判 FAIL。
 - `baseline`：设备对设备像素回归（last-known-good）；`--fail-on` 触发时退出码 2，可直接做 CI 门禁。
@@ -220,6 +220,23 @@ node scripts/e2e-crash.mjs --package com.example.app
 # 手动触发后用 --collect-only 只做采集；多设备用 --serial 指定
 ```
 
+### 设备命令（adb-safe）
+
+`scripts/adb-safe.mjs` 是带硬超时与进程组清理的 adb 包装器，可复制到任意项目供脚本/代理使用：
+
+```bash
+node scripts/adb-safe.mjs install <apk>                  # 默认 push 安装（--no-streaming）
+node scripts/adb-safe.mjs shell "input tap 992 1786" --timeout 15
+node scripts/adb-safe.mjs screencap out.png
+node scripts/adb-safe.mjs devices --json
+```
+
+- 超时到点杀整个进程组并返回 `124`（不留孤儿 adb；`sleep 300 --timeout 3` 实测 3s 返回）；
+- `shell` 拦截 `adb shell pm install`（设备侧完成后 host 端永不返回的 FD 假死），提示改用 `install`；
+- 设备解析：`--serial` → `ANDROID_SERIAL` → 唯一在线设备；多设备不带 `--serial` 直接报错；
+- adb 路径：`AOS_ADB_PATH` → `ARTEMIS_ADB_PATH` → `ANDROID_HOME/SDK_ROOT` → `local.properties sdk.dir` → 常见 SDK 目录 → PATH；
+- 退出码：`0` 成功 / `2` 用法 / `3` 设备 / `4` 命令失败 / `124` 超时 / `125` adb 缺失；`shell` 透传远端退出码。
+
 ## 状态
 
 | 里程碑 | 内容 | 状态 |
@@ -269,7 +286,7 @@ node dist/cli.js doctor
 | `aos_tasks` | 任务/调用统计（case/trace/状态/模型），含完成态同步与错误终态记录 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
-| `design_device_diff` | 设计 vs 真机差异（确定性）：设计源 Figma 节点或 `.pen`（`design:{source:"pen"}`，pen CLI 渲染）+ 截图（`live` 实时，或 `step` + `traceId`（`stepNumber` 可省略→失败证据自动检索）对比失败步骤，默认 post）→ 对齐（insets/ignoreRegions/降采样）→ 像素差异判定 + 设计节点几何分类（missing/extra/text/asset/position-size/color）→ 差异报告 + 标注图，落盘 `.artemis/design/diffs/<node>-<时间戳>/`；`dryRun` 只回计划 |
+| `design_device_diff` | 设计 vs 真机差异（确定性）：设计源 Figma 节点或 `.pen`（`design:{source:"pen"}`，pen CLI 渲染）+ 截图（`live` 实时，或 `step` + `traceId`（`stepNumber` 可省略→失败证据自动检索）对比失败步骤，默认 post；`device.platform:"ios"` 走 macOS 模拟器 idb/simctl）→ 对齐（insets/ignoreRegions/降采样）→ 像素差异判定 + 设计节点几何分类（missing/extra/text/asset/position-size/color）→ 差异报告 + 标注图，落盘 `.artemis/design/diffs/<node>-<时间戳>/`；`dryRun` 只回计划 |
 | `screen_map` | 持久屏幕映射 `.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 候选（confidence/unmatched）、`save` 幂等/merge、`list`；差异报告输出 `localized` |
 | `figma_extract_flows` | 解析 Figma 原型交互 → 流程图（screens/edges/entryScreens，支持连续动作与 BACK），落盘 `.artemis/design/flows.json` |
 | `figma_gap_analysis` | 缺口分析：设计资源/色板 vs 项目现有资产/ tokens 文件，落盘 `.artemis/design/gaps.json` |
@@ -286,7 +303,7 @@ node dist/cli.js doctor
 | `pen_apply_tokens` | CLI 写回：`tokens.json`（含 modes 主题）→ `.pen` `SetVariables`；**原位更新**（临时文件→回读校验→原子替换，失败不动原文件），`out` 可另存 |
 | `pen_apply_strings` | CLI 写回：`strings.json` 的 nodeId→sourceText → `.pen` 文本节点；原位更新与校验语义同上；nodeId 缺失记 `notFound` |
 | `pen_agent` | agent 生成/修改设计：prompt → `.pen`（默认原位安全更新；`out` 新建/另存；`exportPath` 顺带出图）；凭证复用 active LLM（不落日志）并自动桥接 Anthropic 端点：DeepSeek（已实测）、Kimi/Z.AI/百炼（Bearer+模型 env，待冒烟）；其他 provider 可 `anthropicBaseUrl` 指定 |
-| `mobile_*`（5） | 代理 artemis（schema 原样透传）；`mobile_run_task` 在 setup 未完成时返回结构化 `setup_required` |
+| `mobile_*`（5） | 代理 artemis（schema 原样透传）；`mobile_run_task` 在 setup 未完成时返回结构化 `setup_required`；`device_serial` 为 iOS 模拟器 UDID 时由 AOS 接管：`mobile_run_task` 走内置观察-动作执行器（active LLM，无唤醒需轮询 `mobile_manage_task`；视觉目标 `AOS_IOS_VISION_LLM`/`AOS_IOS_VISION_MODEL`，层级差或 `AOS_IOS_VISION_ALWAYS=1` 时附图，失败自动降级纯文本），`mobile_manage_task`/`mobile_inspect_trace`（view_summary/view_step_details/view_step_screenshots/search）/`mobile_get_device_state` 均按 UDID 或 iOS trace id 路由；其余仍走 ARTEMIS/adb |
 | Figma 20 | `get_current_selection` … `export_image`（内嵌 dcb，zod 校验）；插件模式走本地桥（锁定 3055，CORS 白名单），REST 模式需 token（缺失时引导 `aos_configure`） |
 
 ## 产物路径（项目内）
@@ -296,9 +313,9 @@ node dist/cli.js doctor
 | 内容 | 路径 |
 |------|------|
 | 任务轨迹（步骤截图 / notes / stdout / stderr / `data_engine.db`） | `.artemis/traces/`（环境变量 `ARTEMIS_TRACES_DIR` 可覆盖，相对路径按项目根解析） |
-| 实时真机截图 | `.artemis/traces/live_screenshots/`（上游在 artemis 仓库根另存一份，AOS 自动镜像；`mobile_get_device_state` 响应不变） |
+| 实时真机截图 | `.artemis/traces/live_screenshots/`（上游在 artemis 仓库根另存一份，AOS 自动镜像；`mobile_get_device_state` 响应不变；iOS 模拟器由 AOS 直写该目录，`.png`） |
 | 设计 vs 真机差异 | `.artemis/design/diffs/<node>-<时间戳>/`（report.json / annotated.png / design.png / device.png） |
-| 崩溃取证 | `.artemis/crashes/` |
+| 崩溃取证 | `.artemis/crashes/`（Android：crash buffer；iOS trace：宿主机 `~/Library/Logs/DiagnosticReports/*.ips` 按任务窗口采集，`aos_crashes` 的 kind=`ios`） |
 | 测试文档（flows / gaps / tests.{json,md,xlsx} / build-brief 等设计产物） | `.artemis/design/` |
 | AOS 日志 | `.artemis/logs/aos-mcp.log`、`artemis-child.log` |
 

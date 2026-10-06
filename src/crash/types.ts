@@ -1,8 +1,8 @@
-export type CrashKind = "java" | "native" | "anr" | "unknown";
+export type CrashKind = "java" | "native" | "anr" | "ios" | "unknown";
 
-export type CrashAttribution = "process-line" | "tombstone-header" | "anr-line" | "unknown";
+export type CrashAttribution = "process-line" | "tombstone-header" | "anr-line" | "ips-header" | "unknown";
 
-export type CrashSource = "crash-buffer" | "main-buffer";
+export type CrashSource = "crash-buffer" | "main-buffer" | "diagnostic-reports";
 
 export interface ParsedCrash {
   kind: CrashKind;

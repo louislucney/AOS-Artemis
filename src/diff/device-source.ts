@@ -6,13 +6,23 @@ import {
   taskStatusOf,
   type TaskStatus
 } from "../artemis/task-result.js";
+import { captureIosPng, type IosPngCapture } from "../device/ios.js";
+import { captureAdbPng, type AdbPngCapture } from "../device/screenshot.js";
 import type { Runtime } from "../runtime.js";
-import { extractDeviceImage } from "../tools/composite.js";
+import { extractDeviceImage } from "../tools/device-image.js";
+import { errorMessage } from "../util.js";
 
 export interface DeviceCapture {
   bytes: Buffer;
   note: string;
   serial?: string;
+}
+
+export interface LiveCaptureOptions {
+  lossless?: boolean;
+  platform?: "android" | "ios";
+  capturePng?: (options?: { serial?: string | null }) => Promise<AdbPngCapture>;
+  captureIosPng?: (options?: { serial?: string | null }) => Promise<IosPngCapture>;
 }
 
 export interface StepScreenshotRequest {
@@ -32,7 +42,7 @@ export interface StepAnchor {
   candidates: StepAnchorCandidate[];
 }
 
-export async function captureLiveScreenshot(runtime: Runtime, serial?: string): Promise<DeviceCapture> {
+async function captureArtemisLive(runtime: Runtime, serial?: string): Promise<DeviceCapture> {
   const result = await runtime.proxy.callTool("mobile_get_device_state", {
     view_type: "screenshot",
     ...(serial ? { device_serial: serial } : {})
@@ -42,6 +52,72 @@ export async function captureLiveScreenshot(runtime: Runtime, serial?: string): 
     throw new Error("无法从 mobile_get_device_state 结果中解析截图（image 块或本地文件路径）。");
   }
   return { bytes: Buffer.from(extracted.data, "base64"), note: extracted.note };
+}
+
+const IOS_ERROR_HINTS: Record<string, string> = {
+  "ios-unsupported": "iOS 模拟器仅支持 macOS。",
+  "no-device": "没有已启动的模拟器；请先执行 xcrun simctl boot <udid>。",
+  "no-serial": "有多台已启动的模拟器；请用 device.serial 指定 UDID。",
+  "not-found": "未找到 idb/xcrun（需要 Xcode；可用 AOS_IDB_PATH / AOS_XCRUN_PATH 指定路径）。"
+};
+
+/** Live device capture. `lossless` grabs a PNG straight from adb
+ * (`exec-out screencap -p`) to keep pixel diffs free of JPEG artifacts; when
+ * adb is unavailable it falls back to ARTEMIS's live JPEG and says so.
+ * `platform:"ios"` switches to the macOS simulator backend (idb → simctl),
+ * which always yields PNG (ARTEMIS itself is Android-only, so there is no
+ * JPEG fallback). */
+export async function captureLiveScreenshot(
+  runtime: Runtime,
+  serial?: string,
+  options: LiveCaptureOptions = {}
+): Promise<DeviceCapture> {
+  if (options.platform === "ios") {
+    const captureIos = options.captureIosPng ?? ((captureOptions) => captureIosPng(captureOptions ?? {}));
+    let png: IosPngCapture;
+    try {
+      png = await captureIos({ serial });
+    } catch (error) {
+      png = { ok: false, serial: serial ?? null, error: errorMessage(error) };
+    }
+    if (png.ok && png.bytes) {
+      const tool = png.tool === "simctl" ? "simctl 兜底" : "idb";
+      return {
+        bytes: png.bytes,
+        note: `iOS 模拟器 PNG（${tool}，udid=${png.serial ?? "?"}）`,
+        ...(png.serial ? { serial: png.serial } : {})
+      };
+    }
+    const hint = IOS_ERROR_HINTS[png.error ?? ""] ?? "请确认模拟器已启动且 idb/simctl 可用。";
+    throw new Error(`iOS 模拟器截图失败（${png.error ?? "unknown"}）；${hint}`);
+  }
+  if (options.lossless !== true) return captureArtemisLive(runtime, serial);
+  const capturePng = options.capturePng ?? ((captureOptions) => captureAdbPng(captureOptions ?? {}));
+  let png: AdbPngCapture;
+  try {
+    png = await capturePng({ serial });
+  } catch (error) {
+    png = {
+      ok: false,
+      serial: serial ?? null,
+      adb: { path: null, source: "missing" },
+      error: errorMessage(error)
+    };
+  }
+  if (png.ok && png.bytes) {
+    return {
+      bytes: png.bytes,
+      note: `adb exec-out screencap -p（无损 PNG，serial=${png.serial ?? "?"}）`,
+      ...(png.serial ? { serial: png.serial } : {})
+    };
+  }
+  const fallback = await captureArtemisLive(runtime, serial);
+  const normalized = fallback.serial ?? serial;
+  return {
+    bytes: fallback.bytes,
+    note: `${fallback.note}；无损 PNG 不可用（${png.error ?? "unknown"}），已回退 live JPEG`,
+    ...(normalized ? { serial: normalized } : {})
+  };
 }
 
 function failureQueryOf(status: TaskStatus | null): string | null {

@@ -13,7 +13,7 @@ import {
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 120_000;
-const PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+export const APP_PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 
 export type AppResetReason =
   | "invalid-package"
@@ -21,7 +21,8 @@ export type AppResetReason =
   | "device-offline"
   | "timeout"
   | "force-stop-failed"
-  | "launch-failed";
+  | "launch-failed"
+  | "ios-unsupported";
 
 export interface AppResetRequest {
   packageName: string;
@@ -89,7 +90,7 @@ export async function resetApp(
   const packageName = request.packageName?.trim() ?? "";
   const commands: string[][] = [];
 
-  if (!PACKAGE_PATTERN.test(packageName)) {
+  if (!APP_PACKAGE_PATTERN.test(packageName)) {
     return {
       ok: false,
       reason: "invalid-package",

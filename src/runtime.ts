@@ -22,6 +22,10 @@ import {
 import { mirrorDeviceScreenshots } from "./artemis/artifacts.js";
 import { ArtemisProxy, type ArtemisProxyLike } from "./artemis/proxy.js";
 import { resultPayload, taskStatusFromFile, taskStatusOf, type TaskStatus } from "./artemis/task-result.js";
+import { maybeIosInspectTrace } from "./ios/inspect.js";
+import { maybeIosManageTask, maybeIosRunTask } from "./ios/task-runner.js";
+import { collectIosCrashes } from "./crash/ios.js";
+import { maybeIosDeviceState } from "./tools/ios-state.js";
 import { appendChildLog } from "./log.js";
 import { CrashIndexStore } from "./crash/store.js";
 import { CrashScanner } from "./crash/scanner.js";
@@ -65,6 +69,7 @@ export interface RuntimeOptions {
   storeNote?: string | null;
   crashCollector?: CrashCollectorLike;
   modelFetcher?: FetchLike;
+  buildModuleUrl?: string;
 }
 
 export interface ActivateResult {
@@ -107,8 +112,9 @@ export class Runtime {
   readonly crashStore: CrashIndexStore;
   readonly crashScanner: CrashScanner;
   readonly modelCatalog: ModelCatalog;
-  readonly build: { moduleUrl: string; startedAtMs: number; stale: boolean };
 
+  private readonly buildModuleUrl: string;
+  private readonly buildStartedAtMs: number;
   private readonly baseEnv: NodeJS.ProcessEnv;
   private scanResult: EnvScanResult;
   private projectRecord: ProjectRecord | null = null;
@@ -120,6 +126,16 @@ export class Runtime {
   private modelRefreshChain: Promise<unknown> = Promise.resolve();
   private readonly lockedPackages = new Map<string, string>();
 
+  /** Build freshness is evaluated on every read, so a rebuild that happens
+   * while this process keeps running surfaces in `aos_status.build.stale`. */
+  get build(): { moduleUrl: string; startedAtMs: number; stale: boolean } {
+    return {
+      moduleUrl: this.buildModuleUrl,
+      startedAtMs: this.buildStartedAtMs,
+      stale: isBuildStale(this.buildModuleUrl, this.buildStartedAtMs)
+    };
+  }
+
   constructor(project: LoadedProject, options: RuntimeOptions = {}) {
     this.project = project;
     this.store = options.store ?? new MemoryStore();
@@ -127,10 +143,9 @@ export class Runtime {
     this.baseEnv = options.baseEnv ?? process.env;
     this.configDirAbs = configDirAbs(project.config, project.rootDir);
     this.state = new StateStore(path.join(this.configDirAbs, "state.json"));
-    const startedAtMs = Date.now() - Math.round(process.uptime() * 1000);
-    const stale = isBuildStale(import.meta.url, startedAtMs);
-    this.build = { moduleUrl: import.meta.url, startedAtMs, stale };
-    if (stale) {
+    this.buildModuleUrl = options.buildModuleUrl ?? import.meta.url;
+    this.buildStartedAtMs = Date.now() - Math.round(process.uptime() * 1000);
+    if (this.build.stale) {
       logWarn(
         "检测到 dist/ 较本进程更新：当前进程仍在运行旧构建，请重启客户端 MCP 会话后生效（aos_status.build.stale）"
       );
@@ -155,14 +170,17 @@ export class Runtime {
   }
 
   /** Wrap any proxy so tool results from artemis still get a project-side copy
-   * of live device screenshots (upstream writes them under the artemis repo). */
+   * of live device screenshots (upstream writes them under the artemis repo).
+   * Read-only mobile tools targeting an iOS simulator UDID / iOS trace id are
+   * served by the in-process AOS backend instead of ARTEMIS. */
   private withArtifactMirror(inner: ArtemisProxyLike): ArtemisProxyLike {
     return {
       isRunning: () => inner.isRunning(),
       ensureStarted: () => inner.ensureStarted(),
       listTools: (force) => inner.listTools(force),
       callTool: async (name, args) => {
-        const result = await inner.callTool(name, args);
+        const iosResult = await this.maybeIosCall(name, args);
+        const result = iosResult ?? (await inner.callTool(name, args));
         this.mirrorToolArtifacts(name, result);
         return result;
       },
@@ -171,6 +189,17 @@ export class Runtime {
       dispose: () => inner.dispose(),
       disposeSync: () => inner.disposeSync()
     };
+  }
+
+  private async maybeIosCall(
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<CallToolResult | null> {
+    if (name === "mobile_run_task") return await maybeIosRunTask(this, args);
+    if (name === "mobile_manage_task") return maybeIosManageTask(args);
+    if (name === "mobile_get_device_state") return await maybeIosDeviceState(this, args);
+    if (name === "mobile_inspect_trace") return maybeIosInspectTrace(args);
+    return null;
   }
 
   private mirrorToolArtifacts(name: string, result: CallToolResult): void {
@@ -596,7 +625,7 @@ export class Runtime {
         );
         if (done) {
           updated += 1;
-          this.enqueueCrashScan(task, status);
+          if (!task.traceId.startsWith("ios-")) this.enqueueCrashScan(task, status);
         }
       }
     }
@@ -609,6 +638,45 @@ export class Runtime {
 
   crashCaptureEnabled(): boolean {
     return this.crashScanner.enabled();
+  }
+
+  /** iOS crash capture: scan host DiagnosticReports `.ips` files written inside
+   * the task window and upsert them into the same crash index as Android. */
+  async captureIosCrashes(
+    input: { traceId: string; udid: string; processName: string | null; startMs: number; endMs: number },
+    deps: { collect?: typeof collectIosCrashes } = {}
+  ): Promise<CrashScanResult> {
+    const collect = deps.collect ?? collectIosCrashes;
+    try {
+      const collected = collect({
+        startMs: input.startMs,
+        endMs: input.endMs,
+        processName: input.processName
+      });
+      if (collected.skipped) {
+        return { traceId: input.traceId, status: "skipped", reason: collected.skipped, found: 0 };
+      }
+      if (collected.records.length === 0) {
+        return { traceId: input.traceId, status: "empty", found: 0 };
+      }
+      const result = this.crashStore.upsert(collected.records, {
+        traceId: input.traceId,
+        taskOutcome: "failed",
+        deviceSerial: input.udid,
+        capturedAt: new Date().toISOString(),
+        source: "diagnostic-reports"
+      });
+      return {
+        traceId: input.traceId,
+        status: "captured",
+        found: collected.records.length,
+        newIds: result.newIds,
+        updatedIds: result.updatedIds,
+        source: "diagnostic-reports"
+      };
+    } catch (error) {
+      return { traceId: input.traceId, status: "skipped", reason: errorMessage(error), found: 0 };
+    }
   }
 
   /** Serializes every crash scan (sync-triggered and manual) per runtime. */

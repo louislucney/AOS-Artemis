@@ -136,13 +136,13 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "aos_crashes",
     description:
-      "崩溃取证：任务终态后自动采集设备 crash buffer 并解析为崩溃签名（包名+根因异常+首个应用帧），按栈签名去重计数；list 列出签名，get 取完整栈/日志摘录，scan 手动扫描（指定 traceId 时强制重扫）。",
+      "崩溃取证：任务终态后自动采集设备崩溃证据（Android：crash buffer；iOS：宿主机 DiagnosticReports .ips）并解析为崩溃签名（包名+根因异常+首个应用帧），按栈签名去重计数；list 列出签名，get 取完整栈/日志摘录，scan 手动扫描（指定 traceId 时强制重扫）。",
     schema: z.object({
       action: z.enum(["list", "get", "scan"]).describe("list 列表 / get 详情 / scan 手动扫描"),
       signature: z.string().optional().describe("get 用的崩溃签名 id（见 list 的 records[].id）"),
       traceId: z.string().optional().describe("scan 时只扫描该 trace（强制重扫）"),
       package: z.string().optional().describe("list 过滤：应用包名（精确匹配）"),
-      kind: z.enum(["java", "native", "anr", "unknown"]).optional().describe("list 过滤：崩溃类型"),
+      kind: z.enum(["java", "native", "anr", "ios", "unknown"]).optional().describe("list 过滤：崩溃类型"),
       since: z.string().optional().describe("list 过滤：ISO 8601 时间，只返回该时间之后仍出现的签名"),
       limit: z.number().int().positive().max(100).optional().describe("list 返回条数，默认 20")
     }),
@@ -151,11 +151,19 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "compare_design_and_device",
     description:
-      "组合工具：拉取 Figma 节点的渲染图（PNG@2x，REST）与当前真机截图，一并返回两张图片，供多模态模型比对布局/间距/颜色/文案。",
+      "组合工具：拉取 Figma 节点的渲染图（PNG@2x，REST）与当前真机截图，一并返回两张图片，供多模态模型比对布局/间距/颜色/文案。lossless=true 时真机侧改用 adb 无损 PNG 截图（避免 JPEG 伪影；失败自动回退 live JPEG）；platform=\"ios\" 时真机侧改走 macOS 模拟器（idb→simctl，需 deviceSerial 传 UDID 或唯一已启动模拟器）。",
     schema: z.object({
       figmaUrl: z.string().min(1).describe("Figma URL（建议带 ?node-id=）"),
       nodeId: z.string().optional().describe("覆盖 URL 中的 node-id"),
-      deviceSerial: z.string().optional().describe("目标设备 serial（默认自动选择）")
+      deviceSerial: z.string().optional().describe("目标设备 serial（默认自动选择；平台 ios 时为模拟器 UDID）"),
+      platform: z
+        .enum(["android", "ios"])
+        .optional()
+        .describe("设备平台：android（默认，ARTEMIS/adb）| ios（仅 macOS 模拟器，经 idb/simctl 截图）"),
+      lossless: z
+        .boolean()
+        .optional()
+        .describe("真机侧无损 PNG（adb exec-out screencap -p）；失败回退 live JPEG，默认 false")
     }),
     handler: (runtime, args) => compareDesignAndDevice(runtime, args as unknown as CompareArgs)
   },
@@ -174,10 +182,18 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       device: z
         .object({
           mode: z.enum(["live", "step"]).optional().describe("设备源模式：live（实时截图，默认）| step（trace 步骤截图）"),
-          serial: z.string().optional().describe("目标设备 serial（默认自动选择）"),
+          platform: z
+            .enum(["android", "ios"])
+            .optional()
+            .describe("设备平台：android（默认）| ios（仅 macOS 模拟器；仅 mode=live，经 idb/simctl 截图）"),
+          serial: z.string().optional().describe("目标设备 serial（默认自动选择；平台 ios 时为模拟器 UDID）"),
           traceId: z.string().optional().describe("mode=step 必填：任务 trace id（mobile_run_task 返回）"),
           stepNumber: z.number().int().positive().optional().describe("mode=step 步骤号；省略则用失败证据自动检索步骤（Pro 任务，best-effort）"),
-          image: z.enum(["post", "pre"]).optional().describe("步骤截图选 post（行动后，默认）或 pre（行动前）")
+          image: z.enum(["post", "pre"]).optional().describe("步骤截图选 post（行动后，默认）或 pre（行动前）"),
+          lossless: z
+            .boolean()
+            .optional()
+            .describe("mode=live 时经 adb 抓无损 PNG（避免 JPEG 伪影；失败自动回退 live JPEG），默认 false")
         })
         .optional(),
       alignment: z
@@ -570,14 +586,17 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
       const result = await runtime.proxy.callTool(name, (args ?? {}) as Record<string, unknown>);
       if (name === "mobile_run_task") {
         const taskArgs = (args ?? {}) as Record<string, unknown>;
-        void runtime.recordTaskResult({
-          isError: result.isError === true,
-          traceId: traceIdOf(result),
-          model: typeof taskArgs.model === "string" ? taskArgs.model : null,
-          taskDesc: typeof taskArgs.task_desc === "string" ? taskArgs.task_desc : null,
-          lockedAppPackage:
-            typeof taskArgs.locked_app_package === "string" ? taskArgs.locked_app_package : null
-        });
+        // iOS runs record their own task row inside maybeIosRunTask.
+        if (!traceIdOf(result)?.startsWith("ios-")) {
+          void runtime.recordTaskResult({
+            isError: result.isError === true,
+            traceId: traceIdOf(result),
+            model: typeof taskArgs.model === "string" ? taskArgs.model : null,
+            taskDesc: typeof taskArgs.task_desc === "string" ? taskArgs.task_desc : null,
+            lockedAppPackage:
+              typeof taskArgs.locked_app_package === "string" ? taskArgs.locked_app_package : null
+          });
+        }
       }
       return result;
     } catch (error) {

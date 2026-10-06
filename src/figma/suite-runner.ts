@@ -21,6 +21,8 @@ import {
   type TaskStatus
 } from "../artemis/task-result.js";
 import { TERMINAL_TASK_STATUSES } from "../db/types.js";
+import { classifyIosSerial } from "../device/ios.js";
+import { resetIosApp } from "../device/ios-reset.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "../device/logcat.js";
 import { resetApp, type AppResetOutcome } from "../device/reset.js";
 import type { Runtime } from "../runtime.js";
@@ -29,6 +31,11 @@ import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_POLL_TIMEOUT_MS = 15 * 60_000;
+
+/** Reset strategy per target: simulator UDIDs use the iOS backend. */
+export function suiteResetFor(serial: string | null): typeof resetApp {
+  return serial && classifyIosSerial(serial) ? resetIosApp : resetApp;
+}
 
 export interface SuiteCaseResult {
   caseId: string;
@@ -179,13 +186,13 @@ export async function runGeneratedTests(
   }
 
   const preflight = testsPath === defaultTestsPath ? preflightGeneratedTests(runtime.configDirAbs) : null;
-  const resetFn = options.reset ?? resetApp;
+  const serial = options.deviceSerial ?? null;
+  const resetFn = options.reset ?? suiteResetFor(serial);
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = options.now ?? Date.now;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const pollTimeoutMs = options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
-  const serial = options.deviceSerial ?? null;
   const apiCatalog = options.apiErrors === false ? null : loadApiErrorCatalog(runtime.configDirAbs);
   const collectLogcat =
     options.logcatCollector ?? ((request) => new AdbLogcatCollector().collect(request));
@@ -306,7 +313,9 @@ export async function runGeneratedTests(
     let apiErrors: ApiErrorObservation[] = [];
     let apiErrorsDegraded: string | null = null;
     if (terminal && apiCatalog) {
-      if (apiCatalog.rules.size === 0) {
+      if (traceSerial && classifyIosSerial(traceSerial)) {
+        apiErrorsDegraded = "ios-log-unsupported";
+      } else if (apiCatalog.rules.size === 0) {
         apiErrorsDegraded = fs.existsSync(apiCatalog.file) ? "registry-empty" : "registry-missing";
       } else if (windowStartMs === null) {
         apiErrorsDegraded = "no-window";

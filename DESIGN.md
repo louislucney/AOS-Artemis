@@ -265,7 +265,7 @@ env:
 | `aos_tasks`                 | `{limit?, sync?}`                                                                  | 任务/调用统计（trace/状态/模型/时间）；默认先向 artemis 同步完成态                                                                                                                                                                                                                                                                                                     |
 | `aos_crashes`               | `{action, signature?, traceId?, package?, kind?, since?, limit?}`                  | 崩溃取证：`list` 列出签名（kind/package/since/limit 过滤 + 采集开关）；`get` 返回完整栈/日志摘录；`scan` 手动扫描（指定 traceId 强制重扫）                                                                                                                                                                                                                       |
 | `compare_design_and_device` | `{figmaUrl, nodeId?, deviceSerial?}`                                               | 组合工具：Figma 节点渲染图（PNG@2x）+ 真机截图，一并以 image content 返回供多模态比对                                                                                                                                                                                                                                                                                  |
-| `design_device_diff`        | `{design:{source?,figmaUrl?,penPath?,nodeId?,renderOut?}, device?:{mode?,serial?,traceId?,stepNumber?,image?}, alignment?:{insets?,ignoreRegions?}, diff?:{pixelThreshold?,minAreaRatio?,clusterGap?,maxRegions?,maxEdge?,nodeProximity?,colorTolerance?,systemBandRatio?}, save?, dryRun?}` | 设计 vs 真机差异（设计源 Figma 或 `.pen`（`design:{source:"pen",penPath?,renderOut?}`，pen CLI 渲染）；设备源 live 实时截图或 step（traceId 必填；stepNumber 可省略 → 失败证据自动检索，记录 anchor 来源/候选；默认 post））：确定性对齐（设计宽度缩放 + 顶部对齐，insets 修正，默认按设计图最长边降采样到 1440px）+ 像素差异判定（pixelmatch，抗 JPEG 噪声：阈值/最小面积/聚类/上限可配）→ 结构化差异报告（区域/类别 `missing/extra/text/asset/position-size/color`（无节点几何时 `pixel`）/严重度/证据，设计节点几何与阈值入报告）+ 标注图；默认落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`（report.json / annotated.png / design.png / device.png），响应摘要 + 标注图 + 路径；`ignoreRegions` 屏蔽动态区域；`dryRun` 不取图不写盘；判定不依赖 LLM（ADR-0001/0002）；差异区域经 `screen-map.json` 输出 `localized`（mapped=`mapEntry`/unmapped=候选/no-candidates=原因） |
+| `design_device_diff`        | `{design:{source?,figmaUrl?,penPath?,nodeId?,renderOut?}, device?:{mode?,serial?,traceId?,stepNumber?,image?,lossless?}, alignment?:{insets?,ignoreRegions?}, diff?:{pixelThreshold?,minAreaRatio?,clusterGap?,maxRegions?,maxEdge?,nodeProximity?,colorTolerance?,systemBandRatio?}, save?, dryRun?}` | 设计 vs 真机差异（设计源 Figma 或 `.pen`（`design:{source:"pen",penPath?,renderOut?}`，pen CLI 渲染）；设备源 live 实时截图或 step（traceId 必填；stepNumber 可省略 → 失败证据自动检索，记录 anchor 来源/候选；默认 post）；live 可加 `lossless:true` 经 adb 抓无损 PNG（避免 JPEG 伪影，失败自动回退 live JPEG））：确定性对齐（设计宽度缩放 + 顶部对齐，insets 修正，默认按设计图最长边降采样到 1440px）+ 像素差异判定（pixelmatch，抗 JPEG 噪声：阈值/最小面积/聚类/上限可配）→ 结构化差异报告（区域/类别 `missing/extra/text/asset/position-size/color`（无节点几何时 `pixel`）/严重度/证据，设计节点几何与阈值入报告）+ 标注图；默认落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`（report.json / annotated.png / design.png / device.png），响应摘要 + 标注图 + 路径；`ignoreRegions` 屏蔽动态区域；`dryRun` 不取图不写盘；判定不依赖 LLM（ADR-0001/0002）；差异区域经 `screen-map.json` 输出 `localized`（mapped=`mapEntry`/unmapped=候选/no-candidates=原因） |
 | `screen_map` | `{action:"list/propose/save", entries?, merge?}` | 持久屏幕映射 `<项目>/.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 基于 build-brief + 栈约定给粗粒度候选（confidence/unmatched，需 agent 复核）；`save` 显式写入（幂等，`merge` 增量）；`list` 读取；差异报告据此定位（ADR-0004） |
 | `figma_extract_flows`       | `{url, nodeId?, save?}`                                                            | 原型交互 → 流程图（screens/edges/entryScreens/unresolved），落盘`.artemis/design/flows.json`；供后续"流程→测试生成"消费（M-B）                                                                                                                                                                                                                                     |
 | `figma_gap_analysis`        | `{url, id?, assetGlobs?, tokenFiles?, save?}`                                      | 设计资源/色板 vs 项目资产/tokens 缺口（missingAssets/missingColors），**扫描规则按检测到的技术栈选择**（`src/projects/stack.ts`：Flutter/RN/原生 Android/iOS/Web 档案，含资产目录/定位/代码/命名约定），缺失资源按栈重命名（如 Android `ic_home.svg`、Flutter `home_icon.svg`）并给出目标目录；落盘 `.artemis/design/gaps.json`；供"资源导入"消费（M-C） |
@@ -339,7 +339,7 @@ env:
 - **任务轨迹**：给 artemis 子进程设 `ARTEMIS_TRACES_DIR=<项目>/.artemis/traces`（`src/artemis/assembly.ts` 的 `projectTracesDir()`）。步骤截图（`traces/images/`、`<trace_id>/step_N_overlay.jpg`）、Pro `notes/`（`task_plan.md` / `output.md`）、`stdout.log` / `stderr.log`、`status.json`、`run_outcome.json` 与历史库 `data_engine.db` 全部随之下沉；`mobile_inspect_trace` / `mobile_manage_task` 免改动即读到项目内文件。
 - **覆盖语义**：显式 `ARTEMIS_TRACES_DIR`（客户端/进程 env，`install` 会透传）优先；相对路径按项目根解析，子进程与 AOS 侧（崩溃取证扫描、任务完成态文件同步）共用同一绝对路径。`tracesDir` 纳入子进程 env 指纹——改动会在下次调用时重启网关子进程。
 - **live_screenshot**：上游 `mobile_get_device_state` 把文件写在 artemis 仓库根（返回 `file://<repo>/live_screenshot_<device>.jpg`），AOS 在代理转发后自动复制一份到 `<项目>/.artemis/traces/live_screenshots/`（`src/artemis/artifacts.ts`；工具响应与 schema 原样透传，复制失败只记日志）。`compare_design_and_device` 复用同一文件，同样被镜像。
-- **设计 vs 真机 diff（v1）**：`design_device_diff` 的产物按对比单元落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`：`report.json`（schemaVersion=1；unit/alignment/ignoredRegions/regions/summary/elapsedMs）、`annotated.png`（差异框 + 编号）、`design.png`（设计源渲染原图，1×）、`device.png`（真机 JPEG 原图）；失败时不保留半成品目录。差异引擎为纯函数（`src/diff/engine.ts`），像素栈为纯 JS（pngjs/jpeg-js/pixelmatch，ADR-0002）。
+- **设计 vs 真机 diff（v1）**：`design_device_diff` 的产物按对比单元落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`：`report.json`（schemaVersion=1；unit/alignment/ignoredRegions/regions/summary/elapsedMs）、`annotated.png`（差异框 + 编号）、`design.png`（设计源渲染原图，1×）、`device.png`（真机原图：live JPEG 或 `lossless` 无损 PNG，统一重编码为 PNG）；失败时不保留半成品目录。差异引擎为纯函数（`src/diff/engine.ts`），像素栈为纯 JS（pngjs/jpeg-js/pixelmatch，ADR-0002）。
 - **测试文档**：`figma_generate_tests` 等设计流水线产物仍在 `<项目>/.artemis/design/`（见 §13），本次不变。
 - **注意**：`ARTEMIS_*` 变量属于客户端/进程 env（项目 `.env` 不注入子进程），覆盖要写在 MCP 客户端配置的 env 或 shell 环境。
 
@@ -432,6 +432,7 @@ llm_switch(name, force):
 | 崩溃取证    | 解析 fixtures（Java/native/ANR、根因签名、年份边界、时窗与时钟偏差）、采集 fake exec（crash buffer/`-T` 回退/离线/超时分类）、文件索引（去重/淘汰/损坏隔离）、Runtime 集成（终态触发/串行/包过滤/关闭开关） |
 | E2E（手动） | 容器内真实项目：首扫导入 → 切 DeepSeek → 真机任务使用新模型                                                                                                                                                 |
 | E2E（手动） | `scripts/e2e-crash.mjs`：`am crash` 制造真实崩溃 → 采集→签名→写入 `.artemis/crashes` → `aos_crashes list`                                                                                         |
+| 设备命令    | `scripts/adb-safe.mjs`（跨项目复制的 adb 包装器）：硬超时到点杀整个进程组（无孤儿 adb）、默认 push 安装（`--no-streaming`）、`shell` 拦截 `pm install`（FD 假死）、设备解析与结构化退出码；`test/adb-safe.test.js` 以假 adb 覆盖超时/退出码/多设备/用法 |
 | CI          | lint + build + node:test（不依赖真实 PG/设备）                                                                                                                                                                |
 
 ---
@@ -868,3 +869,103 @@ llm_switch(name, force):
 
 - **强制三件套（复核结论，无需改代码）**：`figma_generate_tests` 在 `save !== false` 时先渲染 xlsx Buffer、再一次性写 `tests.json`+`tests.md`+`tests.xlsx`（任一渲染失败则三份都不写，`savedTo` 恒含三个路径），由 `test/figma-testgen.test.js` 的默认工作表/默认落盘用例锁定；工具描述已明确"仅 `save:false` 才不写任何文件"。
 - **构建新鲜度**：ESM 在进程启动时加载代码，`dist/` 重建后旧进程不会热更新。`Runtime` 记录 `startedAt` 并用 `isBuildStale`（模块 mtime > 进程启动 + 2s 容差）判定；陈旧时启动日志 WARN、`aos_status.build = { module, startedAt, stale, note? }` 提示重启客户端；改造后可用该字段自证（旧进程没有 `build` 字段即说明仍是旧构建）。
+
+### 13.39 实施记录（无损设备截图：`device.lossless`）
+
+> 实施于 2026-10-06；`src/device/adb.ts`（二进制安全 `ExecBufferFn`/`defaultExecBuffer`）、`src/device/screenshot.ts`（`captureAdbPng`）、`src/diff/device-source.ts`（`LiveCaptureOptions` + 回退）、`src/diff/tool.ts`（`device.lossless`，与 `mode=step` 冲突报错）、`src/tools/composite.ts`（`compare_design_and_device` 同参；截图抽取移至 `src/tools/device-image.ts` 消除循环依赖）、`src/server.ts` schema；测试 `test/device-screenshot.test.js` 8 例。
+
+- **动机**：`mobile_get_device_state` 的 `live_screenshot_*.jpg` 是给 LLM 感知用的有损 JPEG；像素级 diff 直接使用会产生压缩伪影（文字振铃、色度抽样），在阈值边缘出现假差异/漏检。
+- **行为**：`device.lossless: true`（仅 `mode=live`；默认 false）时 AOS 直接经 adb `exec-out screencap -p` 抓 PNG（自动解析 serial；adb 缺失/离线/超时/非 PNG 均回退 live JPEG，note 附回退原因）；`compare_design_and_device` 透传同参。`mobile_get_device_state` 保持 JPEG 不变（token 经济）。
+- **边界**：屏幕截图无有效 alpha（已合成不透明帧），本项解决的是 JPEG 有损压缩而非 alpha；设计侧（Figma/pen 渲染）与 diff 产物本就走 PNG。
+
+### 13.40 实施记录（修复 build 新鲜度缓存缺陷）
+
+> 实施于 2026-10-06；`src/runtime.ts`（`build` 改为每次读取动态计算的 getter；新增 `RuntimeOptions.buildModuleUrl` 供测试注入）、`test/build-stale.test.js`（新增"同进程内重建后 stale=true"用例，共 3 例）。
+
+- **缺陷**：`stale` 原在构造函数中计算一次并缓存；进程启动时 dist 必然"不更新"，此后重建 dist 也不会刷新 → `aos_status.build.stale` 永远为 false，§13.38 的重启提示实际不可达。
+- **修复**：`runtime.build` 改为 getter，每次读取用 `isBuildStale(moduleUrl, startedAtMs)` 重算；启动 WARN 保留（覆盖"启动后立刻重建"的竞态）。`aos_status` 字段与语义不变，现在能真实反映"进程早于构建"。
+
+### 13.41 实施记录（iOS 设备后端 slice 1：模拟器截图接入 design diff / compare）
+
+> 实施于 2026-10-06；来源 `docs/iOS-适配方案.md`（P0 实测与 P1 项目侧 DeviceBackend 已完成，本项是其 P2 的首个 AOS 侧切片）。新增 `src/device/ios.ts`、`test/ios-screenshot.test.js`（14 例）；改造 `src/diff/device-source.ts`、`src/diff/tool.ts`、`src/tools/composite.ts`、`src/server.ts`。
+
+- **范围（slice 1）**：iOS 模拟器截图源接入两个设计对比工具——`design_device_diff`（`device.platform:"ios"`，与 `device.mode` 冲突校验、`dryRun`/报告透出 platform）与 `compare_design_and_device`（`platform:"ios"`）；后端 idb → `xcrun simctl io` 兜底（与项目侧 `tools/device-backend.mjs` 同一优先级）。ARTEMIS 为 Android-only，因此 iOS 路径无 live JPEG 回退，失败返回带指引的结构化错误。
+- **目标选择**：显式 `device.serial`（UDID）优先；否则解析 `xcrun simctl list devices booted --json` 取唯一已启动模拟器，0 台 → `no-device`、多台 → `no-serial`（提示指定 UDID）；仅 macOS（`darwin`）可用，其他平台 `ios-unsupported`。
+- **产物语义**：idb/simctl 截图恒为无损 PNG（模拟器 scale 常为 3，像素尺寸），diff 引擎按设计宽度缩放，与 Android `lossless` 路径同语义；平台差异的 logical/scale 显式约定（方案 §2.6）留待任务执行层接入时补齐。
+- **测试**：假 exec 注入（无真机/无网络）：路径解析、booted 列表解析、显式/自动目标、no-device/no-serial、idb 回退 simctl、双侧缺失、not-png、timeout、非 macOS、工具层 platform 透传与 mode=step 冲突。
+- **未含（后续 P2 余项）**：iOS 层级与动作（idb ui describe-all/tap/text）、`mobile_run_task` 平台路由（artemis drivers/ios 或 AOS 侧连接器）、崩溃/日志取证——见 `docs/iOS-适配方案.md` §3。
+
+### 13.42 实施记录（iOS 设备后端 slice 2：`mobile_get_device_state` 观察路由）
+
+> 实施于 2026-10-06；`src/device/ios.ts`（`listIosSimulators`/`describeIosUi`/`isSimulatorUdid`）、新增 `src/tools/ios-state.ts`、`src/server.ts` 拦截；`test/ios-device-state.test.js`（10 例）。
+
+- **路由判据（唯一且显式）**：仅当 `device_serial` 为规范 UUID（模拟器 UDID）时由 AOS 接管；省略 serial 或非 UUID（如 `emulator-5554`）仍走 ARTEMIS/adb。首次访问会做一次 `simctl list devices --json` 校验：未知 UDID、未启动（提示 `simctl boot`）、非 macOS 均返回 `Error:` 文本（形态与 artemis 的失败文本一致）。
+- **响应契约与 Android 对齐**：`screenshot` → 写 `<项目>/.artemis/traces/live_screenshots/live_screenshot_<udid>.png` 并返回 `file://<abs>`（上游 Android 为 artemis 仓库根 `.jpg` + AOS 镜像；iOS 直写项目目录，镜像步骤自动跳过同路径）；`hierarchy` → `idb ui describe-all --json` → 简化列表 `[i] Text: '…' | Bounds: [n…]`（0-1000 归一化，`Value:` 行、300 行截断标记），与 artemis 的 minimal list 同构；`view_type` 非法时返回同文案 `Error: Invalid view_type …`。
+- **边界**：本切片只读（观察），不含动作/恢复/任务执行；模拟器层级来自 idb，真机 UDID（非规范 UUID 格式）不接管；iOS 失败不回落 Android（UDID 不会命中 adb 设备）。
+- **测试**：UUID 判据、模拟器列表解析、idb JSON 解析、层级格式化（坐标/Value/截断）、路由 null（Android 透传）、未知/未启动/非 macOS、截图落盘与错误分支、层级成功/失败。
+
+### 13.43 实施记录（iOS 动作层：idb 动作 + simctl 生命周期回退）
+
+> 实施于 2026-10-06；`src/device/ios-actions.ts`（`makeIosDevice` 门面：tap/swipe/inputText/launch/terminate/openUrl/nodes/size/screenshot/handleAlerts）、`test/ios-actions.test.js`（11 例）。
+
+- **动作语义**：坐标统一 logical point 且取整（idb 只接受整数）；swipe 时长为秒（下限 0.1）；`inputText` ASCII 走 `idb ui text`（键码），非 ASCII 必须带目标坐标走 `idb ui set-value --api ax`（替换语义，返回 `mode=type|set`）——P0 实测结论（CJK 无键码、set-value 可用）。
+- **生命周期/深链**：launch/terminate/openUrl 首选 idb，失败回退 `xcrun simctl`；`terminate` 为 best-effort（布尔返回不抛）；`handleAlerts({accept,dismiss,mode})` 按方案 §2.4 策略化清理：默认 accept 中文文案表，最多 3 轮，`mode:"keep"` 直接跳过。
+- **边界**：`capabilities.back="none"`（iOS 无系统返回键，返回由用例/代理编排）；`size()` 取自 Application 节点逻辑尺寸（iPhone 17 Pro 实测 402×874 pt）；本层暂无 MCP 暴露，供后续 `mobile_run_task` iOS 执行器（P2 余项）消费。
+- **验证**：单测（参数取整/时长换算、回退链路、错误传播、弹窗计数、非法平台）；模拟器冒烟——tap「轻App」发生页面切换、terminate+launch 复位成功、handleAlerts 空跑安全。
+
+### 13.44 实施记录（iOS 设备后端 slice 4：`mobile_run_task` 路由 + AOS 最小执行器）
+
+> 实施于 2026-10-06；`src/llm/chat.ts`（OpenAI 兼容对话客户端）、`src/ios/task-runner.ts`（观察-决策-动作循环 + 内存任务表）、`src/server.ts` 拦截（`mobile_run_task`/`mobile_manage_task`）、`src/runtime.ts`（`ios-` trace 跳过 Android 崩溃扫描）；`test/ios-task-runner.test.js`（7 例）、`test/llm-chat.test.js`（3 例）。
+
+- **路由判据**：`mobile_run_task` 的 `device_serial` 为模拟器 UDID（规范 UUID）时由 AOS 执行器接管；`mobile_manage_task` 按内存任务表命中 `trace_id` 接管（status/stop/inject_instruction）；其余（Android serial/省略 serial/未知 trace）原样透传 ARTEMIS。setup/模型预检门禁沿用（active LLM 缺失或模型下线时同样拦截）。
+- **执行器（v0，Flash 式反应循环）**：每步观察 idb 层级（元素 Center 为逻辑点坐标，供模型直接点击）→ 截屏存证 → active LLM 输出单个 JSON 动作（tap/swipe/text/launch/terminate/openUrl/alerts/wait/done/fail）→ 校验并执行；`AOS_IOS_MAX_STEPS` 默认 30（1–200）；连续无进展由模型自行 fail；`text` 含非 ASCII 必须带输入框坐标（沿用 P0 结论）。
+- **异步契约**：立即返回 `{trace_id: ios-<uuid>, status: "running", device_serial, model, run_dir, status_file}`；**无主动唤醒**（响应消息提示轮询）；`mobile_manage_task(action=status)` 返回 `status/progress/recent_steps/result/run_dir`（字段对齐 artemis 同名工具）；stop 置位后下一轮退出为 `cancelled`。
+- **产物与台账**：`<项目>/.artemis/traces/ios-<uuid>/`（run.json / status.json（runtime 直接可读，`aos_tasks` sync 自动完结）/ shots/step-N.png）；`recordTaskResult` 写 task_stats（model=active entry.model）；`ios-` 前缀跳过 Android 崩溃扫描。
+- **边界（v0 未含）**：无 wakeup/conversation 通知；层级为唯一感知（图片仅落盘证据，不送模型；纯文本 LLM 可直接用）；`mobile_inspect_trace` 未拦截（iOS trace 上该工具仍走 artemis 会报错）；无 plan/checker/notes 等 Pro 能力；失败分类沿用简单文本（无 §13.26 分域）。
+- **验收（真实链路）**：`mobile_run_task(task='观察并报告设置页标题', device_serial=<iPhone 17 Pro UDID>)` → 真 DeepSeek Flash 一步 done（summary=页面标题=设置）；`mobile_manage_task(status)` 轮询到 completed；run.json/shots 落盘。
+
+### 13.45 实施记录（iOS 执行器视觉 fallback：视觉模型解析 + 降级记录）
+
+> 实施于 2026-10-06；`src/ios/vision.ts`（视觉目标解析/多模态命名启发/PNG IHDR 尺寸）、`src/llm/chat.ts`（多模态 content 分片）、`src/ios/task-runner.ts`（按需附图 + 失败降级）；`test/ios-vision.test.js`（6 例）、`test/ios-task-runner.test.js` 增 2 例。
+
+- **视觉目标解析（优先级）**：`AOS_IOS_VISION_LLM=<条目名>`（registry 条目，要求完整）→ `AOS_IOS_VISION_MODEL`（可配 `AOS_IOS_VISION_BASE_URL/API_KEY`，缺省继承 active）→ active 模型名多模态启发（vision/vl/gpt-4o/gemini/claude-3|4 等）→ 无（纯文本模式）。启动响应与 run.json 记录 `vision: {model, source}`。
+- **按需附图**：可见文本元素 <3 个（层级质量差）或 `AOS_IOS_VISION_ALWAYS=1` 时，该步 user 消息带 `image_url`（`data:image/png;base64,`）分片；文本分片同时给出截图 px 与逻辑 pt/scale（§2.6 约定：坐标输出逻辑点，从截图估计需 ÷scale）；其余步骤纯文本（`perception:"text"`）。
+- **降级**：视觉调用失败（模型不支持图片/鉴权/网络）→ 记录 `vision_degraded`（run.json + status 响应）并当场回退纯文本调用该步（`perception:"text-degraded"`），后续步骤保持可用；不因视觉失败中断任务。
+- **边界**：不做 OCR、不做像素级脱敏；图片不做降采样（v0 直传模拟器原始 PNG，注意 token 成本）；多模态启发可能误判（显式 env 可覆盖）。
+- **验收**：单测覆盖解析优先级/命名启发/IHDR 尺寸/附图与降级链路；真实验收用 `AOS_IOS_VISION_ALWAYS=1` + 不存在的视觉模型驱动降级（DeepSeek 不支持图片 → 400 → 回退文本完成）。
+
+### 13.46 实施记录（iOS trace 检查器 + 路由下沉：`mobile_inspect_trace` / 设计步骤对比闭环）
+
+> 实施于 2026-10-06；新增 `src/ios/inspect.ts`；`src/ios/task-runner.ts`（failed 状态补 `test_summary.failed_items`）；`src/runtime.ts`（只读 mobile 工具路由下沉到代理包装层，内部调用同样生效）；`src/server.ts` 移除重复分支；`test/ios-inspect.test.js`（6 例）。
+
+- **检查器动作**：`view_summary`（步骤/结果/vision 摘要）、`view_step_details`（单步 thought/action/params/outcome/perception + 截图路径）、`view_step_screenshots`（`before_screenshot`=本步观察图，`after_screenshot`=下一步观察图（后置状态），overlay 恒 null）、`search`（全文子串优先、按标点/空白分词兜底、支持 step_range/max_results，结果行 `[Step N] …` 供设计工具锚点解析）。
+- **路由下沉（关键）**：`mobile_manage_task`/`mobile_get_device_state`/`mobile_inspect_trace` 的 iOS 路由从 server 处理器下沉到 `Runtime` 的代理包装层（`maybeIosCall`），因此**服务内部调用**（`design_device_diff` 的 status/search/截图链路）同样命中 iOS 后端；`mobile_run_task` 仍留在 server（需要 setup/模型预检门禁与任务记录语义）。
+- **设计步骤对比闭环**：失败任务的状态响应携带 `test_summary.failed_items`（evidence=失败原因）→ `design_device_diff(device:{mode:"step",traceId,image:"pre"})` 可自动锚定失败步骤并读取该步观察截图，完成"设计 vs iOS 失败步骤"确定性对比。
+- **边界**：`after` 语义为"下一步的观察图"（末步为 null，需 `image:"pre"`）；无 overlay 图；search 不做模糊/拼音。
+- **测试**：检查器四动作 + 非 iOS 透传；集成用真实运行时（StubProxy）跑失败任务 → 自动锚定（anchor.source=search）→ 像素差异 1 区域，且证明内部调用未落到 ARTEMIS 桩。
+
+### 13.47 实施记录（iOS 设备后端 slice 7：suite 用例闭环接入 iOS）
+
+> 实施于 2026-10-06；新增 `src/device/ios-reset.ts`；`src/runtime.ts`（`mobile_run_task` 路由下沉到代理包装层）、`src/server.ts`（去除重复分支 + iOS trace 防重复记账）、`src/device/reset.ts`（`APP_PACKAGE_PATTERN` 导出 + `ios-unsupported` 原因）、`src/figma/suite-runner.ts`（`suiteResetFor` + iOS 日志降级）、`src/artemis/failure-taxonomy.ts`（`ios-unsupported` 归环境域）；`test/ios-reset.test.js`（3 例）、`test/suite-ios.test.js`（3 例）、`test/ios-task-runner.test.js` 增 2 例。
+
+- **路由统一下沉**：`mobile_run_task` 的 iOS 路由与其余只读工具一致，移入 Runtime 代理包装层——`suite run` 等**服务内部调用**由此命中 iOS 执行器；server 仅保留 setup/模型预检门禁，并对 `traceId` 以 `ios-` 开头的结果跳过二次记账（iOS 执行器已按 active entry.model 记录）。
+- **iOS 复位**：`resetIosApp`——校验包名/macOS/UDID → idb terminate（best-effort）→ idb launch（失败即 `launch-failed`）；`AppResetOutcome` 兼容（`adb: {path:null,source:"missing"}`，命令留痕）；`suiteResetFor(serial)` 按 UDID 自动选择；复位失败仍按既有分类（`ios-unsupported` 计入环境域）。
+- **日志/取证降级**：iOS trace 不跑 adb logcat，`apiErrorsDegraded="ios-log-unsupported"`（API 错误注册表匹配暂缺，行为显式标注而非静默）；崩溃扫描此前已跳过 `ios-` trace。
+- **任务启停**：`--app <package>` 同时作为 `locked_app_package` 传入执行器 → 循环前 idb launch 该应用（失败即任务 failed）。
+- **验收（真实链路）**：`node dist/cli.js suite run --device <UDID> [--app com.apple.Preferences]` 两次真实运行 PASS（无复位 / idb 复位 ok），`apiErrorsDegraded=ios-log-unsupported`，trace 落 `.artemis/traces/ios-*`。
+
+### 13.48 实施记录（iOS 崩溃取证 + suite evidence iOS 链路）
+
+> 实施于 2026-10-06；新增 `src/crash/ios.ts`（.ips 解析/窗口采集）；`src/crash/types.ts`（`kind:"ios"`、`attribution:"ips-header"`、`source:"diagnostic-reports"`）、`src/runtime.ts`（`captureIosCrashes` 入同一崩溃索引）、`src/ios/task-runner.ts`（终态触发 + `test_summary` 落盘）、`src/server.ts`（`aos_crashes` kind 过滤加 `ios`）；`test/ios-crash.test.js`（4 例）、`test/ios-inspect.test.js` 增 evidence 用例。
+
+- **采集**：iOS trace 终态后（`AOS_CRASH_CAPTURE` 开启时）扫描宿主机 `~/Library/Logs/DiagnosticReports/*.ips`，按 mtime 落在任务窗口（前后 2s/5s 容差）筛选，解析 header/body（app_name、exception.type、termination.reason、thread0 帧），签名=`包名|异常类|首帧`，与 Android 崩溃共用 `CrashIndexStore`（去重计数、trace 关联、`aos_crashes list/get` 可见，kind=`ios`）。
+- **联动**：`suite evidence` 的失败项/锚点/崩溃引用对 iOS 全部可用；`test_summary` 现同时写入 `status.json`（此前仅存在于内存状态响应，导致落盘读取路径拿不到失败项）。
+- **边界**：仅宿主机 DiagnosticReports（模拟器与 macOS 上运行的模拟器进程崩溃）；真机崩溃（idevicecrashreport/MetricKit）未接；`.ips` 文本格式（旧 `.crash`）不支持；窗口内其他进程崩溃若未传 `--app` 也会被收录（processName 过滤按需生效）。
+
+### 13.49 实施记录（真机 UDID 识别：classifyIosSerial，best-effort）
+
+> 实施于 2026-10-06；`src/device/ios.ts`（`classifyIosSerial`：模拟器规范 UUID / 真机现代 `8-16` / 旧 `40-hex`）、`src/tools/ios-state.ts`、`src/ios/task-runner.ts`、`src/device/ios-reset.ts`、`src/figma/suite-runner.ts` 改用统一判据；测试覆盖分类与"真机跳过 simctl 校验"路径。
+
+- **语义**：模拟器走 simctl 列表/Booted 校验不变；真机 UDID 跳过 simctl 校验（无 boot 概念），直接交给 idb 后端，连接失败由 idb 报错并带指引；`reset`/`suiteResetFor`/logcat 降级同样识别真机。
+- **未验证**：本机无 iPhone，真机链路（idb 连接、配对隧道、真机截图/动作）为 best-effort，未实测；方案 §3 P3 的签名/配对自动化仍是前置。
+- **风险**：40-hex 与个别 Android 序列号形态可能碰撞（概率低）；如遇误判可用非 UDID 形态 serial 或先 `lldb`/`idb list-targets` 核对。

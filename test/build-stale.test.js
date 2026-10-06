@@ -43,3 +43,20 @@ test("aos_status: exposes build freshness and stays fresh right after build", as
   assert.match(payload.build.startedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(payload.build.note, undefined);
 });
+
+test("aos_status: stale 动态反映重建（不再缓存启动时的值）", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const moduleFile = path.join(makeTempDir("aos-stale-mod-"), "runtime.js");
+  fs.writeFileSync(moduleFile, "// module");
+  const moduleUrl = pathToFileURL(moduleFile).href;
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy(), buildModuleUrl: moduleUrl });
+
+  const before = parseToolResult(await aosStatus(runtime));
+  assert.equal(before.build.stale, false);
+
+  const mtime = fs.statSync(moduleFile).mtimeMs;
+  fs.utimesSync(moduleFile, new Date(mtime + 60_000), new Date(mtime + 60_000));
+  const after = parseToolResult(await aosStatus(runtime));
+  assert.equal(after.build.stale, true, "同进程内重建 dist 后 stale 应为 true");
+  assert.equal(typeof after.build.note, "string");
+});
