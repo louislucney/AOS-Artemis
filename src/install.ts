@@ -6,8 +6,8 @@ import { applyEdits, modify, parse as parseJsonc, type ParseError } from "jsonc-
 export const INSTALL_TARGETS = ["claude", "cursor", "vscode", "opencode"] as const;
 export type InstallTarget = (typeof INSTALL_TARGETS)[number];
 
-export const MCP_SERVER_NAME = "android-testing";
-const LEGACY_SERVER_NAMES = ["aos"];
+export const MCP_SERVER_NAME = "mobile-testing";
+const LEGACY_SERVER_NAMES = ["aos", "android-testing"];
 
 export interface InstallOptions {
   projectDir?: string;

@@ -8,7 +8,7 @@ import { runInstall, upsertJsoncFile } from "../dist/install.js";
 import { makeTempProject } from "./helpers.js";
 
 const service = "/svc/dist/index.js";
-const SERVER = "android-testing";
+const SERVER = "mobile-testing";
 const silent = () => {};
 
 test("install local: writes all four project-level configs", () => {
@@ -81,12 +81,18 @@ test("install local: conflicting existing entry requires --force", () => {
   assert.equal(parsed.mcpServers[SERVER].command, "node");
 });
 
-test("install local: removes legacy aos entry", () => {
+test("install local: removes legacy aos and android-testing entries", () => {
   const dir = makeTempProject({});
   fs.writeFileSync(
     path.join(dir, ".mcp.json"),
     JSON.stringify(
-      { mcpServers: { aos: { command: "node", args: ["legacy.js"] }, other: { command: "foo" } } },
+      {
+        mcpServers: {
+          aos: { command: "node", args: ["legacy.js"] },
+          "android-testing": { command: "node", args: ["older.js"] },
+          other: { command: "foo" }
+        }
+      },
       null,
       2
     )
@@ -94,6 +100,7 @@ test("install local: removes legacy aos entry", () => {
   runInstall(["--project", dir, "--targets", "claude", "--service", service], { log: silent });
   const parsed = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
   assert.equal(parsed.mcpServers.aos, undefined);
+  assert.equal(parsed.mcpServers["android-testing"], undefined);
   assert.equal(parsed.mcpServers.other.command, "foo");
   assert.equal(parsed.mcpServers[SERVER].command, "node");
 });
