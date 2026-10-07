@@ -214,6 +214,35 @@ test("aos_crashes: a trace without a window is skipped as no-window", async () =
   assert.equal(collector.calls.length, 0);
 });
 
+test("aos_crashes: scan without traceId proactively collects from the connected device", async () => {
+  const now = Date.now();
+  const dir = makeTempProject();
+  const collector = new FakeCollector(crashText(new Date(now - 30_000)));
+  const { runtime } = await loadTestRuntime(dir, {
+    proxy: new StubProxy({ running: false }),
+    crashCollector: collector
+  });
+
+  const scan = parseToolResult(await aosCrashes(runtime, { action: "scan" }));
+  assert.equal(scan.ok, true);
+  assert.equal(scan.found, 1);
+  const deviceResult = scan.results[scan.results.length - 1];
+  assert.match(deviceResult.traceId, /^device#/);
+  assert.equal(deviceResult.status, "captured");
+  assert.equal(collector.calls.length, 1);
+  assert.equal(collector.calls[0].targetPackage, null);
+
+  const list = parseToolResult(await aosCrashes(runtime, { action: "list" }));
+  assert.equal(list.total, 1);
+  assert.deepEqual(list.records[0].traceIds, [deviceResult.traceId]);
+
+  const filtered = parseToolResult(
+    await aosCrashes(runtime, { action: "scan", package: "com.example.app" })
+  );
+  assert.equal(filtered.found, 1);
+  assert.equal(collector.calls[1].targetPackage, "com.example.app");
+});
+
 test("aos_crashes: list validates since and get validates signature", async () => {
   const dir = makeTempProject();
   const { runtime } = await loadTestRuntime(dir, {

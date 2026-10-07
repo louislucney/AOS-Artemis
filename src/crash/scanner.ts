@@ -36,6 +36,13 @@ export interface CrashScannerOptions {
   collector?: CrashCollectorLike;
 }
 
+export interface CrashDeviceScanInput {
+  serial?: string | null;
+  sinceMs?: number | null;
+  untilMs?: number | null;
+  targetPackage?: string | null;
+}
+
 export class CrashScanner {
   readonly store: CrashIndexStore;
   private readonly tracesDir: string;
@@ -101,6 +108,64 @@ export class CrashScanner {
             traceId,
             taskOutcome,
             deviceSerial: collected.serial ?? info?.deviceSerial ?? null,
+            capturedAt,
+            source: collected.source ?? "crash-buffer"
+          })
+        : { newIds: [], updatedIds: [] };
+    this.store.recordScan(traceId, { at: capturedAt, found: crashes.length });
+
+    return {
+      traceId,
+      status: crashes.length > 0 ? "captured" : "empty",
+      found: crashes.length,
+      newIds: upsert.newIds,
+      updatedIds: upsert.updatedIds,
+      source: collected.source
+    };
+  }
+
+  /**
+   * 主动采集：不依赖任何 ARTEMIS 任务/trace，直接从当前连接的设备读取 crash buffer 并入库。
+   * 默认窗口为整个缓冲区（sinceMs=0），可用 sinceMs/untilMs 收窄；targetPackage 为空时不做包过滤。
+   */
+  async scanDevice(input: CrashDeviceScanInput = {}): Promise<CrashScanResult> {
+    const traceId = `device#${new Date().toISOString()}`;
+    const at = (): string => new Date().toISOString();
+
+    if (!this.enabled()) {
+      return { traceId, status: "skipped", reason: "disabled", found: 0 };
+    }
+    const startMs = input.sinceMs ?? 0;
+    const endMs = input.untilMs ?? Date.now();
+    const targetPackage = input.targetPackage ?? null;
+
+    const collected = await this.collector.collect({
+      serial: input.serial ?? null,
+      windowStartMs: startMs,
+      windowEndMs: endMs,
+      targetPackage
+    });
+    if (collected.clockWarning) {
+      logWarn(`崩溃取证：设备时钟探测失败（device-scan），按零偏差处理`);
+    }
+    if (collected.status === "skipped") {
+      this.store.recordScan(traceId, { at: at(), found: 0, skipped: collected.reason });
+      return { traceId, status: "skipped", reason: collected.reason, found: 0 };
+    }
+
+    const crashes = parseLogcatCrashes(collected.text ?? "", {
+      windowStartMs: startMs,
+      windowEndMs: endMs,
+      clockOffsetMs: collected.clockOffsetMs ?? 0,
+      packageFilter: targetPackage
+    });
+    const capturedAt = at();
+    const upsert =
+      crashes.length > 0
+        ? this.store.upsert(crashes, {
+            traceId,
+            taskOutcome: "device-scan",
+            deviceSerial: collected.serial ?? input.serial ?? null,
             capturedAt,
             source: collected.source ?? "crash-buffer"
           })

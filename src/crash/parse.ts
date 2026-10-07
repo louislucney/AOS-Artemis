@@ -13,6 +13,10 @@ const BACKTRACE_RE = /^\s*#\d{2}\s+pc\s+/;
 const FATAL_SIGNAL_RE = /^Fatal signal (\d+)\s*\(([^)]+)\)/;
 const ANR_RE = /^ANR in (\S+)/;
 
+// crash buffer 条目首尾相接（同 tag 连续行），块收集必须在下一个崩溃头处截断，避免多崩溃合并成一条
+const startsCrashHeader = (message: string): boolean =>
+  message.startsWith("FATAL EXCEPTION:") || FATAL_SIGNAL_RE.test(message) || ANR_RE.test(message);
+
 const SLACK_MS = 5000;
 const MAX_FRAMES = 60;
 const MAX_CAUSED_BY = 8;
@@ -321,7 +325,8 @@ export function parseLogcatCrashes(text: string, options: ParseLogcatOptions): P
       while (
         end < lines.length &&
         lines[end]!.tsDeviceMs !== null &&
-        lines[end]!.tag === tag
+        lines[end]!.tag === tag &&
+        !startsCrashHeader(lines[end]!.message)
       ) {
         end += 1;
       }

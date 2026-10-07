@@ -183,6 +183,27 @@ test("parse: logs from a previous year are inferred across the boundary", () => 
   assert.equal(new Date(crash.occurredAt).getFullYear(), 2025);
 });
 
+test("parse: back-to-back FATAL blocks in the crash buffer are split per crash", () => {
+  const second = new Date(BASE.getTime() + 1_800_000);
+  const text = [
+    JAVA_CRASH,
+    javaLine(second, "FATAL EXCEPTION: main"),
+    javaLine(second, "Process: com.other.app, PID: 2000"),
+    javaLine(second, "java.lang.ArithmeticException: / by zero"),
+    javaLine(second, "\tat com.other.app.Main.run(Main.kt:3)")
+  ].join("\n");
+  const records = parseLogcatCrashes(text, {
+    windowStartMs: BASE.getTime() - 10_000,
+    windowEndMs: second.getTime() + 10_000,
+    referenceMs: BASE.getTime()
+  });
+  assert.equal(records.length, 2);
+  assert.deepEqual(
+    records.map((record) => record.package).sort(),
+    ["com.example.app", "com.other.app"]
+  );
+});
+
 test("parse: multiple crashes are returned separately and noise is ignored", () => {
   const text = [
     "--------- beginning of crash",

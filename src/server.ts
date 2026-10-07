@@ -147,14 +147,14 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "aos_crashes",
     description:
-      "崩溃取证：任务终态后自动采集设备崩溃证据（Android：crash buffer；iOS：宿主机 DiagnosticReports .ips）并解析为崩溃签名（包名+根因异常+首个应用帧），按栈签名去重计数；list 列出签名，get 取完整栈/日志摘录，scan 手动扫描（指定 traceId 时强制重扫）。",
+      "崩溃取证：任务终态后自动采集设备崩溃证据（Android：crash buffer；iOS：宿主机 DiagnosticReports .ips）并解析为崩溃签名（包名+根因异常+首个应用帧），按栈签名去重计数；list 列出签名，get 取完整栈/日志摘录，scan 手动扫描（指定 traceId 时强制重扫该 trace；不指定时扫描未扫描的终态任务，并主动采集当前连接设备的 crash buffer，可用 since/package 收窄）。",
     schema: z.object({
       action: z.enum(["list", "get", "scan"]).describe("list 列表 / get 详情 / scan 手动扫描"),
       signature: z.string().optional().describe("get 用的崩溃签名 id（见 list 的 records[].id）"),
       traceId: z.string().optional().describe("scan 时只扫描该 trace（强制重扫）"),
-      package: z.string().optional().describe("list 过滤：应用包名（精确匹配）"),
+      package: z.string().optional().describe("list 过滤 / scan 包名过滤（精确匹配）"),
       kind: z.enum(["java", "native", "anr", "ios", "unknown"]).optional().describe("list 过滤：崩溃类型"),
-      since: z.string().optional().describe("list 过滤：ISO 8601 时间，只返回该时间之后仍出现的签名"),
+      since: z.string().optional().describe("ISO 8601 时间：list 只返回该时间之后仍出现的签名；scan 只采集该时间之后的崩溃"),
       limit: z.number().int().positive().max(100).optional().describe("list 返回条数，默认 20")
     }),
     handler: (runtime, args) => aosCrashes(runtime, args as unknown as AosCrashesArgs)

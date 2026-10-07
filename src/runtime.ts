@@ -769,8 +769,10 @@ export class Runtime {
     );
   }
 
-  /** Scan one explicit trace (force) or all un-scanned terminal tasks. */
-  async scanTraceForCrashes(input: { traceId?: string; force?: boolean } = {}): Promise<CrashScanReport> {
+  /** Scan one explicit trace (force), all un-scanned terminal tasks, and (no traceId) proactively the device. */
+  async scanTraceForCrashes(
+    input: { traceId?: string; force?: boolean; since?: string; packageFilter?: string } = {}
+  ): Promise<CrashScanReport> {
     const enabled = this.crashScanner.enabled();
     const tasks = await this.taskList(200);
     if (input.traceId) {
@@ -789,6 +791,16 @@ export class Runtime {
     for (const task of pending) {
       results.push(await this.scanTraceByPlatform(task, task.traceId, false));
     }
+    // 无 traceId：主动收集当前设备的 crash buffer（不依赖任务/trace）
+    const sinceMs = input.since ? parseIsoMs(input.since) : null;
+    results.push(
+      await this.enqueueCrashTask(() =>
+        this.crashScanner.scanDevice({
+          sinceMs,
+          targetPackage: input.packageFilter ?? null
+        })
+      )
+    );
     return { enabled, results };
   }
 

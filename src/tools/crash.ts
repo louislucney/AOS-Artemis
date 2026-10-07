@@ -53,18 +53,19 @@ function recordView(record: CrashRecord): Record<string, unknown> {
 }
 
 export async function aosCrashes(runtime: Runtime, args: AosCrashesArgs): Promise<CallToolResult> {
-  if (args.action === "list") {
-    let sinceMs: number | undefined;
-    if (args.since) {
-      const parsed = Date.parse(args.since);
-      if (!Number.isFinite(parsed)) {
-        return jsonResult(
-          { ok: false, error: `无法解析 since 时间 "${args.since}"，请使用 ISO 8601 格式` },
-          true
-        );
-      }
-      sinceMs = parsed;
+  let sinceMs: number | undefined;
+  if (args.since && (args.action === "list" || args.action === "scan")) {
+    const parsed = Date.parse(args.since);
+    if (!Number.isFinite(parsed)) {
+      return jsonResult(
+        { ok: false, error: `无法解析 since 时间 "${args.since}"，请使用 ISO 8601 格式` },
+        true
+      );
     }
+    sinceMs = parsed;
+  }
+
+  if (args.action === "list") {
     const { total, records } = runtime.crashStore.list({
       kind: args.kind,
       package: args.package,
@@ -95,9 +96,12 @@ export async function aosCrashes(runtime: Runtime, args: AosCrashesArgs): Promis
     return jsonResult({ ok: true, record: recordView(record) });
   }
 
+  // 无 traceId：既扫未扫描的终态任务，也主动采集当前设备的 crash buffer（不依赖任务/trace）
   const report = await runtime.scanTraceForCrashes({
     traceId: args.traceId,
-    force: args.traceId ? true : undefined
+    force: args.traceId ? true : undefined,
+    since: sinceMs !== undefined ? new Date(sinceMs).toISOString() : undefined,
+    packageFilter: args.package
   });
   const found = report.results.reduce((sum, result) => sum + result.found, 0);
   const newIds = report.results.flatMap((result) => result.newIds ?? []);
