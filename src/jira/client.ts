@@ -1,0 +1,165 @@
+import { createHash } from "node:crypto";
+
+export class JiraRateLimitError extends Error {
+  readonly retryAfterSeconds: number;
+  readonly reason: string;
+
+  constructor(retryAfterSeconds: number, reason: string) {
+    super(
+      `Jira API 限流（reason=${reason}，retry-after=${retryAfterSeconds}s）。` +
+        "冷却期内不会再发起请求；请等待冷却结束或降低调用频率。"
+    );
+    this.name = "JiraRateLimitError";
+    this.retryAfterSeconds = retryAfterSeconds;
+    this.reason = reason;
+  }
+}
+
+export class JiraApiError extends Error {
+  readonly status: number;
+  readonly body: string;
+  readonly hint: string | null;
+
+  constructor(status: number, body: string, hint: string | null) {
+    super(`Jira API ${status}: ${body}`);
+    this.name = "JiraApiError";
+    this.status = status;
+    this.body = body;
+    this.hint = hint;
+  }
+}
+
+function hintFor(status: number): string | null {
+  if (status === 400) {
+    return "Jira 拒绝了请求：常见原因是 JQL 未加界（如需 project = X）或字段/流转名不合法。";
+  }
+  if (status === 401) {
+    return "凭证无效或已过期：Jira API token 现为一年有效期制，请在 id.atlassian.com 轮换后经 aos_configure 更新 JIRA_API_TOKEN。";
+  }
+  if (status === 403) {
+    return "权限不足：确认账号对目标项目/issue 有相应权限（scoped token 还需包含所需 scope）。";
+  }
+  if (status === 404) {
+    return "未找到：确认 issue key、JQL、站点 URL 与账号可见性。";
+  }
+  if (status === 413) {
+    return "附件超过站点允许的大小。";
+  }
+  return null;
+}
+
+const cooldowns = new Map<string, { until: number; retryAfterSeconds: number; reason: string }>();
+
+function fingerprint(email: string, apiToken: string): string {
+  return createHash("sha256").update(`${email}:${apiToken}`).digest("hex").slice(0, 12);
+}
+
+function retryMaxWaitMs(env: NodeJS.ProcessEnv): number {
+  const value = Number(env.AOS_JIRA_RETRY_MAX_WAIT_MS ?? 60_000);
+  return Number.isFinite(value) && value >= 0 ? value : 60_000;
+}
+
+function timeoutMs(env: NodeJS.ProcessEnv): number {
+  const value = Number(env.AOS_JIRA_TIMEOUT_MS ?? 30_000);
+  return Number.isFinite(value) && value > 0 ? value : 30_000;
+}
+
+function parseRetryAfter(res: Response): number | null {
+  const header = res.headers.get("Retry-After");
+  if (header === null) return null;
+  const seconds = Number.parseFloat(header);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+}
+
+export interface JiraClientOptions {
+  siteUrl: string;
+  email: string;
+  apiToken: string;
+  fetchImpl?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export class JiraClient {
+  private readonly siteUrl: string;
+  private readonly email: string;
+  private readonly apiToken: string;
+  private readonly fetchImpl: typeof fetch;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly sleep: (ms: number) => Promise<void>;
+
+  constructor(options: JiraClientOptions) {
+    this.siteUrl = options.siteUrl.replace(/\/+$/, "");
+    this.email = options.email;
+    this.apiToken = options.apiToken;
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.env = options.env ?? process.env;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  }
+
+  private async request<T>(
+    path: string,
+    init: { method?: string; body?: unknown } = {},
+    attempt = 0
+  ): Promise<T> {
+    const fp = fingerprint(this.email, this.apiToken);
+    const cooldown = cooldowns.get(fp);
+    if (cooldown && Date.now() < cooldown.until) {
+      throw new JiraRateLimitError(
+        Math.ceil((cooldown.until - Date.now()) / 1000),
+        cooldown.reason
+      );
+    }
+    const headers: Record<string, string> = {
+      Authorization: `Basic ${Buffer.from(`${this.email}:${this.apiToken}`).toString("base64")}`,
+      Accept: "application/json"
+    };
+    let body: string | undefined;
+    if (init.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(init.body);
+    }
+    const res = await this.fetchImpl(`${this.siteUrl}${path}`, {
+      method: init.method ?? "GET",
+      headers,
+      body,
+      signal: AbortSignal.timeout(timeoutMs(this.env))
+    });
+    if (res.status === 429) {
+      const reason = res.headers.get("RateLimit-Reason") ?? "unknown";
+      const seconds = parseRetryAfter(res) ?? 60;
+      if (seconds * 1000 <= retryMaxWaitMs(this.env) && attempt < 1) {
+        await this.sleep(seconds * 1000);
+        return this.request<T>(path, init, attempt + 1);
+      }
+      cooldowns.set(fp, { until: Date.now() + seconds * 1000, retryAfterSeconds: seconds, reason });
+      throw new JiraRateLimitError(seconds, reason);
+    }
+    if (!res.ok) {
+      const text = (await res.text()).slice(0, 500);
+      throw new JiraApiError(res.status, text, hintFor(res.status));
+    }
+    if (res.status === 204) return undefined as T;
+    return (await res.json()) as T;
+  }
+
+  async getIssue(key: string, fields: string[]): Promise<Record<string, unknown>> {
+    const query = fields.length > 0 ? `?fields=${fields.map(encodeURIComponent).join(",")}` : "";
+    return await this.request<Record<string, unknown>>(
+      `/rest/api/3/issue/${encodeURIComponent(key)}${query}`
+    );
+  }
+
+  async searchJql(
+    jql: string,
+    options: { maxResults?: number; fields?: string[]; nextPageToken?: string } = {}
+  ): Promise<Record<string, unknown>> {
+    const body: Record<string, unknown> = { jql, maxResults: options.maxResults ?? 20 };
+    if (options.fields && options.fields.length > 0) body.fields = options.fields;
+    if (options.nextPageToken) body.nextPageToken = options.nextPageToken;
+    return await this.request<Record<string, unknown>>("/rest/api/3/search/jql", {
+      method: "POST",
+      body
+    });
+  }
+}

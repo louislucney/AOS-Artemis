@@ -99,6 +99,7 @@ export function usageFamilyOf(tool: string): UsageEventFamily {
   if (tool.startsWith("mobile_")) return "mobile";
   if (tool.startsWith("figma_")) return "figma";
   if (tool.startsWith("pen_")) return "pen";
+  if (tool.startsWith("jira_")) return "jira";
   if (NATIVE_TOOL_NAMES.has(tool)) return "native";
   return "unknown";
 }

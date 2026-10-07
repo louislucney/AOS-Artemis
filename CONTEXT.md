@@ -28,3 +28,10 @@
 - **平台对等（platform parity）**：iOS 路径与 Android/ARTEMIS 路径在工具契约（入参语义、响应字段、产物与闭环）上的一致要求；内部实现机制允许不同，iOS 执行器不要求复刻 ARTEMIS Pro。
 - **显式降级（explicit degradation）**：iOS 无法与 ARTEMIS 等价的能力，必须以结构化标记体现在响应中，并配文档与测试；静默忽略参数、返回伪造数据不属于降级。
 - 不要把「平台对等」说成「对齐」：对齐（alignment）已专指设计渲染与真机截图的坐标对齐。
+
+## Jira 接入
+
+- **issue 上下文（issue context）**：Jira issue 的读取产物——元数据（summary/status/type/labels/project/assignee 等）+ 描述纯文本 + 启发式验收标准（标注 `heuristic`，不保证完整/准确）+ 原始 ADF；是生成测试用例的输入。
+- **验收标准抽取（acceptance criteria extraction）**：从描述 ADF 的标题段（Acceptance Criteria / 验收标准 / AC）延续到下一标题，或 `AC:` 行回退的启发式清单；属于标注，不是权威字段。
+- **证据回写（evidence post）**：把任务/套件失败证据（失败步骤截图、diff 标注图、报告摘要、崩溃签名）以幂等评论与去重附件写回 issue（M8b 范围）；评论按 issue+trace 就地更新而非追加。
+- 不要把「Jira 接入」的 issue 与仓库自身的 issue tracker 混同：前者是产品能力（读写客户 Jira），后者是 agent 工作流的载体；M8c 迁移后两者共用同一 Jira 客户端。

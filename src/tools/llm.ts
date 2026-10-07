@@ -2,6 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { AOS_MCP_VERSION, maskSecret } from "../util.js";
 import { bridgeState } from "../figma/bridge.js";
+import { ENV_JIRA_API_TOKEN } from "../jira/config.js";
 import { childLogFilePath, logFilePath } from "../log.js";
 import { PROVIDER_PRESETS, presetSummary } from "../llm/providers.js";
 import { detectProjectStacks } from "../projects/stack.js";
@@ -233,6 +234,20 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
         envVar: runtime.figmaTokenScanVar()
       }
     },
+    jira: (() => {
+      const config = runtime.jiraConfig();
+      return {
+        configured: config.configured,
+        siteUrl: config.siteUrl,
+        email: config.email,
+        token: {
+          present: config.apiToken !== null,
+          preview: config.apiToken !== null ? maskSecret(config.apiToken) : null,
+          envVar: ENV_JIRA_API_TOKEN
+        },
+        missing: config.missing
+      };
+    })(),
     logs: {
       file: logFilePath(),
       childFile: childLogFilePath()

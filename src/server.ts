@@ -46,6 +46,12 @@ import { screenMap, type ScreenMapArgs } from "./diff/screen-map.js";
 import { aosConfigure, type ConfigureArgs } from "./tools/configure.js";
 import { aosCrashes, type AosCrashesArgs } from "./tools/crash.js";
 import {
+  jiraIssueGet,
+  jiraIssueSearch,
+  type JiraIssueGetArgs,
+  type JiraIssueSearchArgs
+} from "./tools/jira.js";
+import {
   aosStatus,
   aosTasks,
   llmList,
@@ -101,7 +107,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "aos_configure",
     description:
-      "为当前项目配置 LLM（OpenAI 兼容）：写入 PostgreSQL 与项目 .env，并可选设为 active。model/baseUrl 可用 vendor 预设（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）替代：只给 vendor 时自动拉取厂商模型列表并按稳定别名选型。用于 setup_required 引导场景。",
+      "为当前项目配置 LLM（OpenAI 兼容）：写入 PostgreSQL 与项目 .env，并可选设为 active。model/baseUrl 可用 vendor 预设（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）替代：只给 vendor 时自动拉取厂商模型列表并按稳定别名选型。可选同时配置 Jira Cloud（jiraSite/jiraEmail/jiraApiToken 三者一起提供，写入项目 .env，站点仅接受 https://*.atlassian.net）。用于 setup_required 引导场景。",
     schema: z.object({
       apiKey: z.string().min(1).describe("该项目的 LLM key（费用支付方）"),
       model: z.string().optional().describe("模型名，如 deepseek-flash；省略时按 vendor 列表自动选择"),
@@ -114,14 +120,17 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       makeActive: z.boolean().optional().describe("配置后立即设为 active，默认 true"),
       writeEnv: z.boolean().optional().describe("是否回写项目 .env，默认 true"),
       force: z.boolean().optional().describe("激活时跳过运行中任务守卫，默认 false"),
-      figmaToken: z.string().optional().describe("可选的 Figma token（写入项目 .env / 存储）")
+      figmaToken: z.string().optional().describe("可选的 Figma token（写入项目 .env / 存储）"),
+      jiraSite: z.string().optional().describe("Jira Cloud 站点，如 https://your-site.atlassian.net（与 jiraEmail/jiraApiToken 同时提供）"),
+      jiraEmail: z.string().optional().describe("Jira 账号邮箱（API token 的 Basic 认证用户名）"),
+      jiraApiToken: z.string().optional().describe("Jira API token（id.atlassian.com 生成；只回写 .env，响应仅 masked）")
     }),
     handler: (runtime, args) => aosConfigure(runtime, args as unknown as ConfigureArgs)
   },
   {
     name: "aos_status",
     description:
-      "AOS MCP 运行状态：项目注册信息、存储（PostgreSQL/降级内存）、active LLM、artemis 子进程（pid/重启数/stderr 尾部）、Figma 桥/就绪性、setup 状态。",
+      "AOS MCP 运行状态：项目注册信息、存储（PostgreSQL/降级内存）、active LLM、artemis 子进程（pid/重启数/stderr 尾部）、Figma 桥/就绪性、Jira 配置（masked）、setup 状态。",
     schema: z.object({}),
     handler: (runtime) => aosStatus(runtime)
   },
@@ -165,6 +174,27 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       limit: z.number().int().min(1).max(200).optional().describe("events 返回条数（1-200，默认 100）")
     }),
     handler: (runtime, args) => aosUsage(runtime, args as unknown as AosUsageArgs)
+  },
+  {
+    name: "jira_issue_get",
+    description:
+      "读取 Jira Cloud issue：key 或 browse URL → 规范化上下文（summary/status/type/labels + 描述纯文本 + 启发式验收标准标注，保留原始 ADF），供 agent 直接生成测试用例。需项目 .env 配置 JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN（可用 aos_configure 写入）。",
+    schema: z.object({
+      key: z.string().min(1).describe("issue key（如 AOS-123）或含 /browse/ 的 URL")
+    }),
+    handler: (runtime, args) => jiraIssueGet(runtime, args as unknown as JiraIssueGetArgs)
+  },
+  {
+    name: "jira_issue_search",
+    description:
+      "JQL 搜索 Jira Cloud issue（/rest/api/3/search/jql 游标分页）：返回 key/url/summary/status/type/labels/updated/assignee；limit 默认 20、上限 100，nextPageToken 透传。JQL 需有界（如 project = X ORDER BY created DESC）；无 total（计数用 JQL 侧聚合）。",
+    schema: z.object({
+      jql: z.string().min(1).describe("有界 JQL，如 project = AOS AND status != Done ORDER BY created DESC"),
+      limit: z.number().int().positive().max(100).optional().describe("返回条数，默认 20"),
+      fields: z.array(z.string()).optional().describe("覆盖默认字段集（summary/status/issuetype/labels/updated/assignee/project）"),
+      nextPageToken: z.string().optional().describe("翻页游标（上次响应返回的 nextPageToken）")
+    }),
+    handler: (runtime, args) => jiraIssueSearch(runtime, args as unknown as JiraIssueSearchArgs)
   },
   {
     name: "compare_design_and_device",

@@ -64,6 +64,12 @@ AOS_LLM_API_KEY=
 # Figma（可选；仅 REST 模式工具需要）
 FIGMA_ACCESS_TOKEN=
 
+# Jira Cloud（可选；jira_* 工具与 jira CLI 需要）
+# 站点仅接受 https://*.atlassian.net；token 在 id.atlassian.com 生成（一年有效期）
+JIRA_BASE_URL=https://your-site.atlassian.net
+JIRA_EMAIL=
+JIRA_API_TOKEN=
+
 # 说明：AOS_DATABASE_URL 属于服务级配置，由 MCP 客户端配置的 env 注入，
 # 不要写进项目 .env（详见 README / DESIGN.md §4.5）。
 `;

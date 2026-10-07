@@ -135,6 +135,26 @@ node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:
 - Web 看板：`usage --web` 提供 `GET /usage`（HTML）与 `GET /usage.json`（同源 JSON）；HTTP 模式下跟随服务器绑定自动挂载同一路由，`AOS_USAGE_WEB=0` 关闭页面。v1 纯只读、无鉴权（与内网部署口径一致）、无处置标记。
 - 环境变量（进程/客户端 env，不读项目 `.env`）：`AOS_USAGE=0` 关闭采集（历史数据仍可查询与展示）、`AOS_USAGE_RETENTION_DAYS`（保留天数，默认 90，0 不清理）、`AOS_USAGE_MAX_EVENTS`（每项目事件上限，默认 50000，超出丢最旧）、`AOS_USAGE_WEB=0`（关闭 `/usage` 与 `/usage.json` 路由）。
 
+### Jira 接入（M8a：读取）
+
+`jira_issue_get` / `jira_issue_search`：从 Jira Cloud 读取 issue 上下文（描述纯文本 + 启发式验收标准 + 原始 ADF）与 JQL 搜索结果，供 agent 直接生成/圈定测试用例。证据回写（评论/附件）与 CLI 工作流迁移为 M8b/M8c，spec 与票据见 `.scratch/jira-integration/`。
+
+配置（项目 `.env`；推荐用 `aos_configure` 的 `jiraSite` / `jiraEmail` / `jiraApiToken` 一次写入，三者须同时提供）：
+
+- `JIRA_BASE_URL`：仅接受 `https://<site>.atlassian.net`（v1 不支持 Server/DC 与自定义域）
+- `JIRA_EMAIL` / `JIRA_API_TOKEN`：API token 在 id.atlassian.com 生成（现行一年有效期；过期时 401 会带轮换提示）
+
+```bash
+# 项目 .env 示例
+JIRA_BASE_URL=https://your-site.atlassian.net
+JIRA_EMAIL=you@example.com
+JIRA_API_TOKEN=***
+```
+
+- 限流：429 按 `Retry-After` 有界等待（`AOS_JIRA_RETRY_MAX_WAIT_MS` 默认 60s），超时快速失败并按凭证冷却（冷却期不发请求）；请求超时 `AOS_JIRA_TIMEOUT_MS` 默认 30s；无响应缓存。
+- 搜索走 `/rest/api/3/search/jql`：JQL 需有界（如 `project = AOS ORDER BY created DESC`），游标分页（`nextPageToken`），不返回 total。
+- `aos_status.jira` 显示 masked 就绪状态与缺失项；凭证只进项目 `.env`（或客户端 env），不落 PostgreSQL、不进日志。手动编辑 `.env` 后需重启 MCP 会话；`aos_configure` 写入即时生效。
+
 ### 设计 → 测试流水线（Figma → 真机）
 
 ```
@@ -296,11 +316,13 @@ node dist/cli.js doctor
 | `llm_list` | 项目全部 LLM 条目（store/config/env 来源）+ active + masked key + `setupRequired` + 每条目 `models`（厂商列表缓存/是否下线/建议模型） |
 | `llm_switch` | 切换 active（PG 持久化）；模型下个任务生效；key/base_url 变更重启网关（任务守卫，`force: true` 跳过） |
 | `llm_models` | 厂商模型目录：`list` 看缓存，`refresh` 立即拉取 `GET {baseUrl}/models`（后台每 12h 自动刷新）；模型下线时自动修复并附 8 家国产厂商预设（`AOS_LLM_AUTO_REPAIR=0` 可关） |
-| `aos_configure` | 写入/更新 LLM（→ PG + 项目 `.env`）并激活；可只给 `vendor`（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）自动选当前模型；setup 引导入口 |
-| `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 就绪性 |
+| `aos_configure` | 写入/更新 LLM（→ PG + 项目 `.env`）并激活；可只给 `vendor`（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）自动选当前模型；可选同时写入 Jira 三件套（`jiraSite`/`jiraEmail`/`jiraApiToken` → 项目 `.env`）；setup 引导入口 |
+| `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 与 Jira（masked）就绪性 |
 | `aos_tasks` | 任务/调用统计（case/trace/状态/模型），含完成态同步与错误终态记录 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
 | `aos_usage` | 使用统计（调用事件）：`summary` 概览 / `signals` 信号分布 / `events` 流水；`tool`/`status`/`days` 筛选，events `limit` ≤200；只统计客户端发起的调用，`AOS_USAGE=0` 时标注采集已关闭但历史仍可查 |
+| `jira_issue_get` | 读取 Jira Cloud issue（key 或 browse URL）→ summary/status/type/labels + 描述纯文本 + 启发式验收标准标注（保留原始 ADF）；缺凭证返回 `howToFix` |
+| `jira_issue_search` | JQL 搜索（`/rest/api/3/search/jql` 游标分页、无 total）：key/url/summary/status/type/labels/updated/assignee；limit 默认 20、上限 100 |
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
 | `design_device_diff` | 设计 vs 真机差异（确定性）：设计源 Figma 节点或 `.pen`（`design:{source:"pen"}`，pen CLI 渲染）+ 截图（`live` 实时，或 `step` + `traceId`（`stepNumber` 可省略→失败证据自动检索）对比失败步骤，默认 post；`device.platform:"ios"` 走 macOS 模拟器 idb/simctl）→ 对齐（insets/ignoreRegions/降采样）→ 像素差异判定 + 设计节点几何分类（missing/extra/text/asset/position-size/color）→ 差异报告 + 标注图，落盘 `.artemis/design/diffs/<node>-<时间戳>/`；`dryRun` 只回计划 |
 | `screen_map` | 持久屏幕映射 `.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 候选（confidence/unmatched）、`save` 幂等/merge、`list`；差异报告输出 `localized` |

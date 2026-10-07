@@ -2,6 +2,13 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { writeEnvUpdates } from "../env-file.js";
 import { syncFigmaTokenEnv } from "../figma/token.js";
+import {
+  ENV_JIRA_API_TOKEN,
+  ENV_JIRA_BASE_URL,
+  ENV_JIRA_EMAIL,
+  normalizeJiraSiteUrl,
+  validateJiraSiteUrl
+} from "../jira/config.js";
 import { PROVIDER_PRESETS, providerPresetById } from "../llm/providers.js";
 import { ENV_FIGMA_TOKEN, ENV_LLM_API_KEY, ENV_LLM_BASE_URL, ENV_LLM_MODEL, ENV_LLM_NAME } from "../projects/scan.js";
 import { errorMessage, maskSecret } from "../util.js";
@@ -17,6 +24,9 @@ export interface ConfigureArgs {
   writeEnv?: boolean;
   force?: boolean;
   figmaToken?: string;
+  jiraSite?: string;
+  jiraEmail?: string;
+  jiraApiToken?: string;
 }
 
 function jsonResult(payload: unknown, isError = false): CallToolResult {
@@ -59,6 +69,25 @@ export async function aosConfigure(runtime: Runtime, args: ConfigureArgs): Promi
   }
   if (!/^https?:\/\//i.test(baseUrl)) {
     return jsonResult({ ok: false, error: `baseUrl 必须是 http(s) URL：${baseUrl}` }, true);
+  }
+
+  const jiraSiteInput = args.jiraSite?.trim() ?? "";
+  const jiraEmail = args.jiraEmail?.trim() ?? "";
+  const jiraApiToken = args.jiraApiToken?.trim() ?? "";
+  const jiraProvided = jiraSiteInput !== "" || jiraEmail !== "" || jiraApiToken !== "";
+  let jiraSite: string | null = null;
+  if (jiraProvided) {
+    if (jiraSiteInput === "" || jiraEmail === "" || jiraApiToken === "") {
+      return jsonResult(
+        { ok: false, error: "Jira 配置需要同时提供 jiraSite / jiraEmail / jiraApiToken。" },
+        true
+      );
+    }
+    const siteError = validateJiraSiteUrl(jiraSiteInput);
+    if (siteError) {
+      return jsonResult({ ok: false, error: siteError }, true);
+    }
+    jiraSite = normalizeJiraSiteUrl(jiraSiteInput);
   }
 
   const warnings: string[] = [];
@@ -143,7 +172,14 @@ export async function aosConfigure(runtime: Runtime, args: ConfigureArgs): Promi
       [ENV_LLM_API_KEY]: apiKey
     };
     if (figmaToken) updates[ENV_FIGMA_TOKEN] = figmaToken;
+    if (jiraSite !== null) {
+      updates[ENV_JIRA_BASE_URL] = jiraSite;
+      updates[ENV_JIRA_EMAIL] = jiraEmail;
+      updates[ENV_JIRA_API_TOKEN] = jiraApiToken;
+    }
     envPath = writeEnvUpdates(runtime.project.rootDir, updates);
+  } else if (jiraProvided) {
+    warnings.push("writeEnv=false：Jira 凭证未写入项目 .env，请手动配置后重启会话。");
   }
   if (figmaToken) {
     try {
@@ -173,6 +209,17 @@ export async function aosConfigure(runtime: Runtime, args: ConfigureArgs): Promi
     activation,
     maskedKey: maskSecret(apiKey),
     modelsFetched: fetched ? fetched.models.length : 0,
+    jira:
+      jiraSite !== null
+        ? {
+            configured: true,
+            site: jiraSite,
+            email: jiraEmail,
+            maskedToken: maskSecret(jiraApiToken),
+            envPath,
+            written: writeEnv
+          }
+        : undefined,
     warnings
   });
 }

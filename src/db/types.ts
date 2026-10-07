@@ -33,7 +33,7 @@ export interface TaskStatRecord {
   finishedAt: string | null;
 }
 
-export type UsageEventFamily = "native" | "figma" | "pen" | "mobile" | "unknown";
+export type UsageEventFamily = "native" | "figma" | "pen" | "jira" | "mobile" | "unknown";
 
 export type UsageErrorClass =
   | "validation"

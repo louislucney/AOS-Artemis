@@ -32,6 +32,7 @@ import { CrashIndexStore } from "./crash/store.js";
 import { CrashScanner } from "./crash/scanner.js";
 import type { CrashCollectorLike, CrashScanReport, CrashScanResult } from "./crash/types.js";
 import { findGeneratedCaseId } from "./figma/case-index.js";
+import { jiraConfigFrom, type ResolvedJiraConfig } from "./jira/config.js";
 import { MemoryStore } from "./db/memory.js";
 import { TERMINAL_TASK_STATUSES } from "./db/types.js";
 import type {
@@ -882,6 +883,10 @@ export class Runtime {
 
   figmaTokenScanVar(): string | null {
     return this.scanResult.figmaTokenVar ?? ENV_FIGMA_TOKEN;
+  }
+
+  jiraConfig(): ResolvedJiraConfig {
+    return jiraConfigFrom(this.project.resolver);
   }
 
   projectSummary(): ProjectRecord | null {
