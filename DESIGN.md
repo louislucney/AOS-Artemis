@@ -355,6 +355,17 @@ env:
 - **读取契约**：issue 上下文规范化为纯文本 + 启发式验收标准（标题段延续到下一标题，外加 `AC:` 行回退；`heuristic:true` 明示不可全信），保留原始 ADF 供深入消费；搜索走 `/rest/api/3/search/jql`（显式字段、游标分页；JQL 需有界，API 侧 400 原样映射）。
 - **里程碑后续**：M8b 证据回写（单条评论就地更新 + 确定性命名附件 + crash 摘要）、M8c CLI 与 issue tracker 迁移见 `.scratch/jira-integration/`（票据 03–06）与 §13.55。
 
+### 6.9 iOS 真机后端（M9a：Appium + WDA）
+
+真机 UDID（`classifyIosSerial=device`）由 AOS 接管并走 Appium + WebDriverAgent（模拟器保持 idb/simctl 双后端）：
+
+- **服务**：`ios/appium`（service/server/client/session/facade/xml/capabilities/detect）——`AOS_APPIUM_URL` 直连或托管懒启动 `appium --port`（`AOS_IOS_APPIUM_PORT` 默认 4723，启动前先探测复用）；`/status` 就绪轮询；`disposeIosWda()` 随 stdio/HTTP 关停回收。
+- **会话**：同 UDID FIFO 互斥 + 任务级 lease（finally 释放）+ 观测会话空闲回收（`AOS_IOS_SESSION_IDLE_MS` 默认 30min，0=保活）；观测拿锁有界等待（`AOS_IOS_OBSERVE_WAIT_MS` 默认 5s）→ `device_busy` + 最近缓存帧；自愈阶梯（DELETE→POST→托管重启一次）。
+- **能力**：截图、层级（page source XML 经 fast-xml-parser；解析失败 `parse_failed` 回退截图）、tap/swipe（W3C actions）、文本输入（先聚焦→有界等键盘→`POST /keys`；`mobile: typeText` 在 xcuitest 12.15 已移除）、terminate/activate/install/deepLink。
+- **签名**：`AOS_IOS_XCODE_ORG_ID`（证书 OU 团队 ID，必填）、`AOS_IOS_XCODE_SIGNING_ID`（默认 Apple Development）、`AOS_IOS_WDA_BUNDLE_ID`（默认 com.aos.mcp.wda）；`useNewWDA=false` + `allowProvisioningDeviceRegistration=true`（真机实测）。
+- **路由**：`mobile_get_device_state` device 分支（busy/parse_failed 降级）、`captureLiveScreenshot`（design diff / compare 真机截图，note "iOS 真机 WDA PNG" 即 backend 标识）、`mobile_run_task`（执行器设备 façade 对 device 走 WDA）。真机日志/崩溃仍为模拟器路径（M9c）。
+- **排障**：doctor/`aos_status.ios` 显示 Appium/xcuitest/签名/隧道指引；iOS 18+ 需一次性 `sudo appium driver run xcuitest tunnel-creation`。
+
 ---
 
 ## 7. 切换机制（PG 中心）
@@ -466,6 +477,7 @@ llm_switch(name, force):
 | D2             | 测试闭环深化（用例身份台账、状态复位、套件运行器、失败证据/分类、设备基线、运行报告、生成反馈、CLI 接线）   | ✅ 已完成（票据 01–14；389 用例；见 §13.20–13.33）                       |
 | U1             | 使用统计（客户端调用事件采集/存储/聚合 + `aos_usage` 工具 / `usage` CLI / Web 看板三消费面；ADR-0006）     | ✅ 已完成（票据 01–07；610 用例；见 §13.54）                             |
 | M8             | Jira Cloud 接入（产品级读取/证据回写 + 仓库 issue tracker 迁移 CLI；spec 与票据见 `.scratch/jira-integration/`） | 🚧 部分实施（M8a 完成：client/凭证/`jira_issue_get`+`jira_issue_search`；M8b/M8c 为票据 03–06；见 §13.55） |
+| M9             | iOS 真机后端（Appium+WDA：观测/动作/设计对比 + 执行器；日志/崩溃 M9c 与 .ipa 安装待续；spec/票据见 `.scratch/ios-real-device/`） | 🚧 部分实施（M9a 完成并经真机端到端验证；M9b 执行器已接线；见 §13.56） |
 
 ---
 
@@ -1046,3 +1058,11 @@ llm_switch(name, force):
 - **读取**：`jira_issue_get`（key/browse URL → 规范化上下文；ADF→文本覆盖 doc/段落/标题/列表/代码块/引用/表格/提及等；AC 启发式标题段 + `AC:` 行，raw ADF 保留）与 `jira_issue_search`（`/rest/api/3/search/jql` POST、显式字段、limit 1–100、游标 `nextPageToken` 透传）。
 - **usage**：family 增加 `jira`（`jira_` 前缀），工具目录自动纳入 `aos_usage` 零调用统计；`aos_status` 增 `jira` 小节。
 - **边界**：M8a 只读；Server/DC、OAuth、建单、状态同步与证据回写（M8b/M8c）为票据 03–06；真实沙箱冒烟为人工验收（自动测试全 mock、不联网）。
+
+### 13.56 实施记录（iOS 真机 M9a：WDA 后端与真机验证，票据 00–03）
+
+> 实施于 2026-10-08；新增 `src/ios/appium/{client,session,facade,xml,capabilities,server,detect,service}.ts`；改 `runtime.ts`（`iosWda()`/`disposeIosWda()`/`appiumDetector`）、`tools/ios-state.ts`、`diff/device-source.ts`、`ios/task-runner.ts`、`server.ts`/`http-server.ts`（关停回收）、`tools/llm.ts`（`aos_status.ios`）、`commands.ts`（doctor）；依赖新增 `fast-xml-parser`；测试 `test/ios-appium-*.test.js`、`test/ios-wda-service.test.js` 共 25 例；全量 665 绿、lint 干净。spec/票据见 `.scratch/ios-real-device/`。
+
+- **spike 事实（票 00，真机 iPhone 12/iOS 26.6.2）**：隧道 registry `127.0.0.1:42314` 常驻；签名团队取证书 OU（本机 `Z35S33J39R`）+ `allowProvisioningDeviceRegistration`；`useNewWDA=false` 复用会话 ~1s；`mobile: typeText` 已移除 → `POST /keys`；键盘输入须先聚焦。
+- **真机端到端（票 03）**：`mobile_get_device_state` 经全新 MCP 进程（自动托管 Appium）——截图 10.2s（5.6MB PNG → `.artemis/traces/live_screenshots/`）/层级 7.2s（4549 字符真实主屏）✅；design diff / compare 真机受益于同一截图源。
+- **边界与待续**：M9b 套件/复位、`.ipa` 安装（票 05）、真机日志/崩溃（票 06）；Appium 异常退出仍可能遗留孤儿进程（关停路径已回收，崩溃路径后续加固）。

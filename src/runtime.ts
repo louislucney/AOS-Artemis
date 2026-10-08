@@ -33,6 +33,8 @@ import { CrashScanner } from "./crash/scanner.js";
 import type { CrashCollectorLike, CrashScanReport, CrashScanResult } from "./crash/types.js";
 import { findGeneratedCaseId } from "./figma/case-index.js";
 import { jiraConfigFrom, type ResolvedJiraConfig } from "./jira/config.js";
+import { detectAppium, type AppiumDetection } from "./ios/appium/detect.js";
+import { IosWdaService } from "./ios/appium/service.js";
 import { MemoryStore } from "./db/memory.js";
 import { TERMINAL_TASK_STATUSES } from "./db/types.js";
 import type {
@@ -83,6 +85,7 @@ export interface RuntimeOptions {
   iosCrashCollector?: typeof collectIosCrashes;
   iosCrashRetry?: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> };
   modelFetcher?: FetchLike;
+  appiumDetector?: () => Promise<AppiumDetection>;
   buildModuleUrl?: string;
 }
 
@@ -126,6 +129,7 @@ export class Runtime {
   readonly crashStore: CrashIndexStore;
   readonly crashScanner: CrashScanner;
   readonly modelCatalog: ModelCatalog;
+  private readonly appiumDetector: () => Promise<AppiumDetection>;
 
   private readonly buildModuleUrl: string;
   private readonly buildStartedAtMs: number;
@@ -168,6 +172,8 @@ export class Runtime {
       sleep: options.iosCrashRetry?.sleep ?? ((ms) => sleep(ms))
     };
     this.configDirAbs = configDirAbs(project.config, project.rootDir);
+    this.appiumDetector =
+      options.appiumDetector ?? (() => detectAppium({ env: this.baseEnv }));
     this.state = new StateStore(path.join(this.configDirAbs, "state.json"));
     this.buildModuleUrl = options.buildModuleUrl ?? import.meta.url;
     this.buildStartedAtMs = Date.now() - Math.round(process.uptime() * 1000);
@@ -899,6 +905,25 @@ export class Runtime {
 
   jiraConfig(): ResolvedJiraConfig {
     return jiraConfigFrom(this.project.resolver);
+  }
+
+  async iosAppiumInfo(): Promise<AppiumDetection> {
+    return await this.appiumDetector();
+  }
+
+  private iosWdaService: IosWdaService | null = null;
+
+  iosWda(): IosWdaService {
+    if (this.iosWdaService === null) {
+      this.iosWdaService = new IosWdaService({ env: this.baseEnv });
+    }
+    return this.iosWdaService;
+  }
+
+  async disposeIosWda(): Promise<void> {
+    const service = this.iosWdaService;
+    this.iosWdaService = null;
+    if (service !== null) await service.dispose();
   }
 
   projectSummary(): ProjectRecord | null {

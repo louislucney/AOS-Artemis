@@ -348,7 +348,22 @@ export function modelFetcher(models, options = {}) {
 
 export async function loadTestRuntime(
   dir,
-  { proxy, env = {}, store, baseEnv, crashCollector, iosCrashCollector, iosCrashRetry, modelFetcher, buildModuleUrl } = {}
+  {
+    proxy,
+    env = {},
+    store,
+    baseEnv,
+    crashCollector,
+    iosCrashCollector,
+    iosCrashRetry,
+    modelFetcher,
+    buildModuleUrl,
+    appiumDetector = async () => ({
+      appium: { found: false, path: null, version: null },
+      xcuitest: { installed: false, version: null },
+      guidance: []
+    })
+  } = {}
 ) {
   const project = loadProject({ cwd: dir, env });
   const runtime = new Runtime(project, {
@@ -359,7 +374,8 @@ export async function loadTestRuntime(
     iosCrashCollector,
     iosCrashRetry,
     modelFetcher,
-    buildModuleUrl
+    buildModuleUrl,
+    appiumDetector
   });
   await runtime.initialize();
   return { project, runtime };

@@ -206,6 +206,23 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
       });
     }
 
+    const { detectAppium } = await import("./ios/appium/detect.js");
+    const iosAppium = await detectAppium({ env: process.env });
+    if (iosAppium.appium.found && iosAppium.xcuitest.installed) {
+      lines.push({
+        icon: "OK",
+        title: `Appium ${iosAppium.appium.version ?? "(版本未知)"} / xcuitest ${iosAppium.xcuitest.version ?? "(版本未知)"}（iOS 真机后端）`,
+        details: iosAppium.guidance
+      });
+    } else {
+      degraded = true;
+      lines.push({
+        icon: "WARN",
+        title: "iOS 真机后端未就绪（可选：仅影响真机 UDID 的 WDA 路径）",
+        details: iosAppium.guidance
+      });
+    }
+
     const penEnv = penEnvFrom(project.dotenvValues, process.env);
     const pen = await ensurePenCli({
       env: penEnv,

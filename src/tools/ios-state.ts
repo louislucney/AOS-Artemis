@@ -17,11 +17,32 @@ import { errorMessage } from "../util.js";
 
 const MAX_HIERARCHY_LINES = 300;
 
+export interface IosWdaDeps {
+  screenshot: (udid: string) => Promise<{ ok: true; value: Buffer } | { ok: false; error: string }>;
+  nodes: (
+    udid: string
+  ) => Promise<{ ok: true; value: IosUiNode[] } | { ok: false; error: string }>;
+}
+
 export interface IosDeviceStateDeps {
   platform?: NodeJS.Platform;
   listSimulators?: typeof listIosSimulators;
   captureIosPng?: (options?: { serial?: string | null }) => Promise<IosPngCapture>;
   describeIosUi?: (options: { serial: string }) => Promise<Awaited<ReturnType<typeof describeIosUi>>>;
+  wda?: IosWdaDeps;
+}
+
+function writeLivePng(runtime: Runtime, serial: string, bytes: Buffer): string | null {
+  const dir = liveScreenshotsDir(runtime.project.config, runtime.project.rootDir);
+  const safe = serial.replace(/[^A-Za-z0-9_-]/g, "_");
+  const file = path.join(dir, `live_screenshot_${safe}.png`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, bytes);
+  } catch {
+    return null;
+  }
+  return file;
 }
 
 function textResult(text: string): CallToolResult {
@@ -113,7 +134,22 @@ export async function maybeIosDeviceState(
     }
   }
 
+  const wda: IosWdaDeps =
+    deps.wda ?? {
+      screenshot: (udid: string) => runtime.iosWda().screenshot(udid),
+      nodes: (udid: string) => runtime.iosWda().nodes(udid)
+    };
+
   if (viewType === "screenshot") {
+    if (serialKind === "device") {
+      const captured = await wda.screenshot(serial);
+      if (!captured.ok) {
+        return textResult(`Error: iOS 真机截图失败（${captured.error}；serial=${serial}）。`);
+      }
+      const file = writeLivePng(runtime, serial, captured.value);
+      if (file === null) return textResult(`Error: iOS 截图写入失败（serial=${serial}）。`);
+      return textResult(`file://${file}`);
+    }
     const capture = deps.captureIosPng ?? captureIosPng;
     let captured: IosPngCapture;
     try {
@@ -124,16 +160,25 @@ export async function maybeIosDeviceState(
     if (!captured.ok || !captured.bytes) {
       return textResult(`Error: ${stateError(captured.error, serial)}`);
     }
-    const dir = liveScreenshotsDir(runtime.project.config, runtime.project.rootDir);
-    const safe = serial.replace(/[^A-Za-z0-9_-]/g, "_");
-    const file = path.join(dir, `live_screenshot_${safe}.png`);
-    try {
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(file, captured.bytes);
-    } catch (error) {
-      return textResult(`Error: iOS 截图写入失败: ${errorMessage(error)}`);
-    }
+    const file = writeLivePng(runtime, serial, captured.bytes);
+    if (file === null) return textResult(`Error: iOS 截图写入失败（serial=${serial}）。`);
     return textResult(`file://${file}`);
+  }
+
+  if (serialKind === "device") {
+    const described = await wda.nodes(serial);
+    if (!described.ok) {
+      if (described.error === "parse_failed") {
+        const shot = await wda.screenshot(serial);
+        const file = shot.ok ? writeLivePng(runtime, serial, shot.value) : null;
+        const suffix = file !== null ? `；已回退截图: file://${file}` : "";
+        return textResult(
+          `Error: WDA 层级解析失败（hierarchy=parse_failed，serial=${serial}）${suffix}`
+        );
+      }
+      return textResult(`Error: iOS 真机层级失败（${described.error}；serial=${serial}）。`);
+    }
+    return textResult(formatIosHierarchy(described.value));
   }
 
   const describe = deps.describeIosUi ?? ((options) => describeIosUi(options));

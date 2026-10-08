@@ -248,6 +248,7 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
         missing: config.missing
       };
     })(),
+    ios: await runtime.iosAppiumInfo(),
     logs: {
       file: logFilePath(),
       childFile: childLogFilePath()

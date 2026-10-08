@@ -781,6 +781,11 @@ export async function runServer(): Promise<void> {
       /* best effort */
     }
     try {
+      await runtime?.disposeIosWda();
+    } catch {
+      /* best effort */
+    }
+    try {
       await runtime?.store.close();
     } catch {
       /* best effort */

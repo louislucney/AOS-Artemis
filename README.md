@@ -155,6 +155,18 @@ JIRA_API_TOKEN=***
 - 搜索走 `/rest/api/3/search/jql`：JQL 需有界（如 `project = AOS ORDER BY created DESC`），游标分页（`nextPageToken`），不返回 total。
 - `aos_status.jira` 显示 masked 就绪状态与缺失项；凭证只进项目 `.env`（或客户端 env），不落 PostgreSQL、不进日志。手动编辑 `.env` 后需重启 MCP 会话；`aos_configure` 写入即时生效。
 
+### iOS 真机（Appium + WDA，M9a）
+
+真机 UDID 由 AOS 接管（观测/动作/设计对比/执行器；套件、日志与崩溃待续）；模拟器保持 idb/simctl 不变。前置：Xcode + `appium`（含 xcuitest 驱动，`doctor` 会检查）；iOS 18+ 首次需建立隧道（常驻，自动复用）：
+
+```bash
+sudo appium driver run xcuitest tunnel-creation
+```
+
+- 配置（进程 env，宿主级）：`AOS_APPIUM_URL`（直连既有 server，可选）、`AOS_IOS_APPIUM_PORT`（托管启动端口，默认 4723）、`AOS_IOS_XCODE_ORG_ID`（**必填**：证书 OU 团队 ID，可在 Xcode Settings → Accounts 查看）、`AOS_IOS_XCODE_SIGNING_ID`（默认 `Apple Development`）、`AOS_IOS_WDA_BUNDLE_ID`（默认 `com.aos.mcp.wda`）、`AOS_IOS_SESSION_IDLE_MS`（观测会话空闲回收，默认 30min，0=进程存活期保活）、`AOS_IOS_OBSERVE_WAIT_MS`（观测等待锁上限，默认 5s）、`AOS_IOS_APPIUM_TIMEOUT_MS`（WebDriver 超时，默认 120s）。
+- 行为：`mobile_get_device_state`（screenshot/hierarchy）、`mobile_run_task`（iOS 执行器）、`design_device_diff` / `compare_design_and_device`（真机截图源，note 标注 `wda`）；同一设备互斥排队（任务 FIFO），观测被占用时有界等待并返回 `device_busy` + 最近缓存帧；层级解析失败降级为仅截图（`hierarchy=parse_failed`）。
+- 排障：`doctor` 与 `aos_status.ios` 显示 Appium/xcuitest 版本、签名与隧道指引；托管启动前会先探测复用已有实例。
+
 ### 设计 → 测试流水线（Figma → 真机）
 
 ```

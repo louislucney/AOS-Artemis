@@ -35,3 +35,10 @@
 - **验收标准抽取（acceptance criteria extraction）**：从描述 ADF 的标题段（Acceptance Criteria / 验收标准 / AC）延续到下一标题，或 `AC:` 行回退的启发式清单；属于标注，不是权威字段。
 - **证据回写（evidence post）**：把任务/套件失败证据（失败步骤截图、diff 标注图、报告摘要、崩溃签名）以幂等评论与去重附件写回 issue（M8b 范围）；评论按 issue+trace 就地更新而非追加。
 - 不要把「Jira 接入」的 issue 与仓库自身的 issue tracker 混同：前者是产品能力（读写客户 Jira），后者是 agent 工作流的载体；M8c 迁移后两者共用同一 Jira 客户端。
+
+## iOS 真机后端
+
+- **WDA 会话（WDA session）**：AOS 经 Appium 与 WebDriverAgent 建立的设备会话；同 UDID 同时最多一个，任务级 lease + 观测会话空闲回收。
+- **观测会话（observation lease）**：截图/层级等只读调用共享的会话；被任务占用时有界等待后返回 `device_busy` 与最近缓存帧（非无限排队）。
+- **设备 façade（device facade）**：执行器使用的设备能力抽象（tap/swipe/inputText/launch/terminate/nodes/screenshot）；模拟器由 idb/simctl 实现，真机由 WDA 实现。
+- **backend**：观测/对比产物中标注的实现来源（`wda` 真机 / `idb`|`simctl` 模拟器），出现在截图 note 中。

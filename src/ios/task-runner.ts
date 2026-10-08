@@ -486,7 +486,11 @@ async function runLoop(
   visionTarget: VisionTarget | null,
   deps: StartIosTaskDeps
 ): Promise<void> {
-  const device = deps.device ?? makeIosDevice(record.udid);
+  const device =
+    deps.device ??
+    (classifyIosSerial(record.udid) === "device"
+      ? await runtime.iosWda().device(record.udid)
+      : makeIosDevice(record.udid));
   const chat =
     deps.chat ??
     makeChatFn({ baseUrl: entry.baseUrl ?? "", apiKey: entry.apiKey ?? "", model: entry.model });

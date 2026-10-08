@@ -12,3 +12,5 @@
 - [ ] 测试：注入 exec/env/fetch 覆盖检测分支、直连与托管启动、失败指引；不触网不用设备
 
 ## Comments
+
+- 2026-10-08 完成：`src/ios/appium/{capabilities,server,detect}.ts` 全部落地——capabilities（spike 默认值 + env 覆盖）、AppiumServerManager（直连/托管 + 就绪轮询 + 回收）、detect（appium/xcuitest 检测 + 可行动指引；驱动列表在 stderr，需合并输出并去 ANSI）；Runtime 注入 `appiumDetector`（测试默认 stub，保持离线）并新增 `iosAppiumInfo()`；`aos_status.ios` 与 `doctor` 呈现（实测 `✓ Appium 3.8.0 / xcuitest 12.15.0（iOS 真机后端）`）。测试 `test/ios-appium-server.test.js`（4）+ `test/ios-appium-detect.test.js`（3），全量 661 绿、lint 干净。运行时的 manager/session 单例接线留待 03 路由。

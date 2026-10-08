@@ -236,6 +236,11 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
       } catch {
         /* best effort */
       }
+      try {
+        await runtime.disposeIosWda();
+      } catch {
+        /* best effort */
+      }
     }
     runtimes.clear();
     try {

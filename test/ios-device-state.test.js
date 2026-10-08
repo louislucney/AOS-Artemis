@@ -58,7 +58,10 @@ test("maybeIosDeviceState: 真机 UDID 跳过 simctl 校验（best-effort）", a
       listCalls += 1;
       throw new Error("should not be called");
     },
-    captureIosPng: async () => ({ ok: true, bytes: PNG_BYTES, serial: deviceUdid, tool: "idb" })
+    wda: {
+      screenshot: async () => ({ ok: true, value: PNG_BYTES }),
+      nodes: async () => ({ ok: false, error: "unused" })
+    }
   });
   assert.equal(listCalls, 0);
   const text = textOf(result);

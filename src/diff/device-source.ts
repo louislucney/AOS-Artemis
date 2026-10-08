@@ -6,7 +6,7 @@ import {
   taskStatusOf,
   type TaskStatus
 } from "../artemis/task-result.js";
-import { captureIosPng, type IosPngCapture } from "../device/ios.js";
+import { captureIosPng, classifyIosSerial, type IosPngCapture } from "../device/ios.js";
 import { captureAdbPng, type AdbPngCapture } from "../device/screenshot.js";
 import type { Runtime } from "../runtime.js";
 import { extractDeviceImage } from "../tools/device-image.js";
@@ -23,6 +23,9 @@ export interface LiveCaptureOptions {
   platform?: "android" | "ios";
   capturePng?: (options?: { serial?: string | null }) => Promise<AdbPngCapture>;
   captureIosPng?: (options?: { serial?: string | null }) => Promise<IosPngCapture>;
+  captureWdaPng?: (
+    udid: string
+  ) => Promise<{ ok: true; value: Buffer } | { ok: false; error: string }>;
 }
 
 export interface StepScreenshotRequest {
@@ -73,6 +76,28 @@ export async function captureLiveScreenshot(
   options: LiveCaptureOptions = {}
 ): Promise<DeviceCapture> {
   if (options.platform === "ios") {
+    const serialKind = serial ? classifyIosSerial(serial) : null;
+    if (serialKind === "device") {
+      const captureWda =
+        options.captureWdaPng ?? ((udid: string) => runtime.iosWda().screenshot(udid));
+      let wda: { ok: true; value: Buffer } | { ok: false; error: string };
+      try {
+        wda = await captureWda(serial!);
+      } catch (error) {
+        wda = { ok: false, error: errorMessage(error) };
+      }
+      if (wda.ok) {
+        return {
+          bytes: wda.value,
+          note: `iOS 真机 WDA PNG（wda，udid=${serial}）`,
+          serial: serial!
+        };
+      }
+      const hint = /busy|占用/i.test(wda.error)
+        ? "设备正被任务占用；稍后重试。"
+        : "请确认 Appium/WDA 可用（doctor 查看）与 iOS 18+ 隧道已建立。";
+      throw new Error(`iOS 真机截图失败（${wda.error}）；${hint}`);
+    }
     const captureIos = options.captureIosPng ?? ((captureOptions) => captureIosPng(captureOptions ?? {}));
     let png: IosPngCapture;
     try {
