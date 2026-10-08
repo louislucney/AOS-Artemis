@@ -19,3 +19,4 @@
 - 剩余（转 ready-for-human）：审计产物保留期与签字格式（待合规口径）、quarantine 流程（需 owner 签字机制）。
 - 2026-10-08 第四轮更新：审计保留期按 §11.3 临时默认——90d 可配（沿用 `AOS_USAGE_RETENTION_DAYS` 口径；签字/发布产物另存），标注"可被合规口径替换"；oracle 临时优先级 PRD > Jira > Figma；签字格式三段式（设计版本/执行 trace/差分校准）+ suite report 附件。等合规输入后替换，不再长期 open。
 - 2026-10-08 实施（quarantine 部分）：`.artemis/design/quarantine.json`（`caseId`+`owner`+`signedAt`，可选 `expiresAt`）；生效项仍执行、结果标注 `quarantined`、**失败不计门禁**（`suite run/loop` 退出码排除）；过期/无效条目如实提示并恢复门禁；`--no-quarantine` 严格审计跑。测试：2 纯 + 2 CLI（716 全绿）。**剩余仅审计保留期清理**（等合规口径；临时默认 90d 已定）。
+- 2026-10-08 实施（保留期只读报告）：`suite retention [--days 90] [--limit 20]`——扫描 `.artemis/design/{reports,evidence,diffs}`、`.artemis/{traces,crashes}` 五类产物，输出每类总数/超期数/体积与最旧项、超期合计；**不删除任何文件**（`src/figma/retention.ts` 纯函数 + CLI；测试 3 例）。自动清理动作仍待合规口径确认（临时默认 90d）。至此票 09 的 flake/quarantine/标准映射/保留期报告均已落地；仅剩"自动清理"一项等合规输入。
