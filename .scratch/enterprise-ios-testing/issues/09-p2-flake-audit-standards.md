@@ -18,3 +18,4 @@
 - 2026-10-08 实施（标准映射）：ISO/IEC/IEEE 29119 / ISTQB 能力映射表已落 `analysis.md §6`。
 - 剩余（转 ready-for-human）：审计产物保留期与签字格式（待合规口径）、quarantine 流程（需 owner 签字机制）。
 - 2026-10-08 第四轮更新：审计保留期按 §11.3 临时默认——90d 可配（沿用 `AOS_USAGE_RETENTION_DAYS` 口径；签字/发布产物另存），标注"可被合规口径替换"；oracle 临时优先级 PRD > Jira > Figma；签字格式三段式（设计版本/执行 trace/差分校准）+ suite report 附件。等合规输入后替换，不再长期 open。
+- 2026-10-08 实施（quarantine 部分）：`.artemis/design/quarantine.json`（`caseId`+`owner`+`signedAt`，可选 `expiresAt`）；生效项仍执行、结果标注 `quarantined`、**失败不计门禁**（`suite run/loop` 退出码排除）；过期/无效条目如实提示并恢复门禁；`--no-quarantine` 严格审计跑。测试：2 纯 + 2 CLI（716 全绿）。**剩余仅审计保留期清理**（等合规口径；临时默认 90d 已定）。
