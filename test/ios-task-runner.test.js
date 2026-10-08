@@ -506,6 +506,41 @@ test("app_path 明确拒绝并写入任务行", async () => {
   assert.equal(tasks[0].taskDesc, "任务");
 });
 
+test("app_path（真机 .ipa）：安装失败终止并记录", async () => {
+  const { runtime } = await makeRuntime();
+  const deviceUdid = "00008110-001A2C681E22801E";
+  const ipaPath = path.join(runtime.project.rootDir, "app.ipa");
+  fs.writeFileSync(ipaPath, "ipa");
+  const calls = [];
+  const { chat } = scriptedChat([JSON.stringify({ thought: "完成", action: "done", summary: "ok" })]);
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      {
+        task_desc: "安装并运行",
+        device_serial: deviceUdid,
+        app_path: "app.ipa",
+        locked_app_package: "com.example.app"
+      },
+      {
+        entry: ENTRY,
+        device: fakeDevice(),
+        chat,
+        installIpa: async (udid, ipa) => {
+          calls.push([udid, ipa]);
+          return { ok: false, error: "signature invalid" };
+        }
+      }
+    )
+  );
+  assert.equal(started.status, "failed");
+  assert.equal(started.code, "install_failed");
+  assert.match(started.error, /signature invalid/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], deviceUdid);
+  assert.equal(calls[0][1], ipaPath);
+});
+
 test("locked_app_package 限制动作：越界 launch 被拒、openUrl 禁止", async () => {
   const { runtime } = await makeRuntime();
   const device = fakeDevice();

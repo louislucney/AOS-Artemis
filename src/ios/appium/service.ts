@@ -101,6 +101,24 @@ export class IosWdaService {
     }
   }
 
+  async installIpa(udid: string, ipaPath: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      await this.device(udid);
+      const sessions = this.sessions;
+      const client = this.client;
+      if (sessions === null || client === null) return { ok: false, error: "Appium 未就绪。" };
+      const lease = await sessions.acquire(udid, "task");
+      try {
+        await client.installApp(lease.sessionId, ipaPath);
+      } finally {
+        lease.release();
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  }
+
   cachedFrame(udid: string): { png: Buffer; capturedAt: string } | null {
     return this.sessions?.cachedFrame(udid) ?? null;
   }

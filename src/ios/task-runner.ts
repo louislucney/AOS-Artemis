@@ -79,6 +79,7 @@ export interface StartIosTaskDeps {
   stepDelayMs?: number;
   settleMs?: number;
   listSimulators?: typeof listIosSimulators;
+  installIpa?: (udid: string, ipaPath: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 const IOS_SYSTEM_PROMPT = [
@@ -697,11 +698,20 @@ export async function maybeIosRunTask(
     });
   };
   if (!taskDesc) return failStart("task_desc 不能为空。");
+  let appPath: string | null = null;
   if (typeof args.app_path === "string" && args.app_path.trim() !== "") {
-    return failStart(
-      "iOS 执行器不支持 app_path（APK 预装语义）；请改用 locked_app_package 指向已安装应用。",
-      "app_path_unsupported"
-    );
+    if (serialKind !== "device") {
+      return failStart(
+        "iOS 模拟器不支持 app_path（APK 预装语义）；请改用 locked_app_package 指向已安装应用。",
+        "app_path_unsupported"
+      );
+    }
+    const raw = args.app_path.trim();
+    const resolved = path.isAbsolute(raw) ? raw : path.join(runtime.project.rootDir, raw);
+    if (!fs.existsSync(resolved)) {
+      return failStart(`app_path 指向的 .ipa 不存在：${resolved}`, "app_path_not_found");
+    }
+    appPath = resolved;
   }
 
   const entry = deps.entry ?? (await runtime.activeEntry());
@@ -728,6 +738,15 @@ export async function maybeIosRunTask(
         undefined,
         entry.model
       );
+    }
+  }
+
+  if (appPath !== null) {
+    const install =
+      deps.installIpa ?? ((udid: string, ipa: string) => runtime.iosWda().installIpa(udid, ipa));
+    const installed = await install(serial, appPath);
+    if (!installed.ok) {
+      return failStart(`.ipa 安装失败：${installed.error ?? "unknown"}`, "install_failed", entry.model);
     }
   }
 

@@ -6,8 +6,10 @@
 
 **Status:** ready-for-agent
 
-- [ ] `mobile_run_task(app_path=xxx.ipa, device_serial=<真机>)` 先安装再执行；安装结果计入任务台账
-- [ ] 已安装 app 与系统 App 流程不回归；失败分类（签名/设备/文件）可行动
-- [ ] 测试：安装请求形状与错误映射（mock）；真机冒烟人工
+- [x] `mobile_run_task(app_path=xxx.ipa, device_serial=<真机>)` 先安装再执行；安装结果计入任务台账
+- [x] 已安装 app 与系统 App 流程不回归；失败分类（签名/设备/文件）可行动
+- [x] 测试：安装请求形状与错误映射（mock）；真机冒烟人工
 
 ## Comments
+
+- 2026-10-08 实施：`IosWdaService.installIpa(udid, ipaPath)`（复用任务级 lease + `mobile: installApp`）；`maybeIosRunTask` 真机 `app_path` = 本地 `.ipa`（相对路径按项目根解析、存在性校验 `app_path_not_found`、安装失败 `install_failed` 并写任务行），模拟器保持 `app_path_unsupported` 拒绝；deps 可注入 `installIpa`。测试：service 安装请求形状 + 真机安装失败终止用例；全量 666 绿、lint 干净。真机冒烟（合法签名 ipa）待人工。

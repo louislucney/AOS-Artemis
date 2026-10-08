@@ -25,7 +25,9 @@ import { resultPayload, taskStatusFromFile, taskStatusOf, type TaskStatus } from
 import { maybeIosInspectTrace } from "./ios/inspect.js";
 import { maybeIosManageTask, maybeIosRunTask } from "./ios/task-runner.js";
 import { reconcileIosTrace, isIosTraceDir } from "./ios/trace-store.js";
-import { collectIosCrashes } from "./crash/ios.js";
+import { collectIosCrashes, type IosCrashCollectResult } from "./crash/ios.js";
+import { collectIosDeviceCrashes, IOS_DEVICE_CRASH_SOURCE } from "./crash/ios-device.js";
+import { classifyIosSerial } from "./device/ios.js";
 import { maybeIosDeviceState } from "./tools/ios-state.js";
 import { appendChildLog } from "./log.js";
 import { CrashIndexStore } from "./crash/store.js";
@@ -708,19 +710,28 @@ export class Runtime {
     return this.crashScanner.enabled();
   }
 
-  /** iOS crash capture: scan host DiagnosticReports `.ips` files written inside
-   * the task window and upsert them into the same crash index as Android. */
+  /** iOS crash capture: simulator reads host DiagnosticReports `.ips`; physical
+   * devices pull the systemCrashLogs domain via devicectl — both upsert into
+   * the same crash index as Android. */
   async captureIosCrashes(
     input: { traceId: string; udid: string; processName: string | null; startMs: number; endMs: number },
-    deps: { collect?: typeof collectIosCrashes } = {}
+    deps: {
+      collect?: (window: {
+        startMs: number | null;
+        endMs: number | null;
+        processName?: string | null;
+      }) => IosCrashCollectResult | Promise<IosCrashCollectResult>;
+    } = {}
   ): Promise<CrashScanResult> {
+    const isDevice = classifyIosSerial(input.udid) === "device";
+    const useDevice = isDevice && deps.collect === undefined && this.iosCrashCollector === null;
     const collect = deps.collect ?? this.iosCrashCollector ?? collectIosCrashes;
+    const source = useDevice ? IOS_DEVICE_CRASH_SOURCE : "diagnostic-reports";
     try {
-      const collected = collect({
-        startMs: input.startMs,
-        endMs: input.endMs,
-        processName: input.processName
-      });
+      const window = { startMs: input.startMs, endMs: input.endMs, processName: input.processName };
+      const collected = useDevice
+        ? await collectIosDeviceCrashes({ udid: input.udid, ...window })
+        : await collect(window);
       if (collected.skipped) {
         return { traceId: input.traceId, status: "skipped", reason: collected.skipped, found: 0 };
       }
@@ -732,7 +743,7 @@ export class Runtime {
         taskOutcome: "failed",
         deviceSerial: input.udid,
         capturedAt: new Date().toISOString(),
-        source: "diagnostic-reports"
+        source
       });
       return {
         traceId: input.traceId,
@@ -740,7 +751,7 @@ export class Runtime {
         found: collected.records.length,
         newIds: result.newIds,
         updatedIds: result.updatedIds,
-        source: "diagnostic-reports"
+        source
       };
     } catch (error) {
       return { traceId: input.traceId, status: "skipped", reason: errorMessage(error), found: 0 };

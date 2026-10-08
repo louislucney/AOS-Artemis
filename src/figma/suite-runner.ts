@@ -26,7 +26,8 @@ import { IosLogCollector, type IosLogWindowRequest } from "../device/ios-log.js"
 import { resetIosApp } from "../device/ios-reset.js";
 import { isIosTraceDir } from "../ios/trace-store.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "../device/logcat.js";
-import { resetApp, type AppResetOutcome } from "../device/reset.js";
+import { resetApp, type AppResetOptions, type AppResetOutcome, type AppResetRequest } from "../device/reset.js";
+import type { IosDevice } from "../device/ios-actions.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
@@ -34,9 +35,16 @@ import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_POLL_TIMEOUT_MS = 15 * 60_000;
 
-/** Reset strategy per target: simulator UDIDs use the iOS backend. */
-export function suiteResetFor(serial: string | null): typeof resetApp {
-  return serial && classifyIosSerial(serial) ? resetIosApp : resetApp;
+export type SuiteResetFn = (
+  request: AppResetRequest,
+  options?: { device?: IosDevice } & AppResetOptions
+) => Promise<AppResetOutcome>;
+
+/** Reset strategy per target: simulator/physical UDIDs use the iOS backend
+ * (physical devices get the WDA device facade injected by the suite runner). */
+export function suiteResetFor(serial: string | null): SuiteResetFn {
+  if (serial && classifyIosSerial(serial)) return resetIosApp as unknown as SuiteResetFn;
+  return resetApp as unknown as SuiteResetFn;
 }
 
 export interface SuiteCaseResult {
@@ -80,7 +88,7 @@ export interface SuiteRunOptions {
   model?: string;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
-  reset?: (request: { packageName: string; serial?: string | null }) => Promise<AppResetOutcome>;
+  reset?: SuiteResetFn;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   /** Match collected device logs against `.artemis/design/error-codes.json` (default true). */
@@ -195,7 +203,16 @@ export async function runGeneratedTests(
 
   const preflight = testsPath === defaultTestsPath ? preflightGeneratedTests(runtime.configDirAbs) : null;
   const serial = options.deviceSerial ?? null;
+  const serialKind = serial !== null ? classifyIosSerial(serial) : null;
   const resetFn = options.reset ?? suiteResetFor(serial);
+  let iosDeviceWda: IosDevice | null = null;
+  if (serialKind === "device" && options.reset === undefined) {
+    try {
+      iosDeviceWda = await runtime.iosWda().device(serial!);
+    } catch {
+      iosDeviceWda = null;
+    }
+  }
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = options.now ?? Date.now;
@@ -215,7 +232,10 @@ export async function runGeneratedTests(
     let reset: AppResetOutcome | null = null;
     if (options.lockedAppPackage) {
       try {
-        reset = await resetFn({ packageName: options.lockedAppPackage, serial });
+        reset = await resetFn(
+          { packageName: options.lockedAppPackage, serial },
+          iosDeviceWda !== null ? { device: iosDeviceWda } : {}
+        );
       } catch (error) {
         reset = resetFailure(error, serial);
       }

@@ -12,7 +12,7 @@ function fakeFetch() {
   const calls = [];
   const impl = async (url, init = {}) => {
     const method = init.method ?? "GET";
-    calls.push({ method, url });
+    calls.push({ method, url, init });
     const json = (payload) =>
       new Response(JSON.stringify(payload), {
         status: 200,
@@ -51,7 +51,13 @@ test("ios wda service: 直连模式截图/层级/回收", async () => {
   assert.equal(nodes.value.length, 2);
   assert.equal(nodes.value[1].label, "OK");
 
-  assert.equal(fetchImpl.calls.filter((call) => call.method === "POST").length, 1);
+  const installed = await service.installIpa("00008101-000359440C69001E", "/tmp/app.ipa");
+  assert.equal(installed.ok, true);
+  const execCall = fetchImpl.calls.find((call) => call.url.endsWith("/execute/sync"));
+  assert.ok(execCall);
+  assert.equal(JSON.parse(execCall.init.body).script, "mobile: installApp");
+
+  assert.equal(fetchImpl.calls.filter((call) => call.method === "POST").length, 2);
 
   await service.dispose();
   assert.ok(fetchImpl.calls.some((call) => call.method === "DELETE"));

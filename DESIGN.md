@@ -1065,4 +1065,4 @@ llm_switch(name, force):
 
 - **spike 事实（票 00，真机 iPhone 12/iOS 26.6.2）**：隧道 registry `127.0.0.1:42314` 常驻；签名团队取证书 OU（本机 `Z35S33J39R`）+ `allowProvisioningDeviceRegistration`；`useNewWDA=false` 复用会话 ~1s；`mobile: typeText` 已移除 → `POST /keys`；键盘输入须先聚焦。
 - **真机端到端（票 03）**：`mobile_get_device_state` 经全新 MCP 进程（自动托管 Appium）——截图 10.2s（5.6MB PNG → `.artemis/traces/live_screenshots/`）/层级 7.2s（4549 字符真实主屏）✅；design diff / compare 真机受益于同一截图源。
-- **边界与待续**：M9b 套件/复位、`.ipa` 安装（票 05）、真机日志/崩溃（票 06）；Appium 异常退出仍可能遗留孤儿进程（关停路径已回收，崩溃路径后续加固）。
+- **边界与待续**：M9b 套件真机复位已接线（注入 WDA façade）、`.ipa` 安装（票 05）完成；真机崩溃取证（票 06）已接入 `devicectl systemCrashLogs`（来源标识 `devicectl-systemCrashLogs`；真机日志仍降级，候选 idevicesyslog）；Appium 异常退出仍可能遗留孤儿进程（关停路径已回收，崩溃路径后续加固）。
