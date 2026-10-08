@@ -747,3 +747,26 @@ test("suite loop: runs the loop with execution, feedback and calibration merge",
   assert.equal(payload.steps.calibration.mcpMiss, 1);
   assert.ok(payload.nextActions.some((line) => line.includes("MCP 漏报 1 例")));
 });
+
+test("suite calibrate: JUnit XML report (Android instrumentation) aligns by case_id", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const run = await runCli(runtime, ["run"]);
+  assert.equal(run.code, 0);
+
+  const xmlPath = path.join(runtime.project.rootDir, "qa", "android-results.xml");
+  fs.mkdirSync(path.dirname(xmlPath), { recursive: true });
+  fs.writeFileSync(
+    xmlPath,
+    '<testsuites><testsuite name="suite"><testcase classname="C" name="test_case-1()" time="0.1"/></testsuite></testsuites>',
+    "utf-8"
+  );
+
+  const result = await runCli(runtime, ["calibrate", "--report", "qa/android-results.xml", "--json", "--no-save"]);
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.logs[0]);
+  assert.equal(payload.agreedPass, 1);
+  assert.equal(payload.matched, 1);
+});

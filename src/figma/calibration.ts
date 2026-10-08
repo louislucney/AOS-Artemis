@@ -56,6 +56,55 @@ export function parseXcResultTests(input: unknown): XcTestCaseResult[] {
   return results;
 }
 
+/** JUnit XML 解析（Android instrumentation / gradle connectedAndroidTest 等）：
+ * testcase 级匹配；failure/error → failed，skipped → skipped，其余 passed。零依赖。 */
+export function parseJUnitXmlTests(xml: string): XcTestCaseResult[] {
+  const results: XcTestCaseResult[] = [];
+  const seen = new Set<string>();
+  const testcasePattern = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
+  let match: RegExpExecArray | null;
+  while ((match = testcasePattern.exec(xml)) !== null) {
+    const attrs = match[1] ?? "";
+    const body = match[2] ?? "";
+    const name = attributeOf(attrs, "name");
+    if (!name || name.trim() === "") continue;
+    let status: XcTestStatus = "passed";
+    if (/<failure\b|<error\b/.test(body)) status = "failed";
+    else if (/<skipped\b/.test(body)) status = "skipped";
+    const key = `${name}\u0000${status}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({ name: name.trim(), status });
+  }
+  return results;
+}
+
+function attributeOf(attrs: string, key: string): string | null {
+  const doubleQuoted = new RegExp(`\\b${key}="([^"]*)"`).exec(attrs);
+  if (doubleQuoted) return decodeXmlEntities(doubleQuoted[1]!);
+  const singleQuoted = new RegExp(`\\b${key}='([^']*)'`).exec(attrs);
+  if (singleQuoted) return decodeXmlEntities(singleQuoted[1]!);
+  return null;
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/** 统一入口：JUnit XML 字符串 / xcresulttool JSON / 简化 {tests:[…]} 均可。 */
+export function parseTestResults(input: unknown): XcTestCaseResult[] {
+  if (typeof input === "string") {
+    const trimmed = input.trim();
+    return trimmed.startsWith("<") ? parseJUnitXmlTests(trimmed) : [];
+  }
+  return parseXcResultTests(input);
+}
+
 export type McpOutcome = "passed" | "failed" | "pending" | "untested";
 export type XcOutcome = "passed" | "failed" | "skipped" | "absent";
 export type CalibrationVerdict =

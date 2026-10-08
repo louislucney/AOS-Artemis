@@ -205,7 +205,7 @@ node dist/cli.js suite run [--tests <path>] [--max N] [--stop-on-failure]
                            [--device <serial>] [--app <pkg>] [--model Flash|Pro]
                            [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry N]
 node dist/cli.js suite check [--tests <path>]
-node dist/cli.js suite calibrate (--report <json>|--xcresult <bundle>) [--tests <path>]
+node dist/cli.js suite calibrate (--report <json|junit.xml>|--xcresult <bundle>) [--tests <path>]
                            [--limit N] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 node dist/cli.js suite loop [--tests <path>] [--skip-run] [--calibration <json>]
                            [--retry N] [--max N] [--device <serial>] [--app <pkg>]
@@ -221,7 +221,7 @@ node dist/cli.js suite feedback [--min-failures N]
 - `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/用例缺陷/未分类），失败附 `suite evidence <traceId>` 提示；`--device` 为 iOS 模拟器 UDID 时用例由 AOS iOS 执行器运行（`--app` 经 idb terminate+launch 复位；日志采集标 `ios-log-unsupported` 降级）；`--fail-on-uncovered` 按预检覆盖判定——未覆盖屏幕/跳转、生成截断，或无法校验（缺/坏 `flows.json`）一律 exit 2，自定义 `--tests` 同样参与校验（流程完整性契约见 DESIGN §6.10）；`--retry N`（≤3）对未通过用例重跑做 flaky 诊断并如实标注（`retry.flaky`）；**首跑结果仍决定门禁**（重跑转绿不计首跑通过）。
 - `evidence`：一次拿到失败项、崩溃签名、锚定失败步骤截图与可选设计差异引用（默认落 `.artemis/design/evidence/<traceId>/`）。
 - `check`：静态覆盖检查（tests.json × flows.json），**不连设备**，供 pre-merge CI；未覆盖屏幕/跳转、生成截断、缺/坏 flows.json 均 exit 2；"测试引用但设计缺失"的路线漂移仅警告。
-- `calibrate`：确定性套件结果（`--report <json>`，或 `--xcresult <bundle>` 经 `xcrun xcresulttool get test-results tests`，Xcode 16+）与 MCP 台账按 case_id 对齐，输出一致/漏报/误报与比率并落盘 `.artemis/design/reports/calibration-<stamp>.json`；测试名需内嵌 case_id（如 `test_order_flow_case-<12hex>()`）；`--fail-on-miss` 命中漏报即 exit 2。
+- `calibrate`：确定性套件结果（`--report <json|junit.xml>`——JSON 或 Android instrumentation 的 JUnit XML；或 `--xcresult <bundle>` 经 `xcrun xcresulttool get test-results tests`，Xcode 16+）与 MCP 台账按 case_id 对齐，输出一致/漏报/误报与比率并落盘 `.artemis/design/reports/calibration-<stamp>.json`；测试名需内嵌 case_id（如 `test_order_flow_case-<12hex>()`）；`--fail-on-miss` 命中漏报即 exit 2。
 - `loop`：测试闭环一步编排——静态检查 → 执行（`--skip-run` 跳过）→ 生成反馈 → 差分校准合并（`--calibration <calibrate 产物>`）；产出 `loop-<stamp>.{json,md}`（步骤结果 + 确定性"下一步动作" + top 建议）；exit 码 = 检查/执行的门禁结论。MCP 只负责测试闭环，不深入项目实现细节——完善路径即"测试→改进 tests/flows/数据/错误码规则"再跑下一轮。
 - `api-errors`：按 trace 时间窗采集设备日志，匹配项目错误码注册表 `.artemis/design/error-codes.json`（`{codes:{"<code>":{match,handler?,expect?,handledPattern?}}}`），判定 `handled/unhandled/observed` 并落 `.artemis/traces/<traceId>/api-errors.json`；默认只作证据，`--fail-on api-error` 才让未处理错误判 FAIL。
 - `baseline`：设备对设备像素回归（last-known-good）；`--fail-on` 触发时退出码 2，可直接做 CI 门禁。

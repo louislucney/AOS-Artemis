@@ -381,7 +381,7 @@ env:
 - **生成策略**：线性化选路为"覆盖贪心 + 长路径优先"——先选覆盖增量（屏幕+跳转）最大的路径，同增量取更长者，无新增覆盖的冗余短片段不产出；`maxDepth` 默认 12、可配（`figma_generate_tests` 参数），长流程调大即可生成更长的连续用例。
 - **pen 合成提取**（`pen_extract_flows`，离线）：`.pen` 无原型交互数据时，屏幕命名取「Flow 标注 > 屏内首个文本 > 图层名」（默认名 `Frame NNNN` 不再冒充屏名）；状态变体按标签前缀归并为主屏 + `states`；跳转按画板序号/画布排布推断并统一标注 `INFERRED`；产出可直接进入同一闭环的 `flows.json` 与全局 `flow-map.md`；碎片度（默认名屏、状态归并、推断边、缺标签）进入 `warnings`，供人工复核。
 - **pre-merge 静态闸**（`suite check`）：tests.json × flows.json 静态覆盖（复用 preflight 单一实现），不连设备；未覆盖/截断/缺 flows exit 2；"测试引用但设计缺失"的路线漂移仅警告（设计偏差 ≠ 路线缺口）。
-- **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
+- **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 **JUnit XML**——Android instrumentation 直读，或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
 - **追溯矩阵**（`suite report`）：xlsx 第二工作表输出 design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据存在性（未覆盖/无 trace/无证据标注）。
 - **设计版本锚点**：`figma_extract_flows` 将 Figma `version`/`lastModified` 写入 flows.json（`fileVersion`/`lastModified`），为设计冻结（baseline-lock）预留。
 - **flake 治理口径**（`suite run --retry N`，N≤3）：仅对未通过用例重跑做诊断，`retry {attempts, finalStatus, finalTraceId, flaky}` 如实写入报告/JSON；**首跑结果仍决定退出码**（重跑转绿不计首跑门禁），文本输出标注"重试转绿 N 例（flaky）"；quarantine 需 owner 签字（后续）。

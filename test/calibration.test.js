@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCalibration, parseXcResultTests } from "../dist/figma/calibration.js";
+import { buildCalibration, parseTestResults, parseXcResultTests } from "../dist/figma/calibration.js";
 
 test("parseXcResultTests: nested xcresulttool testNodes and simplified tests[]", () => {
   const nested = {
@@ -86,4 +86,36 @@ test("buildCalibration: rates are null without observed ground truth", () => {
   assert.equal(report.missRate, null);
   assert.equal(report.falseAlarmRate, null);
   assert.equal(report.cases[0].verdict, "untested");
+});
+
+test("parseTestResults: JUnit XML (Android instrumentation) alongside JSON", () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="com.example.MOPItemDetailTest" tests="4" failures="1" errors="1" skipped="1">
+    <testcase classname="com.example.MOPItemDetailTest" name="testAddToCart_case-aaaa11112222" time="1.2"/>
+    <testcase classname="com.example.MOPItemDetailTest" name="testToast_case-bbbb33334444" time="0.8">
+      <failure message="assertion failed">expected true</failure>
+    </testcase>
+    <testcase classname="com.example.MOPItemDetailTest" name="testCrash_case-cccc55556666" time="0.4">
+      <error message="boom"/>
+    </testcase>
+    <testcase classname="com.example.MOPItemDetailTest" name="testSkip_case-dddd77778888" time="0">
+      <skipped message="ignored"/>
+    </testcase>
+  </testsuite>
+</testsuites>`;
+  assert.deepEqual(parseTestResults(xml), [
+    { name: "testAddToCart_case-aaaa11112222", status: "passed" },
+    { name: "testToast_case-bbbb33334444", status: "failed" },
+    { name: "testCrash_case-cccc55556666", status: "failed" },
+    { name: "testSkip_case-dddd77778888", status: "skipped" }
+  ]);
+
+  const escaped = "<testsuite><testcase name='test_case-eeee99990000' classname='A &amp; B'/></testsuite>";
+  assert.deepEqual(parseTestResults(escaped), [{ name: "test_case-eeee99990000", status: "passed" }]);
+
+  assert.deepEqual(parseTestResults({ tests: [{ name: "t", status: "Passed" }] }), [
+    { name: "t", status: "passed" }
+  ]);
+  assert.deepEqual(parseTestResults("not xml and not json"), []);
 });

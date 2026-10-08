@@ -14,7 +14,7 @@ import { classifyIosSerial } from "./device/ios.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/baseline.js";
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
-import { buildCalibration, parseXcResultTests, type CalibrationReport } from "./figma/calibration.js";
+import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { preflightGeneratedTests, type PreflightReport } from "./figma/preflight.js";
 import { buildRunReport } from "./figma/run-report.js";
 import {
@@ -243,7 +243,7 @@ run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
         [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>]
 check:  [--tests <path>]
-calibrate: [--report <json>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
+calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
         [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-save] [--out <dir>]
 evidence: [--full-trace] [--out <dir>] [--no-save] [--design-figma <url>|--design-pen <path>] [--node <id>]
@@ -446,7 +446,7 @@ async function suiteCalibrate(
   const xcresultFlag = flags.get("xcresult");
   if (!reportFlag && !xcresultFlag) {
     io.errorLog(
-      "用法: aos-mcp suite calibrate (--report <json>|--xcresult <bundle>) [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]"
+      "用法: aos-mcp suite calibrate (--report <json|junit.xml>|--xcresult <bundle>) [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]"
     );
     return 2;
   }
@@ -456,7 +456,8 @@ async function suiteCalibrate(
   try {
     if (reportFlag) {
       xcSource = path.resolve(runtime.project.rootDir, reportFlag);
-      xcInput = JSON.parse(fs.readFileSync(xcSource, "utf-8"));
+      const raw = fs.readFileSync(xcSource, "utf-8");
+      xcInput = raw.trim().startsWith("<") ? raw : JSON.parse(raw);
     } else {
       xcSource = path.resolve(runtime.project.rootDir, xcresultFlag!);
       const reader = deps.xcresultReader ?? defaultXcResultReader;
@@ -466,7 +467,7 @@ async function suiteCalibrate(
     io.errorLog(`校准输入读取失败: ${errorMessage(error)}`);
     return 2;
   }
-  const xcTests = parseXcResultTests(xcInput);
+  const xcTests = parseTestResults(xcInput);
   if (xcTests.length === 0) {
     io.errorLog(`警告: 未从输入解析出任何用例（${xcSource}）`);
   }
