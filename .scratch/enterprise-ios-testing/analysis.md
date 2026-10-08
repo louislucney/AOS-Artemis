@@ -209,6 +209,46 @@ iOS 侧（starbucks-ios-taiwan）：
 
 ---
 
+## 11. 第四轮评估结论（2026-10-08，外部反馈评估后）
+
+外部反馈总体成立（约 80%）：D1 实测化、L2 角色收口为有效诉求；"L1 内部自校准算漏报率"方向对但机制错（漏报率需要 oracle，先做自一致性/flake 采样）；三项待输入给临时默认；ROI 先给成本框架（只填已知实测）。
+
+### 11.1 L2 角色定稿（消除"校准器 vs 门禁"口径分裂）
+
+- L2 = 同一套 3–5 条流级确定性套件，**双重角色**：① pre-merge 阻塞门禁（**首跑判定**，禁止用重试洗绿）；② nightly 差分校准（输出 MCP 漏报/误报率）。
+- 反馈对 Skeptic 的归因需纠正：Skeptic 的"不进门禁"指设计视觉对比降为 advisory；其主张恰是"门禁只能由确定性 XCTest 承担"。
+- 分阶段：**Phase 1**（07 接通前）pre-merge 只跑 `suite check`；**Phase 2**（07/08 落地后）L2 入门禁 + `suite calibrate` 进 nightly。quarantine 用显式白名单并需 owner 签字。
+
+### 11.2 flaky 采样协议（把"LLM 不可重复"从信念变实测，不依赖 07）
+
+- 样本：同 fixture、同模型、固定 temperature、每轮复位；先取 **3 条代表性用例 ×10 轮**（全量 20 轮成本高、单设备 FIFO）。
+- 指标：首跑通过率、逐例翻转矩阵、`retry.flaky` 计数（`suite run --retry N` 已有字段，可直接累积）。
+- 解读口径：翻转率决定 **投入强度**（L2 条数/是否入门禁），**不决定 D1 存废**——审计要求"可证明可回放"，确定性 oracle 的价值与 LLM flake 高低无关。
+- 工具：新票据 `issues/10-mcp-flake-sampling.md`（纯 MCP 侧）。
+
+### 11.3 工程默认值（替代长期 open，标注可被合规口径替换）
+
+| 项 | 临时默认 |
+|---|---|
+| 审计保留期 | 90d 可配（沿用 `AOS_USAGE_RETENTION_DAYS` 口径；签字/发布产物另存） |
+| oracle 优先级 | **PRD > Jira > Figma**（变更单可覆盖；产品为事实、Figma 为预期） |
+| 签字格式 | 三段式（设计版本 / 执行 trace / 差分校准）+ `suite report` 的 xlsx+JUnit 附件 |
+
+### 11.4 ROI 框架（只填已知实测）
+
+- 成本侧：MCP 单例耗时（台账 `durationMs`，`suite report` 可导出）× 用例数；L2 编写/维护人天（估算）；双轨 TCO = 以上 + CI 机时。
+- 收益侧：**不编造数字**——"少掩盖的线上 bug 数 / 审计交付节省"需真实运营数据后回填。
+- 用途：D1/D2 一类"要不要投入"的决策依据。
+
+### 11.5 平台适用性（ARTEMIS / Android 同样适用）
+
+- AOS 中的"执行器"就是 **ARTEMIS**（`mobile_*` 由 Python 子进程执行）——三闸、`suite loop`、`calibrate`、`--retry`/flake、证据链本就是为这条执行路径设计的，天然适用。
+- 三层治理与平台无关，只换 **L2 载体**：iOS = XCTest/XCUITest；Android = Espresso/UIAutomator（或项目现有仪器化测试）；漏报/误报率与 flake 采样协议完全复用。
+- Android 侧走 `suite calibrate --report <json|junit.xml>`：**已支持直接解析 JUnit XML**（gradle connectedAndroidTest / instrumentation 结果），只需测试名内嵌 case_id；无需转换脚本。
+- `google/artemis` 上游本身**不在治理范围**：AOS 仅以 schema 透传 + env 注入方式依赖它；其质量由 submodule 版本与依赖更新机制（lock 哈希/依赖包）管理。
+
+---
+
 ## 附录 A：三声部逐字报告（子代理原始输出）
 
 ### Skeptic
