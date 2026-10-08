@@ -364,7 +364,7 @@ env:
 - **会话**：同 UDID FIFO 互斥 + 任务级 lease（finally 释放）+ 观测会话空闲回收（`AOS_IOS_SESSION_IDLE_MS` 默认 30min，0=保活）；观测拿锁有界等待（`AOS_IOS_OBSERVE_WAIT_MS` 默认 5s）→ `device_busy` + 最近缓存帧；自愈阶梯（DELETE→POST→托管重启一次）。
 - **能力**：截图、层级（page source XML 经 fast-xml-parser；解析失败 `parse_failed` 回退截图）、tap/swipe（W3C actions）、文本输入（先聚焦→有界等键盘→`POST /keys`；`mobile: typeText` 在 xcuitest 12.15 已移除）、terminate/activate/install/deepLink。
 - **签名**：`AOS_IOS_XCODE_ORG_ID`（证书 OU 团队 ID，真机必填）、`AOS_IOS_XCODE_SIGNING_ID`（默认 Apple Development）、`AOS_IOS_WDA_BUNDLE_ID`（默认 com.aos.mcp.wda）；`useNewWDA=false` + `allowProvisioningDeviceRegistration=true`（真机实测）；多项目团队各异时各自在项目 `.env` 声明（分层规则见 §13.57）。
-- **路由**：`mobile_get_device_state` device 分支（busy/parse_failed 降级）、`captureLiveScreenshot`（design diff / compare 真机截图，note "iOS 真机 WDA PNG" 即 backend 标识）、`mobile_run_task`（执行器设备 façade 对 device 走 WDA）。真机日志/崩溃仍为模拟器路径（M9c）。
+- **路由**：`mobile_get_device_state` device 分支（busy/parse_failed 降级）、`captureLiveScreenshot`（design diff / compare 真机截图，note "iOS 真机 WDA PNG" 即 backend 标识）、`mobile_run_task`（执行器设备 façade 对 device 走 WDA）。真机崩溃经 `devicectl systemCrashLogs`、真机日志经 `idevicesyslog` 实时尾采样（M9c，窗口近似 `clockWarning`；缺工具降级 `ios-log-tool-missing`）。
 - **排障**：doctor/`aos_status.ios` 显示 Appium/xcuitest/签名/隧道指引；iOS 18+ 需一次性 `sudo appium driver run xcuitest tunnel-creation`。
 
 ### 6.10 接入契约：流程完整性保证（2026-10-08）
@@ -500,7 +500,7 @@ llm_switch(name, force):
 | D2             | 测试闭环深化（用例身份台账、状态复位、套件运行器、失败证据/分类、设备基线、运行报告、生成反馈、CLI 接线）   | ✅ 已完成（票据 01–14；389 用例；见 §13.20–13.33）                       |
 | U1             | 使用统计（客户端调用事件采集/存储/聚合 + `aos_usage` 工具 / `usage` CLI / Web 看板三消费面；ADR-0006）     | ✅ 已完成（票据 01–07；610 用例；见 §13.54）                             |
 | M8             | Jira Cloud 接入（产品级读取/证据回写 + 仓库 issue tracker 迁移 CLI；spec 与票据见 `.scratch/jira-integration/`） | 🚧 部分实施（M8a 完成：client/凭证/`jira_issue_get`+`jira_issue_search`；M8b/M8c 为票据 03–06；见 §13.55） |
-| M9             | iOS 真机后端（Appium+WDA：观测/动作/设计对比 + 执行器；日志/崩溃 M9c 与 .ipa 安装待续；spec/票据见 `.scratch/ios-real-device/`） | 🚧 部分实施（M9a 完成并经真机端到端验证；M9b 执行器已接线；见 §13.56） |
+| M9             | iOS 真机后端（Appium+WDA：观测/动作/设计对比 + 执行器；日志/崩溃 M9c 与 .ipa 安装待续；spec/票据见 `.scratch/ios-real-device/`） | ✅ 代码完成（M9a/M9b 经真机端到端验证；M9c 崩溃走 devicectl、日志走 idevicesyslog 尾采样，真机冒烟待人工执行；见 §13.56） |
 
 ---
 
@@ -1088,7 +1088,7 @@ llm_switch(name, force):
 
 - **spike 事实（票 00，真机 iPhone 12/iOS 26.6.2）**：隧道 registry `127.0.0.1:42314` 常驻；签名团队取证书 OU（本机 `Z35S33J39R`）+ `allowProvisioningDeviceRegistration`；`useNewWDA=false` 复用会话 ~1s；`mobile: typeText` 已移除 → `POST /keys`；键盘输入须先聚焦。
 - **真机端到端（票 03）**：`mobile_get_device_state` 经全新 MCP 进程（自动托管 Appium）——截图 10.2s（5.6MB PNG → `.artemis/traces/live_screenshots/`）/层级 7.2s（4549 字符真实主屏）✅；design diff / compare 真机受益于同一截图源。
-- **边界与待续**：M9b 套件真机复位已接线（注入 WDA façade）、`.ipa` 安装（票 05）完成；真机崩溃取证（票 06）已接入 `devicectl systemCrashLogs`（来源标识 `devicectl-systemCrashLogs`；真机日志仍降级，候选 idevicesyslog）；Appium 异常退出仍可能遗留孤儿进程（关停路径已回收，崩溃路径后续加固）。
+- **边界与待续**：M9b 套件真机复位已接线（注入 WDA façade）、`.ipa` 安装（票 05）完成；真机崩溃取证（票 06）已接入 `devicectl systemCrashLogs`（来源标识 `devicectl-systemCrashLogs`）；真机日志已接入 `idevicesyslog` 实时尾采样（窗口近似 + `clockWarning`；缺工具/窗口已过降级 `ios-log-tool-missing`/`window-elapsed-live-tail`；`AOS_IDEVICESYSLOG_PATH`/`AOS_IOS_LOG_TIMEOUT_MS` 可配；人工冒烟待执行）；Appium 异常退出仍可能遗留孤儿进程（关停路径已回收，崩溃路径后续加固）。
 
 ### 13.57 实施记录（iOS 签名/Appium 配置分层：项目 .env 打底）
 
