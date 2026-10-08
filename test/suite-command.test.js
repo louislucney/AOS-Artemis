@@ -866,3 +866,28 @@ test("suite run: expired quarantine restores gating with a warning", async () =>
   assert.equal(result.code, 1);
   assert.ok(result.logs.some((line) => line.includes("quarantine 已过期、恢复门禁")));
 });
+
+test("suite retention: 只读超期报告（不删除文件）", async () => {
+  const { runtime } = await setupRun({ cases: [caseEntry(1)] });
+  const root = runtime.project.rootDir;
+  const oldFile = path.join(root, ".artemis", "design", "reports", "run-old.json");
+  const freshFile = path.join(root, ".artemis", "traces", "trace-x", "shot.png");
+  fs.mkdirSync(path.dirname(oldFile), { recursive: true });
+  fs.mkdirSync(path.dirname(freshFile), { recursive: true });
+  fs.writeFileSync(oldFile, "x".repeat(100));
+  fs.writeFileSync(freshFile, "y".repeat(50));
+  const oldSeconds = (Date.now() - 120 * 24 * 60 * 60 * 1000) / 1000;
+  fs.utimesSync(oldFile, oldSeconds, oldSeconds);
+
+  const result = await runCli(runtime, ["retention", "--days", "90", "--json"]);
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.logs[0]);
+  assert.equal(payload.overdue.count, 1);
+  assert.equal(payload.items[0].category, "reports");
+  assert.equal(payload.items[0].path, ".artemis/design/reports/run-old.json");
+  assert.ok(fs.existsSync(oldFile) && fs.existsSync(freshFile), "只读，不删除");
+
+  const text = await runCli(runtime, ["retention", "--days", "90"]);
+  assert.equal(text.code, 0);
+  assert.ok(text.logs.some((line) => line.includes("只读，不删除")));
+});

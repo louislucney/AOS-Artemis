@@ -388,6 +388,7 @@ env:
 - **闭环编排**（`suite loop`）：一步产出静态检查＋执行＋反馈＋校准的闭环报告（`loop-<stamp>.{json,md}`）与确定性"下一步动作"；exit 码沿用检查/执行门禁结论（`--allow-uncovered` 可放宽覆盖门禁）。**边界**：MCP 只负责测试闭环，不深入项目实现细节；"测试→完善"路径=按下一步动作改进 tests/flows/数据/错误码规则后重跑（`--calibration` 合并 `suite calibrate` 产物）。
 - **flake 采样**（`suite flake --cases … --runs N`）：重复采样输出逐例通过率、翻转矩阵与 flaky 判定、轮次方差；落盘 `flake-<stamp>.{json,md}`；`--fail-on-flaky` 可作门禁。**测量口径**：翻转率决定 L2 投入强度（条数/是否入门禁），不决定"确定性校准器是否需要"（见 `.scratch/enterprise-ios-testing/analysis.md` §11.2 / 票据 10）。
 - **quarantine 口径**（`.artemis/design/quarantine.json`）：条目须 `caseId + owner + signedAt`（可选 `expiresAt`）；生效项仍执行、结果标注 `quarantined`，**失败不计门禁**（`suite run/loop` 退出码排除）；过期/无效条目如实提示并恢复门禁；`--no-quarantine` 用于严格审计运行。
+- **审计保留期（只读先行）**：`suite retention [--days 90] [--limit 20]` 扫描 reports/evidence/diffs/traces/crashes 五类产物，输出超期文件数/体积与最旧项；**不删除任何文件**（`src/figma/retention.ts` 纯函数扫描 + 报告）。自动清理动作待合规口径确认后另行实现（临时默认 90d）。
 
 ---
 

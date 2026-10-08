@@ -16,6 +16,7 @@ import { buildGenerationFeedback } from "./figma/generation-feedback.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { loadQuarantine } from "./figma/quarantine.js";
+import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
 import { preflightGeneratedTests, type PreflightReport } from "./figma/preflight.js";
 import { buildRunReport } from "./figma/run-report.js";
 import {
@@ -230,6 +231,7 @@ Usage:
   aos-mcp suite calibrate [options]  确定性套件（xcresult）与 MCP 台账差分校准（漏报/误报率）
   aos-mcp suite loop [options]       测试闭环：静态检查→执行(可选)→反馈→差分校准(可选)，产出闭环报告与下一步
   aos-mcp suite flake [options]      重复采样量化确定性：通过率/翻转矩阵/flaky 率（--cases × --runs）
+  aos-mcp suite retention [options]  审计产物保留期只读报告（不删除；--days 默认 90、--limit 默认 20）
   aos-mcp suite evidence <traceId> [options]
                                      聚合某 trace 的失败证据包（失败项/崩溃/锚点截图/设计差异）
   aos-mcp suite api-errors <traceId> [options]
@@ -249,6 +251,7 @@ loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--ma
         [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-quarantine] [--no-save] [--out <dir>]
 flake:  --cases <id,id,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>]
         [--model Flash|Pro] [--poll-timeout <ms>] [--no-api-errors] [--fail-on-flaky] [--no-save] [--out <dir>]
+retention: [--days <n>] [--limit <n>]
 evidence: [--full-trace] [--out <dir>] [--no-save] [--design-figma <url>|--design-pen <path>] [--node <id>]
 api-errors: [--serial <s>] [--app <bundleId>] [--no-save] [--json]
 baseline: --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>]
@@ -796,6 +799,41 @@ async function suiteFlake(
   return 0;
 }
 
+/** 审计产物保留期只读报告（不删除任何文件）。 */
+async function suiteRetention(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const days = Math.min(Math.max(intOrNull(flags.get("days")) ?? 90, 1), 3650);
+  const limit = Math.min(Math.max(intOrNull(flags.get("limit")) ?? 20, 1), 200);
+  const entries = collectRetentionEntries(runtime.project.rootDir);
+  const report = buildRetentionReport(entries, {
+    days,
+    nowMs: Date.now(),
+    limit,
+    projectRoot: runtime.project.rootDir
+  });
+  if (flags.bool("json")) {
+    io.log(JSON.stringify(report, null, 2));
+    return 0;
+  }
+  io.log(`保留期报告（只读，不删除；阈值 ${days} 天）`);
+  for (const category of report.categories) {
+    io.log(
+      `  ${category.id}: 共 ${category.total} · 超期 ${category.overdue}（${formatBytes(category.overdueBytes)}）` +
+        (category.oldestModifiedAt ? ` · 最旧 ${category.oldestModifiedAt.slice(0, 10)}` : "")
+    );
+  }
+  io.log(`超期合计: ${report.overdue.count} 个文件 / ${formatBytes(report.overdue.totalBytes)}`);
+  for (const item of report.items) {
+    io.log(`  [${item.ageDays}d] ${item.category} ${item.path} (${formatBytes(item.sizeBytes)})`);
+  }
+  if (report.truncated) io.log(`（仅显示最旧 ${report.items.length} 条；--limit 可调）`);
+  io.log("说明: 本命令只读；清理动作待合规口径确认后另行实现（临时默认 90d 见 DESIGN §6.10）。");
+  return 0;
+}
+
 async function suiteApiErrors(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -1051,7 +1089,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "evidence", "api-errors", "baseline", "report", "feedback"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -1081,6 +1119,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
         iosLogCollector: deps.iosLogCollector
       });
     }
+    if (sub === "retention") return await suiteRetention(built.runtime, flags, { log, errorLog });
     if (sub === "evidence") return await suiteEvidence(built.runtime, flags, { log, errorLog });
     if (sub === "api-errors") {
       return await suiteApiErrors(
