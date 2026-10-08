@@ -136,6 +136,7 @@ export class Runtime {
   private readonly buildModuleUrl: string;
   private readonly buildStartedAtMs: number;
   private readonly baseEnv: NodeJS.ProcessEnv;
+  private readonly iosEnv: NodeJS.ProcessEnv;
   private scanResult: EnvScanResult;
   private projectRecord: ProjectRecord | null = null;
   private activeCache: { name: string; entry: LlmEntry } | null = null;
@@ -167,6 +168,8 @@ export class Runtime {
     this.store = options.store ?? new MemoryStore();
     this.storeNote = options.storeNote ?? null;
     this.baseEnv = options.baseEnv ?? process.env;
+    // iOS 签名/Appium 配置与模型目录同规则：项目 .env 打底、进程 env（客户端配置）覆盖。
+    this.iosEnv = { ...project.dotenvValues, ...this.baseEnv };
     this.iosCrashCollector = options.iosCrashCollector ?? null;
     this.iosCrashRetry = {
       attempts: Math.max(1, options.iosCrashRetry?.attempts ?? 3),
@@ -175,7 +178,7 @@ export class Runtime {
     };
     this.configDirAbs = configDirAbs(project.config, project.rootDir);
     this.appiumDetector =
-      options.appiumDetector ?? (() => detectAppium({ env: this.baseEnv }));
+      options.appiumDetector ?? (() => detectAppium({ env: this.iosEnv }));
     this.state = new StateStore(path.join(this.configDirAbs, "state.json"));
     this.buildModuleUrl = options.buildModuleUrl ?? import.meta.url;
     this.buildStartedAtMs = Date.now() - Math.round(process.uptime() * 1000);
@@ -926,7 +929,7 @@ export class Runtime {
 
   iosWda(): IosWdaService {
     if (this.iosWdaService === null) {
-      this.iosWdaService = new IosWdaService({ env: this.baseEnv });
+      this.iosWdaService = new IosWdaService({ env: this.iosEnv });
     }
     return this.iosWdaService;
   }

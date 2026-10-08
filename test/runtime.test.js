@@ -161,3 +161,53 @@ test("mobile_run_task：Android 透传响应补空 warnings（双端同构）", 
   const payload = JSON.parse(result.content[0].text);
   assert.deepEqual(payload.warnings, []);
 });
+
+test("runtime: iOS 签名配置合并项目 .env（进程 env 覆盖）", async () => {
+  const dir = makeTempProject({
+    config: baseConfig(),
+    dotenv: ["AOS_APPIUM_URL=http://127.0.0.1:4799", "AOS_IOS_XCODE_ORG_ID=TEAM_DOTENV"].join("\n")
+  });
+  const original = globalThis.fetch;
+  const sessionBodies = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const href = String(url);
+    const json = (payload) =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    if (href.endsWith("/status")) return json({ value: { ready: true } });
+    if (href.endsWith("/session") && (init.method ?? "GET") === "POST") {
+      sessionBodies.push(JSON.parse(init.body));
+      return json({ value: { sessionId: "s-1", capabilities: {} } });
+    }
+    if (href.endsWith("/screenshot")) {
+      return json({ value: Buffer.from("png").toString("base64") });
+    }
+    return json({ value: null });
+  };
+  const udid = "00008101-000000000000000E";
+  try {
+    const { runtime: dotenvRuntime } = await loadTestRuntime(dir, {
+      proxy: new StubProxy({ running: false }),
+      baseEnv: {}
+    });
+    const fromDotenv = await dotenvRuntime.iosWda().screenshot(udid);
+    assert.equal(fromDotenv.ok, true);
+    await dotenvRuntime.disposeIosWda();
+
+    const { runtime: processRuntime } = await loadTestRuntime(dir, {
+      proxy: new StubProxy({ running: false }),
+      baseEnv: { AOS_IOS_XCODE_ORG_ID: "TEAM_PROCESS" }
+    });
+    const fromProcess = await processRuntime.iosWda().screenshot(udid);
+    assert.equal(fromProcess.ok, true);
+    await processRuntime.disposeIosWda();
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  assert.equal(sessionBodies.length, 2);
+  assert.equal(sessionBodies[0].capabilities.alwaysMatch["appium:xcodeOrgId"], "TEAM_DOTENV");
+  assert.equal(sessionBodies[1].capabilities.alwaysMatch["appium:xcodeOrgId"], "TEAM_PROCESS");
+});

@@ -207,7 +207,7 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
     }
 
     const { detectAppium } = await import("./ios/appium/detect.js");
-    const iosAppium = await detectAppium({ env: process.env });
+    const iosAppium = await detectAppium({ env: { ...project.dotenvValues, ...process.env } });
     if (iosAppium.appium.found && iosAppium.xcuitest.installed) {
       lines.push({
         icon: "OK",
