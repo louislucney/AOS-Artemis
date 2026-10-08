@@ -63,6 +63,8 @@ export interface SuiteCaseResult {
     stdoutLog: string | null;
   };
   reset: AppResetOutcome | null;
+  /** 在 `.artemis/design/quarantine.json` 中且未过期：如实标注，不计门禁。 */
+  quarantined?: boolean;
   /** Present when `--retry` re-ran this non-passed case. Diagnosis only: the
    * first-run status still decides the gate (D3 口径：重跑转绿不计首跑门禁). */
   retry?: {
@@ -92,6 +94,8 @@ export interface SuiteRunOptions {
   maxCases?: number;
   /** Only run these generated case ids (used by `--retry` diagnostics). */
   caseIds?: string[];
+  /** 隔离用例集合（quarantine.json 生效项）：结果如实标注，门禁由调用方排除。 */
+  quarantinedCaseIds?: Set<string>;
   stopOnFailure?: boolean;
   deviceSerial?: string;
   lockedAppPackage?: string;
@@ -243,6 +247,7 @@ export async function runGeneratedTests(
   let firstSubmitError: string | null = null;
 
   for (const testCase of cases) {
+    const quarantined = options.quarantinedCaseIds?.has(testCase.id) === true;
     let reset: AppResetOutcome | null = null;
     if (options.lockedAppPackage) {
       try {
@@ -278,6 +283,7 @@ export async function runGeneratedTests(
         caseId: testCase.id,
         name: testCase.name,
         status: "submit-error",
+        ...(quarantined ? { quarantined: true } : {}),
         traceId: null,
         error: message,
         testSummary: null,
@@ -315,6 +321,7 @@ export async function runGeneratedTests(
         caseId: testCase.id,
         name: testCase.name,
         status: "submit-error",
+        ...(quarantined ? { quarantined: true } : {}),
         traceId: null,
         error: message,
         testSummary: null,
@@ -442,6 +449,7 @@ export async function runGeneratedTests(
       caseId: testCase.id,
       name: testCase.name,
       status: caseStatus,
+      ...(quarantined ? { quarantined: true } : {}),
       traceId,
       error: forcedError ?? status?.error ?? (terminal ? null : "等待任务终态超时"),
       testSummary: status?.testSummary ?? null,

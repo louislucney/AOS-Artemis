@@ -802,3 +802,67 @@ test("suite flake: --fail-on-flaky gates; missing/absent case ids are rejected",
   const noCases = await runCli(runtime, ["flake"]);
   assert.equal(noCases.code, 2);
 });
+
+test("suite run: quarantined failures are annotated and do not gate; --no-quarantine restores gating", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: {
+      "trace-1": { status: "failed", error: "known" },
+      "trace-2": { status: "failed", error: "known" },
+      "trace-3": { status: "failed", error: "known" }
+    }
+  });
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "quarantine.json"),
+    JSON.stringify({
+      entries: [
+        {
+          caseId: "case-1",
+          owner: "alice",
+          signedAt: "2026-10-01T00:00:00.000Z",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          reason: "known staging crash"
+        }
+      ]
+    }),
+    "utf-8"
+  );
+
+  const quarantined = await runCli(runtime, ["run"]);
+  assert.equal(quarantined.code, 0, "quarantined failure does not gate");
+  assert.ok(quarantined.logs.some((line) => line.includes("quarantine: 1 条生效")));
+  assert.ok(quarantined.logs.some((line) => line.includes("已隔离（不计门禁）")));
+  assert.ok(quarantined.logs.some((line) => line.includes("隔离 1 例失败")));
+
+  const jsonRun = await runCli(runtime, ["run", "--json"]);
+  assert.equal(jsonRun.code, 0);
+  const payload = JSON.parse(jsonRun.logs[0]);
+  assert.equal(payload.cases[0].quarantined, true);
+
+  const strict = await runCli(runtime, ["run", "--no-quarantine"]);
+  assert.equal(strict.code, 1, "strict run ignores quarantine entries");
+});
+
+test("suite run: expired quarantine restores gating with a warning", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "failed" } }
+  });
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "quarantine.json"),
+    JSON.stringify({
+      entries: [
+        {
+          caseId: "case-1",
+          owner: "alice",
+          signedAt: "2026-10-01T00:00:00.000Z",
+          expiresAt: "2026-10-07T00:00:00.000Z"
+        }
+      ]
+    }),
+    "utf-8"
+  );
+  const result = await runCli(runtime, ["run"]);
+  assert.equal(result.code, 1);
+  assert.ok(result.logs.some((line) => line.includes("quarantine 已过期、恢复门禁")));
+});

@@ -16,6 +16,7 @@ import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/base
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
+import { loadQuarantine } from "./figma/quarantine.js";
 import { preflightGeneratedTests, type PreflightReport } from "./figma/preflight.js";
 import { buildRunReport } from "./figma/run-report.js";
 import {
@@ -25,7 +26,12 @@ import {
   type SuiteLoopCheck
 } from "./figma/suite-loop.js";
 import type { TaskStatRecord } from "./db/types.js";
-import { runGeneratedTests, type SuiteCaseResult, type SuiteRunReport } from "./figma/suite-runner.js";
+import {
+  runGeneratedTests,
+  type SuiteCaseResult,
+  type SuiteRunOptions,
+  type SuiteRunReport
+} from "./figma/suite-runner.js";
 import { Runtime } from "./runtime.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
 
@@ -149,11 +155,32 @@ function retryCountOf(flags: ParsedFlags): number {
   return Math.min(Math.max(intOrNull(flags.get("retry")) ?? 0, 0), 3);
 }
 
+/** 读取 `.artemis/design/quarantine.json`：生效项不计门禁，过期/无效项如实提示。 */
+function quarantineFor(
+  runtime: Runtime,
+  flags: ParsedFlags
+): { ids: Set<string> | undefined; messages: string[] } {
+  if (flags.bool("no-quarantine")) return { ids: undefined, messages: [] };
+  const load = loadQuarantine(runtime.configDirAbs);
+  if (!load.exists) return { ids: undefined, messages: [] };
+  const messages: string[] = [];
+  if (load.active.size > 0) {
+    messages.push(`quarantine: ${load.active.size} 条生效（失败不计门禁）`);
+  }
+  for (const entry of load.stale) {
+    messages.push(`quarantine 已过期、恢复门禁: ${entry.caseId}（owner=${entry.owner}）`);
+  }
+  for (const message of load.invalid) {
+    messages.push(`quarantine 无效忽略: ${message}`);
+  }
+  return { ids: load.active.size > 0 ? new Set(load.active.keys()) : undefined, messages };
+}
+
 function suiteRunOptions(
   flags: ParsedFlags,
   logcatCollector?: LogcatCollector,
   iosLogCollector?: IosLogCollectorFn
-) {
+): SuiteRunOptions {
   return {
     testsPath: flags.get("tests") ?? undefined,
     maxCases: intOrNull(flags.get("max")) ?? undefined,
@@ -177,7 +204,7 @@ async function applyRetryDiagnostics(
   runOptions: ReturnType<typeof suiteRunOptions>
 ): Promise<void> {
   for (const entry of report.cases) {
-    if (entry.status === "passed") continue;
+    if (entry.status === "passed" || entry.quarantined === true) continue;
     let attempts = 0;
     let finalStatus: SuiteCaseResult["status"] = entry.status;
     let finalTraceId = entry.traceId;
@@ -243,11 +270,11 @@ Usage:
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
-        [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>]
+        [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine]
 check:  [--tests <path>]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
-        [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-save] [--out <dir>]
+        [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-quarantine] [--no-save] [--out <dir>]
 flake:  --cases <id,id,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>]
         [--model Flash|Pro] [--poll-timeout <ms>] [--no-api-errors] [--fail-on-flaky] [--no-save] [--out <dir>]
 evidence: [--full-trace] [--out <dir>] [--no-save] [--design-figma <url>|--design-pen <path>] [--node <id>]
@@ -269,6 +296,8 @@ async function suiteRun(
   iosLogCollector?: IosLogCollectorFn
 ): Promise<number> {
   const runOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
+  const quarantine = quarantineFor(runtime, flags);
+  runOptions.quarantinedCaseIds = quarantine.ids;
   const report = await runGeneratedTests(runtime, runOptions);
   const retryCount = retryCountOf(flags);
   if (retryCount > 0 && !runOptions.stopOnFailure) {
@@ -279,6 +308,9 @@ async function suiteRun(
     io.log(JSON.stringify(report, null, 2));
   } else {
     io.log(`套件: ${report.testsPath}`);
+    for (const message of quarantine.messages) {
+      io.log(message);
+    }
     if (report.preflight) {
       if (!report.preflight.coverage.available) {
         io.log(`预检: 弱用例 ${report.preflight.weakCases.length} 条 · 覆盖校验不可用（缺 flows.json）`);
@@ -313,13 +345,14 @@ async function suiteRun(
           ? ` · API 错误 ${entry.apiErrors.map((error) => `${error.code}(${error.verdict})`).join("、")}`
           : "";
       const degraded = entry.apiErrorsDegraded ? ` · API 采集降级(${entry.apiErrorsDegraded})` : "";
+      const quarantineNote = entry.quarantined === true ? " · 已隔离（不计门禁）" : "";
       const retryNote = entry.retry
         ? ` · 重试 ${entry.retry.attempts} 次：${entry.status} → ${entry.retry.finalStatus}${
             entry.retry.flaky ? "（flaky，不计首跑）" : ""
           }`
         : "";
       io.log(
-        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${apiNote}${degraded}${retryNote}`
+        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${apiNote}${degraded}${quarantineNote}${retryNote}`
       );
       if (entry.traceId && entry.status !== "passed") {
         io.log(`       证据: node dist/cli.js suite evidence ${entry.traceId}`);
@@ -332,12 +365,21 @@ async function suiteRun(
     if (flakyCount > 0) {
       io.log(`重试转绿 ${flakyCount} 例（flaky，首跑结果仍为准）`);
     }
+    const quarantinedFailed = report.cases.filter(
+      (entry) => entry.quarantined === true && entry.status !== "passed"
+    ).length;
+    if (quarantinedFailed > 0) {
+      io.log(`隔离 ${quarantinedFailed} 例失败（不计门禁）`);
+    }
     if (!report.ok) io.errorLog(`套件未执行: ${report.error ?? "无可提交用例"}`);
     if (coverageIssue) io.errorLog(coverageIssue);
   }
   if (!report.ok) return 2;
   if (coverageIssue) return 2;
-  return report.failed === 0 ? 0 : 1;
+  const quarantinedFailures = report.cases.filter(
+    (entry) => entry.quarantined === true && entry.status !== "passed"
+  ).length;
+  return report.failed - quarantinedFailures === 0 ? 0 : 1;
 }
 
 /** Pure static coverage check: no device, no case submission (CI pre-merge). */
@@ -584,6 +626,8 @@ async function suiteLoop(
   }
 
   const runOptions = suiteRunOptions(flags, deps.logcatCollector, deps.iosLogCollector);
+  const quarantine = quarantineFor(runtime, flags);
+  runOptions.quarantinedCaseIds = quarantine.ids;
   let report: SuiteRunReport | null = null;
   if (!flags.bool("skip-run")) {
     report = await runGeneratedTests(runtime, runOptions);
@@ -636,6 +680,9 @@ async function suiteLoop(
   } else {
     const step = loopReport.steps;
     io.log(`测试闭环: ${testsPath}`);
+    for (const message of quarantine.messages) {
+      io.log(message);
+    }
     io.log(
       `静态检查: ${
         step.check ? (step.check.issue ? `未通过（${step.check.issue}）` : "通过") : "不可用（无 tests.json）"
@@ -676,7 +723,10 @@ async function suiteLoop(
   }
   if (!report || !report.ok) return 2;
   if (check && check.issue !== null) return 2;
-  return report.failed === 0 ? 0 : 1;
+  const quarantinedFailures = report.cases.filter(
+    (entry) => entry.quarantined === true && entry.status !== "passed"
+  ).length;
+  return report.failed - quarantinedFailures === 0 ? 0 : 1;
 }
 
 /** 重复采样（票据 10）：量化执行确定性——通过率/翻转矩阵/flaky 率。 */

@@ -220,7 +220,7 @@ node dist/cli.js suite report [--limit N] [--case <id>]... [--out <dir>] [--no-s
 node dist/cli.js suite feedback [--min-failures N]
 ```
 
-- `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/用例缺陷/未分类），失败附 `suite evidence <traceId>` 提示；`--device` 为 iOS 模拟器 UDID 时用例由 AOS iOS 执行器运行（`--app` 经 idb terminate+launch 复位；日志采集标 `ios-log-unsupported` 降级）；`--fail-on-uncovered` 按预检覆盖判定——未覆盖屏幕/跳转、生成截断，或无法校验（缺/坏 `flows.json`）一律 exit 2，自定义 `--tests` 同样参与校验（流程完整性契约见 DESIGN §6.10）；`--retry N`（≤3）对未通过用例重跑做 flaky 诊断并如实标注（`retry.flaky`）；**首跑结果仍决定门禁**（重跑转绿不计首跑通过）。
+- `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/用例缺陷/未分类），失败附 `suite evidence <traceId>` 提示；`--device` 为 iOS 模拟器 UDID 时用例由 AOS iOS 执行器运行（`--app` 经 idb terminate+launch 复位；日志采集标 `ios-log-unsupported` 降级）；`--fail-on-uncovered` 按预检覆盖判定——未覆盖屏幕/跳转、生成截断，或无法校验（缺/坏 `flows.json`）一律 exit 2，自定义 `--tests` 同样参与校验（流程完整性契约见 DESIGN §6.10）；`--retry N`（≤3）对未通过用例重跑做 flaky 诊断并如实标注（`retry.flaky`）；**首跑结果仍决定门禁**（重跑转绿不计首跑通过）；`.artemis/design/quarantine.json`（须 `owner`+`signedAt`，可选 `expiresAt`）中的隔离用例仍执行并标注，**失败不计门禁**，过期自动恢复；`--no-quarantine` 严格审计跑。
 - `evidence`：一次拿到失败项、崩溃签名、锚定失败步骤截图与可选设计差异引用（默认落 `.artemis/design/evidence/<traceId>/`）。
 - `check`：静态覆盖检查（tests.json × flows.json），**不连设备**，供 pre-merge CI；未覆盖屏幕/跳转、生成截断、缺/坏 flows.json 均 exit 2；"测试引用但设计缺失"的路线漂移仅警告。
 - `calibrate`：确定性套件结果（`--report <json|junit.xml>`——JSON 或 Android instrumentation 的 JUnit XML；或 `--xcresult <bundle>` 经 `xcrun xcresulttool get test-results tests`，Xcode 16+）与 MCP 台账按 case_id 对齐，输出一致/漏报/误报与比率并落盘 `.artemis/design/reports/calibration-<stamp>.json`；测试名需内嵌 case_id（如 `test_order_flow_case-<12hex>()`）；`--fail-on-miss` 命中漏报即 exit 2。
