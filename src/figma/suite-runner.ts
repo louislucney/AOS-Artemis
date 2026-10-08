@@ -63,6 +63,14 @@ export interface SuiteCaseResult {
     stdoutLog: string | null;
   };
   reset: AppResetOutcome | null;
+  /** Present when `--retry` re-ran this non-passed case. Diagnosis only: the
+   * first-run status still decides the gate (D3 口径：重跑转绿不计首跑门禁). */
+  retry?: {
+    attempts: number;
+    finalStatus: "passed" | "failed" | "timeout" | "submit-error";
+    finalTraceId: string | null;
+    flaky: boolean;
+  };
 }
 
 export interface SuiteRunReport {
@@ -82,6 +90,8 @@ export interface SuiteRunReport {
 export interface SuiteRunOptions {
   testsPath?: string;
   maxCases?: number;
+  /** Only run these generated case ids (used by `--retry` diagnostics). */
+  caseIds?: string[];
   stopOnFailure?: boolean;
   deviceSerial?: string;
   lockedAppPackage?: string;
@@ -184,7 +194,7 @@ export async function runGeneratedTests(
   const testsPath = options.testsPath
     ? path.resolve(runtime.project.rootDir, options.testsPath)
     : defaultTestsPath;
-  const cases = loadCases(testsPath, options.maxCases);
+  let cases = loadCases(testsPath, options.maxCases);
   if (!cases) {
     return {
       ok: false,
@@ -200,8 +210,12 @@ export async function runGeneratedTests(
       error: `无法读取用例文件：${testsPath}`
     };
   }
+  if (options.caseIds && options.caseIds.length > 0) {
+    const wanted = new Set(options.caseIds);
+    cases = cases.filter((testCase) => wanted.has(testCase.id));
+  }
 
-  const preflight = testsPath === defaultTestsPath ? preflightGeneratedTests(runtime.configDirAbs) : null;
+  const preflight = preflightGeneratedTests(runtime.configDirAbs, { testsPath });
   const serial = options.deviceSerial ?? null;
   const serialKind = serial !== null ? classifyIosSerial(serial) : null;
   const resetFn = options.reset ?? suiteResetFor(serial);

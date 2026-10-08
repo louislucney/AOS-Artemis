@@ -26,6 +26,7 @@ import { figmaImportStrings, type ImportStringsArgs } from "./figma/import-strin
 import { figmaImportTokens, type ImportTokensArgs } from "./figma/import-tokens.js";
 import { figmaExportBrief, type ExportBriefArgs } from "./figma/brief.js";
 import { penInspect, type PenInspectArgs } from "./pen/inspect.js";
+import { penExtractFlows, type PenExtractFlowsArgs } from "./pen/flows.js";
 import { penImportTokens, type PenTokensArgs } from "./pen/tokens.js";
 import { penImportStrings, type PenStringsArgs } from "./pen/strings.js";
 import { penExportBrief, type PenBriefArgs } from "./pen/brief.js";
@@ -325,11 +326,18 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_generate_tests",
     description:
-      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程，生成可直接传给 mobile_run_task 的自然语言任务描述；默认（save !== false）三份同时落盘：tests.json + tests.md + tests.xlsx（响应 savedTo 给出三个路径；Excel 可用 excelPath 指定路径、excelTemplate 指定 .xlsx 模版），仅 save:false 才不写任何文件。",
+      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程（覆盖贪心 + 长路径优先：先长主链、再补覆盖缺口，冗余短片段不产出），生成可直接传给 mobile_run_task 的自然语言任务描述；默认（save !== false）三份同时落盘：tests.json + tests.md + tests.xlsx（响应 savedTo 给出三个路径；Excel 可用 excelPath 指定路径、excelTemplate 指定 .xlsx 模版），仅 save:false 才不写任何文件。覆盖保证：响应与 tests.json 内含 coverage（未覆盖屏幕/跳转、路径截断、entryFallback）；requireFullCoverage:true 时覆盖不完整即报错且三份都不落盘。",
     schema: z.object({
       url: z.string().optional().describe("Figma URL（可选；不传则用 flows.json）"),
       flowsPath: z.string().optional().describe("自定义 flows.json 路径（相对项目根）"),
       maxFlows: z.number().int().positive().max(50).optional().describe("最多生成条数，默认 10"),
+      maxDepth: z
+        .number()
+        .int()
+        .positive()
+        .max(50)
+        .optional()
+        .describe("路径最大深度（边数），默认 12；长流程可调大以生成更长的连续用例"),
       save: z.boolean().optional().describe("是否落盘 tests.json/tests.md/tests.xlsx，默认 true"),
       excelPath: z
         .string()
@@ -338,7 +346,11 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       excelTemplate: z
         .string()
         .optional()
-        .describe("测试用例 .xlsx 模版路径（相对项目根或绝对），支持 {{meta.*}}/{{counts.*}}/{{case.*}}/{{index}} 占位符")
+        .describe("测试用例 .xlsx 模版路径（相对项目根或绝对），支持 {{meta.*}}/{{counts.*}}/{{case.*}}/{{index}} 占位符"),
+      requireFullCoverage: z
+        .boolean()
+        .optional()
+        .describe("覆盖不完整（有未覆盖屏幕/跳转或路径被截断）时报错且不落盘，默认 false")
     }),
     handler: (runtime, args) => figmaGenerateTests(runtime, args as unknown as GenerateTestsArgs)
   },
@@ -412,6 +424,17 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       save: z.boolean().optional().describe("是否落盘 .artemis/design/pen/summary.json，默认 false")
     }),
     handler: (runtime, args) => penInspect(runtime, args as unknown as PenInspectArgs)
+  },
+  {
+    name: "pen_extract_flows",
+    description:
+      "pen 流程合成（离线）：.pen 无原型交互数据时，用「Flow 标注 > 屏内首个文本 > 图层名」命名屏幕、按标签前缀归并状态变体（主屏+states）、按画板顺序与排布推断跳转（全部 trigger=INFERRED，需复核）→ 落盘 .artemis/design/flows.json（可直接供 figma_generate_tests / suite check 使用）+ flow-map.md（全局交互地图：画板/主链/状态/警告）；返回碎片度统计（默认名屏数、状态归并、推断边数）与 warnings。",
+    schema: z.object({
+      path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
+      save: z.boolean().optional().describe("是否落盘 flows.json + flow-map.md，默认 true"),
+      maxScreens: z.number().int().positive().max(500).optional().describe("主屏数量上限，默认 200")
+    }),
+    handler: (runtime, args) => penExtractFlows(runtime, args as unknown as PenExtractFlowsArgs)
   },
   {
     name: "pen_import_tokens",

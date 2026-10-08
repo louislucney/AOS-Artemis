@@ -6,6 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
+import { computeScreenCoverage } from "./coverage.js";
 import { buildFlowGraph, type FlowEdge, type FlowGraph } from "./flows.js";
 import { deriveCasePreconditions } from "./preconditions.js";
 import { canonicalizePlaceholders, normalizedText } from "./strings.js";
@@ -34,8 +35,43 @@ export interface LinearizeStats {
   truncated: boolean;
 }
 
+export interface FlowCoverage {
+  /** No uncovered screen, no uncovered edge, no truncated path exploration. */
+  complete: boolean;
+  /** Design screens that no generated case visits. */
+  uncoveredScreens: string[];
+  /** Screen-to-screen transitions (`From → To`) no generated case walks. */
+  uncoveredEdges: string[];
+  truncated: boolean;
+  entryFallback: boolean;
+}
+
+/** Deterministic route coverage of the generated cases against the flow graph.
+ * Backed by `computeScreenCoverage` (single implementation shared with preflight). */
+export function computeFlowCoverage(
+  graph: FlowGraph,
+  cases: GeneratedTest[],
+  stats?: Pick<LinearizeStats, "truncated" | "entryFallback"> | null
+): FlowCoverage {
+  const { uncoveredScreens, uncoveredEdges } = computeScreenCoverage(
+    graph.screens.map((screen) => screen.name),
+    graph.edges.map((edge) => ({ from: edge.from.name, to: edge.to ? edge.to.name : null })),
+    cases
+  );
+  const truncated = stats?.truncated ?? false;
+  return {
+    complete: uncoveredScreens.length === 0 && uncoveredEdges.length === 0 && !truncated,
+    uncoveredScreens,
+    uncoveredEdges,
+    truncated,
+    entryFallback: stats?.entryFallback ?? false
+  };
+}
+
 /** Expand the flow graph into concrete execution paths (entry → … → terminal /
- * back edge), bounded by count and depth. */
+ * back edge), bounded by count and depth. Selection is coverage-greedy with
+ * longest-first ordering: long continuous journeys win, redundant fragments
+ * that add no new screen/transition coverage are dropped. */
 export function linearizeFlowsWithStats(
   graph: FlowGraph,
   options: { maxFlows?: number; maxDepth?: number } = {}
@@ -80,27 +116,89 @@ export function linearizeFlowsWithStats(
     }
   }
 
+  const signatureOf = (flow: FlowEdge[]): string =>
+    flow.map((edge) => `${edge.element.id}->${edge.to?.id ?? "?"}:${edge.trigger}`).join("|");
   const seen = new Set<string>();
   const deduped = flows.filter((flow) => {
-    const signature = flow
-      .map((edge) => `${edge.element.id}->${edge.to?.id ?? "?"}:${edge.trigger}`)
-      .join("|");
+    const signature = signatureOf(flow);
     if (seen.has(signature)) return false;
     seen.add(signature);
     return true;
   });
-  const paths = deduped.slice(0, maxFlows);
+
+  const screensOf = (flow: FlowEdge[]): string[] => {
+    const list = [flow[0]!.from.name];
+    for (const edge of flow) {
+      const name = edge.to?.name;
+      if (name && name !== list[list.length - 1]) list.push(name);
+    }
+    return list;
+  };
+  const pairsOf = (flow: FlowEdge[]): string[] => {
+    const pairs = new Set<string>();
+    for (const edge of flow) {
+      if (!edge.to || edge.from.name === edge.to.name) continue;
+      pairs.add(`${edge.from.name} → ${edge.to.name}`);
+    }
+    return [...pairs];
+  };
+
+  /* 覆盖贪心 + 长路径优先：先选覆盖增量最大的连续路径（同增量比长度、再比签名），
+   * 直到没有候选能新增屏幕/跳转覆盖为止——避免"探索序前 N 条"产生大量共享前缀的短用例。 */
+  const candidates = deduped.map((flow) => ({
+    flow,
+    signature: signatureOf(flow),
+    screens: screensOf(flow),
+    pairs: pairsOf(flow)
+  }));
+  const coveredScreens = new Set<string>();
+  const coveredPairs = new Set<string>();
+  const gainOf = (candidate: (typeof candidates)[number]): number =>
+    candidate.screens.filter((screen) => !coveredScreens.has(screen)).length +
+    candidate.pairs.filter((pair) => !coveredPairs.has(pair)).length;
+  const remaining = [...candidates];
+  const kept: FlowEdge[][] = [];
+  while (kept.length < maxFlows && remaining.length > 0) {
+    let bestIndex = -1;
+    for (let index = 0; index < remaining.length; index += 1) {
+      const candidate = remaining[index]!;
+      if (gainOf(candidate) === 0) continue;
+      if (bestIndex === -1) {
+        bestIndex = index;
+        continue;
+      }
+      const best = remaining[bestIndex]!;
+      const gain = gainOf(candidate);
+      const bestGain = gainOf(best);
+      if (
+        gain > bestGain ||
+        (gain === bestGain &&
+          (candidate.flow.length > best.flow.length ||
+            (candidate.flow.length === best.flow.length && candidate.signature < best.signature)))
+      ) {
+        bestIndex = index;
+      }
+    }
+    if (bestIndex === -1) break;
+    const [picked] = remaining.splice(bestIndex, 1);
+    kept.push(picked.flow);
+    for (const screen of picked.screens) coveredScreens.add(screen);
+    for (const pair of picked.pairs) coveredPairs.add(pair);
+  }
+
   const explorationStopped = guard >= 500 || flows.length >= maxFlows * 4;
+  const truncatedAtCap =
+    kept.length >= maxFlows && remaining.some((candidate) => gainOf(candidate) > 0);
   return {
-    paths,
+    paths: kept,
     stats: {
       maxFlows,
       maxDepth,
       entryFallback: entryIds.size === 0,
       exploredPaths: flows.length,
-      keptPaths: paths.length,
-      droppedPaths: Math.max(0, deduped.length - paths.length),
-      truncated: explorationStopped || deduped.length > maxFlows
+      keptPaths: kept.length,
+      droppedPaths: Math.max(0, deduped.length - kept.length),
+      truncated: explorationStopped || truncatedAtCap
     }
   };
 }
@@ -159,6 +257,7 @@ function caseIdFor(name: string, screens: string[], steps: string[]): string {
 
 export interface GenerateTestCasesOptions {
   maxFlows?: number;
+  maxDepth?: number;
   i18nKeys?: Map<string, string>;
   onStats?: (stats: LinearizeStats) => void;
 }
@@ -170,7 +269,10 @@ export function generateTestCases(
   graph: FlowGraph,
   options: GenerateTestCasesOptions = {}
 ): GeneratedTest[] {
-  const { paths, stats } = linearizeFlowsWithStats(graph, { maxFlows: options.maxFlows ?? 10 });
+  const { paths, stats } = linearizeFlowsWithStats(graph, {
+    maxFlows: options.maxFlows ?? 10,
+    maxDepth: options.maxDepth
+  });
   options.onStats?.(stats);
   return paths.map((flowPath) => {
     const first = flowPath[0]!;
@@ -225,9 +327,11 @@ export interface GenerateTestsArgs {
   url?: string;
   flowsPath?: string;
   maxFlows?: number;
+  maxDepth?: number;
   save?: boolean;
   excelPath?: string;
   excelTemplate?: string;
+  requireFullCoverage?: boolean;
 }
 
 /** Load the frozen text→key mapping produced by figma_import_strings (M6b). */
@@ -281,6 +385,7 @@ export async function figmaGenerateTests(
     let generation: LinearizeStats | null = null;
     const cases = generateTestCases(graph, {
       maxFlows: args.maxFlows ?? 10,
+      maxDepth: args.maxDepth,
       i18nKeys: loadI18nKeys(runtime),
       onStats: (stats) => {
         generation = stats;
@@ -288,15 +393,34 @@ export async function figmaGenerateTests(
     });
     const generatedAt = new Date().toISOString();
     const counts = { cases: cases.length, screens: graph.screens.length, edges: graph.edges.length };
+    const coverage = computeFlowCoverage(graph, cases, generation);
+    if (args.requireFullCoverage === true && !coverage.complete) {
+      const reasons: string[] = [];
+      if (coverage.uncoveredScreens.length > 0) {
+        reasons.push(`未覆盖屏幕：${coverage.uncoveredScreens.join("、")}`);
+      }
+      if (coverage.uncoveredEdges.length > 0) {
+        reasons.push(`未覆盖跳转：${coverage.uncoveredEdges.join("、")}`);
+      }
+      if (coverage.truncated) {
+        reasons.push("路径探索被截断（maxFlows 上限或深度限制），可能有流程被丢弃");
+      }
+      throw new Error(
+        `流程覆盖不完整，未落盘：${reasons.join("；")}。可提高 maxFlows、补原型连线；` +
+          "或去掉 requireFullCoverage 仅生成并查看 coverage。"
+      );
+    }
     const payload: Record<string, unknown> = {
       ok: true,
       source,
       counts: { flows: counts.cases, screens: counts.screens, edges: counts.edges },
       generation,
+      coverage,
       flows: cases,
       hint:
         "用 mobile_run_task 执行 flows[].taskDesc；失败步骤可用 compare_design_and_device 做视觉断言；" +
-        "若已跑过 figma_import_strings，步骤中会附带 i18n key（原文仅在 source locale 兜底）。"
+        "若已跑过 figma_import_strings，步骤中会附带 i18n key（原文仅在 source locale 兜底）；" +
+        "coverage.complete=false 表示有未覆盖屏幕/跳转或路径截断（requireFullCoverage:true 可强制不落盘）。"
     };
 
     if (args.save !== false) {

@@ -41,6 +41,59 @@ export interface FlowGraph {
   unresolvedDestinations: string[];
 }
 
+export interface FlowGraphWarning {
+  code: "no-entry" | "unreachable-screens" | "unresolved-destinations";
+  message: string;
+  details?: string[];
+}
+
+/** Deterministic structural warnings: these are exactly the ways a flow graph
+ * can fail to be an entry→terminal route set, so downstream coverage gates can
+ * trust `entryScreens`/reachability. */
+export function flowGraphWarnings(graph: FlowGraph): FlowGraphWarning[] {
+  const warnings: FlowGraphWarning[] = [];
+  if (graph.screens.length > 0 && graph.entryScreens.length === 0) {
+    warnings.push({
+      code: "no-entry",
+      message:
+        "原型未识别到入口屏（所有屏幕都有入边）：线性化将回退为任意屏起点（entryFallback），入口→终点路线无法保证"
+    });
+  }
+  if (graph.entryScreens.length > 0) {
+    const idByName = new Map(graph.screens.map((screen) => [screen.name, screen.id]));
+    const reachable = new Set<string>();
+    const queue = graph.entryScreens
+      .map((name) => idByName.get(name))
+      .filter((id): id is string => typeof id === "string");
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      for (const edge of graph.edges) {
+        if (edge.from.id === id && edge.to) queue.push(edge.to.id);
+      }
+    }
+    const unreachable = graph.screens
+      .filter((screen) => !reachable.has(screen.id))
+      .map((screen) => screen.name);
+    if (unreachable.length > 0) {
+      warnings.push({
+        code: "unreachable-screens",
+        message: `${unreachable.length} 个屏幕无法从入口屏到达：这些屏幕不会出现在任何完整流程里`,
+        details: unreachable
+      });
+    }
+  }
+  if (graph.unresolvedDestinations.length > 0) {
+    warnings.push({
+      code: "unresolved-destinations",
+      message: `${graph.unresolvedDestinations.length} 个跳转目标不在当前解析范围内（跨文件/跨页跳转？）：对应边无目的地`,
+      details: [...graph.unresolvedDestinations]
+    });
+  }
+  return warnings;
+}
+
 interface RawInteraction {
   trigger?: { type?: string; timeout?: number };
   actions?: Array<Record<string, unknown>>;
@@ -216,20 +269,32 @@ export async function figmaExtractFlows(
 ): Promise<CallToolResult> {
   try {
     const { fileKey } = parseFigmaUrl(args.url);
-    const file = (await fetchFile(fileKey)) as { name?: string; document?: FigmaNode };
+    const file = (await fetchFile(fileKey)) as {
+      name?: string;
+      version?: unknown;
+      lastModified?: unknown;
+      document?: FigmaNode;
+    };
     if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
 
     const graph = buildFlowGraph(file.document, { nodeId: args.nodeId });
+    const warnings = flowGraphWarnings(graph);
+    const fileVersion = typeof file.version === "string" ? file.version : null;
+    const lastModified = typeof file.lastModified === "string" ? file.lastModified : null;
     const payload: Record<string, unknown> = {
       ok: true,
       fileKey,
       fileName: file.name ?? null,
+      ...(fileVersion !== null ? { fileVersion } : {}),
+      ...(lastModified !== null ? { lastModified } : {}),
       counts: {
         screens: graph.screens.length,
         edges: graph.edges.length,
         entryScreens: graph.entryScreens.length,
-        unresolved: graph.unresolvedDestinations.length
+        unresolved: graph.unresolvedDestinations.length,
+        warnings: warnings.length
       },
+      warnings,
       ...graph
     };
 

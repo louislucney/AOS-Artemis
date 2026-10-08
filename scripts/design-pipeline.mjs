@@ -74,7 +74,7 @@ try {
     `② 缺口: 栈=${gaps.detectedStacks?.[0]?.id ?? "未检测"} 缺失资源=${gaps.summary.missingAssets} 缺失色值=${gaps.summary.missingColors}${gaps.savedTo ? ` → ${gaps.savedTo}` : ""}`
   );
 
-  const tests = await call("figma_generate_tests", {});
+  const tests = await call("figma_generate_tests", { requireFullCoverage: true });
   console.log(
     `③ 测试: ${tests.counts.flows} 条用例${tests.savedTo ? ` → ${tests.savedTo.markdown}` : ""}`
   );

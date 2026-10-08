@@ -5,11 +5,13 @@ import test from "node:test";
 
 import ExcelJS from "exceljs";
 
-import { buildFlowGraph } from "../dist/figma/flows.js";
+import { buildFlowGraph, flowGraphWarnings } from "../dist/figma/flows.js";
 import {
+  computeFlowCoverage,
   figmaGenerateTests,
   generateTestCases,
   linearizeFlows,
+  linearizeFlowsWithStats,
   renderMarkdown
 } from "../dist/figma/test-gen.js";
 import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
@@ -356,4 +358,254 @@ test("renderMarkdown: checklist + embedded task descriptions", () => {
   assert.match(markdown, /- \[ \] 1\) 点击「Buy now」/);
   assert.match(markdown, /### artemis 任务描述/);
   assert.match(markdown, /```text/);
+});
+
+function chainGraph() {
+  const screen = (id, name) => ({ id, name, suggestedRoute: `/${name}`, childNames: [], textHints: [] });
+  const edge = (id, from, to) => ({
+    from: { id: from.id, name: from.name },
+    to: to ? { id: to.id, name: to.name } : null,
+    element: { id, name: `To ${to ? to.name : "?"}`, type: "BUTTON" },
+    textHints: [],
+    trigger: "ON_CLICK",
+    actionType: "NODE"
+  });
+  const home = screen("s1", "Home");
+  const a = screen("s2", "A");
+  const b = screen("s3", "B");
+  const c = screen("s4", "C");
+  const d = screen("s5", "D");
+  const e = screen("s6", "E");
+  return {
+    screens: [home, a, b, c, d, e],
+    edges: [edge("e1", home, a), edge("e2", a, b), edge("e3", b, c), edge("e4", c, d), edge("e5", home, e)],
+    entryScreens: ["Home"],
+    unresolvedDestinations: []
+  };
+}
+
+test("linearizeFlows: coverage-greedy keeps the longest journey first", () => {
+  const graph = chainGraph();
+  const paths = linearizeFlows(graph);
+  assert.equal(paths.length, 2);
+  assert.equal(paths[0].length, 4, "long chain selected before the short branch");
+  assert.deepEqual(
+    paths[1].map((edge) => edge.to.name),
+    ["E"]
+  );
+  const cases = generateTestCases(graph);
+  assert.deepEqual(cases[0].screens, ["Home", "A", "B", "C", "D"]);
+  assert.deepEqual(cases[1].screens, ["Home", "E"]);
+});
+
+test("linearizeFlows: redundant parallel-edge paths are dropped once coverage is complete", () => {
+  const graph = chainGraph();
+  graph.edges.push({
+    ...graph.edges[0],
+    element: { id: "e1b", name: "CTA alt", type: "BUTTON" }
+  });
+  const { paths, stats } = linearizeFlowsWithStats(graph);
+  assert.equal(paths.length, 2, "chain + E; the parallel Home→A duplicate adds no coverage");
+  assert.equal(stats.keptPaths, 2);
+  assert.equal(stats.droppedPaths, 1);
+  assert.equal(stats.truncated, false);
+});
+
+test("linearizeFlows: case order is deterministic across runs", () => {
+  const first = generateTestCases(chainGraph()).map((entry) => entry.id);
+  const second = generateTestCases(chainGraph()).map((entry) => entry.id);
+  assert.deepEqual(first, second);
+});
+
+test("linearizeFlows: maxDepth caps path length and surfaces as uncovered screens", () => {
+  const graph = chainGraph();
+  const cases = generateTestCases(graph, { maxDepth: 2 });
+  const coverage = computeFlowCoverage(graph, cases, {
+    truncated: false,
+    entryFallback: false
+  });
+  assert.equal(cases[0].screens.length, 3, "Home → A → B is the deepest capped path");
+  assert.equal(coverage.complete, false);
+  assert.ok(coverage.uncoveredScreens.includes("C"));
+  assert.ok(coverage.uncoveredScreens.includes("D"));
+});
+
+function makeOrphanFlowsProject() {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  graph.screens.push({
+    id: "99:1",
+    name: "Orphan",
+    suggestedRoute: "/orphan",
+    childNames: [],
+    textHints: []
+  });
+  fs.writeFileSync(path.join(designDir, "flows.json"), JSON.stringify(graph), "utf-8");
+  return dir;
+}
+
+test("figma_generate_tests: coverage complete on a clean graph; requireFullCoverage writes normally", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { requireFullCoverage: true }));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.coverage.complete, true);
+  assert.equal(payload.coverage.truncated, false);
+  assert.deepEqual(payload.coverage.uncoveredScreens, []);
+  assert.deepEqual(payload.coverage.uncoveredEdges, []);
+  assert.ok(fs.existsSync(payload.savedTo.json));
+});
+
+test("figma_generate_tests: uncovered screen fails requireFullCoverage without writing files", async () => {
+  const dir = makeOrphanFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const report = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(report.ok, true);
+  assert.equal(report.coverage.complete, false);
+  assert.deepEqual(report.coverage.uncoveredScreens, ["Orphan"]);
+
+  const gated = parseToolResult(await figmaGenerateTests(runtime, { requireFullCoverage: true }));
+  assert.equal(gated.ok, false);
+  assert.match(gated.error, /流程覆盖不完整/);
+  assert.match(gated.error, /Orphan/);
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.json")), false);
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.md")), false);
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.xlsx")), false);
+});
+
+test("computeFlowCoverage: truncation and uncovered transitions mark incomplete", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  const cases = generateTestCases(graph);
+  assert.equal(computeFlowCoverage(graph, cases).complete, true);
+
+  const truncated = computeFlowCoverage(graph, cases, { truncated: true, entryFallback: false });
+  assert.equal(truncated.complete, false);
+  assert.equal(truncated.truncated, true);
+
+  const partial = computeFlowCoverage(graph, [{ ...cases[0], screens: ["Home"] }], {
+    truncated: false,
+    entryFallback: false
+  });
+  assert.equal(partial.complete, false);
+  assert.deepEqual(partial.uncoveredScreens, ["Checkout", "Success"]);
+  assert.deepEqual(partial.uncoveredEdges, ["Home → Checkout", "Checkout → Success"]);
+});
+
+test("flowGraphWarnings: no-entry, unreachable screens and unresolved destinations", () => {
+  const screen = (id, name) => ({ id, name, suggestedRoute: `/${name}`, childNames: [], textHints: [] });
+  const edge = (from, to) => ({
+    from: { id: from.id, name: from.name },
+    to: { id: to.id, name: to.name },
+    element: { id: `${from.id}:1`, name: "Tap", type: "BUTTON" },
+    textHints: [],
+    trigger: "ON_CLICK",
+    actionType: "NODE"
+  });
+
+  const home = screen("1", "Home");
+  const loop = screen("2", "Loop");
+  const warnings = flowGraphWarnings({
+    screens: [home, loop],
+    edges: [edge(loop, loop)],
+    entryScreens: [home.name],
+    unresolvedDestinations: ["9:9"]
+  });
+  assert.deepEqual(
+    warnings.map((warning) => warning.code),
+    ["unreachable-screens", "unresolved-destinations"]
+  );
+  assert.deepEqual(warnings[0].details, ["Loop"]);
+  assert.deepEqual(warnings[1].details, ["9:9"]);
+
+  const noEntry = flowGraphWarnings({
+    screens: [home, loop],
+    edges: [edge(home, loop), edge(loop, home)],
+    entryScreens: [],
+    unresolvedDestinations: []
+  });
+  assert.deepEqual(
+    noEntry.map((warning) => warning.code),
+    ["no-entry"]
+  );
+
+  assert.deepEqual(
+    flowGraphWarnings(buildFlowGraph(syntheticFlowDocument())),
+    []
+  );
+});
+
+const BRANCH_EDGE = (id, from, to) => ({
+  from: { id: from.id, name: from.name },
+  to: { id: to.id, name: to.name },
+  element: { id, name: `To ${to.name}`, type: "BUTTON" },
+  textHints: [],
+  trigger: "ON_CLICK",
+  actionType: "NODE"
+});
+
+function makeBranchFlowsProject() {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  const home = { id: "s1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] };
+  const a = { id: "s2", name: "A", suggestedRoute: "/a", childNames: [], textHints: [] };
+  const b = { id: "s3", name: "B", suggestedRoute: "/b", childNames: [], textHints: [] };
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [home, a, b],
+      edges: [BRANCH_EDGE("e1", home, a), BRANCH_EDGE("e2", home, b)],
+      entryScreens: ["Home"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  return dir;
+}
+
+test("figma_generate_tests: truncated exploration blocks requireFullCoverage", async () => {
+  const dir = makeBranchFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const report = parseToolResult(await figmaGenerateTests(runtime, { maxFlows: 1, save: false }));
+  assert.equal(report.ok, true);
+  assert.equal(report.coverage.truncated, true);
+  assert.equal(report.coverage.complete, false);
+
+  const gated = parseToolResult(
+    await figmaGenerateTests(runtime, { maxFlows: 1, requireFullCoverage: true })
+  );
+  assert.equal(gated.ok, false);
+  assert.match(gated.error, /截断/);
+  assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.json")), false);
+});
+
+test("figma_generate_tests: entry fallback is a warning, not a completeness failure", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  const a = { id: "s1", name: "A", suggestedRoute: "/a", childNames: [], textHints: [] };
+  const b = { id: "s2", name: "B", suggestedRoute: "/b", childNames: [], textHints: [] };
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [a, b],
+      edges: [BRANCH_EDGE("e1", a, b), BRANCH_EDGE("e2", b, a)],
+      entryScreens: [],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(
+    await figmaGenerateTests(runtime, { requireFullCoverage: true, save: false })
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.coverage.entryFallback, true);
+  assert.equal(payload.coverage.complete, true);
 });

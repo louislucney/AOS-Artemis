@@ -14,8 +14,17 @@ import { classifyIosSerial } from "./device/ios.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/baseline.js";
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
+import { buildCalibration, parseXcResultTests, type CalibrationReport } from "./figma/calibration.js";
+import { preflightGeneratedTests, type PreflightReport } from "./figma/preflight.js";
 import { buildRunReport } from "./figma/run-report.js";
-import { runGeneratedTests } from "./figma/suite-runner.js";
+import {
+  buildSuiteLoopReport,
+  loopPercent,
+  renderSuiteLoopMarkdown,
+  type SuiteLoopCheck
+} from "./figma/suite-loop.js";
+import type { TaskStatRecord } from "./db/types.js";
+import { runGeneratedTests, type SuiteCaseResult, type SuiteRunReport } from "./figma/suite-runner.js";
 import { Runtime } from "./runtime.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
 
@@ -35,6 +44,8 @@ export interface SuiteCliDeps {
   errorLog?: (line: string) => void;
   logcatCollector?: LogcatCollector;
   iosLogCollector?: IosLogCollectorFn;
+  /** Injected for tests; defaults to `xcrun xcresulttool get test-results tests`. */
+  xcresultReader?: (xcresultPath: string) => Promise<unknown>;
 }
 
 interface ParsedFlags {
@@ -112,6 +123,77 @@ function parseIgnoreRegions(values: string[]): Array<{ x: number; y: number; wid
   return regions;
 }
 
+/** Reason the run fails the flow-coverage gate, or null when it passes.
+ * Fail-closed: unreadable preflight data or missing flows.json both count as
+ * "cannot prove completeness" (DESIGN §6.10). */
+function coverageGateIssue(preflight: PreflightReport | null): string | null {
+  if (!preflight) {
+    return "流程覆盖校验不可用：预检数据缺失（tests.json 不可读）";
+  }
+  const coverage = preflight.coverage;
+  if (!coverage.available) {
+    return "流程覆盖校验不可用：缺 flows.json，无法判定流程完整性（按不通过处理）";
+  }
+  const uncovered = coverage.uncoveredScreens.length + coverage.uncoveredEdges.length;
+  const generation = preflight.generation as { truncated?: unknown } | null;
+  const truncated = generation?.truncated === true;
+  if (uncovered === 0 && !truncated) return null;
+  return (
+    `流程未完整覆盖：未覆盖屏幕 ${coverage.uncoveredScreens.length} · ` +
+    `未覆盖跳转 ${coverage.uncoveredEdges.length}${truncated ? " · 路径截断" : ""}`
+  );
+}
+
+function retryCountOf(flags: ParsedFlags): number {
+  return Math.min(Math.max(intOrNull(flags.get("retry")) ?? 0, 0), 3);
+}
+
+function suiteRunOptions(
+  flags: ParsedFlags,
+  logcatCollector?: LogcatCollector,
+  iosLogCollector?: IosLogCollectorFn
+) {
+  return {
+    testsPath: flags.get("tests") ?? undefined,
+    maxCases: intOrNull(flags.get("max")) ?? undefined,
+    stopOnFailure: flags.bool("stop-on-failure"),
+    deviceSerial: flags.get("device") ?? undefined,
+    lockedAppPackage: flags.get("app") ?? undefined,
+    model: flags.get("model") ?? undefined,
+    pollTimeoutMs: intOrNull(flags.get("poll-timeout")) ?? undefined,
+    apiErrors: !flags.bool("no-api-errors"),
+    failOnApiErrors: flags.get("fail-on") === "api-error",
+    logcatCollector,
+    iosLogCollector
+  };
+}
+
+/** `--retry` 诊断（D3 口径）：只补写 retry 注记，不改首跑计数与退出码。 */
+async function applyRetryDiagnostics(
+  runtime: Runtime,
+  report: SuiteRunReport,
+  retryCount: number,
+  runOptions: ReturnType<typeof suiteRunOptions>
+): Promise<void> {
+  for (const entry of report.cases) {
+    if (entry.status === "passed") continue;
+    let attempts = 0;
+    let finalStatus: SuiteCaseResult["status"] = entry.status;
+    let finalTraceId = entry.traceId;
+    while (attempts < retryCount && finalStatus !== "passed") {
+      const retried = await runGeneratedTests(runtime, { ...runOptions, caseIds: [entry.caseId] });
+      attempts += 1;
+      const first = retried.cases[0];
+      if (!first) break;
+      finalStatus = first.status;
+      finalTraceId = first.traceId;
+    }
+    if (attempts > 0) {
+      entry.retry = { attempts, finalStatus, finalTraceId, flaky: finalStatus === "passed" };
+    }
+  }
+}
+
 async function defaultBuildRuntime(
   projectDir: string | null
 ): Promise<{ runtime: Runtime; dispose: () => Promise<void> }> {
@@ -144,6 +226,9 @@ export function printSuiteUsage(log: (line: string) => void): void {
 
 Usage:
   aos-mcp suite run [options]        执行 tests.json：每例复位→提交→轮询→台账→逐例分类
+  aos-mcp suite check [options]      静态覆盖检查：tests.json × flows.json（不连设备，CI 友好）
+  aos-mcp suite calibrate [options]  确定性套件（xcresult）与 MCP 台账差分校准（漏报/误报率）
+  aos-mcp suite loop [options]       测试闭环：静态检查→执行(可选)→反馈→差分校准(可选)，产出闭环报告与下一步
   aos-mcp suite evidence <traceId> [options]
                                      聚合某 trace 的失败证据包（失败项/崩溃/锚点截图/设计差异）
   aos-mcp suite api-errors <traceId> [options]
@@ -156,7 +241,11 @@ Usage:
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
-        [--no-api-errors] [--fail-on api-error]
+        [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>]
+check:  [--tests <path>]
+calibrate: [--report <json>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
+loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
+        [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-save] [--out <dir>]
 evidence: [--full-trace] [--out <dir>] [--no-save] [--design-figma <url>|--design-pen <path>] [--node <id>]
 api-errors: [--serial <s>] [--app <bundleId>] [--no-save] [--json]
 baseline: --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>]
@@ -164,7 +253,7 @@ baseline: --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--ser
 report: [--limit <n>] [--case <id>]... [--out <dir>] [--stamp <s>] [--no-save] [--no-sync]
 feedback: [--limit <n>] [--min-failures <n>]
 
-exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误或 --fail-on 命中（基线回归/未处理 API 错误）
+exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误或 --fail-on 命中（基线回归/未处理 API 错误/流程未覆盖或无法校验）
 错误码注册表: .artemis/design/error-codes.json（未配置时 api-errors 跳过并如实标注 degraded）`);
 }
 
@@ -175,27 +264,34 @@ async function suiteRun(
   logcatCollector?: LogcatCollector,
   iosLogCollector?: IosLogCollectorFn
 ): Promise<number> {
-  const report = await runGeneratedTests(runtime, {
-    testsPath: flags.get("tests") ?? undefined,
-    maxCases: intOrNull(flags.get("max")) ?? undefined,
-    stopOnFailure: flags.bool("stop-on-failure"),
-    deviceSerial: flags.get("device") ?? undefined,
-    lockedAppPackage: flags.get("app") ?? undefined,
-    model: flags.get("model") ?? undefined,
-    pollTimeoutMs: intOrNull(flags.get("poll-timeout")) ?? undefined,
-    apiErrors: !flags.bool("no-api-errors"),
-    failOnApiErrors: flags.get("fail-on") === "api-error",
-    logcatCollector,
-    iosLogCollector
-  });
+  const runOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
+  const report = await runGeneratedTests(runtime, runOptions);
+  const retryCount = retryCountOf(flags);
+  if (retryCount > 0 && !runOptions.stopOnFailure) {
+    await applyRetryDiagnostics(runtime, report, retryCount, runOptions);
+  }
+  const coverageIssue = flags.bool("fail-on-uncovered") ? coverageGateIssue(report.preflight) : null;
   if (flags.bool("json")) {
     io.log(JSON.stringify(report, null, 2));
   } else {
     io.log(`套件: ${report.testsPath}`);
     if (report.preflight) {
-      io.log(
-        `预检: 弱用例 ${report.preflight.weakCases.length} 条 · 未覆盖屏幕 ${report.preflight.coverage.uncoveredScreens.length} · 未覆盖边 ${report.preflight.coverage.uncoveredEdges.length}`
-      );
+      if (!report.preflight.coverage.available) {
+        io.log(`预检: 弱用例 ${report.preflight.weakCases.length} 条 · 覆盖校验不可用（缺 flows.json）`);
+      } else {
+        const generation = report.preflight.generation as {
+          truncated?: unknown;
+          entryFallback?: unknown;
+        } | null;
+        const notes = [
+          generation?.truncated === true ? "路径截断" : null,
+          generation?.entryFallback === true ? "入口回退" : null
+        ].filter((note): note is string => note !== null);
+        io.log(
+          `预检: 弱用例 ${report.preflight.weakCases.length} 条 · 未覆盖屏幕 ${report.preflight.coverage.uncoveredScreens.length} · 未覆盖边 ${report.preflight.coverage.uncoveredEdges.length}` +
+            (notes.length > 0 ? ` · ${notes.join(" · ")}` : "")
+        );
+      }
     }
     if (report.apiErrorCatalog) {
       io.log(
@@ -213,8 +309,13 @@ async function suiteRun(
           ? ` · API 错误 ${entry.apiErrors.map((error) => `${error.code}(${error.verdict})`).join("、")}`
           : "";
       const degraded = entry.apiErrorsDegraded ? ` · API 采集降级(${entry.apiErrorsDegraded})` : "";
+      const retryNote = entry.retry
+        ? ` · 重试 ${entry.retry.attempts} 次：${entry.status} → ${entry.retry.finalStatus}${
+            entry.retry.flaky ? "（flaky，不计首跑）" : ""
+          }`
+        : "";
       io.log(
-        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${apiNote}${degraded}`
+        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${apiNote}${degraded}${retryNote}`
       );
       if (entry.traceId && entry.status !== "passed") {
         io.log(`       证据: node dist/cli.js suite evidence ${entry.traceId}`);
@@ -223,9 +324,353 @@ async function suiteRun(
     io.log(
       `结果: pass ${report.passed} / fail ${report.failed} / skipped ${report.skipped}（executed ${report.executed}）`
     );
+    const flakyCount = report.cases.filter((entry) => entry.retry?.flaky === true).length;
+    if (flakyCount > 0) {
+      io.log(`重试转绿 ${flakyCount} 例（flaky，首跑结果仍为准）`);
+    }
     if (!report.ok) io.errorLog(`套件未执行: ${report.error ?? "无可提交用例"}`);
+    if (coverageIssue) io.errorLog(coverageIssue);
   }
   if (!report.ok) return 2;
+  if (coverageIssue) return 2;
+  return report.failed === 0 ? 0 : 1;
+}
+
+/** Pure static coverage check: no device, no case submission (CI pre-merge). */
+async function suiteCheck(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const defaultTestsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+  const customTests = flags.get("tests");
+  const testsPath = customTests ? path.resolve(runtime.project.rootDir, customTests) : defaultTestsPath;
+  const preflight = preflightGeneratedTests(runtime.configDirAbs, { testsPath });
+  if (!preflight) {
+    const message = `无法读取用例文件：${testsPath}`;
+    if (flags.bool("json")) {
+      io.log(JSON.stringify({ ok: false, testsPath, error: message }, null, 2));
+    } else {
+      io.errorLog(message);
+    }
+    return 2;
+  }
+
+  const coverage = preflight.coverage;
+  const issue = coverageGateIssue(preflight);
+  const routeDrift = coverage.available
+    ? coverage.screens.filter((screen) => !coverage.designScreens.includes(screen))
+    : [];
+  const generation = preflight.generation as {
+    truncated?: unknown;
+    entryFallback?: unknown;
+  } | null;
+  const notes = [
+    generation?.truncated === true ? "路径截断" : null,
+    generation?.entryFallback === true ? "入口回退" : null
+  ].filter((note): note is string => note !== null);
+
+  if (flags.bool("json")) {
+    io.log(
+      JSON.stringify(
+        {
+          ok: issue === null,
+          testsPath,
+          cases: preflight.cases,
+          weakCases: preflight.weakCases,
+          coverage,
+          generation: preflight.generation,
+          routeDrift,
+          issue
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    io.log(`静态覆盖检查: ${testsPath}`);
+    io.log(`用例: ${preflight.cases} · 弱用例 ${preflight.weakCases.length}`);
+    if (!coverage.available) {
+      io.log("覆盖: 不可用（缺 flows.json）");
+    } else {
+      io.log(
+        `覆盖: 未覆盖屏幕 ${coverage.uncoveredScreens.length} · 未覆盖跳转 ${coverage.uncoveredEdges.length}` +
+          (notes.length > 0 ? ` · ${notes.join(" · ")}` : "")
+      );
+      if (coverage.uncoveredScreens.length > 0) {
+        io.log(`  未覆盖屏幕: ${coverage.uncoveredScreens.join("、")}`);
+      }
+      if (coverage.uncoveredEdges.length > 0) {
+        io.log(`  未覆盖跳转: ${coverage.uncoveredEdges.join("、")}`);
+      }
+    }
+    if (routeDrift.length > 0) {
+      io.log(`路线漂移（测试引用、设计缺失）: ${routeDrift.join("、")}（警告，不阻断）`);
+    }
+    if (issue) io.errorLog(issue);
+    else io.log("结论: 完整");
+  }
+  return issue === null ? 0 : 2;
+}
+
+async function defaultXcResultReader(xcresultPath: string): Promise<unknown> {
+  const { execFile } = await import("node:child_process");
+  return await new Promise((resolve, reject) => {
+    execFile(
+      "xcrun",
+      ["xcresulttool", "get", "test-results", "tests", "--path", xcresultPath, "--format", "json"],
+      { maxBuffer: 128 * 1024 * 1024 },
+      (error, stdout) => {
+        if (error) {
+          reject(new Error(`xcresulttool 读取失败: ${error.message}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (parseError) {
+          reject(new Error(`xcresulttool 输出无法解析: ${errorMessage(parseError)}`));
+        }
+      }
+    );
+  });
+}
+
+/** Differential calibration: deterministic suite (xcresult) vs MCP ledger. */
+async function suiteCalibrate(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  deps: { xcresultReader?: (xcresultPath: string) => Promise<unknown> }
+): Promise<number> {
+  const reportFlag = flags.get("report");
+  const xcresultFlag = flags.get("xcresult");
+  if (!reportFlag && !xcresultFlag) {
+    io.errorLog(
+      "用法: aos-mcp suite calibrate (--report <json>|--xcresult <bundle>) [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]"
+    );
+    return 2;
+  }
+
+  let xcInput: unknown;
+  let xcSource: string;
+  try {
+    if (reportFlag) {
+      xcSource = path.resolve(runtime.project.rootDir, reportFlag);
+      xcInput = JSON.parse(fs.readFileSync(xcSource, "utf-8"));
+    } else {
+      xcSource = path.resolve(runtime.project.rootDir, xcresultFlag!);
+      const reader = deps.xcresultReader ?? defaultXcResultReader;
+      xcInput = await reader(xcSource);
+    }
+  } catch (error) {
+    io.errorLog(`校准输入读取失败: ${errorMessage(error)}`);
+    return 2;
+  }
+  const xcTests = parseXcResultTests(xcInput);
+  if (xcTests.length === 0) {
+    io.errorLog(`警告: 未从输入解析出任何用例（${xcSource}）`);
+  }
+
+  const defaultTestsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+  const customTests = flags.get("tests");
+  const testsPath = customTests ? path.resolve(runtime.project.rootDir, customTests) : defaultTestsPath;
+  let cases: Array<{ id: string; name: string }>;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as {
+      flows?: Array<{ id?: unknown; name?: unknown }>;
+    };
+    cases = (parsed.flows ?? [])
+      .filter((entry): entry is { id: string; name?: unknown } => Boolean(entry) && typeof entry.id === "string")
+      .map((entry) => ({ id: entry.id, name: typeof entry.name === "string" ? entry.name : entry.id }));
+  } catch (error) {
+    io.errorLog(`无法读取用例文件：${testsPath}（${errorMessage(error)}）`);
+    return 2;
+  }
+
+  if (!flags.bool("no-sync")) {
+    await runtime.syncTaskStatuses();
+  }
+  let tasks: TaskStatRecord[];
+  try {
+    tasks = await runtime.store.listTasks(runtime.project.rootDir, intOrNull(flags.get("limit")) ?? 200);
+  } catch (error) {
+    io.errorLog(`无法读取运行台账: ${errorMessage(error)}`);
+    return 2;
+  }
+  const mcpOutcomes = new Map<string, "passed" | "failed" | "pending">();
+  const ordered = [...tasks].sort((a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt));
+  for (const task of ordered) {
+    if (!task.caseId) continue;
+    mcpOutcomes.set(
+      task.caseId,
+      task.status === "completed" ? "passed" : task.status === "submitted" ? "pending" : "failed"
+    );
+  }
+
+  const report = buildCalibration({
+    cases,
+    mcpOutcomes,
+    xcTests,
+    generatedAt: new Date().toISOString(),
+    xcSource
+  });
+  const payload: Record<string, unknown> = { ...report };
+  if (!flags.bool("no-save")) {
+    const outDir = flags.get("out")
+      ? path.resolve(runtime.project.rootDir, flags.get("out")!)
+      : path.join(runtime.configDirAbs, "design", "reports");
+    fs.mkdirSync(outDir, { recursive: true });
+    const stamp = report.generatedAt.slice(0, 19).replace(/[-:]/g, "");
+    const savedTo = path.join(outDir, `calibration-${stamp}.json`);
+    writeFileAtomic(savedTo, JSON.stringify(payload, null, 2) + "\n");
+    payload.savedTo = savedTo;
+  }
+
+  if (flags.bool("json")) {
+    io.log(JSON.stringify(payload, null, 2));
+  } else {
+    io.log(`差分校准（XCTest: ${xcSource}）`);
+    io.log(
+      `对齐 ${report.matched} · 一致通过 ${report.agreedPass} · 一致失败 ${report.agreedFail} · MCP 漏报 ${report.mcpMiss} · MCP 误报 ${report.mcpFalseAlarm}`
+    );
+    io.log(
+      `漏报率 ${report.missRate === null ? "-" : `${(report.missRate * 100).toFixed(1)}%`} · 误报率 ${
+        report.falseAlarmRate === null ? "-" : `${(report.falseAlarmRate * 100).toFixed(1)}%`
+      }`
+    );
+    for (const entry of report.cases) {
+      if (entry.verdict === "agreed-pass" || entry.verdict === "agreed-fail") continue;
+      io.log(
+        `  [${entry.verdict}] ${entry.caseName} (${entry.caseId}) mcp=${entry.mcp} xctest=${entry.xctest}${
+          entry.testName ? ` test=${entry.testName}` : ""
+        }`
+      );
+    }
+    if (report.unmatchedXcTests.length > 0) {
+      io.log(`未对齐的 XCTest 用例（测试名未内嵌 case_id）: ${report.unmatchedXcTests.join("、")}`);
+    }
+    if (payload.savedTo) io.log(`已保存: ${String(payload.savedTo)}`);
+  }
+  if (flags.bool("fail-on-miss") && report.mcpMiss > 0) {
+    return 2;
+  }
+  return 0;
+}
+
+/** 测试闭环（test → improve）：静态检查 → 执行(可选) → 反馈 → 差分校准(可选)，产出闭环报告与下一步动作。 */
+async function suiteLoop(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  deps: { logcatCollector?: LogcatCollector; iosLogCollector?: IosLogCollectorFn }
+): Promise<number> {
+  const defaultTestsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+  const customTests = flags.get("tests");
+  const testsPath = customTests ? path.resolve(runtime.project.rootDir, customTests) : defaultTestsPath;
+
+  const preflight = preflightGeneratedTests(runtime.configDirAbs, { testsPath });
+  let check: SuiteLoopCheck | null = null;
+  if (preflight) {
+    const issue = flags.bool("allow-uncovered") ? null : coverageGateIssue(preflight);
+    const routeDrift = preflight.coverage.available
+      ? preflight.coverage.screens.filter((screen) => !preflight.coverage.designScreens.includes(screen))
+      : [];
+    check = { testsPath, preflight, issue, routeDrift };
+  }
+
+  const runOptions = suiteRunOptions(flags, deps.logcatCollector, deps.iosLogCollector);
+  let report: SuiteRunReport | null = null;
+  if (!flags.bool("skip-run")) {
+    report = await runGeneratedTests(runtime, runOptions);
+    const retryCount = retryCountOf(flags);
+    if (retryCount > 0 && !runOptions.stopOnFailure) {
+      await applyRetryDiagnostics(runtime, report, retryCount, runOptions);
+    }
+  }
+
+  const feedback = await buildGenerationFeedback(runtime, {
+    limit: intOrNull(flags.get("limit")) ?? undefined
+  });
+
+  let calibration: CalibrationReport | null = null;
+  const calibrationPath = flags.get("calibration");
+  if (calibrationPath) {
+    try {
+      const abs = path.resolve(runtime.project.rootDir, calibrationPath);
+      calibration = JSON.parse(fs.readFileSync(abs, "utf-8")) as CalibrationReport;
+    } catch (error) {
+      io.errorLog(`校准报告读取失败: ${errorMessage(error)}`);
+      return 2;
+    }
+  }
+
+  const loopReport = buildSuiteLoopReport({
+    generatedAt: new Date().toISOString(),
+    check,
+    run: report,
+    feedback: feedback.ok ? feedback : null,
+    feedbackError: feedback.ok ? null : feedback.error ?? "反馈聚合失败",
+    calibration
+  });
+  const payload: Record<string, unknown> = { ...loopReport };
+  if (!flags.bool("no-save")) {
+    const outDir = flags.get("out")
+      ? path.resolve(runtime.project.rootDir, flags.get("out")!)
+      : path.join(runtime.configDirAbs, "design", "reports");
+    fs.mkdirSync(outDir, { recursive: true });
+    const stamp = loopReport.generatedAt.slice(0, 19).replace(/[-:]/g, "");
+    const jsonPath = path.join(outDir, `loop-${stamp}.json`);
+    const markdownPath = path.join(outDir, `loop-${stamp}.md`);
+    writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
+    writeFileAtomic(markdownPath, renderSuiteLoopMarkdown(loopReport));
+    payload.savedTo = { json: jsonPath, markdown: markdownPath };
+  }
+
+  if (flags.bool("json")) {
+    io.log(JSON.stringify(payload, null, 2));
+  } else {
+    const step = loopReport.steps;
+    io.log(`测试闭环: ${testsPath}`);
+    io.log(
+      `静态检查: ${
+        step.check ? (step.check.issue ? `未通过（${step.check.issue}）` : "通过") : "不可用（无 tests.json）"
+      }`
+    );
+    io.log(
+      `执行: ${
+        step.run
+          ? `pass ${step.run.passed} / fail ${step.run.failed} / skipped ${step.run.skipped}（flaky ${step.run.flaky}）`
+          : "未执行（--skip-run）"
+      }`
+    );
+    io.log(
+      `反馈: ${
+        step.feedback
+          ? step.feedback.error
+            ? `不可用（${step.feedback.error}）`
+            : `建议 ${step.feedback.suggestions} 条`
+          : "未生成"
+      }`
+    );
+    io.log(
+      `差分校准: ${
+        step.calibration
+          ? `漏报 ${step.calibration.mcpMiss}（${loopPercent(step.calibration.missRate)}）· 误报 ${step.calibration.mcpFalseAlarm}（${loopPercent(step.calibration.falseAlarmRate)}）`
+          : "未提供"
+      }`
+    );
+    io.log("下一步:");
+    loopReport.nextActions.forEach((action, index) => io.log(`  ${index + 1}) ${action}`));
+    if (payload.savedTo) {
+      io.log(`已保存: ${(payload.savedTo as { json: string }).json}`);
+    }
+  }
+
+  if (flags.bool("skip-run")) {
+    return check && check.issue === null ? 0 : 2;
+  }
+  if (!report || !report.ok) return 2;
+  if (check && check.issue !== null) return 2;
   return report.failed === 0 ? 0 : 1;
 }
 
@@ -483,7 +928,9 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     printSuiteUsage(log);
     return sub ? 0 : 2;
   }
-  if (!["run", "evidence", "api-errors", "baseline", "report", "feedback"].includes(sub)) {
+  if (
+    !["run", "check", "calibrate", "loop", "evidence", "api-errors", "baseline", "report", "feedback"].includes(sub)
+  ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
     return 2;
@@ -495,6 +942,16 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     built = await buildRuntime(flags.get("project"));
     if (sub === "run") {
       return await suiteRun(built.runtime, flags, { log, errorLog }, deps.logcatCollector, deps.iosLogCollector);
+    }
+    if (sub === "check") return await suiteCheck(built.runtime, flags, { log, errorLog });
+    if (sub === "calibrate") {
+      return await suiteCalibrate(built.runtime, flags, { log, errorLog }, { xcresultReader: deps.xcresultReader });
+    }
+    if (sub === "loop") {
+      return await suiteLoop(built.runtime, flags, { log, errorLog }, {
+        logcatCollector: deps.logcatCollector,
+        iosLogCollector: deps.iosLogCollector
+      });
     }
     if (sub === "evidence") return await suiteEvidence(built.runtime, flags, { log, errorLog });
     if (sub === "api-errors") {

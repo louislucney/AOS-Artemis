@@ -422,3 +422,328 @@ test("suite api-errors: iOS UDID 走 simctl 采集并标注 source", async () =>
   assert.equal(artifact.source, "simctl-log");
   assert.equal(artifact.errors[0].code, "AUTH_401");
 });
+
+test("suite run --fail-on-uncovered: exits 2 on uncovered flow, 0 when fully covered", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" }, "trace-2": { status: "completed" } }
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const writeFlows = (payload) =>
+    fs.writeFileSync(path.join(designDir, "flows.json"), JSON.stringify(payload), "utf-8");
+
+  writeFlows({
+    screens: [
+      { id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] },
+      { id: "2", name: "Orphan", suggestedRoute: "/orphan", childNames: [], textHints: [] }
+    ],
+    edges: []
+  });
+  const gated = await runCli(runtime, ["run", "--fail-on-uncovered"]);
+  assert.equal(gated.code, 2);
+  assert.ok(gated.errors.some((line) => line.includes("流程未完整覆盖")));
+  assert.ok(gated.logs.some((line) => line.startsWith("[PASS]")));
+
+  writeFlows({
+    screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+    edges: [{ from: { name: "Home" }, to: { name: "Home" } }]
+  });
+  const clean = await runCli(runtime, ["run", "--fail-on-uncovered"]);
+  assert.equal(clean.code, 0);
+  assert.deepEqual(clean.errors, []);
+});
+
+test("suite run --fail-on-uncovered: custom tests path is validated; missing flows.json fails closed", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" }, "trace-2": { status: "completed" } }
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const qaDir = path.join(runtime.project.rootDir, "qa");
+  fs.mkdirSync(qaDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(qaDir, "tests.json"),
+    JSON.stringify({ flows: [caseEntry(1)] }),
+    "utf-8"
+  );
+
+  const missingFlows = await runCli(runtime, ["run", "--tests", "qa/tests.json", "--fail-on-uncovered"]);
+  assert.equal(missingFlows.code, 2);
+  assert.ok(missingFlows.errors.some((line) => line.includes("缺 flows.json")));
+
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: []
+    }),
+    "utf-8"
+  );
+  const okRun = await runCli(runtime, ["run", "--tests", "qa/tests.json", "--fail-on-uncovered"]);
+  assert.equal(okRun.code, 0);
+  assert.ok(okRun.logs.some((line) => line.startsWith("预检:")));
+  assert.deepEqual(okRun.errors, []);
+});
+
+test("suite run --fail-on-uncovered: execution failure is reported before coverage issue", async () => {
+  const { runtime } = await setupRun({ cases: null });
+  const result = await runCli(runtime, ["run", "--fail-on-uncovered"]);
+  assert.equal(result.code, 2);
+  const executionIndex = result.errors.findIndex((line) => line.includes("套件未执行"));
+  const coverageIndex = result.errors.findIndex((line) => line.includes("流程覆盖校验不可用"));
+  assert.ok(executionIndex >= 0, "execution failure line present");
+  assert.ok(coverageIndex >= 0, "coverage issue line present");
+  assert.ok(executionIndex < coverageIndex, "execution failure comes first");
+});
+
+test("suite check: static coverage without device (0 complete, 2 uncovered/missing flows)", async () => {
+  const { runtime, proxy } = await setupRun({ cases: [caseEntry(1)], statuses: {} });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const writeFlows = (payload) =>
+    fs.writeFileSync(path.join(designDir, "flows.json"), JSON.stringify(payload), "utf-8");
+
+  writeFlows({
+    screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+    edges: []
+  });
+  const complete = await runCli(runtime, ["check"]);
+  assert.equal(complete.code, 0);
+  assert.ok(complete.logs.some((line) => line.includes("结论: 完整")));
+
+  const jsonRun = await runCli(runtime, ["check", "--json"]);
+  assert.equal(jsonRun.code, 0);
+  assert.equal(JSON.parse(jsonRun.logs[0]).ok, true);
+  assert.equal(proxy.calls.length, 0, "check never touches the device proxy");
+
+  writeFlows({
+    screens: [
+      { id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] },
+      { id: "2", name: "Orphan", suggestedRoute: "/orphan", childNames: [], textHints: [] }
+    ],
+    edges: []
+  });
+  const incomplete = await runCli(runtime, ["check"]);
+  assert.equal(incomplete.code, 2);
+  assert.ok(incomplete.errors.some((line) => line.includes("流程未完整覆盖")));
+
+  fs.rmSync(path.join(designDir, "flows.json"));
+  const missing = await runCli(runtime, ["check"]);
+  assert.equal(missing.code, 2);
+  assert.ok(missing.errors.some((line) => line.includes("缺 flows.json")));
+});
+
+test("suite check: route drift warning (test screens absent from design, non-blocking)", async () => {
+  const { runtime } = await setupRun({ cases: [caseEntry(1, { screens: ["Home", "ObservedOnly"] })] });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: []
+    }),
+    "utf-8"
+  );
+  const result = await runCli(runtime, ["check"]);
+  assert.equal(result.code, 0);
+  assert.ok(result.logs.some((line) => line.includes("路线漂移") && line.includes("ObservedOnly")));
+});
+
+test("suite calibrate: aligns xcresult report with the ledger and reports miss rate", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1), caseEntry(2)],
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "failed", error: "boom" }
+    }
+  });
+  const run = await runCli(runtime, ["run"]);
+  assert.equal(run.code, 1);
+
+  const reportPath = path.join(runtime.project.rootDir, "qa", "xc.json");
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  fs.writeFileSync(
+    reportPath,
+    JSON.stringify({
+      tests: [
+        { name: "testFlow_case-1()", status: "Passed" },
+        { name: "testFlow2_case-2()", status: "Passed" }
+      ]
+    }),
+    "utf-8"
+  );
+
+  const result = await runCli(runtime, ["calibrate", "--report", "qa/xc.json", "--json", "--no-save"]);
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.logs[0]);
+  assert.equal(payload.agreedPass, 1);
+  assert.equal(payload.mcpFalseAlarm, 1);
+  assert.equal(payload.missRate, null);
+  assert.equal(payload.falseAlarmRate, 0.5);
+});
+
+test("suite calibrate: injected xcresult reader and --fail-on-miss gating", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const run = await runCli(runtime, ["run"]);
+  assert.equal(run.code, 0);
+
+  const result = await runCli(
+    runtime,
+    ["calibrate", "--xcresult", "/tmp/fake.xcresult", "--json", "--no-save", "--fail-on-miss"],
+    { xcresultReader: async () => ({ tests: [{ name: "test_case-1()", status: "Failed" }] }) }
+  );
+  assert.equal(result.code, 2);
+  const payload = JSON.parse(result.logs[0]);
+  assert.equal(payload.mcpMiss, 1);
+  assert.equal(payload.missRate, 1);
+});
+
+test("suite report: traceability matrix joins design, cases, traces and evidence", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1, { screens: ["Home", "Checkout"] })],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  await runCli(runtime, ["run"]);
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [
+        { id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] },
+        { id: "2", name: "Checkout", suggestedRoute: "/c", childNames: [], textHints: [] },
+        { id: "3", name: "Orphan", suggestedRoute: "/o", childNames: [], textHints: [] }
+      ],
+      edges: [{ from: { name: "Home" }, to: { name: "Checkout" } }]
+    }),
+    "utf-8"
+  );
+
+  const result = await runCli(runtime, ["report", "--json", "--no-save"]);
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.logs[0]);
+  assert.deepEqual(payload.traceability.uncoveredScreens, ["Orphan"]);
+  const home = payload.traceability.screens.find((entry) => entry.screen === "Home");
+  assert.deepEqual(home.caseIds, ["case-1"]);
+  assert.deepEqual(home.traceIds, ["trace-1"]);
+});
+
+test("suite run --retry: reruns failures for diagnosis; first-run result still gates", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: {
+      "trace-1": { status: "failed", error: "transient" },
+      "trace-2": { status: "completed" }
+    }
+  });
+  const result = await runCli(runtime, ["run", "--retry", "1"]);
+  assert.equal(result.code, 1, "first-run failure still gates");
+  assert.ok(
+    result.logs.some((line) => line.includes("重试 1 次") && line.includes("flaky，不计首跑")),
+    "retry annotation is honest in text output"
+  );
+});
+
+test("suite run --retry: retry annotation is machine-readable and counters stay first-run", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: {
+      "trace-1": { status: "failed", error: "transient" },
+      "trace-2": { status: "completed" }
+    }
+  });
+  const result = await runCli(runtime, ["run", "--retry", "1", "--json"]);
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.logs[0]);
+  assert.equal(payload.failed, 1, "counters reflect first run");
+  assert.equal(payload.passed, 0);
+  assert.deepEqual(payload.cases[0].retry, {
+    attempts: 1,
+    finalStatus: "passed",
+    finalTraceId: "trace-2",
+    flaky: true
+  });
+});
+
+test("suite loop --skip-run: static closed-loop report without device (0 complete, 2 uncovered)", async () => {
+  const { runtime } = await setupRun({ cases: [caseEntry(1)] });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const writeFlows = (payload) =>
+    fs.writeFileSync(path.join(designDir, "flows.json"), JSON.stringify(payload), "utf-8");
+  writeFlows({
+    screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+    edges: []
+  });
+
+  const result = await runCli(runtime, ["loop", "--skip-run", "--json"]);
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.logs[0]);
+  assert.equal(payload.steps.check.issue, null);
+  assert.equal(payload.steps.run, null);
+  assert.ok(payload.nextActions.length >= 1);
+  assert.ok(fs.existsSync(payload.savedTo.json));
+  assert.ok(fs.existsSync(payload.savedTo.markdown));
+  const markdown = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.match(markdown, /测试闭环报告/);
+
+  writeFlows({
+    screens: [
+      { id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] },
+      { id: "2", name: "Orphan", suggestedRoute: "/orphan", childNames: [], textHints: [] }
+    ],
+    edges: []
+  });
+  const incomplete = await runCli(runtime, ["loop", "--skip-run", "--no-save"]);
+  assert.equal(incomplete.code, 2);
+  assert.ok(incomplete.logs.some((line) => line.includes("未通过")));
+});
+
+test("suite loop: runs the loop with execution, feedback and calibration merge", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: []
+    }),
+    "utf-8"
+  );
+  const calPath = path.join(runtime.project.rootDir, "qa", "cal.json");
+  fs.mkdirSync(path.dirname(calPath), { recursive: true });
+  fs.writeFileSync(
+    calPath,
+    JSON.stringify({
+      generatedAt: "2026-10-08T00:00:00.000Z",
+      xcSource: "fixture",
+      matched: 1,
+      mcpMiss: 1,
+      mcpFalseAlarm: 0,
+      agreedPass: 0,
+      agreedFail: 0,
+      missRate: 1,
+      falseAlarmRate: null,
+      cases: [],
+      unmatchedXcTests: []
+    }),
+    "utf-8"
+  );
+
+  const result = await runCli(runtime, [
+    "loop",
+    "--calibration",
+    "qa/cal.json",
+    "--json",
+    "--no-save"
+  ]);
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.logs[0]);
+  assert.equal(payload.steps.run.passed, 1);
+  assert.equal(payload.steps.feedback.suggestions, 0);
+  assert.equal(payload.steps.calibration.mcpMiss, 1);
+  assert.ok(payload.nextActions.some((line) => line.includes("MCP 漏报 1 例")));
+});

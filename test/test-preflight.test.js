@@ -46,6 +46,7 @@ test("preflightGeneratedTests: weak steps, screen/edge coverage, generation stat
 
   const report = preflightGeneratedTests(configDir);
   assert.equal(report.cases, 2);
+  assert.equal(report.coverage.available, true);
   assert.deepEqual(report.weakCases, [
     { id: "case-2", name: "Home → Home", weakSteps: [{ index: 0, reason: "缺少可验证断言（目的地屏无文本提示）" }] }
   ]);
@@ -67,9 +68,43 @@ test("preflightGeneratedTests: missing or corrupt tests.json returns null; flows
   });
   const report = preflightGeneratedTests(testsOnly);
   assert.equal(report.cases, 1);
+  assert.equal(report.coverage.available, false);
   assert.deepEqual(report.coverage.uncoveredScreens, []);
   assert.deepEqual(report.coverage.uncoveredEdges, []);
   assert.equal(report.generation, null);
+});
+
+test("preflightGeneratedTests: self transitions are excluded; custom tests path is honored", () => {
+  const flows = JSON.stringify({
+    screens: [{ name: "Home" }, { name: "Checkout" }],
+    edges: [
+      { from: { name: "Home" }, to: { name: "Checkout" } },
+      { from: { name: "Checkout" }, to: { name: "Checkout" } }
+    ]
+  });
+  const configDir = makeDesignDir({ flows });
+  const customDir = makeTempDir("aos-preflight-custom-");
+  const customTests = path.join(customDir, "cases.json");
+  fs.writeFileSync(
+    customTests,
+    JSON.stringify({
+      flows: [
+        {
+          id: "case-1",
+          name: "Home → Checkout",
+          screens: ["Home", "Checkout"],
+          steps: ["点击「Buy now」，验证进入「Checkout」（页面应出现「Pay now」）"]
+        }
+      ]
+    })
+  );
+
+  const report = preflightGeneratedTests(configDir, { testsPath: customTests });
+  assert.equal(report.cases, 1);
+  assert.equal(report.coverage.available, true);
+  assert.deepEqual(report.coverage.uncoveredScreens, []);
+  assert.deepEqual(report.coverage.uncoveredEdges, []);
+  assert.deepEqual(report.coverage.screens.sort(), ["Checkout", "Home"]);
 });
 
 test("linearizeFlowsWithStats: reports truncation, dropped paths and entry fallback", () => {

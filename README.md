@@ -163,7 +163,7 @@ JIRA_API_TOKEN=***
 sudo appium driver run xcuitest tunnel-creation
 ```
 
-- 配置（进程 env，宿主级）：`AOS_APPIUM_URL`（直连既有 server，可选）、`AOS_IOS_APPIUM_PORT`（托管启动端口，默认 4723）、`AOS_IOS_XCODE_ORG_ID`（**必填**：证书 OU 团队 ID，可在 Xcode Settings → Accounts 查看）、`AOS_IOS_XCODE_SIGNING_ID`（默认 `Apple Development`）、`AOS_IOS_WDA_BUNDLE_ID`（默认 `com.aos.mcp.wda`）、`AOS_IOS_SESSION_IDLE_MS`（观测会话空闲回收，默认 30min，0=进程存活期保活）、`AOS_IOS_OBSERVE_WAIT_MS`（观测等待锁上限，默认 5s）、`AOS_IOS_APPIUM_TIMEOUT_MS`（WebDriver 超时，默认 120s）。
+- 配置（**项目 `.env` 打底、客户端/进程 env 覆盖**，同模型目录规则）：`AOS_APPIUM_URL`（直连既有 server，可选）、`AOS_IOS_APPIUM_PORT`（托管启动端口，默认 4723）、`AOS_IOS_XCODE_ORG_ID`（真机**必填**：证书 OU 团队 ID，可在 Xcode Settings → Accounts 查看；多项目团队不同时各自写入项目 `.env`）、`AOS_IOS_XCODE_SIGNING_ID`（默认 `Apple Development`）、`AOS_IOS_WDA_BUNDLE_ID`（默认 `com.aos.mcp.wda`）、`AOS_IOS_SESSION_IDLE_MS`（观测会话空闲回收，默认 30min，0=进程存活期保活）、`AOS_IOS_OBSERVE_WAIT_MS`（观测等待锁上限，默认 5s）、`AOS_IOS_APPIUM_TIMEOUT_MS`（WebDriver 超时，默认 120s）。
 - 行为：`mobile_get_device_state`（screenshot/hierarchy）、`mobile_run_task`（iOS 执行器，支持 `app_path` 传本地 `.ipa`）、`design_device_diff` / `compare_design_and_device`（真机截图源，note 标注 `wda`）；同一设备互斥排队（任务 FIFO），观测被占用时有界等待并返回 `device_busy` + 最近缓存帧；层级解析失败降级为仅截图（`hierarchy=parse_failed`）；真机崩溃取证经 `devicectl systemCrashLogs` 采集（`aos_crashes` 来源可辨识），设备日志暂降级。
 - 排障：`doctor` 与 `aos_status.ios` 显示 Appium/xcuitest 版本、签名与隧道指引；托管启动前会先探测复用已有实例。
 
@@ -172,12 +172,13 @@ sudo appium driver run xcuitest tunnel-creation
 ```
 figma_extract_flows(url)     # 交互流程 → .artemis/design/flows.json
 figma_gap_analysis(url)      # 资源缺口 → .artemis/design/gaps.json
-figma_generate_tests(url)    # 流程 → tests.{json,md} + tests.xlsx（含 taskDesc、前置假设；有 strings.json 时附 i18n key；excelTemplate 套 .xlsx 模版）
+figma_generate_tests(url)    # 流程 → tests.{json,md} + tests.xlsx（含 taskDesc、前置假设；有 strings.json 时附 i18n key；excelTemplate 套 .xlsx 模版；覆盖贪心+长路径优先——先长主链再补覆盖缺口，maxDepth 默认 12 可调）
 figma_import_assets()        # 缺失资源 → 按栈命名/目录写入（PNG 默认倍率集；import-report.json；dryRun 预览）
 figma_export_brief(url)      # 编码事实包 → build-brief.{json,md}（tokens/组件/约定；scaffold 可出骨架）
 figma_import_tokens(url)     # 可选：颜色 → .artemis/design/tokens.json + 栈 token 文件（tokens 唯一性/裸色扫描）
 figma_import_strings(url)    # 可选：文案 → .artemis/design/strings.json + 资源文件（Android/Flutter/RN/Web/iOS；key 冻结/i18n；复数经 string-context.json）
 pen_inspect(path?)           # pen.dev 离线检查：.pen（开放 JSON）结构校验 + 摘要；无账号/网络需求
+pen_extract_flows(path?)     # pen 流程合成（离线）：标签命名+状态归并+画板排布推断 → flows.json + flow-map.md（推断边标 INFERRED，碎片度 warnings）
 pen_import_tokens(path?)     # pen 颜色变量 → tokens.json + 栈 token 文件（变量名即 token；modes/别名）
 pen_import_strings(path?)    # pen 文案 → strings.json + 资源文件（冻结 key；冲突经 resolutions.json）
 pen_export_brief(path?)      # pen 构建简报 → build-brief.{json,md}（scaffold 可出组件骨架）
@@ -193,16 +194,22 @@ pen_agent(prompt)            # agent 生成/改设计 → .pen（凭证自动复
 
 1. **CLI 内自然语言（推荐）**：先 `node dist/cli.js install --targets opencode,claude,cursor,vscode`（会带上 `AOS_PROJECT_DIR`/`AOS_DATABASE_URL`，并透传 `ARTEMIS_ADB_PATH`/`ARTEMIS_TRACES_DIR` 若已设置），重启客户端后直接说：
    *"用这个 Figma 链接跑设计流水线：<url>"* —— agent 会依次调用下述 5 个工具。
-2. **一条命令**：`node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`（第 ④ 步默认 dryRun，加 `--import` 正式写入）。
+2. **一条命令**：`node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`（第 ④ 步默认 dryRun，加 `--import` 正式写入；③ 生成默认 `requireFullCoverage:true`——流程覆盖不完整即停，不落盘半套用例）。
 3. **手动逐个调用**（任意 MCP 客户端）：
-   `figma_extract_flows` → `figma_gap_analysis` → `figma_generate_tests` → `figma_import_assets`(dryRun→正式) → `figma_export_brief`(+scaffold)。
+   `figma_extract_flows` → `figma_gap_analysis` → `figma_generate_tests`（建议 `requireFullCoverage:true`，先看响应 `coverage`）→ `figma_import_assets`(dryRun→正式) → `figma_export_brief`(+scaffold)。
 
 **确定性执行与取证（CLI suite）**：生成用例后可用 `node dist/cli.js suite` 跑完整测试闭环（长任务/CI 友好；退出码 0 全通过 / 1 用例失败 / 2 参数或执行错误、基线回归）：
 
 ```bash
 node dist/cli.js suite run [--tests <path>] [--max N] [--stop-on-failure]
                            [--device <serial>] [--app <pkg>] [--model Flash|Pro]
-                           [--no-api-errors] [--fail-on api-error]
+                           [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry N]
+node dist/cli.js suite check [--tests <path>]
+node dist/cli.js suite calibrate (--report <json>|--xcresult <bundle>) [--tests <path>]
+                           [--limit N] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
+node dist/cli.js suite loop [--tests <path>] [--skip-run] [--calibration <json>]
+                           [--retry N] [--max N] [--device <serial>] [--app <pkg>]
+                           [--allow-uncovered] [--no-save] [--out <dir>]
 node dist/cli.js suite evidence <traceId> [--full-trace] [--out <dir>] [--no-save]
 node dist/cli.js suite api-errors <traceId> [--serial <s>] [--no-save] [--json]
 node dist/cli.js suite baseline save|compare --case <id> --step <n> --trace <id> \
@@ -211,18 +218,21 @@ node dist/cli.js suite report [--limit N] [--case <id>]... [--out <dir>] [--no-s
 node dist/cli.js suite feedback [--min-failures N]
 ```
 
-- `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/用例缺陷/未分类），失败附 `suite evidence <traceId>` 提示；`--device` 为 iOS 模拟器 UDID 时用例由 AOS iOS 执行器运行（`--app` 经 idb terminate+launch 复位；日志采集标 `ios-log-unsupported` 降级）。
+- `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/用例缺陷/未分类），失败附 `suite evidence <traceId>` 提示；`--device` 为 iOS 模拟器 UDID 时用例由 AOS iOS 执行器运行（`--app` 经 idb terminate+launch 复位；日志采集标 `ios-log-unsupported` 降级）；`--fail-on-uncovered` 按预检覆盖判定——未覆盖屏幕/跳转、生成截断，或无法校验（缺/坏 `flows.json`）一律 exit 2，自定义 `--tests` 同样参与校验（流程完整性契约见 DESIGN §6.10）；`--retry N`（≤3）对未通过用例重跑做 flaky 诊断并如实标注（`retry.flaky`）；**首跑结果仍决定门禁**（重跑转绿不计首跑通过）。
 - `evidence`：一次拿到失败项、崩溃签名、锚定失败步骤截图与可选设计差异引用（默认落 `.artemis/design/evidence/<traceId>/`）。
+- `check`：静态覆盖检查（tests.json × flows.json），**不连设备**，供 pre-merge CI；未覆盖屏幕/跳转、生成截断、缺/坏 flows.json 均 exit 2；"测试引用但设计缺失"的路线漂移仅警告。
+- `calibrate`：确定性套件结果（`--report <json>`，或 `--xcresult <bundle>` 经 `xcrun xcresulttool get test-results tests`，Xcode 16+）与 MCP 台账按 case_id 对齐，输出一致/漏报/误报与比率并落盘 `.artemis/design/reports/calibration-<stamp>.json`；测试名需内嵌 case_id（如 `test_order_flow_case-<12hex>()`）；`--fail-on-miss` 命中漏报即 exit 2。
+- `loop`：测试闭环一步编排——静态检查 → 执行（`--skip-run` 跳过）→ 生成反馈 → 差分校准合并（`--calibration <calibrate 产物>`）；产出 `loop-<stamp>.{json,md}`（步骤结果 + 确定性"下一步动作" + top 建议）；exit 码 = 检查/执行的门禁结论。MCP 只负责测试闭环，不深入项目实现细节——完善路径即"测试→改进 tests/flows/数据/错误码规则"再跑下一轮。
 - `api-errors`：按 trace 时间窗采集设备日志，匹配项目错误码注册表 `.artemis/design/error-codes.json`（`{codes:{"<code>":{match,handler?,expect?,handledPattern?}}}`），判定 `handled/unhandled/observed` 并落 `.artemis/traces/<traceId>/api-errors.json`；默认只作证据，`--fail-on api-error` 才让未处理错误判 FAIL。
 - `baseline`：设备对设备像素回归（last-known-good）；`--fail-on` 触发时退出码 2，可直接做 CI 门禁。
-- `report`：从运行台账导出 xlsx 结果页（含 API 错误/处理判定列）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）。
+- `report`：从运行台账导出 xlsx 结果页（含 API 错误/处理判定列）+ **追溯矩阵工作表**（design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据，含未覆盖与缺口标注）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）。
 - `feedback`：按屏幕/断言/数据/API 错误维度给出可追踪到 case/trace 的改进建议（只读，不自动改写生成物）。
 - 公共选项：`--project <dir>`（项目根，默认 cwd/`AOS_PROJECT_DIR`）、`--json`（机器可读输出）。
 
 
 前置：`FIGMA_ACCESS_TOKEN` 在项目 `.env`（或 `aos_configure` 写入）；CLI 拉起服务时如 `adb` 不在 PATH，可在客户端 env 设置 `ARTEMIS_ADB_PATH`（如 `~/Library/Android/sdk/platform-tools/adb`）。Figma REST 限流（如访客席位的 low 档）会**快速失败并返回 retry-after 提示**，不会长时间挂起；`AOS_FIGMA_RETRY_MAX_WAIT_MS`（默认 60s）与 `AOS_FIGMA_CACHE_TTL_MS`（默认 10min，0 关闭）可调。
 
-pen.dev 写回/导出/agent（`pen_export`/`pen_apply_tokens`/`pen_apply_strings`/`pen_agent`）前置：**无需手动安装**——pen CLI 缺失时自动安装到 `~/.aos/pen-cli`（Node ≥ 22.19、需网络；`AOS_PEN_NO_INSTALL=1` 关闭，`AOS_PEN_CLI_PATH`/`AOS_PEN_CLI_DIR`/`AOS_PEN_VERSION`、`AOS_PEN_TIMEOUT_MS` 默认 120s、`AOS_PEN_INSTALL_TIMEOUT_MS` 默认 600s 可调）；只需登录一次：`pen login`，或在 pen.dev 组织设置创建 `PEN_CLI_KEY` 写入项目 `.env`（自动透传子进程，不落日志）。`node dist/cli.js doctor` 显示 pen CLI 状态，`doctor --install-deps` 可预装。写回默认原位更新：先在临时文件上执行 `SetVariables`/`Update`，回读校验后才原子替换，失败时原文件保持不变；`dryRun:true` 只返回将执行的命令。`pen_agent` 的 agent 凭证自动复用 AOS active LLM 条目（只进子进程 env、不落日志）：DeepSeek 自动映射 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`（已实测）；Kimi/Moonshot、Z.AI/智谱、阿里云百炼 按官方文档映射各自 Anthropic 端点并使用 `ANTHROPIC_AUTH_TOKEN` + 模型 env（待真实 key 冒烟）；其他 provider 仅注入 `PEN_AGENT_API_KEY`，可用 `anthropicBaseUrl` 或 `AOS_PEN_ANTHROPIC_BASE_URL` 指定兼容端点。CLI 目前只识别 claude/codex/gemini 模型。离线四件套（`pen_inspect`/`pen_import_*`/`pen_export_brief`）不需要 pen CLI 与账号。
+pen.dev 写回/导出/agent（`pen_export`/`pen_apply_tokens`/`pen_apply_strings`/`pen_agent`）前置：**无需手动安装**——pen CLI 缺失时自动安装到 `~/.aos/pen-cli`（Node ≥ 22.19、需网络；`AOS_PEN_NO_INSTALL=1` 关闭，`AOS_PEN_CLI_PATH`/`AOS_PEN_CLI_DIR`/`AOS_PEN_VERSION`、`AOS_PEN_TIMEOUT_MS` 默认 120s、`AOS_PEN_INSTALL_TIMEOUT_MS` 默认 600s 可调）；只需登录一次：`pen login`，或在 pen.dev 组织设置创建 `PEN_CLI_KEY` 写入项目 `.env`（自动透传子进程，不落日志）。`node dist/cli.js doctor` 显示 pen CLI 状态，`doctor --install-deps` 可预装。写回默认原位更新：先在临时文件上执行 `SetVariables`/`Update`，回读校验后才原子替换，失败时原文件保持不变；`dryRun:true` 只返回将执行的命令。`pen_agent` 的 agent 凭证自动复用 AOS active LLM 条目（只进子进程 env、不落日志）：DeepSeek 自动映射 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`（已实测）；Kimi/Moonshot、Z.AI/智谱、阿里云百炼 按官方文档映射各自 Anthropic 端点并使用 `ANTHROPIC_AUTH_TOKEN` + 模型 env（待真实 key 冒烟）；其他 provider 仅注入 `PEN_AGENT_API_KEY`，可用 `anthropicBaseUrl` 或 `AOS_PEN_ANTHROPIC_BASE_URL` 指定兼容端点。CLI 目前只识别 claude/codex/gemini 模型。离线工具（`pen_inspect`/`pen_extract_flows`/`pen_import_*`/`pen_export_brief`）不需要 pen CLI 与账号。
 
 **测试用例 Excel 导出**：`figma_generate_tests` 默认把用例写入 `.artemis/design/tests.xlsx`（每流程一行：用例名/页面链路/前置假设/步骤/任务描述），`excelPath` 可改路径。要套用团队表格格式，传 `excelTemplate` 指向一个 `.xlsx` 模版：
 
@@ -340,12 +350,13 @@ node dist/cli.js doctor
 | `screen_map` | 持久屏幕映射 `.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 候选（confidence/unmatched）、`save` 幂等/merge、`list`；差异报告输出 `localized` |
 | `figma_extract_flows` | 解析 Figma 原型交互 → 流程图（screens/edges/entryScreens，支持连续动作与 BACK），落盘 `.artemis/design/flows.json` |
 | `figma_gap_analysis` | 缺口分析：设计资源/色板 vs 项目现有资产/ tokens 文件，落盘 `.artemis/design/gaps.json` |
-| `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md` + `tests.xlsx`（可用 `excelPath`/`excelTemplate` 定制 Excel 输出与模版），内含可直接传给 `mobile_run_task` 的任务描述 |
+| `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md` + `tests.xlsx`（可用 `excelPath`/`excelTemplate` 定制 Excel 输出与模版），内含可直接传给 `mobile_run_task` 的任务描述；响应含 `coverage` 完整度报告，`requireFullCoverage:true` 时覆盖不完整即报错不落盘 |
 | `figma_import_assets` | 资源导入：按 gaps.json 从 Figma 导出缺失资源，按技术栈命名/目录幂等写入（dryRun 可预览）；PNG 默认按栈倍率集导出（Android `drawable-xhdpi/-xxhdpi`、Flutter `2.0x/3.0x`、iOS `.imageset`+Contents.json、RN `@2x/@3x`；`densities:false` 回退单文件 @2x）；**唯一性**：内容 sha256 去重（批次内 + 项目资产索引，重复项记 `duplicate_of`） |
 | `figma_export_brief` | 构建简报：tokens/路由/组件变体/流程概览/缺口/栈约定 → `build-brief.{json,md}`；`scaffold` 可选按栈生成组件骨架（幂等） |
 | `figma_import_tokens` | 颜色 token 导入：Figma 颜色（含 alpha）→ `.artemis/design/tokens.json`（DTCG，modes 预留）+ 栈 token 文件（Android/Flutter/RN/Web）；裸色扫描 + enforcement；人工命名 `token-names.json` |
 | `figma_import_strings` | 文案 i18n 导入：Figma 文本 → 冻结 key（改名不改 key）→ `.artemis/design/strings.json` + 资源文件（Android `strings.xml` / Flutter `arb` / RN·Web JSON / iOS `.strings`+`.stringsdict`）；复用/迁移/source_changed/unused/硬编码扫描；conflict 经 `resolutions.json` 闭环；复数经 `string-context.json` 人工确认（Android `<plurals>`、Flutter/RN/Web ICU、iOS `.stringsdict`） |
 | `pen_inspect` | pen.dev 离线检查：解析 `.pen`（开放 JSON，支持注释）→ 结构校验（id 唯一/无斜杠、ref 与 `$变量` 可解析）+ 摘要（屏幕/组件/实例/文案/变量与主题/图片资产与缺失）；无账号/网络需求；`save:true` 落盘 `.artemis/design/pen/summary.json` |
+| `pen_extract_flows` | pen 流程合成（离线）：无原型交互数据时，用「Flow 标注 > 屏内首个文本 > 图层名」命名屏幕、按标签前缀归并状态变体、按画板顺序/排布推断跳转（全部 `INFERRED`，需复核）→ `flows.json`（可直接供 `figma_generate_tests`/`suite check`）+ `flow-map.md`（全局交互地图）；返回碎片度统计与 warnings |
 | `pen_import_tokens` | pen 颜色变量 → `.artemis/design/tokens.json`（DTCG；变量名即 token，modes 记录主题取值，`$别名` → aliasOf）+ 栈 token 文件（new/updated/unchanged/unused、裸色扫描、enforcement）；完全离线 |
 | `pen_import_strings` | pen 文案 → `.artemis/design/strings.json` + 资源文件（Android/Flutter/RN/Web/iOS；冻结 key、冲突经 `resolutions.json`、source_changed/unused/硬编码扫描；复数同 Figma 侧经 `string-context.json`）；完全离线 |
 | `pen_export_brief` | pen 构建简报：颜色/字阶/间距/圆角/阴影、屏幕与建议路由、可复用组件、按栈约定 → `build-brief.{json,md}`；`scaffold` 可选生成组件骨架；完全离线 |
@@ -386,12 +397,9 @@ AOS-ARTEMIS/
 克隆：`git clone --recurse-submodules https://github.com/louislucney/AOS-Artemis.git`
 （已 clone 过的补齐：`git submodule update --init --recursive`）
 
-## 运行时副本说明（重要）
+## 运行时副本说明
 
-系统里另有一份 artemis **运行时安装** `/Users/louis/artemis`（含 `.venv`、daemon（:8000）、IDE 已挂载的 mcp_server、本地配置与 `.env`）。统一服务当前使用工作区副本 `./artemis`，两份互不影响。
-
-- 迁移完成前：`cd artemis && uv sync` 让工作区副本自持 venv。
-- 迁移时（准备好后）：停止旧 daemon 与旧 mcp_server → 更新 IDE 的 MCP 配置指向 `aos-mcp`（注入 `AOS_PROJECT_DIR` / `AOS_DATABASE_URL`）→ 旧目录归档。
+系统里曾有一份独立的 artemis **运行时安装** `/Users/louis/artemis`（旧 daemon :8000、旧 mcp_server 挂载）。迁移已完成、该目录已移除（2026-10-08）；统一服务现在只使用工作区副本 `./artemis`（自持 venv：`cd artemis && uv sync` 或依赖包机制）。
 
 ## 开发
 

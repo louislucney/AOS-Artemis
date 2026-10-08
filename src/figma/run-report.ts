@@ -16,6 +16,12 @@ import type { TaskFailedItem, TaskStatus } from "../artemis/task-result.js";
 import type { TaskStatRecord } from "../db/types.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
+import {
+  buildTraceability,
+  type TraceabilityCaseInput,
+  type TraceabilityReport
+} from "./traceability.js";
+import type { CoverageEdge } from "./coverage.js";
 
 export type RunReportOutcome = "passed" | "failed" | "pending";
 
@@ -47,6 +53,7 @@ export interface RunReport {
   failed: number;
   pending: number;
   cases: RunReportCase[];
+  traceability: TraceabilityReport | null;
   saved?: { xlsx: string; junit: string };
   error?: string;
 }
@@ -62,6 +69,7 @@ export interface RunReportOptions {
 interface GeneratedCaseLike {
   id: string;
   name: string;
+  screens: string[];
   preconditions: string[];
   taskDesc: string;
 }
@@ -76,13 +84,22 @@ function loadCases(runtime: Runtime): GeneratedIndex {
   const testsPath = path.join(runtime.configDirAbs, "design", "tests.json");
   try {
     const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as {
-      flows?: Array<{ id?: unknown; name?: unknown; preconditions?: unknown; taskDesc?: unknown }>;
+      flows?: Array<{
+        id?: unknown;
+        name?: unknown;
+        screens?: unknown;
+        preconditions?: unknown;
+        taskDesc?: unknown;
+      }>;
     };
     for (const entry of parsed.flows ?? []) {
       if (!entry || typeof entry.id !== "string") continue;
       const generated: GeneratedCaseLike = {
         id: entry.id,
         name: typeof entry.name === "string" ? entry.name : entry.id,
+        screens: Array.isArray(entry.screens)
+          ? entry.screens.filter((screen): screen is string => typeof screen === "string")
+          : [],
         preconditions: Array.isArray(entry.preconditions)
           ? entry.preconditions.filter((item): item is string => typeof item === "string")
           : [],
@@ -95,6 +112,30 @@ function loadCases(runtime: Runtime): GeneratedIndex {
     /* tests.json not generated yet */
   }
   return index;
+}
+
+function readFlowCoverageInputs(runtime: Runtime): { screens: string[]; edges: CoverageEdge[] } | null {
+  try {
+    const flows = JSON.parse(
+      fs.readFileSync(path.join(runtime.configDirAbs, "design", "flows.json"), "utf-8")
+    ) as {
+      screens?: Array<{ name?: unknown }>;
+      edges?: Array<{ from?: { name?: unknown }; to?: { name?: unknown } | null }>;
+    };
+    const screens = (flows.screens ?? [])
+      .map((screen) => screen.name)
+      .filter((name): name is string => typeof name === "string");
+    const edges: CoverageEdge[] = [];
+    for (const edge of flows.edges ?? []) {
+      const from = edge.from?.name;
+      if (typeof from !== "string") continue;
+      const to = edge.to?.name;
+      edges.push({ from, to: typeof to === "string" ? to : null });
+    }
+    return { screens, edges };
+  } catch {
+    return null;
+  }
 }
 
 function outcomeOf(ledgerStatus: string): RunReportOutcome {
@@ -246,6 +287,41 @@ async function renderWorkbook(report: RunReport): Promise<Buffer> {
     row.getCell(10).alignment = { wrapText: true, vertical: "top" };
     row.getCell(11).alignment = { wrapText: true, vertical: "top" };
   });
+  if (report.traceability) {
+    const trace = workbook.addWorksheet("追溯矩阵", { views: [{ state: "frozen", ySplit: 1 }] });
+    trace.columns = [
+      { header: "类型", key: "kind", width: 10 },
+      { header: "名称", key: "name", width: 44 },
+      { header: "覆盖用例", key: "cases", width: 36 },
+      { header: "追溯ID", key: "traces", width: 36 },
+      { header: "备注", key: "note", width: 16 }
+    ];
+    trace.getRow(1).font = { bold: true };
+    for (const screen of report.traceability.screens) {
+      trace.addRow({
+        kind: "屏幕",
+        name: screen.screen,
+        cases: screen.caseIds.join(", "),
+        traces: screen.traceIds.join(", "),
+        note: screen.caseIds.length === 0 ? "未覆盖" : ""
+      });
+    }
+    for (const edge of report.traceability.edges) {
+      trace.addRow({
+        kind: "跳转",
+        name: edge.edge,
+        cases: edge.caseIds.join(", "),
+        traces: "",
+        note: edge.caseIds.length === 0 ? "未覆盖" : ""
+      });
+    }
+    for (const caseId of report.traceability.casesWithoutTrace) {
+      trace.addRow({ kind: "用例", name: caseId, cases: caseId, traces: "", note: "无 trace" });
+    }
+    for (const caseId of report.traceability.casesWithoutEvidence) {
+      trace.addRow({ kind: "用例", name: caseId, cases: caseId, traces: "", note: "无证据" });
+    }
+  }
   const rendered = await workbook.xlsx.writeBuffer();
   return Buffer.from(rendered);
 }
@@ -268,6 +344,7 @@ export async function buildRunReport(
       failed: 0,
       pending: 0,
       cases: [],
+      traceability: null,
       error: `无法读取运行台账：${errorMessage(error)}`
     };
   }
@@ -282,6 +359,7 @@ export async function buildRunReport(
     );
 
   const results: RunReportCase[] = [];
+  const traceCases: TraceabilityCaseInput[] = [];
   for (const task of selected) {
     const generated = task.caseId
       ? cases.byId.get(task.caseId) ?? null
@@ -322,8 +400,19 @@ export async function buildRunReport(
         stdoutLog: status?.stdoutLog ?? null
       }
     });
+    traceCases.push({
+      id: task.caseId ?? task.traceId,
+      name: generated?.name ?? task.caseId ?? task.traceId,
+      screens: generated?.screens ?? [],
+      traceId: task.traceId,
+      hasEvidence: fs.existsSync(runtime.traceDir(task.traceId))
+    });
   }
 
+  const flowInputs = readFlowCoverageInputs(runtime);
+  const traceability = flowInputs
+    ? buildTraceability({ screenNames: flowInputs.screens, edges: flowInputs.edges, cases: traceCases })
+    : null;
   const passed = results.filter((entry) => entry.outcome === "passed").length;
   const pending = results.filter((entry) => entry.outcome === "pending").length;
   const report: RunReport = {
@@ -333,7 +422,8 @@ export async function buildRunReport(
     passed,
     failed: results.length - passed - pending,
     pending,
-    cases: results
+    cases: results,
+    traceability
   };
 
   if (options.save !== false) {
