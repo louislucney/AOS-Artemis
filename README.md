@@ -137,7 +137,21 @@ node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:
 
 ### Jira 接入（M8a：读取）
 
-`jira_issue_get` / `jira_issue_search`：从 Jira Cloud 读取 issue 上下文（描述纯文本 + 启发式验收标准 + 原始 ADF）与 JQL 搜索结果，供 agent 直接生成/圈定测试用例；`jira_issue_comment` / `jira_issue_attach`：评论（纯文本→ADF，带 traceId 时按 `AOS-TRACE:` marker 幂等回写）与附件上传（确定性命名 + 内容哈希去重 + 超限跳过）；`jira_evidence_post`：失败证据 composite（失败步骤截图/设计差异标注图/失败清单/失败域/崩溃签名 → 中文结构化评论 + 附件，幂等回写，`dryRun` 预览）。CLI 工作流迁移为 M8c 后续票据，见 `.scratch/jira-integration/`。
+`jira_issue_get` / `jira_issue_search`：从 Jira Cloud 读取 issue 上下文（描述纯文本 + 启发式验收标准 + 原始 ADF）与 JQL 搜索结果，供 agent 直接生成/圈定测试用例；`jira_issue_comment` / `jira_issue_attach`：评论（纯文本→ADF，带 traceId 时按 `AOS-TRACE:` marker 幂等回写）与附件上传（确定性命名 + 内容哈希去重 + 超限跳过）；`jira_evidence_post`：失败证据 composite（失败步骤截图/设计差异标注图/失败清单/失败域/崩溃签名 → 中文结构化评论 + 附件，幂等回写，`dryRun` 预览）。
+
+Jira CLI（与 MCP 工具共用客户端与凭证；`node dist/cli.js jira help`）：
+
+```bash
+node dist/cli.js jira issue create --project-key AOS --summary "标题" [--type Task|Bug]
+        [--description "纯文本"] [--label a,b]... [--parent AOS-1] [--blocks AOS-2]...
+node dist/cli.js jira issue comment AOS-1 --body "纯文本" [--trace <traceId>]
+node dist/cli.js jira issue label AOS-1 --add a,b --remove c
+node dist/cli.js jira issue transition AOS-1 --to "In Progress"
+node dist/cli.js jira issue link --inward AOS-1 --outward AOS-2 [--type Blocks]
+# 公共：--project <dir> / --json；exit 0 成功 / 1 请求或配置失败 / 2 用法错误
+```
+
+tracker 迁移与沙箱验收为 M8c 后续票据，见 `.scratch/jira-integration/`。
 
 配置（项目 `.env`；推荐用 `aos_configure` 的 `jiraSite` / `jiraEmail` / `jiraApiToken` 一次写入，三者须同时提供）：
 

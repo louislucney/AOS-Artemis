@@ -153,6 +153,20 @@ export class JiraClient {
     return (await res.json()) as T;
   }
 
+  /** 写操作（无返回值）：不解析响应体，兼容 200/201/204/空体。 */
+  private async requestVoid(
+    path: string,
+    init: { method?: string; body?: unknown } = {}
+  ): Promise<void> {
+    const headers: Record<string, string> = {};
+    let body: string | undefined;
+    if (init.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(init.body);
+    }
+    await this.rawRequest(path, { method: init.method, headers, body });
+  }
+
   async getIssue(key: string, fields: string[]): Promise<Record<string, unknown>> {
     const query = fields.length > 0 ? `?fields=${fields.map(encodeURIComponent).join(",")}` : "";
     return await this.request<Record<string, unknown>>(
@@ -194,7 +208,7 @@ export class JiraClient {
   }
 
   async updateComment(issueKey: string, commentId: string, body: unknown): Promise<void> {
-    await this.request(
+    await this.requestVoid(
       `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment/${encodeURIComponent(commentId)}`,
       { method: "PUT", body: { body } }
     );
@@ -208,7 +222,7 @@ export class JiraClient {
     value: unknown
   ): Promise<boolean> {
     try {
-      await this.request(
+      await this.requestVoid(
         `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment/${encodeURIComponent(commentId)}/properties/${encodeURIComponent(propertyKey)}`,
         { method: "PUT", body: value }
       );
@@ -259,6 +273,61 @@ export class JiraClient {
       method: "POST",
       headers: { "X-Atlassian-Token": "no-check" },
       body: form
+    });
+  }
+
+  async createIssue(fields: Record<string, unknown>): Promise<{ id: string; key: string }> {
+    const payload = await this.request<{ id?: unknown; key?: unknown }>("/rest/api/3/issue", {
+      method: "POST",
+      body: { fields }
+    });
+    if (typeof payload.key !== "string" || payload.key === "") {
+      throw new Error("Jira 未返回 issue key");
+    }
+    return { id: typeof payload.id === "string" ? payload.id : "", key: payload.key };
+  }
+
+  async updateIssue(issueKey: string, fields: Record<string, unknown>): Promise<void> {
+    await this.requestVoid(`/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
+      method: "PUT",
+      body: { fields }
+    });
+  }
+
+  async getTransitions(
+    issueKey: string
+  ): Promise<Array<{ id: string; name: string; to: string | null }>> {
+    const payload = await this.request<{
+      transitions?: Array<{ id?: unknown; name?: unknown; to?: { name?: unknown } }>;
+    }>(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`);
+    return (payload.transitions ?? [])
+      .filter((item) => item && typeof item.id === "string")
+      .map((item) => ({
+        id: item.id as string,
+        name: typeof item.name === "string" ? item.name : "",
+        to: typeof item.to?.name === "string" ? item.to.name : null
+      }));
+  }
+
+  async doTransition(issueKey: string, transitionId: string): Promise<void> {
+    await this.requestVoid(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
+      method: "POST",
+      body: { transition: { id: transitionId } }
+    });
+  }
+
+  async createIssueLink(input: {
+    typeName: string;
+    inwardKey: string;
+    outwardKey: string;
+  }): Promise<void> {
+    await this.requestVoid("/rest/api/3/issueLink", {
+      method: "POST",
+      body: {
+        type: { name: input.typeName },
+        inwardIssue: { key: input.inwardKey },
+        outwardIssue: { key: input.outwardKey }
+      }
     });
   }
 }

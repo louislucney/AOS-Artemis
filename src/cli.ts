@@ -3,6 +3,7 @@ import { runDoctor, runInit } from "./commands.js";
 import { runDepsCommand } from "./deps-build.js";
 import { runHttpServer, type HttpServerOptions } from "./http-server.js";
 import { runInstall } from "./install.js";
+import { runJiraCommand } from "./jira-command.js";
 import { runServer } from "./server.js";
 import { runSuiteCommand } from "./suite-command.js";
 import { runUsageCommand } from "./usage-command.js";
@@ -23,10 +24,13 @@ Usage:
                     Build the artemis dependency bundle (cross-platform, per OS/arch):
                     dist-deps/artemis-deps-<os>-<arch>.tar.gz + .sha256
                     options: --out DIR  --repo DIR  --work DIR  --skip-sync  --uv PATH
-  aos-mcp suite <run|evidence|baseline|report|feedback> [options]
+  aos-mcp suite <run|check|calibrate|loop|flake|evidence|baseline|report|feedback> [options]
                     Deterministic test loop over .artemis/design/tests.json:
-                    run | evidence <traceId> | baseline save|compare | report | feedback
+                    run | check | calibrate | loop | flake | evidence <traceId> | baseline save|compare | report | feedback
                     (see "aos-mcp suite help" for options; exit codes: 0 ok / 1 test failure / 2 error)
+  aos-mcp jira issue <create|comment|label|transition|link> [options]
+                    Jira 工作流（与 MCP 工具共用客户端与凭证；见 "aos-mcp jira help"；
+                    exit codes: 0 成功 / 1 请求或配置失败 / 2 用法错误）
   aos-mcp usage [--json] [--all] [--project <名称>] [--days <n>]
                     使用统计：默认当前项目摘要（--days 默认 7）；--json 机器可读；
                     --all 跨项目总览；--project 选择已注册项目
@@ -94,6 +98,11 @@ void (async () => {
     }
     case "usage": {
       const code = await runUsageCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "jira": {
+      const code = await runJiraCommand(rest);
       process.exit(code);
       break;
     }

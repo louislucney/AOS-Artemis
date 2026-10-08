@@ -7,8 +7,7 @@ import {
   loadApiErrorCatalog,
   matchApiErrors
 } from "./artemis/api-errors.js";
-import { loadProject } from "./config/loader.js";
-import { createProjectStore } from "./db/index.js";
+import { defaultBuildRuntime } from "./cli-runtime.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
 import { classifyIosSerial } from "./device/ios.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
@@ -220,33 +219,6 @@ async function applyRetryDiagnostics(
       entry.retry = { attempts, finalStatus, finalTraceId, flaky: finalStatus === "passed" };
     }
   }
-}
-
-async function defaultBuildRuntime(
-  projectDir: string | null
-): Promise<{ runtime: Runtime; dispose: () => Promise<void> }> {
-  const env = projectDir
-    ? { ...process.env, AOS_PROJECT_DIR: projectDir, AOS_CONFIG: "" }
-    : process.env;
-  const project = loadProject({ env });
-  const { store, reason } = await createProjectStore();
-  const runtime = new Runtime(project, { store, storeNote: reason });
-  await runtime.initialize();
-  return {
-    runtime,
-    dispose: async () => {
-      try {
-        runtime.proxy.disposeSync();
-      } catch {
-        /* already gone */
-      }
-      try {
-        await store.close();
-      } catch {
-        /* ignore */
-      }
-    }
-  };
 }
 
 export function printSuiteUsage(log: (line: string) => void): void {
