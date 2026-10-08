@@ -224,7 +224,7 @@ iOS 侧（starbucks-ios-taiwan）：
 - 样本：同 fixture、同模型、固定 temperature、每轮复位；先取 **3 条代表性用例 ×10 轮**（全量 20 轮成本高、单设备 FIFO）。
 - 指标：首跑通过率、逐例翻转矩阵、`retry.flaky` 计数（`suite run --retry N` 已有字段，可直接累积）。
 - 解读口径：翻转率决定 **投入强度**（L2 条数/是否入门禁），**不决定 D1 存废**——审计要求"可证明可回放"，确定性 oracle 的价值与 LLM flake 高低无关。
-- 工具：新票据 `issues/10-mcp-flake-sampling.md`（纯 MCP 侧）。
+- 工具：`suite flake --cases <id,…> --runs N`（**已实现**，票据 10 resolved；输出通过率/翻转矩阵/flaky 率与轮次方差，`--fail-on-flaky` 可门禁）。
 
 ### 11.3 工程默认值（替代长期 open，标注可被合规口径替换）
 
