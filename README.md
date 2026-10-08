@@ -137,7 +137,7 @@ node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:
 
 ### Jira 接入（M8a：读取）
 
-`jira_issue_get` / `jira_issue_search`：从 Jira Cloud 读取 issue 上下文（描述纯文本 + 启发式验收标准 + 原始 ADF）与 JQL 搜索结果，供 agent 直接生成/圈定测试用例；`jira_issue_comment` / `jira_issue_attach`：评论（纯文本→ADF，带 traceId 时按 `AOS-TRACE:` marker 幂等回写）与附件上传（确定性命名 + 内容哈希去重 + 超限跳过）。证据 composite 与 CLI 工作流迁移为 M8b/M8c 后续票据，见 `.scratch/jira-integration/`。
+`jira_issue_get` / `jira_issue_search`：从 Jira Cloud 读取 issue 上下文（描述纯文本 + 启发式验收标准 + 原始 ADF）与 JQL 搜索结果，供 agent 直接生成/圈定测试用例；`jira_issue_comment` / `jira_issue_attach`：评论（纯文本→ADF，带 traceId 时按 `AOS-TRACE:` marker 幂等回写）与附件上传（确定性命名 + 内容哈希去重 + 超限跳过）；`jira_evidence_post`：失败证据 composite（失败步骤截图/设计差异标注图/失败清单/失败域/崩溃签名 → 中文结构化评论 + 附件，幂等回写，`dryRun` 预览）。CLI 工作流迁移为 M8c 后续票据，见 `.scratch/jira-integration/`。
 
 配置（项目 `.env`；推荐用 `aos_configure` 的 `jiraSite` / `jiraEmail` / `jiraApiToken` 一次写入，三者须同时提供）：
 
@@ -350,6 +350,7 @@ node dist/cli.js doctor
 | `jira_issue_search` | JQL 搜索（`/rest/api/3/search/jql` 游标分页、无 total）：key/url/summary/status/type/labels/updated/assignee；limit 默认 20、上限 100 |
 | `jira_issue_comment` | 评论回写：纯文本→ADF；`traceId` 提供时按 `AOS-TRACE:` 页脚 marker 幂等（存在则更新，否则新建）并 best-effort 写评论属性；`dryRun` 预览 |
 | `jira_issue_attach` | 附件回写：项目根内路径；multipart（`X-Atlassian-Token: no-check`）；确定性命名 `<basename>-<sha8><ext>`，同名同大小去重；上限=站点 meta 与 `AOS_JIRA_ATTACH_MAX_MB`（默认 20）取小，超限 warning 跳过；`dryRun` 预览 |
+| `jira_evidence_post` | 失败证据 composite：聚合失败步骤截图 + 设计差异标注图（annotated.png 优先）+ 失败清单 + 失败域（确定性分类）+ 崩溃签名摘要 → 中文评论（traceId 幂等回写）+ 附件（≤6，去重上传）；`platform`/`deviceSerial` 覆盖或推断（推断不出记 unknown）；`dryRun` 不触网 |
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
 | `design_device_diff` | 设计 vs 真机差异（确定性）：设计源 Figma 节点或 `.pen`（`design:{source:"pen"}`，pen CLI 渲染）+ 截图（`live` 实时，或 `step` + `traceId`（`stepNumber` 可省略→失败证据自动检索）对比失败步骤，默认 post；`device.platform:"ios"` 走 macOS 模拟器 idb/simctl）→ 对齐（insets/ignoreRegions/降采样）→ 像素差异判定 + 设计节点几何分类（missing/extra/text/asset/position-size/color）→ 差异报告 + 标注图，落盘 `.artemis/design/diffs/<node>-<时间戳>/`；`dryRun` 只回计划 |
 | `screen_map` | 持久屏幕映射 `.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 候选（confidence/unmatched）、`save` 幂等/merge、`list`；差异报告输出 `localized` |

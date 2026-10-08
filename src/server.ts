@@ -47,10 +47,12 @@ import { screenMap, type ScreenMapArgs } from "./diff/screen-map.js";
 import { aosConfigure, type ConfigureArgs } from "./tools/configure.js";
 import { aosCrashes, type AosCrashesArgs } from "./tools/crash.js";
 import {
+  jiraEvidencePost,
   jiraIssueAttach,
   jiraIssueComment,
   jiraIssueGet,
   jiraIssueSearch,
+  type JiraEvidencePostArgs,
   type JiraIssueAttachArgs,
   type JiraIssueCommentArgs,
   type JiraIssueGetArgs,
@@ -223,6 +225,19 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       dryRun: z.boolean().optional().describe("仅返回计划，不写回，默认 false")
     }),
     handler: (runtime, args) => jiraIssueAttach(runtime, args as unknown as JiraIssueAttachArgs)
+  },
+  {
+    name: "jira_evidence_post",
+    description:
+      "失败证据 composite：输入 issueKey + traceId（可选 platform/deviceSerial/dryRun）→ 自动聚合失败步骤截图（锚定步骤 pre/post）、设计差异标注图（annotated.png 优先）、失败清单、失败域（确定性命中崩溃/环境/数据/API/用例）与崩溃签名摘要；生成中文结构化评论并按 traceId（AOS-TRACE marker）幂等回写，附件按确定性命名去重上传（≤6 个）。trace 不存在时返回可行动说明；dryRun 只返回将写入的评论与附件清单（不触网）。",
+    schema: z.object({
+      key: z.string().min(1).describe("issue key（如 AOS-123）或含 /browse/ 的 URL"),
+      traceId: z.string().min(1).describe("任务 trace id（mobile_run_task / suite run 产物）"),
+      platform: z.enum(["android", "ios"]).optional().describe("平台覆盖（缺省按 trace 状态/设备号推断，推断不出记 unknown）"),
+      deviceSerial: z.string().optional().describe("设备 serial 覆盖（缺省取 trace 状态）"),
+      dryRun: z.boolean().optional().describe("仅返回计划，不写回，默认 false")
+    }),
+    handler: (runtime, args) => jiraEvidencePost(runtime, args as unknown as JiraEvidencePostArgs)
   },
   {
     name: "compare_design_and_device",

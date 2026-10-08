@@ -4,11 +4,16 @@ import path from "node:path";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
+import { readApiErrorsArtifact } from "../artemis/api-errors.js";
+import { traceEvidence } from "../artemis/evidence.js";
+import { classifyFailure } from "../artemis/failure-taxonomy.js";
+import { classifyIosSerial } from "../device/ios.js";
 import { plainTextToAdf } from "../jira/adf.js";
 import { upsertTraceComment } from "../jira/comments.js";
 import { JiraApiError, JiraClient, JiraRateLimitError } from "../jira/client.js";
 import { ENV_JIRA_API_TOKEN, ENV_JIRA_BASE_URL, ENV_JIRA_EMAIL } from "../jira/config.js";
 import { issueSummaryRow, normalizeIssue, parseIssueKey } from "../jira/context.js";
+import { buildEvidenceComment, type EvidencePlatform } from "../jira/evidence.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
 
@@ -382,5 +387,142 @@ export async function jiraIssueAttach(
       status: entry.status,
       ...(entry.reason ? { reason: entry.reason } : {})
     }))
+  });
+}
+
+export interface JiraEvidencePostArgs {
+  key: string;
+  traceId: string;
+  platform?: "android" | "ios";
+  deviceSerial?: string;
+  dryRun?: boolean;
+}
+
+function payloadOf(result: CallToolResult): Record<string, unknown> {
+  const item = result.content[0];
+  if (!item || item.type !== "text") return {};
+  try {
+    return JSON.parse(item.text) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** `jira_evidence_post`：一次调用回写失败证据（评论幂等 + 附件去重），平台/设备维度如实标注。 */
+export async function jiraEvidencePost(
+  runtime: Runtime,
+  args: JiraEvidencePostArgs
+): Promise<CallToolResult> {
+  const resolved = clientFor(runtime);
+  if (resolved === null) return missingConfigResult(runtime);
+  const key = parseIssueKey(args.key);
+  if (key === null) {
+    return jsonResult(
+      { ok: false, error: `无法解析 issue key："${args.key}"。请传 key（如 AOS-123）或 browse URL。` },
+      true
+    );
+  }
+  const traceId = typeof args.traceId === "string" ? args.traceId.trim() : "";
+  if (traceId === "") {
+    return jsonResult({ ok: false, error: "traceId 不能为空。" }, true);
+  }
+  const traceDir = runtime.traceDir(traceId);
+  const status = await runtime.traceStatus(traceId);
+  if (!status && !fs.existsSync(traceDir)) {
+    return jsonResult(
+      {
+        ok: false,
+        error: `未找到 trace ${traceId} 的任何产物。`,
+        hints: [
+          "确认 traceId（mobile_run_task 返回）；用 mobile_inspect_trace / aos_tasks 查台账",
+          "或先跑 suite run / mobile_run_task 生成 trace 产物后再回写"
+        ]
+      },
+      true
+    );
+  }
+
+  const bundle = await traceEvidence(runtime, { traceId });
+  const apiArtifact = readApiErrorsArtifact(traceDir);
+  const crashes = bundle.crashes.map((crash) => ({
+    id: crash.id,
+    kind: crash.kind,
+    package: crash.package,
+    exceptionClass: crash.exceptionClass
+  }));
+  const failureDomain =
+    bundle.status && bundle.status !== "completed" && bundle.status !== "running"
+      ? classifyFailure({
+          status,
+          crashes,
+          apiErrors: (apiArtifact?.errors ?? []).map((error) => ({
+            code: error.code,
+            handled: error.handled
+          }))
+        }).domain
+      : null;
+  const rawPlatform = status ? (status as unknown as { platform?: unknown }).platform : null;
+  const statusPlatform = typeof rawPlatform === "string" ? rawPlatform : null;
+  const serial =
+    typeof args.deviceSerial === "string" && args.deviceSerial.trim() !== ""
+      ? args.deviceSerial.trim()
+      : (status?.deviceSerial ?? null);
+  const platform: EvidencePlatform =
+    args.platform ??
+    (serial !== null
+      ? classifyIosSerial(serial) !== null
+        ? "ios"
+        : "android"
+      : statusPlatform === "ios"
+        ? "ios"
+        : statusPlatform === "android"
+          ? "android"
+          : "unknown");
+
+  const draft = buildEvidenceComment(bundle, { platform, deviceSerial: serial, failureDomain });
+  const attachmentsRel = draft.attachments
+    .map((abs) => path.relative(runtime.project.rootDir, abs))
+    .filter((rel) => rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel));
+
+  if (args.dryRun === true) {
+    return jsonResult({
+      ok: true,
+      dryRun: true,
+      site: resolved.siteUrl,
+      issue: key,
+      traceId,
+      platform,
+      deviceSerial: serial,
+      failureDomain,
+      degraded: bundle.degraded,
+      commentText: draft.text,
+      attachments: attachmentsRel
+    });
+  }
+
+  let comment: { action: "created" | "updated"; commentId: string; propertySet: boolean };
+  try {
+    comment = await upsertTraceComment(resolved.client, key, { traceId, body: draft.adf });
+  } catch (error) {
+    return jiraErrorResult(error);
+  }
+  let attachments: unknown[] = [];
+  if (attachmentsRel.length > 0) {
+    const attachPayload = payloadOf(await jiraIssueAttach(runtime, { key, files: attachmentsRel }));
+    attachments = Array.isArray(attachPayload.results) ? attachPayload.results : [];
+  }
+  return jsonResult({
+    ok: true,
+    site: resolved.siteUrl,
+    issue: key,
+    traceId,
+    platform,
+    deviceSerial: serial,
+    failureDomain,
+    action: comment.action,
+    commentId: comment.commentId,
+    propertySet: comment.propertySet,
+    attachments,
+    degraded: bundle.degraded
   });
 }
