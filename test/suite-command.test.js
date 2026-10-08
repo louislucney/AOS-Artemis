@@ -770,3 +770,35 @@ test("suite calibrate: JUnit XML report (Android instrumentation) aligns by case
   assert.equal(payload.agreedPass, 1);
   assert.equal(payload.matched, 1);
 });
+
+test("suite flake: repeated sampling detects a flaky case and saves the report", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" }, "trace-2": { status: "failed", error: "boom" } }
+  });
+  const result = await runCli(runtime, ["flake", "--cases", "case-1", "--runs", "2", "--json"]);
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.logs[0]);
+  assert.equal(payload.runs, 2);
+  assert.deepEqual(payload.cases[0].statuses, ["passed", "failed"]);
+  assert.equal(payload.cases[0].flaky, true);
+  assert.equal(payload.summary.flakyCases, 1);
+  assert.ok(fs.existsSync(payload.savedTo.json));
+  assert.ok(fs.existsSync(payload.savedTo.markdown));
+});
+
+test("suite flake: --fail-on-flaky gates; missing/absent case ids are rejected", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" }, "trace-2": { status: "failed" } }
+  });
+  const flaky = await runCli(runtime, ["flake", "--cases", "case-1", "--runs", "2", "--fail-on-flaky", "--no-save"]);
+  assert.equal(flaky.code, 2);
+
+  const missing = await runCli(runtime, ["flake", "--cases", "case-nope", "--runs", "1"]);
+  assert.equal(missing.code, 2);
+  assert.ok(missing.errors.some((line) => line.includes("用例不存在")));
+
+  const noCases = await runCli(runtime, ["flake"]);
+  assert.equal(noCases.code, 2);
+});

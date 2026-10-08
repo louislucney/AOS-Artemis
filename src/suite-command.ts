@@ -15,6 +15,7 @@ import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/baseline.js";
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
+import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { preflightGeneratedTests, type PreflightReport } from "./figma/preflight.js";
 import { buildRunReport } from "./figma/run-report.js";
 import {
@@ -229,6 +230,7 @@ Usage:
   aos-mcp suite check [options]      静态覆盖检查：tests.json × flows.json（不连设备，CI 友好）
   aos-mcp suite calibrate [options]  确定性套件（xcresult）与 MCP 台账差分校准（漏报/误报率）
   aos-mcp suite loop [options]       测试闭环：静态检查→执行(可选)→反馈→差分校准(可选)，产出闭环报告与下一步
+  aos-mcp suite flake [options]      重复采样量化确定性：通过率/翻转矩阵/flaky 率（--cases × --runs）
   aos-mcp suite evidence <traceId> [options]
                                      聚合某 trace 的失败证据包（失败项/崩溃/锚点截图/设计差异）
   aos-mcp suite api-errors <traceId> [options]
@@ -246,6 +248,8 @@ check:  [--tests <path>]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
         [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-save] [--out <dir>]
+flake:  --cases <id,id,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>]
+        [--model Flash|Pro] [--poll-timeout <ms>] [--no-api-errors] [--fail-on-flaky] [--no-save] [--out <dir>]
 evidence: [--full-trace] [--out <dir>] [--no-save] [--design-figma <url>|--design-pen <path>] [--node <id>]
 api-errors: [--serial <s>] [--app <bundleId>] [--no-save] [--json]
 baseline: --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>]
@@ -675,6 +679,101 @@ async function suiteLoop(
   return report.failed === 0 ? 0 : 1;
 }
 
+/** 重复采样（票据 10）：量化执行确定性——通过率/翻转矩阵/flaky 率。 */
+async function suiteFlake(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  deps: { logcatCollector?: LogcatCollector; iosLogCollector?: IosLogCollectorFn }
+): Promise<number> {
+  const requested = splitList(flags.list("cases"));
+  if (requested.length === 0) {
+    io.errorLog(
+      "用法: aos-mcp suite flake --cases <id,id,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>] [--model Flash|Pro] [--fail-on-flaky] [--no-save] [--out <dir>]"
+    );
+    return 2;
+  }
+  const runs = Math.min(Math.max(intOrNull(flags.get("runs")) ?? 3, 1), 50);
+  const runOptions = suiteRunOptions(flags, deps.logcatCollector, deps.iosLogCollector);
+  runOptions.stopOnFailure = false;
+
+  const defaultTestsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+  const testsPath = runOptions.testsPath
+    ? path.resolve(runtime.project.rootDir, runOptions.testsPath)
+    : defaultTestsPath;
+  const caseNames = new Map<string, string>();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as {
+      flows?: Array<{ id?: unknown; name?: unknown }>;
+    };
+    for (const entry of parsed.flows ?? []) {
+      if (entry && typeof entry.id === "string") {
+        caseNames.set(entry.id, typeof entry.name === "string" ? entry.name : entry.id);
+      }
+    }
+  } catch (error) {
+    io.errorLog(`无法读取用例文件：${testsPath}（${errorMessage(error)}）`);
+    return 2;
+  }
+  const missingIds = requested.filter((caseId) => !caseNames.has(caseId));
+  if (missingIds.length > 0) {
+    io.errorLog(`用例不存在于 ${testsPath}: ${missingIds.join("、")}`);
+    return 2;
+  }
+
+  const rounds: SuiteRunReport["cases"][] = [];
+  for (let round = 0; round < runs; round += 1) {
+    const report = await runGeneratedTests(runtime, { ...runOptions, caseIds: requested });
+    if (report.cases.length === 0) {
+      io.errorLog(`第 ${round + 1} 轮执行失败: ${report.error ?? "无可提交用例"}`);
+      return 2;
+    }
+    rounds.push(report.cases);
+  }
+
+  const flake = buildFlakeReport({
+    generatedAt: new Date().toISOString(),
+    caseIds: requested,
+    caseNames,
+    rounds
+  });
+  const payload: Record<string, unknown> = { ...flake };
+  if (!flags.bool("no-save")) {
+    const outDir = flags.get("out")
+      ? path.resolve(runtime.project.rootDir, flags.get("out")!)
+      : path.join(runtime.configDirAbs, "design", "reports");
+    fs.mkdirSync(outDir, { recursive: true });
+    const stamp = flake.generatedAt.slice(0, 19).replace(/[-:]/g, "");
+    const jsonPath = path.join(outDir, `flake-${stamp}.json`);
+    const markdownPath = path.join(outDir, `flake-${stamp}.md`);
+    writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
+    writeFileAtomic(markdownPath, renderFlakeMarkdown(flake));
+    payload.savedTo = { json: jsonPath, markdown: markdownPath };
+  }
+
+  if (flags.bool("json")) {
+    io.log(JSON.stringify(payload, null, 2));
+  } else {
+    io.log(`flake 采样: ${requested.length} 用例 × ${runs} 轮`);
+    io.log(
+      `轮次通过数: ${flake.rounds.map((round) => `R${round.round} ${round.passed}/${round.executed}`).join(" · ")}`
+    );
+    for (const entry of flake.cases) {
+      io.log(
+        `  [${entry.verdict}] ${entry.name ?? entry.caseId} (${entry.caseId}) ${entry.statuses.join(" → ")} · 通过率 ${(
+          entry.passRate * 100
+        ).toFixed(0)}% · 翻转 ${entry.flips}`
+      );
+    }
+    io.log(
+      `汇总: flaky ${flake.summary.flakyCases} · stable-pass ${flake.summary.stablePass} · stable-fail ${flake.summary.stableFail} · 未执行 ${flake.summary.untestedCases}`
+    );
+    if (payload.savedTo) io.log(`已保存: ${(payload.savedTo as { json: string }).json}`);
+  }
+  if (flags.bool("fail-on-flaky") && flake.summary.flakyCases > 0) return 2;
+  return 0;
+}
+
 async function suiteApiErrors(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -930,7 +1029,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "evidence", "api-errors", "baseline", "report", "feedback"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "evidence", "api-errors", "baseline", "report", "feedback"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -950,6 +1049,12 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     }
     if (sub === "loop") {
       return await suiteLoop(built.runtime, flags, { log, errorLog }, {
+        logcatCollector: deps.logcatCollector,
+        iosLogCollector: deps.iosLogCollector
+      });
+    }
+    if (sub === "flake") {
+      return await suiteFlake(built.runtime, flags, { log, errorLog }, {
         logcatCollector: deps.logcatCollector,
         iosLogCollector: deps.iosLogCollector
       });

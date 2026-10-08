@@ -386,6 +386,7 @@ env:
 - **设计版本锚点**：`figma_extract_flows` 将 Figma `version`/`lastModified` 写入 flows.json（`fileVersion`/`lastModified`），为设计冻结（baseline-lock）预留。
 - **flake 治理口径**（`suite run --retry N`，N≤3）：仅对未通过用例重跑做诊断，`retry {attempts, finalStatus, finalTraceId, flaky}` 如实写入报告/JSON；**首跑结果仍决定退出码**（重跑转绿不计首跑门禁），文本输出标注"重试转绿 N 例（flaky）"；quarantine 需 owner 签字（后续）。
 - **闭环编排**（`suite loop`）：一步产出静态检查＋执行＋反馈＋校准的闭环报告（`loop-<stamp>.{json,md}`）与确定性"下一步动作"；exit 码沿用检查/执行门禁结论（`--allow-uncovered` 可放宽覆盖门禁）。**边界**：MCP 只负责测试闭环，不深入项目实现细节；"测试→完善"路径=按下一步动作改进 tests/flows/数据/错误码规则后重跑（`--calibration` 合并 `suite calibrate` 产物）。
+- **flake 采样**（`suite flake --cases … --runs N`）：重复采样输出逐例通过率、翻转矩阵与 flaky 判定、轮次方差；落盘 `flake-<stamp>.{json,md}`；`--fail-on-flaky` 可作门禁。**测量口径**：翻转率决定 L2 投入强度（条数/是否入门禁），不决定"确定性校准器是否需要"（见 `.scratch/enterprise-ios-testing/analysis.md` §11.2 / 票据 10）。
 
 ---
 

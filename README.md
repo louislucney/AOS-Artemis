@@ -210,6 +210,8 @@ node dist/cli.js suite calibrate (--report <json|junit.xml>|--xcresult <bundle>)
 node dist/cli.js suite loop [--tests <path>] [--skip-run] [--calibration <json>]
                            [--retry N] [--max N] [--device <serial>] [--app <pkg>]
                            [--allow-uncovered] [--no-save] [--out <dir>]
+node dist/cli.js suite flake --cases <id,id,...> [--runs N] [--tests <path>]
+                           [--device <serial>] [--app <pkg>] [--fail-on-flaky] [--no-save] [--out <dir>]
 node dist/cli.js suite evidence <traceId> [--full-trace] [--out <dir>] [--no-save]
 node dist/cli.js suite api-errors <traceId> [--serial <s>] [--no-save] [--json]
 node dist/cli.js suite baseline save|compare --case <id> --step <n> --trace <id> \
@@ -223,6 +225,7 @@ node dist/cli.js suite feedback [--min-failures N]
 - `check`：静态覆盖检查（tests.json × flows.json），**不连设备**，供 pre-merge CI；未覆盖屏幕/跳转、生成截断、缺/坏 flows.json 均 exit 2；"测试引用但设计缺失"的路线漂移仅警告。
 - `calibrate`：确定性套件结果（`--report <json|junit.xml>`——JSON 或 Android instrumentation 的 JUnit XML；或 `--xcresult <bundle>` 经 `xcrun xcresulttool get test-results tests`，Xcode 16+）与 MCP 台账按 case_id 对齐，输出一致/漏报/误报与比率并落盘 `.artemis/design/reports/calibration-<stamp>.json`；测试名需内嵌 case_id（如 `test_order_flow_case-<12hex>()`）；`--fail-on-miss` 命中漏报即 exit 2。
 - `loop`：测试闭环一步编排——静态检查 → 执行（`--skip-run` 跳过）→ 生成反馈 → 差分校准合并（`--calibration <calibrate 产物>`）；产出 `loop-<stamp>.{json,md}`（步骤结果 + 确定性"下一步动作" + top 建议）；exit 码 = 检查/执行的门禁结论。MCP 只负责测试闭环，不深入项目实现细节——完善路径即"测试→改进 tests/flows/数据/错误码规则"再跑下一轮。
+- `flake`：重复采样量化执行确定性——`--cases` 指定 3–5 条代表用例、`--runs N` 轮（默认 3，≤50）；输出逐例通过率、翻转矩阵、flaky 判定与轮次方差，落盘 `flake-<stamp>.{json,md}`；`--fail-on-flaky` 命中即 exit 2。口径：翻转率决定 L2 投入强度，**不决定"确定性校准器是否需要"**（见 `.scratch/enterprise-ios-testing/analysis.md §11.2`）。
 - `api-errors`：按 trace 时间窗采集设备日志，匹配项目错误码注册表 `.artemis/design/error-codes.json`（`{codes:{"<code>":{match,handler?,expect?,handledPattern?}}}`），判定 `handled/unhandled/observed` 并落 `.artemis/traces/<traceId>/api-errors.json`；默认只作证据，`--fail-on api-error` 才让未处理错误判 FAIL。
 - `baseline`：设备对设备像素回归（last-known-good）；`--fail-on` 触发时退出码 2，可直接做 CI 门禁。
 - `report`：从运行台账导出 xlsx 结果页（含 API 错误/处理判定列）+ **追溯矩阵工作表**（design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据，含未覆盖与缺口标注）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）。
