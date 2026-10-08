@@ -97,11 +97,11 @@ export class JiraClient {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
-  private async request<T>(
+  private async rawRequest(
     path: string,
-    init: { method?: string; body?: unknown } = {},
+    init: { method?: string; headers?: Record<string, string>; body?: string | FormData } = {},
     attempt = 0
-  ): Promise<T> {
+  ): Promise<Response> {
     const fp = fingerprint(this.email, this.apiToken);
     const cooldown = cooldowns.get(fp);
     if (cooldown && Date.now() < cooldown.until) {
@@ -112,17 +112,13 @@ export class JiraClient {
     }
     const headers: Record<string, string> = {
       Authorization: `Basic ${Buffer.from(`${this.email}:${this.apiToken}`).toString("base64")}`,
-      Accept: "application/json"
+      Accept: "application/json",
+      ...(init.headers ?? {})
     };
-    let body: string | undefined;
-    if (init.body !== undefined) {
-      headers["Content-Type"] = "application/json";
-      body = JSON.stringify(init.body);
-    }
     const res = await this.fetchImpl(`${this.siteUrl}${path}`, {
       method: init.method ?? "GET",
       headers,
-      body,
+      body: init.body,
       signal: AbortSignal.timeout(timeoutMs(this.env))
     });
     if (res.status === 429) {
@@ -130,7 +126,7 @@ export class JiraClient {
       const seconds = parseRetryAfter(res) ?? 60;
       if (seconds * 1000 <= retryMaxWaitMs(this.env) && attempt < 1) {
         await this.sleep(seconds * 1000);
-        return this.request<T>(path, init, attempt + 1);
+        return this.rawRequest(path, init, attempt + 1);
       }
       cooldowns.set(fp, { until: Date.now() + seconds * 1000, retryAfterSeconds: seconds, reason });
       throw new JiraRateLimitError(seconds, reason);
@@ -139,6 +135,20 @@ export class JiraClient {
       const text = (await res.text()).slice(0, 500);
       throw new JiraApiError(res.status, text, hintFor(res.status));
     }
+    return res;
+  }
+
+  private async request<T>(
+    path: string,
+    init: { method?: string; body?: unknown } = {}
+  ): Promise<T> {
+    const headers: Record<string, string> = {};
+    let body: string | undefined;
+    if (init.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(init.body);
+    }
+    const res = await this.rawRequest(path, { method: init.method, headers, body });
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
@@ -160,6 +170,95 @@ export class JiraClient {
     return await this.request<Record<string, unknown>>("/rest/api/3/search/jql", {
       method: "POST",
       body
+    });
+  }
+
+  async getComments(issueKey: string): Promise<Array<{ id: string; body: unknown }>> {
+    const payload = await this.request<{ comments?: Array<{ id?: unknown; body?: unknown }> }>(
+      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment?maxResults=100&orderBy=-created`
+    );
+    return (payload.comments ?? [])
+      .filter((comment) => comment && typeof comment.id === "string")
+      .map((comment) => ({ id: comment.id as string, body: comment.body }));
+  }
+
+  async createComment(issueKey: string, body: unknown): Promise<string> {
+    const payload = await this.request<{ id?: unknown }>(
+      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment`,
+      { method: "POST", body: { body } }
+    );
+    if (typeof payload.id !== "string" || payload.id === "") {
+      throw new Error("Jira 未返回评论 id");
+    }
+    return payload.id;
+  }
+
+  async updateComment(issueKey: string, commentId: string, body: unknown): Promise<void> {
+    await this.request(
+      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment/${encodeURIComponent(commentId)}`,
+      { method: "PUT", body: { body } }
+    );
+  }
+
+  /** 评论属性（marker）：失败不抛错（账号可能无属性 scope），返回是否写入。 */
+  async setCommentProperty(
+    issueKey: string,
+    commentId: string,
+    propertyKey: string,
+    value: unknown
+  ): Promise<boolean> {
+    try {
+      await this.request(
+        `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment/${encodeURIComponent(commentId)}/properties/${encodeURIComponent(propertyKey)}`,
+        { method: "PUT", body: value }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getAttachmentMeta(): Promise<{ enabled: boolean; uploadLimit: number | null }> {
+    const payload = await this.request<{ enabled?: unknown; uploadLimit?: unknown }>(
+      "/rest/api/3/attachment/meta"
+    );
+    return {
+      enabled: payload.enabled === true,
+      uploadLimit: typeof payload.uploadLimit === "number" ? payload.uploadLimit : null
+    };
+  }
+
+  async listAttachments(
+    issueKey: string
+  ): Promise<Array<{ id: string; filename: string; size: number }>> {
+    const payload = await this.request<{
+      fields?: { attachment?: Array<{ id?: unknown; filename?: unknown; size?: unknown }> };
+    }>(`/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=attachment`);
+    return (payload.fields?.attachment ?? [])
+      .filter(
+        (item): item is { id: string; filename: string; size: number } =>
+          Boolean(item) &&
+          typeof item.id === "string" &&
+          typeof item.filename === "string" &&
+          typeof item.size === "number"
+      )
+      .map((item) => ({ id: item.id, filename: item.filename, size: item.size }));
+  }
+
+  async uploadAttachment(
+    issueKey: string,
+    file: { filename: string; content: Buffer; mimeType?: string }
+  ): Promise<void> {
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob([file.content], { type: file.mimeType ?? "application/octet-stream" }),
+      file.filename
+    );
+    await this.rawRequest(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/attachments`, {
+      method: "POST",
+      headers: { "X-Atlassian-Token": "no-check" },
+      body: form
     });
   }
 }

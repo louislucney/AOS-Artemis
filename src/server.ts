@@ -47,8 +47,12 @@ import { screenMap, type ScreenMapArgs } from "./diff/screen-map.js";
 import { aosConfigure, type ConfigureArgs } from "./tools/configure.js";
 import { aosCrashes, type AosCrashesArgs } from "./tools/crash.js";
 import {
+  jiraIssueAttach,
+  jiraIssueComment,
   jiraIssueGet,
   jiraIssueSearch,
+  type JiraIssueAttachArgs,
+  type JiraIssueCommentArgs,
   type JiraIssueGetArgs,
   type JiraIssueSearchArgs
 } from "./tools/jira.js";
@@ -196,6 +200,29 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       nextPageToken: z.string().optional().describe("翻页游标（上次响应返回的 nextPageToken）")
     }),
     handler: (runtime, args) => jiraIssueSearch(runtime, args as unknown as JiraIssueSearchArgs)
+  },
+  {
+    name: "jira_issue_comment",
+    description:
+      "写 Jira issue 评论：纯文本 → ADF；传 traceId 时按 `AOS-TRACE:<traceId>` 页脚 marker 幂等回写（同 issue+trace 存在则 PUT 更新，否则 POST 新建；随后 best-effort 写评论属性）。dryRun:true 只返回将写入的内容摘要（不触网）。",
+    schema: z.object({
+      key: z.string().min(1).describe("issue key（如 AOS-123）或含 /browse/ 的 URL"),
+      body: z.string().min(1).describe("评论正文（纯文本；空行分段、生成 ADF 段落）"),
+      traceId: z.string().optional().describe("trace id：提供时按 marker 幂等（更新既有评论）"),
+      dryRun: z.boolean().optional().describe("仅返回计划，不写回，默认 false")
+    }),
+    handler: (runtime, args) => jiraIssueComment(runtime, args as unknown as JiraIssueCommentArgs)
+  },
+  {
+    name: "jira_issue_attach",
+    description:
+      "上传附件到 Jira issue：项目根内相对路径数组；multipart（X-Atlassian-Token: no-check）；确定性命名 `<basename>-<sha8><ext>`（内容哈希内置），同名同大小视为已存在跳过；单文件上限取站点 attachment/meta 与 AOS_JIRA_ATTACH_MAX_MB（默认 20）较小者，超限 warning 跳过不失败；dryRun:true 只列计划（不读上限制、不触网写）。",
+    schema: z.object({
+      key: z.string().min(1).describe("issue key（如 AOS-123）或含 /browse/ 的 URL"),
+      files: z.array(z.string()).min(1).describe("项目根内相对路径数组（绝对路径越界拒绝）"),
+      dryRun: z.boolean().optional().describe("仅返回计划，不写回，默认 false")
+    }),
+    handler: (runtime, args) => jiraIssueAttach(runtime, args as unknown as JiraIssueAttachArgs)
   },
   {
     name: "compare_design_and_device",

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
 import { aosConfigure } from "../dist/tools/configure.js";
-import { jiraIssueGet, jiraIssueSearch } from "../dist/tools/jira.js";
+import { jiraIssueAttach, jiraIssueComment, jiraIssueGet, jiraIssueSearch } from "../dist/tools/jira.js";
 import { aosStatus } from "../dist/tools/llm.js";
 import { usageFamilyOf } from "../dist/usage/capture.js";
 import { loadTestRuntime, makeTempProject, parseToolResult } from "./helpers.js";
@@ -228,4 +229,125 @@ test("jira status: 就绪与缺失两态", async () => {
 test("jira usage: family 归类", () => {
   assert.equal(usageFamilyOf("jira_issue_get"), "jira");
   assert.equal(usageFamilyOf("jira_issue_search"), "jira");
+});
+
+test("jira_issue_comment: dryRun 不触网；创建带 marker 页脚，属性无权限不失败", async (t) => {
+  const dir = makeTempProject({ dotenv: JIRA_DOTENV });
+  const { runtime } = await loadTestRuntime(dir, { env: {} });
+
+  const dry = parseToolResult(
+    await jiraIssueComment(runtime, { key: "AOS-1", body: "摘要", traceId: "trace-x", dryRun: true })
+  );
+  assert.equal(dry.ok, true);
+  assert.equal(dry.dryRun, true);
+  assert.equal(dry.idempotent, true);
+
+  const stub = stubFetch(async (url, init) => {
+    const u = String(url);
+    if (u.includes("/comment?maxResults=") && (init.method ?? "GET") === "GET") {
+      return jsonResponse({ comments: [] });
+    }
+    if (u.endsWith("/comment") && init.method === "POST") {
+      return jsonResponse({ id: "100" });
+    }
+    if (u.includes("/properties/")) {
+      return new Response("Forbidden", { status: 403 });
+    }
+    return jsonResponse({}, 404);
+  });
+  t.after(stub.restore);
+
+  const created = parseToolResult(
+    await jiraIssueComment(runtime, { key: "AOS-1", body: "失败摘要\n\n第二段", traceId: "trace-x" })
+  );
+  assert.equal(created.ok, true);
+  assert.equal(created.action, "created");
+  assert.equal(created.commentId, "100");
+  assert.equal(created.propertySet, false, "属性无权限不失败");
+  const post = stub.calls.find((call) => call.init.method === "POST");
+  assert.match(JSON.stringify(JSON.parse(post.init.body)), /AOS-TRACE:trace-x/);
+});
+
+test("jira_issue_comment: 既有 marker 评论走 PUT 更新（幂等，不再 POST）", async (t) => {
+  const dir = makeTempProject({ dotenv: JIRA_DOTENV });
+  const { runtime } = await loadTestRuntime(dir, { env: {} });
+  const existingBody = {
+    type: "doc",
+    version: 1,
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "旧摘要" }] },
+      { type: "paragraph", content: [{ type: "text", text: "AOS-TRACE:trace-y" }] }
+    ]
+  };
+  const stub = stubFetch(async (url, init) => {
+    const u = String(url);
+    if (u.includes("/comment?maxResults=")) return jsonResponse({ comments: [{ id: "77", body: existingBody }] });
+    if (u.includes("/comment/77") && init.method === "PUT") return new Response(null, { status: 204 });
+    if (u.includes("/properties/")) return jsonResponse({});
+    return jsonResponse({}, 404);
+  });
+  t.after(stub.restore);
+
+  const result = parseToolResult(
+    await jiraIssueComment(runtime, { key: "AOS-1", body: "新摘要", traceId: "trace-y" })
+  );
+  assert.equal(result.action, "updated");
+  assert.equal(result.commentId, "77");
+  assert.equal(
+    stub.calls.some((call) => (call.init.method ?? "GET") === "POST"),
+    false
+  );
+});
+
+test("jira_issue_attach: 去重/超限/越界均跳过；新文件 multipart 上传", async (t) => {
+  const dir = makeTempProject({ dotenv: JIRA_DOTENV + "\nAOS_JIRA_ATTACH_MAX_MB=1" });
+  fs.mkdirSync(path.join(dir, "artifacts"), { recursive: true });
+  const small = path.join(dir, "artifacts", "report.json");
+  fs.writeFileSync(small, '{"ok":true}', "utf-8");
+  fs.writeFileSync(path.join(dir, "artifacts", "big.bin"), Buffer.alloc(1.5 * 1024 * 1024, 1));
+  const { runtime } = await loadTestRuntime(dir, { env: {} });
+
+  const hash = createHash("sha256").update(fs.readFileSync(small)).digest("hex").slice(0, 8);
+  const expectedName = `report-${hash}.json`;
+
+  const stub = stubFetch(async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/attachment/meta")) return jsonResponse({ enabled: true, uploadLimit: 10 * 1024 * 1024 });
+    if (u.includes("fields=attachment")) {
+      return jsonResponse({
+        fields: {
+          attachment: [{ id: "1", filename: expectedName, size: fs.readFileSync(small).byteLength }]
+        }
+      });
+    }
+    if (u.endsWith("/attachments") && init.method === "POST") return jsonResponse([{ id: "9" }]);
+    return jsonResponse({}, 404);
+  });
+  t.after(stub.restore);
+
+  const result = parseToolResult(
+    await jiraIssueAttach(runtime, {
+      key: "AOS-1",
+      files: ["artifacts/report.json", "artifacts/big.bin", "../outside.txt"]
+    })
+  );
+  assert.equal(result.ok, true);
+  const byFile = new Map(result.results.map((entry) => [entry.file, entry]));
+  assert.equal(byFile.get("artifacts/report.json").status, "skipped-duplicate");
+  assert.equal(byFile.get("artifacts/big.bin").status, "skipped-too-large");
+  assert.equal(byFile.get("../outside.txt").status, "rejected");
+  assert.equal(
+    stub.calls.some((call) => String(call.url).endsWith("/attachments")),
+    false,
+    "去重/超限/越界都不上传"
+  );
+
+  fs.writeFileSync(path.join(dir, "artifacts", "extra.txt"), "hello", "utf-8");
+  const upload = parseToolResult(
+    await jiraIssueAttach(runtime, { key: "AOS-1", files: ["artifacts/extra.txt"] })
+  );
+  assert.equal(upload.results[0].status, "uploaded");
+  const post = stub.calls.find((call) => String(call.url).endsWith("/attachments"));
+  assert.equal(post.init.headers["X-Atlassian-Token"], "no-check");
+  assert.ok(post.init.body instanceof FormData);
 });

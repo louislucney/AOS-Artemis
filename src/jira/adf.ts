@@ -1,5 +1,6 @@
 export interface AdfNode {
   type?: string;
+  version?: number;
   text?: string;
   content?: AdfNode[];
   attrs?: Record<string, unknown>;
@@ -79,4 +80,52 @@ export function adfToText(value: unknown): string {
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function textContent(text: string): AdfNode[] {
+  return text === "" ? [] : [{ type: "text", text }];
+}
+
+export function adfParagraph(text: string): AdfNode {
+  return { type: "paragraph", content: textContent(text) };
+}
+
+export function adfBulletList(items: string[]): AdfNode {
+  return {
+    type: "bulletList",
+    content: items.map((item) => ({ type: "listItem", content: [adfParagraph(item)] }))
+  };
+}
+
+export function adfOrderedList(items: string[]): AdfNode {
+  return {
+    type: "orderedList",
+    content: items.map((item) => ({ type: "listItem", content: [adfParagraph(item)] }))
+  };
+}
+
+export function adfCodeBlock(text: string, language?: string): AdfNode {
+  return {
+    type: "codeBlock",
+    ...(language ? { attrs: { language } } : {}),
+    content: textContent(text)
+  };
+}
+
+export function adfBlockquote(text: string): AdfNode {
+  return { type: "blockquote", content: [adfParagraph(text)] };
+}
+
+export function adfDoc(nodes: AdfNode[]): AdfNode {
+  return { type: "doc", version: 1, content: nodes };
+}
+
+/** 纯文本 → ADF：空行分段；每段一个 paragraph。 */
+export function plainTextToAdf(text: string): AdfNode {
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .map((part) => adfParagraph(part));
+  return adfDoc(paragraphs.length > 0 ? paragraphs : [adfParagraph("")]);
 }
