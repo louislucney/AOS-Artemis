@@ -98,7 +98,7 @@ pen.dev（原 pencil.dev）接入（P1）：离线工具 `pen_inspect` 解析 `.
 
 ### Issue tracker
 
-Issues live as local markdown under `.scratch/<feature>/issues/`. See `docs/agents/issue-tracker.md`.
+Issues/spec/tickets for agent workflows live in **Jira Cloud（沙箱）**, driven by the `jira` CLI and MCP Jira tools (Task=工单、Bug=缺陷、Epic=wayfinder 地图；To Do→In Progress→Done；五类 triage 标签原样；阻塞用 Blocks）。See `docs/agents/issue-tracker.md`. Legacy `.scratch/<feature>/` markdown is historical archive (pre-M8) only.
 
 ### Triage labels
 

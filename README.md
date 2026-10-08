@@ -151,7 +151,7 @@ node dist/cli.js jira issue link --inward AOS-1 --outward AOS-2 [--type Blocks]
 # 公共：--project <dir> / --json；exit 0 成功 / 1 请求或配置失败 / 2 用法错误
 ```
 
-tracker 迁移与沙箱验收为 M8c 后续票据，见 `.scratch/jira-integration/`。
+tracker 工作流已迁移至 Jira：`docs/agents/issue-tracker.md`（Task=工单/Bug=缺陷/Epic=地图、五类 triage 标签、Blocks 阻塞、评论承载讨论与答案）；沙箱端到端验收待使用方提供沙箱凭证（记录于 `.scratch/jira-integration/issues/06-tracker-migration.md`）。
 
 配置（项目 `.env`；推荐用 `aos_configure` 的 `jiraSite` / `jiraEmail` / `jiraApiToken` 一次写入，三者须同时提供）：
 
