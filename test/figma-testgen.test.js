@@ -417,17 +417,49 @@ test("linearizeFlows: case order is deterministic across runs", () => {
   assert.deepEqual(first, second);
 });
 
-test("linearizeFlows: maxDepth caps path length and surfaces as uncovered screens", () => {
+test("linearizeFlows: maxDepth splits long journeys into contiguous segments instead of dropping the tail", () => {
   const graph = chainGraph();
+  const { stats } = linearizeFlowsWithStats(graph, { maxDepth: 2 });
+  assert.equal(stats.depthSplits, 1, "one kept case continues from the capped screen");
+  assert.equal(stats.truncated, false, "segmentation is not truncation: nothing is dropped");
+
   const cases = generateTestCases(graph, { maxDepth: 2 });
-  const coverage = computeFlowCoverage(graph, cases, {
-    truncated: false,
-    entryFallback: false
-  });
-  assert.equal(cases[0].screens.length, 3, "Home → A → B is the deepest capped path");
-  assert.equal(coverage.complete, false);
-  assert.ok(coverage.uncoveredScreens.includes("C"));
-  assert.ok(coverage.uncoveredScreens.includes("D"));
+  assert.deepEqual(cases[0].screens, ["Home", "A", "B"], "first segment stops at the depth cap");
+  assert.deepEqual(cases[1].screens, ["B", "C", "D"], "follow-up starts where the capped path ended");
+  assert.deepEqual(cases[2].screens, ["Home", "E"]);
+  assert.match(cases[1].taskDesc, /开始前应用停留在「B」页/);
+
+  const coverage = computeFlowCoverage(graph, cases, stats);
+  assert.equal(coverage.complete, true);
+  assert.deepEqual(coverage.uncoveredScreens, []);
+  assert.deepEqual(coverage.uncoveredEdges, []);
+});
+
+test("linearizeFlows: default maxDepth walks a 22-edge pen-style chain end to end", () => {
+  const screens = Array.from({ length: 23 }, (_, index) => ({
+    id: `s${index + 1}`,
+    name: `S${index + 1}`,
+    suggestedRoute: `/s${index + 1}`,
+    childNames: [],
+    textHints: []
+  }));
+  const edges = screens.slice(0, -1).map((from, index) => ({
+    from: { id: from.id, name: from.name },
+    to: { id: screens[index + 1].id, name: screens[index + 1].name },
+    element: { id: `e${index + 1}`, name: `推断跳转（按画板排布）`, type: "INFERRED" },
+    textHints: [],
+    trigger: "INFERRED",
+    actionType: "INFERRED"
+  }));
+  const graph = { screens, edges, entryScreens: ["S1"], unresolvedDestinations: [] };
+
+  const cases = generateTestCases(graph);
+  assert.equal(cases.length, 1, "the whole chain is one continuous case");
+  assert.equal(cases[0].steps.length, 22);
+  assert.equal(cases[0].screens.length, 23);
+  const coverage = computeFlowCoverage(graph, cases, linearizeFlowsWithStats(graph).stats);
+  assert.equal(coverage.complete, true);
+  assert.equal(coverage.truncated, false);
 });
 
 function makeOrphanFlowsProject() {

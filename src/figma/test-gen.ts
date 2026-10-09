@@ -32,6 +32,8 @@ export interface LinearizeStats {
   exploredPaths: number;
   keptPaths: number;
   droppedPaths: number;
+  /** Kept cases that start mid-journey because a longer path hit maxDepth. */
+  depthSplits: number;
   truncated: boolean;
 }
 
@@ -71,13 +73,15 @@ export function computeFlowCoverage(
 /** Expand the flow graph into concrete execution paths (entry → … → terminal /
  * back edge), bounded by count and depth. Selection is coverage-greedy with
  * longest-first ordering: long continuous journeys win, redundant fragments
- * that add no new screen/transition coverage are dropped. */
+ * that add no new screen/transition coverage are dropped. Hitting maxDepth
+ * never drops the tail: the journey continues as a follow-up segment that
+ * starts where the capped path ended (visited set inherited: no cycles). */
 export function linearizeFlowsWithStats(
   graph: FlowGraph,
   options: { maxFlows?: number; maxDepth?: number } = {}
 ): { paths: FlowEdge[][]; stats: LinearizeStats } {
   const maxFlows = options.maxFlows ?? 10;
-  const maxDepth = options.maxDepth ?? 12;
+  const maxDepth = options.maxDepth ?? 30;
 
   const outgoingByScreen = new Map<string, FlowEdge[]>();
   for (const edge of graph.edges) {
@@ -91,27 +95,52 @@ export function linearizeFlowsWithStats(
   );
   const startIds = entryIds.size > 0 ? [...entryIds] : graph.screens.map((s) => s.id);
 
+  interface ExploreNode {
+    screenId: string;
+    path: FlowEdge[];
+    visited: Set<string>;
+    /** Path began at a maxDepth cut instead of an entry screen. */
+    continuation: boolean;
+  }
   const flows: FlowEdge[][] = [];
+  const continuationFlows = new WeakSet<FlowEdge[]>();
+  const pushFlow = (flow: FlowEdge[], continuation: boolean): void => {
+    flows.push(flow);
+    if (continuation) continuationFlows.add(flow);
+  };
   let guard = 0;
-  const stack = startIds.map((id) => ({ screenId: id, path: [] as FlowEdge[], visited: new Set([id]) }));
+  const stack: ExploreNode[] = startIds.map((id) => ({
+    screenId: id,
+    path: [],
+    visited: new Set([id]),
+    continuation: false
+  }));
   while (stack.length > 0 && flows.length < maxFlows * 4 && guard < 500) {
     guard += 1;
-    const { screenId, path, visited } = stack.pop()!;
+    const { screenId, path, visited, continuation } = stack.pop()!;
     const outgoing = outgoingByScreen.get(screenId) ?? [];
-    if (path.length >= maxDepth || outgoing.length === 0) {
-      if (path.length > 0) flows.push(path);
+    if (outgoing.length === 0) {
+      if (path.length > 0) pushFlow(path, continuation);
+      continue;
+    }
+    if (path.length >= maxDepth) {
+      pushFlow(path, continuation);
+      /* 到深度上限不丢尾：把当前屏作为续段新起点（visited 继承防环），长流程
+       * 按 maxDepth 拆成首尾相接的连续用例，覆盖缺口留到后续段补齐。 */
+      stack.push({ screenId, path: [], visited, continuation: true });
       continue;
     }
     for (const edge of outgoing) {
       const nextPath = [...path, edge];
       if (!edge.to || visited.has(edge.to.id)) {
-        flows.push(nextPath); // terminate at dead ends, back edges and self loops
+        pushFlow(nextPath, continuation); // terminate at dead ends, back edges and self loops
         continue;
       }
       stack.push({
         screenId: edge.to.id,
         path: nextPath,
-        visited: new Set([...visited, edge.to.id])
+        visited: new Set([...visited, edge.to.id]),
+        continuation
       });
     }
   }
@@ -198,6 +227,7 @@ export function linearizeFlowsWithStats(
       exploredPaths: flows.length,
       keptPaths: kept.length,
       droppedPaths: Math.max(0, deduped.length - kept.length),
+      depthSplits: kept.filter((flow) => continuationFlows.has(flow)).length,
       truncated: explorationStopped || truncatedAtCap
     }
   };
@@ -382,15 +412,16 @@ export async function figmaGenerateTests(
       source = flowsPath;
     }
 
-    let generation: LinearizeStats | null = null;
+    const generationRef: { stats: LinearizeStats | null } = { stats: null };
     const cases = generateTestCases(graph, {
       maxFlows: args.maxFlows ?? 10,
       maxDepth: args.maxDepth,
       i18nKeys: loadI18nKeys(runtime),
       onStats: (stats) => {
-        generation = stats;
+        generationRef.stats = stats;
       }
     });
+    const generation = generationRef.stats;
     const generatedAt = new Date().toISOString();
     const counts = { cases: cases.length, screens: graph.screens.length, edges: graph.edges.length };
     const coverage = computeFlowCoverage(graph, cases, generation);
@@ -410,6 +441,10 @@ export async function figmaGenerateTests(
           "或去掉 requireFullCoverage 仅生成并查看 coverage。"
       );
     }
+    const splitHint =
+      generation && generation.depthSplits > 0
+        ? `本次有 ${generation.depthSplits} 条用例受 maxDepth=${generation.maxDepth} 限制从上一段终点接续（首尾相接）；如需更长的单条连续用例，请调大 maxDepth。`
+        : "";
     const payload: Record<string, unknown> = {
       ok: true,
       source,
@@ -420,7 +455,8 @@ export async function figmaGenerateTests(
       hint:
         "用 mobile_run_task 执行 flows[].taskDesc；失败步骤可用 compare_design_and_device 做视觉断言；" +
         "若已跑过 figma_import_strings，步骤中会附带 i18n key（原文仅在 source locale 兜底）；" +
-        "coverage.complete=false 表示有未覆盖屏幕/跳转或路径截断（requireFullCoverage:true 可强制不落盘）。"
+        "coverage.complete=false 表示有未覆盖屏幕/跳转或路径截断（requireFullCoverage:true 可强制不落盘）。" +
+        splitHint
     };
 
     if (args.save !== false) {

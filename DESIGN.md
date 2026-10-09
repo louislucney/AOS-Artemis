@@ -378,7 +378,7 @@ env:
 - **执行闭环（既有）**：每用例为入口→终点的连续任务（`mobile_run_task`，iOS 走 idb/Appium 执行器），`case_id` 回填台账、失败步骤证据、`compare_design_and_device`/`design_device_diff` 视觉核对、崩溃取证。
 - **默认姿势**：设计流水线脚本 `scripts/design-pipeline.mjs` 调 `figma_generate_tests` 时默认 `requireFullCoverage:true`；文档示例推荐同参数（MCP 参数本身保持可选，不改变既有调用方语义）。
 - **口径**：边覆盖按屏幕对（`From → To`）计；BACK/自环不产生新屏幕步骤，不计边；覆盖计算为单一实现（`src/figma/coverage.ts`），生成闸与执行预检同口径；`entryFallback` 为告警项不阻断（除非覆盖本身不完整）。
-- **生成策略**：线性化选路为"覆盖贪心 + 长路径优先"——先选覆盖增量（屏幕+跳转）最大的路径，同增量取更长者，无新增覆盖的冗余短片段不产出；`maxDepth` 默认 12、可配（`figma_generate_tests` 参数），长流程调大即可生成更长的连续用例。
+- **生成策略**：线性化选路为"覆盖贪心 + 长路径优先"——先选覆盖增量（屏幕+跳转）最大的路径，同增量取更长者，无新增覆盖的冗余短片段不产出；`maxDepth` 默认 30、可配（`figma_generate_tests` 参数，上限 50），是单条用例的边数上限；**到上限不丢尾**——以截断屏为起点生成首尾相接的续段用例（`visited` 继承防环，覆盖仍完整），`generation.depthSplits` 报告接续条数，响应 hint 提示调大 `maxDepth` 可获得更长单条连续用例（修复：此前深度截断直接丢弃剩余路径，长链只剩 12 步且尾部屏幕全未覆盖）。
 - **pen 合成提取**（`pen_extract_flows`，离线）：`.pen` 无原型交互数据时，屏幕命名取「Flow 标注 > 屏内首个文本 > 图层名」（默认名 `Frame NNNN` 不再冒充屏名）；状态变体按标签前缀归并为主屏 + `states`；跳转按画板序号/画布排布推断并统一标注 `INFERRED`；产出可直接进入同一闭环的 `flows.json` 与全局 `flow-map.md`；碎片度（默认名屏、状态归并、推断边、缺标签）进入 `warnings`，供人工复核。
 - **pre-merge 静态闸**（`suite check`）：tests.json × flows.json 静态覆盖（复用 preflight 单一实现），不连设备；未覆盖/截断/缺 flows exit 2；"测试引用但设计缺失"的路线漂移仅警告（设计偏差 ≠ 路线缺口）。
 - **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 **JUnit XML**——Android instrumentation 直读，或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
@@ -783,7 +783,7 @@ llm_switch(name, force):
 
 > 实施于 2026-10-01；新增 `src/figma/preflight.ts`、`linearizeFlowsWithStats`；测试 `test/test-preflight.test.js` 3 例。
 
-- **生成统计不再沉默**：`linearizeFlowsWithStats` 输出 `{maxFlows,maxDepth,entryFallback,exploredPaths,keptPaths,droppedPaths,truncated}`；`figma_generate_tests` 经 `onStats` 回调把 `generation` 写入响应与 tests.json（入口回退、截断、丢弃路径数可见）。
+- **生成统计不再沉默**：`linearizeFlowsWithStats` 输出 `{maxFlows,maxDepth,entryFallback,exploredPaths,keptPaths,droppedPaths,depthSplits,truncated}`；`figma_generate_tests` 经 `onStats` 回调把 `generation` 写入响应与 tests.json（入口回退、截断、丢弃路径数可见）。
 - **静态预检**（`preflightGeneratedTests(configDirAbs)`，纯读）：弱用例（步骤缺「应」类断言）逐条给出步骤索引与原因；覆盖视图列出未覆盖屏幕与未覆盖边（边以用例 `screens` 的连续对判定）；透传 `generation`；缺 flows.json 时覆盖退化为已生成屏幕；tests.json 缺失/损坏返回 null。
 
 ### 13.24 实施记录（测试闭环票据 08：最小套件运行器）
