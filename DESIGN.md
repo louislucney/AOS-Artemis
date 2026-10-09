@@ -284,6 +284,7 @@ env:
 | `pen_apply_tokens`          | `{path?, tokensPath?, out?, dryRun?, timeoutMs?}`                                  | CLI 写回：`tokens.json`（含 modes 主题取值）→ `.pen` `SetVariables`；默认**原位更新**（临时文件 → 回读校验变量值 → 原子替换；校验失败不动原文件），`out` 可另存；别名 token 不单独写入（P1 写回）                                                                                                                                                                                                                       |
 | `pen_apply_strings`         | `{path?, stringsPath?, out?, dryRun?, timeoutMs?}`                                 | CLI 写回：`strings.json` 的 nodeId→sourceText → `.pen` 文本节点 `Update(content)`；原位更新/校验/另存语义同上；nodeId 不存在记入 `notFound`（P1 写回）                                                                                                                                                                                                                                                                    |
 | `pen_agent`                 | `{path?, out?, prompt, agent?, model?, effort?, anthropicBaseUrl?, custom?, exportPath?, exportType?, exportScale?, maxFailedCalls?, dryRun?, timeoutMs?}` | headless CLI agent 生成/修改设计：prompt → `.pen`（默认原位：临时文件→结构校验→原子替换，失败不动原文件；`out` 新建/另存）；pen CLI 缺失时自动托管安装（同 `pen_export`）；**凭证复用 active LLM**（不落日志/响应），项目 `.env` 的 `PEN_*`/`ANTHROPIC_*` 透传（active LLM 派生值优先），Anthropic 兼容端点按 provider 桥接：DeepSeek（apiKey，已实测）、Kimi/Z.AI/百炼（authToken + 模型映射，按官方文档，待真实 key 冒烟）；其他 provider 仅注入 `PEN_AGENT_API_KEY` 并告警（可 `anthropicBaseUrl`/`AOS_PEN_ANTHROPIC_BASE_URL` 覆盖）；有桥接时 claude agent 自动 `--custom`；可选 `exportPath` 顺带出图（P1 写回） |
+| `pen_import_assets`         | `{path?, ids, format?, densities?, destDir?, overwrite?, dryRun?, save?, timeoutMs?}` | CLI 资源导入（headless，需登录）：`.pen` 节点 → 位图（interactive `Export`：单会话、命令数=倍率数、单命令全 ids；png/jpeg/webp）→ 按栈命名/倍率集/目录幂等写入（复用 figma 写盘管线：路径幂等 + sha256 去重 + `duplicate_of`；`densities:false` 回退单 @2x）；产物以 CLI `Exported` 路径对账（缺产物记 `export-no-output` + 批次告警；未知 id 离线预校验失败）；报告 `.artemis/design/import-report.pen.json`（`schemaVersion`/`penCliVersion`/`vector:"unsupported"`；独立于 figma 报告）；超时会话级自适应（`AOS_PEN_IMPORT_TIMEOUT_MS`）；`dryRun` 仍渲染以获得去重结果（§13.58） |
 
 `setup_required` 语义：无任何可用条目时，`llm_list` 正常返回并带 `setupRequired: true` + 指引；`mobile_run_task` 直接返回结构化 `setup_required` 错误（不调用子进程）；其余 mobile 工具放行。
 
@@ -550,7 +551,7 @@ llm_switch(name, force):
 
 - 已有：sha256 内容寻址（同图全域唯一）、路径幂等、`duplicate_of`、栈命名规则。
 - 补强：
-  - 脏图层名（`Frame 427`）回退 `asset-<sha256前12位>`，碰撞再追加序号；现有幂等写入已保证不会静默覆盖（真实代价是混淆性 `skipped_exists`），加长前缀降低概率。
+  - 脏图层名（`Frame 427`）回退**身份种子**命名 `asset <sha1(源 id) 前 8 位>`（`src/figma/gaps.ts` `applyAssetNaming`/`fallbackAssetName`，并标 `needsRename`）；命名在 plan 阶段完成、与导出内容无关，内容 sha256 只用于写盘判定/去重（多倍率下同一资源恒同名）；现有幂等写入保证不静默覆盖（真实代价是混淆性 `skipped_exists`）。
   - 导出规格（2026-10-02 已实施，§13.35）：**SVG 优先**；位图按栈倍率集（Android xhdpi(2x)/xxhdpi(3x)、Flutter 1x/2.0x/3.0x、iOS imageset 1x/2x/3x + Contents.json、RN base/@2x/@3x、Web 单 1x），不再统一 @2x；`densities:false` 回退旧行为。
   - 同内容不同语义名 → 提示合并（不自动改名）。
 
@@ -1098,3 +1099,14 @@ llm_switch(name, force):
 - **动机**：`AOS_IOS_XCODE_ORG_ID` 等此前只读宿主级进程 env，多项目团队 ID 各异时同一实例无法各用各的（HTTP 单实例尤甚）；现与 LLM/Figma/Jira 的 per-project 配置一致，团队 ID 写入项目 `.env` 即可。
 - **优先级**：进程 env（客户端配置）仍覆盖项目 `.env`，全局限定语义不变；`aos_status.ios` / doctor 与真实会话读取同一分层 env。
 - **边界**：`ios/task-runner` 执行器调参（`AOS_IOS_MAX_STEPS` / `AOS_IOS_SETTLE_MS` / 视觉开关）仍读进程 env，未纳入本次分层。
+
+### 13.58 实施记录（pen 资源导入：`pen_import_assets`，v1 ids-only 位图）
+
+> 实施于 2026-10-09；新增 `src/pen/assets.ts`；改 `src/figma/import.ts`（`ImportPlanEntry`/`ImportResultEntry.figmaId` → `sourceId`、导出 `renderIosContents`、`RASTER_FORMATS` 加 `webp`、figma 报告加 `schemaVersion:2`）、`src/figma/gaps.ts`（`fallbackAssetName` 导出、参数泛化为源 id）、`src/server.ts`（工具注册）；测试新增 `test/pen-assets.test.js`（11 例）；人工冒烟 `scripts/e2e-pen-assets.mjs`（真实 CLI 0.3.10 实测：2x PNG 750×1710、报告 schema 正确、临时目录清理）。spec/两轮评审记录见 `.scratch/pen-assets/spec.md`。
+
+- **能力核实（修正旧结论）**：`pen interactive` 的 `execute` 提供 `Export(nodeIds, format, outputPath, options?)`（png/jpeg/webp/pdf/html；每节点独立文件 `<nodeId>.<ext>`、默认 2x、响应逐行 `Exported <绝对路径>`；无 `svg`）；此前"pen CLI 只能整档渲染"不成立——`pen_export` 只包了非交互 `--export`，本工具接 interactive 管道（复用 `runPenInteractive`）补齐按节点导出。
+- **批量与会话**：单次 interactive 会话、**命令数 = 倍率数、单命令携带全部 ids**（进程数与资源数解耦）；超时为**会话级**（`penExec` 每 spawn 一个硬超时），默认 `max(AOS_PEN_TIMEOUT_MS, 60s + ids×倍率×5s)`、`AOS_PEN_IMPORT_TIMEOUT_MS` 可覆盖、上下限 5s–30min（`resolveImportTimeoutMs`）。
+- **对账与缺产物判定**：ids 离线预校验（不存在即参数错误、不启 CLI）；产物 = 响应 `Exported` 路径 ∪ 临时目录扫描；缺产物逐项 `status:"error", error:"export-no-output"` + 批次告警（全缺=CLI/登录/格式问题，部分缺=节点可能零尺寸/不可见）；全缺时硬错误附日志尾。
+- **命名与幂等（身份/内容解耦）**：命名在 plan 阶段由身份决定（`formatAssetFilename`；脏名如 `Frame 427` 回退 `asset <sha1(源 id) 前 8 位>`），与导出内容无关（多倍率恒同名）；内容 sha256 只用于 `unchanged/skipped_exists/duplicate`；写盘/去重/栈规则全部复用 `src/figma/import.ts` 纯函数；iOS `Contents.json` 与 figma 产物一致（非矢量不写 `properties`）。
+- **报告与 schema**：`.artemis/design/import-report.pen.json`（独立于 figma 报告），payload 含 `source:"pen"`/`schemaVersion:2`/`penCliVersion`/`penPath`/`vector:"unsupported"`/`session{timeoutMs,scales,commands,exportedFiles}`/`counts`/`uniqueness`/`results`；字段更名（`figmaId`→`sourceId`）为内部类型级 breaking（测试只消费 `relativePath/status/role`，仓库内无报告字段消费方），figma 报告同批加 `schemaVersion:2`。
+- **边界与后续**：`dryRun` 仍执行渲染（去重结果依赖内容，语义同 `figma_import_assets`）；无 SVG 输出（P1 离线合成或等 CLI 支持）；候选启发式（v1.5）未实施；写盘纯函数下沉 shared 层为后续项（pen→figma 依赖为既有惯性）。

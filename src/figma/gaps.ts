@@ -134,8 +134,8 @@ export function isGenericLayerName(name: string): boolean {
   return GENERIC_LAYER_RE.test(name.trim());
 }
 
-function fallbackAssetName(figmaId: string | undefined): string {
-  const seed = figmaId && figmaId !== "" ? figmaId : "unknown";
+export function fallbackAssetName(sourceId: string | undefined): string {
+  const seed = sourceId && sourceId !== "" ? sourceId : "unknown";
   return `asset ${createHash("sha1").update(seed).digest("hex").slice(0, 8)}`;
 }
 

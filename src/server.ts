@@ -38,6 +38,7 @@ import {
   type PenApplyTokensArgs
 } from "./pen/apply.js";
 import { penAgent, type PenAgentArgs } from "./pen/agent.js";
+import { penImportAssets, type PenAssetsArgs } from "./pen/assets.js";
 import { syncFigmaTokenEnv } from "./figma/token.js";
 import { Runtime, sweepStaleChild } from "./runtime.js";
 import { usageEventInputFrom } from "./usage/capture.js";
@@ -379,7 +380,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
         .positive()
         .max(50)
         .optional()
-        .describe("路径最大深度（边数），默认 12；长流程可调大以生成更长的连续用例"),
+        .describe("路径最大深度（边数），默认 30；长流程可调大以生成更长的连续用例（超限按续段拆分，不丢尾）"),
       save: z.boolean().optional().describe("是否落盘 tests.json/tests.md/tests.xlsx，默认 true"),
       excelPath: z
         .string()
@@ -531,6 +532,23 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       timeoutMs: z.number().int().positive().optional().describe("CLI 超时（毫秒），默认 AOS_PEN_TIMEOUT_MS 或 120s")
     }),
     handler: (runtime, args) => penExport(runtime, args as unknown as PenExportArgs)
+  },
+  {
+    name: "pen_import_assets",
+    description:
+      "pen 资源导入（headless CLI）：.pen 指定节点 → 位图（interactive Export，单会话按倍率批量；png/jpeg/webp）→ 按检测栈命名/倍率集/目录幂等写入（路径幂等 + sha256 去重 + duplicate_of；densities:false 回退单 @2x）；产物以 CLI 响应的 Exported 路径对账，缺失记 export-no-output + 批次告警；报告落 .artemis/design/import-report.pen.json（schemaVersion/penCliVersion/vector:\"unsupported\"；不与 Figma 报告互相覆盖）。pen CLI 缺失时自动安装（同 pen_export），需已登录（pen login 或项目 .env 的 PEN_CLI_KEY）；非离线工具。",
+    schema: z.object({
+      path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
+      ids: z.array(z.string().min(1)).min(1).describe("要导出的节点 id 列表（来自 .pen；可用 pen_inspect 核对）"),
+      format: z.enum(["png", "jpeg", "webp"]).optional().describe("导出格式，默认 png"),
+      densities: z.boolean().optional().describe("位图是否按栈倍率集导出，默认 true；false 回退单文件 @2x"),
+      destDir: z.string().optional().describe("覆盖目标目录（默认按栈档案/建议目录）"),
+      overwrite: z.boolean().optional().describe("同名不同内容时是否覆盖，默认 false（skipped_exists）"),
+      dryRun: z.boolean().optional().describe("仅预览不写文件（渲染仍会执行以获得去重结果），默认 false"),
+      save: z.boolean().optional().describe("是否落盘 import-report.pen.json，默认 true"),
+      timeoutMs: z.number().int().positive().optional().describe("CLI 超时（毫秒）；缺省按会话自适应（AOS_PEN_IMPORT_TIMEOUT_MS / 规模公式）")
+    }),
+    handler: (runtime, args) => penImportAssets(runtime, args as unknown as PenAssetsArgs)
   },
   {
     name: "pen_apply_tokens",

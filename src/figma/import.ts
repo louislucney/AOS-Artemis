@@ -20,7 +20,7 @@ export interface GapAssetEntry {
 }
 
 export interface ImportPlanEntry {
-  figmaId: string;
+  sourceId: string;
   name: string;
   relativePath: string;
   /** Pixel ratio of the exported bitmap (1/2/3); 0 for generated side files. */
@@ -43,7 +43,7 @@ export type ImportStatus =
 
 export interface ImportResultEntry {
   name: string;
-  figmaId: string;
+  sourceId: string;
   file?: string;
   status: ImportStatus;
   bytes?: number;
@@ -56,7 +56,7 @@ export interface ImportResultEntry {
   variant?: string;
 }
 
-const RASTER_FORMATS = new Set(["png", "jpg", "jpeg"]);
+const RASTER_FORMATS = new Set(["png", "jpg", "jpeg", "webp"]);
 
 function stemAndExt(filename: string): { stem: string; ext: string } {
   const match = /^(.*?)(\.[A-Za-z0-9]+)$/.exec(filename);
@@ -134,7 +134,7 @@ function densityPlan(profile: StackProfile | null, dir: string, filename: string
   }
 }
 
-function renderIosContents(
+export function renderIosContents(
   files: Array<{ filename: string; scale: number }>,
   options: { vector?: boolean } = {}
 ): string {
@@ -177,7 +177,7 @@ export function planImports(
   const format = options.format ?? "svg";
   const raster = RASTER_FORMATS.has(format);
   const plan: ImportPlanEntry[] = [];
-  const push = (entry: Omit<ImportPlanEntry, "name" | "figmaId"> & { name: string; figmaId: string }): void => {
+  const push = (entry: Omit<ImportPlanEntry, "name" | "sourceId"> & { name: string; sourceId: string }): void => {
     const relativePath = safeRelativePath("", entry.relativePath);
     if (!relativePath) throw new Error(`非法目标路径: ${entry.relativePath}`);
     plan.push({ ...entry, relativePath });
@@ -193,7 +193,7 @@ export function planImports(
       if (density) {
         for (const variant of density.variants) {
           push({
-            figmaId: asset.figmaId,
+            sourceId: asset.figmaId,
             name: asset.name,
             relativePath: variant.relativePath,
             scale: variant.scale,
@@ -203,7 +203,7 @@ export function planImports(
         }
         if (density.contents) {
           push({
-            figmaId: asset.figmaId,
+            sourceId: asset.figmaId,
             name: asset.name,
             relativePath: density.contents.relativePath,
             scale: 0,
@@ -221,14 +221,14 @@ export function planImports(
       const single = `${base}${ext}`;
       const imageset = `${dir}/${base}.imageset`;
       push({
-        figmaId: asset.figmaId,
+        sourceId: asset.figmaId,
         name: asset.name,
         relativePath: `${imageset}/${single}`,
         scale: raster ? 2 : 1,
         role: "image"
       });
       push({
-        figmaId: asset.figmaId,
+        sourceId: asset.figmaId,
         name: asset.name,
         relativePath: `${imageset}/Contents.json`,
         scale: 0,
@@ -240,7 +240,7 @@ export function planImports(
     }
 
     push({
-      figmaId: asset.figmaId,
+      sourceId: asset.figmaId,
       name: asset.name,
       relativePath: `${dir}/${filename}`,
       scale: raster ? 2 : 1,
@@ -401,7 +401,7 @@ export async function figmaImportAssets(
       return jsonResult({ ok: true, message: "没有可导入的资源（missingAssets 为空或 ids 不匹配）", results: [] });
     }
 
-    const imageIds = [...new Set(plan.filter((entry) => entry.role === "image").map((entry) => entry.figmaId))];
+    const imageIds = [...new Set(plan.filter((entry) => entry.role === "image").map((entry) => entry.sourceId))];
     const scales = [...new Set(plan.filter((entry) => entry.role === "image").map((entry) => entry.scale))].sort(
       (a, b) => a - b
     );
@@ -431,7 +431,7 @@ export async function figmaImportAssets(
     const contentsEntries = plan.filter((entry) => entry.role === "contents");
 
     for (const entry of imageEntries) {
-      const exported = exportedByScale.get(entry.scale)?.get(entry.figmaId);
+      const exported = exportedByScale.get(entry.scale)?.get(entry.sourceId);
       if (!exported) {
         const result: ImportResultEntry = { ...entry, status: "error", error: "Figma 未返回该节点的导出" };
         results.push(result);
@@ -508,7 +508,7 @@ export async function figmaImportAssets(
       const failed = imageEntries.filter((image) => {
         const result = imageResults.get(image.relativePath);
         return (
-          image.figmaId === entry.figmaId &&
+          image.sourceId === entry.sourceId &&
           dirOf(image.relativePath) === dirOf(entry.relativePath) &&
           result !== undefined &&
           (result.status === "error" || result.status === "duplicate")
@@ -568,6 +568,7 @@ export async function figmaImportAssets(
     const payload: Record<string, unknown> = {
       ok: true,
       sourceUrl: url,
+      schemaVersion: 2,
       format,
       densities: format === "svg" ? false : densities,
       dryRun: args.dryRun === true,
@@ -575,7 +576,7 @@ export async function figmaImportAssets(
       warnings,
       counts: {
         ...counts,
-        assets: new Set(plan.filter((entry) => entry.role === "image").map((entry) => entry.figmaId)).size,
+        assets: new Set(plan.filter((entry) => entry.role === "image").map((entry) => entry.sourceId)).size,
         files: plan.length
       },
       uniqueness: {
