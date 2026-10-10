@@ -10,10 +10,12 @@ import {
   ingestExplorationObservations,
   loadReconciliation,
   parseReconciliation,
+  reconciliation,
   reconciliationFilePath,
+  reviewEdge,
   serializeReconciliation
 } from "../dist/figma/reconciliation.js";
-import { makeTempDir } from "./helpers.js";
+import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, StubProxy } from "./helpers.js";
 
 test("reconciliation: observations create, count and idempotently upgrade unconfirmed edges", () => {
   const empty = { version: 1, updatedAt: null, edges: [] };
@@ -246,4 +248,157 @@ test("reconciliation: hitsFromRunSteps dedupes and sorts; ingest writes the dura
     hitIndexes: [5]
   });
   assert.equal(unmapped, 0, "unmapped targets contribute nothing");
+});
+
+test("reconciliation: review decisions promote or reject edges idempotently", () => {
+  const base = applyObservations(
+    { version: 1, updatedAt: null, edges: [] },
+    [{ from: "A", to: "B", designProvenance: "inferred", traceId: "t1", reached: false }],
+    "2026-10-10T00:00:00.000Z"
+  ).asset;
+
+  const confirmed = reviewEdge(base, {
+    from: "A",
+    to: "B",
+    decision: "confirmed",
+    reviewer: "louis",
+    note: "设计确认",
+    at: "2026-10-10T01:00:00.000Z"
+  });
+  assert.ok(!("error" in confirmed));
+  assert.equal(confirmed.entry.status, "confirmed");
+  assert.equal(confirmed.entry.provenance, "human-confirmed");
+  assert.deepEqual(confirmed.entry.review, {
+    decision: "confirmed",
+    reviewer: "louis",
+    at: "2026-10-10T01:00:00.000Z",
+    note: "设计确认"
+  });
+
+  const again = reviewEdge(confirmed.asset, {
+    from: "A",
+    to: "B",
+    decision: "confirmed",
+    reviewer: "louis",
+    at: "2026-10-10T02:00:00.000Z"
+  });
+  assert.ok(!("error" in again));
+  assert.equal(again.entry.status, "confirmed", "repeating a decision is idempotent");
+
+  const rejected = reviewEdge(confirmed.asset, {
+    from: "A",
+    to: "B",
+    decision: "rejected",
+    reviewer: "louis",
+    at: "2026-10-10T03:00:00.000Z"
+  });
+  assert.ok(!("error" in rejected));
+  assert.equal(rejected.entry.status, "rejected");
+  assert.equal(rejected.entry.provenance, "inferred", "rejection falls back to the design side");
+
+  const missing = reviewEdge(base, { from: "X", to: "Y", decision: "confirmed", at: "t" });
+  assert.ok("error" in missing, "reviewing an unknown edge fails");
+});
+
+test("reconciliation: applyReconciliationToGraph handles confirmed and rejected decisions", () => {
+  const inferredEdge = (from, to) => ({
+    from: { id: from.toLowerCase(), name: from },
+    to: { id: to.toLowerCase(), name: to },
+    element: { id: `e-${from}-${to}`, name: "E", type: "INFERRED" },
+    textHints: [],
+    trigger: "INFERRED",
+    actionType: "INFERRED",
+    provenance: "inferred",
+    confidence: "low"
+  });
+  const graph = {
+    screens: [],
+    edges: [inferredEdge("A", "B"), inferredEdge("B", "C")],
+    entryScreens: [],
+    unresolvedDestinations: []
+  };
+  const asset = {
+    version: 1,
+    updatedAt: null,
+    edges: [
+      {
+        from: "A",
+        to: "B",
+        designProvenance: "inferred",
+        provenance: "human-confirmed",
+        status: "confirmed",
+        traces: [],
+        hits: 0,
+        lastSeenAt: null,
+        review: { decision: "confirmed", reviewer: "louis", at: "2026-10-10T00:00:00.000Z" }
+      },
+      {
+        from: "B",
+        to: "C",
+        designProvenance: "inferred",
+        provenance: "inferred",
+        status: "rejected",
+        traces: [],
+        hits: 0,
+        lastSeenAt: null,
+        review: { decision: "rejected", reviewer: "louis", at: "2026-10-10T00:00:00.000Z" }
+      }
+    ]
+  };
+
+  const applied = applyReconciliationToGraph(graph, asset);
+  assert.equal(applied.confirmedEdges, 1);
+  assert.equal(applied.rejectedEdges, 1);
+  assert.equal(applied.upgradedEdges, 0);
+  assert.equal(applied.graph.edges.length, 1, "rejected edges are dropped");
+  assert.equal(applied.graph.edges[0].provenance, "human-confirmed");
+  assert.equal(applied.graph.edges[0].confidence, "high");
+});
+
+test("reconciliation: tool handler lists and reviews edges with actionable errors", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  ingestExplorationObservations({
+    configDirAbs: runtime.configDirAbs,
+    traceId: "t1",
+    at: "2026-10-10T00:00:00.000Z",
+    screens: ["A", "B"],
+    exploreSteps: [{ index: 1, screen: "B", provenance: "inferred" }],
+    hitIndexes: []
+  });
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "flows.json"),
+    JSON.stringify({
+      screens: [
+        {
+          id: "s2",
+          name: "B",
+          suggestedRoute: "/b",
+          childNames: [],
+          textHints: [{ text: "乙页", textClass: "runtime-text" }]
+        }
+      ],
+      edges: [],
+      entryScreens: [],
+      unresolvedDestinations: []
+    })
+  );
+
+  const listed = JSON.parse((await reconciliation(runtime, { action: "list" })).content[0].text);
+  assert.equal(listed.ok, true);
+  assert.equal(listed.counts.pending, 1);
+  assert.equal(listed.edges[0].from, "A");
+  assert.deepEqual(listed.edges[0].toTextHints, ["乙页"], "review context carries target runtime text");
+
+  const confirmed = JSON.parse(
+    (await reconciliation(runtime, { action: "confirm", from: "A", to: "B", reviewer: "louis" }))
+      .content[0].text
+  );
+  assert.equal(confirmed.ok, true);
+  assert.equal(confirmed.edge.status, "confirmed");
+
+  const missingArgs = await reconciliation(runtime, { action: "confirm" });
+  assert.equal(missingArgs.isError, true);
+  const unknown = await reconciliation(runtime, { action: "reject", from: "X", to: "Y" });
+  assert.equal(unknown.isError, true);
 });

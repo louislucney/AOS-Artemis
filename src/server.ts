@@ -45,6 +45,7 @@ import { usageEventInputFrom } from "./usage/capture.js";
 import { compareDesignAndDevice, type CompareArgs } from "./tools/composite.js";
 import { designDeviceDiff, type DesignDeviceDiffArgs } from "./diff/tool.js";
 import { screenMap, type ScreenMapArgs } from "./diff/screen-map.js";
+import { reconciliation, type ReconciliationArgs } from "./figma/reconciliation.js";
 import { aosConfigure, type ConfigureArgs } from "./tools/configure.js";
 import { aosCrashes, type AosCrashesArgs } from "./tools/crash.js";
 import {
@@ -335,6 +336,19 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
       merge: z.boolean().optional().describe("save 时按 design key 增量合并已有映射，默认 false（替换）")
     }),
     handler: (runtime, args) => screenMap(runtime, args as unknown as ScreenMapArgs)
+  },
+  {
+    name: "reconciliation",
+    description:
+      "交互对账审阅（持久资产）：维护 <项目>/.artemis/design/reconciliation.json——设计边 ↔ 真机观测命中/升级/审阅状态。action=list 列举（含来源 designProvenance→provenance、命中数、traces、审阅记录）；action=confirm 人工确认边为可信导航（human-confirmed，下一次 figma_generate_tests 以硬断言生成；幂等，记录 reviewer/时间）；action=reject 判为不成立（该边不进入后续生成）。未裁决项保持待办、不升权。iOS 套件运行自动写入观测与差异条目（见 suite run / DESIGN §13.67）。",
+    schema: z.object({
+      action: z.enum(["list", "confirm", "reject"]).describe("list 列举 / confirm 确认 / reject 驳回"),
+      from: z.string().optional().describe("边起点屏幕名（confirm/reject 必填，与 list 输出一致）"),
+      to: z.string().optional().describe("边终点屏幕名（confirm/reject 必填）"),
+      reviewer: z.string().optional().describe("审阅人标识（写入资产，可省略）"),
+      note: z.string().optional().describe("备注（写入资产）")
+    }),
+    handler: (runtime, args) => reconciliation(runtime, args as unknown as ReconciliationArgs)
   },
   {
     name: "figma_extract_flows",

@@ -578,6 +578,65 @@ test("suite check --strict: weak assertions gate when requested; explore steps s
   assert.equal(exploreStrict.code, 0, "explore steps are exempt from --strict");
 });
 
+test("suite reconcile: list/confirm/reject with exit codes and asset writes", async () => {
+  const { runtime } = await setupRun({ cases: [caseEntry(1)] });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.writeFileSync(
+    path.join(designDir, "reconciliation.json"),
+    JSON.stringify({
+      version: 1,
+      updatedAt: null,
+      edges: [
+        {
+          from: "Home",
+          to: "Next",
+          designProvenance: "inferred",
+          provenance: "inferred",
+          status: "pending",
+          traces: [],
+          hits: 0,
+          lastSeenAt: null,
+          review: null
+        }
+      ]
+    })
+  );
+
+  const list = await runCli(runtime, ["reconcile", "list"]);
+  assert.equal(list.code, 0);
+  assert.ok(list.logs.some((line) => line.includes("[pending] Home → Next")));
+  assert.ok(list.logs.some((line) => line.includes("汇总: pending 1")));
+
+  const badUsage = await runCli(runtime, ["reconcile", "confirm"]);
+  assert.equal(badUsage.code, 2);
+
+  const confirm = await runCli(runtime, [
+    "reconcile",
+    "confirm",
+    "--from",
+    "Home",
+    "--to",
+    "Next",
+    "--reviewer",
+    "louis"
+  ]);
+  assert.equal(confirm.code, 0);
+  assert.ok(confirm.logs.some((line) => line.includes("human-confirmed")));
+  const asset = JSON.parse(
+    fs.readFileSync(path.join(designDir, "reconciliation.json"), "utf-8")
+  );
+  assert.equal(asset.edges[0].status, "confirmed");
+  assert.equal(asset.edges[0].review.reviewer, "louis");
+
+  const unknown = await runCli(runtime, ["reconcile", "reject", "--from", "X", "--to", "Y"]);
+  assert.equal(unknown.code, 1);
+  assert.ok(unknown.errors.some((line) => line.includes("未找到边")));
+
+  const jsonList = await runCli(runtime, ["reconcile", "list", "--json"]);
+  assert.equal(jsonList.code, 0);
+  assert.equal(JSON.parse(jsonList.logs[0]).counts.confirmed, 1);
+});
+
 test("suite check: route drift warning (test screens absent from design, non-blocking)", async () => {
   const { runtime } = await setupRun({ cases: [caseEntry(1, { screens: ["Home", "ObservedOnly"] })] });
   const designDir = path.join(runtime.configDirAbs, "design");

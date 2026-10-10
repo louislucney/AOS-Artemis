@@ -18,6 +18,13 @@ import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { loadQuarantine } from "./figma/quarantine.js";
 import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
 import { preflightGeneratedTests, type PreflightReport } from "./figma/preflight.js";
+import {
+  loadReconciliation,
+  reconciliationFilePath,
+  reconciliationListing,
+  reviewEdge,
+  saveReconciliation
+} from "./figma/reconciliation.js";
 import { buildRunReport } from "./figma/run-report.js";
 import {
   buildSuiteLoopReport,
@@ -251,6 +258,8 @@ Usage:
                                      设备对设备基线视觉回归（last-known-good）
   aos-mcp suite report [options]     从运行台账导出 xlsx 结果页 + JUnit XML
   aos-mcp suite feedback [options]   基于台账与基线的生成改进建议（只读）
+  aos-mcp suite reconcile list|confirm|reject [options]
+                                     对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -269,6 +278,7 @@ baseline: --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--ser
           [--ignore x,y,w,h]... [--no-save] [--fail-on new|persisting|any]
 report: [--limit <n>] [--case <id>]... [--out <dir>] [--stamp <s>] [--no-save] [--no-sync]
 feedback: [--limit <n>] [--min-failures <n>]
+reconcile: list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>]
 
 exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误或 --fail-on 命中（基线回归/未处理 API 错误/流程未覆盖或无法校验）
 错误码注册表: .artemis/design/error-codes.json（未配置时 api-errors 跳过并如实标注 degraded）`);
@@ -1108,6 +1118,103 @@ async function suiteFeedback(runtime: Runtime, flags: ParsedFlags, io: { log: (l
   return feedback.ok ? 0 : 1;
 }
 
+/** 对账审阅面：list / confirm / reject——人工只仲裁不一致；未裁决项保持待办、不升权。 */
+async function suiteReconcile(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const action = flags.positional[1];
+  if (!action || !["list", "confirm", "reject"].includes(action)) {
+    io.errorLog(
+      "用法: suite reconcile list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>] [--json]"
+    );
+    return 2;
+  }
+  const from = flags.get("from")?.trim();
+  const to = flags.get("to")?.trim();
+  if (action !== "list" && (!from || !to)) {
+    io.errorLog("confirm/reject 需要 --from 与 --to（屏幕名，与 list 输出一致）");
+    return 2;
+  }
+  const file = reconciliationFilePath(runtime.configDirAbs);
+  if (action === "list") {
+    const listing = reconciliationListing(runtime.configDirAbs);
+    if (flags.bool("json")) {
+      io.log(
+        JSON.stringify(
+          {
+            ok: true,
+            file: listing.file,
+            updatedAt: listing.updatedAt,
+            counts: listing.counts,
+            ...(listing.corrupt ? { corrupt: true } : {}),
+            edges: listing.edges
+          },
+          null,
+          2
+        )
+      );
+      return 0;
+    }
+    if (listing.edges.length === 0) {
+      io.log(
+        `对账资产为空（${listing.file}）${listing.corrupt ? "；文件损坏按空资产处理" : ""}：iOS 套件运行后自动产生观测；confirm/reject 需要已有条目`
+      );
+      return 0;
+    }
+    io.log(
+      `对账资产: ${listing.file}（${listing.edges.length} 条${listing.corrupt ? "；文件损坏按空资产处理" : ""}）`
+    );
+    for (const entry of listing.edges) {
+      const review = entry.review
+        ? ` · 审阅 ${entry.review.decision}${entry.review.reviewer ? ` by ${entry.review.reviewer}` : ""}${entry.review.note ? `（${entry.review.note}）` : ""}`
+        : "";
+      const traces =
+        entry.traces.length > 0
+          ? `（traces: ${entry.traces.slice(-3).join(", ")}${entry.traces.length > 3 ? ", …" : ""}）`
+          : "";
+      const context = entry.toTextHints.length > 0 ? ` · 目标文本「${entry.toTextHints.join("」「")}」` : "";
+      io.log(
+        `[${entry.status}] ${entry.from} → ${entry.to} · 来源 ${entry.designProvenance}→${entry.provenance} · 命中 ${entry.hits}${traces}${context}${review}`
+      );
+    }
+    io.log(
+      `汇总: pending ${listing.counts.pending} · upgraded ${listing.counts.upgraded} · confirmed ${listing.counts.confirmed} · rejected ${listing.counts.rejected}`
+    );
+    return 0;
+  }
+
+  const asset = loadReconciliation(runtime.configDirAbs);
+  const result = reviewEdge(asset, {
+    from: from!,
+    to: to!,
+    decision: action === "confirm" ? "confirmed" : "rejected",
+    reviewer: flags.get("reviewer") ?? null,
+    note: flags.get("note") ?? undefined,
+    at: new Date().toISOString()
+  });
+  if ("error" in result) {
+    io.errorLog(result.error);
+    return 1;
+  }
+  saveReconciliation(runtime.configDirAbs, result.asset);
+  const entry = result.entry;
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, file, edge: entry }, null, 2));
+  } else {
+    io.log(
+      `已${action === "confirm" ? "确认" : "驳回"}：${entry.from} → ${entry.to}（status=${entry.status}，provenance=${entry.provenance}${entry.review?.reviewer ? `，reviewer=${entry.review.reviewer}` : ""}）`
+    );
+    io.log(
+      action === "confirm"
+        ? "下一次 figma_generate_tests 将以硬断言生成该边（human-confirmed）。"
+        : "该边不再进入后续生成（rejected）。"
+    );
+  }
+  return 0;
+}
+
 export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): Promise<number> {
   const log = deps.log ?? ((line: string) => console.log(line));
   const errorLog = deps.errorLog ?? ((line: string) => console.error(line));
@@ -1118,7 +1225,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -1161,6 +1268,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     }
     if (sub === "baseline") return await suiteBaseline(built.runtime, flags, { log, errorLog });
     if (sub === "report") return await suiteReport(built.runtime, flags, { log, errorLog });
+    if (sub === "reconcile") return await suiteReconcile(built.runtime, flags, { log, errorLog });
     return await suiteFeedback(built.runtime, flags, { log, errorLog });
   } catch (error) {
     errorLog(`suite ${sub} 失败: ${errorMessage(error)}`);

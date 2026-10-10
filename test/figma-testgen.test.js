@@ -7,6 +7,11 @@ import ExcelJS from "exceljs";
 
 import { buildFlowGraph, flowGraphWarnings } from "../dist/figma/flows.js";
 import {
+  applyObservations,
+  reviewEdge,
+  saveReconciliation
+} from "../dist/figma/reconciliation.js";
+import {
   computeFlowCoverage,
   figmaGenerateTests,
   generateTestCases,
@@ -611,6 +616,153 @@ test("figma_generate_tests: upgraded reconciliation edges generate hard assertio
   assert.deepEqual(testCase.expectations[0].hints, ["選擇門市"]);
   assert.match(testCase.steps[0], /验证进入「選擇門市」/);
   assert.equal(testCase.taskDesc.includes("探索"), false, "promoted edge is no longer an exploration step");
+});
+
+test("figma_generate_tests: confirmed edges assert and rejected edges are dropped", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  const inferredEdge = (fromId, fromName, toId, toName) => ({
+    from: { id: fromId, name: fromName },
+    to: { id: toId, name: toName },
+    element: { id: `e-${fromId}`, name: "推断跳转（按画板排布）", type: "INFERRED" },
+    textHints: [],
+    trigger: "INFERRED",
+    actionType: "INFERRED",
+    provenance: "inferred",
+    confidence: "low"
+  });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [
+        {
+          id: "s1",
+          name: "A",
+          suggestedRoute: "/a",
+          childNames: [],
+          textHints: [],
+          provenance: "inferred",
+          confidence: "low"
+        },
+        {
+          id: "s2",
+          name: "B",
+          suggestedRoute: "/b",
+          childNames: [],
+          textHints: [{ text: "乙页", textClass: "runtime-text" }],
+          provenance: "inferred",
+          confidence: "low"
+        },
+        {
+          id: "s3",
+          name: "C",
+          suggestedRoute: "/c",
+          childNames: [],
+          textHints: [],
+          provenance: "inferred",
+          confidence: "low"
+        }
+      ],
+      edges: [inferredEdge("s1", "A", "s2", "B"), inferredEdge("s2", "B", "s3", "C")],
+      entryScreens: ["A"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const base = applyObservations(
+    { version: 1, updatedAt: null, edges: [] },
+    [
+      { from: "A", to: "B", designProvenance: "inferred", traceId: "t1", reached: false },
+      { from: "B", to: "C", designProvenance: "inferred", traceId: "t1", reached: false }
+    ],
+    "2026-10-10T00:00:00.000Z"
+  ).asset;
+  const confirmed = reviewEdge(base, {
+    from: "A",
+    to: "B",
+    decision: "confirmed",
+    reviewer: "louis",
+    at: "2026-10-10T01:00:00.000Z"
+  });
+  if ("error" in confirmed) throw new Error(confirmed.error);
+  const rejected = reviewEdge(confirmed.asset, {
+    from: "B",
+    to: "C",
+    decision: "rejected",
+    reviewer: "louis",
+    at: "2026-10-10T02:00:00.000Z"
+  });
+  if ("error" in rejected) throw new Error(rejected.error);
+  saveReconciliation(runtime.configDirAbs, rejected.asset);
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.reconciliation.confirmedEdges, 1);
+  assert.equal(payload.reconciliation.rejectedEdges, 1);
+  assert.equal(payload.counts.edges, 1, "rejected edges are dropped from the generated graph");
+  const testCase = payload.flows[0];
+  assert.equal(testCase.expectations[0].provenance, "human-confirmed");
+  assert.equal(testCase.expectations[0].kind, "assert");
+});
+
+test("figma_generate_tests: pending reconciliation entries never promote (unadjudicated)", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [
+        {
+          id: "s1",
+          name: "A",
+          suggestedRoute: "/a",
+          childNames: [],
+          textHints: [],
+          provenance: "inferred",
+          confidence: "low"
+        },
+        {
+          id: "s2",
+          name: "B",
+          suggestedRoute: "/b",
+          childNames: [],
+          textHints: [],
+          provenance: "inferred",
+          confidence: "low"
+        }
+      ],
+      edges: [
+        {
+          from: { id: "s1", name: "A" },
+          to: { id: "s2", name: "B" },
+          element: { id: "e1", name: "推断跳转（按画板排布）", type: "INFERRED" },
+          textHints: [],
+          trigger: "INFERRED",
+          actionType: "INFERRED",
+          provenance: "inferred",
+          confidence: "low"
+        }
+      ],
+      entryScreens: ["A"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const pending = applyObservations(
+    { version: 1, updatedAt: null, edges: [] },
+    [{ from: "A", to: "B", designProvenance: "inferred", traceId: "t1", reached: false }],
+    "2026-10-10T00:00:00.000Z"
+  ).asset;
+  saveReconciliation(runtime.configDirAbs, pending);
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(payload.reconciliation, undefined, "unadjudicated entries never promote");
+  assert.equal(payload.flows[0].expectations[0].kind, "explore");
 });
 
 test("generateTestCases: inferred edges become exploration steps", () => {

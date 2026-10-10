@@ -384,7 +384,7 @@ env:
 - **起始屏 preflight（确定性前置）**：`【AOS-EXPECT】` 块携带 `start`（journey 入口屏 + 设计 hints，`GeneratedTest.preflight` 字段；hints 为空则不下发）；iOS 执行器首步观测核对（`pending → matched/unmatched`，unchecked 表示不可核对）：未命中时每步向模型注入「起始屏核对未通过，请先导航到该页」提示（替代即兴导航），全程留痕——`test_summary.preflight.{screen,status,matched_at_step}`、run.json `preflight`、验证提示词「起始屏核对（确定性）」段与完成摘要 `⚠ 起始屏核对未通过`（同样建议级，不硬失败）。
 - **pen 合成提取**（`pen_extract_flows`，离线）：`.pen` 无原型交互数据时，屏幕命名取「Flow 标注 > 屏内首个文本 > 图层名」（默认名 `Frame NNNN` 不再冒充屏名）；状态变体按标签前缀归并为主屏 + `states`；跳转按画板序号/画布排布推断并统一标注 `INFERRED`；产出可直接进入同一闭环的 `flows.json` 与全局 `flow-map.md`；碎片度（默认名屏、状态归并、推断边、缺标签）进入 `warnings`，供人工复核。
 - **pre-merge 静态闸**（`suite check`）：tests.json × flows.json 静态覆盖（复用 preflight 单一实现），不连设备；未硬覆盖/截断/缺 flows exit 2（`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告（设计偏差 ≠ 路线缺口）。
-- **对账闭环（导航级，§13.67）**：`suite run`（iOS 执行器）把探索步骤的实际命中（trace 的 `run.json` → `scriptHits`）写入持久对账资产 `<项目>/.artemis/design/reconciliation.json`（幂等——同 trace 重放不重复计数；稳定排序；升级阈值 = 1 次观测）；下一次 `figma_generate_tests` 自动把已升级边以 `runtime-observed` 生成硬断言（响应 `reconciliation.upgradedEdges`）。硬断言级的升级/冲突裁决留人工审阅面（票 09）。
+- **对账闭环（导航级，§13.67/§13.68）**：`suite run`（iOS 执行器）把探索步骤的实际命中（trace 的 `run.json` → `scriptHits`）写入持久对账资产 `<项目>/.artemis/design/reconciliation.json`（幂等——同 trace 重放不重复计数；稳定排序；升级阈值 = 1 次观测；未命中的边登记 pending 差异）；下一次 `figma_generate_tests` 自动把已升级边以 `runtime-observed` 生成硬断言（响应 `reconciliation.upgradedEdges`）。**人工审阅面**：`suite reconcile` 与 MCP `reconciliation` 工具（list/confirm/reject）——confirm → human-confirmed（硬断言）、reject → 边不进生成；未裁决不升权。
 - **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 **JUnit XML**——Android instrumentation 直读，或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
 - **追溯矩阵**（`suite report`）：xlsx 第二工作表输出 design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据存在性（未覆盖/无 trace/无证据标注）。
 - **设计版本锚点**：`figma_extract_flows` 将 Figma `version`/`lastModified` 写入 flows.json（`fileVersion`/`lastModified`），为设计冻结（baseline-lock）预留。
@@ -1214,3 +1214,17 @@ llm_switch(name, force):
 - **生成消费（资产 → 生成）**：`figma_generate_tests` 读盘/现场提取后都叠加资产——已升级边把 inferred/legacy 置为 `runtime-observed`/high，下一次生成直接产出硬断言（不再探索），响应带 `reconciliation.upgradedEdges`；无资产文件时输出与旧行为一致（显式测试）。
 - **边界**：Android/无 run.json 的 trace 不摄取（记录计数不可得）；冲突仲裁与人工确认属票 09；资产不参与 diff 判定（ADR-0001）；屏幕名即边身份的局限（跨屏同名/改名）留待审核面按 nodeId 强化。
 - **测试**：`test/reconciliation.test.js`（观测计数/幂等/pending 生命周期/explicit 不改写/稳定排序/损坏容错/图叠加/hits 解析/ingest 落盘含差异登记）、`test/figma-testgen.test.js`（升级边生成硬断言 + 响应计数 + 无资产零变化）、`test/suite-ios.test.js`（iOS 运行→升级+差异双条目端到端）。
+
+### 13.68 实施记录（票 09：对账审阅面——CLI/MCP 人工确认）
+
+> 实施于 2026-10-10；CR 交互理解主线第九票。改 `src/figma/reconciliation.ts`（审阅纯函数 + 工具 handler + 共享 listing）、`src/suite-command.ts`（`suite reconcile`）、`src/server.ts`（`reconciliation` 工具注册）；测试 +6；全量 829 绿。
+
+- **资产 schema 扩展**：entry 增 `review {decision: confirmed|rejected, reviewer, at, note?}`；`status ∈ {pending, upgraded, confirmed, rejected}`；确认 → provenance `human-confirmed`（硬断言级），驳回 → 回落 `designProvenance`；观察升级逻辑不变（已确认/驳回条目不再被观测改写，命中仍记录为审计轨迹）。解析时 **review 决定优先于陈旧 status**；重复决定未传 reviewer 时保留上次记录。
+- **纯函数**：`reviewEdge(asset, {from,to,decision,reviewer?,note?,at})` 幂等（重复同一决定仅刷新 reviewer/时间；改判覆盖为最新决定）；未知边返回可行动错误（提示先跑套件或核对屏幕名）。
+- **共享输出面**：`reconciliationListing(configDirAbs)` 单点构造（counts/edges/`toTextHints` 目标屏运行期文本上下文/一次读取 flows.json 建屏名 Map），MCP 工具与 CLI（文本与 `--json`）同形输出。
+- **MCP 工具 `reconciliation`**（screen-map 先例：模块内导出 handler、错误边界 try/catch）：list / confirm / reject（可选 reviewer/note）。
+- **CLI `suite reconcile list|confirm|reject [--from --to --reviewer --note --json]`**：confirm/reject 缺参 exit 2、未知边 exit 1、成功 exit 0，并提示后续生成行为（human-confirmed 硬断言 / rejected 不生成）。
+- **生成消费**：`applyReconciliationToGraph` 扩展——confirmed → `human-confirmed`/high（硬断言路径）；rejected → 从流程图**移除**（不再生成，覆盖口径随图）；响应带 `reconciliation.{upgradedEdges,confirmedEdges,rejectedEdges}`（零值省略）；**未裁决（pending）不升权**有生成侧测试。
+- **corrupt 判定修正**：仅 JSON 不可解析记 corrupt（合法的空 `{"version":1,"edges":[]}` 不再误报）；部分坏条目静默丢弃（记录为已知边界）。
+- **边界**：观测摄取只产生探索边条目，explicit 边通常不入资产（人工确认/驳回按边名仍可作用于 explicit——人工权威）；审阅只针对资产已有条目；屏幕名即身份（改名/同名需 list 核对）；rejected 移除边不单独报告可达性影响（覆盖分母随图缩小，记录为已知边界）。
+- **测试**：`test/reconciliation.test.js`（决定幂等/改判/未知边/reviewer 保留/图叠加 confirmed+rejected/工具 handler 列表含文本上下文与可行动错误）、`test/figma-testgen.test.js`（观测→审阅→生成单链：确认边硬断言 + 驳回边移除 + 响应计数 + 未裁决不升权 + 无资产零变化）、`test/suite-command.test.js`（reconcile list/confirm/reject 退出码 0/1/2 与资产落盘）。
