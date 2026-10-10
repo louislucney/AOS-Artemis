@@ -219,6 +219,31 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
     message: "done"
   });
   fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "flows.json"),
+    JSON.stringify({
+      screens: [
+        {
+          id: "s1",
+          name: "確認頁",
+          suggestedRoute: "/confirm",
+          childNames: [],
+          textHints: [
+            {
+              text: "訂單成立",
+              textClass: "runtime-text",
+              nodeId: "node-confirm",
+              bounds: { x: 20, y: 100, width: 200, height: 30 }
+            }
+          ],
+          bounds: { x: 0, y: 0, width: 390, height: 844 }
+        }
+      ],
+      edges: [],
+      entryScreens: [],
+      unresolvedDestinations: []
+    })
+  );
+  fs.writeFileSync(
     path.join(runtime.traceDir("trace-1"), "run.json"),
     JSON.stringify({
       platform: "ios",
@@ -262,4 +287,9 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
   assert.equal(screenMap.elements[0].text, "訂單成立");
   assert.match(screenMap.elements[0].identifier, /^element_[0-9a-f]{8}$/);
   assert.equal(screenMap.elements[0].hits, 1);
+  assert.equal(screenMap.elements[0].designNodeId, "node-confirm", "design node identity is anchored");
+  assert.ok(
+    Math.abs(screenMap.elements[0].bounds.x - 20 / 390) < 1e-9,
+    "bounds are normalized within the design screen"
+  );
 });

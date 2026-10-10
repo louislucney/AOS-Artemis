@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   matchElementObservations,
   mergeElementObservations,
+  observedTapsFromRunSteps,
   parseScreenMap,
   recordElementObservations,
   screenMap,
@@ -18,6 +19,7 @@ import {
   createImage,
   fillRect,
   loadTestRuntime,
+  makeTempDir,
   makeTempProject,
   parseToolResult,
   StubProxy,
@@ -252,7 +254,7 @@ test("element map: identifier suggestions are deterministic and stack-convention
   assert.match(suggestIdentifier("123"), /^element_/, "numeric-only falls back to a hashed name");
 });
 
-test("element map: matching is unique-exact normalized only", () => {
+test("element map: matching is unique-exact normalized and screen-scoped", () => {
   const matches = matchElementObservations({
     designs: [
       { screen: "首頁", hints: ["早安, Amy☀️", "重複文案", "未出现"] },
@@ -263,8 +265,44 @@ test("element map: matching is unique-exact normalized only", () => {
   const keys = matches.map((entry) => `${entry.screen}:${entry.text}`);
   assert.ok(keys.includes("首頁:早安, Amy☀️"), "whitespace-normalized exact match");
   assert.ok(keys.includes("門市:選擇門市"));
-  assert.ok(!keys.some((key) => key.includes("重複文案")), "ambiguous design texts are skipped");
+  assert.ok(keys.includes("首頁:重複文案"), "cross-screen duplicates become independent entries");
+  assert.ok(keys.includes("門市:重複文案"));
   assert.ok(!keys.some((key) => key.includes("未出现")));
+});
+
+test("element map: geometry disambiguates duplicated texts within a screen", () => {
+  const designs = [
+    {
+      screen: "首頁",
+      bounds: { x: 0, y: 0, width: 390, height: 844 },
+      hints: [
+        { text: "了解更多", nodeId: "n1", bounds: { x: 20, y: 500, width: 160, height: 40 } },
+        { text: "了解更多", nodeId: "n2", bounds: { x: 210, y: 500, width: 160, height: 40 } }
+      ]
+    }
+  ];
+  const withoutTaps = matchElementObservations({ designs, observedLabels: ["了解更多"] });
+  assert.equal(withoutTaps.length, 0, "duplicates without geometry are skipped");
+
+  const withTap = matchElementObservations({
+    designs,
+    observedLabels: ["了解更多"],
+    observedTaps: [{ relX: 290 / 390, relY: 520 / 844 }]
+  });
+  assert.equal(withTap.length, 1);
+  assert.equal(withTap[0].designNodeId, "n2");
+  assert.equal(withTap[0].confidence, 0.8, "geometry-assisted matches carry lower confidence");
+  assert.ok(Math.abs(withTap[0].bounds.x - 210 / 390) < 1e-9, "bounds are normalized within the screen");
+
+  const bothTapped = matchElementObservations({
+    designs,
+    observedLabels: ["了解更多"],
+    observedTaps: [
+      { relX: 0.25, relY: 620 / 844 },
+      { relX: 0.7, relY: 620 / 844 }
+    ]
+  });
+  assert.equal(bothTapped.length, 0, "taps hitting both candidates stay ambiguous");
 });
 
 test("element map: merge counts hits and manual identifiers win", () => {
@@ -316,6 +354,8 @@ test("element map: serialization round-trips and omits empty elements", () => {
       {
         screen: "首頁",
         text: "早安",
+        designNodeId: "n1",
+        bounds: { x: 0.1, y: 0.2, width: 0.3, height: 0.1 },
         observedLabel: "早安",
         identifier: "zaoan",
         confidence: 1,
@@ -330,6 +370,8 @@ test("element map: serialization round-trips and omits empty elements", () => {
     {
       screen: "首頁",
       text: "早安",
+      designNodeId: "n1",
+      bounds: { x: 0.1, y: 0.2, width: 0.3, height: 0.1 },
       observedLabel: "早安",
       identifier: "zaoan",
       confidence: 1,
@@ -363,4 +405,32 @@ test("element map: recordElementObservations persists only when matched", () => 
     "2026-10-10T00:01:00.000Z"
   );
   assert.equal(none, 0);
+});
+
+test("element map: observedTapsFromRunSteps normalizes taps via screenshot size and scale", () => {
+  const dir = makeTempDir("aos-taps-");
+  fs.mkdirSync(path.join(dir, "shots"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "shots", "step-1.png"), toPng(createImage(30, 60)));
+
+  const taps = observedTapsFromRunSteps(
+    {
+      steps: [
+        { step: 1, action: "tap", params: { x: 5, y: 10 }, shot: "shots/step-1.png", scale: 3 },
+        { step: 2, action: "swipe", params: { x1: 0, y1: 0, x2: 1, y2: 1 } },
+        { step: 3, action: "tap", params: { x: 15, y: 5 } }
+      ]
+    },
+    dir
+  );
+  assert.deepEqual(taps, [
+    { relX: 0.5, relY: 0.5 },
+    { relX: 1.5, relY: 0.25 }
+  ]);
+
+  assert.deepEqual(observedTapsFromRunSteps({ steps: [] }, dir), []);
+  assert.deepEqual(
+    observedTapsFromRunSteps({ steps: [{ action: "tap", params: { x: 1, y: 1 } }] }, dir),
+    [],
+    "without a readable screenshot no geometry evidence is produced"
+  );
 });

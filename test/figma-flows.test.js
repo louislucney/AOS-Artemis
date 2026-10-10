@@ -490,3 +490,18 @@ test("flow graph: acceptance criteria come from Flow/AC groups and AC: annotatio
   });
   assert.deepEqual(normalized.screens[0].acceptance, ["人工口径"]);
 });
+
+test("flow graph: hints carry nodeId and design bounds when the API provides them", () => {
+  const document = syntheticFlowDocument();
+  const home = document.children[0].children.find((node) => node.name === "Home");
+  home.absoluteBoundingBox = { x: 0, y: 0, width: 390, height: 844 };
+  const welcome = home.children.find((child) => child.name === "Welcome Text");
+  welcome.absoluteBoundingBox = { x: 24, y: 100, width: 342, height: 30 };
+
+  const graph = buildFlowGraph(document);
+  const screen = graph.screens.find((entry) => entry.name === "Home");
+  assert.deepEqual(screen.bounds, { x: 0, y: 0, width: 390, height: 844 });
+  const hint = screen.textHints.find((entry) => entry.text === "Welcome Back");
+  assert.equal(hint.nodeId, "10:5");
+  assert.deepEqual(hint.bounds, { x: 24, y: 100, width: 342, height: 30 });
+});

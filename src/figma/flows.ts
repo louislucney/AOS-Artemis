@@ -40,6 +40,30 @@ export function acceptanceItemOf(text: string): string | null {
 export interface FlowHint {
   text: string;
   textClass: TextClass;
+  /** Source node identity (design node id) when known. */
+  nodeId?: string;
+  /** Source node bounds in design px (absolute file coordinates) when known. */
+  bounds?: { x: number; y: number; width: number; height: number };
+}
+
+function validateBounds(value: unknown): { x: number; y: number; width: number; height: number } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as { x?: unknown; y?: unknown; width?: unknown; height?: unknown };
+  const values = [record.x, record.y, record.width, record.height];
+  if (!values.every((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))) {
+    return null;
+  }
+  return {
+    x: record.x as number,
+    y: record.y as number,
+    width: record.width as number,
+    height: record.height as number
+  };
+}
+
+function boundsOf(node: unknown): { x: number; y: number; width: number; height: number } | null {
+  if (!node || typeof node !== "object") return null;
+  return validateBounds((node as { absoluteBoundingBox?: unknown }).absoluteBoundingBox);
 }
 
 export interface FlowScreen {
@@ -50,6 +74,8 @@ export interface FlowScreen {
   childNames: string[];
   /** First classed TEXT contents found inside this screen. */
   textHints: FlowHint[];
+  /** Screen frame bounds in design px (absolute file coordinates) when known. */
+  bounds?: { x: number; y: number; width: number; height: number };
   /** Acceptance criteria from design annotations (`Flow/AC*` groups or
    * `AC:`-prefixed annotation texts): the hard-assertion oracle (ticket 11). */
   acceptance?: string[];
@@ -295,7 +321,13 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     const textClass: TextClass = isAnnotationLayer(node.id) ? "annotation" : "runtime-text";
     const classCount = list.filter((hint) => hint.textClass === textClass).length;
     if (classCount < 3 && !list.some((hint) => hint.text === text)) {
-      list.push({ text, textClass });
+      const bounds = boundsOf(node);
+      list.push({
+        text,
+        textClass,
+        ...(typeof node.id === "string" && node.id !== "" ? { nodeId: node.id } : {}),
+        ...(bounds ? { bounds } : {})
+      });
       screenTextHints.set(screen.id, list);
     }
     const acceptance = isAcceptanceLayer(node.id)
@@ -314,12 +346,14 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
 
   const screens: FlowScreen[] = screenNodes.map((screen) => {
     const acceptance = screenAcceptance.get(screen.id) ?? [];
+    const bounds = boundsOf(screen);
     return {
       id: screen.id,
       name: screen.name,
       suggestedRoute: routeFor(screen.name),
       childNames: (screen.children ?? []).slice(0, 10).map((child) => child.name),
       textHints: screenTextHints.get(screen.id) ?? [],
+      ...(bounds ? { bounds } : {}),
       ...(acceptance.length > 0 ? { acceptance } : {}),
       provenance: "explicit",
       confidence: confidenceFor("explicit")
@@ -350,7 +384,7 @@ export function normalizeFlowHints(raw: unknown): FlowHint[] {
       continue;
     }
     if (entry && typeof entry === "object") {
-      const record = entry as { text?: unknown; textClass?: unknown };
+      const record = entry as { text?: unknown; textClass?: unknown; nodeId?: unknown; bounds?: unknown };
       if (typeof record.text !== "string" || record.text.trim() === "") continue;
       const textClass: TextClass =
         record.textClass === "runtime-text" ||
@@ -358,7 +392,13 @@ export function normalizeFlowHints(raw: unknown): FlowHint[] {
         record.textClass === "annotation"
           ? record.textClass
           : "annotation";
-      hints.push({ text: record.text.trim(), textClass });
+      const bounds = validateBounds(record.bounds);
+      hints.push({
+        text: record.text.trim(),
+        textClass,
+        ...(typeof record.nodeId === "string" && record.nodeId !== "" ? { nodeId: record.nodeId } : {}),
+        ...(bounds ? { bounds } : {})
+      });
     }
   }
   return hints;
@@ -382,6 +422,7 @@ export function normalizeFlowGraph(raw: unknown): FlowGraph {
     const screen = (entry ?? {}) as Record<string, unknown>;
     const name = typeof screen.name === "string" ? screen.name : "";
     const provenance = resolveProvenance(screen.provenance);
+    const screenBounds = validateBounds(screen.bounds);
     return {
       id: typeof screen.id === "string" ? screen.id : "",
       name,
@@ -391,6 +432,7 @@ export function normalizeFlowGraph(raw: unknown): FlowGraph {
         ? screen.childNames.filter((child): child is string => typeof child === "string")
         : [],
       textHints: normalizeFlowHints(screen.textHints),
+      ...(screenBounds ? { bounds: screenBounds } : {}),
       ...(() => {
         if (!Array.isArray(screen.acceptance)) return {};
         const acceptance = [
@@ -480,7 +522,13 @@ function collectTextHints(
     if (text === "" || hints.some((hint) => hint.text === text)) return;
     const textClass: TextClass = isAnnotation(candidate.id) ? "annotation" : "runtime-text";
     if (countOf(textClass) >= perClassLimit) return;
-    hints.push({ text, textClass });
+    const bounds = boundsOf(candidate);
+    hints.push({
+      text,
+      textClass,
+      ...(typeof candidate.id === "string" && candidate.id !== "" ? { nodeId: candidate.id } : {}),
+      ...(bounds ? { bounds } : {})
+    });
   });
   return hints;
 }

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { isGenericLayerName } from "../figma/color.js";
+import { pngDimensions } from "../ios/vision.js";
 import {
   detectProjectStacks,
   formatComponentFileName,
@@ -33,9 +34,13 @@ export interface ElementMapEntry {
   screen: string;
   /** Design-side runtime text that matched an observed label. */
   text: string;
+  /** Design node identity when the hint metadata provided one (stable anchor). */
+  designNodeId?: string;
+  /** Design bounds normalized to 0..1 within the screen (when known). */
+  bounds?: ElementBounds;
   observedLabel: string;
   identifier: string;
-  /** 1.0 = unique exact normalized match at observation time. */
+  /** 1 = unique text match; 0.8 = geometry-disambiguated duplicated text. */
   confidence: number;
   source: "observed" | "manual";
   hits: number;
@@ -112,8 +117,8 @@ export function parseScreenMap(text: string): ScreenMapFile {
   }
 }
 
-function elementKey(entry: Pick<ElementMapEntry, "screen" | "text">): string {
-  return JSON.stringify([entry.screen, entry.text]);
+function elementKey(entry: Pick<ElementMapEntry, "screen" | "text" | "designNodeId">): string {
+  return JSON.stringify([entry.screen, entry.designNodeId ?? "", entry.text]);
 }
 
 function normalizeElementEntry(value: unknown): ElementMapEntry | null {
@@ -130,6 +135,19 @@ function normalizeElementEntry(value: unknown): ElementMapEntry | null {
     typeof record.identifier === "string" && record.identifier.trim() !== ""
       ? record.identifier.trim()
       : suggestIdentifier(text);
+  const designNodeId =
+    typeof record.designNodeId === "string" && record.designNodeId.trim() !== ""
+      ? record.designNodeId.trim()
+      : undefined;
+  const boundsRecord = record.bounds;
+  let bounds: ElementBounds | undefined;
+  if (boundsRecord && typeof boundsRecord === "object" && !Array.isArray(boundsRecord)) {
+    const box = boundsRecord as { x?: unknown; y?: unknown; width?: unknown; height?: unknown };
+    const values = [box.x, box.y, box.width, box.height];
+    if (values.every((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))) {
+      bounds = { x: box.x as number, y: box.y as number, width: box.width as number, height: box.height as number };
+    }
+  }
   const confidence =
     typeof record.confidence === "number" && Number.isFinite(record.confidence)
       ? record.confidence
@@ -143,7 +161,19 @@ function normalizeElementEntry(value: unknown): ElementMapEntry | null {
     ? record.traces.filter((trace): trace is string => typeof trace === "string")
     : [];
   const lastSeenAt = typeof record.lastSeenAt === "string" ? record.lastSeenAt : "";
-  return { screen, text, observedLabel, identifier, confidence, source, hits, traces, lastSeenAt };
+  return {
+    screen,
+    text,
+    ...(designNodeId ? { designNodeId } : {}),
+    ...(bounds ? { bounds } : {}),
+    observedLabel,
+    identifier,
+    confidence,
+    source,
+    hits,
+    traces,
+    lastSeenAt
+  };
 }
 
 /** Stack-conventional identifier suggestion: latin words become camelCase
@@ -171,16 +201,75 @@ export function normalizeElementLabel(value: string): string {
 
 const normalizeLabelForMatch = normalizeElementLabel;
 
-export interface ElementObservationInput {
-  /** Design-side runtime texts per screen (from tests.json expectations). */
-  designs: Array<{ screen: string; hints: string[] }>;
-  /** Labels observed during the run (any step's visible text labels). */
-  observedLabels: string[];
+export interface ElementBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
-/** Deterministic text matching: unique exact normalized equality only. Design
- * texts that collide after normalization or match nothing are skipped (no
- * guessing); duplicate observed labels collapse to one candidate. */
+/** Design-side hint metadata (nodeId + design-px bounds enrich plain texts). */
+export interface ElementDesignHint {
+  text: string;
+  nodeId?: string;
+  bounds?: ElementBounds;
+}
+
+export interface ElementDesignScreen {
+  screen: string;
+  hints: Array<string | ElementDesignHint>;
+  /** Screen frame bounds in design px (normalizes hint bounds to 0..1). */
+  bounds?: ElementBounds;
+}
+
+/** Normalized (0..1 within the screen) tap evidence from the run. */
+export interface ElementObservedTap {
+  relX: number;
+  relY: number;
+}
+
+export interface ElementObservationInput {
+  /** Design-side runtime texts per screen (from tests.json expectations,
+   * optionally enriched with nodeId/bounds from flows.json). */
+  designs: ElementDesignScreen[];
+  /** Labels observed during the run (any step's visible text labels). */
+  observedLabels: string[];
+  /** Trace-level tap points for geometry disambiguation of duplicated texts. */
+  observedTaps?: ElementObservedTap[];
+}
+
+function normalizeHintBounds(
+  bounds: ElementBounds | undefined,
+  screen: ElementBounds | undefined
+): ElementBounds | null {
+  if (!bounds || !screen || screen.width <= 0 || screen.height <= 0) return null;
+  const normalized = {
+    x: (bounds.x - screen.x) / screen.width,
+    y: (bounds.y - screen.y) / screen.height,
+    width: bounds.width / screen.width,
+    height: bounds.height / screen.height
+  };
+  if (!Object.values(normalized).every((value) => Number.isFinite(value))) return null;
+  return normalized;
+}
+
+function hintContainsTap(bounds: ElementBounds | null, taps: ElementObservedTap[]): boolean {
+  if (!bounds) return false;
+  const epsilon = 0.01;
+  return taps.some(
+    (tap) =>
+      tap.relX >= bounds.x - epsilon &&
+      tap.relX <= bounds.x + bounds.width + epsilon &&
+      tap.relY >= bounds.y - epsilon &&
+      tap.relY <= bounds.y + bounds.height + epsilon
+  );
+}
+
+/** Deterministic text matching (unique exact normalized equality), scoped per
+ * screen: duplicated texts within one screen are resolved by geometry when
+ * trace tap evidence falls inside exactly one candidate rect, otherwise
+ * skipped (no guessing); duplicates across screens are independent entries.
+ * Duplicate observed labels collapse to one candidate. */
 export function matchElementObservations(input: ElementObservationInput): Omit<
   ElementMapEntry,
   "hits" | "traces" | "lastSeenAt"
@@ -190,31 +279,52 @@ export function matchElementObservations(input: ElementObservationInput): Omit<
     const normalized = normalizeLabelForMatch(label);
     if (normalized !== "" && !observed.has(normalized)) observed.set(normalized, label.trim());
   }
-  const designCounts = new Map<string, number>();
-  for (const design of input.designs) {
-    for (const hint of design.hints) {
-      const normalized = normalizeLabelForMatch(hint);
-      if (normalized !== "") designCounts.set(normalized, (designCounts.get(normalized) ?? 0) + 1);
-    }
-  }
+  const observedTaps = input.observedTaps ?? [];
   const matches: Omit<ElementMapEntry, "hits" | "traces" | "lastSeenAt">[] = [];
   const seen = new Set<string>();
   for (const design of input.designs) {
-    for (const rawHint of design.hints) {
-      const hint = rawHint.trim();
-      const normalized = normalizeLabelForMatch(hint);
-      if (normalized === "" || (designCounts.get(normalized) ?? 0) > 1) continue;
+    const hints = design.hints
+      .map((raw) => (typeof raw === "string" ? { text: raw } : { ...raw, text: raw.text.trim() }))
+      .filter((hint) => hint.text !== "");
+    const byNormalized = new Map<string, ElementDesignHint[]>();
+    for (const hint of hints) {
+      const key = normalizeLabelForMatch(hint.text);
+      if (key === "") continue;
+      const list = byNormalized.get(key) ?? [];
+      if (!list.some((candidate) => (candidate.nodeId ?? "") === (hint.nodeId ?? ""))) {
+        list.push(hint);
+      }
+      byNormalized.set(key, list);
+    }
+    for (const [normalized, candidates] of byNormalized) {
       const observedLabel = observed.get(normalized);
       if (observedLabel === undefined) continue;
-      const key = JSON.stringify([design.screen, hint]);
+      let chosen: ElementDesignHint | null = null;
+      let confidence = 1;
+      if (candidates.length === 1) {
+        chosen = candidates[0]!;
+      } else {
+        const hit = candidates.filter((candidate) =>
+          hintContainsTap(normalizeHintBounds(candidate.bounds, design.bounds), observedTaps)
+        );
+        if (hit.length === 1) {
+          chosen = hit[0]!;
+          confidence = 0.8;
+        }
+      }
+      if (!chosen) continue;
+      const bounds = normalizeHintBounds(chosen.bounds, design.bounds);
+      const key = JSON.stringify([design.screen, chosen.nodeId ?? "", chosen.text]);
       if (seen.has(key)) continue;
       seen.add(key);
       matches.push({
         screen: design.screen,
-        text: hint,
+        text: chosen.text,
+        ...(chosen.nodeId ? { designNodeId: chosen.nodeId } : {}),
+        ...(bounds ? { bounds } : {}),
         observedLabel,
-        identifier: suggestIdentifier(hint),
-        confidence: 1,
+        identifier: suggestIdentifier(chosen.text),
+        confidence,
         source: "observed"
       });
     }
@@ -284,6 +394,48 @@ export function observedLabelsFromRunSteps(run: unknown): string[] {
     }
   }
   return [...labels];
+}
+
+/** Trace-level tap points (normalized to 0..1) for geometry disambiguation.
+ * Device logical size derives from the first step screenshot (PNG) ÷ scale;
+ * without a readable screenshot the taps are omitted (text-only matching). */
+export function observedTapsFromRunSteps(run: unknown, traceDirAbs: string): ElementObservedTap[] {
+  if (!run || typeof run !== "object" || Array.isArray(run)) return [];
+  const steps = (run as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return [];
+  let deviceSize: { width: number; height: number } | null = null;
+  const rawTaps: Array<{ x: number; y: number }> = [];
+  for (const step of steps) {
+    if (!step || typeof step !== "object" || Array.isArray(step)) continue;
+    const record = step as Record<string, unknown>;
+    if (
+      deviceSize === null &&
+      typeof record.shot === "string" &&
+      typeof record.scale === "number" &&
+      Number.isFinite(record.scale) &&
+      record.scale > 0
+    ) {
+      try {
+        const dims = pngDimensions(fs.readFileSync(path.join(traceDirAbs, record.shot)));
+        if (dims) {
+          deviceSize = { width: dims.width / record.scale, height: dims.height / record.scale };
+        }
+      } catch {
+        /* screenshot missing: fall back to text-only matching */
+      }
+    }
+    if (record.action !== "tap") continue;
+    const params = record.params;
+    if (!params || typeof params !== "object" || Array.isArray(params)) continue;
+    const x = (params as { x?: unknown }).x;
+    const y = (params as { y?: unknown }).y;
+    if (typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)) {
+      rawTaps.push({ x, y });
+    }
+  }
+  if (!deviceSize || deviceSize.width <= 0 || deviceSize.height <= 0) return [];
+  const size = deviceSize;
+  return rawTaps.map((tap) => ({ relX: tap.x / size.width, relY: tap.y / size.height }));
 }
 
 /** Persist element observations (load → merge → save only when changed).

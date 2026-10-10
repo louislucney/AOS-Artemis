@@ -38,7 +38,8 @@ import {
   ingestExplorationObservations,
   type ExploreStepSignal
 } from "./reconciliation.js";
-import { observedLabelsFromRunSteps, recordElementObservations } from "../diff/screen-map.js";
+import { observedLabelsFromRunSteps, observedTapsFromRunSteps, normalizeElementLabel, recordElementObservations, type ElementBounds } from "../diff/screen-map.js";
+import { normalizeFlowGraph } from "./flows.js";
 import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -178,6 +179,42 @@ function exploreStepsOf(raw: unknown): ExploreStepSignal[] {
     });
   }
   return steps;
+}
+
+interface FlowHintMeta {
+  bounds?: ElementBounds;
+  hints: Map<string, { nodeId?: string; bounds?: ElementBounds }>;
+}
+
+/** Design-side hint metadata (nodeId + bounds) from flows.json for element
+ * enrichment; null when flows.json is missing/unreadable (text-only path). */
+function loadFlowHintMeta(runtime: Runtime): Map<string, FlowHintMeta> | null {
+  try {
+    const flowsPath = path.join(runtime.configDirAbs, "design", "flows.json");
+    if (!fs.existsSync(flowsPath)) return null;
+    const graph = normalizeFlowGraph(JSON.parse(fs.readFileSync(flowsPath, "utf-8")));
+    const meta = new Map<string, FlowHintMeta>();
+    for (const screen of graph.screens) {
+      const hints = new Map<string, { nodeId?: string; bounds?: ElementBounds }>();
+      for (const hint of screen.textHints) {
+        if (hint.textClass !== "runtime-text") continue;
+        const key = normalizeElementLabel(hint.text);
+        if (!hints.has(key)) {
+          hints.set(key, {
+            ...(hint.nodeId ? { nodeId: hint.nodeId } : {}),
+            ...(hint.bounds ? { bounds: hint.bounds } : {})
+          });
+        }
+      }
+      meta.set(screen.name, {
+        ...(screen.bounds ? { bounds: screen.bounds } : {}),
+        hints
+      });
+    }
+    return meta;
+  } catch {
+    return null;
+  }
 }
 
 function loadCases(file: string, maxCases?: number): GeneratedCaseLike[] | null {
@@ -570,9 +607,25 @@ export async function runGeneratedTests(
           });
         }
         if (testCase.hintScreens.length > 0) {
+          const hintMeta = loadFlowHintMeta(runtime);
+          const designs = testCase.hintScreens.map(({ screen, hints }) => {
+            const meta = hintMeta?.get(screen);
+            return {
+              screen,
+              ...(meta?.bounds ? { bounds: meta.bounds } : {}),
+              hints: hints.map((text) => {
+                const info = meta?.hints.get(normalizeElementLabel(text));
+                return info ? { text, ...info } : text;
+              })
+            };
+          });
           recordElementObservations(
             runtime.configDirAbs,
-            { designs: testCase.hintScreens, observedLabels: observedLabelsFromRunSteps(run) },
+            {
+              designs,
+              observedLabels: observedLabelsFromRunSteps(run),
+              observedTaps: observedTapsFromRunSteps(run, runtime.traceDir(traceId))
+            },
             at,
             traceId
           );

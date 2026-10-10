@@ -1240,7 +1240,7 @@ llm_switch(name, force):
 - **identifier 建议**：latin 词 → camelCase（小写字母开头，单字母合法）；纯非 ASCII → `element_<sha1 前 8>`（稳定幂等）。
 - **人工补（关键路径）**：`screen_map(action:"save", elements:[…])`（source 强制 manual；与自动条目按 screen+text 合并，**manual 的 identifier 不被观察覆盖**）；**工具 schema 已暴露 `elements`（server-smoke 锁定，防止 zod strip 断链）**；list 输出 `elements`。
 - **生成消费**：`figma_generate_tests` 载入 elements（按 hits 优选，键为归一文本——同文案跨屏建议同一 identifier，属约定行为）→ 步骤元素注记追加 `；a11y: <identifier>`（tests.md/xlsx/taskDesc 同步）；无建议时行为不变。
-- **口径与边界（明示）**：本票实现为「运行期文本 ↔ 观察标签」映射，**不含 design nodeId 与几何维度**（观察侧无持久化 bounds；几何字段未引入）；自动发现仅 iOS trace；简报（build-brief）未接线（生成物消费已交付）；`screenTextSummary` 截断（60 元素/4000 字符）可能漏配尾部标签；纯探索边 hints=[] 不参与元素发现（其目标屏文本可经 assert 边进入）。
+- **口径与边界（明示）**：本票实现为「运行期文本 ↔ 观察标签」映射，**不含 design nodeId 与几何维度**（backlog §13.72 已补：hints/screen 携带 nodeId+bounds、条目归一 bounds、tap 几何消歧）；自动发现仅 iOS trace；简报已接线（§13.71）；`screenTextSummary` 截断（60 元素/4000 字符）可能漏配尾部标签；纯探索边 hints=[] 不参与元素发现（其目标屏文本可经 assert 边进入）。
 - **测试**：`test/diff-screen-map.test.js`（建议确定性含单字母/唯一匹配/歧义跳过/合并与 manual 优先/trace 幂等/序列化兼容/落盘幂等）、`test/suite-ios.test.js`（运行 → elements 落盘）、`test/figma-testgen.test.js`（步骤 a11y 注记）、`test/server-smoke.test.js`（screen_map schema 暴露 elements + reconciliation required 锁定）。
 
 ### 13.70 实施记录（票 11：验收口径入生成——设计标注先行）
@@ -1261,3 +1261,14 @@ llm_switch(name, force):
 - **用途**：代码侧实现组件时直接采用建议 identifier（与测试侧步骤 `a11y:` 注记同源），闭合「设计 → 代码」锚点一致。
 - **边界**：建议来源于观测/人工映射（无 elements 即不出章）；Jira AC 仍 backlog。
 - **测试**：`test/figma-brief.test.js`（md 第 7/8 节与回退编号、`briefAccessibility` 排序与缺省空）。
+
+### 13.72 实施记录（backlog：几何 / design nodeId 元素映射）
+
+> 实施于 2026-10-10；backlog 第二项（承接 §13.69 边界）。改 `src/figma/flows.ts`、`src/pen/flows.ts`（hints/screen 携带 nodeId + design-px bounds）、`src/diff/screen-map.ts`（条目 nodeId/归一 bounds、按屏作用域匹配、tap 几何消歧、`observedTapsFromRunSteps`）、`src/figma/suite-runner.ts`（flows 元数据富化 + taps 摄取）；测试 +3；全量 845 绿。
+
+- **设计侧富化**：`FlowHint` 增 `nodeId`/`bounds`（design px 绝对坐标；Figma `absoluteBoundingBox`、pen x/y/w/h），`FlowScreen` 增 `bounds`；随 flows.json 落盘（additive，schemaVersion 仍 2；normalize 校验、legacy 缺省）。
+- **元素条目**：`ElementMapEntry` 增 `designNodeId`/`bounds`（**归一 0..1 per screen**：`(rect − screen) / screen`）；条目身份键 = `(screen, nodeId, text)`（同屏同名不同节点各自独立；无 nodeId 时行为不变）。
+- **匹配升级（按屏作用域）**：跨屏同名文本不再互斥（各屏独立条目，修正 §13.69 的全局去重）；同屏同名按 nodeId 去重；同屏多候选时用 **trace 级 tap 几何消歧**——tap 归一坐标（截图像素 ÷ step.scale ÷ 启动截图逻辑尺寸，PNG 头解析）落在恰一个候选矩形内 → 命中（confidence 0.8），命中 0 或多个 → 跳过（不猜）。
+- **摄取接线**：`suite run`（iOS）元素发现时读 flows.json 富化 hint 元数据（屏 bounds + 节点 nodeId/bounds），并从 run.json tap 步骤（shot+scale+PNG 尺寸）计算归一 taps；flows 缺失/截图不可读 → 退回纯文本匹配（行为同 §13.69）。
+- **边界**：tap 为 trace 级证据（不按步归屏）；几何消歧仅用包含判定（无距离阈值参数）；Android 仍不自动发现；identifier 建议规则不变。
+- **测试**：`test/figma-flows.test.js` / `test/pen-flows.test.js`（nodeId+bounds 采集）、`test/diff-screen-map.test.js`（按屏作用域、几何消歧含双命中与无几何跳过、taps 归一化与缺截图退化、归一 round-trip）、`test/suite-ios.test.js`（flows 元数据富化端到端）。

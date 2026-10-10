@@ -325,12 +325,14 @@ export function synthesizePenFlows(
     }
     const texts = collectTextHints(main.frame, 4);
     const acceptance = collectAcceptance(main.frame);
+    const screenBounds = penBounds(main.frame);
     const screen: PenFlowScreen = {
       id: main.id,
       name: base,
       suggestedRoute: routeFor(base),
       childNames: (main.frame.children ?? []).slice(0, 10).map((child) => String(child.name ?? "")),
       textHints: texts,
+      ...(screenBounds ? { bounds: screenBounds } : {}),
       ...(acceptance.length > 0 ? { acceptance } : {}),
       sourceBoard: String(boards[main.boardIndex]?.name ?? ""),
       sourceFrameName: main.frameName,
@@ -474,6 +476,15 @@ function collectAcceptance(node: PenNode): string[] {
   return items;
 }
 
+function penBounds(node: PenNode): { x: number; y: number; width: number; height: number } | null {
+  const x = numberProp(node, "x");
+  const y = numberProp(node, "y");
+  const width = numberProp(node, "width");
+  const height = numberProp(node, "height");
+  if (x === null || y === null || width === null || height === null) return null;
+  return { x, y, width, height };
+}
+
 function collectTextHints(node: PenNode, perClassLimit: number): FlowHint[] {
   const hints: FlowHint[] = [];
   const visit = (current: PenNode, underFlow: boolean): void => {
@@ -482,7 +493,13 @@ function collectTextHints(node: PenNode, perClassLimit: number): FlowHint[] {
     if (text && !hints.some((hint) => hint.text === text)) {
       const textClass = annotation ? "annotation" : "runtime-text";
       if (hints.filter((hint) => hint.textClass === textClass).length < perClassLimit) {
-        hints.push({ text, textClass });
+        const bounds = penBounds(current);
+        hints.push({
+          text,
+          textClass,
+          ...(typeof current.id === "string" && current.id !== "" ? { nodeId: current.id } : {}),
+          ...(bounds ? { bounds } : {})
+        });
       }
     }
     for (const child of current.children ?? []) visit(child, annotation);

@@ -96,9 +96,13 @@ test("synthesizePenFlows: labels, state merge, inferred chain and fragmentation 
     "synthesized screens are inferred/low"
   );
   const main = result.screens.find((screen) => screen.name === "主頁");
-  assert.deepEqual(main.textHints, [{ text: "主頁", textClass: "annotation" }]);
+  assert.deepEqual(main.textHints, [
+    { text: "主頁", textClass: "annotation", nodeId: "s1-ft" }
+  ]);
   const store = result.screens.find((screen) => screen.name === "門市");
-  assert.deepEqual(store.textHints, [{ text: "門市", textClass: "runtime-text" }]);
+  assert.deepEqual(store.textHints, [
+    { text: "門市", textClass: "runtime-text", nodeId: "s3-t" }
+  ]);
 
   const codes = result.warnings.map((warning) => warning.code);
   assert.ok(codes.includes("pen-no-interactions"));
@@ -236,7 +240,7 @@ test("synthesizePenFlows: note/context/prompt node texts never become hints", ()
   const store = result.screens.find((screen) => screen.name === "門市");
   assert.deepEqual(
     store.textHints,
-    [{ text: "門市", textClass: "runtime-text" }],
+    [{ text: "門市", textClass: "runtime-text", nodeId: "s3-t" }],
     "non-text node content stays out of hints"
   );
 });
