@@ -326,13 +326,19 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "screen_map",
     description:
-      "屏幕映射（持久定位资产）：维护 <项目>/.artemis/design/screen-map.json——设计屏幕/组件 ↔ 路由/组件/文件。action=propose 基于 build-brief + 栈约定给出粗粒度候选（带 confidence 与 unmatched，需复核）；action=save 显式写入（幂等，merge:true 增量合并）；action=list 读取。design_device_diff 报告用该映射为每个差异区域输出 localized（mapped/unmapped/no-candidates）。",
+      "屏幕映射（持久定位资产）：维护 <项目>/.artemis/design/screen-map.json——设计屏幕/组件 ↔ 路由/组件/文件，另含元素级映射 elements（设计运行期文本 ↔ 观察标签 + accessibilityIdentifier 建议；iOS 套件运行自动发现，save 人工可补）。action=propose 基于 build-brief + 栈约定给出粗粒度候选（带 confidence 与 unmatched，需复核）；action=save 显式写入（幂等，merge:true 增量合并；elements 按 screen+text 合并、source 强制 manual、manual identifier 不被观察覆盖）；action=list 读取。design_device_diff 报告用该映射为每个差异区域输出 localized（mapped/unmapped/no-candidates）。",
     schema: z.object({
       action: z.enum(["list", "propose", "save"]).describe("list 读取 / propose 生成候选 / save 显式写入"),
       entries: z
         .array(z.record(z.unknown()))
         .optional()
         .describe('save 用：{design:{screen,nodeId?,component?}, code:{route?,component?,file?}} 数组'),
+      elements: z
+        .array(z.record(z.unknown()))
+        .optional()
+        .describe(
+          "save 用：{screen,text,observedLabel?,identifier?,confidence?} 元素级映射数组（source 强制 manual）"
+        ),
       merge: z.boolean().optional().describe("save 时按 design key 增量合并已有映射，默认 false（替换）")
     }),
     handler: (runtime, args) => screenMap(runtime, args as unknown as ScreenMapArgs)

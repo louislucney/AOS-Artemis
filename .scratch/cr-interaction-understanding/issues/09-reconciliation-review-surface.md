@@ -4,7 +4,9 @@
 
 **Blocked by:** 08（对账资产）。
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+> 实施注（2026-10-10）：`reviewEdge` 幂等决定（confirm→human-confirmed 硬断言 / reject→边不进生成，记录 reviewer/时间）；MCP `reconciliation` 工具 + CLI `suite reconcile list|confirm|reject`（exit 0/1/2）；生成消费扩展 confirmed/rejected；未裁决不升权。见 DESIGN §13.68。
 
 - [ ] 列举 / 确认 / 修正命令与 MCP 工具；幂等写入 human-confirmed 与冲突裁决（含时间戳）
 - [ ] 未裁决不升权；审阅输出含差异上下文（屏幕/边/文本）便于决策

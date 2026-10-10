@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -25,9 +26,29 @@ export interface ScreenMapEntry {
   confidence?: number;
 }
 
+/** Element-level mapping (design runtime text ↔ observed device label) with a
+ * stack-conventional accessibilityIdentifier suggestion (auto-discovered from
+ * exploration/execution observations; manual entries win). */
+export interface ElementMapEntry {
+  screen: string;
+  /** Design-side runtime text that matched an observed label. */
+  text: string;
+  observedLabel: string;
+  identifier: string;
+  /** 1.0 = unique exact normalized match at observation time. */
+  confidence: number;
+  source: "observed" | "manual";
+  hits: number;
+  /** Traces that produced a hit (audit trail; same-trace replay is idempotent). */
+  traces: string[];
+  lastSeenAt: string;
+}
+
 export interface ScreenMapFile {
   version: number;
   entries: ScreenMapEntry[];
+  /** Element-level mappings; omitted from serialization when empty. */
+  elements: ElementMapEntry[];
   corrupt?: boolean;
 }
 
@@ -72,14 +93,213 @@ function normalizeEntry(value: unknown): ScreenMapEntry | null {
 
 export function parseScreenMap(text: string): ScreenMapFile {
   try {
-    const parsed = JSON.parse(text) as { version?: unknown; entries?: unknown };
+    const parsed = JSON.parse(text) as { version?: unknown; entries?: unknown; elements?: unknown };
     const entries = Array.isArray(parsed.entries)
       ? parsed.entries.map(normalizeEntry).filter((entry): entry is ScreenMapEntry => entry !== null)
       : [];
-    return { version: typeof parsed.version === "number" ? parsed.version : SCREEN_MAP_VERSION, entries };
+    const elements = Array.isArray(parsed.elements)
+      ? parsed.elements
+          .map(normalizeElementEntry)
+          .filter((entry): entry is ElementMapEntry => entry !== null)
+      : [];
+    return {
+      version: typeof parsed.version === "number" ? parsed.version : SCREEN_MAP_VERSION,
+      entries,
+      elements
+    };
   } catch {
-    return { version: SCREEN_MAP_VERSION, entries: [] };
+    return { version: SCREEN_MAP_VERSION, entries: [], elements: [] };
   }
+}
+
+function elementKey(entry: Pick<ElementMapEntry, "screen" | "text">): string {
+  return JSON.stringify([entry.screen, entry.text]);
+}
+
+function normalizeElementEntry(value: unknown): ElementMapEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const screen = typeof record.screen === "string" ? record.screen.trim() : "";
+  const text = typeof record.text === "string" ? record.text.trim() : "";
+  if (!screen || !text) return null;
+  const observedLabel =
+    typeof record.observedLabel === "string" && record.observedLabel.trim() !== ""
+      ? record.observedLabel.trim()
+      : text;
+  const identifier =
+    typeof record.identifier === "string" && record.identifier.trim() !== ""
+      ? record.identifier.trim()
+      : suggestIdentifier(text);
+  const confidence =
+    typeof record.confidence === "number" && Number.isFinite(record.confidence)
+      ? record.confidence
+      : 1;
+  const source = record.source === "manual" ? "manual" : "observed";
+  const hits =
+    typeof record.hits === "number" && Number.isFinite(record.hits) && record.hits >= 0
+      ? Math.floor(record.hits)
+      : 0;
+  const traces = Array.isArray(record.traces)
+    ? record.traces.filter((trace): trace is string => typeof trace === "string")
+    : [];
+  const lastSeenAt = typeof record.lastSeenAt === "string" ? record.lastSeenAt : "";
+  return { screen, text, observedLabel, identifier, confidence, source, hits, traces, lastSeenAt };
+}
+
+/** Stack-conventional identifier suggestion: latin words become camelCase
+ * (must start with a letter); non-ASCII-only texts fall back to a stable
+ * hashed name (`element_<sha1 前 8>`). Deterministic and idempotent. */
+export function suggestIdentifier(text: string): string {
+  const tokens = text.match(/[A-Za-z0-9]+/g) ?? [];
+  const camel = tokens
+    .map((token, index) =>
+      index === 0
+        ? token.toLowerCase()
+        : `${token[0]!.toUpperCase()}${token.slice(1).toLowerCase()}`
+    )
+    .join("");
+  if (/^[a-z][A-Za-z0-9]*$/.test(camel)) return camel;
+  const hash = createHash("sha1").update(text).digest("hex").slice(0, 8);
+  return `element_${hash}`;
+}
+
+/** Normalized comparison key for element labels/texts (shared by matching and
+ * generation-side identifier lookup). */
+export function normalizeElementLabel(value: string): string {
+  return value.replace(/\s+/g, "").toLowerCase();
+}
+
+const normalizeLabelForMatch = normalizeElementLabel;
+
+export interface ElementObservationInput {
+  /** Design-side runtime texts per screen (from tests.json expectations). */
+  designs: Array<{ screen: string; hints: string[] }>;
+  /** Labels observed during the run (any step's visible text labels). */
+  observedLabels: string[];
+}
+
+/** Deterministic text matching: unique exact normalized equality only. Design
+ * texts that collide after normalization or match nothing are skipped (no
+ * guessing); duplicate observed labels collapse to one candidate. */
+export function matchElementObservations(input: ElementObservationInput): Omit<
+  ElementMapEntry,
+  "hits" | "traces" | "lastSeenAt"
+>[] {
+  const observed = new Map<string, string>();
+  for (const label of input.observedLabels) {
+    const normalized = normalizeLabelForMatch(label);
+    if (normalized !== "" && !observed.has(normalized)) observed.set(normalized, label.trim());
+  }
+  const designCounts = new Map<string, number>();
+  for (const design of input.designs) {
+    for (const hint of design.hints) {
+      const normalized = normalizeLabelForMatch(hint);
+      if (normalized !== "") designCounts.set(normalized, (designCounts.get(normalized) ?? 0) + 1);
+    }
+  }
+  const matches: Omit<ElementMapEntry, "hits" | "traces" | "lastSeenAt">[] = [];
+  const seen = new Set<string>();
+  for (const design of input.designs) {
+    for (const rawHint of design.hints) {
+      const hint = rawHint.trim();
+      const normalized = normalizeLabelForMatch(hint);
+      if (normalized === "" || (designCounts.get(normalized) ?? 0) > 1) continue;
+      const observedLabel = observed.get(normalized);
+      if (observedLabel === undefined) continue;
+      const key = JSON.stringify([design.screen, hint]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matches.push({
+        screen: design.screen,
+        text: hint,
+        observedLabel,
+        identifier: suggestIdentifier(hint),
+        confidence: 1,
+        source: "observed"
+      });
+    }
+  }
+  return matches;
+}
+
+/** Merge element observations into the mapping asset: new entries start at
+ * hits=1; existing entries refresh label/hits/time. Manual entries keep their
+ * identifier (human curation wins). Same-trace replay is idempotent. */
+export function mergeElementObservations(
+  map: ScreenMapFile,
+  observations: Array<Omit<ElementMapEntry, "hits" | "traces" | "lastSeenAt">>,
+  at: string,
+  traceId?: string
+): { map: ScreenMapFile; updated: number } {
+  const byKey = new Map(map.elements.map((entry) => [elementKey(entry), { ...entry, traces: [...entry.traces] }]));
+  let updated = 0;
+  for (const observation of observations) {
+    const key = elementKey(observation);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, {
+        ...observation,
+        hits: 1,
+        traces: traceId ? [traceId] : [],
+        lastSeenAt: at
+      });
+      updated += 1;
+      continue;
+    }
+    if (traceId && existing.traces.includes(traceId)) continue;
+    existing.observedLabel = observation.observedLabel;
+    existing.hits += 1;
+    if (traceId) existing.traces.push(traceId);
+    existing.lastSeenAt = at;
+    if (existing.source !== "manual") {
+      existing.identifier = observation.identifier;
+      existing.confidence = observation.confidence;
+    }
+    updated += 1;
+  }
+  if (updated === 0) return { map, updated: 0 };
+  return {
+    map: {
+      version: map.version,
+      entries: map.entries,
+      elements: [...byKey.values()].sort((a, b) => elementKey(a).localeCompare(elementKey(b)))
+    },
+    updated
+  };
+}
+
+/** Observing labels recorded by the iOS executor (step screen text summaries). */
+export function observedLabelsFromRunSteps(run: unknown): string[] {
+  if (!run || typeof run !== "object" || Array.isArray(run)) return [];
+  const steps = (run as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return [];
+  const labels = new Set<string>();
+  for (const step of steps) {
+    if (!step || typeof step !== "object" || Array.isArray(step)) continue;
+    const screen = (step as { screen?: unknown }).screen;
+    if (typeof screen !== "string") continue;
+    for (const part of screen.split(" | ")) {
+      const label = part.trim();
+      if (label !== "") labels.add(label);
+    }
+  }
+  return [...labels];
+}
+
+/** Persist element observations (load → merge → save only when changed).
+ * `traceId` makes same-trace replay idempotent. */
+export function recordElementObservations(
+  configDirAbs: string,
+  input: ElementObservationInput,
+  at: string,
+  traceId?: string
+): number {
+  const observations = matchElementObservations(input);
+  if (observations.length === 0) return 0;
+  const current = loadScreenMap(configDirAbs);
+  const merged = mergeElementObservations(current, observations, at, traceId);
+  if (merged.updated > 0) saveScreenMap(configDirAbs, merged.map);
+  return merged.updated;
 }
 
 export function serializeScreenMap(map: ScreenMapFile): string {
@@ -87,6 +307,10 @@ export function serializeScreenMap(map: ScreenMapFile): string {
     .map(normalizeEntry)
     .filter((entry): entry is ScreenMapEntry => entry !== null)
     .sort((a, b) => entryKey(a).localeCompare(entryKey(b)));
+  const elements = [...(map.elements ?? [])]
+    .map(normalizeElementEntry)
+    .filter((entry): entry is ElementMapEntry => entry !== null)
+    .sort((a, b) => elementKey(a).localeCompare(elementKey(b)));
   const lines = [`{`, `  "version": ${SCREEN_MAP_VERSION},`, `  "entries": [`];
   entries.forEach((entry, index) => {
     const record: Record<string, unknown> = { design: entry.design, code: entry.code };
@@ -94,7 +318,15 @@ export function serializeScreenMap(map: ScreenMapFile): string {
     if (entry.confidence !== undefined) record.confidence = entry.confidence;
     lines.push(`    ${JSON.stringify(record)}${index === entries.length - 1 ? "" : ","}`);
   });
-  lines.push("  ]", "}", "");
+  lines.push(`  ]${elements.length > 0 ? "," : ""}`);
+  if (elements.length > 0) {
+    lines.push(`  "elements": [`);
+    elements.forEach((entry, index) => {
+      lines.push(`    ${JSON.stringify(entry)}${index === elements.length - 1 ? "" : ","}`);
+    });
+    lines.push(`  ]`);
+  }
+  lines.push("}", "");
   return lines.join("\n");
 }
 
@@ -104,10 +336,10 @@ export function screenMapFilePath(configDirAbs: string): string {
 
 export function loadScreenMap(configDirAbs: string): ScreenMapFile {
   const file = screenMapFilePath(configDirAbs);
-  if (!fs.existsSync(file)) return { version: SCREEN_MAP_VERSION, entries: [] };
+  if (!fs.existsSync(file)) return { version: SCREEN_MAP_VERSION, entries: [], elements: [] };
   const text = fs.readFileSync(file, "utf-8");
   const map = parseScreenMap(text);
-  const corrupt = text.trim() !== "" && map.entries.length === 0;
+  const corrupt = text.trim() !== "" && map.entries.length === 0 && map.elements.length === 0;
   return corrupt ? { ...map, corrupt: true } : map;
 }
 
@@ -186,6 +418,8 @@ export function proposeScreenMapEntries(configDirAbs: string, profile: StackProf
 export interface ScreenMapArgs {
   action: "list" | "propose" | "save";
   entries?: unknown[];
+  /** Manual element-level mappings (identifier curation); source forced to manual. */
+  elements?: unknown[];
   merge?: boolean;
 }
 
@@ -203,11 +437,12 @@ export async function screenMap(runtime: Runtime, args: ScreenMapArgs): Promise<
         version: map.version,
         file,
         entries: map.entries,
+        elements: map.elements,
         ...(map.corrupt ? { corrupt: true } : {}),
         hint: map.corrupt
           ? "screen-map.json 无法解析（已按空表处理）；修复或删除后重试。"
-          : map.entries.length === 0
-            ? '映射为空：先运行 screen_map(action:"propose") 生成候选，再由 agent 复核后 save。'
+          : map.entries.length === 0 && map.elements.length === 0
+            ? '映射为空：先运行 screen_map(action:"propose") 生成候选，再由 agent 复核后 save（元素级映射由 iOS 套件运行自动发现）。'
             : undefined
       });
     }
@@ -242,6 +477,13 @@ export async function screenMap(runtime: Runtime, args: ScreenMapArgs): Promise<
       if (entry) normalized.push(entry);
       else invalid.push(index);
     });
+    const normalizedElements: ElementMapEntry[] = [];
+    const invalidElements: number[] = [];
+    (args.elements ?? []).forEach((raw, index) => {
+      const entry = normalizeElementEntry(raw);
+      if (entry) normalizedElements.push({ ...entry, source: "manual" });
+      else invalidElements.push(index);
+    });
     if (invalid.length > 0) {
       return jsonResult(
         {
@@ -252,16 +494,38 @@ export async function screenMap(runtime: Runtime, args: ScreenMapArgs): Promise<
         true
       );
     }
-    if (normalized.length === 0) {
-      return jsonResult({ ok: false, error: "entries 为空，无可保存内容" }, true);
+    if (invalidElements.length > 0) {
+      return jsonResult(
+        {
+          ok: false,
+          error: `elements[${invalidElements.join(", ")}] 非法：需要 screen 与 text`,
+          hint: "每条目形如 {screen,text,observedLabel?,identifier?,confidence?}（source 强制 manual）。"
+        },
+        true
+      );
+    }
+    if (normalized.length === 0 && normalizedElements.length === 0) {
+      return jsonResult({ ok: false, error: "entries/elements 均为空，无可保存内容" }, true);
     }
 
     const existing = loadScreenMap(runtime.configDirAbs);
-    const merged = args.merge === true && existing.entries.length > 0
-      ? [...existing.entries.filter((entry) => !normalized.some((next) => entryKey(next) === entryKey(entry))), ...normalized]
-      : normalized;
-    const result = saveScreenMap(runtime.configDirAbs, { version: SCREEN_MAP_VERSION, entries: merged });
-    return jsonResult({ ok: true, action: result.action, file: result.file, entries: merged.length });
+    const merged =
+      normalized.length === 0
+        ? existing.entries
+        : args.merge === true && existing.entries.length > 0
+          ? [...existing.entries.filter((entry) => !normalized.some((next) => entryKey(next) === entryKey(entry))), ...normalized]
+          : normalized;
+    const elementByKey = new Map(existing.elements.map((entry) => [elementKey(entry), entry]));
+    for (const entry of normalizedElements) elementByKey.set(elementKey(entry), entry);
+    const elements = [...elementByKey.values()].sort((a, b) => elementKey(a).localeCompare(elementKey(b)));
+    const result = saveScreenMap(runtime.configDirAbs, { version: SCREEN_MAP_VERSION, entries: merged, elements });
+    return jsonResult({
+      ok: true,
+      action: result.action,
+      file: result.file,
+      entries: merged.length,
+      elements: elements.length
+    });
   } catch (error) {
     return jsonResult({ ok: false, error: `screen_map 失败: ${errorMessage(error)}` }, true);
   }

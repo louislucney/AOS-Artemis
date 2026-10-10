@@ -4,7 +4,9 @@
 
 **Blocked by:** 08（对账资产与观测证据）。
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+> 实施注（2026-10-10）：screen-map.json 增 `elements`（唯一精确归一匹配 + camelCase/hash identifier 建议，同 trace 幂等）；iOS 运行自动发现，`save elements` 人工补（manual 优先，MCP schema 已暴露）；生成步骤追加 `a11y:` 注记。**口径为「运行期文本 ↔ 观察标签」**：不含 design nodeId 与几何维度（观察侧无 bounds 持久化）；brief 未接线（生成物已覆盖）；仅 iOS 自动发现（Android 留后续）。见 DESIGN §13.69。
 
 - [ ] 匹配规则确定性（文本归一化 + 几何），误配可控（阈值/多候选择一策略）
 - [ ] 元素级映射写入持久资产（与屏幕级映射共存）；关键路径可人工补

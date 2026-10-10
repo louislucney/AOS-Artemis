@@ -4,7 +4,9 @@
 
 **Blocked by:** 03、04、09（分类过滤、探索分流、人工裁决面）。
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+> 实施注（2026-10-10）：`Flow/AC*` 分组与 `AC:`/`验收：` 前缀批注识别为验收口径（空体忽略、每屏 ≤5、flows.json `screens[].acceptance`）；assert 期望优先取口径（`hintsSource:"acceptance"`），无口径回退运行期文本（提示级）；`.artemis/design/acceptance.json` 人工确认覆盖优先；Jira AC 摄取留后续集成。见 DESIGN §13.70。
 
 - [ ] 验收口径的识别规则（设计标注形式）与解析；模糊时保守为提示级
 - [ ] 硬断言期望来源 = 口径/人工确认，与 hints 分类联动；冲突经审阅面裁决

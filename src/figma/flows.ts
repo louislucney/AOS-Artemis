@@ -19,8 +19,24 @@ import {
 // Flow extraction (pure graph builder + tool)
 // ---------------------------------------------------------------------------
 
-/** A collected text hint with its class (ADR-0008; consumption rules land in
- * the follow-up annotation-filtering ticket). */
+/** `Flow/*` layer-name convention marking design annotations (shared by the
+ * Figma ancestor walk and the pen subtree walk). */
+export function isAcceptanceLayerName(name: unknown): boolean {
+  return typeof name === "string" && /^Flow\/AC/i.test(name.trim());
+}
+
+/** Inline acceptance convention: annotation text `AC: …` / `验收标准：…`
+ * (empty bodies are ignored — ambiguous criteria stay display-level; the
+ * prefix vocabulary mirrors the Jira acceptance-criteria heuristic). */
+export function acceptanceItemOf(text: string): string | null {
+  const match =
+    /^(?:AC|验收标准|验收条件|验收要求|验收|驗收標準|驗收條件|驗收要求|驗收)\s*[:：]\s*([\s\S]+)$/i.exec(
+      text.trim()
+    );
+  const item = match?.[1]?.trim();
+  return item ? item : null;
+}
+
 export interface FlowHint {
   text: string;
   textClass: TextClass;
@@ -34,6 +50,9 @@ export interface FlowScreen {
   childNames: string[];
   /** First classed TEXT contents found inside this screen. */
   textHints: FlowHint[];
+  /** Acceptance criteria from design annotations (`Flow/AC*` groups or
+   * `AC:`-prefixed annotation texts): the hard-assertion oracle (ticket 11). */
+  acceptance?: string[];
   /** Evidence source; absent = legacy-unknown (conservative). */
   provenance?: Provenance;
   confidence?: Confidence;
@@ -190,6 +209,16 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     return false;
   };
 
+  const isAcceptanceLayer = (nodeId: string): boolean => {
+    let current: FigmaNode | undefined = byId.get(nodeId);
+    while (current) {
+      if (isAcceptanceLayerName(current.name)) return true;
+      const parentId = parentOf.get(current.id);
+      current = parentId ? byId.get(parentId) : undefined;
+    }
+    return false;
+  };
+
   const edges: FlowEdge[] = [];
   const unresolved = new Set<string>();
   const elementTextHints = new Map<string, FlowHint[]>();
@@ -254,31 +283,48 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
   }
 
   const screenTextHints = new Map<string, FlowHint[]>();
+  const screenAcceptance = new Map<string, string[]>();
   for (const node of byId.values()) {
     if (node.type !== "TEXT") continue;
     const characters = (node as { characters?: unknown }).characters;
     if (typeof characters !== "string" || characters.trim() === "") continue;
     const screen = screenOf(node.id);
     if (!screen) continue;
-    const list = screenTextHints.get(screen.id) ?? [];
     const text = characters.trim();
+    const list = screenTextHints.get(screen.id) ?? [];
     const textClass: TextClass = isAnnotationLayer(node.id) ? "annotation" : "runtime-text";
     const classCount = list.filter((hint) => hint.textClass === textClass).length;
     if (classCount < 3 && !list.some((hint) => hint.text === text)) {
       list.push({ text, textClass });
       screenTextHints.set(screen.id, list);
     }
+    const acceptance = isAcceptanceLayer(node.id)
+      ? text
+      : textClass === "annotation"
+        ? acceptanceItemOf(text)
+        : null;
+    if (acceptance) {
+      const acceptanceList = screenAcceptance.get(screen.id) ?? [];
+      if (acceptanceList.length < 5 && !acceptanceList.includes(acceptance)) {
+        acceptanceList.push(acceptance);
+        screenAcceptance.set(screen.id, acceptanceList);
+      }
+    }
   }
 
-  const screens: FlowScreen[] = screenNodes.map((screen) => ({
-    id: screen.id,
-    name: screen.name,
-    suggestedRoute: routeFor(screen.name),
-    childNames: (screen.children ?? []).slice(0, 10).map((child) => child.name),
-    textHints: screenTextHints.get(screen.id) ?? [],
-    provenance: "explicit",
-    confidence: confidenceFor("explicit")
-  }));
+  const screens: FlowScreen[] = screenNodes.map((screen) => {
+    const acceptance = screenAcceptance.get(screen.id) ?? [];
+    return {
+      id: screen.id,
+      name: screen.name,
+      suggestedRoute: routeFor(screen.name),
+      childNames: (screen.children ?? []).slice(0, 10).map((child) => child.name),
+      textHints: screenTextHints.get(screen.id) ?? [],
+      ...(acceptance.length > 0 ? { acceptance } : {}),
+      provenance: "explicit",
+      confidence: confidenceFor("explicit")
+    };
+  });
 
   const incoming = new Set(edges.filter((edge) => edge.to).map((edge) => edge.to!.id));
   return {
@@ -345,6 +391,17 @@ export function normalizeFlowGraph(raw: unknown): FlowGraph {
         ? screen.childNames.filter((child): child is string => typeof child === "string")
         : [],
       textHints: normalizeFlowHints(screen.textHints),
+      ...(() => {
+        if (!Array.isArray(screen.acceptance)) return {};
+        const acceptance = [
+          ...new Set(
+            screen.acceptance
+              .filter((item): item is string => typeof item === "string" && item.trim() !== "")
+              .map((item) => item.trim())
+          )
+        ].slice(0, 5);
+        return acceptance.length > 0 ? { acceptance } : {};
+      })(),
       provenance,
       confidence: confidenceFor(provenance)
     };

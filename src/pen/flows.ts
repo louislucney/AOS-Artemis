@@ -6,7 +6,9 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 import {
+  acceptanceItemOf,
   flowGraphWarnings,
+  isAcceptanceLayerName,
   routeFor,
   type FlowEdge,
   type FlowGraph,
@@ -28,6 +30,8 @@ export interface PenFlowScreen {
   inferredName: boolean;
   /** State variants merged into this screen (label + frame id/name). */
   states: Array<{ id: string; label: string; frameName: string }>;
+  /** Acceptance criteria from `Flow/AC*` groups or `AC:`-prefixed annotation texts. */
+  acceptance?: string[];
   /** Evidence source (synthesis is always heuristic: inferred/low). */
   provenance: Provenance;
   confidence: Confidence;
@@ -320,12 +324,14 @@ export function synthesizePenFlows(
       mergeNotes.push(`${base} ← ${states.map((state) => state.label).join("、")}`);
     }
     const texts = collectTextHints(main.frame, 4);
+    const acceptance = collectAcceptance(main.frame);
     const screen: PenFlowScreen = {
       id: main.id,
       name: base,
       suggestedRoute: routeFor(base),
       childNames: (main.frame.children ?? []).slice(0, 10).map((child) => String(child.name ?? "")),
       textHints: texts,
+      ...(acceptance.length > 0 ? { acceptance } : {}),
       sourceBoard: String(boards[main.boardIndex]?.name ?? ""),
       sourceFrameName: main.frameName,
       inferredName: main.labelSource === "layer-name",
@@ -449,6 +455,23 @@ export function synthesizePenFlows(
       interactionSignals: interactionSignals.count
     }
   };
+}
+
+function collectAcceptance(node: PenNode): string[] {
+  const items: string[] = [];
+  const visit = (current: PenNode, underAcceptance: boolean, underFlow: boolean): void => {
+    if (items.length >= 5) return;
+    const acceptanceLayer = underAcceptance || isAcceptanceLayerName(current.name);
+    const flow = underFlow || (typeof current.name === "string" && current.name.startsWith("Flow/"));
+    const text = textOf(current);
+    if (text) {
+      const item = acceptanceLayer ? text : flow ? acceptanceItemOf(text) : null;
+      if (item && !items.includes(item)) items.push(item);
+    }
+    for (const child of current.children ?? []) visit(child, acceptanceLayer, flow);
+  };
+  visit(node, isAcceptanceLayerName(node.name), false);
+  return items;
 }
 
 function collectTextHints(node: PenNode, perClassLimit: number): FlowHint[] {

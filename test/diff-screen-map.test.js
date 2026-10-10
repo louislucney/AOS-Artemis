@@ -3,7 +3,15 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { screenMap } from "../dist/diff/screen-map.js";
+import {
+  matchElementObservations,
+  mergeElementObservations,
+  parseScreenMap,
+  recordElementObservations,
+  screenMap,
+  serializeScreenMap,
+  suggestIdentifier
+} from "../dist/diff/screen-map.js";
 import { designDeviceDiff } from "../dist/diff/tool.js";
 import {
   baseConfig,
@@ -232,4 +240,127 @@ test("design_device_diff: build-brief 损坏时降级并给出 reason，不阻�
       figma.restore();
     }
   });
+});
+
+test("element map: identifier suggestions are deterministic and stack-conventional", () => {
+  assert.equal(suggestIdentifier("Buy now"), "buyNow");
+  assert.equal(suggestIdentifier("Add to Cart"), "addToCart");
+  const chinese = suggestIdentifier("確認訂單");
+  assert.match(chinese, /^element_[0-9a-f]{8}$/);
+  assert.equal(suggestIdentifier("確認訂單"), chinese, "hash fallback is stable");
+  assert.equal(suggestIdentifier("A"), "a", "single latin letters are valid identifiers");
+  assert.match(suggestIdentifier("123"), /^element_/, "numeric-only falls back to a hashed name");
+});
+
+test("element map: matching is unique-exact normalized only", () => {
+  const matches = matchElementObservations({
+    designs: [
+      { screen: "首頁", hints: ["早安, Amy☀️", "重複文案", "未出现"] },
+      { screen: "門市", hints: ["重複文案", "選擇門市"] }
+    ],
+    observedLabels: ["早安,   Amy☀️", "重複文案", "選擇門市", "无关文本"]
+  });
+  const keys = matches.map((entry) => `${entry.screen}:${entry.text}`);
+  assert.ok(keys.includes("首頁:早安, Amy☀️"), "whitespace-normalized exact match");
+  assert.ok(keys.includes("門市:選擇門市"));
+  assert.ok(!keys.some((key) => key.includes("重複文案")), "ambiguous design texts are skipped");
+  assert.ok(!keys.some((key) => key.includes("未出现")));
+});
+
+test("element map: merge counts hits and manual identifiers win", () => {
+  const base = { version: 1, entries: [], elements: [] };
+  const drafts = matchElementObservations({
+    designs: [{ screen: "首頁", hints: ["早安"] }],
+    observedLabels: ["早安"]
+  });
+  const first = mergeElementObservations(base, drafts, "2026-10-10T00:00:00.000Z");
+  assert.equal(first.updated, 1);
+  assert.equal(first.map.elements[0].hits, 1);
+
+  const second = mergeElementObservations(
+    first.map,
+    [{ ...drafts[0], identifier: "changedByObserver" }],
+    "2026-10-10T00:01:00.000Z"
+  );
+  assert.equal(second.map.elements[0].hits, 2);
+  assert.equal(second.map.elements[0].identifier, "changedByObserver");
+
+  const manual = {
+    ...second.map,
+    elements: [{ ...second.map.elements[0], identifier: "manualId", source: "manual" }]
+  };
+  const third = mergeElementObservations(
+    manual,
+    [{ ...drafts[0], identifier: "observerAgain" }],
+    "2026-10-10T00:02:00.000Z"
+  );
+  assert.equal(third.map.elements[0].identifier, "manualId", "manual curation wins");
+  assert.equal(third.map.elements[0].hits, 3);
+
+  const withTrace = mergeElementObservations(base, drafts, "2026-10-10T00:03:00.000Z", "t1");
+  assert.equal(withTrace.map.elements[0].hits, 1);
+  assert.deepEqual(withTrace.map.elements[0].traces, ["t1"]);
+  const replay = mergeElementObservations(withTrace.map, drafts, "2026-10-10T00:04:00.000Z", "t1");
+  assert.equal(replay.updated, 0, "same-trace replay is idempotent");
+  assert.equal(replay.map.elements[0].hits, 1);
+});
+
+test("element map: serialization round-trips and omits empty elements", () => {
+  const plain = serializeScreenMap({ version: 1, entries: [], elements: [] });
+  assert.ok(!plain.includes('"elements"'), "empty elements stay out of the file (backward compatible)");
+
+  const withElements = serializeScreenMap({
+    version: 1,
+    entries: [],
+    elements: [
+      {
+        screen: "首頁",
+        text: "早安",
+        observedLabel: "早安",
+        identifier: "zaoan",
+        confidence: 1,
+        source: "observed",
+        hits: 2,
+        lastSeenAt: "t"
+      }
+    ]
+  });
+  assert.ok(withElements.includes('"elements"'));
+  assert.deepEqual(parseScreenMap(withElements).elements, [
+    {
+      screen: "首頁",
+      text: "早安",
+      observedLabel: "早安",
+      identifier: "zaoan",
+      confidence: 1,
+      source: "observed",
+      hits: 2,
+      traces: [],
+      lastSeenAt: "t"
+    }
+  ]);
+});
+
+test("element map: recordElementObservations persists only when matched", () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const configDir = path.join(dir, ".artemis");
+  fs.mkdirSync(path.join(configDir, "design"), { recursive: true });
+
+  const updated = recordElementObservations(
+    configDir,
+    { designs: [{ screen: "首頁", hints: ["早安"] }], observedLabels: ["早安", "无关"] },
+    "2026-10-10T00:00:00.000Z"
+  );
+  assert.equal(updated, 1);
+  const parsed = parseScreenMap(
+    fs.readFileSync(path.join(configDir, "design", "screen-map.json"), "utf-8")
+  );
+  assert.equal(parsed.elements.length, 1);
+
+  const none = recordElementObservations(
+    configDir,
+    { designs: [{ screen: "首頁", hints: ["不存在"] }], observedLabels: ["早安"] },
+    "2026-10-10T00:01:00.000Z"
+  );
+  assert.equal(none, 0);
 });

@@ -16,6 +16,7 @@ import {
 } from "./flows.js";
 import { deriveCasePreconditions } from "./preconditions.js";
 import { applyReconciliationToGraph, loadReconciliation } from "./reconciliation.js";
+import { loadScreenMap, normalizeElementLabel } from "../diff/screen-map.js";
 import { canonicalizePlaceholders, normalizedText } from "./strings.js";
 import { renderTestsWorkbook } from "./test-xlsx.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
@@ -40,6 +41,9 @@ export interface StepExpectation {
   confidence: Confidence;
   /** `explore` for unconfirmed evidence: executable but never gating. */
   kind: StepKind;
+  /** Where the assertion hints come from: reviewed acceptance criteria or the
+   * destination screen's runtime text (absent for exploration steps). */
+  hintsSource?: "acceptance" | "runtime-text";
 }
 
 export interface CasePreflight {
@@ -331,8 +335,30 @@ function expectationFor(graph: FlowGraph, edge: FlowEdge): StepExpectation {
   const kind: StepKind = isUnconfirmedProvenance(provenance) ? "explore" : "assert";
   if (!edge.to) return { screen: null, hints: [], provenance, confidence, kind };
   const screen = graph.screens.find((candidate) => candidate.id === edge.to!.id);
-  const hints = kind === "assert" ? runtimeHintTexts(screen?.textHints).slice(0, 3) : [];
-  return { screen: edge.to.name, hints, provenance, confidence, kind };
+  if (kind === "explore") {
+    return { screen: edge.to.name, hints: [], provenance, confidence, kind };
+  }
+  const acceptance = (screen?.acceptance ?? [])
+    .map((item) => item.trim())
+    .filter((item) => item !== "");
+  if (acceptance.length > 0) {
+    return {
+      screen: edge.to.name,
+      hints: acceptance.slice(0, 5),
+      provenance,
+      confidence,
+      kind,
+      hintsSource: "acceptance"
+    };
+  }
+  return {
+    screen: edge.to.name,
+    hints: runtimeHintTexts(screen?.textHints).slice(0, 3),
+    provenance,
+    confidence,
+    kind,
+    hintsSource: "runtime-text"
+  };
 }
 
 function assertionFor(graph: FlowGraph, edge: FlowEdge): string {
@@ -346,7 +372,27 @@ function lookupI18nKey(text: string | undefined, i18nKeys: Map<string, string> |
   return i18nKeys.get(canonical) ?? i18nKeys.get(normalizedText(text)) ?? null;
 }
 
-function stepFor(graph: FlowGraph, edge: FlowEdge, i18nKeys?: Map<string, string>): string {
+/** Element-level identifier suggestions (screen-map elements; best-hit first,
+ * keyed by normalized text — same text on several screens suggests the same
+ * identifier, which is the conventional cross-screen behavior). */
+function loadIdentifierSuggestions(runtime: Runtime): Map<string, string> {
+  const map = new Map<string, string>();
+  const elements = [...loadScreenMap(runtime.configDirAbs).elements].sort(
+    (a, b) => b.hits - a.hits || a.text.localeCompare(b.text)
+  );
+  for (const element of elements) {
+    const key = normalizeElementLabel(element.text);
+    if (key !== "" && !map.has(key)) map.set(key, element.identifier);
+  }
+  return map;
+}
+
+function stepFor(
+  graph: FlowGraph,
+  edge: FlowEdge,
+  i18nKeys?: Map<string, string>,
+  identifiers?: Map<string, string>
+): string {
   const provenance = resolveProvenance(edge.provenance);
   if (isUnconfirmedProvenance(provenance)) {
     if (edge.trigger === "AFTER_TIMEOUT") {
@@ -367,8 +413,9 @@ function stepFor(graph: FlowGraph, edge: FlowEdge, i18nKeys?: Map<string, string
   const elementHint = runtimeHintTexts(edge.textHints)[0];
   const label = elementHint ? `「${elementHint}」` : `「${edge.element.name}」`;
   const i18nKey = lookupI18nKey(elementHint, i18nKeys);
+  const identifier = elementHint ? identifiers?.get(normalizeElementLabel(elementHint)) : undefined;
   const elementNote = elementHint
-    ? `（设计元素：${edge.element.name}${i18nKey ? `；i18n: ${i18nKey}` : ""}）`
+    ? `（设计元素：${edge.element.name}${i18nKey ? `；i18n: ${i18nKey}` : ""}${identifier ? `；a11y: ${identifier}` : ""}）`
     : "";
 
   if (edge.trigger === "AFTER_TIMEOUT") {
@@ -394,10 +441,47 @@ function caseIdFor(name: string, screens: string[], steps: string[]): string {
   return `case-${createHash("sha256").update(basis).digest("hex").slice(0, 12)}`;
 }
 
+/** Manual acceptance overrides (`.artemis/design/acceptance.json`):
+ * `{screens: {"<屏名>": ["条目", …]}}`; human-confirmed criteria replace the
+ * screen's annotation-derived acceptance. Invalid files are ignored. */
+function loadAcceptanceOverrides(runtime: Runtime): Map<string, string[]> {
+  const overrides = new Map<string, string[]>();
+  try {
+    const file = path.join(runtime.configDirAbs, "design", "acceptance.json");
+    if (!fs.existsSync(file)) return overrides;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as { screens?: unknown };
+    const screens = parsed.screens;
+    if (!screens || typeof screens !== "object" || Array.isArray(screens)) return overrides;
+    for (const [name, items] of Object.entries(screens as Record<string, unknown>)) {
+      if (name.trim() === "" || !Array.isArray(items)) continue;
+      const list = items
+        .filter((item): item is string => typeof item === "string" && item.trim() !== "")
+        .map((item) => item.trim())
+        .slice(0, 5);
+      if (list.length > 0) overrides.set(name.trim(), list);
+    }
+  } catch {
+    /* invalid overrides are ignored: annotations stay the acceptance source */
+  }
+  return overrides;
+}
+
+function applyAcceptanceOverrides(graph: FlowGraph, overrides: Map<string, string[]>): FlowGraph {
+  if (overrides.size === 0) return graph;
+  return {
+    ...graph,
+    screens: graph.screens.map((screen) =>
+      overrides.has(screen.name) ? { ...screen, acceptance: overrides.get(screen.name) } : screen
+    )
+  };
+}
+
 export interface GenerateTestCasesOptions {
   maxFlows?: number;
   maxDepth?: number;
   i18nKeys?: Map<string, string>;
+  /** Element identifier suggestions keyed by normalized text (screen-map). */
+  identifiers?: Map<string, string>;
   onStats?: (stats: LinearizeStats) => void;
 }
 
@@ -425,8 +509,8 @@ export function generateTestCases(
     for (const edge of prefix) pushScreen(edge.to?.name);
     pushScreen(first.from.name);
     for (const edge of flowPath) pushScreen(edge.to?.name);
-    const steps = flowPath.map((edge) => stepFor(graph, edge, options.i18nKeys));
-    const prelude = prefix.map((edge) => stepFor(graph, edge, options.i18nKeys));
+    const steps = flowPath.map((edge) => stepFor(graph, edge, options.i18nKeys, options.identifiers));
+    const prelude = prefix.map((edge) => stepFor(graph, edge, options.i18nKeys, options.identifiers));
     const expectations = flowPath.map((edge) => expectationFor(graph, edge));
     const exploreCount = [...prefix, ...flowPath].filter((edge) =>
       isUnconfirmedProvenance(resolveProvenance(edge.provenance))
@@ -454,7 +538,8 @@ export function generateTestCases(
           hints: expectation.hints,
           provenance: expectation.provenance,
           confidence: expectation.confidence,
-          kind: expectation.kind
+          kind: expectation.kind,
+          ...(expectation.hintsSource ? { hintsSource: expectation.hintsSource } : {})
         }))
       }
     )}`;
@@ -593,14 +678,21 @@ export async function figmaGenerateTests(
       source = flowsPath;
     }
 
-    const reconciliation = applyReconciliationToGraph(graph, loadReconciliation(runtime.configDirAbs));
-    graph = reconciliation.graph;
+    const reconciliationApplied = applyReconciliationToGraph(
+      graph,
+      loadReconciliation(runtime.configDirAbs)
+    );
+    graph = applyAcceptanceOverrides(
+      reconciliationApplied.graph,
+      loadAcceptanceOverrides(runtime)
+    );
 
     const generationRef: { stats: LinearizeStats | null } = { stats: null };
     const cases = generateTestCases(graph, {
       maxFlows: args.maxFlows ?? 10,
       maxDepth: args.maxDepth,
       i18nKeys: loadI18nKeys(runtime),
+      identifiers: loadIdentifierSuggestions(runtime),
       onStats: (stats) => {
         generationRef.stats = stats;
       }
@@ -640,8 +732,23 @@ export async function figmaGenerateTests(
       counts: { flows: counts.cases, screens: counts.screens, edges: counts.edges },
       generation,
       coverage,
-      ...(reconciliation.upgradedEdges > 0
-        ? { reconciliation: { upgradedEdges: reconciliation.upgradedEdges } }
+      ...(reconciliationApplied.upgradedEdges +
+        reconciliationApplied.confirmedEdges +
+        reconciliationApplied.rejectedEdges >
+      0
+        ? {
+            reconciliation: {
+              ...(reconciliationApplied.upgradedEdges > 0
+                ? { upgradedEdges: reconciliationApplied.upgradedEdges }
+                : {}),
+              ...(reconciliationApplied.confirmedEdges > 0
+                ? { confirmedEdges: reconciliationApplied.confirmedEdges }
+                : {}),
+              ...(reconciliationApplied.rejectedEdges > 0
+                ? { rejectedEdges: reconciliationApplied.rejectedEdges }
+                : {})
+            }
+          }
         : {}),
       flows: cases,
       hint:

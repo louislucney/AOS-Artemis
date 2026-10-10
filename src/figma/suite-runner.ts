@@ -38,6 +38,7 @@ import {
   ingestExplorationObservations,
   type ExploreStepSignal
 } from "./reconciliation.js";
+import { observedLabelsFromRunSteps, recordElementObservations } from "../diff/screen-map.js";
 import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -136,8 +137,26 @@ interface GeneratedCaseLike {
   screens: string[];
   /** Exploration steps (kind=explore with a target screen) for reconciliation. */
   exploreSteps: ExploreStepSignal[];
+  /** Design runtime texts per expected screen (element-level matching). */
+  hintScreens: Array<{ screen: string; hints: string[] }>;
   /** Script provenance counts from tests.json expectations (null = legacy). */
   scriptProvenance: { asserts: number; explores: number } | null;
+}
+
+function hintScreensOf(raw: unknown): Array<{ screen: string; hints: string[] }> {
+  if (!Array.isArray(raw)) return [];
+  const screens: Array<{ screen: string; hints: string[] }> = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as { screen?: unknown; hints?: unknown };
+    if (typeof record.screen !== "string" || record.screen.trim() === "") continue;
+    const hints = Array.isArray(record.hints)
+      ? record.hints.filter((hint): hint is string => typeof hint === "string" && hint.trim() !== "")
+      : [];
+    if (hints.length === 0) continue;
+    screens.push({ screen: record.screen.trim(), hints });
+  }
+  return screens;
 }
 
 function exploreStepsOf(raw: unknown): ExploreStepSignal[] {
@@ -187,6 +206,7 @@ function loadCases(file: string, maxCases?: number): GeneratedCaseLike[] | null 
           ? entry.screens.filter((screen): screen is string => typeof screen === "string")
           : [],
         exploreSteps: exploreStepsOf(entry.expectations),
+        hintScreens: hintScreensOf(entry.expectations),
         scriptProvenance: summarizeScriptProvenance(entry.expectations)
       });
     }
@@ -530,18 +550,33 @@ export async function runGeneratedTests(
       reset
     };
     results.push(caseResult);
-    if (terminal && testCase.exploreSteps.length > 0 && isIosTrace(runtime, traceId)) {
+    if (
+      terminal &&
+      isIosTrace(runtime, traceId) &&
+      (testCase.exploreSteps.length > 0 || testCase.hintScreens.length > 0)
+    ) {
       try {
         const runText = fs.readFileSync(path.join(runtime.traceDir(traceId), "run.json"), "utf-8");
-        const hitIndexes = hitsFromRunSteps(JSON.parse(runText));
-        ingestExplorationObservations({
-          configDirAbs: runtime.configDirAbs,
-          traceId,
-          at: new Date(now()).toISOString(),
-          screens: testCase.screens,
-          exploreSteps: testCase.exploreSteps,
-          hitIndexes
-        });
+        const run = JSON.parse(runText) as unknown;
+        const at = new Date(now()).toISOString();
+        if (testCase.exploreSteps.length > 0) {
+          ingestExplorationObservations({
+            configDirAbs: runtime.configDirAbs,
+            traceId,
+            at,
+            screens: testCase.screens,
+            exploreSteps: testCase.exploreSteps,
+            hitIndexes: hitsFromRunSteps(run)
+          });
+        }
+        if (testCase.hintScreens.length > 0) {
+          recordElementObservations(
+            runtime.configDirAbs,
+            { designs: testCase.hintScreens, observedLabels: observedLabelsFromRunSteps(run) },
+            at,
+            traceId
+          );
+        }
       } catch (error) {
         logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
       }

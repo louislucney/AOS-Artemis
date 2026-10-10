@@ -205,7 +205,8 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
           taskDesc: "run ios case 1",
           expectations: [
             { index: 1, screen: "選擇門市", hints: [], provenance: "inferred", confidence: "low", kind: "explore" },
-            { index: 2, screen: "店員推薦", hints: [], provenance: "inferred", confidence: "low", kind: "explore" }
+            { index: 2, screen: "店員推薦", hints: [], provenance: "inferred", confidence: "low", kind: "explore" },
+            { index: 3, screen: "確認頁", hints: ["訂單成立"], provenance: "explicit", confidence: "high", kind: "assert" }
           ]
         }
       ]
@@ -219,7 +220,11 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
   });
   fs.writeFileSync(
     path.join(runtime.traceDir("trace-1"), "run.json"),
-    JSON.stringify({ platform: "ios", status: "completed", steps: [{ step: 1, scriptHits: [1] }] })
+    JSON.stringify({
+      platform: "ios",
+      status: "completed",
+      steps: [{ step: 1, scriptHits: [1] }, { step: 2, screen: "確認頁 | 訂單成立 | 其他文案" }]
+    })
   );
 
   const runOptions = {
@@ -248,4 +253,13 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
   assert.equal(pending.from, "選擇門市");
   assert.equal(pending.status, "pending", "un-reached exploration is registered as a reconciliation gap");
   assert.equal(pending.hits, 0);
+
+  const screenMap = JSON.parse(
+    fs.readFileSync(path.join(runtime.configDirAbs, "design", "screen-map.json"), "utf-8")
+  );
+  assert.equal(screenMap.elements.length, 1, "observed labels produce element-level mappings");
+  assert.equal(screenMap.elements[0].screen, "確認頁");
+  assert.equal(screenMap.elements[0].text, "訂單成立");
+  assert.match(screenMap.elements[0].identifier, /^element_[0-9a-f]{8}$/);
+  assert.equal(screenMap.elements[0].hits, 1);
 });

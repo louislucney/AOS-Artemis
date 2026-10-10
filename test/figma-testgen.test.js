@@ -11,6 +11,7 @@ import {
   reviewEdge,
   saveReconciliation
 } from "../dist/figma/reconciliation.js";
+import { serializeScreenMap } from "../dist/diff/screen-map.js";
 import {
   computeFlowCoverage,
   figmaGenerateTests,
@@ -493,7 +494,8 @@ test("generateTestCases: per-step expectations are machine-readable and aligned 
     hints: testCase.expectations[0].hints,
     provenance: testCase.expectations[0].provenance,
     confidence: testCase.expectations[0].confidence,
-    kind: testCase.expectations[0].kind
+    kind: testCase.expectations[0].kind,
+    hintsSource: "runtime-text"
   });
   assert.equal(payload.steps[0].provenance, "explicit");
   assert.equal(payload.steps[0].confidence, "high");
@@ -763,6 +765,40 @@ test("figma_generate_tests: pending reconciliation entries never promote (unadju
   const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
   assert.equal(payload.reconciliation, undefined, "unadjudicated entries never promote");
   assert.equal(payload.flows[0].expectations[0].kind, "explore");
+});
+
+test("figma_generate_tests: element-map identifiers appear in step notes", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify(buildFlowGraph(syntheticFlowDocument()))
+  );
+  fs.writeFileSync(
+    path.join(designDir, "screen-map.json"),
+    serializeScreenMap({
+      version: 1,
+      entries: [],
+      elements: [
+        {
+          screen: "Checkout",
+          text: "Buy now",
+          observedLabel: "Buy now",
+          identifier: "buyNowCta",
+          confidence: 1,
+          source: "observed",
+          hits: 2,
+          lastSeenAt: "2026-10-10T00:00:00.000Z"
+        }
+      ]
+    })
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(payload.ok, true);
+  assert.match(payload.flows[0].steps[0], /a11y: buyNowCta/);
 });
 
 test("generateTestCases: inferred edges become exploration steps", () => {
@@ -1244,4 +1280,181 @@ test("figma_generate_tests: entry fallback is a warning, not a completeness fail
   assert.equal(payload.ok, true);
   assert.equal(payload.coverage.entryFallback, true);
   assert.equal(payload.coverage.complete, true);
+});
+
+test("generateTestCases: acceptance criteria back hard assertions with a source field", () => {
+  const edge = (fromId, fromName, toId, toName) => ({
+    from: { id: fromId, name: fromName },
+    to: { id: toId, name: toName },
+    element: { id: `e-${fromId}`, name: "按钮", type: "BUTTON" },
+    textHints: [],
+    trigger: "ON_CLICK",
+    actionType: "NODE",
+    provenance: "explicit",
+    confidence: "high"
+  });
+  const graph = {
+    screens: [
+      {
+        id: "s1",
+        name: "A",
+        suggestedRoute: "/a",
+        childNames: [],
+        textHints: [],
+        provenance: "explicit",
+        confidence: "high"
+      },
+      {
+        id: "s2",
+        name: "B",
+        suggestedRoute: "/b",
+        childNames: [],
+        textHints: [{ text: "普通文本", textClass: "runtime-text" }],
+        acceptance: ["金额正确", "显示订单号"],
+        provenance: "explicit",
+        confidence: "high"
+      },
+      {
+        id: "s3",
+        name: "C",
+        suggestedRoute: "/c",
+        childNames: [],
+        textHints: [{ text: "提示文本", textClass: "runtime-text" }],
+        provenance: "explicit",
+        confidence: "high"
+      }
+    ],
+    edges: [edge("s1", "A", "s2", "B"), edge("s2", "B", "s3", "C")],
+    entryScreens: ["A"],
+    unresolvedDestinations: []
+  };
+
+  const [testCase] = generateTestCases(graph);
+  assert.deepEqual(testCase.expectations[0].hints, ["金额正确", "显示订单号"]);
+  assert.equal(testCase.expectations[0].hintsSource, "acceptance");
+  assert.deepEqual(testCase.expectations[1].hints, ["提示文本"]);
+  assert.equal(testCase.expectations[1].hintsSource, "runtime-text");
+  assert.match(testCase.steps[0], /金额正确/);
+
+  const line = testCase.taskDesc.split("\n").find((entry) => entry.includes("【AOS-EXPECT】"));
+  const block = JSON.parse(line.slice(line.indexOf("【AOS-EXPECT】") + "【AOS-EXPECT】".length));
+  assert.equal(block.steps[0].hintsSource, "acceptance");
+  assert.equal(block.steps[1].hintsSource, "runtime-text");
+});
+
+test("figma_generate_tests: acceptance.json overrides win over annotations", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [
+        {
+          id: "s1",
+          name: "A",
+          suggestedRoute: "/a",
+          childNames: [],
+          textHints: [],
+          provenance: "explicit",
+          confidence: "high"
+        },
+        {
+          id: "s2",
+          name: "B",
+          suggestedRoute: "/b",
+          childNames: [],
+          textHints: [{ text: "普通文本", textClass: "runtime-text" }],
+          acceptance: ["注释口径"],
+          provenance: "explicit",
+          confidence: "high"
+        }
+      ],
+      edges: [
+        {
+          from: { id: "s1", name: "A" },
+          to: { id: "s2", name: "B" },
+          element: { id: "e1", name: "按钮", type: "BUTTON" },
+          textHints: [],
+          trigger: "ON_CLICK",
+          actionType: "NODE",
+          provenance: "explicit",
+          confidence: "high"
+        }
+      ],
+      entryScreens: ["A"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    path.join(designDir, "acceptance.json"),
+    JSON.stringify({ screens: { B: ["人工口径"] } }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.deepEqual(payload.flows[0].expectations[0].hints, ["人工口径"]);
+  assert.equal(payload.flows[0].expectations[0].hintsSource, "acceptance");
+});
+
+test("figma_generate_tests: acceptance applies once the navigation is upgraded", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [
+        {
+          id: "s1",
+          name: "A",
+          suggestedRoute: "/a",
+          childNames: [],
+          textHints: [],
+          provenance: "inferred",
+          confidence: "low"
+        },
+        {
+          id: "s2",
+          name: "B",
+          suggestedRoute: "/b",
+          childNames: [],
+          textHints: [{ text: "普通文本", textClass: "runtime-text" }],
+          acceptance: ["金额正确"],
+          provenance: "explicit",
+          confidence: "high"
+        }
+      ],
+      edges: [
+        {
+          from: { id: "s1", name: "A" },
+          to: { id: "s2", name: "B" },
+          element: { id: "e1", name: "推断跳转（按画板排布）", type: "INFERRED" },
+          textHints: [],
+          trigger: "INFERRED",
+          actionType: "INFERRED",
+          provenance: "inferred",
+          confidence: "low"
+        }
+      ],
+      entryScreens: ["A"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const observed = applyObservations(
+    { version: 1, updatedAt: null, edges: [] },
+    [{ from: "A", to: "B", designProvenance: "inferred", traceId: "t1", reached: true }],
+    "2026-10-10T00:00:00.000Z"
+  ).asset;
+  saveReconciliation(runtime.configDirAbs, observed);
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  const testCase = payload.flows[0];
+  assert.equal(testCase.expectations[0].kind, "assert", "upgraded navigation enables hard assertions");
+  assert.equal(testCase.expectations[0].hintsSource, "acceptance");
+  assert.deepEqual(testCase.expectations[0].hints, ["金额正确"]);
 });

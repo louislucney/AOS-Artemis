@@ -385,6 +385,8 @@ env:
 - **pen 合成提取**（`pen_extract_flows`，离线）：`.pen` 无原型交互数据时，屏幕命名取「Flow 标注 > 屏内首个文本 > 图层名」（默认名 `Frame NNNN` 不再冒充屏名）；状态变体按标签前缀归并为主屏 + `states`；跳转按画板序号/画布排布推断并统一标注 `INFERRED`；产出可直接进入同一闭环的 `flows.json` 与全局 `flow-map.md`；碎片度（默认名屏、状态归并、推断边、缺标签）进入 `warnings`，供人工复核。
 - **pre-merge 静态闸**（`suite check`）：tests.json × flows.json 静态覆盖（复用 preflight 单一实现），不连设备；未硬覆盖/截断/缺 flows exit 2（`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告（设计偏差 ≠ 路线缺口）。
 - **对账闭环（导航级，§13.67/§13.68）**：`suite run`（iOS 执行器）把探索步骤的实际命中（trace 的 `run.json` → `scriptHits`）写入持久对账资产 `<项目>/.artemis/design/reconciliation.json`（幂等——同 trace 重放不重复计数；稳定排序；升级阈值 = 1 次观测；未命中的边登记 pending 差异）；下一次 `figma_generate_tests` 自动把已升级边以 `runtime-observed` 生成硬断言（响应 `reconciliation.upgradedEdges`）。**人工审阅面**：`suite reconcile` 与 MCP `reconciliation` 工具（list/confirm/reject）——confirm → human-confirmed（硬断言）、reject → 边不进生成；未裁决不升权。
+- **元素级映射（导航级，§13.69）**：iOS 运行把观察标签与设计运行期文本做唯一精确归一匹配，写入 `screen-map.json` 的 `elements`（含 accessibilityIdentifier 建议）；`screen_map` 工具可人工补（manual 优先）；下一次 `figma_generate_tests` 在步骤元素注记追加 `a11y: <identifier>`。
+- **验收口径（oracle，§13.70）**：设计标注 `Flow/AC*` 分组或 `AC:`/`验收：` 前缀批注（或 `.artemis/design/acceptance.json` 人工确认覆盖）声明硬断言期望，assert 步骤携带 `hintsSource:"acceptance"`；无口径的屏沿用运行期文本（`hintsSource:"runtime-text"`，建议级）。Jira AC 留后续集成。
 - **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 **JUnit XML**——Android instrumentation 直读，或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
 - **追溯矩阵**（`suite report`）：xlsx 第二工作表输出 design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据存在性（未覆盖/无 trace/无证据标注）。
 - **设计版本锚点**：`figma_extract_flows` 将 Figma `version`/`lastModified` 写入 flows.json（`fileVersion`/`lastModified`），为设计冻结（baseline-lock）预留。
@@ -1154,7 +1156,7 @@ llm_switch(name, force):
 
 > 实施于 2026-10-10；CR 交互理解主线第三票。改 `src/figma/flows.ts`、`src/pen/flows.ts`（采集端分类限流）、`src/figma/test-gen.ts`（断言消费白名单）；测试 +4；全量 803 绿。
 
-- **消费过滤**：`runtimeHintTexts`（`textClass=runtime-text`）成为 expectations / 起始屏 preflight / 元素定位 label 的**唯一**断言候选来源；批注文本与 childNames 图层名不再进入断言、`【AOS-EXPECT】` 与 taskDesc 断言文案（类别证据仍留在 flows.json 供展示/对账）；无运行期文本时元素定位回退到元素图层名（定位用途，非断言）。
+- **消费过滤**：`runtimeHintTexts`（`textClass=runtime-text`）成为 expectations / 起始屏 preflight / 元素定位 label 的**唯一**断言候选来源（§13.70 起验收口径 `acceptance` 为其外另一硬断言来源）；批注文本与 childNames 图层名不再进入断言、`【AOS-EXPECT】` 与 taskDesc 断言文案（类别证据仍留在 flows.json 供展示/对账）；无运行期文本时元素定位回退到元素图层名（定位用途，非断言）。
 - **采集端分类限流（评审修复）**：hints 采集从"混合类别先截断"改为**按类别分别限流**且深搜索不因配额停止——批注洪水不再挤掉运行期文本（此前 3 条 `Flow/*` 批注在前即会让「早安, Amy」进不了 flows.json，消费过滤后断言为空）。
 - **note 类守门**：pen 侧 note/context/prompt 节点内容按类型门天然不进 hints（负向回归固化）；`Flow/*` 命名规则沿用 `isAnnotationLayerName` 单实现（票 02 已落；Figma 无独立 note 类型，判定即命名约定）。
 - **starbucks 回归**：合成含「刊頭廣告 - 活動跑馬燈」（批注）与图层名 childNames 的夹具 → expectations/起始屏/步骤 label/AOS-EXPECT 四层均只含运行期文本（「內用點餐」「早安, Amy☀️」「選擇門市」），批注文本全程不出现在 taskDesc。
@@ -1228,3 +1230,25 @@ llm_switch(name, force):
 - **corrupt 判定修正**：仅 JSON 不可解析记 corrupt（合法的空 `{"version":1,"edges":[]}` 不再误报）；部分坏条目静默丢弃（记录为已知边界）。
 - **边界**：观测摄取只产生探索边条目，explicit 边通常不入资产（人工确认/驳回按边名仍可作用于 explicit——人工权威）；审阅只针对资产已有条目；屏幕名即身份（改名/同名需 list 核对）；rejected 移除边不单独报告可达性影响（覆盖分母随图缩小，记录为已知边界）。
 - **测试**：`test/reconciliation.test.js`（决定幂等/改判/未知边/reviewer 保留/图叠加 confirmed+rejected/工具 handler 列表含文本上下文与可行动错误）、`test/figma-testgen.test.js`（观测→审阅→生成单链：确认边硬断言 + 驳回边移除 + 响应计数 + 未裁决不升权 + 无资产零变化）、`test/suite-command.test.js`（reconcile list/confirm/reject 退出码 0/1/2 与资产落盘）。
+
+### 13.69 实施记录（票 10：元素级映射自动发现 + accessibilityIdentifier 建议）
+
+> 实施于 2026-10-10；CR 交互理解主线第十票。改 `src/diff/screen-map.ts`（elements 资产 + 匹配/建议/合并纯函数）、`src/figma/suite-runner.ts`（iOS 摄取接线）、`src/figma/test-gen.ts`（生成消费 a11y 建议）、`src/server.ts`（screen_map 工具 elements 参数/输出）；测试 +6；全量 835 绿。
+
+- **资产扩展（screen-map.json，与屏幕级共存）**：新增 `elements: ElementMapEntry[]`（`{screen, text, observedLabel, identifier, confidence, source, hits, traces, lastSeenAt}`）；空数组不落盘（向后兼容——既有文件序列化字节不变）；稳定排序（screen+text）；`loadScreenMap` 的 corrupt 判定修正为「entries 与 elements 皆空」（elements-only 文件不再误报损坏）。
+- **匹配规则（确定性）**：设计运行期文本（tests.json expectations hints，trim 后为身份）↔ 观察标签（iOS `run.json` 各步 `screen` 文本摘要按 ` | ` 拆分）**唯一精确归一匹配**（去空白 + 小写，`normalizeElementLabel` 单点共享）；设计文本归一后冲突或未出现 → 跳过（不猜）；重复观察标签折叠；命中 confidence=1。**同 trace 幂等**（entry `traces` 去重，重放不膨胀）。
+- **identifier 建议**：latin 词 → camelCase（小写字母开头，单字母合法）；纯非 ASCII → `element_<sha1 前 8>`（稳定幂等）。
+- **人工补（关键路径）**：`screen_map(action:"save", elements:[…])`（source 强制 manual；与自动条目按 screen+text 合并，**manual 的 identifier 不被观察覆盖**）；**工具 schema 已暴露 `elements`（server-smoke 锁定，防止 zod strip 断链）**；list 输出 `elements`。
+- **生成消费**：`figma_generate_tests` 载入 elements（按 hits 优选，键为归一文本——同文案跨屏建议同一 identifier，属约定行为）→ 步骤元素注记追加 `；a11y: <identifier>`（tests.md/xlsx/taskDesc 同步）；无建议时行为不变。
+- **口径与边界（明示）**：本票实现为「运行期文本 ↔ 观察标签」映射，**不含 design nodeId 与几何维度**（观察侧无持久化 bounds；几何字段未引入）；自动发现仅 iOS trace；简报（build-brief）未接线（生成物消费已交付）；`screenTextSummary` 截断（60 元素/4000 字符）可能漏配尾部标签；纯探索边 hints=[] 不参与元素发现（其目标屏文本可经 assert 边进入）。
+- **测试**：`test/diff-screen-map.test.js`（建议确定性含单字母/唯一匹配/歧义跳过/合并与 manual 优先/trace 幂等/序列化兼容/落盘幂等）、`test/suite-ios.test.js`（运行 → elements 落盘）、`test/figma-testgen.test.js`（步骤 a11y 注记）、`test/server-smoke.test.js`（screen_map schema 暴露 elements + reconciliation required 锁定）。
+
+### 13.70 实施记录（票 11：验收口径入生成——设计标注先行）
+
+> 实施于 2026-10-10；CR 交互理解主线第十一票（spec Q8；收尾票）。改 `src/figma/flows.ts`（验收采集 + 共享判定）、`src/pen/flows.ts`、`src/figma/test-gen.ts`（硬断言来源 + `acceptance.json` 覆盖）；测试 +5；全量 840 绿。
+
+- **识别规则（设计标注先行，确定性）**：`Flow/AC*` 命名分组内的文本（整条为口径）或 `Flow/*` 批注中 `AC:` / `验收(标准|条件|要求)：` / `驗收(標準|條件|要求)：` 前缀文本（**大小写不敏感**、**支持多行**；词表与 Jira 验收启发式对齐）；**空体/仅有前缀 → 忽略**（模糊口径保守留在展示级批注，不进断言）；每屏上限 5 条；随 flows.json screens 的 `acceptance` 字段落盘（无口径不写字段；normalize 去重、过滤空项与非法类型、空数组不落字段）。
+- **硬断言来源绑定**：assert 步骤的期望 hints 优先取目标屏 `acceptance`（`hintsSource:"acceptance"`，上限 5 与存储一致），否则取运行期文本（`hintsSource:"runtime-text"`）；探索步骤仍 `hints=[]`（导航未确认前不硬断言，**口径在观测/人工升级后生效**——有端到端回归）；`【AOS-EXPECT】` steps 携带 `hintsSource`（执行器忽略未知字段，无回归）。
+- **人工确认覆盖**：`.artemis/design/acceptance.json`（`{screens:{"<屏名>":["条目"]}}`）在生成时覆盖同名屏的注释口径（**人工确认优先**；来源可视为文件作者，无 reviewer 字段；口径侧冲突由覆盖语义解决，**不经 09 审阅面**——导航级冲突仍走 08/09；文件非法 → 忽略并回退注释）；Jira AC 摄取留后续集成。
+- **冲突与提示级口径**：验收条目优于运行期文本（确定性优先）；「无口径的屏保持提示级」——运行期文本断言为建议级（执行器不断言硬失败），起始屏 preflight 仍只取运行期文本（边界）。
+- **测试**：`test/figma-flows.test.js`（Flow/AC 组 + `AC:` 行 + 大小写/多行 + 空体忽略 + 无口径缺省 + normalize 容错）、`test/pen-flows.test.js`（同规则）、`test/figma-testgen.test.js`（hintsSource 双源 + AOS-EXPECT 字段 + acceptance.json 覆盖 + 升级后口径生效端到端）。

@@ -68,6 +68,14 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
     const selectionSchema = tools.find((tool) => tool.name === "get_frame_by_name").inputSchema;
     assert.deepEqual(selectionSchema.required, ["name"]);
 
+    const screenMapSchema = tools.find((tool) => tool.name === "screen_map").inputSchema;
+    assert.ok(
+      screenMapSchema.properties && "elements" in screenMapSchema.properties,
+      "screen_map schema exposes elements (manual element-level mappings)"
+    );
+    const reconciliationSchema = tools.find((tool) => tool.name === "reconciliation").inputSchema;
+    assert.deepEqual(reconciliationSchema.required, ["action"]);
+
     const listed = await client.callTool({ name: "llm_list", arguments: {} });
     const payload = JSON.parse(listed.content[0].text);
     assert.equal(payload.activeProfile, "gemini");

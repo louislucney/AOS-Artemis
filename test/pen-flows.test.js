@@ -287,3 +287,27 @@ test("pen_extract_flows: interaction signals surface in response and saved artif
   const map = fs.readFileSync(payload.savedTo.markdown, "utf-8");
   assert.match(map, /交互线索/);
 });
+
+test("synthesizePenFlows: acceptance criteria from Flow/AC groups and AC: lines", () => {
+  const doc = fixtureDoc();
+  doc.children[0].children[2].children.unshift(
+    {
+      id: "ac1",
+      type: "frame",
+      name: "Flow/AC",
+      children: [{ id: "ac1t", type: "text", content: "確認可下單" }]
+    },
+    {
+      id: "ac2",
+      type: "frame",
+      name: "Flow/Note",
+      children: [{ id: "ac2t", type: "text", content: "AC: 金額正確" }]
+    }
+  );
+
+  const result = synthesizePenFlows(doc);
+  const store = result.screens.find((screen) => screen.id === "s3");
+  assert.deepEqual(store.acceptance, ["確認可下單", "金額正確"]);
+  const main = result.screens.find((screen) => screen.id === "s1");
+  assert.equal(main.acceptance, undefined);
+});

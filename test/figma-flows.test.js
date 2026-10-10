@@ -438,3 +438,55 @@ test("normalizeFlowGraph: legacy artifacts default to legacy-unknown and string 
   );
   assert.equal(unknownClass.edges[0].to, null, "malformed destination resolves to null");
 });
+
+test("flow graph: acceptance criteria come from Flow/AC groups and AC: annotations", () => {
+  const document = syntheticFlowDocument();
+  const home = document.children[0].children.find((node) => node.name === "Home");
+  home.children.push(
+    {
+      id: "10:20",
+      name: "Flow/AC",
+      type: "FRAME",
+      children: [{ id: "10:21", name: "A1", type: "TEXT", characters: "金额正确" }]
+    },
+    {
+      id: "10:22",
+      name: "Flow/Note",
+      type: "FRAME",
+      children: [
+        { id: "10:23", name: "N1", type: "TEXT", characters: "AC: 显示订单号" },
+        { id: "10:24", name: "N2", type: "TEXT", characters: "AC:" },
+        { id: "10:25", name: "N3", type: "TEXT", characters: "普通批注" },
+        { id: "10:26", name: "N4", type: "TEXT", characters: "ac: 小写口径" },
+        { id: "10:27", name: "N5", type: "TEXT", characters: "验收要求：多行\n第二行" }
+      ]
+    }
+  );
+
+  const graph = buildFlowGraph(document);
+  const screen = graph.screens.find((candidate) => candidate.name === "Home");
+  assert.deepEqual(
+    screen.acceptance,
+    ["金额正确", "显示订单号", "小写口径", "多行\n第二行"],
+    "Flow/AC group items and annotated AC: lines (case-insensitive, multiline); empty AC: bodies are ignored"
+  );
+  const checkout = graph.screens.find((candidate) => candidate.name === "Checkout");
+  assert.equal(checkout.acceptance, undefined, "screens without criteria keep the field absent");
+
+  const normalized = normalizeFlowGraph({
+    screens: [
+      {
+        id: "s1",
+        name: "Home",
+        suggestedRoute: "/",
+        childNames: [],
+        textHints: [],
+        acceptance: ["  人工口径  ", "", 42]
+      }
+    ],
+    edges: [],
+    entryScreens: [],
+    unresolvedDestinations: []
+  });
+  assert.deepEqual(normalized.screens[0].acceptance, ["人工口径"]);
+});
