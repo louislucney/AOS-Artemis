@@ -425,14 +425,68 @@ test("linearizeFlows: maxDepth splits long journeys into contiguous segments ins
 
   const cases = generateTestCases(graph, { maxDepth: 2 });
   assert.deepEqual(cases[0].screens, ["Home", "A", "B"], "first segment stops at the depth cap");
-  assert.deepEqual(cases[1].screens, ["B", "C", "D"], "follow-up starts where the capped path ended");
+  assert.equal(cases[0].continuation, false);
+  assert.equal(cases[1].continuation, true, "follow-up is marked as a continuation segment");
+  assert.equal(cases[1].startScreen, "B");
+  assert.equal(cases[1].prelude.length, 2, "entry → cut navigation is replayable");
+  assert.equal(cases[1].preflight.screen, "Home", "preflight checks the journey entry");
+  assert.deepEqual(
+    cases[1].screens,
+    ["Home", "A", "B", "C", "D"],
+    "continuation covers the full journey (prelude + segment)"
+  );
   assert.deepEqual(cases[2].screens, ["Home", "E"]);
-  assert.match(cases[1].taskDesc, /开始前应用停留在「B」页/);
+  assert.match(cases[1].taskDesc, /开始前：打开应用并确保停留在「Home」页/);
+  assert.match(cases[1].taskDesc, /前导导航（仅到达起点，不计入断言）：/);
+  assert.match(cases[1].taskDesc, /P1\) /);
+  assert.match(cases[1].taskDesc, /用例步骤：/);
+  assert.match(cases[1].taskDesc, /【AOS-EXPECT】/);
+  assert.match(
+    cases[1].preconditions.join("；"),
+    /开始前应用停留在「Home」页/,
+    "preconditions describe the actual entry, not the cut screen"
+  );
+
+  const markdown = renderMarkdown(cases, { source: "unit-test", generatedAt: "2026-10-10T00:00:00Z" });
+  assert.match(markdown, /接续段：先按前导导航到「B」/);
+  assert.match(markdown, /P1\) /);
 
   const coverage = computeFlowCoverage(graph, cases, stats);
   assert.equal(coverage.complete, true);
   assert.deepEqual(coverage.uncoveredScreens, []);
   assert.deepEqual(coverage.uncoveredEdges, []);
+});
+
+test("generateTestCases: per-step expectations are machine-readable and aligned with steps", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  const [testCase] = generateTestCases(graph);
+
+  assert.equal(testCase.continuation, false);
+  assert.equal(testCase.startScreen, "Home");
+  assert.deepEqual(testCase.prelude, []);
+  assert.equal(testCase.expectations.length, testCase.steps.length);
+  assert.equal(testCase.expectations[0].screen, "Checkout");
+  assert.ok(testCase.expectations[0].hints.includes("Pay now"));
+  assert.equal(testCase.preflight.screen, "Home");
+  assert.ok(testCase.preflight.hints.includes("Welcome Back"));
+
+  const line = testCase.taskDesc
+    .split("\n")
+    .find((entry) => entry.includes("【AOS-EXPECT】"));
+  assert.ok(line, "taskDesc carries the machine-readable expectation block");
+  const payload = JSON.parse(line.slice(line.indexOf("【AOS-EXPECT】") + "【AOS-EXPECT】".length));
+  assert.deepEqual(payload.start, {
+    screen: testCase.preflight.screen,
+    hints: testCase.preflight.hints
+  });
+  assert.equal(payload.steps.length, testCase.steps.length);
+  assert.deepEqual(payload.steps[0], {
+    index: 1,
+    screen: testCase.expectations[0].screen,
+    hints: testCase.expectations[0].hints
+  });
+  assert.equal(payload.steps[0].index, 1);
+  assert.equal(payload.steps[1].screen, "Success", "AFTER_TIMEOUT step keeps its destination");
 });
 
 test("linearizeFlows: default maxDepth walks a 22-edge pen-style chain end to end", () => {

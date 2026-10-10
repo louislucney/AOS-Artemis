@@ -40,13 +40,22 @@ function fillCell(cell: ExcelJS.Cell, resolve: (key: string) => string | undefin
   if (next.includes("\n")) cell.alignment = { ...(cell.alignment ?? {}), wrapText: true };
 }
 
+function renderStepsCell(testCase: GeneratedTest): string {
+  const prelude = (testCase.prelude ?? []).map((step, stepIndex) => `P${stepIndex + 1}) ${step}`);
+  const steps = testCase.steps.map((step, stepIndex) => `${stepIndex + 1}) ${step}`);
+  return [...prelude, ...steps].join("\n");
+}
+
 function casePlaceholderValues(testCase: GeneratedTest, index: number): Map<string, string> {
   return new Map([
     ["index", String(index + 1)],
     ["case.name", testCase.name],
     ["case.screens", testCase.screens.join(" → ")],
     ["case.preconditions", testCase.preconditions.join("；")],
-    ["case.steps", testCase.steps.map((step, stepIndex) => `${stepIndex + 1}) ${step}`).join("\n")],
+    ["case.steps", renderStepsCell(testCase)],
+    ["case.prelude", (testCase.prelude ?? []).map((step, stepIndex) => `P${stepIndex + 1}) ${step}`).join("\n")],
+    ["case.startScreen", testCase.startScreen ?? ""],
+    ["case.continuation", testCase.continuation === true ? "是" : "否"],
     ["case.taskDesc", testCase.taskDesc]
   ]);
 }
@@ -128,7 +137,7 @@ function defaultTestsWorkbook(cases: GeneratedTest[]): ExcelJS.Workbook {
       name: testCase.name,
       screens: testCase.screens.join(" → "),
       preconditions: testCase.preconditions.join("；"),
-      steps: testCase.steps.map((step, stepIndex) => `${stepIndex + 1}) ${step}`).join("\n"),
+      steps: renderStepsCell(testCase),
       taskDesc: testCase.taskDesc
     });
     row.getCell(4).alignment = { wrapText: true, vertical: "top" };

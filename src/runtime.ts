@@ -925,6 +925,12 @@ export class Runtime {
     return await this.appiumDetector();
   }
 
+  /** iOS 分层配置环境：项目 `.env` 打底、进程 env 覆盖（DESIGN §13.57）。
+   * 执行器开关（视觉/验证/日志/步数等）经此读取，不再是进程 env 独有。 */
+  iosEnvironment(): NodeJS.ProcessEnv {
+    return this.iosEnv;
+  }
+
   private iosWdaService: IosWdaService | null = null;
 
   iosWda(): IosWdaService {

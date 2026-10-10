@@ -58,6 +58,19 @@ export function visionAlwaysEnabled(env: NodeJS.ProcessEnv): boolean {
   return value === "1" || value === "true" || value === "yes";
 }
 
+export type IosVisionMode = "auto" | "sparse" | "off";
+
+/** iOS 执行器视觉输入档位（DESIGN §13.45 增补）：
+ * auto（默认）= 每步视觉输入（多模态主模型直附图；文本主模型每步视觉感知）；
+ * sparse = 文本主模型沿用旧阈值（可见文本 <3 才感知）；
+ * off = 纯文本。AOS_IOS_VISION_ALWAYS=1 为旧开关，语义被 auto 覆盖（映射 auto）。 */
+export function resolveVisionMode(env: NodeJS.ProcessEnv): IosVisionMode {
+  const raw = env.AOS_IOS_VISION_MODE?.trim().toLowerCase();
+  if (raw === "sparse" || raw === "off" || raw === "auto") return raw;
+  if (visionAlwaysEnabled(env)) return "auto";
+  return "auto";
+}
+
 export function pngDimensions(bytes: Buffer): { width: number; height: number } | null {
   if (bytes.length < 24) return null;
   if (!(bytes[0] === 0x89 && bytes.toString("latin1", 1, 4) === "PNG")) return null;

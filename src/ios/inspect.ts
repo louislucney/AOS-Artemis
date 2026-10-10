@@ -28,6 +28,8 @@ interface InspectTraceLike {
   error: string | null;
   vision: IosTaskRecord["vision"];
   visionDegraded: string | null;
+  verification?: IosTaskRecord["verification"];
+  failureLogs?: IosTaskRecord["failureLogs"];
   runDir: string;
 }
 
@@ -75,6 +77,35 @@ function stepLine(step: IosTaskStep): string {
   return `[Step ${step.step}] ${step.action}${params}${thought} | ${step.outcome}`;
 }
 
+function searchFailureLogs(
+  trace: InspectTraceLike,
+  needle: string,
+  terms: string[]
+): string | null {
+  const rel = trace.failureLogs?.rel;
+  if (!rel) return null;
+  try {
+    const text = fs.readFileSync(path.join(trace.runDir, rel), "utf-8");
+    const lower = text.toLowerCase();
+    let at = lower.indexOf(needle);
+    if (at === -1) {
+      for (const term of terms) {
+        const index = lower.indexOf(term);
+        if (index !== -1) {
+          at = index;
+          break;
+        }
+      }
+    }
+    if (at === -1) return null;
+    const start = Math.max(0, at - 120);
+    const end = Math.min(text.length, at + 200);
+    return text.slice(start, end).replace(/\s+/g, " ").trim();
+  } catch {
+    return null;
+  }
+}
+
 function renderInspectTrace(trace: InspectTraceLike, args: Record<string, unknown>): CallToolResult {
   const action = typeof args.action === "string" ? args.action : "";
   const stepNumber = typeof args.step_number === "number" ? args.step_number : null;
@@ -91,6 +122,19 @@ function renderInspectTrace(trace: InspectTraceLike, args: Record<string, unknow
         model: trace.model,
         ...(trace.vision ? { vision: trace.vision } : {}),
         ...(trace.visionDegraded ? { vision_degraded: trace.visionDegraded } : {}),
+        ...(trace.verification
+          ? {
+              verification: {
+                status: trace.verification.status,
+                ...(trace.verification.model ? { model: trace.verification.model } : {}),
+                ...(trace.verification.reason ? { reason: trace.verification.reason } : {}),
+                ...(trace.verification.failedItems.length > 0
+                  ? { failed_items: trace.verification.failedItems }
+                  : {})
+              }
+            }
+          : {}),
+        ...(trace.failureLogs ? { failure_logs: trace.failureLogs } : {}),
         steps: trace.steps.map((step) => ({
           step: step.step,
           action: step.action,
@@ -164,21 +208,24 @@ function renderInspectTrace(trace: InspectTraceLike, args: Record<string, unknow
           : 5;
       const needle = query.toLowerCase();
       const haystackOf = (step: IosTaskStep): string => JSON.stringify(step).toLowerCase();
+      const terms = needle.split(/[\s,，。;；:：、]+/).filter((term) => term.length >= 2);
       let matched = trace.steps.filter((step) => haystackOf(step).includes(needle));
       if (matched.length === 0) {
-        const terms = needle.split(/[\s,，。;；:：、]+/).filter((term) => term.length >= 2);
         matched = trace.steps.filter((step) => terms.some((term) => haystackOf(step).includes(term)));
       }
       if (range && Number.isFinite(range[0]) && Number.isFinite(range[1])) {
         matched = matched.filter((step) => step.step >= range[0]! && step.step <= range[1]!);
       }
+      const lines = matched.map(stepLine);
+      const logHit = searchFailureLogs(trace, needle, terms);
+      if (logHit) lines.push(`[device.log] ${logHit}`);
       return jsonText({
         ok: true,
         platform: "ios",
         trace_id: trace.traceId,
         query,
-        matches: matched.length,
-        results: matched.slice(0, maxResults).map(stepLine).join("\n")
+        matches: lines.length,
+        results: lines.slice(0, maxResults).join("\n")
       });
     }
 

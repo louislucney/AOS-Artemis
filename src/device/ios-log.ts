@@ -1,3 +1,5 @@
+import { spawn, type ChildProcess } from "node:child_process";
+
 import { errorMessage } from "../util.js";
 import { defaultExec, type ExecFn, type ExecResult } from "./adb.js";
 import { classifyIosSerial, resolveXcrunPath } from "./ios.js";
@@ -263,5 +265,81 @@ export class IosLogCollector {
       serial,
       ...(filtered.approximateEnd ? { clockWarning: true } : {})
     };
+  }
+}
+
+const DEFAULT_TAIL_LINES = 200;
+
+export interface IosDeviceLogTailOptions {
+  serial: string;
+  env?: NodeJS.ProcessEnv;
+  maxLines?: number;
+  spawnFn?: typeof spawn;
+}
+
+/** 真机日志环形缓冲：任务启动即挂 `idevicesyslog`，内存保留最后 N 行，
+ * 失败终态取快照（DESIGN §13.47 增补；`AOS_IOS_LOG_FEEDBACK=0` 可关）。 */
+export class IosDeviceLogTail {
+  private readonly serial: string;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly maxLines: number;
+  private readonly spawnFn: typeof spawn;
+  private buffer: string[] = [];
+  private child: ChildProcess | null = null;
+
+  constructor(options: IosDeviceLogTailOptions) {
+    this.serial = options.serial;
+    this.env = options.env ?? process.env;
+    this.maxLines = options.maxLines ?? DEFAULT_TAIL_LINES;
+    this.spawnFn = options.spawnFn ?? spawn;
+  }
+
+  start(): boolean {
+    if (this.child) return true;
+    const binary = this.env.AOS_IDEVICESYSLOG_PATH?.trim() || "idevicesyslog";
+    try {
+      this.child = this.spawnFn(binary, ["-u", this.serial], {
+        stdio: ["ignore", "pipe", "ignore"]
+      });
+    } catch {
+      this.child = null;
+      return false;
+    }
+    const child = this.child;
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string | Buffer) => this.push(String(chunk)));
+    child.on("error", () => {
+      this.child = null;
+    });
+    child.on("exit", () => {
+      this.child = null;
+    });
+    return true;
+  }
+
+  stop(): void {
+    const child = this.child;
+    this.child = null;
+    if (!child) return;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* ignore */
+    }
+  }
+
+  snapshot(): string[] {
+    return [...this.buffer];
+  }
+
+  private push(chunk: string): void {
+    const lines = stripAnsi(chunk)
+      .split(/\r?\n/)
+      .filter((line) => line.trim() !== "");
+    if (lines.length === 0) return;
+    this.buffer.push(...lines);
+    if (this.buffer.length > this.maxLines) {
+      this.buffer = this.buffer.slice(this.buffer.length - this.maxLines);
+    }
   }
 }

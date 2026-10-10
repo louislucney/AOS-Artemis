@@ -12,6 +12,7 @@ import {
   type IosPngCapture,
   type IosUiNode
 } from "../device/ios.js";
+import { annotateOcclusionWarnings, computeOcclusions } from "../ios/occlusion.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
 
@@ -74,6 +75,7 @@ export function formatIosHierarchy(nodes: IosUiNode[], maxLines = MAX_HIERARCHY_
     Math.max(0, Math.min(1000, Math.round((value * 1000) / total)));
 
   const lines: string[] = [];
+  const lineIndexByNode = new Map<IosUiNode, number>();
   let processed = 0;
   for (const node of nodes) {
     const label = node.label.trim();
@@ -81,6 +83,7 @@ export function formatIosHierarchy(nodes: IosUiNode[], maxLines = MAX_HIERARCHY_
     if (!label && !value) continue;
     processed += 1;
     if (lines.length >= maxLines) continue;
+    lineIndexByNode.set(node, lines.length + 1);
     const left = normalize(node.rect.x, width);
     const top = normalize(node.rect.y, height);
     const right = normalize(node.rect.x + node.rect.width, width);
@@ -96,7 +99,14 @@ export function formatIosHierarchy(nodes: IosUiNode[], maxLines = MAX_HIERARCHY_
   }
   const truncated = processed - lines.length;
   if (truncated > 0) lines.push(`... (truncated, ${truncated} more elements)`);
-  return lines.join("\n");
+  const items = nodes.map((node) => ({
+    rect: node.rect,
+    type: node.type,
+    hasText: Boolean(node.label.trim() || node.value.trim()),
+    lineIndex: lineIndexByNode.get(node) ?? null
+  }));
+  const occlusions = computeOcclusions(items, width * height);
+  return annotateOcclusionWarnings(lines, occlusions).join("\n");
 }
 
 /** Route `mobile_get_device_state` to the iOS simulator backend when the

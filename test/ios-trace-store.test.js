@@ -228,3 +228,50 @@ test("runtime.traceStatus：死亡任务归 orphaned，供台账收尾", async (
   assert.equal(status?.status, "orphaned");
   assert.equal(readJson(path.join(traceDir, "status.json")).status, "orphaned");
 });
+
+test("磁盘 fallback：verification/failure_logs 透出且 search 可检索日志", async () => {
+  const { runtime } = await makeRuntime();
+  const TRACE_G = "ios-99999999-9999-4999-8999-999999999999";
+  const traceDir = writeTrace(runtime, TRACE_G, {
+    status: {
+      trace_id: TRACE_G,
+      status: "failed",
+      platform: "ios",
+      device_serial: UDID,
+      message: "验证未通过"
+    },
+    run: {
+      schema_version: 1,
+      trace_id: TRACE_G,
+      platform: "ios",
+      device_serial: UDID,
+      status: "failed",
+      started_at: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+      steps: [],
+      verification: {
+        status: "failed",
+        model: "verify-model",
+        reason: "未显示成功提示",
+        stale: false,
+        failed_items: [{ item_text: "订单号未显示", evidence: "列表无订单号" }]
+      },
+      failure_logs: { status: "ok", source: "simctl-log", rel: "logs/device.log", lines: 1 }
+    }
+  });
+  fs.mkdirSync(path.join(traceDir, "logs"), { recursive: true });
+  fs.writeFileSync(path.join(traceDir, "logs/device.log"), "MyApp[1] fatal: boom-marker\n");
+
+  const summary = payloadOf(
+    maybeIosInspectTrace(runtime, { action: "view_summary", trace_id: TRACE_G })
+  );
+  assert.equal(summary.verification.status, "failed");
+  assert.equal(summary.verification.failed_items[0].item_text, "订单号未显示");
+  assert.equal(summary.failure_logs.source, "simctl-log");
+
+  const search = payloadOf(
+    maybeIosInspectTrace(runtime, { action: "search", trace_id: TRACE_G, query: "boom-marker" })
+  );
+  assert.match(search.results, /device\.log/);
+  assert.match(search.results, /boom-marker/);
+});

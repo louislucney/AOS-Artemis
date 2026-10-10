@@ -14,6 +14,20 @@ import { renderTestsWorkbook } from "./test-xlsx.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
+export interface StepExpectation {
+  /** Target screen (design name) the step should land on; null when the edge has no destination. */
+  screen: string | null;
+  /** Design text hints expected on the destination screen (best-effort deterministic match). */
+  hints: string[];
+}
+
+export interface CasePreflight {
+  /** Screen the case expects to start on (journey entry). */
+  screen: string;
+  /** Design text hints expected on the start screen; empty = not deterministically checkable. */
+  hints: string[];
+}
+
 export interface GeneratedTest {
   id: string;
   name: string;
@@ -23,6 +37,16 @@ export interface GeneratedTest {
   preconditions: string[];
   /** Ready-to-run mobile_run_task description. */
   taskDesc: string;
+  /** True when the journey continues from a maxDepth cut (prelude reaches the start). */
+  continuation: boolean;
+  /** Screen where this case's own (asserted) steps begin. */
+  startScreen: string;
+  /** Navigation-only steps from the entry to `startScreen`; empty unless continuation. */
+  prelude: string[];
+  /** Per-step destination expectations, aligned with `steps` (deterministic audit). */
+  expectations: StepExpectation[];
+  /** Deterministic start-state check: the executor verifies the journey entry screen. */
+  preflight: CasePreflight;
 }
 
 export interface LinearizeStats {
@@ -75,11 +99,14 @@ export function computeFlowCoverage(
  * longest-first ordering: long continuous journeys win, redundant fragments
  * that add no new screen/transition coverage are dropped. Hitting maxDepth
  * never drops the tail: the journey continues as a follow-up segment that
- * starts where the capped path ended (visited set inherited: no cycles). */
+ * starts where the capped path ended (visited set inherited: no cycles).
+ * `prefixes[i]` is the navigation prefix (entry → segment start) of
+ * `paths[i]`, empty for non-continuation cases; the follow-up segment must
+ * replay it to be self-contained at execution time. */
 export function linearizeFlowsWithStats(
   graph: FlowGraph,
   options: { maxFlows?: number; maxDepth?: number } = {}
-): { paths: FlowEdge[][]; stats: LinearizeStats } {
+): { paths: FlowEdge[][]; prefixes: FlowEdge[][]; stats: LinearizeStats } {
   const maxFlows = options.maxFlows ?? 10;
   const maxDepth = options.maxDepth ?? 30;
 
@@ -98,47 +125,60 @@ export function linearizeFlowsWithStats(
   interface ExploreNode {
     screenId: string;
     path: FlowEdge[];
+    /** Navigation edges from the journey entry to this node's journey (replayable). */
+    prefix: FlowEdge[];
     visited: Set<string>;
     /** Path began at a maxDepth cut instead of an entry screen. */
     continuation: boolean;
   }
   const flows: FlowEdge[][] = [];
   const continuationFlows = new WeakSet<FlowEdge[]>();
-  const pushFlow = (flow: FlowEdge[], continuation: boolean): void => {
+  const prefixByFlow = new WeakMap<FlowEdge[], FlowEdge[]>();
+  const pushFlow = (flow: FlowEdge[], continuation: boolean, prefix: FlowEdge[]): void => {
     flows.push(flow);
     if (continuation) continuationFlows.add(flow);
+    prefixByFlow.set(flow, prefix);
   };
   let guard = 0;
   const stack: ExploreNode[] = startIds.map((id) => ({
     screenId: id,
     path: [],
+    prefix: [],
     visited: new Set([id]),
     continuation: false
   }));
   while (stack.length > 0 && flows.length < maxFlows * 4 && guard < 500) {
     guard += 1;
-    const { screenId, path, visited, continuation } = stack.pop()!;
+    const { screenId, path, prefix, visited, continuation } = stack.pop()!;
     const outgoing = outgoingByScreen.get(screenId) ?? [];
     if (outgoing.length === 0) {
-      if (path.length > 0) pushFlow(path, continuation);
+      if (path.length > 0) pushFlow(path, continuation, prefix);
       continue;
     }
     if (path.length >= maxDepth) {
-      pushFlow(path, continuation);
+      pushFlow(path, continuation, prefix);
       /* 到深度上限不丢尾：把当前屏作为续段新起点（visited 继承防环），长流程
-       * 按 maxDepth 拆成首尾相接的连续用例，覆盖缺口留到后续段补齐。 */
-      stack.push({ screenId, path: [], visited, continuation: true });
+       * 按 maxDepth 拆成首尾相接的连续用例，覆盖缺口留到后续段补齐。续段携带
+       * 从入口到切点的完整前缀，执行时可重放导航（自包含，不依赖上段状态）。 */
+      stack.push({
+        screenId,
+        path: [],
+        prefix: [...prefix, ...path],
+        visited,
+        continuation: true
+      });
       continue;
     }
     for (const edge of outgoing) {
       const nextPath = [...path, edge];
       if (!edge.to || visited.has(edge.to.id)) {
-        pushFlow(nextPath, continuation); // terminate at dead ends, back edges and self loops
+        pushFlow(nextPath, continuation, prefix); // terminate at dead ends, back edges and self loops
         continue;
       }
       stack.push({
         screenId: edge.to.id,
         path: nextPath,
+        prefix,
         visited: new Set([...visited, edge.to.id]),
         continuation
       });
@@ -220,6 +260,7 @@ export function linearizeFlowsWithStats(
     kept.length >= maxFlows && remaining.some((candidate) => gainOf(candidate) > 0);
   return {
     paths: kept,
+    prefixes: kept.map((flow) => prefixByFlow.get(flow) ?? []),
     stats: {
       maxFlows,
       maxDepth,
@@ -240,10 +281,15 @@ export function linearizeFlows(
   return linearizeFlowsWithStats(graph, options).paths;
 }
 
-function assertionFor(graph: FlowGraph, edge: FlowEdge): string {
-  if (!edge.to) return "";
+function expectationFor(graph: FlowGraph, edge: FlowEdge): StepExpectation {
+  if (!edge.to) return { screen: null, hints: [] };
   const screen = graph.screens.find((candidate) => candidate.id === edge.to!.id);
   const hints = [...(screen?.textHints ?? []), ...(screen?.childNames ?? [])].slice(0, 3);
+  return { screen: edge.to.name, hints };
+}
+
+function assertionFor(graph: FlowGraph, edge: FlowEdge): string {
+  const { hints } = expectationFor(graph, edge);
   return hints.length > 0 ? `（页面应出现「${hints.join("」「")}」等）` : "";
 }
 
@@ -299,32 +345,83 @@ export function generateTestCases(
   graph: FlowGraph,
   options: GenerateTestCasesOptions = {}
 ): GeneratedTest[] {
-  const { paths, stats } = linearizeFlowsWithStats(graph, {
+  const { paths, prefixes, stats } = linearizeFlowsWithStats(graph, {
     maxFlows: options.maxFlows ?? 10,
     maxDepth: options.maxDepth
   });
   options.onStats?.(stats);
-  return paths.map((flowPath) => {
+  return paths.map((flowPath, pathIndex) => {
+    const prefix = prefixes[pathIndex] ?? [];
+    const continuation = prefix.length > 0;
     const first = flowPath[0]!;
-    const screens: string[] = [first.from.name];
-    for (const edge of flowPath) {
-      const name = edge.to?.name;
-      if (name && name !== screens[screens.length - 1]) screens.push(name);
-    }
+    const screens: string[] = [];
+    const pushScreen = (screenName: string | null | undefined): void => {
+      if (screenName && screenName !== screens[screens.length - 1]) screens.push(screenName);
+    };
+    pushScreen(prefix.length > 0 ? prefix[0]!.from.name : first.from.name);
+    for (const edge of prefix) pushScreen(edge.to?.name);
+    pushScreen(first.from.name);
+    for (const edge of flowPath) pushScreen(edge.to?.name);
     const steps = flowPath.map((edge) => stepFor(graph, edge, options.i18nKeys));
-    const name =
+    const prelude = prefix.map((edge) => stepFor(graph, edge, options.i18nKeys));
+    const expectations = flowPath.map((edge) => expectationFor(graph, edge));
+    const baseName =
       screens.length <= 4 ? screens.join(" → ") : `${screens.slice(0, 4).join(" → ")} → …`;
+    const name = continuation ? `${baseName}（续段）` : baseName;
     const preconditions = deriveCasePreconditions(screens, {
       entryFallback: stats.entryFallback
     });
+    const entryScreen = screens[0]!;
+    const entryScreenObj = graph.screens.find((candidate) => candidate.name === entryScreen);
+    const preflight: CasePreflight = {
+      screen: entryScreen,
+      hints: [...(entryScreenObj?.textHints ?? []), ...(entryScreenObj?.childNames ?? [])].slice(0, 3)
+    };
+    const expectationLine = `脚本断言（供 iOS 执行器自动核对，执行时无需处理）：【AOS-EXPECT】${JSON.stringify(
+      {
+        ...(preflight.hints.length > 0
+          ? { start: { screen: preflight.screen, hints: preflight.hints } }
+          : {}),
+        steps: expectations.map((expectation, index) => ({
+          index: index + 1,
+          screen: expectation.screen,
+          hints: expectation.hints
+        }))
+      }
+    )}`;
     const taskDesc = [
       `【设计流程端到端验证】${name}`,
-      `开始前：打开应用并确保停留在「${first.from.name}」页（如不在该页，先导航过去）。`,
+      ...(continuation
+        ? [
+            `本篇为长流程接续段：先按「前导导航」到达起点「${first.from.name}」，前导步骤仅用于到达起点，不计入断言。`
+          ]
+        : []),
+      `开始前：打开应用并确保停留在「${entryScreen}」页（如不在该页，先导航过去）。`,
       `前置假设：${preconditions.join("；")}。若数据不满足，请停止并报告数据不满足。`,
+      ...(continuation
+        ? [
+            "前导导航（仅到达起点，不计入断言）：",
+            ...prelude.map((step, index) => `P${index + 1}) ${step}`),
+            "用例步骤："
+          ]
+        : []),
       ...steps.map((step, index) => `${index + 1}) ${step}`),
-      "每步完成后报告当前页面标题与可见关键文本；任一步失败则停止，报告失败步骤、屏幕上的关键文本并截屏；全部通过后输出 PASS/FAIL 摘要。"
+      "每步完成后报告当前页面标题与可见关键文本；任一步失败则停止，报告失败步骤、屏幕上的关键文本并截屏；全部通过后输出 PASS/FAIL 摘要。",
+      expectationLine
     ].join("\n");
-    return { id: caseIdFor(name, screens, steps), name, screens, steps, preconditions, taskDesc };
+    return {
+      id: caseIdFor(name, screens, steps),
+      name,
+      screens,
+      steps,
+      preconditions,
+      taskDesc,
+      continuation,
+      startScreen: first.from.name,
+      prelude,
+      expectations,
+      preflight
+    };
   });
 }
 
@@ -341,8 +438,18 @@ export function renderMarkdown(
   ];
   cases.forEach((testCase, index) => {
     lines.push(`## ${index + 1}. ${testCase.name}`, "");
+    if (testCase.continuation) {
+      lines.push(`> 接续段：先按前导导航到「${testCase.startScreen}」（不计断言）`, "");
+    }
     if (testCase.preconditions.length > 0) {
       lines.push(`- 前置假设：${testCase.preconditions.join("；")}`, "");
+    }
+    if (testCase.prelude.length > 0) {
+      lines.push("- 前导导航（仅到达起点）：");
+      testCase.prelude.forEach((step, stepIndex) => {
+        lines.push(`  - [ ] P${stepIndex + 1}) ${step}`);
+      });
+      lines.push("");
     }
     testCase.steps.forEach((step, stepIndex) => {
       lines.push(`- [ ] ${stepIndex + 1}) ${step}`);

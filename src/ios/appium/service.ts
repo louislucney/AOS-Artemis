@@ -1,8 +1,8 @@
 import { spawn as defaultSpawn } from "node:child_process";
 
 import type { IosDevice } from "../../device/ios-actions.js";
-import type { IosUiNode } from "../../device/ios.js";
-import { errorMessage } from "../../util.js";
+import { resolveObserveRetry, type IosUiNode } from "../../device/ios.js";
+import { errorMessage, sleep } from "../../util.js";
 import { buildIosCapabilities } from "./capabilities.js";
 import { AppiumClient } from "./client.js";
 import { IosHierarchyParseError, makeWdaDevice } from "./facade.js";
@@ -92,13 +92,23 @@ export class IosWdaService {
   }
 
   async nodes(udid: string): Promise<WdaCaptureResult<IosUiNode[]>> {
-    try {
-      const device = await this.device(udid);
-      return { ok: true, value: await device.nodes() };
-    } catch (error) {
-      if (error instanceof IosHierarchyParseError) return { ok: false, error: "parse_failed" };
-      return { ok: false, error: errorMessage(error) };
+    const attempts = 1 + resolveObserveRetry(this.env);
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const device = await this.device(udid);
+        return { ok: true, value: await device.nodes() };
+      } catch (error) {
+        lastError = error;
+        if (error instanceof IosHierarchyParseError && attempt < attempts - 1) {
+          await (this.sleep ?? sleep)(300);
+          continue;
+        }
+        break;
+      }
     }
+    if (lastError instanceof IosHierarchyParseError) return { ok: false, error: "parse_failed" };
+    return { ok: false, error: errorMessage(lastError) };
   }
 
   async installIpa(udid: string, ipaPath: string): Promise<{ ok: true } | { ok: false; error: string }> {

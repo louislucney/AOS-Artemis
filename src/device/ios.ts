@@ -309,6 +309,13 @@ export interface IosUiNode {
   rect: { x: number; y: number; width: number; height: number };
 }
 
+/** 观测解析失败的重试次数（`AOS_IOS_OBSERVE_RETRY`，默认 1，范围 0-5）。 */
+export function resolveObserveRetry(env: NodeJS.ProcessEnv): number {
+  const raw = Number.parseInt(env.AOS_IOS_OBSERVE_RETRY ?? "", 10);
+  if (!Number.isInteger(raw) || raw < 0) return 1;
+  return Math.min(5, raw);
+}
+
 export function parseIdbNodes(stdout: string): IosUiNode[] | null {
   let data: unknown;
   try {

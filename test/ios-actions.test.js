@@ -202,3 +202,47 @@ test("ios screenshot: 成功路径返回 PNG 字节", async () => {
   assert.equal((await device.screenshot()).equals(png), true);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test("ios nodes: describe-all 失败按 AOS_IOS_OBSERVE_RETRY 重试一次", async () => {
+  let attempts = 0;
+  const nodes = [
+    { type: "Application", AXLabel: "", AXValue: "", frame: { x: 0, y: 0, width: 402, height: 874 } }
+  ];
+  const { exec } = actionExec([
+    {
+      match: "ui describe-all",
+      outcome: () => {
+        attempts += 1;
+        if (attempts === 1) return { code: 1, stdout: "", stderr: "boom" };
+        return { code: 0, stdout: JSON.stringify(nodes), stderr: "" };
+      }
+    }
+  ]);
+  const device = makeIosDevice(UDID, {
+    env: { ...ENV, AOS_IOS_OBSERVE_RETRY: "1" },
+    exec,
+    platform: "darwin",
+    pathExists: () => true
+  });
+  assert.equal((await device.nodes()).length, 1);
+  assert.equal(attempts, 2);
+
+  let strictAttempts = 0;
+  const strict = actionExec([
+    {
+      match: "ui describe-all",
+      outcome: () => {
+        strictAttempts += 1;
+        return { code: 1, stdout: "", stderr: "boom" };
+      }
+    }
+  ]);
+  const strictDevice = makeIosDevice(UDID, {
+    env: { ...ENV, AOS_IOS_OBSERVE_RETRY: "0" },
+    exec: strict.exec,
+    platform: "darwin",
+    pathExists: () => true
+  });
+  await assert.rejects(() => strictDevice.nodes(), /idb ui describe-all 失败/);
+  assert.equal(strictAttempts, 1);
+});

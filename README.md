@@ -171,14 +171,15 @@ JIRA_API_TOKEN=***
 
 ### iOS 真机（Appium + WDA，M9a）
 
-真机 UDID 由 AOS 接管（观测/动作/设计对比/执行器；套件、日志与崩溃待续）；模拟器保持 idb/simctl 不变。前置：Xcode + `appium`（含 xcuitest 驱动，`doctor` 会检查）；iOS 18+ 首次需建立隧道（常驻，自动复用）：
+真机 UDID 由 AOS 接管（观测/动作/设计对比/执行器/套件复位/日志/崩溃）；模拟器保持 idb/simctl 不变。前置：Xcode + `appium`（含 xcuitest 驱动，`doctor` 会检查）；iOS 18+ 首次需建立隧道（常驻，自动复用）：
 
 ```bash
 sudo appium driver run xcuitest tunnel-creation
 ```
 
 - 配置（**项目 `.env` 打底、客户端/进程 env 覆盖**，同模型目录规则）：`AOS_APPIUM_URL`（直连既有 server，可选）、`AOS_IOS_APPIUM_PORT`（托管启动端口，默认 4723）、`AOS_IOS_XCODE_ORG_ID`（真机**必填**：证书 OU 团队 ID，可在 Xcode Settings → Accounts 查看；多项目团队不同时各自写入项目 `.env`）、`AOS_IOS_XCODE_SIGNING_ID`（默认 `Apple Development`）、`AOS_IOS_WDA_BUNDLE_ID`（默认 `com.aos.mcp.wda`）、`AOS_IOS_SESSION_IDLE_MS`（观测会话空闲回收，默认 30min，0=进程存活期保活）、`AOS_IOS_OBSERVE_WAIT_MS`（观测等待锁上限，默认 5s）、`AOS_IOS_APPIUM_TIMEOUT_MS`（WebDriver 超时，默认 120s）。
-- 行为：`mobile_get_device_state`（screenshot/hierarchy）、`mobile_run_task`（iOS 执行器，支持 `app_path` 传本地 `.ipa`）、`design_device_diff` / `compare_design_and_device`（真机截图源，note 标注 `wda`）；同一设备互斥排队（任务 FIFO），观测被占用时有界等待并返回 `device_busy` + 最近缓存帧；层级解析失败降级为仅截图（`hierarchy=parse_failed`）；真机崩溃取证经 `devicectl systemCrashLogs` 采集（`aos_crashes` 来源可辨识），设备日志暂降级。
+- 行为：`mobile_get_device_state`（screenshot/hierarchy）、`mobile_run_task`（iOS 执行器，支持 `app_path` 传本地 `.ipa`）、`design_device_diff` / `compare_design_and_device`（真机截图源，note 标注 `wda`）；同一设备互斥排队（任务 FIFO），观测被占用时有界等待并返回 `device_busy` + 最近缓存帧；层级解析失败降级为仅截图（`hierarchy=parse_failed`，默认自动重试一次）；真机崩溃取证经 `devicectl systemCrashLogs` 采集（`aos_crashes` 来源可辨识），设备日志经 `idevicesyslog` 实时尾采样（窗口近似标注；工具缺失降级 `ios-log-tool-missing`）。
+- iOS 执行器开关（项目 `.env` 打底、进程 env 覆盖）：`AOS_IOS_VISION_MODE=auto|sparse|off`（默认 auto：多模态主模型每步带截图、文本主模型每步视觉感知并融合补充元素；`sparse` 旧阈值省钱档、`off` 纯文本；`AOS_IOS_VISION_ALWAYS=1` 映射 auto）、`AOS_IOS_VISION_LLM`/`AOS_IOS_VISION_MODEL`（视觉感知模型）、`AOS_IOS_VERIFY=final|off`（默认 final：完成时独立验证，失败必须带证据项并置 failed；`AOS_IOS_VERIFY_LLM` 可指定独立验证条目）、`AOS_IOS_MAX_STEPS`、`AOS_IOS_SETTLE_MS`、`AOS_IOS_HISTORY_STEPS`（默认 8）、`AOS_IOS_OBSERVE_RETRY`（默认 1）、`AOS_IOS_LOG_FEEDBACK=0`（关闭失败日志采集；采集写 `logs/device.log` 且 `mobile_inspect_trace` 可检索）。
 - 排障：`doctor` 与 `aos_status.ios` 显示 Appium/xcuitest 版本、签名与隧道指引；托管启动前会先探测复用已有实例。
 
 ### 设计 → 测试流水线（Figma → 真机）
@@ -186,7 +187,7 @@ sudo appium driver run xcuitest tunnel-creation
 ```
 figma_extract_flows(url)     # 交互流程 → .artemis/design/flows.json
 figma_gap_analysis(url)      # 资源缺口 → .artemis/design/gaps.json
-figma_generate_tests(url)    # 流程 → tests.{json,md} + tests.xlsx（含 taskDesc、前置假设；有 strings.json 时附 i18n key；excelTemplate 套 .xlsx 模版；覆盖贪心+长路径优先——先长主链再补覆盖缺口，maxDepth 默认 30 可调，超限按续段拆分不丢尾）
+figma_generate_tests(url)    # 流程 → tests.{json,md} + tests.xlsx（含 taskDesc、前置假设；有 strings.json 时附 i18n key；excelTemplate 套 .xlsx 模版；覆盖贪心+长路径优先——先长主链再补覆盖缺口，maxDepth 默认 30 可调，超限按续段拆分不丢尾且续段自带前导导航；每步断言与起始屏随 taskDesc 以 【AOS-EXPECT】 块输出，iOS 执行器逐步核对并汇总 adherence、起始屏 preflight）
 figma_import_assets()        # 缺失资源 → 按栈命名/目录写入（PNG 默认倍率集；import-report.json；dryRun 预览）
 figma_export_brief(url)      # 编码事实包 → build-brief.{json,md}（tokens/组件/约定；scaffold 可出骨架）
 figma_import_tokens(url)     # 可选：颜色 → .artemis/design/tokens.json + 栈 token 文件（tokens 唯一性/裸色扫描）
@@ -373,7 +374,7 @@ node dist/cli.js doctor
 | `screen_map` | 持久屏幕映射 `.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 候选（confidence/unmatched）、`save` 幂等/merge、`list`；差异报告输出 `localized` |
 | `figma_extract_flows` | 解析 Figma 原型交互 → 流程图（screens/edges/entryScreens，支持连续动作与 BACK），落盘 `.artemis/design/flows.json` |
 | `figma_gap_analysis` | 缺口分析：设计资源/色板 vs 项目现有资产/ tokens 文件，落盘 `.artemis/design/gaps.json` |
-| `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md` + `tests.xlsx`（可用 `excelPath`/`excelTemplate` 定制 Excel 输出与模版），内含可直接传给 `mobile_run_task` 的任务描述；响应含 `coverage` 完整度报告，`requireFullCoverage:true` 时覆盖不完整即报错不落盘 |
+| `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md` + `tests.xlsx`（可用 `excelPath`/`excelTemplate` 定制 Excel 输出与模版），内含可直接传给 `mobile_run_task` 的任务描述；响应含 `coverage` 完整度报告，`requireFullCoverage:true` 时覆盖不完整即报错不落盘；长流程超 `maxDepth` 按续段拆分（`continuation/startScreen/prelude`，续段自带前导导航可独立执行）；每步断言与起始屏以 `【AOS-EXPECT】` 块随 taskDesc 输出，iOS 执行器逐步核对并汇总 `adherence` 与 `preflight` |
 | `figma_import_assets` | 资源导入：按 gaps.json 从 Figma 导出缺失资源，按技术栈命名/目录幂等写入（dryRun 可预览）；PNG 默认按栈倍率集导出（Android `drawable-xhdpi/-xxhdpi`、Flutter `2.0x/3.0x`、iOS `.imageset`+Contents.json、RN `@2x/@3x`；`densities:false` 回退单文件 @2x）；**唯一性**：内容 sha256 去重（批次内 + 项目资产索引，重复项记 `duplicate_of`） |
 | `figma_export_brief` | 构建简报：tokens/路由/组件变体/流程概览/缺口/栈约定 → `build-brief.{json,md}`；`scaffold` 可选按栈生成组件骨架（幂等） |
 | `figma_import_tokens` | 颜色 token 导入：Figma 颜色（含 alpha）→ `.artemis/design/tokens.json`（DTCG，modes 预留）+ 栈 token 文件（Android/Flutter/RN/Web）；裸色扫描 + enforcement；人工命名 `token-names.json` |
@@ -388,7 +389,7 @@ node dist/cli.js doctor
 | `pen_apply_tokens` | CLI 写回：`tokens.json`（含 modes 主题）→ `.pen` `SetVariables`；**原位更新**（临时文件→回读校验→原子替换，失败不动原文件），`out` 可另存 |
 | `pen_apply_strings` | CLI 写回：`strings.json` 的 nodeId→sourceText → `.pen` 文本节点；原位更新与校验语义同上；nodeId 缺失记 `notFound` |
 | `pen_agent` | agent 生成/修改设计：prompt → `.pen`（默认原位安全更新；`out` 新建/另存；`exportPath` 顺带出图）；凭证复用 active LLM（不落日志）并自动桥接 Anthropic 端点：DeepSeek（已实测）、Kimi/Z.AI/百炼（Bearer+模型 env，待冒烟）；其他 provider 可 `anthropicBaseUrl` 指定 |
-| `mobile_*`（5） | 代理 artemis（schema 原样透传）；`mobile_run_task` 在 setup 未完成时返回结构化 `setup_required`；`device_serial` 为 iOS 模拟器 UDID 时由 AOS 接管：`mobile_run_task` 走内置观察-动作执行器（active LLM，无唤醒需轮询 `mobile_manage_task`；视觉目标 `AOS_IOS_VISION_LLM`/`AOS_IOS_VISION_MODEL`，层级差或 `AOS_IOS_VISION_ALWAYS=1` 时附图，失败自动降级纯文本），`mobile_manage_task`/`mobile_inspect_trace`（view_summary/view_step_details/view_step_screenshots/search）/`mobile_get_device_state` 均按 UDID 或 iOS trace id 路由；其余仍走 ARTEMIS/adb |
+| `mobile_*`（5） | 代理 artemis（schema 原样透传）；`mobile_run_task` 在 setup 未完成时返回结构化 `setup_required`；`device_serial` 为 iOS UDID（模拟器或真机）时由 AOS 接管：`mobile_run_task` 走内置观察-动作执行器（active LLM，无唤醒需轮询 `mobile_manage_task`；默认每步视觉输入——多模态主模型直附图、文本主模型视觉感知融合补充元素；完成时终态验证；失败采集设备日志；开关与降级见「iOS 真机」节），`mobile_manage_task`/`mobile_inspect_trace`（view_summary/view_step_details/view_step_screenshots/search）/`mobile_get_device_state` 均按 UDID 或 iOS trace id 路由；其余仍走 ARTEMIS/adb |
 | Figma 20 | `get_current_selection` … `export_image`（内嵌 dcb，zod 校验）；插件模式走本地桥（锁定 3055，CORS 白名单），REST 模式需 token（缺失时引导 `aos_configure`） |
 
 ## 产物路径（项目内）

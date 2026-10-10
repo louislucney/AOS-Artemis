@@ -125,6 +125,21 @@ test("formatIosHierarchy: 归一化坐标、Value 行与截断标记", () => {
   assert.match(formatIosHierarchy(nodes, 2), /truncated, 1 more elements/);
 });
 
+test("formatIosHierarchy: 重叠元素输出遮挡 WARNING，同心包含被排除", () => {
+  const nodes = [
+    { type: "Application", label: "", value: "", id: "", rect: { x: 0, y: 0, width: 402, height: 874 } },
+    { type: "Button", label: "提交", value: "", id: "", rect: { x: 100, y: 400, width: 120, height: 44 } },
+    { type: "Overlay", label: "弹层", value: "", id: "", rect: { x: 160, y: 400, width: 120, height: 44 } },
+    { type: "Container", label: "卡片", value: "", id: "", rect: { x: 20, y: 600, width: 200, height: 200 } },
+    { type: "Text", label: "内容", value: "", id: "", rect: { x: 70, y: 650, width: 100, height: 100 } }
+  ];
+  const text = formatIosHierarchy(nodes);
+  assert.match(text, /\[1\] Text: '提交'.*may overlap with \[2\]/);
+  assert.match(text, /\[2\] Text: '弹层'.*may overlap with \[1\]/);
+  assert.doesNotMatch(text, /\[3\] Text: '卡片'.*WARNING/);
+  assert.doesNotMatch(text, /\[4\] Text: '内容'.*WARNING/);
+});
+
 test("maybeIosDeviceState: Android serial 或缺省 → 不接管（返回 null）", async () => {
   const { runtime } = await makeRuntime();
   assert.equal(await maybeIosDeviceState(runtime, { view_type: "screenshot", device_serial: "emulator-5554" }), null);

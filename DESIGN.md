@@ -380,6 +380,8 @@ env:
 - **默认姿势**：设计流水线脚本 `scripts/design-pipeline.mjs` 调 `figma_generate_tests` 时默认 `requireFullCoverage:true`；文档示例推荐同参数（MCP 参数本身保持可选，不改变既有调用方语义）。
 - **口径**：边覆盖按屏幕对（`From → To`）计；BACK/自环不产生新屏幕步骤，不计边；覆盖计算为单一实现（`src/figma/coverage.ts`），生成闸与执行预检同口径；`entryFallback` 为告警项不阻断（除非覆盖本身不完整）。
 - **生成策略**：线性化选路为"覆盖贪心 + 长路径优先"——先选覆盖增量（屏幕+跳转）最大的路径，同增量取更长者，无新增覆盖的冗余短片段不产出；`maxDepth` 默认 30、可配（`figma_generate_tests` 参数，上限 50），是单条用例的边数上限；**到上限不丢尾**——以截断屏为起点生成首尾相接的续段用例（`visited` 继承防环，覆盖仍完整），`generation.depthSplits` 报告接续条数，响应 hint 提示调大 `maxDepth` 可获得更长单条连续用例（修复：此前深度截断直接丢弃剩余路径，长链只剩 12 步且尾部屏幕全未覆盖）。
+- **续段自包含 + 步骤断言结构化（执行约束力）**：续段用例携带"入口 → 切点"的前导导航步骤（`prelude`；taskDesc 增「前导导航（仅到达起点，不计断言）」段，`continuation:true`/`startScreen` 字段标注），执行时不再依赖上段状态（修复：此前仅写"如不在该页，先导航过去"一句文案，接续段起点不可达）。所有用例每步输出结构化 `expectations`（目标屏名 + 设计文本 hints，与 `steps` 对齐），随 taskDesc 以 `【AOS-EXPECT】` JSON 块传递；iOS 执行器逐步确定性核对（空白归一化、hints 全部包含）：命中序号记入 step `scriptHits`，汇总为 `script_adherence`（run.json）与 `test_summary.adherence`（`checkable/satisfied/unchecked/unresolved`）；未出现项作为证据写入终态验证提示词与完成摘要（`⚠ 脚本断言未出现`）。口径为**建议级**（替代路径不硬失败，verify=final 下交模型裁量），tests.json 保持平台中立（Android 侧忽略该行）。
+- **起始屏 preflight（确定性前置）**：`【AOS-EXPECT】` 块携带 `start`（journey 入口屏 + 设计 hints，`GeneratedTest.preflight` 字段；hints 为空则不下发）；iOS 执行器首步观测核对（`pending → matched/unmatched`，unchecked 表示不可核对）：未命中时每步向模型注入「起始屏核对未通过，请先导航到该页」提示（替代即兴导航），全程留痕——`test_summary.preflight.{screen,status,matched_at_step}`、run.json `preflight`、验证提示词「起始屏核对（确定性）」段与完成摘要 `⚠ 起始屏核对未通过`（同样建议级，不硬失败）。
 - **pen 合成提取**（`pen_extract_flows`，离线）：`.pen` 无原型交互数据时，屏幕命名取「Flow 标注 > 屏内首个文本 > 图层名」（默认名 `Frame NNNN` 不再冒充屏名）；状态变体按标签前缀归并为主屏 + `states`；跳转按画板序号/画布排布推断并统一标注 `INFERRED`；产出可直接进入同一闭环的 `flows.json` 与全局 `flow-map.md`；碎片度（默认名屏、状态归并、推断边、缺标签）进入 `warnings`，供人工复核。
 - **pre-merge 静态闸**（`suite check`）：tests.json × flows.json 静态覆盖（复用 preflight 单一实现），不连设备；未覆盖/截断/缺 flows exit 2；"测试引用但设计缺失"的路线漂移仅警告（设计偏差 ≠ 路线缺口）。
 - **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 **JUnit XML**——Android instrumentation 直读，或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
@@ -503,6 +505,7 @@ llm_switch(name, force):
 | U1             | 使用统计（客户端调用事件采集/存储/聚合 + `aos_usage` 工具 / `usage` CLI / Web 看板三消费面；ADR-0006）     | ✅ 已完成（票据 01–07；610 用例；见 §13.54）                             |
 | M8             | Jira Cloud 接入（产品级读取/证据回写 + 仓库 issue tracker 迁移 CLI；spec 与票据见 `.scratch/jira-integration/`） | 🚧 部分实施（M8a 完成：client/凭证/`jira_issue_get`+`jira_issue_search`；M8b/M8c 为票据 03–06；见 §13.55） |
 | M9             | iOS 真机后端（Appium+WDA：观测/动作/设计对比 + 执行器；日志/崩溃 M9c 与 .ipa 安装待续；spec/票据见 `.scratch/ios-real-device/`） | ✅ 代码完成（M9a/M9b 经真机端到端验证；M9c 崩溃走 devicectl、日志走 idevicesyslog 尾采样，真机冒烟待人工执行；见 §13.56） |
+| M9.1           | iOS 执行器理解强化（感知档位/视觉融合/遮挡/no-op/终态验证/历史/失败日志/平台语义；spec 见 `.scratch/ios-understanding-parity/`） | ✅ 已完成（786 用例；见 §13.59） |
 
 ---
 
@@ -982,7 +985,7 @@ llm_switch(name, force):
 - **视觉目标解析（优先级）**：`AOS_IOS_VISION_LLM=<条目名>`（registry 条目，要求完整）→ `AOS_IOS_VISION_MODEL`（可配 `AOS_IOS_VISION_BASE_URL/API_KEY`，缺省继承 active）→ active 模型名多模态启发（vision/vl/gpt-4o/gemini/claude-3|4 等）→ 无（纯文本模式）。启动响应与 run.json 记录 `vision: {model, source}`。
 - **按需附图**：可见文本元素 <3 个（层级质量差）或 `AOS_IOS_VISION_ALWAYS=1` 时，该步 user 消息带 `image_url`（`data:image/png;base64,`）分片；文本分片同时给出截图 px 与逻辑 pt/scale（§2.6 约定：坐标输出逻辑点，从截图估计需 ÷scale）；其余步骤纯文本（`perception:"text"`）。
 - **降级**：视觉调用失败（模型不支持图片/鉴权/网络）→ 记录 `vision_degraded`（run.json + status 响应）并当场回退纯文本调用该步（`perception:"text-degraded"`），后续步骤保持可用；不因视觉失败中断任务。
-- **边界**：不做 OCR、不做像素级脱敏；图片不做降采样（v0 直传模拟器原始 PNG，注意 token 成本）；多模态启发可能误判（显式 env 可覆盖）。
+- **边界**：不做 OCR、不做像素级脱敏；图片不做降采样（v0 直传模拟器原始 PNG，注意 token 成本）；多模态启发可能误判（显式 env 可覆盖）。（§13.59 已换代：默认档位 `AOS_IOS_VISION_MODE=auto` 每步视觉输入，附图为感知/决策分流，`AOS_IOS_VISION_ALWAYS=1` 并入 auto 语义。）
 - **验收**：单测覆盖解析优先级/命名启发/IHDR 尺寸/附图与降级链路；真实验收用 `AOS_IOS_VISION_ALWAYS=1` + 不存在的视觉模型驱动降级（DeepSeek 不支持图片 → 400 → 回退文本完成）。
 
 ### 13.46 实施记录（iOS trace 检查器 + 路由下沉：`mobile_inspect_trace` / 设计步骤对比闭环）
@@ -1098,7 +1101,7 @@ llm_switch(name, force):
 
 - **动机**：`AOS_IOS_XCODE_ORG_ID` 等此前只读宿主级进程 env，多项目团队 ID 各异时同一实例无法各用各的（HTTP 单实例尤甚）；现与 LLM/Figma/Jira 的 per-project 配置一致，团队 ID 写入项目 `.env` 即可。
 - **优先级**：进程 env（客户端配置）仍覆盖项目 `.env`，全局限定语义不变；`aos_status.ios` / doctor 与真实会话读取同一分层 env。
-- **边界**：`ios/task-runner` 执行器调参（`AOS_IOS_MAX_STEPS` / `AOS_IOS_SETTLE_MS` / 视觉开关）仍读进程 env，未纳入本次分层。
+- **边界**：`ios/task-runner` 执行器调参（`AOS_IOS_MAX_STEPS` / `AOS_IOS_SETTLE_MS` / 视觉开关）仍读进程 env，未纳入本次分层。（§13.59 已收口：新增 `runtime.iosEnvironment()`，执行器开关统一走项目 `.env` 打底、进程 env 覆盖。）
 
 ### 13.58 实施记录（pen 资源导入：`pen_import_assets`，v1 ids-only 位图）
 
@@ -1110,3 +1113,19 @@ llm_switch(name, force):
 - **命名与幂等（身份/内容解耦）**：命名在 plan 阶段由身份决定（`formatAssetFilename`；脏名如 `Frame 427` 回退 `asset <sha1(源 id) 前 8 位>`），与导出内容无关（多倍率恒同名）；内容 sha256 只用于 `unchanged/skipped_exists/duplicate`；写盘/去重/栈规则全部复用 `src/figma/import.ts` 纯函数；iOS `Contents.json` 与 figma 产物一致（非矢量不写 `properties`）。
 - **报告与 schema**：`.artemis/design/import-report.pen.json`（独立于 figma 报告），payload 含 `source:"pen"`/`schemaVersion:2`/`penCliVersion`/`penPath`/`vector:"unsupported"`/`session{timeoutMs,scales,commands,exportedFiles}`/`counts`/`uniqueness`/`results`；字段更名（`figmaId`→`sourceId`）为内部类型级 breaking（测试只消费 `relativePath/status/role`，仓库内无报告字段消费方），figma 报告同批加 `schemaVersion:2`。
 - **边界与后续**：`dryRun` 仍执行渲染（去重结果依赖内容，语义同 `figma_import_assets`）；无 SVG 输出（P1 离线合成或等 CLI 支持）；候选启发式（v1.5）未实施；写盘纯函数下沉 shared 层为后续项（pen→figma 依赖为既有惯性）。
+
+### 13.59 实施记录（iOS 执行器理解强化：感知 / 循环 / 平台语义）
+
+> 实施于 2026-10-10；spec 与两轮评审见 `.scratch/ios-understanding-parity/spec.md`。新增 `src/ios/{occlusion,perception,noop}.ts`、`IosDeviceLogTail`（`src/device/ios-log.ts`）；改 `src/ios/task-runner.ts`（模型分流/终态验证/历史压缩/失败日志/开关）、`src/ios/vision.ts`（`resolveVisionMode`）、`src/tools/ios-state.ts`（遮挡告警）、`src/ios/appium/service.ts` 与 `src/device/ios-actions.ts`（观测重试）、`src/ios/{trace-store,inspect}.ts`（verification/failure_logs 透出与 search）、`src/runtime.ts`（`iosEnvironment()`）；README 同步。测试新增 `test/ios-{occlusion,perception,noop}.test.js` 与 iOS 执行器/日志/服务增量用例；全量 784 绿、lint 干净。
+
+- **感知档位（票 01/02）**：`AOS_IOS_VISION_MODE=auto|sparse|off`（默认 auto；`AOS_IOS_VISION_ALWAYS=1` 映射为 auto）。auto = 每步视觉输入：多模态主模型（`looksVisionCapable`）直附截图并由主模型决策；文本主模型（有 visionTarget）每步调视觉感知——模型只输出 `[{text,bounds_px}]`（截图像素坐标、不做算术），执行器按 `scale=像素宽/逻辑宽` 换算逻辑 pt、计算 Center，以 `[V#] (模型视觉，可能有误) OCR Text: … | Center: (x,y) | Bounds: …` 融合进元素列表（独立配额 30 行、不挤占 200 行元素预算；与可访问性文本规范化相等/包含去重；非法/越界丢弃）。`perception` 扩为 `text|image|vision-text|text-degraded`；丢弃计数写 run.json `vision_dropped`。多模态路径历史不保留旧截图（对齐 Android 中间截图裁剪）。`sparse` 保留旧阈值（可见文本 <3），`off` 纯文本。
+- **遮挡告警（票 03）**：移植 Android 互相遮挡算法（≥50% 重叠、排除同心父子包含），新增 iOS 合并规则：主导遮挡层（覆盖 ≥3 个文本元素且面积占屏 40–90%）输出单条全局告警并抑制相关逐元素告警，其余按重叠比取前 5 对。应用于执行器 prompt 与 `mobile_get_device_state` 的 `formatIosHierarchy`（输出契约变更，既有断言同步更新）。
+- **no-op 检测（票 04）**：元素签名（排除系统状态栏与顶带节点）与截图哈希（裁上下 5% 系统带）双不变判定；`wait` 不参与；连续 1/3 步注入策略提示、连续相同 action+params 注入换策略提示；step 记 `noop`、record 记 `noopStreak`。
+- **终态验证（票 05）**：`AOS_IOS_VERIFY=final|off`（默认 final）；`done(success=true)` 后补采一次 observation（失败标 `hierarchy:"stale"`），调用验证模型（默认主模型；`AOS_IOS_VERIFY_LLM` 可指定独立条目；非多模态模型不加截图）。fail 必须带非空 `failed_items`，否则 unavailable；`stale` 且验证模型非多模态直接 unavailable（不基于陈旧层级硬判）。pass → completed + 真实 `test_summary`（`synthesized:false`、`verification:"model-final"`、`verification_model`）；fail → failed，summary「验证未通过：…」，`failed_items` 入台账；unavailable 保持 completed 并显式标记。
+- **历史压缩（票 06）**：`AOS_IOS_HISTORY_STEPS`（默认 8，范围 4–20）；更早步骤输出动作链摘要（thought 首句 ≤40 字 + action + outcome，跳屏步带屏幕摘要），≤800 字符、超限首尾保留 + 省略标记；digest 写 run.json。
+- **失败日志（票 08）**：`AOS_IOS_LOG_FEEDBACK=0` 可关；失败终态前采集——模拟器用 `IosLogCollector` 时间窗过滤；真机用任务启动即挂的 `idevicesyslog` 环形缓冲（上限 200 行内存，失败终态落盘）；写 `logs/device.log`（来源/时间近似标注），摘要追加「设备日志已采集（N 行，来源 X）」；`mobile_inspect_trace` 的 view_summary 透出 `failure_logs`、search 可检索日志内容。不自动重试、不喂回循环（backlog）。
+- **观测重试（票 09）**：`AOS_IOS_OBSERVE_RETRY`（默认 1，范围 0–5）；真机 WDA `nodes()` 解析失败与模拟器 idb `describe-all` 失败各重试一次（300ms 间隔），仍失败保持既有 `parse_failed`/错误语义。
+- **平台语义（票 07）**：`tests.json`/`tests.md`/`tests.xlsx` 保持平台中立、零改动；`IOS_SYSTEM_PROMPT` 增规则：系统弹窗优先用 `alerts` 处理、视觉补充行与可访问性元素冲突时以可访问性元素为准。
+- **env 分层收口**：`runtime.iosEnvironment()` 暴露 `{ ...项目 .env, ...进程 env }`；执行器开关（步数/视觉/验证/历史/日志/重试）统一经此读取（§13.57 边界收口；项目 `.env` 现在也生效、进程 env 仍优先，向后兼容）。
+- **边界**：视觉感知走模型而非 macOS Vision framework OCR（backlog）；验证失败即终态、不自动修复重试；真机日志缓冲为长驻进程、可用开关关闭；`.scratch` 票 00（失败归因 + 零代码 A/B）为人工 spike，需设备执行、未随本批自动完成。
+- **脚本断言核对（增补 2026-10-10：长用例执行约束力闭环）**：生成侧 `linearizeFlowsWithStats` 返回与 `paths` 对齐的 `prefixes`（入口→切点导航前缀，非续段为空），`generateTestCases` 据此产出 `continuation/startScreen/prelude/expectations` 字段与 `【AOS-EXPECT】` 块（`src/figma/test-gen.ts`）；tests.md 增加接续段标注与前导清单，tests.xlsx 新增 `{{case.prelude}}`/`{{case.startScreen}}`/`{{case.continuation}}` 占位符（默认表"步骤"列续段前置 `P#)` 行）。执行侧 `src/ios/task-runner.ts` 导出 `parseScriptPlan`（解析 `start` + `steps`）；每轮观测与 done 后补采各做一次命中匹配（`matchScriptExpectations`），`buildScriptAdherence` 汇总；验证提示词新增"脚本断言核对"段（未出现项→ failed_items 候选）；无验证时摘要追加 `⚠` 行。**起始屏 preflight（同批）**：生成侧 `GeneratedTest.preflight`（入口屏 + hints）随 `start` 下发；执行侧 `IosScriptPreflight`（`pending/matched/unmatched/unchecked`）首步核对、未命中每步注入导航提示、`test_summary.preflight` 与 run.json `preflight` 留痕、验证提示词"起始屏核对（确定性）"段 + 摘要 `⚠` 行；建议级不硬失败。新增测试：`test/figma-testgen.test.js`（续段 prelude/字段/AOS-EXPECT 解析/preflight/覆盖率不回退）、`test/ios-task-runner.test.js`（`parseScriptPlan` 解析边界、命中/未命中核对、`test_summary.adherence`、preflight matched/unmatched、run.json）。全量 786 绿。

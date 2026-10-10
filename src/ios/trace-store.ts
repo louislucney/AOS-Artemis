@@ -2,7 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { isProcessAlive, writeFileAtomic } from "../util.js";
-import type { IosTaskRecord, IosTaskStep } from "./task-runner.js";
+import type {
+  IosFailureLogs,
+  IosTaskRecord,
+  IosTaskStep,
+  IosVerificationItem
+} from "./task-runner.js";
 
 const DEFAULT_IOS_STALE_MS = 30 * 60_000;
 const IOS_STALE_ENV = "AOS_IOS_STALE_MS";
@@ -28,6 +33,8 @@ export interface DiskIosTrace {
   testSummary: Record<string, unknown> | null;
   vision: IosTaskRecord["vision"];
   visionDegraded: string | null;
+  verification: IosTaskRecord["verification"];
+  failureLogs: IosFailureLogs | null;
   startedAtMs: number | null;
   finishedAtMs: number | null;
   runDir: string;
@@ -96,6 +103,55 @@ function parseSteps(value: unknown): IosTaskStep[] {
     (entry): entry is IosTaskStep =>
       entry !== null && typeof entry === "object" && typeof (entry as IosTaskStep).step === "number"
   );
+}
+
+function parseVerification(value: unknown): IosTaskRecord["verification"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const status = asString(record.status);
+  if (status !== "passed" && status !== "failed" && status !== "unavailable") return null;
+  const failedItems: IosVerificationItem[] = [];
+  if (Array.isArray(record.failed_items)) {
+    for (const entry of record.failed_items) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const item = entry as Record<string, unknown>;
+      const text = asString(item.item_text) ?? asString(item.text);
+      const evidence = asString(item.evidence);
+      if (!text && !evidence) continue;
+      failedItems.push({
+        item_text: text ?? evidence!,
+        evidence: evidence ?? text!,
+        ...(item.region !== undefined ? { region: item.region } : {})
+      });
+    }
+  }
+  return {
+    status,
+    model: asString(record.model),
+    reason: typeof record.reason === "string" ? record.reason : "",
+    stale: record.stale === true,
+    failedItems
+  };
+}
+
+function parseFailureLogs(value: unknown): IosFailureLogs | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const status = asString(record.status);
+  const source = asString(record.source);
+  if ((status !== "ok" && status !== "skipped") || (source !== "simctl-log" && source !== "idevicesyslog" && source !== "none")) {
+    return null;
+  }
+  const reason = asString(record.reason);
+  const rel = asString(record.rel);
+  const lines = asNumber(record.lines);
+  return {
+    status,
+    source,
+    ...(reason ? { reason } : {}),
+    ...(rel ? { rel } : {}),
+    ...(lines !== null ? { lines } : {})
+  };
 }
 
 function resolveIosStaleMs(env: NodeJS.ProcessEnv, override?: number): number {
@@ -184,6 +240,8 @@ export function readIosTrace(
         : null,
     vision: parseVision(run?.vision),
     visionDegraded: asString(run?.vision_degraded),
+    verification: parseVerification(run?.verification),
+    failureLogs: parseFailureLogs(run?.failure_logs),
     startedAtMs: secondsToMs(status?.start_time) ?? parseIsoMs(run?.started_at),
     finishedAtMs: secondsToMs(status?.end_time) ?? parseIsoMs(run?.finished_at),
     runDir: traceDir,

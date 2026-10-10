@@ -97,3 +97,39 @@ test("device-source: 真机走 WDA 分支与失败指引", async () => {
     /busy|占用/
   );
 });
+
+test("ios wda service: nodes 解析失败按 AOS_IOS_OBSERVE_RETRY 重试", async () => {
+  let sourceCalls = 0;
+  const fetchImpl = async (url, init = {}) => {
+    const method = init.method ?? "GET";
+    const json = (payload) =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    if (url.endsWith("/status")) return json({ value: { ready: true } });
+    if (url.endsWith("/session") && method === "POST") {
+      return json({ value: { sessionId: "s-1", capabilities: {} } });
+    }
+    if (url.endsWith("/source")) {
+      sourceCalls += 1;
+      return json({ value: sourceCalls === 1 ? "<not-xml" : SOURCE_XML });
+    }
+    return json({ value: null });
+  };
+  const service = new IosWdaService({
+    env: {
+      AOS_APPIUM_URL: "http://127.0.0.1:4723",
+      AOS_IOS_XCODE_ORG_ID: "TEAM123",
+      AOS_IOS_SESSION_IDLE_MS: "0",
+      AOS_IOS_OBSERVE_RETRY: "1"
+    },
+    fetchImpl,
+    sleep: async () => {}
+  });
+  const nodes = await service.nodes("00008101-000359440C69001E");
+  assert.equal(nodes.ok, true);
+  assert.equal(nodes.value.length, 2);
+  assert.equal(sourceCalls, 2);
+  await service.dispose();
+});

@@ -5,6 +5,7 @@ import {
   captureIosPng,
   describeIosUi,
   resolveIdbPath,
+  resolveObserveRetry,
   resolveXcrunPath,
   type IosUiNode
 } from "./ios.js";
@@ -203,16 +204,22 @@ export function makeIosDevice(serial: string, options: IosDeviceOptions = {}): I
 
     async nodes() {
       assertPlatform(ctx);
-      const result = await describeIosUi({
-        env: ctx.env,
-        exec: ctx.exec,
-        platform: ctx.platform,
-        pathExists: ctx.pathExists,
-        serial: ctx.serial,
-        timeoutMs: ctx.timeoutMs
-      });
-      if (!result.ok) throw new Error(`idb ui describe-all 失败（${result.error}）。`);
-      return result.nodes;
+      const attempts = 1 + resolveObserveRetry(ctx.env);
+      let lastError = "unknown";
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const result = await describeIosUi({
+          env: ctx.env,
+          exec: ctx.exec,
+          platform: ctx.platform,
+          pathExists: ctx.pathExists,
+          serial: ctx.serial,
+          timeoutMs: ctx.timeoutMs
+        });
+        if (result.ok) return result.nodes;
+        lastError = result.error;
+        if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      throw new Error(`idb ui describe-all 失败（${lastError}）。`);
     },
 
     async size() {

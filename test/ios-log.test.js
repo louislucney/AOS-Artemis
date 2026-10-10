@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 
-import { IosLogCollector, filterDeviceLogLines, formatLogShowTime, parseDeviceLogTime } from "../dist/device/ios-log.js";
+import {
+  IosDeviceLogTail,
+  IosLogCollector,
+  filterDeviceLogLines,
+  formatLogShowTime,
+  parseDeviceLogTime
+} from "../dist/device/ios-log.js";
 
 const UDID = "65584900-E161-4125-8928-587499DD6457";
 const DEVICE_UDID = "00008101-000359440C69001E";
@@ -163,4 +170,38 @@ test("IosLogCollector：真机工具缺失显式降级（ios-log-tool-missing）
   });
   assert.equal(result.status, "skipped");
   assert.equal(result.reason, "ios-log-tool-missing");
+});
+
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stdout.setEncoding = () => {};
+  child.killed = null;
+  child.kill = (signal) => {
+    child.killed = signal;
+  };
+  return child;
+}
+
+test("IosDeviceLogTail：环形缓冲上限、ANSI 清理与 stop 回收", () => {
+  const child = fakeChild();
+  const tail = new IosDeviceLogTail({ serial: DEVICE_UDID, maxLines: 3, spawnFn: () => child });
+  assert.equal(tail.start(), true);
+  child.stdout.emit("data", "\u001b[31mline-1\u001b[0m\nline-2\n");
+  child.stdout.emit("data", "line-3\nline-4\n");
+  assert.deepEqual(tail.snapshot(), ["line-2", "line-3", "line-4"]);
+  tail.stop();
+  assert.equal(child.killed, "SIGTERM");
+  assert.deepEqual(tail.snapshot(), ["line-2", "line-3", "line-4"]);
+});
+
+test("IosDeviceLogTail：spawn 抛错返回 false 且不阻塞", () => {
+  const tail = new IosDeviceLogTail({
+    serial: DEVICE_UDID,
+    spawnFn: () => {
+      throw new Error("ENOENT");
+    }
+  });
+  assert.equal(tail.start(), false);
+  assert.deepEqual(tail.snapshot(), []);
 });
