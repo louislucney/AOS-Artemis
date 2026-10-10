@@ -7,18 +7,33 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import { computeScreenCoverage } from "./coverage.js";
-import { buildFlowGraph, type FlowEdge, type FlowGraph } from "./flows.js";
+import {
+  buildFlowGraph,
+  normalizeFlowGraph,
+  normalizeFlowHints,
+  type FlowEdge,
+  type FlowGraph
+} from "./flows.js";
 import { deriveCasePreconditions } from "./preconditions.js";
 import { canonicalizePlaceholders, normalizedText } from "./strings.js";
 import { renderTestsWorkbook } from "./test-xlsx.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
+import {
+  confidenceFor,
+  resolveProvenance,
+  type Confidence,
+  type Provenance
+} from "../provenance.js";
 
 export interface StepExpectation {
   /** Target screen (design name) the step should land on; null when the edge has no destination. */
   screen: string | null;
   /** Design text hints expected on the destination screen (best-effort deterministic match). */
   hints: string[];
+  /** Evidence source of the driving edge (legacy-unknown for v1 artifacts). */
+  provenance: Provenance;
+  confidence: Confidence;
 }
 
 export interface CasePreflight {
@@ -281,11 +296,17 @@ export function linearizeFlows(
   return linearizeFlowsWithStats(graph, options).paths;
 }
 
+function hintTexts(raw: unknown): string[] {
+  return normalizeFlowHints(raw).map((hint) => hint.text);
+}
+
 function expectationFor(graph: FlowGraph, edge: FlowEdge): StepExpectation {
-  if (!edge.to) return { screen: null, hints: [] };
+  const provenance = resolveProvenance(edge.provenance);
+  const confidence = confidenceFor(provenance);
+  if (!edge.to) return { screen: null, hints: [], provenance, confidence };
   const screen = graph.screens.find((candidate) => candidate.id === edge.to!.id);
-  const hints = [...(screen?.textHints ?? []), ...(screen?.childNames ?? [])].slice(0, 3);
-  return { screen: edge.to.name, hints };
+  const hints = [...hintTexts(screen?.textHints), ...(screen?.childNames ?? [])].slice(0, 3);
+  return { screen: edge.to.name, hints, provenance, confidence };
 }
 
 function assertionFor(graph: FlowGraph, edge: FlowEdge): string {
@@ -302,9 +323,10 @@ function lookupI18nKey(text: string | undefined, i18nKeys: Map<string, string> |
 function stepFor(graph: FlowGraph, edge: FlowEdge, i18nKeys?: Map<string, string>): string {
   const target = edge.to ? `「${edge.to.name}」` : null;
   const assertion = assertionFor(graph, edge);
-  const label = edge.textHints[0] ? `「${edge.textHints[0]}」` : `「${edge.element.name}」`;
-  const i18nKey = lookupI18nKey(edge.textHints[0], i18nKeys);
-  const elementNote = edge.textHints[0]
+  const elementHint = hintTexts(edge.textHints)[0];
+  const label = elementHint ? `「${elementHint}」` : `「${edge.element.name}」`;
+  const i18nKey = lookupI18nKey(elementHint, i18nKeys);
+  const elementNote = elementHint
     ? `（设计元素：${edge.element.name}${i18nKey ? `；i18n: ${i18nKey}` : ""}）`
     : "";
 
@@ -375,7 +397,10 @@ export function generateTestCases(
     const entryScreenObj = graph.screens.find((candidate) => candidate.name === entryScreen);
     const preflight: CasePreflight = {
       screen: entryScreen,
-      hints: [...(entryScreenObj?.textHints ?? []), ...(entryScreenObj?.childNames ?? [])].slice(0, 3)
+      hints: [
+        ...hintTexts(entryScreenObj?.textHints),
+        ...(entryScreenObj?.childNames ?? [])
+      ].slice(0, 3)
     };
     const expectationLine = `脚本断言（供 iOS 执行器自动核对，执行时无需处理）：【AOS-EXPECT】${JSON.stringify(
       {
@@ -385,7 +410,9 @@ export function generateTestCases(
         steps: expectations.map((expectation, index) => ({
           index: index + 1,
           screen: expectation.screen,
-          hints: expectation.hints
+          hints: expectation.hints,
+          provenance: expectation.provenance,
+          confidence: expectation.confidence
         }))
       }
     )}`;
@@ -515,7 +542,7 @@ export async function figmaGenerateTests(
       if (!Array.isArray(parsed.screens) || !Array.isArray(parsed.edges)) {
         throw new Error(`${flowsPath} 格式不正确（缺少 screens/edges）`);
       }
-      graph = parsed;
+      graph = normalizeFlowGraph(parsed);
       source = flowsPath;
     }
 

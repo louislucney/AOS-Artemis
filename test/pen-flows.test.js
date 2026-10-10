@@ -87,6 +87,18 @@ test("synthesizePenFlows: labels, state merge, inferred chain and fragmentation 
     "chain follows board order and canvas layout"
   );
   assert.ok(result.edges.every((edge) => edge.trigger === "INFERRED" && edge.actionType === "INFERRED"));
+  assert.ok(
+    result.edges.every((edge) => edge.provenance === "inferred" && edge.confidence === "low"),
+    "synthesized edges are inferred/low"
+  );
+  assert.ok(
+    result.screens.every((screen) => screen.provenance === "inferred" && screen.confidence === "low"),
+    "synthesized screens are inferred/low"
+  );
+  const main = result.screens.find((screen) => screen.name === "主頁");
+  assert.deepEqual(main.textHints, [{ text: "主頁", textClass: "annotation" }]);
+  const store = result.screens.find((screen) => screen.name === "門市");
+  assert.deepEqual(store.textHints, [{ text: "門市", textClass: "runtime-text" }]);
 
   const codes = result.warnings.map((warning) => warning.code);
   assert.ok(codes.includes("pen-no-interactions"));
@@ -128,6 +140,10 @@ test("pen_extract_flows: saves flows.json + flow-map.md and feeds the test loop"
 
   const flows = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
   assert.deepEqual(flows.entryScreens, ["主頁"]);
+  assert.equal(flows.schemaVersion, 2);
+  assert.equal(flows.screens[0].provenance, "inferred");
+  assert.equal(flows.screens[0].confidence, "low");
+  assert.equal(flows.edges[0].provenance, "inferred");
   assert.deepEqual(
     flows.screens.map((screen) => screen.name),
     ["主頁", "門市", "單品頁"]

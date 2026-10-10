@@ -5,7 +5,14 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
-import { flowGraphWarnings, routeFor, type FlowEdge, type FlowGraph } from "../figma/flows.js";
+import {
+  flowGraphWarnings,
+  routeFor,
+  type FlowEdge,
+  type FlowGraph,
+  type FlowHint
+} from "../figma/flows.js";
+import { confidenceFor, isAnnotationLayerName, type Confidence, type Provenance } from "../provenance.js";
 import { loadPenDocument, penRelativePath, PEN_HINT, resolvePenTarget } from "./paths.js";
 import type { PenDocument, PenNode } from "./read.js";
 
@@ -14,13 +21,16 @@ export interface PenFlowScreen {
   name: string;
   suggestedRoute: string;
   childNames: string[];
-  textHints: string[];
+  textHints: FlowHint[];
   sourceBoard: string;
   sourceFrameName: string;
   /** True when the name came from the (generic) layer name, not a screen label. */
   inferredName: boolean;
   /** State variants merged into this screen (label + frame id/name). */
   states: Array<{ id: string; label: string; frameName: string }>;
+  /** Evidence source (synthesis is always heuristic: inferred/low). */
+  provenance: Provenance;
+  confidence: Confidence;
 }
 
 export interface PenFlowWarning {
@@ -319,7 +329,9 @@ export function synthesizePenFlows(
       sourceBoard: String(boards[main.boardIndex]?.name ?? ""),
       sourceFrameName: main.frameName,
       inferredName: main.labelSource === "layer-name",
-      states
+      states,
+      provenance: "inferred",
+      confidence: confidenceFor("inferred")
     };
     built.push({ screen, boardIndex: main.boardIndex, orderIndex: main.orderIndex });
   }
@@ -342,7 +354,9 @@ export function synthesizePenFlows(
       element: { id: `inferred-${inferredEdges}`, name: "推断跳转（按画板排布）", type: "INFERRED" },
       textHints: [],
       trigger: "INFERRED",
-      actionType: "INFERRED"
+      actionType: "INFERRED",
+      provenance: "inferred",
+      confidence: confidenceFor("inferred")
     });
   };
   for (let index = 0; index + 1 < kept.length; index += 1) {
@@ -437,15 +451,18 @@ export function synthesizePenFlows(
   };
 }
 
-function collectTextHints(node: PenNode, limit: number): string[] {
-  const hints: string[] = [];
-  const visit = (current: PenNode): void => {
+function collectTextHints(node: PenNode, limit: number): FlowHint[] {
+  const hints: FlowHint[] = [];
+  const visit = (current: PenNode, underFlow: boolean): void => {
     if (hints.length >= limit) return;
+    const annotation = underFlow || isAnnotationLayerName(current.name);
     const text = textOf(current);
-    if (text && !hints.includes(text)) hints.push(text);
-    for (const child of current.children ?? []) visit(child);
+    if (text && !hints.some((hint) => hint.text === text)) {
+      hints.push({ text, textClass: annotation ? "annotation" : "runtime-text" });
+    }
+    for (const child of current.children ?? []) visit(child, annotation);
   };
-  visit(node);
+  visit(node, isAnnotationLayerName(node.name));
   return hints;
 }
 
@@ -537,6 +554,7 @@ export async function penExtractFlows(
     const result = synthesizePenFlows(doc, { maxScreens: args.maxScreens });
     const payload: Record<string, unknown> = {
       ok: true,
+      schemaVersion: 2,
       source: `pen:${penRelativePath(runtime, target)}`,
       counts: {
         boards: result.synthesis.boards.length,

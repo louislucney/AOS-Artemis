@@ -467,6 +467,8 @@ test("generateTestCases: per-step expectations are machine-readable and aligned 
   assert.equal(testCase.expectations.length, testCase.steps.length);
   assert.equal(testCase.expectations[0].screen, "Checkout");
   assert.ok(testCase.expectations[0].hints.includes("Pay now"));
+  assert.equal(testCase.expectations[0].provenance, "explicit");
+  assert.equal(testCase.expectations[0].confidence, "high");
   assert.equal(testCase.preflight.screen, "Home");
   assert.ok(testCase.preflight.hints.includes("Welcome Back"));
 
@@ -483,10 +485,51 @@ test("generateTestCases: per-step expectations are machine-readable and aligned 
   assert.deepEqual(payload.steps[0], {
     index: 1,
     screen: testCase.expectations[0].screen,
-    hints: testCase.expectations[0].hints
+    hints: testCase.expectations[0].hints,
+    provenance: testCase.expectations[0].provenance,
+    confidence: testCase.expectations[0].confidence
   });
+  assert.equal(payload.steps[0].provenance, "explicit");
+  assert.equal(payload.steps[0].confidence, "high");
   assert.equal(payload.steps[0].index, 1);
   assert.equal(payload.steps[1].screen, "Success", "AFTER_TIMEOUT step keeps its destination");
+});
+
+test("figma_generate_tests: legacy flows.json (no provenance) normalizes conservatively", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [
+        { id: "s1", name: "Home", suggestedRoute: "/", childNames: [], textHints: ["Welcome"] },
+        { id: "s2", name: "Checkout", suggestedRoute: "/checkout", childNames: [], textHints: ["Pay now"] }
+      ],
+      edges: [
+        {
+          from: { id: "s1", name: "Home" },
+          to: { id: "s2", name: "Checkout" },
+          element: { id: "e1", name: "CTA", type: "INSTANCE" },
+          textHints: ["Buy now"],
+          trigger: "ON_CLICK",
+          actionType: "NODE"
+        }
+      ],
+      entryScreens: ["Home"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(payload.ok, true);
+  const testCase = payload.flows[0];
+  assert.equal(testCase.expectations[0].provenance, "legacy-unknown");
+  assert.equal(testCase.expectations[0].confidence, "low");
+  assert.ok(testCase.expectations[0].hints.includes("Pay now"));
+  assert.match(testCase.taskDesc, /点击「Buy now」/, "legacy string hints still render");
 });
 
 test("linearizeFlows: default maxDepth walks a 22-edge pen-style chain end to end", () => {

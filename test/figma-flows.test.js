@@ -13,7 +13,7 @@ import {
   normalizeAssetName,
   walkProjectFiles
 } from "../dist/figma/gaps.js";
-import { buildFlowGraph, flowGraphWarnings, routeFor } from "../dist/figma/flows.js";
+import { buildFlowGraph, flowGraphWarnings, normalizeFlowGraph, routeFor } from "../dist/figma/flows.js";
 import { STACK_PROFILES } from "../dist/projects/stack.js";
 
 test("flow graph: consecutive interactions produce screens, edges and entry screens", () => {
@@ -32,10 +32,16 @@ test("flow graph: consecutive interactions produce screens, edges and entry scre
   assert.equal(click.to.name, "Checkout");
   assert.equal(click.element.name, "CTA Button");
   assert.equal(click.navigation, "NAVIGATE");
-  assert.ok(click.textHints.includes("Buy now"), "element text hints captured");
+  assert.ok(
+    click.textHints.some((hint) => hint.text === "Buy now"),
+    "element text hints captured"
+  );
 
   const home = graph.screens.find((screen) => screen.name === "Home");
-  assert.ok(home.textHints.includes("Welcome Back"), "screen text hints captured");
+  assert.ok(
+    home.textHints.some((hint) => hint.text === "Welcome Back"),
+    "screen text hints captured"
+  );
   assert.ok(home.childNames.includes("CTA Button"), "screen child names captured");
 
   const timeout = graph.edges.find((edge) => edge.trigger === "AFTER_TIMEOUT");
@@ -272,4 +278,125 @@ test("flow graph: a single screen without interactions does not warn", () => {
   const graph = buildFlowGraph(single);
   assert.equal(graph.screens.length, 1);
   assert.deepEqual(flowGraphWarnings(graph), []);
+});
+
+test("flow graph: explicit provenance, high confidence and text classes are attached", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  assert.ok(
+    graph.edges.every((edge) => edge.provenance === "explicit" && edge.confidence === "high"),
+    "interaction edges are explicit/high"
+  );
+  assert.ok(
+    graph.screens.every((screen) => screen.provenance === "explicit" && screen.confidence === "high"),
+    "design screens are explicit/high"
+  );
+
+  const home = graph.screens.find((screen) => screen.name === "Home");
+  const welcome = home.textHints.find((hint) => hint.text === "Welcome Back");
+  assert.equal(welcome.textClass, "runtime-text");
+  const click = graph.edges.find((edge) => edge.element.name === "CTA Button");
+  assert.equal(click.textHints.find((hint) => hint.text === "Buy now").textClass, "runtime-text");
+});
+
+test("flow graph: texts under Flow/* layers are classified as annotations", () => {
+  const document = syntheticFlowDocument();
+  const home = document.children[0].children.find((node) => node.name === "Home");
+  home.children.push({
+    id: "10:9",
+    name: "Flow/Note",
+    type: "FRAME",
+    children: [{ id: "10:10", name: "Note text", type: "TEXT", characters: "设计批注：跳转 A→B" }]
+  });
+
+  const graph = buildFlowGraph(document);
+  const screen = graph.screens.find((candidate) => candidate.name === "Home");
+  const note = screen.textHints.find((hint) => hint.text === "设计批注：跳转 A→B");
+  assert.equal(note.textClass, "annotation");
+  assert.equal(
+    screen.textHints.find((hint) => hint.text === "Welcome Back").textClass,
+    "runtime-text"
+  );
+});
+
+test("normalizeFlowGraph: legacy artifacts default to legacy-unknown and string hints", () => {
+  const legacy = {
+    screens: [
+      {
+        id: "s1",
+        name: "Home",
+        suggestedRoute: "/",
+        childNames: ["X"],
+        textHints: ["Welcome"]
+      }
+    ],
+    edges: [
+      {
+        from: { id: "s1", name: "Home" },
+        to: null,
+        element: { id: "e", name: "E", type: "BUTTON" },
+        textHints: [],
+        trigger: "ON_CLICK",
+        actionType: "NODE"
+      }
+    ],
+    entryScreens: ["Home"],
+    unresolvedDestinations: []
+  };
+
+  const graph = normalizeFlowGraph(legacy);
+  assert.equal(graph.screens[0].provenance, "legacy-unknown");
+  assert.equal(graph.screens[0].confidence, "low");
+  assert.deepEqual(graph.screens[0].textHints, [{ text: "Welcome", textClass: "runtime-text" }]);
+  assert.equal(graph.edges[0].provenance, "legacy-unknown");
+  assert.equal(graph.edges[0].confidence, "low");
+
+  const kept = normalizeFlowGraph({
+    screens: [
+      {
+        id: "s1",
+        name: "Home",
+        suggestedRoute: "/",
+        childNames: [],
+        textHints: [{ text: "Welcome", textClass: "annotation" }],
+        provenance: "human-confirmed",
+        confidence: "high"
+      }
+    ],
+    edges: [],
+    entryScreens: [],
+    unresolvedDestinations: []
+  });
+  assert.equal(kept.screens[0].provenance, "human-confirmed");
+  assert.equal(kept.screens[0].confidence, "high");
+  assert.deepEqual(kept.screens[0].textHints, [{ text: "Welcome", textClass: "annotation" }]);
+
+  const unknownClass = normalizeFlowGraph({
+    screens: [
+      {
+        id: "s1",
+        name: "Home",
+        suggestedRoute: "/",
+        childNames: [],
+        textHints: [{ text: "  Padded text  ", textClass: "made-up" }]
+      }
+    ],
+    edges: [
+      {
+        from: { id: "s1", name: "Home" },
+        to: { bogus: true },
+        element: null,
+        textHints: [],
+        trigger: "ON_CLICK",
+        actionType: "NODE"
+      }
+    ],
+    entryScreens: [],
+    unresolvedDestinations: []
+  });
+  assert.deepEqual(
+    unknownClass.screens[0].textHints,
+    [{ text: "Padded text", textClass: "annotation" }],
+    "unknown classes downgrade to annotation (never promoted into assertions)"
+  );
+  assert.equal(unknownClass.edges[0].to, null, "malformed destination resolves to null");
 });

@@ -6,10 +6,25 @@ import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-
 import { walk, type FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
+import {
+  confidenceFor,
+  isAnnotationLayerName,
+  resolveProvenance,
+  type Confidence,
+  type Provenance,
+  type TextClass
+} from "../provenance.js";
 
 // ---------------------------------------------------------------------------
 // Flow extraction (pure graph builder + tool)
 // ---------------------------------------------------------------------------
+
+/** A collected text hint with its class (ADR-0008; consumption rules land in
+ * the follow-up annotation-filtering ticket). */
+export interface FlowHint {
+  text: string;
+  textClass: TextClass;
+}
 
 export interface FlowScreen {
   id: string;
@@ -17,21 +32,27 @@ export interface FlowScreen {
   suggestedRoute: string;
   /** Direct child layer names — used as visible-element hints for assertions. */
   childNames: string[];
-  /** First TEXT contents found inside this screen. */
-  textHints: string[];
+  /** First classed TEXT contents found inside this screen. */
+  textHints: FlowHint[];
+  /** Evidence source; absent = legacy-unknown (conservative). */
+  provenance?: Provenance;
+  confidence?: Confidence;
 }
 
 export interface FlowEdge {
   from: { id: string; name: string };
   to: { id: string; name: string } | null;
   element: { id: string; name: string; type: string };
-  /** First TEXT contents inside the tapped element (locator hints). */
-  textHints: string[];
+  /** First classed TEXT contents inside the tapped element (locator hints). */
+  textHints: FlowHint[];
   trigger: string;
   triggerTimeoutMs?: number;
   navigation?: string;
   actionType: string;
   back?: boolean;
+  /** Evidence source; absent = legacy-unknown (conservative). */
+  provenance?: Provenance;
+  confidence?: Confidence;
 }
 
 export interface FlowGraph {
@@ -159,15 +180,25 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     }
   };
 
+  const isAnnotationLayer = (nodeId: string): boolean => {
+    let current: FigmaNode | undefined = byId.get(nodeId);
+    while (current) {
+      if (isAnnotationLayerName(current.name)) return true;
+      const parentId = parentOf.get(current.id);
+      current = parentId ? byId.get(parentId) : undefined;
+    }
+    return false;
+  };
+
   const edges: FlowEdge[] = [];
   const unresolved = new Set<string>();
-  const elementTextHints = new Map<string, string[]>();
+  const elementTextHints = new Map<string, FlowHint[]>();
   const sources: Array<{ node: FigmaNode; interactions: RawInteraction[] }> = [];
   walk(scopeRoot, (node) => {
     const interactions = (node as { interactions?: RawInteraction[] }).interactions;
     if (Array.isArray(interactions) && interactions.length > 0) {
       sources.push({ node, interactions });
-      elementTextHints.set(node.id, collectTextHints(node, 3));
+      elementTextHints.set(node.id, collectTextHints(node, 3, isAnnotationLayer));
     }
   });
 
@@ -206,7 +237,9 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
           ...(timeout !== undefined ? { triggerTimeoutMs: timeout } : {}),
           ...(navigation ? { navigation } : {}),
           ...(back ? { back: true } : {}),
-          actionType
+          actionType,
+          provenance: "explicit",
+          confidence: confidenceFor("explicit")
         });
       }
     }
@@ -220,7 +253,7 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     screenNodes.push(scopeRoot);
   }
 
-  const screenTextHints = new Map<string, string[]>();
+  const screenTextHints = new Map<string, FlowHint[]>();
   for (const node of byId.values()) {
     if (node.type !== "TEXT") continue;
     const characters = (node as { characters?: unknown }).characters;
@@ -228,8 +261,9 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     const screen = screenOf(node.id);
     if (!screen) continue;
     const list = screenTextHints.get(screen.id) ?? [];
-    if (list.length < 3 && !list.includes(characters.trim())) {
-      list.push(characters.trim());
+    const text = characters.trim();
+    if (list.length < 3 && !list.some((hint) => hint.text === text)) {
+      list.push({ text, textClass: isAnnotationLayer(node.id) ? "annotation" : "runtime-text" });
       screenTextHints.set(screen.id, list);
     }
   }
@@ -239,7 +273,9 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     name: screen.name,
     suggestedRoute: routeFor(screen.name),
     childNames: (screen.children ?? []).slice(0, 10).map((child) => child.name),
-    textHints: screenTextHints.get(screen.id) ?? []
+    textHints: screenTextHints.get(screen.id) ?? [],
+    provenance: "explicit",
+    confidence: confidenceFor("explicit")
   }));
 
   const incoming = new Set(edges.filter((edge) => edge.to).map((edge) => edge.to!.id));
@@ -252,14 +288,140 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
   };
 }
 
-function collectTextHints(node: FigmaNode, limit: number): string[] {
-  const hints: string[] = [];
+/** Normalize persisted hints (string entries from v1 artifacts, classed
+ * objects from v2) into classed records. Legacy strings count as runtime text
+ * and unknown classes downgrade to annotation (display-only, never silently
+ * promoted into assertions). */
+export function normalizeFlowHints(raw: unknown): FlowHint[] {
+  if (!Array.isArray(raw)) return [];
+  const hints: FlowHint[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string") {
+      const text = entry.trim();
+      if (text !== "") hints.push({ text, textClass: "runtime-text" });
+      continue;
+    }
+    if (entry && typeof entry === "object") {
+      const record = entry as { text?: unknown; textClass?: unknown };
+      if (typeof record.text !== "string" || record.text.trim() === "") continue;
+      const textClass: TextClass =
+        record.textClass === "runtime-text" ||
+        record.textClass === "layer-name" ||
+        record.textClass === "annotation"
+          ? record.textClass
+          : "annotation";
+      hints.push({ text: record.text.trim(), textClass });
+    }
+  }
+  return hints;
+}
+
+/** Normalize a persisted flow graph (v1 artifacts lack provenance/text
+ * classes): missing evidence fields become legacy-unknown/low, string hints
+ * become runtime-text records. Unknown future fields are dropped. */
+export function normalizeFlowGraph(raw: unknown): FlowGraph {
+  const source = (raw ?? {}) as {
+    screens?: unknown;
+    edges?: unknown;
+    entryScreens?: unknown;
+    unresolvedDestinations?: unknown;
+    interactionNodes?: unknown;
+  };
+  const screensRaw = Array.isArray(source.screens) ? source.screens : [];
+  const edgesRaw = Array.isArray(source.edges) ? source.edges : [];
+
+  const screens: FlowScreen[] = screensRaw.map((entry) => {
+    const screen = (entry ?? {}) as Record<string, unknown>;
+    const name = typeof screen.name === "string" ? screen.name : "";
+    const provenance = resolveProvenance(screen.provenance);
+    return {
+      id: typeof screen.id === "string" ? screen.id : "",
+      name,
+      suggestedRoute:
+        typeof screen.suggestedRoute === "string" ? screen.suggestedRoute : routeFor(name),
+      childNames: Array.isArray(screen.childNames)
+        ? screen.childNames.filter((child): child is string => typeof child === "string")
+        : [],
+      textHints: normalizeFlowHints(screen.textHints),
+      provenance,
+      confidence: confidenceFor(provenance)
+    };
+  });
+
+  const pickRef = (value: unknown): { id: string; name: string } => {
+    if (value && typeof value === "object") {
+      const record = value as { id?: unknown; name?: unknown };
+      return {
+        id: typeof record.id === "string" ? record.id : "",
+        name: typeof record.name === "string" ? record.name : ""
+      };
+    }
+    return { id: "", name: "" };
+  };
+  const pickOptionalRef = (value: unknown): { id: string; name: string } | null => {
+    if (!value || typeof value !== "object") return null;
+    const record = value as { id?: unknown; name?: unknown };
+    if (typeof record.name !== "string" || record.name === "") return null;
+    return { id: typeof record.id === "string" ? record.id : "", name: record.name };
+  };
+
+  const edges: FlowEdge[] = edgesRaw.map((entry) => {
+    const edge = (entry ?? {}) as Record<string, unknown>;
+    const provenance = resolveProvenance(edge.provenance);
+    const elementRaw = (edge.element ?? {}) as { id?: unknown; name?: unknown; type?: unknown };
+    return {
+      from: pickRef(edge.from),
+      to: pickOptionalRef(edge.to),
+      element: {
+        id: typeof elementRaw.id === "string" ? elementRaw.id : "",
+        name: typeof elementRaw.name === "string" ? elementRaw.name : "",
+        type: typeof elementRaw.type === "string" ? elementRaw.type : "UNKNOWN"
+      },
+      textHints: normalizeFlowHints(edge.textHints),
+      trigger: typeof edge.trigger === "string" ? edge.trigger : "UNKNOWN",
+      ...(typeof edge.triggerTimeoutMs === "number" ? { triggerTimeoutMs: edge.triggerTimeoutMs } : {}),
+      ...(typeof edge.navigation === "string" ? { navigation: edge.navigation } : {}),
+      ...(edge.back === true ? { back: true } : {}),
+      actionType: typeof edge.actionType === "string" ? edge.actionType : "UNKNOWN",
+      provenance,
+      confidence: confidenceFor(provenance)
+    };
+  });
+
+  return {
+    screens,
+    edges,
+    entryScreens: Array.isArray(source.entryScreens)
+      ? source.entryScreens.filter((name): name is string => typeof name === "string")
+      : [],
+    unresolvedDestinations: Array.isArray(source.unresolvedDestinations)
+      ? source.unresolvedDestinations.filter(
+          (destination): destination is string => typeof destination === "string"
+        )
+      : [],
+    ...(typeof source.interactionNodes === "number"
+      ? { interactionNodes: source.interactionNodes }
+      : {})
+  };
+}
+
+function collectTextHints(
+  node: FigmaNode,
+  limit: number,
+  isAnnotation: (id: string) => boolean
+): FlowHint[] {
+  const hints: FlowHint[] = [];
   walk(node, (candidate) => {
     if (hints.length >= limit || candidate.type !== "TEXT") return;
     const characters = (candidate as { characters?: unknown }).characters;
     if (typeof characters !== "string") return;
     const text = characters.trim();
-    if (text !== "" && !hints.includes(text)) hints.push(text);
+    if (text !== "" && !hints.some((hint) => hint.text === text)) {
+      hints.push({
+        text,
+        textClass: isAnnotation(candidate.id) ? "annotation" : "runtime-text"
+      });
+    }
   });
   return hints;
 }
@@ -297,6 +459,7 @@ export async function figmaExtractFlows(
     const lastModified = typeof file.lastModified === "string" ? file.lastModified : null;
     const payload: Record<string, unknown> = {
       ok: true,
+      schemaVersion: 2,
       fileKey,
       fileName: file.name ?? null,
       ...(fileVersion !== null ? { fileVersion } : {}),

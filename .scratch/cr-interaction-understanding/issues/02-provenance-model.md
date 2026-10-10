@@ -4,7 +4,9 @@
 
 **Blocked by:** 01（无交互检测决定 pen 置标为推断的前提）。
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+> 实施注：枚举首值落地为 `explicit`（涵盖显式交互与显式设计对象/文本，见 ADR-0008 实现注）；confidence 读取时由 provenance 派生（防自相矛盾升权）；`【AOS-EXPECT】` steps 携带 provenance + confidence。见 DESIGN §13.61。
 
 - [ ] 流程 screen/edge 与用例 step/expectation 新增来源与置信度字段，枚举语义与 CONTEXT.md / ADR-0008 一致
 - [ ] Figma 显式交互标 explicit-interaction；pen 合成标 inferred；解析升级可回填

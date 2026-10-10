@@ -1138,3 +1138,13 @@ llm_switch(name, force):
 - **pen**：`.pen` v2.20 经 schema 核实无原型交互字段（唯一链接性字段为 text `href`）；新增确定性检测 `detectPenInteractionSignals`（`href` + 交互类节点键 interactions/prototype/reactions/onTap/onClick/onPress/hotspot + `metadata.type` 交互线索；空值 false/0/空串/空数组/空对象不计数）。告警由恒定 `pen-no-interactions` 改为条件二选一：无线索保持（文案注明格式依据）；有线索改为新码 `pen-interactions-present`（显式标注「未解析、仍按画板推断」，不静默合成）；`synthesis.interactionSignals`、工具 `counts.interactionSignals`、flow-map 说明行随状态切换。
 - **边界**：本票仅检测与告警；线索解析与来源置标（provenance）属票 02+。
 - **测试**：`test/figma-flows.test.js`（无交互告警/单屏不告警/有交互不告警/有交互无跳转告警）、`test/pen-flows.test.js`（线索翻转/空值不计数/确定性/工具级响应与落盘产物）。
+
+### 13.61 实施记录（票 02：来源模型置标 provenance / confidence / 文本类别）
+
+> 实施于 2026-10-10；CR 交互理解主线第二票（ADR-0008）。新增 `src/provenance.ts`；改 `src/figma/flows.ts`（置标 + 类别 + `normalizeFlowGraph`）、`src/pen/flows.ts`、`src/figma/test-gen.ts`；测试 +7；全量 799 绿。
+
+- **词表**（CONTEXT.md）：`provenance ∈ {explicit, inferred, runtime-observed, human-confirmed, legacy-unknown}`（首个值从 ADR-0008 的「显式交互」放宽为「显式」，以覆盖显式设计对象/文本）；`confidence ∈ {high, low}`（explicit/observed/confirmed=high，inferred/legacy=low）；`textClass ∈ {runtime-text, annotation, layer-name}`（`Flow/*` 祖先层下的文本 = annotation）。
+- **产物**：flows.json 升 `schemaVersion: 2`——screens/edges 携带 provenance/confidence，`textHints` 从 `string[]` 变为 `{text, textClass}[]`（Figma=explicit/high；pen 合成=inferred/low）；tests.json 的 expectations 每步携带 provenance/confidence，`【AOS-EXPECT】` steps 同步带 provenance。
+- **兼容（保守消费）**：`normalizeFlowGraph`/`normalizeFlowHints` 读取旧 flows.json（缺字段/字符串 hints）→ legacy-unknown/low + runtime-text，不静默升权；未知 `textClass` 降级 `annotation`（只展示、不进断言）；畸形边引用校验（`to` 无名 → null）；**读取时 confidence 由 provenance 派生**（持久值仅供展示，自相矛盾字段不生效）。`figma_generate_tests` 读盘路径统一走 normalize；iOS 执行器解析 AOS-EXPECT 忽略未知字段（无回归）；原有内嵌 legacy 图（如手工夹具）经 `generateTestCases` 的容错读取同样可用。回填 = 重跑解析（解析器升级后产物自带）。
+- **边界**：本票只置标与透传；类别消费（批注不进断言）、推断边降级探索、门禁分级属票 03+。结构分类规则（`Flow/*` → annotation）已随字段落地，票 03 收敛为「消费过滤 + note 类细化 + starbucks 回归」。
+- **测试**：`test/provenance.test.js`（枚举归一含原型链键、confidence 映射、`Flow/*` 判定）、`test/figma-flows.test.js`（explicit/high 置标、Flow/* 批注分类、normalize 兼容两态 + 未知类别降级）、`test/pen-flows.test.js`（inferred/low、类别、schemaVersion=2）、`test/figma-testgen.test.js`（expectations/AOS-EXPECT provenance+confidence、legacy flows 端到端保守归一）。
