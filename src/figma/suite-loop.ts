@@ -29,6 +29,8 @@ export interface SuiteLoopReport {
       coverageAvailable: boolean;
       uncoveredScreens: number;
       uncoveredEdges: number;
+      exploreUncoveredScreens: number;
+      exploreUncoveredEdges: number;
       routeDrift: string[];
       issue: string | null;
     } | null;
@@ -152,6 +154,10 @@ export function buildSuiteLoopReport(input: SuiteLoopInput): SuiteLoopReport {
             coverageAvailable: input.check.preflight.coverage.available,
             uncoveredScreens: input.check.preflight.coverage.uncoveredScreens.length,
             uncoveredEdges: input.check.preflight.coverage.uncoveredEdges.length,
+            exploreUncoveredScreens:
+              input.check.preflight.coverage.explore?.uncoveredScreens.length ?? 0,
+            exploreUncoveredEdges:
+              input.check.preflight.coverage.explore?.uncoveredEdges.length ?? 0,
             routeDrift: input.check.routeDrift,
             issue: input.check.issue
           }
@@ -204,7 +210,7 @@ export function renderSuiteLoopMarkdown(report: SuiteLoopReport): string {
       check
         ? check.issue
           ? `未通过（${check.issue}）`
-          : `通过（用例 ${check.cases} · 弱断言 ${check.weakCases} · 未覆盖屏幕 ${check.uncoveredScreens} · 未覆盖跳转 ${check.uncoveredEdges}）`
+          : `通过（用例 ${check.cases} · 弱断言 ${check.weakCases} · 未硬覆盖屏幕 ${check.uncoveredScreens} · 未硬覆盖跳转 ${check.uncoveredEdges} · 探索缺口 屏 ${check.exploreUncoveredScreens}/边 ${check.exploreUncoveredEdges}）`
         : "不可用（无 tests.json）"
     }`
   );

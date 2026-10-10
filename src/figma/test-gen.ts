@@ -6,7 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
-import { computeScreenCoverage } from "./coverage.js";
+import { computeClassifiedCoverage, type CoverageClass } from "./coverage.js";
 import {
   buildFlowGraph,
   normalizeFlowGraph,
@@ -21,6 +21,7 @@ import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 import {
   confidenceFor,
+  isHardCoverageValue,
   isUnconfirmedProvenance,
   resolveProvenance,
   type Confidence,
@@ -80,36 +81,51 @@ export interface LinearizeStats {
   truncated: boolean;
 }
 
-export interface FlowCoverage {
-  /** No uncovered screen, no uncovered edge, no truncated path exploration. */
-  complete: boolean;
-  /** Design screens that no generated case visits. */
-  uncoveredScreens: string[];
-  /** Screen-to-screen transitions (`From → To`) no generated case walks. */
-  uncoveredEdges: string[];
+export interface FlowCoverage extends CoverageClass {
   truncated: boolean;
   entryFallback: boolean;
+  /** Exploration-only coverage (inferred evidence): reported, never gates. */
+  explore: CoverageClass;
 }
 
 /** Deterministic route coverage of the generated cases against the flow graph.
- * Backed by `computeScreenCoverage` (single implementation shared with preflight). */
+ * Hard targets (explicit/observed/confirmed/legacy evidence) gate
+ * `requireFullCoverage`; inferred targets are reported under `explore` only.
+ * Backed by `computeClassifiedCoverage` (single implementation shared with
+ * preflight). */
 export function computeFlowCoverage(
   graph: FlowGraph,
   cases: GeneratedTest[],
   stats?: Pick<LinearizeStats, "truncated" | "entryFallback"> | null
 ): FlowCoverage {
-  const { uncoveredScreens, uncoveredEdges } = computeScreenCoverage(
-    graph.screens.map((screen) => screen.name),
-    graph.edges.map((edge) => ({ from: edge.from.name, to: edge.to ? edge.to.name : null })),
+  const split = computeClassifiedCoverage(
+    graph.screens.map((screen) => ({
+      name: screen.name,
+      hard: isHardCoverageValue(screen.provenance)
+    })),
+    graph.edges.map((edge) => ({
+      from: edge.from.name,
+      to: edge.to ? edge.to.name : null,
+      hard: isHardCoverageValue(edge.provenance)
+    })),
     cases
   );
   const truncated = stats?.truncated ?? false;
   return {
-    complete: uncoveredScreens.length === 0 && uncoveredEdges.length === 0 && !truncated,
-    uncoveredScreens,
-    uncoveredEdges,
+    complete:
+      split.hard.uncoveredScreens.length === 0 &&
+      split.hard.uncoveredEdges.length === 0 &&
+      !truncated,
+    uncoveredScreens: split.hard.uncoveredScreens,
+    uncoveredEdges: split.hard.uncoveredEdges,
     truncated,
-    entryFallback: stats?.entryFallback ?? false
+    entryFallback: stats?.entryFallback ?? false,
+    explore: {
+      uncoveredScreens: split.explore.uncoveredScreens,
+      uncoveredEdges: split.explore.uncoveredEdges,
+      complete:
+        split.explore.uncoveredScreens.length === 0 && split.explore.uncoveredEdges.length === 0
+    }
   };
 }
 
@@ -592,13 +608,18 @@ export async function figmaGenerateTests(
     if (args.requireFullCoverage === true && !coverage.complete) {
       const reasons: string[] = [];
       if (coverage.uncoveredScreens.length > 0) {
-        reasons.push(`未覆盖屏幕：${coverage.uncoveredScreens.join("、")}`);
+        reasons.push(`未硬覆盖屏幕：${coverage.uncoveredScreens.join("、")}`);
       }
       if (coverage.uncoveredEdges.length > 0) {
-        reasons.push(`未覆盖跳转：${coverage.uncoveredEdges.join("、")}`);
+        reasons.push(`未硬覆盖跳转：${coverage.uncoveredEdges.join("、")}`);
       }
       if (coverage.truncated) {
         reasons.push("路径探索被截断（maxFlows 上限或深度限制），可能有流程被丢弃");
+      }
+      if (!coverage.explore.complete) {
+        reasons.push(
+          `探索覆盖缺口（inferred，仅报告）：屏幕 ${coverage.explore.uncoveredScreens.length} · 跳转 ${coverage.explore.uncoveredEdges.length}`
+        );
       }
       throw new Error(
         `流程覆盖不完整，未落盘：${reasons.join("；")}。可提高 maxFlows、补原型连线；` +
@@ -619,7 +640,8 @@ export async function figmaGenerateTests(
       hint:
         "用 mobile_run_task 执行 flows[].taskDesc；失败步骤可用 compare_design_and_device 做视觉断言；" +
         "若已跑过 figma_import_strings，步骤中会附带 i18n key（原文仅在 source locale 兜底）；" +
-        "coverage.complete=false 表示有未覆盖屏幕/跳转或路径截断（requireFullCoverage:true 可强制不落盘）。" +
+        "coverage 分硬/探索两类：complete 只按硬覆盖判定（inferred 边不虚高门禁），explore 单独报告" +
+        "（requireFullCoverage:true 硬覆盖不完整即不落盘）。" +
         splitHint
     };
 

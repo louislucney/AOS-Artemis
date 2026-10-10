@@ -532,6 +532,52 @@ test("suite check: static coverage without device (0 complete, 2 uncovered/missi
   assert.ok(missing.errors.some((line) => line.includes("缺 flows.json")));
 });
 
+test("suite check --strict: weak assertions gate when requested; explore steps stay exempt", async () => {
+  const { runtime } = await setupRun({
+    cases: [
+      caseEntry(1, {
+        screens: ["Home"],
+        steps: ["进入首页"],
+        expectations: [
+          { screen: null, hints: [], provenance: "explicit", confidence: "high", kind: "assert" }
+        ]
+      })
+    ]
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: []
+    }),
+    "utf-8"
+  );
+
+  const relaxed = await runCli(runtime, ["check"]);
+  assert.equal(relaxed.code, 0);
+  assert.ok(relaxed.logs.some((line) => line.includes("弱用例 1")));
+
+  const strict = await runCli(runtime, ["check", "--strict"]);
+  assert.equal(strict.code, 2);
+  assert.ok(strict.errors.some((line) => line.includes("--strict 门禁未通过")));
+  assert.ok(strict.errors.some((line) => line.includes("弱断言 1 条")));
+
+  const exploreCase = caseEntry(2, {
+    screens: ["Home"],
+    steps: [
+      "探索到达「Next」（来源未确认）：自行尝试触发通往该页的交互，记录实际路径与页面变化；不参与断言判定"
+    ],
+    expectations: [
+      { screen: "Next", hints: [], provenance: "inferred", confidence: "low", kind: "explore" }
+    ]
+  });
+  fs.writeFileSync(path.join(designDir, "tests.json"), JSON.stringify({ flows: [exploreCase] }));
+
+  const exploreStrict = await runCli(runtime, ["check", "--strict"]);
+  assert.equal(exploreStrict.code, 0, "explore steps are exempt from --strict");
+});
+
 test("suite check: route drift warning (test screens absent from design, non-blocking)", async () => {
   const { runtime } = await setupRun({ cases: [caseEntry(1, { screens: ["Home", "ObservedOnly"] })] });
   const designDir = path.join(runtime.configDirAbs, "design");

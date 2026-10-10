@@ -12,6 +12,12 @@ export interface ScreenCoverage {
   uncoveredEdges: string[];
 }
 
+export interface CoverageClass {
+  uncoveredScreens: string[];
+  uncoveredEdges: string[];
+  complete: boolean;
+}
+
 /** Single source of truth for screen/transition coverage (生成闸与执行预检共用).
  * Rules (DESIGN §6.10 口径): edges without a destination and self transitions
  * (BACK/self loops) add no new screen step, so they are not coverage targets. */
@@ -37,5 +43,31 @@ export function computeScreenCoverage(
     coveredScreens: [...coveredScreens],
     uncoveredScreens: screenNames.filter((name) => !coveredScreens.has(name)),
     uncoveredEdges: [...edgePairs].filter((pair) => !coveredPairs.has(pair))
+  };
+}
+
+export interface ClassifiedCoverage {
+  /** Hard targets gate `requireFullCoverage` (explicit/observed/confirmed/legacy). */
+  hard: ScreenCoverage;
+  /** Inferred targets are reported only, never gate. */
+  explore: ScreenCoverage;
+}
+
+/** Split screen/transition coverage by evidence class, reusing the single
+ * `computeScreenCoverage` implementation for both partitions. */
+export function computeClassifiedCoverage(
+  screens: Array<{ name: string; hard: boolean }>,
+  edges: Array<CoverageEdge & { hard: boolean }>,
+  cases: Array<{ screens: string[] }>
+): ClassifiedCoverage {
+  const partition = (hard: boolean): { screens: string[]; edges: CoverageEdge[] } => ({
+    screens: screens.filter((entry) => entry.hard === hard).map((entry) => entry.name),
+    edges: edges.filter((entry) => entry.hard === hard)
+  });
+  const hardPart = partition(true);
+  const explorePart = partition(false);
+  return {
+    hard: computeScreenCoverage(hardPart.screens, hardPart.edges, cases),
+    explore: computeScreenCoverage(explorePart.screens, explorePart.edges, cases)
   };
 }

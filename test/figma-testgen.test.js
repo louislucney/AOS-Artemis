@@ -835,6 +835,72 @@ test("computeFlowCoverage: truncation and uncovered transitions mark incomplete"
   assert.deepEqual(partial.uncoveredEdges, ["Home → Checkout", "Checkout → Success"]);
 });
 
+test("computeFlowCoverage: inferred edges are explore-only (hard gate not inflated)", () => {
+  const screens = [
+    {
+      id: "s1",
+      name: "A",
+      suggestedRoute: "/a",
+      childNames: [],
+      textHints: [],
+      provenance: "inferred",
+      confidence: "low"
+    },
+    {
+      id: "s2",
+      name: "B",
+      suggestedRoute: "/b",
+      childNames: [],
+      textHints: [],
+      provenance: "inferred",
+      confidence: "low"
+    }
+  ];
+  const edges = [
+    {
+      from: { id: "s1", name: "A" },
+      to: { id: "s2", name: "B" },
+      element: { id: "e", name: "E", type: "INFERRED" },
+      textHints: [],
+      trigger: "INFERRED",
+      actionType: "INFERRED",
+      provenance: "inferred",
+      confidence: "low"
+    }
+  ];
+  const graph = { screens, edges, entryScreens: ["A"], unresolvedDestinations: [] };
+
+  const full = computeFlowCoverage(graph, [{ screens: ["A", "B"] }]);
+  assert.equal(full.complete, true, "no hard targets: the gate is vacuously complete");
+  assert.equal(full.explore.complete, true);
+  assert.deepEqual(full.uncoveredScreens, []);
+
+  const partial = computeFlowCoverage(graph, [{ screens: ["A"] }]);
+  assert.equal(partial.complete, true, "exploration gaps never gate");
+  assert.equal(partial.explore.complete, false);
+  assert.deepEqual(partial.explore.uncoveredScreens, ["B"]);
+  assert.deepEqual(partial.explore.uncoveredEdges, ["A → B"]);
+
+  const hard = buildFlowGraph(syntheticFlowDocument());
+  const hardPartial = computeFlowCoverage(hard, [{ screens: ["Home"] }]);
+  assert.equal(hardPartial.complete, false, "confirmed evidence still gates");
+  assert.deepEqual(hardPartial.uncoveredScreens, ["Checkout", "Success"]);
+  assert.equal(hardPartial.explore.complete, true);
+
+  const legacyGraph = {
+    screens: [
+      { id: "s1", name: "A", suggestedRoute: "/a", childNames: [], textHints: [] },
+      { id: "s2", name: "B", suggestedRoute: "/b", childNames: [], textHints: [] }
+    ],
+    edges: [],
+    entryScreens: ["A"],
+    unresolvedDestinations: []
+  };
+  const legacy = computeFlowCoverage(legacyGraph, [{ screens: ["A"] }]);
+  assert.equal(legacy.complete, false, "legacy artifacts stay gating (fail loud, never weakened)");
+  assert.deepEqual(legacy.uncoveredScreens, ["B"]);
+});
+
 test("flowGraphWarnings: no-entry, unreachable screens and unresolved destinations", () => {
   const screen = (id, name) => ({ id, name, suggestedRoute: `/${name}`, childNames: [], textHints: [] });
   const edge = (from, to) => ({

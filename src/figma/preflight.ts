@@ -1,8 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { computeScreenCoverage, type CoverageEdge } from "./coverage.js";
-import { isExploreKind } from "../provenance.js";
+import {
+  computeClassifiedCoverage,
+  computeScreenCoverage,
+  type CoverageClass,
+  type CoverageEdge
+} from "./coverage.js";
+import { isExploreKind, isHardCoverageValue } from "../provenance.js";
 
 export interface PreflightWeakStep {
   index: number;
@@ -20,10 +25,13 @@ export interface PreflightCoverage {
   available: boolean;
   /** All design screen names from flows.json (empty when unavailable). */
   designScreens: string[];
-  /** Screens visited by at least one case. */
+  /** Screens visited by at least one case (hard + explore). */
   screens: string[];
+  /** Hard-class gaps: these gate the run (fail-closed). */
   uncoveredScreens: string[];
   uncoveredEdges: string[];
+  /** Exploration-class gaps (inferred evidence): reported only, never gate. */
+  explore: Pick<CoverageClass, "uncoveredScreens" | "uncoveredEdges">;
 }
 
 export interface PreflightReport {
@@ -104,26 +112,41 @@ export function preflightGeneratedTests(
   let coverage: PreflightCoverage;
   try {
     const flows = JSON.parse(fs.readFileSync(path.join(designDir, "flows.json"), "utf-8")) as {
-      screens?: Array<{ name?: unknown }>;
-      edges?: Array<{ from?: { name?: unknown }; to?: { name?: unknown } | null }>;
+      screens?: Array<{ name?: unknown; provenance?: unknown }>;
+      edges?: Array<{
+        from?: { name?: unknown };
+        to?: { name?: unknown } | null;
+        provenance?: unknown;
+      }>;
     };
-    const screens = (flows.screens ?? [])
-      .map((screen) => screen.name)
-      .filter((name): name is string => typeof name === "string");
-    const edges: CoverageEdge[] = [];
+    const screenInputs = (flows.screens ?? [])
+      .map((screen) => ({
+        name: screen.name,
+        hard: isHardCoverageValue(screen.provenance)
+      }))
+      .filter((entry): entry is { name: string; hard: boolean } => typeof entry.name === "string");
+    const edgeInputs: Array<CoverageEdge & { hard: boolean }> = [];
     for (const edge of flows.edges ?? []) {
       const from = edge.from?.name;
       if (typeof from !== "string") continue;
       const to = edge.to?.name;
-      edges.push({ from, to: typeof to === "string" ? to : null });
+      edgeInputs.push({
+        from,
+        to: typeof to === "string" ? to : null,
+        hard: isHardCoverageValue(edge.provenance)
+      });
     }
-    const result = computeScreenCoverage(screens, edges, caseInputs);
+    const split = computeClassifiedCoverage(screenInputs, edgeInputs, caseInputs);
     coverage = {
       available: true,
-      designScreens: screens,
-      screens: result.coveredScreens,
-      uncoveredScreens: result.uncoveredScreens,
-      uncoveredEdges: result.uncoveredEdges
+      designScreens: screenInputs.map((entry) => entry.name),
+      screens: [...new Set([...split.hard.coveredScreens, ...split.explore.coveredScreens])],
+      uncoveredScreens: split.hard.uncoveredScreens,
+      uncoveredEdges: split.hard.uncoveredEdges,
+      explore: {
+        uncoveredScreens: split.explore.uncoveredScreens,
+        uncoveredEdges: split.explore.uncoveredEdges
+      }
     };
   } catch {
     const result = computeScreenCoverage([], [], caseInputs);
@@ -132,7 +155,8 @@ export function preflightGeneratedTests(
       designScreens: [],
       screens: result.coveredScreens,
       uncoveredScreens: [],
-      uncoveredEdges: []
+      uncoveredEdges: [],
+      explore: { uncoveredScreens: [], uncoveredEdges: [] }
     };
   }
 

@@ -7,7 +7,15 @@ import {
   renderSuiteLoopMarkdown
 } from "../dist/figma/suite-loop.js";
 
-function checkInput({ issue = null, weak = 0, uncoveredScreens = [], uncoveredEdges = [], drift = [] } = {}) {
+function checkInput({
+  issue = null,
+  weak = 0,
+  uncoveredScreens = [],
+  uncoveredEdges = [],
+  exploreScreens = [],
+  exploreEdges = [],
+  drift = []
+} = {}) {
   return {
     testsPath: "/p/.artemis/design/tests.json",
     preflight: {
@@ -22,7 +30,8 @@ function checkInput({ issue = null, weak = 0, uncoveredScreens = [], uncoveredEd
         designScreens: ["Home"],
         screens: ["Home"],
         uncoveredScreens,
-        uncoveredEdges
+        uncoveredEdges,
+        explore: { uncoveredScreens: exploreScreens, uncoveredEdges: exploreEdges }
       },
       generation: null
     },
@@ -146,6 +155,7 @@ test("buildSuiteLoopReport: aggregates steps, flake and failure domains", () => 
     calibration: calibrationInput()
   });
   assert.equal(report.steps.check.cases, 2);
+  assert.equal(report.steps.check.exploreUncoveredScreens, 0);
   assert.equal(report.steps.run.flaky, 1);
   assert.deepEqual(report.steps.run.failureDomains, { 应用缺陷: 1 });
   assert.equal(report.steps.feedback.suggestions, 1);
@@ -177,6 +187,7 @@ test("renderSuiteLoopMarkdown: steps, actions and top suggestions", () => {
     })
   );
   assert.match(markdown, /# 测试闭环报告/);
+  assert.match(markdown, /探索缺口 屏 0\/边 0/);
   assert.match(markdown, /pass 1 \/ fail 1/);
   assert.match(markdown, /flaky 1/);
   assert.match(markdown, /## 下一步动作/);

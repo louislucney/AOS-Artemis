@@ -52,3 +52,18 @@ export type StepKind = "assert" | "explore";
 export function isExploreKind(value: unknown): boolean {
   return value === "explore";
 }
+
+/** Gate-side classification for flow coverage: only `inferred` evidence is
+ * exempt from the hard gate. Legacy artifacts stay gating (fail loud — never
+ * silently weaken an old project's gate); confirmed evidence always gates.
+ * Note this is deliberately NOT the inverse of `isUnconfirmedProvenance`
+ * (assertion side): legacy is unconfirmed for assertions yet still gating. */
+export function isHardCoverageTarget(provenance: Provenance): boolean {
+  return provenance !== "inferred";
+}
+
+/** Convenience for persisted artifacts: classify a raw provenance value for
+ * coverage gating (missing/unknown → legacy-unknown → hard). */
+export function isHardCoverageValue(value: unknown): boolean {
+  return isHardCoverageTarget(resolveProvenance(value));
+}

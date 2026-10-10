@@ -79,6 +79,39 @@ test("preflightGeneratedTests: explore-kind steps are not counted as weak assert
   assert.deepEqual(report.weakCases, [], "exploration steps are deferred, not weak");
 });
 
+test("preflightGeneratedTests: hard/explore coverage split from flows provenance", () => {
+  const tests = JSON.stringify({
+    flows: [
+      {
+        id: "case-1",
+        name: "A → C",
+        screens: ["A", "C"],
+        steps: ["点击「x」，验证进入「C」（页面应出现「C」）"]
+      }
+    ]
+  });
+  const flows = JSON.stringify({
+    screens: [
+      { name: "A", provenance: "explicit" },
+      { name: "B", provenance: "inferred" },
+      { name: "C", provenance: "explicit" }
+    ],
+    edges: [
+      { from: { name: "A" }, to: { name: "B" }, provenance: "inferred" },
+      { from: { name: "A" }, to: { name: "C" }, provenance: "explicit" }
+    ]
+  });
+  const configDir = makeDesignDir({ tests, flows });
+
+  const report = preflightGeneratedTests(configDir);
+  assert.equal(report.coverage.available, true);
+  assert.deepEqual(report.coverage.uncoveredScreens, [], "hard screens are all covered");
+  assert.deepEqual(report.coverage.uncoveredEdges, [], "hard edge is covered");
+  assert.deepEqual(report.coverage.explore.uncoveredScreens, ["B"], "explore gaps are separate");
+  assert.deepEqual(report.coverage.explore.uncoveredEdges, ["A → B"]);
+  assert.deepEqual(report.coverage.screens.sort(), ["A", "C"]);
+});
+
 test("preflightGeneratedTests: missing or corrupt tests.json returns null; flows optional", () => {
   const missing = makeDesignDir({});
   assert.equal(preflightGeneratedTests(missing), null);

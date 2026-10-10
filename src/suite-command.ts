@@ -131,9 +131,15 @@ function parseIgnoreRegions(values: string[]): Array<{ x: number; y: number; wid
 }
 
 /** Reason the run fails the flow-coverage gate, or null when it passes.
+ * Hard coverage gaps (explicit/observed/confirmed/legacy evidence) always
+ * gate; inferred exploration gaps never do. `--strict` additionally gates on
+ * weak assertions (non-explore steps without a checkable expectation).
  * Fail-closed: unreadable preflight data or missing flows.json both count as
  * "cannot prove completeness" (DESIGN §6.10). */
-function coverageGateIssue(preflight: PreflightReport | null): string | null {
+function coverageGateIssue(
+  preflight: PreflightReport | null,
+  options: { strict?: boolean } = {}
+): string | null {
   if (!preflight) {
     return "流程覆盖校验不可用：预检数据缺失（tests.json 不可读）";
   }
@@ -144,10 +150,15 @@ function coverageGateIssue(preflight: PreflightReport | null): string | null {
   const uncovered = coverage.uncoveredScreens.length + coverage.uncoveredEdges.length;
   const generation = preflight.generation as { truncated?: unknown } | null;
   const truncated = generation?.truncated === true;
-  if (uncovered === 0 && !truncated) return null;
+  const strictWeak = options.strict === true && preflight.weakCases.length > 0;
+  if (uncovered === 0 && !truncated && !strictWeak) return null;
+  if (uncovered === 0 && !truncated) {
+    return `--strict 门禁未通过：弱断言 ${preflight.weakCases.length} 条（explore 步骤已豁免）`;
+  }
   return (
-    `流程未完整覆盖：未覆盖屏幕 ${coverage.uncoveredScreens.length} · ` +
-    `未覆盖跳转 ${coverage.uncoveredEdges.length}${truncated ? " · 路径截断" : ""}`
+    `流程未完整覆盖：未硬覆盖屏幕 ${coverage.uncoveredScreens.length} · ` +
+    `未硬覆盖跳转 ${coverage.uncoveredEdges.length}${truncated ? " · 路径截断" : ""}` +
+    (strictWeak ? ` · --strict 弱断言 ${preflight.weakCases.length} 条` : "")
   );
 }
 
@@ -244,8 +255,8 @@ Usage:
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
-        [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine]
-check:  [--tests <path>]
+        [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine] [--strict]
+check:  [--tests <path>] [--strict]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
         [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-quarantine] [--no-save] [--out <dir>]
@@ -278,11 +289,16 @@ async function suiteRun(
   if (retryCount > 0 && !runOptions.stopOnFailure) {
     await applyRetryDiagnostics(runtime, report, retryCount, runOptions);
   }
-  const coverageIssue = flags.bool("fail-on-uncovered") ? coverageGateIssue(report.preflight) : null;
+  const coverageIssue = flags.bool("fail-on-uncovered")
+    ? coverageGateIssue(report.preflight, { strict: flags.bool("strict") })
+    : null;
   if (flags.bool("json")) {
     io.log(JSON.stringify(report, null, 2));
   } else {
     io.log(`套件: ${report.testsPath}`);
+    if (flags.bool("strict") && !flags.bool("fail-on-uncovered")) {
+      io.log("注意: --strict 需与 --fail-on-uncovered 同时使用才参与门禁");
+    }
     for (const message of quarantine.messages) {
       io.log(message);
     }
@@ -298,8 +314,10 @@ async function suiteRun(
           generation?.truncated === true ? "路径截断" : null,
           generation?.entryFallback === true ? "入口回退" : null
         ].filter((note): note is string => note !== null);
+        const explore = report.preflight.coverage.explore;
         io.log(
-          `预检: 弱用例 ${report.preflight.weakCases.length} 条 · 未覆盖屏幕 ${report.preflight.coverage.uncoveredScreens.length} · 未覆盖边 ${report.preflight.coverage.uncoveredEdges.length}` +
+          `预检: 弱用例 ${report.preflight.weakCases.length} 条 · 未硬覆盖屏幕 ${report.preflight.coverage.uncoveredScreens.length} · 未硬覆盖边 ${report.preflight.coverage.uncoveredEdges.length}` +
+            ` · 探索缺口 屏 ${explore.uncoveredScreens.length}/边 ${explore.uncoveredEdges.length}（不阻断）` +
             (notes.length > 0 ? ` · ${notes.join(" · ")}` : "")
         );
       }
@@ -378,7 +396,7 @@ async function suiteCheck(
   }
 
   const coverage = preflight.coverage;
-  const issue = coverageGateIssue(preflight);
+  const issue = coverageGateIssue(preflight, { strict: flags.bool("strict") });
   const routeDrift = coverage.available
     ? coverage.screens.filter((screen) => !coverage.designScreens.includes(screen))
     : [];
@@ -415,21 +433,29 @@ async function suiteCheck(
       io.log("覆盖: 不可用（缺 flows.json）");
     } else {
       io.log(
-        `覆盖: 未覆盖屏幕 ${coverage.uncoveredScreens.length} · 未覆盖跳转 ${coverage.uncoveredEdges.length}` +
+        `覆盖: 未硬覆盖屏幕 ${coverage.uncoveredScreens.length} · 未硬覆盖跳转 ${coverage.uncoveredEdges.length}` +
+          ` · 探索缺口 屏 ${coverage.explore.uncoveredScreens.length}/边 ${coverage.explore.uncoveredEdges.length}（不阻断）` +
           (notes.length > 0 ? ` · ${notes.join(" · ")}` : "")
       );
       if (coverage.uncoveredScreens.length > 0) {
-        io.log(`  未覆盖屏幕: ${coverage.uncoveredScreens.join("、")}`);
+        io.log(`  未硬覆盖屏幕: ${coverage.uncoveredScreens.join("、")}`);
       }
       if (coverage.uncoveredEdges.length > 0) {
-        io.log(`  未覆盖跳转: ${coverage.uncoveredEdges.join("、")}`);
+        io.log(`  未硬覆盖跳转: ${coverage.uncoveredEdges.join("、")}`);
+      }
+      if (coverage.explore.uncoveredScreens.length > 0 || coverage.explore.uncoveredEdges.length > 0) {
+        io.log(
+          `  探索未覆盖（仅报告）: 屏 ${coverage.explore.uncoveredScreens.join("、") || "-"} · 跳转 ${
+            coverage.explore.uncoveredEdges.join("、") || "-"
+          }`
+        );
       }
     }
     if (routeDrift.length > 0) {
       io.log(`路线漂移（测试引用、设计缺失）: ${routeDrift.join("、")}（警告，不阻断）`);
     }
     if (issue) io.errorLog(issue);
-    else io.log("结论: 完整");
+    else io.log(flags.bool("strict") ? "结论: 完整（--strict 弱断言 0）" : "结论: 完整");
   }
   return issue === null ? 0 : 2;
 }
