@@ -296,8 +296,12 @@ export function linearizeFlows(
   return linearizeFlowsWithStats(graph, options).paths;
 }
 
-function hintTexts(raw: unknown): string[] {
-  return normalizeFlowHints(raw).map((hint) => hint.text);
+/** Assertion candidates: runtime text only — annotations and layer names are
+ * display-level evidence and never feed assertions. */
+function runtimeHintTexts(raw: unknown): string[] {
+  return normalizeFlowHints(raw)
+    .filter((hint) => hint.textClass === "runtime-text")
+    .map((hint) => hint.text);
 }
 
 function expectationFor(graph: FlowGraph, edge: FlowEdge): StepExpectation {
@@ -305,7 +309,7 @@ function expectationFor(graph: FlowGraph, edge: FlowEdge): StepExpectation {
   const confidence = confidenceFor(provenance);
   if (!edge.to) return { screen: null, hints: [], provenance, confidence };
   const screen = graph.screens.find((candidate) => candidate.id === edge.to!.id);
-  const hints = [...hintTexts(screen?.textHints), ...(screen?.childNames ?? [])].slice(0, 3);
+  const hints = runtimeHintTexts(screen?.textHints).slice(0, 3);
   return { screen: edge.to.name, hints, provenance, confidence };
 }
 
@@ -323,7 +327,7 @@ function lookupI18nKey(text: string | undefined, i18nKeys: Map<string, string> |
 function stepFor(graph: FlowGraph, edge: FlowEdge, i18nKeys?: Map<string, string>): string {
   const target = edge.to ? `「${edge.to.name}」` : null;
   const assertion = assertionFor(graph, edge);
-  const elementHint = hintTexts(edge.textHints)[0];
+  const elementHint = runtimeHintTexts(edge.textHints)[0];
   const label = elementHint ? `「${elementHint}」` : `「${edge.element.name}」`;
   const i18nKey = lookupI18nKey(elementHint, i18nKeys);
   const elementNote = elementHint
@@ -397,10 +401,7 @@ export function generateTestCases(
     const entryScreenObj = graph.screens.find((candidate) => candidate.name === entryScreen);
     const preflight: CasePreflight = {
       screen: entryScreen,
-      hints: [
-        ...hintTexts(entryScreenObj?.textHints),
-        ...(entryScreenObj?.childNames ?? [])
-      ].slice(0, 3)
+      hints: runtimeHintTexts(entryScreenObj?.textHints).slice(0, 3)
     };
     const expectationLine = `脚本断言（供 iOS 执行器自动核对，执行时无需处理）：【AOS-EXPECT】${JSON.stringify(
       {

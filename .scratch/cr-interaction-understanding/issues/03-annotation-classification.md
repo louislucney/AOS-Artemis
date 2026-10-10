@@ -4,9 +4,9 @@
 
 **Blocked by:** 02（文本类别字段）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-> 注（02 落地后边界收窄）：结构分类（`Flow/*` 祖先层 → `annotation`）已随 02 的文本类别字段落地；本票剩「消费过滤（断言候选/期望不吃批注与图层名）+ note 类图层细化 + starbucks 回归 fixture」。
+> 实施注（2026-10-10）：结构分类（`Flow/*` 祖先层 → `annotation`）随票 02 落地；本票实现消费过滤（expectations/preflight/步骤 label/AOS-EXPECT 仅用 runtime-text）+ note/context/prompt 守门 + starbucks 回归四层测试。见 DESIGN §13.62。
 
 - [ ] 结构规则分类：`Flow/*` 分组、note 类图层 → 批注；其余候选 → 运行期文本；图层名独立类别
 - [ ] 断言候选与期望不再消费批注与图层名（提示级可展示，不参与判定）

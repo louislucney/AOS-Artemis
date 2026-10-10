@@ -262,8 +262,10 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     if (!screen) continue;
     const list = screenTextHints.get(screen.id) ?? [];
     const text = characters.trim();
-    if (list.length < 3 && !list.some((hint) => hint.text === text)) {
-      list.push({ text, textClass: isAnnotationLayer(node.id) ? "annotation" : "runtime-text" });
+    const textClass: TextClass = isAnnotationLayer(node.id) ? "annotation" : "runtime-text";
+    const classCount = list.filter((hint) => hint.textClass === textClass).length;
+    if (classCount < 3 && !list.some((hint) => hint.text === text)) {
+      list.push({ text, textClass });
       screenTextHints.set(screen.id, list);
     }
   }
@@ -407,21 +409,21 @@ export function normalizeFlowGraph(raw: unknown): FlowGraph {
 
 function collectTextHints(
   node: FigmaNode,
-  limit: number,
+  perClassLimit: number,
   isAnnotation: (id: string) => boolean
 ): FlowHint[] {
   const hints: FlowHint[] = [];
+  const countOf = (textClass: TextClass): number =>
+    hints.filter((hint) => hint.textClass === textClass).length;
   walk(node, (candidate) => {
-    if (hints.length >= limit || candidate.type !== "TEXT") return;
+    if (candidate.type !== "TEXT") return;
     const characters = (candidate as { characters?: unknown }).characters;
     if (typeof characters !== "string") return;
     const text = characters.trim();
-    if (text !== "" && !hints.some((hint) => hint.text === text)) {
-      hints.push({
-        text,
-        textClass: isAnnotation(candidate.id) ? "annotation" : "runtime-text"
-      });
-    }
+    if (text === "" || hints.some((hint) => hint.text === text)) return;
+    const textClass: TextClass = isAnnotation(candidate.id) ? "annotation" : "runtime-text";
+    if (countOf(textClass) >= perClassLimit) return;
+    hints.push({ text, textClass });
   });
   return hints;
 }

@@ -1148,3 +1148,14 @@ llm_switch(name, force):
 - **兼容（保守消费）**：`normalizeFlowGraph`/`normalizeFlowHints` 读取旧 flows.json（缺字段/字符串 hints）→ legacy-unknown/low + runtime-text，不静默升权；未知 `textClass` 降级 `annotation`（只展示、不进断言）；畸形边引用校验（`to` 无名 → null）；**读取时 confidence 由 provenance 派生**（持久值仅供展示，自相矛盾字段不生效）。`figma_generate_tests` 读盘路径统一走 normalize；iOS 执行器解析 AOS-EXPECT 忽略未知字段（无回归）；原有内嵌 legacy 图（如手工夹具）经 `generateTestCases` 的容错读取同样可用。回填 = 重跑解析（解析器升级后产物自带）。
 - **边界**：本票只置标与透传；类别消费（批注不进断言）、推断边降级探索、门禁分级属票 03+。结构分类规则（`Flow/*` → annotation）已随字段落地，票 03 收敛为「消费过滤 + note 类细化 + starbucks 回归」。
 - **测试**：`test/provenance.test.js`（枚举归一含原型链键、confidence 映射、`Flow/*` 判定）、`test/figma-flows.test.js`（explicit/high 置标、Flow/* 批注分类、normalize 兼容两态 + 未知类别降级）、`test/pen-flows.test.js`（inferred/low、类别、schemaVersion=2）、`test/figma-testgen.test.js`（expectations/AOS-EXPECT provenance+confidence、legacy flows 端到端保守归一）。
+
+### 13.62 实施记录（票 03：批注/图层名消费过滤 + starbucks 回归）
+
+> 实施于 2026-10-10；CR 交互理解主线第三票。改 `src/figma/flows.ts`、`src/pen/flows.ts`（采集端分类限流）、`src/figma/test-gen.ts`（断言消费白名单）；测试 +4；全量 803 绿。
+
+- **消费过滤**：`runtimeHintTexts`（`textClass=runtime-text`）成为 expectations / 起始屏 preflight / 元素定位 label 的**唯一**断言候选来源；批注文本与 childNames 图层名不再进入断言、`【AOS-EXPECT】` 与 taskDesc 断言文案（类别证据仍留在 flows.json 供展示/对账）；无运行期文本时元素定位回退到元素图层名（定位用途，非断言）。
+- **采集端分类限流（评审修复）**：hints 采集从"混合类别先截断"改为**按类别分别限流**且深搜索不因配额停止——批注洪水不再挤掉运行期文本（此前 3 条 `Flow/*` 批注在前即会让「早安, Amy」进不了 flows.json，消费过滤后断言为空）。
+- **note 类守门**：pen 侧 note/context/prompt 节点内容按类型门天然不进 hints（负向回归固化）；`Flow/*` 命名规则沿用 `isAnnotationLayerName` 单实现（票 02 已落；Figma 无独立 note 类型，判定即命名约定）。
+- **starbucks 回归**：合成含「刊頭廣告 - 活動跑馬燈」（批注）与图层名 childNames 的夹具 → expectations/起始屏/步骤 label/AOS-EXPECT 四层均只含运行期文本（「內用點餐」「早安, Amy☀️」「選擇門市」），批注文本全程不出现在 taskDesc。
+- **边界**：批注的「提示级展示」未新增渲染面（flows.json 已带类别）；弱断言告警在新口径下部分步骤增多（back/AFTER_TIMEOUT 文案自带「应」除外），留给票 05 的门禁分级。
+- **测试**：`test/figma-testgen.test.js`（starbucks 回归：四层过滤）、`test/figma-flows.test.js` / `test/pen-flows.test.js`（批注洪水回归：运行期文本存活 + 类别配额独立）、`test/pen-flows.test.js`（note/context/prompt 不进 hints）。

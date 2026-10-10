@@ -532,6 +532,63 @@ test("figma_generate_tests: legacy flows.json (no provenance) normalizes conserv
   assert.match(testCase.taskDesc, /点击「Buy now」/, "legacy string hints still render");
 });
 
+test("generateTestCases: assertions consume runtime text only (starbucks regression)", () => {
+  const graph = {
+    screens: [
+      {
+        id: "s1",
+        name: "首頁",
+        suggestedRoute: "/",
+        childNames: ["Flow/Section"],
+        textHints: [
+          { text: "早安, Amy☀️", textClass: "runtime-text" },
+          { text: "刊頭廣告 - 活動跑馬燈", textClass: "annotation" }
+        ],
+        provenance: "inferred",
+        confidence: "low"
+      },
+      {
+        id: "s2",
+        name: "選擇門市",
+        suggestedRoute: "/store",
+        childNames: ["我的最愛", "全部"],
+        textHints: [{ text: "選擇門市", textClass: "runtime-text" }],
+        provenance: "inferred",
+        confidence: "low"
+      }
+    ],
+    edges: [
+      {
+        from: { id: "s1", name: "首頁" },
+        to: { id: "s2", name: "選擇門市" },
+        element: { id: "e1", name: "選擇門市", type: "BUTTON" },
+        textHints: [
+          { text: "元素批注", textClass: "annotation" },
+          { text: "內用點餐", textClass: "runtime-text" }
+        ],
+        trigger: "INFERRED",
+        actionType: "INFERRED",
+        provenance: "inferred",
+        confidence: "low"
+      }
+    ],
+    entryScreens: ["首頁"],
+    unresolvedDestinations: []
+  };
+
+  const [testCase] = generateTestCases(graph);
+  assert.deepEqual(testCase.expectations[0].hints, ["選擇門市"], "runtime text only; layer names excluded");
+  assert.deepEqual(testCase.preflight.hints, ["早安, Amy☀️"], "annotation excluded from start hints");
+  assert.match(testCase.steps[0], /触发「內用點餐」/, "annotation element hint skipped for locators");
+  assert.ok(!testCase.steps[0].includes("元素批注"));
+  assert.ok(!testCase.taskDesc.includes("刊頭廣告 - 活動跑馬燈"), "annotation never reaches the task");
+
+  const line = testCase.taskDesc.split("\n").find((entry) => entry.includes("【AOS-EXPECT】"));
+  const block = JSON.parse(line.slice(line.indexOf("【AOS-EXPECT】") + "【AOS-EXPECT】".length));
+  assert.deepEqual(block.steps[0].hints, ["選擇門市"]);
+  assert.deepEqual(block.start.hints, ["早安, Amy☀️"]);
+});
+
 test("linearizeFlows: default maxDepth walks a 22-edge pen-style chain end to end", () => {
   const screens = Array.from({ length: 23 }, (_, index) => ({
     id: `s${index + 1}`,

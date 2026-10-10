@@ -202,6 +202,43 @@ test("synthesizePenFlows: interaction signals flip the no-interactions warning",
   assert.match(markdown, /交互线索/);
 });
 
+test("synthesizePenFlows: annotation flood does not crowd out runtime texts", () => {
+  const doc = fixtureDoc();
+  doc.children[0].children[2].children.unshift(
+    ...[1, 2, 3, 4, 5].map((index) => ({
+      id: `fa${index}`,
+      type: "frame",
+      name: "Flow/Note",
+      children: [{ id: `fa${index}t`, type: "text", content: `批注${index}` }]
+    }))
+  );
+
+  const result = synthesizePenFlows(doc);
+  const store = result.screens.find((screen) => screen.id === "s3");
+  assert.ok(store, "flooded screen is still synthesized");
+  assert.ok(
+    store.textHints.some((hint) => hint.text === "門市" && hint.textClass === "runtime-text"),
+    "runtime text survives an annotation flood"
+  );
+});
+
+test("synthesizePenFlows: note/context/prompt node texts never become hints", () => {
+  const doc = fixtureDoc();
+  doc.children[0].children[2].children.push(
+    { id: "n1", type: "note", content: "設計注記：此頁可跳轉" },
+    { id: "n2", type: "context", content: "Context blurb" },
+    { id: "n3", type: "prompt", content: "Prompt text" }
+  );
+
+  const result = synthesizePenFlows(doc);
+  const store = result.screens.find((screen) => screen.name === "門市");
+  assert.deepEqual(
+    store.textHints,
+    [{ text: "門市", textClass: "runtime-text" }],
+    "non-text node content stays out of hints"
+  );
+});
+
 test("synthesizePenFlows: blank signal values are not interaction signals", () => {
   const doc = fixtureDoc();
   walkNodes(doc, (node) => {

@@ -298,6 +298,44 @@ test("flow graph: explicit provenance, high confidence and text classes are atta
   assert.equal(click.textHints.find((hint) => hint.text === "Buy now").textClass, "runtime-text");
 });
 
+test("flow graph: annotation flood does not crowd out runtime texts", () => {
+  const document = syntheticFlowDocument();
+  const home = document.children[0].children.find((node) => node.name === "Home");
+  home.children.unshift(
+    ...[1, 2, 3].map((index) => ({
+      id: `fn${index}`,
+      name: "Flow/Note",
+      type: "FRAME",
+      children: [{ id: `fn${index}t`, type: "TEXT", characters: `批注${index}` }]
+    }))
+  );
+  const cta = home.children.find((node) => node.name === "CTA Button");
+  cta.children.unshift(
+    ...[1, 2, 3].map((index) => ({
+      id: `cf${index}`,
+      name: "Flow/Note",
+      type: "FRAME",
+      children: [{ id: `cf${index}t`, type: "TEXT", characters: `按钮批注${index}` }]
+    }))
+  );
+
+  const graph = buildFlowGraph(document);
+  const screen = graph.screens.find((candidate) => candidate.name === "Home");
+  assert.ok(
+    screen.textHints.some((hint) => hint.text === "Welcome Back" && hint.textClass === "runtime-text"),
+    "runtime screen text survives an annotation flood"
+  );
+  assert.ok(
+    screen.textHints.some((hint) => hint.text === "批注1" && hint.textClass === "annotation"),
+    "annotations are still kept under their own class cap"
+  );
+  const click = graph.edges.find((edge) => edge.element.name === "CTA Button");
+  assert.ok(
+    click.textHints.some((hint) => hint.text === "Buy now" && hint.textClass === "runtime-text"),
+    "runtime element text survives an annotation flood"
+  );
+});
+
 test("flow graph: texts under Flow/* layers are classified as annotations", () => {
   const document = syntheticFlowDocument();
   const home = document.children[0].children.find((node) => node.name === "Home");

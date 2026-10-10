@@ -451,14 +451,16 @@ export function synthesizePenFlows(
   };
 }
 
-function collectTextHints(node: PenNode, limit: number): FlowHint[] {
+function collectTextHints(node: PenNode, perClassLimit: number): FlowHint[] {
   const hints: FlowHint[] = [];
   const visit = (current: PenNode, underFlow: boolean): void => {
-    if (hints.length >= limit) return;
     const annotation = underFlow || isAnnotationLayerName(current.name);
     const text = textOf(current);
     if (text && !hints.some((hint) => hint.text === text)) {
-      hints.push({ text, textClass: annotation ? "annotation" : "runtime-text" });
+      const textClass = annotation ? "annotation" : "runtime-text";
+      if (hints.filter((hint) => hint.textClass === textClass).length < perClassLimit) {
+        hints.push({ text, textClass });
+      }
     }
     for (const child of current.children ?? []) visit(child, annotation);
   };
