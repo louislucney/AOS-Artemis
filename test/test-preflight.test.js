@@ -56,6 +56,29 @@ test("preflightGeneratedTests: weak steps, screen/edge coverage, generation stat
   assert.deepEqual(report.generation, { maxFlows: 10, truncated: false, droppedPaths: 0 });
 });
 
+test("preflightGeneratedTests: explore-kind steps are not counted as weak assertions", () => {
+  const tests = JSON.stringify({
+    flows: [
+      {
+        id: "case-1",
+        name: "Home → Checkout",
+        screens: ["Home", "Checkout"],
+        steps: [
+          "探索进入「Checkout」（推断跳转，未确认）：自行寻找并点击通往该页的入口，记录实际路径与页面变化；不参与断言判定"
+        ],
+        expectations: [
+          { screen: "Checkout", hints: [], provenance: "inferred", confidence: "low", kind: "explore" }
+        ]
+      }
+    ]
+  });
+  const configDir = makeDesignDir({ tests });
+
+  const report = preflightGeneratedTests(configDir);
+  assert.equal(report.cases, 1);
+  assert.deepEqual(report.weakCases, [], "exploration steps are deferred, not weak");
+});
+
 test("preflightGeneratedTests: missing or corrupt tests.json returns null; flows optional", () => {
   const missing = makeDesignDir({});
   assert.equal(preflightGeneratedTests(missing), null);

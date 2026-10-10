@@ -38,3 +38,17 @@ export function resolveProvenance(value: unknown): Provenance {
 export function isAnnotationLayerName(name: unknown): boolean {
   return typeof name === "string" && name.startsWith("Flow/");
 }
+
+/** Unconfirmed evidence (heuristic inference or legacy artifacts): generation
+ * must emit exploration steps, never hard assertions. */
+export function isUnconfirmedProvenance(provenance: Provenance): boolean {
+  return provenance === "inferred" || provenance === "legacy-unknown";
+}
+
+/** How a generated step is judged: hard assertions gate PASS/FAIL, exploration
+ * steps only record their actual path (deferred semantics). */
+export type StepKind = "assert" | "explore";
+
+export function isExploreKind(value: unknown): boolean {
+  return value === "explore";
+}

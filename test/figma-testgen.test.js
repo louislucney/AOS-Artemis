@@ -487,10 +487,12 @@ test("generateTestCases: per-step expectations are machine-readable and aligned 
     screen: testCase.expectations[0].screen,
     hints: testCase.expectations[0].hints,
     provenance: testCase.expectations[0].provenance,
-    confidence: testCase.expectations[0].confidence
+    confidence: testCase.expectations[0].confidence,
+    kind: testCase.expectations[0].kind
   });
   assert.equal(payload.steps[0].provenance, "explicit");
   assert.equal(payload.steps[0].confidence, "high");
+  assert.equal(payload.steps[0].kind, "assert");
   assert.equal(payload.steps[0].index, 1);
   assert.equal(payload.steps[1].screen, "Success", "AFTER_TIMEOUT step keeps its destination");
 });
@@ -528,8 +530,119 @@ test("figma_generate_tests: legacy flows.json (no provenance) normalizes conserv
   const testCase = payload.flows[0];
   assert.equal(testCase.expectations[0].provenance, "legacy-unknown");
   assert.equal(testCase.expectations[0].confidence, "low");
-  assert.ok(testCase.expectations[0].hints.includes("Pay now"));
-  assert.match(testCase.taskDesc, /点击「Buy now」/, "legacy string hints still render");
+  assert.equal(testCase.expectations[0].kind, "explore");
+  assert.deepEqual(testCase.expectations[0].hints, [], "conservative: no hard hints from legacy edges");
+  assert.match(testCase.taskDesc, /探索到达「Checkout」/, "legacy edges render as exploration");
+});
+
+test("generateTestCases: inferred edges become exploration steps", () => {
+  const graph = {
+    screens: [
+      {
+        id: "s1",
+        name: "首頁",
+        suggestedRoute: "/",
+        childNames: [],
+        textHints: [{ text: "早安", textClass: "runtime-text" }],
+        provenance: "explicit",
+        confidence: "high"
+      },
+      {
+        id: "s2",
+        name: "門市",
+        suggestedRoute: "/store",
+        childNames: [],
+        textHints: [{ text: "選擇門市", textClass: "runtime-text" }],
+        provenance: "explicit",
+        confidence: "high"
+      },
+      {
+        id: "s3",
+        name: "訂單",
+        suggestedRoute: "/order",
+        childNames: [],
+        textHints: [{ text: "訂單狀態", textClass: "runtime-text" }],
+        provenance: "inferred",
+        confidence: "low"
+      }
+    ],
+    edges: [
+      {
+        from: { id: "s1", name: "首頁" },
+        to: { id: "s2", name: "門市" },
+        element: { id: "e1", name: "門市入口", type: "BUTTON" },
+        textHints: [],
+        trigger: "ON_CLICK",
+        actionType: "NODE",
+        provenance: "explicit",
+        confidence: "high"
+      },
+      {
+        from: { id: "s2", name: "門市" },
+        to: { id: "s3", name: "訂單" },
+        element: { id: "e2", name: "推断跳转（按画板排布）", type: "INFERRED" },
+        textHints: [],
+        trigger: "INFERRED",
+        actionType: "INFERRED",
+        provenance: "inferred",
+        confidence: "low"
+      }
+    ],
+    entryScreens: ["首頁"],
+    unresolvedDestinations: []
+  };
+
+  const [testCase] = generateTestCases(graph);
+  assert.equal(testCase.steps.length, 2);
+  assert.match(testCase.steps[0], /^点击「門市入口」/, "explicit steps keep the hard-assert path");
+  assert.match(testCase.steps[0], /页面应出现「選擇門市」/);
+  assert.match(testCase.steps[1], /^探索到达「訂單」/);
+  assert.ok(!testCase.steps[1].includes("应"), "exploration steps carry no assertions");
+
+  assert.equal(testCase.expectations[0].kind, "assert");
+  assert.deepEqual(testCase.expectations[0].hints, ["選擇門市"]);
+  assert.equal(testCase.expectations[1].kind, "explore");
+  assert.deepEqual(testCase.expectations[1].hints, [], "explore steps carry no hard hints");
+  assert.equal(testCase.expectations[1].screen, "訂單", "the exploration goal is kept");
+  assert.match(testCase.taskDesc, /含 1 步探索/);
+
+  const line = testCase.taskDesc.split("\n").find((entry) => entry.includes("【AOS-EXPECT】"));
+  const block = JSON.parse(line.slice(line.indexOf("【AOS-EXPECT】") + "【AOS-EXPECT】".length));
+  assert.equal(block.steps[0].kind, "assert");
+  assert.equal(block.steps[1].kind, "explore");
+
+  const markdown = renderMarkdown([testCase], { source: "test", generatedAt: "now" });
+  assert.match(markdown, /1\) 点击「門市入口」/);
+  assert.match(markdown, /2\) 探索到达「訂單」/);
+});
+
+test("generateTestCases: exploration wording respects trigger semantics (timeout/back/unknown)", () => {
+  const screens = [
+    { id: "s1", name: "A", suggestedRoute: "/a", childNames: [], textHints: [] },
+    { id: "s2", name: "B", suggestedRoute: "/b", childNames: [], textHints: [] }
+  ];
+  const baseEdge = {
+    from: { id: "s1", name: "A" },
+    to: { id: "s2", name: "B" },
+    element: { id: "e", name: "E", type: "INFERRED" },
+    textHints: [],
+    trigger: "INFERRED",
+    actionType: "INFERRED",
+    provenance: "inferred",
+    confidence: "low"
+  };
+  const graphOf = (edge) => ({ screens, edges: [edge], entryScreens: ["A"], unresolvedDestinations: [] });
+
+  const [timeoutCase] = generateTestCases(
+    graphOf({ ...baseEdge, trigger: "AFTER_TIMEOUT", triggerTimeoutMs: 2000 })
+  );
+  assert.match(timeoutCase.steps[0], /^等待 2 秒后确认到达「B」/);
+
+  const [backCase] = generateTestCases(graphOf({ ...baseEdge, back: true }));
+  assert.match(backCase.steps[0], /^探索返回上一屏/);
+
+  const [unknownCase] = generateTestCases(graphOf({ ...baseEdge, to: null }));
+  assert.match(unknownCase.steps[0], /^探索未知跳转/);
 });
 
 test("generateTestCases: assertions consume runtime text only (starbucks regression)", () => {
@@ -566,10 +679,10 @@ test("generateTestCases: assertions consume runtime text only (starbucks regress
           { text: "元素批注", textClass: "annotation" },
           { text: "內用點餐", textClass: "runtime-text" }
         ],
-        trigger: "INFERRED",
-        actionType: "INFERRED",
-        provenance: "inferred",
-        confidence: "low"
+        trigger: "ON_CLICK",
+        actionType: "NODE",
+        provenance: "explicit",
+        confidence: "high"
       }
     ],
     entryScreens: ["首頁"],
@@ -579,7 +692,7 @@ test("generateTestCases: assertions consume runtime text only (starbucks regress
   const [testCase] = generateTestCases(graph);
   assert.deepEqual(testCase.expectations[0].hints, ["選擇門市"], "runtime text only; layer names excluded");
   assert.deepEqual(testCase.preflight.hints, ["早安, Amy☀️"], "annotation excluded from start hints");
-  assert.match(testCase.steps[0], /触发「內用點餐」/, "annotation element hint skipped for locators");
+  assert.match(testCase.steps[0], /点击「內用點餐」/, "annotation element hint skipped for locators");
   assert.ok(!testCase.steps[0].includes("元素批注"));
   assert.ok(!testCase.taskDesc.includes("刊頭廣告 - 活動跑馬燈"), "annotation never reaches the task");
 
@@ -643,6 +756,47 @@ test("figma_generate_tests: coverage complete on a clean graph; requireFullCover
   assert.deepEqual(payload.coverage.uncoveredScreens, []);
   assert.deepEqual(payload.coverage.uncoveredEdges, []);
   assert.ok(fs.existsSync(payload.savedTo.json));
+});
+
+test("figma_generate_tests: exploration steps land in all three artifacts", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [
+        { id: "s1", name: "Home", suggestedRoute: "/", childNames: [], textHints: ["Welcome"] },
+        { id: "s2", name: "Checkout", suggestedRoute: "/checkout", childNames: [], textHints: ["Pay now"] }
+      ],
+      edges: [
+        {
+          from: { id: "s1", name: "Home" },
+          to: { id: "s2", name: "Checkout" },
+          element: { id: "e1", name: "CTA", type: "INSTANCE" },
+          textHints: ["Buy now"],
+          trigger: "ON_CLICK",
+          actionType: "NODE"
+        }
+      ],
+      entryScreens: ["Home"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(payload.ok, true);
+  assert.ok(fs.existsSync(payload.savedTo.json));
+  assert.ok(fs.existsSync(payload.savedTo.markdown));
+  assert.ok(fs.existsSync(payload.savedTo.xlsx));
+
+  const saved = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
+  assert.match(saved.flows[0].steps[0], /^探索到达「Checkout」/);
+  assert.equal(saved.flows[0].expectations[0].kind, "explore");
+  const markdown = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.match(markdown, /探索到达「Checkout」/);
 });
 
 test("figma_generate_tests: uncovered screen fails requireFullCoverage without writing files", async () => {

@@ -1159,3 +1159,14 @@ llm_switch(name, force):
 - **starbucks 回归**：合成含「刊頭廣告 - 活動跑馬燈」（批注）与图层名 childNames 的夹具 → expectations/起始屏/步骤 label/AOS-EXPECT 四层均只含运行期文本（「內用點餐」「早安, Amy☀️」「選擇門市」），批注文本全程不出现在 taskDesc。
 - **边界**：批注的「提示级展示」未新增渲染面（flows.json 已带类别）；弱断言告警在新口径下部分步骤增多（back/AFTER_TIMEOUT 文案自带「应」除外），留给票 05 的门禁分级。
 - **测试**：`test/figma-testgen.test.js`（starbucks 回归：四层过滤）、`test/figma-flows.test.js` / `test/pen-flows.test.js`（批注洪水回归：运行期文本存活 + 类别配额独立）、`test/pen-flows.test.js`（note/context/prompt 不进 hints）。
+
+### 13.63 实施记录（票 04：推断边 → 探索步骤，生成语义）
+
+> 实施于 2026-10-10；CR 交互理解主线第四票。改 `src/figma/test-gen.ts`（来源分流）、`src/figma/preflight.ts`（探索步骤不计弱断言、索引对齐）、`src/provenance.ts`（`isUnconfirmedProvenance` / `StepKind` / `isExploreKind`）；测试 +4；全量 807 绿。
+
+- **生成分流**：`isUnconfirmedProvenance`（inferred / legacy-unknown）的边生成**探索步骤**——通用文案「探索到达「X」（来源未确认）：自行尝试触发通往该页的交互，记录实际路径与页面变化；不参与断言判定」；`AFTER_TIMEOUT`（等待 N 秒后确认到达）、`back`（探索返回上一屏）、无目标（探索未知跳转）各有专用措辞，不覆盖 trigger 语义；explicit / observed / confirmed 走现行硬断言路径。
+- **结构化标记**：`StepExpectation.kind ∈ {assert, explore}`（tests.json 与 `【AOS-EXPECT】` steps 同步；`StepKind`/`isExploreKind` 归 `src/provenance.ts` 单点，preflight 不再字面量解码）；探索步骤 `hints=[]`（不断言，`screen` 保留为探索目标）；taskDesc 在含探索步骤时加「本用例含 N 步探索（来源未确认）…不参与 PASS/FAIL」行（**N 含续段前导探索步骤**）；tests.md/xlsx 经同一步骤文本自然呈现（三件套落盘有端到端断言）。
+- **kind = deferred 语义**：`kind=explore` 即「不参与 PASS/FAIL 的 deferred 步骤」；执行器的 deferred 运行语义（不硬失败、adherence 只核 hard）属票 06。
+- **门禁口径（承接）**：`suite check` 弱断言统计按**原始索引**对齐 `expectations[index].kind` 豁免 explore（字符串步骤过滤不再错位；legacy tests.json 无 expectations 时回退原「应」字口径）；覆盖口径的硬/探索分离属票 05。
+- **兼容**：旧 flows（legacy-unknown）按保守 = 探索；旧 tests.json 无 kind 在 preflight 回退旧口径；iOS 执行器解析 AOS-EXPECT 忽略未知 `kind`（回归测试锁定）。
+- **测试**：`test/figma-testgen.test.js`（显式+推断混合分流、legacy 保守、trigger 语义专用措辞、AOS-EXPECT kind、md 渲染、三件套落盘含探索）、`test/pen-flows.test.js`（pen 合成全探索端到端）、`test/test-preflight.test.js`（explore 不计弱断言）、`test/ios-task-runner.test.js`（parser 对 kind/provenance 未知字段容错）。

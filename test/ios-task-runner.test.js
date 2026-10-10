@@ -1156,7 +1156,7 @@ test("脚本断言：解析 【AOS-EXPECT】 块（缺失/非法 → null，hint
   assert.equal(parseScriptPlan("x【AOS-EXPECT】not-json"), null);
   assert.equal(parseScriptPlan('x【AOS-EXPECT】{"steps":[]}'), null);
   const parsed = parseScriptPlan(
-    '任务\n脚本断言：【AOS-EXPECT】{"start":{"screen":"首页","hints":["欢迎",""]},"steps":[{"index":1,"screen":"订单页","hints":["订单成功",""]},{"index":2,"screen":null,"hints":[]}]}'
+    '任务\n脚本断言：【AOS-EXPECT】{"start":{"screen":"首页","hints":["欢迎",""]},"steps":[{"index":1,"screen":"订单页","hints":["订单成功",""],"provenance":"explicit","confidence":"high","kind":"assert"},{"index":2,"screen":null,"hints":[],"provenance":"inferred","confidence":"low","kind":"explore"}]}'
   );
   assert.deepEqual(parsed.start, { screen: "首页", hints: ["欢迎"] });
   assert.deepEqual(parsed.steps, [

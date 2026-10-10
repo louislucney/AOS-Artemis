@@ -159,6 +159,8 @@ test("pen_extract_flows: saves flows.json + flow-map.md and feeds the test loop"
   assert.equal(generated.coverage.complete, true);
   assert.equal(generated.flows.length, 1);
   assert.match(generated.flows[0].name, /主頁 → 門市 → 單品頁/);
+  assert.match(generated.flows[0].steps[0], /^探索到达/, "pen synthesis generates exploration steps");
+  assert.equal(generated.flows[0].expectations[0].kind, "explore");
 });
 
 function walkNodes(doc, visit) {

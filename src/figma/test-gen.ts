@@ -21,9 +21,11 @@ import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 import {
   confidenceFor,
+  isUnconfirmedProvenance,
   resolveProvenance,
   type Confidence,
-  type Provenance
+  type Provenance,
+  type StepKind
 } from "../provenance.js";
 
 export interface StepExpectation {
@@ -34,6 +36,8 @@ export interface StepExpectation {
   /** Evidence source of the driving edge (legacy-unknown for v1 artifacts). */
   provenance: Provenance;
   confidence: Confidence;
+  /** `explore` for unconfirmed evidence: executable but never gating. */
+  kind: StepKind;
 }
 
 export interface CasePreflight {
@@ -307,10 +311,11 @@ function runtimeHintTexts(raw: unknown): string[] {
 function expectationFor(graph: FlowGraph, edge: FlowEdge): StepExpectation {
   const provenance = resolveProvenance(edge.provenance);
   const confidence = confidenceFor(provenance);
-  if (!edge.to) return { screen: null, hints: [], provenance, confidence };
+  const kind: StepKind = isUnconfirmedProvenance(provenance) ? "explore" : "assert";
+  if (!edge.to) return { screen: null, hints: [], provenance, confidence, kind };
   const screen = graph.screens.find((candidate) => candidate.id === edge.to!.id);
-  const hints = runtimeHintTexts(screen?.textHints).slice(0, 3);
-  return { screen: edge.to.name, hints, provenance, confidence };
+  const hints = kind === "assert" ? runtimeHintTexts(screen?.textHints).slice(0, 3) : [];
+  return { screen: edge.to.name, hints, provenance, confidence, kind };
 }
 
 function assertionFor(graph: FlowGraph, edge: FlowEdge): string {
@@ -325,6 +330,21 @@ function lookupI18nKey(text: string | undefined, i18nKeys: Map<string, string> |
 }
 
 function stepFor(graph: FlowGraph, edge: FlowEdge, i18nKeys?: Map<string, string>): string {
+  const provenance = resolveProvenance(edge.provenance);
+  if (isUnconfirmedProvenance(provenance)) {
+    if (edge.trigger === "AFTER_TIMEOUT") {
+      const seconds = ((edge.triggerTimeoutMs ?? 0) / 1000).toFixed(1).replace(/\.0$/, "");
+      const destination = edge.to ? `「${edge.to.name}」` : "下一屏";
+      return `等待 ${seconds} 秒后确认到达${destination}（来源未确认；记录实际页面变化，不参与断言判定）`;
+    }
+    if (edge.back) {
+      return "探索返回上一屏（来源未确认）：记录实际页面变化；不参与断言判定";
+    }
+    if (edge.to) {
+      return `探索到达「${edge.to.name}」（来源未确认）：自行尝试触发通往该页的交互，记录实际路径与页面变化；不参与断言判定`;
+    }
+    return "探索未知跳转（来源未确认）：记录实际页面变化；不参与断言判定";
+  }
   const target = edge.to ? `「${edge.to.name}」` : null;
   const assertion = assertionFor(graph, edge);
   const elementHint = runtimeHintTexts(edge.textHints)[0];
@@ -391,6 +411,9 @@ export function generateTestCases(
     const steps = flowPath.map((edge) => stepFor(graph, edge, options.i18nKeys));
     const prelude = prefix.map((edge) => stepFor(graph, edge, options.i18nKeys));
     const expectations = flowPath.map((edge) => expectationFor(graph, edge));
+    const exploreCount = [...prefix, ...flowPath].filter((edge) =>
+      isUnconfirmedProvenance(resolveProvenance(edge.provenance))
+    ).length;
     const baseName =
       screens.length <= 4 ? screens.join(" → ") : `${screens.slice(0, 4).join(" → ")} → …`;
     const name = continuation ? `${baseName}（续段）` : baseName;
@@ -413,7 +436,8 @@ export function generateTestCases(
           screen: expectation.screen,
           hints: expectation.hints,
           provenance: expectation.provenance,
-          confidence: expectation.confidence
+          confidence: expectation.confidence,
+          kind: expectation.kind
         }))
       }
     )}`;
@@ -426,6 +450,11 @@ export function generateTestCases(
         : []),
       `开始前：打开应用并确保停留在「${entryScreen}」页（如不在该页，先导航过去）。`,
       `前置假设：${preconditions.join("；")}。若数据不满足，请停止并报告数据不满足。`,
+      ...(exploreCount > 0
+        ? [
+            `本用例含 ${exploreCount} 步探索（来源未确认）：探索步骤记录实际路径即可，不参与 PASS/FAIL。`
+          ]
+        : []),
       ...(continuation
         ? [
             "前导导航（仅到达起点，不计入断言）：",

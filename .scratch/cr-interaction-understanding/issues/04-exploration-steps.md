@@ -4,7 +4,9 @@
 
 **Blocked by:** 02（来源模型）。
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+> 实施注（2026-10-10）：推断/legacy 边生成探索步骤（`kind=explore`、`hints=[]`、taskDesc 探索行含前导、AOS-EXPECT kind；`kind=explore` 即 deferred 语义）；trigger 专用措辞（timeout/back/未知目标）；preflight 按原始索引豁免 explore；见 DESIGN §13.63。
 
 - [ ] 生成器按来源分流：inferred → 探索步骤（可执行动作描述、不断言、deferred 标记）；explicit-interaction/confirmed → 现行硬断言路径
 - [ ] 探索步骤不进入硬断言期望集合；taskDesc 与「AOS-EXPECT」块扩展可辨识且不破坏既有解析

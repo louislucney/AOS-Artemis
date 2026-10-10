@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { computeScreenCoverage, type CoverageEdge } from "./coverage.js";
+import { isExploreKind } from "../provenance.js";
 
 export interface PreflightWeakStep {
   index: number;
@@ -57,7 +58,13 @@ export function preflightGeneratedTests(
 
   const rawCases = Array.isArray(tests.flows) ? tests.flows : [];
   const cases = rawCases.filter(
-    (entry): entry is { id: string; name?: unknown; screens?: unknown; steps?: unknown } =>
+    (entry): entry is {
+      id: string;
+      name?: unknown;
+      screens?: unknown;
+      steps?: unknown;
+      expectations?: unknown;
+    } =>
       Boolean(entry) && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string"
   );
   const caseInputs = cases.map((entry) => ({
@@ -68,11 +75,21 @@ export function preflightGeneratedTests(
 
   const weakCases: PreflightWeakCase[] = [];
   for (const entry of cases) {
-    const steps = Array.isArray(entry.steps)
-      ? entry.steps.filter((step): step is string => typeof step === "string")
-      : [];
-    const weakSteps = steps
-      .map((step, index) => ({ index, weak: !step.includes("应") }))
+    const rawSteps = Array.isArray(entry.steps) ? entry.steps : [];
+    const expectations = Array.isArray(entry.expectations) ? entry.expectations : [];
+    const kindOf = (index: number): unknown => {
+      const expectation = expectations[index];
+      return expectation && typeof expectation === "object"
+        ? (expectation as { kind?: unknown }).kind
+        : undefined;
+    };
+    const weakSteps = rawSteps
+      .map((step, index) => ({ step, index }))
+      .filter((item): item is { step: string; index: number } => typeof item.step === "string")
+      .map((item) => ({
+        index: item.index,
+        weak: !isExploreKind(kindOf(item.index)) && !item.step.includes("应")
+      }))
       .filter((item) => item.weak)
       .map((item) => ({ index: item.index, reason: "缺少可验证断言（目的地屏无文本提示）" }));
     if (weakSteps.length > 0) {
