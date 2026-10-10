@@ -220,6 +220,19 @@ test("pen cli: 路径解析、status 解析与失败分类", async () => {
     /操作失败/
   );
   assert.match(detectPenFailure({ code: null, stdout: "", stderr: "", error: "timeout" }, ""), /超时/);
+  assert.equal(
+    detectPenFailure(
+      { code: 0, stdout: "Saved /tmp/.demo.pen.aos-65673-1791640148894.tmp\n", stderr: "" },
+      "Saved /tmp/.demo.pen.aos-65673-1791640148894.tmp\n"
+    ),
+    null,
+    "bare digit sequences in paths are not 401 auth failures"
+  );
+  assert.match(
+    detectPenFailure({ code: 1, stdout: "", stderr: "HTTP 401" }, "HTTP 401"),
+    /未登录/,
+    "auth-context 401 still classifies as not-logged-in"
+  );
 
   const captured = [];
   await runPenInteractive({

@@ -235,7 +235,10 @@ export function detectPenFailure(result: PenExecResult, log: string): string | n
   if (/Agent failed/i.test(log)) {
     return "pen agent 执行失败（见日志尾部）";
   }
-  if (/not authenticated|not logged in|login required|unauthorized|401/i.test(log)) {
+  if (/not authenticated|not logged in|login required|unauthorized/i.test(log)) {
+    return `pen CLI 未登录（${PEN_CLI_HINT}）`;
+  }
+  if (/(?:HTTP|status|code|error)[^\n]{0,16}\b401\b/i.test(log)) {
     return `pen CLI 未登录（${PEN_CLI_HINT}）`;
   }
   if (/Failed to execute|Failure during operation|\[ERROR\]/i.test(log)) {
