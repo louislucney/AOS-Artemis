@@ -144,3 +144,91 @@ test("pen_extract_flows: saves flows.json + flow-map.md and feeds the test loop"
   assert.equal(generated.flows.length, 1);
   assert.match(generated.flows[0].name, /主頁 → 門市 → 單品頁/);
 });
+
+function walkNodes(doc, visit) {
+  const step = (node) => {
+    visit(node);
+    for (const child of node.children ?? []) step(child);
+  };
+  for (const child of doc.children ?? []) step(child);
+}
+
+test("synthesizePenFlows: interaction signals flip the no-interactions warning", () => {
+  const doc = fixtureDoc();
+  let tagged = 0;
+  walkNodes(doc, (node) => {
+    if (tagged === 0 && node.type === "text") {
+      node.href = "https://example.com/offer";
+      tagged = 1;
+    }
+  });
+  doc.children[0].children[2].metadata = { type: "interaction", target: "s4" };
+
+  const result = synthesizePenFlows(doc);
+  assert.equal(result.synthesis.interactionSignals, 2);
+  assert.equal(result.synthesis.inferredEdges, 2, "synthesis still proceeds (explicitly annotated)");
+
+  const codes = result.warnings.map((warning) => warning.code);
+  assert.ok(codes.includes("pen-interactions-present"));
+  assert.ok(!codes.includes("pen-no-interactions"));
+
+  const warning = result.warnings.find((entry) => entry.code === "pen-interactions-present");
+  assert.match(warning.message, /未解析/);
+  assert.ok((warning.details ?? []).some((line) => line.includes("href")));
+  assert.ok((warning.details ?? []).some((line) => line.includes("metadata:interaction")));
+
+  const markdown = renderPenFlowMap({
+    file: "design.pen",
+    generatedAt: "2026-10-08T00:00:00.000Z",
+    result
+  });
+  assert.match(markdown, /\[pen-interactions-present\]/);
+  assert.match(markdown, /交互线索/);
+});
+
+test("synthesizePenFlows: blank signal values are not interaction signals", () => {
+  const doc = fixtureDoc();
+  walkNodes(doc, (node) => {
+    if (node.type === "text") node.href = "  ";
+  });
+  doc.children[0].children[2].interactions = [];
+  doc.children[0].children[1].prototype = "";
+  doc.children[0].children[1].onClick = false;
+  doc.children[0].children[3].hotspot = 0;
+  doc.children[0].children[3].metadata = {};
+
+  const result = synthesizePenFlows(doc);
+  assert.equal(result.synthesis.interactionSignals, 0);
+  const codes = result.warnings.map((warning) => warning.code);
+  assert.ok(codes.includes("pen-no-interactions"));
+  assert.ok(!codes.includes("pen-interactions-present"));
+});
+
+test("pen_extract_flows: interaction signals surface in response and saved artifact", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  const doc = fixtureDoc();
+  let tagged = 0;
+  walkNodes(doc, (node) => {
+    if (tagged === 0 && node.type === "text") {
+      node.href = "https://example.com/offer";
+      tagged = 1;
+    }
+  });
+  fs.writeFileSync(path.join(designDir, "design.pen"), JSON.stringify(doc), "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(await penExtractFlows(runtime, {}));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.counts.interactionSignals, 1);
+  const codes = payload.warnings.map((warning) => warning.code);
+  assert.ok(codes.includes("pen-interactions-present"));
+  assert.ok(!codes.includes("pen-no-interactions"));
+
+  const saved = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
+  assert.equal(saved.synthesis.interactionSignals, 1);
+  assert.ok(saved.warnings.some((warning) => warning.code === "pen-interactions-present"));
+  const map = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.match(map, /交互线索/);
+});

@@ -1129,3 +1129,12 @@ llm_switch(name, force):
 - **env 分层收口**：`runtime.iosEnvironment()` 暴露 `{ ...项目 .env, ...进程 env }`；执行器开关（步数/视觉/验证/历史/日志/重试）统一经此读取（§13.57 边界收口；项目 `.env` 现在也生效、进程 env 仍优先，向后兼容）。
 - **边界**：视觉感知走模型而非 macOS Vision framework OCR（backlog）；验证失败即终态、不自动修复重试；真机日志缓冲为长驻进程、可用开关关闭；`.scratch` 票 00（失败归因 + 零代码 A/B）为人工 spike，需设备执行、未随本批自动完成。
 - **脚本断言核对（增补 2026-10-10：长用例执行约束力闭环）**：生成侧 `linearizeFlowsWithStats` 返回与 `paths` 对齐的 `prefixes`（入口→切点导航前缀，非续段为空），`generateTestCases` 据此产出 `continuation/startScreen/prelude/expectations` 字段与 `【AOS-EXPECT】` 块（`src/figma/test-gen.ts`）；tests.md 增加接续段标注与前导清单，tests.xlsx 新增 `{{case.prelude}}`/`{{case.startScreen}}`/`{{case.continuation}}` 占位符（默认表"步骤"列续段前置 `P#)` 行）。执行侧 `src/ios/task-runner.ts` 导出 `parseScriptPlan`（解析 `start` + `steps`）；每轮观测与 done 后补采各做一次命中匹配（`matchScriptExpectations`），`buildScriptAdherence` 汇总；验证提示词新增"脚本断言核对"段（未出现项→ failed_items 候选）；无验证时摘要追加 `⚠` 行。**起始屏 preflight（同批）**：生成侧 `GeneratedTest.preflight`（入口屏 + hints）随 `start` 下发；执行侧 `IosScriptPreflight`（`pending/matched/unmatched/unchecked`）首步核对、未命中每步注入导航提示、`test_summary.preflight` 与 run.json `preflight` 留痕、验证提示词"起始屏核对（确定性）"段 + 摘要 `⚠` 行；建议级不硬失败。新增测试：`test/figma-testgen.test.js`（续段 prelude/字段/AOS-EXPECT 解析/preflight/覆盖率不回退）、`test/ios-task-runner.test.js`（`parseScriptPlan` 解析边界、命中/未命中核对、`test_summary.adherence`、preflight matched/unmatched、run.json）。全量 786 绿。
+
+### 13.60 实施记录（票 01：无交互数据检测与结构化告警）
+
+> 实施于 2026-10-10；CR 交互理解主线首票（spec `.scratch/cr-interaction-understanding/`，根决策 ADR-0007/0008）。改 `src/figma/flows.ts`、`src/pen/flows.ts`、`src/server.ts`（工具描述）；测试 +6；全量 792 绿。
+
+- **Figma**：`buildFlowGraph` 记录范围内携带原型交互的节点数（`interactionNodes`，随 flows.json 与工具 `counts.interactionNodes` 透出）；`flowGraphWarnings` 在「屏幕数 > 1 且 0 条边」时输出新码 `no-interactions`（文案区分「0 交互」与「有交互但未提取到可执行跳转」两态；details 列屏名；单屏文件不告警，避免噪声），与 no-entry/unreachable/unresolved 并列。
+- **pen**：`.pen` v2.20 经 schema 核实无原型交互字段（唯一链接性字段为 text `href`）；新增确定性检测 `detectPenInteractionSignals`（`href` + 交互类节点键 interactions/prototype/reactions/onTap/onClick/onPress/hotspot + `metadata.type` 交互线索；空值 false/0/空串/空数组/空对象不计数）。告警由恒定 `pen-no-interactions` 改为条件二选一：无线索保持（文案注明格式依据）；有线索改为新码 `pen-interactions-present`（显式标注「未解析、仍按画板推断」，不静默合成）；`synthesis.interactionSignals`、工具 `counts.interactionSignals`、flow-map 说明行随状态切换。
+- **边界**：本票仅检测与告警；线索解析与来源置标（provenance）属票 02+。
+- **测试**：`test/figma-flows.test.js`（无交互告警/单屏不告警/有交互不告警/有交互无跳转告警）、`test/pen-flows.test.js`（线索翻转/空值不计数/确定性/工具级响应与落盘产物）。

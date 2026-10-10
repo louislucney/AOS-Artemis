@@ -380,7 +380,7 @@ node dist/cli.js doctor
 | `figma_import_tokens` | 颜色 token 导入：Figma 颜色（含 alpha）→ `.artemis/design/tokens.json`（DTCG，modes 预留）+ 栈 token 文件（Android/Flutter/RN/Web）；裸色扫描 + enforcement；人工命名 `token-names.json` |
 | `figma_import_strings` | 文案 i18n 导入：Figma 文本 → 冻结 key（改名不改 key）→ `.artemis/design/strings.json` + 资源文件（Android `strings.xml` / Flutter `arb` / RN·Web JSON / iOS `.strings`+`.stringsdict`）；复用/迁移/source_changed/unused/硬编码扫描；conflict 经 `resolutions.json` 闭环；复数经 `string-context.json` 人工确认（Android `<plurals>`、Flutter/RN/Web ICU、iOS `.stringsdict`） |
 | `pen_inspect` | pen.dev 离线检查：解析 `.pen`（开放 JSON，支持注释）→ 结构校验（id 唯一/无斜杠、ref 与 `$变量` 可解析）+ 摘要（屏幕/组件/实例/文案/变量与主题/图片资产与缺失）；无账号/网络需求；`save:true` 落盘 `.artemis/design/pen/summary.json` |
-| `pen_extract_flows` | pen 流程合成（离线）：无原型交互数据时，用「Flow 标注 > 屏内首个文本 > 图层名」命名屏幕、按标签前缀归并状态变体、按画板顺序/排布推断跳转（全部 `INFERRED`，需复核）→ `flows.json`（可直接供 `figma_generate_tests`/`suite check`）+ `flow-map.md`（全局交互地图）；返回碎片度统计与 warnings |
+| `pen_extract_flows` | pen 流程合成（离线）：检测交互线索（`.pen` v2.20 无原型交互字段；text `href`/交互类键/metadata 线索）——无线索按「Flow 标注 > 屏内首个文本 > 图层名」命名屏幕、按标签前缀归并状态变体、按画板顺序/排布推断跳转（全部 `INFERRED`，需复核）；有线索显式标注 `pen-interactions-present`（未解析，不静默）→ `flows.json`（可直接供 `figma_generate_tests`/`suite check`）+ `flow-map.md`（全局交互地图）；返回碎片度统计与 warnings |
 | `pen_import_tokens` | pen 颜色变量 → `.artemis/design/tokens.json`（DTCG；变量名即 token，modes 记录主题取值，`$别名` → aliasOf）+ 栈 token 文件（new/updated/unchanged/unused、裸色扫描、enforcement）；完全离线 |
 | `pen_import_strings` | pen 文案 → `.artemis/design/strings.json` + 资源文件（Android/Flutter/RN/Web/iOS；冻结 key、冲突经 `resolutions.json`、source_changed/unused/硬编码扫描；复数同 Figma 侧经 `string-context.json`）；完全离线 |
 | `pen_export_brief` | pen 构建简报：颜色/字阶/间距/圆角/阴影、屏幕与建议路由、可复用组件、按栈约定 → `build-brief.{json,md}`；`scaffold` 可选生成组件骨架；完全离线 |

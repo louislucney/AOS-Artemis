@@ -471,7 +471,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "pen_extract_flows",
     description:
-      "pen 流程合成（离线）：.pen 无原型交互数据时，用「Flow 标注 > 屏内首个文本 > 图层名」命名屏幕、按标签前缀归并状态变体（主屏+states）、按画板顺序与排布推断跳转（全部 trigger=INFERRED，需复核）→ 落盘 .artemis/design/flows.json（可直接供 figma_generate_tests / suite check 使用）+ flow-map.md（全局交互地图：画板/主链/状态/警告）；返回碎片度统计（默认名屏数、状态归并、推断边数）与 warnings。",
+      "pen 流程合成（离线）：检测交互线索（.pen v2.20 无原型交互字段；text href / 交互类键 / metadata 线索）：无线索时按「Flow 标注 > 屏内首个文本 > 图层名」命名屏幕、按标签前缀归并状态变体（主屏+states）、按画板顺序与排布推断跳转（全部 trigger=INFERRED，需复核）；有线索显式告警 pen-interactions-present（未解析，不静默）→ 落盘 .artemis/design/flows.json（可直接供 figma_generate_tests / suite check 使用）+ flow-map.md（全局交互地图：画板/主链/状态/警告）；返回碎片度统计（默认名屏数、状态归并、推断边数、交互线索数）与 warnings。",
     schema: z.object({
       path: z.string().optional().describe("相对项目根或绝对路径的 .pen 文件；缺省自动选择最新文件"),
       save: z.boolean().optional().describe("是否落盘 flows.json + flow-map.md，默认 true"),

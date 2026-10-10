@@ -39,10 +39,12 @@ export interface FlowGraph {
   edges: FlowEdge[];
   entryScreens: string[];
   unresolvedDestinations: string[];
+  /** Nodes carrying prototype interactions within the extracted scope (set by Figma extraction; pen omits it and emits its own warnings). */
+  interactionNodes?: number;
 }
 
 export interface FlowGraphWarning {
-  code: "no-entry" | "unreachable-screens" | "unresolved-destinations";
+  code: "no-entry" | "unreachable-screens" | "unresolved-destinations" | "no-interactions";
   message: string;
   details?: string[];
 }
@@ -52,6 +54,17 @@ export interface FlowGraphWarning {
  * trust `entryScreens`/reachability. */
 export function flowGraphWarnings(graph: FlowGraph): FlowGraphWarning[] {
   const warnings: FlowGraphWarning[] = [];
+  if (graph.screens.length > 1 && graph.edges.length === 0) {
+    const nodes = graph.interactionNodes ?? 0;
+    warnings.push({
+      code: "no-interactions",
+      message:
+        nodes === 0
+          ? `${graph.screens.length} 个屏幕未检测到任何原型交互（连线）：无法提取跳转，流程缺少交互信息（需在设计稿补原型连线，或改用 pen / 手工产物）`
+          : `检测到 ${nodes} 个节点携带原型交互，但未提取到任何可执行跳转（action 类型可能不受支持）：流程仍为孤岛图`,
+      details: graph.screens.slice(0, 10).map((screen) => screen.name)
+    });
+  }
   if (graph.screens.length > 0 && graph.entryScreens.length === 0) {
     warnings.push({
       code: "no-entry",
@@ -234,7 +247,8 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     screens,
     edges,
     entryScreens: screens.filter((screen) => !incoming.has(screen.id)).map((screen) => screen.name),
-    unresolvedDestinations: [...unresolved]
+    unresolvedDestinations: [...unresolved],
+    interactionNodes: sources.length
   };
 }
 
@@ -292,6 +306,7 @@ export async function figmaExtractFlows(
         edges: graph.edges.length,
         entryScreens: graph.entryScreens.length,
         unresolved: graph.unresolvedDestinations.length,
+        interactionNodes: graph.interactionNodes ?? 0,
         warnings: warnings.length
       },
       warnings,

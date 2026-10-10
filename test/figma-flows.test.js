@@ -13,7 +13,7 @@ import {
   normalizeAssetName,
   walkProjectFiles
 } from "../dist/figma/gaps.js";
-import { buildFlowGraph, routeFor } from "../dist/figma/flows.js";
+import { buildFlowGraph, flowGraphWarnings, routeFor } from "../dist/figma/flows.js";
 import { STACK_PROFILES } from "../dist/projects/stack.js";
 
 test("flow graph: consecutive interactions produce screens, edges and entry screens", () => {
@@ -202,4 +202,74 @@ test("applyAssetNaming: generic layer names fall back to a deterministic asset h
 
   const flutter = applyAssetNaming(missing, STACK_PROFILES.flutter);
   assert.match(flutter[0].suggestedFilename, /^asset_[0-9a-f]{8}\.svg$/);
+});
+
+test("flow graph: screens without prototype interactions get a no-interactions warning", () => {
+  const document = syntheticFlowDocument();
+  const strip = (node) => {
+    delete node.interactions;
+    for (const child of node.children ?? []) strip(child);
+  };
+  strip(document);
+
+  const graph = buildFlowGraph(document);
+  assert.equal(graph.interactionNodes, 0);
+  assert.equal(graph.edges.length, 0);
+  assert.ok(graph.screens.length > 1);
+  const warnings = flowGraphWarnings(graph);
+  assert.deepEqual(
+    warnings.map((warning) => warning.code),
+    ["no-interactions"]
+  );
+  assert.match(warnings[0].message, /原型交互/);
+  assert.deepEqual(warnings[0].details, ["Home", "Checkout", "Success"]);
+
+  const rich = buildFlowGraph(syntheticFlowDocument());
+  assert.equal(rich.interactionNodes, 3);
+  assert.deepEqual(flowGraphWarnings(rich), [], "interactions present: no missing-interaction warning");
+});
+
+test("flow graph: interactions without executable actions still warn as an island", () => {
+  const document = syntheticFlowDocument();
+  const strip = (node) => {
+    delete node.interactions;
+    for (const child of node.children ?? []) strip(child);
+  };
+  strip(document);
+  let cta = null;
+  const find = (node) => {
+    if (node.id === "10:2") cta = node;
+    for (const child of node.children ?? []) find(child);
+  };
+  find(document);
+  cta.interactions = [{ trigger: { type: "ON_CLICK" }, actions: [] }];
+
+  const graph = buildFlowGraph(document);
+  assert.equal(graph.interactionNodes, 1);
+  assert.equal(graph.edges.length, 0);
+  const warnings = flowGraphWarnings(graph);
+  assert.deepEqual(
+    warnings.map((warning) => warning.code),
+    ["no-interactions"]
+  );
+  assert.match(warnings[0].message, /未提取到任何可执行跳转/);
+});
+
+test("flow graph: a single screen without interactions does not warn", () => {
+  const single = {
+    id: "0:0",
+    name: "Doc",
+    type: "DOCUMENT",
+    children: [
+      {
+        id: "1:0",
+        name: "Page",
+        type: "PAGE",
+        children: [{ id: "2:0", name: "Only", type: "FRAME", children: [] }]
+      }
+    ]
+  };
+  const graph = buildFlowGraph(single);
+  assert.equal(graph.screens.length, 1);
+  assert.deepEqual(flowGraphWarnings(graph), []);
 });

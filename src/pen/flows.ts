@@ -39,6 +39,8 @@ export interface PenFlowSynthesis {
   statesMerged: number;
   mainScreens: number;
   inferredEdges: number;
+  /** Interaction-like signals found in the document (unparsed; synthesis is explicitly annotated). */
+  interactionSignals: number;
 }
 
 export interface PenFlowResult {
@@ -90,6 +92,63 @@ function firstFlowAnnotation(node: PenNode): string | null {
 function numberProp(node: PenNode, key: string): number | null {
   const value = node[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+const INTERACTION_SIGNAL_KEYS = [
+  "interactions",
+  "interaction",
+  "prototype",
+  "reactions",
+  "onTap",
+  "onClick",
+  "onPress",
+  "hotspot"
+] as const;
+const INTERACTION_METADATA_RE = /interact|prototype|tap|click|link|navigat/i;
+
+function isSignalValue(value: unknown): boolean {
+  if (value === undefined || value === null || value === false) return false;
+  if (typeof value === "string") return value.trim() !== "";
+  if (typeof value === "number") return value !== 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
+/** Deterministic scan for interaction-like data in a .pen document.
+ * .pen v2.20 has no prototype field: the schema-level link is a text `href`;
+ * node keys and metadata types are checked so a future format carrying
+ * interactions is never silently synthesized over. */
+function detectPenInteractionSignals(doc: PenDocument): {
+  count: number;
+  details: string[];
+} {
+  let count = 0;
+  const details: string[] = [];
+  const visit = (node: PenNode): void => {
+    const label = `${node.id ?? "?"}${typeof node.name === "string" && node.name ? ` ${node.name}` : ""}`;
+    if (isSignalValue(node.href)) {
+      count += 1;
+      details.push(`href @ ${label}`);
+    }
+    for (const key of INTERACTION_SIGNAL_KEYS) {
+      if (isSignalValue(node[key])) {
+        count += 1;
+        details.push(`${key} @ ${label}`);
+      }
+    }
+    const metadata = node.metadata;
+    if (metadata !== null && typeof metadata === "object" && !Array.isArray(metadata)) {
+      const type = (metadata as Record<string, unknown>).type;
+      if (typeof type === "string" && INTERACTION_METADATA_RE.test(type)) {
+        count += 1;
+        details.push(`metadata:${type} @ ${label}`);
+      }
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  for (const child of doc.children ?? []) visit(child);
+  return { count, details };
 }
 
 function isGenericLayerName(name: string): boolean {
@@ -159,6 +218,7 @@ export function synthesizePenFlows(
   options: { maxScreens?: number } = {}
 ): PenFlowResult {
   const maxScreens = options.maxScreens ?? 200;
+  const interactionSignals = detectPenInteractionSignals(doc);
   const topFrames = (doc.children ?? []).filter(
     (child): child is PenNode => Boolean(child) && typeof child === "object" && child.type === "frame"
   );
@@ -304,13 +364,22 @@ export function synthesizePenFlows(
     unresolvedDestinations: []
   };
 
-  const warnings: PenFlowWarning[] = [
-    {
-      code: "pen-no-interactions",
-      message:
-        "设计文件无原型/交互数据：所有跳转由画板排布推断（trigger=INFERRED），需人工复核"
-    }
-  ];
+  const warnings: PenFlowWarning[] =
+    interactionSignals.count > 0
+      ? [
+          {
+            code: "pen-interactions-present",
+            message: `检测到 ${interactionSignals.count} 处交互线索但当前未解析：合成仍按画板排布推断（非静默），交互解析待支持`,
+            details: interactionSignals.details.slice(0, 10)
+          }
+        ]
+      : [
+          {
+            code: "pen-no-interactions",
+            message:
+              "设计文件未包含原型/交互数据（.pen v2.20 无原型交互字段）：跳转由画板排布推断（trigger=INFERRED），需人工复核"
+          }
+        ];
   if (genericNamed > 0) {
     warnings.push({
       code: "pen-generic-names",
@@ -362,7 +431,8 @@ export function synthesizePenFlows(
       labelFromLayerName,
       statesMerged,
       mainScreens: screens.length,
-      inferredEdges
+      inferredEdges,
+      interactionSignals: interactionSignals.count
     }
   };
 }
@@ -385,12 +455,17 @@ export function renderPenFlowMap(input: {
   result: PenFlowResult;
 }): string {
   const { result } = input;
+  const signals = result.synthesis.interactionSignals;
+  const note =
+    signals > 0
+      ? `> 说明：检测到 ${signals} 处交互线索但尚未解析；跳转仍由画板排布推断，需人工复核。`
+      : "> 说明：设计文件无原型交互数据；跳转由画板排布推断，状态由标签归并，均需人工复核。";
   const lines: string[] = [
     "# Pen 交互地图（合成 · inferred）",
     "",
     `> 来源: ${input.file}`,
     `> 生成时间: ${input.generatedAt}`,
-    "> 说明：设计文件无原型交互数据；跳转由画板排布推断，状态由标签归并，均需人工复核。",
+    note,
     ""
   ];
   lines.push("## 画板（主流程顺序）", "");
@@ -469,6 +544,7 @@ export async function penExtractFlows(
         states: result.synthesis.statesMerged,
         edges: result.edges.length,
         inferredEdges: result.synthesis.inferredEdges,
+        interactionSignals: result.synthesis.interactionSignals,
         warnings: result.warnings.length
       },
       synthesis: result.synthesis,
