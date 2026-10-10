@@ -18,6 +18,10 @@ export const RECONCILIATION_VERSION = 1;
 
 export type ReconciliationStatus = "pending" | "upgraded" | "confirmed" | "rejected";
 export type ReconciliationDecision = "confirmed" | "rejected";
+/** `design` = an edge from the design graph; `runtime-only` = a transition
+ * observed on device with no design counterpart (evidence-only, never feeds
+ * generation). */
+export type ReconciliationDirection = "design" | "runtime-only";
 
 export interface ReconciliationReview {
   decision: ReconciliationDecision;
@@ -27,6 +31,7 @@ export interface ReconciliationReview {
 }
 
 export interface ReconciliationEdgeEntry {
+  direction: ReconciliationDirection;
   from: string;
   to: string;
   /** Design-side provenance first recorded for this edge. */
@@ -42,6 +47,8 @@ export interface ReconciliationEdgeEntry {
   lastSeenAt: string | null;
   /** Human adjudication (review surface); null = untouched. */
   review: ReconciliationReview | null;
+  /** Superseded reviews (append-only on decision changes; latest 10 kept). */
+  history: ReconciliationReview[];
 }
 
 export interface ReconciliationAsset {
@@ -92,6 +99,14 @@ function normalizeEntry(value: unknown): ReconciliationEdgeEntry | null {
   const designProvenance = resolveProvenance(record.designProvenance);
   const rawProvenance = resolveProvenance(record.provenance);
   const review = normalizeReview(record.review);
+  const history = Array.isArray(record.history)
+    ? record.history
+        .map(normalizeReview)
+        .filter((entry): entry is ReconciliationReview => entry !== null)
+        .slice(-10)
+    : [];
+  const direction: ReconciliationDirection =
+    record.direction === "runtime-only" ? "runtime-only" : "design";
   let status: ReconciliationStatus;
   if (review) {
     status = review.decision === "confirmed" ? "confirmed" : "rejected";
@@ -99,21 +114,29 @@ function normalizeEntry(value: unknown): ReconciliationEdgeEntry | null {
     status = "confirmed";
   } else if (record.status === "rejected") {
     status = "rejected";
-  } else if (record.status === "upgraded" || rawProvenance === "runtime-observed") {
+  } else if (
+    direction === "design" &&
+    (record.status === "upgraded" || rawProvenance === "runtime-observed")
+  ) {
     status = "upgraded";
   } else {
     status = "pending";
   }
-  const provenance: Provenance =
-    status === "confirmed"
-      ? "human-confirmed"
-      : status === "upgraded"
-        ? "runtime-observed"
-        : status === "rejected"
-          ? designProvenance
-          : rawProvenance === "runtime-observed" || rawProvenance === "human-confirmed"
-            ? designProvenance
-            : rawProvenance;
+  let provenance: Provenance;
+  if (direction === "runtime-only") {
+    provenance = "runtime-observed";
+  } else if (status === "confirmed") {
+    provenance = "human-confirmed";
+  } else if (status === "upgraded") {
+    provenance = "runtime-observed";
+  } else if (status === "rejected") {
+    provenance = designProvenance;
+  } else {
+    provenance =
+      rawProvenance === "runtime-observed" || rawProvenance === "human-confirmed"
+        ? designProvenance
+        : rawProvenance;
+  }
   const traces = Array.isArray(record.traces)
     ? record.traces.filter((trace): trace is string => typeof trace === "string")
     : [];
@@ -123,6 +146,7 @@ function normalizeEntry(value: unknown): ReconciliationEdgeEntry | null {
       : traces.length;
   const lastSeenAt = typeof record.lastSeenAt === "string" ? record.lastSeenAt : null;
   return {
+    direction,
     from,
     to,
     designProvenance,
@@ -131,7 +155,8 @@ function normalizeEntry(value: unknown): ReconciliationEdgeEntry | null {
     traces,
     hits,
     lastSeenAt,
-    review
+    review,
+    history
   };
 }
 
@@ -216,6 +241,7 @@ export function applyObservations(
     const created = entry === undefined;
     if (!entry) {
       entry = {
+        direction: "design",
         from: observation.from,
         to: observation.to,
         designProvenance: observation.designProvenance,
@@ -224,7 +250,8 @@ export function applyObservations(
         traces: [],
         hits: 0,
         lastSeenAt: null,
-        review: null
+        review: null,
+        history: []
       };
       map.set(key, entry);
       applied += 1;
@@ -251,10 +278,64 @@ export function applyObservations(
   };
 }
 
+/** Record observed transitions that have no design counterpart ("真机有设计无",
+ * evidence-only): design entries always win; runtime-only entries never feed
+ * generation and are idempotent per trace. */
+export function applyRuntimeOnlyObservations(
+  asset: ReconciliationAsset,
+  observations: Array<{ from: string; to: string; traceId: string }>,
+  at: string
+): { asset: ReconciliationAsset; applied: number } {
+  const map = new Map(
+    asset.edges.map((entry) => [
+      edgeKey(entry.from, entry.to),
+      { ...entry, traces: [...entry.traces], history: [...entry.history] }
+    ])
+  );
+  let applied = 0;
+  for (const observation of observations) {
+    if (observation.from === observation.to) continue;
+    const key = edgeKey(observation.from, observation.to);
+    const existing = map.get(key);
+    if (existing) {
+      if (existing.direction !== "runtime-only") continue;
+      if (existing.traces.includes(observation.traceId)) continue;
+      existing.traces.push(observation.traceId);
+      existing.hits += 1;
+      existing.lastSeenAt = at;
+      applied += 1;
+      continue;
+    }
+    map.set(key, {
+      direction: "runtime-only",
+      from: observation.from,
+      to: observation.to,
+      designProvenance: "legacy-unknown",
+      provenance: "runtime-observed",
+      status: "pending",
+      traces: [observation.traceId],
+      hits: 1,
+      lastSeenAt: at,
+      review: null,
+      history: []
+    });
+    applied += 1;
+  }
+  if (applied === 0) return { asset, applied: 0 };
+  return {
+    asset: {
+      version: asset.version,
+      updatedAt: at,
+      edges: [...map.values()].sort((a, b) => edgeKey(a.from, a.to).localeCompare(edgeKey(b.from, b.to)))
+    },
+    applied
+  };
+}
+
 /** Overlay reconciliation decisions onto a flow graph for the next generation:
  * observation-upgraded edges become runtime-observed, confirmed edges become
  * human-confirmed, rejected edges are dropped (invalid navigation). Only
- * unconfirmed design evidence is rewritten for promotions. */
+ * design-direction entries participate; runtime-only observations never do. */
 export function applyReconciliationToGraph(
   graph: FlowGraph,
   asset: ReconciliationAsset
@@ -264,7 +345,11 @@ export function applyReconciliationToGraph(
   confirmedEdges: number;
   rejectedEdges: number;
 } {
-  const byKey = new Map(asset.edges.map((entry) => [edgeKey(entry.from, entry.to), entry]));
+  const byKey = new Map(
+    asset.edges
+      .filter((entry) => entry.direction !== "runtime-only")
+      .map((entry) => [edgeKey(entry.from, entry.to), entry])
+  );
   let upgradedEdges = 0;
   let confirmedEdges = 0;
   let rejectedEdges = 0;
@@ -321,10 +406,17 @@ export function reviewEdge(
   }
 ): { asset: ReconciliationAsset; entry: ReconciliationEdgeEntry } | { error: string } {
   const key = edgeKey(input.from, input.to);
-  const edges = asset.edges.map((entry) => ({ ...entry, traces: [...entry.traces] }));
+  const edges = asset.edges.map((entry) => ({
+    ...entry,
+    traces: [...entry.traces],
+    history: [...entry.history]
+  }));
   const entry = edges.find((candidate) => edgeKey(candidate.from, candidate.to) === key);
   if (!entry) {
     return { error: `资产中未找到边「${key}」：先运行 suite run 产生观测，或核对屏幕名（可在 list 中查看可用边）` };
+  }
+  if (entry.review && entry.review.decision !== input.decision) {
+    entry.history = [...entry.history, entry.review].slice(-10);
   }
   entry.review = {
     decision: input.decision,
@@ -333,7 +425,9 @@ export function reviewEdge(
     ...(input.note?.trim() ? { note: input.note.trim() } : {})
   };
   entry.status = input.decision === "confirmed" ? "confirmed" : "rejected";
-  entry.provenance = input.decision === "confirmed" ? "human-confirmed" : entry.designProvenance;
+  if (entry.direction === "design") {
+    entry.provenance = input.decision === "confirmed" ? "human-confirmed" : entry.designProvenance;
+  }
   return {
     asset: {
       version: asset.version,

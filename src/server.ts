@@ -346,7 +346,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "reconciliation",
     description:
-      "交互对账审阅（持久资产）：维护 <项目>/.artemis/design/reconciliation.json——设计边 ↔ 真机观测命中/升级/审阅状态。action=list 列举（含来源 designProvenance→provenance、命中数、traces、审阅记录）；action=confirm 人工确认边为可信导航（human-confirmed，下一次 figma_generate_tests 以硬断言生成；幂等，记录 reviewer/时间）；action=reject 判为不成立（该边不进入后续生成）。未裁决项保持待办、不升权。iOS 套件运行自动写入观测与差异条目（见 suite run / DESIGN §13.67）。",
+      "交互对账审阅（持久资产）：维护 <项目>/.artemis/design/reconciliation.json——设计边 ↔ 真机观测命中/升级/审阅状态（含「真机有设计无」的 runtime-only 逆向观测，证据级不参与生成；改判保留决定历史）。action=list 列举（含来源 designProvenance→provenance、命中数、traces、审阅记录与历史）；action=confirm 人工确认边为可信导航（human-confirmed，下一次 figma_generate_tests 以硬断言生成；幂等，记录 reviewer/时间）；action=reject 判为不成立（该边不进入后续生成）。未裁决项保持待办、不升权。iOS/Android 套件运行自动写入观测与差异条目（见 suite run / DESIGN §13.67–§13.74）。",
     schema: z.object({
       action: z.enum(["list", "confirm", "reject"]).describe("list 列举 / confirm 确认 / reject 驳回"),
       from: z.string().optional().describe("边起点屏幕名（confirm/reject 必填，与 list 输出一致）"),

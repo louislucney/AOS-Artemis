@@ -384,7 +384,7 @@ env:
 - **起始屏 preflight（确定性前置）**：`【AOS-EXPECT】` 块携带 `start`（journey 入口屏 + 设计 hints，`GeneratedTest.preflight` 字段；hints 为空则不下发）；iOS 执行器首步观测核对（`pending → matched/unmatched`，unchecked 表示不可核对）：未命中时每步向模型注入「起始屏核对未通过，请先导航到该页」提示（替代即兴导航），全程留痕——`test_summary.preflight.{screen,status,matched_at_step}`、run.json `preflight`、验证提示词「起始屏核对（确定性）」段与完成摘要 `⚠ 起始屏核对未通过`（同样建议级，不硬失败）。
 - **pen 合成提取**（`pen_extract_flows`，离线）：`.pen` 无原型交互数据时，屏幕命名取「Flow 标注 > 屏内首个文本 > 图层名」（默认名 `Frame NNNN` 不再冒充屏名）；状态变体按标签前缀归并为主屏 + `states`；跳转按画板序号/画布排布推断并统一标注 `INFERRED`；产出可直接进入同一闭环的 `flows.json` 与全局 `flow-map.md`；碎片度（默认名屏、状态归并、推断边、缺标签）进入 `warnings`，供人工复核。
 - **pre-merge 静态闸**（`suite check`）：tests.json × flows.json 静态覆盖（复用 preflight 单一实现），不连设备；未硬覆盖/截断/缺 flows exit 2（`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告（设计偏差 ≠ 路线缺口）。
-- **对账闭环（导航级，§13.67/§13.68/§13.73）**：`suite run` 把探索步骤的实际命中写入持久对账资产 `<项目>/.artemis/design/reconciliation.json`——iOS 经 trace `run.json` 的 `scriptHits`；Android 经 `data_engine.db` 的 OCR 标签匹配设计运行期文本/屏名（§13.73）。（幂等——同 trace 重放不重复计数；稳定排序；升级阈值 = 1 次观测；未命中的边登记 pending 差异）；下一次 `figma_generate_tests` 自动把已升级边以 `runtime-observed` 生成硬断言（响应 `reconciliation.upgradedEdges`）。**人工审阅面**：`suite reconcile` 与 MCP `reconciliation` 工具（list/confirm/reject）——confirm → human-confirmed（硬断言）、reject → 边不进生成；未裁决不升权。
+- **对账闭环（导航级，§13.67/§13.68/§13.73/§13.74）**：`suite run` 把探索步骤的实际命中写入持久对账资产 `<项目>/.artemis/design/reconciliation.json`——iOS 经 trace `run.json` 的 `scriptHits`；Android 经 `data_engine.db` 的 OCR 标签匹配设计运行期文本/屏名（§13.73）。（幂等——同 trace 重放不重复计数；稳定排序；升级阈值 = 1 次观测；未命中的边登记 pending 差异）；**反向观测**（真机有设计无）以 `direction:"runtime-only"` 证据级条目记录（不生成、不升级）；审阅**决定历史**保留（改判追加，上限 10）。下一次 `figma_generate_tests` 自动把已升级边以 `runtime-observed` 生成硬断言（响应 `reconciliation.upgradedEdges`）。**人工审阅面**：`suite reconcile` 与 MCP `reconciliation` 工具（list/confirm/reject）——confirm → human-confirmed（硬断言）、reject → 边不进生成；未裁决不升权。
 - **元素级映射（导航级，§13.69）**：iOS 运行把观察标签与设计运行期文本做唯一精确归一匹配，写入 `screen-map.json` 的 `elements`（含 accessibilityIdentifier 建议）；`screen_map` 工具可人工补（manual 优先）；下一次 `figma_generate_tests` 在步骤元素注记追加 `a11y: <identifier>`。
 - **验收口径（oracle，§13.70）**：设计标注 `Flow/AC*` 分组或 `AC:`/`验收：` 前缀批注（或 `.artemis/design/acceptance.json` 人工确认覆盖）声明硬断言期望，assert 步骤携带 `hintsSource:"acceptance"`；无口径的屏沿用运行期文本（`hintsSource:"runtime-text"`，建议级）。Jira AC 留后续集成。
 - **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 **JUnit XML**——Android instrumentation 直读，或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
@@ -1222,7 +1222,7 @@ llm_switch(name, force):
 > 实施于 2026-10-10；CR 交互理解主线第九票。改 `src/figma/reconciliation.ts`（审阅纯函数 + 工具 handler + 共享 listing）、`src/suite-command.ts`（`suite reconcile`）、`src/server.ts`（`reconciliation` 工具注册）；测试 +6；全量 829 绿。
 
 - **资产 schema 扩展**：entry 增 `review {decision: confirmed|rejected, reviewer, at, note?}`；`status ∈ {pending, upgraded, confirmed, rejected}`；确认 → provenance `human-confirmed`（硬断言级），驳回 → 回落 `designProvenance`；观察升级逻辑不变（已确认/驳回条目不再被观测改写，命中仍记录为审计轨迹）。解析时 **review 决定优先于陈旧 status**；重复决定未传 reviewer 时保留上次记录。
-- **纯函数**：`reviewEdge(asset, {from,to,decision,reviewer?,note?,at})` 幂等（重复同一决定仅刷新 reviewer/时间；改判覆盖为最新决定）；未知边返回可行动错误（提示先跑套件或核对屏幕名）。
+- **纯函数**：`reviewEdge(asset, {from,to,decision,reviewer?,note?,at})` 幂等（重复同一决定仅刷新 reviewer/时间、不追加历史；改判覆盖为最新决定并把被取代项追加进 `history`，上限 10——见 §13.74）；未知边返回可行动错误（提示先跑套件或核对屏幕名）。
 - **共享输出面**：`reconciliationListing(configDirAbs)` 单点构造（counts/edges/`toTextHints` 目标屏运行期文本上下文/一次读取 flows.json 建屏名 Map），MCP 工具与 CLI（文本与 `--json`）同形输出。
 - **MCP 工具 `reconciliation`**（screen-map 先例：模块内导出 handler、错误边界 try/catch）：list / confirm / reject（可选 reviewer/note）。
 - **CLI `suite reconcile list|confirm|reject [--from --to --reviewer --note --json]`**：confirm/reject 缺参 exit 2、未知边 exit 1、成功 exit 0，并提示后续生成行为（human-confirmed 硬断言 / rejected 不生成）。
@@ -1283,3 +1283,13 @@ llm_switch(name, force):
 - **降级**：DB 缺失/表结构不符/`node:sqlite` 不可用（Node < 22.5，动态 import 失败）→ 静默跳过（无发现、不报错）；AOS 本体 Node ≥ 20 兼容不受影响（仅该功能需 ≥ 22.5，README 注明）。
 - **边界**：Android 无 AOS-EXPECT adherence（断言核对仍 artemis 自管）；到达门槛为 1 个设计文本/屏名命中（OCR 缺失即无证据，保守）；未标 `coordinate_space` 的动作不计 tap。
 - **测试**：`test/android-trace.test.js`（DB 读取/标签与归一 taps/未知 trace 与缺库退化 + 套件端到端：OCR 命中升级对账边、元素条目带 designNodeId；`node:sqlite` 缺失自动 skip）。
+
+### 13.74 实施记录（backlog：对账决定历史 + 反向观测）
+
+> 实施于 2026-10-10；backlog 第四项（收尾）。改 `src/figma/reconciliation.ts`（direction/history + `applyRuntimeOnlyObservations`）、`src/artemis/android-trace.ts`（pre/post 标签 + transitions）、`src/figma/suite-runner.ts`（设计上下文 `loadDesignContext`、屏匹配 `bestScreenForSummary`、双端反向摄取）、`src/suite-command.ts`（list 呈现）；测试 +4；全量 849 绿。
+
+- **决定历史**：`reviewEdge` 仅在**决定变更**时把被取代的 review 追加进 `entry.history`（上限 10，含 reviewer/note/时间），同决定重复只刷新时间/reviewer；normalize 持久化 history；CLI list 追加 `决定历史 confirmed→rejected` 呈现；工具 JSON 全量透出。
+- **方向模型**：entry 增 `direction: "design" | "runtime-only"`（缺省 design，legacy 兼容）。runtime-only 条目：`designProvenance: legacy-unknown`、`provenance: runtime-observed`、初始 status pending；**永不影响生成**（`applyReconciliationToGraph` 过滤 runtime-only；审阅 confirm/reject 仅裁决留痕，provenance 保持观测级）。
+- **反向观测摄取（真机有设计无）**：iOS——`run.json` 步屏文本摘要压缩后取相邻转移；Android——`data_engine.db` 步骤 pre/post OCR 标签集合不同者；两侧统一经 `bestScreenForSummary`（按屏匹配数取唯一最大；并列/无匹配 → 弃，不猜）映射到设计屏；设计图已有该边（`edgeKeys`）则跳过；同 trace 幂等（traces 去重）、按边去重。
+- **边界**：反向观测为**证据级**（不生成、不升级、不硬断言）；映射并列即弃（保守）；Android 转移依赖 pre/post 图落盘（缺 post 即无证据）。
+- **测试**：`test/reconciliation.test.js`（历史追加/同决定不追加/round-trip；runtime-only 创建/幂等/design 优先/不升权/审阅留痕）、`test/android-trace.test.js`（transitions 采集 + 端到端逆向条目）、`test/suite-ios.test.js`（iOS 逆向条目端到端）。

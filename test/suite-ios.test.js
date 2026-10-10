@@ -236,6 +236,14 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
             }
           ],
           bounds: { x: 0, y: 0, width: 390, height: 844 }
+        },
+        {
+          id: "s2",
+          name: "首頁",
+          suggestedRoute: "/",
+          childNames: [],
+          textHints: [{ text: "首頁", textClass: "runtime-text" }],
+          bounds: { x: 0, y: 0, width: 390, height: 844 }
         }
       ],
       edges: [],
@@ -248,7 +256,10 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
     JSON.stringify({
       platform: "ios",
       status: "completed",
-      steps: [{ step: 1, scriptHits: [1] }, { step: 2, screen: "確認頁 | 訂單成立 | 其他文案" }]
+      steps: [
+        { step: 1, scriptHits: [1], screen: "確認頁 | 訂單成立" },
+        { step: 2, screen: "首頁 | 金星禮星星 82123" }
+      ]
     })
   );
 
@@ -268,7 +279,7 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
   assert.equal(report.passed, 1);
 
   const asset = loadReconciliation(runtime.configDirAbs);
-  assert.equal(asset.edges.length, 2);
+  assert.equal(asset.edges.length, 3, "two design edges plus one runtime-only reverse observation");
   const upgraded = asset.edges.find((entry) => entry.to === "選擇門市");
   assert.equal(upgraded.from, "首頁");
   assert.equal(upgraded.status, "upgraded");
@@ -292,4 +303,11 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
     Math.abs(screenMap.elements[0].bounds.x - 20 / 390) < 1e-9,
     "bounds are normalized within the design screen"
   );
+
+  const reverse = asset.edges.find(
+    (entry) => entry.direction === "runtime-only" && entry.from === "確認頁"
+  );
+  assert.ok(reverse, "an observed transition without a design edge becomes a runtime-only entry");
+  assert.equal(reverse.to, "首頁");
+  assert.equal(reverse.status, "pending");
 });

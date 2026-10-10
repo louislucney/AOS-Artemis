@@ -9,8 +9,10 @@ import fs from "node:fs";
 export interface AndroidTraceStep {
   stepNumber: number;
   action: string | null;
-  /** OCR texts recorded with the step's screen image. */
-  labels: string[];
+  /** OCR texts recorded with the step's pre-action screen image. */
+  preLabels: string[];
+  /** OCR texts recorded with the step's post-action screen image (when present). */
+  postLabels: string[];
 }
 
 export interface AndroidTraceObservations {
@@ -19,6 +21,8 @@ export interface AndroidTraceObservations {
   labels: string[];
   /** Normalized (0..1) tap points (coordinate_space=normalized, 0..1000). */
   taps: Array<{ relX: number; relY: number }>;
+  /** Observed screen transitions without design filtering (pre≠post label sets). */
+  transitions: Array<{ fromLabels: string[]; toLabels: string[] }>;
 }
 
 interface SqliteStatement {
@@ -95,25 +99,34 @@ export async function readAndroidTraceObservations(
       .all(traceId) as Array<Record<string, unknown>>;
     if (rows.length === 0) return null;
     const imageStatement = db.prepare("SELECT ocr_result FROM images WHERE image_name = ?");
+    const labelsOfImage = (name: unknown): string[] => {
+      if (typeof name !== "string" || name === "") return [];
+      const imageRow = imageStatement.all(name)[0] as Record<string, unknown> | undefined;
+      return ocrTextsOf(imageRow?.ocr_result);
+    };
     const steps: AndroidTraceStep[] = [];
     const labels = new Set<string>();
     const taps: Array<{ relX: number; relY: number }> = [];
+    const transitions: Array<{ fromLabels: string[]; toLabels: string[] }> = [];
+    const seenTransitions = new Set<string>();
     for (const row of rows) {
-      const imageName =
-        typeof row.pre_image_name === "string" && row.pre_image_name !== ""
-          ? row.pre_image_name
-          : typeof row.post_image_name === "string" && row.post_image_name !== ""
-            ? row.post_image_name
-            : null;
-      let texts: string[] = [];
-      if (imageName) {
-        const imageRow = imageStatement.all(imageName)[0] as Record<string, unknown> | undefined;
-        texts = ocrTextsOf(imageRow?.ocr_result);
-      }
-      for (const text of texts) labels.add(text);
+      const preLabels = labelsOfImage(row.pre_image_name);
+      const postLabels = labelsOfImage(row.post_image_name);
+      for (const text of [...preLabels, ...postLabels]) labels.add(text);
       const action = jsonOf(row.action_taken);
       const tap = normalizedTapOf(row.action_taken);
       if (tap) taps.push(tap);
+      if (preLabels.length > 0 && postLabels.length > 0) {
+        const fromKey = [...preLabels].sort().join("\u0000");
+        const toKey = [...postLabels].sort().join("\u0000");
+        if (fromKey !== toKey) {
+          const pairKey = `${fromKey}\u0001${toKey}`;
+          if (!seenTransitions.has(pairKey)) {
+            seenTransitions.add(pairKey);
+            transitions.push({ fromLabels: preLabels, toLabels: postLabels });
+          }
+        }
+      }
       steps.push({
         stepNumber: typeof row.step_number === "number" ? row.step_number : steps.length + 1,
         action:
@@ -121,10 +134,11 @@ export async function readAndroidTraceObservations(
           typeof (action as { action?: unknown }).action === "string"
             ? ((action as { action: string }).action)
             : null,
-        labels: texts
+        preLabels,
+        postLabels
       });
     }
-    return { steps, labels: [...labels], taps };
+    return { steps, labels: [...labels], taps, transitions };
   } catch {
     return null;
   } finally {

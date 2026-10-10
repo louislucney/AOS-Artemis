@@ -1170,13 +1170,18 @@ async function suiteReconcile(
       const review = entry.review
         ? ` · 审阅 ${entry.review.decision}${entry.review.reviewer ? ` by ${entry.review.reviewer}` : ""}${entry.review.note ? `（${entry.review.note}）` : ""}`
         : "";
+      const direction = entry.direction === "runtime-only" ? " · 逆向观测（设计无此边，不参与生成）" : "";
+      const history =
+        entry.history.length > 0
+          ? ` · 决定历史 ${entry.history.map((item) => item.decision).join("→")}`
+          : "";
       const traces =
         entry.traces.length > 0
           ? `（traces: ${entry.traces.slice(-3).join(", ")}${entry.traces.length > 3 ? ", …" : ""}）`
           : "";
       const context = entry.toTextHints.length > 0 ? ` · 目标文本「${entry.toTextHints.join("」「")}」` : "";
       io.log(
-        `[${entry.status}] ${entry.from} → ${entry.to} · 来源 ${entry.designProvenance}→${entry.provenance} · 命中 ${entry.hits}${traces}${context}${review}`
+        `[${entry.status}] ${entry.from} → ${entry.to} · 来源 ${entry.designProvenance}→${entry.provenance} · 命中 ${entry.hits}${traces}${context}${direction}${history}${review}`
       );
     }
     io.log(

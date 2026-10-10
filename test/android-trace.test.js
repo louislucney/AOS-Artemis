@@ -36,13 +36,14 @@ function makeArtemisDb(dbPath, traceId) {
     extra_metadata TEXT
   )`);
   const insertStep = db.prepare(
-    "INSERT INTO steps (step_id, session_id, step_number, pre_image_name, action_taken) VALUES (?, ?, ?, ?, ?)"
+    "INSERT INTO steps (step_id, session_id, step_number, pre_image_name, post_image_name, action_taken) VALUES (?, ?, ?, ?, ?, ?)"
   );
   insertStep.run(
     "s1",
     traceId,
     1,
     "img1",
+    "img2",
     JSON.stringify({ action: "tap", coordinates: [500, 800], coordinate_space: "normalized", args: {} })
   );
   insertStep.run(
@@ -50,6 +51,7 @@ function makeArtemisDb(dbPath, traceId) {
     traceId,
     2,
     "img2",
+    "img3",
     JSON.stringify({ action: "swipe", coordinates: [600, 700, 600, 300], coordinate_space: "normalized", args: {} })
   );
   insertStep.run(
@@ -57,11 +59,13 @@ function makeArtemisDb(dbPath, traceId) {
     traceId,
     3,
     null,
+    null,
     JSON.stringify({ action: "tap", coordinates: [100, 200], args: {} })
   );
   const insertImage = db.prepare("INSERT INTO images (image_name, ocr_result) VALUES (?, ?)");
   insertImage.run("img1", JSON.stringify([{ text: "首頁" }, { text: "門市列表" }]));
-  insertImage.run("img2", JSON.stringify([{ text: "首頁" }]));
+  insertImage.run("img2", JSON.stringify([{ text: "門市列表" }]));
+  insertImage.run("img3", JSON.stringify([{ text: "首頁" }]));
   db.close();
 }
 
@@ -81,7 +85,12 @@ test("android trace: reads OCR labels and normalized taps from data_engine.db", 
     "only taps carrying the normalized coordinate space count"
   );
   assert.equal(observations.steps[0].action, "tap");
-  assert.deepEqual(observations.steps[0].labels, ["首頁", "門市列表"]);
+  assert.deepEqual(observations.steps[0].preLabels, ["首頁", "門市列表"]);
+  assert.deepEqual(observations.steps[0].postLabels, ["門市列表"]);
+  assert.deepEqual(observations.transitions, [
+    { fromLabels: ["首頁", "門市列表"], toLabels: ["門市列表"] },
+    { fromLabels: ["門市列表"], toLabels: ["首頁"] }
+  ]);
 
   assert.equal(await readAndroidTraceObservations(dbPath, "unknown-trace"), null);
   assert.equal(await readAndroidTraceObservations(path.join(dir, "missing.db"), "trace-1"), null);
@@ -184,6 +193,13 @@ test(
     assert.ok(upgraded, "an OCR label matching the target screen's design text upgrades the edge");
     assert.equal(upgraded.status, "upgraded");
     assert.equal(upgraded.from, "首頁");
+
+    const reverse = reconciliation.edges.find(
+      (entry) => entry.direction === "runtime-only" && entry.from === "選擇門市"
+    );
+    assert.ok(reverse, "an observed transition without a design counterpart becomes a runtime-only entry");
+    assert.equal(reverse.to, "首頁");
+    assert.equal(reverse.status, "pending");
 
     const screenMap = JSON.parse(
       fs.readFileSync(path.join(designDir, "screen-map.json"), "utf-8")

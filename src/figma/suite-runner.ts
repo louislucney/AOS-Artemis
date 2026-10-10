@@ -36,6 +36,9 @@ import { isExploreKind, resolveProvenance, summarizeScriptProvenance } from "../
 import {
   hitsFromRunSteps,
   ingestExplorationObservations,
+  applyRuntimeOnlyObservations,
+  loadReconciliation,
+  saveReconciliation,
   type ExploreStepSignal
 } from "./reconciliation.js";
 import { observedLabelsFromRunSteps, observedTapsFromRunSteps, normalizeElementLabel, recordElementObservations, type ElementBounds } from "../diff/screen-map.js";
@@ -187,19 +190,32 @@ interface FlowHintMeta {
   hints: Map<string, { nodeId?: string; bounds?: ElementBounds }>;
 }
 
-/** Design-side hint metadata (nodeId + bounds) from flows.json for element
- * enrichment; null when flows.json is missing/unreadable (text-only path). */
-function loadFlowHintMeta(runtime: Runtime): Map<string, FlowHintMeta> | null {
+interface DesignContext {
+  meta: Map<string, FlowHintMeta>;
+  /** Design edge keys (`From → To`) for reverse-observation filtering. */
+  edgeKeys: Set<string>;
+  /** Screen-name matchers (normalized name + runtime hint texts). */
+  screenMatchers: Array<{ name: string; normalizedTexts: string[] }>;
+}
+
+/** Design-side context from flows.json: hint metadata (nodeId + bounds),
+ * design edge keys and screen text matchers for enrichment, OCR matching and
+ * reverse (runtime-only) observations. Null when flows.json is missing or
+ * unreadable (text-only path). */
+function loadDesignContext(runtime: Runtime): DesignContext | null {
   try {
     const flowsPath = path.join(runtime.configDirAbs, "design", "flows.json");
     if (!fs.existsSync(flowsPath)) return null;
     const graph = normalizeFlowGraph(JSON.parse(fs.readFileSync(flowsPath, "utf-8")));
     const meta = new Map<string, FlowHintMeta>();
+    const screenMatchers: DesignContext["screenMatchers"] = [];
     for (const screen of graph.screens) {
       const hints = new Map<string, { nodeId?: string; bounds?: ElementBounds }>();
+      const normalizedTexts = new Set<string>([normalizeElementLabel(screen.name)]);
       for (const hint of screen.textHints) {
         if (hint.textClass !== "runtime-text") continue;
         const key = normalizeElementLabel(hint.text);
+        if (key !== "") normalizedTexts.add(key);
         if (!hints.has(key)) {
           hints.set(key, {
             ...(hint.nodeId ? { nodeId: hint.nodeId } : {}),
@@ -211,11 +227,99 @@ function loadFlowHintMeta(runtime: Runtime): Map<string, FlowHintMeta> | null {
         ...(screen.bounds ? { bounds: screen.bounds } : {}),
         hints
       });
+      screenMatchers.push({
+        name: screen.name,
+        normalizedTexts: [...normalizedTexts].filter((text) => text !== "")
+      });
     }
-    return meta;
+    const edgeKeys = new Set<string>();
+    for (const edge of graph.edges) {
+      if (!edge.to || edge.from.name === edge.to.name) continue;
+      edgeKeys.add(`${edge.from.name} → ${edge.to.name}`);
+    }
+    return { meta, edgeKeys, screenMatchers };
   } catch {
     return null;
   }
+}
+
+/** Best design screen for an observed text summary: the screen matching the
+ * most of its own texts (name + runtime hints) as substrings; ties or no match
+ * yield null (no guessing). */
+function bestScreenForSummary(
+  summary: string,
+  matchers: DesignContext["screenMatchers"]
+): string | null {
+  const normalized = normalizeElementLabel(summary);
+  if (normalized === "") return null;
+  let best: { name: string; count: number } | null = null;
+  let tie = false;
+  for (const matcher of matchers) {
+    const count = matcher.normalizedTexts.filter((text) => normalized.includes(text)).length;
+    if (count === 0) continue;
+    if (!best || count > best.count) {
+      best = { name: matcher.name, count };
+      tie = false;
+    } else if (count === best.count) {
+      tie = true;
+    }
+  }
+  return best && !tie ? best.name : null;
+}
+
+function observedSummariesFromRunSteps(run: unknown): string[] {
+  if (!run || typeof run !== "object" || Array.isArray(run)) return [];
+  const steps = (run as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return [];
+  const summaries: string[] = [];
+  for (const step of steps) {
+    if (!step || typeof step !== "object" || Array.isArray(step)) continue;
+    const screen = (step as { screen?: unknown }).screen;
+    if (typeof screen === "string" && screen.trim() !== "") summaries.push(screen);
+  }
+  return summaries;
+}
+
+function adjacentTransitions(summaries: string[]): Array<{ from: string; to: string }> {
+  const compressed: string[] = [];
+  for (const summary of summaries) {
+    const last = compressed[compressed.length - 1];
+    if (last === undefined || normalizeElementLabel(last) !== normalizeElementLabel(summary)) {
+      compressed.push(summary);
+    }
+  }
+  const transitions: Array<{ from: string; to: string }> = [];
+  for (let index = 1; index < compressed.length; index += 1) {
+    transitions.push({ from: compressed[index - 1]!, to: compressed[index]! });
+  }
+  return transitions;
+}
+
+/** Record transitions with no design counterpart (evidence-only, never fed to
+ * generation; idempotent per trace). */
+function ingestRuntimeOnly(
+  runtime: Runtime,
+  traceId: string,
+  at: string,
+  design: DesignContext | null,
+  transitions: Array<{ from: string; to: string }>
+): void {
+  if (!design || transitions.length === 0) return;
+  const seen = new Set<string>();
+  const observations: Array<{ from: string; to: string; traceId: string }> = [];
+  for (const transition of transitions) {
+    const from = bestScreenForSummary(transition.from, design.screenMatchers);
+    const to = bestScreenForSummary(transition.to, design.screenMatchers);
+    if (!from || !to || from === to) continue;
+    const key = `${from} → ${to}`;
+    if (seen.has(key) || design.edgeKeys.has(key)) continue;
+    seen.add(key);
+    observations.push({ from, to, traceId });
+  }
+  if (observations.length === 0) return;
+  const asset = loadReconciliation(runtime.configDirAbs);
+  const result = applyRuntimeOnlyObservations(asset, observations, at);
+  if (result.applied > 0) saveReconciliation(runtime.configDirAbs, result.asset);
 }
 
 interface ElementDesignHintLike {
@@ -246,8 +350,9 @@ function buildElementDesigns(
  * feed the same reconciliation/element discovery as the iOS path. Exploration
  * hits are derived deterministically: a target screen counts as reached when
  * any of its design runtime texts (flows.json) or its name appears as an OCR
- * label. Best-effort: missing DB or Node < 22.5 (`node:sqlite`) degrades to no
- * discovery. */
+ * label; observed transitions without a design counterpart become
+ * runtime-only reconciliation entries. Best-effort: missing DB or Node < 22.5
+ * (`node:sqlite`) degrades to no discovery. */
 async function ingestAndroidObservations(
   runtime: Runtime,
   traceId: string,
@@ -259,7 +364,8 @@ async function ingestAndroidObservations(
     traceId
   );
   if (!observations) return;
-  const hintMeta = loadFlowHintMeta(runtime);
+  const design = loadDesignContext(runtime);
+  const hintMeta = design?.meta ?? null;
   if (testCase.exploreSteps.length > 0) {
     const normalizedLabels = new Set(observations.labels.map((label) => normalizeElementLabel(label)));
     const hitIndexes = testCase.exploreSteps
@@ -295,6 +401,16 @@ async function ingestAndroidObservations(
       traceId
     );
   }
+  ingestRuntimeOnly(
+    runtime,
+    traceId,
+    at,
+    design,
+    observations.transitions.map((transition) => ({
+      from: transition.fromLabels.join(" | "),
+      to: transition.toLabels.join(" | ")
+    }))
+  );
 }
 
 function loadCases(file: string, maxCases?: number): GeneratedCaseLike[] | null {
@@ -676,6 +792,7 @@ export async function runGeneratedTests(
         try {
           const runText = fs.readFileSync(path.join(runtime.traceDir(traceId), "run.json"), "utf-8");
           const run = JSON.parse(runText) as unknown;
+          const design = loadDesignContext(runtime);
           if (testCase.exploreSteps.length > 0) {
             ingestExplorationObservations({
               configDirAbs: runtime.configDirAbs,
@@ -690,7 +807,7 @@ export async function runGeneratedTests(
             recordElementObservations(
               runtime.configDirAbs,
               {
-                designs: buildElementDesigns(testCase.hintScreens, loadFlowHintMeta(runtime)),
+                designs: buildElementDesigns(testCase.hintScreens, design?.meta ?? null),
                 observedLabels: observedLabelsFromRunSteps(run),
                 observedTaps: observedTapsFromRunSteps(run, runtime.traceDir(traceId))
               },
@@ -698,6 +815,13 @@ export async function runGeneratedTests(
               traceId
             );
           }
+          ingestRuntimeOnly(
+            runtime,
+            traceId,
+            at,
+            design,
+            adjacentTransitions(observedSummariesFromRunSteps(run))
+          );
         } catch (error) {
           logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
         }

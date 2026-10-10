@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   applyObservations,
   applyReconciliationToGraph,
+  applyRuntimeOnlyObservations,
   hitsFromRunSteps,
   ingestExplorationObservations,
   loadReconciliation,
@@ -401,4 +402,131 @@ test("reconciliation: tool handler lists and reviews edges with actionable error
   assert.equal(missingArgs.isError, true);
   const unknown = await reconciliation(runtime, { action: "reject", from: "X", to: "Y" });
   assert.equal(unknown.isError, true);
+});
+
+test("reconciliation: review decision history keeps superseded decisions", () => {
+  const base = applyObservations(
+    { version: 1, updatedAt: null, edges: [] },
+    [{ from: "A", to: "B", designProvenance: "inferred", traceId: "t1", reached: false }],
+    "2026-10-10T00:00:00.000Z"
+  ).asset;
+
+  const confirmed = reviewEdge(base, {
+    from: "A",
+    to: "B",
+    decision: "confirmed",
+    reviewer: "louis",
+    at: "2026-10-10T01:00:00.000Z"
+  });
+  assert.ok(!("error" in confirmed));
+  assert.deepEqual(confirmed.entry.history, []);
+
+  const rejected = reviewEdge(confirmed.asset, {
+    from: "A",
+    to: "B",
+    decision: "rejected",
+    reviewer: "amy",
+    at: "2026-10-10T02:00:00.000Z"
+  });
+  assert.ok(!("error" in rejected));
+  assert.equal(rejected.entry.history.length, 1, "the superseded decision is kept");
+  assert.equal(rejected.entry.history[0].decision, "confirmed");
+  assert.equal(rejected.entry.history[0].reviewer, "louis");
+
+  const reConfirmed = reviewEdge(rejected.asset, {
+    from: "A",
+    to: "B",
+    decision: "confirmed",
+    reviewer: "amy",
+    at: "2026-10-10T03:00:00.000Z"
+  });
+  assert.ok(!("error" in reConfirmed));
+  assert.deepEqual(reConfirmed.entry.history.map((item) => item.decision), ["confirmed", "rejected"]);
+
+  const sameAgain = reviewEdge(reConfirmed.asset, {
+    from: "A",
+    to: "B",
+    decision: "confirmed",
+    reviewer: "amy",
+    at: "2026-10-10T04:00:00.000Z"
+  });
+  assert.ok(!("error" in sameAgain));
+  assert.equal(sameAgain.entry.history.length, 2, "repeating the same decision appends no history");
+
+  const roundTrip = parseReconciliation(serializeReconciliation(sameAgain.asset));
+  assert.deepEqual(roundTrip.edges[0].history.map((item) => item.decision), ["confirmed", "rejected"]);
+});
+
+test("reconciliation: runtime-only observations are recorded, idempotent and never promoted", () => {
+  const empty = { version: 1, updatedAt: null, edges: [] };
+  const transition = { from: "首頁", to: "結帳", traceId: "t1" };
+
+  const first = applyRuntimeOnlyObservations(empty, [transition], "2026-10-10T00:00:00.000Z");
+  assert.equal(first.applied, 1);
+  const entry = first.asset.edges[0];
+  assert.equal(entry.direction, "runtime-only");
+  assert.equal(entry.status, "pending");
+  assert.equal(entry.provenance, "runtime-observed");
+  assert.equal(entry.designProvenance, "legacy-unknown");
+  assert.deepEqual(entry.traces, ["t1"]);
+
+  assert.equal(
+    applyRuntimeOnlyObservations(first.asset, [transition], "2026-10-10T00:01:00.000Z").applied,
+    0,
+    "same-trace replay is idempotent"
+  );
+  const second = applyRuntimeOnlyObservations(
+    first.asset,
+    [{ ...transition, traceId: "t2" }],
+    "2026-10-10T00:02:00.000Z"
+  );
+  assert.equal(second.asset.edges[0].hits, 2);
+
+  const designFirst = applyObservations(
+    empty,
+    [{ from: "首頁", to: "結帳", designProvenance: "inferred", traceId: "t1", reached: true }],
+    "2026-10-10T00:00:00.000Z"
+  ).asset;
+  assert.equal(
+    applyRuntimeOnlyObservations(designFirst, [transition], "2026-10-10T00:03:00.000Z").applied,
+    0,
+    "a design entry always wins over the reverse observation"
+  );
+
+  const graph = {
+    screens: [],
+    edges: [
+      {
+        from: { id: "a", name: "首頁" },
+        to: { id: "b", name: "結帳" },
+        element: { id: "e", name: "E", type: "BUTTON" },
+        textHints: [],
+        trigger: "ON_CLICK",
+        actionType: "NODE",
+        provenance: "inferred",
+        confidence: "low"
+      }
+    ],
+    entryScreens: [],
+    unresolvedDestinations: []
+  };
+  const applied = applyReconciliationToGraph(graph, first.asset);
+  assert.equal(applied.upgradedEdges, 0, "runtime-only entries never promote design edges");
+  assert.equal(applied.rejectedEdges, 0);
+  assert.equal(applied.graph.edges.length, 1);
+
+  const reviewed = reviewEdge(first.asset, {
+    from: "首頁",
+    to: "結帳",
+    decision: "confirmed",
+    reviewer: "louis",
+    at: "2026-10-10T05:00:00.000Z"
+  });
+  assert.ok(!("error" in reviewed));
+  assert.equal(reviewed.entry.status, "confirmed");
+  assert.equal(
+    reviewed.entry.provenance,
+    "runtime-observed",
+    "runtime-only entries keep observation provenance (no design-side promotion)"
+  );
 });
