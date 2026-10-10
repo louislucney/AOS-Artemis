@@ -40,6 +40,7 @@ import {
 } from "./reconciliation.js";
 import { observedLabelsFromRunSteps, observedTapsFromRunSteps, normalizeElementLabel, recordElementObservations, type ElementBounds } from "../diff/screen-map.js";
 import { normalizeFlowGraph } from "./flows.js";
+import { readAndroidTraceObservations } from "../artemis/android-trace.js";
 import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -214,6 +215,85 @@ function loadFlowHintMeta(runtime: Runtime): Map<string, FlowHintMeta> | null {
     return meta;
   } catch {
     return null;
+  }
+}
+
+interface ElementDesignHintLike {
+  text: string;
+  nodeId?: string;
+  bounds?: ElementBounds;
+}
+
+/** Shared design-side enrichment for element discovery (iOS + Android paths). */
+function buildElementDesigns(
+  hintScreens: Array<{ screen: string; hints: string[] }>,
+  hintMeta: Map<string, FlowHintMeta> | null
+): Array<{ screen: string; bounds?: ElementBounds; hints: Array<string | ElementDesignHintLike> }> {
+  return hintScreens.map(({ screen, hints }) => {
+    const meta = hintMeta?.get(screen);
+    return {
+      screen,
+      ...(meta?.bounds ? { bounds: meta.bounds } : {}),
+      hints: hints.map((text) => {
+        const info = meta?.hints.get(normalizeElementLabel(text));
+        return info ? { text, ...info } : text;
+      })
+    };
+  });
+}
+
+/** Android/Linux traces: read `data_engine.db` OCR labels + normalized taps and
+ * feed the same reconciliation/element discovery as the iOS path. Exploration
+ * hits are derived deterministically: a target screen counts as reached when
+ * any of its design runtime texts (flows.json) or its name appears as an OCR
+ * label. Best-effort: missing DB or Node < 22.5 (`node:sqlite`) degrades to no
+ * discovery. */
+async function ingestAndroidObservations(
+  runtime: Runtime,
+  traceId: string,
+  testCase: GeneratedCaseLike,
+  at: string
+): Promise<void> {
+  const observations = await readAndroidTraceObservations(
+    path.join(path.dirname(runtime.traceDir(traceId)), "data_engine.db"),
+    traceId
+  );
+  if (!observations) return;
+  const hintMeta = loadFlowHintMeta(runtime);
+  if (testCase.exploreSteps.length > 0) {
+    const normalizedLabels = new Set(observations.labels.map((label) => normalizeElementLabel(label)));
+    const hitIndexes = testCase.exploreSteps
+      .filter((step) => {
+        const meta = hintMeta?.get(step.screen);
+        const designTexts = meta ? [...meta.hints.keys()] : [];
+        return (
+          designTexts.some((text) => normalizedLabels.has(text)) ||
+          normalizedLabels.has(normalizeElementLabel(step.screen))
+        );
+      })
+      .map((step) => step.index);
+    if (hitIndexes.length > 0) {
+      ingestExplorationObservations({
+        configDirAbs: runtime.configDirAbs,
+        traceId,
+        at,
+        screens: testCase.screens,
+        exploreSteps: testCase.exploreSteps,
+        hitIndexes
+      });
+    }
+  }
+  if (testCase.hintScreens.length > 0) {
+    recordElementObservations(
+      runtime.configDirAbs,
+      {
+        designs: buildElementDesigns(testCase.hintScreens, hintMeta),
+        observedLabels: observations.labels,
+        observedTaps: observations.taps
+      },
+      at,
+      traceId
+    );
   }
 }
 
@@ -589,49 +669,44 @@ export async function runGeneratedTests(
     results.push(caseResult);
     if (
       terminal &&
-      isIosTrace(runtime, traceId) &&
       (testCase.exploreSteps.length > 0 || testCase.hintScreens.length > 0)
     ) {
-      try {
-        const runText = fs.readFileSync(path.join(runtime.traceDir(traceId), "run.json"), "utf-8");
-        const run = JSON.parse(runText) as unknown;
-        const at = new Date(now()).toISOString();
-        if (testCase.exploreSteps.length > 0) {
-          ingestExplorationObservations({
-            configDirAbs: runtime.configDirAbs,
-            traceId,
-            at,
-            screens: testCase.screens,
-            exploreSteps: testCase.exploreSteps,
-            hitIndexes: hitsFromRunSteps(run)
-          });
+      const at = new Date(now()).toISOString();
+      if (isIosTrace(runtime, traceId)) {
+        try {
+          const runText = fs.readFileSync(path.join(runtime.traceDir(traceId), "run.json"), "utf-8");
+          const run = JSON.parse(runText) as unknown;
+          if (testCase.exploreSteps.length > 0) {
+            ingestExplorationObservations({
+              configDirAbs: runtime.configDirAbs,
+              traceId,
+              at,
+              screens: testCase.screens,
+              exploreSteps: testCase.exploreSteps,
+              hitIndexes: hitsFromRunSteps(run)
+            });
+          }
+          if (testCase.hintScreens.length > 0) {
+            recordElementObservations(
+              runtime.configDirAbs,
+              {
+                designs: buildElementDesigns(testCase.hintScreens, loadFlowHintMeta(runtime)),
+                observedLabels: observedLabelsFromRunSteps(run),
+                observedTaps: observedTapsFromRunSteps(run, runtime.traceDir(traceId))
+              },
+              at,
+              traceId
+            );
+          }
+        } catch (error) {
+          logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
         }
-        if (testCase.hintScreens.length > 0) {
-          const hintMeta = loadFlowHintMeta(runtime);
-          const designs = testCase.hintScreens.map(({ screen, hints }) => {
-            const meta = hintMeta?.get(screen);
-            return {
-              screen,
-              ...(meta?.bounds ? { bounds: meta.bounds } : {}),
-              hints: hints.map((text) => {
-                const info = meta?.hints.get(normalizeElementLabel(text));
-                return info ? { text, ...info } : text;
-              })
-            };
-          });
-          recordElementObservations(
-            runtime.configDirAbs,
-            {
-              designs,
-              observedLabels: observedLabelsFromRunSteps(run),
-              observedTaps: observedTapsFromRunSteps(run, runtime.traceDir(traceId))
-            },
-            at,
-            traceId
-          );
+      } else {
+        try {
+          await ingestAndroidObservations(runtime, traceId, testCase, at);
+        } catch (error) {
+          logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
         }
-      } catch (error) {
-        logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
       }
     }
     if (options.stopOnFailure && caseResult.status !== "passed") break;

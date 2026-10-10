@@ -384,7 +384,7 @@ env:
 - **起始屏 preflight（确定性前置）**：`【AOS-EXPECT】` 块携带 `start`（journey 入口屏 + 设计 hints，`GeneratedTest.preflight` 字段；hints 为空则不下发）；iOS 执行器首步观测核对（`pending → matched/unmatched`，unchecked 表示不可核对）：未命中时每步向模型注入「起始屏核对未通过，请先导航到该页」提示（替代即兴导航），全程留痕——`test_summary.preflight.{screen,status,matched_at_step}`、run.json `preflight`、验证提示词「起始屏核对（确定性）」段与完成摘要 `⚠ 起始屏核对未通过`（同样建议级，不硬失败）。
 - **pen 合成提取**（`pen_extract_flows`，离线）：`.pen` 无原型交互数据时，屏幕命名取「Flow 标注 > 屏内首个文本 > 图层名」（默认名 `Frame NNNN` 不再冒充屏名）；状态变体按标签前缀归并为主屏 + `states`；跳转按画板序号/画布排布推断并统一标注 `INFERRED`；产出可直接进入同一闭环的 `flows.json` 与全局 `flow-map.md`；碎片度（默认名屏、状态归并、推断边、缺标签）进入 `warnings`，供人工复核。
 - **pre-merge 静态闸**（`suite check`）：tests.json × flows.json 静态覆盖（复用 preflight 单一实现），不连设备；未硬覆盖/截断/缺 flows exit 2（`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告（设计偏差 ≠ 路线缺口）。
-- **对账闭环（导航级，§13.67/§13.68）**：`suite run`（iOS 执行器）把探索步骤的实际命中（trace 的 `run.json` → `scriptHits`）写入持久对账资产 `<项目>/.artemis/design/reconciliation.json`（幂等——同 trace 重放不重复计数；稳定排序；升级阈值 = 1 次观测；未命中的边登记 pending 差异）；下一次 `figma_generate_tests` 自动把已升级边以 `runtime-observed` 生成硬断言（响应 `reconciliation.upgradedEdges`）。**人工审阅面**：`suite reconcile` 与 MCP `reconciliation` 工具（list/confirm/reject）——confirm → human-confirmed（硬断言）、reject → 边不进生成；未裁决不升权。
+- **对账闭环（导航级，§13.67/§13.68/§13.73）**：`suite run` 把探索步骤的实际命中写入持久对账资产 `<项目>/.artemis/design/reconciliation.json`——iOS 经 trace `run.json` 的 `scriptHits`；Android 经 `data_engine.db` 的 OCR 标签匹配设计运行期文本/屏名（§13.73）。（幂等——同 trace 重放不重复计数；稳定排序；升级阈值 = 1 次观测；未命中的边登记 pending 差异）；下一次 `figma_generate_tests` 自动把已升级边以 `runtime-observed` 生成硬断言（响应 `reconciliation.upgradedEdges`）。**人工审阅面**：`suite reconcile` 与 MCP `reconciliation` 工具（list/confirm/reject）——confirm → human-confirmed（硬断言）、reject → 边不进生成；未裁决不升权。
 - **元素级映射（导航级，§13.69）**：iOS 运行把观察标签与设计运行期文本做唯一精确归一匹配，写入 `screen-map.json` 的 `elements`（含 accessibilityIdentifier 建议）；`screen_map` 工具可人工补（manual 优先）；下一次 `figma_generate_tests` 在步骤元素注记追加 `a11y: <identifier>`。
 - **验收口径（oracle，§13.70）**：设计标注 `Flow/AC*` 分组或 `AC:`/`验收：` 前缀批注（或 `.artemis/design/acceptance.json` 人工确认覆盖）声明硬断言期望，assert 步骤携带 `hintsSource:"acceptance"`；无口径的屏沿用运行期文本（`hintsSource:"runtime-text"`，建议级）。Jira AC 留后续集成。
 - **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 **JUnit XML**——Android instrumentation 直读，或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
@@ -1240,7 +1240,7 @@ llm_switch(name, force):
 - **identifier 建议**：latin 词 → camelCase（小写字母开头，单字母合法）；纯非 ASCII → `element_<sha1 前 8>`（稳定幂等）。
 - **人工补（关键路径）**：`screen_map(action:"save", elements:[…])`（source 强制 manual；与自动条目按 screen+text 合并，**manual 的 identifier 不被观察覆盖**）；**工具 schema 已暴露 `elements`（server-smoke 锁定，防止 zod strip 断链）**；list 输出 `elements`。
 - **生成消费**：`figma_generate_tests` 载入 elements（按 hits 优选，键为归一文本——同文案跨屏建议同一 identifier，属约定行为）→ 步骤元素注记追加 `；a11y: <identifier>`（tests.md/xlsx/taskDesc 同步）；无建议时行为不变。
-- **口径与边界（明示）**：本票实现为「运行期文本 ↔ 观察标签」映射，**不含 design nodeId 与几何维度**（backlog §13.72 已补：hints/screen 携带 nodeId+bounds、条目归一 bounds、tap 几何消歧）；自动发现仅 iOS trace；简报已接线（§13.71）；`screenTextSummary` 截断（60 元素/4000 字符）可能漏配尾部标签；纯探索边 hints=[] 不参与元素发现（其目标屏文本可经 assert 边进入）。
+- **口径与边界（明示）**：本票实现为「运行期文本 ↔ 观察标签」映射，**不含 design nodeId 与几何维度**（backlog §13.72 已补：hints/screen 携带 nodeId+bounds、条目归一 bounds、tap 几何消歧）；自动发现双端可用（iOS trace `run.json`；Android `data_engine.db`，§13.73）；简报已接线（§13.71）；`screenTextSummary` 截断（60 元素/4000 字符）可能漏配尾部标签；纯探索边 hints=[] 不参与元素发现（其目标屏文本可经 assert 边进入）。
 - **测试**：`test/diff-screen-map.test.js`（建议确定性含单字母/唯一匹配/歧义跳过/合并与 manual 优先/trace 幂等/序列化兼容/落盘幂等）、`test/suite-ios.test.js`（运行 → elements 落盘）、`test/figma-testgen.test.js`（步骤 a11y 注记）、`test/server-smoke.test.js`（screen_map schema 暴露 elements + reconciliation required 锁定）。
 
 ### 13.70 实施记录（票 11：验收口径入生成——设计标注先行）
@@ -1270,5 +1270,16 @@ llm_switch(name, force):
 - **元素条目**：`ElementMapEntry` 增 `designNodeId`/`bounds`（**归一 0..1 per screen**：`(rect − screen) / screen`）；条目身份键 = `(screen, nodeId, text)`（同屏同名不同节点各自独立；无 nodeId 时行为不变）。
 - **匹配升级（按屏作用域）**：跨屏同名文本不再互斥（各屏独立条目，修正 §13.69 的全局去重）；同屏同名按 nodeId 去重；同屏多候选时用 **trace 级 tap 几何消歧**——tap 归一坐标（截图像素 ÷ step.scale ÷ 启动截图逻辑尺寸，PNG 头解析）落在恰一个候选矩形内 → 命中（confidence 0.8），命中 0 或多个 → 跳过（不猜）。
 - **摄取接线**：`suite run`（iOS）元素发现时读 flows.json 富化 hint 元数据（屏 bounds + 节点 nodeId/bounds），并从 run.json tap 步骤（shot+scale+PNG 尺寸）计算归一 taps；flows 缺失/截图不可读 → 退回纯文本匹配（行为同 §13.69）。
-- **边界**：tap 为 trace 级证据（不按步归屏）；几何消歧仅用包含判定（无距离阈值参数）；Android 仍不自动发现；identifier 建议规则不变。
+- **边界**：tap 为 trace 级证据（不按步归屏）；几何消歧仅用包含判定（无距离阈值参数）；Android 自动发现由 §13.73 接线；identifier 建议规则不变。
 - **测试**：`test/figma-flows.test.js` / `test/pen-flows.test.js`（nodeId+bounds 采集）、`test/diff-screen-map.test.js`（按屏作用域、几何消歧含双命中与无几何跳过、taps 归一化与缺截图退化、归一 round-trip）、`test/suite-ios.test.js`（flows 元数据富化端到端）。
+
+### 13.73 实施记录（backlog：Android 侧自动发现）
+
+> 实施于 2026-10-10；backlog 第三项（接 §13.69/§13.72 的 Android 边界）。新增 `src/artemis/android-trace.ts`（`node:sqlite` 只读）；改 `src/figma/suite-runner.ts`（非 iOS trace 摄取分支；`buildElementDesigns` 抽公共）；测试 +2（`node:sqlite` 缺失自动 skip）；全量 847 绿。
+
+- **数据源（离线可核，artemis 子模块为事实源）**：`<tracesDir>/data_engine.db`（SQLite；子进程以 `session_id == trace_id` 记账）；`steps.action_taken` JSON（`{action, coordinates, coordinate_space:"normalized"}`，Flash 记录模型 0–1000 归一坐标）+ `images.ocr_result` JSON（`[{text, position}]`）。tap 归一：`relX/relY = x/1000`。
+- **对账摄取**：探索步骤「到达」判定为确定性 OCR 匹配——目标屏设计运行期文本（flows.json 归一化）或屏名出现在 OCR 标签集即命中（→ `hitIndexes` → 既有 `ingestExplorationObservations`）；未命中不记 hit（pending 差异照常登记）。
+- **元素映射**：OCR 文本作 `observedLabels`、归一 tap 作 `observedTaps`；设计侧富化与 iOS 共用（`buildElementDesigns`）；同屏重名同样走几何消歧。
+- **降级**：DB 缺失/表结构不符/`node:sqlite` 不可用（Node < 22.5，动态 import 失败）→ 静默跳过（无发现、不报错）；AOS 本体 Node ≥ 20 兼容不受影响（仅该功能需 ≥ 22.5，README 注明）。
+- **边界**：Android 无 AOS-EXPECT adherence（断言核对仍 artemis 自管）；到达门槛为 1 个设计文本/屏名命中（OCR 缺失即无证据，保守）；未标 `coordinate_space` 的动作不计 tap。
+- **测试**：`test/android-trace.test.js`（DB 读取/标签与归一 taps/未知 trace 与缺库退化 + 套件端到端：OCR 命中升级对账边、元素条目带 designNodeId；`node:sqlite` 缺失自动 skip）。
