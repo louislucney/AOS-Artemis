@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { runGeneratedTests, suiteResetFor } from "../dist/figma/suite-runner.js";
+import { loadReconciliation } from "../dist/figma/reconciliation.js";
 import { resetApp } from "../dist/device/reset.js";
 import { resetIosApp } from "../dist/device/ios-reset.js";
 import { __resetIosTasks } from "../dist/ios/task-runner.js";
@@ -186,4 +187,65 @@ test("suite runner: ios- 前缀 fallback 同样跳过套件记账", async () => 
   });
   assert.equal(report.passed, 1);
   assert.equal((await runtime.taskList(10)).length, 0);
+});
+
+test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", async () => {
+  __resetIosTasks();
+  const { dir, runtime } = await setupIos();
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "tests.json"),
+    JSON.stringify({
+      flows: [
+        {
+          id: "case-1",
+          name: "Case 1",
+          screens: ["首頁", "選擇門市", "店員推薦"],
+          steps: ["探索到达「選擇門市」（来源未确认）：自行尝试触发通往该页的交互"],
+          preconditions: [],
+          taskDesc: "run ios case 1",
+          expectations: [
+            { index: 1, screen: "選擇門市", hints: [], provenance: "inferred", confidence: "low", kind: "explore" },
+            { index: 2, screen: "店員推薦", hints: [], provenance: "inferred", confidence: "low", kind: "explore" }
+          ]
+        }
+      ]
+    })
+  );
+  writeStatus(dir, "trace-1", {
+    trace_id: "trace-1",
+    status: "completed",
+    device_serial: UDID,
+    message: "done"
+  });
+  fs.writeFileSync(
+    path.join(runtime.traceDir("trace-1"), "run.json"),
+    JSON.stringify({ platform: "ios", status: "completed", steps: [{ step: 1, scriptHits: [1] }] })
+  );
+
+  const runOptions = {
+    deviceSerial: UDID,
+    reset: async (request) => ({
+      ok: true,
+      serial: request.serial ?? null,
+      adb: { path: null, source: "missing" },
+      commands: []
+    }),
+    sleep: async () => {},
+    pollIntervalMs: 0,
+    apiErrors: false
+  };
+  const report = await runGeneratedTests(runtime, runOptions);
+  assert.equal(report.passed, 1);
+
+  const asset = loadReconciliation(runtime.configDirAbs);
+  assert.equal(asset.edges.length, 2);
+  const upgraded = asset.edges.find((entry) => entry.to === "選擇門市");
+  assert.equal(upgraded.from, "首頁");
+  assert.equal(upgraded.status, "upgraded");
+  assert.equal(upgraded.provenance, "runtime-observed");
+  assert.deepEqual(upgraded.traces, ["trace-1"]);
+  const pending = asset.edges.find((entry) => entry.to === "店員推薦");
+  assert.equal(pending.from, "選擇門市");
+  assert.equal(pending.status, "pending", "un-reached exploration is registered as a reconciliation gap");
+  assert.equal(pending.hits, 0);
 });

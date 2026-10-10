@@ -4,7 +4,9 @@
 
 **Blocked by:** 06（执行侧证据与 deferred 语义）。
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+> 实施注（2026-10-10）：`src/figma/reconciliation.ts`（资产 v1、稳定排序、原子写、幂等摄取、阈值=1 导航级升级）；`suite run` iOS 从 run.json scriptHits 摄取；`figma_generate_tests` 自动叠加升级边（runtime-observed → 硬断言，响应 `reconciliation.upgradedEdges`）。硬断言级升级/冲突仲裁留票 09。见 DESIGN §6.10/§13.67。
 
 - [ ] 资产 schema（版本化、稳定排序、纯函数读写）落项目设计目录；含设计↔观测对账条目与升级状态
 - [ ] 导航级自动升级规则确定（证据门槛明确）；硬断言级不自动升级（留 09 人工/验收口径）

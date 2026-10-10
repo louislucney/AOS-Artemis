@@ -15,6 +15,7 @@ import {
   type FlowGraph
 } from "./flows.js";
 import { deriveCasePreconditions } from "./preconditions.js";
+import { applyReconciliationToGraph, loadReconciliation } from "./reconciliation.js";
 import { canonicalizePlaceholders, normalizedText } from "./strings.js";
 import { renderTestsWorkbook } from "./test-xlsx.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
@@ -592,6 +593,9 @@ export async function figmaGenerateTests(
       source = flowsPath;
     }
 
+    const reconciliation = applyReconciliationToGraph(graph, loadReconciliation(runtime.configDirAbs));
+    graph = reconciliation.graph;
+
     const generationRef: { stats: LinearizeStats | null } = { stats: null };
     const cases = generateTestCases(graph, {
       maxFlows: args.maxFlows ?? 10,
@@ -636,6 +640,9 @@ export async function figmaGenerateTests(
       counts: { flows: counts.cases, screens: counts.screens, edges: counts.edges },
       generation,
       coverage,
+      ...(reconciliation.upgradedEdges > 0
+        ? { reconciliation: { upgradedEdges: reconciliation.upgradedEdges } }
+        : {}),
       flows: cases,
       hint:
         "用 mobile_run_task 执行 flows[].taskDesc；失败步骤可用 compare_design_and_device 做视觉断言；" +

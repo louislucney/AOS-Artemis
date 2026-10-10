@@ -384,6 +384,7 @@ env:
 - **起始屏 preflight（确定性前置）**：`【AOS-EXPECT】` 块携带 `start`（journey 入口屏 + 设计 hints，`GeneratedTest.preflight` 字段；hints 为空则不下发）；iOS 执行器首步观测核对（`pending → matched/unmatched`，unchecked 表示不可核对）：未命中时每步向模型注入「起始屏核对未通过，请先导航到该页」提示（替代即兴导航），全程留痕——`test_summary.preflight.{screen,status,matched_at_step}`、run.json `preflight`、验证提示词「起始屏核对（确定性）」段与完成摘要 `⚠ 起始屏核对未通过`（同样建议级，不硬失败）。
 - **pen 合成提取**（`pen_extract_flows`，离线）：`.pen` 无原型交互数据时，屏幕命名取「Flow 标注 > 屏内首个文本 > 图层名」（默认名 `Frame NNNN` 不再冒充屏名）；状态变体按标签前缀归并为主屏 + `states`；跳转按画板序号/画布排布推断并统一标注 `INFERRED`；产出可直接进入同一闭环的 `flows.json` 与全局 `flow-map.md`；碎片度（默认名屏、状态归并、推断边、缺标签）进入 `warnings`，供人工复核。
 - **pre-merge 静态闸**（`suite check`）：tests.json × flows.json 静态覆盖（复用 preflight 单一实现），不连设备；未硬覆盖/截断/缺 flows exit 2（`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告（设计偏差 ≠ 路线缺口）。
+- **对账闭环（导航级，§13.67）**：`suite run`（iOS 执行器）把探索步骤的实际命中（trace 的 `run.json` → `scriptHits`）写入持久对账资产 `<项目>/.artemis/design/reconciliation.json`（幂等——同 trace 重放不重复计数；稳定排序；升级阈值 = 1 次观测）；下一次 `figma_generate_tests` 自动把已升级边以 `runtime-observed` 生成硬断言（响应 `reconciliation.upgradedEdges`）。硬断言级的升级/冲突裁决留人工审阅面（票 09）。
 - **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 **JUnit XML**——Android instrumentation 直读，或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
 - **追溯矩阵**（`suite report`）：xlsx 第二工作表输出 design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据存在性（未覆盖/无 trace/无证据标注）。
 - **设计版本锚点**：`figma_extract_flows` 将 Figma `version`/`lastModified` 写入 flows.json（`fileVersion`/`lastModified`），为设计冻结（baseline-lock）预留。
@@ -1202,3 +1203,14 @@ llm_switch(name, force):
 - **报告来源显示**：`SuiteCaseResult.scriptProvenance` 入套件 JSON 与控制台（`[FAIL] … · 脚本 断言N/探索M`）；run-report xlsx 增「脚本来源」列（`断言 N / 探索 M`）；JUnit failure message 含归类理由（含探索计数）；`suite loop` 失败域动作文案列全域名；移动任务摘要在 `test_summary.adherence` 透出 assert/explore（来源）计数与归类置信度（套件侧）。
 - **边界与延后**：①「设计↔观测冲突 → design-inference」的冲突信号依赖对账资产（票 08/09），本票只覆盖推断来源失败；②`jira_evidence_post` 归域未接 `scriptProvenance`（无 tests.json 上下文），与套件报告在纯探索场景可能不一致——按需后续接线；③轮询超时且中途有 failedItems 的路径沿用既有优先级（failedItems 分支先于 timedOut），不在本票调整。
 - **测试**：`test/failure-taxonomy.test.js`（纯探索 high / 双证据 medium / 断言未出现回落 / adherence 缺失回落 behavior-or-design / 探索全达成回落 / 数据信号优先 / 崩溃优先）、`test/suite-runner.test.js`（端到端归类 + scriptProvenance 透出）、`test/run-report.test.js`（xlsx 列头与值）。
+
+### 13.67 实施记录（票 08：对账资产核心——证据记录 + 导航级自动升级）
+
+> 实施于 2026-10-10；CR 交互理解主线第八票（ADR-0004 资产模式，ADR-0007 升级规则）。新增 `src/figma/reconciliation.ts`；改 `src/figma/suite-runner.ts`（摄取接线）、`src/figma/test-gen.ts`（生成消费）；测试 +9；全量 823 绿。
+
+- **资产 schema（v1，`.artemis/design/reconciliation.json`）**：逐边条目 `{from, to, designProvenance, provenance, status: pending|upgraded, traces[]（完整审计轨迹，不截断——保证任意 trace 重放幂等）, hits, lastSeenAt}`；纯函数 `parse/serialize/applyObservations/applyReconciliationToGraph/hitsFromRunSteps`，读写薄 IO（load/save，原子写、缺省空资产、损坏容错、保留已有 version），稳定排序（edge key `"From → To"`）。
+- **摄取（执行 → 资产）**：`suite run` 每例终态且为 iOS trace 时，读 trace `run.json` 的 `steps[].scriptHits`，把探索步骤（tests.json expectations kind=explore，含屏幕名与来源）映射为边（screens 序列中目标屏的**最后一次**出现的前一屏 → 目标屏，回访屏不错配）：命中的边计数并升级；**未命中的边登记为 pending 差异条目**（套件钩子不再以"有命中"为前提；设计与真机观测未对上，待审阅/复跑）。同 trace 重放幂等。best-effort：失败 `logWarn` 不阻断套件。
+- **升级规则（导航级）**：阈值 = 1 次观测命中即升级（`designProvenance` 为 inferred/legacy 时才升级；explicit 记录但不改写）；pending → upgraded 生命周期有测试锁定；硬断言级升级不在自动范围（留票 09 人工/验收口径）。
+- **生成消费（资产 → 生成）**：`figma_generate_tests` 读盘/现场提取后都叠加资产——已升级边把 inferred/legacy 置为 `runtime-observed`/high，下一次生成直接产出硬断言（不再探索），响应带 `reconciliation.upgradedEdges`；无资产文件时输出与旧行为一致（显式测试）。
+- **边界**：Android/无 run.json 的 trace 不摄取（记录计数不可得）；冲突仲裁与人工确认属票 09；资产不参与 diff 判定（ADR-0001）；屏幕名即边身份的局限（跨屏同名/改名）留待审核面按 nodeId 强化。
+- **测试**：`test/reconciliation.test.js`（观测计数/幂等/pending 生命周期/explicit 不改写/稳定排序/损坏容错/图叠加/hits 解析/ingest 落盘含差异登记）、`test/figma-testgen.test.js`（升级边生成硬断言 + 响应计数 + 无资产零变化）、`test/suite-ios.test.js`（iOS 运行→升级+差异双条目端到端）。

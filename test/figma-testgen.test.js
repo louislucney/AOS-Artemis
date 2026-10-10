@@ -532,7 +532,85 @@ test("figma_generate_tests: legacy flows.json (no provenance) normalizes conserv
   assert.equal(testCase.expectations[0].confidence, "low");
   assert.equal(testCase.expectations[0].kind, "explore");
   assert.deepEqual(testCase.expectations[0].hints, [], "conservative: no hard hints from legacy edges");
-  assert.match(testCase.taskDesc, /探索到达「Checkout」/, "legacy edges render as exploration");
+  assert.match(testCase.taskDesc, /探索进入「Checkout」|探索到达「Checkout」/, "legacy edges render as exploration");
+  assert.equal(payload.reconciliation, undefined, "no asset file: generation is unchanged");
+});
+
+test("figma_generate_tests: upgraded reconciliation edges generate hard assertions", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [
+        {
+          id: "s1",
+          name: "首頁",
+          suggestedRoute: "/",
+          childNames: [],
+          textHints: [],
+          provenance: "explicit",
+          confidence: "high"
+        },
+        {
+          id: "s2",
+          name: "選擇門市",
+          suggestedRoute: "/store",
+          childNames: [],
+          textHints: [{ text: "選擇門市", textClass: "runtime-text" }],
+          provenance: "inferred",
+          confidence: "low"
+        }
+      ],
+      edges: [
+        {
+          from: { id: "s1", name: "首頁" },
+          to: { id: "s2", name: "選擇門市" },
+          element: { id: "e", name: "推断跳转（按画板排布）", type: "INFERRED" },
+          textHints: [],
+          trigger: "INFERRED",
+          actionType: "INFERRED",
+          provenance: "inferred",
+          confidence: "low"
+        }
+      ],
+      entryScreens: ["首頁"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    path.join(designDir, "reconciliation.json"),
+    JSON.stringify({
+      version: 1,
+      updatedAt: "2026-10-10T00:00:00.000Z",
+      edges: [
+        {
+          from: "首頁",
+          to: "選擇門市",
+          designProvenance: "inferred",
+          provenance: "runtime-observed",
+          status: "upgraded",
+          traces: ["t1"],
+          hits: 1,
+          lastSeenAt: "2026-10-10T00:00:00.000Z"
+        }
+      ]
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.reconciliation.upgradedEdges, 1);
+  const testCase = payload.flows[0];
+  assert.equal(testCase.expectations[0].kind, "assert");
+  assert.equal(testCase.expectations[0].provenance, "runtime-observed");
+  assert.deepEqual(testCase.expectations[0].hints, ["選擇門市"]);
+  assert.match(testCase.steps[0], /验证进入「選擇門市」/);
+  assert.equal(testCase.taskDesc.includes("探索"), false, "promoted edge is no longer an exploration step");
 });
 
 test("generateTestCases: inferred edges become exploration steps", () => {

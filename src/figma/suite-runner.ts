@@ -26,12 +26,18 @@ import { classifyIosSerial } from "../device/ios.js";
 import { IosLogCollector, type IosLogWindowRequest } from "../device/ios-log.js";
 import { resetIosApp } from "../device/ios-reset.js";
 import { isIosTraceDir } from "../ios/trace-store.js";
+import { logWarn } from "../log.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "../device/logcat.js";
 import { resetApp, type AppResetOptions, type AppResetOutcome, type AppResetRequest } from "../device/reset.js";
 import type { IosDevice } from "../device/ios-actions.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
-import { summarizeScriptProvenance } from "../provenance.js";
+import { isExploreKind, resolveProvenance, summarizeScriptProvenance } from "../provenance.js";
+import {
+  hitsFromRunSteps,
+  ingestExplorationObservations,
+  type ExploreStepSignal
+} from "./reconciliation.js";
 import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -127,8 +133,32 @@ interface GeneratedCaseLike {
   name: string;
   preconditions: string[];
   taskDesc: string;
+  screens: string[];
+  /** Exploration steps (kind=explore with a target screen) for reconciliation. */
+  exploreSteps: ExploreStepSignal[];
   /** Script provenance counts from tests.json expectations (null = legacy). */
   scriptProvenance: { asserts: number; explores: number } | null;
+}
+
+function exploreStepsOf(raw: unknown): ExploreStepSignal[] {
+  if (!Array.isArray(raw)) return [];
+  const steps: ExploreStepSignal[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as { index?: unknown; screen?: unknown; kind?: unknown; provenance?: unknown };
+    if (!isExploreKind(record.kind)) continue;
+    if (typeof record.screen !== "string" || record.screen.trim() === "") continue;
+    const index =
+      typeof record.index === "number" && Number.isFinite(record.index)
+        ? Math.floor(record.index)
+        : steps.length + 1;
+    steps.push({
+      index,
+      screen: record.screen.trim(),
+      provenance: resolveProvenance(record.provenance)
+    });
+  }
+  return steps;
 }
 
 function loadCases(file: string, maxCases?: number): GeneratedCaseLike[] | null {
@@ -139,6 +169,7 @@ function loadCases(file: string, maxCases?: number): GeneratedCaseLike[] | null 
         name?: unknown;
         preconditions?: unknown;
         taskDesc?: unknown;
+        screens?: unknown;
         expectations?: unknown;
       }>;
     };
@@ -152,6 +183,10 @@ function loadCases(file: string, maxCases?: number): GeneratedCaseLike[] | null 
           ? entry.preconditions.filter((item): item is string => typeof item === "string")
           : [],
         taskDesc: entry.taskDesc,
+        screens: Array.isArray(entry.screens)
+          ? entry.screens.filter((screen): screen is string => typeof screen === "string")
+          : [],
+        exploreSteps: exploreStepsOf(entry.expectations),
         scriptProvenance: summarizeScriptProvenance(entry.expectations)
       });
     }
@@ -495,6 +530,22 @@ export async function runGeneratedTests(
       reset
     };
     results.push(caseResult);
+    if (terminal && testCase.exploreSteps.length > 0 && isIosTrace(runtime, traceId)) {
+      try {
+        const runText = fs.readFileSync(path.join(runtime.traceDir(traceId), "run.json"), "utf-8");
+        const hitIndexes = hitsFromRunSteps(JSON.parse(runText));
+        ingestExplorationObservations({
+          configDirAbs: runtime.configDirAbs,
+          traceId,
+          at: new Date(now()).toISOString(),
+          screens: testCase.screens,
+          exploreSteps: testCase.exploreSteps,
+          hitIndexes
+        });
+      } catch (error) {
+        logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
+      }
+    }
     if (options.stopOnFailure && caseResult.status !== "passed") break;
   }
 
