@@ -16,6 +16,7 @@ import type { LogcatWindowResult } from "../device/logcat.js";
 import { makeChatFn, type ChatContent, type ChatFn, type ChatMessage } from "../llm/chat.js";
 import { entryIssues, type LlmEntry } from "../llm/registry.js";
 import { logWarn } from "../log.js";
+import { isExploreKind, type StepKind } from "../provenance.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import {
@@ -61,6 +62,9 @@ export interface IosScriptExpectation {
   index: number;
   screen: string | null;
   hints: string[];
+  /** `explore` (deferred) steps are recorded but never gate adherence;
+   * absent kind in the 【AOS-EXPECT】 payload = assert (legacy artifacts). */
+  kind: StepKind;
 }
 
 export interface IosScriptPreflight {
@@ -79,14 +83,16 @@ export interface IosScriptPlan {
 }
 
 export interface IosScriptAdherence {
-  /** 可核对断言数（hints 非空）。 */
+  /** 可核对断言数（hints 非空，仅 assert 类）。 */
   checkable: number;
   /** 已命中（hints 全部在某个观测中出现）的可核对断言数。 */
   satisfied: number;
-  /** 无 hints、无法确定性核对的断言数。 */
+  /** 无 hints、无法确定性核对的断言数（仅 assert 类）。 */
   unchecked: number;
-  /** 全程未出现过的可核对断言。 */
+  /** 全程未出现过的可核对断言（仅 assert 类）。 */
   unresolved: Array<{ index: number; screen: string | null; hints: string[] }>;
+  /** 探索（deferred）步骤：不参与门禁；`reached` 为目标屏名作为**完整可见标签**出现的条数。 */
+  deferred: { total: number; reached: number };
 }
 
 const SCRIPT_EXPECT_MARKER = "【AOS-EXPECT】";
@@ -100,7 +106,7 @@ function scriptHintsOf(value: unknown): string[] {
 }
 
 /** Parse the machine-readable plan block emitted by figma_generate_tests
- * (`【AOS-EXPECT】{"start":{screen,hints},"steps":[{index,screen,hints}]}`).
+ * (`【AOS-EXPECT】{"start":{screen,hints},"steps":[{index,screen,hints,kind?}]}`).
  * Returns null when the block is absent/invalid/empty. */
 export function parseScriptPlan(taskDesc: string): IosScriptPlan | null {
   const line = taskDesc.split("\n").find((entry) => entry.includes(SCRIPT_EXPECT_MARKER));
@@ -139,7 +145,12 @@ export function parseScriptPlan(taskDesc: string): IosScriptPlan | null {
         typeof stepRecord.screen === "string" && stepRecord.screen.trim() !== ""
           ? stepRecord.screen.trim()
           : null;
-      expectations.push({ index, screen, hints: scriptHintsOf(stepRecord.hints) });
+      expectations.push({
+        index,
+        screen,
+        hints: scriptHintsOf(stepRecord.hints),
+        kind: isExploreKind(stepRecord.kind) ? "explore" : "assert"
+      });
     }
   }
   if (!start && expectations.length === 0) return null;
@@ -154,10 +165,25 @@ function matchScriptExpectations(
   screenText: string
 ): number[] {
   const normalized = normalizeMatchText(screenText);
+  const labels = new Set(
+    screenText
+      .split(" | ")
+      .map((part) => normalizeMatchText(part))
+      .filter((part) => part !== "")
+  );
   const hits: number[] = [];
   for (const expectation of expectations) {
-    if (expectation.hints.length === 0 || satisfied.has(expectation.index)) continue;
-    if (expectation.hints.every((hint) => normalized.includes(normalizeMatchText(hint)))) {
+    if (satisfied.has(expectation.index)) continue;
+    const hintMatch =
+      expectation.hints.length > 0 &&
+      expectation.hints.every((hint) => normalized.includes(normalizeMatchText(hint)));
+    // Exploration targets match only as a complete visible label (never as a
+    // loose substring), so short screen names cannot fake `reached`.
+    const screenMatch =
+      expectation.kind === "explore" &&
+      expectation.screen !== null &&
+      labels.has(normalizeMatchText(expectation.screen));
+    if (hintMatch || screenMatch) {
       satisfied.add(expectation.index);
       hits.push(expectation.index);
     }
@@ -169,14 +195,25 @@ function buildScriptAdherence(
   expectations: IosScriptExpectation[],
   satisfied: Set<number>
 ): IosScriptAdherence {
-  const checkable = expectations.filter((expectation) => expectation.hints.length > 0);
-  const unchecked = expectations.length - checkable.length;
-  const unresolved = checkable.filter((expectation) => !satisfied.has(expectation.index));
+  const assertions = expectations.filter((expectation) => expectation.kind === "assert");
+  const explorations = expectations.filter((expectation) => expectation.kind === "explore");
+  const checkable = assertions.filter((expectation) => expectation.hints.length > 0);
+  const unresolved = checkable
+    .filter((expectation) => !satisfied.has(expectation.index))
+    .map((expectation) => ({
+      index: expectation.index,
+      screen: expectation.screen,
+      hints: expectation.hints
+    }));
   return {
     checkable: checkable.length,
     satisfied: checkable.length - unresolved.length,
-    unchecked,
-    unresolved
+    unchecked: assertions.length - checkable.length,
+    unresolved,
+    deferred: {
+      total: explorations.length,
+      reached: explorations.filter((expectation) => satisfied.has(expectation.index)).length
+    }
   };
 }
 
@@ -300,7 +337,8 @@ const IOS_SYSTEM_PROMPT = [
   "5. 如果连续多步没有进展，换一个思路或输出 fail 并说明原因。",
   "6. 若本轮附有截图，可用截图辅助判断；坐标仍输出逻辑点（元素 Center，或截图坐标 ÷ scale）。",
   "7. 出现系统权限/系统弹窗时，优先用 alerts（accept/dismiss）处理后再继续任务。",
-  "8. 元素列表中带「(模型视觉，可能有误)」的行是视觉补充：优先使用可访问性元素；两者冲突时以可访问性元素为准。"
+  "8. 元素列表中带「(模型视觉，可能有误)」的行是视觉补充：优先使用可访问性元素；两者冲突时以可访问性元素为准。",
+  "9. 任务中标注「探索」（deferred，推断跳转）的步骤不参与 PASS/FAIL（覆盖规则 5）：找不到入口或未达成时记录实际路径后继续或 done，不要用 fail 中止整个任务。"
 ].join("\n");
 
 function textResult(text: string): CallToolResult {
@@ -734,12 +772,16 @@ function synthesisSummary(record: IosTaskRecord): Record<string, unknown> | null
 }
 
 function adherencePayload(adherence: IosScriptAdherence | null): Record<string, unknown> {
-  if (!adherence || adherence.checkable + adherence.unchecked === 0) return {};
+  if (!adherence) return {};
+  if (adherence.checkable + adherence.unchecked === 0 && adherence.deferred.total === 0) return {};
   return {
     adherence: {
       checkable: adherence.checkable,
       satisfied: adherence.satisfied,
       unchecked: adherence.unchecked,
+      ...(adherence.deferred.total > 0
+        ? { deferred: { total: adherence.deferred.total, reached: adherence.deferred.reached } }
+        : {}),
       ...(adherence.unresolved.length > 0
         ? {
             unresolved: adherence.unresolved.map(
@@ -922,6 +964,7 @@ function buildVerificationPrompt(
   screen: string,
   stale: boolean,
   scriptUnresolved: IosScriptAdherence["unresolved"] = [],
+  scriptDeferredCount = 0,
   preflightUnmatched: IosScriptPreflight | null = null
 ): string {
   return [
@@ -938,6 +981,12 @@ function buildVerificationPrompt(
               `- 步骤${item.index}${item.screen ? ` 应进入「${item.screen}」` : ""}，预期出现「${item.hints.join("」「")}」但从未出现`
           ),
           "若执行路径合理且任务确实完成可忽略；若确为缺失步骤，请写入 failed_items。"
+        ]
+      : []),
+    ...(scriptDeferredCount > 0
+      ? [
+          "",
+          `另有 ${scriptDeferredCount} 步探索（推断跳转，deferred）：不参与本次判定，请勿因此写入 failed_items。`
         ]
       : []),
     ...(preflightUnmatched
@@ -1003,6 +1052,7 @@ async function runVerification(
   claimedSummary: string,
   screenshot: Buffer | null,
   scriptUnresolved: IosScriptAdherence["unresolved"] = [],
+  scriptDeferredCount = 0,
   preflightUnmatched: IosScriptPreflight | null = null
 ): Promise<IosVerification> {
   let nodes = fallbackNodes;
@@ -1028,6 +1078,7 @@ async function runVerification(
     screen,
     stale,
     scriptUnresolved,
+    scriptDeferredCount,
     preflightUnmatched
   );
   const messages: ChatMessage[] = [
@@ -1512,6 +1563,7 @@ async function runLoop(
             outcome.summary,
             donePost ? donePost.bytes : null,
             scriptAdherence?.unresolved ?? [],
+            scriptAdherence?.deferred.total ?? 0,
             record.preflight?.status === "unmatched" ? record.preflight : null
           );
           persistRun(record);

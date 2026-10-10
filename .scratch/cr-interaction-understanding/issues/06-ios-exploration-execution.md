@@ -4,7 +4,9 @@
 
 **Blocked by:** 04（探索步骤表示）。
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+> 实施注（2026-10-10）：`kind=explore` 解析为 deferred；adherence 只计 assert，新增 `deferred:{total,reached}`（reached=观测命中目标屏）；系统提示规则 9 + 验证提示豁免探索步；run.json/test_summary 可见。见 DESIGN §13.65。
 
 - [ ] 执行器解析并执行探索步骤：失败不置用例失败；实际路径/命中写入 run.json 与摘要
 - [ ] adherence 仅统计硬断言；deferred 标记在 run.json / test_summary 可见

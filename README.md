@@ -187,7 +187,7 @@ sudo appium driver run xcuitest tunnel-creation
 ```
 figma_extract_flows(url)     # 交互流程 → .artemis/design/flows.json
 figma_gap_analysis(url)      # 资源缺口 → .artemis/design/gaps.json
-figma_generate_tests(url)    # 流程 → tests.{json,md} + tests.xlsx（含 taskDesc、前置假设；有 strings.json 时附 i18n key；excelTemplate 套 .xlsx 模版；覆盖贪心+长路径优先——先长主链再补覆盖缺口，maxDepth 默认 30 可调，超限按续段拆分不丢尾且续段自带前导导航；每步断言与起始屏随 taskDesc 以 【AOS-EXPECT】 块输出，iOS 执行器逐步核对并汇总 adherence、起始屏 preflight）
+figma_generate_tests(url)    # 流程 → tests.{json,md} + tests.xlsx（含 taskDesc、前置假设；有 strings.json 时附 i18n key；excelTemplate 套 .xlsx 模版；覆盖贪心+长路径优先——先长主链再补覆盖缺口，maxDepth 默认 30 可调，超限按续段拆分不丢尾且续段自带前导导航；每步断言与起始屏随 taskDesc 以 【AOS-EXPECT】 块输出，iOS 执行器逐步核对并汇总 adherence、起始屏 preflight（`kind=explore` 探索步记为 deferred：不进门禁、命中目标屏记 reached、验证豁免））
 figma_import_assets()        # 缺失资源 → 按栈命名/目录写入（PNG 默认倍率集；import-report.json；dryRun 预览）
 figma_export_brief(url)      # 编码事实包 → build-brief.{json,md}（tokens/组件/约定；scaffold 可出骨架）
 figma_import_tokens(url)     # 可选：颜色 → .artemis/design/tokens.json + 栈 token 文件（tokens 唯一性/裸色扫描）

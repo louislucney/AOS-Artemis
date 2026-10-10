@@ -1160,8 +1160,8 @@ test("脚本断言：解析 【AOS-EXPECT】 块（缺失/非法 → null，hint
   );
   assert.deepEqual(parsed.start, { screen: "首页", hints: ["欢迎"] });
   assert.deepEqual(parsed.steps, [
-    { index: 1, screen: "订单页", hints: ["订单成功"] },
-    { index: 2, screen: null, hints: [] }
+    { index: 1, screen: "订单页", hints: ["订单成功"], kind: "assert" },
+    { index: 2, screen: null, hints: [], kind: "explore" }
   ]);
   const startOnly = parseScriptPlan('x【AOS-EXPECT】{"start":{"screen":"首页","hints":["欢迎"]}}');
   assert.deepEqual(startOnly, { start: { screen: "首页", hints: ["欢迎"] }, steps: [] });
@@ -1219,7 +1219,8 @@ test("脚本断言：逐步核对命中，未出现项进入验证证据与 test
     checkable: 2,
     satisfied: 1,
     unchecked: 0,
-    unresolved: [{ index: 2, screen: "结果页", hints: ["永远不出现的文案"] }]
+    unresolved: [{ index: 2, screen: "结果页", hints: ["永远不出现的文案"] }],
+    deferred: { total: 0, reached: 0 }
   });
   assert.ok(
     record.steps.some((step) => Array.isArray(step.scriptHits) && step.scriptHits.includes(1)),
@@ -1234,6 +1235,141 @@ test("脚本断言：逐步核对命中，未出现项进入验证证据与 test
   assert.equal(status.test_summary.adherence.unresolved.length, 1);
   const run = JSON.parse(fs.readFileSync(path.join(record.runDir, "run.json"), "utf-8"));
   assert.equal(run.script_adherence.checkable, 2);
+});
+
+test("探索步骤（deferred）：不进门禁、命中目标屏记 reached、验证提示词豁免", async () => {
+  const { runtime } = await makeRuntime();
+  const device = fakeDevice();
+  const orderNode = {
+    type: "StaticText",
+    label: "订单成功",
+    value: "",
+    id: "",
+    rect: { x: 0, y: 300, width: 200, height: 30 }
+  };
+  const nextNode = {
+    type: "StaticText",
+    label: "下一步",
+    value: "",
+    id: "",
+    rect: { x: 0, y: 340, width: 200, height: 30 }
+  };
+  let tapped = false;
+  device.tap = async (x, y) => {
+    device.calls.push(["tap", x, y]);
+    tapped = true;
+  };
+  device.nodes = async () => (tapped ? [...NODES, orderNode, nextNode] : NODES);
+
+  const taskDesc = [
+    "【设计流程端到端验证】下单",
+    "1) 点击「搜索」",
+    "2) 完成下单",
+    '脚本断言（供 iOS 执行器自动核对，执行时无需处理）：【AOS-EXPECT】{"steps":[{"index":1,"screen":"订单页","hints":["订单成功"],"kind":"assert"},{"index":2,"screen":"下一步","hints":[],"kind":"explore"}]}'
+  ].join("\n");
+  const { chat } = scriptedChat([
+    JSON.stringify({ thought: "点搜索", action: "tap", x: 140, y: 220 }),
+    JSON.stringify({ thought: "完成", action: "done", success: true, summary: "已下单" })
+  ]);
+  const verifierPrompts = [];
+  const verifier = {
+    chat: async (msgs) => {
+      verifierPrompts.push(msgs.at(-1).content);
+      return JSON.stringify({ pass: true, reason: "界面符合预期" });
+    },
+    model: "verify-model",
+    vision: false
+  };
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: taskDesc, device_serial: UDID },
+      { entry: ENTRY, device, chat, verifier, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+
+  assert.equal(record.status, "completed");
+  assert.deepEqual(record.scriptAdherence, {
+    checkable: 1,
+    satisfied: 1,
+    unchecked: 0,
+    unresolved: [],
+    deferred: { total: 1, reached: 1 }
+  });
+  const status = payloadOf(
+    maybeIosManageTask(runtime, { action: "status", trace_id: started.trace_id })
+  );
+  assert.equal(status.test_summary.adherence.deferred.total, 1);
+  assert.equal(status.test_summary.adherence.deferred.reached, 1);
+  const run = JSON.parse(fs.readFileSync(path.join(record.runDir, "run.json"), "utf-8"));
+  assert.equal(run.script_adherence.deferred.total, 1);
+  assert.match(String(verifierPrompts[0]), /另有 1 步探索/);
+});
+
+test("探索步骤未达成（目标屏未出现）仍 completed，deferred.reached=0", async () => {
+  const { runtime } = await makeRuntime();
+  const device = fakeDevice();
+  const orderNode = {
+    type: "StaticText",
+    label: "订单成功",
+    value: "",
+    id: "",
+    rect: { x: 0, y: 300, width: 200, height: 30 }
+  };
+  let tapped = false;
+  device.tap = async (x, y) => {
+    device.calls.push(["tap", x, y]);
+    tapped = true;
+  };
+  device.nodes = async () => (tapped ? [...NODES, orderNode] : NODES);
+
+  const taskDesc = [
+    "【设计流程端到端验证】下单",
+    "1) 点击「搜索」",
+    '脚本断言（供 iOS 执行器自动核对，执行时无需处理）：【AOS-EXPECT】{"steps":[{"index":1,"screen":"订单页","hints":["订单成功"],"kind":"assert"},{"index":2,"screen":"不存在的目标屏","hints":[],"kind":"explore"}]}'
+  ].join("\n");
+  const { chat } = scriptedChat([
+    JSON.stringify({ thought: "点搜索", action: "tap", x: 140, y: 220 }),
+    JSON.stringify({
+      thought: "探索未达成，记录路径后完成",
+      action: "done",
+      success: true,
+      summary: "已完成可执行部分，探索未达成已记录"
+    })
+  ]);
+  const verifier = {
+    chat: async () => JSON.stringify({ pass: true, reason: "界面符合预期" }),
+    model: "verify-model",
+    vision: false
+  };
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: taskDesc, device_serial: UDID },
+      { entry: ENTRY, device, chat, verifier, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+
+  assert.equal(record.status, "completed", "exploration gaps never fail the case");
+  assert.deepEqual(record.scriptAdherence, {
+    checkable: 1,
+    satisfied: 1,
+    unchecked: 0,
+    unresolved: [],
+    deferred: { total: 1, reached: 0 }
+  });
+  const status = payloadOf(
+    maybeIosManageTask(runtime, { action: "status", trace_id: started.trace_id })
+  );
+  assert.equal(status.test_summary.adherence.deferred.reached, 0);
 });
 
 test("起始屏核对：未命中时提示模型导航，并进入验证证据与 test_summary.preflight", async () => {

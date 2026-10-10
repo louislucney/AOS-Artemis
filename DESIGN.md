@@ -1181,3 +1181,14 @@ llm_switch(name, force):
 - **`--strict`**：`check` 与 `run --fail-on-uncovered` 支持；开启时非探索弱断言（preflight weakCases，explore 已豁免）计入门禁 exit 2；默认行为与退出码语义不变（0/1/2）；`run --strict` 未带 `--fail-on-uncovered` 时输出提示（不静默失效）。
 - **留白与同步**：纯推断图（无硬目标）生成闸为空真通过——探索缺口在 `coverage.explore` 可见，不视为已验证；`suite loop` 报告并列探索缺口计数（json/md）；`computeClassifiedCoverage` 复用单一实现，legacy=硬 的决策有单测锁定。
 - **测试**：`test/figma-testgen.test.js`（硬闸不被 inferred 虚高、探索缺口仅报告、legacy 仍门禁）、`test/test-preflight.test.js`（provenance 拆分）、`test/suite-command.test.js`（check 默认 0 / `--strict` exit 2 / 探索步豁免）、`test/suite-loop.test.js`（探索缺口计数）。
+
+### 13.65 实施记录（票 06：iOS 探索步骤执行语义）
+
+> 实施于 2026-10-10；CR 交互理解主线第六票。改 `src/ios/task-runner.ts`；测试 +2；全量 812 绿。
+
+- **解析**：`parseScriptPlan` 读取 `【AOS-EXPECT】` steps 的 `kind`（`isExploreKind`；缺省 = assert，兼容旧产物），`IosScriptExpectation.kind` 复用 `StepKind`（provenance.ts 单点定义）。
+- **adherence 分区**：`buildScriptAdherence` 只统计 assert 类（checkable/satisfied/unchecked/unresolved）；新增 `deferred: {total, reached}`——探索步骤不进 unresolved 口径；`reached` 口径为**目标屏名作为完整可见标签出现**（按 ` | ` 拆分的标签集合精确匹配，杜绝短屏名子串误命中）；步骤级 `scriptHits` 继续记录命中。
+- **执行语义与保障等级**：系统提示词新增规则 9（探索步骤不参与 PASS/FAIL，**显式覆盖规则 5**：找不到入口记录实际路径后继续或 done，不要用 fail 中止）；验证提示词新增「另有 N 步探索（deferred）不参与本次判定，请勿因此写入 failed_items」；完成摘要的 `⚠ 脚本断言未出现` 只为 assert 未命中出现。**保障等级为提示级 + 验证豁免**：模型若仍对探索未达成输出 `fail` 会中止任务（无法把 fail 机械归因到具体步骤），真实失败（崩溃等）也应如实失败——不做机械拦截，已在本文档明示。
+- **透出**：run.json `script_adherence` 全量（含 deferred）；`test_summary.adherence` 在 `deferred.total>0` 时携带 deferred（adherence 分区后，纯探索用例不会被整体省略）。
+- **不回归**：hard 断言命中/未命中、preflight、终态验证通路不变。
+- **测试**：`test/ios-task-runner.test.js`（parser kind、deferred 分区与 reached、验证提示词豁免、test_summary deferred、探索未达成仍 completed、旧用例 deferred=0）。
