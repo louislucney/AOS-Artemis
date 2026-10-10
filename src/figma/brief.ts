@@ -3,6 +3,8 @@ import path from "node:path";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
+import { loadScreenMap } from "../diff/screen-map.js";
+
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import {
   analyzeStructure,
@@ -58,6 +60,15 @@ export interface BriefData {
     shadows: Array<Record<string, unknown>>;
   };
   components: BriefComponent[];
+  /** Element-level accessibilityIdentifier suggestions (screen-map elements;
+   * empty until an iOS suite run or manual save produces mappings). */
+  accessibility: Array<{
+    screen: string;
+    text: string;
+    identifier: string;
+    source: "observed" | "manual";
+    hits: number;
+  }>;
   flowSummary: { screens: number; edges: number; entryScreens: string[] } | null;
   gapSummary: { missingAssets: number; missingColors: number | "not-checked" } | null;
   nextSteps: string[];
@@ -229,6 +240,20 @@ export function ${componentName}(_props: ${componentName}Props) {
 // Markdown rendering (pure)
 // ---------------------------------------------------------------------------
 
+/** Element-level a11y suggestions for the brief (screen-map elements). */
+export function briefAccessibility(configDirAbs: string): BriefData["accessibility"] {
+  return loadScreenMap(configDirAbs).elements
+    .slice()
+    .sort((a, b) => a.screen.localeCompare(b.screen) || a.text.localeCompare(b.text))
+    .map((entry) => ({
+      screen: entry.screen,
+      text: entry.text,
+      identifier: entry.identifier,
+      source: entry.source,
+      hits: entry.hits
+    }));
+}
+
 export function renderBriefMarkdown(brief: BriefData): string {
   const lines: string[] = [
     `# 构建简报：${brief.fileName ?? brief.fileKey}`,
@@ -307,7 +332,23 @@ export function renderBriefMarkdown(brief: BriefData): string {
     );
   }
 
-  lines.push("## 7. 建议下一步", "");
+  const hasAccessibility = brief.accessibility.length > 0;
+  if (hasAccessibility) {
+    lines.push(
+      "## 7. 无障碍标识建议（a11y）",
+      "",
+      "| 屏幕 | 文本 | identifier | 来源 | 命中 |",
+      "|---|---|---|---|---|"
+    );
+    for (const entry of brief.accessibility) {
+      lines.push(
+        `| ${entry.screen} | ${entry.text} | \`${entry.identifier}\` | ${entry.source} | ${entry.hits} |`
+      );
+    }
+    lines.push("");
+  }
+
+  lines.push(`## ${hasAccessibility ? 8 : 7}. 建议下一步`, "");
   brief.nextSteps.forEach((step, index) => lines.push(`${index + 1}. ${step}`));
   return lines.join("\n") + "\n";
 }
@@ -447,6 +488,7 @@ export async function figmaExportBrief(
         shadows: (designSystem.shadows ?? []).slice(0, 10)
       },
       components,
+      accessibility: briefAccessibility(runtime.configDirAbs),
       flowSummary,
       gapSummary,
       nextSteps

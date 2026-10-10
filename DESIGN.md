@@ -1252,3 +1252,12 @@ llm_switch(name, force):
 - **人工确认覆盖**：`.artemis/design/acceptance.json`（`{screens:{"<屏名>":["条目"]}}`）在生成时覆盖同名屏的注释口径（**人工确认优先**；来源可视为文件作者，无 reviewer 字段；口径侧冲突由覆盖语义解决，**不经 09 审阅面**——导航级冲突仍走 08/09；文件非法 → 忽略并回退注释）；Jira AC 摄取留后续集成。
 - **冲突与提示级口径**：验收条目优于运行期文本（确定性优先）；「无口径的屏保持提示级」——运行期文本断言为建议级（执行器不断言硬失败），起始屏 preflight 仍只取运行期文本（边界）。
 - **测试**：`test/figma-flows.test.js`（Flow/AC 组 + `AC:` 行 + 大小写/多行 + 空体忽略 + 无口径缺省 + normalize 容错）、`test/pen-flows.test.js`（同规则）、`test/figma-testgen.test.js`（hintsSource 双源 + AOS-EXPECT 字段 + acceptance.json 覆盖 + 升级后口径生效端到端）。
+
+### 13.71 实施记录（backlog：build-brief 接线 a11y 标识建议）
+
+> 实施于 2026-10-10；CR 交互理解主线 backlog 首项（闭合 §13.69「简报未接线」边界）。改 `src/figma/brief.ts`（`BriefData.accessibility` + `briefAccessibility` + md 第 7 节）、`src/pen/brief.ts`；测试 +2；全量 842 绿。
+
+- **接线**：`figma_export_brief` / `pen_export_brief` 读取 `.artemis/design/screen-map.json` 的 elements（稳定排序 screen+text），写入 build-brief.json 的 `accessibility: [{screen,text,identifier,source,hits}]`；build-brief.md 在元素非空时新增「## 7. 无障碍标识建议（a11y）」表（下一节顺延为 8；元素为空时编号回退、既有输出不变）。
+- **用途**：代码侧实现组件时直接采用建议 identifier（与测试侧步骤 `a11y:` 注记同源），闭合「设计 → 代码」锚点一致。
+- **边界**：建议来源于观测/人工映射（无 elements 即不出章）；Jira AC 仍 backlog。
+- **测试**：`test/figma-brief.test.js`（md 第 7/8 节与回退编号、`briefAccessibility` 排序与缺省空）。

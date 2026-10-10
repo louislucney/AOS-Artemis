@@ -4,6 +4,7 @@ import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import {
+  briefAccessibility,
   detectAndroidPackage,
   renderBriefMarkdown,
   scaffoldComponentSkeleton,
@@ -264,6 +265,7 @@ export async function penExportBrief(
         shadows: penShadows(doc).slice(0, 10)
       },
       components,
+      accessibility: briefAccessibility(runtime.configDirAbs),
       flowSummary: null,
       gapSummary,
       nextSteps

@@ -7,6 +7,7 @@ import test from "node:test";
 import { makeTempDir } from "./helpers.js";
 
 import {
+  briefAccessibility,
   detectAndroidPackage,
   renderBriefMarkdown,
   scaffoldComponentSkeleton
@@ -116,6 +117,7 @@ test("renderBriefMarkdown: sections, tokens and next steps", () => {
     ],
     flowSummary: { screens: 2, edges: 3, entryScreens: ["Home"] },
     gapSummary: { missingAssets: 4, missingColors: 2 },
+    accessibility: [],
     nextSteps: ["运行 figma_import_assets 导入缺失资源"]
   });
 
@@ -127,5 +129,78 @@ test("renderBriefMarkdown: sections, tokens and next steps", () => {
   assert.match(markdown, /## 4. 交互流程概览/);
   assert.match(markdown, /## 5. 资源缺口/);
   assert.match(markdown, /## 6. 编码约定/);
+  assert.match(markdown, /## 7\. 建议下一步/, "without a11y entries the next-steps section keeps its number");
   assert.match(markdown, /1\. 运行 figma_import_assets/);
+});
+
+test("renderBriefMarkdown: a11y suggestions section with renumbered next steps", () => {
+  const markdown = renderBriefMarkdown({
+    sourceUrl: "pen:design.pen",
+    fileKey: "design.pen",
+    fileName: "design.pen",
+    generatedAt: "2026-10-10T00:00:00Z",
+    stack: null,
+    screens: [{ page: "pen", name: "Home", suggestedRoute: "/" }],
+    suggestedRoutes: ["/"],
+    designSystem: {
+      colors: [],
+      typography: [],
+      spacingScale: [],
+      borderRadius: [],
+      shadows: []
+    },
+    components: [],
+    accessibility: [
+      { screen: "Home", text: "Buy now", identifier: "buyNow", source: "observed", hits: 2 }
+    ],
+    flowSummary: null,
+    gapSummary: null,
+    nextSteps: ["按第 1 节 tokens 实现组件"]
+  });
+
+  assert.match(markdown, /## 7\. 无障碍标识建议（a11y）/);
+  assert.match(markdown, /\| Home \| Buy now \| `buyNow` \| observed \| 2 \|/);
+  assert.match(markdown, /## 8\. 建议下一步/);
+});
+
+test("briefAccessibility: reads screen-map elements sorted", () => {
+  const dir = tmp();
+  write(
+    dir,
+    ".artemis/design/screen-map.json",
+    JSON.stringify({
+      version: 1,
+      entries: [],
+      elements: [
+        {
+          screen: "B",
+          text: "二",
+          observedLabel: "二",
+          identifier: "er",
+          confidence: 1,
+          source: "observed",
+          hits: 1,
+          traces: [],
+          lastSeenAt: "t"
+        },
+        {
+          screen: "A",
+          text: "一",
+          observedLabel: "一",
+          identifier: "yi",
+          confidence: 1,
+          source: "manual",
+          hits: 3,
+          traces: [],
+          lastSeenAt: "t"
+        }
+      ]
+    })
+  );
+
+  assert.deepEqual(briefAccessibility(path.join(dir, ".artemis")), [
+    { screen: "A", text: "一", identifier: "yi", source: "manual", hits: 3 },
+    { screen: "B", text: "二", identifier: "er", source: "observed", hits: 1 }
+  ]);
+  assert.deepEqual(briefAccessibility(path.join(dir, "missing")), []);
 });
