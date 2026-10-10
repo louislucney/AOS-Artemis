@@ -5,6 +5,7 @@ import ExcelJS from "exceljs";
 
 import {
   classifyFailure,
+  scriptProvenanceSignal,
   type CrashSignal,
   type FailureClassification
 } from "../artemis/failure-taxonomy.js";
@@ -15,6 +16,7 @@ import {
 import type { TaskFailedItem, TaskStatus } from "../artemis/task-result.js";
 import type { TaskStatRecord } from "../db/types.js";
 import type { Runtime } from "../runtime.js";
+import { summarizeScriptProvenance } from "../provenance.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import {
   buildTraceability,
@@ -34,6 +36,8 @@ export interface RunReportCase {
   durationMs: number | null;
   model: string | null;
   failure: FailureClassification | null;
+  /** Script provenance summary (assert vs explore steps; null for legacy). */
+  scriptProvenance: { asserts: number; explores: number } | null;
   failedItems: TaskFailedItem[];
   apiErrors: ApiErrorObservation[];
   apiErrorsDegraded: string | null;
@@ -72,6 +76,7 @@ interface GeneratedCaseLike {
   screens: string[];
   preconditions: string[];
   taskDesc: string;
+  scriptProvenance: { asserts: number; explores: number } | null;
 }
 
 interface GeneratedIndex {
@@ -90,6 +95,7 @@ function loadCases(runtime: Runtime): GeneratedIndex {
         screens?: unknown;
         preconditions?: unknown;
         taskDesc?: unknown;
+        expectations?: unknown;
       }>;
     };
     for (const entry of parsed.flows ?? []) {
@@ -103,7 +109,8 @@ function loadCases(runtime: Runtime): GeneratedIndex {
         preconditions: Array.isArray(entry.preconditions)
           ? entry.preconditions.filter((item): item is string => typeof item === "string")
           : [],
-        taskDesc: typeof entry.taskDesc === "string" ? entry.taskDesc : ""
+        taskDesc: typeof entry.taskDesc === "string" ? entry.taskDesc : "",
+        scriptProvenance: summarizeScriptProvenance(entry.expectations)
       };
       index.byId.set(generated.id, generated);
       if (generated.taskDesc) index.byTaskDesc.set(generated.taskDesc, generated);
@@ -262,6 +269,7 @@ async function renderWorkbook(report: RunReport): Promise<Buffer> {
     { header: "traceId", key: "traceId", width: 24 },
     { header: "失败域", key: "domain", width: 18 },
     { header: "置信度", key: "confidence", width: 10 },
+    { header: "脚本来源", key: "scriptProvenance", width: 16 },
     { header: "判定依据", key: "reason", width: 50 },
     { header: "证据路径", key: "evidence", width: 50 },
     { header: "API 错误", key: "apiErrors", width: 24 },
@@ -279,13 +287,16 @@ async function renderWorkbook(report: RunReport): Promise<Buffer> {
       traceId: entry.traceId,
       domain: entry.failure?.domain ?? "",
       confidence: entry.failure?.confidence ?? "",
+      scriptProvenance: entry.scriptProvenance
+        ? `断言 ${entry.scriptProvenance.asserts} / 探索 ${entry.scriptProvenance.explores}`
+        : "",
       reason: entry.failure?.reason ?? "",
       evidence: evidenceText(entry),
       apiErrors: apiErrorsText(entry),
       apiHandled: apiHandledText(entry)
     });
-    row.getCell(10).alignment = { wrapText: true, vertical: "top" };
-    row.getCell(11).alignment = { wrapText: true, vertical: "top" };
+    row.getCell("reason").alignment = { wrapText: true, vertical: "top" };
+    row.getCell("evidence").alignment = { wrapText: true, vertical: "top" };
   });
   if (report.traceability) {
     const trace = workbook.addWorksheet("追溯矩阵", { views: [{ state: "frozen", ySplit: 1 }] });
@@ -387,9 +398,14 @@ export async function buildRunReport(
               status,
               crashes: crashesForTrace(runtime, task.traceId),
               preconditions: generated?.preconditions,
-              apiErrors: apiErrors.map((entry) => ({ code: entry.code, handled: entry.handled }))
+              apiErrors: apiErrors.map((entry) => ({ code: entry.code, handled: entry.handled })),
+              scriptProvenance: scriptProvenanceSignal(
+                generated?.scriptProvenance ?? null,
+                status?.testSummary?.adherence ?? null
+              )
             })
           : null,
+      scriptProvenance: generated?.scriptProvenance ?? null,
       failedItems: status?.testSummary?.failedItems ?? [],
       apiErrors,
       apiErrorsDegraded: apiArtifact?.degraded ?? null,

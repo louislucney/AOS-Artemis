@@ -105,6 +105,77 @@ test("failure taxonomy: assertion failures without other signals are behavior-or
   assert.deepEqual(result.evidence, ["校验金额 / expected 42 got 41"]);
 });
 
+test("failure taxonomy: inferred-script failures classify as design-inference", () => {
+  const failedSummary = {
+    taskStatus: "failed",
+    passed: 0,
+    failed: 1,
+    inconclusive: null,
+    unchecked: null,
+    failedItems: [failedItem("探索未达成", "未看到目标页")]
+  };
+
+  const pure = classifyFailure({
+    status: status({ testSummary: failedSummary }),
+    scriptProvenance: { asserts: 0, explores: 2 }
+  });
+  assert.equal(pure.domain, "design-inference");
+  assert.equal(pure.confidence, "high");
+  assert.ok(pure.evidence.includes("script:explores=2"));
+
+  const mixed = classifyFailure({
+    status: status({ testSummary: failedSummary }),
+    scriptProvenance: { asserts: 2, explores: 1, unresolvedAsserts: 0, exploresReached: 0 }
+  });
+  assert.equal(mixed.domain, "design-inference");
+  assert.equal(mixed.confidence, "medium");
+  assert.match(mixed.reason, /未全部达成/);
+
+  const assertMissing = classifyFailure({
+    status: status({ testSummary: failedSummary }),
+    scriptProvenance: { asserts: 2, explores: 1, unresolvedAsserts: 1, exploresReached: 0 }
+  });
+  assert.equal(assertMissing.domain, "behavior-or-design", "unresolved asserts keep the failure on the assert side");
+
+  const unverified = classifyFailure({
+    status: status({ testSummary: failedSummary }),
+    scriptProvenance: { asserts: 2, explores: 1 }
+  });
+  assert.equal(
+    unverified.domain,
+    "behavior-or-design",
+    "without adherence evidence a mixed script never claims design-inference"
+  );
+
+  const fullyReached = classifyFailure({
+    status: status({ testSummary: failedSummary }),
+    scriptProvenance: { asserts: 2, explores: 1, unresolvedAsserts: 0, exploresReached: 1 }
+  });
+  assert.equal(fullyReached.domain, "behavior-or-design", "fully reached exploration keeps the failure elsewhere");
+
+  const dataSignal = classifyFailure({
+    status: status({
+      testSummary: {
+        taskStatus: "failed",
+        passed: 0,
+        failed: 1,
+        inconclusive: null,
+        unchecked: null,
+        failedItems: [failedItem("数据列表为空", "无数据")]
+      }
+    }),
+    scriptProvenance: { asserts: 0, explores: 2 }
+  });
+  assert.equal(dataSignal.domain, "data-environment", "strong signals keep precedence over design-inference");
+
+  const withCrash = classifyFailure({
+    status: status({ testSummary: failedSummary }),
+    crashes: [{ id: "crash-1", kind: "java", package: "com.x", exceptionClass: "E" }],
+    scriptProvenance: { asserts: 0, explores: 2 }
+  });
+  assert.equal(withCrash.domain, "app-defect", "stronger signals keep precedence");
+});
+
 test("failure taxonomy: timeout and rejected submissions are case defects", () => {
   const timeout = classifyFailure({
     status: status({ status: "running" }),

@@ -88,7 +88,7 @@ export function deriveLoopActions(input: SuiteLoopInput): string[] {
   if (input.run) {
     const flaky = input.run.cases.filter((entry) => entry.retry?.flaky === true).length;
     if (input.run.failed > 0) {
-      actions.push(`首跑失败 ${input.run.failed} 例：按失败域定位（应用缺陷/环境/数据环境/行为或设计/用例缺陷）并修正后重跑 --retry 复诊`);
+      actions.push(`首跑失败 ${input.run.failed} 例：按失败域定位（应用缺陷/环境/数据环境/行为或设计/设计推断/用例缺陷）并修正后重跑 --retry 复诊`);
     }
     if (flaky > 0) {
       actions.push(`flaky ${flaky} 例：确认非真缺陷后加 quarantine（需 owner 签字）`);

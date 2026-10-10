@@ -812,7 +812,7 @@ llm_switch(name, force):
 > 实施于 2026-10-02；新增 `src/figma/preconditions.ts`、`src/artemis/failure-taxonomy.ts`；测试 `test/failure-taxonomy.test.js` 7 例 + testgen/suite-runner 增补；全量 370 例通过。
 
 - **生成物显式前置假设**：`deriveCasePreconditions(screens,{entryFallback?})` 确定性产出：应用已安装 → 开始停留入口页（入口推断时附「入口屏未声明」）→ 屏幕名启发式（登录/账号 → 可登录；profile/我的 → 已登录；列表/list/消息/订单/商品/购物车 → 数据非空）；去重保序。每条用例 `preconditions` 进入 `tests.json`、`tests.md`（`- 前置假设：…`）、`tests.xlsx`（默认表新增「前置假设」列；模版占位符新增 `{{case.preconditions}}`）与 taskDesc 行（`前置假设：…；若数据不满足，请停止并报告数据不满足`）；case id 不变（仍哈希 name/screens/steps）。
-- **失败域确定性分类**（`classifyFailure`，纯函数）：优先级 应用缺陷（与 trace 关联的崩溃签名，high）→ 环境（复位 `adb-not-found/device-offline/timeout` 或失败文案含 adb/device/no devices/设备离线 等，high）→ 数据环境（失败文案含登录/账号/数据/列表/网络 等信号；命中前置假设 high，否则 medium）→ 行为或设计差异（有 `failed_items` 且无其它证据，high）→ 用例缺陷（轮询超时 / 提交被拒且文案含参数/格式/task_desc，medium）→ unclassified low 并给出原因；规则固定顺序、固定样本可回归（同输入输出 deepEqual）。
+- **失败域确定性分类**（`classifyFailure`，纯函数）：优先级 应用缺陷（与 trace 关联的崩溃签名，high）→ 环境（复位 `adb-not-found/device-offline/timeout` 或失败文案含 adb/device/no devices/设备离线 等，high）→ 数据环境（失败文案含登录/账号/数据/列表/网络 等信号；命中前置假设 high，否则 medium）→ 设计推断（纯探索脚本失败 high；断言有凭据全命中且探索未全达成 medium，见 §13.66）→ 行为或设计差异（有 `failed_items` 且无其它证据，high）→ 用例缺陷（轮询超时 / 提交被拒且文案含参数/格式/task_desc，medium）→ unclassified low 并给出原因；规则固定顺序、固定样本可回归（同输入输出 deepEqual）。
 - **ADR-0001 边界**：分类是解释层，输入不含设计差异结果、输出不参与也不改写 diff 判定；`design_device_diff` 契约未动。
 - **运行器接入**：`SuiteCaseResult.failure`（passed 为 null）；失败终态先 `flushCrashScans()` 再按 trace 过滤 `crashStore` 取崩溃签名，复位降级/提交失败/超时分别入参分类；运行报告即含逐例分类与判定依据（票据 12 导出消费）。
 
@@ -904,7 +904,7 @@ llm_switch(name, force):
 
 - **错误码注册表（人工先行）**：`.artemis/design/error-codes.json`（`{version,codes:{"<code>":{match,handler?,expect?,handledPattern?}}}`）；`loadApiErrorCatalog` 逐条校验（match 必填且正则合法、handledPattern 可编译），非法条目计入 `errors[]` 并忽略；未配置 → 空表（不阻塞）。
 - **确定性采集**：`AdbLogcatCollector`（`src/device/logcat.ts`）按 trace 时间窗 `logcat -v threadtime -d -T <start-5s>` 拉取主缓冲；设备时钟探测失败按 0 偏差并回传 `clockWarning`；无 adb/无设备/日志为空 → 结构化 `skipped`（`adb-not-found|no-serial|device-offline|log-empty`），不抛错；`formatLogcatTime`/设备列表/时钟探测与崩溃采集共用（`src/crash/collect.ts` 去除重复实现）。
-- **判定**：`matchApiErrors` 逐行匹配并计数、取首个样例与时间；`handledPattern` 命中 → `handled`，声明但未命中 → `unhandled`，未声明 → `observed`。失败域新增 **`api-error`**（仅 `unhandled` 触发）：优先级 崩溃 > 环境 > api-error > 数据环境 > 行为或设计 > 用例缺陷 > 未分类；`handled/observed` 只作证据不改域。
+- **判定**：`matchApiErrors` 逐行匹配并计数、取首个样例与时间；`handledPattern` 命中 → `handled`，声明但未命中 → `unhandled`，未声明 → `observed`。失败域新增 **`api-error`**（仅 `unhandled` 触发）：优先级 崩溃 > 环境 > api-error > 数据环境 > 设计推断 > 行为或设计 > 用例缺陷 > 未分类；`handled/observed` 只作证据不改域。
 - **runner 集成**：每例终态（默认开启）采集并匹配，产物 `.artemis/traces/<traceId>/api-errors.json`（含 window/serial/source/degraded/errors）；`SuiteCaseResult.apiErrors + apiErrorsDegraded`；`suite run --no-api-errors` 关闭、`--fail-on api-error` 可让未处理错误使用例 FAIL（默认仅证据，不阻断）；报告 `apiErrorCatalog` 显示规则数与无效条目。
 - **报告/反馈**：`suite report` xlsx 追加「API 错误 / 处理判定」两列（`CODE(verdict ×n)`、`CODE=handler|expect`），JUnit failure 内容追加 `api_error: CODE verdict=... handler=...`；`suite feedback` 对重复未处理错误输出 `kind:"api"` 建议（可追踪 case/trace）。
 - **手动复算**：`node dist/cli.js suite api-errors <traceId> [--serial <s>] [--no-save] [--json]`（注册表缺失 → 退出 2；无状态/采集失败 → 1；成功 → 0）。
@@ -1192,3 +1192,13 @@ llm_switch(name, force):
 - **透出**：run.json `script_adherence` 全量（含 deferred）；`test_summary.adherence` 在 `deferred.total>0` 时携带 deferred（adherence 分区后，纯探索用例不会被整体省略）。
 - **不回归**：hard 断言命中/未命中、preflight、终态验证通路不变。
 - **测试**：`test/ios-task-runner.test.js`（parser kind、deferred 分区与 reached、验证提示词豁免、test_summary deferred、探索未达成仍 completed、旧用例 deferred=0）。
+
+### 13.66 实施记录（票 07：`design-inference` 失败域 + 报告来源显示）
+
+> 实施于 2026-10-10；CR 交互理解主线第七票。改 `src/artemis/failure-taxonomy.ts`、`src/artemis/task-result.ts`、`src/figma/suite-runner.ts`、`src/figma/run-report.ts`、`src/suite-command.ts`、`src/figma/suite-loop.ts`、`src/provenance.ts`（`summarizeScriptProvenance`）；测试 +2；全量 814 绿。
+
+- **失败域**：新增 `design-inference`，归类规则插在 data-environment 之后、behavior-or-design 之前（崩溃/环境/API/数据等强信号优先，不冲突）：用例失败且 failedItems 非空时——脚本**纯探索**（asserts=0、explores>0）→ confidence high；**混合脚本**需**双证据**才判 medium：`unresolvedAsserts===0`（iOS adherence 显式回传断言全命中）且 `exploresReached < explores`（探索未全达成）；无 adherence（Android/计划解析失败）或探索全达成或断言未出现 → 回落 `behavior-or-design`。**优先级取舍**：数据/登录类文案启发式先于 design-inference（纯探索用例的真实数据问题仍归 data-environment），已在测试锁定。
+- **输入信号**：`FailureInput.scriptProvenance {asserts, explores, unresolvedAsserts?, exploresReached?}`；tests.json `expectations.kind` 经 `summarizeScriptProvenance`（provenance.ts 单点）汇总；iOS `test_summary.adherence`（unresolved/deferred reached）解析进 `TaskTestSummary.adherence`（`task-result.ts`）；组装由 `scriptProvenanceSignal` 单点（suite-runner / run-report 共用）。
+- **报告来源显示**：`SuiteCaseResult.scriptProvenance` 入套件 JSON 与控制台（`[FAIL] … · 脚本 断言N/探索M`）；run-report xlsx 增「脚本来源」列（`断言 N / 探索 M`）；JUnit failure message 含归类理由（含探索计数）；`suite loop` 失败域动作文案列全域名；移动任务摘要在 `test_summary.adherence` 透出 assert/explore（来源）计数与归类置信度（套件侧）。
+- **边界与延后**：①「设计↔观测冲突 → design-inference」的冲突信号依赖对账资产（票 08/09），本票只覆盖推断来源失败；②`jira_evidence_post` 归域未接 `scriptProvenance`（无 tests.json 上下文），与套件报告在纯探索场景可能不一致——按需后续接线；③轮询超时且中途有 failedItems 的路径沿用既有优先级（failedItems 分支先于 timedOut），不在本票调整。
+- **测试**：`test/failure-taxonomy.test.js`（纯探索 high / 双证据 medium / 断言未出现回落 / adherence 缺失回落 behavior-or-design / 探索全达成回落 / 数据信号优先 / 崩溃优先）、`test/suite-runner.test.js`（端到端归类 + scriptProvenance 透出）、`test/run-report.test.js`（xlsx 列头与值）。

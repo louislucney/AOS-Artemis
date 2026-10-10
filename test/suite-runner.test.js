@@ -8,14 +8,15 @@ import { buildRunReport } from "../dist/figma/run-report.js";
 import { runGeneratedTests } from "../dist/figma/suite-runner.js";
 import { baseConfig, loadTestRuntime, makeTempProject, SuiteProxy } from "./helpers.js";
 
-function caseEntry(index) {
+function caseEntry(index, overrides = {}) {
   return {
     id: `case-${index}`,
     name: `Case ${index}`,
     screens: ["Home", "Next"],
     steps: ["点击「Go」，验证进入「Next」（页面应出现「Done」）"],
     preconditions: ["应用已安装且可正常启动", "开始前应用停留在「Home」页"],
-    taskDesc: `run case ${index}`
+    taskDesc: `run case ${index}`,
+    ...overrides
   };
 }
 
@@ -111,6 +112,34 @@ test("suite runner: keeps going after a failing case and keeps failure evidence"
   assert.equal(report.cases[1].failure.confidence, "high");
   assert.equal(report.cases[2].status, "passed");
   assert.equal(report.cases[2].failure, null);
+});
+
+test("suite runner: exploration-only failures classify as design-inference with script provenance", async () => {
+  const exploreCase = caseEntry(1, {
+    preconditions: [],
+    expectations: [
+      { screen: "门市", hints: [], provenance: "inferred", confidence: "low", kind: "explore" }
+    ]
+  });
+  const { run } = await setup({
+    cases: [exploreCase],
+    statuses: {
+      "trace-1": {
+        status: "failed",
+        error: "assert mismatch",
+        test_summary: {
+          task_status: "failed",
+          failed_items: [{ item_text: "未到达门市", kind: "assert", evidence: "no target screen" }]
+        }
+      }
+    }
+  });
+
+  const report = await run();
+  assert.equal(report.cases[0].status, "failed");
+  assert.equal(report.cases[0].failure.domain, "design-inference");
+  assert.equal(report.cases[0].failure.confidence, "high");
+  assert.deepEqual(report.cases[0].scriptProvenance, { asserts: 0, explores: 1 });
 });
 
 test("suite runner: stopOnFailure breaks the run and reports skipped", async () => {

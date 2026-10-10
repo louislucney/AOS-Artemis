@@ -8,6 +8,12 @@ export interface TaskFailedItem {
   evidence: string | null;
 }
 
+export interface TaskScriptAdherenceSummary {
+  unresolved: number;
+  deferredTotal: number;
+  deferredReached: number;
+}
+
 export interface TaskTestSummary {
   taskStatus: string | null;
   passed: number | null;
@@ -16,6 +22,8 @@ export interface TaskTestSummary {
   unchecked: number | null;
   synthesized: boolean;
   failedItems: TaskFailedItem[];
+  /** Script adherence counts (iOS executor); absent for upstream tasks. */
+  adherence?: TaskScriptAdherenceSummary | null;
 }
 
 export interface TaskStatus {
@@ -65,6 +73,21 @@ function failedItemsOf(value: unknown): TaskFailedItem[] {
 function testSummaryOf(value: unknown): TaskTestSummary | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
+  let adherence: TaskScriptAdherenceSummary | null = null;
+  const adherenceRaw = record.adherence;
+  if (adherenceRaw && typeof adherenceRaw === "object" && !Array.isArray(adherenceRaw)) {
+    const adherenceRecord = adherenceRaw as Record<string, unknown>;
+    const deferredRaw = adherenceRecord.deferred;
+    const deferred =
+      deferredRaw && typeof deferredRaw === "object" && !Array.isArray(deferredRaw)
+        ? (deferredRaw as Record<string, unknown>)
+        : {};
+    adherence = {
+      unresolved: Array.isArray(adherenceRecord.unresolved) ? adherenceRecord.unresolved.length : 0,
+      deferredTotal: asNumber(deferred.total) ?? 0,
+      deferredReached: asNumber(deferred.reached) ?? 0
+    };
+  }
   return {
     taskStatus: asString(record.task_status),
     passed: asNumber(record.passed),
@@ -72,7 +95,8 @@ function testSummaryOf(value: unknown): TaskTestSummary | null {
     inconclusive: asNumber(record.inconclusive),
     unchecked: asNumber(record.unchecked),
     synthesized: record.synthesized === true,
-    failedItems: failedItemsOf(record.failed_items)
+    failedItems: failedItemsOf(record.failed_items),
+    adherence
   };
 }
 

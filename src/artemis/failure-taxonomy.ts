@@ -7,6 +7,7 @@ export type FailureDomain =
   | "api-error"
   | "data-environment"
   | "behavior-or-design"
+  | "design-inference"
   | "case-defect"
   | "unclassified";
 
@@ -31,6 +32,34 @@ export interface ApiErrorSignal {
   handled: boolean | null;
 }
 
+export interface ScriptProvenanceSignal {
+  /** assert-kind steps in the case script (from tests.json expectations). */
+  asserts: number;
+  /** explore-kind (inferred evidence) steps in the case script. */
+  explores: number;
+  /** assert steps never observed during the run (iOS adherence), when available. */
+  unresolvedAsserts?: number;
+  /** explore steps whose target screen was observed (iOS adherence), when available. */
+  exploresReached?: number;
+}
+
+/** Compose the classification signal from the case's script counts and the
+ * run's adherence summary when the executor reported one (iOS). Missing
+ * adherence keeps the signal unverified — mixed scripts then never claim
+ * design-inference. */
+export function scriptProvenanceSignal(
+  base: { asserts: number; explores: number } | null,
+  adherence?: { unresolved: number; deferredReached: number } | null
+): ScriptProvenanceSignal | null {
+  if (!base) return null;
+  if (!adherence) return base;
+  return {
+    ...base,
+    unresolvedAsserts: adherence.unresolved,
+    exploresReached: adherence.deferredReached
+  };
+}
+
 export interface FailureInput {
   status?: TaskStatus | null;
   crashes?: CrashSignal[];
@@ -39,6 +68,7 @@ export interface FailureInput {
   preconditions?: string[];
   timedOut?: boolean;
   apiErrors?: ApiErrorSignal[];
+  scriptProvenance?: ScriptProvenanceSignal | null;
 }
 
 const ENVIRONMENT_RESET_REASONS = new Set([
@@ -144,6 +174,35 @@ export function classifyFailure(input: FailureInput): FailureClassification {
   }
 
   if ((input.status?.testSummary?.failedItems.length ?? 0) > 0) {
+    const provenance = input.scriptProvenance;
+    if (provenance && provenance.explores > 0) {
+      const pureExploration = provenance.asserts === 0;
+      if (pureExploration) {
+        return {
+          domain: "design-inference",
+          confidence: "high",
+          reason: `用例失败但脚本全部为推断来源（探索 ${provenance.explores} 步、断言 0 步）：更可能是设计推断/配对问题而非应用缺陷`,
+          evidence: [`script:asserts=0`, `script:explores=${provenance.explores}`]
+        };
+      }
+      const assertsVerifiedSettled = provenance.unresolvedAsserts === 0;
+      const explorationIncomplete =
+        provenance.exploresReached !== undefined &&
+        provenance.exploresReached < provenance.explores;
+      if (assertsVerifiedSettled && explorationIncomplete) {
+        return {
+          domain: "design-inference",
+          confidence: "medium",
+          reason: `断言均已命中（未出现 0）而探索步骤未全部达成（${provenance.exploresReached}/${provenance.explores}）：失败指向设计推断`,
+          evidence: [
+            `script:asserts=${provenance.asserts}`,
+            `script:explores=${provenance.explores}`,
+            `script:exploresReached=${provenance.exploresReached}`,
+            `script:unresolvedAsserts=0`
+          ]
+        };
+      }
+    }
     return {
       domain: "behavior-or-design",
       confidence: "high",

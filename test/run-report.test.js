@@ -24,6 +24,11 @@ const CASES = [
     screens: ["我的", "登录"],
     steps: ["点击「登录」（页面应出现「账号」）"],
     preconditions: ["应用已安装且可正常启动", "「登录」需要有效账号可完成登录"],
+    expectations: [
+      { screen: "登录", hints: ["账号"], provenance: "explicit", confidence: "high", kind: "assert" },
+      { screen: "首页", hints: [], provenance: "inferred", confidence: "low", kind: "explore" },
+      { screen: "我的", hints: [], provenance: "inferred", confidence: "low", kind: "explore" }
+    ],
     taskDesc: "run case 2"
   }
 ];
@@ -148,11 +153,13 @@ test("run report: writes xlsx result sheet and JUnit XML without touching tests.
   assert.ok(sheet);
   assert.equal(sheet.getRow(1).getCell(1).value, "#");
   assert.equal(sheet.getRow(1).getCell(4).value, "结果");
+  assert.equal(sheet.getRow(1).getCell(10).value, "脚本来源");
   assert.equal(sheet.getRow(2).getCell(2).value, "Home → Checkout");
   assert.equal(sheet.getRow(2).getCell(4).value, "passed");
   assert.equal(sheet.getRow(2).getCell(6).value, 2.5);
   assert.equal(sheet.getRow(3).getCell(8).value, "data-environment");
-  assert.match(sheet.getRow(3).getCell(11).value, /trace: .*trace-2/);
+  assert.equal(sheet.getRow(3).getCell(10).value, "断言 1 / 探索 2");
+  assert.match(sheet.getRow(3).getCell(12).value, /trace: .*trace-2/);
 
   const junit = fs.readFileSync(report.saved.junit, "utf-8");
   assert.match(junit, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
@@ -213,8 +220,8 @@ test("run report: API error artifact feeds xlsx columns and JUnit failure conten
   await workbook.xlsx.load(fs.readFileSync(report.saved.xlsx));
   const sheet = workbook.getWorksheet("运行报告");
   const rowIndex = report.cases.findIndex((entry) => entry.traceId === "trace-2") + 2;
-  assert.match(sheet.getRow(rowIndex).getCell(12).value, /AUTH_401\(unhandled ×2\)/);
-  assert.match(sheet.getRow(rowIndex).getCell(13).value, /AUTH_401=relogin/);
+  assert.match(sheet.getRow(rowIndex).getCell(13).value, /AUTH_401\(unhandled ×2\)/);
+  assert.match(sheet.getRow(rowIndex).getCell(14).value, /AUTH_401=relogin/);
 
   assert.match(
     fs.readFileSync(report.saved.junit, "utf-8"),

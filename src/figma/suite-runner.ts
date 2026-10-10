@@ -11,6 +11,7 @@ import {
 } from "../artemis/api-errors.js";
 import {
   classifyFailure,
+  scriptProvenanceSignal,
   type CrashSignal,
   type FailureClassification
 } from "../artemis/failure-taxonomy.js";
@@ -30,6 +31,7 @@ import { resetApp, type AppResetOptions, type AppResetOutcome, type AppResetRequ
 import type { IosDevice } from "../device/ios-actions.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
+import { summarizeScriptProvenance } from "../provenance.js";
 import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -55,6 +57,9 @@ export interface SuiteCaseResult {
   error: string | null;
   testSummary: TaskStatus["testSummary"];
   failure: FailureClassification | null;
+  /** Design-pipeline script provenance summary (tests.json expectations;
+   * null for legacy artifacts without expectations). */
+  scriptProvenance: { asserts: number; explores: number } | null;
   apiErrors: ApiErrorObservation[];
   apiErrorsDegraded: string | null;
   evidence: {
@@ -122,12 +127,20 @@ interface GeneratedCaseLike {
   name: string;
   preconditions: string[];
   taskDesc: string;
+  /** Script provenance counts from tests.json expectations (null = legacy). */
+  scriptProvenance: { asserts: number; explores: number } | null;
 }
 
 function loadCases(file: string, maxCases?: number): GeneratedCaseLike[] | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as {
-      flows?: Array<{ id?: unknown; name?: unknown; preconditions?: unknown; taskDesc?: unknown }>;
+      flows?: Array<{
+        id?: unknown;
+        name?: unknown;
+        preconditions?: unknown;
+        taskDesc?: unknown;
+        expectations?: unknown;
+      }>;
     };
     const cases: GeneratedCaseLike[] = [];
     for (const entry of parsed.flows ?? []) {
@@ -138,7 +151,8 @@ function loadCases(file: string, maxCases?: number): GeneratedCaseLike[] | null 
         preconditions: Array.isArray(entry.preconditions)
           ? entry.preconditions.filter((item): item is string => typeof item === "string")
           : [],
-        taskDesc: entry.taskDesc
+        taskDesc: entry.taskDesc,
+        scriptProvenance: summarizeScriptProvenance(entry.expectations)
       });
     }
     return maxCases && maxCases > 0 ? cases.slice(0, maxCases) : cases;
@@ -287,6 +301,7 @@ export async function runGeneratedTests(
         traceId: null,
         error: message,
         testSummary: null,
+        scriptProvenance: testCase.scriptProvenance,
         failure: classifyFailure({
           submitError: message,
           reset,
@@ -325,6 +340,7 @@ export async function runGeneratedTests(
         traceId: null,
         error: message,
         testSummary: null,
+        scriptProvenance: testCase.scriptProvenance,
         failure: classifyFailure({
           submitError: message,
           reset,
@@ -453,6 +469,7 @@ export async function runGeneratedTests(
       traceId,
       error: forcedError ?? status?.error ?? (terminal ? null : "等待任务终态超时"),
       testSummary: status?.testSummary ?? null,
+      scriptProvenance: testCase.scriptProvenance,
       failure:
         caseStatus === "passed"
           ? null
@@ -462,7 +479,11 @@ export async function runGeneratedTests(
               reset,
               preconditions: testCase.preconditions,
               timedOut: !terminal,
-              apiErrors: apiErrors.map((entry) => ({ code: entry.code, handled: entry.handled }))
+              apiErrors: apiErrors.map((entry) => ({ code: entry.code, handled: entry.handled })),
+              scriptProvenance: scriptProvenanceSignal(
+                testCase.scriptProvenance,
+                status?.testSummary?.adherence ?? null
+              )
             }),
       apiErrors,
       apiErrorsDegraded,

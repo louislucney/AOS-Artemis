@@ -67,3 +67,19 @@ export function isHardCoverageTarget(provenance: Provenance): boolean {
 export function isHardCoverageValue(value: unknown): boolean {
   return isHardCoverageTarget(resolveProvenance(value));
 }
+
+/** Summarize a tests.json `expectations` array into per-case script provenance
+ * counts (assert vs explore); null when absent (legacy artifacts). */
+export function summarizeScriptProvenance(
+  raw: unknown
+): { asserts: number; explores: number } | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  let asserts = 0;
+  let explores = 0;
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    if (isExploreKind((entry as { kind?: unknown }).kind)) explores += 1;
+    else asserts += 1;
+  }
+  return { asserts, explores };
+}

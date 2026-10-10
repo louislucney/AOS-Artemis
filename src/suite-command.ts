@@ -333,6 +333,9 @@ async function suiteRun(
       const failure = entry.failure
         ? ` · 失败域 ${entry.failure.domain}(${entry.failure.confidence})：${entry.failure.reason}`
         : "";
+      const scriptNote = entry.scriptProvenance
+        ? ` · 脚本 断言${entry.scriptProvenance.asserts}/探索${entry.scriptProvenance.explores}`
+        : "";
       const apiNote =
         entry.apiErrors.length > 0
           ? ` · API 错误 ${entry.apiErrors.map((error) => `${error.code}(${error.verdict})`).join("、")}`
@@ -345,7 +348,7 @@ async function suiteRun(
           }`
         : "";
       io.log(
-        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${apiNote}${degraded}${quarantineNote}${retryNote}`
+        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${scriptNote}${apiNote}${degraded}${quarantineNote}${retryNote}`
       );
       if (entry.traceId && entry.status !== "passed") {
         io.log(`       证据: node dist/cli.js suite evidence ${entry.traceId}`);
