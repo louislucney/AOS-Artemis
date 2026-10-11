@@ -1394,10 +1394,23 @@ llm_switch(name, force):
 
 > 实施于 2026-10-11；第二轮架构评审候选 6（第一切片）。新增 `src/tasks/ledger.ts`（`TaskLedger`：提交/结果记账（`local-` 占位、caseId 回填、lockedPackages 上限 200）、`traceStatus`（status.json 优先 + iOS orphan 对账 + 代理回退）、`syncTaskStatuses`（终态回调注入崩溃取证））；`runtime.ts` 对应方法改为委托（公开面零变化，`traceDir` 保留）；测试 +0；全量 879 绿。
 
-- **边界（本切片未做）**：`ChildSupervisor`（child spec/指纹/sweep 的自由函数内联）暂缓——该拆牵扯 proxy 生命周期与 `sweepStaleChild` 测试不变量，留作独立轮次；`lockedPackageFor` 暴露给崩溃扫描进程名推断。
+- **边界**：`ChildSupervisor` 见 §13.88（本轮补齐）；`lockedPackageFor` 暴露给崩溃扫描进程名推断。
 
 ### 13.87 实施记录（server ListTools schema 缓存）
 
 > 实施于 2026-10-11；第二轮架构评审候选 7（功能切片）。改 `src/server.ts`（`nativeSchemaCache`/`figmaSchemaCache`——zod→JSON schema 转换按工具名缓存一次，HTTP 每 POST 新建 server 的 ListTools 不再重复转换）；测试 +0；全量 879 绿。
 
-- **边界（本切片未做）**：`NATIVE_TOOLS`（534 行）域文件拆分与 stdio/HTTP 引导去重（`runtime-host`）暂缓——两者为纯搬移/生命周期整理，价值在导航性而非行为，留作独立轮次。
+- **边界**：`NATIVE_TOOLS` 域文件拆分见 §13.89（本轮补齐）；stdio/HTTP 引导去重（`runtime-host`）仍暂缓——涉及两入口的 store 生命周期与 dispose 顺序，留作独立轮次（纯整理，不影响行为）。
+
+### 13.88 实施记录（子进程生命周期抽取：`artemis/child-supervisor.ts`）
+
+> 实施于 2026-10-11；第二轮评审候选 6（第二切片，§13.86 补齐）。新增 `src/artemis/child-supervisor.ts`（`fingerprintForEntry`/`spec`（无 LLM 回退 bare spec）/`recordSpawned`（state.child 记账）/`clearChild`/`taskCounts`/`artemisPython`/`sweep`（孤儿清理，含 cmdline 守卫））；`runtime.ts` 对应方法改为委托，`buildDefaultProxy` 的 `prepare/onSpawned` 直连 supervisor；`sweepStaleChild(runtime)` 保留为薄包装（server/http/测试零改动）；测试 +0；全量 879 绿。
+
+- **边界**：`doActivate` 里 restart 前对 `state.child` 的删除保留在同一批 state 写入内（原子性优先，不拆到 `clearChild()`，避免快照回写复活 child 记录）。
+
+### 13.89 实施记录（NATIVE_TOOLS 域拆分：`tools/native-tools/`）
+
+> 实施于 2026-10-11；第二轮评审候选 7（第二切片，§13.87 补齐）。`src/server.ts` 918 → 360 行：34 个原生工具按域拆为 `tools/native-tools/{llm,aos,jira,design,figma,pen}.ts`（`NativeToolDefinition` 类型独立于 `types.ts`），server 只留 `NATIVE_TOOLS = [...域数组]` 装配、传输与门禁；测试 +0（server-smoke/usage 全绿）；全量 879 绿。
+
+- **机制**：每域文件自持 `z` 与 handler 导入（按引用符号自动裁剪），`schema` 缓存（§13.87）按工具名继续生效。
+- **边界**：加/改一个工具只动对应域文件；stdio/HTTP 引导去重仍见 §13.87 边界注。

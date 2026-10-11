@@ -7,20 +7,16 @@ import { loadDotenvValues, type LoadedProject } from "./config/loader.js";
 import { makeResolver } from "./config/validate.js";
 import { StateStore } from "./state.js";
 import {
-  buildBareChildSpec,
-  buildChildEnvForEntry,
-  buildChildSpecForEntry,
   configDirAbs,
   projectTracesDir,
   renderProjectArtemisConfig,
-  resolveArtemisPython,
   type ChildSpec,
   type EntryLike,
   type ResolvedPython
 } from "./artemis/assembly.js";
 import { mirrorDeviceScreenshots } from "./artemis/artifacts.js";
 import { ArtemisProxy, type ArtemisProxyLike } from "./artemis/proxy.js";
-import { resultPayload, type TaskStatus } from "./artemis/task-result.js";
+import { type TaskStatus } from "./artemis/task-result.js";
 import { maybeIosInspectTrace } from "./ios/inspect.js";
 import { maybeIosManageTask, maybeIosRunTask } from "./ios/task-runner.js";
 import { isIosTraceDir } from "./ios/trace-store.js";
@@ -32,6 +28,7 @@ import {
 } from "./crash/ios-dispatch.js";
 import { resolveIosDevice } from "./device/ios-facade.js";
 import type { IosDevice } from "./device/ios-actions.js";
+import { ChildSupervisor } from "./artemis/child-supervisor.js";
 import { TaskLedger } from "./tasks/ledger.js";
 import { maybeIosDeviceState } from "./tools/ios-state.js";
 import { appendChildLog } from "./log.js";
@@ -71,16 +68,7 @@ import {
   type EnvScanResult
 } from "./projects/scan.js";
 import { usageEnabledFrom, usageEventSampleLimit, usagePolicyFrom } from "./usage/capture.js";
-import {
-  errorMessage,
-  isBuildStale,
-  isProcessAlive,
-  logWarn,
-  processCmdline,
-  sleep,
-  terminateProcess,
-  writeFileAtomic
-} from "./util.js";
+import { errorMessage, isBuildStale, logWarn, sleep, writeFileAtomic } from "./util.js";
 
 export interface RuntimeOptions {
   store?: ProjectStore;
@@ -150,6 +138,7 @@ export class Runtime {
   private crashScanChain: Promise<unknown> = Promise.resolve();
   private modelRefreshChain: Promise<unknown> = Promise.resolve();
   private readonly ledger: TaskLedger;
+  private readonly childSupervisor: ChildSupervisor;
   private readonly iosCrashCollector: IosCrashCollectFn | null;
   private readonly iosCrashRetry: {
     attempts: number;
@@ -206,6 +195,14 @@ export class Runtime {
       store: this.crashStore,
       env: this.baseEnv,
       collector: options.crashCollector
+    });
+    this.childSupervisor = new ChildSupervisor({
+      config: this.project.config,
+      rootDir: this.project.rootDir,
+      baseEnv: this.baseEnv,
+      state: this.state,
+      activeEntry: () => this.activeCache?.entry ?? null,
+      proxy: () => this.proxy
     });
     this.proxy = this.withArtifactMirror(options.proxy ?? this.buildDefaultProxy());
     this.ledger = new TaskLedger({
@@ -293,19 +290,8 @@ export class Runtime {
 
   private buildDefaultProxy(): ArtemisProxyLike {
     return new ArtemisProxy({
-      prepare: () => this.prepareChildSpec(),
-      onSpawned: ({ pid, fingerprint }) => {
-        const state = this.state.read();
-        this.state.write({
-          ...state,
-          child: {
-            ownerPid: process.pid,
-            pid: pid ?? undefined,
-            fingerprint,
-            startedAt: new Date().toISOString()
-          }
-        });
-      },
+      prepare: () => this.childSupervisor.spec(),
+      onSpawned: (info) => this.childSupervisor.recordSpawned(info),
       onStderrLine: (line) => appendChildLog(line)
     });
   }
@@ -1098,25 +1084,13 @@ export class Runtime {
   // Child process plumbing
   // ------------------------------------------------------------------
 
+  /** 子进程生命周期经 ChildSupervisor（DESIGN §13.88）。 */
   envFingerprintForEntry(entry: EntryLike): string {
-    return buildChildEnvForEntry({
-      config: this.project.config,
-      rootDir: this.project.rootDir,
-      entry,
-      baseEnv: this.baseEnv
-    }).fingerprint;
+    return this.childSupervisor.fingerprintForEntry(entry);
   }
 
   prepareChildSpec(): ChildSpec {
-    const args = {
-      config: this.project.config,
-      rootDir: this.project.rootDir,
-      baseEnv: this.baseEnv
-    };
-    const entry = this.activeCache?.entry;
-    // No LLM configured yet: spawn a bare child so read-only mobile tools
-    // (diagnose / device state) still work; mobile_run_task is gated upstream.
-    return entry ? buildChildSpecForEntry({ ...args, entry }) : buildBareChildSpec(args);
+    return this.childSupervisor.spec();
   }
 
   activeEntryCached(): LlmEntry | null {
@@ -1124,25 +1098,15 @@ export class Runtime {
   }
 
   async queryTaskCounts(): Promise<{ active: number; queued: number } | null> {
-    try {
-      const result = await this.proxy.callTool("mobile_diagnose", {});
-      const payload = resultPayload(result);
-      if (!payload) return null;
-      const tasks = (payload as { tasks?: unknown }).tasks;
-      if (!tasks || typeof tasks !== "object") return null;
-      const active = (tasks as { active?: unknown }).active;
-      const queued = (tasks as { queued?: unknown }).queued;
-      return {
-        active: Array.isArray(active) ? active.length : 0,
-        queued: Array.isArray(queued) ? queued.length : 0
-      };
-    } catch {
-      return null;
-    }
+    return await this.childSupervisor.taskCounts();
   }
 
   artemisPython(): ResolvedPython {
-    return resolveArtemisPython(this.project.config.artemis);
+    return this.childSupervisor.artemisPython();
+  }
+
+  async sweepChild(): Promise<string | null> {
+    return await this.childSupervisor.sweep();
   }
 
   // ------------------------------------------------------------------
@@ -1174,29 +1138,8 @@ function parseIsoMs(value: string | null): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-/** Kill a recorded mcp_server child left behind by a dead ao-mcp instance. */
+/** Kill a recorded mcp_server child left behind by a dead aos-mcp instance
+ * （经 ChildSupervisor，DESIGN §13.88）。 */
 export async function sweepStaleChild(runtime: Runtime): Promise<string | null> {
-  const state = runtime.state.read();
-  const child = state.child;
-  if (!child?.pid) return null;
-
-  const ownerAlive =
-    typeof child.ownerPid === "number" && child.ownerPid !== process.pid && isProcessAlive(child.ownerPid);
-  if (ownerAlive) return null;
-
-  if (!isProcessAlive(child.pid)) {
-    const current = runtime.state.read();
-    delete current.child;
-    runtime.state.write(current);
-    return null;
-  }
-
-  const cmdline = processCmdline(child.pid);
-  if (!cmdline || !/-m\s+mcp_server/.test(cmdline)) return null;
-
-  await terminateProcess(child.pid, 2000);
-  const current = runtime.state.read();
-  delete current.child;
-  runtime.state.write(current);
-  return `已清理孤儿 artemis mcp_server 进程（pid=${child.pid}，owner ${child.ownerPid ?? "未知"} 已退出）`;
+  return await runtime.sweepChild();
 }
