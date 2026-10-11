@@ -10,13 +10,12 @@ import { loadProject } from "./config/loader.js";
 import { configDirAbs } from "./artemis/assembly.js";
 import { traceIdOf } from "./artemis/task-result.js";
 import { isIosTraceId } from "./ios/trace-store.js";
-import { ensureArtemisDeps, resolveDepsSource } from "./artemis/bootstrap.js";
-import { createProjectStore } from "./db/index.js";
+import { resolveDepsSource } from "./artemis/bootstrap.js";
 import { configureLogging, installCrashHandlers } from "./log.js";
-import { startBridge, stopBridge } from "./figma/bridge.js";
+import { startBridge } from "./figma/bridge.js";
 import { figmaTools, handleFigmaTool, isFigmaTool } from "./figma/registry.js";
-import { syncFigmaTokenEnv } from "./figma/token.js";
-import { Runtime, sweepStaleChild } from "./runtime.js";
+import { Runtime } from "./runtime.js";
+import { RuntimeHost } from "./runtime-host.js";
 import { usageEventInputFrom } from "./usage/capture.js";
 import { AOS_MCP_VERSION, errorMessage, log } from "./util.js";
 import { NativeToolDefinition } from "./tools/native-tools/types.js";
@@ -26,8 +25,6 @@ import { FIGMA_NATIVE_TOOLS } from "./tools/native-tools/figma.js";
 import { JIRA_NATIVE_TOOLS } from "./tools/native-tools/jira.js";
 import { LLM_NATIVE_TOOLS } from "./tools/native-tools/llm.js";
 import { PEN_NATIVE_TOOLS } from "./tools/native-tools/pen.js";
-
-const SYNC_INTERVAL_MS = 30_000;
 
 const NATIVE_TOOLS: NativeToolDefinition[] = [
   ...LLM_NATIVE_TOOLS,
@@ -240,72 +237,39 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
 export async function runServer(): Promise<void> {
   let runtime: Runtime | null = null;
   let initError: string | null = null;
+  let host: RuntimeHost | null = null;
 
   try {
     const project = loadProject();
-    // Logging first: bootstrap/bridge/tool-call records must land in the log file.
-    const logDir =
-      process.env.AOS_LOG_DIR?.trim() ||
-      path.join(configDirAbs(project.config, project.rootDir), "logs");
-    const logFile = configureLogging({ logDir });
-    installCrashHandlers();
-    log(`aos-mcp ${AOS_MCP_VERSION} 启动（stdio）项目=${project.rootDir}`);
-    if (logFile) log(`日志文件: ${logFile}`);
-    // First-run/update bootstrap: installs or refreshes artemis deps when the
-    // venv is missing, unmanaged, or stale against uv.lock (no-op when ready).
-    const deps = await ensureArtemisDeps({
-      repoDir: project.config.artemis.repo,
-      source: resolveDepsSource(project.config),
-      log
+    // 日志引导 + 依赖检查 + 存储 + Runtime 创建经共享宿主（DESIGN §13.90）。
+    host = await RuntimeHost.prepare({
+      logDir:
+        process.env.AOS_LOG_DIR?.trim() ||
+        path.join(configDirAbs(project.config, project.rootDir), "logs"),
+      startupLine: `aos-mcp ${AOS_MCP_VERSION} 启动（stdio）项目=${project.rootDir}`,
+      deps: {
+        repoDir: project.config.artemis.repo,
+        source: resolveDepsSource(project.config)
+      }
     });
-    if (deps.status !== "ready") {
-      log(`依赖状态: ${deps.status} — ${deps.message.split("\n")[0]}`);
-    }
-    const { store, degraded, reason } = await createProjectStore();
-    runtime = new Runtime(project, { store, storeNote: reason });
-    await runtime.initialize();
-    if (degraded && reason) log(reason);
-    log(
-      `项目已注册: ${project.rootDir}` +
-        (runtime.activeEntryCached()
-          ? `，active LLM: ${runtime.activeEntryCached()!.name}`
+    runtime = await host.createRuntime(project, {
+      registerLine: (created) =>
+        `项目已注册: ${project.rootDir}` +
+        (created.activeEntryCached()
+          ? `，active LLM: ${created.activeEntryCached()!.name}`
           : "，未配置 LLM（setup_required）")
-    );
+    });
   } catch (error) {
     initError = errorMessage(error);
-    configureLogging({
-      logDir:
-        process.env.AOS_LOG_DIR?.trim() || path.join(process.cwd(), ".aos-mcp", "logs")
-    });
-    installCrashHandlers();
+    if (!host) {
+      configureLogging({
+        logDir:
+          process.env.AOS_LOG_DIR?.trim() || path.join(process.cwd(), ".aos-mcp", "logs")
+      });
+      installCrashHandlers();
+    }
     log(`初始化失败: ${initError}`, "error");
   }
-
-  if (runtime) {
-    try {
-      const swept = await sweepStaleChild(runtime);
-      if (swept) log(swept);
-    } catch (error) {
-      log(`孤儿清理检查失败: ${errorMessage(error)}`);
-    }
-    try {
-      const figmaToken = await runtime.figmaTokenInfo();
-      syncFigmaTokenEnv(figmaToken.value);
-    } catch (error) {
-      log(`Figma token 同步失败: ${errorMessage(error)}`);
-    }
-  }
-
-  // stdio mirror of the HTTP-mode sync loop: terminal tasks are re-checked so
-  // crash forensics fires without waiting for an explicit aos_tasks call.
-  const syncTimer = runtime
-    ? setInterval(() => {
-        void runtime.syncTaskStatuses();
-        runtime.maybeRefreshModels();
-      }, SYNC_INTERVAL_MS)
-    : null;
-  syncTimer?.unref?.();
-  runtime?.maybeRefreshModels();
 
   try {
     const bridge = await startBridge();
@@ -320,27 +284,7 @@ export async function runServer(): Promise<void> {
   const shutdown = async (code: number): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    if (syncTimer) clearInterval(syncTimer);
-    try {
-      await runtime?.proxy.dispose();
-    } catch {
-      /* best effort */
-    }
-    try {
-      await runtime?.disposeIosWda();
-    } catch {
-      /* best effort */
-    }
-    try {
-      await runtime?.store.close();
-    } catch {
-      /* best effort */
-    }
-    try {
-      await stopBridge();
-    } catch {
-      /* best effort */
-    }
+    await host?.shutdown();
     process.exit(code);
   };
 

@@ -5,12 +5,10 @@ import path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 import { loadProject, defaultArtemisRepo, emptyConfig } from "./config/loader.js";
-import { ensureArtemisDeps, resolveDepsSource } from "./artemis/bootstrap.js";
-import { createProjectStore } from "./db/index.js";
-import { configureLogging, installCrashHandlers } from "./log.js";
-import { startBridge, stopBridge } from "./figma/bridge.js";
-import { syncFigmaTokenEnv } from "./figma/token.js";
-import { Runtime, sweepStaleChild } from "./runtime.js";
+import { resolveDepsSource } from "./artemis/bootstrap.js";
+import { startBridge } from "./figma/bridge.js";
+import { Runtime } from "./runtime.js";
+import { RuntimeHost } from "./runtime-host.js";
 import { createServerForRuntime, inProcessToolCatalog } from "./server.js";
 import { handleUsageRequest } from "./usage/web.js";
 import { AOS_MCP_VERSION, errorMessage, log } from "./util.js";
@@ -30,7 +28,6 @@ export interface AosHttpHandle {
 
 const PROJECT_NAME_RE = /^[A-Za-z0-9._-]+$/;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
-const SYNC_INTERVAL_MS = 30_000;
 
 function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -71,33 +68,17 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     options.workspaceRoot ?? process.env.AOS_WORKSPACE_ROOT ?? process.cwd()
   );
 
-  const logDir =
-    process.env.AOS_LOG_DIR?.trim() || path.join(workspaceRoot, ".aos-mcp", "logs");
-  const logFile = configureLogging({ logDir });
-  installCrashHandlers();
-  log(`aos-mcp ${AOS_MCP_VERSION} 启动（HTTP）workspace=${workspaceRoot}`);
-  if (logFile) log(`日志文件: ${logFile}`);
-
-  // Service-level first-run/update bootstrap: the artemis repo is shared by all
-  // projects; deps come from env (AOS_ARTEMIS_DEPS_URL) or the default repo.
+  // 服务级首启/更新引导：artemis 仓库全项目共享（依赖来源见 AOS_ARTEMIS_DEPS_URL / 默认仓库）。
   const serviceRepo = path.resolve(process.env.AOS_ARTEMIS_REPO ?? defaultArtemisRepo());
-  const depsSource = resolveDepsSource(emptyConfig(), process.env);
-  const deps = await ensureArtemisDeps({ repoDir: serviceRepo, source: depsSource, log });
-  if (deps.status !== "ready") {
-    log(`依赖状态: ${deps.status} — ${deps.message.split("\n")[0]}`);
-  }
-
-  const { store, degraded, reason } = await createProjectStore();
-  if (degraded && reason) log(reason);
+  const runtimeHost = await RuntimeHost.prepare({
+    logDir: process.env.AOS_LOG_DIR?.trim() || path.join(workspaceRoot, ".aos-mcp", "logs"),
+    startupLine: `aos-mcp ${AOS_MCP_VERSION} 启动（HTTP）workspace=${workspaceRoot}`,
+    deps: { repoDir: serviceRepo, source: resolveDepsSource(emptyConfig(), process.env) }
+  });
+  const store = runtimeHost.store;
+  const reason = runtimeHost.storeNote;
 
   const runtimes = new Map<string, Runtime>();
-  const syncTimer = setInterval(() => {
-    for (const runtime of runtimes.values()) {
-      void runtime.syncTaskStatuses();
-      runtime.maybeRefreshModels();
-    }
-  }, SYNC_INTERVAL_MS);
-  syncTimer.unref?.();
 
   const getRuntime = async (project: string): Promise<Runtime | null> => {
     const existing = runtimes.get(project);
@@ -111,29 +92,15 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
       const projectContext = loadProject({
         env: { ...process.env, AOS_PROJECT_DIR: rootDir, AOS_CONFIG: "" }
       });
-      runtime = new Runtime(projectContext, { store, storeNote: reason });
-      await runtime.initialize();
-      runtime.maybeRefreshModels();
+      runtime = await runtimeHost.createRuntime(projectContext, {
+        registerLine: () => `项目已注册（HTTP）: ${rootDir}`
+      });
     } catch (error) {
       log(`项目 "${project}" 初始化失败: ${errorMessage(error)}`);
       return null;
     }
 
-    try {
-      const token = await runtime.figmaTokenInfo();
-      syncFigmaTokenEnv(token.value);
-    } catch {
-      /* best effort */
-    }
-    try {
-      const swept = await sweepStaleChild(runtime);
-      if (swept) log(swept);
-    } catch {
-      /* best effort */
-    }
-
     runtimes.set(project, runtime);
-    log(`项目已注册（HTTP）: ${rootDir}`);
     return runtime;
   };
 
@@ -228,31 +195,9 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   log(`aos-mcp HTTP 已启动: http://${host}:${actualPort}/mcp/<project>（workspace: ${workspaceRoot}）`);
 
   const close = async (): Promise<void> => {
-    clearInterval(syncTimer);
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
-    for (const runtime of runtimes.values()) {
-      try {
-        await runtime.proxy.dispose();
-      } catch {
-        /* best effort */
-      }
-      try {
-        await runtime.disposeIosWda();
-      } catch {
-        /* best effort */
-      }
-    }
     runtimes.clear();
-    try {
-      await store.close();
-    } catch {
-      /* best effort */
-    }
-    try {
-      await stopBridge();
-    } catch {
-      /* best effort */
-    }
+    await runtimeHost.shutdown();
   };
 
   return { httpServer, port: actualPort, workspaceRoot, close };

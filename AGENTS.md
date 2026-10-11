@@ -13,7 +13,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 ## 仓库结构与边界
 
 - `src/` — 本服务源码（TypeScript，ESM + NodeNext + strict；相对导入一律带 `.js` 后缀）。
-- 关键模块位：iOS 设备解析 `src/device/ios-facade.ts`、观察统一 `src/ios/observation.ts`、执行器门面 `src/ios/task-runner.ts`（实现 `tool-entry`/`run-loop`/`step-observe` 等）；任务台账 `src/tasks/ledger.ts`；子进程生命周期 `src/artemis/child-supervisor.ts`；套件执行 `src/figma/case-runner.ts` 与资源单一读取 `src/figma/design-store.ts`；原生工具域 `src/tools/native-tools/`（新增工具按域放置，无需改 server）。
+- 关键模块位：iOS 设备解析 `src/device/ios-facade.ts`、观察统一 `src/ios/observation.ts`、执行器门面 `src/ios/task-runner.ts`（实现 `tool-entry`/`run-loop`/`step-observe` 等）；任务台账 `src/tasks/ledger.ts`；子进程生命周期 `src/artemis/child-supervisor.ts`；套件执行 `src/figma/case-runner.ts` 与资源单一读取 `src/figma/design-store.ts`；原生工具域 `src/tools/native-tools/`（新增工具按域放置，无需改 server）；stdio/HTTP 共享引导 `src/runtime-host.ts`。
 - `src/vendor/design-context-bridge/` — 内嵌的 MIT 上游代码。可打补丁，但每处补丁必须带 `PATCH (aos-mcp)` 注释并同步更新同目录 `NOTICE`；lint 已忽略该目录。
 - `artemis/`、`design-context-bridge/` — **git submodule**（上游 `google/artemis`、`CristinaFores/design-context-bridge`）。克隆需 `git clone --recurse-submodules` 或事后 `git submodule update --init --recursive`。`artemis` 仅作为 Python 子进程依赖（`python -m mcp_server`），避免不必要的改动；其 venv 由 `doctor --install-deps`/依赖包机制处理（或 `cd artemis && uv sync`）。
 - `.artemis/`（生成的 `artemis.jsonc` 项目配置与 state）、`dist/`（构建产物）。

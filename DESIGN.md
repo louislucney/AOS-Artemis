@@ -1413,4 +1413,11 @@ llm_switch(name, force):
 > 实施于 2026-10-11；第二轮评审候选 7（第二切片，§13.87 补齐）。`src/server.ts` 918 → 360 行：34 个原生工具按域拆为 `tools/native-tools/{llm,aos,jira,design,figma,pen}.ts`（`NativeToolDefinition` 类型独立于 `types.ts`），server 只留 `NATIVE_TOOLS = [...域数组]` 装配、传输与门禁；测试 +0（server-smoke/usage 全绿）；全量 879 绿。
 
 - **机制**：每域文件自持 `z` 与 handler 导入（按引用符号自动裁剪），`schema` 缓存（§13.87）按工具名继续生效。
-- **边界**：加/改一个工具只动对应域文件；stdio/HTTP 引导去重仍见 §13.87 边界注。
+- **边界**：加/改一个工具只动对应域文件；stdio/HTTP 引导去重见 §13.90（本轮补齐）。
+
+### 13.90 实施记录（运行宿主：stdio/HTTP 引导去重）
+
+> 实施于 2026-10-11；第二轮评审候选 7（第三切片，§13.87/§13.89 边界收尾）。新增 `src/runtime-host.ts`（`RuntimeHost.prepare`：日志引导 + artemis 依赖检查 + 项目存储 + 30s 同步循环；`createRuntime`：initialize → figma token 同步 → 孤儿清理 → 注册；`shutdown`：循环清除 + 逐 Runtime 代理/WDA 回收 + 存储关闭 + 停桥）；`src/server.ts` 360 → 304 行（runServer 缩为宿主装配 + stdio 生命周期）、`src/http-server.ts` 284 → 229 行（workspace 引导与 getRuntime/close 改经宿主；多项目共享 store 语义不变）；测试 +0（server-smoke / http-server / usage 全绿）；全量 879 绿。
+
+- **边界**：进程级差异留在各入口——stdio 的 stdin/exit 钩子与初始化失败降级日志、HTTP 的 `httpServer` 关闭与每请求新建 server/transport；30s 同步循环统一由宿主持有（HTTP 不再自有 timer）。
+- **行为微调（记录）**：stdio 初始化失败时若宿主已配置日志则不重复 `configureLogging`；HTTP 的 figma token 同步/孤儿清理失败现在记日志（原静默 best-effort）。
