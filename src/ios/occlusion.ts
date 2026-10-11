@@ -178,18 +178,6 @@ export function annotateOcclusionWarnings(lines: string[], result: OcclusionResu
   return annotated;
 }
 
-export function occlusionItemsFromNodes(
-  nodes: IosUiNode[],
-  renderedIndex: (node: IosUiNode) => number | null
-): OcclusionItem[] {
-  return nodes.map((node) => ({
-    rect: node.rect,
-    type: node.type,
-    hasText: Boolean(node.label.trim() || node.value.trim()),
-    lineIndex: renderedIndex(node)
-  }));
-}
-
 export function screenAreaOf(
   nodes: IosUiNode[],
   size: { width: number; height: number } | null

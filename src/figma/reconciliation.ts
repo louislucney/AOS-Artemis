@@ -11,7 +11,8 @@ import {
 } from "../provenance.js";
 import type { Runtime } from "../runtime.js";
 import { writeFileAtomic } from "../util.js";
-import { normalizeFlowGraph, normalizeFlowHints, type FlowGraph } from "./flows.js";
+import { normalizeFlowHints, type FlowGraph } from "./flows.js";
+import { loadDesignFlowGraph } from "./design-store.js";
 
 export const RECONCILIATION_FILE = "reconciliation.json";
 export const RECONCILIATION_VERSION = 1;
@@ -443,19 +444,14 @@ export function reviewEdge(
  * Loaded once per listing (single flows.json read). */
 export function screenTextHintsMap(configDirAbs: string): Map<string, string[]> {
   const map = new Map<string, string[]>();
-  try {
-    const flowsPath = path.join(configDirAbs, "design", "flows.json");
-    if (!fs.existsSync(flowsPath)) return map;
-    const graph = normalizeFlowGraph(JSON.parse(fs.readFileSync(flowsPath, "utf-8")));
-    for (const screen of graph.screens) {
-      const hints = normalizeFlowHints(screen.textHints)
-        .filter((hint) => hint.textClass === "runtime-text")
-        .map((hint) => hint.text)
-        .slice(0, 3);
-      if (hints.length > 0) map.set(screen.name, hints);
-    }
-  } catch {
-    /* flows.json missing or unreadable: review proceeds without text context */
+  const graph = loadDesignFlowGraph(configDirAbs);
+  if (!graph) return map;
+  for (const screen of graph.screens) {
+    const hints = normalizeFlowHints(screen.textHints)
+      .filter((hint) => hint.textClass === "runtime-text")
+      .map((hint) => hint.text)
+      .slice(0, 3);
+    if (hints.length > 0) map.set(screen.name, hints);
   }
   return map;
 }

@@ -3,6 +3,34 @@ import type { AppiumClient } from "./client.js";
 export interface CachedFrame {
   png: Buffer;
   capturedAt: string;
+  /** epoch ms（旧数据/测试桩缺失时回退解析 `capturedAt`）。 */
+  capturedAtMs?: number;
+}
+
+export const CACHED_FRAME_MAX_AGE_MS_DEFAULT = 10 * 60_000;
+
+/** `AOS_IOS_CACHED_FRAME_MAX_AGE_MS`（默认 10min；0 = 关闭陈旧判定）。 */
+export function resolveCachedFrameMaxAgeMs(env: NodeJS.ProcessEnv): number {
+  const raw = Number.parseInt(env.AOS_IOS_CACHED_FRAME_MAX_AGE_MS ?? "", 10);
+  if (!Number.isInteger(raw) || raw < 0) return CACHED_FRAME_MAX_AGE_MS_DEFAULT;
+  return raw;
+}
+
+/** 帧年龄（ms）：优先 `capturedAtMs`，否则解析 ISO `capturedAt`；不可解析返回 null。 */
+export function frameAgeMs(frame: CachedFrame, nowMs: number): number | null {
+  const captured =
+    typeof frame.capturedAtMs === "number" && Number.isFinite(frame.capturedAtMs)
+      ? frame.capturedAtMs
+      : Date.parse(frame.capturedAt);
+  if (!Number.isFinite(captured)) return null;
+  return Math.max(0, nowMs - (captured as number));
+}
+
+/** maxAgeMs <= 0 关闭陈旧判定（始终视为 fresh）。 */
+export function isFrameStale(frame: CachedFrame, nowMs: number, maxAgeMs: number): boolean {
+  if (maxAgeMs <= 0) return false;
+  const age = frameAgeMs(frame, nowMs);
+  return age !== null && age > maxAgeMs;
 }
 
 export class IosDeviceBusyError extends Error {
@@ -220,7 +248,8 @@ export class AppiumSessionManager {
 
   noteFrame(udid: string, png: Buffer): void {
     const state = this.stateFor(udid);
-    state.frame = { png, capturedAt: new Date().toISOString() };
+    const now = Date.now();
+    state.frame = { png, capturedAt: new Date(now).toISOString(), capturedAtMs: now };
   }
 
   async dispose(): Promise<void> {

@@ -146,10 +146,6 @@ export class IosWdaService {
     }
   }
 
-  cachedFrame(udid: string): { png: Buffer; capturedAt: string } | null {
-    return this.sessions?.cachedFrame(udid) ?? null;
-  }
-
   async dispose(): Promise<void> {
     const sessions = this.sessions;
     this.sessions = null;

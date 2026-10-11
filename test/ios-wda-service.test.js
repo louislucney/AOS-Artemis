@@ -45,7 +45,6 @@ test("ios wda service: 直连模式截图/层级/回收", async () => {
   const shot = await service.screenshot("00008101-000359440C69001E");
   assert.equal(shot.ok, true);
   assert.deepEqual(shot.value, Buffer.from("png"));
-  assert.ok(service.cachedFrame("00008101-000359440C69001E"));
 
   const nodes = await service.nodes("00008101-000359440C69001E");
   assert.equal(nodes.ok, true);

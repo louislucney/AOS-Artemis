@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AppiumSessionManager, IosDeviceBusyError } from "../dist/ios/appium/session.js";
+import {
+  AppiumSessionManager,
+  IosDeviceBusyError,
+  frameAgeMs,
+  isFrameStale,
+  resolveCachedFrameMaxAgeMs
+} from "../dist/ios/appium/session.js";
 
 class FakeTimers {
   constructor() {
@@ -176,4 +182,27 @@ test("appium session: dispose 清理会话并拒绝排队请求", async () => {
   await assert.rejects(queued, /已释放/);
   assert.deepEqual(client.deleted, ["s-1"]);
   lease.release();
+});
+
+test("CachedFrame 年龄与陈旧判定（capturedAtMs 优先、ISO 回退、0=关闭）", () => {
+  const now = Date.now();
+  const fresh = {
+    png: Buffer.from("x"),
+    capturedAt: new Date(now - 1_000).toISOString(),
+    capturedAtMs: now - 1_000
+  };
+  const legacy = { png: Buffer.from("x"), capturedAt: new Date(now - 5_000).toISOString() };
+  assert.equal(frameAgeMs(fresh, now), 1_000);
+  assert.equal(frameAgeMs(legacy, now), 5_000);
+  assert.equal(isFrameStale(fresh, now, 10_000), false);
+  assert.equal(isFrameStale(fresh, now, 500), true);
+  assert.equal(isFrameStale(fresh, now, 0), false);
+  assert.equal(frameAgeMs({ png: Buffer.from("x"), capturedAt: "not-a-date" }, now), null);
+});
+
+test("resolveCachedFrameMaxAgeMs：默认 10min、0=关闭、非法回退默认", () => {
+  assert.equal(resolveCachedFrameMaxAgeMs({}), 600_000);
+  assert.equal(resolveCachedFrameMaxAgeMs({ AOS_IOS_CACHED_FRAME_MAX_AGE_MS: "0" }), 0);
+  assert.equal(resolveCachedFrameMaxAgeMs({ AOS_IOS_CACHED_FRAME_MAX_AGE_MS: "5000" }), 5_000);
+  assert.equal(resolveCachedFrameMaxAgeMs({ AOS_IOS_CACHED_FRAME_MAX_AGE_MS: "-3" }), 600_000);
 });

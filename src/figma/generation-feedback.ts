@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { FailureClassification } from "../artemis/failure-taxonomy.js";
 import type { Runtime } from "../runtime.js";
+import { readTestsDocument } from "./design-store.js";
 import { preflightGeneratedTests } from "./preflight.js";
 import { buildRunReport, type RunReportCase } from "./run-report.js";
 
@@ -93,24 +94,10 @@ interface CaseMeta {
 
 function loadCaseMeta(runtime: Runtime): Map<string, CaseMeta> {
   const map = new Map<string, CaseMeta>();
-  const testsPath = path.join(runtime.configDirAbs, "design", "tests.json");
-  try {
-    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as {
-      flows?: Array<{ id?: unknown; screens?: unknown; steps?: unknown }>;
-    };
-    for (const entry of parsed.flows ?? []) {
-      if (!entry || typeof entry.id !== "string") continue;
-      map.set(entry.id, {
-        screens: Array.isArray(entry.screens)
-          ? entry.screens.filter((item): item is string => typeof item === "string")
-          : [],
-        steps: Array.isArray(entry.steps)
-          ? entry.steps.filter((item): item is string => typeof item === "string")
-          : []
-      });
-    }
-  } catch {
-    /* tests.json not generated yet */
+  const document = readTestsDocument(runtime.configDirAbs);
+  if (document === null) return map;
+  for (const record of document.records) {
+    map.set(record.id, { screens: record.screens, steps: record.steps });
   }
   return map;
 }

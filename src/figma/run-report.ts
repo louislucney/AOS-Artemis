@@ -16,8 +16,8 @@ import {
 import type { TaskFailedItem, TaskStatus } from "../artemis/task-result.js";
 import type { TaskStatRecord } from "../db/types.js";
 import type { Runtime } from "../runtime.js";
-import { summarizeScriptProvenance } from "../provenance.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
+import { loadDesignFlowGraph, loadGeneratedCases, type GeneratedCase } from "./design-store.js";
 import {
   buildTraceability,
   type TraceabilityCaseInput,
@@ -70,79 +70,32 @@ export interface RunReportOptions {
   stamp?: string;
 }
 
-interface GeneratedCaseLike {
-  id: string;
-  name: string;
-  screens: string[];
-  preconditions: string[];
-  taskDesc: string;
-  scriptProvenance: { asserts: number; explores: number } | null;
-}
-
 interface GeneratedIndex {
-  byId: Map<string, GeneratedCaseLike>;
-  byTaskDesc: Map<string, GeneratedCaseLike>;
+  byId: Map<string, GeneratedCase>;
+  byTaskDesc: Map<string, GeneratedCase>;
 }
 
 function loadCases(runtime: Runtime): GeneratedIndex {
   const index: GeneratedIndex = { byId: new Map(), byTaskDesc: new Map() };
-  const testsPath = path.join(runtime.configDirAbs, "design", "tests.json");
-  try {
-    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as {
-      flows?: Array<{
-        id?: unknown;
-        name?: unknown;
-        screens?: unknown;
-        preconditions?: unknown;
-        taskDesc?: unknown;
-        expectations?: unknown;
-      }>;
-    };
-    for (const entry of parsed.flows ?? []) {
-      if (!entry || typeof entry.id !== "string") continue;
-      const generated: GeneratedCaseLike = {
-        id: entry.id,
-        name: typeof entry.name === "string" ? entry.name : entry.id,
-        screens: Array.isArray(entry.screens)
-          ? entry.screens.filter((screen): screen is string => typeof screen === "string")
-          : [],
-        preconditions: Array.isArray(entry.preconditions)
-          ? entry.preconditions.filter((item): item is string => typeof item === "string")
-          : [],
-        taskDesc: typeof entry.taskDesc === "string" ? entry.taskDesc : "",
-        scriptProvenance: summarizeScriptProvenance(entry.expectations)
-      };
-      index.byId.set(generated.id, generated);
-      if (generated.taskDesc) index.byTaskDesc.set(generated.taskDesc, generated);
-    }
-  } catch {
-    /* tests.json not generated yet */
+  const cases = loadGeneratedCases(runtime.configDirAbs);
+  if (cases === null) return index;
+  for (const generated of cases) {
+    index.byId.set(generated.id, generated);
+    if (generated.taskDesc) index.byTaskDesc.set(generated.taskDesc, generated);
   }
   return index;
 }
 
 function readFlowCoverageInputs(runtime: Runtime): { screens: string[]; edges: CoverageEdge[] } | null {
-  try {
-    const flows = JSON.parse(
-      fs.readFileSync(path.join(runtime.configDirAbs, "design", "flows.json"), "utf-8")
-    ) as {
-      screens?: Array<{ name?: unknown }>;
-      edges?: Array<{ from?: { name?: unknown }; to?: { name?: unknown } | null }>;
-    };
-    const screens = (flows.screens ?? [])
-      .map((screen) => screen.name)
-      .filter((name): name is string => typeof name === "string");
-    const edges: CoverageEdge[] = [];
-    for (const edge of flows.edges ?? []) {
-      const from = edge.from?.name;
-      if (typeof from !== "string") continue;
-      const to = edge.to?.name;
-      edges.push({ from, to: typeof to === "string" ? to : null });
-    }
-    return { screens, edges };
-  } catch {
-    return null;
-  }
+  const graph = loadDesignFlowGraph(runtime.configDirAbs);
+  if (!graph) return null;
+  return {
+    screens: graph.screens.map((screen) => screen.name),
+    edges: graph.edges.map((edge) => ({
+      from: edge.from.name,
+      to: edge.to ? edge.to.name : null
+    }))
+  };
 }
 
 function outcomeOf(ledgerStatus: string): RunReportOutcome {

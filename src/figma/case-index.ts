@@ -1,22 +1,15 @@
-import fs from "node:fs";
-import path from "node:path";
+import { readTestsDocument } from "./design-store.js";
 
+/** taskDesc → caseId 回填（经 design-store 单一读取，DESIGN §13.84）。 */
 export function findGeneratedCaseId(
   configDirAbs: string,
   taskDesc: string | null | undefined
 ): string | null {
   if (!taskDesc) return null;
-  const testsPath = path.join(configDirAbs, "design", "tests.json");
-  try {
-    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as {
-      flows?: Array<{ id?: unknown; taskDesc?: unknown }>;
-    };
-    for (const entry of parsed.flows ?? []) {
-      if (typeof entry.id === "string" && entry.taskDesc === taskDesc) return entry.id;
-    }
-    return null;
-  } catch {
-    /* tests.json not generated yet */
-    return null;
+  const document = readTestsDocument(configDirAbs);
+  if (document === null) return null;
+  for (const record of document.records) {
+    if (record.taskDesc === taskDesc) return record.id;
   }
+  return null;
 }

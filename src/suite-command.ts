@@ -13,6 +13,7 @@ import { classifyIosSerial } from "./device/ios.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/baseline.js";
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
+import { designDir, readTestsDocument } from "./figma/design-store.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { loadQuarantine } from "./figma/quarantine.js";
@@ -532,21 +533,15 @@ async function suiteCalibrate(
     io.errorLog(`警告: 未从输入解析出任何用例（${xcSource}）`);
   }
 
-  const defaultTestsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+  const defaultTestsPath = path.join(designDir(runtime.configDirAbs), "tests.json");
   const customTests = flags.get("tests");
   const testsPath = customTests ? path.resolve(runtime.project.rootDir, customTests) : defaultTestsPath;
-  let cases: Array<{ id: string; name: string }>;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as {
-      flows?: Array<{ id?: unknown; name?: unknown }>;
-    };
-    cases = (parsed.flows ?? [])
-      .filter((entry): entry is { id: string; name?: unknown } => Boolean(entry) && typeof entry.id === "string")
-      .map((entry) => ({ id: entry.id, name: typeof entry.name === "string" ? entry.name : entry.id }));
-  } catch (error) {
-    io.errorLog(`无法读取用例文件：${testsPath}（${errorMessage(error)}）`);
+  const testsDocument = readTestsDocument(runtime.configDirAbs, { testsPath });
+  if (testsDocument === null) {
+    io.errorLog(`无法读取用例文件：${testsPath}`);
     return 2;
   }
+  const cases = testsDocument.records.map((record) => ({ id: record.id, name: record.name }));
 
   if (!flags.bool("no-sync")) {
     await runtime.syncTaskStatuses();
@@ -765,20 +760,13 @@ async function suiteFlake(
   const testsPath = runOptions.testsPath
     ? path.resolve(runtime.project.rootDir, runOptions.testsPath)
     : defaultTestsPath;
-  const caseNames = new Map<string, string>();
-  try {
-    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as {
-      flows?: Array<{ id?: unknown; name?: unknown }>;
-    };
-    for (const entry of parsed.flows ?? []) {
-      if (entry && typeof entry.id === "string") {
-        caseNames.set(entry.id, typeof entry.name === "string" ? entry.name : entry.id);
-      }
-    }
-  } catch (error) {
-    io.errorLog(`无法读取用例文件：${testsPath}（${errorMessage(error)}）`);
+  const flakeDocument = readTestsDocument(runtime.configDirAbs, { testsPath });
+  if (flakeDocument === null) {
+    io.errorLog(`无法读取用例文件：${testsPath}`);
     return 2;
   }
+  const caseNames = new Map<string, string>();
+  for (const record of flakeDocument.records) caseNames.set(record.id, record.name);
   const missingIds = requested.filter((caseId) => !caseNames.has(caseId));
   if (missingIds.length > 0) {
     io.errorLog(`用例不存在于 ${testsPath}: ${missingIds.join("、")}`);

@@ -648,6 +648,40 @@ function stripSchemaMeta(schema: unknown): unknown {
   return schema;
 }
 
+/** zod→JSON schema 转换结果缓存（NATIVE_TOOLS 为模块级静态表，DESIGN §13.87）。 */
+const nativeSchemaCache = new Map<string, unknown>();
+
+function nativeToolSchema(tool: NativeToolDefinition): unknown {
+  const cached = nativeSchemaCache.get(tool.name);
+  if (cached !== undefined) return cached;
+  const converted = stripSchemaMeta(
+    zodToJsonSchema(tool.schema, { target: "jsonSchema7", $refStrategy: "none" })
+  );
+  nativeSchemaCache.set(tool.name, converted);
+  return converted;
+}
+
+function nativeToolsForList(): Array<{ name: string; description: string; inputSchema: unknown }> {
+  return NATIVE_TOOLS.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: nativeToolSchema(tool)
+  }));
+}
+
+/** Figma 工具 schema 转换同样缓存（tools 表为静态清查）。 */
+const figmaSchemaCache = new Map<string, unknown>();
+
+function figmaToolSchema(name: string, schema: z.ZodTypeAny): unknown {
+  const cached = figmaSchemaCache.get(name);
+  if (cached !== undefined) return cached;
+  const converted = stripSchemaMeta(
+    zodToJsonSchema(schema, { target: "jsonSchema7", $refStrategy: "none" })
+  );
+  figmaSchemaCache.set(name, converted);
+  return converted;
+}
+
 /** Build a fully wired MCP Server for one project runtime (stdio or HTTP). */
 export function createServerForRuntime(runtime: Runtime | null, initError: string | null): Server {
   const server = new Server(
@@ -656,15 +690,8 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const tools: Array<{ name: string; description: string; inputSchema: unknown }> = NATIVE_TOOLS.map(
-      (tool) => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: stripSchemaMeta(
-          zodToJsonSchema(tool.schema, { target: "jsonSchema7", $refStrategy: "none" })
-        )
-      })
-    );
+    const tools: Array<{ name: string; description: string; inputSchema: unknown }> =
+      nativeToolsForList();
 
     if (runtime) {
       try {
@@ -687,9 +714,7 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
       tools.push({
         name: tool.name,
         description: tool.description,
-        inputSchema: stripSchemaMeta(
-          zodToJsonSchema(tool.schema, { target: "jsonSchema7", $refStrategy: "none" })
-        )
+        inputSchema: figmaToolSchema(tool.name, tool.schema)
       });
     }
     return { tools };

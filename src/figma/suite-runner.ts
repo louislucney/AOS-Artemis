@@ -1,27 +1,8 @@
-import fs from "node:fs";
 import path from "node:path";
 
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-
-import {
-  API_ERRORS_ARTIFACT,
-  loadApiErrorCatalog,
-  matchApiErrors,
-  type ApiErrorObservation
-} from "../artemis/api-errors.js";
-import {
-  classifyFailure,
-  scriptProvenanceSignal,
-  type CrashSignal,
-  type FailureClassification
-} from "../artemis/failure-taxonomy.js";
-import {
-  resultPayload,
-  taskStatusOf,
-  traceIdOf,
-  type TaskStatus
-} from "../artemis/task-result.js";
-import { TERMINAL_TASK_STATUSES } from "../db/types.js";
+import { loadApiErrorCatalog, type ApiErrorObservation } from "../artemis/api-errors.js";
+import { type FailureClassification } from "../artemis/failure-taxonomy.js";
+import { type TaskStatus } from "../artemis/task-result.js";
 import { classifyIosSerial } from "../device/ios.js";
 import { IosLogCollector, type IosLogWindowRequest } from "../device/ios-log.js";
 import { resetIosApp } from "../device/ios-reset.js";
@@ -31,18 +12,18 @@ import { AdbLogcatCollector, type LogcatWindowResult } from "../device/logcat.js
 import { resetApp, type AppResetOptions, type AppResetOutcome, type AppResetRequest } from "../device/reset.js";
 import type { IosDevice } from "../device/ios-actions.js";
 import type { Runtime } from "../runtime.js";
-import { errorMessage, writeFileAtomic } from "../util.js";
-import { isExploreKind, resolveProvenance, summarizeScriptProvenance } from "../provenance.js";
+import { errorMessage } from "../util.js";
+import { executeCase } from "./case-runner.js";
+import { designDir, loadDesignFlowGraph, loadGeneratedCases, type GeneratedCase } from "./design-store.js";
 import {
   hitsFromRunSteps,
   ingestExplorationObservations,
   applyRuntimeOnlyObservations,
   loadReconciliation,
-  saveReconciliation,
-  type ExploreStepSignal
+  saveReconciliation
 } from "./reconciliation.js";
 import { observedLabelsFromRunSteps, observedTapsFromRunSteps, normalizeElementLabel, recordElementObservations, type ElementBounds } from "../diff/screen-map.js";
-import { normalizeFlowGraph } from "./flows.js";
+
 import { readAndroidTraceObservations } from "../artemis/android-trace.js";
 import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
 
@@ -134,57 +115,6 @@ export interface SuiteRunOptions {
   iosLogCollector?: (request: IosLogWindowRequest) => Promise<LogcatWindowResult>;
 }
 
-interface GeneratedCaseLike {
-  id: string;
-  name: string;
-  preconditions: string[];
-  taskDesc: string;
-  screens: string[];
-  /** Exploration steps (kind=explore with a target screen) for reconciliation. */
-  exploreSteps: ExploreStepSignal[];
-  /** Design runtime texts per expected screen (element-level matching). */
-  hintScreens: Array<{ screen: string; hints: string[] }>;
-  /** Script provenance counts from tests.json expectations (null = legacy). */
-  scriptProvenance: { asserts: number; explores: number } | null;
-}
-
-function hintScreensOf(raw: unknown): Array<{ screen: string; hints: string[] }> {
-  if (!Array.isArray(raw)) return [];
-  const screens: Array<{ screen: string; hints: string[] }> = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const record = entry as { screen?: unknown; hints?: unknown };
-    if (typeof record.screen !== "string" || record.screen.trim() === "") continue;
-    const hints = Array.isArray(record.hints)
-      ? record.hints.filter((hint): hint is string => typeof hint === "string" && hint.trim() !== "")
-      : [];
-    if (hints.length === 0) continue;
-    screens.push({ screen: record.screen.trim(), hints });
-  }
-  return screens;
-}
-
-function exploreStepsOf(raw: unknown): ExploreStepSignal[] {
-  if (!Array.isArray(raw)) return [];
-  const steps: ExploreStepSignal[] = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const record = entry as { index?: unknown; screen?: unknown; kind?: unknown; provenance?: unknown };
-    if (!isExploreKind(record.kind)) continue;
-    if (typeof record.screen !== "string" || record.screen.trim() === "") continue;
-    const index =
-      typeof record.index === "number" && Number.isFinite(record.index)
-        ? Math.floor(record.index)
-        : steps.length + 1;
-    steps.push({
-      index,
-      screen: record.screen.trim(),
-      provenance: resolveProvenance(record.provenance)
-    });
-  }
-  return steps;
-}
-
 interface FlowHintMeta {
   bounds?: ElementBounds;
   hints: Map<string, { nodeId?: string; bounds?: ElementBounds }>;
@@ -203,10 +133,9 @@ interface DesignContext {
  * reverse (runtime-only) observations. Null when flows.json is missing or
  * unreadable (text-only path). */
 function loadDesignContext(runtime: Runtime): DesignContext | null {
+  const graph = loadDesignFlowGraph(runtime.configDirAbs);
+  if (!graph) return null;
   try {
-    const flowsPath = path.join(runtime.configDirAbs, "design", "flows.json");
-    if (!fs.existsSync(flowsPath)) return null;
-    const graph = normalizeFlowGraph(JSON.parse(fs.readFileSync(flowsPath, "utf-8")));
     const meta = new Map<string, FlowHintMeta>();
     const screenMatchers: DesignContext["screenMatchers"] = [];
     for (const screen of graph.screens) {
@@ -356,7 +285,7 @@ function buildElementDesigns(
 async function ingestAndroidObservations(
   runtime: Runtime,
   traceId: string,
-  testCase: GeneratedCaseLike,
+  testCase: GeneratedCase,
   at: string
 ): Promise<void> {
   const observations = await readAndroidTraceObservations(
@@ -413,94 +342,71 @@ async function ingestAndroidObservations(
   );
 }
 
-function loadCases(file: string, maxCases?: number): GeneratedCaseLike[] | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as {
-      flows?: Array<{
-        id?: unknown;
-        name?: unknown;
-        preconditions?: unknown;
-        taskDesc?: unknown;
-        screens?: unknown;
-        expectations?: unknown;
-      }>;
-    };
-    const cases: GeneratedCaseLike[] = [];
-    for (const entry of parsed.flows ?? []) {
-      if (!entry || typeof entry.id !== "string" || typeof entry.taskDesc !== "string") continue;
-      cases.push({
-        id: entry.id,
-        name: typeof entry.name === "string" ? entry.name : entry.id,
-        preconditions: Array.isArray(entry.preconditions)
-          ? entry.preconditions.filter((item): item is string => typeof item === "string")
-          : [],
-        taskDesc: entry.taskDesc,
-        screens: Array.isArray(entry.screens)
-          ? entry.screens.filter((screen): screen is string => typeof screen === "string")
-          : [],
-        exploreSteps: exploreStepsOf(entry.expectations),
-        hintScreens: hintScreensOf(entry.expectations),
-        scriptProvenance: summarizeScriptProvenance(entry.expectations)
-      });
+/** 对账摄取（iOS 经 run.json / Android 经 data_engine.db）：终端且用例含探索/提示屏时调用。 */
+async function ingestTraceObservations(
+  runtime: Runtime,
+  testCase: GeneratedCase,
+  traceId: string,
+  at: string
+): Promise<void> {
+  if (isIosTraceDir(runtime.traceDir(traceId), traceId)) {
+    try {
+      const run = readIosRunPayload(runtime.traceDir(traceId));
+      if (!run) throw new Error("run.json 不可读");
+      const design = loadDesignContext(runtime);
+      if (testCase.exploreSteps.length > 0) {
+        ingestExplorationObservations({
+          configDirAbs: runtime.configDirAbs,
+          traceId,
+          at,
+          screens: testCase.screens,
+          exploreSteps: testCase.exploreSteps,
+          hitIndexes: hitsFromRunSteps(run)
+        });
+      }
+      if (testCase.hintScreens.length > 0) {
+        recordElementObservations(
+          runtime.configDirAbs,
+          {
+            designs: buildElementDesigns(testCase.hintScreens, design?.meta ?? null),
+            observedLabels: observedLabelsFromRunSteps(run),
+            observedTaps: observedTapsFromRunSteps(run, runtime.traceDir(traceId))
+          },
+          at,
+          traceId
+        );
+      }
+      ingestRuntimeOnly(
+        runtime,
+        traceId,
+        at,
+        design,
+        adjacentTransitions(observedSummariesFromRunSteps(run))
+      );
+    } catch (error) {
+      logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
     }
-    return maxCases && maxCases > 0 ? cases.slice(0, maxCases) : cases;
-  } catch {
-    return null;
+  } else {
+    try {
+      await ingestAndroidObservations(runtime, traceId, testCase, at);
+    } catch (error) {
+      logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
+    }
   }
-}
-
-function crashesForTrace(runtime: Runtime, traceId: string): CrashSignal[] {
-  try {
-    return runtime.crashStore
-      .list({ limit: 100 })
-      .records.filter((record) => record.traceIds.includes(traceId))
-      .map((record) => ({
-        id: record.id,
-        kind: record.kind,
-        package: record.package,
-        exceptionClass: record.exceptionClass
-      }));
-  } catch {
-    return [];
-  }
-}
-
-function isTerminal(status: string | null | undefined): boolean {
-  return (
-    typeof status === "string" &&
-    (TERMINAL_TASK_STATUSES as readonly string[]).includes(status)
-  );
-}
-
-function resetFailure(error: unknown, serial: string | null): AppResetOutcome {
-  const ios = serial !== null && classifyIosSerial(serial) !== null;
-  return {
-    ok: false,
-    reason: ios ? "launch-failed" : "force-stop-failed",
-    message: errorMessage(error),
-    serial,
-    adb: { path: null, source: "missing" },
-    commands: []
-  };
-}
-
-function isIosTrace(runtime: Runtime, traceId: string): boolean {
-  return isIosTraceDir(runtime.traceDir(traceId), traceId);
-}
-
-function emptyEvidence(): SuiteCaseResult["evidence"] {
-  return { notesDir: null, stderrLog: null, stdoutLog: null };
 }
 
 export async function runGeneratedTests(
   runtime: Runtime,
   options: SuiteRunOptions = {}
 ): Promise<SuiteRunReport> {
-  const defaultTestsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+  const defaultTestsPath = path.join(designDir(runtime.configDirAbs), "tests.json");
   const testsPath = options.testsPath
     ? path.resolve(runtime.project.rootDir, options.testsPath)
     : defaultTestsPath;
-  let cases = loadCases(testsPath, options.maxCases);
+  let cases = loadGeneratedCases(runtime.configDirAbs, {
+    testsPath,
+    ...(options.maxCases !== undefined ? { maxCases: options.maxCases } : {})
+  });
   if (!cases) {
     return {
       ok: false,
@@ -550,298 +456,35 @@ export async function runGeneratedTests(
 
   for (const testCase of cases) {
     const quarantined = options.quarantinedCaseIds?.has(testCase.id) === true;
-    let reset: AppResetOutcome | null = null;
-    if (options.lockedAppPackage) {
-      try {
-        reset = await resetFn(
-          { packageName: options.lockedAppPackage, serial },
-          iosDeviceWda !== null ? { device: iosDeviceWda } : {}
-        );
-      } catch (error) {
-        reset = resetFailure(error, serial);
-      }
-    }
-
-    const submitArgs: Record<string, unknown> = { task_desc: testCase.taskDesc };
-    if (options.model) submitArgs.model = options.model;
-    if (options.deviceSerial) submitArgs.device_serial = options.deviceSerial;
-    if (options.lockedAppPackage) submitArgs.locked_app_package = options.lockedAppPackage;
-
-    let result: CallToolResult;
-    try {
-      result = await runtime.proxy.callTool("mobile_run_task", submitArgs);
-    } catch (error) {
-      const message = errorMessage(error);
-      if (!firstSubmitError) firstSubmitError = message;
-      await runtime.recordTaskSubmission({
-        traceId: null,
-        model: options.model ?? null,
-        status: "failed",
-        taskDesc: testCase.taskDesc,
-        caseId: testCase.id,
-        lockedAppPackage: options.lockedAppPackage ?? null
-      });
-      results.push({
-        caseId: testCase.id,
-        name: testCase.name,
-        status: "submit-error",
-        ...(quarantined ? { quarantined: true } : {}),
-        traceId: null,
-        error: message,
-        testSummary: null,
-        scriptProvenance: testCase.scriptProvenance,
-        failure: classifyFailure({
-          submitError: message,
-          reset,
-          preconditions: testCase.preconditions
-        }),
-        apiErrors: [],
-        apiErrorsDegraded: null,
-        evidence: emptyEvidence(),
-        reset
-      });
-      if (options.stopOnFailure) break;
-      continue;
-    }
-
-    const traceId = result.isError === true ? null : traceIdOf(result);
-    const submitStatus = taskStatusOf(resultPayload(result));
-    if (!traceId) {
-      const message =
-        result.isError === true
-          ? submitStatus?.error ?? submitStatus?.message ?? "上游拒绝了任务提交"
-          : "mobile_run_task 未返回 trace_id";
-      if (!firstSubmitError) firstSubmitError = message;
-      await runtime.recordTaskSubmission({
-        traceId: null,
-        model: options.model ?? null,
-        status: "failed",
-        taskDesc: testCase.taskDesc,
-        caseId: testCase.id,
-        lockedAppPackage: options.lockedAppPackage ?? null
-      });
-      results.push({
-        caseId: testCase.id,
-        name: testCase.name,
-        status: "submit-error",
-        ...(quarantined ? { quarantined: true } : {}),
-        traceId: null,
-        error: message,
-        testSummary: null,
-        scriptProvenance: testCase.scriptProvenance,
-        failure: classifyFailure({
-          submitError: message,
-          reset,
-          preconditions: testCase.preconditions
-        }),
-        apiErrors: [],
-        apiErrorsDegraded: null,
-        evidence: emptyEvidence(),
-        reset
-      });
-      if (options.stopOnFailure) break;
-      continue;
-    }
-
-    submitted += 1;
-    if (!isIosTrace(runtime, traceId)) {
-      await runtime.recordTaskSubmission({
-        traceId,
-        model: options.model ?? null,
-        taskDesc: testCase.taskDesc,
-        caseId: testCase.id,
-        lockedAppPackage: options.lockedAppPackage ?? null
-      });
-    }
-
-    const deadline = now() + pollTimeoutMs;
-    let status = await runtime.traceStatus(traceId);
-    while (!isTerminal(status?.status) && now() < deadline) {
-      await sleep(pollIntervalMs);
-      status = await runtime.traceStatus(traceId);
-    }
-    await runtime.syncTaskStatuses();
-    await runtime.flushCrashScans();
-
-    const terminal = isTerminal(status?.status);
-    const windowStartMs = status?.startTimeMs ?? null;
-    const windowEndMs = status?.endTimeMs ?? (terminal ? now() : null);
-    const traceSerial = options.deviceSerial ?? status?.deviceSerial ?? null;
-    let apiErrors: ApiErrorObservation[] = [];
-    let apiErrorsDegraded: string | null = null;
-    if (terminal && apiCatalog) {
-      const serialKind = traceSerial !== null ? classifyIosSerial(traceSerial) : null;
-      const iosTarget = serialKind !== null;
-      if (apiCatalog.rules.size === 0) {
-        apiErrorsDegraded = fs.existsSync(apiCatalog.file) ? "registry-empty" : "registry-missing";
-      } else if (windowStartMs === null) {
-        apiErrorsDegraded = "no-window";
-      } else if (iosTarget) {
-        const processName = options.lockedAppPackage
-          ? options.lockedAppPackage.split(".").pop() ?? null
-          : null;
-        try {
-          const collected = await collectIosLogs({
-            serial: traceSerial,
-            windowStartMs,
-            windowEndMs: windowEndMs ?? now(),
-            processName
-          });
-          if (collected.status === "ok") {
-            apiErrors = matchApiErrors(collected.text, apiCatalog.rules);
-          } else {
-            apiErrorsDegraded = collected.reason ?? "ios-log-unsupported";
-          }
-        } catch (error) {
-          apiErrorsDegraded = `collector-error: ${errorMessage(error)}`;
-        }
-      } else {
-        try {
-          const collected = await collectLogcat({
-            serial: traceSerial,
-            windowStartMs,
-            windowEndMs: windowEndMs ?? now()
-          });
-          if (collected.status === "ok") {
-            apiErrors = matchApiErrors(collected.text, apiCatalog.rules);
-          } else {
-            apiErrorsDegraded = collected.reason ?? "collect-failed";
-          }
-        } catch (error) {
-          apiErrorsDegraded = `collector-error: ${errorMessage(error)}`;
-        }
-      }
-      try {
-        const artifactDir = runtime.traceDir(traceId);
-        fs.mkdirSync(artifactDir, { recursive: true });
-        writeFileAtomic(
-          path.join(artifactDir, API_ERRORS_ARTIFACT),
-          `${JSON.stringify(
-            {
-              traceId,
-              serial: traceSerial,
-              window:
-                windowStartMs === null
-                  ? null
-                  : { startMs: windowStartMs, endMs: windowEndMs ?? now() },
-              source:
-                apiErrorsDegraded !== null
-                  ? "none"
-                  : iosTarget
-                    ? serialKind === "device"
-                      ? "idevicesyslog"
-                      : "simctl-log"
-                    : "logcat",
-              degraded: apiErrorsDegraded,
-              errors: apiErrors
-            },
-            null,
-            2
-          )}\n`
-        );
-      } catch {
-        apiErrorsDegraded = [apiErrorsDegraded, "artifact-write-failed"]
-          .filter((value): value is string => value !== null)
-          .join("；");
-      }
-    }
-
-    const unhandledApiErrors = apiErrors.filter((entry) => entry.handled === false);
-    let caseStatus: SuiteCaseResult["status"] = !terminal
-      ? "timeout"
-      : status!.status === "completed"
-        ? "passed"
-        : "failed";
-    let forcedError: string | null = null;
-    if (options.failOnApiErrors === true && unhandledApiErrors.length > 0 && caseStatus === "passed") {
-      caseStatus = "failed";
-      forcedError = `检测到未处理的 API 错误：${unhandledApiErrors.map((entry) => entry.code).join("、")}`;
-    }
-    const caseResult: SuiteCaseResult = {
-      caseId: testCase.id,
-      name: testCase.name,
-      status: caseStatus,
-      ...(quarantined ? { quarantined: true } : {}),
-      traceId,
-      error: forcedError ?? status?.error ?? (terminal ? null : "等待任务终态超时"),
-      testSummary: status?.testSummary ?? null,
-      scriptProvenance: testCase.scriptProvenance,
-      failure:
-        caseStatus === "passed"
-          ? null
-          : classifyFailure({
-              status,
-              crashes: crashesForTrace(runtime, traceId),
-              reset,
-              preconditions: testCase.preconditions,
-              timedOut: !terminal,
-              apiErrors: apiErrors.map((entry) => ({ code: entry.code, handled: entry.handled })),
-              scriptProvenance: scriptProvenanceSignal(
-                testCase.scriptProvenance,
-                status?.testSummary?.adherence ?? null
-              )
-            }),
-      apiErrors,
-      apiErrorsDegraded,
-      evidence: {
-        notesDir: status?.notesDir ?? null,
-        stderrLog: status?.stderrLog ?? null,
-        stdoutLog: status?.stdoutLog ?? null
-      },
-      reset
-    };
-    results.push(caseResult);
+    const outcome = await executeCase(testCase, {
+      runtime,
+      model: options.model ?? null,
+      deviceSerial: options.deviceSerial ?? null,
+      lockedAppPackage: options.lockedAppPackage ?? null,
+      quarantined,
+      failOnApiErrors: options.failOnApiErrors === true,
+      apiCatalog,
+      resetFn,
+      iosDeviceWda,
+      sleep,
+      now,
+      pollIntervalMs,
+      pollTimeoutMs,
+      collectLogcat,
+      collectIosLogs
+    });
+    if (outcome.submitted) submitted += 1;
+    if (outcome.submitError && !firstSubmitError) firstSubmitError = outcome.submitError;
+    results.push(outcome.result);
     if (
-      terminal &&
+      outcome.terminal &&
+      outcome.result.traceId !== null &&
       (testCase.exploreSteps.length > 0 || testCase.hintScreens.length > 0)
     ) {
       const at = new Date(now()).toISOString();
-      if (isIosTrace(runtime, traceId)) {
-        try {
-          const run = readIosRunPayload(runtime.traceDir(traceId));
-          if (!run) throw new Error("run.json 不可读");
-          const design = loadDesignContext(runtime);
-          if (testCase.exploreSteps.length > 0) {
-            ingestExplorationObservations({
-              configDirAbs: runtime.configDirAbs,
-              traceId,
-              at,
-              screens: testCase.screens,
-              exploreSteps: testCase.exploreSteps,
-              hitIndexes: hitsFromRunSteps(run)
-            });
-          }
-          if (testCase.hintScreens.length > 0) {
-            recordElementObservations(
-              runtime.configDirAbs,
-              {
-                designs: buildElementDesigns(testCase.hintScreens, design?.meta ?? null),
-                observedLabels: observedLabelsFromRunSteps(run),
-                observedTaps: observedTapsFromRunSteps(run, runtime.traceDir(traceId))
-              },
-              at,
-              traceId
-            );
-          }
-          ingestRuntimeOnly(
-            runtime,
-            traceId,
-            at,
-            design,
-            adjacentTransitions(observedSummariesFromRunSteps(run))
-          );
-        } catch (error) {
-          logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
-        }
-      } else {
-        try {
-          await ingestAndroidObservations(runtime, traceId, testCase, at);
-        } catch (error) {
-          logWarn(`对账摄取失败（${traceId}）：${errorMessage(error)}`);
-        }
-      }
+      await ingestTraceObservations(runtime, testCase, outcome.result.traceId, at);
     }
-    if (options.stopOnFailure && caseResult.status !== "passed") break;
+    if (options.stopOnFailure && outcome.result.status !== "passed") break;
   }
 
   const passed = results.filter((entry) => entry.status === "passed").length;

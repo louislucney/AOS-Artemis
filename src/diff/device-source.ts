@@ -6,10 +6,11 @@ import {
   taskStatusOf,
   type TaskStatus
 } from "../artemis/task-result.js";
-import { captureIosPng, classifyIosSerial, type IosPngCapture } from "../device/ios.js";
+import { type IosPngCapture } from "../device/ios.js";
 import { captureAdbPng, type AdbPngCapture } from "../device/screenshot.js";
-import { IosDeviceBusyError } from "../ios/appium/session.js";
+import { frameAgeMs } from "../ios/appium/session.js";
 import type { WdaCaptureResult } from "../ios/appium/service.js";
+import { observeScreenshot } from "../ios/observation.js";
 import type { Runtime } from "../runtime.js";
 import { extractDeviceImage } from "../tools/device-image.js";
 import { errorMessage } from "../util.js";
@@ -76,51 +77,38 @@ export async function captureLiveScreenshot(
   options: LiveCaptureOptions = {}
 ): Promise<DeviceCapture> {
   if (options.platform === "ios") {
-    const serialKind = serial ? classifyIosSerial(serial) : null;
-    if (serialKind === "device") {
-      const captureWda =
-        options.captureWdaPng ?? ((udid: string) => runtime.iosWda().screenshot(udid));
-      let wda: WdaCaptureResult<Buffer>;
-      try {
-        wda = await captureWda(serial!);
-      } catch (error) {
-        wda =
-          error instanceof IosDeviceBusyError
-            ? { ok: false, error: errorMessage(error), busy: true, cachedFrame: error.cachedFrame }
-            : { ok: false, error: errorMessage(error) };
-      }
-      if (wda.ok) {
+    const observation = await observeScreenshot(runtime, serial ?? "", {
+      ...(options.captureIosPng ? { captureIosPng: options.captureIosPng } : {}),
+      ...(options.captureWdaPng ? { wdaScreenshot: options.captureWdaPng } : {})
+    });
+    if (observation.ok) {
+      if (observation.backend === "wda") {
         return {
-          bytes: wda.value,
+          bytes: observation.bytes,
           note: `iOS 真机 WDA PNG（wda，udid=${serial}）`,
           serial: serial!
         };
       }
-      const hint =
-        wda.busy === true
-          ? `设备正被任务占用（device_busy，观测有界等待超时）${
-              wda.cachedFrame ? "；已有最近缓存帧可供观测截图降级使用" : ""
-            }；稍后重试。`
-          : "请确认 Appium/WDA 可用（doctor 查看）与 iOS 18+ 隧道已建立。";
-      throw new Error(`iOS 真机截图失败（${wda.error}）；${hint}`);
-    }
-    const captureIos = options.captureIosPng ?? ((captureOptions) => captureIosPng(captureOptions ?? {}));
-    let png: IosPngCapture;
-    try {
-      png = await captureIos({ serial });
-    } catch (error) {
-      png = { ok: false, serial: serial ?? null, error: errorMessage(error) };
-    }
-    if (png.ok && png.bytes) {
-      const tool = png.tool === "simctl" ? "simctl 兜底" : "idb";
+      const tool = observation.backend === "simctl" ? "simctl 兜底" : "idb";
       return {
-        bytes: png.bytes,
-        note: `iOS 模拟器 PNG（${tool}，udid=${png.serial ?? "?"}）`,
-        ...(png.serial ? { serial: png.serial } : {})
+        bytes: observation.bytes,
+        note: `iOS 模拟器 PNG（${tool}，udid=${observation.serial || "?"}）`,
+        ...(observation.serial ? { serial: observation.serial } : {})
       };
     }
-    const hint = IOS_ERROR_HINTS[png.error ?? ""] ?? "请确认模拟器已启动且 idb/simctl 可用。";
-    throw new Error(`iOS 模拟器截图失败（${png.error ?? "unknown"}）；${hint}`);
+    if (observation.kind === "device") {
+      const frame = observation.busy?.cachedFrame ?? null;
+      const age = frame ? frameAgeMs(frame, Date.now()) : null;
+      const frameNote = frame
+        ? `；已有最近缓存帧${age !== null ? `（age≈${Math.round(age / 1000)}s）` : ""}可供观测截图降级使用`
+        : "";
+      const hint = observation.busy
+        ? `设备正被任务占用（device_busy，观测有界等待超时）${frameNote}；稍后重试。`
+        : "请确认 Appium/WDA 可用（doctor 查看）与 iOS 18+ 隧道已建立。";
+      throw new Error(`iOS 真机截图失败（${observation.error}）；${hint}`);
+    }
+    const hint = IOS_ERROR_HINTS[observation.error ?? ""] ?? "请确认模拟器已启动且 idb/simctl 可用。";
+    throw new Error(`iOS 模拟器截图失败（${observation.error ?? "unknown"}）；${hint}`);
   }
   if (options.lossless !== true) return captureArtemisLive(runtime, serial);
   const capturePng = options.capturePng ?? ((captureOptions) => captureAdbPng(captureOptions ?? {}));

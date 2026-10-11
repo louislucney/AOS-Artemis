@@ -1351,3 +1351,53 @@ llm_switch(name, force):
 - **机制**：打开只读库后先按列探测契约（`steps`: session_id/step_number/action_taken/pre_image_name/post_image_name；`images`: image_name/ocr_result；`data_engine` 无 `user_version`，只能 PRAGMA）；缺表/缺列/不可读 → `logWarn`（可诊断的契约漂移）+ 返回 null；缺库/`node:sqlite` 不可用/未知 trace 保持静默（预期内缺数据）；数据解析路径不变。
 - **边界**：不迁移上游工具面（`mobile_inspect_trace` 返回渲染文本，pre/post 标签与归一 taps 无法无损还原——ADR-0009 Considered Options）；读取结果仍为 `null` 语义（消费方只需要有/无）；ADR-0003 继续约束"失败步骤截图"来源，不受影响。
 - **测试**：`test/android-trace.test.js` 新增 schema 漂移用例（缺 `post_image_name` 列、缺 `images` 表 → null；真实 `node:sqlite` 构造，node < 22.5 自动 skip）。
+
+### 13.81 实施记录（观察读取统一：`ios/observation.ts`）
+
+> 实施于 2026-10-11；第二轮架构评审候选 1。新增 `src/ios/observation.ts`（`observeScreenshot`/`observeHierarchy` 判别结果：ok 携带 bytes/nodes+backend，失败携带 serial 种类与 busy（含缓存帧））；改 `src/tools/ios-state.ts`（截图/层级统一经观察模块，注入缝收缩为 `observe` 一处）、`src/diff/device-source.ts`（iOS 分支委派观察模块，保留既有 `captureIosPng`/`captureWdaPng` 注入兼容）；测试 +0（注入缝更新）；全量 873 绿。
+
+- **动机**：同一"读屏"概念三套协议（facade `Buffer|throw`、service `WdaCaptureResult`、raw `IosPngCapture`）与三处注入端口（`device`/`wda`/`describeIosUi`），busy/parse_failed 策略在消费者重复实现。
+- **机制**：观察模块按 serial 种类分派——模拟器走 idb/simctl 原始捕获（保留 tool 标签），真机走 WDA 服务（结构化变体；`IosDeviceBusyError` → busy 判别）；`device-source` 的 note/提示由判别结果生成，不再各自分支。
+- **边界**：执行器内环（run-loop）继续直接使用 `IosDevice` 动作接口（观察 ≠ 动作）；`device-source` 的差异对比不在 busy 时降级用缓存帧（陈旧帧可能误报，沿用 §13.79 决策）。
+- **测试**：`test/ios-device-state.test.js` 注入缝换为 `observe.{wdaScreenshot,wdaNodes,captureIosPng,describeIosUi}`（含 busy 缓存帧/无帧/层级 busy 三态）。
+
+### 13.82 实施记录（执行器内环拆分：`step-observe`/`step-record` + 设备解析隐患修复）
+
+> 实施于 2026-10-11；第二轮架构评审候选 2。新增 `src/ios/step-observe.ts`（`observeStep`：读屏/尺寸/前置截图 → preflight/scriptHits → noop 游标 → 视觉融合降级）、`src/ios/step-record.ts`（`toStepRecord` 三段重复合一）；改 `src/ios/run-loop.ts`（`runLoop` 401 → ~320 行，只留顺序与终态）；测试 +1（设备解析失败 → 终态 failed）；全量 873 绿。
+
+- **机制**：循环携带状态收缩为 `ObservationCursor`（lastSignature/lastShotHash/previousAction）；`observeStep` 失败抛 `观察屏幕失败: …`，由 `runLoop` 终态收尾。
+- **隐患修复**：设备解析（`runtime.iosDevice`）与 `runtime.entries()` 移入守护——WDA/Appium 启动失败不再产生未处理拒绝、记录不再滞留 `running`（回归用例断言 `无法解析 iOS 设备` 终态）。
+- **边界**：`executeAction` 与 `visibleElementCount` 判定随 `runLoop` 留驻（内环动作/视觉触发策略）。
+
+### 13.83 实施记录（缓存帧生命周期：age/stale 与消费面）
+
+> 实施于 2026-10-11；第二轮架构评审候选 3（兑现 `.scratch/ios-real-device` spec 的 stale 承诺）。改 `src/ios/appium/session.ts`（`CachedFrame` 增 `capturedAtMs`；`frameAgeMs`/`isFrameStale`/`resolveCachedFrameMaxAgeMs`；`AOS_IOS_CACHED_FRAME_MAX_AGE_MS` 默认 10min，0=关闭陈旧判定）、`src/tools/ios-state.ts`（busy 降级标注 `age≈…`，陈旧追加「已陈旧」）、`src/diff/device-source.ts`（busy 提示含帧龄）、`src/ios/appium/service.ts`（删除无生产消费者的 `cachedFrame(udid)` 访问器）；测试 +3；全量 876 绿。
+
+- **策略**：陈旧帧仍返回（保留降级可用性）但显式标注；差异对比路径不消费帧（§13.79 决策不变）。
+- **边界**：帧无 TTL 自动清理（随会话 manager dispose 释放）；`AOS_IOS_CACHED_FRAME_MAX_AGE_MS` 由 `runtime.iosEnvironment()` 分层读取。
+
+### 13.84 实施记录（design 资源单一读取：`figma/design-store.ts`）
+
+> 实施于 2026-10-11；第二轮架构评审候选 5。新增 `src/figma/design-store.ts`（`readTestsDocument`/`loadDesignFlowGraph`（必归一）/`loadGeneratedCases`/`toGeneratedCase`/`designDir`）；迁移 6 个 tests.json 解析器（suite-runner / preflight / run-report / generation-feedback / case-index / suite-command ×2）与 4 个 flows.json 读取（suite-runner / preflight / run-report / reconciliation）经 store；测试 +3（`test/design-store.test.js`）；全量 879 绿。
+
+- **动机**：同一文件六种解析、`GeneratedCaseLike` 三处重声明；`preflight`/`run-report` 的 raw 读取绕过 `normalizeFlowGraph`，provenance 默认值可能分叉。
+- **边界**：`test-gen` 的自定义 flowsPath 读取（错误语义特异）保持原样；`pen` 侧无独立 suite 读取路径不受影响。
+
+### 13.85 实施记录（套件执行核心：`figma/case-runner.ts`）
+
+> 实施于 2026-10-11；第二轮架构评审候选 4。新增 `src/figma/case-runner.ts`（`executeCase(testCase, context)`：reset → 提交（含失败记账）→ 轮询 → api-errors 采集与产物 → 结果组装；返回 `{result, submitted, submitError, terminal}`）；`suite-runner.ts` 866 → 528 行（`runGeneratedTests` 只留加载/筛选/编排/聚合，对账摄取抽为 `ingestTraceObservations`）；新增 `src/crash/query.ts`（`crashesForTrace`，与 run-report 去重）；测试 +0；全量 879 绿。
+
+- **接口**：`CaseRunContext`（runtime/model/deviceSerial/lockedAppPackage/quarantined/failOnApiErrors/apiCatalog/resetFn/iosDeviceWda/timers/采集器）——轮询与提交语义可脱离设备文件夹具直测；flake/retry 复用同一执行器。
+- **边界**：停止/首错传播由调用方（runner 循环）处理；对账摄取留在 runner（依赖设计上下文与 reconciliation 模块）。
+
+### 13.86 实施记录（任务台账抽取：`tasks/ledger.ts`）
+
+> 实施于 2026-10-11；第二轮架构评审候选 6（第一切片）。新增 `src/tasks/ledger.ts`（`TaskLedger`：提交/结果记账（`local-` 占位、caseId 回填、lockedPackages 上限 200）、`traceStatus`（status.json 优先 + iOS orphan 对账 + 代理回退）、`syncTaskStatuses`（终态回调注入崩溃取证））；`runtime.ts` 对应方法改为委托（公开面零变化，`traceDir` 保留）；测试 +0；全量 879 绿。
+
+- **边界（本切片未做）**：`ChildSupervisor`（child spec/指纹/sweep 的自由函数内联）暂缓——该拆牵扯 proxy 生命周期与 `sweepStaleChild` 测试不变量，留作独立轮次；`lockedPackageFor` 暴露给崩溃扫描进程名推断。
+
+### 13.87 实施记录（server ListTools schema 缓存）
+
+> 实施于 2026-10-11；第二轮架构评审候选 7（功能切片）。改 `src/server.ts`（`nativeSchemaCache`/`figmaSchemaCache`——zod→JSON schema 转换按工具名缓存一次，HTTP 每 POST 新建 server 的 ListTools 不再重复转换）；测试 +0；全量 879 绿。
+
+- **边界（本切片未做）**：`NATIVE_TOOLS`（534 行）域文件拆分与 stdio/HTTP 引导去重（`runtime-host`）暂缓——两者为纯搬移/生命周期整理，价值在导航性而非行为，留作独立轮次。

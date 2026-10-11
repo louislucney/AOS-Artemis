@@ -219,7 +219,7 @@ export interface ModelCatalogOptions {
 
 /** Reads/writes the per-project model cache and refreshes via `GET {base_url}/models`. */
 export class ModelCatalog {
-  private readonly env: NodeJS.ProcessEnv;
+  private env: NodeJS.ProcessEnv;
   private readonly fetchImpl: FetchLike | undefined;
   private readonly now: () => number;
 
@@ -227,6 +227,11 @@ export class ModelCatalog {
     this.env = options.env ?? process.env;
     this.fetchImpl = options.fetchImpl;
     this.now = options.now ?? (() => Date.now());
+  }
+
+  /** 项目 .env 变更（aos_configure/refreshProjectEnv）后刷新旋钮 env。 */
+  updateEnv(env: NodeJS.ProcessEnv): void {
+    this.env = env;
   }
 
   ttlHours(): number {

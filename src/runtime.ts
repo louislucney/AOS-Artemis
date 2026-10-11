@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -21,10 +20,10 @@ import {
 } from "./artemis/assembly.js";
 import { mirrorDeviceScreenshots } from "./artemis/artifacts.js";
 import { ArtemisProxy, type ArtemisProxyLike } from "./artemis/proxy.js";
-import { resultPayload, taskStatusFromFile, taskStatusOf, type TaskStatus } from "./artemis/task-result.js";
+import { resultPayload, type TaskStatus } from "./artemis/task-result.js";
 import { maybeIosInspectTrace } from "./ios/inspect.js";
 import { maybeIosManageTask, maybeIosRunTask } from "./ios/task-runner.js";
-import { reconcileIosTrace, isIosTraceDir } from "./ios/trace-store.js";
+import { isIosTraceDir } from "./ios/trace-store.js";
 import type { IosCrashCollectResult } from "./crash/ios.js";
 import {
   collectIosCrashesFor,
@@ -33,12 +32,12 @@ import {
 } from "./crash/ios-dispatch.js";
 import { resolveIosDevice } from "./device/ios-facade.js";
 import type { IosDevice } from "./device/ios-actions.js";
+import { TaskLedger } from "./tasks/ledger.js";
 import { maybeIosDeviceState } from "./tools/ios-state.js";
 import { appendChildLog } from "./log.js";
 import { CrashIndexStore } from "./crash/store.js";
 import { CrashScanner } from "./crash/scanner.js";
 import type { CrashCollectorLike, CrashScanReport, CrashScanResult } from "./crash/types.js";
-import { findGeneratedCaseId } from "./figma/case-index.js";
 import { jiraConfigFrom, type ResolvedJiraConfig } from "./jira/config.js";
 import { detectAppium, type AppiumDetection } from "./ios/appium/detect.js";
 import { IosWdaService } from "./ios/appium/service.js";
@@ -141,7 +140,7 @@ export class Runtime {
   private readonly buildModuleUrl: string;
   private readonly buildStartedAtMs: number;
   private readonly baseEnv: NodeJS.ProcessEnv;
-  private readonly iosEnv: NodeJS.ProcessEnv;
+  private iosEnv: NodeJS.ProcessEnv;
   private scanResult: EnvScanResult;
   private projectRecord: ProjectRecord | null = null;
   private activeCache: { name: string; entry: LlmEntry } | null = null;
@@ -150,7 +149,7 @@ export class Runtime {
   private activationChain: Promise<unknown> = Promise.resolve();
   private crashScanChain: Promise<unknown> = Promise.resolve();
   private modelRefreshChain: Promise<unknown> = Promise.resolve();
-  private readonly lockedPackages = new Map<string, string>();
+  private readonly ledger: TaskLedger;
   private readonly iosCrashCollector: IosCrashCollectFn | null;
   private readonly iosCrashRetry: {
     attempts: number;
@@ -209,6 +208,19 @@ export class Runtime {
       collector: options.crashCollector
     });
     this.proxy = this.withArtifactMirror(options.proxy ?? this.buildDefaultProxy());
+    this.ledger = new TaskLedger({
+      projectRoot: this.project.rootDir,
+      configDirAbs: this.configDirAbs,
+      tracesDir: this.tracesDir(),
+      store: this.store,
+      proxy: this.proxy,
+      safeStore: (fn, fallback) => this.safeStore(fn, fallback),
+      onTerminalTask: (task, status) => {
+        void this.scanTraceByPlatform({ ...task, status }, task.traceId, false).catch((error) => {
+          logWarn(`崩溃取证失败（trace=${task.traceId}）: ${errorMessage(error)}`);
+        });
+      }
+    });
   }
 
   /** Wrap any proxy so tool results from artemis still get a project-side copy
@@ -447,11 +459,14 @@ export class Runtime {
     };
   }
 
-  /** Re-read the project .env (after aos_configure writes it) and rebuild derived state. */
+  /** Re-read the project .env (after aos_configure writes it) and rebuild derived state.
+   * 已知边界：已懒创建的 `IosWdaService` 仍持旧 env 快照（会话不重签）；下次进程/服务重建生效。 */
   refreshProjectEnv(): void {
     this.project.dotenvValues = loadDotenvValues(this.project.rootDir);
     this.project.resolver = makeResolver(this.project.dotenvValues, this.baseEnv);
     this.scanResult = scanProjectEnv(this.project.resolver);
+    this.iosEnv = { ...this.project.dotenvValues, ...this.baseEnv };
+    this.modelCatalog.updateEnv({ ...this.project.dotenvValues, ...this.baseEnv });
   }
 
   // ------------------------------------------------------------------
@@ -611,28 +626,7 @@ export class Runtime {
     caseId?: string | null;
     lockedAppPackage?: string | null;
   }): Promise<void> {
-    const providedTrace = input.traceId?.trim() ?? "";
-    const traceId = providedTrace !== "" ? providedTrace : `local-${randomUUID()}`;
-    const status = providedTrace === "" ? "failed" : input.status ?? "submitted";
-    if (input.lockedAppPackage && status === "submitted") {
-      this.lockedPackages.set(traceId, input.lockedAppPackage);
-      if (this.lockedPackages.size > 200) {
-        const oldest = this.lockedPackages.keys().next().value;
-        if (oldest !== undefined) this.lockedPackages.delete(oldest);
-      }
-    }
-    await this.safeStore<void>(async () => {
-      await this.store.recordTask({
-        rootPath: this.project.rootDir,
-        traceId,
-        model: input.model ?? null,
-        profile: input.profile ?? null,
-        status,
-        taskDesc: input.taskDesc ?? null,
-        caseId: input.caseId ?? null,
-        finishedAt: status === "submitted" ? null : new Date().toISOString()
-      });
-    }, undefined);
+    await this.ledger.recordSubmission(input);
   }
 
   async recordTaskResult(input: {
@@ -642,72 +636,20 @@ export class Runtime {
     taskDesc?: string | null;
     lockedAppPackage?: string | null;
   }): Promise<void> {
-    const traceId = input.isError ? null : input.traceId?.trim() || null;
-    await this.recordTaskSubmission({
-      traceId,
-      model: input.model ?? null,
-      profile: null,
-      status: input.isError || !traceId ? "failed" : "submitted",
-      taskDesc: input.taskDesc ?? null,
-      caseId: findGeneratedCaseId(this.configDirAbs, input.taskDesc),
-      lockedAppPackage: input.lockedAppPackage ?? null
-    });
+    await this.ledger.recordResult(input);
   }
 
-  /** Poll artemis for pending task_statuses and mark terminal ones finished.
-   * Prefers reading the trace store's status.json directly (works across
-   * sessions, no child process needed); falls back to the live proxy. */
   traceDir(traceId: string): string {
     return path.join(this.tracesDir(), traceId);
   }
 
+  /** 状态读取与待终态同步经 TaskLedger（DESIGN §13.86）。 */
   async traceStatus(traceId: string): Promise<TaskStatus | null> {
-    const statusPath = path.join(this.traceDir(traceId), "status.json");
-    let fromFile = taskStatusFromFile(statusPath);
-    if (fromFile?.status === "running" || fromFile === null) {
-      const reconciled = reconcileIosTrace(this.traceDir(traceId), traceId);
-      if (reconciled?.status === "orphaned") fromFile = taskStatusFromFile(statusPath) ?? fromFile;
-    }
-    if (fromFile?.status) return fromFile;
-    if (!this.proxy.isRunning()) return fromFile;
-    try {
-      const result = await this.proxy.callTool("mobile_manage_task", {
-        action: "status",
-        trace_id: traceId
-      });
-      return taskStatusOf(resultPayload(result)) ?? fromFile;
-    } catch {
-      return fromFile;
-    }
+    return await this.ledger.traceStatus(traceId);
   }
 
   async syncTaskStatuses(): Promise<{ checked: number; updated: number }> {
-    const pending = await this.safeStore(
-      () => this.store.listPendingTasks(this.project.rootDir, 20),
-      [] as TaskStatRecord[]
-    );
-    let updated = 0;
-    for (const task of pending) {
-      let status = this.readTraceStatus(task.traceId);
-      if (status === null) status = await this.queryTaskStatusViaProxy(task.traceId);
-      if (status && (TERMINAL_TASK_STATUSES as readonly string[]).includes(status)) {
-        const done = await this.safeStore(
-          () => this.store.markTaskFinished(this.project.rootDir, task.traceId, status!),
-          false
-        );
-        if (done) {
-          updated += 1;
-          void this.scanTraceByPlatform(
-            { ...task, status: status ?? task.status },
-            task.traceId,
-            false
-          ).catch((error) => {
-            logWarn(`崩溃取证失败（trace=${task.traceId}）: ${errorMessage(error)}`);
-          });
-        }
-      }
-    }
-    return { checked: pending.length, updated };
+    return await this.ledger.syncTaskStatuses();
   }
 
   // ------------------------------------------------------------------
@@ -785,7 +727,7 @@ export class Runtime {
       this.crashScanner.scanTrace({
         traceId,
         taskOutcome: task?.status ?? null,
-        targetPackage: this.lockedPackages.get(traceId) ?? null,
+        targetPackage: this.ledger.lockedPackageFor(traceId),
         fallbackStartMs: task ? parseIsoMs(task.submittedAt) : null,
         fallbackEndMs: task ? parseIsoMs(task.finishedAt) : null,
         force
@@ -858,7 +800,7 @@ export class Runtime {
     }
     const endMs =
       status?.endTimeMs ?? (task?.finishedAt ? parseIsoMs(task.finishedAt) : null) ?? Date.now();
-    const processName = this.lockedPackages.get(traceId)?.split(".").pop() ?? null;
+    const processName = this.ledger.lockedPackageFor(traceId)?.split(".").pop() ?? null;
     const udid = status?.deviceSerial ?? "";
     let result: CrashScanResult = { traceId, status: "skipped", reason: "unknown", found: 0 };
     for (let attempt = 1; attempt <= this.iosCrashRetry.attempts; attempt += 1) {
@@ -879,25 +821,6 @@ export class Runtime {
 
   private tracesDir(): string {
     return projectTracesDir(this.project.config, this.project.rootDir, this.baseEnv);
-  }
-
-  private readTraceStatus(traceId: string): string | null {
-    const statusPath = path.join(this.tracesDir(), traceId, "status.json");
-    return taskStatusFromFile(statusPath)?.status ?? null;
-  }
-
-  private async queryTaskStatusViaProxy(traceId: string): Promise<string | null> {
-    if (!this.proxy.isRunning()) return null;
-    try {
-      const result = await this.proxy.callTool("mobile_manage_task", {
-        action: "status",
-        trace_id: traceId
-      });
-      return taskStatusOf(resultPayload(result))?.status ?? null;
-    } catch {
-      /* fall through */
-    }
-    return null;
   }
 
   async taskList(limit = 20): Promise<TaskStatRecord[]> {

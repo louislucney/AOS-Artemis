@@ -59,7 +59,7 @@ test("maybeIosDeviceState: 真机 UDID 跳过 simctl 校验（best-effort）", a
       listCalls += 1;
       throw new Error("should not be called");
     },
-    device: { screenshot: async () => PNG_BYTES }
+    observe: { wdaScreenshot: async () => ({ ok: true, value: PNG_BYTES }) }
   });
   assert.equal(listCalls, 0);
   const text = textOf(result);
@@ -68,16 +68,21 @@ test("maybeIosDeviceState: 真机 UDID 跳过 simctl 校验（best-effort）", a
   void dir;
 });
 
-test("maybeIosDeviceState: 真机截图 busy → 返回最近缓存帧并标注 capturedAt", async () => {
+test("maybeIosDeviceState: 真机截图 busy → 返回新鲜缓存帧并标注 capturedAt（无陈旧标注）", async () => {
   const { runtime } = await makeRuntime();
   const deviceUdid = "00008110-001A2C681E22801E";
-  const frame = { png: PNG_BYTES, capturedAt: "2026-10-11T00:00:00.000Z" };
+  const now = Date.now();
+  const frame = {
+    png: PNG_BYTES,
+    capturedAt: new Date(now).toISOString(),
+    capturedAtMs: now
+  };
   const result = await maybeIosDeviceState(
     runtime,
     { view_type: "screenshot", device_serial: deviceUdid },
     {
-      device: {
-        screenshot: async () => {
+      observe: {
+        wdaScreenshot: async () => {
           throw new IosDeviceBusyError(frame);
         }
       }
@@ -85,9 +90,33 @@ test("maybeIosDeviceState: 真机截图 busy → 返回最近缓存帧并标注 
   );
   const text = textOf(result);
   assert.match(text, /^file:\/\//);
-  assert.match(text, /device_busy：返回最近缓存帧，capturedAt=2026-10-11T00:00:00.000Z/);
+  assert.match(text, /device_busy：返回最近缓存帧，capturedAt=/);
+  assert.match(text, /age≈\d+s/);
+  assert.doesNotMatch(text, /已陈旧/);
   const file = text.split("\n")[0].slice("file://".length);
   assert.equal(fs.readFileSync(file).equals(PNG_BYTES), true);
+});
+
+test("maybeIosDeviceState: 真机截图 busy → 陈旧缓存帧标注已陈旧", async () => {
+  const { runtime } = await makeRuntime();
+  const staleAt = Date.now() - 60 * 60_000;
+  const frame = {
+    png: PNG_BYTES,
+    capturedAt: new Date(staleAt).toISOString(),
+    capturedAtMs: staleAt
+  };
+  const result = await maybeIosDeviceState(
+    runtime,
+    { view_type: "screenshot", device_serial: "00008110-001A2C681E22801E" },
+    {
+      observe: {
+        wdaScreenshot: async () => {
+          throw new IosDeviceBusyError(frame);
+        }
+      }
+    }
+  );
+  assert.match(textOf(result), /已陈旧/);
 });
 
 test("maybeIosDeviceState: 真机截图 busy 且无缓存帧 → 结构化报错", async () => {
@@ -96,8 +125,8 @@ test("maybeIosDeviceState: 真机截图 busy 且无缓存帧 → 结构化报错
     runtime,
     { view_type: "screenshot", device_serial: "00008110-001A2C681E22801E" },
     {
-      device: {
-        screenshot: async () => {
+      observe: {
+        wdaScreenshot: async () => {
           throw new IosDeviceBusyError(null);
         }
       }
@@ -112,8 +141,8 @@ test("maybeIosDeviceState: 真机层级 busy → device_busy 结构化提示", a
     runtime,
     { view_type: "hierarchy", device_serial: "00008110-001A2C681E22801E" },
     {
-      wda: {
-        nodes: async () => ({ ok: false, error: "busy", busy: true, cachedFrame: null })
+      observe: {
+        wdaNodes: async () => ({ ok: false, error: "busy", busy: true, cachedFrame: null })
       }
     }
   );
@@ -225,7 +254,9 @@ test("maybeIosDeviceState: screenshot 写入项目 traces 并返回 file:// 路�
   const { dir, runtime } = await makeRuntime();
   const result = await maybeIosDeviceState(runtime, { view_type: "screenshot", device_serial: UDID }, {
     listSimulators: bootedList(),
-    device: { screenshot: async () => PNG_BYTES }
+    observe: {
+      captureIosPng: async () => ({ ok: true, bytes: PNG_BYTES, serial: UDID, tool: "idb" })
+    }
   });
   const text = textOf(result);
   const expected = path.join(dir, ".artemis", "traces", "live_screenshots", `live_screenshot_${UDID}.png`);
@@ -237,13 +268,11 @@ test("maybeIosDeviceState: screenshot 失败与非法 view_type 返回错误文�
   const { runtime } = await makeRuntime();
   const failed = await maybeIosDeviceState(runtime, { view_type: "screenshot", device_serial: UDID }, {
     listSimulators: bootedList(),
-    device: {
-      screenshot: async () => {
-        throw new Error("idb 截图失败：not found");
-      }
+    observe: {
+      captureIosPng: async () => ({ ok: false, serial: UDID, error: "not-found" })
     }
   });
-  assert.match(textOf(failed), /^Error: idb 截图失败：not found/);
+  assert.match(textOf(failed), /^Error: 未找到 idb/);
 
   const invalid = await maybeIosDeviceState(runtime, { view_type: "tap", device_serial: UDID }, {
     listSimulators: bootedList()
@@ -255,14 +284,16 @@ test("maybeIosDeviceState: hierarchy 走 idb 描述并输出简化列表", async
   const { runtime } = await makeRuntime();
   const result = await maybeIosDeviceState(runtime, { view_type: "hierarchy", device_serial: UDID }, {
     listSimulators: bootedList(),
-    describeIosUi: async () => ({
-      ok: true,
-      serial: UDID,
-      nodes: [
-        { type: "Application", label: "", value: "", id: "", rect: { x: 0, y: 0, width: 402, height: 874 } },
-        { type: "Button", label: "通用", value: "", id: "", rect: { x: 0, y: 0, width: 402, height: 44 } }
-      ]
-    })
+    observe: {
+      describeIosUi: async () => ({
+        ok: true,
+        serial: UDID,
+        nodes: [
+          { type: "Application", label: "", value: "", id: "", rect: { x: 0, y: 0, width: 402, height: 874 } },
+          { type: "Button", label: "通用", value: "", id: "", rect: { x: 0, y: 0, width: 402, height: 44 } }
+        ]
+      })
+    }
   });
   const text = textOf(result);
   assert.match(text, /\[1\] Text: '通用' \| Bounds: \[0,0\]\[1000,50\]/);
@@ -272,7 +303,9 @@ test("maybeIosDeviceState: hierarchy 描述失败返回结构化错误", async (
   const { runtime } = await makeRuntime();
   const failed = await maybeIosDeviceState(runtime, { view_type: "hierarchy", device_serial: UDID }, {
     listSimulators: bootedList(),
-    describeIosUi: async () => ({ ok: false, error: "timeout" })
+    observe: {
+      describeIosUi: async () => ({ ok: false, error: "timeout" })
+    }
   });
   assert.match(textOf(failed), /^Error: idb 命令超时/);
 });

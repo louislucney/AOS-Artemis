@@ -128,6 +128,27 @@ test.beforeEach(() => {
   __resetIosTasks();
 });
 
+test("runLoop：设备解析失败 → 任务终态 failed（不滞留 running）", async () => {
+  const { runtime } = await makeRuntime();
+  runtime.iosDevice = async () => {
+    throw new Error("appium 启动失败");
+  };
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "任务", device_serial: UDID },
+      { entry: ENTRY, listSimulators: bootedSims() }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  assert.equal(record.status, "failed");
+  assert.match(record.error, /无法解析 iOS 设备/);
+  assert.match(record.error, /appium 启动失败/);
+});
+
 test("非 UDID serial 不接管（返回 null）", async () => {
   const { runtime } = await makeRuntime();
   const result = await maybeIosRunTask(

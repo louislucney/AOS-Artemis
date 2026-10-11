@@ -4,32 +4,23 @@ import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { liveScreenshotsDir } from "../artemis/assembly.js";
-import type { IosDevice } from "../device/ios-actions.js";
+import { classifyIosSerial, listIosSimulators, type IosUiNode } from "../device/ios.js";
 import {
-  classifyIosSerial,
-  describeIosUi,
-  listIosSimulators,
-  type IosUiNode
-} from "../device/ios.js";
-import { IosDeviceBusyError } from "../ios/appium/session.js";
-import type { WdaCaptureResult } from "../ios/appium/service.js";
+  frameAgeMs,
+  isFrameStale,
+  resolveCachedFrameMaxAgeMs
+} from "../ios/appium/session.js";
+import { observeHierarchy, observeScreenshot, type ObserveDeps } from "../ios/observation.js";
 import { annotateOcclusionWarnings, computeOcclusions } from "../ios/occlusion.js";
 import type { Runtime } from "../runtime.js";
-import { errorMessage } from "../util.js";
 
 const MAX_HIERARCHY_LINES = 300;
-
-export interface IosWdaDeps {
-  nodes: (udid: string) => Promise<WdaCaptureResult<IosUiNode[]>>;
-}
 
 export interface IosDeviceStateDeps {
   platform?: NodeJS.Platform;
   listSimulators?: typeof listIosSimulators;
-  describeIosUi?: (options: { serial: string }) => Promise<Awaited<ReturnType<typeof describeIosUi>>>;
-  /** 截图取源（设备解析门面；缺省经 `runtime.iosDevice(serial)`）。 */
-  device?: IosDevice;
-  wda?: IosWdaDeps;
+  /** 观察注入（测试）：截图/层级统一经观察模块（DESIGN §13.81）。 */
+  observe?: ObserveDeps;
 }
 
 function writeLivePng(runtime: Runtime, serial: string, bytes: Buffer): string | null {
@@ -143,25 +134,22 @@ export async function maybeIosDeviceState(
     }
   }
 
-  const wda: IosWdaDeps =
-    deps.wda ?? {
-      nodes: (udid: string) => runtime.iosWda().nodes(udid)
-    };
-
   if (viewType === "screenshot") {
-    const device = deps.device ?? (await runtime.iosDevice(serial));
-    if (!device) return textResult(`Error: 无法解析 iOS 设备（serial=${serial}）。`);
-    let bytes: Buffer;
-    try {
-      bytes = await device.screenshot();
-    } catch (error) {
-      if (serialKind === "device" && error instanceof IosDeviceBusyError) {
-        const frame = error.cachedFrame;
+    const observation = await observeScreenshot(runtime, serial, deps.observe ?? {});
+    if (!observation.ok) {
+      if (observation.kind === "device" && observation.busy) {
+        const frame = observation.busy.cachedFrame;
         if (frame !== null) {
           const file = writeLivePng(runtime, serial, frame.png);
           if (file === null) return textResult(`Error: iOS 截图写入失败（serial=${serial}）。`);
+          const now = Date.now();
+          const age = frameAgeMs(frame, now);
+          const stale = isFrameStale(frame, now, resolveCachedFrameMaxAgeMs(runtime.iosEnvironment()));
+          const ageNote = age !== null ? `，age≈${Math.round(age / 1000)}s` : "";
           return textResult(
-            `file://${file}\n（device_busy：返回最近缓存帧，capturedAt=${frame.capturedAt}）`
+            `file://${file}\n（device_busy：返回最近缓存帧，capturedAt=${frame.capturedAt}${ageNote}${
+              stale ? "，已陈旧" : ""
+            }）`
           );
         }
         return textResult(
@@ -169,46 +157,34 @@ export async function maybeIosDeviceState(
         );
       }
       return textResult(
-        serialKind === "device"
-          ? `Error: iOS 真机截图失败（${errorMessage(error)}；serial=${serial}）。`
-          : `Error: ${errorMessage(error)}（serial=${serial}）。`
+        observation.kind === "device"
+          ? `Error: iOS 真机截图失败（${observation.error}；serial=${serial}）。`
+          : `Error: ${stateError(observation.error, serial)}`
       );
     }
-    const file = writeLivePng(runtime, serial, bytes);
+    const file = writeLivePng(runtime, serial, observation.bytes);
     if (file === null) return textResult(`Error: iOS 截图写入失败（serial=${serial}）。`);
     return textResult(`file://${file}`);
   }
 
-  if (serialKind === "device") {
-    const described = await wda.nodes(serial);
-    if (!described.ok) {
-      if (described.busy === true) {
-        return textResult(
-          `Error: iOS 真机层级失败（device_busy：设备正被任务占用，稍后重试；serial=${serial}）。`
-        );
-      }
-      if (described.error === "parse_failed") {
-        const device = deps.device ?? (await runtime.iosDevice(serial));
-        let file: string | null = null;
-        if (device) {
-          try {
-            file = writeLivePng(runtime, serial, await device.screenshot());
-          } catch {
-            file = null;
-          }
-        }
-        const suffix = file !== null ? `；已回退截图: file://${file}` : "";
-        return textResult(
-          `Error: WDA 层级解析失败（hierarchy=parse_failed，serial=${serial}）${suffix}`
-        );
-      }
-      return textResult(`Error: iOS 真机层级失败（${described.error}；serial=${serial}）。`);
-    }
-    return textResult(formatIosHierarchy(described.value));
+  const observation = await observeHierarchy(runtime, serial, deps.observe ?? {});
+  if (observation.ok) return textResult(formatIosHierarchy(observation.nodes));
+  if (observation.code === "busy") {
+    return textResult(
+      `Error: iOS 真机层级失败（device_busy：设备正被任务占用，稍后重试；serial=${serial}）。`
+    );
   }
-
-  const describe = deps.describeIosUi ?? ((options) => describeIosUi(options));
-  const described = await describe({ serial });
-  if (!described.ok) return textResult(`Error: ${stateError(described.error, serial)}`);
-  return textResult(formatIosHierarchy(described.nodes));
+  if (observation.kind === "device" && observation.code === "parse_failed") {
+    const fallback = await observeScreenshot(runtime, serial, deps.observe ?? {});
+    const file = fallback.ok ? writeLivePng(runtime, serial, fallback.bytes) : null;
+    const suffix = file !== null ? `；已回退截图: file://${file}` : "";
+    return textResult(
+      `Error: WDA 层级解析失败（hierarchy=parse_failed，serial=${serial}）${suffix}`
+    );
+  }
+  return textResult(
+    observation.kind === "device"
+      ? `Error: iOS 真机层级失败（${observation.error}；serial=${serial}）。`
+      : `Error: ${stateError(observation.error, serial)}`
+  );
 }

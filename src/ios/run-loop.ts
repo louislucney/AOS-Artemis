@@ -7,37 +7,23 @@ import { logWarn } from "../log.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
 import { collectFailureLogs, resolveLogFeedback } from "./failure-logs.js";
-import { croppedScreenshotHash, screenSignature } from "./noop.js";
-import { buildPerceptionPrompt, fuseVisionElements, parseVisionElements } from "./perception.js";
-import {
-  buildUserPrompt,
-  IOS_SYSTEM_PROMPT,
-  resolveHistorySteps,
-  screenTextSummary,
-  updatePreflight
-} from "./prompt-history.js";
+import { buildUserPrompt, IOS_SYSTEM_PROMPT, resolveHistorySteps, screenTextSummary } from "./prompt-history.js";
 import {
   buildScriptAdherence,
   formatUnresolvedScriptItems,
   matchScriptExpectations,
   parseScriptPlan
 } from "./script-plan.js";
+import { observeStep, type ObservationCursor, type StepObservation } from "./step-observe.js";
+import { toStepRecord } from "./step-record.js";
 import type { StartIosTaskDeps } from "./tool-entry.js";
 import { captureStepShot, finish, persistRun } from "./trace-persist.js";
-import type { IosTaskRecord, IosTaskStep } from "./types.js";
+import type { IosTaskRecord, VerifierTarget } from "./types.js";
 import { resolveVerifier, resolveVerifyMode, runVerification } from "./verifier.js";
-import {
-  looksVisionCapable,
-  pngDimensions,
-  resolveVisionMode,
-  type IosVisionMode,
-  type VisionTarget
-} from "./vision.js";
+import { looksVisionCapable, resolveVisionMode, type IosVisionMode, type VisionTarget } from "./vision.js";
 
 const DEFAULT_MAX_STEPS = 30;
 const MAX_WAIT_MS = 10_000;
-const MIN_TEXT_ELEMENTS = 3;
-const VISION_MAX_LINES = 30;
 const DEFAULT_SETTLE_MS = 200;
 const MAX_SETTLE_MS = 2_000;
 
@@ -61,14 +47,6 @@ function resolveSettleMs(env: NodeJS.ProcessEnv, override?: number): number {
   const raw = Number.parseInt(env.AOS_IOS_SETTLE_MS ?? "", 10);
   if (!Number.isInteger(raw) || raw < 0) return DEFAULT_SETTLE_MS;
   return Math.max(0, Math.min(MAX_SETTLE_MS, raw));
-}
-
-function visibleElementCount(nodes: IosUiNode[]): number {
-  let count = 0;
-  for (const node of nodes) {
-    if (node.label.trim() || node.value.trim()) count += 1;
-  }
-  return count;
 }
 
 function extractJson(content: string): { thought: string; action: string; params: Record<string, unknown> } | null {
@@ -203,9 +181,16 @@ export async function runLoop(
   deps: StartIosTaskDeps
 ): Promise<void> {
   const env = deps.env ?? runtime.iosEnvironment();
-  const device = deps.device ?? (await runtime.iosDevice(record.udid));
-  if (!device) {
-    finish(record, "failed", `无法解析 iOS 设备：${record.udid}`);
+  let device: IosDevice;
+  try {
+    const resolved = deps.device ?? (await runtime.iosDevice(record.udid));
+    if (!resolved) {
+      finish(record, "failed", `无法解析 iOS 设备：${record.udid}`);
+      return;
+    }
+    device = resolved;
+  } catch (error) {
+    finish(record, "failed", `无法解析 iOS 设备（${errorMessage(error)}）：${record.udid}`);
     return;
   }
   const chat =
@@ -218,16 +203,20 @@ export async function runLoop(
   const stepDelayMs = deps.stepDelayMs ?? 300;
   const settleMs = resolveSettleMs(env, deps.settleMs);
   const historySteps = resolveHistorySteps(env);
-  const verifier =
-    resolveVerifyMode(env) === "final"
-      ? deps.verifier !== undefined
-        ? deps.verifier
-        : resolveVerifier(env, await runtime.entries(), {
-            chat,
-            model: entry.model,
-            vision: mainVision
-          })
-      : null;
+  let verifier: VerifierTarget | null = null;
+  if (resolveVerifyMode(env) === "final") {
+    if (deps.verifier !== undefined) {
+      verifier = deps.verifier;
+    } else {
+      let entries: LlmEntry[] = [];
+      try {
+        entries = await runtime.entries();
+      } catch (error) {
+        logWarn(`iOS 执行器读取 LLM 条目失败: ${errorMessage(error)}`);
+      }
+      verifier = resolveVerifier(env, entries, { chat, model: entry.model, vision: mainVision });
+    }
+  }
   const feedbackEnabled = resolveLogFeedback(env);
   const tail =
     feedbackEnabled && classifyIosSerial(record.udid) === "device"
@@ -248,9 +237,11 @@ export async function runLoop(
       "自动视觉不可用：active 模型不支持截图且未配置 AOS_IOS_VISION_LLM；已按纯文本执行。";
   }
   const messages: ChatMessage[] = [{ role: "system", content: IOS_SYSTEM_PROMPT }];
-  let lastSignature: string | null = null;
-  let lastShotHash: string | null = null;
-  let previousAction: string | null = null;
+  const cursor: ObservationCursor = {
+    lastSignature: null,
+    lastShotHash: null,
+    previousAction: null
+  };
   const scriptPlan = parseScriptPlan(record.taskDesc);
   const scriptExpectations = scriptPlan?.steps ?? null;
   const scriptSatisfied = new Set<number>();
@@ -311,121 +302,26 @@ export async function runLoop(
         await finalize("cancelled", "任务已被停止");
         return;
       }
-      let nodes: IosUiNode[];
+      let observation: StepObservation;
       try {
-        nodes = await device.nodes();
+        observation = await observeStep({
+          device,
+          record,
+          step,
+          scriptExpectations,
+          scriptSatisfied,
+          cursor,
+          vision: { mode, mainVision, visionChat }
+        });
       } catch (error) {
-        await finalize("failed", `观察屏幕失败: ${errorMessage(error)}`);
+        await finalize("failed", errorMessage(error));
         return;
       }
-      let size: { width: number; height: number } | null = null;
-      try {
-        size = await device.size();
-      } catch {
-        size = null;
-      }
-      const shot = await captureStepShot(device, record, step, "pre");
-      const screen = screenTextSummary(nodes);
-      updatePreflight(record, screen, step);
-      const scriptHits =
-        scriptExpectations !== null
-          ? matchScriptExpectations(scriptExpectations, scriptSatisfied, screen)
-          : [];
-      const shotDims = shot ? pngDimensions(shot.bytes) : null;
-      const scale = shotDims && size && size.width > 0 ? shotDims.width / size.width : null;
+      const { nodes, size, shot, scale, screen, scriptHits, noop, visionLines, visionContext } =
+        observation;
+      let perception = observation.perception;
       const instruction = record.instruction;
       record.instruction = null;
-
-      const signature = screenSignature(nodes, size?.height ?? null);
-      const shotHash = shot ? croppedScreenshotHash(shot.bytes) : null;
-      const comparable = step > 1 && previousAction !== "wait";
-      let noop = false;
-      if (comparable && lastSignature !== null && signature === lastSignature) {
-        const shotSame =
-          shotHash !== null && lastShotHash !== null ? shotHash === lastShotHash : true;
-        if (shotSame) {
-          record.noopStreak += 1;
-          noop = true;
-        } else {
-          record.noopStreak = 0;
-        }
-      } else if (step > 1) {
-        record.noopStreak = 0;
-      }
-      lastSignature = signature;
-      lastShotHash = shotHash;
-
-      const wantsImage = mode !== "off" && mainVision && shot !== null;
-      const wantsPerception =
-        mode !== "off" &&
-        !mainVision &&
-        visionChat !== null &&
-        shot !== null &&
-        (mode === "auto" || visibleElementCount(nodes) < MIN_TEXT_ELEMENTS);
-      let visionLines: string[] = [];
-      let visionContext: string | null = null;
-      let perception: IosTaskStep["perception"] = "text";
-      if (wantsImage && shot) {
-        visionContext = shotDims
-          ? `本轮附有截图：${shotDims.width}x${shotDims.height} px${
-              size ? `（逻辑 ${size.width}x${size.height} pt${scale ? `，scale≈${scale.toFixed(2)}` : ""}）` : ""
-            }；坐标以元素 Center 为准，若从截图估计请先除以 scale。`
-          : "本轮附有截图；坐标以元素 Center 为准。";
-      } else if (wantsPerception && shot) {
-        if (shotDims === null || scale === null || !size) {
-          record.visionDegraded = record.visionDegraded ?? "视觉感知跳过：截图尺寸或逻辑尺寸未知。";
-          perception = "text-degraded";
-        } else {
-          try {
-            const content = await visionChat!([
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: buildPerceptionPrompt(shotDims.width, shotDims.height) },
-                  {
-                    type: "image_url",
-                    image_url: { url: `data:image/png;base64,${shot.bytes.toString("base64")}` }
-                  }
-                ]
-              }
-            ]);
-            const parsedVision = parseVisionElements(content);
-            if (parsedVision === null) {
-              record.visionDegraded = record.visionDegraded ?? "视觉感知响应不可解析。";
-              perception = "text-degraded";
-            } else {
-              const fused = fuseVisionElements({
-                elements: parsedVision.elements,
-                scale,
-                width: size.width,
-                height: size.height,
-                existing: nodes,
-                maxLines: VISION_MAX_LINES
-              });
-              record.visionDropped = record.visionDropped ?? {
-                invalid: 0,
-                noScale: 0,
-                duplicate: 0,
-                overflow: 0
-              };
-              record.visionDropped.invalid += fused.droppedInvalid + parsedVision.dropped;
-              record.visionDropped.noScale += fused.droppedNoScale;
-              record.visionDropped.duplicate += fused.droppedDuplicate;
-              record.visionDropped.overflow += fused.droppedOverflow;
-              visionLines = fused.lines;
-              visionContext =
-                fused.lines.length > 0
-                  ? `本轮视觉感知补充 ${fused.lines.length} 个元素（像素坐标已换算逻辑点，可能有误）。`
-                  : "本轮视觉感知未发现可补充元素。";
-              perception = "vision-text";
-            }
-          } catch (error) {
-            record.visionDegraded = record.visionDegraded ?? `视觉调用失败：${errorMessage(error)}`;
-            logWarn(`iOS 视觉降级为纯文本（${record.traceId}）: ${errorMessage(error)}`);
-            perception = "text-degraded";
-          }
-        }
-      }
 
       const textPrompt = buildUserPrompt(
         record,
@@ -440,7 +336,7 @@ export async function runLoop(
       );
 
       let content: string;
-      if (wantsImage && shot) {
+      if (mode !== "off" && mainVision && shot) {
         messages.push({
           role: "user",
           content: [
@@ -478,25 +374,27 @@ export async function runLoop(
 
       const parsed = extractJson(content);
       if (!parsed) {
-        previousAction = "invalid";
-        record.steps.push({
-          step,
-          thought: "",
-          action: "invalid",
-          params: { raw: content.slice(0, 200) },
-          outcome: "模型输出不是合法动作 JSON",
-          ...(shot ? { shot: shot.rel } : {}),
-          ...(screen ? { screen } : {}),
-          ...(scale !== null ? { scale } : {}),
-          ...(noop ? { noop: true } : {}),
-          ...(scriptHits.length > 0 ? { scriptHits } : {}),
-          perception
-        });
+        cursor.previousAction = "invalid";
+        record.steps.push(
+          toStepRecord({
+            step,
+            thought: "",
+            action: "invalid",
+            params: { raw: content.slice(0, 200) },
+            outcome: "模型输出不是合法动作 JSON",
+            shot: shot?.rel,
+            screen,
+            scale,
+            noop,
+            scriptHits,
+            perception
+          })
+        );
         persistRun(record);
         if (stepDelayMs > 0) await sleep(stepDelayMs);
         continue;
       }
-      previousAction = parsed.action;
+      cursor.previousAction = parsed.action;
 
       let outcome: ActionOutcome;
       try {
@@ -519,22 +417,22 @@ export async function runLoop(
           doneNodes && scriptExpectations
             ? matchScriptExpectations(scriptExpectations, scriptSatisfied, screenTextSummary(doneNodes))
             : [];
-        record.steps.push({
-          step,
-          thought: parsed.thought,
-          action: parsed.action,
-          params: parsed.params,
-          outcome: outcome.success ? "done" : "fail",
-          ...(shot ? { shot: shot.rel } : {}),
-          ...(donePost ? { postShot: donePost.rel } : {}),
-          ...(screen ? { screen } : {}),
-          ...(scale !== null ? { scale } : {}),
-          ...(noop ? { noop: true } : {}),
-          ...(scriptHits.length + doneHits.length > 0
-            ? { scriptHits: [...scriptHits, ...doneHits] }
-            : {}),
-          perception
-        });
+        record.steps.push(
+          toStepRecord({
+            step,
+            thought: parsed.thought,
+            action: parsed.action,
+            params: parsed.params,
+            outcome: outcome.success ? "done" : "fail",
+            shot: shot?.rel,
+            postShot: donePost?.rel,
+            screen,
+            scale,
+            noop,
+            scriptHits: [...scriptHits, ...doneHits],
+            perception
+          })
+        );
         const scriptAdherence = scriptExpectations
           ? buildScriptAdherence(scriptExpectations, scriptSatisfied)
           : null;
@@ -574,20 +472,22 @@ export async function runLoop(
       }
       if (settleMs > 0) await sleep(settleMs);
       const post = await captureStepShot(device, record, step, "post");
-      record.steps.push({
-        step,
-        thought: parsed.thought,
-        action: parsed.action,
-        params: parsed.params,
-        outcome: outcome.text,
-        ...(shot ? { shot: shot.rel } : {}),
-        ...(post ? { postShot: post.rel } : {}),
-        ...(screen ? { screen } : {}),
-        ...(scale !== null ? { scale } : {}),
-        ...(noop ? { noop: true } : {}),
-        ...(scriptHits.length > 0 ? { scriptHits } : {}),
-        perception
-      });
+      record.steps.push(
+        toStepRecord({
+          step,
+          thought: parsed.thought,
+          action: parsed.action,
+          params: parsed.params,
+          outcome: outcome.text,
+          shot: shot?.rel,
+          postShot: post?.rel,
+          screen,
+          scale,
+          noop,
+          scriptHits,
+          perception
+        })
+      );
       persistRun(record);
       if (stepDelayMs > 0) await sleep(stepDelayMs);
     }
