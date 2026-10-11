@@ -362,10 +362,10 @@ env:
 真机 UDID（`classifyIosSerial=device`）由 AOS 接管并走 Appium + WebDriverAgent（模拟器保持 idb/simctl 双后端）：
 
 - **服务**：`ios/appium`（service/server/client/session/facade/xml/capabilities/detect）——配置按项目 `.env` 打底、进程 env（客户端配置）覆盖（同模型目录规则，见 §13.57）；`AOS_APPIUM_URL` 直连或托管懒启动 `appium --port`（`AOS_IOS_APPIUM_PORT` 默认 4723，启动前先探测复用）；`/status` 就绪轮询；`disposeIosWda()` 随 stdio/HTTP 关停回收。
-- **会话**：同 UDID FIFO 互斥 + 任务级 lease（finally 释放）+ 观测会话空闲回收（`AOS_IOS_SESSION_IDLE_MS` 默认 30min，0=保活）；观测拿锁有界等待（`AOS_IOS_OBSERVE_WAIT_MS` 默认 5s）→ `device_busy` + 最近缓存帧（结构化变体）；截图 busy 且有缓存帧 → 降级返回缓存帧路径并标注 `capturedAt`，层级 busy → 结构化报错（实现见 §13.79）；自愈阶梯（DELETE→POST→托管重启一次）。
+- **会话**：同 UDID FIFO 互斥 + 任务级 lease（finally 释放）+ 观测会话空闲回收（`AOS_IOS_SESSION_IDLE_MS` 默认 30min，0=保活）；观测拿锁有界等待（`AOS_IOS_OBSERVE_WAIT_MS` 默认 5s）→ `device_busy` + 最近缓存帧（结构化变体）；截图 busy 且有缓存帧 → 降级返回缓存帧路径并标注 `capturedAt`/`age`，超过 `AOS_IOS_CACHED_FRAME_MAX_AGE_MS`（默认 10min，0=关闭）追加「已陈旧」，层级 busy → 结构化报错（实现见 §13.79/§13.83）；自愈阶梯（DELETE→POST→托管重启一次）。
 - **能力**：截图、层级（page source XML 经 fast-xml-parser；解析失败 `parse_failed` 回退截图）、tap/swipe（W3C actions）、文本输入（先聚焦→有界等键盘→`POST /keys`；`mobile: typeText` 在 xcuitest 12.15 已移除）、terminate/activate/install/deepLink。
 - **签名**：`AOS_IOS_XCODE_ORG_ID`（证书 OU 团队 ID，真机必填）、`AOS_IOS_XCODE_SIGNING_ID`（默认 Apple Development）、`AOS_IOS_WDA_BUNDLE_ID`（默认 com.aos.mcp.wda）；`useNewWDA=false` + `allowProvisioningDeviceRegistration=true`（真机实测）；多项目团队各异时各自在项目 `.env` 声明（分层规则见 §13.57）。
-- **路由**：`mobile_get_device_state` device 分支（busy/parse_failed 降级）、`captureLiveScreenshot`（design diff / compare 真机截图，note "iOS 真机 WDA PNG" 即 backend 标识）、`mobile_run_task`（执行器设备 façade 对 device 走 WDA）。真机崩溃经 `devicectl systemCrashLogs`、真机日志经 `idevicesyslog` 实时尾采样（M9c，窗口近似 `clockWarning`；缺工具降级 `ios-log-tool-missing`）。
+- **路由**：`mobile_get_device_state` device 分支（busy/parse_failed 降级）、`captureLiveScreenshot`（design diff / compare 真机截图，note "iOS 真机 WDA PNG" 即 backend 标识）、`mobile_run_task`（执行器设备 façade 对 device 走 WDA）。观察读取统一经 `src/ios/observation.ts`、执行器为门面 + 分模块（§13.81/§13.77）。真机崩溃经 `devicectl systemCrashLogs`、真机日志经 `idevicesyslog` 实时尾采样（M9c，窗口近似 `clockWarning`；缺工具降级 `ios-log-tool-missing`）。
 - **排障**：doctor/`aos_status.ios` 显示 Appium/xcuitest/签名/隧道指引；iOS 18+ 需一次性 `sudo appium driver run xcuitest tunnel-creation`。
 
 ### 6.10 接入契约：流程完整性保证（2026-10-08）
