@@ -905,7 +905,8 @@ async function suiteApiErrors(
   }
   const windowEndMs = status.endTimeMs ?? Date.now();
   const serial = flags.get("serial") ?? status.deviceSerial;
-  const iosTarget = serial !== null && classifyIosSerial(serial) !== null;
+  const serialKind = serial !== null ? classifyIosSerial(serial) : null;
+  const iosTarget = serialKind !== null;
   const appBundle = flags.get("app");
   let collected: LogcatWindowResult;
   try {
@@ -934,7 +935,11 @@ async function suiteApiErrors(
     traceId,
     serial: collected.serial,
     window: { startMs: status.startTimeMs, endMs: windowEndMs },
-    source: iosTarget ? ("simctl-log" as const) : ("logcat" as const),
+    source: iosTarget
+      ? serialKind === "device"
+        ? ("idevicesyslog" as const)
+        : ("simctl-log" as const)
+      : ("logcat" as const),
     degraded: null,
     errors
   };

@@ -423,6 +423,35 @@ test("suite api-errors: iOS UDID 走 simctl 采集并标注 source", async () =>
   assert.equal(artifact.errors[0].code, "AUTH_401");
 });
 
+test("suite api-errors: 真机 UDID 走 idevicesyslog 并标注 source", async () => {
+  const { runtime } = await setupRun({ cases: null });
+  writeErrorCodes(runtime, {
+    AUTH_401: {
+      match: "HTTP\\s*401",
+      handler: "relogin"
+    }
+  });
+  writeStatus(runtime, "ios-2345", {
+    status: "failed",
+    platform: "ios",
+    device_serial: "00008110-001A2C681E22801E",
+    start_time: 1000,
+    end_time: 1010
+  });
+  const iosCollector = async (request) => ({
+    status: "ok",
+    serial: request.serial,
+    text: "HTTP 401 Unauthorized"
+  });
+  const result = await runCli(runtime, ["api-errors", "ios-2345"], { iosLogCollector: iosCollector });
+  assert.equal(result.code, 0);
+  const artifact = JSON.parse(
+    fs.readFileSync(path.join(runtime.traceDir("ios-2345"), "api-errors.json"), "utf-8")
+  );
+  assert.equal(artifact.source, "idevicesyslog");
+  assert.equal(artifact.errors[0].code, "AUTH_401");
+});
+
 test("suite run --fail-on-uncovered: exits 2 on uncovered flow, 0 when fully covered", async () => {
   const { runtime } = await setupRun({
     cases: [caseEntry(1)],

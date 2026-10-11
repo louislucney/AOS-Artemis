@@ -1,7 +1,8 @@
 import fs from "node:fs";
 
 import { errorMessage } from "../util.js";
-import { makeIosDevice, type IosDevice, type IosDeviceOptions } from "./ios-actions.js";
+import { type IosDevice, type IosDeviceOptions } from "./ios-actions.js";
+import { resolveIosDevice } from "./ios-facade.js";
 import { classifyIosSerial } from "./ios.js";
 import {
   APP_PACKAGE_PATTERN,
@@ -15,7 +16,7 @@ export interface IosResetOptions extends IosDeviceOptions {
 
 const MISSING_ADB = { path: null, source: "missing" as const };
 
-/** iOS simulator app reset: terminate (best effort) then launch. */
+/** iOS app reset: terminate (best effort) then launch; device resolved per serial kind. */
 export async function resetIosApp(
   request: AppResetRequest,
   options: IosResetOptions = {}
@@ -59,12 +60,24 @@ export async function resetIosApp(
 
   const device =
     options.device ??
-    makeIosDevice(serial, {
-      env,
-      exec: options.exec,
-      platform,
-      pathExists: options.pathExists ?? fs.existsSync
-    });
+    (await resolveIosDevice(serial, {
+      simulatorOptions: {
+        env,
+        exec: options.exec,
+        platform,
+        pathExists: options.pathExists ?? fs.existsSync
+      }
+    }));
+  if (device === null) {
+    return {
+      ok: false,
+      reason: "ios-unsupported",
+      message: "无法解析 iOS 设备。",
+      serial,
+      adb: MISSING_ADB,
+      commands
+    };
+  }
 
   commands.push(["idb", "terminate", "--udid", serial, packageName]);
   try {

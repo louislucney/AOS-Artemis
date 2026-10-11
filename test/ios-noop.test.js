@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { croppedScreenshotHash, screenSignature } from "../dist/ios/noop.js";
-import { buildHistorySections } from "../dist/ios/task-runner.js";
+import { buildHistorySections } from "../dist/ios/prompt-history.js";
 import { createImage, fillRect, toPng } from "./helpers.js";
 
 function node(type, label, x, y, width, height, id = "") {

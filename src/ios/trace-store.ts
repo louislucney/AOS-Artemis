@@ -7,7 +7,7 @@ import type {
   IosTaskRecord,
   IosTaskStep,
   IosVerificationItem
-} from "./task-runner.js";
+} from "./types.js";
 
 const DEFAULT_IOS_STALE_MS = 30 * 60_000;
 const IOS_STALE_ENV = "AOS_IOS_STALE_MS";
@@ -161,6 +161,14 @@ function resolveIosStaleMs(env: NodeJS.ProcessEnv, override?: number): number {
   return raw;
 }
 
+/** iOS 执行器 trace id 前缀约定（唯一事实源；写入与嗅探共用）。 */
+export const IOS_TRACE_PREFIX = "ios-";
+
+/** 前缀约定判定：本进程 iOS 执行器产物的 trace id；磁盘归属仍以 `isIosTraceDir`（platform 优先）为准。 */
+export function isIosTraceId(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.startsWith(IOS_TRACE_PREFIX);
+}
+
 function isIosTraceRecord(
   status: Record<string, unknown> | null,
   run: Record<string, unknown> | null,
@@ -168,13 +176,18 @@ function isIosTraceRecord(
 ): boolean {
   const platform = asString(status?.platform) ?? asString(run?.platform);
   if (platform !== null) return platform === "ios";
-  return traceId.startsWith("ios-");
+  return isIosTraceId(traceId);
 }
 
 export function isIosTraceDir(traceDir: string, traceId: string): boolean {
   const status = readJsonObject(path.join(traceDir, "status.json"));
   const run = readJsonObject(path.join(traceDir, "run.json"));
   return isIosTraceRecord(status, run, traceId);
+}
+
+/** 对账消费的原始 `run.json` 载荷；缺失或不可解析返回 null（调用方须判空）。 */
+export function readIosRunPayload(traceDir: string): Record<string, unknown> | null {
+  return readJsonObject(path.join(traceDir, "run.json"));
 }
 
 export function readIosTrace(

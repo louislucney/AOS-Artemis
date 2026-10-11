@@ -96,6 +96,36 @@ test("android trace: reads OCR labels and normalized taps from data_engine.db", 
   assert.equal(await readAndroidTraceObservations(path.join(dir, "missing.db"), "trace-1"), null);
 });
 
+test("android trace: schema 漂移（缺列/缺表）→ 明确降级为 null", { skip: sqliteSkip }, async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const tracesDir = path.join(dir, ".artemis", "traces");
+  fs.mkdirSync(tracesDir, { recursive: true });
+
+  const missingColumn = path.join(tracesDir, "missing-column.db");
+  const db1 = new sqlite.DatabaseSync(missingColumn);
+  db1.exec(`CREATE TABLE steps (
+    session_id TEXT,
+    step_number INTEGER,
+    action_taken TEXT,
+    pre_image_name TEXT
+  )`);
+  db1.exec(`CREATE TABLE images (image_name TEXT, ocr_result TEXT)`);
+  db1.close();
+  assert.equal(await readAndroidTraceObservations(missingColumn, "trace-1"), null);
+
+  const missingTable = path.join(tracesDir, "missing-table.db");
+  const db2 = new sqlite.DatabaseSync(missingTable);
+  db2.exec(`CREATE TABLE steps (
+    session_id TEXT,
+    step_number INTEGER,
+    action_taken TEXT,
+    pre_image_name TEXT,
+    post_image_name TEXT
+  )`);
+  db2.close();
+  assert.equal(await readAndroidTraceObservations(missingTable, "trace-1"), null);
+});
+
 test(
   "suite runner: Android traces feed reconciliation and element discovery",
   { skip: sqliteSkip },

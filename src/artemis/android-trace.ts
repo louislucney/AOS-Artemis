@@ -1,10 +1,14 @@
 import fs from "node:fs";
 
+import { logWarn } from "../log.js";
+
 /** Android (ARTEMIS) trace observations read from the project's
  * `data_engine.db` (SQLite, written by the pinned artemis submodule):
  * per-step OCR labels and normalized tap points for element-level discovery
  * and exploration reconciliation. Degrades to `null` when the DB, the
- * `node:sqlite` module (Node >= 22.5), or the expected schema is unavailable. */
+ * `node:sqlite` module (Node >= 22.5), or the expected schema is unavailable;
+ * schema drift is probed explicitly (PRAGMA table_info) and logged — the
+ * bounded read-only binding is recorded in ADR-0009. */
 
 export interface AndroidTraceStep {
   stepNumber: number;
@@ -43,6 +47,37 @@ async function openReadOnlyDb(dbPath: string): Promise<SqliteDb | null> {
   } catch {
     return null;
   }
+}
+
+const REQUIRED_COLUMNS: Record<string, string[]> = {
+  steps: ["session_id", "step_number", "action_taken", "pre_image_name", "post_image_name"],
+  images: ["image_name", "ocr_result"]
+};
+
+/** 显式 schema 守卫（ADR-0009）：data_engine.db 无 user_version，只能按列探测；
+ * 返回缺失清单（空数组 = 契约满足）。 */
+function schemaGaps(db: SqliteDb): string[] {
+  const gaps: string[] = [];
+  for (const [table, columns] of Object.entries(REQUIRED_COLUMNS)) {
+    let names: string[];
+    try {
+      const rows = db.prepare("SELECT name FROM pragma_table_info(?)").all(table) as Array<{
+        name?: unknown;
+      }>;
+      names = rows.map((row) => (typeof row.name === "string" ? row.name : ""));
+    } catch {
+      gaps.push(`${table} 不可读`);
+      continue;
+    }
+    if (names.length === 0) {
+      gaps.push(`缺表 ${table}`);
+      continue;
+    }
+    for (const column of columns) {
+      if (!names.includes(column)) gaps.push(`${table} 缺列 ${column}`);
+    }
+  }
+  return gaps;
 }
 
 function jsonOf(value: unknown): unknown {
@@ -92,6 +127,11 @@ export async function readAndroidTraceObservations(
   const db = await openReadOnlyDb(dbPath);
   if (!db) return null;
   try {
+    const gaps = schemaGaps(db);
+    if (gaps.length > 0) {
+      logWarn(`android 对账读取跳过：data_engine schema 不匹配（${gaps.join("；")}）`);
+      return null;
+    }
     const rows = db
       .prepare(
         "SELECT step_number, action_taken, pre_image_name, post_image_name FROM steps WHERE session_id = ? ORDER BY step_number"

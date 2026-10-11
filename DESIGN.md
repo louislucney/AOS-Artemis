@@ -362,7 +362,7 @@ env:
 真机 UDID（`classifyIosSerial=device`）由 AOS 接管并走 Appium + WebDriverAgent（模拟器保持 idb/simctl 双后端）：
 
 - **服务**：`ios/appium`（service/server/client/session/facade/xml/capabilities/detect）——配置按项目 `.env` 打底、进程 env（客户端配置）覆盖（同模型目录规则，见 §13.57）；`AOS_APPIUM_URL` 直连或托管懒启动 `appium --port`（`AOS_IOS_APPIUM_PORT` 默认 4723，启动前先探测复用）；`/status` 就绪轮询；`disposeIosWda()` 随 stdio/HTTP 关停回收。
-- **会话**：同 UDID FIFO 互斥 + 任务级 lease（finally 释放）+ 观测会话空闲回收（`AOS_IOS_SESSION_IDLE_MS` 默认 30min，0=保活）；观测拿锁有界等待（`AOS_IOS_OBSERVE_WAIT_MS` 默认 5s）→ `device_busy` + 最近缓存帧；自愈阶梯（DELETE→POST→托管重启一次）。
+- **会话**：同 UDID FIFO 互斥 + 任务级 lease（finally 释放）+ 观测会话空闲回收（`AOS_IOS_SESSION_IDLE_MS` 默认 30min，0=保活）；观测拿锁有界等待（`AOS_IOS_OBSERVE_WAIT_MS` 默认 5s）→ `device_busy` + 最近缓存帧（结构化变体）；截图 busy 且有缓存帧 → 降级返回缓存帧路径并标注 `capturedAt`，层级 busy → 结构化报错（实现见 §13.79）；自愈阶梯（DELETE→POST→托管重启一次）。
 - **能力**：截图、层级（page source XML 经 fast-xml-parser；解析失败 `parse_failed` 回退截图）、tap/swipe（W3C actions）、文本输入（先聚焦→有界等键盘→`POST /keys`；`mobile: typeText` 在 xcuitest 12.15 已移除）、terminate/activate/install/deepLink。
 - **签名**：`AOS_IOS_XCODE_ORG_ID`（证书 OU 团队 ID，真机必填）、`AOS_IOS_XCODE_SIGNING_ID`（默认 Apple Development）、`AOS_IOS_WDA_BUNDLE_ID`（默认 com.aos.mcp.wda）；`useNewWDA=false` + `allowProvisioningDeviceRegistration=true`（真机实测）；多项目团队各异时各自在项目 `.env` 声明（分层规则见 §13.57）。
 - **路由**：`mobile_get_device_state` device 分支（busy/parse_failed 降级）、`captureLiveScreenshot`（design diff / compare 真机截图，note "iOS 真机 WDA PNG" 即 backend 标识）、`mobile_run_task`（执行器设备 façade 对 device 走 WDA）。真机崩溃经 `devicectl systemCrashLogs`、真机日志经 `idevicesyslog` 实时尾采样（M9c，窗口近似 `clockWarning`；缺工具降级 `ios-log-tool-missing`）。
@@ -1280,7 +1280,7 @@ llm_switch(name, force):
 - **数据源（离线可核，artemis 子模块为事实源）**：`<tracesDir>/data_engine.db`（SQLite；子进程以 `session_id == trace_id` 记账）；`steps.action_taken` JSON（`{action, coordinates, coordinate_space:"normalized"}`，Flash 记录模型 0–1000 归一坐标）+ `images.ocr_result` JSON（`[{text, position}]`）。tap 归一：`relX/relY = x/1000`。
 - **对账摄取**：探索步骤「到达」判定为确定性 OCR 匹配——目标屏设计运行期文本（flows.json 归一化）或屏名出现在 OCR 标签集即命中（→ `hitIndexes` → 既有 `ingestExplorationObservations`）；未命中不记 hit（pending 差异照常登记）。
 - **元素映射**：OCR 文本作 `observedLabels`、归一 tap 作 `observedTaps`；设计侧富化与 iOS 共用（`buildElementDesigns`）；同屏重名同样走几何消歧。
-- **降级**：DB 缺失/表结构不符/`node:sqlite` 不可用（Node < 22.5，动态 import 失败）→ 静默跳过（无发现、不报错）；AOS 本体 Node ≥ 20 兼容不受影响（仅该功能需 ≥ 22.5，README 注明）。
+- **降级**：DB 缺失/`node:sqlite` 不可用（Node < 22.5，动态 import 失败）→ 静默跳过（无发现、不报错）；**schema 漂移经显式 PRAGMA 列守卫探测 → 记 warn + 跳过**（ADR-0009）；AOS 本体 Node ≥ 20 兼容不受影响（仅该功能需 ≥ 22.5，README 注明）。
 - **边界**：Android 无 AOS-EXPECT adherence（断言核对仍 artemis 自管）；到达门槛为 1 个设计文本/屏名命中（OCR 缺失即无证据，保守）；未标 `coordinate_space` 的动作不计 tap。
 - **测试**：`test/android-trace.test.js`（DB 读取/标签与归一 taps/未知 trace 与缺库退化 + 套件端到端：OCR 命中升级对账边、元素条目带 designNodeId；`node:sqlite` 缺失自动 skip）。
 
@@ -1293,3 +1293,61 @@ llm_switch(name, force):
 - **反向观测摄取（真机有设计无）**：iOS——`run.json` 步屏文本摘要压缩后取相邻转移；Android——`data_engine.db` 步骤 pre/post OCR 标签集合不同者；两侧统一经 `bestScreenForSummary`（按屏匹配数取唯一最大；并列/无匹配 → 弃，不猜）映射到设计屏；设计图已有该边（`edgeKeys`）则跳过；同 trace 幂等（traces 去重）、按边去重。
 - **边界**：反向观测为**证据级**（不生成、不升级、不硬断言）；映射并列即弃（保守）；Android 转移依赖 pre/post 图落盘（缺 post 即无证据）。
 - **测试**：`test/reconciliation.test.js`（历史追加/同决定不追加/round-trip；runtime-only 创建/幂等/design 优先/不升权/审阅留痕）、`test/android-trace.test.js`（transitions 采集 + 端到端逆向条目）、`test/suite-ios.test.js`（iOS 逆向条目端到端）。
+
+### 13.75 实施记录（iOS 设备解析收口：`resolveIosDevice` + `Runtime.iosDevice`）
+
+> 实施于 2026-10-11；架构评审候选 A（`improve-codebase-architecture`，见临时报告）。新增 `src/device/ios-facade.ts`（纯模块 `resolveIosDevice`）；改 `src/runtime.ts`（`iosDevice(serial)` 绑定）、`src/ios/task-runner.ts` / `src/figma/suite-runner.ts` / `src/device/ios-reset.ts`（3 个设备构造点迁移）；测试 +6（`test/ios-facade.test.js` 5 例 + `test/ios-reset.test.js` 1 例）；全量 855 绿、lint 干净。
+
+- **动机**：真机后端（M9a/M9c）叠加后，"选后端"的内联三元表达式散在多个调用点（`task-runner` 任务设备、`suite-runner` 复位注入、`ios-reset` 默认构造），真机 serial 在无注入时会错造模拟器设备；按 artemis `create_driver` 的先例收成单一设备解析入口。
+- **机制**：`resolveIosDevice(serial, deps)`——非 iOS serial → `null`；模拟器（UUID 形态）→ `makeIosDevice`（`simulatorOptions` 透传，测试注入 exec/env/platform）；真机（8-16 / 40 hex）→ `deps.wdaDevice(udid)`，缺 provider → 明确抛错。`Runtime.iosDevice(serial)` 绑定 `this.iosWda().device`，为生产唯一入口；设备构造点不再各自分支。
+- **边界**：观察读取（`tools/ios-state.ts`、`diff/device-source.ts` 的 `IosWdaService.screenshot/nodes`，含 observe 重试/`parse_failed` 归并）不在本次范围，保持现状（留给后续"平行实现收敛"候选）；`classifyIosSerial` 仍保留用于行为判定（复位策略、日志分支、`.ipa` 门禁）。`ios-reset` 的行为变化：真机 serial 无注入时由"错造模拟器设备"改为显式报错（`suite` 生产路径本就注入 WDA 设备，不受影响）。
+- **测试**：`test/ios-facade.test.js`（非 iOS → null 且零 provider 调用；模拟器本机构造且不触 WDA；`simulatorOptions` 透传生效；真机走 provider；真机缺 provider 抛错）、`test/ios-reset.test.js`（真机无注入 → `/WDA provider/` 拒绝）。
+
+### 13.76 实施记录（iOS 平行实现收敛：日志窗口策略 / 崩溃分发 / trace raw 读取 / 观察截图取源）
+
+> 实施于 2026-10-11；架构评审候选 B（承接 §13.75）。改 `src/device/ios-log.ts`（新增 `collectWindowLogs` 窗口策略与类型）、`src/ios/task-runner.ts`（`collectFailureLogs` 只留落盘与 `IosFailureLogs` 组装）、`src/crash/ios-dispatch.ts`（新，`collectIosCrashesFor` 分发）、`src/runtime.ts`（崩溃采集改经分发，删除 `useDevice` 分支）、`src/ios/trace-store.ts`（新增 `readIosRunPayload`）、`src/figma/suite-runner.ts`（对账读取改经 trace-store）、`src/tools/ios-state.ts`（截图取源改经 `runtime.iosDevice` 门面）；测试 +6（`test/ios-log.test.js` 3 例、`test/ios-crash-dispatch.test.js` 3 例）；全量 861 绿、lint 干净。
+
+- **动机**：A 落地后仍存在的"同概念多实现"——日志窗口策略在 task-runner 重写、崩溃分发在 runtime 手写、suite 对账直读 run.json、`mobile_get_device_state` 观察截图自行按 kind 选源。
+- **日志（B2）**：`collectWindowLogs({serial, windowStartMs, windowEndMs, processName?, tail?, collector?, env?, nowMs?})` 收口策略——tail 快照（真机实时尾）→ 模拟器 `log show` → 真机无 tail `no-collector`；`ok` 时 lines 必非空（空窗口以 `skipped` 表达）；窗口过滤由实现侧适配（`clockWarning` 标注近似）。task-runner 保留 `persistFailureLogs`（`logs/device.log` + `IosFailureLogs` 契约）。
+- **崩溃（B3）**：`collectIosCrashesFor(serial, window, dispatch)`——`{via:"injected"}`（注入覆盖，来源标 `diagnostic-reports`；互斥 union）或 `{via:"auto"}`（按 serial 种类：模拟器 DiagnosticReports / 真机 devicectl，source 随实现）；runtime 的 `useDevice` 判断删除，注入缝保留（`deps.collect` / `iosCrashCollector` 改为 `IosCrashCollectFn`）。
+- **trace（B4）**：`trace-store.readIosRunPayload(traceDir)` 暴露原始 run.json（缺失/不可解析 → null，调用方判空）；suite 对账不再直读文件。
+- **截图（B1）**：`mobile_get_device_state` 截图（含 `parse_failed` 回退）改经 `deps.device ?? runtime.iosDevice(serial)` 门面取图；错误文案真机保留"真机截图失败"前缀、模拟器透出底层错误（错误码映射退场）；层级读取（`IosWdaService.nodes` 的 observe 重试）与 `device-source` 的 note 标签保持原路径（本切片显式不动）。
+- **边界**：层级两个 formatter 不合并（0-1000 人读 vs 逻辑点 prompt，契约不同；共享 occlusion 已抽出）；`device-source` 截图保持现状（note 的 idb/simctl 标签保真）。
+- **测试**：`test/ios-log.test.js`（tail 优先窗口过滤、真机无 tail 降级、模拟器采集器与异常/空窗）、`test/ios-crash-dispatch.test.js`（按 kind 分发 + injected 覆盖 + source 标注）、`test/ios-device-state.test.js`（注入缝由 `captureIosPng`/`wda` 换为 fake `device`）。
+
+### 13.77 实施记录（iOS 执行器拆分：task-runner 门面 + 9 个实现模块）
+
+> 实施于 2026-10-11；架构评审候选 C（承接 §13.75/§13.76）。`src/ios/task-runner.ts`（1,908 行）拆分：`types.ts`（记录/状态类型 + `VerifierTarget`）、`task-registry.ts`（任务内存注册表）、`script-plan.ts`（【AOS-EXPECT】解析与贴合）、`prompt-history.ts`（system prompt/屏幕格式化/历史摘要/提示）、`verifier.ts`（终态验证）、`failure-logs.ts`（日志窗口落盘 + `resolveLogFeedback`）、`trace-persist.ts`（run.json/status.json 持久化 + 截图落盘）、`run-loop.ts`（执行循环 + 动作执行）、`tool-entry.ts`（两个工具入口 + 状态视图）；`task-runner.ts` 收敛为 7 行门面（仅再导出 `maybeIosRunTask`/`maybeIosManageTask`/`getIosTask`/`__resetIosTasks`）。测试 +0（纯搬移）；861 全绿、lint 干净。
+
+- **动机**：单文件混合编排/感知/LLM 往返/动作/持久化/验证/日志/工具 schema；拆分后每块有明确 seam，导航与改动半径下降（候选 C 的"验证与感知降为内部缝、外围工具成薄适配层"）。
+- **接口**：`mobile_*` 工具面与 `Runtime` 集成零变化（`runtime.ts` 仍只 import 门面）；类型消费者（`trace-store.ts`/`inspect.ts`）改直连 `types.js`，消除唯一的 type-level 环；`StartIosTaskDeps` 留在 `tool-entry.ts`（`run-loop.ts` 仅 type-import，无运行时环）。
+- **边界**：`executeAction` 留 `run-loop.ts`（循环内环动作执行）；`captureStepShot` 随 `trace-persist.ts`（产物写入）；`visibleElementCount`/`MIN_TEXT_ELEMENTS` 留 `run-loop.ts`（视觉触发属循环决策）；不新造 runTask 接口（`maybeIosRunTask` 已是唯一深接口）。
+- **测试**：既有 35/36 入口级用例零改动通过；`parseScriptPlan`（`test/ios-task-runner.test.js`）与 `buildHistorySections`（`test/ios-noop.test.js`）改从新模块导入（2 行）。
+
+### 13.78 实施记录（路由收口：trace 前缀单源 / api-errors 来源标签 / 路由测试补齐）
+
+> 实施于 2026-10-11；架构评审候选 D（承接 §13.75–§13.77；事实修正后范围收敛）。改 `src/ios/trace-store.ts`（新增 `IOS_TRACE_PREFIX`/`isIosTraceId`）、`src/ios/tool-entry.ts`（traceId 用常量）、`src/server.ts`（任务统计跳过改用谓词）、`src/suite-command.ts` + `src/figma/suite-runner.ts`（api-errors 来源按 serial 种类标注：真机 `idevicesyslog` / 模拟器 `simctl-log`，修真机错标）、`src/artemis/api-errors.ts`（`source` 联合类型放宽）；测试 +6（新 `test/ios-routing.test.js` 6 例，其中 1 例自 `test/ios-task-runner.test.js` 迁出；`test/suite-command.test.js` +1）；全量 867 绿、lint 干净。
+
+- **边界（事实修正）**：原报告"18 处字符串嗅探"在 A–C 后大部分已归位（设备构造走 `Runtime.iosDevice`、崩溃走 `collectIosCrashesFor`、日志分支为模块内部合法语义）；剩余真实项 = 前缀硬编码 3 处 + 来源标签 1 处 + 路由测试缺口。不做 dispatch 表驱动（现状单点分发、4 条 if 清晰）；`device-source.ts` 错误文案正则留给候选 E。
+- **前缀单源**：`IOS_TRACE_PREFIX` + `isIosTraceId`（trace-store 唯一事实源；`isIosTraceDir` 磁盘归属判定不动，platform 字段优先）；`tool-entry` 写入与 `server.ts` 任务统计跳过共用，`server` 不再内联 `startsWith`。
+- **来源标签**：`api-errors` 产物 `source` 按 serial 种类标注真实采集器（真机 `idevicesyslog`、模拟器 `simctl-log`），修 suite-command 与 suite-runner 两处真机错标；`ApiErrorArtifact.source` 联合类型同步放宽。
+- **路由测试**：`test/ios-routing.test.js`——wrapper 级（经 `runtime.proxy.callTool`）：iOS UDID `mobile_run_task` 截获 / `mobile_diagnose` 穿透 / Android serial 穿透 / 磁盘 iOS trace 的 `manage`、`inspect` 截获；server 级：`ios-` 结果跳过任务行补记、普通 trace 补记（对照）。
+
+### 13.79 实施记录（结构化降级：`device_busy` 与缓存帧脱离字符串）
+
+> 实施于 2026-10-11；架构评审候选 E（承接 §13.75–§13.78）。改 `src/ios/appium/service.ts`（`WdaCaptureResult` 增加 busy 判别变体：`IosDeviceBusyError` → 结构化 `{busy:true, cachedFrame}`，不再拍平为字符串）、`src/diff/device-source.ts`（删除 `/busy|占用/i` 正则，改读结构化字段；异常路径 `instanceof` 转换）、`src/tools/ios-state.ts`（截图 busy + 缓存帧 → 落盘缓存帧并返回路径 + 标注 `capturedAt`；无帧/层级 busy → 结构化报错）；测试 +4；全量 871 绿、lint 干净。
+
+- **动机**：README/DESIGN/CONTEXT 三处承诺"busy 返回 `device_busy` + 最近缓存帧"，但实现里结构化错误在 `service.screenshot/nodes` 拍平为字符串，消费者只能拿正则反推，`service.cachedFrame` 无生产消费者——承诺全部落空（ADR-0005 的显式降级原则）。
+- **机制**：`WdaCaptureResult<T> = ok | {ok:false, busy?:false, error} | {ok:false, busy:true, error, cachedFrame}`（busy 作判别键，既有注入 `{ok:false,error}` 不受影响）；`service.screenshot/nodes` catch `instanceof IosDeviceBusyError` → busy 变体（携带 `.cachedFrame`；`CachedFrame` 类型经 session 导出）。
+- **降级口径**：观测截图（`mobile_get_device_state` device 分支）busy 且有缓存帧 → 写 `live_screenshot_<udid>.png`（缓存帧）并返回 `file://…` + 标注「device_busy：返回最近缓存帧，capturedAt=…」；无缓存帧 → `device_busy` 结构化文案；层级 busy → 结构化文案（无帧可降级）。diff/compare（`device-source`）busy 仍报错（陈旧帧可能误报差异，显式不做帧降级），错误提示由结构字段生成并注明缓存帧可用性。
+- **边界**：缓存帧无 TTL/stale 标记（会话空闲回收不清帧，仅 dispose 清理）；执行器步骤截图 `captureStepShot` 的 busy 仍静默跳过（不引入陈旧步骤图）。
+- **测试**：`test/ios-wda-service.test.js`（service busy → 结构化变体；device-source busy/普通错误两条提示；普通失败走 Appium 指引）、`test/ios-device-state.test.js`（busy 缓存帧降级返回并标注/无帧报错/层级 busy 提示）。
+
+### 13.80 实施记录（`data_engine.db` 对账读取收边：显式 schema 守卫 + ADR-0009）
+
+> 实施于 2026-10-11；架构评审候选 F（收尾）。改 `src/artemis/android-trace.ts`（`REQUIRED_COLUMNS` + `schemaGaps`（`pragma_table_info` 探测）；schema 漂移 → `logWarn` + 跳过，宽 catch 仍兜损坏）、`test/android-trace.test.js`（+1 用例：缺列/缺表 → null）；新增 `docs/adr/0009-android-trace-readonly-schema-binding.md`；全量 872 绿、lint 干净。
+
+- **动机**：本条读取是 AOS 源码中唯一的 SQLite schema 绑定（151 行、只读、降级为 null），原实现以宽 catch 兜底——schema 漂移与未知 trace/缺库**不可区分**且无测试；与 ADR-0003（其理由"不绑定上游 schema"）的口径张力从未成文。
+- **机制**：打开只读库后先按列探测契约（`steps`: session_id/step_number/action_taken/pre_image_name/post_image_name；`images`: image_name/ocr_result；`data_engine` 无 `user_version`，只能 PRAGMA）；缺表/缺列/不可读 → `logWarn`（可诊断的契约漂移）+ 返回 null；缺库/`node:sqlite` 不可用/未知 trace 保持静默（预期内缺数据）；数据解析路径不变。
+- **边界**：不迁移上游工具面（`mobile_inspect_trace` 返回渲染文本，pre/post 标签与归一 taps 无法无损还原——ADR-0009 Considered Options）；读取结果仍为 `null` 语义（消费方只需要有/无）；ADR-0003 继续约束"失败步骤截图"来源，不受影响。
+- **测试**：`test/android-trace.test.js` 新增 schema 漂移用例（缺 `post_image_name` 列、缺 `images` 表 → null；真实 `node:sqlite` 构造，node < 22.5 自动 skip）。

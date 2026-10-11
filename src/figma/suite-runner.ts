@@ -25,7 +25,7 @@ import { TERMINAL_TASK_STATUSES } from "../db/types.js";
 import { classifyIosSerial } from "../device/ios.js";
 import { IosLogCollector, type IosLogWindowRequest } from "../device/ios-log.js";
 import { resetIosApp } from "../device/ios-reset.js";
-import { isIosTraceDir } from "../ios/trace-store.js";
+import { isIosTraceDir, readIosRunPayload } from "../ios/trace-store.js";
 import { logWarn } from "../log.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "../device/logcat.js";
 import { resetApp, type AppResetOptions, type AppResetOutcome, type AppResetRequest } from "../device/reset.js";
@@ -528,7 +528,7 @@ export async function runGeneratedTests(
   let iosDeviceWda: IosDevice | null = null;
   if (serialKind === "device" && options.reset === undefined) {
     try {
-      iosDeviceWda = await runtime.iosWda().device(serial!);
+      iosDeviceWda = await runtime.iosDevice(serial!);
     } catch {
       iosDeviceWda = null;
     }
@@ -670,7 +670,8 @@ export async function runGeneratedTests(
     let apiErrors: ApiErrorObservation[] = [];
     let apiErrorsDegraded: string | null = null;
     if (terminal && apiCatalog) {
-      const iosTarget = traceSerial !== null && classifyIosSerial(traceSerial) !== null;
+      const serialKind = traceSerial !== null ? classifyIosSerial(traceSerial) : null;
+      const iosTarget = serialKind !== null;
       if (apiCatalog.rules.size === 0) {
         apiErrorsDegraded = fs.existsSync(apiCatalog.file) ? "registry-empty" : "registry-missing";
       } else if (windowStartMs === null) {
@@ -723,7 +724,14 @@ export async function runGeneratedTests(
                 windowStartMs === null
                   ? null
                   : { startMs: windowStartMs, endMs: windowEndMs ?? now() },
-              source: apiErrorsDegraded !== null ? "none" : iosTarget ? "simctl-log" : "logcat",
+              source:
+                apiErrorsDegraded !== null
+                  ? "none"
+                  : iosTarget
+                    ? serialKind === "device"
+                      ? "idevicesyslog"
+                      : "simctl-log"
+                    : "logcat",
               degraded: apiErrorsDegraded,
               errors: apiErrors
             },
@@ -790,8 +798,8 @@ export async function runGeneratedTests(
       const at = new Date(now()).toISOString();
       if (isIosTrace(runtime, traceId)) {
         try {
-          const runText = fs.readFileSync(path.join(runtime.traceDir(traceId), "run.json"), "utf-8");
-          const run = JSON.parse(runText) as unknown;
+          const run = readIosRunPayload(runtime.traceDir(traceId));
+          if (!run) throw new Error("run.json 不可读");
           const design = loadDesignContext(runtime);
           if (testCase.exploreSteps.length > 0) {
             ingestExplorationObservations({

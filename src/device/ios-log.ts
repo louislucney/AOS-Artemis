@@ -268,6 +268,92 @@ export class IosLogCollector {
   }
 }
 
+/** 任务级日志窗口请求：真机无历史 syslog，只有实时尾缓冲（提供 tail 时优先）；
+ * 模拟器走 `log show` 历史窗口；真机无 tail 时没有采集器可用。 */
+export interface IosWindowLogsRequest {
+  serial: string;
+  windowStartMs: number;
+  windowEndMs: number;
+  processName?: string | null;
+  /** 任务级实时尾缓冲（IosDeviceLogTail 或测试桩）；提供时优先于 collector。 */
+  tail?: { stop(): void; snapshot(): string[] } | null;
+  /** 采集器覆盖（测试注入）；缺省按 env 构建（模拟器分支）。 */
+  collector?: Pick<IosLogCollector, "collect"> | null;
+  env?: NodeJS.ProcessEnv;
+  /** 时钟覆盖（测试）；缺省取 windowEndMs，与实时尾"窗口已过"判定一致。 */
+  nowMs?: number;
+}
+
+/** 窗口采集结果：`ok` 时 lines 必为非空（空窗口以 skipped 表达）；窗口过滤由各实现侧适配
+ * （模拟器按时间戳、真机尾缓冲按行时间近似，clockWarning 标注近似）。 */
+export type IosWindowLogsResult =
+  | {
+      status: "ok";
+      source: "idevicesyslog" | "simctl-log";
+      lines: string[];
+      clockWarning: boolean;
+    }
+  | {
+      status: "skipped";
+      source: "idevicesyslog" | "simctl-log" | "none";
+      reason: string;
+    };
+
+/** 收口"窗口策略"：tail 快照 → 模拟器 `log show` → no-collector（真机无 tail）。 */
+export async function collectWindowLogs(
+  request: IosWindowLogsRequest
+): Promise<IosWindowLogsResult> {
+  const nowMs = request.nowMs ?? request.windowEndMs;
+  const tail = request.tail ?? null;
+  if (tail) {
+    try {
+      tail.stop();
+    } catch {
+      /* 停止失败不阻塞失败收尾 */
+    }
+    const filtered = filterDeviceLogLines(tail.snapshot(), {
+      windowStartMs: request.windowStartMs,
+      windowEndMs: request.windowEndMs,
+      processName: request.processName ?? null,
+      nowMs
+    });
+    if (filtered.lines.length === 0) {
+      return {
+        status: "skipped",
+        source: "idevicesyslog",
+        reason: filtered.windowElapsed ? "window-elapsed-live-tail" : "log-empty"
+      };
+    }
+    return {
+      status: "ok",
+      source: "idevicesyslog",
+      lines: filtered.lines,
+      clockWarning: filtered.approximateEnd
+    };
+  }
+  if (classifyIosSerial(request.serial) !== "simulator") {
+    return { status: "skipped", source: "none", reason: "no-collector" };
+  }
+  const collector = request.collector ?? new IosLogCollector({ env: request.env });
+  let result: LogcatWindowResult;
+  try {
+    result = await collector.collect({
+      serial: request.serial,
+      windowStartMs: request.windowStartMs,
+      windowEndMs: request.windowEndMs,
+      processName: request.processName ?? ""
+    });
+  } catch (error) {
+    return { status: "skipped", source: "simctl-log", reason: `collector-error: ${errorMessage(error)}` };
+  }
+  if (result.status !== "ok") {
+    return { status: "skipped", source: "simctl-log", reason: result.reason ?? "log-empty" };
+  }
+  const lines = result.text.split("\n").filter((line) => line !== "");
+  if (lines.length === 0) return { status: "skipped", source: "simctl-log", reason: "log-empty" };
+  return { status: "ok", source: "simctl-log", lines, clockWarning: Boolean(result.clockWarning) };
+}
+
 const DEFAULT_TAIL_LINES = 200;
 
 export interface IosDeviceLogTailOptions {

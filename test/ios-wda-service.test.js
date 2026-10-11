@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { captureLiveScreenshot } from "../dist/diff/device-source.js";
+import { IosDeviceBusyError } from "../dist/ios/appium/session.js";
 import { IosWdaService } from "../dist/ios/appium/service.js";
 
 const SOURCE_XML =
@@ -92,10 +93,43 @@ test("device-source: 真机走 WDA 分支与失败指引", async () => {
   await assert.rejects(
     captureLiveScreenshot(runtime, "00008101-000359440C69001E", {
       platform: "ios",
-      captureWdaPng: async () => ({ ok: false, error: "device busy" })
+      captureWdaPng: async () => ({
+        ok: false,
+        error: "device busy",
+        busy: true,
+        cachedFrame: { png: Buffer.from("cached"), capturedAt: "2026-10-11T00:00:00.000Z" }
+      })
     }),
-    /busy|占用/
+    /device_busy[\s\S]*缓存帧/
   );
+
+  await assert.rejects(
+    captureLiveScreenshot(runtime, "00008101-000359440C69001E", {
+      platform: "ios",
+      captureWdaPng: async () => ({ ok: false, error: "wda down" })
+    }),
+    /Appium\/WDA 可用/
+  );
+});
+
+test("ios wda service: 观测 busy 转为结构化变体（携带缓存帧）", async () => {
+  const service = new IosWdaService({
+    env: { AOS_APPIUM_URL: "http://127.0.0.1:4723" },
+    fetchImpl: fakeFetch()
+  });
+  const frame = { png: Buffer.from("cached"), capturedAt: "2026-10-11T00:00:00.000Z" };
+  service.device = async () => {
+    throw new IosDeviceBusyError(frame);
+  };
+  const shot = await service.screenshot("U-1");
+  assert.equal(shot.ok, false);
+  assert.equal(shot.busy, true);
+  assert.deepEqual(shot.cachedFrame, frame);
+  const nodes = await service.nodes("U-1");
+  assert.equal(nodes.ok, false);
+  assert.equal(nodes.busy, true);
+  assert.deepEqual(nodes.cachedFrame, frame);
+  await service.dispose();
 });
 
 test("ios wda service: nodes 解析失败按 AOS_IOS_OBSERVE_RETRY 重试", async () => {

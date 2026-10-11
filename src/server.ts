@@ -13,6 +13,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import { loadProject } from "./config/loader.js";
 import { configDirAbs } from "./artemis/assembly.js";
 import { traceIdOf } from "./artemis/task-result.js";
+import { isIosTraceId } from "./ios/trace-store.js";
 import { ensureArtemisDeps, resolveDepsSource } from "./artemis/bootstrap.js";
 import { createProjectStore } from "./db/index.js";
 import { configureLogging, installCrashHandlers } from "./log.js";
@@ -744,7 +745,7 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
       if (name === "mobile_run_task") {
         const taskArgs = (args ?? {}) as Record<string, unknown>;
         // iOS runs record their own task row inside maybeIosRunTask.
-        if (!traceIdOf(result)?.startsWith("ios-")) {
+        if (!isIosTraceId(traceIdOf(result))) {
           void runtime.recordTaskResult({
             isError: result.isError === true,
             traceId: traceIdOf(result),

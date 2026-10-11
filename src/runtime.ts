@@ -25,9 +25,14 @@ import { resultPayload, taskStatusFromFile, taskStatusOf, type TaskStatus } from
 import { maybeIosInspectTrace } from "./ios/inspect.js";
 import { maybeIosManageTask, maybeIosRunTask } from "./ios/task-runner.js";
 import { reconcileIosTrace, isIosTraceDir } from "./ios/trace-store.js";
-import { collectIosCrashes, type IosCrashCollectResult } from "./crash/ios.js";
-import { collectIosDeviceCrashes, IOS_DEVICE_CRASH_SOURCE } from "./crash/ios-device.js";
-import { classifyIosSerial } from "./device/ios.js";
+import type { IosCrashCollectResult } from "./crash/ios.js";
+import {
+  collectIosCrashesFor,
+  type IosCrashCollectFn,
+  type IosCrashDispatch
+} from "./crash/ios-dispatch.js";
+import { resolveIosDevice } from "./device/ios-facade.js";
+import type { IosDevice } from "./device/ios-actions.js";
 import { maybeIosDeviceState } from "./tools/ios-state.js";
 import { appendChildLog } from "./log.js";
 import { CrashIndexStore } from "./crash/store.js";
@@ -84,7 +89,7 @@ export interface RuntimeOptions {
   baseEnv?: NodeJS.ProcessEnv;
   storeNote?: string | null;
   crashCollector?: CrashCollectorLike;
-  iosCrashCollector?: typeof collectIosCrashes;
+  iosCrashCollector?: IosCrashCollectFn;
   iosCrashRetry?: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> };
   modelFetcher?: FetchLike;
   appiumDetector?: () => Promise<AppiumDetection>;
@@ -146,7 +151,7 @@ export class Runtime {
   private crashScanChain: Promise<unknown> = Promise.resolve();
   private modelRefreshChain: Promise<unknown> = Promise.resolve();
   private readonly lockedPackages = new Map<string, string>();
-  private readonly iosCrashCollector: typeof collectIosCrashes | null;
+  private readonly iosCrashCollector: IosCrashCollectFn | null;
   private readonly iosCrashRetry: {
     attempts: number;
     delayMs: number;
@@ -726,15 +731,14 @@ export class Runtime {
       }) => IosCrashCollectResult | Promise<IosCrashCollectResult>;
     } = {}
   ): Promise<CrashScanResult> {
-    const isDevice = classifyIosSerial(input.udid) === "device";
-    const useDevice = isDevice && deps.collect === undefined && this.iosCrashCollector === null;
-    const collect = deps.collect ?? this.iosCrashCollector ?? collectIosCrashes;
-    const source = useDevice ? IOS_DEVICE_CRASH_SOURCE : "diagnostic-reports";
     try {
       const window = { startMs: input.startMs, endMs: input.endMs, processName: input.processName };
-      const collected = useDevice
-        ? await collectIosDeviceCrashes({ udid: input.udid, ...window })
-        : await collect(window);
+      const injected = deps.collect ?? this.iosCrashCollector;
+      const dispatch: IosCrashDispatch =
+        injected !== undefined && injected !== null
+          ? { via: "injected", collect: injected }
+          : { via: "auto" };
+      const { collected, source } = await collectIosCrashesFor(input.udid, window, dispatch);
       if (collected.skipped) {
         return { traceId: input.traceId, status: "skipped", reason: collected.skipped, found: 0 };
       }
@@ -938,6 +942,13 @@ export class Runtime {
       this.iosWdaService = new IosWdaService({ env: this.iosEnv });
     }
     return this.iosWdaService;
+  }
+
+  /** 设备解析唯一入口：serial 种类 → 模拟器（idb/simctl）或真机（WDA）设备（DESIGN §13.75）。 */
+  async iosDevice(serial: string): Promise<IosDevice | null> {
+    return await resolveIosDevice(serial, {
+      wdaDevice: (udid) => this.iosWda().device(udid)
+    });
   }
 
   async disposeIosWda(): Promise<void> {

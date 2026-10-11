@@ -9,11 +9,17 @@ import { IosHierarchyParseError, makeWdaDevice } from "./facade.js";
 import { AppiumServerManager } from "./server.js";
 import {
   AppiumSessionManager,
+  IosDeviceBusyError,
   OBSERVE_WAIT_MS_DEFAULT,
-  SESSION_IDLE_MS_DEFAULT
+  SESSION_IDLE_MS_DEFAULT,
+  type CachedFrame
 } from "./session.js";
 
-export type WdaCaptureResult<T> = { ok: true; value: T } | { ok: false; error: string };
+/** 观测结果：`busy:true` 变体携带最近缓存帧（观察会话被任务占用时的结构化降级，DESIGN §13.79）。 */
+export type WdaCaptureResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; busy?: false }
+  | { ok: false; error: string; busy: true; cachedFrame: CachedFrame | null };
 
 export interface IosWdaServiceOptions {
   env?: NodeJS.ProcessEnv;
@@ -87,6 +93,9 @@ export class IosWdaService {
       const device = await this.device(udid);
       return { ok: true, value: await device.screenshot() };
     } catch (error) {
+      if (error instanceof IosDeviceBusyError) {
+        return { ok: false, error: errorMessage(error), busy: true, cachedFrame: error.cachedFrame };
+      }
       return { ok: false, error: errorMessage(error) };
     }
   }
@@ -108,6 +117,14 @@ export class IosWdaService {
       }
     }
     if (lastError instanceof IosHierarchyParseError) return { ok: false, error: "parse_failed" };
+    if (lastError instanceof IosDeviceBusyError) {
+      return {
+        ok: false,
+        error: errorMessage(lastError),
+        busy: true,
+        cachedFrame: lastError.cachedFrame
+      };
+    }
     return { ok: false, error: errorMessage(lastError) };
   }
 

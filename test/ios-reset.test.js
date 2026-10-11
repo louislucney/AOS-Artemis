@@ -61,6 +61,17 @@ test("resetIosApp: 真机 UDID 接受（best-effort）", async () => {
   assert.equal(outcome.ok, true);
 });
 
+test("resetIosApp: 真机 UDID 未注入设备 → 明确报错（不再错造模拟器设备）", async () => {
+  await assert.rejects(
+    () =>
+      resetIosApp(
+        { packageName: "com.apple.Preferences", serial: "00008110-001A2C681E22801E" },
+        { platform: "darwin" }
+      ),
+    /WDA provider/
+  );
+});
+
 test("resetIosApp: launch 失败 → launch-failed", async () => {
   const outcome = await resetIosApp(
     { packageName: "com.apple.Preferences", serial: UDID },

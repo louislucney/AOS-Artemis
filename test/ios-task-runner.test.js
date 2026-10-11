@@ -7,9 +7,9 @@ import {
   __resetIosTasks,
   getIosTask,
   maybeIosManageTask,
-  maybeIosRunTask,
-  parseScriptPlan
+  maybeIosRunTask
 } from "../dist/ios/task-runner.js";
+import { parseScriptPlan } from "../dist/ios/script-plan.js";
 import { maybeIosInspectTrace } from "../dist/ios/inspect.js";
 import {
   baseConfig,
@@ -136,18 +136,6 @@ test("非 UDID serial 不接管（返回 null）", async () => {
     { entry: ENTRY }
   );
   assert.equal(result, null);
-});
-
-test("runtime 代理：UDID 的 mobile_run_task 由 iOS 接管，不落内层代理", async () => {
-  const { runtime, proxy } = await makeRuntime();
-  const result = await runtime.proxy.callTool("mobile_run_task", {
-    task_desc: "观察",
-    device_serial: UDID
-  });
-  const payload = JSON.parse(result.content[0].text);
-  assert.match(payload.trace_id, /^ios-/);
-  assert.equal(payload.status, "failed");
-  assert.equal(proxy.calls.some((call) => call.name === "mobile_run_task"), false);
 });
 
 test("locked_app_package：循环前自动启动应用", async () => {

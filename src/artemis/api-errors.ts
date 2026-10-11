@@ -38,7 +38,7 @@ export interface ApiErrorArtifact {
   traceId: string;
   serial: string | null;
   window: { startMs: number; endMs: number } | null;
-  source: "logcat" | "none";
+  source: "logcat" | "simctl-log" | "idevicesyslog" | "none";
   degraded: string | null;
   errors: ApiErrorObservation[];
 }

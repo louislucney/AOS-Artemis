@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 
 import {
+  collectWindowLogs,
   IosDeviceLogTail,
   IosLogCollector,
   filterDeviceLogLines,
@@ -204,4 +205,73 @@ test("IosDeviceLogTail：spawn 抛错返回 false 且不阻塞", () => {
   });
   assert.equal(tail.start(), false);
   assert.deepEqual(tail.snapshot(), []);
+});
+
+test("collectWindowLogs：tail 优先（快照窗口过滤 + 停止）", async () => {
+  const now = new Date(2026, 9, 11, 10, 0, 0).getTime();
+  const stamp = "Oct 11 09:59:30.000";
+  const stopped = [];
+  const logs = await collectWindowLogs({
+    serial: DEVICE_UDID,
+    windowStartMs: now - 60_000,
+    windowEndMs: now,
+    processName: "MyApp",
+    nowMs: now,
+    tail: {
+      stop: () => stopped.push("stop"),
+      snapshot: () => [`${stamp} MyApp[42] <Notice>: hello`, "no-timestamp junk"]
+    }
+  });
+  assert.deepEqual(stopped, ["stop"]);
+  assert.equal(logs.status, "ok");
+  assert.equal(logs.source, "idevicesyslog");
+  assert.deepEqual(logs.lines, [`${stamp} MyApp[42] <Notice>: hello`]);
+});
+
+test("collectWindowLogs：真机无 tail → no-collector（无历史窗口）", async () => {
+  const logs = await collectWindowLogs({
+    serial: DEVICE_UDID,
+    windowStartMs: 0,
+    windowEndMs: 1000
+  });
+  assert.equal(logs.status, "skipped");
+  assert.equal(logs.source, "none");
+  assert.equal(logs.reason, "no-collector");
+});
+
+test("collectWindowLogs：模拟器走注入采集器；空行与异常降级", async () => {
+  const ok = await collectWindowLogs({
+    serial: UDID,
+    windowStartMs: 0,
+    windowEndMs: 1000,
+    processName: "MyApp",
+    collector: {
+      collect: async () => ({ status: "ok", text: "a\nb", serial: UDID })
+    }
+  });
+  assert.equal(ok.status, "ok");
+  assert.equal(ok.source, "simctl-log");
+  assert.deepEqual(ok.lines, ["a", "b"]);
+
+  const empty = await collectWindowLogs({
+    serial: UDID,
+    windowStartMs: 0,
+    windowEndMs: 1000,
+    collector: { collect: async () => ({ status: "ok", text: "", serial: UDID }) }
+  });
+  assert.equal(empty.status, "skipped");
+  assert.equal(empty.reason, "log-empty");
+
+  const failed = await collectWindowLogs({
+    serial: UDID,
+    windowStartMs: 0,
+    windowEndMs: 1000,
+    collector: {
+      collect: async () => {
+        throw new Error("boom");
+      }
+    }
+  });
+  assert.equal(failed.status, "skipped");
+  assert.match(failed.reason, /collector-error: boom/);
 });

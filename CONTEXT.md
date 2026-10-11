@@ -39,9 +39,10 @@
 ## iOS 真机后端
 
 - **WDA 会话（WDA session）**：AOS 经 Appium 与 WebDriverAgent 建立的设备会话；同 UDID 同时最多一个，任务级 lease + 观测会话空闲回收。
-- **观测会话（observation lease）**：截图/层级等只读调用共享的会话；被任务占用时有界等待后返回 `device_busy` 与最近缓存帧（非无限排队）。
+- **观测会话（observation lease）**：截图/层级等只读调用共享的会话；被任务占用时有界等待后返回 `device_busy`（结构化变体携带最近缓存帧：截图可降级为缓存帧并标注 `capturedAt`，层级仅结构化报错；非无限排队）。
 - **设备 façade（device facade）**：执行器使用的设备能力抽象（tap/swipe/inputText/launch/terminate/nodes/screenshot）；模拟器由 idb/simctl 实现，真机由 WDA 实现。
 - **backend**：观测/对比产物中标注的实现来源（`wda` 真机 / `idb`|`simctl` 模拟器），出现在截图 note 中。
+- **设备解析（device resolution）**：由 serial 种类（模拟器 UDID / 真机 UDID）选择设备后端的唯一入口（`Runtime.iosDevice` → `src/device/ios-facade.ts`）；非 iOS serial 返回空，真机缺少 WDA provider 显式报错（不静默错造模拟器设备）。
 
 ## CR 交互理解
 

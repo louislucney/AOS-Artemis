@@ -8,6 +8,8 @@ import {
 } from "../artemis/task-result.js";
 import { captureIosPng, classifyIosSerial, type IosPngCapture } from "../device/ios.js";
 import { captureAdbPng, type AdbPngCapture } from "../device/screenshot.js";
+import { IosDeviceBusyError } from "../ios/appium/session.js";
+import type { WdaCaptureResult } from "../ios/appium/service.js";
 import type { Runtime } from "../runtime.js";
 import { extractDeviceImage } from "../tools/device-image.js";
 import { errorMessage } from "../util.js";
@@ -23,9 +25,7 @@ export interface LiveCaptureOptions {
   platform?: "android" | "ios";
   capturePng?: (options?: { serial?: string | null }) => Promise<AdbPngCapture>;
   captureIosPng?: (options?: { serial?: string | null }) => Promise<IosPngCapture>;
-  captureWdaPng?: (
-    udid: string
-  ) => Promise<{ ok: true; value: Buffer } | { ok: false; error: string }>;
+  captureWdaPng?: (udid: string) => Promise<WdaCaptureResult<Buffer>>;
 }
 
 export interface StepScreenshotRequest {
@@ -80,11 +80,14 @@ export async function captureLiveScreenshot(
     if (serialKind === "device") {
       const captureWda =
         options.captureWdaPng ?? ((udid: string) => runtime.iosWda().screenshot(udid));
-      let wda: { ok: true; value: Buffer } | { ok: false; error: string };
+      let wda: WdaCaptureResult<Buffer>;
       try {
         wda = await captureWda(serial!);
       } catch (error) {
-        wda = { ok: false, error: errorMessage(error) };
+        wda =
+          error instanceof IosDeviceBusyError
+            ? { ok: false, error: errorMessage(error), busy: true, cachedFrame: error.cachedFrame }
+            : { ok: false, error: errorMessage(error) };
       }
       if (wda.ok) {
         return {
@@ -93,9 +96,12 @@ export async function captureLiveScreenshot(
           serial: serial!
         };
       }
-      const hint = /busy|占用/i.test(wda.error)
-        ? "设备正被任务占用；稍后重试。"
-        : "请确认 Appium/WDA 可用（doctor 查看）与 iOS 18+ 隧道已建立。";
+      const hint =
+        wda.busy === true
+          ? `设备正被任务占用（device_busy，观测有界等待超时）${
+              wda.cachedFrame ? "；已有最近缓存帧可供观测截图降级使用" : ""
+            }；稍后重试。`
+          : "请确认 Appium/WDA 可用（doctor 查看）与 iOS 18+ 隧道已建立。";
       throw new Error(`iOS 真机截图失败（${wda.error}）；${hint}`);
     }
     const captureIos = options.captureIosPng ?? ((captureOptions) => captureIosPng(captureOptions ?? {}));

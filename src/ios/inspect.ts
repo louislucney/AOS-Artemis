@@ -6,7 +6,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
 import { renderActionOverlay } from "./overlay.js";
-import { getIosTask, type IosTaskRecord, type IosTaskStep } from "./task-runner.js";
+import { getIosTask } from "./task-registry.js";
+import type { IosTaskRecord, IosTaskStep } from "./types.js";
 import { reconcileIosTrace, type IosTraceDeps } from "./trace-store.js";
 
 function textResult(text: string): CallToolResult {
