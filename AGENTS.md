@@ -34,7 +34,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 | HTTP 服务 | `node dist/cli.js serve --http --port 8765 --workspace <dir>`（端点 `POST /mcp/<project>`，健康检查 `GET /healthz`） |
 | 本地 PG | `docker compose --profile local-db up -d postgres` → `AOS_DATABASE_URL=postgres://aos:aos_local_dev@127.0.0.1:5433/aos` |
 | 构建依赖包 | `node dist/cli.js deps build`（跨平台）；macOS/Linux 亦可用 `./scripts/artemis-deps.sh build`（可 `--skip-sync` 复用缓存） |
-| 测试闭环（CLI） | `node dist/cli.js suite run\|check\|calibrate\|loop\|flake\|retention\|evidence <traceId>\|api-errors <traceId>\|baseline save\|compare\|report\|feedback\|reconcile list\|confirm\|reject`（退出码 0 全通过 / 1 用例失败或未知边 / 2 执行错误或 --fail-on 命中；`--project <dir>`、`--json`；覆盖闸分**硬/探索**（inferred 边不虚高门禁，探索缺口仅报告）、`--strict` 弱断言升门禁；`reconcile` 审阅对账资产（confirm→human-confirmed 硬断言、reject→边不进生成，未裁决不升权）；`check` 静态覆盖不连设备、`calibrate` 对 xcresult/JUnit XML 差分校准、`loop` 一步闭环报告、`flake` 重复采样（通过率/翻转矩阵/flaky 率）、`retention` 保留期只读报告（不删除）、quarantine 名单（owner 签字，失败不计门禁，`--no-quarantine` 严格跑）；API 错误经 `.artemis/design/error-codes.json` 匹配，见 DESIGN §13.36；流程完整性契约与闭环编排见 DESIGN §6.10；`--device` 传 iOS 模拟器 UDID 时由 AOS iOS 执行器跑用例：idb 复位、`ios-log-unsupported` 日志降级，见 DESIGN §13.47） |
+| 测试闭环（CLI） | `node dist/cli.js suite run\|check\|calibrate\|loop\|flake\|retention\|evidence <traceId>\|api-errors <traceId>\|baseline save\|compare\|report\|feedback\|reconcile list\|confirm\|reject`（退出码 0 全通过 / 1 用例失败或未知边 / 2 执行错误或 --fail-on 命中；`--project <dir>`、`--json`；覆盖闸分**硬/探索**（inferred 边不虚高门禁，探索缺口仅报告）、`--strict` 弱断言升门禁；`reconcile` 审阅对账资产（confirm→human-confirmed 硬断言、reject→边不进生成，未裁决不升权）；`check` 静态覆盖不连设备（硬门禁含三件套 tests.xlsx 存在/时效与 taskDesc `【真实数据】` 标记，见 §13.93）、`calibrate` 对 xcresult/JUnit XML 差分校准、`loop` 一步闭环报告、`flake` 重复采样（通过率/翻转矩阵/flaky 率）、`retention` 保留期只读报告（不删除）、quarantine 名单（owner 签字，失败不计门禁，`--no-quarantine` 严格跑）；API 错误经 `.artemis/design/error-codes.json` 匹配，见 DESIGN §13.36；流程完整性契约与闭环编排见 DESIGN §6.10；`--device` 传 iOS 模拟器 UDID 时由 AOS iOS 执行器跑用例：idb 复位、`ios-log-unsupported` 日志降级，见 DESIGN §13.47） |
 | 安装/更新依赖 | `node dist/cli.js doctor --install-deps`（serve 首次运行自动执行） |
 | 镜像 | `docker build -t aos-mcp:local .` |
 | 真机验收（手动） | `node scripts/e2e-device.mjs "…"`（需 artemis venv + 已授权设备） |
@@ -53,7 +53,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 - 用户可见文案与文档用中文；代码标识符用英文。代码默认不加注释；例外：解释非显然契约的 JSDoc 可保留（如覆盖率口径、失败分类），复述代码的注释不写；vendor 补丁仍须带 `PATCH (aos-mcp)` 标记。
 - 测试跑的是 `dist/`：改动后先 `npm run build` 再 `node --test`。
 - **重建后必须重启**：`dist/` 变化后当前 MCP 进程仍执行旧代码（ESM 启动时加载）；重启客户端会话加载新构建，`aos_status.build.stale=true` 会提示（启动日志同时 WARN）。
-- **生成物三件套是强制的**：`figma_generate_tests` 在 `save !== false` 时 tests.json + tests.md + tests.xlsx 同时落盘（响应 `savedTo` 三个路径；模版渲染失败则三份都不写）；"只有 md" 不是预期行为。
+- **生成物三件套是强制的**：`figma_generate_tests` 在 `save !== false` 时 tests.json + tests.md + tests.xlsx 同时落盘（响应 `savedTo` 三个路径；模版渲染失败则三份都不写）；"只有 md" 不是预期行为。同时每个 taskDesc 注入 `【真实数据】` 硬约束（数据须经被测应用真实请求链路准备——界面操作或后端 API；禁止伪造/写死页面或数据、mock、手造页面）；`suite check` 对**三件套完整性**（tests.xlsx 存在且不早于 tests.json）与**真实数据标记**做硬门禁（缺任一 exit 2，legacy 用例需重新生成），`loop` 与 `run --fail-on-uncovered` 同口径。
 
 ## 关键机制速查
 

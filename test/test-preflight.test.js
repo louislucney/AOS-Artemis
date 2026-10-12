@@ -112,6 +112,30 @@ test("preflightGeneratedTests: hard/explore coverage split from flows provenance
   assert.deepEqual(report.coverage.screens.sort(), ["A", "C"]);
 });
 
+test("preflightGeneratedTests: 三件套/真实数据约束字段（suite check 硬门禁输入）", () => {
+  const tests = JSON.stringify({
+    flows: [
+      { id: "case-1", name: "A", screens: ["Home"], steps: [], taskDesc: "【真实数据】须经真实请求链路" },
+      { id: "case-2", name: "B", screens: ["Home"], steps: [], taskDesc: "手写用例" }
+    ]
+  });
+  const configDir = makeDesignDir({ tests });
+
+  const report = preflightGeneratedTests(configDir);
+  assert.equal(report.artifacts.excelPresent, false, "缺 tests.xlsx 可被检出");
+  assert.equal(report.artifacts.excelFile.endsWith("tests.xlsx"), true);
+  assert.deepEqual(report.dataPolicy.missing, [{ id: "case-2", name: "B" }]);
+
+  fs.writeFileSync(path.join(configDir, "design", "tests.xlsx"), "fake-xlsx");
+  const withXlsx = preflightGeneratedTests(configDir);
+  assert.equal(withXlsx.artifacts.excelPresent, true);
+  assert.equal(withXlsx.artifacts.excelStale, false, "xlsx 晚于 json 不算过期");
+
+  fs.writeFileSync(path.join(configDir, "design", "tests.json"), tests);
+  const stale = preflightGeneratedTests(configDir);
+  assert.equal(stale.artifacts.excelStale, true, "json 更新后 xlsx 过期");
+});
+
 test("preflightGeneratedTests: missing or corrupt tests.json returns null; flows optional", () => {
   const missing = makeDesignDir({});
   assert.equal(preflightGeneratedTests(missing), null);

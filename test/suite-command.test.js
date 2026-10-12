@@ -22,7 +22,7 @@ function caseEntry(index, overrides = {}) {
     screens: ["Home"],
     steps: ["点击「Go」，验证进入「Next」（页面应出现「Done」）"],
     preconditions: ["应用已安装且可正常启动"],
-    taskDesc: `run case ${index}`,
+    taskDesc: `run case ${index}（【真实数据】须经真实请求链路，禁止伪造页面/假数据）`,
     ...overrides
   };
 }
@@ -53,6 +53,7 @@ async function setupRun({ cases = [caseEntry(1)], statuses = {}, store, running 
   fs.mkdirSync(designDir, { recursive: true });
   if (cases) {
     fs.writeFileSync(path.join(designDir, "tests.json"), JSON.stringify({ flows: cases }));
+    fs.writeFileSync(path.join(designDir, "tests.xlsx"), "fake-xlsx");
   }
   return { dir, runtime, store: projectStore, proxy };
 }
@@ -495,6 +496,7 @@ test("suite run --fail-on-uncovered: custom tests path is validated; missing flo
     JSON.stringify({ flows: [caseEntry(1)] }),
     "utf-8"
   );
+  fs.writeFileSync(path.join(qaDir, "tests.xlsx"), "fake-xlsx");
 
   const missingFlows = await runCli(runtime, ["run", "--tests", "qa/tests.json", "--fail-on-uncovered"]);
   assert.equal(missingFlows.code, 2);
@@ -602,9 +604,56 @@ test("suite check --strict: weak assertions gate when requested; explore steps s
     ]
   });
   fs.writeFileSync(path.join(designDir, "tests.json"), JSON.stringify({ flows: [exploreCase] }));
+  fs.writeFileSync(path.join(designDir, "tests.xlsx"), "fake-xlsx");
 
   const exploreStrict = await runCli(runtime, ["check", "--strict"]);
   assert.equal(exploreStrict.code, 0, "explore steps are exempt from --strict");
+});
+
+test("suite check: 三件套与真实数据约束门禁（缺 xlsx / xlsx 过期 / 缺标记 → exit 2）", async () => {
+  const { runtime } = await setupRun({ cases: [caseEntry(1)] });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const testsPath = path.join(designDir, "tests.json");
+  const xlsxPath = path.join(designDir, "tests.xlsx");
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: []
+    }),
+    "utf-8"
+  );
+
+  const ok = await runCli(runtime, ["check"]);
+  assert.equal(ok.code, 0, "三件套与真实数据标记齐备时通过");
+
+  // 缺真实数据标记
+  fs.writeFileSync(
+    testsPath,
+    JSON.stringify({ flows: [caseEntry(1, { taskDesc: "run case 1" })] })
+  );
+  fs.writeFileSync(xlsxPath, "fake-xlsx");
+  const noPolicy = await runCli(runtime, ["check"]);
+  assert.equal(noPolicy.code, 2);
+  assert.ok(noPolicy.errors.some((line) => line.includes("缺少真实数据约束")));
+
+  // 缺 xlsx
+  fs.writeFileSync(
+    testsPath,
+    JSON.stringify({ flows: [caseEntry(1)] })
+  );
+  fs.rmSync(xlsxPath);
+  const noXlsx = await runCli(runtime, ["check"]);
+  assert.equal(noXlsx.code, 2);
+  assert.ok(noXlsx.errors.some((line) => line.includes("缺少配套 tests.xlsx")));
+
+  // xlsx 早于 tests.json（疑似手改）
+  fs.writeFileSync(xlsxPath, "fake-xlsx");
+  const older = new Date(Date.now() - 60_000);
+  fs.utimesSync(xlsxPath, older, older);
+  const stale = await runCli(runtime, ["check"]);
+  assert.equal(stale.code, 2);
+  assert.ok(stale.errors.some((line) => line.includes("tests.xlsx 早于 tests.json")));
 });
 
 test("suite reconcile: list/confirm/reject with exit codes and asset writes", async () => {

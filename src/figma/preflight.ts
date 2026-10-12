@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import {
   computeClassifiedCoverage,
   computeScreenCoverage,
@@ -5,6 +8,7 @@ import {
   type CoverageEdge
 } from "./coverage.js";
 import { loadDesignFlowGraph, readTestsDocument } from "./design-store.js";
+import { hasRealDataPolicy } from "./data-policy.js";
 import { isExploreKind, isHardCoverageValue } from "../provenance.js";
 
 export interface PreflightWeakStep {
@@ -32,11 +36,27 @@ export interface PreflightCoverage {
   explore: Pick<CoverageClass, "uncoveredScreens" | "uncoveredEdges">;
 }
 
+/** 生成物三件套与真实数据约束的静态核验结果（ADR-0010 相邻契约：三件套强制；
+ * 真实数据硬限制：禁止伪造页面/假数据）。两者都是硬门禁输入。 */
+export interface PreflightArtifacts {
+  testsFile: string;
+  excelFile: string;
+  excelPresent: boolean;
+  excelStale: boolean;
+}
+
+export interface PreflightDataPolicy {
+  /** Cases whose taskDesc lacks the real-data clause marker. */
+  missing: Array<{ id: string; name: string }>;
+}
+
 export interface PreflightReport {
   cases: number;
   weakCases: PreflightWeakCase[];
   coverage: PreflightCoverage;
   generation: unknown;
+  artifacts: PreflightArtifacts;
+  dataPolicy: PreflightDataPolicy;
 }
 
 export interface PreflightOptions {
@@ -57,6 +77,26 @@ export function preflightGeneratedTests(
   if (document === null) return null;
   const cases = document.records;
   const caseInputs = cases.map((record) => ({ screens: record.screens }));
+
+  const testsFile =
+    options.testsPath ?? path.join(configDirAbs, "design", "tests.json");
+  const parsedTests = path.parse(testsFile);
+  const excelFile = path.join(parsedTests.dir, `${parsedTests.name}.xlsx`);
+  const excelPresent = fs.existsSync(excelFile);
+  let excelStale = false;
+  if (excelPresent) {
+    try {
+      excelStale = fs.statSync(excelFile).mtimeMs < fs.statSync(testsFile).mtimeMs;
+    } catch {
+      excelStale = false;
+    }
+  }
+  const artifacts: PreflightArtifacts = { testsFile, excelFile, excelPresent, excelStale };
+  const dataPolicy: PreflightDataPolicy = {
+    missing: cases
+      .filter((record) => !hasRealDataPolicy(record.taskDesc))
+      .map((record) => ({ id: record.id, name: record.name }))
+  };
 
   const weakCases: PreflightWeakCase[] = [];
   for (const record of cases) {
@@ -118,5 +158,5 @@ export function preflightGeneratedTests(
     };
   }
 
-  return { cases: cases.length, weakCases, coverage, generation: document.generation };
+  return { cases: cases.length, weakCases, coverage, generation: document.generation, artifacts, dataPolicy };
 }

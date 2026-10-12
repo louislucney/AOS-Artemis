@@ -139,11 +139,13 @@ function parseIgnoreRegions(values: string[]): Array<{ x: number; y: number; wid
 }
 
 /** Reason the run fails the flow-coverage gate, or null when it passes.
- * Hard coverage gaps (explicit/observed/confirmed/legacy evidence) always
- * gate; inferred exploration gaps never do. `--strict` additionally gates on
- * weak assertions (non-explore steps without a checkable expectation).
- * Fail-closed: unreadable preflight data or missing flows.json both count as
- * "cannot prove completeness" (DESIGN §6.10). */
+ * Hard gates: artifact integrity (tests.xlsx present and not older than
+ * tests.json — 三件套强制), real-data policy (every case's taskDesc carries
+ * the 【真实数据】 clause — fabricated pages/data are forbidden), and flow
+ * coverage (hard-class gaps always gate; inferred exploration gaps never do).
+ * `--strict` additionally gates on weak assertions (non-explore steps without
+ * a checkable expectation). Fail-closed: unreadable preflight data or missing
+ * flows.json both count as "cannot prove completeness" (DESIGN §6.10). */
 function coverageGateIssue(
   preflight: PreflightReport | null,
   options: { strict?: boolean } = {}
@@ -151,23 +153,42 @@ function coverageGateIssue(
   if (!preflight) {
     return "流程覆盖校验不可用：预检数据缺失（tests.json 不可读）";
   }
+  const issues: string[] = [];
+  if (!preflight.artifacts.excelPresent) {
+    issues.push(
+      `缺少配套 tests.xlsx（三件套强制：须由 figma_generate_tests 同源生成 ${preflight.artifacts.excelFile}）`
+    );
+  } else if (preflight.artifacts.excelStale) {
+    issues.push("tests.xlsx 早于 tests.json（疑似手改或未重新生成；请重新运行 figma_generate_tests）");
+  }
+  const missingPolicy = preflight.dataPolicy.missing;
+  if (missingPolicy.length > 0) {
+    const names = missingPolicy.slice(0, 3).map((entry) => entry.name).join("、");
+    issues.push(
+      `用例缺少真实数据约束【真实数据】（禁止伪造页面/假数据，数据须经真实请求链路）：` +
+        `${names}${missingPolicy.length > 3 ? ` 等 ${missingPolicy.length} 条` : ""}` +
+        "（需由 figma_generate_tests 重新生成）"
+    );
+  }
   const coverage = preflight.coverage;
   if (!coverage.available) {
-    return "流程覆盖校验不可用：缺 flows.json，无法判定流程完整性（按不通过处理）";
+    issues.push("流程覆盖校验不可用：缺 flows.json，无法判定流程完整性（按不通过处理）");
+  } else {
+    const uncovered = coverage.uncoveredScreens.length + coverage.uncoveredEdges.length;
+    const generation = preflight.generation as { truncated?: unknown } | null;
+    const truncated = generation?.truncated === true;
+    const strictWeak = options.strict === true && preflight.weakCases.length > 0;
+    if (uncovered > 0 || truncated) {
+      issues.push(
+        `流程未完整覆盖：未硬覆盖屏幕 ${coverage.uncoveredScreens.length} · ` +
+          `未硬覆盖跳转 ${coverage.uncoveredEdges.length}${truncated ? " · 路径截断" : ""}` +
+          (strictWeak ? ` · --strict 弱断言 ${preflight.weakCases.length} 条` : "")
+      );
+    } else if (strictWeak) {
+      issues.push(`--strict 门禁未通过：弱断言 ${preflight.weakCases.length} 条（explore 步骤已豁免）`);
+    }
   }
-  const uncovered = coverage.uncoveredScreens.length + coverage.uncoveredEdges.length;
-  const generation = preflight.generation as { truncated?: unknown } | null;
-  const truncated = generation?.truncated === true;
-  const strictWeak = options.strict === true && preflight.weakCases.length > 0;
-  if (uncovered === 0 && !truncated && !strictWeak) return null;
-  if (uncovered === 0 && !truncated) {
-    return `--strict 门禁未通过：弱断言 ${preflight.weakCases.length} 条（explore 步骤已豁免）`;
-  }
-  return (
-    `流程未完整覆盖：未硬覆盖屏幕 ${coverage.uncoveredScreens.length} · ` +
-    `未硬覆盖跳转 ${coverage.uncoveredEdges.length}${truncated ? " · 路径截断" : ""}` +
-    (strictWeak ? ` · --strict 弱断言 ${preflight.weakCases.length} 条` : "")
-  );
+  return issues.length > 0 ? issues.join("；") : null;
 }
 
 function retryCountOf(flags: ParsedFlags): number {
@@ -246,7 +267,7 @@ export function printSuiteUsage(log: (line: string) => void): void {
 
 Usage:
   aos-mcp suite run [options]        执行 tests.json：每例复位→提交→轮询→台账→逐例分类
-  aos-mcp suite check [options]      静态覆盖检查：tests.json × flows.json（不连设备，CI 友好）
+  aos-mcp suite check [options]      静态检查：覆盖 × 三件套（tests.xlsx）× 真实数据约束（不连设备，CI 友好）
   aos-mcp suite calibrate [options]  确定性套件（xcresult）与 MCP 台账差分校准（漏报/误报率）
   aos-mcp suite loop [options]       测试闭环：静态检查→执行(可选)→反馈→差分校准(可选)，产出闭环报告与下一步
   aos-mcp suite flake [options]      重复采样量化确定性：通过率/翻转矩阵/flaky 率（--cases × --runs）

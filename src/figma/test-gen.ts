@@ -15,6 +15,7 @@ import {
   type FlowGraph
 } from "./flows.js";
 import { deriveCasePreconditions } from "./preconditions.js";
+import { REAL_DATA_CLAUSE } from "./data-policy.js";
 import { applyReconciliationToGraph, loadReconciliation } from "./reconciliation.js";
 import { loadScreenMap, normalizeElementLabel } from "../diff/screen-map.js";
 import { canonicalizePlaceholders, normalizedText } from "./strings.js";
@@ -566,6 +567,7 @@ export function generateTestCases(
         : []),
       `开始前：打开应用并确保停留在「${entryScreen}」页（如不在该页，先导航过去）。`,
       `前置假设：${preconditions.join("；")}。若数据不满足，请停止并报告数据不满足。`,
+      REAL_DATA_CLAUSE,
       ...(exploreCount > 0
         ? [
             `本用例含 ${exploreCount} 步探索（来源未确认）：探索步骤记录实际路径即可，不参与 PASS/FAIL。`
