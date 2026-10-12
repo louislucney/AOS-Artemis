@@ -7,6 +7,7 @@
 export type Provenance =
   | "explicit"
   | "inferred"
+  | "vision-inferred"
   | "runtime-observed"
   | "human-confirmed"
   | "legacy-unknown";
@@ -18,6 +19,7 @@ export type TextClass = "runtime-text" | "annotation" | "layer-name";
 const CONFIDENCE_BY_PROVENANCE: Record<Provenance, Confidence> = {
   explicit: "high",
   inferred: "low",
+  "vision-inferred": "low",
   "runtime-observed": "high",
   "human-confirmed": "high",
   "legacy-unknown": "low"
@@ -39,10 +41,14 @@ export function isAnnotationLayerName(name: unknown): boolean {
   return typeof name === "string" && name.startsWith("Flow/");
 }
 
-/** Unconfirmed evidence (heuristic inference or legacy artifacts): generation
- * must emit exploration steps, never hard assertions. */
+/** Unconfirmed evidence (heuristic or vision inference, legacy artifacts):
+ * generation must emit exploration steps, never hard assertions. */
 export function isUnconfirmedProvenance(provenance: Provenance): boolean {
-  return provenance === "inferred" || provenance === "legacy-unknown";
+  return (
+    provenance === "inferred" ||
+    provenance === "vision-inferred" ||
+    provenance === "legacy-unknown"
+  );
 }
 
 /** How a generated step is judged: hard assertions gate PASS/FAIL, exploration
@@ -53,13 +59,14 @@ export function isExploreKind(value: unknown): boolean {
   return value === "explore";
 }
 
-/** Gate-side classification for flow coverage: only `inferred` evidence is
- * exempt from the hard gate. Legacy artifacts stay gating (fail loud — never
- * silently weaken an old project's gate); confirmed evidence always gates.
- * Note this is deliberately NOT the inverse of `isUnconfirmedProvenance`
- * (assertion side): legacy is unconfirmed for assertions yet still gating. */
+/** Gate-side classification for flow coverage: `inferred` and
+ * `vision-inferred` evidence is exempt from the hard gate (ADR-0010). Legacy
+ * artifacts stay gating (fail loud — never silently weaken an old project's
+ * gate); confirmed evidence always gates. Note this is deliberately NOT the
+ * inverse of `isUnconfirmedProvenance` (assertion side): legacy is unconfirmed
+ * for assertions yet still gating. */
 export function isHardCoverageTarget(provenance: Provenance): boolean {
-  return provenance !== "inferred";
+  return provenance !== "inferred" && provenance !== "vision-inferred";
 }
 
 /** Convenience for persisted artifacts: classify a raw provenance value for

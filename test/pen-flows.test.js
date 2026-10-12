@@ -144,7 +144,7 @@ test("pen_extract_flows: saves flows.json + flow-map.md and feeds the test loop"
 
   const flows = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
   assert.deepEqual(flows.entryScreens, ["主頁"]);
-  assert.equal(flows.schemaVersion, 2);
+  assert.equal(flows.schemaVersion, 3);
   assert.equal(flows.screens[0].provenance, "inferred");
   assert.equal(flows.screens[0].confidence, "low");
   assert.equal(flows.edges[0].provenance, "inferred");

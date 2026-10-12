@@ -66,6 +66,36 @@ function boundsOf(node: unknown): { x: number; y: number; width: number; height:
   return validateBounds((node as { absoluteBoundingBox?: unknown }).absoluteBoundingBox);
 }
 
+/** flows.json schema version written by extraction and required by consumers.
+ * v3 adds `screens[].elements` (vision element inventory, ADR-0010): readers
+ * that do not know a provenance value must not silently treat it as legacy
+ * (the coverage gate would hard-flag it), hence the explicit version gate in
+ * `normalizeFlowGraph`. */
+export const FLOWS_SCHEMA_VERSION = 3;
+
+/** Element recognized on a screen (currently vision-inferred, ADR-0010):
+ * `class`/`intent` come from a controlled vocabulary, `label` is free text. */
+export interface FlowElement {
+  id: string;
+  class: string;
+  intent: string;
+  label?: string;
+  /** Design node the element was grounded onto (best geometry match). */
+  nodeId?: string;
+  /** Screen-local bounds in design px (render coordinate system, scale 1). */
+  bbox?: { x: number; y: number; width: number; height: number };
+  /** Render evidence (project-relative path). */
+  evidence?: { render?: string };
+  provenance: Provenance;
+  confidence?: Confidence;
+}
+
+export interface FlowWarning {
+  code: string;
+  message: string;
+  details?: string[];
+}
+
 export interface FlowScreen {
   id: string;
   name: string;
@@ -79,6 +109,8 @@ export interface FlowScreen {
   /** Acceptance criteria from design annotations (`Flow/AC*` groups or
    * `AC:`-prefixed annotation texts): the hard-assertion oracle (ticket 11). */
   acceptance?: string[];
+  /** Vision element inventory (v3 artifacts; absent on earlier ones). */
+  elements?: FlowElement[];
   /** Evidence source; absent = legacy-unknown (conservative). */
   provenance?: Provenance;
   confidence?: Confidence;
@@ -404,10 +436,52 @@ export function normalizeFlowHints(raw: unknown): FlowHint[] {
   return hints;
 }
 
+function normalizeFlowElements(raw: unknown): FlowElement[] {
+  if (!Array.isArray(raw)) return [];
+  const elements: FlowElement[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.id === "string" && record.id !== "" ? record.id : null;
+    if (!id) continue;
+    const provenance = resolveProvenance(record.provenance);
+    const bbox = validateBounds(record.bbox);
+    const evidenceRaw =
+      record.evidence && typeof record.evidence === "object" && !Array.isArray(record.evidence)
+        ? (record.evidence as { render?: unknown })
+        : null;
+    const render = evidenceRaw && typeof evidenceRaw.render === "string" ? evidenceRaw.render : null;
+    elements.push({
+      id,
+      class: typeof record.class === "string" && record.class !== "" ? record.class : "other",
+      intent: typeof record.intent === "string" && record.intent !== "" ? record.intent : "other",
+      ...(typeof record.label === "string" && record.label !== "" ? { label: record.label } : {}),
+      ...(typeof record.nodeId === "string" && record.nodeId !== "" ? { nodeId: record.nodeId } : {}),
+      ...(bbox ? { bbox } : {}),
+      ...(render ? { evidence: { render } } : {}),
+      provenance,
+      confidence: confidenceFor(provenance)
+    });
+  }
+  return elements;
+}
+
 /** Normalize a persisted flow graph (v1 artifacts lack provenance/text
  * classes): missing evidence fields become legacy-unknown/low, string hints
- * become runtime-text records. Unknown future fields are dropped. */
+ * become runtime-text records. Unknown future fields are dropped. A
+ * `schemaVersion` newer than `FLOWS_SCHEMA_VERSION` fails loud instead of
+ * degrading every unknown provenance value to legacy-unknown (which the
+ * coverage gate treats as hard). */
 export function normalizeFlowGraph(raw: unknown): FlowGraph {
+  const versionSource = (raw ?? {}) as { schemaVersion?: unknown };
+  if (
+    typeof versionSource.schemaVersion === "number" &&
+    versionSource.schemaVersion > FLOWS_SCHEMA_VERSION
+  ) {
+    throw new Error(
+      `flows.json schemaVersion ${versionSource.schemaVersion} 高于本版本支持范围 ${FLOWS_SCHEMA_VERSION}：请升级 AOS 后重试`
+    );
+  }
   const source = (raw ?? {}) as {
     screens?: unknown;
     edges?: unknown;
@@ -432,6 +506,10 @@ export function normalizeFlowGraph(raw: unknown): FlowGraph {
         ? screen.childNames.filter((child): child is string => typeof child === "string")
         : [],
       textHints: normalizeFlowHints(screen.textHints),
+      ...(() => {
+        const elements = normalizeFlowElements(screen.elements);
+        return elements.length > 0 ? { elements } : {};
+      })(),
       ...(screenBounds ? { bounds: screenBounds } : {}),
       ...(() => {
         if (!Array.isArray(screen.acceptance)) return {};
@@ -566,7 +644,7 @@ export async function figmaExtractFlows(
     const lastModified = typeof file.lastModified === "string" ? file.lastModified : null;
     const payload: Record<string, unknown> = {
       ok: true,
-      schemaVersion: 2,
+      schemaVersion: FLOWS_SCHEMA_VERSION,
       fileKey,
       fileName: file.name ?? null,
       ...(fileVersion !== null ? { fileVersion } : {}),

@@ -51,6 +51,27 @@ test("reconciliation: observations create, count and idempotently upgrade unconf
   assert.deepEqual(second.asset.edges[0].traces, ["t1", "t2"]);
 });
 
+test("reconciliation: vision-inferred edges upgrade through the same observation path", () => {
+  const result = applyObservations(
+    { version: 1, updatedAt: null, edges: [] },
+    [
+      {
+        from: "首頁",
+        to: "購物車",
+        designProvenance: "vision-inferred",
+        traceId: "v1",
+        reached: true
+      }
+    ],
+    "2026-10-12T00:00:00.000Z"
+  );
+  assert.equal(result.applied, 1);
+  const entry = result.asset.edges[0];
+  assert.equal(entry.status, "upgraded");
+  assert.equal(entry.provenance, "runtime-observed");
+  assert.equal(entry.designProvenance, "vision-inferred");
+});
+
 test("reconciliation: un-reached observations register pending gaps", () => {
   const result = applyObservations(
     { version: 1, updatedAt: null, edges: [] },

@@ -8,15 +8,28 @@ import type { Runtime } from "../runtime.js";
 import {
   acceptanceItemOf,
   flowGraphWarnings,
+  FLOWS_SCHEMA_VERSION,
   isAcceptanceLayerName,
   routeFor,
   type FlowEdge,
+  type FlowElement,
   type FlowGraph,
-  type FlowHint
+  type FlowHint,
+  type FlowWarning
 } from "../figma/flows.js";
+import { makeChatFn, type ChatFn } from "../llm/chat.js";
+import {
+  isVisionCapableModel,
+  runVisionPass,
+  type VisionNodeGeom,
+  type VisionScreenInput
+} from "../design/vision.js";
 import { confidenceFor, isAnnotationLayerName, type Confidence, type Provenance } from "../provenance.js";
+import { penEnvFrom, type PenExecFn } from "./cli.js";
+import { type PenEnsureFn } from "./install.js";
+import { renderPenScreens, type PenScreenRenderInput, type PenScreenRenderResult } from "./render.js";
 import { loadPenDocument, penRelativePath, PEN_HINT, resolvePenTarget } from "./paths.js";
-import type { PenDocument, PenNode } from "./read.js";
+import { collectPenNodes, type PenDocument, type PenNode } from "./read.js";
 
 export interface PenFlowScreen {
   id: string;
@@ -32,16 +45,14 @@ export interface PenFlowScreen {
   states: Array<{ id: string; label: string; frameName: string }>;
   /** Acceptance criteria from `Flow/AC*` groups or `AC:`-prefixed annotation texts. */
   acceptance?: string[];
+  /** Vision element inventory (present only when the vision pass ran). */
+  elements?: FlowElement[];
   /** Evidence source (synthesis is always heuristic: inferred/low). */
   provenance: Provenance;
   confidence: Confidence;
 }
 
-export interface PenFlowWarning {
-  code: string;
-  message: string;
-  details?: string[];
-}
+export type PenFlowWarning = FlowWarning;
 
 export interface PenFlowSynthesis {
   boards: string[];
@@ -554,6 +565,18 @@ export function renderPenFlowMap(input: {
       : "（无屏幕）",
     ""
   );
+  const withElements = result.screens.filter((screen) => (screen.elements?.length ?? 0) > 0);
+  if (withElements.length > 0) {
+    lines.push("## 视觉识别（vision-inferred）", "");
+    for (const screen of withElements) {
+      lines.push(`- ${screen.name}`);
+      for (const element of screen.elements ?? []) {
+        const grounded = element.nodeId ? ` → ${element.nodeId}` : "";
+        lines.push(`  - [${element.class}/${element.intent}] ${element.label ?? "（无标签）"}${grounded}`);
+      }
+    }
+    lines.push("");
+  }
   lines.push("## 警告与碎片度", "");
   for (const warning of result.warnings) {
     lines.push(`- [${warning.code}] ${warning.message}`);
@@ -573,6 +596,225 @@ export interface PenExtractFlowsArgs {
   path?: string;
   save?: boolean;
   maxScreens?: number;
+  /** Vision element recognition: "auto" (default; runs when the active LLM is
+   * vision-capable), true (attempt even when the heuristic says no) or false. */
+  vision?: boolean | "auto";
+}
+
+export interface PenFlowsDeps {
+  exec?: PenExecFn;
+  ensure?: PenEnsureFn;
+  chat?: ChatFn;
+  render?: (input: PenScreenRenderInput) => Promise<PenScreenRenderResult>;
+}
+
+interface VisionMerge {
+  requested: "auto" | "on" | "off";
+  active: boolean;
+  model?: string;
+  reason?: string;
+  warnings: FlowWarning[];
+  edges: FlowEdge[];
+  unresolvedDestinations: string[];
+  elementsByScreen: Map<string, FlowElement[]>;
+  stats?: {
+    screensRequested: number;
+    screensSkipped: number;
+    screensProcessed: number;
+    elements: number;
+    navigationalEdges: number;
+    invalidItems: number;
+    failures: number;
+  };
+}
+
+function skippedVision(
+  requested: VisionMerge["requested"],
+  reason: string,
+  warnings: FlowWarning[] = []
+): VisionMerge {
+  return {
+    requested,
+    active: false,
+    reason,
+    warnings,
+    edges: [],
+    unresolvedDestinations: [],
+    elementsByScreen: new Map()
+  };
+}
+
+function visionEnvFlag(dotenv: Record<string, string>): string {
+  return (dotenv.AOS_VISION ?? process.env.AOS_VISION ?? "").trim();
+}
+
+function visionMaxScreens(dotenv: Record<string, string>): number {
+  const raw = (dotenv.AOS_VISION_MAX_SCREENS ?? process.env.AOS_VISION_MAX_SCREENS ?? "").trim();
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 20;
+}
+
+/** Screen inputs for the vision pass: frame geometry plus screen-local node
+ * geometry (child x/y accumulated from the screen root). */
+function collectVisionScreens(doc: PenDocument, screens: PenFlowScreen[]): VisionScreenInput[] {
+  const byId = new Map<string, PenNode>();
+  for (const node of collectPenNodes(doc)) {
+    if (typeof node.id === "string" && node.id !== "") byId.set(node.id, node);
+  }
+  const inputs: VisionScreenInput[] = [];
+  for (const screen of screens) {
+    const frame = byId.get(screen.id);
+    if (!frame) continue;
+    const width = numberProp(frame, "width");
+    const height = numberProp(frame, "height");
+    if (width === null || height === null || width <= 0 || height <= 0) continue;
+    const nodes: VisionNodeGeom[] = [];
+    const visit = (node: PenNode, ox: number, oy: number): void => {
+      const x = numberProp(node, "x");
+      const y = numberProp(node, "y");
+      const w = numberProp(node, "width");
+      const h = numberProp(node, "height");
+      const ax = ox + (x ?? 0);
+      const ay = oy + (y ?? 0);
+      if (typeof node.id === "string" && node.id !== "" && w !== null && h !== null && w > 0 && h > 0) {
+        nodes.push({
+          id: node.id,
+          name: String(node.name ?? ""),
+          type: String(node.type ?? ""),
+          x: ax,
+          y: ay,
+          width: w,
+          height: h
+        });
+      }
+      for (const child of node.children ?? []) visit(child, ax, ay);
+    };
+    for (const child of frame.children ?? []) visit(child, 0, 0);
+    inputs.push({ id: screen.id, name: screen.name, width, height, nodes: nodes.slice(0, 300) });
+  }
+  return inputs;
+}
+
+async function applyVision(
+  runtime: Runtime,
+  args: PenExtractFlowsArgs,
+  target: string,
+  doc: PenDocument,
+  result: PenFlowResult,
+  deps: PenFlowsDeps
+): Promise<VisionMerge | null> {
+  const requested: VisionMerge["requested"] =
+    args.vision === true ? "on" : args.vision === false ? "off" : "auto";
+  if (requested === "off") return null;
+
+  const dotenv = runtime.project.dotenvValues ?? {};
+  if (visionEnvFlag(dotenv) === "0") {
+    return skippedVision(requested, "AOS_VISION=0", [
+      { code: "vision-disabled-by-env", message: "视觉识别已跳过：AOS_VISION=0（环境禁用）" }
+    ]);
+  }
+
+  const screens = collectVisionScreens(doc, result.screens);
+  if (screens.length === 0) {
+    return skippedVision(requested, "无可用屏幕几何");
+  }
+
+  let chat: ChatFn | null = deps.chat ?? null;
+  let model: string | undefined;
+  let preWarnings: FlowWarning[] = [];
+  if (!chat) {
+    const entry = await runtime.activeEntry();
+    model = entry?.model ?? undefined;
+    if (!entry || !entry.model || !entry.baseUrl || !entry.apiKey) {
+      return skippedVision(requested, "无可用 active LLM", [
+        {
+          code: "vision-unavailable",
+          message: "视觉识别已跳过：无可用 active LLM（缺 model/baseUrl/key，用 aos_configure 配置）"
+        }
+      ]);
+    }
+    if (!isVisionCapableModel(entry.model)) {
+      if (requested === "auto") {
+        return skippedVision(requested, `模型「${entry.model}」未判定为视觉能力`, [
+          {
+            code: "vision-unavailable",
+            message: `视觉识别已跳过：active 模型「${entry.model}」未判定为视觉能力（可 vision:true 强制尝试或切换视觉模型）`
+          }
+        ]);
+      }
+      preWarnings = [
+        {
+          code: "vision-model-unverified",
+          message: `模型「${entry.model}」未判定为视觉能力（vision:true 显式覆盖），仍尝试调用`
+        }
+      ];
+    }
+    chat = makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model });
+  }
+
+  const renderFn = deps.render ?? renderPenScreens;
+  const outDir = path.join(runtime.configDirAbs, "design", "vision", path.basename(target, ".pen"));
+  let rendered: PenScreenRenderResult;
+  try {
+    rendered = await renderFn({
+      target,
+      screenIds: screens.map((screen) => screen.id),
+      env: penEnvFrom(dotenv, process.env),
+      outDir,
+      exec: deps.exec,
+      ensure: deps.ensure
+    });
+  } catch (error) {
+    return skippedVision(requested, "渲染通道失败", [
+      { code: "vision-render-unavailable", message: `视觉识别已跳过：设计渲染失败（${errorMessage(error)}）` }
+    ]);
+  }
+  if (!rendered.ok && rendered.files.size === 0) {
+    return skippedVision(requested, "渲染通道失败", [
+      {
+        code: "vision-render-unavailable",
+        message: `视觉识别已跳过：设计渲染失败（${rendered.error ?? "pen CLI 未产出渲染图"}）`
+      }
+    ]);
+  }
+
+  const imageCache = new Map<string, string | null>();
+  const imageFor = (screenId: string): string | null => {
+    if (imageCache.has(screenId)) return imageCache.get(screenId) ?? null;
+    const file = rendered.files.get(screenId);
+    let data: string | null = null;
+    if (file) {
+      try {
+        data = `data:image/png;base64,${fs.readFileSync(file).toString("base64")}`;
+      } catch {
+        data = null;
+      }
+    }
+    imageCache.set(screenId, data);
+    return data;
+  };
+  const renderPathOf = (screenId: string): string | null => {
+    const file = rendered.files.get(screenId);
+    return file ? penRelativePath(runtime, file) : null;
+  };
+
+  const pass = await runVisionPass({
+    chat,
+    screens,
+    imageFor,
+    renderPath: renderPathOf,
+    maxScreens: visionMaxScreens(dotenv)
+  });
+  return {
+    requested,
+    active: true,
+    ...(model ? { model } : {}),
+    warnings: [...preWarnings, ...pass.warnings],
+    edges: pass.edges,
+    unresolvedDestinations: pass.unresolvedDestinations,
+    elementsByScreen: pass.elementsByScreen,
+    stats: pass.stats
+  };
 }
 
 function jsonResult(payload: unknown, isError = false): CallToolResult {
@@ -581,7 +823,8 @@ function jsonResult(payload: unknown, isError = false): CallToolResult {
 
 export async function penExtractFlows(
   runtime: Runtime,
-  args: PenExtractFlowsArgs
+  args: PenExtractFlowsArgs,
+  deps: PenFlowsDeps = {}
 ): Promise<CallToolResult> {
   try {
     const designDir = path.join(runtime.configDirAbs, "design");
@@ -594,9 +837,20 @@ export async function penExtractFlows(
     }
     const doc = loadPenDocument(target);
     const result = synthesizePenFlows(doc, { maxScreens: args.maxScreens });
+    const vision = await applyVision(runtime, args, target, doc, result, deps);
+    if (vision) {
+      for (const screen of result.screens) {
+        const elements = vision.elementsByScreen.get(screen.id);
+        if (elements && elements.length > 0) screen.elements = elements;
+      }
+      result.edges.push(...vision.edges);
+      result.warnings.push(...vision.warnings);
+    }
+    const visionElements = vision?.active ? vision.stats?.elements ?? 0 : 0;
+    const visionEdges = vision?.active ? vision.edges.length : 0;
     const payload: Record<string, unknown> = {
       ok: true,
-      schemaVersion: 2,
+      schemaVersion: FLOWS_SCHEMA_VERSION,
       source: `pen:${penRelativePath(runtime, target)}`,
       counts: {
         boards: result.synthesis.boards.length,
@@ -605,15 +859,26 @@ export async function penExtractFlows(
         edges: result.edges.length,
         inferredEdges: result.synthesis.inferredEdges,
         interactionSignals: result.synthesis.interactionSignals,
+        visionElements,
+        visionEdges,
         warnings: result.warnings.length
       },
       synthesis: result.synthesis,
+      vision: vision
+        ? {
+            requested: vision.requested,
+            active: vision.active,
+            ...(vision.model ? { model: vision.model } : {}),
+            ...(vision.reason ? { reason: vision.reason } : {}),
+            ...(vision.stats ? vision.stats : {})
+          }
+        : { requested: "off", active: false },
       warnings: result.warnings,
       screens: result.screens.slice(0, 30),
       edges: result.edges.slice(0, 40),
       entryScreens: result.entryScreens,
       hint:
-        "跳转全部为 inferred（画板排布推断）；flows.json 可直接供 figma_generate_tests / suite check 使用；" +
+        "跳转默认全部为 inferred（画板排布推断）；flows.json（schemaVersion 3）可直接供 figma_generate_tests / suite check 使用；" +
         "复核 flow-map.md 后按需修正标签/顺序再生成用例。"
     };
     if (args.save !== false) {
@@ -628,7 +893,7 @@ export async function penExtractFlows(
             screens: result.screens,
             edges: result.edges,
             entryScreens: result.entryScreens,
-            unresolvedDestinations: []
+            unresolvedDestinations: vision?.unresolvedDestinations ?? []
           },
           null,
           2

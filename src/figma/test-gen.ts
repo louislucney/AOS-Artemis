@@ -253,18 +253,31 @@ export function linearizeFlowsWithStats(
   };
 
   /* 覆盖贪心 + 长路径优先：先选覆盖增量最大的连续路径（同增量比长度、再比签名），
-   * 直到没有候选能新增屏幕/跳转覆盖为止——避免"探索序前 N 条"产生大量共享前缀的短用例。 */
+   * 直到没有候选能新增屏幕/跳转/未决探索覆盖为止——避免"探索序前 N 条"产生大量
+   * 共享前缀的短用例。未决目的地边（to:null）不计入硬/探索覆盖目标（coverage.ts
+   * 口径），但每条只探索一次的用例需要被保留，否则视觉识别/未决交互永远不会被
+   * 执行（对账也就拿不到真机观测）。 */
+  const unresolvedOf = (flow: FlowEdge[]): string[] => {
+    const ids = new Set<string>();
+    for (const edge of flow) {
+      if (!edge.to) ids.add(`${edge.from.id}|${edge.element.id}`);
+    }
+    return [...ids];
+  };
   const candidates = deduped.map((flow) => ({
     flow,
     signature: signatureOf(flow),
     screens: screensOf(flow),
-    pairs: pairsOf(flow)
+    pairs: pairsOf(flow),
+    unresolved: unresolvedOf(flow)
   }));
   const coveredScreens = new Set<string>();
   const coveredPairs = new Set<string>();
+  const coveredUnresolved = new Set<string>();
   const gainOf = (candidate: (typeof candidates)[number]): number =>
     candidate.screens.filter((screen) => !coveredScreens.has(screen)).length +
-    candidate.pairs.filter((pair) => !coveredPairs.has(pair)).length;
+    candidate.pairs.filter((pair) => !coveredPairs.has(pair)).length +
+    candidate.unresolved.filter((id) => !coveredUnresolved.has(id)).length;
   const remaining = [...candidates];
   const kept: FlowEdge[][] = [];
   while (kept.length < maxFlows && remaining.length > 0) {
@@ -293,6 +306,7 @@ export function linearizeFlowsWithStats(
     kept.push(picked.flow);
     for (const screen of picked.screens) coveredScreens.add(screen);
     for (const pair of picked.pairs) coveredPairs.add(pair);
+    for (const id of picked.unresolved) coveredUnresolved.add(id);
   }
 
   const explorationStopped = guard >= 500 || flows.length >= maxFlows * 4;
@@ -406,7 +420,7 @@ function stepFor(
     if (edge.to) {
       return `探索到达「${edge.to.name}」（来源未确认）：自行尝试触发通往该页的交互，记录实际路径与页面变化；不参与断言判定`;
     }
-    return "探索未知跳转（来源未确认）：记录实际页面变化；不参与断言判定";
+    return `探索未知跳转「${edge.element.name}」（来源未确认）：尝试触发该元素并记录实际页面变化；不参与断言判定`;
   }
   const target = edge.to ? `「${edge.to.name}」` : null;
   const assertion = assertionFor(graph, edge);
