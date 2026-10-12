@@ -1,6 +1,6 @@
 # AOS MCP
 
-容器化 **AOS × ARTEMIS 合并 MCP 服务**：Figma 设计上下文（[design-context-bridge](https://github.com/CristinaFores/design-context-bridge)，MIT）+ ARTEMIS 真机自动化（[google/artemis](https://github.com/google/artemis)，Apache-2.0）+ **项目级 LLM 关联与切换（PostgreSQL）**。
+**AOS × ARTEMIS 合并 MCP 服务**：Figma 设计上下文（[design-context-bridge](https://github.com/CristinaFores/design-context-bridge)，MIT）+ ARTEMIS 真机自动化（[google/artemis](https://github.com/google/artemis)，Apache-2.0）+ **项目级 LLM 关联与切换（PostgreSQL）**。
 
 > 设计文档（架构/评审/数据模型）：[DESIGN.md](./DESIGN.md)
 > 运行逻辑与接入指南（其他项目如何挂载与使用）：[docs/接入指南.md](./docs/接入指南.md)
@@ -12,7 +12,23 @@
 - **全 OpenAI 兼容**：artemis 侧统一 `custom` provider（`OPENAI_BASE_URL` + `OPENAI_API_KEY` + model，参考 DeepSeek）。
 - **Figma 可选**：token 存在则读（PG/.env），不存在忽略；REST 工具缺 token 时提示。
 
-## 容器部署（推荐给多项目团队）
+## 原生部署（Mac/Linux，推荐）
+
+```bash
+git clone --recurse-submodules https://github.com/louislucney/AOS-Artemis.git
+cd AOS-Artemis && npm install && npm run build
+node dist/cli.js doctor --install-deps   # 首次：安装 artemis venv 等依赖
+
+# 单机 stdio：在 MCP 客户端里挂载 node <repo>/dist/index.js，env 注入 AOS_PROJECT_DIR 与 AOS_DATABASE_URL
+node dist/cli.js install                # 或由它生成客户端配置
+
+# 多项目 HTTP 常驻（Mac mini 供其他机器接入；PG 连接串见下文"本地开发数据库"）
+AOS_DATABASE_URL=postgres://aos:aos_local_dev@127.0.0.1:5432/aos \
+  node dist/cli.js serve --http --host 0.0.0.0 --workspace /srv/projects
+node dist/cli.js install --mode http --url http://<mac-ip>:8765
+```
+
+## 容器部署（可选：Linux/CI 环境）
 
 ```bash
 # 1) 构建并常驻（挂载公司工作区；PG 连接串经环境注入）
@@ -85,21 +101,25 @@ node dist/cli.js doctor --install-deps
 
 ## 本地开发数据库（PostgreSQL）
 
-专用本地实例（Docker，loopback 5433；**不影响**本机 5432 上其他应用的库）：
+Mac 原生部署直接用**本机 PostgreSQL**（系统安装的 EDB / Postgres.app，或 `brew install postgresql@17`；Docker 不再是本机部署的必需项）。以下示例以本机 5432 上的实例为准：
 
 ```bash
-docker compose --profile local-db up -d postgres
-# 连接串：postgres://aos:aos_local_dev@127.0.0.1:5433/aos
+# 用你的超级用户建服务专用角色与库（只做一次）
+psql -h 127.0.0.1 -p 5432 -U postgres -d postgres \
+  -c "CREATE ROLE aos LOGIN PASSWORD 'aos_local_dev';" \
+  -c "CREATE DATABASE aos OWNER aos;"
 
-export AOS_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5433/aos'
+export AOS_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos'
 node dist/cli.js doctor     # 应显示 "✓ PostgreSQL 连接正常"
 
 # 挂载 MCP 客户端时把该变量带进客户端配置：
-AOS_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5433/aos' node dist/cli.js install --mode local
+AOS_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos' node dist/cli.js install --mode local
+# HTTP 集中部署时把该变量放进 serve 进程环境：
+AOS_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos' node dist/cli.js serve --http --host 0.0.0.0 --workspace /srv/projects
 ```
 
-数据落在卷 `aos-postgres-data`；重置：`docker exec aos-postgres psql -U aos -d aos -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`。
-切换到公司 PG 时只需替换 `AOS_DATABASE_URL`（表结构首次连接自动创建）。
+若本机没有 PostgreSQL：`brew install postgresql@17 && brew services start postgresql@17`（默认 5432；被占用时可在 `/opt/homebrew/var/postgresql@17/postgresql.conf` 改 `port`）。
+切换实例只需替换 `AOS_DATABASE_URL`（表结构首次连接自动创建）。
 
 ## HTTP 模式（远程/多项目）
 
