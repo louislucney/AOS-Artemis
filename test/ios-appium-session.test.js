@@ -184,6 +184,34 @@ test("appium session: dispose 清理会话并拒绝排队请求", async () => {
   lease.release();
 });
 
+test("appium session: app URL 能力建会话、变更轮换、无 app 复用（ADR-0011）", async () => {
+  const { client, timers, manager } = makeManager();
+  const first = await manager.acquire("U-APP", "task", { app: "https://ci.example.com/a.ipa" });
+  assert.equal(first.sessionId, "s-1");
+  assert.equal(client.created.length, 1);
+  assert.equal(client.created[0]["appium:app"], "https://ci.example.com/a.ipa");
+  first.release();
+
+  const observe = await manager.acquire("U-APP", "observe");
+  assert.equal(observe.sessionId, "s-1", "无 app 的观测复用现有会话");
+  assert.equal(client.created.length, 1);
+  observe.release();
+
+  const rotated = await manager.acquire("U-APP", "task", { app: "https://ci.example.com/b.ipa" });
+  assert.equal(rotated.sessionId, "s-2", "app 变更轮换会话");
+  assert.equal(client.created.length, 2);
+  assert.equal(client.created[1]["appium:app"], "https://ci.example.com/b.ipa");
+  assert.deepEqual(client.deleted, ["s-1"]);
+  rotated.release();
+
+  const same = await manager.acquire("U-APP", "task", { app: "https://ci.example.com/b.ipa" });
+  assert.equal(same.sessionId, "s-2", "同 app 复用");
+  assert.equal(client.created.length, 2);
+  same.release();
+  timers.fireAll();
+  await tick();
+});
+
 test("CachedFrame 年龄与陈旧判定（capturedAtMs 优先、ISO 回退、0=关闭）", () => {
   const now = Date.now();
   const fresh = {

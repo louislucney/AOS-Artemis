@@ -113,6 +113,8 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 无状态 streamable-HTTP：每个项目独立 Runtime（LLM 关联 / artemis 子进程 / 任务统计）；项目名限 `[A-Za-z0-9._-]`。stdio 与 HTTP 两种入口共用同一套工具。
 
+远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。
+
 ## 任务统计与组合工具
 
 - `aos_tasks`：列出本项目 `mobile_run_task` 记录（case id / trace / 状态 / 模型 / 时间），默认先向 artemis 同步完成态；后台每 30s 自动同步；即时报错也会记为 `failed` 终态，生成用例的 `case_id` 由任务描述精确匹配回填。

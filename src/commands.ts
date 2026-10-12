@@ -206,6 +206,61 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
       });
     }
 
+    // 远程设备宿主（ADR-0011）：仅声明时探活，探针短超时、best-effort。
+    const { probeAdbSocket, probeAppiumStatus, resolveAndroidAdbSocket, resolveIosHost } = await import(
+      "./device/device-hosts.js"
+    );
+    const iosHost = resolveIosHost(project.config, project.resolver);
+    if (iosHost.appiumUrl) {
+      const probe = await probeAppiumStatus(iosHost.appiumUrl);
+      const signing = [
+        iosHost.wdaBundleId ? `wdaBundleId=${iosHost.wdaBundleId}` : null,
+        iosHost.xcodeOrgId ? `xcodeOrgId=${iosHost.xcodeOrgId}` : null,
+        iosHost.xcodeSigningId ? `xcodeSigningId=${iosHost.xcodeSigningId}` : null
+      ].filter((entry): entry is string => entry !== null);
+      if (probe.ok) {
+        lines.push({
+          icon: "OK",
+          title: `iOS 设备宿主可达（${iosHost.appiumUrl}，来源 ${iosHost.source ?? "config"}）`,
+          details: [
+            probe.detail,
+            signing.length > 0 ? `签名覆盖：${signing.join(" / ")}` : "签名：未声明（沿用宿主机默认）"
+          ]
+        });
+      } else {
+        degraded = true;
+        lines.push({
+          icon: "WARN",
+          title: `iOS 设备宿主不可达（${iosHost.appiumUrl}）`,
+          details: [
+            probe.detail,
+            "Guidance: 确认宿主机已在跑 Appium（appium --port 4723）且 LAN/VPN 可达；跨网建议 SSH 隧道：ssh -L 4723:127.0.0.1:4723 <宿主>，AOS_APPIUM_URL 指向 http://127.0.0.1:4723。"
+          ]
+        });
+      }
+    }
+    const androidHost = resolveAndroidAdbSocket(project.config, project.resolver);
+    if (androidHost) {
+      const probe = await probeAdbSocket(androidHost.socket);
+      if (probe.ok) {
+        lines.push({
+          icon: "OK",
+          title: `Android 设备宿主 adb 可达（${androidHost.socket}，来源 ${androidHost.source}）`,
+          details: [probe.detail]
+        });
+      } else {
+        degraded = true;
+        lines.push({
+          icon: "WARN",
+          title: `Android 设备宿主不可达（${androidHost.socket}）`,
+          details: [
+            probe.detail,
+            "Guidance: 在宿主机运行 adb -a nodaemon server（adb server 暴露风险，仅限可信网络）；或 SSH 隧道：ssh -L 5037:127.0.0.1:5037 <宿主> 并把 ADB_SERVER_SOCKET 指向 tcp:127.0.0.1:5037。"
+          ]
+        });
+      }
+    }
+
     const { detectAppium } = await import("./ios/appium/detect.js");
     const iosAppium = await detectAppium({ env: { ...project.dotenvValues, ...process.env } });
     if (iosAppium.appium.found && iosAppium.xcuitest.installed) {

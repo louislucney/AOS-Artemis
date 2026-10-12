@@ -4,7 +4,14 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
 
-import type { AosConfig, ArtemisConfig, FigmaConfig, InstallConfig, LlmProfile } from "./types.js";
+import type {
+  AosConfig,
+  ArtemisConfig,
+  DeviceHostsConfig,
+  FigmaConfig,
+  InstallConfig,
+  LlmProfile
+} from "./types.js";
 import { DEFAULT_CONFIG_DIR } from "./types.js";
 import { makeResolver, validateConfig, type ValidationResult, type ValueResolver } from "./validate.js";
 
@@ -125,11 +132,21 @@ export function normalizeConfig(data: unknown): AosConfig {
     if (artemis.repo === undefined || artemis.repo === null) artemis.repo = "";
   }
 
+  const deviceHostsRaw = obj.deviceHosts;
+  let deviceHosts: DeviceHostsConfig | undefined;
+  if (deviceHostsRaw !== undefined && deviceHostsRaw !== null) {
+    if (typeof deviceHostsRaw !== "object" || Array.isArray(deviceHostsRaw)) {
+      throw new Error(`${CONFIG_FILENAME}: "deviceHosts" must be an object`);
+    }
+    deviceHosts = deviceHostsRaw as DeviceHostsConfig;
+  }
+
   return {
     llm: { defaultProfile, profiles },
     figma: (obj.figma as FigmaConfig | undefined) ?? undefined,
     artemis,
-    install: (obj.install as InstallConfig | undefined) ?? undefined
+    install: (obj.install as InstallConfig | undefined) ?? undefined,
+    deviceHosts
   };
 }
 

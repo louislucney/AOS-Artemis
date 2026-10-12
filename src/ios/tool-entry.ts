@@ -126,11 +126,17 @@ export async function maybeIosRunTask(
       );
     }
     const raw = args.app_path.trim();
-    const resolved = path.isAbsolute(raw) ? raw : path.join(runtime.project.rootDir, raw);
-    if (!fs.existsSync(resolved)) {
-      return failStart(`app_path 指向的 .ipa 不存在：${resolved}`, "app_path_not_found");
+    if (/^https?:\/\//i.test(raw)) {
+      // ADR-0011: remote artifact — the Appium host fetches the .ipa at
+      // session creation (cross-host safe; no server-side path requirement).
+      appPath = raw;
+    } else {
+      const resolved = path.isAbsolute(raw) ? raw : path.join(runtime.project.rootDir, raw);
+      if (!fs.existsSync(resolved)) {
+        return failStart(`app_path 指向的 .ipa 不存在：${resolved}`, "app_path_not_found");
+      }
+      appPath = resolved;
     }
-    appPath = resolved;
   }
 
   const entry = deps.entry ?? (await runtime.activeEntry());

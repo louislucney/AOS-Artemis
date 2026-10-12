@@ -6,6 +6,7 @@ import { parse as parseJsonc } from "jsonc-parser";
 import type { AosConfig, ArtemisConfig, LlmProfile } from "../config/types.js";
 import { ARTEMIS_KEY_ENV, GOOGLE_KEY_ENV_CANDIDATES } from "../config/types.js";
 import { apiKeyEnvFor, type ValueResolver } from "../config/validate.js";
+import { normalizeAdbSocket } from "../device/device-hosts.js";
 
 export interface ResolvedPython {
   python: string | null;
@@ -134,6 +135,15 @@ export function buildChildEnv(args: BuildChildEnvArgs): ChildEnvResult {
   }
 
   if (config.artemis.deviceSerial) env.ADB_DEVICE_SERIAL = config.artemis.deviceSerial;
+
+  // ADR-0011 远程 Android 设备宿主：进程 env / 项目 .env / config.deviceHosts
+  // （优先级同上）→ ADB_SERVER_SOCKET；未声明时保持设备侧 adb（USB/无线调试）。
+  if (!env.ADB_SERVER_SOCKET) {
+    const androidHost =
+      resolver.getValue("ADB_SERVER_SOCKET").value ?? config.deviceHosts?.android?.adbHost ?? null;
+    const socket = normalizeAdbSocket(androidHost);
+    if (socket) env.ADB_SERVER_SOCKET = socket;
+  }
 
   // Defensive: never let the child attach to a global artemis daemon.
   delete env.ARTEMIS_DAEMON_PORT;
@@ -271,6 +281,8 @@ export interface EntryChildEnvArgs {
   rootDir: string;
   entry: EntryLike;
   baseEnv?: NodeJS.ProcessEnv;
+  /** Project `.env` getter (ADR-0011: config < dotenv < process env). */
+  dotenv?: () => Record<string, string>;
 }
 
 export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
@@ -296,6 +308,16 @@ export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
   if (entry.provider !== "google" && entry.baseUrl) env.OPENAI_BASE_URL = entry.baseUrl;
 
   if (config.artemis.deviceSerial) env.ADB_DEVICE_SERIAL = config.artemis.deviceSerial;
+
+  // ADR-0011 远程 Android 设备宿主：进程 env / 项目 .env / config.deviceHosts → ADB_SERVER_SOCKET。
+  if (!env.ADB_SERVER_SOCKET) {
+    const fromDotenv = args.dotenv?.()["ADB_SERVER_SOCKET"]?.trim() ?? "";
+    const androidHost =
+      fromDotenv !== "" ? fromDotenv : config.deviceHosts?.android?.adbHost ?? null;
+    const socket = normalizeAdbSocket(androidHost);
+    if (socket) env.ADB_SERVER_SOCKET = socket;
+  }
+
   delete env.ARTEMIS_DAEMON_PORT;
 
   const fingerprint = createHash("sha256")
@@ -338,6 +360,7 @@ export function buildBareChildSpec(args: {
   config: AosConfig;
   rootDir: string;
   baseEnv?: NodeJS.ProcessEnv;
+  dotenv?: () => Record<string, string>;
 }): ChildSpec {
   return buildChildSpecForEntry({
     ...args,

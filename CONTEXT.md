@@ -44,6 +44,13 @@
 - **backend**：观测/对比产物中标注的实现来源（`wda` 真机 / `idb`|`simctl` 模拟器），出现在截图 note 中。
 - **设备解析（device resolution）**：由 serial 种类（模拟器 UDID / 真机 UDID）选择设备后端的唯一入口（`Runtime.iosDevice` → `src/device/ios-facade.ts`）；非 iOS serial 返回空，真机缺少 WDA provider 显式报错（不静默错造模拟器设备）。
 
+## 远程部署与设备宿主
+
+- **设备宿主（device host）**：真正执行设备控制的机器——iOS 为承载 Appium/WDA 的 Mac（设备必须对它可见；模拟器只认服务本机），Android 为 adb 可达设备的机器（设备可经无线调试直接连入任一宿主）。MCP 服务可跨网络远程指挥设备宿主；宿主即服务本机时无需声明。
+- **宿主声明（host declaration）**：项目对「设备在哪里执行」的显式配置（iOS 的 Appium 端点、Android 的 adb 端点）；项目 `.env`/进程 env 可覆盖。
+- 不要把「设备宿主」与「backend」混用：backend 是观测/截图产物的实现来源标注（wda/idb/simctl），宿主是执行发生在哪台机器；也不要把「宿主」说成「设备源」。
+
+
 ## CR 交互理解
 
 - **CR（变更需求）**：一次待交付的变更单元——Jira 工单、要做的功能/设计、设计稿（Figma/.pen）与验收标准是同一件事的不同侧面，不独立成概念。

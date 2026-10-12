@@ -75,11 +75,34 @@ export interface InstallConfig {
   targets?: string[];
 }
 
+/** Remote device hosts (ADR-0011): where device control actually runs when the
+ * MCP service is deployed away from the project machines. Values map onto the
+ * existing env keys (AOS_APPIUM_URL / AOS_IOS_WDA_BUNDLE_ID /
+ * AOS_IOS_XCODE_ORG_ID / AOS_IOS_XCODE_SIGNING_ID / ADB_SERVER_SOCKET) and are
+ * overridden by project `.env` and process env. */
+export interface IosDeviceHostConfig {
+  appiumUrl?: string;
+  wdaBundleId?: string;
+  xcodeOrgId?: string;
+  xcodeSigningId?: string;
+}
+
+export interface AndroidDeviceHostConfig {
+  /** `host:port` or `tcp:host:port` of the adb server on the host machine. */
+  adbHost?: string;
+}
+
+export interface DeviceHostsConfig {
+  ios?: IosDeviceHostConfig;
+  android?: AndroidDeviceHostConfig;
+}
+
 export interface AosConfig {
   llm: LlmConfig;
   figma?: FigmaConfig;
   artemis: ArtemisConfig;
   install?: InstallConfig;
+  deviceHosts?: DeviceHostsConfig;
 }
 
 export const FIGMA_BRIDGE_PORT = 3055;

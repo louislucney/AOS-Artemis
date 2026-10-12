@@ -1430,3 +1430,10 @@ llm_switch(name, force):
 - **降级与成本**：不可用/离线/未登录各给独立警告（`vision-unavailable`/`vision-render-unavailable`/`vision-call-failed`/`vision-no-elements`/`vision-invalid-items`/`vision-screen-cap`/`vision-disabled-by-env`/`vision-model-unverified`），全部落 flows.json warnings 与响应，不阻断、不静默；`AOS_VISION=0` 全局关闭，`AOS_VISION_MAX_SCREENS` 默认 20；模型能力用名启发式（`isVisionCapableModel`），`vision:true` 可显式强制。
 - **生成侧（`src/figma/test-gen.ts`）**：未决目的地边不计覆盖目标，但按"每条只探索一次"保留用例（否则视觉边永不执行、对账无观测）；探索步文案带元素名（`探索未知跳转「购物袋」…`）。
 - **不猜目的地**：视觉识别只产意图与元素，目的地只能由真机观测或人工确认绑定（`to:null` + `unresolvedDestinations`）。
+
+### 13.92 实施记录（远程设备宿主 + 跨机产物，ADR-0011）
+
+> 实施于 2026-10-12；ADR-0011。集中部署（Mac mini）与分散项目间两端执行拓扑不对称：Android 可无线调试（设备侧联网），iOS 要求 Appium/WDA 宿主与设备同机且 `.ipa` 路径由宿主读取。本轮做操作层对齐：(1) `aos.config.jsonc` 高级层新增 `deviceHosts`（`ios.appiumUrl/wdaBundleId/xcodeOrgId/xcodeSigningId`、`android.adbHost`），解析优先级 config < 项目 `.env` < 进程 env（iOS 经 `deviceHostEnvFromConfig` 注入 `iosEnv` 打底层；Android 经 `buildChildEnvForEntry` 注入 `ADB_SERVER_SOCKET`，`dotenv` getter 由 Runtime 传入）；(2) `app_path` 支持 `http(s)://`——iOS 走 Appium `app` 能力（`AppiumSessionManager.acquire` 新增 `app` 选项：同 app 复用、变更轮换、无 app 观测复用；`installIpa` URL 分支建会话即安装），Android 在 Runtime 代理层下载到 `<项目>/.artemis/cache/apps/<sha16>.<ext>` 后以本地路径转发（`AOS_APP_DOWNLOAD_TIMEOUT_MS` 默认 600s），下载失败显式错误不转发；(3) `doctor` 探活宿主（iOS `GET /status`、Android adb `host:version` 握手，均短超时 best-effort，失败给 SSH 隧道/`adb -a` 暴露提示），`aos_status.deviceHosts` 显示解析结果与来源；`src/device/device-hosts.ts` + `src/device/app-artifacts.ts` 承载映射/探针/缓存。测试 +10（`test/device-hosts.test.js`、会话轮换、iOS URL 安装通道）；全量 899 绿。
+
+- **不变量**：跨机产物不得以服务端本地路径冒充（iOS）；模拟器仍限服务本机；不新建反向隧道/常驻协议。
+- **优先级细节**：`ADB_SERVER_SOCKET` 解析顺序为进程 env（含 Runtime baseEnv）> 项目 `.env` > config；`ADB_DEVICE_SERIAL`（项目级设备钉选）不受影响。

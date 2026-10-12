@@ -6,6 +6,7 @@ import { ENV_JIRA_API_TOKEN } from "../jira/config.js";
 import { childLogFilePath, logFilePath } from "../log.js";
 import { PROVIDER_PRESETS, presetSummary } from "../llm/providers.js";
 import { detectProjectStacks } from "../projects/stack.js";
+import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { entryIssues } from "../llm/registry.js";
 import type { Runtime } from "../runtime.js";
 
@@ -246,6 +247,26 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
           envVar: ENV_JIRA_API_TOKEN
         },
         missing: config.missing
+      };
+    })(),
+    deviceHosts: (() => {
+      const ios = resolveIosHost(runtime.project.config, runtime.project.resolver);
+      const android = resolveAndroidAdbSocket(runtime.project.config, runtime.project.resolver);
+      if (!ios.appiumUrl && !android) return { configured: false };
+      return {
+        configured: true,
+        ios: ios.appiumUrl
+          ? {
+              appiumUrl: ios.appiumUrl,
+              source: ios.source,
+              signing: {
+                wdaBundleId: ios.wdaBundleId,
+                xcodeOrgId: ios.xcodeOrgId,
+                xcodeSigningId: ios.xcodeSigningId
+              }
+            }
+          : null,
+        android: android ? { adbHost: android.socket, source: android.source } : null
       };
     })(),
     ios: await runtime.iosAppiumInfo(),

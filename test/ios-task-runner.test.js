@@ -585,6 +585,38 @@ test("app_path（真机 .ipa）：安装失败终止并记录", async () => {
   assert.equal(calls[0][1], ipaPath);
 });
 
+test("app_path（真机 .ipa URL）：远端产物走安装通道，不做本地存在性校验（ADR-0011）", async () => {
+  const { runtime } = await makeRuntime();
+  const deviceUdid = "00008110-001A2C681E22801E";
+  const url = "https://ci.example.com/builds/app.ipa";
+  const calls = [];
+  const { chat } = scriptedChat([JSON.stringify({ thought: "完成", action: "done", summary: "ok" })]);
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      {
+        task_desc: "URL 安装并运行",
+        device_serial: deviceUdid,
+        app_path: url,
+        locked_app_package: "com.example.app"
+      },
+      {
+        entry: ENTRY,
+        device: fakeDevice(),
+        chat,
+        installIpa: async (udid, ipa) => {
+          calls.push([udid, ipa]);
+          return { ok: true };
+        }
+      }
+    )
+  );
+  assert.equal(started.status, "running");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], deviceUdid);
+  assert.equal(calls[0][1], url, "URL 原样交给安装通道（宿主侧获取）");
+});
+
 test("locked_app_package 限制动作：越界 launch 被拒、openUrl 禁止", async () => {
   const { runtime } = await makeRuntime();
   const device = fakeDevice();

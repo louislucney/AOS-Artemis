@@ -28,6 +28,9 @@ import {
 } from "./crash/ios-dispatch.js";
 import { resolveIosDevice } from "./device/ios-facade.js";
 import type { IosDevice } from "./device/ios-actions.js";
+import { classifyIosSerial } from "./device/ios.js";
+import { materializeAppPathUrl, resolveAppDownloadTimeoutMs } from "./device/app-artifacts.js";
+import { deviceHostEnvFromConfig } from "./device/device-hosts.js";
 import { ChildSupervisor } from "./artemis/child-supervisor.js";
 import { TaskLedger } from "./tasks/ledger.js";
 import { maybeIosDeviceState } from "./tools/ios-state.js";
@@ -161,8 +164,8 @@ export class Runtime {
     this.store = options.store ?? new MemoryStore();
     this.storeNote = options.storeNote ?? null;
     this.baseEnv = options.baseEnv ?? process.env;
-    // iOS 签名/Appium 配置与模型目录同规则：项目 .env 打底、进程 env（客户端配置）覆盖。
-    this.iosEnv = { ...project.dotenvValues, ...this.baseEnv };
+    // iOS 签名/Appium 配置：config（deviceHosts 高级层）打底、项目 .env、进程 env（客户端配置）覆盖。
+    this.iosEnv = { ...deviceHostEnvFromConfig(project.config), ...project.dotenvValues, ...this.baseEnv };
     this.iosCrashCollector = options.iosCrashCollector ?? null;
     this.iosCrashRetry = {
       attempts: Math.max(1, options.iosCrashRetry?.attempts ?? 3),
@@ -202,7 +205,8 @@ export class Runtime {
       baseEnv: this.baseEnv,
       state: this.state,
       activeEntry: () => this.activeCache?.entry ?? null,
-      proxy: () => this.proxy
+      proxy: () => this.proxy,
+      dotenv: () => this.project.dotenvValues
     });
     this.proxy = this.withArtifactMirror(options.proxy ?? this.buildDefaultProxy());
     this.ledger = new TaskLedger({
@@ -235,7 +239,17 @@ export class Runtime {
           this.mirrorToolArtifacts(name, iosResult);
           return iosResult;
         }
-        const result = this.normalizeRunTaskWarnings(name, await inner.callTool(name, args));
+        const androidArgs = await this.materializeAndroidAppPath(name, args);
+        if (androidArgs && "error" in androidArgs) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ ok: false, error: androidArgs.error }, null, 2) }],
+            isError: true
+          };
+        }
+        const result = this.normalizeRunTaskWarnings(
+          name,
+          await inner.callTool(name, androidArgs ? androidArgs.args : args)
+        );
         this.mirrorToolArtifacts(name, result);
         return result;
       },
@@ -255,6 +269,29 @@ export class Runtime {
     if (name === "mobile_get_device_state") return await maybeIosDeviceState(this, args);
     if (name === "mobile_inspect_trace") return maybeIosInspectTrace(this, args);
     return null;
+  }
+
+  /** ADR-0011: http(s) `app_path` for non-iOS tasks is downloaded into the
+   * project cache and forwarded to artemis as a local path (adb reads it on
+   * this host); iOS URLs are handled in the iOS entry (Appium host fetches). */
+  private async materializeAndroidAppPath(
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ args: Record<string, unknown> } | { error: string } | null> {
+    if (name !== "mobile_run_task") return null;
+    const appPath = typeof args.app_path === "string" ? args.app_path.trim() : "";
+    if (!/^https?:\/\//i.test(appPath)) return null;
+    const serial = typeof args.device_serial === "string" ? args.device_serial.trim() : "";
+    if (serial !== "" && classifyIosSerial(serial) !== null) return null;
+    const materialized = await materializeAppPathUrl({
+      appPath,
+      cacheDir: path.join(this.configDirAbs, "cache", "apps"),
+      timeoutMs: resolveAppDownloadTimeoutMs(this.baseEnv)
+    });
+    if (!materialized.ok) {
+      return { error: `app_path 远端产物不可用：${materialized.error}` };
+    }
+    return { args: { ...args, app_path: materialized.path } };
   }
 
   private normalizeRunTaskWarnings(name: string, result: CallToolResult): CallToolResult {
@@ -451,7 +488,7 @@ export class Runtime {
     this.project.dotenvValues = loadDotenvValues(this.project.rootDir);
     this.project.resolver = makeResolver(this.project.dotenvValues, this.baseEnv);
     this.scanResult = scanProjectEnv(this.project.resolver);
-    this.iosEnv = { ...this.project.dotenvValues, ...this.baseEnv };
+    this.iosEnv = { ...deviceHostEnvFromConfig(this.project.config), ...this.project.dotenvValues, ...this.baseEnv };
     this.modelCatalog.updateEnv({ ...this.project.dotenvValues, ...this.baseEnv });
   }
 

@@ -66,6 +66,7 @@ export const defaultTimers: TimerApi = {
 
 interface Waiter {
   mode: "task" | "observe";
+  app: string | undefined;
   resolve: (lease: SessionLease) => void;
   reject: (error: unknown) => void;
   timer: TimerHandle | null;
@@ -74,6 +75,8 @@ interface Waiter {
 interface DeviceState {
   sessionId: string | null;
   staleId: string | null;
+  /** `appium:app` the live session was created with (ADR-0011 URL app); null = none. */
+  app: string | null;
   holders: number;
   queue: Waiter[];
   idle: TimerHandle | null;
@@ -120,6 +123,7 @@ export class AppiumSessionManager {
       state = {
         sessionId: null,
         staleId: null,
+        app: null,
         holders: 0,
         queue: [],
         idle: null,
@@ -131,15 +135,23 @@ export class AppiumSessionManager {
     return state;
   }
 
-  async acquire(udid: string, mode: "task" | "observe"): Promise<SessionLease> {
+  /** Acquire a lease. `options.app` requests a session created with the
+   * `appium:app` capability (host-side download/install, ADR-0011); a live
+   * session created for a different app is rotated. */
+  async acquire(
+    udid: string,
+    mode: "task" | "observe",
+    options: { app?: string } = {}
+  ): Promise<SessionLease> {
     const state = this.stateFor(udid);
     if (state.disposed) throw new Error("AppiumSessionManager 已释放。");
+    const app = options.app;
     if (state.holders === 0 && state.queue.length === 0) {
       if (state.idle) {
         state.idle.cancel();
         state.idle = null;
       }
-      return await this.grant(udid, state);
+      return await this.grant(udid, state, app);
     }
     return await new Promise<SessionLease>((resolve, reject) => {
       const timer =
@@ -150,14 +162,24 @@ export class AppiumSessionManager {
               reject(new IosDeviceBusyError(state.frame));
             }, this.observeWaitMs)
           : null;
-      const waiter: Waiter = { mode, resolve, reject, timer };
+      const waiter: Waiter = { mode, app, resolve, reject, timer };
       state.queue.push(waiter);
     });
   }
 
-  private async openSession(udid: string, state: DeviceState): Promise<string> {
-    if (state.sessionId !== null) return state.sessionId;
-    const capabilities = this.capabilitiesFor(udid);
+  private async openSession(
+    udid: string,
+    state: DeviceState,
+    app: string | undefined
+  ): Promise<string> {
+    if (state.sessionId !== null) {
+      if (app === undefined || state.app === app) return state.sessionId;
+      state.staleId = state.sessionId;
+      state.sessionId = null;
+      state.app = null;
+    }
+    const baseCapabilities = this.capabilitiesFor(udid);
+    const capabilities = app !== undefined ? { ...baseCapabilities, "appium:app": app } : baseCapabilities;
     if (state.staleId !== null) {
       const stale = state.staleId;
       state.staleId = null;
@@ -177,11 +199,12 @@ export class AppiumSessionManager {
       created = (await this.client.createSession(capabilities)).sessionId;
     }
     state.sessionId = created;
+    state.app = app ?? null;
     return created;
   }
 
-  private async grant(udid: string, state: DeviceState): Promise<SessionLease> {
-    const sessionId = await this.openSession(udid, state);
+  private async grant(udid: string, state: DeviceState, app: string | undefined): Promise<SessionLease> {
+    const sessionId = await this.openSession(udid, state, app);
     state.holders += 1;
     let released = false;
     return {
@@ -195,6 +218,7 @@ export class AppiumSessionManager {
         if (state.sessionId !== null) {
           state.staleId = state.sessionId;
           state.sessionId = null;
+          state.app = null;
         }
       }
     };
@@ -215,7 +239,7 @@ export class AppiumSessionManager {
     const next = state.queue.shift();
     if (next) {
       if (next.timer) next.timer.cancel();
-      this.grant(udid, state).then(next.resolve, (error) => {
+      this.grant(udid, state, next.app).then(next.resolve, (error) => {
         next.reject(error);
         this.drainQueue(udid, state);
       });
@@ -233,6 +257,7 @@ export class AppiumSessionManager {
     if (state.holders > 0 || state.queue.length > 0) return;
     const sessionId = state.sessionId;
     state.sessionId = null;
+    state.app = null;
     if (sessionId !== null) {
       try {
         await this.client.deleteSession(sessionId);

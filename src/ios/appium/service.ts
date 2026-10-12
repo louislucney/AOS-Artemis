@@ -134,6 +134,13 @@ export class IosWdaService {
       const sessions = this.sessions;
       const client = this.client;
       if (sessions === null || client === null) return { ok: false, error: "Appium 未就绪。" };
+      if (/^https?:\/\//i.test(ipaPath)) {
+        // ADR-0011: remote URL — the Appium host downloads/installs at session
+        // creation (`appium:app`); the session is kept for the task run.
+        const lease = await sessions.acquire(udid, "task", { app: ipaPath });
+        lease.release();
+        return { ok: true };
+      }
       const lease = await sessions.acquire(udid, "task");
       try {
         await client.installApp(lease.sessionId, ipaPath);

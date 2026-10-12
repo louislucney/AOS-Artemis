@@ -22,6 +22,8 @@ export interface ChildSupervisorDeps {
   state: StateStore;
   activeEntry: () => EntryLike | null;
   proxy: () => ArtemisProxyLike;
+  /** Project `.env` getter for layering (ADR-0011 device hosts). */
+  dotenv?: () => Record<string, string>;
 }
 
 export class ChildSupervisor {
@@ -32,7 +34,8 @@ export class ChildSupervisor {
       config: this.deps.config,
       rootDir: this.deps.rootDir,
       entry,
-      baseEnv: this.deps.baseEnv
+      baseEnv: this.deps.baseEnv,
+      ...(this.deps.dotenv ? { dotenv: this.deps.dotenv } : {})
     }).fingerprint;
   }
 
@@ -41,7 +44,8 @@ export class ChildSupervisor {
     const args = {
       config: this.deps.config,
       rootDir: this.deps.rootDir,
-      baseEnv: this.deps.baseEnv
+      baseEnv: this.deps.baseEnv,
+      ...(this.deps.dotenv ? { dotenv: this.deps.dotenv } : {})
     };
     const entry = this.deps.activeEntry();
     return entry ? buildChildSpecForEntry({ ...args, entry }) : buildBareChildSpec(args);
