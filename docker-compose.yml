@@ -8,7 +8,7 @@
 
 services:
   # 本地开发用 PostgreSQL（可选 profile：docker compose --profile local-db up -d postgres）
-  # 连接串：postgres://aos:aos_local_dev@127.0.0.1:5433/aos
+  # 连接串：postgres://aos:aos_local_dev@127.0.0.1:5433/mobile-testing
   postgres:
     image: postgres:16-alpine
     container_name: aos-postgres
@@ -16,13 +16,13 @@ services:
     environment:
       POSTGRES_USER: aos
       POSTGRES_PASSWORD: ${AOS_DB_PASSWORD:-aos_local_dev}
-      POSTGRES_DB: aos
+      POSTGRES_DB: mobile-testing
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
       - aos-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aos -d aos"]
+      test: ["CMD-SHELL", "pg_isready -U aos -d mobile-testing"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -35,8 +35,8 @@ services:
     entrypoint: ["sleep", "infinity"]
     environment:
       # PostgreSQL registry (required for persistence; degrades to memory if unset)
-      # 本机开发：postgres://aos:aos_local_dev@host.docker.internal:5433/aos
-      # compose 同网络（local-db profile）：postgres://aos:aos_local_dev@postgres:5432/aos
+      # 本机开发：postgres://aos:aos_local_dev@host.docker.internal:5433/mobile-testing
+      # compose 同网络（local-db profile）：postgres://aos:aos_local_dev@postgres:5432/mobile-testing
       - MOBILE_TESTING_DATABASE_URL=${MOBILE_TESTING_DATABASE_URL:-}
       # ADB over TCP to the host's adb server (macOS/Windows/Linux desktop).
       # For USB passthrough on a Linux host, remove these and use `devices:`.

@@ -1447,4 +1447,4 @@ llm_switch(name, force):
 
 ### 13.94 实施记录（PG 连接串环境变量改名）
 
-> 实施于 2026-10-12。`AOS_DATABASE_URL` → `MOBILE_TESTING_DATABASE_URL`（与服务名 `mobile-testing` 对齐），**硬切换、不保留旧名回退**：`src/db/index.ts`（读取与降级提示）、`src/install.ts`（CLI 写入客户端配置 env）、`src/commands.ts`（doctor/init 引导文案）、`src/usage-command.ts`（CLI usage 读取与内存降级 note）、`docker-compose.yml`、`.env.example`、README/AGENTS/接入指南/DESIGN 文档同步。旧名配置将直接进入内存降级（doctor/`aos_status` 可见警告）。测试同步更新 `test/install.test.js`、`test/usage-command.test.js`；全量测试绿。
+> 实施于 2026-10-12。`AOS_DATABASE_URL` → `MOBILE_TESTING_DATABASE_URL`（与服务名 `mobile-testing` 对齐），**硬切换、不保留旧名回退**：`src/db/index.ts`（读取与降级提示）、`src/install.ts`（CLI 写入客户端配置 env）、`src/commands.ts`（doctor/init 引导文案）、`src/usage-command.ts`（CLI usage 读取与内存降级 note）、`docker-compose.yml`、`.env.example`、README/AGENTS/接入指南/DESIGN 文档同步。旧名配置将直接进入内存降级（doctor/`aos_status` 可见警告）。测试同步更新 `test/install.test.js`、`test/usage-command.test.js`；全量测试绿。同时本机库名由 `aos` 改为 `mobile-testing`（示例连接串与 docker compose `POSTGRES_DB`/healthcheck 同步；角色仍为 `aos`）。

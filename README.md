@@ -23,7 +23,7 @@ node dist/cli.js doctor --install-deps   # 首次：安装 artemis venv 等依�
 node dist/cli.js install                # 或由它生成客户端配置
 
 # 多项目 HTTP 常驻（Mac mini 供其他机器接入；PG 连接串见下文"本地开发数据库"）
-MOBILE_TESTING_DATABASE_URL=postgres://aos:aos_local_dev@127.0.0.1:5432/aos \
+MOBILE_TESTING_DATABASE_URL=postgres://aos:aos_local_dev@127.0.0.1:5432/mobile-testing \
   node dist/cli.js serve --http --host 0.0.0.0 --workspace /srv/projects
 node dist/cli.js install --mode http --url http://<mac-ip>:8765
 ```
@@ -107,15 +107,15 @@ Mac 原生部署直接用**本机 PostgreSQL**（系统安装的 EDB / Postgres.
 # 用你的超级用户建服务专用角色与库（只做一次）
 psql -h 127.0.0.1 -p 5432 -U postgres -d postgres \
   -c "CREATE ROLE aos LOGIN PASSWORD 'aos_local_dev';" \
-  -c "CREATE DATABASE aos OWNER aos;"
+  -c "CREATE DATABASE \"mobile-testing\" OWNER aos;"
 
-export MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos'
+export MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/mobile-testing'
 node dist/cli.js doctor     # 应显示 "✓ PostgreSQL 连接正常"
 
 # 挂载 MCP 客户端时把该变量带进客户端配置：
-MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos' node dist/cli.js install --mode local
+MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/mobile-testing' node dist/cli.js install --mode local
 # HTTP 集中部署时把该变量放进 serve 进程环境：
-MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos' node dist/cli.js serve --http --host 0.0.0.0 --workspace /srv/projects
+MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/mobile-testing' node dist/cli.js serve --http --host 0.0.0.0 --workspace /srv/projects
 ```
 
 若本机没有 PostgreSQL：`brew install postgresql@17 && brew services start postgresql@17`（默认 5432；被占用时可在 `/opt/homebrew/var/postgresql@17/postgresql.conf` 改 `port`）。
@@ -367,7 +367,7 @@ node dist/cli.js doctor
 #    command: node
 #    args:    ["<service>/dist/index.js"]
 #    env:     { "AOS_PROJECT_DIR": "/workspace/<project>",
-#               "MOBILE_TESTING_DATABASE_URL": "postgres://user:pass@host:5432/aos" }
+#               "MOBILE_TESTING_DATABASE_URL": "postgres://user:pass@host:5432/mobile-testing" }
 ```
 
 未配置 `MOBILE_TESTING_DATABASE_URL` 时降级为会话内存存储（`aos_status` 会警告）。
