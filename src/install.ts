@@ -166,8 +166,8 @@ function buildServerEntry(options: {
     };
   }
   const env: Record<string, string> = { AOS_PROJECT_DIR: options.projectDir };
-  const databaseUrl = process.env.AOS_DATABASE_URL?.trim();
-  if (databaseUrl) env.AOS_DATABASE_URL = databaseUrl;
+  const databaseUrl = process.env.MOBILE_TESTING_DATABASE_URL?.trim();
+  if (databaseUrl) env.MOBILE_TESTING_DATABASE_URL = databaseUrl;
   // Carry explicit tool paths so CLI-spawned servers find adb/ffmpeg/traces
   // without relying on the client's PATH (artemis resolver Tier-1 overrides).
   for (const key of ["ARTEMIS_ADB_PATH", "ARTEMIS_TRACES_DIR", "ARTEMIS_DAEMON_PORT"]) {

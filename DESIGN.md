@@ -147,7 +147,7 @@
 
 ### 4.5 PostgreSQL 数据模型（v1）
 
-连接：`AOS_DATABASE_URL`（MCP 客户端配置 env 注入，进程级，跨项目共享）。本地开发可用 compose 的 `local-db` profile（专用 PG 于 `127.0.0.1:5433`，见 README）；表结构首次连接自动创建。
+连接：`MOBILE_TESTING_DATABASE_URL`（MCP 客户端配置 env 注入，进程级，跨项目共享）。本地开发可用 compose 的 `local-db` profile（专用 PG 于 `127.0.0.1:5433`，见 README）；表结构首次连接自动创建。
 时间戳用 ISO TEXT（pg-mem 兼容，v1 务实选择）；ID 用 `crypto.randomUUID()`。
 
 ```sql
@@ -201,7 +201,7 @@ CREATE TABLE IF NOT EXISTS llm_model_cache (
 );
 ```
 
-降级策略：`AOS_DATABASE_URL` 缺失或连接失败 → `MemoryStore`（会话内有效）+ `aos_status` 警告，**不阻断**任务执行。
+降级策略：`MOBILE_TESTING_DATABASE_URL` 缺失或连接失败 → `MemoryStore`（会话内有效）+ `aos_status` 警告，**不阻断**任务执行。
 
 ---
 
@@ -424,7 +424,7 @@ llm_switch(name, force):
 
 - 镜像（`Dockerfile`，多阶段）：Node 22 + Python 3.12（artemis venv）+ Android 工具链（adb/ffmpeg；scrcpy 在 Debian 13 已移除 → 尽力而为安装，缺失时仅录像降级）；
 - 挂载：共享工作区（`/workspace`）、Figma 桥端口（`127.0.0.1:3055:3055`）、Android 设备（USB 透传或网络 ADB，`ADB_HOST/ADB_PORT`）；
-- 环境：`AOS_DATABASE_URL`（PG）、`AOS_WORKSPACE_ROOT`（可选）；
+- 环境：`MOBILE_TESTING_DATABASE_URL`（PG）、`AOS_WORKSPACE_ROOT`（可选）；
 - 客户端以 `docker exec -i -w /workspace/<project> <container> node /app/dist/index.js` 接入（`aos-mcp install --mode docker` 自动生成）。
 
 ### 8.2 客户端配置（stdio）
@@ -435,7 +435,7 @@ llm_switch(name, force):
   "args": ["exec", "aos-mcp", "node", "/app/dist/index.js"],
   "env": {
     "AOS_PROJECT_DIR": "/workspace/<project>",
-    "AOS_DATABASE_URL": "postgres://..."
+    "MOBILE_TESTING_DATABASE_URL": "postgres://..."
   }
 }
 ```
@@ -1444,3 +1444,7 @@ llm_switch(name, force):
 
 - **边缘与边界**：门禁作用于 `check`/`loop`（及 `run --fail-on-uncovered`）；`suite run` 不带该开关仍可执行（Excel 缺失不阻断设备执行），但 taskDesc 已内含真实数据条款约束执行者。
 - **legacy 影响（有意）**：旧 tests.json（无标记或无 xlsx）在 `suite check` 响亮失败，需用最新 `figma_generate_tests` 重新生成——禁止手写用例进入 CI 闸。
+
+### 13.94 实施记录（PG 连接串环境变量改名）
+
+> 实施于 2026-10-12。`AOS_DATABASE_URL` → `MOBILE_TESTING_DATABASE_URL`（与服务名 `mobile-testing` 对齐），**硬切换、不保留旧名回退**：`src/db/index.ts`（读取与降级提示）、`src/install.ts`（CLI 写入客户端配置 env）、`src/commands.ts`（doctor/init 引导文案）、`src/usage-command.ts`（CLI usage 读取与内存降级 note）、`docker-compose.yml`、`.env.example`、README/AGENTS/接入指南/DESIGN 文档同步。旧名配置将直接进入内存降级（doctor/`aos_status` 可见警告）。测试同步更新 `test/install.test.js`、`test/usage-command.test.js`；全量测试绿。

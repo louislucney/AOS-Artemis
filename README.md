@@ -19,11 +19,11 @@ git clone --recurse-submodules https://github.com/louislucney/AOS-Artemis.git
 cd AOS-Artemis && npm install && npm run build
 node dist/cli.js doctor --install-deps   # 首次：安装 artemis venv 等依赖
 
-# 单机 stdio：在 MCP 客户端里挂载 node <repo>/dist/index.js，env 注入 AOS_PROJECT_DIR 与 AOS_DATABASE_URL
+# 单机 stdio：在 MCP 客户端里挂载 node <repo>/dist/index.js，env 注入 AOS_PROJECT_DIR 与 MOBILE_TESTING_DATABASE_URL
 node dist/cli.js install                # 或由它生成客户端配置
 
 # 多项目 HTTP 常驻（Mac mini 供其他机器接入；PG 连接串见下文"本地开发数据库"）
-AOS_DATABASE_URL=postgres://aos:aos_local_dev@127.0.0.1:5432/aos \
+MOBILE_TESTING_DATABASE_URL=postgres://aos:aos_local_dev@127.0.0.1:5432/aos \
   node dist/cli.js serve --http --host 0.0.0.0 --workspace /srv/projects
 node dist/cli.js install --mode http --url http://<mac-ip>:8765
 ```
@@ -32,7 +32,7 @@ node dist/cli.js install --mode http --url http://<mac-ip>:8765
 
 ```bash
 # 1) 构建并常驻（挂载公司工作区；PG 连接串经环境注入）
-AOS_WORKSPACE=/srv/projects AOS_DATABASE_URL=postgres://... docker compose up -d --build
+AOS_WORKSPACE=/srv/projects MOBILE_TESTING_DATABASE_URL=postgres://... docker compose up -d --build
 
 # 2) 为每个项目生成客户端配置（docker 模式）
 node dist/cli.js install --project /srv/projects/<project> --mode docker
@@ -109,17 +109,17 @@ psql -h 127.0.0.1 -p 5432 -U postgres -d postgres \
   -c "CREATE ROLE aos LOGIN PASSWORD 'aos_local_dev';" \
   -c "CREATE DATABASE aos OWNER aos;"
 
-export AOS_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos'
+export MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos'
 node dist/cli.js doctor     # 应显示 "✓ PostgreSQL 连接正常"
 
 # 挂载 MCP 客户端时把该变量带进客户端配置：
-AOS_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos' node dist/cli.js install --mode local
+MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos' node dist/cli.js install --mode local
 # HTTP 集中部署时把该变量放进 serve 进程环境：
-AOS_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos' node dist/cli.js serve --http --host 0.0.0.0 --workspace /srv/projects
+MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/aos' node dist/cli.js serve --http --host 0.0.0.0 --workspace /srv/projects
 ```
 
 若本机没有 PostgreSQL：`brew install postgresql@17 && brew services start postgresql@17`（默认 5432；被占用时可在 `/opt/homebrew/var/postgresql@17/postgresql.conf` 改 `port`）。
-切换实例只需替换 `AOS_DATABASE_URL`（表结构首次连接自动创建）。
+切换实例只需替换 `MOBILE_TESTING_DATABASE_URL`（表结构首次连接自动创建）。
 
 ## HTTP 模式（远程/多项目）
 
@@ -230,7 +230,7 @@ pen_agent(prompt)            # agent 生成/改设计 → .pen（凭证自动复
 
 **触发方式**
 
-1. **CLI 内自然语言（推荐）**：先 `node dist/cli.js install --targets opencode,claude,cursor,vscode`（会带上 `AOS_PROJECT_DIR`/`AOS_DATABASE_URL`，并透传 `ARTEMIS_ADB_PATH`/`ARTEMIS_TRACES_DIR` 若已设置），重启客户端后直接说：
+1. **CLI 内自然语言（推荐）**：先 `node dist/cli.js install --targets opencode,claude,cursor,vscode`（会带上 `AOS_PROJECT_DIR`/`MOBILE_TESTING_DATABASE_URL`，并透传 `ARTEMIS_ADB_PATH`/`ARTEMIS_TRACES_DIR` 若已设置），重启客户端后直接说：
    *"用这个 Figma 链接跑设计流水线：<url>"* —— agent 会依次调用下述 5 个工具。
 2. **一条命令**：`node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`（第 ④ 步默认 dryRun，加 `--import` 正式写入；③ 生成默认 `requireFullCoverage:true`——流程覆盖不完整即停，不落盘半套用例）。
 3. **手动逐个调用**（任意 MCP 客户端）：
@@ -367,10 +367,10 @@ node dist/cli.js doctor
 #    command: node
 #    args:    ["<service>/dist/index.js"]
 #    env:     { "AOS_PROJECT_DIR": "/workspace/<project>",
-#               "AOS_DATABASE_URL": "postgres://user:pass@host:5432/aos" }
+#               "MOBILE_TESTING_DATABASE_URL": "postgres://user:pass@host:5432/aos" }
 ```
 
-未配置 `AOS_DATABASE_URL` 时降级为会话内存存储（`aos_status` 会警告）。
+未配置 `MOBILE_TESTING_DATABASE_URL` 时降级为会话内存存储（`aos_status` 会警告）。
 
 厂商模型会下线（如 DeepSeek 旧名 `deepseek-v4-flash` 已由 `deepseek-flash` 别名接管）：服务会按 `AOS_MODEL_REFRESH_HOURS`（默认 12h）定时刷新已配置厂商的 `/models` 列表，模型下线时自动修复为厂商稳定别名/同族等价模型（`AOS_LLM_AUTO_REPAIR=0` 关闭），并在 `mobile_run_task` 前拦截无法修复的失效模型，避免任务跑到一半才失败。
 

@@ -197,12 +197,12 @@ test("usage: createStore fallback surfaces the degraded storage note", async () 
   const store = await seedStore();
   const { code, logs } = await runCli(["--json"], {
     cwd: "/w/alpha",
-    createStore: async () => ({ store, degraded: true, reason: "未配置 AOS_DATABASE_URL：" })
+    createStore: async () => ({ store, degraded: true, reason: "未配置 MOBILE_TESTING_DATABASE_URL：" })
   });
   assert.equal(code, 0);
   const payload = JSON.parse(logs.at(-1));
   assert.equal(payload.store.degraded, true);
-  assert.ok(payload.store.note.startsWith("未配置 AOS_DATABASE_URL："));
+  assert.ok(payload.store.note.startsWith("未配置 MOBILE_TESTING_DATABASE_URL："));
   assert.ok(payload.store.note.includes("独立 CLI 进程无法读取其他进程的内存事件"));
 });
 

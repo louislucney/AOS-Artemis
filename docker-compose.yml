@@ -37,7 +37,7 @@ services:
       # PostgreSQL registry (required for persistence; degrades to memory if unset)
       # 本机开发：postgres://aos:aos_local_dev@host.docker.internal:5433/aos
       # compose 同网络（local-db profile）：postgres://aos:aos_local_dev@postgres:5432/aos
-      - AOS_DATABASE_URL=${AOS_DATABASE_URL:-}
+      - MOBILE_TESTING_DATABASE_URL=${MOBILE_TESTING_DATABASE_URL:-}
       # ADB over TCP to the host's adb server (macOS/Windows/Linux desktop).
       # For USB passthrough on a Linux host, remove these and use `devices:`.
       - ADB_HOST=host.docker.internal

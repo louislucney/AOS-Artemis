@@ -108,10 +108,10 @@ test("install local: removes legacy aos and android-testing entries", () => {
 test("install local: carries explicit tool-path env vars into client config", () => {
   const dir = makeTempProject({});
   const previousAdb = process.env.ARTEMIS_ADB_PATH;
-  const previousDb = process.env.AOS_DATABASE_URL;
+  const previousDb = process.env.MOBILE_TESTING_DATABASE_URL;
   const previousProxy = process.env.NODE_USE_ENV_PROXY;
   process.env.ARTEMIS_ADB_PATH = "/opt/android/platform-tools/adb";
-  process.env.AOS_DATABASE_URL = "postgres://u:p@127.0.0.1:5433/aos";
+  process.env.MOBILE_TESTING_DATABASE_URL = "postgres://u:p@127.0.0.1:5433/aos";
   process.env.NODE_USE_ENV_PROXY = "1";
   try {
     runInstall(["--project", dir, "--targets", "claude", "--service", service], { log: silent });
@@ -121,15 +121,15 @@ test("install local: carries explicit tool-path env vars into client config", ()
       "/opt/android/platform-tools/adb"
     );
     assert.equal(
-      claude.mcpServers[SERVER].env.AOS_DATABASE_URL,
+      claude.mcpServers[SERVER].env.MOBILE_TESTING_DATABASE_URL,
       "postgres://u:p@127.0.0.1:5433/aos"
     );
     assert.equal(claude.mcpServers[SERVER].env.NODE_USE_ENV_PROXY, "1");
   } finally {
     if (previousAdb === undefined) delete process.env.ARTEMIS_ADB_PATH;
     else process.env.ARTEMIS_ADB_PATH = previousAdb;
-    if (previousDb === undefined) delete process.env.AOS_DATABASE_URL;
-    else process.env.AOS_DATABASE_URL = previousDb;
+    if (previousDb === undefined) delete process.env.MOBILE_TESTING_DATABASE_URL;
+    else process.env.MOBILE_TESTING_DATABASE_URL = previousDb;
     if (previousProxy === undefined) delete process.env.NODE_USE_ENV_PROXY;
     else process.env.NODE_USE_ENV_PROXY = previousProxy;
   }

@@ -76,7 +76,7 @@ const DEFAULT_WEB_PORT = 8766;
 const DEFAULT_WEB_HOST = "127.0.0.1";
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 const CLI_MEMORY_NOTE =
-  "独立 CLI 进程无法读取其他进程的内存事件（通常为空结果）；配置 AOS_DATABASE_URL 后可跨进程查询。";
+  "独立 CLI 进程无法读取其他进程的内存事件（通常为空结果）；配置 MOBILE_TESTING_DATABASE_URL 后可跨进程查询。";
 
 export function printUsageCommand(log: (line: string) => void): void {
   log(`aos-mcp usage — 使用统计（调用事件）
@@ -436,7 +436,7 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
       store = deps.store;
     } else {
       const create = deps.createStore ?? ((url: string | null) => createProjectStore(url));
-      const created = await create(env.AOS_DATABASE_URL ?? null);
+      const created = await create(env.MOBILE_TESTING_DATABASE_URL ?? null);
       store = created.store;
       reason = created.reason;
     }

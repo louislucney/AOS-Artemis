@@ -8,14 +8,14 @@ export interface CreateStoreResult {
   reason: string | null;
 }
 
-/** Build the project store from AOS_DATABASE_URL; degrades to in-memory on failure. */
+/** Build the project store from MOBILE_TESTING_DATABASE_URL; degrades to in-memory on failure. */
 export async function createProjectStore(databaseUrl?: string | null): Promise<CreateStoreResult> {
-  const url = (databaseUrl ?? process.env.AOS_DATABASE_URL ?? "").trim();
+  const url = (databaseUrl ?? process.env.MOBILE_TESTING_DATABASE_URL ?? "").trim();
   if (!url) {
     return {
       store: new MemoryStore(),
       degraded: true,
-      reason: "未配置 AOS_DATABASE_URL：使用会话内存存储（切换/条目仅本次进程有效）。"
+      reason: "未配置 MOBILE_TESTING_DATABASE_URL：使用会话内存存储（切换/条目仅本次进程有效）。"
     };
   }
   try {

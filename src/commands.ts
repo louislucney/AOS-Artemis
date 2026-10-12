@@ -70,7 +70,7 @@ JIRA_BASE_URL=https://your-site.atlassian.net
 JIRA_EMAIL=
 JIRA_API_TOKEN=
 
-# 说明：AOS_DATABASE_URL 属于服务级配置，由 MCP 客户端配置的 env 注入，
+# 说明：MOBILE_TESTING_DATABASE_URL 属于服务级配置，由 MCP 客户端配置的 env 注入，
 # 不要写进项目 .env（详见 README / DESIGN.md §4.5）。
 `;
 
@@ -99,7 +99,7 @@ export function runInit(argv: string[]): void {
   console.log("下一步：");
   console.log("  1) cp .env.example .env 并填入 AOS_LLM_MODEL / AOS_LLM_BASE_URL / AOS_LLM_API_KEY（Figma token 可选）");
   console.log("  2) Run: aos-mcp doctor");
-  console.log("  3) 在 MCP 客户端中挂载本服务（node <service>/dist/index.js，env 注入 AOS_PROJECT_DIR 与 AOS_DATABASE_URL）");
+  console.log("  3) 在 MCP 客户端中挂载本服务（node <service>/dist/index.js，env 注入 AOS_PROJECT_DIR 与 MOBILE_TESTING_DATABASE_URL）");
 }
 
 interface DoctorLine {
@@ -317,12 +317,12 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
   }
 
   // 3. PostgreSQL
-  const dbUrl = env.AOS_DATABASE_URL?.trim();
+  const dbUrl = env.MOBILE_TESTING_DATABASE_URL?.trim();
   if (!dbUrl) {
     degraded = true;
     lines.push({
       icon: "WARN",
-      title: "未配置 AOS_DATABASE_URL（降级为会话内存存储）",
+      title: "未配置 MOBILE_TESTING_DATABASE_URL（降级为会话内存存储）",
       details: ["Guidance: 在 MCP 客户端配置的 env 中提供 PostgreSQL 连接串。"]
     });
   } else {
