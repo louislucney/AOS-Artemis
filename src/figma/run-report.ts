@@ -16,6 +16,7 @@ import {
 import type { TaskFailedItem, TaskStatus } from "../artemis/task-result.js";
 import type { TaskStatRecord } from "../db/types.js";
 import type { Runtime } from "../runtime.js";
+import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import { loadDesignFlowGraph, loadGeneratedCases, type GeneratedCase } from "./design-store.js";
 import {
@@ -25,7 +26,7 @@ import {
 } from "./traceability.js";
 import type { CoverageEdge } from "./coverage.js";
 
-export type RunReportOutcome = "passed" | "failed" | "pending";
+export type RunReportOutcome = TaskOutcome;
 
 export interface RunReportCase {
   caseId: string | null;
@@ -96,12 +97,6 @@ function readFlowCoverageInputs(runtime: Runtime): { screens: string[]; edges: C
       to: edge.to ? edge.to.name : null
     }))
   };
-}
-
-function outcomeOf(ledgerStatus: string): RunReportOutcome {
-  if (ledgerStatus === "completed") return "passed";
-  if (ledgerStatus === "submitted") return "pending";
-  return "failed";
 }
 
 function durationOf(task: TaskStatRecord, status: TaskStatus | null): number | null {

@@ -7,11 +7,18 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { loadProject, defaultArtemisRepo, emptyConfig } from "./config/loader.js";
 import { resolveDepsSource } from "./artemis/bootstrap.js";
 import { startBridge } from "./figma/bridge.js";
+import {
+  createPanelWebCache,
+  handlePanelRequest,
+  panelCacheTtlFrom,
+  type PanelWebDeps
+} from "./panel/web.js";
+import { createPanelDeepProbe } from "./panel/deep.js";
 import { Runtime } from "./runtime.js";
 import { RuntimeHost } from "./runtime-host.js";
 import { createServerForRuntime, inProcessToolCatalog } from "./server.js";
 import { handleUsageRequest } from "./usage/web.js";
-import { AOS_MCP_VERSION, errorMessage, log } from "./util.js";
+import { AOS_MCP_VERSION, errorMessage, isBuildStale, log } from "./util.js";
 
 export interface HttpServerOptions {
   host?: string;
@@ -104,6 +111,26 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     return runtime;
   };
 
+  // 深探层：仅限 workspace 一级子目录项目；懒建 Runtime（纯读子集、不拉起子进程）。
+  const deepRuntimeFor = async (rootPath: string): Promise<Runtime | null> => {
+    const relative = path.relative(workspaceRoot, rootPath);
+    if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+    const segments = relative.split(path.sep);
+    if (segments.length !== 1) return null;
+    const name = segments[0]!;
+    if (!PROJECT_NAME_RE.test(name) || name === "." || name === "..") return null;
+    return await getRuntime(name);
+  };
+  const panelDeps: PanelWebDeps = {
+    store,
+    env: process.env,
+    workspaceRoot,
+    serviceRepo,
+    buildStale: isBuildStale(import.meta.url, Date.now() - Math.round(process.uptime() * 1000)),
+    cache: createPanelWebCache(panelCacheTtlFrom(process.env)),
+    deep: createPanelDeepProbe({ createRuntime: deepRuntimeFor })
+  };
+
   const httpServer = createServer((req, res) => {
     void (async () => {
       try {
@@ -135,6 +162,13 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           });
           res.writeHead(usageResponse.status, { "Content-Type": usageResponse.contentType });
           res.end(usageResponse.body);
+          return;
+        }
+
+        if (req.method === "GET" && (url.pathname === "/panel" || url.pathname === "/panel.json")) {
+          const panelResponse = await handlePanelRequest(url, panelDeps);
+          res.writeHead(panelResponse.status, { "Content-Type": panelResponse.contentType });
+          res.end(panelResponse.body);
           return;
         }
 

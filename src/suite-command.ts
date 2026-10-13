@@ -28,6 +28,14 @@ import {
 } from "./figma/reconciliation.js";
 import { buildRunReport } from "./figma/run-report.js";
 import {
+  buildRunManifest,
+  pruneRunManifests,
+  runManifestMax,
+  runManifestsEnabled,
+  saveRunManifest,
+  testsFingerprint
+} from "./figma/run-manifest.js";
+import {
   buildSuiteLoopReport,
   loopPercent,
   renderSuiteLoopMarkdown,
@@ -41,6 +49,7 @@ import {
   type SuiteRunReport
 } from "./figma/suite-runner.js";
 import { Runtime } from "./runtime.js";
+import { logWarn } from "./log.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
 
 type LogcatCollector = (request: {
@@ -57,6 +66,8 @@ export interface SuiteCliDeps {
   ) => Promise<{ runtime: Runtime; dispose: () => Promise<void> }>;
   log?: (line: string) => void;
   errorLog?: (line: string) => void;
+  /** 批次清单开关读取（默认 process.env；测试注入）。 */
+  env?: NodeJS.ProcessEnv;
   logcatCollector?: LogcatCollector;
   iosLogCollector?: IosLogCollectorFn;
   /** Injected for tests; defaults to `xcrun xcresulttool get test-results tests`. */
@@ -262,11 +273,69 @@ async function applyRetryDiagnostics(
   }
 }
 
+type SuiteIo = {
+  log: (line: string) => void;
+  errorLog: (line: string) => void;
+  env?: NodeJS.ProcessEnv;
+};
+
+/** 批次清单一等实体（DESIGN §13.95）：best-effort，写失败仅 WARN、不影响退出码。 */
+async function persistRunManifest(
+  runtime: Runtime,
+  report: SuiteRunReport,
+  io: SuiteIo,
+  input: {
+    source: "suite-run" | "suite-loop";
+    startedAtMs: number;
+    exitCode: number;
+    coverageIssue: string | null;
+    strict: boolean;
+    failOnUncovered: boolean;
+    retry: number;
+    options: SuiteRunOptions;
+    quarantinedCaseIds?: Set<string>;
+  }
+): Promise<void> {
+  const env = io.env ?? process.env;
+  if (!runManifestsEnabled(env)) return;
+  try {
+    const fingerprint = testsFingerprint(report.testsPath);
+    const manifest = buildRunManifest({
+      report,
+      source: input.source,
+      startedAtMs: input.startedAtMs,
+      finishedAtMs: Date.now(),
+      exitCode: input.exitCode,
+      coverageIssue: input.coverageIssue,
+      testsPath: report.testsPath,
+      testsSha256: fingerprint.sha256,
+      testsGeneratedAt: fingerprint.generatedAt,
+      options: {
+        deviceSerial: input.options.deviceSerial ?? null,
+        lockedAppPackage: input.options.lockedAppPackage ?? null,
+        model: input.options.model ?? null,
+        maxCases: input.options.maxCases ?? null,
+        stopOnFailure: input.options.stopOnFailure === true,
+        apiErrors: input.options.apiErrors !== false,
+        failOnApiErrors: input.options.failOnApiErrors === true,
+        strict: input.strict,
+        failOnUncovered: input.failOnUncovered,
+        retry: input.retry,
+        quarantinedCaseIds: [...(input.quarantinedCaseIds ?? [])].sort()
+      }
+    });
+    saveRunManifest(runtime.configDirAbs, manifest);
+    pruneRunManifests(runtime.configDirAbs, runManifestMax(env));
+  } catch (error) {
+    logWarn(`批次清单写入失败: ${errorMessage(error)}`);
+  }
+}
+
 export function printSuiteUsage(log: (line: string) => void): void {
   log(`aos-mcp suite — 测试闭环（生成用例的确定性执行与取证）
 
 Usage:
-  aos-mcp suite run [options]        执行 tests.json：每例复位→提交→轮询→台账→逐例分类
+  aos-mcp suite run [options]        执行 tests.json：每例复位→提交→轮询→台账→逐例分类（批次清单自动落盘）
   aos-mcp suite check [options]      静态检查：覆盖 × 三件套（tests.xlsx）× 真实数据约束（不连设备，CI 友好）
   aos-mcp suite calibrate [options]  确定性套件（xcresult）与 MCP 台账差分校准（漏报/误报率）
   aos-mcp suite loop [options]       测试闭环：静态检查→执行(可选)→反馈→差分校准(可选)，产出闭环报告与下一步
@@ -286,7 +355,7 @@ Usage:
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
-        [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine] [--strict]
+        [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine] [--strict] [--no-save]
 check:  [--tests <path>] [--strict]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
@@ -309,13 +378,14 @@ exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行
 async function suiteRun(
   runtime: Runtime,
   flags: ParsedFlags,
-  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  io: SuiteIo,
   logcatCollector?: LogcatCollector,
   iosLogCollector?: IosLogCollectorFn
 ): Promise<number> {
   const runOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
   const quarantine = quarantineFor(runtime, flags);
   runOptions.quarantinedCaseIds = quarantine.ids;
+  const startedAtMs = Date.now();
   const report = await runGeneratedTests(runtime, runOptions);
   const retryCount = retryCountOf(flags);
   if (retryCount > 0 && !runOptions.stopOnFailure) {
@@ -402,12 +472,25 @@ async function suiteRun(
     if (!report.ok) io.errorLog(`套件未执行: ${report.error ?? "无可提交用例"}`);
     if (coverageIssue) io.errorLog(coverageIssue);
   }
-  if (!report.ok) return 2;
-  if (coverageIssue) return 2;
   const quarantinedFailures = report.cases.filter(
     (entry) => entry.quarantined === true && entry.status !== "passed"
   ).length;
-  return report.failed - quarantinedFailures === 0 ? 0 : 1;
+  const exitCode =
+    !report.ok ? 2 : coverageIssue ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
+  if (!flags.bool("no-save")) {
+    await persistRunManifest(runtime, report, io, {
+      source: "suite-run",
+      startedAtMs,
+      exitCode,
+      coverageIssue,
+      strict: flags.bool("strict"),
+      failOnUncovered: flags.bool("fail-on-uncovered"),
+      retry: retryCount,
+      options: runOptions,
+      quarantinedCaseIds: quarantine.ids
+    });
+  }
+  return exitCode;
 }
 
 /** Pure static coverage check: no device, no case submission (CI pre-merge). */
@@ -638,7 +721,7 @@ async function suiteCalibrate(
 async function suiteLoop(
   runtime: Runtime,
   flags: ParsedFlags,
-  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  io: SuiteIo,
   deps: { logcatCollector?: LogcatCollector; iosLogCollector?: IosLogCollectorFn }
 ): Promise<number> {
   const defaultTestsPath = path.join(runtime.configDirAbs, "design", "tests.json");
@@ -660,10 +743,30 @@ async function suiteLoop(
   runOptions.quarantinedCaseIds = quarantine.ids;
   let report: SuiteRunReport | null = null;
   if (!flags.bool("skip-run")) {
+    const startedAtMs = Date.now();
     report = await runGeneratedTests(runtime, runOptions);
     const retryCount = retryCountOf(flags);
     if (retryCount > 0 && !runOptions.stopOnFailure) {
       await applyRetryDiagnostics(runtime, report, retryCount, runOptions);
+    }
+    const quarantinedFailures = report.cases.filter(
+      (entry) => entry.quarantined === true && entry.status !== "passed"
+    ).length;
+    const coverageIssue = check && check.issue !== null ? check.issue : null;
+    const exitCode =
+      !report.ok ? 2 : coverageIssue ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
+    if (!flags.bool("no-save")) {
+      await persistRunManifest(runtime, report, io, {
+        source: "suite-loop",
+        startedAtMs,
+        exitCode,
+        coverageIssue,
+        strict: flags.bool("strict"),
+        failOnUncovered: !flags.bool("allow-uncovered"),
+        retry: retryCount,
+        options: runOptions,
+        quarantinedCaseIds: quarantine.ids
+      });
     }
   }
 
@@ -1256,14 +1359,20 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
   try {
     built = await buildRuntime(flags.get("project"));
     if (sub === "run") {
-      return await suiteRun(built.runtime, flags, { log, errorLog }, deps.logcatCollector, deps.iosLogCollector);
+      return await suiteRun(
+        built.runtime,
+        flags,
+        { log, errorLog, env: deps.env ?? process.env },
+        deps.logcatCollector,
+        deps.iosLogCollector
+      );
     }
     if (sub === "check") return await suiteCheck(built.runtime, flags, { log, errorLog });
     if (sub === "calibrate") {
       return await suiteCalibrate(built.runtime, flags, { log, errorLog }, { xcresultReader: deps.xcresultReader });
     }
     if (sub === "loop") {
-      return await suiteLoop(built.runtime, flags, { log, errorLog }, {
+      return await suiteLoop(built.runtime, flags, { log, errorLog, env: deps.env ?? process.env }, {
         logcatCollector: deps.logcatCollector,
         iosLogCollector: deps.iosLogCollector
       });

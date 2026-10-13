@@ -21,6 +21,16 @@ export function isBuildStale(moduleUrl: string, startedAtMs: number): boolean {
   }
 }
 
+/** HTML 转义（服务端渲染看板/面板共用）。 */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export function writeFileAtomic(filePath: string, content: string | Buffer): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });

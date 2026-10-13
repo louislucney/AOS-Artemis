@@ -51,6 +51,7 @@ export interface WeakAssertionIssue {
 }
 
 export interface VisualHotspot {
+  serial: string;
   caseId: string;
   stepNumber: number;
   regions: number;
@@ -102,8 +103,9 @@ function loadCaseMeta(runtime: Runtime): Map<string, CaseMeta> {
   return map;
 }
 
-function collectVisualHotspots(runtime: Runtime): VisualHotspot[] {
-  const root = path.join(runtime.configDirAbs, "design", "baselines");
+/** 设备基线热点扫描（suite feedback 与总览面板共用）：`baselines/<serial>/<caseId>/step-<n>/last-diff.json` 有区域即未消除。 */
+export function collectVisualHotspots(configDirAbs: string): VisualHotspot[] {
+  const root = path.join(configDirAbs, "design", "baselines");
   const hotspots: VisualHotspot[] = [];
   let serials: string[];
   try {
@@ -148,7 +150,7 @@ function collectVisualHotspots(runtime: Runtime): VisualHotspot[] {
               .filter((category): category is string => category !== null)
           )
         ].sort();
-        hotspots.push({ caseId, stepNumber, regions: regions.length, categories, dir });
+        hotspots.push({ serial, caseId, stepNumber, regions: regions.length, categories, dir });
       }
     }
   }
@@ -265,7 +267,7 @@ export async function buildGenerationFeedback(
     }
   }
 
-  const visualHotspots = collectVisualHotspots(runtime);
+  const visualHotspots = collectVisualHotspots(runtime.configDirAbs);
 
   const byCountThenKey = <T extends { failures: number }>(entries: T[], key: (entry: T) => string): T[] =>
     entries.sort((a, b) => {

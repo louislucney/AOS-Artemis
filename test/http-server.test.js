@@ -145,3 +145,60 @@ test("http server: AOS_USAGE_WEB=0 disables /usage routes only", async () => {
     else process.env.AOS_USAGE_WEB = previous;
   }
 });
+
+test("http server: panel dashboard over real HTTP", async () => {
+  const workspace = makeWorkspace();
+  const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+  try {
+    const json = await fetch(`http://127.0.0.1:${handle.port}/panel.json`);
+    assert.equal(json.status, 200);
+    const payload = await json.json();
+    assert.equal(payload.ok, true);
+    assert.equal(payload.view, "overview");
+    assert.ok(payload.projects.some((row) => row.name === "demo"));
+
+    const html = await fetch(`http://127.0.0.1:${handle.port}/panel`);
+    assert.equal(html.status, 200);
+    assert.match(html.headers.get("content-type"), /text\/html/);
+    const body = await html.text();
+    assert.match(body, /多项目总览/);
+    assert.match(body, /demo/);
+
+    const project = await fetch(`http://127.0.0.1:${handle.port}/panel?project=demo`);
+    assert.equal(project.status, 200);
+    const projectBody = await project.text();
+    assert.match(projectBody, /接入信息/);
+    assert.match(projectBody, /深探信息/);
+
+    const deepJson = await fetch(`http://127.0.0.1:${handle.port}/panel.json?project=demo`);
+    assert.equal(deepJson.status, 200);
+    const deepPayload = await deepJson.json();
+    assert.equal(deepPayload.deep.store.kind, "memory");
+    assert.equal(deepPayload.deep.iosProbe, null, "默认不触发 iOS 探测");
+
+    const unknown = await fetch(`http://127.0.0.1:${handle.port}/panel.json?project=nope`);
+    assert.equal(unknown.status, 404);
+
+    const health = await fetch(`http://127.0.0.1:${handle.port}/healthz`);
+    assert.equal(health.status, 200);
+  } finally {
+    await handle.close();
+  }
+});
+
+test("http server: AOS_PANEL_WEB=0 disables /panel routes only", async () => {
+  const previous = process.env.AOS_PANEL_WEB;
+  process.env.AOS_PANEL_WEB = "0";
+  const workspace = makeWorkspace();
+  const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+  try {
+    assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel`)).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel.json`)).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${handle.port}/usage`)).status, 200);
+    assert.equal((await fetch(`http://127.0.0.1:${handle.port}/healthz`)).status, 200);
+  } finally {
+    await handle.close();
+    if (previous === undefined) delete process.env.AOS_PANEL_WEB;
+    else process.env.AOS_PANEL_WEB = previous;
+  }
+});

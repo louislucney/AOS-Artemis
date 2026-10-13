@@ -1074,3 +1074,98 @@ test("suite retention: 只读超期报告（不删除文件）", async () => {
   assert.equal(text.code, 0);
   assert.ok(text.logs.some((line) => line.includes("只读，不删除")));
 });
+
+test("suite run: 批次清单自动落盘（gate/failureDomains/指纹）", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1), caseEntry(2)],
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": {
+        status: "failed",
+        error: "assert mismatch",
+        test_summary: {
+          task_status: "failed",
+          failed_items: [{ item_text: "校验金额", evidence: "expected 42 got 41" }]
+        }
+      }
+    }
+  });
+  const { code } = await runCli(runtime, ["run"]);
+  assert.equal(code, 1);
+  const runsDir = path.join(runtime.configDirAbs, "design", "runs");
+  const files = fs.readdirSync(runsDir).filter((name) => name.endsWith(".json"));
+  assert.equal(files.length, 1);
+  assert.match(files[0], /^run-\d{8}T\d{6}-[0-9a-f]{6}\.json$/);
+  const manifest = JSON.parse(fs.readFileSync(path.join(runsDir, files[0]), "utf-8"));
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.source, "suite-run");
+  assert.equal(manifest.taxonomyVersion, 1);
+  assert.equal(manifest.summary.total, 2);
+  assert.equal(manifest.summary.passed, 1);
+  assert.equal(manifest.summary.failed, 1);
+  assert.equal(manifest.gate.result, "fail");
+  assert.deepEqual(manifest.gate.reasons, ["failed:1"]);
+  assert.equal(manifest.failureDomains["behavior-or-design"], 1);
+  assert.equal(manifest.tests.path, path.join(runtime.configDirAbs, "design", "tests.json"));
+  assert.equal(manifest.tests.sha256.length, 64);
+  assert.ok(manifest.cases.some((entry) => entry.traceId === "trace-2"));
+});
+
+test("suite run: 批次清单 --no-save 与 AOS_SUITE_RUNS=0 均可跳过", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" },
+      "trace-3": { status: "completed" }
+    }
+  });
+  const runsDir = path.join(runtime.configDirAbs, "design", "runs");
+
+  const noSave = await runCli(runtime, ["run", "--no-save"]);
+  assert.equal(noSave.code, 0);
+  assert.equal(fs.existsSync(runsDir), false);
+
+  const disabled = await runCli(runtime, ["run"], {
+    env: { ...process.env, AOS_SUITE_RUNS: "0" }
+  });
+  assert.equal(disabled.code, 0);
+  assert.equal(fs.existsSync(runsDir), false);
+
+  const enabled = await runCli(runtime, ["run"], { env: { ...process.env } });
+  assert.equal(enabled.code, 0);
+  assert.equal(fs.readdirSync(runsDir).filter((name) => name.endsWith(".json")).length, 1);
+});
+
+test("suite run: 批次清单写入失败不影响退出码（best-effort）", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  fs.writeFileSync(path.join(runtime.configDirAbs, "design", "runs"), "not-a-dir");
+  const { code } = await runCli(runtime, ["run"]);
+  assert.equal(code, 0, "写失败降级为 WARN，退出码不变");
+});
+
+test("suite loop: 批次清单来源标记为 suite-loop", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: []
+    }),
+    "utf-8"
+  );
+  const result = await runCli(runtime, ["loop"]);
+  assert.equal(result.code, 0);
+  const runsDir = path.join(runtime.configDirAbs, "design", "runs");
+  const files = fs.readdirSync(runsDir).filter((name) => name.endsWith(".json"));
+  assert.equal(files.length, 1);
+  const manifest = JSON.parse(fs.readFileSync(path.join(runsDir, files[0]), "utf-8"));
+  assert.equal(manifest.source, "suite-loop");
+  assert.equal(manifest.gate.result, "pass");
+});

@@ -13,6 +13,9 @@ export type FailureDomain =
 
 export type FailureConfidence = "high" | "medium" | "low";
 
+/** 失败域分类规则版本：随批次清单记录，区分"运行期原判"与"按当前规则重算"。 */
+export const FAILURE_TAXONOMY_VERSION = 1;
+
 export interface FailureClassification {
   domain: FailureDomain;
   confidence: FailureConfidence;

@@ -117,6 +117,7 @@ test("generation feedback: aggregates screens, data assumptions and weak asserti
   ]);
   assert.deepEqual(feedback.issues.visualHotspots, [
     {
+      serial: "emulator-5554",
       caseId: "case-1",
       stepNumber: 2,
       regions: 2,

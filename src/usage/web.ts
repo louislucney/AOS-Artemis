@@ -15,6 +15,7 @@ import {
   type UsageSummary
 } from "./aggregate.js";
 import { USAGE_DISABLED_NOTE, usageEnabledFrom, usageEventSampleLimit } from "./capture.js";
+import { escapeHtml } from "../util.js";
 
 export interface UsageWebDeps {
   store: ProjectStore;
@@ -310,14 +311,7 @@ export async function handleUsageRequest(
   return { status: 200, contentType: HTML_CONTENT_TYPE, body: renderUsageHtml(view) };
 }
 
-export function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+export { escapeHtml };
 
 function formatPercent(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;

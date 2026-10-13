@@ -7,6 +7,7 @@ import { runJiraCommand } from "./jira-command.js";
 import { runServer } from "./server.js";
 import { runSuiteCommand } from "./suite-command.js";
 import { runUsageCommand } from "./usage-command.js";
+import { runPanelCommand } from "./panel-command.js";
 
 function printUsage(): void {
   console.log(`aos-mcp — AOS × ARTEMIS unified MCP service
@@ -36,6 +37,8 @@ Usage:
                     --all 跨项目总览；--project 选择已注册项目
   aos-mcp usage --web [--port 8766] [--host 127.0.0.1]
                     只读看板（复用 /usage 与 /usage.json）；端口占用 exit 2
+  aos-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]
+                    多项目总览面板（只读；复用 /panel 与 /panel.json）
 
 install options:
   --project <dir>        Target project (default: cwd)
@@ -98,6 +101,11 @@ void (async () => {
     }
     case "usage": {
       const code = await runUsageCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "panel": {
+      const code = await runPanelCommand(rest);
       process.exit(code);
       break;
     }

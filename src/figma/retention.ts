@@ -37,6 +37,8 @@ export const RETENTION_CATEGORIES: Array<{ id: string; segments: string[] }> = [
   { id: "reports", segments: [".artemis", "design", "reports"] },
   { id: "evidence", segments: [".artemis", "design", "evidence"] },
   { id: "diffs", segments: [".artemis", "design", "diffs"] },
+  { id: "screens", segments: [".artemis", "design", "screens"] },
+  { id: "runs", segments: [".artemis", "design", "runs"] },
   { id: "traces", segments: [".artemis", "traces"] },
   { id: "crashes", segments: [".artemis", "crashes"] }
 ];
