@@ -1448,3 +1448,54 @@ llm_switch(name, force):
 ### 13.94 实施记录（PG 连接串环境变量改名）
 
 > 实施于 2026-10-12。`AOS_DATABASE_URL` → `MOBILE_TESTING_DATABASE_URL`（与服务名 `mobile-testing` 对齐），**硬切换、不保留旧名回退**：`src/db/index.ts`（读取与降级提示）、`src/install.ts`（CLI 写入客户端配置 env）、`src/commands.ts`（doctor/init 引导文案）、`src/usage-command.ts`（CLI usage 读取与内存降级 note）、`docker-compose.yml`、`.env.example`、README/AGENTS/接入指南/DESIGN 文档同步。旧名配置将直接进入内存降级（doctor/`aos_status` 可见警告）。测试同步更新 `test/install.test.js`、`test/usage-command.test.js`；全量测试绿。同时本机库名由 `aos` 改为 `mobile-testing`（示例连接串与 docker compose `POSTGRES_DB`/healthcheck 同步；角色仍为 `aos`）。
+
+### 13.95 实施记录（批次清单：overview-panel T1）
+
+> 实施于 2026-10-13（多项目总览面板 `.scratch/overview-panel/spec.md` 的 T1）。把"一次 suite run/loop"立为**批次清单一等实体**，解决"跑完即走"（此前套件报告只在内存/终端，默认不落盘）。新增 `src/figma/run-manifest.ts`：`buildRunManifest`（纯函数映射 SuiteRunReport → 清单：`summary`（含 `flaky`/`quarantinedFailed`）、`gate{result,exitCode,reasons}`、`failureDomains` 归并、preflight 摘要、tests.json 指纹 sha256+mtime；**不存 taskDesc**）、`saveRunManifest`（原子 + 独占创建：tmp + `link`，撞名换后缀重试 ≤4；同秒碰撞概率 ~1/16.7M）、判别式读取 `loadRunManifest`（`ok | missing | invalid | newer`：`missing` 含裁剪竞态 ENOENT；`newer` 仅 `BaseRunManifest`（runId/startedAt/finishedAt/ok/summary{total,passed,failed}）白名单字段逐类型校验映射并标注）、`runManifestFileNames`/`loadLatestRunManifest`（文件名倒序 = 时间序，零额外 stat，供 L1 轻量索引）、`pruneRunManifests`（`AOS_SUITE_RUNS_MAX` 默认 200、写后 best-effort、max ≤ 0 不裁剪；prune 是唯一删除者）。接线：`suite run`/`suite loop` 完成（含 retry 诊断与门禁计算）后写 `<configDir>/design/runs/run-<UTC时间戳>-<6位后缀>.json`，best-effort（写失败仅 WARN、不影响退出码）；`suite run` 新增 `--no-save`；`AOS_SUITE_RUNS=0` 全局关闭；`suite flake` 采样轮次不写。`failure-taxonomy` 增 `FAILURE_TAXONOMY_VERSION`（随清单记录，供"原判 vs 重算"区分）；`RETENTION_CATEGORIES` 增 `runs`（`suite retention` 覆盖）。测试 +13（新增 `test/suite-run-manifest.test.js` 9 例 + `test/suite-command.test.js` 4 例：落盘字段、开关、写失败降级、loop 来源）；全量 914 绿。
+
+- **口径**：`gate.reasons` 词汇 = `suite-not-executed`（report.ok=false）/ `preflight-gate`（三件套/真实数据/覆盖/`--strict` 组合门禁）/ `failed:N`（N = 扣除隔离失败后的首跑失败数）；`summary.failed` 保留原始计数，`quarantinedFailed`/`flaky` 单列；失败域为运行期 `classifyFailure` 原判（重算对照属面板侧，T2）。
+- **边缘**：`missing`/`invalid`/`newer` 均为合法读取结果（消费方占位/降级，不抛错）；清单只存 caseId/name 等，taskDesc 回查失败（用例集重生成）的降级标注留待面板侧（T2）。
+
+### 13.96 实施记录（面板聚合层：overview-panel T2）
+
+> 实施于 2026-10-13（`.scratch/overview-panel/spec.md` 的 T2）。新增 `src/panel/overview.ts`（跨项目只读聚合层，**无子进程 / 无网络 / 无写盘**）：`buildPanelOverview`（L1：项目集合 = PG 注册项目 ∪ workspace 子目录；逐项目软读 → 状态灯 + 固定顺序 `lampReasons` + 最新批次摘要）、`buildPanelProjectDetail`（L2：集成详情（LLM 条目/active/可用性与缺失、Figma/Jira/pen 凭证 presence、config validation、deviceHosts、设计资产存在性+mtime、宿主 deps/build）+ 批次列表（清单权威，默认 20 / 上限 100）+ 独立运行（台账行扣除已加载批次覆盖的 traceId，默认 20）+ 批次空态**原因清单**）、`buildPanelBatchDetail`（L3：判别式读取透传 + 逐用例证据链存在性校验（trace/notes/stderr/stdout 两态，null 路径不生成）+ 文件名合法性守卫）。**状态灯短路顺序**：磁盘可达性 → 灰（短路，仍展示注册层）；无可用 LLM → 红；黄按固定聚合序（Figma/Jira 凭证缺 → 宿主 deps stale|missing → 三件套不齐 → store 降级 → build stale）；全无 → 绿。**宿主级判定**：deps 为 `depsStatus(serviceRepo)` 一次、`buildStale` 由调用方注入；pen key 仅展示 presence、不参与灯（避免未用 pen 的项目一律标黄）。**软读构成**：`loadProject({AOS_PROJECT_DIR})` + `scanProjectEnv` + store LLM 条目 `entryIssues` + `detectProjectStacks` + `resolveIosHost/resolveAndroidAdbSocket` + `jiraConfigFrom`。共享口径：`outcomeOf`（台账状态映射）提至 `src/tasks/outcome.ts`，面板与 run-report 共用（行为不变）；"按当前规则重算"（`recomputed` 对照）留在渲染侧（T4）/后续增量。测试 +10（pg-mem 假 store + 临时项目 + 假批次清单）：四灯、工作区并入、内存降级标注、批次权威 + 独立运行过滤 + outcome 映射 + limit、空态原因、证据存在性、判别式读取与非法文件名、磁盘不可达降级；全量 924 绿。
+
+- **降级口径**：磁盘不可达 → `integration:null` + 台账行按独立运行展示 + `warnings` 标注；未知项目（无注册且无磁盘）→ `null`；清单/证据缺失 → 两态占位，不猜测。
+
+### 13.97 实施记录（面板 HTTP 路由与缓存：overview-panel T3）
+
+> 实施于 2026-10-13（`.scratch/overview-panel/spec.md` 的 T3）。新增 `src/panel/web.ts`：`handlePanelRequest(url, deps)`（与 usage 看板同构的 `{status, contentType, body}` 处理器，`http-server` 直接接线）。路由：`GET /panel`（HTML）/ `GET /panel.json`（同源 JSON，envelope `{ok, view: "overview"|"project"|"batch", ...}`）；查询参数 `project`（项目名 / 根路径 / workspace 子目录名）、`batch`（清单文件名，配 project）、`limit`（L2 批次数，默认 20、上限 100）；未知项目 404。开关 `AOS_PANEL_WEB=0` → 两路由 404（对齐 usage，不影响 `/usage`/`/healthz`/`/mcp`）；进程内短缓存 `createPanelWebCache`（TTL 默认 5s、`AOS_PANEL_CACHE_MS` 可配、0 关闭；命中回同响应体）。HTTP 模式注入 store/workspaceRoot/serviceRepo/`buildStale`（`isBuildStale(import.meta.url, 进程启动)`）/env/缓存实例；**不建 Runtime、不 spawn、不触网、不写盘**。测试 +7（`test/panel-web.test.js` 5 例：开关与 TTL 解析与 404、总览 JSON+HTML、项目详情生命周期（空态→批次→独立运行）、批次详情与非法文件名、缓存 TTL 命中/过期；`test/http-server.test.js` +2：真实 HTTP 面板路由、`AOS_PANEL_WEB=0` 只关面板路由）；全量 931 绿。
+
+### 13.98 实施记录（面板 HTML 渲染：overview-panel T4）
+
+> 实施于 2026-10-13（overview-panel T4）。`src/panel/web.ts` 服务端渲染 HTML（内联 CSS、零依赖、零前端构建，与 `/usage` 同风格）：**L1** 项目表（灯色点 + `lampReasons` + 栈/最后活跃/最新批次/备注；存储与宿主徽标）；**L2** 项目页（集成信息卡 + 凭证/资产表 + 批次表（门禁/通过率/失败域/清单链接）+ 空态**原因清单** + 独立运行表 + 降级提示）；**L3** 批次页（gate/exitCode/reasons + summary 卡片 + 失败域 chips + 用例表（状态/失败域与置信度/脚本来源「断言N/探索M」/隔离与 flaky/证据）+ 选项与 tests 指纹上下文；`read != ok` 时只渲染占位与说明）。证据链按两态渲染：存在 → 路径文本；缺失 → `[已清理]`（不做未校验链接）；`escapeHtml` 提至 `src/util.ts`（usage 看板复用）。**未含**"按当前规则重算"对照（P1：需按 trace 重跑 `classifyFailure`，成本与价值待验证；清单内 `taxonomyVersion` 已预留）。测试见 §13.97（HTML 关键区块断言随路由测试）；全量 931 绿。
+
+### 13.99 实施记录（设计流水线截图：共享模块 + 保留期，design-screenshots T1）
+
+> 实施于 2026-10-13（`.scratch/design-screenshots/spec.md` 的 T1）。新增 `src/design/screens.ts`：`sanitizeScreenId`（文件名安全转义，空回退 `screen`）、`isPngBuffer`（魔术头）、`storeScreenPng`（sha256 相同跳过、保留 mtime；损坏/变更原子覆盖；非法 buffer 不落盘）、`importScreenFile`（pen CLI 直写产物：读取 + 校验 + 原子入库 + 清理临时文件）、`figmaScreensDir`/`penScreensDir`（`design/screens/figma-<fileKey>` / `pen-<slug>`）、`relativeScreenPath`（md 相对引用、POSIX 分隔）、`screensEnabledFrom`（arg 优先、`AOS_SCREENS=0` 关闭）与 warning 词汇 `screenshot-skipped` / `screenshot-render-unavailable` / `screenshot-mapping-missing`。`RETENTION_CATEGORIES` 增 `screens` 分类（README retention 六类→七类）。测试 +7（`test/design-screens.test.js`：转义边界、PNG 校验、写入/跳过/覆盖/损坏替换/非法不落盘、导入清理、目录与相对路径、开关、词汇与保留期）；全量 942 绿。
+
+### 13.100 实施记录（pen 截图通道，design-screenshots T2）
+
+> 实施于 2026-10-13（design-screenshots T2）。`pen_extract_flows` 默认渲染屏幕截图（新增 `screens?: boolean`，默认开；`AOS_SCREENS=0` 关闭、显式 true 覆盖 env）并嵌入 `flow-map.md`（每屏 `<img src="screens/pen-<slug>/<id>.png" height="200">`）。**一次渲染两用**：截图与 vision 共享 memoized 渲染（`screenAssetLoader`）——渲染落私有临时目录 → 逐张校验原子入库 `design/screens/pen-<slug>/` → 清理临时目录；vision 的 outDir 从 `design/vision/<name>/` 迁入统一目录（历史 `evidence.render` 不回溯）。**降级**：全通道失败 → `screenshot-render-unavailable`、部分缺屏 → `screenshot-skipped`，md 照常生成、不阻断；响应新增 `screenshots: { dir, rendered, skipped, skippedScreens }`（避免与既有屏幕列表 `screens` 键冲突）。**并发加固**：`runPenInteractive` 进程级串行队列 + session 输出名唯一化（`session-<pid>-<rand>.pen`）；`--export` 一次性调用不入队。测试 +4（`test/pen-flows.test.js` 3：默认渲染 + 幂等（mtime 稳定）、通道失败/部分缺屏降级、`screens:false`/`AOS_SCREENS=0` 与显式覆盖；`test/pen-cli.test.js` 1：并发不交错）与既有断言更新（`test/pen-vision.test.js`：共享渲染计数=1、证据路径改 `screens/`）；全量 942 绿。
+
+### 13.101 实施记录（figma 截图通道：flow-map.md + 批量渲染，design-screenshots T3）
+
+> 实施于 2026-10-13（design-screenshots T3）。`figma_extract_flows` 新增 **`flow-map.md`**（屏幕含缩略图/跳转/入口屏/未决目的地/警告/统计；`savedTo` 由字符串改为 `{ json, markdown }`，对齐 pen；仓库脚本未消费该字段）与**屏幕截图**（`screens?: boolean` 默认开、`AOS_SCREENS=0` 关闭、显式 true 覆盖）：一次批量 `fetchImages(fileKey, ids, "png", 1)` → 逐节点下载 → PNG 校验 → `storeScreenPng` 原子入库 `design/screens/figma-<fileKey>/`。**单屏 null 有界重试**：等 1s 后仅对未决屏二次请求并**绕响应缓存**（vendor 补丁：`fetchImages`/`figmaFetch` 增可选 `noCache`，NOTICE 第 6 条——缓存中的 null 会吞掉重试）→ 仍缺则逐屏降级 `screenshot-skipped`；通道级失败（无 token/限流/HTTP 错误）→ `screenshot-render-unavailable`，md 照常生成。响应增 `screenshots: { dir, rendered, skipped, skippedScreens }`。测试 +5（`test/figma-screens.test.js`：批量一次调用 + scale=1 + 嵌入 + 幂等 mtime、null-once 重试全恢复、partial 仅查询未决屏、通道失败降级、开关与 env 覆盖、`renderFigmaFlowMap` 直测）；全量 947 绿。
+
+### 13.102 实施记录（tests.md 用例配图，design-screenshots T4）
+
+> 实施于 2026-10-13（design-screenshots T4）。`figma_generate_tests` 的 `tests.md` 默认按用例嵌入屏幕截图（`screens?: boolean` 默认开、`AOS_SCREENS=0` 关闭、显式 true 覆盖；仅 `save !== false` 时执行——无 md 则不渲染）。**映射**：新增 `design-store.readFlowDocumentMeta`（保留 flows.json 顶层 `fileKey`/pen `source` 与屏幕名→id；**不改 `normalizeFlowGraph`**）；`figma` 来源（含 URL 直提）走 Figma 批量通道、`pen:*` 走 pen 单会话通道（新增 `src/pen/screens.ts` 共享捕获原语，pen/flows.ts 同步重构复用、行为不变）；每用例 ≤3 张 `height="160"` 缩略图、超出提示「…（共 N 屏）」；映射缺失（legacy flows 无来源 / 屏幕名对不上）→ `screenshot-mapping-missing` 无图降级。**降级**：通道级 `screenshot-render-unavailable` / 逐屏 `screenshot-skipped`；响应增 `warnings` 与 `screenshots: { channel, dir, rendered, skipped, skippedScreens }`。回归：既有 testgen 用例（手写 flows 无来源）走映射缺失路径、无渲染调用，行为不变。测试 +5（`test/figma-test-screens.test.js`：pen 通道嵌图 + 一次渲染、figma 通道批量、映射缺失降级、开关与 env 覆盖、`renderMarkdown` ≤3 截断直测）；全量 952 绿。
+
+### 13.103 实施记录（面板磁盘资产 + 批次趋势：overview-panel T6 部分）
+
+> 实施于 2026-10-14（overview-panel P1 第一切片）。**磁盘资产**：新增 `src/panel/assets.ts`（`collectDiskAssets`，全部只读、单项失败降级 warnings）——崩溃签名（`CrashIndexStore.list`：总数 + 最近 20 条）；对账资产（`reconciliation.json`：present/updatedAt、边数、pending/upgraded/confirmed/rejected 与 runtime-only 计数）；设备基线热点（`generation-feedback.collectVisualHotspots` 重构为导出并接收 `configDirAbs`、`VisualHotspot` 增 `serial`，feedback 行为不变）；保留期摘要（复用 `collectRetentionEntries` + `buildRetentionReport`，90 天只读、分类 chip）。**批次趋势**：L2 从已加载清单派生 `trend { points（时间升序）, domainTotals, recentPassRate }`（`buildBatchTrend`；无 ok 清单为 null）。**渲染**：项目页批次区加趋势行（最近 20 批 `passed/total` 色块序列 + 失败域累计 chips）、新增「磁盘资产」区块（崩溃/对账/基线/保留期 + 降级提示）；JSON 契约同步增 `trend`/`diskAssets`（磁盘不可达均为 null）。测试 +4（`test/panel-assets.test.js` 2：汇总 + 空态；`test/panel-overview.test.js` +2：趋势与磁盘资产聚合、无批次 trend=null；`panel-web` 增 HTML 断言；`generation-feedback` 断言同步 `serial`）；全量 956 绿。
+
+- **边界**：保留期为整树只读扫描（含 traces），依赖面板 5s TTL 缓存限频；不改 `suite retention` 语义。
+
+### 13.104 实施记录（面板深探层：overview-panel T6）
+
+> 实施于 2026-10-14。新增 `src/panel/deep.ts`（`createPanelDeepProbe`）：L2 详情在 HTTP 模式下经注入 provider 懒建 Runtime（workspace 一级子目录校验后复用既有 `getRuntime`）后仅取**纯读子集**——activeProfile、LLM 条目数、setupRequired、store（kind/degraded/note/lastError）、usage、modelRefresh、artemis（repo/configDir/python/`proxy.status()`）、figma 桥状态与 token 来源、jira、logs 路径、build stale；**不拉起 artemis 子进程、不触网打外部 API**。**iOS 环境检测为显式动作**（`?ios=1`）：允许白名单本地 CLI 探测（`iosAppiumInfo`，内部超时 + 外层 45s 兜底），失败/超时如实记录 `error`，**实例内按项目 60s 时间缓存**。L2 契约增 `deep`（无 provider / 构建失败为 null）；项目页新增「深探信息」区块（含 `?ios=1` 指引与探测结果）。测试 +5（`test/panel-deep.test.js` 3：默认不探测的纯读子集、显式探测 + TTL 缓存、失败/超时如实记录；`panel-web` +1 注入断言；`http-server` 增深探与"默认不探测"断言）；全量 963 绿。
+
+### 13.105 实施记录（CLI `panel --web`：overview-panel T6）
+
+> 实施于 2026-10-14。新增 `src/panel-command.ts`（`aos-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]`；`cli.ts` 接线与 help 更新）：复用 `handlePanelRequest` 同一 handler 的独立只读看板，默认 loopback、端口占用 exit 2；存储经 `createProjectStore(MOBILE_TESTING_DATABASE_URL)`（缺省内存降级并如实提示）；`--workspace` 可选并入未注册工作区目录；独立进程无跨项目 Runtime → **深探层不可用（`deep:null`）**。测试 +3（`test/panel-command.test.js`：临时端口服务与清理、端口冲突 exit 2、help/参数错误）；全量 963 绿。
