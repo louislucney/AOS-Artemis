@@ -4,8 +4,17 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import { walk, type FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
-import { errorMessage, writeFileAtomic } from "../util.js";
+import { errorMessage, escapeHtml, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
+import {
+  figmaScreensDir,
+  relativeScreenPath,
+  screensEnabledFrom,
+  SCREENSHOT_RENDER_UNAVAILABLE,
+  SCREENSHOT_SKIPPED,
+  storeScreenPng
+} from "../design/screens.js";
+import { captureFigmaScreens } from "./render.js";
 import {
   confidenceFor,
   isAnnotationLayerName,
@@ -622,11 +631,137 @@ export interface ExtractFlowsArgs {
   url: string;
   nodeId?: string;
   save?: boolean;
+  /** 渲染屏幕截图并嵌入 flow-map.md（默认 true；`AOS_SCREENS=0` 全局关闭）。 */
+  screens?: boolean;
+}
+
+export interface FigmaFlowsDeps {
+  /** 渲染重试等待（测试注入；默认真实等待）。 */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+interface FigmaScreensResult {
+  imagePaths: Map<string, string>;
+  warnings: FlowWarning[];
+  summary: { dir: string; rendered: number; skipped: number; skippedScreens: string[] };
+}
+
+/** 批量渲染屏幕 → 原子入库 `design/screens/figma-<fileKey>/`；失败逐屏/通道级降级。 */
+async function captureAndStoreFigmaScreens(
+  runtime: Runtime,
+  fileKey: string,
+  screens: FlowScreen[],
+  deps: FigmaFlowsDeps
+): Promise<FigmaScreensResult> {
+  const capture = await captureFigmaScreens(fileKey, screens.map((screen) => screen.id), deps);
+  const targetDir = figmaScreensDir(runtime.configDirAbs, fileKey);
+  const imagePaths = new Map<string, string>();
+  for (const [id, png] of capture.pngById) {
+    const stored = storeScreenPng(targetDir, id, png);
+    if (stored.status !== "invalid") imagePaths.set(id, stored.path);
+  }
+  const skipped = screens.map((screen) => screen.id).filter((id) => !imagePaths.has(id));
+  const warnings: FlowWarning[] = [];
+  if (capture.channelError !== null) {
+    warnings.push({
+      code: SCREENSHOT_RENDER_UNAVAILABLE,
+      message: `截图已跳过：Figma 渲染不可用（${capture.channelError}）`
+    });
+  } else if (imagePaths.size === 0 && skipped.length > 0) {
+    warnings.push({
+      code: SCREENSHOT_RENDER_UNAVAILABLE,
+      message: "截图已跳过：Figma 未产出渲染图"
+    });
+  } else if (skipped.length > 0) {
+    warnings.push({
+      code: SCREENSHOT_SKIPPED,
+      message: `截图降级：${skipped.length} 屏未产出渲染（${skipped.slice(0, 5).join("、")}${
+        skipped.length > 5 ? " 等" : ""
+      }）`
+    });
+  }
+  return {
+    imagePaths,
+    warnings,
+    summary: {
+      dir: relativeScreenPath(path.join(runtime.configDirAbs, "design"), targetDir),
+      rendered: imagePaths.size,
+      skipped: skipped.length,
+      skippedScreens: skipped
+    }
+  };
+}
+
+/** Figma 交互地图 md（design-screenshots T3）：屏幕（含缩略图）/跳转/入口/未决/警告/统计。 */
+export function renderFigmaFlowMap(input: {
+  fileKey: string;
+  fileName: string | null;
+  generatedAt: string;
+  graph: FlowGraph;
+  warnings: FlowWarning[];
+  images?: Map<string, string>;
+}): string {
+  const lines: string[] = [
+    "# Figma 交互地图",
+    "",
+    `> 来源: figma:${input.fileKey}${input.fileName ? ` (${input.fileName})` : ""}`,
+    `> 生成时间: ${input.generatedAt}`,
+    ""
+  ];
+  lines.push("## 屏幕（含缩略图）", "");
+  for (const screen of input.graph.screens) {
+    const route = screen.suggestedRoute ? `（${screen.suggestedRoute}）` : "";
+    lines.push(`- ${screen.name}${route}`);
+    const image = input.images?.get(screen.id);
+    if (image) {
+      lines.push(`  - <img src="${image}" alt="${escapeHtml(screen.name)}" height="200">`);
+    }
+  }
+  lines.push("");
+  lines.push("## 跳转", "");
+  if (input.graph.edges.length === 0) {
+    lines.push("（无连线）");
+  } else {
+    for (const edge of input.graph.edges) {
+      const to = edge.to ? edge.to.name : "（未决）";
+      const trigger = edge.trigger ? ` [${edge.trigger}]` : "";
+      const element = edge.element?.name ? ` · ${edge.element.name}` : "";
+      lines.push(`- ${edge.from.name} → ${to}${trigger}${element}`);
+    }
+  }
+  lines.push("");
+  lines.push("## 入口屏", "");
+  lines.push(
+    input.graph.entryScreens.length > 0
+      ? input.graph.entryScreens.map((name) => `- ${name}`).join("\n")
+      : "（无）"
+  );
+  lines.push("");
+  if (input.graph.unresolvedDestinations.length > 0) {
+    lines.push("## 未决目的地", "");
+    for (const id of input.graph.unresolvedDestinations) lines.push(`- ${id}`);
+    lines.push("");
+  }
+  lines.push("## 警告", "");
+  if (input.warnings.length === 0) {
+    lines.push("（无）");
+  } else {
+    for (const warning of input.warnings) {
+      lines.push(`- [${warning.code}] ${warning.message}`);
+      for (const detail of warning.details ?? []) lines.push(`  - ${detail}`);
+    }
+  }
+  lines.push("", "## 统计", "");
+  lines.push(
+    `- 屏幕 ${input.graph.screens.length} · 跳转 ${input.graph.edges.length} · 入口 ${input.graph.entryScreens.length} · 交互节点 ${input.graph.interactionNodes ?? 0}`
+  );
+  return lines.join("\n") + "\n";
 }
 
 export async function figmaExtractFlows(
   runtime: Runtime,
-  args: ExtractFlowsArgs
+  args: ExtractFlowsArgs,
+  deps: FigmaFlowsDeps = {}
 ): Promise<CallToolResult> {
   try {
     const { fileKey } = parseFigmaUrl(args.url);
@@ -639,7 +774,12 @@ export async function figmaExtractFlows(
     if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
 
     const graph = buildFlowGraph(file.document, { nodeId: args.nodeId });
-    const warnings = flowGraphWarnings(graph);
+    const dotenv = runtime.project.dotenvValues ?? {};
+    const wantScreens = screensEnabledFrom({ ...process.env, ...dotenv }, args.screens);
+    const screens = wantScreens
+      ? await captureAndStoreFigmaScreens(runtime, fileKey, graph.screens, deps)
+      : null;
+    const warnings: FlowWarning[] = [...flowGraphWarnings(graph), ...(screens?.warnings ?? [])];
     const fileVersion = typeof file.version === "string" ? file.version : null;
     const lastModified = typeof file.lastModified === "string" ? file.lastModified : null;
     const payload: Record<string, unknown> = {
@@ -658,13 +798,31 @@ export async function figmaExtractFlows(
         warnings: warnings.length
       },
       warnings,
+      ...(screens ? { screenshots: screens.summary } : {}),
       ...graph
     };
 
     if (args.save !== false) {
-      const savedTo = path.join(runtime.configDirAbs, "design", "flows.json");
-      writeFileAtomic(savedTo, JSON.stringify(payload, null, 2) + "\n");
-      payload.savedTo = savedTo;
+      const designDirAbs = path.join(runtime.configDirAbs, "design");
+      const jsonPath = path.join(designDirAbs, "flows.json");
+      writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
+      const imageRefs = new Map<string, string>();
+      for (const [screenId, filePath] of screens?.imagePaths ?? []) {
+        imageRefs.set(screenId, relativeScreenPath(designDirAbs, filePath));
+      }
+      const markdownPath = path.join(designDirAbs, "flow-map.md");
+      writeFileAtomic(
+        markdownPath,
+        renderFigmaFlowMap({
+          fileKey,
+          fileName: file.name ?? null,
+          generatedAt: new Date().toISOString(),
+          graph,
+          warnings,
+          images: imageRefs
+        })
+      );
+      payload.savedTo = { json: jsonPath, markdown: markdownPath };
     }
     return jsonResult(payload);
   } catch (error) {

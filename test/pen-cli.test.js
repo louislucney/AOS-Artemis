@@ -482,3 +482,25 @@ test("pen_agent: provider 桥接表（Kimi/Z.AI/百炼 Bearer + 模型映射；�
   assert.equal(anthropicBridgeFor("https://api.z.ai/api/paas/v4").anthropicBaseUrl, "https://api.z.ai/api/anthropic");
   assert.equal(anthropicBridgeFor("https://api.example.com/v1"), null);
 });
+
+test("pen cli: 交互会话进程级串行（并发调用不交错）", async () => {
+  const order = [];
+  let active = 0;
+  let maxActive = 0;
+  const exec = async (command, args, options = {}) => {
+    const tag = String(options.input ?? "").includes("A()") ? "A" : "B";
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    order.push(`start:${tag}`);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    order.push(`end:${tag}`);
+    active -= 1;
+    return { code: 0, stdout: "ok", stderr: "" };
+  };
+  await Promise.all([
+    runPenInteractive({ input: "/x/a.pen", output: "/tmp/a-out.pen", commands: ["A()"], exec }),
+    runPenInteractive({ input: "/x/b.pen", output: "/tmp/b-out.pen", commands: ["B()"], exec })
+  ]);
+  assert.equal(maxActive, 1, "同一时刻只有一个交互会话");
+  assert.deepEqual(order, ["start:A", "end:A", "start:B", "end:B"]);
+});

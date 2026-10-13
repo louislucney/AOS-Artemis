@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,8 +10,7 @@ export interface PenScreenRenderInput {
   target: string;
   screenIds: string[];
   env: Record<string, string>;
-  /** Persistent output directory (project `.artemis/design/vision/<name>/`);
-   * a temp dir is used when omitted. */
+  /** 输出目录（调用方决定：视觉/截图流程先落私有临时目录，校验后原子入库）。 */
   outDir?: string;
   exec?: PenExecFn;
   ensure?: PenEnsureFn;
@@ -48,9 +48,10 @@ export async function renderPenScreens(input: PenScreenRenderInput): Promise<Pen
   const outDir = input.outDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "aos-pen-vision-"));
   fs.mkdirSync(outDir, { recursive: true });
   const expression = `Export(${JSON.stringify(screenIds)}, "png", ${JSON.stringify(outDir)}, { scale: 1 })`;
+  const sessionFile = `session-${process.pid}-${randomBytes(3).toString("hex")}.pen`;
   const run = await runPenInteractive({
     input: input.target,
-    output: path.join(outDir, "session.pen"),
+    output: path.join(outDir, sessionFile),
     commands: [`execute({ input: ${JSON.stringify(expression)} })`],
     timeoutMs: input.timeoutMs,
     exec: input.exec,

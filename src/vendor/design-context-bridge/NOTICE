@@ -32,6 +32,10 @@ Modifications (all files also carry inline PATCH notes):
                                    response cache TTL raised to 10min and made
                                    configurable (AOS_FIGMA_CACHE_TTL_MS, 0
                                    disables).
+  6. figma-rest/client.ts       — optional `noCache` on figmaFetch/fetchImages:
+                                   bounded screen-render retries must bypass the
+                                   response cache (a cached null image URL would
+                                   defeat the retry — design-pipeline screens).
 
 Everything else is unmodified upstream code. The original MIT license and
 copyright notices are preserved in LICENSE.

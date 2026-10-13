@@ -135,7 +135,7 @@ test("pen_extract_flows: saves flows.json + flow-map.md and feeds the test loop"
   fs.writeFileSync(path.join(designDir, "design.pen"), "// pen fixture\n" + JSON.stringify(fixtureDoc()), "utf-8");
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
 
-  const payload = parseToolResult(await penExtractFlows(runtime, {}));
+  const payload = parseToolResult(await penExtractFlows(runtime, { screens: false }));
   assert.equal(payload.ok, true);
   assert.equal(payload.counts.screens, 3);
   assert.equal(payload.counts.inferredEdges, 2);
@@ -278,7 +278,7 @@ test("pen_extract_flows: interaction signals surface in response and saved artif
   fs.writeFileSync(path.join(designDir, "design.pen"), JSON.stringify(doc), "utf-8");
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
 
-  const payload = parseToolResult(await penExtractFlows(runtime, {}));
+  const payload = parseToolResult(await penExtractFlows(runtime, { screens: false }));
   assert.equal(payload.ok, true);
   assert.equal(payload.counts.interactionSignals, 1);
   const codes = payload.warnings.map((warning) => warning.code);
@@ -314,4 +314,122 @@ test("synthesizePenFlows: acceptance criteria from Flow/AC groups and AC: lines"
   assert.deepEqual(store.acceptance, ["確認可下單", "金額正確"]);
   const main = result.screens.find((screen) => screen.id === "s1");
   assert.equal(main.acceptance, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// 屏幕截图（design-screenshots T2）
+
+function pngBytes(id) {
+  return Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from(String(id))]);
+}
+
+function fakeScreenRender(calls, { onlyFirst = false, fail = false } = {}) {
+  return async ({ screenIds, outDir }) => {
+    calls.count += 1;
+    calls.screenIds = screenIds;
+    if (fail) {
+      return { ok: false, dir: null, files: new Map(), missing: screenIds, error: "pen CLI 未登录" };
+    }
+    fs.mkdirSync(outDir, { recursive: true });
+    const files = new Map();
+    const ids = onlyFirst ? screenIds.slice(0, 1) : screenIds;
+    for (const id of ids) {
+      const file = path.join(outDir, `${id}.png`);
+      fs.writeFileSync(file, pngBytes(id));
+      files.set(id, file);
+    }
+    return { ok: true, dir: outDir, files, missing: screenIds.filter((id) => !files.has(id)) };
+  };
+}
+
+async function makePenProject(dotenv = "") {
+  const dir = makeTempProject({ config: baseConfig(), dotenv });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(path.join(designDir, "design.pen"), "// pen fixture\n" + JSON.stringify(fixtureDoc()), "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  return { dir, designDir, runtime };
+}
+
+test("pen_extract_flows: 默认渲染截图并嵌入 flow-map.md（幂等）", async () => {
+  const { designDir, runtime } = await makePenProject();
+  const calls = { count: 0 };
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, { vision: false }, { render: fakeScreenRender(calls) })
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(calls.count, 1);
+  assert.equal(calls.screenIds.length, 3);
+  assert.equal(payload.screenshots.rendered, 3);
+  assert.equal(payload.screenshots.skipped, 0);
+  assert.equal(payload.screenshots.dir, "screens/pen-design");
+  assert.deepEqual(payload.screenshots.skippedScreens, []);
+
+  const map = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.match(map, /<img src="screens\/pen-design\/s1\.png"/);
+  assert.match(map, /height="200"/);
+  const first = path.join(designDir, "screens", "pen-design", "s1.png");
+  assert.equal(fs.existsSync(first), true);
+  assert.equal(fs.readFileSync(first).subarray(0, 4).toString("hex"), "89504e47");
+  const mtime = fs.statSync(first).mtimeMs;
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const again = parseToolResult(
+    await penExtractFlows(runtime, { vision: false }, { render: fakeScreenRender(calls) })
+  );
+  assert.equal(calls.count, 2);
+  assert.equal(again.screenshots.rendered, 3);
+  assert.equal(fs.statSync(first).mtimeMs, mtime, "同内容跳过重写（mtime 稳定）");
+});
+
+test("pen_extract_flows: 截图降级不阻断（通道失败 / 部分缺屏）", async () => {
+  const { runtime } = await makePenProject();
+  const failed = parseToolResult(
+    await penExtractFlows(runtime, { vision: false }, { render: fakeScreenRender({ count: 0 }, { fail: true }) })
+  );
+  assert.equal(failed.ok, true);
+  assert.equal(failed.screenshots.rendered, 0);
+  assert.equal(failed.screenshots.skipped, 3);
+  assert.ok(failed.warnings.some((warning) => warning.code === "screenshot-render-unavailable"));
+  assert.ok(!failed.warnings.some((warning) => warning.code === "screenshot-skipped"));
+  const mapFailed = fs.readFileSync(failed.savedTo.markdown, "utf-8");
+  assert.doesNotMatch(mapFailed, /<img/);
+  assert.match(mapFailed, /截图已跳过/);
+
+  const partial = parseToolResult(
+    await penExtractFlows(
+      runtime,
+      { vision: false },
+      { render: fakeScreenRender({ count: 0 }, { onlyFirst: true }) }
+    )
+  );
+  assert.equal(partial.screenshots.rendered, 1);
+  assert.equal(partial.screenshots.skipped, 2);
+  assert.ok(partial.warnings.some((warning) => warning.code === "screenshot-skipped"));
+  const mapPartial = fs.readFileSync(partial.savedTo.markdown, "utf-8");
+  assert.match(mapPartial, /<img/);
+});
+
+test("pen_extract_flows: screens:false / AOS_SCREENS=0 关闭；显式 true 覆盖 env", async () => {
+  const { runtime } = await makePenProject();
+  const calls = { count: 0 };
+  const off = parseToolResult(
+    await penExtractFlows(runtime, { vision: false, screens: false }, { render: fakeScreenRender(calls) })
+  );
+  assert.equal(calls.count, 0);
+  assert.equal(off.screenshots, undefined);
+  assert.doesNotMatch(fs.readFileSync(off.savedTo.markdown, "utf-8"), /<img/);
+
+  const { runtime: envRuntime } = await makePenProject("AOS_SCREENS=0\n");
+  const envOff = parseToolResult(
+    await penExtractFlows(envRuntime, { vision: false }, { render: fakeScreenRender(calls) })
+  );
+  assert.equal(calls.count, 0);
+  assert.equal(envOff.screenshots, undefined);
+
+  const forced = parseToolResult(
+    await penExtractFlows(envRuntime, { vision: false, screens: true }, { render: fakeScreenRender(calls) })
+  );
+  assert.equal(calls.count, 1);
+  assert.equal(forced.screenshots.rendered, 3);
 });

@@ -13,11 +13,15 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_extract_flows",
     description:
-      "解析 Figma 文件的原型交互 → 流程图：screens（含建议路由）+ edges（元素/触发器/导航/转场，支持 ON_CLICK/AFTER_TIMEOUT/拖拽/BACK 等连续动作）+ entryScreens；落盘 <项目>/.artemis/design/flows.json。REST 模式需 FIGMA_ACCESS_TOKEN。",
+      "解析 Figma 文件的原型交互 → 流程图：screens（含建议路由）+ edges（元素/触发器/导航/转场，支持 ON_CLICK/AFTER_TIMEOUT/拖拽/BACK 等连续动作）+ entryScreens；屏幕截图（screens，默认开）批量渲染各屏嵌入 flow-map.md（图片落 .artemis/design/screens/figma-<fileKey>/，相对路径引用；单屏未就绪有界重试后逐屏降级 screenshot-skipped / screenshot-render-unavailable，不阻断）。落盘 <项目>/.artemis/design/flows.json + flow-map.md。REST 模式需 FIGMA_ACCESS_TOKEN。",
     schema: z.object({
       url: z.string().min(1).describe("Figma 文件 URL（可选带 node-id 限定范围）"),
       nodeId: z.string().optional().describe("可选：只解析该节点子树"),
-      save: z.boolean().optional().describe("是否落盘到 .artemis/design/flows.json，默认 true")
+      save: z.boolean().optional().describe("是否落盘 flows.json + flow-map.md，默认 true"),
+      screens: z
+        .boolean()
+        .optional()
+        .describe("渲染屏幕截图并嵌入 flow-map.md，默认 true；AOS_SCREENS=0 全局关闭（显式 true 覆盖）")
     }),
     handler: (runtime, args) => figmaExtractFlows(runtime, args as unknown as ExtractFlowsArgs)
   },
@@ -43,7 +47,7 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_generate_tests",
     description:
-      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程（覆盖贪心 + 长路径优先：先长主链、再补覆盖缺口，冗余短片段不产出），生成可直接传给 mobile_run_task 的自然语言任务描述；默认（save !== false）三份同时落盘：tests.json + tests.md + tests.xlsx（响应 savedTo 给出三个路径；Excel 可用 excelPath 指定路径、excelTemplate 指定 .xlsx 模版），仅 save:false 才不写任何文件。覆盖保证：响应与 tests.json 内含 coverage（硬覆盖：未覆盖屏幕/跳转、路径截断、entryFallback；explore：inferred 探索缺口，仅报告不阻断）；requireFullCoverage:true 时硬覆盖不完整即报错且三份都不落盘。",
+      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程（覆盖贪心 + 长路径优先：先长主链、再补覆盖缺口，冗余短片段不产出），生成可直接传给 mobile_run_task 的自然语言任务描述；默认（save !== false）三份同时落盘：tests.json + tests.md + tests.xlsx（响应 savedTo 给出三个路径；Excel 可用 excelPath 指定路径、excelTemplate 指定 .xlsx 模版），仅 save:false 才不写任何文件。tests.md 默认按用例嵌入屏幕截图（screens，默认开：按 flows 来源自动分派 figma/pen 渲染通道，每用例 ≤3 张缩略图；映射缺失/渲染失败降级 screenshot-mapping-missing / screenshot-skipped / screenshot-render-unavailable，不阻断）。覆盖保证：响应与 tests.json 内含 coverage（硬覆盖：未覆盖屏幕/跳转、路径截断、entryFallback；explore：inferred 探索缺口，仅报告不阻断）；requireFullCoverage:true 时硬覆盖不完整即报错且三份都不落盘。",
     schema: z.object({
       url: z.string().optional().describe("Figma URL（可选；不传则用 flows.json）"),
       flowsPath: z.string().optional().describe("自定义 flows.json 路径（相对项目根）"),
@@ -56,6 +60,10 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
         .optional()
         .describe("路径最大深度（边数），默认 30；长流程可调大以生成更长的连续用例（超限按续段拆分，不丢尾）"),
       save: z.boolean().optional().describe("是否落盘 tests.json/tests.md/tests.xlsx，默认 true"),
+      screens: z
+        .boolean()
+        .optional()
+        .describe("按用例嵌入屏幕截图到 tests.md，默认 true；AOS_SCREENS=0 全局关闭（显式 true 覆盖）"),
       excelPath: z
         .string()
         .optional()

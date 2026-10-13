@@ -13,6 +13,44 @@ export function designDir(configDirAbs: string): string {
   return path.join(configDirAbs, "design");
 }
 
+export interface FlowDocumentMeta {
+  /** Figma 来源的 fileKey（顶层字段）。 */
+  fileKey: string | null;
+  /** pen 来源的相对项目根路径（`source: "pen:<path>"`）。 */
+  penPath: string | null;
+  /** 屏幕名 → 节点 id（用于 tests.md 截图映射；同名取首个）。 */
+  screenIdsByName: Map<string, string>;
+}
+
+/** flows.json 顶层来源信息（fileKey / pen source）——`normalizeFlowGraph` 会丢弃
+ * 这些字段，截图映射单独读取原文，不改归一化契约。 */
+export function readFlowDocumentMeta(
+  configDirAbs: string,
+  options: { flowsPath?: string } = {}
+): FlowDocumentMeta | null {
+  const file = options.flowsPath ?? path.join(designDir(configDirAbs), "flows.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    const fileKey =
+      typeof parsed.fileKey === "string" && parsed.fileKey.trim() !== "" ? parsed.fileKey : null;
+    const source = typeof parsed.source === "string" ? parsed.source : "";
+    const penPath =
+      source.startsWith("pen:") && source.slice(4).trim() !== "" ? source.slice(4).trim() : null;
+    const screensRaw = Array.isArray(parsed.screens) ? parsed.screens : [];
+    const screenIdsByName = new Map<string, string>();
+    for (const entry of screensRaw) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const record = entry as { id?: unknown; name?: unknown };
+      if (typeof record.id !== "string" || record.id.trim() === "") continue;
+      if (typeof record.name !== "string" || record.name.trim() === "") continue;
+      if (!screenIdsByName.has(record.name)) screenIdsByName.set(record.name, record.id);
+    }
+    return { fileKey, penPath, screenIdsByName };
+  } catch {
+    return null;
+  }
+}
+
 export interface GeneratedCaseRecord {
   id: string;
   name: string;

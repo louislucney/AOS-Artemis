@@ -104,8 +104,13 @@ test("vision: grounds the cart entry, emits an unresolved edge and feeds explora
   const dir = makeProject();
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
 
+  const renderCalls = { count: 0 };
+  const countingRender = async (input) => {
+    renderCalls.count += 1;
+    return fakeRender()(input);
+  };
   const payload = parseToolResult(
-    await penExtractFlows(runtime, { vision: "auto" }, { chat: fakeChat(), render: fakeRender() })
+    await penExtractFlows(runtime, { vision: "auto" }, { chat: fakeChat(), render: countingRender })
   );
   assert.equal(payload.ok, true);
   assert.equal(payload.counts.visionElements, 1);
@@ -113,6 +118,7 @@ test("vision: grounds the cart entry, emits an unresolved edge and feeds explora
   assert.equal(payload.vision.active, true);
   assert.equal(payload.vision.screensProcessed, 2);
   assert.equal(payload.vision.failures, 0);
+  assert.equal(renderCalls.count, 1, "截图与 vision 共享同一次渲染");
 
   const flows = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
   assert.equal(flows.schemaVersion, 3);
@@ -125,7 +131,7 @@ test("vision: grounds the cart entry, emits an unresolved edge and feeds explora
   assert.equal(element.nodeId, "cart-fab", "bbox grounds onto the design node");
   assert.equal(element.provenance, "vision-inferred");
   assert.equal(element.confidence, "low");
-  assert.match(element.evidence.render, /\.artemis\/design\/vision\//);
+  assert.match(element.evidence.render, /\.artemis\/design\/screens\//);
 
   const visionEdge = flows.edges.find((edge) => edge.trigger === "VISION");
   assert.ok(visionEdge, "vision edge persisted");
@@ -170,7 +176,7 @@ test("vision: explicit false disables the pass without warnings", async () => {
 test("vision: no usable active LLM degrades explicitly (auto)", async () => {
   const dir = makeProject();
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
-  const payload = parseToolResult(await penExtractFlows(runtime, {}));
+  const payload = parseToolResult(await penExtractFlows(runtime, { screens: false }));
   assert.equal(payload.ok, true);
   assert.equal(payload.vision.active, false);
   assert.equal(payload.counts.visionElements, 0);

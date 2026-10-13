@@ -266,6 +266,9 @@ export function runPenCli(
   }).then((result) => ({ result, log: stripAnsi(`${result.stdout}\n${result.stderr}`) }));
 }
 
+/** 交互会话串行队列尾（进程级；见 runPenInteractive）。 */
+let interactiveQueue: Promise<unknown> = Promise.resolve();
+
 export interface PenInteractiveRun {
   result: PenExecResult;
   log: string;
@@ -273,6 +276,26 @@ export interface PenInteractiveRun {
 }
 
 export function runPenInteractive(options: {
+  input: string;
+  output: string;
+  commands: string[];
+  timeoutMs?: number;
+  exec?: PenExecFn;
+  cliPath?: string;
+  env?: Record<string, string>;
+}): Promise<PenInteractiveRun> {
+  // 交互会话进程级串行队列（design-screenshots T2）：并发调用会互相覆盖
+  // session 输出文件、并可能争用 CLI 侧共享状态；一次性 `--export` 不入队。
+  const task = () => runPenInteractiveOnce(options);
+  const run = interactiveQueue.then(task, task);
+  interactiveQueue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+function runPenInteractiveOnce(options: {
   input: string;
   output: string;
   commands: string[];

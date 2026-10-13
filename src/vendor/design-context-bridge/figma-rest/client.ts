@@ -65,9 +65,15 @@ function parseRetryAfter(res: Response): number | null {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
-async function figmaFetch(path: string, attempt = 0): Promise<unknown> {
+async function figmaFetch(
+  path: string,
+  attempt = 0,
+  // PATCH (aos-mcp): `noCache` bypasses the response cache for bounded retries
+  // (a cached null render URL would otherwise defeat an /images retry).
+  options: { noCache?: boolean } = {}
+): Promise<unknown> {
   const ttl = cacheTtlMs();
-  if (ttl > 0) {
+  if (ttl > 0 && options.noCache !== true) {
     const cached = cache.get(path);
     if (cached && Date.now() < cached.expiresAt) return cached.data;
   }
@@ -86,7 +92,7 @@ async function figmaFetch(path: string, attempt = 0): Promise<unknown> {
     const seconds = parseRetryAfter(res) ?? 60;
     if (seconds * 1000 <= retryMaxWaitMs() && attempt < 1) {
       await new Promise((r) => setTimeout(r, seconds * 1000));
-      return figmaFetch(path, attempt + 1);
+      return figmaFetch(path, attempt + 1, options);
     }
     cooldowns.set(fingerprint, { until: Date.now() + seconds * 1000, tier, retryAfterSeconds: seconds });
     throw new FigmaRateLimitError(seconds, tier);
@@ -142,10 +148,12 @@ export async function fetchImages(
   nodeIds: string[],
   format: 'svg' | 'png' | 'jpg' = 'svg',
   scale = 1,
+  // PATCH (aos-mcp): `noCache` passthrough for bounded render retries.
+  options: { noCache?: boolean } = {},
 ): Promise<{ images: Record<string, string | null>; err?: string }> {
   const ids = nodeIds.map((id) => encodeURIComponent(id)).join(',');
   const scaleQuery = format === 'svg' ? '' : `&scale=${scale}`;
-  return figmaFetch(`/images/${fileKey}?ids=${ids}&format=${format}${scaleQuery}`) as Promise<{
+  return figmaFetch(`/images/${fileKey}?ids=${ids}&format=${format}${scaleQuery}`, 0, options) as Promise<{
     images: Record<string, string | null>;
     err?: string;
   }>;

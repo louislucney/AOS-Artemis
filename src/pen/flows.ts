@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { errorMessage, writeFileAtomic } from "../util.js";
+import { errorMessage, escapeHtml, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 import {
   acceptanceItemOf,
@@ -25,9 +25,16 @@ import {
   type VisionScreenInput
 } from "../design/vision.js";
 import { confidenceFor, isAnnotationLayerName, type Confidence, type Provenance } from "../provenance.js";
-import { penEnvFrom, type PenExecFn } from "./cli.js";
+import {
+  relativeScreenPath,
+  screensEnabledFrom,
+  SCREENSHOT_RENDER_UNAVAILABLE,
+  SCREENSHOT_SKIPPED
+} from "../design/screens.js";
+import { type PenExecFn } from "./cli.js";
 import { type PenEnsureFn } from "./install.js";
-import { renderPenScreens, type PenScreenRenderInput, type PenScreenRenderResult } from "./render.js";
+import { type PenScreenRenderInput, type PenScreenRenderResult } from "./render.js";
+import { capturePenScreens } from "./screens.js";
 import { loadPenDocument, penRelativePath, PEN_HINT, resolvePenTarget } from "./paths.js";
 import { collectPenNodes, type PenDocument, type PenNode } from "./read.js";
 
@@ -523,6 +530,8 @@ export function renderPenFlowMap(input: {
   file: string;
   generatedAt: string;
   result: PenFlowResult;
+  /** screen id → md 相对引用（`screens/...`，与 md 同级）；可选。 */
+  images?: Map<string, string>;
 }): string {
   const { result } = input;
   const signals = result.synthesis.interactionSignals;
@@ -555,6 +564,10 @@ export function renderPenFlowMap(input: {
       const stateLabels = [...new Set(screen.states.map((state) => state.label))];
       const states = stateLabels.length > 0 ? `（状态：${stateLabels.join("、")}）` : "";
       lines.push(`- ${screen.name}${states}`);
+      const image = input.images?.get(screen.id);
+      if (image) {
+        lines.push(`  - <img src="${image}" alt="${escapeHtml(screen.name)}" height="200">`);
+      }
     }
     lines.push("");
   }
@@ -599,6 +612,8 @@ export interface PenExtractFlowsArgs {
   /** Vision element recognition: "auto" (default; runs when the active LLM is
    * vision-capable), true (attempt even when the heuristic says no) or false. */
   vision?: boolean | "auto";
+  /** 渲染屏幕截图并嵌入 flow-map.md（默认 true；`AOS_SCREENS=0` 全局关闭）。 */
+  screens?: boolean;
 }
 
 export interface PenFlowsDeps {
@@ -695,13 +710,85 @@ function collectVisionScreens(doc: PenDocument, screens: PenFlowScreen[]): Visio
   return inputs;
 }
 
+interface PenScreenAssets {
+  channelError: string | null;
+  /** screenId → 已入库的最终 PNG 绝对路径（仅成功入库的屏）。 */
+  imagePaths: Map<string, string>;
+  skipped: string[];
+  warnings: FlowWarning[];
+  summary: { dir: string; rendered: number; skipped: number; skippedScreens: string[] };
+}
+
+/** 一次渲染两用（design-screenshots T2）：截图与 vision 共享同一批渲染；
+ * 渲染到私有临时目录 → 逐张校验后原子入库 `screens/pen-<slug>/` → 清理临时目录。 */
+function screenAssetLoader(
+  runtime: Runtime,
+  target: string,
+  screens: PenFlowScreen[],
+  deps: PenFlowsDeps,
+  dotenv: Record<string, string>
+): () => Promise<PenScreenAssets> {
+  let pending: Promise<PenScreenAssets> | null = null;
+  return () => {
+    pending ??= renderAndImportPenScreens(runtime, target, screens, deps, dotenv);
+    return pending;
+  };
+}
+
+async function renderAndImportPenScreens(
+  runtime: Runtime,
+  target: string,
+  screens: PenFlowScreen[],
+  deps: PenFlowsDeps,
+  dotenv: Record<string, string>
+): Promise<PenScreenAssets> {
+  const capture = await capturePenScreens({
+    configDirAbs: runtime.configDirAbs,
+    target,
+    screenIds: screens.map((screen) => screen.id),
+    dotenv,
+    deps: { render: deps.render, exec: deps.exec, ensure: deps.ensure }
+  });
+  const warnings: FlowWarning[] = [];
+  if (capture.channelError !== null) {
+    warnings.push({
+      code: SCREENSHOT_RENDER_UNAVAILABLE,
+      message: `截图已跳过：pen 渲染不可用（${capture.channelError}）`
+    });
+  } else if (capture.imagePaths.size === 0 && capture.skipped.length > 0) {
+    warnings.push({
+      code: SCREENSHOT_RENDER_UNAVAILABLE,
+      message: "截图已跳过：pen 渲染不可用（CLI 未产出渲染图）"
+    });
+  } else if (capture.skipped.length > 0) {
+    warnings.push({
+      code: SCREENSHOT_SKIPPED,
+      message: `截图降级：${capture.skipped.length} 屏未产出渲染（${capture.skipped.slice(0, 5).join("、")}${
+        capture.skipped.length > 5 ? " 等" : ""
+      }）`
+    });
+  }
+  return {
+    channelError: capture.channelError,
+    imagePaths: capture.imagePaths,
+    skipped: capture.skipped,
+    warnings,
+    summary: {
+      dir: relativeScreenPath(path.join(runtime.configDirAbs, "design"), capture.dir),
+      rendered: capture.imagePaths.size,
+      skipped: capture.skipped.length,
+      skippedScreens: capture.skipped
+    }
+  };
+}
+
 async function applyVision(
   runtime: Runtime,
   args: PenExtractFlowsArgs,
-  target: string,
   doc: PenDocument,
   result: PenFlowResult,
-  deps: PenFlowsDeps
+  deps: PenFlowsDeps,
+  loadAssets: () => Promise<PenScreenAssets>
 ): Promise<VisionMerge | null> {
   const requested: VisionMerge["requested"] =
     args.vision === true ? "on" : args.vision === false ? "off" : "auto";
@@ -752,28 +839,19 @@ async function applyVision(
     chat = makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model });
   }
 
-  const renderFn = deps.render ?? renderPenScreens;
-  const outDir = path.join(runtime.configDirAbs, "design", "vision", path.basename(target, ".pen"));
-  let rendered: PenScreenRenderResult;
+  let assets: PenScreenAssets;
   try {
-    rendered = await renderFn({
-      target,
-      screenIds: screens.map((screen) => screen.id),
-      env: penEnvFrom(dotenv, process.env),
-      outDir,
-      exec: deps.exec,
-      ensure: deps.ensure
-    });
+    assets = await loadAssets();
   } catch (error) {
     return skippedVision(requested, "渲染通道失败", [
       { code: "vision-render-unavailable", message: `视觉识别已跳过：设计渲染失败（${errorMessage(error)}）` }
     ]);
   }
-  if (!rendered.ok && rendered.files.size === 0) {
+  if (assets.channelError !== null) {
     return skippedVision(requested, "渲染通道失败", [
       {
         code: "vision-render-unavailable",
-        message: `视觉识别已跳过：设计渲染失败（${rendered.error ?? "pen CLI 未产出渲染图"}）`
+        message: `视觉识别已跳过：设计渲染失败（${assets.channelError}）`
       }
     ]);
   }
@@ -781,7 +859,7 @@ async function applyVision(
   const imageCache = new Map<string, string | null>();
   const imageFor = (screenId: string): string | null => {
     if (imageCache.has(screenId)) return imageCache.get(screenId) ?? null;
-    const file = rendered.files.get(screenId);
+    const file = assets.imagePaths.get(screenId);
     let data: string | null = null;
     if (file) {
       try {
@@ -794,7 +872,7 @@ async function applyVision(
     return data;
   };
   const renderPathOf = (screenId: string): string | null => {
-    const file = rendered.files.get(screenId);
+    const file = assets.imagePaths.get(screenId);
     return file ? penRelativePath(runtime, file) : null;
   };
 
@@ -837,7 +915,22 @@ export async function penExtractFlows(
     }
     const doc = loadPenDocument(target);
     const result = synthesizePenFlows(doc, { maxScreens: args.maxScreens });
-    const vision = await applyVision(runtime, args, target, doc, result, deps);
+    const dotenv = runtime.project.dotenvValues ?? {};
+    const wantScreens = screensEnabledFrom({ ...process.env, ...dotenv }, args.screens);
+    const loadAssets = screenAssetLoader(runtime, target, result.screens, deps, dotenv);
+    let screenAssets: PenScreenAssets | null = null;
+    if (wantScreens) {
+      try {
+        screenAssets = await loadAssets();
+        result.warnings.push(...screenAssets.warnings);
+      } catch (error) {
+        result.warnings.push({
+          code: SCREENSHOT_RENDER_UNAVAILABLE,
+          message: `截图已跳过：设计渲染失败（${errorMessage(error)}）`
+        });
+      }
+    }
+    const vision = await applyVision(runtime, args, doc, result, deps, loadAssets);
     if (vision) {
       for (const screen of result.screens) {
         const elements = vision.elementsByScreen.get(screen.id);
@@ -874,6 +967,7 @@ export async function penExtractFlows(
           }
         : { requested: "off", active: false },
       warnings: result.warnings,
+      ...(screenAssets ? { screenshots: screenAssets.summary } : {}),
       screens: result.screens.slice(0, 30),
       edges: result.edges.slice(0, 40),
       entryScreens: result.entryScreens,
@@ -899,12 +993,17 @@ export async function penExtractFlows(
           2
         ) + "\n"
       );
+      const imageRefs = new Map<string, string>();
+      for (const [screenId, file] of screenAssets?.imagePaths ?? []) {
+        imageRefs.set(screenId, relativeScreenPath(designDir, file));
+      }
       writeFileAtomic(
         mapPath,
         renderPenFlowMap({
           file: penRelativePath(runtime, target),
           generatedAt: new Date().toISOString(),
-          result
+          result,
+          images: imageRefs
         })
       );
       payload.savedTo = { json: flowsPath, markdown: mapPath };

@@ -20,6 +20,21 @@ import { applyReconciliationToGraph, loadReconciliation } from "./reconciliation
 import { loadScreenMap, normalizeElementLabel } from "../diff/screen-map.js";
 import { canonicalizePlaceholders, normalizedText } from "./strings.js";
 import { renderTestsWorkbook } from "./test-xlsx.js";
+import { readFlowDocumentMeta } from "./design-store.js";
+import { captureFigmaScreens } from "./render.js";
+import {
+  figmaScreensDir,
+  relativeScreenPath,
+  screensEnabledFrom,
+  SCREENSHOT_MAPPING_MISSING,
+  SCREENSHOT_RENDER_UNAVAILABLE,
+  SCREENSHOT_SKIPPED,
+  storeScreenPng
+} from "../design/screens.js";
+import { capturePenScreens } from "../pen/screens.js";
+import type { PenExecFn } from "../pen/cli.js";
+import type { PenEnsureFn } from "../pen/install.js";
+import type { PenScreenRenderInput, PenScreenRenderResult } from "../pen/render.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 import {
@@ -602,7 +617,8 @@ export function generateTestCases(
 
 export function renderMarkdown(
   cases: GeneratedTest[],
-  meta: { source: string; generatedAt: string }
+  meta: { source: string; generatedAt: string },
+  options: { images?: Map<string, string[]> } = {}
 ): string {
   const lines: string[] = [
     "# 设计流程测试用例",
@@ -615,6 +631,13 @@ export function renderMarkdown(
     lines.push(`## ${index + 1}. ${testCase.name}`, "");
     if (testCase.continuation) {
       lines.push(`> 接续段：先按前导导航到「${testCase.startScreen}」（不计断言）`, "");
+    }
+    const refs = options.images?.get(testCase.id) ?? [];
+    if (refs.length > 0) {
+      const shown = refs.slice(0, 3);
+      lines.push(shown.map((ref) => `<img src="${ref}" height="160">`).join(" "));
+      if (refs.length > shown.length) lines.push(`…（共 ${refs.length} 屏）`);
+      lines.push("");
     }
     if (testCase.preconditions.length > 0) {
       lines.push(`- 前置假设：${testCase.preconditions.join("；")}`, "");
@@ -644,6 +667,162 @@ export interface GenerateTestsArgs {
   excelPath?: string;
   excelTemplate?: string;
   requireFullCoverage?: boolean;
+  /** 按用例嵌入屏幕截图到 tests.md（默认 true；`AOS_SCREENS=0` 全局关闭）。 */
+  screens?: boolean;
+}
+
+export interface GenerateTestsDeps {
+  /** pen 通道渲染注入（测试）。 */
+  render?: (input: PenScreenRenderInput) => Promise<PenScreenRenderResult>;
+  exec?: PenExecFn;
+  ensure?: PenEnsureFn;
+  /** 渲染重试等待注入（测试）。 */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+interface CaseScreensResult {
+  caseRefs: Map<string, string[]>;
+  warnings: Array<{ code: string; message: string }>;
+  summary: {
+    channel: "figma" | "pen";
+    dir: string;
+    rendered: number;
+    skipped: number;
+    skippedScreens: string[];
+  } | null;
+}
+
+function screenCaptureWarnings(
+  channelLabel: string,
+  channelError: string | null,
+  rendered: number,
+  skipped: string[]
+): Array<{ code: string; message: string }> {
+  if (channelError !== null) {
+    return [
+      {
+        code: SCREENSHOT_RENDER_UNAVAILABLE,
+        message: `截图已跳过：${channelLabel} 渲染不可用（${channelError}）`
+      }
+    ];
+  }
+  if (rendered === 0 && skipped.length > 0) {
+    return [
+      { code: SCREENSHOT_RENDER_UNAVAILABLE, message: `截图已跳过：${channelLabel} 未产出渲染图` }
+    ];
+  }
+  if (skipped.length > 0) {
+    return [{ code: SCREENSHOT_SKIPPED, message: `截图降级：${skipped.length} 屏未产出渲染` }];
+  }
+  return [];
+}
+
+/** 按用例收集屏幕截图（design-screenshots T4）：flows 来源（fileKey/pen source）决定通道，
+ * 屏幕名 → nodeId 映射后一次批量渲染；映射缺失/渲染失败逐级降级，不阻断。 */
+async function captureCaseScreens(
+  runtime: Runtime,
+  input: {
+    flowsPath: string;
+    fromUrlFileKey: string | null;
+    graph: FlowGraph;
+    cases: GeneratedTest[];
+    deps: GenerateTestsDeps;
+    dotenv: Record<string, string>;
+  }
+): Promise<CaseScreensResult> {
+  const warnings: Array<{ code: string; message: string }> = [];
+  const meta =
+    input.fromUrlFileKey !== null
+      ? {
+          fileKey: input.fromUrlFileKey,
+          penPath: null as string | null,
+          screenIdsByName: new Map(input.graph.screens.map((screen) => [screen.name, screen.id]))
+        }
+      : readFlowDocumentMeta(runtime.configDirAbs, { flowsPath: input.flowsPath });
+  if (meta === null || (meta.fileKey === null && meta.penPath === null)) {
+    warnings.push({
+      code: SCREENSHOT_MAPPING_MISSING,
+      message: "截图已跳过：flows 缺少来源信息（fileKey/pen source），无法映射屏幕截图"
+    });
+    return { caseRefs: new Map(), warnings, summary: null };
+  }
+
+  const perCaseIds = new Map<string, string[]>();
+  const screenIds = new Set<string>();
+  let unmappedCases = 0;
+  for (const testCase of input.cases) {
+    const ids: string[] = [];
+    for (const name of testCase.screens) {
+      const id = meta.screenIdsByName.get(name);
+      if (id) {
+        ids.push(id);
+        screenIds.add(id);
+      }
+    }
+    if (testCase.screens.length > 0 && ids.length === 0) unmappedCases += 1;
+    perCaseIds.set(testCase.id, ids);
+  }
+  if (unmappedCases > 0) {
+    warnings.push({
+      code: SCREENSHOT_MAPPING_MISSING,
+      message: `截图降级：${unmappedCases} 条用例无法映射屏幕（flows 屏幕名缺失）`
+    });
+  }
+  if (screenIds.size === 0) return { caseRefs: new Map(), warnings, summary: null };
+  const ids = [...screenIds];
+
+  const designDirAbs = path.join(runtime.configDirAbs, "design");
+  let imagePaths: Map<string, string>;
+  let skipped: string[];
+  let channel: "figma" | "pen";
+  let dir: string;
+  if (meta.fileKey !== null) {
+    channel = "figma";
+    const capture = await captureFigmaScreens(meta.fileKey, ids, { sleep: input.deps.sleep });
+    const targetDir = figmaScreensDir(runtime.configDirAbs, meta.fileKey);
+    imagePaths = new Map();
+    for (const [id, png] of capture.pngById) {
+      const stored = storeScreenPng(targetDir, id, png);
+      if (stored.status !== "invalid") imagePaths.set(id, stored.path);
+    }
+    skipped = ids.filter((id) => !imagePaths.has(id));
+    dir = targetDir;
+    warnings.push(...screenCaptureWarnings("Figma", capture.channelError, imagePaths.size, skipped));
+  } else {
+    channel = "pen";
+    const capture = await capturePenScreens({
+      configDirAbs: runtime.configDirAbs,
+      target: path.resolve(runtime.project.rootDir, meta.penPath!),
+      screenIds: ids,
+      dotenv: input.dotenv,
+      deps: { render: input.deps.render, exec: input.deps.exec, ensure: input.deps.ensure }
+    });
+    imagePaths = capture.imagePaths;
+    skipped = capture.skipped;
+    dir = capture.dir;
+    warnings.push(...screenCaptureWarnings("pen", capture.channelError, imagePaths.size, skipped));
+  }
+
+  const caseRefs = new Map<string, string[]>();
+  for (const testCase of input.cases) {
+    const refs: string[] = [];
+    for (const id of perCaseIds.get(testCase.id) ?? []) {
+      const file = imagePaths.get(id);
+      if (file) refs.push(relativeScreenPath(designDirAbs, file));
+    }
+    caseRefs.set(testCase.id, refs);
+  }
+  return {
+    caseRefs,
+    warnings,
+    summary: {
+      channel,
+      dir: relativeScreenPath(designDirAbs, dir),
+      rendered: imagePaths.size,
+      skipped: skipped.length,
+      skippedScreens: skipped
+    }
+  };
 }
 
 /** Load the frozen text→key mapping produced by figma_import_strings (M6b). */
@@ -667,7 +846,8 @@ function loadI18nKeys(runtime: Runtime): Map<string, string> {
 
 export async function figmaGenerateTests(
   runtime: Runtime,
-  args: GenerateTestsArgs
+  args: GenerateTestsArgs,
+  deps: GenerateTestsDeps = {}
 ): Promise<CallToolResult> {
   try {
     const flowsPath = args.flowsPath
@@ -676,8 +856,10 @@ export async function figmaGenerateTests(
 
     let graph: FlowGraph;
     let source: string;
+    let fromUrlFileKey: string | null = null;
     if (args.url) {
       const { fileKey } = parseFigmaUrl(args.url);
+      fromUrlFileKey = fileKey;
       const file = (await fetchFile(fileKey)) as { name?: string; document?: FigmaNode };
       if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
       graph = buildFlowGraph(file.document);
@@ -784,13 +966,46 @@ export async function figmaGenerateTests(
       const templatePath = args.excelTemplate
         ? path.resolve(runtime.project.rootDir, args.excelTemplate)
         : undefined;
+
+      const dotenv = runtime.project.dotenvValues ?? {};
+      const wantScreens = screensEnabledFrom({ ...process.env, ...dotenv }, args.screens);
+      let caseScreens: CaseScreensResult | null = null;
+      if (wantScreens) {
+        try {
+          caseScreens = await captureCaseScreens(runtime, {
+            flowsPath,
+            fromUrlFileKey,
+            graph,
+            cases,
+            deps,
+            dotenv
+          });
+        } catch (error) {
+          caseScreens = {
+            caseRefs: new Map(),
+            warnings: [
+              {
+                code: SCREENSHOT_RENDER_UNAVAILABLE,
+                message: `截图已跳过：渲染失败（${errorMessage(error)}）`
+              }
+            ],
+            summary: null
+          };
+        }
+        payload.warnings = caseScreens.warnings;
+        if (caseScreens.summary) payload.screenshots = caseScreens.summary;
+      }
+
       const excelBuffer = await renderTestsWorkbook(
         cases,
         { source, generatedAt, counts },
         { templatePath }
       );
       writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
-      writeFileAtomic(markdownPath, renderMarkdown(cases, { source, generatedAt }));
+      writeFileAtomic(
+        markdownPath,
+        renderMarkdown(cases, { source, generatedAt }, { images: caseScreens?.caseRefs ?? new Map() })
+      );
       writeFileAtomic(excelPath, excelBuffer);
       payload.savedTo = { json: jsonPath, markdown: markdownPath, xlsx: excelPath };
       if (templatePath) payload.excel = { template: templatePath };
