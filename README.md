@@ -143,16 +143,17 @@ node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:
 
 ### 多项目总览面板（overview-panel）
 
-HTTP 模式挂只读总览面板：`GET /panel`（服务端渲染 HTML）与 `GET /panel.json`（同源 JSON，`view: overview|project|batch`）。三层视图：**L1 项目总览**（接入健康灯 + 最新批次摘要）、**L2 项目详情**（集成信息 + **深探信息** + 批次列表与**批次趋势** + **磁盘资产**（崩溃签名/对账/设备基线热点/保留期摘要）+ 独立运行 + 设计资产）、**L3 批次详情**（归纳分类：门禁/失败域/置信度/用例/证据链）。
+HTTP 模式挂总览面板：`GET /panel`（服务端渲染 HTML）与 `GET /panel.json`（同源 JSON，`view: overview|project|batch|task|review|stats`）。三层视图：**L1 项目总览**（接入健康灯 + 最新批次摘要）、**L2 项目详情**（集成信息 + **深探信息** + 批次列表与**批次趋势** + **回归引用**（新建回归测试：勾选份 → 创建任务）+ **回归任务**列表 + **磁盘资产**（崩溃签名/对账/设备基线热点/保留期摘要）+ 独立运行 + 设计资产）、**L3 批次详情**（归纳分类：门禁/失败域/置信度/用例/证据链）；回归视图：**任务页**（`?task=<id>`：子运行/对比/跨端差异/触发执行指引）、**归因队列**（`?view=review`：失败用例初判+证据+批量裁决，写库后 reload 可见）、**统计下钻**（`?view=stats`：功能通过率/趋势、最不稳用例、跨端差异、改进出口三清单）。
 
 ```bash
-node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读看板（HTTP 模式自带 /panel）
+node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读看板（HTTP 模式自带 /panel；动作层仅 HTTP 模式）
 ```
 
-- 数据源：批次清单 `.artemis/design/runs/`（`suite run`/`loop` 自动落盘，权威）+ PG 台账 + 项目软读（无子进程/无网络）；磁盘不可达的项目降级为"仅台账"；缺件/清理/高版本清单一律如实占位，不猜测。
+- **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用份创建回归任务）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）。**v1 无鉴权**——仅在受控内网部署，任何能访问端口者可写任务与裁决；独立 CLI 看板保持只读。
+- 数据源：批次清单 `.artemis/design/runs/`（`suite run`/`loop` 自动落盘，权威）+ PG 台账（含 `regression_tasks`/`suite_runs`/`suite_run_cases`，裁决写回 `suite_run_cases.verdict*`）+ 项目软读（无子进程/无网络）；磁盘不可达的项目降级为"仅台账"；缺件/清理/高版本清单一律如实占位，不猜测。
 - **深探**（HTTP 模式）：项目页懒建 Runtime 后取纯读子集（active Profile/存储/artemis 子进程/桥/日志/构建状态；**不拉起子进程、不触网**）；URL 加 `?ios=1` 显式执行 **iOS 环境检测**（调用本地 appium CLI，结果缓存 60s）；独立 CLI 进程无深探层。
-- 查询参数：`project`（项目名或根路径）、`batch`（清单文件名）、`limit`（批次数，默认 20、上限 100）、`ios`（=1 显式 iOS 检测）。
-- 只读、默认 loopback、进程内缓存 5s；`AOS_PANEL_WEB=0` 关闭路由、`AOS_PANEL_CACHE_MS` 调整缓存 TTL（0 关闭缓存）；CLI 端口占用 exit 2。见 DESIGN §13.95–§13.98、§13.103–§13.105。
+- 查询参数：`project`（项目名或根路径）、`batch`（清单文件名）、`task`（回归任务 id）、`view`（`review`|`stats`；优先级 task > batch > view）、`limit`（批次数，默认 20、上限 100）、`ios`（=1 显式 iOS 检测）。
+- 默认 loopback、进程内缓存 5s（动作写成功后缓存失效）；`AOS_PANEL_WEB=0` 关闭只读路由、`AOS_PANEL_CACHE_MS` 调整缓存 TTL（0 关闭缓存）；CLI 端口占用 exit 2。见 DESIGN §13.95–§13.98、§13.103–§13.105、§13.108。
 
 ### Jira 接入（M8a：读取）
 
