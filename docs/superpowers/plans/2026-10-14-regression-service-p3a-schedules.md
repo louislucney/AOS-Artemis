@@ -22,6 +22,8 @@
   - 补跑＝**仅补一次**：CAS 推进 `last_fired_at=now`，下一窗口从 now 起算。
   - 面板**只读**展示（管理走 `suite schedule` CLI；面板动作层扩展列 backlog）。
   - 触发失败（建任务抛错）→ 告警日志 + `last_note`；不打断 runner 主循环。
+  - schedule `name` 项目内**唯一**（DDL `UNIQUE (project_id, name)`；重名 `add` 拒绝 exit 2）——面板「最近任务」与任务「来源」按 `schedule:<name>` 关联的正确性前提。
+  - schedule 的 `platforms` 需与至少一台同项目 runner 的设备端匹配；否则任务停留 pending 并**逐窗口累积**（v1 不自动超时/清理，属 owner 配置责任、面板任务列表可见）。
 
 ## Review Focus
 
@@ -55,8 +57,8 @@
     baseline: "latest" | "none"; everyMinutes: number; createdBy?: string | null;
   }
   // ProjectStore 接口新增：
-  createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord>;
-  listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]>;   // createdAt 新→旧
+  createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord>;   // 同项目同名 → 抛错
+  listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]>;   // createdAt 新→旧；limit 缺省=全量（firing 用）
   getSchedule(rootPath: string, id: string): Promise<ScheduleRecord | null>;
   updateSchedule(rootPath: string, id: string, patch: {
     enabled?: boolean; everyMinutes?: number; lastNote?: string | null;
@@ -71,6 +73,7 @@
 - [ ] **Step 1: 写失败测试**（`test/db-schedules.test.js`；pg-mem + memory 双跑）
   - `createSchedule/listSchedules：落库（enabled=true、lastFiredAt/lastNote=null）+ createdAt 新→旧 + limit`。
   - `create/get/update（enabled/everyMinutes/lastNote；键缺省不动）/delete（再查 null；删除不存在 → false）`。
+  - `createSchedule：同项目同名 → 抛错（跨项目同名可行）`。
   - `claimScheduleWindow：首次触发（lastFiredAt null）→ true 并落 firedAt；未到期（firedAt 推进后立即再领）→ false；恰等于窗口（cutoff 边界）→ true；disabled → false；不同项目 id → false`。
   - `契约定型：claimScheduleWindow 返回 false 时 last_fired_at 不变`。
 - [ ] **Step 2: 跑测试确认失败**：`npm run test:file -- test/db-schedules.test.js`。
@@ -138,11 +141,11 @@
    * best-effort：任何异常仅告警，不抛出。 */
   export async function fireDueSchedules(options: FireSchedulesOptions): Promise<number>;
   ```
-- 语义：`listSchedules`（enabled）→ `now - lastFiredAt >= everyMinutes*60_000`（`lastFiredAt null` → 到期）→ `claimScheduleWindow(claim…)`（**先 CAS 后建**）→ 成功者：`listCaseSets` + `latestFeatureRefs` 解析 featureKeys：
+- 语义：`listSchedules`（**缺省全量**）→ 过滤 enabled 且（`lastFiredAt === null` 或 `Date.parse(lastFiredAt) <= nowMs - everyMinutes*60_000`；`now` 为毫秒 epoch，`firedAt/cutoff` 均由 `new Date(...).toISOString()` 生成——**不得**用毫秒数与 ISO 字符串直接比较）→ `claimScheduleWindow`（**先 CAS 后建**）→ 成功者：`listCaseSets` + `latestFeatureRefs` 解析 featureKeys（**`listCaseSets` 读取失败 → 本轮不触发、不消费窗口**）：
   - 全部命中 → `createRegressionTask({ refs, platforms, baseline, createdBy: \`schedule:${name}\` })` + `updateSchedule({ lastNote: null })` + 日志「触发 <name> → 任务 <id>」；
   - 部分命中 → 用子集建任务 + `updateSchedule({ lastNote: \`缺 ${missing.join(",")}\` })` + 告警；
   - 全miss → **不建任务** + `updateSchedule({ lastNote: "引用份均不可用" })` + 告警；
-  - CAS 败（他 runner 赢）→ 静默跳过；建任务抛错 → 告警 + `lastNote: "触发失败：…"`（窗口已消费，下窗口重试）。
+  - CAS 败（他 runner 赢）→ 静默跳过；建任务抛错 → **每个 due schedule 独立 try/catch**（告警 + `lastNote: "触发失败：…"` 后 continue，不阻断其余 schedule；窗口已消费，下窗口重试）；函数级 try/catch 仅兜底保证整体不抛出；`createRegressionTask({ rootPath, refs: resolved.map(r => ({ caseSetId: r.caseSetId, featureKey: r.featureKey })), … })`。
 
 - [ ] **Step 1: 写失败测试**
   - `到期（lastFiredAt null / 超过 every）→ 建任务：refs 为最新份、createdBy=schedule:<name>、platforms/baseline 原样；lastFiredAt 推进、lastNote null`。
