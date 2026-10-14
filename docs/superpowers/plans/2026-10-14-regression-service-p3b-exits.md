@@ -32,7 +32,7 @@
 ### Task 1: store——`jira_issue_key` 列 + `setCaseIssueKey` + `getSuiteRun`
 
 **Files:**
-- Modify: `src/db/types.ts`、`src/db/postgres.ts`、`src/db/memory.ts`
+- Modify: `src/db/types.ts`、`src/db/postgres.ts`、`src/db/memory.ts`、`src/tasks/run-registry.ts`
 - Test: `test/db-suite-runs.test.js`（追加）
 
 **Interfaces:**
@@ -58,6 +58,8 @@
   - DDL：`suite_run_cases` CREATE 内 `verdict_note TEXT,` 后加 `jira_issue_key TEXT,`。
   - MIGRATIONS 追加：`` `ALTER TABLE suite_run_cases ADD COLUMN IF NOT EXISTS jira_issue_key TEXT` ``。
   - 行映射：`jiraIssueKey: nullableString(row.jira_issue_key)`（与既有 verdict 字段同款）。
+  - `src/tasks/run-registry.ts`：`buildSuiteRunInput` 的 cases 映射补 `jiraIssueKey: null`（I1：必需字段，缺则 strict tsc 编译失败）。
+  - memory 卫生（M6）：`recordSuiteRun`/`cloneSuiteRun` 路径统一 `jiraIssueKey: entry.jiraIssueKey ?? null`（旧夹具不产生 `undefined`）。
   - postgres/memory 实现两个新方法（镜像既有写法；memory 的 `getSuiteRun` 深拷贝 cases）。
 - [ ] **Step 4: 跑测试确认通过** + `npm run build`。
 - [ ] **Step 5: 提交**：`git commit -m "feat(db): jira_issue_key + setCaseIssueKey + getSuiteRun (store)"`
@@ -67,7 +69,7 @@
 **Files:**
 - Create: `src/tasks/verdict-exits.ts`
 - Modify: `src/panel/overview.ts`（`buildPanelStatsView` 改用共享模块；`PanelImprovementItem` 扩展）、`src/figma/generation-feedback.ts`（`collectVerdictSuggestions` 改用共享模块）
-- Test: `test/verdict-exits.test.js`（新）；回归锁 `test/panel-stats.test.js`、`test/generation-feedback.test.js`
+- Test: `test/verdict-exits.test.js`（新）；回归锁 `test/panel-overview.test.js`、`test/generation-feedback.test.js`
 
 **Interfaces:**
 - Consumes：Task 1 的 `SuiteRunCaseRecord.jiraIssueKey`。
@@ -108,28 +110,30 @@
   - 入口排序：`[...runs].sort((a,b) => b.createdAt.localeCompare(a.createdAt))`（稳定 tie 保持入参序）。
   - `caseDefects`＝verdict `"case-defect"`；`appDefects`＝`"app-defect"`；其余（execution-deviation/uncertain）不进 1/3 清单。
   - `environment`：对 verdict `"execution-deviation"` 的条目按 `${device ?? ""}|${platform}` 分组；`count` 条目数；`features`＝`featureName ?? featureKey ?? caseId` 去重字典序；`lastAt`＝组内非空 `verdictAt` 最大（ISO 字符串比较）；`notes`＝非空 note 去重（按入参自排后的出现序，新→旧）；组排序：count 降序 → device 升序（null 视为 ""）→ platform 升序。
+  - **份血统口径（§13.108 契约，C1 修订）**：入口先跳过 `featureKey === null` 的 run（既有 `overview.ts:1145`、`generation-feedback.ts:182` 逐字口径；`test/panel-overview.test.js:832-836` 与 `test/generation-feedback.test.js:261-285` 为锁）。D10「无份运行允许建单」仅指**建单路由准入**，不改出口清单口径。
   - 面板扩展：`PanelImprovementItem` 增 `runId: string; platform: string; device: string | null; traceId: string | null; jiraKey: string | null`；`PanelStatsView.improvement` 形状变为：
     ```ts
     improvement: { caseDefects: PanelImprovementItem[]; environment: VerdictEnvironmentGroup[]; appDefects: PanelImprovementItem[] }
     ```
     （environment 由条目列表改为**分组列表**——`test/panel-stats.test.js` 针对该形状的断言随更新，数量与统计口径不变，其余断言为回归锁；`guidance` 文案结构保留，P3「后续接线」句本任务先保留、Task 5 移除）
-  - `collectVerdictSuggestions`：改为取 `listSuiteRuns(limit 50)`（本任务暂保留独立取数窗口，行为最小变化）→ `collectVerdictExits` → 按 `featureKey ?? featureName` 分组的 `caseDefects`；消息文本本任务保持现状（caseId 列表），Task 6 再增强名称与备注。
+  - `collectVerdictSuggestions`：改为取 `listSuiteRuns(limit 50)`（本任务暂保留独立取数窗口，行为最小变化）→ `collectVerdictExits` → 按 `featureKey ?? featureName` 分组的 `caseDefects`（**分组按 key、展示按名**）；消息文本本任务保持现状（caseId 列表），Task 6 再增强名称与备注。
+  - 回归面（I3 修订）：形状断言在 `test/panel-overview.test.js`（improvement 三清单与 `environment[0].caseId` 断言随形状更新为分组字段），该文件＋`test/generation-feedback.test.js` 为回归锁；`test/panel-stats.test.js` 只测 `buildRegressionStats`，不受影响。
 
 - [ ] **Step 1: 写失败测试**（`test/verdict-exits.test.js`）
   - `最新裁决：同（份,用例）多条 → 取最新非空（入参乱序亦自排）`。
   - `caseDefects/appDefects 过滤与排序（caseId 升序；tie 决出）`。
   - `environment 分组：device+platform、count、features 去重字典序、lastAt 取最大、notes 去重保序`。
   - `空 runs → 三清单为空数组`；`verdict 为 null 跳过`；`jiraKey 透传`。
-- [ ] **Step 2: 跑测试确认失败** + `npm run test:file -- test/panel-stats.test.js && npm run test:file -- test/generation-feedback.test.js`（先看既有锁现状）。
+- [ ] **Step 2: 跑测试确认失败** + `npm run test:file -- test/panel-overview.test.js && npm run test:file -- test/generation-feedback.test.js`（先看既有锁现状）。
 - [ ] **Step 3: 实现**（按「语义」；`buildPanelStatsView`/`collectVerdictSuggestions` 改为消费共享模块，删除本地重复循环）。
-- [ ] **Step 4: 跑测试确认通过**（新测试 + 两个回归锁全绿）。
+- [ ] **Step 4: 跑测试确认通过**（新测试 + `panel-overview`/`generation-feedback` 两处形状断言更新后全绿）。
 - [ ] **Step 5: 提交**：`git commit -m "refactor(panel): shared verdict exits aggregation (single source)"`
 
 ### Task 3: Jira 服务层提取＋建单模板
 
 **Files:**
-- Create: `src/jira/resolve.ts`、`src/jira/post.ts`、`src/jira/issue-template.ts`
-- Modify: `src/tools/jira.ts`（`clientFor`/`missingConfigResult`/`jiraEvidencePost` 改为薄封装）
+- Create: `src/jira/resolve.ts`、`src/jira/post.ts`、`src/jira/attachments.ts`、`src/jira/issue-template.ts`
+- Modify: `src/tools/jira.ts`（`clientFor`/`missingConfigResult`/`jiraErrorResult`/`jiraEvidencePost`/`jiraIssueAttach` 改为薄封装）
 - Test: `test/jira-issue-template.test.js`（新）；回归锁 `test/jira-tools.test.js`、`test/jira-evidence.test.js`
 
 **Interfaces:**
@@ -139,8 +143,19 @@
   export function resolveJiraClient(runtime: Runtime): { client: JiraClient; siteUrl: string } | null;
   export function jiraMissingConfigPayload(runtime: Runtime): { ok: false; error: string; howToFix: string[] };
 
+  // src/jira/attachments.ts（自 jiraIssueAttach 提取附件去重上传核心——I2：避免 post.ts ←→ tools/jira.ts 循环依赖）
+  export interface AttachEntry { file: string; filename: string; size: number; content: Buffer }
+  export function deterministicAttachmentName(path: string, content: Buffer): string;   // 现名/逻辑逐字迁移
+  export function shortContentHash(content: Buffer): string;
+  export async function uploadAttachmentsDeduped(
+    client: JiraClient, key: string, entries: AttachEntry[]
+  ): Promise<Array<{ file: string; filename: string | null; size: number; status: string; reason?: string }>>;
+  // jiraIssueAttach 工具与 post.ts 共用（附件去重上传单一事实源）
+
   // src/jira/post.ts（自 jiraEvidencePost 提取主体，输出 payload 与现工具 JSON 形状一致）
   export interface JiraEvidencePostArgs { key: string; traceId: string; platform?: "android" | "ios"; deviceSerial?: string; dryRun?: boolean; }
+  /** 错误三态（限流 retryAfterSeconds/reason、API status/hint、通用）以 payload 字段保留（M2，锁测试）。
+   * dryRun 且 key 为空/未提供 → 跳过 key 解析（预览路径，`issue: null`），供面板无 key 预览（M1）。 */
   export async function postEvidenceToIssue(runtime: Runtime, args: JiraEvidencePostArgs): Promise<Record<string, unknown>>;
 
   // src/jira/issue-template.ts
@@ -160,7 +175,7 @@
   ```
 - 语义：
   - `resolveJiraClient`/`jiraMissingConfigPayload`：与现 `clientFor`/`missingConfigResult` 逐字一致（消息与 howToFix 文本不变——`test/jira-tools.test.js` 为锁）。
-  - `postEvidenceToIssue`：把 `jiraEvidencePost` 函数体（凭证检查 → key 解析 → trace 存在性 → `traceEvidence` → 证据评论幂等＋附件去重 → 返回 JSON payload）原样迁入；**返回普通 payload 对象**（含 `ok` 及既有字段；错误分支含 `error`＋必要时 `hints`/`howToFix`），不再包 `CallToolResult`。工具侧：`jsonResult(await postEvidenceToIssue(runtime, args), payload.ok === false)`——输出与现状一致（锁测试保障）。
+  - `postEvidenceToIssue`：把 `jiraEvidencePost` 函数体（凭证检查 → key 解析 → trace 存在性 → `traceEvidence` → 证据评论幂等＋附件去重 → 返回 JSON payload）原样迁入；附件上传改用 `attachments.ts` 的 `uploadAttachmentsDeduped`（不再调用工具层 `jiraIssueAttach`）；`jiraErrorResult` 三态分类随迁为 payload 级（M2：限流/API/通用字段不变）。**返回普通 payload 对象**（含 `ok` 及既有字段；错误分支含 `error`＋必要时 `hints`/`howToFix`），不再包 `CallToolResult`。工具侧：`jsonResult(await postEvidenceToIssue(runtime, args), payload.ok === false)`——输出与现状一致（锁测试保障）。**dryRun 预览**（M1）：`dryRun === true` 且 key 为空串/未提供 → 跳过 `parseIssueKey`，payload `issue: null`；其余输入行为不变。
   - `buildRegressionIssueSummary`：`[回归] ${featureName ? `${featureName} · ` : ""}${caseName} 失败`（D10：无功能段省略功能段）。
   - `buildRegressionIssueDescription`：ADF 文档＝标题段（summary 同文）＋ bullet 事实（项目名/运行 ID/任务 ID/用例 ID＋名/端/设备/应用版本/运行时间/失败域（置信）/失败理由/traceId/裁决备注/证据路径（逐条）/产物 URL）；空字段省略；文本中不带 token。实现用 `src/jira/adf.ts` 的 `adfDoc`/`adfParagraph`/`adfBulletList`。
 - [ ] **Step 1: 写失败测试**（`test/jira-issue-template.test.js`：summary 有无功能段两态；description 文本含各事实、空字段省略、ADF 形状 `{type:"doc","content":[…]}` 且可 JSON 序列化）。
@@ -211,9 +226,9 @@
   ): Promise<IssuesOutcome>;
   ```
 - 语义（逐条，顺序处理；第一条失败不阻断后续）：
-  1. **前置解析**（整请求一次）：runtime＝`runtimeFor(rootPath)`；null → `{ok:false, error:"项目运行时不可用（仅 HTTP 模式支持建单）"}`。`clientFor(runtime)` null → `{ok:false, error:"尚未配置 Jira 凭证…", hints:[…]}`（复用 `jiraMissingConfigPayload` 的 error/howToFix 文本）。`projectKey`＝input ?? `runtime.project.resolver.getValue("JIRA_ISSUE_PROJECT").value`；仍空 → `{ok:false, error:"缺少 Jira 项目 key（payload.projectKey 或项目 .env JIRA_ISSUE_PROJECT）"}`。`issueType`＝input ?? resolver `JIRA_ISSUE_TYPE` ?? `"Bug"`；`labels`＝input ?? resolver `JIRA_ISSUE_LABELS` 逗号拆分 ?? `[]`（去空串）。
+  1. **前置解析**（整请求一次）：runtime＝`runtimeFor(rootPath)`；null → `{ok:false, error:"项目运行时不可用（仅限 workspace 内项目、HTTP 模式）"}`（M3：复用 deep 探针懒建 Runtime，建单路径只读配置＋trace 产物、不拉起子进程）。`clientFor(runtime)` null → `{ok:false, error:"尚未配置 Jira 凭证…", hints:[…]}`（复用 `jiraMissingConfigPayload` 的 error/howToFix 文本）。`projectKey`＝input ?? `runtime.project.resolver.getValue("JIRA_ISSUE_PROJECT").value`；仍空 → `{ok:false, error:"缺少 Jira 项目 key（payload.projectKey 或项目 .env JIRA_ISSUE_PROJECT）"}`。`issueType`＝input ?? resolver `JIRA_ISSUE_TYPE` ?? `"Bug"`；`labels`＝input ?? resolver `JIRA_ISSUE_LABELS` 逗号拆分 ?? `[]`（去空串）。
   2. **逐条**：`store.getSuiteRun(rootPath, runId)` → null 或 case 不存在 → `status:"skipped", reason:"未知运行或用例"`；case `status === "passed"` → `skipped, reason:"用例已通过，无需建单"`；verdict 非空且 ≠ `"app-defect"` → `skipped, reason:`裁决为 ${verdict}，与建单不符``；`jiraIssueKey` 非空 → `status:"existing"`＋key/url（`siteUrl + "/browse/" + key`）。
-  3. `dryRun` → `status:"preview"`＋`summary`（模板）＋`attachments`（`postEvidence` 以 `dryRun:true` 调用并取 payload 的候选附件名列表；无 trace → `[]`；**不触网**）。
+  3. `dryRun` → `status:"preview"`＋`summary`（模板）＋`attachments`（`postEvidence(runtime, { key: "", traceId, dryRun: true })` 取 payload 的候选附件相对路径列表；无 trace → `[]`；**不触网**）。
   4. 建单：`client.createIssue({ project: { key: projectKey }, issuetype: { name: issueType }, summary, description: buildRegressionIssueDescription(facts), labels })`；`summary`＝input.summary ?? 模板。`facts` 组装：run（featureName/device/appVersion/startedAt/regressionTaskId）＋case（name/failureDomain/failureConfidence/failureReason/traceId）＋证据路径（trace 目录；尽力，同归因队列口径）＋artifactUrl（尽力：经 regressionTaskId → runners.artifact_base_url 拼接，缺则 null——口径同面板 `artifactUrl`）＋verdictNote。create 抛错 → `status:"error", reason: errorMessage`（不回写）。
   5. 证据：`traceId` 非空 → `postEvidence(runtime, { key, traceId, platform, deviceSerial: device, dryRun:false })`；payload.ok !== true → `evidence:"error"`（建单保持 created）；无 trace → `skipped`；成功 → `posted`。
   6. 回写：`store.setCaseIssueKey({ rootPath, runId, caseId, jiraKey: key })` best-effort（失败仅日志，不改变结果）。
@@ -279,7 +294,7 @@
   //   - 应用缺陷：1 条（已建单 1）
   ```
 - 语义：
-  - `buildGenerationFeedback`：在 `suggestions` 组装前取 `exits`：`listSuiteRuns(rootDir, { limit: 100 })` → `collectVerdictExits`；成功 → `exits`；抛错 → 省略（沿用静默降级口径，不新增 error）。`collectVerdictSuggestions` 改为**消费同一份 exits**（去掉独立的 50 取数窗口）：分组按 `featureKey ?? featureName ?? "未分组"`，消息：`功能「X」有 N 条用例被判案例问题（case-a「名称A」（备注摘要）；case-b「名称B」…），建议下一轮重新生成该功能用例。`（备注截断 40 字；无备注省略括号）。
+  - `buildGenerationFeedback`：在 `suggestions` 组装前取 `exits`：`listSuiteRuns(rootDir, { limit: 100 })` → `collectVerdictExits`；成功 → `exits`；抛错 → 省略（沿用静默降级口径，不新增 error）。`collectVerdictSuggestions` 改为**消费同一份 exits**（去掉独立的 50 取数窗口）：**分组按 `featureKey ?? featureName`（键为主）、展示名＝组内首个非空 `featureName ?? 分组键`（I4）**，消息：`功能「展示名」有 N 条用例被判案例问题（case-a「名称A」（备注摘要）；case-b「名称B」…），建议下一轮重新生成该功能用例。`（备注截断 40 字；无备注省略括号）。
   - 文本输出：三行（案例问题功能列表去重、执行偏差 `device(count)` 列表、应用缺陷条数＋已建单数）；全空 → `出口清单为空（暂无已裁决失败）。`
 - [ ] **Step 1: 写失败测试**
   - `generation-feedback：exits 形状（caseDefects/environment/appDefects；jiraKey 透传）；store 抛错 → exits 省略且 ok true`。
@@ -347,10 +362,26 @@
 
 - [ ] **Step 1: 全量回归**：`npm run build && npm test && npm run lint` → 全绿（记录新增测试数与总数）。
 - [ ] **Step 2: 文档**
-  - DESIGN §13.111：P3b 实施记录（共享出口聚合/D9 准入/证据服务层同源/runtimeFor 缝/`jira_issue_key`/生成侧只读呈现/CLI 导出/面板 UI；风险：一键建单外部副作用＋并发双开接受口径）。
+  - DESIGN §13.111：P3b 实施记录（共享出口聚合/D9 准入/证据服务层同源/runtimeFor 缝/`jira_issue_key`/生成侧只读呈现/CLI 导出/面板 UI；风险：一键建单外部副作用＋并发双开接受口径；已建单 chip 的 siteUrl 降级（面板无 Jira 站点来源时纯文本 KEY）点名）。
   - README：回归服务面板段（出口清单/一键建单/`JIRA_ISSUE_*` 默认值）；`suite feedback` 说明补出口清单。
   - AGENTS.md：Jira 接入行补「面板一键建单」；面板行补建单路由；`.env.example` 增 `JIRA_ISSUE_PROJECT/TYPE/LABELS`（注释说明可选）。
 - [ ] **Step 3: 提交**：`git commit -m "docs: regression service P3b (improvement exits)"`
+
+## 独立复核修订记录（2026-10-14）
+
+计划评审（deepseek-v4-pro#high，只读）结论「需先修订（小幅）再执行」；发现已全部并入本计划：
+
+- **C1**：`collectVerdictExits` 增「仅份血统运行参与」过滤（§13.108 契约；`panel-overview`/`generation-feedback` 两处既有测试为锁）——Task 2 语义。
+- **I1**：Task 1 增补 `src/tasks/run-registry.ts`（cases 映射 `jiraIssueKey: null`，否则 strict tsc 失败）。
+- **I2**：Task 3 增 `src/jira/attachments.ts`（附件去重上传核心），工具与 `post.ts` 共用，避免循环依赖。
+- **I3**：Task 2 回归锁更正为 `test/panel-overview.test.js`（environment 断言随分组形状更新）；`panel-stats` 不受影响。
+- **I4**：verdict 建议「分组按 key、展示按名」（`featureName ?? featureKey` 展示，既有断言保持）。
+- **M1**：dryRun 预览允许空 key（跳过解析，`issue: null`）。
+- **M2**：错误三态（限流/API/通用）随迁为 payload 级，锁测试保障。
+- **M3**：runtimeFor 行为与提示措辞明确（仅 workspace 内项目；建单路径不拉起子进程）。
+- **M4**：结果字段统一定为 `reason?`（设计稿 §2 C1 已同步修订）。
+- **M5**：已建单 chip 的 siteUrl 降级点名（Task 8 文档项）。
+- **M6**：memory 记录/克隆路径 `jiraIssueKey ?? null` 卫生。
 
 ---
 

@@ -33,7 +33,7 @@
 
 ### 出口 B：执行偏差 → 环境改进清单
 
-- **B1** 共享聚合模块（单一事实源）：按（份,用例）取最新裁决 → 三出口清单；执行偏差按 **(device, platform)** 分组：条数 / 涉及功能 / 最近裁决时间 / 备注摘要。功能维度以 **featureKey 为主键**（featureName 仅展示；跨份连续性口径同 §5.8）。
+- **B1** 共享聚合模块（单一事实源）：**仅份血统运行参与**（`featureKey === null` 跳过——§13.108 口径），按（份,用例）取最新裁决 → 三出口清单；执行偏差按 **(device, platform)** 分组：条数 / 涉及功能 / 最近裁决时间 / 备注摘要。功能维度以 **featureKey 为主键**（featureName 仅展示；跨份连续性口径同 §5.8）。
 - **B2** 视图：面板 `?view=stats` 改进出口区把静态指引行替换为**结构化环境清单表**（设备/端/次数/功能/最近/备注）。
 - **B3** 导出：`suite feedback` JSON 增 `exits`（`caseDefects`/`environment`/`appDefects`；appDefects 带 `jiraKey` 若非空）；文本模式打印「出口清单」段。
 
@@ -42,7 +42,7 @@
 - **C1** 路由 `POST /panel/api/issues`（与 tasks/verdicts 同层；`AOS_PANEL_ACTIONS=0` 整体关闭；body ≤256KB）。
   - 请求：`{ project, items:[{runId,caseId}…], projectKey?, issueType?, labels?, summary?, dryRun? }`（items ≤20）。
   - 逐条：读运行用例（项目作用域校验；准入规则见 D9）→ 生成确定性模板 → `JiraClient.createIssue` → 证据评论＋附件 → 回写单号。
-  - 响应：`{ ok, results:[{runId,caseId,status:"created"|"existing"|"error"|"skipped",key?,url?,error?,evidence?}], created, existing, failed }`（部分失败容忍，口径同 verdicts 路由）。
+  - 响应：`{ ok, results:[{runId,caseId,status:"created"|"existing"|"skipped"|"error"|"preview",key?,url?,reason?,evidence?,summary?,attachments?}], created, existing, failed }`（部分失败容忍，口径同 verdicts 路由；`reason?` 承载 skipped/error 归因，`summary?`/`attachments?` 为 dryRun 预览）。
 - **C2** 幂等：新增 `suite_run_cases.jira_issue_key` 列（MIGRATIONS 补列；读取宽容）。已有单号 → `status:"existing"` 直接返回，不重复建单；证据评论本身按 trace 幂等（既有 marker 机制）。
 - **C3** 证据：复用 `traceEvidence`/`buildEvidenceComment`/`candidateAttachments`（自 `jiraEvidencePost` 提取**服务层核心**，MCP 工具与面板动作同源）；无 trace 或无附件 → `evidence:"skipped"`，不阻塞建单；附件超限/失败如实标注（既有口径）；`dryRun:true` 只回预览（summary/描述/附件清单），不触网。
 - **C4** 凭证与默认值：`JIRA_BASE_URL/EMAIL/API_TOKEN` 项目 `.env`（现状不变）；可选默认 `JIRA_ISSUE_PROJECT` / `JIRA_ISSUE_TYPE`（缺省 `Bug`）/ `JIRA_ISSUE_LABELS`（逗号分隔）；payload 优先。Jira 未配置或 projectKey 缺失 → 400＋指引（不触网）。
@@ -78,7 +78,7 @@
 | D7 | 环境清单维度＝（device, platform）分组；不带 runner 在线态 | 面板 runner 区块已承担在线态；清单聚焦「哪些环境在出问题」 | 增加 runner 维度成本低，可按需补 |
 | D8 | 面板动作层经 **HTTP 模式注入的懒建 Runtime 缝**（`runtimeFor(rootPath)`；复用 deep 探针的 workspace 一级子目录约束）获取项目配置与 trace 证据；`jiraEvidencePost` 核心提取为 `src/jira/` 服务层（MCP 工具与面板动作同源） | 建单需要项目 `.env` 凭证解析与 trace 证据（均为 runtime 面）；HTTP 进程本就持有各项目 Runtime，不新增能力面 | 若改窄服务（rootPath＋resolver＋traces 目录），重构面更大、且需另建凭证解析缝 |
 | D9 | 建单路由准入：case 必须存在且 `status ≠ passed`；已有裁决且 ≠ app-defect → 该条 `skipped`（防矛盾建单）；无裁决或 app-defect → 允许 | 按钮在 app-defect 清单上，但允许「先建单后补裁决」的现实路径，同时防误建 | 若要求严格 `verdict === "app-defect"`，加一道校验、前端需先裁决再建单 |
-| D10 | 无功能段运行（`featureKey === null`）允许建单（模板省略功能段）；描述中证据「路径必附、产物 URL 尽力」（有 runner `artifact_base_url` 时拼接，口径同面板 `artifactUrl`） | 失败即失败，不为血统拒绝；中心只拼 URL 不取文件（P1/P2 口径） | 若严格限份血统，加一道过滤（standalone 运行不进建单面） |
+| D10 | 无功能段运行（`featureKey === null`）允许建单（模板省略功能段）；描述中证据「路径必附、产物 URL 尽力」（有 runner `artifact_base_url` 时拼接，口径同面板 `artifactUrl`） | 失败即失败，不为血统拒绝；中心只拼 URL 不取文件（P1/P2 口径）。**仅建单路由准入**——出口清单/裁决建议仍按 §13.108 份血统口径排除无份运行 | 若严格限份血统，加一道过滤（standalone 运行不进建单面） |
 
 ## 6. 接口草案（细节留给计划）
 
