@@ -5,6 +5,7 @@ import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usag
 import type {
   CaseSetRecord,
   CreateRegressionTaskInput,
+  CreateScheduleInput,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
@@ -16,6 +17,7 @@ import type {
   RecordUsageEventInput,
   RegressionTaskRecord,
   RunnerRecord,
+  ScheduleRecord,
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
@@ -38,6 +40,7 @@ export class MemoryStore implements ProjectStore {
   private regressionTasks: RegressionTaskRecord[] = [];
   private suiteRuns: SuiteRunRecord[] = [];
   private runners: RunnerRecord[] = [];
+  private schedules: ScheduleRecord[] = [];
 
   async upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord> {
     const now = new Date().toISOString();
@@ -348,6 +351,91 @@ export class MemoryStore implements ProjectStore {
     return true;
   }
 
+  async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
+    const project = this.projects.get(input.rootPath);
+    if (!project) throw new Error(`项目未注册：${input.rootPath}`);
+    const record: ScheduleRecord = {
+      id: randomUUID(),
+      projectId: project.id,
+      name: input.name,
+      featureKeys: [...input.featureKeys],
+      platforms: [...input.platforms],
+      baseline: input.baseline,
+      everyMinutes: input.everyMinutes,
+      enabled: true,
+      lastFiredAt: null,
+      lastNote: null,
+      createdAt: new Date().toISOString(),
+      createdBy: input.createdBy ?? null
+    };
+    this.schedules.push(record);
+    return cloneSchedule(record);
+  }
+
+  async listSchedules(rootPath: string, limit = 20): Promise<ScheduleRecord[]> {
+    const project = this.projects.get(rootPath);
+    if (!project) return [];
+    return this.schedules
+      .filter((entry) => entry.projectId === project.id)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+      .slice(0, limit)
+      .map(cloneSchedule);
+  }
+
+  async getSchedule(rootPath: string, id: string): Promise<ScheduleRecord | null> {
+    const project = this.projects.get(rootPath);
+    if (!project) return null;
+    const found = this.schedules.find(
+      (entry) => entry.projectId === project.id && entry.id === id
+    );
+    return found ? cloneSchedule(found) : null;
+  }
+
+  async updateSchedule(
+    rootPath: string,
+    id: string,
+    patch: { enabled?: boolean; everyMinutes?: number; lastNote?: string | null }
+  ): Promise<boolean> {
+    const project = this.projects.get(rootPath);
+    if (!project) return false;
+    const schedule = this.schedules.find(
+      (entry) => entry.projectId === project.id && entry.id === id
+    );
+    if (!schedule) return false;
+    if (patch.enabled !== undefined) schedule.enabled = patch.enabled;
+    if (patch.everyMinutes !== undefined) schedule.everyMinutes = patch.everyMinutes;
+    if (patch.lastNote !== undefined) schedule.lastNote = patch.lastNote;
+    return true;
+  }
+
+  async deleteSchedule(rootPath: string, id: string): Promise<boolean> {
+    const project = this.projects.get(rootPath);
+    if (!project) return false;
+    const index = this.schedules.findIndex(
+      (entry) => entry.projectId === project.id && entry.id === id
+    );
+    if (index < 0) return false;
+    this.schedules.splice(index, 1);
+    return true;
+  }
+
+  async claimScheduleWindow(input: {
+    rootPath: string;
+    scheduleId: string;
+    firedAt: string;
+    cutoff: string;
+  }): Promise<boolean> {
+    const project = this.projects.get(input.rootPath);
+    if (!project) return false;
+    const schedule = this.schedules.find(
+      (entry) => entry.projectId === project.id && entry.id === input.scheduleId
+    );
+    if (!schedule || !schedule.enabled) return false;
+    if (schedule.lastFiredAt !== null && schedule.lastFiredAt > input.cutoff) return false;
+    schedule.lastFiredAt = input.firedAt;
+    return true;
+  }
+
   async recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord> {
     const project = this.projects.get(input.rootPath);
     const record: SuiteRunRecord = {
@@ -569,5 +657,13 @@ function cloneRunner(record: RunnerRecord): RunnerRecord {
     platforms: [...record.platforms],
     devices: record.devices.map((device) => ({ ...device })),
     tools: { ...record.tools }
+  };
+}
+
+function cloneSchedule(record: ScheduleRecord): ScheduleRecord {
+  return {
+    ...record,
+    featureKeys: [...record.featureKeys],
+    platforms: [...record.platforms]
   };
 }

@@ -221,6 +221,31 @@ export interface UpsertRunnerInput {
   version?: string | null;
 }
 
+export interface ScheduleRecord {
+  id: string;
+  projectId: string | null;
+  name: string;
+  featureKeys: string[];
+  platforms: string[];
+  baseline: "latest" | "none";
+  everyMinutes: number;
+  enabled: boolean;
+  lastFiredAt: string | null;
+  lastNote: string | null;
+  createdAt: string;
+  createdBy: string | null;
+}
+
+export interface CreateScheduleInput {
+  rootPath: string;
+  name: string;
+  featureKeys: string[];
+  platforms: string[];
+  baseline: "latest" | "none";
+  everyMinutes: number;
+  createdBy?: string | null;
+}
+
 export interface SuiteRunCaseRecord {
   caseId: string;
   name: string;
@@ -340,6 +365,23 @@ export interface ProjectStore {
     runnerId: string | null;
     taskId: string;
     to?: "pending" | "failed";
+  }): Promise<boolean>;
+  createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord>;
+  /** 返回 createdAt 新→旧。 */
+  listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]>;
+  getSchedule(rootPath: string, id: string): Promise<ScheduleRecord | null>;
+  updateSchedule(
+    rootPath: string,
+    id: string,
+    patch: { enabled?: boolean; everyMinutes?: number; lastNote?: string | null }
+  ): Promise<boolean>;
+  deleteSchedule(rootPath: string, id: string): Promise<boolean>;
+  /** 窗口 CAS：仅当 enabled 且（从未触发或 last_fired_at <= cutoff）时推进 last_fired_at=firedAt。 */
+  claimScheduleWindow(input: {
+    rootPath: string;
+    scheduleId: string;
+    firedAt: string;
+    cutoff: string;
   }): Promise<boolean>;
   recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord>;
   /** 返回按 createdAt 新→旧（内存与 PG 实现均保证；调用方可依赖该序取「最新」）。 */

@@ -12,6 +12,7 @@ import {
 import type {
   CaseSetRecord,
   CreateRegressionTaskInput,
+  CreateScheduleInput,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
@@ -26,6 +27,7 @@ import type {
   RunnerDevice,
   RunnerRecord,
   RunnerTools,
+  ScheduleRecord,
   SuiteRunCaseRecord,
   SuiteRunRecord,
   TaskStatRecord,
@@ -206,6 +208,20 @@ const SCHEMA = [
      version TEXT,
      last_seen_at TEXT NOT NULL,
      created_at TEXT NOT NULL
+    )`,
+  `CREATE TABLE IF NOT EXISTS schedules (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     name TEXT NOT NULL,
+     feature_keys TEXT NOT NULL,
+     platforms TEXT NOT NULL,
+     baseline TEXT NOT NULL DEFAULT 'latest',
+     every_minutes INTEGER NOT NULL,
+     enabled BOOLEAN NOT NULL DEFAULT TRUE,
+     last_fired_at TEXT,
+     last_note TEXT,
+     created_at TEXT NOT NULL,
+     created_by TEXT
     )`
 ];
 
@@ -944,6 +960,119 @@ export class PostgresStore implements ProjectStore {
     return result.rows.map((row) => mapRunner(row));
   }
 
+  async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) throw new Error(`项目未注册：${input.rootPath}`);
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    await this.pool.query(
+      `INSERT INTO schedules
+         (id, project_id, name, feature_keys, platforms, baseline, every_minutes, enabled,
+          last_fired_at, last_note, created_at, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NULL, NULL, $8, $9)`,
+      [
+        id,
+        project.id,
+        input.name,
+        JSON.stringify(input.featureKeys),
+        JSON.stringify(input.platforms),
+        input.baseline,
+        input.everyMinutes,
+        createdAt,
+        input.createdBy ?? null
+      ]
+    );
+    return {
+      id,
+      projectId: project.id,
+      name: input.name,
+      featureKeys: [...input.featureKeys],
+      platforms: [...input.platforms],
+      baseline: input.baseline,
+      everyMinutes: input.everyMinutes,
+      enabled: true,
+      lastFiredAt: null,
+      lastNote: null,
+      createdAt,
+      createdBy: input.createdBy ?? null
+    };
+  }
+
+  async listSchedules(rootPath: string, limit = 20): Promise<ScheduleRecord[]> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return [];
+    const result = await this.pool.query(
+      `SELECT * FROM schedules WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [project.id, limit]
+    );
+    return result.rows.map((row) => mapSchedule(row));
+  }
+
+  async getSchedule(rootPath: string, id: string): Promise<ScheduleRecord | null> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return null;
+    const result = await this.pool.query(
+      `SELECT * FROM schedules WHERE project_id = $1 AND id = $2`,
+      [project.id, id]
+    );
+    return result.rows.length > 0 ? mapSchedule(result.rows[0]!) : null;
+  }
+
+  async updateSchedule(
+    rootPath: string,
+    id: string,
+    patch: { enabled?: boolean; everyMinutes?: number; lastNote?: string | null }
+  ): Promise<boolean> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return false;
+    const sets: string[] = [];
+    const values: unknown[] = [project.id, id];
+    const add = (column: string, value: unknown): void => {
+      values.push(value);
+      sets.push(`${column} = $${values.length}`);
+    };
+    if (patch.enabled !== undefined) add("enabled", patch.enabled);
+    if (patch.everyMinutes !== undefined) add("every_minutes", patch.everyMinutes);
+    if (patch.lastNote !== undefined) add("last_note", patch.lastNote);
+    if (sets.length === 0) {
+      return (await this.getSchedule(rootPath, id)) !== null;
+    }
+    const updated = await this.pool.query(
+      `UPDATE schedules SET ${sets.join(", ")}
+        WHERE project_id = $1 AND id = $2 RETURNING id`,
+      values
+    );
+    return updated.rows.length > 0;
+  }
+
+  async deleteSchedule(rootPath: string, id: string): Promise<boolean> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return false;
+    const deleted = await this.pool.query(
+      `DELETE FROM schedules WHERE project_id = $1 AND id = $2 RETURNING id`,
+      [project.id, id]
+    );
+    return deleted.rows.length > 0;
+  }
+
+  async claimScheduleWindow(input: {
+    rootPath: string;
+    scheduleId: string;
+    firedAt: string;
+    cutoff: string;
+  }): Promise<boolean> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return false;
+    const claimed = await this.pool.query(
+      `UPDATE schedules SET last_fired_at = $3
+        WHERE project_id = $1 AND id = $2 AND enabled
+          AND (last_fired_at IS NULL OR last_fired_at <= $4)
+      RETURNING id`,
+      [project.id, input.scheduleId, input.firedAt, input.cutoff]
+    );
+    return claimed.rows.length > 0;
+  }
+
   async recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,
@@ -1369,5 +1498,22 @@ function parseRunnerTools(value: unknown): RunnerTools {
     simctl: record.simctl === true,
     ideviceId: record.ideviceId === true,
     appium: record.appium === true
+  };
+}
+
+function mapSchedule(row: Record<string, unknown>): ScheduleRecord {
+  return {
+    id: String(row.id),
+    projectId: nullableString(row.project_id),
+    name: String(row.name),
+    featureKeys: parseStringArray(row.feature_keys),
+    platforms: parseStringArray(row.platforms),
+    baseline: row.baseline === "none" ? "none" : "latest",
+    everyMinutes: Number(row.every_minutes),
+    enabled: Boolean(row.enabled),
+    lastFiredAt: nullableString(row.last_fired_at),
+    lastNote: nullableString(row.last_note),
+    createdAt: String(row.created_at),
+    createdBy: nullableString(row.created_by)
   };
 }
