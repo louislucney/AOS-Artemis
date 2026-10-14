@@ -4,14 +4,18 @@ import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usag
 
 import type {
   CaseSetRecord,
+  CreateRegressionTaskInput,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
   ProjectStore,
   PutModelCacheInput,
   RecordCaseSetInput,
+  RecordSuiteRunInput,
   RecordTaskInput,
   RecordUsageEventInput,
+  RegressionTaskRecord,
+  SuiteRunRecord,
   TaskStatRecord,
   UpsertLlmInput,
   UsageEventQuery,
@@ -28,6 +32,8 @@ export class MemoryStore implements ProjectStore {
   private tasks: TaskStatRecord[] = [];
   private usageEvents: UsageEventRecord[] = [];
   private caseSets: CaseSetRecord[] = [];
+  private regressionTasks: RegressionTaskRecord[] = [];
+  private suiteRuns: SuiteRunRecord[] = [];
 
   async upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord> {
     const now = new Date().toISOString();
@@ -217,6 +223,96 @@ export class MemoryStore implements ProjectStore {
       .map(cloneCaseSet);
   }
 
+  async createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord> {
+    const project = this.projects.get(input.rootPath);
+    const record: RegressionTaskRecord = {
+      id: randomUUID(),
+      projectId: project?.id ?? null,
+      createdAt: new Date().toISOString(),
+      createdBy: input.createdBy ?? null,
+      refs: input.refs.map((ref) => ({ ...ref })),
+      platforms: [...input.platforms],
+      baseline: input.baseline,
+      status: "pending",
+      runIds: []
+    };
+    this.regressionTasks.push(record);
+    return cloneRegressionTask(record);
+  }
+
+  async getRegressionTask(rootPath: string, id: string): Promise<RegressionTaskRecord | null> {
+    const project = this.projects.get(rootPath);
+    if (!project) return null;
+    const found = this.regressionTasks.find(
+      (task) => task.projectId === project.id && task.id === id
+    );
+    return found ? cloneRegressionTask(found) : null;
+  }
+
+  async listRegressionTasks(rootPath: string, limit = 50): Promise<RegressionTaskRecord[]> {
+    const project = this.projects.get(rootPath);
+    if (!project) return [];
+    return this.regressionTasks
+      .filter((task) => task.projectId === project.id)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+      .slice(0, limit)
+      .map(cloneRegressionTask);
+  }
+
+  async updateRegressionTask(
+    rootPath: string,
+    id: string,
+    patch: { status?: RegressionTaskRecord["status"]; runIds?: string[] }
+  ): Promise<boolean> {
+    const project = this.projects.get(rootPath);
+    if (!project) return false;
+    const task = this.regressionTasks.find(
+      (entry) => entry.projectId === project.id && entry.id === id
+    );
+    if (!task) return false;
+    if (patch.status !== undefined) task.status = patch.status;
+    if (patch.runIds !== undefined) task.runIds = [...patch.runIds];
+    return true;
+  }
+
+  async recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord> {
+    const project = this.projects.get(input.rootPath);
+    const record: SuiteRunRecord = {
+      id: randomUUID(),
+      projectId: project?.id ?? null,
+      createdAt: input.createdAt ?? new Date().toISOString(),
+      ...input.run,
+      failureDomains: { ...input.run.failureDomains },
+      comparison: input.run.comparison ?? null,
+      cases: input.cases.map((entry) => ({ ...entry }))
+    };
+    this.suiteRuns.push(record);
+    return cloneSuiteRun(record);
+  }
+
+  async listSuiteRuns(
+    rootPath: string,
+    query: {
+      taskId?: string;
+      caseSetId?: string;
+      featureKey?: string;
+      platform?: string;
+      limit?: number;
+    } = {}
+  ): Promise<SuiteRunRecord[]> {
+    const project = this.projects.get(rootPath);
+    if (!project) return [];
+    return this.suiteRuns
+      .filter((run) => run.projectId === project.id)
+      .filter((run) => query.taskId === undefined || run.regressionTaskId === query.taskId)
+      .filter((run) => query.caseSetId === undefined || run.caseSetId === query.caseSetId)
+      .filter((run) => query.featureKey === undefined || run.featureKey === query.featureKey)
+      .filter((run) => query.platform === undefined || run.platform === query.platform)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+      .slice(0, query.limit ?? 50)
+      .map(cloneSuiteRun);
+  }
+
   async ping(): Promise<boolean> {
     return true;
   }
@@ -313,5 +409,22 @@ function cloneCaseSet(record: CaseSetRecord): CaseSetRecord {
   return {
     ...record,
     features: record.features.map((feature) => ({ ...feature, screens: [...feature.screens] }))
+  };
+}
+
+function cloneRegressionTask(task: RegressionTaskRecord): RegressionTaskRecord {
+  return {
+    ...task,
+    refs: task.refs.map((ref) => ({ ...ref })),
+    platforms: [...task.platforms],
+    runIds: [...task.runIds]
+  };
+}
+
+function cloneSuiteRun(run: SuiteRunRecord): SuiteRunRecord {
+  return {
+    ...run,
+    failureDomains: { ...run.failureDomains },
+    cases: run.cases.map((entry) => ({ ...entry }))
   };
 }

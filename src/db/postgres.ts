@@ -9,14 +9,20 @@ import {
 
 import type {
   CaseSetRecord,
+  CreateRegressionTaskInput,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
   ProjectStore,
   PutModelCacheInput,
   RecordCaseSetInput,
+  RecordSuiteRunInput,
   RecordTaskInput,
   RecordUsageEventInput,
+  RegressionTaskRecord,
+  RegressionTaskRef,
+  SuiteRunCaseRecord,
+  SuiteRunRecord,
   TaskStatRecord,
   UpsertLlmInput,
   UsageEventQuery,
@@ -119,6 +125,62 @@ const SCHEMA = [
      md_path TEXT NOT NULL,
      xlsx_path TEXT NOT NULL,
      PRIMARY KEY (case_set_id, feature_key)
+    )`,
+  `CREATE TABLE IF NOT EXISTS regression_tasks (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     created_at TEXT NOT NULL,
+     created_by TEXT,
+     refs TEXT NOT NULL DEFAULT '[]',
+     platforms TEXT NOT NULL DEFAULT '[]',
+     baseline TEXT NOT NULL DEFAULT 'latest',
+     status TEXT NOT NULL DEFAULT 'pending',
+     run_ids TEXT NOT NULL DEFAULT '[]'
+    )`,
+  `CREATE TABLE IF NOT EXISTS suite_runs (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     created_at TEXT NOT NULL,
+     trigger TEXT NOT NULL,
+     regression_task_id TEXT,
+     case_set_id TEXT,
+     feature_key TEXT,
+     feature_name TEXT,
+     platform TEXT NOT NULL,
+     device TEXT,
+     app_version TEXT,
+     status TEXT NOT NULL,
+     started_at TEXT NOT NULL,
+     finished_at TEXT NOT NULL,
+     total INTEGER NOT NULL,
+     passed INTEGER NOT NULL,
+     failed INTEGER NOT NULL,
+     flaky INTEGER NOT NULL,
+     quarantined INTEGER NOT NULL,
+     failure_domains TEXT NOT NULL DEFAULT '{}',
+     gate_result TEXT,
+     exit_code INTEGER NOT NULL,
+     manifest_path TEXT,
+     comparison TEXT
+    )`,
+  `CREATE TABLE IF NOT EXISTS suite_run_cases (
+     run_id TEXT NOT NULL REFERENCES suite_runs(id) ON DELETE CASCADE,
+     case_id TEXT NOT NULL,
+     feature_key TEXT,
+     platform TEXT NOT NULL,
+     status TEXT NOT NULL,
+     trace_id TEXT,
+     failure_domain TEXT,
+     failure_confidence TEXT,
+     failure_reason TEXT,
+     duration_ms INTEGER,
+     quarantined BOOLEAN NOT NULL DEFAULT FALSE,
+     flaky BOOLEAN NOT NULL DEFAULT FALSE,
+     verdict TEXT,
+     verdict_by TEXT,
+     verdict_at TEXT,
+     verdict_note TEXT,
+     PRIMARY KEY (run_id, case_id)
     )`
 ];
 
@@ -393,15 +455,36 @@ export class PostgresStore implements ProjectStore {
     return updated.rows.length > 0;
   }
 
-  async recordCaseSet(input: RecordCaseSetInput): Promise<CaseSetRecord> {
-    const project = await this.getProjectByPath(input.rootPath);
-    const id = randomUUID();
-    const createdAt = input.createdAt ?? new Date().toISOString();
+  private async withTransaction<T>(
+    fn: (run: (text: string, values?: unknown[]) => Promise<QueryResultLike>) => Promise<T>
+  ): Promise<T> {
     const client = this.pool.connect ? await this.pool.connect() : null;
     const run = (text: string, values?: unknown[]): Promise<QueryResultLike> =>
       client ? client.query(text, values) : this.pool.query(text, values);
     try {
       if (client) await run("BEGIN");
+      const result = await fn(run);
+      if (client) await run("COMMIT");
+      return result;
+    } catch (error) {
+      if (client) {
+        try {
+          await run("ROLLBACK");
+        } catch {
+          /* best effort */
+        }
+      }
+      throw error;
+    } finally {
+      client?.release?.();
+    }
+  }
+
+  async recordCaseSet(input: RecordCaseSetInput): Promise<CaseSetRecord> {
+    const project = await this.getProjectByPath(input.rootPath);
+    const id = randomUUID();
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    await this.withTransaction(async (run) => {
       await run(
         `INSERT INTO case_sets (id, project_id, created_at, source, design_name, fingerprint, basename)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -432,19 +515,7 @@ export class PostgresStore implements ProjectStore {
           ]
         );
       }
-      if (client) await run("COMMIT");
-    } catch (error) {
-      if (client) {
-        try {
-          await run("ROLLBACK");
-        } catch {
-          /* best effort */
-        }
-      }
-      throw error;
-    } finally {
-      client?.release?.();
-    }
+    });
     return {
       id,
       projectId: project?.id ?? null,
@@ -471,6 +542,198 @@ export class PostgresStore implements ProjectStore {
         [String(row.id)]
       );
       out.push(mapCaseSet(row, features.rows));
+    }
+    return out;
+  }
+
+  async createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord> {
+    const project = await this.getProjectByPath(input.rootPath);
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    await this.pool.query(
+      `INSERT INTO regression_tasks (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        id,
+        project?.id ?? null,
+        createdAt,
+        input.createdBy ?? null,
+        JSON.stringify(input.refs),
+        JSON.stringify(input.platforms),
+        input.baseline,
+        "pending",
+        "[]"
+      ]
+    );
+    return {
+      id,
+      projectId: project?.id ?? null,
+      createdAt,
+      createdBy: input.createdBy ?? null,
+      refs: input.refs.map((ref) => ({ ...ref })),
+      platforms: [...input.platforms],
+      baseline: input.baseline,
+      status: "pending",
+      runIds: []
+    };
+  }
+
+  async getRegressionTask(rootPath: string, id: string): Promise<RegressionTaskRecord | null> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return null;
+    const result = await this.pool.query(
+      "SELECT * FROM regression_tasks WHERE project_id = $1 AND id = $2",
+      [project.id, id]
+    );
+    return result.rows.length > 0 ? mapRegressionTask(result.rows[0]!) : null;
+  }
+
+  async listRegressionTasks(rootPath: string, limit = 50): Promise<RegressionTaskRecord[]> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return [];
+    const result = await this.pool.query(
+      "SELECT * FROM regression_tasks WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
+      [project.id, limit]
+    );
+    return result.rows.map(mapRegressionTask);
+  }
+
+  async updateRegressionTask(
+    rootPath: string,
+    id: string,
+    patch: { status?: RegressionTaskRecord["status"]; runIds?: string[] }
+  ): Promise<boolean> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return false;
+    const current = await this.getRegressionTask(rootPath, id);
+    if (!current) return false;
+    const updated = await this.pool.query(
+      `UPDATE regression_tasks SET status = $3, run_ids = $4
+        WHERE project_id = $1 AND id = $2 RETURNING id`,
+      [project.id, id, patch.status ?? current.status, JSON.stringify(patch.runIds ?? current.runIds)]
+    );
+    return updated.rows.length > 0;
+  }
+
+  async recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord> {
+    const project = await this.getProjectByPath(input.rootPath);
+    const id = randomUUID();
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    const { run } = input;
+    await this.withTransaction(async (query) => {
+      await query(
+        `INSERT INTO suite_runs
+           (id, project_id, created_at, trigger, regression_task_id, case_set_id, feature_key, feature_name,
+            platform, device, app_version, status, started_at, finished_at, total, passed, failed, flaky,
+            quarantined, failure_domains, gate_result, exit_code, manifest_path, comparison)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+        [
+          id,
+          project?.id ?? null,
+          createdAt,
+          run.trigger,
+          run.regressionTaskId,
+          run.caseSetId,
+          run.featureKey,
+          run.featureName,
+          run.platform,
+          run.device,
+          run.appVersion,
+          run.status,
+          run.startedAt,
+          run.finishedAt,
+          run.total,
+          run.passed,
+          run.failed,
+          run.flaky,
+          run.quarantined,
+          JSON.stringify(run.failureDomains),
+          run.gateResult,
+          run.exitCode,
+          run.manifestPath,
+          run.comparison === undefined || run.comparison === null ? null : JSON.stringify(run.comparison)
+        ]
+      );
+      for (const entry of input.cases) {
+        await query(
+          `INSERT INTO suite_run_cases
+             (run_id, case_id, feature_key, platform, status, trace_id, failure_domain, failure_confidence,
+              failure_reason, duration_ms, quarantined, flaky, verdict, verdict_by, verdict_at, verdict_note)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          [
+            id,
+            entry.caseId,
+            entry.featureKey,
+            entry.platform,
+            entry.status,
+            entry.traceId,
+            entry.failureDomain,
+            entry.failureConfidence,
+            entry.failureReason,
+            entry.durationMs,
+            entry.quarantined,
+            entry.flaky,
+            entry.verdict,
+            entry.verdictBy,
+            entry.verdictAt,
+            entry.verdictNote
+          ]
+        );
+      }
+    });
+    return {
+      id,
+      projectId: project?.id ?? null,
+      createdAt,
+      ...run,
+      failureDomains: { ...run.failureDomains },
+      comparison: run.comparison ?? null,
+      cases: input.cases.map((entry) => ({ ...entry }))
+    };
+  }
+
+  async listSuiteRuns(
+    rootPath: string,
+    query: {
+      taskId?: string;
+      caseSetId?: string;
+      featureKey?: string;
+      platform?: string;
+      limit?: number;
+    } = {}
+  ): Promise<SuiteRunRecord[]> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return [];
+    const conditions = ["project_id = $1"];
+    const values: unknown[] = [project.id];
+    if (query.taskId !== undefined) {
+      values.push(query.taskId);
+      conditions.push(`regression_task_id = $${values.length}`);
+    }
+    if (query.caseSetId !== undefined) {
+      values.push(query.caseSetId);
+      conditions.push(`case_set_id = $${values.length}`);
+    }
+    if (query.featureKey !== undefined) {
+      values.push(query.featureKey);
+      conditions.push(`feature_key = $${values.length}`);
+    }
+    if (query.platform !== undefined) {
+      values.push(query.platform);
+      conditions.push(`platform = $${values.length}`);
+    }
+    values.push(query.limit ?? 50);
+    const runs = await this.pool.query(
+      `SELECT * FROM suite_runs WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT $${values.length}`,
+      values
+    );
+    const out: SuiteRunRecord[] = [];
+    for (const row of runs.rows) {
+      const cases = await this.pool.query(
+        "SELECT * FROM suite_run_cases WHERE run_id = $1 ORDER BY case_id ASC",
+        [String(row.id)]
+      );
+      out.push(mapSuiteRun(row, cases.rows));
     }
     return out;
   }
@@ -723,5 +986,109 @@ function mapCaseSet(
       mdPath: String(feature.md_path),
       xlsxPath: String(feature.xlsx_path)
     }))
+  };
+}
+
+function parseJsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function parseNumberMap(value: unknown): Record<string, number> {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof entry === "number" && Number.isFinite(entry)) out[key] = entry;
+  }
+  return out;
+}
+
+function parseTaskRefs(value: unknown): RegressionTaskRef[] {
+  const parsed = parseJsonValue(value);
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const record = entry as { caseSetId?: unknown; featureKey?: unknown };
+      if (typeof record.caseSetId !== "string" || typeof record.featureKey !== "string") return null;
+      return { caseSetId: record.caseSetId, featureKey: record.featureKey };
+    })
+    .filter((entry): entry is RegressionTaskRef => entry !== null);
+}
+
+function nullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
+  return {
+    id: String(row.id),
+    projectId: nullableString(row.project_id),
+    createdAt: String(row.created_at),
+    createdBy: nullableString(row.created_by),
+    refs: parseTaskRefs(row.refs),
+    platforms: parseStringArray(row.platforms),
+    baseline: row.baseline === "none" ? "none" : "latest",
+    status: String(row.status) as RegressionTaskRecord["status"],
+    runIds: parseStringArray(row.run_ids)
+  };
+}
+
+function mapSuiteRunCase(row: Record<string, unknown>): SuiteRunCaseRecord {
+  return {
+    caseId: String(row.case_id),
+    featureKey: nullableString(row.feature_key),
+    platform: String(row.platform),
+    status: String(row.status),
+    traceId: nullableString(row.trace_id),
+    failureDomain: nullableString(row.failure_domain),
+    failureConfidence: nullableString(row.failure_confidence),
+    failureReason: nullableString(row.failure_reason),
+    durationMs:
+      row.duration_ms === null || row.duration_ms === undefined ? null : Number(row.duration_ms),
+    quarantined: Boolean(row.quarantined),
+    flaky: Boolean(row.flaky),
+    verdict: nullableString(row.verdict),
+    verdictBy: nullableString(row.verdict_by),
+    verdictAt: nullableString(row.verdict_at),
+    verdictNote: nullableString(row.verdict_note)
+  };
+}
+
+function mapSuiteRun(
+  row: Record<string, unknown>,
+  caseRows: Array<Record<string, unknown>>
+): SuiteRunRecord {
+  return {
+    id: String(row.id),
+    projectId: nullableString(row.project_id),
+    createdAt: String(row.created_at),
+    trigger: String(row.trigger),
+    regressionTaskId: nullableString(row.regression_task_id),
+    caseSetId: nullableString(row.case_set_id),
+    featureKey: nullableString(row.feature_key),
+    featureName: nullableString(row.feature_name),
+    platform: String(row.platform),
+    device: nullableString(row.device),
+    appVersion: nullableString(row.app_version),
+    status: String(row.status),
+    startedAt: String(row.started_at),
+    finishedAt: String(row.finished_at),
+    total: Number(row.total),
+    passed: Number(row.passed),
+    failed: Number(row.failed),
+    flaky: Number(row.flaky),
+    quarantined: Number(row.quarantined),
+    failureDomains: parseNumberMap(row.failure_domains),
+    gateResult: nullableString(row.gate_result),
+    exitCode: Number(row.exit_code),
+    manifestPath: nullableString(row.manifest_path),
+    comparison: parseJsonValue(row.comparison),
+    cases: caseRows.map(mapSuiteRunCase)
   };
 }

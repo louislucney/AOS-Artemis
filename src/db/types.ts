@@ -160,6 +160,84 @@ export interface RecordCaseSetInput {
   features: CaseSetFeatureRecord[];
 }
 
+export interface RegressionTaskRef {
+  caseSetId: string;
+  featureKey: string;
+}
+
+export interface RegressionTaskRecord {
+  id: string;
+  projectId: string | null;
+  createdAt: string;
+  createdBy: string | null;
+  refs: RegressionTaskRef[];
+  platforms: string[];
+  baseline: "latest" | "none";
+  status: "pending" | "running" | "completed" | "partial" | "failed";
+  runIds: string[];
+}
+
+export interface SuiteRunCaseRecord {
+  caseId: string;
+  featureKey: string | null;
+  platform: string;
+  status: string;
+  traceId: string | null;
+  failureDomain: string | null;
+  failureConfidence: string | null;
+  failureReason: string | null;
+  durationMs: number | null;
+  quarantined: boolean;
+  flaky: boolean;
+  verdict: string | null;
+  verdictBy: string | null;
+  verdictAt: string | null;
+  verdictNote: string | null;
+}
+
+export interface SuiteRunRecord {
+  id: string;
+  projectId: string | null;
+  createdAt: string;
+  trigger: string;
+  regressionTaskId: string | null;
+  caseSetId: string | null;
+  featureKey: string | null;
+  featureName: string | null;
+  platform: string;
+  device: string | null;
+  appVersion: string | null;
+  status: string;
+  startedAt: string;
+  finishedAt: string;
+  total: number;
+  passed: number;
+  failed: number;
+  flaky: number;
+  quarantined: number;
+  failureDomains: Record<string, number>;
+  gateResult: string | null;
+  exitCode: number;
+  manifestPath: string | null;
+  comparison: unknown;
+  cases: SuiteRunCaseRecord[];
+}
+
+export interface RecordSuiteRunInput {
+  rootPath: string;
+  run: Omit<SuiteRunRecord, "id" | "projectId" | "cases" | "createdAt">;
+  cases: SuiteRunCaseRecord[];
+  createdAt?: string;
+}
+
+export interface CreateRegressionTaskInput {
+  rootPath: string;
+  refs: RegressionTaskRef[];
+  platforms: string[];
+  baseline: "latest" | "none";
+  createdBy?: string | null;
+}
+
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */
 export interface ProjectStore {
   readonly kind: "postgres" | "memory";
@@ -177,6 +255,25 @@ export interface ProjectStore {
   markTaskFinished(rootPath: string, traceId: string, status: string): Promise<boolean>;
   recordCaseSet(input: RecordCaseSetInput): Promise<CaseSetRecord>;
   listCaseSets(rootPath: string, limit?: number): Promise<CaseSetRecord[]>;
+  createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord>;
+  getRegressionTask(rootPath: string, id: string): Promise<RegressionTaskRecord | null>;
+  listRegressionTasks(rootPath: string, limit?: number): Promise<RegressionTaskRecord[]>;
+  updateRegressionTask(
+    rootPath: string,
+    id: string,
+    patch: { status?: RegressionTaskRecord["status"]; runIds?: string[] }
+  ): Promise<boolean>;
+  recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord>;
+  listSuiteRuns(
+    rootPath: string,
+    query?: {
+      taskId?: string;
+      caseSetId?: string;
+      featureKey?: string;
+      platform?: string;
+      limit?: number;
+    }
+  ): Promise<SuiteRunRecord[]>;
   recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,
