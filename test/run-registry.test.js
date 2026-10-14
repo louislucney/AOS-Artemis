@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -144,6 +145,7 @@ test("registerSuiteRun: 落库并返回 id；store 抛错 → null 不抛", asyn
   const runs = await store.listSuiteRuns(runtime.project.rootDir);
   assert.equal(runs.length, 1);
   assert.equal(runs[0].cases.length, 2);
+  assert.equal(runs[0].runner, os.hostname(), "登记填执行机 hostname");
 
   runtime.store.recordSuiteRun = async () => {
     throw new Error("down");

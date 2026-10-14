@@ -1,3 +1,5 @@
+import os from "node:os";
+
 import type { SuiteRunCaseRecord, SuiteRunRecord } from "../db/types.js";
 import { classifyIosSerial } from "../device/ios.js";
 import type { SuiteRunReport } from "../figma/suite-runner.js";
@@ -23,6 +25,8 @@ export interface BuildSuiteRunInput {
   platform: string;
   device: string | null;
   appVersion?: string | null;
+  /** 执行机标识（registerSuiteRun 缺省填 os.hostname()）。 */
+  runner?: string | null;
   exitCode: number;
   startedAtMs: number;
   finishedAtMs: number;
@@ -54,6 +58,7 @@ export function buildSuiteRunInput(input: BuildSuiteRunInput): {
       platform: input.platform,
       device: input.device,
       appVersion: input.appVersion ?? null,
+      runner: input.runner ?? null,
       status: input.exitCode === 0 ? "completed" : "failed",
       startedAt: new Date(input.startedAtMs).toISOString(),
       finishedAt: new Date(input.finishedAtMs).toISOString(),
@@ -113,7 +118,7 @@ export async function registerSuiteRun(
   input: BuildSuiteRunInput
 ): Promise<string | null> {
   try {
-    const built = buildSuiteRunInput(input);
+    const built = buildSuiteRunInput({ ...input, runner: input.runner ?? os.hostname() });
     const record = await runtime.store.recordSuiteRun({
       rootPath: runtime.project.rootDir,
       run: built.run,

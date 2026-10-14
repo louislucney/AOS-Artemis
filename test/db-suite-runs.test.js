@@ -304,3 +304,19 @@ test("updateCaseVerdict: 未知 run/case/项目 → false（memory + pg-mem）",
     );
   }
 });
+
+test("suite_runs: runner 字段往返（显式值 / 缺省 null；memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const input = runInput();
+    const withRunner = await store.recordSuiteRun({
+      ...input,
+      run: { ...input.run, runner: "runner-a" }
+    });
+    const withoutRunner = await store.recordSuiteRun(input);
+    const runs = await store.listSuiteRuns("/w/p1");
+    assert.equal(runs.find((entry) => entry.id === withRunner.id).runner, "runner-a");
+    assert.equal(runs.find((entry) => entry.id === withoutRunner.id).runner, null);
+  }
+});

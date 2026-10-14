@@ -283,6 +283,7 @@ export class MemoryStore implements ProjectStore {
       projectId: project?.id ?? null,
       createdAt: input.createdAt ?? new Date().toISOString(),
       ...input.run,
+      runner: input.run.runner ?? null,
       failureDomains: { ...input.run.failureDomains },
       comparison: input.run.comparison ?? null,
       cases: input.cases.map((entry) => ({ ...entry }))

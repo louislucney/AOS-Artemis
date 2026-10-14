@@ -457,3 +457,58 @@ test("suite report --task: 未知任务 → exit 2 且不落盘", async () => {
   assert.ok(report.errors.some((line) => line.includes("未找到回归任务")));
   assert.equal(fs.existsSync(path.join(runtime.configDirAbs, "design", "reports")), false);
 });
+
+test("suite run --task: 任务状态回写失败 → 运行结果不受影响", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" }
+    }
+  });
+  await runCli(runtime, ["task", "create", "--ref", "f-登录-aaaa1111", "--platform", "android"]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+
+  store.updateRegressionTask = async () => {
+    throw new Error("pg down");
+  };
+  const run = await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+  assert.equal(run.code, 0, "运行结果不受状态回写失败影响");
+  assert.ok(run.logs.some((line) => line.includes("[android] 登录流程")), "结果摘要行仍在");
+  assert.ok(
+    run.logs.some((line) => line.includes("注意: 任务状态回写失败（运行结果不受影响）")),
+    "回写失败有提示"
+  );
+  const runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.equal(runs.length, 1, "运行仍登记");
+});
+
+test("suite task create: 非法 --platform/--baseline → exit 2 不落库", async () => {
+  const { runtime, store } = await setupTaskProject();
+  const badPlatform = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--platform",
+    "windows"
+  ]);
+  assert.equal(badPlatform.code, 2);
+  assert.ok(badPlatform.errors.some((line) => line.includes("非法 --platform")));
+
+  const badBaseline = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--baseline",
+    "latestt"
+  ]);
+  assert.equal(badBaseline.code, 2);
+  assert.ok(badBaseline.errors.some((line) => line.includes("非法 --baseline")));
+
+  assert.equal(
+    (await store.listRegressionTasks(runtime.project.rootDir)).length,
+    0,
+    "非法参数不落库"
+  );
+});

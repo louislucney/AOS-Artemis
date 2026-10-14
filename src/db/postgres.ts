@@ -150,6 +150,7 @@ const SCHEMA = [
      platform TEXT NOT NULL,
      device TEXT,
      app_version TEXT,
+     runner TEXT,
      status TEXT NOT NULL,
      started_at TEXT NOT NULL,
      finished_at TEXT NOT NULL,
@@ -626,9 +627,9 @@ export class PostgresStore implements ProjectStore {
       await query(
         `INSERT INTO suite_runs
            (id, project_id, created_at, trigger, regression_task_id, case_set_id, feature_key, feature_name,
-            platform, device, app_version, status, started_at, finished_at, total, passed, failed, flaky,
+            platform, device, app_version, runner, status, started_at, finished_at, total, passed, failed, flaky,
             quarantined, failure_domains, gate_result, exit_code, manifest_path, comparison)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)`,
         [
           id,
           project?.id ?? null,
@@ -641,6 +642,7 @@ export class PostgresStore implements ProjectStore {
           run.platform,
           run.device,
           run.appVersion,
+          run.runner ?? null,
           run.status,
           run.startedAt,
           run.finishedAt,
@@ -1102,6 +1104,7 @@ function mapSuiteRun(
     platform: String(row.platform),
     device: nullableString(row.device),
     appVersion: nullableString(row.app_version),
+    runner: nullableString(row.runner),
     status: String(row.status),
     startedAt: String(row.started_at),
     finishedAt: String(row.finished_at),

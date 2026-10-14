@@ -208,6 +208,7 @@ export interface SuiteRunRecord {
   platform: string;
   device: string | null;
   appVersion: string | null;
+  runner: string | null;
   status: string;
   startedAt: string;
   finishedAt: string;

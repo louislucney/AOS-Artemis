@@ -525,9 +525,14 @@ async function suiteRunTask(
   const quarantine = quarantineFor(runtime, flags);
   baseOptions.quarantinedCaseIds = quarantine.ids;
 
-  await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
-    status: "running"
-  });
+  try {
+    await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
+      status: "running"
+    });
+  } catch (error) {
+    logWarn(`任务状态回写失败: ${errorMessage(error)}`);
+    say("注意: 任务状态回写失败（运行结果不受影响）");
+  }
 
   const subRuns: Array<{
     device: string;
@@ -638,10 +643,15 @@ async function suiteRunTask(
     : anyFailure || anyExecError
       ? "partial"
       : "completed";
-  await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
-    status: finalStatus,
-    runIds
-  });
+  try {
+    await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
+      status: finalStatus,
+      runIds
+    });
+  } catch (error) {
+    logWarn(`任务状态回写失败: ${errorMessage(error)}`);
+    say("注意: 任务状态回写失败（运行结果不受影响）");
+  }
 
   const deltas = crossPlatformDeltas(
     [...platformCases.entries()].map(([platform, cases]) => ({ platform, cases }))
@@ -1758,7 +1768,19 @@ async function suiteTaskCreate(
   }
   const platforms =
     flags.list("platform").length > 0 ? splitList(flags.list("platform")) : ["ios", "android"];
-  const baseline = flags.get("baseline") === "none" ? "none" : "latest";
+  const invalidPlatforms = platforms.filter(
+    (platform) => platform !== "ios" && platform !== "android"
+  );
+  if (invalidPlatforms.length > 0) {
+    io.errorLog(`非法 --platform：${invalidPlatforms.join("、")}（仅支持 ios/android）`);
+    return 2;
+  }
+  const rawBaseline = flags.get("baseline");
+  if (rawBaseline !== null && rawBaseline !== "latest" && rawBaseline !== "none") {
+    io.errorLog(`非法 --baseline：${rawBaseline}（仅支持 latest/none）`);
+    return 2;
+  }
+  const baseline = rawBaseline === "none" ? "none" : "latest";
   const task = await runtime.store.createRegressionTask({
     rootPath: runtime.project.rootDir,
     refs: resolved.map((entry) => ({ caseSetId: entry.caseSetId, featureKey: entry.featureKey })),
