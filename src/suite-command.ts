@@ -1896,11 +1896,11 @@ async function suiteTaskRelease(
     io.errorLog(`任务 ${taskId} 状态为 ${task.status}，无需释放`);
     return 2;
   }
-  if (task.claimedBy === null) {
-    io.errorLog(`任务 ${taskId} 领取信息缺失（claimed_by 为空）；请核对中心库`);
+  if (task.claimedBy === null && !flags.bool("force")) {
+    io.errorLog(`任务 ${taskId} 领取信息缺失（claimed_by 为空）；如需强制重置加 --force`);
     return 2;
   }
-  if (!flags.bool("force")) {
+  if (task.claimedBy !== null && !flags.bool("force")) {
     const runners = await runtime.store.listRunners(rootPath);
     const holder = runners.find((runner) => runner.id === task.claimedBy);
     const online = holder

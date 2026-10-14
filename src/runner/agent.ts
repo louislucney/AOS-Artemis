@@ -15,6 +15,7 @@ export interface RunnerAgentOptions {
   name?: string;
   pollMs?: number;
   heartbeatMs?: number;
+  maxAttempts?: number;
   once?: boolean;
   shouldStop?: () => boolean;
   artifactBaseUrl?: string | null;
@@ -40,6 +41,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
   const name = options.name?.trim() || os.hostname();
   const pollMs = options.pollMs ?? intFromEnv(env.AOS_RUNNER_POLL_MS, 5_000);
   const heartbeatMs = options.heartbeatMs ?? intFromEnv(env.AOS_RUNNER_HEARTBEAT_MS, 30_000);
+  const maxAttempts = options.maxAttempts ?? intFromEnv(env.AOS_RUNNER_MAX_ATTEMPTS, 3);
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const io = options.io ?? {
@@ -164,13 +166,19 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         const failed = exitCode === null || exitCode !== 0;
         if (failed) {
           try {
+            const exhausted = task.attempts >= maxAttempts;
             const released = await store.releaseRegressionTask({
               rootPath,
               runnerId: me.id,
-              taskId: task.id
+              taskId: task.id,
+              to: exhausted ? "failed" : "pending"
             });
             if (released) {
-              io.log(`[runner] 任务 ${task.id} 未达终态，已释放回待执行（下轮重试）`);
+              io.log(
+                exhausted
+                  ? `[runner] 任务 ${task.id} 第 ${task.attempts} 次失败（上限 ${maxAttempts}），标记 failed（不再自动重试；修复引用后请新建任务）`
+                  : `[runner] 任务 ${task.id} 未达终态，已释放回待执行（第 ${task.attempts} 次尝试）`
+              );
             }
           } catch (releaseError) {
             io.errorLog(`[runner] 释放任务失败：${errorMessage(releaseError)}`);

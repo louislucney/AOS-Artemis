@@ -907,3 +907,36 @@ test("panel web: 产物链接（任务页/归因队列；无 runner → 纯路�
   assert.match(review.body, /打开证据/);
   assert.match(review.body, /href="http:\/\/mac-1:8770\/artifact\/traces\/trace-1"/);
 });
+
+test("panel web: 任务页显示重试次数（attempts > 1）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const task = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.claimRegressionTask({
+    rootPath: projectDir,
+    runnerId: "r-x",
+    platforms: ["android"]
+  });
+  await store.releaseRegressionTask({
+    rootPath: projectDir,
+    runnerId: "r-x",
+    taskId: task.id
+  });
+  await store.claimRegressionTask({
+    rootPath: projectDir,
+    runnerId: "r-x",
+    platforms: ["android"]
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${task.id}`),
+    deps
+  );
+  assert.match(html.body, /已尝试 2 次/);
+  assert.match(html.body, /已领取/);
+});

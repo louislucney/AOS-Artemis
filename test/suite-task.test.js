@@ -586,6 +586,33 @@ test("suite task release：离线/未知执行机 → 重置；在线未 --force
   assert.equal(noId.code, 2);
 });
 
+test("suite task release：claimed_by 为空的数据异常态——默认拒绝、--force 重置", async () => {
+  const { runtime, store } = await setupTaskProject();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask({
+    rootPath,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.updateRegressionTask(rootPath, task.id, {
+    status: "claimed",
+    claimedBy: null,
+    claimedAt: null
+  });
+
+  const refused = await runCli(runtime, ["task", "release", task.id]);
+  assert.equal(refused.code, 2);
+  assert.ok(refused.errors.some((line) => line.includes("--force")));
+
+  const forced = await runCli(runtime, ["task", "release", task.id, "--force"]);
+  assert.equal(forced.code, 0);
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "pending");
+  assert.equal(after.claimedBy, null);
+});
+
 test("suite run --task: runnerName 透传（缺省 hostname）", async () => {
   const { runtime, store } = await setupTaskProject({
     statuses: {

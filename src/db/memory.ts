@@ -240,6 +240,7 @@ export class MemoryStore implements ProjectStore {
       status: "pending",
       claimedBy: null,
       claimedAt: null,
+      attempts: 0,
       runIds: []
     };
     this.regressionTasks.push(record);
@@ -307,6 +308,7 @@ export class MemoryStore implements ProjectStore {
     match.status = "claimed";
     match.claimedBy = input.runnerId;
     match.claimedAt = new Date().toISOString();
+    match.attempts += 1;
     return cloneRegressionTask(match);
   }
 
@@ -327,8 +329,9 @@ export class MemoryStore implements ProjectStore {
 
   async releaseRegressionTask(input: {
     rootPath: string;
-    runnerId: string;
+    runnerId: string | null;
     taskId: string;
+    to?: "pending" | "failed";
   }): Promise<boolean> {
     const project = this.projects.get(input.rootPath);
     if (!project) return false;
@@ -336,10 +339,10 @@ export class MemoryStore implements ProjectStore {
       (entry) =>
         entry.projectId === project.id &&
         entry.id === input.taskId &&
-        entry.claimedBy === input.runnerId
+        (input.runnerId === null ? entry.claimedBy === null : entry.claimedBy === input.runnerId)
     );
     if (!task || (task.status !== "claimed" && task.status !== "running")) return false;
-    task.status = "pending";
+    task.status = input.to === "failed" ? "failed" : "pending";
     task.claimedBy = null;
     task.claimedAt = null;
     return true;

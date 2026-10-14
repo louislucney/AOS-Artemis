@@ -232,6 +232,7 @@ test("claimRegressionTask: 单任务被领后不复领（第二个 runner → nu
       platforms: ["android"]
     });
     assert.ok(first);
+    assert.equal(first.attempts, 1, "领取累加 attempts");
     assert.equal(
       await store.claimRegressionTask({
         rootPath: "/w/p1",
@@ -240,6 +241,51 @@ test("claimRegressionTask: 单任务被领后不复领（第二个 runner → nu
       }),
       null
     );
+  }
+});
+
+test("releaseRegressionTask: to='failed' 终态化；runnerId=null 仅命中 claimed_by 空行（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const normal = await store.createRegressionTask(taskInput());
+    const weird = await store.createRegressionTask(taskInput());
+    await store.updateRegressionTask("/w/p1", weird.id, {
+      status: "claimed",
+      claimedBy: null,
+      claimedAt: null
+    });
+
+    const claimedNormal = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-1",
+      platforms: ["android"]
+    });
+    assert.equal(claimedNormal.id, normal.id);
+
+    assert.equal(
+      await store.releaseRegressionTask({ rootPath: "/w/p1", runnerId: null, taskId: normal.id }),
+      false,
+      "runnerId=null 不动正常持有行"
+    );
+    assert.equal(
+      await store.releaseRegressionTask({ rootPath: "/w/p1", runnerId: null, taskId: weird.id }),
+      true
+    );
+    assert.equal((await store.getRegressionTask("/w/p1", weird.id)).status, "pending");
+
+    assert.equal(
+      await store.releaseRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-1",
+        taskId: normal.id,
+        to: "failed"
+      }),
+      true
+    );
+    const failed = await store.getRegressionTask("/w/p1", normal.id);
+    assert.equal(failed.status, "failed", "to='failed' 终态化");
+    assert.equal(failed.claimedBy, null);
   }
 });
 
@@ -381,4 +427,5 @@ test("存量库迁移：旧 regression_tasks 缺 claimed_by/claimed_at → init 
   assert.ok(claimed, "补列后可领取");
   assert.equal(claimed.status, "claimed");
   assert.equal(claimed.claimedBy, "r-legacy");
+  assert.equal(claimed.attempts, 1, "补列后 attempts 可累加");
 });

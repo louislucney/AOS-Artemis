@@ -176,6 +176,7 @@ export interface RegressionTaskRecord {
   status: "pending" | "claimed" | "running" | "completed" | "partial" | "failed";
   claimedBy: string | null;
   claimedAt: string | null;
+  attempts: number;
   runIds: string[];
 }
 
@@ -332,11 +333,13 @@ export interface ProjectStore {
   }): Promise<RegressionTaskRecord | null>;
   /** 释放本 runner 的全部未完成领取（claimed/running）→ pending；返回条数。 */
   releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number>;
-  /** 单任务释放（执行异常救济；带 claimed_by 与状态守卫，已终态不覆盖）。 */
+  /** 单任务释放（执行异常救济；守卫 claimed_by 与状态，已终态不覆盖）。
+   * `to:"failed"`＝达重试上限时直接置 failed；`runnerId:null`＝仅命中 claimed_by 为空的数据异常行（强制救济）。 */
   releaseRegressionTask(input: {
     rootPath: string;
-    runnerId: string;
+    runnerId: string | null;
     taskId: string;
+    to?: "pending" | "failed";
   }): Promise<boolean>;
   recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord>;
   /** 返回按 createdAt 新→旧（内存与 PG 实现均保证；调用方可依赖该序取「最新」）。 */

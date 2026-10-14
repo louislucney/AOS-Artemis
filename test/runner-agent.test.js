@@ -254,6 +254,40 @@ test("非零退出码但已置终态 → 守卫拒绝不覆盖（partial 保持�
   assert.deepEqual(after.runIds, ["r-1"]);
 });
 
+test("重试上限：永久失败任务达上限置 failed，不再饿死后续任务", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const permanent = await store.createRegressionTask(taskInput(rootPath));
+  const later = await store.createRegressionTask(taskInput(rootPath));
+  const calls = [];
+  const state = { done: false };
+  const { options, logs } = makeOptions(runtime, inv, {
+    once: false,
+    maxAttempts: 2,
+    shouldStop: () => state.done,
+    executeSuite: async (argv) => {
+      const taskId = argv[2];
+      calls.push(taskId);
+      if (taskId === permanent.id) return 2;
+      await store.updateRegressionTask(rootPath, later.id, { status: "completed" });
+      state.done = true;
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.deepEqual(
+    calls,
+    [permanent.id, permanent.id, later.id],
+    "达上限后让位给后续任务（不饥饿）"
+  );
+  const failed = await store.getRegressionTask(rootPath, permanent.id);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.attempts, 2);
+  assert.equal((await store.getRegressionTask(rootPath, later.id)).status, "completed");
+  assert.ok(logs.some((line) => line.includes("标记 failed")));
+});
+
 test("执行期间心跳持续（daemon）：长跑不再失联", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;

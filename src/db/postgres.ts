@@ -144,6 +144,7 @@ const SCHEMA = [
      status TEXT NOT NULL DEFAULT 'pending',
      claimed_by TEXT,
      claimed_at TEXT,
+     attempts INTEGER NOT NULL DEFAULT 0,
      run_ids TEXT NOT NULL DEFAULT '[]'
     )`,
   `CREATE TABLE IF NOT EXISTS suite_runs (
@@ -212,7 +213,8 @@ const MIGRATIONS = [
   `ALTER TABLE task_stats ADD COLUMN IF NOT EXISTS case_id TEXT`,
   `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS runner TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_by TEXT`,
-  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_at TEXT`
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_at TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`
 ];
 
 export class PostgresStore implements ProjectStore {
@@ -606,6 +608,7 @@ export class PostgresStore implements ProjectStore {
       status: "pending",
       claimedBy: null,
       claimedAt: null,
+      attempts: 0,
       runIds: []
     };
   }
@@ -686,7 +689,7 @@ export class PostgresStore implements ProjectStore {
     if (!match) return null;
     const claimed = await this.pool.query(
       `UPDATE regression_tasks
-          SET status = 'claimed', claimed_by = $2, claimed_at = $3
+          SET status = 'claimed', claimed_by = $2, claimed_at = $3, attempts = attempts + 1
         WHERE project_id = $1 AND id = $4 AND status = 'pending'
       RETURNING *`,
       [project.id, input.runnerId, new Date().toISOString(), String(match.id)]
@@ -710,17 +713,25 @@ export class PostgresStore implements ProjectStore {
 
   async releaseRegressionTask(input: {
     rootPath: string;
-    runnerId: string;
+    runnerId: string | null;
     taskId: string;
+    to?: "pending" | "failed";
   }): Promise<boolean> {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) return false;
+    const target = input.to === "failed" ? "failed" : "pending";
+    const values: unknown[] = [project.id, input.taskId];
+    let runnerClause = "claimed_by IS NULL";
+    if (input.runnerId !== null) {
+      values.push(input.runnerId);
+      runnerClause = "claimed_by = $3";
+    }
     const released = await this.pool.query(
       `UPDATE regression_tasks
-          SET status = 'pending', claimed_by = NULL, claimed_at = NULL
-        WHERE project_id = $1 AND id = $2 AND claimed_by = $3 AND status IN ('claimed', 'running')
+          SET status = '${target}', claimed_by = NULL, claimed_at = NULL
+        WHERE project_id = $1 AND id = $2 AND ${runnerClause} AND status IN ('claimed', 'running')
       RETURNING id`,
-      [project.id, input.taskId, input.runnerId]
+      values
     );
     return released.rows.length > 0;
   }
@@ -1232,6 +1243,8 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     status: String(row.status) as RegressionTaskRecord["status"],
     claimedBy: nullableString(row.claimed_by),
     claimedAt: nullableString(row.claimed_at),
+    attempts:
+      row.attempts === null || row.attempts === undefined ? 0 : Number(row.attempts),
     runIds: parseStringArray(row.run_ids)
   };
 }

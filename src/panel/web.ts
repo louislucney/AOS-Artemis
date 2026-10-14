@@ -900,7 +900,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
-      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)} · 共 ${detail.runs.length} 个子运行</p>`,
+      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}</p>`,
       coverageHint,
       warnings,
       "</header>",
