@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { traceEvidence } from "./artemis/evidence.js";
@@ -7,7 +8,7 @@ import {
   loadApiErrorCatalog,
   matchApiErrors
 } from "./artemis/api-errors.js";
-import { defaultBuildRuntime } from "./cli-runtime.js";
+import { defaultBuildRuntime, type CliRuntimeBundle } from "./cli-runtime.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
 import { classifyIosSerial } from "./device/ios.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
@@ -49,6 +50,10 @@ import {
   type SuiteRunReport
 } from "./figma/suite-runner.js";
 import { Runtime } from "./runtime.js";
+import { runRunnerAgent } from "./runner/agent.js";
+import { startRunnerArtifactServer, type RunnerArtifactServer } from "./runner/artifact-server.js";
+import type { RunnerInventory } from "./runner/inventory.js";
+import { isRunnerOnline, runnerTtlFrom } from "./runner/status.js";
 import { logWarn } from "./log.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
 import { baselineFor, platformOf, registerSuiteRun, resolveRunRefs } from "./tasks/run-registry.js";
@@ -79,6 +84,15 @@ export interface SuiteCliDeps {
   iosLogCollector?: IosLogCollectorFn;
   /** Injected for tests; defaults to `xcrun xcresulttool get test-results tests`. */
   xcresultReader?: (xcresultPath: string) => Promise<unknown>;
+  /** runner 子命令注入缝（测试）。 */
+  runner?: {
+    executeSuite?: (argv: string[]) => Promise<number>;
+    collectInventory?: () => Promise<RunnerInventory>;
+    sleep?: (ms: number) => Promise<void>;
+    shouldStop?: () => boolean;
+  };
+  /** 登记透传：suite run 的 suite_runs.runner（缺省 hostname）。 */
+  runnerName?: string;
 }
 
 interface ParsedFlags {
@@ -284,6 +298,7 @@ type SuiteIo = {
   log: (line: string) => void;
   errorLog: (line: string) => void;
   env?: NodeJS.ProcessEnv;
+  runnerName?: string | null;
 };
 
 /** 批次清单一等实体（DESIGN §13.95）：best-effort，写失败仅 WARN、不影响退出码。 */
@@ -358,8 +373,10 @@ Usage:
   aos-mcp suite feedback [options]   基于台账与基线的生成改进建议（只读）
   aos-mcp suite reconcile list|confirm|reject [options]
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
-  aos-mcp suite task create|list|show [options]
+  aos-mcp suite task create|list|show|release [options]
                                      回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none]（引用取该功能最新份）
+                                     release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
+  aos-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -380,6 +397,8 @@ baseline: --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--ser
 report: [--limit <n>] [--case <id>]... [--out <dir>] [--stamp <s>] [--no-save] [--no-sync] [--task <id>（回归任务报告：命名 <时间>_<功能>_回归.xlsx）]
 feedback: [--limit <n>] [--min-failures <n>]
 reconcile: list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>]
+runner: [--name <n>] [--poll-ms <n>] [--heartbeat-ms <n>] [--artifact-port <n>（0 关闭）] [--artifact-host <h>] [--once]
+        （需要中心 PG；AOS_RUNNER_* 环境变量可配，AOS_RUNNER_DEVICES 显式覆盖设备清单）
 
 exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误或 --fail-on 命中（基线回归/未处理 API 错误/流程未覆盖或无法校验）
 错误码注册表: .artemis/design/error-codes.json（未配置时 api-errors 跳过并如实标注 degraded）`);
@@ -402,6 +421,7 @@ async function registerRunBestEffort(
     startedAtMs: number;
     regressionTaskId?: string | null;
     refs?: { caseSetId: string; featureKey: string; featureName: string } | null;
+    runnerName?: string | null;
   }
 ): Promise<{ runId: string; comparison: RunComparison | null } | null> {
   const refs =
@@ -426,6 +446,7 @@ async function registerRunBestEffort(
     featureName: refs?.featureName ?? null,
     platform,
     device: input.runOptions.deviceSerial ?? null,
+    runner: input.runnerName ?? null,
     exitCode: input.exitCode,
     startedAtMs: input.startedAtMs,
     finishedAtMs: Date.now(),
@@ -456,7 +477,10 @@ async function persistRunRegistration(
   flags: ParsedFlags,
   input: { runOptions: SuiteRunOptions; exitCode: number; startedAtMs: number }
 ): Promise<void> {
-  const registration = await registerRunBestEffort(runtime, report, input);
+  const registration = await registerRunBestEffort(runtime, report, {
+    ...input,
+    runnerName: io.runnerName ?? null
+  });
   if (flags.bool("json")) return;
   io.log(registration ? registrationLine(registration) : "登记降级: suite run 未入库（见日志）");
 }
@@ -609,6 +633,7 @@ async function suiteRunTask(
         featureName: ref.featureName,
         platform,
         device,
+        runner: io.runnerName ?? null,
         exitCode,
         startedAtMs,
         finishedAtMs: Date.now(),
@@ -1702,7 +1727,8 @@ async function suiteTask(
   if (action === "create") return await suiteTaskCreate(runtime, flags, io);
   if (action === "list") return await suiteTaskList(runtime, flags, io);
   if (action === "show") return await suiteTaskShow(runtime, flags, io);
-  io.errorLog("用法: suite task create|list|show …（见 suite help）");
+  if (action === "release") return await suiteTaskRelease(runtime, flags, io);
+  io.errorLog("用法: suite task create|list|show|release …（见 suite help）");
   return 2;
 }
 
@@ -1826,6 +1852,154 @@ async function suiteTaskList(
   return 0;
 }
 
+async function suiteTaskRelease(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const taskId = flags.positional[2];
+  if (!taskId) {
+    io.errorLog("用法: suite task release <taskId> [--force]");
+    return 2;
+  }
+  const rootPath = runtime.project.rootDir;
+  const task = await runtime.store.getRegressionTask(rootPath, taskId);
+  if (!task) {
+    io.errorLog(`未找到回归任务 ${taskId}`);
+    return 2;
+  }
+  if (task.status !== "claimed" && task.status !== "running") {
+    io.errorLog(`任务 ${taskId} 状态为 ${task.status}，无需释放`);
+    return 2;
+  }
+  if (task.claimedBy && !flags.bool("force")) {
+    const runners = await runtime.store.listRunners(rootPath);
+    const holder = runners.find((runner) => runner.id === task.claimedBy);
+    const online = holder
+      ? isRunnerOnline(holder.lastSeenAt, Date.now(), runnerTtlFrom(process.env))
+      : false;
+    if (online) {
+      io.errorLog(
+        `任务 ${taskId} 由在线 runner「${holder?.name ?? task.claimedBy}」持有；如需强制重置加 --force`
+      );
+      return 2;
+    }
+  }
+  const ok = await runtime.store.updateRegressionTask(rootPath, taskId, {
+    status: "pending",
+    claimedBy: null,
+    claimedAt: null
+  });
+  if (!ok) {
+    io.errorLog(`任务 ${taskId} 释放失败`);
+    return 2;
+  }
+  io.log(`任务 ${taskId} 已重置为待执行（清除领取）`);
+  return 0;
+}
+
+function parsePositiveInt(value: string): number | null {
+  const parsed = Number(value.trim());
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function suiteRunnerCommand(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: SuiteIo,
+  deps: SuiteCliDeps,
+  buildRuntime: (projectDir: string | null) => Promise<CliRuntimeBundle>
+): Promise<number> {
+  const env = io.env ?? process.env;
+  if (runtime.store.kind !== "postgres") {
+    io.errorLog("runner 需要中心 PG（当前为内存存储）；请配置 MOBILE_TESTING_DATABASE_URL");
+    return 2;
+  }
+  const pollRaw = flags.get("poll-ms");
+  const heartbeatRaw = flags.get("heartbeat-ms");
+  const pollMs = pollRaw === null ? undefined : parsePositiveInt(pollRaw);
+  const heartbeatMs = heartbeatRaw === null ? undefined : parsePositiveInt(heartbeatRaw);
+  if ((pollRaw !== null && pollMs === null) || (heartbeatRaw !== null && heartbeatMs === null)) {
+    io.errorLog("用法: --poll-ms/--heartbeat-ms 需为正整数");
+    return 2;
+  }
+  const resolvedPollMs = pollMs ?? undefined;
+  const resolvedHeartbeatMs = heartbeatMs ?? undefined;
+
+  let artifactPort = 8_770;
+  const envPort = Number((env.AOS_RUNNER_ARTIFACT_PORT ?? "").trim());
+  if (Number.isInteger(envPort) && envPort >= 0) artifactPort = envPort;
+  const portRaw = flags.get("artifact-port");
+  if (portRaw !== null) {
+    const parsed = Number(portRaw.trim());
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      io.errorLog("用法: --artifact-port 需为非负整数（0 关闭产物服务）");
+      return 2;
+    }
+    artifactPort = parsed;
+  }
+  const artifactHost =
+    flags.get("artifact-host")?.trim() || env.AOS_RUNNER_ARTIFACT_HOST?.trim() || "0.0.0.0";
+
+  let artifactServer: RunnerArtifactServer | null = null;
+  let artifactBaseUrl: string | null = null;
+  if (artifactPort !== 0) {
+    try {
+      artifactServer = await startRunnerArtifactServer({
+        projectDir: runtime.project.rootDir,
+        host: artifactHost,
+        port: artifactPort,
+        env
+      });
+      artifactBaseUrl =
+        env.AOS_RUNNER_ADVERTISE_URL?.trim() || `http://${os.hostname()}:${artifactServer.port}`;
+    } catch (error) {
+      io.errorLog(`产物服务启动失败（继续执行，不广播产物基址）：${errorMessage(error)}`);
+      artifactServer = null;
+      artifactBaseUrl = null;
+    }
+  }
+
+  let stopRequested = false;
+  const onSignal = (): void => {
+    stopRequested = true;
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  try {
+    const name = flags.get("name")?.trim() || undefined;
+    const seam = deps.runner ?? {};
+    return await runRunnerAgent({
+      projectDir: flags.get("project"),
+      name,
+      pollMs: resolvedPollMs,
+      heartbeatMs: resolvedHeartbeatMs,
+      once: flags.bool("once"),
+      shouldStop: seam.shouldStop ?? ((): boolean => stopRequested),
+      artifactBaseUrl,
+      env,
+      buildRuntime: async () => ({ runtime, dispose: async (): Promise<void> => {} }),
+      executeSuite:
+        seam.executeSuite ??
+        ((argv) =>
+          runSuiteCommand(argv, {
+            buildRuntime,
+            log: io.log,
+            errorLog: io.errorLog,
+            env,
+            runnerName: name
+          })),
+      collectInventory: seam.collectInventory,
+      io: { log: io.log, errorLog: io.errorLog },
+      sleep: seam.sleep
+    });
+  } finally {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+    if (artifactServer) await artifactServer.close();
+  }
+}
+
 async function suiteTaskShow(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -1881,7 +2055,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "runner"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -1896,7 +2070,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
       return await suiteRun(
         built.runtime,
         flags,
-        { log, errorLog, env: deps.env ?? process.env },
+        { log, errorLog, env: deps.env ?? process.env, runnerName: deps.runnerName ?? null },
         deps.logcatCollector,
         deps.iosLogCollector
       );
@@ -1906,7 +2080,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
       return await suiteCalibrate(built.runtime, flags, { log, errorLog }, { xcresultReader: deps.xcresultReader });
     }
     if (sub === "loop") {
-      return await suiteLoop(built.runtime, flags, { log, errorLog, env: deps.env ?? process.env }, {
+      return await suiteLoop(built.runtime, flags, { log, errorLog, env: deps.env ?? process.env, runnerName: deps.runnerName ?? null }, {
         logcatCollector: deps.logcatCollector,
         iosLogCollector: deps.iosLogCollector
       });
@@ -1932,6 +2106,15 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "report") return await suiteReport(built.runtime, flags, { log, errorLog });
     if (sub === "reconcile") return await suiteReconcile(built.runtime, flags, { log, errorLog });
     if (sub === "task") return await suiteTask(built.runtime, flags, { log, errorLog });
+    if (sub === "runner") {
+      return await suiteRunnerCommand(
+        built.runtime,
+        flags,
+        { log, errorLog, env: deps.env ?? process.env },
+        deps,
+        buildRuntime
+      );
+    }
     return await suiteFeedback(built.runtime, flags, { log, errorLog });
   } catch (error) {
     errorLog(`suite ${sub} 失败: ${errorMessage(error)}`);

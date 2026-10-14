@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -528,4 +529,120 @@ test("suite task create: --platform 去重", async () => {
   assert.equal(code, 0);
   const tasks = await store.listRegressionTasks(runtime.project.rootDir);
   assert.deepEqual(tasks[0].platforms, ["android"]);
+});
+
+test("suite task release：离线/未知执行机 → 重置；在线未 --force → 拒；--force → 强制；未知任务 → exit 2", async () => {
+  const { runtime, store } = await setupTaskProject();
+  const rootPath = runtime.project.rootDir;
+  const mk = async () =>
+    store.createRegressionTask({
+      rootPath,
+      refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+      platforms: ["android"],
+      baseline: "latest",
+      createdBy: "cli"
+    });
+
+  const offlineTask = await mk();
+  await store.claimRegressionTask({ rootPath, runnerId: "r-ghost", platforms: ["android"] });
+
+  const onlineTask = await mk();
+  const runner = await store.upsertRunner({
+    rootPath,
+    name: "r-on",
+    hostname: "r-on",
+    platforms: ["android"],
+    devices: [],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false }
+  });
+  await store.claimRegressionTask({ rootPath, runnerId: runner.id, platforms: ["android"] });
+
+  const refused = await runCli(runtime, ["task", "release", onlineTask.id]);
+  assert.equal(refused.code, 2);
+  assert.ok(refused.errors.some((line) => line.includes("--force")));
+  assert.equal((await store.getRegressionTask(rootPath, onlineTask.id)).status, "claimed");
+
+  const forced = await runCli(runtime, ["task", "release", onlineTask.id, "--force"]);
+  assert.equal(forced.code, 0);
+  const afterForced = await store.getRegressionTask(rootPath, onlineTask.id);
+  assert.equal(afterForced.status, "pending");
+  assert.equal(afterForced.claimedBy, null);
+
+  const released = await runCli(runtime, ["task", "release", offlineTask.id]);
+  assert.equal(released.code, 0);
+  const afterReleased = await store.getRegressionTask(rootPath, offlineTask.id);
+  assert.equal(afterReleased.status, "pending");
+  assert.equal(afterReleased.claimedBy, null);
+
+  const missing = await runCli(runtime, ["task", "release", "task-nope"]);
+  assert.equal(missing.code, 2);
+  assert.ok(missing.errors.some((line) => line.includes("未找到")));
+
+  const pendingTask = await mk();
+  const notClaimed = await runCli(runtime, ["task", "release", pendingTask.id]);
+  assert.equal(notClaimed.code, 2);
+
+  const noId = await runCli(runtime, ["task", "release"]);
+  assert.equal(noId.code, 2);
+});
+
+test("suite run --task: runnerName 透传（缺省 hostname）", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" },
+      "trace-3": { status: "completed" },
+      "trace-4": { status: "completed" }
+    }
+  });
+  await runCli(runtime, ["task", "create", "--ref", "f-登录-aaaa1111", "--platform", "android"]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+
+  const logs = [];
+  const errors = [];
+  const baseDeps = {
+    buildRuntime: async () => ({ runtime, dispose: async () => {} }),
+    log: (line) => logs.push(line),
+    errorLog: (line) => errors.push(line)
+  };
+  const withName = await runSuiteCommand(["run", "--task", tasks[0].id, "--device", "emulator-5554"], {
+    ...baseDeps,
+    runnerName: "runner-alpha"
+  });
+  assert.equal(withName, 0);
+  const withoutName = await runSuiteCommand(
+    ["run", "--task", tasks[0].id, "--device", "emulator-5554"],
+    baseDeps
+  );
+  assert.equal(withoutName, 0);
+
+  const runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.equal(runs.length, 2);
+  assert.equal(runs[0].runner, os.hostname(), "缺省记 hostname");
+  assert.equal(runs[1].runner, "runner-alpha", "显式 runnerName 透传");
+});
+
+test("claimed 任务可手动执行（不因领取状态阻塞，契约锁）", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" }
+    }
+  });
+  await runCli(runtime, ["task", "create", "--ref", "f-登录-aaaa1111", "--platform", "android"]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  await store.claimRegressionTask({
+    rootPath: runtime.project.rootDir,
+    runnerId: "r-ghost",
+    platforms: ["android"]
+  });
+  assert.equal(
+    (await store.getRegressionTask(runtime.project.rootDir, tasks[0].id)).status,
+    "claimed"
+  );
+
+  const run = await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+  assert.equal(run.code, 0, "claimed 不阻塞手动执行");
+  const after = await store.getRegressionTask(runtime.project.rootDir, tasks[0].id);
+  assert.equal(after.status, "completed");
 });
