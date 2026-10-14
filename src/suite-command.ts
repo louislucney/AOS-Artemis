@@ -1896,7 +1896,11 @@ async function suiteTaskRelease(
     io.errorLog(`任务 ${taskId} 状态为 ${task.status}，无需释放`);
     return 2;
   }
-  if (task.claimedBy && !flags.bool("force")) {
+  if (task.claimedBy === null) {
+    io.errorLog(`任务 ${taskId} 领取信息缺失（claimed_by 为空）；请核对中心库`);
+    return 2;
+  }
+  if (!flags.bool("force")) {
     const runners = await runtime.store.listRunners(rootPath);
     const holder = runners.find((runner) => runner.id === task.claimedBy);
     const online = holder
@@ -1909,13 +1913,19 @@ async function suiteTaskRelease(
       return 2;
     }
   }
-  const ok = await runtime.store.updateRegressionTask(rootPath, taskId, {
-    status: "pending",
-    claimedBy: null,
-    claimedAt: null
-  });
-  if (!ok) {
-    io.errorLog(`任务 ${taskId} 释放失败`);
+  let released: boolean;
+  try {
+    released = await runtime.store.releaseRegressionTask({
+      rootPath,
+      runnerId: task.claimedBy,
+      taskId
+    });
+  } catch (error) {
+    io.errorLog(`任务 ${taskId} 释放失败：${errorMessage(error)}`);
+    return 2;
+  }
+  if (!released) {
+    io.errorLog(`任务 ${taskId} 状态已变化（可能已完成回写），未释放`);
     return 2;
   }
   io.log(`任务 ${taskId} 已重置为待执行（清除领取）`);
@@ -1977,6 +1987,11 @@ async function suiteRunnerCommand(
       });
       artifactBaseUrl =
         env.AOS_RUNNER_ADVERTISE_URL?.trim() || `http://${os.hostname()}:${artifactServer.port}`;
+      if (artifactHost === "0.0.0.0" || artifactHost === "::") {
+        io.log(
+          `[runner] 注意: 产物服务监听 ${artifactHost}（无鉴权只读；范围 .artemis 含 logs/crashes）——仅限受控内网`
+        );
+      }
     } catch (error) {
       io.errorLog(`产物服务启动失败（继续执行，不广播产物基址）：${errorMessage(error)}`);
       artifactServer = null;
@@ -1991,7 +2006,7 @@ async function suiteRunnerCommand(
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
   try {
-    const name = flags.get("name")?.trim() || undefined;
+    const name = flags.get("name")?.trim() || os.hostname();
     const seam = deps.runner ?? {};
     return await runRunnerAgent({
       projectDir: flags.get("project"),

@@ -103,7 +103,12 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     if (!once) {
       heartbeatTask = (async (): Promise<void> => {
         while (!stopHeartbeat) {
-          await sleep(heartbeatMs);
+          let waited = 0;
+          while (waited < heartbeatMs && !stopHeartbeat) {
+            const step = Math.min(HEARTBEAT_STOP_STEP_MS, heartbeatMs - waited);
+            await sleep(step);
+            waited += step;
+          }
           if (stopHeartbeat) break;
           try {
             await heartbeat();
@@ -116,12 +121,13 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
 
     try {
       while (!stopped()) {
+        const snapshot = inventory;
         let task: RegressionTaskRecord | null;
         try {
           task = await store.claimRegressionTask({
             rootPath,
             runnerId: me.id,
-            platforms: inventory.platforms
+            platforms: snapshot.platforms
           });
         } catch (error) {
           io.errorLog(`[runner] 领取失败：${errorMessage(error)}`);
@@ -135,7 +141,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           continue;
         }
 
-        const devices = inventory.devices
+        const devices = snapshot.devices
           .filter((device) => task.platforms.includes(device.platform))
           .map((device) => device.serial);
         const argv = [
@@ -148,15 +154,24 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         io.log(
           `[runner] 领取任务 ${task.id}（端 ${task.platforms.join(",")} · 设备 ${devices.join(",") || "无"}）`
         );
-        let failed = false;
+        let exitCode: number | null = null;
         try {
-          const exitCode = await options.executeSuite(argv);
+          exitCode = await options.executeSuite(argv);
           io.log(`[runner] 任务 ${task.id} 执行结束（退出码 ${exitCode}）`);
         } catch (error) {
-          failed = true;
           io.errorLog(`[runner] 任务 ${task.id} 执行异常：${errorMessage(error)}`);
+        }
+        const failed = exitCode === null || exitCode !== 0;
+        if (failed) {
           try {
-            await store.releaseRegressionTask({ rootPath, runnerId: me.id, taskId: task.id });
+            const released = await store.releaseRegressionTask({
+              rootPath,
+              runnerId: me.id,
+              taskId: task.id
+            });
+            if (released) {
+              io.log(`[runner] 任务 ${task.id} 未达终态，已释放回待执行（下轮重试）`);
+            }
           } catch (releaseError) {
             io.errorLog(`[runner] 释放任务失败：${errorMessage(releaseError)}`);
           }
@@ -167,7 +182,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
       return 0;
     } finally {
       stopHeartbeat = true;
-      await heartbeatTask;
+      await settleWithin(heartbeatTask, 2_000);
     }
   } finally {
     await bundle.dispose();
@@ -177,4 +192,16 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
 function intFromEnv(raw: string | undefined, fallback: number): number {
   const parsed = Number((raw ?? "").trim());
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+const HEARTBEAT_STOP_STEP_MS = 250;
+
+function settleWithin(promise: Promise<void>, timeoutMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    void promise.finally(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }

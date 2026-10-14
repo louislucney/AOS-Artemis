@@ -243,6 +243,24 @@ test("claimRegressionTask: 单任务被领后不复领（第二个 runner → nu
   }
 });
 
+test("claimRegressionTask: 无候选窗截断（>50 条缺端任务不饿死后续可领任务；memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    for (let index = 0; index < 55; index += 1) {
+      await store.createRegressionTask(taskInput({ platforms: ["ios"] }));
+    }
+    const android = await store.createRegressionTask(taskInput());
+    const claimed = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-android",
+      platforms: ["android"]
+    });
+    assert.ok(claimed, "更晚的 android 任务不被头部缺端任务饿死");
+    assert.equal(claimed.id, android.id);
+  }
+});
+
 test("release 语义：全量仅释放自己；单任务守卫（他人/已终态 → false 不覆盖）", async () => {
   const stores = [new MemoryStore(), (await makePgStore()).store];
   for (const store of stores) {

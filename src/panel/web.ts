@@ -810,7 +810,7 @@ function renderRunners(detail: PanelProjectDetail): string {
 function renderTaskList(rootPath: string, detail: PanelProjectDetail): string {
   const rows = detail.tasks.map((task) => [
     `<a href="${escapeHtml(taskHref(rootPath, task.id))}"><code>${escapeHtml(task.id)}</code></a>`,
-    escapeHtml(task.status),
+    escapeHtml(taskStatusLabel(task.status)),
     String(task.refs),
     escapeHtml(task.platforms.join(", ")),
     String(task.runIds),

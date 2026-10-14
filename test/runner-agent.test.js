@@ -219,6 +219,41 @@ test("执行器抛错 → 释放本次领取（回 pending 可再领）＋errorL
   assert.equal(final.status, "completed", "释放后可被再领取执行");
 });
 
+test("非零退出码且未达终态 → 守卫释放回待执行（真实 runSuiteCommand 吞错语义）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  const { options, logs } = makeOptions(runtime, inv, {
+    executeSuite: async () => 2
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "pending", "非零退出未达终态 → 释放");
+  assert.equal(after.claimedBy, null);
+  assert.ok(logs.some((line) => line.includes("已释放回待执行")));
+});
+
+test("非零退出码但已置终态 → 守卫拒绝不覆盖（partial 保持）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  const { options } = makeOptions(runtime, inv, {
+    executeSuite: async () => {
+      await store.updateRegressionTask(rootPath, task.id, {
+        status: "partial",
+        runIds: ["r-1"]
+      });
+      return 2;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "partial", "终态不被覆盖");
+  assert.deepEqual(after.runIds, ["r-1"]);
+});
+
 test("执行期间心跳持续（daemon）：长跑不再失联", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;

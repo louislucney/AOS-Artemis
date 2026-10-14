@@ -673,7 +673,7 @@ export class PostgresStore implements ProjectStore {
     const candidates = await this.pool.query(
       `SELECT id, platforms FROM regression_tasks
         WHERE project_id = $1 AND status = 'pending'
-        ORDER BY created_at ASC LIMIT 50`,
+        ORDER BY created_at ASC`,
       [project.id]
     );
     const match = candidates.rows.find((row) => {

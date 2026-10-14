@@ -170,7 +170,7 @@ node dist/cli.js suite task release <taskId> [--force]   # 管理侧救济：cla
 - 设备盘点：adb devices（emulator-* 归 emulator）＋模拟器（darwin，仅 Booted 可用）＋真机 `idevice_id -l`（best-effort）；**真机 UDID 请用 `AOS_RUNNER_DEVICES="udid1,udid2"` 显式列入**（设了即覆盖全部来源）。
 - 命名与登记：`--name <n>`＝心跳/登记名（缺省 hostname）；runner 执行的任务子运行 `suite_runs.runner` 记录该名（显式透传，不影响手动运行归因）。环境变量：`AOS_RUNNER_POLL_MS`（5000）、`AOS_RUNNER_HEARTBEAT_MS`（30000）、`AOS_RUNNER_TTL_MS`（在线判定，90000）、`AOS_RUNNER_ARTIFACT_PORT/HOST`、`AOS_RUNNER_ADVERTISE_URL`（LAN 无 DNS 时用 IP 覆盖基址）。
 - 领取条件：**任务目标端 ⊆ 该 runner 的设备端集合**（缺端不领）；**双端任务需单机双端 runner**（两端分属两台机时请拆单端任务或手动执行）；面板对「pending 且无 runner 可覆盖」会给提示。
-- 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需）、**无鉴权**，暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
+- 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需；启动打印醒目告警）、**无鉴权**，暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
 - 崩溃/失联救济：runner 重启自动释放自己的未完成领取；机器报废等场景用 `suite task release`（默认要求该执行机离线）。无 runner 时手动路径不变：`suite run --task <id> --device <serial>`（claimed 不阻塞手动执行）。见 DESIGN §13.109。
 
 ### Jira 接入（M8a：读取）
