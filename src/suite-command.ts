@@ -11,6 +11,7 @@ import {
 import { defaultBuildRuntime, type CliRuntimeBundle } from "./cli-runtime.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
 import { classifyIosSerial } from "./device/ios.js";
+import { latestFeatureRefs, type ResolvedTaskRef } from "./tasks/feature-refs.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/baseline.js";
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
@@ -1754,37 +1755,6 @@ async function suiteTask(
   if (action === "release") return await suiteTaskRelease(runtime, flags, io);
   io.errorLog("用法: suite task create|list|show|release …（见 suite help）");
   return 2;
-}
-
-interface ResolvedTaskRef {
-  caseSetId: string;
-  featureKey: string;
-  featureName: string;
-  caseCount: number;
-  jsonPath: string;
-}
-
-/** 引用解析：每个 feature key 取最新一份（listCaseSets 新→旧首次出现）。 */
-function latestFeatureRefs(
-  sets: Array<{
-    id: string;
-    features: Array<{ key: string; name: string; caseCount: number; jsonPath: string }>;
-  }>
-): Map<string, ResolvedTaskRef> {
-  const latest = new Map<string, ResolvedTaskRef>();
-  for (const set of sets) {
-    for (const feature of set.features) {
-      if (latest.has(feature.key)) continue;
-      latest.set(feature.key, {
-        caseSetId: set.id,
-        featureKey: feature.key,
-        featureName: feature.name,
-        caseCount: feature.caseCount,
-        jsonPath: feature.jsonPath
-      });
-    }
-  }
-  return latest;
 }
 
 async function suiteTaskCreate(
