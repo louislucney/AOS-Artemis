@@ -1,21 +1,23 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { readApiErrorsArtifact } from "../artemis/api-errors.js";
-import { traceEvidence } from "../artemis/evidence.js";
-import { classifyFailure } from "../artemis/failure-taxonomy.js";
-import { classifyIosSerial } from "../device/ios.js";
 import { plainTextToAdf } from "../jira/adf.js";
+import {
+  type AttachEntry,
+  deterministicAttachmentName,
+  shortContentHash,
+  uploadAttachmentsDeduped
+} from "../jira/attachments.js";
 import { upsertTraceComment } from "../jira/comments.js";
-import { JiraApiError, JiraClient, JiraRateLimitError } from "../jira/client.js";
-import { ENV_JIRA_API_TOKEN, ENV_JIRA_BASE_URL, ENV_JIRA_EMAIL } from "../jira/config.js";
 import { issueSummaryRow, normalizeIssue, parseIssueKey } from "../jira/context.js";
-import { buildEvidenceComment, type EvidencePlatform } from "../jira/evidence.js";
+import { postEvidenceToIssue, type JiraEvidencePostArgs } from "../jira/post.js";
+import { jiraErrorPayload, jiraMissingConfigPayload, resolveJiraClient } from "../jira/resolve.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
+
+export type { JiraEvidencePostArgs };
 
 export interface JiraIssueGetArgs {
   key: string;
@@ -58,68 +60,16 @@ function jsonResult(payload: unknown, isError = false): CallToolResult {
   };
 }
 
-function clientFor(runtime: Runtime): { client: JiraClient; siteUrl: string } | null {
-  const config = runtime.jiraConfig();
-  if (!config.configured || config.siteUrl === null || config.email === null || config.apiToken === null) {
-    return null;
-  }
-  return {
-    client: new JiraClient({
-      siteUrl: config.siteUrl,
-      email: config.email,
-      apiToken: config.apiToken
-    }),
-    siteUrl: config.siteUrl
-  };
-}
-
-function missingConfigResult(runtime: Runtime): CallToolResult {
-  const config = runtime.jiraConfig();
-  return jsonResult(
-    {
-      ok: false,
-      error: `尚未配置 Jira 凭证：缺少 ${config.missing.join(" / ")}。`,
-      howToFix: [
-        "调用 aos_configure 同时提供 jiraSite / jiraEmail / jiraApiToken（写入项目 .env 并即时刷新）",
-        `或在 ${runtime.project.rootDir}/.env 中添加 ${ENV_JIRA_BASE_URL} / ${ENV_JIRA_EMAIL} / ${ENV_JIRA_API_TOKEN} 后重启 MCP 会话`
-      ]
-    },
-    true
-  );
-}
-
 function jiraErrorResult(error: unknown): CallToolResult {
-  if (error instanceof JiraRateLimitError) {
-    return jsonResult(
-      {
-        ok: false,
-        error: error.message,
-        retryAfterSeconds: error.retryAfterSeconds,
-        reason: error.reason
-      },
-      true
-    );
-  }
-  if (error instanceof JiraApiError) {
-    return jsonResult(
-      {
-        ok: false,
-        error: `Jira API ${error.status}: ${error.body}`,
-        status: error.status,
-        hint: error.hint
-      },
-      true
-    );
-  }
-  return jsonResult({ ok: false, error: `Jira 请求失败：${errorMessage(error)}` }, true);
+  return jsonResult(jiraErrorPayload(error), true);
 }
 
 export async function jiraIssueGet(
   runtime: Runtime,
   args: JiraIssueGetArgs
 ): Promise<CallToolResult> {
-  const resolved = clientFor(runtime);
-  if (resolved === null) return missingConfigResult(runtime);
+  const resolved = resolveJiraClient(runtime);
+  if (resolved === null) return jsonResult(jiraMissingConfigPayload(runtime), true);
   const key = parseIssueKey(args.key);
   if (key === null) {
     return jsonResult(
@@ -143,8 +93,8 @@ export async function jiraIssueSearch(
   runtime: Runtime,
   args: JiraIssueSearchArgs
 ): Promise<CallToolResult> {
-  const resolved = clientFor(runtime);
-  if (resolved === null) return missingConfigResult(runtime);
+  const resolved = resolveJiraClient(runtime);
+  if (resolved === null) return jsonResult(jiraMissingConfigPayload(runtime), true);
   const jql = args.jql.trim();
   if (jql === "") {
     return jsonResult({ ok: false, error: "jql 不能为空（需有界查询，如 project = X ORDER BY created DESC）。" }, true);
@@ -185,15 +135,13 @@ export interface JiraIssueAttachArgs {
   dryRun?: boolean;
 }
 
-const DEFAULT_ATTACH_MAX_MB = 20;
-
 /** `jira_issue_comment`：纯文本→ADF 评论；带 traceId 时按 marker 幂等（更新既有/新建）。 */
 export async function jiraIssueComment(
   runtime: Runtime,
   args: JiraIssueCommentArgs
 ): Promise<CallToolResult> {
-  const resolved = clientFor(runtime);
-  if (resolved === null) return missingConfigResult(runtime);
+  const resolved = resolveJiraClient(runtime);
+  if (resolved === null) return jsonResult(jiraMissingConfigPayload(runtime), true);
   const key = parseIssueKey(args.key);
   if (key === null) {
     return jsonResult(
@@ -234,24 +182,12 @@ export async function jiraIssueComment(
   }
 }
 
-function shortContentHash(content: Buffer): string {
-  return createHash("sha256").update(content).digest("hex").slice(0, 8);
-}
-
-/** 确定性附件名：`<basename>-<sha8><ext>`（同名同大小视为已存在，内容哈希内置在名字里）。 */
-function deterministicAttachmentName(original: string, hash: string): string {
-  const parsed = path.parse(original);
-  const base = parsed.name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "file";
-  return `${base}-${hash}${parsed.ext}`;
-}
-
-interface AttachEntry {
+interface ReadEntry {
   file: string;
-  abs: string;
   filename: string;
   size: number;
   content: Buffer;
-  status: "pending" | "rejected" | "read-error" | "uploaded" | "skipped-duplicate" | "skipped-too-large" | "error";
+  status: "pending" | "rejected" | "read-error";
   reason?: string;
 }
 
@@ -260,8 +196,8 @@ export async function jiraIssueAttach(
   runtime: Runtime,
   args: JiraIssueAttachArgs
 ): Promise<CallToolResult> {
-  const resolved = clientFor(runtime);
-  if (resolved === null) return missingConfigResult(runtime);
+  const resolved = resolveJiraClient(runtime);
+  if (resolved === null) return jsonResult(jiraMissingConfigPayload(runtime), true);
   const key = parseIssueKey(args.key);
   if (key === null) {
     return jsonResult(
@@ -274,17 +210,13 @@ export async function jiraIssueAttach(
     return jsonResult({ ok: false, error: "files 不能为空（项目根内相对路径数组）。" }, true);
   }
   const root = runtime.project.rootDir;
-  const env = { ...runtime.project.dotenvValues, ...process.env };
-  const envCapMb = Number(env.AOS_JIRA_ATTACH_MAX_MB ?? "");
-  const localCapMb = Number.isFinite(envCapMb) && envCapMb > 0 ? envCapMb : DEFAULT_ATTACH_MAX_MB;
 
-  const entries: AttachEntry[] = [];
+  const entries: ReadEntry[] = [];
   for (const file of files) {
     const abs = path.resolve(root, file);
     if (abs !== root && !abs.startsWith(root + path.sep)) {
       entries.push({
         file,
-        abs,
         filename: "",
         size: 0,
         content: Buffer.alloc(0),
@@ -297,7 +229,6 @@ export async function jiraIssueAttach(
       const content = fs.readFileSync(abs);
       entries.push({
         file,
-        abs,
         filename: deterministicAttachmentName(path.basename(abs), shortContentHash(content)),
         size: content.byteLength,
         content,
@@ -306,7 +237,6 @@ export async function jiraIssueAttach(
     } catch (error) {
       entries.push({
         file,
-        abs,
         filename: "",
         size: 0,
         content: Buffer.alloc(0),
@@ -332,80 +262,38 @@ export async function jiraIssueAttach(
     });
   }
 
-  let siteLimit: number | null = null;
-  const degraded: string[] = [];
-  try {
-    const meta = await resolved.client.getAttachmentMeta();
-    if (!meta.enabled) degraded.push("attachments-disabled");
-    siteLimit = meta.uploadLimit;
-  } catch (error) {
-    degraded.push(`meta-failed: ${errorMessage(error)}`);
-  }
-  const existing = new Set<string>();
-  try {
-    for (const item of await resolved.client.listAttachments(key)) {
-      existing.add(`${item.filename}:${item.size}`);
-    }
-  } catch (error) {
-    degraded.push(`list-failed: ${errorMessage(error)}`);
-  }
-  const limitBytes = Math.min(siteLimit ?? Number.POSITIVE_INFINITY, localCapMb * 1024 * 1024);
+  const ready: AttachEntry[] = entries
+    .filter((entry) => entry.status === "pending")
+    .map((entry) => ({
+      file: entry.file,
+      filename: entry.filename,
+      size: entry.size,
+      content: entry.content
+    }));
+  const env = { ...runtime.project.dotenvValues, ...process.env };
+  const { results: uploaded, degraded } = await uploadAttachmentsDeduped(resolved.client, key, ready, {
+    env
+  });
 
-  for (const entry of entries) {
-    if (entry.status !== "pending") continue;
-    if (entry.size > limitBytes) {
-      entry.status = "skipped-too-large";
-      entry.reason = `超过上限 ${Math.round(limitBytes / (1024 * 1024))}MB（站点/本地取小）`;
-      continue;
-    }
-    if (existing.has(`${entry.filename}:${entry.size}`)) {
-      entry.status = "skipped-duplicate";
-      continue;
-    }
-    try {
-      await resolved.client.uploadAttachment(key, {
-        filename: entry.filename,
-        content: entry.content
-      });
-      entry.status = "uploaded";
-      existing.add(`${entry.filename}:${entry.size}`);
-    } catch (error) {
-      entry.status = "error";
-      entry.reason = errorMessage(error);
-    }
-  }
-
+  let uploadedIndex = 0;
   return jsonResult({
     ok: true,
     site: resolved.siteUrl,
     issue: key,
     degraded: degraded.length > 0 ? degraded : null,
-    results: entries.map((entry) => ({
-      file: entry.file,
-      filename: entry.filename || null,
-      size: entry.size,
-      status: entry.status,
-      ...(entry.reason ? { reason: entry.reason } : {})
-    }))
+    results: entries.map((entry) => {
+      if (entry.status !== "pending") {
+        return {
+          file: entry.file,
+          filename: entry.filename || null,
+          size: entry.size,
+          status: entry.status,
+          ...(entry.reason ? { reason: entry.reason } : {})
+        };
+      }
+      return uploaded[uploadedIndex++];
+    })
   });
-}
-
-export interface JiraEvidencePostArgs {
-  key: string;
-  traceId: string;
-  platform?: "android" | "ios";
-  deviceSerial?: string;
-  dryRun?: boolean;
-}
-
-function payloadOf(result: CallToolResult): Record<string, unknown> {
-  const item = result.content[0];
-  if (!item || item.type !== "text") return {};
-  try {
-    return JSON.parse(item.text) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
 }
 
 /** `jira_evidence_post`：一次调用回写失败证据（评论幂等 + 附件去重），平台/设备维度如实标注。 */
@@ -413,116 +301,6 @@ export async function jiraEvidencePost(
   runtime: Runtime,
   args: JiraEvidencePostArgs
 ): Promise<CallToolResult> {
-  const resolved = clientFor(runtime);
-  if (resolved === null) return missingConfigResult(runtime);
-  const key = parseIssueKey(args.key);
-  if (key === null) {
-    return jsonResult(
-      { ok: false, error: `无法解析 issue key："${args.key}"。请传 key（如 AOS-123）或 browse URL。` },
-      true
-    );
-  }
-  const traceId = typeof args.traceId === "string" ? args.traceId.trim() : "";
-  if (traceId === "") {
-    return jsonResult({ ok: false, error: "traceId 不能为空。" }, true);
-  }
-  const traceDir = runtime.traceDir(traceId);
-  const status = await runtime.traceStatus(traceId);
-  if (!status && !fs.existsSync(traceDir)) {
-    return jsonResult(
-      {
-        ok: false,
-        error: `未找到 trace ${traceId} 的任何产物。`,
-        hints: [
-          "确认 traceId（mobile_run_task 返回）；用 mobile_inspect_trace / aos_tasks 查台账",
-          "或先跑 suite run / mobile_run_task 生成 trace 产物后再回写"
-        ]
-      },
-      true
-    );
-  }
-
-  const bundle = await traceEvidence(runtime, { traceId });
-  const apiArtifact = readApiErrorsArtifact(traceDir);
-  const crashes = bundle.crashes.map((crash) => ({
-    id: crash.id,
-    kind: crash.kind,
-    package: crash.package,
-    exceptionClass: crash.exceptionClass
-  }));
-  const failureDomain =
-    bundle.status && bundle.status !== "completed" && bundle.status !== "running"
-      ? classifyFailure({
-          status,
-          crashes,
-          apiErrors: (apiArtifact?.errors ?? []).map((error) => ({
-            code: error.code,
-            handled: error.handled
-          }))
-        }).domain
-      : null;
-  const rawPlatform = status ? (status as unknown as { platform?: unknown }).platform : null;
-  const statusPlatform = typeof rawPlatform === "string" ? rawPlatform : null;
-  const serial =
-    typeof args.deviceSerial === "string" && args.deviceSerial.trim() !== ""
-      ? args.deviceSerial.trim()
-      : (status?.deviceSerial ?? null);
-  const platform: EvidencePlatform =
-    args.platform ??
-    (serial !== null
-      ? classifyIosSerial(serial) !== null
-        ? "ios"
-        : "android"
-      : statusPlatform === "ios"
-        ? "ios"
-        : statusPlatform === "android"
-          ? "android"
-          : "unknown");
-
-  const draft = buildEvidenceComment(bundle, { platform, deviceSerial: serial, failureDomain });
-  const attachmentsRel = draft.attachments
-    .map((abs) => path.relative(runtime.project.rootDir, abs))
-    .filter((rel) => rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel));
-
-  if (args.dryRun === true) {
-    return jsonResult({
-      ok: true,
-      dryRun: true,
-      site: resolved.siteUrl,
-      issue: key,
-      traceId,
-      platform,
-      deviceSerial: serial,
-      failureDomain,
-      degraded: bundle.degraded,
-      commentText: draft.text,
-      attachments: attachmentsRel
-    });
-  }
-
-  let comment: { action: "created" | "updated"; commentId: string; propertySet: boolean };
-  try {
-    comment = await upsertTraceComment(resolved.client, key, { traceId, body: draft.adf });
-  } catch (error) {
-    return jiraErrorResult(error);
-  }
-  let attachments: unknown[] = [];
-  if (attachmentsRel.length > 0) {
-    const attachPayload = payloadOf(await jiraIssueAttach(runtime, { key, files: attachmentsRel }));
-    attachments = Array.isArray(attachPayload.results) ? attachPayload.results : [];
-  }
-  return jsonResult({
-    ok: true,
-    site: resolved.siteUrl,
-    issue: key,
-    traceId,
-    platform,
-    deviceSerial: serial,
-    failureDomain,
-    action: comment.action,
-    commentId: comment.commentId,
-    propertySet: comment.propertySet,
-    attachments,
-    degraded: bundle.degraded
-  });
+  const payload = await postEvidenceToIssue(runtime, args);
+  return jsonResult(payload, payload.ok === false);
 }
