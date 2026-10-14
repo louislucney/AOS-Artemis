@@ -52,7 +52,12 @@ import { Runtime } from "./runtime.js";
 import { logWarn } from "./log.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
 import { baselineFor, platformOf, registerSuiteRun, resolveRunRefs } from "./tasks/run-registry.js";
-import { compareRuns, type CompareCaseInput, type RunComparison } from "./tasks/run-compare.js";
+import {
+  compareRuns,
+  crossPlatformDeltas,
+  type CompareCaseInput,
+  type RunComparison
+} from "./tasks/run-compare.js";
 
 type LogcatCollector = (request: {
   serial: string | null;
@@ -360,6 +365,7 @@ common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
         [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine] [--strict] [--no-save]
+        [--task <id>（回归任务：与 --tests 互斥；--device 可重复，按端展开子运行）]
 check:  [--tests <path>] [--strict]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
@@ -455,6 +461,225 @@ async function persistRunRegistration(
   io.log(registration ? registrationLine(registration) : "登记降级: suite run 未入库（见日志）");
 }
 
+async function suiteRunTask(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: SuiteIo,
+  taskId: string,
+  logcatCollector?: LogcatCollector,
+  iosLogCollector?: IosLogCollectorFn
+): Promise<number> {
+  const jsonMode = flags.bool("json");
+  const say = jsonMode ? (_line: string): void => {} : (line: string): void => io.log(line);
+  if (flags.get("tests") !== null) {
+    io.errorLog("--task 与 --tests 不能同用（task 引用份存档，--tests 指定单一用例文件）");
+    return 2;
+  }
+  const task = await runtime.store.getRegressionTask(runtime.project.rootDir, taskId);
+  if (!task) {
+    io.errorLog(`未找到回归任务 ${taskId}`);
+    return 2;
+  }
+  const devices = splitList(flags.list("device"));
+  if (devices.length === 0) {
+    io.errorLog("用法: suite run --task <id> --device <serial>（可重复传多个设备）");
+    return 2;
+  }
+  say("子集运行不做全图覆盖门禁（全图完整性由生成时 requireFullCoverage 保障）");
+  if (flags.bool("fail-on-uncovered")) {
+    say("注意: --fail-on-uncovered 在 task 模式忽略（子集天然不完整）");
+  }
+
+  const sets = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+  const setById = new Map(sets.map((set) => [set.id, set]));
+  const resolvedRefs: ResolvedTaskRef[] = [];
+  for (const ref of task.refs) {
+    const feature = setById
+      .get(ref.caseSetId)
+      ?.features.find((entry) => entry.key === ref.featureKey);
+    if (!feature) {
+      say(`注意: 引用份已不可用（跳过）：caseSet=${ref.caseSetId} feature=${ref.featureKey}`);
+      continue;
+    }
+    resolvedRefs.push({
+      caseSetId: ref.caseSetId,
+      featureKey: ref.featureKey,
+      featureName: feature.name,
+      caseCount: feature.caseCount,
+      jsonPath: feature.jsonPath
+    });
+  }
+  if (resolvedRefs.length === 0) {
+    io.errorLog(`回归任务 ${taskId} 的引用份均不可用（先重新生成/登记用例集）`);
+    return 2;
+  }
+
+  const devicePlatforms = new Set<string>(devices.map((device) => platformOf(device)));
+  for (const platform of task.platforms) {
+    if (!devicePlatforms.has(platform)) {
+      say(`注意: 目标端 ${platform} 无设备（该端未执行）`);
+    }
+  }
+
+  const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
+  const quarantine = quarantineFor(runtime, flags);
+  baseOptions.quarantinedCaseIds = quarantine.ids;
+
+  await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
+    status: "running"
+  });
+
+  const subRuns: Array<{
+    device: string;
+    platform: string;
+    feature: string;
+    total: number;
+    passed: number;
+    failed: number;
+    fixed: number;
+    regressed: number;
+    runId: string | null;
+  }> = [];
+  const runIds: string[] = [];
+  const seenByDevice = new Map<string, Set<string>>();
+  const platformCases = new Map<string, CompareCaseInput[]>();
+  let anyFailure = false;
+  let anyExecError = false;
+  let anyExecuted = false;
+
+  for (const device of devices) {
+    const platform = platformOf(device);
+    const seen = seenByDevice.get(device) ?? new Set<string>();
+    seenByDevice.set(device, seen);
+    for (const ref of resolvedRefs) {
+      const archive = readTestsDocument(runtime.configDirAbs, { testsPath: ref.jsonPath });
+      if (!archive) {
+        io.errorLog(`份不可读（跳过）：${ref.jsonPath}`);
+        anyExecError = true;
+        continue;
+      }
+      const caseIds = archive.records.map((record) => record.id).filter((id) => !seen.has(id));
+      const deduped = archive.records.length - caseIds.length;
+      if (deduped > 0) {
+        say(`[${platform}] ${ref.featureName}: 去重 ${deduped} 例（跨份重复 caseId 只跑一次）`);
+      }
+      if (caseIds.length === 0) {
+        say(`[${platform}] ${ref.featureName}: 用例均已在前序份执行（去重跳过）`);
+        continue;
+      }
+      for (const id of caseIds) seen.add(id);
+      const startedAtMs = Date.now();
+      const report = await runGeneratedTests(runtime, {
+        ...baseOptions,
+        testsPath: ref.jsonPath,
+        deviceSerial: device,
+        caseIds
+      });
+      anyExecuted = true;
+      const quarantinedFailures = report.cases.filter(
+        (entry) => entry.quarantined === true && entry.status !== "passed"
+      ).length;
+      const exitCode = !report.ok ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
+      if (!report.ok) {
+        anyExecError = true;
+      } else if (exitCode !== 0) {
+        anyFailure = true;
+      }
+      const comparison = compareRuns(
+        await baselineFor(runtime, {
+          caseSetId: ref.caseSetId,
+          featureKey: ref.featureKey,
+          platform
+        }),
+        outcomeCasesOf(report)
+      );
+      const runId = await registerSuiteRun(runtime, {
+        report,
+        trigger: "cli",
+        regressionTaskId: task.id,
+        caseSetId: ref.caseSetId,
+        featureKey: ref.featureKey,
+        featureName: ref.featureName,
+        platform,
+        device,
+        exitCode,
+        startedAtMs,
+        finishedAtMs: Date.now(),
+        comparison
+      });
+      if (runId) runIds.push(runId);
+      platformCases.set(platform, [
+        ...(platformCases.get(platform) ?? []),
+        ...outcomeCasesOf(report)
+      ]);
+      subRuns.push({
+        device,
+        platform,
+        feature: ref.featureName,
+        total: report.total,
+        passed: report.passed,
+        failed: report.failed,
+        fixed: comparison.fixed,
+        regressed: comparison.regressed,
+        runId
+      });
+      say(
+        `[${platform}] ${ref.featureName}: pass ${report.passed}/${report.total} · 修复${comparison.fixed} 回归${comparison.regressed}` +
+          (comparison.baseline === "established" ? "（基准建立）" : "") +
+          (runId ? ` · run ${runId}` : " · 登记降级")
+      );
+    }
+  }
+
+  const finalStatus: "completed" | "partial" | "failed" = !anyExecuted
+    ? "failed"
+    : anyFailure || anyExecError
+      ? "partial"
+      : "completed";
+  await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
+    status: finalStatus,
+    runIds
+  });
+
+  const deltas = crossPlatformDeltas(
+    [...platformCases.entries()].map(([platform, cases]) => ({ platform, cases }))
+  );
+  const totalPassed = subRuns.reduce((sum, entry) => sum + entry.passed, 0);
+  const totalCases = subRuns.reduce((sum, entry) => sum + entry.total, 0);
+  const exitCode = !anyExecuted ? 2 : anyExecError ? 2 : anyFailure ? 1 : 0;
+  if (jsonMode) {
+    io.log(
+      JSON.stringify(
+        {
+          ok: exitCode === 0,
+          taskId: task.id,
+          status: finalStatus,
+          runIds,
+          subRuns,
+          crossPlatform: deltas
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    if (deltas.length > 0) {
+      io.log(`跨端差异 ${deltas.length} 条：`);
+      for (const delta of deltas.slice(0, 10)) {
+        io.log(
+          `- ${delta.name}：${Object.entries(delta.results)
+            .map(([platform, outcome]) => `${platform}=${outcome}`)
+            .join(" ")}`
+        );
+      }
+    }
+    io.log(
+      `回归任务 ${task.id}: ${finalStatus} · 子运行 ${subRuns.length} · pass ${totalPassed}/${totalCases}`
+    );
+  }
+  return exitCode;
+}
+
 async function suiteRun(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -462,6 +687,10 @@ async function suiteRun(
   logcatCollector?: LogcatCollector,
   iosLogCollector?: IosLogCollectorFn
 ): Promise<number> {
+  const taskId = flags.get("task");
+  if (taskId) {
+    return await suiteRunTask(runtime, flags, io, taskId, logcatCollector, iosLogCollector);
+  }
   const runOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
   const quarantine = quarantineFor(runtime, flags);
   runOptions.quarantinedCaseIds = quarantine.ids;

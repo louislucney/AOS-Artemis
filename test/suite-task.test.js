@@ -5,7 +5,7 @@ import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { runSuiteCommand } from "../dist/suite-command.js";
-import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
+import { baseConfig, loadTestRuntime, makeTempProject, SuiteProxy } from "./helpers.js";
 
 async function runCli(runtime, args) {
   const logs = [];
@@ -18,19 +18,37 @@ async function runCli(runtime, args) {
   return { code, logs, errors };
 }
 
-async function setupTaskProject() {
+function caseEntry(index, feature) {
+  return {
+    id: `case-${index}`,
+    name: `Case ${index}`,
+    screens: ["Home"],
+    steps: ["点击「Go」，验证进入「Next」"],
+    preconditions: ["应用已安装且可正常启动"],
+    taskDesc: `run case ${index}（【真实数据】须经真实请求链路，禁止伪造页面/假数据）`,
+    feature
+  };
+}
+
+async function setupTaskProject({ statuses = {}, running = true } = {}) {
   const dir = makeTempProject({ config: baseConfig() });
   const store = new MemoryStore();
-  const { runtime } = await loadTestRuntime(dir, { store });
+  const proxy = new SuiteProxy({ statuses, running });
+  const crashCollector = { collect: async () => ({ status: "skipped", reason: "disabled" }) };
+  const { runtime } = await loadTestRuntime(dir, { proxy, store, crashCollector });
   await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
   const archiveDir = path.join(runtime.configDirAbs, "design", "case-sets");
   fs.mkdirSync(archiveDir, { recursive: true });
   const older = path.join(archiveDir, "20261010T090000_登录.json");
   const newer = path.join(archiveDir, "20261014T153000_登录.json");
   const other = path.join(archiveDir, "20261014T153000_下单.json");
-  for (const file of [older, newer, other]) {
-    fs.writeFileSync(file, JSON.stringify({ flows: [] }), "utf-8");
-  }
+  fs.writeFileSync(older, JSON.stringify({ flows: [caseEntry(1, "f-登录-aaaa1111")] }), "utf-8");
+  fs.writeFileSync(
+    newer,
+    JSON.stringify({ flows: [caseEntry(1, "f-登录-aaaa1111"), caseEntry(2, "f-登录-aaaa1111")] }),
+    "utf-8"
+  );
+  fs.writeFileSync(other, JSON.stringify({ flows: [caseEntry(3, "f-下单-bbbb2222")] }), "utf-8");
   const paths = (json) => ({
     jsonPath: json,
     mdPath: json.replace(/\.json$/, ".md"),
@@ -69,7 +87,7 @@ async function setupTaskProject() {
       { key: "f-下单-bbbb2222", name: "下单流程", caseCount: 3, screens: ["下单"], ...paths(other) }
     ]
   });
-  return { dir, runtime, store, older, newer, other, oldSet, newSet, otherSet };
+  return { dir, runtime, store, proxy, older, newer, other, oldSet, newSet, otherSet };
 }
 
 test("suite task create: 解析最新份并落库", async () => {
@@ -130,4 +148,195 @@ test("suite task list/show: 输出状态、解析路径与运行列表", async (
   const missing = await runCli(runtime, ["task", "show", "task-nope"]);
   assert.equal(missing.code, 2);
   assert.ok(missing.errors.some((line) => line.includes("未找到回归任务")));
+});
+
+test("suite run --task: 展开 refs×devices、逐例登记带 task 关联、状态 → completed", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" },
+      "trace-3": { status: "completed" }
+    }
+  });
+  const create = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--ref",
+    "f-下单-bbbb2222",
+    "--platform",
+    "android"
+  ]);
+  assert.equal(create.code, 0);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  const run = await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+  assert.equal(run.code, 0);
+  const runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.equal(runs.length, 2);
+  assert.ok(runs.every((entry) => entry.regressionTaskId === tasks[0].id));
+  assert.equal(
+    runs.reduce((sum, entry) => sum + entry.passed, 0),
+    3
+  );
+  const updated = await store.getRegressionTask(runtime.project.rootDir, tasks[0].id);
+  assert.equal(updated.status, "completed");
+  assert.equal(updated.runIds.length, 2);
+  assert.ok(run.logs.some((line) => line.includes("[android] 登录流程")));
+  assert.ok(run.logs.some((line) => line.includes("子集运行不做全图覆盖门禁")));
+});
+
+test("suite run --task: 有失败 → 退出码 1、状态 partial、对比含回归", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "failed", error: "boom" }
+    }
+  });
+  await runCli(runtime, ["task", "create", "--ref", "f-登录-aaaa1111", "--platform", "android"]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  await store.recordSuiteRun({
+    rootPath: runtime.project.rootDir,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: tasks[0].refs[0].caseSetId,
+      featureKey: "f-登录-aaaa1111",
+      featureName: "登录流程",
+      platform: "android",
+      device: null,
+      appVersion: null,
+      status: "completed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 2,
+      passed: 2,
+      failed: 0,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "pass",
+      exitCode: 0,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: ["case-1", "case-2"].map((caseId) => ({
+      caseId,
+      name: `Case ${caseId}`,
+      featureKey: "f-登录-aaaa1111",
+      platform: "android",
+      status: "passed",
+      traceId: null,
+      failureDomain: null,
+      failureConfidence: null,
+      failureReason: null,
+      durationMs: null,
+      quarantined: false,
+      flaky: false,
+      verdict: null,
+      verdictBy: null,
+      verdictAt: null,
+      verdictNote: null
+    }))
+  });
+
+  const run = await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+  assert.equal(run.code, 1);
+  const runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].comparison.regressed, 1);
+  assert.ok(run.logs.some((line) => line.includes("回归1")));
+  const updated = await store.getRegressionTask(runtime.project.rootDir, tasks[0].id);
+  assert.equal(updated.status, "partial");
+});
+
+test("suite run --task: 跨份重复 caseId 去重（同设备只跑一次）", async () => {
+  const { runtime, store, proxy } = await setupTaskProject({
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" },
+      "trace-3": { status: "completed" }
+    }
+  });
+  const archiveDir = path.join(runtime.configDirAbs, "design", "case-sets");
+  const overlapPath = path.join(archiveDir, "20261014T160000_登录补充.json");
+  fs.writeFileSync(
+    overlapPath,
+    JSON.stringify({
+      flows: [caseEntry(1, "f-登录-补充-cccc3333"), caseEntry(4, "f-登录-补充-cccc3333")]
+    }),
+    "utf-8"
+  );
+  await store.recordCaseSet({
+    rootPath: runtime.project.rootDir,
+    source: "pen:c.pen",
+    basename: "tests",
+    createdAt: "2026-10-14T16:00:00.000Z",
+    features: [
+      {
+        key: "f-登录-补充-cccc3333",
+        name: "登录补充",
+        caseCount: 2,
+        screens: ["登录"],
+        jsonPath: overlapPath,
+        mdPath: overlapPath,
+        xlsxPath: overlapPath
+      }
+    ]
+  });
+  await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--ref",
+    "f-登录-补充-cccc3333",
+    "--platform",
+    "android"
+  ]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  const run = await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+  assert.equal(run.code, 0);
+  assert.equal(proxy.submitted, 3, "case-1 跨份去重，共提交 3 次");
+  assert.ok(run.logs.some((line) => line.includes("去重 1 例")));
+});
+
+test("suite run --task: 缺端设备 → 标注该端未执行", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: { "trace-1": { status: "completed" }, "trace-2": { status: "completed" } }
+  });
+  await runCli(runtime, ["task", "create", "--ref", "f-登录-aaaa1111"]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  const run = await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+  assert.equal(run.code, 0);
+  assert.ok(
+    run.logs.some((line) => line.includes("ios") && line.includes("未执行")),
+    "缺端标注"
+  );
+});
+
+test("suite run --task: 未知任务/缺设备/与 --tests 互斥 → exit 2", async () => {
+  const { runtime, store } = await setupTaskProject();
+  const missing = await runCli(runtime, ["run", "--task", "task-nope", "--device", "emulator-5554"]);
+  assert.equal(missing.code, 2);
+  assert.ok(missing.errors.some((line) => line.includes("未找到回归任务")));
+
+  const conflict = await runCli(runtime, [
+    "run",
+    "--task",
+    "task-x",
+    "--tests",
+    "x.json",
+    "--device",
+    "d"
+  ]);
+  assert.equal(conflict.code, 2);
+  assert.ok(conflict.errors.some((line) => line.includes("不能同用")));
+
+  await runCli(runtime, ["task", "create", "--ref", "f-登录-aaaa1111"]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  const noDevice = await runCli(runtime, ["run", "--task", tasks[0].id]);
+  assert.equal(noDevice.code, 2);
+  assert.ok(noDevice.errors.some((line) => line.includes("--device")));
 });
