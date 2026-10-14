@@ -50,6 +50,10 @@ import type { PenScreenRenderInput, PenScreenRenderResult } from "../pen/render.
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 import {
+  collectCaseDefectFeedback,
+  type CaseDefectFeedback
+} from "./generation-feedback.js";
+import {
   confidenceFor,
   isHardCoverageValue,
   isUnconfirmedProvenance,
@@ -632,7 +636,7 @@ export function generateTestCases(
 export function renderMarkdown(
   cases: GeneratedTest[],
   meta: { source: string; generatedAt: string },
-  options: { images?: Map<string, string[]> } = {}
+  options: { images?: Map<string, string[]>; feedback?: CaseDefectFeedback } = {}
 ): string {
   const lines: string[] = [
     "# 设计流程测试用例",
@@ -668,6 +672,20 @@ export function renderMarkdown(
     });
     lines.push("", "### artemis 任务描述（可直接传给 mobile_run_task）", "", "```text", testCase.taskDesc, "```", "");
   });
+  if (options.feedback && options.feedback.byFeature.length > 0) {
+    lines.push("## 上轮案例问题修订提示（裁决反馈）", "");
+    for (const feature of options.feedback.byFeature) {
+      const name = feature.featureName ?? feature.featureKey;
+      const items = feature.cases
+        .map(
+          (entry) =>
+            `（${entry.caseId}「${entry.name}」${entry.note !== null && entry.note !== "" ? `；备注：${entry.note}` : ""}）`
+        )
+        .join("");
+      lines.push(`- 功能「${name}」：${feature.count} 条${items}`);
+    }
+    lines.push("");
+  }
   return lines.join("\n") + "\n";
 }
 
@@ -1029,6 +1047,18 @@ export async function figmaGenerateTests(
         .filter((testCase) => testCase.feature === group.key)
         .map((testCase) => testCase.id)
     }));
+    const caseDefectFeedback = await collectCaseDefectFeedback(runtime);
+    const featureKeys = new Set(featurePayload.map((entry) => entry.key));
+    const matchedFeedback = (caseDefectFeedback?.byFeature ?? []).filter((entry) =>
+      featureKeys.has(entry.featureKey)
+    );
+    const feedbackWarning: FeatureWarning | null =
+      caseDefectFeedback === null
+        ? {
+            code: "case-defect-feedback-unavailable",
+            message: "案例问题反馈读取失败（跳过；不影响生成）"
+          }
+        : null;
     const splitHint =
       generation && generation.depthSplits > 0
         ? `本次有 ${generation.depthSplits} 条用例受 maxDepth=${generation.maxDepth} 限制从上一段终点接续（首尾相接）；如需更长的单条连续用例，请调大 maxDepth。`
@@ -1059,7 +1089,24 @@ export async function figmaGenerateTests(
         : {}),
       flows: cases,
       features: featurePayload,
-      ...(featureAssignment.warnings.length > 0 ? { warnings: featureAssignment.warnings } : {}),
+      ...(matchedFeedback.length > 0
+        ? {
+            feedback: {
+              caseDefects: {
+                total: matchedFeedback.reduce((sum, entry) => sum + entry.count, 0),
+                byFeature: matchedFeedback
+              }
+            }
+          }
+        : {}),
+      ...(featureAssignment.warnings.length > 0 || feedbackWarning !== null
+        ? {
+            warnings: [
+              ...featureAssignment.warnings,
+              ...(feedbackWarning !== null ? [feedbackWarning] : [])
+            ]
+          }
+        : {}),
       hint:
         "用 mobile_run_task 执行 flows[].taskDesc；失败步骤可用 compare_design_and_device 做视觉断言；" +
         "若已跑过 figma_import_strings，步骤中会附带 i18n key（原文仅在 source locale 兜底）；" +
@@ -1118,7 +1165,10 @@ export async function figmaGenerateTests(
       writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
       writeFileAtomic(
         markdownPath,
-        renderMarkdown(cases, { source, generatedAt }, { images: caseScreens?.caseRefs ?? new Map() })
+        renderMarkdown(cases, { source, generatedAt }, {
+          images: caseScreens?.caseRefs ?? new Map(),
+          ...(matchedFeedback.length > 0 ? { feedback: { byFeature: matchedFeedback } } : {})
+        })
       );
       writeFileAtomic(excelPath, excelBuffer);
       payload.savedTo = { json: jsonPath, markdown: markdownPath, xlsx: excelPath };
@@ -1149,6 +1199,7 @@ export async function figmaGenerateTests(
         if (subset.length === 0) continue;
         const stem = caseSetStem(group.name, stampNow, taken);
         taken.add(stem);
+        const subsetFeedback = matchedFeedback.filter((entry) => entry.featureKey === group.key);
         const saved = await saveCaseSetFiles(caseSetsBase, stem, {
           json:
             JSON.stringify(
@@ -1163,7 +1214,8 @@ export async function figmaGenerateTests(
               2
             ) + "\n",
           markdown: renderMarkdown(subset, { source, generatedAt }, {
-            images: caseScreens?.caseRefs ?? new Map()
+            images: caseScreens?.caseRefs ?? new Map(),
+            ...(subsetFeedback.length > 0 ? { feedback: { byFeature: subsetFeedback } } : {})
           }),
           xlsx: await renderTestsWorkbook(
             subset,

@@ -223,6 +223,55 @@ async function loadVerdictExits(runtime: Runtime): Promise<VerdictExits | undefi
   }
 }
 
+export interface CaseDefectFeedback {
+  byFeature: Array<{
+    featureKey: string;
+    featureName: string | null;
+    count: number;
+    cases: Array<{ caseId: string; name: string; note: string | null }>;
+  }>;
+}
+
+/** 案例问题反馈（按 featureKey 分组；store 不可用 → null；供生成侧只读消费）。 */
+export async function collectCaseDefectFeedback(
+  runtime: Runtime
+): Promise<CaseDefectFeedback | null> {
+  let exits: VerdictExits;
+  try {
+    const runs = await runtime.store.listSuiteRuns(runtime.project.rootDir, { limit: 100 });
+    exits = collectVerdictExits(runs);
+  } catch {
+    return null;
+  }
+  const byKey = new Map<
+    string,
+    { featureName: string | null; cases: VerdictExitCase[] }
+  >();
+  for (const entry of exits.caseDefects) {
+    const featureKey = entry.featureKey;
+    if (featureKey === null || featureKey === "") continue;
+    const group = byKey.get(featureKey) ?? { featureName: null, cases: [] };
+    if (
+      group.featureName === null &&
+      entry.featureName !== null &&
+      entry.featureName !== ""
+    ) {
+      group.featureName = entry.featureName;
+    }
+    if (!group.cases.some((item) => item.caseId === entry.caseId)) group.cases.push(entry);
+    byKey.set(featureKey, group);
+  }
+  const byFeature = [...byKey.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([featureKey, group]) => {
+      const cases = group.cases
+        .map((item) => ({ caseId: item.caseId, name: item.name, note: item.note }))
+        .sort((a, b) => (a.caseId < b.caseId ? -1 : a.caseId > b.caseId ? 1 : 0));
+      return { featureKey, featureName: group.featureName, count: cases.length, cases };
+    });
+  return { byFeature };
+}
+
 /** Read-only aggregation over the run ledger plus device baselines. Produces
  * suggestions with case/trace back-references; it never rewrites generated
  * artifacts (the caller decides whether to apply them). */

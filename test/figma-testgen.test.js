@@ -5,6 +5,7 @@ import test from "node:test";
 
 import ExcelJS from "exceljs";
 
+import { MemoryStore } from "../dist/db/memory.js";
 import { buildFlowGraph, flowGraphWarnings } from "../dist/figma/flows.js";
 import {
   applyObservations,
@@ -1457,4 +1458,142 @@ test("figma_generate_tests: acceptance applies once the navigation is upgraded",
   assert.equal(testCase.expectations[0].kind, "assert", "upgraded navigation enables hard assertions");
   assert.equal(testCase.expectations[0].hintsSource, "acceptance");
   assert.deepEqual(testCase.expectations[0].hints, ["金额正确"]);
+});
+
+function mkVerdictCase(caseId, verdict, extra = {}) {
+  return {
+    caseId,
+    name: extra.name ?? `Case ${caseId}`,
+    featureKey: "f-1",
+    platform: "android",
+    status: "failed",
+    traceId: extra.traceId ?? null,
+    failureDomain: "用例缺陷",
+    failureConfidence: "medium",
+    failureReason: "断言未命中",
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict,
+    verdictBy: verdict === null ? null : "alice",
+    verdictAt: verdict === null ? null : "2026-10-14T12:00:00.000Z",
+    verdictNote: extra.note ?? null,
+    jiraIssueKey: extra.jiraKey ?? null
+  };
+}
+
+function mkVerdictRun(overrides = {}) {
+  return {
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId: "cs-1",
+    featureKey: "f-1",
+    featureName: "登录",
+    platform: "android",
+    device: "emulator-5554",
+    appVersion: null,
+    runner: null,
+    status: "failed",
+    startedAt: "2026-10-14T10:00:00.000Z",
+    finishedAt: "2026-10-14T10:05:00.000Z",
+    total: 1,
+    passed: 0,
+    failed: 1,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: { 用例缺陷: 1 },
+    gateResult: "fail",
+    exitCode: 1,
+    manifestPath: null,
+    comparison: null,
+    ...overrides
+  };
+}
+
+test("figma_generate_tests: 匹配的案例问题裁决进入 feedback.caseDefects（total/byFeature 过滤）", async () => {
+  const dir = makeFlowsProject();
+  const store = new MemoryStore();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy(), store });
+
+  const first = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(first.feedback, undefined, "无裁决 → 无 feedback 字段");
+  const featureKey = first.features[0].key;
+
+  await store.upsertProject({ rootPath: dir, name: "p" });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: mkVerdictRun({ featureKey, featureName: "登录" }),
+    cases: [
+      mkVerdictCase("case-a", "case-defect", { name: "验证码登录", note: "期望文案有误" }),
+      mkVerdictCase("case-b", "case-defect", { name: "密码登录", note: null })
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:06:00.000Z",
+    run: mkVerdictRun({ caseSetId: "cs-other", featureKey: "f-other", featureName: "其他" }),
+    cases: [mkVerdictCase("case-x", "case-defect", { note: null })]
+  });
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.ok(payload.feedback, "存在匹配裁决 → feedback 字段");
+  assert.deepEqual(Object.keys(payload.feedback), ["caseDefects"]);
+  assert.equal(payload.feedback.caseDefects.total, 2);
+  assert.deepEqual(
+    payload.feedback.caseDefects.byFeature.map((entry) => entry.featureKey),
+    [featureKey],
+    "非本次功能 key 被过滤"
+  );
+  assert.equal(payload.feedback.caseDefects.byFeature[0].featureName, "登录");
+  assert.deepEqual(
+    payload.feedback.caseDefects.byFeature[0].cases.map((entry) => entry.caseId),
+    ["case-a", "case-b"]
+  );
+});
+
+test("figma_generate_tests: store 抛错 → warnings 标注且生成照常", async () => {
+  const dir = makeFlowsProject();
+  const store = new MemoryStore();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy(), store });
+  runtime.store.listSuiteRuns = async () => {
+    throw new Error("store down");
+  };
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.feedback, undefined, "store 不可读 → 无 feedback 字段");
+  const warning = payload.warnings?.find((entry) => entry.code === "case-defect-feedback-unavailable");
+  assert.ok(warning, "warnings 含案例问题反馈读取失败标注");
+  assert.equal(warning.message, "案例问题反馈读取失败（跳过；不影响生成）");
+  assert.ok(payload.flows.length > 0, "生成照常");
+});
+
+test("renderMarkdown: 带 feedback 追加裁决反馈段；不带/空不出现", () => {
+  const cases = generateTestCases(buildFlowGraph(syntheticFlowDocument()));
+  const feedback = {
+    byFeature: [
+      {
+        featureKey: "f-login",
+        featureName: "登录",
+        count: 2,
+        cases: [
+          { caseId: "case-a", name: "验证码登录", note: "期望文案有误" },
+          { caseId: "case-b", name: "密码登录", note: null }
+        ]
+      }
+    ]
+  };
+  const md = renderMarkdown(cases, { source: "t", generatedAt: "now" }, { feedback });
+  assert.match(md, /## 上轮案例问题修订提示（裁决反馈）/);
+  assert.match(
+    md,
+    /- 功能「登录」：2 条（case-a「验证码登录」；备注：期望文案有误）（case-b「密码登录」）/
+  );
+
+  const without = renderMarkdown(cases, { source: "t", generatedAt: "now" });
+  assert.doesNotMatch(without, /上轮案例问题修订提示/);
+
+  const empty = renderMarkdown(cases, { source: "t", generatedAt: "now" }, { feedback: { byFeature: [] } });
+  assert.doesNotMatch(empty, /上轮案例问题修订提示/);
 });

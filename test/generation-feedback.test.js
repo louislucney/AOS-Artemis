@@ -4,7 +4,10 @@ import path from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
-import { buildGenerationFeedback } from "../dist/figma/generation-feedback.js";
+import {
+  buildGenerationFeedback,
+  collectCaseDefectFeedback
+} from "../dist/figma/generation-feedback.js";
 import { baseConfig, loadTestRuntime, makeTempProject, StubProxy } from "./helpers.js";
 
 const CASES = [
@@ -421,4 +424,74 @@ test("generation feedback: verdict 建议含用例名与备注摘要（截断 40
   );
   assert.equal(verdicts[0].message.includes("（）"), false, "无备注不产生空括号");
   assert.deepEqual(verdicts[0].caseIds, ["case-1", "case-2", "case-3"]);
+});
+
+test("collectCaseDefectFeedback: 按 featureKey 分组、去重、排序并透传备注；featureName 取首个非空", async () => {
+  const { dir, runtime } = await setup();
+  await runtime.store.upsertProject({ rootPath: dir, name: "p" });
+  await runtime.store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: verdictRun({ caseSetId: "cs-b1", featureKey: "f-b", featureName: null }),
+    cases: [
+      verdictCase("case-b", "case-defect", { name: "密码登录", note: null }),
+      verdictCase("case-a", "case-defect", { name: "验证码登录", note: "期望文案有误" })
+    ]
+  });
+  await runtime.store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:06:00.000Z",
+    run: verdictRun({ caseSetId: "cs-b2", featureKey: "f-b", featureName: "登录" }),
+    cases: [verdictCase("case-c", "case-defect", { name: "退出登录", note: "缺少登出确认" })]
+  });
+  await runtime.store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:07:00.000Z",
+    run: verdictRun({ caseSetId: "cs-a", featureKey: "f-a", featureName: "订单" }),
+    cases: [verdictCase("case-d", "case-defect", { name: "提交订单", note: "步骤顺序错误" })]
+  });
+  await runtime.store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:08:00.000Z",
+    run: verdictRun({ caseSetId: null, featureKey: null, featureName: null }),
+    cases: [verdictCase("case-standalone", "case-defect", { note: null })]
+  });
+
+  const feedback = await collectCaseDefectFeedback(runtime);
+  assert.ok(feedback, "store 可读 → 返回反馈");
+  assert.deepEqual(
+    feedback.byFeature.map((entry) => entry.featureKey),
+    ["f-a", "f-b"],
+    "featureKey 升序"
+  );
+  const order = feedback.byFeature[0];
+  assert.equal(order.featureName, "订单");
+  assert.equal(order.count, 1);
+  assert.deepEqual(order.cases, [
+    { caseId: "case-d", name: "提交订单", note: "步骤顺序错误" }
+  ]);
+  const login = feedback.byFeature[1];
+  assert.equal(login.featureName, "登录", "首个非空 featureName");
+  assert.equal(login.count, 3);
+  assert.deepEqual(
+    login.cases,
+    [
+      { caseId: "case-a", name: "验证码登录", note: "期望文案有误" },
+      { caseId: "case-b", name: "密码登录", note: null },
+      { caseId: "case-c", name: "退出登录", note: "缺少登出确认" }
+    ],
+    "cases 按 caseId 升序，去重，note 透传"
+  );
+});
+
+test("collectCaseDefectFeedback: store 抛错 → null；无裁决 → 空 byFeature", async () => {
+  const { runtime } = await setup();
+  const empty = await collectCaseDefectFeedback(runtime);
+  assert.ok(empty);
+  assert.deepEqual(empty.byFeature, [], "无裁决 → 空 byFeature");
+
+  runtime.store.listSuiteRuns = async () => {
+    throw new Error("store down");
+  };
+  assert.equal(await collectCaseDefectFeedback(runtime), null, "store 不可用 → null");
 });
