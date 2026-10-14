@@ -51,6 +51,8 @@ import {
 import { Runtime } from "./runtime.js";
 import { logWarn } from "./log.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
+import { baselineFor, platformOf, registerSuiteRun, resolveRunRefs } from "./tasks/run-registry.js";
+import { compareRuns, type CompareCaseInput, type RunComparison } from "./tasks/run-compare.js";
 
 type LogcatCollector = (request: {
   serial: string | null;
@@ -375,6 +377,82 @@ exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行
 错误码注册表: .artemis/design/error-codes.json（未配置时 api-errors 跳过并如实标注 degraded）`);
 }
 
+function outcomeCasesOf(report: SuiteRunReport): CompareCaseInput[] {
+  return report.cases.map((entry) => ({
+    caseId: entry.caseId,
+    name: entry.name,
+    outcome: entry.status === "passed" ? "passed" : "failed"
+  }));
+}
+
+async function registerRunBestEffort(
+  runtime: Runtime,
+  report: SuiteRunReport,
+  input: {
+    runOptions: SuiteRunOptions;
+    exitCode: number;
+    startedAtMs: number;
+    regressionTaskId?: string | null;
+    refs?: { caseSetId: string; featureKey: string; featureName: string } | null;
+  }
+): Promise<{ runId: string; comparison: RunComparison | null } | null> {
+  const refs =
+    input.refs !== undefined ? input.refs : await resolveRunRefs(runtime, report.testsPath);
+  const platform = platformOf(input.runOptions.deviceSerial ?? null);
+  const comparison = refs
+    ? compareRuns(
+        await baselineFor(runtime, {
+          caseSetId: refs.caseSetId,
+          featureKey: refs.featureKey,
+          platform
+        }),
+        outcomeCasesOf(report)
+      )
+    : null;
+  const runId = await registerSuiteRun(runtime, {
+    report,
+    trigger: "cli",
+    regressionTaskId: input.regressionTaskId ?? null,
+    caseSetId: refs?.caseSetId ?? null,
+    featureKey: refs?.featureKey ?? null,
+    featureName: refs?.featureName ?? null,
+    platform,
+    device: input.runOptions.deviceSerial ?? null,
+    exitCode: input.exitCode,
+    startedAtMs: input.startedAtMs,
+    finishedAtMs: Date.now(),
+    comparison
+  });
+  return runId ? { runId, comparison } : null;
+}
+
+/** 登记摘要行（json 模式由调用方跳过，避免污染 JSON 输出）。 */
+function registrationLine(registration: {
+  runId: string;
+  comparison: RunComparison | null;
+}): string {
+  const comparison = registration.comparison;
+  return (
+    `登记: run ${registration.runId}` +
+    (comparison
+      ? ` · 对比 修复${comparison.fixed}/回归${comparison.regressed}` +
+        (comparison.baseline === "established" ? "（基准建立）" : "")
+      : "")
+  );
+}
+
+async function persistRunRegistration(
+  runtime: Runtime,
+  report: SuiteRunReport,
+  io: SuiteIo,
+  flags: ParsedFlags,
+  input: { runOptions: SuiteRunOptions; exitCode: number; startedAtMs: number }
+): Promise<void> {
+  const registration = await registerRunBestEffort(runtime, report, input);
+  if (flags.bool("json")) return;
+  io.log(registration ? registrationLine(registration) : "登记降级: suite run 未入库（见日志）");
+}
+
 async function suiteRun(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -488,6 +566,11 @@ async function suiteRun(
       retry: retryCount,
       options: runOptions,
       quarantinedCaseIds: quarantine.ids
+    });
+    await persistRunRegistration(runtime, report, io, flags, {
+      runOptions,
+      exitCode,
+      startedAtMs
     });
   }
   return exitCode;
@@ -766,6 +849,11 @@ async function suiteLoop(
         retry: retryCount,
         options: runOptions,
         quarantinedCaseIds: quarantine.ids
+      });
+      await persistRunRegistration(runtime, report, io, flags, {
+        runOptions,
+        exitCode,
+        startedAtMs
       });
     }
   }

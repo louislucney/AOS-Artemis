@@ -1169,3 +1169,170 @@ test("suite loop: 批次清单来源标记为 suite-loop", async () => {
   assert.equal(manifest.source, "suite-loop");
   assert.equal(manifest.gate.result, "pass");
 });
+
+test("suite run: 登记 suite_runs + 逐例（memory store）", async () => {
+  const { runtime, store } = await setupRun({
+    cases: [caseEntry(1), caseEntry(2)],
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": {
+        status: "failed",
+        error: "assert mismatch",
+        test_summary: {
+          task_status: "failed",
+          failed_items: [{ item_text: "校验金额", evidence: "expected 42 got 41" }]
+        }
+      }
+    }
+  });
+  const { code, logs } = await runCli(runtime, ["run"]);
+  assert.equal(code, 1);
+  const runs = await store.listSuiteRuns(runtime.project.rootDir);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].trigger, "cli");
+  assert.equal(runs[0].platform, "unknown");
+  assert.equal(runs[0].total, 2);
+  assert.equal(runs[0].passed, 1);
+  assert.equal(runs[0].failed, 1);
+  assert.equal(runs[0].cases.length, 2);
+  assert.deepEqual(runs[0].cases.map((entry) => entry.caseId).sort(), ["case-1", "case-2"]);
+  assert.ok(logs.some((line) => line.startsWith("登记: run ")), "登记摘要行");
+});
+
+test("suite run: 指向归档 JSON 时解析份血统并写对比（修复）", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const proxy = new SuiteProxy({ statuses: { "trace-1": { status: "completed" } }, running: true });
+  const crashCollector = { collect: async () => ({ status: "skipped", reason: "disabled" }) };
+  const { runtime } = await loadTestRuntime(dir, { proxy, store, crashCollector });
+  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+  const design = path.join(runtime.configDirAbs, "design");
+  const archiveDir = path.join(design, "case-sets");
+  fs.mkdirSync(archiveDir, { recursive: true });
+  const archivePath = path.join(archiveDir, "20261014T153000_登录.json");
+  fs.writeFileSync(archivePath, JSON.stringify({ flows: [caseEntry(1)] }), "utf-8");
+
+  const set = await store.recordCaseSet({
+    rootPath: runtime.project.rootDir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: archivePath,
+        mdPath: archivePath.replace(/\.json$/, ".md"),
+        xlsxPath: archivePath.replace(/\.json$/, ".xlsx")
+      }
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: runtime.project.rootDir,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: set.id,
+      featureKey: "f-1",
+      featureName: "登录流程",
+      platform: "unknown",
+      device: null,
+      appVersion: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 1,
+      passed: 0,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: "f-1",
+        platform: "unknown",
+        status: "failed",
+        traceId: "old-trace",
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "旧失败",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+
+  const { code, logs } = await runCli(runtime, ["run", "--tests", archivePath]);
+  assert.equal(code, 0);
+  assert.ok(logs.some((line) => line.includes("对比 修复1/回归0")), "对比摘要");
+  const runs = await store.listSuiteRuns(runtime.project.rootDir);
+  assert.equal(runs.length, 2);
+  const newRun = runs.find((entry) => entry.status === "completed");
+  assert.ok(newRun, "新运行已登记");
+  assert.equal(newRun.caseSetId, set.id);
+  assert.equal(newRun.featureKey, "f-1");
+  assert.equal(newRun.comparison.baseline, "compared");
+  assert.equal(newRun.comparison.fixed, 1);
+  assert.equal(newRun.comparison.regressed, 0);
+});
+
+test("suite run: store 抛错 → 执行仍成功 + 登记降级标注", async () => {
+  const { runtime, store } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  store.listCaseSets = async () => {
+    throw new Error("down");
+  };
+  store.recordSuiteRun = async () => {
+    throw new Error("down");
+  };
+  const { code, logs } = await runCli(runtime, ["run"]);
+  assert.equal(code, 0);
+  assert.ok(logs.some((line) => line.startsWith("登记降级")), "降级标注");
+});
+
+test("suite run --no-save: 不登记", async () => {
+  const { runtime, store } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const { code } = await runCli(runtime, ["run", "--no-save"]);
+  assert.equal(code, 0);
+  assert.equal((await store.listSuiteRuns(runtime.project.rootDir)).length, 0);
+});
+
+test("suite loop: run 步骤登记 suite_runs", async () => {
+  const { runtime, store } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: []
+    }),
+    "utf-8"
+  );
+  const result = await runCli(runtime, ["loop"]);
+  assert.equal(result.code, 0);
+  const runs = await store.listSuiteRuns(runtime.project.rootDir);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].passed, 1);
+  assert.equal(runs[0].status, "completed");
+});
