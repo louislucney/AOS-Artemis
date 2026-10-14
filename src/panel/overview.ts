@@ -145,6 +145,17 @@ export interface PanelStandaloneRow {
   finishedAt: string | null;
 }
 
+export interface PanelRegressionRef {
+  caseSetId: string;
+  featureKey: string;
+  featureName: string;
+  caseCount: number;
+  createdAt: string;
+  source: string;
+  jsonPath: string;
+  lastPassRate: number | null;
+}
+
 export interface PanelProjectDetail {
   generatedAt: string;
   project: PanelProjectRow;
@@ -152,6 +163,7 @@ export interface PanelProjectDetail {
   batches: PanelBatchRow[];
   trend: PanelBatchTrend | null;
   standalones: PanelStandaloneRow[];
+  regressionRefs: PanelRegressionRef[];
   diskAssets: PanelDiskAssets | null;
   deep: PanelDeepView | null;
   emptyState: { causes: string[] } | null;
@@ -670,6 +682,33 @@ export async function buildPanelProjectDetail(
     .slice(0, standaloneLimit)
     .map(standaloneRow);
 
+  const regressionRefs: PanelRegressionRef[] = [];
+  try {
+    const sets = await deps.store.listCaseSets(rootPath, 50);
+    const runs = await deps.store.listSuiteRuns(rootPath, { limit: 50 });
+    for (const set of sets) {
+      for (const feature of set.features) {
+        const latest = runs.find(
+          (run) =>
+            run.caseSetId === set.id && run.featureKey === feature.key && run.cases.length > 0
+        );
+        regressionRefs.push({
+          caseSetId: set.id,
+          featureKey: feature.key,
+          featureName: feature.name,
+          caseCount: feature.caseCount,
+          createdAt: set.createdAt,
+          source: set.source,
+          jsonPath: feature.jsonPath,
+          lastPassRate:
+            latest !== undefined && latest.total > 0 ? latest.passed / latest.total : null
+        });
+      }
+    }
+  } catch (error) {
+    warnings.push(`回归引用读取失败：${errorMessage(error)}`);
+  }
+
   return {
     generatedAt: new Date(now()).toISOString(),
     project: row,
@@ -677,6 +716,7 @@ export async function buildPanelProjectDetail(
     batches,
     trend,
     standalones,
+    regressionRefs,
     diskAssets,
     deep,
     emptyState,

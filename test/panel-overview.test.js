@@ -251,6 +251,122 @@ test("panel detail: 无批次时给原因清单（不做断言式归因）", asy
   assert.deepEqual(detail.emptyState.causes, [...PANEL_BATCH_EMPTY_CAUSES]);
 });
 
+test("panel detail: 回归引用聚合（两份同 key → 两条；最近通过率）", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "regression-app" });
+  const oldSet = await store.recordCaseSet({
+    rootPath: dir,
+    source: "pen:a.pen",
+    basename: "tests",
+    createdAt: "2026-10-10T09:00:00.000Z",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: "/x/old.json",
+        mdPath: "/x/old.md",
+        xlsxPath: "/x/old.xlsx"
+      }
+    ]
+  });
+  const newSet = await store.recordCaseSet({
+    rootPath: dir,
+    source: "pen:a.pen",
+    basename: "tests",
+    createdAt: "2026-10-14T15:30:00.000Z",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 2,
+        screens: ["Home"],
+        jsonPath: "/x/new.json",
+        mdPath: "/x/new.md",
+        xlsxPath: "/x/new.xlsx"
+      }
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T16:00:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: newSet.id,
+      featureKey: "f-1",
+      featureName: "登录流程",
+      platform: "android",
+      device: null,
+      appVersion: null,
+      status: "completed",
+      startedAt: "2026-10-14T16:00:00.000Z",
+      finishedAt: "2026-10-14T16:05:00.000Z",
+      total: 2,
+      passed: 1,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: "f-1",
+        platform: "android",
+        status: "passed",
+        traceId: null,
+        failureDomain: null,
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      },
+      {
+        caseId: "case-2",
+        name: "Case 2",
+        featureKey: "f-1",
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "x",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+
+  const detail = await buildPanelProjectDetail({ store, serviceRepo: repo, buildStale: false, env: {} }, dir);
+  assert.ok(detail);
+  assert.equal(detail.regressionRefs.length, 2);
+  const newer = detail.regressionRefs.find((ref) => ref.caseSetId === newSet.id);
+  const older = detail.regressionRefs.find((ref) => ref.caseSetId === oldSet.id);
+  assert.equal(newer.caseCount, 2);
+  assert.equal(newer.lastPassRate, 0.5);
+  assert.equal(older.lastPassRate, null);
+  assert.equal(detail.regressionRefs[0].caseSetId, newSet.id, "新→旧");
+});
+
 test("panel batch detail: ok 读取 + 证据链存在性校验（缺失→占位）", async () => {
   const store = await makePgStore();
   const repo = makeReadyRepo();

@@ -195,6 +195,39 @@ test("panel web: 项目详情（空态→批次→独立运行）与未知项目
   );
 });
 
+test("panel web: 回归引用区块（复选框/端/基线/内联 JS/无 JS 提示）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const set = await store.recordCaseSet({
+    rootPath: projectDir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 2,
+        screens: ["Home"],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /新建回归测试/);
+  assert.match(html.body, new RegExp(`value="${set.id}\\|f-1"`), "复选框 value＝caseSetId|featureKey");
+  assert.match(html.body, /name="platform" value="ios" checked/);
+  assert.match(html.body, /name="platform" value="android" checked/);
+  assert.match(html.body, /name="baseline"/);
+  assert.match(html.body, /fetch\('\/panel\/api\/tasks'/);
+  assert.match(html.body, /需启用 JavaScript 提交/);
+});
+
 test("panel web: 批次详情（证据缺失占位/失败域）与非法文件名", async () => {
   const { deps, projectDir } = await makeHarness();
   const manifest = makeBatch(projectDir, {

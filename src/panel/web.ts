@@ -635,6 +635,67 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
   ].join("\n");
 }
 
+function renderRegressionBlock(rootPath: string, detail: PanelProjectDetail): string {
+  const refs = detail.regressionRefs;
+  if (refs.length === 0) {
+    return [
+      '<section id="regression">',
+      "<h2>新建回归测试</h2>",
+      '<p class="empty">暂无可引用的用例份（先运行 figma_generate_tests 生成并登记用例集）</p>',
+      "</section>"
+    ].join("\n");
+  }
+  const rootJson = JSON.stringify(rootPath).replace(/</g, "\\u003c");
+  const rows = refs.map((ref) => [
+    `<input type="checkbox" name="ref" value="${escapeHtml(`${ref.caseSetId}|${ref.featureKey}`)}">`,
+    `<code>${escapeHtml(ref.createdAt)}</code>`,
+    escapeHtml(ref.featureName),
+    String(ref.caseCount),
+    ref.lastPassRate === null
+      ? '<span class="muted">—</span>'
+      : `${Math.round(ref.lastPassRate * 100)}%`,
+    `<span class="muted">${escapeHtml(ref.source)}</span>`
+  ]);
+  return [
+    '<section id="regression">',
+    "<h2>新建回归测试</h2>",
+    '<p class="muted">勾选要引用的用例份（可多份），选择目标端与基线策略后创建回归任务。</p>',
+    '<form id="regression-form" onsubmit="return createRegressionTask(event)">',
+    renderTable(["引用", "时间", "功能", "用例", "最近通过率", "来源"], rows, "暂无可引用的用例份"),
+    "<p><label>目标端：</label>",
+    '<label><input type="checkbox" name="platform" value="ios" checked> iOS</label> ',
+    '<label><input type="checkbox" name="platform" value="android" checked> Android</label></p>',
+    "<p><label>基线：</label><select name=\"baseline\">",
+    '<option value="latest" selected>最近一次（同份）</option>',
+    '<option value="none">不对比（重建基准）</option>',
+    "</select></p>",
+    '<p><button type="submit">创建回归任务</button> <span id="regression-status" class="muted"></span></p>',
+    '<p class="note">需启用 JavaScript 提交（或使用 <code>suite task create</code>）。</p>',
+    "</form>",
+    "<script>",
+    "function createRegressionTask(event){",
+    "  event.preventDefault();",
+    "  var form=event.target;",
+    "  var refs=Array.prototype.slice.call(form.querySelectorAll('input[name=ref]:checked')).map(function(el){var parts=el.value.split('|');return {caseSetId:parts[0],featureKey:parts[1]};});",
+    "  var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name=platform]:checked')).map(function(el){return el.value;});",
+    "  var baseline=form.querySelector('select[name=baseline]').value;",
+    "  var status=document.getElementById('regression-status');",
+    "  if(refs.length===0){status.textContent='请先勾选至少一份';return false;}",
+    "  status.textContent='提交中…';",
+    "  fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:" +
+      rootJson +
+      ",refs:refs,platforms:platforms,baseline:baseline})})",
+    "    .then(function(response){return response.json().then(function(payload){if(!response.ok){throw new Error(payload.error||('HTTP '+response.status));}location.href='/panel?project='+encodeURIComponent(" +
+      rootJson +
+      ")+'&task='+encodeURIComponent(payload.task.id);});})",
+    "    .catch(function(error){status.textContent='创建失败：'+error.message;});",
+    "  return false;",
+    "}",
+    "</script>",
+    "</section>"
+  ].join("\n");
+}
+
 function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail }, cacheNote: string): string {
   const { detail } = view;
   const row = detail.project;
@@ -663,6 +724,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       renderIntegration(detail),
       renderDeepSection(detail),
       renderBatches(detail, view.rootPath),
+      renderRegressionBlock(view.rootPath, detail),
       renderDiskAssets(detail),
       renderStandalones(detail),
       "</main>"
