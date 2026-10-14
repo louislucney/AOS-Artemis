@@ -14,6 +14,7 @@ import {
   buildPanelOverview,
   buildPanelProjectDetail,
   buildPanelReviewQueue,
+  buildPanelStatsView,
   buildPanelTaskDetail,
   PANEL_BATCH_EMPTY_CAUSES
 } from "../dist/panel/overview.js";
@@ -721,4 +722,119 @@ test("panel detail: 归因队列聚合（未裁决在前、初判字段、已裁
   assert.equal(items[1].verdictBy, "alice");
   assert.equal(items[1].verdictNote, "期望值写错");
   assert.equal(items[1].evidencePath, null, "无 traceId → 无证据路径");
+});
+
+test("panel detail: buildPanelStatsView（三清单取最新裁决；指引非空；空数据不崩）", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "stats-app" });
+  const set = await store.recordCaseSet({
+    rootPath: dir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 3,
+        screens: ["Home"],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+
+  const mkCase = (caseId, status, verdict) => ({
+    caseId,
+    name: `Case ${caseId}`,
+    featureKey: "f-1",
+    platform: "android",
+    status,
+    traceId: null,
+    failureDomain: status === "passed" ? null : "用例缺陷",
+    failureConfidence: status === "passed" ? null : "medium",
+    failureReason: status === "passed" ? null : "断言未命中",
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict,
+    verdictBy: verdict === null ? null : "alice",
+    verdictAt: verdict === null ? null : "2026-10-14T12:00:00.000Z",
+    verdictNote: null
+  });
+  const mkRun = (overrides) => ({
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId: set.id,
+    featureKey: "f-1",
+    featureName: "登录流程",
+    platform: "android",
+    device: "emulator-5554",
+    appVersion: null,
+    status: "failed",
+    startedAt: "2026-10-14T09:00:00.000Z",
+    finishedAt: "2026-10-14T09:05:00.000Z",
+    total: 2,
+    passed: 0,
+    failed: 2,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: { 用例缺陷: 2 },
+    gateResult: "fail",
+    exitCode: 1,
+    manifestPath: null,
+    comparison: null,
+    ...overrides
+  });
+
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-13T09:00:00.000Z",
+    run: mkRun({}),
+    cases: [
+      mkCase("case-1", "failed", "case-defect"),
+      mkCase("case-2", "failed", "execution-deviation")
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T09:00:00.000Z",
+    run: mkRun({}),
+    cases: [
+      mkCase("case-1", "failed", "app-defect"),
+      mkCase("case-3", "failed", "case-defect")
+    ]
+  });
+
+  const view = await buildPanelStatsView(
+    { store, serviceRepo: repo, buildStale: false, env: {} },
+    dir
+  );
+  assert.deepEqual(view.warnings, []);
+  assert.equal(view.stats.features.length, 1);
+  assert.equal(view.stats.features[0].runs, 2);
+  assert.equal(view.improvement.caseDefects.length, 1);
+  assert.equal(view.improvement.caseDefects[0].caseId, "case-3");
+  assert.equal(view.improvement.caseDefects[0].featureName, "登录流程");
+  assert.equal(view.improvement.environment.length, 1);
+  assert.equal(view.improvement.environment[0].caseId, "case-2");
+  assert.equal(view.improvement.appDefects.length, 1);
+  assert.equal(view.improvement.appDefects[0].caseId, "case-1", "同（份,用例）取最新裁决");
+  assert.ok(view.guidance.length >= 3);
+  assert.ok(view.guidance.some((line) => line.includes("figma_generate_tests")));
+  assert.ok(view.guidance.some((line) => line.includes("jira issue create")));
+
+  const emptyDir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: emptyDir, name: "stats-empty" });
+  const empty = await buildPanelStatsView(
+    { store, serviceRepo: repo, buildStale: false, env: {} },
+    emptyDir
+  );
+  assert.deepEqual(empty.stats.features, []);
+  assert.deepEqual(empty.improvement.caseDefects, []);
+  assert.deepEqual(empty.improvement.environment, []);
+  assert.deepEqual(empty.improvement.appDefects, []);
+  assert.ok(Array.isArray(empty.guidance));
 });

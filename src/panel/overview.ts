@@ -27,6 +27,7 @@ import { scanProjectEnv, type EnvScanResult } from "../projects/scan.js";
 import { detectProjectStacks } from "../projects/stack.js";
 import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
 import { crossPlatformDeltas } from "../tasks/run-compare.js";
+import { buildRegressionStats, type PanelRegressionStats } from "./stats.js";
 import { errorMessage } from "../util.js";
 import { collectDiskAssets, type PanelDiskAssets } from "./assets.js";
 import type { PanelDeepProbe, PanelDeepView } from "./deep.js";
@@ -224,6 +225,23 @@ export interface PanelReviewItem {
   verdictAt: string | null;
   verdictNote: string | null;
   createdAt: string;
+}
+
+export interface PanelImprovementItem {
+  caseId: string;
+  name: string;
+  featureName: string | null;
+}
+
+export interface PanelStatsView {
+  stats: PanelRegressionStats;
+  improvement: {
+    caseDefects: PanelImprovementItem[];
+    environment: PanelImprovementItem[];
+    appDefects: PanelImprovementItem[];
+  };
+  guidance: string[];
+  warnings: string[];
 }
 
 export interface PanelProjectDetail {
@@ -954,6 +972,67 @@ export async function buildPanelReviewQueue(
     return b.createdAt < a.createdAt ? -1 : b.createdAt > a.createdAt ? 1 : 0;
   });
   return { items, warnings };
+}
+
+/** 统计下钻（DESIGN：回归服务 §5.8）：聚合 + 改进出口三清单（按（份,用例）取最新裁决）。
+ * 指引行为静态命令参考（P3 一键流转）。 */
+export async function buildPanelStatsView(deps: PanelDeps, rootPath: string): Promise<PanelStatsView> {
+  const warnings: string[] = [];
+  let runs: Awaited<ReturnType<ProjectStore["listSuiteRuns"]>> = [];
+  try {
+    runs = await deps.store.listSuiteRuns(rootPath, { limit: 100 });
+  } catch (error) {
+    warnings.push(`运行读取失败：${errorMessage(error)}`);
+  }
+  const stats = buildRegressionStats(runs);
+
+  const latestVerdict = new Map<
+    string,
+    { caseId: string; verdict: string; name: string; featureName: string | null }
+  >();
+  for (const run of runs) {
+    for (const entry of run.cases) {
+      if (entry.verdict === null) continue;
+      const key = `${run.caseSetId ?? ""}|${entry.caseId}`;
+      if (latestVerdict.has(key)) continue;
+      latestVerdict.set(key, {
+        caseId: entry.caseId,
+        verdict: entry.verdict,
+        name: entry.name,
+        featureName: run.featureName
+      });
+    }
+  }
+  const pick = (verdict: string): PanelImprovementItem[] =>
+    [...latestVerdict.values()]
+      .filter((entry) => entry.verdict === verdict)
+      .map((entry) => ({ caseId: entry.caseId, name: entry.name, featureName: entry.featureName }))
+      .sort((a, b) => (a.caseId < b.caseId ? -1 : a.caseId > b.caseId ? 1 : 0));
+
+  const improvement = {
+    caseDefects: pick("case-defect"),
+    environment: pick("execution-deviation"),
+    appDefects: pick("app-defect")
+  };
+  const guidance: string[] = [];
+  if (improvement.caseDefects.length > 0) {
+    guidance.push(
+      "案例问题（case-defect）：修订用例期望后重新生成用例集（figma_generate_tests / pen 对应生成工具，生成物覆盖同名份）。"
+    );
+  }
+  if (improvement.environment.length > 0) {
+    guidance.push(
+      "执行偏差（execution-deviation）：核对环境清单（设备在线 / 网络 / 账号与测试数据）后重跑：node dist/cli.js suite run --task <task-id> --device <serial>。"
+    );
+  }
+  if (improvement.appDefects.length > 0) {
+    guidance.push(
+      '应用缺陷（app-defect）：建单：node dist/cli.js jira issue create --project <KEY> --type Bug --summary "…"；失败证据可用 jira_evidence_post 附加。'
+    );
+  }
+  guidance.push("自动化（P3）：以上出口的一键流转（重新生成 / 建单）后续接线。");
+
+  return { stats, improvement, guidance, warnings };
 }
 
 function evidenceLinks(tracesDir: string, rootPath: string, entry: RunManifest["cases"][number]): PanelEvidenceLink[] {

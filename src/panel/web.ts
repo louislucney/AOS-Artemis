@@ -9,17 +9,20 @@ import {
   buildPanelOverview,
   buildPanelProjectDetail,
   buildPanelReviewQueue,
+  buildPanelStatsView,
   buildPanelTaskDetail,
   PANEL_BATCH_LIMIT_DEFAULT,
   PANEL_BATCH_LIMIT_MAX,
   type PanelBatchDetail,
   type PanelBatchRow,
   type PanelDeps,
+  type PanelImprovementItem,
   type PanelOverview,
   type PanelProjectDetail,
   type PanelProjectRow,
   type PanelReviewItem,
   type PanelStandaloneRow,
+  type PanelStatsView,
   type PanelTaskDetail
 } from "./overview.js";
 import { PANEL_IOS_PROBE_TTL_MS, type PanelDeepProbe } from "./deep.js";
@@ -99,6 +102,7 @@ type PanelView =
   | { kind: "project"; rootPath: string; detail: PanelProjectDetail }
   | { kind: "task"; rootPath: string; detail: PanelTaskDetail }
   | { kind: "review"; rootPath: string; detail: { items: PanelReviewItem[]; warnings: string[] } }
+  | { kind: "stats"; rootPath: string; detail: PanelStatsView }
   | { kind: "batch"; rootPath: string; detail: PanelBatchDetail };
 
 class PanelNotFoundError extends Error {}
@@ -181,6 +185,11 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return { kind: "review", rootPath: resolved.rootPath, detail };
   }
 
+  if (trimmed(url.searchParams.get("view")) === "stats") {
+    const detail = await buildPanelStatsView(panelDeps, resolved.rootPath);
+    return { kind: "stats", rootPath: resolved.rootPath, detail };
+  }
+
   const limitRaw = intParam(url.searchParams, "limit");
   const batchLimit = Math.min(Math.max(limitRaw ?? PANEL_BATCH_LIMIT_DEFAULT, 1), PANEL_BATCH_LIMIT_MAX);
   const detail = await buildPanelProjectDetail(panelDeps, resolved.rootPath, {
@@ -196,6 +205,7 @@ function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "project") return { ok: true, view: "project", ...view.detail };
   if (view.kind === "task") return { ok: true, view: "task", ...view.detail };
   if (view.kind === "review") return { ok: true, view: "review", ...view.detail };
+  if (view.kind === "stats") return { ok: true, view: "stats", ...view.detail };
   return { ok: true, view: "batch", ...view.detail };
 }
 
@@ -277,6 +287,10 @@ function taskHref(rootPath: string, taskId: string): string {
 
 function reviewHref(rootPath: string): string {
   return `/panel?project=${encodeURIComponent(rootPath)}&view=review`;
+}
+
+function statsHref(rootPath: string): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}&view=stats`;
 }
 
 function gateSpan(gate: "pass" | "fail" | null): string {
@@ -946,6 +960,103 @@ function renderReviewPage(view: {
   );
 }
 
+function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): string {
+  const { stats, improvement, guidance, warnings } = view.detail;
+  const featureRows = stats.features.map((feature) => [
+    `<code>${escapeHtml(feature.featureKey)}</code>`,
+    escapeHtml(feature.featureName ?? "—"),
+    String(feature.runs),
+    feature.passRate === null ? "—" : `${Math.round(feature.passRate * 100)}%`,
+    feature.trend
+      .map((entry) => (entry === "pass" ? '<span class="ok">✓</span>' : '<span class="err">✗</span>'))
+      .join(" "),
+    Object.entries(feature.failureDomains)
+      .map(([domain, count]) => `<span class="chip">${escapeHtml(domain)} × ${count}</span>`)
+      .join(" ") || "—",
+    Object.entries(feature.verdicts)
+      .map(([verdict, count]) => `<span class="chip">${escapeHtml(verdict)} × ${count}</span>`)
+      .join(" ") || "—"
+  ]);
+  const caseRows = stats.unstableCases.map((entry) => [
+    `<code>${escapeHtml(entry.caseId)}</code>`,
+    escapeHtml(entry.name),
+    escapeHtml(entry.featureName ?? "—"),
+    String(entry.runs),
+    entry.failed === 0 ? "0" : `<span class="err">${entry.failed}</span>`,
+    String(entry.consecutiveFailures),
+    String(entry.flaky),
+    escapeHtml(entry.lastStatus ?? "—"),
+    escapeHtml(entry.lastFailureDomain ?? "—"),
+    entry.verdict === null ? '<span class="muted">未裁决</span>' : escapeHtml(entry.verdict)
+  ]);
+  const crossRows = stats.crossPlatform.map((delta) => [
+    `<code>${escapeHtml(delta.caseId)}</code>`,
+    escapeHtml(delta.name),
+    Object.entries(delta.results)
+      .map(([platform, outcome]) => `${escapeHtml(platform)}=${escapeHtml(outcome)}`)
+      .join(" · ")
+  ]);
+  const improvementList = (title: string, items: PanelImprovementItem[]): string => {
+    const body =
+      items.length === 0
+        ? '<p class="empty">（空）</p>'
+        : `<ul>${items
+            .map(
+              (item) =>
+                `<li><code>${escapeHtml(item.caseId)}</code> ${escapeHtml(item.name)}${
+                  item.featureName === null ? "" : ` · ${escapeHtml(item.featureName)}`
+                }</li>`
+            )
+            .join("")}</ul>`;
+    return `<h3>${escapeHtml(title)}</h3>${body}`;
+  };
+  const guidanceHtml = guidance
+    .map((line) => `<p class="muted">${escapeHtml(line)}</p>`)
+    .join("");
+  const warningsHtml = warnings
+    .map((warning) => `<p class="note">${escapeHtml(warning)}</p>`)
+    .join("");
+  return page(
+    `回归统计 · ${path.basename(view.rootPath)}`,
+    [
+      "<header>",
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
+      "<h1>回归统计</h1>",
+      warningsHtml,
+      "</header>",
+      "<main>",
+      '<section id="features">',
+      "<h2>功能维度</h2>",
+      renderTable(
+        ["功能", "名称", "运行", "通过率", "趋势", "失败域", "归因构成"],
+        featureRows,
+        "暂无份血统运行（先创建回归任务并执行）"
+      ),
+      "</section>",
+      '<section id="cases">',
+      "<h2>最不稳用例</h2>",
+      renderTable(
+        ["用例", "名称", "功能", "运行", "失败", "连败", "flaky", "最近状态", "最近失败域", "裁决"],
+        caseRows,
+        "暂无用例数据"
+      ),
+      "</section>",
+      '<section id="cross">',
+      "<h2>跨端差异</h2>",
+      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）"),
+      "</section>",
+      '<section id="improvement">',
+      "<h2>改进出口</h2>",
+      improvementList("案例问题（case-defect）→ 修订期望 / 重新生成", improvement.caseDefects),
+      improvementList("执行偏差（execution-deviation）→ 环境核对 / 重跑", improvement.environment),
+      improvementList("应用缺陷（app-defect）→ 建单（Jira）", improvement.appDefects),
+      guidanceHtml,
+      "</section>",
+      "</main>"
+    ].join("\n")
+  );
+}
+
 function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail }, cacheNote: string): string {
   const { detail } = view;
   const row = detail.project;
@@ -969,7 +1080,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       reasons,
       warnings,
       `<p class="muted">生成时间 ${escapeHtml(detail.generatedAt)} · ${escapeHtml(cacheNote)}</p>`,
-      `<p><a href="${escapeHtml(reviewHref(view.rootPath))}">归因队列</a></p>`,
+      `<p><a href="${escapeHtml(reviewHref(view.rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(view.rootPath))}">统计</a></p>`,
       "</header>",
       "<main>",
       renderIntegration(detail),
@@ -1141,5 +1252,6 @@ function renderPanelHtml(view: PanelView): string {
   if (view.kind === "project") return renderProjectPage(view, cacheNote);
   if (view.kind === "task") return renderTaskPage(view);
   if (view.kind === "review") return renderReviewPage(view);
+  if (view.kind === "stats") return renderStatsPage(view);
   return renderBatchPage(view);
 }

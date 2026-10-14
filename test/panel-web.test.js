@@ -558,3 +558,127 @@ test("panel web: review HTML（radio 四选项、批量复选框、fetch、证�
   );
   assert.match(projectHtml.body, /view=review/, "项目页有归因队列入口");
 });
+
+test("panel web: stats HTML（功能表/最不稳用例/跨端/三清单/指引）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const set = await store.recordCaseSet({
+    rootPath: projectDir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 2,
+        screens: ["Home"],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: set.id,
+      featureKey: "f-1",
+      featureName: "登录流程",
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 3,
+      passed: 1,
+      failed: 2,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: "f-1",
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: "case-defect",
+        verdictBy: "alice",
+        verdictAt: "2026-10-14T12:00:00.000Z",
+        verdictNote: "期望值写错"
+      },
+      {
+        caseId: "case-2",
+        name: "Case 2",
+        featureKey: "f-1",
+        platform: "android",
+        status: "passed",
+        traceId: null,
+        failureDomain: null,
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      },
+      {
+        caseId: "case-3",
+        name: "Case 3",
+        featureKey: "f-1",
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "应用缺陷",
+        failureConfidence: "high",
+        failureReason: "崩溃",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: "app-defect",
+        verdictBy: "bob",
+        verdictAt: "2026-10-14T12:30:00.000Z",
+        verdictNote: null
+      }
+    ]
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=stats`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /回归统计/);
+  assert.match(html.body, /登录流程/);
+  assert.match(html.body, /33%/);
+  assert.match(html.body, /案例问题/);
+  assert.match(html.body, /执行偏差/);
+  assert.match(html.body, /应用缺陷/);
+  assert.match(html.body, /figma_generate_tests/);
+  assert.match(html.body, /jira issue create/);
+  assert.match(html.body, /case-1/);
+
+  const projectHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.match(projectHtml.body, /view=stats/, "项目页有统计入口");
+});
