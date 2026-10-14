@@ -149,11 +149,12 @@ HTTP 模式挂总览面板：`GET /panel`（服务端渲染 HTML）与 `GET /pan
 node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读看板（HTTP 模式自带 /panel；动作层仅 HTTP 模式）
 ```
 
-- **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用份创建回归任务，body ≤256KB，超限 413；重复提交会创建多个任务，无幂等去重）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）。**v1 无鉴权**——仅在受控内网部署，任何能访问端口者可写任务与裁决；独立 CLI 看板保持只读；`AOS_PANEL_WEB=0` 不影响动作层（两开关相互独立）。
+- **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用份创建回归任务，body ≤256KB，超限 413；重复提交会创建多个任务，无幂等去重）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）、`POST /panel/api/issues`（应用缺陷**一键建 Jira 单**：`{project, items:[{runId,caseId}]}`≤20 条，逐条建单＋证据评论/附件＋回写单号；`dryRun` 预览不触网；仅对存在且非 passed、无裁决或裁决为 app-defect、未建单的用例生效，已有单号返回 existing 幂等）。**v1 无鉴权**——仅在受控内网部署，任何能访问端口者可写任务、裁决与**建立真实 Jira 单（外部副作用）**；独立 CLI 看板保持只读；`AOS_PANEL_WEB=0` 不影响动作层（两开关相互独立）。
+- **改进出口（统计下钻，§13.111）**：统计视图按最新裁决呈现三个出口——**案例问题**（case-defect，指引修订期望/重新生成）、**执行偏差环境清单**（execution-deviation，按设备/端分组：次数/涉及功能/最近/备注摘要）、**应用缺陷**（app-defect，勾选 → 一键建单）。**一键建单为外部副作用**：建单走项目 Jira 凭证与 `jira_evidence_post` 同源证据逻辑（失败 best-effort 不回滚）；缺省值可写项目 `.env` 的 `JIRA_ISSUE_PROJECT`（必填缺省）/`JIRA_ISSUE_TYPE`（默认 `Bug`）/`JIRA_ISSUE_LABELS`（逗号分隔），表单输入优先；已建单条目显示单号纯文本（面板无 Jira 站点来源、不出链接）。**并发双开为已接受限制**（同条目并发可能各建一张；顺序重复点击幂等）。
 - 数据源：批次清单 `.artemis/design/runs/`（`suite run`/`loop` 自动落盘，权威）+ PG 台账（含 `regression_tasks`/`suite_runs`/`suite_run_cases`，裁决写回 `suite_run_cases.verdict*`）+ 项目软读（无子进程/无网络）；磁盘不可达的项目降级为"仅台账"；缺件/清理/高版本清单一律如实占位，不猜测。
 - **深探**（HTTP 模式）：项目页懒建 Runtime 后取纯读子集（active Profile/存储/artemis 子进程/桥/日志/构建状态；**不拉起子进程、不触网**）；URL 加 `?ios=1` 显式执行 **iOS 环境检测**（调用本地 appium CLI，结果缓存 60s）；独立 CLI 进程无深探层。
 - 查询参数：`project`（项目名或根路径）、`batch`（清单文件名）、`task`（回归任务 id）、`view`（`review`|`stats`；优先级 task > batch > view）、`limit`（批次数，默认 20、上限 100）、`ios`（=1 显式 iOS 检测）。
-- 默认 loopback、进程内缓存 5s（动作写成功后缓存失效）；`AOS_PANEL_WEB=0` 关闭只读路由、`AOS_PANEL_CACHE_MS` 调整缓存 TTL（0 关闭缓存）；CLI 端口占用 exit 2。见 DESIGN §13.95–§13.98、§13.103–§13.105、§13.108、§13.109。
+- 默认 loopback、进程内缓存 5s（动作写成功后缓存失效）；`AOS_PANEL_WEB=0` 关闭只读路由、`AOS_PANEL_CACHE_MS` 调整缓存 TTL（0 关闭缓存）；CLI 端口占用 exit 2。见 DESIGN §13.95–§13.98、§13.103–§13.105、§13.108、§13.109、§13.111。
 
 ### 项目机 runner（回归自动领取执行 + 产物只读预览）
 
@@ -294,7 +295,7 @@ node dist/cli.js suite report --task <id> [--out <dir>] [--no-save] [--json]
 - `api-errors`：按 trace 时间窗采集设备日志，匹配项目错误码注册表 `.artemis/design/error-codes.json`（`{codes:{"<code>":{match,handler?,expect?,handledPattern?}}}`），判定 `handled/unhandled/observed` 并落 `.artemis/traces/<traceId>/api-errors.json`；默认只作证据，`--fail-on api-error` 才让未处理错误判 FAIL。
 - `baseline`：设备对设备像素回归（last-known-good）；`--fail-on` 触发时退出码 2，可直接做 CI 门禁。
 - `report`：从运行台账导出 xlsx 结果页（含「功能」「端」列 + API 错误/处理判定列）+ **追溯矩阵工作表**（design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据，含未覆盖与缺口标注）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）；`--task <id>` 改出**回归任务报告**（逐例来自 `suite_runs`，命名 `<时间戳>_<功能>_回归.xlsx`，多功能 → `多功能N项`）。
-- `feedback`：按屏幕/断言/数据/API 错误维度给出可追踪到 case/trace 的改进建议（只读，不自动改写生成物）。
+- `feedback`：按屏幕/断言/数据/API 错误维度给出可追踪到 case/trace 的改进建议，并追加**出口清单（按最新裁决）**——案例问题/执行偏差（按设备计数）/应用缺陷（含已建单数），JSON 输出带 `exits`（`appDefects` 每条含 `jiraKey`）；与面板统计/生成侧同源（只读，不自动改写生成物）。
 - 公共选项：`--project <dir>`（项目根，默认 cwd/`AOS_PROJECT_DIR`）、`--json`（机器可读输出）。
 
 
