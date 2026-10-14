@@ -177,6 +177,47 @@ export interface RegressionTaskRecord {
   runIds: string[];
 }
 
+export interface RunnerDevice {
+  serial: string;
+  name: string;
+  platform: "ios" | "android";
+  kind: "device" | "emulator" | "simulator";
+  state: string;
+}
+
+export interface RunnerTools {
+  adb: boolean;
+  idb: boolean;
+  simctl: boolean;
+  ideviceId: boolean;
+  appium: boolean;
+}
+
+export interface RunnerRecord {
+  id: string;
+  projectId: string | null;
+  name: string;
+  hostname: string;
+  platforms: string[];
+  devices: RunnerDevice[];
+  tools: RunnerTools;
+  artifactBaseUrl: string | null;
+  version: string | null;
+  lastSeenAt: string;
+  createdAt: string;
+}
+
+export interface UpsertRunnerInput {
+  rootPath: string;
+  name: string;
+  hostname: string;
+  platforms: string[];
+  devices: RunnerDevice[];
+  tools: RunnerTools;
+  artifactBaseUrl?: string | null;
+  version?: string | null;
+}
+
 export interface SuiteRunCaseRecord {
   caseId: string;
   name: string;
@@ -289,6 +330,8 @@ export interface ProjectStore {
     }
   ): Promise<SuiteRunRecord[]>;
   updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean>;
+  upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord>;
+  listRunners(rootPath: string, limit?: number): Promise<RunnerRecord[]>;
   recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,

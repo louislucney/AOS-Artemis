@@ -15,10 +15,12 @@ import type {
   RecordTaskInput,
   RecordUsageEventInput,
   RegressionTaskRecord,
+  RunnerRecord,
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
   UpsertLlmInput,
+  UpsertRunnerInput,
   UsageEventQuery,
   UsageEventRecord,
   UsagePrunePolicy
@@ -35,6 +37,7 @@ export class MemoryStore implements ProjectStore {
   private caseSets: CaseSetRecord[] = [];
   private regressionTasks: RegressionTaskRecord[] = [];
   private suiteRuns: SuiteRunRecord[] = [];
+  private runners: RunnerRecord[] = [];
 
   async upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord> {
     const now = new Date().toISOString();
@@ -331,6 +334,50 @@ export class MemoryStore implements ProjectStore {
     return true;
   }
 
+  async upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord> {
+    const project = this.projects.get(input.rootPath);
+    if (!project) throw new Error(`项目未注册：${input.rootPath}`);
+    const now = new Date().toISOString();
+    const existing = this.runners.find(
+      (entry) => entry.projectId === project.id && entry.name === input.name
+    );
+    if (existing) {
+      existing.hostname = input.hostname;
+      existing.platforms = [...input.platforms];
+      existing.devices = input.devices.map((device) => ({ ...device }));
+      existing.tools = { ...input.tools };
+      existing.artifactBaseUrl = input.artifactBaseUrl ?? null;
+      existing.version = input.version ?? null;
+      existing.lastSeenAt = now;
+      return cloneRunner(existing);
+    }
+    const record: RunnerRecord = {
+      id: randomUUID(),
+      projectId: project.id,
+      name: input.name,
+      hostname: input.hostname,
+      platforms: [...input.platforms],
+      devices: input.devices.map((device) => ({ ...device })),
+      tools: { ...input.tools },
+      artifactBaseUrl: input.artifactBaseUrl ?? null,
+      version: input.version ?? null,
+      lastSeenAt: now,
+      createdAt: now
+    };
+    this.runners.push(record);
+    return cloneRunner(record);
+  }
+
+  async listRunners(rootPath: string, limit = 20): Promise<RunnerRecord[]> {
+    const project = this.projects.get(rootPath);
+    if (!project) return [];
+    return this.runners
+      .filter((entry) => entry.projectId === project.id)
+      .sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0))
+      .slice(0, limit)
+      .map(cloneRunner);
+  }
+
   async ping(): Promise<boolean> {
     return true;
   }
@@ -444,5 +491,14 @@ function cloneSuiteRun(run: SuiteRunRecord): SuiteRunRecord {
     ...run,
     failureDomains: { ...run.failureDomains },
     cases: run.cases.map((entry) => ({ ...entry }))
+  };
+}
+
+function cloneRunner(record: RunnerRecord): RunnerRecord {
+  return {
+    ...record,
+    platforms: [...record.platforms],
+    devices: record.devices.map((device) => ({ ...device })),
+    tools: { ...record.tools }
   };
 }

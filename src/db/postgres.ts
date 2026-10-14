@@ -23,11 +23,15 @@ import type {
   RecordUsageEventInput,
   RegressionTaskRecord,
   RegressionTaskRef,
+  RunnerDevice,
+  RunnerRecord,
+  RunnerTools,
   SuiteRunCaseRecord,
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
   UpsertLlmInput,
+  UpsertRunnerInput,
   UsageEventQuery,
   UsageEventRecord,
   UsagePrunePolicy
@@ -186,6 +190,19 @@ const SCHEMA = [
      verdict_at TEXT,
      verdict_note TEXT,
      PRIMARY KEY (run_id, case_id)
+    )`,
+  `CREATE TABLE IF NOT EXISTS runners (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     name TEXT NOT NULL,
+     hostname TEXT NOT NULL,
+     platforms TEXT NOT NULL,
+     devices TEXT NOT NULL,
+     tools TEXT NOT NULL DEFAULT '{}',
+     artifact_base_url TEXT,
+     version TEXT,
+     last_seen_at TEXT NOT NULL,
+     created_at TEXT NOT NULL
     )`
 ];
 
@@ -771,6 +788,67 @@ export class PostgresStore implements ProjectStore {
     return updated.rows.length > 0;
   }
 
+  async upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) throw new Error(`项目未注册：${input.rootPath}`);
+    const now = new Date().toISOString();
+    const existing = await this.pool.query(
+      `SELECT * FROM runners WHERE project_id = $1 AND name = $2`,
+      [project.id, input.name]
+    );
+    if (existing.rows.length > 0) {
+      const updated = await this.pool.query(
+        `UPDATE runners
+            SET hostname = $3, platforms = $4, devices = $5, tools = $6,
+                artifact_base_url = $7, version = $8, last_seen_at = $9
+          WHERE project_id = $1 AND name = $2
+        RETURNING *`,
+        [
+          project.id,
+          input.name,
+          input.hostname,
+          JSON.stringify(input.platforms),
+          JSON.stringify(input.devices),
+          JSON.stringify(input.tools),
+          input.artifactBaseUrl ?? null,
+          input.version ?? null,
+          now
+        ]
+      );
+      return mapRunner(updated.rows[0]!);
+    }
+    const inserted = await this.pool.query(
+      `INSERT INTO runners
+         (id, project_id, name, hostname, platforms, devices, tools, artifact_base_url, version, last_seen_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`,
+      [
+        randomUUID(),
+        project.id,
+        input.name,
+        input.hostname,
+        JSON.stringify(input.platforms),
+        JSON.stringify(input.devices),
+        JSON.stringify(input.tools),
+        input.artifactBaseUrl ?? null,
+        input.version ?? null,
+        now,
+        now
+      ]
+    );
+    return mapRunner(inserted.rows[0]!);
+  }
+
+  async listRunners(rootPath: string, limit = 20): Promise<RunnerRecord[]> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return [];
+    const result = await this.pool.query(
+      `SELECT * FROM runners WHERE project_id = $1 ORDER BY last_seen_at DESC LIMIT $2`,
+      [project.id, limit]
+    );
+    return result.rows.map((row) => mapRunner(row));
+  }
+
   async recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,
@@ -1125,5 +1203,72 @@ function mapSuiteRun(
     manifestPath: nullableString(row.manifest_path),
     comparison: parseJsonValue(row.comparison),
     cases: caseRows.map(mapSuiteRunCase)
+  };
+}
+
+function mapRunner(row: Record<string, unknown>): RunnerRecord {
+  return {
+    id: String(row.id),
+    projectId: nullableString(row.project_id),
+    name: String(row.name),
+    hostname: String(row.hostname),
+    platforms: parseStringArray(row.platforms),
+    devices: parseRunnerDevices(row.devices),
+    tools: parseRunnerTools(row.tools),
+    artifactBaseUrl: nullableString(row.artifact_base_url),
+    version: nullableString(row.version),
+    lastSeenAt: String(row.last_seen_at),
+    createdAt: String(row.created_at)
+  };
+}
+
+function parseRunnerDevices(value: unknown): RunnerDevice[] {
+  let data: unknown;
+  try {
+    data = typeof value === "string" ? JSON.parse(value) : value;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(data)) return [];
+  const devices: RunnerDevice[] = [];
+  for (const entry of data) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.serial !== "string") continue;
+    const platform =
+      record.platform === "ios" || record.platform === "android" ? record.platform : null;
+    if (platform === null) continue;
+    const kind =
+      record.kind === "device" || record.kind === "emulator" || record.kind === "simulator"
+        ? record.kind
+        : "device";
+    devices.push({
+      serial: record.serial,
+      name: typeof record.name === "string" ? record.name : "",
+      platform,
+      kind,
+      state: typeof record.state === "string" ? record.state : ""
+    });
+  }
+  return devices;
+}
+
+function parseRunnerTools(value: unknown): RunnerTools {
+  let data: unknown;
+  try {
+    data = typeof value === "string" ? JSON.parse(value) : value;
+  } catch {
+    data = null;
+  }
+  const record =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? (data as Record<string, unknown>)
+      : {};
+  return {
+    adb: record.adb === true,
+    idb: record.idb === true,
+    simctl: record.simctl === true,
+    ideviceId: record.ideviceId === true,
+    appium: record.appium === true
   };
 }
