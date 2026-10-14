@@ -13,6 +13,7 @@ import {
   panelCacheTtlFrom,
   type PanelWebDeps
 } from "./panel/web.js";
+import { handlePanelActionRequest } from "./panel/actions.js";
 import { createPanelDeepProbe } from "./panel/deep.js";
 import { Runtime } from "./runtime.js";
 import { RuntimeHost } from "./runtime-host.js";
@@ -169,6 +170,26 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           const panelResponse = await handlePanelRequest(url, panelDeps);
           res.writeHead(panelResponse.status, { "Content-Type": panelResponse.contentType });
           res.end(panelResponse.body);
+          return;
+        }
+
+        if (url.pathname.startsWith("/panel/api/")) {
+          let body: unknown = undefined;
+          if (req.method === "POST") {
+            try {
+              body = await readBody(req);
+            } catch {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end('{"error":"invalid JSON body"}');
+              return;
+            }
+          }
+          const actionResponse = await handlePanelActionRequest(
+            { method: req.method ?? "GET", url, body },
+            panelDeps
+          );
+          res.writeHead(actionResponse.status, { "Content-Type": actionResponse.contentType });
+          res.end(actionResponse.body);
           return;
         }
 

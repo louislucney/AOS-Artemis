@@ -202,3 +202,51 @@ test("http server: AOS_PANEL_WEB=0 disables /panel routes only", async () => {
     else process.env.AOS_PANEL_WEB = previous;
   }
 });
+
+test("http server: panel action routes over real HTTP", async () => {
+  const workspace = makeWorkspace();
+  const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+  try {
+    const post = (pathname, body) =>
+      fetch(`http://127.0.0.1:${handle.port}${pathname}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body
+      });
+
+    const missingProject = await post("/panel/api/tasks", JSON.stringify({ refs: [] }));
+    assert.equal(missingProject.status, 400, "缺 project → 400");
+
+    const unknownProject = await post(
+      "/panel/api/tasks",
+      JSON.stringify({ project: "nope", refs: [{ caseSetId: "x", featureKey: "y" }] })
+    );
+    assert.equal(unknownProject.status, 404, "未知项目 → 404");
+
+    const unknownRef = await post(
+      "/panel/api/tasks",
+      JSON.stringify({ project: "demo", refs: [{ caseSetId: "x", featureKey: "y" }] })
+    );
+    assert.equal(unknownRef.status, 400, "未知份 → 400");
+
+    const badJson = await post("/panel/api/tasks", "{oops");
+    assert.equal(badJson.status, 400, "非法 JSON → 400");
+
+    const notPost = await fetch(`http://127.0.0.1:${handle.port}/panel/api/tasks`);
+    assert.equal(notPost.status, 405, "非 POST → 405");
+
+    const missed = await post(
+      "/panel/api/verdicts",
+      JSON.stringify({
+        project: "demo",
+        items: [{ runId: "run-nope", caseId: "case-1" }],
+        verdict: "uncertain"
+      })
+    );
+    assert.equal(missed.status, 400, "裁决未命中 → 400");
+
+    assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel`)).status, 200, "只读面板不受影响");
+  } finally {
+    await handle.close();
+  }
+});

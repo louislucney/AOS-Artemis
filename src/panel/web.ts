@@ -109,7 +109,7 @@ function intParam(params: URLSearchParams, key: string): number | null {
   return Number.isFinite(value) && Number.isInteger(value) ? value : null;
 }
 
-async function resolveProjectKey(
+export async function resolveProjectKey(
   deps: PanelWebDeps,
   key: string
 ): Promise<{ rootPath: string; name: string } | null> {
