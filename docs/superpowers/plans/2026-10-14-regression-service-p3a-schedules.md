@@ -141,7 +141,7 @@
    * best-effort：任何异常仅告警，不抛出。 */
   export async function fireDueSchedules(options: FireSchedulesOptions): Promise<number>;
   ```
-- 语义：`listSchedules`（**缺省全量**）→ 过滤 enabled 且（`lastFiredAt === null` 或 `Date.parse(lastFiredAt) <= nowMs - everyMinutes*60_000`；`now` 为毫秒 epoch，`firedAt/cutoff` 均由 `new Date(...).toISOString()` 生成——**不得**用毫秒数与 ISO 字符串直接比较）→ `claimScheduleWindow`（**先 CAS 后建**）→ 成功者：`listCaseSets` + `latestFeatureRefs` 解析 featureKeys（**`listCaseSets` 读取失败 → 本轮不触发、不消费窗口**）：
+- 语义：`listSchedules`（**缺省全量**）→ 过滤 enabled 且（`lastFiredAt === null` 或 `Date.parse(lastFiredAt) <= nowMs - everyMinutes*60_000`；`now` 为毫秒 epoch，`firedAt/cutoff` 均由 `new Date(...).toISOString()` 生成——**不得**用毫秒数与 ISO 字符串直接比较）→ `claimScheduleWindow`（**先 CAS 后建**；CAS 异常逐 schedule 捕获——该 schedule 跳过且窗口未消费）→ 成功者：`listCaseSets`（**缺省全量**——不受展示分页 50 上限影响，防 >50 份时静默停摆）+ `latestFeatureRefs` 解析 featureKeys（**`listCaseSets` 读取失败 → 本轮不触发、不消费窗口**）：
   - 全部命中 → `createRegressionTask({ refs, platforms, baseline, createdBy: \`schedule:${name}\` })` + `updateSchedule({ lastNote: null })` + 日志「触发 <name> → 任务 <id>」；
   - 部分命中 → 用子集建任务 + `updateSchedule({ lastNote: \`缺 ${missing.join(",")}\` })` + 告警；
   - 全miss → **不建任务** + `updateSchedule({ lastNote: "引用份均不可用" })` + 告警；
