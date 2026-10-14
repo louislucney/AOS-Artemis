@@ -20,6 +20,10 @@ dist-deps/
 /.vscode/mcp.json
 /opencode.json
 
+# Project-installed agent skills (restore via `npx skills experimental_install`;
+# skills-lock.json is tracked)
+.agents/skills/
+
 # OS / editor
 .DS_Store
 *.log
