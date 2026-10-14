@@ -15,7 +15,7 @@ export interface FeedbackTarget {
 }
 
 export interface FeedbackSuggestion {
-  kind: "prompt" | "hint" | "assertion" | "data" | "api";
+  kind: "prompt" | "hint" | "assertion" | "data" | "api" | "verdict";
   message: string;
   targets: FeedbackTarget;
   caseIds: string[];
@@ -163,6 +163,54 @@ function dataPreconditionOf(failure: FailureClassification | null): string | nul
     if (item.startsWith("precondition:")) return item.slice("precondition:".length);
   }
   return null;
+}
+
+/** 案例问题裁决（case-defect，按（份,用例）取最新裁决）→ 按功能分组的重新生成建议。
+ * 只读按需计算；store 不可用即跳过该维度（不阻断既有建议）。 */
+async function collectVerdictSuggestions(runtime: Runtime): Promise<FeedbackSuggestion[]> {
+  let runs: Awaited<ReturnType<Runtime["store"]["listSuiteRuns"]>>;
+  try {
+    runs = await runtime.store.listSuiteRuns(runtime.project.rootDir, { limit: 50 });
+  } catch {
+    return [];
+  }
+  const latestVerdict = new Map<
+    string,
+    { caseId: string; verdict: string; traceId: string | null; feature: string }
+  >();
+  for (const run of runs) {
+    const feature = run.featureName ?? run.featureKey ?? "未归属功能";
+    for (const entry of run.cases) {
+      if (entry.verdict === null) continue;
+      const key = `${run.caseSetId ?? ""}|${entry.caseId}`;
+      if (latestVerdict.has(key)) continue;
+      latestVerdict.set(key, {
+        caseId: entry.caseId,
+        verdict: entry.verdict,
+        traceId: entry.traceId,
+        feature
+      });
+    }
+  }
+  const byFeature = new Map<string, { caseIds: string[]; traceIds: string[] }>();
+  for (const entry of latestVerdict.values()) {
+    if (entry.verdict !== "case-defect") continue;
+    const group = byFeature.get(entry.feature) ?? { caseIds: [], traceIds: [] };
+    if (!group.caseIds.includes(entry.caseId)) group.caseIds.push(entry.caseId);
+    if (entry.traceId !== null && !group.traceIds.includes(entry.traceId)) {
+      group.traceIds.push(entry.traceId);
+    }
+    byFeature.set(entry.feature, group);
+  }
+  return [...byFeature.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([feature, group]) => ({
+      kind: "verdict" as const,
+      message: `功能「${feature}」有 ${group.caseIds.length} 条用例被判案例问题（${group.caseIds.join("、")}），建议下一轮重新生成该功能用例。`,
+      targets: {},
+      caseIds: group.caseIds,
+      traceIds: group.traceIds
+    }));
 }
 
 /** Read-only aggregation over the run ledger plus device baselines. Produces
@@ -349,6 +397,7 @@ export async function buildGenerationFeedback(
       traceIds: []
     });
   }
+  suggestions.push(...(await collectVerdictSuggestions(runtime)));
 
   return {
     ok: true,

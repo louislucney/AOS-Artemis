@@ -196,3 +196,99 @@ test("generation feedback: unhandled API errors become traceable suggestions", a
   assert.ok(suggestion, "api suggestion exists");
   assert.match(suggestion.message, /AUTH_401/);
 });
+
+test("generation feedback: 案例问题裁决 → kind: verdict 建议（按功能分组、带 caseIds）", async () => {
+  const { dir, runtime } = await setup();
+  await runtime.store.upsertProject({ rootPath: dir, name: "p" });
+  const mkCase = (caseId, verdict, traceId) => ({
+    caseId,
+    name: `Case ${caseId}`,
+    featureKey: "f-1",
+    platform: "android",
+    status: "failed",
+    traceId,
+    failureDomain: "用例缺陷",
+    failureConfidence: "medium",
+    failureReason: "断言未命中",
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict,
+    verdictBy: verdict === null ? null : "alice",
+    verdictAt: verdict === null ? null : "2026-10-14T12:00:00.000Z",
+    verdictNote: null
+  });
+  const mkRun = (overrides = {}) => ({
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId: "cs-1",
+    featureKey: "f-1",
+    featureName: "登录流程",
+    platform: "android",
+    device: "emulator-5554",
+    appVersion: null,
+    runner: null,
+    status: "failed",
+    startedAt: "2026-10-14T10:00:00.000Z",
+    finishedAt: "2026-10-14T10:05:00.000Z",
+    total: 2,
+    passed: 0,
+    failed: 2,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: { 用例缺陷: 2 },
+    gateResult: "fail",
+    exitCode: 1,
+    manifestPath: null,
+    comparison: null,
+    ...overrides
+  });
+  await runtime.store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: mkRun(),
+    cases: [
+      mkCase("case-1", "case-defect", "trace-v1"),
+      mkCase("case-2", "app-defect", "trace-v2")
+    ]
+  });
+  await runtime.store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:06:00.000Z",
+    run: mkRun({ caseSetId: "cs-2", featureKey: "f-2", featureName: "下单流程" }),
+    cases: [mkCase("case-9", "case-defect", null)]
+  });
+
+  const feedback = await buildGenerationFeedback(runtime);
+  assert.equal(feedback.ok, true);
+  const verdictSuggestions = feedback.suggestions.filter((entry) => entry.kind === "verdict");
+  assert.equal(verdictSuggestions.length, 2, "按功能分组各一条");
+  const login = verdictSuggestions.find((entry) => entry.message.includes("登录流程"));
+  assert.ok(login, "登录流程建议");
+  assert.ok(login.message.includes("1 条用例被判案例问题"));
+  assert.deepEqual(login.caseIds, ["case-1"]);
+  assert.deepEqual(login.traceIds, ["trace-v1"]);
+  const order = verdictSuggestions.find((entry) => entry.message.includes("下单流程"));
+  assert.ok(order, "下单流程建议");
+  assert.deepEqual(order.caseIds, ["case-9"]);
+  assert.deepEqual(order.traceIds, []);
+});
+
+test("generation feedback: 无裁决 → 无 verdict 建议；store 抛错不阻断既有建议", async () => {
+  const { runtime } = await setup();
+  const baseline = await buildGenerationFeedback(runtime);
+  assert.ok(baseline.suggestions.length > 0, "既有建议仍在");
+  assert.equal(
+    baseline.suggestions.filter((entry) => entry.kind === "verdict").length,
+    0,
+    "无裁决 → 无 verdict 建议"
+  );
+
+  runtime.store.listSuiteRuns = async () => {
+    throw new Error("store down");
+  };
+  const degraded = await buildGenerationFeedback(runtime);
+  assert.equal(degraded.ok, true);
+  assert.ok(degraded.suggestions.length > 0, "store 不可用不阻断既有建议");
+  assert.equal(degraded.suggestions.filter((entry) => entry.kind === "verdict").length, 0);
+});
