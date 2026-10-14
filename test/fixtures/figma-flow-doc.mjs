@@ -1,3 +1,83 @@
+export function pagedFlowDocument() {
+  return {
+    id: "0:0",
+    name: "Doc",
+    type: "DOCUMENT",
+    children: [
+      {
+        id: "1:0",
+        name: "登录",
+        type: "PAGE",
+        children: [
+          {
+            id: "20:1",
+            name: "登录-输入",
+            type: "FRAME",
+            children: [
+              {
+                id: "20:2",
+                name: "Submit",
+                type: "BUTTON",
+                children: [{ id: "20:4", name: "L", type: "TEXT", characters: "登录" }],
+                interactions: [
+                  {
+                    trigger: { type: "ON_CLICK" },
+                    actions: [{ type: "NODE", destinationId: "20:3", navigation: "NAVIGATE" }]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            id: "20:3",
+            name: "登录-验证",
+            type: "FRAME",
+            children: [
+              {
+                id: "20:5",
+                name: "Enter",
+                type: "BUTTON",
+                interactions: [
+                  {
+                    trigger: { type: "ON_CLICK" },
+                    actions: [{ type: "NODE", destinationId: "21:1", navigation: "NAVIGATE" }]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        id: "2:0",
+        name: "主流程",
+        type: "PAGE",
+        children: [
+          {
+            id: "21:1",
+            name: "首页",
+            type: "FRAME",
+            children: [
+              {
+                id: "21:2",
+                name: "Go",
+                type: "BUTTON",
+                interactions: [
+                  {
+                    trigger: { type: "ON_CLICK" },
+                    actions: [{ type: "NODE", destinationId: "21:3", navigation: "NAVIGATE" }]
+                  }
+                ]
+              }
+            ]
+          },
+          { id: "21:3", name: "详情", type: "FRAME", children: [] }
+        ]
+      }
+    ]
+  };
+}
+
 export function syntheticFlowDocument({ extraEntry = false } = {}) {
   const settings = extraEntry
     ? [

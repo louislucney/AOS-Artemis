@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { makeTempDir } from "./helpers.js";
-import { syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
+import { pagedFlowDocument, syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
 
 import {
   analyzeGapData,
@@ -504,4 +504,33 @@ test("flow graph: hints carry nodeId and design bounds when the API provides the
   const hint = screen.textHints.find((entry) => entry.text === "Welcome Back");
   assert.equal(hint.nodeId, "10:5");
   assert.deepEqual(hint.bounds, { x: 24, y: 100, width: 342, height: 30 });
+});
+
+test("buildFlowGraph: 屏幕记录所属页面名", () => {
+  const graph = buildFlowGraph(pagedFlowDocument());
+  const byName = new Map(graph.screens.map((screen) => [screen.name, screen.page]));
+  assert.equal(byName.get("登录-输入"), "登录");
+  assert.equal(byName.get("登录-验证"), "登录");
+  assert.equal(byName.get("首页"), "主流程");
+  assert.equal(byName.get("详情"), "主流程");
+  assert.equal(graph.edges.length, 3);
+});
+
+test("normalizeFlowGraph: 缺 page 的旧文档正常读取、带 page 的新文档保留", () => {
+  const legacy = normalizeFlowGraph({
+    screens: [{ id: "s1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+    edges: [],
+    entryScreens: [],
+    unresolvedDestinations: []
+  });
+  assert.equal(legacy.screens[0].name, "Home");
+  assert.equal(legacy.screens[0].page, undefined);
+
+  const withPage = normalizeFlowGraph({
+    screens: [{ id: "s1", name: "Home", page: "登录", suggestedRoute: "/", childNames: [], textHints: [] }],
+    edges: [],
+    entryScreens: [],
+    unresolvedDestinations: []
+  });
+  assert.equal(withPage.screens[0].page, "登录");
 });

@@ -109,6 +109,8 @@ export interface FlowScreen {
   id: string;
   name: string;
   suggestedRoute: string;
+  /** 所属 Figma 页面名（可选增量字段；pen 通道不产出）。 */
+  page?: string;
   /** Direct child layer names — used as visible-element hints for assertions. */
   childNames: string[];
   /** First classed TEXT contents found inside this screen. */
@@ -385,13 +387,26 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     }
   }
 
+  const pageNameOf = (screenId: string): string | null => {
+    let currentId = parentOf.get(screenId);
+    while (currentId) {
+      const current = byId.get(currentId);
+      if (!current) return null;
+      if (current.type === "PAGE") return current.name;
+      currentId = parentOf.get(currentId);
+    }
+    return null;
+  };
+
   const screens: FlowScreen[] = screenNodes.map((screen) => {
     const acceptance = screenAcceptance.get(screen.id) ?? [];
     const bounds = boundsOf(screen);
+    const page = pageNameOf(screen.id);
     return {
       id: screen.id,
       name: screen.name,
       suggestedRoute: routeFor(screen.name),
+      ...(page ? { page } : {}),
       childNames: (screen.children ?? []).slice(0, 10).map((child) => child.name),
       textHints: screenTextHints.get(screen.id) ?? [],
       ...(bounds ? { bounds } : {}),
@@ -511,6 +526,10 @@ export function normalizeFlowGraph(raw: unknown): FlowGraph {
       name,
       suggestedRoute:
         typeof screen.suggestedRoute === "string" ? screen.suggestedRoute : routeFor(name),
+      ...(() => {
+        const page = typeof screen.page === "string" ? screen.page.trim() : "";
+        return page !== "" ? { page } : {};
+      })(),
       childNames: Array.isArray(screen.childNames)
         ? screen.childNames.filter((child): child is string => typeof child === "string")
         : [],
