@@ -101,3 +101,45 @@ test("listCaseSets: 项目隔离（不同 rootPath 不串）", async () => {
   assert.equal((await pg.listCaseSets("/w/a")).length, 1);
   assert.equal((await pg.listCaseSets("/w/b")).length, 0);
 });
+
+test("recordCaseSet: 事务协议——失败时 BEGIN→ROLLBACK→release，不 COMMIT", async () => {
+  const calls = [];
+  let featureInserts = 0;
+  const client = {
+    async query(text) {
+      calls.push(text);
+      if (text.startsWith("INSERT INTO case_set_features")) {
+        featureInserts += 1;
+        if (featureInserts > 1) throw new Error("boom");
+      }
+      return { rows: [] };
+    },
+    release() {
+      calls.push("release");
+    }
+  };
+  const pool = {
+    async query(text) {
+      calls.push(`pool:${text}`);
+      return { rows: [] };
+    },
+    async connect() {
+      return client;
+    }
+  };
+  const store = new PostgresStore(pool);
+
+  await assert.rejects(
+    store.recordCaseSet({
+      rootPath: "/w/tx",
+      source: "pen:tx.pen",
+      basename: "b-tx",
+      features: [FEATURES[0], { ...FEATURES[0] }]
+    }),
+    /boom/
+  );
+  assert.ok(calls.includes("BEGIN"), "BEGIN issued");
+  assert.ok(calls.includes("ROLLBACK"), "ROLLBACK issued");
+  assert.ok(!calls.includes("COMMIT"), "no COMMIT on failure");
+  assert.equal(calls.at(-1), "release");
+});

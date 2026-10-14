@@ -24,13 +24,21 @@ import type {
   UsagePrunePolicy
 } from "./types.js";
 
+export interface QueryResultLike {
+  rows: Array<Record<string, unknown>>;
+  rowCount?: number | null;
+}
+
+export interface PoolClientLike {
+  query(text: string, values?: unknown[]): Promise<QueryResultLike>;
+  release?(): void;
+}
+
 /** Minimal pool surface — lets tests inject `pg-mem` and keeps SQL portable. */
 export interface PoolLike {
-  query(
-    text: string,
-    values?: unknown[]
-  ): Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number | null }>;
+  query(text: string, values?: unknown[]): Promise<QueryResultLike>;
   end?(): Promise<void>;
+  connect?(): Promise<PoolClientLike>;
 }
 
 const SCHEMA = [
@@ -389,35 +397,53 @@ export class PostgresStore implements ProjectStore {
     const project = await this.getProjectByPath(input.rootPath);
     const id = randomUUID();
     const createdAt = input.createdAt ?? new Date().toISOString();
-    await this.pool.query(
-      `INSERT INTO case_sets (id, project_id, created_at, source, design_name, fingerprint, basename)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        id,
-        project?.id ?? null,
-        createdAt,
-        input.source,
-        input.designName ?? null,
-        input.fingerprint ?? null,
-        input.basename
-      ]
-    );
-    for (const feature of input.features) {
-      await this.pool.query(
-        `INSERT INTO case_set_features
-           (case_set_id, feature_key, name, case_count, screens, json_path, md_path, xlsx_path)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    const client = this.pool.connect ? await this.pool.connect() : null;
+    const run = (text: string, values?: unknown[]): Promise<QueryResultLike> =>
+      client ? client.query(text, values) : this.pool.query(text, values);
+    try {
+      if (client) await run("BEGIN");
+      await run(
+        `INSERT INTO case_sets (id, project_id, created_at, source, design_name, fingerprint, basename)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           id,
-          feature.key,
-          feature.name,
-          feature.caseCount,
-          JSON.stringify(feature.screens),
-          feature.jsonPath,
-          feature.mdPath,
-          feature.xlsxPath
+          project?.id ?? null,
+          createdAt,
+          input.source,
+          input.designName ?? null,
+          input.fingerprint ?? null,
+          input.basename
         ]
       );
+      for (const feature of input.features) {
+        await run(
+          `INSERT INTO case_set_features
+             (case_set_id, feature_key, name, case_count, screens, json_path, md_path, xlsx_path)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            id,
+            feature.key,
+            feature.name,
+            feature.caseCount,
+            JSON.stringify(feature.screens),
+            feature.jsonPath,
+            feature.mdPath,
+            feature.xlsxPath
+          ]
+        );
+      }
+      if (client) await run("COMMIT");
+    } catch (error) {
+      if (client) {
+        try {
+          await run("ROLLBACK");
+        } catch {
+          /* best effort */
+        }
+      }
+      throw error;
+    } finally {
+      client?.release?.();
     }
     return {
       id,
