@@ -353,6 +353,8 @@ Usage:
   aos-mcp suite feedback [options]   基于台账与基线的生成改进建议（只读）
   aos-mcp suite reconcile list|confirm|reject [options]
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
+  aos-mcp suite task create|list|show [options]
+                                     回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none]（引用取该功能最新份）
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -1425,6 +1427,171 @@ async function suiteReconcile(
   return 0;
 }
 
+async function suiteTask(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const action = flags.positional[1];
+  if (action === "create") return await suiteTaskCreate(runtime, flags, io);
+  if (action === "list") return await suiteTaskList(runtime, flags, io);
+  if (action === "show") return await suiteTaskShow(runtime, flags, io);
+  io.errorLog("用法: suite task create|list|show …（见 suite help）");
+  return 2;
+}
+
+interface ResolvedTaskRef {
+  caseSetId: string;
+  featureKey: string;
+  featureName: string;
+  caseCount: number;
+  jsonPath: string;
+}
+
+/** 引用解析：每个 feature key 取最新一份（listCaseSets 新→旧首次出现）。 */
+function latestFeatureRefs(
+  sets: Array<{
+    id: string;
+    features: Array<{ key: string; name: string; caseCount: number; jsonPath: string }>;
+  }>
+): Map<string, ResolvedTaskRef> {
+  const latest = new Map<string, ResolvedTaskRef>();
+  for (const set of sets) {
+    for (const feature of set.features) {
+      if (latest.has(feature.key)) continue;
+      latest.set(feature.key, {
+        caseSetId: set.id,
+        featureKey: feature.key,
+        featureName: feature.name,
+        caseCount: feature.caseCount,
+        jsonPath: feature.jsonPath
+      });
+    }
+  }
+  return latest;
+}
+
+async function suiteTaskCreate(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const refs = splitList(flags.list("ref"));
+  if (refs.length === 0) {
+    io.errorLog(
+      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none]"
+    );
+    return 2;
+  }
+  const sets = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+  const latest = latestFeatureRefs(sets);
+  const resolved: ResolvedTaskRef[] = [];
+  const missing: string[] = [];
+  for (const key of refs) {
+    const hit = latest.get(key);
+    if (!hit) {
+      missing.push(key);
+      continue;
+    }
+    resolved.push(hit);
+  }
+  if (missing.length > 0) {
+    const available = [...latest.keys()].sort().join("、");
+    io.errorLog(`未知 feature key：${missing.join("、")}（可用：${available || "无"}）`);
+    return 2;
+  }
+  const platforms =
+    flags.list("platform").length > 0 ? splitList(flags.list("platform")) : ["ios", "android"];
+  const baseline = flags.get("baseline") === "none" ? "none" : "latest";
+  const task = await runtime.store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: resolved.map((entry) => ({ caseSetId: entry.caseSetId, featureKey: entry.featureKey })),
+    platforms,
+    baseline,
+    createdBy: "cli"
+  });
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
+    return 0;
+  }
+  io.log(
+    `回归任务 ${task.id}（status=${task.status} · platforms=${platforms.join(",")} · baseline=${baseline}）`
+  );
+  for (const entry of resolved) {
+    io.log(
+      `- ${entry.featureName}（${entry.featureKey}）· caseSet=${entry.caseSetId} · 用例 ${entry.caseCount} · ${entry.jsonPath}`
+    );
+  }
+  return 0;
+}
+
+async function suiteTaskList(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const tasks = await runtime.store.listRegressionTasks(runtime.project.rootDir, 50);
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, tasks }, null, 2));
+    return 0;
+  }
+  if (tasks.length === 0) {
+    io.log("暂无回归任务（suite task create 创建）");
+    return 0;
+  }
+  for (const task of tasks) {
+    io.log(
+      `${task.id} · ${task.status} · refs ${task.refs.length} · platforms ${task.platforms.join(",")} · runs ${task.runIds.length} · ${task.createdAt}`
+    );
+  }
+  return 0;
+}
+
+async function suiteTaskShow(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const id = flags.positional[2];
+  if (!id) {
+    io.errorLog("用法: suite task show <id>");
+    return 2;
+  }
+  const task = await runtime.store.getRegressionTask(runtime.project.rootDir, id);
+  if (!task) {
+    io.errorLog(`未找到回归任务 ${id}`);
+    return 2;
+  }
+  const sets = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+  const byId = new Map(sets.map((set) => [set.id, set]));
+  const resolved = task.refs.map((ref) => {
+    const set = byId.get(ref.caseSetId);
+    const feature = set?.features.find((entry) => entry.key === ref.featureKey) ?? null;
+    return {
+      caseSetId: ref.caseSetId,
+      featureKey: ref.featureKey,
+      featureName: feature?.name ?? null,
+      caseCount: feature?.caseCount ?? null,
+      jsonPath: feature?.jsonPath ?? null,
+      createdAt: set?.createdAt ?? null
+    };
+  });
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
+    return 0;
+  }
+  io.log(
+    `回归任务 ${task.id} · ${task.status} · platforms ${task.platforms.join(",")} · baseline ${task.baseline}`
+  );
+  for (const entry of resolved) {
+    io.log(
+      `- ${entry.featureName ?? entry.featureKey} · caseSet=${entry.caseSetId} · 用例 ${entry.caseCount ?? "?"} · ${entry.jsonPath ?? "（份已清理）"} · ${entry.createdAt ?? ""}`
+    );
+  }
+  if (task.runIds.length > 0) io.log(`运行: ${task.runIds.join("、")}`);
+  return 0;
+}
+
 export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): Promise<number> {
   const log = deps.log ?? ((line: string) => console.log(line));
   const errorLog = deps.errorLog ?? ((line: string) => console.error(line));
@@ -1435,7 +1602,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -1485,6 +1652,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "baseline") return await suiteBaseline(built.runtime, flags, { log, errorLog });
     if (sub === "report") return await suiteReport(built.runtime, flags, { log, errorLog });
     if (sub === "reconcile") return await suiteReconcile(built.runtime, flags, { log, errorLog });
+    if (sub === "task") return await suiteTask(built.runtime, flags, { log, errorLog });
     return await suiteFeedback(built.runtime, flags, { log, errorLog });
   } catch (error) {
     errorLog(`suite ${sub} 失败: ${errorMessage(error)}`);
