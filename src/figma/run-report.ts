@@ -36,6 +36,8 @@ export interface RunReportCase {
   ledgerStatus: string;
   durationMs: number | null;
   model: string | null;
+  feature: string | null;
+  platform: string | null;
   failure: FailureClassification | null;
   /** Script provenance summary (assert vs explore steps; null for legacy). */
   scriptProvenance: { asserts: number; explores: number } | null;
@@ -211,6 +213,8 @@ async function renderWorkbook(report: RunReport): Promise<Buffer> {
     { header: "#", key: "index", width: 5 },
     { header: "用例", key: "name", width: 36 },
     { header: "用例ID", key: "caseId", width: 18 },
+    { header: "功能", key: "feature", width: 16 },
+    { header: "端", key: "platform", width: 8 },
     { header: "结果", key: "outcome", width: 10 },
     { header: "台账状态", key: "ledgerStatus", width: 12 },
     { header: "耗时(秒)", key: "duration", width: 10 },
@@ -229,6 +233,8 @@ async function renderWorkbook(report: RunReport): Promise<Buffer> {
       index: index + 1,
       name: entry.name,
       caseId: entry.caseId ?? "",
+      feature: entry.feature ?? "—",
+      platform: entry.platform ?? "—",
       outcome: entry.outcome,
       ledgerStatus: entry.ledgerStatus,
       duration: entry.durationMs == null ? "" : Number((entry.durationMs / 1000).toFixed(3)),
@@ -310,6 +316,17 @@ export async function buildRunReport(
 
   const wanted = options.caseIds && options.caseIds.length > 0 ? new Set(options.caseIds) : null;
   const cases = loadCases(runtime);
+  const featureNames = new Map<string, string>();
+  try {
+    const sets = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+    for (const set of sets) {
+      for (const feature of set.features) {
+        if (!featureNames.has(feature.key)) featureNames.set(feature.key, feature.name);
+      }
+    }
+  } catch {
+    /* 名称解析降级：显示 feature key */
+  }
   const selected = tasks
     .filter((task) => (wanted ? task.caseId != null && wanted.has(task.caseId) : true))
     .sort(
@@ -340,6 +357,10 @@ export async function buildRunReport(
       ledgerStatus: task.status,
       durationMs: durationOf(task, status),
       model: task.model,
+      feature: generated?.feature
+        ? featureNames.get(generated.feature) ?? generated.feature
+        : null,
+      platform: null,
       failure:
         outcome === "failed"
           ? classifyFailure({
@@ -408,5 +429,109 @@ export async function buildRunReport(
     }
   }
 
+  return report;
+}
+
+function sanitizeLabel(value: string): string {
+  const cleaned = value
+    .replace(/[/\\:*?"<>|\s]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return cleaned === "" ? "feature" : cleaned;
+}
+
+export interface TaskRunReportOptions {
+  taskId: string;
+  outputDir?: string;
+  save?: boolean;
+  stamp?: string;
+}
+
+/** 回归任务报告（DESIGN：回归服务 §5.6）：逐例来自 `suite_runs`；
+ * 命名 `<stamp>_<功能>_回归.xlsx`（多功能 → `多功能N项`）。 */
+export async function buildTaskRunReport(
+  runtime: Runtime,
+  options: TaskRunReportOptions
+): Promise<RunReport> {
+  const generatedAt = new Date().toISOString();
+  const runs = await runtime.store.listSuiteRuns(runtime.project.rootDir, {
+    taskId: options.taskId,
+    limit: 100
+  });
+  const results: RunReportCase[] = [];
+  for (const run of runs) {
+    for (const entry of run.cases) {
+      results.push({
+        caseId: entry.caseId,
+        name: entry.name,
+        traceId: entry.traceId ?? "",
+        outcome: entry.status === "passed" ? "passed" : "failed",
+        ledgerStatus: entry.status,
+        durationMs: entry.durationMs,
+        model: null,
+        feature: run.featureName ?? run.featureKey,
+        platform: run.platform,
+        failure: entry.failureDomain
+          ? {
+              domain: entry.failureDomain as FailureClassification["domain"],
+              confidence: (entry.failureConfidence ??
+                "low") as FailureClassification["confidence"],
+              reason: entry.failureReason ?? "",
+              evidence: []
+            }
+          : null,
+        scriptProvenance: null,
+        failedItems: [],
+        apiErrors: [],
+        apiErrorsDegraded: null,
+        evidence: {
+          traceDir: entry.traceId ? runtime.traceDir(entry.traceId) : "",
+          notesDir: null,
+          stderrLog: null,
+          stdoutLog: null
+        }
+      });
+    }
+  }
+  const passed = results.filter((entry) => entry.outcome === "passed").length;
+  const pending = results.filter((entry) => entry.outcome === "pending").length;
+  const report: RunReport = {
+    ok: true,
+    generatedAt,
+    total: results.length,
+    passed,
+    failed: results.length - passed - pending,
+    pending,
+    cases: results,
+    traceability: null
+  };
+  if (options.save !== false) {
+    const stamp = options.stamp ?? stampOf(new Date(generatedAt));
+    const featureLabels = [
+      ...new Set(
+        runs
+          .map((run) => run.featureName ?? run.featureKey)
+          .filter((label): label is string => label !== null && label !== "")
+      )
+    ];
+    const label =
+      featureLabels.length <= 1
+        ? sanitizeLabel(featureLabels[0] ?? "回归")
+        : `多功能${featureLabels.length}项`;
+    const dir = options.outputDir
+      ? path.resolve(runtime.project.rootDir, options.outputDir)
+      : path.join(runtime.configDirAbs, "design", "reports");
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const xlsx = path.join(dir, `${stamp}_${label}_回归.xlsx`);
+      const junit = path.join(dir, `${stamp}_${label}_回归.xml`);
+      writeFileAtomic(xlsx, await renderWorkbook(report));
+      writeFileAtomic(junit, renderJunit(report));
+      report.saved = { xlsx, junit };
+    } catch (error) {
+      report.ok = false;
+      report.error = `任务报告写入失败: ${errorMessage(error)}`;
+    }
+  }
   return report;
 }

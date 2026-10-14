@@ -26,7 +26,7 @@ import {
   reviewEdge,
   saveReconciliation
 } from "./figma/reconciliation.js";
-import { buildRunReport } from "./figma/run-report.js";
+import { buildRunReport, buildTaskRunReport } from "./figma/run-report.js";
 import {
   buildRunManifest,
   pruneRunManifests,
@@ -377,7 +377,7 @@ evidence: [--full-trace] [--out <dir>] [--no-save] [--design-figma <url>|--desig
 api-errors: [--serial <s>] [--app <bundleId>] [--no-save] [--json]
 baseline: --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>]
           [--ignore x,y,w,h]... [--no-save] [--fail-on new|persisting|any]
-report: [--limit <n>] [--case <id>]... [--out <dir>] [--stamp <s>] [--no-save] [--no-sync]
+report: [--limit <n>] [--case <id>]... [--out <dir>] [--stamp <s>] [--no-save] [--no-sync] [--task <id>（回归任务报告：命名 <时间>_<功能>_回归.xlsx）]
 feedback: [--limit <n>] [--min-failures <n>]
 reconcile: list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>]
 
@@ -1503,6 +1503,28 @@ async function suiteBaseline(runtime: Runtime, flags: ParsedFlags, io: { log: (l
 }
 
 async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (line: string) => void; errorLog: (line: string) => void }): Promise<number> {
+  const taskId = flags.get("task");
+  if (taskId) {
+    const report = await buildTaskRunReport(runtime, {
+      taskId,
+      outputDir: flags.get("out") ?? undefined,
+      stamp: flags.get("stamp") ?? undefined,
+      save: !flags.bool("no-save")
+    });
+    if (flags.bool("json")) {
+      io.log(JSON.stringify(report, null, 2));
+    } else {
+      io.log(
+        `任务报告: 共 ${report.total} · 通过 ${report.passed} · 失败 ${report.failed} · 待定 ${report.pending}`
+      );
+      if (report.saved) {
+        io.log(`xlsx: ${report.saved.xlsx}`);
+        io.log(`junit: ${report.saved.junit}`);
+      }
+      if (report.error) io.errorLog(report.error);
+    }
+    return report.ok ? 0 : 1;
+  }
   if (!flags.bool("no-sync")) {
     await runtime.syncTaskStatuses();
     await runtime.flushCrashScans();

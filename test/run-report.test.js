@@ -6,7 +6,7 @@ import test from "node:test";
 import ExcelJS from "exceljs";
 
 import { MemoryStore } from "../dist/db/memory.js";
-import { buildRunReport } from "../dist/figma/run-report.js";
+import { buildRunReport, buildTaskRunReport } from "../dist/figma/run-report.js";
 import { baseConfig, loadTestRuntime, makeTempProject, StubProxy } from "./helpers.js";
 
 const CASES = [
@@ -16,7 +16,8 @@ const CASES = [
     screens: ["Home", "Checkout"],
     steps: ["点击「Buy now」，验证进入「Checkout」（页面应出现「Pay now」）"],
     preconditions: ["应用已安装且可正常启动"],
-    taskDesc: "run case 1"
+    taskDesc: "run case 1",
+    feature: "f-1"
   },
   {
     id: "case-2",
@@ -95,7 +96,23 @@ async function setup() {
     status: "submitted",
     taskDesc: "ad-hoc task\nsecond line"
   });
-  return { dir, runtime, designDir };
+  await store.recordCaseSet({
+    rootPath: dir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+  return { dir, runtime, designDir, store };
 }
 
 test("run report: ledger rows get outcome, duration, evidence and failure domain", async () => {
@@ -152,14 +169,18 @@ test("run report: writes xlsx result sheet and JUnit XML without touching tests.
   const sheet = workbook.getWorksheet("运行报告");
   assert.ok(sheet);
   assert.equal(sheet.getRow(1).getCell(1).value, "#");
-  assert.equal(sheet.getRow(1).getCell(4).value, "结果");
-  assert.equal(sheet.getRow(1).getCell(10).value, "脚本来源");
+  assert.equal(sheet.getRow(1).getCell(4).value, "功能");
+  assert.equal(sheet.getRow(1).getCell(5).value, "端");
+  assert.equal(sheet.getRow(1).getCell(6).value, "结果");
+  assert.equal(sheet.getRow(1).getCell(12).value, "脚本来源");
   assert.equal(sheet.getRow(2).getCell(2).value, "Home → Checkout");
-  assert.equal(sheet.getRow(2).getCell(4).value, "passed");
-  assert.equal(sheet.getRow(2).getCell(6).value, 2.5);
-  assert.equal(sheet.getRow(3).getCell(8).value, "data-environment");
-  assert.equal(sheet.getRow(3).getCell(10).value, "断言 1 / 探索 2");
-  assert.match(sheet.getRow(3).getCell(12).value, /trace: .*trace-2/);
+  assert.equal(sheet.getRow(2).getCell(4).value, "登录流程");
+  assert.equal(sheet.getRow(2).getCell(5).value, "—");
+  assert.equal(sheet.getRow(2).getCell(6).value, "passed");
+  assert.equal(sheet.getRow(2).getCell(8).value, 2.5);
+  assert.equal(sheet.getRow(3).getCell(10).value, "data-environment");
+  assert.equal(sheet.getRow(3).getCell(12).value, "断言 1 / 探索 2");
+  assert.match(sheet.getRow(3).getCell(14).value, /trace: .*trace-2/);
 
   const junit = fs.readFileSync(report.saved.junit, "utf-8");
   assert.match(junit, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
@@ -220,11 +241,137 @@ test("run report: API error artifact feeds xlsx columns and JUnit failure conten
   await workbook.xlsx.load(fs.readFileSync(report.saved.xlsx));
   const sheet = workbook.getWorksheet("运行报告");
   const rowIndex = report.cases.findIndex((entry) => entry.traceId === "trace-2") + 2;
-  assert.match(sheet.getRow(rowIndex).getCell(13).value, /AUTH_401\(unhandled ×2\)/);
-  assert.match(sheet.getRow(rowIndex).getCell(14).value, /AUTH_401=relogin/);
+  assert.match(sheet.getRow(rowIndex).getCell(15).value, /AUTH_401\(unhandled ×2\)/);
+  assert.match(sheet.getRow(rowIndex).getCell(16).value, /AUTH_401=relogin/);
 
   assert.match(
     fs.readFileSync(report.saved.junit, "utf-8"),
     /api_error: AUTH_401 verdict=unhandled handler=relogin/
   );
+});
+
+function taskRunInput(taskId, featureKey, featureName, cases) {
+  return {
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: taskId,
+      caseSetId: "cs-1",
+      featureKey,
+      featureName,
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: cases.length,
+      passed: cases.filter((entry) => entry.status === "passed").length,
+      failed: cases.filter((entry) => entry.status !== "passed").length,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: cases.map((entry) => ({
+      caseId: entry.caseId,
+      name: entry.name ?? entry.caseId,
+      featureKey,
+      platform: "android",
+      status: entry.status,
+      traceId: entry.traceId ?? null,
+      failureDomain: entry.failureDomain ?? null,
+      failureConfidence: entry.failureConfidence ?? null,
+      failureReason: entry.failureReason ?? null,
+      durationMs: null,
+      quarantined: false,
+      flaky: false,
+      verdict: null,
+      verdictBy: null,
+      verdictAt: null,
+      verdictNote: null
+    }))
+  };
+}
+
+test("task report: 逐例来自 suite_runs、单功能命名、功能/端列", async () => {
+  const { runtime, store } = await setup();
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.recordSuiteRun({
+    rootPath: runtime.project.rootDir,
+    ...taskRunInput(task.id, "f-1", "登录流程", [
+      { caseId: "case-1", name: "Home → Checkout", status: "passed", traceId: "trace-1" },
+      {
+        caseId: "case-2",
+        name: "我的 → 登录",
+        status: "failed",
+        traceId: "trace-2",
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中"
+      }
+    ])
+  });
+
+  const report = await buildTaskRunReport(runtime, { taskId: task.id, stamp: "20261014-100500" });
+  assert.equal(report.ok, true);
+  assert.equal(report.total, 2);
+  assert.equal(report.passed, 1);
+  assert.equal(report.failed, 1);
+  assert.equal(report.cases[0].feature, "登录流程");
+  assert.equal(report.cases[0].platform, "android");
+  assert.equal(report.cases[1].failure.domain, "用例缺陷");
+  assert.equal(
+    report.saved.xlsx,
+    path.join(runtime.configDirAbs, "design", "reports", "20261014-100500_登录流程_回归.xlsx")
+  );
+  assert.equal(
+    report.saved.junit,
+    path.join(runtime.configDirAbs, "design", "reports", "20261014-100500_登录流程_回归.xml")
+  );
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(report.saved.xlsx));
+  const sheet = workbook.getWorksheet("运行报告");
+  assert.equal(sheet.getRow(1).getCell(4).value, "功能");
+  assert.equal(sheet.getRow(2).getCell(4).value, "登录流程");
+  assert.equal(sheet.getRow(2).getCell(5).value, "android");
+});
+
+test("task report: 多功能 → 多功能N项 命名", async () => {
+  const { runtime, store } = await setup();
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [
+      { caseSetId: "cs-1", featureKey: "f-1" },
+      { caseSetId: "cs-2", featureKey: "f-2" }
+    ],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.recordSuiteRun({
+    rootPath: runtime.project.rootDir,
+    ...taskRunInput(task.id, "f-1", "登录流程", [{ caseId: "case-1", status: "passed" }])
+  });
+  await store.recordSuiteRun({
+    rootPath: runtime.project.rootDir,
+    ...taskRunInput(task.id, "f-2", "下单流程", [{ caseId: "case-3", status: "passed" }]),
+    createdAt: "2026-10-14T10:06:00.000Z"
+  });
+
+  const report = await buildTaskRunReport(runtime, { taskId: task.id, stamp: "20261014-101000" });
+  assert.equal(
+    report.saved.xlsx,
+    path.join(runtime.configDirAbs, "design", "reports", "20261014-101000_多功能2项_回归.xlsx")
+  );
+  assert.ok(fs.existsSync(report.saved.xlsx));
 });

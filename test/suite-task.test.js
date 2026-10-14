@@ -340,3 +340,24 @@ test("suite run --task: 未知任务/缺设备/与 --tests 互斥 → exit 2", a
   assert.equal(noDevice.code, 2);
   assert.ok(noDevice.errors.some((line) => line.includes("--device")));
 });
+
+test("suite report --task: 输出 xlsx/junit 两路径且文件存在", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: { "trace-1": { status: "completed" }, "trace-2": { status: "completed" } }
+  });
+  await runCli(runtime, ["task", "create", "--ref", "f-登录-aaaa1111", "--platform", "android"]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+
+  const report = await runCli(runtime, ["report", "--task", tasks[0].id]);
+  assert.equal(report.code, 0);
+  const xlsxLine = report.logs.find((line) => line.startsWith("xlsx: "));
+  assert.ok(xlsxLine, "xlsx 路径行");
+  const xlsxPath = xlsxLine.slice("xlsx: ".length);
+  assert.ok(fs.existsSync(xlsxPath));
+  assert.ok(xlsxPath.includes("登录流程"));
+  assert.ok(xlsxPath.endsWith("_回归.xlsx"));
+  const junitLine = report.logs.find((line) => line.startsWith("junit: "));
+  assert.ok(junitLine, "junit 路径行");
+  assert.ok(fs.existsSync(junitLine.slice("junit: ".length)));
+});
