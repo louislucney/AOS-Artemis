@@ -386,3 +386,192 @@ test("updateCaseVerdict: 跨项目 runId → false 且不误写（memory + pg-me
     assert.equal(entry.verdict, null, "跨项目裁决不生效");
   }
 });
+
+test("setCaseIssueKey: 写入可经 getSuiteRun 读回、null 清空（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const record = await store.recordSuiteRun(runInput());
+    assert.equal(
+      await store.setCaseIssueKey({
+        rootPath: "/w/p1",
+        runId: record.id,
+        caseId: "case-aaaa00000001",
+        jiraKey: "AOS-123"
+      }),
+      true
+    );
+    const fetched = await store.getSuiteRun("/w/p1", record.id);
+    assert.equal(
+      fetched.cases.find((item) => item.caseId === "case-aaaa00000001").jiraIssueKey,
+      "AOS-123"
+    );
+    assert.equal(
+      fetched.cases.find((item) => item.caseId === "case-aaaa00000002").jiraIssueKey,
+      null
+    );
+
+    assert.equal(
+      await store.setCaseIssueKey({
+        rootPath: "/w/p1",
+        runId: record.id,
+        caseId: "case-aaaa00000001",
+        jiraKey: null
+      }),
+      true
+    );
+    const after = await store.getSuiteRun("/w/p1", record.id);
+    assert.equal(
+      after.cases.find((item) => item.caseId === "case-aaaa00000001").jiraIssueKey,
+      null
+    );
+  }
+});
+
+test("setCaseIssueKey: 未知 run/case/项目与跨项目 → false 且不误写（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.upsertProject({ rootPath: "/w/p2", name: "p2" });
+    const record = await store.recordSuiteRun(runInput());
+    assert.equal(
+      await store.setCaseIssueKey({
+        rootPath: "/w/p1",
+        runId: "run-nope",
+        caseId: "case-aaaa00000001",
+        jiraKey: "AOS-1"
+      }),
+      false
+    );
+    assert.equal(
+      await store.setCaseIssueKey({
+        rootPath: "/w/p1",
+        runId: record.id,
+        caseId: "case-nope",
+        jiraKey: "AOS-1"
+      }),
+      false
+    );
+    assert.equal(
+      await store.setCaseIssueKey({
+        rootPath: "/w/unknown",
+        runId: record.id,
+        caseId: "case-aaaa00000001",
+        jiraKey: "AOS-1"
+      }),
+      false
+    );
+    assert.equal(
+      await store.setCaseIssueKey({
+        rootPath: "/w/p2",
+        runId: record.id,
+        caseId: "case-aaaa00000001",
+        jiraKey: "AOS-1"
+      }),
+      false
+    );
+    const runs = await store.listSuiteRuns("/w/p1");
+    assert.equal(
+      runs[0].cases.find((item) => item.caseId === "case-aaaa00000001").jiraIssueKey,
+      null,
+      "跨项目写入不生效"
+    );
+  }
+});
+
+test("getSuiteRun: 含 cases；未知 id / 项目不匹配 → null（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.upsertProject({ rootPath: "/w/p2", name: "p2" });
+    const record = await store.recordSuiteRun(runInput());
+    const fetched = await store.getSuiteRun("/w/p1", record.id);
+    assert.ok(fetched);
+    assert.equal(fetched.id, record.id);
+    assert.equal(fetched.trigger, "cli");
+    assert.equal(fetched.cases.length, 2);
+    assert.equal(
+      fetched.cases.find((item) => item.caseId === "case-aaaa00000002").name,
+      "Case 2"
+    );
+    assert.equal(await store.getSuiteRun("/w/p1", "run-nope"), null);
+    assert.equal(await store.getSuiteRun("/w/p2", record.id), null);
+    assert.equal(await store.getSuiteRun("/w/unknown", record.id), null);
+  }
+});
+
+test("suite_run_cases: 存量库迁移——旧表缺 jira_issue_key 列时 init 补列并用", async () => {
+  // noAstCoverageCheck：旧表已存在时 pg-mem 会因未读取的 AST 约束直接报错，这里只关注迁移结果
+  const mem = newDb({ noAstCoverageCheck: true });
+  const { Pool } = mem.adapters.createPg();
+  const pool = new Pool();
+  await pool.query(
+    `CREATE TABLE suite_runs (
+       id TEXT PRIMARY KEY,
+       project_id TEXT,
+       created_at TEXT NOT NULL,
+       trigger TEXT NOT NULL,
+       regression_task_id TEXT,
+       case_set_id TEXT,
+       feature_key TEXT,
+       feature_name TEXT,
+       platform TEXT NOT NULL,
+       device TEXT,
+       app_version TEXT,
+       runner TEXT,
+       status TEXT NOT NULL,
+       started_at TEXT NOT NULL,
+       finished_at TEXT NOT NULL,
+       total INTEGER NOT NULL,
+       passed INTEGER NOT NULL,
+       failed INTEGER NOT NULL,
+       flaky INTEGER NOT NULL,
+       quarantined INTEGER NOT NULL,
+       failure_domains TEXT NOT NULL DEFAULT '{}',
+       gate_result TEXT,
+       exit_code INTEGER NOT NULL,
+       manifest_path TEXT,
+       comparison TEXT
+     )`
+  );
+  await pool.query(
+    `CREATE TABLE suite_run_cases (
+       run_id TEXT NOT NULL,
+       case_id TEXT NOT NULL,
+       name TEXT NOT NULL,
+       feature_key TEXT,
+       platform TEXT NOT NULL,
+       status TEXT NOT NULL,
+       trace_id TEXT,
+       failure_domain TEXT,
+       failure_confidence TEXT,
+       failure_reason TEXT,
+       duration_ms INTEGER,
+       quarantined BOOLEAN NOT NULL DEFAULT FALSE,
+       flaky BOOLEAN NOT NULL DEFAULT FALSE,
+       verdict TEXT,
+       verdict_by TEXT,
+       verdict_at TEXT,
+       verdict_note TEXT,
+       PRIMARY KEY (run_id, case_id)
+     )`
+  );
+  const store = new PostgresStore(pool);
+  await store.init();
+  await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  const record = await store.recordSuiteRun(runInput());
+  assert.equal(
+    await store.setCaseIssueKey({
+      rootPath: "/w/p1",
+      runId: record.id,
+      caseId: "case-aaaa00000001",
+      jiraKey: "AOS-9"
+    }),
+    true
+  );
+  const fetched = await store.getSuiteRun("/w/p1", record.id);
+  assert.equal(
+    fetched.cases.find((item) => item.caseId === "case-aaaa00000001").jiraIssueKey,
+    "AOS-9"
+  );
+});

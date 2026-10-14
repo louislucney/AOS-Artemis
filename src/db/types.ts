@@ -263,6 +263,7 @@ export interface SuiteRunCaseRecord {
   verdictBy: string | null;
   verdictAt: string | null;
   verdictNote: string | null;
+  jiraIssueKey: string | null;
 }
 
 export interface SuiteRunRecord {
@@ -310,6 +311,13 @@ export interface UpdateCaseVerdictInput {
   verdict: CaseVerdict;
   verdictBy?: string | null;
   verdictNote?: string | null;
+}
+
+export interface SetCaseIssueKeyInput {
+  rootPath: string;
+  runId: string;
+  caseId: string;
+  jiraKey: string | null;
 }
 
 export interface CreateRegressionTaskInput {
@@ -397,6 +405,8 @@ export interface ProjectStore {
     }
   ): Promise<SuiteRunRecord[]>;
   updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean>;
+  setCaseIssueKey(input: SetCaseIssueKeyInput): Promise<boolean>;
+  getSuiteRun(rootPath: string, runId: string): Promise<SuiteRunRecord | null>;
   upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord>;
   listRunners(rootPath: string, limit?: number): Promise<RunnerRecord[]>;
   recordUsageEvent(

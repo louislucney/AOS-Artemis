@@ -18,6 +18,7 @@ import type {
   RegressionTaskRecord,
   RunnerRecord,
   ScheduleRecord,
+  SetCaseIssueKeyInput,
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
@@ -450,7 +451,7 @@ export class MemoryStore implements ProjectStore {
       runner: input.run.runner ?? null,
       failureDomains: { ...input.run.failureDomains },
       comparison: input.run.comparison ?? null,
-      cases: input.cases.map((entry) => ({ ...entry }))
+      cases: input.cases.map((entry) => ({ ...entry, jiraIssueKey: entry.jiraIssueKey ?? null }))
     };
     this.suiteRuns.push(record);
     return cloneSuiteRun(record);
@@ -493,6 +494,28 @@ export class MemoryStore implements ProjectStore {
     target.verdictAt = new Date().toISOString();
     target.verdictNote = input.verdictNote ?? null;
     return true;
+  }
+
+  async setCaseIssueKey(input: SetCaseIssueKeyInput): Promise<boolean> {
+    const project = this.projects.get(input.rootPath);
+    if (!project) return false;
+    const run = this.suiteRuns.find(
+      (entry) => entry.projectId === project.id && entry.id === input.runId
+    );
+    if (!run) return false;
+    const target = run.cases.find((entry) => entry.caseId === input.caseId);
+    if (!target) return false;
+    target.jiraIssueKey = input.jiraKey;
+    return true;
+  }
+
+  async getSuiteRun(rootPath: string, runId: string): Promise<SuiteRunRecord | null> {
+    const project = this.projects.get(rootPath);
+    if (!project) return null;
+    const run = this.suiteRuns.find(
+      (entry) => entry.projectId === project.id && entry.id === runId
+    );
+    return run ? cloneSuiteRun(run) : null;
   }
 
   async upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord> {
@@ -651,7 +674,7 @@ function cloneSuiteRun(run: SuiteRunRecord): SuiteRunRecord {
   return {
     ...run,
     failureDomains: { ...run.failureDomains },
-    cases: run.cases.map((entry) => ({ ...entry }))
+    cases: run.cases.map((entry) => ({ ...entry, jiraIssueKey: entry.jiraIssueKey ?? null }))
   };
 }
 

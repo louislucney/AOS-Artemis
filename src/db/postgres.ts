@@ -28,6 +28,7 @@ import type {
   RunnerRecord,
   RunnerTools,
   ScheduleRecord,
+  SetCaseIssueKeyInput,
   SuiteRunCaseRecord,
   SuiteRunRecord,
   TaskStatRecord,
@@ -194,6 +195,7 @@ const SCHEMA = [
      verdict_by TEXT,
      verdict_at TEXT,
      verdict_note TEXT,
+     jira_issue_key TEXT,
      PRIMARY KEY (run_id, case_id)
     )`,
   `CREATE TABLE IF NOT EXISTS runners (
@@ -231,7 +233,8 @@ const MIGRATIONS = [
   `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS runner TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_by TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_at TEXT`,
-  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE suite_run_cases ADD COLUMN IF NOT EXISTS jira_issue_key TEXT`
 ];
 
 export class PostgresStore implements ProjectStore {
@@ -803,8 +806,8 @@ export class PostgresStore implements ProjectStore {
         await query(
           `INSERT INTO suite_run_cases
              (run_id, case_id, name, feature_key, platform, status, trace_id, failure_domain, failure_confidence,
-              failure_reason, duration_ms, quarantined, flaky, verdict, verdict_by, verdict_at, verdict_note)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+              failure_reason, duration_ms, quarantined, flaky, verdict, verdict_by, verdict_at, verdict_note, jira_issue_key)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
           [
             id,
             entry.caseId,
@@ -822,7 +825,8 @@ export class PostgresStore implements ProjectStore {
             entry.verdict,
             entry.verdictBy,
             entry.verdictAt,
-            entry.verdictNote
+            entry.verdictNote,
+            entry.jiraIssueKey ?? null
           ]
         );
       }
@@ -904,6 +908,36 @@ export class PostgresStore implements ProjectStore {
       ]
     );
     return updated.rows.length > 0;
+  }
+
+  async setCaseIssueKey(input: SetCaseIssueKeyInput): Promise<boolean> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return false;
+    const updated = await this.pool.query(
+      `UPDATE suite_run_cases
+          SET jira_issue_key = $3
+        WHERE run_id = $1 AND case_id = $2
+          AND run_id IN (SELECT id FROM suite_runs WHERE project_id = $4)
+        RETURNING case_id`,
+      [input.runId, input.caseId, input.jiraKey, project.id]
+    );
+    return updated.rows.length > 0;
+  }
+
+  async getSuiteRun(rootPath: string, runId: string): Promise<SuiteRunRecord | null> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return null;
+    const runs = await this.pool.query(
+      "SELECT * FROM suite_runs WHERE id = $1 AND project_id = $2",
+      [runId, project.id]
+    );
+    const row = runs.rows[0];
+    if (!row) return null;
+    const cases = await this.pool.query(
+      "SELECT * FROM suite_run_cases WHERE run_id = $1 ORDER BY case_id ASC",
+      [runId]
+    );
+    return mapSuiteRun(row, cases.rows);
   }
 
   async upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord> {
@@ -1423,7 +1457,8 @@ function mapSuiteRunCase(row: Record<string, unknown>): SuiteRunCaseRecord {
     verdict: nullableString(row.verdict),
     verdictBy: nullableString(row.verdict_by),
     verdictAt: nullableString(row.verdict_at),
-    verdictNote: nullableString(row.verdict_note)
+    verdictNote: nullableString(row.verdict_note),
+    jiraIssueKey: nullableString(row.jira_issue_key)
   };
 }
 

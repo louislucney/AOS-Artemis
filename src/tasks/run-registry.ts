@@ -89,7 +89,8 @@ export function buildSuiteRunInput(input: BuildSuiteRunInput): {
       verdict: null,
       verdictBy: null,
       verdictAt: null,
-      verdictNote: null
+      verdictNote: null,
+      jiraIssueKey: null
     }))
   };
 }
