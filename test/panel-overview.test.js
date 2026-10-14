@@ -849,3 +849,96 @@ test("panel detail: buildPanelStatsView（三清单取最新裁决；指引非�
   assert.deepEqual(empty.improvement.appDefects, []);
   assert.ok(Array.isArray(empty.guidance));
 });
+
+test("panel detail: runners 聚合（在线按 TTL；含设备/工具；无 runner → []）", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "runner-app" });
+  const runner = await store.upsertRunner({
+    rootPath: dir,
+    name: "r-1",
+    hostname: "mac-1",
+    platforms: ["android"],
+    devices: [
+      { serial: "emulator-5554", name: "", platform: "android", kind: "emulator", state: "device" }
+    ],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false },
+    artifactBaseUrl: "http://mac-1:8770"
+  });
+  const seenMs = Date.parse(runner.lastSeenAt);
+
+  const online = await buildPanelProjectDetail(
+    { store, serviceRepo: repo, buildStale: false, env: {}, now: () => seenMs + 10_000 },
+    dir
+  );
+  assert.equal(online.runners.length, 1);
+  assert.equal(online.runners[0].id, runner.id);
+  assert.equal(online.runners[0].online, true);
+  assert.equal(online.runners[0].name, "r-1");
+  assert.equal(online.runners[0].devices[0].serial, "emulator-5554");
+  assert.deepEqual(online.runners[0].tools, {
+    adb: true,
+    idb: false,
+    simctl: false,
+    ideviceId: false,
+    appium: false
+  });
+  assert.equal(online.runners[0].artifactBaseUrl, "http://mac-1:8770");
+
+  const offline = await buildPanelProjectDetail(
+    { store, serviceRepo: repo, buildStale: false, env: {}, now: () => seenMs + 120_000 },
+    dir
+  );
+  assert.equal(offline.runners[0].online, false, "TTL 过期 → 离线");
+
+  const emptyDir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: emptyDir, name: "empty-app" });
+  const empty = await buildPanelProjectDetail(
+    { store, serviceRepo: repo, buildStale: false, env: {} },
+    emptyDir
+  );
+  assert.deepEqual(empty.runners, []);
+});
+
+test("panel detail: 任务详情 runner 匹配（claimedBy=runner id；未领取 → null）", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "task-runner-app" });
+  const taskInput = {
+    rootPath: dir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  };
+  const task = await store.createRegressionTask(taskInput);
+  const runner = await store.upsertRunner({
+    rootPath: dir,
+    name: "r-1",
+    hostname: "mac-1",
+    platforms: ["android"],
+    devices: [],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false }
+  });
+  await store.claimRegressionTask({ rootPath: dir, runnerId: runner.id, platforms: ["android"] });
+  const deps = {
+    store,
+    serviceRepo: repo,
+    buildStale: false,
+    env: {},
+    now: () => Date.parse(runner.lastSeenAt) + 5_000
+  };
+
+  const detail = await buildPanelTaskDetail(deps, dir, task.id);
+  assert.ok(detail);
+  assert.equal(detail.task.claimedBy, runner.id);
+  assert.equal(detail.runner.id, runner.id);
+  assert.equal(detail.runner.online, true);
+  assert.equal(detail.runners.length, 1);
+
+  const second = await store.createRegressionTask(taskInput);
+  const pending = await buildPanelTaskDetail(deps, dir, second.id);
+  assert.equal(pending.runner, null, "未领取 → null");
+});

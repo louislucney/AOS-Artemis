@@ -9,6 +9,9 @@ import type {
   ProjectRecord,
   ProjectStore,
   RegressionTaskRecord,
+  RunnerDevice,
+  RunnerRecord,
+  RunnerTools,
   TaskStatRecord
 } from "../db/types.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
@@ -27,6 +30,7 @@ import { scanProjectEnv, type EnvScanResult } from "../projects/scan.js";
 import { detectProjectStacks } from "../projects/stack.js";
 import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
 import { crossPlatformDeltas } from "../tasks/run-compare.js";
+import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import { buildRegressionStats, type PanelRegressionStats } from "./stats.js";
 import { errorMessage } from "../util.js";
 import { collectDiskAssets, type PanelDiskAssets } from "./assets.js";
@@ -204,7 +208,35 @@ export interface PanelTaskDetail {
   }>;
   runs: PanelTaskRunView[];
   crossPlatform: Array<{ caseId: string; name: string; results: Record<string, string> }>;
+  runner: PanelRunnerView | null;
+  runners: PanelRunnerView[];
   warnings: string[];
+}
+
+export interface PanelRunnerView {
+  id: string;
+  name: string;
+  hostname: string;
+  online: boolean;
+  lastSeenAt: string;
+  platforms: string[];
+  devices: RunnerDevice[];
+  tools: RunnerTools;
+  artifactBaseUrl: string | null;
+}
+
+function runnerView(record: RunnerRecord, nowMs: number, ttlMs: number): PanelRunnerView {
+  return {
+    id: record.id,
+    name: record.name,
+    hostname: record.hostname,
+    online: isRunnerOnline(record.lastSeenAt, nowMs, ttlMs),
+    lastSeenAt: record.lastSeenAt,
+    platforms: record.platforms,
+    devices: record.devices,
+    tools: record.tools,
+    artifactBaseUrl: record.artifactBaseUrl
+  };
 }
 
 export interface PanelReviewItem {
@@ -253,6 +285,7 @@ export interface PanelProjectDetail {
   standalones: PanelStandaloneRow[];
   regressionRefs: PanelRegressionRef[];
   tasks: PanelTaskRow[];
+  runners: PanelRunnerView[];
   diskAssets: PanelDiskAssets | null;
   deep: PanelDeepView | null;
   emptyState: { causes: string[] } | null;
@@ -815,6 +848,17 @@ export async function buildPanelProjectDetail(
     warnings.push(`回归任务读取失败：${errorMessage(error)}`);
   }
 
+  const runners: PanelRunnerView[] = [];
+  try {
+    const ttlMs = runnerTtlFrom(deps.env ?? process.env);
+    const nowMs = now();
+    for (const record of await deps.store.listRunners(rootPath)) {
+      runners.push(runnerView(record, nowMs, ttlMs));
+    }
+  } catch (error) {
+    warnings.push(`执行机读取失败：${errorMessage(error)}`);
+  }
+
   return {
     generatedAt: new Date(now()).toISOString(),
     project: row,
@@ -824,6 +868,7 @@ export async function buildPanelProjectDetail(
     standalones,
     regressionRefs,
     tasks: taskRows,
+    runners,
     diskAssets,
     deep,
     emptyState,
@@ -913,7 +958,21 @@ export async function buildPanelTaskDetail(
     }))
   );
 
-  return { task, refs, runs: runViews, crossPlatform, warnings };
+  const runners: PanelRunnerView[] = [];
+  try {
+    const ttlMs = runnerTtlFrom(deps.env ?? process.env);
+    const nowMs = (deps.now ?? (() => Date.now()))();
+    for (const record of await deps.store.listRunners(rootPath)) {
+      runners.push(runnerView(record, nowMs, ttlMs));
+    }
+  } catch (error) {
+    warnings.push(`执行机读取失败：${errorMessage(error)}`);
+  }
+  const runner = task.claimedBy
+    ? (runners.find((entry) => entry.id === task.claimedBy) ?? null)
+    : null;
+
+  return { task, refs, runs: runViews, crossPlatform, runner, runners, warnings };
 }
 
 /** 归因队列（DESIGN：回归服务 §5.7）：最近 N 次运行的全部失败用例；

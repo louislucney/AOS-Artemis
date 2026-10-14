@@ -705,3 +705,88 @@ test("panel web: stats HTML（功能表/最不稳用例/跨端/三清单/指引�
   );
   assert.match(projectHtml.body, /view=stats/, "项目页有统计入口");
 });
+
+test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标）+ 有 runner 挂 refresh", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  await store.upsertRunner({
+    rootPath: projectDir,
+    name: "r-1",
+    hostname: "mac-1",
+    platforms: ["android"],
+    devices: [
+      { serial: "emulator-5554", name: "", platform: "android", kind: "emulator", state: "device" }
+    ],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false },
+    artifactBaseUrl: "http://mac-1:8770"
+  });
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /执行机（runner）/);
+  assert.match(html.body, /lamp-green/);
+  assert.match(html.body, /emulator-5554/);
+  assert.match(html.body, /adb ✓/);
+  assert.match(html.body, /appium ✗/);
+  assert.match(html.body, /http:\/\/mac-1:8770/);
+  assert.match(html.body, /http-equiv="refresh" content="30"/);
+
+  const clean = await makeHarness();
+  const cleanHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(clean.projectDir)}`),
+    clean.deps
+  );
+  assert.match(cleanHtml.body, /暂无 runner 心跳/);
+  assert.doesNotMatch(cleanHtml.body, /http-equiv="refresh"/, "无 runner 不挂刷新");
+});
+
+test("panel web: 任务页 已领取/在线标记/刷新/无端覆盖提示", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const taskInput = (platforms) => ({
+    rootPath: projectDir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms,
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  const claimedTask = await store.createRegressionTask(taskInput(["android"]));
+  const runner = await store.upsertRunner({
+    rootPath: projectDir,
+    name: "r-1",
+    hostname: "mac-1",
+    platforms: ["android"],
+    devices: [],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false }
+  });
+  await store.claimRegressionTask({
+    rootPath: projectDir,
+    runnerId: runner.id,
+    platforms: ["android"]
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${claimedTask.id}`),
+    deps
+  );
+  assert.match(html.body, /已领取/);
+  assert.match(html.body, /「r-1」（在线）/);
+  assert.match(html.body, /http-equiv="refresh" content="10"/);
+  assert.match(html.body, /在线 runner 会自动领取执行/);
+  assert.doesNotMatch(html.body, /无在线 runner 完整覆盖/);
+
+  const pendingTask = await store.createRegressionTask(taskInput(["ios"]));
+  const pendingHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pendingTask.id}`),
+    deps
+  );
+  assert.match(pendingHtml.body, /无在线 runner 完整覆盖/, "pending 且无端覆盖 → 提示");
+
+  await store.updateRegressionTask(projectDir, claimedTask.id, { status: "completed" });
+  const doneHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${claimedTask.id}`),
+    deps
+  );
+  assert.match(doneHtml.body, /已完成/);
+  assert.doesNotMatch(doneHtml.body, /http-equiv="refresh"/, "终态不刷新");
+});

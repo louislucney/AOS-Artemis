@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { ProjectStore } from "../db/types.js";
+import type { ProjectStore, RunnerTools } from "../db/types.js";
 import { formatBytes } from "../figma/retention.js";
 import { escapeHtml } from "../util.js";
 import {
@@ -743,6 +743,70 @@ function renderRegressionBlock(rootPath: string, detail: PanelProjectDetail): st
   ].join("\n");
 }
 
+const TASK_STATUS_LABELS: Record<string, string> = {
+  pending: "待执行",
+  claimed: "已领取",
+  running: "执行中",
+  completed: "已完成",
+  partial: "部分失败",
+  failed: "失败"
+};
+
+function taskStatusLabel(status: string): string {
+  return TASK_STATUS_LABELS[status] ?? status;
+}
+
+function toolBadges(tools: RunnerTools): string {
+  const entries: Array<[string, boolean]> = [
+    ["adb", tools.adb],
+    ["idb", tools.idb],
+    ["simctl", tools.simctl],
+    ["idevice_id", tools.ideviceId],
+    ["appium", tools.appium]
+  ];
+  return entries
+    .map(
+      ([name, ok]) =>
+        `<span class="chip"${ok ? "" : ' style="opacity:.45"'}>${escapeHtml(name)} ${ok ? "✓" : "✗"}</span>`
+    )
+    .join(" ");
+}
+
+function renderRunners(detail: PanelProjectDetail): string {
+  if (detail.runners.length === 0) {
+    return [
+      '<section id="runners">',
+      "<h2>执行机（runner）</h2>",
+      '<p class="empty">暂无 runner 心跳（在项目机运行 <code>node dist/cli.js suite runner</code>）</p>',
+      "</section>"
+    ].join("\n");
+  }
+  const rows = detail.runners.map((runner) => [
+    `${lampSpan(runner.online ? "green" : "gray")}<code>${escapeHtml(runner.name)}</code>`,
+    escapeHtml(runner.hostname),
+    runner.devices.length === 0
+      ? '<span class="muted">—</span>'
+      : runner.devices
+          .map((device) => {
+            const label =
+              device.name === ""
+                ? `${device.platform}:${device.serial}`
+                : `${device.platform}:${device.name}(${device.serial})`;
+            return `<span class="chip">${escapeHtml(label)}</span>`;
+          })
+          .join(""),
+    toolBadges(runner.tools),
+    `<code>${escapeHtml(runner.lastSeenAt)}</code>`,
+    runner.artifactBaseUrl === null ? "—" : `<code>${escapeHtml(runner.artifactBaseUrl)}</code>`
+  ]);
+  return [
+    '<section id="runners">',
+    "<h2>执行机（runner）</h2>",
+    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无 runner"),
+    "</section>"
+  ].join("\n");
+}
+
 function renderTaskList(rootPath: string, detail: PanelProjectDetail): string {
   const rows = detail.tasks.map((task) => [
     `<a href="${escapeHtml(taskHref(rootPath, task.id))}"><code>${escapeHtml(task.id)}</code></a>`,
@@ -802,13 +866,30 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
   const warnings = detail.warnings
     .map((warning) => `<p class="note">${escapeHtml(warning)}</p>`)
     .join("");
+  const active =
+    task.status === "pending" || task.status === "claimed" || task.status === "running";
+  const claimLine =
+    task.claimedBy === null
+      ? ""
+      : detail.runner === null
+        ? ` · 领取：<code>${escapeHtml(task.claimedBy)}</code>（未知执行机）`
+        : ` · 领取：「${escapeHtml(detail.runner.name)}」（${detail.runner.online ? "在线" : "失联"}）`;
+  const covered = detail.runners.some(
+    (entry) =>
+      entry.online && task.platforms.every((platform) => entry.platforms.includes(platform))
+  );
+  const coverageHint =
+    task.status === "pending" && !covered
+      ? '<p class="note">当前无在线 runner 完整覆盖任务目标端（双端任务需单机双端 runner）；可手动执行或等待 runner 上线。</p>'
+      : "";
   return page(
     `回归任务 · ${task.id}`,
     [
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
-      `<p>状态：${escapeHtml(task.status)} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)}</p>`,
+      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)} · 共 ${detail.runs.length} 个子运行</p>`,
+      coverageHint,
       warnings,
       "</header>",
       "<main>",
@@ -830,10 +911,11 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
       "</section>",
       '<section id="run-hint">',
       "<h2>触发执行</h2>",
-      `<p class="muted">在项目机执行：<code>node dist/cli.js suite run --task ${escapeHtml(task.id)} --device &lt;serial&gt;</code>（P2 支持面板一键下发）。产物在项目机磁盘（上方清单路径），中心侧仅展示路径。</p>`,
+      `<p class="muted">在线 runner 会自动领取执行；也可手动：<code>node dist/cli.js suite run --task ${escapeHtml(task.id)} --device &lt;serial&gt;</code>。产物在项目机磁盘（上方清单路径），中心侧仅展示路径。</p>`,
       "</section>",
       "</main>"
-    ].join("\n")
+    ].join("\n"),
+    active ? 10 : undefined
   );
 }
 
@@ -1089,10 +1171,12 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       renderBatches(detail, view.rootPath),
       renderRegressionBlock(view.rootPath, detail),
       renderTaskList(view.rootPath, detail),
+      renderRunners(detail),
       renderDiskAssets(detail),
       renderStandalones(detail),
       "</main>"
-    ].join("\n")
+    ].join("\n"),
+    detail.runners.length > 0 ? 30 : undefined
   );
 }
 
@@ -1230,13 +1314,16 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
   );
 }
 
-function page(title: string, bodyParts: string): string {
+function page(title: string, bodyParts: string, refreshSeconds?: number): string {
   return [
     "<!doctype html>",
     '<html lang="zh-CN">',
     "<head>",
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    ...(refreshSeconds !== undefined
+      ? [`<meta http-equiv="refresh" content="${refreshSeconds}">`]
+      : []),
     `<title>${escapeHtml(title)} · AOS 总览面板</title>`,
     `<style>${PAGE_CSS}</style>`,
     "</head>",
