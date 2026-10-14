@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ChatFn } from "../llm/chat.js";
 
 /** 功能切分（DESIGN：回归服务 §5.1）：把一稿多功能的流程按功能切成"份"。
@@ -219,4 +221,75 @@ export async function nameFeatures(
     });
   }
   return { groups: named, warnings };
+}
+
+export interface PriorFeature {
+  key: string;
+  name: string;
+  screens: string[];
+}
+
+function slugify(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 16);
+  return slug || "feature";
+}
+
+function overlapRatio(screens: string[], priorScreens: string[]): number {
+  const other = new Set(priorScreens);
+  const shared = screens.filter((screen) => other.has(screen)).length;
+  const denominator = Math.min(screens.length, priorScreens.length);
+  return denominator === 0 ? 0 : shared / denominator;
+}
+
+/** 身份继承：重叠率（|交集|/min）唯一最高且 ≥0.5 → 继承旧 key/name（名称冻结）；
+ * 并列最高 / 低于阈值 / prior 已被占用 → 新 key + `feature-identity-new` 告警。 */
+export function applyIdentity(
+  groups: FeatureGroup[],
+  prior: PriorFeature[]
+): { groups: FeatureGroup[]; warnings: FeatureWarning[] } {
+  const warnings: FeatureWarning[] = [];
+  const assigned = new Set<string>();
+  const result: FeatureGroup[] = [];
+  for (const group of groups) {
+    const scored = prior
+      .map((feature) => ({ feature, ratio: overlapRatio(group.screens, feature.screens) }))
+      .filter((entry) => entry.ratio >= 0.5)
+      .sort((a, b) => b.ratio - a.ratio || compareText(a.feature.key, b.feature.key));
+    const best = scored[0];
+    const tied = best ? scored.filter((entry) => entry.ratio === best.ratio).length > 1 : false;
+    if (best && !tied && !assigned.has(best.feature.key)) {
+      assigned.add(best.feature.key);
+      result.push({ ...group, key: best.feature.key, name: best.feature.name });
+      continue;
+    }
+    const digest = createHash("sha256")
+      .update([...group.screens].sort(compareText).join("|"))
+      .digest("hex")
+      .slice(0, 8);
+    const key = `f-${slugify(group.name)}-${digest}`;
+    result.push({ ...group, key });
+    warnings.push({
+      code: "feature-identity-new",
+      message: `功能身份新建：${group.name}（${group.screens.length} 屏）→ ${key}`
+    });
+  }
+  return { groups: result, warnings };
+}
+
+export function assignCaseFeature(caseScreens: string[], groups: FeatureGroup[]): string | null {
+  const counts = groups.map((group) => ({
+    group,
+    count: caseScreens.filter((screen) => group.screens.includes(screen)).length
+  }));
+  const max = counts.reduce((best, entry) => Math.max(best, entry.count), 0);
+  if (max === 0) return null;
+  const top = counts.filter((entry) => entry.count === max);
+  if (top.length === 1) return top[0]!.group.key;
+  const first = caseScreens[0];
+  const owner = first ? groups.find((group) => group.screens.includes(first)) : undefined;
+  return (owner ?? top[0]!.group).key;
 }

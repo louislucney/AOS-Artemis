@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { nameFeatures, splitFeatures } from "../dist/figma/features.js";
+import { applyIdentity, assignCaseFeature, nameFeatures, splitFeatures } from "../dist/figma/features.js";
 
 test("splitFeatures: 按页面分组（signal=page）", () => {
   const groups = splitFeatures({
@@ -137,4 +137,60 @@ test("nameFeatures: chat 抛错不阻断", async () => {
   });
   assert.equal(result.groups[0].name, "功能1");
   assert.equal(result.warnings[0].code, "feature-naming-fallback");
+});
+
+function namedGroup(name, screens, key = "") {
+  return { key, name, screens, signal: "name-prefix", candidateName: name };
+}
+
+test("applyIdentity: 重叠 ≥0.5 继承 key 与名（名称冻结）", () => {
+  const result = applyIdentity(
+    [namedGroup("登录流程", ["登录-输入", "登录-验证"])],
+    [{ key: "f-login-aaaa1111", name: "登录", screens: ["登录-输入", "登录-验证", "登录-找回"] }]
+  );
+  assert.equal(result.groups[0].key, "f-login-aaaa1111");
+  assert.equal(result.groups[0].name, "登录");
+  assert.equal(result.warnings.length, 0);
+});
+
+test("applyIdentity: 无匹配生成新 key 并告警", () => {
+  const result = applyIdentity(
+    [namedGroup("支付流程", ["支付-确认", "支付-结果"])],
+    [{ key: "f-login-aaaa1111", name: "登录", screens: ["登录-输入"] }]
+  );
+  assert.match(result.groups[0].key, /^f-支付流程-[0-9a-f]{8}$/);
+  assert.equal(result.warnings[0].code, "feature-identity-new");
+});
+
+test("applyIdentity: 并列最高不合并（新 key）", () => {
+  const result = applyIdentity(
+    [namedGroup("流程A", ["甲", "乙"])],
+    [
+      { key: "f-a-11111111", name: "甲组", screens: ["甲", "乙"] },
+      { key: "f-b-22222222", name: "乙组", screens: ["甲", "乙"] }
+    ]
+  );
+  assert.notEqual(result.groups[0].key, "f-a-11111111");
+  assert.notEqual(result.groups[0].key, "f-b-22222222");
+  assert.equal(result.warnings[0].code, "feature-identity-new");
+});
+
+test("applyIdentity: 同一 prior 不被两组重复继承", () => {
+  const result = applyIdentity(
+    [namedGroup("甲流程", ["甲", "乙"]), namedGroup("乙流程", ["乙", "丙"])],
+    [{ key: "f-shared-33333333", name: "共享", screens: ["甲", "乙", "丙"] }]
+  );
+  assert.equal(result.groups[0].key, "f-shared-33333333");
+  assert.notEqual(result.groups[1].key, "f-shared-33333333");
+  assert.equal(result.warnings[0].code, "feature-identity-new");
+});
+
+test("assignCaseFeature: 多数归属；并列取首屏；无命中 null", () => {
+  const groups = [
+    { key: "f-login", name: "登录", screens: ["登录-输入", "登录-验证"], signal: "name-prefix", candidateName: "登录" },
+    { key: "f-home", name: "首页", screens: ["首页", "详情"], signal: "name-prefix", candidateName: "首页" }
+  ];
+  assert.equal(assignCaseFeature(["登录-输入", "登录-验证", "首页"], groups), "f-login");
+  assert.equal(assignCaseFeature(["登录-输入", "首页"], groups), "f-login");
+  assert.equal(assignCaseFeature(["无关屏"], groups), null);
 });
