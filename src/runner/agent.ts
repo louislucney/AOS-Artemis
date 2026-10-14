@@ -4,6 +4,7 @@ import { defaultBuildRuntime, type CliRuntimeBundle } from "../cli-runtime.js";
 import type { RegressionTaskRecord, RunnerRecord } from "../db/types.js";
 import { AOS_MCP_VERSION, errorMessage } from "../util.js";
 import { collectRunnerInventory, type RunnerInventory } from "./inventory.js";
+import { fireDueSchedules } from "./schedules.js";
 
 export interface RunnerAgentIO {
   log: (line: string) => void;
@@ -16,6 +17,7 @@ export interface RunnerAgentOptions {
   pollMs?: number;
   heartbeatMs?: number;
   maxAttempts?: number;
+  schedulesEnabled?: boolean;
   once?: boolean;
   shouldStop?: () => boolean;
   artifactBaseUrl?: string | null;
@@ -42,6 +44,8 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
   const pollMs = options.pollMs ?? intFromEnv(env.AOS_RUNNER_POLL_MS, 5_000);
   const heartbeatMs = options.heartbeatMs ?? intFromEnv(env.AOS_RUNNER_HEARTBEAT_MS, 30_000);
   const maxAttempts = options.maxAttempts ?? intFromEnv(env.AOS_RUNNER_MAX_ATTEMPTS, 3);
+  const schedulesEnabled =
+    options.schedulesEnabled ?? (env.AOS_RUNNER_SCHEDULES ?? "").trim() !== "0";
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const io = options.io ?? {
@@ -123,6 +127,13 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
 
     try {
       while (!stopped()) {
+        if (schedulesEnabled) {
+          try {
+            await fireDueSchedules({ store, rootPath, now: options.now, io });
+          } catch (error) {
+            io.errorLog(`[runner] 调度检查失败：${errorMessage(error)}`);
+          }
+        }
         const snapshot = inventory;
         let task: RegressionTaskRecord | null;
         try {

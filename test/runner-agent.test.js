@@ -65,6 +65,36 @@ function taskInput(rootPath, overrides = {}) {
   };
 }
 
+const SCHEDULE_NOW = Date.parse("2026-10-14T12:00:00.000Z");
+
+async function seedSchedule(rootPath, store) {
+  await store.recordCaseSet({
+    rootPath,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+  return store.createSchedule({
+    rootPath,
+    name: "夜间回归",
+    featureKeys: ["f-1"],
+    platforms: ["android"],
+    baseline: "latest",
+    everyMinutes: 60,
+    createdBy: "cli"
+  });
+}
+
 test("once：心跳写入 runners（name/hostname/platforms/devices/tools/artifactBaseUrl）", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const { options, logs } = makeOptions(runtime, inv);
@@ -286,6 +316,110 @@ test("重试上限：永久失败任务达上限置 failed，不再饿死后续�
   assert.equal(failed.attempts, 2);
   assert.equal((await store.getRegressionTask(rootPath, later.id)).status, "completed");
   assert.ok(logs.some((line) => line.includes("标记 failed")));
+});
+
+test("once：到期调度触发建任务并当轮领取执行", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  await seedSchedule(rootPath, store);
+  const calls = [];
+  const { options, logs } = makeOptions(runtime, inv, {
+    now: () => SCHEDULE_NOW,
+    executeSuite: async (argv) => {
+      calls.push(argv[2]);
+      await store.updateRegressionTask(rootPath, argv[2], { status: "completed" });
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(calls.length, 1);
+  const tasks = await store.listRegressionTasks(rootPath);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].createdBy, "schedule:夜间回归");
+  assert.equal(tasks[0].status, "completed", "当轮即领取执行");
+  assert.ok(logs.some((line) => line.includes("触发 夜间回归")));
+});
+
+test("调度可关：schedulesEnabled:false / AOS_RUNNER_SCHEDULES=0 → 不触发", async () => {
+  const off1 = await setupFixture();
+  await seedSchedule(off1.runtime.project.rootDir, off1.store);
+  const { options: options1 } = makeOptions(off1.runtime, off1.inventory, {
+    now: () => SCHEDULE_NOW,
+    schedulesEnabled: false
+  });
+  await runRunnerAgent(options1);
+  assert.equal(
+    (await off1.store.listRegressionTasks(off1.runtime.project.rootDir)).length,
+    0
+  );
+
+  const off2 = await setupFixture();
+  await seedSchedule(off2.runtime.project.rootDir, off2.store);
+  const { options: options2 } = makeOptions(off2.runtime, off2.inventory, {
+    now: () => SCHEDULE_NOW,
+    env: { AOS_RUNNER_SCHEDULES: "0" }
+  });
+  await runRunnerAgent(options2);
+  assert.equal(
+    (await off2.store.listRegressionTasks(off2.runtime.project.rootDir)).length,
+    0
+  );
+});
+
+test("daemon：跨窗口连续触发（now 推进；每窗口一次）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  await seedSchedule(rootPath, store);
+  let nowMs = SCHEDULE_NOW;
+  let completed = 0;
+  const calls = [];
+  const state = { done: false };
+  const { options } = makeOptions(runtime, inv, {
+    once: false,
+    now: () => nowMs,
+    shouldStop: () => state.done,
+    executeSuite: async (argv) => {
+      calls.push(argv[2]);
+      await store.updateRegressionTask(rootPath, argv[2], { status: "completed" });
+      completed += 1;
+      if (completed >= 2) state.done = true;
+      else nowMs = SCHEDULE_NOW + 2 * 60 * 60_000;
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(calls.length, 2, "两窗口各触发一次");
+  const tasks = await store.listRegressionTasks(rootPath);
+  assert.equal(tasks.length, 2);
+  assert.ok(tasks.every((task) => task.createdBy === "schedule:夜间回归"));
+});
+
+test("调度触发失败不打断领取循环（后续任务照常执行）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  await seedSchedule(rootPath, store);
+  const manual = await store.createRegressionTask(taskInput(rootPath));
+  const original = store.createRegressionTask.bind(store);
+  store.createRegressionTask = async () => {
+    throw new Error("insert fail");
+  };
+  const calls = [];
+  const { options, errors } = makeOptions(runtime, inv, {
+    now: () => SCHEDULE_NOW,
+    executeSuite: async (argv) => {
+      calls.push(argv[2]);
+      await store.updateRegressionTask(rootPath, argv[2], { status: "completed" });
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  store.createRegressionTask = original;
+  assert.equal(code, 0);
+  assert.deepEqual(calls, [manual.id], "调度失败后照常领取执行");
+  assert.ok(errors.some((line) => line.includes("insert fail")));
+  assert.equal((await store.getRegressionTask(rootPath, manual.id)).status, "completed");
 });
 
 test("执行期间心跳持续（daemon）：长跑不再失联", async () => {
