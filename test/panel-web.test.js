@@ -1188,6 +1188,17 @@ test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS
   assert.match(html.body, />预览</);
   assert.match(html.body, />建单</);
   assert.match(html.body, /id="issues-result"/);
+  const formOpen = html.body.indexOf('<form id="issues-form"');
+  const formClose = html.body.indexOf("</form>", formOpen);
+  const formHtml = html.body.slice(formOpen, formClose);
+  assert.ok(formOpen >= 0 && formClose > formOpen, "issues-form 开/闭标签存在");
+  assert.match(
+    formHtml,
+    /name="issue-item" value="[^"]*case-app"/,
+    "checkbox 位于 issues-form 作用域内（否则 form.querySelectorAll 采集为空）"
+  );
+  assert.match(formHtml, /name="projectKey"/, "表单字段位于 issues-form 内");
+  assert.match(formHtml, /id="issues-result"/, "结果容器位于 issues-form 内");
   assert.match(html.body, /function submitIssues\(event,dryRun\)/);
   assert.match(html.body, /fetch\('\/panel\/api\/issues'/);
   assert.match(html.body, /submitIssues\(event, false\)/, "建单按钮 dryRun=false");

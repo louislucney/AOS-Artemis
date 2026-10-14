@@ -1126,8 +1126,8 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
   ]);
   return [
     title,
-    renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决"),
     '<form id="issues-form" onsubmit="return submitIssues(event, false)">',
+    renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决"),
     '<p><label>Jira 项目：<input type="text" name="projectKey" size="12" placeholder="默认 JIRA_ISSUE_PROJECT"></label> ',
     '<label>类型：<input type="text" name="issueType" size="10" placeholder="Bug"></label> ',
     '<label>标签：<input type="text" name="labels" size="20" placeholder="逗号分隔"></label></p>',
