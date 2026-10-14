@@ -317,9 +317,9 @@ async function persistRunManifest(
     options: SuiteRunOptions;
     quarantinedCaseIds?: Set<string>;
   }
-): Promise<void> {
+): Promise<string | null> {
   const env = io.env ?? process.env;
-  if (!runManifestsEnabled(env)) return;
+  if (!runManifestsEnabled(env)) return null;
   try {
     const fingerprint = testsFingerprint(report.testsPath);
     const manifest = buildRunManifest({
@@ -346,10 +346,12 @@ async function persistRunManifest(
         quarantinedCaseIds: [...(input.quarantinedCaseIds ?? [])].sort()
       }
     });
-    saveRunManifest(runtime.configDirAbs, manifest);
+    const manifestPath = saveRunManifest(runtime.configDirAbs, manifest);
     pruneRunManifests(runtime.configDirAbs, runManifestMax(env));
+    return manifestPath;
   } catch (error) {
     logWarn(`批次清单写入失败: ${errorMessage(error)}`);
+    return null;
   }
 }
 
@@ -422,6 +424,7 @@ async function registerRunBestEffort(
     regressionTaskId?: string | null;
     refs?: { caseSetId: string; featureKey: string; featureName: string } | null;
     runnerName?: string | null;
+    manifestPath?: string | null;
   }
 ): Promise<{ runId: string; comparison: RunComparison | null } | null> {
   const refs =
@@ -450,6 +453,7 @@ async function registerRunBestEffort(
     exitCode: input.exitCode,
     startedAtMs: input.startedAtMs,
     finishedAtMs: Date.now(),
+    manifestPath: input.manifestPath ?? null,
     comparison
   });
   return runId ? { runId, comparison } : null;
@@ -475,7 +479,7 @@ async function persistRunRegistration(
   report: SuiteRunReport,
   io: SuiteIo,
   flags: ParsedFlags,
-  input: { runOptions: SuiteRunOptions; exitCode: number; startedAtMs: number }
+  input: { runOptions: SuiteRunOptions; exitCode: number; startedAtMs: number; manifestPath?: string | null }
 ): Promise<void> {
   const registration = await registerRunBestEffort(runtime, report, {
     ...input,
@@ -637,6 +641,24 @@ async function suiteRunTask(
         exitCode,
         startedAtMs,
         finishedAtMs: Date.now(),
+        manifestPath: flags.bool("no-save")
+          ? null
+          : await persistRunManifest(runtime, report, io, {
+              source: "suite-run",
+              startedAtMs,
+              exitCode,
+              coverageIssue: null,
+              strict: flags.bool("strict"),
+              failOnUncovered: false,
+              retry: retryCountOf(flags),
+              options: {
+                ...baseOptions,
+                testsPath: ref.jsonPath,
+                deviceSerial: device,
+                caseIds
+              },
+              quarantinedCaseIds: quarantine.ids
+            }),
         comparison
       });
       if (runId) runIds.push(runId);
@@ -824,7 +846,7 @@ async function suiteRun(
   const exitCode =
     !report.ok ? 2 : coverageIssue ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
   if (!flags.bool("no-save")) {
-    await persistRunManifest(runtime, report, io, {
+    const manifestPath = await persistRunManifest(runtime, report, io, {
       source: "suite-run",
       startedAtMs,
       exitCode,
@@ -838,7 +860,8 @@ async function suiteRun(
     await persistRunRegistration(runtime, report, io, flags, {
       runOptions,
       exitCode,
-      startedAtMs
+      startedAtMs,
+      manifestPath
     });
   }
   return exitCode;
@@ -1107,7 +1130,7 @@ async function suiteLoop(
     const exitCode =
       !report.ok ? 2 : coverageIssue ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
     if (!flags.bool("no-save")) {
-      await persistRunManifest(runtime, report, io, {
+      const manifestPath = await persistRunManifest(runtime, report, io, {
         source: "suite-loop",
         startedAtMs,
         exitCode,
@@ -1121,7 +1144,8 @@ async function suiteLoop(
       await persistRunRegistration(runtime, report, io, flags, {
         runOptions,
         exitCode,
-        startedAtMs
+        startedAtMs,
+        manifestPath
       });
     }
   }

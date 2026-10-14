@@ -790,3 +790,120 @@ test("panel web: 任务页 已领取/在线标记/刷新/无端覆盖提示", as
   assert.match(doneHtml.body, /已完成/);
   assert.doesNotMatch(doneHtml.body, /http-equiv="refresh"/, "终态不刷新");
 });
+
+test("panel web: 产物链接（任务页/归因队列；无 runner → 纯路径）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const caseSetsDir = path.join(projectDir, ".artemis", "design", "case-sets");
+  const set = await store.recordCaseSet({
+    rootPath: projectDir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: path.join(caseSetsDir, "x.json"),
+        mdPath: path.join(caseSetsDir, "x.md"),
+        xlsxPath: path.join(caseSetsDir, "x.xlsx")
+      }
+    ]
+  });
+  const task = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: set.id, featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: task.id,
+      caseSetId: set.id,
+      featureKey: "f-1",
+      featureName: "登录流程",
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      runner: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 1,
+      passed: 0,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: path.join(projectDir, ".artemis", "design", "runs", "run-1.json"),
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: "f-1",
+        platform: "android",
+        status: "failed",
+        traceId: "trace-1",
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+
+  const bareHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${task.id}`),
+    deps
+  );
+  assert.doesNotMatch(bareHtml.body, /\/artifact\//, "无 runner → 纯路径");
+  const bareReview = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=review`),
+    deps
+  );
+  assert.doesNotMatch(bareReview.body, /打开证据/);
+
+  const runner = await store.upsertRunner({
+    rootPath: projectDir,
+    name: "r-1",
+    hostname: "mac-1",
+    platforms: ["android"],
+    devices: [],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false },
+    artifactBaseUrl: "http://mac-1:8770"
+  });
+  await store.claimRegressionTask({
+    rootPath: projectDir,
+    runnerId: runner.id,
+    platforms: ["android"]
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${task.id}`),
+    deps
+  );
+  assert.match(html.body, /href="http:\/\/mac-1:8770\/artifact\/design\/runs\/run-1\.json"/);
+  assert.match(html.body, /href="http:\/\/mac-1:8770\/artifact\/design\/case-sets\/x\.json"/);
+  assert.match(html.body, />xlsx<\/a>/);
+
+  const review = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=review`),
+    deps
+  );
+  assert.match(review.body, /打开证据/);
+  assert.match(review.body, /href="http:\/\/mac-1:8770\/artifact\/traces\/trace-1"/);
+});

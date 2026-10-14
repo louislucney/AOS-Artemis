@@ -1197,6 +1197,8 @@ test("suite run: 登记 suite_runs + 逐例（memory store）", async () => {
   assert.equal(runs[0].cases.length, 2);
   assert.deepEqual(runs[0].cases.map((entry) => entry.caseId).sort(), ["case-1", "case-2"]);
   assert.ok(logs.some((line) => line.startsWith("登记: run ")), "登记摘要行");
+  assert.ok(runs[0].manifestPath, "批次清单路径登记");
+  assert.ok(fs.existsSync(runs[0].manifestPath), "批次清单文件存在");
 });
 
 test("suite run: 指向归档 JSON 时解析份血统并写对比（修复）", async () => {

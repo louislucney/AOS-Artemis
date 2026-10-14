@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { startRunnerArtifactServer } from "../dist/runner/artifact-server.js";
+import { artifactUrl } from "../dist/panel/overview.js";
 import { makeTempDir } from "./helpers.js";
 
 function makeProject() {
@@ -123,4 +124,28 @@ test("artifact server: 非 GET/HEAD → 405；未知路径 → 404", async () =>
     const other = await fetch(`${base}/other`);
     assert.equal(other.status, 404);
   });
+});
+
+test("端到端缝：artifactUrl 构建的 URL 打到真实产物服务 → 200（跨任务缝合）", async () => {
+  const { projectDir, artemis } = makeProject();
+  const server = await startRunnerArtifactServer({ projectDir, port: 0 });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const fileUrl = artifactUrl(
+      base,
+      projectDir,
+      path.join(artemis, "design", "reports", "a.xlsx")
+    );
+    assert.equal(fileUrl, `${base}/artifact/design/reports/a.xlsx`);
+    const file = await fetch(fileUrl);
+    assert.equal(file.status, 200, "面板拼出的 URL 必须真实可达");
+    assert.equal(await file.text(), "xlsx-bytes");
+
+    const dirUrl = artifactUrl(base, projectDir, path.join(artemis, "design"));
+    const dirResponse = await fetch(dirUrl);
+    assert.equal(dirResponse.status, 200);
+    assert.match(await dirResponse.text(), /note\.json/, "目录索引可达");
+  } finally {
+    await server.close();
+  }
 });

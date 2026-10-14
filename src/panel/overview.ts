@@ -194,6 +194,7 @@ export interface PanelTaskRunView {
     vanished: number;
   } | null;
   manifestPath: string | null;
+  artifacts: { manifestUrl: string | null };
   createdAt: string;
 }
 
@@ -205,6 +206,9 @@ export interface PanelTaskDetail {
     featureName: string | null;
     caseCount: number | null;
     jsonPath: string | null;
+    xlsxPath: string | null;
+    jsonUrl: string | null;
+    xlsxUrl: string | null;
   }>;
   runs: PanelTaskRunView[];
   crossPlatform: Array<{ caseId: string; name: string; results: Record<string, string> }>;
@@ -239,6 +243,24 @@ function runnerView(record: RunnerRecord, nowMs: number, ttlMs: number): PanelRu
   };
 }
 
+/** 产物 URL（服务根＝`<rootPath>/.artemis`，与服务端一致）：越界/无基址 → null。 */
+export function artifactUrl(
+  artifactBaseUrl: string | null,
+  rootPath: string,
+  absPath: string | null
+): string | null {
+  if (artifactBaseUrl === null || absPath === null) return null;
+  const rel = path.relative(path.join(rootPath, ".artemis"), absPath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  const base = artifactBaseUrl.replace(/\/+$/, "");
+  if (rel === "") return `${base}/artifact/`;
+  const encoded = rel
+    .split(path.sep)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `${base}/artifact/${encoded}`;
+}
+
 export interface PanelReviewItem {
   runId: string;
   caseId: string;
@@ -252,6 +274,7 @@ export interface PanelReviewItem {
   failureReason: string | null;
   traceId: string | null;
   evidencePath: string | null;
+  evidenceUrl: string | null;
   verdict: string | null;
   verdictBy: string | null;
   verdictAt: string | null;
@@ -919,7 +942,8 @@ export async function buildPanelTaskDetail(
       featureKey: ref.featureKey,
       featureName: feature?.name ?? null,
       caseCount: feature?.caseCount ?? null,
-      jsonPath: feature?.jsonPath ?? null
+      jsonPath: feature?.jsonPath ?? null,
+      xlsxPath: feature?.xlsxPath ?? null
     };
   });
 
@@ -929,19 +953,6 @@ export async function buildPanelTaskDetail(
   } catch (error) {
     warnings.push(`运行读取失败：${errorMessage(error)}`);
   }
-  const runViews: PanelTaskRunView[] = runs.map((run) => ({
-    runId: run.id,
-    platform: run.platform,
-    device: run.device,
-    status: run.status,
-    total: run.total,
-    passed: run.passed,
-    failed: run.failed,
-    failureDomains: run.failureDomains,
-    comparison: comparisonView(run.comparison),
-    manifestPath: run.manifestPath,
-    createdAt: run.createdAt
-  }));
 
   const latestByPlatform = new Map<string, (typeof runs)[number]>();
   for (const run of runs) {
@@ -972,7 +983,28 @@ export async function buildPanelTaskDetail(
     ? (runners.find((entry) => entry.id === task.claimedBy) ?? null)
     : null;
 
-  return { task, refs, runs: runViews, crossPlatform, runner, runners, warnings };
+  const base = runner?.artifactBaseUrl ?? null;
+  const runViews: PanelTaskRunView[] = runs.map((run) => ({
+    runId: run.id,
+    platform: run.platform,
+    device: run.device,
+    status: run.status,
+    total: run.total,
+    passed: run.passed,
+    failed: run.failed,
+    failureDomains: run.failureDomains,
+    comparison: comparisonView(run.comparison),
+    manifestPath: run.manifestPath,
+    artifacts: { manifestUrl: artifactUrl(base, rootPath, run.manifestPath) },
+    createdAt: run.createdAt
+  }));
+  const refViews = refs.map((ref) => ({
+    ...ref,
+    jsonUrl: artifactUrl(base, rootPath, ref.jsonPath),
+    xlsxUrl: artifactUrl(base, rootPath, ref.xlsxPath)
+  }));
+
+  return { task, refs: refViews, runs: runViews, crossPlatform, runner, runners, warnings };
 }
 
 /** 归因队列（DESIGN：回归服务 §5.7）：最近 N 次运行的全部失败用例；
@@ -999,10 +1031,27 @@ export async function buildPanelReviewQueue(
     warnings.push(`项目配置读取失败（证据路径按默认 .artemis/traces 解析）：${errorMessage(error)}`);
   }
 
+  const baseByTaskId = new Map<string, string | null>();
+  try {
+    const runnerById = new Map(
+      (await deps.store.listRunners(rootPath)).map((runner) => [runner.id, runner])
+    );
+    for (const task of await deps.store.listRegressionTasks(rootPath, 50)) {
+      const runner = task.claimedBy === null ? undefined : runnerById.get(task.claimedBy);
+      baseByTaskId.set(task.id, runner?.artifactBaseUrl ?? null);
+    }
+  } catch (error) {
+    warnings.push(`执行机读取失败（证据链接不可用）：${errorMessage(error)}`);
+  }
+
   const items: PanelReviewItem[] = [];
   for (const run of runs) {
+    const base =
+      run.regressionTaskId === null ? null : (baseByTaskId.get(run.regressionTaskId) ?? null);
     for (const entry of run.cases) {
       if (entry.status === "passed") continue;
+      const evidencePath =
+        entry.traceId === null ? null : path.join(tracesDir, entry.traceId);
       items.push({
         runId: run.id,
         caseId: entry.caseId,
@@ -1015,7 +1064,8 @@ export async function buildPanelReviewQueue(
         failureConfidence: entry.failureConfidence,
         failureReason: entry.failureReason,
         traceId: entry.traceId,
-        evidencePath: entry.traceId === null ? null : path.join(tracesDir, entry.traceId),
+        evidencePath,
+        evidenceUrl: artifactUrl(base, rootPath, evidencePath),
         verdict: entry.verdict,
         verdictBy: entry.verdictBy,
         verdictAt: entry.verdictAt,

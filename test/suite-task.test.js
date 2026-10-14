@@ -646,3 +646,51 @@ test("claimed 任务可手动执行（不因领取状态阻塞，契约锁）", 
   const after = await store.getRegressionTask(runtime.project.rootDir, tasks[0].id);
   assert.equal(after.status, "completed");
 });
+
+test("suite run --task: 子运行批次清单落盘并登记 manifest_path（--no-save/AOS_SUITE_RUNS=0 → null）", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" },
+      "trace-3": { status: "completed" },
+      "trace-4": { status: "completed" },
+      "trace-5": { status: "completed" },
+      "trace-6": { status: "completed" }
+    }
+  });
+  await runCli(runtime, ["task", "create", "--ref", "f-登录-aaaa1111", "--platform", "android"]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  const runsDir = path.join(runtime.configDirAbs, "design", "runs");
+
+  const first = await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+  assert.equal(first.code, 0);
+  let runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.ok(runs[0].manifestPath, "清单路径登记");
+  assert.ok(fs.existsSync(runs[0].manifestPath), "清单文件存在");
+  const manifestCount = fs.readdirSync(runsDir).length;
+
+  const noSave = await runCli(runtime, [
+    "run",
+    "--task",
+    tasks[0].id,
+    "--device",
+    "emulator-5554",
+    "--no-save"
+  ]);
+  assert.equal(noSave.code, 0);
+  runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.equal(runs[0].manifestPath, null, "--no-save → null");
+  assert.equal(fs.readdirSync(runsDir).length, manifestCount, "--no-save 不写清单");
+
+  const logs = [];
+  const errors = [];
+  const envOff = await runSuiteCommand(["run", "--task", tasks[0].id, "--device", "emulator-5554"], {
+    buildRuntime: async () => ({ runtime, dispose: async () => {} }),
+    log: (line) => logs.push(line),
+    errorLog: (line) => errors.push(line),
+    env: { AOS_SUITE_RUNS: "0" }
+  });
+  assert.equal(envOff, 0);
+  runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.equal(runs[0].manifestPath, null, "AOS_SUITE_RUNS=0 → null");
+});

@@ -837,7 +837,15 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
     ref.caseCount === null ? "—" : String(ref.caseCount),
     ref.jsonPath === null
       ? '<span class="muted">（份已清理）</span>'
-      : `<code>${escapeHtml(ref.jsonPath)}</code>`
+      : `${
+          ref.jsonUrl === null
+            ? `<code>${escapeHtml(ref.jsonPath)}</code>`
+            : `<a href="${escapeHtml(ref.jsonUrl)}" target="_blank" rel="noreferrer"><code>${escapeHtml(ref.jsonPath)}</code></a>`
+        }${
+          ref.xlsxUrl === null
+            ? ""
+            : ` · <a href="${escapeHtml(ref.xlsxUrl)}" target="_blank" rel="noreferrer">xlsx</a>`
+        }`
   ]);
   const runRows = detail.runs.map((run) => [
     escapeHtml(run.platform),
@@ -853,7 +861,11 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
     run.comparison === null
       ? "—"
       : `${escapeHtml(run.comparison.baseline === "established" ? "基准建立" : "对比")}：修复 ${run.comparison.fixed} · 回归 ${run.comparison.regressed}`,
-    run.manifestPath === null ? "—" : `<code>${escapeHtml(run.manifestPath)}</code>`,
+    run.manifestPath === null
+      ? "—"
+      : run.artifacts.manifestUrl === null
+        ? `<code>${escapeHtml(run.manifestPath)}</code>`
+        : `<a href="${escapeHtml(run.artifacts.manifestUrl)}" target="_blank" rel="noreferrer"><code>${escapeHtml(run.manifestPath)}</code></a>`,
     escapeHtml(run.createdAt)
   ]);
   const crossRows = detail.crossPlatform.map((delta) => [
@@ -933,9 +945,13 @@ function renderReviewPage(view: {
     } catch {
       present = false;
     }
+    const link =
+      item.evidenceUrl === null
+        ? ""
+        : ` <a href="${escapeHtml(item.evidenceUrl)}" target="_blank" rel="noreferrer">打开证据</a>`;
     return present
-      ? `<code>${escapeHtml(item.evidencePath)}</code>`
-      : `<code>${escapeHtml(item.evidencePath)}</code> <span class="muted">[已清理]</span>`;
+      ? `<code>${escapeHtml(item.evidencePath)}</code>${link}`
+      : `<code>${escapeHtml(item.evidencePath)}</code> <span class="muted">[已清理]</span>${link}`;
   };
   const rows = items.map((item) => [
     `<input type="checkbox" name="item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}">`,

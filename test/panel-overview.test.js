@@ -10,6 +10,7 @@ import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { buildRunManifest, saveRunManifest } from "../dist/figma/run-manifest.js";
 import {
+  artifactUrl,
   buildPanelBatchDetail,
   buildPanelOverview,
   buildPanelProjectDetail,
@@ -941,4 +942,139 @@ test("panel detail: 任务详情 runner 匹配（claimedBy=runner id；未领取
   const second = await store.createRegressionTask(taskInput);
   const pending = await buildPanelTaskDetail(deps, dir, second.id);
   assert.equal(pending.runner, null, "未领取 → null");
+});
+
+test("artifactUrl: 相对 .artemis 分段编码；越界/无基址/null → null", () => {
+  assert.equal(
+    artifactUrl("http://mac:8770", "/proj", "/proj/.artemis/design/runs/a b.json"),
+    "http://mac:8770/artifact/design/runs/a%20b.json"
+  );
+  assert.equal(
+    artifactUrl("http://mac:8770/", "/proj", "/proj/.artemis/design/中文/1.png"),
+    `http://mac:8770/artifact/design/${encodeURIComponent("中文")}/1.png`
+  );
+  assert.equal(artifactUrl("http://mac:8770", "/proj", "/proj/.artemis"), "http://mac:8770/artifact/");
+  assert.equal(artifactUrl("http://mac:8770", "/proj", "/proj/secret.txt"), null, "越界拒绝");
+  assert.equal(
+    artifactUrl("http://mac:8770", "/proj", "/proj/.artemis-old/x"),
+    null,
+    "前缀近似但越界"
+  );
+  assert.equal(artifactUrl(null, "/proj", "/proj/.artemis/x"), null, "无基址");
+  assert.equal(artifactUrl("http://mac:8770", "/proj", null), null);
+});
+
+test("panel detail: 产物链接（manifestUrl/jsonUrl/xlsxUrl/evidenceUrl；无 runner → null）", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "artifact-app" });
+  const caseSetsDir = path.join(dir, ".artemis", "design", "case-sets");
+  const set = await store.recordCaseSet({
+    rootPath: dir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: path.join(caseSetsDir, "20261014T153000_登录.json"),
+        mdPath: path.join(caseSetsDir, "20261014T153000_登录.md"),
+        xlsxPath: path.join(caseSetsDir, "20261014T153000_登录.xlsx")
+      }
+    ]
+  });
+  const task = await store.createRegressionTask({
+    rootPath: dir,
+    refs: [{ caseSetId: set.id, featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: task.id,
+      caseSetId: set.id,
+      featureKey: "f-1",
+      featureName: "登录流程",
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      runner: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 1,
+      passed: 0,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: path.join(dir, ".artemis", "design", "runs", "run-1.json"),
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: "f-1",
+        platform: "android",
+        status: "failed",
+        traceId: "trace-1",
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+
+  const deps = { store, serviceRepo: repo, buildStale: false, env: {} };
+  const bare = await buildPanelTaskDetail(deps, dir, task.id);
+  assert.equal(bare.refs[0].jsonUrl, null, "无 runner → 无链接");
+  assert.ok(bare.refs[0].xlsxPath.endsWith("_登录.xlsx"));
+  assert.equal(bare.runs[0].artifacts.manifestUrl, null);
+  const bareQueue = await buildPanelReviewQueue(deps, dir);
+  assert.equal(bareQueue.items[0].evidenceUrl, null);
+
+  const runner = await store.upsertRunner({
+    rootPath: dir,
+    name: "r-1",
+    hostname: "mac-1",
+    platforms: ["android"],
+    devices: [],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false },
+    artifactBaseUrl: "http://mac-1:8770"
+  });
+  await store.claimRegressionTask({ rootPath: dir, runnerId: runner.id, platforms: ["android"] });
+
+  const detail = await buildPanelTaskDetail(deps, dir, task.id);
+  assert.equal(detail.runner.name, "r-1");
+  assert.equal(
+    detail.runs[0].artifacts.manifestUrl,
+    "http://mac-1:8770/artifact/design/runs/run-1.json"
+  );
+  assert.equal(
+    detail.refs[0].jsonUrl,
+    `http://mac-1:8770/artifact/design/case-sets/${encodeURIComponent("20261014T153000_登录.json")}`
+  );
+  assert.equal(
+    detail.refs[0].xlsxUrl,
+    `http://mac-1:8770/artifact/design/case-sets/${encodeURIComponent("20261014T153000_登录.xlsx")}`
+  );
+  const queue = await buildPanelReviewQueue(deps, dir);
+  assert.equal(queue.items[0].evidenceUrl, "http://mac-1:8770/artifact/traces/trace-1");
 });
