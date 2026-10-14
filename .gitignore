@@ -14,6 +14,9 @@ dist/
 dist-deps/
 .artemis-deps/
 
+# Visual brainstorming mockups (superpowers)
+.superpowers/
+
 # Generated client MCP configs (contain machine-local paths)
 /.mcp.json
 /.cursor/mcp.json
