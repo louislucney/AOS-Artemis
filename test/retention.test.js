@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
-import { buildRetentionReport, formatBytes } from "../dist/figma/retention.js";
+import { makeTempDir } from "./helpers.js";
+import { buildRetentionReport, collectRetentionEntries, formatBytes } from "../dist/figma/retention.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -40,4 +43,20 @@ test("buildRetentionReport: 全新鲜时无超期项", () => {
   assert.equal(report.overdue.count, 0);
   assert.equal(report.overdue.totalBytes, 0);
   assert.equal(report.truncated, false);
+});
+
+test("suite retention: case-sets 分类纳入扫描与超期计数", () => {
+  const root = makeTempDir("aos-retention-");
+  const dir = path.join(root, ".artemis", "design", "case-sets");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "20260101T000000_登录流程.json");
+  fs.writeFileSync(file, "{}");
+  const old = new Date(Date.now() - 100 * DAY);
+  fs.utimesSync(file, old, old);
+
+  const entries = collectRetentionEntries(root);
+  const report = buildRetentionReport(entries, { days: 90, nowMs: Date.now(), projectRoot: root });
+  const summary = report.categories.find((category) => category.id === "case-sets");
+  assert.equal(summary.total, 1);
+  assert.equal(summary.overdue, 1);
 });
