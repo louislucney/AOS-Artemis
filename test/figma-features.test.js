@@ -185,6 +185,39 @@ test("applyIdentity: 同一 prior 不被两组重复继承", () => {
   assert.equal(result.warnings[0].code, "feature-identity-new");
 });
 
+test("applyIdentity: 同一 key 的重复 prior 不误判并列（取最高重叠）", () => {
+  const result = applyIdentity(
+    [namedGroup("登录流程", ["登录-输入", "登录-验证"])],
+    [
+      { key: "f-login-aaaa1111", name: "登录", screens: ["登录-输入", "登录-验证", "登录-找回"] },
+      { key: "f-login-aaaa1111", name: "登录", screens: ["登录-输入", "登录-验证"] }
+    ]
+  );
+  assert.equal(result.groups[0].key, "f-login-aaaa1111");
+  assert.equal(result.groups[0].name, "登录");
+  assert.equal(result.warnings.length, 0);
+});
+
+test("splitFeatures: 页面分组下无 page 屏幕按邻居归并、无邻居单独成组", () => {
+  const groups = splitFeatures({
+    screens: [
+      { name: "登录-输入", page: "登录" },
+      { name: "登录-验证", page: "登录" },
+      { name: "首页", page: "主流程" },
+      { name: "详情", page: "主流程" },
+      { name: "弹窗-分享" },
+      { name: "孤立" }
+    ],
+    edges: [{ from: "弹窗-分享", to: "登录-输入" }]
+  });
+  assert.equal(groups.length, 3);
+  const login = groups.find((group) => group.candidateName === "登录");
+  assert.deepEqual(login.screens, ["弹窗-分享", "登录-输入", "登录-验证"]);
+  const standalone = groups.find((group) => group.screens.includes("孤立"));
+  assert.equal(standalone.signal, "cluster");
+  assert.equal(standalone.candidateName, null);
+});
+
 test("assignCaseFeature: 多数归属；并列取首屏；无命中 null", () => {
   const groups = [
     { key: "f-login", name: "登录", screens: ["登录-输入", "登录-验证"], signal: "name-prefix", candidateName: "登录" },

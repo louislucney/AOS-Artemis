@@ -62,6 +62,44 @@ function buildAdjacency(
   return adjacency;
 }
 
+/** 把未归属屏幕并入既有组（边邻居多数；并列取字典序最小组），无邻居则单独成 cluster 组。 */
+function absorbUnowned(
+  groups: FeatureGroup[],
+  names: string[],
+  adjacency: Map<string, string[]>
+): void {
+  const assigned = new Set(groups.flatMap((group) => group.screens));
+  for (const name of names.filter((entry) => !assigned.has(entry))) {
+    const counts = new Map<FeatureGroup, number>();
+    for (const neighbor of adjacency.get(name) ?? []) {
+      const owner = groups.find((group) => group.screens.includes(neighbor));
+      if (owner) counts.set(owner, (counts.get(owner) ?? 0) + 1);
+    }
+    let best: FeatureGroup | null = null;
+    let bestCount = 0;
+    for (const [group, count] of counts) {
+      if (count > bestCount) {
+        best = group;
+        bestCount = count;
+        continue;
+      }
+      if (
+        count === bestCount &&
+        best !== null &&
+        compareText(group.screens[0] ?? "", best.screens[0] ?? "") < 0
+      ) {
+        best = group;
+      }
+    }
+    if (best) {
+      best.screens.push(name);
+      best.screens.sort(compareText);
+    } else {
+      groups.push(makeGroup([name], "cluster", null));
+    }
+  }
+}
+
 export function splitFeatures(input: FeatureSplitInput): FeatureGroup[] {
   const names = [...new Set(input.screens.map((screen) => screen.name))].sort(compareText);
   if (names.length === 0) return [];
@@ -77,9 +115,9 @@ export function splitFeatures(input: FeatureSplitInput): FeatureGroup[] {
     byPage.set(page, bucket);
   }
   if (byPage.size >= 2) {
-    return sortGroups(
-      [...byPage.entries()].map(([page, screens]) => makeGroup(screens, "page", page))
-    );
+    const groups = [...byPage.entries()].map(([page, screens]) => makeGroup(screens, "page", page));
+    absorbUnowned(groups, names, adjacency);
+    return sortGroups(groups);
   }
 
   const byPrefix = new Map<string, string[]>();
@@ -91,42 +129,12 @@ export function splitFeatures(input: FeatureSplitInput): FeatureGroup[] {
     byPrefix.set(token, bucket);
   }
   const groups: FeatureGroup[] = [];
-  const assigned = new Set<string>();
   for (const [token, screens] of byPrefix) {
     if (screens.length < 2) continue;
     groups.push(makeGroup(screens, "name-prefix", token));
-    for (const screen of screens) assigned.add(screen);
   }
   if (groups.length > 0) {
-    for (const name of names.filter((entry) => !assigned.has(entry))) {
-      const counts = new Map<FeatureGroup, number>();
-      for (const neighbor of adjacency.get(name) ?? []) {
-        const owner = groups.find((group) => group.screens.includes(neighbor));
-        if (owner) counts.set(owner, (counts.get(owner) ?? 0) + 1);
-      }
-      let best: FeatureGroup | null = null;
-      let bestCount = 0;
-      for (const [group, count] of counts) {
-        if (count > bestCount) {
-          best = group;
-          bestCount = count;
-          continue;
-        }
-        if (
-          count === bestCount &&
-          best !== null &&
-          compareText(group.screens[0] ?? "", best.screens[0] ?? "") < 0
-        ) {
-          best = group;
-        }
-      }
-      if (best) {
-        best.screens.push(name);
-        best.screens.sort(compareText);
-      } else {
-        groups.push(makeGroup([name], "cluster", null));
-      }
-    }
+    absorbUnowned(groups, names, adjacency);
     return sortGroups(groups);
   }
 
@@ -255,12 +263,18 @@ export function applyIdentity(
   const assigned = new Set<string>();
   const result: FeatureGroup[] = [];
   for (const group of groups) {
-    const scored = prior
-      .map((feature) => ({ feature, ratio: overlapRatio(group.screens, feature.screens) }))
-      .filter((entry) => entry.ratio >= 0.5)
-      .sort((a, b) => b.ratio - a.ratio || compareText(a.feature.key, b.feature.key));
-    const best = scored[0];
-    const tied = best ? scored.filter((entry) => entry.ratio === best.ratio).length > 1 : false;
+    const byKey = new Map<string, { feature: PriorFeature; ratio: number }>();
+    for (const feature of prior) {
+      const ratio = overlapRatio(group.screens, feature.screens);
+      if (ratio < 0.5) continue;
+      const existing = byKey.get(feature.key);
+      if (!existing || ratio > existing.ratio) byKey.set(feature.key, { feature, ratio });
+    }
+    const ranked = [...byKey.values()].sort(
+      (a, b) => b.ratio - a.ratio || compareText(a.feature.key, b.feature.key)
+    );
+    const best = ranked[0];
+    const tied = best ? ranked.filter((entry) => entry.ratio === best.ratio).length > 1 : false;
     if (best && !tied && !assigned.has(best.feature.key)) {
       assigned.add(best.feature.key);
       result.push({ ...group, key: best.feature.key, name: best.feature.name });

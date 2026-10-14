@@ -142,6 +142,22 @@ test("figma_generate_tests: 重新生成（屏幕集合变化）→ 继承同一
   const secondLogin = second.features.find((entry) => entry.name === "登录");
   assert.equal(secondLogin.key, loginKey, "屏幕变化但重叠 ≥0.5 → 继承 key");
   assert.equal(secondLogin.screens.length, 3);
+
+  const third = parseToolResult(
+    await figmaGenerateTests(runtime, {}, { now: () => new Date("2026-10-14T17:00:00.000Z"), chat: null })
+  );
+  const firstKeys = new Map(first.features.map((entry) => [entry.name, entry.key]));
+  for (const feature of third.features) {
+    assert.equal(
+      feature.key,
+      firstKeys.get(feature.name),
+      "第 3 代仍继承同一 key（重复登记不误判并列）"
+    );
+  }
+  assert.ok(
+    !(third.warnings ?? []).some((warning) => warning.code === "feature-identity-new"),
+    "稳态代不误报身份新建"
+  );
 });
 
 test("figma_generate_tests: store 不可用 → 生成成功 + 如实告警", async () => {
