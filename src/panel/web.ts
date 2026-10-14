@@ -8,6 +8,7 @@ import {
   buildPanelBatchDetail,
   buildPanelOverview,
   buildPanelProjectDetail,
+  buildPanelTaskDetail,
   PANEL_BATCH_LIMIT_DEFAULT,
   PANEL_BATCH_LIMIT_MAX,
   type PanelBatchDetail,
@@ -16,7 +17,8 @@ import {
   type PanelOverview,
   type PanelProjectDetail,
   type PanelProjectRow,
-  type PanelStandaloneRow
+  type PanelStandaloneRow,
+  type PanelTaskDetail
 } from "./overview.js";
 import { PANEL_IOS_PROBE_TTL_MS, type PanelDeepProbe } from "./deep.js";
 
@@ -88,6 +90,7 @@ export function panelCacheTtlFrom(env: NodeJS.ProcessEnv): number {
 type PanelView =
   | { kind: "overview"; overview: PanelOverview }
   | { kind: "project"; rootPath: string; detail: PanelProjectDetail }
+  | { kind: "task"; rootPath: string; detail: PanelTaskDetail }
   | { kind: "batch"; rootPath: string; detail: PanelBatchDetail };
 
 class PanelNotFoundError extends Error {}
@@ -151,6 +154,13 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   const resolved = await resolveProjectKey(deps, projectKey);
   if (!resolved) throw new PanelNotFoundError(`未知项目 "${projectKey}"`);
 
+  const taskId = trimmed(url.searchParams.get("task"));
+  if (taskId !== null) {
+    const detail = await buildPanelTaskDetail(panelDeps, resolved.rootPath, taskId);
+    if (!detail) throw new PanelNotFoundError(`未知回归任务 "${taskId}"`);
+    return { kind: "task", rootPath: resolved.rootPath, detail };
+  }
+
   const batchFile = trimmed(url.searchParams.get("batch"));
   if (batchFile !== null) {
     const detail = await buildPanelBatchDetail(panelDeps, resolved.rootPath, batchFile);
@@ -171,6 +181,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
 function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "overview") return { ...view.overview, view: "overview" };
   if (view.kind === "project") return { ok: true, view: "project", ...view.detail };
+  if (view.kind === "task") return { ok: true, view: "task", ...view.detail };
   return { ok: true, view: "batch", ...view.detail };
 }
 
@@ -244,6 +255,10 @@ function projectHref(rootPath: string): string {
 
 function batchHref(rootPath: string, file: string): string {
   return `/panel?project=${encodeURIComponent(rootPath)}&batch=${encodeURIComponent(file)}`;
+}
+
+function taskHref(rootPath: string, taskId: string): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}&task=${encodeURIComponent(taskId)}`;
 }
 
 function gateSpan(gate: "pass" | "fail" | null): string {
@@ -696,6 +711,100 @@ function renderRegressionBlock(rootPath: string, detail: PanelProjectDetail): st
   ].join("\n");
 }
 
+function renderTaskList(rootPath: string, detail: PanelProjectDetail): string {
+  const rows = detail.tasks.map((task) => [
+    `<a href="${escapeHtml(taskHref(rootPath, task.id))}"><code>${escapeHtml(task.id)}</code></a>`,
+    escapeHtml(task.status),
+    String(task.refs),
+    escapeHtml(task.platforms.join(", ")),
+    String(task.runIds),
+    escapeHtml(task.createdAt)
+  ]);
+  return [
+    '<section id="tasks">',
+    "<h2>回归任务</h2>",
+    renderTable(
+      ["任务", "状态", "引用份数", "目标端", "运行数", "创建时间"],
+      rows,
+      "暂无回归任务（上方「新建回归测试」创建）"
+    ),
+    "</section>"
+  ].join("\n");
+}
+
+function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): string {
+  const { detail } = view;
+  const task = detail.task;
+  const refRows = detail.refs.map((ref) => [
+    escapeHtml(ref.featureName ?? ref.featureKey),
+    `<code>${escapeHtml(ref.caseSetId)}</code>`,
+    ref.caseCount === null ? "—" : String(ref.caseCount),
+    ref.jsonPath === null
+      ? '<span class="muted">（份已清理）</span>'
+      : `<code>${escapeHtml(ref.jsonPath)}</code>`
+  ]);
+  const runRows = detail.runs.map((run) => [
+    escapeHtml(run.platform),
+    escapeHtml(run.device ?? "—"),
+    escapeHtml(run.status),
+    `${run.passed}/${run.total}`,
+    run.failed === 0 ? "0" : `<span class="err">${run.failed}</span>`,
+    Object.keys(run.failureDomains).length === 0
+      ? "—"
+      : Object.entries(run.failureDomains)
+          .map(([domain, count]) => `<span class="chip">${escapeHtml(domain)} × ${count}</span>`)
+          .join(""),
+    run.comparison === null
+      ? "—"
+      : `${escapeHtml(run.comparison.baseline === "established" ? "基准建立" : "对比")}：修复 ${run.comparison.fixed} · 回归 ${run.comparison.regressed}`,
+    run.manifestPath === null ? "—" : `<code>${escapeHtml(run.manifestPath)}</code>`,
+    escapeHtml(run.createdAt)
+  ]);
+  const crossRows = detail.crossPlatform.map((delta) => [
+    `<code>${escapeHtml(delta.caseId)}</code>`,
+    escapeHtml(delta.name),
+    Object.entries(delta.results)
+      .map(([platform, outcome]) => `${escapeHtml(platform)}=${escapeHtml(outcome)}`)
+      .join(" · ")
+  ]);
+  const warnings = detail.warnings
+    .map((warning) => `<p class="note">${escapeHtml(warning)}</p>`)
+    .join("");
+  return page(
+    `回归任务 · ${task.id}`,
+    [
+      "<header>",
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
+      `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
+      `<p>状态：${escapeHtml(task.status)} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)}</p>`,
+      warnings,
+      "</header>",
+      "<main>",
+      '<section id="refs">',
+      "<h2>引用份</h2>",
+      renderTable(["功能", "用例集", "用例数", "存档路径"], refRows, "无引用"),
+      "</section>",
+      '<section id="runs">',
+      "<h2>子运行</h2>",
+      renderTable(
+        ["端", "设备", "状态", "通过", "失败", "失败域", "对比", "清单", "时间"],
+        runRows,
+        "暂无运行（触发执行见下方指引）"
+      ),
+      "</section>",
+      '<section id="cross">',
+      "<h2>跨端差异</h2>",
+      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）"),
+      "</section>",
+      '<section id="run-hint">',
+      "<h2>触发执行</h2>",
+      `<p class="muted">在项目机执行：<code>node dist/cli.js suite run --task ${escapeHtml(task.id)} --device &lt;serial&gt;</code>（P2 支持面板一键下发）。产物在项目机磁盘（上方清单路径），中心侧仅展示路径。</p>`,
+      "</section>",
+      "</main>"
+    ].join("\n")
+  );
+}
+
 function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail }, cacheNote: string): string {
   const { detail } = view;
   const row = detail.project;
@@ -725,6 +834,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       renderDeepSection(detail),
       renderBatches(detail, view.rootPath),
       renderRegressionBlock(view.rootPath, detail),
+      renderTaskList(view.rootPath, detail),
       renderDiskAssets(detail),
       renderStandalones(detail),
       "</main>"
@@ -887,5 +997,6 @@ function renderPanelHtml(view: PanelView): string {
   const cacheNote = "缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）";
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);
   if (view.kind === "project") return renderProjectPage(view, cacheNote);
+  if (view.kind === "task") return renderTaskPage(view);
   return renderBatchPage(view);
 }

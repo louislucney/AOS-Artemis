@@ -339,3 +339,106 @@ test("panel web: 进程内缓存 TTL（TTL 内命中、过期重算）", async (
   const third = JSON.parse((await handlePanelRequest(url, depsWithCache)).body);
   assert.notEqual(third.generatedAt, first.generatedAt, "TTL 过期后重算");
 });
+
+test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const set = await store.recordCaseSet({
+    rootPath: projectDir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+  const task = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: set.id, featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.updateRegressionTask(projectDir, task.id, { status: "partial", runIds: ["r1"] });
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: task.id,
+      caseSetId: set.id,
+      featureKey: "f-1",
+      featureName: "登录流程",
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 1,
+      passed: 0,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: "/m/android.json",
+      comparison: { baseline: "compared", fixed: 0, regressed: 1, newFailed: 0, vanished: 0 }
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: "f-1",
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${encodeURIComponent(task.id)}`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /回归任务/);
+  assert.match(html.body, /partial/);
+  assert.match(html.body, /登录流程/);
+  assert.match(html.body, /emulator-5554/);
+  assert.match(html.body, new RegExp(`suite run --task ${task.id}`));
+
+  const json = JSON.parse(
+    (
+      await handlePanelRequest(
+        new URL(`http://x/panel.json?project=${encodeURIComponent(projectDir)}&task=${encodeURIComponent(task.id)}`),
+        deps
+      )
+    ).body
+  );
+  assert.equal(json.view, "task");
+  assert.equal(json.task.id, task.id);
+
+  const missing = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=task-nope`),
+    deps
+  );
+  assert.equal(missing.status, 404);
+});

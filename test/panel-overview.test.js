@@ -13,6 +13,7 @@ import {
   buildPanelBatchDetail,
   buildPanelOverview,
   buildPanelProjectDetail,
+  buildPanelTaskDetail,
   PANEL_BATCH_EMPTY_CAUSES
 } from "../dist/panel/overview.js";
 import { baseConfig, makeTempDir, makeTempProject } from "./helpers.js";
@@ -507,4 +508,112 @@ test("panel detail: 磁盘不可达降级为仅台账（standalones = 全部台�
 
   const unknown = await buildPanelProjectDetail(deps, path.join(makeTempDir("aos-panel-unknown-"), "nope"));
   assert.equal(unknown, null);
+});
+
+test("panel detail: buildPanelTaskDetail（引用解析/子运行/对比/跨端；未知 task → null）", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "task-app" });
+  const set = await store.recordCaseSet({
+    rootPath: dir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+  const task = await store.createRegressionTask({
+    rootPath: dir,
+    refs: [{ caseSetId: set.id, featureKey: "f-1" }],
+    platforms: ["ios", "android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.updateRegressionTask(dir, task.id, { status: "completed", runIds: ["r1", "r2"] });
+
+  const caseEntry = (platform, status) => ({
+    caseId: "case-1",
+    name: "Case 1",
+    featureKey: "f-1",
+    platform,
+    status,
+    traceId: null,
+    failureDomain: status === "passed" ? null : "用例缺陷",
+    failureConfidence: status === "passed" ? null : "medium",
+    failureReason: status === "passed" ? null : "断言未命中",
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict: null,
+    verdictBy: null,
+    verdictAt: null,
+    verdictNote: null
+  });
+  const runBase = (platform, status) => ({
+    trigger: "cli",
+    regressionTaskId: task.id,
+    caseSetId: set.id,
+    featureKey: "f-1",
+    featureName: "登录流程",
+    platform,
+    device: platform === "ios" ? "4E0A2C7A-1B2D-4F5E-8A9B-0C1D2E3F4A5B" : "emulator-5554",
+    appVersion: null,
+    status,
+    startedAt: "2026-10-14T10:00:00.000Z",
+    finishedAt: "2026-10-14T10:05:00.000Z",
+    total: 1,
+    passed: status === "completed" ? 1 : 0,
+    failed: status === "completed" ? 0 : 1,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: status === "completed" ? {} : { 用例缺陷: 1 },
+    gateResult: status === "completed" ? "pass" : "fail",
+    exitCode: status === "completed" ? 0 : 1,
+    manifestPath: `/m/${platform}.json`,
+    comparison: { baseline: "compared", fixed: 0, regressed: 1, newFailed: 0, vanished: 0 }
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: runBase("ios", "failed"),
+    cases: [caseEntry("ios", "failed")]
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:06:00.000Z",
+    run: runBase("android", "completed"),
+    cases: [caseEntry("android", "passed")]
+  });
+
+  const deps = { store, serviceRepo: repo, buildStale: false, env: {} };
+  const detail = await buildPanelTaskDetail(deps, dir, task.id);
+  assert.ok(detail);
+  assert.equal(detail.task.status, "completed");
+  assert.deepEqual(detail.task.runIds, ["r1", "r2"]);
+  assert.equal(detail.refs.length, 1);
+  assert.equal(detail.refs[0].featureName, "登录流程");
+  assert.equal(detail.refs[0].caseCount, 1);
+  assert.equal(detail.runs.length, 2);
+  const ios = detail.runs.find((run) => run.platform === "ios");
+  assert.equal(ios.status, "failed");
+  assert.equal(ios.comparison.regressed, 1);
+  assert.equal(ios.manifestPath, "/m/ios.json");
+  assert.equal(detail.crossPlatform.length, 1);
+  assert.deepEqual(detail.crossPlatform[0].results, { ios: "failed", android: "passed" });
+
+  const projectDetail = await buildPanelProjectDetail(deps, dir);
+  assert.equal(projectDetail.tasks.length, 1);
+  assert.equal(projectDetail.tasks[0].id, task.id);
+  assert.equal(projectDetail.tasks[0].runIds, 2);
+
+  assert.equal(await buildPanelTaskDetail(deps, dir, "task-nope"), null);
 });

@@ -4,7 +4,13 @@ import path from "node:path";
 import { configDirAbs, projectTracesDir } from "../artemis/assembly.js";
 import { depsStatus, type DepsStatus } from "../artemis/bootstrap.js";
 import { defaultArtemisRepo, loadProject, type LoadedProject } from "../config/loader.js";
-import type { ProjectLlmRecord, ProjectRecord, ProjectStore, TaskStatRecord } from "../db/types.js";
+import type {
+  ProjectLlmRecord,
+  ProjectRecord,
+  ProjectStore,
+  RegressionTaskRecord,
+  TaskStatRecord
+} from "../db/types.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { designDir } from "../figma/design-store.js";
 import {
@@ -20,6 +26,7 @@ import { entriesFromConfig, entryFromStore, entryIssues } from "../llm/registry.
 import { scanProjectEnv, type EnvScanResult } from "../projects/scan.js";
 import { detectProjectStacks } from "../projects/stack.js";
 import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
+import { crossPlatformDeltas } from "../tasks/run-compare.js";
 import { errorMessage } from "../util.js";
 import { collectDiskAssets, type PanelDiskAssets } from "./assets.js";
 import type { PanelDeepProbe, PanelDeepView } from "./deep.js";
@@ -156,6 +163,49 @@ export interface PanelRegressionRef {
   lastPassRate: number | null;
 }
 
+export interface PanelTaskRow {
+  id: string;
+  status: string;
+  refs: number;
+  platforms: string[];
+  runIds: number;
+  createdAt: string;
+}
+
+export interface PanelTaskRunView {
+  runId: string;
+  platform: string;
+  device: string | null;
+  status: string;
+  total: number;
+  passed: number;
+  failed: number;
+  failureDomains: Record<string, number>;
+  comparison: {
+    baseline: string;
+    fixed: number;
+    regressed: number;
+    newFailed: number;
+    vanished: number;
+  } | null;
+  manifestPath: string | null;
+  createdAt: string;
+}
+
+export interface PanelTaskDetail {
+  task: RegressionTaskRecord;
+  refs: Array<{
+    caseSetId: string;
+    featureKey: string;
+    featureName: string | null;
+    caseCount: number | null;
+    jsonPath: string | null;
+  }>;
+  runs: PanelTaskRunView[];
+  crossPlatform: Array<{ caseId: string; name: string; results: Record<string, string> }>;
+  warnings: string[];
+}
+
 export interface PanelProjectDetail {
   generatedAt: string;
   project: PanelProjectRow;
@@ -164,6 +214,7 @@ export interface PanelProjectDetail {
   trend: PanelBatchTrend | null;
   standalones: PanelStandaloneRow[];
   regressionRefs: PanelRegressionRef[];
+  tasks: PanelTaskRow[];
   diskAssets: PanelDiskAssets | null;
   deep: PanelDeepView | null;
   emptyState: { causes: string[] } | null;
@@ -709,6 +760,23 @@ export async function buildPanelProjectDetail(
     warnings.push(`回归引用读取失败：${errorMessage(error)}`);
   }
 
+  const taskRows: PanelTaskRow[] = [];
+  try {
+    const regressionTasks = await deps.store.listRegressionTasks(rootPath, 20);
+    for (const task of regressionTasks) {
+      taskRows.push({
+        id: task.id,
+        status: task.status,
+        refs: task.refs.length,
+        platforms: task.platforms,
+        runIds: task.runIds.length,
+        createdAt: task.createdAt
+      });
+    }
+  } catch (error) {
+    warnings.push(`回归任务读取失败：${errorMessage(error)}`);
+  }
+
   return {
     generatedAt: new Date(now()).toISOString(),
     project: row,
@@ -717,11 +785,97 @@ export async function buildPanelProjectDetail(
     trend,
     standalones,
     regressionRefs,
+    tasks: taskRows,
     diskAssets,
     deep,
     emptyState,
     warnings
   };
+}
+
+function comparisonView(value: unknown): PanelTaskRunView["comparison"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const number = (key: string): number =>
+    typeof record[key] === "number" && Number.isFinite(record[key]) ? (record[key] as number) : 0;
+  return {
+    baseline: typeof record.baseline === "string" ? record.baseline : "unknown",
+    fixed: number("fixed"),
+    regressed: number("regressed"),
+    newFailed: number("newFailed"),
+    vanished: number("vanished")
+  };
+}
+
+/** 回归任务详情（DESIGN：回归服务 §5.4 屏 B）：引用解析 + 子运行 + 跨端差异；
+ * 产物路径仅展示（P1 不内联预览）。未知 task → null。 */
+export async function buildPanelTaskDetail(
+  deps: PanelDeps,
+  rootPath: string,
+  taskId: string
+): Promise<PanelTaskDetail | null> {
+  const task = await safeStore(
+    () => deps.store.getRegressionTask(rootPath, taskId),
+    null as RegressionTaskRecord | null
+  );
+  if (!task) return null;
+
+  const warnings: string[] = [];
+  let sets: Awaited<ReturnType<ProjectStore["listCaseSets"]>> = [];
+  try {
+    sets = await deps.store.listCaseSets(rootPath, 50);
+  } catch (error) {
+    warnings.push(`用例集读取失败：${errorMessage(error)}`);
+  }
+  const setById = new Map(sets.map((set) => [set.id, set]));
+  const refs = task.refs.map((ref) => {
+    const set = setById.get(ref.caseSetId);
+    const feature = set?.features.find((entry) => entry.key === ref.featureKey) ?? null;
+    return {
+      caseSetId: ref.caseSetId,
+      featureKey: ref.featureKey,
+      featureName: feature?.name ?? null,
+      caseCount: feature?.caseCount ?? null,
+      jsonPath: feature?.jsonPath ?? null
+    };
+  });
+
+  let runs: Awaited<ReturnType<ProjectStore["listSuiteRuns"]>> = [];
+  try {
+    runs = await deps.store.listSuiteRuns(rootPath, { taskId, limit: 100 });
+  } catch (error) {
+    warnings.push(`运行读取失败：${errorMessage(error)}`);
+  }
+  const runViews: PanelTaskRunView[] = runs.map((run) => ({
+    runId: run.id,
+    platform: run.platform,
+    device: run.device,
+    status: run.status,
+    total: run.total,
+    passed: run.passed,
+    failed: run.failed,
+    failureDomains: run.failureDomains,
+    comparison: comparisonView(run.comparison),
+    manifestPath: run.manifestPath,
+    createdAt: run.createdAt
+  }));
+
+  const latestByPlatform = new Map<string, (typeof runs)[number]>();
+  for (const run of runs) {
+    if (!latestByPlatform.has(run.platform)) latestByPlatform.set(run.platform, run);
+  }
+  const crossPlatform = crossPlatformDeltas(
+    [...latestByPlatform.entries()].map(([platform, run]) => ({
+      platform,
+      cases: run.cases.map((entry) => ({
+        caseId: entry.caseId,
+        name: entry.name,
+        outcome: entry.status === "passed" ? ("passed" as const) : ("failed" as const)
+      }))
+    }))
+  );
+
+  return { task, refs, runs: runViews, crossPlatform, warnings };
 }
 
 function evidenceLinks(tracesDir: string, rootPath: string, entry: RunManifest["cases"][number]): PanelEvidenceLink[] {

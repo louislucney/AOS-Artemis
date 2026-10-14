@@ -250,3 +250,17 @@ test("http server: panel action routes over real HTTP", async () => {
     await handle.close();
   }
 });
+
+test("http server: 任务视图路由（未知 task → 404）", async () => {
+  const workspace = makeWorkspace();
+  const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+  try {
+    const missing = await fetch(
+      `http://127.0.0.1:${handle.port}/panel?project=demo&task=task-nope`
+    );
+    assert.equal(missing.status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel`)).status, 200);
+  } finally {
+    await handle.close();
+  }
+});
