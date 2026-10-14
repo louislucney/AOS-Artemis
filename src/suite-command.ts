@@ -380,6 +380,8 @@ Usage:
                                      回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none]（引用取该功能最新份）
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
   aos-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
+  aos-mcp suite schedule add|list|show|enable|disable|remove [options]
+                                     定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -402,6 +404,7 @@ feedback: [--limit <n>] [--min-failures <n>]
 reconcile: list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>]
 runner: [--name <n>] [--poll-ms <n>] [--heartbeat-ms <n>] [--artifact-port <n>（0 关闭）] [--artifact-host <h>] [--once]
         （需要中心 PG；AOS_RUNNER_* 环境变量可配，AOS_RUNNER_DEVICES 显式覆盖设备清单）
+schedule: add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]；list/show/enable/disable/remove <id>
 
 exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误或 --fail-on 命中（基线回归/未处理 API 错误/流程未覆盖或无法校验）
 错误码注册表: .artemis/design/error-codes.json（未配置时 api-errors 跳过并如实标注 degraded）`);
@@ -1902,6 +1905,194 @@ async function suiteTaskRelease(
   return 0;
 }
 
+async function suiteSchedule(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const action = flags.positional[1];
+  if (action === "add") return await suiteScheduleAdd(runtime, flags, io);
+  if (action === "list") return await suiteScheduleList(runtime, flags, io);
+  if (action === "show") return await suiteScheduleShow(runtime, flags, io);
+  if (action === "enable") return await suiteScheduleSetEnabled(runtime, flags, io, true);
+  if (action === "disable") return await suiteScheduleSetEnabled(runtime, flags, io, false);
+  if (action === "remove") return await suiteScheduleRemove(runtime, flags, io);
+  io.errorLog("用法: suite schedule add|list|show|enable|disable|remove …（见 suite help）");
+  return 2;
+}
+
+async function suiteScheduleAdd(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const refs = splitList(flags.list("ref"));
+  if (refs.length === 0) {
+    io.errorLog(
+      "用法: suite schedule add --ref <featureKey> [--ref …] --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]"
+    );
+    return 2;
+  }
+  const rootPath = runtime.project.rootDir;
+  const sets = await runtime.store.listCaseSets(rootPath, 50);
+  const latest = latestFeatureRefs(sets);
+  const missing = refs.filter((key) => !latest.has(key));
+  if (missing.length > 0) {
+    const available = [...latest.keys()].sort().join("、");
+    io.errorLog(`未知 feature key：${missing.join("、")}（可用：${available || "无"}）`);
+    return 2;
+  }
+  const rawPlatforms =
+    flags.list("platform").length > 0 ? splitList(flags.list("platform")) : ["ios", "android"];
+  const invalidPlatforms = rawPlatforms.filter(
+    (platform) => platform !== "ios" && platform !== "android"
+  );
+  if (invalidPlatforms.length > 0) {
+    io.errorLog(`非法 --platform：${invalidPlatforms.join("、")}（仅支持 ios/android）`);
+    return 2;
+  }
+  const platforms = [...new Set(rawPlatforms)];
+  const baselineRaw = flags.get("baseline");
+  if (baselineRaw !== null && baselineRaw !== "latest" && baselineRaw !== "none") {
+    io.errorLog(`非法 --baseline：${baselineRaw}（仅支持 latest/none）`);
+    return 2;
+  }
+  const baseline = baselineRaw === "none" ? "none" : "latest";
+  const everyRaw = flags.get("every");
+  const everyMinutes = everyRaw === null ? null : parsePositiveInt(everyRaw);
+  if (everyMinutes === null || everyMinutes < 5) {
+    io.errorLog("用法: --every 需为 ≥5 的整数（分钟）");
+    return 2;
+  }
+  const name = flags.get("name")?.trim() || refs[0]!;
+  const schedule = await runtime.store.createSchedule({
+    rootPath,
+    name,
+    featureKeys: refs,
+    platforms,
+    baseline,
+    everyMinutes,
+    createdBy: "cli"
+  });
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, schedule }, null, 2));
+    return 0;
+  }
+  io.log(
+    `定时回归 ${schedule.id}（name=${schedule.name} · every=${schedule.everyMinutes}min · platforms=${schedule.platforms.join(",")} · baseline=${schedule.baseline}）`
+  );
+  for (const key of refs) {
+    const hit = latest.get(key)!;
+    io.log(`- ${hit.featureName}（${key}）· caseSet=${hit.caseSetId} · 用例 ${hit.caseCount}`);
+  }
+  return 0;
+}
+
+async function suiteScheduleList(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const schedules = await runtime.store.listSchedules(runtime.project.rootDir, 50);
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, schedules }, null, 2));
+    return 0;
+  }
+  if (schedules.length === 0) {
+    io.log("暂无定时回归（suite schedule add 创建）");
+    return 0;
+  }
+  for (const schedule of schedules) {
+    io.log(
+      `${schedule.id} · ${schedule.name} · every ${schedule.everyMinutes}min · ${
+        schedule.enabled ? "enabled" : "disabled"
+      } · 上次触发 ${schedule.lastFiredAt ?? "—"}${
+        schedule.lastNote ? ` · ${schedule.lastNote}` : ""
+      }`
+    );
+  }
+  return 0;
+}
+
+async function suiteScheduleShow(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const id = flags.positional[2];
+  if (!id) {
+    io.errorLog("用法: suite schedule show <id>");
+    return 2;
+  }
+  const schedule = await runtime.store.getSchedule(runtime.project.rootDir, id);
+  if (!schedule) {
+    io.errorLog(`未找到定时回归 ${id}`);
+    return 2;
+  }
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, schedule }, null, 2));
+    return 0;
+  }
+  io.log(
+    `${schedule.id} · ${schedule.name} · every ${schedule.everyMinutes}min · ${
+      schedule.enabled ? "enabled" : "disabled"
+    }`
+  );
+  io.log(`refs: ${schedule.featureKeys.join("、")}`);
+  io.log(`platforms: ${schedule.platforms.join(",")} · baseline: ${schedule.baseline}`);
+  io.log(`上次触发: ${schedule.lastFiredAt ?? "—"}${schedule.lastNote ? ` · ${schedule.lastNote}` : ""}`);
+  return 0;
+}
+
+async function suiteScheduleSetEnabled(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  enabled: boolean
+): Promise<number> {
+  const id = flags.positional[2];
+  if (!id) {
+    io.errorLog(`用法: suite schedule ${enabled ? "enable" : "disable"} <id>`);
+    return 2;
+  }
+  const rootPath = runtime.project.rootDir;
+  const schedule = await runtime.store.getSchedule(rootPath, id);
+  if (!schedule) {
+    io.errorLog(`未找到定时回归 ${id}`);
+    return 2;
+  }
+  if (schedule.enabled === enabled) {
+    io.log(`定时回归 ${id} 已是${enabled ? "启用" : "停用"}状态`);
+    return 0;
+  }
+  const ok = await runtime.store.updateSchedule(rootPath, id, { enabled });
+  if (!ok) {
+    io.errorLog(`定时回归 ${id} 更新失败`);
+    return 2;
+  }
+  io.log(`定时回归 ${id} 已${enabled ? "启用" : "停用"}`);
+  return 0;
+}
+
+async function suiteScheduleRemove(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const id = flags.positional[2];
+  if (!id) {
+    io.errorLog("用法: suite schedule remove <id>");
+    return 2;
+  }
+  const ok = await runtime.store.deleteSchedule(runtime.project.rootDir, id);
+  if (!ok) {
+    io.errorLog(`未找到定时回归 ${id}`);
+    return 2;
+  }
+  io.log(`定时回归 ${id} 已删除`);
+  return 0;
+}
+
 function parsePositiveInt(value: string): number | null {
   const parsed = Number(value.trim());
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -2064,7 +2255,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "runner"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "runner", "schedule"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -2115,6 +2306,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "report") return await suiteReport(built.runtime, flags, { log, errorLog });
     if (sub === "reconcile") return await suiteReconcile(built.runtime, flags, { log, errorLog });
     if (sub === "task") return await suiteTask(built.runtime, flags, { log, errorLog });
+    if (sub === "schedule") return await suiteSchedule(built.runtime, flags, { log, errorLog });
     if (sub === "runner") {
       return await suiteRunnerCommand(
         built.runtime,
