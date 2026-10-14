@@ -1,5 +1,6 @@
 import type { CaseVerdict } from "../db/types.js";
 import { errorMessage, log } from "../util.js";
+import { createRunCaseIssues, MAX_ISSUE_ITEMS, normalizeLabels } from "./issues.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 
 /** 面板动作层（DESIGN：回归服务 §5.4）：仅 HTTP 模式接线；v1 内网无鉴权
@@ -56,6 +57,9 @@ export async function handlePanelActionRequest(
     }
     if (request.url.pathname === "/panel/api/verdicts") {
       return await saveVerdicts(deps, resolved.rootPath, payload);
+    }
+    if (request.url.pathname === "/panel/api/issues") {
+      return await createIssues(deps, resolved.rootPath, payload);
     }
     return json(404, { error: "not found" });
   } catch (error) {
@@ -192,4 +196,65 @@ async function saveVerdicts(
     missed: items.length - updated - failed,
     ...(failed > 0 ? { failed } : {})
   });
+}
+
+function optionalString(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") return null;
+  return value.trim() === "" ? undefined : value.trim();
+}
+
+async function createIssues(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>
+): Promise<PanelWebResponse> {
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+  const items: Array<{ runId: string; caseId: string }> = [];
+  for (const entry of rawItems) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as { runId?: unknown; caseId?: unknown };
+    if (typeof record.runId !== "string" || record.runId.trim() === "") continue;
+    if (typeof record.caseId !== "string" || record.caseId.trim() === "") continue;
+    items.push({ runId: record.runId.trim(), caseId: record.caseId.trim() });
+  }
+  if (items.length === 0) return json(400, { error: "items 为空或格式非法" });
+  if (items.length > MAX_ISSUE_ITEMS) {
+    return json(400, { error: `items 数量超过上限 ${MAX_ISSUE_ITEMS}` });
+  }
+
+  const projectKey = optionalString(payload.projectKey);
+  if (projectKey === null) return json(400, { error: "projectKey 必须是字符串" });
+  const issueType = optionalString(payload.issueType);
+  if (issueType === null) return json(400, { error: "issueType 必须是字符串" });
+  const summary = optionalString(payload.summary);
+  if (summary === null) return json(400, { error: "summary 必须是字符串" });
+
+  let labels: string[] | undefined;
+  if (payload.labels !== undefined) {
+    if (typeof payload.labels !== "string" && !Array.isArray(payload.labels)) {
+      return json(400, { error: "labels 必须是字符串或字符串数组" });
+    }
+    if (
+      Array.isArray(payload.labels) &&
+      !payload.labels.every((entry) => typeof entry === "string" && entry.trim() !== "")
+    ) {
+      return json(400, { error: "labels 必须是字符串数组（非空元素）" });
+    }
+    labels = normalizeLabels(payload.labels as string | string[]);
+  }
+
+  let dryRun: boolean | undefined;
+  if (payload.dryRun !== undefined) {
+    if (typeof payload.dryRun !== "boolean") return json(400, { error: "dryRun 必须是布尔值" });
+    dryRun = payload.dryRun;
+  }
+
+  const outcome = await createRunCaseIssues(
+    { store: deps.store, runtimeFor: deps.runtimeFor },
+    { rootPath, items, projectKey, issueType, labels, summary, dryRun }
+  );
+  if (!outcome.ok) return json(400, outcome);
+  if (outcome.created + outcome.existing > 0) deps.cache?.clear();
+  return json(200, outcome);
 }

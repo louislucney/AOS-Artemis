@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "../dist/panel/actions.js";
+import { createRunCaseIssues } from "../dist/panel/issues.js";
 import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
 
 function request(overrides = {}) {
@@ -309,4 +310,537 @@ test("panel actions: platforms 去重", async () => {
     (await store.listRegressionTasks(runtime.project.rootDir))[0].platforms,
     ["android"]
   );
+});
+
+// ---------------------------------------------------------------------------
+// POST /panel/api/issues — 一键建单
+// ---------------------------------------------------------------------------
+
+function fakeRuntime(overrides = {}) {
+  const resolverValues = {
+    JIRA_ISSUE_PROJECT: "AOS",
+    JIRA_ISSUE_TYPE: "Bug",
+    JIRA_ISSUE_LABELS: "",
+    ...(overrides.resolverValues ?? {})
+  };
+  const rootDir = overrides.rootDir ?? "/issues-proj";
+  return {
+    project: {
+      rootDir,
+      resolver: {
+        getValue: (name) => ({ value: resolverValues[name] ?? null, source: null })
+      }
+    },
+    traceDir: (traceId) => `${rootDir}/.artemis/traces/${traceId}`,
+    jiraConfig:
+      overrides.jiraConfig ??
+      (() => ({ configured: false, siteUrl: null, email: null, apiToken: null, missing: [] }))
+  };
+}
+
+async function issueStore(rootPath = "/issues-proj") {
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "issues" });
+  return store;
+}
+
+async function recordIssueRun(store, rootPath, { cases } = {}) {
+  return await store.recordSuiteRun({
+    rootPath,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: null,
+      featureName: "登录流程",
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: "1.2.3",
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 1,
+      passed: 0,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 应用缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases:
+      cases ?? [
+        {
+          caseId: "case-1",
+          name: "Case 1",
+          featureKey: null,
+          platform: "android",
+          status: "failed",
+          traceId: "trace-1",
+          failureDomain: "应用缺陷",
+          failureConfidence: "high",
+          failureReason: "崩溃",
+          durationMs: null,
+          quarantined: false,
+          flaky: false,
+          verdict: null,
+          verdictBy: null,
+          verdictAt: null,
+          verdictNote: null
+        }
+      ]
+  });
+}
+
+function fakeClientFor({ siteUrl = "https://acme.atlassian.net", createIssue } = {}) {
+  const calls = [];
+  const clientFor = () => ({
+    siteUrl,
+    client: {
+      createIssue: async (fields) => {
+        calls.push(fields);
+        if (createIssue) return await createIssue(fields, calls.length);
+        return { id: "10001", key: "AOS-1" };
+      }
+    }
+  });
+  return { clientFor, calls };
+}
+
+const noopEvidence = async () => ({ ok: true });
+
+test("panel issues: 成功建单（模板字段/证据 key-trace/回写/响应）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath);
+  const { clientFor, calls } = fakeClientFor();
+  const evidenceCalls = [];
+  const postEvidence = async (runtime, args) => {
+    evidenceCalls.push(args);
+    return { ok: true, issue: args.key };
+  };
+
+  const outcome = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.created, 1);
+  assert.equal(outcome.existing, 0);
+  assert.equal(outcome.skipped, 0);
+  assert.equal(outcome.failed, 0);
+  assert.equal(outcome.results[0].status, "created");
+  assert.equal(outcome.results[0].key, "AOS-1");
+  assert.equal(outcome.results[0].url, "https://acme.atlassian.net/browse/AOS-1");
+  assert.equal(outcome.results[0].evidence, "posted");
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].project, { key: "AOS" });
+  assert.deepEqual(calls[0].issuetype, { name: "Bug" });
+  assert.equal(calls[0].summary, "[回归] 登录流程 · Case 1 失败");
+  assert.ok(calls[0].description, "含 ADF 描述");
+  assert.deepEqual(calls[0].labels, []);
+
+  assert.equal(evidenceCalls.length, 1);
+  assert.equal(evidenceCalls[0].key, "AOS-1");
+  assert.equal(evidenceCalls[0].traceId, "trace-1");
+  assert.equal(evidenceCalls[0].platform, "android");
+  assert.equal(evidenceCalls[0].deviceSerial, "emulator-5554");
+  assert.equal(evidenceCalls[0].dryRun, false);
+
+  const stored = await store.getSuiteRun(rootPath, run.id);
+  assert.equal(stored.cases.find((c) => c.caseId === "case-1").jiraIssueKey, "AOS-1");
+});
+
+test("panel issues: 路由成功 → 200 + 清缓存（existing 离线）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath, {
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: "trace-1",
+        failureDomain: "应用缺陷",
+        failureConfidence: "high",
+        failureReason: "崩溃",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: "app-defect",
+        verdictBy: "panel",
+        verdictAt: null,
+        verdictNote: null,
+        jiraIssueKey: "AOS-42"
+      }
+    ]
+  });
+  let cleared = 0;
+  const cache = {
+    get: () => undefined,
+    set: () => {},
+    clear: () => {
+      cleared += 1;
+    }
+  };
+  const deps = {
+    store,
+    env: {},
+    workspaceRoot: null,
+    runtimeFor: async () =>
+      fakeRuntime({
+        jiraConfig: () => ({
+          configured: true,
+          siteUrl: "https://acme.atlassian.net",
+          email: "a@b.c",
+          apiToken: "tok",
+          missing: []
+        })
+      })
+  };
+  const response = await handlePanelActionRequest(
+    request({
+      url: new URL("http://localhost/panel/api/issues"),
+      body: { project: rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+    }),
+    { ...deps, cache }
+  );
+  assert.equal(response.status, 200);
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.existing, 1);
+  assert.equal(payload.results[0].status, "existing");
+  assert.equal(payload.results[0].url, "https://acme.atlassian.net/browse/AOS-42");
+  assert.equal(cleared, 1, "写后清缓存（existing 亦清）");
+});
+
+test("panel issues: existing 幂等（不调 createIssue）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath, {
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: "trace-1",
+        failureDomain: "应用缺陷",
+        failureConfidence: "high",
+        failureReason: "崩溃",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null,
+        jiraIssueKey: "AOS-9"
+      }
+    ]
+  });
+  const { clientFor, calls } = fakeClientFor();
+  let evidenceCalls = 0;
+  const postEvidence = async () => {
+    evidenceCalls += 1;
+    return { ok: true };
+  };
+
+  const outcome = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.existing, 1);
+  assert.equal(outcome.created, 0);
+  assert.equal(outcome.results[0].status, "existing");
+  assert.equal(outcome.results[0].key, "AOS-9");
+  assert.equal(outcome.results[0].url, "https://acme.atlassian.net/browse/AOS-9");
+  assert.equal(calls.length, 0, "existing 不触发 createIssue");
+  assert.equal(evidenceCalls, 0, "existing 不触发证据");
+});
+
+test("panel issues: skipped 三态（未知/通过/裁决冲突）不触 Jira", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath, {
+    cases: [
+      {
+        caseId: "case-pass",
+        name: "Pass",
+        featureKey: null,
+        platform: "android",
+        status: "passed",
+        traceId: null,
+        failureDomain: null,
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      },
+      {
+        caseId: "case-defect",
+        name: "Defect",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "用例缺陷",
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: "case-defect",
+        verdictBy: "panel",
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+  const { clientFor, calls } = fakeClientFor();
+  let evidenceCalls = 0;
+  const postEvidence = async () => {
+    evidenceCalls += 1;
+    return { ok: true };
+  };
+
+  const outcome = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
+    {
+      rootPath,
+      items: [
+        { runId: "run-nope", caseId: "case-1" },
+        { runId: run.id, caseId: "case-pass" },
+        { runId: run.id, caseId: "case-defect" }
+      ]
+    }
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.skipped, 3);
+  assert.equal(outcome.created, 0);
+  assert.deepEqual(outcome.results.map((r) => r.status), ["skipped", "skipped", "skipped"]);
+  assert.equal(outcome.results[0].reason, "未知运行或用例");
+  assert.equal(outcome.results[1].reason, "用例已通过，无需建单");
+  assert.equal(outcome.results[2].reason, "裁决为 case-defect，与建单不符");
+  assert.equal(calls.length, 0, "skipped 不触 createIssue");
+  assert.equal(evidenceCalls, 0, "skipped 不触证据");
+});
+
+test("panel issues: dryRun 预览（不触 createIssue；证据以 dryRun:true）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath);
+  const { clientFor, calls } = fakeClientFor();
+  const evidenceCalls = [];
+  const postEvidence = async (runtime, args) => {
+    evidenceCalls.push(args);
+    return { ok: true, dryRun: true, attachments: ["traces/trace-1/screenshot.png"] };
+  };
+
+  const outcome = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }], dryRun: true }
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.created, 0);
+  assert.equal(outcome.results[0].status, "preview");
+  assert.equal(outcome.results[0].summary, "[回归] 登录流程 · Case 1 失败");
+  assert.deepEqual(outcome.results[0].attachments, ["traces/trace-1/screenshot.png"]);
+  assert.equal(calls.length, 0, "dryRun 不触 createIssue");
+  assert.equal(evidenceCalls.length, 1);
+  assert.equal(evidenceCalls[0].key, "");
+  assert.equal(evidenceCalls[0].dryRun, true);
+  const stored = await store.getSuiteRun(rootPath, run.id);
+  assert.equal(stored.cases.find((c) => c.caseId === "case-1").jiraIssueKey, null, "dryRun 不回写");
+});
+
+test("panel issues: 未配置 Jira / runtimeFor 缺失 → ok:false 指引", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath);
+
+  const unconfigured = await createRunCaseIssues(
+    {
+      store,
+      runtimeFor: async () =>
+        fakeRuntime({
+          jiraConfig: () => ({
+            configured: false,
+            siteUrl: null,
+            email: null,
+            apiToken: null,
+            missing: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+          })
+        }),
+      clientFor: () => null,
+      postEvidence: noopEvidence
+    },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+  );
+  assert.equal(unconfigured.ok, false);
+  assert.ok(unconfigured.error.includes("JIRA_BASE_URL"), "错误含缺失项");
+  assert.ok(Array.isArray(unconfigured.hints) && unconfigured.hints.length > 0);
+
+  const noRuntime = await createRunCaseIssues(
+    { store, runtimeFor: async () => null },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+  );
+  assert.equal(noRuntime.ok, false);
+  assert.equal(noRuntime.error, "项目运行时不可用（仅限 workspace 内项目、HTTP 模式）");
+});
+
+test("panel issues: projectKey/issueType/labels 缺省解析（逗号拆分去重）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath);
+  const { clientFor, calls } = fakeClientFor();
+  const runtime = fakeRuntime({
+    resolverValues: {
+      JIRA_ISSUE_PROJECT: "AOS",
+      JIRA_ISSUE_TYPE: "Task",
+      JIRA_ISSUE_LABELS: " login , pay , , login "
+    }
+  });
+
+  const outcome = await createRunCaseIssues(
+    { store, runtimeFor: async () => runtime, clientFor, postEvidence: noopEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.created, 1);
+  assert.deepEqual(calls[0].project, { key: "AOS" });
+  assert.deepEqual(calls[0].issuetype, { name: "Task" });
+  assert.deepEqual(calls[0].labels, ["login", "pay"]);
+});
+
+test("panel issues: 部分失败容忍（第 1 条 create 抛错、第 2 条成功）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath, {
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: "trace-1",
+        failureDomain: "应用缺陷",
+        failureConfidence: "high",
+        failureReason: "崩溃",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      },
+      {
+        caseId: "case-2",
+        name: "Case 2",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: "trace-2",
+        failureDomain: "应用缺陷",
+        failureConfidence: "high",
+        failureReason: "崩溃",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+  const calls = [];
+  const clientFor = () => ({
+    siteUrl: "https://acme.atlassian.net",
+    client: {
+      createIssue: async (fields) => {
+        calls.push(fields);
+        if (calls.length === 1) throw new Error("jira hiccup");
+        return { id: "10002", key: "AOS-2" };
+      }
+    }
+  });
+
+  const outcome = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence: noopEvidence },
+    {
+      rootPath,
+      items: [
+        { runId: run.id, caseId: "case-1" },
+        { runId: run.id, caseId: "case-2" }
+      ]
+    }
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.created, 1);
+  assert.equal(outcome.failed, 1);
+  assert.equal(outcome.results[0].status, "error");
+  assert.equal(outcome.results[0].reason, "jira hiccup");
+  assert.equal(outcome.results[1].status, "created");
+  assert.equal(outcome.results[1].key, "AOS-2");
+  const stored = await store.getSuiteRun(rootPath, run.id);
+  assert.equal(stored.cases.find((c) => c.caseId === "case-2").jiraIssueKey, "AOS-2");
+  assert.equal(stored.cases.find((c) => c.caseId === "case-1").jiraIssueKey, null);
+});
+
+test("panel issues: 路由校验（items 超 20 → 400；labels 非字符串 → 400）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath);
+  const deps = {
+    store,
+    env: {},
+    workspaceRoot: null,
+    runtimeFor: async () => fakeRuntime()
+  };
+  const url = new URL("http://localhost/panel/api/issues");
+  const body = (payload) => ({ project: rootPath, ...payload });
+
+  const tooMany = await handlePanelActionRequest(
+    request({
+      url,
+      body: body({ items: Array.from({ length: 21 }, () => ({ runId: run.id, caseId: "case-1" })) })
+    }),
+    deps
+  );
+  assert.equal(tooMany.status, 400);
+  assert.ok(JSON.parse(tooMany.body).error.includes("超过上限"));
+
+  const badLabels = await handlePanelActionRequest(
+    request({ url, body: body({ items: [{ runId: run.id, caseId: "case-1" }], labels: 123 }) }),
+    deps
+  );
+  assert.equal(badLabels.status, 400);
+
+  const emptyItems = await handlePanelActionRequest(
+    request({ url, body: body({ items: [] }) }),
+    deps
+  );
+  assert.equal(emptyItems.status, 400);
 });

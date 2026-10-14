@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { ProjectStore, RunnerTools } from "../db/types.js";
 import { formatBytes } from "../figma/retention.js";
+import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
 import {
@@ -48,6 +49,8 @@ export interface PanelWebDeps {
   cache?: PanelWebCache | null;
   /** 深探层（HTTP 模式注入；懒建 Runtime 纯读子集）。 */
   deep?: PanelDeepProbe | null;
+  /** 面板建单动作的运行时解析（HTTP 模式注入 deepRuntimeFor）。 */
+  runtimeFor?: (rootPath: string) => Promise<Runtime | null>;
 }
 
 export interface PanelWebResponse {
