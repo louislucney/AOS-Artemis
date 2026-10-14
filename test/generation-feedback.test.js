@@ -95,6 +95,56 @@ function snapshot(dir) {
   return files.sort();
 }
 
+function verdictCase(caseId, verdict, extra = {}) {
+  return {
+    caseId,
+    name: extra.name ?? `Case ${caseId}`,
+    featureKey: extra.featureKey ?? "f-1",
+    platform: extra.platform ?? "android",
+    status: extra.status ?? "failed",
+    traceId: extra.traceId ?? null,
+    failureDomain: "用例缺陷",
+    failureConfidence: "medium",
+    failureReason: "断言未命中",
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict,
+    verdictBy: verdict === null ? null : "alice",
+    verdictAt: verdict === null ? null : "2026-10-14T12:00:00.000Z",
+    verdictNote: extra.note ?? null,
+    jiraIssueKey: extra.jiraKey ?? null
+  };
+}
+
+function verdictRun(overrides = {}) {
+  return {
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId: "cs-1",
+    featureKey: "f-1",
+    featureName: "登录流程",
+    platform: "android",
+    device: "emulator-5554",
+    appVersion: null,
+    runner: null,
+    status: "failed",
+    startedAt: "2026-10-14T10:00:00.000Z",
+    finishedAt: "2026-10-14T10:05:00.000Z",
+    total: 1,
+    passed: 0,
+    failed: 1,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: { 用例缺陷: 1 },
+    gateResult: "fail",
+    exitCode: 1,
+    manifestPath: null,
+    comparison: null,
+    ...overrides
+  };
+}
+
 test("generation feedback: aggregates screens, data assumptions and weak assertions", async () => {
   const { runtime } = await setup();
   const feedback = await buildGenerationFeedback(runtime);
@@ -302,4 +352,73 @@ test("generation feedback: 无裁决 → 无 verdict 建议；store 抛错不阻
   assert.equal(degraded.ok, true);
   assert.ok(degraded.suggestions.length > 0, "store 不可用不阻断既有建议");
   assert.equal(degraded.suggestions.filter((entry) => entry.kind === "verdict").length, 0);
+});
+
+test("generation feedback: exits 形状（三清单、jiraKey 透传）；store 抛错 → exits 省略且 ok true", async () => {
+  const { dir, runtime } = await setup();
+  await runtime.store.upsertProject({ rootPath: dir, name: "p" });
+  await runtime.store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: verdictRun(),
+    cases: [
+      verdictCase("case-1", "case-defect", { note: "按钮文案不符", jiraKey: "AOS-1" }),
+      verdictCase("case-2", "execution-deviation", { traceId: "trace-x" }),
+      verdictCase("case-3", "app-defect", { jiraKey: "AOS-3" })
+    ]
+  });
+
+  const feedback = await buildGenerationFeedback(runtime);
+  assert.equal(feedback.ok, true);
+  const exits = feedback.exits;
+  assert.ok(exits, "exits 存在");
+  assert.deepEqual(Object.keys(exits).sort(), ["appDefects", "caseDefects", "environment"]);
+  assert.equal(exits.caseDefects.length, 1);
+  assert.deepEqual(
+    {
+      caseId: exits.caseDefects[0].caseId,
+      jiraKey: exits.caseDefects[0].jiraKey,
+      note: exits.caseDefects[0].note
+    },
+    { caseId: "case-1", jiraKey: "AOS-1", note: "按钮文案不符" }
+  );
+  assert.deepEqual(exits.appDefects.map((entry) => entry.jiraKey), ["AOS-3"]);
+  assert.equal(exits.environment.length, 1);
+  assert.equal(exits.environment[0].count, 1);
+  assert.equal(exits.environment[0].device, "emulator-5554");
+
+  runtime.store.listSuiteRuns = async () => {
+    throw new Error("store down");
+  };
+  const degraded = await buildGenerationFeedback(runtime);
+  assert.equal(degraded.ok, true);
+  assert.equal("exits" in degraded, false, "store 不可读 → exits 省略而非 null");
+});
+
+test("generation feedback: verdict 建议含用例名与备注摘要（截断 40 字）；无备注不产生空括号", async () => {
+  const { dir, runtime } = await setup();
+  await runtime.store.upsertProject({ rootPath: dir, name: "p" });
+  const longNote = "长".repeat(45);
+  await runtime.store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: verdictRun(),
+    cases: [
+      verdictCase("case-1", "case-defect", { name: "登录成功", note: "按钮文案不符" }),
+      verdictCase("case-2", "case-defect", { name: "退出登录", note: longNote }),
+      verdictCase("case-3", "case-defect", { name: "无备注", note: null })
+    ]
+  });
+
+  const feedback = await buildGenerationFeedback(runtime);
+  const verdicts = feedback.suggestions.filter((entry) => entry.kind === "verdict");
+  assert.equal(verdicts.length, 1);
+  assert.equal(
+    verdicts[0].message,
+    `功能「登录流程」有 3 条用例被判案例问题（case-1「登录成功」（按钮文案不符）；case-2「退出登录」（${"长".repeat(
+      40
+    )}…）；case-3「无备注」），建议下一轮重新生成该功能用例。`
+  );
+  assert.equal(verdicts[0].message.includes("（）"), false, "无备注不产生空括号");
+  assert.deepEqual(verdicts[0].caseIds, ["case-1", "case-2", "case-3"]);
 });

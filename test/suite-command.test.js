@@ -295,6 +295,103 @@ test("suite report/feedback: ledger-derived artifacts and suggestions", async ()
   assert.ok(feedbackPayload.suggestions.every((suggestion) => Array.isArray(suggestion.traceIds)));
 });
 
+function verdictRun(overrides = {}) {
+  return {
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId: "cs-1",
+    featureKey: "f-login",
+    featureName: "登录",
+    platform: "android",
+    device: "emulator-5554",
+    appVersion: null,
+    runner: null,
+    status: "failed",
+    startedAt: "2026-10-14T10:00:00.000Z",
+    finishedAt: "2026-10-14T10:05:00.000Z",
+    total: 1,
+    passed: 0,
+    failed: 1,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: { 用例缺陷: 1 },
+    gateResult: "fail",
+    exitCode: 1,
+    manifestPath: null,
+    comparison: null,
+    ...overrides
+  };
+}
+
+function verdictCase(caseId, verdict, extra = {}) {
+  return {
+    caseId,
+    name: extra.name ?? `Case ${caseId}`,
+    featureKey: "f-login",
+    platform: "android",
+    status: "failed",
+    traceId: null,
+    failureDomain: "用例缺陷",
+    failureConfidence: "medium",
+    failureReason: "断言未命中",
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict,
+    verdictBy: verdict === null ? null : "alice",
+    verdictAt: verdict === null ? null : "2026-10-14T12:00:00.000Z",
+    verdictNote: null,
+    jiraIssueKey: extra.jiraKey ?? null
+  };
+}
+
+async function recordVerdictExits(store, dir) {
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: verdictRun(),
+    cases: [verdictCase("case-1", "case-defect"), verdictCase("case-4", "execution-deviation")]
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:06:00.000Z",
+    run: verdictRun({ caseSetId: "cs-2", featureKey: "f-settings", featureName: "设置" }),
+    cases: [verdictCase("case-2", "case-defect")]
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:07:00.000Z",
+    run: verdictRun({ caseSetId: "cs-3", featureKey: "f-order", featureName: "下单" }),
+    cases: [verdictCase("case-3", "app-defect", { jiraKey: "AOS-9" })]
+  });
+}
+
+test("suite feedback: exports verdict exits (JSON + text) and empty state", async () => {
+  const store = new MemoryStore();
+  const { dir, runtime } = await setupRun({ cases: [caseEntry(1)], store });
+  await recordVerdictExits(store, dir);
+
+  const json = await runCli(runtime, ["feedback", "--json"]);
+  assert.equal(json.code, 0);
+  const payload = JSON.parse(json.logs.at(-1));
+  assert.equal(payload.exits.caseDefects.length, 2);
+  assert.deepEqual(payload.exits.caseDefects.map((entry) => entry.caseId), ["case-1", "case-2"]);
+  assert.equal(payload.exits.appDefects[0].jiraKey, "AOS-9");
+  assert.equal(payload.exits.environment[0].count, 1);
+
+  const text = await runCli(runtime, ["feedback"]);
+  assert.equal(text.code, 0);
+  assert.ok(text.logs.includes("出口清单（按最新裁决）："));
+  assert.ok(text.logs.includes("- 案例问题：2 条（功能：登录、设置）"));
+  assert.ok(text.logs.includes("- 执行偏差：1 条（设备：emulator-5554(1)）"));
+  assert.ok(text.logs.includes("- 应用缺陷：1 条（已建单 1）"));
+
+  const empty = await setupRun({ cases: [caseEntry(1)] });
+  const emptyText = await runCli(empty.runtime, ["feedback"]);
+  assert.equal(emptyText.code, 0);
+  assert.ok(emptyText.logs.includes("出口清单为空（暂无已裁决失败）。"));
+});
+
 test("suite help and unknown subcommands", async () => {
   const { runtime } = await setupRun({ cases: null });
   const help = await runCli(runtime, ["help"]);

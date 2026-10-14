@@ -3,7 +3,11 @@ import path from "node:path";
 
 import type { FailureClassification } from "../artemis/failure-taxonomy.js";
 import type { Runtime } from "../runtime.js";
-import { collectVerdictExits } from "../tasks/verdict-exits.js";
+import {
+  collectVerdictExits,
+  type VerdictExitCase,
+  type VerdictExits
+} from "../tasks/verdict-exits.js";
 import { readTestsDocument } from "./design-store.js";
 import { preflightGeneratedTests } from "./preflight.js";
 import { buildRunReport, type RunReportCase } from "./run-report.js";
@@ -81,6 +85,7 @@ export interface GenerationFeedback {
     apiErrors: ApiErrorIssue[];
   };
   suggestions: FeedbackSuggestion[];
+  exits?: VerdictExits;
   error?: string;
 }
 
@@ -166,39 +171,56 @@ function dataPreconditionOf(failure: FailureClassification | null): string | nul
   return null;
 }
 
-/** 案例问题裁决（case-defect，按（份,用例）取最新裁决）→ 按功能分组的重新生成建议。
- * 只读按需计算；store 不可用即跳过该维度（不阻断既有建议）。 */
-async function collectVerdictSuggestions(runtime: Runtime): Promise<FeedbackSuggestion[]> {
-  let runs: Awaited<ReturnType<Runtime["store"]["listSuiteRuns"]>>;
-  try {
-    runs = await runtime.store.listSuiteRuns(runtime.project.rootDir, { limit: 50 });
-  } catch {
-    return [];
-  }
-  const exits = collectVerdictExits(runs);
-  const byKey = new Map<string, { caseIds: string[]; traceIds: string[]; name: string | null }>();
+const VERDICT_NOTE_MAX = 40;
+
+function verdictNoteSuffix(note: string | null): string {
+  if (note === null || note === "") return "";
+  const shown = note.length <= VERDICT_NOTE_MAX ? note : `${note.slice(0, VERDICT_NOTE_MAX)}…`;
+  return `（${shown}）`;
+}
+
+/** 案例问题裁决（case-defect）→ 按功能分组的重新生成建议（消费共享的 exits，不再单独取数）。
+ * 分组键 `featureKey ?? featureName`；展示名＝组内首个非空 `featureName ?? 分组键`。 */
+function collectVerdictSuggestions(exits: VerdictExits): FeedbackSuggestion[] {
+  const byKey = new Map<string, { cases: VerdictExitCase[]; traceIds: string[] }>();
   for (const entry of exits.caseDefects) {
-    const groupKey = entry.featureKey ?? entry.featureName ?? entry.caseId;
-    const group = byKey.get(groupKey) ?? { caseIds: [], traceIds: [], name: null };
-    if (!group.caseIds.includes(entry.caseId)) group.caseIds.push(entry.caseId);
+    const groupKey = entry.featureKey ?? entry.featureName;
+    if (groupKey === null || groupKey === "") continue;
+    const group = byKey.get(groupKey) ?? { cases: [], traceIds: [] };
+    if (!group.cases.some((item) => item.caseId === entry.caseId)) group.cases.push(entry);
     if (entry.traceId !== null && !group.traceIds.includes(entry.traceId)) {
       group.traceIds.push(entry.traceId);
     }
-    if (group.name === null && entry.featureName !== null) group.name = entry.featureName;
     byKey.set(groupKey, group);
   }
   return [...byKey.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([groupKey, group]) => {
-      const name = group.name ?? groupKey;
+      const name =
+        group.cases.find((item) => item.featureName !== null && item.featureName !== "")?.featureName ??
+        groupKey;
+      const items = group.cases.map(
+        (item) => `${item.caseId}「${item.name}」${verdictNoteSuffix(item.note)}`
+      );
       return {
         kind: "verdict" as const,
-        message: `功能「${name}」有 ${group.caseIds.length} 条用例被判案例问题（${group.caseIds.join("、")}），建议下一轮重新生成该功能用例。`,
+        message: `功能「${name}」有 ${group.cases.length} 条用例被判案例问题（${items.join(
+          "；"
+        )}），建议下一轮重新生成该功能用例。`,
         targets: {},
-        caseIds: group.caseIds,
+        caseIds: group.cases.map((item) => item.caseId),
         traceIds: group.traceIds
       };
     });
+}
+
+async function loadVerdictExits(runtime: Runtime): Promise<VerdictExits | undefined> {
+  try {
+    const runs = await runtime.store.listSuiteRuns(runtime.project.rootDir, { limit: 100 });
+    return collectVerdictExits(runs);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Read-only aggregation over the run ledger plus device baselines. Produces
@@ -227,6 +249,7 @@ export async function buildGenerationFeedback(
     return { ...empty, error: report.error ?? "运行台账不可读" };
   }
 
+  const exits = await loadVerdictExits(runtime);
   const meta = loadCaseMeta(runtime);
   const failed = report.cases.filter((entry) => entry.outcome === "failed");
 
@@ -385,7 +408,7 @@ export async function buildGenerationFeedback(
       traceIds: []
     });
   }
-  suggestions.push(...(await collectVerdictSuggestions(runtime)));
+  suggestions.push(...(exits ? collectVerdictSuggestions(exits) : []));
 
   return {
     ok: true,
@@ -402,6 +425,7 @@ export async function buildGenerationFeedback(
       visualHotspots,
       apiErrors: apiIssues
     },
-    suggestions
+    suggestions,
+    ...(exits ? { exits } : {})
   };
 }

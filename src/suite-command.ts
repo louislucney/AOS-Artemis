@@ -15,6 +15,7 @@ import { latestFeatureRefs, type ResolvedTaskRef } from "./tasks/feature-refs.js
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/baseline.js";
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
+import type { VerdictExits } from "./tasks/verdict-exits.js";
 import { designDir, readTestsDocument } from "./figma/design-store.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
@@ -373,7 +374,7 @@ Usage:
   aos-mcp suite baseline save|compare [options]
                                      设备对设备基线视觉回归（last-known-good）
   aos-mcp suite report [options]     从运行台账导出 xlsx 结果页 + JUnit XML
-  aos-mcp suite feedback [options]   基于台账与基线的生成改进建议（只读）
+  aos-mcp suite feedback [options]   生成改进建议与出口清单（只读）
   aos-mcp suite reconcile list|confirm|reject [options]
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
   aos-mcp suite task create|list|show|release [options]
@@ -1617,6 +1618,33 @@ async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (lin
   return report.ok ? 0 : 1;
 }
 
+/** 出口清单文本面（与面板/JSON 同源）：三行 + 空态。 */
+function renderVerdictExits(exits: VerdictExits, log: (line: string) => void): void {
+  const { caseDefects, environment, appDefects } = exits;
+  if (caseDefects.length === 0 && environment.length === 0 && appDefects.length === 0) {
+    log("出口清单为空（暂无已裁决失败）。");
+    return;
+  }
+  log("出口清单（按最新裁决）：");
+  const features: string[] = [];
+  for (const entry of caseDefects) {
+    const name = entry.featureName ?? entry.featureKey;
+    if (name !== null && name !== "" && !features.includes(name)) features.push(name);
+  }
+  log(
+    `- 案例问题：${caseDefects.length} 条${features.length > 0 ? `（功能：${features.join("、")}）` : ""}`
+  );
+  const environmentTotal = environment.reduce((sum, group) => sum + group.count, 0);
+  const deviceCounts = environment.map((group) => `${group.device ?? "—"}(${group.count})`);
+  log(
+    `- 执行偏差：${environmentTotal} 条${
+      deviceCounts.length > 0 ? `（设备：${deviceCounts.join("、")}）` : ""
+    }`
+  );
+  const created = appDefects.filter((entry) => entry.jiraKey !== null && entry.jiraKey !== "").length;
+  log(`- 应用缺陷：${appDefects.length} 条${created > 0 ? `（已建单 ${created}）` : ""}`);
+}
+
 async function suiteFeedback(runtime: Runtime, flags: ParsedFlags, io: { log: (line: string) => void; errorLog: (line: string) => void }): Promise<number> {
   const feedback = await buildGenerationFeedback(runtime, {
     limit: intOrNull(flags.get("limit")) ?? undefined,
@@ -1640,6 +1668,7 @@ async function suiteFeedback(runtime: Runtime, flags: ParsedFlags, io: { log: (l
       io.log(`- [${suggestion.kind}] ${suggestion.message}${refs ? ` （${refs}）` : ""}`);
     }
     if (feedback.suggestions.length === 0) io.log("无改进建议（数据不足或均已满足阈值）。");
+    if (feedback.exits) renderVerdictExits(feedback.exits, io.log);
   }
   return feedback.ok ? 0 : 1;
 }
