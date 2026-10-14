@@ -164,6 +164,21 @@ test("fireDueSchedules: 窗口被抢先（另一 runner 已领）→ 不重复�
   assert.equal((await store.listRegressionTasks(rootPath)).length, 0);
 });
 
+test("fireDueSchedules: 用例集读取失败 → 不消费窗口（lastFiredAt 不变）", async () => {
+  const { store, rootPath } = await setup();
+  await seedCaseSet(store, rootPath);
+  const schedule = await addSchedule(store, rootPath);
+  store.listCaseSets = async () => {
+    throw new Error("sets down");
+  };
+  const { io, errors } = makeIo();
+  assert.equal(await fireDueSchedules({ store, rootPath, now: () => NOW, io }), 0);
+  const after = await store.getSchedule(rootPath, schedule.id);
+  assert.equal(after.lastFiredAt, null, "不消费窗口");
+  assert.equal(after.lastNote, null);
+  assert.ok(errors.some((line) => line.includes("sets down")));
+});
+
 test("fireDueSchedules: store 抛错 → 0 且不抛（best-effort）；建任务抛错 → lastNote+窗口已消费", async () => {
   const first = await setup();
   const failing = first.store;

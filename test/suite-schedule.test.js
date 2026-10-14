@@ -125,6 +125,30 @@ test("suite schedule add：落库（缺省 name=首个 featureKey；平台去重
 
   const noRef = await runCli(runtime, ["schedule", "add", "--every", "60"]);
   assert.equal(noRef.code, 2);
+
+  const named = await runCli(runtime, [
+    "schedule",
+    "add",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--every",
+    "120",
+    "--name",
+    "夜间"
+  ]);
+  assert.equal(named.code, 0);
+  const dup = await runCli(runtime, [
+    "schedule",
+    "add",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--every",
+    "60",
+    "--name",
+    "夜间"
+  ]);
+  assert.equal(dup.code, 2);
+  assert.ok(dup.errors.some((line) => line.includes("同名")));
 });
 
 test("suite schedule list/show：文本与 --json；未知 id → exit 2", async () => {

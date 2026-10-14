@@ -221,7 +221,8 @@ const SCHEMA = [
      last_fired_at TEXT,
      last_note TEXT,
      created_at TEXT NOT NULL,
-     created_by TEXT
+     created_by TEXT,
+     UNIQUE (project_id, name)
     )`
 ];
 
@@ -963,6 +964,13 @@ export class PostgresStore implements ProjectStore {
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
+    const existing = await this.pool.query(
+      `SELECT id FROM schedules WHERE project_id = $1 AND name = $2`,
+      [project.id, input.name]
+    );
+    if (existing.rows.length > 0) {
+      throw new Error(`同名定时回归已存在：${input.name}（请用 --name 指定其他名称）`);
+    }
     const id = randomUUID();
     const createdAt = new Date().toISOString();
     await this.pool.query(
@@ -998,13 +1006,19 @@ export class PostgresStore implements ProjectStore {
     };
   }
 
-  async listSchedules(rootPath: string, limit = 20): Promise<ScheduleRecord[]> {
+  async listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]> {
     const project = await this.getProjectByPath(rootPath);
     if (!project) return [];
-    const result = await this.pool.query(
-      `SELECT * FROM schedules WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2`,
-      [project.id, limit]
-    );
+    const result =
+      limit === undefined
+        ? await this.pool.query(
+            `SELECT * FROM schedules WHERE project_id = $1 ORDER BY created_at DESC`,
+            [project.id]
+          )
+        : await this.pool.query(
+            `SELECT * FROM schedules WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2`,
+            [project.id, limit]
+          );
     return result.rows.map((row) => mapSchedule(row));
   }
 

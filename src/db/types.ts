@@ -367,7 +367,7 @@ export interface ProjectStore {
     to?: "pending" | "failed";
   }): Promise<boolean>;
   createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord>;
-  /** 返回 createdAt 新→旧。 */
+  /** 返回 createdAt 新→旧；`limit` 缺省＝全量（firing 用；面板/CLI 显式传分页值）。 */
   listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]>;
   getSchedule(rootPath: string, id: string): Promise<ScheduleRecord | null>;
   updateSchedule(

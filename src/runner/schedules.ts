@@ -19,7 +19,7 @@ export async function fireDueSchedules(options: FireSchedulesOptions): Promise<n
   };
   let fired = 0;
   try {
-    const schedules = await options.store.listSchedules(options.rootPath, 50);
+    const schedules = await options.store.listSchedules(options.rootPath);
     const due = schedules.filter(
       (schedule) =>
         schedule.enabled &&
@@ -28,11 +28,12 @@ export async function fireDueSchedules(options: FireSchedulesOptions): Promise<n
     );
     if (due.length === 0) return 0;
 
-    let sets: Awaited<ReturnType<ProjectStore["listCaseSets"]>> = [];
+    let sets: Awaited<ReturnType<ProjectStore["listCaseSets"]>>;
     try {
       sets = await options.store.listCaseSets(options.rootPath, 50);
     } catch (error) {
-      io.errorLog(`[schedule] 用例集读取失败：${errorMessage(error)}`);
+      io.errorLog(`[schedule] 用例集读取失败（本轮不触发、不消费窗口）：${errorMessage(error)}`);
+      return 0;
     }
     const latest = latestFeatureRefs(sets);
 

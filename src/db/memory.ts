@@ -354,6 +354,12 @@ export class MemoryStore implements ProjectStore {
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
     const project = this.projects.get(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
+    const existing = this.schedules.find(
+      (entry) => entry.projectId === project.id && entry.name === input.name
+    );
+    if (existing) {
+      throw new Error(`同名定时回归已存在：${input.name}（请用 --name 指定其他名称）`);
+    }
     const record: ScheduleRecord = {
       id: randomUUID(),
       projectId: project.id,
@@ -372,14 +378,13 @@ export class MemoryStore implements ProjectStore {
     return cloneSchedule(record);
   }
 
-  async listSchedules(rootPath: string, limit = 20): Promise<ScheduleRecord[]> {
+  async listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]> {
     const project = this.projects.get(rootPath);
     if (!project) return [];
-    return this.schedules
+    const all = this.schedules
       .filter((entry) => entry.projectId === project.id)
-      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
-      .slice(0, limit)
-      .map(cloneSchedule);
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    return (limit === undefined ? all : all.slice(0, limit)).map(cloneSchedule);
   }
 
   async getSchedule(rootPath: string, id: string): Promise<ScheduleRecord | null> {

@@ -1965,27 +1965,32 @@ async function suiteScheduleAdd(
     return 2;
   }
   const name = flags.get("name")?.trim() || refs[0]!;
-  const schedule = await runtime.store.createSchedule({
-    rootPath,
-    name,
-    featureKeys: refs,
-    platforms,
-    baseline,
-    everyMinutes,
-    createdBy: "cli"
-  });
-  if (flags.bool("json")) {
-    io.log(JSON.stringify({ ok: true, schedule }, null, 2));
+  try {
+    const schedule = await runtime.store.createSchedule({
+      rootPath,
+      name,
+      featureKeys: refs,
+      platforms,
+      baseline,
+      everyMinutes,
+      createdBy: "cli"
+    });
+    if (flags.bool("json")) {
+      io.log(JSON.stringify({ ok: true, schedule }, null, 2));
+      return 0;
+    }
+    io.log(
+      `定时回归 ${schedule.id}（name=${schedule.name} · every=${schedule.everyMinutes}min · platforms=${schedule.platforms.join(",")} · baseline=${schedule.baseline}）`
+    );
+    for (const key of refs) {
+      const hit = latest.get(key)!;
+      io.log(`- ${hit.featureName}（${key}）· caseSet=${hit.caseSetId} · 用例 ${hit.caseCount}`);
+    }
     return 0;
+  } catch (error) {
+    io.errorLog(`创建定时回归失败：${errorMessage(error)}`);
+    return 2;
   }
-  io.log(
-    `定时回归 ${schedule.id}（name=${schedule.name} · every=${schedule.everyMinutes}min · platforms=${schedule.platforms.join(",")} · baseline=${schedule.baseline}）`
-  );
-  for (const key of refs) {
-    const hit = latest.get(key)!;
-    io.log(`- ${hit.featureName}（${key}）· caseSet=${hit.caseSetId} · 用例 ${hit.caseCount}`);
-  }
-  return 0;
 }
 
 async function suiteScheduleList(

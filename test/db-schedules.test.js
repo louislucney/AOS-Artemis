@@ -66,6 +66,18 @@ test("createSchedule：未注册项目 → 抛错（memory + pg-mem）", async (
   }
 });
 
+test("createSchedule：同项目同名 → 抛错（跨项目同名可行；memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.createSchedule(scheduleInput());
+    await assert.rejects(store.createSchedule(scheduleInput()), /同名/);
+    await store.upsertProject({ rootPath: "/w/p2", name: "p2" });
+    const other = await store.createSchedule(scheduleInput({ rootPath: "/w/p2" }));
+    assert.ok(other.id, "跨项目同名不受限");
+  }
+});
+
 test("get/update/delete：键缺省不动 / null 显式置空；删除后再查 null（memory + pg-mem）", async () => {
   const stores = [new MemoryStore(), await makePgStore()];
   for (const store of stores) {

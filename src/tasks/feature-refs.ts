@@ -6,7 +6,7 @@ export interface ResolvedTaskRef {
   jsonPath: string;
 }
 
-/** 引用解析：每个 feature key 取最新一份（listCaseSets 新→旧首次出现）。 */
+/** 引用解析：每个 feature key 取最新一份。@param sets 需按 createdAt 新→旧（listCaseSets 保证）。 */
 export function latestFeatureRefs(
   sets: Array<{
     id: string;
