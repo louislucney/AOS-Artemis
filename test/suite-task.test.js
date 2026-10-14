@@ -379,3 +379,81 @@ test("suite run --task: --fail-on-uncovered 被忽略并提示", async () => {
   assert.equal(run.code, 0);
   assert.ok(run.logs.some((line) => line.includes("--fail-on-uncovered 在 task 模式忽略")));
 });
+
+test("suite run --task: --baseline none 跳过对比并重建基准", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: { "trace-1": { status: "completed" }, "trace-2": { status: "failed", error: "boom" } }
+  });
+  await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--platform",
+    "android",
+    "--baseline",
+    "none"
+  ]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  assert.equal(tasks[0].baseline, "none");
+  await store.recordSuiteRun({
+    rootPath: runtime.project.rootDir,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: tasks[0].refs[0].caseSetId,
+      featureKey: "f-登录-aaaa1111",
+      featureName: "登录流程",
+      platform: "android",
+      device: null,
+      appVersion: null,
+      status: "completed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 2,
+      passed: 2,
+      failed: 0,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "pass",
+      exitCode: 0,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: ["case-1", "case-2"].map((caseId) => ({
+      caseId,
+      name: `Case ${caseId}`,
+      featureKey: "f-登录-aaaa1111",
+      platform: "android",
+      status: "passed",
+      traceId: null,
+      failureDomain: null,
+      failureConfidence: null,
+      failureReason: null,
+      durationMs: null,
+      quarantined: false,
+      flaky: false,
+      verdict: null,
+      verdictBy: null,
+      verdictAt: null,
+      verdictNote: null
+    }))
+  });
+
+  const run = await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+  assert.equal(run.code, 1);
+  const runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.equal(runs[0].comparison.baseline, "established");
+  assert.equal(runs[0].comparison.regressed, 0);
+  assert.ok(run.logs.some((line) => line.includes("基准建立")));
+});
+
+test("suite report --task: 未知任务 → exit 2 且不落盘", async () => {
+  const { runtime } = await setupTaskProject();
+  const report = await runCli(runtime, ["report", "--task", "task-nope"]);
+  assert.equal(report.code, 2);
+  assert.ok(report.errors.some((line) => line.includes("未找到回归任务")));
+  assert.equal(fs.existsSync(path.join(runtime.configDirAbs, "design", "reports")), false);
+});

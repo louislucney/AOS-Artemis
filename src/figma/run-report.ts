@@ -454,6 +454,20 @@ export async function buildTaskRunReport(
   options: TaskRunReportOptions
 ): Promise<RunReport> {
   const generatedAt = new Date().toISOString();
+  const task = await runtime.store.getRegressionTask(runtime.project.rootDir, options.taskId);
+  if (!task) {
+    return {
+      ok: false,
+      generatedAt,
+      total: 0,
+      passed: 0,
+      failed: 0,
+      pending: 0,
+      cases: [],
+      traceability: null,
+      error: `未找到回归任务 ${options.taskId}`
+    };
+  }
   const runs = await runtime.store.listSuiteRuns(runtime.project.rootDir, {
     taskId: options.taskId,
     limit: 100

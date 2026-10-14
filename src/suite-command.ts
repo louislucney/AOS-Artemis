@@ -586,11 +586,13 @@ async function suiteRunTask(
         anyFailure = true;
       }
       const comparison = compareRuns(
-        await baselineFor(runtime, {
-          caseSetId: ref.caseSetId,
-          featureKey: ref.featureKey,
-          platform
-        }),
+        task.baseline === "none"
+          ? null
+          : await baselineFor(runtime, {
+              caseSetId: ref.caseSetId,
+              featureKey: ref.featureKey,
+              platform
+            }),
         outcomeCasesOf(report)
       );
       const runId = await registerSuiteRun(runtime, {
@@ -1523,7 +1525,10 @@ async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (lin
       }
       if (report.error) io.errorLog(report.error);
     }
-    return report.ok ? 0 : 1;
+    if (!report.ok) {
+      return report.error?.includes("未找到回归任务") ? 2 : 1;
+    }
+    return 0;
   }
   if (!flags.bool("no-sync")) {
     await runtime.syncTaskStatuses();
