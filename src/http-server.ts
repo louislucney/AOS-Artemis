@@ -15,6 +15,7 @@ import {
 } from "./panel/web.js";
 import { handlePanelActionRequest } from "./panel/actions.js";
 import { createPanelDeepProbe } from "./panel/deep.js";
+import type { ProjectStore } from "./db/types.js";
 import { Runtime } from "./runtime.js";
 import { RuntimeHost } from "./runtime-host.js";
 import { createServerForRuntime, inProcessToolCatalog } from "./server.js";
@@ -25,6 +26,8 @@ export interface HttpServerOptions {
   host?: string;
   port?: number;
   workspaceRoot?: string;
+  /** 测试/嵌入：复用外部 store（缺省由 RuntimeHost.prepare 自建）。 */
+  store?: ProjectStore;
 }
 
 export interface AosHttpHandle {
@@ -83,7 +86,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     startupLine: `aos-mcp ${AOS_MCP_VERSION} 启动（HTTP）workspace=${workspaceRoot}`,
     deps: { repoDir: serviceRepo, source: resolveDepsSource(emptyConfig(), process.env) }
   });
-  const store = runtimeHost.store;
+  const store = options.store ?? runtimeHost.store;
   const reason = runtimeHost.storeNote;
 
   const runtimes = new Map<string, Runtime>();

@@ -8,6 +8,7 @@ import {
   buildPanelBatchDetail,
   buildPanelOverview,
   buildPanelProjectDetail,
+  buildPanelReviewQueue,
   buildPanelTaskDetail,
   PANEL_BATCH_LIMIT_DEFAULT,
   PANEL_BATCH_LIMIT_MAX,
@@ -17,6 +18,7 @@ import {
   type PanelOverview,
   type PanelProjectDetail,
   type PanelProjectRow,
+  type PanelReviewItem,
   type PanelStandaloneRow,
   type PanelTaskDetail
 } from "./overview.js";
@@ -53,6 +55,8 @@ export interface PanelWebResponse {
 export interface PanelWebCache {
   get(key: string): PanelWebResponse | undefined;
   set(key: string, response: PanelWebResponse): void;
+  /** 动作层写后失效：POST 成功后 reload 立即看到新状态。 */
+  clear(): void;
 }
 
 export function createPanelWebCache(ttlMs: number, now: () => number = Date.now): PanelWebCache {
@@ -71,6 +75,9 @@ export function createPanelWebCache(ttlMs: number, now: () => number = Date.now)
     set(key: string, response: PanelWebResponse): void {
       if (!(ttlMs > 0)) return;
       entries.set(key, { at: now(), response });
+    },
+    clear(): void {
+      entries.clear();
     }
   };
 }
@@ -91,6 +98,7 @@ type PanelView =
   | { kind: "overview"; overview: PanelOverview }
   | { kind: "project"; rootPath: string; detail: PanelProjectDetail }
   | { kind: "task"; rootPath: string; detail: PanelTaskDetail }
+  | { kind: "review"; rootPath: string; detail: { items: PanelReviewItem[]; warnings: string[] } }
   | { kind: "batch"; rootPath: string; detail: PanelBatchDetail };
 
 class PanelNotFoundError extends Error {}
@@ -168,6 +176,11 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return { kind: "batch", rootPath: resolved.rootPath, detail };
   }
 
+  if (trimmed(url.searchParams.get("view")) === "review") {
+    const detail = await buildPanelReviewQueue(panelDeps, resolved.rootPath, { limit: 10 });
+    return { kind: "review", rootPath: resolved.rootPath, detail };
+  }
+
   const limitRaw = intParam(url.searchParams, "limit");
   const batchLimit = Math.min(Math.max(limitRaw ?? PANEL_BATCH_LIMIT_DEFAULT, 1), PANEL_BATCH_LIMIT_MAX);
   const detail = await buildPanelProjectDetail(panelDeps, resolved.rootPath, {
@@ -182,6 +195,7 @@ function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "overview") return { ...view.overview, view: "overview" };
   if (view.kind === "project") return { ok: true, view: "project", ...view.detail };
   if (view.kind === "task") return { ok: true, view: "task", ...view.detail };
+  if (view.kind === "review") return { ok: true, view: "review", ...view.detail };
   return { ok: true, view: "batch", ...view.detail };
 }
 
@@ -259,6 +273,10 @@ function batchHref(rootPath: string, file: string): string {
 
 function taskHref(rootPath: string, taskId: string): string {
   return `/panel?project=${encodeURIComponent(rootPath)}&task=${encodeURIComponent(taskId)}`;
+}
+
+function reviewHref(rootPath: string): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}&view=review`;
 }
 
 function gateSpan(gate: "pass" | "fail" | null): string {
@@ -805,6 +823,129 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
   );
 }
 
+function renderReviewPage(view: {
+  rootPath: string;
+  detail: { items: PanelReviewItem[]; warnings: string[] };
+}): string {
+  const { items, warnings } = view.detail;
+  const rootJson = JSON.stringify(view.rootPath).replace(/</g, "\\u003c");
+  const evidenceCell = (item: PanelReviewItem): string => {
+    if (item.evidencePath === null) return "—";
+    let present = false;
+    try {
+      present = fs.statSync(item.evidencePath).isDirectory();
+    } catch {
+      present = false;
+    }
+    return present
+      ? `<code>${escapeHtml(item.evidencePath)}</code>`
+      : `<code>${escapeHtml(item.evidencePath)}</code> <span class="muted">[已清理]</span>`;
+  };
+  const rows = items.map((item) => [
+    `<input type="checkbox" name="item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}">`,
+    `<code>${escapeHtml(item.caseId)}</code>`,
+    escapeHtml(item.name),
+    escapeHtml(item.featureName ?? "—"),
+    escapeHtml(item.platform),
+    escapeHtml(item.device ?? "—"),
+    escapeHtml(item.status),
+    item.failureDomain === null
+      ? "—"
+      : `<span class="chip">${escapeHtml(item.failureDomain)}</span>${
+          item.failureConfidence === null
+            ? ""
+            : ` <span class="muted">${escapeHtml(item.failureConfidence)}</span>`
+        }`,
+    escapeHtml(item.failureReason ?? "—"),
+    evidenceCell(item),
+    item.verdict === null
+      ? '<span class="muted">未裁决</span>'
+      : `<span class="chip">${escapeHtml(item.verdict)}</span>${
+          item.verdictBy === null ? "" : ` <span class="muted">${escapeHtml(item.verdictBy)}</span>`
+        }${item.verdictNote === null ? "" : `<br><span class="muted">${escapeHtml(item.verdictNote)}</span>`}`
+  ]);
+  const undecided = items.filter((item) => item.verdict === null).length;
+  const warningsHtml =
+    warnings.length > 0
+      ? warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("")
+      : "";
+  const body =
+    items.length === 0
+      ? [
+          '<section id="queue">',
+          "<h2>失败用例</h2>",
+          '<p class="empty">暂无失败用例（最近 10 次运行全部通过）</p>',
+          "</section>"
+        ]
+      : [
+          '<form id="verdict-form" onsubmit="return submitVerdicts(event)">',
+          renderTable(
+            [
+              "选择",
+              "用例",
+              "名称",
+              "功能",
+              "端",
+              "设备",
+              "状态",
+              "初判",
+              "理由",
+              "证据",
+              "裁决"
+            ],
+            rows,
+            "暂无失败用例"
+          ),
+          "<p>裁决：",
+          '<label><input type="radio" name="verdict" value="case-defect" checked> 案例问题</label> ',
+          '<label><input type="radio" name="verdict" value="execution-deviation"> 执行偏差</label> ',
+          '<label><input type="radio" name="verdict" value="app-defect"> 应用缺陷</label> ',
+          '<label><input type="radio" name="verdict" value="uncertain"> 不确定</label>',
+          "</p>",
+          '<p><label>备注：<input type="text" name="note" size="40" placeholder="可选（写入裁决历史）"></label></p>',
+          '<p><button type="submit">提交裁决</button> <span id="verdict-status" class="muted"></span></p>',
+          '<p class="note">需启用 JavaScript 提交；勾选多条 → 同一裁决批量写入。</p>',
+          "</form>",
+          "<script>",
+          "function submitVerdicts(event){",
+          "  event.preventDefault();",
+          "  var form=event.target;",
+          "  var items=Array.prototype.slice.call(form.querySelectorAll('input[name=item]:checked')).map(function(el){var parts=el.value.split('|');return {runId:parts[0],caseId:parts[1]};});",
+          "  var verdict=form.querySelector('input[name=verdict]:checked').value;",
+          "  var note=form.querySelector('input[name=note]').value;",
+          "  var status=document.getElementById('verdict-status');",
+          "  if(items.length===0){status.textContent='请先勾选至少一条失败用例';return false;}",
+          "  status.textContent='提交中…';",
+          "  fetch('/panel/api/verdicts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:" +
+            rootJson +
+            ",items:items,verdict:verdict,note:note})})",
+          "    .then(function(response){return response.json().then(function(payload){if(!response.ok){throw new Error(payload.error||('HTTP '+response.status));}location.reload();});})",
+          "    .catch(function(error){status.textContent='提交失败：'+error.message;});",
+          "  return false;",
+          "}",
+          "</script>"
+        ];
+  return page(
+    `归因队列 · ${path.basename(view.rootPath)}`,
+    [
+      "<header>",
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
+      "<h1>归因队列</h1>",
+      `<p class="muted">最近 10 次运行的失败用例 · 共 ${items.length} 条 · 未裁决 ${undecided} 条</p>`,
+      warningsHtml,
+      "</header>",
+      "<main>",
+      ...body,
+      '<section id="run-hint">',
+      "<h2>动作指引</h2>",
+      '<p class="muted">重跑：<code>node dist/cli.js suite run --task &lt;task-id&gt; --device &lt;serial&gt;</code>（整任务）或 <code>node dist/cli.js suite run --tests &lt;tests.json&gt; --case &lt;caseId&gt; --device &lt;serial&gt;</code>（单用例）。</p>',
+      '<p class="muted">隔离：写入 <code>.artemis/design/quarantine.json</code>（owner 签字名单；suite run 默认跳过，<code>--no-quarantine</code> 严格跑）。</p>',
+      "</section>",
+      "</main>"
+    ].join("\n")
+  );
+}
+
 function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail }, cacheNote: string): string {
   const { detail } = view;
   const row = detail.project;
@@ -828,6 +969,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       reasons,
       warnings,
       `<p class="muted">生成时间 ${escapeHtml(detail.generatedAt)} · ${escapeHtml(cacheNote)}</p>`,
+      `<p><a href="${escapeHtml(reviewHref(view.rootPath))}">归因队列</a></p>`,
       "</header>",
       "<main>",
       renderIntegration(detail),
@@ -998,5 +1140,6 @@ function renderPanelHtml(view: PanelView): string {
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);
   if (view.kind === "project") return renderProjectPage(view, cacheNote);
   if (view.kind === "task") return renderTaskPage(view);
+  if (view.kind === "review") return renderReviewPage(view);
   return renderBatchPage(view);
 }

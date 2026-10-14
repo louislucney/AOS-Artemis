@@ -442,3 +442,119 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   );
   assert.equal(missing.status, 404);
 });
+
+test("panel web: review HTML（radio 四选项、批量复选框、fetch、证据两态、指引）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  fs.mkdirSync(path.join(projectDir, ".artemis", "traces", "trace-1"), { recursive: true });
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: null,
+      featureName: null,
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 2,
+      passed: 0,
+      failed: 2,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 2 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: "trace-1",
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      },
+      {
+        caseId: "case-2",
+        name: "Case 2",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: "trace-gone",
+        failureDomain: "环境",
+        failureConfidence: "low",
+        failureReason: "设备离线",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      },
+      {
+        caseId: "case-3",
+        name: "Case 3",
+        featureKey: null,
+        platform: "android",
+        status: "passed",
+        traceId: null,
+        failureDomain: null,
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=review`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /归因队列/);
+  assert.match(html.body, /value="case-defect"/);
+  assert.match(html.body, /value="execution-deviation"/);
+  assert.match(html.body, /value="app-defect"/);
+  assert.match(html.body, /value="uncertain"/);
+  assert.match(html.body, /name="item" value="[^"]+\|case-1"/);
+  assert.match(html.body, /fetch\('\/panel\/api\/verdicts'/);
+  assert.match(html.body, /trace-1<\/code>/, "存在证据目录 → 直接展示路径");
+  assert.match(
+    html.body,
+    /trace-gone<\/code> <span class="muted">\[已清理\]<\/span>/,
+    "缺失证据目录 → [已清理] 标注"
+  );
+  assert.match(html.body, /suite run --tests/);
+  assert.match(html.body, /quarantine\.json/);
+  assert.doesNotMatch(html.body, /case-3/, "已通过用例不进队列");
+
+  const projectHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.match(projectHtml.body, /view=review/, "项目页有归因队列入口");
+});

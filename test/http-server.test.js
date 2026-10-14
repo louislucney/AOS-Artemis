@@ -8,6 +8,7 @@ import { makeTempDir } from "./helpers.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+import { MemoryStore } from "../dist/db/memory.js";
 import { createAosHttpServer } from "../dist/http-server.js";
 
 process.env.AOS_MODEL_REFRESH_HOURS = "0";
@@ -260,6 +261,97 @@ test("http server: 任务视图路由（未知 task → 404）", async () => {
     );
     assert.equal(missing.status, 404);
     assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel`)).status, 200);
+  } finally {
+    await handle.close();
+  }
+});
+
+test("http server: 归因队列（GET view=review + POST 裁决后队列更新）", async () => {
+  const store = new MemoryStore();
+  const workspace = makeWorkspace();
+  const projectDir = path.join(workspace, "demo");
+  await store.upsertProject({ rootPath: projectDir, name: "demo" });
+  const run = await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: null,
+      featureName: null,
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 1,
+      passed: 0,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+  const handle = await createAosHttpServer({
+    port: 0,
+    host: "127.0.0.1",
+    workspaceRoot: workspace,
+    store
+  });
+  try {
+    const first = JSON.parse(
+      await (await fetch(`http://127.0.0.1:${handle.port}/panel.json?project=demo&view=review`)).text()
+    );
+    assert.equal(first.view, "review");
+    assert.equal(first.items.length, 1);
+    assert.equal(first.items[0].verdict, null);
+
+    const html = await fetch(`http://127.0.0.1:${handle.port}/panel?project=demo&view=review`);
+    assert.equal(html.status, 200);
+
+    const post = await fetch(`http://127.0.0.1:${handle.port}/panel/api/verdicts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project: "demo",
+        items: [{ runId: run.id, caseId: "case-1" }],
+        verdict: "case-defect",
+        note: "期望值写错"
+      })
+    });
+    assert.equal(post.status, 200);
+
+    const second = JSON.parse(
+      await (await fetch(`http://127.0.0.1:${handle.port}/panel.json?project=demo&view=review`)).text()
+    );
+    assert.equal(second.items[0].verdict, "case-defect", "裁决后队列更新（面板缓存已失效）");
+    assert.equal(second.items[0].verdictNote, "期望值写错");
   } finally {
     await handle.close();
   }

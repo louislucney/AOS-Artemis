@@ -50,10 +50,14 @@ export async function handlePanelActionRequest(
 
   try {
     if (request.url.pathname === "/panel/api/tasks") {
-      return await createTask(deps, resolved.rootPath, payload);
+      const response = await createTask(deps, resolved.rootPath, payload);
+      if (response.status === 200) deps.cache?.clear();
+      return response;
     }
     if (request.url.pathname === "/panel/api/verdicts") {
-      return await saveVerdicts(deps, resolved.rootPath, payload);
+      const response = await saveVerdicts(deps, resolved.rootPath, payload);
+      if (response.status === 200) deps.cache?.clear();
+      return response;
     }
     return json(404, { error: "not found" });
   } catch (error) {

@@ -206,6 +206,26 @@ export interface PanelTaskDetail {
   warnings: string[];
 }
 
+export interface PanelReviewItem {
+  runId: string;
+  caseId: string;
+  name: string;
+  featureName: string | null;
+  platform: string;
+  device: string | null;
+  status: string;
+  failureDomain: string | null;
+  failureConfidence: string | null;
+  failureReason: string | null;
+  traceId: string | null;
+  evidencePath: string | null;
+  verdict: string | null;
+  verdictBy: string | null;
+  verdictAt: string | null;
+  verdictNote: string | null;
+  createdAt: string;
+}
+
 export interface PanelProjectDetail {
   generatedAt: string;
   project: PanelProjectRow;
@@ -876,6 +896,64 @@ export async function buildPanelTaskDetail(
   );
 
   return { task, refs, runs: runViews, crossPlatform, warnings };
+}
+
+/** 归因队列（DESIGN：回归服务 §5.7）：最近 N 次运行的全部失败用例；
+ * 未裁决在前，再按运行时间新→旧；evidencePath 为用例 trace 目录（存在性由视图标注两态）。 */
+export async function buildPanelReviewQueue(
+  deps: PanelDeps,
+  rootPath: string,
+  options: { limit?: number } = {}
+): Promise<{ items: PanelReviewItem[]; warnings: string[] }> {
+  const warnings: string[] = [];
+  const limit = Math.max(Math.trunc(options.limit ?? 10), 1);
+  let runs: Awaited<ReturnType<ProjectStore["listSuiteRuns"]>> = [];
+  try {
+    runs = await deps.store.listSuiteRuns(rootPath, { limit });
+  } catch (error) {
+    warnings.push(`运行读取失败：${errorMessage(error)}`);
+  }
+
+  let tracesDir = path.join(rootPath, ".artemis", "traces");
+  try {
+    const soft = await softReadProject(deps, rootPath);
+    tracesDir = projectTracesDir(soft.project.config, rootPath, deps.env ?? process.env);
+  } catch (error) {
+    warnings.push(`项目配置读取失败（证据路径按默认 .artemis/traces 解析）：${errorMessage(error)}`);
+  }
+
+  const items: PanelReviewItem[] = [];
+  for (const run of runs) {
+    for (const entry of run.cases) {
+      if (entry.status === "passed") continue;
+      items.push({
+        runId: run.id,
+        caseId: entry.caseId,
+        name: entry.name,
+        featureName: run.featureName,
+        platform: run.platform,
+        device: run.device,
+        status: entry.status,
+        failureDomain: entry.failureDomain,
+        failureConfidence: entry.failureConfidence,
+        failureReason: entry.failureReason,
+        traceId: entry.traceId,
+        evidencePath: entry.traceId === null ? null : path.join(tracesDir, entry.traceId),
+        verdict: entry.verdict,
+        verdictBy: entry.verdictBy,
+        verdictAt: entry.verdictAt,
+        verdictNote: entry.verdictNote,
+        createdAt: run.createdAt
+      });
+    }
+  }
+  items.sort((a, b) => {
+    const aRank = a.verdict === null ? 0 : 1;
+    const bRank = b.verdict === null ? 0 : 1;
+    if (aRank !== bRank) return aRank - bRank;
+    return b.createdAt < a.createdAt ? -1 : b.createdAt > a.createdAt ? 1 : 0;
+  });
+  return { items, warnings };
 }
 
 function evidenceLinks(tracesDir: string, rootPath: string, entry: RunManifest["cases"][number]): PanelEvidenceLink[] {

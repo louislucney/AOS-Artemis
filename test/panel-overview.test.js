@@ -13,6 +13,7 @@ import {
   buildPanelBatchDetail,
   buildPanelOverview,
   buildPanelProjectDetail,
+  buildPanelReviewQueue,
   buildPanelTaskDetail,
   PANEL_BATCH_EMPTY_CAUSES
 } from "../dist/panel/overview.js";
@@ -616,4 +617,108 @@ test("panel detail: buildPanelTaskDetail（引用解析/子运行/对比/跨端�
   assert.equal(projectDetail.tasks[0].runIds, 2);
 
   assert.equal(await buildPanelTaskDetail(deps, dir, "task-nope"), null);
+});
+
+test("panel detail: 归因队列聚合（未裁决在前、初判字段、已裁决展示）", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "review-app" });
+
+  const mkCase = (overrides) => ({
+    caseId: "case-1",
+    name: "Case 1",
+    featureKey: null,
+    platform: "android",
+    status: "failed",
+    traceId: null,
+    failureDomain: null,
+    failureConfidence: null,
+    failureReason: null,
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict: null,
+    verdictBy: null,
+    verdictAt: null,
+    verdictNote: null,
+    ...overrides
+  });
+  const mkRun = (overrides) => ({
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId: null,
+    featureKey: null,
+    featureName: null,
+    platform: "android",
+    device: "emulator-5554",
+    appVersion: null,
+    status: "failed",
+    startedAt: "2026-10-14T09:00:00.000Z",
+    finishedAt: "2026-10-14T09:05:00.000Z",
+    total: 1,
+    passed: 0,
+    failed: 1,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: {},
+    gateResult: "fail",
+    exitCode: 1,
+    manifestPath: null,
+    comparison: null,
+    ...overrides
+  });
+
+  const older = await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T09:00:00.000Z",
+    run: mkRun({}),
+    cases: [
+      mkCase({
+        traceId: "trace-1",
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中"
+      })
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: mkRun({}),
+    cases: [
+      mkCase({ caseId: "case-2", name: "Case 2", status: "passed" }),
+      mkCase({
+        caseId: "case-3",
+        name: "Case 3",
+        verdict: "case-defect",
+        verdictBy: "alice",
+        verdictAt: "2026-10-14T11:00:00.000Z",
+        verdictNote: "期望值写错"
+      })
+    ]
+  });
+
+  const { items, warnings } = await buildPanelReviewQueue(
+    { store, serviceRepo: repo, buildStale: false, env: {} },
+    dir
+  );
+  assert.deepEqual(warnings, []);
+  assert.equal(items.length, 2, "已通过用例不进队列");
+  assert.equal(items[0].caseId, "case-1", "未裁决在前（即使运行更旧）");
+  assert.equal(items[0].runId, older.id);
+  assert.equal(items[0].name, "Case 1");
+  assert.equal(items[0].platform, "android");
+  assert.equal(items[0].device, "emulator-5554");
+  assert.equal(items[0].status, "failed");
+  assert.equal(items[0].failureDomain, "用例缺陷");
+  assert.equal(items[0].failureConfidence, "medium");
+  assert.equal(items[0].failureReason, "断言未命中");
+  assert.equal(items[0].verdict, null);
+  assert.equal(items[0].evidencePath, path.join(dir, ".artemis", "traces", "trace-1"));
+  assert.equal(items[1].caseId, "case-3");
+  assert.equal(items[1].verdict, "case-defect");
+  assert.equal(items[1].verdictBy, "alice");
+  assert.equal(items[1].verdictNote, "期望值写错");
+  assert.equal(items[1].evidencePath, null, "无 traceId → 无证据路径");
 });
