@@ -187,7 +187,10 @@ const SCHEMA = [
     )`
 ];
 
-const MIGRATIONS = [`ALTER TABLE task_stats ADD COLUMN IF NOT EXISTS case_id TEXT`];
+const MIGRATIONS = [
+  `ALTER TABLE task_stats ADD COLUMN IF NOT EXISTS case_id TEXT`,
+  `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS runner TEXT`
+];
 
 export class PostgresStore implements ProjectStore {
   readonly kind = "postgres" as const;

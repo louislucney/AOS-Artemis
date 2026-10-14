@@ -320,3 +320,47 @@ test("suite_runs: runner 字段往返（显式值 / 缺省 null；memory + pg-me
     assert.equal(runs.find((entry) => entry.id === withoutRunner.id).runner, null);
   }
 });
+
+test("suite_runs: 存量库迁移——旧表缺 runner 列时 init 补列", async () => {
+  const mem = newDb({ noAstCoverageCheck: true });
+  const { Pool } = mem.adapters.createPg();
+  const pool = new Pool();
+  await pool.query(
+    `CREATE TABLE suite_runs (
+       id TEXT PRIMARY KEY,
+       project_id TEXT,
+       created_at TEXT NOT NULL,
+       trigger TEXT NOT NULL,
+       regression_task_id TEXT,
+       case_set_id TEXT,
+       feature_key TEXT,
+       feature_name TEXT,
+       platform TEXT NOT NULL,
+       device TEXT,
+       app_version TEXT,
+       status TEXT NOT NULL,
+       started_at TEXT NOT NULL,
+       finished_at TEXT NOT NULL,
+       total INTEGER NOT NULL,
+       passed INTEGER NOT NULL,
+       failed INTEGER NOT NULL,
+       flaky INTEGER NOT NULL,
+       quarantined INTEGER NOT NULL,
+       failure_domains TEXT NOT NULL DEFAULT '{}',
+       gate_result TEXT,
+       exit_code INTEGER NOT NULL,
+       manifest_path TEXT,
+       comparison TEXT
+     )`
+  );
+  const store = new PostgresStore(pool);
+  await store.init();
+  await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  const input = runInput();
+  const record = await store.recordSuiteRun({
+    ...input,
+    run: { ...input.run, runner: "legacy-fix" }
+  });
+  const runs = await store.listSuiteRuns("/w/p1");
+  assert.equal(runs.find((entry) => entry.id === record.id).runner, "legacy-fix");
+});
