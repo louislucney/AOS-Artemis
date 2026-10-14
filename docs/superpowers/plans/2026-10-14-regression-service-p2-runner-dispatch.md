@@ -18,11 +18,12 @@
 - 密钥只存项目 `.env`（或 PG）；日志/响应不落 key。
 - 完工标准：`npm run build && npm test && npm run lint` 全绿；行为变更同步 DESIGN.md（新增 §13.109）+ README + AGENTS.md（命令表）。
 - **§8 留项拍板（本计划）**：
-  - 领取通道＝中心 PG（既有「各项目机直连中心 PG」定论）；原子领取＝单条 `UPDATE ... AND status='pending'` 守卫（不用 `SKIP LOCKED`；竞争者拿 0 行 → 下一轮再领取，不双跑）；**领取条件＝任务 platforms ⊆ runner 在线设备端集合**（缺端不领，避免半意图执行）。
+  - 领取通道＝中心 PG（既有「各项目机直连中心 PG」定论）；原子领取＝单条 `UPDATE ... AND status='pending'` 守卫（不用 `SKIP LOCKED`；竞争者拿 0 行 → 下一轮再领取，不双跑）；**领取条件＝任务 platforms ⊆ runner 在线设备端集合**（缺端不领，避免半意图执行）。代价：双端任务需**单机双端** runner 才能自动领取（本项目拓扑：每项目机 1 iOS＋1 Android，满足）；分机部署（两端分属两台机）时双端任务保持待执行，改用手动 `suite run --task`；按端部分领取列 P3。
   - 心跳＝`runners` 表行 upsert＋TTL 在线判定（`AOS_RUNNER_TTL_MS` 默认 90s）；任务锁＝`claimed_by/claimed_at`＋runner 启动释放（崩溃残留回 pending，可再领取）。
   - runner 形态＝`suite runner` 常驻子命令（`--once` 单轮冒烟）；runner 需要中心 PG（内存 store 拒启并提示）。
-  - 产物服务：与 runner 同进程、默认监听 `0.0.0.0`（LAN 预览所需）、只读且限 `<项目>/.artemis` 范围、无鉴权（内网口径，README/DESIGN 标注风险）；`--artifact-port 0` 关闭。
+  - 产物服务：与 runner 同进程、默认监听 `0.0.0.0`（LAN 预览所需）、只读且限 `<项目>/.artemis` 范围（**含 `logs/` 与 `crashes/`，README/DESIGN 点名标注**）、无鉴权（内网口径）；`--artifact-port 0` 关闭。
   - 「一键下发」语义＝面板创建任务后由在线 runner 自动领取执行，**不新增按钮**；无 runner 时手动 `suite run --task` 路径不变。
+  - §8 剩余项沿用现状（不在本计划）：多实例并发迁移（init 幂等 best-effort：`ADD COLUMN IF NOT EXISTS` + logWarn）；`platforms/devices/tools` 为无版本宽容解析 JSON 文本（沿用既有 schema 做法）。
 
 ## Review Focus
 
@@ -45,14 +46,15 @@
 - Produces：
   ```ts
   // db/types.ts
-  export interface RunnerDevice { serial: string; platform: "ios" | "android"; kind: "device" | "emulator" | "simulator"; state: string; }
+  export interface RunnerDevice { serial: string; name: string; platform: "ios" | "android"; kind: "device" | "emulator" | "simulator"; state: string; }
+  export interface RunnerTools { adb: boolean; idb: boolean; simctl: boolean; ideviceId: boolean; appium: boolean; }
   export interface RunnerRecord {
     id: string; projectId: string | null; name: string; hostname: string;
-    platforms: string[]; devices: RunnerDevice[];
+    platforms: string[]; devices: RunnerDevice[]; tools: RunnerTools;
     artifactBaseUrl: string | null; version: string | null;
     lastSeenAt: string; createdAt: string;
   }
-  export interface UpsertRunnerInput { rootPath: string; name: string; hostname: string; platforms: string[]; devices: RunnerDevice[]; artifactBaseUrl?: string | null; version?: string | null; }
+  export interface UpsertRunnerInput { rootPath: string; name: string; hostname: string; platforms: string[]; devices: RunnerDevice[]; tools: RunnerTools; artifactBaseUrl?: string | null; version?: string | null; }
   // ProjectStore 接口新增：
   upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord>;
   listRunners(rootPath: string, limit?: number): Promise<RunnerRecord[]>;
@@ -64,12 +66,13 @@
 
 - [ ] **Step 1: 写失败测试**（`test/db-runners.test.js`；pg-mem + memory 双跑，MemoryStore 与 `makePgStore` 同测试文件既有两个既有模式）
   - `upsertRunner: 首次落库 + 二次更新同项目同名同一条（id 稳定、devices 覆盖、createdAt 不变、lastSeenAt 变新）`。
+  - `devices.name 与 tools 五布尔往返一致；JSON 缺字段 → 宽容解析（tools 全 false、name 空串）`。
   - `upsertRunner: 未注册项目 → 抛错（文案含「未注册」）`。
   - `listRunners: 按 lastSeenAt 新→旧 + limit；空 → []`。
   - `isRunnerOnline: 恰等于 TTL 在线、超 1ms 离线、lastSeen 解析失败离线`；`runnerTtlFrom: 非法值回默认、合法值生效`。
 - [ ] **Step 2: 跑测试确认失败**：`npm run test:file -- test/db-runners.test.js`。
 - [ ] **Step 3: 实现**
-  - DDL（postgres SCHEMA 数组内，字段：id/project_id/name/hostname/platforms/devices/artifact_base_url/version/last_seen_at/created_at，platforms/devices 为 JSON 文本；`project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`）。
+  - DDL（postgres SCHEMA 数组内，字段：id/project_id/name/hostname/platforms/devices/tools/artifact_base_url/version/last_seen_at/created_at，platforms/devices/tools 为 JSON 文本；`project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`）。
   - upsert＝`getProjectByPath` 校验 → SELECT `(project_id, name)` → 命中 UPDATE（last_seen_at/hostname/platforms/devices/artifact_base_url/version）否则 INSERT（id＝`randomUUID()`）；**不用 ON CONFLICT**（pg-mem 兼容；每项目机单 runner，无并发写冲突假设）。
   - memory 同语义（`cloneRunner` 深拷贝 devices）。
   - `status.ts` 纯函数（ISO 解析，非法 → 离线）。
@@ -95,7 +98,7 @@
   - `claimRegressionTask: 最旧 pending 且任务 platforms ⊆ runner platforms → claimed + claimedBy/claimedAt；缺端/无 pending → null`。
   - `claimRegressionTask: 已 claimed 的任务不被二次领取（先后两个 runner → 第二个拿到 null 或下一个可领任务）`。
   - `releaseRegressionTasks: 仅释放自己的 claimed/running（他人任务不动），返回条数`。
-  - `updateRegressionTask: claimedBy/claimedAt 可置空；createRegressionTask 新行默认 null`。
+  - `updateRegressionTask: 键缺省不动 / null 显式置空；status-only 更新不清空 claimedBy/claimedAt；createRegressionTask 新行默认 null`。
   - `存量库迁移：旧 regression_tasks 缺 claimed_by/claimed_at → init 补列后领取可用`（旧表模拟见 `test/db-suite-runs.test.js` 的 `noAstCoverageCheck` 用法）。
 - [ ] **Step 2: 跑测试确认失败**。
 - [ ] **Step 3: 实现**
@@ -103,7 +106,7 @@
   - claim（postgres）：`SELECT id, platforms FROM regression_tasks WHERE project_id=$1 AND status='pending' ORDER BY created_at ASC LIMIT 20` → JS 解析 platforms JSON 取首个「任务端 ⊆ runner 端」→ `UPDATE regression_tasks SET status='claimed', claimed_by=$2, claimed_at=$3 WHERE id=$4 AND status='pending' RETURNING *`（0 行 → null，下一轮再试）；mapRegressionTask 读两新列。
   - claim（memory）：同逻辑数组实现。
   - release：`UPDATE ... SET status='pending', claimed_by=NULL, claimed_at=NULL WHERE project_id=$1 AND claimed_by=$2 AND status IN ('claimed','running')`；memory 同语义。
-  - `createRegressionTask` INSERT 带两列（null）；`updateRegressionTask` 动态 SET 支持两字段（`?? null` 语义＝显式置空）。
+  - `createRegressionTask` INSERT 带两列（null）；`updateRegressionTask` 动态 SET：`status`/`runIds` 缺省不动，`claimedBy`/`claimedAt` **仅当 patch 含该键时写入**（`!== undefined`；`null`＝显式置空，缺省不动——**不得**用 `?? null` 写死，否则 status-only 更新会清空领取归因）。
 - [ ] **Step 4: 跑测试确认通过**。
 - [ ] **Step 5: 提交**：`git commit -m "feat(runner): atomic task claim/release with claimed state"`
 
@@ -120,7 +123,7 @@
   export interface RunnerInventory {
     platforms: Array<"ios" | "android">;   // 有设备端的去重、固定序（android → ios）
     devices: RunnerDevice[];
-    tools: { adb: boolean; idb: boolean; simctl: boolean; ideviceId: boolean; appium: boolean };  // appium＝`AOS_APPIUM_URL` 已配置
+    tools: RunnerTools;                    // 复用 Task 1 类型；appium＝`AOS_APPIUM_URL` 已配置
   }
   export async function collectRunnerInventory(options?: {
     env?: NodeJS.ProcessEnv; exec?: ExecFn; platform?: NodeJS.Platform; timeoutMs?: number;
@@ -129,9 +132,9 @@
 
 - [ ] **Step 1: 写失败测试**
   - `adb devices → android 设备（emulator-* kind "emulator"，其余 "device"；offline 行不计；adb 缺失 tools.adb=false 不炸）`。
-  - `simctl（darwin）→ 仅 isAvailable 且 state "Booted" 的模拟器（kind "simulator"）`。
-  - `idevice_id -l → 真机 UDID（kind "device"；命令缺失/超时 → tools.ideviceId=false 静默跳过）`。
-  - `AOS_RUNNER_DEVICES="A,B" → 覆盖全部来源（平台按 classifyIosSerial 判定；未识别项忽略）`。
+  - `simctl（darwin）→ 仅 isAvailable 且 state "Booted" 的模拟器（kind "simulator"，name 取自模拟器名）`。
+  - `idevice_id -l → 真机 UDID（kind "device"，name 空串；命令缺失/超时 → tools.ideviceId=false 静默跳过）`。
+  - `AOS_RUNNER_DEVICES="A,B" → 覆盖全部来源（平台按 classifyIosSerial 判定；未识别项忽略；name 空串）`。
   - `非 darwin → 无 iOS 设备且不调 ios 工具`。
   - `tools：idb 经 resolveIdbPath 探测；appium＝AOS_APPIUM_URL 非空`。
 - [ ] **Step 2: 跑测试确认失败**：`npm run test:file -- test/runner-inventory.test.js`。
@@ -203,10 +206,10 @@
   }
   export async function runRunnerAgent(options: RunnerAgentOptions): Promise<number>;  // 0 正常结束
   ```
-- 语义：启动 → `releaseRegressionTasks(me)`（有释放则日志条数）→ 循环：心跳（周期 `heartbeatMs`，含 devices/platforms/artifactBaseUrl/version=`AOS_MCP_VERSION`）→ `claimRegressionTask(me, inventory.platforms)` → 命中：日志「领取 <id>（端 …）」→ `executeSuite(["run","--task",id, ...(projectDir?["--project",projectDir]:[]), ...设备 flatMap ["--device", serial]])`（设备＝inventory 中 platform ∈ 任务 platforms，platform 序→serial 序）→ 日志退出码 → 立即下一轮；未命中：`sleep(pollMs)`；`once` 一轮即返回 0。
+- 语义：启动 → 首轮心跳 upsert（`me`＝返回的 `runners.id`；后续领取/释放均用 id 而非 name）→ `releaseRegressionTasks(me)`（有释放则日志条数）→ 循环：心跳（周期 `heartbeatMs`，含 devices/platforms/tools/artifactBaseUrl/version=`AOS_MCP_VERSION`）→ `claimRegressionTask(me, inventory.platforms)` → 命中：日志「领取 <id>（端 …）」→ `executeSuite(["run","--task",id, ...(projectDir?["--project",projectDir]:[]), ...设备 flatMap ["--device", serial]])`（设备＝inventory 中 platform ∈ 任务 platforms，platform 序→serial 序）→ 日志退出码 → 立即下一轮；未命中：`sleep(pollMs)`；`once` 一轮（含 upsert/release/领取）即返回 0。
 
 - [ ] **Step 1: 写失败测试**
-  - `once：心跳写入 runners（name/hostname/platforms/devices/artifactBaseUrl）`。
+  - `once：心跳写入 runners（name/hostname/platforms/devices/tools/artifactBaseUrl）`。
   - `once：领取最旧可跑 pending → executeSuite 收到正确 argv（--task/--project/逐 --device）→ 假执行器置终态`。
   - `once：无 pending → 不调用 executeSuite，返回 0`。
   - `once：端不完备的任务不领取（任务 ios+android，runner 仅 android → null）`。
@@ -223,7 +226,7 @@
 
 **Files:**
 - Modify: `src/suite-command.ts`（子命令路由/白名单、usage、SuiteCliDeps 增注入缝）
-- Test: `test/suite-runner.test.js`（新）、`test/suite-task.test.js`（追加手动路径锁）
+- Test: `test/suite-runner-cli.test.js`（新；**勿覆盖既有 `test/suite-runner.test.js`**——那是 figma 执行引擎的测试）、`test/suite-task.test.js`（追加手动路径锁）
 
 **Interfaces:**
 - Consumes：Task 4/5（`startRunnerArtifactServer`、`runRunnerAgent`）。
@@ -266,17 +269,18 @@
     name: string; hostname: string; online: boolean; lastSeenAt: string;
     platforms: string[]; devices: RunnerDevice[]; artifactBaseUrl: string | null;
   }
-  // PanelProjectDetail 增 runners: PanelRunnerView[]（online＝isRunnerOnline(lastSeenAt, now, runnerTtlFrom(env))）
-  // PanelTaskDetail 增 claimedBy: string | null; claimedAt: string | null; runner: PanelRunnerView | null（按 claimedBy 匹配）
+  // PanelProjectDetail 增 runners: PanelRunnerView[]（online＝isRunnerOnline(lastSeenAt, now, runnerTtlFrom(env))；含 tools）
+  // PanelTaskDetail 增 runner: PanelRunnerView | null（按 task.claimedBy＝runners.id 匹配；无匹配 → null，页面显示原值+「未知执行机」）
+  // claimedBy/claimedAt 取 detail.task（Task 2 已有；不另加顶层字段）
   ```
   任务状态标签（web.ts）：pending 待执行 / claimed 已领取 / running 执行中 / completed 已完成 / partial 部分失败 / failed 失败。
 - 渲染：
-  - 项目页 section「执行机（runner）」：名称/主机/在线/设备（`platform:serial` chips）/最后心跳/产物基址。
+  - 项目页 section「执行机（runner）」：名称/主机/在线/设备（`platform:name(serial)` chips）/工具状态（adb/idb/appium 布尔徽标）/最后心跳/产物基址。
   - 任务页：状态标签 + claimedBy（该 runner 在线/失联）+「共 N 个子运行」；pending/claimed/running 时 `<meta http-equiv="refresh" content="10">`；执行指引行改为「在线 runner 会自动领取执行；也可手动 `node dist/cli.js suite run --task <id> --device <serial>`」。
 - [ ] **Step 1: 写失败测试**
   - `panel-overview: runners 聚合（注入 now 控在线；无 runner → []）`。
   - `panel-overview: buildPanelTaskDetail claimedBy/claimedAt + runner 匹配（无匹配 → null）`。
-  - `panel-web: 项目页 runner 区块（在线灯/设备 chips）`。
+  - `panel-web: 项目页 runner 区块（在线灯/设备 chips/工具徽标）`。
   - `panel-web: 任务页 claimed 展示 + 活跃态有 meta refresh、completed 无`。
 - [ ] **Step 2: 跑测试确认失败**。
 - [ ] **Step 3: 实现**（复用 `listRunners`/`isRunnerOnline`/`runnerTtlFrom`；`PanelDeps.now` 既有）。
@@ -287,7 +291,8 @@
 
 **Files:**
 - Modify: `src/panel/overview.ts`、`src/panel/web.ts`
-- Test: `test/panel-overview.test.js`、`test/panel-web.test.js`
+- Modify: `src/suite-command.ts`（`persistRunManifest` 返回保存路径；`persistRunRegistration`/`registerRunBestEffort` 透传 `manifestPath` → `suite_runs.manifest_path` 落库——此前该列无写入方、恒 null）
+- Test: `test/panel-overview.test.js`、`test/panel-web.test.js`、`test/suite-task.test.js`、`test/suite-command.test.js`
 
 **Interfaces:**
 - Produces：
@@ -296,15 +301,16 @@
   // PanelTaskDetail.refs[] 增 jsonUrl: string | null; xlsxUrl: string | null
   // PanelReviewItem 增 evidenceUrl: string | null
   ```
-  规则（overview.ts 纯函数）：路径在 `<rootPath>` 前缀内且 `runner.artifactBaseUrl` 非空 → `baseUrl + "/artifact/" + rel`（`path.relative(rootPath, abs)` 逐段 `encodeURIComponent`，`..`/绝对 → null）；否则 null（面板照旧渲染本地路径文本）。
+  规则（overview.ts 纯函数）：路径在 `<rootPath>/.artemis` 前缀内且 `runner.artifactBaseUrl` 非空 → `baseUrl + "/artifact/" + rel`（**rel 相对 `.artemis` 计算**：`path.relative(path.join(rootPath, ".artemis"), abs)`，逐段 `encodeURIComponent`；`..`/绝对/越界 → null）；否则 null（面板照旧渲染本地路径文本）。服务根与服务端（Task 4）一致，URL 中不含重复 `.artemis`。
   - task 页：manifestUrl/refs 的 jsonUrl/xlsxUrl 渲染为链接（`target="_blank" rel="noreferrer"`）。
   - 归因队列：evidenceUrl 非空 → 「打开证据」链接（trace 目录浅索引）；否则现状两态文本。
 - [ ] **Step 1: 写失败测试**
-  - `overview: manifestPath 在项目内 + runner 基址 → manifestUrl 分段编码正确；无基址/越界 → null`。
+  - `overview: manifestPath 在 .artemis 内 + runner 基址 → manifestUrl 分段编码正确且不含重复 `.artemis`；无基址/越界 → null`。
   - `web: 任务页链接渲染（新窗口）；无 runner → 纯路径`。
   - `web: 归因队列「打开证据」在有/无 runner 下的两态`。
+  - `manifest_path 落库：`suite run --task` 与普通 `suite run` 登记后 runs[*].manifestPath 非空且文件存在；`--no-save`/`AOS_SUITE_RUNS=0` 时 null（suite-task 与 suite-command 各 1 条）`。
 - [ ] **Step 2: 跑测试确认失败**。
-- [ ] **Step 3: 实现**（URL 构建纯函数导出供测试；全字段 escapeHtml）。
+- [ ] **Step 3: 实现**（URL 构建纯函数导出供测试；全字段 escapeHtml；manifestPath 透传按 Files 说明接线，`persistRunManifest` 失败/跳过 → null 不阻断登记）。
 - [ ] **Step 4: 跑测试确认通过**。
 - [ ] **Step 5: 提交**：`git commit -m "feat(panel): artifact links via runner read-only preview"`
 
@@ -315,7 +321,7 @@
 - [ ] **Step 1: 全量回归**：`npm run build && npm test && npm run lint` → 全绿（记录新增测试数与总数）。
 - [ ] **Step 2: 文档**
   - DESIGN §13.109：P2 实施记录（runners 表；claim 状态守卫与 release-on-start；状态机加 `claimed`；`suite runner` 参数与 `AOS_RUNNER_*` 一览；产物服务范围/默认 0.0.0.0/无鉴权风险标注；「一键下发」＝创建即自动领取；§8 拍板项）；口径 bullet（领取条件子集语义、TTL、产物路径规则）。
-  - README：「项目机 runner」小节（启动命令、环境变量、设备盘点与 `AOS_RUNNER_DEVICES` 真机覆盖、产物预览与风险、无 runner 时手动路径仍在）；面板章节补 runner 区块与产物链接说明。
+  - README：「项目机 runner」小节（启动命令、环境变量、设备盘点与 `AOS_RUNNER_DEVICES` 真机覆盖、产物预览与风险（**点名 `.artemis/logs`、`.artemis/crashes` 暴露**；双端任务需单机双端 runner，分机部署走手动）、无 runner 时手动路径仍在）；面板章节补 runner 区块与产物链接说明。
   - AGENTS.md：命令表「测试闭环（CLI）」行加 `suite runner`；关键机制速查补 runner 心跳/领取一行。
 - [ ] **Step 3: 提交**：`git commit -m "docs: regression service P2 (runner dispatch + artifact preview)"`
 
