@@ -21,6 +21,16 @@ import { loadScreenMap, normalizeElementLabel } from "../diff/screen-map.js";
 import { canonicalizePlaceholders, normalizedText } from "./strings.js";
 import { renderTestsWorkbook } from "./test-xlsx.js";
 import { readFlowDocumentMeta } from "./design-store.js";
+import { caseSetStem, caseSetsDir, saveCaseSetFiles } from "./case-sets.js";
+import {
+  applyIdentity,
+  assignCaseFeature,
+  nameFeatures,
+  splitFeatures,
+  type FeatureGroup,
+  type FeatureWarning
+} from "./features.js";
+import { makeChatFn, type ChatFn } from "../llm/chat.js";
 import { captureFigmaScreens } from "./render.js";
 import {
   figmaScreensDir,
@@ -88,6 +98,8 @@ export interface GeneratedTest {
   expectations: StepExpectation[];
   /** Deterministic start-state check: the executor verifies the journey entry screen. */
   preflight: CasePreflight;
+  /** 功能段 key（回归服务 §5.1；生成接线后填充）。 */
+  feature?: string;
 }
 
 export interface LinearizeStats {
@@ -678,6 +690,10 @@ export interface GenerateTestsDeps {
   ensure?: PenEnsureFn;
   /** 渲染重试等待注入（测试）。 */
   sleep?: (ms: number) => Promise<void>;
+  /** 功能命名 LLM 注入（测试；缺省解析 active LLM）。 */
+  chat?: ChatFn | null;
+  /** 归档时间戳注入（测试）。 */
+  now?: () => Date;
 }
 
 interface CaseScreensResult {
@@ -844,6 +860,56 @@ function loadI18nKeys(runtime: Runtime): Map<string, string> {
   return map;
 }
 
+async function resolveNamingChat(runtime: Runtime): Promise<ChatFn | null> {
+  const entry = await runtime.activeEntry();
+  if (!entry || !entry.model || !entry.baseUrl || !entry.apiKey) return null;
+  return makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model });
+}
+
+async function resolveDesignName(runtime: Runtime): Promise<string | null> {
+  const meta = readFlowDocumentMeta(runtime.configDirAbs);
+  if (!meta) return null;
+  if (meta.penPath) {
+    const name = path.basename(meta.penPath, ".pen");
+    return name !== "" ? name : null;
+  }
+  if (!meta.fileKey) return null;
+  try {
+    const file = (await fetchFile(meta.fileKey, 1)) as { name?: string };
+    return typeof file.name === "string" && file.name.trim() !== "" ? file.name : null;
+  } catch {
+    return null;
+  }
+}
+
+async function assignFeatures(
+  runtime: Runtime,
+  graph: FlowGraph,
+  cases: GeneratedTest[],
+  deps: GenerateTestsDeps,
+  designNameHint: string | null
+): Promise<{ groups: FeatureGroup[]; warnings: FeatureWarning[] }> {
+  const split = splitFeatures({
+    screens: graph.screens.map((screen) => ({
+      name: screen.name,
+      ...(screen.page ? { page: screen.page } : {})
+    })),
+    edges: graph.edges.map((edge) => ({ from: edge.from.name, to: edge.to ? edge.to.name : null }))
+  });
+  const designName = designNameHint ?? (await resolveDesignName(runtime));
+  for (const group of split) {
+    if (group.signal === "fallback" && group.candidateName === null && designName) {
+      group.candidateName = designName;
+    }
+  }
+  const named = await nameFeatures(split, { chat: deps.chat ?? (await resolveNamingChat(runtime)) });
+  const identity = applyIdentity(named.groups, []);
+  for (const testCase of cases) {
+    testCase.feature = assignCaseFeature(testCase.screens, identity.groups) ?? undefined;
+  }
+  return { groups: identity.groups, warnings: [...named.warnings, ...identity.warnings] };
+}
+
 export async function figmaGenerateTests(
   runtime: Runtime,
   args: GenerateTestsArgs,
@@ -857,12 +923,14 @@ export async function figmaGenerateTests(
     let graph: FlowGraph;
     let source: string;
     let fromUrlFileKey: string | null = null;
+    let designNameHint: string | null = null;
     if (args.url) {
       const { fileKey } = parseFigmaUrl(args.url);
       fromUrlFileKey = fileKey;
       const file = (await fetchFile(fileKey)) as { name?: string; document?: FigmaNode };
       if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
       graph = buildFlowGraph(file.document);
+      designNameHint = typeof file.name === "string" && file.name.trim() !== "" ? file.name : null;
       source = `figma:${fileKey}${file.name ? ` (${file.name})` : ""}`;
     } else {
       if (!fs.existsSync(flowsPath)) {
@@ -920,6 +988,15 @@ export async function figmaGenerateTests(
           "或去掉 requireFullCoverage 仅生成并查看 coverage。"
       );
     }
+    const featureAssignment = await assignFeatures(runtime, graph, cases, deps, designNameHint);
+    const featurePayload = featureAssignment.groups.map((group) => ({
+      key: group.key,
+      name: group.name,
+      screens: [...group.screens],
+      caseIds: cases
+        .filter((testCase) => testCase.feature === group.key)
+        .map((testCase) => testCase.id)
+    }));
     const splitHint =
       generation && generation.depthSplits > 0
         ? `本次有 ${generation.depthSplits} 条用例受 maxDepth=${generation.maxDepth} 限制从上一段终点接续（首尾相接）；如需更长的单条连续用例，请调大 maxDepth。`
@@ -949,6 +1026,8 @@ export async function figmaGenerateTests(
           }
         : {}),
       flows: cases,
+      features: featurePayload,
+      ...(featureAssignment.warnings.length > 0 ? { warnings: featureAssignment.warnings } : {}),
       hint:
         "用 mobile_run_task 执行 flows[].taskDesc；失败步骤可用 compare_design_and_device 做视觉断言；" +
         "若已跑过 figma_import_strings，步骤中会附带 i18n key（原文仅在 source locale 兜底）；" +
@@ -992,7 +1071,10 @@ export async function figmaGenerateTests(
             summary: null
           };
         }
-        payload.warnings = caseScreens.warnings;
+        const priorWarnings = Array.isArray(payload.warnings)
+          ? (payload.warnings as Array<{ code: string; message: string }>)
+          : [];
+        payload.warnings = [...priorWarnings, ...caseScreens.warnings];
         if (caseScreens.summary) payload.screenshots = caseScreens.summary;
       }
 
@@ -1009,6 +1091,55 @@ export async function figmaGenerateTests(
       writeFileAtomic(excelPath, excelBuffer);
       payload.savedTo = { json: jsonPath, markdown: markdownPath, xlsx: excelPath };
       if (templatePath) payload.excel = { template: templatePath };
+
+      const caseSetsBase = caseSetsDir(runtime.configDirAbs);
+      const taken = new Set<string>();
+      try {
+        for (const name of fs.readdirSync(caseSetsBase)) {
+          if (name.endsWith(".json")) taken.add(name.slice(0, -".json".length));
+        }
+      } catch {
+        /* 目录不存在：全新 */
+      }
+      const stampNow = deps.now ? deps.now() : new Date();
+      const caseSetEntries: Array<{ feature: string; json: string; md: string; xlsx: string }> = [];
+      for (const group of featureAssignment.groups) {
+        const subset = cases.filter((testCase) => testCase.feature === group.key);
+        if (subset.length === 0) continue;
+        const stem = caseSetStem(group.name, stampNow, taken);
+        taken.add(stem);
+        const saved = await saveCaseSetFiles(caseSetsBase, stem, {
+          json:
+            JSON.stringify(
+              {
+                ...payload,
+                counts: { flows: subset.length, screens: counts.screens, edges: counts.edges },
+                coverage: computeFlowCoverage(graph, subset),
+                features: featurePayload.filter((entry) => entry.key === group.key),
+                flows: subset
+              },
+              null,
+              2
+            ) + "\n",
+          markdown: renderMarkdown(subset, { source, generatedAt }, {
+            images: caseScreens?.caseRefs ?? new Map()
+          }),
+          xlsx: await renderTestsWorkbook(
+            subset,
+            { source, generatedAt, counts: { cases: subset.length, screens: counts.screens, edges: counts.edges } },
+            { templatePath }
+          )
+        });
+        caseSetEntries.push({
+          feature: group.name,
+          json: saved.jsonPath,
+          md: saved.mdPath,
+          xlsx: saved.xlsxPath
+        });
+      }
+      if (caseSetEntries.length > 0) {
+        (payload.savedTo as Record<string, unknown>).caseSets = caseSetEntries;
+      }
     }
 
     return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
