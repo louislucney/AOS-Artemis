@@ -103,3 +103,79 @@ test("figma_generate_tests: requireFullCoverage 不通过时不落任何文件",
   assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "tests.json")), false);
   assert.equal(fs.existsSync(path.join(dir, ".artemis", "design", "case-sets")), false);
 });
+
+test("figma_generate_tests: 重新生成（屏幕集合变化）→ 继承同一 key/name", async () => {
+  const dir = makeFlowsProject(pagedFlowDocument(), true);
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+
+  const first = parseToolResult(await figmaGenerateTests(runtime, {}, { now: NOW, chat: null }));
+  const loginKey = first.features.find((entry) => entry.name === "登录").key;
+
+  const flowsPath = path.join(dir, ".artemis", "design", "flows.json");
+  const graph = JSON.parse(fs.readFileSync(flowsPath, "utf-8"));
+  graph.screens.push({
+    id: "20:9",
+    name: "登录-完成",
+    suggestedRoute: "/login-done",
+    childNames: [],
+    textHints: [],
+    page: "登录",
+    provenance: "explicit",
+    confidence: "high"
+  });
+  graph.edges.push({
+    from: { id: "20:3", name: "登录-验证" },
+    to: { id: "20:9", name: "登录-完成" },
+    element: { id: "20:10", name: "Done", type: "BUTTON" },
+    textHints: [],
+    trigger: "ON_CLICK",
+    actionType: "NODE",
+    provenance: "explicit",
+    confidence: "high"
+  });
+  fs.writeFileSync(flowsPath, JSON.stringify(graph), "utf-8");
+
+  const second = parseToolResult(
+    await figmaGenerateTests(runtime, {}, { now: () => new Date("2026-10-14T16:00:00.000Z"), chat: null })
+  );
+  const secondLogin = second.features.find((entry) => entry.name === "登录");
+  assert.equal(secondLogin.key, loginKey, "屏幕变化但重叠 ≥0.5 → 继承 key");
+  assert.equal(secondLogin.screens.length, 3);
+});
+
+test("figma_generate_tests: store 不可用 → 生成成功 + 如实告警", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  runtime.store.listCaseSets = async () => {
+    throw new Error("store down");
+  };
+  runtime.store.recordCaseSet = async () => {
+    throw new Error("store down");
+  };
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}, { now: NOW, chat: null }));
+  assert.equal(payload.ok, true);
+  assert.ok(payload.warnings.some((warning) => warning.code === "case-set-registry-unavailable"));
+  assert.ok(payload.warnings.some((warning) => warning.code === "case-set-registration-failed"));
+});
+
+test("figma_generate_tests: 登记行与归档一致（memory store）", async () => {
+  const dir = makeFlowsProject(pagedFlowDocument(), true);
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}, { now: NOW, chat: null }));
+
+  const registered = await runtime.store.listCaseSets(runtime.project.rootDir, 10);
+  assert.equal(registered.length, 1);
+  const record = registered[0];
+  assert.equal(record.basename, "tests");
+  assert.equal(record.features.length, 2);
+  const byName = new Map(record.features.map((feature) => [feature.name, feature]));
+  assert.equal(byName.get("登录").caseCount, 1);
+  assert.deepEqual(byName.get("登录").screens, ["登录-输入", "登录-验证"]);
+  assert.equal(
+    byName.get("登录").jsonPath,
+    payload.savedTo.caseSets.find((entry) => entry.feature === "登录").json
+  );
+});

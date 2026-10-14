@@ -28,9 +28,11 @@ import {
   nameFeatures,
   splitFeatures,
   type FeatureGroup,
-  type FeatureWarning
+  type FeatureWarning,
+  type PriorFeature
 } from "./features.js";
 import { makeChatFn, type ChatFn } from "../llm/chat.js";
+import { testsFingerprint } from "./run-manifest.js";
 import { captureFigmaScreens } from "./render.js";
 import {
   figmaScreensDir,
@@ -882,13 +884,38 @@ async function resolveDesignName(runtime: Runtime): Promise<string | null> {
   }
 }
 
+async function loadPriorFeatures(
+  runtime: Runtime
+): Promise<{ features: PriorFeature[]; warnings: FeatureWarning[] }> {
+  try {
+    const records = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+    const features: PriorFeature[] = [];
+    for (const record of records) {
+      for (const feature of record.features) {
+        features.push({ key: feature.key, name: feature.name, screens: [...feature.screens] });
+      }
+    }
+    return { features, warnings: [] };
+  } catch (error) {
+    return {
+      features: [],
+      warnings: [
+        {
+          code: "case-set-registry-unavailable",
+          message: `用例集登记不可用（功能身份继承跳过）：${errorMessage(error)}`
+        }
+      ]
+    };
+  }
+}
+
 async function assignFeatures(
   runtime: Runtime,
   graph: FlowGraph,
   cases: GeneratedTest[],
   deps: GenerateTestsDeps,
   designNameHint: string | null
-): Promise<{ groups: FeatureGroup[]; warnings: FeatureWarning[] }> {
+): Promise<{ groups: FeatureGroup[]; warnings: FeatureWarning[]; designName: string | null }> {
   const split = splitFeatures({
     screens: graph.screens.map((screen) => ({
       name: screen.name,
@@ -903,11 +930,16 @@ async function assignFeatures(
     }
   }
   const named = await nameFeatures(split, { chat: deps.chat ?? (await resolveNamingChat(runtime)) });
-  const identity = applyIdentity(named.groups, []);
+  const prior = await loadPriorFeatures(runtime);
+  const identity = applyIdentity(named.groups, prior.features);
   for (const testCase of cases) {
     testCase.feature = assignCaseFeature(testCase.screens, identity.groups) ?? undefined;
   }
-  return { groups: identity.groups, warnings: [...named.warnings, ...identity.warnings] };
+  return {
+    groups: identity.groups,
+    warnings: [...named.warnings, ...prior.warnings, ...identity.warnings],
+    designName
+  };
 }
 
 export async function figmaGenerateTests(
@@ -1103,6 +1135,15 @@ export async function figmaGenerateTests(
       }
       const stampNow = deps.now ? deps.now() : new Date();
       const caseSetEntries: Array<{ feature: string; json: string; md: string; xlsx: string }> = [];
+      const registrationFeatures: Array<{
+        key: string;
+        name: string;
+        caseCount: number;
+        screens: string[];
+        jsonPath: string;
+        mdPath: string;
+        xlsxPath: string;
+      }> = [];
       for (const group of featureAssignment.groups) {
         const subset = cases.filter((testCase) => testCase.feature === group.key);
         if (subset.length === 0) continue;
@@ -1136,9 +1177,40 @@ export async function figmaGenerateTests(
           md: saved.mdPath,
           xlsx: saved.xlsxPath
         });
+        registrationFeatures.push({
+          key: group.key,
+          name: group.name,
+          caseCount: subset.length,
+          screens: [...group.screens],
+          jsonPath: saved.jsonPath,
+          mdPath: saved.mdPath,
+          xlsxPath: saved.xlsxPath
+        });
       }
       if (caseSetEntries.length > 0) {
         (payload.savedTo as Record<string, unknown>).caseSets = caseSetEntries;
+        try {
+          const fingerprint = testsFingerprint(jsonPath);
+          await runtime.store.recordCaseSet({
+            rootPath: runtime.project.rootDir,
+            source,
+            designName: featureAssignment.designName,
+            fingerprint: fingerprint.sha256,
+            basename: path.basename(jsonPath, ".json"),
+            features: registrationFeatures
+          });
+        } catch (error) {
+          const current = Array.isArray(payload.warnings)
+            ? (payload.warnings as FeatureWarning[])
+            : [];
+          payload.warnings = [
+            ...current,
+            {
+              code: "case-set-registration-failed",
+              message: `用例集登记失败（本地归档已写入）：${errorMessage(error)}`
+            }
+          ];
+        }
       }
     }
 
