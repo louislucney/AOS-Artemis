@@ -142,6 +142,8 @@ const SCHEMA = [
      platforms TEXT NOT NULL DEFAULT '[]',
      baseline TEXT NOT NULL DEFAULT 'latest',
      status TEXT NOT NULL DEFAULT 'pending',
+     claimed_by TEXT,
+     claimed_at TEXT,
      run_ids TEXT NOT NULL DEFAULT '[]'
     )`,
   `CREATE TABLE IF NOT EXISTS suite_runs (
@@ -208,7 +210,9 @@ const SCHEMA = [
 
 const MIGRATIONS = [
   `ALTER TABLE task_stats ADD COLUMN IF NOT EXISTS case_id TEXT`,
-  `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS runner TEXT`
+  `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS runner TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_by TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_at TEXT`
 ];
 
 export class PostgresStore implements ProjectStore {
@@ -600,6 +604,8 @@ export class PostgresStore implements ProjectStore {
       platforms: [...input.platforms],
       baseline: input.baseline,
       status: "pending",
+      claimedBy: null,
+      claimedAt: null,
       runIds: []
     };
   }
@@ -627,18 +633,96 @@ export class PostgresStore implements ProjectStore {
   async updateRegressionTask(
     rootPath: string,
     id: string,
-    patch: { status?: RegressionTaskRecord["status"]; runIds?: string[] }
+    patch: {
+      status?: RegressionTaskRecord["status"];
+      runIds?: string[];
+      claimedBy?: string | null;
+      claimedAt?: string | null;
+    }
   ): Promise<boolean> {
     const project = await this.getProjectByPath(rootPath);
     if (!project) return false;
-    const current = await this.getRegressionTask(rootPath, id);
-    if (!current) return false;
+    const sets: string[] = [];
+    const values: unknown[] = [project.id, id];
+    const add = (column: string, value: unknown): void => {
+      values.push(value);
+      sets.push(`${column} = $${values.length}`);
+    };
+    if (patch.status !== undefined) add("status", patch.status);
+    if (patch.runIds !== undefined) add("run_ids", JSON.stringify(patch.runIds));
+    if (patch.claimedBy !== undefined) add("claimed_by", patch.claimedBy);
+    if (patch.claimedAt !== undefined) add("claimed_at", patch.claimedAt);
+    if (sets.length === 0) {
+      return (await this.getRegressionTask(rootPath, id)) !== null;
+    }
     const updated = await this.pool.query(
-      `UPDATE regression_tasks SET status = $3, run_ids = $4
+      `UPDATE regression_tasks SET ${sets.join(", ")}
         WHERE project_id = $1 AND id = $2 RETURNING id`,
-      [project.id, id, patch.status ?? current.status, JSON.stringify(patch.runIds ?? current.runIds)]
+      values
     );
     return updated.rows.length > 0;
+  }
+
+  async claimRegressionTask(input: {
+    rootPath: string;
+    runnerId: string;
+    platforms: string[];
+  }): Promise<RegressionTaskRecord | null> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return null;
+    const candidates = await this.pool.query(
+      `SELECT id, platforms FROM regression_tasks
+        WHERE project_id = $1 AND status = 'pending'
+        ORDER BY created_at ASC LIMIT 50`,
+      [project.id]
+    );
+    const match = candidates.rows.find((row) => {
+      const taskPlatforms = parseStringArray(row.platforms);
+      return (
+        taskPlatforms.length > 0 &&
+        taskPlatforms.every((platform) => input.platforms.includes(platform))
+      );
+    });
+    if (!match) return null;
+    const claimed = await this.pool.query(
+      `UPDATE regression_tasks
+          SET status = 'claimed', claimed_by = $2, claimed_at = $3
+        WHERE project_id = $1 AND id = $4 AND status = 'pending'
+      RETURNING *`,
+      [project.id, input.runnerId, new Date().toISOString(), String(match.id)]
+    );
+    if (claimed.rows.length === 0) return null;
+    return mapRegressionTask(claimed.rows[0]!);
+  }
+
+  async releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return 0;
+    const released = await this.pool.query(
+      `UPDATE regression_tasks
+          SET status = 'pending', claimed_by = NULL, claimed_at = NULL
+        WHERE project_id = $1 AND claimed_by = $2 AND status IN ('claimed', 'running')
+      RETURNING id`,
+      [project.id, input.runnerId]
+    );
+    return released.rows.length;
+  }
+
+  async releaseRegressionTask(input: {
+    rootPath: string;
+    runnerId: string;
+    taskId: string;
+  }): Promise<boolean> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return false;
+    const released = await this.pool.query(
+      `UPDATE regression_tasks
+          SET status = 'pending', claimed_by = NULL, claimed_at = NULL
+        WHERE project_id = $1 AND id = $2 AND claimed_by = $3 AND status IN ('claimed', 'running')
+      RETURNING id`,
+      [project.id, input.taskId, input.runnerId]
+    );
+    return released.rows.length > 0;
   }
 
   async recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord> {
@@ -1146,6 +1230,8 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     platforms: parseStringArray(row.platforms),
     baseline: row.baseline === "none" ? "none" : "latest",
     status: String(row.status) as RegressionTaskRecord["status"],
+    claimedBy: nullableString(row.claimed_by),
+    claimedAt: nullableString(row.claimed_at),
     runIds: parseStringArray(row.run_ids)
   };
 }

@@ -173,7 +173,9 @@ export interface RegressionTaskRecord {
   refs: RegressionTaskRef[];
   platforms: string[];
   baseline: "latest" | "none";
-  status: "pending" | "running" | "completed" | "partial" | "failed";
+  status: "pending" | "claimed" | "running" | "completed" | "partial" | "failed";
+  claimedBy: string | null;
+  claimedAt: string | null;
   runIds: string[];
 }
 
@@ -315,8 +317,27 @@ export interface ProjectStore {
   updateRegressionTask(
     rootPath: string,
     id: string,
-    patch: { status?: RegressionTaskRecord["status"]; runIds?: string[] }
+    patch: {
+      status?: RegressionTaskRecord["status"];
+      runIds?: string[];
+      claimedBy?: string | null;
+      claimedAt?: string | null;
+    }
   ): Promise<boolean>;
+  /** 原子领取：任务端 ⊆ runner 端且 status='pending' 的最旧任务 → claimed（竞争失败 → null）。 */
+  claimRegressionTask(input: {
+    rootPath: string;
+    runnerId: string;
+    platforms: string[];
+  }): Promise<RegressionTaskRecord | null>;
+  /** 释放本 runner 的全部未完成领取（claimed/running）→ pending；返回条数。 */
+  releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number>;
+  /** 单任务释放（执行异常救济；带 claimed_by 与状态守卫，已终态不覆盖）。 */
+  releaseRegressionTask(input: {
+    rootPath: string;
+    runnerId: string;
+    taskId: string;
+  }): Promise<boolean>;
   recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord>;
   /** 返回按 createdAt 新→旧（内存与 PG 实现均保证；调用方可依赖该序取「最新」）。 */
   listSuiteRuns(

@@ -159,3 +159,208 @@ test("isRunnerOnline: TTL 边界；runnerTtlFrom: 默认与合法值", () => {
   assert.equal(runnerTtlFrom({ AOS_RUNNER_TTL_MS: "abc" }), RUNNER_TTL_DEFAULT_MS);
   assert.equal(runnerTtlFrom({ AOS_RUNNER_TTL_MS: "0" }), RUNNER_TTL_DEFAULT_MS);
 });
+
+function taskInput(overrides = {}) {
+  return {
+    rootPath: "/w/p1",
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli",
+    ...overrides
+  };
+}
+
+test("claimRegressionTask: 最旧可领 pending → claimed（端子集条件）；缺端/无 pending → null", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const androidTask = await store.createRegressionTask(taskInput());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const iosTask = await store.createRegressionTask(taskInput({ platforms: ["ios"] }));
+
+    const claimed = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-android",
+      platforms: ["android"]
+    });
+    assert.ok(claimed);
+    assert.equal(claimed.id, androidTask.id, "最旧可领");
+    assert.equal(claimed.status, "claimed");
+    assert.equal(claimed.claimedBy, "r-android");
+    assert.ok(claimed.claimedAt);
+
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-android",
+        platforms: ["android"]
+      }),
+      null,
+      "ios-only 任务缺端不领"
+    );
+
+    const dual = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-dual",
+      platforms: ["ios", "android"]
+    });
+    assert.ok(dual);
+    assert.equal(dual.id, iosTask.id);
+    assert.equal(dual.claimedBy, "r-dual");
+
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-late",
+        platforms: ["ios", "android"]
+      }),
+      null,
+      "全被领走 → null"
+    );
+  }
+});
+
+test("claimRegressionTask: 单任务被领后不复领（第二个 runner → null）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.createRegressionTask(taskInput());
+    const first = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-1",
+      platforms: ["android"]
+    });
+    assert.ok(first);
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-2",
+        platforms: ["android"]
+      }),
+      null
+    );
+  }
+});
+
+test("release 语义：全量仅释放自己；单任务守卫（他人/已终态 → false 不覆盖）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.createRegressionTask(taskInput());
+    await store.createRegressionTask(taskInput());
+    const mine = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-me",
+      platforms: ["android"]
+    });
+    const theirs = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-other",
+      platforms: ["android"]
+    });
+    assert.ok(mine && theirs);
+
+    assert.equal(
+      await store.releaseRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-me",
+        taskId: theirs.id
+      }),
+      false,
+      "他人持有 → false 不动"
+    );
+
+    assert.equal(
+      await store.releaseRegressionTasks({ rootPath: "/w/p1", runnerId: "r-me" }),
+      1,
+      "全量只释放自己的"
+    );
+    const afterBulk = await store.listRegressionTasks("/w/p1");
+    const reMine = afterBulk.find((task) => task.id === mine.id);
+    const reTheirs = afterBulk.find((task) => task.id === theirs.id);
+    assert.equal(reMine.status, "pending");
+    assert.equal(reMine.claimedBy, null);
+    assert.equal(reMine.claimedAt, null);
+    assert.equal(reTheirs.status, "claimed", "他人持有不动");
+
+    await store.claimRegressionTask({ rootPath: "/w/p1", runnerId: "r-me", platforms: ["android"] });
+    assert.equal(
+      await store.releaseRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-me",
+        taskId: mine.id
+      }),
+      true
+    );
+    await store.updateRegressionTask("/w/p1", mine.id, { status: "completed" });
+    assert.equal(
+      await store.releaseRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-me",
+        taskId: mine.id
+      }),
+      false,
+      "已终态 → false 不覆盖"
+    );
+    assert.equal((await store.getRegressionTask("/w/p1", mine.id)).status, "completed");
+  }
+});
+
+test("updateRegressionTask: 键缺省不动 / null 显式置空；status-only 不清空 claimedBy", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.createRegressionTask(taskInput());
+    const claimed = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-1",
+      platforms: ["android"]
+    });
+    assert.ok(claimed);
+
+    await store.updateRegressionTask("/w/p1", claimed.id, { status: "running" });
+    const running = await store.getRegressionTask("/w/p1", claimed.id);
+    assert.equal(running.status, "running");
+    assert.equal(running.claimedBy, "r-1", "status-only 更新不清空领取归因");
+    assert.ok(running.claimedAt);
+
+    await store.updateRegressionTask("/w/p1", claimed.id, { claimedBy: null, claimedAt: null });
+    const cleared = await store.getRegressionTask("/w/p1", claimed.id);
+    assert.equal(cleared.claimedBy, null, "null 显式置空");
+    assert.equal(cleared.claimedAt, null);
+    assert.equal(cleared.status, "running", "置空领取不改状态");
+  }
+});
+
+test("存量库迁移：旧 regression_tasks 缺 claimed_by/claimed_at → init 补列后可领取", async () => {
+  // noAstCoverageCheck：旧表已存在时 pg-mem 会因未读取的 AST 约束直接报错，这里只关注迁移结果
+  const mem = newDb({ noAstCoverageCheck: true });
+  const { Pool } = mem.adapters.createPg();
+  const pool = new Pool();
+  await pool.query(
+    `CREATE TABLE regression_tasks (
+       id TEXT PRIMARY KEY,
+       project_id TEXT,
+       created_at TEXT NOT NULL,
+       created_by TEXT,
+       refs TEXT NOT NULL DEFAULT '[]',
+       platforms TEXT NOT NULL DEFAULT '[]',
+       baseline TEXT NOT NULL DEFAULT 'latest',
+       status TEXT NOT NULL DEFAULT 'pending',
+       run_ids TEXT NOT NULL DEFAULT '[]'
+     )`
+  );
+  const store = new PostgresStore(pool);
+  await store.init();
+  await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  await store.createRegressionTask(taskInput());
+  const claimed = await store.claimRegressionTask({
+    rootPath: "/w/p1",
+    runnerId: "r-legacy",
+    platforms: ["android"]
+  });
+  assert.ok(claimed, "补列后可领取");
+  assert.equal(claimed.status, "claimed");
+  assert.equal(claimed.claimedBy, "r-legacy");
+});

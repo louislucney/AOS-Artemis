@@ -238,6 +238,8 @@ export class MemoryStore implements ProjectStore {
       platforms: [...input.platforms],
       baseline: input.baseline,
       status: "pending",
+      claimedBy: null,
+      claimedAt: null,
       runIds: []
     };
     this.regressionTasks.push(record);
@@ -266,7 +268,12 @@ export class MemoryStore implements ProjectStore {
   async updateRegressionTask(
     rootPath: string,
     id: string,
-    patch: { status?: RegressionTaskRecord["status"]; runIds?: string[] }
+    patch: {
+      status?: RegressionTaskRecord["status"];
+      runIds?: string[];
+      claimedBy?: string | null;
+      claimedAt?: string | null;
+    }
   ): Promise<boolean> {
     const project = this.projects.get(rootPath);
     if (!project) return false;
@@ -276,6 +283,65 @@ export class MemoryStore implements ProjectStore {
     if (!task) return false;
     if (patch.status !== undefined) task.status = patch.status;
     if (patch.runIds !== undefined) task.runIds = [...patch.runIds];
+    if (patch.claimedBy !== undefined) task.claimedBy = patch.claimedBy;
+    if (patch.claimedAt !== undefined) task.claimedAt = patch.claimedAt;
+    return true;
+  }
+
+  async claimRegressionTask(input: {
+    rootPath: string;
+    runnerId: string;
+    platforms: string[];
+  }): Promise<RegressionTaskRecord | null> {
+    const project = this.projects.get(input.rootPath);
+    if (!project) return null;
+    const candidates = this.regressionTasks
+      .filter((task) => task.projectId === project.id && task.status === "pending")
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+    const match = candidates.find(
+      (task) =>
+        task.platforms.length > 0 &&
+        task.platforms.every((platform) => input.platforms.includes(platform))
+    );
+    if (!match) return null;
+    match.status = "claimed";
+    match.claimedBy = input.runnerId;
+    match.claimedAt = new Date().toISOString();
+    return cloneRegressionTask(match);
+  }
+
+  async releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number> {
+    const project = this.projects.get(input.rootPath);
+    if (!project) return 0;
+    let released = 0;
+    for (const task of this.regressionTasks) {
+      if (task.projectId !== project.id || task.claimedBy !== input.runnerId) continue;
+      if (task.status !== "claimed" && task.status !== "running") continue;
+      task.status = "pending";
+      task.claimedBy = null;
+      task.claimedAt = null;
+      released += 1;
+    }
+    return released;
+  }
+
+  async releaseRegressionTask(input: {
+    rootPath: string;
+    runnerId: string;
+    taskId: string;
+  }): Promise<boolean> {
+    const project = this.projects.get(input.rootPath);
+    if (!project) return false;
+    const task = this.regressionTasks.find(
+      (entry) =>
+        entry.projectId === project.id &&
+        entry.id === input.taskId &&
+        entry.claimedBy === input.runnerId
+    );
+    if (!task || (task.status !== "claimed" && task.status !== "running")) return false;
+    task.status = "pending";
+    task.claimedBy = null;
+    task.claimedAt = null;
     return true;
   }
 
