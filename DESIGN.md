@@ -1539,3 +1539,15 @@ llm_switch(name, force):
 > 测试 +54（db-runners 12 / runner-inventory 5 / runner-agent 12 / runner-artifact 6 / suite-runner-cli 6 / suite-task +6 / panel-overview +4 / panel-web +5；另含端到端缝：`artifactUrl` 构建的 URL 打到真实 loopback 服务 200）；全量 **1123 绿**（含 Review Focus 五条锁定：并发领取守卫、路径穿越、崩溃重启释放、心跳/在线边界、手动与自动并存；两轮评审修复补：非零退出未达终态释放/终态不覆盖、**重试上限不饥饿队列**、`to:"failed"`、null claimedBy 救济、>50 条饥饿锁、守卫化 release）。
 
 - **口径**：领取＝任务端子集＋原子状态守卫；心跳 TTL 90s（3×默认周期）判定在线（字段级 now 对比）；产物 URL 一律相对 `.artemis`（与服务根一致，越界不链接）；claimed 无自动超时（救济＝启动释放＋`suite task release`）；产物服务与动作层并列**内网无鉴权**面（默认 `0.0.0.0`、`.artemis` 只读范围，风险在 README/DESIGN 点名）；双端任务需单机双端 runner（分机部署走手动）。
+
+### 13.110 实施记录（回归服务 P3a：定时回归——schedules + runner 触发）
+
+> 实施于 2026-10-14（设计稿 §5.5/§7 P3「定时回归」；计划 `docs/superpowers/plans/2026-10-14-regression-service-p3a-schedules.md`）。DB 增 `schedules` 表（id/project_id/name/feature_keys/platforms/baseline/every_minutes/enabled/last_fired_at/last_note/created_at/created_by；新表无迁移）。`latestFeatureRefs`/`ResolvedTaskRef` 从 suite-command 提取到 `src/tasks/feature-refs.ts`（逐字迁移、零行为变化；suite-task 既有测试为回归锁）。
+>
+> - **触发**（`src/runner/schedules.ts` `fireDueSchedules`；agent 主循环每轮「**先触发再领取**」）：`enabled` 且（从未触发或 `now - last_fired_at >= every_minutes`）→ **窗口 CAS**（`UPDATE ... WHERE enabled AND (last_fired_at IS NULL OR last_fired_at <= cutoff)`——多 runner 并发恰一个赢，败者静默跳过）→ 赢得者**实时解析最新份**（featureKey → 最新 caseSetId；份重生成自动跟随，不冻结）→ `createRegressionTask({createdBy: "schedule:<name>"})` → 由既有领取循环执行（**不新增执行路径**）。部分引用缺失 → 可解析子集建任务 + `last_note` 记缺项；全缺失 → 跳过 + `last_note="引用份均不可用"`（窗口仍推进——**补跑仅补一次**，防风暴）。触发失败 best-effort（告警 + `last_note`，不打断主循环）。`AOS_RUNNER_SCHEDULES=0` 关闭（默认开；`--once` 亦检查一次）。
+> - **CLI `suite schedule add|list|show|enable|disable|remove`**：`add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（key 解析校验、platform 白名单+去重、name 缺省=首个 featureKey）；enable/disable 幂等（已是目标值提示仍 exit 0）；list/show 支持 `--json`。
+> - **面板（只读）**：项目页「定时回归（schedule）」区块（名称/功能 chips/端/节奏/启用/上次触发+`last_note`/最近任务链接——按 `createdBy=schedule:<name>` 在最近任务中匹配）；任务页状态行显示「来源」；空态给 CLI 提示。管理走 CLI（面板动作层扩展列 backlog）。
+>
+> 测试 +21（db-schedules 4 / feature-refs 1 / fire-schedules 6 / runner-agent +4 / suite-schedule 4 / panel-overview +1 / panel-web +1）；全量 **1144 绿**（含 Review Focus 五条锁定：并发双触发 CAS、引用时效、补跑仅一次、触发失败不阻断、禁用/删除语义）。
+
+- **口径**：节奏 v1 仅 interval（最小 5 分钟；cron/每日定点/时区、错峰、schedule 编辑/改名、面板管理动作列 P3+）；触发在 runner（项目机常驻、CAS 单触发）；schedule 引用 featureKey 而非 caseSetId（份演进自动跟随）；补跑仅补一次；面板只读、CLI 管理。
