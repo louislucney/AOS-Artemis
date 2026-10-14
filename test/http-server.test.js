@@ -389,3 +389,23 @@ test("http server: 动作层 body 超限 → 413；AOS_PANEL_ACTIONS=0 → 404",
     await handle.close();
   }
 });
+
+test("http server: MCP 端点 body >4MB → 413（排空后可继续请求）", async () => {
+  const workspace = makeWorkspace();
+  const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+  try {
+    const tooLarge = await fetch(`http://127.0.0.1:${handle.port}/mcp/demo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pad: "x".repeat(5 * 1024 * 1024) })
+    });
+    assert.equal(tooLarge.status, 413);
+    assert.equal(
+      (await fetch(`http://127.0.0.1:${handle.port}/healthz`)).status,
+      200,
+      "排空后服务可继续使用"
+    );
+  } finally {
+    await handle.close();
+  }
+});

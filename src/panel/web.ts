@@ -954,6 +954,7 @@ function renderReviewPage(view: {
       "<h2>动作指引</h2>",
       '<p class="muted">重跑：<code>node dist/cli.js suite run --task &lt;task-id&gt; --device &lt;serial&gt;</code>（整任务）或 <code>node dist/cli.js suite run --tests &lt;tests.json&gt; --case &lt;caseId&gt; --device &lt;serial&gt;</code>（单用例）。</p>',
       '<p class="muted">隔离：写入 <code>.artemis/design/quarantine.json</code>（owner 签字名单；suite run 默认跳过，<code>--no-quarantine</code> 严格跑）。</p>',
+      '<p class="muted">口径：仅份血统运行参与统计与改进出口/生成建议；无份运行（<code>suite run --tests</code>）的裁决仅存档。</p>',
       "</section>",
       "</main>"
     ].join("\n")

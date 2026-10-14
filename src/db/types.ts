@@ -277,6 +277,7 @@ export interface ProjectStore {
     patch: { status?: RegressionTaskRecord["status"]; runIds?: string[] }
   ): Promise<boolean>;
   recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord>;
+  /** 返回按 createdAt 新→旧（内存与 PG 实现均保证；调用方可依赖该序取「最新」）。 */
   listSuiteRuns(
     rootPath: string,
     query?: {

@@ -572,6 +572,7 @@ test("panel web: review HTML（radio 四选项、批量复选框、fetch、证�
   );
   assert.match(html.body, /suite run --tests/);
   assert.match(html.body, /quarantine\.json/);
+  assert.match(html.body, /裁决仅存档/, "无份运行裁决口径提示");
   assert.doesNotMatch(html.body, /case-3/, "已通过用例不进队列");
 
   const projectHtml = await handlePanelRequest(
