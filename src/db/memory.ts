@@ -220,14 +220,13 @@ export class MemoryStore implements ProjectStore {
     return cloneCaseSet(record);
   }
 
-  async listCaseSets(rootPath: string, limit = 50): Promise<CaseSetRecord[]> {
+  async listCaseSets(rootPath: string, limit?: number): Promise<CaseSetRecord[]> {
     const project = this.projects.get(rootPath);
     if (!project) return [];
-    return this.caseSets
+    const all = this.caseSets
       .filter((record) => record.projectId === project.id)
-      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
-      .slice(0, limit)
-      .map(cloneCaseSet);
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    return (limit === undefined ? all : all.slice(0, limit)).map(cloneCaseSet);
   }
 
   async createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord> {

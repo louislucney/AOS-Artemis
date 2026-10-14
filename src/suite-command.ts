@@ -381,7 +381,7 @@ Usage:
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
   aos-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
   aos-mcp suite schedule add|list|show|enable|disable|remove [options]
-                                     定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]
+                                     定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -1929,7 +1929,7 @@ async function suiteScheduleAdd(
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite schedule add --ref <featureKey> [--ref …] --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]"
+      "用法: suite schedule add --ref <featureKey> [--ref …] --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]"
     );
     return 2;
   }

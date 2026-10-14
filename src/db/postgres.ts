@@ -577,13 +577,19 @@ export class PostgresStore implements ProjectStore {
     };
   }
 
-  async listCaseSets(rootPath: string, limit = 50): Promise<CaseSetRecord[]> {
+  async listCaseSets(rootPath: string, limit?: number): Promise<CaseSetRecord[]> {
     const project = await this.getProjectByPath(rootPath);
     if (!project) return [];
-    const sets = await this.pool.query(
-      "SELECT * FROM case_sets WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
-      [project.id, limit]
-    );
+    const sets =
+      limit === undefined
+        ? await this.pool.query(
+            "SELECT * FROM case_sets WHERE project_id = $1 ORDER BY created_at DESC",
+            [project.id]
+          )
+        : await this.pool.query(
+            "SELECT * FROM case_sets WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
+            [project.id, limit]
+          );
     const out: CaseSetRecord[] = [];
     for (const row of sets.rows) {
       const features = await this.pool.query(
@@ -973,23 +979,30 @@ export class PostgresStore implements ProjectStore {
     }
     const id = randomUUID();
     const createdAt = new Date().toISOString();
-    await this.pool.query(
-      `INSERT INTO schedules
-         (id, project_id, name, feature_keys, platforms, baseline, every_minutes, enabled,
-          last_fired_at, last_note, created_at, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NULL, NULL, $8, $9)`,
-      [
-        id,
-        project.id,
-        input.name,
-        JSON.stringify(input.featureKeys),
-        JSON.stringify(input.platforms),
-        input.baseline,
-        input.everyMinutes,
-        createdAt,
-        input.createdBy ?? null
-      ]
-    );
+    try {
+      await this.pool.query(
+        `INSERT INTO schedules
+           (id, project_id, name, feature_keys, platforms, baseline, every_minutes, enabled,
+            last_fired_at, last_note, created_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NULL, NULL, $8, $9)`,
+        [
+          id,
+          project.id,
+          input.name,
+          JSON.stringify(input.featureKeys),
+          JSON.stringify(input.platforms),
+          input.baseline,
+          input.everyMinutes,
+          createdAt,
+          input.createdBy ?? null
+        ]
+      );
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") {
+        throw new Error(`同名定时回归已存在：${input.name}（请用 --name 指定其他名称）`);
+      }
+      throw error;
+    }
     return {
       id,
       projectId: project.id,

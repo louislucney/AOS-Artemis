@@ -16,11 +16,12 @@ async function setup() {
   return { store, rootPath: runtime.project.rootDir };
 }
 
-async function seedCaseSet(store, rootPath, { key = "f-1", suffix = "一" } = {}) {
+async function seedCaseSet(store, rootPath, { key = "f-1", suffix = "一", createdAt } = {}) {
   const set = await store.recordCaseSet({
     rootPath,
     source: "pen:a.pen",
     basename: "tests",
+    ...(createdAt === undefined ? {} : { createdAt }),
     features: [
       {
         key,
@@ -212,4 +213,50 @@ test("fireDueSchedules: store 抛错 → 0 且不抛（best-effort）；建任�
   assert.equal(after.lastFiredAt, NOON, "窗口已消费");
   assert.match(after.lastNote, /触发失败/);
   assert.ok(secondIo.errors.some((line) => line.includes("insert fail")));
+});
+
+test("fireDueSchedules: >50 份时仍解析视野外的引用份（全量扫描，不静默停摆）", async () => {
+  const { store, rootPath } = await setup();
+  const base = Date.parse("2026-10-01T00:00:00.000Z");
+  const oldest = await seedCaseSet(store, rootPath, {
+    key: "f-old",
+    suffix: "old",
+    createdAt: new Date(base).toISOString()
+  });
+  for (let index = 0; index < 55; index += 1) {
+    await seedCaseSet(store, rootPath, {
+      key: `f-fill-${index}`,
+      suffix: `fill-${index}`,
+      createdAt: new Date(base + (index + 1) * 60_000).toISOString()
+    });
+  }
+  await addSchedule(store, rootPath, { name: "老功能", featureKeys: ["f-old"] });
+  const { io } = makeIo();
+  const fired = await fireDueSchedules({ store, rootPath, now: () => NOW, io });
+  assert.equal(fired, 1, "不被 50 上限截断");
+  const tasks = await store.listRegressionTasks(rootPath);
+  assert.equal(tasks[0].refs[0].caseSetId, oldest.id, "解析到视野外的份");
+});
+
+test("fireDueSchedules: CAS 抛错 → 仅跳过该 schedule（其余照常，窗口未消费）", async () => {
+  const { store, rootPath } = await setup();
+  await seedCaseSet(store, rootPath);
+  const failing = await addSchedule(store, rootPath, { name: "甲" });
+  const healthy = await addSchedule(store, rootPath, { name: "乙" });
+  const original = store.claimScheduleWindow.bind(store);
+  store.claimScheduleWindow = async (input) => {
+    if (input.scheduleId === failing.id) throw new Error("cas down");
+    return original(input);
+  };
+  const { io, errors } = makeIo();
+  const fired = await fireDueSchedules({ store, rootPath, now: () => NOW, io });
+  store.claimScheduleWindow = original;
+  assert.equal(fired, 1, "其余 schedule 照常触发");
+  assert.equal(
+    (await store.getSchedule(rootPath, failing.id)).lastFiredAt,
+    null,
+    "失败者窗口未消费"
+  );
+  assert.equal((await store.getSchedule(rootPath, healthy.id)).lastFiredAt, NOON);
+  assert.ok(errors.some((line) => line.includes("窗口抢占失败")));
 });

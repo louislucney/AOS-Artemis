@@ -336,6 +336,7 @@ export interface ProjectStore {
   listPendingTasks(rootPath: string, limit?: number): Promise<TaskStatRecord[]>;
   markTaskFinished(rootPath: string, traceId: string, status: string): Promise<boolean>;
   recordCaseSet(input: RecordCaseSetInput): Promise<CaseSetRecord>;
+  /** 返回 createdAt 新→旧；`limit` 缺省＝全量（触发解析用；展示/交互路径显式传分页值）。 */
   listCaseSets(rootPath: string, limit?: number): Promise<CaseSetRecord[]>;
   createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord>;
   getRegressionTask(rootPath: string, id: string): Promise<RegressionTaskRecord | null>;

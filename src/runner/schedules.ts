@@ -30,7 +30,7 @@ export async function fireDueSchedules(options: FireSchedulesOptions): Promise<n
 
     let sets: Awaited<ReturnType<ProjectStore["listCaseSets"]>>;
     try {
-      sets = await options.store.listCaseSets(options.rootPath, 50);
+      sets = await options.store.listCaseSets(options.rootPath);
     } catch (error) {
       io.errorLog(`[schedule] 用例集读取失败（本轮不触发、不消费窗口）：${errorMessage(error)}`);
       return 0;
@@ -40,12 +40,18 @@ export async function fireDueSchedules(options: FireSchedulesOptions): Promise<n
     for (const schedule of due) {
       const firedAt = new Date(nowMs).toISOString();
       const cutoff = new Date(nowMs - schedule.everyMinutes * 60_000).toISOString();
-      const won = await options.store.claimScheduleWindow({
-        rootPath: options.rootPath,
-        scheduleId: schedule.id,
-        firedAt,
-        cutoff
-      });
+      let won = false;
+      try {
+        won = await options.store.claimScheduleWindow({
+          rootPath: options.rootPath,
+          scheduleId: schedule.id,
+          firedAt,
+          cutoff
+        });
+      } catch (error) {
+        io.errorLog(`[schedule] ${schedule.name} 窗口抢占失败：${errorMessage(error)}`);
+        continue;
+      }
       if (!won) continue;
 
       const refs: ResolvedTaskRef[] = [];
