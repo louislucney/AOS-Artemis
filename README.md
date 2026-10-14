@@ -143,7 +143,7 @@ node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:
 
 ### 多项目总览面板（overview-panel）
 
-HTTP 模式挂总览面板：`GET /panel`（服务端渲染 HTML）与 `GET /panel.json`（同源 JSON，`view: overview|project|batch|task|review|stats`）。三层视图：**L1 项目总览**（接入健康灯 + 最新批次摘要）、**L2 项目详情**（集成信息 + **深探信息** + 批次列表与**批次趋势** + **回归引用**（新建回归测试：勾选份 → 创建任务）+ **回归任务**列表 + **磁盘资产**（崩溃签名/对账/设备基线热点/保留期摘要）+ 独立运行 + 设计资产）、**L3 批次详情**（归纳分类：门禁/失败域/置信度/用例/证据链）；回归视图：**任务页**（`?task=<id>`：子运行/对比/跨端差异/触发执行指引）、**归因队列**（`?view=review`：失败用例初判+证据+批量裁决，写库后 reload 可见）、**统计下钻**（`?view=stats`：功能通过率/趋势、最不稳用例、跨端差异、改进出口三清单）。
+HTTP 模式挂总览面板：`GET /panel`（服务端渲染 HTML）与 `GET /panel.json`（同源 JSON，`view: overview|project|batch|task|review|stats`）。三层视图：**L1 项目总览**（接入健康灯 + 最新批次摘要）、**L2 项目详情**（集成信息 + **深探信息** + 批次列表与**批次趋势** + **回归引用**（新建回归测试：勾选份 → 创建任务）+ **回归任务**列表 + **执行机（runner）**区块 + **磁盘资产**（崩溃签名/对账/设备基线热点/保留期摘要）+ 独立运行 + 设计资产）、**L3 批次详情**（归纳分类：门禁/失败域/置信度/用例/证据链）；回归视图：**任务页**（`?task=<id>`：状态/领取方（在线/失联）/子运行/对比/跨端差异/活跃态自动刷新/产物链接）、**归因队列**（`?view=review`：失败用例初判+证据+批量裁决，写库后 reload 可见；含「打开证据」链接）、**统计下钻**（`?view=stats`：功能通过率/趋势、最不稳用例、跨端差异、改进出口三清单）。
 
 ```bash
 node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读看板（HTTP 模式自带 /panel；动作层仅 HTTP 模式）
@@ -153,7 +153,25 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读�
 - 数据源：批次清单 `.artemis/design/runs/`（`suite run`/`loop` 自动落盘，权威）+ PG 台账（含 `regression_tasks`/`suite_runs`/`suite_run_cases`，裁决写回 `suite_run_cases.verdict*`）+ 项目软读（无子进程/无网络）；磁盘不可达的项目降级为"仅台账"；缺件/清理/高版本清单一律如实占位，不猜测。
 - **深探**（HTTP 模式）：项目页懒建 Runtime 后取纯读子集（active Profile/存储/artemis 子进程/桥/日志/构建状态；**不拉起子进程、不触网**）；URL 加 `?ios=1` 显式执行 **iOS 环境检测**（调用本地 appium CLI，结果缓存 60s）；独立 CLI 进程无深探层。
 - 查询参数：`project`（项目名或根路径）、`batch`（清单文件名）、`task`（回归任务 id）、`view`（`review`|`stats`；优先级 task > batch > view）、`limit`（批次数，默认 20、上限 100）、`ios`（=1 显式 iOS 检测）。
-- 默认 loopback、进程内缓存 5s（动作写成功后缓存失效）；`AOS_PANEL_WEB=0` 关闭只读路由、`AOS_PANEL_CACHE_MS` 调整缓存 TTL（0 关闭缓存）；CLI 端口占用 exit 2。见 DESIGN §13.95–§13.98、§13.103–§13.105、§13.108。
+- 默认 loopback、进程内缓存 5s（动作写成功后缓存失效）；`AOS_PANEL_WEB=0` 关闭只读路由、`AOS_PANEL_CACHE_MS` 调整缓存 TTL（0 关闭缓存）；CLI 端口占用 exit 2。见 DESIGN §13.95–§13.98、§13.103–§13.105、§13.108、§13.109。
+
+### 项目机 runner（回归自动领取执行 + 产物只读预览）
+
+项目机常驻 runner 自动领取面板/CLI 创建的回归任务并按 P1 同一契约执行回写；同进程提供只读产物服务，中心面板据此给「清单/份/xlsx/证据」链接（大件仍留在项目机磁盘）。
+
+```bash
+node dist/cli.js suite runner [--name <n>] [--poll-ms n] [--heartbeat-ms n]
+        [--artifact-port n（0 关闭；默认 AOS_RUNNER_ARTIFACT_PORT 或 8770）]
+        [--artifact-host h（默认 AOS_RUNNER_ARTIFACT_HOST 或 0.0.0.0）] [--once]
+# 需要中心 PG（MOBILE_TESTING_DATABASE_URL，与 suite 其余命令同口径）；--once 单轮冒烟
+node dist/cli.js suite task release <taskId> [--force]   # 管理侧救济：claimed/running → 待执行
+```
+
+- 设备盘点：adb devices（emulator-* 归 emulator）＋模拟器（darwin，仅 Booted 可用）＋真机 `idevice_id -l`（best-effort）；**真机 UDID 请用 `AOS_RUNNER_DEVICES="udid1,udid2"` 显式列入**（设了即覆盖全部来源）。
+- 命名与登记：`--name <n>`＝心跳/登记名（缺省 hostname）；runner 执行的任务子运行 `suite_runs.runner` 记录该名（显式透传，不影响手动运行归因）。环境变量：`AOS_RUNNER_POLL_MS`（5000）、`AOS_RUNNER_HEARTBEAT_MS`（30000）、`AOS_RUNNER_TTL_MS`（在线判定，90000）、`AOS_RUNNER_ARTIFACT_PORT/HOST`、`AOS_RUNNER_ADVERTISE_URL`（LAN 无 DNS 时用 IP 覆盖基址）。
+- 领取条件：**任务目标端 ⊆ 该 runner 的设备端集合**（缺端不领）；**双端任务需单机双端 runner**（两端分属两台机时请拆单端任务或手动执行）；面板对「pending 且无 runner 可覆盖」会给提示。
+- 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需）、**无鉴权**，暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
+- 崩溃/失联救济：runner 重启自动释放自己的未完成领取；机器报废等场景用 `suite task release`（默认要求该执行机离线）。无 runner 时手动路径不变：`suite run --task <id> --device <serial>`（claimed 不阻塞手动执行）。见 DESIGN §13.109。
 
 ### Jira 接入（M8a：读取）
 

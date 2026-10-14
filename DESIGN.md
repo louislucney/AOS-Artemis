@@ -1525,3 +1525,17 @@ llm_switch(name, force):
 > 测试 +26（db-suite-runs +3 / panel-stats +5 / panel-actions +3 / panel-overview +4 / panel-web +4 / http-server +3 / suite-task +2 / generation-feedback +2）；全量 1060 绿。
 
 - **口径**：面板动作层只写「任务创建 + 裁决」两类事实（登记/对比/状态机仍由执行侧负责）；动作层与只读层同源 store、同视图构建路径（动作后 reload 即可见）；中心侧只存索引与状态，大件（清单/截图/证据）留在项目机磁盘、面板仅展示路径。
+
+### 13.109 实施记录（回归服务 P2：runner 心跳 + 自动领取执行 + 产物只读预览）
+
+> 实施于 2026-10-14（设计稿 §5.3/§5.4/§5.5/§7；计划 `docs/superpowers/plans/2026-10-14-regression-service-p2-runner-dispatch.md`，经两轮独立复核修订）。DB 增 `runners` 表（id/project_id/name/hostname/platforms/devices/tools/artifact_base_url/version/last_seen_at/created_at；`devices`＝`{serial,name,platform,kind,state}` 列表、`tools`＝adb/idb/simctl/ideviceId/appium 布尔、JSON 宽容解析）；`regression_tasks` 增 `claimed_by/claimed_at`（存量库经 MIGRATIONS 补列）与状态 **claimed**；`suite_runs.manifest_path` 首次接线（此前该列无写入方，恒 null）。
+>
+> - **runner（`suite runner` 常驻，项目机）**：首轮心跳 upsert（`runners.id` 为身份；`--name`/缺省 hostname）→ 启动释放自己的 claimed/running（崩溃残留回 pending）→ **并行心跳循环**（独立 async；`AOS_RUNNER_HEARTBEAT_MS` 默认 30s；异常仅日志不终止——**长跑执行期间不失联**）→ 主循环原子领取（最旧 pending 且**任务 platforms ⊆ runner 设备端**；单条 `UPDATE ... AND status='pending'` 守卫、不用 SKIP LOCKED、竞争失败下轮再试；候选窗 50）→ 复用 `suite run --task`（argv 带 `--project` 与按任务端过滤的 `--device`，可多设备）→ **执行异常释放本次领取**（回 pending，已终态守卫不覆盖）＋防热循环延迟。`--once` 单轮冒烟；SIGINT/SIGTERM 优雅退出；**需要中心 PG**（内存 store 拒启 exit 2）。设备盘点：adb devices（emulator-* → emulator）＋darwin 下 simctl Booted 可用模拟器＋`idevice_id -l` 真机（best-effort）；`AOS_RUNNER_DEVICES` 逗号分隔**覆盖全部来源**（真机 UDID 显式列入口径）；tools 探测 idb（--version）与 appium（`AOS_APPIUM_URL` 配置）。
+> - **产物只读服务**（runner 同进程；`GET|HEAD /healthz`＋`/artifact/<rel>`）：根＝`<项目>/.artemis`（realpath 双重校验拒绝 `..`/绝对路径/符号链接外逃）；文件流（图片 inline、json/md/txt/log text/plain、xlsx 对应 MIME、`nosniff`）；目录浅索引（转义/不递归/父链接/>500 截断、`nosniff`）。**默认监听 `0.0.0.0`、无鉴权**（内网口径；暴露范围含 `.artemis/logs` 与 `.artemis/crashes`，README 点名）；`--artifact-port 0` 关闭、端口占用不阻断执行且**不广播基址**；基址＝`AOS_RUNNER_ADVERTISE_URL` 或 `http://<hostname>:<port>`。CLI 参数：`--name/--poll-ms/--heartbeat-ms/--artifact-port/--artifact-host/--once`。
+> - **面板**：项目页「执行机（runner）」区块（TTL 90s（`AOS_RUNNER_TTL_MS`）在线灯、设备 chips、工具徽标、最后心跳、产物基址；有 runner 时 30s 刷新）；任务页状态标签（待执行/已领取/执行中/已完成/部分失败/失败）＋领取方（在线/失联；未知执行机）＋活跃态 10s 刷新＋「在线 runner 会自动领取执行」指引；**pending 且无单台在线 runner 端覆盖时提示原因**（双端任务需单机双端）。**产物链接**：任务页子运行「清单」（子运行各自落批次清单并登记 `manifest_path`）与引用份 json/xlsx、归因队列「打开证据」（run→task→runner 链；`artifactUrl` 相对 `.artemis` 分段编码，越界 → 纯路径文本）；中心只拼 URL 不取文件，面板/中心不触网。
+> - **「一键下发」＝面板创建任务后由在线 runner 自动领取执行**（**不加按钮**）；无 runner 时手动 `suite run --task` 路径不变（claimed 不阻塞手动，契约锁）。`suite task release <taskId> [--force]`＝管理侧救济（claimed/running → pending；默认要求执行机离线，在线需 `--force`）；`suite_runs.runner` 经 `SuiteCliDeps.runnerName` 透传（runner 子命令传 `--name`；缺省 hostname；显式注入、不经 `process.env`）。
+> - **§8 剩余项**（沿用现状/列 P3）：多实例并发迁移（init 幂等 best-effort）、`platforms/devices/tools` 无版本宽容解析、回填扫描、面板动作层/产物服务鉴权升级、claimed 自动超时重置、按端部分领取、真机 iOS 自动发现。
+>
+> 测试 +47（db-runners 10 / runner-inventory 5 / runner-agent 9 / runner-artifact 6 / suite-runner-cli 6 / suite-task +5 / panel-overview +4 / panel-web +3；另含端到端缝：`artifactUrl` 构建的 URL 打到真实 loopback 服务 200）；全量 **1116 绿**（含 Review Focus 五条锁定：并发领取守卫、路径穿越、崩溃重启释放、心跳/在线边界、手动与自动并存）。
+
+- **口径**：领取＝任务端子集＋原子状态守卫；心跳 TTL 90s（3×默认周期）判定在线（字段级 now 对比）；产物 URL 一律相对 `.artemis`（与服务根一致，越界不链接）；claimed 无自动超时（救济＝启动释放＋`suite task release`）；产物服务与动作层并列**内网无鉴权**面（默认 `0.0.0.0`、`.artemis` 只读范围，风险在 README/DESIGN 点名）；双端任务需单机双端 runner（分机部署走手动）。
