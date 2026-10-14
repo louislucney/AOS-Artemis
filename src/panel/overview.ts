@@ -1166,7 +1166,7 @@ export async function buildPanelStatsView(deps: PanelDeps, rootPath: string): Pr
   const guidance: string[] = [];
   if (improvement.caseDefects.length > 0) {
     guidance.push(
-      "案例问题（case-defect）：修订用例期望后重新生成用例集（figma_generate_tests / pen 对应生成工具，生成物覆盖同名份）。"
+      "修订用例期望后重新生成（figma_generate_tests / pen 生成工具）；重新生成时响应与 tests.md 会附上轮案例问题提示。"
     );
   }
   if (improvement.environment.length > 0) {
@@ -1179,7 +1179,6 @@ export async function buildPanelStatsView(deps: PanelDeps, rootPath: string): Pr
       '应用缺陷（app-defect）：建单：node dist/cli.js jira issue create --project <KEY> --type Bug --summary "…"；失败证据可用 jira_evidence_post 附加。'
     );
   }
-  guidance.push("自动化（P3）：以上出口的一键流转（重新生成 / 建单）后续接线。");
 
   return { stats, improvement, guidance, warnings };
 }

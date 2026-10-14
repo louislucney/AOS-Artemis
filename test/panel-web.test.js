@@ -986,3 +986,243 @@ test("panel web: 定时回归区块 + 任务页来源显示", async () => {
   );
   assert.match(cleanHtml.body, /暂无定时回归/);
 });
+
+function makeStatsRun({
+  caseSetId = "cs-1",
+  featureKey = "f-1",
+  featureName = "登录流程",
+  platform = "android",
+  device = "emulator-5554",
+  startedIso = "2026-10-14T10:00:00.000Z",
+  total = 1
+} = {}) {
+  return {
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId,
+    featureKey,
+    featureName,
+    platform,
+    device,
+    appVersion: null,
+    status: "failed",
+    startedAt: startedIso,
+    finishedAt: startedIso,
+    total,
+    passed: 0,
+    failed: total,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: {},
+    gateResult: "fail",
+    exitCode: 1,
+    manifestPath: null,
+    comparison: null
+  };
+}
+
+function makeStatsCase({
+  caseId,
+  name = caseId,
+  featureKey = "f-1",
+  platform = "android",
+  status = "failed",
+  verdict = null,
+  verdictBy = null,
+  verdictAt = null,
+  verdictNote = null,
+  failureDomain = null
+}) {
+  return {
+    caseId,
+    name,
+    featureKey,
+    platform,
+    status,
+    traceId: null,
+    failureDomain,
+    failureConfidence: null,
+    failureReason: null,
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict,
+    verdictBy,
+    verdictAt,
+    verdictNote
+  };
+}
+
+test("panel web: stats 环境清单表（设备/端/次数/功能/最近/备注；null 设备与空态）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: makeStatsRun({ total: 2 }),
+    cases: [
+      makeStatsCase({
+        caseId: "case-1",
+        name: "Case 1",
+        failureDomain: "环境",
+        verdict: "execution-deviation",
+        verdictBy: "alice",
+        verdictAt: "2026-10-14T12:00:00.000Z",
+        verdictNote: "设备离线"
+      }),
+      makeStatsCase({
+        caseId: "case-2",
+        name: "Case 2",
+        failureDomain: "环境",
+        verdict: "execution-deviation",
+        verdictBy: "alice",
+        verdictAt: "2026-10-14T12:30:00.000Z",
+        verdictNote: "网络抖动"
+      })
+    ]
+  });
+  const longNote = "长".repeat(130);
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T11:05:00.000Z",
+    run: makeStatsRun({
+      caseSetId: "cs-2",
+      featureKey: "f-2",
+      featureName: "设置",
+      platform: "ios",
+      device: null,
+      startedIso: "2026-10-14T11:00:00.000Z"
+    }),
+    cases: [
+      makeStatsCase({
+        caseId: "case-3",
+        name: "Case 3",
+        featureKey: "f-2",
+        platform: "ios",
+        failureDomain: "环境",
+        verdict: "execution-deviation",
+        verdictBy: "bob",
+        verdictAt: "2026-10-14T13:00:00.000Z",
+        verdictNote: longNote
+      })
+    ]
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=stats`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(
+    html.body,
+    /<th>设备<\/th><th>端<\/th><th>次数<\/th><th>涉及功能<\/th><th>最近裁决<\/th><th>备注摘要<\/th>/
+  );
+  assert.match(
+    html.body,
+    /<tr><td>emulator-5554<\/td><td>android<\/td><td>2<\/td><td>登录流程<\/td><td>2026-10-14T12:30:00.000Z<\/td><td>设备离线；网络抖动<\/td><\/tr>/,
+    "环境行：设备/端/次数/功能/最近裁决（组内最大）/备注（；连接）"
+  );
+  assert.match(
+    html.body,
+    /<tr><td>—<\/td><td>ios<\/td><td>1<\/td><td>设置<\/td><td>2026-10-14T13:00:00.000Z<\/td>/,
+    "设备 null → —"
+  );
+  assert.ok(html.body.includes(`${longNote.slice(0, 120)}…`), "备注摘要截断 ~120 字");
+  assert.ok(!html.body.includes(longNote), "超长备注不原样输出");
+
+  const clean = await makeHarness();
+  const emptyHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(clean.projectDir)}&view=stats`),
+    clean.deps
+  );
+  assert.match(emptyHtml.body, /无执行偏差裁决/, "空态");
+  assert.doesNotMatch(emptyHtml.body, /id="issues-form"/, "无应用缺陷 → 不渲染建单表单");
+});
+
+test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS/指引行）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const run = await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: makeStatsRun({}),
+    cases: [
+      makeStatsCase({
+        caseId: "case-app",
+        name: "崩溃用例",
+        failureDomain: "应用缺陷",
+        verdict: "app-defect",
+        verdictBy: "bob",
+        verdictAt: "2026-10-14T12:30:00.000Z"
+      }),
+      makeStatsCase({
+        caseId: "case-def",
+        name: "期望写错",
+        failureDomain: "用例缺陷",
+        verdict: "case-defect",
+        verdictBy: "alice",
+        verdictAt: "2026-10-14T12:00:00.000Z"
+      })
+    ]
+  });
+  await store.setCaseIssueKey({
+    rootPath: projectDir,
+    runId: run.id,
+    caseId: "case-app",
+    jiraKey: "REGR-42"
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=stats`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /应用缺陷（app-defect）→ 建单（Jira）/);
+  assert.match(html.body, new RegExp(`name="issue-item" value="${run.id}\\|case-app"`), "复选框 value＝runId|caseId");
+  assert.match(html.body, /<span class="chip">REGR-42<\/span>/, "已建单 chip（纯文本 KEY）");
+  assert.doesNotMatch(html.body, /href="[^"]*REGR-42"/, "面板无 Jira 站点来源 → chip 不做链接");
+  assert.match(html.body, /name="projectKey"/);
+  assert.match(html.body, /placeholder="默认 JIRA_ISSUE_PROJECT"/);
+  assert.match(html.body, /name="issueType"/);
+  assert.match(html.body, /placeholder="Bug"/);
+  assert.match(html.body, /name="labels"/);
+  assert.match(html.body, /placeholder="逗号分隔"/);
+  assert.match(html.body, />预览</);
+  assert.match(html.body, />建单</);
+  assert.match(html.body, /id="issues-result"/);
+  assert.match(html.body, /function submitIssues\(event,dryRun\)/);
+  assert.match(html.body, /fetch\('\/panel\/api\/issues'/);
+  assert.match(html.body, /submitIssues\(event, false\)/, "建单按钮 dryRun=false");
+  assert.match(html.body, /submitIssues\(event, true\)/, "预览按钮 dryRun=true");
+  assert.match(html.body, /payload\.projectKey=projectKey/);
+  assert.match(html.body, /payload\.issueType=issueType/);
+  assert.match(html.body, /payload\.labels=labels/);
+  assert.match(html.body, /items:items,dryRun:dryRun/);
+  assert.match(html.body, /location\.reload\(\)/, "非 dryRun 成功后 reload");
+  assert.match(html.body, /重新生成时响应与 tests\.md 会附上轮案例问题提示/, "案例问题指引行更新");
+  assert.doesNotMatch(html.body, /后续接线/, "移除「自动化（P3）…后续接线」指引行");
+});
+
+test("panel web: stats 建单 UI HTML 转义（名称/复选框 value 注入不裸出）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const run = await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: makeStatsRun({}),
+    cases: [
+      makeStatsCase({
+        caseId: 'ca"se',
+        name: '"><script>alert(1)</script>',
+        failureDomain: "应用缺陷",
+        verdict: "app-defect",
+        verdictAt: "2026-10-14T12:30:00.000Z"
+      })
+    ]
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=stats`),
+    deps
+  );
+  assert.doesNotMatch(html.body, /<script>alert\(1\)<\/script>/, "名称不裸出脚本标签");
+  assert.match(html.body, /&quot;&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(html.body, new RegExp(`name="issue-item" value="${run.id}\\|ca&quot;se"`), "复选框 value 转义引号");
+});

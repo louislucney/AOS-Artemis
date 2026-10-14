@@ -1101,6 +1101,88 @@ function renderReviewPage(view: {
   );
 }
 
+const ENVIRONMENT_NOTE_SUMMARY_MAX = 120;
+
+function environmentNoteSummary(notes: string[]): string {
+  const joined = notes.join("；");
+  if (joined === "") return "—";
+  return joined.length <= ENVIRONMENT_NOTE_SUMMARY_MAX
+    ? joined
+    : `${joined.slice(0, ENVIRONMENT_NOTE_SUMMARY_MAX)}…`;
+}
+
+function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string {
+  const title = "<h3>应用缺陷（app-defect）→ 建单（Jira）</h3>";
+  if (items.length === 0) return `${title}<p class="empty">（空）</p>`;
+  const rootJson = JSON.stringify(rootPath).replace(/</g, "\\u003c");
+  const rows = items.map((item) => [
+    `<input type="checkbox" name="issue-item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}">`,
+    `<code>${escapeHtml(item.caseId)}</code>`,
+    escapeHtml(item.name),
+    escapeHtml(item.featureName ?? "—"),
+    item.jiraKey === null || item.jiraKey === ""
+      ? '<span class="muted">—</span>'
+      : `<span class="chip">${escapeHtml(item.jiraKey)}</span>`
+  ]);
+  return [
+    title,
+    renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决"),
+    '<form id="issues-form" onsubmit="return submitIssues(event, false)">',
+    '<p><label>Jira 项目：<input type="text" name="projectKey" size="12" placeholder="默认 JIRA_ISSUE_PROJECT"></label> ',
+    '<label>类型：<input type="text" name="issueType" size="10" placeholder="Bug"></label> ',
+    '<label>标签：<input type="text" name="labels" size="20" placeholder="逗号分隔"></label></p>',
+    '<p><button type="button" onclick="return submitIssues(event, true)">预览</button> ',
+    '<button type="submit">建单</button> <span id="issues-status" class="muted"></span></p>',
+    '<div id="issues-result"></div>',
+    '<p class="note">建立 Jira 单为外部副作用；「预览」仅显示将创建的摘要与附件、不触网。勾选多条 → 每条各建一张单。</p>',
+    "</form>",
+    "<script>",
+    "function submitIssues(event,dryRun){",
+    "  event.preventDefault();",
+    "  var form=document.getElementById('issues-form');",
+    "  var items=Array.prototype.slice.call(form.querySelectorAll('input[name=issue-item]:checked')).map(function(el){var parts=el.value.split('|');return {runId:parts[0],caseId:parts[1]};});",
+    "  var status=document.getElementById('issues-status');",
+    "  var result=document.getElementById('issues-result');",
+    "  if(items.length===0){status.textContent='请先勾选至少一条应用缺陷';return false;}",
+    "  var payload={project:" + rootJson + ",items:items,dryRun:dryRun};",
+    "  var projectKey=form.querySelector('input[name=projectKey]').value.trim();",
+    "  var issueType=form.querySelector('input[name=issueType]').value.trim();",
+    "  var labels=form.querySelector('input[name=labels]').value.trim();",
+    "  if(projectKey!==''){payload.projectKey=projectKey;}",
+    "  if(issueType!==''){payload.issueType=issueType;}",
+    "  if(labels!==''){payload.labels=labels;}",
+    "  status.textContent=dryRun?'预览中…':'提交中…';",
+    "  result.replaceChildren();",
+    "  fetch('/panel/api/issues',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})",
+    "    .then(function(response){return response.json().then(function(data){",
+    "      if(!response.ok||data.ok===false){status.textContent='失败：'+(data.error||('HTTP '+response.status))+((data.hints&&data.hints.length>0)?('（'+data.hints.join('；')+'）'):'');return;}",
+    "      result.replaceChildren(renderIssueResults(data.results));",
+    "      status.textContent='完成：新建 '+data.created+' · 已存在 '+data.existing+' · 跳过 '+data.skipped+' · 失败 '+data.failed;",
+    "      if(!dryRun&&data.created>0){location.reload();}",
+    "    });})",
+    "    .catch(function(error){status.textContent='请求失败：'+error.message;});",
+    "  return false;",
+    "}",
+    "function renderIssueResults(results){",
+    "  var fragment=document.createDocumentFragment();",
+    "  if(!results||results.length===0){var empty=document.createElement('p');empty.className='muted';empty.textContent='无结果';fragment.appendChild(empty);return fragment;}",
+    "  var list=document.createElement('ul');",
+    "  results.forEach(function(item){",
+    "    var li=document.createElement('li');",
+    "    li.appendChild(document.createTextNode(item.caseId+'（'+item.status+'）'));",
+    "    if(item.key){var code=document.createElement('code');code.textContent=' '+item.key;li.appendChild(code);}",
+    "    if(item.url){var link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noreferrer';link.textContent=' 打开';li.appendChild(link);}",
+    "    if(item.reason){var reason=document.createElement('span');reason.className='muted';reason.textContent=' '+item.reason;li.appendChild(reason);}",
+    "    if(item.summary){var summary=document.createElement('span');summary.className='muted';summary.textContent=' '+item.summary;li.appendChild(summary);}",
+    "    list.appendChild(li);",
+    "  });",
+    "  fragment.appendChild(list);",
+    "  return fragment;",
+    "}",
+    "</script>"
+  ].join("\n");
+}
+
 function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): string {
   const { stats, improvement, guidance, warnings } = view.detail;
   const featureRows = stats.features.map((feature) => [
@@ -1151,23 +1233,19 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
             .join("")}</ul>`;
     return `<h3>${escapeHtml(title)}</h3>${body}`;
   };
-  const environmentList = (title: string, groups: VerdictEnvironmentGroup[]): string => {
-    const body =
-      groups.length === 0
-        ? '<p class="empty">（空）</p>'
-        : `<ul>${groups
-            .map(
-              (group) =>
-                `<li>${escapeHtml(group.device ?? "—")} · ${escapeHtml(group.platform)} × ${
-                  group.count
-                }${
-                  group.features.length === 0
-                    ? ""
-                    : ` · ${group.features.map((feature) => escapeHtml(feature)).join("、")}`
-                }</li>`
-            )
-            .join("")}</ul>`;
-    return `<h3>${escapeHtml(title)}</h3>${body}`;
+  const environmentTable = (groups: VerdictEnvironmentGroup[]): string => {
+    const rows = groups.map((group) => [
+      escapeHtml(group.device ?? "—"),
+      escapeHtml(group.platform),
+      String(group.count),
+      escapeHtml(group.features.join("、") || "—"),
+      escapeHtml(group.lastAt ?? "—"),
+      escapeHtml(environmentNoteSummary(group.notes))
+    ]);
+    return [
+      "<h3>执行偏差（execution-deviation）→ 环境核对 / 重跑</h3>",
+      renderTable(["设备", "端", "次数", "涉及功能", "最近裁决", "备注摘要"], rows, "无执行偏差裁决")
+    ].join("\n");
   };
   const guidanceHtml = guidance
     .map((line) => `<p class="muted">${escapeHtml(line)}</p>`)
@@ -1207,8 +1285,8 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
       '<section id="improvement">',
       "<h2>改进出口</h2>",
       improvementList("案例问题（case-defect）→ 修订期望 / 重新生成", improvement.caseDefects),
-      environmentList("执行偏差（execution-deviation）→ 环境核对 / 重跑", improvement.environment),
-      improvementList("应用缺陷（app-defect）→ 建单（Jira）", improvement.appDefects),
+      environmentTable(improvement.environment),
+      appDefectBlock(view.rootPath, improvement.appDefects),
       guidanceHtml,
       "</section>",
       "</main>"
