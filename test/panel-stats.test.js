@@ -209,3 +209,31 @@ test("buildRegressionStats: 空输入与无份运行不崩（跳过 featureKey=n
   assert.equal(skipped.features.length, 0);
   assert.equal(skipped.unstableCases.length, 0);
 });
+
+test("buildRegressionStats: 入参乱序自排（趋势/连败按 createdAt 新→旧）", () => {
+  const older = runRecord({
+    id: "r1",
+    createdAt: "2026-10-14T10:00:00.000Z",
+    passed: 2,
+    failed: 0,
+    gateResult: "pass",
+    failureDomains: {},
+    cases: [
+      caseRecord({ status: "passed" }),
+      caseRecord({ caseId: "case-2", status: "passed" })
+    ]
+  });
+  const newer = runRecord({
+    id: "r2",
+    createdAt: "2026-10-14T11:00:00.000Z",
+    cases: [
+      caseRecord({ status: "failed" }),
+      caseRecord({ caseId: "case-2", status: "failed" })
+    ]
+  });
+  const stats = buildRegressionStats([older, newer]);
+  assert.deepEqual(stats.features[0].trend, ["fail", "pass"]);
+  const unstable = stats.unstableCases.find((entry) => entry.caseId === "case-1");
+  assert.equal(unstable.lastStatus, "failed");
+  assert.equal(unstable.consecutiveFailures, 1);
+});

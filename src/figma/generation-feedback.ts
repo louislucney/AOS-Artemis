@@ -179,7 +179,8 @@ async function collectVerdictSuggestions(runtime: Runtime): Promise<FeedbackSugg
     { caseId: string; verdict: string; traceId: string | null; feature: string }
   >();
   for (const run of runs) {
-    const feature = run.featureName ?? run.featureKey ?? "未归属功能";
+    if (run.featureKey === null) continue;
+    const feature = run.featureName ?? run.featureKey;
     for (const entry of run.cases) {
       if (entry.verdict === null) continue;
       const key = `${run.caseSetId ?? ""}|${entry.caseId}`;

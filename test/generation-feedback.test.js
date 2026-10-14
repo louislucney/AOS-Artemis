@@ -258,6 +258,12 @@ test("generation feedback: 案例问题裁决 → kind: verdict 建议（按功�
     run: mkRun({ caseSetId: "cs-2", featureKey: "f-2", featureName: "下单流程" }),
     cases: [mkCase("case-9", "case-defect", null)]
   });
+  await runtime.store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:07:00.000Z",
+    run: mkRun({ caseSetId: null, featureKey: null, featureName: null }),
+    cases: [mkCase("case-standalone", "case-defect", null)]
+  });
 
   const feedback = await buildGenerationFeedback(runtime);
   assert.equal(feedback.ok, true);
@@ -272,6 +278,11 @@ test("generation feedback: 案例问题裁决 → kind: verdict 建议（按功�
   assert.ok(order, "下单流程建议");
   assert.deepEqual(order.caseIds, ["case-9"]);
   assert.deepEqual(order.traceIds, []);
+  assert.equal(
+    verdictSuggestions.some((entry) => entry.message.includes("case-standalone")),
+    false,
+    "无份运行不进建议（仅份血统）"
+  );
 });
 
 test("generation feedback: 无裁决 → 无 verdict 建议；store 抛错不阻断既有建议", async () => {

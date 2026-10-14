@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { logWarn } from "../log.js";
+import { errorMessage } from "../util.js";
 import {
   buildUsageEvent,
   isUsageErrorClass,
@@ -214,8 +216,9 @@ export class PostgresStore implements ProjectStore {
     for (const statement of MIGRATIONS) {
       try {
         await this.pool.query(statement);
-      } catch {
+      } catch (error) {
         /* best effort: fresh schema already carries the column */
+        logWarn(`迁移语句失败（忽略）: ${errorMessage(error)}`);
       }
     }
   }

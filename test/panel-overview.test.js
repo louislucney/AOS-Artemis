@@ -791,7 +791,7 @@ test("panel detail: buildPanelStatsView（三清单取最新裁决；指引非�
 
   await store.recordSuiteRun({
     rootPath: dir,
-    createdAt: "2026-10-13T09:00:00.000Z",
+    createdAt: "2026-10-14T09:00:00.000Z",
     run: mkRun({}),
     cases: [
       mkCase("case-1", "failed", "case-defect"),
@@ -800,7 +800,13 @@ test("panel detail: buildPanelStatsView（三清单取最新裁决；指引非�
   });
   await store.recordSuiteRun({
     rootPath: dir,
-    createdAt: "2026-10-14T09:00:00.000Z",
+    createdAt: "2026-10-14T09:30:00.000Z",
+    run: mkRun({ caseSetId: null, featureKey: null, featureName: null }),
+    cases: [mkCase("case-standalone", "failed", "case-defect")]
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:00:00.000Z",
     run: mkRun({}),
     cases: [
       mkCase("case-1", "failed", "app-defect"),
@@ -822,6 +828,11 @@ test("panel detail: buildPanelStatsView（三清单取最新裁决；指引非�
   assert.equal(view.improvement.environment[0].caseId, "case-2");
   assert.equal(view.improvement.appDefects.length, 1);
   assert.equal(view.improvement.appDefects[0].caseId, "case-1", "同（份,用例）取最新裁决");
+  assert.equal(
+    view.improvement.caseDefects.some((entry) => entry.caseId === "case-standalone"),
+    false,
+    "无份运行不进改进出口（与统计主体口径一致）"
+  );
   assert.ok(view.guidance.length >= 3);
   assert.ok(view.guidance.some((line) => line.includes("figma_generate_tests")));
   assert.ok(view.guidance.some((line) => line.includes("jira issue create")));

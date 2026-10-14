@@ -991,6 +991,7 @@ export async function buildPanelStatsView(deps: PanelDeps, rootPath: string): Pr
     { caseId: string; verdict: string; name: string; featureName: string | null }
   >();
   for (const run of runs) {
+    if (run.featureKey === null) continue;
     for (const entry of run.cases) {
       if (entry.verdict === null) continue;
       const key = `${run.caseSetId ?? ""}|${entry.caseId}`;

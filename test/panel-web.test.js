@@ -441,6 +441,28 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
     deps
   );
   assert.equal(missing.status, 404);
+
+  const priority = JSON.parse(
+    (
+      await handlePanelRequest(
+        new URL(
+          `http://x/panel.json?project=${encodeURIComponent(projectDir)}&task=${encodeURIComponent(task.id)}&view=stats`
+        ),
+        deps
+      )
+    ).body
+  );
+  assert.equal(priority.view, "task", "视图优先级：task > view");
+
+  const unknownView = JSON.parse(
+    (
+      await handlePanelRequest(
+        new URL(`http://x/panel.json?project=${encodeURIComponent(projectDir)}&view=foo`),
+        deps
+      )
+    ).body
+  );
+  assert.equal(unknownView.view, "project", "未知 view 静默回项目页");
 });
 
 test("panel web: review HTML（radio 四选项、批量复选框、fetch、证据两态、指引）", async () => {

@@ -322,6 +322,7 @@ test("suite_runs: runner 字段往返（显式值 / 缺省 null；memory + pg-me
 });
 
 test("suite_runs: 存量库迁移——旧表缺 runner 列时 init 补列", async () => {
+  // noAstCoverageCheck：旧表已存在时 pg-mem 会因未读取的 AST 约束直接报错，这里只关注迁移结果
   const mem = newDb({ noAstCoverageCheck: true });
   const { Pool } = mem.adapters.createPg();
   const pool = new Pool();
@@ -363,4 +364,25 @@ test("suite_runs: 存量库迁移——旧表缺 runner 列时 init 补列", asy
   });
   const runs = await store.listSuiteRuns("/w/p1");
   assert.equal(runs.find((entry) => entry.id === record.id).runner, "legacy-fix");
+});
+
+test("updateCaseVerdict: 跨项目 runId → false 且不误写（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.upsertProject({ rootPath: "/w/p2", name: "p2" });
+    const record = await store.recordSuiteRun(runInput());
+    assert.equal(
+      await store.updateCaseVerdict({
+        rootPath: "/w/p2",
+        runId: record.id,
+        caseId: "case-aaaa00000001",
+        verdict: "case-defect"
+      }),
+      false
+    );
+    const runs = await store.listSuiteRuns("/w/p1");
+    const entry = runs[0].cases.find((item) => item.caseId === "case-aaaa00000001");
+    assert.equal(entry.verdict, null, "跨项目裁决不生效");
+  }
 });
