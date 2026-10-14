@@ -24,6 +24,7 @@ import type {
   SuiteRunCaseRecord,
   SuiteRunRecord,
   TaskStatRecord,
+  UpdateCaseVerdictInput,
   UpsertLlmInput,
   UsageEventQuery,
   UsageEventRecord,
@@ -738,6 +739,28 @@ export class PostgresStore implements ProjectStore {
       out.push(mapSuiteRun(row, cases.rows));
     }
     return out;
+  }
+
+  async updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return false;
+    const updated = await this.pool.query(
+      `UPDATE suite_run_cases
+          SET verdict = $3, verdict_by = $4, verdict_at = $5, verdict_note = $6
+        WHERE run_id = $1 AND case_id = $2
+          AND run_id IN (SELECT id FROM suite_runs WHERE project_id = $7)
+        RETURNING case_id`,
+      [
+        input.runId,
+        input.caseId,
+        input.verdict,
+        input.verdictBy ?? null,
+        new Date().toISOString(),
+        input.verdictNote ?? null,
+        project.id
+      ]
+    );
+    return updated.rows.length > 0;
   }
 
   async recordUsageEvent(

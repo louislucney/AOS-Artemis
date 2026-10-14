@@ -230,3 +230,77 @@ test("recordSuiteRun: 事务协议——失败时 BEGIN→ROLLBACK→release，�
   assert.ok(!calls.includes("COMMIT"), "no COMMIT on failure");
   assert.equal(calls.at(-1), "release");
 });
+
+test("updateCaseVerdict: 往返 + 重复覆盖更新 verdictAt（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const record = await store.recordSuiteRun(runInput());
+    const updated = await store.updateCaseVerdict({
+      rootPath: "/w/p1",
+      runId: record.id,
+      caseId: "case-aaaa00000001",
+      verdict: "case-defect",
+      verdictBy: "alice",
+      verdictNote: "期望值写错"
+    });
+    assert.equal(updated, true);
+    const runs = await store.listSuiteRuns("/w/p1");
+    const entry = runs[0].cases.find((item) => item.caseId === "case-aaaa00000001");
+    assert.equal(entry.verdict, "case-defect");
+    assert.equal(entry.verdictBy, "alice");
+    assert.equal(entry.verdictNote, "期望值写错");
+    assert.ok(entry.verdictAt);
+
+    const firstAt = entry.verdictAt;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const again = await store.updateCaseVerdict({
+      rootPath: "/w/p1",
+      runId: record.id,
+      caseId: "case-aaaa00000001",
+      verdict: "execution-deviation"
+    });
+    assert.equal(again, true);
+    const reread = (await store.listSuiteRuns("/w/p1"))[0].cases.find(
+      (item) => item.caseId === "case-aaaa00000001"
+    );
+    assert.equal(reread.verdict, "execution-deviation");
+    assert.equal(reread.verdictBy, null);
+    assert.notEqual(reread.verdictAt, firstAt, "重复裁决更新 verdictAt");
+  }
+});
+
+test("updateCaseVerdict: 未知 run/case/项目 → false（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const record = await store.recordSuiteRun(runInput());
+    assert.equal(
+      await store.updateCaseVerdict({
+        rootPath: "/w/p1",
+        runId: "run-nope",
+        caseId: "case-aaaa00000001",
+        verdict: "uncertain"
+      }),
+      false
+    );
+    assert.equal(
+      await store.updateCaseVerdict({
+        rootPath: "/w/p1",
+        runId: record.id,
+        caseId: "case-nope",
+        verdict: "uncertain"
+      }),
+      false
+    );
+    assert.equal(
+      await store.updateCaseVerdict({
+        rootPath: "/w/unknown",
+        runId: record.id,
+        caseId: "case-aaaa00000001",
+        verdict: "uncertain"
+      }),
+      false
+    );
+  }
+});

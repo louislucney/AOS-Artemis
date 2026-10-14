@@ -17,6 +17,7 @@ import type {
   RegressionTaskRecord,
   SuiteRunRecord,
   TaskStatRecord,
+  UpdateCaseVerdictInput,
   UpsertLlmInput,
   UsageEventQuery,
   UsageEventRecord,
@@ -311,6 +312,22 @@ export class MemoryStore implements ProjectStore {
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
       .slice(0, query.limit ?? 50)
       .map(cloneSuiteRun);
+  }
+
+  async updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean> {
+    const project = this.projects.get(input.rootPath);
+    if (!project) return false;
+    const run = this.suiteRuns.find(
+      (entry) => entry.projectId === project.id && entry.id === input.runId
+    );
+    if (!run) return false;
+    const target = run.cases.find((entry) => entry.caseId === input.caseId);
+    if (!target) return false;
+    target.verdict = input.verdict;
+    target.verdictBy = input.verdictBy ?? null;
+    target.verdictAt = new Date().toISOString();
+    target.verdictNote = input.verdictNote ?? null;
+    return true;
   }
 
   async ping(): Promise<boolean> {

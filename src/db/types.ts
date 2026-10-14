@@ -231,6 +231,17 @@ export interface RecordSuiteRunInput {
   createdAt?: string;
 }
 
+export type CaseVerdict = "case-defect" | "execution-deviation" | "app-defect" | "uncertain";
+
+export interface UpdateCaseVerdictInput {
+  rootPath: string;
+  runId: string;
+  caseId: string;
+  verdict: CaseVerdict;
+  verdictBy?: string | null;
+  verdictNote?: string | null;
+}
+
 export interface CreateRegressionTaskInput {
   rootPath: string;
   refs: RegressionTaskRef[];
@@ -275,6 +286,7 @@ export interface ProjectStore {
       limit?: number;
     }
   ): Promise<SuiteRunRecord[]>;
+  updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean>;
   recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,
