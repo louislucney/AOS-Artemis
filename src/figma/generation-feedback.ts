@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { FailureClassification } from "../artemis/failure-taxonomy.js";
 import type { Runtime } from "../runtime.js";
+import { collectVerdictExits } from "../tasks/verdict-exits.js";
 import { readTestsDocument } from "./design-store.js";
 import { preflightGeneratedTests } from "./preflight.js";
 import { buildRunReport, type RunReportCase } from "./run-report.js";
@@ -174,44 +175,30 @@ async function collectVerdictSuggestions(runtime: Runtime): Promise<FeedbackSugg
   } catch {
     return [];
   }
-  const latestVerdict = new Map<
-    string,
-    { caseId: string; verdict: string; traceId: string | null; feature: string }
-  >();
-  for (const run of runs) {
-    if (run.featureKey === null) continue;
-    const feature = run.featureName ?? run.featureKey;
-    for (const entry of run.cases) {
-      if (entry.verdict === null) continue;
-      const key = `${run.caseSetId ?? ""}|${entry.caseId}`;
-      if (latestVerdict.has(key)) continue;
-      latestVerdict.set(key, {
-        caseId: entry.caseId,
-        verdict: entry.verdict,
-        traceId: entry.traceId,
-        feature
-      });
-    }
-  }
-  const byFeature = new Map<string, { caseIds: string[]; traceIds: string[] }>();
-  for (const entry of latestVerdict.values()) {
-    if (entry.verdict !== "case-defect") continue;
-    const group = byFeature.get(entry.feature) ?? { caseIds: [], traceIds: [] };
+  const exits = collectVerdictExits(runs);
+  const byKey = new Map<string, { caseIds: string[]; traceIds: string[]; name: string | null }>();
+  for (const entry of exits.caseDefects) {
+    const groupKey = entry.featureKey ?? entry.featureName ?? entry.caseId;
+    const group = byKey.get(groupKey) ?? { caseIds: [], traceIds: [], name: null };
     if (!group.caseIds.includes(entry.caseId)) group.caseIds.push(entry.caseId);
     if (entry.traceId !== null && !group.traceIds.includes(entry.traceId)) {
       group.traceIds.push(entry.traceId);
     }
-    byFeature.set(entry.feature, group);
+    if (group.name === null && entry.featureName !== null) group.name = entry.featureName;
+    byKey.set(groupKey, group);
   }
-  return [...byFeature.entries()]
+  return [...byKey.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([feature, group]) => ({
-      kind: "verdict" as const,
-      message: `功能「${feature}」有 ${group.caseIds.length} 条用例被判案例问题（${group.caseIds.join("、")}），建议下一轮重新生成该功能用例。`,
-      targets: {},
-      caseIds: group.caseIds,
-      traceIds: group.traceIds
-    }));
+    .map(([groupKey, group]) => {
+      const name = group.name ?? groupKey;
+      return {
+        kind: "verdict" as const,
+        message: `功能「${name}」有 ${group.caseIds.length} 条用例被判案例问题（${group.caseIds.join("、")}），建议下一轮重新生成该功能用例。`,
+        targets: {},
+        caseIds: group.caseIds,
+        traceIds: group.traceIds
+      };
+    });
 }
 
 /** Read-only aggregation over the run ledger plus device baselines. Produces

@@ -826,7 +826,10 @@ test("panel detail: buildPanelStatsView（三清单取最新裁决；指引非�
   assert.equal(view.improvement.caseDefects[0].caseId, "case-3");
   assert.equal(view.improvement.caseDefects[0].featureName, "登录流程");
   assert.equal(view.improvement.environment.length, 1);
-  assert.equal(view.improvement.environment[0].caseId, "case-2");
+  assert.equal(view.improvement.environment[0].device, "emulator-5554");
+  assert.equal(view.improvement.environment[0].platform, "android");
+  assert.equal(view.improvement.environment[0].count, 1);
+  assert.deepEqual(view.improvement.environment[0].features, ["登录流程"]);
   assert.equal(view.improvement.appDefects.length, 1);
   assert.equal(view.improvement.appDefects[0].caseId, "case-1", "同（份,用例）取最新裁决");
   assert.equal(

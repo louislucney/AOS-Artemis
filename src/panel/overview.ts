@@ -30,6 +30,10 @@ import { scanProjectEnv, type EnvScanResult } from "../projects/scan.js";
 import { detectProjectStacks } from "../projects/stack.js";
 import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
 import { crossPlatformDeltas } from "../tasks/run-compare.js";
+import {
+  collectVerdictExits,
+  type VerdictEnvironmentGroup
+} from "../tasks/verdict-exits.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import { buildRegressionStats, type PanelRegressionStats } from "./stats.js";
 import { errorMessage } from "../util.js";
@@ -300,13 +304,18 @@ export interface PanelImprovementItem {
   caseId: string;
   name: string;
   featureName: string | null;
+  runId: string;
+  platform: string;
+  device: string | null;
+  traceId: string | null;
+  jiraKey: string | null;
 }
 
 export interface PanelStatsView {
   stats: PanelRegressionStats;
   improvement: {
     caseDefects: PanelImprovementItem[];
-    environment: PanelImprovementItem[];
+    environment: VerdictEnvironmentGroup[];
     appDefects: PanelImprovementItem[];
   };
   guidance: string[];
@@ -1137,34 +1146,22 @@ export async function buildPanelStatsView(deps: PanelDeps, rootPath: string): Pr
   }
   const stats = buildRegressionStats(runs);
 
-  const latestVerdict = new Map<
-    string,
-    { caseId: string; verdict: string; name: string; featureName: string | null }
-  >();
-  for (const run of runs) {
-    if (run.featureKey === null) continue;
-    for (const entry of run.cases) {
-      if (entry.verdict === null) continue;
-      const key = `${run.caseSetId ?? ""}|${entry.caseId}`;
-      if (latestVerdict.has(key)) continue;
-      latestVerdict.set(key, {
-        caseId: entry.caseId,
-        verdict: entry.verdict,
-        name: entry.name,
-        featureName: run.featureName
-      });
-    }
-  }
-  const pick = (verdict: string): PanelImprovementItem[] =>
-    [...latestVerdict.values()]
-      .filter((entry) => entry.verdict === verdict)
-      .map((entry) => ({ caseId: entry.caseId, name: entry.name, featureName: entry.featureName }))
-      .sort((a, b) => (a.caseId < b.caseId ? -1 : a.caseId > b.caseId ? 1 : 0));
+  const exits = collectVerdictExits(runs);
+  const toItem = (entry: (typeof exits.caseDefects)[number]): PanelImprovementItem => ({
+    caseId: entry.caseId,
+    name: entry.name,
+    featureName: entry.featureName,
+    runId: entry.runId,
+    platform: entry.platform,
+    device: entry.device,
+    traceId: entry.traceId,
+    jiraKey: entry.jiraKey
+  });
 
   const improvement = {
-    caseDefects: pick("case-defect"),
-    environment: pick("execution-deviation"),
-    appDefects: pick("app-defect")
+    caseDefects: exits.caseDefects.map(toItem),
+    environment: exits.environment,
+    appDefects: exits.appDefects.map(toItem)
   };
   const guidance: string[] = [];
   if (improvement.caseDefects.length > 0) {

@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { ProjectStore, RunnerTools } from "../db/types.js";
 import { formatBytes } from "../figma/retention.js";
+import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
 import {
   buildPanelBatchDetail,
@@ -1147,6 +1148,24 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
             .join("")}</ul>`;
     return `<h3>${escapeHtml(title)}</h3>${body}`;
   };
+  const environmentList = (title: string, groups: VerdictEnvironmentGroup[]): string => {
+    const body =
+      groups.length === 0
+        ? '<p class="empty">（空）</p>'
+        : `<ul>${groups
+            .map(
+              (group) =>
+                `<li>${escapeHtml(group.device ?? "—")} · ${escapeHtml(group.platform)} × ${
+                  group.count
+                }${
+                  group.features.length === 0
+                    ? ""
+                    : ` · ${group.features.map((feature) => escapeHtml(feature)).join("、")}`
+                }</li>`
+            )
+            .join("")}</ul>`;
+    return `<h3>${escapeHtml(title)}</h3>${body}`;
+  };
   const guidanceHtml = guidance
     .map((line) => `<p class="muted">${escapeHtml(line)}</p>`)
     .join("");
@@ -1185,7 +1204,7 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
       '<section id="improvement">',
       "<h2>改进出口</h2>",
       improvementList("案例问题（case-defect）→ 修订期望 / 重新生成", improvement.caseDefects),
-      improvementList("执行偏差（execution-deviation）→ 环境核对 / 重跑", improvement.environment),
+      environmentList("执行偏差（execution-deviation）→ 环境核对 / 重跑", improvement.environment),
       improvementList("应用缺陷（app-defect）→ 建单（Jira）", improvement.appDefects),
       guidanceHtml,
       "</section>",
