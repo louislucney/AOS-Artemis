@@ -940,3 +940,49 @@ test("panel web: 任务页显示重试次数（attempts > 1）", async () => {
   assert.match(html.body, /已尝试 2 次/);
   assert.match(html.body, /已领取/);
 });
+
+test("panel web: 定时回归区块 + 任务页来源显示", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const schedule = await store.createSchedule({
+    rootPath: projectDir,
+    name: "夜间回归",
+    featureKeys: ["f-1", "f-2"],
+    platforms: ["android", "ios"],
+    baseline: "latest",
+    everyMinutes: 720,
+    createdBy: "cli"
+  });
+  await store.updateSchedule(projectDir, schedule.id, { lastNote: "缺 f-2" });
+  const task = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "schedule:夜间回归"
+  });
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.match(html.body, /定时回归（schedule）/);
+  assert.match(html.body, /夜间回归/);
+  assert.match(html.body, /每 720 分钟/);
+  assert.match(html.body, /启用/);
+  assert.match(html.body, /缺 f-2/);
+  assert.match(html.body, new RegExp(`task=${task.id}`), "最近任务链接");
+
+  const taskHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${task.id}`),
+    deps
+  );
+  assert.match(taskHtml.body, /来源 <code>schedule:夜间回归<\/code>/);
+  assert.match(taskHtml.body, /待执行/);
+
+  const clean = await makeHarness();
+  const cleanHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(clean.projectDir)}`),
+    clean.deps
+  );
+  assert.match(cleanHtml.body, /暂无定时回归/);
+});

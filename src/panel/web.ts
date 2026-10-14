@@ -828,6 +828,44 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail): string {
   ].join("\n");
 }
 
+function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
+  if (detail.schedules.length === 0) {
+    return [
+      '<section id="schedules">',
+      "<h2>定时回归（schedule）</h2>",
+      '<p class="empty">暂无定时回归（CLI：<code>node dist/cli.js suite schedule add --ref &lt;featureKey&gt; --every &lt;minutes&gt;</code>）</p>',
+      "</section>"
+    ].join("\n");
+  }
+  const rows = detail.schedules.map((schedule) => [
+    escapeHtml(schedule.name),
+    schedule.featureKeys
+      .map((key) => `<span class="chip">${escapeHtml(key)}</span>`)
+      .join(""),
+    escapeHtml(schedule.platforms.join(", ")),
+    `每 ${schedule.everyMinutes} 分钟`,
+    schedule.enabled ? '<span class="ok">启用</span>' : '<span class="muted">停用</span>',
+    `${escapeHtml(schedule.lastFiredAt ?? "—")}${
+      schedule.lastNote === null ? "" : ` <span class="note">${escapeHtml(schedule.lastNote)}</span>`
+    }`,
+    schedule.lastTaskId === null
+      ? "—"
+      : `<a href="${escapeHtml(taskHref(rootPath, schedule.lastTaskId))}">${escapeHtml(
+          schedule.lastTaskStatus ?? "任务"
+        )}</a>`
+  ]);
+  return [
+    '<section id="schedules">',
+    "<h2>定时回归（schedule）</h2>",
+    renderTable(
+      ["名称", "功能", "端", "节奏", "状态", "上次触发", "最近任务"],
+      rows,
+      "暂无定时回归"
+    ),
+    "</section>"
+  ].join("\n");
+}
+
 function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): string {
   const { detail } = view;
   const task = detail.task;
@@ -900,7 +938,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
-      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}</p>`,
+      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 <code>${escapeHtml(task.createdBy)}</code>`}</p>`,
       coverageHint,
       warnings,
       "</header>",
@@ -1188,6 +1226,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       renderRegressionBlock(view.rootPath, detail),
       renderTaskList(view.rootPath, detail),
       renderRunners(detail),
+      renderSchedules(view.rootPath, detail),
       renderDiskAssets(detail),
       renderStandalones(detail),
       "</main>"

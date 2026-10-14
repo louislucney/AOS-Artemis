@@ -1078,3 +1078,62 @@ test("panel detail: 产物链接（manifestUrl/jsonUrl/xlsxUrl/evidenceUrl；无
   const queue = await buildPanelReviewQueue(deps, dir);
   assert.equal(queue.items[0].evidenceUrl, "http://mac-1:8770/artifact/traces/trace-1");
 });
+
+test("panel detail: schedules 聚合 + lastTask 匹配（schedule:<name>）", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "schedule-app" });
+  const schedule = await store.createSchedule({
+    rootPath: dir,
+    name: "夜间回归",
+    featureKeys: ["f-1"],
+    platforms: ["android"],
+    baseline: "latest",
+    everyMinutes: 720,
+    createdBy: "cli"
+  });
+  await store.claimScheduleWindow({
+    rootPath: dir,
+    scheduleId: schedule.id,
+    firedAt: "2026-10-14T02:00:00.000Z",
+    cutoff: "2026-10-14T01:00:00.000Z"
+  });
+  const created = await store.createRegressionTask({
+    rootPath: dir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "schedule:夜间回归"
+  });
+  await store.updateRegressionTask(dir, created.id, { status: "completed" });
+  await store.createRegressionTask({
+    rootPath: dir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+
+  const detail = await buildPanelProjectDetail(
+    { store, serviceRepo: repo, buildStale: false, env: {} },
+    dir
+  );
+  assert.equal(detail.schedules.length, 1);
+  const view = detail.schedules[0];
+  assert.equal(view.name, "夜间回归");
+  assert.deepEqual(view.featureKeys, ["f-1"]);
+  assert.equal(view.everyMinutes, 720);
+  assert.equal(view.enabled, true);
+  assert.equal(view.lastFiredAt, "2026-10-14T02:00:00.000Z");
+  assert.equal(view.lastTaskId, created.id, "匹配 schedule:<name> 任务");
+  assert.equal(view.lastTaskStatus, "completed");
+
+  const emptyDir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: emptyDir, name: "empty-sched" });
+  const empty = await buildPanelProjectDetail(
+    { store, serviceRepo: repo, buildStale: false, env: {} },
+    emptyDir
+  );
+  assert.deepEqual(empty.schedules, []);
+});

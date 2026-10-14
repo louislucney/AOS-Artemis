@@ -229,6 +229,20 @@ export interface PanelRunnerView {
   artifactBaseUrl: string | null;
 }
 
+export interface PanelScheduleView {
+  id: string;
+  name: string;
+  featureKeys: string[];
+  platforms: string[];
+  baseline: "latest" | "none";
+  everyMinutes: number;
+  enabled: boolean;
+  lastFiredAt: string | null;
+  lastNote: string | null;
+  lastTaskId: string | null;
+  lastTaskStatus: string | null;
+}
+
 function runnerView(record: RunnerRecord, nowMs: number, ttlMs: number): PanelRunnerView {
   return {
     id: record.id,
@@ -309,6 +323,7 @@ export interface PanelProjectDetail {
   regressionRefs: PanelRegressionRef[];
   tasks: PanelTaskRow[];
   runners: PanelRunnerView[];
+  schedules: PanelScheduleView[];
   diskAssets: PanelDiskAssets | null;
   deep: PanelDeepView | null;
   emptyState: { causes: string[] } | null;
@@ -855,9 +870,10 @@ export async function buildPanelProjectDetail(
   }
 
   const taskRows: PanelTaskRow[] = [];
+  let regressionTaskRecords: RegressionTaskRecord[] = [];
   try {
-    const regressionTasks = await deps.store.listRegressionTasks(rootPath, 20);
-    for (const task of regressionTasks) {
+    regressionTaskRecords = await deps.store.listRegressionTasks(rootPath, 20);
+    for (const task of regressionTaskRecords) {
       taskRows.push({
         id: task.id,
         status: task.status,
@@ -882,6 +898,31 @@ export async function buildPanelProjectDetail(
     warnings.push(`执行机读取失败：${errorMessage(error)}`);
   }
 
+  const schedulesView: PanelScheduleView[] = [];
+  try {
+    for (const schedule of await deps.store.listSchedules(rootPath, 20)) {
+      const lastTask =
+        regressionTaskRecords.find(
+          (task) => task.createdBy === `schedule:${schedule.name}`
+        ) ?? null;
+      schedulesView.push({
+        id: schedule.id,
+        name: schedule.name,
+        featureKeys: schedule.featureKeys,
+        platforms: schedule.platforms,
+        baseline: schedule.baseline,
+        everyMinutes: schedule.everyMinutes,
+        enabled: schedule.enabled,
+        lastFiredAt: schedule.lastFiredAt,
+        lastNote: schedule.lastNote,
+        lastTaskId: lastTask?.id ?? null,
+        lastTaskStatus: lastTask?.status ?? null
+      });
+    }
+  } catch (error) {
+    warnings.push(`定时回归读取失败：${errorMessage(error)}`);
+  }
+
   return {
     generatedAt: new Date(now()).toISOString(),
     project: row,
@@ -892,6 +933,7 @@ export async function buildPanelProjectDetail(
     regressionRefs,
     tasks: taskRows,
     runners,
+    schedules: schedulesView,
     diskAssets,
     deep,
     emptyState,
