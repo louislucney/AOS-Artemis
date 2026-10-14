@@ -16,6 +16,7 @@ async function makePgStore() {
 const CASES = [
   {
     caseId: "case-aaaa00000001",
+    name: "Case 1",
     featureKey: "f-登录-41b473ed",
     platform: "android",
     status: "failed",
@@ -33,6 +34,7 @@ const CASES = [
   },
   {
     caseId: "case-aaaa00000002",
+    name: "Case 2",
     featureKey: "f-登录-41b473ed",
     platform: "android",
     status: "passed",
@@ -135,6 +137,7 @@ test("recordSuiteRun: 往返完整（cases 嵌套、failureDomains、comparison 
     assert.deepEqual(record.comparison, { baseline: "compared", fixed: 0, regressed: 1 });
     assert.equal(record.cases.length, 2);
     const failed = record.cases.find((entry) => entry.caseId === "case-aaaa00000001");
+    assert.equal(failed.name, "Case 1");
     assert.equal(failed.failureDomain, "用例缺陷");
     assert.equal(failed.failureConfidence, "medium");
     assert.equal(failed.traceId, "trace-1");
@@ -147,6 +150,10 @@ test("recordSuiteRun: 往返完整（cases 嵌套、failureDomains、comparison 
     assert.equal(listed[0].cases.length, 2);
     assert.equal(listed[0].featureName, "登录流程");
     assert.equal(listed[0].exitCode, 1);
+    assert.equal(
+      listed[0].cases.find((entry) => entry.caseId === "case-aaaa00000001").name,
+      "Case 1"
+    );
   }
 });
 

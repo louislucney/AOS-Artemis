@@ -166,6 +166,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS suite_run_cases (
      run_id TEXT NOT NULL REFERENCES suite_runs(id) ON DELETE CASCADE,
      case_id TEXT NOT NULL,
+     name TEXT NOT NULL,
      feature_key TEXT,
      platform TEXT NOT NULL,
      status TEXT NOT NULL,
@@ -657,12 +658,13 @@ export class PostgresStore implements ProjectStore {
       for (const entry of input.cases) {
         await query(
           `INSERT INTO suite_run_cases
-             (run_id, case_id, feature_key, platform, status, trace_id, failure_domain, failure_confidence,
+             (run_id, case_id, name, feature_key, platform, status, trace_id, failure_domain, failure_confidence,
               failure_reason, duration_ms, quarantined, flaky, verdict, verdict_by, verdict_at, verdict_note)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
           [
             id,
             entry.caseId,
+            entry.name,
             entry.featureKey,
             entry.platform,
             entry.status,
@@ -1042,6 +1044,7 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
 function mapSuiteRunCase(row: Record<string, unknown>): SuiteRunCaseRecord {
   return {
     caseId: String(row.case_id),
+    name: String(row.name),
     featureKey: nullableString(row.feature_key),
     platform: String(row.platform),
     status: String(row.status),

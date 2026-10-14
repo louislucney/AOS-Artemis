@@ -59,6 +59,8 @@ export interface GeneratedCaseRecord {
   screens: string[];
   steps: string[];
   expectations: unknown[];
+  /** 功能段 key（回归服务 §5.1；旧产物缺失 → null）。 */
+  feature: string | null;
 }
 
 export interface TestsDocument {
@@ -94,7 +96,9 @@ export function readTestsDocument(
         taskDesc: typeof record.taskDesc === "string" ? record.taskDesc : null,
         screens: stringArray(record.screens),
         steps: stringArray(record.steps),
-        expectations: Array.isArray(record.expectations) ? record.expectations : []
+        expectations: Array.isArray(record.expectations) ? record.expectations : [],
+        feature:
+          typeof record.feature === "string" && record.feature !== "" ? record.feature : null
       });
     }
     return { records, generation: parsed.generation ?? null };
@@ -157,6 +161,8 @@ export interface GeneratedCase {
   preconditions: string[];
   taskDesc: string;
   screens: string[];
+  /** 功能段 key（回归服务 §5.1；旧产物缺失 → null）。 */
+  feature: string | null;
   /** Exploration steps (kind=explore with a target screen) for reconciliation. */
   exploreSteps: ExploreStepSignal[];
   /** Design runtime texts per expected screen (element-level matching). */
@@ -172,6 +178,7 @@ export function toGeneratedCase(record: GeneratedCaseRecord): GeneratedCase {
     preconditions: record.preconditions,
     taskDesc: record.taskDesc ?? "",
     screens: record.screens,
+    feature: record.feature,
     exploreSteps: exploreStepsOf(record.expectations),
     hintScreens: hintScreensOf(record.expectations),
     scriptProvenance: summarizeScriptProvenance(record.expectations)

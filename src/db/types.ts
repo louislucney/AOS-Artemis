@@ -179,6 +179,7 @@ export interface RegressionTaskRecord {
 
 export interface SuiteRunCaseRecord {
   caseId: string;
+  name: string;
   featureKey: string | null;
   platform: string;
   status: string;
