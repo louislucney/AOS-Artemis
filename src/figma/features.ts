@@ -1,3 +1,5 @@
+import type { ChatFn } from "../llm/chat.js";
+
 /** 功能切分（DESIGN：回归服务 §5.1）：把一稿多功能的流程按功能切成"份"。
  * 信号优先级（确定性，同输入同输出）：① Figma 页面 ② 屏幕名公共前缀（未覆盖屏按
  * 边邻居多数归并）③ 无向图连通分量 ④ 单组回退。所有遍历按屏幕名 code-point 排序。 */
@@ -149,4 +151,72 @@ export function splitFeatures(input: FeatureSplitInput): FeatureGroup[] {
   }
 
   return [makeGroup(names, "fallback", null)];
+}
+
+const NAME_SYSTEM_PROMPT =
+  '你是测试架构师。为一组屏幕起一个简短的中文功能名；只输出 JSON：{"name":"…"}；名称不超过 8 个字，不含标点。';
+
+function cleanName(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/["'“”「」\r\n\t]/g, "").trim();
+  if (!cleaned) return null;
+  return cleaned.slice(0, maxLength);
+}
+
+function parseNameJson(raw: string): string | null {
+  const trimmed = raw.trim();
+  const candidates = [trimmed];
+  const match = /\{[\s\S]*\}/.exec(trimmed);
+  if (match) candidates.push(match[0]);
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as { name?: unknown };
+      const name = cleanName(parsed?.name, 8);
+      if (name) return name;
+    } catch {
+      /* 尝试下一个候选 */
+    }
+  }
+  return null;
+}
+
+async function askFeatureName(chat: ChatFn, group: FeatureGroup): Promise<string | null> {
+  try {
+    const raw = await chat([
+      { role: "system", content: NAME_SYSTEM_PROMPT },
+      { role: "user", content: group.screens.join("、") }
+    ]);
+    return parseNameJson(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** 命名回退链：候选名（≤16 字）→ LLM（≤8 字）→ `功能N`（N=按屏幕名字典序的组序号）+ 告警。 */
+export async function nameFeatures(
+  groups: FeatureGroup[],
+  deps: { chat?: ChatFn | null } = {}
+): Promise<{ groups: FeatureGroup[]; warnings: FeatureWarning[] }> {
+  const warnings: FeatureWarning[] = [];
+  const ordered = [...groups].sort((a, b) => compareText(a.screens[0] ?? "", b.screens[0] ?? ""));
+  const named: FeatureGroup[] = [];
+  for (const [index, group] of ordered.entries()) {
+    const candidate = cleanName(group.candidateName, 16);
+    if (candidate) {
+      named.push({ ...group, name: candidate });
+      continue;
+    }
+    const fromLlm = deps.chat ? await askFeatureName(deps.chat, group) : null;
+    if (fromLlm) {
+      named.push({ ...group, name: fromLlm });
+      continue;
+    }
+    const fallback = `功能${index + 1}`;
+    named.push({ ...group, name: fallback });
+    warnings.push({
+      code: "feature-naming-fallback",
+      message: `功能命名回退：${group.screens[0] ?? "?"}（${group.screens.length} 屏）→ ${fallback}`
+    });
+  }
+  return { groups: named, warnings };
 }

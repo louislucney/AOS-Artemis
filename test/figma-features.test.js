@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { splitFeatures } from "../dist/figma/features.js";
+import { nameFeatures, splitFeatures } from "../dist/figma/features.js";
 
 test("splitFeatures: 按页面分组（signal=page）", () => {
   const groups = splitFeatures({
@@ -77,4 +77,64 @@ test("splitFeatures: 单屏回退单组、空图返回空数组", () => {
   assert.equal(single[0].signal, "fallback");
   assert.deepEqual(single[0].screens, ["首页"]);
   assert.deepEqual(splitFeatures({ screens: [], edges: [] }), []);
+});
+
+function featureGroup(candidateName, screens) {
+  return {
+    key: "",
+    name: "",
+    screens,
+    signal: candidateName ? "name-prefix" : "cluster",
+    candidateName
+  };
+}
+
+test("nameFeatures: 有候选名直接用（不调用 chat）", async () => {
+  let calls = 0;
+  const result = await nameFeatures([featureGroup("登录", ["登录-输入", "登录-验证"])], {
+    chat: async () => {
+      calls += 1;
+      return '{"name":"不该被用"}';
+    }
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.groups[0].name, "登录");
+  assert.equal(result.warnings.length, 0);
+});
+
+test("nameFeatures: 无候选名走 LLM（fake 返回 JSON）", async () => {
+  const result = await nameFeatures([featureGroup(null, ["甲", "乙"])], {
+    chat: async () => '{"name":"订单流程"}'
+  });
+  assert.equal(result.groups[0].name, "订单流程");
+  assert.equal(result.warnings.length, 0);
+});
+
+test("nameFeatures: LLM 坏 JSON 回退 功能N 并告警（按组序号编号）", async () => {
+  const result = await nameFeatures(
+    [featureGroup("甲", ["甲"]), featureGroup(null, ["登录-输入"])],
+    { chat: async () => "不是 JSON" }
+  );
+  const fallback = result.groups.find((group) => group.name.startsWith("功能"));
+  assert.equal(fallback.name, "功能2");
+  assert.equal(result.warnings[0].code, "feature-naming-fallback");
+});
+
+test("nameFeatures: 名称清洗（引号/换行/超长截断）", async () => {
+  const candidate = await nameFeatures([featureGroup('"登\n录流程超长名称测试超过十六个字符啦"', ["x"])], {});
+  assert.equal(candidate.groups[0].name, "登录流程超长名称测试超过十六个字");
+  const llm = await nameFeatures([featureGroup(null, ["x"])], {
+    chat: async () => '{"name":"非常非常非常长的功能名称超出八字"}'
+  });
+  assert.equal(llm.groups[0].name, "非常非常非常长的");
+});
+
+test("nameFeatures: chat 抛错不阻断", async () => {
+  const result = await nameFeatures([featureGroup(null, ["x"])], {
+    chat: async () => {
+      throw new Error("boom");
+    }
+  });
+  assert.equal(result.groups[0].name, "功能1");
+  assert.equal(result.warnings[0].code, "feature-naming-fallback");
 });
