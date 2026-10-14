@@ -356,3 +356,36 @@ test("http server: 归因队列（GET view=review + POST 裁决后队列更新�
     await handle.close();
   }
 });
+
+test("http server: 动作层 body 超限 → 413；AOS_PANEL_ACTIONS=0 → 404", async () => {
+  const store = new MemoryStore();
+  const workspace = makeWorkspace();
+  const handle = await createAosHttpServer({
+    port: 0,
+    host: "127.0.0.1",
+    workspaceRoot: workspace,
+    store
+  });
+  const previous = process.env.AOS_PANEL_ACTIONS;
+  try {
+    const tooLarge = await fetch(`http://127.0.0.1:${handle.port}/panel/api/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: "demo", refs: [], pad: "x".repeat(300 * 1024) })
+    });
+    assert.equal(tooLarge.status, 413);
+    assert.match(await tooLarge.text(), /too large/);
+
+    process.env.AOS_PANEL_ACTIONS = "0";
+    const disabled = await fetch(`http://127.0.0.1:${handle.port}/panel/api/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: "demo", refs: [] })
+    });
+    assert.equal(disabled.status, 404, "动作层可独立关闭");
+  } finally {
+    if (previous === undefined) delete process.env.AOS_PANEL_ACTIONS;
+    else process.env.AOS_PANEL_ACTIONS = previous;
+    await handle.close();
+  }
+});

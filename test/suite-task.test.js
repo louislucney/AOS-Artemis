@@ -512,3 +512,20 @@ test("suite task create: 非法 --platform/--baseline → exit 2 不落库", asy
     "非法参数不落库"
   );
 });
+
+test("suite task create: --platform 去重", async () => {
+  const { runtime, store } = await setupTaskProject();
+  const { code } = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--platform",
+    "android",
+    "--platform",
+    "android"
+  ]);
+  assert.equal(code, 0);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  assert.deepEqual(tasks[0].platforms, ["android"]);
+});

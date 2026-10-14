@@ -1,5 +1,5 @@
 import type { CaseVerdict } from "../db/types.js";
-import { errorMessage } from "../util.js";
+import { errorMessage, log } from "../util.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 
 /** 面板动作层（DESIGN：回归服务 §5.4）：仅 HTTP 模式接线；v1 内网无鉴权
@@ -55,13 +55,12 @@ export async function handlePanelActionRequest(
       return response;
     }
     if (request.url.pathname === "/panel/api/verdicts") {
-      const response = await saveVerdicts(deps, resolved.rootPath, payload);
-      if (response.status === 200) deps.cache?.clear();
-      return response;
+      return await saveVerdicts(deps, resolved.rootPath, payload);
     }
     return json(404, { error: "not found" });
   } catch (error) {
-    return json(500, { ok: false, error: errorMessage(error) });
+    log(`面板动作失败: ${errorMessage(error)}`);
+    return json(500, { ok: false, error: "internal error" });
   }
 }
 
@@ -101,6 +100,7 @@ async function createTask(
   ) {
     return json(400, { error: "platforms 仅支持 ios/android" });
   }
+  const uniquePlatforms = [...new Set(platforms as string[])];
   if (
     payload.baseline !== undefined &&
     payload.baseline !== "latest" &&
@@ -113,7 +113,7 @@ async function createTask(
   const task = await deps.store.createRegressionTask({
     rootPath,
     refs,
-    platforms: platforms as string[],
+    platforms: uniquePlatforms,
     baseline,
     createdBy: "panel"
   });
@@ -149,16 +149,34 @@ async function saveVerdicts(
     typeof payload.by === "string" && payload.by.trim() !== "" ? payload.by.trim() : "panel";
 
   let updated = 0;
+  let failed = 0;
+  let lastError: string | null = null;
   for (const item of items) {
-    const ok = await deps.store.updateCaseVerdict({
-      rootPath,
-      runId: item.runId,
-      caseId: item.caseId,
-      verdict: verdict as CaseVerdict,
-      verdictBy: by,
-      verdictNote: note
+    try {
+      const ok = await deps.store.updateCaseVerdict({
+        rootPath,
+        runId: item.runId,
+        caseId: item.caseId,
+        verdict: verdict as CaseVerdict,
+        verdictBy: by,
+        verdictNote: note
+      });
+      if (ok) updated += 1;
+    } catch (error) {
+      failed += 1;
+      lastError = errorMessage(error);
+    }
+  }
+  deps.cache?.clear();
+  if (updated === 0 && failed > 0) {
+    log(`裁决写入失败: ${lastError ?? "unknown"}`);
+    return json(500, {
+      ok: false,
+      error: "裁决写入失败",
+      updated,
+      failed,
+      missed: items.length - updated - failed
     });
-    if (ok) updated += 1;
   }
   if (updated === 0) {
     return json(400, {
@@ -168,5 +186,10 @@ async function saveVerdicts(
       missed: items.length
     });
   }
-  return json(200, { ok: true, updated, missed: items.length - updated });
+  return json(200, {
+    ok: true,
+    updated,
+    missed: items.length - updated - failed,
+    ...(failed > 0 ? { failed } : {})
+  });
 }

@@ -50,12 +50,12 @@ async function setup() {
       status: "failed",
       startedAt: "2026-10-14T10:00:00.000Z",
       finishedAt: "2026-10-14T10:05:00.000Z",
-      total: 1,
+      total: 2,
       passed: 0,
-      failed: 1,
+      failed: 2,
       flaky: 0,
       quarantined: 0,
-      failureDomains: { 用例缺陷: 1 },
+      failureDomains: { 用例缺陷: 2 },
       gateResult: "fail",
       exitCode: 1,
       manifestPath: null,
@@ -65,6 +65,24 @@ async function setup() {
       {
         caseId: "case-1",
         name: "Case 1",
+        featureKey: "f-1",
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      },
+      {
+        caseId: "case-2",
+        name: "Case 2",
         featureKey: "f-1",
         platform: "android",
         status: "failed",
@@ -203,4 +221,92 @@ test("panel actions: POST verdicts 批量裁决（重复幂等）/ 全未命中 
     deps
   );
   assert.equal(badVerdict.status, 400);
+});
+
+test("panel actions: verdicts 部分失败容忍 + 写后清缓存", async () => {
+  const { runtime, store, run, deps } = await setup();
+  const url = new URL("http://localhost/panel/api/verdicts");
+  let cleared = 0;
+  const cache = {
+    get: () => undefined,
+    set: () => {},
+    clear: () => {
+      cleared += 1;
+    }
+  };
+  const original = store.updateCaseVerdict.bind(store);
+  let calls = 0;
+  store.updateCaseVerdict = async (input) => {
+    calls += 1;
+    if (calls === 2) throw new Error("db hiccup");
+    return original(input);
+  };
+
+  const response = await handlePanelActionRequest(
+    request({
+      url,
+      body: {
+        project: runtime.project.rootDir,
+        items: [
+          { runId: run.id, caseId: "case-1" },
+          { runId: run.id, caseId: "case-2" }
+        ],
+        verdict: "case-defect"
+      }
+    }),
+    { ...deps, cache }
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(JSON.parse(response.body), { ok: true, updated: 1, missed: 0, failed: 1 });
+  assert.equal(cleared, 1, "写后清缓存（含部分失败）");
+  const runs = await store.listSuiteRuns(runtime.project.rootDir);
+  assert.equal(
+    runs[0].cases.find((entry) => entry.caseId === "case-1").verdict,
+    "case-defect"
+  );
+  assert.equal(runs[0].cases.find((entry) => entry.caseId === "case-2").verdict, null);
+});
+
+test("panel actions: verdicts 全部写入失败 → 500 通用错误（不泄露详情）", async () => {
+  const { runtime, store, run, deps } = await setup();
+  const url = new URL("http://localhost/panel/api/verdicts");
+  store.updateCaseVerdict = async () => {
+    throw new Error("relation pg_stat_activity does not exist");
+  };
+  const response = await handlePanelActionRequest(
+    request({
+      url,
+      body: {
+        project: runtime.project.rootDir,
+        items: [{ runId: run.id, caseId: "case-1" }],
+        verdict: "case-defect"
+      }
+    }),
+    deps
+  );
+  assert.equal(response.status, 500);
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.error, "裁决写入失败");
+  assert.ok(!response.body.includes("pg_stat_activity"), "不泄露底层错误详情");
+});
+
+test("panel actions: platforms 去重", async () => {
+  const { runtime, store, set, deps } = await setup();
+  const response = await handlePanelActionRequest(
+    request({
+      body: {
+        project: runtime.project.rootDir,
+        refs: [{ caseSetId: set.id, featureKey: "f-1" }],
+        platforms: ["android", "android"]
+      }
+    }),
+    deps
+  );
+  assert.equal(response.status, 200);
+  const payload = JSON.parse(response.body);
+  assert.deepEqual(payload.task.platforms, ["android"]);
+  assert.deepEqual(
+    (await store.listRegressionTasks(runtime.project.rootDir))[0].platforms,
+    ["android"]
+  );
 });

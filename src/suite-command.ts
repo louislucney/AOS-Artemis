@@ -1775,6 +1775,7 @@ async function suiteTaskCreate(
     io.errorLog(`非法 --platform：${invalidPlatforms.join("、")}（仅支持 ios/android）`);
     return 2;
   }
+  const uniquePlatforms = [...new Set(platforms)];
   const rawBaseline = flags.get("baseline");
   if (rawBaseline !== null && rawBaseline !== "latest" && rawBaseline !== "none") {
     io.errorLog(`非法 --baseline：${rawBaseline}（仅支持 latest/none）`);
@@ -1784,7 +1785,7 @@ async function suiteTaskCreate(
   const task = await runtime.store.createRegressionTask({
     rootPath: runtime.project.rootDir,
     refs: resolved.map((entry) => ({ caseSetId: entry.caseSetId, featureKey: entry.featureKey })),
-    platforms,
+    platforms: uniquePlatforms,
     baseline,
     createdBy: "cli"
   });
@@ -1793,7 +1794,7 @@ async function suiteTaskCreate(
     return 0;
   }
   io.log(
-    `回归任务 ${task.id}（status=${task.status} · platforms=${platforms.join(",")} · baseline=${baseline}）`
+    `回归任务 ${task.id}（status=${task.status} · platforms=${uniquePlatforms.join(",")} · baseline=${baseline}）`
   );
   for (const entry of resolved) {
     io.log(

@@ -39,21 +39,29 @@ export interface AosHttpHandle {
 
 const PROJECT_NAME_RE = /^[A-Za-z0-9._-]+$/;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_PANEL_BODY_BYTES = 256 * 1024;
 
-function readBody(req: IncomingMessage): Promise<unknown> {
+/** 请求体超限（区别于 JSON 解析失败；外层映射 413）。 */
+class BodyTooLargeError extends Error {}
+
+function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let tooLarge = false;
     req.on("data", (chunk: Buffer) => {
+      if (tooLarge) return;
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(new Error("request body too large"));
-        req.destroy();
+      if (size > maxBytes) {
+        tooLarge = true;
+        chunks.length = 0;
+        reject(new BodyTooLargeError("request body too large"));
         return;
       }
       chunks.push(chunk);
     });
     req.on("end", () => {
+      if (tooLarge) return;
       const raw = Buffer.concat(chunks).toString("utf-8");
       if (raw.trim() === "") {
         resolve(undefined);
@@ -65,7 +73,9 @@ function readBody(req: IncomingMessage): Promise<unknown> {
         reject(error);
       }
     });
-    req.on("error", reject);
+    req.on("error", (error) => {
+      if (!tooLarge) reject(error);
+    });
   });
 }
 
@@ -180,8 +190,9 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           let body: unknown = undefined;
           if (req.method === "POST") {
             try {
-              body = await readBody(req);
-            } catch {
+              body = await readBody(req, MAX_PANEL_BODY_BYTES);
+            } catch (error) {
+              if (error instanceof BodyTooLargeError) throw error;
               res.writeHead(400, { "Content-Type": "application/json" });
               res.end('{"error":"invalid JSON body"}');
               return;
@@ -237,8 +248,13 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
       } catch (error) {
         log(`HTTP 请求处理失败: ${errorMessage(error)}`);
         if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end('{"error":"internal error"}');
+          if (error instanceof BodyTooLargeError) {
+            res.writeHead(413, { "Content-Type": "application/json" });
+            res.end('{"error":"request body too large"}');
+          } else {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end('{"error":"internal error"}');
+          }
         }
       }
     })();
