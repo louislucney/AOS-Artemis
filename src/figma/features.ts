@@ -304,6 +304,10 @@ export function assignCaseFeature(caseScreens: string[], groups: FeatureGroup[])
   const top = counts.filter((entry) => entry.count === max);
   if (top.length === 1) return top[0]!.group.key;
   const first = caseScreens[0];
-  const owner = first ? groups.find((group) => group.screens.includes(first)) : undefined;
-  return (owner ?? top[0]!.group).key;
+  const owner = first ? top.find((entry) => entry.group.screens.includes(first)) : undefined;
+  if (owner) return owner.group.key;
+  const sorted = [...top].sort((a, b) =>
+    a.group.key < b.group.key ? -1 : a.group.key > b.group.key ? 1 : 0
+  );
+  return sorted[0]!.group.key;
 }

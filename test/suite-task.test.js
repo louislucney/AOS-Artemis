@@ -361,3 +361,21 @@ test("suite report --task: 输出 xlsx/junit 两路径且文件存在", async ()
   assert.ok(junitLine, "junit 路径行");
   assert.ok(fs.existsSync(junitLine.slice("junit: ".length)));
 });
+
+test("suite run --task: --fail-on-uncovered 被忽略并提示", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: { "trace-1": { status: "completed" }, "trace-2": { status: "completed" } }
+  });
+  await runCli(runtime, ["task", "create", "--ref", "f-登录-aaaa1111", "--platform", "android"]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  const run = await runCli(runtime, [
+    "run",
+    "--task",
+    tasks[0].id,
+    "--device",
+    "emulator-5554",
+    "--fail-on-uncovered"
+  ]);
+  assert.equal(run.code, 0);
+  assert.ok(run.logs.some((line) => line.includes("--fail-on-uncovered 在 task 模式忽略")));
+});

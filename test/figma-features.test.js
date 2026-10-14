@@ -218,6 +218,20 @@ test("splitFeatures: 页面分组下无 page 屏幕按邻居归并、无邻居�
   assert.equal(standalone.candidateName, null);
 });
 
+test("assignCaseFeature: 并列决胜仅在并列组内（首屏在次相关组时不越级）", () => {
+  const groups = [
+    { key: "f-a", name: "A", screens: ["a1"], signal: "cluster", candidateName: null },
+    { key: "f-b", name: "B", screens: ["b1", "b2"], signal: "cluster", candidateName: null },
+    { key: "f-c", name: "C", screens: ["c1", "c2"], signal: "cluster", candidateName: null }
+  ];
+  assert.equal(
+    assignCaseFeature(["a1", "b1", "b2", "c1", "c2"], groups),
+    "f-b",
+    "首屏在次相关组时不越级，取并列组字典序首者"
+  );
+  assert.equal(assignCaseFeature(["c1", "b1", "b2", "c2"], groups), "f-c", "首屏在并列组内取该组");
+});
+
 test("assignCaseFeature: 多数归属；并列取首屏；无命中 null", () => {
   const groups = [
     { key: "f-login", name: "登录", screens: ["登录-输入", "登录-验证"], signal: "name-prefix", candidateName: "登录" },
