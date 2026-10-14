@@ -8,11 +8,13 @@ import {
 } from "./usage-event.js";
 
 import type {
+  CaseSetRecord,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
   ProjectStore,
   PutModelCacheInput,
+  RecordCaseSetInput,
   RecordTaskInput,
   RecordUsageEventInput,
   TaskStatRecord,
@@ -89,7 +91,27 @@ const SCHEMA = [
      last_error TEXT,
      updated_at TEXT NOT NULL,
       UNIQUE (project_id, cache_key)
-   )`
+   )`,
+  `CREATE TABLE IF NOT EXISTS case_sets (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     created_at TEXT NOT NULL,
+     source TEXT NOT NULL,
+     design_name TEXT,
+     fingerprint TEXT,
+     basename TEXT NOT NULL
+    )`,
+  `CREATE TABLE IF NOT EXISTS case_set_features (
+     case_set_id TEXT NOT NULL REFERENCES case_sets(id) ON DELETE CASCADE,
+     feature_key TEXT NOT NULL,
+     name TEXT NOT NULL,
+     case_count INTEGER NOT NULL,
+     screens TEXT NOT NULL DEFAULT '[]',
+     json_path TEXT NOT NULL,
+     md_path TEXT NOT NULL,
+     xlsx_path TEXT NOT NULL,
+     PRIMARY KEY (case_set_id, feature_key)
+    )`
 ];
 
 const MIGRATIONS = [`ALTER TABLE task_stats ADD COLUMN IF NOT EXISTS case_id TEXT`];
@@ -363,6 +385,70 @@ export class PostgresStore implements ProjectStore {
     return updated.rows.length > 0;
   }
 
+  async recordCaseSet(input: RecordCaseSetInput): Promise<CaseSetRecord> {
+    const project = await this.getProjectByPath(input.rootPath);
+    const id = randomUUID();
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    await this.pool.query(
+      `INSERT INTO case_sets (id, project_id, created_at, source, design_name, fingerprint, basename)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        id,
+        project?.id ?? null,
+        createdAt,
+        input.source,
+        input.designName ?? null,
+        input.fingerprint ?? null,
+        input.basename
+      ]
+    );
+    for (const feature of input.features) {
+      await this.pool.query(
+        `INSERT INTO case_set_features
+           (case_set_id, feature_key, name, case_count, screens, json_path, md_path, xlsx_path)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          id,
+          feature.key,
+          feature.name,
+          feature.caseCount,
+          JSON.stringify(feature.screens),
+          feature.jsonPath,
+          feature.mdPath,
+          feature.xlsxPath
+        ]
+      );
+    }
+    return {
+      id,
+      projectId: project?.id ?? null,
+      createdAt,
+      source: input.source,
+      designName: input.designName ?? null,
+      fingerprint: input.fingerprint ?? null,
+      basename: input.basename,
+      features: input.features.map((feature) => ({ ...feature, screens: [...feature.screens] }))
+    };
+  }
+
+  async listCaseSets(rootPath: string, limit = 50): Promise<CaseSetRecord[]> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return [];
+    const sets = await this.pool.query(
+      "SELECT * FROM case_sets WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
+      [project.id, limit]
+    );
+    const out: CaseSetRecord[] = [];
+    for (const row of sets.rows) {
+      const features = await this.pool.query(
+        "SELECT * FROM case_set_features WHERE case_set_id = $1 ORDER BY feature_key ASC",
+        [String(row.id)]
+      );
+      out.push(mapCaseSet(row, features.rows));
+    }
+    return out;
+  }
+
   async recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,
@@ -571,5 +657,45 @@ function mapTask(row: Record<string, unknown>): TaskStatRecord {
     taskDesc: row.task_desc === null || row.task_desc === undefined ? null : String(row.task_desc),
     submittedAt: String(row.submitted_at),
     finishedAt: row.finished_at === null || row.finished_at === undefined ? null : String(row.finished_at)
+  };
+}
+
+function parseStringArray(value: unknown): string[] {
+  let source: unknown = value;
+  if (typeof value === "string") {
+    try {
+      source = JSON.parse(value) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(source)
+    ? source.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function mapCaseSet(
+  row: Record<string, unknown>,
+  featureRows: Array<Record<string, unknown>>
+): CaseSetRecord {
+  return {
+    id: String(row.id),
+    projectId: row.project_id === null || row.project_id === undefined ? null : String(row.project_id),
+    createdAt: String(row.created_at),
+    source: String(row.source),
+    designName:
+      row.design_name === null || row.design_name === undefined ? null : String(row.design_name),
+    fingerprint:
+      row.fingerprint === null || row.fingerprint === undefined ? null : String(row.fingerprint),
+    basename: String(row.basename),
+    features: featureRows.map((feature) => ({
+      key: String(feature.feature_key),
+      name: String(feature.name),
+      caseCount: Number(feature.case_count),
+      screens: parseStringArray(feature.screens),
+      jsonPath: String(feature.json_path),
+      mdPath: String(feature.md_path),
+      xlsxPath: String(feature.xlsx_path)
+    }))
   };
 }

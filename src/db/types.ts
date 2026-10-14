@@ -129,6 +129,37 @@ export interface RecordTaskInput {
   finishedAt?: string | null;
 }
 
+export interface CaseSetFeatureRecord {
+  key: string;
+  name: string;
+  caseCount: number;
+  screens: string[];
+  jsonPath: string;
+  mdPath: string;
+  xlsxPath: string;
+}
+
+export interface CaseSetRecord {
+  id: string;
+  projectId: string | null;
+  createdAt: string;
+  source: string;
+  designName: string | null;
+  fingerprint: string | null;
+  basename: string;
+  features: CaseSetFeatureRecord[];
+}
+
+export interface RecordCaseSetInput {
+  rootPath: string;
+  source: string;
+  designName?: string | null;
+  fingerprint?: string | null;
+  basename: string;
+  createdAt?: string;
+  features: CaseSetFeatureRecord[];
+}
+
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */
 export interface ProjectStore {
   readonly kind: "postgres" | "memory";
@@ -144,6 +175,8 @@ export interface ProjectStore {
   listTasks(rootPath: string, limit?: number): Promise<TaskStatRecord[]>;
   listPendingTasks(rootPath: string, limit?: number): Promise<TaskStatRecord[]>;
   markTaskFinished(rootPath: string, traceId: string, status: string): Promise<boolean>;
+  recordCaseSet(input: RecordCaseSetInput): Promise<CaseSetRecord>;
+  listCaseSets(rootPath: string, limit?: number): Promise<CaseSetRecord[]>;
   recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,

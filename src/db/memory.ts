@@ -3,11 +3,13 @@ import { randomUUID } from "node:crypto";
 import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
 
 import type {
+  CaseSetRecord,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
   ProjectStore,
   PutModelCacheInput,
+  RecordCaseSetInput,
   RecordTaskInput,
   RecordUsageEventInput,
   TaskStatRecord,
@@ -25,6 +27,7 @@ export class MemoryStore implements ProjectStore {
   private modelCaches = new Map<string, ModelCacheRecord>();
   private tasks: TaskStatRecord[] = [];
   private usageEvents: UsageEventRecord[] = [];
+  private caseSets: CaseSetRecord[] = [];
 
   async upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord> {
     const now = new Date().toISOString();
@@ -188,6 +191,32 @@ export class MemoryStore implements ProjectStore {
     return updated;
   }
 
+  async recordCaseSet(input: RecordCaseSetInput): Promise<CaseSetRecord> {
+    const project = this.projects.get(input.rootPath);
+    const record: CaseSetRecord = {
+      id: randomUUID(),
+      projectId: project?.id ?? null,
+      createdAt: input.createdAt ?? new Date().toISOString(),
+      source: input.source,
+      designName: input.designName ?? null,
+      fingerprint: input.fingerprint ?? null,
+      basename: input.basename,
+      features: input.features.map((feature) => ({ ...feature, screens: [...feature.screens] }))
+    };
+    this.caseSets.push(record);
+    return cloneCaseSet(record);
+  }
+
+  async listCaseSets(rootPath: string, limit = 50): Promise<CaseSetRecord[]> {
+    const project = this.projects.get(rootPath);
+    if (!project) return [];
+    return this.caseSets
+      .filter((record) => record.projectId === project.id)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+      .slice(0, limit)
+      .map(cloneCaseSet);
+  }
+
   async ping(): Promise<boolean> {
     return true;
   }
@@ -277,5 +306,12 @@ function cloneUsageEvent(event: UsageEventRecord): UsageEventRecord {
     ...event,
     signals: event.signals.map((signal) => ({ ...signal })),
     argKeys: [...event.argKeys]
+  };
+}
+
+function cloneCaseSet(record: CaseSetRecord): CaseSetRecord {
+  return {
+    ...record,
+    features: record.features.map((feature) => ({ ...feature, screens: [...feature.screens] }))
   };
 }
