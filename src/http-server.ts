@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
+import { authorizeRequest, isLoopbackHost, unauthorizedResponse } from "./auth.js";
 import { loadProject, defaultArtemisRepo, emptyConfig } from "./config/loader.js";
 import { resolveDepsSource } from "./artemis/bootstrap.js";
 import { startBridge } from "./figma/bridge.js";
@@ -20,7 +21,7 @@ import { Runtime } from "./runtime.js";
 import { RuntimeHost } from "./runtime-host.js";
 import { createServerForRuntime, inProcessToolCatalog } from "./server.js";
 import { handleUsageRequest } from "./usage/web.js";
-import { AOS_MCP_VERSION, errorMessage, isBuildStale, log } from "./util.js";
+import { AOS_MCP_VERSION, errorMessage, isBuildStale, log, maskSecret } from "./util.js";
 
 export interface HttpServerOptions {
   host?: string;
@@ -40,6 +41,19 @@ export interface AosHttpHandle {
 const PROJECT_NAME_RE = /^[A-Za-z0-9._-]+$/;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_PANEL_BODY_BYTES = 256 * 1024;
+
+/** 非 loopback 且未配置静态令牌、未显式放行时拒绝启动（fail-fast，无副作用）。 */
+export class InsecureBindRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InsecureBindRefusedError";
+  }
+}
+
+/** 静态令牌闸门豁免：仅根路径与健康检查，且只允许 GET/HEAD（不读查询参数）。 */
+function isExempt(method: string | undefined, pathname: string): boolean {
+  return (method === "GET" || method === "HEAD") && (pathname === "/" || pathname === "/healthz");
+}
 
 /** 请求体超限（区别于 JSON 解析失败；外层映射 413）。 */
 class BodyTooLargeError extends Error {}
@@ -88,6 +102,23 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   const workspaceRoot = path.resolve(
     options.workspaceRoot ?? process.env.AOS_WORKSPACE_ROOT ?? process.cwd()
   );
+  const token = (process.env.AOS_HTTP_TOKEN ?? "").trim();
+  const allowInsecure = process.env.AOS_HTTP_ALLOW_INSECURE === "1";
+
+  if (!isLoopbackHost(host) && token === "" && !allowInsecure) {
+    throw new InsecureBindRefusedError(
+      `拒绝在非 loopback 主机（${host}）上无鉴权启动 HTTP 服务：请设置 AOS_HTTP_TOKEN` +
+        `（静态令牌，请求经 Authorization: Bearer/Basic 校验），或显式 AOS_HTTP_ALLOW_INSECURE=1` +
+        `（仅限可信网络，不安全）。`
+    );
+  }
+  if (allowInsecure && !isLoopbackHost(host) && token === "") {
+    log(
+      `WARN：非 loopback 主机（${host}）且未设置 AOS_HTTP_TOKEN，已按 AOS_HTTP_ALLOW_INSECURE=1` +
+        ` 放行（无鉴权，仅限可信网络）。`,
+      "warn"
+    );
+  }
 
   // 服务级首启/更新引导：artemis 仓库全项目共享（依赖来源见 AOS_ARTEMIS_DEPS_URL / 默认仓库）。
   const serviceRepo = path.resolve(process.env.AOS_ARTEMIS_REPO ?? defaultArtemisRepo());
@@ -98,6 +129,12 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   });
   const store = options.store ?? runtimeHost.store;
   const reason = runtimeHost.storeNote;
+
+  log(
+    token === ""
+      ? "认证：未启用"
+      : `认证：已启用（Bearer/Basic，token=${maskSecret(token)}）`
+  );
 
   const runtimes = new Map<string, Runtime>();
 
@@ -151,17 +188,33 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
 
-        if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/healthz")) {
+        if (
+          token !== "" &&
+          !isExempt(req.method, url.pathname) &&
+          !authorizeRequest({ authorization: req.headers.authorization, token })
+        ) {
+          const unauthorized = unauthorizedResponse("aos-mcp");
+          const headers = { ...unauthorized.headers };
+          if (req.method === "HEAD") headers["Content-Length"] = "0";
+          res.writeHead(unauthorized.status, headers);
+          if (req.method === "HEAD") res.end();
+          else res.end(unauthorized.body);
+          return;
+        }
+
+        if (
+          (req.method === "GET" || req.method === "HEAD") &&
+          (url.pathname === "/" || url.pathname === "/healthz")
+        ) {
+          const body = JSON.stringify({
+            ok: true,
+            service: "aos-mcp",
+            version: AOS_MCP_VERSION,
+            workspaceRoot,
+            projects: [...runtimes.keys()]
+          });
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({
-              ok: true,
-              service: "aos-mcp",
-              version: AOS_MCP_VERSION,
-              workspaceRoot,
-              projects: [...runtimes.keys()]
-            })
-          );
+          res.end(req.method === "HEAD" ? undefined : body);
           return;
         }
 

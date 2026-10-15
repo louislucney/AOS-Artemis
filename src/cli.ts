@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { runDoctor, runInit } from "./commands.js";
 import { runDepsCommand } from "./deps-build.js";
-import { runHttpServer, type HttpServerOptions } from "./http-server.js";
+import { runHttpServer, InsecureBindRefusedError, type HttpServerOptions } from "./http-server.js";
 import { runInstall } from "./install.js";
 import { runJiraCommand } from "./jira-command.js";
 import { runServer } from "./server.js";
@@ -70,7 +70,15 @@ void (async () => {
             options.workspaceRoot = rest[++index];
           }
         }
-        await runHttpServer(options);
+        try {
+          await runHttpServer(options);
+        } catch (error) {
+          if (error instanceof InsecureBindRefusedError) {
+            console.error(error.message);
+            process.exit(2);
+          }
+          throw error;
+        }
       } else {
         await runServer();
       }
