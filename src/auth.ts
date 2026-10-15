@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -8,12 +8,11 @@ export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.has(host.toLowerCase());
 }
 
-/** 密钥比较须常时安全：长度不等直接判否（`timingSafeEqual` 要求等长），
- * 等长才进入逐字节比较，避免按内容提前返回造成的时序侧信道。 */
+/** 密钥比较须常时安全：两侧先经 sha256 摘要为固定长度，
+ * 再 `timingSafeEqual` 逐字节比较，消除长度分支与按内容提前返回造成的时序侧信道。 */
 function timingSafeStringEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a, "utf8");
-  const right = Buffer.from(b, "utf8");
-  if (left.length !== right.length) return false;
+  const left = createHash("sha256").update(a, "utf8").digest();
+  const right = createHash("sha256").update(b, "utf8").digest();
   return timingSafeEqual(left, right);
 }
 
@@ -39,7 +38,7 @@ function matchAuthorization(authorization: string | undefined, token: string): b
 }
 
 /** 带凭据判定：`Authorization: Bearer <t>` / `Authorization: Basic <base64(user:pass)>`（密码＝token，用户名任意/空）；
- * `options.allowQueryToken` 时另接受 URL `?t=<token>`。比较经 `timingSafeStringEqual`（先长度归一，长度不等直接 false）。 */
+ * `options.allowQueryToken` 时另接受 URL `?t=<token>`。比较经 `timingSafeStringEqual`（sha256 摘要固定长度比较，消除长度侧信道）。 */
 export function authorizeRequest(input: {
   authorization: string | undefined;
   queryToken?: string | null;

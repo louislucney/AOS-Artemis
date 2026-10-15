@@ -134,13 +134,13 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 ```bash
 curl -H "Authorization: Bearer $AOS_HTTP_TOKEN"  http://host:8765/panel.json   # 1) Bearer（脚本/MCP 客户端）
 curl -u "any:$AOS_HTTP_TOKEN"                     http://host:8765/panel.json   # 2) Basic（用户名任意/空，密码＝令牌）
-curl "http://host:8767/artifact/...?t=$TOKEN"                                   # 3) ?t= —— 仅产物服务（书签/直链）
+curl "http://host:8770/artifact/...?t=$TOKEN"                                   # 3) ?t= —— 仅产物服务（书签/直链）
 ```
 
 - **serve 安全默认**：绑定**非 loopback**（`0.0.0.0`/`::`/LAN 地址）且未设令牌且未显式放行 → 启动失败并给指引（`exit 2`）；`AOS_HTTP_ALLOW_INSECURE=1` 可放行（仅限可信网络）。loopback 绑定不受此限。401 带 `WWW-Authenticate: Basic realm="aos-mcp"`（`HEAD` 抑制 body）。
 - **install 注入（幂等）**：`AOS_HTTP_TOKEN` 在 `install --mode http` 的操作者进程 env 中时，生成的客户端条目自动带 `headers.Authorization: Bearer <token>`（token 缺失则不带并提示手配）。**令牌变更后配置视为「已存在但不同」→ 必须 `--force` 重装**才会更新。
 - **浏览器流指引**：令牌启用时，首次打开 `/panel*`（GET）会触发 `WWW-Authenticate` Basic 弹窗；认证按 origin 缓存后，同源 `/panel/api/*` 的 `fetch` 会自动携带凭据（各环境/浏览器或有差异）。**建议先打开一次页面再点动作按钮**。
-- **`?t=` 取舍**：查询参数方式便于书签/直链，但令牌会进入 URL、浏览器历史与访问日志——仅在可信环境使用，或改用 Bearer/Basic。HTTP 服务**不提供**查询参数通道（仅产物服务）。
+- **`?t=` 取舍**：查询参数方式便于书签/直链，但令牌会进入 URL、浏览器历史与访问日志——仅在可信环境使用，或改用 Bearer/Basic。HTTP 服务**不提供**查询参数通道（仅产物服务）。产物服务**目录浏览建议用 Bearer/Basic**；`?t=` 仅建议**单文件直链**（目录索引链接不携带查询串）。
 
 ## 任务统计与组合工具
 

@@ -43,7 +43,7 @@ function makeProject() {
 
 async function withServer(run) {
   const { projectDir, artemis } = makeProject();
-  const server = await startRunnerArtifactServer({ projectDir, port: 0 });
+  const server = await startRunnerArtifactServer({ projectDir, port: 0, env: {} });
   const base = `http://127.0.0.1:${server.port}`;
   try {
     await run(base, projectDir, artemis);
@@ -150,7 +150,7 @@ test("artifact server: 非 GET/HEAD → 405；未知路径 → 404", async () =>
 
 test("端到端缝：artifactUrl 构建的 URL 打到真实产物服务 → 200（跨任务缝合）", async () => {
   const { projectDir, artemis } = makeProject();
-  const server = await startRunnerArtifactServer({ projectDir, port: 0 });
+  const server = await startRunnerArtifactServer({ projectDir, port: 0, env: {} });
   const base = `http://127.0.0.1:${server.port}`;
   try {
     const fileUrl = artifactUrl(

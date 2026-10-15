@@ -384,6 +384,9 @@ export function runInstall(argv: string[], defaults: InstallOptions = {}): numbe
   log(`      [mcp_servers.${MCP_SERVER_NAME}]`);
   if (entry.kind === "http") {
     log(`      url = ${JSON.stringify(entry.url)}`);
+    if (entry.headers) {
+      log(`      # 需鉴权时补 Authorization 头，如: Authorization: Bearer <AOS_HTTP_TOKEN>`);
+    }
   } else {
     log(`      command = ${JSON.stringify(entry.command)}`);
     log(`      args = ${JSON.stringify(entry.args)}`);

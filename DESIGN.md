@@ -1534,11 +1534,11 @@ llm_switch(name, force):
 > - **产物只读服务**（runner 同进程；`GET|HEAD /healthz`＋`/artifact/<rel>`）：根＝`<项目>/.artemis`（realpath 双重校验拒绝 `..`/绝对路径/符号链接外逃）；文件流（图片 inline、json/md/txt/log text/plain、xlsx 对应 MIME、`nosniff`）；目录浅索引（转义/不递归/父链接/>500 截断、`nosniff`）。**默认监听 `0.0.0.0`、无鉴权**（内网口径；暴露范围含 `.artemis/logs` 与 `.artemis/crashes`，README 点名）；`--artifact-port 0` 关闭、端口占用不阻断执行且**不广播基址**；基址＝`AOS_RUNNER_ADVERTISE_URL` 或 `http://<hostname>:<port>`；监听 `0.0.0.0`/`::` 时启动打印醒目告警。CLI 参数：`--name/--poll-ms/--heartbeat-ms/--artifact-port/--artifact-host/--once`。
 > - **面板**：项目页「执行机（runner）」区块（TTL 90s（`AOS_RUNNER_TTL_MS`）在线灯、设备 chips、工具徽标、最后心跳、产物基址；有 runner 时 30s 刷新）；任务页状态标签（待执行/已领取/执行中/已完成/部分失败/失败）＋领取方（在线/失联；未知执行机）＋活跃态 10s 刷新＋「在线 runner 会自动领取执行」指引；**pending 且无单台在线 runner 端覆盖时提示原因**（双端任务需单机双端）。**产物链接**：任务页子运行「清单」（子运行各自落批次清单并登记 `manifest_path`）与引用份 json/xlsx、归因队列「打开证据」（run→task→runner 链；`artifactUrl` 相对 `.artemis` 分段编码，越界 → 纯路径文本）；中心只拼 URL 不取文件，面板/中心不触网。
 > - **「一键下发」＝面板创建任务后由在线 runner 自动领取执行**（**不加按钮**）；无 runner 时手动 `suite run --task` 路径不变（claimed 不阻塞手动，契约锁）。`suite task release <taskId> [--force]`＝管理侧救济（**复用 `releaseRegressionTask` 状态守卫**——读取与写入之间任务已达终态则不覆盖；默认要求执行机离线，在线需 `--force`；`claimed_by` 为空的数据异常态默认拒绝、`--force` 可重置）；`suite_runs.runner` 经 `SuiteCliDeps.runnerName` 透传（runner 子命令把 `--name`/hostname 解析后显式传入；不经 `process.env`）。任务页显示 `attempts > 1` 的重试次数。
-> - **§8 剩余项**（沿用现状/列 P3）：多实例并发迁移（init 幂等 best-effort）、`platforms/devices/tools` 无版本宽容解析、回填扫描、面板动作层/产物服务鉴权升级（已实施：见 §13.113）、claimed 自动超时重置、按端部分领取、真机 iOS 自动发现。
+> - **§8 剩余项**（沿用现状/列 P3）：多实例并发迁移（init 幂等 best-effort）、`platforms/devices/tools` 无版本宽容解析、回填扫描、claimed 自动超时重置、按端部分领取、真机 iOS 自动发现。（面板动作层/产物服务鉴权升级已实施，见 §13.113，不在剩余项。）
 >
 > 测试 +54（db-runners 12 / runner-inventory 5 / runner-agent 12 / runner-artifact 6 / suite-runner-cli 6 / suite-task +6 / panel-overview +4 / panel-web +5；另含端到端缝：`artifactUrl` 构建的 URL 打到真实 loopback 服务 200）；全量 **1123 绿**（含 Review Focus 五条锁定：并发领取守卫、路径穿越、崩溃重启释放、心跳/在线边界、手动与自动并存；两轮评审修复补：非零退出未达终态释放/终态不覆盖、**重试上限不饥饿队列**、`to:"failed"`、null claimedBy 救济、>50 条饥饿锁、守卫化 release）。
 
-- **口径**：领取＝任务端子集＋原子状态守卫；心跳 TTL 90s（3×默认周期）判定在线（字段级 now 对比）；产物 URL 一律相对 `.artemis`（与服务根一致，越界不链接）；claimed 无自动超时（救济＝启动释放＋`suite task release`）；产物服务与动作层并列**内网无鉴权**面（默认 `0.0.0.0`、`.artemis` 只读范围，风险在 README/DESIGN 点名）；双端任务需单机双端 runner（分机部署走手动）。
+- **口径**：领取＝任务端子集＋原子状态守卫；心跳 TTL 90s（3×默认周期）判定在线（字段级 now 对比）；产物 URL 一律相对 `.artemis`（与服务根一致，越界不链接）；claimed 无自动超时（救济＝启动释放＋`suite task release`）；产物服务与动作层并列**内网无鉴权**面（无鉴权为默认、已可选令牌见 §13.113；默认 `0.0.0.0`、`.artemis` 只读范围，风险在 README/DESIGN 点名）；双端任务需单机双端 runner（分机部署走手动）。
 
 ### 13.110 实施记录（回归服务 P3a：定时回归——schedules + runner 触发）
 
@@ -1567,7 +1567,7 @@ llm_switch(name, force):
 >
 > 测试 +40（原 +38：db-suite-runs +4 / verdict-exits +7（新文件）/ jira-issue-template +4、jira-post +3 / panel-actions +9 / panel-web +3 / generation-feedback +2、suite-command +1 / figma-test-gen +5；收尾复核修复波 +2：`test/panel-actions.test.js`、`test/figma-case-sets-gen.test.js` 各 +1）；全量 **1188 绿**（含 Review Focus 五条锁定：Jira 未配置/失败不触网不误报、重复建单顺序幂等、越权/坏输入先校验后建单、注入转义、生成侧降级不阻断；回归锁 `test/panel-stats.test.js`／`test/jira-tools.test.js`／`test/jira-evidence.test.js` 未改；`test/panel-overview.test.js`／`test/generation-feedback.test.js` 随接口演进更新形状断言（口径不弱化，由 `test/verdict-exits.test.js` 新测试锁定））。
 
-- **口径**：改进出口＝**共享聚合单一事实源**（面板/CLI/生成三面同源，份血统口径，§13.108 语义）；**生成侧只呈现不改产物**（案例问题→提示重生成，不静默改写用例）；**建单粒度＝每条一张**（不批量合并）；**证据与 `jira_evidence_post` 同源**、best-effort 不回滚；Jira 缺省值项目 `.env`（`JIRA_ISSUE_PROJECT`/`JIRA_ISSUE_TYPE`(默认 Bug)/`JIRA_ISSUE_LABELS`），payload 优先；面板建单为**外部副作用**（v1 内网无鉴权、并发双开接受、已建单 chip 无 siteUrl 降级）；动作层与只读层同源 store、写成功清缓存（reload 即可见）。
+- **口径**：改进出口＝**共享聚合单一事实源**（面板/CLI/生成三面同源，份血统口径，§13.108 语义）；**生成侧只呈现不改产物**（案例问题→提示重生成，不静默改写用例）；**建单粒度＝每条一张**（不批量合并）；**证据与 `jira_evidence_post` 同源**、best-effort 不回滚；Jira 缺省值项目 `.env`（`JIRA_ISSUE_PROJECT`/`JIRA_ISSUE_TYPE`(默认 Bug)/`JIRA_ISSUE_LABELS`），payload 优先；面板建单为**外部副作用**（v1 内网无鉴权（默认；已可选令牌，见 §13.113）、并发双开接受、已建单 chip 无 siteUrl 降级）；动作层与只读层同源 store、写成功清缓存（reload 即可见）。
 
 ### 13.112 实施记录（回归服务 P3c：跨项目对比——多项目对比视图）
 
@@ -1596,4 +1596,4 @@ llm_switch(name, force):
 >
 > 测试 +26（auth +7（新文件）/ http-server +9 / runner-artifact +6 / install +4；含 CLI serve 的 exit 2 缝）；全量 **1231 绿**（含 Review Focus 锁定：闸门先于路由与豁免边界、凭据形式等价与常时比较/空 token、安全默认 exit 2 与放行 WARN、`HEAD` 无体、`?t=` 仅产物服务且仅在开通道时生效、install 幂等与不泄露明文）。
 >
-> - **口径**：鉴权＝**可选静态共享令牌**（Bearer＋Basic 双接受；产物服务另允 `?t=`）——默认零破坏、设＝强制；**先鉴权后路由**、未认证不泄露路由；豁免**仅** `GET|HEAD /`（serve）与 `GET|HEAD /healthz`（serve＋产物服务）；`serve` 非 loopback 无 token 为**安全默认启动失败（exit 2）**，`AOS_HTTP_ALLOW_INSECURE=1` 为显式逃生门；令牌仅进程 env、比较常时、日志 masked、install 输出不落明文；`isLoopbackHost` 为**纯字符串判定**（仅 `127.0.0.1`/`::1`/`localhost` 大小写不敏感，`::ffff:127.0.0.1` 及解析到 loopback 的主机名一律按非 loopback **fail-closed**）；401 对 `HEAD` 抑制 body；账号/角色/OAuth/mTLS/令牌轮换、独立 CLI 看板鉴权、产物签名 URL/中心代理、默认绑定改变均**不在范围**（另立计划）。
+> - **口径**：鉴权＝**可选静态共享令牌**（Bearer＋Basic 双接受；产物服务另允 `?t=`）——默认零破坏、设＝强制；**先鉴权后路由**、未认证不泄露路由；豁免**仅** `GET|HEAD /`（serve）与 `GET|HEAD /healthz`（serve＋产物服务）；`serve` 非 loopback 无 token 为**安全默认启动失败（exit 2）**，`AOS_HTTP_ALLOW_INSECURE=1` 为显式逃生门；令牌仅进程 env、比较常时、日志 masked、install 输出不落明文；`isLoopbackHost` 为**纯字符串判定**（仅 `127.0.0.1`/`::1`/`localhost` 大小写不敏感，`::ffff:127.0.0.1` 及解析到 loopback 的主机名一律按非 loopback **fail-closed**）；401 对 `HEAD` 抑制 body；账号/角色/OAuth/mTLS/令牌轮换、独立 CLI 看板鉴权、产物签名 URL/中心代理、默认绑定改变均**不在范围**（另立计划）。产物服务**目录浏览建议用 Bearer/Basic**；`?t=` 仅建议**单文件直链**（目录索引链接不携带查询串）。
