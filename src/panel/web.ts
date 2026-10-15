@@ -1140,7 +1140,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
     "function submitIssues(event,dryRun){",
     "  event.preventDefault();",
     "  var form=document.getElementById('issues-form');",
-    "  var items=Array.prototype.slice.call(form.querySelectorAll('input[name=issue-item]:checked')).map(function(el){var parts=el.value.split('|');return {runId:parts[0],caseId:parts[1]};});",
+    "  var items=Array.prototype.slice.call(form.querySelectorAll('input[name=issue-item]:checked')).map(function(el){var idx=el.value.indexOf('|');return {runId:el.value.slice(0,idx),caseId:el.value.slice(idx+1)};});",
     "  var status=document.getElementById('issues-status');",
     "  var result=document.getElementById('issues-result');",
     "  if(items.length===0){status.textContent='请先勾选至少一条应用缺陷';return false;}",

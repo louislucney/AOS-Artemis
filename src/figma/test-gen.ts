@@ -1205,6 +1205,16 @@ export async function figmaGenerateTests(
             JSON.stringify(
               {
                 ...payload,
+                ...(subsetFeedback.length > 0
+                  ? {
+                      feedback: {
+                        caseDefects: {
+                          total: subsetFeedback.reduce((sum, entry) => sum + entry.count, 0),
+                          byFeature: subsetFeedback
+                        }
+                      }
+                    }
+                  : { feedback: undefined }),
                 counts: { flows: subset.length, screens: counts.screens, edges: counts.edges },
                 coverage: computeFlowCoverage(graph, subset),
                 features: featurePayload.filter((entry) => entry.key === group.key),

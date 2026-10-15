@@ -187,7 +187,8 @@ async function processItem(
     });
     key = createdIssue.key;
   } catch (error) {
-    return { runId, caseId, status: "error", reason: errorMessage(error) };
+    log(`建单失败（${runId}/${caseId}）：${errorMessage(error)}`);
+    return { runId, caseId, status: "error", reason: "Jira 建单失败" };
   }
 
   const result: IssueItemResult = { runId, caseId, status: "created", key, url: `${ctx.siteUrl}/browse/${key}` };

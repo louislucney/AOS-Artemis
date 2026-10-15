@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
+import { JiraApiError } from "../dist/jira/client.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "../dist/panel/actions.js";
 import { createRunCaseIssues } from "../dist/panel/issues.js";
 import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
@@ -801,12 +802,38 @@ test("panel issues: 部分失败容忍（第 1 条 create 抛错、第 2 条成�
   assert.equal(outcome.created, 1);
   assert.equal(outcome.failed, 1);
   assert.equal(outcome.results[0].status, "error");
-  assert.equal(outcome.results[0].reason, "jira hiccup");
+  assert.equal(outcome.results[0].reason, "Jira 建单失败");
   assert.equal(outcome.results[1].status, "created");
   assert.equal(outcome.results[1].key, "AOS-2");
   const stored = await store.getSuiteRun(rootPath, run.id);
   assert.equal(stored.cases.find((c) => c.caseId === "case-2").jiraIssueKey, "AOS-2");
   assert.equal(stored.cases.find((c) => c.caseId === "case-1").jiraIssueKey, null);
+});
+
+test("panel issues: createIssue 抛 JiraApiError → reason 通用短语（不泄露 body 与 Jira API 原文）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath);
+  const clientFor = () => ({
+    siteUrl: "https://acme.atlassian.net",
+    client: {
+      createIssue: async () => {
+        throw new JiraApiError(500, "UNIQUE_MARKER_SECRET_BODY_42", null);
+      }
+    }
+  });
+
+  const outcome = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence: noopEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.failed, 1);
+  assert.equal(outcome.results[0].status, "error");
+  assert.equal(outcome.results[0].reason, "Jira 建单失败");
+  assert.ok(!outcome.results[0].reason.includes("UNIQUE_MARKER_SECRET_BODY_42"), "不泄露 Jira body");
+  assert.ok(!outcome.results[0].reason.includes("Jira API"), "不泄露底层原文");
 });
 
 test("panel issues: 路由校验（items 超 20 → 400；labels 非字符串 → 400）", async () => {

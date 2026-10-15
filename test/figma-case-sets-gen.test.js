@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { buildFlowGraph } from "../dist/figma/flows.js";
 import { figmaGenerateTests } from "../dist/figma/test-gen.js";
+import { MemoryStore } from "../dist/db/memory.js";
 import { baseConfig, loadTestRuntime, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
 import { pagedFlowDocument, syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
 
@@ -194,4 +195,83 @@ test("figma_generate_tests: 登记行与归档一致（memory store）", async (
     byName.get("登录").jsonPath,
     payload.savedTo.caseSets.find((entry) => entry.feature === "登录").json
   );
+});
+
+test("figma_generate_tests: 子集归档 JSON 的 feedback 与 markdown 同源（仅含本功能）", async () => {
+  const dir = makeFlowsProject(pagedFlowDocument(), true);
+  const store = new MemoryStore();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy(), store });
+  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+
+  const first = parseToolResult(await figmaGenerateTests(runtime, { save: false }, { now: NOW, chat: null }));
+  const keyByName = new Map(first.features.map((entry) => [entry.name, entry.key]));
+
+  const verdictCase = (caseId) => ({
+    caseId,
+    name: `Case ${caseId}`,
+    featureKey: null,
+    platform: "android",
+    status: "failed",
+    traceId: null,
+    failureDomain: "用例缺陷",
+    failureConfidence: "medium",
+    failureReason: "断言未命中",
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict: "case-defect",
+    verdictBy: "alice",
+    verdictAt: "2026-10-14T12:00:00.000Z",
+    verdictNote: null,
+    jiraIssueKey: null
+  });
+  const run = (featureName, caseSetId) => ({
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId,
+    featureKey: keyByName.get(featureName),
+    featureName,
+    platform: "android",
+    device: "emulator-5554",
+    appVersion: null,
+    runner: null,
+    status: "failed",
+    startedAt: "2026-10-14T10:00:00.000Z",
+    finishedAt: "2026-10-14T10:05:00.000Z",
+    total: 1,
+    passed: 0,
+    failed: 1,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: { 用例缺陷: 1 },
+    gateResult: "fail",
+    exitCode: 1,
+    manifestPath: null,
+    comparison: null
+  });
+  const caseByFeature = { 登录: "case-a", 主流程: "case-b" };
+  for (const [featureName, caseId] of Object.entries(caseByFeature)) {
+    await store.recordSuiteRun({
+      rootPath: runtime.project.rootDir,
+      createdAt: `2026-10-14T10:05:00.000Z`,
+      run: run(featureName, `cs-${caseId}`),
+      cases: [verdictCase(caseId)]
+    });
+  }
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}, { now: NOW, chat: null }));
+  assert.equal(payload.savedTo.caseSets.length, 2);
+
+  for (const entry of payload.savedTo.caseSets) {
+    const json = JSON.parse(fs.readFileSync(entry.json, "utf-8"));
+    const md = fs.readFileSync(entry.md, "utf-8");
+    const byFeature = json.feedback?.caseDefects?.byFeature ?? [];
+    assert.equal(byFeature.length, 1, `${entry.feature} 的归档 JSON feedback 仅含本功能`);
+    assert.equal(byFeature[0].featureKey, keyByName.get(entry.feature), "feedback featureKey 匹配本功能");
+    const ownCaseId = caseByFeature[entry.feature];
+    const otherCaseId = Object.entries(caseByFeature).find(([name]) => name !== entry.feature)[1];
+    assert.match(md, new RegExp(ownCaseId), "md 含本功能案例");
+    assert.doesNotMatch(md, new RegExp(otherCaseId), "md 不含另一功能案例");
+    assert.match(json.feedback.caseDefects.byFeature[0].cases[0].caseId, new RegExp(ownCaseId), "JSON 案例与本功能一致");
+  }
 });
