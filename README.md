@@ -155,8 +155,8 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读�
 - **改进出口（统计下钻，§13.111）**：统计视图按最新裁决呈现三个出口——**案例问题**（case-defect，指引修订期望/重新生成）、**执行偏差环境清单**（execution-deviation，按设备/端分组：次数/涉及功能/最近/备注摘要）、**应用缺陷**（app-defect，勾选 → 一键建单）。**一键建单为外部副作用**：建单走项目 Jira 凭证与 `jira_evidence_post` 同源证据逻辑（失败 best-effort 不回滚）；缺省值可写项目 `.env` 的 `JIRA_ISSUE_PROJECT`（必填缺省）/`JIRA_ISSUE_TYPE`（默认 `Bug`）/`JIRA_ISSUE_LABELS`（逗号分隔），表单输入优先；已建单条目显示单号纯文本（面板无 Jira 站点来源、不出链接）。**并发双开为已接受限制**（同条目并发可能各建一张；顺序重复点击幂等）。
 - 数据源：批次清单 `.artemis/design/runs/`（`suite run`/`loop` 自动落盘，权威）+ PG 台账（含 `regression_tasks`/`suite_runs`/`suite_run_cases`，裁决写回 `suite_run_cases.verdict*`）+ 项目软读（无子进程/无网络）；磁盘不可达的项目降级为"仅台账"；缺件/清理/高版本清单一律如实占位，不猜测。
 - **深探**（HTTP 模式）：项目页懒建 Runtime 后取纯读子集（active Profile/存储/artemis 子进程/桥/日志/构建状态；**不拉起子进程、不触网**）；URL 加 `?ios=1` 显式执行 **iOS 环境检测**（调用本地 appium CLI，结果缓存 60s）；独立 CLI 进程无深探层。
-- 查询参数：`project`（项目名或根路径）、`batch`（清单文件名）、`task`（回归任务 id）、`view`（`review`|`stats`；优先级 task > batch > view）、`limit`（批次数，默认 20、上限 100）、`ios`（=1 显式 iOS 检测）。
-- 默认 loopback、进程内缓存 5s（动作写成功后缓存失效）；`AOS_PANEL_WEB=0` 关闭只读路由、`AOS_PANEL_CACHE_MS` 调整缓存 TTL（0 关闭缓存）；CLI 端口占用 exit 2。见 DESIGN §13.95–§13.98、§13.103–§13.105、§13.108、§13.109、§13.111。
+- 查询参数：`project`（项目名或根路径）、`batch`（清单文件名）、`task`（回归任务 id）、`view`（`review`|`stats`|`compare`；优先级 task > batch > view）、`limit`（批次数，默认 20、上限 100）、`ios`（=1 显式 iOS 检测）。
+- 默认 loopback、进程内缓存 5s（动作写成功后缓存失效）；`AOS_PANEL_WEB=0` 关闭只读路由、`AOS_PANEL_CACHE_MS` 调整缓存 TTL（0 关闭缓存）；CLI 端口占用 exit 2。见 DESIGN §13.95–§13.98、§13.103–§13.105、§13.108、§13.109、§13.111、§13.112。
 
 ### 项目机 runner（回归自动领取执行 + 产物只读预览）
 
