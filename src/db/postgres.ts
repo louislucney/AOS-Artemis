@@ -877,15 +877,22 @@ export class PostgresStore implements ProjectStore {
       `SELECT * FROM suite_runs WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT $${values.length}`,
       values
     );
-    const out: SuiteRunRecord[] = [];
-    for (const row of runs.rows) {
+    const runIds = runs.rows.map((row) => String(row.id));
+    const casesByRun = new Map<string, Array<Record<string, unknown>>>();
+    if (runIds.length > 0) {
+      const placeholders = runIds.map((_, index) => `$${index + 1}`).join(", ");
       const cases = await this.pool.query(
-        "SELECT * FROM suite_run_cases WHERE run_id = $1 ORDER BY case_id ASC",
-        [String(row.id)]
+        `SELECT * FROM suite_run_cases WHERE run_id IN (${placeholders}) ORDER BY run_id ASC, case_id ASC`,
+        runIds
       );
-      out.push(mapSuiteRun(row, cases.rows));
+      for (const caseRow of cases.rows) {
+        const runId = String(caseRow.run_id);
+        const bucket = casesByRun.get(runId);
+        if (bucket) bucket.push(caseRow);
+        else casesByRun.set(runId, [caseRow]);
+      }
     }
-    return out;
+    return runs.rows.map((row) => mapSuiteRun(row, casesByRun.get(String(row.id)) ?? []));
   }
 
   async updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean> {

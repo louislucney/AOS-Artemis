@@ -84,6 +84,28 @@ function runInput(overrides = {}) {
   };
 }
 
+function caseInput(caseId, overrides = {}) {
+  return {
+    caseId,
+    name: `Case ${caseId}`,
+    featureKey: "f-登录-41b473ed",
+    platform: "android",
+    status: "passed",
+    traceId: null,
+    failureDomain: null,
+    failureConfidence: null,
+    failureReason: null,
+    durationMs: null,
+    quarantined: false,
+    flaky: false,
+    verdict: null,
+    verdictBy: null,
+    verdictAt: null,
+    verdictNote: null,
+    ...overrides
+  };
+}
+
 test("regression_tasks: create/get/list/update 往返（memory + pg-mem）", async () => {
   const stores = [new MemoryStore(), await makePgStore()];
   for (const store of stores) {
@@ -195,6 +217,68 @@ test("listSuiteRuns: 过滤（taskId/caseSetId/featureKey/platform）与新→�
   const limited = await store.listSuiteRuns("/w/p2", { limit: 2 });
   assert.equal(limited.length, 2);
   assert.equal((await store.listSuiteRuns("/w/unknown")).length, 0);
+});
+
+test("listSuiteRuns: 多 run 批量装配——cases 数不等、含 0 case、逐 run 完整、新→旧与 limit（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p3", name: "p3" });
+    const base = runInput({ rootPath: "/w/p3" });
+    await store.recordSuiteRun({
+      ...base,
+      createdAt: "2026-10-14T10:00:00.000Z",
+      cases: [caseInput("case-aa01"), caseInput("case-aa02")]
+    });
+    await store.recordSuiteRun({
+      ...base,
+      createdAt: "2026-10-14T11:00:00.000Z",
+      cases: []
+    });
+    await store.recordSuiteRun({
+      ...base,
+      createdAt: "2026-10-14T12:00:00.000Z",
+      cases: [caseInput("case-bb01"), caseInput("case-bb02"), caseInput("case-bb03")]
+    });
+
+    const runs = await store.listSuiteRuns("/w/p3");
+    assert.equal(runs.length, 3);
+    assert.deepEqual(
+      runs.map((entry) => entry.createdAt),
+      ["2026-10-14T12:00:00.000Z", "2026-10-14T11:00:00.000Z", "2026-10-14T10:00:00.000Z"]
+    );
+    assert.deepEqual(
+      runs[0].cases.map((entry) => entry.caseId),
+      ["case-bb01", "case-bb02", "case-bb03"]
+    );
+    assert.deepEqual(runs[1].cases, []);
+    assert.deepEqual(
+      runs[2].cases.map((entry) => entry.caseId),
+      ["case-aa01", "case-aa02"]
+    );
+
+    const limited = await store.listSuiteRuns("/w/p3", { limit: 2 });
+    assert.equal(limited.length, 2);
+    assert.deepEqual(
+      limited[0].cases.map((entry) => entry.caseId),
+      ["case-bb01", "case-bb02", "case-bb03"]
+    );
+    assert.deepEqual(limited[1].cases, []);
+  }
+});
+
+test("listSuiteRuns: 批读逐 run 内 case_id 升序（乱序写入）（pg-mem）", async () => {
+  const store = await makePgStore();
+  await store.upsertProject({ rootPath: "/w/p4", name: "p4" });
+  await store.recordSuiteRun({
+    ...runInput({ rootPath: "/w/p4" }),
+    createdAt: "2026-10-14T10:00:00.000Z",
+    cases: [caseInput("case-zz09"), caseInput("case-aa01"), caseInput("case-mm05")]
+  });
+  const runs = await store.listSuiteRuns("/w/p4");
+  assert.deepEqual(
+    runs[0].cases.map((entry) => entry.caseId),
+    ["case-aa01", "case-mm05", "case-zz09"]
+  );
 });
 
 test("recordSuiteRun: 事务协议——失败时 BEGIN→ROLLBACK→release，不 COMMIT", async () => {
