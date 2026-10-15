@@ -65,7 +65,7 @@ P3d 升级为**可选静态令牌**鉴权：默认行为对既有内网部署零
 | # | 决策 | 理由 | 若否决的代价 |
 |---|------|------|--------------|
 | D1 | 机制＝**静态共享令牌**（Bearer＋Basic 双接受）；不做账号/角色 | 内网单团队场景的最简有效鉴权；浏览器零改造（Basic） | 若要多用户，需引入账号/会话体系（大改） |
-| D2 | `serve`：token 可选；**非 loopback 无 token → 启动失败**（`AOS_HTTP_ALLOW_INSECURE=1` 放行） | 「升级」的安全默认；loopback 开发不受扰；显式放行保留逃生门 | 若要求仅告警不失败，LAN 暴露面仍可无鉴权运行 |
+| D2 | `serve`：token 可选；**非 loopback 无 token → 启动失败**（`AOS_HTTP_ALLOW_INSECURE=1` 放行）——CLI serve 分支捕获专用错误 → **exit 2**（其余错误维持 exit 1） | 「升级」的安全默认；loopback 开发不受扰；显式放行保留逃生门；exit 码契约清晰 | 若要求仅告警不失败，LAN 暴露面仍可无鉴权运行 |
 | D3 | artifact：token **可选**（设＝强制；未设＝现状＋告警）；不因默认 0.0.0.0 强制 | 默认即 0.0.0.0，强制会破坏所有既有部署；升级以「推荐配置」呈现 | 若要求强制：既有部署全需补 token（可接受但需迁移说明） |
 | D4 | 浏览器路径＝Basic 401 challenge；脚本＝Bearer；artifact 另允 `?t=` | 前端零改造；`?t=` 的 URL 泄露取舍文档明示 | 若禁用 `?t=`，书签/直链体验退化 |
 | D5 | 令牌仅**进程 env**（无项目 `.env` 语义；serve 为 workspace 级）；无 CLI flag；`timingSafeEqual`；日志 masked | `ps`/日志泄露面最小化；安全默认检查与令牌读取同源（避免「.env 设了但检查读不到」的误拒） | 若需 `.env` 便利，需为各入口新增 dotenv 装载（行为面变大） |
@@ -78,7 +78,7 @@ P3d 升级为**可选静态令牌**鉴权：默认行为对既有内网部署零
 - **env**：`AOS_HTTP_TOKEN`（serve）、`AOS_RUNNER_ARTIFACT_TOKEN`（runner；options 传入 artifact server）、`AOS_HTTP_ALLOW_INSECURE`（仅 serve 安全默认放行）。
 - **判定助手**（建议 `src/auth.ts` 共享）：`isLoopbackHost(host: string): boolean`（`127.0.0.1`/`::1`/`localhost`）；`authorizeRequest(reqHeaders, url, token, { allowQueryToken?: boolean }): boolean`（Bearer/Basic/`?t=`＋timingSafeEqual）；`unauthorizedResponse(realm): { status, headers, body }`（401＋`WWW-Authenticate`）。
 - **http-server**：URL 解析后、路由分派前插入闸门（豁免 `GET|HEAD /` 与 `GET|HEAD /healthz`；补 `HEAD` 处理返回 200 无体）；启动处插入安全默认（`host` 非 loopback && `!token` && `!allowInsecure` → throw；`allowInsecure` → WARN）；启动日志含 `认证：已启用（masked）/未启用`。
-- **artifact-server**：`StartRunnerArtifactServerOptions` 增 `token?: string`（`suite runner` 命令层从进程 env 读取传入）；`/healthz` 豁免、其余先鉴权；启动行含认证状态。
+- **artifact-server**：`startRunnerArtifactServer` 从**既有 `options.env ?? process.env`** 读取 `AOS_RUNNER_ARTIFACT_TOKEN`（命令层已传 env、无新增读取点）；`/healthz` 豁免、其余先鉴权；启动行含认证状态。
 - **install**：http 条目形状增可选 `headers`；从**进程 env** 读取 token 注入（各 target 形状一致附加）；输出提示（含「客户端不支持 headers 时按其文档」一行）。
 - **usage web（serve 内）**：随闸门一并保护；独立 `usage --web` 不变。
 

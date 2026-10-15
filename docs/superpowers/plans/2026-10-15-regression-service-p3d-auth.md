@@ -66,23 +66,26 @@
 ### Task 2: `serve --http` 闸门与安全默认
 
 **Files:**
-- Modify: `src/http-server.ts`
+- Modify: `src/http-server.ts`、`src/cli.ts`（serve 分支的 exit 2 出口——C1 修订）
 - Test: `test/http-server.test.js`（追加）
 
 **Interfaces:**
 - Consumes：Task 1（`isLoopbackHost`/`authorizeRequest`/`unauthorizedResponse`）。
 - 语义：
-  - 启动读取：`token = (env.AOS_HTTP_TOKEN ?? "").trim()`；`allowInsecure = env.AOS_HTTP_ALLOW_INSECURE === "1"`（`options.env ?? process.env`，按该文件既有 env 取法）。
-  - **安全默认**（listen 前）：`!isLoopbackHost(host) && token === "" && !allowInsecure` → `throw new Error`（指引文案含：设置 `AOS_HTTP_TOKEN` 或显式 `AOS_HTTP_ALLOW_INSECURE=1`；沿用 CLI 既有错误出口 → exit 2）。`allowInsecure && !isLoopbackHost(host) && token === ""` → `log()` 醒目 WARN。
-  - **闸门**：URL 解析后、所有路由分派前：`if (token !== "" && !isExempt(method, pathname) && !authorizeRequest({authorization: req.headers.authorization, token}))` → 发送 401（Task 1 的 `unauthorizedResponse("aos-mcp")`）。`isExempt = (m, p) => (m === "GET" || m === "HEAD") && (p === "/" || p === "/healthz")`。**不读查询参数**（allowQueryToken 不启用）。
+  - 启动读取（**直接读 `process.env`**，与文件既有取法一致；I1 修订）：`token = (process.env.AOS_HTTP_TOKEN ?? "").trim()`；`allowInsecure = process.env.AOS_HTTP_ALLOW_INSECURE === "1"`。
+  - **安全默认**（解析 host/token 之后、`RuntimeHost.prepare` **之前**——fail-fast 无副作用；M1）：`!isLoopbackHost(host) && token === "" && !allowInsecure` → `throw new InsecureBindRefusedError(指引文案)`（含：设置 `AOS_HTTP_TOKEN` 或显式 `AOS_HTTP_ALLOW_INSECURE=1`）；`allowInsecure && !isLoopbackHost(host) && token === ""` → `log()` 醒目 WARN。
+  - **exit 2 出口（C1 修订）**：`http-server.ts` 导出该错误类型；`src/cli.ts` 的 `serve` 分支包 try/catch——捕获该类型 → 将指引打印至 stderr → `process.exit(2)`；其余错误维持既有顶层出口（exit 1）。
+  - **闸门**：URL 解析后、所有路由分派前：`if (token !== "" && !isExempt(method, pathname) && !authorizeRequest({authorization: req.headers.authorization, token}))` → 发送 401（Task 1 的 `unauthorizedResponse("aos-mcp")`）；**401 写回对 HEAD 抑制 body**（M3：HEAD 不写体、`Content-Length: 0`）。`isExempt = (m, p) => (m === "GET" || m === "HEAD") && (p === "/" || p === "/healthz")`。**不读查询参数**（allowQueryToken 不启用）。
   - **HEAD 补全**：`GET|HEAD /` 与 `GET|HEAD /healthz` 均 200 无体（HEAD 不写 body；沿用健康检查 JSON 形状对 GET）。
   - 启动日志：追加 `认证：已启用（Bearer/Basic，token=<masked>）/未启用`（masked 用既有 `maskSecret`；**不得输出明文**）。
 - [ ] **Step 1: 写失败测试**（`test/http-server.test.js` 追加；沿用该文件真实 loopback＋port 0 harness）
   - `未设 token：既有路由行为回归（/healthz、/panel 404/200、/mcp 鉴权前路径、404 未知）`（既有断言即锁，新增仅在必要处）。
   - `设 token：无凭据 → 401＋WWW-Authenticate（/panel、/panel.json、/usage、/mcp/<p>、/panel/api/*）；Bearer 通过；Basic（密码=token）通过；错 token 401`。
   - `豁免：GET|HEAD / 与 /healthz → 200（HEAD 无体）`；`禁用路由（AOS_PANEL_WEB=0/AOS_USAGE_WEB=0）与未知路径：无凭据 401、有凭据 404`。
-  - `安全默认：host=0.0.0.0 无 token → 启动 throws（信息含指引）；ALLOW_INSECURE=1 → 可启动（并断言有警告日志）；host=127.0.0.1 无 token → 正常启动`。
-  - `来源断言：新起进程 env 不设 token 而写项目 .env → 不生效（启动无认证）`（如 harness 不支持项目 .env 场景，改为断言读取来源仅 options.env/process.env）。
+  - `行级：401-on-HEAD 无体（Content-Length 0）`。
+  - `安全默认：host=0.0.0.0 无 token → 启动 throws（信息含指引、且不产生 prepare 副作用）；ALLOW_INSECURE=1 → 可启动（并断言有警告日志）；host=127.0.0.1 无 token → 正常启动`。
+  - `来源断言：仅 process.env 生效——测试以 process.env 设值＋try/finally 还原（与既有 harness 风格一致）；「项目 .env 同名变量不生效」为弱回归断言（http-server 不加载 dotenv，恒真即可）`。
+  - `cli 出口：InsecureBindRefusedError → serve 捕获后 stderr 指引＋exit 2（若既有 cli 测试可注入进程则补一条；否则实现保证＋Task 5 DESIGN 记录）`。
   - `日志断言：启动行含 masked 片段、不含明文 token`。
 - [ ] **Step 2: 跑测试确认失败**：`npm run test:file -- test/http-server.test.js`。
 - [ ] **Step 3: 实现**（按「语义」；保持既有路由与 404/413 行为不变）。
@@ -92,13 +95,12 @@
 ### Task 3: runner 产物服务令牌
 
 **Files:**
-- Modify: `src/runner/artifact-server.ts`、`src/suite-command.ts`（`suite runner` 命令层读取 `AOS_RUNNER_ARTIFACT_TOKEN` 并传入；实现时按实际调用链放置，**读取点唯一**）
-- Test: `test/runner-artifact.test.js`（追加）；如 runner 命令接线另有测试文件（如 `test/suite-runner-cli.test.js`）则一并追加
+- Modify: `src/runner/artifact-server.ts`（**既有 `env?` 缝**：`startRunnerArtifactServer` 内从 `options.env ?? process.env` 读取 `AOS_RUNNER_ARTIFACT_TOKEN`——M5 修订：不新增 `token?` 选项、命令层已传 env、无需改 `suite-command.ts`）
+- Test: `test/runner-artifact.test.js`（追加）；命令层回归 `test/suite-runner.test.js`（M4：实际文件名，无 `-cli`）
 
 **Interfaces:**
 - Consumes：Task 1（`authorizeRequest`/`unauthorizedResponse`）。
-- Produces：`StartRunnerArtifactServerOptions` 增 `token?: string`（trim 后非空＝启用）。
-- 语义：启用后 `/artifact*`（GET/HEAD）先鉴权：`authorizeRequest({authorization, queryToken: url.searchParams.get("t"), token, allowQueryToken: true})`；未过 → 401（`unauthorizedResponse("aos-artifact")`）。**`GET|HEAD /healthz` 豁免**（既有处理不变）。未设 token → 一切照旧。启动行含 `认证：已启用（token=<masked>）/未启用`。
+- 语义：`token = ((options.env ?? process.env).AOS_RUNNER_ARTIFACT_TOKEN ?? "").trim()`；启用后 `/artifact*`（GET/HEAD）先鉴权：`authorizeRequest({authorization, queryToken: url.searchParams.get("t"), token, allowQueryToken: true})`；未过 → 401（`unauthorizedResponse("aos-artifact")`；**HEAD 抑制 body**）。**`GET|HEAD /healthz` 豁免**（既有处理不变）。未设 token → 一切照旧。启动行含 `认证：已启用（token=<masked>）/未启用`。
 - [ ] **Step 1: 写失败测试**（`test/runner-artifact.test.js` 追加）
   - `未设 token：既有测试回归`。
   - `设 token：无凭据 401＋realm；Bearer 通过；Basic 通过；?t= 通过；错 token 401；/healthz 豁免（GET 与 HEAD）`。
@@ -125,6 +127,7 @@
   - `env 有 token：各 target 写入的配置含 headers.Authorization（Bearer <真实值>——写入配置文件是必须的，允许出现在文件断言中；输出提示 masked）`。
   - `env 无 token：无 headers＋提示行`。
   - `既有形状字段不回归（command/args/env/url 等）`。
+  - `幂等语义（M6）：含 headers 的既有条目重装默认 skipped——token 变更需 --force（测试断言 + Task 5 README 提及）`。
 - [ ] **Step 2: 跑测试确认失败**。
 - [ ] **Step 3: 实现**。
 - [ ] **Step 4: 跑测试确认通过** + build。
@@ -138,9 +141,24 @@
 - [ ] **Step 1: 全量回归**：`npm run build && npm test && npm run lint` → 全绿（记录新增测试数与总数）。
 - [ ] **Step 2: 文档**
   - DESIGN §13.113：P3d 实施记录（机制/闸门优先级与豁免/安全默认/双路径/artifact `?t=`/install 注入/令牌卫生；D1–D8 口径收束）。
-  - README：更新三个「无鉴权」风险段（serve 动作层、产物服务、usage 看板）为「可选令牌＋serve 安全默认」表述；补令牌用法（env 名、Bearer/Basic/`?t=`、install 自动注入）。
+  - README：更新三个「无鉴权」风险段（serve 动作层、产物服务、usage 看板）为「可选令牌＋serve 安全默认」表述；补令牌用法（env 名、Bearer/Basic/`?t=`、install 自动注入）。**必写（I2 修订）**：① `?t=` 会进入 URL/浏览器历史/访问日志的取舍提示；② 浏览器流指引——首次访问 `/panel*`（GET）触发 Basic 弹窗，认证按 origin 缓存后同源 `/panel/api/*` fetch 自动携带（各环境或有差异，建议先打开一次页面再点动作按钮）；③ install 幂等——token 变更后需 `--force` 重装。
   - AGENTS.md：HTTP 服务行与 runner 行补鉴权一句；`.env.example` 增 `AOS_HTTP_TOKEN`/`AOS_RUNNER_ARTIFACT_TOKEN`/`AOS_HTTP_ALLOW_INSECURE`（注释说明、只写变量名）。
+  - DESIGN §13.113 另记两条边界（复核 M2/M3）：`isLoopbackHost` 为纯字符串判定（`::ffff:127.0.0.1`/解析到 loopback 的主机名均按非 loopback **fail-closed**）；401 对 HEAD 抑制 body。
 - [ ] **Step 3: 提交**：`git commit -m "docs: regression service P3d (auth tokens)"`
+
+## 独立复核修订记录（2026-10-15）
+
+计划评审（deepseek/deepseek-v4-pro#high，只读）结论「需先修订（1 Critical＋2 Important）」；发现已全部并入：
+
+- **C1（Critical）**：serve 无 exit 2 出口（实际 exit 1）——Task 2 增 `src/cli.ts`：导出专用错误类型（如 `InsecureBindRefusedError`），serve 分支捕获 → stderr 指引＋`exit 2`；其余错误维持 exit 1。
+- **I1（Important）**：`HttpServerOptions` 无 `env` 字段——统一为**直接读 `process.env`**（与文件现状/既有 harness 一致）；测试以 process.env 设值＋try/finally 还原。
+- **I2（Important）**：README 必写项补 `?t=` 取舍、浏览器 Basic/fetch 流指引（Task 5）。
+- **M1**：安全默认检查置于 `RuntimeHost.prepare` 之前（fail-fast 无副作用）。
+- **M2**：`isLoopbackHost` 纯字符串判定（fail-closed 边界）→ DESIGN 记录。
+- **M3**：401 对 HEAD 抑制 body（serve 与 artifact）。
+- **M4**：runner 测试文件名修正为 `test/suite-runner.test.js`。
+- **M5**：artifact 令牌复用既有 `env?` 缝（不新增 `token?` 选项；命令层无需改）。
+- **M6**：install 幂等——token 变更需 `--force` 重装（测试＋README）。
 
 ---
 
