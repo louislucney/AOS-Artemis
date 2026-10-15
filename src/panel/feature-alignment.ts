@@ -11,19 +11,22 @@ export function normalizeFeatureName(name: string): string {
   return name.normalize("NFC").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-/** figma:<fileKey>[ (名)] → figma:<fileKey>；**先判 `figma:`/`pen:` 前缀**，其余含路径分隔符/绝对路径 → path.relative(rootPath, src) posix+lower
- * （相对结果以 `..` 开头或仍为绝对路径（跨盘符）→ 原样 lower）；pen:<rel> → posix+lower（含分隔符仍走 pen 归一化）；其他 → lower。 */
+/** figma:<fileKey>[ (名)] → figma:<fileKey>；**先判 `figma:`/`pen:` 前缀**，其余**绝对路径** → path.relative(rootPath, src) posix+lower
+ * （相对结果以 `..` 开头或仍为绝对路径（跨盘符）→ 原样 lower）；**非绝对但含分隔符** → 原样 posix+lower（不经 cwd 解析）；
+ * pen:<rel> → 前缀后 trim 再 posix+lower（含分隔符仍走 pen 归一化）；其他 → lower。 */
 export function normalizeDesignSource(source: string, rootPath: string): string {
   if (source.startsWith(FIGMA_PREFIX)) {
     const key = source.slice(FIGMA_PREFIX.length).trim().split(/\s+/)[0];
     return `${FIGMA_PREFIX}${key}`;
   }
   if (source.startsWith(PEN_PREFIX)) {
-    return `${PEN_PREFIX}${toPosix(source.slice(PEN_PREFIX.length)).toLowerCase()}`;
+    return `${PEN_PREFIX}${toPosix(source.slice(PEN_PREFIX.length).trim()).toLowerCase()}`;
   }
   const pathApi = WINDOWS_ABSOLUTE.test(source) ? path.win32 : path.posix;
-  if (!pathApi.isAbsolute(source) && !source.includes("/") && !source.includes("\\")) {
-    return source.toLowerCase();
+  if (!pathApi.isAbsolute(source)) {
+    return source.includes("/") || source.includes("\\")
+      ? toPosix(source).toLowerCase()
+      : source.toLowerCase();
   }
   const relative = pathApi.relative(rootPath, source);
   if (isOutsideRoot(relative) || pathApi.isAbsolute(relative)) return source.toLowerCase();
@@ -133,6 +136,7 @@ function collectUnits(project: FeatureAlignmentInput): FeatureUnit[] {
     const name = frozenName === undefined || frozenName === "" ? run.featureName : frozenName;
     if (name === null || name === "") continue;
 
+    /** 单位键 = caseSetId|featureKey；键成分（caseSetId/featureKey/source/name）不含 `|`，拼接不产生歧义。 */
     const key = `${run.caseSetId}|${run.featureKey}`;
     let unit = units.get(key);
     if (unit === undefined) {
@@ -164,6 +168,7 @@ function mergeProjectFeatures(project: FeatureAlignmentInput): FeatureAccumulato
   const merged = new Map<string, FeatureAccumulator>();
 
   for (const unit of collectUnits(project)) {
+    /** 组键 = 归一化设计源|归一化功能名；键成分（caseSetId/featureKey/source/name）不含 `|`，拼接不产生歧义。 */
     const key = `${normalizeDesignSource(unit.source, project.rootPath)}|${normalizeFeatureName(unit.name)}`;
     const existing = merged.get(key);
     if (existing === undefined) {

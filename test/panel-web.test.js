@@ -1464,6 +1464,14 @@ test("panel web: compare HTML 转义（项目名/失败域注入不裸出）", a
   assert.match(html.body, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });
 
+test("panel web: compare 功能对齐通过率收敛到 ≤100%（异常 passRate 钳制）", async () => {
+  const { deps } = await makeAlignedProjects({ passed: 8, total: 4 });
+  const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
+  assert.equal(html.status, 200);
+  assert.doesNotMatch(html.body, /200%/, "对齐表通过率不超 100%");
+  assert.match(html.body, /100%/, "钳制后显示 100%");
+});
+
 async function makeAlignedProjects({ source = "figma:KEY", featureName = "登录流程", passed = 2, total = 4, flaky = 0, passedB, totalB, flakyB } = {}) {
   const store = new MemoryStore();
   const workspace = makeTempDir("aos-panel-web-align-");

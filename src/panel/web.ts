@@ -1512,7 +1512,7 @@ function renderFeatureAlignmentSection(view: PanelCompareView): string {
     )} · ${group.entries.length} 个项目</span>`;
     const rows = group.entries.map((entry) => [
       escapeHtml(entry.project),
-      entry.passRate === null ? "—" : `${Math.round(entry.passRate * 100)}%`,
+      entry.passRate === null ? "—" : `${Math.round(clampPassRate(entry.passRate) * 100)}%`,
       String(entry.runs),
       String(entry.flaky),
       String(entry.pendingVerdicts),

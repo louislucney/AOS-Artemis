@@ -70,6 +70,22 @@ test("normalizeDesignSource relativizes absolute paths against the project root"
   );
 });
 
+test("normalizeDesignSource keeps separator-bearing relative paths independent of root", () => {
+  assert.equal(
+    normalizeDesignSource(".artemis/design/flows.json", "/work/a"),
+    ".artemis/design/flows.json"
+  );
+  assert.equal(
+    normalizeDesignSource(".artemis/design/Flows.JSON", "/work/b"),
+    ".artemis/design/flows.json"
+  );
+  assert.equal(
+    normalizeDesignSource(".artemis/design/flows.json", "/work/a"),
+    normalizeDesignSource(".artemis/design/flows.json", "/work/b")
+  );
+  assert.equal(normalizeDesignSource("Sub\\Login.pen", "/work/a"), "sub/login.pen");
+});
+
 test("normalizeDesignSource keeps out-of-root and cross-drive paths as lowercased originals", () => {
   assert.equal(normalizeDesignSource("/Other/Flows.JSON", "/work/a"), "/other/flows.json");
   assert.equal(
@@ -81,6 +97,7 @@ test("normalizeDesignSource keeps out-of-root and cross-drive paths as lowercase
 test("normalizeDesignSource normalizes pen sources even when they carry separators", () => {
   assert.equal(normalizeDesignSource("pen:Sub\\Login.PEN", "/work/a"), "pen:sub/login.pen");
   assert.equal(normalizeDesignSource("pen:Sub/Login.PEN", "/work/a"), "pen:sub/login.pen");
+  assert.equal(normalizeDesignSource("pen: Sub/Login.PEN", "/work/a"), "pen:sub/login.pen");
   assert.notEqual(
     normalizeDesignSource("pen:sub/login.pen", "/work/a"),
     normalizeDesignSource("/work/a/sub/login.pen", "/work/a")
