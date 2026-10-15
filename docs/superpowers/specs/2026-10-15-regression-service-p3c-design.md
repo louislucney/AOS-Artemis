@@ -53,7 +53,7 @@
 
 - 只读：无子进程/无网络/无写盘（沿用 `/panel` 语义）；全部输出 `escapeHtml`。
 - 数据来源：中央 store（`listSuiteRuns`/`listRegressionTasks`/`listRunners`/`listSchedules` 按项目 bounded 调用）＋ L1 既有软读（灯色）。**不读取批次清单**（磁盘不可达项目也要有数）。
-- 性能：每项目 **DB 往返 ≤3**（project 解析＋运行＋用例批量，见 D10）；跑数上限一并入缓存（`PanelWebCache`，TTL 沿用 `AOS_PANEL_TTL_MS`）。项目数超限（>50）时截断并如实标注。
+- 性能：每项目 **DB 往返 ≤3**（project 解析＋运行＋用例批量，见 D10）；跑数上限一并入缓存（`PanelWebCache`，TTL 沿用 `AOS_PANEL_TTL_MS`）。输出**封顶 50 行**——**先关注优先排序、后截断**（避免红灯项目被 overview 的最后活跃序误丢）并如实标注。
 - 测试口径：pg-mem/内存 store、假目录、不触网；测试跑 `dist/`。
 - 文案中文、代码英文；默认无注释；相对导入 `.js`。
 - 完工同步：DESIGN.md 新增 §13.112、README（面板章节）、AGENTS.md（面板行）。
