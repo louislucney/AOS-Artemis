@@ -119,6 +119,29 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。
 
+## 鉴权（可选静态令牌，P3d，§13.113）
+
+两个对外网络面支持**可选静态共享令牌**（默认不设＝现状，对既有内网部署零破坏）：
+
+| 变量 | 作用面 | 说明 |
+|------|--------|------|
+| `AOS_HTTP_TOKEN` | `serve --http` 全部路由 | 设置后**先鉴权后路由**：除 `GET\|HEAD /` 与 `GET\|HEAD /healthz` 外，未认证一律 401（含禁用路由与未知路径） |
+| `AOS_RUNNER_ARTIFACT_TOKEN` | runner 产物服务 `/artifact*` | 设置后 `/artifact/*`（GET/HEAD）强制认证；`GET\|HEAD /healthz` 豁免；令牌不随心跳广播、面板链接保持纯 URL |
+| `AOS_HTTP_ALLOW_INSECURE` | `serve --http` 安全默认逃生门 | `=1` 显式放行「非 loopback 且未设令牌」并打印醒目 WARN |
+
+令牌只读**进程 env**（不是项目 `.env`，也无 CLI flag），日志与 `install` 输出只回 masked 预览。三种等价凭据形式：
+
+```bash
+curl -H "Authorization: Bearer $AOS_HTTP_TOKEN"  http://host:8765/panel.json   # 1) Bearer（脚本/MCP 客户端）
+curl -u "any:$AOS_HTTP_TOKEN"                     http://host:8765/panel.json   # 2) Basic（用户名任意/空，密码＝令牌）
+curl "http://host:8767/artifact/...?t=$TOKEN"                                   # 3) ?t= —— 仅产物服务（书签/直链）
+```
+
+- **serve 安全默认**：绑定**非 loopback**（`0.0.0.0`/`::`/LAN 地址）且未设令牌且未显式放行 → 启动失败并给指引（`exit 2`）；`AOS_HTTP_ALLOW_INSECURE=1` 可放行（仅限可信网络）。loopback 绑定不受此限。401 带 `WWW-Authenticate: Basic realm="aos-mcp"`（`HEAD` 抑制 body）。
+- **install 注入（幂等）**：`AOS_HTTP_TOKEN` 在 `install --mode http` 的操作者进程 env 中时，生成的客户端条目自动带 `headers.Authorization: Bearer <token>`（token 缺失则不带并提示手配）。**令牌变更后配置视为「已存在但不同」→ 必须 `--force` 重装**才会更新。
+- **浏览器流指引**：令牌启用时，首次打开 `/panel*`（GET）会触发 `WWW-Authenticate` Basic 弹窗；认证按 origin 缓存后，同源 `/panel/api/*` 的 `fetch` 会自动携带凭据（各环境/浏览器或有差异）。**建议先打开一次页面再点动作按钮**。
+- **`?t=` 取舍**：查询参数方式便于书签/直链，但令牌会进入 URL、浏览器历史与访问日志——仅在可信环境使用，或改用 Bearer/Basic。HTTP 服务**不提供**查询参数通道（仅产物服务）。
+
 ## 任务统计与组合工具
 
 - `aos_tasks`：列出本项目 `mobile_run_task` 记录（case id / trace / 状态 / 模型 / 时间），默认先向 artemis 同步完成态；后台每 30s 自动同步；即时报错也会记为 `failed` 终态，生成用例的 `case_id` 由任务描述精确匹配回填。
@@ -138,7 +161,7 @@ node dist/cli.js usage --project <名称> --days 30
 node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:8766（端口占用 exit 2）
 ```
 
-- Web 看板：`usage --web` 提供 `GET /usage`（HTML）与 `GET /usage.json`（同源 JSON）；HTTP 模式下跟随服务器绑定自动挂载同一路由，`AOS_USAGE_WEB=0` 关闭页面。v1 纯只读、无鉴权（与内网部署口径一致）、无处置标记。
+- Web 看板：`usage --web` 提供 `GET /usage`（HTML）与 `GET /usage.json`（同源 JSON）；HTTP 模式下跟随服务器绑定自动挂载同一路由（纳入 `AOS_HTTP_TOKEN` 闸门；见「鉴权」段），`AOS_USAGE_WEB=0` 关闭页面。v1 纯只读、无处置标记；独立 `usage --web` CLI 看板为 loopback 只读、暂不带鉴权（另立小票）。
 - 环境变量（进程/客户端 env，不读项目 `.env`）：`AOS_USAGE=0` 关闭采集（历史数据仍可查询与展示）、`AOS_USAGE_RETENTION_DAYS`（保留天数，默认 90，0 不清理）、`AOS_USAGE_MAX_EVENTS`（每项目事件上限，默认 50000，超出丢最旧）、`AOS_USAGE_WEB=0`（关闭 `/usage` 与 `/usage.json` 路由）。
 
 ### 多项目总览面板（overview-panel）
@@ -151,7 +174,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读�
 
 - **多项目对比**（`?view=compare` ＋ `/panel.json?view=compare`，§13.112；`panel --web` 独立看板自动可用）：补上「项目」这一层的只读运营面，回答「哪个项目需要关注」——行＝项目，列为**项目**（名链接项目页＋接入健康灯，复用 L1 行）｜**最近批次**（时间·门禁·通过率）｜**趋势**（内联 SVG 迷你图，最近 ≤10 批通过率）｜**质量**（flaky·失败域 top3）｜**待办**（未裁决失败·未建单应用缺陷·任务积压·failed）｜**运行**（runner 在线/设备·定时回归 enabled/最近触发）。**口径**：数据源以**中央台账为主**（磁盘不可达的项目机同样可比，不读批次清单）；窗口＝**份血统运行**最近 **20** 批，「最近批次」列与排序键取台账窗口最新一批（L1 的「最新批次」软读列与灯不变）；`flaky`＝窗口内运行级之和、失败域取窗口合并 top3；**两列待办口径不同**——未裁决失败＝窗内**发生次数**，未建单应用缺陷＝按（份,用例）**最新裁决去重**且未建单（与统计视图/一键建单同源）；任务积压为**最近 200 条近似**、runner 为**最近 100 条近似**，精确待办以**归因队列**（近 10 次口径）为准。**排序**＝固定「关注优先」（无批次 → 门禁 fail → 通过率升 → 名），**先排序后截断前 50** 并标注；**行级降级**——单项目台账读取失败只标注该行（`读取失败：…`），不整页失败。与 **L1 总览**的关系：同源列表与灯、独立视图、只加互链；与**统计下钻**的关系：统计是单项目「功能→用例」维度，对比是跨项目「项目」维度。**严格只读**（无子进程/无网络/无写盘），`?view=compare` 带 `project` 参数时不命中（回退项目页）。
 
-- **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用份创建回归任务，body ≤256KB，超限 413；重复提交会创建多个任务，无幂等去重）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）、`POST /panel/api/issues`（应用缺陷**一键建 Jira 单**：`{project, items:[{runId,caseId}]}`≤20 条，逐条建单＋证据评论/附件＋回写单号；`dryRun` 预览不触网；仅对存在且非 passed、无裁决或裁决为 app-defect、未建单的用例生效，已有单号返回 existing 幂等）。**v1 无鉴权**——仅在受控内网部署，任何能访问端口者可写任务、裁决与**建立真实 Jira 单（外部副作用）**；独立 CLI 看板保持只读；`AOS_PANEL_WEB=0` 不影响动作层（两开关相互独立）。
+- **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用份创建回归任务，body ≤256KB，超限 413；重复提交会创建多个任务，无幂等去重）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）、`POST /panel/api/issues`（应用缺陷**一键建 Jira 单**：`{project, items:[{runId,caseId}]}`≤20 条，逐条建单＋证据评论/附件＋回写单号；`dryRun` 预览不触网；仅对存在且非 passed、无裁决或裁决为 app-defect、未建单的用例生效，已有单号返回 existing 幂等）。**可选令牌保护**——HTTP 模式下受 `AOS_HTTP_TOKEN` 闸门（先鉴权后路由；`serve` 非 loopback 未设令牌则启动失败的安全默认，见「鉴权」段）；**未设令牌时**任何能访问端口者可写任务、裁决与**建立真实 Jira 单（外部副作用）**，故仅在受控内网部署；独立 CLI 看板保持只读；`AOS_PANEL_WEB=0` 不影响动作层（两开关相互独立）。
 - **改进出口（统计下钻，§13.111）**：统计视图按最新裁决呈现三个出口——**案例问题**（case-defect，指引修订期望/重新生成）、**执行偏差环境清单**（execution-deviation，按设备/端分组：次数/涉及功能/最近/备注摘要）、**应用缺陷**（app-defect，勾选 → 一键建单）。**一键建单为外部副作用**：建单走项目 Jira 凭证与 `jira_evidence_post` 同源证据逻辑（失败 best-effort 不回滚）；缺省值可写项目 `.env` 的 `JIRA_ISSUE_PROJECT`（必填缺省）/`JIRA_ISSUE_TYPE`（默认 `Bug`）/`JIRA_ISSUE_LABELS`（逗号分隔），表单输入优先；已建单条目显示单号纯文本（面板无 Jira 站点来源、不出链接）。**并发双开为已接受限制**（同条目并发可能各建一张；顺序重复点击幂等）。
 - 数据源：批次清单 `.artemis/design/runs/`（`suite run`/`loop` 自动落盘，权威）+ PG 台账（含 `regression_tasks`/`suite_runs`/`suite_run_cases`，裁决写回 `suite_run_cases.verdict*`）+ 项目软读（无子进程/无网络）；磁盘不可达的项目降级为"仅台账"；缺件/清理/高版本清单一律如实占位，不猜测。
 - **深探**（HTTP 模式）：项目页懒建 Runtime 后取纯读子集（active Profile/存储/artemis 子进程/桥/日志/构建状态；**不拉起子进程、不触网**）；URL 加 `?ios=1` 显式执行 **iOS 环境检测**（调用本地 appium CLI，结果缓存 60s）；独立 CLI 进程无深探层。
@@ -174,7 +197,7 @@ node dist/cli.js suite task release <taskId> [--force]   # 管理侧救济：cla
 - 命名与登记：`--name <n>`＝心跳/登记名（缺省 hostname）；runner 执行的任务子运行 `suite_runs.runner` 记录该名（显式透传，不影响手动运行归因）。环境变量：`AOS_RUNNER_POLL_MS`（5000）、`AOS_RUNNER_HEARTBEAT_MS`（30000）、`AOS_RUNNER_TTL_MS`（在线判定，90000）、`AOS_RUNNER_MAX_ATTEMPTS`（失败重试上限，默认 3）、`AOS_RUNNER_ARTIFACT_PORT/HOST`、`AOS_RUNNER_ADVERTISE_URL`（LAN 无 DNS 时用 IP 覆盖基址）。
 - 失败重试：任务未达终态（如引用份失效、执行前置失败）自动释放重试；**连续失败达上限置 `failed`**（不再自动重试、不阻塞后续任务；修复引用后请新建任务）。`suite task release` 对 `claimed_by` 为空的数据异常态需配 `--force`。
 - 领取条件：**任务目标端 ⊆ 该 runner 的设备端集合**（缺端不领）；**双端任务需单机双端 runner**（两端分属两台机时请拆单端任务或手动执行）；面板对「pending 且无 runner 可覆盖」会给提示。
-- 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需；启动打印醒目告警）、**无鉴权**，暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
+- 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需；启动打印醒目告警）；**可选令牌 `AOS_RUNNER_ARTIFACT_TOKEN`**——设置后 `/artifact*` 强制认证（Bearer/Basic/`?t=`，`GET|HEAD /healthz` 豁免，见「鉴权」段），未设则维持「无鉴权」内网口径；暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
 - 崩溃/失联救济：runner 重启自动释放自己的未完成领取；机器报废等场景用 `suite task release`（默认要求该执行机离线）。无 runner 时手动路径不变：`suite run --task <id> --device <serial>`（claimed 不阻塞手动执行）。见 DESIGN §13.109。
 - **定时回归**：`node dist/cli.js suite schedule add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（runner 到点**自动建任务并执行**；引用按功能实时取最新份；**同名拒绝**；`list/show/enable/disable/remove` 管理，`--json` 可选）；`AOS_RUNNER_SCHEDULES=0` 关闭触发。注意：platforms 需与项目内至少一台 runner 的设备端匹配，否则任务会**逐窗口累积 pending**（在面板任务列表关注）。面板项目页「定时回归」区块与任务页「来源」可见。见 DESIGN §13.110。
 
