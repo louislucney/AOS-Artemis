@@ -28,6 +28,7 @@ import {
   type PanelTaskDetail
 } from "./overview.js";
 import { PANEL_IOS_PROBE_TTL_MS, type PanelDeepProbe } from "./deep.js";
+import { buildPanelCompare, type PanelCompareView } from "./compare.js";
 
 /** 总览面板 Web 处理（overview-panel T3/T4，DESIGN §13.97/§13.98）：
  * 服务端渲染 HTML（内联 CSS、零依赖）+ 同源 JSON；只读、默认 loopback；
@@ -103,6 +104,7 @@ export function panelCacheTtlFrom(env: NodeJS.ProcessEnv): number {
 
 type PanelView =
   | { kind: "overview"; overview: PanelOverview }
+  | { kind: "compare"; compare: PanelCompareView }
   | { kind: "project"; rootPath: string; detail: PanelProjectDetail }
   | { kind: "task"; rootPath: string; detail: PanelTaskDetail }
   | { kind: "review"; rootPath: string; detail: { items: PanelReviewItem[]; warnings: string[] } }
@@ -165,6 +167,9 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   };
   const projectKey = trimmed(url.searchParams.get("project"));
   if (projectKey === null) {
+    if (trimmed(url.searchParams.get("view")) === "compare") {
+      return { kind: "compare", compare: await buildPanelCompare(panelDeps) };
+    }
     return { kind: "overview", overview: await buildPanelOverview(panelDeps) };
   }
   const resolved = await resolveProjectKey(deps, projectKey);
@@ -206,6 +211,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
 
 function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "overview") return { ...view.overview, view: "overview" };
+  if (view.kind === "compare") return { ...view.compare, view: "compare" };
   if (view.kind === "project") return { ok: true, view: "project", ...view.detail };
   if (view.kind === "task") return { ok: true, view: "task", ...view.detail };
   if (view.kind === "review") return { ok: true, view: "review", ...view.detail };
@@ -1345,6 +1351,68 @@ function renderEvidence(links: PanelBatchDetail["cases"][number]["evidence"]): s
     .join("<br>");
 }
 
+function renderComparePage(view: PanelCompareView, cacheNote: string): string {
+  const rows = view.projects.map((project) => {
+    const batch = project.latestBatch;
+    const latest =
+      batch === null
+        ? '<span class="muted">无批次</span>'
+        : `${batch.gate === null ? "—" : batch.gate === "pass" ? '<span class="gate-pass">通过</span>' : '<span class="gate-fail">未通过</span>'}` +
+          (batch.passRate === null ? "" : ` · ${Math.round(batch.passRate * 100)}%`);
+    const trend =
+      project.trend.length === 0
+        ? "—"
+        : escapeHtml(
+            project.trend.map((point) => (point.passRate === null ? "—" : `${Math.round(point.passRate * 100)}%`)).join(" → ")
+          );
+    const quality = [
+      `flaky ${project.flaky}`,
+      project.domains.length === 0
+        ? ""
+        : project.domains.map((entry) => `${escapeHtml(entry.domain)}×${entry.count}`).join("、"),
+      project.pendingVerdicts > 0 ? `待裁决 ${project.pendingVerdicts}` : "",
+      project.unissuedAppDefects > 0 ? `未建单 ${project.unissuedAppDefects}` : ""
+    ]
+      .filter((part) => part !== "")
+      .join("；") || "—";
+    const backlog = `${project.taskBacklog.pending}/${project.taskBacklog.claimed}/${project.taskBacklog.running}/${project.taskBacklog.failed}`;
+    const run = `在线 ${project.runners.online} · 设备 ${project.runners.devices} · 计划 ${project.schedules.enabled}`;
+    const error =
+      project.error === null ? "" : `<div class="note">读取降级：${escapeHtml(project.error)}</div>`;
+    return [
+      `<a href="${escapeHtml(projectHref(project.rootPath))}"><code>${escapeHtml(project.name)}</code></a>${error}`,
+      latest,
+      trend,
+      quality,
+      backlog,
+      run
+    ];
+  });
+  const warnings = view.warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("");
+  return page(
+    "跨项目对比",
+    [
+      "<header>",
+      "<h1>跨项目对比</h1>",
+      `<p class="muted">生成时间 ${escapeHtml(view.generatedAt)} · 项目 ${view.projects.length} 个${
+        view.truncated ? "（已截断）" : ""
+      } · ${escapeHtml(cacheNote)}</p>`,
+      warnings,
+      "</header>",
+      "<main>",
+      '<section id="compare">',
+      "<h2>项目对比</h2>",
+      renderTable(
+        ["项目", "最近批次", "趋势", "质量", "待办(待/领/跑/败)", "运行"],
+        rows,
+        "暂无项目"
+      ),
+      "</section>",
+      "</main>"
+    ].join("\n")
+  );
+}
+
 function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): string {
   const { detail } = view;
   const meta = [
@@ -1492,6 +1560,7 @@ function page(title: string, bodyParts: string, refreshSeconds?: number): string
 function renderPanelHtml(view: PanelView): string {
   const cacheNote = "缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）";
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);
+  if (view.kind === "compare") return renderComparePage(view.compare, cacheNote);
   if (view.kind === "project") return renderProjectPage(view, cacheNote);
   if (view.kind === "task") return renderTaskPage(view);
   if (view.kind === "review") return renderReviewPage(view);
