@@ -1,6 +1,12 @@
 import { collectVerdictExits } from "../tasks/verdict-exits.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import { errorMessage } from "../util.js";
+import type { SuiteRunRecord } from "../db/types.js";
+import {
+  alignFeatureRuns,
+  type FeatureAlignmentGroup,
+  type FeatureAlignmentInput
+} from "./feature-alignment.js";
 import {
   buildPanelOverview,
   type PanelDeps,
@@ -46,6 +52,7 @@ export interface PanelCompareView {
   projects: PanelCompareProject[];
   truncated: boolean;
   warnings: string[];
+  featureAlignment: { groups: FeatureAlignmentGroup[]; unmatched: number };
 }
 
 /** gate 归一：非 pass/fail 一律 null（如 canceled/skipped 等门禁结果不入排序信号）。 */
@@ -108,11 +115,12 @@ async function buildCompareRow(
   deps: PanelDeps,
   row: PanelProjectRow,
   nowMs: number
-): Promise<PanelCompareProject> {
+): Promise<{ row: PanelCompareProject; runs: FeatureAlignmentInput["runs"]; sets: FeatureAlignmentInput["sets"] }> {
   const base = emptyCompareRow(row);
+  let lineage: SuiteRunRecord[] = [];
   try {
     const runs = await deps.store.listSuiteRuns(row.rootPath, { limit: PANEL_COMPARE_RUNS_LIMIT });
-    const lineage = runs.filter((run) => run.featureKey !== null).slice(0, PANEL_COMPARE_WINDOW);
+    lineage = runs.filter((run) => run.featureKey !== null).slice(0, PANEL_COMPARE_WINDOW);
 
     if (lineage.length > 0) {
       const latest = lineage[0];
@@ -186,7 +194,20 @@ async function buildCompareRow(
   } catch (error) {
     base.error = errorMessage(error);
   }
-  return base;
+
+  let sets: FeatureAlignmentInput["sets"] = null;
+  try {
+    const caseSets = await deps.store.listCaseSets(row.rootPath);
+    sets = caseSets.map((set) => ({
+      id: set.id,
+      source: set.source,
+      features: set.features.map((feature) => ({ key: feature.key, name: feature.name }))
+    }));
+  } catch {
+    sets = null;
+  }
+
+  return { row: base, runs: lineage, sets };
 }
 
 export async function buildPanelCompare(deps: PanelDeps): Promise<PanelCompareView> {
@@ -195,8 +216,11 @@ export async function buildPanelCompare(deps: PanelDeps): Promise<PanelCompareVi
   const overview = await buildPanelOverview(deps);
 
   const projects: PanelCompareProject[] = [];
+  const builds: Array<{ row: PanelCompareProject; runs: FeatureAlignmentInput["runs"]; sets: FeatureAlignmentInput["sets"] }> = [];
   for (const row of overview.projects) {
-    projects.push(await buildCompareRow(deps, row, nowMs));
+    const built = await buildCompareRow(deps, row, nowMs);
+    builds.push(built);
+    projects.push(built.row);
   }
 
   const { rows, truncated } = selectCompareRows(projects, PANEL_COMPARE_ROW_CAP);
@@ -205,6 +229,15 @@ export async function buildPanelCompare(deps: PanelDeps): Promise<PanelCompareVi
     warnings.push(`项目数 ${projects.length} 超上限 ${PANEL_COMPARE_ROW_CAP}：仅显示关注序前 ${PANEL_COMPARE_ROW_CAP}`);
   }
 
+  const featureAlignment = alignFeatureRuns(
+    builds.map((built) => ({
+      name: built.row.name,
+      rootPath: built.row.rootPath,
+      runs: built.runs,
+      sets: built.sets
+    }))
+  );
+
   return {
     ok: true,
     generatedAt: new Date(nowMs).toISOString(),
@@ -212,6 +245,7 @@ export async function buildPanelCompare(deps: PanelDeps): Promise<PanelCompareVi
     window: { runs: PANEL_COMPARE_WINDOW },
     projects: rows,
     truncated,
-    warnings
+    warnings,
+    featureAlignment
   };
 }

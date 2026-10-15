@@ -465,3 +465,178 @@ test("panel compare: 路由/JSON（view=compare 无 project → compare；带 pr
   const projectPayload = JSON.parse((await handlePanelRequest(projectUrl, deps)).body);
   assert.equal(projectPayload.view, "project", "带 project 参数 + view=compare → 回退项目页");
 });
+
+test("panel compare: 功能对齐（两项目同源同名→groups=1/entries=2/指标正确）", async () => {
+  const store = new MemoryStore();
+  const repo = makeReadyRepo();
+  const dirA = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  const dirB = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dirA, name: "align-a" });
+  await store.upsertProject({ rootPath: dirB, name: "align-b" });
+
+  const setA = await store.recordCaseSet({
+    rootPath: dirA,
+    source: `${dirA}/.artemis/design/flows.json`,
+    basename: "tests",
+    features: [
+      { key: "f-a", name: "登录流程", caseCount: 1, screens: [], jsonPath: "/x.json", mdPath: "/x.md", xlsxPath: "/x.xlsx" }
+    ]
+  });
+  const setB = await store.recordCaseSet({
+    rootPath: dirB,
+    source: `${dirB}/.artemis/design/flows.json`,
+    basename: "tests",
+    features: [
+      { key: "f-b", name: "登录流程", caseCount: 1, screens: [], jsonPath: "/x.json", mdPath: "/x.md", xlsxPath: "/x.xlsx" }
+    ]
+  });
+
+  await store.recordSuiteRun({
+    rootPath: dirA,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: mkRun({
+      caseSetId: setA.id,
+      featureKey: "f-a",
+      featureName: "登录流程",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 8,
+      passed: 4,
+      failed: 4,
+      flaky: 1
+    }),
+    cases: [
+      mkCase({ caseId: "c1", featureKey: "f-a", status: "failed", verdict: null }),
+      mkCase({ caseId: "c2", featureKey: "f-a", status: "error", verdict: null })
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: dirB,
+    createdAt: "2026-10-14T11:00:00.000Z",
+    run: mkRun({
+      caseSetId: setB.id,
+      featureKey: "f-b",
+      featureName: "登录流程",
+      finishedAt: "2026-10-14T11:05:00.000Z",
+      total: 4,
+      passed: 2,
+      failed: 2,
+      flaky: 0
+    }),
+    cases: []
+  });
+
+  const view = await buildPanelCompare({ store, serviceRepo: repo, buildStale: false, env: {} });
+  assert.equal(view.featureAlignment.unmatched, 0);
+  assert.equal(view.featureAlignment.groups.length, 1);
+  const group = view.featureAlignment.groups[0];
+  assert.equal(group.displayName, "登录流程");
+  assert.equal(group.sourceLabel, `${dirA}/.artemis/design/flows.json`);
+  assert.equal(group.entries.length, 2);
+  const entryA = group.entries.find((entry) => entry.project === "align-a");
+  const entryB = group.entries.find((entry) => entry.project === "align-b");
+  assert.equal(entryA.passRate, 0.5);
+  assert.equal(entryA.runs, 1);
+  assert.equal(entryA.flaky, 1);
+  assert.equal(entryA.pendingVerdicts, 2);
+  assert.equal(entryA.latestAt, "2026-10-14T10:05:00.000Z");
+  assert.equal(entryB.passRate, 0.5);
+  assert.equal(entryB.runs, 1);
+  assert.equal(entryB.flaky, 0);
+  assert.equal(entryB.pendingVerdicts, 0);
+  assert.equal(entryB.latestAt, "2026-10-14T11:05:00.000Z");
+});
+
+test("panel compare: 功能对齐（单项目→unmatched=1 且无组）", async () => {
+  const { store, repo, dir } = await makeHarness();
+  const set = await store.recordCaseSet({
+    rootPath: dir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      { key: "f-1", name: "登录流程", caseCount: 1, screens: [], jsonPath: "/x.json", mdPath: "/x.md", xlsxPath: "/x.xlsx" }
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: mkRun({ caseSetId: set.id, featureKey: "f-1", featureName: "登录流程" }),
+    cases: []
+  });
+
+  const view = await buildPanelCompare({ store, serviceRepo: repo, buildStale: false, env: {} });
+  assert.deepEqual(view.featureAlignment.groups, []);
+  assert.equal(view.featureAlignment.unmatched, 1);
+});
+
+test("panel compare: 功能对齐（listCaseSets 抛错→该项目不进组且项目级行照常）", async () => {
+  const store = new MemoryStore();
+  const repo = makeReadyRepo();
+  const good = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  const bad = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: good, name: "good" });
+  await store.upsertProject({ rootPath: bad, name: "bad" });
+
+  const set = (p) =>
+    store.recordCaseSet({
+      rootPath: p,
+      source: "figma:SHARED",
+      basename: "tests",
+      features: [
+        { key: "f-1", name: "登录流程", caseCount: 1, screens: [], jsonPath: "/x.json", mdPath: "/x.md", xlsxPath: "/x.xlsx" }
+      ]
+    });
+  const sGood = await set(good);
+  const sBad = await set(bad);
+
+  await store.recordSuiteRun({
+    rootPath: good,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: mkRun({ caseSetId: sGood.id, featureKey: "f-1", featureName: "登录流程", gateResult: "pass", total: 4, passed: 4, failed: 0 }),
+    cases: []
+  });
+  await store.recordSuiteRun({
+    rootPath: bad,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: mkRun({ caseSetId: sBad.id, featureKey: "f-1", featureName: "登录流程", gateResult: "pass", total: 4, passed: 4, failed: 0 }),
+    cases: []
+  });
+
+  const throwingStore = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "listCaseSets") {
+        return async (rootPath) => {
+          if (rootPath === bad) throw new Error("sets boom");
+          return target.listCaseSets(rootPath);
+        };
+      }
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+
+  const view = await buildPanelCompare({ store: throwingStore, serviceRepo: repo, buildStale: false, env: {} });
+  assert.equal(view.projects.length, 2);
+  const badRow = view.projects.find((row) => row.name === "bad");
+  assert.equal(badRow.error, null, "listCaseSets 失败不置行级 error");
+  assert.notEqual(badRow.latestBatch, null, "项目级批次照常聚合");
+  assert.equal(view.featureAlignment.groups.length, 0, "bad 不进组 → 仅 good 单项目无组");
+  assert.equal(view.featureAlignment.unmatched, 1);
+});
+
+test("panel compare: JSON 含 featureAlignment（加性字段不破坏既有字段）", async () => {
+  const { store, repo, dir } = await makeHarness();
+  const json = await handlePanelRequest(new URL("http://x/panel.json?view=compare"), {
+    store,
+    env: {},
+    serviceRepo: repo,
+    buildStale: false
+  });
+  const payload = JSON.parse(json.body);
+  assert.equal(payload.view, "compare");
+  assert.deepEqual(payload.window, { runs: 20 }, "既有 window 字段不变");
+  assert.ok(Array.isArray(payload.projects), "既有 projects 字段不变");
+  assert.ok(payload.featureAlignment, "featureAlignment 存在");
+  assert.deepEqual(Object.keys(payload.featureAlignment).sort(), ["groups", "unmatched"]);
+  assert.ok(Array.isArray(payload.featureAlignment.groups));
+  assert.equal(typeof payload.featureAlignment.unmatched, "number");
+});

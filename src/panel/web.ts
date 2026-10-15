@@ -1487,6 +1487,52 @@ function renderCompareRow(project: PanelCompareProject): string[] {
   ];
 }
 
+function renderFeatureAlignmentSection(view: PanelCompareView): string {
+  const { groups, unmatched } = view.featureAlignment;
+  const scope = [
+    "匹配规则：设计源归一化（figma:fileKey / pen:相对路径 / 相对化路径）＋功能名归一（NFC·trim·折叠空白·小写）一致才成组",
+    `窗口＝份血统最近 ${view.window.runs} 批`,
+    "误报口径：flaky 为窗口内累加；未裁决＝状态非 passed 且未裁决的用例数",
+    `未匹配 ${unmatched} 个（仅单项目出现）`
+  ].join("；");
+
+  if (groups.length === 0) {
+    return [
+      '<section id="feature-alignment">',
+      "<h2>功能对齐（跨项目）</h2>",
+      `<p class="muted">${escapeHtml(scope)}</p>`,
+      '<p class="empty">暂无跨项目对齐的功能（同名同源在 ≥2 个项目出现才成组）</p>',
+      "</section>"
+    ].join("\n");
+  }
+
+  const blocks = groups.map((group) => {
+    const header = `${escapeHtml(group.displayName)} · <span class="muted">${escapeHtml(
+      group.sourceLabel
+    )} · ${group.entries.length} 个项目</span>`;
+    const rows = group.entries.map((entry) => [
+      escapeHtml(entry.project),
+      entry.passRate === null ? "—" : `${Math.round(entry.passRate * 100)}%`,
+      String(entry.runs),
+      String(entry.flaky),
+      String(entry.pendingVerdicts),
+      escapeHtml(entry.latestAt ?? "—")
+    ]);
+    return [
+      `<h3>${header}</h3>`,
+      renderTable(["项目", "通过率", "批次", "flaky", "未裁决", "最近"], rows, "—")
+    ].join("\n");
+  });
+
+  return [
+    '<section id="feature-alignment">',
+    "<h2>功能对齐（跨项目）</h2>",
+    `<p class="muted">${escapeHtml(scope)}</p>`,
+    blocks.join("\n"),
+    "</section>"
+  ].join("\n");
+}
+
 function renderComparePage(view: PanelCompareView, cacheNote: string): string {
   const rows = view.projects.map((project) => renderCompareRow(project));
   const warnings = view.warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("");
@@ -1525,6 +1571,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
         "暂无项目"
       ),
       "</section>",
+      renderFeatureAlignmentSection(view),
       "</main>"
     ].join("\n")
   );

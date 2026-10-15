@@ -1245,14 +1245,17 @@ function makeCompareRun({
   passed = 4,
   flaky = 0,
   failureDomains = {},
-  gateResult = "pass"
+  gateResult = "pass",
+  caseSetId = null,
+  featureKey = "f-1",
+  featureName = "登录流程"
 } = {}) {
   return {
     trigger: "cli",
     regressionTaskId: null,
-    caseSetId: null,
-    featureKey: "f-1",
-    featureName: "登录流程",
+    caseSetId,
+    featureKey,
+    featureName,
     platform: "android",
     device: "emulator-5554",
     appVersion: null,
@@ -1457,6 +1460,126 @@ test("panel web: compare HTML 转义（项目名/失败域注入不裸出）", a
   assert.equal(html.status, 200);
   assert.doesNotMatch(html.body, /<script>alert\(1\)<\/script>/, "项目名不裸出脚本标签");
   assert.doesNotMatch(html.body, /<img src=x/, "失败域不裸出标签");
+  assert.match(html.body, /&quot;&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(html.body, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
+async function makeAlignedProjects({ source = "figma:KEY", featureName = "登录流程", passed = 2, total = 4, flaky = 0, passedB, totalB, flakyB } = {}) {
+  const store = new MemoryStore();
+  const workspace = makeTempDir("aos-panel-web-align-");
+  const repo = makeReadyRepo();
+  const project = async (name, metrics) => {
+    const dir = path.join(workspace, name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "aos.config.jsonc"), JSON.stringify(baseConfig()), "utf-8");
+    fs.writeFileSync(path.join(dir, ".env"), COMPLETE_DOTENV, "utf-8");
+    await store.upsertProject({ rootPath: dir, name });
+    const set = await store.recordCaseSet({
+      rootPath: dir,
+      source,
+      basename: "tests",
+      features: [
+        { key: "f-1", name: featureName, caseCount: 1, screens: [], jsonPath: "/x.json", mdPath: "/x.md", xlsxPath: "/x.xlsx" }
+      ]
+    });
+    await store.recordSuiteRun({
+      rootPath: dir,
+      createdAt: "2026-10-14T10:00:00.000Z",
+      run: makeCompareRun({
+        finishedIso: "2026-10-14T10:05:00.000Z",
+        caseSetId: set.id,
+        featureKey: "f-1",
+        featureName,
+        ...metrics
+      }),
+      cases: []
+    });
+    return { dir, set };
+  };
+  const a = await project("align-a", { passed, total, flaky });
+  const b = await project("align-b", {
+    passed: passedB ?? passed,
+    total: totalB ?? total,
+    flaky: flakyB ?? flaky
+  });
+  const deps = { store, env: {}, workspaceRoot: workspace, serviceRepo: repo, buildStale: false };
+  return { a, b, store, workspace, repo, deps };
+}
+
+test("panel web: compare 功能对齐区块（表头/小表/口径说明/未匹配计数）", async () => {
+  const { store, workspace, repo, deps } = await makeAlignedProjects({
+    passed: 2,
+    total: 4,
+    flaky: 1,
+    passedB: 3,
+    totalB: 4,
+    flakyB: 0
+  });
+
+  // 第三个项目：唯一功能 → 未匹配
+  const dirC = path.join(workspace, "align-c");
+  fs.mkdirSync(dirC, { recursive: true });
+  fs.writeFileSync(path.join(dirC, "aos.config.jsonc"), JSON.stringify(baseConfig()), "utf-8");
+  fs.writeFileSync(path.join(dirC, ".env"), COMPLETE_DOTENV, "utf-8");
+  await store.upsertProject({ rootPath: dirC, name: "align-c" });
+  const setC = await store.recordCaseSet({
+    rootPath: dirC,
+    source: "figma:OTHER",
+    basename: "tests",
+    features: [
+      { key: "f-c", name: "注册流程", caseCount: 1, screens: [], jsonPath: "/x.json", mdPath: "/x.md", xlsxPath: "/x.xlsx" }
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: dirC,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: makeCompareRun({
+      finishedIso: "2026-10-14T10:05:00.000Z",
+      caseSetId: setC.id,
+      featureKey: "f-c",
+      featureName: "注册流程",
+      passed: 1,
+      total: 2
+    }),
+    cases: []
+  });
+
+  const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
+  assert.equal(html.status, 200);
+  assert.match(html.body, /功能对齐（跨项目）/, "区块标题");
+  assert.match(html.body, /<th>项目<\/th><th>通过率<\/th><th>批次<\/th><th>flaky<\/th><th>未裁决<\/th><th>最近<\/th>/, "小表列头");
+  assert.match(html.body, /登录流程/, "显示名");
+  assert.match(html.body, /figma:KEY/, "sourceLabel");
+  assert.match(html.body, /2 个项目/, "项目数");
+  assert.match(html.body, /align-a/, "项目 a 行");
+  assert.match(html.body, /align-b/, "项目 b 行");
+  assert.match(html.body, /50%/, "通过率（a 2/4）");
+  assert.match(html.body, /75%/, "通过率（b 3/4）");
+  assert.match(html.body, /匹配规则/, "口径说明：匹配规则");
+  assert.match(html.body, /窗口＝份血统最近 20 批/, "口径说明：窗口");
+  assert.match(html.body, /误报口径/, "口径说明：误报口径");
+  assert.match(html.body, /未匹配 1 个（仅单项目出现）/, "口径说明：未匹配计数");
+});
+
+test("panel web: compare 功能对齐空态（无组 → 说明行 + 未匹配计数）", async () => {
+  const { deps } = await makeHarness();
+  const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
+  assert.equal(html.status, 200);
+  assert.match(html.body, /功能对齐（跨项目）/, "区块仍渲染");
+  assert.match(html.body, /暂无跨项目对齐的功能/, "空态文案");
+  assert.match(html.body, /未匹配 0 个（仅单项目出现）/, "未匹配计数为 0");
+  assert.doesNotMatch(html.body, /<th>项目<\/th><th>通过率<\/th>/, "空态不渲染小表");
+});
+
+test("panel web: compare 功能对齐 HTML 转义（显示名/源注入不裸出）", async () => {
+  const { deps } = await makeAlignedProjects({
+    source: 'figma:KEY"><img src=x onerror=alert(1)>',
+    featureName: '"><script>alert(1)</script>'
+  });
+  const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
+  assert.equal(html.status, 200);
+  assert.doesNotMatch(html.body, /<script>alert\(1\)<\/script>/, "显示名不裸出脚本标签");
+  assert.doesNotMatch(html.body, /<img src=x/, "源不裸出标签");
   assert.match(html.body, /&quot;&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.match(html.body, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });
