@@ -211,6 +211,134 @@ test("install --help: prints usage, writes nothing, exits 0", () => {
   assert.equal(fs.existsSync(path.join(dir, ".cursor")), false);
 });
 
+test("install http: injects Authorization header when AOS_HTTP_TOKEN is set", () => {
+  const dir = makeTempProject({});
+  const previous = process.env.AOS_HTTP_TOKEN;
+  const token = "p3d-secret-token";
+  process.env.AOS_HTTP_TOKEN = token;
+  const logs = [];
+  try {
+    const code = runInstall(
+      ["--project", dir, "--mode", "http", "--url", "http://10.0.0.5:8765/"],
+      { log: (line) => logs.push(line) }
+    );
+    assert.equal(code, 0);
+    const url = `http://10.0.0.5:8765/mcp/${path.basename(dir)}`;
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
+    assert.deepEqual(claude.mcpServers[SERVER], { type: "http", url, headers });
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(dir, ".cursor/mcp.json"), "utf-8"));
+    assert.deepEqual(cursor.mcpServers[SERVER], { url, headers });
+
+    const vscode = JSON.parse(fs.readFileSync(path.join(dir, ".vscode/mcp.json"), "utf-8"));
+    assert.deepEqual(vscode.servers[SERVER], { type: "http", url, headers });
+
+    const opencode = JSON.parse(fs.readFileSync(path.join(dir, "opencode.json"), "utf-8"));
+    assert.deepEqual(opencode.mcp[SERVER], { type: "remote", url, enabled: true, headers });
+
+    assert.ok(
+      logs.some((line) =>
+        line.includes("已注入 Authorization 头；客户端若不支持自定义 headers，请按其文档配置")
+      )
+    );
+    for (const line of logs) {
+      assert.ok(!line.includes(token), `输出不得包含 token 明文: ${line}`);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.AOS_HTTP_TOKEN;
+    else process.env.AOS_HTTP_TOKEN = previous;
+  }
+});
+
+test("install http: no headers and a configure hint when AOS_HTTP_TOKEN is absent", () => {
+  const dir = makeTempProject({});
+  const previous = process.env.AOS_HTTP_TOKEN;
+  delete process.env.AOS_HTTP_TOKEN;
+  const logs = [];
+  try {
+    const code = runInstall(
+      ["--project", dir, "--mode", "http", "--url", "http://10.0.0.5:8765"],
+      { log: (line) => logs.push(line) }
+    );
+    assert.equal(code, 0);
+    const url = `http://10.0.0.5:8765/mcp/${path.basename(dir)}`;
+
+    const claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
+    assert.deepEqual(claude.mcpServers[SERVER], { type: "http", url });
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(dir, ".cursor/mcp.json"), "utf-8"));
+    assert.deepEqual(cursor.mcpServers[SERVER], { url });
+
+    const vscode = JSON.parse(fs.readFileSync(path.join(dir, ".vscode/mcp.json"), "utf-8"));
+    assert.deepEqual(vscode.servers[SERVER], { type: "http", url });
+
+    const opencode = JSON.parse(fs.readFileSync(path.join(dir, "opencode.json"), "utf-8"));
+    assert.deepEqual(opencode.mcp[SERVER], { type: "remote", url, enabled: true });
+
+    assert.ok(
+      logs.some((line) => line.includes("目标服务若启用令牌，请在客户端配置 Authorization"))
+    );
+    assert.ok(!logs.some((line) => line.includes("已注入 Authorization 头")));
+  } finally {
+    if (previous === undefined) delete process.env.AOS_HTTP_TOKEN;
+    else process.env.AOS_HTTP_TOKEN = previous;
+  }
+});
+
+test("install local: AOS_HTTP_TOKEN does not touch stdio entries", () => {
+  const dir = makeTempProject({});
+  const previous = process.env.AOS_HTTP_TOKEN;
+  process.env.AOS_HTTP_TOKEN = "p3d-secret-token";
+  try {
+    runInstall(["--project", dir, "--targets", "claude", "--service", service], { log: silent });
+    const entry = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8")).mcpServers[
+      SERVER
+    ];
+    assert.equal(entry.command, "node");
+    assert.deepEqual(entry.args, [path.resolve(service)]);
+    assert.equal(entry.env.AOS_PROJECT_DIR, dir);
+    assert.equal(entry.headers, undefined);
+    assert.equal(entry.type, undefined);
+  } finally {
+    if (previous === undefined) delete process.env.AOS_HTTP_TOKEN;
+    else process.env.AOS_HTTP_TOKEN = previous;
+  }
+});
+
+test("install http: changed token is skipped without --force and stays silent about injection", () => {
+  const dir = makeTempProject({});
+  const previous = process.env.AOS_HTTP_TOKEN;
+  try {
+    process.env.AOS_HTTP_TOKEN = "token-one";
+    runInstall(["--project", dir, "--targets", "claude", "--mode", "http"], { log: silent });
+
+    process.env.AOS_HTTP_TOKEN = "token-two";
+    const skipped = [];
+    const code = runInstall(["--project", dir, "--targets", "claude", "--mode", "http"], {
+      log: (line) => skipped.push(line)
+    });
+    assert.equal(code, 0);
+    let claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
+    assert.equal(claude.mcpServers[SERVER].headers.Authorization, "Bearer token-one");
+    assert.ok(skipped.some((line) => line.includes("已存在不同配置；使用 --force 覆盖")));
+    assert.ok(!skipped.some((line) => line.includes("已注入 Authorization 头")));
+    for (const line of skipped) assert.ok(!line.includes("token-two"));
+
+    const forced = [];
+    runInstall(["--project", dir, "--targets", "claude", "--mode", "http", "--force"], {
+      log: (line) => forced.push(line)
+    });
+    claude = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf-8"));
+    assert.equal(claude.mcpServers[SERVER].headers.Authorization, "Bearer token-two");
+    assert.ok(forced.some((line) => line.includes("已注入 Authorization 头")));
+  } finally {
+    if (previous === undefined) delete process.env.AOS_HTTP_TOKEN;
+    else process.env.AOS_HTTP_TOKEN = previous;
+  }
+});
+
 test("install: unknown flags and invalid values fail fast without writing", () => {
   const dir = makeTempProject({});
   const logs = [];

@@ -23,7 +23,7 @@ export interface InstallOptions {
 
 type ServerEntry =
   | { kind: "stdio"; command: string; args: string[]; env: Record<string, string> }
-  | { kind: "http"; url: string };
+  | { kind: "http"; url: string; headers?: Record<string, string> };
 
 interface TargetPlan {
   file: string;
@@ -147,7 +147,12 @@ function buildServerEntry(options: {
   const projectName = path.basename(options.projectDir);
   if (options.mode === "http") {
     const base = options.url.replace(/\/+$/, "");
-    return { kind: "http", url: `${base}/mcp/${encodeURIComponent(projectName)}` };
+    const token = (process.env.AOS_HTTP_TOKEN ?? "").trim();
+    return {
+      kind: "http",
+      url: `${base}/mcp/${encodeURIComponent(projectName)}`,
+      ...(token !== "" ? { headers: { Authorization: `Bearer ${token}` } } : {})
+    };
   }
   if (options.mode === "docker") {
     return {
@@ -192,7 +197,7 @@ function targetPlan(target: InstallTarget, projectDir: string): TargetPlan {
         jsonPath: ["mcpServers", MCP_SERVER_NAME],
         toValue: (entry) =>
           entry.kind === "http"
-            ? { type: "http", url: entry.url }
+            ? { type: "http", url: entry.url, ...(entry.headers ? { headers: entry.headers } : {}) }
             : { command: entry.command, args: entry.args, env: entry.env }
       };
     case "cursor":
@@ -201,7 +206,7 @@ function targetPlan(target: InstallTarget, projectDir: string): TargetPlan {
         jsonPath: ["mcpServers", MCP_SERVER_NAME],
         toValue: (entry) =>
           entry.kind === "http"
-            ? { url: entry.url }
+            ? { url: entry.url, ...(entry.headers ? { headers: entry.headers } : {}) }
             : { command: entry.command, args: entry.args, env: entry.env }
       };
     case "vscode":
@@ -210,7 +215,7 @@ function targetPlan(target: InstallTarget, projectDir: string): TargetPlan {
         jsonPath: ["servers", MCP_SERVER_NAME],
         toValue: (entry) =>
           entry.kind === "http"
-            ? { type: "http", url: entry.url }
+            ? { type: "http", url: entry.url, ...(entry.headers ? { headers: entry.headers } : {}) }
             : { command: entry.command, args: entry.args, env: entry.env }
       };
     case "opencode":
@@ -219,7 +224,12 @@ function targetPlan(target: InstallTarget, projectDir: string): TargetPlan {
         jsonPath: ["mcp", MCP_SERVER_NAME],
         toValue: (entry) =>
           entry.kind === "http"
-            ? { type: "remote", url: entry.url, enabled: true }
+            ? {
+                type: "remote",
+                url: entry.url,
+                enabled: true,
+                ...(entry.headers ? { headers: entry.headers } : {})
+              }
             : {
                 type: "local",
                 command: [entry.command, ...entry.args],
@@ -339,6 +349,7 @@ export function runInstall(argv: string[], defaults: InstallOptions = {}): numbe
   );
   log("");
 
+  let authInjected = false;
   for (const target of options.targets) {
     const plan = targetPlan(target as InstallTarget, options.projectDir);
     const relative = path.relative(options.projectDir, plan.file) || plan.file;
@@ -349,6 +360,8 @@ export function runInstall(argv: string[], defaults: InstallOptions = {}): numbe
       }
     }
     const status = upsertJsoncFile(plan.file, plan.jsonPath, plan.toValue(entry), options.force);
+    // Only claim the token was injected when a token-bearing entry is actually in place.
+    if (status === "written" || status === "unchanged") authInjected = true;
     switch (status) {
       case "written":
         log(`✓ ${target.padEnd(9)} → ${relative}`);
@@ -382,6 +395,18 @@ export function runInstall(argv: string[], defaults: InstallOptions = {}): numbe
     }
   }
   log(`  • Claude Desktop / Windsurf：同 Codex 结构（各自全局配置文件的 mcpServers.${MCP_SERVER_NAME}）`);
+
+  if (entry.kind === "http") {
+    const hint = entry.headers
+      ? authInjected
+        ? "已注入 Authorization 头；客户端若不支持自定义 headers，请按其文档配置"
+        : undefined
+      : "目标服务若启用令牌，请在客户端配置 Authorization";
+    if (hint) {
+      log("");
+      log(hint);
+    }
+  }
 
   return 0;
 }
