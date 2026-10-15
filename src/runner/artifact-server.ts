@@ -2,7 +2,8 @@ import fs from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import path from "node:path";
 
-import { escapeHtml } from "../util.js";
+import { authorizeRequest, unauthorizedResponse } from "../auth.js";
+import { escapeHtml, log, maskSecret } from "../util.js";
 
 /** 产物只读服务（P2）：根＝`<projectDir>/.artemis`，GET/HEAD、浅目录索引、realpath 越界拒绝。 */
 export interface RunnerArtifactServer {
@@ -111,6 +112,7 @@ export async function startRunnerArtifactServer(
 ): Promise<RunnerArtifactServer> {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 0;
+  const token = ((options.env ?? process.env).AOS_RUNNER_ARTIFACT_TOKEN ?? "").trim();
   let rootReal: string | null = null;
   try {
     rootReal = await fs.promises.realpath(path.join(options.projectDir, ".artemis"));
@@ -130,6 +132,23 @@ export async function startRunnerArtifactServer(
         }
         if (url.pathname === "/healthz") {
           sendJson(res, 200, { ok: true, project: path.basename(options.projectDir) }, head);
+          return;
+        }
+        if (
+          token !== "" &&
+          !authorizeRequest({
+            authorization: req.headers.authorization,
+            queryToken: url.searchParams.get("t"),
+            token,
+            allowQueryToken: true
+          })
+        ) {
+          const unauthorized = unauthorizedResponse("aos-artifact");
+          const headers: Record<string, string> = { ...unauthorized.headers };
+          if (head) headers["Content-Length"] = "0";
+          res.writeHead(unauthorized.status, headers);
+          if (head) res.end();
+          else res.end(unauthorized.body);
           return;
         }
         if (url.pathname !== "/artifact" && !url.pathname.startsWith("/artifact/")) {
@@ -202,6 +221,7 @@ export async function startRunnerArtifactServer(
   });
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
+  log(token === "" ? "认证：未启用" : `认证：已启用（token=${maskSecret(token)}）`);
   return {
     port: actualPort,
     close: async (): Promise<void> => {
