@@ -10,7 +10,8 @@ import {
   createPanelWebCache,
   handlePanelRequest,
   panelCacheTtlFrom,
-  panelWebEnabled
+  panelWebEnabled,
+  trendPassRateSvg
 } from "../dist/panel/web.js";
 import { baseConfig, makeTempDir } from "./helpers.js";
 
@@ -1236,4 +1237,226 @@ test("panel web: stats 建单 UI HTML 转义（名称/复选框 value 注入不�
   assert.doesNotMatch(html.body, /<script>alert\(1\)<\/script>/, "名称不裸出脚本标签");
   assert.match(html.body, /&quot;&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.match(html.body, new RegExp(`name="issue-item" value="${run.id}\\|ca&quot;se"`), "复选框 value 转义引号");
+});
+
+function makeCompareRun({
+  finishedIso = "2026-10-14T10:00:00.000Z",
+  total = 4,
+  passed = 4,
+  flaky = 0,
+  failureDomains = {},
+  gateResult = "pass"
+} = {}) {
+  return {
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId: null,
+    featureKey: "f-1",
+    featureName: "登录流程",
+    platform: "android",
+    device: "emulator-5554",
+    appVersion: null,
+    status: "completed",
+    startedAt: finishedIso,
+    finishedAt: finishedIso,
+    total,
+    passed,
+    failed: Math.max(0, total - passed),
+    flaky,
+    quarantined: 0,
+    failureDomains,
+    gateResult,
+    exitCode: gateResult === "pass" ? 0 : 1,
+    manifestPath: null,
+    comparison: null
+  };
+}
+
+test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/运行）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+
+  const emptyHtml = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
+  assert.equal(emptyHtml.status, 200);
+  assert.match(emptyHtml.body, /多项目对比/, "页头标题");
+  assert.match(emptyHtml.body, /口径：窗口＝份血统最近 20 批/, "窗口口径");
+  assert.match(emptyHtml.body, /任务积压为最近 200 条近似/, "任务积压近似口径");
+  assert.match(emptyHtml.body, /runner 为最近 100 条近似/, "runner 近似口径");
+  assert.match(emptyHtml.body, /数据源＝中央台账/, "数据源口径");
+  assert.match(emptyHtml.body, /精确待办以归因队列为准/, "精确待办口径");
+  assert.match(emptyHtml.body, /无批次/, "无批次 ≠ 读取失败");
+  assert.doesNotMatch(emptyHtml.body, /读取失败/, "无 error 不出现降级标注");
+
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: makeCompareRun({
+      finishedIso: "2026-10-14T10:00:00.000Z",
+      passed: 2,
+      flaky: 2,
+      failureDomains: { 应用缺陷: 2, 环境: 1 }
+    }),
+    cases: []
+  });
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T11:00:00.000Z",
+    run: makeCompareRun({ finishedIso: "2026-10-14T11:00:00.000Z", passed: 3 }),
+    cases: []
+  });
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T12:00:00.000Z",
+    run: makeCompareRun({
+      finishedIso: "2026-10-14T12:00:00.000Z",
+      passed: 1,
+      flaky: 1,
+      gateResult: "fail",
+      failureDomains: { 应用缺陷: 1 }
+    }),
+    cases: []
+  });
+
+  const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
+  assert.equal(html.status, 200);
+  assert.match(html.body, /最近批次（时间·门禁·通过率）/, "列组标记：最近批次");
+  assert.match(html.body, /趋势（最近 10 批）/, "列组标记：趋势");
+  assert.match(html.body, /质量（flaky·失败域 top3）/, "列组标记：质量");
+  assert.match(html.body, /待办（未裁决·未建单·积压·failed）/, "列组标记：待办");
+  assert.match(html.body, /运行（runner·定时回归）/, "列组标记：运行");
+  assert.doesNotMatch(html.body, /待办\(待\/领\/跑\/败\)/, "替换 T2 最小表格列");
+
+  assert.match(html.body, /<div class="muted">2026-10-14T12:00:00.000Z<\/div>/, "最近批次时间");
+  assert.match(html.body, /<span class="gate-fail">未通过<\/span> · 25%/, "门禁与通过率");
+  assert.match(
+    html.body,
+    /<svg class="spark"[^>]*><polyline points="0,12 50,7 100,17"><\/polyline><\/svg>/,
+    "内联 SVG 迷你图（三点：50%/75%/25%）"
+  );
+  assert.match(html.body, /flaky 3/, "flaky 为窗口内累加");
+  assert.match(html.body, /<span class="chip">应用缺陷 × 3<\/span>/, "失败域 top3 chips");
+  assert.match(html.body, /<span class="chip">环境 × 1<\/span>/);
+  assert.match(html.body, /未裁决失败 0 条 · 未建单缺陷 0 项/, "待办：未裁决/未建单");
+  assert.match(html.body, /任务积压 0（待 0 \/ 领 0 \/ 跑 0） · failed 0/, "待办：积压 p+c+r / failed");
+  assert.match(html.body, /runner 在线 0 · 设备 0/, "运行：runner");
+  assert.match(html.body, /定时回归 启用 0 · 最近触发 —/, "运行：定时回归");
+});
+
+test("panel web: trendPassRateSvg 纯函数（钳制 0–100/断点/≤10 点/空）", () => {
+  assert.equal(trendPassRateSvg([]), "", "无点 → 空串");
+  assert.equal(trendPassRateSvg([{ at: null, passRate: null }]), "", "全 null → 空串");
+  assert.equal(trendPassRateSvg([{ at: null, passRate: Number.NaN }]), "", "NaN 视同缺数");
+
+  const clamped = trendPassRateSvg([
+    { at: null, passRate: 2 },
+    { at: null, passRate: -1 }
+  ]);
+  assert.match(clamped, /^<svg class="spark"[^>]*>/, "根元素为 svg.spark");
+  assert.match(clamped, /<polyline points="0,2 100,22"><\/polyline>/, "数值钳制 0–100（y 落在 2–22）");
+
+  const broken = trendPassRateSvg([
+    { at: null, passRate: 1 },
+    { at: null, passRate: null },
+    { at: null, passRate: 0.5 },
+    { at: null, passRate: 0.5 }
+  ]);
+  assert.match(broken, /<circle cx="0" cy="2" r="1.5"><\/circle>/, "孤立点画圆");
+  assert.match(broken, /<polyline points="66.67,12 100,12"><\/polyline>/, "null 点断开两段");
+  assert.equal((broken.match(/<polyline/g) ?? []).length, 1, "断点不跨 null 连线");
+
+  const many = trendPassRateSvg(
+    Array.from({ length: 12 }, () => ({ at: null, passRate: 0.5 }))
+  );
+  const points = /<polyline points="([^"]+)"/.exec(many);
+  assert.ok(points, "多点 → polyline");
+  assert.equal(points[1].split(" ").length, 10, "仅取最近 10 点");
+});
+
+test("panel web: compare 降级行（读取失败标注 + 其余列 —）", async () => {
+  const { deps, store } = await makeHarness();
+  const throwing = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "listSuiteRuns") {
+        return async () => {
+          throw new Error("boom <&>");
+        };
+      }
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+
+  const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), {
+    ...deps,
+    store: throwing
+  });
+  assert.equal(html.status, 200);
+  assert.match(html.body, /读取失败：boom &lt;&amp;&gt;/, "行内可见标注且转义");
+
+  const rowChunk = html.body.split("<tr>").find((chunk) => chunk.includes("读取失败"));
+  assert.ok(rowChunk, "降级行存在");
+  const cells = [...rowChunk.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((match) => match[1]);
+  assert.equal(cells.length, 6, "六个列组");
+  assert.deepEqual(
+    cells.slice(1),
+    Array(5).fill('<span class="muted">—</span>'),
+    "error 行其余列全部 —"
+  );
+});
+
+test("panel web: compare 空态（无项目）", async () => {
+  const store = new MemoryStore();
+  const deps = { store, env: {}, serviceRepo: makeReadyRepo(), buildStale: false };
+  const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
+  assert.equal(html.status, 200);
+  assert.match(html.body, /暂无项目/, "空态提示");
+  assert.doesNotMatch(html.body, /<tbody><tr>/, "空表不渲染数据行");
+});
+
+test("panel web: compare 与总览互链；项目名链接项目页", async () => {
+  const { deps, projectDir } = await makeHarness();
+
+  const overview = await handlePanelRequest(new URL("http://x/panel"), deps);
+  assert.match(
+    overview.body,
+    /<a href="\/panel\?view=compare">多项目对比<\/a>/,
+    "L1 页头「多项目对比」链接"
+  );
+
+  const compare = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
+  assert.match(compare.body, /<a href="\/panel">← 多项目总览<\/a>/, "对比页回链 L1");
+  assert.ok(
+    compare.body.includes(
+      `<a href="/panel?project=${encodeURIComponent(projectDir)}"><code>demo</code></a>`
+    ),
+    "项目名链接项目页"
+  );
+});
+
+test("panel web: compare HTML 转义（项目名/失败域注入不裸出）", async () => {
+  const store = new MemoryStore();
+  const workspace = makeTempDir("aos-panel-web-compare-xss-");
+  const projectDir = path.join(workspace, "xss");
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, "aos.config.jsonc"), JSON.stringify(baseConfig()), "utf-8");
+  await store.upsertProject({ rootPath: projectDir, name: '"><script>alert(1)</script>' });
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: makeCompareRun({ failureDomains: { '"><img src=x onerror=alert(1)>': 1 } }),
+    cases: []
+  });
+
+  const deps = {
+    store,
+    env: {},
+    workspaceRoot: workspace,
+    serviceRepo: makeReadyRepo(),
+    buildStale: false
+  };
+  const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
+  assert.equal(html.status, 200);
+  assert.doesNotMatch(html.body, /<script>alert\(1\)<\/script>/, "项目名不裸出脚本标签");
+  assert.doesNotMatch(html.body, /<img src=x/, "失败域不裸出标签");
+  assert.match(html.body, /&quot;&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(html.body, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });

@@ -28,7 +28,14 @@ import {
   type PanelTaskDetail
 } from "./overview.js";
 import { PANEL_IOS_PROBE_TTL_MS, type PanelDeepProbe } from "./deep.js";
-import { buildPanelCompare, type PanelCompareView } from "./compare.js";
+import {
+  buildPanelCompare,
+  PANEL_COMPARE_RUNNER_LIMIT,
+  PANEL_COMPARE_TASK_LIMIT,
+  PANEL_COMPARE_TREND_LIMIT,
+  type PanelCompareProject,
+  type PanelCompareView
+} from "./compare.js";
 
 /** 总览面板 Web 处理（overview-panel T3/T4，DESIGN §13.97/§13.98）：
  * 服务端渲染 HTML（内联 CSS、零依赖）+ 同源 JSON；只读、默认 loopback；
@@ -269,6 +276,9 @@ const PAGE_CSS = [
   ".lamp{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}",
   ".lamp-red{background:#dc2626}.lamp-yellow{background:#d97706}.lamp-green{background:#16a34a}.lamp-gray{background:#6b7280}",
   ".gate-pass{color:#15803d}.gate-fail{color:#b91c1c}",
+  ".spark{display:block}",
+  ".spark polyline{fill:none;stroke:#2563eb;stroke-width:1.5}",
+  ".spark circle{fill:#2563eb}",
   ".ok{color:#15803d}.err{color:#b91c1c}",
   "a{color:#2563eb}",
   "ul{margin:6px 0;padding-left:20px}"
@@ -361,6 +371,7 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
     [
       "<header>",
       "<h1>多项目总览</h1>",
+      '<p><a href="/panel?view=compare">多项目对比</a></p>',
       `<p class="badges">${store}<span class="badge">宿主 deps：${escapeHtml(view.host.deps)}</span>` +
         `<span class="badge">构建：${
           view.host.buildStale === null ? "未知" : view.host.buildStale ? "陈旧（需重启）" : "最新"
@@ -1351,59 +1362,165 @@ function renderEvidence(links: PanelBatchDetail["cases"][number]["evidence"]): s
     .join("<br>");
 }
 
-function renderComparePage(view: PanelCompareView, cacheNote: string): string {
-  const rows = view.projects.map((project) => {
-    const batch = project.latestBatch;
-    const latest =
-      batch === null
-        ? '<span class="muted">无批次</span>'
-        : `${batch.gate === null ? "—" : batch.gate === "pass" ? '<span class="gate-pass">通过</span>' : '<span class="gate-fail">未通过</span>'}` +
-          (batch.passRate === null ? "" : ` · ${Math.round(batch.passRate * 100)}%`);
-    const trend =
-      project.trend.length === 0
-        ? "—"
-        : escapeHtml(
-            project.trend.map((point) => (point.passRate === null ? "—" : `${Math.round(point.passRate * 100)}%`)).join(" → ")
-          );
-    const quality = [
-      `flaky ${project.flaky}`,
-      project.domains.length === 0
-        ? ""
-        : project.domains.map((entry) => `${escapeHtml(entry.domain)}×${entry.count}`).join("、"),
-      project.pendingVerdicts > 0 ? `待裁决 ${project.pendingVerdicts}` : "",
-      project.unissuedAppDefects > 0 ? `未建单 ${project.unissuedAppDefects}` : ""
-    ]
-      .filter((part) => part !== "")
-      .join("；") || "—";
-    const backlog = `${project.taskBacklog.pending}/${project.taskBacklog.claimed}/${project.taskBacklog.running}/${project.taskBacklog.failed}`;
-    const run = `在线 ${project.runners.online} · 设备 ${project.runners.devices} · 计划 ${project.schedules.enabled}`;
-    const error =
-      project.error === null ? "" : `<div class="note">读取降级：${escapeHtml(project.error)}</div>`;
-    return [
-      `<a href="${escapeHtml(projectHref(project.rootPath))}"><code>${escapeHtml(project.name)}</code></a>${error}`,
-      latest,
-      trend,
-      quality,
-      backlog,
-      run
-    ];
+const DASH_CELL = '<span class="muted">—</span>';
+
+const SPARK_WIDTH = 100;
+const SPARK_HEIGHT = 24;
+const SPARK_PAD = 2;
+
+function clampPassRate(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+function clampPassRateOrNull(value: number | null): number | null {
+  return value === null || !Number.isFinite(value) ? null : clampPassRate(value);
+}
+
+function sparkNumber(value: number): string {
+  return String(Number(value.toFixed(2)));
+}
+
+/** 通过率迷你图（纯字符串）：≤10 点、null 断开、0–100 钳制；
+ * 仅拼接钳制后的数值，不嵌入任何外部文本。 */
+export function trendPassRateSvg(
+  points: Array<{ at: string | null; passRate: number | null }>
+): string {
+  const window = points.slice(-PANEL_COMPARE_TREND_LIMIT);
+  if (window.length === 0) return "";
+  const coords = window.map((point, index) => {
+    const rate = clampPassRateOrNull(point.passRate);
+    const x = window.length === 1 ? SPARK_WIDTH / 2 : (index * SPARK_WIDTH) / (window.length - 1);
+    const y = rate === null ? null : SPARK_HEIGHT - SPARK_PAD - rate * (SPARK_HEIGHT - SPARK_PAD * 2);
+    return { x, y };
   });
+  const shapes: string[] = [];
+  let segment: Array<{ x: number; y: number }> = [];
+  const flush = (): void => {
+    if (segment.length >= 2) {
+      const path = segment
+        .map((point) => `${sparkNumber(point.x)},${sparkNumber(point.y)}`)
+        .join(" ");
+      shapes.push(`<polyline points="${path}"></polyline>`);
+    } else if (segment.length === 1) {
+      const only = segment[0];
+      shapes.push(
+        `<circle cx="${sparkNumber(only.x)}" cy="${sparkNumber(only.y)}" r="1.5"></circle>`
+      );
+    }
+    segment = [];
+  };
+  for (const coord of coords) {
+    if (coord.y === null) flush();
+    else segment.push({ x: coord.x, y: coord.y });
+  }
+  flush();
+  if (shapes.length === 0) return "";
+  return (
+    `<svg class="spark" width="${SPARK_WIDTH}" height="${SPARK_HEIGHT}" viewBox="0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}" role="img" aria-label="通过率趋势（旧→新，断点＝缺数）">` +
+    shapes.join("") +
+    "</svg>"
+  );
+}
+
+function renderCompareProjectCell(project: PanelCompareProject): string {
+  const reasons =
+    project.lampReasons.length > 0
+      ? `<div class="muted">${project.lampReasons.map((reason) => escapeHtml(reason)).join("；")}</div>`
+      : "";
+  const error =
+    project.error === null ? "" : `<div class="note">读取失败：${escapeHtml(project.error)}</div>`;
+  return `<a href="${escapeHtml(projectHref(project.rootPath))}"><code>${escapeHtml(
+    project.name
+  )}</code></a> ${lampSpan(project.lamp)}${reasons}${error}`;
+}
+
+function renderCompareLatestCell(project: PanelCompareProject): string {
+  const batch = project.latestBatch;
+  if (batch === null) return '<span class="muted">无批次</span>';
+  const rate =
+    batch.passRate === null ? "—" : `${Math.round(clampPassRate(batch.passRate) * 100)}%`;
+  return [
+    `<div class="muted">${escapeHtml(batch.at ?? "—")}</div>`,
+    `${gateSpan(batch.gate)} · ${rate}`
+  ].join("");
+}
+
+function renderCompareQualityCell(project: PanelCompareProject): string {
+  const domains = project.domains.map(
+    (entry) => `<span class="chip">${escapeHtml(entry.domain)} × ${entry.count}</span>`
+  );
+  return [`flaky ${project.flaky}`, ...domains].join(" ");
+}
+
+function renderCompareTodoCell(project: PanelCompareProject): string {
+  const backlog = project.taskBacklog;
+  const open = backlog.pending + backlog.claimed + backlog.running;
+  return [
+    `<div>未裁决失败 ${project.pendingVerdicts} 条 · 未建单缺陷 ${project.unissuedAppDefects} 项</div>`,
+    `<div>任务积压 ${open}（待 ${backlog.pending} / 领 ${backlog.claimed} / 跑 ${backlog.running}） · failed ${backlog.failed}</div>`
+  ].join("");
+}
+
+function renderCompareRunCell(project: PanelCompareProject): string {
+  return [
+    `<div>runner 在线 ${project.runners.online} · 设备 ${project.runners.devices}</div>`,
+    `<div>定时回归 启用 ${project.schedules.enabled} · 最近触发 ${escapeHtml(
+      project.schedules.lastFiredAt ?? "—"
+    )}</div>`
+  ].join("");
+}
+
+function renderCompareRow(project: PanelCompareProject): string[] {
+  const projectCell = renderCompareProjectCell(project);
+  if (project.error !== null) {
+    return [projectCell, DASH_CELL, DASH_CELL, DASH_CELL, DASH_CELL, DASH_CELL];
+  }
+  const spark = trendPassRateSvg(project.trend);
+  return [
+    projectCell,
+    renderCompareLatestCell(project),
+    spark === "" ? DASH_CELL : spark,
+    renderCompareQualityCell(project),
+    renderCompareTodoCell(project),
+    renderCompareRunCell(project)
+  ];
+}
+
+function renderComparePage(view: PanelCompareView, cacheNote: string): string {
+  const rows = view.projects.map((project) => renderCompareRow(project));
   const warnings = view.warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("");
+  const scope = [
+    `口径：窗口＝份血统最近 ${view.window.runs} 批`,
+    `任务积压为最近 ${PANEL_COMPARE_TASK_LIMIT} 条近似`,
+    `runner 为最近 ${PANEL_COMPARE_RUNNER_LIMIT} 条近似`,
+    "数据源＝中央台账",
+    "精确待办以归因队列为准"
+  ].join("；");
   return page(
-    "跨项目对比",
+    "多项目对比",
     [
       "<header>",
-      "<h1>跨项目对比</h1>",
+      '<p><a href="/panel">← 多项目总览</a></p>',
+      "<h1>多项目对比</h1>",
       `<p class="muted">生成时间 ${escapeHtml(view.generatedAt)} · 项目 ${view.projects.length} 个${
         view.truncated ? "（已截断）" : ""
       } · ${escapeHtml(cacheNote)}</p>`,
+      `<p class="muted">${escapeHtml(scope)}</p>`,
       warnings,
       "</header>",
       "<main>",
       '<section id="compare">',
       "<h2>项目对比</h2>",
       renderTable(
-        ["项目", "最近批次", "趋势", "质量", "待办(待/领/跑/败)", "运行"],
+        [
+          "项目",
+          "最近批次（时间·门禁·通过率）",
+          "趋势（最近 10 批）",
+          "质量（flaky·失败域 top3）",
+          "待办（未裁决·未建单·积压·failed）",
+          "运行（runner·定时回归）"
+        ],
         rows,
         "暂无项目"
       ),
