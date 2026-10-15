@@ -56,7 +56,7 @@ P3c 的对比视图是**项目级**。当同一条产品线以多份项目并存
 ## 4. 硬约束
 
 - 只读：无子进程/无网络/无写盘（沿用 `/panel`）；全部输出 `escapeHtml`。
-- 性能：每项目新增 ≤1 次 store 读（`listCaseSets`，limit 20）——对比视图每项目 ≤4 次 DB 往返（原 ≤3＋本 1），仍入 `PanelWebCache`。
+- 性能：每项目新增 1 次 store 读（`listCaseSets`，**缺省全量**——保证窗口内老份可映射）——对比视图每项目 ≤5 次 DB 往返（原 4＋本 1），仍入 `PanelWebCache`。
 - 测试口径：pg-mem/内存 store、假目录、不触网；测试跑 `dist/`。
 - 文案中文、代码英文；默认无注释；相对导入 `.js`。
 - 完工同步：DESIGN.md 新增 §13.114、README（对比视图章节）、AGENTS.md（面板行，如需）。

@@ -37,8 +37,8 @@
   ```ts
   /** NFC → trim → 连续空白折叠单空格 → 小写。 */
   export function normalizeFeatureName(name: string): string;
-  /** figma:<fileKey>[ (名)] → figma:<fileKey>；含路径分隔符/绝对路径 → path.relative(rootPath, src) posix+lower（越界/不可相对化 → 原样 lower）；
-   * pen:<rel> → posix+lower；其他 → lower。 */
+  /** figma:<fileKey>[ (名)] → figma:<fileKey>；**先判 `figma:`/`pen:` 前缀**，其余含路径分隔符/绝对路径 → path.relative(rootPath, src) posix+lower
+   * （相对结果以 `..` 开头或仍为绝对路径（跨盘符）→ 原样 lower）；pen:<rel> → posix+lower（含分隔符仍走 pen 归一化）；其他 → lower。 */
   export function normalizeDesignSource(source: string, rootPath: string): string;
 
   export interface FeatureAlignmentEntry {
@@ -62,14 +62,14 @@
   };
   ```
 - 语义（严格按设计 §2）：
-  - 收集（每项目）：仅 `caseSetId !== null` 且能在 `sets` 中命中的运行（无映射 → 跳过）；单位键 `${caseSetId}|${featureKey}`；`name`＝`sets` 中该 featureKey 的冻结名（命中缺失 → 取 `run.featureName`，仍空 → 跳过该运行）；累计 `passed/total/flaky`、`runs++`、`pendingVerdicts += cases.filter(c => c.status !== "passed" && c.verdict === null).length`、`latestAt = max(finishedAt)`。
+  - 收集（每项目）：仅 `caseSetId !== null` **且 `featureKey !== null`**（防御守卫）且能在 `sets` 中命中的运行（无映射 → 跳过；**被跳过的运行不产生组键、不参与 unmatched 计数**）；单位键 `${caseSetId}|${featureKey}`；`name`＝`sets` 中该 featureKey 的冻结名（**set 存在但缺该 featureKey → 回退 `run.featureName`**，仍空 → 跳过该运行）；累计 `passed/total/flaky`、`runs++`、`pendingVerdicts += cases.filter(c => c.status !== "passed" && c.verdict === null).length`、`latestAt = max(finishedAt)`。
   - 合并（项目内）：按 `(normalizeDesignSource(source, rootPath), normalizeFeatureName(name))` 合并 Σ；`featureKey` 取首个。
   - 分组（跨项目）：键同上；**仅保留 groups ≥2 项目**；`unmatched`＝键的项目数 == 1 的数量；`entries` 按项目名升序；`displayName`＝升序后首个 entry 的名称（冻结名）；`sourceLabel`＝组内首个原始 source。
   - 组排序：项目数降序 → 极差（组内非 null passRate 的最大-最小；参与值 <2 → 0）降序 → `displayName` 升序。
 - [ ] **Step 1: 写失败测试**（`test/feature-alignment.test.js`）
-  - `normalizeDesignSource：figma 装饰剥离；绝对路径→相对根 posix+lower（同布局两项目相等）；越界路径原样 lower；pen posix/lower；其他 lower；跨形式（figma:KEY vs 路径）不等`。
+  - `normalizeDesignSource：figma 装饰剥离；绝对路径→相对根 posix+lower（同布局两项目相等）；`..` 越界与跨盘符绝对结果原样 lower；pen posix/lower（**含分隔符 `pen:sub/a.pen` 仍走 pen 归一化——前缀优先**）；其他 lower；跨形式（figma:KEY vs 路径）不等`。
   - `normalizeFeatureName：NFC/trim/空白折叠/大小写；CJK 不变`。
-  - `align：同源同名跨 2 项目成组（entries 升序、指标 Σ）；单项目组 → 不进 groups 且 unmatched=1；同名不同源/同源异名不成组（各计 1）；跨份同 key 合并 Σ；无映射/无冻结名运行不进表；pendingVerdicts 谓词；latestAt 取 max；组排序三级与极差 null 处理`。
+  - `align：同源同名跨 2 项目成组（entries 升序、指标 Σ、total=0→passRate null）；单项目组 → 不进 groups 且 unmatched=1；同名不同源/同源异名不成组（各计 1）；跨份同 key 合并 Σ；无映射/`featureKey=null`/无冻结名运行不进表且**不抬高 unmatched**；set 缺 featureKey 但 `run.featureName` 非空 → 回退命名并进组；pendingVerdicts 谓词；latestAt 取 max；组排序三级与极差 null 处理`。
 - [ ] **Step 2: 跑测试确认失败**：`npm run test:file -- test/feature-alignment.test.js`。
 - [ ] **Step 3: 实现**（按「语义」；纯函数、无 IO；归一化用 `node:path` 与既有 regex 提取）。
 - [ ] **Step 4: 跑测试确认通过** + `npm run build`。
@@ -84,7 +84,7 @@
 **Interfaces:**
 - Consumes：Task 1（`alignFeatureRuns`/类型）。
 - 语义：
-  - `compare.ts`：per-project 循环内**独立 try/catch** 读 `listCaseSets(rootPath)`（**无 limit＝全量**）；失败 → 该项目 `sets:null`（不置行级 error、项目级区块照常）；收集窗口 runs 的必要字段（含 cases）后，循环外加一次 `alignFeatureRuns`；`PanelCompareView` 增 `featureAlignment: { groups; unmatched }`（加性）。
+  - `compare.ts`：per-project 循环内**独立 try/catch** 读 `listCaseSets(rootPath)`（**无 limit＝全量**）并**投影**为 `{id, source, features:[{key,name}]}`；失败 → 该项目 `sets:null`（不置行级 error、项目级区块照常）；`buildCompareRow` 增返 `{ runs, sets }`（或循环内并行收集等价形状，**计划此处允许实现自选但须单点收集**），循环后统一调 `alignFeatureRuns`；`PanelCompareView` 增 `featureAlignment: { groups; unmatched }`（加性）。
   - `web.ts`：对比页第二区块「**功能对齐（跨项目）**」：每组＝表头（显示名＋`sourceLabel`＋项目数）＋小表（项目｜通过率｜批次｜flaky｜未裁决｜最近）；口径说明行（匹配规则、窗口、误报口径、「未匹配 N 个（仅单项目出现）」）；空态（无组 → 说明一行＋未匹配计数）；全字段 `escapeHtml`。
 - [ ] **Step 1: 写失败测试**
   - `panel-compare：两项目同源同名（路径式 source 相对化后相等）→ groups=1 且 entries=2、指标正确；单项目 → unmatched=1；listCaseSets 抛错 → 该项目不进组、项目级行照常；JSON 含 featureAlignment（加性）`。
@@ -101,10 +101,27 @@
 
 - [ ] **Step 1: 全量回归**：`npm run build && npm test && npm run lint` → 全绿（记录新增测试数与总数）。
 - [ ] **Step 2: 文档**
-  - DESIGN §13.114：P3e 实施记录（匹配规则与归一化、路径相对化与跨形式边界、全量 case sets 映射、聚合/合并/未匹配定义、只并列不合并、渲染与 JSON、D1–D10 口径收束）。
+  - DESIGN §13.114：P3e 实施记录（匹配规则与归一化、路径相对化与跨形式边界、全量 case sets 映射、聚合/合并/未匹配定义、只并列不合并、渲染与 JSON、D1–D10 口径收束；**注明**：set 缺 featureKey 时回退 run.featureName 的补丁口径、被跳过的运行不参与 unmatched、对齐区块全部展示（无封顶））。**并修订设计稿 §4** 的「limit 20／≤4 往返」旧表述为「全量／≤5 往返」。
   - README：对比视图章节补「功能对齐」段（入口同页、匹配规则、误报口径、窗口）。
   - AGENTS.md：面板行或对比视图描述补一句（按文件实际结构，最小改动）。
 - [ ] **Step 3: 提交**：`git commit -m "docs: regression service P3e (cross-project feature alignment)"`
+
+---
+
+## 独立复核修订记录（2026-10-15）
+
+计划评审（deepseek/deepseek-v4-pro#high，只读）结论「可执行（无 Critical；2 Important 需补强）」；发现已全部并入：
+
+- **I1**：`normalizeDesignSource` 前缀优先（`figma:`/`pen:` 先判 → 再判路径）；补 `pen:sub/a.pen`（含分隔符）用例。
+- **I2**：设计稿 §4 旧表述（limit 20／≤4 往返）已修订为「全量／≤5 往返」（Task 3 同步执行）。
+- **M3**：`featureKey === null` 运行跳过（防御守卫）＋断言。
+- **M4**：set 缺 featureKey → `run.featureName` 回退的正向断言＋§13.114 注明补丁口径。
+- **M5**：越界判定谓词明确（`..` 开头或跨盘符绝对结果 → 原样 lower）＋测试。
+- **M6**：`buildCompareRow` 增返 `{ runs, sets }`（或循环内单点收集）——实现形状单点化。
+- **M7**：被跳过运行不产生组键、不参与 unmatched（§13.114 注明＋断言）。
+- **M8**：`listCaseSets` → `sets` 投影映射写明。
+- **M9**：对齐区块无封顶（§13.114 注明全部展示）。
+- **M10**：既有测试无回归风险（加性字段/子串断言）——无需动作。
 
 ---
 
