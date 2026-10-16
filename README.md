@@ -324,7 +324,7 @@ node dist/cli.js suite backfill [--dry-run] [--since <ISO>] [--project <dir>] [-
 - `baseline`：设备对设备像素回归（last-known-good）；`--fail-on` 触发时退出码 2，可直接做 CI 门禁。
 - `report`：从运行台账导出 xlsx 结果页（含「功能」「端」列 + API 错误/处理判定列）+ **追溯矩阵工作表**（design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据，含未覆盖与缺口标注）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）；`--task <id>` 改出**回归任务报告**（逐例来自 `suite_runs`，命名 `<时间戳>_<功能>_回归.xlsx`，多功能 → `多功能N项`）。
 - `feedback`：按屏幕/断言/数据/API 错误维度给出可追踪到 case/trace 的改进建议，并追加**出口清单（按最新裁决）**——案例问题/执行偏差（按设备计数）/应用缺陷（含已建单数），JSON 输出带 `exits`（`appDefects` 每条含 `jiraKey`）；与面板统计/生成侧同源（只读，不自动改写生成物）。
-- `backfill`：从磁盘产物（`.artemis/design/runs/*.json` 批次清单 + `.artemis/design/case-sets/*.json` 归档）**幂等重建登记**，补上降级期间漏登记/无登记的份与运行（**只读扫描、绝不改写产物**；**须中心 PG**，内存降级 exit 2）。重复运行已登记项全部 skip；默认只回填**不早于项目最早登记时间**的产物（`--since <ISO>` 覆盖，`beforeSince` 计数；空库无下界并告警）；`--dry-run` 只报告不写库（`registered` 恒 0、`wouldRegister`＝将登记数）；失效产物计 `invalid` 并告警。**局限**：既有任务/引用的历史 id 不可复原（回填产生新 id，仅同窗口经批次清单 `caseSetJsonPath`/`testsPath` 可达的悬空引用经路径桥修复）、回归服务之前的历史清单不回填。见 DESIGN §13.117。
+- `backfill`：从磁盘产物（`.artemis/design/runs/*.json` 批次清单 + `.artemis/design/case-sets/*.json` 归档）**幂等重建登记**，补上降级期间漏登记/无登记的份与运行（**只读扫描、绝不改写产物**；**须中心 PG**，内存降级 exit 2）。重复运行已登记项全部 skip；默认只回填**不早于项目最早登记时间**的产物（`--since <ISO>` 覆盖，须为可解析 ISO（建议 `YYYY-MM-DDTHH:mm:ss.sssZ`），非法 exit 2；`beforeSince` 计数；空库无下界并告警）；`--dry-run` 只报告不写库（`registered` 恒 0、`wouldRegister`＝将登记数）；失效产物计 `invalid` 并告警。**局限**：既有任务/引用的历史 id 不可复原（回填产生新 id，仅同窗口经批次清单 `caseSetJsonPath`/`testsPath` 可达的悬空引用经路径桥修复）、回归服务之前的历史清单不回填。见 DESIGN §13.117。
 - 公共选项：`--project <dir>`（项目根，默认 cwd/`AOS_PROJECT_DIR`）、`--json`（机器可读输出）。
 
 

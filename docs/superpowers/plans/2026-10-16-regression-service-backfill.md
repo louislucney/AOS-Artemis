@@ -15,7 +15,7 @@
 - **只读产物**：backfill 对 `<configDir>/design/` 不写任何文件（dry-run 与实跑均如此）。
 - 幂等：重复运行第二次全部 skip（计数断言）；字段缺维度**如实 null 不猜**（platform 分类除外）。
 - 完工标准：`npm run build && npm test && npm run lint` 全绿；同步 DESIGN（新增 §13.117）＋ README（命令与回填段）＋ AGENTS.md（命令表）。
-- **拍板（D1–D9 摘要）**：CLI-only；runs 幂等键＝manifest_path（项目域）、sets 幂等键＝features[].jsonPath；manifest `registration?`（无 trigger；保存时点可得即写）；sets 一行/归档（单 feature）；trigger 回填＝`"cli"`（与在线一致）；fingerprint＝归档 sha、createdAt＝stamp（兜底 mtime）；basename＝归档 stem（展示项）；screens＝flows[].screens 摊平去重。
+- **拍板（D1–D12 摘要；D10–D12 见修订记录）**：CLI-only；runs 幂等键＝manifest_path（项目域）、sets 幂等键＝features[].jsonPath；manifest `registration?`（无 trigger；保存时点可得即写）；sets 一行/归档（单 feature）；trigger 回填＝`"cli"`（与在线一致）；fingerprint＝归档 sha、createdAt＝stamp（兜底 mtime）；basename＝归档 stem（展示项）；screens＝flows[].screens 摊平去重。
 
 ## Review Focus
 

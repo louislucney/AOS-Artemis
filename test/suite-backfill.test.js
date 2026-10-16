@@ -359,8 +359,53 @@ test("backfill since: 空库无下界＋warning；最早登记晚于远古 manif
   }
 });
 
-test("backfill 路径桥: 先 sets 后 runs，重映射新 id 且 feature 自归档恢复；匹配不到原值保留", async () => {
+test("backfill since 归一化: 带时区 --since 与内部 UTC 时间戳字符串比较正确", async () => {
   const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const runtime = await makeRuntime(store, dir);
+  const before = writeManifest(runtime, {
+    fileName: "run-20251231T150000-before.json",
+    startedAt: "2025-12-31T14:59:00.000Z",
+    finishedAt: "2025-12-31T15:00:00.000Z",
+    cases: [runCase("case-before")]
+  });
+  const after = writeManifest(runtime, {
+    fileName: "run-20251231T170000-after.json",
+    startedAt: "2025-12-31T16:59:00.000Z",
+    finishedAt: "2025-12-31T17:00:00.000Z",
+    cases: [runCase("case-after")]
+  });
+  const report = await runBackfill(runtime, { since: "2026-01-01T00:00:00+08:00" });
+  assert.equal(report.beforeSince, 1);
+  assert.equal(report.registered.runs, 1);
+  const runs = await store.listSuiteRuns(runtime.project.rootDir);
+  assert.equal(runs.some((entry) => entry.manifestPath === before), false);
+  assert.equal(runs.some((entry) => entry.manifestPath === after), true);
+});
+
+test("backfill 畸形 manifest（缺 summary/gate/cases）→ invalid＋友好 warning", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const runtime = await makeRuntime(store, dir);
+  const runsDir = path.join(runtime.configDirAbs, "design", "runs");
+  fs.mkdirSync(runsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(runsDir, "run-20261014T150000-malformed.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      runId: "run-20261014T150000-malformed",
+      startedAt: "2026-10-14T14:59:00.000Z",
+      finishedAt: "2026-10-14T15:00:00.000Z"
+    }),
+    "utf-8"
+  );
+  const report = await runBackfill(runtime);
+  assert.equal(report.invalid, 1);
+  assert.equal(report.registered.runs, 0);
+  assert.ok(report.warnings.some((warning) => warning.includes("清单缺 summary/gate/cases")), "友好 warning");
+});
+
+test("backfill 路径桥: 先 sets 后 runs，重映射新 id 且 feature 自归档恢复；匹配不到原值保留", async () => {  const dir = makeTempProject({ config: baseConfig() });
   const store = new MemoryStore();
   const runtime = await makeRuntime(store, dir);
 
@@ -583,6 +628,15 @@ test("命令层: usage 列出 backfill；内存 store → exit 2（PG 守卫）�
   assert.equal(report.dryRun, false);
   assert.equal("beforeSince" in report, true);
   assert.equal("wouldRegister" in report, true);
+});
+
+test("命令层: --since 非法 → exit 2 不进入扫描", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = await makePgStore();
+  const runtime = await makeRuntime(store, dir);
+  const res = await runCli(runtime, ["backfill", "--since", "abc"]);
+  assert.equal(res.code, 2);
+  assert.ok(res.errors.some((line) => line.includes("--since 非法")), "非法 since 提示");
 });
 
 test("命令层: --since 与 --project 生效", async () => {

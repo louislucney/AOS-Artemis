@@ -50,7 +50,16 @@ export async function runBackfill(
   const rootPath = runtime.project.rootDir;
   const configDirAbs = runtime.configDirAbs;
 
-  const since = options.since ?? (await defaultSince(runtime, report));
+  let since: string | null;
+  if (options.since !== undefined) {
+    const parsed = Date.parse(options.since);
+    if (Number.isNaN(parsed)) {
+      throw new Error(`--since 不可解析（须为可解析的 ISO 时间）: ${options.since}`);
+    }
+    since = new Date(parsed).toISOString();
+  } else {
+    since = await defaultSince(runtime, report);
+  }
 
   // 路径桥：既有 listCaseSets 全量摊平 + 本次新登记（runs 段按 jsonPath 重映射）。
   const bridge = new Map<string, BridgeEntry>();
@@ -107,6 +116,11 @@ export async function runBackfill(
       continue;
     }
     const createdAt = caseSetCreatedAt(name, jsonPath);
+    if (createdAt === null) {
+      report.invalid += 1;
+      report.warnings.push(`归档 mtime 读取失败: ${jsonPath}`);
+      continue;
+    }
     if (since !== null && createdAt < since) {
       report.beforeSince += 1;
       continue;
@@ -205,6 +219,15 @@ async function registerRun(
   manifestPath: string,
   bridge: Map<string, BridgeEntry>
 ): Promise<void> {
+  if (
+    !manifest.summary ||
+    typeof manifest.summary !== "object" ||
+    !manifest.gate ||
+    typeof manifest.gate !== "object" ||
+    !Array.isArray(manifest.cases)
+  ) {
+    throw new Error("清单缺 summary/gate/cases");
+  }
   const registration = manifest.registration;
   const deviceSerial = manifest.options?.deviceSerial ?? null;
   const platform = deviceSerial
@@ -282,14 +305,18 @@ async function defaultSince(runtime: Runtime, report: BackfillReport): Promise<s
   return values.reduce((a, b) => (a < b ? a : b));
 }
 
-function caseSetCreatedAt(name: string, jsonPath: string): string {
+function caseSetCreatedAt(name: string, jsonPath: string): string | null {
   const prefix = name.slice(0, -".json".length).split("_")[0] ?? "";
   const match = /^(\d{8})T(\d{6})$/.exec(prefix);
   if (match) {
     const iso = `${match[1]!.slice(0, 4)}-${match[1]!.slice(4, 6)}-${match[1]!.slice(6, 8)}T${match[2]!.slice(0, 2)}:${match[2]!.slice(2, 4)}:${match[2]!.slice(4, 6)}.000Z`;
     if (!Number.isNaN(Date.parse(iso))) return iso;
   }
-  return new Date(fs.statSync(jsonPath).mtimeMs).toISOString();
+  try {
+    return new Date(fs.statSync(jsonPath).mtimeMs).toISOString();
+  } catch {
+    return null;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -2314,10 +2314,15 @@ async function suiteBackfill(
     io.errorLog("backfill 需要中心 PG（当前为内存存储）；请配置 MOBILE_TESTING_DATABASE_URL");
     return 2;
   }
+  const sinceRaw = flags.get("since");
+  if (sinceRaw !== null && Number.isNaN(Date.parse(sinceRaw))) {
+    io.errorLog("--since 非法（须为可解析的 ISO 时间）");
+    return 2;
+  }
   try {
     const report = await runBackfill(runtime, {
       dryRun: flags.bool("dry-run"),
-      since: flags.get("since") ?? undefined
+      since: sinceRaw ?? undefined
     });
     if (flags.bool("json")) {
       io.log(JSON.stringify(report, null, 2));
