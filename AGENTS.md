@@ -42,6 +42,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 | 使用统计看板 | `node dist/cli.js usage --web [--port 8766] [--host 127.0.0.1]`（只读看板复用 `/usage`+`/usage.json`，默认 loopback；端口占用 exit 2） |
 | 总览面板 | `node dist/cli.js panel --web [--port 8767] [--workspace <dir>]`（只读，复用 `/panel`+`/panel.json`；`?view=compare` 多项目对比，见 DESIGN §13.112/§13.114；HTTP 模式自带该路由与深探层（`?ios=1` 显式 iOS 环境检测，缓存 60s），见 DESIGN §13.97/§13.98/§13.104/§13.105） |
 | 设计流水线（一条命令） | `node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`（无 token 时给出指引并 exit 2） |
+| 设计→测试（一条链） | `node scripts/design-to-test.mjs --figma <url> \| --pen <路径.pen> --project <dir> [--device <serial>] [--no-run] [--no-check]`（①提取流程 ②交互理解（pen 可 `--vision`）③生成三件套 ④`suite check` 静态校验 ⑤`suite run` 执行；退出码 0/1/2/3；测试 `test/design-to-test.test.js`） |
 | MCP 工具调试调用（手动） | `node scripts/aos-call.mjs <calls.json> [projectDir]`（stdio 启动 `dist/index.js`，`AOS_PROJECT_DIR` 指向目标项目；`calls.json` 为 `[{name,args,out?}]`，`out` 落盘结果） |
 | 设备命令（跨项目复用） | `node scripts/adb-safe.mjs <devices\|wait\|install\|shell\|screencap\|push\|pull>`（硬超时 + 超时杀进程组；默认 push 安装；`shell` 拦截 `pm install`；退出码 0/2/3/4/124/125，`--json`；测试 `test/adb-safe.test.js`） |
 | 用例产物巡检（跨项目） | `node scripts/audit-legacy-tests.mjs [--json] <项目根或工作区目录…>`（逐项目跑 `suite check` 同口径：列出 md-only／缺 xlsx／xlsx 过期／缺【真实数据】／覆盖缺口的遗留清单与复核命令；退出码 0/1/2；测试 `test/audit-legacy-tests.test.js`） |
