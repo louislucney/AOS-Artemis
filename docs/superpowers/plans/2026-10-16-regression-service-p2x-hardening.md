@@ -55,7 +55,7 @@
   （`$2=claimedBefore`、`$3=offlineBefore`；悬空 `claimed_by` 自然命中；单条原子；**返回 `rows.length`**（`RETURNING id` 风格，与 `releaseRegressionTasks` 一致；勿用 `rowCount`——pg-mem 适配层不可靠）。）memory 同语义（遍历判定）。
 - `upsertRunner`：**DDL 不加表约束**；MIGRATIONS 追加两条（顺序固定）：①去重 `DELETE FROM runners WHERE id IN (SELECT r1.id FROM runners r1 JOIN runners r2 ON r1.project_id = r2.project_id AND r1.name = r2.name WHERE r1.last_seen_at < r2.last_seen_at OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id))`（**pg-mem 3.0.14 实测唯一可行形态**——窗口函数/`DELETE…USING`/相关 EXISTS/`NOT IN`+GROUP BY 均不可用；`project_id IS NULL` 行不参与，报告说明）②`CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`（幂等，新库/存量库一体覆盖）。实现改为：先 `INSERT ... RETURNING *`，捕获 `code === "23505"` → 按 `(project_id, name)` `UPDATE ... RETURNING *`；不再 SELECT 预检。
 - [ ] **Step 1: 写失败测试**（`test/db-runners.test.js`；memory+pg-mem 双跑沿用该文件模式）
-  - `releaseStaleClaims：超龄+失联→pending（清 claimed_by/at、attempts 保留、返回 1）；runner 在线→0 不动；未超龄→0；claimed_by 空且超龄→回收；running 同判；终态→0；跨项目隔离`。
+  - `releaseStaleClaims：超龄+失联→pending（清 claimed_by/at、attempts 保留、返回 1）；超龄+在线→0 不回收（定向用例）；未超龄+失联→0；claimed_by 空且超龄→回收；running 同判；终态→0；跨项目隔离`。
   - `upsert：同名二次调用单行（id 不变、字段更新）；跨项目同名两行；23505 回退（同名已存在时 upsert 仍单行）`。
   - `迁移专项：pg-mem 建旧表（无唯一索引，夹具沿用 test/db-runners.test.js:400 的 noAstCoverageCheck: true 形态）＋插入重复行 → init() 后重复仅剩 last_seen_at 最新、唯一索引存在、二次 upsert 单行`。
 - [ ] **Step 2: 跑测试确认失败**：`npm run test:file -- test/db-runners.test.js`。
@@ -96,11 +96,13 @@
 - 主循环每轮（schedules 触发之前）：
   - `staleClaimMs`：**新写专用解析器**（`undefined/非法→900000`；`"0"→0`；正数→该值——**勿复用 `intFromEnv`**，其 `<=0` 回退默认会破坏关闭语义）；`>0` 时 `store.releaseStaleClaims({ rootPath, offlineBefore: new Date(now - runnerTtlMs).toISOString(), claimedBefore: new Date(now - staleClaimMs).toISOString() })`；返回 `>0` 日志 `[runner] 回收失联领取：N 条`。
   - `partial = env.AOS_RUNNER_PARTIAL_CLAIM === "1"`；领取调用传 `onlineBefore: new Date(now - runnerTtlMs).toISOString(), allowPartial: partial`。
+  - **领取守卫（毒丸防护）**：领取成功后若 `task.attempts > maxAttempts` → `store.releaseRegressionTask({ rootPath, taskId: task.id, runnerId: me.id, to: "failed" })` ＋ 日志（超上限、毒丸防护）；**不进入执行**（continue 下一轮）。
   - `runnerTtlMs` 复用既有 helper（`src/runner/status.js` 的 `runnerTtlFrom`）＋当前 env。
   - 部分领取命中时日志明示缺端：`[runner] 领取任务 X（部分端 android，缺 ios——在线无全覆盖执行机）`。
 - [ ] **Step 1: 写失败测试**（runner-agent 既有 harness：假 store 记录调用参数）
   - `回收：主循环调用 releaseStaleClaims 且参数 = now-TTL / now-900000（注入 now）；env "0" → 不调用；回收数>0 产生日志；顺序为 回收→触发→领取`（**顺序断言方法**：包一层 store——`releaseStaleClaims`/`createRegressionTask`（触发）/`claimRegressionTask` 各自 push 到共享 sequence 数组，断言出现序；注入 now 使触发真实发生）。
   - `部分领取：无 env → allowPartial=false 且 runner-agent:163 用例仍绿；env=1 → allowPartial=true 透传；部分命中日志含「部分端」与缺端平台`。
+  - `领取守卫：预置 attempts=3 的任务（max 默认 3）→ 领取后置 failed、假执行器未被调用、日志含「毒丸防护」`。
 - [ ] **Step 2: 跑测试确认失败**。
 - [ ] **Step 3: 实现**。
 - [ ] **Step 4: 跑测试确认通过** + `npm run test:file -- test/runner-agent.test.js` 全绿 + `test/suite-task.test.js` 不回归 + build。
@@ -113,7 +115,7 @@
 
 - [ ] **Step 1: 全量回归**：`npm run build && npm test && npm run lint` → 全绿（记录新增测试数与总数）。
 - [ ] **Step 2: 文档**
-  - DESIGN §13.116：P2.x 实施记录（回收双条件与开关/attempts 保留/悬空口径；部分领取规则与默认关、缺端可见性；upsert 原子化与迁移去重；迁移 best-effort 残余口径；D1–D7 口径收束）。
+  - DESIGN §13.116：P2.x 实施记录（回收双条件与开关/attempts 领取累加语义与**领取守卫（毒丸防护）**/悬空口径/「无在线则无人回收」自洽性质；部分领取规则与默认关、缺端可见性、**端覆盖审计反推口径**；upsert 原子化与迁移去重与 tie-break/ISO 口径；迁移 best-effort 残余口径；**部署约束（统一 TTL/心跳配置、心跳≤TTL/3）**；D1–D7 口径收束）。
   - README：runner 段补两项（回收语义与 `AOS_RUNNER_STALE_CLAIM_MS`；部分领取 `AOS_RUNNER_PARTIAL_CLAIM=1` 与缺端说明）。
   - AGENTS.md：runner 行补一句。
 - [ ] **Step 3: 提交**：`git commit -m "docs: regression service P2.x hardening"`
@@ -133,6 +135,7 @@
 - **M4**：顺序断言方法写明（包 store 方法 push sequence 数组）。
 - **M5**：`AOS_RUNNER_STALE_CLAIM_MS` 用**专用解析器**（勿复用 `intFromEnv` 的 `<=0` 回退）。
 - **M6**：去重自 JOIN O(N²)/每次 init 可接受（`runners` 行数极小；顺序保持先去重后建索引）。
+- **外部复核（2026-10-16）并入**：① §4 前置声明（回收依赖「执行期间心跳持续」——已核实 P2 实现在场）＋「超龄＋在线」定向测试；② **毒丸防护**：`attempts` 实为「领取即累加」，真正缺口＝无 claim 侧上限守卫 → T3 增「领取守卫：attempts > maxAttempts → failed 不执行」（设计 §2.1/D2/§6 同步）；③ 部署约束（TTL/心跳统一）；④ 端覆盖审计反推口径；⑤ claim 参数四组合语义表；⑥ 低优先三条（快照竞态不覆盖注记/ISO tie-break 口径/无在线无回收自洽性质）。
 
 ---
 
