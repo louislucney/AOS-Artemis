@@ -129,8 +129,11 @@ test("design-to-test: 参数校验——figma/pen 互斥；缺来源=傻瓜模�
     noCheck: false
   });
   const pen = parsePipelineArgs(["--pen", "/d/x.pen", "--vision", "true", "--project", "/p", "--no-run"]);
-  assert.deepEqual(pen.source, { kind: "pen", penPath: "/d/x.pen", vision: "true" });
+  assert.deepEqual(pen.source, { kind: "pen", penPath: "/d/x.pen", vision: true });
   assert.equal(pen.noRun, true);
+  const penAuto = parsePipelineArgs(["--pen", "/d/x.pen", "--vision", "auto", "--project", "/p"]);
+  assert.equal(penAuto.source.vision, "auto");
+  assert.throws(() => parsePipelineArgs(["--pen", "/d/x.pen", "--vision", "yes", "--project", "/p"]), /vision/);
 });
 
 test("简单模式: 复用现有 flows + 单设备默认跑 → 不提取、直接生成/校验/执行", async () => {

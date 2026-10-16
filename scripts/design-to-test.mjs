@@ -38,10 +38,17 @@ export function parsePipelineArgs(argv) {
   if (figma && pen) throw new Error("--figma 与 --pen 只能给一个");
   const nodeId = flag("--node-id");
   if (nodeId && !figma) throw new Error("--node-id 仅适用于 --figma");
-  const vision = flag("--vision");
+  const visionRaw = flag("--vision");
+  let vision = null;
+  if (visionRaw !== null) {
+    if (visionRaw === "auto") vision = "auto";
+    else if (visionRaw === "true") vision = true;
+    else if (visionRaw === "false") vision = false;
+    else throw new Error("--vision 只接受 auto|true|false");
+  }
   const source = figma
     ? { kind: "figma", url: figma, ...(nodeId ? { nodeId } : {}) }
-    : { kind: "pen", penPath: pen, ...(vision ? { vision } : {}) };
+    : { kind: "pen", penPath: pen, ...(vision !== null ? { vision } : {}) };
   return { source, ...common };
 }
 
