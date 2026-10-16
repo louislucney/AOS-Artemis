@@ -308,6 +308,7 @@ node dist/cli.js suite task create --ref <featureKey>... [--platform ios|android
 node dist/cli.js suite task list|show <id> [--json]
 node dist/cli.js suite run --task <id> --device <serial> [--device <serial>...]
 node dist/cli.js suite report --task <id> [--out <dir>] [--no-save] [--json]
+node dist/cli.js suite backfill [--dry-run] [--since <ISO>] [--project <dir>] [--json]
 ```
 
 - `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/**设计推断**/用例缺陷/未分类；每例附「脚本 断言N/探索M」来源计数）；批次清单自动落盘 `.artemis/design/runs/`（一文件一批次：gate/失败域归并/预检摘要/用例行；`--no-save` 跳过、`AOS_SUITE_RUNS=0` 关闭、`AOS_SUITE_RUNS_MAX` 默认 200，见 DESIGN §13.95）；iOS 运行会把探索步骤命中自动写入对账资产 `.artemis/design/reconciliation.json`（Android 经 `data_engine.db` OCR/归一 taps 同样发现，需 Node ≥ 22.5，缺失自动降级；幂等，下次生成自动升级为硬断言）；同时记录「真机有设计无」的**反向观测**（runtime-only 证据级条目，不参与生成）；失败附 `suite evidence <traceId>` 提示；`--device` 为 iOS 模拟器 UDID 时用例由 AOS iOS 执行器运行（`--app` 经 idb terminate+launch 复位；日志采集标 `ios-log-unsupported` 降级）；`--fail-on-uncovered` 按预检**硬覆盖**判定——未硬覆盖屏幕/跳转、生成截断，或无法校验（缺/坏 `flows.json`）一律 exit 2（inferred 探索缺口仅报告不阻断；`--strict` 追加弱断言门禁），自定义 `--tests` 同样参与校验（流程完整性契约见 DESIGN §6.10）；`--retry N`（≤3）对未通过用例重跑做 flaky 诊断并如实标注（`retry.flaky`）；**首跑结果仍决定门禁**（重跑转绿不计首跑通过）；`.artemis/design/quarantine.json`（须 `owner`+`signedAt`，可选 `expiresAt`）中的隔离用例仍执行并标注，**失败不计门禁**，过期自动恢复；`--no-quarantine` 严格审计跑。**回归任务模式** `--task <id>`（与 `--tests` 互斥）：按引用份×设备展开子运行（`--device` 可重复；同设备内跨份重复 caseId 只跑一次）、逐子运行登记 `suite_runs`/`suite_run_cases`（带任务关联与**同份对比**：修复/回归/仍失败/新增/消失，跨端差异提示）、任务状态机 pending→running→completed/partial/failed；子集运行不做全图覆盖门禁（如实标注；`--fail-on-uncovered` 忽略）。普通 `run`/`loop` 每次执行同样 best-effort 登记（`--no-save` 跳过；store 不可用如实降级、不影响退出码）。
@@ -323,6 +324,7 @@ node dist/cli.js suite report --task <id> [--out <dir>] [--no-save] [--json]
 - `baseline`：设备对设备像素回归（last-known-good）；`--fail-on` 触发时退出码 2，可直接做 CI 门禁。
 - `report`：从运行台账导出 xlsx 结果页（含「功能」「端」列 + API 错误/处理判定列）+ **追溯矩阵工作表**（design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据，含未覆盖与缺口标注）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）；`--task <id>` 改出**回归任务报告**（逐例来自 `suite_runs`，命名 `<时间戳>_<功能>_回归.xlsx`，多功能 → `多功能N项`）。
 - `feedback`：按屏幕/断言/数据/API 错误维度给出可追踪到 case/trace 的改进建议，并追加**出口清单（按最新裁决）**——案例问题/执行偏差（按设备计数）/应用缺陷（含已建单数），JSON 输出带 `exits`（`appDefects` 每条含 `jiraKey`）；与面板统计/生成侧同源（只读，不自动改写生成物）。
+- `backfill`：从磁盘产物（`.artemis/design/runs/*.json` 批次清单 + `.artemis/design/case-sets/*.json` 归档）**幂等重建登记**，补上降级期间漏登记/无登记的份与运行（**只读扫描、绝不改写产物**；**须中心 PG**，内存降级 exit 2）。重复运行已登记项全部 skip；默认只回填**不早于项目最早登记时间**的产物（`--since <ISO>` 覆盖，`beforeSince` 计数；空库无下界并告警）；`--dry-run` 只报告不写库（`registered` 恒 0、`wouldRegister`＝将登记数）；失效产物计 `invalid` 并告警。**局限**：既有任务/引用的历史 id 不可复原（回填产生新 id，仅同窗口经批次清单 `caseSetJsonPath`/`testsPath` 可达的悬空引用经路径桥修复）、回归服务之前的历史清单不回填。见 DESIGN §13.117。
 - 公共选项：`--project <dir>`（项目根，默认 cwd/`AOS_PROJECT_DIR`）、`--json`（机器可读输出）。
 
 
