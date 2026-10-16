@@ -67,7 +67,7 @@ test("design-to-test: pen 源——提取带 vision 透传；无 --device 只到
     errorLog: () => {}
   });
   assert.equal(code, 0);
-  assert.deepEqual(calls[0], { name: "pen_extract_flows", args: { penPath: "/d/x.pen", vision: "auto" } });
+  assert.deepEqual(calls[0], { name: "pen_extract_flows", args: { path: "/d/x.pen", vision: "auto" } });
   assert.deepEqual(cliCalls, [["suite", "check", "--project", "/proj"]]);
   assert.ok(logs.join("\n").includes("suite run"), "应提示手工执行命令");
 });
@@ -178,7 +178,7 @@ test("简单模式: 无 flows → 选择候选 .pen → 无设备只到校验", 
     pencilRoot
   });
   assert.equal(code, 0);
-  assert.deepEqual(calls[0], { name: "pen_extract_flows", args: { penPath } });
+  assert.deepEqual(calls[0], { name: "pen_extract_flows", args: { path: penPath } });
   assert.deepEqual(cliCalls, [["suite", "check", "--project", dir]]);
 });
 
@@ -199,5 +199,5 @@ test("简单模式: 粘贴 .pen 路径（引号/转义空格）→ 作为 pen �
     pencilRoot: emptyPencilRoot
   });
   assert.equal(code, 0);
-  assert.deepEqual(calls[0], { name: "pen_extract_flows", args: { penPath: "/tmp/my design/x.pen" } });
+  assert.deepEqual(calls[0], { name: "pen_extract_flows", args: { path: "/tmp/my design/x.pen" } });
 });

@@ -197,7 +197,7 @@ export async function runPipeline({ options, deps, log, errorLog }) {
     const extractArgs =
       source.kind === "figma"
         ? { url: source.url, ...(source.nodeId ? { nodeId: source.nodeId } : {}) }
-        : { penPath: source.penPath, ...(source.vision ? { vision: source.vision } : {}) };
+        : { path: source.penPath, ...(source.vision ? { vision: source.vision } : {}) };
     let flows;
     try {
       flows = await deps.callTool(extractName, extractArgs);
