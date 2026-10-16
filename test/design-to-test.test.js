@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
-import { parsePipelineArgs, runPipeline } from "../scripts/design-to-test.mjs";
+import { parsePipelineArgs, runPipeline, runSimpleMode } from "../scripts/design-to-test.mjs";
+import { makeTempDir } from "./helpers.js";
 
 function makeDeps(overrides = {}) {
   const calls = [];
@@ -26,6 +29,7 @@ function makeDeps(overrides = {}) {
       cliCalls.push(args);
       return 0;
     },
+    listDevices: async () => ["S1"],
     ...overrides
   };
   return { deps, calls, cliCalls };
@@ -106,8 +110,14 @@ test("design-to-test: 执行失败透传退出码 1", async () => {
   assert.equal(code, 1);
 });
 
-test("design-to-test: 参数校验——figma/pen 互斥且必选其一；node-id 仅 figma", () => {
-  assert.throws(() => parsePipelineArgs(["--project", "/p"]), /figma|pen/);
+test("design-to-test: 参数校验——figma/pen 互斥；缺来源=傻瓜模式；node-id 仅 figma", () => {
+  assert.deepEqual(parsePipelineArgs(["--project", "/p"]), {
+    simple: true,
+    projectDir: "/p",
+    device: null,
+    noRun: false,
+    noCheck: false
+  });
   assert.throws(() => parsePipelineArgs(["--figma", "u", "--pen", "/d/x.pen", "--project", "/p"]), /只能/);
   assert.throws(() => parsePipelineArgs(["--pen", "/d/x.pen", "--node-id", "1-2", "--project", "/p"]), /node-id/);
   const figma = parsePipelineArgs(["--figma", "https://f", "--node-id", "1-2", "--project", "/p", "--device", "S1"]);
@@ -121,4 +131,53 @@ test("design-to-test: 参数校验——figma/pen 互斥且必选其一；node-i
   const pen = parsePipelineArgs(["--pen", "/d/x.pen", "--vision", "true", "--project", "/p", "--no-run"]);
   assert.deepEqual(pen.source, { kind: "pen", penPath: "/d/x.pen", vision: "true" });
   assert.equal(pen.noRun, true);
+});
+
+test("简单模式: 复用现有 flows + 单设备默认跑 → 不提取、直接生成/校验/执行", async () => {
+  const dir = makeTempDir("aos-simple-");
+  fs.mkdirSync(path.join(dir, ".artemis", "design"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, ".artemis", "design", "flows.json"),
+    JSON.stringify({ screens: [{ id: "1", name: "Home" }], edges: [] })
+  );
+  const { deps, calls, cliCalls } = makeDeps();
+  const answers = ["", ""];
+  const code = await runSimpleMode({
+    projectDir: dir,
+    options: {},
+    deps,
+    ask: async () => answers.shift() ?? "",
+    log: () => {},
+    errorLog: () => {}
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls.map((entry) => entry.name), ["figma_generate_tests"]);
+  assert.deepEqual(cliCalls, [
+    ["suite", "check", "--project", dir],
+    ["suite", "run", "--project", dir, "--device", "S1"]
+  ]);
+});
+
+test("简单模式: 无 flows → 选择候选 .pen → 无设备只到校验", async () => {
+  const dir = makeTempDir("aos-simple2-");
+  fs.mkdirSync(path.join(dir, ".artemis", "design"), { recursive: true });
+  const pencilRoot = makeTempDir("aos-pencil-");
+  fs.mkdirSync(path.join(pencilRoot, "uuid-1"));
+  const penPath = path.join(pencilRoot, "uuid-1", "demo.pen");
+  fs.writeFileSync(penPath, "{}");
+
+  const { deps, calls, cliCalls } = makeDeps({ listDevices: async () => [] });
+  const answers = ["1"];
+  const code = await runSimpleMode({
+    projectDir: dir,
+    options: {},
+    deps,
+    ask: async () => answers.shift() ?? "",
+    log: () => {},
+    errorLog: () => {},
+    pencilRoot
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls[0], { name: "pen_extract_flows", args: { penPath } });
+  assert.deepEqual(cliCalls, [["suite", "check", "--project", dir]]);
 });
