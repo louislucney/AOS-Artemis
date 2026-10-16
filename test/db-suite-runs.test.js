@@ -598,6 +598,124 @@ test("getSuiteRun: 含 cases；未知 id / 项目不匹配 → null（memory + p
   }
 });
 
+function caseSetInput(overrides = {}) {
+  return {
+    rootPath: "/w/p1",
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-登录-41b473ed",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: "/w/p1/.artemis/design/tests.json",
+        mdPath: "/w/p1/.artemis/design/tests.md",
+        xlsxPath: "/w/p1/.artemis/design/tests.xlsx"
+      }
+    ],
+    ...overrides
+  };
+}
+
+test("listRegisteredManifestPaths: 仅非 null、跨项目隔离、未注册 → []（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.upsertProject({ rootPath: "/w/p2", name: "p2" });
+    const base = runInput({ rootPath: "/w/p1" });
+    await store.recordSuiteRun({ ...base, run: { ...base.run, manifestPath: "/m/a.json" } });
+    await store.recordSuiteRun({ ...base, run: { ...base.run, manifestPath: "/m/b.json" } });
+    await store.recordSuiteRun({ ...base, run: { ...base.run, manifestPath: null } });
+    assert.deepEqual(
+      (await store.listRegisteredManifestPaths("/w/p1")).sort(),
+      ["/m/a.json", "/m/b.json"]
+    );
+    assert.deepEqual(await store.listRegisteredManifestPaths("/w/p2"), []);
+    assert.deepEqual(await store.listRegisteredManifestPaths("/w/unknown"), []);
+  }
+});
+
+test("getEarliestRegistrationCreatedAt: runs/sets 各自 min、无行 null、跨项目隔离（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.upsertProject({ rootPath: "/w/p2", name: "p2" });
+    const base = runInput({ rootPath: "/w/p1" });
+    await store.recordSuiteRun({ ...base, createdAt: "2026-10-14T12:00:00.000Z" });
+    await store.recordSuiteRun({ ...base, createdAt: "2026-10-14T10:00:00.000Z" });
+    await store.recordCaseSet(caseSetInput({ createdAt: "2026-10-13T09:00:00.000Z" }));
+    await store.recordCaseSet(caseSetInput({ createdAt: "2026-10-13T08:00:00.000Z" }));
+
+    const earliest = await store.getEarliestRegistrationCreatedAt("/w/p1");
+    assert.equal(earliest.runs, "2026-10-14T10:00:00.000Z");
+    assert.equal(earliest.caseSets, "2026-10-13T08:00:00.000Z");
+
+    const empty = await store.getEarliestRegistrationCreatedAt("/w/p2");
+    assert.equal(empty.runs, null);
+    assert.equal(empty.caseSets, null);
+
+    const unknown = await store.getEarliestRegistrationCreatedAt("/w/unknown");
+    assert.equal(unknown.runs, null);
+    assert.equal(unknown.caseSets, null);
+  }
+});
+
+test("迁移 D11: manifest_path 部分唯一索引——多 NULL 共存、同 (project, 非空 path) 二次插入 23505", async () => {
+  // noAstCoverageCheck：旧表已存在时 pg-mem 会因未读取的 AST 约束直接报错，这里只关注迁移结果
+  const mem = newDb({ noAstCoverageCheck: true });
+  const { Pool } = mem.adapters.createPg();
+  const pool = new Pool();
+  await pool.query(
+    `CREATE TABLE suite_runs (
+       id TEXT PRIMARY KEY,
+       project_id TEXT,
+       created_at TEXT NOT NULL,
+       trigger TEXT NOT NULL,
+       regression_task_id TEXT,
+       case_set_id TEXT,
+       feature_key TEXT,
+       feature_name TEXT,
+       platform TEXT NOT NULL,
+       device TEXT,
+       app_version TEXT,
+       runner TEXT,
+       status TEXT NOT NULL,
+       started_at TEXT NOT NULL,
+       finished_at TEXT NOT NULL,
+       total INTEGER NOT NULL,
+       passed INTEGER NOT NULL,
+       failed INTEGER NOT NULL,
+       flaky INTEGER NOT NULL,
+       quarantined INTEGER NOT NULL,
+       failure_domains TEXT NOT NULL DEFAULT '{}',
+       gate_result TEXT,
+       exit_code INTEGER NOT NULL,
+       manifest_path TEXT,
+       comparison TEXT
+     )`
+  );
+  const store = new PostgresStore(pool);
+  await store.init();
+  await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  const base = runInput({ rootPath: "/w/p1" });
+
+  await store.recordSuiteRun({ ...base, run: { ...base.run, manifestPath: null } });
+  await store.recordSuiteRun({ ...base, run: { ...base.run, manifestPath: null } });
+  assert.equal(
+    (await store.listRegisteredManifestPaths("/w/p1")).length,
+    0,
+    "两条 NULL manifest_path 均被部分索引排除，共存"
+  );
+
+  await store.recordSuiteRun({ ...base, run: { ...base.run, manifestPath: "/m/dup.json" } });
+  await assert.rejects(
+    store.recordSuiteRun({ ...base, run: { ...base.run, manifestPath: "/m/dup.json" } }),
+    (error) => error.code === "23505",
+    "同 (project, 非空 path) 二次插入命中唯一索引 23505"
+  );
+});
+
 test("suite_run_cases: 存量库迁移——旧表缺 jira_issue_key 列时 init 补列并用", async () => {
   // noAstCoverageCheck：旧表已存在时 pg-mem 会因未读取的 AST 约束直接报错，这里只关注迁移结果
   const mem = newDb({ noAstCoverageCheck: true });

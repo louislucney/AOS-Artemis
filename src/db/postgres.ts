@@ -240,7 +240,8 @@ const MIGRATIONS = [
      JOIN runners r2 ON r1.project_id = r2.project_id AND r1.name = r2.name
      WHERE r1.last_seen_at < r2.last_seen_at
         OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id))`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`
+  `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS suite_runs_project_manifest_idx ON suite_runs(project_id, manifest_path) WHERE manifest_path IS NOT NULL`
 ];
 
 export class PostgresStore implements ProjectStore {
@@ -999,6 +1000,35 @@ export class PostgresStore implements ProjectStore {
       [runId]
     );
     return mapSuiteRun(row, cases.rows);
+  }
+
+  async listRegisteredManifestPaths(rootPath: string): Promise<string[]> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return [];
+    const result = await this.pool.query(
+      "SELECT manifest_path FROM suite_runs WHERE project_id = $1 AND manifest_path IS NOT NULL",
+      [project.id]
+    );
+    return result.rows.map((row) => String(row.manifest_path));
+  }
+
+  async getEarliestRegistrationCreatedAt(
+    rootPath: string
+  ): Promise<{ runs: string | null; caseSets: string | null }> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return { runs: null, caseSets: null };
+    const runs = await this.pool.query(
+      "SELECT MIN(created_at) AS created_at FROM suite_runs WHERE project_id = $1",
+      [project.id]
+    );
+    const caseSets = await this.pool.query(
+      "SELECT MIN(created_at) AS created_at FROM case_sets WHERE project_id = $1",
+      [project.id]
+    );
+    return {
+      runs: nullableString(runs.rows[0]?.created_at),
+      caseSets: nullableString(caseSets.rows[0]?.created_at)
+    };
   }
 
   async upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord> {

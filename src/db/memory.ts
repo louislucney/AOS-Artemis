@@ -572,6 +572,31 @@ export class MemoryStore implements ProjectStore {
     return run ? cloneSuiteRun(run) : null;
   }
 
+  async listRegisteredManifestPaths(rootPath: string): Promise<string[]> {
+    const project = this.projects.get(rootPath);
+    if (!project) return [];
+    return this.suiteRuns.flatMap((run) =>
+      run.projectId === project.id && run.manifestPath !== null ? [run.manifestPath] : []
+    );
+  }
+
+  async getEarliestRegistrationCreatedAt(
+    rootPath: string
+  ): Promise<{ runs: string | null; caseSets: string | null }> {
+    const project = this.projects.get(rootPath);
+    if (!project) return { runs: null, caseSets: null };
+    const runTimes = this.suiteRuns
+      .filter((run) => run.projectId === project.id)
+      .map((run) => run.createdAt);
+    const caseSetTimes = this.caseSets
+      .filter((set) => set.projectId === project.id)
+      .map((set) => set.createdAt);
+    return {
+      runs: minIso(runTimes),
+      caseSets: minIso(caseSetTimes)
+    };
+  }
+
   async upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord> {
     const project = this.projects.get(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
@@ -698,6 +723,11 @@ export class MemoryStore implements ProjectStore {
 
 function byNewestUsageEvent(a: UsageEventRecord, b: UsageEventRecord): number {
   return b.at.localeCompare(a.at) || b.id.localeCompare(a.id);
+}
+
+function minIso(values: string[]): string | null {
+  if (values.length === 0) return null;
+  return values.reduce((a, b) => (a < b ? a : b));
 }
 
 function cloneUsageEvent(event: UsageEventRecord): UsageEventRecord {

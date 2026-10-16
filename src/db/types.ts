@@ -417,6 +417,12 @@ export interface ProjectStore {
   updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean>;
   setCaseIssueKey(input: SetCaseIssueKeyInput): Promise<boolean>;
   getSuiteRun(rootPath: string, runId: string): Promise<SuiteRunRecord | null>;
+  /** 已登记清单路径（仅非 null）；未注册项目 → []。 */
+  listRegisteredManifestPaths(rootPath: string): Promise<string[]>;
+  /** 最早登记时间：suite_runs 与 case_sets 各自的 MIN(created_at)；无行/未注册项目 → null。 */
+  getEarliestRegistrationCreatedAt(
+    rootPath: string
+  ): Promise<{ runs: string | null; caseSets: string | null }>;
   upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord>;
   listRunners(rootPath: string, limit?: number): Promise<RunnerRecord[]>;
   recordUsageEvent(
