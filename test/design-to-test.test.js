@@ -181,3 +181,23 @@ test("简单模式: 无 flows → 选择候选 .pen → 无设备只到校验", 
   assert.deepEqual(calls[0], { name: "pen_extract_flows", args: { penPath } });
   assert.deepEqual(cliCalls, [["suite", "check", "--project", dir]]);
 });
+
+test("简单模式: 粘贴 .pen 路径（引号/转义空格）→ 作为 pen 源", async () => {
+  const dir = makeTempDir("aos-simple3-");
+  fs.mkdirSync(path.join(dir, ".artemis", "design"), { recursive: true });
+  const emptyPencilRoot = makeTempDir("aos-pencil-empty-");
+
+  const { deps, calls } = makeDeps({ listDevices: async () => [] });
+  const answers = ['"/tmp/my\\ design/x.pen"'];
+  const code = await runSimpleMode({
+    projectDir: dir,
+    options: {},
+    deps,
+    ask: async () => answers.shift() ?? "",
+    log: () => {},
+    errorLog: () => {},
+    pencilRoot: emptyPencilRoot
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls[0], { name: "pen_extract_flows", args: { penPath: "/tmp/my design/x.pen" } });
+});

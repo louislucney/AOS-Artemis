@@ -156,10 +156,20 @@ export async function runSimpleMode({ projectDir, options = {}, deps, ask, log, 
   return code;
 }
 
+export function normalizeInputTarget(input) {
+  let value = String(input ?? "").trim();
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1).trim();
+  }
+  return value.replace(/\\ /g, " ");
+}
+
 async function resolveDesignSource({ projectDir, ask, log, errorLog, pencilRoot }) {
   const candidates = findDesignCandidates({ projectDir, ...(pencilRoot ? { pencilRoot } : {}) });
   if (candidates.length === 0) {
-    const answer = (await ask("没找到 .pen 设计文件。粘贴 Figma 链接、或输入 .pen 路径：")).trim();
+    const answer = normalizeInputTarget(
+      await ask("没找到 .pen 设计文件。粘贴 Figma 链接（http 开头），或把 .pen 文件拖进来（自动变成路径）：")
+    );
     if (answer === "") {
       errorLog("没有设计来源，没法继续。");
       return "cancelled";
@@ -167,7 +177,9 @@ async function resolveDesignSource({ projectDir, ask, log, errorLog, pencilRoot 
     return answer.startsWith("http") ? { kind: "figma", url: answer } : { kind: "pen", penPath: answer };
   }
   const lines = candidates.map((entry, index) => `   ${index + 1}) ${entry.label}`).join("\n");
-  const answer = (await ask(`发现 ${candidates.length} 个设计文件，用哪个？\n${lines}\n（回车=1 / 或直接粘贴 Figma 链接）`)).trim();
+  const answer = normalizeInputTarget(
+    await ask(`发现 ${candidates.length} 个设计文件，用哪个？\n${lines}\n（回车=1 / 或粘贴 Figma 链接 / 或直接拖入 .pen 文件）`)
+  );
   if (answer.startsWith("http")) return { kind: "figma", url: answer };
   const index = answer === "" ? 1 : Number.parseInt(answer, 10);
   if (!Number.isInteger(index) || index < 1 || index > candidates.length) {
