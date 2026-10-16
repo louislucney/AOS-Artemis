@@ -66,6 +66,7 @@ export function stubFigmaFetch(designPng, nodeId, fileKey, options = {}) {
       });
     }
     if (href.includes(`/files/${fileKey}/nodes`)) {
+      if (options.failNodes) return new Response("nodes unavailable", { status: 500 });
       const document = options.document ?? DEFAULT_FIGMA_NODE_DOCUMENT;
       return new Response(JSON.stringify({ nodes: { [nodeId]: { document } } }), {
         status: 200,

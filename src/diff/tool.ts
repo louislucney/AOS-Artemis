@@ -20,6 +20,15 @@ import {
 } from "./device-source.js";
 import { decodeImage, diffScreens, encodePng, type Bbox, type Insets } from "./engine.js";
 import { renderPenDesign } from "./pen-source.js";
+import {
+  composeDetailPair,
+  extractDetailPair,
+  proposeDetailRegions,
+  resolveDetailGeometry,
+  runDetailDiff,
+  scaleDetailNodes,
+  type DetailLocalSummary
+} from "./detail.js";
 import { loadScreenMap, localizeRegion, proposeScreenMapEntries, type ProposeResult } from "./screen-map.js";
 import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
 
@@ -29,6 +38,15 @@ export interface DesignSourceArgs {
   penPath?: string;
   nodeId?: string;
   renderOut?: string;
+}
+
+interface DetailRegionReport {
+  idx: number;
+  source: string;
+  bbox: Bbox;
+  name?: string;
+  localSummary: DetailLocalSummary;
+  crops?: { pair: string };
 }
 
 export interface DesignDeviceDiffArgs {
@@ -52,6 +70,14 @@ export interface DesignDeviceDiffArgs {
     nodeProximity?: number;
     colorTolerance?: number;
     systemBandRatio?: number;
+  };
+  regions?: "auto" | "nodes" | "tiles" | "none" | Bbox[];
+  zoom?: number;
+  returnCrops?: number;
+  detail?: {
+    pixelThreshold?: number;
+    minAreaRatio?: number;
+    clusterGap?: number;
   };
   save?: boolean;
   dryRun?: boolean;
@@ -317,6 +343,180 @@ export async function designDeviceDiff(
     }
 
     const noCandidateCount = diffResult.regions.filter((region) => region.localized?.status === "no-candidates").length;
+
+    const regionsArg = args.regions ?? "auto";
+    let detailMeta: {
+      enabled: true;
+      zoom: number;
+      returned: number;
+      regionCount: number;
+      tilesUsed: boolean;
+      truncated: boolean;
+      degraded: boolean;
+    } | null = null;
+    let regionDetailsPayload: DetailRegionReport[] | null = null;
+    const pairBuffers: Buffer[] = [];
+    const detailWarnings: string[] = [];
+    let inlinePairBuffers: Buffer[] = [];
+
+    if (regionsArg !== "none") {
+      if (Array.isArray(regionsArg)) {
+        const invalid = regionsArg.some(
+          (box) =>
+            !Number.isFinite(box?.x) ||
+            !Number.isFinite(box?.y) ||
+            !Number.isFinite(box?.width) ||
+            !Number.isFinite(box?.height) ||
+            box.width <= 0 ||
+            box.height <= 0
+        );
+        if (invalid) return jsonError("regions 显式区域需要合法的 {x,y,width,height}（宽高 > 0）。");
+      }
+      const zoom = Math.min(4, Math.max(1, args.zoom ?? 2));
+      const returnCrops = Math.min(Math.max(0, Math.trunc(args.returnCrops ?? 8)), 50);
+      const maxRegions = Math.max(1, Math.trunc(args.diff?.maxRegions ?? 20));
+      const insets = diffResult.alignment.insets;
+
+      let detailDesignPng = designPng;
+      let detailScale = 1;
+      let designRetryReason: string | null = null;
+      const deviceCroppedWidth = deviceImage.width - insets.left - insets.right;
+      const rootWidth = screens.find((node) => node.width > 0)?.width ?? null;
+      if (rootWidth !== null) {
+        const target = Math.min(4, Math.max(1, Math.round((deviceCroppedWidth / rootWidth) * 100) / 100));
+        if (target > 1.02) {
+          try {
+            if (source.kind === "figma") {
+              const render = await fetchFigmaRenderPng(args.design.figmaUrl!, args.design.nodeId, target);
+              detailDesignPng = render.png;
+            } else {
+              const penName = typeof designResponse.path === "string" ? path.basename(designResponse.path, ".pen") : "design";
+              const rendered = await renderPenDesign(runtime, {
+                penPath: args.design.penPath,
+                renderOut: path.relative(
+                  runtime.project.rootDir,
+                  path.join(runtime.configDirAbs, "design", "pen", `${penName}.detail.png`)
+                ),
+                scale: target,
+                exec: deps.exec,
+                ensure: deps.ensure
+              });
+              detailDesignPng = rendered.png;
+            }
+            detailScale = target;
+          } catch (error) {
+            designRetryReason = errorMessage(error);
+          }
+        }
+      }
+      const detailDesign = decodeImage(detailDesignPng);
+      const geometry = resolveDetailGeometry(detailDesign, deviceImage, insets);
+      const designDegraded = geometry.ratio > 1.02;
+      if (designDegraded) {
+        detailWarnings.push(
+          `design-upscaled：设计源低于设备栅格${designRetryReason ? `（${designRetryReason}）` : ""}，细节档降级（阈值 0.1）`
+        );
+      }
+
+      let detailDeviceBytes = deviceBytes;
+      let deviceLossless = captured.lossless;
+      const explicitLossy = args.device?.lossless === false;
+      if (stepRequest === null && args.device?.platform !== "ios" && !explicitLossy && captured.lossless !== true) {
+        try {
+          const recapture = await captureLiveScreenshot(runtime, args.device?.serial, {
+            lossless: true,
+            capturePng: deps.capturePng,
+            captureIosPng: deps.captureIosPng
+          });
+          detailDeviceBytes = recapture.bytes;
+          deviceLossless = recapture.lossless === true;
+        } catch (error) {
+          deviceLossless = false;
+          detailWarnings.push(`lossy-source：无损二次抓图失败（${errorMessage(error)}），细节档降级（阈值 0.1）`);
+        }
+      }
+      if (stepRequest === null && deviceLossless !== true && !detailWarnings.some((warning) => warning.startsWith("lossy-source"))) {
+        detailWarnings.push(
+          explicitLossy
+            ? "lossy-source：device.lossless=false 显式有损，细节档降级（阈值 0.1）"
+            : "lossy-source：设备源为有损截图（无损不可用回退），细节档降级（阈值 0.1）"
+        );
+      }
+      const degraded = designDegraded || (stepRequest === null && deviceLossless !== true);
+      const detailDevice = detailDeviceBytes === deviceBytes ? deviceImage : decodeImage(detailDeviceBytes);
+
+      const proposalResult = proposeDetailRegions({
+        designWidth: detailDesign.width,
+        designHeight: detailDesign.height,
+        nodes: scaleDetailNodes(designNodes, detailScale),
+        screenRegionBboxes: diffResult.regions.map((region) => ({
+          x: region.bbox.x * detailScale,
+          y: region.bbox.y * detailScale,
+          width: region.bbox.width * detailScale,
+          height: region.bbox.height * detailScale
+        })),
+        mode: regionsArg,
+        maxRegions
+      });
+      if (proposalResult.truncated) {
+        detailWarnings.push(`detail-truncated：区域数超过上限 ${maxRegions}（diff 命中与小面积优先），未全量核验`);
+      }
+
+      const saving = args.save !== false;
+      let outOfBounds = 0;
+      const details: DetailRegionReport[] = [];
+      for (const region of proposalResult.regions) {
+        const pair = extractDetailPair({ design: detailDesign, device: detailDevice, region: region.bbox, geometry });
+        if (pair === null) {
+          outOfBounds += 1;
+          continue;
+        }
+        const localSummary = runDetailDiff(pair.design, pair.device, { degraded, thresholds: args.detail });
+        pairBuffers.push(composeDetailPair(pair.device, pair.design, { zoom }).png);
+        const slug = region.name ? diffSlug(region.name) : `r${region.idx}`;
+        details.push({
+          idx: region.idx,
+          source: region.source,
+          bbox: region.bbox,
+          ...(region.name ? { name: region.name } : {}),
+          localSummary,
+          ...(saving ? { crops: { pair: `regions/${String(region.idx).padStart(2, "0")}-${slug}.png` } } : {})
+        });
+      }
+      if (outOfBounds > 0) {
+        detailWarnings.push(`out-of-bounds：${outOfBounds} 个区域越出设备视口，已跳过`);
+      }
+
+      const severityRank: Record<string, number> = { blocker: 0, major: 1, minor: 2, info: 3 };
+      const rankOf = (summary: DetailLocalSummary): number =>
+        summary.clusters.reduce((rank, cluster) => Math.min(rank, severityRank[cluster.severity] ?? 4), 4);
+      const ordered = details
+        .map((entry, index) => ({ entry, index }))
+        .sort((a, b) => {
+          const diffOrder = Number(!a.entry.localSummary.hasDiff) - Number(!b.entry.localSummary.hasDiff);
+          if (diffOrder !== 0) return diffOrder;
+          if (a.entry.localSummary.hasDiff) {
+            const rankOrder = rankOf(a.entry.localSummary) - rankOf(b.entry.localSummary);
+            if (rankOrder !== 0) return rankOrder;
+            const areaOrder = b.entry.bbox.width * b.entry.bbox.height - a.entry.bbox.width * a.entry.bbox.height;
+            if (areaOrder !== 0) return areaOrder;
+          }
+          return a.index - b.index;
+        });
+      inlinePairBuffers = ordered.slice(0, returnCrops).map((item) => pairBuffers[item.index]!);
+
+      regionDetailsPayload = details;
+      detailMeta = {
+        enabled: true,
+        zoom,
+        returned: inlinePairBuffers.length,
+        regionCount: details.length,
+        tilesUsed: proposalResult.tilesUsed,
+        truncated: proposalResult.truncated,
+        degraded
+      };
+    }
+
     const warnings = [
       ...(nodeWarning ? [nodeWarning] : []),
       ...(noCandidateCount > 0 && proposal?.buildBrief
@@ -324,7 +524,8 @@ export async function designDeviceDiff(
         : []),
       ...(anchorAmbiguous
         ? [`失败证据命中 ${stepAnchor!.candidates.length} 个步骤，已取首个 Step ${stepAnchor!.stepNumber}；可用 device.stepNumber 显式指定。`]
-        : [])
+        : []),
+      ...detailWarnings
     ];
     const designScreens = screens
       .slice(0, 10)
@@ -361,6 +562,9 @@ export async function designDeviceDiff(
               }
       },
       ...shared,
+      ...(detailMeta !== null && regionDetailsPayload !== null
+        ? { detail: detailMeta, regionDetails: regionDetailsPayload }
+        : {}),
       elapsedMs: Date.now() - started
     };
 
@@ -373,6 +577,15 @@ export async function designDeviceDiff(
         fs.writeFileSync(path.join(dir, "annotated.png"), annotated);
         fs.writeFileSync(path.join(dir, "design.png"), designPng);
         fs.writeFileSync(path.join(dir, "device.png"), encodePng(deviceImage));
+        if (regionDetailsPayload !== null && regionDetailsPayload.length > 0) {
+          fs.mkdirSync(path.join(dir, "regions"), { recursive: true });
+          for (const [index, entry] of regionDetailsPayload.entries()) {
+            if (!entry.crops) continue;
+            const target = path.join(dir, entry.crops.pair);
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.writeFileSync(target, pairBuffers[index]!);
+          }
+        }
       } catch (error) {
         try {
           fs.rmSync(dir, { recursive: true, force: true });
@@ -405,13 +618,17 @@ export async function designDeviceDiff(
                 ...(args.device?.platform === "ios" ? { platform: "ios" } : {})
               },
               ...shared,
+              ...(detailMeta !== null && regionDetailsPayload !== null
+                ? { detail: detailMeta, regionDetails: regionDetailsPayload }
+                : {}),
               saved
             },
             null,
             2
           )
         },
-        { type: "image", data: annotated.toString("base64"), mimeType: "image/png" }
+        { type: "image", data: annotated.toString("base64"), mimeType: "image/png" },
+        ...inlinePairBuffers.map((png) => ({ type: "image" as const, data: png.toString("base64"), mimeType: "image/png" }))
       ]
     };
   } catch (error) {

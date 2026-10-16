@@ -231,7 +231,8 @@ test("design_device_diff: build-brief 损坏时降级并给出 reason，不阻�
     try {
       const payload = parseToolResult(
         await designDeviceDiff(runtime, {
-          design: { figmaUrl: "https://www.figma.com/design/MapE5/File?node-id=1-2" }
+          design: { figmaUrl: "https://www.figma.com/design/MapE5/File?node-id=1-2" },
+          regions: "none"
         })
       );
       assert.equal(payload.ok, true, JSON.stringify(payload));

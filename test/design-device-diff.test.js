@@ -28,24 +28,31 @@ function makeDiffProject({ fileKey }) {
   const designPng = toPng(designImage);
 
   const deviceImage = createImage(390, 844);
+  const devicePng = toPng(deviceImage);
   const deviceJpeg = toJpeg(deviceImage, 85);
   const devicePath = path.join(dir, "device-screen.jpg");
   fs.writeFileSync(devicePath, deviceJpeg);
 
   const figma = stubFigmaFetch(designPng, "1:2", fileKey);
-  return { dir, designPng, deviceJpeg, devicePath, figma };
+  return { dir, designPng, devicePng, deviceJpeg, devicePath, figma };
 }
 
 test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + 产物落盘", async () => {
   await withFigmaToken(async () => {
-    const { dir, designPng, deviceJpeg, devicePath, figma } = makeDiffProject({ fileKey: "DiffA1" });
+    const { dir, designPng, deviceJpeg, devicePath, devicePng, figma } = makeDiffProject({ fileKey: "DiffA1" });
     const proxy = new StubProxy({ running: true });
     stubDevice(proxy, devicePath);
     const { runtime } = await loadTestRuntime(dir, { proxy });
     try {
-      const result = await designDeviceDiff(runtime, {
-        design: { figmaUrl: "https://www.figma.com/design/DiffA1/File?node-id=1-2" }
-      });
+      const result = await designDeviceDiff(
+        runtime,
+        {
+          design: { figmaUrl: "https://www.figma.com/design/DiffA1/File?node-id=1-2" }
+        },
+        {
+          capturePng: async () => ({ ok: true, bytes: devicePng, serial: "S1", adb: { path: "/fake/adb", source: "env" } })
+        }
+      );
       const payload = parseToolResult(result);
       assert.equal(payload.ok, true, JSON.stringify(payload));
       assert.equal(payload.summary.regions, 1, JSON.stringify(payload.regions));
@@ -73,6 +80,8 @@ test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + �
         "warnings",
         "regions",
         "summary",
+        "detail",
+        "regionDetails",
         "elapsedMs"
       ]);
       assert.equal(report.schemaVersion, 1);
@@ -88,7 +97,7 @@ test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + �
       const sample = (200 * savedDevice.width + 200) * 4;
       assert.deepEqual([...savedDevice.data.subarray(sample, sample + 3)], [255, 255, 255]);
 
-      assert.equal(result.content.length, 2);
+      assert.equal(result.content.length, 2 + payload.detail.returned);
       assert.equal(result.content[1].type, "image");
       assert.equal(result.content[1].mimeType, "image/png");
       assert.ok(result.content[1].data.length > 0);
@@ -121,16 +130,22 @@ test("design_device_diff: dryRun 不取图不写盘", async () => {
 
 test("design_device_diff: ignoreRegions 屏蔽后无差异区域", async () => {
   await withFigmaToken(async () => {
-    const { dir, devicePath, figma } = makeDiffProject({ fileKey: "DiffC3" });
+    const { dir, devicePath, devicePng, figma } = makeDiffProject({ fileKey: "DiffC3" });
     const proxy = new StubProxy({ running: true });
     stubDevice(proxy, devicePath);
     const { runtime } = await loadTestRuntime(dir, { proxy });
     try {
       const payload = parseToolResult(
-        await designDeviceDiff(runtime, {
-          design: { figmaUrl: "https://www.figma.com/design/DiffC3/File?node-id=1-2" },
-          alignment: { ignoreRegions: [{ x: 30, y: 70, width: 140, height: 80 }] }
-        })
+        await designDeviceDiff(
+          runtime,
+          {
+            design: { figmaUrl: "https://www.figma.com/design/DiffC3/File?node-id=1-2" },
+            alignment: { ignoreRegions: [{ x: 30, y: 70, width: 140, height: 80 }] }
+          },
+          {
+            capturePng: async () => ({ ok: true, bytes: devicePng, serial: "S1", adb: { path: "/fake/adb", source: "env" } })
+          }
+        )
       );
       assert.equal(payload.summary.regions, 0, JSON.stringify(payload.regions));
       assert.deepEqual(payload.ignoredRegions, [{ x: 30, y: 70, width: 140, height: 80 }]);
@@ -205,7 +220,7 @@ test("design_device_diff: insets 过大时差异计算报错且不写盘", async
 
 test("design_device_diff: 写盘失败时清理并报错", async () => {
   await withFigmaToken(async () => {
-    const { dir, devicePath, figma } = makeDiffProject({ fileKey: "DiffG7" });
+    const { dir, devicePath, devicePng, figma } = makeDiffProject({ fileKey: "DiffG7" });
     const proxy = new StubProxy({ running: true });
     stubDevice(proxy, devicePath);
     const { runtime } = await loadTestRuntime(dir, { proxy });
@@ -213,9 +228,15 @@ test("design_device_diff: 写盘失败时清理并报错", async () => {
     fs.mkdirSync(designDir, { recursive: true });
     fs.writeFileSync(path.join(designDir, "diffs"), "occupied", "utf-8");
     try {
-      const result = await designDeviceDiff(runtime, {
-        design: { figmaUrl: "https://www.figma.com/design/DiffG7/File?node-id=1-2" }
-      });
+      const result = await designDeviceDiff(
+        runtime,
+        {
+          design: { figmaUrl: "https://www.figma.com/design/DiffG7/File?node-id=1-2" }
+        },
+        {
+          capturePng: async () => ({ ok: true, bytes: devicePng, serial: "S1", adb: { path: "/fake/adb", source: "env" } })
+        }
+      );
       assert.equal(result.isError, true);
       assert.match(parseToolResult(result).error, /产物写入失败/);
       assert.ok(!fs.existsSync(path.join(designDir, "diffs", "report.json")));

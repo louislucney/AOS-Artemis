@@ -84,6 +84,25 @@ export const DESIGN_NATIVE_TOOLS: NativeToolDefinition[] = [
           systemBandRatio: z.number().min(0).max(0.25).optional().describe("上下系统边缘条带比例（无节点引用区域降级 system-area），默认 0.05")
         })
         .optional(),
+      regions: z
+        .union([
+          z.enum(["auto", "nodes", "tiles", "none"]),
+          z.array(z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }))
+        ])
+        .optional()
+        .describe(
+          "区域核验（细节档）：auto（默认，节点∪整屏 diff；无节点时 tiles）| nodes | tiles | none（关闭）｜显式区域 {x,y,width,height}（细节渲染像素坐标，通常回传上轮 regionDetails[].bbox 做分页）"
+        ),
+      zoom: z.number().min(1).max(4).optional().describe("对图放大倍数，默认 2"),
+      returnCrops: z.number().int().min(0).max(50).optional().describe("内联对图上限，默认 8；0=仅落盘"),
+      detail: z
+        .object({
+          pixelThreshold: z.number().min(0).max(1).optional(),
+          minAreaRatio: z.number().min(0).max(1).optional(),
+          clusterGap: z.number().int().nonnegative().optional()
+        })
+        .optional()
+        .describe("细节档阈值覆盖（默认 0.05/0.0005/4；有损或上采样源自动降为 0.1）"),
       save: z.boolean().optional().describe("是否落盘产物，默认 true"),
       dryRun: z.boolean().optional().describe("仅返回计划，不取图不写盘，默认 false")
     }),

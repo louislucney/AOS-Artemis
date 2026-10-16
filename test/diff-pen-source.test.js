@@ -149,6 +149,59 @@ test("renderPenDesign: scale 透传 --export-scale，节点坐标为渲染像素
   assert.equal(plain.renderScale, 1);
 });
 
+function fakePenByScale(byScale) {
+  const calls = [];
+  const exec = async (command, args, options = {}) => {
+    calls.push({ command, args, input: options.input });
+    const scale = args[args.indexOf("--export-scale") + 1];
+    const output = args[args.indexOf("--export") + 1];
+    fs.writeFileSync(output, byScale[scale] ?? byScale["1"]);
+    return { code: 0, stdout: `Export saved to: ${output}\n`, stderr: "" };
+  };
+  return { exec, calls };
+}
+
+test("design_device_diff: pen 细节核验按设备倍率重渲染（--export-scale 3）", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(path.join(designDir, "demo.pen"), PEN_FIXTURE, "utf-8");
+
+  const designImage = createImage(390, 844);
+  fillRect(designImage, 40, 80, 120, 60, [30, 64, 176, 255]);
+  const designPng = toPng(designImage);
+  const designHi = createImage(1170, 2532);
+  fillRect(designHi, 120, 240, 360, 180, [30, 64, 176, 255]);
+  const design3x = toPng(designHi);
+
+  const deviceImage = createImage(1170, 2532);
+  const devicePng = Buffer.from(toPng(deviceImage));
+  const devicePath = path.join(dir, "device.jpg");
+  fs.writeFileSync(devicePath, toJpeg(deviceImage, 85));
+
+  const { exec, calls } = fakePenByScale({ "1": designPng, "3": design3x });
+  const proxy = new StubProxy({ running: true });
+  stubDevice(proxy, devicePath);
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+
+  const payload = parseToolResult(
+    await designDeviceDiff(
+      runtime,
+      { design: { source: "pen", penPath: ".artemis/design/demo.pen" } },
+      {
+        exec,
+        ensure: stubEnsure(),
+        capturePng: async () => ({ ok: true, bytes: devicePng, serial: "S1", adb: { path: "/fake/adb", source: "env" } })
+      }
+    )
+  );
+  assert.equal(payload.ok, true, JSON.stringify(payload));
+  assert.equal(calls.length, 2, JSON.stringify(calls.map((call) => call.args)));
+  assert.equal(calls[1].args[calls[1].args.indexOf("--export-scale") + 1], "3");
+  assert.equal(payload.detail.degraded, false, JSON.stringify(payload.warnings));
+  assert.ok(payload.regionDetails.some((region) => region.localSummary.hasDiff));
+});
+
 test("design_device_diff: source=pen 缺省取最新 .pen", async () => {
   const { dir, devicePath } = makePenProject();
   const { exec, calls } = fakePen(designPngFixture());
