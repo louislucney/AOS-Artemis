@@ -13,6 +13,7 @@ import type { DesignNode } from "./engine.js";
 export interface PenRender {
   png: Buffer;
   nodes: DesignNode[];
+  renderScale: number;
   penPath: string;
   output: string;
 }
@@ -20,6 +21,7 @@ export interface PenRender {
 export interface PenRenderOptions {
   penPath?: string;
   renderOut?: string;
+  scale?: number;
   exec?: PenExecFn;
   ensure?: PenEnsureFn;
 }
@@ -96,13 +98,14 @@ export async function renderPenDesign(
   const ready = await (options.ensure ?? ensurePenCli)({ env });
   if (!ready.ok) throw new Error(ready.error ?? "pen CLI 不可用");
 
+  const scale = options.scale ?? 1;
   fs.mkdirSync(path.dirname(output), { recursive: true });
   const existedBefore = fs.existsSync(output);
   const run = await runPenExport({
     input: target,
     output,
     format: "png",
-    scale: 1,
+    scale,
     exec: options.exec,
     cliPath: ready.path ?? undefined,
     env
@@ -120,7 +123,14 @@ export async function renderPenDesign(
   }
   return {
     png: fs.readFileSync(output),
-    nodes: penDesignNodes(doc),
+    nodes: penDesignNodes(doc).map((node) => ({
+      ...node,
+      x: node.x * scale,
+      y: node.y * scale,
+      width: node.width * scale,
+      height: node.height * scale
+    })),
+    renderScale: scale,
     penPath: penRelativePath(runtime, target),
     output
   };

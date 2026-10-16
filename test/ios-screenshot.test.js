@@ -174,7 +174,21 @@ test("captureLiveScreenshot(ios): 注入的 iOS 截图源生效且不调用代�
   assert.equal(proxyCalls, 0);
   assert.match(capture.note, /iOS 模拟器 PNG/);
   assert.equal(capture.serial, "UDID-1");
+  assert.equal(capture.lossless, true);
   assert.equal(capture.bytes.equals(PNG_BYTES), true);
+});
+
+test("captureLiveScreenshot(ios): 真机 WDA PNG 标记 lossless=true", async () => {
+  const capture = await captureLiveScreenshot(
+    { proxy: { callTool: async () => ({ content: [] }) } },
+    "00008101-000359440C69001E",
+    {
+      platform: "ios",
+      captureWdaPng: async () => ({ ok: true, value: PNG_BYTES })
+    }
+  );
+  assert.match(capture.note, /iOS 真机 WDA PNG/);
+  assert.equal(capture.lossless, true);
 });
 
 test("captureLiveScreenshot(ios): 失败抛出带指引的错误（无 ARTEMIS 回退）", async () => {

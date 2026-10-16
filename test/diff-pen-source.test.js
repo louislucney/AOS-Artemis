@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { penDesignNodes } from "../dist/diff/pen-source.js";
+import { penDesignNodes, renderPenDesign } from "../dist/diff/pen-source.js";
 import { parsePenText } from "../dist/pen/read.js";
 import { designDeviceDiff } from "../dist/diff/tool.js";
 import {
@@ -127,6 +127,26 @@ test("design_device_diff: .pen 设计源渲染 + 分类 + 产物", async () => {
   assert.equal(exportPath, path.join(dir, ".artemis", "design", "pen", "demo.png"));
   assert.equal(calls[0].args[calls[0].args.indexOf("--export-scale") + 1], "1");
   assert.ok(fs.existsSync(exportPath));
+});
+
+test("renderPenDesign: scale 透传 --export-scale，节点坐标为渲染像素", async () => {
+  const { dir } = makePenProject();
+  const { exec, calls } = fakePen(designPngFixture());
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy({ running: true }) });
+  const rendered = await renderPenDesign(runtime, { penPath: ".artemis/design/demo.pen", scale: 3, exec, ensure: stubEnsure() });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args[calls[0].args.indexOf("--export-scale") + 1], "3");
+  assert.equal(rendered.renderScale, 3);
+  const card = rendered.nodes.find((node) => node.id === "card");
+  assert.deepEqual(
+    { x: card.x, y: card.y, width: card.width, height: card.height },
+    { x: 120, y: 240, width: 360, height: 180 }
+  );
+
+  const fallback = fakePen(designPngFixture());
+  const plain = await renderPenDesign(runtime, { penPath: ".artemis/design/demo.pen", exec: fallback.exec, ensure: stubEnsure() });
+  assert.equal(fallback.calls[0].args[fallback.calls[0].args.indexOf("--export-scale") + 1], "1");
+  assert.equal(plain.renderScale, 1);
 });
 
 test("design_device_diff: source=pen 缺省取最新 .pen", async () => {

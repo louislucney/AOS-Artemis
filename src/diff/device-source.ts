@@ -19,6 +19,7 @@ export interface DeviceCapture {
   bytes: Buffer;
   note: string;
   serial?: string;
+  lossless?: boolean;
 }
 
 export interface LiveCaptureOptions {
@@ -55,7 +56,7 @@ async function captureArtemisLive(runtime: Runtime, serial?: string): Promise<De
   if (!extracted) {
     throw new Error("无法从 mobile_get_device_state 结果中解析截图（image 块或本地文件路径）。");
   }
-  return { bytes: Buffer.from(extracted.data, "base64"), note: extracted.note };
+  return { bytes: Buffer.from(extracted.data, "base64"), note: extracted.note, lossless: false };
 }
 
 const IOS_ERROR_HINTS: Record<string, string> = {
@@ -86,14 +87,16 @@ export async function captureLiveScreenshot(
         return {
           bytes: observation.bytes,
           note: `iOS 真机 WDA PNG（wda，udid=${serial}）`,
-          serial: serial!
+          serial: serial!,
+          lossless: true
         };
       }
       const tool = observation.backend === "simctl" ? "simctl 兜底" : "idb";
       return {
         bytes: observation.bytes,
         note: `iOS 模拟器 PNG（${tool}，udid=${observation.serial || "?"}）`,
-        ...(observation.serial ? { serial: observation.serial } : {})
+        ...(observation.serial ? { serial: observation.serial } : {}),
+        lossless: true
       };
     }
     if (observation.kind === "device") {
@@ -127,7 +130,8 @@ export async function captureLiveScreenshot(
     return {
       bytes: png.bytes,
       note: `adb exec-out screencap -p（无损 PNG，serial=${png.serial ?? "?"}）`,
-      ...(png.serial ? { serial: png.serial } : {})
+      ...(png.serial ? { serial: png.serial } : {}),
+      lossless: true
     };
   }
   const fallback = await captureArtemisLive(runtime, serial);
@@ -135,7 +139,8 @@ export async function captureLiveScreenshot(
   return {
     bytes: fallback.bytes,
     note: `${fallback.note}；无损 PNG 不可用（${png.error ?? "unknown"}），已回退 live JPEG`,
-    ...(normalized ? { serial: normalized } : {})
+    ...(normalized ? { serial: normalized } : {}),
+    lossless: false
   };
 }
 

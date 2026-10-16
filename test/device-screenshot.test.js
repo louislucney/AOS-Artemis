@@ -101,6 +101,7 @@ test("captureLiveScreenshot(lossless): 直接返回 adb PNG 且不调用代理",
   assert.equal(proxyCalls, 0);
   assert.match(capture.note, /无损 PNG/);
   assert.equal(capture.serial, "S1");
+  assert.equal(capture.lossless, true);
   assert.equal(capture.bytes.equals(PNG_BYTES), true);
 });
 
@@ -121,6 +122,23 @@ test("captureLiveScreenshot(lossless): adb 不可用时回退 live JPEG 并注�
   });
   assert.equal(capture.bytes.equals(JPG_BYTES), true);
   assert.match(capture.note, /回退 live JPEG/);
+  assert.equal(capture.lossless, false);
+});
+
+test("captureLiveScreenshot(默认): live JPEG 路径标记 lossless=false", async () => {
+  const dir = makeTempDir("aos-live-");
+  const jpgPath = path.join(dir, "device.jpg");
+  fs.writeFileSync(jpgPath, JPG_BYTES);
+  const runtime = {
+    proxy: {
+      callTool: async () => ({
+        content: [{ type: "text", text: JSON.stringify({ screenshot_path: jpgPath }) }]
+      })
+    }
+  };
+  const capture = await captureLiveScreenshot(runtime);
+  assert.equal(capture.lossless, false);
+  assert.equal(capture.bytes.equals(JPG_BYTES), true);
 });
 
 function makeLosslessProject() {
