@@ -484,3 +484,180 @@ test("首轮心跳失败 → 返回 2 且 errorLog", async () => {
   assert.equal(code, 2);
   assert.ok(errors.some((line) => line.includes("首轮心跳失败")));
 });
+
+const RECLAIM_NOW = Date.parse("2026-10-14T12:00:00.000Z");
+
+test("回收：主循环每轮调用 releaseStaleClaims（now-TTL / now-900000）且顺序 回收→触发→领取", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  await seedSchedule(rootPath, store);
+  const sequence = [];
+  const reclaimCalls = [];
+  const claimCalls = [];
+  const originalClaim = store.claimRegressionTask.bind(store);
+  const originalCreate = store.createRegressionTask.bind(store);
+  store.releaseStaleClaims = async (input) => {
+    reclaimCalls.push(input);
+    sequence.push("releaseStaleClaims");
+    return 0;
+  };
+  store.createRegressionTask = async (input) => {
+    sequence.push("createRegressionTask");
+    return originalCreate(input);
+  };
+  store.claimRegressionTask = async (input) => {
+    claimCalls.push(input);
+    sequence.push("claimRegressionTask");
+    return originalClaim(input);
+  };
+  const { options } = makeOptions(runtime, inv, {
+    now: () => RECLAIM_NOW,
+    executeSuite: async (argv) => {
+      await store.updateRegressionTask(rootPath, argv[2], { status: "completed" });
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(reclaimCalls.length, 1);
+  assert.deepEqual(reclaimCalls[0], {
+    rootPath,
+    offlineBefore: new Date(RECLAIM_NOW - 90_000).toISOString(),
+    claimedBefore: new Date(RECLAIM_NOW - 900_000).toISOString()
+  });
+  assert.deepEqual(
+    sequence,
+    ["releaseStaleClaims", "createRegressionTask", "claimRegressionTask"],
+    "顺序：回收→触发→领取"
+  );
+  assert.equal(claimCalls.length, 1);
+  assert.equal(claimCalls[0].onlineBefore, new Date(RECLAIM_NOW - 90_000).toISOString());
+  assert.equal(claimCalls[0].allowPartial, false);
+});
+
+test("回收：AOS_RUNNER_STALE_CLAIM_MS 正数透传（含 TTL 覆盖，勿回退默认）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const calls = [];
+  store.releaseStaleClaims = async (input) => {
+    calls.push(input);
+    return 0;
+  };
+  const { options } = makeOptions(runtime, inv, {
+    now: () => RECLAIM_NOW,
+    env: { AOS_RUNNER_STALE_CLAIM_MS: "5000", AOS_RUNNER_TTL_MS: "30000" }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.deepEqual(calls[0], {
+    rootPath,
+    offlineBefore: new Date(RECLAIM_NOW - 30_000).toISOString(),
+    claimedBefore: new Date(RECLAIM_NOW - 5_000).toISOString()
+  });
+});
+
+test('回收：env "0" 关闭不调用；回收数>0 → 日志', async () => {
+  const off = await setupFixture();
+  let offCalls = 0;
+  off.store.releaseStaleClaims = async () => {
+    offCalls += 1;
+    return 0;
+  };
+  const { options: offOptions } = makeOptions(off.runtime, off.inventory, {
+    env: { AOS_RUNNER_STALE_CLAIM_MS: "0" }
+  });
+  await runRunnerAgent(offOptions);
+  assert.equal(offCalls, 0, '"0" 不回退默认：关闭回收');
+
+  const on = await setupFixture();
+  on.store.releaseStaleClaims = async () => 2;
+  const { options: onOptions, logs } = makeOptions(on.runtime, on.inventory);
+  await runRunnerAgent(onOptions);
+  assert.ok(logs.some((line) => line.includes("回收失联领取：2 条")), "回收数>0 有日志");
+});
+
+test("部分领取：无 env → allowPartial=false 透传；env=1 → true", async () => {
+  const a = await setupFixture();
+  const seenA = [];
+  const originalA = a.store.claimRegressionTask.bind(a.store);
+  a.store.claimRegressionTask = async (input) => {
+    seenA.push(input);
+    return originalA(input);
+  };
+  const { options: optionsA } = makeOptions(a.runtime, a.inventory);
+  await runRunnerAgent(optionsA);
+  assert.equal(seenA.length, 1);
+  assert.equal(seenA[0].allowPartial, false, "默认关");
+  assert.ok(seenA[0].onlineBefore, "始终透传 onlineBefore");
+
+  const b = await setupFixture();
+  const seenB = [];
+  const originalB = b.store.claimRegressionTask.bind(b.store);
+  b.store.claimRegressionTask = async (input) => {
+    seenB.push(input);
+    return originalB(input);
+  };
+  const { options: optionsB } = makeOptions(b.runtime, b.inventory, {
+    env: { AOS_RUNNER_PARTIAL_CLAIM: "1" }
+  });
+  await runRunnerAgent(optionsB);
+  assert.equal(seenB.length, 1);
+  assert.equal(seenB[0].allowPartial, true, "env=1 开启");
+});
+
+test("部分领取：命中部分端任务 → 日志明示缺端", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const androidOnly = { platforms: ["android"], devices: [inv.devices[0]], tools: TOOLS };
+  const task = await store.createRegressionTask(
+    taskInput(rootPath, { platforms: ["android", "ios"] })
+  );
+  const calls = [];
+  const { options, logs } = makeOptions(runtime, androidOnly, {
+    env: { AOS_RUNNER_PARTIAL_CLAIM: "1" },
+    executeSuite: async (argv) => {
+      calls.push(argv);
+      await store.updateRegressionTask(rootPath, task.id, { status: "completed" });
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(calls.length, 1, "部分领取后执行");
+  const line = logs.find((entry) => entry.includes("部分端"));
+  assert.ok(line, "有部分端日志");
+  assert.ok(line.includes("android"), "含覆盖端");
+  assert.ok(line.includes("ios"), "含缺端");
+});
+
+test("领取守卫：attempts 超上限 → 置 failed、不执行、毒丸防护日志", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  for (let i = 0; i < 3; i += 1) {
+    await store.claimRegressionTask({ rootPath, runnerId: "seed", platforms: ["android"] });
+    await store.releaseRegressionTask({
+      rootPath,
+      runnerId: "seed",
+      taskId: task.id,
+      to: "pending"
+    });
+  }
+  const before = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(before.attempts, 3);
+  const calls = [];
+  const { options, logs } = makeOptions(runtime, inv, {
+    executeSuite: async (argv) => {
+      calls.push(argv);
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(calls.length, 0, "毒丸不进入执行");
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "failed");
+  assert.equal(after.claimedBy, null);
+  assert.ok(logs.some((line) => line.includes("毒丸防护")), "有毒丸防护日志");
+  assert.ok(logs.some((line) => line.includes("超上限")), "有超上限说明");
+});

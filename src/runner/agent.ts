@@ -5,6 +5,7 @@ import type { RegressionTaskRecord, RunnerRecord } from "../db/types.js";
 import { AOS_MCP_VERSION, errorMessage } from "../util.js";
 import { collectRunnerInventory, type RunnerInventory } from "./inventory.js";
 import { fireDueSchedules } from "./schedules.js";
+import { runnerTtlFrom } from "./status.js";
 
 export interface RunnerAgentIO {
   log: (line: string) => void;
@@ -44,8 +45,12 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
   const pollMs = options.pollMs ?? intFromEnv(env.AOS_RUNNER_POLL_MS, 5_000);
   const heartbeatMs = options.heartbeatMs ?? intFromEnv(env.AOS_RUNNER_HEARTBEAT_MS, 30_000);
   const maxAttempts = options.maxAttempts ?? intFromEnv(env.AOS_RUNNER_MAX_ATTEMPTS, 3);
+  const runnerTtlMs = runnerTtlFrom(env);
+  const staleClaimMs = staleClaimMsFromEnv(env.AOS_RUNNER_STALE_CLAIM_MS);
+  const partialClaim = env.AOS_RUNNER_PARTIAL_CLAIM === "1";
   const schedulesEnabled =
     options.schedulesEnabled ?? (env.AOS_RUNNER_SCHEDULES ?? "").trim() !== "0";
+  const now = options.now ?? ((): number => Date.now());
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const io = options.io ?? {
@@ -127,9 +132,22 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
 
     try {
       while (!stopped()) {
+        const nowMs = now();
+        if (staleClaimMs > 0) {
+          try {
+            const reclaimed = await store.releaseStaleClaims({
+              rootPath,
+              offlineBefore: new Date(nowMs - runnerTtlMs).toISOString(),
+              claimedBefore: new Date(nowMs - staleClaimMs).toISOString()
+            });
+            if (reclaimed > 0) io.log(`[runner] 回收失联领取：${reclaimed} 条`);
+          } catch (error) {
+            io.errorLog(`[runner] 回收失联领取失败：${errorMessage(error)}`);
+          }
+        }
         if (schedulesEnabled) {
           try {
-            await fireDueSchedules({ store, rootPath, now: options.now, io });
+            await fireDueSchedules({ store, rootPath, now, io });
           } catch (error) {
             io.errorLog(`[runner] 调度检查失败：${errorMessage(error)}`);
           }
@@ -140,7 +158,9 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           task = await store.claimRegressionTask({
             rootPath,
             runnerId: me.id,
-            platforms: snapshot.platforms
+            platforms: snapshot.platforms,
+            onlineBefore: new Date(nowMs - runnerTtlMs).toISOString(),
+            allowPartial: partialClaim
           });
         } catch (error) {
           io.errorLog(`[runner] 领取失败：${errorMessage(error)}`);
@@ -149,6 +169,27 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           continue;
         }
         if (!task) {
+          if (once) return 0;
+          await sleep(pollMs);
+          continue;
+        }
+
+        if (task.attempts > maxAttempts) {
+          try {
+            const released = await store.releaseRegressionTask({
+              rootPath,
+              runnerId: me.id,
+              taskId: task.id,
+              to: "failed"
+            });
+            if (released) {
+              io.log(
+                `[runner] 任务 ${task.id} 领取次数 ${task.attempts} 超上限 ${maxAttempts}，标记 failed（毒丸防护，不进入执行）`
+              );
+            }
+          } catch (error) {
+            io.errorLog(`[runner] 毒丸防护释放失败：${errorMessage(error)}`);
+          }
           if (once) return 0;
           await sleep(pollMs);
           continue;
@@ -164,9 +205,21 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           ...(options.projectDir ? ["--project", options.projectDir] : []),
           ...devices.flatMap((serial) => ["--device", serial])
         ];
-        io.log(
-          `[runner] 领取任务 ${task.id}（端 ${task.platforms.join(",")} · 设备 ${devices.join(",") || "无"}）`
+        const missing = task.platforms.filter(
+          (platform) => !snapshot.platforms.some((mine) => mine === platform)
         );
+        if (missing.length > 0) {
+          const covered = task.platforms.filter((platform) =>
+            snapshot.platforms.some((mine) => mine === platform)
+          );
+          io.log(
+            `[runner] 领取任务 ${task.id}（部分端 ${covered.join(",")}，缺 ${missing.join(",")}——在线无全覆盖执行机）`
+          );
+        } else {
+          io.log(
+            `[runner] 领取任务 ${task.id}（端 ${task.platforms.join(",")} · 设备 ${devices.join(",") || "无"}）`
+          );
+        }
         let exitCode: number | null = null;
         try {
           exitCode = await options.executeSuite(argv);
@@ -211,6 +264,15 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
 function intFromEnv(raw: string | undefined, fallback: number): number {
   const parsed = Number((raw ?? "").trim());
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+const STALE_CLAIM_DEFAULT_MS = 900_000;
+
+function staleClaimMsFromEnv(raw: string | undefined): number {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return STALE_CLAIM_DEFAULT_MS;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : STALE_CLAIM_DEFAULT_MS;
 }
 
 const HEARTBEAT_STOP_STEP_MS = 250;
