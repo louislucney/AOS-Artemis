@@ -359,11 +359,15 @@ export interface ProjectStore {
       claimedAt?: string | null;
     }
   ): Promise<boolean>;
-  /** 原子领取：任务端 ⊆ runner 端且 status='pending' 的最旧任务 → claimed（竞争失败 → null）。 */
+  /** 原子领取：任务端 ⊆ runner 端且 status='pending' 的最旧任务 → claimed（竞争失败 → null）。
+   * `allowPartial === true && onlineBefore 提供` 时，无完全覆盖候选则按交集≥1 部分领取
+   * （仅当无他者在线 runner 完全覆盖该任务端时）；否则严格旧行为。 */
   claimRegressionTask(input: {
     rootPath: string;
     runnerId: string;
     platforms: string[];
+    onlineBefore?: string;
+    allowPartial?: boolean;
   }): Promise<RegressionTaskRecord | null>;
   /** 释放本 runner 的全部未完成领取（claimed/running）→ pending；返回条数。 */
   releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number>;

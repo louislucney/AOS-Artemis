@@ -296,17 +296,43 @@ export class MemoryStore implements ProjectStore {
     rootPath: string;
     runnerId: string;
     platforms: string[];
+    onlineBefore?: string;
+    allowPartial?: boolean;
   }): Promise<RegressionTaskRecord | null> {
     const project = this.projects.get(input.rootPath);
     if (!project) return null;
     const candidates = this.regressionTasks
       .filter((task) => task.projectId === project.id && task.status === "pending")
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
-    const match = candidates.find(
+    const fullMatch = candidates.find(
       (task) =>
         task.platforms.length > 0 &&
         task.platforms.every((platform) => input.platforms.includes(platform))
     );
+    let match = fullMatch;
+    if (!match && input.allowPartial === true && input.onlineBefore !== undefined) {
+      const onlineBefore = input.onlineBefore;
+      const otherOnline = this.runners
+        .filter(
+          (runner) =>
+            runner.projectId === project.id &&
+            runner.id !== input.runnerId &&
+            runner.lastSeenAt > onlineBefore
+        )
+        .map((runner) => runner.platforms);
+      for (const task of candidates) {
+        const intersection = task.platforms.filter((platform) =>
+          input.platforms.includes(platform)
+        );
+        if (intersection.length === 0) continue;
+        const coveredByOther = otherOnline.some((platforms) =>
+          task.platforms.every((platform) => platforms.includes(platform))
+        );
+        if (coveredByOther) continue;
+        match = task;
+        break;
+      }
+    }
     if (!match) return null;
     match.status = "claimed";
     match.claimedBy = input.runnerId;

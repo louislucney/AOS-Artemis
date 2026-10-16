@@ -702,6 +702,8 @@ export class PostgresStore implements ProjectStore {
     rootPath: string;
     runnerId: string;
     platforms: string[];
+    onlineBefore?: string;
+    allowPartial?: boolean;
   }): Promise<RegressionTaskRecord | null> {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) return null;
@@ -711,13 +713,38 @@ export class PostgresStore implements ProjectStore {
         ORDER BY created_at ASC`,
       [project.id]
     );
-    const match = candidates.rows.find((row) => {
+    const rows = candidates.rows;
+    const fullMatch = rows.find((row) => {
       const taskPlatforms = parseStringArray(row.platforms);
       return (
         taskPlatforms.length > 0 &&
         taskPlatforms.every((platform) => input.platforms.includes(platform))
       );
     });
+    let match = fullMatch;
+    if (!match && input.allowPartial === true && input.onlineBefore !== undefined) {
+      const online = await this.pool.query(
+        `SELECT id, platforms FROM runners
+          WHERE project_id = $1 AND last_seen_at > $2`,
+        [project.id, input.onlineBefore]
+      );
+      const otherOnline = online.rows
+        .filter((row) => String(row.id) !== input.runnerId)
+        .map((row) => parseStringArray(row.platforms));
+      for (const row of rows) {
+        const taskPlatforms = parseStringArray(row.platforms);
+        const intersection = taskPlatforms.filter((platform) =>
+          input.platforms.includes(platform)
+        );
+        if (intersection.length === 0) continue;
+        const coveredByOther = otherOnline.some((platforms) =>
+          taskPlatforms.every((platform) => platforms.includes(platform))
+        );
+        if (coveredByOther) continue;
+        match = row;
+        break;
+      }
+    }
     if (!match) return null;
     const claimed = await this.pool.query(
       `UPDATE regression_tasks

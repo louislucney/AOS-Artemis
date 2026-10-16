@@ -307,6 +307,186 @@ test("claimRegressionTask: 无候选窗截断（>50 条缺端任务不饿死后�
   }
 });
 
+test("claimRegressionTask: 无新参数 → 严格子集（不部分领取）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.createRegressionTask(taskInput({ platforms: ["android", "ios"] }));
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-android",
+        platforms: ["android"]
+      }),
+      null,
+      "无 allowPartial → 严格子集，部分交集不领"
+    );
+  }
+});
+
+test("claimRegressionTask: 完全覆盖优先（较新完全覆盖 vs 较旧部分可领）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const onlineBefore = new Date(Date.now() - 60_000).toISOString();
+    const older = await store.createRegressionTask(taskInput({ platforms: ["android", "ios"] }));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const newer = await store.createRegressionTask(taskInput({ platforms: ["android"] }));
+
+    const claimed = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-self",
+      platforms: ["android"],
+      onlineBefore,
+      allowPartial: true
+    });
+    assert.ok(claimed);
+    assert.equal(claimed.id, newer.id, "完全覆盖者优先于部分可领");
+    assert.equal((await store.getRegressionTask("/w/p1", older.id)).status, "pending");
+  }
+});
+
+test("claimRegressionTask 部分领取：无他者在线全覆盖 → 领最早交集≥1 候选", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const onlineBefore = new Date(Date.now() - 60_000).toISOString();
+    const dual = await store.createRegressionTask(taskInput({ platforms: ["android", "ios"] }));
+    const claimed = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-self",
+      platforms: ["android"],
+      onlineBefore,
+      allowPartial: true
+    });
+    assert.ok(claimed, "交集≥1 且无他者全覆盖 → 部分领取");
+    assert.equal(claimed.id, dual.id);
+    assert.equal(claimed.status, "claimed");
+    assert.equal(claimed.attempts, 1);
+  }
+});
+
+test("claimRegressionTask 部分领取：他者在线全覆盖 → null 等待", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const onlineBefore = new Date(Date.now() - 60_000).toISOString();
+    await store.upsertRunner(runnerInput({ name: "other", platforms: ["android", "ios"] }));
+    const dual = await store.createRegressionTask(taskInput({ platforms: ["android", "ios"] }));
+    const claimed = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-self",
+      platforms: ["android"],
+      onlineBefore,
+      allowPartial: true
+    });
+    assert.equal(claimed, null, "他者在线全覆盖 → 等待该 runner 领取");
+    assert.equal((await store.getRegressionTask("/w/p1", dual.id)).status, "pending");
+  }
+});
+
+test("claimRegressionTask 部分领取：self 自身 runner 行不阻塞（排除 self，按 input.platforms 判定）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const onlineBefore = new Date(Date.now() - 60_000).toISOString();
+    const self = await store.upsertRunner(
+      runnerInput({ name: "self", platforms: ["android", "ios"] })
+    );
+    const dual = await store.createRegressionTask(taskInput({ platforms: ["android", "ios"] }));
+    const claimed = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: self.id,
+      platforms: ["android"],
+      onlineBefore,
+      allowPartial: true
+    });
+    assert.ok(claimed, "self 的 DB 行（含 ios）不视为他者，排除 self 后无他者全覆盖 → 部分领取");
+    assert.equal(claimed.id, dual.id);
+  }
+});
+
+test("claimRegressionTask: allowPartial:false 或 onlineBefore 缺省 → 严格（null）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const onlineBefore = new Date(Date.now() - 60_000).toISOString();
+    const dual = await store.createRegressionTask(taskInput({ platforms: ["android", "ios"] }));
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-android",
+        platforms: ["android"],
+        onlineBefore,
+        allowPartial: false
+      }),
+      null,
+      "allowPartial:false → 严格"
+    );
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-android",
+        platforms: ["android"],
+        allowPartial: true
+      }),
+      null,
+      "onlineBefore 缺省 → 严格"
+    );
+    assert.equal((await store.getRegressionTask("/w/p1", dual.id)).status, "pending");
+  }
+});
+
+test("claimRegressionTask 部分领取：交集 0 → null", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const onlineBefore = new Date(Date.now() - 60_000).toISOString();
+    const iosOnly = await store.createRegressionTask(taskInput({ platforms: ["ios"] }));
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-android",
+        platforms: ["android"],
+        onlineBefore,
+        allowPartial: true
+      }),
+      null,
+      "交集 0 → 不领"
+    );
+    assert.equal((await store.getRegressionTask("/w/p1", iosOnly.id)).status, "pending");
+  }
+});
+
+test("claimRegressionTask 部分领取：已被领取后不复领（CAS）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const onlineBefore = new Date(Date.now() - 60_000).toISOString();
+    await store.createRegressionTask(taskInput({ platforms: ["android", "ios"] }));
+    const first = await store.claimRegressionTask({
+      rootPath: "/w/p1",
+      runnerId: "r-1",
+      platforms: ["android"],
+      onlineBefore,
+      allowPartial: true
+    });
+    assert.ok(first);
+    assert.equal(first.attempts, 1);
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/p1",
+        runnerId: "r-2",
+        platforms: ["android"],
+        onlineBefore,
+        allowPartial: true
+      }),
+      null,
+      "已领取 → CAS 守卫不复领"
+    );
+  }
+});
+
 test("release 语义：全量仅释放自己；单任务守卫（他人/已终态 → false 不覆盖）", async () => {
   const stores = [new MemoryStore(), (await makePgStore()).store];
   for (const store of stores) {
