@@ -36,7 +36,7 @@
 
 ### 2.3 C：`upsertRunner` 原子化（D4）
 
-- DDL/MIGRATIONS：`runners` 增 **UNIQUE (project_id, name)**；迁移**先去重**（同项目同名多行 → 保留 `last_seen_at` 最新者，删除其余）**再建唯一索引**（存量库可能已有竞态重复行；去重为必要前置，防索引创建被 best-effort 跳过致指数静默缺失，见 Q3 修订说明）。
+- DDL/MIGRATIONS：`runners` 增 **UNIQUE (project_id, name)**——**统一由 MIGRATIONS 建唯一索引**（`CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx`，幂等、新库/存量库一体覆盖；DDL 不加表约束以避免新库双索引）；迁移**先去重再建索引**（存量库可能已有竞态重复行；去重为必要前置，防索引创建被 best-effort 跳过致指数静默缺失，见 Q3 修订说明）。**去重 SQL 形态（pg-mem 3.0.14 实测）**：仅「`id IN (自 JOIN 子查询：保留 last_seen_at 最大、并列取 id 最大)`」可行（窗口函数/`DELETE…USING`/相关 EXISTS/`NOT IN`+GROUP BY 均不可用）；`project_id IS NULL` 行不参与去重（无实际影响：upsert 未注册项目即抛错）。
 - `upsertRunner` 实现改为：INSERT → 命中唯一冲突（`23505`）→ 回退 UPDATE（与 `createSchedule` 的 23505 归一先例同款）；语义＝单行 upsert，双写并发下最多一次回退重试，不产生重复行。
 - 无签名变化；离线测试可在 pg-mem 上以「连续/交错调用」验证单行不变量与回退路径。
 
@@ -54,7 +54,7 @@
 - 测试口径：pg-mem/内存 store、假 runner、不触网；测试跑 `dist/`。
 - 相对导入 `.js`；代码英文、用户文案中文；默认不加注释（仅保留解释非显然契约的 JSDoc）。
 - **默认配置零行为回归**（Q1 修订）：回收仅作用于「超龄＋失联」（健康流程与在线 runner 的领取/执行零变化）；部分领取**默认关**（严格旧行为逐字，`runner-agent:163` 缺端不领用例为锁）；既有 runner-agent/suite-task/runner-artifact 测试全绿。
-- **迁移口径**（Q3 修订）：`MIGRATIONS` 维持仓库既有 best-effort 包装（多实例并发迁移已声明 out-of-scope）；本项以**迁移专项测试**（pg-mem）锁定「存量重复行去重 + 唯一索引存在 + upsert 单行不变量」；新库 DDL 直接含唯一索引。索引生效时 `upsertRunner` 保证单行；残余风险（迁移未生效且并发插入）与现状同级，文档注明。
+- **迁移口径**（Q3 修订）：`MIGRATIONS` 维持仓库既有 best-effort 包装（多实例并发迁移已声明 out-of-scope）；本项以**迁移专项测试**（pg-mem，夹具沿用 `test/db-runners.test.js:400` 的 `noAstCoverageCheck: true` 旧表形态）锁定「存量重复行去重 + 唯一索引存在 + upsert 单行不变量」；**唯一索引仅由 MIGRATIONS 建**（幂等覆盖新库/存量库；DDL 不加表约束）。索引生效时 `upsertRunner` 保证单行；残余风险（迁移未生效且并发插入）与现状同级，文档注明。
 - 完工标准：`npm run build && npm test && npm run lint` 全绿；同步 DESIGN（新增 §13.116）＋ README（runner 段）＋ AGENTS.md（runner 行）。
 
 ## 5. 关键决策（本次方案判断；可被否决/修订）
@@ -64,7 +64,7 @@
 | D1 | 失联回收＝**runner 主循环内自动执行**（每轮先回收→触发→领取），双条件（超龄＋失联）同时满足才回收 | 无需新增守护进程/中心动作；双条件防误伤长跑执行 | 若改由中心/CLI 巡检，需新的调度面与部署配置 |
 | D2 | 回收后置 `pending`、`attempts` 保留；任何 runner 均可执行回收（单条 UPDATE 原子） | 重试上限语义不变；恢复越快越好 | 若回收即置 failed，误伤面大（崩溃≠任务失败） |
 | D3 | 部分领取＝**「全覆盖已不可能」时才启用**（存在任一在线 runner 可全覆盖则继续等待）；**且默认关闭**（见 D6 修订） | 保留「双端齐备优先」语义，同时为分机部署提供显式解锁 | 若直接允许部分抢占，双端 runner 在场时也会丢端执行 |
-| D4 | `upsertRunner`＝唯一索引＋23505 回退 UPDATE；迁移**先去重再建唯一索引**（新库 DDL 直接含索引） | 与 `createSchedule` 先例一致；去重防存量脏数据 | 若不做去重，存量重复行可能致迁移语句失败（best-effort 跳过→指数缺失，见 Q3 修订说明） |
+| D4 | `upsertRunner`＝唯一索引（**仅经 MIGRATIONS 建，幂等；DDL 不加表约束**）＋23505 回退 UPDATE；迁移**先去重再建索引**（自 JOIN 去重写法，pg-mem 实测唯一可行） | 与 `createSchedule` 先例一致；去重防存量脏数据；统一入口避免双索引 | 若不做去重，存量重复行可能致迁移语句失败（best-effort 跳过→指数缺失，见 Q3 修订说明） |
 | D5 | 回收阈值默认 15min、0 关闭；TTL 用既有 90s | 15min 覆盖「领取→启动执行」正常窗口；长跑执行由心跳失联条件保护 | 阈值过长滞留久、过短可能误回收 |
 | D6 | 部分领取**默认关**（`AOS_RUNNER_PARTIAL_CLAIM=1` 显式开启；开启后按 D3 规则） | **修订（builder-check Q1）**：缺端标注当前仅日志级（Q2），默认开会静默降覆盖；opt-in 保住「默认零行为回归」（`runner-agent:163` 缺端不领用例默认仍成立） | 若要求默认开，需先补任务页/结果表级缺端标注（见非目标 backlog） |
 | D7 | 缺端**不自动补跑**；v1 可见性＝领取日志明示「部分端执行（缺 X）」＋ `suite run --task` 既有控制台标注＋文档；**不新增任务状态/结果表字段**（Q2 定案） | 自动化补跑需跨 runner 协同；新增状态面改动过大；opt-in 下风险可控 | 若要求「完成后仍显著可见缺端」（面板/结果表字段），需状态机与新字段（另立小票） |
@@ -87,7 +87,7 @@
 - **agent 主循环**（`src/runner/agent.ts`）：每轮 `schedulesEnabled` 触发之前：
   `staleClaimMs` 解析 `env.AOS_RUNNER_STALE_CLAIM_MS`（缺省 900000；`"0"` 解析为 0 关闭、**勿回退默认**）；`>0` 时 `releaseStaleClaims({ offlineBefore: iso(now-runnerTtlMs), claimedBefore: iso(now-staleClaimMs) })`，`>0` 条则日志；`partial = env.AOS_RUNNER_PARTIAL_CLAIM === "1"`（默认关）；领取调用传 `onlineBefore: iso(now-runnerTtlMs), allowPartial: partial`（部分领取时领取日志明示缺端）。
 - **claim 判定顺序**（store 内、单次调用内拉一次在线 runner 列表）：先按「完全覆盖」取最早候选（旧逻辑）；无则当 `allowPartial && onlineBefore` 时：对每个候选算交集，若无在线 runner 全覆盖该候选且交集≥1 → 领最早者；否则返回 null。
-- **upsertRunner**：迁移语句（优先序）：① `DELETE FROM runners WHERE ... 重复保留最新`（以 `(project_id, name)` 分组、`last_seen_at` 非最大者删除；实现用可在 pg-mem 验证的写法）② `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`；实现主体：INSERT 捕获 `code === "23505"` → UPDATE（按 project_id+name）。
+- **upsertRunner**：迁移语句（顺序固定）：①去重 `DELETE FROM runners WHERE id IN (SELECT r1.id FROM runners r1 JOIN runners r2 ON r1.project_id = r2.project_id AND r1.name = r2.name WHERE r1.last_seen_at < r2.last_seen_at OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id))`（pg-mem 3.0.14 实测唯一可行形态）②`CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`；实现主体：INSERT 捕获 `code === "23505"` → UPDATE（按 project_id+name）；**返回口径沿用 `RETURNING *`/`rows.length` 既有风格**。
 
 ## 7. 测试口径（映射，具体用例随计划）
 
