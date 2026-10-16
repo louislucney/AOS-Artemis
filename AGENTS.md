@@ -44,6 +44,7 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 | 设计流水线（一条命令） | `node scripts/design-pipeline.mjs "<figma-url>" [--import] [--scaffold]`（无 token 时给出指引并 exit 2） |
 | MCP 工具调试调用（手动） | `node scripts/aos-call.mjs <calls.json> [projectDir]`（stdio 启动 `dist/index.js`，`AOS_PROJECT_DIR` 指向目标项目；`calls.json` 为 `[{name,args,out?}]`，`out` 落盘结果） |
 | 设备命令（跨项目复用） | `node scripts/adb-safe.mjs <devices\|wait\|install\|shell\|screencap\|push\|pull>`（硬超时 + 超时杀进程组；默认 push 安装；`shell` 拦截 `pm install`；退出码 0/2/3/4/124/125，`--json`；测试 `test/adb-safe.test.js`） |
+| 用例产物巡检（跨项目） | `node scripts/audit-legacy-tests.mjs [--json] <项目根或工作区目录…>`（逐项目跑 `suite check` 同口径：列出 md-only／缺 xlsx／xlsx 过期／缺【真实数据】／覆盖缺口的遗留清单与复核命令；退出码 0/1/2；测试 `test/audit-legacy-tests.test.js`） |
 
 ## 硬性约定
 
