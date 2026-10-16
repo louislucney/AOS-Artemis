@@ -429,3 +429,218 @@ test("存量库迁移：旧 regression_tasks 缺 claimed_by/claimed_at → init 
   assert.equal(claimed.claimedBy, "r-legacy");
   assert.equal(claimed.attempts, 1, "补列后 attempts 可累加");
 });
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const isoAt = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
+const CLAIM_CUT = isoAt(-DAY_MS);
+const OFFLINE_CUT = isoAt(-DAY_MS);
+const STALE_CLAIM = isoAt(-2 * DAY_MS);
+const FRESH_CLAIM = isoAt(2 * DAY_MS);
+const OFFLINE_SEEN = isoAt(-2 * DAY_MS);
+
+async function seedClaimed(store, rootPath, { claimedBy, claimedAt, status = "claimed" }) {
+  const task = await store.createRegressionTask(taskInput({ rootPath }));
+  const claimed = await store.claimRegressionTask({
+    rootPath,
+    runnerId: claimedBy ?? "seed-runner",
+    platforms: ["android"]
+  });
+  await store.updateRegressionTask(rootPath, claimed.id, {
+    status,
+    claimedBy: claimedBy ?? null,
+    claimedAt
+  });
+  return claimed.id;
+}
+
+test("releaseStaleClaims: 超龄+失联→pending；在线/未超龄/终态→0；空 claimed_by 与 running 同判；跨项目隔离", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.upsertProject({ rootPath: "/w/p2", name: "p2" });
+    const online = await store.upsertRunner(runnerInput());
+
+    const staleOffline = await seedClaimed(store, "/w/p1", {
+      claimedBy: "ghost-runner",
+      claimedAt: STALE_CLAIM
+    });
+    const staleOnline = await seedClaimed(store, "/w/p1", {
+      claimedBy: online.id,
+      claimedAt: STALE_CLAIM
+    });
+    const freshOffline = await seedClaimed(store, "/w/p1", {
+      claimedBy: "ghost-runner",
+      claimedAt: FRESH_CLAIM
+    });
+    const emptyClaimedBy = await seedClaimed(store, "/w/p1", {
+      claimedBy: null,
+      claimedAt: STALE_CLAIM
+    });
+    const runningStale = await seedClaimed(store, "/w/p1", {
+      claimedBy: "ghost-runner",
+      claimedAt: STALE_CLAIM,
+      status: "running"
+    });
+    const terminal = await seedClaimed(store, "/w/p1", {
+      claimedBy: "ghost-runner",
+      claimedAt: STALE_CLAIM,
+      status: "completed"
+    });
+    const otherProject = await seedClaimed(store, "/w/p2", {
+      claimedBy: "ghost-runner",
+      claimedAt: STALE_CLAIM
+    });
+
+    const count = await store.releaseStaleClaims({
+      rootPath: "/w/p1",
+      offlineBefore: OFFLINE_CUT,
+      claimedBefore: CLAIM_CUT
+    });
+    assert.equal(count, 3, "staleOffline + emptyClaimedBy + runningStale");
+
+    const reclaimed = await store.getRegressionTask("/w/p1", staleOffline);
+    assert.equal(reclaimed.status, "pending");
+    assert.equal(reclaimed.claimedBy, null);
+    assert.equal(reclaimed.claimedAt, null);
+    assert.equal(reclaimed.attempts, 1, "attempts 保留");
+
+    const kept = await store.getRegressionTask("/w/p1", staleOnline);
+    assert.equal(kept.status, "claimed", "在线 runner 不回收");
+    assert.equal(kept.claimedBy, online.id);
+    assert.equal(kept.attempts, 1);
+
+    assert.equal((await store.getRegressionTask("/w/p1", freshOffline)).status, "claimed", "未超龄不回收");
+    assert.equal((await store.getRegressionTask("/w/p1", emptyClaimedBy)).status, "pending", "空 claimed_by 且超龄回收");
+    assert.equal((await store.getRegressionTask("/w/p1", runningStale)).status, "pending", "running 同判");
+    assert.equal((await store.getRegressionTask("/w/p1", terminal)).status, "completed", "终态不回收");
+    assert.equal((await store.getRegressionTask("/w/p2", otherProject)).status, "claimed", "跨项目隔离");
+  }
+});
+
+test("releaseStaleClaims: 真实失联 runner（last_seen_at 超龄）回收、在线 runner 不回收（pg-mem）", async () => {
+  const { store, pool } = await makePgStore();
+  const project = await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  await pool.query(
+    `INSERT INTO runners
+       (id, project_id, name, hostname, platforms, devices, tools, artifact_base_url, version, last_seen_at, created_at)
+     VALUES ('r-off', $1, 'off', 'host-off', '[]', '[]', '{}', NULL, NULL, $2, $2)`,
+    [project.id, OFFLINE_SEEN]
+  );
+  const online = await store.upsertRunner(runnerInput({ name: "on" }));
+
+  const offlineTask = await seedClaimed(store, "/w/p1", {
+    claimedBy: "r-off",
+    claimedAt: STALE_CLAIM
+  });
+  const onlineTask = await seedClaimed(store, "/w/p1", {
+    claimedBy: online.id,
+    claimedAt: STALE_CLAIM
+  });
+
+  const count = await store.releaseStaleClaims({
+    rootPath: "/w/p1",
+    offlineBefore: OFFLINE_CUT,
+    claimedBefore: CLAIM_CUT
+  });
+  assert.equal(count, 1);
+  assert.equal((await store.getRegressionTask("/w/p1", offlineTask)).status, "pending");
+  assert.equal((await store.getRegressionTask("/w/p1", onlineTask)).status, "claimed");
+});
+
+test("upsertRunner: 跨项目同名两行（同名不同 project 不冲突）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    await store.upsertProject({ rootPath: "/w/p2", name: "p2" });
+    const a = await store.upsertRunner(runnerInput({ rootPath: "/w/p1" }));
+    const b = await store.upsertRunner(runnerInput({ rootPath: "/w/p2" }));
+    assert.notEqual(a.id, b.id);
+    assert.equal(a.name, b.name);
+    assert.equal((await store.listRunners("/w/p1")).length, 1);
+    assert.equal((await store.listRunners("/w/p2")).length, 1);
+  }
+});
+
+test("upsertRunner: 同名已存在（直接插入）→ INSERT 撞唯一索引 23505 → 回退 UPDATE 仍单行", async () => {
+  const { store, pool } = await makePgStore();
+  const project = await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  await pool.query(
+    `INSERT INTO runners
+       (id, project_id, name, hostname, platforms, devices, tools, artifact_base_url, version, last_seen_at, created_at)
+     VALUES ('r-seed', $1, 'runner-a', 'old-host', '[]', '[]', '{}', NULL, NULL, $2, $2)`,
+    [project.id, "2026-10-14T00:00:00.000Z"]
+  );
+  const up = await store.upsertRunner(runnerInput());
+  assert.equal(up.id, "r-seed", "回退 UPDATE 保留原 id");
+  assert.equal(up.hostname, "mac-a.local");
+  assert.equal((await store.listRunners("/w/p1")).length, 1);
+});
+
+test("迁移专项：runners 存量重复行去重（留 last_seen_at 最新、并列取 id 大）+ 唯一索引 + 二次 upsert 单行", async () => {
+  // noAstCoverageCheck：旧表已存在时 pg-mem 会因未读取的 AST 约束直接报错，这里只关注迁移结果
+  const mem = newDb({ noAstCoverageCheck: true });
+  const { Pool } = mem.adapters.createPg();
+  const pool = new Pool();
+  await pool.query(
+    `CREATE TABLE projects (
+       id TEXT PRIMARY KEY,
+       root_path TEXT NOT NULL UNIQUE,
+       name TEXT NOT NULL,
+       figma_token TEXT,
+       created_at TEXT NOT NULL,
+       last_seen_at TEXT NOT NULL
+     )`
+  );
+  await pool.query(
+    `CREATE TABLE runners (
+       id TEXT PRIMARY KEY,
+       project_id TEXT,
+       name TEXT NOT NULL,
+       hostname TEXT NOT NULL,
+       platforms TEXT NOT NULL,
+       devices TEXT NOT NULL,
+       tools TEXT NOT NULL DEFAULT '{}',
+       artifact_base_url TEXT,
+       version TEXT,
+       last_seen_at TEXT NOT NULL,
+       created_at TEXT NOT NULL
+     )`
+  );
+  await pool.query(
+    `INSERT INTO projects (id, root_path, name, figma_token, created_at, last_seen_at)
+     VALUES ('proj-1', '/w/p1', 'p1', NULL, $1, $1)`,
+    ["2026-10-01T00:00:00.000Z"]
+  );
+  const insertRunner = (id, lastSeenAt) =>
+    pool.query(
+      `INSERT INTO runners
+         (id, project_id, name, hostname, platforms, devices, tools, artifact_base_url, version, last_seen_at, created_at)
+       VALUES ($1, 'proj-1', 'dup-a', 'host', '[]', '[]', '{}', NULL, NULL, $2, $2)`,
+      [id, lastSeenAt]
+    );
+  await insertRunner("r-1", "2026-10-14T00:00:00.000Z");
+  await insertRunner("r-2", "2026-10-15T00:00:00.000Z");
+  await insertRunner("r-3", "2026-10-15T00:00:00.000Z");
+
+  const store = new PostgresStore(pool);
+  await store.init();
+
+  const remaining = await pool.query(
+    `SELECT id FROM runners WHERE project_id = 'proj-1' ORDER BY id`
+  );
+  assert.deepEqual(
+    remaining.rows.map((row) => row.id),
+    ["r-3"],
+    "仅剩 last_seen_at 最新、并列取 id 最大"
+  );
+
+  await assert.rejects(
+    insertRunner("r-4", "2026-10-16T00:00:00.000Z"),
+    (error) => error.code === "23505",
+    "唯一索引已建立"
+  );
+
+  const up = await store.upsertRunner(runnerInput({ name: "dup-a" }));
+  assert.equal(up.id, "r-3", "二次 upsert 复用去重后剩余行");
+  assert.equal((await store.listRunners("/w/p1")).length, 1);
+});

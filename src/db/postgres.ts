@@ -234,7 +234,13 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_by TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_at TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE suite_run_cases ADD COLUMN IF NOT EXISTS jira_issue_key TEXT`
+  `ALTER TABLE suite_run_cases ADD COLUMN IF NOT EXISTS jira_issue_key TEXT`,
+  `DELETE FROM runners WHERE id IN (
+     SELECT r1.id FROM runners r1
+     JOIN runners r2 ON r1.project_id = r2.project_id AND r1.name = r2.name
+     WHERE r1.last_seen_at < r2.last_seen_at
+        OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`
 ];
 
 export class PostgresStore implements ProjectStore {
@@ -762,6 +768,27 @@ export class PostgresStore implements ProjectStore {
     return released.rows.length > 0;
   }
 
+  async releaseStaleClaims(input: {
+    rootPath: string;
+    offlineBefore: string;
+    claimedBefore: string;
+  }): Promise<number> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return 0;
+    const released = await this.pool.query(
+      `UPDATE regression_tasks
+          SET status = 'pending', claimed_by = NULL, claimed_at = NULL
+        WHERE project_id = $1
+          AND status IN ('claimed', 'running')
+          AND claimed_at IS NOT NULL AND claimed_at <= $2
+          AND (claimed_by IS NULL OR claimed_by NOT IN (
+                SELECT id FROM runners WHERE project_id = $1 AND last_seen_at > $3))
+      RETURNING id`,
+      [project.id, input.claimedBefore, input.offlineBefore]
+    );
+    return released.rows.length;
+  }
+
   async recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord> {
     const project = await this.getProjectByPath(input.rootPath);
     const id = randomUUID();
@@ -951,11 +978,29 @@ export class PostgresStore implements ProjectStore {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
     const now = new Date().toISOString();
-    const existing = await this.pool.query(
-      `SELECT * FROM runners WHERE project_id = $1 AND name = $2`,
-      [project.id, input.name]
-    );
-    if (existing.rows.length > 0) {
+    try {
+      const inserted = await this.pool.query(
+        `INSERT INTO runners
+           (id, project_id, name, hostname, platforms, devices, tools, artifact_base_url, version, last_seen_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING *`,
+        [
+          randomUUID(),
+          project.id,
+          input.name,
+          input.hostname,
+          JSON.stringify(input.platforms),
+          JSON.stringify(input.devices),
+          JSON.stringify(input.tools),
+          input.artifactBaseUrl ?? null,
+          input.version ?? null,
+          now,
+          now
+        ]
+      );
+      return mapRunner(inserted.rows[0]!);
+    } catch (error) {
+      if ((error as { code?: string }).code !== "23505") throw error;
       const updated = await this.pool.query(
         `UPDATE runners
             SET hostname = $3, platforms = $4, devices = $5, tools = $6,
@@ -976,26 +1021,6 @@ export class PostgresStore implements ProjectStore {
       );
       return mapRunner(updated.rows[0]!);
     }
-    const inserted = await this.pool.query(
-      `INSERT INTO runners
-         (id, project_id, name, hostname, platforms, devices, tools, artifact_base_url, version, last_seen_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-       RETURNING *`,
-      [
-        randomUUID(),
-        project.id,
-        input.name,
-        input.hostname,
-        JSON.stringify(input.platforms),
-        JSON.stringify(input.devices),
-        JSON.stringify(input.tools),
-        input.artifactBaseUrl ?? null,
-        input.version ?? null,
-        now,
-        now
-      ]
-    );
-    return mapRunner(inserted.rows[0]!);
   }
 
   async listRunners(rootPath: string, limit = 20): Promise<RunnerRecord[]> {

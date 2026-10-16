@@ -351,6 +351,34 @@ export class MemoryStore implements ProjectStore {
     return true;
   }
 
+  async releaseStaleClaims(input: {
+    rootPath: string;
+    offlineBefore: string;
+    claimedBefore: string;
+  }): Promise<number> {
+    const project = this.projects.get(input.rootPath);
+    if (!project) return 0;
+    const onlineRunnerIds = new Set(
+      this.runners
+        .filter(
+          (runner) => runner.projectId === project.id && runner.lastSeenAt > input.offlineBefore
+        )
+        .map((runner) => runner.id)
+    );
+    let released = 0;
+    for (const task of this.regressionTasks) {
+      if (task.projectId !== project.id) continue;
+      if (task.status !== "claimed" && task.status !== "running") continue;
+      if (task.claimedAt === null || task.claimedAt > input.claimedBefore) continue;
+      if (task.claimedBy !== null && onlineRunnerIds.has(task.claimedBy)) continue;
+      task.status = "pending";
+      task.claimedBy = null;
+      task.claimedAt = null;
+      released += 1;
+    }
+    return released;
+  }
+
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
     const project = this.projects.get(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);

@@ -375,6 +375,12 @@ export interface ProjectStore {
     taskId: string;
     to?: "pending" | "failed";
   }): Promise<boolean>;
+  /** 失联领取回收：claimed/running 且 claimed_at 超龄、且（claimed_by 为空或指向的 runner 已离线）→ pending；返回回收条数。 */
+  releaseStaleClaims(input: {
+    rootPath: string;
+    offlineBefore: string;
+    claimedBefore: string;
+  }): Promise<number>;
   createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord>;
   /** 返回 createdAt 新→旧；`limit` 缺省＝全量（firing 用；面板/CLI 显式传分页值）。 */
   listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]>;
