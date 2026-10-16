@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractDetailPair, mapRegionToDeviceRect, proposeDetailRegions, resolveDetailGeometry, scaleDetailNodes } from "../dist/diff/detail.js";
+import {
+  composeDetailPair,
+  extractDetailPair,
+  mapRegionToDeviceRect,
+  proposeDetailRegions,
+  resolveDetailGeometry,
+  runDetailDiff,
+  scaleDetailNodes
+} from "../dist/diff/detail.js";
+import { decodeImage } from "../dist/diff/engine.js";
 import { createImage, fillRect } from "./helpers.js";
 
 function node(overrides) {
@@ -226,4 +235,83 @@ test("detail 配对: 尺寸对齐、升/降采样标注、像素位置保真、�
   assert.equal(near.designDownscaled, false);
 
   assert.equal(extractDetailPair({ design, device, region: { x: 100, y: 0, width: 40, height: 100 }, geometry }), null);
+});
+
+function textBlock(width = 200, height = 80) {
+  const image = createImage(width, height);
+  fillRect(image, 40, 20, 60, 30, [30, 30, 30, 255]);
+  return image;
+}
+
+test("detail 判定: 四类细节差异在细节档全部命中、相同内容不命中", () => {
+  const device = textBlock();
+  const bold = textBlock();
+  fillRect(bold, 39, 19, 62, 32, [30, 30, 30, 255]);
+  assert.equal(runDetailDiff(bold, device).hasDiff, true);
+
+  const missingDevice = textBlock();
+  fillRect(missingDevice, 120, 30, 30, 20, [160, 160, 160, 255]);
+  assert.equal(runDetailDiff(textBlock(), missingDevice).hasDiff, true);
+
+  const shiftDesign = createImage(200, 80);
+  fillRect(shiftDesign, 50, 20, 60, 30, [30, 30, 30, 255]);
+  const shiftDevice = createImage(200, 80);
+  fillRect(shiftDevice, 40, 20, 60, 30, [30, 30, 30, 255]);
+  assert.equal(runDetailDiff(shiftDesign, shiftDevice).hasDiff, true);
+
+  const lineDevice = textBlock();
+  fillRect(lineDevice, 20, 60, 160, 3, [232, 232, 232, 255]);
+  assert.equal(runDetailDiff(textBlock(), lineDevice).hasDiff, true);
+
+  assert.equal(runDetailDiff(textBlock(), textBlock()).hasDiff, false);
+});
+
+test("detail 判定: 降级档行为锁定——细线不命中、加粗仍命中", () => {
+  const device = textBlock();
+  const lineDevice = textBlock();
+  fillRect(lineDevice, 20, 60, 160, 3, [232, 232, 232, 255]);
+  assert.equal(runDetailDiff(textBlock(), lineDevice, { degraded: true }).hasDiff, false);
+
+  const bold = textBlock();
+  fillRect(bold, 39, 19, 62, 32, [30, 30, 30, 255]);
+  assert.equal(runDetailDiff(bold, device, { degraded: true }).hasDiff, true);
+});
+
+test("detail 判定: 超 maxEdge 的宽裁剪不做降采样（低对比细线在原生栅格可检出）", () => {
+  const width = 3000;
+  const device = createImage(width, 100);
+  const design = createImage(width, 100);
+  fillRect(device, 0, 50, width, 1, [232, 232, 232, 255]);
+  const result = runDetailDiff(design, device);
+  assert.equal(result.hasDiff, true, JSON.stringify(result.clusters));
+  assert.ok(result.clusters.every((cluster) => cluster.bbox.x + cluster.bbox.width <= width && cluster.bbox.y + cluster.bbox.height <= 100));
+});
+
+test("composeDetailPair: 左 device 右 design、gap 白、zoom 钳制、确定性", () => {
+  const device = createImage(200, 80);
+  fillRect(device, 0, 0, 200, 80, [255, 0, 0, 255]);
+  const design = createImage(200, 80);
+  fillRect(design, 0, 0, 200, 80, [0, 0, 255, 255]);
+  const pair = composeDetailPair(device, design);
+  assert.equal(pair.scale, 2);
+  assert.equal(pair.width, 200 * 2 + 24 + 200 * 2);
+  assert.equal(pair.height, 160);
+  const decoded = decodeImage(new Uint8Array(pair.png));
+  const px = (image, x, y) => {
+    const position = (y * image.width + x) * 4;
+    return [image.data[position], image.data[position + 1], image.data[position + 2]];
+  };
+  assert.deepEqual(px(decoded, 10, 10), [255, 0, 0]);
+  assert.deepEqual(px(decoded, decoded.width - 10, 10), [0, 0, 255]);
+  assert.deepEqual(px(decoded, 400 + 12, 40), [255, 255, 255]);
+
+  const wide = composeDetailPair(createImage(800, 50), createImage(800, 50));
+  assert.equal(wide.scale, 0.8);
+  assert.equal(wide.width, 640 + 24 + 640);
+
+  const tall = composeDetailPair(createImage(100, 900), createImage(100, 900));
+  assert.ok(Math.abs(tall.scale - 1200 / 900) < 1e-9);
+  assert.equal(tall.height, 1200);
+
+  assert.ok(composeDetailPair(device, design).png.equals(pair.png));
 });

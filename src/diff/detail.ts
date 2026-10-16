@@ -1,4 +1,4 @@
-import { resize, type Bbox, type DesignNode, type RgbaImage } from "./engine.js";
+import { diffScreens, encodePng, resize, type Bbox, type DesignNode, type RgbaImage } from "./engine.js";
 
 export type DetailRegionSource = "node" | "diff" | "tile" | "manual";
 
@@ -312,4 +312,76 @@ export function extractDetailPair(input: {
     design = resize(designCrop, deviceCrop.width, deviceCrop.height);
   }
   return { design, device: deviceCrop, upscaled, designDownscaled, clipped: mapped.clipped || designClamped };
+}
+
+export interface DetailLocalSummary {
+  hasDiff: boolean;
+  clusters: Array<{ bbox: Bbox; severity: string; pixelDiffRatio: number }>;
+  pixels: number;
+}
+
+const DETAIL_THRESHOLDS = { pixelThreshold: 0.05, minAreaRatio: 0.0005, clusterGap: 4 };
+const DEGRADED_THRESHOLDS = { ...DETAIL_THRESHOLDS, pixelThreshold: 0.1 };
+
+/** Local 1:1 verdict on an already-extracted device-grid crop pair. `maxEdge`
+ * is raised to the crop size so the engine never resamples here. */
+export function runDetailDiff(
+  design: RgbaImage,
+  device: RgbaImage,
+  options: { degraded?: boolean; thresholds?: { pixelThreshold?: number; minAreaRatio?: number; clusterGap?: number } } = {}
+): DetailLocalSummary {
+  const base = options.degraded === true ? DEGRADED_THRESHOLDS : DETAIL_THRESHOLDS;
+  const result = diffScreens(design, device, {
+    pixelThreshold: options.thresholds?.pixelThreshold ?? base.pixelThreshold,
+    minAreaRatio: options.thresholds?.minAreaRatio ?? base.minAreaRatio,
+    clusterGap: options.thresholds?.clusterGap ?? base.clusterGap,
+    maxEdge: Math.max(design.width, design.height, device.width, device.height),
+    designNodes: []
+  });
+  const clusters = result.regions.map((region) => ({
+    bbox: region.bbox,
+    severity: region.severity,
+    pixelDiffRatio: region.pixelDiffRatio
+  }));
+  const pixels = clusters.reduce(
+    (sum, cluster) => sum + Math.round(cluster.bbox.width * cluster.bbox.height * cluster.pixelDiffRatio),
+    0
+  );
+  return { hasDiff: clusters.length > 0, clusters, pixels };
+}
+
+export interface DetailPairImage {
+  png: Buffer;
+  width: number;
+  height: number;
+  scale: number;
+}
+
+/** device | design side by side on the device grid; display-only scaling
+ * (zoom capped by the single-side and total-height budget). */
+export function composeDetailPair(
+  device: RgbaImage,
+  design: RgbaImage,
+  options: { zoom?: number; maxSide?: number; maxHeight?: number; gap?: number } = {}
+): DetailPairImage {
+  const zoom = options.zoom ?? 2;
+  const maxSide = options.maxSide ?? 640;
+  const maxHeight = options.maxHeight ?? 1200;
+  const gap = options.gap ?? 24;
+  const scale = Math.min(
+    zoom,
+    device.width > 0 ? maxSide / device.width : zoom,
+    device.height > 0 ? maxHeight / device.height : zoom
+  );
+  const sideWidth = Math.max(1, Math.round(device.width * scale));
+  const sideHeight = Math.max(1, Math.round(device.height * scale));
+  const deviceScaled = scale === 1 ? device : resize(device, sideWidth, sideHeight);
+  const designScaled = scale === 1 ? design : resize(design, sideWidth, sideHeight);
+  const width = sideWidth * 2 + gap;
+  const out: RgbaImage = { width, height: sideHeight, data: new Uint8Array(width * sideHeight * 4).fill(255) };
+  for (let row = 0; row < sideHeight; row += 1) {
+    out.data.set(deviceScaled.data.subarray(row * sideWidth * 4, (row + 1) * sideWidth * 4), row * width * 4);
+    out.data.set(designScaled.data.subarray(row * sideWidth * 4, (row + 1) * sideWidth * 4), (row * width + sideWidth + gap) * 4);
+  }
+  return { png: encodePng(out), width, height: sideHeight, scale };
 }
