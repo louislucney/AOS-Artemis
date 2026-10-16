@@ -186,6 +186,10 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
               io.log(
                 `[runner] 任务 ${task.id} 领取次数 ${task.attempts} 超上限 ${maxAttempts}，标记 failed（毒丸防护，不进入执行）`
               );
+            } else {
+              io.errorLog(
+                `[runner] 任务 ${task.id} 超上限置 failed 失败（可能已被并发处理）`
+              );
             }
           } catch (error) {
             io.errorLog(`[runner] 毒丸防护释放失败：${errorMessage(error)}`);

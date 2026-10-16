@@ -661,3 +661,86 @@ test("领取守卫：attempts 超上限 → 置 failed、不执行、毒丸防�
   assert.ok(logs.some((line) => line.includes("毒丸防护")), "有毒丸防护日志");
   assert.ok(logs.some((line) => line.includes("超上限")), "有超上限说明");
 });
+
+test("领取守卫边界：attempts === maxAttempts → 仍执行（守卫为 >）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  for (let i = 0; i < 2; i += 1) {
+    await store.claimRegressionTask({ rootPath, runnerId: "seed", platforms: ["android"] });
+    await store.releaseRegressionTask({
+      rootPath,
+      runnerId: "seed",
+      taskId: task.id,
+      to: "pending"
+    });
+  }
+  const before = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(before.attempts, 2);
+  const calls = [];
+  const { options, logs } = makeOptions(runtime, inv, {
+    executeSuite: async (argv) => {
+      calls.push(argv);
+      await store.updateRegressionTask(rootPath, task.id, { status: "completed" });
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(calls.length, 1, "attempts=3==max 不越界、仍执行");
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "completed");
+  assert.ok(!logs.some((line) => line.includes("毒丸防护")), "未触发毒丸");
+});
+
+test("领取守卫：置 failed 返回 false → errorLog（可能已被并发处理）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  for (let i = 0; i < 3; i += 1) {
+    await store.claimRegressionTask({ rootPath, runnerId: "seed", platforms: ["android"] });
+    await store.releaseRegressionTask({
+      rootPath,
+      runnerId: "seed",
+      taskId: task.id,
+      to: "pending"
+    });
+  }
+  store.releaseRegressionTask = async () => false;
+  const calls = [];
+  const { options, errors } = makeOptions(runtime, inv, {
+    executeSuite: async (argv) => {
+      calls.push(argv);
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(calls.length, 0, "不进入执行");
+  assert.ok(
+    errors.some((line) => line.includes("超上限置 failed 失败")),
+    "释放 false 有 errorLog"
+  );
+});
+
+test("回收：非法 AOS_RUNNER_STALE_CLAIM_MS → 回退 900000（非关闭）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const calls = [];
+  store.releaseStaleClaims = async (input) => {
+    calls.push(input);
+    return 0;
+  };
+  const { options } = makeOptions(runtime, inv, {
+    now: () => RECLAIM_NOW,
+    env: { AOS_RUNNER_STALE_CLAIM_MS: "abc" }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(calls.length, 1, "非法值回退默认、仍回收");
+  assert.deepEqual(calls[0], {
+    rootPath,
+    offlineBefore: new Date(RECLAIM_NOW - 90_000).toISOString(),
+    claimedBefore: new Date(RECLAIM_NOW - 900_000).toISOString()
+  });
+});
