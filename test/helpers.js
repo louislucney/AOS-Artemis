@@ -60,7 +60,14 @@ export function stubFigmaFetch(designPng, nodeId, fileKey, options = {}) {
     const href = String(url);
     calls.push(href);
     if (href.includes(`/images/${fileKey}`)) {
-      return new Response(JSON.stringify({ err: null, images: { [nodeId]: "https://render.example/test.png" } }), {
+      const scaleMatch = /[?&]scale=([^&]+)/.exec(href);
+      const scale = scaleMatch ? scaleMatch[1] : null;
+      if (options.failRenderAtScale && scale === options.failRenderAtScale) {
+        return new Response("render unavailable", { status: 500 });
+      }
+      const renderUrl =
+        scale && options.renderByScale ? `https://render.example/test.png?scale=${scale}` : "https://render.example/test.png";
+      return new Response(JSON.stringify({ err: null, images: { [nodeId]: renderUrl } }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
@@ -73,8 +80,11 @@ export function stubFigmaFetch(designPng, nodeId, fileKey, options = {}) {
         headers: { "content-type": "application/json" }
       });
     }
-    if (href === "https://render.example/test.png") {
-      return new Response(designPng, { status: 200, headers: { "content-type": "image/png" } });
+    if (href.startsWith("https://render.example/test.png")) {
+      const scaleMatch = /[?&]scale=([^&]+)/.exec(href);
+      const scale = scaleMatch ? scaleMatch[1] : null;
+      const bytes = (scale && options.renderByScale?.[scale]) ?? designPng;
+      return new Response(bytes, { status: 200, headers: { "content-type": "image/png" } });
     }
     throw new Error(`unexpected fetch ${href}`);
   };

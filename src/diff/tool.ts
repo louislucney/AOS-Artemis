@@ -125,6 +125,10 @@ function timestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 }
 
+function isPngBytes(bytes: Buffer): boolean {
+  return bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+}
+
 export async function designDeviceDiff(
   runtime: Runtime,
   args: DesignDeviceDiffArgs,
@@ -442,7 +446,11 @@ export async function designDeviceDiff(
             : "lossy-source：设备源为有损截图（无损不可用回退），细节档降级（阈值 0.1）"
         );
       }
-      const degraded = designDegraded || (stepRequest === null && deviceLossless !== true);
+      const stepDeviceLossy = stepRequest !== null && !isPngBytes(deviceBytes);
+      if (stepDeviceLossy) {
+        detailWarnings.push("lossy-source：步骤截图为有损格式（非 PNG），细节档降级（阈值 0.1）");
+      }
+      const degraded = designDegraded || (stepRequest === null ? deviceLossless !== true : stepDeviceLossy);
       const detailDevice = detailDeviceBytes === deviceBytes ? deviceImage : decodeImage(detailDeviceBytes);
 
       const proposalResult = proposeDetailRegions({
@@ -464,6 +472,7 @@ export async function designDeviceDiff(
 
       const saving = args.save !== false;
       let outOfBounds = 0;
+      let clippedRegions = 0;
       const details: DetailRegionReport[] = [];
       for (const region of proposalResult.regions) {
         const pair = extractDetailPair({ design: detailDesign, device: detailDevice, region: region.bbox, geometry });
@@ -471,6 +480,7 @@ export async function designDeviceDiff(
           outOfBounds += 1;
           continue;
         }
+        if (pair.clipped) clippedRegions += 1;
         const localSummary = runDetailDiff(pair.design, pair.device, { degraded, thresholds: args.detail });
         pairBuffers.push(composeDetailPair(pair.device, pair.design, { zoom }).png);
         const slug = region.name ? diffSlug(region.name) : `r${region.idx}`;
@@ -483,8 +493,11 @@ export async function designDeviceDiff(
           ...(saving ? { crops: { pair: `regions/${String(region.idx).padStart(2, "0")}-${slug}.png` } } : {})
         });
       }
-      if (outOfBounds > 0) {
-        detailWarnings.push(`out-of-bounds：${outOfBounds} 个区域越出设备视口，已跳过`);
+      if (outOfBounds > 0 || clippedRegions > 0) {
+        const parts: string[] = [];
+        if (outOfBounds > 0) parts.push(`${outOfBounds} 个不可见已跳过`);
+        if (clippedRegions > 0) parts.push(`${clippedRegions} 个部分截断按可见窗口核验`);
+        detailWarnings.push(`out-of-bounds：${outOfBounds + clippedRegions} 个区域越出设备视口（${parts.join("、")}）`);
       }
 
       const severityRank: Record<string, number> = { blocker: 0, major: 1, minor: 2, info: 3 };

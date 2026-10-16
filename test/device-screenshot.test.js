@@ -141,6 +141,21 @@ test("captureLiveScreenshot(默认): live JPEG 路径标记 lossless=false", asy
   assert.equal(capture.bytes.equals(JPG_BYTES), true);
 });
 
+test("captureLiveScreenshot(默认): screenshot_path 为 PNG（iOS 经 ARTEMIS 路由）标记 lossless=true", async () => {
+  const dir = makeTempDir("aos-live-png-");
+  const pngPath = path.join(dir, "shot.png");
+  fs.writeFileSync(pngPath, PNG_BYTES);
+  const runtime = {
+    proxy: {
+      callTool: async () => ({
+        content: [{ type: "text", text: JSON.stringify({ screenshot_path: pngPath }) }]
+      })
+    }
+  };
+  const capture = await captureLiveScreenshot(runtime);
+  assert.equal(capture.lossless, true);
+});
+
 function makeLosslessProject() {
   const dir = makeTempProject({ config: baseConfig() });
   const designImage = createImage(390, 844);

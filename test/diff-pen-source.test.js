@@ -103,7 +103,11 @@ test("design_device_diff: .pen 设计源渲染 + 分类 + 产物", async () => {
     await designDeviceDiff(
       runtime,
       { design: { source: "pen", penPath: ".artemis/design/demo.pen" } },
-      { exec, ensure: stubEnsure() }
+      {
+        exec,
+        ensure: stubEnsure(),
+        capturePng: async () => ({ ok: true, bytes: toPng(createImage(390, 844)), serial: "S1", adb: { path: "/fake/adb", source: "env" } })
+      }
     )
   );
   assert.equal(payload.ok, true, JSON.stringify(payload));
@@ -209,7 +213,17 @@ test("design_device_diff: source=pen 缺省取最新 .pen", async () => {
   stubDevice(proxy, devicePath);
   const { runtime } = await loadTestRuntime(dir, { proxy });
 
-  const payload = parseToolResult(await designDeviceDiff(runtime, { design: { source: "pen" } }, { exec, ensure: stubEnsure() }));
+  const payload = parseToolResult(
+    await designDeviceDiff(
+      runtime,
+      { design: { source: "pen" } },
+      {
+        exec,
+        ensure: stubEnsure(),
+        capturePng: async () => ({ ok: true, bytes: toPng(createImage(390, 844)), serial: "S1", adb: { path: "/fake/adb", source: "env" } })
+      }
+    )
+  );
   assert.equal(payload.ok, true, JSON.stringify(payload));
   assert.match(String(payload.design.path), /demo\.pen$/);
   assert.equal(calls.length, 1);

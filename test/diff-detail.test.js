@@ -138,6 +138,17 @@ test("propose: mode none → 空结果", () => {
   assert.deepEqual(result, { regions: [], truncated: false, tilesUsed: false });
 });
 
+test("propose: mode nodes 超限同样按小面积优先", () => {
+  const nodes = [
+    node({ id: "big", name: "big", x: 20, y: 100, width: 200, height: 20, depth: 2 }),
+    node({ id: "mid", name: "mid", x: 20, y: 300, width: 50, height: 20, depth: 2 }),
+    node({ id: "tiny", name: "tiny", x: 20, y: 500, width: 5, height: 20, depth: 2 })
+  ];
+  const result = proposeDetailRegions({ ...SCREEN, nodes, screenRegionBboxes: [], mode: "nodes", maxRegions: 2 });
+  assert.equal(result.truncated, true);
+  assert.deepEqual(result.regions.map((region) => region.name).sort(), ["mid", "tiny"]);
+});
+
 test("propose: 容器剔除（更深节点覆盖 ≥90% 自身面积）、子节点合并、确定性", () => {
   const parent = node({ id: "card", name: "Card", x: 24, y: 24, width: 300, height: 200, depth: 1 });
   const c1 = node({ id: "c1", name: "c1", x: 24, y: 24, width: 300, height: 95, depth: 2 });
@@ -235,6 +246,21 @@ test("detail 配对: 尺寸对齐、升/降采样标注、像素位置保真、�
   assert.equal(near.designDownscaled, false);
 
   assert.equal(extractDetailPair({ design, device, region: { x: 100, y: 0, width: 40, height: 100 }, geometry }), null);
+});
+
+test("detail 配对: 部分越界区域两侧按同一可见窗口裁剪（不把视口外内容压进可见带）", () => {
+  const design = createImage(100, 200);
+  const device = createImage(100, 100);
+  fillRect(design, 0, 80, 100, 20, [255, 0, 0, 255]);
+  fillRect(device, 0, 80, 100, 20, [255, 0, 0, 255]);
+  fillRect(design, 0, 100, 100, 20, [0, 0, 0, 255]);
+  const geometry = resolveDetailGeometry({ width: 100, height: 200 }, { width: 100, height: 100 }, NO_INSETS);
+  const pair = extractDetailPair({ design, device, region: { x: 0, y: 80, width: 100, height: 40 }, geometry });
+  assert.ok(pair);
+  assert.equal(pair.clipped, true);
+  assert.equal(pair.device.height, 20);
+  assert.equal(pair.design.height, 20);
+  assert.equal(runDetailDiff(pair.design, pair.device).hasDiff, false, "同一可见窗口内容不应报差异");
 });
 
 function textBlock(width = 200, height = 80) {

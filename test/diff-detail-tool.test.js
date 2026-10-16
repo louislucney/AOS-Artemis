@@ -14,6 +14,7 @@ import {
   StubProxy,
   stubDevice,
   stubFigmaFetch,
+  stubStepScreenshots,
   toJpeg,
   toPng,
   withFigmaToken
@@ -343,6 +344,177 @@ test("design_device_diff: dryRun 维持旧语义（不取图、无 detail 键）
       assert.equal(payload.dryRun, true);
       assert.equal(captureCalls, 0);
       assert.equal("detail" in payload, false);
+    } finally {
+      figma.restore();
+    }
+  });
+});
+
+test("design_device_diff: step 源为 JPEG 时按降级档并给出 lossy-source 警告", async () => {
+  await withFigmaToken(async () => {
+    const { dir, figma } = makeDetailProject({ fileKey: "DetailStep1" });
+    const proxy = new StubProxy({ running: true });
+    const stepJpeg = path.join(dir, "step.jpg");
+    fs.writeFileSync(stepJpeg, toJpeg(createImage(390, 844), 85));
+    stubStepScreenshots(proxy, { ok: true, step_number: 2, after_screenshot: stepJpeg });
+    const { runtime } = await loadTestRuntime(dir, { proxy });
+    try {
+      const payload = parseToolResult(
+        await designDeviceDiff(runtime, {
+          design: { figmaUrl: "https://www.figma.com/design/DetailStep1/File?node-id=1-2" },
+          device: { mode: "step", traceId: "trace-step-jpeg", stepNumber: 2 }
+        })
+      );
+      assert.equal(payload.ok, true, JSON.stringify(payload));
+      assert.equal(payload.detail.degraded, true);
+      assert.match(payload.warnings.join(" "), /lossy-source/);
+    } finally {
+      figma.restore();
+    }
+  });
+});
+
+test("design_device_diff: 部分截断区域按可见窗口核验并计入 out-of-bounds", async () => {
+  await withFigmaToken(async () => {
+    const doc = {
+      id: "0:1",
+      type: "FRAME",
+      name: "Screen",
+      absoluteBoundingBox: { x: 0, y: 0, width: 390, height: 844 },
+      fills: [{ type: "SOLID", color: { r: 1, g: 1, b: 1, a: 1 } }],
+      children: [
+        {
+          id: "1:2",
+          type: "RECTANGLE",
+          name: "Card",
+          absoluteBoundingBox: { x: 40, y: 80, width: 120, height: 60 },
+          fills: [{ type: "SOLID", color: { r: 0.118, g: 0.251, b: 0.686, a: 1 } }]
+        },
+        {
+          id: "1:7",
+          type: "RECTANGLE",
+          name: "Edge",
+          absoluteBoundingBox: { x: 20, y: 340, width: 50, height: 20 },
+          fills: [{ type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5, a: 1 } }]
+        }
+      ]
+    };
+    const { dir, devicePng, devicePath, figma } = makeDetailProject({ fileKey: "DetailOob1", document: doc });
+    const proxy = new StubProxy({ running: true });
+    stubDevice(proxy, devicePath);
+    const { runtime } = await loadTestRuntime(dir, { proxy });
+    try {
+      const payload = parseToolResult(
+        await designDeviceDiff(
+          runtime,
+          {
+            design: { figmaUrl: "https://www.figma.com/design/DetailOob1/File?node-id=1-2" },
+            alignment: { insets: { top: 500 } }
+          },
+          { capturePng: okCapture(devicePng) }
+        )
+      );
+      assert.equal(payload.ok, true, JSON.stringify(payload));
+      assert.match(payload.warnings.join(" "), /out-of-bounds/);
+      assert.ok(payload.regionDetails.some((region) => region.name === "Edge"));
+    } finally {
+      figma.restore();
+    }
+  });
+});
+
+function makeScale3Project({ fileKey, failDetailRender } = {}) {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designImage = createImage(390, 844);
+  fillRect(designImage, 40, 80, 120, 60, [30, 64, 175, 255]);
+  const designPng = toPng(designImage);
+  const designHi = createImage(1170, 2532);
+  fillRect(designHi, 120, 240, 360, 180, [30, 64, 175, 255]);
+  const design3x = toPng(designHi);
+
+  const deviceImage = createImage(1170, 2532);
+  const devicePng = Buffer.from(toPng(deviceImage));
+  const devicePath = path.join(dir, "device.jpg");
+  fs.writeFileSync(devicePath, toJpeg(deviceImage, 85));
+
+  const figma = stubFigmaFetch(designPng, "1:2", fileKey, {
+    renderByScale: { "3": design3x },
+    ...(failDetailRender ? { failRenderAtScale: "3" } : {})
+  });
+  return { dir, designPng, design3x, devicePng, devicePath, figma };
+}
+
+test("design_device_diff: Figma 按设备倍率二次渲染（S=3）→ 节点坐标 ×3、无降级", async () => {
+  await withFigmaToken(async () => {
+    const { dir, devicePng, devicePath, figma } = makeScale3Project({ fileKey: "DetailHi1" });
+    const proxy = new StubProxy({ running: true });
+    stubDevice(proxy, devicePath);
+    const { runtime } = await loadTestRuntime(dir, { proxy });
+    try {
+      const payload = parseToolResult(
+        await designDeviceDiff(
+          runtime,
+          { design: { figmaUrl: "https://www.figma.com/design/DetailHi1/File?node-id=1-2" } },
+          { capturePng: okCapture(devicePng) }
+        )
+      );
+      assert.equal(payload.ok, true, JSON.stringify(payload));
+      assert.equal(figma.calls.filter((href) => href.includes("/images/")).length, 2, "S>1 应二次渲染");
+      assert.equal(payload.detail.degraded, false, JSON.stringify(payload.warnings));
+      const nodeRegion = payload.regionDetails.find((region) => region.source === "node");
+      assert.deepEqual(nodeRegion.bbox, { x: 104, y: 224, width: 392, height: 212 });
+      assert.ok(payload.regionDetails.some((region) => region.localSummary.hasDiff));
+    } finally {
+      figma.restore();
+    }
+  });
+});
+
+test("design_device_diff: 高保真渲染失败回退低尺度 → design-upscaled 降级警告", async () => {
+  await withFigmaToken(async () => {
+    const { dir, devicePng, devicePath, figma } = makeScale3Project({ fileKey: "DetailHiFail1", failDetailRender: true });
+    const proxy = new StubProxy({ running: true });
+    stubDevice(proxy, devicePath);
+    const { runtime } = await loadTestRuntime(dir, { proxy });
+    try {
+      const payload = parseToolResult(
+        await designDeviceDiff(
+          runtime,
+          { design: { figmaUrl: "https://www.figma.com/design/DetailHiFail1/File?node-id=1-2" } },
+          { capturePng: okCapture(devicePng) }
+        )
+      );
+      assert.equal(payload.ok, true, JSON.stringify(payload));
+      assert.equal(payload.detail.degraded, true);
+      assert.match(payload.warnings.join(" "), /design-upscaled/);
+    } finally {
+      figma.restore();
+    }
+  });
+});
+
+test("design_device_diff: zoom/returnCrops/detail 参数覆盖生效", async () => {
+  await withFigmaToken(async () => {
+    const { dir, devicePng, devicePath, figma } = makeDetailProject({ fileKey: "DetailParams1" });
+    const proxy = new StubProxy({ running: true });
+    stubDevice(proxy, devicePath);
+    const { runtime } = await loadTestRuntime(dir, { proxy });
+    try {
+      const result = await designDeviceDiff(
+        runtime,
+        {
+          design: { figmaUrl: "https://www.figma.com/design/DetailParams1/File?node-id=1-2" },
+          zoom: 3,
+          returnCrops: 1,
+          detail: { pixelThreshold: 0.05 }
+        },
+        { capturePng: okCapture(devicePng) }
+      );
+      const payload = parseToolResult(result);
+      assert.equal(payload.ok, true, JSON.stringify(payload));
+      assert.equal(payload.detail.zoom, 3);
+      assert.equal(payload.detail.returned, 1);
+      assert.equal(result.content.length, 3);
     } finally {
       figma.restore();
     }

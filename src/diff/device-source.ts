@@ -56,7 +56,7 @@ async function captureArtemisLive(runtime: Runtime, serial?: string): Promise<De
   if (!extracted) {
     throw new Error("无法从 mobile_get_device_state 结果中解析截图（image 块或本地文件路径）。");
   }
-  return { bytes: Buffer.from(extracted.data, "base64"), note: extracted.note, lossless: false };
+  return { bytes: Buffer.from(extracted.data, "base64"), note: extracted.note, lossless: extracted.mimeType === "image/png" };
 }
 
 const IOS_ERROR_HINTS: Record<string, string> = {

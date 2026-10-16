@@ -23,8 +23,8 @@ function makeAutoProject({ fileKey }) {
   const designImage = createImage(390, 844);
   fillRect(designImage, 40, 80, 120, 60, [30, 64, 175, 255]);
   const figma = stubFigmaFetch(toPng(designImage), "1:2", fileKey);
-  const postPath = path.join(dir, "step-post.jpg");
-  fs.writeFileSync(postPath, toJpeg(createImage(390, 844), 90));
+  const postPath = path.join(dir, "step-post.png");
+  fs.writeFileSync(postPath, toPng(createImage(390, 844)));
   return { dir, figma, postPath };
 }
 

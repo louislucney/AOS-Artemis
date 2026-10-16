@@ -29,7 +29,7 @@ export const DESIGN_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "design_device_diff",
     description:
-      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG 渲染，或 `design:{source:\"pen\"}` 经 pen CLI 渲染 .pen）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId（stepNumber 可选：省略则用失败证据自动检索步骤）指定失败步骤截图，默认 post；device.platform=\"ios\" 支持模拟器 idb→simctl 与真机 WDA，均 PNG），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）。区域核验（默认开启，regions:\"auto\"）：按设计叶子节点 ∪ 整屏 diff 命中（无节点源时 tiles 重叠平铺）提议区域 → 在设计渲染×真机设备原生栅格上成对裁剪 → 1:1 局部判定（细节档 0.05；有损/上采样源自动降为 0.1 并警告）→ 每区域 device｜design 并排对图（内联前 returnCrops 张、hasDiff 优先；全部落盘 regions/）＋ regionDetails[].localSummary；regions 可设 auto|nodes|tiles|none|显式 bbox 数组（分页=回传上轮 regionDetails[].bbox，序号仅同一响应内有效）；zoom（1-4）与 detail 阈值可调；detail.degraded/truncated 如实标注。核对纪律：对比结论必须来自区域级对图核对（引用区域编号），整屏图仅用于定位。dryRun 只回计划；判定不依赖 LLM。",
+      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG 渲染，或 `design:{source:\"pen\"}` 经 pen CLI 渲染 .pen）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId（stepNumber 可选：省略则用失败证据自动检索步骤）指定失败步骤截图，默认 post；device.platform=\"ios\" 支持模拟器 idb→simctl 与真机 WDA，均 PNG），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）。区域核验（默认开启，regions:\"auto\"）：按设计叶子节点 ∪ 整屏 diff 命中（无节点源时 tiles 重叠平铺）提议区域 → 在设计渲染×真机设备原生栅格上成对裁剪 → 1:1 局部判定（细节档 0.05；有损/上采样源自动降为 0.1 并警告）→ 每区域 device｜design 并排对图（内联前 returnCrops 张、hasDiff 优先；全部落盘 regions/）＋ regionDetails[].localSummary；regions 可设 auto|nodes|tiles|none|显式 bbox 数组（分页=回传上轮 regionDetails[].bbox，序号仅同一响应内有效）；zoom（1-4）与 detail 阈值可调；detail.degraded/truncated 如实标注。核对纪律：对比结论必须来自区域级对图核对（引用区域编号），整屏图仅用于定位。（跨源细节档验证中：同源四类差异实证 4/4；设计渲染×真机渲染的误报基线待真实项目对实验，不得将其视为已放行的权威结论。）dryRun 只回计划；判定不依赖 LLM。",
     schema: z.object({
       design: z.object({
         source: z.enum(["figma", "pen"]).optional().describe("设计源；省略时按 figmaUrl/penPath 推断"),
@@ -40,7 +40,7 @@ export const DESIGN_NATIVE_TOOLS: NativeToolDefinition[] = [
       }),
       device: z
         .object({
-          mode: z.enum(["live", "step"]).optional().describe("设备源模式：live（实时截图，默认）| step（trace 步骤截图）"),
+          mode: z.enum(["live", "step"]).optional().describe("设备源模式：live（实时截图，默认）| step（trace 步骤截图；保真随执行器，非 PNG 将按降级档并警告）"),
           platform: z
             .enum(["android", "ios"])
             .optional()

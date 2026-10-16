@@ -168,7 +168,9 @@ export function proposeDetailRegions(input: ProposeRegionsInput): ProposeRegions
   let candidates: Array<{ source: DetailRegionSource; bbox: Bbox; name?: string }>;
   let tilesUsed = false;
   if (mode === "nodes") {
-    candidates = nodeRegions.map((box) => ({ source: "node" as const, ...box }));
+    candidates = nodeRegions
+      .map((box) => ({ source: "node" as const, ...box }))
+      .sort((a, b) => areaOf(a.bbox) - areaOf(b.bbox) || sortByPosition(a.bbox, b.bbox));
   } else if (mode === "tiles") {
     tilesUsed = true;
     candidates = tileBoxes(designWidth, designHeight, input.tileSize ?? DEFAULT_TILE_SIZE, input.tileOverlap ?? DEFAULT_TILE_OVERLAP).map(
@@ -290,10 +292,17 @@ export function extractDetailPair(input: {
   geometry: DetailGeometry;
   minVisiblePx?: number;
 }): DetailPairExtraction | null {
-  const designBox = clampBox(input.region, input.design.width, input.design.height);
-  if (!designBox) return null;
   const mapped = mapRegionToDeviceRect(input.region, input.geometry, input.device, input.minVisiblePx ?? 4);
   if (!mapped.visible) return null;
+  const ratio = input.geometry.ratio > 0 ? input.geometry.ratio : 1;
+  const designWindow = {
+    x: Math.floor((mapped.bbox.x - input.geometry.offset.x) / ratio),
+    y: Math.floor((mapped.bbox.y - input.geometry.offset.y) / ratio),
+    width: Math.ceil(mapped.bbox.width / ratio),
+    height: Math.ceil(mapped.bbox.height / ratio)
+  };
+  const designBox = clampBox(designWindow, input.design.width, input.design.height);
+  if (!designBox) return null;
   const deviceCrop = cropImage(input.device, mapped.bbox);
   const designCrop = cropImage(input.design, designBox);
   const designClamped =

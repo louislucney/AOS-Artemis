@@ -84,6 +84,10 @@ async function makeDiffRuntime(dir, { fileKey, document = HOME_DOCUMENT } = {}) 
   return { runtime, figma };
 }
 
+function okPngCapture() {
+  return async () => ({ ok: true, bytes: toPng(createImage(390, 844)), serial: "S1", adb: { path: "/fake/adb", source: "env" } });
+}
+
 test("screen_map propose: 基于 build-brief + 栈约定给出候选与 unmatched", async () => {
   const dir = makeMapProject();
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
@@ -165,9 +169,13 @@ test("design_device_diff: 已映射区域输出 localized.mapped", async () => {
     const before = fs.readFileSync(mapPath, "utf-8");
     try {
       const payload = parseToolResult(
-        await designDeviceDiff(runtime, {
-          design: { figmaUrl: "https://www.figma.com/design/MapA1/File?node-id=1-2" }
-        })
+        await designDeviceDiff(
+          runtime,
+          {
+            design: { figmaUrl: "https://www.figma.com/design/MapA1/File?node-id=1-2" }
+          },
+          { capturePng: okPngCapture() }
+        )
       );
       assert.equal(payload.ok, true, JSON.stringify(payload));
       assert.equal(payload.summary.regions, 1);
@@ -187,9 +195,13 @@ test("design_device_diff: 未映射区域给候选或 no-candidates", async () =
     const { runtime, figma } = await makeDiffRuntime(dir, { fileKey: "MapB2" });
     try {
       const payload = parseToolResult(
-        await designDeviceDiff(runtime, {
-          design: { figmaUrl: "https://www.figma.com/design/MapB2/File?node-id=1-2" }
-        })
+        await designDeviceDiff(
+          runtime,
+          {
+            design: { figmaUrl: "https://www.figma.com/design/MapB2/File?node-id=1-2" }
+          },
+          { capturePng: okPngCapture() }
+        )
       );
       assert.equal(payload.regions[0].localized.status, "unmapped");
       assert.equal(payload.regions[0].localized.candidates[0].design.screen, "Home");
@@ -203,9 +215,13 @@ test("design_device_diff: 未映射区域给候选或 no-candidates", async () =
     const { runtime, figma } = await makeDiffRuntime(dir, { fileKey: "MapC3" });
     try {
       const payload = parseToolResult(
-        await designDeviceDiff(runtime, {
-          design: { figmaUrl: "https://www.figma.com/design/MapC3/File?node-id=1-2" }
-        })
+        await designDeviceDiff(
+          runtime,
+          {
+            design: { figmaUrl: "https://www.figma.com/design/MapC3/File?node-id=1-2" }
+          },
+          { capturePng: okPngCapture() }
+        )
       );
       assert.equal(payload.regions[0].localized.status, "no-candidates");
       assert.match(payload.regions[0].localized.reason, /build-brief/);
