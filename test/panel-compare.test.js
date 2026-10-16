@@ -367,6 +367,90 @@ test("panel compare: 排序（无批次→门禁 fail→通过率升 null 后置
   );
 });
 
+test("panel compare: D8 直测——磁盘不可达但有台账血统运行 → latestBatch 按台账且 rank 1", async () => {
+  const store = new MemoryStore();
+  const repo = makeReadyRepo();
+
+  const noBatch = path.join(makeTempDir("aos-panel-d8-"), "no-batch");
+  await store.upsertProject({ rootPath: noBatch, name: "no-batch" });
+
+  const ledgerOnly = path.join(makeTempDir("aos-panel-d8-"), "ledger-only");
+  await store.upsertProject({ rootPath: ledgerOnly, name: "ledger-only" });
+  const ledgerSet = await store.recordCaseSet({
+    rootPath: ledgerOnly,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      { key: "f-1", name: "登录流程", caseCount: 1, screens: [], jsonPath: "/x.json", mdPath: "/x.md", xlsxPath: "/x.xlsx" }
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: ledgerOnly,
+    createdAt: "2026-10-14T09:00:00.000Z",
+    run: mkRun({
+      caseSetId: ledgerSet.id,
+      featureKey: "f-1",
+      featureName: "登录流程",
+      gateResult: "fail",
+      total: 10,
+      passed: 4,
+      failed: 6
+    }),
+    cases: []
+  });
+
+  const passHigh = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  const passLow = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: passHigh, name: "pass-high" });
+  await store.upsertProject({ rootPath: passLow, name: "pass-low" });
+
+  const set = (p) =>
+    store.recordCaseSet({
+      rootPath: p,
+      source: "pen:a.pen",
+      basename: "tests",
+      features: [
+        { key: "f-1", name: "登录流程", caseCount: 1, screens: [], jsonPath: "/x.json", mdPath: "/x.md", xlsxPath: "/x.xlsx" }
+      ]
+    });
+  const sHigh = await set(passHigh);
+  const sLow = await set(passLow);
+  await store.recordSuiteRun({
+    rootPath: passHigh,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: mkRun({ caseSetId: sHigh.id, featureKey: "f-1", featureName: "登录流程", gateResult: "pass", total: 10, passed: 9, failed: 1 }),
+    cases: []
+  });
+  await store.recordSuiteRun({
+    rootPath: passLow,
+    createdAt: "2026-10-14T10:00:00.000Z",
+    run: mkRun({ caseSetId: sLow.id, featureKey: "f-1", featureName: "登录流程", gateResult: "pass", total: 10, passed: 5, failed: 5 }),
+    cases: []
+  });
+
+  const view = await buildPanelCompare({ store, serviceRepo: repo, buildStale: false, env: {} });
+
+  const row = view.projects.find((entry) => entry.name === "ledger-only");
+  assert.ok(row, "磁盘不可达但有台账 → 行存在");
+  assert.equal(row.error, null);
+  assert.notEqual(row.latestBatch, null, "台账运行 → 最近批次非空（非无批次 rank 0）");
+  assert.equal(row.latestBatch.gate, "fail");
+  assert.equal(row.latestBatch.passRate, 0.4);
+  assert.equal(row.latestBatch.at, "2026-10-14T09:05:00.000Z");
+  assert.equal(row.trend.length, 1);
+
+  assert.deepEqual(
+    view.projects.map((entry) => entry.name),
+    ["no-batch", "ledger-only", "pass-low", "pass-high"],
+    "无批次(rank0) → 台账 fail(rank1) → pass 按通过率升"
+  );
+  assert.equal(
+    view.projects.findIndex((entry) => entry.name === "ledger-only"),
+    1,
+    "位于 rank 1（fail 组），非无批次 rank 0"
+  );
+});
+
 test("panel compare: 行级降级（store 抛错 → 该行 error，其余行正常）", async () => {
   const store = new MemoryStore();
   const repo = makeReadyRepo();

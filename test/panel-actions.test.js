@@ -871,3 +871,47 @@ test("panel issues: 路由校验（items 超 20 → 400；labels 非字符串 �
   );
   assert.equal(emptyItems.status, 400);
 });
+
+test("panel issues: 路由级请求错误分支（runtimeFor null / Jira 未配置 → 400 指引）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath);
+  const url = new URL("http://localhost/panel/api/issues");
+  const body = { project: rootPath, items: [{ runId: run.id, caseId: "case-1" }] };
+
+  const noRuntime = await handlePanelActionRequest(request({ url, body }), {
+    store,
+    env: {},
+    workspaceRoot: null,
+    runtimeFor: async () => null
+  });
+  assert.equal(noRuntime.status, 400);
+  const noRuntimePayload = JSON.parse(noRuntime.body);
+  assert.equal(noRuntimePayload.ok, false);
+  assert.match(noRuntimePayload.error, /项目运行时不可用/);
+
+  const unconfigured = await handlePanelActionRequest(request({ url, body }), {
+    store,
+    env: {},
+    workspaceRoot: null,
+    runtimeFor: async () =>
+      fakeRuntime({
+        jiraConfig: () => ({
+          configured: false,
+          siteUrl: null,
+          email: null,
+          apiToken: null,
+          missing: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        })
+      })
+  });
+  assert.equal(unconfigured.status, 400);
+  const unconfiguredPayload = JSON.parse(unconfigured.body);
+  assert.equal(unconfiguredPayload.ok, false);
+  assert.ok(unconfiguredPayload.error.includes("JIRA_BASE_URL"), "缺失项进 error");
+  assert.ok(Array.isArray(unconfiguredPayload.hints) && unconfiguredPayload.hints.length > 0);
+  assert.ok(
+    unconfiguredPayload.hints.some((hint) => hint.includes("JIRA_BASE_URL")),
+    "指引含 JIRA_BASE_URL"
+  );
+});

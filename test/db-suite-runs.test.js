@@ -219,6 +219,20 @@ test("listSuiteRuns: 过滤（taskId/caseSetId/featureKey/platform）与新→�
   assert.equal((await store.listSuiteRuns("/w/unknown")).length, 0);
 });
 
+test("listSuiteRuns: 零 run 守卫（limit 0 / 已注册无 run）→ [] 且不抛（memory + pg-mem）", async () => {
+  const stores = [new MemoryStore(), await makePgStore()];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/zero", name: "zero" });
+    assert.deepEqual(
+      await store.listSuiteRuns("/w/zero", { limit: 0 }),
+      [],
+      "limit 0 → 空（pg-mem 命中 runIds.length === 0 守卫，不生成空 IN 查询）"
+    );
+    assert.deepEqual(await store.listSuiteRuns("/w/zero"), [], "已注册但无任何 run → 空");
+    assert.deepEqual(await store.listSuiteRuns("/w/zero", { taskId: "task-x" }), []);
+  }
+});
+
 test("listSuiteRuns: 多 run 批量装配——cases 数不等、含 0 case、逐 run 完整、新→旧与 limit（memory + pg-mem）", async () => {
   const stores = [new MemoryStore(), await makePgStore()];
   for (const store of stores) {
