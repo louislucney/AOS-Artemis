@@ -10,15 +10,15 @@ export const DESIGN_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "compare_design_and_device",
     description:
-      "组合工具：拉取 Figma 节点的渲染图（PNG@2x，REST）与当前真机截图，一并返回两张图片，供多模态模型比对布局/间距/颜色/文案。lossless=true 时真机侧改用 adb 无损 PNG 截图（避免 JPEG 伪影；失败自动回退 live JPEG）；platform=\"ios\" 时真机侧改走 macOS 模拟器（idb→simctl，需 deviceSerial 传 UDID 或唯一已启动模拟器）。",
+      "组合工具：拉取 Figma 节点的渲染图（PNG@2x，REST）与当前真机截图，一并返回两张图片，供多模态模型比对布局/间距/颜色/文案。lossless=true 时真机侧改用 adb 无损 PNG 截图（避免 JPEG 伪影；失败自动回退 live JPEG）；platform=\"ios\" 支持 iOS 模拟器（idb→simctl，deviceSerial 传 UDID 或自动取唯一已启动模拟器）与 iOS 真机（WDA PNG）。细节核验（逐区域放大对图与局部 1:1 判定）请用 design_device_diff 的区域核验，不要只凭整屏缩略对比下结论。",
     schema: z.object({
       figmaUrl: z.string().min(1).describe("Figma URL（建议带 ?node-id=）"),
       nodeId: z.string().optional().describe("覆盖 URL 中的 node-id"),
-      deviceSerial: z.string().optional().describe("目标设备 serial（默认自动选择；平台 ios 时为模拟器 UDID）"),
+      deviceSerial: z.string().optional().describe("目标设备 serial（默认自动选择；ios 可为模拟器 UDID 或真机 UDID）"),
       platform: z
         .enum(["android", "ios"])
         .optional()
-        .describe("设备平台：android（默认，ARTEMIS/adb）| ios（仅 macOS 模拟器，经 idb/simctl 截图）"),
+        .describe("设备平台：android（默认，ARTEMIS/adb）| ios（模拟器 idb→simctl 或真机 WDA，PNG 截图）"),
       lossless: z
         .boolean()
         .optional()
@@ -29,7 +29,7 @@ export const DESIGN_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "design_device_diff",
     description:
-      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG@2x，或 `design:{source:\"pen\"}` 经 pen CLI 渲染 .pen）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId（stepNumber 可选：省略则用失败证据自动检索步骤）指定失败步骤截图，默认 post），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）；响应返回摘要 + 标注图 + 产物路径。dryRun 只回计划；判定不依赖 LLM。",
+      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG 渲染，或 `design:{source:\"pen\"}` 经 pen CLI 渲染 .pen）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId（stepNumber 可选：省略则用失败证据自动检索步骤）指定失败步骤截图，默认 post；device.platform=\"ios\" 支持模拟器 idb→simctl 与真机 WDA，均 PNG），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）。区域核验（默认开启，regions:\"auto\"）：按设计叶子节点 ∪ 整屏 diff 命中（无节点源时 tiles 重叠平铺）提议区域 → 在设计渲染×真机设备原生栅格上成对裁剪 → 1:1 局部判定（细节档 0.05；有损/上采样源自动降为 0.1 并警告）→ 每区域 device｜design 并排对图（内联前 returnCrops 张、hasDiff 优先；全部落盘 regions/）＋ regionDetails[].localSummary；regions 可设 auto|nodes|tiles|none|显式 bbox 数组（分页=回传上轮 regionDetails[].bbox，序号仅同一响应内有效）；zoom（1-4）与 detail 阈值可调；detail.degraded/truncated 如实标注。核对纪律：对比结论必须来自区域级对图核对（引用区域编号），整屏图仅用于定位。dryRun 只回计划；判定不依赖 LLM。",
     schema: z.object({
       design: z.object({
         source: z.enum(["figma", "pen"]).optional().describe("设计源；省略时按 figmaUrl/penPath 推断"),
@@ -44,8 +44,8 @@ export const DESIGN_NATIVE_TOOLS: NativeToolDefinition[] = [
           platform: z
             .enum(["android", "ios"])
             .optional()
-            .describe("设备平台：android（默认）| ios（macOS 模拟器；live 经 idb/simctl 截图，step 走 iOS trace 截图）"),
-          serial: z.string().optional().describe("目标设备 serial（默认自动选择；平台 ios 时为模拟器 UDID）"),
+            .describe("设备平台：android（默认）| ios（模拟器 idb→simctl 或真机 WDA；live 均 PNG，step 走 iOS trace 截图）"),
+          serial: z.string().optional().describe("目标设备 serial（默认自动选择；ios 可为模拟器 UDID 或真机 UDID）"),
           traceId: z.string().optional().describe("mode=step 必填：任务 trace id（mobile_run_task 返回）"),
           stepNumber: z.number().int().positive().optional().describe("mode=step 步骤号；省略则用失败证据自动检索步骤（Pro 任务，best-effort）"),
           image: z.enum(["post", "pre"]).optional().describe("步骤截图选 post（行动后，默认）或 pre（行动前）"),
