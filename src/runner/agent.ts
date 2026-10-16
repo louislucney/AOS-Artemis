@@ -247,6 +247,10 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
                   ? `[runner] 任务 ${task.id} 第 ${task.attempts} 次失败（上限 ${maxAttempts}），标记 failed（不再自动重试；修复引用后请新建任务）`
                   : `[runner] 任务 ${task.id} 未达终态，已释放回待执行（第 ${task.attempts} 次尝试）`
               );
+            } else {
+              io.errorLog(
+                `[runner] 任务 ${task.id} 守卫释放未生效（可能已被并发处理/终态）`
+              );
             }
           } catch (releaseError) {
             io.errorLog(`[runner] 释放任务失败：${errorMessage(releaseError)}`);

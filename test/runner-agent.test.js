@@ -723,6 +723,31 @@ test("领取守卫：置 failed 返回 false → errorLog（可能已被并发�
   );
 });
 
+test("执行失败释放返回 false → errorLog（守卫释放未生效）＋ 干净退出", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  await store.createRegressionTask(taskInput(rootPath));
+  store.releaseRegressionTask = async () => false;
+  const calls = [];
+  const { options, errors } = makeOptions(runtime, inv, {
+    executeSuite: async (argv) => {
+      calls.push(argv);
+      return 2;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0, "干净退出");
+  assert.equal(calls.length, 1, "执行失败后被守卫释放");
+  assert.ok(
+    errors.some((line) => line.includes("守卫释放未生效")),
+    "释放 false 有 errorLog（守卫释放未生效）"
+  );
+  assert.ok(
+    !errors.some((line) => line.includes("释放任务失败")),
+    "与 catch 分支日志可区分"
+  );
+});
+
 test("回收：非法 AOS_RUNNER_STALE_CLAIM_MS → 回退 900000（非关闭）", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;
