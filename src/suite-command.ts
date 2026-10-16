@@ -60,6 +60,7 @@ import { isRunnerOnline, runnerTtlFrom } from "./runner/status.js";
 import { logWarn } from "./log.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
 import { baselineFor, platformOf, registerSuiteRun, resolveRunRefs } from "./tasks/run-registry.js";
+import { runBackfill } from "./tasks/backfill.js";
 import {
   compareRuns,
   crossPlatformDeltas,
@@ -386,6 +387,7 @@ Usage:
   aos-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
   aos-mcp suite schedule add|list|show|enable|disable|remove [options]
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
+  aos-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -409,6 +411,7 @@ reconcile: list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name
 runner: [--name <n>] [--poll-ms <n>] [--heartbeat-ms <n>] [--artifact-port <n>（0 关闭）] [--artifact-host <h>] [--once]
         （需要中心 PG；AOS_RUNNER_* 环境变量可配，AOS_RUNNER_DEVICES 显式覆盖设备清单）
 schedule: add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]；list/show/enable/disable/remove <id>
+backfill: [--dry-run] [--since <ISO>] [--project <dir>] [--json]
 
 exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误或 --fail-on 命中（基线回归/未处理 API 错误/流程未覆盖或无法校验）
 错误码注册表: .artemis/design/error-codes.json（未配置时 api-errors 跳过并如实标注 degraded）`);
@@ -2301,6 +2304,43 @@ async function suiteTaskShow(
   return 0;
 }
 
+/** 回填扫描（只读产物 → 幂等重建登记）：PG 守卫 + 下界 + 报告输出。 */
+async function suiteBackfill(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  if (runtime.store.kind !== "postgres") {
+    io.errorLog("backfill 需要中心 PG（当前为内存存储）；请配置 MOBILE_TESTING_DATABASE_URL");
+    return 2;
+  }
+  try {
+    const report = await runBackfill(runtime, {
+      dryRun: flags.bool("dry-run"),
+      since: flags.get("since") ?? undefined
+    });
+    if (flags.bool("json")) {
+      io.log(JSON.stringify(report, null, 2));
+      return 0;
+    }
+    io.log(
+      `回填: 扫描 runs ${report.scanned.runs} · caseSets ${report.scanned.caseSets} · ` +
+        `登记 runs ${report.registered.runs} · caseSets ${report.registered.caseSets} · ` +
+        `skipped ${report.skipped} · invalid ${report.invalid} · beforeSince ${report.beforeSince}`
+    );
+    if (report.dryRun) {
+      io.log(
+        `将登记: runs ${report.wouldRegister.runs} · caseSets ${report.wouldRegister.caseSets}（dry-run 未写库）`
+      );
+    }
+    for (const warning of report.warnings) io.log(`警告: ${warning}`);
+    return 0;
+  } catch (error) {
+    io.errorLog(`backfill 失败: ${errorMessage(error)}`);
+    return 1;
+  }
+}
+
 export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): Promise<number> {
   const log = deps.log ?? ((line: string) => console.log(line));
   const errorLog = deps.errorLog ?? ((line: string) => console.error(line));
@@ -2311,7 +2351,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "runner", "schedule"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "runner", "schedule", "backfill"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -2363,6 +2403,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "reconcile") return await suiteReconcile(built.runtime, flags, { log, errorLog });
     if (sub === "task") return await suiteTask(built.runtime, flags, { log, errorLog });
     if (sub === "schedule") return await suiteSchedule(built.runtime, flags, { log, errorLog });
+    if (sub === "backfill") return await suiteBackfill(built.runtime, flags, { log, errorLog });
     if (sub === "runner") {
       return await suiteRunnerCommand(
         built.runtime,
