@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
+import { loadLatestRunManifest } from "../dist/figma/run-manifest.js";
 import { runSuiteCommand } from "../dist/suite-command.js";
 import {
   baseConfig,
@@ -1434,4 +1436,21 @@ test("suite loop: run 步骤登记 suite_runs", async () => {
   assert.equal(runs.length, 1);
   assert.equal(runs[0].passed, 1);
   assert.equal(runs[0].status, "completed");
+});
+
+test("suite run: manifest 写侧 registration 可得即写（runner/testsPath；缺维度不写）", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const { code } = await runCli(runtime, ["run"]);
+  assert.equal(code, 0);
+  const latest = loadLatestRunManifest(runtime.configDirAbs);
+  assert.equal(latest.kind, "ok");
+  assert.equal(latest.manifest.schemaVersion, 1);
+  assert.deepEqual(latest.manifest.registration, {
+    platform: null,
+    runner: os.hostname(),
+    testsPath: path.join(runtime.configDirAbs, "design", "tests.json")
+  });
 });

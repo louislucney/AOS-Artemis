@@ -63,10 +63,24 @@ export interface RunManifestCase {
   evidence: SuiteCaseResult["evidence"];
 }
 
+/** 回归服务回填所需维度：保存时点可得即写，缺省字段不写。 */
+export interface RunManifestRegistration {
+  regressionTaskId?: string | null;
+  caseSetId?: string | null;
+  featureKey?: string | null;
+  featureName?: string | null;
+  platform?: string | null;
+  appVersion?: string | null;
+  runner?: string | null;
+  caseSetJsonPath?: string | null;
+  testsPath?: string | null;
+}
+
 export interface RunManifest {
   schemaVersion: typeof RUN_MANIFEST_VERSION;
   runId: string;
   source: "suite-run" | "suite-loop";
+  registration?: RunManifestRegistration;
   taxonomyVersion: typeof FAILURE_TAXONOMY_VERSION;
   startedAt: string;
   finishedAt: string;
@@ -115,6 +129,7 @@ export interface BuildRunManifestInput {
   testsSha256: string | null;
   testsGeneratedAt: string | null;
   options: RunManifestOptions;
+  registration?: RunManifestRegistration;
 }
 
 export function runManifestDir(configDirAbs: string): string {
@@ -205,6 +220,7 @@ export function buildRunManifest(input: BuildRunManifestInput): RunManifest {
     schemaVersion: RUN_MANIFEST_VERSION,
     runId: newRunId(input.startedAtMs),
     source: input.source,
+    ...(input.registration ? { registration: input.registration } : {}),
     taxonomyVersion: FAILURE_TAXONOMY_VERSION,
     startedAt: new Date(input.startedAtMs).toISOString(),
     finishedAt: new Date(input.finishedAtMs).toISOString(),

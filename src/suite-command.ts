@@ -36,7 +36,8 @@ import {
   runManifestMax,
   runManifestsEnabled,
   saveRunManifest,
-  testsFingerprint
+  testsFingerprint,
+  type RunManifestRegistration
 } from "./figma/run-manifest.js";
 import {
   buildSuiteLoopReport,
@@ -318,6 +319,7 @@ async function persistRunManifest(
     retry: number;
     options: SuiteRunOptions;
     quarantinedCaseIds?: Set<string>;
+    registration?: RunManifestRegistration;
   }
 ): Promise<string | null> {
   const env = io.env ?? process.env;
@@ -346,7 +348,8 @@ async function persistRunManifest(
         failOnUncovered: input.failOnUncovered,
         retry: input.retry,
         quarantinedCaseIds: [...(input.quarantinedCaseIds ?? [])].sort()
-      }
+      },
+      ...(input.registration ? { registration: input.registration } : {})
     });
     const manifestPath = saveRunManifest(runtime.configDirAbs, manifest);
     pruneRunManifests(runtime.configDirAbs, runManifestMax(env));
@@ -662,7 +665,16 @@ async function suiteRunTask(
                 deviceSerial: device,
                 caseIds
               },
-              quarantinedCaseIds: quarantine.ids
+              quarantinedCaseIds: quarantine.ids,
+              registration: {
+                regressionTaskId: task.id,
+                caseSetId: ref.caseSetId,
+                featureKey: ref.featureKey,
+                featureName: ref.featureName,
+                platform,
+                runner: io.runnerName ?? os.hostname(),
+                caseSetJsonPath: ref.jsonPath
+              }
             }),
         comparison
       });
@@ -860,7 +872,12 @@ async function suiteRun(
       failOnUncovered: flags.bool("fail-on-uncovered"),
       retry: retryCount,
       options: runOptions,
-      quarantinedCaseIds: quarantine.ids
+      quarantinedCaseIds: quarantine.ids,
+      registration: {
+        platform: runOptions.deviceSerial ? platformOf(runOptions.deviceSerial) : null,
+        runner: io.runnerName ?? os.hostname(),
+        testsPath: report.testsPath
+      }
     });
     await persistRunRegistration(runtime, report, io, flags, {
       runOptions,
@@ -1144,7 +1161,12 @@ async function suiteLoop(
         failOnUncovered: !flags.bool("allow-uncovered"),
         retry: retryCount,
         options: runOptions,
-        quarantinedCaseIds: quarantine.ids
+        quarantinedCaseIds: quarantine.ids,
+        registration: {
+          platform: runOptions.deviceSerial ? platformOf(runOptions.deviceSerial) : null,
+          runner: io.runnerName ?? os.hostname(),
+          testsPath: report.testsPath
+        }
       });
       await persistRunRegistration(runtime, report, io, flags, {
         runOptions,

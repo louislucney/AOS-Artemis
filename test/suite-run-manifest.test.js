@@ -238,6 +238,54 @@ test("buildRunManifest：未执行批次与全通过批次的口径", () => {
   assert.deepEqual(passing.failureDomains, {});
 });
 
+test("buildRunManifest：registration 可得即写；缺省不写空对象", () => {
+  const registration = {
+    regressionTaskId: "task-1",
+    caseSetId: "cs-1",
+    featureKey: "checkout",
+    featureName: "结算",
+    platform: "ios",
+    appVersion: null,
+    runner: "host-1",
+    caseSetJsonPath: "/x/design/case-sets/checkout.json",
+    testsPath: "/x/design/tests.json"
+  };
+  const withRegistration = makeManifest("2026-10-13T08:40:00.000Z", {}, { registration });
+  assert.deepEqual(withRegistration.registration, registration);
+  assert.equal(withRegistration.schemaVersion, 1);
+
+  const without = makeManifest("2026-10-13T08:41:00.000Z");
+  assert.equal("registration" in without, false);
+  assert.equal(without.schemaVersion, 1);
+});
+
+test("save/load roundtrip：含/不含 registration 均可读取；schemaVersion 判别不回归", () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const registration = {
+    regressionTaskId: null,
+    caseSetId: null,
+    featureKey: null,
+    featureName: null,
+    platform: "android",
+    appVersion: null,
+    runner: "host-2",
+    caseSetJsonPath: null,
+    testsPath: "/tmp/project/.artemis/design/tests.json"
+  };
+  const withFile = saveRunManifest(dir, makeManifest("2026-10-13T08:50:00.000Z", {}, { registration }));
+  const withoutFile = saveRunManifest(dir, makeManifest("2026-10-13T08:51:00.000Z"));
+
+  const readWith = loadRunManifest(dir, path.basename(withFile));
+  assert.equal(readWith.kind, "ok");
+  assert.equal(readWith.manifest.schemaVersion, 1);
+  assert.deepEqual(readWith.manifest.registration, registration);
+
+  const readWithout = loadRunManifest(dir, path.basename(withoutFile));
+  assert.equal(readWithout.kind, "ok");
+  assert.equal(readWithout.manifest.schemaVersion, 1);
+  assert.equal("registration" in readWithout.manifest, false);
+});
+
 test("save/list/load：原子落盘、倒序列表与 latest", () => {
   const dir = makeTempProject({ config: baseConfig() });
   saveRunManifest(dir, makeManifest("2026-10-13T08:00:00.000Z"));
