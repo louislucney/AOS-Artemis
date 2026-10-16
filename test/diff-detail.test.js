@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { proposeDetailRegions, scaleDetailNodes } from "../dist/diff/detail.js";
+import { extractDetailPair, mapRegionToDeviceRect, proposeDetailRegions, resolveDetailGeometry, scaleDetailNodes } from "../dist/diff/detail.js";
+import { createImage, fillRect } from "./helpers.js";
 
 function node(overrides) {
   return {
@@ -147,4 +148,82 @@ test("scaleDetailNodes: 几何 ×factor，其余字段保留，输入不改", ()
   const scaled = scaleDetailNodes([n], 3);
   assert.deepEqual(scaled[0], { ...original, x: 30, y: 60, width: 90, height: 120 });
   assert.deepEqual(n, original);
+});
+
+const NO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
+
+test("detail 几何: ratio=设备裁剪宽/设计宽，offset=insets 左上", () => {
+  const geometry = resolveDetailGeometry({ width: 390, height: 844 }, { width: 1170, height: 2532 }, { top: 100, right: 0, bottom: 0, left: 0 });
+  assert.equal(geometry.ratio, 3);
+  assert.deepEqual(geometry.offset, { x: 0, y: 100 });
+  const oneToOne = resolveDetailGeometry({ width: 390, height: 844 }, { width: 390, height: 844 }, NO_INSETS);
+  assert.equal(oneToOne.ratio, 1);
+  assert.deepEqual(oneToOne.offset, { x: 0, y: 0 });
+});
+
+test("detail 映射: 区域→设备矩形（含 insets）、越界钳制与不可见判定", () => {
+  const geometry = resolveDetailGeometry({ width: 390, height: 844 }, { width: 1170, height: 2532 }, { top: 100, right: 0, bottom: 0, left: 0 });
+  const device = { width: 1170, height: 2532 };
+  const mapped = mapRegionToDeviceRect({ x: 40, y: 80, width: 120, height: 60 }, geometry, device);
+  assert.deepEqual(mapped.bbox, { x: 120, y: 340, width: 360, height: 180 });
+  assert.equal(mapped.clipped, false);
+  assert.equal(mapped.visible, true);
+
+  const edge = mapRegionToDeviceRect({ x: 380, y: 800, width: 40, height: 30 }, geometry, device);
+  assert.equal(edge.clipped, true);
+  assert.equal(edge.visible, true);
+  assert.ok(edge.bbox.x + edge.bbox.width <= device.width && edge.bbox.y + edge.bbox.height <= device.height, JSON.stringify(edge.bbox));
+
+  const gone = mapRegionToDeviceRect({ x: 390, y: 800, width: 40, height: 30 }, geometry, device);
+  assert.equal(gone.visible, false);
+});
+
+test("detail 配对: 尺寸对齐、升/降采样标注、像素位置保真、越界返回 null", () => {
+  const design = createImage(100, 100);
+  const device = createImage(300, 300);
+  fillRect(device, 0, 0, 150, 300, [255, 0, 0, 255]);
+  fillRect(device, 150, 0, 150, 300, [0, 0, 255, 255]);
+  const geometry = resolveDetailGeometry({ width: 100, height: 100 }, { width: 300, height: 300 }, NO_INSETS);
+  const px = (img, x, y) => {
+    const position = (y * img.width + x) * 4;
+    return [img.data[position], img.data[position + 1], img.data[position + 2]];
+  };
+
+  const left = extractDetailPair({ design, device, region: { x: 0, y: 0, width: 50, height: 100 }, geometry });
+  assert.ok(left);
+  assert.equal(left.device.width, 150);
+  assert.equal(left.device.height, 300);
+  assert.equal(left.design.width, 150);
+  assert.equal(left.design.height, 300);
+  assert.equal(left.upscaled, true);
+  assert.equal(left.designDownscaled, false);
+  assert.equal(left.clipped, false);
+  assert.deepEqual(px(left.device, 10, 10), [255, 0, 0]);
+  assert.deepEqual(px(left.design, 10, 10), [255, 255, 255]);
+
+  const right = extractDetailPair({ design, device, region: { x: 50, y: 0, width: 50, height: 100 }, geometry });
+  assert.deepEqual(px(right.device, 10, 10), [0, 0, 255]);
+  assert.deepEqual(px(right.design, 10, 10), [255, 255, 255]);
+
+  const down = extractDetailPair({
+    design: createImage(600, 600),
+    device: createImage(300, 300),
+    region: { x: 0, y: 0, width: 600, height: 600 },
+    geometry: resolveDetailGeometry({ width: 600, height: 600 }, { width: 300, height: 300 }, NO_INSETS)
+  });
+  assert.equal(down.design.width, 300);
+  assert.equal(down.designDownscaled, true);
+  assert.equal(down.upscaled, false);
+
+  const near = extractDetailPair({
+    design: createImage(601, 100),
+    device: createImage(600, 100),
+    region: { x: 0, y: 0, width: 601, height: 100 },
+    geometry: resolveDetailGeometry({ width: 601, height: 100 }, { width: 600, height: 100 }, NO_INSETS)
+  });
+  assert.equal(near.design.width, 600);
+  assert.equal(near.upscaled, false);
+  assert.equal(near.designDownscaled, false);
+
+  assert.equal(extractDetailPair({ design, device, region: { x: 100, y: 0, width: 40, height: 100 }, geometry }), null);
 });

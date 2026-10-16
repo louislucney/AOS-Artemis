@@ -1,4 +1,4 @@
-import type { Bbox, DesignNode } from "./engine.js";
+import { resize, type Bbox, type DesignNode, type RgbaImage } from "./engine.js";
 
 export type DetailRegionSource = "node" | "diff" | "tile" | "manual";
 
@@ -204,4 +204,112 @@ export function scaleDetailNodes(nodes: DesignNode[], factor: number): DesignNod
     width: node.width * factor,
     height: node.height * factor
   }));
+}
+
+export interface DetailGeometry {
+  ratio: number;
+  offset: { x: number; y: number };
+}
+
+export function resolveDetailGeometry(
+  designSize: { width: number; height: number },
+  deviceSize: { width: number; height: number },
+  insets: { top: number; right: number; bottom: number; left: number }
+): DetailGeometry {
+  const croppedWidth = deviceSize.width - insets.left - insets.right;
+  return {
+    ratio: designSize.width > 0 ? croppedWidth / designSize.width : 1,
+    offset: { x: insets.left, y: insets.top }
+  };
+}
+
+export interface MappedDeviceRect {
+  bbox: Bbox;
+  clipped: boolean;
+  visible: boolean;
+}
+
+export function mapRegionToDeviceRect(
+  region: Bbox,
+  geometry: DetailGeometry,
+  deviceSize: { width: number; height: number },
+  minVisiblePx = 4
+): MappedDeviceRect {
+  const x0 = geometry.offset.x + region.x * geometry.ratio;
+  const y0 = geometry.offset.y + region.y * geometry.ratio;
+  const x1 = geometry.offset.x + (region.x + region.width) * geometry.ratio;
+  const y1 = geometry.offset.y + (region.y + region.height) * geometry.ratio;
+  const clampedX0 = Math.max(0, Math.floor(x0));
+  const clampedY0 = Math.max(0, Math.floor(y0));
+  const clampedX1 = Math.min(deviceSize.width, Math.ceil(x1));
+  const clampedY1 = Math.min(deviceSize.height, Math.ceil(y1));
+  const bbox: Bbox = {
+    x: clampedX0,
+    y: clampedY0,
+    width: Math.max(0, clampedX1 - clampedX0),
+    height: Math.max(0, clampedY1 - clampedY0)
+  };
+  const clipped =
+    clampedX0 !== Math.floor(x0) || clampedY0 !== Math.floor(y0) || clampedX1 !== Math.ceil(x1) || clampedY1 !== Math.ceil(y1);
+  return { bbox, clipped, visible: bbox.width >= minVisiblePx && bbox.height >= minVisiblePx };
+}
+
+export interface DetailPairExtraction {
+  design: RgbaImage;
+  device: RgbaImage;
+  upscaled: boolean;
+  designDownscaled: boolean;
+  clipped: boolean;
+}
+
+function clampBox(box: Bbox, width: number, height: number): Bbox | null {
+  const x0 = Math.max(0, Math.floor(box.x));
+  const y0 = Math.max(0, Math.floor(box.y));
+  const x1 = Math.min(width, Math.ceil(box.x + box.width));
+  const y1 = Math.min(height, Math.ceil(box.y + box.height));
+  if (x1 - x0 < 1 || y1 - y0 < 1) return null;
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+function cropImage(image: RgbaImage, box: Bbox): RgbaImage {
+  const out = { width: box.width, height: box.height, data: new Uint8Array(box.width * box.height * 4) };
+  for (let row = 0; row < box.height; row += 1) {
+    const source = ((box.y + row) * image.width + box.x) * 4;
+    out.data.set(image.data.subarray(source, source + box.width * 4), row * box.width * 4);
+  }
+  return out;
+}
+
+/** Crops both sides of one design region onto the device-native grid. Design
+ * pixels are upsampled when the render is below device scale (>2% area);
+ * a design crop above device scale (>2% area) is flagged as an anomaly. */
+export function extractDetailPair(input: {
+  design: RgbaImage;
+  device: RgbaImage;
+  region: Bbox;
+  geometry: DetailGeometry;
+  minVisiblePx?: number;
+}): DetailPairExtraction | null {
+  const designBox = clampBox(input.region, input.design.width, input.design.height);
+  if (!designBox) return null;
+  const mapped = mapRegionToDeviceRect(input.region, input.geometry, input.device, input.minVisiblePx ?? 4);
+  if (!mapped.visible) return null;
+  const deviceCrop = cropImage(input.device, mapped.bbox);
+  const designCrop = cropImage(input.design, designBox);
+  const designClamped =
+    designBox.x !== input.region.x ||
+    designBox.y !== input.region.y ||
+    designBox.width !== input.region.width ||
+    designBox.height !== input.region.height;
+  let design = designCrop;
+  let upscaled = false;
+  let designDownscaled = false;
+  if (designCrop.width !== deviceCrop.width || designCrop.height !== deviceCrop.height) {
+    const sourceArea = designCrop.width * designCrop.height;
+    const targetArea = deviceCrop.width * deviceCrop.height;
+    upscaled = sourceArea < targetArea * 0.98;
+    designDownscaled = sourceArea > targetArea * 1.02;
+    design = resize(designCrop, deviceCrop.width, deviceCrop.height);
+  }
+  return { design, device: deviceCrop, upscaled, designDownscaled, clipped: mapped.clipped || designClamped };
 }
