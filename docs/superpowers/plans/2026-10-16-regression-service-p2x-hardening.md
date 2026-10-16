@@ -13,7 +13,7 @@
 - 测试口径：pg-mem/内存 store、假 runner、不触网；测试跑 `dist/`；`npm run build` 后跑测试；单文件 `npm run test:file -- test/xxx.test.js`。
 - 相对导入一律带 `.js` 后缀；代码英文、用户文案中文；默认不加注释（仅保留解释非显然契约的 JSDoc）。
 - **默认配置零行为回归**：回收仅作用于「超龄＋失联」（健康流程零变化）；部分领取**默认关**（`runner-agent:163` 缺端不领用例为锁）；既有 runner-agent/suite-task/runner-artifact/db-runners 测试全绿。
-- 迁移口径：MIGRATIONS 维持 best-effort 包装；以**迁移专项测试**锁定「去重＋唯一索引＋upsert 单行」；新库 DDL 直接含唯一索引。
+- 迁移口径：MIGRATIONS 维持 best-effort 包装；以**迁移专项测试**锁定「去重＋唯一索引＋upsert 单行」；**唯一索引仅经 MIGRATIONS 建**（幂等覆盖新库/存量；DDL 不加表约束）。
 - 完工标准：`npm run build && npm test && npm run lint` 全绿；同步 DESIGN（新增 §13.116）＋ README（runner 段）＋ AGENTS.md（runner 行）。
 - **拍板（D1–D7 摘要）**：回收＝agent 主循环每轮（回收→触发→领取），双条件（`claimed_at<=claimedBefore` 且 runner 失联/悬空），置 pending、attempts 保留；`AOS_RUNNER_STALE_CLAIM_MS` 默认 900000、`"0"` 关闭（勿回退默认）；部分领取默认关、`AOS_RUNNER_PARTIAL_CLAIM=1` 开、仅「无在线全覆盖」时按交集领取、不缺端补跑、领取日志明示缺端；upsert＝INSERT→23505→UPDATE；TTL 复用既有 90s。
 
@@ -59,7 +59,7 @@
   - `upsert：同名二次调用单行（id 不变、字段更新）；跨项目同名两行；23505 回退（同名已存在时 upsert 仍单行）`。
   - `迁移专项：pg-mem 建旧表（无唯一索引，夹具沿用 test/db-runners.test.js:400 的 noAstCoverageCheck: true 形态）＋插入重复行 → init() 后重复仅剩 last_seen_at 最新、唯一索引存在、二次 upsert 单行`。
 - [ ] **Step 2: 跑测试确认失败**：`npm run test:file -- test/db-runners.test.js`。
-- [ ] **Step 3: 实现**（按「语义」；去重 SQL 以 pg-mem 可执行优先——若 pg-mem 不支持相关 EXISTS 写法，改用等价可执行写法并在报告说明）。
+- [ ] **Step 3: 实现**（按「语义」的**钉死去重写法**（自 JOIN——pg-mem 3.0.14 实测唯一可行；勿再尝试窗口函数/`DELETE…USING`/相关 EXISTS——均不可用））。
 - [ ] **Step 4: 跑测试确认通过** + `npm run build`。
 - [ ] **Step 5: 提交**：`git commit -m "feat(db): stale claim reclaim + atomic runner upsert (unique index)"`
 
