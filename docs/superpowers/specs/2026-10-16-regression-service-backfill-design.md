@@ -29,7 +29,7 @@
 - **幂等键＝`manifest_path`**：新增 store 只读查询 `listRegisteredManifestPaths(rootPath): Promise<string[]>`（`SELECT manifest_path WHERE NOT NULL`）；路径已登记 → skip。
 - 未登记 → 组装 `recordSuiteRun`：
   - 可得维度：`trigger = "cli"`（**与在线登记逐字一致**；manifest.source 的 run/loop 细分属清单自身语义，不写入登记列——Q2 修订）；状态/exitCode（`gate.exitCode`；`ok` 与 gate 一致）、计数（summary）、`failureDomains`、`cases`（caseId/name/status/traceId/failure/quarantined/retry.flaky→flaky 口径）、`manifestPath`、时间（startedAt/finishedAt）；`platform`＝`deviceSerial` 经 `platformOf` 分类（null 时兜底 `registration.platform`，再无 → `"unknown"`）。
-  - **依赖 manifest 扩展段**（2.4）：`caseSetId/featureKey/featureName/appVersion/runner/regressionTaskId`——有则填、无则 `null` **如实标注**（面板/统计按既有口径：feature 为 null 的运行不进份血统聚合）。
+  - **依赖 manifest 扩展段**（2.4）：`caseSetId/featureKey/featureName/runner/regressionTaskId`——有则填、无则 `null` **如实标注**（面板/统计按既有口径：feature 为 null 的运行不进份血统聚合）；`appVersion` **无写侧来源 → 恒 null（字段保留）**（复核 I1）。
 - `suite_run_cases.featureKey` 取扩展段 featureKey（无 → null）。
 - **口径声明（Q1）**：`suite run`/`suite loop` 默认路径在线登记本就 feature-null（refs 解析在登记后、且主 tests.json 不匹配）；manifest 扩展按「**保存时点可得即写**」——`run --task` 全维度、run/loop 写可得者（runner/deviceSerial/platform 等）。「`--tests <归档>` 场景在保存前解析 refs」列为 backlog（重排保存时序，收益仅极端降级场景，v1 不做）。
 
@@ -37,7 +37,7 @@
 
 - 扫描 `design/case-sets/*.json`（按 basename 排序）；**幂等键＝`features[].jsonPath`**（已登记集合＝`listCaseSets(rootPath)` 全量摊平 `jsonPath` 集合）；已登记 → skip。
 - 未登记 → 读归档 JSON（失败 → `invalid` 跳过）：`recordCaseSet`：
-  - `source`＝归档 `source`；`designName`＝归档同名可选字段（缺失 null）；`basename`＝**归档 stem**（`<stamp>_<功能>`；与在线登记（恒 `"tests"`）不同——basename 为展示项、非身份/聚合键，Q3 已核；口径注明）；`fingerprint`＝**该归档文件 sha256**（口径注明：与在线登记用的主 `tests.json` 指纹不同源——回填行以归档自身为准）。
+  - `source`＝归档 `source`；`designName`＝**恒 null（归档不含该字段；复核 M4）**；`basename`＝**归档 stem**（`<stamp>_<功能>`；与在线登记（恒 `"tests"`）不同——basename 为展示项、非身份/聚合键，Q3 已核；口径注明）；`fingerprint`＝**该归档文件 sha256（crypto 直算；复核 M5）**（口径注明：与在线登记用的主 `tests.json` 指纹不同源——回填行以归档自身为准）。
   - `features`＝单条（本归档仅含一个功能段）：`key/name` 从归档 `features[0]`（缺失 → invalid 跳过）、`caseCount`＝`flows.length`（兜底 counts.flows）、`screens`＝**`flows[].screens` 摊平去重**（Q4：与在线 `group.screens` 可能不同——展示项、非聚合键，口径注明）、三路径＝同名 `.json/.md/.xlsx`（存在性校验，缺 md/xlsx 仍登记并告警）。
   - `createdAt`＝basename 前缀 UTCstamp 解析（`YYYYMMDDTHHMMSS`→ISO；不可解析 → 文件 mtime）。
 - 一行/一归档（单 feature per row）——与在线登记「一次生成一行多 features」粒度不同，**语义等价可用**（`latestFeatureRefs`/对比键（份,功能）均以行内 feature 为准）；口径在 DESIGN 注明。

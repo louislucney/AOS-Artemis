@@ -44,10 +44,10 @@
   // RunManifest 增：registration?: RunManifestRegistration;（schemaVersion 不变）
   // buildRunManifest 增可选入参 registration（按实际签名放置于 options/deps）
   ```
-- 语义：保存调用点「保存时点可得即写」——`suite run --task` 传全量（refs/taskId/platform(deviceSerial 分类)/runner/appVersion）；`suite run`/`suite loop` 传可得者（runner 等；feature 维度保持缺省）。`loadRunManifest` 不变（可选字段天然宽容）。
+- 语义：保存调用点「保存时点可得即写」——`suite run --task` 传可得者（refs/taskId/device→platform 分类/runner）；`suite run`/`suite loop` 传可得者（runner/deviceSerial 等）；**feature 维度保持缺省**。**钉死（复核 I1/I4/M1）**：`buildRunManifest` 为单入参 `BuildRunManifestInput`——`registration?` 加在该接口；**`appVersion` 无可得来源 → 恒不写（字段保留、值 null）**；写侧 `runner` 取 `io.runnerName ?? os.hostname()`（与在线登记 `input.runner ?? os.hostname()` 对齐）。`loadRunManifest` 不变（可选字段天然宽容）。
 - [ ] **Step 1: 写失败测试**
-  - `build/save/load roundtrip：带 registration → manifest 含字段、load ok；不带 → 无字段、load ok（既有 schemaVersion 判别不回归）`。
-  - `suite run --task（或最小集成路径）：保存的 manifest 含 registration（refs/runner/platform）`。
+  - `buildRunManifest(registration) 单测：带 registration → manifest 含字段；不带 → 无字段`。
+  - `save/load roundtrip：含/不含 registration 均 load ok；既有 schemaVersion 判别不回归`（最小集成点即可，不必全链路 run --task——复核 M9；保存点唯一为 `persistRunManifest`）。
 - [ ] **Step 2: 跑测试确认失败**：`npm run test:file -- test/suite-run-manifest.test.js`。
 - [ ] **Step 3: 实现**。
 - [ ] **Step 4: 跑测试确认通过** + `test/suite-task.test.js` 不回归 + build。
@@ -80,20 +80,21 @@
   ```ts
   export interface BackfillReport {
     scanned: { runs: number; caseSets: number };
-    registered: { runs: number; caseSets: number };
+    registered: { runs: number; caseSets: number };     // 实际写库数（dry-run 恒 0）
+    wouldRegister: { runs: number; caseSets: number };  // 将登记数（dry-run 下有值；复核 I3）
     skipped: number; invalid: number; dryRun: boolean; warnings: string[];
   }
   export async function runBackfill(runtime: Runtime, options?: { dryRun?: boolean }): Promise<BackfillReport>;
   ```
 - 语义：
-  - **runs**：`runManifestFileNames`（或 readdir 倒序）→ `loadRunManifest`：ok → `manifest_path` 已在 `listRegisteredManifestPaths` 集合 → `skipped++`；否则 `recordSuiteRun`（字段按设计 §2.2：trigger="cli"、gate.exitCode→status/exitCode、summary 计数、failureDomains、cases（flaky 口径＝retry.flaky===true；quarantined；traceId/failure））、platform＝platformOf(deviceSerial) ?? registration.platform ?? "unknown"、扩展维度有则填；`registered.runs++`。`invalid`/`newer` → `invalid++`（warning 记文件）。**登记失败 → warning＋invalid++（best-effort 继续，不中断整体）**。
-  - **caseSets**：readdir `*.json` 排序 → parse（失败 invalid++）；`features[0]` 缺 → invalid++；jsonPath 已在（`listCaseSets(rootPath)` 全量摊平）集合 → skipped++；否则 `recordCaseSet`（§2.3：basename＝stem、fingerprint＝sha256、createdAt＝stamp 解析兜底 mtime、features 单条、caseCount＝flows.length ?? counts.flows、screens＝flows[].screens 摊平去重；md/xlsx 缺失 → warning 仍登记）。
+  - **runs**：`runManifestFileNames`（已倒序＝时间倒序）→ `loadRunManifest`：ok → `manifest_path`（**取 `read.file`**，与落盘/`artifactUrl` 口径同源；复核 M2）已在 `listRegisteredManifestPaths` 集合 → `skipped++`；否则 `recordSuiteRun`（字段按设计 §2.2：trigger="cli"、gate.exitCode→status/exitCode、summary 计数、failureDomains、cases（flaky 口径＝retry.flaky===true；quarantined；traceId/failure）；**`createdAt = manifest.finishedAt`（保历史时序，防回填行聚集在扫描时刻）**；**`platform＝deviceSerial ? platformOf(deviceSerial) : (registration.platform ?? "unknown")`**（复核 I2：platformOf 恒有返回，勿写 `??` 链））；扩展维度有则填（appVersion 恒 null）；`registered.runs++`。`invalid`/`newer`/**`missing`** → `invalid++`＋warning（复核 M6）。**登记失败 → warning＋invalid++（best-effort 继续，不中断整体）**。
+  - **caseSets**：readdir `*.json` **按 basename 升序**（钉死；复核 M7）→ parse（失败 invalid++）；**`!features[0] || !features[0].key || !features[0].name` → invalid++**（复核 M3）；jsonPath 已在（`listCaseSets(rootPath)` 全量摊平）集合 → skipped++；否则 `recordCaseSet`（§2.3：basename＝stem、**fingerprint＝`crypto.createHash("sha256")` 对该归档直算**（复核 M5；勿复用 `testsFingerprint`）、createdAt＝stamp 解析（**按首个 `_` 切分**；复核 M7）兜底 mtime、**designName 恒 null**（归档不含该字段；复核 M4）、features 单条、caseCount＝flows.length ?? counts.flows、screens＝flows[].screens 摊平去重；md/xlsx 缺失 → warning 仍登记）。
   - `dryRun` → 不写库（`registered` 计为 0，另以 `warnings`/文本列出「将登记 N 项」？**钉死**：dryRun 时 `registered` 填**将登记数**并置 `dryRun:true`，文本标注（不写库））。hmm——为可断言性：dryRun 下 `registered` 记录「将登记数」。
   - 命令：`suite backfill [--dry-run] [--json] [--project <dir>]`；文本输出计数行；`--json` 输出报告；exit 0（命令级异常 → 1；invalid>0 不改变退出码）。
 - [ ] **Step 1: 写失败测试**（`test/suite-backfill.test.js`；临时目录写真实产物夹具）
   - `runs 回填：2 份 manifest（1 含 registration、1 不含）＋1 份已登记（预写 manifest_path）＋1 份坏 JSON → registered.runs=2、skipped=1、invalid=1；登记行字段（trigger="cli"/gate/计数/平台分类/扩展维度/缺维度 null）；cases 行与 flaky 口径`。
   - `sets 回填：1 归档三件套（缺 xlsx → warning 仍登记）＋1 已登记（预置 jsonPath）＋1 坏 JSON → 计数与字段（stem/fingerprint=sha/stamp/caseCount/screens）`。
-  - `幂等：连跑第二次 → registered=0、skipped=全部`；`dry-run → 不写库（store 行数不变）且 registered=将登记数`。
+  - `幂等：连跑第二次 → registered=0、skipped=全部`；`dry-run → 不写库（store 行数不变）、registered=0 且 wouldRegister=将登记数`；**各夹具同时断言 `scanned.runs/caseSets` 总数**（复核 M8）。
   - `命令层：usage 列出 backfill；--json 形状；--project；exit 0`。
 - [ ] **Step 2: 跑测试确认失败**。
 - [ ] **Step 3: 实现**。
@@ -110,6 +111,18 @@
   - DESIGN §13.117：实施记录（命令/幂等键/两域扫描与字段口径/registration 扩展与兼容/只读产物/局限（既有任务 refs 不可复原、run/loop 默认 feature-null、「--tests 归档」backlog、无效产物计数）；D1–D9 口径收束）。
   - README：命令段补 `suite backfill`（用法、幂等、dry-run、局限一句）；AGENTS.md 命令表补。
 - [ ] **Step 3: 提交**：`git commit -m "docs: regression service backfill"`
+
+---
+
+## 独立复核修订记录（2026-10-16）
+
+计划评审（deepseek/deepseek-v4-pro#high，只读）结论「可执行，但需先修订 4 处 Important 口径」；已全部并入：
+
+- **I1**：`appVersion` 无写侧来源 → 恒 null（字段保留）；T1 语义与设计 §2.2 同步。
+- **I2**：platform 兜底表达式修正为 `deviceSerial ? platformOf(deviceSerial) : (registration.platform ?? "unknown")`（`platformOf` 恒有返回）。
+- **I3**：dry-run 语义拆字段——`registered`＝实际写库数（dry-run 恒 0）、新增 `wouldRegister`＝将登记数。
+- **I4**：写侧 `runner` 取 `io.runnerName ?? os.hostname()`（与在线对齐）。
+- **M1/M2/M3/M4/M5/M6/M7/M8/M9**：registration 落点为 `BuildRunManifestInput`；`manifestPath` 取 `read.file`；`features[0]` 三缺判定；`designName` 恒 null；sha256 用 crypto 直算；`missing` 计入 invalid；sets 排序与 stamp 切分钉死；测试补 `scanned` 断言；T1 集成断言减负（build/roundtrip 即可）。
 
 ---
 
