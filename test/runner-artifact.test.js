@@ -262,6 +262,78 @@ test("artifact server: 设 token → Bearer/Basic（用户名任意/空）/ ?t= 
   });
 });
 
+test("artifact server: 设 token → 目录索引经 ?t= 携带查询令牌（条目与父链接）", async () => {
+  await withTokenServer(async (base) => {
+    const index = await fetch(`${base}/artifact/design?t=${encodeURIComponent(TOKEN)}`);
+    assert.equal(index.status, 200);
+    const html = await index.text();
+    assert.match(
+      html,
+      new RegExp(`href="/artifact/design/note\\.json\\?t=${TOKEN}"`),
+      "文件条目携带 ?t="
+    );
+    assert.match(
+      html,
+      new RegExp(`href="/artifact/design/reports/\\?t=${TOKEN}"`),
+      "目录条目携带 ?t= 且保留尾斜杠"
+    );
+    assert.match(html, new RegExp(`href="/artifact/\\?t=${TOKEN}"`), "父目录链接携带 ?t=");
+  });
+});
+
+test("artifact server: 有效 Bearer ＋ 陈旧 ?t= → 索引链接不携带坏令牌（I2）", async () => {
+  await withTokenServer(async (base) => {
+    const index = await fetch(`${base}/artifact/design?t=stale`, {
+      headers: { authorization: `Bearer ${TOKEN}` }
+    });
+    assert.equal(index.status, 200);
+    const html = await index.text();
+    assert.doesNotMatch(html, /\?t=/, "Bearer 命中不改变 ?t= 判定：坏值不得进链接");
+    assert.match(html, /href="\/artifact\/design\/note\.json"/, "链接回到无查询形态");
+  });
+});
+
+test("artifact server: Basic 凭据（无 ?t=）→ 索引链接不携带 ?t=", async () => {
+  await withTokenServer(async (base) => {
+    const index = await fetch(`${base}/artifact/design`, {
+      headers: { authorization: `Basic ${Buffer.from(`user:${TOKEN}`).toString("base64")}` }
+    });
+    assert.equal(index.status, 200);
+    const html = await index.text();
+    assert.doesNotMatch(html, /\?t=/, "仅 Bearer/Basic 命中时链接不带 ?t=");
+    assert.match(html, /href="\/artifact\/design\/reports\/"/);
+  });
+});
+
+test("artifact server: 未启用 token → 目录索引逐字不含 ?t=（回归）", async () => {
+  await withServer(async (base) => {
+    const plain = await (await fetch(`${base}/artifact/design`)).text();
+    const withQuery = await (await fetch(`${base}/artifact/design?t=whatever`)).text();
+    assert.equal(withQuery, plain, "未启用 token 时索引逐字一致");
+    assert.doesNotMatch(plain, /\?t=/);
+    assert.match(plain, /href="\/artifact\/design\/note\.json"/);
+  });
+});
+
+test("artifact server: 含保留字符的 token → 索引链接 ?t= 百分号编码", async () => {
+  const reserved = "a+b/c";
+  const { projectDir } = makeProject();
+  const server = await startRunnerArtifactServer({
+    projectDir,
+    port: 0,
+    env: { AOS_RUNNER_ARTIFACT_TOKEN: reserved }
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const index = await fetch(`${base}/artifact/design?t=${encodeURIComponent(reserved)}`);
+    assert.equal(index.status, 200);
+    const html = await index.text();
+    assert.match(html, /href="\/artifact\/design\/note\.json\?t=a%2Bb%2Fc"/, "保留字符须百分号编码");
+  } finally {
+    await server.close();
+  }
+});
+
 test("artifact server: 设 token → /healthz 豁免（GET 与 HEAD）；闸门先于路由", async () => {
   await withTokenServer(async (base) => {
     const health = await fetch(`${base}/healthz`);

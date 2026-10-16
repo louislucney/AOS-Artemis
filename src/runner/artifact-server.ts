@@ -71,7 +71,8 @@ async function sendIndex(
   res: ServerResponse,
   head: boolean,
   rootReal: string,
-  targetReal: string
+  targetReal: string,
+  querySuffix: string
 ): Promise<void> {
   const entries = await fs.promises.readdir(targetReal, { withFileTypes: true });
   const sorted = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -83,11 +84,11 @@ async function sendIndex(
           path.relative(rootReal, path.dirname(targetReal)) === ""
             ? ""
             : `${encodeRel(path.relative(rootReal, path.dirname(targetReal)))}/`
-        }">← 上级</a></p>`;
+        }${querySuffix}">← 上级</a></p>`;
   const rows = sorted.slice(0, MAX_INDEX_ENTRIES).map((entry) => {
     const rel = relDir === "" ? entry.name : path.join(relDir, entry.name);
     const suffix = entry.isDirectory() ? "/" : "";
-    return `<li><a href="/artifact/${encodeRel(rel)}${suffix}">${escapeHtml(entry.name)}${suffix}</a></li>`;
+    return `<li><a href="/artifact/${encodeRel(rel)}${suffix}${querySuffix}">${escapeHtml(entry.name)}${suffix}</a></li>`;
   });
   const truncated =
     sorted.length > MAX_INDEX_ENTRIES
@@ -126,6 +127,18 @@ export async function startRunnerArtifactServer(
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
         const method = req.method ?? "GET";
         const head = method === "HEAD";
+        const queryToken = url.searchParams.get("t");
+        const querySuffix =
+          token !== "" &&
+          queryToken !== null &&
+          authorizeRequest({
+            authorization: undefined,
+            queryToken,
+            token,
+            allowQueryToken: true
+          })
+            ? `?t=${encodeURIComponent(queryToken)}`
+            : "";
         if (method !== "GET" && method !== "HEAD") {
           sendJson(res, 405, { error: "method not allowed (GET/HEAD)" });
           return;
@@ -189,7 +202,7 @@ export async function startRunnerArtifactServer(
         }
         const stat = await fs.promises.stat(targetReal);
         if (stat.isDirectory()) {
-          await sendIndex(res, head, rootReal, targetReal);
+          await sendIndex(res, head, rootReal, targetReal, querySuffix);
           return;
         }
         if (!stat.isFile()) {

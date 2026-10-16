@@ -229,6 +229,98 @@ test("panel web: 回归引用区块（复选框/端/基线/内联 JS/无 JS 提�
   assert.match(html.body, /需启用 JavaScript 提交/);
 });
 
+test("panel web: 内联 JS 按首个 | 切分（refs/items indexOf+slice 形状，无 split）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const set = await store.recordCaseSet({
+    rootPath: projectDir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 2,
+        screens: ["Home"],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: null,
+      featureName: null,
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 1,
+      passed: 0,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+
+  const projectHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.match(projectHtml.body, new RegExp(`value="${set.id}\\|f-1"`), "任务表单 value 仍为 caseSetId|featureKey");
+  assert.match(
+    projectHtml.body,
+    /map\(function\(el\)\{var idx=el\.value\.indexOf\('\|'\);return \{caseSetId:el\.value\.slice\(0,idx\),featureKey:el\.value\.slice\(idx\+1\)\};\}\)/,
+    "任务表单 refs 以首个 | 切分（indexOf+slice）"
+  );
+
+  const reviewHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=review`),
+    deps
+  );
+  assert.match(reviewHtml.body, /name="item" value="[^"]+\|case-1"/, "裁决表单 value 仍为 runId|caseId");
+  assert.match(
+    reviewHtml.body,
+    /map\(function\(el\)\{var idx=el\.value\.indexOf\('\|'\);return \{runId:el\.value\.slice\(0,idx\),caseId:el\.value\.slice\(idx\+1\)\};\}\)/,
+    "裁决表单 items 以首个 | 切分（indexOf+slice）"
+  );
+
+  assert.doesNotMatch(projectHtml.body, /\.value\.split\('\|'\)/, "任务表单不得残留 split('|')");
+  assert.doesNotMatch(reviewHtml.body, /\.value\.split\('\|'\)/, "裁决表单不得残留 split('|')");
+});
+
 test("panel web: 批次详情（证据缺失占位/失败域）与非法文件名", async () => {
   const { deps, projectDir } = await makeHarness();
   const manifest = makeBatch(projectDir, {
