@@ -25,6 +25,7 @@ import { FIGMA_NATIVE_TOOLS } from "./tools/native-tools/figma.js";
 import { JIRA_NATIVE_TOOLS } from "./tools/native-tools/jira.js";
 import { LLM_NATIVE_TOOLS } from "./tools/native-tools/llm.js";
 import { PEN_NATIVE_TOOLS } from "./tools/native-tools/pen.js";
+import { WORKFLOW_NATIVE_TOOLS } from "./tools/native-tools/workflow.js";
 
 const NATIVE_TOOLS: NativeToolDefinition[] = [
   ...LLM_NATIVE_TOOLS,
@@ -32,7 +33,8 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   ...JIRA_NATIVE_TOOLS,
   ...DESIGN_NATIVE_TOOLS,
   ...FIGMA_NATIVE_TOOLS,
-  ...PEN_NATIVE_TOOLS
+  ...PEN_NATIVE_TOOLS,
+  ...WORKFLOW_NATIVE_TOOLS
 ];
 
 function errorResult(message: string): CallToolResult {
