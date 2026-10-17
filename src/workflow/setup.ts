@@ -1,6 +1,7 @@
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
 import { makeChatFn, type ChatMessage } from "../llm/chat.js";
+import { log as logInfo } from "../log.js";
 import {
   penEnvFrom,
   penExec,
@@ -27,6 +28,7 @@ export interface SetupDeps {
   chat?: (messages: ChatMessage[], signal?: AbortSignal) => Promise<string>;
   penTimeoutMs?: number;
   llmTimeoutMs?: number;
+  log?: (line: string) => void;
 }
 
 const DEFAULT_PEN_TIMEOUT_MS = 10_000;
@@ -152,12 +154,21 @@ export async function checkLlm(runtime: Runtime, deps: SetupDeps = {}): Promise<
 
   const chat = deps.chat ?? makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model });
   const timeoutMs = deps.llmTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
+  const logLine = deps.log ?? logInfo;
+  const startedAtMs = Date.now();
   let reply: string;
   try {
     reply = await chat([{ role: "user", content: "ping" }], AbortSignal.timeout(timeoutMs));
   } catch (error) {
-    return llmPingNeed(entry.name, errorMessage(error));
+    const detail = errorMessage(error);
+    logLine(`LLM ping 失败 model=${entry.model} ms=${Date.now() - startedAtMs}：${detail}`);
+    return llmPingNeed(entry.name, detail);
   }
-  if (reply.trim() === "") return llmPingNeed(entry.name, "空响应");
+  const elapsedMs = Date.now() - startedAtMs;
+  if (reply.trim() === "") {
+    logLine(`LLM ping 失败 model=${entry.model} ms=${elapsedMs}：空响应`);
+    return llmPingNeed(entry.name, "空响应");
+  }
+  logLine(`LLM ping 通过 model=${entry.model} ms=${elapsedMs}`);
   return null;
 }

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { designToTest } from "../dist/workflow/design-to-test.js";
+import { designToTest, runnerInventoryEnv } from "../dist/workflow/design-to-test.js";
 
 const LLM_ENTRY = {
   name: "deepseek",
@@ -67,6 +67,15 @@ function caseStub(caseId, traceId) {
     apiErrorsDegraded: null,
     evidence: { notesDir: null, stderrLog: null, stdoutLog: null },
     reset: null
+  };
+}
+
+function failedCaseStub(caseId, traceId, overrides = {}) {
+  return {
+    ...caseStub(caseId, traceId),
+    status: "failed",
+    error: "known failure",
+    ...overrides
   };
 }
 
@@ -451,4 +460,227 @@ test("run 缺省时 nextAction 回显 device", async () => {
     tool: "design_to_test",
     args: { reuseExistingFlows: true, run: true, device: "emulator-5554" }
   });
+});
+
+test("run:true 走共享批次执行：写批次清单 + 登记 + quarantine 不计门禁", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-batch-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const designDir = path.join(dir, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "quarantine.json"),
+    JSON.stringify({
+      entries: [
+        {
+          caseId: "F-1",
+          owner: "alice",
+          signedAt: "2026-10-01T00:00:00.000Z",
+          expiresAt: "2099-01-01T00:00:00.000Z"
+        }
+      ]
+    })
+  );
+
+  const runtime = stubRuntime({ dir, dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const recorded = [];
+  runtime.store = {
+    recordSuiteRun: async (input) => {
+      recorded.push(input);
+      return { id: "run-db-1" };
+    }
+  };
+  const { deps, calls } = makeDeps();
+  deps.execute = async (runtime_, options) => {
+    calls.execute.push(options);
+    return {
+      ...reportStub(options),
+      passed: 1,
+      failed: 1,
+      cases: [caseStub("F-2", "trace-b"), failedCaseStub("F-1", "trace-a", { quarantined: true })]
+    };
+  };
+
+  const result = await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, run: true, device: "emulator-5554" },
+    deps
+  );
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.run.failed, 1);
+  assert.equal(payload.run.gate, "passed", "隔离失败不计门禁");
+  assert.equal(calls.execute[0].quarantinedCaseIds instanceof Set, true);
+  assert.equal(calls.execute[0].quarantinedCaseIds.has("F-1"), true);
+
+  const runsDir = path.join(designDir, "runs");
+  const files = fs.readdirSync(runsDir).filter((name) => name.endsWith(".json"));
+  assert.equal(files.length, 1);
+  const manifestPath = path.join(runsDir, files[0]);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+  assert.equal(manifest.source, "design_to_test");
+  assert.equal(manifest.summary.quarantinedFailed, 1);
+  assert.deepEqual(manifest.options.quarantinedCaseIds, ["F-1"]);
+  assert.equal(payload.artifacts.runManifest, manifestPath);
+
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].run.trigger, "design_to_test");
+  assert.equal(recorded[0].run.device, "emulator-5554");
+  assert.equal(recorded[0].cases[1].quarantined, true);
+});
+
+test("run:true 套件未执行（report.ok:false）→ failedStep:run（不再顶层 ok:true）", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps();
+  deps.execute = async (runtime_, options) => ({
+    ...reportStub(options),
+    ok: false,
+    total: 2,
+    executed: 0,
+    skipped: 2,
+    passed: 0,
+    failed: 0,
+    cases: [],
+    error: "Appium 不可达：ECONNREFUSED 127.0.0.1:4723"
+  });
+
+  const result = await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, run: true, device: "emulator-5554" },
+    deps
+  );
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.failedStep, "run");
+  assert.ok(payload.detail.includes("ECONNREFUSED"));
+  assert.ok(Array.isArray(payload.suggestions) && payload.suggestions.length > 0);
+  assert.equal(payload.run, undefined);
+});
+
+test("run:true execute 抛错 → failedStep:run（detail 透传）", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps();
+  deps.execute = async () => {
+    throw new Error("artemis 子进程不可用");
+  };
+
+  const result = await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, run: true, device: "emulator-5554" },
+    deps
+  );
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.failedStep, "run");
+  assert.ok(payload.detail.includes("artemis 子进程不可用"));
+  assert.ok(Array.isArray(payload.suggestions) && payload.suggestions.length > 0);
+});
+
+test("run:true 用例失败但已执行 → 顶层仍 ok:true（run.ok/gate 反映）", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps();
+  deps.execute = async (runtime_, options) => ({
+    ...reportStub(options),
+    passed: 1,
+    failed: 1,
+    cases: [caseStub("F-2", "trace-b"), failedCaseStub("F-1", "trace-a")]
+  });
+
+  const result = await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, run: true, device: "emulator-5554" },
+    deps
+  );
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.run.ok, true);
+  assert.equal(payload.run.gate, "failed");
+  assert.equal(payload.run.failed, 1);
+});
+
+test("run:true 设备盘点抛错 → needs-setup(device) 带失败注记", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps, calls } = makeDeps();
+  deps.listDevices = async () => {
+    calls.list += 1;
+    throw new Error("adb server 未启动");
+  };
+
+  const result = await designToTest(runtime, { figmaUrl: FIGMA_URL, run: true }, deps);
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.needs, "setup");
+  assert.equal(payload.checks[0].target, "device");
+  assert.ok((payload.checks[0].note ?? "").includes("adb server 未启动"));
+  assert.equal(calls.execute.length, 0);
+});
+
+test("run:true 执行前写服务日志（用例/来源/设备），且早于 execute", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps, calls } = makeDeps();
+  const events = [];
+  deps.log = (line) => events.push({ line, executes: calls.execute.length });
+
+  const result = await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, run: true, device: "emulator-5554" },
+    deps
+  );
+
+  assert.ok(!result.isError);
+  assert.equal(events.length >= 1, true);
+  assert.equal(events[0].executes, 0, "日志必须早于执行");
+  assert.ok(events[0].line.includes("2 条"), events[0].line);
+  assert.ok(events[0].line.includes("emulator-5554"), events[0].line);
+  assert.ok(
+    events[0].line.includes(path.join(runtime.configDirAbs, "design", "flows.json")),
+    events[0].line
+  );
+});
+
+test("设备盘点 env：合并 iosEnvironment、项目 .env 与 deviceHosts.adbHost", () => {
+  const runtime = {
+    project: {
+      config: { deviceHosts: { android: { adbHost: "10.0.0.5:5037" } } },
+      dotenvValues: { AOS_RUNNER_DEVICES: "emulator-5554" },
+      resolver: { getValue: () => ({ value: null, source: null }) }
+    },
+    iosEnvironment: () => ({
+      AOS_APPIUM_URL: "http://127.0.0.1:4723",
+      AOS_RUNNER_DEVICES: "emulator-5554"
+    })
+  };
+
+  const env = runnerInventoryEnv(runtime);
+  assert.equal(env.ADB_SERVER_SOCKET, "tcp:10.0.0.5:5037");
+  assert.equal(env.AOS_RUNNER_DEVICES, "emulator-5554");
+  assert.equal(env.AOS_APPIUM_URL, "http://127.0.0.1:4723");
+});
+
+test("设备盘点 env：ADB_SERVER_SOCKET 以运行时解析（env/.env）优先于 deviceHosts", () => {
+  const runtime = {
+    project: {
+      config: { deviceHosts: { android: { adbHost: "10.0.0.5:5037" } } },
+      dotenvValues: { ADB_SERVER_SOCKET: "127.0.0.1:5038" },
+      resolver: {
+        getValue: (key) =>
+          key === "ADB_SERVER_SOCKET"
+            ? { value: "127.0.0.1:5038", source: "dotenv" }
+            : { value: null, source: null }
+      }
+    },
+    iosEnvironment: () => ({})
+  };
+
+  const env = runnerInventoryEnv(runtime);
+  assert.equal(env.ADB_SERVER_SOCKET, "tcp:127.0.0.1:5038");
 });

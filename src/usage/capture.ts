@@ -14,6 +14,8 @@ export const USAGE_MAX_EVENTS_DEFAULT = 50_000;
 export const USAGE_DISABLED_NOTE =
   "使用统计采集已关闭（AOS_USAGE=0）；以下为已记录的历史数据。";
 
+const WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set(["design_to_test"]);
+
 const NATIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "analyze_structure",
   "aos_configure",
@@ -23,6 +25,7 @@ const NATIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "aos_usage",
   "compare_design_and_device",
   "design_device_diff",
+  "design_to_test",
   "export_image",
   "extract_design_system",
   "find_assets",
@@ -100,6 +103,7 @@ export function usageFamilyOf(tool: string): UsageEventFamily {
   if (tool.startsWith("figma_")) return "figma";
   if (tool.startsWith("pen_")) return "pen";
   if (tool.startsWith("jira_")) return "jira";
+  if (WORKFLOW_TOOL_NAMES.has(tool)) return "workflow";
   if (NATIVE_TOOL_NAMES.has(tool)) return "native";
   return "unknown";
 }
@@ -213,16 +217,53 @@ function dedupeSignals(signals: UsageSignal[]): UsageSignal[] {
   return out;
 }
 
+/** 结构化结果信号（D12）：预期缺失的目标、失败步骤、执行门禁——只取根字段，
+ * 不读取参数值。 */
+function outcomeSignalsOf(value: unknown): UsageSignal[] {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  const signals: UsageSignal[] = [];
+  const needs = record.needs;
+  if (needs === "info") {
+    signals.push({ code: "needs:info" });
+  } else if (needs === "setup") {
+    const checks = Array.isArray(record.checks) ? record.checks : [];
+    const targets = new Set<string>();
+    for (const entry of checks) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const target = (entry as Record<string, unknown>).target;
+      if (typeof target === "string" && target.trim() !== "") targets.add(target.trim());
+    }
+    if (targets.size === 0) signals.push({ code: "needs:setup" });
+    for (const target of targets) signals.push({ code: `needs:${target}` });
+  }
+  const failedStep = record.failedStep;
+  if (typeof failedStep === "string" && failedStep.trim() !== "") {
+    signals.push({ code: `failed-step:${failedStep.trim()}` });
+  }
+  const run = record.run;
+  if (run !== null && typeof run === "object" && !Array.isArray(run)) {
+    const gate = (run as Record<string, unknown>).gate;
+    if (typeof gate === "string" && gate.trim() !== "") {
+      signals.push({ code: "run.gate", field: gate.trim() });
+    }
+  }
+  return signals;
+}
+
 function signalsOf(result: CallToolResult): UsageSignal[] {
-  const warnings: UsageSignal[] = [];
+  const found: UsageSignal[] = [];
   const texts: string[] = [];
   for (const item of result.content ?? []) {
     if (item.type !== "text" || typeof item.text !== "string") continue;
     texts.push(item.text);
     const parsed = tryJson(item.text);
-    if (parsed !== null) collectWarningSignals(parsed, warnings, 0, { left: 200 });
+    if (parsed !== null) {
+      collectWarningSignals(parsed, found, 0, { left: 200 });
+      found.push(...outcomeSignalsOf(parsed));
+    }
   }
-  const signals = dedupeSignals(warnings);
+  const signals = dedupeSignals(found);
   const codes = new Set(signals.map((signal) => signal.code));
   const joined = texts.join("\n");
   for (const [marker, code] of TEXT_MARKERS) {

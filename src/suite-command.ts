@@ -19,7 +19,6 @@ import type { VerdictExits } from "./tasks/verdict-exits.js";
 import { designDir, readTestsDocument } from "./figma/design-store.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
-import { loadQuarantine } from "./figma/quarantine.js";
 import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
 import { coverageGateIssue } from "./figma/gate.js";
 import { preflightGeneratedTests } from "./figma/preflight.js";
@@ -32,14 +31,12 @@ import {
 } from "./figma/reconciliation.js";
 import { buildRunReport, buildTaskRunReport } from "./figma/run-report.js";
 import {
-  buildRunManifest,
-  pruneRunManifests,
-  runManifestMax,
-  runManifestsEnabled,
-  saveRunManifest,
-  testsFingerprint,
-  type RunManifestRegistration
-} from "./figma/run-manifest.js";
+  executeSuiteBatch,
+  loadSuiteQuarantine,
+  outcomeCasesOf,
+  persistSuiteRunManifest,
+  suiteRegistrationLine
+} from "./figma/suite-batch.js";
 import {
   buildSuiteLoopReport,
   loopPercent,
@@ -49,7 +46,6 @@ import {
 import type { TaskStatRecord } from "./db/types.js";
 import {
   runGeneratedTests,
-  type SuiteCaseResult,
   type SuiteRunOptions,
   type SuiteRunReport
 } from "./figma/suite-runner.js";
@@ -60,14 +56,9 @@ import type { RunnerInventory } from "./runner/inventory.js";
 import { isRunnerOnline, runnerTtlFrom } from "./runner/status.js";
 import { logWarn } from "./log.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
-import { baselineFor, platformOf, registerSuiteRun, resolveRunRefs } from "./tasks/run-registry.js";
+import { baselineFor, platformOf, registerSuiteRun } from "./tasks/run-registry.js";
 import { runBackfill } from "./tasks/backfill.js";
-import {
-  compareRuns,
-  crossPlatformDeltas,
-  type CompareCaseInput,
-  type RunComparison
-} from "./tasks/run-compare.js";
+import { compareRuns, crossPlatformDeltas, type CompareCaseInput } from "./tasks/run-compare.js";
 
 type LogcatCollector = (request: {
   serial: string | null;
@@ -179,27 +170,6 @@ function retryCountOf(flags: ParsedFlags): number {
   return Math.min(Math.max(intOrNull(flags.get("retry")) ?? 0, 0), 3);
 }
 
-/** 读取 `.artemis/design/quarantine.json`：生效项不计门禁，过期/无效项如实提示。 */
-function quarantineFor(
-  runtime: Runtime,
-  flags: ParsedFlags
-): { ids: Set<string> | undefined; messages: string[] } {
-  if (flags.bool("no-quarantine")) return { ids: undefined, messages: [] };
-  const load = loadQuarantine(runtime.configDirAbs);
-  if (!load.exists) return { ids: undefined, messages: [] };
-  const messages: string[] = [];
-  if (load.active.size > 0) {
-    messages.push(`quarantine: ${load.active.size} 条生效（失败不计门禁）`);
-  }
-  for (const entry of load.stale) {
-    messages.push(`quarantine 已过期、恢复门禁: ${entry.caseId}（owner=${entry.owner}）`);
-  }
-  for (const message of load.invalid) {
-    messages.push(`quarantine 无效忽略: ${message}`);
-  }
-  return { ids: load.active.size > 0 ? new Set(load.active.keys()) : undefined, messages };
-}
-
 function suiteRunOptions(
   flags: ParsedFlags,
   logcatCollector?: LogcatCollector,
@@ -220,94 +190,12 @@ function suiteRunOptions(
   };
 }
 
-/** `--retry` 诊断（D3 口径）：只补写 retry 注记，不改首跑计数与退出码。 */
-async function applyRetryDiagnostics(
-  runtime: Runtime,
-  report: SuiteRunReport,
-  retryCount: number,
-  runOptions: ReturnType<typeof suiteRunOptions>
-): Promise<void> {
-  for (const entry of report.cases) {
-    if (entry.status === "passed" || entry.quarantined === true) continue;
-    let attempts = 0;
-    let finalStatus: SuiteCaseResult["status"] = entry.status;
-    let finalTraceId = entry.traceId;
-    while (attempts < retryCount && finalStatus !== "passed") {
-      const retried = await runGeneratedTests(runtime, { ...runOptions, caseIds: [entry.caseId] });
-      attempts += 1;
-      const first = retried.cases[0];
-      if (!first) break;
-      finalStatus = first.status;
-      finalTraceId = first.traceId;
-    }
-    if (attempts > 0) {
-      entry.retry = { attempts, finalStatus, finalTraceId, flaky: finalStatus === "passed" };
-    }
-  }
-}
-
 type SuiteIo = {
   log: (line: string) => void;
   errorLog: (line: string) => void;
   env?: NodeJS.ProcessEnv;
   runnerName?: string | null;
 };
-
-/** 批次清单一等实体（DESIGN §13.95）：best-effort，写失败仅 WARN、不影响退出码。 */
-async function persistRunManifest(
-  runtime: Runtime,
-  report: SuiteRunReport,
-  io: SuiteIo,
-  input: {
-    source: "suite-run" | "suite-loop";
-    startedAtMs: number;
-    exitCode: number;
-    coverageIssue: string | null;
-    strict: boolean;
-    failOnUncovered: boolean;
-    retry: number;
-    options: SuiteRunOptions;
-    quarantinedCaseIds?: Set<string>;
-    registration?: RunManifestRegistration;
-  }
-): Promise<string | null> {
-  const env = io.env ?? process.env;
-  if (!runManifestsEnabled(env)) return null;
-  try {
-    const fingerprint = testsFingerprint(report.testsPath);
-    const manifest = buildRunManifest({
-      report,
-      source: input.source,
-      startedAtMs: input.startedAtMs,
-      finishedAtMs: Date.now(),
-      exitCode: input.exitCode,
-      coverageIssue: input.coverageIssue,
-      testsPath: report.testsPath,
-      testsSha256: fingerprint.sha256,
-      testsGeneratedAt: fingerprint.generatedAt,
-      options: {
-        deviceSerial: input.options.deviceSerial ?? null,
-        lockedAppPackage: input.options.lockedAppPackage ?? null,
-        model: input.options.model ?? null,
-        maxCases: input.options.maxCases ?? null,
-        stopOnFailure: input.options.stopOnFailure === true,
-        apiErrors: input.options.apiErrors !== false,
-        failOnApiErrors: input.options.failOnApiErrors === true,
-        strict: input.strict,
-        failOnUncovered: input.failOnUncovered,
-        retry: input.retry,
-        quarantinedCaseIds: [...(input.quarantinedCaseIds ?? [])].sort()
-      },
-      ...(input.registration ? { registration: input.registration } : {})
-    });
-    const manifestPath = saveRunManifest(runtime.configDirAbs, manifest);
-    pruneRunManifests(runtime.configDirAbs, runManifestMax(env));
-    return manifestPath;
-  } catch (error) {
-    logWarn(`批次清单写入失败: ${errorMessage(error)}`);
-    return null;
-  }
-}
 
 export function printSuiteUsage(log: (line: string) => void): void {
   log(`aos-mcp suite — 测试闭环（生成用例的确定性执行与取证）
@@ -363,89 +251,6 @@ backfill: [--dry-run] [--since <ISO>] [--project <dir>] [--json]
 
 exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误或 --fail-on 命中（基线回归/未处理 API 错误/流程未覆盖或无法校验）
 错误码注册表: .artemis/design/error-codes.json（未配置时 api-errors 跳过并如实标注 degraded）`);
-}
-
-function outcomeCasesOf(report: SuiteRunReport): CompareCaseInput[] {
-  return report.cases.map((entry) => ({
-    caseId: entry.caseId,
-    name: entry.name,
-    outcome: entry.status === "passed" ? "passed" : "failed"
-  }));
-}
-
-async function registerRunBestEffort(
-  runtime: Runtime,
-  report: SuiteRunReport,
-  input: {
-    runOptions: SuiteRunOptions;
-    exitCode: number;
-    startedAtMs: number;
-    regressionTaskId?: string | null;
-    refs?: { caseSetId: string; featureKey: string; featureName: string } | null;
-    runnerName?: string | null;
-    manifestPath?: string | null;
-  }
-): Promise<{ runId: string; comparison: RunComparison | null } | null> {
-  const refs =
-    input.refs !== undefined ? input.refs : await resolveRunRefs(runtime, report.testsPath);
-  const platform = platformOf(input.runOptions.deviceSerial ?? null);
-  const comparison = refs
-    ? compareRuns(
-        await baselineFor(runtime, {
-          caseSetId: refs.caseSetId,
-          featureKey: refs.featureKey,
-          platform
-        }),
-        outcomeCasesOf(report)
-      )
-    : null;
-  const runId = await registerSuiteRun(runtime, {
-    report,
-    trigger: "cli",
-    regressionTaskId: input.regressionTaskId ?? null,
-    caseSetId: refs?.caseSetId ?? null,
-    featureKey: refs?.featureKey ?? null,
-    featureName: refs?.featureName ?? null,
-    platform,
-    device: input.runOptions.deviceSerial ?? null,
-    runner: input.runnerName ?? null,
-    exitCode: input.exitCode,
-    startedAtMs: input.startedAtMs,
-    finishedAtMs: Date.now(),
-    manifestPath: input.manifestPath ?? null,
-    comparison
-  });
-  return runId ? { runId, comparison } : null;
-}
-
-/** 登记摘要行（json 模式由调用方跳过，避免污染 JSON 输出）。 */
-function registrationLine(registration: {
-  runId: string;
-  comparison: RunComparison | null;
-}): string {
-  const comparison = registration.comparison;
-  return (
-    `登记: run ${registration.runId}` +
-    (comparison
-      ? ` · 对比 修复${comparison.fixed}/回归${comparison.regressed}` +
-        (comparison.baseline === "established" ? "（基准建立）" : "")
-      : "")
-  );
-}
-
-async function persistRunRegistration(
-  runtime: Runtime,
-  report: SuiteRunReport,
-  io: SuiteIo,
-  flags: ParsedFlags,
-  input: { runOptions: SuiteRunOptions; exitCode: number; startedAtMs: number; manifestPath?: string | null }
-): Promise<void> {
-  const registration = await registerRunBestEffort(runtime, report, {
-    ...input,
-    runnerName: io.runnerName ?? null
-  });
-  if (flags.bool("json")) return;
-  io.log(registration ? registrationLine(registration) : "登记降级: suite run 未入库（见日志）");
 }
 
 async function suiteRunTask(
@@ -509,7 +314,7 @@ async function suiteRunTask(
   }
 
   const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
-  const quarantine = quarantineFor(runtime, flags);
+  const quarantine = loadSuiteQuarantine(runtime, flags.bool("no-quarantine"));
   baseOptions.quarantinedCaseIds = quarantine.ids;
 
   try {
@@ -602,7 +407,7 @@ async function suiteRunTask(
         finishedAtMs: Date.now(),
         manifestPath: flags.bool("no-save")
           ? null
-          : await persistRunManifest(runtime, report, io, {
+          : await persistSuiteRunManifest(runtime, report, io, {
               source: "suite-run",
               startedAtMs,
               exitCode,
@@ -719,17 +524,30 @@ async function suiteRun(
     return await suiteRunTask(runtime, flags, io, taskId, logcatCollector, iosLogCollector);
   }
   const runOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
-  const quarantine = quarantineFor(runtime, flags);
-  runOptions.quarantinedCaseIds = quarantine.ids;
-  const startedAtMs = Date.now();
-  const report = await runGeneratedTests(runtime, runOptions);
   const retryCount = retryCountOf(flags);
-  if (retryCount > 0 && !runOptions.stopOnFailure) {
-    await applyRetryDiagnostics(runtime, report, retryCount, runOptions);
-  }
-  const coverageIssue = flags.bool("fail-on-uncovered")
-    ? coverageGateIssue(report.preflight, { strict: flags.bool("strict") })
-    : null;
+  const batch = await executeSuiteBatch(
+    runtime,
+    {
+      options: runOptions,
+      source: "suite-run",
+      quarantine: flags.bool("no-quarantine") ? "skip" : "load",
+      retry: retryCount,
+      resolveCoverageIssue: (report) =>
+        flags.bool("fail-on-uncovered")
+          ? coverageGateIssue(report.preflight, { strict: flags.bool("strict") })
+          : null,
+      strict: flags.bool("strict"),
+      failOnUncovered: flags.bool("fail-on-uncovered"),
+      registration: {
+        platform: runOptions.deviceSerial ? platformOf(runOptions.deviceSerial) : null
+      },
+      persist: !flags.bool("no-save"),
+      logRegistration: false
+    },
+    io
+  );
+  const report = batch.report;
+  const coverageIssue = batch.coverageIssue;
   if (flags.bool("json")) {
     io.log(JSON.stringify(report, null, 2));
   } else {
@@ -737,7 +555,7 @@ async function suiteRun(
     if (flags.bool("strict") && !flags.bool("fail-on-uncovered")) {
       io.log("注意: --strict 需与 --fail-on-uncovered 同时使用才参与门禁");
     }
-    for (const message of quarantine.messages) {
+    for (const message of batch.quarantineMessages) {
       io.log(message);
     }
     if (report.preflight) {
@@ -807,37 +625,15 @@ async function suiteRun(
     }
     if (!report.ok) io.errorLog(`套件未执行: ${report.error ?? "无可提交用例"}`);
     if (coverageIssue) io.errorLog(coverageIssue);
+    if (!flags.bool("no-save")) {
+      io.log(
+        batch.runId !== null
+          ? suiteRegistrationLine({ runId: batch.runId, comparison: batch.comparison })
+          : "登记降级: suite run 未入库（见日志）"
+      );
+    }
   }
-  const quarantinedFailures = report.cases.filter(
-    (entry) => entry.quarantined === true && entry.status !== "passed"
-  ).length;
-  const exitCode =
-    !report.ok ? 2 : coverageIssue ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
-  if (!flags.bool("no-save")) {
-    const manifestPath = await persistRunManifest(runtime, report, io, {
-      source: "suite-run",
-      startedAtMs,
-      exitCode,
-      coverageIssue,
-      strict: flags.bool("strict"),
-      failOnUncovered: flags.bool("fail-on-uncovered"),
-      retry: retryCount,
-      options: runOptions,
-      quarantinedCaseIds: quarantine.ids,
-      registration: {
-        platform: runOptions.deviceSerial ? platformOf(runOptions.deviceSerial) : null,
-        runner: io.runnerName ?? os.hostname(),
-        testsPath: report.testsPath
-      }
-    });
-    await persistRunRegistration(runtime, report, io, flags, {
-      runOptions,
-      exitCode,
-      startedAtMs,
-      manifestPath
-    });
-  }
-  return exitCode;
+  return batch.exitCode;
 }
 
 /** Pure static coverage check: no device, no case submission (CI pre-merge). */
@@ -1086,46 +882,29 @@ async function suiteLoop(
   }
 
   const runOptions = suiteRunOptions(flags, deps.logcatCollector, deps.iosLogCollector);
-  const quarantine = quarantineFor(runtime, flags);
-  runOptions.quarantinedCaseIds = quarantine.ids;
+  let quarantineMessages: string[] = [];
   let report: SuiteRunReport | null = null;
   if (!flags.bool("skip-run")) {
-    const startedAtMs = Date.now();
-    report = await runGeneratedTests(runtime, runOptions);
-    const retryCount = retryCountOf(flags);
-    if (retryCount > 0 && !runOptions.stopOnFailure) {
-      await applyRetryDiagnostics(runtime, report, retryCount, runOptions);
-    }
-    const quarantinedFailures = report.cases.filter(
-      (entry) => entry.quarantined === true && entry.status !== "passed"
-    ).length;
-    const coverageIssue = check && check.issue !== null ? check.issue : null;
-    const exitCode =
-      !report.ok ? 2 : coverageIssue ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
-    if (!flags.bool("no-save")) {
-      const manifestPath = await persistRunManifest(runtime, report, io, {
+    const batch = await executeSuiteBatch(
+      runtime,
+      {
+        options: runOptions,
         source: "suite-loop",
-        startedAtMs,
-        exitCode,
-        coverageIssue,
+        quarantine: flags.bool("no-quarantine") ? "skip" : "load",
+        retry: retryCountOf(flags),
+        resolveCoverageIssue: () => (check && check.issue !== null ? check.issue : null),
         strict: flags.bool("strict"),
         failOnUncovered: !flags.bool("allow-uncovered"),
-        retry: retryCount,
-        options: runOptions,
-        quarantinedCaseIds: quarantine.ids,
         registration: {
-          platform: runOptions.deviceSerial ? platformOf(runOptions.deviceSerial) : null,
-          runner: io.runnerName ?? os.hostname(),
-          testsPath: report.testsPath
-        }
-      });
-      await persistRunRegistration(runtime, report, io, flags, {
-        runOptions,
-        exitCode,
-        startedAtMs,
-        manifestPath
-      });
-    }
+          platform: runOptions.deviceSerial ? platformOf(runOptions.deviceSerial) : null
+        },
+        persist: !flags.bool("no-save"),
+        logRegistration: !flags.bool("json")
+      },
+      io
+    );
+    report = batch.report;
+    quarantineMessages = batch.quarantineMessages;
   }
 
   const feedback = await buildGenerationFeedback(runtime, {
@@ -1171,7 +950,7 @@ async function suiteLoop(
   } else {
     const step = loopReport.steps;
     io.log(`测试闭环: ${testsPath}`);
-    for (const message of quarantine.messages) {
+    for (const message of quarantineMessages) {
       io.log(message);
     }
     io.log(

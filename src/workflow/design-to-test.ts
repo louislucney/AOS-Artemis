@@ -7,15 +7,15 @@ import { loadDesignFlowGraph } from "../figma/design-store.js";
 import { figmaExtractFlows } from "../figma/flows.js";
 import { coverageGateIssue } from "../figma/gate.js";
 import { preflightGeneratedTests } from "../figma/preflight.js";
-import {
-  runGeneratedTests,
-  type SuiteRunOptions,
-  type SuiteRunReport
-} from "../figma/suite-runner.js";
+import { executeSuiteBatch, type SuiteBatchResult } from "../figma/suite-batch.js";
+import type { SuiteRunOptions, SuiteRunReport } from "../figma/suite-runner.js";
 import { figmaGenerateTests } from "../figma/test-gen.js";
+import { resolveAndroidAdbSocket } from "../device/device-hosts.js";
+import { log as logInfo } from "../log.js";
 import { penExtractFlows } from "../pen/flows.js";
 import { collectRunnerInventory } from "../runner/inventory.js";
 import type { Runtime } from "../runtime.js";
+import { platformOf } from "../tasks/run-registry.js";
 import { errorMessage } from "../util.js";
 import { checkFigma, checkLlm, checkPen, type SetupDeps, type SetupNeed } from "./setup.js";
 
@@ -34,15 +34,20 @@ export interface DesignToTestDeps {
   extractPen?: typeof penExtractFlows;
   generate?: typeof figmaGenerateTests;
   gate?: typeof coverageGateIssue;
-  listDevices?: () => Promise<Array<{ serial: string; platform?: string }>>;
+  listDevices?: (runtime: Runtime) => Promise<Array<{ serial: string; platform?: string }>>;
   execute?: (runtime: Runtime, options: SuiteRunOptions) => Promise<SuiteRunReport>;
   setup?: SetupDeps;
+  log?: (line: string) => void;
 }
 
 const REUSE_NO_FLOWS_QUESTION = "还没有设计流程——给 Figma 链接或 .pen 路径，或先跑一次设计提取";
 const CHECK_SUGGESTION = "按提示用 figma_generate_tests 修正后重跑";
 const RUN_FAILURE_SUGGESTION =
   "用例与证据已落盘（.artemis/design/runs/、.artemis/traces/），按提示处理后重跑安全";
+const RUN_NOT_EXECUTED_SUGGESTIONS = [
+  "确认设备在线且可驱动：node dist/cli.js doctor（Android 查 adb 授权；iOS 查 Appium/WDA 状态）",
+  RUN_FAILURE_SUGGESTION
+];
 
 const FIGMA_EXTRACT_SUGGESTIONS = [
   "确认 Figma 链接可访问且 token 有权限（aos_configure(figmaToken=…) 或项目 .env 的 FIGMA_ACCESS_TOKEN）",
@@ -113,9 +118,20 @@ function deviceNeed(note: string | null): SetupNeed {
   };
 }
 
-async function defaultListDevices(): Promise<Array<{ serial: string; platform?: string }>> {
-  const inventory = await collectRunnerInventory();
+async function defaultListDevices(
+  runtime: Runtime
+): Promise<Array<{ serial: string; platform?: string }>> {
+  const inventory = await collectRunnerInventory({ env: runnerInventoryEnv(runtime) });
   return inventory.devices.map((device) => ({ serial: device.serial, platform: device.platform }));
+}
+
+/** 设备盘点的运行时环境：iOS 分层配置（config/.env/进程 env）＋ ADB_SERVER_SOCKET
+ * 按既有优先级解析（含 `deviceHosts.android.adbHost`，ADR-0011 集中部署）。 */
+export function runnerInventoryEnv(runtime: Runtime): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...runtime.iosEnvironment() };
+  const android = resolveAndroidAdbSocket(runtime.project.config, runtime.project.resolver);
+  if (android !== null) env.ADB_SERVER_SOCKET = android.socket;
+  return env;
 }
 
 /** CR 一条龙编排：前置检查 → 设计提取 → 用例生成 → 静态校验 →（可选）执行。
@@ -285,7 +301,9 @@ export async function designToTest(
     generatedSource ??
     (figmaUrl !== null ? `figma:${figmaUrl}` : penPath !== null ? `pen:${penPath}` : flowsPath);
 
+  const logLine = deps.log ?? logInfo;
   let runSummary: Record<string, unknown> | null = null;
+  let runManifestPath: string | null = null;
   if (args.run === true) {
     const listDevices = deps.listDevices ?? defaultListDevices;
     let device = deviceArg;
@@ -293,7 +311,7 @@ export async function designToTest(
       let devices: Array<{ serial: string; platform?: string }> = [];
       let listError: string | null = null;
       try {
-        devices = await listDevices();
+        devices = await listDevices(runtime);
       } catch (error) {
         listError = errorMessage(error);
       }
@@ -317,18 +335,29 @@ export async function designToTest(
 
     const cases = generatedCases ?? preflight?.cases ?? 0;
     steps.push({ step: "run", cases, source, device });
+    logLine(
+      `design_to_test: 即将执行 ${cases} 条用例 · 来源 ${source} · 设备 ${device}`
+    );
 
-    const execute = deps.execute ?? runGeneratedTests;
-    const options: SuiteRunOptions = {
-      testsPath,
-      deviceSerial: device,
-      apiErrors: true,
-      failOnApiErrors: false,
-      stopOnFailure: false
-    };
-    let report: SuiteRunReport;
+    let batch: SuiteBatchResult;
     try {
-      report = await execute(runtime, options);
+      batch = await executeSuiteBatch(
+        runtime,
+        {
+          options: {
+            testsPath,
+            deviceSerial: device,
+            apiErrors: true,
+            failOnApiErrors: false,
+            stopOnFailure: false
+          },
+          source: "design_to_test",
+          trigger: "design_to_test",
+          registration: { platform: platformOf(device) },
+          ...(deps.execute !== undefined ? { execute: deps.execute } : {})
+        },
+        { log: logLine }
+      );
     } catch (error) {
       return jsonResult({
         ok: false,
@@ -337,6 +366,20 @@ export async function designToTest(
         suggestions: [RUN_FAILURE_SUGGESTION]
       });
     }
+    const report = batch.report;
+    runManifestPath = batch.manifestPath;
+    if (!report.ok) {
+      return jsonResult({
+        ok: false,
+        failedStep: "run",
+        detail: report.error ?? "套件未执行（无可提交用例）",
+        suggestions: RUN_NOT_EXECUTED_SUGGESTIONS,
+        ...(runManifestPath !== null ? { artifacts: { runManifest: runManifestPath } } : {})
+      });
+    }
+    const quarantinedFailures = report.cases.filter(
+      (entry) => entry.quarantined === true && entry.status !== "passed"
+    ).length;
     runSummary = {
       device,
       source,
@@ -345,7 +388,7 @@ export async function designToTest(
       passed: report.passed,
       failed: report.failed,
       ok: report.ok,
-      gate: report.ok ? (report.failed === 0 ? "passed" : "failed") : "error",
+      gate: report.failed - quarantinedFailures === 0 ? "passed" : "failed",
       traceIds: report.cases
         .map((entry) => entry.traceId)
         .filter((traceId): traceId is string => traceId !== null)
@@ -355,6 +398,7 @@ export async function designToTest(
   const artifacts: Record<string, unknown> = {};
   if (fs.existsSync(flowsPath)) artifacts.flows = flowsPath;
   artifacts.tests = testsPath;
+  if (runManifestPath !== null) artifacts.runManifest = runManifestPath;
   const savedTo = generatePayload?.savedTo;
   if (savedTo !== undefined && savedTo !== null) artifacts.savedTo = savedTo;
 

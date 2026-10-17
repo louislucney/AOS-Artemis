@@ -251,6 +251,43 @@ test("usage capture: known degradation/fallback markers are recorded and deduped
   assert.deepEqual(warningWithField.signals, [{ code: "param_ignored", field: "model" }]);
 });
 
+test("usage capture: design_to_test family and structured outcome signals", () => {
+  assert.equal(usageFamilyOf("design_to_test"), "workflow");
+
+  const setup = usageEventInputFrom(
+    "design_to_test",
+    {},
+    textPayload({ ok: false, needs: "setup", checks: [{ target: "figma" }, { target: "llm" }] }),
+    5
+  );
+  assert.equal(setup.family, "workflow");
+  assert.deepEqual(setup.signals, [{ code: "needs:figma" }, { code: "needs:llm" }]);
+
+  const info = usageEventInputFrom(
+    "design_to_test",
+    {},
+    textPayload({ ok: false, needs: "info", questions: ["哪台设备？"] }),
+    5
+  );
+  assert.deepEqual(info.signals, [{ code: "needs:info" }]);
+
+  const failed = usageEventInputFrom(
+    "design_to_test",
+    {},
+    textPayload({ ok: false, failedStep: "check", detail: "覆盖不完整" }),
+    5
+  );
+  assert.deepEqual(failed.signals, [{ code: "failed-step:check" }]);
+
+  const ran = usageEventInputFrom(
+    "design_to_test",
+    {},
+    textPayload({ ok: true, run: { gate: "failed", failed: 1 } }),
+    5
+  );
+  assert.deepEqual(ran.signals, [{ code: "run.gate", field: "failed" }]);
+});
+
 test("usage capture: traceId best-effort from the result payload", () => {
   assert.equal(
     usageEventInputFrom("mobile_run_task", {}, textPayload({ trace_id: "trace-abc12345" }), 1)

@@ -19,6 +19,8 @@ export const RUN_MANIFEST_DIR = "runs";
 export const RUN_MANIFEST_VERSION = 1;
 export const RUN_MANIFEST_MAX_DEFAULT = 200;
 
+export type RunManifestSource = "suite-run" | "suite-loop" | "design_to_test";
+
 export interface RunManifestOptions {
   deviceSerial: string | null;
   lockedAppPackage: string | null;
@@ -79,7 +81,7 @@ export interface RunManifestRegistration {
 export interface RunManifest {
   schemaVersion: typeof RUN_MANIFEST_VERSION;
   runId: string;
-  source: "suite-run" | "suite-loop";
+  source: RunManifestSource;
   registration?: RunManifestRegistration;
   taxonomyVersion: typeof FAILURE_TAXONOMY_VERSION;
   startedAt: string;
@@ -120,7 +122,7 @@ export type RunManifestRead =
 
 export interface BuildRunManifestInput {
   report: SuiteRunReport;
-  source: "suite-run" | "suite-loop";
+  source: RunManifestSource;
   startedAtMs: number;
   finishedAtMs: number;
   exitCode: number;

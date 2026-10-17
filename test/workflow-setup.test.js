@@ -265,6 +265,35 @@ test("checkLlm: ping 超时（AbortSignal.timeout）→ need", async () => {
   assert.ok((need.note ?? "").toLowerCase().includes("timeout"));
 });
 
+test("checkLlm: ping 成功/失败都记录 model、耗时与结果（不落 key）", async () => {
+  const runtime = stubRuntime({ entry: LLM_ENTRY });
+  const logs = [];
+  assert.equal(
+    await checkLlm(runtime, { chat: async () => "pong", log: (line) => logs.push(line) }),
+    null
+  );
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /LLM ping 通过/);
+  assert.ok(logs[0].includes("model=deepseek-chat"));
+  assert.match(logs[0], /ms=\d+/);
+  assert.ok(!logs[0].includes("sk-test-key"));
+
+  logs.length = 0;
+  const need = await checkLlm(runtime, {
+    chat: async () => {
+      throw new Error("socket hang up");
+    },
+    log: (line) => logs.push(line)
+  });
+  assert.ok(need);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /LLM ping 失败/);
+  assert.ok(logs[0].includes("model=deepseek-chat"));
+  assert.match(logs[0], /ms=\d+/);
+  assert.ok(logs[0].includes("socket hang up"));
+  assert.ok(!logs[0].includes("sk-test-key"));
+});
+
 test("前置检查：全桩注入时不触网、不写盘", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-workflow-setup-"));
   const fetchCalls = [];
