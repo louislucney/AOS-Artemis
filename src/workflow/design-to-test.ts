@@ -246,6 +246,15 @@ export async function designToTest(
     ...(generatedEdges !== null ? { edges: generatedEdges } : {})
   });
 
+  if (generatedCases === 0) {
+    return jsonResult({
+      ok: false,
+      failedStep: "generate",
+      detail: "设计流程没有生成任何用例（flows.json 为空或流程不可达）",
+      suggestions: GENERATE_SUGGESTIONS
+    });
+  }
+
   const preflight = preflightGeneratedTests(runtime.configDirAbs);
   const gate = deps.gate ?? coverageGateIssue;
   const issue = gate(preflight);

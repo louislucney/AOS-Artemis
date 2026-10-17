@@ -717,3 +717,19 @@ test("设备盘点 env 真正到达 adb：deviceHosts.adbHost → ADB_SERVER_SOC
   assert.equal(devicesCall.options.env.ADB_SERVER_SOCKET, "tcp:10.0.0.5:5037");
   assert.equal(devicesCall.options.env.AOS_APPIUM_URL, "http://127.0.0.1:4723");
 });
+
+test("generate 返回 0 条用例：failedStep:generate（不静默成功）", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps({
+    generate: async (runtime, args) => {
+      void runtime;
+      void args;
+      return textResult({ ok: true, counts: { flows: 0, screens: 0, edges: 0 } });
+    }
+  });
+  const result = await designToTest(runtime, { figmaUrl: FIGMA_URL }, deps);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.failedStep, "generate");
+  assert.ok(String(payload.detail).includes("没有生成任何用例"));
+});

@@ -8,7 +8,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "design_to_test",
     description:
-      "设计→测试一条龙（CR 流程）：用户给出设计稿（Figma 链接或 .pen 文件）并要求产出并验证用例时优先用它——一条龙串起 前置自检→读设计→懂交互→出用例→校验→可选执行（等价于 figma/pen 流程提取 → figma_generate_tests → suite check → 可选 suite run 的手工串跑）。设计来源二选一：figmaUrl 或 penPath；已有 .artemis/design/flows.json 时传 reuseExistingFlows:true 跳过提取直接复用。run 缺省 false：默认止于校验，响应含 nextAction 指引以 reuseExistingFlows:true + run:true 续跑；显式 run:true 才执行（未指定 device 先盘点设备，多于一台返回 needs-info 询问）。缺前置（Figma token / pen 登录 / LLM 连通性 / 在线设备）返回 needs-setup、信息不足返回 needs-info——均为非 isError 的结构化指引（missing/howTo/questions/context），先问不猜、补全后重跑；单步失败返回 failedStep/detail/suggestions。产物在 <项目>/.artemis/design/（tests.json/md/xlsx 三件套）。",
+      "设计→测试一条龙（CR 流程）：用户给出设计稿（Figma 链接或 .pen 文件）并要求产出并验证用例时优先用它——一条龙串起 前置自检→读设计→懂交互→出用例→校验→可选执行（等价于 figma/pen 流程提取 → figma_generate_tests → suite check → 可选 suite run 的手工串跑）。设计来源二选一：figmaUrl 或 penPath；已有 .artemis/design/flows.json 时传 reuseExistingFlows:true 跳过提取直接复用。run 缺省 false：默认止于校验，响应含 nextAction 指引以 reuseExistingFlows:true + run:true 续跑；显式 run:true 才执行（未指定 device 先盘点设备，多于一台返回 needs-info 询问）。缺前置（Figma token / pen 登录 / LLM 连通性 / 在线设备）返回 needs-setup、信息不足返回 needs-info——均为非 isError 的结构化指引（needs-setup 时 checks[]：每项 missing/howTo；needs-info 时 questions/context），先问不猜、补全后重跑；单步失败返回 failedStep/detail/suggestions。产物在 <项目>/.artemis/design/（tests.json/md/xlsx 三件套）。",
     schema: z.object({
       figmaUrl: z
         .string()

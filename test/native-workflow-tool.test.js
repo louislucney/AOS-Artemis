@@ -73,7 +73,8 @@ test("design_to_test: description pins the pipeline protocol (no drift)", async 
       "止于校验",
       "nextAction",
       "needs-setup",
-      "needs-info"
+      "needs-info",
+      "checks[]"
     ]) {
       assert.ok(tool.description.includes(phrase), `description must mention "${phrase}"`);
     }
