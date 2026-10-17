@@ -119,3 +119,66 @@ test("design_to_test: zod rejects illegal types, accepts documented shapes", asy
     await harness.close();
   }
 });
+
+async function namedTool(client, name) {
+  const { tools } = await client.listTools();
+  const tool = tools.find((entry) => entry.name === name);
+  assert.ok(tool, `${name} missing from ${tools.map((entry) => entry.name).join(",")}`);
+  return tool;
+}
+
+test("run_regression: registered in the catalog with the documented schema", async () => {
+  assert.ok(inProcessToolCatalog().includes("run_regression"));
+  const harness = await makeHarness();
+  try {
+    const tool = await namedTool(harness.client, "run_regression");
+    assert.ok(tool.description.length > 0);
+    const properties = tool.inputSchema.properties ?? {};
+    for (const key of ["excelPath", "scope", "all", "device"]) {
+      assert.ok(key in properties, `inputSchema exposes ${key}`);
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("run_regression: description pins the regression protocol (no drift)", async () => {
+  const harness = await makeHarness();
+  try {
+    const tool = await namedTool(harness.client, "run_regression");
+    for (const phrase of [
+      "回归",
+      "重跑",
+      "Excel",
+      ".xlsx",
+      "needs-setup",
+      "needs-info",
+      "功能×条数",
+      "来源",
+      "导入自",
+      "生成自",
+      "执行前",
+      "日志",
+      "缺省",
+      "最新份",
+      "全量"
+    ]) {
+      assert.ok(tool.description.includes(phrase), `description must mention "${phrase}"`);
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("run_regression: zod rejects illegal types", async () => {
+  const harness = await makeHarness();
+  try {
+    for (const args of [{ excelPath: 42 }, { scope: 1 }, { all: "yes" }, { device: 123 }]) {
+      const rejected = await harness.client.callTool({ name: "run_regression", arguments: args });
+      assert.equal(rejected.isError, true, JSON.stringify(args));
+      assert.match(rejected.content[0].text, /参数校验失败/, JSON.stringify(args));
+    }
+  } finally {
+    await harness.close();
+  }
+});

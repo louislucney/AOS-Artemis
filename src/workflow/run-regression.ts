@@ -168,6 +168,7 @@ export async function runRegression(
   const keyword = scope === null ? null : normalizeKeyword(scope);
   let mode: "import" | "scope" | "all";
   let targets: RegressionTarget[];
+  let importOutcome: "imported" | "skipped" | null = null;
 
   if (excelPath !== null) {
     mode = "import";
@@ -177,6 +178,7 @@ export async function runRegression(
       return jsonResult({
         ok: false,
         failedStep: "import",
+        import: { outcome: "invalid" },
         detail: imported.error,
         suggestions: IMPORT_SUGGESTIONS
       });
@@ -188,6 +190,7 @@ export async function runRegression(
       sets: imported.sets.length,
       sourceCopy: imported.sourceCopy
     });
+    importOutcome = imported.status;
     targets = importedTargets(imported.sets, imported.sourceId);
     if (keyword !== null) {
       targets = selectByScope(targets, keyword);
@@ -230,6 +233,7 @@ export async function runRegression(
     }
   }
 
+  const scopeHits = keyword === null ? null : targets.reduce((sum, target) => sum + target.cases, 0);
   const echo = targets.map((target) => ({
     feature: target.feature,
     cases: target.cases,
@@ -308,6 +312,8 @@ export async function runRegression(
 
   return jsonResult({
     ok: true,
+    ...(importOutcome !== null ? { import: { outcome: importOutcome } } : {}),
+    ...(scopeHits !== null ? { scope: { keyword: scope, hits: scopeHits } } : {}),
     steps,
     artifacts: { sets: summaries },
     run: {

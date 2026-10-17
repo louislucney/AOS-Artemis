@@ -307,3 +307,36 @@ test("usage capture: event sample limit follows AOS_USAGE_MAX_EVENTS", () => {
   assert.equal(usageEventSampleLimit({ AOS_USAGE_MAX_EVENTS: "0" }), USAGE_MAX_EVENTS_DEFAULT);
   assert.equal(usageEventSampleLimit({ AOS_USAGE_MAX_EVENTS: "nope" }), USAGE_MAX_EVENTS_DEFAULT);
 });
+
+test("usage capture: run_regression family and import/scope outcome signals", () => {
+  assert.equal(usageFamilyOf("run_regression"), "workflow");
+  const imported = usageEventInputFrom(
+    "run_regression",
+    {},
+    textPayload({ ok: true, import: { outcome: "imported" } }),
+    1
+  );
+  assert.deepEqual(imported.signals, [{ code: "import.outcome", field: "imported" }]);
+  const skipped = usageEventInputFrom(
+    "run_regression",
+    {},
+    textPayload({ ok: true, import: { outcome: "skipped" } }),
+    1
+  );
+  assert.deepEqual(skipped.signals, [{ code: "import.outcome", field: "skipped" }]);
+  const invalid = usageEventInputFrom(
+    "run_regression",
+    {},
+    textPayload({ ok: false, import: { outcome: "invalid" }, failedStep: "import" }),
+    1
+  );
+  assert.ok(invalid.signals.some((signal) => signal.code === "import.outcome" && signal.field === "invalid"));
+  assert.ok(invalid.signals.some((signal) => signal.code === "failed-step:import"));
+  const scope = usageEventInputFrom(
+    "run_regression",
+    {},
+    textPayload({ ok: true, scope: { keyword: "账户", hits: 3 } }),
+    1
+  );
+  assert.deepEqual(scope.signals, [{ code: "scope.match", field: "3" }]);
+});

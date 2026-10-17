@@ -14,7 +14,7 @@ export const USAGE_MAX_EVENTS_DEFAULT = 50_000;
 export const USAGE_DISABLED_NOTE =
   "使用统计采集已关闭（AOS_USAGE=0）；以下为已记录的历史数据。";
 
-const WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set(["design_to_test"]);
+const WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set(["design_to_test", "run_regression"]);
 
 const NATIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "analyze_structure",
@@ -26,6 +26,7 @@ const NATIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "compare_design_and_device",
   "design_device_diff",
   "design_to_test",
+  "run_regression",
   "export_image",
   "extract_design_system",
   "find_assets",
@@ -240,6 +241,20 @@ function outcomeSignalsOf(value: unknown): UsageSignal[] {
   const failedStep = record.failedStep;
   if (typeof failedStep === "string" && failedStep.trim() !== "") {
     signals.push({ code: `failed-step:${failedStep.trim()}` });
+  }
+  const imported = record.import;
+  if (imported !== null && typeof imported === "object" && !Array.isArray(imported)) {
+    const outcome = (imported as Record<string, unknown>).outcome;
+    if (outcome === "imported" || outcome === "skipped" || outcome === "invalid") {
+      signals.push({ code: "import.outcome", field: outcome });
+    }
+  }
+  const scope = record.scope;
+  if (scope !== null && typeof scope === "object" && !Array.isArray(scope)) {
+    const hits = (scope as Record<string, unknown>).hits;
+    if (typeof hits === "number" && Number.isFinite(hits)) {
+      signals.push({ code: "scope.match", field: String(hits) });
+    }
   }
   const run = record.run;
   if (run !== null && typeof run === "object" && !Array.isArray(run)) {
