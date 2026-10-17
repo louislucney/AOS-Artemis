@@ -10,14 +10,15 @@ import { preflightGeneratedTests } from "../figma/preflight.js";
 import { executeSuiteBatch, type SuiteBatchResult } from "../figma/suite-batch.js";
 import type { SuiteRunOptions, SuiteRunReport } from "../figma/suite-runner.js";
 import { figmaGenerateTests } from "../figma/test-gen.js";
-import { resolveAndroidAdbSocket } from "../device/device-hosts.js";
 import { log as logInfo } from "../log.js";
 import { penExtractFlows } from "../pen/flows.js";
-import { collectRunnerInventory } from "../runner/inventory.js";
 import type { Runtime } from "../runtime.js";
 import { platformOf } from "../tasks/run-registry.js";
 import { errorMessage } from "../util.js";
+import { defaultListDevices, pickDevice } from "./devices.js";
 import { checkFigma, checkLlm, checkPen, type SetupDeps, type SetupNeed } from "./setup.js";
+
+export { runnerInventoryEnv } from "./devices.js";
 
 export interface DesignToTestArgs {
   figmaUrl?: string;
@@ -103,35 +104,6 @@ function countOf(payload: Record<string, unknown> | null, key: string): number |
   if (counts === null || typeof counts !== "object" || Array.isArray(counts)) return null;
   const value = (counts as Record<string, unknown>)[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function deviceNeed(note: string | null): SetupNeed {
-  return {
-    target: "device",
-    missing: ["在线设备"],
-    howTo: [
-      "连接设备并确认在线：node scripts/adb-safe.mjs devices（Android 需已授权 USB 调试）",
-      "node dist/cli.js doctor 查看设备与工具链状态（iOS 模拟器启动后亦可见）",
-      "或用 device 参数直接指定设备序列号 / UDID"
-    ],
-    ...(note !== null ? { note: `设备盘点失败：${note}` } : {})
-  };
-}
-
-async function defaultListDevices(
-  runtime: Runtime
-): Promise<Array<{ serial: string; platform?: string }>> {
-  const inventory = await collectRunnerInventory({ env: runnerInventoryEnv(runtime) });
-  return inventory.devices.map((device) => ({ serial: device.serial, platform: device.platform }));
-}
-
-/** 设备盘点的运行时环境：iOS 分层配置（config/.env/进程 env）＋ ADB_SERVER_SOCKET
- * 按既有优先级解析（含 `deviceHosts.android.adbHost`，ADR-0011 集中部署）。 */
-export function runnerInventoryEnv(runtime: Runtime): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...runtime.iosEnvironment() };
-  const android = resolveAndroidAdbSocket(runtime.project.config, runtime.project.resolver);
-  if (android !== null) env.ADB_SERVER_SOCKET = android.socket;
-  return env;
 }
 
 /** CR 一条龙编排：前置检查 → 设计提取 → 用例生成 → 静态校验 →（可选）执行。
@@ -305,33 +277,15 @@ export async function designToTest(
   let runSummary: Record<string, unknown> | null = null;
   let runManifestPath: string | null = null;
   if (args.run === true) {
-    const listDevices = deps.listDevices ?? defaultListDevices;
-    let device = deviceArg;
-    if (device === null) {
-      let devices: Array<{ serial: string; platform?: string }> = [];
-      let listError: string | null = null;
-      try {
-        devices = await listDevices(runtime);
-      } catch (error) {
-        listError = errorMessage(error);
-      }
-      if (devices.length === 0) {
-        return jsonResult({ ok: false, needs: "setup", checks: [deviceNeed(listError)] });
-      }
-      if (devices.length > 1) {
-        return jsonResult({
-          ok: false,
-          needs: "info",
-          questions: [
-            `发现 ${devices.length} 台在线设备，本次执行用哪台？重跑并在 device 参数给出序列号 / UDID`
-          ],
-          context: devices.map((entry) =>
-            entry.platform ? `${entry.serial}（${entry.platform}）` : entry.serial
-          )
-        });
-      }
-      device = devices[0]!.serial;
+    const pick = await pickDevice(deviceArg, async () =>
+      deps.listDevices !== undefined ? await deps.listDevices(runtime) : await defaultListDevices(runtime)
+    );
+    if (!pick.ok) {
+      return pick.needs === "setup"
+        ? jsonResult({ ok: false, needs: "setup", checks: [pick.check] })
+        : jsonResult({ ok: false, needs: "info", questions: pick.questions, context: pick.context });
     }
+    const device = pick.device;
 
     const cases = generatedCases ?? preflight?.cases ?? 0;
     steps.push({ step: "run", cases, source, device });
