@@ -49,7 +49,7 @@ export async function collectRunnerInventory(
   const adbResult =
     adb.path === null
       ? { ok: false, devices: [] as string[], error: "adb-not-found" }
-      : await listAdbDevices(exec, adb.path);
+      : await listAdbDevices(exec, adb.path, env);
   const devices: RunnerDevice[] = adbResult.devices.map((serial) => ({
     serial,
     name: "",

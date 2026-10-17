@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { designToTest, runnerInventoryEnv } from "../dist/workflow/design-to-test.js";
+import { collectRunnerInventory } from "../dist/runner/inventory.js";
 
 const LLM_ENTRY = {
   name: "deepseek",
@@ -683,4 +684,36 @@ test("设备盘点 env：ADB_SERVER_SOCKET 以运行时解析（env/.env）优�
 
   const env = runnerInventoryEnv(runtime);
   assert.equal(env.ADB_SERVER_SOCKET, "tcp:127.0.0.1:5038");
+});
+
+test("设备盘点 env 真正到达 adb：deviceHosts.adbHost → ADB_SERVER_SOCKET 子进程环境", async () => {
+  const runtime = {
+    project: {
+      config: { deviceHosts: { android: { adbHost: "10.0.0.5:5037" } } },
+      dotenvValues: {},
+      resolver: { getValue: () => ({ value: null, source: null }) }
+    },
+    iosEnvironment: () => ({ AOS_APPIUM_URL: "http://127.0.0.1:4723" })
+  };
+  const calls = [];
+  const exec = async (command, args, options) => {
+    calls.push({ command, args, options });
+    return {
+      code: 0,
+      stdout: "List of devices attached\nemulator-5554\tdevice\n",
+      stderr: ""
+    };
+  };
+
+  const inventory = await collectRunnerInventory({
+    exec,
+    platform: "linux",
+    env: runnerInventoryEnv(runtime)
+  });
+
+  assert.deepEqual(inventory.devices.map((device) => device.serial), ["emulator-5554"]);
+  const devicesCall = calls.find((call) => call.args[0] === "devices");
+  assert.ok(devicesCall, "adb devices 被调用");
+  assert.equal(devicesCall.options.env.ADB_SERVER_SOCKET, "tcp:10.0.0.5:5037");
+  assert.equal(devicesCall.options.env.AOS_APPIUM_URL, "http://127.0.0.1:4723");
 });

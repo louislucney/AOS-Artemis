@@ -157,3 +157,30 @@ test("非 darwin：无 iOS 设备且不调 iOS 工具", async () => {
   assert.equal(inventory.tools.idb, false);
   assert.ok(calls.every((call) => call.command === "adb"), "不调 iOS 工具");
 });
+
+test("远程 adb：项目 env（ADB_SERVER_SOCKET）透传到 adb devices 子进程", async () => {
+  const { exec, calls } = makeExec([
+    {
+      match: (command, args) => command === "/opt/adb" && args[0] === "devices",
+      result: {
+        code: 0,
+        stdout: "List of devices attached\nemulator-5554\tdevice\n",
+        stderr: ""
+      }
+    }
+  ]);
+  const env = {
+    ADB_SERVER_SOCKET: "tcp:10.0.0.5:5037",
+    AOS_ADB_PATH: "/opt/adb",
+    PROJECT_SENTINEL: "from-dotenv"
+  };
+  const inventory = await collectRunnerInventory({ exec, platform: "linux", env });
+
+  assert.deepEqual(inventory.devices.map((device) => device.serial), ["emulator-5554"]);
+  const devicesCall = calls.find(
+    (call) => call.command === "/opt/adb" && call.args[0] === "devices"
+  );
+  assert.ok(devicesCall, "adb devices 被调用");
+  assert.equal(devicesCall.options.env.ADB_SERVER_SOCKET, "tcp:10.0.0.5:5037");
+  assert.equal(devicesCall.options.env.PROJECT_SENTINEL, "from-dotenv");
+});

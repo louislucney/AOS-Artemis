@@ -12,8 +12,8 @@ function makeExec({
   execError = null
 } = {}) {
   const calls = [];
-  const exec = async (command, args) => {
-    calls.push({ command, args });
+  const exec = async (command, args, options) => {
+    calls.push({ command, args, options });
     if (execError) return { code: null, stdout: "", stderr: "", error: execError };
     const joined = args.join(" ");
     if (joined === "devices") {
@@ -44,6 +44,32 @@ test("logcat collector: pulls the window with -T and returns the text", async ()
   assert.ok(logcatCall, "logcat was invoked");
   const since = logcatCall.args[logcatCall.args.indexOf("-T") + 1];
   assert.equal(since, formatLogcatTime(deviceNow - 65_000));
+});
+
+test("logcat collector: 项目 env（ADB_SERVER_SOCKET）透传到每个 adb 子进程", async () => {
+  const deviceNow = 1_700_000_000_000;
+  const { exec, calls } = makeExec({ deviceNowMs: deviceNow });
+  const env = { ADB_SERVER_SOCKET: "tcp:10.0.0.5:5037" };
+  const collector = new AdbLogcatCollector({
+    exec,
+    env,
+    now: () => deviceNow,
+    platform: "darwin"
+  });
+  const result = await collector.collect({
+    serial: "emulator-5554",
+    windowStartMs: deviceNow - 60_000
+  });
+
+  assert.equal(result.status, "ok");
+  assert.ok(calls.length >= 3, "devices / shell date / logcat");
+  for (const call of calls) {
+    assert.equal(
+      call.options.env.ADB_SERVER_SOCKET,
+      "tcp:10.0.0.5:5037",
+      `${call.args.join(" ")} 未收到项目 env`
+    );
+  }
 });
 
 test("logcat collector: auto-selects a single device, rejects ambiguity and unknown serial", async () => {

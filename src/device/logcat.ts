@@ -31,10 +31,17 @@ export interface DeviceListResult {
   error?: string;
 }
 
-export async function listAdbDevices(exec: ExecFn, adbPath: string): Promise<DeviceListResult> {
+export async function listAdbDevices(
+  exec: ExecFn,
+  adbPath: string,
+  env?: NodeJS.ProcessEnv
+): Promise<DeviceListResult> {
   let result: ExecResult;
   try {
-    result = await exec(adbPath, ["devices"], { timeoutMs: DEVICES_TIMEOUT_MS });
+    result = await exec(adbPath, ["devices"], {
+      timeoutMs: DEVICES_TIMEOUT_MS,
+      ...(env !== undefined ? { env } : {})
+    });
   } catch (error) {
     return { ok: false, devices: [], error: errorMessage(error) };
   }
@@ -54,12 +61,14 @@ export async function probeDeviceClock(
   exec: ExecFn,
   adbPath: string,
   serial: string,
-  now: () => number
+  now: () => number,
+  env?: NodeJS.ProcessEnv
 ): Promise<{ ok: boolean; offsetMs: number }> {
   let result: ExecResult;
   try {
     result = await exec(adbPath, ["-s", serial, "shell", "date", "+%s"], {
-      timeoutMs: CLOCK_TIMEOUT_MS
+      timeoutMs: CLOCK_TIMEOUT_MS,
+      ...(env !== undefined ? { env } : {})
     });
   } catch {
     return { ok: false, offsetMs: 0 };
@@ -125,7 +134,7 @@ export class AdbLogcatCollector {
 
   private async run(adbPath: string, args: string[]): Promise<ExecResult> {
     try {
-      return await this.exec(adbPath, args, { timeoutMs: this.timeoutMs });
+      return await this.exec(adbPath, args, { timeoutMs: this.timeoutMs, env: this.env });
     } catch (error) {
       return { code: null, stdout: "", stderr: "", error: errorMessage(error) };
     }
@@ -135,7 +144,7 @@ export class AdbLogcatCollector {
     const adb = resolveAdbPath(this.env, this.platform, this.pathExists);
     if (!adb.path) return { status: "skipped", reason: "adb-not-found", text: "", serial: null };
 
-    const devices = await listAdbDevices(this.exec, adb.path);
+    const devices = await listAdbDevices(this.exec, adb.path, this.env);
     if (!devices.ok) {
       return { status: "skipped", reason: classifyAdbFailure(devices.error), text: "", serial: null };
     }
@@ -145,7 +154,7 @@ export class AdbLogcatCollector {
       return { status: "skipped", reason: "device-offline", text: "", serial };
     }
 
-    const clock = await probeDeviceClock(this.exec, adb.path, serial, this.now);
+    const clock = await probeDeviceClock(this.exec, adb.path, serial, this.now, this.env);
     const since = formatLogcatTime(request.windowStartMs + clock.offsetMs - WINDOW_SLACK_MS);
     const result = await this.run(adb.path, [
       "-s",

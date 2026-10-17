@@ -14,7 +14,7 @@ export interface ExecResult {
 export type ExecFn = (
   command: string,
   args: string[],
-  options?: { timeoutMs?: number }
+  options?: { timeoutMs?: number; env?: NodeJS.ProcessEnv }
 ) => Promise<ExecResult>;
 
 export interface ResolvedAdb {
@@ -26,7 +26,7 @@ export const defaultExec: ExecFn = (command, args, options = {}) =>
   new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, args, { windowsHide: true });
+      child = spawn(command, args, { windowsHide: true, env: options.env ?? process.env });
     } catch (error) {
       resolve({ code: null, stdout: "", stderr: "", error: errorMessage(error) });
       return;
@@ -108,14 +108,14 @@ export interface ExecBufferResult {
 export type ExecBufferFn = (
   command: string,
   args: string[],
-  options?: { timeoutMs?: number }
+  options?: { timeoutMs?: number; env?: NodeJS.ProcessEnv }
 ) => Promise<ExecBufferResult>;
 
 export const defaultExecBuffer: ExecBufferFn = (command, args, options = {}) =>
   new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, args, { windowsHide: true });
+      child = spawn(command, args, { windowsHide: true, env: options.env ?? process.env });
     } catch (error) {
       resolve({ code: null, stdout: Buffer.alloc(0), stderr: "", error: errorMessage(error) });
       return;
