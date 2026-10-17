@@ -41,7 +41,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "run_regression",
     description:
-      "回归一条龙：用户要做回归/重跑验证时优先用它——有 Excel 测试文档（excelPath，.xlsx）时导入用例库（按模块拆集、同内容幂等复用）并执行；没有文档时按 scope 关键词（功能/模块/用例名）在用例库里选最新份，或 all/缺省跑库内每个功能的最新一份全量。执行前回显回归目标（功能×条数＋来源：导入自 x / 生成自 y）并写服务日志；逐集执行后聚合报告（run manifest 路径、通过/失败计数与 gate：用例失败但已执行仍 ok:true）。前置自检：LLM 连通性与在线设备先于导入/选择——无设备→needs-setup、多台未指定→needs-info，needs-setup/needs-info 均为非 isError 的结构化指引（先问不猜、补全后重跑）；单步失败返回 failedStep/detail/suggestions。Excel 导入要求首行表头（用例名、步骤；可选：预期、前置、模块），合并单元格会显式报错。",
+      "回归一条龙：用户要做回归/重跑验证时优先用它——有 Excel 测试文档（excelPath，.xlsx）时导入用例库（按模块拆集、同内容幂等复用）并执行；没有文档时按 scope 关键词（功能/模块/用例名）在用例库里选最新份，或 all/缺省跑库内每个功能的最新一份全量。执行前回显回归目标（功能×条数＋来源：导入自 x / 生成自 y）并写服务日志；逐集执行后聚合报告（run manifest 路径、通过/失败计数与 gate：用例失败但已执行仍 ok:true）。前置自检：LLM 连通性与在线设备先于导入/选择——无设备→needs-setup、多台未指定→needs-info，needs-setup/needs-info 均为非 isError 的结构化指引（先问不猜、补全后重跑）；单步失败返回 failedStep/detail/suggestions。Excel 导入要求首行表头（用例名、步骤；可选：预期、前置、模块），列名可用 columns 覆盖，合并单元格会显式报错。",
     schema: z.object({
       excelPath: z
         .string()
@@ -60,7 +60,17 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
       device: z
         .string()
         .optional()
-        .describe("目标设备 serial / UDID；缺省自动盘点（多于一台先问）")
+        .describe("目标设备 serial / UDID；缺省自动盘点（多于一台先问）"),
+      columns: z
+        .object({
+          name: z.string().optional(),
+          steps: z.string().optional(),
+          expected: z.string().optional(),
+          preconditions: z.string().optional(),
+          module: z.string().optional()
+        })
+        .optional()
+        .describe("Excel 列名覆盖（默认自动识别；按字段给出实际表头文本）")
     }),
     handler: (runtime, args) => runRegression(runtime, args as unknown as RunRegressionArgs)
   }

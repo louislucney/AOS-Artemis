@@ -5,10 +5,13 @@ import path from "node:path";
 import test from "node:test";
 import { newDb } from "pg-mem";
 
+import ExcelJS from "exceljs";
+
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { runSuiteCommand } from "../dist/suite-command.js";
 import { runBackfill } from "../dist/tasks/backfill.js";
+import { importTestDocument } from "../dist/workflow/excel-import.js";
 import { baseConfig, loadTestRuntime, makeTempProject, SuiteProxy } from "./helpers.js";
 
 async function makePgStore() {
@@ -674,4 +677,28 @@ test("命令层: --since 与 --project 生效", async () => {
   const report = JSON.parse(logs.join("\n"));
   assert.equal(report.beforeSince, 0, "--since 覆盖默认下界");
   assert.equal(report.registered.runs, 1, "远古 manifest 被登记");
+});
+
+test("suite backfill: 从导入归档重建登记（top-level source + features）", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const runtime = await makeRuntime(store, dir);
+  const file = path.join(dir, "qa.xlsx");
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例名", "步骤", "预期"]);
+  sheet.addRow(["登录", "点击登录", "进入首页"]);
+  await workbook.xlsx.writeFile(file);
+  const imported = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(imported.ok, true, JSON.stringify(imported));
+
+  const fresh = new MemoryStore();
+  const runtime2 = await makeRuntime(fresh, dir);
+  const report = await runBackfill(runtime2);
+  assert.equal(report.registered.caseSets, 1, JSON.stringify(report));
+  const sets = await fresh.listCaseSets(runtime2.project.rootDir, 10);
+  assert.equal(sets.length, 1);
+  assert.equal(sets[0].source, imported.sourceId);
+  assert.equal(sets[0].features[0].caseCount, 1);
+  assert.equal(sets[0].features[0].key, imported.sets[0].featureKey);
 });

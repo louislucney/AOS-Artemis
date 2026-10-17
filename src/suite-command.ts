@@ -20,12 +20,7 @@ import { designDir, readTestsDocument } from "./figma/design-store.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
-import {
-  artifactGateIssue,
-  coverageGateIssue,
-  dataPolicyGateIssue,
-  isImportedTestsFile
-} from "./figma/gate.js";
+import { gateIssueForTests, isImportedTestsFile } from "./figma/gate.js";
 import { preflightGeneratedTests } from "./figma/preflight.js";
 import {
   loadReconciliation,
@@ -539,7 +534,7 @@ async function suiteRun(
       retry: retryCount,
       resolveCoverageIssue: (report) =>
         flags.bool("fail-on-uncovered")
-          ? coverageGateIssue(report.preflight, { strict: flags.bool("strict") })
+          ? gateIssueForTests(report.testsPath, report.preflight, { strict: flags.bool("strict") })
           : null,
       strict: flags.bool("strict"),
       failOnUncovered: flags.bool("fail-on-uncovered"),
@@ -663,11 +658,7 @@ async function suiteCheck(
 
   const coverage = preflight.coverage;
   const imported = isImportedTestsFile(testsPath);
-  const issue = imported
-    ? [artifactGateIssue(preflight), dataPolicyGateIssue(preflight)]
-        .filter((entry): entry is string => entry !== null)
-        .join("；") || null
-    : coverageGateIssue(preflight, { strict: flags.bool("strict") });
+  const issue = gateIssueForTests(testsPath, preflight, { strict: flags.bool("strict") });
   const routeDrift =
     !imported && coverage.available
       ? coverage.screens.filter((screen) => !coverage.designScreens.includes(screen))
@@ -888,7 +879,7 @@ async function suiteLoop(
   const preflight = preflightGeneratedTests(runtime.configDirAbs, { testsPath });
   let check: SuiteLoopCheck | null = null;
   if (preflight) {
-    const issue = flags.bool("allow-uncovered") ? null : coverageGateIssue(preflight);
+    const issue = flags.bool("allow-uncovered") ? null : gateIssueForTests(testsPath, preflight);
     const routeDrift = preflight.coverage.available
       ? preflight.coverage.screens.filter((screen) => !preflight.coverage.designScreens.includes(screen))
       : [];

@@ -103,6 +103,16 @@ function renderImportedMarkdown(cases: ImportedCase[], meta: { source: string; i
   return lines.join("\n");
 }
 
+function cleanupFiles(files: string[]): void {
+  for (const file of files) {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
 function findSourceCopy(dir: string, baseName: string): string {
   try {
     const hit = fs.readdirSync(dir).find((name) => name.endsWith(`_${baseName}.source.xlsx`));
@@ -176,6 +186,7 @@ export async function importTestDocument(
     return { ok: false, error: `无法读取测试文档：${errorMessage(error)}` };
   }
   const baseName = path.basename(excelPath);
+  const documentSlug = slug(path.parse(excelPath).name);
   const sourceId = `imported:${baseName}@${sha8}`;
   const dir = caseSetsDir(runtime.configDirAbs);
   const skipped = await existingSets(runtime, sourceId);
@@ -260,9 +271,11 @@ export async function importTestDocument(
 
   const sets: ImportedSet[] = [];
   const allCases: ImportedCase[] = [];
+  const createdFiles: string[] = [];
   try {
     for (const [module, rows] of groups) {
-      const featureKey = `imp-${slug(module)}-${sha8}`;
+      const moduleSlug = slug(module);
+      const featureKey = moduleSlug === documentSlug ? `imp-${documentSlug}` : `imp-${documentSlug}-${moduleSlug}`;
       const cases: ImportedCase[] = rows.map((row) => {
         const steps: string[] = [];
         const expectations: Array<Record<string, unknown>> = [];
@@ -302,6 +315,8 @@ export async function importTestDocument(
           JSON.stringify(
             {
               meta: { source: sourceId, importedAt, feature: module, featureKey },
+              source: sourceId,
+              features: [{ key: featureKey, name: module, screens: [module] }],
               counts: { flows: cases.length, screens: 1, edges: 0 },
               flows: cases
             },
@@ -314,6 +329,7 @@ export async function importTestDocument(
           { source: sourceId, generatedAt: importedAt, counts: { cases: cases.length, screens: 1, edges: 0 } }
         )
       });
+      createdFiles.push(saved.jsonPath, saved.mdPath, saved.xlsxPath);
       sets.push({
         feature: module,
         featureKey,
@@ -325,7 +341,8 @@ export async function importTestDocument(
       });
     }
   } catch (error) {
-    return { ok: false, error: `归档失败：${errorMessage(error)}` };
+    cleanupFiles(createdFiles);
+    return { ok: false, error: `归档失败（已回滚本地归档）：${errorMessage(error)}` };
   }
 
   const stamp = importedAt.slice(0, 19).replace(/[-:]/g, "");
@@ -334,9 +351,13 @@ export async function importTestDocument(
     `${stamp}_${baseName.replace(/[/\\:*?"<>|\s]+/g, "-")}.source.xlsx`
   );
   try {
-    if (!fs.existsSync(sourceCopy)) fs.copyFileSync(excelPath, sourceCopy);
+    if (!fs.existsSync(sourceCopy)) {
+      fs.copyFileSync(excelPath, sourceCopy);
+      createdFiles.push(sourceCopy);
+    }
   } catch (error) {
-    return { ok: false, error: `源文件副本写入失败：${errorMessage(error)}` };
+    cleanupFiles(createdFiles);
+    return { ok: false, error: `源文件副本写入失败（已回滚本地归档）：${errorMessage(error)}` };
   }
 
   const fingerprint = createHash("sha256")
@@ -371,7 +392,8 @@ export async function importTestDocument(
       }))
     });
   } catch (error) {
-    return { ok: false, error: `用例集登记失败（本地归档已写入）：${errorMessage(error)}` };
+    cleanupFiles(createdFiles);
+    return { ok: false, error: `用例集登记失败（已回滚本地归档）：${errorMessage(error)}` };
   }
 
   return { ok: true, status: "imported", sourceId, sets, sourceCopy };

@@ -135,7 +135,7 @@ test("run_regression: registered in the catalog with the documented schema", asy
     const tool = await namedTool(harness.client, "run_regression");
     assert.ok(tool.description.length > 0);
     const properties = tool.inputSchema.properties ?? {};
-    for (const key of ["excelPath", "scope", "all", "device"]) {
+    for (const key of ["excelPath", "scope", "all", "device", "columns"]) {
       assert.ok(key in properties, `inputSchema exposes ${key}`);
     }
   } finally {
@@ -174,7 +174,7 @@ test("run_regression: description pins the regression protocol (no drift)", asyn
 test("run_regression: zod rejects illegal types", async () => {
   const harness = await makeHarness();
   try {
-    for (const args of [{ excelPath: 42 }, { scope: 1 }, { all: "yes" }, { device: 123 }]) {
+    for (const args of [{ excelPath: 42 }, { scope: 1 }, { all: "yes" }, { device: 123 }, { columns: "x" }]) {
       const rejected = await harness.client.callTool({ name: "run_regression", arguments: args });
       assert.equal(rejected.isError, true, JSON.stringify(args));
       assert.match(rejected.content[0].text, /参数校验失败/, JSON.stringify(args));

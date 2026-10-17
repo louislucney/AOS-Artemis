@@ -72,6 +72,19 @@ export function coverageGateIssue(
   return issues.length > 0 ? issues.join("；") : null;
 }
 
+/** 按用例来源选闸：导入集只走三件套＋真实数据（覆盖闸 n/a），生成集走完整三闸。 */
+export function gateIssueForTests(
+  testsPath: string,
+  preflight: PreflightReport | null,
+  options: { strict?: boolean } = {}
+): string | null {
+  if (!isImportedTestsFile(testsPath)) return coverageGateIssue(preflight, options);
+  const issues = [artifactGateIssue(preflight), dataPolicyGateIssue(preflight)].filter(
+    (issue): issue is string => issue !== null
+  );
+  return issues.length > 0 ? issues.join("；") : null;
+}
+
 /** True when the tests file declares an imported case set (`meta.source` 前缀 `imported:`）。 */
 export function isImportedTestsFile(testsPath: string): boolean {
   try {

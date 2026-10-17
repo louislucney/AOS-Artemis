@@ -9,7 +9,7 @@ import { platformOf } from "../tasks/run-registry.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
 import { defaultListDevices, pickDevice } from "./devices.js";
-import { importTestDocument, type ImportedSet } from "./excel-import.js";
+import { importTestDocument, type ImportColumns, type ImportedSet } from "./excel-import.js";
 import { checkLlm, type SetupDeps } from "./setup.js";
 
 export interface RunRegressionArgs {
@@ -17,6 +17,7 @@ export interface RunRegressionArgs {
   scope?: string;
   all?: boolean;
   device?: string;
+  columns?: ImportColumns;
 }
 
 export interface RunRegressionDeps {
@@ -173,7 +174,10 @@ export async function runRegression(
   if (excelPath !== null) {
     mode = "import";
     const importFn = deps.importDocument ?? importTestDocument;
-    const imported = await importFn(runtime, { excelPath });
+    const imported = await importFn(runtime, {
+      excelPath,
+      ...(args.columns !== undefined ? { columns: args.columns } : {})
+    });
     if (!imported.ok) {
       return jsonResult({
         ok: false,

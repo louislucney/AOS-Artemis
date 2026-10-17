@@ -909,6 +909,7 @@ async function loadPriorFeatures(
     const records = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
     const features: PriorFeature[] = [];
     for (const record of records) {
+      if (record.source.startsWith("imported:")) continue;
       for (const feature of record.features) {
         features.push({ key: feature.key, name: feature.name, screens: [...feature.screens] });
       }

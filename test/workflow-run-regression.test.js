@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
+
+import { MemoryStore } from "../dist/db/memory.js";
+import { importTestDocument } from "../dist/workflow/excel-import.js";
 import { runRegression } from "../dist/workflow/run-regression.js";
+import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
 
 const LLM_ENTRY = {
   name: "deepseek",
@@ -295,4 +300,51 @@ test("run_regression: 某集未执行（report.ok=false）→ failedStep:run", a
   assert.equal(payload.ok, false);
   assert.equal(payload.failedStep, "run");
   assert.ok(payload.detail.includes("设备不可达"));
+});
+
+test("run_regression: 同一 Excel 更新后只跑最新份（featureKey 稳定）", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const { runtime } = await loadTestRuntime(dir, { store });
+  const file = path.join(dir, "cases.xlsx");
+  const write = async (rows) => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Sheet1");
+    for (const row of rows) sheet.addRow(row);
+    await workbook.xlsx.writeFile(file);
+  };
+  await write([
+    ["用例名", "步骤", "预期"],
+    ["登录", "点击登录", "进入首页"]
+  ]);
+  const v1 = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(v1.ok, true);
+  await write([
+    ["用例名", "步骤", "预期"],
+    ["登录", "点击登录", "进入首页"],
+    ["下单", "提交订单", "出现订单号"]
+  ]);
+  const v2 = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(v2.ok, true);
+  assert.equal(v2.sets[0].featureKey, v1.sets[0].featureKey);
+
+  const requests = [];
+  const result = await runRegression(stubRuntime(dir), {}, {
+    setup: { chat: async () => "pong" },
+    listDevices: async () => [{ serial: "dev-1" }],
+    listSets: () => store.listCaseSets(dir, 10),
+    executeBatch: async (runtimeArg, request) => {
+      void runtimeArg;
+      requests.push(request);
+      return batchStub(reportStub(), "/p/runs/latest.json");
+    }
+  });
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true, JSON.stringify(payload));
+  const select = payload.steps.find((step) => step.step === "select");
+  assert.equal(select.mode, "all");
+  assert.equal(select.targets.length, 1, "同一功能只跑最新一份");
+  assert.equal(select.targets[0].cases, 2);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.testsPath, v2.sets[0].jsonPath);
 });

@@ -45,7 +45,7 @@ test("importTestDocument: 单模块 → 三件套 + 源副本 + 登记（真实�
   const set = first.sets[0];
   assert.equal(set.caseCount, 1);
   assert.equal(set.feature, "cases");
-  assert.match(set.featureKey, /^imp-[a-z0-9-]+-[0-9a-f]{8}$/);
+  assert.equal(set.featureKey, "imp-cases");
   for (const filePath of [set.jsonPath, set.mdPath, set.xlsxPath]) {
     assert.ok(fs.existsSync(filePath), filePath);
   }
@@ -95,6 +95,10 @@ test("importTestDocument: 按模块拆集（一个登记记录，多 features）
   assert.equal(result.sets.length, 2);
   assert.deepEqual(result.sets.map((set) => set.feature).sort(), ["交易", "账户"]);
   assert.deepEqual(result.sets.map((set) => set.caseCount).sort(), [1, 2]);
+  assert.deepEqual(
+    result.sets.map((set) => set.featureKey).sort(),
+    ["imp-multi-交易", "imp-multi-账户"].sort()
+  );
   const sets = await store.listCaseSets(runtime.project.rootDir, 10);
   assert.equal(sets.length, 1);
   assert.equal(sets[0].features.length, 2);
@@ -143,4 +147,67 @@ test("importTestDocument: 无预期 → explore 步骤（弱断言豁免）", as
   assert.equal(document.flows[0].expectations[0].kind, "explore");
   const preflight = preflightGeneratedTests(runtime.configDirAbs, { testsPath: result.sets[0].jsonPath });
   assert.deepEqual(preflight.weakCases, []);
+});
+
+test("importTestDocument: 同一文档内容更新 → featureKey 稳定（最新份可取代旧版）", async () => {
+  const { dir, runtime, store } = await project();
+  const file = path.join(dir, "cases.xlsx");
+  await writeSheet(file, [
+    ["用例名", "步骤", "预期"],
+    ["登录", "点击登录", "进入首页"]
+  ]);
+  const v1 = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(v1.ok, true);
+  await writeSheet(file, [
+    ["用例名", "步骤", "预期"],
+    ["登录", "点击登录", "进入首页"],
+    ["下单", "提交订单", "出现订单号"]
+  ]);
+  const v2 = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(v2.ok, true);
+  assert.equal(v2.status, "imported");
+  assert.notEqual(v2.sourceId, v1.sourceId);
+  assert.equal(v2.sets[0].featureKey, v1.sets[0].featureKey);
+  const sets = await store.listCaseSets(runtime.project.rootDir, 10);
+  assert.equal(sets.length, 2);
+  assert.equal(sets[0].source, v2.sourceId, "最新份排在最前");
+  assert.equal(sets[0].features[0].key, v1.sets[0].featureKey);
+});
+
+class FlakyStore extends MemoryStore {
+  constructor() {
+    super();
+    this.failures = 1;
+  }
+  async recordCaseSet(input) {
+    if (this.failures > 0) {
+      this.failures -= 1;
+      throw new Error("db down");
+    }
+    return super.recordCaseSet(input);
+  }
+}
+
+test("importTestDocument: 登记失败回滚本地归档，重试可重新导入（不落 skipped 假象）", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new FlakyStore();
+  const { runtime } = await loadTestRuntime(dir, { store });
+  const file = path.join(dir, "cases.xlsx");
+  await writeSheet(file, [
+    ["用例名", "步骤", "预期"],
+    ["登录", "点击登录", "进入首页"]
+  ]);
+  const failed = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(failed.ok, false);
+  assert.ok(failed.error.includes("登记失败"), failed.error);
+  const setsDir = caseSetsDir(runtime.configDirAbs);
+  const leftovers = fs.existsSync(setsDir)
+    ? fs.readdirSync(setsDir).filter((name) => /\.(json|md|xlsx)$/.test(name))
+    : [];
+  assert.deepEqual(leftovers, [], `leftovers: ${leftovers.join(",")}`);
+
+  const retry = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(retry.ok, true);
+  assert.equal(retry.status, "imported");
+  assert.equal((await store.listCaseSets(runtime.project.rootDir, 10)).length, 1);
 });

@@ -1486,3 +1486,34 @@ test("suite check: imported case set applies artifact+data gates only (coverage 
   assert.equal(noXlsx.code, 2);
   assert.ok(noXlsx.errors.some((line) => line.includes("缺少配套 tests.xlsx")));
 });
+
+test("suite loop --skip-run: 导入集覆盖闸 n/a（不被缺 flows 拦截）", async () => {
+  const { runtime } = await setupRun({ cases: null });
+  const qaDir = path.join(runtime.project.rootDir, "qa");
+  fs.mkdirSync(qaDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(qaDir, "imported.json"),
+    JSON.stringify({ meta: { source: "imported:qa.xlsx@abcd1234" }, flows: [caseEntry(1)] })
+  );
+  fs.writeFileSync(path.join(qaDir, "imported.xlsx"), "fake-xlsx");
+  const result = await runCli(runtime, ["loop", "--tests", "qa/imported.json", "--skip-run", "--no-save"]);
+  assert.equal(result.code, 0, `${result.logs.join("\n")}\n${result.errors.join("\n")}`);
+  assert.ok(result.logs.some((line) => line.includes("静态检查: 通过")), result.logs.join("\n"));
+});
+
+test("suite run --fail-on-uncovered: 导入集不做覆盖门禁（n/a）", async () => {
+  const { runtime } = await setupRun({
+    cases: null,
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const qaDir = path.join(runtime.project.rootDir, "qa");
+  fs.mkdirSync(qaDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(qaDir, "imported.json"),
+    JSON.stringify({ meta: { source: "imported:qa.xlsx@abcd1234" }, flows: [caseEntry(1)] })
+  );
+  fs.writeFileSync(path.join(qaDir, "imported.xlsx"), "fake-xlsx");
+  const result = await runCli(runtime, ["run", "--tests", "qa/imported.json", "--fail-on-uncovered"]);
+  assert.equal(result.code, 0, `${result.logs.join("\n")}\n${result.errors.join("\n")}`);
+  assert.ok(result.logs.some((line) => line.startsWith("[PASS]")), result.logs.join("\n"));
+});

@@ -275,3 +275,33 @@ test("figma_generate_tests: 子集归档 JSON 的 feedback 与 markdown 同源�
     assert.match(json.feedback.caseDefects.byFeature[0].cases[0].caseId, new RegExp(ownCaseId), "JSON 案例与本功能一致");
   }
 });
+
+test("figma_generate_tests: 导入集不参与功能身份继承（imp- key 不污染生成集）", async () => {
+  const dir = makeFlowsProject(pagedFlowDocument(), true);
+  const store = new MemoryStore();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy(), store });
+  await store.recordCaseSet({
+    rootPath: runtime.project.rootDir,
+    source: "imported:qa.xlsx@abcd1234",
+    designName: null,
+    fingerprint: null,
+    basename: "qa",
+    features: [
+      {
+        key: "imp-qa-登录",
+        name: "登录",
+        caseCount: 2,
+        screens: ["登录-输入", "登录-验证"],
+        jsonPath: "/p/a.json",
+        mdPath: "/p/a.md",
+        xlsxPath: "/p/a.xlsx"
+      }
+    ]
+  });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}, { now: NOW, chat: null }));
+  assert.equal(payload.ok, true);
+  assert.ok(payload.features.length > 0);
+  for (const feature of payload.features) {
+    assert.ok(!feature.key.startsWith("imp-"), `生成 key 不应继承导入集: ${feature.key}`);
+  }
+});
