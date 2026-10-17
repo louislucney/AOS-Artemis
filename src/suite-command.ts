@@ -20,7 +20,12 @@ import { designDir, readTestsDocument } from "./figma/design-store.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
-import { coverageGateIssue } from "./figma/gate.js";
+import {
+  artifactGateIssue,
+  coverageGateIssue,
+  dataPolicyGateIssue,
+  isImportedTestsFile
+} from "./figma/gate.js";
 import { preflightGeneratedTests } from "./figma/preflight.js";
 import {
   loadReconciliation,
@@ -657,10 +662,16 @@ async function suiteCheck(
   }
 
   const coverage = preflight.coverage;
-  const issue = coverageGateIssue(preflight, { strict: flags.bool("strict") });
-  const routeDrift = coverage.available
-    ? coverage.screens.filter((screen) => !coverage.designScreens.includes(screen))
-    : [];
+  const imported = isImportedTestsFile(testsPath);
+  const issue = imported
+    ? [artifactGateIssue(preflight), dataPolicyGateIssue(preflight)]
+        .filter((entry): entry is string => entry !== null)
+        .join("；") || null
+    : coverageGateIssue(preflight, { strict: flags.bool("strict") });
+  const routeDrift =
+    !imported && coverage.available
+      ? coverage.screens.filter((screen) => !coverage.designScreens.includes(screen))
+      : [];
   const generation = preflight.generation as {
     truncated?: unknown;
     entryFallback?: unknown;
@@ -676,6 +687,7 @@ async function suiteCheck(
         {
           ok: issue === null,
           testsPath,
+          imported,
           cases: preflight.cases,
           weakCases: preflight.weakCases,
           coverage,
@@ -690,7 +702,9 @@ async function suiteCheck(
   } else {
     io.log(`静态覆盖检查: ${testsPath}`);
     io.log(`用例: ${preflight.cases} · 弱用例 ${preflight.weakCases.length}`);
-    if (!coverage.available) {
+    if (imported) {
+      io.log("覆盖: n/a (imported)");
+    } else if (!coverage.available) {
       io.log("覆盖: 不可用（缺 flows.json）");
     } else {
       io.log(

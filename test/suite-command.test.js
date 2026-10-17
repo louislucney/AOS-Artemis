@@ -1454,3 +1454,35 @@ test("suite run: manifest 写侧 registration 可得即写（runner/testsPath；
     testsPath: path.join(runtime.configDirAbs, "design", "tests.json")
   });
 });
+
+test("suite check: imported case set applies artifact+data gates only (coverage n/a)", async () => {
+  const { runtime } = await setupRun({ cases: null });
+  const qaDir = path.join(runtime.project.rootDir, "qa");
+  fs.mkdirSync(qaDir, { recursive: true });
+  const importedPath = path.join(qaDir, "imported.json");
+  const importedXlsx = path.join(qaDir, "imported.xlsx");
+  const writeImported = (cases) => {
+    fs.writeFileSync(
+      importedPath,
+      JSON.stringify({ meta: { source: "imported:qa.xlsx@abcd1234", importedAt: "2026-10-17T00:00:00.000Z" }, flows: cases })
+    );
+    fs.writeFileSync(importedXlsx, "fake-xlsx");
+  };
+
+  writeImported([caseEntry(1)]);
+  const ok = await runCli(runtime, ["check", "--tests", "qa/imported.json"]);
+  assert.equal(ok.code, 0);
+  assert.ok(ok.logs.some((line) => line.includes("覆盖: n/a (imported)")), ok.logs.join("\n"));
+  assert.ok(ok.logs.some((line) => line.includes("结论: 完整")));
+  assert.deepEqual(ok.errors, []);
+
+  writeImported([caseEntry(1, { taskDesc: "run case 1" })]);
+  const noPolicy = await runCli(runtime, ["check", "--tests", "qa/imported.json"]);
+  assert.equal(noPolicy.code, 2);
+  assert.ok(noPolicy.errors.some((line) => line.includes("【真实数据】")));
+
+  fs.rmSync(importedXlsx);
+  const noXlsx = await runCli(runtime, ["check", "--tests", "qa/imported.json"]);
+  assert.equal(noXlsx.code, 2);
+  assert.ok(noXlsx.errors.some((line) => line.includes("缺少配套 tests.xlsx")));
+});

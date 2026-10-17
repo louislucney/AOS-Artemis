@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { coverageGateIssue } from "../dist/figma/gate.js";
+import {
+  artifactGateIssue,
+  coverageGateIssue,
+  dataPolicyGateIssue,
+  isImportedTestsFile
+} from "../dist/figma/gate.js";
 
 function preflightFixture(overrides = {}) {
   return {
@@ -62,4 +70,65 @@ test("coverageGateIssue: strict 弱断言路径保留原判", () => {
 
 test("coverageGateIssue: 完整报告通过时返回 null", () => {
   assert.equal(coverageGateIssue(preflightFixture()), null);
+});
+
+test("artifactGateIssue: 仅三件套（缺 xlsx / 过期 / 健康）", () => {
+  const missing = artifactGateIssue(
+    preflightFixture({
+      artifacts: {
+        testsFile: "/project/.artemis/design/tests.json",
+        excelFile: "/project/.artemis/design/tests.xlsx",
+        excelPresent: false,
+        excelStale: false
+      }
+    })
+  );
+  assert.ok(missing !== null && missing.includes("缺少配套 tests.xlsx"));
+
+  const stale = artifactGateIssue(
+    preflightFixture({
+      artifacts: {
+        testsFile: "/project/.artemis/design/tests.json",
+        excelFile: "/project/.artemis/design/tests.xlsx",
+        excelPresent: true,
+        excelStale: true
+      }
+    })
+  );
+  assert.equal(stale, "tests.xlsx 早于 tests.json（疑似手改或未重新生成；请重新运行 figma_generate_tests）");
+
+  assert.equal(artifactGateIssue(preflightFixture()), null);
+  assert.equal(artifactGateIssue(null), null);
+});
+
+test("dataPolicyGateIssue: 仅真实数据约束", () => {
+  const missing = dataPolicyGateIssue(
+    preflightFixture({
+      dataPolicy: { missing: [{ id: "case-1", name: "Case 1" }] }
+    })
+  );
+  assert.ok(missing !== null && missing.includes("用例缺少真实数据约束【真实数据】"));
+  assert.equal(dataPolicyGateIssue(preflightFixture()), null);
+  assert.equal(dataPolicyGateIssue(null), null);
+});
+
+test("isImportedTestsFile: meta.source 前缀 imported:", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-gate-"));
+  try {
+    const write = (name, payload) => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, typeof payload === "string" ? payload : JSON.stringify(payload));
+      return file;
+    };
+    assert.equal(
+      isImportedTestsFile(write("a.json", { meta: { source: "imported:qa.xlsx@abcd1234" }, flows: [] })),
+      true
+    );
+    assert.equal(isImportedTestsFile(write("b.json", { meta: { source: "figma:abc" }, flows: [] })), false);
+    assert.equal(isImportedTestsFile(write("c.json", { flows: [] })), false);
+    assert.equal(isImportedTestsFile(path.join(dir, "missing.json")), false);
+    assert.equal(isImportedTestsFile(write("d.json", "not json")), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
