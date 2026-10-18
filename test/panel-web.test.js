@@ -192,6 +192,8 @@ test("panel web: 项目详情（空态→批次→独立运行）与未知项目
   assert.match(projectHtml.body, /磁盘资产/);
   assert.match(projectHtml.body, /对账资产/);
   assert.match(projectHtml.body, /在跑什么/, "一屏三问");
+  assert.match(projectHtml.body, /c-store-chip/, "顶栏记录底座指示器");
+  assert.match(projectHtml.body, /会话内存（不持久）|文件台账/, "指示器显示持久层");
   assert.match(projectHtml.body, /&(amp;)?section=dispatch/, "下发入口");
   assert.match(
     projectHtml.body,
@@ -542,6 +544,8 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   );
   assert.match(pendingHtml.body, /id="release-task"/, "未完任务释放可操作");
   assert.match(pendingHtml.body, /panel\/api\/tasks\/release/);
+  assert.match(pendingHtml.body, /data-confirm="确认释放该任务回待领取？领取方：[^"]*子运行/, "释放确认含后果");
+  assert.match(pendingHtml.body, /id="release-status"[^>]*role="alert"/, "释放失败内联回报");
 
   const flashHtml = await handlePanelRequest(
     new URL(
@@ -1330,11 +1334,13 @@ test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS
   assert.match(html.body, /name="projectKey"/);
   assert.match(html.body, /placeholder="默认 JIRA_ISSUE_PROJECT"/);
   assert.match(html.body, /name="issueType"/);
-  assert.match(html.body, /placeholder="Bug"/);
+  assert.match(html.body, /placeholder="默认 Bug"/);
+  assert.match(html.body, /请先点「预览」核对将创建的内容/, "建单强制预览闸门");
+  assert.match(html.body, /建单（外部副作用）/, "按钮明示外部副作用");
   assert.match(html.body, /name="labels"/);
   assert.match(html.body, /placeholder="逗号分隔"/);
   assert.match(html.body, />预览</);
-  assert.match(html.body, />建单</);
+  assert.match(html.body, />建单（外部副作用）</);
   assert.match(html.body, /id="issues-result"/);
   const formOpen = html.body.indexOf('<form id="issues-form"');
   const formClose = html.body.indexOf("</form>", formOpen);

@@ -6,7 +6,7 @@ import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
-import { renderConsoleShell, type ConsoleCapabilities, type ConsoleNavKey } from "../console/shell.js";
+import { renderConsoleShell, type ConsoleCapabilities, type ConsoleNavKey, type ConsoleShellInput } from "../console/shell.js";
 import {
   computeDispatchPreview,
   renderDispatchPage,
@@ -446,7 +446,11 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
   const response: PanelWebResponse =
     url.pathname === "/panel.json"
       ? { status: 200, contentType: JSON_CONTENT_TYPE, body: JSON.stringify(toJsonView(view), null, 2) }
-      : { status: 200, contentType: HTML_CONTENT_TYPE, body: renderPanelHtml(view, deps) };
+      : {
+          status: 200,
+          contentType: HTML_CONTENT_TYPE,
+          body: renderPanelHtml(view, deps, await loadStoreHealth(deps, view))
+        };
   deps.cache?.set(cacheKey, response);
   return response;
 }
@@ -1222,11 +1226,18 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
         if (!active) {
           return `<p>${badge} <button class="c-button" type="button" disabled title="任务已终态">释放重跑</button> <span class="muted">仅未完成（待领取/已领取/执行中）任务可释放</span></p>`;
         }
+        const runnerNote =
+          detail.runner === null
+            ? `${task.claimedBy ?? "无领取方"}（未知执行机）`
+            : `${detail.runner.name}（${detail.runner.online ? "在线" : "失联"}）`;
+        const releaseConfirm = `确认释放该任务回待领取？领取方：${runnerNote}；已完成子运行 ${detail.runs.length} 个（保留）；释放后可能被重新领取执行。`;
         const projectJson = JSON.stringify(view.rootPath).replace(/</g, "\\u003c");
         const taskJson = JSON.stringify(task.id).replace(/</g, "\\u003c");
+        const confirmJson = JSON.stringify(releaseConfirm).replace(/</g, "\\u003c");
         return [
-          `<p>${badge} <button class="c-button c-button-danger" type="button" id="release-task">释放重跑</button> <span class="muted">放回待领取（需确认）</span></p>`,
-          `<script>(function(){var b=document.getElementById('release-task');if(!b)return;b.addEventListener('click',function(){if(!confirm('确认释放该任务回待领取？'))return;fetch('/panel/api/tasks/release',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:${projectJson},taskId:${taskJson}})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('已释放任务回待领取 · 已写入审计');location.reload();}else{alert('释放失败：'+(res.j.error||res.status||''));}}).catch(function(e){alert('释放失败：'+e);});});})();</script>`
+          `<p>${badge} <button class="c-button c-button-danger" type="button" id="release-task" data-confirm="${escapeHtml(releaseConfirm)}">释放重跑</button> <span class="muted">放回待领取（需确认；子运行保留）</span></p>`,
+          `<p id="release-status" role="alert" class="c-banner c-banner-warn" hidden></p>`,
+          `<script>(function(){var b=document.getElementById('release-task');if(!b)return;var errBox=document.getElementById('release-status');function showErr(m){errBox.textContent=m;errBox.hidden=false;}b.addEventListener('click',function(){if(!confirm(b.getAttribute('data-confirm')||'确认释放该任务回待领取？'))return;errBox.hidden=true;fetch('/panel/api/tasks/release',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:${projectJson},taskId:${taskJson}})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('已释放任务回待领取 · 已写入审计');location.reload();}else{showErr('释放失败：'+((res.j&&res.j.error)||res.status||'未知错误'));}}).catch(function(e){showErr('释放失败：'+e);});});})();</script>`
         ].join("\n");
       })(),
       coverageHint,
@@ -1414,13 +1425,13 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
     title,
     '<form id="issues-form" onsubmit="return submitIssues(event, false)">',
     renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决"),
-    '<p><label>Jira 项目：<input type="text" name="projectKey" size="12" placeholder="默认 JIRA_ISSUE_PROJECT"></label> ',
-    '<label>类型：<input type="text" name="issueType" size="10" placeholder="Bug"></label> ',
-    '<label>标签：<input type="text" name="labels" size="20" placeholder="逗号分隔"></label></p>',
+    `<p><label>Jira 项目：<input type="text" name="projectKey" size="12" value="${escapeHtml(currentShell.jiraDefaults?.projectKey ?? "")}" placeholder="默认 JIRA_ISSUE_PROJECT"></label> `,
+    `<label>类型：<input type="text" name="issueType" size="10" value="${escapeHtml(currentShell.jiraDefaults?.issueType ?? "")}" placeholder="默认 Bug"></label> `,
+    `<label>标签：<input type="text" name="labels" size="20" value="${escapeHtml(currentShell.jiraDefaults?.labels ?? "")}" placeholder="逗号分隔"></label></p>`,
     '<p><button type="button" onclick="return submitIssues(event, true)">预览</button> ',
-    '<button type="submit">建单</button> <span id="issues-status" role="status" class="muted"></span></p>',
+    '<button type="submit">建单（外部副作用）</button> <span id="issues-status" role="status" class="muted"></span></p>',
     '<div id="issues-result"></div>',
-    '<p class="note">建立 Jira 单为外部副作用；「预览」仅显示将创建的摘要与附件、不触网。勾选多条 → 每条各建一张单。</p>',
+    '<p class="note">建立 Jira 单为外部副作用：必须先用「预览」核对（表单默认值已按项目配置回显），再点「建单」。勾选多条 → 每条各建一张单。</p>',
     "</form>",
     "<script>",
     "function submitIssues(event,dryRun){",
@@ -1437,6 +1448,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
     "  if(projectKey!==''){payload.projectKey=projectKey;}",
     "  if(issueType!==''){payload.issueType=issueType;}",
     "  if(labels!==''){payload.labels=labels;}",
+    "  if(!dryRun&&!window.__aosIssuesPreviewed){status.textContent='请先点「预览」核对将创建的内容（防误建单）';return false;}",
     "  if(!dryRun&&!confirm('确认在 Jira 创建外部可见单据（外部副作用）？')){status.textContent='已取消';return false;}",
     "  status.textContent=dryRun?'预览中…':'提交中…';",
     "  result.replaceChildren();",
@@ -1444,6 +1456,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
     "    .then(function(response){return response.json().then(function(data){",
     "      if(!response.ok||data.ok===false){status.textContent='失败：'+(data.error||('HTTP '+response.status))+((data.hints&&data.hints.length>0)?('（'+data.hints.join('；')+'）'):'');return;}",
     "      result.replaceChildren(renderIssueResults(data.results));",
+    "      if(dryRun){window.__aosIssuesPreviewed=true;}",
     "      status.textContent='完成：新建 '+data.created+' · 已存在 '+data.existing+' · 跳过 '+data.skipped+' · 失败 '+data.failed;",
     "      if(!dryRun&&data.created>0){window.aosFlash&&aosFlash('已建单 '+data.created+' 张（外部副作用） · 已写入审计');location.reload();}",
     "    });})",
@@ -1978,6 +1991,7 @@ function page(title: string, bodyParts: string, refreshSeconds?: number): string
     active: currentShell.active,
     project: currentShell.project,
     capabilities: currentShell.capabilities,
+    storeHealth: currentShell.storeHealth,
     ...(refreshSeconds === undefined ? {} : { autoRefreshSeconds: refreshSeconds }),
     body: bodyParts.replaceAll("<main>", "").replaceAll("</main>", "")
   });
@@ -1987,6 +2001,8 @@ interface ShellCtx {
   active: ConsoleNavKey | null;
   project: string | null;
   capabilities?: ConsoleCapabilities;
+  jiraDefaults?: { projectKey?: string; issueType?: string; labels?: string };
+  storeHealth?: ConsoleShellInput["storeHealth"];
 }
 
 let currentShell: ShellCtx = { active: "overview", project: null };
@@ -2017,11 +2033,48 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
   }
 }
 
-function renderPanelHtml(view: PanelView, deps: PanelWebDeps): string {
+async function loadStoreHealth(
+  deps: PanelWebDeps,
+  view: PanelView
+): Promise<NonNullable<ConsoleShellInput["storeHealth"]>> {
+  const kind = deps.store.kind;
+  const health = (
+    deps.store as { writeErrors?: () => { count: number; lastError: string | null } }
+  ).writeErrors?.();
+  const project = view.kind === "overview" || view.kind === "compare" ? null : view.rootPath;
+  let lastWriteAt: string | null = null;
+  if (project !== null) {
+    try {
+      const recent = await deps.store.listAudit(project, { limit: 1 });
+      lastWriteAt = recent[0]?.at ?? null;
+    } catch {
+      /* best effort：指示器不阻断页面 */
+    }
+  }
+  return {
+    label: storeKindLabel(kind),
+    lastWriteAt,
+    writeIssue:
+      health && health.count > 0
+        ? `写失败 ${health.count} 次`
+        : kind === "memory"
+          ? "会话内存（不持久）"
+          : null,
+    opsHref: project === null ? null : `/panel?project=${encodeURIComponent(project)}&section=ops`
+  };
+}
+
+function renderPanelHtml(view: PanelView, deps: PanelWebDeps, storeHealth?: ConsoleShellInput["storeHealth"]): string {
   currentShell = {
     active: activeForView(view),
     project: view.kind === "overview" || view.kind === "compare" ? null : view.rootPath,
-    capabilities: deps.capabilities
+    capabilities: deps.capabilities,
+    jiraDefaults: {
+      projectKey: deps.env?.JIRA_ISSUE_PROJECT?.trim() || undefined,
+      issueType: deps.env?.JIRA_ISSUE_TYPE?.trim() || undefined,
+      labels: deps.env?.JIRA_ISSUE_LABELS?.trim() || undefined
+    },
+    storeHealth
   };
   const cacheNote = "缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）";
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);
@@ -2032,7 +2085,8 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps): string {
       rootLabel: view.rootLabel,
       preview: view.preview,
       query: view.query,
-      capabilities: deps.capabilities
+      capabilities: deps.capabilities,
+      storeHealth: currentShell.storeHealth
     });
   }
   if (view.kind === "library") {
@@ -2041,7 +2095,8 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps): string {
       rootLabel: view.rootLabel,
       sets: view.sets,
       quarantine: view.quarantine,
-      capabilities: deps.capabilities
+      capabilities: deps.capabilities,
+      storeHealth: currentShell.storeHealth
     });
   }
   if (view.kind === "archive") {
@@ -2049,7 +2104,8 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps): string {
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
       artifacts: view.artifacts,
-      query: view.query
+      query: view.query,
+      storeHealth: currentShell.storeHealth
     });
   }
   if (view.kind === "audit") {
@@ -2058,7 +2114,8 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps): string {
       rootLabel: view.rootLabel,
       events: view.events,
       query: view.query,
-      page: view.page
+      page: view.page,
+      storeHealth: currentShell.storeHealth
     });
   }
   if (view.kind === "ops") {
@@ -2070,7 +2127,8 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps): string {
       storeNote: view.storeNote,
       writeError: view.writeError,
       artifacts: view.artifacts,
-      capabilities: deps.capabilities
+      capabilities: deps.capabilities,
+      storeHealth: currentShell.storeHealth
     });
   }
   if (view.kind === "project") return renderProjectPage(view, cacheNote);

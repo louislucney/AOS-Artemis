@@ -6,7 +6,7 @@ import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
 import { parseQuarantine } from "../figma/quarantine.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cCard, cTable } from "./components.js";
-import { renderConsoleShell, type ConsoleCapabilities } from "./shell.js";
+import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
 
 export interface LibraryPageData {
   rootPath: string;
@@ -14,6 +14,7 @@ export interface LibraryPageData {
   sets: CaseSetRecord[];
   quarantine: { active: string[]; stale: number; invalid: number; exists: boolean };
   capabilities?: ConsoleCapabilities;
+  storeHealth?: ConsoleShellInput["storeHealth"];
 }
 
 export function readQuarantineSummary(rootPath: string): Promise<LibraryPageData["quarantine"]> {
@@ -81,6 +82,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
     capabilities: data.capabilities,
+    storeHealth: data.storeHealth,
     body: [
       "<h1>用例库</h1>",
       cCard({
@@ -106,6 +108,7 @@ export interface ArchivePageData {
   rootLabel: string;
   artifacts: ArtifactRecord[];
   query: Record<string, string>;
+  storeHealth?: ConsoleShellInput["storeHealth"];
 }
 
 export function renderArchivePage(data: ArchivePageData): string {
@@ -128,6 +131,7 @@ export function renderArchivePage(data: ArchivePageData): string {
     active: "archive",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
+    storeHealth: data.storeHealth,
     body: [
       "<h1>档案与产物</h1>",
       cCard({
@@ -165,6 +169,7 @@ export interface AuditPageData {
   events: AuditEventRecord[];
   query: Record<string, string>;
   page: { offset: number; hasNext: boolean; pageSize: number };
+  storeHealth?: ConsoleShellInput["storeHealth"];
 }
 
 export function renderAuditPage(data: AuditPageData): string {
@@ -201,6 +206,7 @@ export function renderAuditPage(data: AuditPageData): string {
     active: "audit",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
+    storeHealth: data.storeHealth,
     body: [
       "<h1>审计</h1>",
       cCard({
@@ -245,6 +251,7 @@ export interface OpsPageData {
   writeError: string | null;
   artifacts: number;
   capabilities?: ConsoleCapabilities;
+  storeHealth?: ConsoleShellInput["storeHealth"];
 }
 
 export function renderOpsPage(data: OpsPageData): string {
@@ -263,6 +270,7 @@ export function renderOpsPage(data: OpsPageData): string {
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
     capabilities: data.capabilities,
+    storeHealth: data.storeHealth,
     body: [
       "<h1>运维与数据</h1>",
       cCard({

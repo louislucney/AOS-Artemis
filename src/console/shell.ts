@@ -43,6 +43,13 @@ export interface ConsoleShellInput {
   /** 当前项目根路径：项目级导航项据此携带 project 上下文；缺省时项目级项渲染为禁用。 */
   project?: string | null;
   capabilities?: ConsoleCapabilities;
+  /** 顶栏"记录底座"常驻指示（持久层/最近写入/写失败）。 */
+  storeHealth?: {
+    label: string;
+    lastWriteAt: string | null;
+    writeIssue: string | null;
+    opsHref: string | null;
+  };
 }
 
 /** 项目级导航键（需要 project 上下文；无上下文时禁用而非误指总览）。 */
@@ -124,7 +131,16 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     .filter(([, key]) => navTargets[key] !== undefined)
     .map(([letter, , label]) => `<li><span class="c-kbd">g ${letter}</span> ${escapeHtml(label)}</li>`)
     .join("");
-  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({t:"tasks",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}})();</script>`;
+  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({t:"tasks",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}})();</script>`;
+  const health = input.storeHealth;
+  const healthChip =
+    health === undefined
+      ? ""
+      : `<div class="c-store-chip">${health.opsHref === null ? "" : `<a href="${escapeHtml(health.opsHref)}">`}${escapeHtml(health.label)}${health.opsHref === null ? "" : "</a>"}${
+          health.lastWriteAt === null
+            ? ""
+            : ` · 最近写入 ${escapeHtml(health.lastWriteAt.slice(5, 16).replace("T", " "))}`
+        }${health.writeIssue === null ? "" : ` <span class="c-badge c-badge-error">${escapeHtml(health.writeIssue)}</span>`}</div>`;
   const shortcutsPanel = `<div class="c-card" id="console-shortcuts" role="region" aria-label="快捷键"><h2 class="c-card-title">快捷键</h2><ul><li><span class="c-kbd">?</span> 开关本帮助</li><li><span class="c-kbd">/</span> 聚焦筛选框</li>${shortcutRows}</ul></div>`;
   const flashScript = `<script>(function(){window.aosFlash=function(message){try{sessionStorage.setItem("aos-flash",message);}catch(e){}};var raw=null;try{raw=sessionStorage.getItem("aos-flash");}catch(e){}if(raw){try{sessionStorage.removeItem("aos-flash");}catch(e){}var main=document.getElementById("console-main");if(main){var box=document.createElement("div");box.className="c-banner c-banner-accent";box.setAttribute("role","status");var text=document.createTextNode(raw);box.appendChild(text);var params=new URLSearchParams(location.search);var project=params.get("project");if(project){box.appendChild(document.createTextNode(" "));var a=document.createElement("a");a.href="/panel?project="+encodeURIComponent(project)+"&section=audit";a.textContent="查看审计";box.appendChild(a);}var sheet=document.getElementById("console-shortcuts");main.insertBefore(box,sheet?sheet.nextSibling:main.firstChild);}}var dismiss=document.getElementById("capability-dismiss");if(dismiss){dismiss.addEventListener("click",function(){try{sessionStorage.setItem("aos-cap-dismissed","1");}catch(e){}var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);});}}if(function(){try{return sessionStorage.getItem("aos-cap-dismissed")==="1";}catch(e){return false;}}()){var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);}})();</script>`;
   return [
@@ -144,6 +160,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     '<a class="c-skip-link" href="#console-main">跳到主内容</a>',
     '<header class="c-topbar">',
     '<div class="c-brand"><a href="/panel">AOS 控制台</a></div>',
+    healthChip,
     input.meta ? `<div class="c-topbar-meta">${input.meta}</div>` : "",
     "</header>",
     actionsBanner,

@@ -54,6 +54,26 @@ test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷�
   assert.match(html, /g o<\/span> 总览|g t<\/span> 任务/, "跳转键表");
 });
 
+test("console shell: 顶栏记录底座指示器（持久层/最近写入/写失败）", () => {
+  const html = renderConsoleShell({
+    title: "任务",
+    active: "tasks",
+    body: "",
+    project: "/w/p",
+    storeHealth: {
+      label: "文件台账",
+      lastWriteAt: "2026-10-18T12:03:44.000Z",
+      writeIssue: "写失败 2 次",
+      opsHref: "/panel?project=%2Fw%2Fp&section=ops"
+    }
+  });
+  assert.match(html, /c-store-chip/);
+  assert.match(html, /文件台账/);
+  assert.match(html, /最近写入 10-18 12:03/);
+  assert.match(html, /c-badge-error">写失败 2 次/);
+  assert.match(html, /section=ops/);
+});
+
 test("console shell: 项目上下文与能力标记（导航禁用/横幅）", () => {
   const withProject = renderConsoleShell({
     title: "下发",
