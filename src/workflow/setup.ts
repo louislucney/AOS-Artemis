@@ -10,9 +10,10 @@ import {
   type PenExecFn,
   type PenExecResult
 } from "../pen/cli.js";
+import { ENV_JIRA_API_TOKEN, ENV_JIRA_BASE_URL, ENV_JIRA_EMAIL } from "../jira/config.js";
 import { ENV_FIGMA_TOKEN } from "../projects/scan.js";
 
-export type SetupTarget = "figma" | "pen" | "llm" | "device";
+export type SetupTarget = "figma" | "pen" | "llm" | "device" | "jira";
 
 /** 前置检查结果：就绪＝null；SetupNeed＝预期缺失（非错误，供 needs-setup 结构化返回）。 */
 export interface SetupNeed {
@@ -48,6 +49,19 @@ export function checkFigma(runtime: Runtime): SetupNeed | null {
     target: "figma",
     missing: [ENV_FIGMA_TOKEN],
     howTo: ["aos_configure(figmaToken=…) 或写项目 .env"]
+  };
+}
+
+export function checkJira(runtime: Runtime): SetupNeed | null {
+  const config = runtime.jiraConfig();
+  if (config.configured) return null;
+  return {
+    target: "jira",
+    missing: config.missing,
+    howTo: [
+      "调用 aos_configure 同时提供 jiraSite / jiraEmail / jiraApiToken（写入项目 .env 并即时刷新）",
+      `或在 <项目根>/.env 中添加 ${ENV_JIRA_BASE_URL} / ${ENV_JIRA_EMAIL} / ${ENV_JIRA_API_TOKEN} 后重启 MCP 会话`
+    ]
   };
 }
 

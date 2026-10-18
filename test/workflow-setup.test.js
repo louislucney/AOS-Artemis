@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { checkFigma, checkLlm, checkPen } from "../dist/workflow/setup.js";
+import { checkFigma, checkJira, checkLlm, checkPen } from "../dist/workflow/setup.js";
 
 function stubRuntime({ dotenv = {}, entry = null } = {}) {
   const state = { activeCalls: 0 };
@@ -322,4 +322,37 @@ test("前置检查：全桩注入时不触网、不写盘", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("checkJira: configured → null", () => {
+  const runtime = {
+    jiraConfig: () => ({
+      configured: true,
+      missing: [],
+      siteUrl: "https://example.atlassian.net",
+      email: "a@b.c",
+      apiToken: "t"
+    })
+  };
+  assert.equal(checkJira(runtime), null);
+});
+
+test("checkJira: 缺 URL+token → 结构化 need（missing/howTo 逐字）", () => {
+  const runtime = {
+    jiraConfig: () => ({
+      configured: false,
+      missing: ["JIRA_BASE_URL", "JIRA_API_TOKEN"],
+      siteUrl: null,
+      email: "a@b.c",
+      apiToken: null
+    })
+  };
+  assert.deepEqual(checkJira(runtime), {
+    target: "jira",
+    missing: ["JIRA_BASE_URL", "JIRA_API_TOKEN"],
+    howTo: [
+      "调用 aos_configure 同时提供 jiraSite / jiraEmail / jiraApiToken（写入项目 .env 并即时刷新）",
+      "或在 <项目根>/.env 中添加 JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN 后重启 MCP 会话"
+    ]
+  });
 });
