@@ -86,32 +86,3 @@ export function cEmpty(input: CEmptyInput): string {
   const action = input.action ? `<div class="c-empty-action">${input.action}</div>` : "";
   return `<div class="c-empty"><h3>${escapeHtml(input.title)}</h3><p>${escapeHtml(input.body)}</p>${action}</div>`;
 }
-
-export interface CConfirmFormInput {
-  action: string;
-  project: string;
-  fields: Record<string, string>;
-  label: string;
-  confirm: string;
-  danger?: boolean;
-}
-
-export function cConfirmForm(input: CConfirmFormInput): string {
-  const hidden = (name: string, value: string): string =>
-    `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`;
-  const fields = Object.entries(input.fields)
-    .map(([name, value]) => hidden(name, value))
-    .join("");
-  const dangerAttrs = input.danger
-    ? ` data-danger="1" data-danger-phrase="${escapeHtml(input.confirm)}"`
-    : "";
-  const buttonClass = input.danger ? "c-button c-button-danger" : "c-button";
-  return [
-    `<form class="c-confirm" method="post" action="${escapeHtml(input.action)}" data-confirm="${escapeHtml(input.confirm)}"${dangerAttrs} onsubmit="return window.aosConfirmForm?window.aosConfirmForm(this):true">`,
-    hidden("project", input.project),
-    fields,
-    `<button class="${buttonClass}" type="submit">${escapeHtml(input.label)}</button>`,
-    "<script>if(!window.aosConfirmForm){window.aosConfirmForm=function(f){var msg=f.getAttribute('data-confirm');if(msg&&!window.confirm(msg))return false;var phrase=f.getAttribute('data-danger')==='1'?f.getAttribute('data-danger-phrase'):null;if(phrase){var v=window.prompt('输入“'+phrase+'”以确认');if(v!==phrase)return false;}return true;};}</script>",
-    "</form>"
-  ].join("");
-}

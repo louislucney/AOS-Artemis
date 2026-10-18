@@ -22,7 +22,7 @@ import {
 } from "../console/pages.js";
 import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
 import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
-import { cBadge, cCard, cStat, cTable } from "../console/components.js";
+import { cBadge, cCard, cEmpty, cStat, cTable } from "../console/components.js";
 import { storeKindLabel } from "../db/labels.js";
 import {
   buildPanelBatchDetail,
@@ -86,7 +86,7 @@ export interface PanelWebDeps {
 export interface PanelWebResponse {
   status: number;
   contentType: string;
-  body: string;
+  body: string | Buffer;
 }
 
 export interface PanelWebCache {
@@ -161,6 +161,7 @@ type PanelView =
       rootLabel: string;
       events: AuditEventRecord[];
       query: Record<string, string>;
+      page: { offset: number; hasNext: boolean; pageSize: number };
     }
   | {
       kind: "ops";
@@ -301,14 +302,31 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     const result =
       resultRaw === "ok" || resultRaw === "skipped" || resultRaw === "failed" ? resultRaw : undefined;
     const since = trimmed(url.searchParams.get("since"));
-    const events = await deps.store.listAudit(resolved.rootPath, {
+    const offsetRaw = trimmed(url.searchParams.get("offset"));
+    const offset =
+      offsetRaw !== null && Number.isFinite(Number(offsetRaw)) && Number(offsetRaw) > 0
+        ? Math.floor(Number(offsetRaw))
+        : 0;
+    const pageSize = 50;
+    const page = await deps.store.listAudit(resolved.rootPath, {
       ...(domain === null ? {} : { domain }),
       ...(result === undefined ? {} : { result }),
-      ...(since === null ? {} : { since })
+      ...(since === null ? {} : { since }),
+      limit: pageSize + 1,
+      offset
     });
+    const hasNext = page.length > pageSize;
+    const events = hasNext ? page.slice(0, pageSize) : page;
     const query: Record<string, string> = {};
     for (const [key, value] of url.searchParams) query[key] = value;
-    return { kind: "audit", rootPath: resolved.rootPath, rootLabel: resolved.name, events, query };
+    return {
+      kind: "audit",
+      rootPath: resolved.rootPath,
+      rootLabel: resolved.name,
+      events,
+      query,
+      page: { offset, hasNext, pageSize }
+    };
   }
   if (section === "ops") {
     const health = (
@@ -535,15 +553,21 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
         tone: view.host.buildStale === null ? "neutral" : view.host.buildStale ? "warning" : "success"
       })}</p>`,
       "</header>",
-      cCard({
-        title: "项目",
-        subtitle: `生成时间 ${view.generatedAt} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
-        body: cTable({
-          columns: ["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
-          rows,
-          empty: "暂无项目"
-        })
-      })
+      view.projects.length === 0
+        ? cEmpty({
+            title: "还没有接入项目",
+            body: "在 MCP 客户端配置 AOS_PROJECT_DIR 指向项目目录，或把项目放入本次工作区后刷新；接入步骤见项目根 README。",
+            action: '<code>node dist/cli.js install</code>（生成客户端挂载配置）'
+          })
+        : cCard({
+            title: "项目",
+            subtitle: `生成时间 ${view.generatedAt} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
+            body: cTable({
+              columns: ["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
+              rows,
+              empty: "暂无项目"
+            })
+          })
     ].join("\n")
   });
 }
@@ -925,7 +949,7 @@ function renderRegressionBlock(rootPath: string, detail: PanelProjectDetail): st
     '<option value="latest" selected>最近一次（同份）</option>',
     '<option value="none">不对比（重建基准）</option>',
     "</select></label></p>",
-    '<p><button type="submit">创建回归任务</button> <span id="regression-status" class="muted"></span></p>',
+    '<p><button type="submit">创建回归任务</button> <span id="regression-status" role="status" class="muted"></span></p>',
     '<p class="note">需启用 JavaScript 提交（或使用 <code>suite task create</code>）。</p>',
     "</form>",
     "<script>",
@@ -1291,7 +1315,7 @@ function renderReviewPage(view: {
           '<label><input type="radio" name="verdict" value="uncertain"> 不确定</label>',
           "</p>",
           '<p><label>备注：<input type="text" name="note" size="40" placeholder="可选（写入裁决历史）"></label></p>',
-          '<p><button type="submit">提交裁决</button> <span id="verdict-status" class="muted"></span></p>',
+          '<p><button type="submit">提交裁决</button> <span id="verdict-status" role="status" class="muted"></span></p>',
           '<p class="note">需启用 JavaScript 提交；勾选多条 → 同一裁决批量写入。</p>',
           "</form>",
           "<script>",
@@ -1366,7 +1390,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
     '<label>类型：<input type="text" name="issueType" size="10" placeholder="Bug"></label> ',
     '<label>标签：<input type="text" name="labels" size="20" placeholder="逗号分隔"></label></p>',
     '<p><button type="button" onclick="return submitIssues(event, true)">预览</button> ',
-    '<button type="submit">建单</button> <span id="issues-status" class="muted"></span></p>',
+    '<button type="submit">建单</button> <span id="issues-status" role="status" class="muted"></span></p>',
     '<div id="issues-result"></div>',
     '<p class="note">建立 Jira 单为外部副作用；「预览」仅显示将创建的摘要与附件、不触网。勾选多条 → 每条各建一张单。</p>',
     "</form>",
@@ -1998,7 +2022,8 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps): string {
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
       events: view.events,
-      query: view.query
+      query: view.query,
+      page: view.page
     });
   }
   if (view.kind === "ops") {

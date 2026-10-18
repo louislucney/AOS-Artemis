@@ -36,7 +36,8 @@ export function renderLibraryPage(data: LibraryPageData): string {
     escapeHtml(set.source),
     escapeHtml(set.createdAt),
     String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
-    set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—"
+    set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
+    `<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}">下发该份</a>`
   ]);
   const quarantine = data.quarantine;
   const quarantineBody = [
@@ -58,7 +59,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
         title: "用例集（份）",
         subtitle: `共 ${data.sets.length} 份 · 来源与条数为登记口径`,
         body: cTable({
-          columns: ["份", "来源", "登记时间", "用例数", "功能"],
+          columns: ["份", "来源", "登记时间", "用例数", "功能", "动作"],
           rows,
           empty: "暂无用例集（先生成或导入）"
         }),
@@ -77,13 +78,19 @@ export interface ArchivePageData {
 }
 
 export function renderArchivePage(data: ArchivePageData): string {
-  const rows = data.artifacts.map((record) => [
-    cBadge({ label: record.kind, tone: "neutral" }),
-    `<code>${escapeHtml(record.title)}</code>`,
-    escapeHtml(record.path),
-    escapeHtml(record.at),
-    record.size === 0 && record.meta?.type === "dir" ? "目录" : `${record.size} B`
-  ]);
+  const rows = data.artifacts.map((record) => {
+    const isDir = record.meta?.type === "dir";
+    const location = isDir
+      ? `<code>${escapeHtml(record.path)}</code>`
+      : `<a href="/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(record.path)}"><code>${escapeHtml(record.path)}</code></a>`;
+    return [
+      cBadge({ label: record.kind, tone: "neutral" }),
+      `<code>${escapeHtml(record.title)}</code>`,
+      location,
+      escapeHtml(record.at),
+      isDir ? "目录" : `${record.size} B`
+    ];
+  });
   const q = (name: string): string => escapeHtml(data.query[name] ?? "");
   return renderConsoleShell({
     title: "档案与产物",
@@ -125,6 +132,7 @@ export interface AuditPageData {
   rootLabel: string;
   events: AuditEventRecord[];
   query: Record<string, string>;
+  page: { offset: number; hasNext: boolean; pageSize: number };
 }
 
 export function renderAuditPage(data: AuditPageData): string {
@@ -139,6 +147,23 @@ export function renderAuditPage(data: AuditPageData): string {
     escapeHtml(event.summary)
   ]);
   const q = (name: string): string => escapeHtml(data.query[name] ?? "");
+  const link = (patch: Record<string, string | null>): string => {
+    const params = new URLSearchParams({ project: data.rootPath, section: "audit" });
+    for (const key of ["domain", "result", "since"]) {
+      const value = data.query[key];
+      if (value !== undefined && value !== "") params.set(key, value);
+    }
+    params.set("offset", String(data.page.offset));
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+    }
+    return `/panel?${params.toString()}`;
+  };
+  const prevHref = data.page.offset > 0 ? link({ offset: String(Math.max(0, data.page.offset - data.page.pageSize)) }) : null;
+  const nextHref = data.page.hasNext ? link({ offset: String(data.page.offset + data.page.pageSize) }) : null;
+  const preset = (label: string, hours: number): string =>
+    `<a class="c-button" href="${link({ since: new Date(Date.now() - hours * 3600_000).toISOString(), offset: "0" })}">${label}</a>`;
   return renderConsoleShell({
     title: "审计",
     active: "audit",
@@ -158,17 +183,21 @@ export function renderAuditPage(data: AuditPageData): string {
                 `<option value="${result}"${data.query.result === result ? " selected" : ""}>${result}</option>`
             )
             .join("")}</select> 起自 <input type="text" name="since" aria-label="起始时间（ISO）" value="${q("since")}" size="20" placeholder="ISO 时间"> <button class="c-button" type="submit">筛选</button></p>`,
+          `<p>时间预设：${preset("近 24 小时", 24)} ${preset("近 7 天", 168)} ${preset("近 30 天", 720)} ${data.query.since !== undefined && data.query.since !== "" ? `<a class="c-button" href="${link({ since: null, offset: "0" })}">清除</a>` : ""}</p>`,
           "</form>"
         ].join("\n")
       }),
       cCard({
         title: "事件流",
-        subtitle: `共 ${data.events.length} 条（新→旧，上限 200）· 保留期 90 天 / 5 万条（AOS_AUDIT_*）`,
-        body: cTable({
-          columns: ["时间", "域", "动作", "结果", "摘要"],
-          rows,
-          empty: "暂无审计事件（内部编排动作发生后出现）"
-        })
+        subtitle: `第 ${Math.floor(data.page.offset / data.page.pageSize) + 1} 页 · 本页 ${data.events.length} 条（新→旧）· 保留期 90 天 / 5 万条（AOS_AUDIT_*）`,
+        body: [
+          cTable({
+            columns: ["时间", "域", "动作", "结果", "摘要"],
+            rows,
+            empty: "暂无审计事件（内部编排动作发生后出现）"
+          }),
+          `<div class="pager">${prevHref === null ? "" : `<a href="${prevHref}">← 上一页</a>`}${prevHref !== null && nextHref !== null ? " · " : ""}${nextHref === null ? "" : `<a href="${nextHref}">下一页 →</a>`}</div>`
+        ].join("\n")
       })
     ].join("\n")
   });

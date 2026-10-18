@@ -119,6 +119,8 @@ export interface AuditQuery {
   result?: AuditEventInput["result"];
   since?: string;
   limit?: number;
+  /** 分页偏移（配合 limit；审计页翻页用）。 */
+  offset?: number;
 }
 
 export interface ModelCacheRecord {

@@ -15,6 +15,7 @@ import {
   type PanelWebDeps
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
+import { handleArtifactRequest } from "./panel/artifact-route.js";
 import { createPanelDeepProbe } from "./panel/deep.js";
 import type { ProjectStore } from "./db/types.js";
 import { Runtime } from "./runtime.js";
@@ -262,6 +263,12 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           return;
         }
 
+        if (req.method === "GET" && url.pathname === "/panel/artifact") {
+          const response = await handleArtifactRequest(url, panelDeps);
+          res.writeHead(response.status, { "Content-Type": response.contentType });
+          res.end(response.body);
+          return;
+        }
         if (req.method === "GET" && (url.pathname === "/panel" || url.pathname === "/panel.json")) {
           const panelResponse = await handlePanelRequest(url, panelDeps);
           res.writeHead(panelResponse.status, { "Content-Type": panelResponse.contentType });

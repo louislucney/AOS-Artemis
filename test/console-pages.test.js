@@ -58,6 +58,8 @@ test("console pages: 用例库（份列表＋隔离徽章）", async () => {
   assert.match(html.body, /登录回归/);
   assert.match(html.body, /隔离中 0/);
   assert.match(html.body, /按份下发/);
+  assert.match(html.body, /下发该份/, "份行内动作");
+  assert.match(html.body, /section=dispatch&source=case-set&ref=/, "预填下发链接");
 
   const json = JSON.parse((await handlePanelRequest(new URL(url(rootPath, "library").toString().replace("/panel?", "/panel.json?")), deps)).body);
   assert.equal(json.view, "library");
@@ -70,6 +72,7 @@ test("console pages: 档案（索引＋kind 筛选）", async () => {
   assert.equal(all.status, 200);
   assert.match(all.body, /产物索引/);
   assert.match(all.body, /20261018_a\.json/);
+  assert.match(all.body, /\/panel\/artifact\?project=/, "产物行可点（只读服务）");
 
   const filtered = await handlePanelRequest(url(rootPath, "archive", { kind: "case-set" }), deps);
   assert.ok(!filtered.body.includes("20261018_a.json"), "kind 筛选生效");
@@ -89,6 +92,11 @@ test("console pages: 审计（domain 筛选＋结果徽章）", async () => {
   const failedOnly = await handlePanelRequest(url(rootPath, "audit", { result: "failed" }), deps);
   assert.ok(failedOnly.body.includes("action.tasks"));
   assert.ok(!failedOnly.body.includes("批次登记"));
+
+  assert.match(all.body, /时间预设/, "时间预设");
+  assert.match(all.body, /第 1 页/);
+  const pager = await handlePanelRequest(url(rootPath, "audit", { offset: "1" }), deps);
+  assert.match(pager.body, /第 1 页|第 2 页/, "offset 生效");
 });
 
 test("console pages: 运维与数据（存储徽章＋写失败信号位＋导出链接）", async () => {

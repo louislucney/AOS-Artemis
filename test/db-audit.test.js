@@ -57,6 +57,11 @@ test("MemoryStore: audit events round-trip, filters, newest-first, summary cap",
     summary: "x".repeat(400)
   });
   assert.equal(capped.summary.length, 300);
+
+  const page = await store.listAudit("/w/a", { limit: 1, offset: 1 });
+  assert.equal(page.length, 1);
+  assert.equal(page[0].id, second.id, "offset 分页（新→旧：第三条为 capped，第二位是 second）");
+  assert.deepEqual(await store.listAudit("/w/a", { offset: 99 }), []);
 });
 
 test("MemoryStore: exportState/importState round-trip", async () => {

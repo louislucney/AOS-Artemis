@@ -4,6 +4,7 @@ import path from "node:path";
 import { createProjectStore, type CreateStoreResult } from "./db/index.js";
 import { storeKindShortLabel } from "./db/labels.js";
 import { handlePanelActionRequest } from "./panel/actions.js";
+import { handleArtifactRequest } from "./panel/artifact-route.js";
 import { loopbackHostAllowed } from "./panel/http-guard.js";
 import type { ProjectStore } from "./db/types.js";
 import {
@@ -202,6 +203,12 @@ async function runPanelWeb(options: {
         if (req.method === "GET" && url.pathname === "/") {
           res.writeHead(302, { Location: "/panel" });
           res.end();
+          return;
+        }
+        if (req.method === "GET" && url.pathname === "/panel/artifact") {
+          const response = await handleArtifactRequest(url, deps);
+          res.writeHead(response.status, { "Content-Type": response.contentType });
+          res.end(response.body);
           return;
         }
         if (req.method === "GET" && (url.pathname === "/panel" || url.pathname === "/panel.json")) {

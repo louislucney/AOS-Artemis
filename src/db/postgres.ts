@@ -1336,8 +1336,14 @@ export class PostgresStore implements ProjectStore {
       conditions.push(`at >= $${params.length}`);
     }
     params.push(normalizeAuditLimit(query.limit));
+    const limitParam = params.length;
+    const offset =
+      typeof query.offset === "number" && Number.isFinite(query.offset) && query.offset > 0
+        ? Math.floor(query.offset)
+        : 0;
+    params.push(offset);
     const result = await this.pool.query(
-      `SELECT * FROM audit_events WHERE ${conditions.join(" AND ")} ORDER BY at DESC, id DESC LIMIT $${params.length}`,
+      `SELECT * FROM audit_events WHERE ${conditions.join(" AND ")} ORDER BY at DESC, id DESC LIMIT $${limitParam} OFFSET $${params.length}`,
       params
     );
     return result.rows.map(mapAudit);

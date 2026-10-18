@@ -697,13 +697,17 @@ export class MemoryStore implements ProjectStore {
   }
 
   async listAudit(rootPath: string, query: AuditQuery = {}): Promise<AuditEventRecord[]> {
+    const offset =
+      typeof query.offset === "number" && Number.isFinite(query.offset) && query.offset > 0
+        ? Math.floor(query.offset)
+        : 0;
     return this.auditEvents
       .filter((event) => event.rootPath === rootPath)
       .filter((event) => !query.domain || event.domain === query.domain)
       .filter((event) => !query.result || event.result === query.result)
       .filter((event) => !query.since || event.at >= query.since)
       .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))
-      .slice(0, normalizeAuditLimit(query.limit))
+      .slice(offset, offset + normalizeAuditLimit(query.limit))
       .map(cloneAuditEvent);
   }
 

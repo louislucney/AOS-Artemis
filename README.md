@@ -191,10 +191,10 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读�
 
 | 版块 | 内容与动作 |
 |---|---|
-| `dispatch` **下发向导** | 四步（来源→参数→预览回显→确认）；支持用例库选份/关键词/Excel；预览显示条数、runner 候选与告警 |
-| `library` **用例库** | 份列表（来源/条数/功能）＋隔离（quarantine，owner 签字）＋按份下发入口 |
-| `archive` **档案与产物** | 批次/份/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选 |
-| `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果/时间筛选 |
+| `dispatch` **下发向导** | 四步（来源→参数→预览回显→确认）；支持用例库选份/关键词；预览显示条数、runner 候选与告警；**两段确认**派发（refs 服务端重解析） |
+| `library` **用例库** | 份列表（来源/条数/功能）＋**行内「下发该份」**＋隔离（quarantine，owner 签字） |
+| `archive` **档案与产物** | 批次/份/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
+| `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
 | `ops` **运维与数据** | 存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
 
 写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel 导入支持 multipart 上传（`.xlsx`≤20MB，单飞）。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层（导入需 HTTP 模式的运行时解析）。

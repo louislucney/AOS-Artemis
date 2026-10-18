@@ -5,7 +5,6 @@ import {
   cBadge,
   cBanner,
   cCard,
-  cConfirmForm,
   cEmpty,
   cStat,
   cTable
@@ -58,22 +57,4 @@ test("cStat / cEmpty: 结构与转义", () => {
   const empty = cEmpty({ title: "还没有数据", body: "先下发一次", action: '<a href="/d">去下发</a>' });
   assert.match(empty, /<h3>还没有数据<\/h3>/);
   assert.match(empty, /<a href="\/d">去下发<\/a>/);
-});
-
-test("cConfirmForm: 隐藏字段转义、确认短语、危险态", () => {
-  const html = cConfirmForm({
-    action: "/panel/api/tasks/release",
-    project: '/w/"q"',
-    fields: { taskId: "t1" },
-    label: "释放重跑",
-    confirm: "确认释放？",
-    danger: true
-  });
-  assert.match(html, /action="\/panel\/api\/tasks\/release"/);
-  assert.ok(html.includes('value="/w/&quot;q&quot;"'), "project 转义");
-  assert.ok(html.includes('name="taskId" value="t1"'), "字段隐藏传递");
-  assert.match(html, /data-confirm="确认释放？"/);
-  assert.match(html, /data-danger="1"/);
-  assert.match(html, /c-button-danger/);
-  assert.match(html, /aosConfirmForm/);
 });
