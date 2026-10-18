@@ -3,7 +3,7 @@
 **AOS × ARTEMIS 合并 MCP 服务**：Figma 设计上下文（[design-context-bridge](https://github.com/CristinaFores/design-context-bridge)，MIT）+ ARTEMIS 真机自动化（[google/artemis](https://github.com/google/artemis)，Apache-2.0）+ **项目级 LLM 关联与切换（PostgreSQL）**。
 
 > 设计文档（架构/评审/数据模型）：[DESIGN.md](./DESIGN.md)
-> 运行逻辑与接入指南（其他项目如何挂载与使用）：[docs/接入指南.md](./docs/接入指南.md)
+> 项目接入指南（其他项目如何接入与使用：能提供什么、怎么配、怎么用、排障）：[docs/接入指南.md](./docs/接入指南.md)
 
 ## 核心模型（v0.3）
 
