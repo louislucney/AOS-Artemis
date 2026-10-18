@@ -207,7 +207,8 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     buildStale: isBuildStale(import.meta.url, Date.now() - Math.round(process.uptime() * 1000)),
     cache: createPanelWebCache(panelCacheTtlFrom(process.env)),
     deep: createPanelDeepProbe({ createRuntime: deepRuntimeFor }),
-    runtimeFor: deepRuntimeFor
+    runtimeFor: deepRuntimeFor,
+    storeNote: runtimeHost.storeNote
   };
 
   const httpServer = createServer((req, res) => {

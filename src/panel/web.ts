@@ -12,6 +12,16 @@ import {
   renderDispatchPage,
   type DispatchPreview
 } from "../console/dispatch.js";
+import {
+  readQuarantineSummary,
+  renderArchivePage,
+  renderAuditPage,
+  renderLibraryPage,
+  renderOpsPage,
+  type LibraryPageData
+} from "../console/pages.js";
+import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
+import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
 import { cBadge, cCard, cStat, cTable } from "../console/components.js";
 import { storeKindLabel } from "../db/labels.js";
 import {
@@ -67,6 +77,8 @@ export interface PanelWebDeps {
   deep?: PanelDeepProbe | null;
   /** 面板建单动作的运行时解析（HTTP 模式注入 deepRuntimeFor）。 */
   runtimeFor?: (rootPath: string) => Promise<Runtime | null>;
+  /** 存储回退说明（装配期 reason；运维页展示）。 */
+  storeNote?: string | null;
 }
 
 export interface PanelWebResponse {
@@ -126,6 +138,36 @@ type PanelView =
       rootLabel: string;
       preview: DispatchPreview;
       query: Record<string, string>;
+    }
+  | {
+      kind: "library";
+      rootPath: string;
+      rootLabel: string;
+      sets: CaseSetRecord[];
+      quarantine: LibraryPageData["quarantine"];
+    }
+  | {
+      kind: "archive";
+      rootPath: string;
+      rootLabel: string;
+      artifacts: ArtifactRecord[];
+      query: Record<string, string>;
+    }
+  | {
+      kind: "audit";
+      rootPath: string;
+      rootLabel: string;
+      events: AuditEventRecord[];
+      query: Record<string, string>;
+    }
+  | {
+      kind: "ops";
+      rootPath: string;
+      rootLabel: string;
+      storeKind: ProjectStore["kind"];
+      storeNote: string | null;
+      writeError: string | null;
+      artifacts: number;
     }
   | { kind: "project"; rootPath: string; detail: PanelProjectDetail }
   | { kind: "task"; rootPath: string; detail: PanelTaskDetail }
@@ -223,6 +265,67 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     for (const [key, value] of url.searchParams) query[key] = value;
     return { kind: "dispatch", rootPath: resolved.rootPath, rootLabel: resolved.name, preview, query };
   }
+  if (section === "library") {
+    return {
+      kind: "library",
+      rootPath: resolved.rootPath,
+      rootLabel: resolved.name,
+      sets: await deps.store.listCaseSets(resolved.rootPath),
+      quarantine: await readQuarantineSummary(resolved.rootPath)
+    };
+  }
+  if (section === "archive") {
+    const kindRaw = trimmed(url.searchParams.get("kind"));
+    const kind =
+      kindRaw !== null &&
+      ["run", "case-set", "report", "diff", "crash", "trace"].includes(kindRaw)
+        ? (kindRaw as ArtifactRecord["kind"])
+        : undefined;
+    const q = trimmed(url.searchParams.get("q"));
+    const since = trimmed(url.searchParams.get("since"));
+    const artifacts = await listArtifacts(resolved.rootPath, {
+      ...(kind === undefined ? {} : { kind }),
+      ...(q === null ? {} : { q }),
+      ...(since === null ? {} : { since }),
+      limit: 100
+    });
+    const query: Record<string, string> = {};
+    for (const [key, value] of url.searchParams) query[key] = value;
+    return { kind: "archive", rootPath: resolved.rootPath, rootLabel: resolved.name, artifacts, query };
+  }
+  if (section === "audit") {
+    const domain = trimmed(url.searchParams.get("domain"));
+    const resultRaw = trimmed(url.searchParams.get("result"));
+    const result =
+      resultRaw === "ok" || resultRaw === "skipped" || resultRaw === "failed" ? resultRaw : undefined;
+    const since = trimmed(url.searchParams.get("since"));
+    const events = await deps.store.listAudit(resolved.rootPath, {
+      ...(domain === null ? {} : { domain }),
+      ...(result === undefined ? {} : { result }),
+      ...(since === null ? {} : { since })
+    });
+    const query: Record<string, string> = {};
+    for (const [key, value] of url.searchParams) query[key] = value;
+    return { kind: "audit", rootPath: resolved.rootPath, rootLabel: resolved.name, events, query };
+  }
+  if (section === "ops") {
+    const health = (
+      deps.store as { writeErrors?: () => { count: number; lastError: string | null } }
+    ).writeErrors?.();
+    const artifacts = (await listArtifacts(resolved.rootPath, { limit: 500 })).length;
+    return {
+      kind: "ops",
+      rootPath: resolved.rootPath,
+      rootLabel: resolved.name,
+      storeKind: deps.store.kind,
+      storeNote: deps.storeNote ?? null,
+      writeError:
+        health && health.count > 0
+          ? `台账写失败 ${health.count} 次：${health.lastError ?? "未知原因"}`
+          : null,
+      artifacts
+    };
+  }
 
   const taskId = trimmed(url.searchParams.get("task"));
   if (taskId !== null) {
@@ -262,6 +365,21 @@ function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "overview") return { ...view.overview, view: "overview" };
   if (view.kind === "compare") return { ...view.compare, view: "compare" };
   if (view.kind === "dispatch") return { ok: true, view: "dispatch", ...view.preview };
+  if (view.kind === "library") {
+    return { ok: true, view: "library", sets: view.sets, quarantine: view.quarantine };
+  }
+  if (view.kind === "archive") return { ok: true, view: "archive", artifacts: view.artifacts };
+  if (view.kind === "audit") return { ok: true, view: "audit", events: view.events };
+  if (view.kind === "ops") {
+    return {
+      ok: true,
+      view: "ops",
+      storeKind: view.storeKind,
+      storeNote: view.storeNote,
+      writeError: view.writeError,
+      artifacts: view.artifacts
+    };
+  }
   if (view.kind === "project") return { ok: true, view: "project", ...view.detail };
   if (view.kind === "task") return { ok: true, view: "task", ...view.detail };
   if (view.kind === "review") return { ok: true, view: "review", ...view.detail };
@@ -1821,6 +1939,41 @@ function renderPanelHtml(view: PanelView): string {
       rootLabel: view.rootLabel,
       preview: view.preview,
       query: view.query
+    });
+  }
+  if (view.kind === "library") {
+    return renderLibraryPage({
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      sets: view.sets,
+      quarantine: view.quarantine
+    });
+  }
+  if (view.kind === "archive") {
+    return renderArchivePage({
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      artifacts: view.artifacts,
+      query: view.query
+    });
+  }
+  if (view.kind === "audit") {
+    return renderAuditPage({
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      events: view.events,
+      query: view.query
+    });
+  }
+  if (view.kind === "ops") {
+    return renderOpsPage({
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      storeKind: view.storeKind,
+      storeLabel: storeKindLabel(view.storeKind),
+      storeNote: view.storeNote,
+      writeError: view.writeError,
+      artifacts: view.artifacts
     });
   }
   if (view.kind === "project") return renderProjectPage(view, cacheNote);

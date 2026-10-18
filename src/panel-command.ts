@@ -184,7 +184,8 @@ async function runPanelWeb(options: {
     env,
     workspaceRoot,
     buildStale: isBuildStale(import.meta.url, Date.now() - Math.round(process.uptime() * 1000)),
-    cache: createPanelWebCache(panelCacheTtlFrom(env))
+    cache: createPanelWebCache(panelCacheTtlFrom(env)),
+    storeNote: options.storageNote
   };
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
