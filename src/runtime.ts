@@ -907,7 +907,7 @@ export class Runtime {
     return this.projectRecord;
   }
 
-  storeKind(): "postgres" | "memory" {
+  storeKind(): "postgres" | "file" | "memory" {
     return this.store.kind;
   }
 

@@ -22,7 +22,7 @@ export interface AosUsageArgs {
 
 interface UsageView {
   enabled: boolean;
-  storage: "postgres" | "memory";
+  storage: "postgres" | "file" | "memory";
   note?: string;
 }
 

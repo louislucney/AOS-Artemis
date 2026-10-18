@@ -49,7 +49,7 @@ export interface UsageCliReport {
   days: number;
   since: string;
   usage: { enabled: boolean; note: string | null };
-  store: { kind: "postgres" | "memory"; degraded: boolean; note: string | null };
+  store: { kind: "postgres" | "file" | "memory"; degraded: boolean; note: string | null };
   projects: UsageProjectView[];
   totals: { summary: UsageSummary; signals: UsageSignals };
 }
@@ -66,7 +66,7 @@ interface Io {
 }
 
 interface StorageView {
-  kind: "postgres" | "memory";
+  kind: "postgres" | "file" | "memory";
   degraded: boolean;
   note: string | null;
 }
@@ -139,7 +139,7 @@ function normalizeCatalog(catalog: readonly string[]): string[] {
   return [...new Set(catalog)].filter((name) => name !== "aos_usage").sort();
 }
 
-function storageView(kind: "postgres" | "memory", reason: string | null): StorageView {
+function storageView(kind: "postgres" | "file" | "memory", reason: string | null): StorageView {
   if (kind === "postgres") return { kind, degraded: false, note: null };
   const trimmed = reason?.trim();
   return {
@@ -149,7 +149,7 @@ function storageView(kind: "postgres" | "memory", reason: string | null): Storag
   };
 }
 
-function storageLabel(kind: "postgres" | "memory"): string {
+function storageLabel(kind: "postgres" | "file" | "memory"): string {
   return kind === "postgres" ? "PostgreSQL" : "内存降级";
 }
 

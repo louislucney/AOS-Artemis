@@ -96,6 +96,31 @@ export interface UsagePrunePolicy {
   maxEvents?: number;
 }
 
+export interface AuditEventInput {
+  domain: string;
+  action: string;
+  result: "ok" | "skipped" | "failed";
+  /** 已由调用方脱敏；超 300 字符截断。 */
+  summary: string;
+  refs?: Record<string, string | undefined>;
+  /** 显式时间（测试/导入）；缺省＝当前时间。 */
+  at?: string;
+}
+
+export interface AuditEventRecord extends AuditEventInput {
+  id: string;
+  rootPath: string;
+  at: string;
+  refs: Record<string, string | undefined>;
+}
+
+export interface AuditQuery {
+  domain?: string;
+  result?: AuditEventInput["result"];
+  since?: string;
+  limit?: number;
+}
+
 export interface ModelCacheRecord {
   id: string;
   projectId: string;
@@ -337,7 +362,7 @@ export interface CreateRegressionTaskInput {
 
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */
 export interface ProjectStore {
-  readonly kind: "postgres" | "memory";
+  readonly kind: "postgres" | "file" | "memory";
   upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord>;
   getProjectByPath(rootPath: string): Promise<ProjectRecord | null>;
   setFigmaToken(rootPath: string, token: string | null): Promise<void>;
@@ -438,6 +463,9 @@ export interface ProjectStore {
     policy?: UsagePrunePolicy
   ): Promise<UsageEventRecord>;
   listUsageEvents(rootPath: string, query?: UsageEventQuery): Promise<UsageEventRecord[]>;
+  recordAudit(rootPath: string, input: AuditEventInput): Promise<AuditEventRecord>;
+  /** 新→旧（at DESC, id DESC）；`limit` 缺省＝200。 */
+  listAudit(rootPath: string, query?: AuditQuery): Promise<AuditEventRecord[]>;
   listProjects(): Promise<ProjectRecord[]>;
   ping(): Promise<boolean>;
   close(): Promise<void>;

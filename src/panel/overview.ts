@@ -100,7 +100,7 @@ export interface PanelProjectRow {
 export interface PanelOverview {
   ok: true;
   generatedAt: string;
-  store: { kind: "postgres" | "memory"; degraded: boolean };
+  store: { kind: "postgres" | "file" | "memory"; degraded: boolean };
   host: { serviceRepo: string; deps: DepsStatus["status"]; buildStale: boolean | null };
   workspaceRoot: string | null;
   projects: PanelProjectRow[];

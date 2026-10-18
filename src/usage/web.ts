@@ -78,8 +78,8 @@ export interface UsageWebToolRow {
 export interface UsageWebView {
   ok: boolean;
   generatedAt: string;
-  usage: { enabled: boolean; storage: "postgres" | "memory"; note: string | null };
-  store: { kind: "postgres" | "memory"; degraded: boolean; note: string | null };
+  usage: { enabled: boolean; storage: "postgres" | "file" | "memory"; note: string | null };
+  store: { kind: "postgres" | "file" | "memory"; degraded: boolean; note: string | null };
   filters: UsageWebFiltersView;
   project: UsageWebProjectView | null;
   projects: UsageWebProjectView[];

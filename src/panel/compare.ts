@@ -47,7 +47,7 @@ export interface PanelCompareProject {
 export interface PanelCompareView {
   ok: true;
   generatedAt: string;
-  store: { kind: "postgres" | "memory"; degraded: boolean };
+  store: { kind: "postgres" | "file" | "memory"; degraded: boolean };
   window: { runs: number };
   projects: PanelCompareProject[];
   truncated: boolean;

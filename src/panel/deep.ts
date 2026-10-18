@@ -20,7 +20,7 @@ export interface PanelDeepView {
   llmEntries: number;
   setupRequired: boolean;
   store: {
-    kind: "postgres" | "memory";
+    kind: "postgres" | "file" | "memory";
     degraded: boolean;
     note: string | null;
     lastError: string | null;

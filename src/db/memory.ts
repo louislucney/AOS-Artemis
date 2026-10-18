@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 
+import { buildAuditEvent, cloneAuditEvent, normalizeAuditLimit } from "./audit-event.js";
 import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
 
 import type {
+  AuditEventInput,
+  AuditEventRecord,
+  AuditQuery,
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
@@ -29,6 +33,20 @@ import type {
   UsagePrunePolicy
 } from "./types.js";
 
+export interface MemoryStoreState {
+  projects: ProjectRecord[];
+  llms: Array<{ rootPath: string; entries: ProjectLlmRecord[] }>;
+  modelCaches: Array<{ key: string; record: ModelCacheRecord }>;
+  tasks: TaskStatRecord[];
+  usageEvents: UsageEventRecord[];
+  caseSets: CaseSetRecord[];
+  regressionTasks: RegressionTaskRecord[];
+  suiteRuns: SuiteRunRecord[];
+  runners: RunnerRecord[];
+  schedules: ScheduleRecord[];
+  auditEvents: AuditEventRecord[];
+}
+
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
 export class MemoryStore implements ProjectStore {
   readonly kind = "memory" as const;
@@ -37,6 +55,7 @@ export class MemoryStore implements ProjectStore {
   private modelCaches = new Map<string, ModelCacheRecord>();
   private tasks: TaskStatRecord[] = [];
   private usageEvents: UsageEventRecord[] = [];
+  private auditEvents: AuditEventRecord[] = [];
   private caseSets: CaseSetRecord[] = [];
   private regressionTasks: RegressionTaskRecord[] = [];
   private suiteRuns: SuiteRunRecord[] = [];
@@ -671,6 +690,23 @@ export class MemoryStore implements ProjectStore {
       .map(cloneUsageEvent);
   }
 
+  async recordAudit(rootPath: string, input: AuditEventInput): Promise<AuditEventRecord> {
+    const record = buildAuditEvent(rootPath, input);
+    this.auditEvents.push(record);
+    return cloneAuditEvent(record);
+  }
+
+  async listAudit(rootPath: string, query: AuditQuery = {}): Promise<AuditEventRecord[]> {
+    return this.auditEvents
+      .filter((event) => event.rootPath === rootPath)
+      .filter((event) => !query.domain || event.domain === query.domain)
+      .filter((event) => !query.result || event.result === query.result)
+      .filter((event) => !query.since || event.at >= query.since)
+      .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))
+      .slice(0, normalizeAuditLimit(query.limit))
+      .map(cloneAuditEvent);
+  }
+
   async listProjects(): Promise<ProjectRecord[]> {
     return [...this.projects.values()]
       .sort(
@@ -681,6 +717,52 @@ export class MemoryStore implements ProjectStore {
 
   usageEventCount(): number {
     return this.usageEvents.length;
+  }
+
+  exportState(): MemoryStoreState {
+    return {
+      projects: [...this.projects.values()].map((project) => ({ ...project })),
+      llms: [...this.llms.entries()].map(([rootPath, entries]) => ({
+        rootPath,
+        entries: entries.map((entry) => ({ ...entry }))
+      })),
+      modelCaches: [...this.modelCaches.entries()].map(([key, record]) => ({
+        key,
+        record: { ...record, models: [...record.models] }
+      })),
+      tasks: this.tasks.map((task) => ({ ...task })),
+      usageEvents: this.usageEvents.map(cloneUsageEvent),
+      caseSets: this.caseSets.map(cloneCaseSet),
+      regressionTasks: this.regressionTasks.map(cloneRegressionTask),
+      suiteRuns: this.suiteRuns.map(cloneSuiteRun),
+      runners: this.runners.map(cloneRunner),
+      schedules: this.schedules.map(cloneSchedule),
+      auditEvents: this.auditEvents.map(cloneAuditEvent)
+    };
+  }
+
+  importState(data: Partial<MemoryStoreState>): void {
+    if (data.projects) {
+      this.projects = new Map(data.projects.map((project) => [project.rootPath, { ...project }]));
+    }
+    if (data.llms) {
+      this.llms = new Map(
+        data.llms.map((bucket) => [bucket.rootPath, bucket.entries.map((entry) => ({ ...entry }))])
+      );
+    }
+    if (data.modelCaches) {
+      this.modelCaches = new Map(
+        data.modelCaches.map((entry) => [entry.key, { ...entry.record, models: [...entry.record.models] }])
+      );
+    }
+    if (data.tasks) this.tasks = data.tasks.map((task) => ({ ...task }));
+    if (data.usageEvents) this.usageEvents = data.usageEvents.map(cloneUsageEvent);
+    if (data.caseSets) this.caseSets = data.caseSets.map(cloneCaseSet);
+    if (data.regressionTasks) this.regressionTasks = data.regressionTasks.map(cloneRegressionTask);
+    if (data.suiteRuns) this.suiteRuns = data.suiteRuns.map(cloneSuiteRun);
+    if (data.runners) this.runners = data.runners.map(cloneRunner);
+    if (data.schedules) this.schedules = data.schedules.map(cloneSchedule);
+    if (data.auditEvents) this.auditEvents = data.auditEvents.map(cloneAuditEvent);
   }
 
   private pruneUsageEvents(projectId: string | null, policy: UsagePrunePolicy): void {

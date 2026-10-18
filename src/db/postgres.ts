@@ -37,8 +37,12 @@ import type {
   UpsertRunnerInput,
   UsageEventQuery,
   UsageEventRecord,
-  UsagePrunePolicy
+  UsagePrunePolicy,
+  AuditEventInput,
+  AuditEventRecord,
+  AuditQuery
 } from "./types.js";
+import { buildAuditEvent, normalizeAuditLimit } from "./audit-event.js";
 
 export interface QueryResultLike {
   rows: Array<Record<string, unknown>>;
@@ -225,6 +229,16 @@ const SCHEMA = [
      created_at TEXT NOT NULL,
      created_by TEXT,
      UNIQUE (project_id, name)
+    )`,
+  `CREATE TABLE IF NOT EXISTS audit_events (
+     id TEXT PRIMARY KEY,
+     root_path TEXT NOT NULL,
+     at TEXT NOT NULL,
+     domain TEXT NOT NULL,
+     action TEXT NOT NULL,
+     result TEXT NOT NULL,
+     summary TEXT NOT NULL,
+     refs TEXT NOT NULL DEFAULT '{}'
     )`
 ];
 
@@ -241,7 +255,8 @@ const MIGRATIONS = [
      WHERE r1.last_seen_at < r2.last_seen_at
         OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS suite_runs_project_manifest_idx ON suite_runs(project_id, manifest_path) WHERE manifest_path IS NOT NULL`
+  `CREATE UNIQUE INDEX IF NOT EXISTS suite_runs_project_manifest_idx ON suite_runs(project_id, manifest_path) WHERE manifest_path IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS audit_events_root_at_idx ON audit_events(root_path, at)`
 ];
 
 export class PostgresStore implements ProjectStore {
@@ -1281,6 +1296,48 @@ export class PostgresStore implements ProjectStore {
     return result.rows.map(mapUsageEvent);
   }
 
+  async recordAudit(rootPath: string, input: AuditEventInput): Promise<AuditEventRecord> {
+    const record = buildAuditEvent(rootPath, input);
+    await this.pool.query(
+      `INSERT INTO audit_events (id, root_path, at, domain, action, result, summary, refs)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        record.id,
+        record.rootPath,
+        record.at,
+        record.domain,
+        record.action,
+        record.result,
+        record.summary,
+        JSON.stringify(record.refs)
+      ]
+    );
+    return record;
+  }
+
+  async listAudit(rootPath: string, query: AuditQuery = {}): Promise<AuditEventRecord[]> {
+    const conditions = ["root_path = $1"];
+    const params: unknown[] = [rootPath];
+    if (query.domain) {
+      params.push(query.domain);
+      conditions.push(`domain = $${params.length}`);
+    }
+    if (query.result) {
+      params.push(query.result);
+      conditions.push(`result = $${params.length}`);
+    }
+    if (query.since) {
+      params.push(query.since);
+      conditions.push(`at >= $${params.length}`);
+    }
+    params.push(normalizeAuditLimit(query.limit));
+    const result = await this.pool.query(
+      `SELECT * FROM audit_events WHERE ${conditions.join(" AND ")} ORDER BY at DESC, id DESC LIMIT $${params.length}`,
+      params
+    );
+    return result.rows.map(mapAudit);
+  }
+
   async listProjects(): Promise<ProjectRecord[]> {
     const result = await this.pool.query(
       "SELECT * FROM projects ORDER BY last_seen_at DESC, name ASC"
@@ -1366,6 +1423,28 @@ function parseJsonArray<T>(raw: unknown, guard: (item: unknown) => item is T): T
   } catch {
     return [];
   }
+}
+
+function mapAudit(row: Record<string, unknown>): AuditEventRecord {
+  let refs: Record<string, string | undefined> = {};
+  try {
+    const parsed = JSON.parse(String(row.refs ?? "{}")) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      refs = parsed as Record<string, string | undefined>;
+    }
+  } catch {
+    refs = {};
+  }
+  return {
+    id: String(row.id),
+    rootPath: String(row.root_path),
+    at: String(row.at),
+    domain: String(row.domain),
+    action: String(row.action),
+    result: String(row.result) as AuditEventRecord["result"],
+    summary: String(row.summary),
+    refs
+  };
 }
 
 function mapProject(row: Record<string, unknown>): ProjectRecord {
