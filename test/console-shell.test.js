@@ -50,6 +50,9 @@ test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷�
   assert.match(html, /id="console-shortcuts"/);
   assert.match(html, /c-shortcuts-open/);
   assert.match(html, /prefers-reduced-motion: reduce/);
+  assert.match(html, /role="search"/, "顶栏全局搜索");
+  assert.match(html, /name="q"[^>]*aria-label="全局搜索/, "搜索框可访问名");
+  assert.match(html, /name="section" value="search"/, "搜索提交到结果页");
   assert.match(html, /按 <span class="c-kbd">\?<\/span> 查看快捷键/);
   assert.match(html, /g o<\/span> 总览|g t<\/span> 任务/, "跳转键表");
   assert.match(html, /术语/, "帮助面板含术语表");

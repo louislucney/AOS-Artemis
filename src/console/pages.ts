@@ -5,7 +5,7 @@ import type { ArtifactRecord } from "../artifacts/index.js";
 import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
 import { parseQuarantine } from "../figma/quarantine.js";
 import { escapeHtml } from "../util.js";
-import { cBadge, cCard, cTable } from "./components.js";
+import { cBadge, cCard, cEmpty, cTable } from "./components.js";
 import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
 
 export interface LibraryPageData {
@@ -262,6 +262,71 @@ export function renderAuditPage(data: AuditPageData): string {
         ].join("\n")
       })
     ].join("\n")
+  });
+}
+
+export interface SearchPageData {
+  q: string;
+  projects: Array<{ name: string; rootPath: string }>;
+  caseSets: Array<{ project: string; id: string; basename: string; source: string; features: string }>;
+  tasks: Array<{ project: string; id: string; status: string }>;
+  truncated: boolean;
+}
+
+export function renderSearchPage(data: SearchPageData): string {
+  const q = escapeHtml(data.q);
+  const projectLink = (name: string, rootPath: string): string =>
+    `<a href="/panel?project=${encodeURIComponent(rootPath)}"><code>${escapeHtml(name)}</code></a>`;
+  const projectRows = data.projects.map((project) => [
+    projectLink(project.name, project.rootPath),
+    `<code>${escapeHtml(project.rootPath)}</code>`
+  ]);
+  const caseSetRows = data.caseSets.map((entry) => [
+    projectLink(entry.project, entry.project),
+    `<code>${escapeHtml(entry.basename)}</code>`,
+    escapeHtml(entry.source),
+    escapeHtml(entry.features),
+    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&section=dispatch&source=case-set&ref=${encodeURIComponent(entry.id)}">下发该份</a>`
+  ]);
+  const taskRows = data.tasks.map((entry) => [
+    projectLink(entry.project, entry.project),
+    `<a href="/panel?project=${encodeURIComponent(entry.project)}&task=${encodeURIComponent(entry.id)}"><code>${escapeHtml(entry.id)}</code></a>`,
+    escapeHtml(entry.status)
+  ]);
+  const empty = `<h1>搜索</h1>`;
+  return renderConsoleShell({
+    title: data.q === "" ? "搜索" : `搜索：${data.q}`,
+    active: null,
+    searchQuery: data.q,
+    body:
+      data.q === ""
+        ? [empty, cEmpty({ title: "输入关键词开始搜索", body: "按名称/路径搜项目，按份名/来源/功能搜用例集，按任务 id 搜任务；顶栏搜索框或 `/` 键直达。", action: '<span class="muted">示例：登录 / AOS / regression</span>' })].join("\n")
+        : [
+            empty,
+            `<p class="muted">关键词「${q}」· 项目 ${data.projects.length} · 用例集 ${data.caseSets.length} · 任务 ${data.tasks.length}${data.truncated ? "（结果已截断）" : ""}</p>`,
+            cCard({
+              title: "项目",
+              body: cTable({ columns: ["项目", "路径"], rows: projectRows, caption: "匹配项目", empty: "无匹配项目" })
+            }),
+            cCard({
+              title: "用例集（份）",
+              body: cTable({
+                columns: ["项目", "份", "来源", "功能", "动作"],
+                rows: caseSetRows,
+                caption: "匹配用例集",
+                empty: "无匹配用例集"
+              })
+            }),
+            cCard({
+              title: "任务",
+              body: cTable({
+                columns: ["项目", "任务", "状态"],
+                rows: taskRows,
+                caption: "匹配任务",
+                empty: "无匹配任务"
+              })
+            })
+          ].join("\n")
   });
 }
 

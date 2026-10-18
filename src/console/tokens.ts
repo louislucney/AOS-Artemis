@@ -89,6 +89,9 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 .c-nav-item-disabled:hover{background:transparent;text-decoration:none;color:var(--color-text-tertiary)}
 .c-store-chip{margin-left:12px;font-size:12px;color:var(--color-text-secondary)}
 .c-store-chip a{color:inherit;text-decoration:underline}
+.c-search{display:flex;gap:6px;align-items:center;margin-left:16px}
+.c-search input[type=search]{padding:4px 8px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-surface-white);color:var(--color-text-primary);font-size:12px;min-width:200px}
+.c-search button{padding:4px 10px;font-size:12px}
 .bulk-tools{display:flex;gap:8px;align-items:center;margin:8px 0}
 #console-shortcuts{display:none;margin:0 0 16px}
 body.c-shortcuts-open #console-shortcuts{display:block}

@@ -39,7 +39,8 @@ test("console a11y: 每页唯一 h1、zh-CN、focus-visible、无禁用语义", 
     ["library", sectionUrl(rootPath, "library")],
     ["archive", sectionUrl(rootPath, "archive")],
     ["audit", sectionUrl(rootPath, "audit")],
-    ["ops", sectionUrl(rootPath, "ops")]
+    ["ops", sectionUrl(rootPath, "ops")],
+    ["search", new URL("http://x/panel?section=search&q=登录")]
   ];
   for (const [name, url] of pages) {
     const html = await handlePanelRequest(url, deps);

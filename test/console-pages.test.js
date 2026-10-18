@@ -105,6 +105,35 @@ test("console pages: 审计（domain 筛选＋结果徽章）", async () => {
   assert.match(pager.body, /第 1 页|第 2 页/, "offset 生效");
 });
 
+test("console pages: 全局搜索（项目/用例集/任务）与空态", async () => {
+  const { deps, rootPath, set } = await setup();
+  await deps.store.createRegressionTask({
+    rootPath,
+    refs: [{ caseSetId: set.id, featureKey: "login" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  const hit = await handlePanelRequest(url(rootPath, "search", { q: "登录" }), deps);
+  assert.equal(hit.status, 200);
+  assert.match(hit.body, /搜索：登录/);
+  assert.match(hit.body, /登录回归/, "命中用例集");
+  assert.match(hit.body, /下发该份/);
+  assert.match(hit.body, /无匹配任务|任务/, "任务分组渲染");
+
+  const empty = await handlePanelRequest(new URL("http://x/panel?section=search"), deps);
+  assert.equal(empty.status, 200);
+  assert.match(empty.body, /输入关键词开始搜索/);
+
+  const json = await handlePanelRequest(
+    new URL(`http://x/panel.json?section=search&q=${encodeURIComponent("登录")}`),
+    deps
+  );
+  const payload = JSON.parse(json.body);
+  assert.equal(payload.view, "search");
+  assert.equal(payload.caseSets.length, 1);
+});
+
 test("console pages: 运维与数据（存储徽章＋写失败信号位＋导出链接）", async () => {
   const { deps, rootPath } = await setup();
   const html = await handlePanelRequest(url(rootPath, "ops"), deps);

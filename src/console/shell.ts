@@ -50,6 +50,8 @@ export interface ConsoleShellInput {
     writeIssue: string | null;
     opsHref: string | null;
   };
+  /** 顶栏搜索框回显（搜索页传入当前 q）。 */
+  searchQuery?: string;
 }
 
 /** 项目级导航键（需要 project 上下文；无上下文时禁用而非误指总览）。 */
@@ -173,6 +175,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     '<header class="c-topbar">',
     '<div class="c-brand"><a href="/panel">AOS 控制台</a></div>',
     healthChip,
+    '<form class="c-search" method="get" action="/panel" role="search"><input type="hidden" name="section" value="search"><input type="search" name="q" aria-label="全局搜索（项目/用例集/任务）" placeholder="搜索项目 / 用例集 / 任务" value="' + escapeHtml(input.searchQuery ?? "") + '"><button class="c-button" type="submit">搜索</button></form>',
     input.meta ? `<div class="c-topbar-meta">${input.meta}</div>` : "",
     "</header>",
     actionsBanner,

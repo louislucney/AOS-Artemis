@@ -18,7 +18,9 @@ import {
   renderAuditPage,
   renderLibraryPage,
   renderOpsPage,
-  type LibraryPageData
+  renderSearchPage,
+  type LibraryPageData,
+  type SearchPageData
 } from "../console/pages.js";
 import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
 import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
@@ -173,6 +175,7 @@ type PanelView =
       artifacts: number;
     }
   | { kind: "project"; rootPath: string; detail: PanelProjectDetail; active?: ConsoleNavKey | null }
+  | { kind: "search"; data: SearchPageData }
   | { kind: "task"; rootPath: string; detail: PanelTaskDetail; flash?: string }
   | { kind: "review"; rootPath: string; detail: { items: PanelReviewItem[]; warnings: string[] } }
   | { kind: "stats"; rootPath: string; detail: PanelStatsView }
@@ -248,6 +251,12 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     ...(deps.deep !== undefined ? { deepProbe: deps.deep } : {})
   };
   const projectKey = trimmed(url.searchParams.get("project"));
+  if (trimmed(url.searchParams.get("section")) === "search") {
+    return {
+      kind: "search",
+      data: await buildSearch(deps, trimmed(url.searchParams.get("q")) ?? "")
+    };
+  }
   if (projectKey === null) {
     if (trimmed(url.searchParams.get("view")) === "compare") {
       return { kind: "compare", compare: await buildPanelCompare(panelDeps) };
@@ -418,6 +427,9 @@ function toJsonView(view: PanelView): Record<string, unknown> {
       writeError: view.writeError,
       artifacts: view.artifacts
     };
+  }
+  if (view.kind === "search") {
+    return { ok: true, view: "search", ...view.data };
   }
   if (view.kind === "project") return { ok: true, view: "project", ...view.detail };
   if (view.kind === "task") return { ok: true, view: "task", ...view.detail };
@@ -2056,6 +2068,7 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
     case "review":
     case "stats":
     case "batch":
+    case "search":
       return null;
     default:
       return "tasks";
@@ -2078,7 +2091,10 @@ async function loadStoreHealth(
   const health = (
     deps.store as { writeErrors?: () => { count: number; lastError: string | null } }
   ).writeErrors?.();
-  const project = view.kind === "overview" || view.kind === "compare" ? null : view.rootPath;
+  const project =
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
+      ? null
+      : view.rootPath;
   let lastWriteAt: string | null = null;
   if (project !== null) {
     try {
@@ -2101,10 +2117,61 @@ async function loadStoreHealth(
   };
 }
 
+async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPageData> {
+  const data: SearchPageData = { q: query, projects: [], caseSets: [], tasks: [], truncated: false };
+  if (query === "") return data;
+  const needle = query.toLowerCase();
+  const projects = await deps.store.listProjects().catch(() => []);
+  const capped = projects.slice(0, 50);
+  data.truncated = projects.length > capped.length;
+  for (const project of capped) {
+    if (
+      project.name.toLowerCase().includes(needle) ||
+      project.rootPath.toLowerCase().includes(needle)
+    ) {
+      if (data.projects.length < 20) data.projects.push({ name: project.name, rootPath: project.rootPath });
+      else data.truncated = true;
+    }
+    const sets = await deps.store.listCaseSets(project.rootPath).catch(() => []);
+    for (const set of sets) {
+      const matched =
+        set.basename.toLowerCase().includes(needle) ||
+        set.source.toLowerCase().includes(needle) ||
+        set.features.some(
+          (feature) =>
+            feature.name.toLowerCase().includes(needle) ||
+            feature.key.toLowerCase().includes(needle)
+        );
+      if (!matched) continue;
+      if (data.caseSets.length >= 20) {
+        data.truncated = true;
+        break;
+      }
+      data.caseSets.push({
+        project: project.rootPath,
+        id: set.id,
+        basename: set.basename,
+        source: set.source,
+        features: set.features.map((feature) => feature.name).join("、")
+      });
+    }
+    const tasks = await deps.store.listRegressionTasks(project.rootPath, 50).catch(() => []);
+    for (const task of tasks) {
+      if (!task.id.toLowerCase().includes(needle)) continue;
+      if (data.tasks.length >= 20) {
+        data.truncated = true;
+        break;
+      }
+      data.tasks.push({ project: project.rootPath, id: task.id, status: task.status });
+    }
+  }
+  return data;
+}
+
 function renderPanelHtml(view: PanelView, deps: PanelWebDeps, storeHealth?: ConsoleShellInput["storeHealth"]): string {
   currentShell = {
     active: activeForView(view),
-    project: view.kind === "overview" || view.kind === "compare" ? null : view.rootPath,
+    project: view.kind === "overview" || view.kind === "compare" || view.kind === "search" ? null : view.rootPath,
     capabilities: deps.capabilities,
     jiraDefaults: {
       projectKey: deps.env?.JIRA_ISSUE_PROJECT?.trim() || undefined,
@@ -2169,6 +2236,7 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps, storeHealth?: Cons
     });
   }
   if (view.kind === "project") return renderProjectPage(view, cacheNote);
+  if (view.kind === "search") return renderSearchPage(view.data);
   if (view.kind === "task") return renderTaskPage(view);
   if (view.kind === "review") return renderReviewPage(view);
   if (view.kind === "stats") return renderStatsPage(view);
