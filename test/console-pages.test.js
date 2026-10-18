@@ -59,7 +59,7 @@ test("console pages: 用例库（份列表＋隔离徽章）", async () => {
   assert.match(html.body, /隔离中 0/);
   assert.match(html.body, /按份下发/);
   assert.match(html.body, /下发该份/, "份行内动作");
-  assert.match(html.body, /section=dispatch&source=case-set&ref=/, "预填下发链接");
+  assert.match(html.body, /section=dispatch&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");
   assert.match(html.body, /id="import-form"/, "Excel 上传表单");
   assert.match(html.body, /panel\/api\/import/);
   assert.match(html.body, /id="quarantine-form"/, "隔离表单");

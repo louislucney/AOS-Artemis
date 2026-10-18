@@ -192,7 +192,12 @@ test("panel web: 项目详情（空态→批次→独立运行）与未知项目
   assert.match(projectHtml.body, /磁盘资产/);
   assert.match(projectHtml.body, /对账资产/);
   assert.match(projectHtml.body, /在跑什么/, "一屏三问");
-  assert.match(projectHtml.body, /panel\?section=dispatch/, "下发入口");
+  assert.match(projectHtml.body, /&(amp;)?section=dispatch/, "下发入口");
+  assert.match(
+    projectHtml.body,
+    /href="\/panel\?project=[^"]+&amp;section=dispatch"/,
+    "主 CTA 携带项目上下文（不再回总站览）"
+  );
 
   assert.equal(
     (await handlePanelRequest(new URL("http://x/panel.json?project=nope"), deps)).status,

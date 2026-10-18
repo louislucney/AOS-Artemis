@@ -93,7 +93,7 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.ok(body.includes("存储：会话内存"));
   assert.ok(body.includes("PostgreSQL 不可用，会话数据仅当前进程可见。"));
   assert.match(body, /data-console="shell"/, "统计页套用控制台外壳");
-  assert.match(body, /aria-current="page"[^>]*>统计</, "统计为当前导航项");
+  assert.match(body, /aria-current="page"[^>]*>使用统计</, "使用统计为当前导航项");
   assert.ok(body.includes('<option value="/w/alpha" selected>alpha</option>'));
   assert.ok(body.includes('<option value="/w/beta">beta</option>'));
   assert.ok(body.includes('data-tool="llm_list"'));
@@ -101,8 +101,8 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.ok(body.includes("aos_status"));
   assert.ok(!body.includes("aos_usage"));
   assert.ok(body.includes("未知条目 &lt;str&gt;"));
-  assert.equal((body.match(/<script/g) ?? []).length, 1, "仅外壳快捷键脚本，无业务脚本");
   assert.ok(body.includes("console-shortcuts"));
+  assert.ok(!body.includes("fetch("), "无业务脚本（usage 只读）");
 });
 
 test("usage web: /usage.json exposes the stable machine-readable contract", async () => {

@@ -103,6 +103,9 @@ test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", asy
   assert.match(html, /data-features=/);
   assert.match(html, /id="dispatch-confirm"[\s\S]*hidden/, "两段确认摘要（默认隐藏）");
   assert.match(html, /id="dispatch-confirm-yes"/);
+  assert.match(html, /id="dispatch-confirm-text"/, "摘要文本可实时重建");
+  assert.match(html, /data-count=/, "份选项携带条数（客户端重建摘要）");
+  assert.match(html, /请至少选择目标端/, "端为空前置校验");
   assert.match(html, /id="dispatch-error"[^>]*role="alert"/, "内联错误区");
   assert.ok(!html.includes('value="excel"'), "Excel 死选项已移除");
   assert.ok(!html.includes('name="devices"'), "设备手输已移除（执行时在项目机确定）");

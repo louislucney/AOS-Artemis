@@ -43,7 +43,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
     escapeHtml(set.createdAt),
     String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
     set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
-    `<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}">下发该份</a>`
+    `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}`)}">下发该份</a>`
   ]);
   const quarantine = data.quarantine;
   const quarantineEntries =
@@ -74,7 +74,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
   ].join("\n");
   const script = actionsOff
     ? ""
-    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};function jsonPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var qForm=document.getElementById('quarantine-form');var qStatus=document.getElementById('quarantine-status');if(qForm){qForm.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(qForm);jsonPost('/panel/api/quarantine',{project:root,action:'add',caseId:(f.get('caseId')||'').trim(),owner:(f.get('owner')||'').trim(),until:(f.get('until')||'').trim()||undefined}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{qStatus.textContent='加入失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){qStatus.textContent='加入失败：'+err;});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-quarantine]'):null;if(!b)return;if(!confirm('确认移除该隔离条目？'))return;jsonPost('/panel/api/quarantine',{project:root,action:'remove',caseId:b.getAttribute('data-quarantine')}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else if(qStatus){qStatus.textContent='移除失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){if(qStatus)qStatus.textContent='移除失败：'+err;});});var iForm=document.getElementById('import-form');var iStatus=document.getElementById('import-status');if(iForm){iForm.addEventListener('submit',function(e){e.preventDefault();var fd=new FormData(iForm);if(!fd.get('file')||!(fd.get('file').name||'').toLowerCase().endsWith('.xlsx')){iStatus.textContent='请选择 .xlsx 文件';return;}iStatus.textContent='导入中…';fetch('/panel/api/import',{method:'POST',headers:{'X-AOS-Console':'1'},body:fd}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{iStatus.textContent='导入失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){iStatus.textContent='导入失败：'+err;});});}})();</script>`;
+    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};function jsonPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var qForm=document.getElementById('quarantine-form');var qStatus=document.getElementById('quarantine-status');if(qForm){qForm.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(qForm);jsonPost('/panel/api/quarantine',{project:root,action:'add',caseId:(f.get('caseId')||'').trim(),owner:(f.get('owner')||'').trim(),until:(f.get('until')||'').trim()||undefined}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('已加入隔离 · 已写入审计');location.reload();}else{qStatus.textContent='加入失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){qStatus.textContent='加入失败：'+err;});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-quarantine]'):null;if(!b)return;if(!confirm('确认移除该隔离条目？'))return;jsonPost('/panel/api/quarantine',{project:root,action:'remove',caseId:b.getAttribute('data-quarantine')}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('已移除隔离 · 已写入审计');location.reload();}else if(qStatus){qStatus.textContent='移除失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){if(qStatus)qStatus.textContent='移除失败：'+err;});});var iForm=document.getElementById('import-form');var iStatus=document.getElementById('import-status');if(iForm){iForm.addEventListener('submit',function(e){e.preventDefault();var fd=new FormData(iForm);if(!fd.get('file')||!(fd.get('file').name||'').toLowerCase().endsWith('.xlsx')){iStatus.textContent='请选择 .xlsx 文件';return;}iStatus.textContent='导入中…';fetch('/panel/api/import',{method:'POST',headers:{'X-AOS-Console':'1'},body:fd}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('导入完成 · 已登记为最新份');location.reload();}else{iStatus.textContent='导入失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){iStatus.textContent='导入失败：'+err;});});}})();</script>`;
   return renderConsoleShell({
     title: "用例库",
     active: "library",
@@ -89,6 +89,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
         body: cTable({
           columns: ["份", "来源", "登记时间", "用例数", "功能", "动作"],
           rows,
+          caption: "用例集（份）列表",
           empty: "暂无用例集（下方导入或先生成）"
         }),
         actions: `<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch">按份下发</a>`
@@ -112,7 +113,7 @@ export function renderArchivePage(data: ArchivePageData): string {
     const isDir = record.meta?.type === "dir";
     const location = isDir
       ? `<code>${escapeHtml(record.path)}</code>`
-      : `<a href="/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(record.path)}"><code>${escapeHtml(record.path)}</code></a>`;
+      : `<a href="${escapeHtml(`/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(record.path)}`)}"><code>${escapeHtml(record.path)}</code></a>`;
     return [
       cBadge({ label: record.kind, tone: "neutral" }),
       `<code>${escapeHtml(record.title)}</code>`,
@@ -150,6 +151,7 @@ export function renderArchivePage(data: ArchivePageData): string {
         body: cTable({
           columns: ["类型", "名称", "路径", "时间", "大小"],
           rows,
+          caption: "产物索引",
           empty: "暂无产物（产物落盘后自动出现）"
         })
       })
@@ -188,7 +190,7 @@ export function renderAuditPage(data: AuditPageData): string {
       if (value === null) params.delete(key);
       else params.set(key, value);
     }
-    return `/panel?${params.toString()}`;
+    return escapeHtml(`/panel?${params.toString()}`);
   };
   const prevHref = data.page.offset > 0 ? link({ offset: String(Math.max(0, data.page.offset - data.page.pageSize)) }) : null;
   const nextHref = data.page.hasNext ? link({ offset: String(data.page.offset + data.page.pageSize) }) : null;
@@ -224,6 +226,7 @@ export function renderAuditPage(data: AuditPageData): string {
           cTable({
             columns: ["时间", "域", "动作", "结果", "摘要"],
             rows,
+            caption: "审计事件",
             empty: "暂无审计事件（内部编排动作发生后出现）"
           }),
           `<div class="pager">${prevHref === null ? "" : `<a href="${prevHref}">← 上一页</a>`}${prevHref !== null && nextHref !== null ? " · " : ""}${nextHref === null ? "" : `<a href="${nextHref}">下一页 →</a>`}</div>`
@@ -246,10 +249,14 @@ export interface OpsPageData {
 
 export function renderOpsPage(data: OpsPageData): string {
   const actionsOff = data.capabilities?.actions === false;
-  const exportLink = (what: string, format: string, label: string): string =>
-    actionsOff
+  const exportLink = (what: string, format: string, label: string): string => {
+    const href = escapeHtml(
+      `/panel/api/export?project=${encodeURIComponent(data.rootPath)}&what=${what}&format=${format}`
+    );
+    return actionsOff
       ? `<span class="c-button c-nav-item-disabled" aria-disabled="true" title="写动作未启用">${label}</span>`
-      : `<a class="c-button" href="/panel/api/export?project=${encodeURIComponent(data.rootPath)}&what=${what}&format=${format}">${label}</a>`;
+      : `<a class="c-button" href="${href}">${label}</a>`;
+  };
   return renderConsoleShell({
     title: "运维与数据",
     active: "ops",

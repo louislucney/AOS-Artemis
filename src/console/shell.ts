@@ -67,11 +67,11 @@ export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "schedules", label: "计划", href: "/panel?section=schedules" },
   { key: "ops", label: "运维与数据", href: "/panel?section=ops" },
   { key: "audit", label: "审计", href: "/panel?section=audit" },
-  { key: "usage", label: "统计", href: "/usage" }
+  { key: "usage", label: "使用统计", href: "/usage" }
 ];
 
 export const USAGE_STANDALONE_NAV: ConsoleNavItem[] = [
-  { key: "usage", label: "统计", href: "/usage" }
+  { key: "usage", label: "使用统计", href: "/usage" }
 ];
 
 function navHref(item: ConsoleNavItem, project: string | null): string | null {
@@ -95,14 +95,14 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
       const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project);
       if (href === null) {
         const reason = item.key === "usage" ? "本进程不提供统计页（独立统计服务：usage --web）" : "先进入项目后再使用";
-        return `<span class="c-nav-item c-nav-item-disabled" aria-disabled="true" title="${escapeHtml(reason)}">${escapeHtml(item.label)}${badge}</span>`;
+        return `<span class="c-nav-item c-nav-item-disabled" role="link" tabindex="0" aria-disabled="true" aria-label="${escapeHtml(item.label)}（${escapeHtml(reason)}）" title="${escapeHtml(reason)}">${escapeHtml(item.label)}${badge}</span>`;
       }
       return `<a class="c-nav-item"${current} href="${escapeHtml(href)}">${escapeHtml(item.label)}${badge}</a>`;
     })
     .join("\n");
   const actionsBanner = capabilities.actions
     ? ""
-    : `<div class="c-banner c-banner-warn" role="status">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback 访问；或使用 HTTP 模式（<code>serve --http</code>，见 README 接入指南）。当前页面为只读。</div>`;
+    : `<div class="c-banner c-banner-warn" role="status" id="capability-banner">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback 访问；或使用 HTTP 模式（<code>serve --http</code>，见 README 接入指南）。当前页面为只读。 <button class="c-button" type="button" id="capability-dismiss">知道了</button></div>`;
   const navTargets: Record<string, string> = {};
   for (const item of nav) {
     const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project);
@@ -118,14 +118,15 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     ["s", "schedules", "计划"],
     ["p", "ops", "运维"],
     ["a", "audit", "审计"],
-    ["u", "usage", "统计"]
+    ["u", "usage", "使用统计"]
   ];
   const shortcutRows = shortcutKeys
     .filter(([, key]) => navTargets[key] !== undefined)
     .map(([letter, , label]) => `<li><span class="c-kbd">g ${letter}</span> ${escapeHtml(label)}</li>`)
     .join("");
-  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({t:"tasks",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}})();</script>`;
+  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({t:"tasks",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}})();</script>`;
   const shortcutsPanel = `<div class="c-card" id="console-shortcuts" role="region" aria-label="快捷键"><h2 class="c-card-title">快捷键</h2><ul><li><span class="c-kbd">?</span> 开关本帮助</li><li><span class="c-kbd">/</span> 聚焦筛选框</li>${shortcutRows}</ul></div>`;
+  const flashScript = `<script>(function(){window.aosFlash=function(message){try{sessionStorage.setItem("aos-flash",message);}catch(e){}};var raw=null;try{raw=sessionStorage.getItem("aos-flash");}catch(e){}if(raw){try{sessionStorage.removeItem("aos-flash");}catch(e){}var main=document.getElementById("console-main");if(main){var box=document.createElement("div");box.className="c-banner c-banner-accent";box.setAttribute("role","status");var text=document.createTextNode(raw);box.appendChild(text);var params=new URLSearchParams(location.search);var project=params.get("project");if(project){box.appendChild(document.createTextNode(" "));var a=document.createElement("a");a.href="/panel?project="+encodeURIComponent(project)+"&section=audit";a.textContent="查看审计";box.appendChild(a);}var sheet=document.getElementById("console-shortcuts");main.insertBefore(box,sheet?sheet.nextSibling:main.firstChild);}}var dismiss=document.getElementById("capability-dismiss");if(dismiss){dismiss.addEventListener("click",function(){try{sessionStorage.setItem("aos-cap-dismissed","1");}catch(e){}var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);});}}if(function(){try{return sessionStorage.getItem("aos-cap-dismissed")==="1";}catch(e){return false;}}()){var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);}})();</script>`;
   return [
     "<!doctype html>",
     '<html lang="zh-CN">',
@@ -152,6 +153,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     "</div>",
     `<footer class="c-footer">AOS-ARTEMIS · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,
     shortcutsScript,
+    flashScript,
     "</body>",
     "</html>"
   ]

@@ -468,6 +468,10 @@ function projectHref(rootPath: string): string {
   return `/panel?project=${encodeURIComponent(rootPath)}`;
 }
 
+function dispatchHref(rootPath: string): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}&section=dispatch`;
+}
+
 function batchHref(rootPath: string, file: string): string {
   return `/panel?project=${encodeURIComponent(rootPath)}&batch=${encodeURIComponent(file)}`;
 }
@@ -565,6 +569,7 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
             body: cTable({
               columns: ["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
               rows,
+              caption: "项目列表",
               empty: "暂无项目"
             })
           })
@@ -593,7 +598,7 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
     cCard({
       tone: "accent",
       title: "下一步",
-      actions: '<a class="c-button c-button-primary" href="/panel?section=dispatch">新建回归任务</a>',
+      actions: `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`,
       body: `<p><a href="${escapeHtml(reviewHref(rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(rootPath))}">统计</a></p>`
     }),
     "</div>"
@@ -832,7 +837,7 @@ function renderDeepSection(detail: PanelProjectDetail): string {
   return [
     '<section id="deep">',
     "<h2>深探信息</h2>",
-    cTable({ columns: ["项", "值"], rows, empty: "—" }),
+    cTable({ columns: ["项", "值"], rows, caption: "深探项", empty: "—" }),
     "<h3>iOS 环境检测</h3>",
     iosBlock,
     "</section>"
@@ -927,7 +932,7 @@ function renderRegressionBlock(rootPath: string, detail: PanelProjectDetail): st
   }
   const rootJson = JSON.stringify(rootPath).replace(/</g, "\\u003c");
   const rows = refs.map((ref) => [
-    `<input type="checkbox" name="ref" value="${escapeHtml(`${ref.caseSetId}|${ref.featureKey}`)}">`,
+    `<input type="checkbox" name="ref" aria-label="选择该份用于回归" value="${escapeHtml(`${ref.caseSetId}|${ref.featureKey}`)}">`,
     `<code>${escapeHtml(ref.createdAt)}</code>`,
     escapeHtml(ref.featureName),
     String(ref.caseCount),
@@ -942,7 +947,7 @@ function renderRegressionBlock(rootPath: string, detail: PanelProjectDetail): st
     '<p class="muted">勾选要引用的用例份（可多份），选择目标端与基线策略后创建回归任务。</p>',
     '<form id="regression-form" onsubmit="return createRegressionTask(event)">',
     renderTable(["引用", "时间", "功能", "用例", "最近通过率", "来源"], rows, "暂无可引用的用例份"),
-    "<p><label>目标端：</label>",
+    '<p><span class="muted">目标端：</span>',
     '<label><input type="checkbox" name="platform" value="ios"> iOS</label> ',
     '<label><input type="checkbox" name="platform" value="android" checked> Android</label></p>',
     '<p><label>基线：<select name="baseline" aria-label="基线">',
@@ -1111,7 +1116,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
   ]);
   const script = actionsOff
     ? ""
-    : `<script>(function(){var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var status=document.getElementById('schedule-status');function say(m){status.textContent=m;}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var form=document.getElementById('schedule-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var keys=(f.get('featureKeys')||'').split(',').map(function(s){return s.trim();}).filter(Boolean);var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(i){return i.value;});post({project:root,action:'create',name:(f.get('name')||'').trim(),featureKeys:keys,platforms:platforms,everyMinutes:Number(f.get('everyMinutes')||0)}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{say('创建失败：'+(res.j.error||res.status));}}).catch(function(err){say('创建失败：'+err);});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-schedule]'):null;if(!b)return;var op=b.getAttribute('data-op');if(op==='delete'&&!confirm('确认删除该计划？'))return;post({project:root,action:op,id:b.getAttribute('data-schedule')}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{say('操作失败：'+(res.j.error||res.status));}}).catch(function(err){say('操作失败：'+err);});});})();</script>`;
+    : `<script>(function(){var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var status=document.getElementById('schedule-status');function say(m){status.textContent=m;}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var form=document.getElementById('schedule-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var keys=(f.get('featureKeys')||'').split(',').map(function(s){return s.trim();}).filter(Boolean);var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(i){return i.value;});post({project:root,action:'create',name:(f.get('name')||'').trim(),featureKeys:keys,platforms:platforms,everyMinutes:Number(f.get('everyMinutes')||0)}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已创建 · 已写入审计');location.reload();}else{say('创建失败：'+(res.j.error||res.status));}}).catch(function(err){say('创建失败：'+err);});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-schedule]'):null;if(!b)return;var op=b.getAttribute('data-op');if(op==='delete'&&!confirm('确认删除该计划？'))return;post({project:root,action:op,id:b.getAttribute('data-schedule')}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已更新 · 已写入审计');location.reload();}else{say('操作失败：'+(res.j.error||res.status));}}).catch(function(err){say('操作失败：'+err);});});})();</script>`;
   return [
     '<section id="schedules">',
     "<h2>定时回归（schedule）</h2>",
@@ -1221,7 +1226,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
         const taskJson = JSON.stringify(task.id).replace(/</g, "\\u003c");
         return [
           `<p>${badge} <button class="c-button c-button-danger" type="button" id="release-task">释放重跑</button> <span class="muted">放回待领取（需确认）</span></p>`,
-          `<script>(function(){var b=document.getElementById('release-task');if(!b)return;b.addEventListener('click',function(){if(!confirm('确认释放该任务回待领取？'))return;fetch('/panel/api/tasks/release',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:${projectJson},taskId:${taskJson}})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{alert('释放失败：'+(res.j.error||res.status||''));}}).catch(function(e){alert('释放失败：'+e);});});})();</script>`
+          `<script>(function(){var b=document.getElementById('release-task');if(!b)return;b.addEventListener('click',function(){if(!confirm('确认释放该任务回待领取？'))return;fetch('/panel/api/tasks/release',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:${projectJson},taskId:${taskJson}})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('已释放任务回待领取 · 已写入审计');location.reload();}else{alert('释放失败：'+(res.j.error||res.status||''));}}).catch(function(e){alert('释放失败：'+e);});});})();</script>`
         ].join("\n");
       })(),
       coverageHint,
@@ -1354,7 +1359,7 @@ function renderReviewPage(view: {
           "  fetch('/panel/api/verdicts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:" +
             rootJson +
             ",items:items,verdict:verdict,note:note})})",
-          "    .then(function(response){return response.json().then(function(payload){if(!response.ok){throw new Error(payload.error||('HTTP '+response.status));}location.reload();});})",
+          "    .then(function(response){return response.json().then(function(payload){if(!response.ok){throw new Error(payload.error||('HTTP '+response.status));}window.aosFlash&&aosFlash('裁决已提交 · 已写入审计');location.reload();});})",
           "    .catch(function(error){status.textContent='提交失败：'+error.message;});",
           "  return false;",
           "}",
@@ -1432,6 +1437,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
     "  if(projectKey!==''){payload.projectKey=projectKey;}",
     "  if(issueType!==''){payload.issueType=issueType;}",
     "  if(labels!==''){payload.labels=labels;}",
+    "  if(!dryRun&&!confirm('确认在 Jira 创建外部可见单据（外部副作用）？')){status.textContent='已取消';return false;}",
     "  status.textContent=dryRun?'预览中…':'提交中…';",
     "  result.replaceChildren();",
     "  fetch('/panel/api/issues',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})",
@@ -1439,7 +1445,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
     "      if(!response.ok||data.ok===false){status.textContent='失败：'+(data.error||('HTTP '+response.status))+((data.hints&&data.hints.length>0)?('（'+data.hints.join('；')+'）'):'');return;}",
     "      result.replaceChildren(renderIssueResults(data.results));",
     "      status.textContent='完成：新建 '+data.created+' · 已存在 '+data.existing+' · 跳过 '+data.skipped+' · 失败 '+data.failed;",
-    "      if(!dryRun&&data.created>0){location.reload();}",
+    "      if(!dryRun&&data.created>0){window.aosFlash&&aosFlash('已建单 '+data.created+' 张（外部副作用） · 已写入审计');location.reload();}",
     "    });})",
     "    .catch(function(error){status.textContent='请求失败：'+error.message;});",
     "  return false;",
@@ -1832,6 +1838,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
             "运行（runner·定时回归）"
           ],
           rows,
+          caption: "项目对比矩阵",
           empty: "暂无项目"
         })
       }),
@@ -2001,6 +2008,10 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
       return "ops";
     case "project":
       return view.active ?? null;
+    case "review":
+    case "stats":
+    case "batch":
+      return null;
     default:
       return "tasks";
   }
