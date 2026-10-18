@@ -136,12 +136,24 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   const healthChip =
     health === undefined
       ? ""
-      : `<div class="c-store-chip">${health.opsHref === null ? "" : `<a href="${escapeHtml(health.opsHref)}">`}${escapeHtml(health.label)}${health.opsHref === null ? "" : "</a>"}${
+      : `<div class="c-store-chip" title="记录底座：持久层与最近写入（点击进入运维与数据）">${health.opsHref === null ? "" : `<a href="${escapeHtml(health.opsHref)}">`}${escapeHtml(health.label)}${health.opsHref === null ? "" : "</a>"}${
           health.lastWriteAt === null
             ? ""
             : ` · 最近写入 ${escapeHtml(health.lastWriteAt.slice(5, 16).replace("T", " "))}`
         }${health.writeIssue === null ? "" : ` <span class="c-badge c-badge-error">${escapeHtml(health.writeIssue)}</span>`}</div>`;
-  const shortcutsPanel = `<div class="c-card" id="console-shortcuts" role="region" aria-label="快捷键"><h2 class="c-card-title">快捷键</h2><ul><li><span class="c-kbd">?</span> 开关本帮助</li><li><span class="c-kbd">/</span> 聚焦筛选框</li>${shortcutRows}</ul></div>`;
+  const glossaryRows = [
+    ["份", "一次生成或导入登记的用例集版本（其 tests.json 可直接执行）"],
+    ["裁决", "对失败用例的定性：案例问题/执行偏差/应用缺陷/不确定"],
+    ["失败域", "失败归因分类（应用缺陷/环境/数据环境/行为或设计/设计推断/用例缺陷…）"],
+    ["基线", "对比参照：latest＝与该份最近批次比；none＝重立基准"],
+    ["执行机", "运行用例的机器（runner；自动领取任务并在设备上执行）"],
+    ["隔离", "quarantine：经 owner 签字暂时不计门禁的用例"],
+    ["记录底座", "服务对结果/过程/数据的强制持久台账（顶栏指示器）"]
+  ];
+  const glossaryHtml = `<h2 class="c-card-title">术语</h2><ul>${glossaryRows
+    .map(([term, meaning]) => `<li><strong>${escapeHtml(term)}</strong>：${escapeHtml(meaning)}</li>`)
+    .join("")}</ul>`;
+  const shortcutsPanel = `<div class="c-card" id="console-shortcuts" role="region" aria-label="快捷键与术语"><h2 class="c-card-title">快捷键</h2><ul><li><span class="c-kbd">?</span> 开关本帮助</li><li><span class="c-kbd">/</span> 聚焦筛选框</li>${shortcutRows}</ul>${glossaryHtml}</div>`;
   const flashScript = `<script>(function(){window.aosFlash=function(message){try{sessionStorage.setItem("aos-flash",message);}catch(e){}};var raw=null;try{raw=sessionStorage.getItem("aos-flash");}catch(e){}if(raw){try{sessionStorage.removeItem("aos-flash");}catch(e){}var main=document.getElementById("console-main");if(main){var box=document.createElement("div");box.className="c-banner c-banner-accent";box.setAttribute("role","status");var text=document.createTextNode(raw);box.appendChild(text);var params=new URLSearchParams(location.search);var project=params.get("project");if(project){box.appendChild(document.createTextNode(" "));var a=document.createElement("a");a.href="/panel?project="+encodeURIComponent(project)+"&section=audit";a.textContent="查看审计";box.appendChild(a);}var sheet=document.getElementById("console-shortcuts");main.insertBefore(box,sheet?sheet.nextSibling:main.firstChild);}}var dismiss=document.getElementById("capability-dismiss");if(dismiss){dismiss.addEventListener("click",function(){try{sessionStorage.setItem("aos-cap-dismissed","1");}catch(e){}var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);});}}if(function(){try{return sessionStorage.getItem("aos-cap-dismissed")==="1";}catch(e){return false;}}()){var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);}})();</script>`;
   return [
     "<!doctype html>",

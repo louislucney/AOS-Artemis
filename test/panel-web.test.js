@@ -190,7 +190,7 @@ test("panel web: 项目详情（空态→批次→独立运行）与未知项目
     deps
   );
   assert.match(projectHtml.body, /磁盘资产/);
-  assert.match(projectHtml.body, /对账资产/);
+  assert.match(projectHtml.body, /对账信息/);
   assert.match(projectHtml.body, /在跑什么/, "一屏三问");
   assert.match(projectHtml.body, /c-store-chip/, "顶栏记录底座指示器");
   assert.match(projectHtml.body, /会话内存（不持久）|文件台账/, "指示器显示持久层");
@@ -427,7 +427,7 @@ test("panel web: 深探注入（默认纯读；ios=1 显式探测）", async () 
   assert.equal(iosPayload.deep.iosProbe.appium.found, false);
 
   const html = await handlePanelRequest(new URL("http://x/panel?project=demo"), withDeep);
-  assert.match(html.body, /深探信息/);
+  assert.match(html.body, /运行时细节/);
   assert.match(html.body, /iOS 环境检测/);
 });
 
@@ -889,7 +889,7 @@ test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标�
     new URL(`http://x/panel?project=${encodeURIComponent(clean.projectDir)}`),
     clean.deps
   );
-  assert.match(cleanHtml.body, /暂无 runner 心跳/);
+  assert.match(cleanHtml.body, /暂无执行机心跳/);
   assert.doesNotMatch(cleanHtml.body, /http-equiv="refresh"/, "无 runner 不挂刷新");
 });
 
@@ -924,7 +924,7 @@ test("panel web: 任务页 已领取/在线标记/刷新/无端覆盖提示", as
   assert.match(html.body, /已领取/);
   assert.match(html.body, /「r-1」（在线）/);
   assert.match(html.body, /http-equiv="refresh" content="10"/);
-  assert.match(html.body, /在线 runner 会自动领取执行/);
+  assert.match(html.body, /在线执行机会自动领取执行/);
   assert.doesNotMatch(html.body, /无在线 runner 完整覆盖/);
 
   const pendingTask = await store.createRegressionTask(taskInput(["ios"]));
@@ -1446,7 +1446,7 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
   const emptyHtml = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
   assert.equal(emptyHtml.status, 200);
   assert.match(emptyHtml.body, /多项目对比/, "页头标题");
-  assert.match(emptyHtml.body, /口径：窗口＝份血统最近 20 批/, "窗口口径");
+  assert.match(emptyHtml.body, /口径：窗口＝用例集份最近 20 批/, "窗口口径");
   assert.match(emptyHtml.body, /任务积压为最近 200 条近似/, "任务积压近似口径");
   assert.match(emptyHtml.body, /runner 为最近 100 条近似/, "runner 近似口径");
   assert.match(emptyHtml.body, /数据源＝中央台账/, "数据源口径");
@@ -1752,7 +1752,7 @@ test("panel web: compare 功能对齐区块（表头/小表/口径说明/未匹�
   assert.match(html.body, /50%/, "通过率（a 2/4）");
   assert.match(html.body, /75%/, "通过率（b 3/4）");
   assert.match(html.body, /匹配规则/, "口径说明：匹配规则");
-  assert.match(html.body, /窗口＝份血统最近 20 批/, "口径说明：窗口");
+  assert.match(html.body, /窗口＝用例集份最近 20 批/, "口径说明：窗口");
   assert.match(html.body, /误报口径/, "口径说明：误报口径");
   assert.match(html.body, /未匹配 1 个（仅单项目出现）/, "口径说明：未匹配计数");
 });

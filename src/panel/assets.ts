@@ -112,7 +112,7 @@ export async function collectDiskAssets(input: {
       runtimeOnly
     };
   } catch (error) {
-    warnings.push(`对账资产读取失败：${errorMessage(error)}`);
+    warnings.push(`对账信息读取失败：${errorMessage(error)}`);
   }
 
   let baselines: PanelBaselineView | null = null;

@@ -650,7 +650,7 @@ async function buildProjectRow(
     let lamp: PanelLamp = "green";
     if (!soft.llmUsable) {
       lamp = "red";
-      reasons.push(`无可用 LLM（setup_required）：${soft.llmMissing.slice(0, 3).join("、")}`);
+      reasons.push(`无可用 LLM（未完成接入配置，setup_required）：${soft.llmMissing.slice(0, 3).join("、")}`);
     } else {
       if (!figmaPresent) reasons.push("Figma token 未配置");
       if (!soft.jira.configured) reasons.push(`Jira 未配置（缺 ${soft.jira.missing.join("、")}）`);

@@ -76,7 +76,7 @@ test("computeDispatchPreview: 关键词匹配多份 / 无 runner 警告 / 空关
     ROOT,
     new URLSearchParams({ source: "excel", excel: "/x/cases.xlsx" })
   );
-  assert.ok(noRunner.warnings.some((warning) => warning.includes("无在线 runner")));
+  assert.ok(noRunner.warnings.some((warning) => warning.includes("无在线执行机")));
   assert.ok(noRunner.warnings.some((warning) => warning.includes("multipart 上传")));
 });
 

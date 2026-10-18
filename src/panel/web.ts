@@ -533,6 +533,13 @@ function renderLatestBatchCell(row: PanelProjectRow): string {
   ].join("<br>");
 }
 
+function hostDepsLabel(status: string): string {
+  if (status === "ready") return "就绪";
+  if (status === "stale") return "需更新";
+  if (status === "missing") return "缺失";
+  return status;
+}
+
 function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
   const store = view.store.degraded
     ? cBadge({ label: "存储：会话内存", tone: "warning" })
@@ -556,7 +563,7 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
       "<header>",
       "<h1>多项目总览</h1>",
       '<p><a href="/panel?view=compare">多项目对比</a></p>',
-      `<p>${store}${cBadge({ label: `宿主 deps：${view.host.deps}`, tone: "neutral" })} ${cBadge({
+      `<p>${store}${cBadge({ label: `服务依赖：${hostDepsLabel(view.host.deps)}`, tone: "neutral" })} ${cBadge({
         label: `构建：${view.host.buildStale === null ? "未知" : view.host.buildStale ? "陈旧（需重启）" : "最新"}`,
         tone: view.host.buildStale === null ? "neutral" : view.host.buildStale ? "warning" : "success"
       })}</p>`,
@@ -859,7 +866,7 @@ function renderDeepSection(detail: PanelProjectDetail): string {
             .join("\n");
   return [
     '<section id="deep">',
-    "<h2>深探信息</h2>",
+    "<h2>运行时细节</h2>",
     cTable({ columns: ["项", "值"], rows, caption: "深探项", empty: "—" }),
     "<h3>iOS 环境检测</h3>",
     iosBlock,
@@ -892,7 +899,7 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
           .join("\n");
   const reconciliation =
     assets.reconciliation === null || !assets.reconciliation.present
-      ? '<p class="empty">无对账资产</p>'
+      ? '<p class="empty">暂无对账信息</p>'
       : `<p class="muted">边 ${assets.reconciliation.edges} · 升级 ${assets.reconciliation.byStatus.upgraded} · 待审 ${assets.reconciliation.byStatus.pending} · 已确认 ${assets.reconciliation.byStatus.confirmed} · 已驳回 ${assets.reconciliation.byStatus.rejected} · 逆向观测 ${assets.reconciliation.runtimeOnly} · 更新 ${escapeHtml(
           assets.reconciliation.updatedAt ?? "—"
         )}</p>`;
@@ -932,7 +939,7 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
     "<h2>磁盘资产</h2>",
     "<h3>崩溃签名</h3>",
     crashes,
-    "<h3>对账资产</h3>",
+    "<h3>对账信息</h3>",
     reconciliation,
     "<h3>设备基线热点</h3>",
     baselines,
@@ -1047,7 +1054,7 @@ function renderRunners(detail: PanelProjectDetail): string {
     return [
       '<section id="runners">',
       "<h2>执行机（runner）</h2>",
-      '<p class="empty">暂无 runner 心跳（在项目机运行 <code>node dist/cli.js suite runner</code>）</p>',
+      '<p class="empty">暂无执行机心跳（在执行机（项目机）运行 <code>node dist/cli.js suite runner</code>）</p>',
       "</section>"
     ].join("\n");
   }
@@ -1282,7 +1289,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
       "</section>",
       '<section id="run-hint">',
       "<h2>触发执行</h2>",
-      `<p class="muted">在线 runner 会自动领取执行；也可手动：<code>node dist/cli.js suite run --task ${escapeHtml(task.id)} --device &lt;serial&gt;</code>。产物在项目机磁盘（上方清单路径），中心侧仅展示路径。</p>`,
+      `<p class="muted">在线执行机会自动领取执行；也可手动：<code>node dist/cli.js suite run --task ${escapeHtml(task.id)} --device &lt;serial&gt;</code>。产物在执行机磁盘（上方清单路径），中心侧仅展示路径。</p>`,
       "</section>",
       "</main>"
     ].join("\n"),
@@ -1412,7 +1419,7 @@ function renderReviewPage(view: {
       "<h2>动作指引</h2>",
       '<p class="muted">重跑：<code>node dist/cli.js suite run --task &lt;task-id&gt; --device &lt;serial&gt;</code>（整任务）或 <code>node dist/cli.js suite run --tests &lt;tests.json&gt; --case &lt;caseId&gt; --device &lt;serial&gt;</code>（单用例）。</p>',
       '<p class="muted">隔离：写入 <code>.artemis/design/quarantine.json</code>（owner 签字名单；suite run 默认跳过，<code>--no-quarantine</code> 严格跑）。</p>',
-      '<p class="muted">口径：仅份血统运行参与统计与改进出口/生成建议；无份运行（<code>suite run --tests</code>）的裁决仅存档。</p>',
+      '<p class="muted">口径：仅「用例集份」来源的运行参与统计与改进出口/生成建议；无份运行（<code>suite run --tests</code>）的裁决仅存档。</p>',
       "</section>",
       "</main>"
     ].join("\n")
@@ -1589,7 +1596,7 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
       renderTable(
         ["功能", "名称", "运行", "通过率", "趋势", "失败域", "归因构成"],
         featureRows,
-        "暂无份血统运行（先创建回归任务并执行）"
+        '暂无「用例集份」来源运行（先创建回归任务并执行）'
       ),
       "</section>",
       '<section id="cases">',
@@ -1796,7 +1803,7 @@ function renderFeatureAlignmentSection(view: PanelCompareView): string {
   const { groups, unmatched } = view.featureAlignment;
   const scope = [
     "匹配规则：设计源归一化（figma:fileKey / pen:相对路径 / 相对化路径）＋功能名归一（NFC·trim·折叠空白·小写）一致才成组",
-    `窗口＝份血统最近 ${view.window.runs} 批`,
+    `窗口＝用例集份最近 ${view.window.runs} 批`,
     "误报口径：flaky 为窗口内累加；未裁决＝状态非 passed 且未裁决的用例数",
     `未匹配 ${unmatched} 个（仅单项目出现）`
   ].join("；");
@@ -1842,7 +1849,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
   const rows = view.projects.map((project) => renderCompareRow(project));
   const warnings = view.warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("");
   const scope = [
-    `口径：窗口＝份血统最近 ${view.window.runs} 批`,
+    `口径：窗口＝用例集份最近 ${view.window.runs} 批`,
     `任务积压为最近 ${PANEL_COMPARE_TASK_LIMIT} 条近似`,
     `runner 为最近 ${PANEL_COMPARE_RUNNER_LIMIT} 条近似`,
     "数据源＝中央台账",
@@ -1889,7 +1896,7 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
     `来源 ${escapeHtml(detail.source ?? "—")}`,
     `开始 ${escapeHtml(detail.startedAt ?? "—")}`,
     `结束 ${escapeHtml(detail.finishedAt ?? "—")}`,
-    detail.taxonomyVersion === null ? "分类原判版本 —" : `分类原版 v${detail.taxonomyVersion}`
+    detail.taxonomyVersion === null ? "分类口径 —" : `分类口径 v${detail.taxonomyVersion}`
   ].join(" · ");
 
   if (detail.read !== "ok") {

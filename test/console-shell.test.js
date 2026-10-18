@@ -52,6 +52,9 @@ test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷�
   assert.match(html, /prefers-reduced-motion: reduce/);
   assert.match(html, /按 <span class="c-kbd">\?<\/span> 查看快捷键/);
   assert.match(html, /g o<\/span> 总览|g t<\/span> 任务/, "跳转键表");
+  assert.match(html, /术语/, "帮助面板含术语表");
+  assert.match(html, /份<\/strong>：一次生成或导入登记的用例集版本/, "份就地定义");
+  assert.match(html, /记录底座<\/strong>/, "记录底座术语");
 });
 
 test("console shell: 顶栏记录底座指示器（持久层/最近写入/写失败）", () => {

@@ -173,12 +173,14 @@ export interface AuditPageData {
 }
 
 export function renderAuditPage(data: AuditPageData): string {
+  const auditResultLabel = (result: string): string =>
+    result === "ok" ? "成功" : result === "failed" ? "失败" : result === "skipped" ? "跳过" : result;
   const rows = data.events.map((event) => [
     escapeHtml(event.at),
     escapeHtml(event.domain),
     escapeHtml(event.action),
     cBadge({
-      label: event.result,
+      label: auditResultLabel(event.result),
       tone: event.result === "ok" ? "success" : event.result === "failed" ? "error" : "warning"
     }),
     escapeHtml(event.summary)
@@ -215,10 +217,10 @@ export function renderAuditPage(data: AuditPageData): string {
           `<form method="get" action="/panel">`,
           `<input type="hidden" name="project" value="${escapeHtml(data.rootPath)}">`,
           `<input type="hidden" name="section" value="audit">`,
-          `<p>域 <input type="text" name="domain" aria-label="事件域" value="${q("domain")}" size="12"> 结果 <select name="result" aria-label="结果"><option value="">全部</option>${["ok", "skipped", "failed"]
+          `<p>域 <input type="text" name="domain" aria-label="事件域" value="${q("domain")}" size="12"> 结果 <select name="result" aria-label="结果"><option value="">全部</option>${[["ok", "成功"], ["skipped", "跳过"], ["failed", "失败"]]
             .map(
-              (result) =>
-                `<option value="${result}"${data.query.result === result ? " selected" : ""}>${result}</option>`
+              ([value, label]) =>
+                `<option value="${value}"${data.query.result === value ? " selected" : ""}>${label}</option>`
             )
             .join("")}</select> 起自 <input type="text" name="since" aria-label="起始时间（ISO）" value="${q("since")}" size="20" placeholder="ISO 时间"> <button class="c-button" type="submit">筛选</button></p>`,
           `<p>时间预设：${preset("近 24 小时", 24)} ${preset("近 7 天", 168)} ${preset("近 30 天", 720)} ${data.query.since !== undefined && data.query.since !== "" ? `<a class="c-button" href="${link({ since: null, offset: "0" })}">清除</a>` : ""}</p>`,

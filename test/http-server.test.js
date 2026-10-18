@@ -201,7 +201,7 @@ test("http server: panel dashboard over real HTTP", async () => {
     assert.equal(project.status, 200);
     const projectBody = await project.text();
     assert.match(projectBody, /接入信息/);
-    assert.match(projectBody, /深探信息/);
+    assert.match(projectBody, /运行时细节/);
 
     const deepJson = await fetch(`http://127.0.0.1:${handle.port}/panel.json?project=demo`);
     assert.equal(deepJson.status, 200);
