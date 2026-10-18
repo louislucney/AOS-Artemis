@@ -57,6 +57,10 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 }
 :focus-visible{outline:2px solid var(--color-link);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+.c-skip-link{position:absolute;left:-9999px;top:0}
+.c-skip-link:focus{left:12px;top:8px;background:var(--color-accent);color:var(--color-text-primary);padding:8px 12px;border-radius:var(--radius-sm);z-index:99}
+.c-nav-item-disabled{color:var(--color-text-tertiary);cursor:not-allowed}
+.c-nav-item-disabled:hover{background:transparent;text-decoration:none;color:var(--color-text-tertiary)}
 .c-stats-row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;margin:0 0 16px}
 .c-card{background:var(--color-surface-white);border:1px solid var(--color-border-subtle);border-radius:var(--radius-card);box-shadow:var(--shadow-card);padding:16px 18px;margin:0 0 16px}
 .c-card-accent{background:var(--color-accent-subtle);border-color:var(--color-accent)}
@@ -88,8 +92,9 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 .c-empty p{color:var(--color-text-secondary);margin:6px 0 0}
 .c-empty-action{margin-top:12px}
 .c-button{appearance:none;border:1px solid var(--color-border);background:var(--color-surface-white);border-radius:var(--radius-sm);padding:7px 14px;font-size:var(--font-size-callout);cursor:pointer;color:var(--color-text-primary);font-family:inherit}
-.c-button:hover{border-color:var(--color-text-secondary)}
-.c-button-primary{background:var(--color-accent);border-color:var(--color-accent);font-weight:var(--font-weight-medium)}
-.c-button-danger{border-color:var(--color-error);color:var(--color-error)}
+.c-button:hover{border-color:var(--color-text-secondary);color:var(--color-text-primary);text-decoration:none}
+.c-button-primary{background:var(--color-accent);border-color:var(--color-accent);font-weight:var(--font-weight-medium);color:var(--color-text-primary)}
+.c-button-primary:hover{background:var(--color-accent-hover);color:var(--color-text-primary)}
+.c-button-danger{border-color:#B91C1C;color:#B91C1C}
 .c-confirm{display:inline-block}
 `;

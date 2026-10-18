@@ -1,7 +1,7 @@
 import type { ProjectStore } from "../db/types.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cBanner, cCard, cStat, cTable } from "./components.js";
-import { renderConsoleShell } from "./shell.js";
+import { renderConsoleShell, type ConsoleCapabilities } from "./shell.js";
 
 export interface DispatchDeps {
   store: ProjectStore;
@@ -33,6 +33,7 @@ export interface DispatchView {
   rootLabel: string;
   preview: DispatchPreview;
   query: Record<string, string>;
+  capabilities?: ConsoleCapabilities;
 }
 
 const ONLINE_WINDOW_MS = 5 * 60_000;
@@ -166,23 +167,16 @@ export function renderDispatchPage(view: DispatchView): string {
   const sourceBody = [
     `<label class="dispatch-option"><input type="radio" name="source" value="case-set"${mode === "case-set" ? " checked" : ""}> 用例库选份</label>`,
     `<label class="dispatch-option"><input type="radio" name="source" value="keyword"${mode === "keyword" ? " checked" : ""}> 功能关键词</label>`,
-    `<label class="dispatch-option"><input type="radio" name="source" value="excel"${mode === "excel" ? " checked" : ""}> Excel 导入</label>`,
-    `<p><select name="ref"><option value="">（选择份）</option>${setOptions}</select></p>`,
-    `<p>关键词：<input type="text" name="keyword" value="${query("keyword")}" placeholder="例：登录"></p>`,
-    `<p>Excel 路径：<input type="text" name="excel" size="48" value="${query("excel")}" placeholder="/path/to/cases.xlsx"></p>`
+    `<p><label>份 <select name="ref" aria-label="用例集份"><option value="">（选择份）</option>${setOptions}</select></label></p>`,
+    `<p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label> <span class="muted">Excel 导入经 CLI/API（multipart 上传）。</span></p>`
   ].join("\n");
 
   const paramsBody = [
     `<p>目标端：${platformChecks}</p>`,
-    `<p>设备（逗号分隔，可留空＝由 runner 自动领取）：<input type="text" name="devices" size="32" value="${query("devices")}"></p>`,
-    `<p>基线：<select name="baseline"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none</option></select></p>`
+    `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本份最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在项目机执行时确定（<code>suite run --device</code>）</p>`
   ].join("\n");
 
-  const refsJson = JSON.stringify(
-    preview.refDetails.map((detail) => ({ id: detail.id, featureKeys: detail.featureKeys }))
-  ).replace(/</g, "\\u003c");
   const previewBody = [
-    `<script id="dispatch-refs" type="application/json">${refsJson}</script>`,
     `<div class="c-stats-row">`,
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
@@ -199,15 +193,22 @@ export function renderDispatchPage(view: DispatchView): string {
     `<p><button class="c-button" type="submit">刷新预览</button></p>`
   ].join("\n");
 
-  const confirmBody = [
-    `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">派发将创建回归任务：由在线 runner 自动领取，或在项目机手动执行（<code>suite run --task</code>）。</span></p>`,
-    `<script>(function(){var btn=document.getElementById('dispatch-submit');if(!btn)return;var refsEl=document.getElementById('dispatch-refs');var allRefs=refsEl?JSON.parse(refsEl.textContent):[];btn.addEventListener('click',function(){var form=btn.closest('form');var data=new FormData(form);var mode=data.get('source');var refs=[];if(mode==='case-set'){var sel=form.querySelector('select[name="ref"]');if(!sel||!sel.value){alert('请选择份');return;}var opt=sel.options[sel.selectedIndex];var feats=opt&&opt.dataset.features?JSON.parse(opt.dataset.features):[];feats.forEach(function(k){refs.push({caseSetId:sel.value,featureKey:k});});}else if(mode==='keyword'){allRefs.forEach(function(d){d.featureKeys.forEach(function(k){refs.push({caseSetId:d.id,featureKey:k});});});}else{alert('Excel 导入请用 CLI/API（multipart 上传，暂不在本表单提交）');return;}if(refs.length===0){alert('没有可派发的引用（先选择份或更换关键词）');return;}var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});var baseline=form.querySelector('select[name="baseline"]').value;var project=form.querySelector('input[name="project"]').value;fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,refs:refs,platforms:platforms,baseline:baseline})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(res.j.task.id);}else{alert('派发失败：'+(res.j.error||res.status||''));}}).catch(function(e){alert('派发失败：'+e);});});})();</script>`
-  ].join("\n");
+  const actionsOff = view.capabilities?.actions === false;
+  const confirmBody = actionsOff
+    ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
+    : [
+        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">派发前显示一次摘要确认；由在线 runner 自动领取，或在项目机手动执行（<code>suite run --task</code>）。</span></p>`,
+        `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
+        `<p id="dispatch-confirm" class="c-banner c-banner-accent" hidden>将创建回归任务：来源「${escapeHtml(preview.source.label || "—")}」· 用例 ${preview.source.caseCount} 条 · 端 ${escapeHtml(preview.platforms.join("、") || "—")} · 基线 ${preview.baseline}。 <button class="c-button c-button-primary" type="button" id="dispatch-confirm-yes">确认创建</button> <button class="c-button" type="button" id="dispatch-confirm-no">取消</button></p>`,
+        `<script>(function(){var go=document.getElementById('dispatch-submit');if(!go)return;var box=document.getElementById('dispatch-confirm');var yes=document.getElementById('dispatch-confirm-yes');var no=document.getElementById('dispatch-confirm-no');var err=document.getElementById('dispatch-error');function showErr(m){err.textContent=m;err.hidden=false;}go.addEventListener('click',function(){var form=go.closest('form');var data=new FormData(form);if(data.get('source')==='case-set'&&!(form.querySelector('select[name="ref"]')||{value:''}).value){showErr('请选择份');return;}if(data.get('source')==='keyword'&&!((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim()){showErr('请输入功能关键词');return;}err.hidden=true;box.hidden=false;go.disabled=true;});no.addEventListener('click',function(){box.hidden=true;go.disabled=false;});yes.addEventListener('click',function(){var form=go.closest('form');var data=new FormData(form);var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});var payload={project:form.querySelector('input[name="project"]').value,source:data.get('source'),platforms:platforms,baseline:(form.querySelector('select[name="baseline"]')||{value:'latest'}).value};if(data.get('source')==='case-set'){payload.ref=(form.querySelector('select[name="ref"]')||{value:''}).value;}else{payload.keyword=((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim();}fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(payload)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){location.href='/panel?project='+encodeURIComponent(payload.project)+'&task='+encodeURIComponent(res.j.task.id)+'&dispatched='+encodeURIComponent(res.j.task.id);}else{yes.disabled=false;showErr('派发失败：'+(res.j.error||res.status||'未知错误'));}}).catch(function(e){yes.disabled=false;showErr('派发失败：'+e);});});})();</script>`
+      ].join("\n");
 
   return renderConsoleShell({
     title: "下发回归",
     active: "dispatch",
     meta: `项目 <code>${escapeHtml(view.rootLabel)}</code>`,
+    project: view.rootPath,
+    capabilities: view.capabilities,
     body: [
       "<h1>下发回归</h1>",
       `<p class="muted"><code>${escapeHtml(view.rootPath)}</code> · 四步：来源 → 参数 → 预览回显 → 确认派发</p>`,

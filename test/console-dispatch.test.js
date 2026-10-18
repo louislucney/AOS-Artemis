@@ -101,10 +101,41 @@ test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", asy
   assert.match(html, /id="dispatch-submit"/);
   assert.match(html, /panel\/api\/tasks/);
   assert.match(html, /data-features=/);
+  assert.match(html, /id="dispatch-confirm"[\s\S]*hidden/, "两段确认摘要（默认隐藏）");
+  assert.match(html, /id="dispatch-confirm-yes"/);
+  assert.match(html, /id="dispatch-error"[^>]*role="alert"/, "内联错误区");
+  assert.ok(!html.includes('value="excel"'), "Excel 死选项已移除");
+  assert.ok(!html.includes('name="devices"'), "设备手输已移除（执行时在项目机确定）");
+  assert.match(html, /aria-label="用例集份"/);
+  assert.match(html, /aria-label="功能关键词"/);
+  assert.match(html, /aria-label="基线"/);
   assert.match(html, /登录回归/);
   assert.match(html, /host-a/);
-  assert.match(html, /href="\/panel\?section=dispatch" aria-current="page"|aria-current="page" href="\/panel\?section=dispatch"/);
+  assert.match(
+    html,
+    /aria-current="page"[^>]*href="[^"]*section=dispatch"|href="[^"]*section=dispatch"[^>]*aria-current="page"/,
+    "下发为当前导航项（含项目上下文）"
+  );
   assert.ok(!html.includes('http-equiv="refresh"'), "表单页不自动刷新");
+});
+
+test("renderDispatchPage: 写动作关闭时禁用派发并给可见原因", async () => {
+  const { store, setA } = await seed();
+  const preview = await computeDispatchPreview(
+    { store, env: {} },
+    ROOT,
+    new URLSearchParams({ source: "case-set", ref: setA.id })
+  );
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    query: {},
+    capabilities: { actions: false, usage: false, mode: "standalone" }
+  });
+  assert.match(html, /disabled title="写动作未启用"/);
+  assert.ok(html.includes("写动作未启用：独立进程需"), "可见原因");
+  assert.ok(!html.includes("id=\"dispatch-submit\""), "不渲染可点提交");
 });
 
 test("renderDispatchPage: 份名转义（存储型 XSS 回归）", async () => {

@@ -14,7 +14,7 @@ import {
   panelCacheTtlFrom,
   type PanelWebDeps
 } from "./panel/web.js";
-import { handlePanelActionRequest } from "./panel/actions.js";
+import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
 import { createPanelDeepProbe } from "./panel/deep.js";
 import type { ProjectStore } from "./db/types.js";
 import { Runtime } from "./runtime.js";
@@ -208,7 +208,8 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     cache: createPanelWebCache(panelCacheTtlFrom(process.env)),
     deep: createPanelDeepProbe({ createRuntime: deepRuntimeFor }),
     runtimeFor: deepRuntimeFor,
-    storeNote: runtimeHost.storeNote
+    storeNote: runtimeHost.storeNote,
+    capabilities: { actions: panelActionsEnabled(process.env), usage: true, mode: "http" }
   };
 
   const httpServer = createServer((req, res) => {

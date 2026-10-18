@@ -704,7 +704,9 @@ function integrationView(soft: SoftProjectRead, record: ProjectRecord | null, ho
       penKey: soft.penKeyPresent
     },
     validation: {
-      errors: soft.project.validation.errors.map((issue) => issue.message),
+      errors: soft.project.validation.errors
+        .map((issue) => issue.message)
+        .filter((message) => !(soft.llmUsable && message.includes("llm.profiles 为空"))),
       warnings: soft.project.validation.warnings.map((issue) => issue.message)
     },
     deviceHosts: soft.deviceHosts,

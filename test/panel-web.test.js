@@ -226,8 +226,8 @@ test("panel web: 回归引用区块（复选框/端/基线/内联 JS/无 JS 提�
   assert.equal(html.status, 200);
   assert.match(html.body, /新建回归测试/);
   assert.match(html.body, new RegExp(`value="${set.id}\\|f-1"`), "复选框 value＝caseSetId|featureKey");
-  assert.match(html.body, /name="platform" value="ios" checked/);
-  assert.match(html.body, /name="platform" value="android" checked/);
+  assert.match(html.body, /name="platform" value="ios">/);
+  assert.match(html.body, /name="platform" value="android" checked/, "默认仅 Android（双端需单机双端 runner）");
   assert.match(html.body, /name="baseline"/);
   assert.match(html.body, /fetch\('\/panel\/api\/tasks'/);
   assert.match(html.body, /需启用 JavaScript 提交/);
@@ -537,6 +537,25 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   );
   assert.match(pendingHtml.body, /id="release-task"/, "未完任务释放可操作");
   assert.match(pendingHtml.body, /panel\/api\/tasks\/release/);
+
+  const flashHtml = await handlePanelRequest(
+    new URL(
+      `http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pending.id}&dispatched=${pending.id}`
+    ),
+    deps
+  );
+  assert.match(flashHtml.body, /已派发任务/, "派发回执");
+  assert.match(flashHtml.body, /section=audit/, "回执链接审计");
+
+  const gatedDeps = {
+    ...deps,
+    capabilities: { actions: false, usage: false, mode: "standalone" }
+  };
+  const gatedHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pending.id}`),
+    gatedDeps
+  );
+  assert.match(gatedHtml.body, /写动作未启用：独立进程需/, "能力关闭时释放给可见原因");
 
   const json = JSON.parse(
     (

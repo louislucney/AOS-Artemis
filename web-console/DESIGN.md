@@ -43,3 +43,5 @@
 导航口径：usage 独立进程显示 `USAGE_STANDALONE_NAV`（`src/console/shell.ts`：仅「统计」自身，不显示跨进程链接）；HTTP 模式下 `/panel` 与 `/usage` 各自导航（/usage 沿用该子集，后续如需并入主导航再议）。
 
 AA 偏差记录：`--color-link-hover` 采用 `#0066CC`（CSDC 原值 `#0077ED` 对白底 4.3:1，低于 AA）；遗留 PAGE_CSS 的 `#888` 已改 `#6E6E73`；`impeccable detect` 对 `scripts/console-fixtures.mjs` 产物为 **0 anti-patterns**。
+
+**critique→polish 轮（2026-10-18）**：样式收敛为**单一源**——`tokens.ts`（CSDC 变量＋组件）＋`compat.ts`（遗留标记兼容层，颜色/圆角对齐 token；不再有第二份 legacy `<style>` 与 `color-scheme` 双色系）；危险按钮 `#B91C1C`（≥4.5:1）；主按钮 hover 保持深色文字（修 4.39:1 边缘）；`.c-skip-link` 跳链；页级能力横幅与禁用态口径见 `src/console/shell.ts` 的 `ConsoleCapabilities`。

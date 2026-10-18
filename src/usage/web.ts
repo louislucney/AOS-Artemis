@@ -102,36 +102,6 @@ const HTML_CONTENT_TYPE = "text/html; charset=utf-8";
 const MAX_REFRESH_SECONDS = 86_400;
 const DEFAULT_MEMORY_NOTE = "会话内存：数据仅当前进程内有效，重启后丢失。";
 
-const PAGE_CSS = [
-  ":root{color-scheme:light dark}",
-  "*{box-sizing:border-box}",
-  "body{margin:0;padding:24px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;line-height:1.5}",
-  "main,header{max-width:1120px;margin:0 auto}",
-  "h1{font-size:22px;margin:0 0 8px}h2{font-size:17px;margin:0 0 12px}h3{font-size:14px;margin:16px 0 8px}",
-  "section{border:1px solid #8884;border-radius:8px;padding:16px;margin:16px 0}",
-  "table{border-collapse:collapse;width:100%;font-size:13px}",
-  "th,td{border-bottom:1px solid #8883;padding:6px 8px;text-align:left;vertical-align:top}",
-  "th{font-weight:600;white-space:nowrap}",
-  "code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}",
-  ".cards{display:flex;flex-wrap:wrap;gap:12px}",
-  ".card{border:1px solid #8884;border-radius:8px;padding:10px 16px;min-width:120px}",
-  ".card .k{font-size:12px;color:#6E6E73}.card .v{font-size:20px;font-weight:600}",
-  ".badges{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}",
-  ".badge{border-radius:999px;padding:2px 10px;font-size:12px;border:1px solid #8886}",
-  ".badge.warn{border-color:#B45309;color:#B45309}",
-  ".note{font-size:13px;color:#b45309;margin:4px 0}",
-  ".muted{color:#6E6E73}.empty{color:#6E6E73;font-size:13px}",
-  ".chip{display:inline-block;border:1px solid #8884;border-radius:999px;padding:0 8px;margin-right:6px;font-size:12px}",
-  ".switcher,.filters{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:8px 0}",
-  ".switcher label,.filters label{display:flex;flex-direction:column;font-size:12px;gap:2px}",
-  "select,input[type=text],input[type=number]{padding:4px 6px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}",
-  "button{padding:5px 12px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}",
-  ".pager{display:flex;gap:12px;align-items:center;margin-top:10px;font-size:13px}",
-  ".zero-call{opacity:.55}.ok{color:#15803d}.err{color:#b91c1c}",
-  ".summary{max-width:280px;word-break:break-word}",
-  "a{color:#2563eb}"
-].join("");
-
 class UsageWebNotFoundError extends Error {}
 
 function trimmed(value: string | null): string | null {
@@ -578,7 +548,6 @@ export function renderUsageHtml(view: UsageWebView): string {
     active: "usage",
     nav: USAGE_STANDALONE_NAV,
     meta: escapeHtml(projectLabel),
-    headExtra: `<style>${PAGE_CSS}</style>`,
     ...(view.filters.refresh === null ? {} : { autoRefreshSeconds: view.filters.refresh }),
     body: [
       "<header>",

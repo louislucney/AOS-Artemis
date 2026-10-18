@@ -53,6 +53,9 @@ test("console a11y: 每页唯一 h1、zh-CN、focus-visible、无禁用语义", 
     assert.match(html.body, /@media \(max-width:960px\)/, `${name}: 窄屏适配`);
     assert.ok(!/color:\s*#86868B/i.test(html.body), `${name}: 正文禁用法外灰（装饰色不得进正文）`);
     assert.ok(!html.body.includes('http-equiv="refresh"'), `${name}: 默认无整页刷新`);
+    assert.ok(!html.body.includes("color-scheme:light dark"), `${name}: 不声明双色系（亮色唯一）`);
+    assert.ok(!html.body.includes("#2563eb"), `${name}: 无 legacy 链接色（单一样式源）`);
+    assert.equal((html.body.match(/<style>/g) ?? []).length, 1, `${name}: 单一 <style> 块`);
   }
 });
 
@@ -64,7 +67,14 @@ test("console a11y: 表格语义（th scope）与表单页刷新纪律", async (
   assert.match(project.body, /<th scope="col">/, "遗留表格补 scope");
   const dispatch = await handlePanelRequest(sectionUrl(rootPath, "dispatch"), deps);
   assert.match(dispatch.body, /<form/);
+  assert.match(dispatch.body, /aria-label="用例集份"/);
+  assert.match(dispatch.body, /aria-label="基线"/);
   assert.ok(!dispatch.body.includes('http-equiv="refresh"'), "含表单页永不整页刷新");
+  assert.match(archive.body, /aria-label="产物类型"/);
+  assert.match(archive.body, /aria-label="产物关键词"/);
+  const audit = await handlePanelRequest(sectionUrl(rootPath, "audit"), deps);
+  assert.match(audit.body, /aria-label="事件域"/);
+  assert.match(audit.body, /aria-label="结果"/);
   const ops = await handlePanelRequest(sectionUrl(rootPath, "ops"), deps);
   assert.ok(!ops.body.includes('http-equiv="refresh"'));
 });

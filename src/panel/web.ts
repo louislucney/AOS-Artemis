@@ -6,7 +6,7 @@ import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
-import { renderConsoleShell } from "../console/shell.js";
+import { renderConsoleShell, type ConsoleCapabilities, type ConsoleNavKey } from "../console/shell.js";
 import {
   computeDispatchPreview,
   renderDispatchPage,
@@ -79,6 +79,8 @@ export interface PanelWebDeps {
   runtimeFor?: (rootPath: string) => Promise<Runtime | null>;
   /** 存储回退说明（装配期 reason；运维页展示）。 */
   storeNote?: string | null;
+  /** 能力标记（承载模式/写动作/统计页）；缺省按 HTTP 全开渲染。 */
+  capabilities?: ConsoleCapabilities;
 }
 
 export interface PanelWebResponse {
@@ -169,8 +171,8 @@ type PanelView =
       writeError: string | null;
       artifacts: number;
     }
-  | { kind: "project"; rootPath: string; detail: PanelProjectDetail }
-  | { kind: "task"; rootPath: string; detail: PanelTaskDetail }
+  | { kind: "project"; rootPath: string; detail: PanelProjectDetail; active?: ConsoleNavKey | null }
+  | { kind: "task"; rootPath: string; detail: PanelTaskDetail; flash?: string }
   | { kind: "review"; rootPath: string; detail: { items: PanelReviewItem[]; warnings: string[] } }
   | { kind: "stats"; rootPath: string; detail: PanelStatsView }
   | { kind: "batch"; rootPath: string; detail: PanelBatchDetail };
@@ -331,7 +333,13 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   if (taskId !== null) {
     const detail = await buildPanelTaskDetail(panelDeps, resolved.rootPath, taskId);
     if (!detail) throw new PanelNotFoundError(`未知回归任务 "${taskId}"`);
-    return { kind: "task", rootPath: resolved.rootPath, detail };
+    const dispatched = trimmed(url.searchParams.get("dispatched"));
+    return {
+      kind: "task",
+      rootPath: resolved.rootPath,
+      detail,
+      ...(dispatched === null ? {} : { flash: dispatched })
+    };
   }
 
   const batchFile = trimmed(url.searchParams.get("batch"));
@@ -358,7 +366,20 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     iosProbe: trimmed(url.searchParams.get("ios")) === "1"
   });
   if (!detail) throw new PanelNotFoundError(`未知项目 "${projectKey}"`);
-  return { kind: "project", rootPath: resolved.rootPath, detail };
+  const sectionActive: ConsoleNavKey | null =
+    section === "tasks"
+      ? "tasks"
+      : section === "runners"
+        ? "runners"
+        : section === "schedules"
+          ? "schedules"
+          : null;
+  return {
+    kind: "project",
+    rootPath: resolved.rootPath,
+    detail,
+    ...(sectionActive === null ? {} : { active: sectionActive })
+  };
 }
 
 function toJsonView(view: PanelView): Record<string, unknown> {
@@ -407,7 +428,7 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
   const response: PanelWebResponse =
     url.pathname === "/panel.json"
       ? { status: 200, contentType: JSON_CONTENT_TYPE, body: JSON.stringify(toJsonView(view), null, 2) }
-      : { status: 200, contentType: HTML_CONTENT_TYPE, body: renderPanelHtml(view) };
+      : { status: 200, contentType: HTML_CONTENT_TYPE, body: renderPanelHtml(view, deps) };
   deps.cache?.set(cacheKey, response);
   return response;
 }
@@ -415,35 +436,6 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
 // ---------------------------------------------------------------------------
 // HTML rendering
 
-const PAGE_CSS = [
-  ":root{color-scheme:light dark}",
-  "*{box-sizing:border-box}",
-  "body{margin:0;padding:24px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;line-height:1.5}",
-  "main,header{max-width:1120px;margin:0 auto}",
-  "h1{font-size:22px;margin:0 0 8px}h2{font-size:17px;margin:0 0 12px}",
-  "section{border:1px solid #8884;border-radius:8px;padding:16px;margin:16px 0}",
-  "table{border-collapse:collapse;width:100%;font-size:13px}",
-  "th,td{border-bottom:1px solid #8883;padding:6px 8px;text-align:left;vertical-align:top}",
-  "th{font-weight:600;white-space:nowrap}",
-  "code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}",
-  ".cards{display:flex;flex-wrap:wrap;gap:12px}",
-  ".card{border:1px solid #8884;border-radius:8px;padding:10px 16px;min-width:120px}",
-  ".card .k{font-size:12px;color:#6E6E73}.card .v{font-size:20px;font-weight:600}",
-  ".badge{border-radius:999px;padding:2px 10px;font-size:12px;border:1px solid #8886;display:inline-block}",
-  ".badge.warn{border-color:#B45309;color:#B45309}",
-  ".note{font-size:13px;color:#b45309;margin:4px 0}",
-  ".muted{color:#6E6E73}.empty{color:#6E6E73;font-size:13px}",
-  ".chip{display:inline-block;border:1px solid #8884;border-radius:999px;padding:0 8px;margin:0 6px 6px 0;font-size:12px}",
-  ".lamp{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}",
-  ".lamp-red{background:#dc2626}.lamp-yellow{background:#d97706}.lamp-green{background:#16a34a}.lamp-gray{background:#6b7280}",
-  ".gate-pass{color:#15803d}.gate-fail{color:#b91c1c}",
-  ".spark{display:block}",
-  ".spark polyline{fill:none;stroke:#2563eb;stroke-width:1.5}",
-  ".spark circle{fill:#2563eb}",
-  ".ok{color:#15803d}.err{color:#b91c1c}",
-  "a{color:#2563eb}",
-  "ul{margin:6px 0;padding-left:20px}"
-].join("");
 
 function renderTable(headers: string[], rows: string[][], emptyText: string): string {
   if (rows.length === 0) return `<p class="empty">${escapeHtml(emptyText)}</p>`;
@@ -520,8 +512,7 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
     ? cBadge({ label: "存储：会话内存", tone: "warning" })
     : view.store.kind === "file"
       ? cBadge({ label: "存储：文件台账", tone: "neutral" })
-      : cBadge({ label: "存储：PostgreSQL", tone: "neutral" });
-  const rows = view.projects.map((row) => [
+      : cBadge({ label: "存储：PostgreSQL", tone: "neutral" });  const rows = view.projects.map((row) => [
     `<a href="${escapeHtml(projectHref(row.rootPath))}"><code>${escapeHtml(row.name)}</code></a>`,
     renderProjectCell(row),
     escapeHtml(row.stacks.join("、") || "—"),
@@ -533,7 +524,8 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
     title: "多项目总览",
     active: "overview",
     meta: `项目 ${view.projects.length} 个 · ${escapeHtml(cacheNote)}`,
-    headExtra: `<style>${PAGE_CSS}</style>`,
+    project: currentShell.project,
+    capabilities: currentShell.capabilities,
     body: [
       "<header>",
       "<h1>多项目总览</h1>",
@@ -927,12 +919,12 @@ function renderRegressionBlock(rootPath: string, detail: PanelProjectDetail): st
     '<form id="regression-form" onsubmit="return createRegressionTask(event)">',
     renderTable(["引用", "时间", "功能", "用例", "最近通过率", "来源"], rows, "暂无可引用的用例份"),
     "<p><label>目标端：</label>",
-    '<label><input type="checkbox" name="platform" value="ios" checked> iOS</label> ',
+    '<label><input type="checkbox" name="platform" value="ios"> iOS</label> ',
     '<label><input type="checkbox" name="platform" value="android" checked> Android</label></p>',
-    "<p><label>基线：</label><select name=\"baseline\">",
+    '<p><label>基线：<select name="baseline" aria-label="基线">',
     '<option value="latest" selected>最近一次（同份）</option>',
     '<option value="none">不对比（重建基准）</option>',
-    "</select></p>",
+    "</select></label></p>",
     '<p><button type="submit">创建回归任务</button> <span id="regression-status" class="muted"></span></p>',
     '<p class="note">需启用 JavaScript 提交（或使用 <code>suite task create</code>）。</p>',
     "</form>",
@@ -1091,7 +1083,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
   ].join("\n");
 }
 
-function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): string {
+function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash?: string }): string {
   const { detail } = view;
   const task = detail.task;
   const refRows = detail.refs.map((ref) => [
@@ -1160,12 +1152,21 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
   return page(
     `回归任务 · ${task.id}`,
     [
+      ...(view.flash === undefined
+        ? []
+        : [
+            `<div class="c-banner c-banner-accent" role="status">已派发任务 <code>${escapeHtml(view.flash)}</code>；已写入审计（<a href="/panel?project=${encodeURIComponent(view.rootPath)}&section=audit">查看审计</a>）。</div>`
+          ]),
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 <code>${escapeHtml(task.createdBy)}</code>`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
+        const actionsOff = currentShell.capabilities?.actions === false;
+        if (actionsOff) {
+          return `<p>${badge} <button class="c-button" type="button" disabled title="写动作未启用">释放重跑</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</span></p>`;
+        }
         if (!active) {
           return `<p>${badge} <button class="c-button" type="button" disabled title="任务已终态">释放重跑</button> <span class="muted">仅未完成（待领取/已领取/执行中）任务可释放</span></p>`;
         }
@@ -1920,14 +1921,50 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
 function page(title: string, bodyParts: string, refreshSeconds?: number): string {
   return renderConsoleShell({
     title,
-    active: "overview",
-    headExtra: `<style>${PAGE_CSS}</style>`,
+    active: currentShell.active,
+    project: currentShell.project,
+    capabilities: currentShell.capabilities,
     ...(refreshSeconds === undefined ? {} : { autoRefreshSeconds: refreshSeconds }),
     body: bodyParts.replaceAll("<main>", "").replaceAll("</main>", "")
   });
 }
 
-function renderPanelHtml(view: PanelView): string {
+interface ShellCtx {
+  active: ConsoleNavKey | null;
+  project: string | null;
+  capabilities?: ConsoleCapabilities;
+}
+
+let currentShell: ShellCtx = { active: "overview", project: null };
+
+function activeForView(view: PanelView): ConsoleNavKey | null {
+  switch (view.kind) {
+    case "overview":
+    case "compare":
+      return "overview";
+    case "dispatch":
+      return "dispatch";
+    case "library":
+      return "library";
+    case "archive":
+      return "archive";
+    case "audit":
+      return "audit";
+    case "ops":
+      return "ops";
+    case "project":
+      return view.active ?? null;
+    default:
+      return "tasks";
+  }
+}
+
+function renderPanelHtml(view: PanelView, deps: PanelWebDeps): string {
+  currentShell = {
+    active: activeForView(view),
+    project: view.kind === "overview" || view.kind === "compare" ? null : view.rootPath,
+    capabilities: deps.capabilities
+  };
   const cacheNote = "缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）";
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);
   if (view.kind === "compare") return renderComparePage(view.compare, cacheNote);
@@ -1936,7 +1973,8 @@ function renderPanelHtml(view: PanelView): string {
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
       preview: view.preview,
-      query: view.query
+      query: view.query,
+      capabilities: deps.capabilities
     });
   }
   if (view.kind === "library") {
@@ -1971,7 +2009,8 @@ function renderPanelHtml(view: PanelView): string {
       storeLabel: storeKindLabel(view.storeKind),
       storeNote: view.storeNote,
       writeError: view.writeError,
-      artifacts: view.artifacts
+      artifacts: view.artifacts,
+      capabilities: deps.capabilities
     });
   }
   if (view.kind === "project") return renderProjectPage(view, cacheNote);

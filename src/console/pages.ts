@@ -6,7 +6,7 @@ import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
 import { parseQuarantine } from "../figma/quarantine.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cCard, cTable } from "./components.js";
-import { renderConsoleShell } from "./shell.js";
+import { renderConsoleShell, type ConsoleCapabilities } from "./shell.js";
 
 export interface LibraryPageData {
   rootPath: string;
@@ -51,6 +51,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
     title: "用例库",
     active: "library",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
     body: [
       "<h1>用例库</h1>",
       cCard({
@@ -88,6 +89,7 @@ export function renderArchivePage(data: ArchivePageData): string {
     title: "档案与产物",
     active: "archive",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
     body: [
       "<h1>档案与产物</h1>",
       cCard({
@@ -96,12 +98,12 @@ export function renderArchivePage(data: ArchivePageData): string {
           `<form method="get" action="/panel">`,
           `<input type="hidden" name="project" value="${escapeHtml(data.rootPath)}">`,
           `<input type="hidden" name="section" value="archive">`,
-          `<p>类型 <select name="kind"><option value="">全部</option>${["run", "case-set", "report", "diff", "crash", "trace"]
+          `<p>类型 <select name="kind" aria-label="产物类型"><option value="">全部</option>${["run", "case-set", "report", "diff", "crash", "trace"]
             .map(
               (kind) =>
                 `<option value="${kind}"${data.query.kind === kind ? " selected" : ""}>${kind}</option>`
             )
-            .join("")}</select> 关键词 <input type="text" name="q" value="${q("q")}" placeholder="文件名/路径"> <button class="c-button" type="submit">筛选</button></p>`,
+            .join("")}</select> 关键词 <input type="text" name="q" aria-label="产物关键词" value="${q("q")}" placeholder="文件名/路径"> <button class="c-button" type="submit">筛选</button></p>`,
           "</form>"
         ].join("\n")
       }),
@@ -141,6 +143,7 @@ export function renderAuditPage(data: AuditPageData): string {
     title: "审计",
     active: "audit",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
     body: [
       "<h1>审计</h1>",
       cCard({
@@ -149,12 +152,12 @@ export function renderAuditPage(data: AuditPageData): string {
           `<form method="get" action="/panel">`,
           `<input type="hidden" name="project" value="${escapeHtml(data.rootPath)}">`,
           `<input type="hidden" name="section" value="audit">`,
-          `<p>域 <input type="text" name="domain" value="${q("domain")}" size="12"> 结果 <select name="result"><option value="">全部</option>${["ok", "skipped", "failed"]
+          `<p>域 <input type="text" name="domain" aria-label="事件域" value="${q("domain")}" size="12"> 结果 <select name="result" aria-label="结果"><option value="">全部</option>${["ok", "skipped", "failed"]
             .map(
               (result) =>
                 `<option value="${result}"${data.query.result === result ? " selected" : ""}>${result}</option>`
             )
-            .join("")}</select> 起自 <input type="text" name="since" value="${q("since")}" size="20" placeholder="ISO 时间"> <button class="c-button" type="submit">筛选</button></p>`,
+            .join("")}</select> 起自 <input type="text" name="since" aria-label="起始时间（ISO）" value="${q("since")}" size="20" placeholder="ISO 时间"> <button class="c-button" type="submit">筛选</button></p>`,
           "</form>"
         ].join("\n")
       }),
@@ -179,15 +182,21 @@ export interface OpsPageData {
   storeLabel: string;
   writeError: string | null;
   artifacts: number;
+  capabilities?: ConsoleCapabilities;
 }
 
 export function renderOpsPage(data: OpsPageData): string {
+  const actionsOff = data.capabilities?.actions === false;
   const exportLink = (what: string, format: string, label: string): string =>
-    `<a class="c-button" href="/panel/api/export?project=${encodeURIComponent(data.rootPath)}&what=${what}&format=${format}">${label}</a>`;
+    actionsOff
+      ? `<span class="c-button c-nav-item-disabled" aria-disabled="true" title="写动作未启用">${label}</span>`
+      : `<a class="c-button" href="/panel/api/export?project=${encodeURIComponent(data.rootPath)}&what=${what}&format=${format}">${label}</a>`;
   return renderConsoleShell({
     title: "运维与数据",
     active: "ops",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
+    capabilities: data.capabilities,
     body: [
       "<h1>运维与数据</h1>",
       cCard({

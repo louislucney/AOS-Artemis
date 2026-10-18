@@ -164,27 +164,53 @@ async function createTask(
   rootPath: string,
   payload: Record<string, unknown>
 ): Promise<PanelWebResponse> {
-  const rawRefs = Array.isArray(payload.refs) ? payload.refs : [];
-  const refs: Array<{ caseSetId: string; featureKey: string }> = [];
-  for (const entry of rawRefs) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const record = entry as { caseSetId?: unknown; featureKey?: unknown };
-    if (typeof record.caseSetId !== "string" || record.caseSetId === "") continue;
-    if (typeof record.featureKey !== "string" || record.featureKey === "") continue;
-    refs.push({ caseSetId: record.caseSetId, featureKey: record.featureKey });
-  }
-  if (refs.length === 0) return json(400, { error: "refs 为空或格式非法" });
-  if (refs.length > MAX_REFS) return json(400, { error: `refs 数量超过上限 ${MAX_REFS}` });
-
   const sets = await deps.store.listCaseSets(rootPath);
-  const known = new Set(
-    sets.flatMap((set) => set.features.map((feature) => `${set.id}|${feature.key}`))
-  );
-  const unknown = refs.filter((ref) => !known.has(`${ref.caseSetId}|${ref.featureKey}`));
-  if (unknown.length > 0) {
-    return json(400, {
-      error: `未知引用份：${unknown.map((ref) => ref.featureKey).join("、")}（先重新生成/登记用例集）`
-    });
+  let refs: Array<{ caseSetId: string; featureKey: string }> = [];
+  const sourceMode = payload.source;
+  if (sourceMode === "case-set" || sourceMode === "keyword") {
+    if (sourceMode === "case-set") {
+      const refId = typeof payload.ref === "string" ? payload.ref.trim() : "";
+      const set = sets.find((entry) => entry.id === refId);
+      if (!set) return json(400, { error: `未知份 "${refId}"（请刷新预览后重选）` });
+      refs = set.features.map((feature) => ({ caseSetId: set.id, featureKey: feature.key }));
+    } else {
+      const keyword = typeof payload.keyword === "string" ? payload.keyword.trim() : "";
+      if (keyword === "") return json(400, { error: "keyword 为空" });
+      const hits = sets.filter(
+        (set) =>
+          set.basename.includes(keyword) ||
+          set.features.some(
+            (feature) => feature.name.includes(keyword) || feature.key.includes(keyword)
+          )
+      );
+      if (hits.length === 0) return json(400, { error: `关键词「${keyword}」未匹配到份` });
+      refs = hits.flatMap((set) =>
+        set.features.map((feature) => ({ caseSetId: set.id, featureKey: feature.key }))
+      );
+    }
+    if (refs.length === 0) return json(400, { error: "解析后 refs 为空（份无功能段？）" });
+    if (refs.length > MAX_REFS) return json(400, { error: `refs 数量超过上限 ${MAX_REFS}` });
+  } else {
+    const rawRefs = Array.isArray(payload.refs) ? payload.refs : [];
+    for (const entry of rawRefs) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const record = entry as { caseSetId?: unknown; featureKey?: unknown };
+      if (typeof record.caseSetId !== "string" || record.caseSetId === "") continue;
+      if (typeof record.featureKey !== "string" || record.featureKey === "") continue;
+      refs.push({ caseSetId: record.caseSetId, featureKey: record.featureKey });
+    }
+    if (refs.length === 0) return json(400, { error: "refs 为空或格式非法" });
+    if (refs.length > MAX_REFS) return json(400, { error: `refs 数量超过上限 ${MAX_REFS}` });
+
+    const known = new Set(
+      sets.flatMap((set) => set.features.map((feature) => `${set.id}|${feature.key}`))
+    );
+    const unknown = refs.filter((ref) => !known.has(`${ref.caseSetId}|${ref.featureKey}`));
+    if (unknown.length > 0) {
+      return json(400, {
+        error: `未知引用份：${unknown.map((ref) => ref.featureKey).join("、")}（先重新生成/登记用例集）`
+      });
+    }
   }
 
   const rawPlatforms = Array.isArray(payload.platforms) ? payload.platforms : undefined;

@@ -220,6 +220,45 @@ test("console actions: 导入（无运行时 → 400 指引；缺路径 → 400�
   assert.match(noRuntime.body, /运行时/);
 });
 
+test("console actions: 服务端重解析（case-set/keyword 不信客户端 refs；陈旧份 400）", async () => {
+  const { deps, rootPath, store } = await setup();
+  await store.recordCaseSet({
+    rootPath,
+    source: "figma:x",
+    basename: "登录回归",
+    features: [
+      { key: "f-1", name: "登录", caseCount: 1, screens: [], jsonPath: "/x/a.json", mdPath: "/x/a.md", xlsxPath: "/x/a.xlsx" }
+    ]
+  });
+  const sets = await store.listCaseSets(rootPath);
+
+  const bySet = await handlePanelActionRequest(
+    request("/panel/api/tasks", { project: rootPath, source: "case-set", ref: sets[0].id }),
+    deps
+  );
+  assert.equal(bySet.status, 200);
+  const task = JSON.parse(bySet.body).task;
+  assert.deepEqual(task.refs, [{ caseSetId: sets[0].id, featureKey: "f-1" }], "refs 由服务端解析");
+
+  const stale = await handlePanelActionRequest(
+    request("/panel/api/tasks", { project: rootPath, source: "case-set", ref: "cs-gone" }),
+    deps
+  );
+  assert.equal(stale.status, 400);
+
+  const byKeyword = await handlePanelActionRequest(
+    request("/panel/api/tasks", { project: rootPath, source: "keyword", keyword: "登录" }),
+    deps
+  );
+  assert.equal(byKeyword.status, 200);
+
+  const noHit = await handlePanelActionRequest(
+    request("/panel/api/tasks", { project: rootPath, source: "keyword", keyword: "不存在" }),
+    deps
+  );
+  assert.equal(noHit.status, 400);
+});
+
 test("console actions: 导入单飞（409）＋上传临时文件必清理", async () => {
   const { deps, rootPath } = await setup();
   const boundary = "----aos";

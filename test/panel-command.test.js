@@ -47,6 +47,9 @@ test("panel --web: 动作门默认关闭；AOS_PANEL_ACTIONS=1＋loopback 才开
   await runCli(["--web", "--port", "0", "--workspace", dir], {
     store,
     waitForShutdown: async (handle) => {
+      const page = await fetch(`http://127.0.0.1:${handle.port}/panel`);
+      const html = await page.text();
+      assert.ok(html.includes("写动作未启用"), "默认关：页级横幅");
       const off = await post(handle.port, "127.0.0.1");
       assert.equal(off.status, 404, "未设 AOS_PANEL_ACTIONS：动作门关闭");
     }
@@ -56,6 +59,9 @@ test("panel --web: 动作门默认关闭；AOS_PANEL_ACTIONS=1＋loopback 才开
     store,
     env: { ...process.env, AOS_PANEL_ACTIONS: "1" },
     waitForShutdown: async (handle) => {
+      const page = await fetch(`http://127.0.0.1:${handle.port}/panel`);
+      const html = await page.text();
+      assert.ok(!html.includes("写动作未启用"), "开启后无横幅");
       const on = await post(handle.port, "127.0.0.1");
       assert.equal(on.status, 400, "已开：进入业务校验（缺 project 400）");
       const foreign = await post(handle.port, "10.0.0.5:8767");
