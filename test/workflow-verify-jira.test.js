@@ -576,3 +576,50 @@ test("verify_jira_issue: 非法 issueKey → isError 用法错误（未请求 is
   assert.match(payload.error, /无法解析 issue key/);
   assert.equal(jira.calls.getIssue.length, 0);
 });
+
+test("verify_jira_issue: 候选用例文件不可读 → 跳过＋日志（不阻断）", async () => {
+  const dir = tempDir();
+  const goodFile = writeCasesFile(dir, "账户.json", [{ id: "c1", name: "错误密码" }]);
+  const { deps, calls } = makeDeps(dir, {
+    sets: [
+      record("figma:y", [
+        featureRecord(path.join(dir, "fixtures", "missing.json"), {
+          key: "f-x",
+          name: "缺件",
+          caseCount: 1
+        }),
+        featureRecord(goodFile, { key: "f-a", name: "账户", caseCount: 1 })
+      ])
+    ],
+    mappingReply: '{"caseIds":["c1"]}',
+    report: reportStub({ cases: [caseStub("c1")] })
+  });
+  const payload = payloadOf(await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1" }, deps));
+  assert.equal(payload.ok, true);
+  assert.equal(calls.logs.some((line) => line.includes("候选用例文件不可读")), true);
+  assert.equal(calls.execute.length, 1);
+  assert.equal(calls.execute[0].options.testsPath, goodFile);
+});
+
+test("verify_jira_issue: dryRun 预览带 evidenceTruncated（与发送路径同式）", async () => {
+  const dir = tempDir();
+  const flows = Array.from({ length: 11 }, (_, index) => ({
+    id: `c${index}`,
+    name: `密码用例${index}`
+  }));
+  const casesFile = writeCasesFile(dir, "账户.json", flows);
+  const failedCases = flows.map((entry, index) =>
+    caseStub(entry.id, { status: "failed", traceId: `t${index}` })
+  );
+  const { deps, calls } = makeDeps(dir, {
+    sets: [record("figma:x", [featureRecord(casesFile, { caseCount: 11 })])],
+    report: reportStub({ total: 11, executed: 11, passed: 0, failed: 11, cases: failedCases })
+  });
+  const payload = payloadOf(
+    await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1", scope: "密码", dryRun: true }, deps)
+  );
+  assert.equal(payload.writeback.outcome, "dryRun");
+  assert.equal(payload.writeback.evidencePlanned.length, 10);
+  assert.equal(payload.writeback.evidenceTruncated, 1);
+  assert.equal(calls.execute.length, 1);
+});

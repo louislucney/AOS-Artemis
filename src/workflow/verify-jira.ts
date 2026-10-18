@@ -220,9 +220,15 @@ export async function verifyJiraIssue(
       });
     }
   } else {
-    const features = latestFeatures(await listSets(runtime, 200))
-      .map((target) => ({ target, cases: readCaseSummaries(target.jsonPath) }))
-      .filter((entry) => entry.cases.length > 0);
+    const features: Array<{ target: CaseTarget; cases: Array<{ id: string; name: string }> }> = [];
+    for (const target of latestFeatures(await listSets(runtime, 200))) {
+      const cases = readCaseSummaries(target.jsonPath);
+      if (cases.length === 0) {
+        logLine(`verify_jira_issue: 候选用例文件不可读，已跳过：${target.jsonPath}`);
+        continue;
+      }
+      features.push({ target, cases });
+    }
     if (features.length === 0) {
       mode = "ticket";
     } else {
@@ -409,6 +415,9 @@ export async function verifyJiraIssue(
   const failedWithTrace = failedEntries.filter((entry) => entry.traceId !== null);
   if (dryRun) {
     writeback.evidencePlanned = failedWithTrace.slice(0, EVIDENCE_POST_CAP).map((entry) => entry.traceId);
+    if (failedWithTrace.length > EVIDENCE_POST_CAP) {
+      writeback.evidenceTruncated = failedWithTrace.length - EVIDENCE_POST_CAP;
+    }
     writeback.conclusionText = buildVerifyComment(commentInput).text;
   } else {
     const writebackErrors: string[] = [];

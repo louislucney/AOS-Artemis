@@ -5,7 +5,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { CaseSetRecord, SuiteRunRecord } from "../db/types.js";
 import { designDir, loadDesignFlowGraph, readFlowDocumentMeta } from "../figma/design-store.js";
-import { loadRunManifest, runManifestFileNames } from "../figma/run-manifest.js";
+import { loadRunManifest, runManifestFileNames, type RunManifest } from "../figma/run-manifest.js";
 import { resolveProvenance } from "../provenance.js";
 import { detectProjectStacks } from "../projects/stack.js";
 import type { Runtime } from "../runtime.js";
@@ -39,6 +39,26 @@ function provenanceCounts(entries: Array<{ provenance?: unknown }>): Record<stri
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return counts;
+}
+
+function usableManifest(manifest: RunManifest): boolean {
+  const isObject = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  if (typeof manifest.runId !== "string" || manifest.runId.trim() === "") return false;
+  if (typeof manifest.source !== "string") return false;
+  if (typeof manifest.startedAt !== "string" || typeof manifest.finishedAt !== "string") return false;
+  const summary = manifest.summary as unknown;
+  if (!isObject(summary)) return false;
+  for (const key of ["total", "passed", "failed"] as const) {
+    const value = summary[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  }
+  const gate = manifest.gate as unknown;
+  if (!isObject(gate)) return false;
+  if (gate.result !== "pass" && gate.result !== "fail") return false;
+  if (typeof gate.exitCode !== "number" || !Number.isFinite(gate.exitCode)) return false;
+  if (!isObject(manifest.failureDomains)) return false;
+  return true;
 }
 
 export async function projectArchive(
@@ -128,27 +148,23 @@ export async function projectArchive(
   let unreadable = 0;
   for (const name of manifestNames.slice(0, ARCHIVE_RUNS_LIMIT)) {
     const read = loadRunManifest(runtime.configDirAbs, name);
-    if (read.kind !== "ok") {
+    if (read.kind !== "ok" || !usableManifest(read.manifest)) {
       unreadable += 1;
       continue;
     }
-    try {
-      const manifest = read.manifest;
-      recent.push({
-        runId: manifest.runId,
-        source: manifest.source,
-        startedAt: manifest.startedAt,
-        finishedAt: manifest.finishedAt,
-        total: manifest.summary.total,
-        passed: manifest.summary.passed,
-        failed: manifest.summary.failed,
-        gate: manifest.gate.result,
-        exitCode: manifest.gate.exitCode,
-        failureDomains: manifest.failureDomains
-      });
-    } catch {
-      unreadable += 1;
-    }
+    const manifest = read.manifest;
+    recent.push({
+      runId: manifest.runId,
+      source: manifest.source,
+      startedAt: manifest.startedAt,
+      finishedAt: manifest.finishedAt,
+      total: manifest.summary.total,
+      passed: manifest.summary.passed,
+      failed: manifest.summary.failed,
+      gate: manifest.gate.result,
+      exitCode: manifest.gate.exitCode,
+      failureDomains: manifest.failureDomains
+    });
   }
 
   let verdicts: Record<string, unknown> | null = null;

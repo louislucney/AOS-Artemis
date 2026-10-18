@@ -262,6 +262,15 @@ test("project_archive: 坏 flows.json → design null＋degraded", async () => {
   assert.deepEqual(payload.degraded, ["flows.json 存在但不可解析（已略过设计血统）"]);
 });
 
+test("project_archive: pen 源 flows → design.source=pen:<path>", async () => {
+  const dir = tempDir();
+  const { fileKey, ...rest } = FLOWS_FIXTURE;
+  writeFlows(dir, { ...rest, source: "pen:design/app.pen" });
+  const payload = payloadOf(await projectArchive(stubRuntime(dir), baseDeps()));
+  assert.equal(payload.design.source, "pen:design/app.pen");
+  assert.equal(payload.design.screens, 3);
+});
+
 test("project_archive: 批次清单（字段回显；坏件计 unreadable；非 run-* 不计）", async () => {
   const dir = tempDir();
   writeManifest(
@@ -272,10 +281,12 @@ test("project_archive: 批次清单（字段回显；坏件计 unreadable；非 
   writeManifest(dir, "run-20261018T000002-b.json", manifestFixture("run-b"));
   writeManifest(dir, "run-20261018T000001-a.json", "{broken");
   writeManifest(dir, "not-a-manifest.json", manifestFixture("run-x"));
+  writeManifest(dir, "run-20261018T000004-d.json", manifestFixture("run-d", { schemaVersion: 99 }));
+  writeManifest(dir, "run-20261018T000000-e.json", manifestFixture("run-e", { failureDomains: undefined }));
 
   const payload = payloadOf(await projectArchive(stubRuntime(dir), baseDeps()));
-  assert.equal(payload.runs.total, 3);
-  assert.equal(payload.runs.unreadable, 1);
+  assert.equal(payload.runs.total, 5);
+  assert.equal(payload.runs.unreadable, 3);
   assert.equal(payload.runs.recent.length, 2);
   assert.deepEqual(payload.runs.recent[0], {
     runId: "run-c",
