@@ -214,7 +214,7 @@ async function runPanelWeb(options: {
           if (req.method === "POST") {
             try {
               body = await readStandaloneJsonBody(req);
-            } catch (error) {
+            } catch {
               res.writeHead(400, { "Content-Type": JSON_CONTENT_TYPE });
               res.end('{"error":"invalid JSON body"}');
               return;
