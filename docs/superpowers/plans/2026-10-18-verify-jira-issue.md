@@ -256,7 +256,7 @@ export async function verifyJiraIssue(
   5. `checkLlm(runtime, deps.setup)` → needs-setup。6. 设备（`pickDevice`，同 run-regression 三态）。
   7. 选择：
      - `scope` 给定：`listSets`（缺省 `(rt,limit)=>rt.store.listCaseSets(rt.project.rootDir,limit)`，limit 200）→`latestFeatures`→`selectByScope`；0 命中→needs-info（questions：`用例库里没有匹配「<scope>」的用例：换关键词，或给 Excel 测试文档导入/用 design_to_test 生成`；context 为最新份清单）；**不调用映射 chat**；mode=`scope`。
-     - 否则：候选=`latestFeatures` 逐 feature `readCaseSummaries`（空表跳过）；候选为空→合成；非空→读上次映射（`client.getComments(key)`＋`findCommentByMarker(comments, verifyMarker(key))`＋`adfToText`＋`parseVerifyMapping`；失败降级为空＋WARN 日志）→`selectCasesWithLlm(deps.chat ?? makeChatFn(activeEntry), {issue,candidates,previous})`；`ok:false`→`{ok:false,failedStep:"mapping",detail,suggestions:[可重试/给 scope]}`；`caseIds` 空→合成；非空→mode=`mapped`，targets=对应 feature（`caseIds` 透传）。
+     - 否则：候选=`latestFeatures` 逐 feature `readCaseSummaries`（空表跳过）；候选为空→合成（`mappingAttempted=false`）；非空→读上次映射（`client.getComments(key)`＋`findCommentByMarker(comments, verifyMarker(key))`＋`adfToText`＋`parseVerifyMapping`；失败降级为空＋WARN 日志）→`selectCasesWithLlm(deps.chat ?? makeChatFn(activeEntry), {issue,candidates,previous})`（置 `mappingAttempted=true`）；`ok:false`→`{ok:false,failedStep:"mapping",detail,suggestions:[可重试/给 scope]}`；`caseIds` 空→合成；非空→mode=`mapped`，targets=对应 feature（`caseIds` 透传）。
      - 合成（D8b）：`synthesizeCasesFromIssue(issue)`＋`writeTicketTestsFile(configDirAbs, issue, cases, deps.now?.() ?? new Date())`→单 target（`provenance:"单子即用例"`）；mode=`ticket`；steps 增 `{step:"synthesize",cases,testsFile}`。
      - 回显/评论用 `source` 串：mode=`ticket` → `单子即用例`；否则 targets 的 `provenance` 去重后以 `；` 连接（如 `导入自 qa.xlsx@abcd1234；生成自 figma:…`）；评论的 `mapping:{caseIds}` 仅在 mode=`mapped` 传入。
   8. 回显＋日志（同 run-regression 两次 `log()`）：`verify_jira_issue: 验证目标 …（来源…）· 设备 …`、`verify_jira_issue: 即将执行 N 条用例 · M 个集 · 设备 …`；steps 增 `{step:"select",mode,targets}`。
@@ -267,10 +267,10 @@ export async function verifyJiraIssue(
       - 结论评论：`upsertMarkedComment(client, key, {marker:verifyMarker(key), body:buildVerifyComment(input).adf, property:{key:"aos-verify",value:{issueKey:key}}})`→`action/commentId`；失败记 errors。
       - 关联：每集 `runId` 非空→逐 executed case `associateCase`（缺省 `(rt,input)=>rt.store.setCaseIssueKey({rootPath:rt.project.rootDir,...input})`）best-effort，失败记 errors。
       - `dryRun===true`：零调用；`writeback={outcome:"dryRun",conclusionText:buildVerifyComment(...).text,evidencePlanned:[traceIds]}`。
-  12. payload：`{ok:true, ticket:{key,detailTier,summary}, ...(mode==="mapped"?{mapping:{selected:N}}:{}) , ...(scope?{scope:{keyword,hits}}:{}) , steps, artifacts:{sets:[{feature,jsonPath,manifestPath}], ...(mode==="ticket"?{testsFile}:{})}, run:{device,sets,total,executed,passed,failed,gate:conclusion,conclusion,composition,traceIds}, writeback:{outcome:"sent"|"dryRun",…}}`。
+  12. payload：`{ok:true, ticket:{key,detailTier,summary}, ...(mappingAttempted?{mapping:{selected:mappedSelected}}:{}) , ...(scope?{scope:{keyword,hits}}:{}) , steps, artifacts:{sets:[{feature,jsonPath,manifestPath}], ...(mode==="ticket"?{testsFile}:{})}, run:{device,sets,total,executed,passed,failed,gate:conclusion,conclusion,composition,traceIds}, writeback:{outcome:"sent"|"dryRun",…}}`（`mappedSelected`＝映射选中的 caseIds 数；答"没有"时 0，供 usage `mapping.selected|none`）。
 - 测试矩阵（全桩；fixture：stub runtime（`configDirAbs` 临时目录、`jiraConfig` configured、`activeEntry`）、stub client（记录 getIssue/getComments/createComment/updateComment/setCommentProperty）、stub chat、stub executeBatch（构造 report.preflight/scriptProvenance）、stub postEvidence/associateCase）：
   1. detailed＋映射命中→执行（`source:"verify_jira_issue"`、caseIds 透传）→`run.conclusion:"passed"`→写回 sent（create＋marker＋映射行＋属性）。
-  2. 映射 `[]`＋库有候选→合成：`design/jira/<KEY>.tests.json` 落盘、执行该文件、评论来源=`单子即用例`。
+  2. 映射 `[]`＋库有候选→合成（payload `mapping.selected:0`）：`design/jira/<KEY>.tests.json` 落盘、执行该文件、评论来源=`单子即用例`。
   3. 库为空→直接合成（未调用映射 chat）。
   4. coarse→needs-info 三条问题；断言未调用设备盘点、未调用映射 chat、未写盘。
   5. Jira 未配置→needs-setup（`checks[0].target==="jira"`）且未调用 getIssue。
