@@ -6,13 +6,23 @@ function headerValue(headers: Record<string, HeaderValue> | undefined, name: str
   return typeof raw === "string" ? raw : "";
 }
 
-/** 写端点同源校验（CSRF 纵深防御）：自定义头 `x-aos-console: 1` 或
- * `Sec-Fetch-Site: same-origin|none` 放行；无该头（非浏览器客户端）放行；
- * `cross-site` 拒绝。 */
+/** 写端点同源校验（CSRF 纵深防御）：自定义头 `x-aos-console: 1` 放行；
+ * 有 `Origin` 时要求与 `Host` 一致（拦截老浏览器跨站表单）；
+ * 无 `Origin` 时按 `Sec-Fetch-Site`（cross-site 拒绝；same-origin/none/缺省放行——纯 CLI 客户端无该头）。 */
 export function sameOriginAllowed(headers: Record<string, HeaderValue> | undefined): boolean {
   if (!headers) return true;
   if (headerValue(headers, "x-aos-console") === "1") return true;
   const site = headerValue(headers, "sec-fetch-site");
+  if (site === "cross-site") return false;
+  const origin = headerValue(headers, "origin");
+  if (origin !== "") {
+    const host = headerValue(headers, "host");
+    try {
+      return new URL(origin).host === host;
+    } catch {
+      return false;
+    }
+  }
   if (site === "") return true;
   return site === "same-origin" || site === "none";
 }

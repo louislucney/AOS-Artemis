@@ -47,6 +47,8 @@ test("console a11y: 每页唯一 h1、zh-CN、focus-visible、无禁用语义", 
     assert.match(html.body, /lang="zh-CN"/, name);
     const h1Count = (html.body.match(/<h1[ >]/g) ?? []).length;
     assert.equal(h1Count, 1, `${name}: 恰一个 h1`);
+    const mainCount = (html.body.match(/<main[ >]/g) ?? []).length;
+    assert.equal(mainCount, 1, `${name}: 恰一个 main（不嵌套）`);
     assert.match(html.body, /:focus-visible/, `${name}: 焦点可见样式`);
     assert.match(html.body, /@media \(max-width:960px\)/, `${name}: 窄屏适配`);
     assert.ok(!/color:\s*#86868B/i.test(html.body), `${name}: 正文禁用法外灰（装饰色不得进正文）`);
@@ -58,6 +60,8 @@ test("console a11y: 表格语义（th scope）与表单页刷新纪律", async (
   const { deps, rootPath } = await harness();
   const archive = await handlePanelRequest(sectionUrl(rootPath, "archive"), deps);
   assert.match(archive.body, /<th scope="col">/);
+  const project = await handlePanelRequest(sectionUrl(rootPath, null), deps);
+  assert.match(project.body, /<th scope="col">/, "遗留表格补 scope");
   const dispatch = await handlePanelRequest(sectionUrl(rootPath, "dispatch"), deps);
   assert.match(dispatch.body, /<form/);
   assert.ok(!dispatch.body.includes('http-equiv="refresh"'), "含表单页永不整页刷新");

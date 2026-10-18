@@ -77,7 +77,7 @@ test("computeDispatchPreview: 关键词匹配多份 / 无 runner 警告 / 空关
     new URLSearchParams({ source: "excel", excel: "/x/cases.xlsx" })
   );
   assert.ok(noRunner.warnings.some((warning) => warning.includes("无在线 runner")));
-  assert.ok(noRunner.warnings.some((warning) => warning.includes("导入后确定")));
+  assert.ok(noRunner.warnings.some((warning) => warning.includes("multipart 上传")));
 });
 
 test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", async () => {
@@ -98,9 +98,32 @@ test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", asy
   assert.match(html, /② 参数/);
   assert.match(html, /③ 预览回显/);
   assert.match(html, /④ 确认/);
-  assert.match(html, /<button class="c-button c-button-primary" type="submit" disabled/);
+  assert.match(html, /id="dispatch-submit"/);
+  assert.match(html, /panel\/api\/tasks/);
+  assert.match(html, /data-features=/);
   assert.match(html, /登录回归/);
   assert.match(html, /host-a/);
   assert.match(html, /href="\/panel\?section=dispatch" aria-current="page"|aria-current="page" href="\/panel\?section=dispatch"/);
   assert.ok(!html.includes('http-equiv="refresh"'), "表单页不自动刷新");
+});
+
+test("renderDispatchPage: 份名转义（存储型 XSS 回归）", async () => {
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: ROOT, name: "p" });
+  const evil = await store.recordCaseSet({
+    rootPath: ROOT,
+    source: "figma:x",
+    basename: '<img src=x onerror=alert(1)>',
+    features: [
+      { key: "f", name: "登录", caseCount: 1, screens: [], jsonPath: "/x/a.json", mdPath: "/x/a.md", xlsxPath: "/x/a.xlsx" }
+    ]
+  });
+  const preview = await computeDispatchPreview(
+    { store, env: {} },
+    ROOT,
+    new URLSearchParams({ source: "case-set", ref: evil.id })
+  );
+  const html = renderDispatchPage({ rootPath: ROOT, rootLabel: "p", preview, query: {} });
+  assert.ok(!html.includes("<img src=x"), "份名不得原样进 HTML（rows 通道）");
+  assert.ok(html.includes("&lt;img src=x"), "份名转义后可见");
 });

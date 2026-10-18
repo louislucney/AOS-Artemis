@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -217,4 +218,43 @@ test("console actions: 导入（无运行时 → 400 指引；缺路径 → 400�
   );
   assert.equal(noRuntime.status, 400);
   assert.match(noRuntime.body, /运行时/);
+});
+
+test("console actions: 导入单飞（409）＋上传临时文件必清理", async () => {
+  const { deps, rootPath } = await setup();
+  const boundary = "----aos";
+  const content = "XLSX";
+  const body = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="cases.xlsx"\r\nContent-Type: application/octet-stream\r\n\r\n${content}\r\n--${boundary}--\r\n`,
+    "utf8"
+  );
+  const raw = { rawBody: body, contentType: `multipart/form-data; boundary=${boundary}` };
+
+  let release = null;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const gated = {
+    ...deps,
+    runtimeFor: async () => {
+      await gate;
+      return null;
+    }
+  };
+
+  const first = handlePanelActionRequest(request("/panel/api/import", { project: rootPath }, raw), gated);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const second = await handlePanelActionRequest(
+    request("/panel/api/import", { project: rootPath }, raw),
+    gated
+  );
+  assert.equal(second.status, 409, "并发导入单飞");
+
+  release();
+  const done = await first;
+  assert.equal(done.status, 400, "无运行时指引");
+
+  const expected = `aos-upload-${createHash("sha256").update(Buffer.from(content)).digest("hex").slice(0, 12)}.xlsx`;
+  const leftovers = (await readdir(tmpdir())).filter((name) => name.startsWith("aos-upload-"));
+  assert.ok(!leftovers.includes(expected), "上传临时文件已清理");
 });

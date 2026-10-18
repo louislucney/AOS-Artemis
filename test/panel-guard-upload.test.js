@@ -4,13 +4,28 @@ import test from "node:test";
 import { loopbackHostAllowed, sameOriginAllowed } from "../dist/panel/http-guard.js";
 import { UploadError, parseMultipartUpload } from "../dist/panel/upload.js";
 
-test("sameOriginAllowed: 同源/无头放行；cross-site 拒绝；自定义头放行", () => {
+test("sameOriginAllowed: 同源/无头放行；cross-site 拒绝；自定义头放行；Origin 须与 Host 一致", () => {
   assert.equal(sameOriginAllowed({ "sec-fetch-site": "same-origin" }), true);
   assert.equal(sameOriginAllowed({ "sec-fetch-site": "cross-site" }), false, "跨站写请求必须拒绝");
   assert.equal(sameOriginAllowed({ "sec-fetch-site": "none" }), true, "地址栏直达");
   assert.equal(sameOriginAllowed({}), true, "非浏览器客户端（无该头）放行");
   assert.equal(sameOriginAllowed({ "sec-fetch-site": "cross-site", "x-aos-console": "1" }), true);
   assert.equal(sameOriginAllowed(undefined), true);
+  assert.equal(
+    sameOriginAllowed({ origin: "http://127.0.0.1:8767", host: "127.0.0.1:8767" }),
+    true,
+    "同源 Origin"
+  );
+  assert.equal(
+    sameOriginAllowed({ origin: "http://evil.example", host: "127.0.0.1:8767" }),
+    false,
+    "跨站 Origin（老浏览器无 Sec-Fetch-Site）必须拒绝"
+  );
+  assert.equal(
+    sameOriginAllowed({ "sec-fetch-site": "cross-site", origin: "http://127.0.0.1:8767", host: "127.0.0.1:8767" }),
+    false,
+    "cross-site 头优先拒绝"
+  );
 });
 
 test("loopbackHostAllowed: 仅 loopback 主机名", () => {

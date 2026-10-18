@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { createProjectStore, type CreateStoreResult } from "./db/index.js";
 import { storeKindShortLabel } from "./db/labels.js";
-import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
+import { handlePanelActionRequest } from "./panel/actions.js";
 import { loopbackHostAllowed } from "./panel/http-guard.js";
 import type { ProjectStore } from "./db/types.js";
 import {
@@ -207,7 +207,7 @@ async function runPanelWeb(options: {
         }
         if (
           url.pathname.startsWith("/panel/api/") &&
-          panelActionsEnabled(env) &&
+          (env.AOS_PANEL_ACTIONS ?? "").trim() === "1" &&
           loopbackHostAllowed(req.headers.host) &&
           (req.method === "POST" || req.method === "GET")
         ) {

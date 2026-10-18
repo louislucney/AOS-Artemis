@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -115,6 +115,7 @@ export async function handlePanelActionRequest(
     }
     if (request.url.pathname === "/panel/api/quarantine") {
       const response = await manageQuarantine(resolved.rootPath, payload);
+      if (response.status === 200) deps.cache?.clear();
       await auditPanel(deps, resolved.rootPath, "action.quarantine", response);
       return response;
     }
@@ -125,6 +126,7 @@ export async function handlePanelActionRequest(
     }
     if (request.url.pathname === "/panel/api/import") {
       const response = await runImport(deps, resolved.rootPath, payload, request);
+      if (response.status === 200) deps.cache?.clear();
       await auditPanel(deps, resolved.rootPath, "action.import", response);
       return response;
     }
@@ -543,7 +545,8 @@ async function runImport(
     let excelPath: string;
     if (request.rawBody !== undefined) {
       const upload = await parseMultipartUpload(request.rawBody, request.contentType);
-      tmpPath = path.join(tmpdir(), `aos-upload-${randomUUID()}.xlsx`);
+      const hash = createHash("sha256").update(upload.content).digest("hex").slice(0, 12);
+      tmpPath = path.join(tmpdir(), `aos-upload-${hash}.xlsx`);
       await writeFile(tmpPath, upload.content);
       excelPath = tmpPath;
     } else {

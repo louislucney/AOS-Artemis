@@ -522,11 +522,21 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   assert.match(html.body, /emulator-5554/);
   assert.match(html.body, new RegExp(`suite run --task ${task.id}`));
   assert.match(html.body, /c-badge-warning/, "状态语义徽章");
-  assert.match(
-    html.body,
-    /<button class="c-button" type="button" disabled[^>]*>释放重跑<\/button>/,
-    "释放重跑（只读禁用）"
+  assert.match(html.body, /仅未完成（待领取\/已领取\/执行中）任务可释放/, "终态任务释放禁用说明");
+
+  const pending = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: set.id, featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  const pendingHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pending.id}`),
+    deps
   );
+  assert.match(pendingHtml.body, /id="release-task"/, "未完任务释放可操作");
+  assert.match(pendingHtml.body, /panel\/api\/tasks\/release/);
 
   const json = JSON.parse(
     (
@@ -809,7 +819,7 @@ test("panel web: stats HTML（功能表/最不稳用例/跨端/三清单/指引�
   assert.match(projectHtml.body, /view=stats/, "项目页有统计入口");
 });
 
-test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标）+ 有 runner 挂 refresh", async () => {
+test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标）+ 含表单页不整页刷新", async () => {
   const { deps, projectDir, store } = await makeHarness();
   await store.upsertRunner({
     rootPath: projectDir,
@@ -834,7 +844,7 @@ test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标�
   assert.match(html.body, /adb ✓/);
   assert.match(html.body, /appium ✗/);
   assert.match(html.body, /http:\/\/mac-1:8770/);
-  assert.match(html.body, /http-equiv="refresh" content="30"/);
+  assert.doesNotMatch(html.body, /http-equiv="refresh"/, "含表单项目页不整页刷新（修复 I4）");
 
   const clean = await makeHarness();
   const cleanHtml = await handlePanelRequest(
@@ -1218,7 +1228,7 @@ test("panel web: stats 环境清单表（设备/端/次数/功能/最近/备注�
   assert.equal(html.status, 200);
   assert.match(
     html.body,
-    /<th>设备<\/th><th>端<\/th><th>次数<\/th><th>涉及功能<\/th><th>最近裁决<\/th><th>备注摘要<\/th>/
+    /<th scope="col">设备<\/th><th scope="col">端<\/th><th scope="col">次数<\/th><th scope="col">涉及功能<\/th><th scope="col">最近裁决<\/th><th scope="col">备注摘要<\/th>/
   );
   assert.match(
     html.body,
@@ -1518,7 +1528,8 @@ test("panel web: 下发向导（?section=dispatch 只读预览）与 JSON 形状
   assert.equal(html.status, 200);
   assert.match(html.body, /下发回归/);
   assert.match(html.body, /③ 预览回显/);
-  assert.match(html.body, /<button class="c-button c-button-primary" type="submit" disabled/);
+  assert.match(html.body, /id="dispatch-submit"/, "确认派发可操作（动作层已接线）");
+  assert.match(html.body, /panel\/api\/tasks/);
   assert.ok(!html.body.includes('http-equiv="refresh"'), "表单页不自动刷新");
 
   const json = await handlePanelRequest(
@@ -1680,7 +1691,7 @@ test("panel web: compare 功能对齐区块（表头/小表/口径说明/未匹�
   const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
   assert.equal(html.status, 200);
   assert.match(html.body, /功能对齐（跨项目）/, "区块标题");
-  assert.match(html.body, /<th>项目<\/th><th>通过率<\/th><th>批次<\/th><th>flaky<\/th><th>未裁决<\/th><th>最近<\/th>/, "小表列头");
+  assert.match(html.body, /<th scope="col">项目<\/th><th scope="col">通过率<\/th><th scope="col">批次<\/th><th scope="col">flaky<\/th><th scope="col">未裁决<\/th><th scope="col">最近<\/th>/, "小表列头");
   assert.match(html.body, /登录流程/, "显示名");
   assert.match(html.body, /figma:KEY/, "sourceLabel");
   assert.match(html.body, /2 个项目/, "项目数");

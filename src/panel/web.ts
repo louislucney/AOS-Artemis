@@ -430,7 +430,7 @@ const PAGE_CSS = [
   ".card{border:1px solid #8884;border-radius:8px;padding:10px 16px;min-width:120px}",
   ".card .k{font-size:12px;color:#6E6E73}.card .v{font-size:20px;font-weight:600}",
   ".badge{border-radius:999px;padding:2px 10px;font-size:12px;border:1px solid #8886;display:inline-block}",
-  ".badge.warn{border-color:#d97706;color:#d97706}",
+  ".badge.warn{border-color:#B45309;color:#B45309}",
   ".note{font-size:13px;color:#b45309;margin:4px 0}",
   ".muted{color:#6E6E73}.empty{color:#6E6E73;font-size:13px}",
   ".chip{display:inline-block;border:1px solid #8884;border-radius:999px;padding:0 8px;margin:0 6px 6px 0;font-size:12px}",
@@ -447,7 +447,7 @@ const PAGE_CSS = [
 
 function renderTable(headers: string[], rows: string[][], emptyText: string): string {
   if (rows.length === 0) return `<p class="empty">${escapeHtml(emptyText)}</p>`;
-  const head = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+  const head = headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("");
   const body = rows
     .map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
     .join("");
@@ -543,7 +543,6 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
         tone: view.host.buildStale === null ? "neutral" : view.host.buildStale ? "warning" : "success"
       })}</p>`,
       "</header>",
-      "<main>",
       cCard({
         title: "项目",
         subtitle: `生成时间 ${view.generatedAt} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
@@ -552,8 +551,7 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
           rows,
           empty: "暂无项目"
         })
-      }),
-      "</main>"
+      })
     ].join("\n")
   });
 }
@@ -1166,7 +1164,18 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 <code>${escapeHtml(task.createdBy)}</code>`}</p>`,
-      `<p>${cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) })} <button class="c-button" type="button" disabled title="动作层接线后可用（控制台规划）">释放重跑</button> <span class="muted">只读预览：释放与重跑将在动作层接线后可用</span></p>`,
+      (() => {
+        const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
+        if (!active) {
+          return `<p>${badge} <button class="c-button" type="button" disabled title="任务已终态">释放重跑</button> <span class="muted">仅未完成（待领取/已领取/执行中）任务可释放</span></p>`;
+        }
+        const projectJson = JSON.stringify(view.rootPath).replace(/</g, "\\u003c");
+        const taskJson = JSON.stringify(task.id).replace(/</g, "\\u003c");
+        return [
+          `<p>${badge} <button class="c-button c-button-danger" type="button" id="release-task">释放重跑</button> <span class="muted">放回待领取（需确认）</span></p>`,
+          `<script>(function(){var b=document.getElementById('release-task');if(!b)return;b.addEventListener('click',function(){if(!confirm('确认释放该任务回待领取？'))return;fetch('/panel/api/tasks/release',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:${projectJson},taskId:${taskJson}})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{alert('释放失败：'+(res.j.error||res.status||''));}}).catch(function(e){alert('释放失败：'+e);});});})();</script>`
+        ].join("\n");
+      })(),
       coverageHint,
       warnings,
       "</header>",
@@ -1555,8 +1564,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       renderDiskAssets(detail),
       renderStandalones(detail),
       "</main>"
-    ].join("\n"),
-    detail.runners.length > 0 ? 30 : undefined
+    ].join("\n")
   );
 }
 
@@ -1915,7 +1923,7 @@ function page(title: string, bodyParts: string, refreshSeconds?: number): string
     active: "overview",
     headExtra: `<style>${PAGE_CSS}</style>`,
     ...(refreshSeconds === undefined ? {} : { autoRefreshSeconds: refreshSeconds }),
-    body: bodyParts
+    body: bodyParts.replaceAll("<main>", "").replaceAll("</main>", "")
   });
 }
 

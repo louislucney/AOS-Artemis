@@ -13,6 +13,7 @@ export interface DispatchRefDetail {
   id: string;
   label: string;
   caseCount: number;
+  featureKeys: string[];
 }
 
 export interface DispatchPreview {
@@ -49,7 +50,8 @@ export async function computeDispatchPreview(
   const setOptions: DispatchRefDetail[] = sets.map((set) => ({
     id: set.id,
     label: set.basename,
-    caseCount: set.features.reduce((sum, feature) => sum + feature.caseCount, 0)
+    caseCount: set.features.reduce((sum, feature) => sum + feature.caseCount, 0),
+    featureKeys: set.features.map((feature) => feature.key)
   }));
 
   const warnings: string[] = [];
@@ -91,7 +93,7 @@ export async function computeDispatchPreview(
     const excelPath = (params.get("excel") ?? "").trim();
     label = excelPath === "" ? "Excel 导入" : `Excel：${excelPath}`;
     if (excelPath === "") warnings.push("未指定 Excel 路径");
-    else warnings.push("Excel 导入在派发时执行：条数与功能在导入后确定");
+    else warnings.push("Excel 导入经 CLI/API（multipart 上传）；本表单提交支持「用例库选份」与「功能关键词」");
   }
 
   const platforms = (params.get("platforms") ?? "android")
@@ -143,11 +145,11 @@ export function renderDispatchPage(view: DispatchView): string {
   const setOptions = preview.setOptions
     .map(
       (option) =>
-        `<option value="${escapeHtml(option.id)}"${preview.refs.includes(option.id) ? " selected" : ""}>${escapeHtml(option.label)}（${option.caseCount} 例）</option>`
+        `<option value="${escapeHtml(option.id)}" data-features="${escapeHtml(JSON.stringify(option.featureKeys))}"${preview.refs.includes(option.id) ? " selected" : ""}>${escapeHtml(option.label)}（${option.caseCount} 例）</option>`
     )
     .join("");
   const refRows = preview.refDetails.map((detail) => [
-    detail.label,
+    escapeHtml(detail.label),
     `<code>${escapeHtml(detail.id)}</code>`,
     String(detail.caseCount)
   ]);
@@ -176,7 +178,11 @@ export function renderDispatchPage(view: DispatchView): string {
     `<p>基线：<select name="baseline"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none</option></select></p>`
   ].join("\n");
 
+  const refsJson = JSON.stringify(
+    preview.refDetails.map((detail) => ({ id: detail.id, featureKeys: detail.featureKeys }))
+  ).replace(/</g, "\\u003c");
   const previewBody = [
+    `<script id="dispatch-refs" type="application/json">${refsJson}</script>`,
     `<div class="c-stats-row">`,
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
@@ -194,7 +200,8 @@ export function renderDispatchPage(view: DispatchView): string {
   ].join("\n");
 
   const confirmBody = [
-    `<p><button class="c-button c-button-primary" type="submit" disabled title="动作层接线后启用">确认派发</button> <span class="muted">只读预览：派发（创建回归任务并指派 runner/手动执行）将在动作层接线后启用</span></p>`
+    `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">派发将创建回归任务：由在线 runner 自动领取，或在项目机手动执行（<code>suite run --task</code>）。</span></p>`,
+    `<script>(function(){var btn=document.getElementById('dispatch-submit');if(!btn)return;var refsEl=document.getElementById('dispatch-refs');var allRefs=refsEl?JSON.parse(refsEl.textContent):[];btn.addEventListener('click',function(){var form=btn.closest('form');var data=new FormData(form);var mode=data.get('source');var refs=[];if(mode==='case-set'){var sel=form.querySelector('select[name="ref"]');if(!sel||!sel.value){alert('请选择份');return;}var opt=sel.options[sel.selectedIndex];var feats=opt&&opt.dataset.features?JSON.parse(opt.dataset.features):[];feats.forEach(function(k){refs.push({caseSetId:sel.value,featureKey:k});});}else if(mode==='keyword'){allRefs.forEach(function(d){d.featureKeys.forEach(function(k){refs.push({caseSetId:d.id,featureKey:k});});});}else{alert('Excel 导入请用 CLI/API（multipart 上传，暂不在本表单提交）');return;}if(refs.length===0){alert('没有可派发的引用（先选择份或更换关键词）');return;}var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});var baseline=form.querySelector('select[name="baseline"]').value;var project=form.querySelector('input[name="project"]').value;fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,refs:refs,platforms:platforms,baseline:baseline})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(res.j.task.id);}else{alert('派发失败：'+(res.j.error||res.status||''));}}).catch(function(e){alert('派发失败：'+e);});});})();</script>`
   ].join("\n");
 
   return renderConsoleShell({

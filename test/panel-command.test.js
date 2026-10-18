@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import path from "node:path";
 import test from "node:test";
 
@@ -17,6 +17,52 @@ function runCli(args, deps = {}) {
     ...deps
   }).then((code) => ({ code, logs, errors }));
 }
+
+test("panel --web: 动作门默认关闭；AOS_PANEL_ACTIONS=1＋loopback 才开放", async () => {
+  const store = new MemoryStore();
+  const dir = makeTempDir("aos-panel-gate-");
+  fs.mkdirSync(path.join(dir, "ws-app"), { recursive: true });
+  const post = (port, host) =>
+    new Promise((resolve, reject) => {
+      const req = httpRequest(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/panel/api/schedules",
+          method: "POST",
+          headers: { "Content-Type": "application/json", Host: host }
+        },
+        (response) => {
+          let body = "";
+          response.on("data", (chunk) => {
+            body += chunk;
+          });
+          response.on("end", () => resolve({ status: response.statusCode, body }));
+        }
+      );
+      req.on("error", reject);
+      req.end(JSON.stringify({}));
+    });
+
+  await runCli(["--web", "--port", "0", "--workspace", dir], {
+    store,
+    waitForShutdown: async (handle) => {
+      const off = await post(handle.port, "127.0.0.1");
+      assert.equal(off.status, 404, "未设 AOS_PANEL_ACTIONS：动作门关闭");
+    }
+  });
+
+  await runCli(["--web", "--port", "0", "--workspace", dir], {
+    store,
+    env: { ...process.env, AOS_PANEL_ACTIONS: "1" },
+    waitForShutdown: async (handle) => {
+      const on = await post(handle.port, "127.0.0.1");
+      assert.equal(on.status, 400, "已开：进入业务校验（缺 project 400）");
+      const foreign = await post(handle.port, "10.0.0.5:8767");
+      assert.equal(foreign.status, 404, "非 loopback Host 拒绝");
+    }
+  });
+});
 
 test("panel --web: serves /panel on an ephemeral port and closes cleanly", async () => {
   const store = new MemoryStore();
