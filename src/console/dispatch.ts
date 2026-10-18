@@ -166,14 +166,16 @@ export function renderDispatchPage(view: DispatchView): string {
     .join("");
 
   const sourceBody = [
+    '<fieldset class="c-fieldset"><legend>来源</legend>',
     `<label class="dispatch-option"><input type="radio" name="source" value="case-set"${mode === "case-set" ? " checked" : ""}> 用例库选份</label>`,
     `<label class="dispatch-option"><input type="radio" name="source" value="keyword"${mode === "keyword" ? " checked" : ""}> 功能关键词</label>`,
+    "</fieldset>",
     `<p><label>份 <select name="ref" aria-label="用例集份"><option value="">（选择份）</option>${setOptions}</select></label></p>`,
     `<p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label> <span class="muted">Excel 导入经 CLI/API（multipart 上传）。</span></p>`
   ].join("\n");
 
   const paramsBody = [
-    `<p>目标端：${platformChecks}</p>`,
+    `<fieldset class="c-fieldset"><legend>目标端</legend>${platformChecks}</fieldset>`,
     `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本份最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`
   ].join("\n");
 

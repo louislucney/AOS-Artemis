@@ -62,7 +62,7 @@ export function cTable(input: CTableInput): string {
     rows.length === 0
       ? `<tr><td class="c-empty-cell" colspan="${input.columns.length}">${escapeHtml(input.empty ?? "暂无数据")}</td></tr>`
       : rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
-  return `<table class="c-table">${caption}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  return `<div class="c-table-wrap"><table class="c-table">${caption}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 export interface CStatInput {

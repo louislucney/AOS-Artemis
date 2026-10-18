@@ -58,6 +58,7 @@ test("console pages: 用例库（份列表＋隔离徽章）", async () => {
   assert.match(html.body, /登录回归/);
   assert.match(html.body, /隔离中 0/);
   assert.match(html.body, /按份下发/);
+  assert.match(html.body, /c-table-wrap/, "表格横向滚动容器（窄屏不整页溢出）");
   assert.match(html.body, /下发该份/, "份行内动作");
   assert.match(html.body, /section=dispatch&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");
   assert.match(html.body, /id="import-form"/, "Excel 上传表单");
@@ -115,6 +116,25 @@ test("console pages: 档案分页（offset/上一页）与图片缩略图", asyn
   const page2 = await handlePanelRequest(url(rootPath, "archive", { offset: "1" }), deps);
   assert.match(page2.body, /上一页/);
   assert.match(page2.body, /offset=0/, "上一页带回 offset=0");
+});
+
+test("console pages: 独立进程能力同源（只读横幅＋统计导航禁用，全页生效）", async () => {
+  const { deps, rootPath } = await setup();
+  const standalone = {
+    ...deps,
+    capabilities: { actions: false, usage: false, mode: "standalone" }
+  };
+  const pages = [
+    ["archive", {}],
+    ["audit", {}],
+    ["search", { q: "登录" }]
+  ];
+  for (const [section, extra] of pages) {
+    const html = await handlePanelRequest(url(rootPath, section, extra), standalone);
+    assert.equal(html.status, 200, section);
+    assert.match(html.body, /capability-banner|写动作未启用/, `${section}: 只读横幅断档修复`);
+    assert.match(html.body, /本进程不提供统计页/, `${section}: 统计导航按能力禁用（不再 404）`);
+  }
 });
 
 test("console pages: 审计（domain 筛选＋结果徽章）", async () => {

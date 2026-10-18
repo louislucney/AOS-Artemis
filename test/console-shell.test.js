@@ -20,7 +20,7 @@ test("console shell: CSDC chrome, active nav, escaped title, no refresh by defau
   assert.ok(!html.includes('http-equiv="refresh"'));
 });
 
-test("console shell: auto refresh only when asked; nav subset supported", () => {
+test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动画偏好关）", () => {
   const html = renderConsoleShell({
     title: "任务",
     active: "tasks",
@@ -28,7 +28,10 @@ test("console shell: auto refresh only when asked; nav subset supported", () => 
     autoRefreshSeconds: 15,
     nav: [{ key: "tasks", label: "任务", href: "/panel?section=tasks" }]
   });
-  assert.match(html, /<meta http-equiv="refresh" content="15">/);
+  assert.ok(!html.includes('http-equiv="refresh"'), "不再使用 meta 整页刷新");
+  assert.match(html, /setInterval/, "轮询脚本存在");
+  assert.match(html, /DOMParser/, "轮询替换 console-main 局部内容");
+  assert.match(html, /prefers-reduced-motion: reduce[\s\S]*setInterval/, "缩小动画偏好时不启动轮询");
   assert.ok(!html.includes("总览"), "显式 nav 子集生效");
 });
 
@@ -141,6 +144,8 @@ test("console shell: 项目上下文与能力标记（导航禁用/横幅）", (
     bare.includes('aria-disabled="true"') && bare.includes('title="先进入项目后再使用"'),
     "无项目上下文时项目级导航禁用而非误指总览"
   );
+  assert.ok(!bare.includes('tabindex="0"'), "禁用导航不可聚焦（键盘 Tab 不穿过）");
+  assert.match(bare, /role="link" aria-disabled="true"/, "禁用语义保留（屏幕阅读器可播报）");
 
   const off = renderConsoleShell({
     title: "总览",

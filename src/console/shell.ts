@@ -56,12 +56,14 @@ export interface ConsoleShellInput {
   projectSwitcher?: { options: Array<{ label: string; href: string; current?: boolean }> };
 }
 
-let shellDefaults: Pick<ConsoleShellInput, "projectSwitcher" | "storeHealth"> = {};
+let shellDefaults: {
+  projectSwitcher?: ConsoleShellInput["projectSwitcher"];
+  storeHealth?: ConsoleShellInput["storeHealth"];
+  capabilities?: ConsoleCapabilities;
+} = {};
 
-/** 面板在渲染前注入的默认上下文（切换器 / 记录底座）；同一次同步渲染调用内生效。 */
-export function setConsoleShellDefaults(
-  patch: Pick<ConsoleShellInput, "projectSwitcher" | "storeHealth">
-): void {
+/** 面板在渲染前注入的默认上下文（切换器 / 记录底座 / 能力）；同一次同步渲染调用内生效。 */
+export function setConsoleShellDefaults(patch: typeof shellDefaults): void {
   shellDefaults = patch;
 }
 
@@ -108,7 +110,7 @@ function navHref(item: ConsoleNavItem, project: string | null): string | null {
 }
 
 export function renderConsoleShell(input: ConsoleShellInput): string {
-  const capabilities = input.capabilities ?? DEFAULT_CAPABILITIES;
+  const capabilities = input.capabilities ?? shellDefaults.capabilities ?? DEFAULT_CAPABILITIES;
   const project = input.project ?? null;
   const nav = input.nav ?? DEFAULT_CONSOLE_NAV;
   const navHtml = nav
@@ -118,7 +120,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
       const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project);
       if (href === null) {
         const reason = item.key === "usage" ? "本进程不提供统计页（独立统计服务：usage --web）" : "先进入项目后再使用";
-        return `<span class="c-nav-item c-nav-item-disabled" role="link" tabindex="0" aria-disabled="true" aria-label="${escapeHtml(item.label)}（${escapeHtml(reason)}）" title="${escapeHtml(reason)}">${escapeHtml(item.label)}${badge}</span>`;
+        return `<span class="c-nav-item c-nav-item-disabled" role="link" aria-disabled="true" aria-label="${escapeHtml(item.label)}（${escapeHtml(reason)}）" title="${escapeHtml(reason)}">${escapeHtml(item.label)}${badge}</span>`;
       }
       return `<a class="c-nav-item"${current} href="${escapeHtml(href)}">${escapeHtml(item.label)}${badge}</a>`;
     })
@@ -181,6 +183,10 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     .map(([term, meaning]) => `<li><strong>${escapeHtml(term)}</strong>：${escapeHtml(meaning)}</li>`)
     .join("")}</ul>`;
   const shortcutsPanel = `<div class="c-card" id="console-shortcuts" role="region" aria-label="快捷键与术语"><h2 class="c-card-title">快捷键</h2><ul><li><span class="c-kbd">?</span> 开关本帮助</li><li><span class="c-kbd">/</span> 聚焦筛选框</li>${shortcutRows}</ul>${glossaryHtml}</div>`;
+  const livePollScript =
+    input.autoRefreshSeconds === undefined
+      ? ""
+      : `<script>(function(){var ms=${Math.max(1, Math.floor(input.autoRefreshSeconds))}*1000;try{if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches)return;}catch(e){}setInterval(function(){if(document.hidden)return;var cur=document.getElementById("console-main");if(cur&&cur.contains(document.activeElement)&&document.activeElement!==document.body)return;fetch(location.href).then(function(r){return r.ok?r.text():null;}).then(function(html){if(!html)return;var doc=new DOMParser().parseFromString(html,"text/html");var fresh=doc.getElementById("console-main");var now=document.getElementById("console-main");if(fresh&&now&&!now.contains(document.activeElement)){now.replaceChildren.apply(now,Array.prototype.slice.call(fresh.childNodes));}}).catch(function(){});},ms);})();</script>`;
   const flashScript = `<script>(function(){window.aosFlash=function(message){try{sessionStorage.setItem("aos-flash",message);}catch(e){}};var raw=null;try{raw=sessionStorage.getItem("aos-flash");}catch(e){}if(raw){try{sessionStorage.removeItem("aos-flash");}catch(e){}var main=document.getElementById("console-main");if(main){var box=document.createElement("div");box.className="c-banner c-banner-accent";box.setAttribute("role","status");var text=document.createTextNode(raw);box.appendChild(text);var params=new URLSearchParams(location.search);var project=params.get("project");if(project){box.appendChild(document.createTextNode(" "));var a=document.createElement("a");a.href="/panel?project="+encodeURIComponent(project)+"&section=audit";a.textContent="查看审计";box.appendChild(a);}var sheet=document.getElementById("console-shortcuts");main.insertBefore(box,sheet?sheet.nextSibling:main.firstChild);}}var dismiss=document.getElementById("capability-dismiss");if(dismiss){dismiss.addEventListener("click",function(){try{sessionStorage.setItem("aos-cap-dismissed","1");}catch(e){}var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);});}if(function(){try{return sessionStorage.getItem("aos-cap-dismissed")==="1";}catch(e){return false;}}()){var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);}})();</script>`;
   return [
     "<!doctype html>",
@@ -188,9 +194,6 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     "<head>",
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    ...(input.autoRefreshSeconds !== undefined
-      ? [`<meta http-equiv="refresh" content="${input.autoRefreshSeconds}">`]
-      : []),
     `<title>${escapeHtml(input.title)} · AOS 控制台</title>`,
     `<style>${CSDC_TOKENS_CSS}\n${CONSOLE_COMPAT_CSS}</style>`,
     input.headExtra ?? "",
@@ -211,6 +214,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     "</div>",
     `<footer class="c-footer">AOS-ARTEMIS · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,
     shortcutsScript,
+    livePollScript,
     flashScript,
     "</body>",
     "</html>"

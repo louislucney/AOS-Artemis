@@ -499,7 +499,7 @@ function renderTable(headers: string[], rows: string[][], emptyText: string): st
   const body = rows
     .map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
     .join("");
-  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  return `<div class="c-table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function projectHref(rootPath: string): string {
@@ -1131,9 +1131,11 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
     '<form id="schedule-form" data-project="' + escapeHtml(rootPath) + '">',
     '<p><label>名称 <input type="text" name="name" aria-label="计划名称" required' + disabledAttr + '></label> ' +
       '<label>功能 key（逗号分隔） <input type="text" name="featureKeys" aria-label="功能 key" size="28" placeholder="login,pay"' + disabledAttr + '></label></p>',
-    '<p>端 <label><input type="checkbox" name="platform" value="android" checked' + disabledAttr + '> android</label> ' +
-      '<label><input type="checkbox" name="platform" value="ios"' + disabledAttr + '> ios</label> ' +
-      '<label>每 <input type="number" name="everyMinutes" aria-label="间隔分钟" value="60" min="1" style="width:5em"' + disabledAttr + '> 分钟</label> ' +
+    '<fieldset class="c-fieldset"><legend>端</legend>',
+    '<label><input type="checkbox" name="platform" value="android" checked' + disabledAttr + '> android</label> ',
+    '<label><input type="checkbox" name="platform" value="ios"' + disabledAttr + '> ios</label>',
+    "</fieldset>",
+    '<p><label>每 <input type="number" name="everyMinutes" aria-label="间隔分钟" value="60" min="1" style="width:5em"' + disabledAttr + '> 分钟</label> ' +
       '<button class="c-button" type="submit"' + disabledAttr + '>创建计划</button> <span id="schedule-status" role="status" class="muted"></span></p>',
     "</form>",
     reason
@@ -1336,7 +1338,7 @@ function renderReviewPage(view: {
       : `<code>${escapeHtml(item.evidencePath)}</code> <span class="muted">[已清理]</span>${link}`;
   };
   const rows = items.map((item) => [
-    `<input type="checkbox" name="item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}">`,
+    `<input type="checkbox" name="item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}" aria-label="选择用例 ${escapeHtml(item.caseId)}（${escapeHtml(item.name)}）">`,
     `<code>${escapeHtml(item.caseId)}</code>`,
     escapeHtml(item.name),
     escapeHtml(item.featureName ?? "—"),
@@ -1391,12 +1393,12 @@ function renderReviewPage(view: {
             "暂无失败用例"
           ),
           '<p class="bulk-tools"><button type="button" class="c-button" data-bulk="all">全选</button> <button type="button" class="c-button" data-bulk="none">清空</button> <span class="muted">已选 <span id="verdict-count">0</span> 条</span></p>',
-          "<p>裁决：",
+          '<fieldset class="c-fieldset"><legend>裁决（对所选条目批量写入）</legend>',
           '<label><input type="radio" name="verdict" value="case-defect" checked> 案例问题</label> ',
           '<label><input type="radio" name="verdict" value="execution-deviation"> 执行偏差</label> ',
           '<label><input type="radio" name="verdict" value="app-defect"> 应用缺陷</label> ',
           '<label><input type="radio" name="verdict" value="uncertain"> 不确定</label>',
-          "</p>",
+          "</fieldset>",
           '<p><label>备注：<input type="text" name="note" size="40" placeholder="可选（写入裁决历史）"></label></p>',
           '<p><button type="submit">提交裁决</button> <span id="verdict-status" role="status" class="muted"></span></p>',
           '<p class="note">需启用 JavaScript 提交；勾选多条 → 同一裁决批量写入。</p>',
@@ -1458,7 +1460,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
   if (items.length === 0) return `${title}<p class="empty">（空）</p>`;
   const rootJson = JSON.stringify(rootPath).replace(/</g, "\\u003c");
   const rows = items.map((item) => [
-    `<input type="checkbox" name="issue-item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}">`,
+    `<input type="checkbox" name="issue-item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}" aria-label="选择应用缺陷 ${escapeHtml(item.caseId)}（${escapeHtml(item.name)}）">`,
     `<code>${escapeHtml(item.caseId)}</code>`,
     escapeHtml(item.name),
     escapeHtml(item.featureName ?? "—"),
@@ -2214,7 +2216,7 @@ function renderPanelHtml(
   storeHealth?: ConsoleShellInput["storeHealth"],
   projectSwitcher?: ConsoleShellInput["projectSwitcher"]
 ): string {
-  setConsoleShellDefaults({ storeHealth, projectSwitcher });
+  setConsoleShellDefaults({ storeHealth, projectSwitcher, capabilities: deps.capabilities });
   currentShell = {
     active: activeForView(view),
     project: view.kind === "overview" || view.kind === "compare" || view.kind === "search" ? null : view.rootPath,

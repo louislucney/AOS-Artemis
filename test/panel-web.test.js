@@ -241,6 +241,7 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
   assert.match(html.body, /当前有 1 份可引用的用例集/);
   assert.doesNotMatch(html.body, /id="regression-form"/, "内嵌表单已移除（派发唯一真相＝向导）");
   assert.doesNotMatch(html.body, /fetch\('\/panel\/api\/tasks'/);
+  assert.match(html.body, /<fieldset class="c-fieldset"><legend>端<\/legend>/, "计划表单端组有 legend");
   assert.match(html.body, /<details class="c-details">/, "环境自查与明细折叠");
   assert.match(html.body, /<summary>环境自查与明细/);
   assert.match(html.body, /aria-current="page"[^>]*>项目</, "项目页高亮「项目」导航");
@@ -318,6 +319,8 @@ test("panel web: 内联 JS 按首个 | 切分（裁决 items indexOf+slice 形�
     deps
   );
   assert.match(reviewHtml.body, /name="item" value="[^"]+\|case-1"/, "裁决表单 value 仍为 runId|caseId");
+  assert.match(reviewHtml.body, /aria-label="选择用例 case-1（Case 1）"/, "行选择含用例上下文可访问名");
+  assert.match(reviewHtml.body, /<fieldset class="c-fieldset"><legend>裁决/, "裁决组 fieldset/legend");
   assert.match(reviewHtml.body, /id="verdict-count"/, "批量已选计数");
   assert.match(reviewHtml.body, /data-bulk="all"/, "全选按钮");
   assert.match(reviewHtml.body, /data-bulk="none"/, "清空按钮");
@@ -945,7 +948,8 @@ test("panel web: 任务页 已领取/在线标记/刷新/无端覆盖提示", as
   );
   assert.match(html.body, /已领取/);
   assert.match(html.body, /「r-1」（在线）/);
-  assert.match(html.body, /http-equiv="refresh" content="10"/);
+  assert.match(html.body, /DOMParser/, "活动任务页走局部轮询（console-main 就地替换）");
+  assert.ok(!html.body.includes('http-equiv="refresh"'), "不再整页刷新");
   assert.match(html.body, /在线执行机会自动领取执行/);
   assert.doesNotMatch(html.body, /无在线 runner 完整覆盖/);
 
@@ -962,7 +966,7 @@ test("panel web: 任务页 已领取/在线标记/刷新/无端覆盖提示", as
     deps
   );
   assert.match(doneHtml.body, /已完成/);
-  assert.doesNotMatch(doneHtml.body, /http-equiv="refresh"/, "终态不刷新");
+  assert.doesNotMatch(doneHtml.body, /DOMParser/, "终态不轮询");
 });
 
 test("panel web: 产物链接（任务页/归因队列；无 runner → 纯路径）", async () => {
