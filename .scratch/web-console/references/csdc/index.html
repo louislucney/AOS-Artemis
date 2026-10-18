@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CSDC 开发者设计系统 (CSDC 标准视觉体系)</title>
+  <link rel="stylesheet" href="design-tokens.css">
+</head>
+<body>
+
+  <!-- Top CSDC Frosted Glass Navigation -->
+  <header class="csdc-nav">
+    <div class="csdc-nav-brand">
+      <img src="csdc-logo-navbar.svg" alt="CSDC Logo">
+    </div>
+    <nav class="csdc-nav-links">
+      <a href="#assets" class="csdc-nav-link">徽标</a>
+      <a href="#tokens" class="csdc-nav-link">颜色</a>
+      <a href="#typography" class="csdc-nav-link">字体</a>
+      <a href="#components" class="csdc-nav-link">UI 组件</a>
+      <a href="#layout" class="csdc-nav-link">布局</a>
+      <a href="design-tokens.css" download class="csdc-btn csdc-btn-primary csdc-btn-sm">
+        下载 CSS 规范库
+      </a>
+    </nav>
+  </header>
+
+  <div class="container">
+
+    <!-- CSDC 核心黄纯色横幅区块 (Solid Flat, 无渐变) -->
+    <div class="csdc-banner-yellow" style="margin-bottom: 48px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+        <div>
+          <h2 style="font-size: 22px; font-weight: 800; margin: 0 0 6px 0; color: #1D1D1F;">
+            CSDC 样式库
+          </h2>
+          <p style="font-size: 14px; color: #2C2C30; margin: 0; font-weight: 500;">
+            在 HTML / React / Vue 模板中引入即可全局调用。
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- =========================================================================
+         SECTION 1: LOGO ASSET VAULT
+         ========================================================================= -->
+    <section id="assets" class="dev-section">
+      <div class="section-header-yellow">
+        <div>
+          <h2 class="section-title">徽标</h2>
+        </div>
+        <span class="section-subtitle">支持一键复制 React / HTML 代码或导出</span>
+      </div>
+
+      <div class="asset-grid">
+
+        <!-- Card 1: Light Logo -->
+        <div class="asset-card">
+          <div class="asset-info-left">
+            <div class="asset-preview-box">
+              <img src="csdc-logo-light.svg" alt="csdc-logo-light">
+            </div>
+            <div class="asset-meta">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <strong style="font-size: 15px; color: var(--color-text-primary); letter-spacing: var(--tracking-normal);">浅色标准主标 (Light)</strong>
+                <span class="csdc-badge csdc-badge-yellow">推荐主标</span>
+              </div>
+              <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0;">
+                <code>csdc-logo-light.svg</code> &bull; 适用于白底 Web 页面、PPT 报告、商务提案
+              </p>
+            </div>
+          </div>
+
+          <div class="asset-actions">
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm" onclick="copyAssetCode('csdc-logo-light.svg', 'img')">复制 &lt;img&gt; 标签</button>
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm" onclick="copyAssetCode('csdc-logo-light.svg', 'react')">复制 React 组件</button>
+            <a class="csdc-btn csdc-btn-outline csdc-btn-sm" href="csdc-logo-light.svg" download>下载 SVG</a>
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm" onclick="exportPNGDirect('csdc-logo-light.svg', 2400, 1200)">导出 2K PNG</button>
+          </div>
+        </div>
+
+        <!-- Card 2: Navbar Logo -->
+        <div class="asset-card">
+          <div class="asset-info-left">
+            <div class="asset-preview-box">
+              <img src="csdc-logo-navbar.svg" alt="csdc-logo-navbar">
+            </div>
+            <div class="asset-meta">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <strong style="font-size: 15px; color: var(--color-text-primary); letter-spacing: var(--tracking-normal);">导航栏横版标 (Navbar)</strong>
+                <span class="csdc-badge csdc-badge-yellow">紧凑横版</span>
+              </div>
+              <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0;">
+                <code>csdc-logo-navbar.svg</code> &bull; 适用于网站顶部 Header、系统侧边栏
+              </p>
+            </div>
+          </div>
+
+          <div class="asset-actions">
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm" onclick="copyAssetCode('csdc-logo-navbar.svg', 'img')">复制 &lt;img&gt; 标签</button>
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm" onclick="copyAssetCode('csdc-logo-navbar.svg', 'react')">复制 React 组件</button>
+            <a class="csdc-btn csdc-btn-outline csdc-btn-sm" href="csdc-logo-navbar.svg" download>下载 SVG</a>
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm" onclick="exportPNGDirect('csdc-logo-navbar.svg', 1920, 352)">导出 2K PNG</button>
+          </div>
+        </div>
+
+        <!-- Card 3: Icon Light -->
+        <div class="asset-card">
+          <div class="asset-info-left">
+            <div class="asset-preview-box">
+              <img src="csdc-icon-light.svg" alt="csdc-icon-light">
+            </div>
+            <div class="asset-meta">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <strong style="font-size: 15px; color: var(--color-text-primary); letter-spacing: var(--tracking-normal);">浅色应用图标 (Icon Light)</strong>
+                <span class="csdc-badge csdc-badge-yellow">Favicon / 头像</span>
+              </div>
+              <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0;">
+                <code>csdc-icon-light.svg</code> &bull; 适用于 Favicon、企业微信头像、工牌
+              </p>
+            </div>
+          </div>
+
+          <div class="asset-actions">
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm" onclick="copyAssetCode('csdc-icon-light.svg', 'img')">复制 &lt;img&gt; 标签</button>
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm" onclick="copyAssetCode('csdc-icon-light.svg', 'react')">复制 React 组件</button>
+            <a class="csdc-btn csdc-btn-outline csdc-btn-sm" href="csdc-icon-light.svg" download>下载 SVG</a>
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm" onclick="exportPNGDirect('csdc-icon-light.svg', 1024, 1024)">导出 1K PNG</button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- =========================================================================
+         SECTION 2: DESIGN TOKENS
+         ========================================================================= -->
+    <section id="tokens" class="dev-section">
+      <div class="section-header-yellow">
+        <div>
+          <h2 class="section-title">颜色</h2>
+        </div>
+        <span class="section-subtitle">点击 Token 代码即可直接复制 CSS 变量名</span>
+      </div>
+
+      <div class="token-table-wrap">
+        <table class="token-table">
+          <thead>
+            <tr>
+              <th style="width: 22%;">用途分类</th>
+              <th style="width: 26%;">Token 变量名</th>
+              <th style="width: 18%;">色值 (HEX)</th>
+              <th style="width: 34%;">设计场景说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Row 1: Accent -->
+            <tr>
+              <td><strong>点缀色 (Accent)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-accent)')">--color-accent</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #FFE600;"></span>
+                  <code>#FFE600</code>
+                </div>
+              </td>
+              <td>CSDC 核心黄 · 主行动按钮 (CTA)、关键焦点高光</td>
+            </tr>
+
+            <!-- Row 2: Accent Hover -->
+            <tr>
+              <td><strong>点缀色 (Hover)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-accent-hover)')">--color-accent-hover</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #FFF9CC;"></span>
+                  <code>#FFF9CC</code>
+                </div>
+              </td>
+              <td>CSDC 按钮与操作项悬浮态</td>
+            </tr>
+
+            <!-- Row 3: Accent Surface -->
+            <tr>
+              <td><strong>卡片 (Cards)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-accent-surface)')">--color-accent-surface</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #FFF9CC;"></span>
+                  <code>#FFF9CC</code>
+                </div>
+              </td>
+              <td>CSDC 高亮卡片背景</td>
+            </tr>
+
+            <!-- Row 4: Primary Text -->
+            <tr>
+              <td><strong>主文本 (Primary Text)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-text-primary)')">--color-text-primary</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #1D1D1F;"></span>
+                  <code>#1D1D1F</code>
+                </div>
+              </td>
+              <td>CSDC 经典近黑 · 页面大标题 (H1-H3)、代码与强调正文</td>
+            </tr>
+
+            <!-- Row 5: Secondary Text -->
+            <tr>
+              <td><strong>次级文本 (Secondary)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-text-secondary)')">--color-text-secondary</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #6E6E73;"></span>
+                  <code>#6E6E73</code>
+                </div>
+              </td>
+              <td>CSDC 次级灰 · 说明段落、副标题、列表描述</td>
+            </tr>
+
+            <!-- Row 6: Light Surface -->
+            <tr>
+              <td><strong>浅灰底色 (Light Surface)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-surface-light)')">--color-surface-light</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #F5F5F7;"></span>
+                  <code>#F5F5F7</code>
+                </div>
+              </td>
+              <td>CSDC 标准浅灰画布底色</td>
+            </tr>
+
+            <!-- Row 7: Border -->
+            <tr>
+              <td><strong>精密边框 (Border)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-border)')">--color-border</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #D2D2D7;"></span>
+                  <code>#D2D2D7</code>
+                </div>
+              </td>
+              <td>CSDC 标准卡片与输入框细边框</td>
+            </tr>
+
+            <!-- Row 8: Link Blue -->
+            <tr>
+              <td><strong>交互蓝 (Link Blue)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-link)')">--color-link</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #0066CC;"></span>
+                  <code>#0066CC</code>
+                </div>
+              </td>
+              <td>CSDC 链接与跳转动作色</td>
+            </tr>
+
+            <!-- Row 9: Success -->
+            <tr>
+              <td><strong>系统成功 (Success)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-success)')">--color-success</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #34C759;"></span>
+                  <code>#34C759</code>
+                </div>
+              </td>
+              <td>CSDC 系统绿 · 正常运行、正向指标</td>
+            </tr>
+
+            <!-- Row 10: Error / Failure -->
+            <tr>
+              <td><strong>系统失败 (Error)</strong></td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--color-error)')">--color-error</span></td>
+              <td>
+                <div class="color-swatch-box">
+                  <span class="color-swatch" style="background: #FF3B30;"></span>
+                  <code>#FF3B30</code>
+                </div>
+              </td>
+              <td>CSDC 系统红 · 异常报错、风险警示、执行失败状态</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- =========================================================================
+         SECTION 3: TYPOGRAPHY & FONT SCALE (APPLE STANDARDS)
+         ========================================================================= -->
+    <section id="typography" class="dev-section">
+      <div class="section-header-yellow">
+        <div>
+          <h2 class="section-title">字体</h2>
+        </div>
+        <span class="section-subtitle">点击 Token 代码即可直接复制字体与字阶 CSS 变量</span>
+      </div>
+
+      <!-- Typography Scale Table -->
+      <div class="token-table-wrap">
+        <table class="token-table">
+          <thead>
+            <tr>
+              <th style="width: 14%;">排印层级</th>
+              <th style="width: 24%;">视觉字样预览 (Live Sample)</th>
+              <th style="width: 20%;">Token 变量名</th>
+              <th style="width: 16%;">字号 / 行高 / 字重</th>
+              <th style="width: 10%;">字间距 (Tracking)</th>
+              <th style="width: 16%;">CSDC 标准场景说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Row 1: Hero Display -->
+            <tr>
+              <td><strong>Hero Display</strong><br><span style="font-size: 11px; color: #8E8E93;">展台超大标</span></td>
+              <td>
+                <div style="font-size: 24px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.15; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                  构建下一代智能交付
+                </div>
+              </td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--font-size-hero)')">--font-size-hero</span></td>
+              <td><code>48px (3rem)</code><br><span style="font-size: 11px; color: #8E8E93;">LH: 1.15 &bull; Bold 700</span></td>
+              <td><code>-0.025em</code></td>
+              <td>首页英雄区、核心重磅标语</td>
+            </tr>
+
+            <!-- Row 2: Title 1 -->
+            <tr>
+              <td><strong>Title 1</strong><br><span style="font-size: 11px; color: #8E8E93;">一级大标题</span></td>
+              <td>
+                <div style="font-size: 20px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.2; color: var(--color-text-primary);">
+                  端到端 AI 研发流水线
+                </div>
+              </td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--font-size-title-1)')">--font-size-title-1</span></td>
+              <td><code>36px (2.25rem)</code><br><span style="font-size: 11px; color: #8E8E93;">LH: 1.20 &bull; Bold 700</span></td>
+              <td><code>-0.022em</code></td>
+              <td>主功能页面大标题、首屏核心标题</td>
+            </tr>
+
+            <!-- Row 3: Title 2 -->
+            <tr>
+              <td><strong>Title 2</strong><br><span style="font-size: 11px; color: #8E8E93;">二级板块标题</span></td>
+              <td>
+                <div style="font-size: 17px; font-weight: 700; letter-spacing: -0.018em; line-height: 1.25; color: var(--color-text-primary);">
+                  设计 Tokens 与组件库
+                </div>
+              </td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--font-size-title-2)')">--font-size-title-2</span></td>
+              <td><code>24px (1.5rem)</code><br><span style="font-size: 11px; color: #8E8E93;">LH: 1.25 &bull; Bold 700</span></td>
+              <td><code>-0.018em</code></td>
+              <td>主要业务板块标题、大卡片标题</td>
+            </tr>
+
+            <!-- Row 4: Title 3 -->
+            <tr>
+              <td><strong>Title 3</strong><br><span style="font-size: 11px; color: #8E8E93;">三级卡片标题</span></td>
+              <td>
+                <div style="font-size: 15px; font-weight: 600; letter-spacing: -0.012em; line-height: 1.3; color: var(--color-text-primary);">
+                  标准胶囊按钮与徽章
+                </div>
+              </td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--font-size-title-3)')">--font-size-title-3</span></td>
+              <td><code>18px (1.125rem)</code><br><span style="font-size: 11px; color: #8E8E93;">LH: 1.30 &bull; Semibold 600</span></td>
+              <td><code>-0.012em</code></td>
+              <td>模块标题、卡片主标、弹窗标题</td>
+            </tr>
+
+            <!-- Row 5: Body -->
+            <tr>
+              <td><strong>Body (推荐正文)</strong><br><span style="font-size: 11px; color: #8E8E93;">CSDC 标准正文</span></td>
+              <td>
+                <div style="font-size: 15px; font-weight: 400; letter-spacing: -0.006em; line-height: 1.55; color: var(--color-text-primary);">
+                  遵循 CSDC 极简排印规范，提供极致清晰的阅读体验。
+                </div>
+              </td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--font-size-body)')">--font-size-body</span></td>
+              <td><code>15px (0.9375rem)</code><br><span style="font-size: 11px; color: #8E8E93;">LH: 1.55 &bull; Regular 400</span></td>
+              <td><code>-0.006em</code></td>
+              <td>页面主正文、文档段落、长文本说明</td>
+            </tr>
+
+            <!-- Row 6: Callout -->
+            <tr>
+              <td><strong>Callout</strong><br><span style="font-size: 11px; color: #8E8E93;">辅助说明正文</span></td>
+              <td>
+                <div style="font-size: 13px; font-weight: 400; letter-spacing: 0; line-height: 1.5; color: var(--color-text-secondary);">
+                  适用于次级说明、元数据信息、列表辅助描述。
+                </div>
+              </td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--font-size-callout)')">--font-size-callout</span></td>
+              <td><code>13px (0.8125rem)</code><br><span style="font-size: 11px; color: #8E8E93;">LH: 1.50 &bull; Regular 400</span></td>
+              <td><code>0em</code></td>
+              <td>辅助说明、卡片副标题、表格次级文本</td>
+            </tr>
+
+            <!-- Row 7: Caption -->
+            <tr>
+              <td><strong>Caption</strong><br><span style="font-size: 11px; color: #8E8E93;">注脚与微文本</span></td>
+              <td>
+                <div style="font-size: 12px; font-weight: 400; letter-spacing: 0; line-height: 1.4; color: #8E8E93;">
+                  &copy; 2026 CSDC &bull; All rights reserved &bull; v7.2
+                </div>
+              </td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--font-size-caption)')">--font-size-caption</span></td>
+              <td><code>12px (0.75rem)</code><br><span style="font-size: 11px; color: #8E8E93;">LH: 1.40 &bull; Regular 400</span></td>
+              <td><code>0em</code></td>
+              <td>注脚信息、时间戳、表单帮助提示</td>
+            </tr>
+
+            <!-- Row 8: Monospace Code -->
+            <tr>
+              <td><strong>Monospace Code</strong><br><span style="font-size: 11px; color: #8E8E93;">等宽代码文本</span></td>
+              <td>
+                <div style="font-family: var(--font-family-mono); font-size: 13px; font-weight: 500; line-height: 1.6; color: #0066CC;">
+                  const engine = new CSDC.AI();
+                </div>
+              </td>
+              <td><span class="token-code-pill" onclick="copySnippet('var(--font-family-mono)')">--font-family-mono</span></td>
+              <td><code>13px (0.8125rem)</code><br><span style="font-size: 11px; color: #8E8E93;">LH: 1.60 &bull; Medium 500</span></td>
+              <td><code>0em</code></td>
+              <td>代码片段、命令调用、Token 变量</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- =========================================================================
+         SECTION 4: UI COMPONENT CODE SNIPPETS
+         ========================================================================= -->
+    <section id="components" class="dev-section">
+      <div class="section-header-yellow">
+        <div>
+          <h2 class="section-title">UI 组件代码片段</h2>
+        </div>
+        <span class="section-subtitle">浅色设计 · 已绑定 CSDC 标准类名</span>
+      </div>
+
+      <!-- Component 1: Navbar Header -->
+      <div class="component-box">
+        <h3 style="font-size: 17px; margin-bottom: 14px; font-weight: 600; color: var(--color-text-primary);">1. 顶部导航栏</h3>
+        
+        <div class="component-preview" style="background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--color-border-subtle); border-radius: var(--radius-md);">
+          <div class="csdc-nav-brand">
+            <img src="csdc-logo-navbar.svg" alt="CSDC Logo" style="height: 32px;">
+          </div>
+          <nav class="csdc-nav-links">
+            <a href="#" class="csdc-nav-link">交付服务</a>
+            <a href="#" class="csdc-nav-link">AI 流水线</a>
+            <button class="csdc-btn csdc-btn-outline csdc-btn-sm">立即接入</button>
+          </nav>
+        </div>
+
+        <!-- Clean CSDC Code Box -->
+        <div class="csdc-code-box">
+          <button class="copy-float-btn" onclick="copySnippet(this.nextElementSibling.innerText)">复制代码</button>
+<pre style="margin:0;">&lt;header class="csdc-nav"&gt;
+  &lt;div class="csdc-nav-brand"&gt;
+    &lt;img src="/assets/csdc-logo-navbar.svg" alt="CSDC Logo" /&gt;
+  &lt;/div&gt;
+  &lt;nav class="csdc-nav-links"&gt;
+    &lt;a href="/services" class="csdc-nav-link"&gt;交付服务&lt;/a&gt;
+    &lt;a href="/pipeline" class="csdc-nav-link"&gt;AI 流水线&lt;/a&gt;
+    &lt;button class="csdc-btn csdc-btn-outline csdc-btn-sm"&gt;立即接入&lt;/button&gt;
+  &lt;/nav&gt;
+&lt;/header&gt;</pre>
+        </div>
+      </div>
+
+      <!-- Component 2: Buttons & Badges -->
+      <div class="component-box">
+        <h3 style="font-size: 17px; margin-bottom: 14px; font-weight: 600; color: var(--color-text-primary);">2. 按钮与标签</h3>
+        
+        <div class="component-preview" style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
+          <button class="csdc-btn csdc-btn-primary">主按钮</button>
+          <button class="csdc-btn csdc-btn-outline">次按钮</button>
+          <a href="#" class="csdc-link">连接 ›</a>
+          <span class="csdc-badge csdc-badge-accent">标签</span>
+          <span class="csdc-badge csdc-badge-success">&#9679; 正常运行</span>
+          <span class="csdc-badge csdc-badge-error">&#9679; 系统失败</span>
+        </div>
+
+        <!-- Clean CSDC Code Box -->
+        <div class="csdc-code-box">
+          <button class="copy-float-btn" onclick="copySnippet(this.nextElementSibling.innerText)">复制代码</button>
+<pre style="margin:0;">&lt;!-- 按钮系统 --&gt;
+&lt;button class="csdc-btn csdc-btn-primary"&gt;主按钮&lt;/button&gt;
+&lt;button class="csdc-btn csdc-btn-outline"&gt;次按钮&lt;/button&gt;
+&lt;a href="#" class="csdc-link"&gt;连接 ›&lt;/a&gt;
+
+&lt;!-- 状态标签 --&gt;
+&lt;span class="csdc-badge csdc-badge-accent"&gt;标签&lt;/span&gt;
+&lt;span class="csdc-badge csdc-badge-success"&gt;&#9679; 正常运行&lt;/span&gt;
+&lt;span class="csdc-badge csdc-badge-error"&gt;&#9679; 系统失败&lt;/span&gt;</pre>
+        </div>
+      </div>
+
+      <!-- Component 3: Feature & KPI Card -->
+      <div class="component-box">
+        <h3 style="font-size: 17px; margin-bottom: 14px; font-weight: 600; color: var(--color-text-primary);">3. 卡片</h3>
+        
+        <div class="component-preview" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px;">
+          <!-- Card A: Standard White KPI Card -->
+          <div class="csdc-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 11px; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase;">KEY METRIC</span>
+              <span style="font-size: 13px; color: var(--color-success); font-weight: 600;">+14.2%</span>
+            </div>
+            <div style="font-size: 38px; font-weight: 700; color: var(--color-text-primary); letter-spacing: var(--tracking-tight); margin: 6px 0;">99.85%</div>
+            <p style="font-size: var(--font-size-sm); color: var(--color-text-secondary); margin: 0;">端到端智能化交付达标率</p>
+          </div>
+
+          <!-- Card B: Yellow Featured Area Card -->
+          <div class="csdc-card-yellow">
+            <h4 style="font-size: 17px; font-weight: 700; color: var(--color-text-primary); margin: 4px 0 8px 0;">企业级 AI 智能体流水线</h4>
+            <p style="font-size: var(--font-size-sm); color: #4A4A52; margin-bottom: 16px;">构建安全合规的数字化工作流与自动化评估模型。</p>
+            <a href="#" class="csdc-link" style="font-weight: 600;">查看架构规范 ›</a>
+          </div>
+        </div>
+
+        <!-- Clean CSDC Code Box -->
+        <div class="csdc-code-box">
+          <button class="copy-float-btn" onclick="copySnippet(this.nextElementSibling.innerText)">复制代码</button>
+<pre style="margin:0;">&lt;!-- 1. 标准浅色 KPI 咨询卡片 --&gt;
+&lt;div class="csdc-card"&gt;
+  &lt;div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;"&gt;
+    &lt;span style="font-size: 11px; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase;"&gt;KEY METRIC&lt;/span&gt;
+    &lt;span style="font-size: 13px; color: var(--color-success); font-weight: 600;"&gt;+14.2%&lt;/span&gt;
+  &lt;/div&gt;
+  &lt;div style="font-size: 38px; font-weight: 700; color: var(--color-text-primary); letter-spacing: var(--tracking-tight); margin: 6px 0;"&gt;99.85%&lt;/div&gt;
+  &lt;p style="font-size: var(--font-size-sm); color: var(--color-text-secondary); margin: 0;"&gt;端到端智能化交付达标率&lt;/p&gt;
+&lt;/div&gt;
+
+&lt;!-- 2. CSDC 核心黄特色高亮卡片 --&gt;
+&lt;div class="csdc-card-yellow"&gt;
+  &lt;h4 style="font-size: 17px; font-weight: 700; color: var(--color-text-primary); margin: 4px 0 8px 0;"&gt;企业级 AI 智能体流水线&lt;/h4&gt;
+  &lt;p style="font-size: var(--font-size-sm); color: #4A4A52; margin-bottom: 16px;"&gt;构建安全合规的数字化工作流与自动化评估模型。&lt;/p&gt;
+  &lt;a href="#" class="csdc-link" style="font-weight: 600;"&gt;查看架构规范 ›&lt;/a&gt;
+&lt;/div&gt;</pre>
+        </div>
+      </div>
+
+      <!-- Component: Typical Page Layout (Element Container 实例1 结构) -->
+      <div class="component-box" id="layout">
+        <h3 style="font-size: 17px; margin-bottom: 14px; font-weight: 600; color: var(--color-text-primary);">
+          4. 页面布局
+        </h3>
+
+        <!-- Live Preview -->
+        <div class="component-preview" style="padding: 18px;">
+          <div class="csdc-layout">
+            <header class="csdc-layout-header">
+              <div class="csdc-layout-brand">
+                <img src="csdc-logo-navbar.svg" alt="CSDC Logo">
+              </div>
+              <div class="csdc-layout-user">
+                <span class="csdc-avatar">
+                  <img src="./imgs/avatar.svg" style="width: 20px;height: 20px;">
+                </span>
+                <span class="csdc-layout-user-name">Admin</span>
+              </div>
+            </header>
+            <div class="csdc-layout-body">
+              <aside class="csdc-layout-aside">
+                <div class="csdc-layout-menu-group">
+                  <div class="csdc-layout-menu-group-title">工作台</div>
+                  <div class="csdc-layout-submenu">
+                    <a href="#layout" class="csdc-layout-aside-item is-active">概览面板</a>
+                    <a href="#layout" class="csdc-layout-aside-item is-sub">任务总览</a>
+                    <a href="#layout" class="csdc-layout-aside-item is-sub">交付进度</a>
+                  </div>
+                </div>
+                <div class="csdc-layout-menu-group">
+                  <div class="csdc-layout-menu-group-title">设置</div>
+                  <div class="csdc-layout-submenu">
+                    <a href="#layout" class="csdc-layout-aside-item">权限管理</a>
+                    <a href="#layout" class="csdc-layout-aside-item">系统参数</a>
+                  </div>
+                </div>
+              </aside>
+              <div class="csdc-layout-main">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+                  <strong style="font-size: 15px;">主内容区 Main</strong>
+                </div>
+                <p style="font-size: var(--font-size-sm); color: var(--color-text-secondary); margin: 0 0 14px 0;">
+                  页面主体内容自动填满剩余空间，与二级侧边菜单共同构成多层导航结构，适配管理后台、数据看板与表单页面。
+                </p>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                  <button class="csdc-btn csdc-btn-primary">主按钮</button>
+                  <button class="csdc-btn csdc-btn-outline">次按钮</button>
+                </div>
+              </div>
+            </div>
+            <div class="csdc-layout-footer">
+              <span>&copy; 2026 CSDC</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Clean CSDC Code Box -->
+        <div class="csdc-code-box">
+          <button class="copy-float-btn" onclick="copySnippet(this.nextElementSibling.innerText)">复制代码</button>
+<pre style="margin:0;">&lt;!-- 标准页面骨架: Header + (二级菜单 Aside + Main) + Footer --&gt;
+&lt;div class="csdc-layout"&gt;
+  &lt;header class="csdc-layout-header"&gt;
+    &lt;div class="csdc-layout-brand"&gt;
+      &lt;img src="/assets/csdc-logo-navbar.svg" alt="CSDC Logo" /&gt;
+    &lt;/div&gt;
+    &lt;div class="csdc-layout-user"&gt;
+      &lt;span class="csdc-avatar"&gt;
+        &lt;img src="./imgs/avatar.svg" style="width: 20px;height: 20px;"&gt;
+      &lt;/span&gt;
+      &lt;span class="csdc-layout-user-name"&gt;Admin&lt;/span&gt;
+    &lt;/div&gt;
+  &lt;/header&gt;
+
+  &lt;div class="csdc-layout-body"&gt;
+    &lt;aside class="csdc-layout-aside"&gt;
+      &lt;div class="csdc-layout-menu-group"&gt;
+        &lt;div class="csdc-layout-menu-group-title"&gt;工作台&lt;/div&gt;
+        &lt;div class="csdc-layout-submenu"&gt;
+          &lt;a href="#" class="csdc-layout-aside-item is-active"&gt;概览面板&lt;/a&gt;
+          &lt;a href="#" class="csdc-layout-aside-item is-sub"&gt;任务总览&lt;/a&gt;
+          &lt;a href="#" class="csdc-layout-aside-item is-sub"&gt;交付进度&lt;/a&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="csdc-layout-menu-group"&gt;
+        &lt;div class="csdc-layout-menu-group-title"&gt;设置&lt;/div&gt;
+        &lt;div class="csdc-layout-submenu"&gt;
+          &lt;a href="#" class="csdc-layout-aside-item"&gt;权限管理&lt;/a&gt;
+          &lt;a href="#" class="csdc-layout-aside-item is-sub"&gt;系统参数&lt;/a&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/aside&gt;
+
+    &lt;main class="csdc-layout-main"&gt;
+      &lt;p&gt;主内容区：自动填满剩余空间。&lt;/p&gt;
+    &lt;/main&gt;
+  &lt;/div&gt;
+
+  &lt;footer class="csdc-layout-footer"&gt;&amp;copy; 2026 CSDC&lt;/footer&gt;
+&lt;/div&gt;</pre>
+        </div>
+
+        <!-- Layout Structure Spec Table -->
+        <div class="token-table-wrap" style="margin-top: 18px;">
+          <table class="token-table">
+            <thead>
+              <tr>
+                <th style="width: 26%;">区域</th>
+                <th style="width: 30%;">标准类名</th>
+                <th style="width: 44%;">布局行为说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>布局根容器</strong></td>
+                <td><span class="token-code-pill" onclick="copySnippet('.csdc-layout')">.csdc-layout</span></td>
+                <td>纵向弹性容器 &bull; 圆角 14px &bull; 最小高度 300px &bull; 子元素零间隙</td>
+              </tr>
+              <tr>
+                <td><strong>顶部栏</strong></td>
+                <td><span class="token-code-pill" onclick="copySnippet('.csdc-layout-header')">.csdc-layout-header</span></td>
+                <td>高度自适应 &bull; CSDC 核心黄底 <code>#FFE600</code> &bull; 内置左侧品牌区与右侧登录人区</td>
+              </tr>
+              <tr>
+                <td><strong>品牌区 (Header 左)</strong></td>
+                <td><span class="token-code-pill" onclick="copySnippet('.csdc-layout-brand')">.csdc-layout-brand</span></td>
+                <td>Logo 容器 &bull; 标准高度 <code>30px</code> &bull; 宽度自适应</td>
+              </tr>
+              <tr>
+                <td><strong>登录人区 (Header 右)</strong></td>
+                <td><span class="token-code-pill" onclick="copySnippet('.csdc-layout-user')">.csdc-layout-user</span></td>
+                <td>姓名 <code>.csdc-layout-user-name</code> + 头像 <code>.csdc-avatar</code> (32px 圆形，支持图片或首字母)</td>
+              </tr>
+              <tr>
+                <td><strong>主体容器</strong></td>
+                <td><span class="token-code-pill" onclick="copySnippet('.csdc-layout-body')">.csdc-layout-body</span></td>
+                <td>横向弹性容器 &bull; 承载侧边栏与主内容区</td>
+              </tr>
+              <tr>
+                <td><strong>二级侧边菜单</strong></td>
+                <td><span class="token-code-pill" onclick="copySnippet('.csdc-layout-aside')">.csdc-layout-aside</span></td>
+                <td>固定宽度 <code>220px</code> &bull; 分组式导航 &bull; 支持一级分组 + 二级链接</td>
+              </tr>
+              <tr>
+                <td><strong>主内容区</strong></td>
+                <td><span class="token-code-pill" onclick="copySnippet('.csdc-layout-main')">.csdc-layout-main</span></td>
+                <td>弹性填满剩余空间 &bull; 纯白底 &bull; 标准正文 15px</td>
+              </tr>
+              <tr>
+                <td><strong>底部栏</strong></td>
+                <td><span class="token-code-pill" onclick="copySnippet('.csdc-layout-footer')">.csdc-layout-footer</span></td>
+                <td>高度自适应 &bull; 浅灰底 <code>#F5F5F7</code> &bull; 次级文本色</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Component: 纯上下布局 (无侧边栏) -->
+      <div class="component-box">
+        <h3 style="font-size: 17px; margin-bottom: 14px; font-weight: 600; color: var(--color-text-primary);">
+          无侧边栏布局
+        </h3>
+
+        <div class="component-preview" style="padding: 18px;">
+          <div class="csdc-layout" style="min-height: 0;">
+            <header class="csdc-layout-header">
+              <div class="csdc-layout-brand">
+                <img src="csdc-logo-navbar.svg" alt="CSDC Logo">
+              </div>
+              <nav class="csdc-layout-nav">
+                <a href="#" class="csdc-nav-link" data-active>首页</a>
+                <a href="#" class="csdc-nav-link">文档</a>
+                <a href="#" class="csdc-nav-link">仪表盘</a>
+              </nav>
+            </header>
+            <div class="csdc-layout-main">
+              <p style="font-size: var(--font-size-sm); color: var(--color-text-secondary); margin: 0;">
+                省略侧边栏时，主内容区直接占满整行，适用于单栏文档、登录页与全宽图表页面。
+              </p>
+            </div>
+            <div class="csdc-layout-footer">
+              <span>&copy; 2026 CSDC</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="csdc-code-box">
+          <button class="copy-float-btn" onclick="copySnippet(this.nextElementSibling.innerText)">复制代码</button>
+<pre style="margin:0;">&lt;!-- 精简骨架: Header + Main + Footer --&gt;
+&lt;div class="csdc-layout"&gt;
+  &lt;header class="csdc-layout-header"&gt;
+    &lt;div class="csdc-layout-brand"&gt;
+      &lt;img src="/assets/csdc-logo-navbar.svg" alt="CSDC Logo" /&gt;
+    &lt;/div&gt;
+    &lt;nav class="csdc-layout-nav"&gt;
+      &lt;a href="#" class="csdc-nav-link" data-active&gt;首页&lt;/a&gt;
+      &lt;a href="#" class="csdc-nav-link"&gt;文档&lt;/a&gt;
+      &lt;a href="#" class="csdc-nav-link"&gt;仪表盘&lt;/a&gt;
+    &lt;/nav&gt;
+  &lt;/header&gt;
+  &lt;main class="csdc-layout-main"&gt;
+    &lt;p&gt;主内容区占满整行。&lt;/p&gt;
+  &lt;/main&gt;
+  &lt;footer class="csdc-layout-footer"&gt;&amp;copy; 2026 CSDC&lt;/footer&gt;
+&lt;/div&gt;</pre>
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <!-- Toast Element -->
+  <div id="devToast">代码已复制到剪贴板</div>
+
+  <script>
+    const embeddedSVGs = {"csdc-logo-light.svg": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjAwIDYwMCIgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgc2hhcGUtcmVuZGVyaW5nPSJnZW9tZXRyaWNQcmVjaXNpb24iIHRleHQtcmVuZGVyaW5nPSJnZW9tZXRyaWNQcmVjaXNpb24iPgogIDxkZWZzPgogICAgPGxpbmVhckdyYWRpZW50IGlkPSJiZ1BsYXRlIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0ZGRkZGRiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNGNUY1RjciLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CgogICAgPCEtLSBJbnRlcmFjdGl2ZSBCbHVlIFRlbnNvciBGbHVpZCAoIzAwNTVCMyAtPiAjMEE4NEZGKSAtLT4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iYmx1ZVRlbnNvciIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMwMDU1QjMiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSI1MCUiIHN0b3AtY29sb3I9IiMwMDY2Q0MiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMEE4NEZGIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgoKICAgIDwhLS0gQ1NEQyBFbmVyZ3kgWWVsbG93IEZsdWlkICgjRkZGMDREIC0+ICNFNUNFMDApIC0tPgogICAgPGxpbmVhckdyYWRpZW50IGlkPSJ5ZWxsb3dUZW5zb3IiIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPgogICAgICA8c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjRkZGMDREIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iNTAlIiBzdG9wLWNvbG9yPSIjRkZFNjAwIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0U1Q0UwMCIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KCiAgICA8IS0tIENyaXNwIFJldGluYSBTaGFkb3cgKFRpZ2h0LCBub3QgZm9nZ3kpIC0tPgogICAgPGZpbHRlciBpZD0iY3Jpc3BUZW5zb3JTaGFkb3ciIHg9Ii0xMCUiIHk9Ii0xMCUiIHdpZHRoPSIxMjAlIiBoZWlnaHQ9IjEyMCUiPgogICAgICA8ZmVEcm9wU2hhZG93IGR4PSIwIiBkeT0iNiIgc3RkRGV2aWF0aW9uPSIxMCIgZmxvb2QtY29sb3I9IiMwMDY2Q0MiIGZsb29kLW9wYWNpdHk9IjAuMTIiLz4KICAgICAgPGZlRHJvcFNoYWRvdyBkeD0iMCIgZHk9IjMiIHN0ZERldmlhdGlvbj0iNiIgZmxvb2QtY29sb3I9IiNGRkU2MDAiIGZsb29kLW9wYWNpdHk9IjAuMTUiLz4KICAgIDwvZmlsdGVyPgogIDwvZGVmcz4KCiAgPCEtLSBCYWNrZ3JvdW5kIFBsYXRlIC0tPgogIDxyZWN0IHdpZHRoPSIxMjAwIiBoZWlnaHQ9IjYwMCIgcng9IjMyIiBmaWxsPSJ1cmwoI2JnUGxhdGUpIi8+CgogIDwhLS0gVUxUUkEtTU9ERVJOIEFJIEVNQkxFTTogVEhFIFBBUkFNRVRSSUMgTkVVUkFMIE1BTklGT0xEIC0tPgogIDxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDI0NSwgMzAwKSIgZmlsdGVyPSJ1cmwoI2NyaXNwVGVuc29yU2hhZG93KSI+CiAgICA8IS0tIFdpbmcgMTogSW50ZXJhY3RpdmUgQmx1ZSBOZXVyYWwgTG9vcCAoVXBwZXIgRmxvdykgLS0+CiAgICA8cGF0aCBkPSJNIC0xMzAsLTQ1IEMgLTEzMCwtMTE1IC03NSwtMTY1IDAsLTE2NSBDIDY1LC0xNjUgMTE1LC0xMjUgMTQwLC03MCBDIDE2MCwtMjUgMTUwLDMwIDExNSw3NSBMIDg1LDQ1IEMgMTA4LDEyIDExNSwtMjUgMTAwLC01NSBDIDgyLC05NSA0NSwtMTIyIDAsLTEyMiBDIC01MCwtMTIyIC04OCwtODUgLTg4LC00NSBDIC04OCwtMTIgLTY1LDE1IC0zNSw0NSBMIC02NSw3NSBDIC0xMDUsMzUgLTEzMCwtNSAtMTMwLC00NSBaIiAKICAgICAgICAgIGZpbGw9InVybCgjYmx1ZVRlbnNvcikiLz4KCiAgICA8IS0tIFdpbmcgMjogQ1NEQyBZZWxsb3cgRW5lcmd5IExvb3AgKExvd2VyIEZsb3cpIC0tPgogICAgPHBhdGggZD0iTSAxMzAsNDUgQyAxMzAsMTE1IDc1LDE2NSAwLDE2NSBDIC02NSwxNjUgLTExNSwxMjUgLTE0MCw3MCBDIC0xNjAsMjUgLTE1MCwtMzAgLTExNSwtNzUgTCAtODUsLTQ1IEMgLTEwOCwtMTIgLTExNSwyNSAtMTAwLDU1IEMgLTgyLDk1IC00NSwxMjIgMCwxMjIgQyA1MCwxMjIgODgsODUgODgsNDUgQyA4OCwxMiA2NSwtMTUgMzUsLTQ1IEwgNjUsLTc1IEMgMTA1LC0zNSAxMzAsNSAxMzAsNDUgWiIgCiAgICAgICAgICBmaWxsPSJ1cmwoI3llbGxvd1RlbnNvcikiLz4KCiAgICA8IS0tIFdpbmcgMzogQ2VudHJhbCBQYXJhbWV0cmljIEFJIEJyaWRnZSAmIFNpbmd1bGFyaXR5IENvcmUgKE9wdGljYWwgV2VhdmUpIC0tPgogICAgPHBhdGggZD0iTSAtMzUsNDUgQyAtMTIsMjIgMTIsLTIyIDM1LC00NSBDIDU1LC0yNSA2NSwtNSA2NSwxNSBDIDY1LDQ1IDM1LDc1IDAsNzUgQyAtMTUsNzUgLTI4LDY1IC0zNSw0NSBaIiAKICAgICAgICAgIGZpbGw9InVybCgjeWVsbG93VGVuc29yKSIgb3BhY2l0eT0iMC45NiIvPgogICAgPHBhdGggZD0iTSAzNSwtNDUgQyAxMiwtMjIgLTEyLDIyIC0zNSw0NSBDIC01NSwyNSAtNjUsNSAtNjUsLTE1IEMgLTY1LC00NSAtMzUsLTc1IDAsLTc1IEMgMTUsLTc1IDI4LC02NSAzNSwtNDUgWiIgCiAgICAgICAgICBmaWxsPSJ1cmwoI2JsdWVUZW5zb3IpIiBvcGFjaXR5PSIwLjkyIi8+CgogICAgPCEtLSBDb3JlIEFJIFNwYXJrIFNpbmd1bGFyaXR5IC0tPgogICAgPGNpcmNsZSBjeD0iMCIgY3k9IjAiIHI9IjE2IiBmaWxsPSIjRkZGRkZGIi8+CiAgICA8Y2lyY2xlIGN4PSIwIiBjeT0iMCIgcj0iMTAiIGZpbGw9InVybCgjeWVsbG93VGVuc29yKSIvPgogICAgPGNpcmNsZSBjeD0iMCIgY3k9IjAiIHI9IjQuNSIgZmlsbD0iIzAwNjZDQyIvPgogIDwvZz4KCiAgPCEtLSBQcmVjaXNpb24gSGFpcmxpbmUgRGl2aWRlciAoQ1NEQyAjRDJEMkQ3KSAtLT4KICA8bGluZSB4MT0iNDkwIiB5MT0iMTYwIiB4Mj0iNDkwIiB5Mj0iNDQwIiBzdHJva2U9IiNEMkQyRDciIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KCiAgPCEtLSBDTEVBTiBBUFBMRSBUWVBPR1JBUEhZIFNVSVRFIC0tPgogIDxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDU0NSwgMCkiPgogICAgPCEtLSBNYWluIEFjcm9ueW0gQ1NEQyAoQ1NEQyAjMUQxRDFGKSAtLT4KICAgIDx0ZXh0IHg9IjAiIHk9IjI3OCIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgJ1NGIFBybyBEaXNwbGF5JywgJ0hlbHZldGljYSBOZXVlJywgc2Fucy1zZXJpZiIgCiAgICAgICAgICBmb250LXNpemU9IjEwOCIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iIzFEMUQxRiIgbGV0dGVyLXNwYWNpbmc9Ii0wLjAzZW0iPgogICAgICBDU0RDCiAgICA8L3RleHQ+CiAgICAKICAgIDwhLS0gTWluaW1hbGlzdCBEdWFsLURvdCBJZGVudGl0eSBNYXJrIC0tPgogICAgPGNpcmNsZSBjeD0iMzYwIiBjeT0iMjI2IiByPSI2IiBmaWxsPSIjMDA2NkNDIi8+CiAgICA8Y2lyY2xlIGN4PSIzNzgiIGN5PSIyMjYiIHI9IjYiIGZpbGw9IiNGRkU2MDAiLz4KCiAgICA8IS0tIEZ1bGwgRW5nbGlzaCBUaXRsZSAoQ1NEQyAjMUQxRDFGKSAtLT4KICAgIDx0ZXh0IHg9IjAiIHk9IjM0MCIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgJ1NGIFBybyBUZXh0JywgJ0hlbHZldGljYSBOZXVlJywgc2Fucy1zZXJpZiIgCiAgICAgICAgICBmb250LXNpemU9IjI1IiBmb250LXdlaWdodD0iNjAwIiBmaWxsPSIjMUQxRDFGIiBsZXR0ZXItc3BhY2luZz0iLTAuMDFlbSI+CiAgICAgIENoaW5hIFNtYXJ0IERlbGl2ZXJ5IENlbnRlcgogICAgPC90ZXh0PgoKICAgIDwhLS0gQ2hpbmVzZSBTdWJ0aXRsZSAoQ1NEQyAjNkU2RTczKSAtLT4KICAgIDx0ZXh0IHg9IjAiIHk9IjM4OCIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgJ1BpbmdGYW5nIFNDJywgJ0hpcmFnaW5vIFNhbnMgR0InLCBzYW5zLXNlcmlmIiAKICAgICAgICAgIGZvbnQtc2l6ZT0iMjEiIGZvbnQtd2VpZ2h0PSI1MDAiIGZpbGw9IiM2RTZFNzMiIGxldHRlci1zcGFjaW5nPSI0Ij4KICAgICAg5Lqk5LuY5Lit5b+DCiAgICA8L3RleHQ+CiAgPC9nPgo8L3N2Zz4=", "csdc-logo-navbar.svg": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNDAgNDQiIHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIHNoYXBlLXJlbmRlcmluZz0iZ2VvbWV0cmljUHJlY2lzaW9uIiB0ZXh0LXJlbmRlcmluZz0iZ2VvbWV0cmljUHJlY2lzaW9uIj4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0ibmJCbHVlU2hhcnAiIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPgogICAgICA8c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjMDA1NUIzIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzBBODRGRiIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0ibmJZZWxsb3dTaGFycCIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGRkYwNEQiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjRkZFNjAwIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogIDwvZGVmcz4KCiAgPCEtLSBSYXpvci1TaGFycCBQYXJhbWV0cmljIEFJIEVtYmxlbSAoU2NhbGVkICYgRml0dGVkIHBlcmZlY3RseSB0byAzNngzNiBib3gpIC0tPgogIDxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDIyLCAyMikgc2NhbGUoMC4xMikiPgogICAgPCEtLSBCbHVlIExvb3AgKFVwcGVyKSAtLT4KICAgIDxwYXRoIGQ9Ik0gLTEzMCwtNDUgQyAtMTMwLC0xMTUgLTc1LC0xNjUgMCwtMTY1IEMgNjUsLTE2NSAxMTUsLTEyNSAxNDAsLTcwIEMgMTYwLC0yNSAxNTAsMzAgMTE1LDc1IEwgODUsNDUgQyAxMDgsMTIgMTE1LC0yNSAxMDAsLTU1IEMgODIsLTk1IDQ1LC0xMjIgMCwtMTIyIEMgLTUwLC0xMjIgLTg4LC04NSAtODgsLTQ1IEMgLTg4LC0xMiAtNjUsMTUgLTM1LDQ1IEwgLTY1LDc1IEMgLTEwNSwzNSAtMTMwLC01IC0xMzAsLTQ1IFoiIAogICAgICAgICAgZmlsbD0idXJsKCNuYkJsdWVTaGFycCkiLz4KICAgIDwhLS0gWWVsbG93IExvb3AgKExvd2VyKSAtLT4KICAgIDxwYXRoIGQ9Ik0gMTMwLDQ1IEMgMTMwLDExNSA3NSwxNjUgMCwxNjUgQyAtNjUsMTY1IC0xMTUsMTI1IC0xNDAsNzAgQyAtMTYwLDI1IC0xNTAsLTMwIC0xMTUsLTc1IEwgLTg1LC00NSBDIC0xMDgsLTEyIC0xMTUsMjUgLTEwMCw1NSBDIC04Miw5NSAtNDUsMTIyIDAsMTIyIEMgNTAsMTIyIDg4LDg1IDg4LDQ1IEMgODgsMTIgNjUsLTE1IDM1LC00NSBMIDY1LC03NSBDIDEwNSwtMzUgMTMwLDUgMTMwLDQ1IFoiIAogICAgICAgICAgZmlsbD0idXJsKCNuYlllbGxvd1NoYXJwKSIvPgogICAgPCEtLSBDZW50cmFsIE9wdGljYWwgV2VhdmUgLS0+CiAgICA8cGF0aCBkPSJNIC0zNSw0NSBDIC0xMiwyMiAxMiwtMjIgMzUsLTQ1IEMgNTUsLTI1IDY1LC01IDY1LDE1IEMgNjUsNDUgMzUsNzUgMCw3NSBDIC0xNSw3NSAtMjgsNjUgLTM1LDQ1IFoiIAogICAgICAgICAgZmlsbD0idXJsKCNuYlllbGxvd1NoYXJwKSIvPgogICAgPHBhdGggZD0iTSAzNSwtNDUgQyAxMiwtMjIgLTEyLDIyIC0zNSw0NSBDIC01NSwyNSAtNjUsNSAtNjUsLTE1IEMgLTY1LC00NSAtMzUsLTc1IDAsLTc1IEMgMTUsLTc1IDI4LC02NSAzNSwtNDUgWiIgCiAgICAgICAgICBmaWxsPSJ1cmwoI25iQmx1ZVNoYXJwKSIvPgogICAgPCEtLSBDb3JlIEFJIFNwYXJrIC0tPgogICAgPGNpcmNsZSBjeD0iMCIgY3k9IjAiIHI9IjE4IiBmaWxsPSIjRkZGRkZGIi8+CiAgICA8Y2lyY2xlIGN4PSIwIiBjeT0iMCIgcj0iMTEiIGZpbGw9InVybCgjbmJZZWxsb3dTaGFycCkiLz4KICAgIDxjaXJjbGUgY3g9IjAiIGN5PSIwIiByPSI1IiBmaWxsPSIjMDA2NkNDIi8+CiAgPC9nPgoKICA8IS0tIENyaXNwIFByZWNpc2lvbiBEaXZpZGVyIC0tPgogIDxsaW5lIHgxPSI1MCIgeTE9IjEwIiB4Mj0iNTAiIHkyPSIzNCIgc3Ryb2tlPSIjRDJEMkQ3IiBzdHJva2Utd2lkdGg9IjEuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CgogIDwhLS0gSGlnaC1DbGFyaXR5IENTREMgVHlwb2dyYXBoeSAtLT4KICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSg2MCwgMCkiPgogICAgPCEtLSBDU0RDIE1haW4gLS0+CiAgICA8dGV4dCB4PSIwIiB5PSIyNCIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgJ1NGIFBybyBEaXNwbGF5JywgJ0hlbHZldGljYSBOZXVlJywgc2Fucy1zZXJpZiIgCiAgICAgICAgICBmb250LXNpemU9IjIwIiBmb250LXdlaWdodD0iODAwIiBmaWxsPSIjMUQxRDFGIiBsZXR0ZXItc3BhY2luZz0iLTAuMDJlbSI+Q1NEQzwvdGV4dD4KICAgIAogICAgPCEtLSBNaWNybyBEdWFsLUNvbG9yIERvdHMgLS0+CiAgICA8Y2lyY2xlIGN4PSI2MiIgY3k9IjE4IiByPSIyLjUiIGZpbGw9IiMwMDY2Q0MiLz4KICAgIDxjaXJjbGUgY3g9IjcwIiBjeT0iMTgiIHI9IjIuNSIgZmlsbD0iI0ZGRTYwMCIvPgoKICAgIDwhLS0gQ2hpbmVzZSBTdWJ0aXRsZSAtLT4KICAgIDx0ZXh0IHg9IjAiIHk9IjM3IiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCAnUGluZ0ZhbmcgU0MnLCAnSGlyYWdpbm8gU2FucyBHQicsIHNhbnMtc2VyaWYiIAogICAgICAgICAgZm9udC1zaXplPSIxMC41IiBmb250LXdlaWdodD0iNjAwIiBmaWxsPSIjNkU2RTczIiBsZXR0ZXItc3BhY2luZz0iMS41Ij7mmbrog73kuqTku5jkuK3lv4M8L3RleHQ+CiAgPC9nPgo8L3N2Zz4=", "csdc-icon-light.svg": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIiB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBzaGFwZS1yZW5kZXJpbmc9Imdlb21ldHJpY1ByZWNpc2lvbiIgdGV4dC1yZW5kZXJpbmc9Imdlb21ldHJpY1ByZWNpc2lvbiI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImljQmciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPgogICAgICA8c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjRkZGRkZGIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0Y1RjVGNyIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iaWNCbHVlIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwNTVCMyIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjUwJSIgc3RvcC1jb2xvcj0iIzAwNjZDQyIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwQTg0RkYiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImljWWVsbG93IiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0ZGRjA0RCIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjUwJSIgc3RvcC1jb2xvcj0iI0ZGRTYwMCIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNFNUNFMDAiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8ZmlsdGVyIGlkPSJpY29uVGVuc29yU2hhZG93IiB4PSItMTAlIiB5PSItMTAlIiB3aWR0aD0iMTIwJSIgaGVpZ2h0PSIxMjAlIj4KICAgICAgPGZlRHJvcFNoYWRvdyBkeD0iMCIgZHk9IjgiIHN0ZERldmlhdGlvbj0iMTIiIGZsb29kLWNvbG9yPSIjMDA2NkNDIiBmbG9vZC1vcGFjaXR5PSIwLjE1Ii8+CiAgICAgIDxmZURyb3BTaGFkb3cgZHg9IjAiIGR5PSI0IiBzdGREZXZpYXRpb249IjYiIGZsb29kLWNvbG9yPSIjRkZFNjAwIiBmbG9vZC1vcGFjaXR5PSIwLjE4Ii8+CiAgICA8L2ZpbHRlcj4KICA8L2RlZnM+CgogIDwhLS0gQmFja2dyb3VuZCBBcHAgU3F1aXJjbGUgLS0+CiAgPHJlY3Qgd2lkdGg9IjUxMiIgaGVpZ2h0PSI1MTIiIHJ4PSIxMTIiIGZpbGw9InVybCgjaWNCZykiIHN0cm9rZT0iI0QyRDJENyIgc3Ryb2tlLXdpZHRoPSIyIi8+CgogIDwhLS0gUGFyYW1ldHJpYyBBSSBUZW5zb3IgTWFuaWZvbGQgRW1ibGVtIC0tPgogIDxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDI1NiwgMjI1KSBzY2FsZSgwLjk1KSIgZmlsdGVyPSJ1cmwoI2ljb25UZW5zb3JTaGFkb3cpIj4KICAgIDwhLS0gQmx1ZSBMb29wIC0tPgogICAgPHBhdGggZD0iTSAtMTMwLC00NSBDIC0xMzAsLTExNSAtNzUsLTE2NSAwLC0xNjUgQyA2NSwtMTY1IDExNSwtMTI1IDE0MCwtNzAgQyAxNjAsLTI1IDE1MCwzMCAxMTUsNzUgTCA4NSw0NSBDIDEwOCwxMiAxMTUsLTI1IDEwMCwtNTUgQyA4MiwtOTUgNDUsLTEyMiAwLC0xMjIgQyAtNTAsLTEyMiAtODgsLTg1IC04OCwtNDUgQyAtODgsLTEyIC02NSwxNSAtMzUsNDUgTCAtNjUsNzUgQyAtMTA1LDM1IC0xMzAsLTUgLTEzMCwtNDUgWiIgCiAgICAgICAgICBmaWxsPSJ1cmwoI2ljQmx1ZSkiLz4KICAgIDwhLS0gWWVsbG93IExvb3AgLS0+CiAgICA8cGF0aCBkPSJNIDEzMCw0NSBDIDEzMCwxMTUgNzUsMTY1IDAsMTY1IEMgLTY1LDE2NSAtMTE1LDEyNSAtMTQwLDcwIEMgLTE2MCwyNSAtMTUwLC0zMCAtMTE1LC03NSBMIC04NSwtNDUgQyAtMTA4LC0xMiAtMTE1LDI1IC0xMDAsNTUgQyAtODIsOTUgLTQ1LDEyMiAwLDEyMiBDIDUwLDEyMiA4OCw4NSA4OCw0NSBDIDg4LDEyIDY1LC0xNSAzNSwtNDUgTCA2NSwtNzUgQyAxMDUsLTM1IDEzMCw1IDEzMCw0NSBaIiAKICAgICAgICAgIGZpbGw9InVybCgjaWNZZWxsb3cpIi8+CiAgICA8IS0tIENvcmUgV2VhdmUgLS0+CiAgICA8cGF0aCBkPSJNIC0zNSw0NSBDIC0xMiwyMiAxMiwtMjIgMzUsLTQ1IEMgNTUsLTI1IDY1LC01IDY1LDE1IEMgNjUsNDUgMzUsNzUgMCw3NSBDIC0xNSw3NSAtMjgsNjUgLTM1LDQ1IFoiIAogICAgICAgICAgZmlsbD0idXJsKCNpY1llbGxvdykiIG9wYWNpdHk9IjAuOTYiLz4KICAgIDxwYXRoIGQ9Ik0gMzUsLTQ1IEMgMTIsLTIyIC0xMiwyMiAtMzUsNDUgQyAtNTUsMjUgLTY1LDUgLTY1LC0xNSBDIC02NSwtNDUgLTM1LC03NSAwLC03NSBDIDE1LC03NSAyOCwtNjUgMzUsLTQ1IFoiIAogICAgICAgICAgZmlsbD0idXJsKCNpY0JsdWUpIiBvcGFjaXR5PSIwLjkyIi8+CiAgICA8Y2lyY2xlIGN4PSIwIiBjeT0iMCIgcj0iMTYiIGZpbGw9IiNGRkZGRkYiLz4KICAgIDxjaXJjbGUgY3g9IjAiIGN5PSIwIiByPSIxMCIgZmlsbD0idXJsKCNpY1llbGxvdykiLz4KICAgIDxjaXJjbGUgY3g9IjAiIGN5PSIwIiByPSI0LjUiIGZpbGw9IiMwMDY2Q0MiLz4KICA8L2c+CgogIDwhLS0gQm90dG9tIENhcHN1bGUgKENTREMgUGlsbCkgLS0+CiAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjA2LCA0MjQpIj4KICAgIDxyZWN0IHdpZHRoPSIxMDAiIGhlaWdodD0iMzQiIHJ4PSIxNyIgZmlsbD0iIzFEMUQxRiIvPgogICAgPHRleHQgeD0iNTAiIHk9IjIyIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCAnU0YgUHJvIERpc3BsYXknLCBzYW5zLXNlcmlmIiAKICAgICAgICAgIGZvbnQtc2l6ZT0iMTUiIGZvbnQtd2VpZ2h0PSI3MDAiIGZpbGw9IiNGRkU2MDAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGxldHRlci1zcGFjaW5nPSIxIj5DU0RDPC90ZXh0PgogIDwvZz4KPC9zdmc+"};
+
+    function showToast(msg) {
+      const toast = document.getElementById('devToast');
+      toast.innerText = msg || '代码已复制到剪贴板';
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    function copySnippet(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('代码已复制到剪贴板');
+      }).catch(() => {
+        prompt('请手动复制：', text);
+      });
+    }
+
+    function copyAssetCode(fileName, type) {
+      if (type === 'img') {
+        const code = '<img src="/assets/' + fileName + '" alt="CSDC Logo" />';
+        copySnippet(code);
+      } else if (type === 'react') {
+        const code = "import Image from 'next/image';\n// 或标准 img 标签:\n<img src=\"/assets/" + fileName + "\" alt=\"CSDC Logo\" />";
+        copySnippet(code);
+      }
+    }
+
+    function exportPNGDirect(fileName, width, height) {
+      const base64Data = embeddedSVGs[fileName];
+      if (!base64Data) {
+        alert('未找到 SVG 数据: ' + fileName);
+        return;
+      }
+
+      const svgDataUrl = 'data:image/svg+xml;base64,' + base64Data;
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+
+      const img = new Image();
+      img.onload = () => {
+        try {
+          ctx.drawImage(img, 0, 0, width, height);
+          const pngUrl = canvas.toDataURL('image/png');
+          const link = document.createElement('a');
+          link.download = fileName.replace('.svg', '-2K.png');
+          link.href = pngUrl;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          showToast('成功导出 2K PNG (' + width + '×' + height + ')');
+        } catch (err) {
+          console.error(err);
+          alert('导出 PNG 失败: ' + err.message);
+        }
+      };
+      img.onerror = (e) => {
+        console.error('Image load error', e);
+        alert('SVG 渲染失败，请检查浏览器兼容性');
+      };
+      img.src = svgDataUrl;
+    }
+  </script>
+</body>
+</html>

@@ -20,6 +20,9 @@ dist-deps/
 # Generated client MCP configs (contain machine-local paths)
 /.mcp.json
 /.cursor/mcp.json
+# Impeccable 装到 harness 的技能/代理（本地物，不入库）
+.cursor/agents/
+.cursor/skills/
 /.vscode/mcp.json
 /opencode.json
 

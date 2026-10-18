@@ -1,0 +1,1108 @@
+/**
+ * CSDC UI Design System & Design Tokens
+ * 纯浅色 CSDC 极简科技美学 + CSDC 核心黄色彩体系
+ * Version: 7.4.0
+ */
+
+:root {
+  /* ==========================================================================
+     1. COLOR SYSTEM (CSDC 核心黄 + CSDC 中性浅色体系)
+     ========================================================================== */
+  /* CSDC 核心黄 (CSDC Yellow Accent System) */
+  --color-accent:          #FFE600; /* 主 CTA 按钮、核心高光、焦点 Accent */
+  --color-accent-hover:    #FFF9CC; /* 悬浮 / 激活状态 (与 CSDC 黄区块同色 #FFF9CC) */
+  --color-accent-surface:  #FFF9CC; /* CSDC 黄区块背景 (Section / Area) */
+  --color-accent-subtle:   #FFFDE6; /* 极浅黄高光底色 */
+  --color-accent-border:   #FFE600; /* 黄色强调边框 */
+
+  /* CSDC 排印文本颜色 (CSDC Signature Text) */
+  --color-text-primary:    #1D1D1F; /* 页面大标题、卡片标题、主正文、代码文字 (CSDC Near-Black) */
+  --color-text-secondary:  #6E6E73; /* 次级正文、说明段落 (CSDC Secondary Gray) */
+  --color-text-tertiary:   #86868B; /* 元数据、注脚、辅助标签 */
+
+  /* 界面区块与表面底色 (All Light Surfaces) */
+  --color-surface-light:   #F5F5F7; /* CSDC 经典中性浅灰底色 (Canvas) */
+  --color-surface-white:   #FFFFFF; /* 纯白悬浮卡片背景 */
+  --color-surface-subtle:  #EFEFF2; /* 浅灰分割区块 */
+
+  /* 精密描边与分割线 (CSDC Hairline Borders) */
+  --color-border:          #D2D2D7; /* CSDC 标准边框线 */
+  --color-border-subtle:   rgba(0, 0, 0, 0.08); /* 极细卡片描边与毛玻璃边界 */
+
+  /* 交互与系统功能色 (CSDC System Colors) */
+  --color-link:            #0066CC; /* CSDC 开发者交互蓝 */
+  --color-link-hover:      #0077ED;
+  --color-success:         #34C759; /* CSDC 系统绿 */
+  --color-success-bg:      #EBF9EE;
+  --color-error:           #FF3B30; /* CSDC 系统红 */
+  --color-error-bg:        #FFEEEE;
+  --color-warning:         #FF9500; /* CSDC 警示橙 */
+  --color-warning-bg:      #FFF8EC;
+
+  /* ==========================================================================
+     2. TYPOGRAPHY (CSDC SF Pro 字阶与字间距系统)
+     ========================================================================== */
+  --font-family-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", sans-serif;
+  --font-family-mono: "SF Mono", Menlo, Monaco, Consolas, "Fira Code", monospace;
+
+  /* 字阶大小 (CSDC Typography Scale) */
+  --font-size-hero:     3rem;        /* 48px - 英雄展台超大标题 (Display) */
+  --font-size-title-1:  2.25rem;     /* 36px - 页面一级大标题 */
+  --font-size-title-2:  1.5rem;      /* 24px - 二级板块标题 */
+  --font-size-title-3:  1.125rem;    /* 18px - 三级卡片/模块标题 */
+  --font-size-body:     0.9375rem;   /* 15px - CSDC 核心标准正文 */
+  --font-size-callout:  0.8125rem;   /* 13px - 辅助正文 / 说明文字 */
+  --font-size-caption:  0.75rem;     /* 12px - 注脚 / 标签文本 */
+
+  /* 语义化映射 */
+  --font-size-xs:      var(--font-size-caption);
+  --font-size-sm:      var(--font-size-callout);
+  --font-size-base:    var(--font-size-body);
+  --font-size-md:      var(--font-size-title-3);
+  --font-size-lg:      1.3125rem;   /* 21px */
+  --font-size-xl:      var(--font-size-title-2);
+  --font-size-2xl:     var(--font-size-title-1);
+  --font-size-3xl:     2.5rem;      /* 40px */
+  --font-size-4xl:     var(--font-size-hero);
+
+  /* 行高规范 (CSDC Line Heights) */
+  --line-height-tight:  1.15; /* 大标题紧凑行高 */
+  --line-height-title:  1.25; /* 板块标题行高 */
+  --line-height-body:   1.55; /* 正文易读行高 */
+
+  /* 字重 */
+  --font-weight-regular:  400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
+
+  /* 字间距 (CSDC Tracking) */
+  --tracking-hero:    -0.025em; /* 36px/48px 大标题紧致字距 */
+  --tracking-title:   -0.018em; /* 18px/24px 标题字距 */
+  --tracking-body:    -0.006em; /* 15px 正文字距 */
+  --tracking-tight:   -0.022em;
+  --tracking-normal:  -0.006em;
+
+  /* ==========================================================================
+     3. RADII & ELEVATIONS
+     ========================================================================== */
+  --radius-xs:   6px;
+  --radius-sm:   10px;
+  --radius-md:   14px;
+  --radius-card: 18px;
+  --radius-pill: 980px;
+
+  --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.04);
+  --shadow-hover: 0 10px 30px rgba(0, 0, 0, 0.07);
+  --blur-header: blur(20px);
+}
+
+/* ==========================================================================
+   4. BASE RESETS & LAYOUT
+   ========================================================================== */
+body {
+  background-color: var(--color-surface-light);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-sans);
+  margin: 0;
+  padding: 0;
+  line-height: var(--line-height-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.container {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 36px 36px 80px 36px;
+  box-sizing: border-box;
+}
+
+.dev-section {
+  margin-bottom: 56px;
+}
+
+.csdc-hero {
+  margin-bottom: 36px;
+}
+
+.csdc-hero h1 {
+  font-size: var(--font-size-3xl);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text-primary);
+  margin: 8px 0 12px 0;
+  line-height: var(--line-height-tight);
+}
+
+.csdc-hero p {
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+  max-width: 820px;
+  margin: 0 0 24px 0;
+  line-height: var(--line-height-body);
+}
+
+/* ==========================================================================
+   5. NAVIGATION HEADER (CSDC Frosted Glass)
+   ========================================================================== */
+.csdc-nav {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: var(--blur-header);
+  -webkit-backdrop-filter: var(--blur-header);
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding: 12px 36px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-sizing: border-box;
+}
+
+.csdc-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.csdc-nav-brand img {
+  height: 32px;
+}
+
+.csdc-nav-links {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+}
+
+.csdc-nav-link {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  transition: all 0.15s ease;
+  letter-spacing: var(--tracking-normal);
+}
+
+.csdc-nav-link:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-accent-surface);
+}
+
+/* ==========================================================================
+   6. BUTTONS & LINKS (CSDC Pill Buttons & Links)
+   ========================================================================== */
+.csdc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-normal);
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  text-decoration: none;
+  line-height: 1.2;
+}
+
+.csdc-btn:active {
+  transform: scale(0.97);
+}
+
+/* 主行动按钮 (CSDC 核心黄 CTA) */
+.csdc-btn-primary {
+  background-color: var(--color-accent);
+  color: var(--color-text-primary);
+  border-color: var(--color-accent);
+}
+.csdc-btn-primary:hover {
+  background-color: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+  box-shadow: 0 2px 12px rgba(255, 230, 0, 0.35);
+}
+
+/* 轮廓胶囊按钮 (默认纯白/浅色，Hover 时激活 CSDC 黄点缀色) */
+.csdc-btn-outline {
+  background-color: var(--color-surface-white);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+}
+.csdc-btn-outline:hover {
+  background-color: var(--color-accent-hover); /* 严格使用点缀色 Hover: #FFF9CC */
+  border-color: var(--color-accent-hover);
+  color: #1D1D1F;
+  box-shadow: 0 2px 10px rgba(255, 249, 204, 0.40);
+}
+
+.csdc-btn-sm {
+  padding: 3px 8px;
+  font-size: var(--font-size-xs);
+}
+
+/* CSDC 文本链接 */
+.csdc-link {
+  color: var(--color-link);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.15s ease;
+}
+.csdc-link:hover {
+  color: var(--color-link-hover);
+  text-decoration: underline;
+}
+
+/* ==========================================================================
+   7. BADGES & LABELS
+   ========================================================================== */
+.csdc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.02em;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  line-height: 1;
+}
+
+.csdc-badge-accent,
+.csdc-badge-yellow {
+  background-color: var(--color-accent); /* 纯实色 CSDC 核心黄 #FFE600 */
+  color: #1D1D1F;
+  font-weight: 700;
+  border: 1px solid var(--color-accent-hover);
+}
+
+.csdc-badge-success {
+  background-color: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.csdc-badge-error {
+  background-color: var(--color-error-bg);
+  color: var(--color-error);
+}
+
+/* ==========================================================================
+   8. CARDS & BANNERS (Pure Flat Solid Surfaces)
+   ========================================================================== */
+/* 纯白标准卡片 */
+.csdc-card {
+  background: var(--color-surface-white);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-card);
+  padding: 28px;
+  box-shadow: var(--shadow-card);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  box-sizing: border-box;
+}
+.csdc-card:hover {
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
+}
+
+/* CSDC 黄纯色特色高亮卡片 / 区块 (Solid Flat, 无渐变) */
+.csdc-card-yellow {
+  background-color: var(--color-accent-surface); /* 纯实色 #FFF9CC */
+  border: 1.5px solid var(--color-accent);
+  border-radius: var(--radius-card);
+  padding: 28px;
+  box-shadow: 0 4px 20px rgba(255, 230, 0, 0.15);
+  box-sizing: border-box;
+}
+
+/* CSDC 黄纯色横幅 / 区块 (Solid Flat #FFE600, 无渐变) */
+.csdc-banner-yellow {
+  background-color: var(--color-accent); /* 纯正实色 CSDC 核心黄 #FFE600 */
+  border: 1px solid var(--color-accent-hover);
+  border-radius: var(--radius-card);
+  padding: 32px;
+  color: var(--color-text-primary);
+  box-shadow: 0 4px 18px rgba(255, 230, 0, 0.22);
+  box-sizing: border-box;
+}
+
+/* CSDC 黄板块标题底条 (Yellow Section Header Banner - Yellow Area #FFF9CC) */
+.section-header-yellow {
+  background-color: var(--color-accent-surface);
+  border: 1.5px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  padding: 12px 20px;
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  box-shadow: 0 2px 10px rgba(255, 230, 0, 0.12);
+}
+
+.section-header-yellow .section-title {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #1D1D1F;
+  margin: 0;
+}
+
+.section-header-yellow .section-subtitle {
+  font-size: 13px;
+  color: #555560;
+  font-weight: 500;
+}
+
+.section-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+/* ==========================================================================
+   9. ASSET VAULT CARDS (Compact Horizontal Split Layout)
+   ========================================================================== */
+.asset-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.asset-card {
+  background: var(--color-surface-white);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 20px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  box-shadow: var(--shadow-card);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.asset-card:hover {
+  box-shadow: var(--shadow-hover);
+  border-color: var(--color-border);
+  transform: translateY(-1px);
+}
+
+.asset-info-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-width: 260px;
+}
+
+.asset-preview-box {
+  width: 140px;
+  height: 68px;
+  min-width: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-light);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  margin: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.asset-preview-box img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.asset-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.asset-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin: 0;
+}
+
+/* ==========================================================================
+   10. TABLES & TOKEN SPECIFICATION
+   ========================================================================== */
+.token-table-wrap {
+  background: var(--color-surface-white);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-card);
+  overflow-x: auto;
+  box-shadow: var(--shadow-card);
+}
+
+.token-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: var(--font-size-sm);
+}
+
+.token-table th {
+  background: var(--color-surface-light);
+  padding: 14px 22px;
+  font-weight: 600;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border-subtle);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.token-table td {
+  padding: 16px 22px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  color: var(--color-text-secondary);
+}
+
+.token-table tr:last-child td {
+  border-bottom: none;
+}
+
+.token-table tr:hover td {
+  background: #FAFAFB;
+}
+
+.color-swatch-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.color-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  display: inline-block;
+}
+
+.token-code-pill {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  background: var(--color-surface-light);
+  color: var(--color-text-primary);
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--color-border-subtle);
+  transition: all 0.15s ease;
+}
+
+.token-code-pill:hover {
+  background-color: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+  color: #1D1D1F;
+}
+
+/* ==========================================================================
+   11. CODE BOXES & COMPONENT SANDBOX
+   ========================================================================== */
+.csdc-code-box {
+  background: var(--color-surface-light);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  position: relative;
+  overflow: hidden;
+}
+
+.csdc-code-box pre {
+  margin: 0;
+  padding: 14px 75px 14px 18px;
+  overflow-x: auto;
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  box-sizing: border-box;
+}
+
+.copy-float-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 10;
+  background: var(--color-surface-white);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font-family-sans);
+  font-weight: 600;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.copy-float-btn:hover {
+  background-color: var(--color-accent-hover); /* 严格使用 #FFF9CC */
+  border-color: var(--color-accent-hover);
+  color: #1D1D1F;
+  box-shadow: 0 2px 6px rgba(255, 249, 204, 0.40);
+}
+
+.component-box {
+  background: var(--color-surface-white);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-card);
+  padding: 0 24px 24px 24px;
+  margin-bottom: 24px;
+  box-shadow: var(--shadow-card);
+}
+
+.component-preview {
+  padding: 24px;
+  background: var(--color-surface-light);
+  border-radius: var(--radius-md);
+  margin-bottom: 18px;
+}
+
+/* ==========================================================================
+   12. LAYOUT CONTAINER (CSDC 标准布局容器)
+   标准结构: Header(可选) + Body[ Aside(可选) + Main ] + Footer(可选)
+   ========================================================================== */
+.csdc-layout {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-white);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-sizing: border-box;
+  min-height: 300px;
+}
+
+/* 顶部栏 / 底部栏 (共享排印规范) */
+.csdc-layout-header,
+.csdc-layout-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 14px 20px;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-callout);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-normal);
+  box-sizing: border-box;
+}
+
+/* Header: CSDC 核心黄品牌栏 (纯实色 #FFE600，与核心黄横幅同色) */
+.csdc-layout-header {
+  background-color: var(--color-accent); /* 纯实色 CSDC 核心黄 #FFE600 */
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+}
+
+/* Header 左侧 · 品牌标识区 (Logo) */
+.csdc-layout-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.csdc-layout-brand img {
+  height: 30px;
+  width: auto;
+  display: block;
+}
+
+/* Header 右侧 · 登录人信息区 (姓名 + 头像) */
+.csdc-layout-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.csdc-layout-user-name {
+  font-size: var(--font-size-callout);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-normal);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 标准头像 (支持首字母文字或图片两种用法) */
+.csdc-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  background-color: var(--color-surface-white);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-callout);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0;
+  line-height: 1;
+  overflow: hidden;
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.csdc-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Footer: CSDC 标准浅灰底 (版权 / 辅助信息区) */
+.csdc-layout-footer {
+  background-color: var(--color-surface-light);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+/* Body: 承载 Aside 与 Main 的弹性横向容器 */
+.csdc-layout-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Aside: 固定宽度侧边栏 (默认 200px，可用内联 width 覆盖) */
+.csdc-layout-aside {
+  flex: 0 0 220px;
+  width: 220px;
+  max-width: 100%;
+  padding: 18px 14px;
+  background-color: var(--color-surface-light);
+  border-right: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-callout);
+  line-height: var(--line-height-body);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.csdc-layout-menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.csdc-layout-menu-group-title {
+  padding: 8px 10px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.csdc-layout-submenu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Main: 主内容区，自动填满剩余空间 */
+.csdc-layout-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 20px;
+  background-color: var(--color-surface-white);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  box-sizing: border-box;
+}
+
+/* 布局区域标注胶囊 (仅用于文档示意) */
+.csdc-layout-tag {
+  font-family: var(--font-family-mono);
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-tertiary);
+  background-color: var(--color-surface-white);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  letter-spacing: 0;
+}
+
+/* 侧边栏导航项 (可选标准样式) */
+.csdc-layout-aside-item {
+  display: block;
+  padding: 8px 12px;
+  margin-bottom: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-callout);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.csdc-layout-aside-item:hover {
+  background-color: var(--color-accent-hover);
+  color: var(--color-text-primary);
+}
+
+.csdc-layout-aside-item.is-active {
+  background-color: var(--color-accent);
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.csdc-layout-aside-item.is-sub {
+  padding-left: 18px;
+  border-left: 2px solid transparent;
+}
+
+.csdc-layout-aside-item.is-sub.is-active {
+  border-left-color: var(--color-text-primary);
+  background-color: rgba(255, 230, 0, 0.18);
+}
+
+/* Header 导航菜单 (共享 .csdc-nav-link 样式) */
+.csdc-layout-nav {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+/* 导航菜单激活项：CSDC 核心黄实色高亮 */
+.csdc-layout-nav .csdc-nav-link[data-active] {
+  background-color: var(--color-accent-hover);
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* ==========================================================================
+   13. TOAST NOTIFICATIONS
+   ========================================================================== */
+#devToast,
+.csdc-toast {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  background: var(--color-surface-white);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-accent);
+  border-left: 4px solid var(--color-accent);
+  padding: 14px 24px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.10);
+  transform: translateY(100px);
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 999;
+}
+
+#devToast.show,
+.csdc-toast.show {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+/* ==========================================================================
+   14. MOBILE & SMALL SCREEN RESPONSIVE (适配手机端与小屏浏览器)
+   ========================================================================== */
+@media (max-width: 768px) {
+  html, body {
+    width: 100%;
+    overflow-x: hidden;
+  }
+
+  .container {
+    padding: 16px 12px 60px 12px;
+  }
+
+  .dev-section {
+    margin-bottom: 36px;
+  }
+
+  /* 顶部毛玻璃导航栏移动端适配 */
+  .csdc-nav {
+    padding: 10px 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .csdc-nav-brand img {
+    height: 24px;
+  }
+
+  .csdc-nav-links {
+    gap: 4px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .csdc-nav-link {
+    padding: 4px 6px;
+    font-size: 12px;
+  }
+
+  /* 横幅与标题适配 */
+  .csdc-banner-yellow {
+    padding: 18px 14px;
+    border-radius: var(--radius-md);
+    margin-bottom: 28px !important;
+  }
+
+  .section-header-yellow {
+    padding: 10px 12px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    border-radius: var(--radius-sm);
+  }
+
+  .section-header-yellow .section-title {
+    font-size: 15px;
+  }
+
+  .section-header-yellow .section-subtitle {
+    font-size: 11px;
+  }
+
+  /* 徽标资产卡片移动端自适应 (紧凑卡片垂直堆叠，按钮2x2网格) */
+  .asset-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 12px;
+    border-radius: var(--radius-sm);
+  }
+
+  .asset-info-left {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .asset-preview-box {
+    width: 72px;
+    height: 52px;
+    min-width: 72px;
+    padding: 4px 6px;
+  }
+
+  .asset-meta {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .asset-meta strong {
+    font-size: 13px !important;
+  }
+
+  .asset-meta p {
+    font-size: 11px !important;
+    line-height: 1.35;
+    word-break: break-all;
+  }
+
+  .asset-actions {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+
+  .asset-actions .csdc-btn {
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 11px;
+    padding: 5px 2px;
+    text-align: center;
+    justify-content: center;
+  }
+
+  /* 表格横向平滑滚动 */
+  .token-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: var(--radius-sm);
+  }
+
+  .token-table {
+    min-width: 540px;
+  }
+
+  .token-table th, 
+  .token-table td {
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+
+  /* 字体卡片移动端换行与内边距 */
+  #typography .csdc-card {
+    padding: 14px !important;
+    border-radius: var(--radius-sm);
+  }
+
+  #typography code {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    font-size: 11px !important;
+    padding: 8px 10px !important;
+  }
+
+  /* UI 组件沙箱移动端适配 */
+  .component-box {
+    padding: 0 12px 14px 12px;
+    border-radius: var(--radius-md);
+    margin-bottom: 16px;
+  }
+
+  .component-box h3 {
+    font-size: 15px !important;
+    margin-bottom: 10px !important;
+  }
+
+  .component-preview {
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    margin-bottom: 12px;
+  }
+
+  .csdc-code-box pre {
+    padding: 10px 65px 10px 10px;
+    font-size: 11px;
+  }
+
+  .copy-float-btn {
+    top: 6px;
+    right: 6px;
+    font-size: 10px;
+    padding: 2px 6px;
+  }
+
+  .csdc-card, 
+  .csdc-card-yellow {
+    padding: 16px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* Toast 在移动端居中贴底 */
+  #devToast, 
+  .csdc-toast {
+    bottom: 16px;
+    right: 16px;
+    left: 16px;
+    text-align: center;
+    padding: 10px 16px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* 布局容器移动端自适应 (Aside 堆叠到 Main 之上) */
+  .csdc-layout {
+    min-height: 0;
+    border-radius: var(--radius-sm);
+  }
+
+  .csdc-layout-header,
+  .csdc-layout-footer {
+    padding: 10px 12px;
+    font-size: 11px;
+    flex-wrap: wrap;
+  }
+
+  .csdc-layout-brand img {
+    height: 22px;
+  }
+
+  .csdc-layout-user {
+    gap: 6px;
+  }
+
+  .csdc-layout-nav {
+    gap: 4px;
+  }
+
+  .csdc-layout-user-name {
+    font-size: 11px;
+  }
+
+  .csdc-avatar {
+    width: 26px;
+    height: 26px;
+    font-size: 11px;
+  }
+
+  .csdc-layout-body {
+    flex-direction: column;
+  }
+
+  .csdc-layout-aside {
+    flex: 0 0 auto;
+    width: 100%;
+    padding: 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 11px;
+  }
+
+  .csdc-layout-main {
+    padding: 14px 12px;
+    font-size: var(--font-size-sm);
+  }
+}
+
+@media (max-width: 480px) {
+  .csdc-nav-brand {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .csdc-nav-links {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .asset-actions {
+    grid-template-columns: 1fr;
+  }
+}
