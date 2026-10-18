@@ -1729,3 +1729,14 @@ llm_switch(name, force):
 > - **接入文档三补**：README/接入指南——项目机 runner **常驻化**（systemd/launchd 最小示例＋勿双开/中心 PG/产物令牌注意）、`aos-mcp init` 脚手架引用（§3.2）、**Excel 入料最小样例表**；文档提法逐一 `grep src/` 核对消费点（`AOS_RUNNER_ARTIFACT_TOKEN` 实装 `src/runner/artifact-server.ts:116`，DESIGN §13.113）。
 > - 未做（留档）：主 help 的 suite 行扩展、`suite task list` 的 runner 覆盖提示、`install` 的 dist 存在校验、`listCaseSets` PG `DISTINCT ON` 下推、task create 可用列表 cap、usage/panel 命令专属帮助文案、`-h` 作 flag 值 quirk。
 > - 测试新增 27（`cli-help` 15、`suite-command` 6、`jira-cli` 1、`panel-actions` 1、`run-registry` 1、`figma-case-sets-gen` 1、`workflow-run-regression` 1、`workflow-verify-jira` 1）；全量 **1530 绿**。
+
+### 13.125 实施记录（记录底座 ①：强制持久＋审计事件＋文件台账装配）
+
+> 实施于 2026-10-18（依据：`PRODUCT.md`「记录即产品」＋外部评审修订；计划 `docs/superpowers/plans/2026-10-18-data-foundation.md`（v2）；任务 1–3 已落地，任务 4–7 见后续记录）。动机：未配 PG 时"会话内存即弃"使接入与产出无留存；记录必须默认持久（**结果/过程/数据**三类）。
+> - **T1 审计接口**：`ProjectStore.recordAudit/listAudit`（Memory/PG 双实现，PG 表 `audit_events`：TEXT 时间戳＋`refs` JSON 文本，对齐 pg-mem 先例）；`kind` 联合扩 `"file"`（17 处行为位分类见下）。
+> - **T2 FileStore（`.artemis/ledger/`）**：`state.json`（原子 tmp+rename 快照，**写侧剥离 `apiKey`/`figmaToken`**）＋`usage.jsonl`/`audit.jsonl`（追加＋保留裁剪：usage 沿既有策略、audit **90 天/5 万条**）＋`journal.jsonl`（写操作取证行，**不承诺回放**）＋home `registry.jsonl`（跨进程项目索引）。**合并写**：每次写前 mtime 检测→重读→按 id 并集合并（单值字段最后写者胜；毫秒级同窗文档化为已知窗口），跨写者存活性有测试锁定。
+> - **T3 装配与自愈**：`createProjectStore` ＝ **PG → 文件台账 → 会话内存（仅最后兜底，`degraded=true`）**；PG 故障期 reason 明示"历史不自动回流"。**凭证回落**：`withEnvKeyFallback`（store 条目 key 为空时按 provider 约定→`AOS_LLM_API_KEY`/`DEEPSEEK_API_KEY`/`OPENAI_API_KEY` 从项目 `.env`/进程 env 回填；面板可用性判定同式）。**用例集自愈**：`.artemis/design/case-sets/*.json` 首载幂等登记（按 jsonPath；≤200 份，超出记 `registry/hydrate.capped` 交由 `suite backfill`）；登记前确保项目已注册。
+> - **守卫再决策**：runner 仍 **PG-only**（文案改"文件台账不支持多进程"）；`suite backfill` **放行 file、仅拒 memory**；`project-archive` 仅对 memory 判降级。
+> - **面板解析**：`resolveProjectKey` 改为**工作区优先**（byPath → 工作区绝对路径 → 工作区名字 → 注册表名字＋存在性守卫）——持久注册表下防跨工作区串台（http 面板深探回归实证）。
+> - 测试新增 16（`db-audit` 3、`db-file` 9、`db-default` 4＋守卫 1＋env 回落 2 −重复）；全量 **1551 绿**。
+> - 未做（留档/后续任务）：内部编排审计接线（T4）、产物索引（T5）、三口径导出（T6）、全表面文案整改（T7）。

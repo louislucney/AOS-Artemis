@@ -596,7 +596,7 @@ test("backfill 幂等: 第二次全 skip；dry-run 不写库且 wouldRegister=�
   assert.equal((await store2.listCaseSets(runtime2.project.rootDir)).length, beforeSets);
 });
 
-test("命令层: usage 列出 backfill；内存 store → exit 2（PG 守卫）；--json 形状", async () => {
+test("命令层: usage 列出 backfill；内存 store → exit 2（持久台账守卫）；--json 形状", async () => {
   const helpLogs = [];
   await runSuiteCommand(["help"], {
     buildRuntime: async () => {
@@ -612,7 +612,7 @@ test("命令层: usage 列出 backfill；内存 store → exit 2（PG 守卫）�
   const runtime = await makeRuntime(store, dir);
   const mem = await runCli(runtime, ["backfill"]);
   assert.equal(mem.code, 2);
-  assert.ok(mem.errors.some((line) => line.includes("中心 PG")), "PG 守卫提示");
+  assert.ok(mem.errors.some((line) => line.includes("会话内存")), "持久台账守卫提示");
 
   const dir2 = makeTempProject({ config: baseConfig() });
   const store2 = await makePgStore();

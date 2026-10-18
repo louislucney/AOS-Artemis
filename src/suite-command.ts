@@ -1898,7 +1898,7 @@ async function suiteRunnerCommand(
 ): Promise<number> {
   const env = io.env ?? process.env;
   if (runtime.store.kind !== "postgres") {
-    io.errorLog("runner 需要中心 PG（当前为内存存储）；请配置 MOBILE_TESTING_DATABASE_URL");
+    io.errorLog("runner 需要中心 PG（文件台账不支持多进程）；请配置 MOBILE_TESTING_DATABASE_URL");
     return 2;
   }
   const pollRaw = flags.get("poll-ms");
@@ -2042,8 +2042,8 @@ async function suiteBackfill(
   flags: ParsedFlags,
   io: { log: (line: string) => void; errorLog: (line: string) => void }
 ): Promise<number> {
-  if (runtime.store.kind !== "postgres") {
-    io.errorLog("backfill 需要中心 PG（当前为内存存储）；请配置 MOBILE_TESTING_DATABASE_URL");
+  if (runtime.store.kind === "memory") {
+    io.errorLog("backfill 需要持久台账（当前为会话内存）；请配置 MOBILE_TESTING_DATABASE_URL 或使用项目文件台账");
     return 2;
   }
   const sinceRaw = flags.get("since");

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,7 @@ import { baseConfig, makeTempProject } from "./helpers.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
+const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-smoke-ledger-"));
 
 async function makeClient(projectDir) {
   const transport = new StdioClientTransport({
@@ -20,6 +22,7 @@ async function makeClient(projectDir) {
     env: {
       ...process.env,
       AOS_PROJECT_DIR: projectDir,
+      AOS_LEDGER_DIR: ledgerDir,
       AOS_MODEL_REFRESH_HOURS: "0",
       AOS_USAGE: "1"
     }
@@ -92,7 +95,7 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
     const statusPayload = JSON.parse(status.content[0].text);
     assert.equal(statusPayload.ok, true);
     assert.equal(statusPayload.figma.token.present, false);
-    assert.equal(statusPayload.store.kind, "memory");
+    assert.equal(statusPayload.store.kind, "file");
     assert.ok(
       ["listening", "skipped_occupied"].includes(statusPayload.figma.bridge.status),
       `unexpected bridge status: ${statusPayload.figma.bridge.status}`

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -14,6 +15,7 @@ import { createAosHttpServer } from "../dist/http-server.js";
 
 process.env.AOS_MODEL_REFRESH_HOURS = "0";
 process.env.AOS_USAGE = "1";
+process.env.AOS_LEDGER_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "aos-http-ledger-"));
 
 const TOKEN = "aos-http-secret-token-9f8e7d6c";
 const basic = (user, pass) => `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
@@ -202,7 +204,7 @@ test("http server: panel dashboard over real HTTP", async () => {
     const deepJson = await fetch(`http://127.0.0.1:${handle.port}/panel.json?project=demo`);
     assert.equal(deepJson.status, 200);
     const deepPayload = await deepJson.json();
-    assert.equal(deepPayload.deep.store.kind, "memory");
+    assert.equal(deepPayload.deep.store.kind, "file");
     assert.equal(deepPayload.deep.iosProbe, null, "默认不触发 iOS 探测");
 
     const unknown = await fetch(`http://127.0.0.1:${handle.port}/panel.json?project=nope`);

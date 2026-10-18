@@ -69,8 +69,8 @@ export async function projectArchive(
   const designDirAbs = designDir(runtime.configDirAbs);
   const root = runtime.project.rootDir;
 
-  if (runtime.store !== undefined && runtime.store.kind !== "postgres") {
-    degraded.push("登记读自内存存储（PostgreSQL 不可用），用例库/裁决数据可能不完整");
+  if (runtime.store !== undefined && runtime.store.kind === "memory") {
+    degraded.push("登记读自会话内存（未配置持久台账），用例库/裁决数据可能不完整");
   }
 
   let design: Record<string, unknown> | null = null;

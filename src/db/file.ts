@@ -6,6 +6,7 @@ import path from "node:path";
 import { resolveProject } from "../config/loader.js";
 import { errorMessage, log } from "../util.js";
 import { MemoryStore, type MemoryStoreState } from "./memory.js";
+import { hydrateProjectLedger } from "./hydrate.js";
 import { retentionCutoffIso } from "./usage-event.js";
 import type {
   AuditEventInput,
@@ -524,6 +525,11 @@ export class FileStore implements ProjectStore {
       bucket.seenUsageMtimeMs = await mtimeMs(bucket.usagePath);
       bucket.seenAuditMtimeMs = await mtimeMs(bucket.auditPath);
       await this.trimJournalIfLarge(bucket.journalPath);
+      try {
+        await hydrateProjectLedger(this, bucket.rootPath);
+      } catch (error) {
+        log(`用例集自愈失败（忽略）：${errorMessage(error)}`);
+      }
     } catch (error) {
       log(`文件台账加载失败（${bucket.rootPath}）：${errorMessage(error)}`);
     }

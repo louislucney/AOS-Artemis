@@ -149,8 +149,6 @@ export async function resolveProjectKey(
   }
   const byPath = projects.find((project) => project.rootPath === key);
   if (byPath) return { rootPath: byPath.rootPath, name: byPath.name };
-  const byName = projects.find((project) => project.name === key);
-  if (byName) return { rootPath: byName.rootPath, name: byName.name };
   if (deps.workspaceRoot !== null && path.isAbsolute(key)) {
     const candidate = path.resolve(key);
     const within = candidate === deps.workspaceRoot || candidate.startsWith(deps.workspaceRoot + path.sep);
@@ -172,6 +170,10 @@ export async function resolveProjectKey(
       /* fall through */
     }
   }
+  const byName = projects.find(
+    (project) => project.name === key && fs.existsSync(project.rootPath)
+  );
+  if (byName) return { rootPath: byName.rootPath, name: byName.name };
   return null;
 }
 

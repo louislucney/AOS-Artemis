@@ -1,7 +1,7 @@
 import { bridgeState } from "../figma/bridge.js";
 import { childLogFilePath, logFilePath } from "../log.js";
 import type { Runtime } from "../runtime.js";
-import { errorMessage } from "../util.js";
+import { errorMessage, log } from "../util.js";
 
 /** 总览面板深探层（overview-panel T6，DESIGN §13.104）：显式动作触发，懒建 Runtime
  * 后仅取**纯读子集**（不拉起 artemis 子进程、不触网打外部 API）；iOS 环境检测
@@ -94,7 +94,8 @@ export function createPanelDeepProbe(deps: {
       let runtime: Runtime | null;
       try {
         runtime = await deps.createRuntime(rootPath);
-      } catch {
+      } catch (error) {
+        log(`面板深探失败（${rootPath}）: ${errorMessage(error)}`);
         return null;
       }
       if (runtime === null) return null;
@@ -161,7 +162,8 @@ export function createPanelDeepProbe(deps: {
           },
           iosProbe
         };
-      } catch {
+      } catch (error) {
+        log(`面板深探读取失败（${rootPath}）: ${errorMessage(error)}`);
         return null;
       }
     }

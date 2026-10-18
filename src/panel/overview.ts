@@ -25,7 +25,7 @@ import {
   type RunManifestRead
 } from "../figma/run-manifest.js";
 import { jiraConfigFrom, type ResolvedJiraConfig } from "../jira/config.js";
-import { entriesFromConfig, entryFromStore, entryIssues } from "../llm/registry.js";
+import { entriesFromConfig, entryFromStore, entryIssues, withEnvKeyFallback } from "../llm/registry.js";
 import { scanProjectEnv, type EnvScanResult } from "../projects/scan.js";
 import { detectProjectStacks } from "../projects/stack.js";
 import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
@@ -454,7 +454,9 @@ async function softReadProject(deps: PanelDeps, rootPath: string): Promise<SoftP
   const storeEntries = await safeStore(() => deps.store.listLlms(rootPath), [] as ProjectLlmRecord[]);
   const configEntries = entriesFromConfig(project.config, project.resolver);
 
-  const storeUsable = storeEntries.some((record) => entryIssues(entryFromStore(record)).length === 0);
+  const storeUsable = storeEntries.some(
+    (record) => entryIssues(withEnvKeyFallback(entryFromStore(record), project.resolver)).length === 0
+  );
   const configUsable = configEntries.some((entry) => entryIssues(entry).length === 0);
   const envUsable = scan.llm?.complete === true;
   const llmUsable = storeUsable || configUsable || envUsable;
@@ -463,7 +465,11 @@ async function softReadProject(deps: PanelDeps, rootPath: string): Promise<SoftP
   if (!llmUsable) {
     if (scan.llm) missing.push(...scan.llm.missing);
     for (const record of storeEntries) {
-      missing.push(...entryIssues(entryFromStore(record)).map((issue) => `${record.name}: ${issue}`));
+      missing.push(
+        ...entryIssues(withEnvKeyFallback(entryFromStore(record), project.resolver)).map(
+          (issue) => `${record.name}: ${issue}`
+        )
+      );
     }
     for (const entry of configEntries) {
       missing.push(...entryIssues(entry).map((issue) => `${entry.name}: ${issue}`));

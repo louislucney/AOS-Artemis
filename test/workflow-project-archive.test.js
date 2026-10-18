@@ -425,7 +425,7 @@ test("project_archive: 内存 store 降级 → degraded 明示且数据不丢", 
   );
   assert.equal(payload.caseSets.total, 1);
   assert.deepEqual(payload.degraded, [
-    "登记读自内存存储（PostgreSQL 不可用），用例库/裁决数据可能不完整"
+    "登记读自会话内存（未配置持久台账），用例库/裁决数据可能不完整"
   ]);
 });
 

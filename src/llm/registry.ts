@@ -1,4 +1,4 @@
-import type { AosConfig, ProviderId } from "../config/types.js";
+import type { AosConfig, LlmProfile, ProviderId } from "../config/types.js";
 import { apiKeyEnvFor, type ValueResolver } from "../config/validate.js";
 import type { ProjectLlmRecord } from "../db/types.js";
 import type { EnvScanResult } from "../projects/scan.js";
@@ -91,4 +91,19 @@ export function entryIssues(entry: LlmEntry): string[] {
   if (!entry.apiKey) issues.push("缺少 api_key");
   if (entry.provider !== "google" && !entry.baseUrl) issues.push("缺少 base_url");
   return issues;
+}
+
+/** store 条目凭据为空（文件台账快照剥离 apiKey）时，按 provider 约定从项目 .env / 进程 env 回填。 */
+export function withEnvKeyFallback(entry: LlmEntry, resolver: ValueResolver): LlmEntry {
+  if (entry.apiKey || entry.source !== "store") return entry;
+  const candidates: string[] = [];
+  if (entry.provider !== "custom") {
+    candidates.push(apiKeyEnvFor({ provider: entry.provider } as LlmProfile));
+  }
+  candidates.push("AOS_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY");
+  for (const name of candidates) {
+    const hit = resolver.getValue(name);
+    if (hit.value) return { ...entry, apiKey: hit.value, keyEnvName: name };
+  }
+  return entry;
 }

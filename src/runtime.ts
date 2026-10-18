@@ -60,6 +60,7 @@ import {
   entryFromStore,
   entryIssues,
   mergeEntries,
+  withEnvKeyFallback,
   type LlmEntry
 } from "./llm/registry.js";
 import {
@@ -420,7 +421,10 @@ export class Runtime {
     );
     const configEntries = entriesFromConfig(this.project.config, this.project.resolver);
     const envEntry = entryFromEnvScan(this.scanResult);
-    return mergeEntries(records.map(entryFromStore), configEntries, envEntry ? [envEntry] : []);
+    const storeEntries = records.map((record) =>
+      withEnvKeyFallback(entryFromStore(record), this.project.resolver)
+    );
+    return mergeEntries(storeEntries, configEntries, envEntry ? [envEntry] : []);
   }
 
   async activeEntry(): Promise<LlmEntry | null> {
