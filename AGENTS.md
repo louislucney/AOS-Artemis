@@ -16,6 +16,12 @@ AOS × ARTEMIS 合并 MCP 服务：Figma 设计上下文（内嵌 design-context
 - 关键模块位：iOS 设备解析 `src/device/ios-facade.ts`、观察统一 `src/ios/observation.ts`、执行器门面 `src/ios/task-runner.ts`（实现 `tool-entry`/`run-loop`/`step-observe` 等）；任务台账 `src/tasks/ledger.ts`；子进程生命周期 `src/artemis/child-supervisor.ts`；套件执行 `src/figma/case-runner.ts` 与资源单一读取 `src/figma/design-store.ts`；原生工具域 `src/tools/native-tools/`（新增工具按域放置，无需改 server）；stdio/HTTP 共享引导 `src/runtime-host.ts`。
 - `src/vendor/design-context-bridge/` — 内嵌的 MIT 上游代码。可打补丁，但每处补丁必须带 `PATCH (aos-mcp)` 注释并同步更新同目录 `NOTICE`；lint 已忽略该目录。
 - `artemis/`、`design-context-bridge/` — **git submodule**（上游 `google/artemis`、`CristinaFores/design-context-bridge`）。克隆需 `git clone --recurse-submodules` 或事后 `git submodule update --init --recursive`。`artemis` 仅作为 Python 子进程依赖（`python -m mcp_server`），避免不必要的改动；其 venv 由 `doctor --install-deps`/依赖包机制处理（或 `cd artemis && uv sync`）。
+- **Submodule 更新流程（上游动了才做；先核验、后更新、dcb 必须重同步内嵌副本）**：
+  1. 核验：`git -C artemis ls-remote origin refs/heads/main`、`git -C design-context-bridge ls-remote origin refs/heads/main` 与各自本地 `git rev-parse HEAD` 比对；同 SHA 即无事可做（远端其余分支多为 dependabot 依赖升级分支，不跟）。
+  2. 更新：`git submodule update --remote artemis design-context-bridge`（跟随上游默认分支）；父仓库提交两个新 pin。
+  3. `artemis` 更新后：`artemis/uv.lock` 有变则 `node dist/cli.js doctor --install-deps`；随后 `doctor`＋**全量 `npm test`** 验证（Python 子进程接口以 `doctor` 的 `mcp_server 模块可导入` 为准）。
+  4. `design-context-bridge` 更新后**必须重同步 `src/vendor/design-context-bridge/`**：对旧 pin..新 pin 仅取 `src/core`、`src/figma-bridge`、`src/figma-rest`、`src/mcp-server/tools` 范围的 `git diff` → 应用到内嵌副本 → **重打全部补丁**（`grep -rn "PATCH (aos-mcp)" src/vendor/design-context-bridge` 逐处对照）→ 更新同目录 `NOTICE`（`Vendored: commit <新sha>`＋修改清单）→ 全量 `npm test`。
+  5. 一致性抽查（差异只应来自 NOTICE 记录的补丁与应删文件）：`for d in core figma-bridge figma-rest mcp-server; do diff -rq "src/vendor/design-context-bridge/$d" "design-context-bridge/src/$d"; done`。
 - `.artemis/`（生成的 `artemis.jsonc` 项目配置与 state）、`dist/`（构建产物）。
 
 ## 常用命令
