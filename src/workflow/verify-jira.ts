@@ -393,6 +393,7 @@ export async function verifyJiraIssue(
     passed += report.passed;
     failed += report.failed;
   }
+  runEntry.ms = Date.now() - execStartedAt;
 
   const conclusion: Conclusion =
     strongFailed > 0 ? "failed" : strongTotal === 0 ? "inconclusive" : weakFailed > 0 ? "inconclusive" : "passed";
@@ -470,8 +471,6 @@ export async function verifyJiraIssue(
     }
     if (writebackErrors.length > 0) writeback.errors = writebackErrors;
   }
-
-  runEntry.ms = Date.now() - execStartedAt;
 
   return jsonResult({
     ok: true,

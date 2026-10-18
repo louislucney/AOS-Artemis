@@ -214,6 +214,7 @@ test("verify_jira_issue: description pins the jira-verification protocol (no dri
       "弱断言仅记录路径，不代表验证通过",
       "AOS-VERIFY",
       "dryRun",
+      "dryRun 零写回（不产生任何外部副作用；读单/评论读取不变）",
       "needs-setup",
       "needs-info",
       "回显"

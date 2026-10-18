@@ -577,6 +577,30 @@ test("verify_jira_issue: 非法 issueKey → isError 用法错误（未请求 is
   assert.equal(jira.calls.getIssue.length, 0);
 });
 
+test("verify_jira_issue: run 步 ms 在执行完成时回填（不含回写耗时）", async () => {
+  const dir = tempDir();
+  const casesFile = writeCasesFile(dir, "账户.json", [{ id: "c1", name: "错误密码" }]);
+  const { deps } = makeDeps(dir, {
+    sets: [record("figma:x", [featureRecord(casesFile, { caseCount: 1 })])],
+    mappingReply: '{"caseIds":["c1"]}',
+    report: reportStub({
+      total: 1,
+      executed: 1,
+      passed: 0,
+      failed: 1,
+      cases: [caseStub("c1", { status: "failed", traceId: "t1" })]
+    })
+  });
+  deps.postEvidence = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return { ok: true, commentId: "900" };
+  };
+  const payload = payloadOf(await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1" }, deps));
+  const runStep = payload.steps.find((entry) => entry.step === "run");
+  assert.equal(typeof runStep.ms, "number");
+  assert.ok(runStep.ms < 40, `run.ms 不应包含回写耗时（实际 ${runStep.ms}ms）`);
+});
+
 test("verify_jira_issue: 候选用例文件不可读 → 跳过＋日志（不阻断）", async () => {
   const dir = tempDir();
   const goodFile = writeCasesFile(dir, "账户.json", [{ id: "c1", name: "错误密码" }]);

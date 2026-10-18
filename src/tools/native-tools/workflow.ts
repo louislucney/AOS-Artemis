@@ -79,7 +79,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "verify_jira_issue",
     description:
-      "Jira 验证一条龙：用户给出 Jira 单号（issueKey，如 AOS-123 或 browse URL）并要求验证/复验该单时优先用它——读单分档 → 用例库映射或单子即用例 → 执行 → 聚合 → 回写。详细单优先做用例库映射（LLM 辅助但约束只能从清单中选或答没有；库空/无匹配时按单子步骤直接合成「单子即用例」执行并注明来源）；粗单（一句话/无步骤/无预期）返回 needs-info 先问（功能页面、触发条件、期望结果）。执行前回显将跑的用例（数量＋来源＋设备）并写服务日志。聚合口径：任一强断言失败→FAIL；全弱/全探索→无法判定（弱断言仅记录路径，不代表验证通过，评论披露构成）；quarantine 失败不计门禁。回写（外部副作用，默认执行）：失败证据评论/附件幂等＋结论评论同单复用（marker AOS-VERIFY:<单号>，显式标注自动验证）；不自动写 verdict，只写 jira_issue_key 关联；dryRun 不回写（零写回、不产生任何外部副作用；读单/评论读取不变，响应含结论预览）。前置：Jira 凭证＋LLM 连通性＋在线设备——缺→needs-setup、多台未指定→needs-info（均非 isError 结构化指引，先问不猜）；scope 给定时覆盖映射（按关键词选用例库最新份，不调 LLM）；device 缺省自动盘点。单步失败返回 failedStep/detail/suggestions。",
+      "Jira 验证一条龙：用户给出 Jira 单号（issueKey，如 AOS-123 或 browse URL）并要求验证/复验该单时优先用它——读单分档 → 用例库映射或单子即用例 → 执行 → 聚合 → 回写。详细单优先做用例库映射（LLM 辅助但约束只能从清单中选或答没有；库空/无匹配时按单子步骤直接合成「单子即用例」执行并注明来源）；粗单（一句话/无步骤/无预期）返回 needs-info 先问（功能页面、触发条件、期望结果）。执行前回显将跑的用例（数量＋来源＋设备）并写服务日志。聚合口径：任一强断言失败→FAIL；全弱/全探索→无法判定（弱断言仅记录路径，不代表验证通过，评论披露构成）；quarantine 失败不计门禁。回写（外部副作用，默认执行）：失败证据评论/附件幂等＋结论评论同单复用（marker AOS-VERIFY:<单号>，显式标注自动验证）；不自动写 verdict，只写 jira_issue_key 关联；dryRun 零写回（不产生任何外部副作用；读单/评论读取不变）；响应含结论预览。前置：Jira 凭证＋LLM 连通性＋在线设备——缺→needs-setup、多台未指定→needs-info（均非 isError 结构化指引，先问不猜）；scope 给定时覆盖映射（按关键词选用例库最新份，不调 LLM）；device 缺省自动盘点。单步失败返回 failedStep/detail/suggestions。",
     schema: z.object({
       issueKey: z.string().describe("Jira 单号（如 AOS-123）或 browse URL；必填"),
       device: z.string().optional().describe("目标设备 serial / UDID；缺省自动盘点（多于一台先问）"),
