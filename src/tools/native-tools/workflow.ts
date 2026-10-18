@@ -94,7 +94,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "project_archive",
     description:
-      "项目档案（只读摘要面）：汇总 项目与栈 / 设计血统（flows 来源/落盘时间/屏边数/provenance 构成）/ 用例库（每功能最新份与导入自/生成自来源）/ 最近运行（近 10 批清单：gate/通过率/失败域）/ 裁决与 Jira 关联摘要 / 前置状态（figma/pen/jira/llm 就绪，masked 预览）。只读铁律：不触网、无子进程、不写盘；前置项仅静态存在性并显式「未复核」（真实复核在各流程工具首步）。缺数据如实降级：PostgreSQL 不可用（登记读自内存）/flows.json 不可解析/清单坏件等以 degraded[] 标注，恒返回 ok:true（非 isError）。无参数。",
+      "项目档案（只读摘要面）：汇总 项目与栈 / 设计血统（flows 来源/落盘时间/屏边数/provenance 构成）/ 用例库（每功能最新份与导入自/生成自来源）/ 最近运行（近 10 批清单：gate/通过率/失败域）/ 裁决与 Jira 关联摘要 / 前置状态（figma/pen/jira/llm 就绪，masked 预览）。只读铁律：不触网、无子进程、不写盘；前置项仅静态存在性并显式「未复核」（真实复核在各流程工具首步）。缺数据如实标注：未配置持久台账（登记读自会话内存）/flows.json 不可解析/清单坏件等以 degraded[] 标注，恒返回 ok:true（非 isError）。无参数。",
     schema: z.object({}),
     handler: (runtime) => projectArchive(runtime)
   }

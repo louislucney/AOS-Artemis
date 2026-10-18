@@ -108,6 +108,8 @@ MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/mobile-
 若本机没有 PostgreSQL：`brew install postgresql@17 && brew services start postgresql@17`（默认 5432；被占用时可在 `/opt/homebrew/var/postgresql@17/postgresql.conf` 改 `port`）。
 切换实例只需替换 `MOBILE_TESTING_DATABASE_URL`（表结构首次连接自动创建）。
 
+> **缺省即持久**：未配置 `MOBILE_TESTING_DATABASE_URL` 时，台账落**项目文件台账**（`.artemis/ledger/`：state.json/usage.jsonl/audit.jsonl/journal.jsonl，随项目保留、重启不丢）；PostgreSQL 用于集中跨进程/跨项目查询。runner 与定时回归仍需中心 PG（文件台账不支持多进程）；仅文件台账目录不可写才退回会话内存（doctor/aos_status 会如实标注）。
+
 ## HTTP 模式（远程/多项目）
 
 ```bash
@@ -164,6 +166,15 @@ node dist/cli.js usage --all                  # 跨项目总览（含合计）
 node dist/cli.js usage --project <名称> --days 30
 node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:8766（端口占用 exit 2）
 ```
+
+### 记录导出（export）
+
+```bash
+node dist/cli.js export --what results|process|data [--format json|csv] \
+  [--project <dir>] [--out <file>] [--since <ISO>] [--limit <n>]
+```
+
+三口径：**results**（测试结果：批次/裁决/单号）、**process**（测试过程：审计事件/回归任务/计划/执行机）、**data**（测试用的数据：用例集/任务统计/产物索引）；缺省打印到 stdout，`--out` 写文件；exit 0/2。
 
 - Web 看板：`usage --web` 提供 `GET /usage`（HTML）与 `GET /usage.json`（同源 JSON）；HTTP 模式下跟随服务器绑定自动挂载同一路由（纳入 `AOS_HTTP_TOKEN` 闸门；见「鉴权」段），`AOS_USAGE_WEB=0` 关闭页面。v1 纯只读、无处置标记；独立 `usage --web` CLI 看板为 loopback 只读、暂不带鉴权（另立小票）。
 - 环境变量（进程/客户端 env，不读项目 `.env`）：`AOS_USAGE=0` 关闭采集（历史数据仍可查询与展示）、`AOS_USAGE_RETENTION_DAYS`（保留天数，默认 90，0 不清理）、`AOS_USAGE_MAX_EVENTS`（每项目事件上限，默认 50000，超出丢最旧）、`AOS_USAGE_WEB=0`（关闭 `/usage` 与 `/usage.json` 路由）。

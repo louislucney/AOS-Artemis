@@ -159,7 +159,7 @@ export async function aosConfigure(runtime: Runtime, args: ConfigureArgs): Promi
     });
     stored = true;
   } catch (error) {
-    warnings.push(`存储写入失败（${errorMessage(error)}）：条目将依赖 .env 与会话内存。`);
+    warnings.push(`存储写入失败（${errorMessage(error)}）：条目将依赖 .env 与文件台账。`);
   }
 
   let envPath: string | null = null;

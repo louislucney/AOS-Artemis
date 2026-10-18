@@ -192,7 +192,7 @@ test("panel overview: 工作区目录并入项目集合（未注册行）", asyn
   assert.equal(row.diskReachable, true);
 });
 
-test("panel overview: 内存存储降级标注（黄灯）", async () => {
+test("panel overview: 会话内存标注（黄灯）", async () => {
   const store = new MemoryStore();
   const repo = makeReadyRepo();
   const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
@@ -202,7 +202,7 @@ test("panel overview: 内存存储降级标注（黄灯）", async () => {
   assert.equal(view.store.degraded, true);
   const row = view.projects[0];
   assert.equal(row.lamp, "yellow");
-  assert.ok(row.lampReasons.some((reason) => reason.includes("存储降级")));
+  assert.ok(row.lampReasons.some((reason) => reason.includes("会话内存")));
 });
 
 test("panel detail: 批次清单权威 + 独立运行过滤 + outcome 映射", async () => {

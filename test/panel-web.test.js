@@ -147,14 +147,14 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   assert.equal(payload.projects.length, 1);
   assert.equal(payload.projects[0].name, "demo");
   assert.equal(payload.projects[0].lamp, "yellow");
-  assert.ok(payload.projects[0].lampReasons.some((reason) => reason.includes("存储降级")));
+  assert.ok(payload.projects[0].lampReasons.some((reason) => reason.includes("会话内存")));
 
   const html = await handlePanelRequest(new URL("http://x/panel"), deps);
   assert.equal(html.status, 200);
   assert.match(html.contentType, /text\/html/);
   assert.match(html.body, /多项目总览/);
   assert.match(html.body, /lamp-yellow/);
-  assert.match(html.body, /存储：内存降级/);
+  assert.match(html.body, /存储：会话内存/);
   assert.match(html.body, /demo/);
 });
 

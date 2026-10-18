@@ -52,7 +52,7 @@ test("refreshModels: retired model is auto-repaired to the vendor alias", async 
     from: "deepseek-v4-flash",
     to: "deepseek-flash",
     reason: "alias",
-    sources: ["内存存储", "项目 .env", ".artemis/artemis.jsonc"]
+    sources: ["会话内存", "项目 .env", ".artemis/artemis.jsonc"]
   });
 
   const entries = await runtime.entries();

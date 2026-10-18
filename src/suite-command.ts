@@ -453,7 +453,7 @@ async function suiteRunTask(
       say(
         `[${platform}] ${ref.featureName}: pass ${report.passed}/${report.total} · 修复${comparison.fixed} 回归${comparison.regressed}` +
           (comparison.baseline === "established" ? "（基准建立）" : "") +
-          (runId ? ` · run ${runId}` : " · 登记降级")
+          (runId ? ` · run ${runId}` : " · 未登记")
       );
     }
   }

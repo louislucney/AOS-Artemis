@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { loadProject } from "./config/loader.js";
 import { createProjectStore, type CreateStoreResult } from "./db/index.js";
+import { storeKindShortLabel } from "./db/labels.js";
 import type { ProjectRecord, ProjectStore, UsageEventQuery, UsageEventRecord } from "./db/types.js";
 import {
   usageSignals,
@@ -76,7 +77,7 @@ const DEFAULT_WEB_PORT = 8766;
 const DEFAULT_WEB_HOST = "127.0.0.1";
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 const CLI_MEMORY_NOTE =
-  "独立 CLI 进程无法读取其他进程的内存事件（通常为空结果）；配置 MOBILE_TESTING_DATABASE_URL 后可跨进程查询。";
+  "会话内存仅当前进程可见（重启即空）；配置 MOBILE_TESTING_DATABASE_URL 或使用文件台账（.artemis/ledger）可跨进程查询。";
 
 export function printUsageCommand(log: (line: string) => void): void {
   log(`aos-mcp usage — 使用统计（调用事件）
@@ -142,6 +143,9 @@ function normalizeCatalog(catalog: readonly string[]): string[] {
 function storageView(kind: "postgres" | "file" | "memory", reason: string | null): StorageView {
   if (kind === "postgres") return { kind, degraded: false, note: null };
   const trimmed = reason?.trim();
+  if (kind === "file") {
+    return { kind, degraded: false, note: trimmed ? trimmed : null };
+  }
   return {
     kind,
     degraded: true,
@@ -150,7 +154,7 @@ function storageView(kind: "postgres" | "file" | "memory", reason: string | null
 }
 
 function storageLabel(kind: "postgres" | "file" | "memory"): string {
-  return kind === "postgres" ? "PostgreSQL" : "内存降级";
+  return storeKindShortLabel(kind);
 }
 
 function formatPercent(rate: number): string {

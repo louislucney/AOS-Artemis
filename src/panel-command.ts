@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path";
 
 import { createProjectStore, type CreateStoreResult } from "./db/index.js";
+import { storeKindShortLabel } from "./db/labels.js";
 import type { ProjectStore } from "./db/types.js";
 import {
   createPanelWebCache,
@@ -117,7 +118,7 @@ Usage:
   aos-mcp panel help
 
 说明：独立 CLI 进程无跨项目 Runtime（深探层不可用）；跨项目数据来自
-MOBILE_TESTING_DATABASE_URL（缺省降级内存，只显示当前进程可见项目）。
+MOBILE_TESTING_DATABASE_URL（未配置时使用项目文件台账，跨项目以工作区扫描为准）。
 
 exit codes: 0 成功；2 参数错误或端口被占用`);
 }
@@ -210,7 +211,7 @@ async function runPanelWeb(options: {
   options.log(`总览面板已启动: ${url}`);
   options.log(`JSON: http://${host}:${actualPort}/panel.json`);
   options.log(
-    `存储: ${store.kind === "postgres" ? "PostgreSQL" : "内存降级"}${
+    `存储: ${storeKindShortLabel(store.kind)}${
       options.storageNote ? ` — ${options.storageNote}` : ""
     }`
   );

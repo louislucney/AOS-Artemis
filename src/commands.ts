@@ -319,11 +319,10 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
   // 3. PostgreSQL
   const dbUrl = env.MOBILE_TESTING_DATABASE_URL?.trim();
   if (!dbUrl) {
-    degraded = true;
     lines.push({
-      icon: "WARN",
-      title: "未配置 MOBILE_TESTING_DATABASE_URL（降级为会话内存存储）",
-      details: ["Guidance: 在 MCP 客户端配置的 env 中提供 PostgreSQL 连接串。"]
+      icon: "OK",
+      title: "未配置 MOBILE_TESTING_DATABASE_URL：使用项目文件台账（.artemis/ledger，随项目持久）",
+      details: ["可选：配置连接串以集中跨进程/跨项目查询。"]
     });
   } else {
     const { store, degraded: dbDegraded, reason } = await createProjectStore();

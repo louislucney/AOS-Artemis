@@ -16,6 +16,7 @@ import {
 } from "./aggregate.js";
 import { USAGE_DISABLED_NOTE, usageEnabledFrom, usageEventSampleLimit } from "./capture.js";
 import { escapeHtml } from "../util.js";
+import { storeKindShortLabel } from "../db/labels.js";
 
 export interface UsageWebDeps {
   store: ProjectStore;
@@ -98,7 +99,7 @@ export interface UsageWebView {
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 const HTML_CONTENT_TYPE = "text/html; charset=utf-8";
 const MAX_REFRESH_SECONDS = 86_400;
-const DEFAULT_MEMORY_NOTE = "内存降级：数据仅当前进程内有效，重启后丢失。";
+const DEFAULT_MEMORY_NOTE = "会话内存：数据仅当前进程内有效，重启后丢失。";
 
 const PAGE_CSS = [
   ":root{color-scheme:light dark}",
@@ -367,8 +368,8 @@ function renderSwitcher(view: UsageWebView): string {
 }
 
 function renderBadges(view: UsageWebView): string {
-  const storageLabel = view.store.kind === "postgres" ? "PostgreSQL" : "内存降级";
-  const storageClass = view.store.kind === "postgres" ? "badge" : "badge warn";
+  const storageLabel = storeKindShortLabel(view.store.kind);
+  const storageClass = view.store.kind === "memory" ? "badge warn" : "badge";
   const usageLabel = view.usage.enabled ? "采集已开启" : "采集已关闭（AOS_USAGE=0）";
   const usageClass = view.usage.enabled ? "badge" : "badge warn";
   const parts = [

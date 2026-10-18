@@ -141,7 +141,7 @@ test("http server: usage dashboard over real HTTP", async () => {
     assert.match(htmlBody, /信号面板/);
     assert.match(htmlBody, /事件流水/);
     assert.match(htmlBody, /llm_list/);
-    assert.match(htmlBody, /内存降级/);
+    assert.match(htmlBody, /文件台账/);
 
     const json = await fetch(`http://127.0.0.1:${handle.port}/usage.json`);
     assert.equal(json.status, 200);

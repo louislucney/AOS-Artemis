@@ -6,6 +6,7 @@ import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
+import { storeKindLabel } from "../db/labels.js";
 import {
   buildPanelBatchDetail,
   buildPanelOverview,
@@ -371,8 +372,10 @@ function renderLatestBatchCell(row: PanelProjectRow): string {
 
 function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
   const store = view.store.degraded
-    ? `<span class="badge warn" data-storage="memory">存储：内存降级</span>`
-    : `<span class="badge" data-storage="postgres">存储：PostgreSQL</span>`;
+    ? `<span class="badge warn" data-storage="memory">存储：会话内存</span>`
+    : view.store.kind === "file"
+      ? `<span class="badge" data-storage="file">存储：文件台账</span>`
+      : `<span class="badge" data-storage="postgres">存储：PostgreSQL</span>`;
   const rows = view.projects.map((row) => [
     `<a href="${escapeHtml(projectHref(row.rootPath))}"><code>${escapeHtml(row.name)}</code></a>`,
     renderProjectCell(row),
@@ -565,7 +568,7 @@ function renderDeepSection(detail: PanelProjectDetail): string {
     [
       "存储",
       escapeHtml(
-        `${deep.store.kind}${deep.store.degraded ? "（降级）" : ""}${
+        `${storeKindLabel(deep.store.kind)}${
           deep.store.note ? ` · ${deep.store.note}` : ""
         }`
       )

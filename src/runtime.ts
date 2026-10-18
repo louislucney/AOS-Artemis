@@ -41,6 +41,7 @@ import type { CrashCollectorLike, CrashScanReport, CrashScanResult } from "./cra
 import { jiraConfigFrom, type ResolvedJiraConfig } from "./jira/config.js";
 import { detectAppium, type AppiumDetection } from "./ios/appium/detect.js";
 import { IosWdaService } from "./ios/appium/service.js";
+import { storeKindShortLabel } from "./db/labels.js";
 import { MemoryStore } from "./db/memory.js";
 import { TERMINAL_TASK_STATUSES } from "./db/types.js";
 import type {
@@ -1090,7 +1091,7 @@ export class Runtime {
         }),
       null
     );
-    if (stored) sources.push(this.store.kind === "postgres" ? "PostgreSQL" : "内存存储");
+    if (stored) sources.push(storeKindShortLabel(this.store.kind));
 
     const dotenv = this.project.resolver.getDotenv();
     if (this.scanResult.llm?.model === entry.model && dotenv[ENV_LLM_MODEL] !== undefined) {

@@ -15,7 +15,7 @@ import { provenanceOf } from "./case-selection.js";
 import { staticReadiness } from "./readiness.js";
 
 /** `project_archive`（统一服务 ④）：只读摘要——不触网、不跑子进程、不写盘；
- * 恒 `ok:true`，缺口以 `degraded[]` 如实标注（含 PG 不可用时的内存 store 静默降级）。 */
+ * 恒 `ok:true`，缺口以 `degraded[]` 如实标注（含未配置持久台账时的会话内存回退）。 */
 
 export const ARCHIVE_RUNS_LIMIT = 10;
 export const ARCHIVE_CASE_SETS_LIMIT = 200;

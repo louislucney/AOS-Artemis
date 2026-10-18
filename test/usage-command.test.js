@@ -77,8 +77,8 @@ test("usage: default text summary shows overview, tools, zero-call and signals",
   assert.equal(code, 0);
   assert.deepEqual(errors, []);
   assert.ok(logs.some((line) => line.startsWith("使用统计 · alpha")));
-  assert.ok(logs.some((line) => line.startsWith("存储: 内存降级")));
-  assert.ok(logs.some((line) => line.includes("独立 CLI 进程无法读取其他进程的内存事件")));
+  assert.ok(logs.some((line) => line.startsWith("存储: 会话内存")));
+  assert.ok(logs.some((line) => line.includes("会话内存仅当前进程可见")));
   assert.ok(
     logs.some(
       (line) =>
@@ -203,7 +203,7 @@ test("usage: createStore fallback surfaces the degraded storage note", async () 
   const payload = JSON.parse(logs.at(-1));
   assert.equal(payload.store.degraded, true);
   assert.ok(payload.store.note.startsWith("未配置 MOBILE_TESTING_DATABASE_URL："));
-  assert.ok(payload.store.note.includes("独立 CLI 进程无法读取其他进程的内存事件"));
+  assert.ok(payload.store.note.includes("会话内存仅当前进程可见"));
 });
 
 test("usage --web: serves /usage on an ephemeral port and closes cleanly", async () => {

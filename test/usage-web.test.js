@@ -59,7 +59,7 @@ function deps(store, extra = {}) {
   return {
     store,
     catalog: CATALOG,
-    storageNote: "PostgreSQL 不可用，已降级为内存存储。",
+    storageNote: "PostgreSQL 不可用，会话数据仅当前进程可见。",
     env: {},
     now: NOW,
     ...extra
@@ -90,8 +90,8 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.ok(body.includes("工具表"));
   assert.ok(body.includes("信号面板"));
   assert.ok(body.includes("事件流水"));
-  assert.ok(body.includes("存储：内存降级"));
-  assert.ok(body.includes("PostgreSQL 不可用，已降级为内存存储。"));
+  assert.ok(body.includes("存储：会话内存"));
+  assert.ok(body.includes("PostgreSQL 不可用，会话数据仅当前进程可见。"));
   assert.ok(body.includes('<option value="/w/alpha" selected>alpha</option>'));
   assert.ok(body.includes('<option value="/w/beta">beta</option>'));
   assert.ok(body.includes('data-tool="llm_list"'));
@@ -110,7 +110,7 @@ test("usage web: /usage.json exposes the stable machine-readable contract", asyn
   assert.deepEqual(payload.usage, { enabled: true, storage: "memory", note: null });
   assert.equal(payload.store.kind, "memory");
   assert.equal(payload.store.degraded, true);
-  assert.equal(payload.store.note, "PostgreSQL 不可用，已降级为内存存储。");
+  assert.equal(payload.store.note, "PostgreSQL 不可用，会话数据仅当前进程可见。");
   assert.deepEqual(payload.filters, {
     project: "alpha",
     projectRoot: "/w/alpha",
@@ -267,8 +267,8 @@ test("usage web: empty store and project without events render empty states", as
   assert.equal(html.status, 200);
   assert.ok(html.body.includes("暂无已注册项目"));
   assert.ok(html.body.includes("暂无事件"));
-  assert.ok(html.body.includes("存储：内存降级"));
-  assert.ok(html.body.includes("内存降级：数据仅当前进程内有效，重启后丢失。"));
+  assert.ok(html.body.includes("存储：会话内存"));
+  assert.ok(html.body.includes("会话内存：数据仅当前进程内有效，重启后丢失。"));
 
   const payload = await getJson(empty, "/usage.json");
   assert.equal(payload.project, null);

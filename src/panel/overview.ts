@@ -660,7 +660,7 @@ async function buildProjectRow(
       if (artifacts.testsJson.present && (!artifacts.testsXlsx.present || artifacts.xlsxStale)) {
         reasons.push("三件套不齐：tests.xlsx 缺失或陈旧");
       }
-      if (input.storeDegraded) reasons.push("存储降级（内存）：数据仅当前进程有效");
+      if (input.storeDegraded) reasons.push("会话内存：数据仅当前进程有效（未配置持久台账）");
       if (input.host.buildStale === true) reasons.push("构建陈旧（dist 较进程新）：重启客户端会话");
       if (reasons.length > 0) lamp = "yellow";
     }
