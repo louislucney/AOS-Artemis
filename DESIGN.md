@@ -1750,4 +1750,5 @@ llm_switch(name, force):
 > - **收尾**：`scripts/console-fixtures.mjs` 生成 7 页 fixtures → **impeccable detect 0 anti-patterns**（修 h1→h3 跳级、遗留对比度、hover 色）；a11y 结构测试（唯一 h1/表格语义/焦点/刷新纪律）。
 > - 测试新增 ~30（shell/components/dispatch/pages/a11y/guard-upload/console-actions）；全量 **1597 绿**。
 > - 未做（留档）：暗色主题；usage 独立进程并入主导航（暂用子集）；impeccable critique/polish 未跑；分页与导出落盘（大项目）。
+> - **评审修复轮（c510554）**：C1 下发页份名转义（`rows` 通道存储型 XSS，回归测试锁）；C2 独立进程动作门改**显式 `AOS_PANEL_ACTIONS=1`**（与 README/DESIGN 文档对齐，测试锁）；I2 守卫补 **Origin↔Host 一致性**（无 Sec-Fetch-Site 的老浏览器跨站拒）；I1 部分接线：**下发向导「确认派发」**与**任务「释放重跑」**已走同源 fetch（带确认/`X-AOS-Console` 头/成功跳转；关键词模式按匹配份展开 refs）；计划/隔离/导入的表单提交留 CLI/API 指引（明示不承诺）；I4 项目页去掉整页刷新（刷新纪律，含表单页零刷新，测试翻转）；I5 遗留 `renderTable` 补 `scope="col"`、`page()` 去嵌套 `<main>`、usage 遗留灰与警示色 AA 修正；M2 上传临时文件名改**内容哈希**（导入溯源与同内容幂等）、M4 隔离/导入成功清缓存。detect 保持 **0**；全量 **1600 绿**。
 > - 未做（留档/后续任务）：内部编排审计接线（T4）、产物索引（T5）、三口径导出（T6）、全表面文案整改（T7）。
