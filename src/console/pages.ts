@@ -126,6 +126,26 @@ export function renderArchivePage(data: ArchivePageData): string {
     ];
   });
   const q = (name: string): string => escapeHtml(data.query[name] ?? "");
+  const archiveLink = (patch: Record<string, string | null>): string => {
+    const params = new URLSearchParams({ project: data.rootPath, section: "archive" });
+    for (const key of ["kind", "q", "since"]) {
+      const value = data.query[key];
+      if (value !== undefined && value !== "") params.set(key, value);
+    }
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+    }
+    return escapeHtml(`/panel?${params.toString()}`);
+  };
+  const preset = (label: string, hours: number): string =>
+    `<a class="c-button" href="${archiveLink({ since: new Date(Date.now() - hours * 3600_000).toISOString() })}">${label}</a>`;
+  const csvParams = new URLSearchParams({ project: data.rootPath, format: "csv" });
+  for (const key of ["kind", "q", "since"]) {
+    const value = data.query[key];
+    if (value !== undefined && value !== "") csvParams.set(key, value);
+  }
+  const csvHref = escapeHtml(`/panel/artifact?${csvParams.toString()}`);
   return renderConsoleShell({
     title: "档案与产物",
     active: "archive",
@@ -145,7 +165,8 @@ export function renderArchivePage(data: ArchivePageData): string {
               (kind) =>
                 `<option value="${kind}"${data.query.kind === kind ? " selected" : ""}>${kind}</option>`
             )
-            .join("")}</select> 关键词 <input type="text" name="q" aria-label="产物关键词" value="${q("q")}" placeholder="文件名/路径"> <button class="c-button" type="submit">筛选</button></p>`,
+            .join("")}</select> 关键词 <input type="text" name="q" aria-label="产物关键词" value="${q("q")}" placeholder="文件名/路径"> 起自 <input type="text" name="since" aria-label="起始时间（ISO）" value="${q("since")}" size="20" placeholder="ISO 时间"> <button class="c-button" type="submit">筛选</button></p>`,
+          `<p>时间预设：${preset("近 24 小时", 24)} ${preset("近 7 天", 168)} ${preset("近 30 天", 720)} <a class="c-button" href="${csvHref}">导出索引 CSV</a></p>`,
           "</form>"
         ].join("\n")
       }),

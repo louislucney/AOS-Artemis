@@ -14,6 +14,7 @@ import {
   type UsageSignals,
   type UsageSummary
 } from "./aggregate.js";
+import { cBadge, cStat } from "../console/components.js";
 import { USAGE_DISABLED_NOTE, usageEnabledFrom, usageEventSampleLimit } from "./capture.js";
 import { escapeHtml } from "../util.js";
 import { storeKindShortLabel } from "../db/labels.js";
@@ -296,14 +297,16 @@ function formatMs(value: number | null): string {
 function renderTable(
   headers: readonly string[],
   rows: readonly (readonly string[])[],
-  emptyText: string
+  emptyText: string,
+  caption?: string
 ): string {
   if (rows.length === 0) return `<p class="empty">${escapeHtml(emptyText)}</p>`;
-  const head = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+  const head = headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("");
+  const captionHtml = caption === undefined ? "" : `<caption>${escapeHtml(caption)}</caption>`;
   const body = rows
     .map((row) => `<tr>${row.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`)
     .join("");
-  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  return `<table>${captionHtml}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function renderSwitcher(view: UsageWebView): string {
@@ -340,12 +343,10 @@ function renderSwitcher(view: UsageWebView): string {
 
 function renderBadges(view: UsageWebView): string {
   const storageLabel = storeKindShortLabel(view.store.kind);
-  const storageClass = view.store.kind === "memory" ? "badge warn" : "badge";
   const usageLabel = view.usage.enabled ? "采集已开启" : "采集已关闭（AOS_USAGE=0）";
-  const usageClass = view.usage.enabled ? "badge" : "badge warn";
   const parts = [
-    `<p class="badges"><span class="${storageClass}" data-storage="${view.store.kind}">存储：${escapeHtml(storageLabel)}</span>`,
-    `<span class="${usageClass}" data-usage="${view.usage.enabled ? "on" : "off"}">${escapeHtml(usageLabel)}</span></p>`
+    `<p class="badges">${cBadge({ label: `存储：${storageLabel}`, tone: view.store.kind === "memory" ? "warning" : "neutral" })}`,
+    ` ${cBadge({ label: usageLabel, tone: view.usage.enabled ? "neutral" : "warning" })}</p>`
   ];
   if (view.store.note) parts.push(`<p class="note">${escapeHtml(view.store.note)}</p>`);
   if (view.usage.note) parts.push(`<p class="note">${escapeHtml(view.usage.note)}</p>`);
@@ -360,11 +361,11 @@ function renderOverview(view: UsageWebView): string {
   return [
     '<section id="overview">',
     "<h2>概览</h2>",
-    '<div class="cards">',
-    `<div class="card"><div class="k">事件总数</div><div class="v">${view.summary.total}</div></div>`,
-    `<div class="card"><div class="k">成功率</div><div class="v">${formatPercent(view.summary.successRate)}</div></div>`,
-    `<div class="card"><div class="k">p50</div><div class="v">${formatMs(view.summary.p50)}</div></div>`,
-    `<div class="card"><div class="k">p95</div><div class="v">${formatMs(view.summary.p95)}</div></div>`,
+    '<div class="c-stats-row">',
+    cStat({ label: "事件总数", value: String(view.summary.total) }),
+    cStat({ label: "成功率", value: formatPercent(view.summary.successRate) }),
+    cStat({ label: "p50", value: formatMs(view.summary.p50) }),
+    cStat({ label: "p95", value: formatMs(view.summary.p95) }),
     "</div>",
     `<p class="muted">项目：${escapeHtml(view.project?.name ?? "未注册项目")} · 过滤后事件：${view.summary.total} 条 · 家族：${families}</p>`,
     "</section>"
@@ -391,7 +392,7 @@ function renderTools(view: UsageWebView): string {
   const table =
     view.tools.length === 0
       ? '<p class="empty">暂无数据</p>'
-      : `<table><thead><tr><th>工具</th><th>调用</th><th>成功率</th><th>p95</th><th>最近调用</th></tr></thead><tbody>${rows}</tbody></table>`;
+      : `<table><caption>工具调用汇总</caption><thead><tr><th scope="col">工具</th><th scope="col">调用</th><th scope="col">成功率</th><th scope="col">p95</th><th scope="col">最近调用</th></tr></thead><tbody>${rows}</tbody></table>`;
   return `<section id="tools">\n<h2>工具表</h2>\n${table}\n</section>`;
 }
 
@@ -404,25 +405,29 @@ function renderSignals(view: UsageWebView): string {
     renderTable(
       ["错误类", "次数"],
       errorClasses.map((entry) => [entry.errorClass ?? "（无错误）", String(entry.count)]),
-      "暂无数据"
+      "暂无数据",
+      "错误类分布"
     ),
     "<h3>未分类错误模板</h3>",
     renderTable(
       ["模板", "次数", "工具"],
       unclassified.map((entry) => [entry.template, String(entry.count), entry.tools.join(", ")]),
-      "暂无数据"
+      "暂无数据",
+      "未分类错误模板"
     ),
     "<h3>信号码分布</h3>",
     renderTable(
       ["code", "field", "次数"],
       signalCodes.map((entry) => [entry.code, entry.field ?? "—", String(entry.count)]),
-      "暂无数据"
+      "暂无数据",
+      "信号码分布"
     ),
     "<h3>降级标记</h3>",
     renderTable(
       ["code", "次数"],
       degradations.map((entry) => [entry.code, String(entry.count)]),
-      "暂无数据"
+      "暂无数据",
+      "降级标记"
     ),
     "<h3>参数键频次</h3>",
     renderTable(
@@ -431,7 +436,8 @@ function renderSignals(view: UsageWebView): string {
         entry.tool,
         entry.keys.map((key) => `${key.key}×${key.count}`).join(", ") || "—"
       ]),
-      "暂无数据"
+      "暂无数据",
+      "参数键频次"
     ),
     "</section>"
   ].join("\n");
@@ -507,7 +513,7 @@ function renderEvents(view: UsageWebView): string {
   const table =
     view.events.items.length === 0
       ? '<p class="empty">暂无事件</p>'
-      : `<table><thead><tr><th>时间</th><th>工具</th><th>家族</th><th>结果</th><th>耗时</th><th>错误类</th><th>摘要</th><th>信号</th><th>参数键</th><th>trace</th></tr></thead><tbody>${rows}</tbody></table>`;
+      : `<table><caption>事件流水</caption><thead><tr><th scope="col">时间</th><th scope="col">工具</th><th scope="col">家族</th><th scope="col">结果</th><th scope="col">耗时</th><th scope="col">错误类</th><th scope="col">摘要</th><th scope="col">信号</th><th scope="col">参数键</th><th scope="col">trace</th></tr></thead><tbody>${rows}</tbody></table>`;
 
   const visibleTotal = Math.min(view.events.total, USAGE_EVENT_LIST_MAX);
   const start = view.events.count === 0 ? 0 : view.filters.offset + 1;

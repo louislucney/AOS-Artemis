@@ -22,6 +22,26 @@ export const CSDC_TOKENS_CSS = `
   --blur-header:blur(20px);
   color-scheme:light;
 }
+@media (prefers-color-scheme: dark){
+  :root{
+    --color-accent:#FFE600; --color-accent-hover:#FFF9CC; --color-accent-surface:#4A4200; --color-accent-subtle:#333000; --color-accent-border:#FFE600;
+    --color-text-primary:#F5F5F7; --color-text-secondary:#AEAEB2; --color-text-tertiary:#8E8E93;
+    --color-surface-light:#1C1C1E; --color-surface-white:#2C2C2E; --color-surface-subtle:#3A3A3C;
+    --color-border:#3A3A3C; --color-border-subtle:rgba(255,255,255,0.12);
+    --color-link:#4DA3FF; --color-link-hover:#4DA3FF;
+    --color-success:#30D158; --color-success-bg:#123A1B; --color-error:#FF453A; --color-error-bg:#3A1414; --color-warning:#FF9F0A; --color-warning-bg:#3A2A0A;
+    --shadow-card:0 4px 20px rgba(0,0,0,0.35); --shadow-hover:0 10px 30px rgba(0,0,0,0.5);
+    color-scheme:dark;
+  }
+  .c-topbar{background:rgba(28,28,30,0.72)}
+  .c-button-primary{color:#1D1D1F}
+  .c-button-danger{color:#FF6B61;border-color:#FF453A}
+  .note{color:#FFB340}
+  .badge.warn{color:#FFB340;border-color:#FF9F0A}
+  .gate-pass,.ok{color:#30D158}
+  .gate-fail,.err{color:#FF6B61}
+  select,input[type=text],input[type=number]{background:var(--color-surface-subtle)}
+}
 *{box-sizing:border-box}
 body{margin:0;background:var(--color-surface-light);color:var(--color-text-primary);
   font-family:var(--font-family-sans);font-size:var(--font-size-body);line-height:var(--line-height-body);

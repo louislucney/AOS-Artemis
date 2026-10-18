@@ -4,6 +4,8 @@ import path from "node:path";
 import { errorMessage } from "../util.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 
+import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
+
 const MIME_BY_EXT: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -30,10 +32,39 @@ export async function handleArtifactRequest(
     body: JSON.stringify({ error: message })
   });
   const project = (url.searchParams.get("project") ?? "").trim();
-  const rel = (url.searchParams.get("path") ?? "").trim();
-  if (project === "" || rel === "") return jsonError(400, "缺少 project 或 path");
+  if (project === "") return jsonError(400, "缺少 project");
   const resolved = await resolveProjectKey(deps, project);
   if (!resolved) return jsonError(404, `未知项目 "${project}"`);
+  if (url.searchParams.get("format") === "csv") {
+    const kindRaw = (url.searchParams.get("kind") ?? "").trim();
+    const kind =
+      kindRaw !== "" && ["run", "case-set", "report", "diff", "crash", "trace"].includes(kindRaw)
+        ? (kindRaw as ArtifactRecord["kind"])
+        : undefined;
+    const q = (url.searchParams.get("q") ?? "").trim();
+    const since = (url.searchParams.get("since") ?? "").trim();
+    const records = await listArtifacts(resolved.rootPath, {
+      ...(kind === undefined ? {} : { kind }),
+      ...(q === "" ? {} : { q }),
+      ...(since === "" ? {} : { since }),
+      limit: 1000
+    });
+    const lines = [
+      "kind,path,title,at,size",
+      ...records.map((record) =>
+        [record.kind, record.path, record.title, record.at, String(record.size)]
+          .map((value) => (/[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value))
+          .join(",")
+      )
+    ];
+    return {
+      status: 200,
+      contentType: "text/csv; charset=utf-8",
+      body: `${lines.join("\n")}\n`
+    };
+  }
+  const rel = (url.searchParams.get("path") ?? "").trim();
+  if (rel === "") return jsonError(400, "缺少 path");
   if (rel.includes("..") || path.isAbsolute(rel)) return jsonError(400, "非法路径");
   const root = path.resolve(resolved.rootPath);
   const abs = path.resolve(root, rel);

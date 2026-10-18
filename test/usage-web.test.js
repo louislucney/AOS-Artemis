@@ -103,6 +103,10 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.ok(body.includes("未知条目 &lt;str&gt;"));
   assert.ok(body.includes("console-shortcuts"));
   assert.ok(!body.includes("fetch("), "无业务脚本（usage 只读）");
+  assert.match(body, /<th scope="col">/, "usage 表格补 scope");
+  assert.match(body, /<caption>/, "usage 表格补 caption");
+  assert.match(body, /c-badge/, "usage 徽章并入 CSDC 组件");
+  assert.match(body, /c-stat/, "usage 指标卡并入 CSDC 组件");
 });
 
 test("usage web: /usage.json exposes the stable machine-readable contract", async () => {

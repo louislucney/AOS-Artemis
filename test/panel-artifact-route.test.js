@@ -37,6 +37,22 @@ test("artifact route: .artemis 内白名单文件可读（正确 content-type）
   }
 });
 
+test("artifact route: 索引 CSV 导出（含筛选）", async () => {
+  const { root, deps } = await setup();
+  try {
+    const csv = await handleArtifactRequest(
+      new URL(`http://x/panel/artifact?project=${encodeURIComponent(root)}&format=csv&q=shot`),
+      deps
+    );
+    assert.equal(csv.status, 200);
+    assert.match(csv.contentType, /text\/csv/);
+    assert.match(String(csv.body), /kind,path,title,at,size/);
+    assert.match(String(csv.body), /shot\.png/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("artifact route: 越权与穿越全部拒绝", async () => {
   const { root, deps } = await setup();
   try {

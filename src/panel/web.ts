@@ -2062,6 +2062,14 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
   }
 }
 
+function coherentStoreNote(kind: ProjectStore["kind"], note: string | null): string | null {
+  if (note === null || note.trim() === "") return null;
+  if (kind === "memory" && !note.includes("内存")) {
+    return "会话内存：数据仅当前进程内有效（未配置持久台账）。";
+  }
+  return note;
+}
+
 async function loadStoreHealth(
   deps: PanelWebDeps,
   view: PanelView
@@ -2153,7 +2161,7 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps, storeHealth?: Cons
       rootLabel: view.rootLabel,
       storeKind: view.storeKind,
       storeLabel: storeKindLabel(view.storeKind),
-      storeNote: view.storeNote,
+      storeNote: coherentStoreNote(view.storeKind, view.storeNote),
       writeError: view.writeError,
       artifacts: view.artifacts,
       capabilities: deps.capabilities,

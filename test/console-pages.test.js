@@ -77,6 +77,8 @@ test("console pages: 档案（索引＋kind 筛选）", async () => {
   assert.match(all.body, /产物索引/);
   assert.match(all.body, /20261018_a\.json/);
   assert.match(all.body, /\/panel\/artifact\?project=/, "产物行可点（只读服务）");
+  assert.match(all.body, /时间预设/, "档案时间预设");
+  assert.match(all.body, /format=csv/, "索引导出 CSV 链接");
 
   const filtered = await handlePanelRequest(url(rootPath, "archive", { kind: "case-set" }), deps);
   assert.ok(!filtered.body.includes("20261018_a.json"), "kind 筛选生效");
@@ -109,6 +111,7 @@ test("console pages: 运维与数据（存储徽章＋写失败信号位＋导�
   assert.equal(html.status, 200);
   assert.match(html.body, /运维与数据/);
   assert.match(html.body, /会话内存/, "MemoryStore 显示会话内存");
+  assert.ok(!html.body.includes("文件台账"), "存储口径同源（不出现矛盾的台账说明）");
   assert.match(html.body, /panel\/api\/export\?project=/);
   assert.match(html.body, /node dist\/cli\.js export/);
   assert.ok(!html.body.includes('http-equiv="refresh"'), "运维表单页不自动刷新");
