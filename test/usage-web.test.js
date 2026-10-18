@@ -92,6 +92,8 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.ok(body.includes("事件流水"));
   assert.ok(body.includes("存储：会话内存"));
   assert.ok(body.includes("PostgreSQL 不可用，会话数据仅当前进程可见。"));
+  assert.match(body, /data-console="shell"/, "统计页套用控制台外壳");
+  assert.match(body, /aria-current="page"[^>]*>统计</, "统计为当前导航项");
   assert.ok(body.includes('<option value="/w/alpha" selected>alpha</option>'));
   assert.ok(body.includes('<option value="/w/beta">beta</option>'));
   assert.ok(body.includes('data-tool="llm_list"'));

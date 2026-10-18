@@ -17,6 +17,7 @@ import {
 import { USAGE_DISABLED_NOTE, usageEnabledFrom, usageEventSampleLimit } from "./capture.js";
 import { escapeHtml } from "../util.js";
 import { storeKindShortLabel } from "../db/labels.js";
+import { renderConsoleShell, USAGE_STANDALONE_NAV } from "../console/shell.js";
 
 export interface UsageWebDeps {
   store: ProjectStore;
@@ -572,35 +573,23 @@ function renderEvents(view: UsageWebView): string {
 
 export function renderUsageHtml(view: UsageWebView): string {
   const projectLabel = view.project?.name ?? "未注册项目";
-  const refreshMeta =
-    view.filters.refresh === null
-      ? ""
-      : `<meta http-equiv="refresh" content="${view.filters.refresh}">`;
-  return [
-    "<!doctype html>",
-    '<html lang="zh-CN">',
-    "<head>",
-    '<meta charset="utf-8">',
-    '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    `<title>使用统计 · ${escapeHtml(projectLabel)}</title>`,
-    refreshMeta,
-    `<style>${PAGE_CSS}</style>`,
-    "</head>",
-    "<body>",
-    "<header>",
-    "<h1>使用统计</h1>",
-    renderSwitcher(view),
-    renderBadges(view),
-    "</header>",
-    "<main>",
-    renderOverview(view),
-    renderTools(view),
-    renderSignals(view),
-    renderEvents(view),
-    "</main>",
-    "</body>",
-    "</html>"
-  ]
-    .filter((part) => part !== "")
-    .join("\n");
+  return renderConsoleShell({
+    title: `使用统计 · ${projectLabel}`,
+    active: "usage",
+    nav: USAGE_STANDALONE_NAV,
+    meta: escapeHtml(projectLabel),
+    headExtra: `<style>${PAGE_CSS}</style>`,
+    ...(view.filters.refresh === null ? {} : { autoRefreshSeconds: view.filters.refresh }),
+    body: [
+      "<header>",
+      "<h1>使用统计</h1>",
+      renderSwitcher(view),
+      renderBadges(view),
+      "</header>",
+      renderOverview(view),
+      renderTools(view),
+      renderSignals(view),
+      renderEvents(view)
+    ].join("\n")
+  });
 }

@@ -45,6 +45,10 @@ export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "usage", label: "统计", href: "/usage" }
 ];
 
+export const USAGE_STANDALONE_NAV: ConsoleNavItem[] = [
+  { key: "usage", label: "统计", href: "/usage" }
+];
+
 export function renderConsoleShell(input: ConsoleShellInput): string {
   const nav = input.nav ?? DEFAULT_CONSOLE_NAV;
   const navHtml = nav

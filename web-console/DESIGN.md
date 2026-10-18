@@ -39,3 +39,5 @@
 ## 组件类名（计划）
 
 `c-topbar/c-brand/c-topbar-meta/c-layout/c-aside/c-nav-item/c-main/c-footer`（Task 1）；`c-card(-accent)/c-badge-*/c-banner-*/c-table/c-stat/c-empty/c-button(-primary/-danger)/c-confirm`（Task 2）。
+
+导航口径：usage 独立进程显示 `USAGE_STANDALONE_NAV`（`src/console/shell.ts`：仅「统计」自身，不显示跨进程链接）；HTTP 模式下 `/panel` 与 `/usage` 各自导航（/usage 沿用该子集，后续如需并入主导航再议）。
