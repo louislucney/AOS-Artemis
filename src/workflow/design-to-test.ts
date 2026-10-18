@@ -162,7 +162,7 @@ export async function designToTest(
 
   if (reuse) {
     if (!fs.existsSync(flowsPath)) {
-      return jsonResult({ ok: false, needs: "info", questions: [REUSE_NO_FLOWS_QUESTION] });
+      return jsonResult({ ok: false, needs: "info", category: "no-flows", questions: [REUSE_NO_FLOWS_QUESTION] });
     }
     const graph = loadDesignFlowGraph(runtime.configDirAbs);
     steps.push({
@@ -292,7 +292,13 @@ export async function designToTest(
     if (!pick.ok) {
       return pick.needs === "setup"
         ? jsonResult({ ok: false, needs: "setup", checks: [pick.check] })
-        : jsonResult({ ok: false, needs: "info", questions: pick.questions, context: pick.context });
+        : jsonResult({
+            ok: false,
+            needs: "info",
+            category: pick.category,
+            questions: pick.questions,
+            context: pick.context
+          });
     }
     const device = pick.device;
 

@@ -313,6 +313,7 @@ test("verify_jira_issue: 粗单 → needs-info（未盘点设备/未映射/未�
 
   assert.equal(payload.ok, false);
   assert.equal(payload.needs, "info");
+  assert.equal(payload.category, "ticket-coarse");
   assert.deepEqual(payload.questions, [
     "这是哪个功能/页面？",
     "触发条件是什么（做了什么操作）？",
@@ -362,6 +363,7 @@ test("verify_jira_issue: 多设备未指定 → needs-info", async () => {
   const payload = payloadOf(await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1" }, deps));
 
   assert.equal(payload.needs, "info");
+  assert.equal(payload.category, "device-ambiguous");
   assert.equal(payload.questions.length, 1);
   assert.equal(calls.execute.length, 0);
 });
@@ -385,6 +387,7 @@ test("verify_jira_issue: scope 覆盖映射（不调映射 chat）与 0 命中 n
   const miss = payloadOf(await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1", scope: "不存在" }, missDeps.deps));
   assert.equal(miss.ok, false);
   assert.equal(miss.needs, "info");
+  assert.equal(miss.category, "scope-no-hit");
   assert.equal(missDeps.calls.execute.length, 0);
 });
 

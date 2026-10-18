@@ -400,3 +400,24 @@ test("usage capture: project_archive family is workflow (no extra signals)", () 
   assert.equal(read.family, "workflow");
   assert.deepEqual(read.signals, []);
 });
+
+test("usage capture: needs-info category signal（有则发、无则不发）", () => {
+  const withCategory = usageEventInputFrom(
+    "run_regression",
+    {},
+    textPayload({ ok: false, needs: "info", category: "scope-no-hit", questions: ["…"] }),
+    1
+  );
+  assert.deepEqual(withCategory.signals, [
+    { code: "needs:info" },
+    { code: "needs:info.category", field: "scope-no-hit" }
+  ]);
+
+  const without = usageEventInputFrom(
+    "run_regression",
+    {},
+    textPayload({ ok: false, needs: "info", questions: ["…"] }),
+    1
+  );
+  assert.deepEqual(without.signals, [{ code: "needs:info" }]);
+});

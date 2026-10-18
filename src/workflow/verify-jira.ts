@@ -156,6 +156,7 @@ export async function verifyJiraIssue(
     return jsonResult({
       ok: false,
       needs: "info",
+      category: "ticket-coarse",
       questions: ["这是哪个功能/页面？", "触发条件是什么（做了什么操作）？", "期望结果是什么？"],
       context: [
         `工单 ${issue.key}：${issue.summary}`,
@@ -176,7 +177,13 @@ export async function verifyJiraIssue(
   if (!pick.ok) {
     return pick.needs === "setup"
       ? jsonResult({ ok: false, needs: "setup", checks: [pick.check] })
-      : jsonResult({ ok: false, needs: "info", questions: pick.questions, context: pick.context });
+      : jsonResult({
+          ok: false,
+          needs: "info",
+          category: pick.category,
+          questions: pick.questions,
+          context: pick.context
+        });
   }
   const device = pick.device;
   steps.push({ step: "device", device });
@@ -199,6 +206,7 @@ export async function verifyJiraIssue(
       return jsonResult({
         ok: false,
         needs: "info",
+        category: "scope-no-hit",
         questions: [`用例库里没有匹配「${scope}」的用例：换关键词，或给 Excel 测试文档导入/用 design_to_test 生成`],
         context: features.map((entry) => `${entry.feature}（${entry.cases} 条，${entry.provenance}）`)
       });

@@ -15,6 +15,14 @@ import { ENV_FIGMA_TOKEN } from "../projects/scan.js";
 
 export type SetupTarget = "figma" | "pen" | "llm" | "device" | "jira";
 
+/** needs-info 分类词汇（usage 事件 `needs:info.category` 与 payload.category 共用）。 */
+export type NeedsInfoCategory =
+  | "device-ambiguous"
+  | "no-flows"
+  | "scope-no-hit"
+  | "library-empty"
+  | "ticket-coarse";
+
 /** 前置检查结果：就绪＝null；SetupNeed＝预期缺失（非错误，供 needs-setup 结构化返回）。 */
 export interface SetupNeed {
   target: SetupTarget;

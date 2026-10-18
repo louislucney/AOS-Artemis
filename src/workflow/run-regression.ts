@@ -90,7 +90,13 @@ export async function runRegression(
   if (!pick.ok) {
     return pick.needs === "setup"
       ? jsonResult({ ok: false, needs: "setup", checks: [pick.check] })
-      : jsonResult({ ok: false, needs: "info", questions: pick.questions, context: pick.context });
+      : jsonResult({
+          ok: false,
+          needs: "info",
+          category: pick.category,
+          questions: pick.questions,
+          context: pick.context
+        });
   }
   const device = pick.device;
   steps.push({ step: "device", device });
@@ -131,6 +137,7 @@ export async function runRegression(
         return jsonResult({
           ok: false,
           needs: "info",
+          category: "scope-no-hit",
           questions: [`导入集里没有匹配「${scope}」的用例：换关键词，或去掉 scope 跑整个导入集`],
           context: imported.sets.map((set) => `${set.feature}（${set.caseCount} 条）`)
         });
@@ -148,6 +155,7 @@ export async function runRegression(
         return jsonResult({
           ok: false,
           needs: "info",
+          category: "scope-no-hit",
           questions: [`用例库里没有匹配「${scope}」的用例：换个功能/用例关键词，或给 Excel 测试文档导入`],
           context: latest.map((entry) => `${entry.feature}（${entry.cases} 条，${entry.provenance}）`)
         });
@@ -159,6 +167,7 @@ export async function runRegression(
         return jsonResult({
           ok: false,
           needs: "info",
+          category: "library-empty",
           questions: ["用例库还没有可用用例：先给 Excel 测试文档导入，或用 design_to_test 从设计稿生成"],
           context: []
         });

@@ -234,6 +234,10 @@ function outcomeSignalsOf(value: unknown): UsageSignal[] {
   const needs = record.needs;
   if (needs === "info") {
     signals.push({ code: "needs:info" });
+    const category = record.category;
+    if (typeof category === "string" && category.trim() !== "") {
+      signals.push({ code: "needs:info.category", field: category.trim() });
+    }
   } else if (needs === "setup") {
     const checks = Array.isArray(record.checks) ? record.checks : [];
     const targets = new Set<string>();

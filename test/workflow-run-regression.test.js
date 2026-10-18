@@ -200,6 +200,7 @@ test("run_regression: scope 0 命中 → needs-info（不执行）", async () =>
   const payload = payloadOf(result);
   assert.equal(payload.ok, false);
   assert.equal(payload.needs, "info");
+  assert.equal(payload.category, "scope-no-hit");
   assert.ok(payload.questions[0].includes("不存在的功能"));
   assert.equal(calls.execute.length, 0);
 });
@@ -286,7 +287,28 @@ test("run_regression: 多设备 → needs-info（不执行）", async () => {
   const payload = payloadOf(result);
   assert.equal(payload.ok, false);
   assert.equal(payload.needs, "info");
+  assert.equal(payload.category, "device-ambiguous");
   assert.ok(payload.questions[0].includes("2 台"));
+  assert.equal(calls.execute.length, 0);
+});
+
+test("run_regression: 库空 → needs-info（library-empty）", async () => {
+  const { deps, calls } = makeDeps({ listSets: async () => [] });
+  const payload = payloadOf(await runRegression(stubRuntime(), {}, deps));
+  assert.equal(payload.ok, false);
+  assert.equal(payload.needs, "info");
+  assert.equal(payload.category, "library-empty");
+  assert.equal(calls.execute.length, 0);
+});
+
+test("run_regression: excelPath+scope 0 命中 → needs-info（scope-no-hit）", async () => {
+  const { deps, calls } = makeDeps();
+  const payload = payloadOf(
+    await runRegression(stubRuntime(), { excelPath: "qa/cases.xlsx", scope: "不存在" }, deps)
+  );
+  assert.equal(payload.ok, false);
+  assert.equal(payload.needs, "info");
+  assert.equal(payload.category, "scope-no-hit");
   assert.equal(calls.execute.length, 0);
 });
 

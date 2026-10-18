@@ -12,7 +12,7 @@ export interface DeviceCandidate {
 export type DevicePick =
   | { ok: true; device: string }
   | { ok: false; needs: "setup"; check: SetupNeed }
-  | { ok: false; needs: "info"; questions: string[]; context: string[] };
+  | { ok: false; needs: "info"; category: "device-ambiguous"; questions: string[]; context: string[] };
 
 export function deviceNeed(note: string | null): SetupNeed {
   return {
@@ -58,6 +58,7 @@ export async function pickDevice(
     return {
       ok: false,
       needs: "info",
+      category: "device-ambiguous",
       questions: [`发现 ${devices.length} 台在线设备，本次执行用哪台？重跑并在 device 参数给出序列号 / UDID`],
       context: devices.map((entry) =>
         entry.platform ? `${entry.serial}（${entry.platform}）` : entry.serial

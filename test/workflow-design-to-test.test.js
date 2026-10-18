@@ -275,6 +275,7 @@ test("reuseExistingFlows 无 flows.json → needs-info（问句逐字）", async
   assert.deepEqual(payloadOf(result), {
     ok: false,
     needs: "info",
+    category: "no-flows",
     questions: [NO_FLOWS_QUESTION]
   });
   assert.equal(calls.figma.length + calls.pen.length + calls.generate.length, 0);
@@ -386,6 +387,7 @@ test("run:true 多设备 → needs-info（候选列表，不执行）", async ()
   const payload = payloadOf(result);
   assert.equal(payload.ok, false);
   assert.equal(payload.needs, "info");
+  assert.equal(payload.category, "device-ambiguous");
   assert.ok(payload.questions[0].includes("2"));
   assert.ok(payload.context.some((line) => line.includes("emulator-5554")));
   assert.ok(payload.context.some((line) => line.includes("00008110-000C1234")));
