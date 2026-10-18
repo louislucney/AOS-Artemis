@@ -1740,4 +1740,14 @@ llm_switch(name, force):
 > - **面板解析**：`resolveProjectKey` 改为**工作区优先**（byPath → 工作区绝对路径 → 工作区名字 → 注册表名字＋存在性守卫）——持久注册表下防跨工作区串台（http 面板深探回归实证）。
 > - 测试新增 16（`db-audit` 3、`db-file` 9、`db-default` 4＋守卫 1＋env 回落 2 −重复）；全量 **1551 绿**。
 > - **T4–T7 补记（同日第二轮）**：内部编排审计接线六点（suite/import/schedule/panel/verify/issues；`recordAuditSafe` best-effort 不阻断主流程）＋ `test/audit-wiring`；产物索引 `src/artifacts/`（六族与 retention 同源、浅扫、目录项 size 0）；三口径导出 `src/export/`＋CLI `export`（JSON/CSV；文件台账项目 process 非空有测试）；全表面如实文案整改（`src/db/labels.ts` 统一标签：PostgreSQL／文件台账（.artemis/ledger）／会话内存（仅本次进程，数据不持久）；doctor 缺 PG 改 OK 级说明；`test/copy-gate` 防回归）。全量 **1562 绿**。
+
+### 13.126 实施记录（Web 控制台：CSDC 原地升级＋下发闭环）
+
+> 实施于 2026-10-18（依据 `docs/superpowers/specs/2026-10-18-web-console-shape.md`；计划 `docs/superpowers/plans/2026-10-18-web-console-csdc.md` Task 1–9）。动机：面板/看板从"只读记录展示"升级为**可操作控制台**（CSDC 风格基准＋下发任务闭环）。
+> - **视觉层**：`src/console/tokens.ts`（CSDC 唯一 CSS 变量源＋组件样式）／`shell.ts`（毛玻璃顶栏＋分区导航＋焦点可见＋窄屏媒体查询；`USAGE_STANDALONE_NAV` 子集）／`components.ts`（7 件组件，**表格双通道**：数据走 `rowsText` 自动转义）；对比度口径：正文灰 `#6E6E73`、`#86868B` 仅装饰；两处 AA 偏差记录（link-hover 采用 `#0066CC`；遗留 PAGE_CSS `#888`→`#6E6E73`）。
+> - **页面**：总览（CSDC 表/徽章）、项目页**一屏三问**（健康/在跑什么/待执行/下一步＋下发入口）、对比、任务（状态徽章＋**释放重跑只读预览**）、运行机（在线/失联徽章）、统计（并入外壳）、**下发向导**（`?section=dispatch` 四步＋预览回显，派发禁用待动作层）、用例库/档案与产物/审计/运维与数据（`?section=library|archive|audit|ops`，消费 artifacts/audit/export）；遗留页统一套壳（`page()` 走 shell）。
+> - **动作层（`/panel/api/*`）**：新增 release／schedules CRUD／quarantine（owner 签字）／export（POST＋GET 下载）／import（multipart 上传：Node `Response.formData`、20MB、单飞、临时文件必清、路径变体）；**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，cross-site 403）＋Host 白名单（独立进程）；独立 `panel --web` 在 `AOS_PANEL_ACTIONS=1` 且 loopback 时开放动作层；全部写动作落审计。
+> - **收尾**：`scripts/console-fixtures.mjs` 生成 7 页 fixtures → **impeccable detect 0 anti-patterns**（修 h1→h3 跳级、遗留对比度、hover 色）；a11y 结构测试（唯一 h1/表格语义/焦点/刷新纪律）。
+> - 测试新增 ~30（shell/components/dispatch/pages/a11y/guard-upload/console-actions）；全量 **1597 绿**。
+> - 未做（留档）：暗色主题；usage 独立进程并入主导航（暂用子集）；impeccable critique/polish 未跑；分页与导出落盘（大项目）。
 > - 未做（留档/后续任务）：内部编排审计接线（T4）、产物索引（T5）、三口径导出（T6）、全表面文案整改（T7）。

@@ -20,7 +20,7 @@ test("cCard: 标题/副题/强调底/动作区与原文 body", () => {
     body: "<p>原文</p>"
   });
   assert.match(html, /class="c-card c-card-accent"/);
-  assert.match(html, /<h3 class="c-card-title">项目<\/h3>/);
+  assert.match(html, /<h2 class="c-card-title">项目<\/h2>/);
   assert.match(html, /c-card-subtitle">demo</);
   assert.match(html, /<a href="\/x">详情<\/a>/);
   assert.match(html, /<p>原文<\/p>/);

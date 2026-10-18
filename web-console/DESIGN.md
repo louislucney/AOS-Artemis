@@ -41,3 +41,5 @@
 `c-topbar/c-brand/c-topbar-meta/c-layout/c-aside/c-nav-item/c-main/c-footer`（Task 1）；`c-card(-accent)/c-badge-*/c-banner-*/c-table/c-stat/c-empty/c-button(-primary/-danger)/c-confirm`（Task 2）。
 
 导航口径：usage 独立进程显示 `USAGE_STANDALONE_NAV`（`src/console/shell.ts`：仅「统计」自身，不显示跨进程链接）；HTTP 模式下 `/panel` 与 `/usage` 各自导航（/usage 沿用该子集，后续如需并入主导航再议）。
+
+AA 偏差记录：`--color-link-hover` 采用 `#0066CC`（CSDC 原值 `#0077ED` 对白底 4.3:1，低于 AA）；遗留 PAGE_CSS 的 `#888` 已改 `#6E6E73`；`impeccable detect` 对 `scripts/console-fixtures.mjs` 产物为 **0 anti-patterns**。

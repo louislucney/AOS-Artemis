@@ -115,7 +115,7 @@ const PAGE_CSS = [
   "code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}",
   ".cards{display:flex;flex-wrap:wrap;gap:12px}",
   ".card{border:1px solid #8884;border-radius:8px;padding:10px 16px;min-width:120px}",
-  ".card .k{font-size:12px;color:#888}.card .v{font-size:20px;font-weight:600}",
+  ".card .k{font-size:12px;color:#6E6E73}.card .v{font-size:20px;font-weight:600}",
   ".badges{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}",
   ".badge{border-radius:999px;padding:2px 10px;font-size:12px;border:1px solid #8886}",
   ".badge.warn{border-color:#d97706;color:#d97706}",

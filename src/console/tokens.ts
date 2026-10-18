@@ -1,13 +1,14 @@
 /** CSDC 开发者设计系统 tokens 子集＋控制台基础样式（web-console/DESIGN.md 为规范记录）。
  * 对比度口径：正文级次要文字用 --color-text-secondary（#6E6E73，对白底 ≈5.1:1）；
- * --color-text-tertiary（#86868B，≈3.6:1）仅限装饰/大字号，不得用于正文。 */
+ * --color-text-tertiary（#86868B，≈3.6:1）仅限装饰/大字号，不得用于正文。
+ * 偏差：--color-link-hover 采用 CSDC 链接色 #0066CC（CSDC 原值 #0077ED 对白底 4.3:1，低于 AA）。 */
 export const CSDC_TOKENS_CSS = `
 :root{
   --color-accent:#FFE600; --color-accent-hover:#FFF9CC; --color-accent-surface:#FFF9CC; --color-accent-subtle:#FFFDE6; --color-accent-border:#FFE600;
   --color-text-primary:#1D1D1F; --color-text-secondary:#6E6E73; --color-text-tertiary:#86868B;
   --color-surface-light:#F5F5F7; --color-surface-white:#FFFFFF; --color-surface-subtle:#EFEFF2;
   --color-border:#D2D2D7; --color-border-subtle:rgba(0,0,0,0.08);
-  --color-link:#0066CC; --color-link-hover:#0077ED;
+  --color-link:#0066CC; --color-link-hover:#0066CC;
   --color-success:#34C759; --color-success-bg:#EBF9EE; --color-error:#FF3B30; --color-error-bg:#FFEEEE; --color-warning:#FF9500; --color-warning-bg:#FFF8EC;
   --font-family-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","PingFang SC","Hiragino Sans GB","Helvetica Neue",sans-serif;
   --font-family-mono:"SF Mono",Menlo,Monaco,Consolas,"Fira Code",monospace;

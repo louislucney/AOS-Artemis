@@ -10,7 +10,7 @@ export interface CCardInput {
 
 export function cCard(input: CCardInput): string {
   const toneClass = input.tone === "accent" ? " c-card-accent" : "";
-  const title = input.title ? `<h3 class="c-card-title">${escapeHtml(input.title)}</h3>` : "";
+  const title = input.title ? `<h2 class="c-card-title">${escapeHtml(input.title)}</h2>` : "";
   const subtitle = input.subtitle
     ? `<p class="c-card-subtitle">${escapeHtml(input.subtitle)}</p>`
     : "";

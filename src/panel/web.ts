@@ -428,11 +428,11 @@ const PAGE_CSS = [
   "code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}",
   ".cards{display:flex;flex-wrap:wrap;gap:12px}",
   ".card{border:1px solid #8884;border-radius:8px;padding:10px 16px;min-width:120px}",
-  ".card .k{font-size:12px;color:#888}.card .v{font-size:20px;font-weight:600}",
+  ".card .k{font-size:12px;color:#6E6E73}.card .v{font-size:20px;font-weight:600}",
   ".badge{border-radius:999px;padding:2px 10px;font-size:12px;border:1px solid #8886;display:inline-block}",
   ".badge.warn{border-color:#d97706;color:#d97706}",
   ".note{font-size:13px;color:#b45309;margin:4px 0}",
-  ".muted{color:#888}.empty{color:#888;font-size:13px}",
+  ".muted{color:#6E6E73}.empty{color:#6E6E73;font-size:13px}",
   ".chip{display:inline-block;border:1px solid #8884;border-radius:999px;padding:0 8px;margin:0 6px 6px 0;font-size:12px}",
   ".lamp{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}",
   ".lamp-red{background:#dc2626}.lamp-yellow{background:#d97706}.lamp-green{background:#16a34a}.lamp-gray{background:#6b7280}",
@@ -1910,23 +1910,13 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
 }
 
 function page(title: string, bodyParts: string, refreshSeconds?: number): string {
-  return [
-    "<!doctype html>",
-    '<html lang="zh-CN">',
-    "<head>",
-    '<meta charset="utf-8">',
-    '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    ...(refreshSeconds !== undefined
-      ? [`<meta http-equiv="refresh" content="${refreshSeconds}">`]
-      : []),
-    `<title>${escapeHtml(title)} · AOS 总览面板</title>`,
-    `<style>${PAGE_CSS}</style>`,
-    "</head>",
-    "<body>",
-    bodyParts,
-    "</body>",
-    "</html>"
-  ].join("\n");
+  return renderConsoleShell({
+    title,
+    active: "overview",
+    headExtra: `<style>${PAGE_CSS}</style>`,
+    ...(refreshSeconds === undefined ? {} : { autoRefreshSeconds: refreshSeconds }),
+    body: bodyParts
+  });
 }
 
 function renderPanelHtml(view: PanelView): string {
