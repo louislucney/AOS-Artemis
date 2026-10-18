@@ -87,3 +87,23 @@ test("parseVerifyMapping: 中英文冒号/多分隔符/无行", () => {
   assert.deepEqual(parseVerifyMapping("映射用例：a，b、 c"), ["a", "b", "c"]);
   assert.deepEqual(parseVerifyMapping("- 结论: PASS"), []);
 });
+
+test("parseVerifyMapping: 与 buildVerifyComment 输出闭环（bullet 前缀容错）", () => {
+  const { adf } = buildVerifyComment(input({ mapping: { caseIds: ["c1", "c2"] } }));
+  assert.deepEqual(parseVerifyMapping(adfToText(adf)), ["c1", "c2"]);
+});
+
+test("buildVerifyComment: 强断言存在但弱断言失败 → inconclusive 文案点明弱失败", () => {
+  const { text } = buildVerifyComment(
+    input({
+      conclusion: "inconclusive",
+      composition: { strong: 1, weak: 1, explore: 0 },
+      failed: [{ caseId: "c2", name: "退出登录", classification: "weak", traceId: null }]
+    })
+  );
+  assert.equal(
+    text.includes("- 结论: 无法判定（弱断言失败 1 条；弱断言仅记录路径，不代表验证通过）"),
+    true
+  );
+  assert.equal(text.split("不代表验证通过").length - 1, 1);
+});

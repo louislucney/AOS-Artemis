@@ -129,11 +129,11 @@ export interface VerifyCommentInput {
   mapping?: { caseIds: string[] };
 }
 export function buildVerifyComment(input: VerifyCommentInput): { text: string; adf: AdfNode };
-export function parseVerifyMapping(text: string): string[]; // 读 "映射用例:" 行；中英文冒号；逗号/顿号/空白分隔
+export function parseVerifyMapping(text: string): string[]; // 读 "映射用例:" 行（bullet 前缀容错）；中英文冒号；逗号/顿号/空白分隔
 ```
 - 文案钉死（`buildVerifyComment().text` 逐行，测试字面断言）：
   - 首行：`【AOS 自动验证】<KEY> <summary>`
-  - `- 结论: ` → passed=`PASS`；failed=`FAIL（强断言失败 X 条）`；inconclusive=`无法判定（无强断言；弱断言仅记录路径，不代表验证通过）`
+  - `- 结论: ` → passed=`PASS`；failed=`FAIL（强断言失败 X 条）`；inconclusive：强断言 0 条=`无法判定（无强断言；弱断言仅记录路径，不代表验证通过）`，否则=`无法判定（弱断言失败 N 条；弱断言仅记录路径，不代表验证通过）`
   - `- 构成: 强 X · 弱 Y · 探索 Z（共 N 条）`
   - `- 来源: <source>`、`- 设备: <device>`、每个 manifest 一行 `- 批次: <path>`
   - 失败行：`- 失败: <name>（trace <id>，<强|弱|探索>）`；无 traceId 时省略 `（trace …）` 括号段

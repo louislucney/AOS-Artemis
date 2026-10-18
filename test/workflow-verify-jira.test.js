@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { adfToText, plainTextToAdf } from "../dist/jira/adf.js";
+import { adfToText } from "../dist/jira/adf.js";
+import { buildVerifyComment } from "../dist/jira/verify-comment.js";
 import { verifyJiraIssue } from "../dist/workflow/verify-jira.js";
 
 const LLM_ENTRY = {
@@ -436,6 +437,27 @@ test("verify_jira_issue: 全弱/全探索 → inconclusive 且不报 PASS", asyn
   const weakPayload = payloadOf(await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1" }, weakDeps.deps));
   assert.equal(weakPayload.run.conclusion, "inconclusive");
   assert.deepEqual(weakPayload.run.composition, { strong: 0, weak: 1, explore: 0 });
+
+  const mixedFile = writeCasesFile(dir, "订单.json", [
+    { id: "m1", name: "正确密码" },
+    { id: "m2", name: "探索下单" }
+  ]);
+  const mixedDeps = makeDeps(dir, {
+    sets: [record("figma:y", [featureRecord(mixedFile, { key: "f-b", name: "订单", caseCount: 2 })])],
+    mappingReply: '{"caseIds":["m1","m2"]}',
+    report: reportStub({
+      total: 2,
+      executed: 2,
+      passed: 1,
+      failed: 1,
+      cases: [caseStub("m1"), caseStub("m2", { status: "failed", scriptProvenance: { asserts: 0, explores: 1 } })]
+    })
+  });
+  const mixedPayload = payloadOf(await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1" }, mixedDeps.deps));
+  assert.equal(mixedPayload.run.conclusion, "inconclusive");
+  const mixedComment = adfToText(mixedDeps.jira.calls.createComment[0].body);
+  assert.equal(mixedComment.includes("弱断言失败 1 条；弱断言仅记录路径，不代表验证通过"), true);
+  assert.equal(mixedComment.includes("无强断言"), false);
 });
 
 test("verify_jira_issue: dryRun → 零写回调用＋结论预览", async () => {
@@ -471,9 +493,25 @@ test("verify_jira_issue: 复验读上次映射作上下文；同 marker 更新�
     { id: "c1", name: "错误密码" },
     { id: "c2", name: "退出登录" }
   ]);
+  const draft = buildVerifyComment({
+    issue: { key: "AOS-1", summary: "登录失败" },
+    conclusion: "passed",
+    composition: { strong: 1, weak: 0, explore: 0 },
+    source: "用例库映射",
+    device: "dev-1",
+    manifestPaths: [],
+    failed: [],
+    mapping: { caseIds: ["c2"] }
+  });
   const previousComment = {
     id: "77",
-    body: plainTextToAdf("【AOS 自动验证】AOS-1 登录失败\n\n映射用例: c2\n\nAOS-VERIFY:AOS-1")
+    body: {
+      ...draft.adf,
+      content: [
+        ...(draft.adf.content ?? []),
+        { type: "paragraph", content: [{ type: "text", text: "AOS-VERIFY:AOS-1" }] }
+      ]
+    }
   };
   const { deps, calls, jira } = makeDeps(dir, {
     jira: { comments: [previousComment] },

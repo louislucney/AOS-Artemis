@@ -37,12 +37,15 @@ export function buildVerifyComment(input: VerifyCommentInput): { text: string; a
   const { strong, weak, explore } = input.composition;
   const total = strong + weak + explore;
   const strongFailed = input.failed.filter((entry) => entry.classification === "strong").length;
+  const weakFailed = input.failed.filter((entry) => entry.classification !== "strong").length;
   const conclusionText =
     input.conclusion === "passed"
       ? "PASS"
       : input.conclusion === "failed"
         ? `FAIL（强断言失败 ${strongFailed} 条）`
-        : "无法判定（无强断言；弱断言仅记录路径，不代表验证通过）";
+        : strong === 0
+          ? "无法判定（无强断言；弱断言仅记录路径，不代表验证通过）"
+          : `无法判定（弱断言失败 ${weakFailed} 条；弱断言仅记录路径，不代表验证通过）`;
 
   const lines: string[] = [`【AOS 自动验证】${input.issue.key} ${input.issue.summary}`];
   lines.push(`- 结论: ${conclusionText}`);
@@ -66,7 +69,7 @@ export function buildVerifyComment(input: VerifyCommentInput): { text: string; a
   return { text, adf };
 }
 
-const MAPPING_LINE_PATTERN = /^映射用例[:：]\s*(.+)$/m;
+const MAPPING_LINE_PATTERN = /^[-*•]?\s*映射用例[:：]\s*(.+)$/m;
 
 export function parseVerifyMapping(text: string): string[] {
   const match = MAPPING_LINE_PATTERN.exec(text);
