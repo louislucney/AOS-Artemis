@@ -421,3 +421,34 @@ test("usage capture: needs-info category signal（有则发、无则不发）", 
   );
   assert.deepEqual(without.signals, [{ code: "needs:info" }]);
 });
+
+test("usage capture: needs-setup missing entries as signals（顺序钉死；无 missing 零新增）", () => {
+  const withMissing = usageEventInputFrom(
+    "verify_jira_issue",
+    {},
+    textPayload({
+      ok: false,
+      needs: "setup",
+      checks: [
+        { target: "figma", missing: ["FIGMA_ACCESS_TOKEN"] },
+        { target: "jira", missing: ["JIRA_BASE_URL", "JIRA_API_TOKEN"] }
+      ]
+    }),
+    1
+  );
+  assert.deepEqual(withMissing.signals, [
+    { code: "needs:figma" },
+    { code: "needs:jira" },
+    { code: "needs:figma.missing", field: "FIGMA_ACCESS_TOKEN" },
+    { code: "needs:jira.missing", field: "JIRA_BASE_URL" },
+    { code: "needs:jira.missing", field: "JIRA_API_TOKEN" }
+  ]);
+
+  const noMissing = usageEventInputFrom(
+    "verify_jira_issue",
+    {},
+    textPayload({ ok: false, needs: "setup", checks: [{ target: "jira" }] }),
+    1
+  );
+  assert.deepEqual(noMissing.signals, [{ code: "needs:jira" }]);
+});

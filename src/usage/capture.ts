@@ -248,6 +248,17 @@ function outcomeSignalsOf(value: unknown): UsageSignal[] {
     }
     if (targets.size === 0) signals.push({ code: "needs:setup" });
     for (const target of targets) signals.push({ code: `needs:${target}` });
+    for (const entry of checks) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const check = entry as { target?: unknown; missing?: unknown };
+      if (typeof check.target !== "string" || check.target.trim() === "") continue;
+      if (!Array.isArray(check.missing)) continue;
+      for (const item of check.missing) {
+        if (typeof item === "string" && item.trim() !== "") {
+          signals.push({ code: `needs:${check.target.trim()}.missing`, field: item.trim() });
+        }
+      }
+    }
   }
   const failedStep = record.failedStep;
   if (typeof failedStep === "string" && failedStep.trim() !== "") {
