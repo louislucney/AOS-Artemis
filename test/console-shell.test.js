@@ -75,8 +75,9 @@ test("console shell: 顶栏记录底座指示器（持久层/最近写入/写失
   assert.match(html, /最近写入 10-18 12:03/);
   assert.match(html, /c-badge-error">写失败 2 次/);
   assert.match(html, /section=ops/);
-  assert.match(html, /@media \(prefers-color-scheme: dark\)/, "暗色主题 token");
+  assert.match(html, /:root\[data-theme="dark"\]/, "暗色主题 token（属性态）");
   assert.match(html, /--color-surface-light:#1C1C1E/, "暗色面色映射");
+  assert.match(html, /setAttribute\("data-theme","dark"\)/, "按系统偏好应用暗色");
 });
 
 test("console shell: 项目上下文与能力标记（导航禁用/横幅）", () => {
