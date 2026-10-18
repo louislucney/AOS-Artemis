@@ -276,7 +276,12 @@ export class PostgresStore implements ProjectStore {
 
   async init(): Promise<void> {
     for (const statement of SCHEMA) {
-      await this.pool.query(statement);
+      try {
+        await this.pool.query(statement);
+      } catch (error) {
+        if (!isIdempotentSchemaRace(error)) throw error;
+        logWarn(`建表竞态（忽略，已有并发建表者）: ${errorMessage(error)}`);
+      }
     }
     for (const statement of MIGRATIONS) {
       try {
@@ -1423,6 +1428,14 @@ function parseJsonArray<T>(raw: unknown, guard: (item: unknown) => item is T): T
   } catch {
     return [];
   }
+}
+
+/** 并发首连建表竞态（PG 的 CREATE TABLE IF NOT EXISTS 可抛 23505/42P07/42710）→ 视为已有并发建表者。 */
+function isIdempotentSchemaRace(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  if (code === "23505" || code === "42P07" || code === "42710") return true;
+  const message = errorMessage(error);
+  return message.includes("duplicate key value") || message.includes("already exists");
 }
 
 function mapAudit(row: Record<string, unknown>): AuditEventRecord {
