@@ -230,6 +230,8 @@ test("usage web: refresh adds the HTML meta refresh and the JSON filter field", 
   assert.equal(html.status, 200);
   assert.ok(html.body.includes("DOMParser"), "refresh=30 走局部轮询（不再整页刷新）");
   assert.ok(!html.body.includes('http-equiv="refresh"'), "无 meta 刷新");
+  assert.match(html.body, /class="c-brand"><a href="\/usage"/, "独立统计页品牌指向 /usage");
+  assert.ok(!html.body.includes('role="search"'), "独立统计页不做指向 /panel 的全局搜索");
   const payload = await getJson(store, "/usage.json?project=alpha&refresh=30");
   assert.equal(payload.filters.refresh, 30);
   const off = await handleUsageRequest(

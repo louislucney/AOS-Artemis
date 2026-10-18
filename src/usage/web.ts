@@ -554,6 +554,8 @@ export function renderUsageHtml(view: UsageWebView): string {
     active: "usage",
     nav: USAGE_STANDALONE_NAV,
     meta: escapeHtml(projectLabel),
+    brandHref: "/usage",
+    hideSearch: true,
     ...(view.filters.refresh === null ? {} : { autoRefreshSeconds: view.filters.refresh }),
     body: [
       "<header>",

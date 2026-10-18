@@ -75,11 +75,19 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 .c-main{flex:1;min-width:0;padding:18px 24px 56px}
 .c-footer{max-width:1320px;margin:0 auto;padding:14px 24px 24px;color:var(--color-text-secondary);font-size:var(--font-size-caption)}
 @media (max-width:960px){
-  .c-layout{flex-direction:column}
+  .c-layout{flex-direction:column;align-items:stretch}
   .c-aside{width:100%;position:static;padding:8px 16px;border-bottom:1px solid var(--color-border-subtle)}
   .c-aside nav{flex-direction:row;overflow-x:auto;gap:6px}
   .c-nav-item{white-space:nowrap}
-  .c-main{padding:14px 16px 48px}
+  .c-main{padding:14px 16px 48px;width:100%;max-width:100%}
+  .c-topbar{flex-wrap:wrap;row-gap:8px}
+  .c-search{margin-left:0;flex:1 1 100%;order:3}
+  .c-search input[type=search]{min-width:0;width:100%}
+  .c-switcher{margin-left:0;max-width:100%}
+  .c-switcher select{max-width:100%}
+  .c-card{min-width:0;max-width:100%}
+  .c-table-wrap{max-width:100%}
+  .c-topbar-meta{max-width:100%;overflow-wrap:anywhere}
 }
 :focus-visible{outline:2px solid var(--color-link);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -94,10 +102,11 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 .c-search button{padding:4px 10px;font-size:12px}
 .c-switcher{margin-left:16px}
 .c-switcher select{padding:4px 8px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-surface-white);color:var(--color-text-primary);font-size:12px;max-width:220px}
-button:disabled,.c-button:disabled{opacity:.55;cursor:not-allowed}
+button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.55;cursor:not-allowed}
 .c-fieldset{border:0;margin:0;padding:0}
 .c-fieldset>legend{font-size:13px;color:var(--color-text-secondary);padding:0;margin-bottom:4px}
 .c-table-wrap{overflow-x:auto;max-width:100%}
+.c-main code{overflow-wrap:anywhere}
 .c-nav-item-disabled{cursor:not-allowed}
 .c-thumb{height:24px;width:auto;border-radius:4px;vertical-align:middle;margin-right:6px}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
@@ -139,7 +148,7 @@ body.c-shortcuts-open #console-shortcuts{display:block}
 .c-empty{text-align:center;padding:32px 16px;background:var(--color-surface-white);border-radius:var(--radius-card);border:1px dashed var(--color-border)}
 .c-empty p{color:var(--color-text-secondary);margin:6px 0 0}
 .c-empty-action{margin-top:12px}
-.c-button{appearance:none;border:1px solid var(--color-border);background:var(--color-surface-white);border-radius:var(--radius-sm);padding:7px 14px;font-size:var(--font-size-callout);cursor:pointer;color:var(--color-text-primary);font-family:inherit}
+.c-button{appearance:none;display:inline-block;border:1px solid var(--color-border);background:var(--color-surface-white);border-radius:var(--radius-sm);padding:7px 14px;font-size:var(--font-size-callout);cursor:pointer;color:var(--color-text-primary);font-family:inherit}
 .c-button:hover{border-color:var(--color-text-secondary);color:var(--color-text-primary);text-decoration:none}
 .c-button-primary{background:var(--color-accent);border-color:var(--color-accent);font-weight:var(--font-weight-medium);color:var(--color-text-primary)}
 .c-button-primary:hover{background:var(--color-accent-hover);color:var(--color-text-primary)}

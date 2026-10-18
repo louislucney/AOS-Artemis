@@ -94,7 +94,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
           caption: "用例集（份）列表",
           empty: "暂无用例集（下方导入或先生成）"
         }),
-        actions: `<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch">按份下发</a>`
+        actions: `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch`)}">按份下发</a>`
       }),
       cCard({ title: "导入 Excel（用例文档）", body: importBody }),
       cCard({ title: "隔离（quarantine）", body: quarantineBody }),

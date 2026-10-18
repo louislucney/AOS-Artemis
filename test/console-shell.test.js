@@ -68,6 +68,28 @@ test("console shell: 项目导航项、切换器与任务锚点", () => {
   assert.match(html, /g j<\/span> 项目/, "项目快捷键 j");
 });
 
+test("console shell: 独立统计进程（品牌指 /usage，隐藏全局搜索）", () => {
+  const html = renderConsoleShell({
+    title: "使用统计",
+    active: "usage",
+    body: "",
+    nav: [{ key: "usage", label: "使用统计", href: "/usage" }],
+    brandHref: "/usage",
+    hideSearch: true
+  });
+  assert.match(html, /class="c-brand"><a href="\/usage"/, "品牌链接不指向不存在的 /panel");
+  assert.ok(!html.includes('role="search"'), "无面板路由时不做全局搜索");
+  assert.ok(!html.includes('action="/panel"'), "无死链表单");
+});
+
+test("console shell: 窄屏布局（顶栏换行/主区收宽/表格容器）", () => {
+  const html = renderConsoleShell({ title: "x", active: "overview", body: "" });
+  assert.match(html, /@media \(max-width:960px\)/);
+  assert.match(html, /\.c-topbar\{flex-wrap:wrap/, "顶栏允许换行");
+  assert.match(html, /\.c-layout\{flex-direction:column;align-items:stretch\}/, "列向拉伸（主区不再被内容撑宽）");
+  assert.match(html, /\.c-table-wrap\{overflow-x:auto/, "表格横向滚动容器");
+});
+
 test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷新）", () => {
   const html = renderConsoleShell({
     title: "任务",

@@ -242,6 +242,7 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
   assert.doesNotMatch(html.body, /id="regression-form"/, "内嵌表单已移除（派发唯一真相＝向导）");
   assert.doesNotMatch(html.body, /fetch\('\/panel\/api\/tasks'/);
   assert.match(html.body, /<fieldset class="c-fieldset"><legend>端<\/legend>/, "计划表单端组有 legend");
+  assert.match(html.body, /<section id="regression" class="c-plain">/, "CTA 区块不吃遗留 section 边框（无双框）");
   assert.match(html.body, /<details class="c-details">/, "环境自查与明细折叠");
   assert.match(html.body, /<summary>环境自查与明细/);
   assert.match(html.body, /aria-current="page"[^>]*>项目</, "项目页高亮「项目」导航");

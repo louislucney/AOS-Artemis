@@ -493,13 +493,14 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
 // HTML rendering
 
 
-function renderTable(headers: string[], rows: string[][], emptyText: string): string {
+function renderTable(headers: string[], rows: string[][], emptyText: string, caption?: string): string {
   if (rows.length === 0) return `<p class="empty">${escapeHtml(emptyText)}</p>`;
   const head = headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("");
+  const captionHtml = caption === undefined ? "" : `<caption>${escapeHtml(caption)}</caption>`;
   const body = rows
     .map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
     .join("");
-  return `<div class="c-table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="c-table-wrap"><table>${captionHtml}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function projectHref(rootPath: string): string {
@@ -800,7 +801,7 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
     '<section id="batches">',
     "<h2>测试批次</h2>",
     trendLine,
-    renderTable(["开始", "结束", "来源", "门禁", "通过/总数", "失败域", "清单"], rows, empty),
+    renderTable(["开始", "结束", "来源", "门禁", "通过/总数", "失败域", "清单"], rows, empty, "测试批次"),
     "</section>"
   ]
     .filter((part) => part !== "")
@@ -1001,7 +1002,7 @@ function renderDispatchCta(rootPath: string, detail: PanelProjectDetail): string
       ? "当前暂无可引用的用例份（先运行 figma_generate_tests 生成并登记用例集）。"
       : `当前有 ${refs.length} 份可引用的用例集；向导支持多份引用与逐条预览。`;
   return [
-    '<section id="regression">',
+    '<section id="regression" class="c-plain">',
     "<h2>新建回归测试</h2>",
     cCard({
       title: "使用下发向导（唯一入口）",
@@ -1095,7 +1096,7 @@ function renderRunners(detail: PanelProjectDetail): string {
   return [
     '<section id="runners">',
     "<h2>执行机（runner）</h2>",
-    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无 runner"),
+    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无 runner", "运行机（执行机）"),
     "</section>"
   ].join("\n");
 }
@@ -1291,7 +1292,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
       "<main>",
       '<section id="refs">',
       "<h2>引用份</h2>",
-      renderTable(["功能", "用例集", "用例数", "存档路径"], refRows, "无引用"),
+      renderTable(["功能", "用例集", "用例数", "存档路径"], refRows, "无引用", "任务引用份"),
       "</section>",
       '<section id="runs">',
       "<h2>子运行</h2>",
@@ -1303,7 +1304,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
       "</section>",
       '<section id="cross">',
       "<h2>跨端差异</h2>",
-      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）"),
+      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）", "跨端差异"),
       "</section>",
       '<section id="run-hint">',
       "<h2>触发执行</h2>",
@@ -1471,7 +1472,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
   return [
     title,
     '<form id="issues-form" onsubmit="return submitIssues(event, false)">',
-    renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决"),
+    renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决", "应用缺陷（可建单）"),
     '<p class="bulk-tools"><button type="button" class="c-button" data-bulk="all">全选</button> <button type="button" class="c-button" data-bulk="none">清空</button> <span class="muted">已选 <span id="issues-count">0</span> 条</span></p>',
     `<p><label>Jira 项目：<input type="text" name="projectKey" size="12" value="${escapeHtml(currentShell.jiraDefaults?.projectKey ?? "")}" placeholder="默认 JIRA_ISSUE_PROJECT"></label> `,
     `<label>类型：<input type="text" name="issueType" size="10" value="${escapeHtml(currentShell.jiraDefaults?.issueType ?? "")}" placeholder="默认 Bug"></label> `,
@@ -1593,7 +1594,7 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
     ]);
     return [
       "<h3>执行偏差（execution-deviation）→ 环境核对 / 重跑</h3>",
-      renderTable(["设备", "端", "次数", "涉及功能", "最近裁决", "备注摘要"], rows, "无执行偏差裁决")
+      renderTable(["设备", "端", "次数", "涉及功能", "最近裁决", "备注摘要"], rows, "无执行偏差裁决", "执行偏差按设备")
     ].join("\n");
   };
   const guidanceHtml = guidance
@@ -1629,7 +1630,7 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
       "</section>",
       '<section id="cross">',
       "<h2>跨端差异</h2>",
-      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）"),
+      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）", "跨端差异"),
       "</section>",
       '<section id="improvement">',
       "<h2>改进出口</h2>",

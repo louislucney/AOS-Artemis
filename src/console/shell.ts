@@ -54,6 +54,10 @@ export interface ConsoleShellInput {
   searchQuery?: string;
   /** 顶栏项目切换器（当前项目 + 最近项目候选）。 */
   projectSwitcher?: { options: Array<{ label: string; href: string; current?: boolean }> };
+  /** 品牌链接目标（独立统计进程指向 /usage；默认 /panel）。 */
+  brandHref?: string;
+  /** 独立进程无面板路由时隐藏全局搜索（避免提交到不存在端点）。 */
+  hideSearch?: boolean;
 }
 
 let shellDefaults: {
@@ -151,6 +155,11 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     .map(([letter, , label]) => `<li><span class="c-kbd">g ${letter}</span> ${escapeHtml(label)}</li>`)
     .join("");
   const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({j:"project",t:"tasks",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}var darkMq=window.matchMedia?window.matchMedia("(prefers-color-scheme: dark)"):null;function aosApplyTheme(){if(darkMq&&darkMq.matches){document.documentElement.setAttribute("data-theme","dark");}else{document.documentElement.removeAttribute("data-theme");}}aosApplyTheme();if(darkMq&&darkMq.addEventListener){darkMq.addEventListener("change",aosApplyTheme);}})();</script>`;
+  const brandHref = input.brandHref ?? "/panel";
+  const searchForm =
+    input.hideSearch === true
+      ? ""
+      : `<form class="c-search" method="get" action="/panel" role="search"><input type="hidden" name="section" value="search"><input type="search" name="q" aria-label="全局搜索（项目/用例集/任务）" placeholder="搜索项目 / 用例集 / 任务" value="${escapeHtml(input.searchQuery ?? "")}"><button class="c-button" type="submit">搜索</button></form>`;
   const health = input.storeHealth ?? shellDefaults.storeHealth;
   const healthChip =
     health === undefined
@@ -201,10 +210,10 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     '<body data-console="shell">',
     '<a class="c-skip-link" href="#console-main">跳到主内容</a>',
     '<header class="c-topbar">',
-    '<div class="c-brand"><a href="/panel">AOS 控制台</a></div>',
+    `<div class="c-brand"><a href="${escapeHtml(brandHref)}">AOS 控制台</a></div>`,
     switcher,
     healthChip,
-    '<form class="c-search" method="get" action="/panel" role="search"><input type="hidden" name="section" value="search"><input type="search" name="q" aria-label="全局搜索（项目/用例集/任务）" placeholder="搜索项目 / 用例集 / 任务" value="' + escapeHtml(input.searchQuery ?? "") + '"><button class="c-button" type="submit">搜索</button></form>',
+    searchForm,
     input.meta ? `<div class="c-topbar-meta">${input.meta}</div>` : "",
     "</header>",
     actionsBanner,
