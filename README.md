@@ -19,6 +19,9 @@ git clone --recurse-submodules https://github.com/louislucney/AOS-Artemis.git
 cd AOS-Artemis && npm install && npm run build
 node dist/cli.js doctor --install-deps   # 首次：安装 artemis venv 等依赖
 
+# 目标项目侧（可选脚手架）：在「项目目录」执行 node <AOS-Artemis>/dist/cli.js init
+#   → 写 aos.config.jsonc + .env.example，并打印三步指引（--force 覆盖已有）
+
 # 单机 stdio：在 MCP 客户端里挂载 node <repo>/dist/index.js，env 注入 AOS_PROJECT_DIR 与 MOBILE_TESTING_DATABASE_URL
 node dist/cli.js install                # 或由它生成客户端配置
 
@@ -202,6 +205,36 @@ node dist/cli.js suite task release <taskId> [--force]   # 管理侧救济：cla
 - 领取条件：**任务目标端 ⊆ 该 runner 的设备端集合**（缺端不领）；**双端任务需单机双端 runner**（两端分属两台机时请拆单端任务或手动执行）；面板对「pending 且无 runner 可覆盖」会给提示。默认严格子集；设 `AOS_RUNNER_PARTIAL_CLAIM=1` 后可**按端部分领取**——仅当**无任一在线 runner 可全覆盖**该任务时按交集端领取（完全覆盖仍优先，双端齐备在场时绝不部分抢占）；缺端**不自动补跑**、不新增状态字段，仅领取日志「部分端执行（缺 X——在线无全覆盖执行机）」＋执行侧既有缺端标注；**端覆盖审计反推口径**＝任务 `runIds` 关联的 `suite_runs.platform` 集合 vs 任务 `platforms`（统计下钻分母按实际已跑端）。
 - 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需；启动打印醒目告警）；**可选令牌 `AOS_RUNNER_ARTIFACT_TOKEN`**——设置后 `/artifact*` 强制认证（Bearer/Basic/`?t=`，`GET|HEAD /healthz` 豁免，见「鉴权」段），未设则维持「无鉴权」内网口径；暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
 - 崩溃/失联救济：runner 重启自动释放自己的未完成领取；**在线 runner 每轮自动回收超龄＋失联的领取**（`claimed_at` 超 `AOS_RUNNER_STALE_CLAIM_MS` 且领取机离线／归属悬空 → 回待执行，`attempts` 保留；毒丸任务在超上限的下一次领取处直接置 `failed` 不执行——「无在线 runner 则无人回收」为自洽性质）；机器报废等场景用 `suite task release`（默认要求该执行机离线）。无 runner 时手动路径不变：`suite run --task <id> --device <serial>`（claimed 不阻塞手动执行）。见 DESIGN §13.109/§13.116。
+- **常驻化（项目机）**：前台跑适合调试；长期运行交给系统服务管理器（工作目录＝服务仓库，自动拉起；`MOBILE_TESTING_DATABASE_URL` 须在该机环境可得）。systemd 最小示例（`/etc/systemd/system/aos-runner.service`，改 `User` 后 `systemctl daemon-reload && systemctl enable --now aos-runner`）：
+
+  ```ini
+  [Service]
+  WorkingDirectory=/opt/AOS-Artemis
+  EnvironmentFile=/srv/projects/<项目>/.env
+  ExecStart=/usr/bin/node /opt/AOS-Artemis/dist/cli.js suite runner --name mac-mini-1
+  Restart=always
+  User=aos
+  ```
+
+  launchd 最小键（`~/Library/LaunchAgents/com.aos.runner.plist`；`ProgramArguments` 依序 node／服务 dist/cli.js／suite／runner／--name …）：
+
+  ```xml
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/opt/AOS-Artemis/dist/cli.js</string>
+    <string>suite</string>
+    <string>runner</string>
+    <string>--name</string>
+    <string>mac-mini-1</string>
+  </array>
+  <key>WorkingDirectory</key><string>/opt/AOS-Artemis</string>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/aos-runner.log</string>
+  <key>StandardErrorPath</key><string>/tmp/aos-runner.err.log</string>
+  ```
+
+  注意：单项目**勿双开同名 runner**；产物令牌 `AOS_RUNNER_ARTIFACT_TOKEN` 可选（未设＝内网无鉴权，暴露范围与风险见上文与 DESIGN §13.109/§13.113）。
 - **定时回归**：`node dist/cli.js suite schedule add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（runner 到点**自动建任务并执行**；引用按功能实时取最新份；**同名拒绝**；`list/show/enable/disable/remove` 管理，`--json` 可选）；`AOS_RUNNER_SCHEDULES=0` 关闭触发。注意：platforms 需与项目内至少一台 runner 的设备端匹配，否则任务会**逐窗口累积 pending**（在面板任务列表关注）。（**默认严格子集**下如此；开启 `AOS_RUNNER_PARTIAL_CLAIM=1` 后，**仅当无任一在线 runner 可全覆盖时**按交集端部分领取执行、缺端不补跑，见 DESIGN §13.116）面板项目页「定时回归」区块与任务页「来源」可见。见 DESIGN §13.110。
 
 ### Jira 接入（M8a：读取）
@@ -317,6 +350,13 @@ node dist/cli.js suite backfill [--dry-run] [--since <ISO>] [--project <dir>] [-
 - `check`：静态检查（tests.json × flows.json × 三件套 × 真实数据约束），**不连设备**，供 pre-merge CI；未硬覆盖屏幕/跳转、生成截断、缺/坏 flows.json、**缺 tests.xlsx 或 xlsx 早于 tests.json**（三件套强制）、**用例缺 `【真实数据】` 约束标记**（禁止伪造页面/假数据，数据须经真实请求链路）均 exit 2（探索缺口仅报告；`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告。
 - `reconcile`：对账审阅面（`list` 列举差异/来源/命中/决定历史/逆向观测；`confirm` 人工确认 → human-confirmed 硬断言；`reject` 驳回 → 边不进生成；runtime-only 逆向观测仅裁决留痕；幂等、改判追加历史；未裁决不升权；未知边 exit 1、缺参 exit 2）。
 - `task`：回归任务台账——`create` 引用 feature key（取该功能**最新份**；未知 key exit 2 并列出可用项；`--platform` 默认 ios+android、`--baseline latest|none`）、`list`/`show` 查看状态、引用解析结果与运行列表（`--json` 支持）。
+
+- **Excel 入料最小样例**（`run_regression excelPath` 导入；另存为 `.xlsx`、勿合并单元格、首行表头）：
+
+  | 用例名 | 步骤 | 预期 | 前置 | 模块 |
+  |---|---|---|---|---|
+  | 登录-错误密码 | 打开首页→点击登录→输入错误密码→提交 | 提示"密码错误"且不进入主页 | 应用已安装且可启动 | 登录 |
+  | 登录-正常 | 输入正确密码→提交 | 进入主页 | — | 登录 |
 - `calibrate`：确定性套件结果（`--report <json|junit.xml>`——JSON 或 Android instrumentation 的 JUnit XML；或 `--xcresult <bundle>` 经 `xcrun xcresulttool get test-results tests`，Xcode 16+）与 MCP 台账按 case_id 对齐，输出一致/漏报/误报与比率并落盘 `.artemis/design/reports/calibration-<stamp>.json`；测试名需内嵌 case_id（如 `test_order_flow_case-<12hex>()`）；`--fail-on-miss` 命中漏报即 exit 2。
 - `loop`：测试闭环一步编排——静态检查 → 执行（`--skip-run` 跳过）→ 生成反馈 → 差分校准合并（`--calibration <calibrate 产物>`）；产出 `loop-<stamp>.{json,md}`（步骤结果 + 确定性"下一步动作" + top 建议）；exit 码 = 检查/执行的门禁结论。MCP 只负责测试闭环，不深入项目实现细节——完善路径即"测试→改进 tests/flows/数据/错误码规则"再跑下一轮。
 - `flake`：重复采样量化执行确定性——`--cases` 指定 3–5 条代表用例、`--runs N` 轮（默认 3，≤50）；输出逐例通过率、翻转矩阵、flaky 判定与轮次方差，落盘 `flake-<stamp>.{json,md}`；`--fail-on-flaky` 命中即 exit 2。口径：翻转率决定 L2 投入强度，**不决定"确定性校准器是否需要"**（见 `.scratch/enterprise-ios-testing/analysis.md §11.2`）。
