@@ -83,6 +83,21 @@ test("console shell: 顶栏记录底座指示器（持久层/最近写入/写失
   assert.match(html, /setAttribute\("data-theme","dark"\)/, "按系统偏好应用暗色");
 });
 
+test("console shell: 内联脚本可解析（防语法回归）", () => {
+  const html = renderConsoleShell({
+    title: "任务",
+    active: "tasks",
+    body: "",
+    project: "/w/p",
+    capabilities: { actions: false, usage: false, mode: "standalone" }
+  });
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.ok(scripts.length >= 2, "shell 含快捷键与 flash 两段脚本");
+  for (const code of scripts) {
+    assert.doesNotThrow(() => new Function(code), "脚本不得有语法错误");
+  }
+});
+
 test("console shell: 项目上下文与能力标记（导航禁用/横幅）", () => {
   const withProject = renderConsoleShell({
     title: "下发",
