@@ -61,6 +61,9 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 .c-skip-link:focus{left:12px;top:8px;background:var(--color-accent);color:var(--color-text-primary);padding:8px 12px;border-radius:var(--radius-sm);z-index:99}
 .c-nav-item-disabled{color:var(--color-text-tertiary);cursor:not-allowed}
 .c-nav-item-disabled:hover{background:transparent;text-decoration:none;color:var(--color-text-tertiary)}
+#console-shortcuts{display:none;margin:0 0 16px}
+body.c-shortcuts-open #console-shortcuts{display:block}
+.c-kbd{display:inline-block;border:1px solid var(--color-border);border-radius:var(--radius-xs);padding:0 6px;font-family:var(--font-family-mono);font-size:11px;background:var(--color-surface-subtle)}
 .c-stats-row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;margin:0 0 16px}
 .c-card{background:var(--color-surface-white);border:1px solid var(--color-border-subtle);border-radius:var(--radius-card);box-shadow:var(--shadow-card);padding:16px 18px;margin:0 0 16px}
 .c-card-accent{background:var(--color-accent-subtle);border-color:var(--color-accent)}

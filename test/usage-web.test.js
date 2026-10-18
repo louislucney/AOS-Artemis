@@ -101,7 +101,8 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.ok(body.includes("aos_status"));
   assert.ok(!body.includes("aos_usage"));
   assert.ok(body.includes("未知条目 &lt;str&gt;"));
-  assert.ok(!body.includes("<script"));
+  assert.equal((body.match(/<script/g) ?? []).length, 1, "仅外壳快捷键脚本，无业务脚本");
+  assert.ok(body.includes("console-shortcuts"));
 });
 
 test("usage web: /usage.json exposes the stable machine-readable contract", async () => {

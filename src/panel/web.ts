@@ -1070,14 +1070,23 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail): string {
 }
 
 function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
-  if (detail.schedules.length === 0) {
-    return [
-      '<section id="schedules">',
-      "<h2>定时回归（schedule）</h2>",
-      '<p class="empty">暂无定时回归（CLI：<code>node dist/cli.js suite schedule add --ref &lt;featureKey&gt; --every &lt;minutes&gt;</code>）</p>',
-      "</section>"
-    ].join("\n");
-  }
+  const actionsOff = currentShell.capabilities?.actions === false;
+  const reason = actionsOff
+    ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
+    : "";
+  const disabledAttr = actionsOff ? " disabled" : "";
+  const form = [
+    '<form id="schedule-form" data-project="' + escapeHtml(rootPath) + '">',
+    '<p><label>名称 <input type="text" name="name" aria-label="计划名称" required' + disabledAttr + '></label> ' +
+      '<label>功能 key（逗号分隔） <input type="text" name="featureKeys" aria-label="功能 key" size="28" placeholder="login,pay"' + disabledAttr + '></label></p>',
+    '<p>端 <label><input type="checkbox" name="platform" value="android" checked' + disabledAttr + '> android</label> ' +
+      '<label><input type="checkbox" name="platform" value="ios"' + disabledAttr + '> ios</label> ' +
+      '<label>每 <input type="number" name="everyMinutes" aria-label="间隔分钟" value="60" min="1" style="width:5em"' + disabledAttr + '> 分钟</label> ' +
+      '<button class="c-button" type="submit"' + disabledAttr + '>创建计划</button> <span id="schedule-status" role="status" class="muted"></span></p>',
+    "</form>",
+    reason
+  ].join("");
+  const emptyRow = '<p class="empty">暂无定时回归（runner 按窗口自动触发；引用实时取最新份）</p>';
   const rows = detail.schedules.map((schedule) => [
     escapeHtml(schedule.name),
     schedule.featureKeys
@@ -1093,18 +1102,32 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
       ? "—"
       : `<a href="${escapeHtml(taskHref(rootPath, schedule.lastTaskId))}">${escapeHtml(
           schedule.lastTaskStatus ?? "任务"
-        )}</a>`
+        )}</a>`,
+    `<button class="c-button" type="button" data-schedule="${escapeHtml(schedule.id)}" data-op="${
+      schedule.enabled ? "disable" : "enable"
+    }"${disabledAttr}>${schedule.enabled ? "停用" : "启用"}</button> <button class="c-button c-button-danger" type="button" data-schedule="${escapeHtml(
+      schedule.id
+    )}" data-op="delete"${disabledAttr}>删除</button>`
   ]);
+  const script = actionsOff
+    ? ""
+    : `<script>(function(){var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var status=document.getElementById('schedule-status');function say(m){status.textContent=m;}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var form=document.getElementById('schedule-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var keys=(f.get('featureKeys')||'').split(',').map(function(s){return s.trim();}).filter(Boolean);var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(i){return i.value;});post({project:root,action:'create',name:(f.get('name')||'').trim(),featureKeys:keys,platforms:platforms,everyMinutes:Number(f.get('everyMinutes')||0)}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{say('创建失败：'+(res.j.error||res.status));}}).catch(function(err){say('创建失败：'+err);});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-schedule]'):null;if(!b)return;var op=b.getAttribute('data-op');if(op==='delete'&&!confirm('确认删除该计划？'))return;post({project:root,action:op,id:b.getAttribute('data-schedule')}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{say('操作失败：'+(res.j.error||res.status));}}).catch(function(err){say('操作失败：'+err);});});})();</script>`;
   return [
     '<section id="schedules">',
     "<h2>定时回归（schedule）</h2>",
-    renderTable(
-      ["名称", "功能", "端", "节奏", "状态", "上次触发", "最近任务"],
-      rows,
-      "暂无定时回归"
-    ),
+    form,
+    detail.schedules.length === 0
+      ? emptyRow
+      : renderTable(
+          ["名称", "功能", "端", "节奏", "状态", "上次触发", "最近任务", "操作"],
+          rows,
+          "暂无定时回归"
+        ),
+    script,
     "</section>"
-  ].join("\n");
+  ]
+    .filter((part) => part !== "")
+    .join("\n");
 }
 
 function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash?: string }): string {
@@ -2006,7 +2029,8 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps): string {
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
       sets: view.sets,
-      quarantine: view.quarantine
+      quarantine: view.quarantine,
+      capabilities: deps.capabilities
     });
   }
   if (view.kind === "archive") {

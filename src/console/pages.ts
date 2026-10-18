@@ -13,6 +13,7 @@ export interface LibraryPageData {
   rootLabel: string;
   sets: CaseSetRecord[];
   quarantine: { active: string[]; stale: number; invalid: number; exists: boolean };
+  capabilities?: ConsoleCapabilities;
 }
 
 export function readQuarantineSummary(rootPath: string): Promise<LibraryPageData["quarantine"]> {
@@ -31,6 +32,11 @@ export function readQuarantineSummary(rootPath: string): Promise<LibraryPageData
 }
 
 export function renderLibraryPage(data: LibraryPageData): string {
+  const actionsOff = data.capabilities?.actions === false;
+  const disabledAttr = actionsOff ? " disabled" : "";
+  const actionsReason = actionsOff
+    ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
+    : "";
   const rows = data.sets.map((set) => [
     `<code>${escapeHtml(set.basename)}</code>`,
     escapeHtml(set.source),
@@ -40,19 +46,41 @@ export function renderLibraryPage(data: LibraryPageData): string {
     `<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}">下发该份</a>`
   ]);
   const quarantine = data.quarantine;
+  const quarantineEntries =
+    quarantine.active.length > 0
+      ? `<ul>${quarantine.active
+          .map(
+            (id) =>
+              `<li><code>${escapeHtml(id)}</code> <button class="c-button c-button-danger" type="button" data-quarantine="${escapeHtml(id)}"${disabledAttr}>移除</button></li>`
+          )
+          .join("")}</ul>`
+      : `<p class="muted">${quarantine.exists ? "无隔离用例" : "尚无 quarantine.json（下方加入后生成）"}</p>`;
   const quarantineBody = [
     `<p>${cBadge({ label: `隔离中 ${quarantine.active.length}`, tone: quarantine.active.length > 0 ? "warning" : "success" })}` +
       ` ${cBadge({ label: `过期 ${quarantine.stale}`, tone: "neutral" })}` +
       ` ${cBadge({ label: `无效 ${quarantine.invalid}`, tone: quarantine.invalid > 0 ? "error" : "neutral" })}</p>`,
-    quarantine.active.length > 0
-      ? `<p>${quarantine.active.map((id) => `<code>${escapeHtml(id)}</code>`).join(" ")}</p>`
-      : `<p class="muted">${quarantine.exists ? "无隔离用例" : "尚无 quarantine.json（动作层 add 后生成）"}</p>`
+    quarantineEntries,
+    `<form id="quarantine-form" data-project="${escapeHtml(data.rootPath)}"><p><label>用例 ID <input type="text" name="caseId" aria-label="用例 ID"${disabledAttr}></label> ` +
+      `<label>签字 owner <input type="text" name="owner" aria-label="签字 owner"${disabledAttr}></label> ` +
+      `<label>到期（可选 ISO） <input type="text" name="until" aria-label="到期时间（ISO）" size="22" placeholder="2026-12-31T00:00:00Z"${disabledAttr}></label> ` +
+      `<button class="c-button" type="submit"${disabledAttr}>加入隔离</button> <span id="quarantine-status" role="status" class="muted"></span></p></form>`,
+    actionsReason
   ].join("\n");
+  const importBody = [
+    `<form id="import-form" data-project="${escapeHtml(data.rootPath)}"><p><input type="file" name="file" accept=".xlsx" aria-label="Excel 文件"${disabledAttr}> ` +
+      `<button class="c-button" type="submit"${disabledAttr}>上传导入</button> <span id="import-status" role="status" class="muted"></span></p>` +
+      `<p class="muted">≤20MB、仅 .xlsx；导入后自动登记为最新份（需 HTTP 模式运行时；独立进程请用 CLI <code>suite task create --excel</code>）。</p></form>`,
+    actionsReason
+  ].join("\n");
+  const script = actionsOff
+    ? ""
+    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};function jsonPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var qForm=document.getElementById('quarantine-form');var qStatus=document.getElementById('quarantine-status');if(qForm){qForm.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(qForm);jsonPost('/panel/api/quarantine',{project:root,action:'add',caseId:(f.get('caseId')||'').trim(),owner:(f.get('owner')||'').trim(),until:(f.get('until')||'').trim()||undefined}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{qStatus.textContent='加入失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){qStatus.textContent='加入失败：'+err;});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-quarantine]'):null;if(!b)return;if(!confirm('确认移除该隔离条目？'))return;jsonPost('/panel/api/quarantine',{project:root,action:'remove',caseId:b.getAttribute('data-quarantine')}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else if(qStatus){qStatus.textContent='移除失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){if(qStatus)qStatus.textContent='移除失败：'+err;});});var iForm=document.getElementById('import-form');var iStatus=document.getElementById('import-status');if(iForm){iForm.addEventListener('submit',function(e){e.preventDefault();var fd=new FormData(iForm);if(!fd.get('file')||!(fd.get('file').name||'').toLowerCase().endsWith('.xlsx')){iStatus.textContent='请选择 .xlsx 文件';return;}iStatus.textContent='导入中…';fetch('/panel/api/import',{method:'POST',headers:{'X-AOS-Console':'1'},body:fd}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){location.reload();}else{iStatus.textContent='导入失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){iStatus.textContent='导入失败：'+err;});});}})();</script>`;
   return renderConsoleShell({
     title: "用例库",
     active: "library",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
+    capabilities: data.capabilities,
     body: [
       "<h1>用例库</h1>",
       cCard({
@@ -61,11 +89,13 @@ export function renderLibraryPage(data: LibraryPageData): string {
         body: cTable({
           columns: ["份", "来源", "登记时间", "用例数", "功能", "动作"],
           rows,
-          empty: "暂无用例集（先生成或导入）"
+          empty: "暂无用例集（下方导入或先生成）"
         }),
         actions: `<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch">按份下发</a>`
       }),
-      cCard({ title: "隔离（quarantine）", body: quarantineBody })
+      cCard({ title: "导入 Excel（用例文档）", body: importBody }),
+      cCard({ title: "隔离（quarantine）", body: quarantineBody }),
+      script
     ].join("\n")
   });
 }

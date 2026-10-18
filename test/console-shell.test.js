@@ -39,6 +39,21 @@ test("console shell: 默认 nav 覆盖控制台版块", () => {
   }
 });
 
+test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷新）", () => {
+  const html = renderConsoleShell({
+    title: "任务",
+    active: "tasks",
+    body: "",
+    project: "/w/p",
+    autoRefreshSeconds: 10
+  });
+  assert.match(html, /id="console-shortcuts"/);
+  assert.match(html, /c-shortcuts-open/);
+  assert.match(html, /prefers-reduced-motion: reduce/);
+  assert.match(html, /按 <span class="c-kbd">\?<\/span> 查看快捷键/);
+  assert.match(html, /g o<\/span> 总览|g t<\/span> 任务/, "跳转键表");
+});
+
 test("console shell: 项目上下文与能力标记（导航禁用/横幅）", () => {
   const withProject = renderConsoleShell({
     title: "下发",

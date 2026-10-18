@@ -103,6 +103,29 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   const actionsBanner = capabilities.actions
     ? ""
     : `<div class="c-banner c-banner-warn" role="status">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback 访问；或使用 HTTP 模式（<code>serve --http</code>，见 README 接入指南）。当前页面为只读。</div>`;
+  const navTargets: Record<string, string> = {};
+  for (const item of nav) {
+    const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project);
+    if (href !== null) navTargets[item.key] = href;
+  }
+  const shortcutKeys: Array<[string, ConsoleNavKey, string]> = [
+    ["o", "overview", "总览"],
+    ["t", "tasks", "任务"],
+    ["d", "dispatch", "下发"],
+    ["l", "library", "用例库"],
+    ["f", "archive", "档案"],
+    ["r", "runners", "运行机"],
+    ["s", "schedules", "计划"],
+    ["p", "ops", "运维"],
+    ["a", "audit", "审计"],
+    ["u", "usage", "统计"]
+  ];
+  const shortcutRows = shortcutKeys
+    .filter(([, key]) => navTargets[key] !== undefined)
+    .map(([letter, , label]) => `<li><span class="c-kbd">g ${letter}</span> ${escapeHtml(label)}</li>`)
+    .join("");
+  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({t:"tasks",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}})();</script>`;
+  const shortcutsPanel = `<div class="c-card" id="console-shortcuts" role="region" aria-label="快捷键"><h2 class="c-card-title">快捷键</h2><ul><li><span class="c-kbd">?</span> 开关本帮助</li><li><span class="c-kbd">/</span> 聚焦筛选框</li>${shortcutRows}</ul></div>`;
   return [
     "<!doctype html>",
     '<html lang="zh-CN">',
@@ -125,9 +148,10 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     actionsBanner,
     '<div class="c-layout">',
     `<aside class="c-aside"><nav aria-label="控制台导航">${navHtml}</nav></aside>`,
-    `<main class="c-main" id="console-main">${input.body}</main>`,
+    `<main class="c-main" id="console-main">${shortcutsPanel}${input.body}</main>`,
     "</div>",
-    '<footer class="c-footer">AOS-ARTEMIS · 本地服务</footer>',
+    `<footer class="c-footer">AOS-ARTEMIS · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,
+    shortcutsScript,
     "</body>",
     "</html>"
   ]

@@ -1104,6 +1104,16 @@ test("panel web: 定时回归区块 + 任务页来源显示", async () => {
   assert.match(html.body, /启用/);
   assert.match(html.body, /缺 f-2/);
   assert.match(html.body, new RegExp(`task=${task.id}`), "最近任务链接");
+  assert.match(html.body, /id="schedule-form"/, "计划创建表单");
+  assert.match(html.body, /panel\/api\/schedules/, "控制台动作端点");
+  assert.match(html.body, new RegExp(`data-op="disable"[^>]*>停用|data-schedule="${schedule.id}"[^>]*data-op="disable"`));
+
+  const gatedSchedule = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    { ...deps, capabilities: { actions: false, usage: false, mode: "standalone" } }
+  );
+  assert.match(gatedSchedule.body, /写动作未启用：独立进程需/, "能力关闭时计划动作给原因");
+  assert.ok(!gatedSchedule.body.includes("panel/api/schedules"), "关闭时不渲染动作脚本");
 
   const taskHtml = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${task.id}`),

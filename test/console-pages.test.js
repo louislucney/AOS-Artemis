@@ -60,6 +60,10 @@ test("console pages: 用例库（份列表＋隔离徽章）", async () => {
   assert.match(html.body, /按份下发/);
   assert.match(html.body, /下发该份/, "份行内动作");
   assert.match(html.body, /section=dispatch&source=case-set&ref=/, "预填下发链接");
+  assert.match(html.body, /id="import-form"/, "Excel 上传表单");
+  assert.match(html.body, /panel\/api\/import/);
+  assert.match(html.body, /id="quarantine-form"/, "隔离表单");
+  assert.match(html.body, /aria-label="签字 owner"/);
 
   const json = JSON.parse((await handlePanelRequest(new URL(url(rootPath, "library").toString().replace("/panel?", "/panel.json?")), deps)).body);
   assert.equal(json.view, "library");
