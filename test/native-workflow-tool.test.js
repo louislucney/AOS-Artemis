@@ -237,3 +237,50 @@ test("verify_jira_issue: zod rejects illegal types", async () => {
     await harness.close();
   }
 });
+
+test("project_archive: registered with a no-argument schema and callable read-only", async () => {
+  assert.ok(inProcessToolCatalog().includes("project_archive"));
+  const harness = await makeHarness();
+  try {
+    const tool = await namedTool(harness.client, "project_archive");
+    assert.ok(tool.description.length > 0);
+    const properties = tool.inputSchema.properties ?? {};
+    assert.equal(Object.keys(properties).length, 0, "no parameters");
+    const required = tool.inputSchema.required ?? [];
+    assert.equal(required.length, 0, "nothing required");
+
+    const result = await harness.client.callTool({ name: "project_archive", arguments: {} });
+    assert.notEqual(result.isError, true);
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.ok, true);
+    assert.equal(typeof payload.project.name, "string");
+    assert.equal(Array.isArray(payload.degraded), true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("project_archive: description pins the read-only protocol (no drift)", async () => {
+  const harness = await makeHarness();
+  try {
+    const tool = await namedTool(harness.client, "project_archive");
+    for (const phrase of [
+      "档案",
+      "只读",
+      "不触网",
+      "无子进程",
+      "不写盘",
+      "未复核",
+      "设计血统",
+      "用例库",
+      "最近运行",
+      "裁决",
+      "前置状态",
+      "masked"
+    ]) {
+      assert.ok(tool.description.includes(phrase), `description must mention "${phrase}"`);
+    }
+  } finally {
+    await harness.close();
+  }
+});

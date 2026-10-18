@@ -388,3 +388,15 @@ test("usage capture: verify_jira_issue family and ticket/mapping/writeback signa
   );
   assert.deepEqual(setup.signals, [{ code: "needs:jira" }]);
 });
+
+test("usage capture: project_archive family is workflow (no extra signals)", () => {
+  assert.equal(usageFamilyOf("project_archive"), "workflow");
+  const read = usageEventInputFrom(
+    "project_archive",
+    {},
+    textPayload({ ok: true, degraded: ["登记读自内存存储（PostgreSQL 不可用），用例库/裁决数据可能不完整"] }),
+    1
+  );
+  assert.equal(read.family, "workflow");
+  assert.deepEqual(read.signals, []);
+});

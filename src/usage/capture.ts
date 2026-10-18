@@ -17,7 +17,8 @@ export const USAGE_DISABLED_NOTE =
 const WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set([
   "design_to_test",
   "run_regression",
-  "verify_jira_issue"
+  "verify_jira_issue",
+  "project_archive"
 ]);
 
 const NATIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -32,6 +33,7 @@ const NATIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "design_to_test",
   "run_regression",
   "verify_jira_issue",
+  "project_archive",
   "export_image",
   "extract_design_system",
   "find_assets",
