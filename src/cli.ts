@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { runDoctor, runInit } from "./commands.js";
 import { runDepsCommand } from "./deps-build.js";
+import { runExportCommand } from "./export-command.js";
 import { runHttpServer, InsecureBindRefusedError, type HttpServerOptions } from "./http-server.js";
 import { runInstall } from "./install.js";
 import { runJiraCommand } from "./jira-command.js";
@@ -39,6 +40,9 @@ Usage:
                     只读看板（复用 /usage 与 /usage.json）；端口占用 exit 2
   aos-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]
                     多项目总览面板（只读；复用 /panel 与 /panel.json）
+  aos-mcp export --what results|process|data [--format json|csv] [--project <dir>]
+                    [--out <file>] [--since <ISO>] [--limit <n>]
+                    三口径导出：results（测试结果）/ process（测试过程）/ data（测试用的数据）
 
 install options:
   --project <dir>        Target project (default: cwd)
@@ -121,6 +125,11 @@ void (async () => {
     }
     case "panel": {
       const code = await runPanelCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "export": {
+      const code = await runExportCommand(rest);
       process.exit(code);
       break;
     }
