@@ -322,6 +322,9 @@ test("panel web: 内联 JS 按首个 | 切分（refs/items indexOf+slice 形状�
     deps
   );
   assert.match(reviewHtml.body, /name="item" value="[^"]+\|case-1"/, "裁决表单 value 仍为 runId|caseId");
+  assert.match(reviewHtml.body, /id="verdict-count"/, "批量已选计数");
+  assert.match(reviewHtml.body, /data-bulk="all"/, "全选按钮");
+  assert.match(reviewHtml.body, /data-bulk="none"/, "清空按钮");
   assert.match(
     reviewHtml.body,
     /map\(function\(el\)\{var idx=el\.value\.indexOf\('\|'\);return \{runId:el\.value\.slice\(0,idx\),caseId:el\.value\.slice\(idx\+1\)\};\}\)/,
@@ -546,6 +549,13 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   assert.match(pendingHtml.body, /panel\/api\/tasks\/release/);
   assert.match(pendingHtml.body, /data-confirm="确认释放该任务回待领取？领取方：[^"]*子运行/, "释放确认含后果");
   assert.match(pendingHtml.body, /id="release-status"[^>]*role="alert"/, "释放失败内联回报");
+
+  const projectAfter = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.match(projectAfter.body, new RegExp(`待领取：[\\s\\S]{0,120}task=${pending.id}`), "在跑什么/待领取可点对象");
+  assert.match(projectAfter.body, /执行中：|待领取：/, "活动行渲染");
 
   const flashHtml = await handlePanelRequest(
     new URL(
@@ -1337,6 +1347,8 @@ test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS
   assert.match(html.body, /placeholder="默认 Bug"/);
   assert.match(html.body, /请先点「预览」核对将创建的内容/, "建单强制预览闸门");
   assert.match(html.body, /建单（外部副作用）/, "按钮明示外部副作用");
+  assert.match(html.body, /id="issues-count"/, "建单批量已选计数");
+  assert.match(html.body, /bulk-tools/, "批量工具栏");
   assert.match(html.body, /name="labels"/);
   assert.match(html.body, /placeholder="逗号分隔"/);
   assert.match(html.body, />预览</);

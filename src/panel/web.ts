@@ -590,6 +590,24 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
   const pending = detail.tasks.filter((task) => task.status === "pending");
   const activeHint =
     active.length > 0 ? `${active[0].status} · ${active[0].id.slice(0, 8)}` : "当前无执行中任务";
+  const activeLinks = active
+    .slice(0, 3)
+    .map(
+      (task) =>
+        `<a href="${escapeHtml(taskHref(rootPath, task.id))}">${escapeHtml(task.status)} · <code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
+    )
+    .join(" · ");
+  const pendingLinks = pending
+    .slice(0, 3)
+    .map(
+      (task) =>
+        `<a href="${escapeHtml(taskHref(rootPath, task.id))}">待领取 · <code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
+    )
+    .join(" · ");
+  const activityLine =
+    activeLinks === "" && pendingLinks === ""
+      ? ""
+      : `<p class="muted">${activeLinks === "" ? "" : `执行中：${activeLinks}`}${activeLinks !== "" && pendingLinks !== "" ? "　" : ""}${pendingLinks === "" ? "" : `待领取：${pendingLinks}`}</p>`;
   return [
     '<div class="c-stats-row">',
     cStat({ label: "健康", value: health, hint: row.lampReasons[0] ?? "无告警" }),
@@ -605,6 +623,7 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
       actions: `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`,
       body: `<p><a href="${escapeHtml(reviewHref(rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(rootPath))}">统计</a></p>`
     }),
+    activityLine,
     "</div>"
   ].join("");
 }
@@ -980,6 +999,7 @@ function renderRegressionBlock(rootPath: string, detail: PanelProjectDetail): st
     "    .catch(function(error){status.textContent='创建失败：'+error.message;});",
     "  return false;",
     "}",
+    "function aosBindBulk(scopeSel,itemName,countId){var scope=document.querySelector(scopeSel);if(!scope)return;var countEl=document.getElementById(countId);function refresh(){if(countEl)countEl.textContent=String(scope.querySelectorAll('input[name=\"'+itemName+'\"]:checked').length);}scope.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-bulk]'):null;if(!b)return;var op=b.getAttribute('data-bulk');var boxes=scope.querySelectorAll('input[name=\"'+itemName+'\"]');for(var i=0;i<boxes.length;i++){boxes[i].checked=(op==='all');}refresh();});scope.addEventListener('change',function(e){if(e.target&&e.target.name===itemName)refresh();});refresh();}aosBindBulk('#verdict-form','item','verdict-count');aosBindBulk('#issues-form','issue-item','issues-count');",
     "</script>",
     "</section>"
   ].join("\n");
@@ -1347,6 +1367,7 @@ function renderReviewPage(view: {
             rows,
             "暂无失败用例"
           ),
+          '<p class="bulk-tools"><button type="button" class="c-button" data-bulk="all">全选</button> <button type="button" class="c-button" data-bulk="none">清空</button> <span class="muted">已选 <span id="verdict-count">0</span> 条</span></p>',
           "<p>裁决：",
           '<label><input type="radio" name="verdict" value="case-defect" checked> 案例问题</label> ',
           '<label><input type="radio" name="verdict" value="execution-deviation"> 执行偏差</label> ',
@@ -1425,6 +1446,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
     title,
     '<form id="issues-form" onsubmit="return submitIssues(event, false)">',
     renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决"),
+    '<p class="bulk-tools"><button type="button" class="c-button" data-bulk="all">全选</button> <button type="button" class="c-button" data-bulk="none">清空</button> <span class="muted">已选 <span id="issues-count">0</span> 条</span></p>',
     `<p><label>Jira 项目：<input type="text" name="projectKey" size="12" value="${escapeHtml(currentShell.jiraDefaults?.projectKey ?? "")}" placeholder="默认 JIRA_ISSUE_PROJECT"></label> `,
     `<label>类型：<input type="text" name="issueType" size="10" value="${escapeHtml(currentShell.jiraDefaults?.issueType ?? "")}" placeholder="默认 Bug"></label> `,
     `<label>标签：<input type="text" name="labels" size="20" value="${escapeHtml(currentShell.jiraDefaults?.labels ?? "")}" placeholder="逗号分隔"></label></p>`,

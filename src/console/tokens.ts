@@ -63,6 +63,7 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 .c-nav-item-disabled:hover{background:transparent;text-decoration:none;color:var(--color-text-tertiary)}
 .c-store-chip{margin-left:12px;font-size:12px;color:var(--color-text-secondary)}
 .c-store-chip a{color:inherit;text-decoration:underline}
+.bulk-tools{display:flex;gap:8px;align-items:center;margin:8px 0}
 #console-shortcuts{display:none;margin:0 0 16px}
 body.c-shortcuts-open #console-shortcuts{display:block}
 .c-kbd{display:inline-block;border:1px solid var(--color-border);border-radius:var(--radius-xs);padding:0 6px;font-family:var(--font-family-mono);font-size:11px;background:var(--color-surface-subtle)}
