@@ -7,6 +7,11 @@ import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
 import { renderConsoleShell } from "../console/shell.js";
+import {
+  computeDispatchPreview,
+  renderDispatchPage,
+  type DispatchPreview
+} from "../console/dispatch.js";
 import { cBadge, cCard, cStat, cTable } from "../console/components.js";
 import { storeKindLabel } from "../db/labels.js";
 import {
@@ -115,6 +120,13 @@ export function panelCacheTtlFrom(env: NodeJS.ProcessEnv): number {
 type PanelView =
   | { kind: "overview"; overview: PanelOverview }
   | { kind: "compare"; compare: PanelCompareView }
+  | {
+      kind: "dispatch";
+      rootPath: string;
+      rootLabel: string;
+      preview: DispatchPreview;
+      query: Record<string, string>;
+    }
   | { kind: "project"; rootPath: string; detail: PanelProjectDetail }
   | { kind: "task"; rootPath: string; detail: PanelTaskDetail }
   | { kind: "review"; rootPath: string; detail: { items: PanelReviewItem[]; warnings: string[] } }
@@ -200,6 +212,18 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   const resolved = await resolveProjectKey(deps, projectKey);
   if (!resolved) throw new PanelNotFoundError(`未知项目 "${projectKey}"`);
 
+  const section = trimmed(url.searchParams.get("section"));
+  if (section === "dispatch") {
+    const preview = await computeDispatchPreview(
+      { store: deps.store, env: deps.env ?? process.env },
+      resolved.rootPath,
+      url.searchParams
+    );
+    const query: Record<string, string> = {};
+    for (const [key, value] of url.searchParams) query[key] = value;
+    return { kind: "dispatch", rootPath: resolved.rootPath, rootLabel: resolved.name, preview, query };
+  }
+
   const taskId = trimmed(url.searchParams.get("task"));
   if (taskId !== null) {
     const detail = await buildPanelTaskDetail(panelDeps, resolved.rootPath, taskId);
@@ -237,6 +261,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
 function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "overview") return { ...view.overview, view: "overview" };
   if (view.kind === "compare") return { ...view.compare, view: "compare" };
+  if (view.kind === "dispatch") return { ok: true, view: "dispatch", ...view.preview };
   if (view.kind === "project") return { ok: true, view: "project", ...view.detail };
   if (view.kind === "task") return { ok: true, view: "task", ...view.detail };
   if (view.kind === "review") return { ok: true, view: "review", ...view.detail };
@@ -1790,6 +1815,14 @@ function renderPanelHtml(view: PanelView): string {
   const cacheNote = "缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）";
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);
   if (view.kind === "compare") return renderComparePage(view.compare, cacheNote);
+  if (view.kind === "dispatch") {
+    return renderDispatchPage({
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      preview: view.preview,
+      query: view.query
+    });
+  }
   if (view.kind === "project") return renderProjectPage(view, cacheNote);
   if (view.kind === "task") return renderTaskPage(view);
   if (view.kind === "review") return renderReviewPage(view);

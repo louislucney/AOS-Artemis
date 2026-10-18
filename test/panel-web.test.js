@@ -1509,6 +1509,28 @@ test("panel web: compare 降级行（读取失败标注 + 其余列 —）", asy
   );
 });
 
+test("panel web: 下发向导（?section=dispatch 只读预览）与 JSON 形状", async () => {
+  const { deps, projectDir } = await makeHarness();
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&section=dispatch&source=case-set`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /下发回归/);
+  assert.match(html.body, /③ 预览回显/);
+  assert.match(html.body, /<button class="c-button c-button-primary" type="submit" disabled/);
+  assert.ok(!html.body.includes('http-equiv="refresh"'), "表单页不自动刷新");
+
+  const json = await handlePanelRequest(
+    new URL(`http://x/panel.json?project=${encodeURIComponent(projectDir)}&section=dispatch`),
+    deps
+  );
+  assert.equal(json.status, 200);
+  const payload = JSON.parse(json.body);
+  assert.equal(payload.view, "dispatch");
+  assert.ok(Array.isArray(payload.setOptions));
+});
+
 test("panel web: compare 空态（无项目）", async () => {
   const store = new MemoryStore();
   const deps = { store, env: {}, serviceRepo: makeReadyRepo(), buildStale: false };
