@@ -307,6 +307,10 @@ export async function runJiraCommand(argv: string[], deps: JiraCliDeps = {}): Pr
   const log = deps.log ?? ((line: string) => console.log(line));
   const errorLog = deps.errorLog ?? ((line: string) => console.error(line));
   const flags = parseFlags(argv);
+  if (argv.includes("-h") || argv.includes("--help")) {
+    printJiraUsage(log);
+    return 0;
+  }
   const group = flags.positional[0];
   if (!group || group === "help" || group === "--help" || group === "-h") {
     printJiraUsage(log);

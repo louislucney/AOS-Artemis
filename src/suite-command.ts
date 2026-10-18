@@ -2082,6 +2082,10 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
   const log = deps.log ?? ((line: string) => console.log(line));
   const errorLog = deps.errorLog ?? ((line: string) => console.error(line));
   const flags = parseFlags(argv);
+  if (argv.includes("-h") || argv.includes("--help")) {
+    printSuiteUsage(log);
+    return 0;
+  }
   const sub = flags.positional[0];
   if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
     printSuiteUsage(log);

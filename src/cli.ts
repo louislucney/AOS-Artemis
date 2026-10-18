@@ -5,7 +5,7 @@ import { runHttpServer, InsecureBindRefusedError, type HttpServerOptions } from 
 import { runInstall } from "./install.js";
 import { runJiraCommand } from "./jira-command.js";
 import { runServer } from "./server.js";
-import { runSuiteCommand } from "./suite-command.js";
+import { printSuiteUsage, runSuiteCommand } from "./suite-command.js";
 import { runUsageCommand } from "./usage-command.js";
 import { runPanelCommand } from "./panel-command.js";
 
@@ -57,6 +57,13 @@ install options:
 const [command = "serve", ...rest] = process.argv.slice(2);
 
 void (async () => {
+  // `--help/-h` 优先于一切校验（含拼写错误子命令）：只打印对应用法，不进入任何命令分支。
+  const wantsHelp = rest.includes("-h") || rest.includes("--help");
+  if (wantsHelp && command !== "jira") {
+    if (command === "suite") printSuiteUsage((line) => console.log(line));
+    else printUsage();
+    return;
+  }
   switch (command) {
     case "serve": {
       if (rest.includes("--http")) {

@@ -405,6 +405,21 @@ test("suite help and unknown subcommands", async () => {
   assert.ok(unknown.errors.some((line) => line.includes('未知 suite 子命令 "nope"')));
 });
 
+test("suite bare: 2＋用法（现状锁定）", async () => {
+  const { runtime } = await setupRun({ cases: null });
+  const { code, logs } = await runCli(runtime, []);
+  assert.equal(code, 2);
+  assert.ok(logs.some((line) => line.includes("aos-mcp suite")));
+});
+
+test("suite run --help: 只打印用法、不执行", async () => {
+  const { runtime } = await setupRun({ cases: null });
+  const { code, logs } = await runCli(runtime, ["run", "--help"]);
+  assert.equal(code, 0);
+  assert.ok(logs.some((line) => line.includes("aos-mcp suite")));
+  assert.equal(logs.some((line) => line.includes("套件:")), false, "不得走执行路径");
+});
+
 function writeErrorCodes(runtime, codes) {
   const designDir = path.join(runtime.configDirAbs, "design");
   fs.mkdirSync(designDir, { recursive: true });
