@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { resolveProject } from "../config/loader.js";
-import { errorMessage, log } from "../util.js";
+import { errorMessage, log, writeFileAtomic } from "../util.js";
 import { MemoryStore, type MemoryStoreState } from "./memory.js";
 import { hydrateProjectLedger } from "./hydrate.js";
 import { retentionCutoffIso } from "./usage-event.js";
@@ -90,6 +90,8 @@ export class FileStore implements ProjectStore {
   private readonly env: NodeJS.ProcessEnv;
   private readonly buckets = new Map<string, ProjectBucket>();
   private readonly registry = new Map<string, RegistryEntry>();
+  private failedWrites = 0;
+  private lastWriteError: string | null = null;
 
   private constructor(homeDir: string, env: NodeJS.ProcessEnv) {
     this.homeDir = homeDir;
@@ -400,8 +402,9 @@ export class FileStore implements ProjectStore {
       await this.ensureDir(bucket);
       await appendFile(bucket.usagePath, `${JSON.stringify(record)}\n`, "utf8");
       bucket.seenUsageMtimeMs = await mtimeMs(bucket.usagePath);
-      if (after !== before + 1) await this.rewriteUsage(bucket);
+      if (after !== before + 1) await this.rewriteUsage(bucket, policy);
     } catch (error) {
+      this.noteWriteFailure(error);
       log(`文件台账写入失败（recordUsageEvent）：${errorMessage(error)}`);
     }
     return record;
@@ -421,6 +424,7 @@ export class FileStore implements ProjectStore {
       bucket.seenAuditMtimeMs = await mtimeMs(bucket.auditPath);
       await this.trimAuditToLimit(bucket);
     } catch (error) {
+      this.noteWriteFailure(error);
       log(`文件台账写入失败（recordAudit）：${errorMessage(error)}`);
     }
     return record;
@@ -446,6 +450,16 @@ export class FileStore implements ProjectStore {
 
   async ping(): Promise<boolean> {
     return true;
+  }
+
+  /** 运行期写失败计数（对外如实信号；aos_status 经 Runtime.storeError 展示）。 */
+  writeErrors(): { count: number; lastError: string | null } {
+    return { count: this.failedWrites, lastError: this.lastWriteError };
+  }
+
+  private noteWriteFailure(error: unknown): void {
+    this.failedWrites += 1;
+    this.lastWriteError = errorMessage(error);
   }
 
   async close(): Promise<void> {
@@ -490,10 +504,14 @@ export class FileStore implements ProjectStore {
 
   private async bucket(rootPath: string): Promise<ProjectBucket> {
     const existing = this.buckets.get(rootPath);
-    if (existing?.loaded) return existing;
+    if (existing?.loaded) {
+      await this.syncFromDisk(existing);
+      return existing;
+    }
     const bucket = existing ?? this.createBucket(rootPath);
     this.buckets.set(rootPath, bucket);
     await this.loadBucket(bucket);
+    await this.syncFromDisk(bucket);
     return bucket;
   }
 
@@ -560,7 +578,7 @@ export class FileStore implements ProjectStore {
     const usageMtime = await mtimeMs(bucket.usagePath);
     if (usageMtime !== null && bucket.seenUsageMtimeMs !== null && usageMtime !== bucket.seenUsageMtimeMs) {
       const diskUsage = await readJsonl<UsageEventRecord>(bucket.usagePath);
-      const merged = unionBy(bucket.mem.exportState().usageEvents, diskUsage, (event) => event.id);
+      const merged = unionBy(diskUsage, bucket.mem.exportState().usageEvents, (event) => event.id);
       bucket.mem.importState({ usageEvents: merged });
     }
     bucket.seenUsageMtimeMs = usageMtime ?? bucket.seenUsageMtimeMs;
@@ -568,7 +586,7 @@ export class FileStore implements ProjectStore {
     const auditMtime = await mtimeMs(bucket.auditPath);
     if (auditMtime !== null && bucket.seenAuditMtimeMs !== null && auditMtime !== bucket.seenAuditMtimeMs) {
       const diskAudit = await readJsonl<AuditEventRecord>(bucket.auditPath);
-      const merged = unionBy(bucket.mem.exportState().auditEvents, diskAudit, (event) => event.id);
+      const merged = unionBy(diskAudit, bucket.mem.exportState().auditEvents, (event) => event.id);
       bucket.mem.importState({ auditEvents: merged });
     }
     bucket.seenAuditMtimeMs = auditMtime ?? bucket.seenAuditMtimeMs;
@@ -576,7 +594,6 @@ export class FileStore implements ProjectStore {
 
   private async persist(bucket: ProjectBucket, op: string): Promise<void> {
     try {
-      await this.syncFromDisk(bucket);
       const full = bucket.mem.exportState();
       const snapshot: Partial<MemoryStoreState> = {
         projects: full.projects.map((project) => ({ ...project, figmaToken: null })),
@@ -609,29 +626,33 @@ export class FileStore implements ProjectStore {
         "utf8"
       );
     } catch (error) {
+      this.noteWriteFailure(error);
       log(`文件台账写入失败（${op}）：${errorMessage(error)}`);
     }
   }
 
-  private async rewriteUsage(bucket: ProjectBucket): Promise<void> {
-    const events = bucket.mem.exportState().usageEvents;
-    const content = events.map((event) => JSON.stringify(event)).join("\n");
-    await writeFile(bucket.usagePath, events.length > 0 ? `${content}\n` : "", "utf8");
+  private async rewriteUsage(bucket: ProjectBucket, policy: UsagePrunePolicy = {}): Promise<void> {
+    const disk = await readJsonl<UsageEventRecord>(bucket.usagePath);
+    const merged = unionBy(disk, bucket.mem.exportState().usageEvents, (event) => event.id);
+    const kept = pruneUsageEvents(merged, policy);
+    const content = kept.map((event) => JSON.stringify(event)).join("\n");
+    await writeFileAtomic(bucket.usagePath, kept.length > 0 ? `${content}\n` : "");
     bucket.seenUsageMtimeMs = await mtimeMs(bucket.usagePath);
+    bucket.mem.importState({ usageEvents: kept });
   }
 
   private async trimAuditToLimit(bucket: ProjectBucket): Promise<void> {
-    const events = bucket.mem.exportState().auditEvents;
-    const kept = this.trimAudit(events);
-    if (kept.length < events.length) {
-      bucket.mem.importState({ auditEvents: kept });
-      await this.rewriteAudit(bucket, kept);
-    }
+    const disk = await readJsonl<AuditEventRecord>(bucket.auditPath);
+    const merged = unionBy(disk, bucket.mem.exportState().auditEvents, (event) => event.id);
+    const kept = this.trimAudit(merged);
+    if (kept.length >= merged.length) return;
+    await this.rewriteAudit(bucket, kept);
+    bucket.mem.importState({ auditEvents: kept });
   }
 
   private async rewriteAudit(bucket: ProjectBucket, events: AuditEventRecord[]): Promise<void> {
     const content = events.map((event) => JSON.stringify(event)).join("\n");
-    await writeFile(bucket.auditPath, events.length > 0 ? `${content}\n` : "", "utf8");
+    await writeFileAtomic(bucket.auditPath, events.length > 0 ? `${content}\n` : "");
     bucket.seenAuditMtimeMs = await mtimeMs(bucket.auditPath);
   }
 
@@ -687,26 +708,26 @@ function unionBy<T>(local: T[], disk: T[], key: (value: T) => string): T[] {
 
 function mergeStates(disk: Partial<MemoryStoreState>, local: MemoryStoreState): Partial<MemoryStoreState> {
   const out: Partial<MemoryStoreState> = {};
-  if (disk.projects) out.projects = unionBy(local.projects, disk.projects, (project) => project.rootPath);
-  if (disk.llms) out.llms = mergeLlmBuckets(local.llms, disk.llms);
-  if (disk.modelCaches) out.modelCaches = unionBy(local.modelCaches, disk.modelCaches, (entry) => entry.key);
-  if (disk.tasks) out.tasks = unionBy(local.tasks, disk.tasks, (task) => task.id);
-  if (disk.caseSets) out.caseSets = unionBy(local.caseSets, disk.caseSets, (set) => set.id);
+  if (disk.projects) out.projects = unionBy(disk.projects, local.projects, (project) => project.rootPath);
+  if (disk.llms) out.llms = mergeLlmBuckets(disk.llms, local.llms);
+  if (disk.modelCaches) out.modelCaches = unionBy(disk.modelCaches, local.modelCaches, (entry) => entry.key);
+  if (disk.tasks) out.tasks = unionBy(disk.tasks, local.tasks, (task) => task.id);
+  if (disk.caseSets) out.caseSets = unionBy(disk.caseSets, local.caseSets, (set) => set.id);
   if (disk.regressionTasks) {
-    out.regressionTasks = unionBy(local.regressionTasks, disk.regressionTasks, (task) => task.id);
+    out.regressionTasks = unionBy(disk.regressionTasks, local.regressionTasks, (task) => task.id);
   }
-  if (disk.suiteRuns) out.suiteRuns = unionBy(local.suiteRuns, disk.suiteRuns, (run) => run.id);
-  if (disk.runners) out.runners = unionBy(local.runners, disk.runners, (runner) => runner.id);
-  if (disk.schedules) out.schedules = unionBy(local.schedules, disk.schedules, (schedule) => schedule.id);
+  if (disk.suiteRuns) out.suiteRuns = unionBy(disk.suiteRuns, local.suiteRuns, (run) => run.id);
+  if (disk.runners) out.runners = unionBy(disk.runners, local.runners, (runner) => runner.id);
+  if (disk.schedules) out.schedules = unionBy(disk.schedules, local.schedules, (schedule) => schedule.id);
   return out;
 }
 
 function mergeLlmBuckets(
-  local: Array<{ rootPath: string; entries: ProjectLlmRecord[] }>,
-  disk: Array<{ rootPath: string; entries: ProjectLlmRecord[] }>
+  primary: Array<{ rootPath: string; entries: ProjectLlmRecord[] }>,
+  secondary: Array<{ rootPath: string; entries: ProjectLlmRecord[] }>
 ): Array<{ rootPath: string; entries: ProjectLlmRecord[] }> {
   const byRoot = new Map<string, ProjectLlmRecord[]>();
-  for (const group of [...local, ...disk]) {
+  for (const group of [...primary, ...secondary]) {
     const list = byRoot.get(group.rootPath) ?? [];
     const names = new Set(list.map((entry) => entry.name));
     for (const entry of group.entries) {
@@ -719,7 +740,6 @@ function mergeLlmBuckets(
   }
   return [...byRoot.entries()].map(([rootPath, entries]) => ({ rootPath, entries }));
 }
-
 async function assertWritable(dir: string): Promise<void> {
   const probe = path.join(dir, `.aos-write-probe-${randomUUID()}`);
   try {
@@ -774,4 +794,23 @@ async function mtimeMs(filePath: string): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+function pruneUsageEvents(
+  events: UsageEventRecord[],
+  policy: UsagePrunePolicy
+): UsageEventRecord[] {
+  let kept = events;
+  const retentionDays = policy.retentionDays ?? 0;
+  if (retentionDays > 0) {
+    const cutoff = retentionCutoffIso(retentionDays);
+    kept = kept.filter((event) => event.at >= cutoff);
+  }
+  const maxEvents = policy.maxEvents ?? 0;
+  if (maxEvents > 0 && kept.length > maxEvents) {
+    kept = [...kept]
+      .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))
+      .slice(0, maxEvents);
+  }
+  return kept;
 }

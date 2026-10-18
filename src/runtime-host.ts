@@ -65,9 +65,9 @@ export class RuntimeHost {
       log(`依赖状态: ${deps.status} — ${deps.message.split("\n")[0]}`);
     }
 
-    const { store, degraded, reason } = await createProjectStore();
-    const host = new RuntimeHost(store, reason);
-    if (degraded && reason) log(reason);
+    const created = await createProjectStore();
+    const host = new RuntimeHost(created.store, created.reason);
+    if (created.kind !== "postgres" && created.reason) log(created.reason);
     return host;
   }
 

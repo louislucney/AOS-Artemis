@@ -93,10 +93,14 @@ export function entryIssues(entry: LlmEntry): string[] {
   return issues;
 }
 
-/** store 条目凭据为空（文件台账快照剥离 apiKey）时，按 provider 约定从项目 .env / 进程 env 回填。 */
+/** store 条目凭据为空（文件台账快照剥离 apiKey）时，按条目专属变量→provider 约定从项目 .env / 进程 env 回填。 */
+export function perEntryKeyEnv(name: string): string {
+  return `AOS_LLM_KEY_${name.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
+}
+
 export function withEnvKeyFallback(entry: LlmEntry, resolver: ValueResolver): LlmEntry {
   if (entry.apiKey || entry.source !== "store") return entry;
-  const candidates: string[] = [];
+  const candidates: string[] = [perEntryKeyEnv(entry.name)];
   if (entry.provider !== "custom") {
     candidates.push(apiKeyEnvFor({ provider: entry.provider } as LlmProfile));
   }

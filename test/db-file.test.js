@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -258,6 +257,83 @@ test("FileStore: unwritable home fails create", { skip: process.platform === "wi
     await assert.rejects(() => FileStore.create({ homeDir: home }));
   } finally {
     await chmod(home, 0o755);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("FileStore: 同记录更新不被陈旧写者回滚（磁盘胜合并）", async () => {
+  const home = await tempHome();
+  const root = await fixtureProject(home);
+
+  const a = await FileStore.create({ homeDir: home });
+  await a.upsertProject({ rootPath: root, name: "p" });
+  await a.recordTask({ rootPath: root, traceId: "x", status: "submitted" });
+
+  const b = await FileStore.create({ homeDir: home });
+  await b.listTasks(root, 10);
+
+  await a.markTaskFinished(root, "x", "completed");
+  await b.recordTask({ rootPath: root, traceId: "y", status: "submitted" });
+
+  const c = await FileStore.create({ homeDir: home });
+  const tasks = await c.listTasks(root, 10);
+  const x = tasks.find((task) => task.traceId === "x");
+  assert.equal(x.status, "completed", "陈旧写者不得回滚已落盘的更新");
+  assert.ok(tasks.some((task) => task.traceId === "y"));
+});
+
+test("FileStore: usage 裁剪重写不丢并发写者事件，且原子（无 tmp 残留）", async () => {
+  const home = await tempHome();
+  const root = await fixtureProject(home);
+  const policy = { maxEvents: 3 };
+
+  const a = await FileStore.create({ homeDir: home });
+  await a.upsertProject({ rootPath: root, name: "p" });
+  for (const id of ["e1", "e2", "e3"]) {
+    await a.recordUsageEvent(
+      root,
+      { tool: `t-${id}`, family: "native", ok: true, durationMs: 1, at: `2026-10-18T00:00:0${id.slice(1)}.000Z` },
+      policy
+    );
+  }
+
+  const b = await FileStore.create({ homeDir: home });
+  await b.listUsageEvents(root, { limit: 10 });
+
+  await a.recordUsageEvent(
+    root,
+    { tool: "t-e4", family: "native", ok: true, durationMs: 1, at: "2026-10-18T00:00:04.000Z" },
+    policy
+  );
+  await b.recordUsageEvent(
+    root,
+    { tool: "t-e5", family: "native", ok: true, durationMs: 1, at: "2026-10-18T00:00:05.000Z" },
+    policy
+  );
+
+  const c = await FileStore.create({ homeDir: home });
+  const events = await c.listUsageEvents(root, { limit: 10 });
+  assert.deepEqual(events.map((event) => event.tool), ["t-e5", "t-e4", "t-e3"]);
+
+  const names = await readdir(join(root, ".artemis", "ledger"));
+  assert.equal(names.some((name) => name.includes(".tmp-")), false, "原子重写无 tmp 残留");
+});
+
+test("FileStore: 写失败计数经 writeErrors 暴露（如实信号）", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const home = await tempHome();
+  const root = await fixtureProject(home);
+  const store = await FileStore.create({ homeDir: home });
+  await store.upsertProject({ rootPath: root, name: "p" });
+
+  const ledgerDir = join(root, ".artemis", "ledger");
+  await chmod(ledgerDir, 0o555);
+  try {
+    await store.recordTask({ rootPath: root, traceId: "t1", status: "submitted" });
+    const health = store.writeErrors();
+    assert.ok(health.count >= 1, "写失败被计数");
+    assert.ok(typeof health.lastError === "string" && health.lastError.length > 0);
+  } finally {
+    await chmod(ledgerDir, 0o755);
     await rm(home, { recursive: true, force: true });
   }
 });

@@ -325,8 +325,8 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
       details: ["可选：配置连接串以集中跨进程/跨项目查询。"]
     });
   } else {
-    const { store, degraded: dbDegraded, reason } = await createProjectStore();
-    if (!dbDegraded) {
+    const { store, kind: dbKind, reason } = await createProjectStore();
+    if (dbKind === "postgres") {
       lines.push({ icon: "OK", title: "PostgreSQL 连接正常" });
       try {
         await store.close();
@@ -335,7 +335,11 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
       }
     } else {
       degraded = true;
-      lines.push({ icon: "WARN", title: reason ?? "PostgreSQL 不可用" });
+      lines.push({
+        icon: "WARN",
+        title: dbKind === "file" ? "PostgreSQL 已配置但不可用：当前使用项目文件台账" : (reason ?? "PostgreSQL 不可用"),
+        details: reason === null || dbKind !== "file" ? [] : [reason]
+      });
     }
   }
 

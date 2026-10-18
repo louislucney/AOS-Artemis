@@ -917,6 +917,12 @@ export class Runtime {
   }
 
   storeError(): string | null {
+    const fileHealth = (
+      this.store as { writeErrors?: () => { count: number; lastError: string | null } }
+    ).writeErrors?.();
+    if (fileHealth && fileHealth.count > 0) {
+      return `台账写失败 ${fileHealth.count} 次：${fileHealth.lastError ?? "未知原因"}`;
+    }
     return this.lastStoreError;
   }
 

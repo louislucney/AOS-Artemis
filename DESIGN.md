@@ -1734,7 +1734,7 @@ llm_switch(name, force):
 
 > 实施于 2026-10-18（依据：`PRODUCT.md`「记录即产品」＋外部评审修订；计划 `docs/superpowers/plans/2026-10-18-data-foundation.md`（v2）；任务 1–3 已落地，任务 4–7 见后续记录）。动机：未配 PG 时"会话内存即弃"使接入与产出无留存；记录必须默认持久（**结果/过程/数据**三类）。
 > - **T1 审计接口**：`ProjectStore.recordAudit/listAudit`（Memory/PG 双实现，PG 表 `audit_events`：TEXT 时间戳＋`refs` JSON 文本，对齐 pg-mem 先例）；`kind` 联合扩 `"file"`（17 处行为位分类见下）。
-> - **T2 FileStore（`.artemis/ledger/`）**：`state.json`（原子 tmp+rename 快照，**写侧剥离 `apiKey`/`figmaToken`**）＋`usage.jsonl`/`audit.jsonl`（追加＋保留裁剪：usage 沿既有策略、audit **90 天/5 万条**）＋`journal.jsonl`（写操作取证行，**不承诺回放**）＋home `registry.jsonl`（跨进程项目索引）。**合并写**：每次写前 mtime 检测→重读→按 id 并集合并（单值字段最后写者胜；毫秒级同窗文档化为已知窗口），跨写者存活性有测试锁定。
+> - **T2 FileStore（`.artemis/ledger/`）**：`state.json`（原子 tmp+rename 快照，**写侧剥离 `apiKey`/`figmaToken`**）＋`usage.jsonl`/`audit.jsonl`（追加＋保留裁剪：usage 沿既有策略、audit **90 天/5 万条**；裁剪重写走原子写并先与磁盘并集）＋`journal.jsonl`（写操作取证行，**不承诺回放**）＋home `registry.jsonl`（跨进程项目索引）。**合并写**：每次读取/写前重读磁盘并合并——**同 id 冲突磁盘胜**（本地仅保留未落盘的少数记录），真并发窗口＝同步与落盘之间（毫秒级）；跨写者存活性与"更新不被陈旧写者回滚"均有测试锁定。运行期写失败经 `FileStore.writeErrors()` 暴露（`aos_status` 可见）。
 > - **T3 装配与自愈**：`createProjectStore` ＝ **PG → 文件台账 → 会话内存（仅最后兜底，`degraded=true`）**；PG 故障期 reason 明示"历史不自动回流"。**凭证回落**：`withEnvKeyFallback`（store 条目 key 为空时按 provider 约定→`AOS_LLM_API_KEY`/`DEEPSEEK_API_KEY`/`OPENAI_API_KEY` 从项目 `.env`/进程 env 回填；面板可用性判定同式）。**用例集自愈**：`.artemis/design/case-sets/*.json` 首载幂等登记（按 jsonPath；≤200 份，超出记 `registry/hydrate.capped` 交由 `suite backfill`）；登记前确保项目已注册。
 > - **守卫再决策**：runner 仍 **PG-only**（文案改"文件台账不支持多进程"）；`suite backfill` **放行 file、仅拒 memory**；`project-archive` 仅对 memory 判降级。
 > - **面板解析**：`resolveProjectKey` 改为**工作区优先**（byPath → 工作区绝对路径 → 工作区名字 → 注册表名字＋存在性守卫）——持久注册表下防跨工作区串台（http 面板深探回归实证）。

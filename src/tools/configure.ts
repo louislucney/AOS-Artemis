@@ -1,6 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { writeEnvUpdates } from "../env-file.js";
+import { perEntryKeyEnv } from "../llm/registry.js";
 import { syncFigmaTokenEnv } from "../figma/token.js";
 import {
   ENV_JIRA_API_TOKEN,
@@ -162,6 +163,12 @@ export async function aosConfigure(runtime: Runtime, args: ConfigureArgs): Promi
     warnings.push(`存储写入失败（${errorMessage(error)}）：条目将依赖 .env 与文件台账。`);
   }
 
+  if (!writeEnv && runtime.storeKind() === "file") {
+    warnings.push(
+      "文件台账不保存密钥（快照脱敏）且 writeEnv=false：重启后该条目缺少 api_key，请写入项目 .env（AOS_LLM_KEY_<NAME> 或 AOS_LLM_API_KEY）。"
+    );
+  }
+
   let envPath: string | null = null;
   const figmaToken = args.figmaToken?.trim();
   if (writeEnv) {
@@ -169,7 +176,8 @@ export async function aosConfigure(runtime: Runtime, args: ConfigureArgs): Promi
       [ENV_LLM_NAME]: name,
       [ENV_LLM_MODEL]: model,
       [ENV_LLM_BASE_URL]: baseUrl,
-      [ENV_LLM_API_KEY]: apiKey
+      [ENV_LLM_API_KEY]: apiKey,
+      [perEntryKeyEnv(name)]: apiKey
     };
     if (figmaToken) updates[ENV_FIGMA_TOKEN] = figmaToken;
     if (jiraSite !== null) {
