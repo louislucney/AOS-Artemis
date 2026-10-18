@@ -42,6 +42,13 @@ function payloadOf(result) {
   return JSON.parse(result.content[0].text);
 }
 
+function withoutMs(step) {
+  const { ms, ...rest } = step;
+  assert.equal(typeof ms, "number", "step.ms 为实测数字");
+  assert.ok(ms >= 0, "step.ms ≥ 0");
+  return rest;
+}
+
 async function withFigmaToken(value, fn) {
   const previous = process.env.FIGMA_ACCESS_TOKEN;
   if (value === undefined) delete process.env.FIGMA_ACCESS_TOKEN;
@@ -159,9 +166,9 @@ test("figma happy：提取→生成→校验→nextAction（run 缺省 false）"
   assert.equal(calls.execute.length, 0);
 
   assert.equal(payload.steps.length, 3);
-  assert.deepEqual(payload.steps[0], { step: "extract", source: "figma", screens: 2, edges: 1 });
-  assert.deepEqual(payload.steps[1], { step: "generate", cases: 2, screens: 2, edges: 1 });
-  assert.deepEqual(payload.steps[2], { step: "check", ok: true });
+  assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", source: "figma", screens: 2, edges: 1 });
+  assert.deepEqual(withoutMs(payload.steps[1]), { step: "generate", cases: 2, screens: 2, edges: 1 });
+  assert.deepEqual(withoutMs(payload.steps[2]), { step: "check", ok: true });
 
   assert.equal(payload.artifacts.tests, path.join(runtime.configDirAbs, "design", "tests.json"));
   assert.equal(payload.artifacts.flows, undefined);
@@ -198,7 +205,7 @@ test("pen happy：vision 透传（前置 pen 检查走 stub exec）", async () =
   assert.deepEqual(calls.pen, [{ path: "/designs/app.pen", vision: "auto" }]);
   assert.equal(calls.figma.length, 0);
   assert.deepEqual(penExecCalls, [{ command: "/opt/pen", args: ["status"] }]);
-  assert.deepEqual(payload.steps[0], { step: "extract", source: "pen", screens: 3, edges: 2 });
+  assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", source: "pen", screens: 3, edges: 2 });
   assert.deepEqual(payload.nextAction, {
     tool: "design_to_test",
     args: { reuseExistingFlows: true, run: true }
@@ -308,7 +315,7 @@ test("reuseExistingFlows 有 flows.json → 跳过提取（steps 标 reused）",
   const payload = payloadOf(result);
   assert.equal(payload.ok, true);
   assert.equal(calls.figma.length + calls.pen.length, 0);
-  assert.deepEqual(payload.steps[0], { step: "extract", reused: true, screens: 2, edges: 0 });
+  assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", reused: true, screens: 2, edges: 0 });
   assert.equal(payload.artifacts.flows, path.join(designDir, "flows.json"));
   assert.equal(payload.nextAction.args.reuseExistingFlows, true);
 });
@@ -427,7 +434,7 @@ test("run:true happy → steps 回显 run（cases/source/device）+ execute 收�
   assert.equal(calls.list, 0, "显式 device 不盘点设备");
 
   const runStep = payload.steps.find((step) => step.step === "run");
-  assert.deepEqual(runStep, {
+  assert.deepEqual(withoutMs(runStep), {
     step: "run",
     cases: 2,
     source: path.join(runtime.configDirAbs, "design", "flows.json"),

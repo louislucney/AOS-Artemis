@@ -77,6 +77,14 @@ export async function runRegression(
 
   const logLine = deps.log ?? logInfo;
   const steps: Array<Record<string, unknown>> = [];
+  let stepMark = Date.now();
+  const recordStep = (entry: Record<string, unknown>): Record<string, unknown> => {
+    const now = Date.now();
+    const out: Record<string, unknown> = { ...entry, ms: now - stepMark };
+    stepMark = now;
+    steps.push(out);
+    return out;
+  };
 
   const llmNeed = await checkLlm(runtime, deps.setup);
   if (llmNeed !== null) {
@@ -99,7 +107,7 @@ export async function runRegression(
         });
   }
   const device = pick.device;
-  steps.push({ step: "device", device });
+  recordStep({ step: "device", device });
 
   const keyword = scope === null ? null : normalizeKeyword(scope);
   let mode: "import" | "scope" | "all";
@@ -122,7 +130,7 @@ export async function runRegression(
         suggestions: IMPORT_SUGGESTIONS
       });
     }
-    steps.push({
+    recordStep({
       step: "import",
       status: imported.status,
       sourceId: imported.sourceId,
@@ -181,7 +189,7 @@ export async function runRegression(
     cases: target.cases,
     provenance: target.provenance
   }));
-  steps.push({ step: "select", mode, targets: echo });
+  recordStep({ step: "select", mode, targets: echo });
   const totalCases = targets.reduce((sum, target) => sum + target.cases, 0);
   logLine(
     `run_regression: 回归目标 ${echo
@@ -189,7 +197,8 @@ export async function runRegression(
       .join("；")} · 设备 ${device}`
   );
   logLine(`run_regression: 即将执行 ${totalCases} 条用例 · ${targets.length} 个功能 · 设备 ${device}`);
-  steps.push({ step: "run", cases: totalCases, sets: targets.length, device });
+  const runEntry = recordStep({ step: "run", cases: totalCases, sets: targets.length, device });
+  const execStartedAt = Date.now();
 
   const executeBatch = deps.executeBatch ?? executeSuiteBatch;
   const summaries: Array<{ feature: string; jsonPath: string; manifestPath: string | null }> = [];
@@ -251,6 +260,8 @@ export async function runRegression(
       if (typeof entry.traceId === "string" && entry.traceId !== "") traceIds.push(entry.traceId);
     }
   }
+
+  runEntry.ms = Date.now() - execStartedAt;
 
   return jsonResult({
     ok: true,

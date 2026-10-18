@@ -292,6 +292,23 @@ function outcomeSignalsOf(value: unknown): UsageSignal[] {
       signals.push({ code: "ticket.detailTier", field: tier });
     }
   }
+  const stepList = record.steps;
+  if (Array.isArray(stepList)) {
+    for (const entry of stepList) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const step = (entry as Record<string, unknown>).step;
+      const ms = (entry as Record<string, unknown>).ms;
+      if (
+        typeof step === "string" &&
+        step.trim() !== "" &&
+        typeof ms === "number" &&
+        Number.isFinite(ms) &&
+        ms >= 0
+      ) {
+        signals.push({ code: `step-ms:${step.trim()}`, field: String(ms) });
+      }
+    }
+  }
   const mapping = record.mapping;
   if (mapping !== null && typeof mapping === "object" && !Array.isArray(mapping)) {
     const selected = (mapping as Record<string, unknown>).selected;

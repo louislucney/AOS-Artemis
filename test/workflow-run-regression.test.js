@@ -156,6 +156,9 @@ test("run_regression: excelPath 导入并执行（来源/设备/清单路径回�
   assert.equal(payload.artifacts.sets[0].manifestPath, "/p/runs/1.json");
   assert.ok(payload.steps.some((step) => step.step === "import" && step.status === "imported"));
   assert.equal(payload.steps.find((step) => step.step === "select").mode, "import");
+  const runStep = payload.steps.find((step) => step.step === "run");
+  assert.equal(typeof runStep.ms, "number");
+  assert.ok(runStep.ms >= 0);
   assert.equal(calls.execute.length, 1);
   assert.equal(calls.execute[0].source, "run_regression");
   assert.equal(calls.execute[0].options.testsPath, "/p/账户.json");

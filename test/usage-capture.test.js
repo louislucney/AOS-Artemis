@@ -452,3 +452,24 @@ test("usage capture: needs-setup missing entries as signals（顺序钉死；无
   );
   assert.deepEqual(noMissing.signals, [{ code: "needs:jira" }]);
 });
+
+test("usage capture: step-ms signals（有 ms 才发；按 steps 顺序）", () => {
+  const withSteps = usageEventInputFrom(
+    "run_regression",
+    {},
+    textPayload({ ok: true, steps: [{ step: "run", ms: 12 }, { step: "select", ms: 3 }] }),
+    1
+  );
+  assert.deepEqual(withSteps.signals, [
+    { code: "step-ms:run", field: "12" },
+    { code: "step-ms:select", field: "3" }
+  ]);
+
+  const without = usageEventInputFrom(
+    "run_regression",
+    {},
+    textPayload({ ok: true, steps: [{ step: "x" }] }),
+    1
+  );
+  assert.deepEqual(without.signals, []);
+});

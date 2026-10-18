@@ -159,13 +159,21 @@ export async function designToTest(
   const flowsPath = path.join(designDirAbs, "flows.json");
   const testsPath = path.join(designDirAbs, "tests.json");
   const steps: Array<Record<string, unknown>> = [];
+  let stepMark = Date.now();
+  const recordStep = (entry: Record<string, unknown>): Record<string, unknown> => {
+    const now = Date.now();
+    const out: Record<string, unknown> = { ...entry, ms: now - stepMark };
+    stepMark = now;
+    steps.push(out);
+    return out;
+  };
 
   if (reuse) {
     if (!fs.existsSync(flowsPath)) {
       return jsonResult({ ok: false, needs: "info", category: "no-flows", questions: [REUSE_NO_FLOWS_QUESTION] });
     }
     const graph = loadDesignFlowGraph(runtime.configDirAbs);
-    steps.push({
+    recordStep({
       step: "extract",
       reused: true,
       ...(graph ? { screens: graph.screens.length, edges: graph.edges.length } : {})
@@ -205,7 +213,7 @@ export async function designToTest(
     }
     const screens = countOf(extractedPayload, "screens");
     const edges = countOf(extractedPayload, "edges");
-    steps.push({
+    recordStep({
       step: "extract",
       source: figmaUrl !== null ? "figma" : "pen",
       ...(screens !== null ? { screens } : {}),
@@ -239,7 +247,7 @@ export async function designToTest(
   const generatedCases = countOf(generatePayload, "flows");
   const generatedScreens = countOf(generatePayload, "screens");
   const generatedEdges = countOf(generatePayload, "edges");
-  steps.push({
+  recordStep({
     step: "generate",
     ...(generatedCases !== null ? { cases: generatedCases } : {}),
     ...(generatedScreens !== null ? { screens: generatedScreens } : {}),
@@ -266,7 +274,7 @@ export async function designToTest(
       suggestions: [CHECK_SUGGESTION]
     });
   }
-  steps.push({
+  recordStep({
     step: "check",
     ok: true,
     ...(preflight ? { cases: preflight.cases } : {})
@@ -303,10 +311,11 @@ export async function designToTest(
     const device = pick.device;
 
     const cases = generatedCases ?? preflight?.cases ?? 0;
-    steps.push({ step: "run", cases, source, device });
+    const runEntry = recordStep({ step: "run", cases, source, device });
     logLine(
       `design_to_test: 即将执行 ${cases} 条用例 · 来源 ${source} · 设备 ${device}`
     );
+    const execStartedAt = Date.now();
 
     let batch: SuiteBatchResult;
     try {
@@ -335,6 +344,7 @@ export async function designToTest(
         suggestions: [RUN_FAILURE_SUGGESTION]
       });
     }
+    runEntry.ms = Date.now() - execStartedAt;
     const report = batch.report;
     runManifestPath = batch.manifestPath;
     if (!report.ok) {

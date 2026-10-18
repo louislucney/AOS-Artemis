@@ -117,6 +117,14 @@ export async function verifyJiraIssue(
   const dryRun = args.dryRun === true;
   const logLine = deps.log ?? logInfo;
   const steps: Array<Record<string, unknown>> = [];
+  let stepMark = Date.now();
+  const recordStep = (entry: Record<string, unknown>): Record<string, unknown> => {
+    const now = Date.now();
+    const out: Record<string, unknown> = { ...entry, ms: now - stepMark };
+    stepMark = now;
+    steps.push(out);
+    return out;
+  };
 
   const jiraNeed = checkJira(runtime);
   if (jiraNeed !== null) {
@@ -151,7 +159,7 @@ export async function verifyJiraIssue(
   }
 
   const detailTier = detailTierOf(issue);
-  steps.push({ step: "ticket", key: issue.key, detailTier });
+  recordStep({ step: "ticket", key: issue.key, detailTier });
   if (detailTier === "coarse") {
     return jsonResult({
       ok: false,
@@ -186,7 +194,7 @@ export async function verifyJiraIssue(
         });
   }
   const device = pick.device;
-  steps.push({ step: "device", device });
+  recordStep({ step: "device", device });
 
   const listSets =
     deps.listSets ?? ((rt: Runtime, limit: number) => rt.store.listCaseSets(rt.project.rootDir, limit));
@@ -240,7 +248,7 @@ export async function verifyJiraIssue(
         })),
         ...(previous.length > 0 ? { previous } : {})
       });
-      steps.push({
+      recordStep({
         step: "map",
         candidates: features.reduce((sum, item) => sum + item.cases.length, 0),
         selected: selection.ok ? selection.caseIds.length : 0
@@ -279,7 +287,7 @@ export async function verifyJiraIssue(
         provenance: "单子即用例"
       }
     ];
-    steps.push({ step: "synthesize", cases: cases.length, testsFile });
+    recordStep({ step: "synthesize", cases: cases.length, testsFile });
   }
 
   const echo = targets.map((target) => ({
@@ -287,7 +295,7 @@ export async function verifyJiraIssue(
     cases: target.cases,
     provenance: target.provenance
   }));
-  steps.push({ step: "select", mode, targets: echo });
+  recordStep({ step: "select", mode, targets: echo });
   const totalCases = targets.reduce((sum, target) => sum + target.cases, 0);
   logLine(
     `verify_jira_issue: 验证目标 ${echo
@@ -295,7 +303,8 @@ export async function verifyJiraIssue(
       .join("；")} · 设备 ${device}`
   );
   logLine(`verify_jira_issue: 即将执行 ${totalCases} 条用例 · ${targets.length} 个集 · 设备 ${device}`);
-  steps.push({ step: "run", cases: totalCases, sets: targets.length, device });
+  const runEntry = recordStep({ step: "run", cases: totalCases, sets: targets.length, device });
+  const execStartedAt = Date.now();
 
   const executeBatch = deps.executeBatch ?? executeSuiteBatch;
   const summaries: Array<{ feature: string; jsonPath: string; manifestPath: string | null }> = [];
@@ -452,6 +461,8 @@ export async function verifyJiraIssue(
     }
     if (writebackErrors.length > 0) writeback.errors = writebackErrors;
   }
+
+  runEntry.ms = Date.now() - execStartedAt;
 
   return jsonResult({
     ok: true,

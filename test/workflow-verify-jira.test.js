@@ -268,6 +268,9 @@ test("verify_jira_issue: 详细单映射命中 → 执行（caseIds 透传）＋
   const select = payload.steps.find((entry) => entry.step === "select");
   assert.equal(select.mode, "mapped");
   assert.deepEqual(select.targets, [{ feature: "账户", cases: 1, provenance: "生成自 figma:x" }]);
+  const runStep = payload.steps.find((entry) => entry.step === "run");
+  assert.equal(typeof runStep.ms, "number");
+  assert.ok(runStep.ms >= 0);
 });
 
 test("verify_jira_issue: 映射答没有 → 单子即用例（mapping.selected:0，落盘 design/jira）", async () => {
