@@ -1720,3 +1720,12 @@ llm_switch(name, force):
 > - **精选硬化**：`project-archive` 清单校验（`usableManifest`：runId/source/起止时间/summary 三数/gate result+exitCode/failureDomains——不完整 ok 件改判 `unreadable`，替代原 try/catch 掩蔽）；`verify_jira_issue` 候选用例文件不可读经 `deps.log` WARN 且不阻断、dryRun 预览补 `evidenceTruncated`（与发送路径同式）；dryRun 文案统一「零写回/不产生外部副作用」；README/DESIGN 文案两处。
 > - 未做（留档）：顶层 catch（假空载荷风险，per-path 已守）、读评论单遍、空 runs 原因提示。
 > - 测试新增 8（T1 usage 1＋run 2、T2 usage 1、T3 usage 1、T5 archive 2＋verify 2）；全量 **1502 绿**。
+
+### 13.124 实施记录（接入与下发加固 ⑥：CLI help 短路＋下发窗口假阴性修复＋接入文档三补）
+
+> 实施于 2026-10-18（依据：接入/下发可用性评审（B1/B2，B2 三复现实测变红）＋外部评审修订；计划 `docs/superpowers/plans/2026-10-18-onboarding-dispatch-hardening.md`（4 任务 TDD）；提交 32bc772/c36cb24/396ded9/9cbc530/2146bf0 ＋ 本记录）。动机：`--help` 会实际执行命令（`suite run` 真跑机、`serve` 起常驻、`init` 写文件）；"50 份窗口"被用于正确性路径导致**假报不可用**（task create 未知 key／run --task 引用均不可用／resolveRunRefs 归因丢失；runner 经同一路径重试后置 failed）。
+> - **help 短路（B1）**：`cli.ts` 顶部统一守卫（`suite`→suite 用法、其余→全局用法；jira 委托自身守卫）+`runSuiteCommand`/`runJiraCommand` 库级守卫；**`--help/-h` 优先于一切校验**（含拼写错误子命令）；修复裸 `jira --help`（原 exit 2）；零副作用经 spawn 实测（init 不写文件、suite run 不执行、runner 不启动、serve 不常驻）。
+> - **下发窗口修复（B2）**：口径＝**正确性/触发路径按全量读取，展示路径显式分页**（`db/types.ts` listCaseSets 注释）。**Step 0 全枚举分类**后改全量十处：`suite task create`／`run --task`／`schedule add`／`task show`、`resolveRunRefs`、`panel/actions` 建单校验、`test-gen` 身份继承、`run-report` 名称解析、`run-regression`/`verify-jira` 默认读取（原 200 窗口）。保留并记录理由：`excel-import` 200（文件扫描兜底）、`project-archive` 200＋`truncated` 披露、`schedules`/`backfill`/`compare` 已全量、`panel/overview` 展示窗口。
+> - **接入文档三补**：README/接入指南——项目机 runner **常驻化**（systemd/launchd 最小示例＋勿双开/中心 PG/产物令牌注意）、`aos-mcp init` 脚手架引用（§3.2）、**Excel 入料最小样例表**；文档提法逐一 `grep src/` 核对消费点（`AOS_RUNNER_ARTIFACT_TOKEN` 实装 `src/runner/artifact-server.ts:116`，DESIGN §13.113）。
+> - 未做（留档）：主 help 的 suite 行扩展、`suite task list` 的 runner 覆盖提示、`install` 的 dist 存在校验、`listCaseSets` PG `DISTINCT ON` 下推、task create 可用列表 cap、usage/panel 命令专属帮助文案、`-h` 作 flag 值 quirk。
+> - 测试新增 27（`cli-help` 15、`suite-command` 6、`jira-cli` 1、`panel-actions` 1、`run-registry` 1、`figma-case-sets-gen` 1、`workflow-run-regression` 1、`workflow-verify-jira` 1）；全量 **1530 绿**。
