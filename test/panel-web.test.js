@@ -521,6 +521,12 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   assert.match(html.body, /登录流程/);
   assert.match(html.body, /emulator-5554/);
   assert.match(html.body, new RegExp(`suite run --task ${task.id}`));
+  assert.match(html.body, /c-badge-warning/, "状态语义徽章");
+  assert.match(
+    html.body,
+    /<button class="c-button" type="button" disabled[^>]*>释放重跑<\/button>/,
+    "释放重跑（只读禁用）"
+  );
 
   const json = JSON.parse(
     (
@@ -822,7 +828,8 @@ test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标�
   );
   assert.equal(html.status, 200);
   assert.match(html.body, /执行机（runner）/);
-  assert.match(html.body, /lamp-green/);
+  assert.match(html.body, /c-badge-success/, "在线徽章");
+  assert.match(html.body, /在线/);
   assert.match(html.body, /emulator-5554/);
   assert.match(html.body, /adb ✓/);
   assert.match(html.body, /appium ✗/);

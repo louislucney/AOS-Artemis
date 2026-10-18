@@ -675,7 +675,7 @@ function renderDeepSection(detail: PanelProjectDetail): string {
   return [
     '<section id="deep">',
     "<h2>深探信息</h2>",
-    renderTable(["项", "值"], rows, "—"),
+    cTable({ columns: ["项", "值"], rows, empty: "—" }),
     "<h3>iOS 环境检测</h3>",
     iosBlock,
     "</section>"
@@ -832,6 +832,14 @@ function taskStatusLabel(status: string): string {
   return TASK_STATUS_LABELS[status] ?? status;
 }
 
+function taskStatusTone(status: string): "accent" | "success" | "warning" | "error" | "neutral" {
+  if (status === "completed") return "success";
+  if (status === "failed") return "error";
+  if (status === "claimed" || status === "running") return "accent";
+  if (status === "pending" || status === "partial") return "warning";
+  return "neutral";
+}
+
 function toolBadges(tools: RunnerTools): string {
   const entries: Array<[string, boolean]> = [
     ["adb", tools.adb],
@@ -858,7 +866,7 @@ function renderRunners(detail: PanelProjectDetail): string {
     ].join("\n");
   }
   const rows = detail.runners.map((runner) => [
-    `${lampSpan(runner.online ? "green" : "gray")}<code>${escapeHtml(runner.name)}</code>`,
+    `${cBadge({ label: runner.online ? "在线" : "失联", tone: runner.online ? "success" : "warning" })} <code>${escapeHtml(runner.name)}</code>`,
     escapeHtml(runner.hostname),
     runner.devices.length === 0
       ? '<span class="muted">—</span>'
@@ -1015,6 +1023,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail }): st
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 <code>${escapeHtml(task.createdBy)}</code>`}</p>`,
+      `<p>${cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) })} <button class="c-button" type="button" disabled title="动作层接线后可用（控制台规划）">释放重跑</button> <span class="muted">只读预览：释放与重跑将在动作层接线后可用</span></p>`,
       coverageHint,
       warnings,
       "</header>",
