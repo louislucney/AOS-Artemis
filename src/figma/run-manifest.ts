@@ -19,7 +19,12 @@ export const RUN_MANIFEST_DIR = "runs";
 export const RUN_MANIFEST_VERSION = 1;
 export const RUN_MANIFEST_MAX_DEFAULT = 200;
 
-export type RunManifestSource = "suite-run" | "suite-loop" | "design_to_test" | "run_regression";
+export type RunManifestSource =
+  | "suite-run"
+  | "suite-loop"
+  | "design_to_test"
+  | "run_regression"
+  | "verify_jira_issue";
 
 export interface RunManifestOptions {
   deviceSerial: string | null;
