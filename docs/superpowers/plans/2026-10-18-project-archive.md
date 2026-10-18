@@ -16,7 +16,7 @@
 - **只读铁律**：不触网、不跑子进程、不写盘——数据只来自 `flows.json`、批次清单（`design/runs/*.json`）、登记（`store.listCaseSets/listSuiteRuns`）与环境变量/项目 `.env` 的**静态读取**；测试禁 `fetch`（全局替换为抛错）＋调用前后项目目录快照不变。
 - **「未复核」不漏标**（D14）：readiness 每项 `verified: false`；**不** ping LLM、**不** 跑 `pen status`；真实复核属流程工具首步，本工具不做。
 - **masked 只回预览**：LLM `apiKey`、Jira `email` 一律 `maskSecret`；任何字段不落完整密钥。
-- **降级如实**：store 不可用／`flows.json` 坏／清单坏件 → `null` 或计数 ＋ `degraded[]` 中文说明，绝不猜测（不新增任何存储）。
+- **降级如实（含静默降级）**：store 不可用／`flows.json` 坏／清单坏件 → `null` 或计数 ＋ `degraded[]` 中文说明，绝不猜测（不新增任何存储）。**PG 不可用时 store 静默切换内存实现（不抛错）——必须读 `runtime.store.kind`（先例：`suite-command.ts` 的 `kind !== "postgres"` 守卫）并在 `degraded[]` 明示「读自内存、可能不完整」；`activeEntry()` 等经 PG 的读取一律 try/catch 降级，整份档案恒 `ok:true`。**
 - ESM+NodeNext+strict、相对导入 `.js`；中文文案；默认无注释（契约 JSDoc 例外）；既有面零回归（usage family 只增列，不动既有信号）。
 
 ## Review Focus（最可能咬人；测试已归入各任务）
@@ -24,7 +24,7 @@
 1. **只读铁律**：不触网／无子进程／不写盘——T2 测试禁网＋目录快照＋readiness 不触发 ping（T1）。
 2. **「未复核」标注**：每项 `verified:false`；pen 只看静态配置（key/路径/托管存在性），不执行 `pen status`（T1）。
 3. **masked 不漏**：`llm.key`＝`****<last4>`、`jira.email` masked；无凭据时字段为 `null` 而非空串（T1）。
-4. **降级如实**：store 抛错→对应段 `null`＋`degraded`；坏清单只计数 `unreadable`；坏 `flows.json` 不崩整包（T2）。
+4. **降级如实（含静默降级）**：store 抛错→对应段 `null`＋`degraded`；**store 为内存实现（PG 不可用）→同样 `degraded` 明示**（否则全空数据会被当成「干净项目」骗过排障）；坏清单只计数 `unreadable`；坏 `flows.json` 不崩整包（T2）。
 5. **口径同源**：来源文案用 `provenanceOf`、用例最新份按 feature.key 首见（列表新→旧）、裁决计数用 `collectVerdictExits`（§13.108 口径）——与既有面逐字一致（T2）。
 
 ---
@@ -52,17 +52,19 @@ export interface ReadinessReport {
     ready: boolean; missing: string[]; name: string | null; model: string | null;
     baseUrl: string | null; key: string | null; detail: string; verified: false;
   };
+  /** 读取降级说明（如条目登记不可用）；由装配层并入 payload.degraded。 */
+  degraded: string[];
 }
 export async function staticReadiness(runtime: Runtime, deps?: StaticReadinessDeps): Promise<ReadinessReport>;
 ```
 - 行为钉死：
   - **figma**：`checkFigma(runtime)`；ready=`need===null`；missing=`need?.missing ?? []`；detail `FIGMA_ACCESS_TOKEN 已配置（未复核）`／`缺 FIGMA_ACCESS_TOKEN`。
-  - **pen**：`env = penEnvFrom(runtime.project.dotenvValues ?? {}, deps.env ?? process.env)`；`PEN_CLI_KEY` 存在→ready true、detail `PEN_CLI_KEY 已配置（登录状态未复核）`；否则 `cli = resolvePenCliPath(env, deps.platform ?? process.platform, deps.exists ? { exists: deps.exists } : {})`：`source==="env"`→ready true、detail `AOS_PEN_CLI_PATH=${cli.path}（登录状态未复核）`；`source==="managed"`→ready true、detail `托管安装：${cli.path}（登录状态未复核）`；`source==="path"`→ready **false**、detail `未检测到 pen 配置（PATH 兜底未复核；howTo：pen login / 项目 .env 写 PEN_CLI_KEY / AOS_PEN_CLI_PATH；首次调用可自动托管安装）`。
+  - **pen**：`env = penEnvFrom(runtime.project.dotenvValues ?? {}, deps.env ?? process.env)`；`PEN_CLI_KEY` 存在→ready true、detail `PEN_CLI_KEY 已配置（登录状态未复核）`；否则 `cli = resolvePenCliPath(env, deps.platform ?? process.platform, deps.exists ? { exists: deps.exists } : {})`：`source==="env"`→ready true、detail `AOS_PEN_CLI_PATH=${cli.path}（登录状态未复核）`；`source==="managed"`→ready true、detail `托管安装：${cli.path}（登录状态未复核）`；`source==="path"`→ready **false**、detail `未检测到 pen 配置（PATH 兜底未复核；howTo：pen login / 项目 .env 写 PEN_CLI_KEY / AOS_PEN_CLI_PATH；首次调用可自动托管安装）`。（PATH 兜底判 not ready 为**有意取舍**：静态面先问不猜，detail 自带 howTo；实际可用性由流程工具首步复核。）
   - **jira**：`config = runtime.jiraConfig()`；ready=`config.configured`；missing=`config.missing`；site=`config.siteUrl`；email=`config.email === null ? null : maskSecret(config.email)`；detail `站点 ${site}（凭证未复核）` 或 `缺 ${missing.join(" / ")}`。
-  - **llm**：`entry = await runtime.activeEntry()`；ready=`entry!==null && model/baseUrl/apiKey 均非空`；missing 按缺失列出 `["model"|"base_url"|"api_key"]`；name/model/baseUrl 原样、key=`apiKey===null?null:maskSecret(apiKey)`；detail `条目「${name}」（未复核）` 或 `未配置（aos_configure / 项目 .env）`。
+  - **llm**：`runtime.activeEntry()` 包 try/catch（条目可落 PG，异常不得外溢）：成功→ready=`entry!==null && model/baseUrl/apiKey 均非空`；missing 按缺失列出 `["model"|"base_url"|"api_key"]`；name/model/baseUrl 原样、key=`apiKey===null?null:maskSecret(apiKey)`；detail `条目「${name}」（未复核）` 或 `未配置（aos_configure / 项目 .env）`。失败→ready false、missing `[]`、各 meta 字段 null、detail `LLM 条目读取降级：<err>（未复核）`、`degraded` push `LLM 条目读取降级：<err>`。
   - 全部 `verified: false`；实现**不得**出现 fetch/child_process。
 
-- [ ] **Step 1: 写失败测试**（stub runtime：`{project:{dotenvValues}, jiraConfig, activeEntry}`）：figma 三态；pen 四态（key／env 路径／托管：`AOS_PEN_CLI_DIR`＋`exists:()=>true`／兜底）；jira configured（site 原样、email `****`尾4）与缺（missing 逐字）；llm 完整（key masked）与缺 key（ready false＋missing）；全项 `verified===false`；全局 `fetch` 替换为抛错（禁网）。
+- [ ] **Step 1: 写失败测试**（stub runtime：`{project:{dotenvValues}, jiraConfig, activeEntry}`）：figma 三态；pen 四态（key／env 路径／托管：`AOS_PEN_CLI_DIR`＋`exists:()=>true`／兜底）；jira configured（site 原样、email `****`尾4）与缺（missing 逐字）；llm 完整（key masked）与缺 key（ready false＋missing）；**llm `activeEntry` 抛错→ready false＋detail 提及降级＋`degraded` 一条且 `staticReadiness` 不抛**；全项 `verified===false`；全局 `fetch` 替换为抛错（禁网）。
 - [ ] **Step 2: 红**（`npm run test:file -- test/workflow-readiness.test.js`）。
 - [ ] **Step 3: 实现**。**Step 4: 绿**。
 - [ ] **Step 5: 提交**：`git commit -m "feat(workflow): static readiness probes for project archive"`
@@ -101,35 +103,38 @@ export async function projectArchive(runtime: Runtime, deps?: ProjectArchiveDeps
     provenance: { screens: Record<string, number>; edges: Record<string, number> }; // resolveProvenance 计；缺省计 legacy-unknown
   },
   caseSets: null | {
-    total: number; imported: number; generated: number; features: number;
+    total: number; imported: number; generated: number; features: number; truncated: boolean; // 计数为已扫描窗口（≤ARCHIVE_CASE_SETS_LIMIT）；truncated=窗口打满（可能还有更早份）
     latest: Array<{ feature: string; cases: number; provenance: string; createdAt: string }>; // 每 feature.key 首见，≤10
   },
   runs: {
     total: number; unreadable: number;
     recent: Array<{ runId: string; source: string; startedAt: string; finishedAt: string; total: number; passed: number; failed: number; gate: "pass" | "fail"; exitCode: number; failureDomains: Record<string, number> }>; // kind==="ok" 的前 10 件
   },
-  verdicts: null | { runsScanned: number; caseDefects: number; environment: number; appDefects: number; jiraKeys: number },
+  verdicts: null | { runsScanned: number; caseDefects: number; environment: number; appDefects: number; jiraKeys: number }, // jiraKeys＝扫描窗口内「全部 cases」的去重非空 jira_issue_key（独立于 verdict；覆盖 verify_jira_issue 的 D9 自动关联）
   readiness: ReadinessReport,
   degraded: string[]
 }
 ```
 - 行为钉死：
   - `design`：`flowsPath = <design>/flows.json`；不存在→`null`；存在但 `loadDesignFlowGraph` 为 null→`null`＋degraded `flows.json 存在但不可解析（已略过设计血统）`；正常→按上形状（`savedAt` 取 `fs.statSync` mtime，读失败→null）；`source` 由 `readFlowDocumentMeta`（penPath 优先→`pen:<path>`，否则 fileKey→`figma:<fileKey>`，都缺→null）。
-  - `caseSets`：`(deps.listCaseSets ?? (rt,limit)=>rt.store.listCaseSets(rt.project.rootDir,limit))(runtime, ARCHIVE_CASE_SETS_LIMIT)`；抛错→`null`＋degraded `用例库读取降级：<err>`；否则 imported/generated 按 `source` 前缀 `imported:` 计，`features`=去重 `feature.key` 数，`latest` 按列表序（新→旧）每 key 首见（`provenanceOf(set.source)`、`set.createdAt`）取前 10。
+  - **内存降级检测（先例 `suite-command.ts`）**：`runtime.store !== undefined && runtime.store.kind !== "postgres"` → `degraded.push("登记读自内存存储（PostgreSQL 不可用），用例库/裁决数据可能不完整")`（两段照常返回；stub/注入 deps 场景以 `store:{kind:"postgres"}` 保持干净，内存用例显式 `kind:"memory"`）。
+  - `caseSets`：`(deps.listCaseSets ?? (rt,limit)=>rt.store.listCaseSets(rt.project.rootDir,limit))(runtime, ARCHIVE_CASE_SETS_LIMIT)`；抛错→`null`＋degraded `用例库读取降级：<err>`；否则 imported/generated 按 `source` 前缀 `imported:` 计，`features`=去重 `feature.key` 数，`truncated = sets.length >= ARCHIVE_CASE_SETS_LIMIT`，`latest` 按列表序（新→旧）每 key 首见（`provenanceOf(set.source)`、`set.createdAt`）取前 10。
   - `runs`：`runManifestFileNames(configDirAbs)`（新→旧）——`total`=文件数；前 `ARCHIVE_RUNS_LIMIT` 件逐一 `loadRunManifest`：`kind==="ok"`→recent 行（gate=`manifest.gate.result`、exitCode=`manifest.gate.exitCode`、failureDomains=原样），否则 `unreadable++`。
-  - `verdicts`：`(deps.listRuns ?? (rt,limit)=>rt.store.listSuiteRuns(rt.project.rootDir,{limit}))(runtime, ARCHIVE_VERDICT_RUNS_LIMIT)`；抛错→`null`＋degraded `裁决摘要读取降级：<err>`；否则 `collectVerdictExits(runs)`→三组长度＋`jiraKeys`=三组中出现过的非空 `jiraKey` 去重数；`runsScanned`=入参行数。
+  - `verdicts`：`(deps.listRuns ?? (rt,limit)=>rt.store.listSuiteRuns(rt.project.rootDir,{limit}))(runtime, ARCHIVE_VERDICT_RUNS_LIMIT)`（排序依赖 store 契约「返回按 createdAt 新→旧」，`db/types.ts:413` 已声明）；抛错→`null`＋degraded `裁决摘要读取降级：<err>`；否则 `collectVerdictExits(runs)`→三组长度（其**只收有 verdict 的用例**，§13.108 口径）；**`jiraKeys` 不走 `collectVerdictExits`**——直接扫 `runs[].cases[].jiraIssueKey` 全部去重非空值（D9 自动关联无 verdict，必须可见）；`runsScanned`=入参行数（已扫描窗口语义）。
+  - `degraded` 组装顺序：内存 store 提示 → design 坏件 → caseSets 读取降级 → verdicts 读取降级 → `readiness.degraded`。`runs.unreadable` 仅计扫描窗口（前 `ARCHIVE_RUNS_LIMIT` 件）内的坏件；`total` 为清单文件总数（语义不对称在此声明）。
   - `readiness`：`deps.readiness ?? staticReadiness`(runtime)。
   - 只读：除上述读取外无 fetch/child_process/写盘。
 - 测试矩阵（temp 目录＋stub runtime＋deps 注入）：
-  1. 空项目：`design:null`、`runs:{total:0,unreadable:0,recent:[]}`、`caseSets` 空计数、`verdicts` 0、readiness 全 not ready、`degraded:[]`。
+  1. 空项目：`design:null`、`runs:{total:0,unreadable:0,recent:[]}`、`caseSets` 空计数（`truncated:false`）、`verdicts` 0、readiness 全 not ready、`degraded:[]`（stub `store:{kind:"postgres"}`）。
   2. 写一份 figma 形状 `flows.json`（含 explicit/inferred/缺省 provenance 的屏与边、fileKey、entryScreens、unresolved）→ design 段计数/来源/`savedAt`/provenance 三键（含 legacy-unknown）。
   3. 坏 `flows.json`→ design null＋degraded 提及。
   4. 批次清单 3 件（2 件正常、1 件坏 JSON）→ `recent` 2 行（runId/gate/failureDomains 回显）、`unreadable:1`。
-  5. caseSets：生成份＋导入份混合、同 featureKey 多份（新→旧）→ `imported/generated/features` 计数、`latest` 首见与 `provenance` 文案（`导入自`/`生成自`）。
-  6. verdicts：stub runs（含 verdict + jiraIssueKey 重复项）→ 三组计数与 `jiraKeys` 去重。
-  7. store 抛错→对应段 `null`＋`degraded` 两条，其余照常 `ok:true`。
-  8. 禁网（全局 fetch 抛错）＋调用前后项目目录文件清单快照一致（不写盘）。
-- [ ] **Step 1: 写失败测试**（矩阵 1–8）。**Step 2: 红→实现→绿**。
+  5. caseSets：生成份＋导入份混合、同 featureKey 多份（新→旧）→ `imported/generated/features` 计数、`latest` 首见与 `provenance` 文案（`导入自`/`生成自`）；**与 `latestFeatures` 交叉锁定**（同输入下 latest 的 feature/cases/provenance 三元组与 `latestFeatures` 输出一致）；窗口打满（200 件）→ `truncated:true`。
+  6. verdicts：stub runs（含 verdict + jiraIssueKey；**另含一条无 verdict 但 `jiraIssueKey` 非空的用例**，模拟 D9 自动关联）→ 三组计数与 `jiraKeys` 含该 key（去重）。
+  7. store 抛错（注入 deps 抛错）→对应段 `null`＋`degraded` 两条，其余照常 `ok:true`。
+  8. **内存降级**：`store:{kind:"memory"}`＋deps 返回数据 → `degraded` 含「登记读自内存存储」；数据仍回显（不丢）。
+  9. 禁网（全局 fetch 抛错）＋调用前后项目目录文件清单快照一致（不写盘）。
+- [ ] **Step 1: 写失败测试**（矩阵 1–9）。**Step 2: 红→实现→绿**。
 - [ ] **Step 4: 绿**＋`npm run test:file -- test/workflow-project-archive.test.js test/workflow-case-selection.test.js`。
 - [ ] **Step 5: 提交**：`git commit -m "feat(workflow): project_archive read-only summary assembly"`
 
@@ -156,19 +161,20 @@ export async function projectArchive(runtime: Runtime, deps?: ProjectArchiveDeps
 **Files:**
 - Modify: `README.md`（工具表 `project_archive` 行）、`AGENTS.md`（设计流水线段一句：档案入口）、`DESIGN.md`（§13.122 实施记录：范围、口径（只读/未复核/masked/降级/口径同源）、测试数）。
 
-- [ ] **Step 1: 文档三处**（与 T2 payload 口径一致）。
+- [ ] **Step 1: 文档三处**（与 T2 payload 口径一致；DESIGN §13.122 记一笔：archive `degraded` 的非空计数事件属 D12 服务侧候选，spec 未列，留待下轮）。
 - [ ] **Step 2: 全量回归** `npm run build && npm test && npm run lint`。
-- [ ] **Step 3: 残留扫描**（新文件无 `fetch`/`child_process`/`writeFile`，确认只读铁律；新工具名装配点对照）。
+- [ ] **Step 3: 残留扫描**（新文件无 `fetch`/`child_process`/写原语（`writeFile|writeFileSync|mkdir|copyFile|appendFile|rm`）；矩阵 9 快照为真防线；新工具名装配点对照）。
 - [ ] **Step 4: 提交**：`git commit -m "docs: project_archive (unified service ④) record"`
 
 ---
 
 ## Self-Review 记录（写稿人自查）
 
-- **Spec 覆盖**：D7 六段（项目与栈/设计血统/用例库/最近运行/裁决与 Jira/前置状态）→T2/T1；D14（静态＋未复核＋无子进程）→T1/T2；§7 `project_archive {}`→T3；§9（archive 不适用三态；只读）→T2 矩阵 8；`design` 缺源文件→null 不误报。
+- **Spec 覆盖**：D7 六段（项目与栈/设计血统/用例库/最近运行/裁决与 Jira/前置状态）→T2/T1；D14（静态＋未复核＋无子进程）→T1/T2；§7 `project_archive {}`→T3；§9（archive 不适用三态；只读）→T2 矩阵 9；`design` 缺源文件→null 不误报。
 - **类型一致性**：`ReadinessReport`/`ProjectArchiveDeps`/常量跨任务同名；`CaseSetRecord`/`SuiteRunRecord` 沿用既有类型；`collectVerdictExits` 入参形状与 `SuiteRunRecord` 兼容（featureKey/caseSetId/cases 字段齐）。
-- **比例**：4 任务；T2 行为矩阵 8 例；无整段实现转写；payload 钉死字段树供实现与测试共用。
-- **留白（随实现/复核收敛）**：`degraded` 文案措辞、`latest` 条数上限 10、`unreadable` 是否含 `newer`（本稿计入）、pen 兜底态文案——均在行为处写明，复核可调。
+- **比例**：4 任务；T2 行为矩阵 9 例；无整段实现转写；payload 钉死字段树供实现与测试共用。
+- **评审吸收（2026-10-18 外部评审，10 条；核验：`collectVerdictExits` 只收有 verdict 的用例——D9 自动关联原不可见；`activeEntry()` 经条目登记可落 PG；`store.kind` 与 `suite-command` 先例俱在；`listSuiteRuns` 排序契约见 `db/types.ts:413`）**：① store 内存降级检测（`kind !== "postgres"` → degraded；矩阵 8）；② `activeEntry` try/catch 降级（T1，`ReadinessReport` 增 `degraded[]`）；③ `jiraKeys` 改扫全部 cases；④ `caseSets.truncated` 披露窗口；⑤ `latest` 与 `latestFeatures` 交叉锁定测试；⑥ `listSuiteRuns` 排序契约引用；⑦ `runs.unreadable` 窗口语义声明；⑧ pen 兜底判 not ready 为有意取舍；⑨ T4 残留扫描措辞放宽；⑩ degraded 事件提取留记 DESIGN（下轮）。
+- **留白（随实现/复核收敛）**：`degraded` 文案措辞、`latest` 条数上限 10、`unreadable` 是否含 `newer`（本稿计入）——均在行为处写明，复核可调。
 
 ## Execution Handoff
 
