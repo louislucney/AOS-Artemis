@@ -151,6 +151,19 @@ export async function resolveProjectKey(
   if (byPath) return { rootPath: byPath.rootPath, name: byPath.name };
   const byName = projects.find((project) => project.name === key);
   if (byName) return { rootPath: byName.rootPath, name: byName.name };
+  if (deps.workspaceRoot !== null && path.isAbsolute(key)) {
+    const candidate = path.resolve(key);
+    const within = candidate === deps.workspaceRoot || candidate.startsWith(deps.workspaceRoot + path.sep);
+    if (within) {
+      try {
+        if (fs.statSync(candidate).isDirectory()) {
+          return { rootPath: candidate, name: path.basename(candidate) };
+        }
+      } catch {
+        /* fall through */
+      }
+    }
+  }
   if (deps.workspaceRoot && PROJECT_KEY_RE.test(key) && key !== "." && key !== "..") {
     const rootPath = path.join(deps.workspaceRoot, key);
     try {

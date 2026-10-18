@@ -1683,3 +1683,33 @@ test("panel web: compare 功能对齐 HTML 转义（显示名/源注入不裸出
   assert.match(html.body, /&quot;&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.match(html.body, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });
+
+test("panel web: workspace 内未登记项目可经绝对路径直达（overview 链接同形）", async () => {
+  const store = new MemoryStore();
+  const repo = makeReadyRepo();
+  const workspace = makeTempDir("aos-panel-web-ws-");
+  const projectDir = path.join(workspace, "disk-only");
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, "aos.config.jsonc"), JSON.stringify(baseConfig()), "utf-8");
+  const deps = { store, env: {}, workspaceRoot: workspace, serviceRepo: repo, buildStale: false };
+
+  const direct = await handlePanelRequest(
+    new URL(`http://x/panel.json?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.equal(direct.status, 200);
+  assert.equal(JSON.parse(direct.body).project.name, "disk-only");
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /接入信息/);
+
+  const outside = await handlePanelRequest(
+    new URL(`http://x/panel.json?project=${encodeURIComponent(repo)}`),
+    deps
+  );
+  assert.equal(outside.status, 404, "工作区外绝对路径必须 404");
+});

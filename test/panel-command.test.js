@@ -47,6 +47,10 @@ test("panel --web: serves /panel on an ephemeral port and closes cleanly", async
       const missing = await fetch(`http://127.0.0.1:${webHandle.port}/other`);
       assert.equal(missing.status, 404);
 
+      const root = await fetch(`http://127.0.0.1:${webHandle.port}/`, { redirect: "manual" });
+      assert.equal(root.status, 302);
+      assert.equal(root.headers.get("location"), "/panel");
+
       await webHandle.close();
       await assert.rejects(fetch(webHandle.url));
     }

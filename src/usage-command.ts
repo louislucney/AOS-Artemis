@@ -329,6 +329,11 @@ async function runUsageWeb(options: {
           req.url ?? "/",
           `http://${req.headers.host ?? `${host}:${actualPort}`}`
         );
+        if (req.method === "GET" && url.pathname === "/") {
+          res.writeHead(302, { Location: "/usage" });
+          res.end();
+          return;
+        }
         if (req.method === "GET" && (url.pathname === "/usage" || url.pathname === "/usage.json")) {
           const response = await handleUsageRequest(url, {
             store,

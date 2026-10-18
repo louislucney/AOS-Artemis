@@ -219,6 +219,10 @@ test("usage --web: serves /usage on an ephemeral port and closes cleanly", async
       const res = await fetch(`http://127.0.0.1:${webHandle.port}/usage.json?project=alpha`);
       assert.equal(res.status, 200);
       assert.equal((await res.json()).summary.total, 3);
+
+      const root = await fetch(`http://127.0.0.1:${webHandle.port}/`, { redirect: "manual" });
+      assert.equal(root.status, 302);
+      assert.equal(root.headers.get("location"), "/usage");
       await webHandle.close();
       await assert.rejects(fetch(`${webHandle.url}?project=alpha`));
     }

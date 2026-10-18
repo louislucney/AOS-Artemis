@@ -157,6 +157,11 @@ async function runPanelWeb(options: {
           req.url ?? "/",
           `http://${req.headers.host ?? `${host}:${actualPort}`}`
         );
+        if (req.method === "GET" && url.pathname === "/") {
+          res.writeHead(302, { Location: "/panel" });
+          res.end();
+          return;
+        }
         if (req.method === "GET" && (url.pathname === "/panel" || url.pathname === "/panel.json")) {
           const response = await handlePanelRequest(url, deps);
           res.writeHead(response.status, { "Content-Type": response.contentType });
