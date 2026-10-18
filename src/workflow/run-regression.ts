@@ -1,5 +1,3 @@
-import fs from "node:fs";
-
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { CaseSetRecord } from "../db/types.js";
@@ -8,6 +6,7 @@ import { log as logInfo } from "../log.js";
 import { platformOf } from "../tasks/run-registry.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
+import { latestFeatures, normalizeKeyword, provenanceOf, selectByScope, type CaseTarget } from "./case-selection.js";
 import { defaultListDevices, pickDevice } from "./devices.js";
 import { importTestDocument, type ImportColumns, type ImportedSet } from "./excel-import.js";
 import { checkLlm, type SetupDeps } from "./setup.js";
@@ -27,14 +26,6 @@ export interface RunRegressionDeps {
   listDevices?: () => Promise<Array<{ serial: string }>>;
   setup?: SetupDeps;
   log?: (line: string) => void;
-}
-
-interface RegressionTarget {
-  feature: string;
-  jsonPath: string;
-  cases: number;
-  provenance: string;
-  caseIds?: string[];
 }
 
 const IMPORT_SUGGESTIONS = [
@@ -58,69 +49,7 @@ function trimOrNull(value: string | undefined): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
-function normalizeKeyword(value: string): string {
-  return value.normalize("NFKC").toLowerCase().replace(/\s+/g, "");
-}
-
-function contains(text: string, keyword: string): boolean {
-  return normalizeKeyword(text).includes(keyword);
-}
-
-function provenanceOf(source: string): string {
-  return source.startsWith("imported:") ? `导入自 ${source.slice("imported:".length)}` : `生成自 ${source}`;
-}
-
-function caseIdsMatching(jsonPath: string, keyword: string): string[] {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as { flows?: unknown };
-    const flows = Array.isArray(parsed.flows) ? parsed.flows : [];
-    const ids: string[] = [];
-    for (const entry of flows) {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
-      const record = entry as { id?: unknown; name?: unknown };
-      if (typeof record.name !== "string" || typeof record.id !== "string") continue;
-      if (contains(record.name, keyword)) ids.push(record.id);
-    }
-    return ids;
-  } catch {
-    return [];
-  }
-}
-
-function latestFeatures(sets: CaseSetRecord[]): RegressionTarget[] {
-  const seen = new Set<string>();
-  const targets: RegressionTarget[] = [];
-  for (const set of sets) {
-    for (const feature of set.features) {
-      if (seen.has(feature.key)) continue;
-      seen.add(feature.key);
-      targets.push({
-        feature: feature.name,
-        jsonPath: feature.jsonPath,
-        cases: feature.caseCount,
-        provenance: provenanceOf(set.source)
-      });
-    }
-  }
-  return targets;
-}
-
-function selectByScope(candidates: RegressionTarget[], keyword: string): RegressionTarget[] {
-  const targets: RegressionTarget[] = [];
-  for (const candidate of candidates) {
-    if (contains(candidate.feature, keyword)) {
-      targets.push(candidate);
-      continue;
-    }
-    const caseIds = caseIdsMatching(candidate.jsonPath, keyword);
-    if (caseIds.length > 0) {
-      targets.push({ ...candidate, cases: caseIds.length, caseIds });
-    }
-  }
-  return targets;
-}
-
-function importedTargets(sets: ImportedSet[], sourceId: string): RegressionTarget[] {
+function importedTargets(sets: ImportedSet[], sourceId: string): CaseTarget[] {
   const provenance = provenanceOf(sourceId);
   return sets.map((set) => ({
     feature: set.feature,
@@ -168,7 +97,7 @@ export async function runRegression(
 
   const keyword = scope === null ? null : normalizeKeyword(scope);
   let mode: "import" | "scope" | "all";
-  let targets: RegressionTarget[];
+  let targets: CaseTarget[];
   let importOutcome: "imported" | "skipped" | null = null;
 
   if (excelPath !== null) {
