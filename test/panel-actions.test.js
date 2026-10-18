@@ -145,6 +145,8 @@ test("panel actions: POST tasks 创建成功 / 未知项目 404 / refs 空 400 /
   const tasks = await store.listRegressionTasks(runtime.project.rootDir);
   assert.equal(tasks.length, 1);
   assert.deepEqual(tasks[0].refs, [{ caseSetId: set.id, featureKey: "f-1" }]);
+  const taskAudit = await store.listAudit(runtime.project.rootDir, { domain: "panel" });
+  assert.ok(taskAudit.some((event) => event.action === "action.tasks" && event.result === "ok"));
 
   const unknownProject = await handlePanelActionRequest(
     request({ body: { project: "nope", refs: [] } }),
@@ -439,6 +441,11 @@ test("panel issues: 成功建单（模板字段/证据 key-trace/回写/响应�
   assert.equal(outcome.results[0].key, "AOS-1");
   assert.equal(outcome.results[0].url, "https://acme.atlassian.net/browse/AOS-1");
   assert.equal(outcome.results[0].evidence, "posted");
+  const issueAudit = await store.listAudit(rootPath, { domain: "issues" });
+  assert.ok(
+    issueAudit.some((event) => event.action === "linked" && event.refs.issueKey === "AOS-1"),
+    "建单回写落审计"
+  );
 
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].project, { key: "AOS" });

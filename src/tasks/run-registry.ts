@@ -1,6 +1,7 @@
 import os from "node:os";
 
 import type { SuiteRunCaseRecord, SuiteRunRecord } from "../db/types.js";
+import { recordAuditSafe } from "../db/audit-event.js";
 import { classifyIosSerial } from "../device/ios.js";
 import type { SuiteRunReport } from "../figma/suite-runner.js";
 import { logWarn } from "../log.js";
@@ -125,6 +126,18 @@ export async function registerSuiteRun(
       run: built.run,
       cases: built.cases,
       createdAt: built.run.finishedAt
+    });
+    await recordAuditSafe(runtime.store, runtime.project.rootDir, {
+      domain: "suite",
+      action: "run.recorded",
+      result: "ok",
+      summary: `批次登记 ${record.id}（${built.run.platform}）`,
+      refs: {
+        runId: record.id,
+        caseSetId: input.caseSetId ?? undefined,
+        featureKey: input.featureKey ?? undefined,
+        taskId: input.regressionTaskId ?? undefined
+      }
     });
     return record.id;
   } catch (error) {

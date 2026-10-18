@@ -1,4 +1,5 @@
 import type { ProjectStore } from "../db/types.js";
+import { recordAuditSafe } from "../db/audit-event.js";
 import { latestFeatureRefs, type ResolvedTaskRef } from "../tasks/feature-refs.js";
 import { errorMessage } from "../util.js";
 
@@ -80,6 +81,13 @@ export async function fireDueSchedules(options: FireSchedulesOptions): Promise<n
         });
         fired += 1;
         io.log(`[schedule] 触发 ${schedule.name} → 任务 ${task.id}`);
+        await recordAuditSafe(options.store, options.rootPath, {
+          domain: "schedule",
+          action: "fired",
+          result: "ok",
+          summary: `触发 ${schedule.name} → 任务 ${task.id}`,
+          refs: { scheduleId: schedule.id, taskId: task.id }
+        });
         await safeUpdateNote(
           options,
           schedule.id,

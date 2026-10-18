@@ -42,6 +42,11 @@ test("importTestDocument: 单模块 → 三件套 + 源副本 + 登记（真实�
   assert.equal(first.ok, true, JSON.stringify(first));
   assert.equal(first.status, "imported");
   assert.equal(first.sets.length, 1);
+  const importAudit = await store.listAudit(runtime.project.rootDir, { domain: "import" });
+  assert.ok(
+    importAudit.some((event) => event.action === "excel.imported" && event.result === "ok"),
+    "导入落审计"
+  );
   const set = first.sets[0];
   assert.equal(set.caseCount, 1);
   assert.equal(set.feature, "cases");

@@ -66,6 +66,7 @@ function rawIssue({ key = "AOS-1", summary = "登录失败", description = detai
 function stubRuntime(dir, { jiraConfigured = true } = {}) {
   return {
     configDirAbs: dir,
+    store: new MemoryStore(),
     project: { rootDir: dir, dotenvValues: {} },
     async activeEntry() {
       return LLM_ENTRY;
@@ -235,7 +236,8 @@ test("verify_jira_issue: 详细单映射命中 → 执行（caseIds 透传）＋
     mappingReply: '{"caseIds":["c1"]}',
     report: reportStub({ cases: [caseStub("c1")] })
   });
-  const payload = payloadOf(await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1" }, deps));
+  const runtime = stubRuntime(dir);
+  const payload = payloadOf(await verifyJiraIssue(runtime, { issueKey: "AOS-1" }, deps));
 
   assert.equal(payload.ok, true);
   assert.deepEqual(payload.ticket, { key: "AOS-1", detailTier: "detailed", summary: "登录失败" });
@@ -258,6 +260,11 @@ test("verify_jira_issue: 详细单映射命中 → 执行（caseIds 透传）＋
 
   assert.equal(payload.writeback.outcome, "sent");
   assert.equal(payload.writeback.action, "created");
+  const audit = await runtime.store.listAudit(dir, { domain: "verify" });
+  assert.ok(
+    audit.some((event) => event.action === "writeback" && event.refs.issueKey === "AOS-1"),
+    "verify 回写落审计"
+  );
   assert.equal(jira.calls.createComment.length, 1);
   const commentText = adfToText(jira.calls.createComment[0].body);
   assert.equal(commentText.includes("【AOS 自动验证】AOS-1 登录失败"), true);

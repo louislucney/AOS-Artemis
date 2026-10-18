@@ -1,6 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { CaseSetRecord } from "../db/types.js";
+import { recordAuditSafe } from "../db/audit-event.js";
 import { executeSuiteBatch } from "../figma/suite-batch.js";
 import type { SuiteCaseResult } from "../figma/suite-runner.js";
 import { adfToText } from "../jira/adf.js";
@@ -460,14 +461,27 @@ export async function verifyJiraIssue(
       deps.associateCase ??
       ((rt: Runtime, input: { runId: string; caseId: string; jiraKey: string }) =>
         rt.store.setCaseIssueKey({ rootPath: rt.project.rootDir, ...input }));
+    let attempted = 0;
+    let linked = 0;
     for (const run of runs) {
       for (const caseId of run.caseIds) {
+        attempted += 1;
         try {
           await associate(runtime, { runId: run.runId, caseId, jiraKey: issue.key });
+          linked += 1;
         } catch (error) {
           writebackErrors.push(`关联 ${caseId}: ${errorMessage(error)}`);
         }
       }
+    }
+    if (attempted > 0) {
+      await recordAuditSafe(runtime.store, runtime.project.rootDir, {
+        domain: "verify",
+        action: "writeback",
+        result: linked > 0 ? "ok" : "failed",
+        summary: `verify 回写关联 ${linked}/${attempted}（${issue.key}）`,
+        refs: { issueKey: issue.key }
+      });
     }
     if (writebackErrors.length > 0) writeback.errors = writebackErrors;
   }

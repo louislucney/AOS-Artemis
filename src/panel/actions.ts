@@ -1,4 +1,5 @@
 import type { CaseVerdict } from "../db/types.js";
+import { recordAuditSafe } from "../db/audit-event.js";
 import { errorMessage, log } from "../util.js";
 import { createRunCaseIssues, MAX_ISSUE_ITEMS, normalizeLabels } from "./issues.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
@@ -53,17 +54,43 @@ export async function handlePanelActionRequest(
     if (request.url.pathname === "/panel/api/tasks") {
       const response = await createTask(deps, resolved.rootPath, payload);
       if (response.status === 200) deps.cache?.clear();
+      await recordAuditSafe(deps.store, resolved.rootPath, {
+        domain: "panel",
+        action: "action.tasks",
+        result: response.status === 200 ? "ok" : "failed",
+        summary: `面板动作 tasks → ${response.status}`
+      });
       return response;
     }
     if (request.url.pathname === "/panel/api/verdicts") {
-      return await saveVerdicts(deps, resolved.rootPath, payload);
+      const response = await saveVerdicts(deps, resolved.rootPath, payload);
+      await recordAuditSafe(deps.store, resolved.rootPath, {
+        domain: "panel",
+        action: "action.verdicts",
+        result: response.status === 200 ? "ok" : "failed",
+        summary: `面板动作 verdicts → ${response.status}`
+      });
+      return response;
     }
     if (request.url.pathname === "/panel/api/issues") {
-      return await createIssues(deps, resolved.rootPath, payload);
+      const response = await createIssues(deps, resolved.rootPath, payload);
+      await recordAuditSafe(deps.store, resolved.rootPath, {
+        domain: "panel",
+        action: "action.issues",
+        result: response.status === 200 ? "ok" : "failed",
+        summary: `面板动作 issues → ${response.status}`
+      });
+      return response;
     }
     return json(404, { error: "not found" });
   } catch (error) {
     log(`面板动作失败: ${errorMessage(error)}`);
+    await recordAuditSafe(deps.store, resolved.rootPath, {
+      domain: "panel",
+      action: "action.error",
+      result: "failed",
+      summary: `面板动作异常：${errorMessage(error)}`
+    });
     return json(500, { ok: false, error: "internal error" });
   }
 }

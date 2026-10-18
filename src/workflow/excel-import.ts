@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { caseSetStem, caseSetsDir, saveCaseSetFiles } from "../figma/case-sets.js";
 import { REAL_DATA_CLAUSE } from "../figma/data-policy.js";
+import { recordAuditSafe } from "../db/audit-event.js";
 import { renderTestsWorkbook } from "../figma/test-xlsx.js";
 import type { GeneratedTest } from "../figma/test-gen.js";
 import type { Runtime } from "../runtime.js";
@@ -374,7 +375,7 @@ export async function importTestDocument(
     )
     .digest("hex");
   try {
-    await runtime.store.recordCaseSet({
+    const inserted = await runtime.store.recordCaseSet({
       rootPath: runtime.project.rootDir,
       source: sourceId,
       designName: null,
@@ -391,8 +392,22 @@ export async function importTestDocument(
         xlsxPath: set.xlsxPath
       }))
     });
+    await recordAuditSafe(runtime.store, runtime.project.rootDir, {
+      domain: "import",
+      action: "excel.imported",
+      result: "ok",
+      summary: `导入 ${path.parse(excelPath).name}（${sets.length} 功能）`,
+      refs: { file: excelPath, caseSetId: inserted.id }
+    });
   } catch (error) {
     cleanupFiles(createdFiles);
+    await recordAuditSafe(runtime.store, runtime.project.rootDir, {
+      domain: "import",
+      action: "excel.imported",
+      result: "failed",
+      summary: `导入失败：${errorMessage(error)}`,
+      refs: { file: excelPath }
+    });
     return { ok: false, error: `用例集登记失败（已回滚本地归档）：${errorMessage(error)}` };
   }
 

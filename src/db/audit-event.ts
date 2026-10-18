@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import type { AuditEventInput, AuditEventRecord } from "./types.js";
+import { errorMessage, log } from "../util.js";
+import type { AuditEventInput, AuditEventRecord, ProjectStore } from "./types.js";
 
 export const AUDIT_SUMMARY_MAX = 300;
 export const AUDIT_DEFAULT_LIMIT = 200;
@@ -26,4 +27,17 @@ export function normalizeAuditLimit(limit?: number): number {
   return typeof limit === "number" && Number.isFinite(limit) && limit > 0
     ? Math.floor(limit)
     : AUDIT_DEFAULT_LIMIT;
+}
+
+/** 内部编排审计（best-effort）：写入失败仅告警，绝不影响主流程。 */
+export async function recordAuditSafe(
+  store: ProjectStore,
+  rootPath: string,
+  input: AuditEventInput
+): Promise<void> {
+  try {
+    await store.recordAudit(rootPath, input);
+  } catch (error) {
+    log(`审计写入失败（忽略）：${errorMessage(error)}`);
+  }
 }

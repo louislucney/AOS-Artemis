@@ -1,4 +1,5 @@
 import type { ProjectStore, SuiteRunCaseRecord, SuiteRunRecord } from "../db/types.js";
+import { recordAuditSafe } from "../db/audit-event.js";
 import {
   buildRegressionIssueDescription,
   buildRegressionIssueSummary,
@@ -213,6 +214,13 @@ async function processItem(
 
   try {
     await store.setCaseIssueKey({ rootPath: ctx.rootPath, runId, caseId, jiraKey: key });
+    await recordAuditSafe(store, ctx.rootPath, {
+      domain: "issues",
+      action: "linked",
+      result: "ok",
+      summary: `回写单号 ${key}`,
+      refs: { runId, caseId, issueKey: key }
+    });
   } catch (error) {
     log(`建单回写失败（${runId}/${caseId}/${key}）：${errorMessage(error)}`);
   }
