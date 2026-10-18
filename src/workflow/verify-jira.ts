@@ -35,7 +35,7 @@ export interface VerifyJiraIssueDeps {
   setup?: SetupDeps;
   chat?: ChatFn;
   listDevices?: () => Promise<Array<{ serial: string }>>;
-  listSets?: (runtime: Runtime, limit: number) => Promise<CaseSetRecord[]>;
+  listSets?: (runtime: Runtime) => Promise<CaseSetRecord[]>;
   executeBatch?: typeof executeSuiteBatch;
   resolveJira?: typeof resolveJiraClient;
   postEvidence?: typeof postEvidenceToIssue;
@@ -197,7 +197,7 @@ export async function verifyJiraIssue(
   recordStep({ step: "device", device });
 
   const listSets =
-    deps.listSets ?? ((rt: Runtime, limit: number) => rt.store.listCaseSets(rt.project.rootDir, limit));
+    deps.listSets ?? ((rt: Runtime) => rt.store.listCaseSets(rt.project.rootDir));
   const keyword = scope === null ? null : normalizeKeyword(scope);
   let mode: "scope" | "mapped" | "ticket";
   let targets: CaseTarget[] = [];
@@ -208,7 +208,7 @@ export async function verifyJiraIssue(
 
   if (keyword !== null) {
     mode = "scope";
-    const features = latestFeatures(await listSets(runtime, 200));
+    const features = latestFeatures(await listSets(runtime));
     targets = selectByScope(features, keyword);
     if (targets.length === 0) {
       return jsonResult({
@@ -221,7 +221,7 @@ export async function verifyJiraIssue(
     }
   } else {
     const features: Array<{ target: CaseTarget; cases: Array<{ id: string; name: string }> }> = [];
-    for (const target of latestFeatures(await listSets(runtime, 200))) {
+    for (const target of latestFeatures(await listSets(runtime))) {
       const cases = readCaseSummaries(target.jsonPath);
       if (cases.length === 0) {
         logLine(`verify_jira_issue: 候选用例文件不可读，已跳过：${target.jsonPath}`);

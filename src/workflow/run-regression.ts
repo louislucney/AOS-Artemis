@@ -21,7 +21,7 @@ export interface RunRegressionArgs {
 
 export interface RunRegressionDeps {
   importDocument?: typeof importTestDocument;
-  listSets?: (runtime: Runtime, limit: number) => Promise<CaseSetRecord[]>;
+  listSets?: (runtime: Runtime) => Promise<CaseSetRecord[]>;
   executeBatch?: typeof executeSuiteBatch;
   listDevices?: () => Promise<Array<{ serial: string }>>;
   setup?: SetupDeps;
@@ -153,8 +153,8 @@ export async function runRegression(
     }
   } else {
     const listSets =
-      deps.listSets ?? ((rt: Runtime, limit: number) => rt.store.listCaseSets(rt.project.rootDir, limit));
-    const sets = await listSets(runtime, 200);
+      deps.listSets ?? ((rt: Runtime) => rt.store.listCaseSets(rt.project.rootDir));
+    const sets = await listSets(runtime);
     const latest = latestFeatures(sets);
     if (keyword !== null) {
       mode = "scope";

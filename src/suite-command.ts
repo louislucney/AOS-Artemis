@@ -282,7 +282,7 @@ async function suiteRunTask(
     say("注意: --fail-on-uncovered 在 task 模式忽略（子集天然不完整）");
   }
 
-  const sets = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+  const sets = await runtime.store.listCaseSets(runtime.project.rootDir);
   const setById = new Map(sets.map((set) => [set.id, set]));
   const resolvedRefs: ResolvedTaskRef[] = [];
   for (const ref of task.refs) {
@@ -1558,7 +1558,7 @@ async function suiteTaskCreate(
     );
     return 2;
   }
-  const sets = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+  const sets = await runtime.store.listCaseSets(runtime.project.rootDir);
   const latest = latestFeatureRefs(sets);
   const resolved: ResolvedTaskRef[] = [];
   const missing: string[] = [];
@@ -1720,7 +1720,7 @@ async function suiteScheduleAdd(
     return 2;
   }
   const rootPath = runtime.project.rootDir;
-  const sets = await runtime.store.listCaseSets(rootPath, 50);
+  const sets = await runtime.store.listCaseSets(rootPath);
   const latest = latestFeatureRefs(sets);
   const missing = refs.filter((key) => !latest.has(key));
   if (missing.length > 0) {
@@ -2006,7 +2006,7 @@ async function suiteTaskShow(
     io.errorLog(`未找到回归任务 ${id}`);
     return 2;
   }
-  const sets = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+  const sets = await runtime.store.listCaseSets(runtime.project.rootDir);
   const byId = new Map(sets.map((set) => [set.id, set]));
   const resolved = task.refs.map((ref) => {
     const set = byId.get(ref.caseSetId);

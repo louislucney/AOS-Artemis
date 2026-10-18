@@ -85,7 +85,7 @@ async function createTask(
   if (refs.length === 0) return json(400, { error: "refs 为空或格式非法" });
   if (refs.length > MAX_REFS) return json(400, { error: `refs 数量超过上限 ${MAX_REFS}` });
 
-  const sets = await deps.store.listCaseSets(rootPath, 50);
+  const sets = await deps.store.listCaseSets(rootPath);
   const known = new Set(
     sets.flatMap((set) => set.features.map((feature) => `${set.id}|${feature.key}`))
   );

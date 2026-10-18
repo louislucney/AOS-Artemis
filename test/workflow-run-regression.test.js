@@ -9,7 +9,7 @@ import ExcelJS from "exceljs";
 import { MemoryStore } from "../dist/db/memory.js";
 import { importTestDocument } from "../dist/workflow/excel-import.js";
 import { runRegression } from "../dist/workflow/run-regression.js";
-import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
+import { baseConfig, loadTestRuntime, makeTempProject, seedCaseSets } from "./helpers.js";
 
 const LLM_ENTRY = {
   name: "deepseek",
@@ -372,4 +372,40 @@ test("run_regression: 同一 Excel 更新后只跑最新份（featureKey 稳定�
   assert.equal(select.targets[0].cases, 2);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].options.testsPath, v2.sets[0].jsonPath);
+});
+
+test("run_regression: >200 份时 scope 仍命中窗口外功能（默认读取全量）", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const { runtime } = await loadTestRuntime(dir, {
+    store,
+    env: {
+      AOS_LLM_NAME: "deepseek",
+      AOS_LLM_MODEL: "deepseek-chat",
+      AOS_LLM_BASE_URL: "https://api.deepseek.com/v1",
+      AOS_LLM_API_KEY: "sk-test-key"
+    }
+  });
+  const { targetJsonPath } = await seedCaseSets(
+    store,
+    runtime.project.rootDir,
+    path.join(runtime.configDirAbs, "design"),
+    { count: 201 }
+  );
+  const executed = [];
+  const deps = {
+    setup: { chat: async () => "pong" },
+    listDevices: async () => [{ serial: "dev-1" }],
+    executeBatch: async (rt, request) => {
+      executed.push(request);
+      return batchStub(reportStub({ cases: [caseStub("case-1", "t1")] }), "/p/runs/1.json");
+    },
+    log: () => {}
+  };
+  const payload = payloadOf(await runRegression(runtime, { scope: "目标功能" }, deps));
+  assert.equal(payload.ok, true, JSON.stringify(payload));
+  const select = payload.steps.find((step) => step.step === "select");
+  assert.equal(select.mode, "scope");
+  assert.equal(select.targets[0].feature, "目标功能");
+  assert.equal(executed[0].options.testsPath, targetJsonPath);
 });

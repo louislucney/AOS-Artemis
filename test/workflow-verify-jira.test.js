@@ -6,6 +6,8 @@ import test from "node:test";
 
 import { adfToText } from "../dist/jira/adf.js";
 import { buildVerifyComment } from "../dist/jira/verify-comment.js";
+import { MemoryStore } from "../dist/db/memory.js";
+import { seedCaseSets } from "./helpers.js";
 import { verifyJiraIssue } from "../dist/workflow/verify-jira.js";
 
 const LLM_ENTRY = {
@@ -646,4 +648,21 @@ test("verify_jira_issue: dryRun 预览带 evidenceTruncated（与发送路径同
   assert.equal(payload.writeback.evidencePlanned.length, 10);
   assert.equal(payload.writeback.evidenceTruncated, 1);
   assert.equal(calls.execute.length, 1);
+});
+
+test("verify_jira_issue: >200 份时窗口外功能仍进入候选（默认读取全量）", async () => {
+  const dir = tempDir();
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: dir, name: "p" });
+  const { targetJsonPath } = await seedCaseSets(store, dir, path.join(dir, "design"), { count: 201 });
+  const runtime = { ...stubRuntime(dir), store };
+  const { deps, calls } = makeDeps(dir, {
+    mappingReply: '{"caseIds":["case-1"]}',
+    report: reportStub({ cases: [caseStub("case-1")] })
+  });
+  delete deps.listSets;
+  const payload = payloadOf(await verifyJiraIssue(runtime, { issueKey: "AOS-1" }, deps));
+  assert.equal(payload.ok, true, JSON.stringify(payload));
+  assert.deepEqual(payload.mapping, { selected: 1 });
+  assert.equal(calls.execute[0].options.testsPath, targetJsonPath);
 });

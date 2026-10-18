@@ -6,7 +6,7 @@ import test from "node:test";
 import { buildFlowGraph } from "../dist/figma/flows.js";
 import { figmaGenerateTests } from "../dist/figma/test-gen.js";
 import { MemoryStore } from "../dist/db/memory.js";
-import { baseConfig, loadTestRuntime, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
+import { baseConfig, loadTestRuntime, makeTempProject, parseToolResult, seedCaseSets, StubProxy } from "./helpers.js";
 import { pagedFlowDocument, syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
 
 const NOW = () => new Date("2026-10-14T15:30:00.000Z");
@@ -304,4 +304,49 @@ test("figma_generate_tests: 导入集不参与功能身份继承（imp- key 不�
   for (const feature of payload.features) {
     assert.ok(!feature.key.startsWith("imp-"), `生成 key 不应继承导入集: ${feature.key}`);
   }
+});
+
+test("figma_generate_tests: 窗口外老功能仍继承身份（>50 份）", async () => {
+  const dir = makeFlowsProject(pagedFlowDocument(), true);
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+
+  const first = parseToolResult(await figmaGenerateTests(runtime, {}, { now: NOW, chat: null }));
+  const loginKey = first.features.find((entry) => entry.name === "登录").key;
+
+  const flowsPath = path.join(dir, ".artemis", "design", "flows.json");
+  const graph = JSON.parse(fs.readFileSync(flowsPath, "utf-8"));
+  graph.screens.push({
+    id: "20:9",
+    name: "登录-完成",
+    suggestedRoute: "/login-done",
+    childNames: [],
+    textHints: [],
+    page: "登录",
+    provenance: "explicit",
+    confidence: "high"
+  });
+  graph.edges.push({
+    from: { id: "20:3", name: "登录-验证" },
+    to: { id: "20:9", name: "登录-完成" },
+    element: { id: "20:10", name: "Done", type: "BUTTON" },
+    textHints: [],
+    trigger: "ON_CLICK",
+    actionType: "NODE",
+    provenance: "explicit",
+    confidence: "high"
+  });
+  fs.writeFileSync(flowsPath, JSON.stringify(graph), "utf-8");
+
+  await seedCaseSets(runtime.store, runtime.project.rootDir, path.join(runtime.configDirAbs, "design"), {
+    count: 51,
+    createdAtBase: new Date("2026-11-01T00:00:00.000Z")
+  });
+
+  const second = parseToolResult(
+    await figmaGenerateTests(runtime, {}, { now: () => new Date("2026-12-01T00:00:00.000Z"), chat: null })
+  );
+  const secondLogin = second.features.find((entry) => entry.name === "登录");
+  assert.equal(secondLogin.key, loginKey, "最新份在窗口外也须继承同一 key（屏幕变化场景）");
+  assert.equal(secondLogin.screens.length, 3);
 });

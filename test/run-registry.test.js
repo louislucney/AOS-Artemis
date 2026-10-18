@@ -13,7 +13,7 @@ import {
   registerSuiteRun,
   resolveRunRefs
 } from "../dist/tasks/run-registry.js";
-import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
+import { baseConfig, loadTestRuntime, makeTempProject, seedCaseSets } from "./helpers.js";
 
 function caseResult(overrides = {}) {
   return {
@@ -238,4 +238,18 @@ test("loadGeneratedCases: 读取用例的 feature 标签", async () => {
   const cases = loadGeneratedCases(runtime.configDirAbs);
   assert.equal(cases[0].feature, "f-登录-41b473ed");
   assert.equal(cases[1].feature, null);
+});
+
+test("resolveRunRefs: >50 份仍归因窗口外既有份", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const { runtime } = await loadTestRuntime(dir, { store });
+  const { targetJsonPath } = await seedCaseSets(
+    store,
+    runtime.project.rootDir,
+    path.join(runtime.configDirAbs, "design")
+  );
+  const ref = await resolveRunRefs(runtime, targetJsonPath);
+  assert.ok(ref, "应能归因窗口外的既有份");
+  assert.equal(ref.featureKey, "f-old");
 });

@@ -318,7 +318,7 @@ export async function buildRunReport(
   const cases = loadCases(runtime);
   const featureNames = new Map<string, string>();
   try {
-    const sets = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+    const sets = await runtime.store.listCaseSets(runtime.project.rootDir);
     for (const set of sets) {
       for (const feature of set.features) {
         if (!featureNames.has(feature.key)) featureNames.set(feature.key, feature.name);

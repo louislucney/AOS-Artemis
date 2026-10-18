@@ -100,7 +100,7 @@ export async function resolveRunRefs(
   testsPath: string
 ): Promise<{ caseSetId: string; featureKey: string; featureName: string } | null> {
   try {
-    const sets = await runtime.store.listCaseSets(runtime.project.rootDir, 50);
+    const sets = await runtime.store.listCaseSets(runtime.project.rootDir);
     for (const set of sets) {
       for (const feature of set.features) {
         if (feature.jsonPath === testsPath) {

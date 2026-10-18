@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { JiraApiError } from "../dist/jira/client.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "../dist/panel/actions.js";
 import { createRunCaseIssues } from "../dist/panel/issues.js";
-import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
+import { baseConfig, loadTestRuntime, makeTempProject, seedCaseSets } from "./helpers.js";
 
 function request(overrides = {}) {
   return {
@@ -914,4 +915,25 @@ test("panel issues: 路由级请求错误分支（runtimeFor null / Jira 未配�
     unconfiguredPayload.hints.some((hint) => hint.includes("JIRA_BASE_URL")),
     "指引含 JIRA_BASE_URL"
   );
+});
+
+test("panel actions: >50 份时窗口外引用可建任务（与 CLI 同口径）", async () => {
+  const { runtime, store, deps } = await setup();
+  const { sets } = await seedCaseSets(
+    store,
+    runtime.project.rootDir,
+    path.join(runtime.configDirAbs, "design")
+  );
+  const created = await handlePanelActionRequest(
+    request({
+      body: {
+        project: runtime.project.rootDir,
+        refs: [{ caseSetId: sets[0].id, featureKey: "f-old" }],
+        platforms: ["android"],
+        baseline: "none"
+      }
+    }),
+    deps
+  );
+  assert.equal(created.status, 200, String(created.body));
 });

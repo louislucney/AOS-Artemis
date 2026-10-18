@@ -13,6 +13,7 @@ import {
   fillRect,
   loadTestRuntime,
   makeTempProject,
+  seedCaseSets,
   SuiteProxy,
   toPng
 } from "./helpers.js";
@@ -1531,4 +1532,68 @@ test("suite run --fail-on-uncovered: 导入集不做覆盖门禁（n/a）", asyn
   const result = await runCli(runtime, ["run", "--tests", "qa/imported.json", "--fail-on-uncovered"]);
   assert.equal(result.code, 0, `${result.logs.join("\n")}\n${result.errors.join("\n")}`);
   assert.ok(result.logs.some((line) => line.startsWith("[PASS]")), result.logs.join("\n"));
+});
+
+test("suite task create: >50 份仍识别窗口外功能（正确性路径全量）", async () => {
+  const { runtime, store } = await setupRun({ cases: null });
+  await seedCaseSets(store, runtime.project.rootDir, path.join(runtime.configDirAbs, "design"));
+  const { code, logs, errors } = await runCli(runtime, ["task", "create", "--ref", "f-old"]);
+  assert.equal(code, 0, errors.join(" | "));
+  assert.ok(logs.some((line) => line.includes("目标功能")));
+});
+
+test("suite run --task: >50 份仍可执行窗口外引用（不误报不可用）", async () => {
+  const { runtime, store } = await setupRun({
+    cases: null,
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const { sets } = await seedCaseSets(
+    store,
+    runtime.project.rootDir,
+    path.join(runtime.configDirAbs, "design")
+  );
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: sets[0].id, featureKey: "f-old" }],
+    platforms: ["android"],
+    baseline: "none",
+    createdBy: "test"
+  });
+  const { code, logs, errors } = await runCli(runtime, [
+    "run",
+    "--task",
+    task.id,
+    "--device",
+    "emulator-1"
+  ]);
+  assert.equal(errors.some((line) => line.includes("均不可用")), false, errors.join(" | "));
+  assert.ok(logs.some((line) => line.includes("目标功能")));
+  assert.equal(code, 0, errors.join(" | "));
+});
+
+test("suite schedule add: >50 份仍识别窗口外功能", async () => {
+  const { runtime, store } = await setupRun({ cases: null });
+  await seedCaseSets(store, runtime.project.rootDir, path.join(runtime.configDirAbs, "design"));
+  const { code, errors } = await runCli(runtime, ["schedule", "add", "--ref", "f-old", "--every", "5"]);
+  assert.equal(code, 0, errors.join(" | "));
+});
+
+test("suite task show: >50 份不误报「份已清理」", async () => {
+  const { runtime, store } = await setupRun({ cases: null });
+  const { sets } = await seedCaseSets(
+    store,
+    runtime.project.rootDir,
+    path.join(runtime.configDirAbs, "design")
+  );
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: sets[0].id, featureKey: "f-old" }],
+    platforms: ["android"],
+    baseline: "none",
+    createdBy: "test"
+  });
+  const { code, logs } = await runCli(runtime, ["task", "show", task.id]);
+  assert.equal(code, 0);
+  assert.ok(logs.some((line) => line.includes("目标功能")));
+  assert.equal(logs.some((line) => line.includes("份已清理")), false);
 });

@@ -395,3 +395,62 @@ export async function loadTestRuntime(
 export function parseToolResult(result) {
   return JSON.parse(result.content[0].text);
 }
+
+/** 回归/下发测试种子：第 1 份＝目标功能（最旧，用于"窗口外"边界），其余为 filler（屏幕不重叠）。 */
+export async function seedCaseSets(
+  store,
+  rootPath,
+  designDirAbs,
+  {
+    count = 51,
+    targetKey = "f-old",
+    targetName = "目标功能",
+    createdAtBase = new Date(Date.UTC(2026, 0, 1, 0, 0, 0))
+  } = {}
+) {
+  const archiveDir = path.join(designDirAbs, "case-sets");
+  fs.mkdirSync(archiveDir, { recursive: true });
+  const sets = [];
+  for (let index = 1; index <= count; index += 1) {
+    const isTarget = index === 1;
+    const key = isTarget ? targetKey : `f-bulk-${index}`;
+    const name = isTarget ? targetName : `批量功能${index}`;
+    const jsonPath = path.join(archiveDir, `s${index}.json`);
+    fs.writeFileSync(
+      jsonPath,
+      JSON.stringify({
+        flows: [
+          {
+            id: `case-${index}`,
+            name: `用例 ${index}`,
+            screens: [],
+            preconditions: [],
+            taskDesc: `run case ${index}`,
+            steps: ["执行「Go」，应出现「Done」"],
+            expectations: [{ kind: "assert" }]
+          }
+        ]
+      }),
+      "utf-8"
+    );
+    const set = await store.recordCaseSet({
+      rootPath,
+      source: `figma:bundle-${index}`,
+      basename: `bundle-${index}`,
+      createdAt: new Date(createdAtBase.getTime() + index * 60_000).toISOString(),
+      features: [
+        {
+          key,
+          name,
+          caseCount: 1,
+          screens: isTarget ? ["目标屏"] : [`批量屏-${index}`],
+          jsonPath,
+          mdPath: jsonPath.replace(/\.json$/, ".md"),
+          xlsxPath: jsonPath.replace(/\.json$/, ".xlsx")
+        }
+      ]
+    });
+    sets.push(set);
+  }
+  return { sets, targetJsonPath: sets[0].features[0].jsonPath };
+}
