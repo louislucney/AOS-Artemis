@@ -34,9 +34,35 @@ test("console shell: auto refresh only when asked; nav subset supported", () => 
 
 test("console shell: 默认 nav 覆盖控制台版块", () => {
   const keys = DEFAULT_CONSOLE_NAV.map((item) => item.key);
-  for (const expected of ["overview", "tasks", "dispatch", "library", "archive", "runners", "schedules", "ops", "audit", "usage"]) {
+  for (const expected of ["overview", "project", "tasks", "dispatch", "library", "archive", "runners", "schedules", "ops", "audit", "usage"]) {
     assert.ok(keys.includes(expected), expected);
   }
+});
+
+test("console shell: 项目导航项、切换器与任务锚点", () => {
+  const html = renderConsoleShell({
+    title: "项目",
+    active: "project",
+    body: "",
+    project: "/w/p",
+    projectSwitcher: {
+      options: [
+        { label: "A", href: "/panel?project=%2Fw%2Fa", current: true },
+        { label: "B", href: "/panel?project=%2Fw%2Fb" }
+      ]
+    }
+  });
+  assert.match(html, /aria-current="page"[^>]*>项目</);
+  assert.match(html, /c-switcher/);
+  assert.match(html, /aria-label="切换项目"/);
+  assert.match(html, /<option value="\/panel\?project=%2Fw%2Fa" selected>A<\/option>/, "当前项目预选");
+  assert.match(
+    html,
+    /href="\/panel\?project=%2Fw%2Fp&amp;section=tasks#tasks"/,
+    "任务锚点指向任务列表"
+  );
+  assert.doesNotMatch(html, /section=tasks#regression/);
+  assert.match(html, /g j<\/span> 项目/, "项目快捷键 j");
 });
 
 test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷新）", () => {

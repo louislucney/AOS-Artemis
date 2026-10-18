@@ -6,7 +6,7 @@ import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
-import { renderConsoleShell, type ConsoleCapabilities, type ConsoleNavKey, type ConsoleShellInput } from "../console/shell.js";
+import { renderConsoleShell, setConsoleShellDefaults, type ConsoleCapabilities, type ConsoleNavKey, type ConsoleShellInput } from "../console/shell.js";
 import {
   computeDispatchPreview,
   renderDispatchPage,
@@ -156,6 +156,7 @@ type PanelView =
       rootLabel: string;
       artifacts: ArtifactRecord[];
       query: Record<string, string>;
+      page: { offset: number; hasNext: boolean; pageSize: number };
     }
   | {
       kind: "audit";
@@ -295,15 +296,31 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         : undefined;
     const q = trimmed(url.searchParams.get("q"));
     const since = trimmed(url.searchParams.get("since"));
-    const artifacts = await listArtifacts(resolved.rootPath, {
+    const offsetRaw = trimmed(url.searchParams.get("offset"));
+    const offset =
+      offsetRaw !== null && Number.isFinite(Number(offsetRaw)) && Number(offsetRaw) > 0
+        ? Math.floor(Number(offsetRaw))
+        : 0;
+    const pageSize = 50;
+    const fetched = await listArtifacts(resolved.rootPath, {
       ...(kind === undefined ? {} : { kind }),
       ...(q === null ? {} : { q }),
       ...(since === null ? {} : { since }),
-      limit: 100
+      limit: pageSize + 1,
+      offset
     });
+    const hasNext = fetched.length > pageSize;
+    const artifacts = hasNext ? fetched.slice(0, pageSize) : fetched;
     const query: Record<string, string> = {};
     for (const [key, value] of url.searchParams) query[key] = value;
-    return { kind: "archive", rootPath: resolved.rootPath, rootLabel: resolved.name, artifacts, query };
+    return {
+      kind: "archive",
+      rootPath: resolved.rootPath,
+      rootLabel: resolved.name,
+      artifacts,
+      query,
+      page: { offset, hasNext, pageSize }
+    };
   }
   if (section === "audit") {
     const domain = trimmed(url.searchParams.get("domain"));
@@ -416,7 +433,7 @@ function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "library") {
     return { ok: true, view: "library", sets: view.sets, quarantine: view.quarantine };
   }
-  if (view.kind === "archive") return { ok: true, view: "archive", artifacts: view.artifacts };
+  if (view.kind === "archive") return { ok: true, view: "archive", artifacts: view.artifacts, page: view.page };
   if (view.kind === "audit") return { ok: true, view: "audit", events: view.events };
   if (view.kind === "ops") {
     return {
@@ -461,7 +478,12 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
       : {
           status: 200,
           contentType: HTML_CONTENT_TYPE,
-          body: renderPanelHtml(view, deps, await loadStoreHealth(deps, view))
+          body: renderPanelHtml(
+            view,
+            deps,
+            await loadStoreHealth(deps, view),
+            await loadProjectSwitcher(deps, view)
+          )
         };
   deps.cache?.set(cacheKey, response);
   return response;
@@ -511,15 +533,25 @@ function gateSpan(gate: "pass" | "fail" | null): string {
     : '<span class="gate-fail">未通过</span>';
 }
 
+function batchGateCell(gate: "pass" | "fail" | null, summary: { total?: number | null } | null): string {
+  return summary !== null && summary.total === 0
+    ? '<span class="muted">未执行（无用例）</span>'
+    : gateSpan(gate);
+}
+
 const LAMP_LABELS: Record<PanelProjectRow["lamp"], string> = {
-  red: "红",
-  yellow: "黄",
-  green: "绿",
-  gray: "灰"
+  red: "阻断",
+  yellow: "需关注",
+  green: "健康",
+  gray: "未知"
 };
 
+function lampDot(lamp: PanelProjectRow["lamp"]): string {
+  return `<span class="lamp lamp-${lamp}" aria-hidden="true"></span>`;
+}
+
 function lampSpan(lamp: PanelProjectRow["lamp"]): string {
-  return `<span class="lamp lamp-${lamp}"></span>${LAMP_LABELS[lamp]}`;
+  return `${lampDot(lamp)}${LAMP_LABELS[lamp]}`;
 }
 
 function renderProjectCell(row: PanelProjectRow): string {
@@ -539,7 +571,7 @@ function renderLatestBatchCell(row: PanelProjectRow): string {
       : ` · 通过 ${batch.summary.passed ?? "—"}/${batch.summary.total ?? "—"}`;
   const note = batch.note !== null ? ` · ${escapeHtml(batch.note)}` : "";
   return [
-    gateSpan(batch.gate),
+    batchGateCell(batch.gate, batch.summary),
     `<code>${escapeHtml(batch.runId ?? "（不可读）")}</code>`,
     `<div class="muted">${escapeHtml(batch.finishedAt ?? "—")}${summary}${note}</div>`
   ].join("<br>");
@@ -724,7 +756,7 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
     escapeHtml(batch.startedAt ?? "—"),
     escapeHtml(batch.finishedAt ?? "—"),
     escapeHtml(batch.source ?? "—"),
-    gateSpan(batch.gate),
+    batchGateCell(batch.gate, batch.summary),
     batch.summary === null
       ? "—"
       : `${batch.summary.passed ?? "—"}/${batch.summary.total ?? "—"}`,
@@ -962,66 +994,38 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
   ].join("\n");
 }
 
-function renderRegressionBlock(rootPath: string, detail: PanelProjectDetail): string {
+function renderDispatchCta(rootPath: string, detail: PanelProjectDetail): string {
   const refs = detail.regressionRefs;
-  if (refs.length === 0) {
-    return [
-      '<section id="regression">',
-      "<h2>新建回归测试</h2>",
-      '<p class="empty">暂无可引用的用例份（先运行 figma_generate_tests 生成并登记用例集）</p>',
-      "</section>"
-    ].join("\n");
-  }
-  const rootJson = JSON.stringify(rootPath).replace(/</g, "\\u003c");
-  const rows = refs.map((ref) => [
-    `<input type="checkbox" name="ref" aria-label="选择该份用于回归" value="${escapeHtml(`${ref.caseSetId}|${ref.featureKey}`)}">`,
-    `<code>${escapeHtml(ref.createdAt)}</code>`,
-    escapeHtml(ref.featureName),
-    String(ref.caseCount),
-    ref.lastPassRate === null
-      ? '<span class="muted">—</span>'
-      : `${Math.round(ref.lastPassRate * 100)}%`,
-    `<span class="muted">${escapeHtml(ref.source)}</span>`
-  ]);
+  const hint =
+    refs.length === 0
+      ? "当前暂无可引用的用例份（先运行 figma_generate_tests 生成并登记用例集）。"
+      : `当前有 ${refs.length} 份可引用的用例集；向导支持多份引用与逐条预览。`;
   return [
     '<section id="regression">',
     "<h2>新建回归测试</h2>",
-    '<p class="muted">勾选要引用的用例份（可多份），选择目标端与基线策略后创建回归任务。</p>',
-    '<form id="regression-form" onsubmit="return createRegressionTask(event)">',
-    renderTable(["引用", "时间", "功能", "用例", "最近通过率", "来源"], rows, "暂无可引用的用例份"),
-    '<p><span class="muted">目标端：</span>',
-    '<label><input type="checkbox" name="platform" value="ios"> iOS</label> ',
-    '<label><input type="checkbox" name="platform" value="android" checked> Android</label></p>',
-    '<p><label>基线：<select name="baseline" aria-label="基线">',
-    '<option value="latest" selected>最近一次（同份）</option>',
-    '<option value="none">不对比（重建基准）</option>',
-    "</select></label></p>",
-    '<p><button type="submit">创建回归任务</button> <span id="regression-status" role="status" class="muted"></span></p>',
-    '<p class="note">需启用 JavaScript 提交（或使用 <code>suite task create</code>）。</p>',
-    "</form>",
-    "<script>",
-    "function createRegressionTask(event){",
-    "  event.preventDefault();",
-    "  var form=event.target;",
-    "  var refs=Array.prototype.slice.call(form.querySelectorAll('input[name=ref]:checked')).map(function(el){var idx=el.value.indexOf('|');return {caseSetId:el.value.slice(0,idx),featureKey:el.value.slice(idx+1)};});",
-    "  var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name=platform]:checked')).map(function(el){return el.value;});",
-    "  var baseline=form.querySelector('select[name=baseline]').value;",
-    "  var status=document.getElementById('regression-status');",
-    "  if(refs.length===0){status.textContent='请先勾选至少一份';return false;}",
-    "  status.textContent='提交中…';",
-    "  fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:" +
-      rootJson +
-      ",refs:refs,platforms:platforms,baseline:baseline})})",
-    "    .then(function(response){return response.json().then(function(payload){if(!response.ok){throw new Error(payload.error||('HTTP '+response.status));}location.href='/panel?project='+encodeURIComponent(" +
-      rootJson +
-      ")+'&task='+encodeURIComponent(payload.task.id);});})",
-    "    .catch(function(error){status.textContent='创建失败：'+error.message;});",
-    "  return false;",
-    "}",
-    "function aosBindBulk(scopeSel,itemName,countId){var scope=document.querySelector(scopeSel);if(!scope)return;var countEl=document.getElementById(countId);function refresh(){if(countEl)countEl.textContent=String(scope.querySelectorAll('input[name=\"'+itemName+'\"]:checked').length);}scope.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-bulk]'):null;if(!b)return;var op=b.getAttribute('data-bulk');var boxes=scope.querySelectorAll('input[name=\"'+itemName+'\"]');for(var i=0;i<boxes.length;i++){boxes[i].checked=(op==='all');}refresh();});scope.addEventListener('change',function(e){if(e.target&&e.target.name===itemName)refresh();});refresh();}aosBindBulk('#verdict-form','item','verdict-count');aosBindBulk('#issues-form','issue-item','issues-count');",
-    "</script>",
+    cCard({
+      title: "使用下发向导（唯一入口）",
+      body: [
+        `<p>四步完成：选来源 → 设参数 → 看预览回显 → 确认派发。${hint}</p>`,
+        `<p><a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">去下发向导</a></p>`
+      ].join("\n")
+    }),
     "</section>"
   ].join("\n");
+}
+
+function bulkBindScript(formSelector: string, itemName: string, countId: string): string[] {
+  return [
+    "function aosBindBulk(scopeSel,itemName,countId){",
+    "  var scope=document.querySelector(scopeSel);if(!scope)return;",
+    "  var countEl=document.getElementById(countId);",
+    "  function refresh(){if(countEl)countEl.textContent=String(scope.querySelectorAll('input[name=\"'+itemName+'\"]:checked').length);}",
+    "  scope.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-bulk]'):null;if(!b)return;var op=b.getAttribute('data-bulk');var boxes=scope.querySelectorAll('input[name=\"'+itemName+'\"]');for(var i=0;i<boxes.length;i++){boxes[i].checked=(op==='all');}refresh();});",
+    "  scope.addEventListener('change',function(e){if(e.target&&e.target.name===itemName)refresh();});",
+    "  refresh();",
+    "}",
+    `aosBindBulk('${formSelector}','${itemName}','${countId}');`
+  ];
 }
 
 const TASK_STATUS_LABELS: Record<string, string> = {
@@ -1414,6 +1418,7 @@ function renderReviewPage(view: {
           "    .catch(function(error){status.textContent='提交失败：'+error.message;});",
           "  return false;",
           "}",
+          ...bulkBindScript("#verdict-form", "item", "verdict-count"),
           "</script>"
         ];
   return page(
@@ -1520,6 +1525,7 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
     "  fragment.appendChild(list);",
     "  return fragment;",
     "}",
+    ...bulkBindScript("#issues-form", "issue-item", "issues-count"),
     "</script>"
   ].join("\n");
 }
@@ -1651,7 +1657,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
     [
       "<header>",
       '<p><a href="/panel">← 多项目总览</a></p>',
-      `<h1>${lampSpan(row.lamp)} ${escapeHtml(row.name)}</h1>`,
+      `<h1>${lampDot(row.lamp)}<span class="sr-only">项目状态：${escapeHtml(LAMP_LABELS[row.lamp])}。</span>${escapeHtml(row.name)}</h1>`,
       `<p class="muted"><code>${escapeHtml(row.rootPath)}</code> · 最后活跃 ${escapeHtml(row.lastSeenAt ?? "—")} · ${
         row.diskReachable ? "磁盘可达" : "磁盘不可达"
       }</p>`,
@@ -1662,26 +1668,40 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       "</header>",
       "<main>",
       renderProjectPulse(detail, view.rootPath),
-      renderIntegration(detail),
-      renderDeepSection(detail),
       renderBatches(detail, view.rootPath),
-      renderRegressionBlock(view.rootPath, detail),
       renderTaskList(view.rootPath, detail),
       renderRunners(detail),
       renderSchedules(view.rootPath, detail),
+      renderDispatchCta(view.rootPath, detail),
+      '<details class="c-details">',
+      "<summary>环境自查与明细（接入自检 / 运行时细节 / 磁盘资产 / 独立运行）</summary>",
+      renderIntegration(detail),
+      renderDeepSection(detail),
       renderDiskAssets(detail),
       renderStandalones(detail),
+      "</details>",
       "</main>"
     ].join("\n")
   );
 }
 
-function renderEvidence(links: PanelBatchDetail["cases"][number]["evidence"]): string {
+function artifactHref(rootPath: string, filePath: string): string {
+  const rel = filePath.startsWith(rootPath)
+    ? filePath.slice(rootPath.length).replace(/^[/\\]/, "")
+    : filePath;
+  return `/panel/artifact?project=${encodeURIComponent(rootPath)}&path=${encodeURIComponent(rel)}`;
+}
+
+function renderEvidence(
+  links: PanelBatchDetail["cases"][number]["evidence"],
+  rootPath: string
+): string {
   if (links.length === 0) return '<span class="muted">—</span>';
   return links
     .map((link) => {
-      const status = link.status === "present" ? "" : ' <span class="muted">[已清理]</span>';
-      return `${escapeHtml(link.kind)}: <code>${escapeHtml(link.path)}</code>${status}`;
+      const label = `${escapeHtml(link.kind)}: <code>${escapeHtml(link.path)}</code>`;
+      if (link.status !== "present") return `${label} <span class="muted">[已清理]</span>`;
+      return `<a href="${escapeHtml(artifactHref(rootPath, link.path))}">${label}</a>`;
     })
     .join("<br>");
 }
@@ -1955,7 +1975,7 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
     [entry.quarantined ? "隔离" : null, entry.flaky ? "flaky" : null]
       .filter((tag): tag is string => tag !== null)
       .join("、") || "—",
-    renderEvidence(entry.evidence)
+    renderEvidence(entry.evidence, view.rootPath)
   ]);
   const options = detail.options;
   const optionRows: string[][] = options
@@ -2033,6 +2053,7 @@ function page(title: string, bodyParts: string, refreshSeconds?: number): string
     project: currentShell.project,
     capabilities: currentShell.capabilities,
     storeHealth: currentShell.storeHealth,
+    projectSwitcher: currentShell.projectSwitcher,
     ...(refreshSeconds === undefined ? {} : { autoRefreshSeconds: refreshSeconds }),
     body: bodyParts.replaceAll("<main>", "").replaceAll("</main>", "")
   });
@@ -2044,6 +2065,7 @@ interface ShellCtx {
   capabilities?: ConsoleCapabilities;
   jiraDefaults?: { projectKey?: string; issueType?: string; labels?: string };
   storeHealth?: ConsoleShellInput["storeHealth"];
+  projectSwitcher?: ConsoleShellInput["projectSwitcher"];
 }
 
 let currentShell: ShellCtx = { active: "overview", project: null };
@@ -2064,7 +2086,7 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
     case "ops":
       return "ops";
     case "project":
-      return view.active ?? null;
+      return view.active ?? "project";
     case "review":
     case "stats":
     case "batch":
@@ -2168,7 +2190,31 @@ async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPag
   return data;
 }
 
-function renderPanelHtml(view: PanelView, deps: PanelWebDeps, storeHealth?: ConsoleShellInput["storeHealth"]): string {
+async function loadProjectSwitcher(
+  deps: PanelWebDeps,
+  view: PanelView
+): Promise<NonNullable<ConsoleShellInput["projectSwitcher"]>> {
+  const current =
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
+      ? null
+      : view.rootPath;
+  const projects = await deps.store.listProjects().catch(() => []);
+  return {
+    options: projects.slice(0, 20).map((project) => ({
+      label: project.name,
+      href: `/panel?project=${encodeURIComponent(project.rootPath)}`,
+      ...(project.rootPath === current ? { current: true } : {})
+    }))
+  };
+}
+
+function renderPanelHtml(
+  view: PanelView,
+  deps: PanelWebDeps,
+  storeHealth?: ConsoleShellInput["storeHealth"],
+  projectSwitcher?: ConsoleShellInput["projectSwitcher"]
+): string {
+  setConsoleShellDefaults({ storeHealth, projectSwitcher });
   currentShell = {
     active: activeForView(view),
     project: view.kind === "overview" || view.kind === "compare" || view.kind === "search" ? null : view.rootPath,
@@ -2178,7 +2224,8 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps, storeHealth?: Cons
       issueType: deps.env?.JIRA_ISSUE_TYPE?.trim() || undefined,
       labels: deps.env?.JIRA_ISSUE_LABELS?.trim() || undefined
     },
-    storeHealth
+    storeHealth,
+    projectSwitcher
   };
   const cacheNote = "缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）";
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);
@@ -2209,6 +2256,7 @@ function renderPanelHtml(view: PanelView, deps: PanelWebDeps, storeHealth?: Cons
       rootLabel: view.rootLabel,
       artifacts: view.artifacts,
       query: view.query,
+      page: view.page,
       storeHealth: currentShell.storeHealth
     });
   }

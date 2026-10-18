@@ -52,10 +52,22 @@ export interface ConsoleShellInput {
   };
   /** 顶栏搜索框回显（搜索页传入当前 q）。 */
   searchQuery?: string;
+  /** 顶栏项目切换器（当前项目 + 最近项目候选）。 */
+  projectSwitcher?: { options: Array<{ label: string; href: string; current?: boolean }> };
+}
+
+let shellDefaults: Pick<ConsoleShellInput, "projectSwitcher" | "storeHealth"> = {};
+
+/** 面板在渲染前注入的默认上下文（切换器 / 记录底座）；同一次同步渲染调用内生效。 */
+export function setConsoleShellDefaults(
+  patch: Pick<ConsoleShellInput, "projectSwitcher" | "storeHealth">
+): void {
+  shellDefaults = patch;
 }
 
 /** 项目级导航键（需要 project 上下文；无上下文时禁用而非误指总览）。 */
 const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
+  "project",
   "tasks",
   "dispatch",
   "library",
@@ -68,6 +80,7 @@ const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
 
 export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "overview", label: "总览", href: "/panel" },
+  { key: "project", label: "项目", href: "/panel" },
   { key: "tasks", label: "任务", href: "/panel?section=tasks" },
   { key: "dispatch", label: "下发", href: "/panel?section=dispatch" },
   { key: "library", label: "用例库", href: "/panel?section=library" },
@@ -86,8 +99,9 @@ export const USAGE_STANDALONE_NAV: ConsoleNavItem[] = [
 function navHref(item: ConsoleNavItem, project: string | null): string | null {
   if (!PROJECT_SCOPED.has(item.key)) return item.href;
   if (project === null || project === "") return null;
+  if (item.key === "project") return `/panel?project=${encodeURIComponent(project)}`;
   const params = new URLSearchParams({ project, section: item.key });
-  if (item.key === "tasks") return `/panel?${params.toString()}#regression`;
+  if (item.key === "tasks") return `/panel?${params.toString()}#tasks`;
   if (item.key === "runners") return `/panel?${params.toString()}#runners`;
   if (item.key === "schedules") return `/panel?${params.toString()}#schedules`;
   return `/panel?${params.toString()}`;
@@ -119,6 +133,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   }
   const shortcutKeys: Array<[string, ConsoleNavKey, string]> = [
     ["o", "overview", "总览"],
+    ["j", "project", "项目"],
     ["t", "tasks", "任务"],
     ["d", "dispatch", "下发"],
     ["l", "library", "用例库"],
@@ -133,8 +148,8 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     .filter(([, key]) => navTargets[key] !== undefined)
     .map(([letter, , label]) => `<li><span class="c-kbd">g ${letter}</span> ${escapeHtml(label)}</li>`)
     .join("");
-  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({t:"tasks",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}var darkMq=window.matchMedia?window.matchMedia("(prefers-color-scheme: dark)"):null;function aosApplyTheme(){if(darkMq&&darkMq.matches){document.documentElement.setAttribute("data-theme","dark");}else{document.documentElement.removeAttribute("data-theme");}}aosApplyTheme();if(darkMq&&darkMq.addEventListener){darkMq.addEventListener("change",aosApplyTheme);}})();</script>`;
-  const health = input.storeHealth;
+  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({j:"project",t:"tasks",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}var darkMq=window.matchMedia?window.matchMedia("(prefers-color-scheme: dark)"):null;function aosApplyTheme(){if(darkMq&&darkMq.matches){document.documentElement.setAttribute("data-theme","dark");}else{document.documentElement.removeAttribute("data-theme");}}aosApplyTheme();if(darkMq&&darkMq.addEventListener){darkMq.addEventListener("change",aosApplyTheme);}})();</script>`;
+  const health = input.storeHealth ?? shellDefaults.storeHealth;
   const healthChip =
     health === undefined
       ? ""
@@ -143,6 +158,16 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
             ? ""
             : ` · 最近写入 ${escapeHtml(health.lastWriteAt.slice(5, 16).replace("T", " "))}`
         }${health.writeIssue === null ? "" : ` <span class="c-badge c-badge-error">${escapeHtml(health.writeIssue)}</span>`}</div>`;
+  const switcherOptions = (input.projectSwitcher ?? shellDefaults.projectSwitcher)?.options ?? [];
+  const switcher =
+    switcherOptions.length === 0
+      ? ""
+      : `<nav class="c-switcher" aria-label="项目切换"><select name="project-switcher" aria-label="切换项目" onchange="if(this.value)location.href=this.value"><option value="">切换项目…</option>${switcherOptions
+          .map(
+            (option) =>
+              `<option value="${escapeHtml(option.href)}"${option.current === true ? " selected" : ""}>${escapeHtml(option.label)}</option>`
+          )
+          .join("")}</select></nav>`;
   const glossaryRows = [
     ["份", "一次生成或导入登记的用例集版本（其 tests.json 可直接执行）"],
     ["裁决", "对失败用例的定性：案例问题/执行偏差/应用缺陷/不确定"],
@@ -174,6 +199,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     '<a class="c-skip-link" href="#console-main">跳到主内容</a>',
     '<header class="c-topbar">',
     '<div class="c-brand"><a href="/panel">AOS 控制台</a></div>',
+    switcher,
     healthChip,
     '<form class="c-search" method="get" action="/panel" role="search"><input type="hidden" name="section" value="search"><input type="search" name="q" aria-label="全局搜索（项目/用例集/任务）" placeholder="搜索项目 / 用例集 / 任务" value="' + escapeHtml(input.searchQuery ?? "") + '"><button class="c-button" type="submit">搜索</button></form>',
     input.meta ? `<div class="c-topbar-meta">${input.meta}</div>` : "",

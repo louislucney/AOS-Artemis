@@ -207,9 +207,9 @@ test("panel web: 项目详情（空态→批次→独立运行）与未知项目
   );
 });
 
-test("panel web: 回归引用区块（复选框/端/基线/内联 JS/无 JS 提示）", async () => {
+test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌表单）", async () => {
   const { deps, projectDir, store } = await makeHarness();
-  const set = await store.recordCaseSet({
+  await store.recordCaseSet({
     rootPath: projectDir,
     source: "pen:a.pen",
     basename: "tests",
@@ -232,15 +232,21 @@ test("panel web: 回归引用区块（复选框/端/基线/内联 JS/无 JS 提�
   );
   assert.equal(html.status, 200);
   assert.match(html.body, /新建回归测试/);
-  assert.match(html.body, new RegExp(`value="${set.id}\\|f-1"`), "复选框 value＝caseSetId|featureKey");
-  assert.match(html.body, /name="platform" value="ios">/);
-  assert.match(html.body, /name="platform" value="android" checked/, "默认仅 Android（双端需单机双端 runner）");
-  assert.match(html.body, /name="baseline"/);
-  assert.match(html.body, /fetch\('\/panel\/api\/tasks'/);
-  assert.match(html.body, /需启用 JavaScript 提交/);
+  assert.match(html.body, /去下发向导/);
+  assert.match(
+    html.body,
+    /href="\/panel\?project=[^"]+&amp;section=dispatch"/,
+    "CTA 携带项目上下文直达向导"
+  );
+  assert.match(html.body, /当前有 1 份可引用的用例集/);
+  assert.doesNotMatch(html.body, /id="regression-form"/, "内嵌表单已移除（派发唯一真相＝向导）");
+  assert.doesNotMatch(html.body, /fetch\('\/panel\/api\/tasks'/);
+  assert.match(html.body, /<details class="c-details">/, "环境自查与明细折叠");
+  assert.match(html.body, /<summary>环境自查与明细/);
+  assert.match(html.body, /aria-current="page"[^>]*>项目</, "项目页高亮「项目」导航");
 });
 
-test("panel web: 内联 JS 按首个 | 切分（refs/items indexOf+slice 形状，无 split）", async () => {
+test("panel web: 内联 JS 按首个 | 切分（裁决 items indexOf+slice 形状，无 split）", async () => {
   const { deps, projectDir, store } = await makeHarness();
   const set = await store.recordCaseSet({
     rootPath: projectDir,
@@ -258,6 +264,7 @@ test("panel web: 内联 JS 按首个 | 切分（refs/items indexOf+slice 形状�
       }
     ]
   });
+  assert.ok(set.id.length > 0);
   await store.recordSuiteRun({
     rootPath: projectDir,
     createdAt: "2026-10-14T10:05:00.000Z",
@@ -306,17 +313,6 @@ test("panel web: 内联 JS 按首个 | 切分（refs/items indexOf+slice 形状�
     ]
   });
 
-  const projectHtml = await handlePanelRequest(
-    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
-    deps
-  );
-  assert.match(projectHtml.body, new RegExp(`value="${set.id}\\|f-1"`), "任务表单 value 仍为 caseSetId|featureKey");
-  assert.match(
-    projectHtml.body,
-    /map\(function\(el\)\{var idx=el\.value\.indexOf\('\|'\);return \{caseSetId:el\.value\.slice\(0,idx\),featureKey:el\.value\.slice\(idx\+1\)\};\}\)/,
-    "任务表单 refs 以首个 | 切分（indexOf+slice）"
-  );
-
   const reviewHtml = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=review`),
     deps
@@ -330,9 +326,29 @@ test("panel web: 内联 JS 按首个 | 切分（refs/items indexOf+slice 形状�
     /map\(function\(el\)\{var idx=el\.value\.indexOf\('\|'\);return \{runId:el\.value\.slice\(0,idx\),caseId:el\.value\.slice\(idx\+1\)\};\}\)/,
     "裁决表单 items 以首个 | 切分（indexOf+slice）"
   );
+  assert.match(
+    reviewHtml.body,
+    /aosBindBulk\('#verdict-form','item','verdict-count'\);/,
+    "裁决批量按钮绑定在本页脚本（不再依赖项目页）"
+  );
 
-  assert.doesNotMatch(projectHtml.body, /\.value\.split\('\|'\)/, "任务表单不得残留 split('|')");
   assert.doesNotMatch(reviewHtml.body, /\.value\.split\('\|'\)/, "裁决表单不得残留 split('|')");
+});
+
+test("panel web: 页面内联脚本可解析（项目/裁决页，防语法回归）", async () => {
+  const { deps, projectDir } = await makeHarness();
+  for (const suffix of ["", "&view=review"]) {
+    const html = await handlePanelRequest(
+      new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}${suffix}`),
+      deps
+    );
+    assert.equal(html.status, 200);
+    const scripts = [...html.body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+    assert.ok(scripts.length >= 1, `页面含内联脚本（${suffix || "项目页"}）`);
+    for (const code of scripts) {
+      assert.doesNotThrow(() => new Function(code), `脚本可解析（${suffix || "项目页"}）`);
+    }
+  }
 });
 
 test("panel web: 批次详情（证据缺失占位/失败域）与非法文件名", async () => {
@@ -366,6 +382,12 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
   assert.match(htmlBody, /失败域汇总/);
   assert.match(htmlBody, /已清理/);
   assert.match(htmlBody, /断言 4 \/ 探索 1/);
+
+  fs.mkdirSync(path.join(projectDir, ".artemis", "traces", "trace-1"), { recursive: true });
+  const htmlPresent = (await handlePanelRequest(htmlUrl, deps)).body;
+  assert.match(htmlPresent, /panel\/artifact\?project=/, "证据路径渲染为可点链接");
+  assert.match(htmlPresent, /&amp;path=/, "链接指向产物只读服务");
+  assert.doesNotMatch(htmlPresent, /\[已清理\]/, "trace 存量后不再标注已清理");
 
   const illegal = await handlePanelRequest(
     new URL(`http://x/panel.json?project=demo&batch=${encodeURIComponent("../evil.json")}`),

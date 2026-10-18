@@ -84,6 +84,39 @@ test("console pages: 档案（索引＋kind 筛选）", async () => {
   assert.ok(!filtered.body.includes("20261018_a.json"), "kind 筛选生效");
 });
 
+test("console pages: 档案分页（offset/上一页）与图片缩略图", async () => {
+  const { deps, rootPath } = await setup();
+  const diffsDir = join(rootPath, ".artemis", "design", "diffs");
+  await mkdir(diffsDir, { recursive: true });
+  await writeFile(join(diffsDir, "vs_design.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  const page1 = await handlePanelRequest(url(rootPath, "archive"), deps);
+  assert.equal(page1.status, 200);
+  assert.match(page1.body, /class="c-thumb"/, "图片产物缩略图");
+  assert.match(page1.body, /vs_design\.png/);
+  assert.match(page1.body, /第 1 页/);
+
+  const all = JSON.parse(
+    (await handlePanelRequest(new URL(`http://x/panel.json?project=${encodeURIComponent(rootPath)}&section=archive`), deps)).body
+  );
+  assert.ok(all.artifacts.length >= 2, "至少 manifest + png 两项");
+
+  const page2Json = JSON.parse(
+    (
+      await handlePanelRequest(
+        new URL(`http://x/panel.json?project=${encodeURIComponent(rootPath)}&section=archive&offset=1`),
+        deps
+      )
+    ).body
+  );
+  assert.equal(page2Json.page.offset, 1);
+  assert.equal(page2Json.artifacts.length, all.artifacts.length - 1, "offset 跳过分页项");
+
+  const page2 = await handlePanelRequest(url(rootPath, "archive", { offset: "1" }), deps);
+  assert.match(page2.body, /上一页/);
+  assert.match(page2.body, /offset=0/, "上一页带回 offset=0");
+});
+
 test("console pages: 审计（domain 筛选＋结果徽章）", async () => {
   const { deps, rootPath } = await setup();
   const all = await handlePanelRequest(url(rootPath, "audit"), deps);

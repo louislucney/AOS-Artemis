@@ -18,6 +18,7 @@ export interface ArtifactQuery {
   since?: string;
   q?: string;
   limit?: number;
+  offset?: number;
 }
 
 /** 资产族与保留期（src/figma/retention.ts）同源；浅扫一层，文件/目录均入索引。 */
@@ -72,7 +73,11 @@ export async function listArtifacts(
       );
     })
     .sort((a, b) => b.at.localeCompare(a.at) || a.path.localeCompare(b.path));
+  const start =
+    typeof query.offset === "number" && Number.isFinite(query.offset) && query.offset > 0
+      ? Math.floor(query.offset)
+      : 0;
   return typeof query.limit === "number" && Number.isFinite(query.limit) && query.limit > 0
-    ? filtered.slice(0, Math.floor(query.limit))
-    : filtered;
+    ? filtered.slice(start, start + Math.floor(query.limit))
+    : filtered.slice(start);
 }

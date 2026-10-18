@@ -108,18 +108,25 @@ export interface ArchivePageData {
   rootLabel: string;
   artifacts: ArtifactRecord[];
   query: Record<string, string>;
+  page: { offset: number; hasNext: boolean; pageSize: number };
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
 
 export function renderArchivePage(data: ArchivePageData): string {
+  const artifactUrl = (record: ArtifactRecord): string =>
+    `/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(record.path)}`;
   const rows = data.artifacts.map((record) => {
     const isDir = record.meta?.type === "dir";
+    const isImage = !isDir && /\.(png|jpe?g|webp|gif)$/i.test(record.title);
+    const thumb = isImage
+      ? `<img class="c-thumb" src="${escapeHtml(artifactUrl(record))}" alt="" loading="lazy">`
+      : "";
     const location = isDir
       ? `<code>${escapeHtml(record.path)}</code>`
-      : `<a href="${escapeHtml(`/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(record.path)}`)}"><code>${escapeHtml(record.path)}</code></a>`;
+      : `<a href="${escapeHtml(artifactUrl(record))}" target="_blank" rel="noreferrer"><code>${escapeHtml(record.path)}</code></a>`;
     return [
       cBadge({ label: record.kind, tone: "neutral" }),
-      `<code>${escapeHtml(record.title)}</code>`,
+      `${thumb}<code>${escapeHtml(record.title)}</code>`,
       location,
       escapeHtml(record.at),
       isDir ? "目录" : `${record.size} B`
@@ -132,12 +139,31 @@ export function renderArchivePage(data: ArchivePageData): string {
       const value = data.query[key];
       if (value !== undefined && value !== "") params.set(key, value);
     }
+    params.set("offset", String(data.page.offset));
     for (const [key, value] of Object.entries(patch)) {
       if (value === null) params.delete(key);
       else params.set(key, value);
     }
     return escapeHtml(`/panel?${params.toString()}`);
   };
+  const prevHref =
+    data.page.offset > 0
+      ? archiveLink({ offset: String(Math.max(0, data.page.offset - data.page.pageSize)) })
+      : null;
+  const nextHref = data.page.hasNext
+    ? archiveLink({ offset: String(data.page.offset + data.page.pageSize) })
+    : null;
+  const pager = `<div class="pager">${
+    prevHref === null
+      ? '<span class="muted">上一页</span>'
+      : `<a class="c-button" href="${prevHref}">上一页</a>`
+  } <span class="muted">第 ${
+    Math.floor(data.page.offset / data.page.pageSize) + 1
+  } 页 · 本页 ${data.artifacts.length} 项</span> ${
+    nextHref === null
+      ? '<span class="muted">下一页</span>'
+      : `<a class="c-button" href="${nextHref}">下一页</a>`
+  }</div>`;
   const preset = (label: string, hours: number): string =>
     `<a class="c-button" href="${archiveLink({ since: new Date(Date.now() - hours * 3600_000).toISOString() })}">${label}</a>`;
   const csvParams = new URLSearchParams({ project: data.rootPath, format: "csv" });
@@ -172,13 +198,18 @@ export function renderArchivePage(data: ArchivePageData): string {
       }),
       cCard({
         title: "产物索引",
-        subtitle: `共 ${data.artifacts.length} 项 · 与保留期同源（六族浅扫）`,
-        body: cTable({
-          columns: ["类型", "名称", "路径", "时间", "大小"],
-          rows,
-          caption: "产物索引",
-          empty: "暂无产物（产物落盘后自动出现）"
-        })
+        subtitle: `第 ${
+          Math.floor(data.page.offset / data.page.pageSize) + 1
+        } 页 · 本页 ${data.artifacts.length} 项 · 每页 ${data.page.pageSize} 项 · 与保留期同源（六族浅扫）`,
+        body: [
+          cTable({
+            columns: ["类型", "名称", "路径", "时间", "大小"],
+            rows,
+            caption: "产物索引",
+            empty: "暂无产物（产物落盘后自动出现）"
+          }),
+          pager
+        ].join("\n")
       })
     ].join("\n")
   });
