@@ -156,6 +156,8 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   assert.match(html.body, /lamp-yellow/);
   assert.match(html.body, /存储：会话内存/);
   assert.match(html.body, /demo/);
+  assert.match(html.body, /c-table/, "CSDC 表格");
+  assert.match(html.body, /c-badge/, "CSDC 徽章");
 });
 
 test("panel web: 项目详情（空态→批次→独立运行）与未知项目 404", async () => {
@@ -189,6 +191,8 @@ test("panel web: 项目详情（空态→批次→独立运行）与未知项目
   );
   assert.match(projectHtml.body, /磁盘资产/);
   assert.match(projectHtml.body, /对账资产/);
+  assert.match(projectHtml.body, /在跑什么/, "一屏三问");
+  assert.match(projectHtml.body, /panel\?section=dispatch/, "下发入口");
 
   assert.equal(
     (await handlePanelRequest(new URL("http://x/panel.json?project=nope"), deps)).status,
@@ -1504,7 +1508,7 @@ test("panel web: compare 空态（无项目）", async () => {
   const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
   assert.equal(html.status, 200);
   assert.match(html.body, /暂无项目/, "空态提示");
-  assert.doesNotMatch(html.body, /<tbody><tr>/, "空表不渲染数据行");
+  assert.match(html.body, /c-empty-cell" colspan="6">暂无项目/, "空态占位行（colspan=6，无数据行）");
 });
 
 test("panel web: compare 与总览互链；项目名链接项目页", async () => {

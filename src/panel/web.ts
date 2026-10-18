@@ -7,6 +7,7 @@ import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
 import { renderConsoleShell } from "../console/shell.js";
+import { cBadge, cCard, cStat, cTable } from "../console/components.js";
 import { storeKindLabel } from "../db/labels.js";
 import {
   buildPanelBatchDetail,
@@ -373,10 +374,10 @@ function renderLatestBatchCell(row: PanelProjectRow): string {
 
 function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
   const store = view.store.degraded
-    ? `<span class="badge warn" data-storage="memory">存储：会话内存</span>`
+    ? cBadge({ label: "存储：会话内存", tone: "warning" })
     : view.store.kind === "file"
-      ? `<span class="badge" data-storage="file">存储：文件台账</span>`
-      : `<span class="badge" data-storage="postgres">存储：PostgreSQL</span>`;
+      ? cBadge({ label: "存储：文件台账", tone: "neutral" })
+      : cBadge({ label: "存储：PostgreSQL", tone: "neutral" });
   const rows = view.projects.map((row) => [
     `<a href="${escapeHtml(projectHref(row.rootPath))}"><code>${escapeHtml(row.name)}</code></a>`,
     renderProjectCell(row),
@@ -394,20 +395,52 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
       "<header>",
       "<h1>多项目总览</h1>",
       '<p><a href="/panel?view=compare">多项目对比</a></p>',
-      `<p class="badges">${store}<span class="badge">宿主 deps：${escapeHtml(view.host.deps)}</span>` +
-        `<span class="badge">构建：${
-          view.host.buildStale === null ? "未知" : view.host.buildStale ? "陈旧（需重启）" : "最新"
-        }</span></p>`,
-      `<p class="muted">生成时间 ${escapeHtml(view.generatedAt)} · 项目 ${view.projects.length} 个 · ${escapeHtml(cacheNote)}</p>`,
+      `<p>${store}${cBadge({ label: `宿主 deps：${view.host.deps}`, tone: "neutral" })} ${cBadge({
+        label: `构建：${view.host.buildStale === null ? "未知" : view.host.buildStale ? "陈旧（需重启）" : "最新"}`,
+        tone: view.host.buildStale === null ? "neutral" : view.host.buildStale ? "warning" : "success"
+      })}</p>`,
       "</header>",
       "<main>",
-      '<section id="projects">',
-      "<h2>项目</h2>",
-      renderTable(["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"], rows, "暂无项目"),
-      "</section>",
+      cCard({
+        title: "项目",
+        subtitle: `生成时间 ${view.generatedAt} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
+        body: cTable({
+          columns: ["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
+          rows,
+          empty: "暂无项目"
+        })
+      }),
       "</main>"
     ].join("\n")
   });
+}
+
+function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): string {
+  const row = detail.project;
+  const health = row.lamp === "green" ? "正常" : row.lamp === "red" ? "阻断" : "需要关注";
+  const active = detail.tasks.filter(
+    (task) => task.status === "claimed" || task.status === "running"
+  );
+  const pending = detail.tasks.filter((task) => task.status === "pending");
+  const activeHint =
+    active.length > 0 ? `${active[0].status} · ${active[0].id.slice(0, 8)}` : "当前无执行中任务";
+  return [
+    '<div class="c-stats-row">',
+    cStat({ label: "健康", value: health, hint: row.lampReasons[0] ?? "无告警" }),
+    cStat({ label: "在跑什么", value: String(active.length), hint: activeHint }),
+    cStat({
+      label: "待执行",
+      value: String(pending.length),
+      hint: pending.length > 0 ? "等待 runner 领取" : "队列为空"
+    }),
+    cCard({
+      tone: "accent",
+      title: "下一步",
+      actions: '<a class="c-button c-button-primary" href="/panel?section=dispatch">新建回归任务</a>',
+      body: `<p><a href="${escapeHtml(reviewHref(rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(rootPath))}">统计</a></p>`
+    }),
+    "</div>"
+  ].join("");
 }
 
 function renderCredentialRows(detail: PanelProjectDetail): string[][] {
@@ -1359,6 +1392,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       `<p><a href="${escapeHtml(reviewHref(view.rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(view.rootPath))}">统计</a></p>`,
       "</header>",
       "<main>",
+      renderProjectPulse(detail, view.rootPath),
       renderIntegration(detail),
       renderDeepSection(detail),
       renderBatches(detail, view.rootPath),
@@ -1578,21 +1612,21 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
       warnings,
       "</header>",
       "<main>",
-      '<section id="compare">',
-      "<h2>项目对比</h2>",
-      renderTable(
-        [
-          "项目",
-          "最近批次（时间·门禁·通过率）",
-          "趋势（最近 10 批）",
-          "质量（flaky·失败域 top3）",
-          "待办（未裁决·未建单·积压·failed）",
-          "运行（runner·定时回归）"
-        ],
-        rows,
-        "暂无项目"
-      ),
-      "</section>",
+      cCard({
+        title: "项目对比",
+        body: cTable({
+          columns: [
+            "项目",
+            "最近批次（时间·门禁·通过率）",
+            "趋势（最近 10 批）",
+            "质量（flaky·失败域 top3）",
+            "待办（未裁决·未建单·积压·failed）",
+            "运行（runner·定时回归）"
+          ],
+          rows,
+          empty: "暂无项目"
+        })
+      }),
       renderFeatureAlignmentSection(view),
       "</main>"
     ].join("\n")

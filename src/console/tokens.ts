@@ -56,6 +56,7 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 }
 :focus-visible{outline:2px solid var(--color-link);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+.c-stats-row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;margin:0 0 16px}
 .c-card{background:var(--color-surface-white);border:1px solid var(--color-border-subtle);border-radius:var(--radius-card);box-shadow:var(--shadow-card);padding:16px 18px;margin:0 0 16px}
 .c-card-accent{background:var(--color-accent-subtle);border-color:var(--color-accent)}
 .c-card-title{margin:0 0 4px}
