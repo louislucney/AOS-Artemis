@@ -1709,3 +1709,14 @@ llm_switch(name, force):
 > - **只读与降级**：不触网/无子进程/不写盘（测试：禁网＋目录快照）；恒 `ok:true`；**PG 不可用时 store 静默切换内存实现——以 `runtime.store.kind !== "postgres"` 探测（先例 `suite-command.ts`）并在 `degraded[]` 明示**；`degraded` 顺序：内存提示→flows 坏件→用例库降级→裁决降级→readiness.degraded。
 > - **usage**：family=`workflow`（不新增信号，D12 未列；`degraded` 非空计数事件留待下轮）。
 > - 测试新增 18（`workflow-readiness` 5、`workflow-project-archive` 10（含内存降级/口径交叉锁定/只读快照）、`native-workflow-tool` 2、`usage-capture` 1）；全量 **1494 绿**。
+
+### 13.123 实施记录（统一服务 ⑤：收尾补齐——usage 事件三项＋接入指南＋精选硬化）
+
+> 实施于 2026-10-18（完整性核查驱动；计划 `docs/superpowers/plans/2026-10-18-unified-service-closure.md`（6 任务 TDD）；提交 2f3cb3a/514170b/14b18fc/0fbe83f/96c291b/29a7460 ＋ 本记录）。动机：四阶段落地后按 spec 逐条核查发现 D12/§9 三个最小事件未落、接入指南未随统一服务更新；同时清掉 ③/④ 延续的精选 Minor。
+> - **needsInfo.category（D12）**：`NeedsInfoCategory` 五值（`device-ambiguous`/`no-flows`/`scope-no-hit`/`library-empty`/`ticket-coarse`）入 `setup.ts`；`DevicePick` info 变体收紧、三工具 needs-info payload 增根 `category`；usage 信号 `needs:info.category`（紧随 `needs:info`）。
+> - **needsSetup.missing[]（D12）**：usage 逐条信号 `needs:<target>.missing`（在全部 `needs:<target>` 之后、按 checks 顺序；无 missing 零新增）。
+> - **各步耗时（D12）**：三工具统一 `recordStep`（`steps[].ms`＝距上一步的实测间隔），`run` 步执行完成后回填执行耗时；usage 信号 `step-ms:<step>`（`run.gate` 之后按 steps 顺序）。**中断点**沿用 `failed-step:<step>`。
+> - **接入指南**：新增 §2.11「统一服务四入口」（四工具/needs 协议＋category/usage 信号清单/复用执行链）；版本行刷新（1502 用例）。
+> - **精选硬化**：`project-archive` 清单校验（`usableManifest`：runId/source/起止时间/summary 三数/gate result+exitCode/failureDomains——不完整 ok 件改判 `unreadable`，替代原 try/catch 掩蔽）；`verify_jira_issue` 候选用例文件不可读经 `deps.log` WARN 且不阻断、dryRun 预览补 `evidenceTruncated`（与发送路径同式）；dryRun 文案统一「零写回/不产生外部副作用」；README/DESIGN 文案两处。
+> - 未做（留档）：顶层 catch（假空载荷风险，per-path 已守）、读评论单遍、空 runs 原因提示。
+> - 测试新增 8（T1 usage 1＋run 2、T2 usage 1、T3 usage 1、T5 archive 2＋verify 2）；全量 **1502 绿**。
