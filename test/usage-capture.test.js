@@ -340,3 +340,51 @@ test("usage capture: run_regression family and import/scope outcome signals", ()
   );
   assert.deepEqual(scope.signals, [{ code: "scope.match", field: "3" }]);
 });
+
+test("usage capture: verify_jira_issue family and ticket/mapping/writeback signals", () => {
+  assert.equal(usageFamilyOf("verify_jira_issue"), "workflow");
+  const failed = usageEventInputFrom(
+    "verify_jira_issue",
+    {},
+    textPayload({
+      ok: true,
+      ticket: { key: "AOS-1", detailTier: "detailed" },
+      mapping: { selected: 2 },
+      run: { gate: "failed" },
+      writeback: { outcome: "sent" }
+    }),
+    1
+  );
+  assert.equal(failed.family, "workflow");
+  assert.deepEqual(failed.signals, [
+    { code: "run.gate", field: "failed" },
+    { code: "ticket.detailTier", field: "detailed" },
+    { code: "mapping.selected", field: "2" },
+    { code: "writeback", field: "sent" }
+  ]);
+
+  const none = usageEventInputFrom(
+    "verify_jira_issue",
+    {},
+    textPayload({
+      ok: true,
+      ticket: { detailTier: "coarse" },
+      mapping: { selected: 0 },
+      writeback: { outcome: "dryRun" }
+    }),
+    1
+  );
+  assert.deepEqual(none.signals, [
+    { code: "ticket.detailTier", field: "coarse" },
+    { code: "mapping.none" },
+    { code: "writeback", field: "dryRun" }
+  ]);
+
+  const setup = usageEventInputFrom(
+    "verify_jira_issue",
+    {},
+    textPayload({ ok: false, needs: "setup", checks: [{ target: "jira" }] }),
+    1
+  );
+  assert.deepEqual(setup.signals, [{ code: "needs:jira" }]);
+});

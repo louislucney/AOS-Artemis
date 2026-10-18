@@ -183,3 +183,57 @@ test("run_regression: zod rejects illegal types", async () => {
     await harness.close();
   }
 });
+
+test("verify_jira_issue: registered in the catalog with the documented schema", async () => {
+  assert.ok(inProcessToolCatalog().includes("verify_jira_issue"));
+  const harness = await makeHarness();
+  try {
+    const tool = await namedTool(harness.client, "verify_jira_issue");
+    assert.ok(tool.description.length > 0);
+    const properties = tool.inputSchema.properties ?? {};
+    for (const key of ["issueKey", "device", "scope", "dryRun"]) {
+      assert.ok(key in properties, `inputSchema exposes ${key}`);
+    }
+    const required = tool.inputSchema.required ?? [];
+    assert.ok(required.includes("issueKey"), "issueKey is required");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("verify_jira_issue: description pins the jira-verification protocol (no drift)", async () => {
+  const harness = await makeHarness();
+  try {
+    const tool = await namedTool(harness.client, "verify_jira_issue");
+    for (const phrase of [
+      "Jira 验证",
+      "粗单",
+      "只能从清单中选",
+      "单子即用例",
+      "任一强断言失败",
+      "弱断言仅记录路径，不代表验证通过",
+      "AOS-VERIFY",
+      "dryRun",
+      "needs-setup",
+      "needs-info",
+      "回显"
+    ]) {
+      assert.ok(tool.description.includes(phrase), `description must mention "${phrase}"`);
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("verify_jira_issue: zod rejects illegal types", async () => {
+  const harness = await makeHarness();
+  try {
+    for (const args of [{}, { issueKey: 42 }, { device: 123 }, { scope: 1 }, { dryRun: "yes" }]) {
+      const rejected = await harness.client.callTool({ name: "verify_jira_issue", arguments: args });
+      assert.equal(rejected.isError, true, JSON.stringify(args));
+      assert.match(rejected.content[0].text, /参数校验失败/, JSON.stringify(args));
+    }
+  } finally {
+    await harness.close();
+  }
+});

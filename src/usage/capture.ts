@@ -14,7 +14,11 @@ export const USAGE_MAX_EVENTS_DEFAULT = 50_000;
 export const USAGE_DISABLED_NOTE =
   "使用统计采集已关闭（AOS_USAGE=0）；以下为已记录的历史数据。";
 
-const WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set(["design_to_test", "run_regression"]);
+const WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "design_to_test",
+  "run_regression",
+  "verify_jira_issue"
+]);
 
 const NATIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "analyze_structure",
@@ -27,6 +31,7 @@ const NATIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "design_device_diff",
   "design_to_test",
   "run_regression",
+  "verify_jira_issue",
   "export_image",
   "extract_design_system",
   "find_assets",
@@ -261,6 +266,29 @@ function outcomeSignalsOf(value: unknown): UsageSignal[] {
     const gate = (run as Record<string, unknown>).gate;
     if (typeof gate === "string" && gate.trim() !== "") {
       signals.push({ code: "run.gate", field: gate.trim() });
+    }
+  }
+  const ticket = record.ticket;
+  if (ticket !== null && typeof ticket === "object" && !Array.isArray(ticket)) {
+    const tier = (ticket as Record<string, unknown>).detailTier;
+    if (tier === "detailed" || tier === "coarse") {
+      signals.push({ code: "ticket.detailTier", field: tier });
+    }
+  }
+  const mapping = record.mapping;
+  if (mapping !== null && typeof mapping === "object" && !Array.isArray(mapping)) {
+    const selected = (mapping as Record<string, unknown>).selected;
+    if (typeof selected === "number" && Number.isFinite(selected)) {
+      signals.push(
+        selected > 0 ? { code: "mapping.selected", field: String(selected) } : { code: "mapping.none" }
+      );
+    }
+  }
+  const writeback = record.writeback;
+  if (writeback !== null && typeof writeback === "object" && !Array.isArray(writeback)) {
+    const outcome = (writeback as Record<string, unknown>).outcome;
+    if (outcome === "sent" || outcome === "dryRun") {
+      signals.push({ code: "writeback", field: outcome });
     }
   }
   return signals;
