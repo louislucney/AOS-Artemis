@@ -194,6 +194,8 @@ test("http server: panel dashboard over real HTTP", async () => {
     const body = await html.text();
     assert.match(body, /多项目总览/);
     assert.match(body, /demo/);
+    assert.match(body, /data-console="shell"/, "总览套用控制台外壳");
+    assert.match(body, /--color-accent/, "CSDC token 就位");
 
     const project = await fetch(`http://127.0.0.1:${handle.port}/panel?project=demo`);
     assert.equal(project.status, 200);

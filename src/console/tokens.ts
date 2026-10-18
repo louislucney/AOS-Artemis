@@ -1,0 +1,59 @@
+/** CSDC 开发者设计系统 tokens 子集＋控制台基础样式（web-console/DESIGN.md 为规范记录）。
+ * 对比度口径：正文级次要文字用 --color-text-secondary（#6E6E73，对白底 ≈5.1:1）；
+ * --color-text-tertiary（#86868B，≈3.6:1）仅限装饰/大字号，不得用于正文。 */
+export const CSDC_TOKENS_CSS = `
+:root{
+  --color-accent:#FFE600; --color-accent-hover:#FFF9CC; --color-accent-surface:#FFF9CC; --color-accent-subtle:#FFFDE6; --color-accent-border:#FFE600;
+  --color-text-primary:#1D1D1F; --color-text-secondary:#6E6E73; --color-text-tertiary:#86868B;
+  --color-surface-light:#F5F5F7; --color-surface-white:#FFFFFF; --color-surface-subtle:#EFEFF2;
+  --color-border:#D2D2D7; --color-border-subtle:rgba(0,0,0,0.08);
+  --color-link:#0066CC; --color-link-hover:#0077ED;
+  --color-success:#34C759; --color-success-bg:#EBF9EE; --color-error:#FF3B30; --color-error-bg:#FFEEEE; --color-warning:#FF9500; --color-warning-bg:#FFF8EC;
+  --font-family-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","PingFang SC","Hiragino Sans GB","Helvetica Neue",sans-serif;
+  --font-family-mono:"SF Mono",Menlo,Monaco,Consolas,"Fira Code",monospace;
+  --font-size-title-1:2.25rem; --font-size-title-2:1.5rem; --font-size-title-3:1.125rem;
+  --font-size-body:0.9375rem; --font-size-callout:0.8125rem; --font-size-caption:0.75rem;
+  --line-height-tight:1.15; --line-height-title:1.25; --line-height-body:1.55;
+  --font-weight-regular:400; --font-weight-medium:500; --font-weight-semibold:600; --font-weight-bold:700;
+  --tracking-title:-0.018em; --tracking-body:-0.006em;
+  --radius-xs:6px; --radius-sm:10px; --radius-md:14px; --radius-card:18px; --radius-pill:980px;
+  --shadow-card:0 4px 20px rgba(0,0,0,0.04); --shadow-hover:0 10px 30px rgba(0,0,0,0.07);
+  --blur-header:blur(20px);
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--color-surface-light);color:var(--color-text-primary);
+  font-family:var(--font-family-sans);font-size:var(--font-size-body);line-height:var(--line-height-body);
+  letter-spacing:var(--tracking-body);-webkit-font-smoothing:antialiased}
+a{color:var(--color-link);text-decoration:none}
+a:hover{color:var(--color-link-hover);text-decoration:underline}
+code,kbd{font-family:var(--font-family-mono);font-size:0.85em}
+h1,h2,h3{letter-spacing:var(--tracking-title);line-height:var(--line-height-title)}
+h1{font-size:var(--font-size-title-2);font-weight:var(--font-weight-semibold);margin:0 0 12px}
+h2{font-size:var(--font-size-title-3);font-weight:var(--font-weight-semibold);margin:0 0 10px}
+h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margin:0 0 8px}
+.c-topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;padding:10px 24px;
+  background:rgba(255,255,255,0.72);backdrop-filter:var(--blur-header);-webkit-backdrop-filter:var(--blur-header);
+  border-bottom:1px solid var(--color-border)}
+.c-brand{font-weight:var(--font-weight-semibold);font-size:var(--font-size-title-3);letter-spacing:var(--tracking-title)}
+.c-brand a{color:inherit}
+.c-topbar-meta{margin-left:auto;color:var(--color-text-secondary);font-size:var(--font-size-callout)}
+.c-layout{display:flex;align-items:flex-start;max-width:1320px;margin:0 auto}
+.c-aside{width:196px;flex-shrink:0;padding:16px 8px;position:sticky;top:56px;align-self:flex-start}
+.c-aside nav{display:flex;flex-direction:column;gap:2px}
+.c-nav-item{display:block;padding:7px 12px;border-radius:var(--radius-sm);color:var(--color-text-primary);
+  font-size:var(--font-size-callout)}
+.c-nav-item:hover{background:var(--color-surface-subtle);text-decoration:none;color:var(--color-text-primary)}
+.c-nav-item[aria-current="page"]{background:var(--color-accent);font-weight:var(--font-weight-medium)}
+.c-main{flex:1;min-width:0;padding:18px 24px 56px}
+.c-footer{max-width:1320px;margin:0 auto;padding:14px 24px 24px;color:var(--color-text-secondary);font-size:var(--font-size-caption)}
+@media (max-width:960px){
+  .c-layout{flex-direction:column}
+  .c-aside{width:100%;position:static;padding:8px 16px;border-bottom:1px solid var(--color-border-subtle)}
+  .c-aside nav{flex-direction:row;overflow-x:auto;gap:6px}
+  .c-nav-item{white-space:nowrap}
+  .c-main{padding:14px 16px 48px}
+}
+:focus-visible{outline:2px solid var(--color-link);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+`;

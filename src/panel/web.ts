@@ -6,6 +6,7 @@ import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
+import { renderConsoleShell } from "../console/shell.js";
 import { storeKindLabel } from "../db/labels.js";
 import {
   buildPanelBatchDetail,
@@ -384,9 +385,12 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
     renderLatestBatchCell(row),
     escapeHtml(row.warnings.join("；") || "—")
   ]);
-  return page(
-    "多项目总览",
-    [
+  return renderConsoleShell({
+    title: "多项目总览",
+    active: "overview",
+    meta: `项目 ${view.projects.length} 个 · ${escapeHtml(cacheNote)}`,
+    headExtra: `<style>${PAGE_CSS}</style>`,
+    body: [
       "<header>",
       "<h1>多项目总览</h1>",
       '<p><a href="/panel?view=compare">多项目对比</a></p>',
@@ -403,7 +407,7 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
       "</section>",
       "</main>"
     ].join("\n")
-  );
+  });
 }
 
 function renderCredentialRows(detail: PanelProjectDetail): string[][] {
