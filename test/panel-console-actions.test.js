@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
+import { computeDispatchPreview, dispatchFormSignature, dispatchPreviewId } from "../dist/console/dispatch.js";
 import { handlePanelActionRequest } from "../dist/panel/actions.js";
 import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
 
@@ -257,6 +258,83 @@ test("console actions: 服务端重解析（case-set/keyword 不信客户端 ref
     deps
   );
   assert.equal(noHit.status, 400);
+});
+
+test("console actions: 下发预览合同（previewId 复算；改端/范围变化 409；缺省向后兼容）", async () => {
+  const { deps, rootPath, store } = await setup();
+  const set = await store.recordCaseSet({
+    rootPath,
+    source: "figma:x",
+    basename: "登录回归",
+    features: [
+      { key: "f-1", name: "登录", caseCount: 2, screens: [], jsonPath: "/x/a.json", mdPath: "/x/a.md", xlsxPath: "/x/a.xlsx" }
+    ]
+  });
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: set.id,
+    platforms: "android",
+    baseline: "latest"
+  });
+  const preview = await computeDispatchPreview({ store, env: {} }, rootPath, params);
+  const formSignature = dispatchFormSignature(params);
+  const previewId = dispatchPreviewId(preview, formSignature);
+
+  const ok = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: set.id,
+      platforms: ["android"],
+      baseline: "latest",
+      previewId
+    }),
+    deps
+  );
+  assert.equal(ok.status, 200, "同源 previewId 放行");
+
+  const tampered = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: set.id,
+      platforms: ["ios"],
+      baseline: "latest",
+      previewId
+    }),
+    deps
+  );
+  assert.equal(tampered.status, 409, "改端后 previewId 不匹配 → 409");
+  assert.equal(JSON.parse(tampered.body).stale, true);
+
+  const keywordParams = new URLSearchParams({ source: "keyword", keyword: "登录", platforms: "android" });
+  const keywordPreview = await computeDispatchPreview({ store, env: {} }, rootPath, keywordParams);
+  const keywordId = dispatchPreviewId(keywordPreview, dispatchFormSignature(keywordParams));
+  await store.recordCaseSet({
+    rootPath,
+    source: "figma:y",
+    basename: "登录回归（v2）",
+    features: [
+      { key: "f-2", name: "登录二次", caseCount: 1, screens: [], jsonPath: "/x/c.json", mdPath: "/x/c.md", xlsxPath: "/x/c.xlsx" }
+    ]
+  });
+  const keywordStale = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "keyword",
+      keyword: "登录",
+      platforms: ["android"],
+      previewId: keywordId
+    }),
+    deps
+  );
+  assert.equal(keywordStale.status, 409, "关键词匹配范围变化 → 预览过期");
+
+  const legacy = await handlePanelActionRequest(
+    request("/panel/api/tasks", { project: rootPath, source: "case-set", ref: set.id }),
+    deps
+  );
+  assert.equal(legacy.status, 200, "无 previewId（CLI/legacy）向后兼容");
 });
 
 test("console actions: 导入单飞（409）＋上传临时文件必清理", async () => {

@@ -9,6 +9,8 @@ import { escapeHtml } from "../util.js";
 import { renderConsoleShell, setConsoleShellDefaults, type ConsoleCapabilities, type ConsoleNavKey, type ConsoleShellInput } from "../console/shell.js";
 import {
   computeDispatchPreview,
+  dispatchFormSignature,
+  dispatchPreviewId,
   renderDispatchPage,
   type DispatchPreview
 } from "../console/dispatch.js";
@@ -141,6 +143,8 @@ type PanelView =
       rootPath: string;
       rootLabel: string;
       preview: DispatchPreview;
+      previewId: string;
+      formSignature: string;
       query: Record<string, string>;
     }
   | {
@@ -276,7 +280,16 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     );
     const query: Record<string, string> = {};
     for (const [key, value] of url.searchParams) query[key] = value;
-    return { kind: "dispatch", rootPath: resolved.rootPath, rootLabel: resolved.name, preview, query };
+    const formSignature = dispatchFormSignature(url.searchParams);
+    return {
+      kind: "dispatch",
+      rootPath: resolved.rootPath,
+      rootLabel: resolved.name,
+      preview,
+      previewId: dispatchPreviewId(preview, formSignature),
+      formSignature,
+      query
+    };
   }
   if (section === "library") {
     return {
@@ -429,7 +442,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
 function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "overview") return { ...view.overview, view: "overview" };
   if (view.kind === "compare") return { ...view.compare, view: "compare" };
-  if (view.kind === "dispatch") return { ok: true, view: "dispatch", ...view.preview };
+  if (view.kind === "dispatch") return { ok: true, view: "dispatch", previewId: view.previewId, ...view.preview };
   if (view.kind === "library") {
     return { ok: true, view: "library", sets: view.sets, quarantine: view.quarantine };
   }
@@ -2238,6 +2251,8 @@ function renderPanelHtml(
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
       preview: view.preview,
+      previewId: view.previewId,
+      formSignature: view.formSignature,
       query: view.query,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth

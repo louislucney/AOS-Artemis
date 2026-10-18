@@ -11,6 +11,11 @@ import { importTestDocument } from "../workflow/excel-import.js";
 import { createRunCaseIssues, MAX_ISSUE_ITEMS, normalizeLabels } from "./issues.js";
 import { sameOriginAllowed } from "./http-guard.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
+import {
+  computeDispatchPreview,
+  dispatchFormSignature,
+  dispatchPreviewId
+} from "../console/dispatch.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 
 /** 面板动作层（DESIGN：回归服务 §5.4）：HTTP 模式接线；独立进程需 `AOS_PANEL_ACTIONS=1`＋loopback。
@@ -159,11 +164,46 @@ async function auditPanel(
   });
 }
 
+async function checkDispatchPreviewFreshness(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>
+): Promise<PanelWebResponse | null> {
+  const previewId = typeof payload.previewId === "string" ? payload.previewId.trim() : "";
+  if (previewId === "") return null;
+  const mode = payload.source === "keyword" ? "keyword" : "case-set";
+  const params = new URLSearchParams();
+  params.set("source", mode);
+  if (mode === "keyword") params.set("keyword", String(payload.keyword ?? "").trim());
+  else params.set("ref", String(payload.ref ?? "").trim());
+  const platforms = Array.isArray(payload.platforms)
+    ? payload.platforms.filter((value): value is string => typeof value === "string")
+    : [];
+  params.set("platforms", platforms.join(","));
+  params.set("baseline", payload.baseline === "none" ? "none" : "latest");
+  const preview = await computeDispatchPreview(
+    { store: deps.store, env: deps.env ?? process.env },
+    rootPath,
+    params
+  );
+  const expected = dispatchPreviewId(preview, dispatchFormSignature(params));
+  if (expected !== previewId) {
+    return json(409, {
+      ok: false,
+      stale: true,
+      error: "预览已过期：份/端/基线或匹配范围已变化，请刷新预览后重新确认"
+    });
+  }
+  return null;
+}
+
 async function createTask(
   deps: PanelWebDeps,
   rootPath: string,
   payload: Record<string, unknown>
 ): Promise<PanelWebResponse> {
+  const stalePreview = await checkDispatchPreviewFreshness(deps, rootPath, payload);
+  if (stalePreview !== null) return stalePreview;
   const sets = await deps.store.listCaseSets(rootPath);
   let refs: Array<{ caseSetId: string; featureKey: string }> = [];
   const sourceMode = payload.source;

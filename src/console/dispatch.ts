@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ProjectStore } from "../db/types.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cBanner, cCard, cStat, cTable } from "./components.js";
@@ -32,9 +34,37 @@ export interface DispatchView {
   rootPath: string;
   rootLabel: string;
   preview: DispatchPreview;
+  /** 预览 ID：POST 时服务端复算比对（预览过期 → 409）。 */
+  previewId: string;
+  /** 表单字段签名：客户端以它判断"改了字段 → 预览已过期"。 */
+  formSignature: string;
   query: Record<string, string>;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
+}
+
+/** 表单字段签名（与预览同源；客户端复算同式）。 */
+export function dispatchFormSignature(params: URLSearchParams): string {
+  const mode = (params.get("source") ?? "case-set").trim() === "keyword" ? "keyword" : "case-set";
+  const refOrKeyword =
+    mode === "keyword" ? (params.get("keyword") ?? "").trim() : (params.get("ref") ?? "").trim();
+  const platforms = (params.get("platforms") ?? "android")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value === "ios" || value === "android")
+    .sort()
+    .join(",");
+  const baseline = (params.get("baseline") ?? "latest").trim() === "none" ? "none" : "latest";
+  return [mode, refOrKeyword, platforms, baseline].join("|");
+}
+
+/** 预览 ID＝表单签名＋服务端解析结果（份集合/用例数）短哈希；服务端复算不一致即视为过期。 */
+export function dispatchPreviewId(preview: DispatchPreview, formSignature: string): string {
+  const resolved = preview.refs.slice().sort().join(",");
+  return createHash("sha256")
+    .update(`${formSignature}#${resolved}#${preview.source.caseCount}`)
+    .digest("hex")
+    .slice(0, 16);
 }
 
 const ONLINE_WINDOW_MS = 5 * 60_000;
@@ -193,18 +223,74 @@ export function renderDispatchPage(view: DispatchView): string {
       empty: "无引用（待选择来源）"
     }),
     `<p>runner 候选：${runnerBadges || '<span class="muted">暂无注册执行机</span>'}</p>`,
+    preview.devices.length === 0
+      ? `<p class="muted">设备：由在线执行机在领取时确定；最终设备见任务页。</p>`
+      : "",
     warnings,
     `<p><button class="c-button" type="submit">刷新预览</button></p>`
   ].join("\n");
 
+  const dispatchConfirmScript = `<script>(function(){
+var form=document.getElementById('dispatch-form');if(!form)return;
+var go=document.getElementById('dispatch-submit');if(!go)return;
+var box=document.getElementById('dispatch-confirm');
+var yes=document.getElementById('dispatch-confirm-yes');
+var no=document.getElementById('dispatch-confirm-no');
+var err=document.getElementById('dispatch-error');
+var stale=document.getElementById('dispatch-stale');
+var island=null;try{island=JSON.parse(document.getElementById('dispatch-preview-data').textContent);}catch(e){island=null;}
+if(!island){return;}
+function showErr(m){err.textContent=m;err.hidden=false;}
+function formSignature(){
+  var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
+  var refOrKeyword=mode==='keyword'?((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim():((form.querySelector('select[name="ref"]')||{value:''}).value||'');
+  var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;}).sort().join(',');
+  var baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
+  return [mode,refOrKeyword,platforms,baseline].join('|');
+}
+function refreshStale(){
+  var staleNow=formSignature()!==island.formSignature;
+  if(stale)stale.hidden=!staleNow;
+  go.disabled=staleNow;
+  if(staleNow)box.hidden=true;
+  return staleNow;
+}
+form.addEventListener('input',refreshStale);
+form.addEventListener('change',refreshStale);
+refreshStale();
+go.addEventListener('click',function(){
+  if(refreshStale()){showErr('预览已过期：请先点「刷新预览」');return;}
+  if(form.querySelectorAll('input[name="platforms"]:checked').length===0){showErr('请至少选择目标端（iOS/Android）');return;}
+  var s=island.summary||{};
+  var text='将创建回归任务：来源「'+(s.label||'—')+'」· 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条 · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+'。';
+  var textEl=document.getElementById('dispatch-confirm-text');if(textEl)textEl.textContent=text;
+  err.hidden=true;box.hidden=false;go.disabled=true;if(yes&&yes.focus)yes.focus();
+});
+no.addEventListener('click',function(){box.hidden=true;go.disabled=false;});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!box.hidden){box.hidden=true;go.disabled=false;}});
+yes.addEventListener('click',function(){
+  var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
+  var payload={project:island.project,previewId:island.previewId,source:mode};
+  if(mode==='keyword'){payload.keyword=((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim();}
+  else{payload.ref=(form.querySelector('select[name="ref"]')||{value:''}).value||'';}
+  payload.platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
+  payload.baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
+  yes.disabled=true;
+  fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(function(response){return response.json().then(function(p){if(!response.ok){throw new Error(p.error||('HTTP '+response.status));}window.aosFlash&&aosFlash('已派发任务 '+p.task.id+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(island.project)+'&task='+encodeURIComponent(p.task.id);});})
+    .catch(function(error){yes.disabled=false;showErr('创建失败：'+error.message);});
+});
+})();</script>`;
   const actionsOff = view.capabilities?.actions === false;
   const confirmBody = actionsOff
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
+        `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">派发前显示一次摘要确认；由在线执行机自动领取，或在执行机手动执行（<code>suite run --task</code>）。</span></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
-        `<p id="dispatch-confirm" class="c-banner c-banner-accent" hidden><span id="dispatch-confirm-text">将创建回归任务：来源「${escapeHtml(preview.source.label || "—")}」· 用例 ${preview.source.caseCount} 条 · 端 ${escapeHtml(preview.platforms.join("、") || "—")} · 基线 ${preview.baseline}。</span> <button class="c-button c-button-primary" type="button" id="dispatch-confirm-yes">确认创建</button> <button class="c-button" type="button" id="dispatch-confirm-no">取消</button></p>`,
-        `<script>(function(){var go=document.getElementById('dispatch-submit');if(!go)return;var box=document.getElementById('dispatch-confirm');var yes=document.getElementById('dispatch-confirm-yes');var no=document.getElementById('dispatch-confirm-no');var err=document.getElementById('dispatch-error');function showErr(m){err.textContent=m;err.hidden=false;}go.addEventListener('click',function(){var form=go.closest('form');var data=new FormData(form);if(data.get('source')==='case-set'&&!(form.querySelector('select[name="ref"]')||{value:''}).value){showErr('请选择份');return;}if(data.get('source')==='keyword'&&!((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim()){showErr('请输入功能关键词');return;}var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});if(platforms.length===0){showErr('请至少选择目标端（iOS/Android）');return;}var label='';var count='';if(data.get('source')==='case-set'){var sel=form.querySelector('select[name="ref"]');var opt=sel&&sel.options[sel.selectedIndex];label=opt?String(opt.textContent).replace(/（.*$/,''):'—';count=(opt&&opt.dataset&&opt.dataset.count)||'0';}else{var kw=(form.querySelector('input[name="keyword"]')||{value:''}).value.trim();label='关键词「'+kw+'」';count='实时解析';}var baselineText=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;var textEl=document.getElementById('dispatch-confirm-text');if(textEl){textEl.textContent='将创建回归任务：来源「'+label+'」· 用例 '+count+(count==='实时解析'?'（按关键词，派发时解析）':' 条')+' · 端 '+platforms.join('、')+' · 基线 '+baselineText+'。';}err.hidden=true;box.hidden=false;go.disabled=true;if(yes&&yes.focus)yes.focus();});no.addEventListener('click',function(){box.hidden=true;go.disabled=false;});document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!box.hidden){box.hidden=true;go.disabled=false;}});yes.addEventListener('click',function(){var form=go.closest('form');var data=new FormData(form);var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});var payload={project:form.querySelector('input[name="project"]').value,source:data.get('source'),platforms:platforms,baseline:(form.querySelector('select[name="baseline"]')||{value:'latest'}).value};if(data.get('source')==='case-set'){payload.ref=(form.querySelector('select[name="ref"]')||{value:''}).value;}else{payload.keyword=((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim();}fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(payload)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){location.href='/panel?project='+encodeURIComponent(payload.project)+'&task='+encodeURIComponent(res.j.task.id)+'&dispatched='+encodeURIComponent(res.j.task.id);}else{yes.disabled=false;showErr('派发失败：'+(res.j.error||res.status||'未知错误'));}}).catch(function(e){yes.disabled=false;showErr('派发失败：'+e);});});})();</script>`
+        `<p id="dispatch-confirm" class="c-banner c-banner-accent" hidden><span id="dispatch-confirm-text"></span> <button class="c-button c-button-primary" type="button" id="dispatch-confirm-yes">确认创建</button> <button class="c-button" type="button" id="dispatch-confirm-no">取消</button></p>`,
+        `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
+        dispatchConfirmScript,
       ].join("\n");
 
   return renderConsoleShell({
@@ -217,7 +303,7 @@ export function renderDispatchPage(view: DispatchView): string {
     body: [
       "<h1>下发回归</h1>",
       `<p class="muted"><code>${escapeHtml(view.rootPath)}</code> · 四步：来源 → 参数 → 预览回显 → 确认派发</p>`,
-      `<form method="get" action="/panel">`,
+      `<form id="dispatch-form" method="get" action="/panel">`,
       `<input type="hidden" name="project" value="${escapeHtml(view.rootPath)}">`,
       `<input type="hidden" name="section" value="dispatch">`,
       cCard({ title: "① 来源", body: sourceBody }),

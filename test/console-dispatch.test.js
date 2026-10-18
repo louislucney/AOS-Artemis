@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { computeDispatchPreview, renderDispatchPage } from "../dist/console/dispatch.js";
+import { computeDispatchPreview, dispatchFormSignature, dispatchPreviewId, renderDispatchPage } from "../dist/console/dispatch.js";
 import { MemoryStore } from "../dist/db/memory.js";
 
 const ROOT = "/w/p";
@@ -107,6 +107,10 @@ test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", asy
   assert.match(html, /data-count=/, "份选项携带条数（客户端重建摘要）");
   assert.match(html, /请至少选择目标端/, "端为空前置校验");
   assert.match(html, /id="dispatch-error"[^>]*role="alert"/, "内联错误区");
+  assert.match(html, /id="dispatch-stale"/, "预览过期横幅");
+  assert.match(html, /id="dispatch-preview-data"/, "预览数据岛（previewId＋表单签名）");
+  assert.match(html, /refreshStale/, "字段变更→过期即禁用确认");
+  assert.match(html, /island\.previewId/, "POST 携带 previewId（服务端复算比对）");
   assert.ok(!html.includes('value="excel"'), "Excel 死选项已移除");
   assert.ok(!html.includes('name="devices"'), "设备手输已移除（执行时在项目机确定）");
   assert.match(html, /aria-label="用例集份"/);
@@ -120,6 +124,27 @@ test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", asy
     "下发为当前导航项（含项目上下文）"
   );
   assert.ok(!html.includes('http-equiv="refresh"'), "表单页不自动刷新");
+});
+
+test("renderDispatchPage: 预览合同（预览数据岛与服务端同源）", async () => {
+  const { store, setA } = await seed();
+  const params = new URLSearchParams({ source: "case-set", ref: setA.id, platforms: "android" });
+  const preview = await computeDispatchPreview({ store, env: {}, now: () => NOW }, ROOT, params);
+  const formSignature = dispatchFormSignature(params);
+  const previewId = dispatchPreviewId(preview, formSignature);
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId,
+    formSignature,
+    query: { source: "case-set", ref: setA.id }
+  });
+  assert.ok(html.includes(`"previewId":"${previewId}"`), "岛内 previewId 与服务端同源");
+  assert.ok(html.includes(`"formSignature":"${formSignature}"`), "岛内表单签名（客户端复算同式）");
+  assert.match(html, /formSignature\(\)!==island\.formSignature/, "字段变更→过期判定");
+  assert.match(html, /id="dispatch-stale"/, "过期横幅（role=status）");
+  assert.match(html, /role="status"[^>]*hidden|hidden[^>]*role="status"/, "默认隐藏");
 });
 
 test("renderDispatchPage: 写动作关闭时禁用派发并给可见原因", async () => {
