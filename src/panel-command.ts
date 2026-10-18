@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { createProjectStore, type CreateStoreResult } from "./db/index.js";
 import { storeKindShortLabel } from "./db/labels.js";
+import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
+import { loopbackHostAllowed } from "./panel/http-guard.js";
 import type { ProjectStore } from "./db/types.js";
 import {
   createPanelWebCache,
@@ -96,8 +98,41 @@ function listen(
   });
 }
 
-function defaultWaitForShutdown(): Promise<void> {
-  return new Promise((resolve) => {
+function readStandaloneJsonBody(req: IncomingMessage, maxBytes = 256 * 1024): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let oversized = false;
+    req.on("data", (chunk: Buffer) => {
+      if (oversized) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        oversized = true;
+        reject(new Error("body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (oversized) return;
+      const raw = Buffer.concat(chunks).toString("utf-8").trim();
+      if (raw === "") {
+        resolve(undefined);
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on("error", (error) => {
+      if (!oversized) reject(error);
+    });
+  });
+}
+
+function defaultWaitForShutdown(): Promise<void> {  return new Promise((resolve) => {
     const done = (): void => {
       process.removeListener("SIGINT", done);
       process.removeListener("SIGTERM", done);
@@ -165,6 +200,30 @@ async function runPanelWeb(options: {
         }
         if (req.method === "GET" && (url.pathname === "/panel" || url.pathname === "/panel.json")) {
           const response = await handlePanelRequest(url, deps);
+          res.writeHead(response.status, { "Content-Type": response.contentType });
+          res.end(response.body);
+          return;
+        }
+        if (
+          url.pathname.startsWith("/panel/api/") &&
+          panelActionsEnabled(env) &&
+          loopbackHostAllowed(req.headers.host) &&
+          (req.method === "POST" || req.method === "GET")
+        ) {
+          let body: unknown;
+          if (req.method === "POST") {
+            try {
+              body = await readStandaloneJsonBody(req);
+            } catch (error) {
+              res.writeHead(400, { "Content-Type": JSON_CONTENT_TYPE });
+              res.end('{"error":"invalid JSON body"}');
+              return;
+            }
+          }
+          const response = await handlePanelActionRequest(
+            { method: req.method ?? "GET", url, body, headers: req.headers },
+            deps
+          );
           res.writeHead(response.status, { "Content-Type": response.contentType });
           res.end(response.body);
           return;

@@ -41,6 +41,7 @@ export interface AosHttpHandle {
 const PROJECT_NAME_RE = /^[A-Za-z0-9._-]+$/;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_PANEL_BODY_BYTES = 256 * 1024;
+const MAX_PANEL_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 /** 非 loopback 且未配置静态令牌、未显式放行时拒绝启动（fail-fast，无副作用）。 */
 export class InsecureBindRefusedError extends Error {
@@ -57,6 +58,32 @@ function isExempt(method: string | undefined, pathname: string): boolean {
 
 /** 请求体超限（区别于 JSON 解析失败；外层映射 413）。 */
 class BodyTooLargeError extends Error {}
+
+/** 原始字节体（multipart 上传用；调用方负责上限预检）。 */
+function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let tooLarge = false;
+    req.on("data", (chunk: Buffer) => {
+      if (tooLarge) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        tooLarge = true;
+        chunks.length = 0;
+        reject(new BodyTooLargeError("request body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!tooLarge) resolve(Buffer.concat(chunks));
+    });
+    req.on("error", (error) => {
+      if (!tooLarge) reject(error);
+    });
+  });
+}
 
 function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -242,7 +269,24 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
 
         if (url.pathname.startsWith("/panel/api/")) {
           let body: unknown = undefined;
-          if (req.method === "POST") {
+          let rawBody: Buffer | undefined;
+          let contentType: string | undefined;
+          const headerType = req.headers["content-type"];
+          const contentTypeValue = Array.isArray(headerType) ? headerType[0] : headerType;
+          const isMultipart =
+            typeof contentTypeValue === "string" &&
+            contentTypeValue.toLowerCase().includes("multipart/form-data");
+          if (req.method === "POST" && url.pathname === "/panel/api/import" && isMultipart) {
+            try {
+              rawBody = await readRawBody(req, MAX_PANEL_BODY_BYTES + MAX_PANEL_UPLOAD_BYTES);
+            } catch (error) {
+              if (error instanceof BodyTooLargeError) throw error;
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end('{"error":"invalid multipart body"}');
+              return;
+            }
+            contentType = contentTypeValue;
+          } else if (req.method === "POST") {
             try {
               body = await readBody(req, MAX_PANEL_BODY_BYTES);
             } catch (error) {
@@ -253,7 +297,14 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             }
           }
           const actionResponse = await handlePanelActionRequest(
-            { method: req.method ?? "GET", url, body },
+            {
+              method: req.method ?? "GET",
+              url,
+              body,
+              headers: req.headers,
+              ...(rawBody === undefined ? {} : { rawBody }),
+              ...(contentType === undefined ? {} : { contentType })
+            },
             panelDeps
           );
           res.writeHead(actionResponse.status, { "Content-Type": actionResponse.contentType });
