@@ -177,6 +177,16 @@ test("panel web: 项目详情（空态→批次→独立运行）与未知项目
   assert.equal(empty.integration.llm.usable, true);
   assert.equal(empty.integration.credentials.figma, true);
 
+  const emptyHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.match(emptyHtml.body, /id="onboarding"/, "空项目三步卡");
+  assert.match(emptyHtml.body, /生成或导入第一份用例/, "② 步文案");
+  assert.match(emptyHtml.body, /先去生成\/导入用例 →/, "主 CTA 随状态切换（无份）");
+  assert.match(emptyHtml.body, /详细状态（批次 \/ 任务 \/ 执行机 \/ 计划）/, "空区块收敛到详细状态");
+  assert.match(emptyHtml.body, /去用例库/, "下发块引导先去用例库");
+
   const manifest = makeBatch(projectDir, { startedIso: "2026-10-13T09:00:00.000Z", traceId: "trace-1" });
   await store.recordTask({ rootPath: projectDir, traceId: "trace-2", status: "submitted" });
 
@@ -254,6 +264,7 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
   assert.match(html.body, /<option value="f-1">登录流程（2 例）<\/option>/, "选项含功能名与条数");
   assert.match(html.body, /f\.getAll\('featureKeys'\)/, "提交收集多选值");
   assert.match(html.body, /<section id="regression" class="c-plain">/, "CTA 区块不吃遗留 section 边框（无双框）");
+  assert.doesNotMatch(html.body, /id="onboarding"/, "有引用份时不显示入门卡");
   assert.match(html.body, /执行：[\s\S]{0,200}?集成：/, "项目页两轴并列（执行／集成）");
   assert.doesNotMatch(html.body, /项目状态：/, "H1 不再夹灯状态（状态进徽章行）");
   assert.match(html.body, /<details class="c-details">/, "环境自查与明细折叠");

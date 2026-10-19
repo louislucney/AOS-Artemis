@@ -746,7 +746,11 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
       actions:
         detail.reviewQueue.undecided > 0
           ? `<a class="c-button c-button-primary" href="${escapeHtml(reviewHref(rootPath))}">先去裁决 ${detail.reviewQueue.undecided} 条 →</a> <a class="c-button" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`
-          : `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`,
+        : detail.regressionRefs.length === 0
+        ? `<a class="c-button c-button-primary" href="${escapeHtml(
+            `/panel?project=${encodeURIComponent(rootPath)}&section=library`
+          )}">先去生成/导入用例 →</a>`
+        : `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`,
       body:
         detail.reviewQueue.undecided === 0 && detail.reviewQueue.unissued === 0
           ? `<p><a href="${escapeHtml(reviewHref(rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(rootPath))}">统计</a></p>`
@@ -1072,6 +1076,25 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
   ].join("\n");
 }
 
+function renderOnboarding(rootPath: string): string {
+  const libraryHref = `/panel?project=${encodeURIComponent(rootPath)}&section=library`;
+  const opsHref = `/panel?project=${encodeURIComponent(rootPath)}&section=ops`;
+  return [
+    '<section id="onboarding">',
+    "<h2>三步开始</h2>",
+    cCard({
+      body: [
+        "<ol>",
+        `<li><strong>接入检查（可选）</strong>：LLM / Figma / Jira 缺失不影响执行（缺 LLM 不生成用例、缺 Jira 不建单）；详见 <a href="${escapeHtml(opsHref)}">运维与数据</a> 与下方「环境自查与明细」。</li>`,
+        `<li><strong>生成或导入第一份用例</strong>：MCP 工具 <code>figma_generate_tests</code> / <code>pen_extract_flows</code>，或 <a href="${escapeHtml(libraryHref)}">用例库 → Excel 导入</a>。</li>`,
+        `<li><strong>下发第一条回归</strong>：<a href="${escapeHtml(dispatchHref(rootPath))}">去下发向导</a>（需先完成第 ② 步；预览与确认同源、字段变更即失效）。</li>`,
+        "</ol>"
+      ].join("\n")
+    }),
+    "</section>"
+  ].join("\n");
+}
+
 function renderDispatchCta(rootPath: string, detail: PanelProjectDetail): string {
   const refs = detail.regressionRefs;
   const hint =
@@ -1085,7 +1108,11 @@ function renderDispatchCta(rootPath: string, detail: PanelProjectDetail): string
       title: "使用下发向导（唯一入口）",
       body: [
         `<p>四步完成：选来源 → 设参数 → 看预览回显 → 确认派发。${hint}</p>`,
-        `<p><a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">去下发向导</a></p>`
+        refs.length === 0
+          ? `<p><span class="muted">完成「生成或导入用例」后可下发。</span> <a class="c-button" href="${escapeHtml(
+              `/panel?project=${encodeURIComponent(rootPath)}&section=library`
+            )}">去用例库</a></p>`
+          : `<p><a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">去下发向导</a></p>`
       ].join("\n")
     }),
     "</section>"
@@ -1831,6 +1858,11 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
     detail.warnings.length > 0
       ? detail.warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("")
       : "";
+  const emptyProject =
+    detail.batches.length === 0 &&
+    detail.tasks.length === 0 &&
+    detail.regressionRefs.length === 0;
+
   return page(
     `项目 · ${row.name}`,
     [
@@ -1851,11 +1883,18 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       `<p><a href="${escapeHtml(reviewHref(view.rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(view.rootPath))}">统计</a></p>`,
       "</header>",
       "<main>",
+      ...(emptyProject ? [renderOnboarding(view.rootPath)] : []),
       renderProjectPulse(detail, view.rootPath),
+      ...(emptyProject
+        ? [
+            '<details class="c-details"><summary>详细状态（批次 / 任务 / 执行机 / 计划）</summary>'
+          ]
+        : []),
       renderBatches(detail, view.rootPath),
       renderTaskList(view.rootPath, detail),
       renderRunners(detail),
       renderSchedules(view.rootPath, detail),
+      ...(emptyProject ? ["</details>"] : []),
       renderDispatchCta(view.rootPath, detail),
       '<details class="c-details">',
       "<summary>环境自查与明细（接入自检 / 运行时细节 / 磁盘资产 / 独立运行）</summary>",
