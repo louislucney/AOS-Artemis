@@ -1,5 +1,6 @@
 import { CONSOLE_COMPAT_CSS } from "./compat.js";
 import { CSDC_TOKENS_CSS } from "./tokens.js";
+import { relativeTime } from "./time.js";
 import { escapeHtml } from "../util.js";
 
 export type ConsoleNavKey =
@@ -179,7 +180,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
       : `<div class="c-store-chip" title="记录底座：持久层与最近写入（点击进入运维与数据）">${health.opsHref === null ? "" : `<a href="${escapeHtml(health.opsHref)}">`}${escapeHtml(health.label)}${health.opsHref === null ? "" : "</a>"}${
           health.lastWriteAt === null
             ? ""
-            : ` · 最近写入 ${escapeHtml(health.lastWriteAt.slice(5, 16).replace("T", " "))}`
+            : ` · 最近写入 ${relativeTime(health.lastWriteAt)}`
         }${health.writeIssue === null ? "" : ` <span class="c-badge c-badge-error">${escapeHtml(health.writeIssue)}</span>`}</div>`;
   const switcherOptions = (input.projectSwitcher ?? shellDefaults.projectSwitcher)?.options ?? [];
   const switcher =

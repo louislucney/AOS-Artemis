@@ -46,6 +46,13 @@ const pages = [
 ];
 for (const [name, url] of pages) {
   const response = await handlePanelRequest(url, deps);
-  await writeFile(path.join(outDir, `${name}.html`), response.body, "utf8");
+  const body =
+    name === "overview"
+      ? response.body.replace(
+          "if(projects.length===1&&!sessionStorage.getItem(\"aos-auto-entered\")){sessionStorage.setItem(\"aos-auto-entered\",\"1\");location.replace(projects[0].url);}",
+          "/* fixture: 单项目自动进入已禁用（静态快照可扫描） */"
+        )
+      : response.body;
+  await writeFile(path.join(outDir, `${name}.html`), body, "utf8");
 }
 console.log(`控制台 fixtures 已写入 ${pages.length} 页 → ${outDir}`);

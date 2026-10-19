@@ -141,7 +141,7 @@ export function renderArchivePage(data: ArchivePageData): string {
       ? `<code>${escapeHtml(record.path)}</code>`
       : `<a href="${escapeHtml(artifactUrl(record))}" target="_blank" rel="noreferrer"><code>${escapeHtml(record.path)}</code></a>`;
     return [
-      cBadge({ label: artifactKindLabel(record.kind), tone: "neutral" }),
+      cBadge({ label: artifactKindLabel(record.kind), tone: "neutral", title: record.kind }),
       `${thumb}<code>${escapeHtml(record.title)}</code>`,
       location,
       relativeTime(record.at),

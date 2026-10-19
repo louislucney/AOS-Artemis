@@ -21,11 +21,14 @@ export function cCard(input: CCardInput): string {
 export interface CBadgeInput {
   label: string;
   tone: "neutral" | "accent" | "success" | "error" | "warning";
+  /** 悬停原文（如机器枚举），保留可追溯。 */
+  title?: string;
 }
 
 export function cBadge(input: CBadgeInput): string {
   const toneClass = input.tone === "neutral" ? "" : ` c-badge-${input.tone}`;
-  return `<span class="c-badge${toneClass}">${escapeHtml(input.label)}</span>`;
+  const titleAttr = input.title === undefined ? "" : ` title="${escapeHtml(input.title)}"`;
+  return `<span class="c-badge${toneClass}"${titleAttr}>${escapeHtml(input.label)}</span>`;
 }
 
 export interface CBannerInput {

@@ -298,7 +298,7 @@ yes.addEventListener('click',function(){
     : [
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">派发前显示一次摘要确认；由在线执行机自动领取，或在执行机手动执行（<code>suite run --task</code>）。</span></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
-        `<p id="dispatch-confirm" class="c-banner c-banner-accent" hidden><span id="dispatch-confirm-text"></span> <button class="c-button c-button-primary" type="button" id="dispatch-confirm-yes">确认创建</button> <button class="c-button" type="button" id="dispatch-confirm-no">取消</button></p>`,
+        `<p id="dispatch-confirm" class="c-banner c-banner-accent" role="status" hidden><span id="dispatch-confirm-text"></span> <button class="c-button c-button-primary" type="button" id="dispatch-confirm-yes">确认创建</button> <button class="c-button" type="button" id="dispatch-confirm-no">取消</button></p>`,
         `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, ready: preview.refs.length > 0, summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
         dispatchConfirmScript,
       ].join("\n");

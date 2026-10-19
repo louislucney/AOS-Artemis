@@ -128,7 +128,7 @@ test("console shell: 顶栏记录底座指示器（持久层/最近写入/写失
   });
   assert.match(html, /c-store-chip/);
   assert.match(html, /文件台账/);
-  assert.match(html, /最近写入 10-18 12:03/);
+  assert.match(html, /最近写入 <time datetime="2026-10-18T12:03:44\.000Z"[^>]*>[^<]*<\/time>/, "最近写入相对化（title 本地时间）");
   assert.match(html, /c-badge-error">写失败 2 次/);
   assert.match(html, /section=ops/);
   assert.match(html, /:root\[data-theme="dark"\]/, "暗色主题 token（属性态）");

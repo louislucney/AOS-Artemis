@@ -1064,7 +1064,7 @@ function renderDispatchCta(rootPath: string, detail: PanelProjectDetail): string
   const hint =
     refs.length === 0
       ? "当前暂无可引用的用例份（先运行 figma_generate_tests 生成并登记用例集）。"
-      : `当前有 ${refs.length} 份可引用的用例集；向导支持多份引用与逐条预览。`;
+      : `当前有 ${refs.length} 份可引用的用例集；关键词模式可批量匹配多份，预览逐份列出。`;
   return [
     '<section id="regression" class="c-plain">',
     "<h2>新建回归测试</h2>",
@@ -1618,6 +1618,10 @@ function renderResults(results){
     if(item.url){var link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noreferrer';link.textContent=' 打开';li.appendChild(link);}
     if(item.reason){var reason=document.createElement('span');reason.className='muted';reason.textContent=' '+item.reason;li.appendChild(reason);}
     if(item.summary){var summary=document.createElement('span');summary.className='muted';summary.textContent=' '+item.summary;li.appendChild(summary);}
+    if(item.attachments&&item.attachments.length){var at=document.createElement('span');at.className='muted';at.textContent=' 将附证据 '+item.attachments.length+' 个';li.appendChild(at);}
+    if(item.evidence==='posted'){var ev=document.createElement('span');ev.className='muted';ev.textContent=' 证据已附';li.appendChild(ev);}
+    else if(item.evidence==='error'){var ev2=document.createElement('span');ev2.className='muted';ev2.textContent=' 证据附加失败';li.appendChild(ev2);}
+    else if(item.evidence==='skipped'){var ev3=document.createElement('span');ev3.className='muted';ev3.textContent=' 无证据（无轨迹）';li.appendChild(ev3);}
     if(item.attachmentsFailed){var aw=document.createElement('span');aw.className='muted';aw.textContent=' 附件预览失败（不影响建单）';li.appendChild(aw);}
     list.appendChild(li);
   });
@@ -1648,7 +1652,7 @@ createBtn.addEventListener('click',function(){
     previewId=null;
     createBtn.disabled=true;showStale(false);
     renderResults(res.j.results);
-    status.textContent='完成：新建 '+res.j.created+' · 已存在 '+res.j.existing+' · 跳过 '+res.j.skipped+' · 失败 '+res.j.failed+'（明细见下，已写入审计；刷新页面更新「已建单」列）';
+    status.textContent='完成：新建 '+res.j.created+' · 已存在 '+res.j.existing+' · 跳过 '+res.j.skipped+' · 失败 '+res.j.failed+((res.j.results||[]).filter(function(r){return r.evidence==='error';}).length>0?' · 证据失败 '+res.j.results.filter(function(r){return r.evidence==='error';}).length:'')+'（明细见下，已写入审计；刷新页面更新「已建单」列）';
     window.aosFlash&&aosFlash('已建单 '+res.j.created+' 张（外部副作用） · 已写入审计');
   }).catch(function(e){createBtn.disabled=false;status.textContent='请求失败：'+e.message;});
   });
@@ -1817,7 +1821,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       }</p>`,
       reasons,
       warnings,
-      `<p class="muted">生成时间 ${escapeHtml(detail.generatedAt)} · ${escapeHtml(cacheNote)}</p>`,
+      `<p class="muted">生成时间 ${relativeTime(detail.generatedAt)} · ${escapeHtml(cacheNote)}</p>`,
       `<p><a href="${escapeHtml(reviewHref(view.rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(view.rootPath))}">统计</a></p>`,
       "</header>",
       "<main>",
@@ -2047,7 +2051,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
       "<header>",
       '<p><a href="/panel">← 多项目总览</a></p>',
       "<h1>多项目对比</h1>",
-      `<p class="muted">生成时间 ${escapeHtml(view.generatedAt)} · 项目 ${view.projects.length} 个${
+      `<p class="muted">生成时间 ${relativeTime(view.generatedAt)} · 项目 ${view.projects.length} 个${
         view.truncated ? "（已截断）" : ""
       } · ${escapeHtml(cacheNote)}</p>`,
       `<p class="muted">${escapeHtml(scope)}</p>`,
@@ -2080,8 +2084,8 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
   const { detail } = view;
   const meta = [
     `来源 ${sourceHtml(detail.source)}`,
-    `开始 ${escapeHtml(detail.startedAt ?? "—")}`,
-    `结束 ${escapeHtml(detail.finishedAt ?? "—")}`,
+    `开始 ${relativeTime(detail.startedAt)}`,
+    `结束 ${relativeTime(detail.finishedAt)}`,
     detail.taxonomyVersion === null ? "失败域口径 —" : `失败域口径 v${detail.taxonomyVersion}`
   ].join(" · ");
 
