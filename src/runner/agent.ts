@@ -24,12 +24,14 @@ export interface RunnerAgentOptions {
   artifactBaseUrl?: string | null;
   env?: NodeJS.ProcessEnv;
   buildRuntime?: (projectDir: string | null) => Promise<CliRuntimeBundle>;
-  executeSuite: (argv: string[]) => Promise<number>;
+  executeSuite: (argv: string[], options?: { shouldAbort?: () => boolean }) => Promise<number | null>;
   collectInventory?: () => Promise<RunnerInventory>;
   io?: RunnerAgentIO;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
+
+const STOP_POLL_MS = 3_000;
 
 const EMPTY_INVENTORY: RunnerInventory = {
   platforms: [],
@@ -225,11 +227,29 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           );
         }
         let exitCode: number | null = null;
+        let stopRequested = false;
+        const stopPoll = setInterval(() => {
+          void store
+            .getRegressionTask(rootPath, task.id)
+            .then((fresh) => {
+              if (fresh?.status === "stopped") stopRequested = true;
+            })
+            .catch(() => {});
+        }, STOP_POLL_MS);
+        stopPoll.unref?.();
         try {
-          exitCode = await options.executeSuite(argv);
+          exitCode = await options.executeSuite(argv, { shouldAbort: () => stopRequested });
           io.log(`[runner] 任务 ${task.id} 执行结束（退出码 ${exitCode}）`);
         } catch (error) {
           io.errorLog(`[runner] 任务 ${task.id} 执行异常：${errorMessage(error)}`);
+        } finally {
+          clearInterval(stopPoll);
+        }
+        const afterRun = await store.getRegressionTask(rootPath, task.id).catch(() => null);
+        if (afterRun?.status === "stopped") {
+          io.log(`[runner] 任务 ${task.id} 已停止（面板请求）：保留 stopped，不释放、不重试`);
+          if (once) return 0;
+          continue;
         }
         const failed = exitCode === null || exitCode !== 0;
         if (failed) {

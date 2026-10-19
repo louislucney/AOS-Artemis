@@ -341,18 +341,26 @@ test("panel web: 内联 JS 按首个 | 切分（裁决 items indexOf+slice 形�
   assert.doesNotMatch(reviewHtml.body, /\.value\.split\('\|'\)/, "裁决表单不得残留 split('|')");
 });
 
-test("panel web: 页面内联脚本可解析（项目/裁决页，防语法回归）", async () => {
-  const { deps, projectDir } = await makeHarness();
-  for (const suffix of ["", "&view=review"]) {
+test("panel web: 页面内联脚本可解析（项目/裁决/任务页，防语法回归）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const task = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: "cs-parse", featureKey: "f-parse" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  for (const suffix of ["", "&view=review", `&task=${task.id}`]) {
     const html = await handlePanelRequest(
       new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}${suffix}`),
       deps
     );
     assert.equal(html.status, 200);
+    const label = suffix === "" ? "项目页" : suffix === "&view=review" ? "裁决页" : "任务页";
     const scripts = [...html.body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
-    assert.ok(scripts.length >= 1, `页面含内联脚本（${suffix || "项目页"}）`);
+    assert.ok(scripts.length >= 1, `页面含内联脚本（${label}）`);
     for (const code of scripts) {
-      assert.doesNotThrow(() => new Function(code), `脚本可解析（${suffix || "项目页"}）`);
+      assert.doesNotThrow(() => new Function(code), `脚本可解析（${label}）`);
     }
   }
 });
@@ -560,7 +568,8 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   assert.match(html.body, /emulator-5554/);
   assert.match(html.body, new RegExp(`suite run --task ${task.id}`));
   assert.match(html.body, /c-badge-warning/, "状态语义徽章");
-  assert.match(html.body, /仅未完成（待领取\/已领取\/执行中）任务可释放/, "终态任务释放禁用说明");
+  assert.match(html.body, />重新派发</, "非运行态可重新派发");
+  assert.doesNotMatch(html.body, />停止执行</, "非运行态无停止动作");
 
   const pending = await store.createRegressionTask({
     rootPath: projectDir,
@@ -573,10 +582,28 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pending.id}`),
     deps
   );
-  assert.match(pendingHtml.body, /id="release-task"/, "未完任务释放可操作");
-  assert.match(pendingHtml.body, /panel\/api\/tasks\/release/);
-  assert.match(pendingHtml.body, /data-confirm="确认释放该任务回待领取？领取方：[^"]*子运行/, "释放确认含后果");
-  assert.match(pendingHtml.body, /id="release-status"[^>]*role="alert"/, "释放失败内联回报");
+  assert.match(pendingHtml.body, /等待执行机领取/, "pending 无释放动作（等待领取）");
+  assert.match(pendingHtml.body, /panel\/api\/tasks\/stop/, "动作脚本覆盖三入口");
+  assert.doesNotMatch(pendingHtml.body, />释放回队列</, "pending 不渲染释放按钮");
+
+  await store.updateRegressionTask(projectDir, pending.id, {
+    status: "claimed",
+    claimedBy: "runner-1",
+    claimedAt: "2026-10-18T00:00:00.000Z"
+  });
+  const claimedHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pending.id}`),
+    deps
+  );
+  assert.match(claimedHtml.body, />停止执行</, "运行中提供停止执行");
+  assert.match(claimedHtml.body, /运行中不可直接释放/, "运行中释放指引");
+  assert.match(claimedHtml.body, /data-confirm="确认停止该任务？领取方：runner-1/, "停止确认含领取方与后果");
+  assert.match(claimedHtml.body, /id="task-action-status"[^>]*role="status"/, "动作失败内联回报");
+  await store.updateRegressionTask(projectDir, pending.id, {
+    status: "pending",
+    claimedBy: null,
+    claimedAt: null
+  });
 
   const projectAfter = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),

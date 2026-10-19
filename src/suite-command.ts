@@ -82,13 +82,15 @@ export interface SuiteCliDeps {
   xcresultReader?: (xcresultPath: string) => Promise<unknown>;
   /** runner 子命令注入缝（测试）。 */
   runner?: {
-    executeSuite?: (argv: string[]) => Promise<number>;
+    executeSuite?: (argv: string[], options?: { shouldAbort?: () => boolean }) => Promise<number | null>;
     collectInventory?: () => Promise<RunnerInventory>;
     sleep?: (ms: number) => Promise<void>;
     shouldStop?: () => boolean;
   };
   /** 登记透传：suite run 的 suite_runs.runner（缺省 hostname）。 */
   runnerName?: string;
+  /** 面板停止请求（runner 注入；true → 用例边界停止后续）。 */
+  shouldAbort?: () => boolean;
 }
 
 interface ParsedFlags {
@@ -195,6 +197,7 @@ type SuiteIo = {
   errorLog: (line: string) => void;
   env?: NodeJS.ProcessEnv;
   runnerName?: string | null;
+  shouldAbort?: () => boolean;
 };
 
 export function printSuiteUsage(log: (line: string) => void): void {
@@ -259,7 +262,8 @@ async function suiteRunTask(
   io: SuiteIo,
   taskId: string,
   logcatCollector?: LogcatCollector,
-  iosLogCollector?: IosLogCollectorFn
+  iosLogCollector?: IosLogCollectorFn,
+  shouldAbort?: () => boolean
 ): Promise<number> {
   const jsonMode = flags.bool("json");
   const say = jsonMode ? (_line: string): void => {} : (line: string): void => io.log(line);
@@ -270,6 +274,10 @@ async function suiteRunTask(
   const task = await runtime.store.getRegressionTask(runtime.project.rootDir, taskId);
   if (!task) {
     io.errorLog(`未找到回归任务 ${taskId}`);
+    return 2;
+  }
+  if (task.status === "stopped") {
+    say("任务已停止：不再执行（等待释放回队列或重新派发）");
     return 2;
   }
   const devices = splitList(flags.list("device"));
@@ -316,6 +324,14 @@ async function suiteRunTask(
   const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
   const quarantine = loadSuiteQuarantine(runtime, flags.bool("no-quarantine"));
   baseOptions.quarantinedCaseIds = quarantine.ids;
+
+  const beforeRun = await runtime.store
+    .getRegressionTask(runtime.project.rootDir, task.id)
+    .catch(() => null);
+  if (beforeRun?.status === "stopped") {
+    say("任务已停止：不再执行（等待释放回队列或重新派发）");
+    return 2;
+  }
 
   try {
     await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
@@ -370,7 +386,8 @@ async function suiteRunTask(
         ...baseOptions,
         testsPath: ref.jsonPath,
         deviceSerial: device,
-        caseIds
+        caseIds,
+        ...(shouldAbort === undefined ? {} : { shouldAbort })
       });
       anyExecuted = true;
       const quarantinedFailures = report.cases.filter(
@@ -463,11 +480,16 @@ async function suiteRunTask(
     : anyFailure || anyExecError
       ? "partial"
       : "completed";
+  const duringRun = await runtime.store
+    .getRegressionTask(runtime.project.rootDir, task.id)
+    .catch(() => null);
+  const stoppedDuringRun = duringRun?.status === "stopped";
   try {
     await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
-      status: finalStatus,
+      ...(stoppedDuringRun ? {} : { status: finalStatus }),
       runIds
     });
+    if (stoppedDuringRun) say("任务已停止：保留 stopped（不回写终态、不自动重试）");
   } catch (error) {
     logWarn(`任务状态回写失败: ${errorMessage(error)}`);
     say("注意: 任务状态回写失败（运行结果不受影响）");
@@ -521,7 +543,7 @@ async function suiteRun(
 ): Promise<number> {
   const taskId = flags.get("task");
   if (taskId) {
-    return await suiteRunTask(runtime, flags, io, taskId, logcatCollector, iosLogCollector);
+    return await suiteRunTask(runtime, flags, io, taskId, logcatCollector, iosLogCollector, io.shouldAbort);
   }
   const runOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
   const retryCount = retryCountOf(flags);
@@ -1972,13 +1994,14 @@ async function suiteRunnerCommand(
       buildRuntime: async () => ({ runtime, dispose: async (): Promise<void> => {} }),
       executeSuite:
         seam.executeSuite ??
-        ((argv) =>
+        ((argv, options) =>
           runSuiteCommand(argv, {
             buildRuntime,
             log: io.log,
             errorLog: io.errorLog,
             env,
-            runnerName: name
+            runnerName: name,
+            shouldAbort: options?.shouldAbort
           })),
       collectInventory: seam.collectInventory,
       io: { log: io.log, errorLog: io.errorLog },
@@ -2107,7 +2130,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
       return await suiteRun(
         built.runtime,
         flags,
-        { log, errorLog, env: deps.env ?? process.env, runnerName: deps.runnerName ?? null },
+        { log, errorLog, env: deps.env ?? process.env, runnerName: deps.runnerName ?? null, shouldAbort: deps.shouldAbort },
         deps.logcatCollector,
         deps.iosLogCollector
       );

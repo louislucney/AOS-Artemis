@@ -110,7 +110,23 @@ export async function handlePanelActionRequest(
     }
     if (request.url.pathname === "/panel/api/tasks/release") {
       const response = await releaseTask(deps, resolved.rootPath, payload);
-      await auditPanel(deps, resolved.rootPath, "action.release", response);
+      await auditPanel(deps, resolved.rootPath, "action.release", response, {
+        taskId: String(payload.taskId ?? "")
+      });
+      return response;
+    }
+    if (request.url.pathname === "/panel/api/tasks/stop") {
+      const response = await stopTask(deps, resolved.rootPath, payload);
+      await auditPanel(deps, resolved.rootPath, "action.stop", response, {
+        taskId: String(payload.taskId ?? "")
+      });
+      return response;
+    }
+    if (request.url.pathname === "/panel/api/tasks/rerun") {
+      const response = await rerunTask(deps, resolved.rootPath, payload);
+      await auditPanel(deps, resolved.rootPath, "action.rerun", response, {
+        taskId: String(payload.taskId ?? "")
+      });
       return response;
     }
     if (request.url.pathname === "/panel/api/schedules") {
@@ -425,6 +441,9 @@ async function releaseTask(
   if (taskId === "") return json(400, { error: "缺少 taskId" });
   const task = await deps.store.getRegressionTask(rootPath, taskId);
   if (!task) return json(404, { error: `未知任务 "${taskId}"` });
+  if (task.status === "claimed" || task.status === "running") {
+    return json(409, { error: "任务正在执行：请先「停止执行」，再释放回队列" });
+  }
   if (task.status === "completed" || task.status === "failed") {
     return json(400, { error: `任务已终态（${task.status}），无需释放` });
   }
@@ -436,6 +455,47 @@ async function releaseTask(
   if (!ok) return json(500, { ok: false, error: "释放失败" });
   deps.cache?.clear();
   return json(200, { ok: true, taskId, status: "pending" });
+}
+
+async function stopTask(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>
+): Promise<PanelWebResponse> {
+  const taskId = typeof payload.taskId === "string" ? payload.taskId.trim() : "";
+  if (taskId === "") return json(400, { error: "缺少 taskId" });
+  const task = await deps.store.getRegressionTask(rootPath, taskId);
+  if (!task) return json(404, { error: `未知任务 "${taskId}"` });
+  if (task.status !== "claimed" && task.status !== "running") {
+    return json(400, { error: `仅已领取/执行中任务可停止（当前 ${task.status}）` });
+  }
+  const ok = await deps.store.updateRegressionTask(rootPath, taskId, { status: "stopped" });
+  if (!ok) return json(500, { ok: false, error: "停止失败" });
+  deps.cache?.clear();
+  return json(200, { ok: true, taskId, status: "stopped" });
+}
+
+async function rerunTask(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>
+): Promise<PanelWebResponse> {
+  const taskId = typeof payload.taskId === "string" ? payload.taskId.trim() : "";
+  if (taskId === "") return json(400, { error: "缺少 taskId" });
+  const task = await deps.store.getRegressionTask(rootPath, taskId);
+  if (!task) return json(404, { error: `未知任务 "${taskId}"` });
+  if (task.status === "claimed" || task.status === "running") {
+    return json(409, { error: "任务正在执行：请先「停止执行」，再重新派发" });
+  }
+  const created = await deps.store.createRegressionTask({
+    rootPath,
+    refs: task.refs,
+    platforms: [...task.platforms],
+    baseline: task.baseline,
+    createdBy: "panel"
+  });
+  deps.cache?.clear();
+  return json(200, { ok: true, task: created, sourceTaskId: task.id });
 }
 
 async function manageSchedules(

@@ -95,6 +95,8 @@ export interface SuiteRunOptions {
   /** 隔离用例集合（quarantine.json 生效项）：结果如实标注，门禁由调用方排除。 */
   quarantinedCaseIds?: Set<string>;
   stopOnFailure?: boolean;
+  /** 停止请求：每个用例边界检查（true → 停止后续用例，已执行结果保留；不再提交新用例）。 */
+  shouldAbort?: () => boolean;
   deviceSerial?: string;
   lockedAppPackage?: string;
   model?: string;
@@ -455,6 +457,7 @@ export async function runGeneratedTests(
   let firstSubmitError: string | null = null;
 
   for (const testCase of cases) {
+    if (options.shouldAbort?.() === true) break;
     const quarantined = options.quarantinedCaseIds?.has(testCase.id) === true;
     const outcome = await executeCase(testCase, {
       runtime,

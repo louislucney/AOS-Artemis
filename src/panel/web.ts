@@ -1061,6 +1061,7 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   pending: "待执行",
   claimed: "已领取",
   running: "执行中",
+  stopped: "已停止",
   completed: "已完成",
   partial: "部分失败",
   failed: "失败"
@@ -1074,6 +1075,7 @@ function taskStatusTone(status: string): "accent" | "success" | "warning" | "err
   if (status === "completed") return "success";
   if (status === "failed") return "error";
   if (status === "claimed" || status === "running") return "accent";
+  if (status === "stopped") return "neutral";
   if (status === "pending" || status === "partial") return "warning";
   return "neutral";
 }
@@ -1263,8 +1265,6 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
   const warnings = detail.warnings
     .map((warning) => `<p class="note">${escapeHtml(warning)}</p>`)
     .join("");
-  const active =
-    task.status === "pending" || task.status === "claimed" || task.status === "running";
   const claimLine =
     task.claimedBy === null
       ? ""
@@ -1295,25 +1295,41 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
         const actionsOff = currentShell.capabilities?.actions === false;
         if (actionsOff) {
-          return `<p>${badge} <button class="c-button" type="button" disabled title="写动作未启用">释放重跑</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</span></p>`;
+          return `<p>${badge} <button class="c-button" type="button" disabled title="写动作未启用">任务动作</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</span></p>`;
         }
-        if (!active) {
-          return `<p>${badge} <button class="c-button" type="button" disabled title="任务已终态">释放重跑</button> <span class="muted">仅未完成（待领取/已领取/执行中）任务可释放</span></p>`;
-        }
+        const projectJson = JSON.stringify(view.rootPath).replace(/</g, "\\u003c");
+        const taskJson = JSON.stringify(task.id).replace(/</g, "\\u003c");
         const runnerNote =
           detail.runner === null
             ? `${task.claimedBy ?? "无领取方"}（未知执行机）`
             : `${detail.runner.name}（${detail.runner.online ? "在线" : "失联"}）`;
-        const releaseConfirm = `确认释放该任务回待领取？领取方：${runnerNote}；已完成子运行 ${detail.runs.length} 个（保留）；释放后可能被重新领取执行。`;
-        const projectJson = JSON.stringify(view.rootPath).replace(/</g, "\\u003c");
-        const taskJson = JSON.stringify(task.id).replace(/</g, "\\u003c");
-        const confirmJson = JSON.stringify(releaseConfirm).replace(/</g, "\\u003c");
+        const running = task.status === "claimed" || task.status === "running";
+        const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生子运行 ${detail.runs.length} 个保留；不回写终态、不自动重试）。`;
+        const releaseConfirm = `确认释放该任务回待领取？已完成子运行 ${detail.runs.length} 个（保留）；释放后可能被重新领取执行。`;
+        const rerunConfirm = "确认重新派发？将按原引用/端/基线创建一个新任务（当前任务保留）。";
+        const buttons = [
+          running
+            ? `<button class="c-button c-button-danger" type="button" data-task-action="stop" data-confirm="${escapeHtml(stopConfirm)}">停止执行</button>`
+            : "",
+          task.status === "stopped"
+            ? `<button class="c-button" type="button" data-task-action="release" data-confirm="${escapeHtml(releaseConfirm)}">释放回队列</button>`
+            : "",
+          !running && task.status !== "pending"
+            ? `<button class="c-button c-button-primary" type="button" data-task-action="rerun" data-confirm="${escapeHtml(rerunConfirm)}">重新派发</button>`
+            : "",
+          task.status === "pending" ? '<span class="muted">等待执行机领取</span>' : "",
+          running ? '<span class="muted">运行中不可直接释放：先「停止执行」</span>' : ""
+        ]
+          .filter((part) => part !== "")
+          .join(" ");
+        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun'};document.querySelectorAll('[data-task-action]').forEach(function(b){b.addEventListener('click',function(){if(!confirm(b.getAttribute('data-confirm')||'确认执行该动作？'))return;var action=b.getAttribute('data-task-action');b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId);return;}window.aosFlash&&aosFlash(action==='stop'?'已停止任务（执行机在用例边界停止后续） · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});})();</script>`;
         return [
-          `<p>${badge} <button class="c-button c-button-danger" type="button" id="release-task" data-confirm="${escapeHtml(releaseConfirm)}">释放重跑</button> <span class="muted">放回待领取（需确认；子运行保留）</span></p>`,
-          `<p id="release-status" role="alert" class="c-banner c-banner-warn" hidden></p>`,
-          `<script>(function(){var b=document.getElementById('release-task');if(!b)return;var errBox=document.getElementById('release-status');function showErr(m){errBox.textContent=m;errBox.hidden=false;}b.addEventListener('click',function(){if(!confirm(b.getAttribute('data-confirm')||'确认释放该任务回待领取？'))return;errBox.hidden=true;fetch('/panel/api/tasks/release',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:${projectJson},taskId:${taskJson}})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('已释放任务回待领取 · 已写入审计');location.reload();}else{showErr('释放失败：'+((res.j&&res.j.error)||res.status||'未知错误'));}}).catch(function(e){showErr('释放失败：'+e);});});})();</script>`
+          `<p id="task-actions">${badge} ${buttons}</p>`,
+          `<p id="task-action-status" role="status" class="c-banner" hidden></p>`,
+          actionsScript
         ].join("\n");
       })(),
+
       coverageHint,
       warnings,
       "</header>",
@@ -1340,7 +1356,9 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
       "</section>",
       "</main>"
     ].join("\n"),
-    active ? 10 : undefined
+    task.status === "pending" || task.status === "claimed" || task.status === "running"
+      ? 10
+      : undefined
   );
 }
 

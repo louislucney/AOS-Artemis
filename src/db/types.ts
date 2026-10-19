@@ -207,7 +207,7 @@ export interface RegressionTaskRecord {
   refs: RegressionTaskRef[];
   platforms: string[];
   baseline: "latest" | "none";
-  status: "pending" | "claimed" | "running" | "completed" | "partial" | "failed";
+  status: "pending" | "claimed" | "running" | "stopped" | "completed" | "partial" | "failed";
   claimedBy: string | null;
   claimedAt: string | null;
   attempts: number;

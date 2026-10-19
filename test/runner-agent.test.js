@@ -284,6 +284,26 @@ test("非零退出码但已置终态 → 守卫拒绝不覆盖（partial 保持�
   assert.deepEqual(after.runIds, ["r-1"]);
 });
 
+test("面板停止：执行中置 stopped → 不释放/不回写终态，executeSuite 收到 shouldAbort", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  let abortType = null;
+  const { options, logs } = makeOptions(runtime, inv, {
+    executeSuite: async (argv, execOptions) => {
+      abortType = typeof execOptions?.shouldAbort;
+      await store.updateRegressionTask(rootPath, task.id, { status: "stopped" });
+      return 2;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(abortType, "function", "注入 shouldAbort（轮询停止请求）");
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "stopped", "保持 stopped：不释放、不重试");
+  assert.ok(logs.some((line) => line.includes("已停止")), "日志如实说明");
+});
+
 test("重试上限：永久失败任务达上限置 failed，不再饿死后续任务", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;

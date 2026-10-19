@@ -46,7 +46,7 @@ test("console actions: 同源守卫（cross-site 403；自定义头放行）", a
   assert.equal(allowed.status, 404, "守卫通过后进入业务（未知任务 404）");
 });
 
-test("console actions: 释放重跑（claimed→pending；终态 400；未知 404；落审计）", async () => {
+test("console actions: 释放/停止/重新派发三动作（运行中先停止；终态 400；未知 404；落审计）", async () => {
   const { deps, rootPath, store } = await setup();
   const task = await store.createRegressionTask({
     rootPath,
@@ -61,14 +61,36 @@ test("console actions: 释放重跑（claimed→pending；终态 400；未知 40
     claimedAt: "2026-10-18T00:00:00.000Z"
   });
 
+  const blockedRelease = await handlePanelActionRequest(
+    request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
+    deps
+  );
+  assert.equal(blockedRelease.status, 409, "运行中不可直接释放");
+  assert.match(JSON.parse(blockedRelease.body).error, /停止执行/);
+
+  const stopped = await handlePanelActionRequest(
+    request("/panel/api/tasks/stop", { project: rootPath, taskId: task.id }),
+    deps
+  );
+  assert.equal(stopped.status, 200);
+  const afterStop = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(afterStop.status, "stopped");
+  assert.equal(afterStop.claimedBy, "runner-1", "claimant 历史保留");
+
   const released = await handlePanelActionRequest(
     request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
     deps
   );
-  assert.equal(released.status, 200);
+  assert.equal(released.status, 200, "stopped → pending");
   const after = await store.getRegressionTask(rootPath, task.id);
   assert.equal(after.status, "pending");
   assert.equal(after.claimedBy, null);
+
+  const stopPending = await handlePanelActionRequest(
+    request("/panel/api/tasks/stop", { project: rootPath, taskId: task.id }),
+    deps
+  );
+  assert.equal(stopPending.status, 400, "pending 无执行可停止");
 
   await store.updateRegressionTask(rootPath, task.id, { status: "completed" });
   const terminal = await handlePanelActionRequest(
@@ -76,6 +98,17 @@ test("console actions: 释放重跑（claimed→pending；终态 400；未知 40
     deps
   );
   assert.equal(terminal.status, 400);
+
+  const rerun = await handlePanelActionRequest(
+    request("/panel/api/tasks/rerun", { project: rootPath, taskId: task.id }),
+    deps
+  );
+  assert.equal(rerun.status, 200, "终态可重新派发");
+  const rerunTask = JSON.parse(rerun.body).task;
+  assert.notEqual(rerunTask.id, task.id);
+  assert.deepEqual(rerunTask.refs, task.refs);
+  assert.deepEqual(rerunTask.platforms, task.platforms);
+  assert.equal(rerunTask.baseline, task.baseline);
 
   const unknown = await handlePanelActionRequest(
     request("/panel/api/tasks/release", { project: rootPath, taskId: "nope" }),
@@ -85,6 +118,8 @@ test("console actions: 释放重跑（claimed→pending；终态 400；未知 40
 
   const audit = await store.listAudit(rootPath, { domain: "panel" });
   assert.ok(audit.some((event) => event.action === "action.release"));
+  assert.ok(audit.some((event) => event.action === "action.stop"));
+  assert.ok(audit.some((event) => event.action === "action.rerun"));
 });
 
 test("console actions: 计划 CRUD（create/重复 400/enable/disable/delete）", async () => {
