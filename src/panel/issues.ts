@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ProjectStore, SuiteRunCaseRecord, SuiteRunRecord } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
 import {
@@ -49,8 +51,36 @@ export interface IssueItemResult {
 }
 
 export type IssuesOutcome =
-  | { ok: true; results: IssueItemResult[]; created: number; existing: number; skipped: number; failed: number }
-  | { ok: false; error: string; hints?: string[] };
+  | {
+      ok: true;
+      /** 预览回执：dryRun 签发；建单必须原样携带（服务端复算比对）。 */
+      previewId: string;
+      results: IssueItemResult[];
+      created: number;
+      existing: number;
+      skipped: number;
+      failed: number;
+    }
+  | { ok: false; error: string; hints?: string[]; stale?: boolean };
+
+/** 预览回执哈希：勾选（排序后）＋项目/类型/标签（归一后）＋标题覆盖。 */
+export function issuePreviewId(input: {
+  items: Array<{ runId: string; caseId: string }>;
+  projectKey: string;
+  issueType: string;
+  labels: string[];
+  summary?: string | null;
+}): string {
+  const items = input.items
+    .map((item) => `${item.runId}|${item.caseId}`)
+    .sort()
+    .join(",");
+  const labels = [...input.labels].sort().join(",");
+  return createHash("sha256")
+    .update(`${items}#${input.projectKey}#${input.issueType}#${labels}#${input.summary ?? ""}`)
+    .digest("hex")
+    .slice(0, 16);
+}
 
 const defaultRuntimeFor = async (): Promise<Runtime | null> => null;
 const defaultClientFor = (runtime: Runtime) => resolveJiraClient(runtime);
@@ -238,6 +268,8 @@ export async function createRunCaseIssues(
     labels?: string[];
     summary?: string;
     dryRun?: boolean;
+    /** 建单（dryRun=false）必须携带 dryRun 签发的预览回执。 */
+    previewId?: string;
   }
 ): Promise<IssuesOutcome> {
   const runtimeFor = options.runtimeFor ?? defaultRuntimeFor;
@@ -265,6 +297,30 @@ export async function createRunCaseIssues(
   const issueType =
     (input.issueType ?? resolverValue(runtime, JIRA_ISSUE_TYPE) ?? "Bug").trim() || "Bug";
   const labels = normalizeLabels(input.labels ?? resolverValue(runtime, JIRA_ISSUE_LABELS));
+
+  const previewId = issuePreviewId({
+    items: input.items,
+    projectKey,
+    issueType,
+    labels,
+    summary: input.summary ?? null
+  });
+  if (input.dryRun !== true) {
+    const provided = (input.previewId ?? "").trim();
+    if (provided === "") {
+      return {
+        ok: false,
+        error: "请先在面板点「预览」：建单必须携带服务端预览回执（外部副作用防误建）"
+      };
+    }
+    if (provided !== previewId) {
+      return {
+        ok: false,
+        stale: true,
+        error: "预览已过期：勾选或字段已变化，请重新预览后再建单"
+      };
+    }
+  }
 
   const baseByTaskId = await artifactBaseByTaskId(options.store, input.rootPath);
 
@@ -299,5 +355,5 @@ export async function createRunCaseIssues(
     else if (result.status === "error") failed += 1;
   }
 
-  return { ok: true, results, created, existing, skipped, failed };
+  return { ok: true, previewId, results, created, existing, skipped, failed };
 }

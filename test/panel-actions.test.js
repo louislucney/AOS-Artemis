@@ -427,9 +427,18 @@ test("panel issues: 成功建单（模板字段/证据 key-trace/回写/响应�
     return { ok: true, issue: args.key };
   };
 
+  const preview = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }], dryRun: true }
+  );
+  assert.equal(preview.ok, true);
   const outcome = await createRunCaseIssues(
     { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
-    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+    {
+      rootPath,
+      items: [{ runId: run.id, caseId: "case-1" }],
+      previewId: preview.ok ? preview.previewId : ""
+    }
   );
 
   assert.equal(outcome.ok, true);
@@ -454,12 +463,13 @@ test("panel issues: 成功建单（模板字段/证据 key-trace/回写/响应�
   assert.ok(calls[0].description, "含 ADF 描述");
   assert.deepEqual(calls[0].labels, []);
 
-  assert.equal(evidenceCalls.length, 1);
-  assert.equal(evidenceCalls[0].key, "AOS-1");
-  assert.equal(evidenceCalls[0].traceId, "trace-1");
-  assert.equal(evidenceCalls[0].platform, "android");
-  assert.equal(evidenceCalls[0].deviceSerial, "emulator-5554");
-  assert.equal(evidenceCalls[0].dryRun, false);
+  const createEvidence = evidenceCalls.filter((entry) => entry.dryRun === false);
+  assert.equal(createEvidence.length, 1);
+  assert.equal(createEvidence[0].key, "AOS-1");
+  assert.equal(createEvidence[0].traceId, "trace-1");
+  assert.equal(createEvidence[0].platform, "android");
+  assert.equal(createEvidence[0].deviceSerial, "emulator-5554");
+  assert.equal(createEvidence[0].dryRun, false);
 
   const stored = await store.getSuiteRun(rootPath, run.id);
   assert.equal(stored.cases.find((c) => c.caseId === "case-1").jiraIssueKey, "AOS-1");
@@ -514,10 +524,21 @@ test("panel issues: 路由成功 → 200 + 清缓存（existing 离线）", asyn
         })
       })
   };
+  const previewResponse = await handlePanelActionRequest(
+    request({
+      url: new URL("http://localhost/panel/api/issues"),
+      body: { project: rootPath, items: [{ runId: run.id, caseId: "case-1" }], dryRun: true }
+    }),
+    deps
+  );
+  assert.equal(previewResponse.status, 200);
+  const previewId = JSON.parse(previewResponse.body).previewId;
+  assert.ok(typeof previewId === "string" && previewId.length === 16, "dryRun 签发预览回执");
+
   const response = await handlePanelActionRequest(
     request({
       url: new URL("http://localhost/panel/api/issues"),
-      body: { project: rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+      body: { project: rootPath, items: [{ runId: run.id, caseId: "case-1" }], previewId }
     }),
     { ...deps, cache }
   );
@@ -563,9 +584,18 @@ test("panel issues: existing 幂等（不调 createIssue）", async () => {
     return { ok: true };
   };
 
+  const preview = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }], dryRun: true }
+  );
+  assert.equal(preview.ok, true);
   const outcome = await createRunCaseIssues(
     { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
-    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+    {
+      rootPath,
+      items: [{ runId: run.id, caseId: "case-1" }],
+      previewId: preview.ok ? preview.previewId : ""
+    }
   );
 
   assert.equal(outcome.ok, true);
@@ -628,6 +658,19 @@ test("panel issues: skipped 三态（未知/通过/裁决冲突）不触 Jira", 
     return { ok: true };
   };
 
+  const preview = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
+    {
+      rootPath,
+      items: [
+        { runId: "run-nope", caseId: "case-1" },
+        { runId: run.id, caseId: "case-pass" },
+        { runId: run.id, caseId: "case-defect" }
+      ],
+      dryRun: true
+    }
+  );
+  assert.equal(preview.ok, true);
   const outcome = await createRunCaseIssues(
     { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence },
     {
@@ -636,7 +679,8 @@ test("panel issues: skipped 三态（未知/通过/裁决冲突）不触 Jira", 
         { runId: "run-nope", caseId: "case-1" },
         { runId: run.id, caseId: "case-pass" },
         { runId: run.id, caseId: "case-defect" }
-      ]
+      ],
+      previewId: preview.ok ? preview.previewId : ""
     }
   );
 
@@ -728,9 +772,18 @@ test("panel issues: projectKey/issueType/labels 缺省解析（逗号拆分去�
     }
   });
 
+  const preview = await createRunCaseIssues(
+    { store, runtimeFor: async () => runtime, clientFor, postEvidence: noopEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }], dryRun: true }
+  );
+  assert.equal(preview.ok, true);
   const outcome = await createRunCaseIssues(
     { store, runtimeFor: async () => runtime, clientFor, postEvidence: noopEvidence },
-    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+    {
+      rootPath,
+      items: [{ runId: run.id, caseId: "case-1" }],
+      previewId: preview.ok ? preview.previewId : ""
+    }
   );
 
   assert.equal(outcome.ok, true);
@@ -795,6 +848,18 @@ test("panel issues: 部分失败容忍（第 1 条 create 抛错、第 2 条成�
     }
   });
 
+  const preview = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence: noopEvidence },
+    {
+      rootPath,
+      items: [
+        { runId: run.id, caseId: "case-1" },
+        { runId: run.id, caseId: "case-2" }
+      ],
+      dryRun: true
+    }
+  );
+  assert.equal(preview.ok, true);
   const outcome = await createRunCaseIssues(
     { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence: noopEvidence },
     {
@@ -802,7 +867,8 @@ test("panel issues: 部分失败容忍（第 1 条 create 抛错、第 2 条成�
       items: [
         { runId: run.id, caseId: "case-1" },
         { runId: run.id, caseId: "case-2" }
-      ]
+      ],
+      previewId: preview.ok ? preview.previewId : ""
     }
   );
 
@@ -831,9 +897,18 @@ test("panel issues: createIssue 抛 JiraApiError → reason 通用短语（不�
     }
   });
 
+  const preview = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence: noopEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }], dryRun: true }
+  );
+  assert.equal(preview.ok, true);
   const outcome = await createRunCaseIssues(
     { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence: noopEvidence },
-    { rootPath, items: [{ runId: run.id, caseId: "case-1" }] }
+    {
+      rootPath,
+      items: [{ runId: run.id, caseId: "case-1" }],
+      previewId: preview.ok ? preview.previewId : ""
+    }
   );
 
   assert.equal(outcome.ok, true);
@@ -852,7 +927,16 @@ test("panel issues: 路由校验（items 超 20 → 400；labels 非字符串 �
     store,
     env: {},
     workspaceRoot: null,
-    runtimeFor: async () => fakeRuntime()
+    runtimeFor: async () =>
+      fakeRuntime({
+        jiraConfig: () => ({
+          configured: true,
+          siteUrl: "https://acme.atlassian.net",
+          email: "a@b.c",
+          apiToken: "tok",
+          missing: []
+        })
+      })
   };
   const url = new URL("http://localhost/panel/api/issues");
   const body = (payload) => ({ project: rootPath, ...payload });
@@ -878,6 +962,31 @@ test("panel issues: 路由校验（items 超 20 → 400；labels 非字符串 �
     deps
   );
   assert.equal(emptyItems.status, 400);
+
+  const noPreview = await handlePanelActionRequest(
+    request({ url, body: body({ items: [{ runId: run.id, caseId: "case-1" }] }) }),
+    deps
+  );
+  assert.equal(noPreview.status, 400, "建单必须携带预览回执");
+  assert.match(JSON.parse(noPreview.body).error, /预览/);
+
+  const previewResponse = await handlePanelActionRequest(
+    request({ url, body: body({ items: [{ runId: run.id, caseId: "case-1" }], dryRun: true }) }),
+    deps
+  );
+  assert.equal(previewResponse.status, 200);
+  const previewId = JSON.parse(previewResponse.body).previewId;
+  assert.ok(typeof previewId === "string" && previewId.length === 16);
+
+  const stalePreview = await handlePanelActionRequest(
+    request({
+      url,
+      body: body({ items: [{ runId: run.id, caseId: "case-1" }], previewId: "deadbeefdeadbeef" })
+    }),
+    deps
+  );
+  assert.equal(stalePreview.status, 409, "篡改回执 → 409");
+  assert.equal(JSON.parse(stalePreview.body).stale, true);
 });
 
 test("panel issues: 路由级请求错误分支（runtimeFor null / Jira 未配置 → 400 指引）", async () => {

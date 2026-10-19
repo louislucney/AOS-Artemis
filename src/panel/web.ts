@@ -1515,67 +1515,106 @@ function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string
       ? '<span class="muted">—</span>'
       : `<span class="chip">${escapeHtml(item.jiraKey)}</span>`
   ]);
+  const table = renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决", "应用缺陷（可建单）");
+  if (currentShell.jiraReady === false) {
+    return [
+      title,
+      table,
+      '<div class="c-banner c-banner-warn" role="status"><strong>未检测到 Jira 凭据：预览与建单不可用。</strong><p>在项目 .env 配置 <code>JIRA_BASE_URL</code> / <code>JIRA_EMAIL</code> / <code>JIRA_API_TOKEN</code> 后重启会话；建单为外部副作用，未配置时被前置拦截。</p></div>'
+    ].join("\n");
+  }
+  const projectDefault = escapeHtml(currentShell.jiraDefaults?.projectKey ?? "");
+  const typeDefault = escapeHtml(currentShell.jiraDefaults?.issueType ?? "");
+  const labelsDefault = escapeHtml(currentShell.jiraDefaults?.labels ?? "");
+  const script = `<script>(function(){
+var form=document.getElementById('issues-form');if(!form)return;
+var status=document.getElementById('issues-status');
+var result=document.getElementById('issues-result');
+var stale=document.getElementById('issues-stale');
+var previewBtn=document.getElementById('issues-preview');
+var createBtn=document.getElementById('issues-create');
+var previewId=null;
+function showStale(on){if(stale)stale.hidden=!on;createBtn.disabled=(on||previewId===null);}
+function payload(dryRun){
+  var items=Array.prototype.slice.call(form.querySelectorAll('input[name=issue-item]:checked')).map(function(el){var idx=el.value.indexOf('|');return {runId:el.value.slice(0,idx),caseId:el.value.slice(idx+1)};});
+  var data={project:${rootJson},items:items,dryRun:dryRun};
+  if(previewId!==null)data.previewId=previewId;
+  var projectKey=form.querySelector('input[name=projectKey]').value.trim();
+  var issueType=form.querySelector('input[name=issueType]').value.trim();
+  var labels=form.querySelector('input[name=labels]').value.trim();
+  if(projectKey!=='')data.projectKey=projectKey;
+  if(issueType!=='')data.issueType=issueType;
+  if(labels!=='')data.labels=labels;
+  return data;
+}
+function post(data){
+  return fetch('/panel/api/issues',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(function(r){return r.json().then(function(j){return {status:r.status,ok:r.ok,j:j};});});
+}
+function renderResults(results){
+  result.replaceChildren();
+  var fragment=document.createDocumentFragment();
+  if(!results||results.length===0){var empty=document.createElement('p');empty.className='muted';empty.textContent='无结果';fragment.appendChild(empty);result.appendChild(fragment);return;}
+  var list=document.createElement('ul');
+  results.forEach(function(item){
+    var li=document.createElement('li');
+    li.appendChild(document.createTextNode(item.caseId+'（'+item.status+'）'));
+    if(item.key){var code=document.createElement('code');code.textContent=' '+item.key;li.appendChild(code);}
+    if(item.url){var link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noreferrer';link.textContent=' 打开';li.appendChild(link);}
+    if(item.reason){var reason=document.createElement('span');reason.className='muted';reason.textContent=' '+item.reason;li.appendChild(reason);}
+    if(item.summary){var summary=document.createElement('span');summary.className='muted';summary.textContent=' '+item.summary;li.appendChild(summary);}
+    list.appendChild(li);
+  });
+  fragment.appendChild(list);
+  result.appendChild(fragment);
+}
+previewBtn.addEventListener('click',function(){
+  var data=payload(true);
+  if(!data.items.length){status.textContent='请先勾选至少一条应用缺陷';return;}
+  previewBtn.disabled=true;status.textContent='预览中…';
+  post(data).then(function(res){
+    previewBtn.disabled=false;
+    if(!res.ok||res.j.ok===false){status.textContent='预览失败：'+(res.j.error||('HTTP '+res.status))+((res.j.hints&&res.j.hints.length>0)?('（'+res.j.hints.join('；')+'）'):'');return;}
+    previewId=res.j.previewId||null;
+    renderResults(res.j.results);
+    showStale(false);
+    status.textContent='预览完成（未创建）：将创建 '+res.j.results.filter(function(r){return r.status==='preview';}).length+' 条 · 已存在 '+res.j.existing+' · 跳过 '+res.j.skipped+'。核对后点「建单」。';
+  }).catch(function(e){previewBtn.disabled=false;status.textContent='预览失败：'+e.message;});
+});
+createBtn.addEventListener('click',function(){
+  if(previewId===null){status.textContent='请先预览核对（外部副作用防误建）';return;}
+  if(!confirm('确认在 Jira 创建外部可见单据（外部副作用）？'))return;
+  var data=payload(false);
+  createBtn.disabled=true;status.textContent='提交中…';
+  post(data).then(function(res){
+    if(res.status===409||res.j.stale===true){previewId=null;showStale(true);createBtn.disabled=true;renderResults([]);status.textContent='预览已过期：勾选或字段已变化，请重新预览后再建单';return;}
+    if(!res.ok||res.j.ok===false){createBtn.disabled=false;status.textContent='失败：'+(res.j.error||('HTTP '+res.status))+((res.j.hints&&res.j.hints.length>0)?('（'+res.j.hints.join('；')+'）'):'');return;}
+    previewId=null;
+    createBtn.disabled=true;showStale(false);
+    renderResults(res.j.results);
+    status.textContent='完成：新建 '+res.j.created+' · 已存在 '+res.j.existing+' · 跳过 '+res.j.skipped+' · 失败 '+res.j.failed+'（明细见下，已写入审计；刷新页面更新「已建单」列）';
+    window.aosFlash&&aosFlash('已建单 '+res.j.created+' 张（外部副作用） · 已写入审计');
+  }).catch(function(e){createBtn.disabled=false;status.textContent='请求失败：'+e.message;});
+});
+form.addEventListener('input',function(){previewId=null;showStale(true);});
+form.addEventListener('change',function(){previewId=null;showStale(true);});
+showStale(false);
+})();</script>`;
   return [
     title,
-    '<form id="issues-form" onsubmit="return submitIssues(event, false)">',
-    renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决", "应用缺陷（可建单）"),
+    '<form id="issues-form" onsubmit="return false">',
+    table,
     '<p class="bulk-tools"><button type="button" class="c-button" data-bulk="all">全选</button> <button type="button" class="c-button" data-bulk="none">清空</button> <span class="muted">已选 <span id="issues-count">0</span> 条</span></p>',
-    `<p><label>Jira 项目：<input type="text" name="projectKey" size="12" value="${escapeHtml(currentShell.jiraDefaults?.projectKey ?? "")}" placeholder="默认 JIRA_ISSUE_PROJECT"></label> `,
-    `<label>类型：<input type="text" name="issueType" size="10" value="${escapeHtml(currentShell.jiraDefaults?.issueType ?? "")}" placeholder="默认 Bug"></label> `,
-    `<label>标签：<input type="text" name="labels" size="20" value="${escapeHtml(currentShell.jiraDefaults?.labels ?? "")}" placeholder="逗号分隔"></label></p>`,
-    '<p><button type="button" onclick="return submitIssues(event, true)">预览</button> ',
-    '<button type="submit">建单（外部副作用）</button> <span id="issues-status" role="status" class="muted"></span></p>',
+    `<p><label>Jira 项目：<input type="text" name="projectKey" size="12" value="${projectDefault}" placeholder="默认 JIRA_ISSUE_PROJECT"></label> `,
+    `<label>类型：<input type="text" name="issueType" size="10" value="${typeDefault}" placeholder="默认 Bug"></label> `,
+    `<label>标签：<input type="text" name="labels" size="20" value="${labelsDefault}" placeholder="逗号分隔"></label></p>`,
+    '<p id="issues-stale" role="status" class="c-banner c-banner-warn" hidden>勾选或字段已变化：预览已失效，请重新预览后再建单。</p>',
+    '<p><button class="c-button" type="button" id="issues-preview">预览</button> ',
+    '<button class="c-button" type="button" id="issues-create" disabled>建单（外部副作用）</button> <span id="issues-status" role="status" class="muted"></span></p>',
     '<div id="issues-result"></div>',
-    '<p class="note">建立 Jira 单为外部副作用：必须先用「预览」核对（表单默认值已按项目配置回显），再点「建单」。勾选多条 → 每条各建一张单。</p>',
+    '<p class="note">建单为外部副作用：必须先「预览」（服务端签发预览回执），再点「建单」；勾选/字段变化会立即作废预览。</p>',
     "</form>",
-    "<script>",
-    "function submitIssues(event,dryRun){",
-    "  event.preventDefault();",
-    "  var form=document.getElementById('issues-form');",
-    "  var items=Array.prototype.slice.call(form.querySelectorAll('input[name=issue-item]:checked')).map(function(el){var idx=el.value.indexOf('|');return {runId:el.value.slice(0,idx),caseId:el.value.slice(idx+1)};});",
-    "  var status=document.getElementById('issues-status');",
-    "  var result=document.getElementById('issues-result');",
-    "  if(items.length===0){status.textContent='请先勾选至少一条应用缺陷';return false;}",
-    "  var payload={project:" + rootJson + ",items:items,dryRun:dryRun};",
-    "  var projectKey=form.querySelector('input[name=projectKey]').value.trim();",
-    "  var issueType=form.querySelector('input[name=issueType]').value.trim();",
-    "  var labels=form.querySelector('input[name=labels]').value.trim();",
-    "  if(projectKey!==''){payload.projectKey=projectKey;}",
-    "  if(issueType!==''){payload.issueType=issueType;}",
-    "  if(labels!==''){payload.labels=labels;}",
-    "  if(!dryRun&&!window.__aosIssuesPreviewed){status.textContent='请先点「预览」核对将创建的内容（防误建单）';return false;}",
-    "  if(!dryRun&&!confirm('确认在 Jira 创建外部可见单据（外部副作用）？')){status.textContent='已取消';return false;}",
-    "  status.textContent=dryRun?'预览中…':'提交中…';",
-    "  result.replaceChildren();",
-    "  fetch('/panel/api/issues',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})",
-    "    .then(function(response){return response.json().then(function(data){",
-    "      if(!response.ok||data.ok===false){status.textContent='失败：'+(data.error||('HTTP '+response.status))+((data.hints&&data.hints.length>0)?('（'+data.hints.join('；')+'）'):'');return;}",
-    "      result.replaceChildren(renderIssueResults(data.results));",
-    "      if(dryRun){window.__aosIssuesPreviewed=true;}",
-    "      status.textContent='完成：新建 '+data.created+' · 已存在 '+data.existing+' · 跳过 '+data.skipped+' · 失败 '+data.failed;",
-    "      if(!dryRun&&data.created>0){window.aosFlash&&aosFlash('已建单 '+data.created+' 张（外部副作用） · 已写入审计');location.reload();}",
-    "    });})",
-    "    .catch(function(error){status.textContent='请求失败：'+error.message;});",
-    "  return false;",
-    "}",
-    "function renderIssueResults(results){",
-    "  var fragment=document.createDocumentFragment();",
-    "  if(!results||results.length===0){var empty=document.createElement('p');empty.className='muted';empty.textContent='无结果';fragment.appendChild(empty);return fragment;}",
-    "  var list=document.createElement('ul');",
-    "  results.forEach(function(item){",
-    "    var li=document.createElement('li');",
-    "    li.appendChild(document.createTextNode(item.caseId+'（'+item.status+'）'));",
-    "    if(item.key){var code=document.createElement('code');code.textContent=' '+item.key;li.appendChild(code);}",
-    "    if(item.url){var link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noreferrer';link.textContent=' 打开';li.appendChild(link);}",
-    "    if(item.reason){var reason=document.createElement('span');reason.className='muted';reason.textContent=' '+item.reason;li.appendChild(reason);}",
-    "    if(item.summary){var summary=document.createElement('span');summary.className='muted';summary.textContent=' '+item.summary;li.appendChild(summary);}",
-    "    list.appendChild(li);",
-    "  });",
-    "  fragment.appendChild(list);",
-    "  return fragment;",
-    "}",
-    ...bulkBindScript("#issues-form", "issue-item", "issues-count"),
-    "</script>"
+    script,
+    ...bulkBindScript("#issues-form", "issue-item", "issues-count")
   ].join("\n");
 }
 
@@ -2118,6 +2157,8 @@ interface ShellCtx {
   project: string | null;
   capabilities?: ConsoleCapabilities;
   jiraDefaults?: { projectKey?: string; issueType?: string; labels?: string };
+  /** 进程 env 中 Jira 凭据三件套齐备（未提供 → 未知，不前置拦截；服务端仍硬闸）。 */
+  jiraReady?: boolean;
   storeHealth?: ConsoleShellInput["storeHealth"];
   projectSwitcher?: ConsoleShellInput["projectSwitcher"];
 }
@@ -2279,7 +2320,13 @@ function renderPanelHtml(
       labels: deps.env?.JIRA_ISSUE_LABELS?.trim() || undefined
     },
     storeHealth,
-    projectSwitcher
+    projectSwitcher,
+    jiraReady: (() => {
+      const env = deps.env ?? {};
+      const jiraKeys = Object.keys(env).filter((key) => key.startsWith("JIRA_"));
+      if (jiraKeys.length === 0) return undefined;
+      return Boolean(env.JIRA_BASE_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN);
+    })()
   };
   const cacheNote = "缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）";
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);

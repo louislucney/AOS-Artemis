@@ -1401,7 +1401,7 @@ test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS
   assert.match(html.body, /placeholder="默认 JIRA_ISSUE_PROJECT"/);
   assert.match(html.body, /name="issueType"/);
   assert.match(html.body, /placeholder="默认 Bug"/);
-  assert.match(html.body, /请先点「预览」核对将创建的内容/, "建单强制预览闸门");
+  assert.match(html.body, /服务端签发预览回执/, "建单强制预览闸门（服务端回执）");
   assert.match(html.body, /建单（外部副作用）/, "按钮明示外部副作用");
   assert.match(html.body, /id="issues-count"/, "建单批量已选计数");
   assert.match(html.body, /bulk-tools/, "批量工具栏");
@@ -1421,17 +1421,50 @@ test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS
   );
   assert.match(formHtml, /name="projectKey"/, "表单字段位于 issues-form 内");
   assert.match(formHtml, /id="issues-result"/, "结果容器位于 issues-form 内");
-  assert.match(html.body, /function submitIssues\(event,dryRun\)/);
+  assert.match(html.body, /id="issues-preview"/, "预览按钮");
+  assert.match(html.body, /id="issues-create"[^>]*disabled/, "建单默认禁用（须先预览）");
+  assert.match(html.body, /id="issues-stale"/, "预览失效横幅");
   assert.match(html.body, /fetch\('\/panel\/api\/issues'/);
-  assert.match(html.body, /submitIssues\(event, false\)/, "建单按钮 dryRun=false");
-  assert.match(html.body, /submitIssues\(event, true\)/, "预览按钮 dryRun=true");
-  assert.match(html.body, /payload\.projectKey=projectKey/);
-  assert.match(html.body, /payload\.issueType=issueType/);
-  assert.match(html.body, /payload\.labels=labels/);
-  assert.match(html.body, /items:items,dryRun:dryRun/);
-  assert.match(html.body, /location\.reload\(\)/, "非 dryRun 成功后 reload");
+  assert.match(html.body, /if\(previewId!==null\)data\.previewId=previewId;/, "建单携带服务端预览回执");
+  assert.match(html.body, /previewId=res\.j\.previewId/, "预览回执取自服务端响应");
+  assert.doesNotMatch(html.body, /__aosIssuesPreviewed/, "布尔闸门已移除");
+  assert.doesNotMatch(html.body, /location\.reload\(\)/, "成功后保留结果面板（不再 reload）");
   assert.match(html.body, /重新生成时响应与 tests\.md 会附上轮案例问题提示/, "案例问题指引行更新");
   assert.doesNotMatch(html.body, /后续接线/, "移除「自动化（P3）…后续接线」指引行");
+});
+
+test("panel web: Jira 未配置前置拦截（不渲染预览/建单，给配置指引）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const run = await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: makeStatsRun({}),
+    cases: [
+      makeStatsCase({
+        caseId: "case-app",
+        name: "崩溃用例",
+        failureDomain: "应用缺陷",
+        verdict: "app-defect",
+        verdictBy: "bob",
+        verdictAt: "2026-10-14T12:30:00.000Z"
+      })
+    ]
+  });
+  assert.ok(run.id);
+  const url = new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=stats`);
+
+  const gated = await handlePanelRequest(url, { ...deps, env: { JIRA_ISSUE_PROJECT: "AOS" } });
+  assert.equal(gated.status, 200);
+  assert.match(gated.body, /未检测到 Jira 凭据/, "未配置前置指引");
+  assert.doesNotMatch(gated.body, /id="issues-preview"/, "不渲染预览（前置拦截）");
+  assert.doesNotMatch(gated.body, /id="issues-create"/, "不渲染建单");
+  assert.match(gated.body, /JIRA_BASE_URL/, "指引含配置项");
+
+  const ready = await handlePanelRequest(url, {
+    ...deps,
+    env: { JIRA_BASE_URL: "https://x.atlassian.net", JIRA_EMAIL: "a@b.c", JIRA_API_TOKEN: "tok" }
+  });
+  assert.match(ready.body, /id="issues-preview"/, "凭据齐备时可用");
 });
 
 test("panel web: stats 建单 UI HTML 转义（名称/复选框 value 注入不裸出）", async () => {

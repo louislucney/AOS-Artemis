@@ -423,11 +423,14 @@ async function createIssues(
     dryRun = payload.dryRun;
   }
 
+  const previewId = optionalString(payload.previewId);
+  if (previewId === null) return json(400, { error: "previewId 必须是字符串" });
+
   const outcome = await createRunCaseIssues(
     { store: deps.store, runtimeFor: deps.runtimeFor },
-    { rootPath, items, projectKey, issueType, labels, summary, dryRun }
+    { rootPath, items, projectKey, issueType, labels, summary, dryRun, previewId }
   );
-  if (!outcome.ok) return json(400, outcome);
+  if (!outcome.ok) return json(outcome.stale === true ? 409 : 400, outcome);
   if (outcome.created + outcome.existing > 0) deps.cache?.clear();
   return json(200, outcome);
 }
