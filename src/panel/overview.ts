@@ -91,8 +91,11 @@ export interface PanelProjectRow {
   lastSeenAt: string | null;
   diskReachable: boolean;
   stacks: string[];
+  /** 执行轴灯（回归可执行）：磁盘/宿主依赖/三件套/存储/构建；不含可选集成。 */
   lamp: PanelLamp;
   lampReasons: string[];
+  /** 集成轴就绪（LLM/Figma/Jira）：只报告，不参与执行灯。 */
+  integration: { ready: number; total: number; missing: string[] };
   latestBatch: PanelBatchSummary | null;
   warnings: string[];
 }
@@ -628,6 +631,7 @@ async function buildProjectRow(
     stacks: [],
     lamp: "gray",
     lampReasons: [],
+    integration: { ready: 0, total: 3, missing: [] },
     latestBatch: null,
     warnings: []
   };
@@ -648,22 +652,20 @@ async function buildProjectRow(
 
     const reasons: string[] = [];
     let lamp: PanelLamp = "green";
-    if (!soft.llmUsable) {
-      lamp = "red";
-      reasons.push(`无可用 LLM（未完成接入配置，setup_required）：${soft.llmMissing.slice(0, 3).join("、")}`);
-    } else {
-      if (!figmaPresent) reasons.push("Figma token 未配置");
-      if (!soft.jira.configured) reasons.push(`Jira 未配置（缺 ${soft.jira.missing.join("、")}）`);
-      if (input.host.deps.status === "stale" || input.host.deps.status === "missing") {
-        reasons.push(`宿主依赖 ${input.host.deps.status}：运行 doctor --install-deps`);
-      }
-      if (artifacts.testsJson.present && (!artifacts.testsXlsx.present || artifacts.xlsxStale)) {
-        reasons.push("三件套不齐：tests.xlsx 缺失或陈旧");
-      }
-      if (input.storeDegraded) reasons.push("会话内存：数据仅当前进程有效（未配置持久台账）");
-      if (input.host.buildStale === true) reasons.push("构建陈旧（dist 较进程新）：重启客户端会话");
-      if (reasons.length > 0) lamp = "yellow";
+    if (input.host.deps.status === "stale" || input.host.deps.status === "missing") {
+      reasons.push(`宿主依赖 ${input.host.deps.status}：运行 doctor --install-deps`);
     }
+    if (artifacts.testsJson.present && (!artifacts.testsXlsx.present || artifacts.xlsxStale)) {
+      reasons.push("三件套不齐：tests.xlsx 缺失或陈旧");
+    }
+    if (input.storeDegraded) reasons.push("会话内存：数据仅当前进程有效（未配置持久台账）");
+    if (input.host.buildStale === true) reasons.push("构建陈旧（dist 较进程新）：重启客户端会话");
+    if (reasons.length > 0) lamp = "yellow";
+
+    const integrationMissing: string[] = [];
+    if (!soft.llmUsable) integrationMissing.push("LLM");
+    if (!figmaPresent) integrationMissing.push("Figma");
+    if (!soft.jira.configured) integrationMissing.push("Jira");
 
     return {
       ...base,
@@ -671,6 +673,11 @@ async function buildProjectRow(
       stacks: soft.stacks,
       lamp,
       lampReasons: reasons,
+      integration: {
+        ready: 3 - integrationMissing.length,
+        total: 3,
+        missing: integrationMissing
+      },
       latestBatch: batchSummaryFromRead(latest),
       warnings: []
     };

@@ -30,6 +30,8 @@ export interface PanelCompareProject {
   rootPath: string;
   lamp: PanelLamp;
   lampReasons: string[];
+  /** 集成轴就绪（LLM/Figma/Jira）：只报告，不参与执行灯。 */
+  integration: { ready: number; total: number; missing: string[] };
   latestBatch: { at: string | null; gate: "pass" | "fail" | null; passRate: number | null } | null;
   /** 时间升序 ≤10 */
   trend: Array<{ at: string | null; passRate: number | null }>;
@@ -98,6 +100,7 @@ function emptyCompareRow(row: PanelProjectRow): PanelCompareProject {
     rootPath: row.rootPath,
     lamp: row.lamp,
     lampReasons: row.lampReasons,
+    integration: row.integration,
     latestBatch: null,
     trend: [],
     flaky: 0,

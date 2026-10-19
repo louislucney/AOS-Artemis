@@ -573,7 +573,14 @@ function renderProjectCell(row: PanelProjectRow): string {
     row.lampReasons.length > 0
       ? `<div class="muted">${row.lampReasons.map((reason) => escapeHtml(reason)).join("；")}</div>`
       : "";
-  return `<span>${lampSpan(row.lamp)}</span>${reasons}`;
+  const integration = row.integration?.total
+    ? `<div class="muted">集成 ${row.integration.ready}/${row.integration.total}${
+        row.integration.missing.length > 0
+          ? `（缺 ${row.integration.missing.map((item) => escapeHtml(item)).join("、")}）`
+          : ""
+      }</div>`
+    : "";
+  return `<span>${lampSpan(row.lamp)}</span>${reasons}${integration}`;
 }
 
 function renderLatestBatchCell(row: PanelProjectRow): string {
@@ -675,7 +682,15 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
       : `<p class="muted">${activeLinks === "" ? "" : `执行中：${activeLinks}`}${activeLinks !== "" && pendingLinks !== "" ? "　" : ""}${pendingLinks === "" ? "" : `待领取：${pendingLinks}`}</p>`;
   return [
     '<div class="c-stats-row">',
-    cStat({ label: "健康", value: health, hint: row.lampReasons[0] ?? "无告警" }),
+    cStat({
+      label: "执行健康",
+      value: health,
+      hint:
+        row.lampReasons[0] ??
+        (row.integration.missing.length > 0
+          ? `集成 ${row.integration.ready}/${row.integration.total}（不影响执行）`
+          : "无告警")
+    }),
     cStat({ label: "在跑什么", value: String(active.length), hint: activeHint }),
     cStat({
       label: "待执行",
@@ -1673,7 +1688,12 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
     [
       "<header>",
       '<p><a href="/panel">← 多项目总览</a></p>',
-      `<h1>${lampDot(row.lamp)}<span class="sr-only">项目状态：${escapeHtml(LAMP_LABELS[row.lamp])}。</span>${escapeHtml(row.name)}</h1>`,
+      `<h1>${escapeHtml(row.name)}</h1>`,
+      `<p>执行：${lampSpan(row.lamp)} · 集成：${row.integration.ready}/${row.integration.total} 就绪${
+        row.integration.missing.length > 0
+          ? `（缺 ${row.integration.missing.map((item) => escapeHtml(item)).join("、")}；不影响执行）`
+          : ""
+      }</p>`,
       `<p class="muted"><code>${escapeHtml(row.rootPath)}</code> · 最后活跃 ${escapeHtml(row.lastSeenAt ?? "—")} · ${
         row.diskReachable ? "磁盘可达" : "磁盘不可达"
       }</p>`,

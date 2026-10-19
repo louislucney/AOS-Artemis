@@ -132,10 +132,11 @@ test("panel overview: green 灯（完整接入 + ready 宿主 + postgres 存储�
   assert.equal(row.diskReachable, true);
   assert.equal(row.lamp, "green");
   assert.deepEqual(row.lampReasons, []);
+  assert.deepEqual(row.integration, { ready: 3, total: 3, missing: [] });
   assert.equal(row.latestBatch, null);
 });
 
-test("panel overview: red 灯（无可用 LLM）", async () => {
+test("panel overview: LLM 缺失只影响集成轴（执行灯不再变红）", async () => {
   const store = await makePgStore();
   const repo = makeReadyRepo();
   const dir = makeTempProject({ config: baseConfig() });
@@ -143,11 +144,14 @@ test("panel overview: red 灯（无可用 LLM）", async () => {
 
   const view = await buildPanelOverview({ store, serviceRepo: repo, buildStale: false, env: {} });
   const row = view.projects[0];
-  assert.equal(row.lamp, "red");
-  assert.ok(row.lampReasons[0].includes("setup_required"));
+  assert.equal(row.lamp, "green", "LLM 是可选集成，不染执行灯");
+  assert.deepEqual(row.lampReasons, []);
+  assert.ok(row.integration.missing.includes("LLM"), "集成轴标注缺 LLM");
+  assert.equal(row.integration.total, 3);
+  assert.equal(row.integration.ready, row.integration.total - row.integration.missing.length);
 });
 
-test("panel overview: yellow 灯（凭证缺）与 gray 灯（磁盘不可达，短路判定）", async () => {
+test("panel overview: yellow 灯（执行轴）与 gray 灯（磁盘不可达，短路判定）", async () => {
   const store = await makePgStore();
   const repo = makeReadyRepo();
   const partial = makeTempProject({
@@ -160,9 +164,10 @@ test("panel overview: yellow 灯（凭证缺）与 gray 灯（磁盘不可达，
 
   const view = await buildPanelOverview({ store, serviceRepo: repo, buildStale: false, env: {} });
   const partialRow = view.projects.find((row) => row.name === "partial");
-  assert.equal(partialRow.lamp, "yellow");
-  assert.ok(partialRow.lampReasons.some((reason) => reason.includes("Figma token 未配置")));
-  assert.ok(partialRow.lampReasons.some((reason) => reason.includes("Jira 未配置")));
+  assert.equal(partialRow.lamp, "green", "Figma/Jira 未配置不染执行灯");
+  assert.deepEqual(partialRow.lampReasons, []);
+  assert.ok(partialRow.integration.missing.includes("Figma"));
+  assert.ok(partialRow.integration.missing.includes("Jira"));
 
   const goneRow = view.projects.find((row) => row.name === "gone-app");
   assert.equal(goneRow.registered, true);

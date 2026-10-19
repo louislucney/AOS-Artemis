@@ -243,6 +243,8 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
   assert.doesNotMatch(html.body, /fetch\('\/panel\/api\/tasks'/);
   assert.match(html.body, /<fieldset class="c-fieldset"><legend>端<\/legend>/, "计划表单端组有 legend");
   assert.match(html.body, /<section id="regression" class="c-plain">/, "CTA 区块不吃遗留 section 边框（无双框）");
+  assert.match(html.body, /执行：[\s\S]{0,200}?集成：/, "项目页两轴并列（执行／集成）");
+  assert.doesNotMatch(html.body, /项目状态：/, "H1 不再夹灯状态（状态进徽章行）");
   assert.match(html.body, /<details class="c-details">/, "环境自查与明细折叠");
   assert.match(html.body, /<summary>环境自查与明细/);
   assert.match(html.body, /aria-current="page"[^>]*>项目</, "项目页高亮「项目」导航");
