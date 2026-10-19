@@ -3,7 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { penExtractFlows, renderPenFlowMap, synthesizePenFlows } from "../dist/pen/flows.js";
+import {
+  collectVisionScreens,
+  penExtractFlows,
+  renderPenFlowMap,
+  synthesizePenFlows,
+  visionMaxScreens
+} from "../dist/pen/flows.js";
 import { figmaGenerateTests } from "../dist/figma/test-gen.js";
 import { baseConfig, loadTestRuntime, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
 
@@ -359,9 +365,15 @@ test("pen_extract_flows: 默认渲染截图并嵌入 flow-map.md（幂等）", a
   );
   assert.equal(payload.ok, true);
   assert.equal(calls.count, 1);
-  assert.equal(calls.screenIds.length, 3);
-  assert.equal(payload.screenshots.rendered, 3);
+  assert.deepEqual(
+    calls.screenIds,
+    ["s1", "s3", "s4", "s2", "s5"],
+    "主屏在前、变体在后（同一次渲染）"
+  );
+  assert.equal(payload.screenshots.rendered, 5);
   assert.equal(payload.screenshots.skipped, 0);
+  assert.equal(payload.screenshots.screens, 3);
+  assert.equal(payload.screenshots.states, 2);
   assert.equal(payload.screenshots.dir, "screens/pen-design");
   assert.deepEqual(payload.screenshots.skippedScreens, []);
 
@@ -378,7 +390,7 @@ test("pen_extract_flows: 默认渲染截图并嵌入 flow-map.md（幂等）", a
     await penExtractFlows(runtime, { vision: false }, { render: fakeScreenRender(calls) })
   );
   assert.equal(calls.count, 2);
-  assert.equal(again.screenshots.rendered, 3);
+  assert.equal(again.screenshots.rendered, 5);
   assert.equal(fs.statSync(first).mtimeMs, mtime, "同内容跳过重写（mtime 稳定）");
 });
 
@@ -389,7 +401,7 @@ test("pen_extract_flows: 截图降级不阻断（通道失败 / 部分缺屏）"
   );
   assert.equal(failed.ok, true);
   assert.equal(failed.screenshots.rendered, 0);
-  assert.equal(failed.screenshots.skipped, 3);
+  assert.equal(failed.screenshots.skipped, 5);
   assert.ok(failed.warnings.some((warning) => warning.code === "screenshot-render-unavailable"));
   assert.ok(!failed.warnings.some((warning) => warning.code === "screenshot-skipped"));
   const mapFailed = fs.readFileSync(failed.savedTo.markdown, "utf-8");
@@ -404,7 +416,7 @@ test("pen_extract_flows: 截图降级不阻断（通道失败 / 部分缺屏）"
     )
   );
   assert.equal(partial.screenshots.rendered, 1);
-  assert.equal(partial.screenshots.skipped, 2);
+  assert.equal(partial.screenshots.skipped, 4);
   assert.ok(partial.warnings.some((warning) => warning.code === "screenshot-skipped"));
   const mapPartial = fs.readFileSync(partial.savedTo.markdown, "utf-8");
   assert.match(mapPartial, /<img/);
@@ -431,5 +443,246 @@ test("pen_extract_flows: screens:false / AOS_SCREENS=0 关闭；显式 true 覆�
     await penExtractFlows(envRuntime, { vision: false, screens: true }, { render: fakeScreenRender(calls) })
   );
   assert.equal(calls.count, 1);
-  assert.equal(forced.screenshots.rendered, 3);
+  assert.equal(forced.screenshots.rendered, 5);
+});
+
+// ---------------------------------------------------------------------------
+// 候选/变体采集与静默路径（no-silent-omission P0）
+
+function boardOf(children) {
+  return {
+    version: "2.20",
+    children: [
+      { id: "board", type: "frame", name: "1. 主流程", x: 0, y: 0, children }
+    ]
+  };
+}
+
+function collectionDoc() {
+  return boardOf([
+    {
+      id: "main",
+      type: "frame",
+      name: "Frame 101",
+      x: 0,
+      y: 0,
+      width: 390,
+      height: 844,
+      children: [
+        { id: "main-title", type: "text", content: "主頁" },
+        {
+          id: "cta",
+          type: "frame",
+          name: "主要/Button",
+          x: 20,
+          y: 700,
+          width: 200,
+          height: 48,
+          children: [
+            { id: "cta-label", type: "text", content: "立即購買" },
+            { id: "cta-icon", type: "image", name: "Bag", x: 0, y: 0, width: 24, height: 24 }
+          ]
+        },
+        {
+          id: "cart",
+          type: "frame",
+          name: "Cart/入口",
+          x: 320,
+          y: 760,
+          width: 48,
+          height: 48,
+          children: [{ id: "cart-bag", type: "image", name: "Bag", width: 48, height: 48 }]
+        },
+        {
+          id: "flow-note",
+          type: "frame",
+          name: "Flow/Note",
+          children: [{ id: "flow-button", type: "frame", name: "Button", width: 10, height: 10 }]
+        }
+      ]
+    },
+    {
+      id: "variant",
+      type: "frame",
+      name: "Frame 102",
+      x: 420,
+      y: 0,
+      width: 390,
+      height: 844,
+      children: [
+        { id: "variant-title", type: "text", content: "主頁-登入" },
+        { id: "login", type: "frame", name: "登入 Button", x: 40, y: 600, width: 180, height: 44 }
+      ]
+    }
+  ]);
+}
+
+test("collectVisionScreens: 帧缺 id/重复 id → excluded frame-missing + duplicateIds，不静默 continue", () => {
+  const doc = boardOf([
+    { id: "dup", type: "frame", name: "重複 A", width: 390, height: 844, children: [] },
+    { id: "dup", type: "frame", name: "重複 B", width: 390, height: 844, children: [] }
+  ]);
+  const collected = collectVisionScreens(doc, [
+    { id: "ghost", name: "幽靈屏", states: [] },
+    { id: "", name: "無 id 屏", states: [] },
+    { id: "dup", name: "重複屏", states: [] }
+  ]);
+
+  assert.deepEqual(collected.duplicateIds, ["dup"]);
+  assert.deepEqual(
+    collected.targets.map((target) => target.id),
+    ["dup"]
+  );
+  const ghost = collected.excluded.find((entry) => entry.screenId === "ghost");
+  assert.equal(ghost.reason, "frame-missing");
+  assert.equal(ghost.screenName, "幽靈屏");
+  assert.equal(ghost.state, null);
+  assert.deepEqual(ghost.candidates, []);
+  assert.equal(ghost.designNodes, 0);
+  assert.ok(
+    collected.excluded.some((entry) => entry.screenId === "" && entry.reason === "frame-missing"),
+    "缺 id 的屏同样具名进入 excluded（不静默 continue）"
+  );
+});
+
+test("collectVisionScreens: 主屏在前、states 在后；state target 带 stateOf/stateName", () => {
+  const doc = collectionDoc();
+  const screens = [
+    {
+      id: "main",
+      name: "主頁",
+      states: [{ id: "variant", label: "主頁-登入", frameName: "Frame 102" }]
+    }
+  ];
+  const collected = collectVisionScreens(doc, screens);
+  assert.deepEqual(
+    collected.targets.map((target) => target.id),
+    ["main", "variant"],
+    "主屏先于变体"
+  );
+  const [main, variant] = collected.targets;
+  assert.equal(main.stateOf, undefined);
+  assert.equal(main.stateName, undefined);
+  assert.ok(main.candidates.every((candidate) => candidate.state === null));
+  assert.equal(variant.stateOf, "main");
+  assert.equal(variant.stateName, "主頁-登入");
+  assert.ok(
+    variant.candidates.every((candidate) => candidate.state === "主頁-登入"),
+    "变体候选归属该 state"
+  );
+  assert.deepEqual(
+    variant.candidates.map((candidate) => candidate.id),
+    ["login"]
+  );
+});
+
+test("collectVisionScreens: Button/Icon/Bag 候选命中；Flow/* 排除；嵌套保留最外层", () => {
+  const doc = collectionDoc();
+  const collected = collectVisionScreens(doc, [
+    { id: "main", name: "主頁", states: [] }
+  ]);
+  const target = collected.targets[0];
+  assert.deepEqual(
+    target.candidates.map((candidate) => candidate.id),
+    ["cta", "cart"],
+    "命中 Button/Cart 且嵌套的 Bag 不重复采集"
+  );
+  const cta = target.candidates[0];
+  assert.equal(cta.name, "主要/Button");
+  assert.deepEqual(cta.bbox, { x: 20, y: 700, width: 200, height: 48 });
+  assert.deepEqual(cta.textHints, ["立即購買"], "文本提示来自候选子树");
+  assert.ok(
+    !target.candidates.some((candidate) => candidate.id.startsWith("flow-")),
+    "Flow/* 子树整体排除"
+  );
+  assert.ok(
+    !target.candidates.some((candidate) => candidate.id === "cart-bag"),
+    "嵌套候选保留最外层（Cart 而非 Bag）"
+  );
+  assert.deepEqual(
+    target.nodes.slice(0, 2).map((node) => node.id),
+    ["cta", "cart"],
+    "grounding 节点候选优先"
+  );
+});
+
+test("collectVisionScreens: auto-layout 无几何候选 bbox 缺省；200 上限 candidatesTruncated", () => {
+  const buttons = Array.from({ length: 250 }, (_, index) => ({
+    id: `btn-${index + 1}`,
+    type: "frame",
+    name: `Button ${index + 1}`,
+    x: index + 1,
+    y: 10,
+    width: 40,
+    height: 40
+  }));
+  const doc = boardOf([
+    {
+      id: "auto",
+      type: "frame",
+      name: "Frame 201",
+      x: 0,
+      y: 0,
+      width: "fill_container",
+      children: [
+        { id: "no-size", type: "frame", name: "Bag", x: 10, y: 10 },
+        ...buttons
+      ]
+    }
+  ]);
+  const screens = [{ id: "auto", name: "自動佈局", states: [] }];
+  const collected = collectVisionScreens(doc, screens, () => ({ width: 390, height: 844 }));
+  assert.equal(collected.targets.length, 1);
+  assert.equal(collected.targets[0].width, 390);
+  assert.equal(collected.targets[0].height, 844);
+  assert.equal(collected.targets[0].candidates.length, 200);
+  assert.equal(collected.candidatesTruncated, 51);
+  assert.equal(collected.targets[0].candidates[0].id, "no-size");
+  assert.equal(
+    collected.targets[0].candidates[0].bbox,
+    undefined,
+    "x/y 齐全但缺 w/h 时不给 bbox（不可核验，不伪造）"
+  );
+
+  const noFallback = collectVisionScreens(doc, screens);
+  assert.equal(noFallback.targets.length, 0);
+  assert.equal(noFallback.excluded[0].reason, "no-geometry");
+  assert.ok(noFallback.excluded[0].candidates.length > 0, "excluded 保留已采集候选");
+  assert.ok(noFallback.excluded[0].designNodes > 0);
+});
+
+test("collectVisionScreens: state 帧缺失 → excluded frame-missing（statesFrameMissing 可计）", () => {
+  const doc = collectionDoc();
+  const collected = collectVisionScreens(doc, [
+    {
+      id: "main",
+      name: "主頁",
+      states: [{ id: "ghost-state", label: "主頁-錯誤", frameName: "Frame 999" }]
+    }
+  ]);
+  assert.deepEqual(
+    collected.targets.map((target) => target.id),
+    ["main"]
+  );
+  const missing = collected.excluded.find((entry) => entry.screenId === "ghost-state");
+  assert.equal(missing.reason, "frame-missing");
+  assert.equal(missing.screenName, "主頁");
+  assert.equal(missing.state, "主頁-錯誤");
+  assert.equal(
+    collected.excluded.filter((entry) => entry.state !== null).length,
+    1,
+    "statesFrameMissing 可由 excluded 的 state 计数得出"
+  );
+});
+
+test("visionMaxScreens: AOS_VISION_MAX_TARGETS 优先于旧名；0/all 不限", () => {
+  assert.equal(visionMaxScreens({ AOS_VISION_MAX_TARGETS: "3" }), 3);
+  assert.equal(
+    visionMaxScreens({ AOS_VISION_MAX_TARGETS: "3", AOS_VISION_MAX_SCREENS: "1" }),
+    3
+  );
+  assert.equal(visionMaxScreens({ AOS_VISION_MAX_SCREENS: "7" }), 7);
+  assert.equal(visionMaxScreens({ AOS_VISION_MAX_TARGETS: "0" }), Number.POSITIVE_INFINITY);
+  assert.equal(visionMaxScreens({ AOS_VISION_MAX_TARGETS: "all" }), Number.POSITIVE_INFINITY);
+  assert.equal(visionMaxScreens({ AOS_VISION_MAX_TARGETS: "unlimited" }), Number.POSITIVE_INFINITY);
 });

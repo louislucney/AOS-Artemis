@@ -28,6 +28,11 @@ import {
   type VisionCapabilitySource
 } from "../llm/vision-capability.js";
 import { runVisionPass, type VisionNodeGeom, type VisionScreenInput } from "../design/vision.js";
+import {
+  candidateNameMatches,
+  type FlowElementCoverage,
+  type VisionCandidate
+} from "../design/element-coverage.js";
 import { confidenceFor, isAnnotationLayerName, type Confidence, type Provenance } from "../provenance.js";
 import {
   pngDimensions,
@@ -54,11 +59,22 @@ export interface PenFlowScreen {
   /** True when the name came from the (generic) layer name, not a screen label. */
   inferredName: boolean;
   /** State variants merged into this screen (label + frame id/name). */
-  states: Array<{ id: string; label: string; frameName: string }>;
+  states: Array<{
+    id: string;
+    label: string;
+    frameName: string;
+    /** Vision element inventory for this variant (Task 5 接线). */
+    elements?: FlowElement[];
+    /** Variant-only edges (audit only; never merged into `result.edges`). */
+    edges?: FlowEdge[];
+    elementsCoverage?: FlowElementCoverage[];
+  }>;
   /** Acceptance criteria from `Flow/AC*` groups or `AC:`-prefixed annotation texts. */
   acceptance?: string[];
   /** Vision element inventory (present only when the vision pass ran). */
   elements?: FlowElement[];
+  /** Per-target candidate coverage (present only when the vision pass ran). */
+  elementsCoverage?: FlowElementCoverage[];
   /** Evidence source (synthesis is always heuristic: inferred/low). */
   provenance: Provenance;
   confidence: Confidence;
@@ -668,69 +684,257 @@ function visionEnvFlag(dotenv: Record<string, string>): string {
   return (dotenv.AOS_VISION ?? process.env.AOS_VISION ?? "").trim();
 }
 
-/** 默认视觉屏数上限：覆盖常见设计文件全量屏，同时给多模态调用成本留闸。 */
-const DEFAULT_VISION_MAX_SCREENS = 50;
+/** 默认视觉 target 上限：覆盖常见设计文件全量主屏+变体，同时给多模态调用成本留闸。 */
+const DEFAULT_VISION_MAX_TARGETS = 50;
 
-function visionMaxScreens(dotenv: Record<string, string>): number {
-  const raw = (dotenv.AOS_VISION_MAX_SCREENS ?? process.env.AOS_VISION_MAX_SCREENS ?? "").trim().toLowerCase();
-  if (raw === "0" || raw === "all" || raw === "unlimited") return Number.POSITIVE_INFINITY;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_VISION_MAX_SCREENS;
+function parseVisionTargetCap(raw: string): number {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "0" || normalized === "all" || normalized === "unlimited") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_VISION_MAX_TARGETS;
 }
 
-/** Screen inputs for the vision pass: frame geometry plus screen-local node
- * geometry (child x/y accumulated from the screen root).
+/** `AOS_VISION_MAX_TARGETS` 为首选名（含变体），`AOS_VISION_MAX_SCREENS` 兼容旧配置。 */
+export function visionMaxScreens(dotenv: Record<string, string>): number {
+  const preferred = (dotenv.AOS_VISION_MAX_TARGETS ?? process.env.AOS_VISION_MAX_TARGETS ?? "").trim();
+  if (preferred !== "") return parseVisionTargetCap(preferred);
+  const legacy = (dotenv.AOS_VISION_MAX_SCREENS ?? process.env.AOS_VISION_MAX_SCREENS ?? "").trim();
+  if (legacy !== "") return parseVisionTargetCap(legacy);
+  return DEFAULT_VISION_MAX_TARGETS;
+}
+
+const CANDIDATE_NODE_LIMIT = 200;
+const GROUNDING_NODE_LIMIT = 300;
+const CANDIDATE_TEXT_LIMIT = 3;
+
+export interface CollectedVisionExclusion {
+  screenId: string;
+  screenName: string;
+  state: string | null;
+  reason: "frame-missing" | "no-geometry";
+  candidates: VisionCandidate[];
+  designNodes: number;
+}
+
+export interface CollectedVision {
+  /** 主屏在前，变体在后。 */
+  targets: VisionScreenInput[];
+  excluded: CollectedVisionExclusion[];
+  duplicateIds: string[];
+  candidatesTruncated: number;
+  groundingTruncated: number;
+}
+
+function isFlowLayer(node: PenNode): boolean {
+  return typeof node.name === "string" && node.name.startsWith("Flow/");
+}
+
+function candidateTextHints(node: PenNode): string[] {
+  const hints: string[] = [];
+  const visit = (current: PenNode): void => {
+    if (hints.length >= CANDIDATE_TEXT_LIMIT) return;
+    if (isFlowLayer(current)) return;
+    const text = textOf(current);
+    if (text && !hints.includes(text)) hints.push(text);
+    for (const child of current.children ?? []) {
+      if (hints.length >= CANDIDATE_TEXT_LIMIT) return;
+      visit(child);
+    }
+  };
+  visit(node);
+  return hints;
+}
+
+interface InspectedFrame {
+  candidates: VisionCandidate[];
+  candidateMatches: number;
+  nodes: VisionNodeGeom[];
+  designNodes: number;
+  groundingTruncated: number;
+}
+
+/** 候选与 grounding 节点一次采集：候选（最外层）优先、叶子优先、容器兜底。 */
+function inspectFrameNode(frame: PenNode, state: string | null): InspectedFrame {
+  const candidates: VisionCandidate[] = [];
+  const geoms: Array<VisionNodeGeom & { container: boolean; candidate: boolean }> = [];
+  let candidateMatches = 0;
+
+  const visit = (node: PenNode, ox: number, oy: number): void => {
+    if (isFlowLayer(node)) return;
+    const x = numberProp(node, "x");
+    const y = numberProp(node, "y");
+    const ax = ox + (x ?? 0);
+    const ay = oy + (y ?? 0);
+    const name = typeof node.name === "string" ? node.name : "";
+    const id = typeof node.id === "string" && node.id !== "" ? node.id : null;
+    const width = numberProp(node, "width");
+    const height = numberProp(node, "height");
+    const matches = id !== null && name !== "" && candidateNameMatches(name);
+
+    if (matches) {
+      candidateMatches += 1;
+      if (candidates.length < CANDIDATE_NODE_LIMIT) {
+        candidates.push({
+          id,
+          name,
+          type: String(node.type ?? ""),
+          ...(x !== null && y !== null && width !== null && height !== null && width > 0 && height > 0
+            ? { bbox: { x: ax, y: ay, width, height } }
+            : {}),
+          textHints: candidateTextHints(node),
+          state
+        });
+      }
+    }
+
+    if (id !== null && width !== null && height !== null && width > 0 && height > 0) {
+      const container = (node.children ?? []).some(
+        (child) => numberProp(child, "width") !== null && numberProp(child, "height") !== null
+      );
+      geoms.push({
+        id,
+        name,
+        type: String(node.type ?? ""),
+        x: ax,
+        y: ay,
+        width,
+        height,
+        container,
+        candidate: matches
+      });
+    }
+
+    if (matches) return;
+    for (const child of node.children ?? []) visit(child, ax, ay);
+  };
+  for (const child of frame.children ?? []) visit(child, 0, 0);
+
+  const rank = (entry: { container: boolean; candidate: boolean }): number =>
+    (entry.candidate ? 0 : 2) + (entry.container ? 1 : 0);
+  const ordered = [...geoms].sort((left, right) => rank(left) - rank(right));
+  const nodes = ordered.slice(0, GROUNDING_NODE_LIMIT).map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    x: entry.x,
+    y: entry.y,
+    width: entry.width,
+    height: entry.height
+  }));
+  return {
+    candidates,
+    candidateMatches,
+    nodes,
+    designNodes: geoms.length,
+    groundingTruncated: Math.max(0, geoms.length - GROUNDING_NODE_LIMIT)
+  };
+}
+
+interface VisionTargetSpec {
+  id: string;
+  name: string;
+  screenName: string;
+  stateOf: string | null;
+  stateName: string | null;
+}
+
+/** Screen inputs for the vision pass: main screens first, then merged state
+ * variants; candidate geometry (child x/y accumulated from the frame root)
+ * only exists when all of x/y/w/h are numeric.
  *
  * Auto-layout frames often carry `fill_container` / `fit_content` widths and
  * no height at all (the layout engine resolves them). Those screens still
  * render, so the rendered PNG's IHDR size is the authoritative fallback —
  * rendering is scale 1 in the design coordinate system. */
-function collectVisionScreens(
+export function collectVisionScreens(
   doc: PenDocument,
   screens: PenFlowScreen[],
   sizeFor?: (screenId: string) => { width: number; height: number } | null
-): { inputs: VisionScreenInput[]; dropped: string[] } {
+): CollectedVision {
   const byId = new Map<string, PenNode>();
+  const duplicateIds: string[] = [];
+  const seenIds = new Set<string>();
   for (const node of collectPenNodes(doc)) {
-    if (typeof node.id === "string" && node.id !== "") byId.set(node.id, node);
+    if (typeof node.id !== "string" || node.id === "") continue;
+    if (seenIds.has(node.id)) {
+      if (!duplicateIds.includes(node.id)) duplicateIds.push(node.id);
+    } else {
+      seenIds.add(node.id);
+    }
+    byId.set(node.id, node);
   }
-  const inputs: VisionScreenInput[] = [];
-  const dropped: string[] = [];
+
+  const specs: VisionTargetSpec[] = [];
   for (const screen of screens) {
-    const frame = byId.get(screen.id);
-    if (!frame) continue;
-    const fallback = sizeFor ? sizeFor(screen.id) : null;
+    specs.push({
+      id: screen.id,
+      name: screen.name,
+      screenName: screen.name,
+      stateOf: null,
+      stateName: null
+    });
+  }
+  for (const screen of screens) {
+    for (const state of screen.states) {
+      specs.push({
+        id: state.id,
+        name: state.label,
+        screenName: screen.name,
+        stateOf: screen.id,
+        stateName: state.label
+      });
+    }
+  }
+
+  const targets: VisionScreenInput[] = [];
+  const excluded: CollectedVisionExclusion[] = [];
+  let candidatesTruncated = 0;
+  let groundingTruncated = 0;
+  for (const spec of specs) {
+    const frame = byId.get(spec.id);
+    if (!frame) {
+      excluded.push({
+        screenId: spec.id,
+        screenName: spec.screenName,
+        state: spec.stateName,
+        reason: "frame-missing",
+        candidates: [],
+        designNodes: 0
+      });
+      continue;
+    }
+    const inspected = inspectFrameNode(frame, spec.stateName);
+    candidatesTruncated += inspected.candidateMatches - inspected.candidates.length;
+    groundingTruncated += inspected.groundingTruncated;
+    const fallback = sizeFor ? sizeFor(spec.id) : null;
     const width = numberProp(frame, "width") ?? fallback?.width ?? null;
     const height = numberProp(frame, "height") ?? fallback?.height ?? null;
     if (width === null || height === null || width <= 0 || height <= 0) {
-      dropped.push(screen.name);
+      excluded.push({
+        screenId: spec.id,
+        screenName: spec.screenName,
+        state: spec.stateName,
+        reason: "no-geometry",
+        candidates: inspected.candidates,
+        designNodes: inspected.designNodes
+      });
       continue;
     }
-    const nodes: VisionNodeGeom[] = [];
-    const visit = (node: PenNode, ox: number, oy: number): void => {
-      const x = numberProp(node, "x");
-      const y = numberProp(node, "y");
-      const w = numberProp(node, "width");
-      const h = numberProp(node, "height");
-      const ax = ox + (x ?? 0);
-      const ay = oy + (y ?? 0);
-      if (typeof node.id === "string" && node.id !== "" && w !== null && h !== null && w > 0 && h > 0) {
-        nodes.push({
-          id: node.id,
-          name: String(node.name ?? ""),
-          type: String(node.type ?? ""),
-          x: ax,
-          y: ay,
-          width: w,
-          height: h
-        });
-      }
-      for (const child of node.children ?? []) visit(child, ax, ay);
-    };
-    for (const child of frame.children ?? []) visit(child, 0, 0);
-    inputs.push({ id: screen.id, name: screen.name, width, height, nodes: nodes.slice(0, 300) });
+    targets.push({
+      id: spec.id,
+      name: spec.name,
+      width,
+      height,
+      nodes: inspected.nodes,
+      ...(spec.stateOf !== null && spec.stateName !== null
+        ? { stateOf: spec.stateOf, stateName: spec.stateName }
+        : {}),
+      candidates: inspected.candidates
+    });
   }
-  return { inputs, dropped };
+  return { targets, excluded, duplicateIds, candidatesTruncated, groundingTruncated };
 }
 
 interface PenScreenAssets {
@@ -739,7 +943,36 @@ interface PenScreenAssets {
   imagePaths: Map<string, string>;
   skipped: string[];
   warnings: FlowWarning[];
-  summary: { dir: string; rendered: number; skipped: number; skippedScreens: string[] };
+  summary: {
+    dir: string;
+    /** 主屏数量（与 `states` 相加 = rendered + skipped）。 */
+    screens: number;
+    /** 变体数量。 */
+    states: number;
+    rendered: number;
+    skipped: number;
+    skippedScreens: string[];
+  };
+}
+
+function requestedScreenIds(screens: PenFlowScreen[]): {
+  ids: string[];
+  screens: number;
+  states: number;
+} {
+  const unique = (values: string[]): string[] => {
+    const out: string[] = [];
+    for (const value of values) {
+      if (value.trim() === "" || out.includes(value)) continue;
+      out.push(value);
+    }
+    return out;
+  };
+  const mainIds = unique(screens.map((screen) => screen.id));
+  const stateIds = unique(
+    screens.flatMap((screen) => screen.states.map((state) => state.id))
+  ).filter((id) => !mainIds.includes(id));
+  return { ids: [...mainIds, ...stateIds], screens: mainIds.length, states: stateIds.length };
 }
 
 /** 一次渲染两用（design-screenshots T2）：截图与 vision 共享同一批渲染；
@@ -765,10 +998,11 @@ async function renderAndImportPenScreens(
   deps: PenFlowsDeps,
   dotenv: Record<string, string>
 ): Promise<PenScreenAssets> {
+  const requested = requestedScreenIds(screens);
   const capture = await capturePenScreens({
     configDirAbs: runtime.configDirAbs,
     target,
-    screenIds: screens.map((screen) => screen.id),
+    screenIds: requested.ids,
     dotenv,
     deps: { render: deps.render, exec: deps.exec, ensure: deps.ensure }
   });
@@ -798,6 +1032,8 @@ async function renderAndImportPenScreens(
     warnings,
     summary: {
       dir: relativeScreenPath(path.join(runtime.configDirAbs, "design"), capture.dir),
+      screens: requested.screens,
+      states: requested.states,
       rendered: capture.imagePaths.size,
       skipped: capture.skipped.length,
       skippedScreens: capture.skipped
@@ -921,19 +1157,52 @@ async function applyVision(
     ]);
   }
 
-  const { inputs: screens, dropped } = collectVisionScreens(
-    doc,
-    result.screens,
-    renderedSizeResolver(assets)
-  );
+  const collected = collectVisionScreens(doc, result.screens, renderedSizeResolver(assets));
+  const screens = collected.targets;
+  const labelOf = (entry: CollectedVisionExclusion): string =>
+    entry.state === null ? entry.screenName : `${entry.screenName}·${entry.state}`;
+  const dropped = collected.excluded.filter((entry) => entry.reason === "no-geometry");
   if (dropped.length > 0) {
     preWarnings = [
       ...preWarnings,
       {
         code: "vision-screen-no-geometry",
-        message: `${dropped.length} 屏缺尺寸且无渲染图，已跳过视觉识别（${dropped.slice(0, 5).join("、")}${
-          dropped.length > 5 ? " 等" : ""
-        }）`
+        message: `${dropped.length} 屏缺尺寸且无渲染图，已跳过视觉识别（${dropped
+          .slice(0, 5)
+          .map(labelOf)
+          .join("、")}${dropped.length > 5 ? " 等" : ""}）`
+      }
+    ];
+  }
+  const missingFrames = collected.excluded.filter((entry) => entry.reason === "frame-missing");
+  if (missingFrames.length > 0) {
+    preWarnings = [
+      ...preWarnings,
+      {
+        code: "vision-screen-frame-missing",
+        message: `${missingFrames.length} 屏在文档中找不到对应帧（id 缺失或悬空），已跳过视觉识别（${missingFrames
+          .slice(0, 5)
+          .map(labelOf)
+          .join("、")}${missingFrames.length > 5 ? " 等" : ""}）`
+      }
+    ];
+  }
+  if (collected.duplicateIds.length > 0) {
+    preWarnings = [
+      ...preWarnings,
+      {
+        code: "vision-duplicate-screen-ids",
+        message: `设计文档存在 ${collected.duplicateIds.length} 个重复节点 id，视觉识别按文档中最后出现的帧解析，需修正设计文件`,
+        details: collected.duplicateIds.slice(0, 10)
+      }
+    ];
+  }
+  if (collected.candidatesTruncated > 0) {
+    preWarnings = [
+      ...preWarnings,
+      {
+        code: "vision-candidate-cap",
+        message: `候选交互元素超过每屏上限 ${CANDIDATE_NODE_LIMIT}，${collected.candidatesTruncated} 个已截断（覆盖判定按已采集候选）`
       }
     ];
   }

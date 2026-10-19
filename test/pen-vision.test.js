@@ -164,6 +164,66 @@ function makeProject({ dotenv = "" } = {}) {
   return dir;
 }
 
+/** Same screen with a merged state variant: synthesis keeps it out of
+ * `screens` but vision/states must still be rendered and processed. */
+function statefulDoc() {
+  return {
+    version: "2.20",
+    children: [
+      {
+        id: "b1",
+        type: "frame",
+        name: "1. 主流程",
+        x: 0,
+        y: 0,
+        children: [
+          {
+            id: "home",
+            type: "frame",
+            name: "Frame 101",
+            x: 0,
+            y: 0,
+            width: 390,
+            height: 844,
+            children: [{ id: "home-title", type: "text", content: "主頁" }]
+          },
+          {
+            id: "home-loading",
+            type: "frame",
+            name: "Frame 102",
+            x: 420,
+            y: 0,
+            width: 390,
+            height: 844,
+            children: [
+              { id: "loading-title", type: "text", content: "主頁-載入" },
+              { id: "loading-cta", type: "frame", name: "取消 Button", x: 40, y: 600, width: 180, height: 44 }
+            ]
+          },
+          {
+            id: "store",
+            type: "frame",
+            name: "Frame 103",
+            x: 840,
+            y: 0,
+            width: 390,
+            height: 844,
+            children: [{ id: "store-title", type: "text", content: "門市" }]
+          }
+        ]
+      }
+    ]
+  };
+}
+
+function makeProjectWithDoc(doc, { dotenv = "" } = {}) {
+  const dir = makeTempProject({ config: baseConfig(), dotenv });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(path.join(designDir, "design.pen"), JSON.stringify(doc), "utf-8");
+  return dir;
+}
+
 function fakeChat() {
   return async (messages) => {
     const text = messages[1].content[0].text;
@@ -626,6 +686,38 @@ test("vision: when every screen lacks geometry the skip reason still carries the
   const warning = payload.warnings.find((entry) => entry.code === "vision-screen-no-geometry");
   assert.ok(warning, "an all-dropped pass must not lose its reason");
   assert.match(warning.message, /主頁|門市/);
+});
+
+
+test("vision: screens:false 仍为主屏 + 变体渲染（同一次渲染，变体不静默）", async () => {
+  const dir = makeProjectWithDoc(statefulDoc());
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const calls = { count: 0, screenIds: null };
+  const render = async ({ screenIds, outDir }) => {
+    calls.count += 1;
+    calls.screenIds = screenIds;
+    fs.mkdirSync(outDir, { recursive: true });
+    const files = new Map();
+    for (const id of screenIds) {
+      const file = path.join(outDir, `${id}.png`);
+      fs.writeFileSync(file, pngHeader(390, 844));
+      files.set(id, file);
+    }
+    return { ok: true, dir: outDir, files, missing: [] };
+  };
+  const payload = parseToolResult(
+    await penExtractFlows(
+      runtime,
+      { screens: false },
+      { chat: async () => JSON.stringify({ elements: [] }), render }
+    )
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.screenshots, undefined, "screens:false 不附截图摘要");
+  assert.deepEqual(calls.screenIds, ["home", "store", "home-loading"]);
+  assert.equal(payload.vision.active, true);
+  assert.equal(payload.vision.screensRequested, 3, "变体也算 target");
+  assert.equal(payload.vision.screensProcessed, 3);
 });
 
 
