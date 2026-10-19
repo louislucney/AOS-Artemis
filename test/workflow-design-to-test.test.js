@@ -903,3 +903,41 @@ test("design_to_test: check 失败响应也携带已获得的 warnings", async (
   assert.equal(payload.designWarnings.total, 1);
   assert.deepEqual(payload.designWarnings.codes, ["flow-graph-empty"]);
 });
+
+test("design_to_test: extract 与 flows.json 重复警告去重（extract 优先）", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-dedupe-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const duplicate = { code: "pen-no-interactions", message: "未检测到交互线索" };
+  const runtime = stubRuntime({ dir, dotenv: { PEN_CLI_KEY: "pen_test" } });
+  const { deps } = makeDeps();
+  deps.extractPen = async (runtime_) => {
+    const designDir = path.join(runtime_.configDirAbs, "design");
+    fs.mkdirSync(designDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(designDir, "flows.json"),
+      JSON.stringify({
+        schemaVersion: 3,
+        screens: [],
+        edges: [],
+        entryScreens: [],
+        unresolvedDestinations: [],
+        warnings: [duplicate]
+      })
+    );
+    return textResult({
+      ok: true,
+      counts: { screens: 1, edges: 0, warnings: 1 },
+      warnings: [duplicate]
+    });
+  };
+
+  const result = await designToTest(runtime, { penPath: "/designs/app.pen" }, deps);
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.warnings, [duplicate], "同 code+message 只保留一条");
+  assert.deepEqual(payload.designWarnings.bySource, { extract: 1, flows: 0 });
+  assert.equal(payload.designWarnings.total, 1, "total 为去重后条数");
+  assert.equal(withoutMs(payload.steps[0]).warnings, 1);
+});
