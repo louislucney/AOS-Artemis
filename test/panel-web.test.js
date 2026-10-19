@@ -265,7 +265,7 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
   assert.match(html.body, /f\.getAll\('featureKeys'\)/, "提交收集多选值");
   assert.match(html.body, /<section id="regression" class="c-plain">/, "CTA 区块不吃遗留 section 边框（无双框）");
   assert.doesNotMatch(html.body, /id="onboarding"/, "有引用份时不显示入门卡");
-  assert.match(html.body, /执行：[\s\S]{0,200}?集成：/, "项目页两轴并列（执行／集成）");
+  assert.match(html.body, /可运行：[\s\S]{0,260}?可持久：[\s\S]{0,120}?已接入：/, "项目页三轴并列（可运行／可持久／已接入）");
   assert.doesNotMatch(html.body, /项目状态：/, "H1 不再夹灯状态（状态进徽章行）");
   assert.match(html.body, /<details class="c-details">/, "环境自查与明细折叠");
   assert.match(html.body, /<summary>环境自查与明细/);

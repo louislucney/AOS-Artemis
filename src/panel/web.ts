@@ -696,9 +696,18 @@ try{
   });
 }
 
+function runnableAxis(detail: PanelProjectDetail): { lamp: PanelProjectRow["lamp"]; note: string } {
+  if (!detail.project.diskReachable) return { lamp: "gray", note: "（磁盘不可达，仅台账可见）" };
+  const online = detail.runners.filter((runner) => runner.online).length;
+  if (online === 0) {
+    return { lamp: "yellow", note: "（无在线执行机；任务将排队，可 CLI 手动执行）" };
+  }
+  return { lamp: "green", note: `（在线执行机 ${online}）` };
+}
+
 function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): string {
   const row = detail.project;
-  const health = row.lamp === "green" ? "正常" : row.lamp === "red" ? "阻断" : "需要关注";
+  const axis = runnableAxis(detail);
   const active = detail.tasks.filter(
     (task) => task.status === "claimed" || task.status === "running"
   );
@@ -726,13 +735,16 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
   return [
     '<div class="c-stats-row">',
     cStat({
-      label: "执行健康",
-      value: health,
-      hint:
-        row.lampReasons[0] ??
-        (row.integration.missing.length > 0
-          ? `集成 ${row.integration.ready}/${row.integration.total}（不影响执行）`
-          : "无告警")
+      label: "可运行",
+      value:
+        axis.lamp === "green"
+          ? "正常"
+          : axis.lamp === "red"
+            ? "阻断"
+            : axis.lamp === "gray"
+              ? "不可达"
+              : "需关注",
+      hint: axis.note
     }),
     cStat({ label: "在跑什么", value: String(active.length), hint: activeHint }),
     cStat({
@@ -1869,11 +1881,19 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       "<header>",
       '<p><a href="/panel">← 多项目总览</a></p>',
       `<h1>${escapeHtml(row.name)}</h1>`,
-      `<p>执行：${lampSpan(row.lamp)} · 集成：${row.integration.ready}/${row.integration.total} 就绪${
-        row.integration.missing.length > 0
-          ? `（缺 ${row.integration.missing.map((item) => escapeHtml(item)).join("、")}；不影响执行）`
-          : ""
-      }</p>`,
+      (() => {
+        const axis = runnableAxis(detail);
+        const health = currentShell.storeHealth;
+        const persist =
+          health === undefined
+            ? "—"
+            : `${escapeHtml(health.label)}${health.writeIssue === null ? "" : `（${escapeHtml(health.writeIssue)}）`}`;
+        return `<p>可运行：${lampSpan(axis.lamp)}${escapeHtml(axis.note)} · 可持久：${persist} · 已接入：${row.integration.ready}/${row.integration.total} 就绪${
+          row.integration.missing.length > 0
+            ? `（缺 ${row.integration.missing.map((item) => escapeHtml(item)).join("、")}；不影响执行）`
+            : ""
+        }</p>`;
+      })(),
       `<p class="muted"><code>${escapeHtml(row.rootPath)}</code> · 最后活跃 ${relativeTime(row.lastSeenAt)} · ${
         row.diskReachable ? "磁盘可达" : "磁盘不可达"
       }</p>`,
