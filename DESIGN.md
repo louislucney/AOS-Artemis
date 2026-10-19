@@ -1861,3 +1861,37 @@ llm_switch(name, force):
 - **测试**：`native-workflow-tool` zod 拒绝点 `maxFlows:51` → `1001`（51 自此合法）、合法形态增 300/1000；新增 `test/native-figma-tool.test.js`（300/1000 通过；1001/0/2.5 拒绝；`maxDepth` 50/51 边界）。全量 **1654 绿**；lint 0 error（2 条既有 warning）。
 - **真实验证（starbuckstw，`reuseExistingFlows` 重生成，不重跑视觉）**：`maxFlows=300` → `explored=kept=215`、`dropped=0`、**check 通过**、`coverage.complete=true`（explore 类亦全绿）；用例分布 行動點餐首頁 73 · 到店自取 142（其余组 0，属归属口径现状，见 §13.131 边界）；case-set 两文件各自独立（500KB / 1.34MB），ledger 键唯一。
 
+### 13.133 实施记录（设计链路「不静默省略」P0：候选四态 + 变体 target + 守恒 + 警告可见面）
+
+> 实施于 2026-10-20（承接 §13.130–§13.132 的 starbuckstw 全量视觉复盘）。现象：pen 视觉只处理主屏，合并进主屏的状态变体（`screen.states[]`）从未成为独立 target；设计稿里的候选交互元素没有词表与核验，识别不全时无逐条交代；回复 >40 条、候选 >200、grounding >300 的截断只留内部计数；且设计警告只写 `flows.json`，生成/检查/执行/面板各层看不到。本阶段分 **P0-A（生产侧不静默）** 与 **P0-B（消费侧可见）** 两部分；P1（交互解析、状态路径生成等）不在本计划。
+
+**P0-A：警告管道与候选四态**
+
+- **统一形态**（`src/design/warnings.ts`）：`DesignWarning = {code, message, details?}`；`flows.json.warnings` 与 `tests.json.designWarnings` 同构。`normalizeWarnings` 逐条丢弃无 `code`/`message` 的条目；`readFlowsWarnings`/`readTestsWarnings` 缺文件、坏 JSON、顶层非对象均返回 `available:false` 而不抛；**字段缺失 ≠ 零警告**——缺 `warnings`/`designWarnings` 字段即不可用，回退另一来源；显式空数组才是「可用且 0 条」。`mergeWarnings` 按 `code + message` 去重并保留首次顺序（`bySource` 把每条唯一警告记给首个来源，各值之和 = 条数）；`summarizeWarnings` 出 `total/byCode/codes`（可选 `bySource/snapshotAt/stale`）；`resolveDesignWarnings` 默认 **tests 快照优先、flows 回退**，仅当采用 tests 且 flows mtime 严格更新时 `stale:true`（同秒不算陈旧）。
+- **候选词表与四态**（`src/design/element-coverage.ts`）：默认词表 13 个英文词（`Button`/`Tab`/`Link`/`Input`/`Toggle`/`Switch`/`Checkbox`/`Search`/`Menu`/`Cart`/`Bag`/`CTA`/`Sticky button`）＋ 11 个中文词（`按钮`…`关闭`）；名称按 `/` 分段匹配（英文按词序列连续命中、中文按子串），大小写不敏感；`AOS_VISION_CANDIDATE_TOKENS` 追加项目词（逗号/中文逗号/换行分隔，去空去重转小写）。
+- **四态判定**（按 target 隔离）：`covered`（nodeId 命中 → 几何命中：IoU ≥ 0.2 或元素中心落在候选 bbox → 文本 fallback）／`uncovered`（有几何但未命中）／`unverifiable`（无几何且无可匹配文本、`no-geometry`/`no-text`，或文本被同 state 多候选共享 `ambiguous-text`）／`not-evaluated`（target 未进入 vision，带原因）。计数与 `details`（逐候选 nodeId/name/status/reason/bbox）写入 `FlowElementCoverage`；告警 `vision-candidate-uncovered`（逐屏×state 一条＋具名明细）、`vision-candidate-unverifiable`（整屏聚合一条）、`vision-candidate-vocabulary-unmatched`（有设计节点但零候选，提示词表不适配；未评估 target 不误报）。
+- **变体 target**（`src/design/vision.ts` + `src/pen/flows.ts`）：主屏与其状态变体都成为独立 target（`stateOf`/`stateName`），`collectVisionScreens` **主屏在前、变体在后**；上限先裁变体、主屏仅在自身超限时被裁。`screensRequested` 恒指主屏、`statesRequested` 指变体、`targetsRequested = 两者之和`（均只计进入 pass 的 target：`processed + skipped + failed`）；`screensInput`/`statesInput` 另计全部输入（含 capped/排除）。变体元素落 `screens[].states[].elements`，变体边只进 `stateEdges` 与 `counts.visionStateEdges`（审计专用，**不并入 `result.edges`/`unresolvedDestinations`**，生成侧边界不变，见「已知边界」）。
+- **静默截断可见**：回复元素 >40 → `vision-response-truncated`（含屏名与条数）；每 target 候选 >200 → `vision-candidate-cap`（并记 `vision.accounting.candidatesTruncated`，含被排除/被 cap 的 target）；grounding >300 记 `groundingTruncated`（只进 accounting）；上限截断出 `vision-screen-cap`，`details` 逐 target 具名并区分主屏/变体，附 `AOS_VISION_MAX_SCREENS=0` 行动提示；缺帧/缺几何/重复 id 分别 `vision-screen-frame-missing`/`vision-screen-no-geometry`/`vision-duplicate-screen-ids`。
+- **守恒公式**（D7，`visionAccounting`）：`screensInput = processed + skipped + failed + capped + noGeometry + frameMissing`；states 同式；`targetsRequested = screensRequested + statesRequested`；`screensRequested = processed + skipped + failed`；states 同式；`elements = grounded + ungrounded`；`rawElements = elements + invalid + truncated`。任一不成立出 `vision-accounting-mismatch`（消息带全部数字，不静默）；`candidatesTruncated`/`groundingTruncated` 明确不参与公式。截图侧 `screens + states = rendered + skipped`，不成立出 `screenshot-accounting-mismatch`；`screenshots.accounting` 可见。
+- **env**：`AOS_VISION_MAX_TARGETS` 为首选名（上限覆盖主屏＋变体），`AOS_VISION_MAX_SCREENS` 保留为兼容旧配置；两者均为默认 50、`0`/`all`/`unlimited` 不限。`AOS_VISION_CANDIDATE_TOKENS` 追加候选词表（默认词表始终生效）。
+- **flow-map**：每主屏/每变体一行覆盖摘要「识别 / 候选 / 覆盖 / 未覆盖 / 不可核验 / 未评估（未评估：原因）」，零候选的未评估 target 也能与「已评估但无候选」区分；视觉识别区补变体元素行。
+
+**P0-B：警告的消费面**
+
+- **`design_to_test`**：提取后响应带 `warnings[]` 与 `designWarnings` 摘要（`bySource` 含 `extract`/`flows`，提取响应与磁盘 `flows.json` 按 code+message 去重）；`steps[extract].warnings` 计数；成功后 `artifacts.flowMap`（文件存在时）。提取后的失败响应（生成 0 用例/检查失败/执行失败/needs-setup/needs-info）同样携带已收集警告；**提取前的 setup/no-flows 响应刻意保持原形状**（此时尚无设计源）。
+- **`figma_generate_tests`**：flows 警告与生成期警告（功能命名/身份、用例集登记、截图降级）按 code+message 合并，写入响应 `warnings`/`designWarningsSummary` 与 tests.json 的 `designWarnings`/`designWarningsSummary`（`bySource` 为 `flows`/`generated`）；tests.md 顶部增「设计源警告（不阻断生成）」小节（无警告不出现）。快照在 tests.json 落盘前定稿；登记失败等晚到警告只留在响应 `warnings`，不改写已登记指纹。
+- **`suite check` / `suite loop`**：preflight 经 `resolveDesignWarnings` 取一份快照，文本统一由 `renderDesignWarningLine` 渲染（`设计源警告: N 条（codes）· 来源 · 快照 · [stale-snapshot]`）；`check --json` 增 `designWarnings`/摘要/来源/快照/陈旧字段，`loop` 的 check 步骤与 markdown 同源；**退出码与门禁语义不变**（警告不阻断）。
+- **manifest / report / 回归 / Jira**：批次清单写入运行期 `designWarningSummary` 快照（历史清单缺字段 → `null`，面板显式「未记录」而非 0 条）；`suite report` 用当前快照；`run_regression`/`verify_jira_issue` 跨 set 合并去重，并用 `missingSets` 披露「部分 set 无摘要」的覆盖缺口（全部缺失仍 `null`，不伪造 0）。
+- **面板 / 档案 / pipeline**：`/panel.json` 项目行、项目页「磁盘资产」、批次详情（清单冻结值）均显示设计源警告（无快照显式「不可用」）；`project_archive.design.warnings` 与面板/套件同源；`scripts/design-pipeline.mjs` 在提取后打印警告行（响应无 `warnings` 时打印不可用）。
+
+**测试与验收**：`npm run build && npm test && npm run lint` → build 0 error、**1715/1715 通过**、lint 0 error（2 条既有 warning 与本阶段无关）；覆盖 `test/design-warnings.test.js`、`test/design-element-coverage.test.js`、`test/pen-flows.test.js`、`test/pen-vision.test.js`、`test/workflow-design-to-test.test.js`、`test/figma-testgen.test.js`、`test/suite-command.test.js`、`test/suite-loop.test.js`、`test/suite-run-manifest.test.js`、`test/run-report.test.js`、`test/workflow-run-regression.test.js`、`test/workflow-verify-jira.test.js`、`test/panel-assets.test.js`、`test/panel-web.test.js`、`test/workflow-project-archive.test.js`。
+
+**已知边界**
+
+- **原始原因码**：flow-map 的 `not-evaluated` 原因直接用 `frame-missing`/`no-geometry`/`capped`/`render-missing`/`rejected`/`failed`，未另做中文映射；候选 `reason` 同样保留原始码（`no-geometry`/`no-text`/`ambiguous-text`/`vision-off`/`capped`/`render-missing`/`frame-missing`/`rejected`/`failed`）。
+- **变体仍为审计面**：变体元素/边只在 `states[]` 与 `stateEdges` 留证，不进入生成路径（`result.edges`/探索边仍是主屏边）；状态路径生成属 P1。
+- **手工回放延期**：本阶段**未执行** starbuckstw 真实项目回放（会写入外部项目）。待手工验收的期望是：23 主屏＋30 变体全部有 target 记录；默认 50 时 3 个变体具名 `capped`；`unverifiable` 有计数；`maxFlows=300` 下 215 条探索边全保留；一条龙响应含 design warnings。该项在真实项目验收时补记，不影响本阶段代码/测试结论。
+- **截图守恒的集成路径**：真实链路由构造保证 `screens + states = rendered + skipped`，不会自然触发不平；目前以 `screenshotAccounting` 纯函数单测锁定破坏路径，未做真实截图失败的端到端注入。
+- **候选判定是启发式**：词表不适配（尤其自定义命名）可能产生 `uncovered`/`vocabulary-unmatched`；同一归一化文本被多候选共享时保守判 `unverifiable`（不虚报覆盖）。宽松包含匹配（如 `结算` 命中 `去结算`）为既定行为。
+- **快照语义**：批次详情读清单冻结值，项目页/档案读当前快照；两者时间差会在详情中体现为「未记录/旧值」而不是自动刷新。
+
