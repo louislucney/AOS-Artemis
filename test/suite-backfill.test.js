@@ -103,7 +103,7 @@ function archiveFlow(id, screens) {
   return { id, name: `Case ${id}`, screens, feature: "f", taskDesc: "run", steps: [], expectations: [] };
 }
 
-function writeArchive(runtime, { stem, source = "pen:a.pen", featureKey, featureName, flows = [], withMd = false, withXlsx = false }) {
+function writeArchive(runtime, { stem, source = "pen:a.pen", featureKey, featureName, featureScreens = [], flows = [], withMd = false, withXlsx = false }) {
   const dir = path.join(runtime.configDirAbs, "design", "case-sets");
   fs.mkdirSync(dir, { recursive: true });
   const jsonPath = path.join(dir, `${stem}.json`);
@@ -114,7 +114,7 @@ function writeArchive(runtime, { stem, source = "pen:a.pen", featureKey, feature
     JSON.stringify(
       {
         source,
-        features: [{ key: featureKey, name: featureName, screens: [], caseIds: flows.map((entry) => entry.id) }],
+        features: [{ key: featureKey, name: featureName, screens: featureScreens, caseIds: flows.map((entry) => entry.id) }],
         flows,
         counts: { flows: flows.length, screens: 3, edges: 5 }
       },
@@ -533,6 +533,29 @@ test("backfill case-sets: 登记 1 归档（缺 xlsx 告警仍登记）、跳过
   assert.deepEqual(aSet.features[0].screens, ["Home", "Login"]);
   assert.equal(aSet.features[0].mdPath, a.mdPath);
   assert.equal(aSet.features[0].xlsxPath, a.xlsxPath);
+});
+
+test("backfill: 归档 features[0].screens 优先于 flows 并集（屏集不被用例覆盖放大）", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const runtime = await makeRuntime(store, dir);
+
+  const archive = writeArchive(runtime, {
+    stem: "20261019T100137_到店自取",
+    featureKey: "f-到店自取",
+    featureName: "到店自取",
+    featureScreens: ["Cart", "Pay"],
+    flows: [archiveFlow("case-1", ["Cart", "Pay", "Extra"])],
+    withMd: true
+  });
+
+  const report = await runBackfill(runtime);
+  assert.equal(report.registered.caseSets, 1);
+  const sets = await store.listCaseSets(runtime.project.rootDir);
+  const rebuilt = sets.find((entry) => entry.features.some((feature) => feature.jsonPath === archive.jsonPath));
+  assert.ok(rebuilt, "归档登记");
+  assert.deepEqual(rebuilt.features[0].screens, ["Cart", "Pay"]);
+  assert.equal(rebuilt.features[0].caseCount, 1);
 });
 
 test("backfill 幂等: 第二次全 skip；dry-run 不写库且 wouldRegister=将登记数", async () => {

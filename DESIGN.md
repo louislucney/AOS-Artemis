@@ -1504,7 +1504,7 @@ llm_switch(name, force):
 
 > 实施于 2026-10-14（设计稿 `docs/superpowers/specs/2026-10-14-regression-service-design.md` §5.1–§5.3；计划 `docs/superpowers/plans/2026-10-14-regression-service-p1a-generation.md`，P1b/P1c 另立）。新增 `src/figma/features.ts`（纯函数）：`splitFeatures`（信号优先级 Figma 页面 → 屏幕名公共前缀（未覆盖屏按边邻居多数归并）→ 无向图连通分量 → 单组回退；全部按屏幕名 code-point 确定性排序）；`nameFeatures`（回退链：候选名 ≤16 字 → LLM（`ChatFn` 注入，缺省经 `runtime.activeEntry()` 仿 pen vision 解析；输出 `{"name":"…"}`，≤8 字）→ `功能N`（按组序号）+ `feature-naming-fallback` 告警）；`applyIdentity`（重叠率 |交集|/min，唯一最高且 ≥0.5 继承 key/name——名称冻结；否则新 key `f-<slug>-<sha8(排序屏幕)>` + `feature-identity-new`；同一 prior 不重复继承）；`assignCaseFeature`（用例屏幕多数归属、并列取首屏、无命中 null）。`src/figma/case-sets.ts`：`caseSetsDir`/`caseSetStem`（`<UTC YYYYMMDDTHHmmss>_<功能名>`；非法字符/空白→`-`、空→`feature`、≤40 字、目录冲突 `-2` 递增）/`saveCaseSetFiles`（三件套同 basename 原子写）。`src/figma/flows.ts`：`FlowScreen` 增可选 `page`（`buildFlowGraph` 沿 `parentOf` 链取所属 PAGE 名；`normalizeFlowGraph` 容忍缺失；**不升 schemaVersion**）。DB：`case_sets`/`case_set_features` 两表（screens 以 TEXT+JSON 存，仿既有惯例）+ `recordCaseSet`/`listCaseSets`（新→旧、默认 50；pg-mem + memory 双实现）。`figma_generate_tests` 接线：用例带 `feature`、payload 增 `features[]`；保存时每功能子集三件套归档 `.artemis/design/case-sets/`（子集 JSON 含 flows/coverage/features；md/xlsx 复用同渲染器；`savedTo.caseSets` 三路径；空功能段不产出）；生成前 `listCaseSets` 展平为 prior 做身份继承（不可用 → `case-set-registry-unavailable` 告警），保存后 `recordCaseSet` 登记（失败 → `case-set-registration-failed`，不阻断）；live 三件套契约不变；`suite retention` 增 `case-sets` 分类。测试 +33（features 15 / case-sets 4 / case-sets-gen 8 / db-case-sets 3 / flows +2 / retention +1）；全量 996 绿。
 
-- **口径**：功能名生成后冻结（改名不改档案，后续合并走别名映射）；身份继承以屏幕重叠为唯一确定性依据（低置信不静默合并——新 key + 告警）；"份"＝功能段（回归引用与命名单位）；"磁盘归档是事实源、DB 是索引"，store 不可用一律如实降级、不阻断生成。
+- **口径**：功能名生成后冻结（改名不改档案，后续合并走别名映射）；身份继承以屏幕重叠为唯一确定性依据（低置信不静默合并——新 key + 告警）；"份"＝功能段（回归引用与命名单位）；"磁盘归档是事实源、DB 是索引"，store 不可用一律如实降级、不阻断生成。身份修订（2026-10-19）：同屏集重复身份继承最近一份、新建 key 与已用 key 碰撞确定性消歧、自愈/回填屏集取归档声明（§13.131）。
 
 ### 13.107 实施记录（回归服务 P1b：执行与对比——suite task / run --task / 登记 / 同份对比 / 结果表）
 
@@ -1735,7 +1735,7 @@ llm_switch(name, force):
 > 实施于 2026-10-18（依据：`PRODUCT.md`「记录即产品」＋外部评审修订；计划 `docs/superpowers/plans/2026-10-18-data-foundation.md`（v2）；任务 1–3 已落地，任务 4–7 见后续记录）。动机：未配 PG 时"会话内存即弃"使接入与产出无留存；记录必须默认持久（**结果/过程/数据**三类）。
 > - **T1 审计接口**：`ProjectStore.recordAudit/listAudit`（Memory/PG 双实现，PG 表 `audit_events`：TEXT 时间戳＋`refs` JSON 文本，对齐 pg-mem 先例）；`kind` 联合扩 `"file"`（17 处行为位分类见下）。
 > - **T2 FileStore（`.artemis/ledger/`）**：`state.json`（原子 tmp+rename 快照，**写侧剥离 `apiKey`/`figmaToken`**）＋`usage.jsonl`/`audit.jsonl`（追加＋保留裁剪：usage 沿既有策略、audit **90 天/5 万条**；裁剪重写走原子写并先与磁盘并集）＋`journal.jsonl`（写操作取证行，**不承诺回放**）＋home `registry.jsonl`（跨进程项目索引）。**合并写**：每次读取/写前重读磁盘并合并——**同 id 冲突磁盘胜**（本地仅保留未落盘的少数记录），真并发窗口＝同步与落盘之间（毫秒级）；跨写者存活性与"更新不被陈旧写者回滚"均有测试锁定。运行期写失败经 `FileStore.writeErrors()` 暴露（`aos_status` 可见）。
-> - **T3 装配与自愈**：`createProjectStore` ＝ **PG → 文件台账 → 会话内存（仅最后兜底，`degraded=true`）**；PG 故障期 reason 明示"历史不自动回流"。**凭证回落**：`withEnvKeyFallback`（store 条目 key 为空时按 provider 约定→`AOS_LLM_API_KEY`/`DEEPSEEK_API_KEY`/`OPENAI_API_KEY` 从项目 `.env`/进程 env 回填；面板可用性判定同式）。**用例集自愈**：`.artemis/design/case-sets/*.json` 首载幂等登记（按 jsonPath；≤200 份，超出记 `registry/hydrate.capped` 交由 `suite backfill`）；登记前确保项目已注册。
+> - **T3 装配与自愈**：`createProjectStore` ＝ **PG → 文件台账 → 会话内存（仅最后兜底，`degraded=true`）**；PG 故障期 reason 明示"历史不自动回流"。**凭证回落**：`withEnvKeyFallback`（store 条目 key 为空时按 provider 约定→`AOS_LLM_API_KEY`/`DEEPSEEK_API_KEY`/`OPENAI_API_KEY` 从项目 `.env`/进程 env 回填；面板可用性判定同式）。**用例集自愈**：`.artemis/design/case-sets/*.json` 首载幂等登记（按 jsonPath；≤200 份，超出记 `registry/hydrate.capped` 交由 `suite backfill`）；登记前确保项目已注册；屏集取归档 `features[0].screens`（缺省回退用例覆盖并集；2026-10-19 修订见 §13.131）。
 > - **守卫再决策**：runner 仍 **PG-only**（文案改"文件台账不支持多进程"）；`suite backfill` **放行 file、仅拒 memory**；`project-archive` 仅对 memory 判降级。
 > - **面板解析**：`resolveProjectKey` 改为**工作区优先**（byPath → 工作区绝对路径 → 工作区名字 → 注册表名字＋存在性守卫）——持久注册表下防跨工作区串台（http 面板深探回归实证）。
 > - 测试新增 16（`db-audit` 3、`db-file` 9、`db-default` 4＋守卫 1＋env 回落 2 −重复）；全量 **1551 绿**。
@@ -1835,3 +1835,21 @@ llm_switch(name, force):
 - **测试**：`test/pen-vision.test.js` +6（`AOS_VISION_MAX_SCREENS=0`/`all` 解除上限；默认 50 放行 23 屏、仍截断 60 屏并告警；auto-layout 屏用 PNG 尺寸且 bbox 按渲染尺寸换算、grounding 命中设计节点；无几何无渲染的屏出 `vision-screen-no-geometry`；全屏皆无几何时跳过原因仍带该警告）；`test/design-screens.test.js` +1（`pngDimensions` 边界）。全量 **1650 绿**；lint 0（2 条既有 warning 与本次无关）。
 - **真实验证**：starbuckstw 23 屏 `screensRequested/Processed` 均为 23（改前 4），无 `vision-screen-cap`、无 `vision-screen-no-geometry`。
 - **边界**：无数字几何的子节点仍不参与 bbox→nodeId grounding（元素与探索边照常产出，`nodeId` 缺省）；成本随屏数线性上升，全量识别前应确认 active 模型的图片计费口径。
+
+### 13.131 实施记录（功能身份：碰撞消歧＋重复身份去重＋屏集口径修正）
+
+> 实施于 2026-10-19。真实复盘（starbuckstw）：`到店自取` 在 ledger 中出现两次（**同一 key**、各 30 条）、`到店自取-2` 与 `到店自取` 三件套**字节相同**、`再次訂購/結帳流程/選擇取餐時間` 等 0 用例、每次生成重复落盘。根因链（逐层复现，非猜测）：
+
+- **① 自愈/回填屏集放大**：`hydrate` 与 `suite backfill` 登记功能屏集时取「用例覆盖过的屏幕并集」（`collectScreens(flows)`/`uniqueScreens(flows)`），而归档 `features[0].screens` 才是功能组屏集。starbuckstw 的 genesis 功能真实 6 屏被登记成 23 屏 → 与所有组假重叠 1.0。
+- **② 假重叠 → 抢注 → 新建键碰撞**：`applyIdentity` 比例继承下，首个组（4 屏 cluster）借假重叠抢走 genesis key `K`；被 `assigned` 挡下的另一 `到店自取` 组（6 屏、name-prefix）走新建路径，而 `f-<slug>-<sha8(排序屏幕)>` 恰好重算回同一个 `K`——同一调用内两组同 key，`cases.filter(feature===key)` 对两组返回同一子集 → 三件套字节相同（`-2`）、ledger 双登记、身份复用失效。
+- **③ 历史键抖动**：被挡组每轮用「当前 LLM 命名 + 屏集哈希」重算 key（命名方差 → key 变）；且自身历史多键与假重叠项并列最高 → 永远判「新」，无法复用。
+
+修复：
+
+- **`applyIdentity` 碰撞消歧**：新建 key 与本次已产出 key 相同时确定性递增 `-2`/`-3`…，出 `feature-identity-collision` 告警（不变量：同一调用内各组 key 唯一）。
+- **`applyIdentity` 重复身份去重**：prior 中屏集与组完全相同的条目优先继承——取最近一份（prior 新→旧）且未被占用者；无精确匹配/全被占用才回退比例继承（唯一最高 ≥0.5），再回退新建。「并列最高但屏集不同」（真歧义）仍不合并、新 key + `feature-identity-new`。
+- **屏集口径**：`hydrate`/`backfill` 登记屏集优先取归档 `features[0].screens`（字符串去重），缺省才回退用例覆盖并集。
+- **测试**：`test/figma-features.test.js` 替换 1＋新增 2（同屏集并列继承最近一份；屏集不同并列仍新 key；碰撞消歧 `-2`、同调用 key 唯一）、`test/db-default.test.js` hydrate 增屏集优先/回退断言、`test/suite-backfill.test.js` +1；全量 **1653 绿**；lint 0 error（2 条既有 warning）。
+- **真实验证（starbuckstw，修复构建 stdio 重跑）**：vision `23/23` 屏（360 元素/215 导航边/0 失败，无 cap/no-geometry 告警）；`到店自取` 双组键分为 `f-到店自取-06f2c8a0` 与 `f-到店自取-06f2c8a0-2`（带 `feature-identity-collision`）、`行動點餐首頁` 组继承其最近历史键；case-set 仅 1 份（50 用例），不再有字节相同的 `-2` 双份；用真实 ledger 回放模拟下一轮，六组键完全稳定（同键复用）。
+- **边界**：既有 ledger 历史记录（含 genesis 23 屏）不回写——`-2` 键自本轮起稳定，`K` 名义屏集与 slug 归属的历史差异可见但无害。用例→功能归属仍按「屏幕多数归属」：全应用级长路径（平均 19 屏）下最大功能组恒胜，`再次訂購/結帳流程` 等 0 用例属分配口径现状（非身份缺陷；按功能生成/归属另立）。
+

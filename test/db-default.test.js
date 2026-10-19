@@ -99,20 +99,32 @@ test("hydrate: case-set archive self-heals idempotently (file ledger)", async ()
     JSON.stringify({ source: "figma", features: [{ key: "login", name: "登录" }], flows: [{ screen: "S1" }, { screen: "S2" }] }),
     "utf8"
   );
+  await writeFile(
+    join(setsDir, "20261018_order.json"),
+    JSON.stringify({
+      source: "figma",
+      features: [{ key: "order", name: "下单", screens: ["Cart", "Pay"] }],
+      flows: [{ screens: ["Cart", "Pay", "Extra"] }]
+    }),
+    "utf8"
+  );
   await writeFile(join(setsDir, "20261018_bad.json"), "{not json", "utf8");
   try {
     await withEnv({ MOBILE_TESTING_DATABASE_URL: "", AOS_LEDGER_DIR: home }, async () => {
       let result = await createProjectStore();
       const sets = await result.store.listCaseSets(root);
-      assert.equal(sets.length, 1);
-      assert.equal(sets[0].features[0].key, "login");
-      assert.equal(sets[0].features[0].caseCount, 2);
+      assert.equal(sets.length, 2);
+      const login = sets.find((set) => set.features[0].key === "login");
+      const order = sets.find((set) => set.features[0].key === "order");
+      assert.equal(login.features[0].caseCount, 2);
+      assert.deepEqual(login.features[0].screens, ["S1", "S2"], "无 features[0].screens 时回退 flows 并集");
+      assert.deepEqual(order.features[0].screens, ["Cart", "Pay"], "优先归档 features[0].screens，不被用例覆盖放大");
       const audit = await result.store.listAudit(root, { domain: "registry" });
       assert.ok(audit.some((event) => event.action === "hydrate.registered"));
       await result.store.close();
 
       result = await createProjectStore();
-      assert.equal((await result.store.listCaseSets(root)).length, 1);
+      assert.equal((await result.store.listCaseSets(root)).length, 2);
       await result.store.close();
     });
   } finally {

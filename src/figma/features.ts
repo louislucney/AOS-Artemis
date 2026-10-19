@@ -253,8 +253,21 @@ function overlapRatio(screens: string[], priorScreens: string[]): number {
   return denominator === 0 ? 0 : shared / denominator;
 }
 
-/** 身份继承：重叠率（|交集|/min）唯一最高且 ≥0.5 → 继承旧 key/name（名称冻结）；
- * 并列最高 / 低于阈值 / prior 已被占用 → 新 key + `feature-identity-new` 告警。 */
+function sameScreenSet(a: string[], b: string[]): boolean {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size !== setB.size) return false;
+  for (const screen of setA) {
+    if (!setB.has(screen)) return false;
+  }
+  return true;
+}
+
+/** 身份继承：① 屏集完全相同的 prior（历史重复身份）取最近一份未占用者；
+ * ② 否则重叠率（|交集|/min）唯一最高且 ≥0.5 → 继承旧 key/name（名称冻结）；
+ * ③ 并列最高（屏集不同，真歧义）/ 低于阈值 / prior 已被占用 → 新 key（与本次
+ * 已产出 key 碰撞时确定性加 `-2`/`-3`… 消歧，保证同调用内 key 唯一）；
+ * 全部走 `feature-identity-*` 告警。prior 约定新→旧排序。 */
 export function applyIdentity(
   groups: FeatureGroup[],
   prior: PriorFeature[]
@@ -263,6 +276,14 @@ export function applyIdentity(
   const assigned = new Set<string>();
   const result: FeatureGroup[] = [];
   for (const group of groups) {
+    const exact = prior.find(
+      (feature) => !assigned.has(feature.key) && sameScreenSet(group.screens, feature.screens)
+    );
+    if (exact) {
+      assigned.add(exact.key);
+      result.push({ ...group, key: exact.key, name: exact.name });
+      continue;
+    }
     const byKey = new Map<string, { feature: PriorFeature; ratio: number }>();
     for (const feature of prior) {
       const ratio = overlapRatio(group.screens, feature.screens);
@@ -284,12 +305,25 @@ export function applyIdentity(
       .update([...group.screens].sort(compareText).join("|"))
       .digest("hex")
       .slice(0, 8);
-    const key = `f-${slugify(group.name)}-${digest}`;
+    const base = `f-${slugify(group.name)}-${digest}`;
+    let key = base;
+    let suffix = 2;
+    while (result.some((entry) => entry.key === key)) {
+      key = `${base}-${suffix}`;
+      suffix += 1;
+    }
     result.push({ ...group, key });
-    warnings.push({
-      code: "feature-identity-new",
-      message: `功能身份新建：${group.name}（${group.screens.length} 屏）→ ${key}`
-    });
+    if (key === base) {
+      warnings.push({
+        code: "feature-identity-new",
+        message: `功能身份新建：${group.name}（${group.screens.length} 屏）→ ${key}`
+      });
+    } else {
+      warnings.push({
+        code: "feature-identity-collision",
+        message: `功能身份碰撞：${group.name}（${group.screens.length} 屏）→ ${base} 已被占用，改用 ${key}`
+      });
+    }
   }
   return { groups: result, warnings };
 }

@@ -141,7 +141,7 @@ export async function runBackfill(
 
     const flows = Array.isArray(record.flows) ? record.flows : [];
     const caseCount = Array.isArray(record.flows) ? record.flows.length : countOf(record.counts);
-    const screens = [...uniqueScreens(flows)];
+    const screens = first.screens.length > 0 ? [...first.screens] : [...uniqueScreens(flows)];
     const feature: CaseSetFeatureRecord = {
       key: first.key,
       name: first.name,
@@ -325,14 +325,19 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function firstFeature(record: Record<string, unknown>): { key: string; name: string } | null {
+function firstFeature(record: Record<string, unknown>): { key: string; name: string; screens: string[] } | null {
   const features = Array.isArray(record.features) ? record.features : [];
   const first = features[0];
   if (!first || typeof first !== "object" || Array.isArray(first)) return null;
   const feature = first as Record<string, unknown>;
   if (typeof feature.key !== "string" || feature.key === "") return null;
   if (typeof feature.name !== "string" || feature.name === "") return null;
-  return { key: feature.key, name: feature.name };
+  const screens = new Set<string>();
+  const raw = Array.isArray(feature.screens) ? feature.screens : [];
+  for (const screen of raw) {
+    if (typeof screen === "string" && screen !== "") screens.add(screen);
+  }
+  return { key: feature.key, name: feature.name, screens: [...screens] };
 }
 
 function countOf(counts: unknown): number {

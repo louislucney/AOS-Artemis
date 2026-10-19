@@ -162,17 +162,45 @@ test("applyIdentity: 无匹配生成新 key 并告警", () => {
   assert.equal(result.warnings[0].code, "feature-identity-new");
 });
 
-test("applyIdentity: 并列最高不合并（新 key）", () => {
+test("applyIdentity: 屏幕集完全相同并列 → 继承最近一份（重复身份去重）", () => {
   const result = applyIdentity(
     [namedGroup("流程A", ["甲", "乙"])],
     [
-      { key: "f-a-11111111", name: "甲组", screens: ["甲", "乙"] },
-      { key: "f-b-22222222", name: "乙组", screens: ["甲", "乙"] }
+      { key: "f-a-22222222", name: "甲组（新）", screens: ["甲", "乙"] },
+      { key: "f-a-11111111", name: "甲组（旧）", screens: ["甲", "乙"] }
+    ]
+  );
+  assert.equal(result.groups[0].key, "f-a-22222222");
+  assert.equal(result.groups[0].name, "甲组（新）");
+  assert.equal(result.warnings.length, 0);
+});
+
+test("applyIdentity: 并列最高且屏集不同 → 不合并（新 key）", () => {
+  const result = applyIdentity(
+    [namedGroup("流程A", ["甲", "乙"])],
+    [
+      { key: "f-a-11111111", name: "甲组", screens: ["甲", "乙", "丙"] },
+      { key: "f-b-22222222", name: "乙组", screens: ["甲", "乙", "丁"] }
     ]
   );
   assert.notEqual(result.groups[0].key, "f-a-11111111");
   assert.notEqual(result.groups[0].key, "f-b-22222222");
   assert.equal(result.warnings[0].code, "feature-identity-new");
+});
+
+test("applyIdentity: 新建 key 与已继承 key 碰撞 → 确定性消歧（同调用内 key 唯一）", () => {
+  const cartScreens = ["首頁", "到店自取_MOP", "取餐方法", "單品頁", "選擇門市, 取餐時間", "到店自取 內用點餐 車道取餐"];
+  const seeded = applyIdentity([namedGroup("到店自取", cartScreens)], []);
+  const base = seeded.groups[0].key;
+  assert.match(base, /^f-到店自取-[0-9a-f]{8}$/);
+  const result = applyIdentity(
+    [namedGroup("到店自取", ["Homepage", "店外取餐", "早安, Casey", "訂單狀態"]), namedGroup("到店自取", cartScreens)],
+    [{ key: base, name: "到店自取", screens: [...cartScreens, "Homepage", "店外取餐", "早安, Casey", "訂單狀態"] }]
+  );
+  assert.equal(result.groups[0].key, base);
+  assert.equal(result.groups[1].key, `${base}-2`);
+  assert.notEqual(result.groups[0].key, result.groups[1].key);
+  assert.ok(result.warnings.some((warning) => warning.code === "feature-identity-collision"));
 });
 
 test("applyIdentity: 同一 prior 不被两组重复继承", () => {

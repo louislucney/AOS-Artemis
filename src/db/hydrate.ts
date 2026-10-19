@@ -50,12 +50,13 @@ export async function hydrateProjectLedger(store: ProjectStore, rootPath: string
       const featureName = typeof first?.name === "string" ? first.name : "";
       if (key === "" || featureName === "") continue;
       const flows = Array.isArray(parsed.flows) ? (parsed.flows as Array<Record<string, unknown>>) : [];
+      const declared = declaredScreens(first);
       const info = await stat(jsonPath);
       const feature: CaseSetFeatureRecord = {
         key,
         name: featureName,
         caseCount: flows.length,
-        screens: collectScreens(flows),
+        screens: declared.length > 0 ? declared : collectScreens(flows),
         jsonPath,
         mdPath: jsonPath.replace(/\.json$/, ".md"),
         xlsxPath: jsonPath.replace(/\.json$/, ".xlsx")
@@ -85,6 +86,17 @@ export async function hydrateProjectLedger(store: ProjectStore, rootPath: string
     });
   }
   return registered;
+}
+
+/** 归档 features[0].screens（功能组屏集）优先；缺省回退用例覆盖屏并集。 */
+function declaredScreens(first: Record<string, unknown> | undefined): string[] {
+  const raw = first?.screens;
+  if (!Array.isArray(raw)) return [];
+  const screens = new Set<string>();
+  for (const screen of raw) {
+    if (typeof screen === "string" && screen !== "") screens.add(screen);
+  }
+  return [...screens];
 }
 
 function collectScreens(flows: Array<Record<string, unknown>>): string[] {
