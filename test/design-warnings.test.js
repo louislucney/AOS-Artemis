@@ -124,11 +124,14 @@ test("resolveDesignWarnings: tests 早于 flows 时 stale=true", () => {
     assert.equal(freshFlows.source, "flows");
     assert.equal(freshFlows.stale, false);
 
-    const now = new Date();
-    fs.utimesSync(flowsPath, now, now);
+    const base = Date.now();
+    const flowsTime = new Date(base + 60_000);
+    const testsTime = new Date(base + 120_000);
+    fs.utimesSync(flowsPath, flowsTime, flowsTime);
+    fs.utimesSync(testsPath, testsTime, testsTime);
     const fresh = resolveDesignWarnings(dir);
     assert.equal(fresh.source, "tests");
-    assert.equal(fresh.stale, false);
+    assert.equal(fresh.stale, false, "tests 快照晚于 flows 时不算陈旧");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -160,7 +163,8 @@ test("mergeWarnings: code+message 去重、稳定序、bySource 计数", () => {
   assert.deepEqual(merged.bySource, { flows: 2, tests: 2 });
   assert.equal(
     Object.values(merged.bySource).reduce((total, count) => total + count, 0),
-    merged.warnings.length
+    merged.warnings.length,
+    "bySource 各来源计数之和应等于去重后总数"
   );
 
   const empty = mergeWarnings([{ source: "flows", warnings: [] }, { source: "tests", warnings: [] }]);

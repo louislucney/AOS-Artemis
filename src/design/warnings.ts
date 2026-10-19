@@ -100,7 +100,7 @@ export function readTestsWarnings(
   return { warnings, snapshotAt, available };
 }
 
-/** 按 `code + "\0" + message` 去重并保留首次出现顺序；`bySource` 计首见归属的唯一条数。 */
+/** 按 `code + "\0" + message` 去重并保留首次出现顺序；`bySource` 将每条唯一警告记给首个贡献来源，各值之和等于 `warnings.length`。 */
 export function mergeWarnings(
   inputs: Array<{ warnings: DesignWarning[]; source: string }>
 ): MergedWarnings {
