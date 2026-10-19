@@ -7,6 +7,7 @@ import { parseQuarantine } from "../figma/quarantine.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cCard, cEmpty, cTable } from "./components.js";
 import { relativeTime } from "./time.js";
+import { artifactKindLabel, auditActionHtml, auditDomainHtml, sourceHtml } from "./vocab.js";
 import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
 
 export interface LibraryPageData {
@@ -41,7 +42,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
     : "";
   const rows = data.sets.map((set) => [
     `<code>${escapeHtml(set.basename)}</code>`,
-    escapeHtml(set.source),
+    sourceHtml(set.source),
     relativeTime(set.createdAt),
     String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
     set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
@@ -63,8 +64,8 @@ export function renderLibraryPage(data: LibraryPageData): string {
       ` ${cBadge({ label: `无效 ${quarantine.invalid}`, tone: quarantine.invalid > 0 ? "error" : "neutral" })}</p>`,
     quarantineEntries,
     `<form id="quarantine-form" data-project="${escapeHtml(data.rootPath)}"><p><label>用例 ID <input type="text" name="caseId" aria-label="用例 ID"${disabledAttr}></label> ` +
-      `<label>签字 owner <input type="text" name="owner" aria-label="签字 owner"${disabledAttr}></label> ` +
-      `<label>到期（可选 ISO） <input type="text" name="until" aria-label="到期时间（ISO）" size="22" placeholder="2026-12-31T00:00:00Z"${disabledAttr}></label> ` +
+      `<label>签字人 <input type="text" name="owner" aria-label="签字人（owner）"${disabledAttr}></label> ` +
+      `<label>到期时间（可选，ISO） <input type="text" name="until" aria-label="到期时间（ISO）" size="22" placeholder="2026-12-31T00:00:00Z"${disabledAttr}></label> ` +
       `<button class="c-button" type="submit"${disabledAttr}>加入隔离</button> <span id="quarantine-status" role="status" class="muted"></span></p></form>`,
     actionsReason
   ].join("\n");
@@ -126,7 +127,7 @@ export function renderArchivePage(data: ArchivePageData): string {
       ? `<code>${escapeHtml(record.path)}</code>`
       : `<a href="${escapeHtml(artifactUrl(record))}" target="_blank" rel="noreferrer"><code>${escapeHtml(record.path)}</code></a>`;
     return [
-      cBadge({ label: record.kind, tone: "neutral" }),
+      cBadge({ label: artifactKindLabel(record.kind), tone: "neutral" }),
       `${thumb}<code>${escapeHtml(record.title)}</code>`,
       location,
       relativeTime(record.at),
@@ -190,7 +191,7 @@ export function renderArchivePage(data: ArchivePageData): string {
           `<p>类型 <select name="kind" aria-label="产物类型"><option value="">全部</option>${["run", "case-set", "report", "diff", "crash", "trace"]
             .map(
               (kind) =>
-                `<option value="${kind}"${data.query.kind === kind ? " selected" : ""}>${kind}</option>`
+                `<option value="${kind}"${data.query.kind === kind ? " selected" : ""}>${artifactKindLabel(kind)}</option>`
             )
             .join("")}</select> 关键词 <input type="text" name="q" aria-label="产物关键词" value="${q("q")}" placeholder="文件名/路径"> 起自 <input type="text" name="since" aria-label="起始时间（ISO）" value="${q("since")}" size="20" placeholder="ISO 时间"> <button class="c-button" type="submit">筛选</button></p>`,
           `<p>时间预设：${preset("近 24 小时", 24)} ${preset("近 7 天", 168)} ${preset("近 30 天", 720)} <a class="c-button" href="${csvHref}">导出索引 CSV</a></p>`,
@@ -201,7 +202,7 @@ export function renderArchivePage(data: ArchivePageData): string {
         title: "产物索引",
         subtitle: `第 ${
           Math.floor(data.page.offset / data.page.pageSize) + 1
-        } 页 · 本页 ${data.artifacts.length} 项 · 每页 ${data.page.pageSize} 项 · 与保留期同源（六族浅扫）`,
+        } 页 · 本页 ${data.artifacts.length} 项 · 每页 ${data.page.pageSize} 项 · 与保留期同源（六类浅扫：批次/用例集/报告/差异/崩溃/轨迹）`,
         body: [
           cTable({
             columns: ["类型", "名称", "路径", "时间", "大小"],
@@ -230,8 +231,8 @@ export function renderAuditPage(data: AuditPageData): string {
     result === "ok" ? "成功" : result === "failed" ? "失败" : result === "skipped" ? "跳过" : result;
   const rows = data.events.map((event) => [
     relativeTime(event.at),
-    escapeHtml(event.domain),
-    escapeHtml(event.action),
+    auditDomainHtml(event.domain),
+    auditActionHtml(event.action),
     cBadge({
       label: auditResultLabel(event.result),
       tone: event.result === "ok" ? "success" : event.result === "failed" ? "error" : "warning"

@@ -62,12 +62,13 @@ test("console pages: 用例库（份列表＋隔离徽章）", async () => {
   assert.match(html.body, /aosInlineConfirm\(b,'确认移除该隔离条目？'/, "隔离移除走站内确认");
   assert.doesNotMatch(html.body, /[^a-zA-Z_.]confirm\(/, "无原生 confirm 残留");
   assert.match(html.body, /c-table-wrap/, "表格横向滚动容器（窄屏不整页溢出）");
+  assert.match(html.body, /<span title="figma:x">Figma 生成（x）<\/span>/, "来源中文化（title 原文）");
   assert.match(html.body, /下发该份/, "份行内动作");
   assert.match(html.body, /section=dispatch&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");
   assert.match(html.body, /id="import-form"/, "Excel 上传表单");
   assert.match(html.body, /panel\/api\/import/);
   assert.match(html.body, /id="quarantine-form"/, "隔离表单");
-  assert.match(html.body, /aria-label="签字 owner"/);
+  assert.match(html.body, /aria-label="签字人（owner）"/);
 
   const json = JSON.parse((await handlePanelRequest(new URL(url(rootPath, "library").toString().replace("/panel?", "/panel.json?")), deps)).body);
   assert.equal(json.view, "library");
@@ -81,6 +82,8 @@ test("console pages: 档案（索引＋kind 筛选）", async () => {
   assert.match(all.body, /产物索引/);
   assert.match(all.body, /20261018_a\.json/);
   assert.match(all.body, /\/panel\/artifact\?project=/, "产物行可点（只读服务）");
+  assert.match(all.body, /<option value="case-set"[^>]*>用例集<\/option>/, "类型筛选中文化");
+  assert.match(all.body, /批次<\/span>/, "kind 徽章中文化（run→批次）");
   assert.match(all.body, /时间预设/, "档案时间预设");
   assert.match(all.body, /format=csv/, "索引导出 CSV 链接");
 
@@ -147,6 +150,8 @@ test("console pages: 审计（domain 筛选＋结果徽章）", async () => {
   assert.match(all.body, /批次登记/);
   assert.match(all.body, /action.tasks/);
   assert.match(all.body, /<time datetime="2026-10-18T01:00:00\.000Z"/, "审计时间相对化（title 绝对）");
+  assert.match(all.body, /<span title="action\.tasks">派发回归任务<\/span>/, "动作中文化（title 原文）");
+  assert.match(all.body, /<span title="panel">控制台操作<\/span>/, "域中文化（title 原文）");
 
   const suiteOnly = await handlePanelRequest(url(rootPath, "audit", { domain: "suite" }), deps);
   assert.match(suiteOnly.body, /批次登记/);

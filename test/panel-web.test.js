@@ -1213,7 +1213,11 @@ test("panel web: 定时回归区块 + 任务页来源显示", async () => {
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${task.id}`),
     deps
   );
-  assert.match(taskHtml.body, /来源 <code>schedule:夜间回归<\/code>/);
+  assert.match(
+    taskHtml.body,
+    /来源 <span title="schedule:夜间回归">定时计划（夜间回归）<\/span>/,
+    "任务来源中文化（title 保留原文）"
+  );
   assert.match(taskHtml.body, /待执行/);
 
   const clean = await makeHarness();

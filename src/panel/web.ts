@@ -28,6 +28,7 @@ import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
 import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
 import { cBadge, cCard, cEmpty, cStat, cTable } from "../console/components.js";
 import { relativeTime } from "../console/time.js";
+import { sourceHtml, verdictLabel } from "../console/vocab.js";
 import { storeKindLabel } from "../db/labels.js";
 import {
   buildPanelBatchDetail,
@@ -803,7 +804,7 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
   const rows = detail.batches.map((batch: PanelBatchRow) => [
     relativeTime(batch.startedAt),
     relativeTime(batch.finishedAt),
-    escapeHtml(batch.source ?? "—"),
+    sourceHtml(batch.source),
     batchGateCell(batch.gate, batch.summary),
     batch.summary === null
       ? "—"
@@ -1309,7 +1310,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
-      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 <code>${escapeHtml(task.createdBy)}</code>`}</p>`,
+      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
         const actionsOff = currentShell.capabilities?.actions === false;
@@ -1658,7 +1659,10 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
       .map(([domain, count]) => `<span class="chip">${escapeHtml(domain)} × ${count}</span>`)
       .join(" ") || "—",
     Object.entries(feature.verdicts)
-      .map(([verdict, count]) => `<span class="chip">${escapeHtml(verdict)} × ${count}</span>`)
+      .map(
+        ([verdict, count]) =>
+          `<span class="chip" title="${escapeHtml(verdict)}">${escapeHtml(verdictLabel(verdict))} × ${count}</span>`
+      )
       .join(" ") || "—"
   ]);
   const caseRows = stats.unstableCases.map((entry) => [
@@ -2044,10 +2048,10 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
 function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): string {
   const { detail } = view;
   const meta = [
-    `来源 ${escapeHtml(detail.source ?? "—")}`,
+    `来源 ${sourceHtml(detail.source)}`,
     `开始 ${escapeHtml(detail.startedAt ?? "—")}`,
     `结束 ${escapeHtml(detail.finishedAt ?? "—")}`,
-    detail.taxonomyVersion === null ? "分类口径 —" : `分类口径 v${detail.taxonomyVersion}`
+    detail.taxonomyVersion === null ? "失败域口径 —" : `失败域口径 v${detail.taxonomyVersion}`
   ].join(" · ");
 
   if (detail.read !== "ok") {

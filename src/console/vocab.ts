@@ -1,0 +1,116 @@
+import { escapeHtml } from "../util.js";
+
+/** 机器语汇→用户语汇映射：中文展示＋title 保留原文（可追溯、可复制给 Jira/日报）。 */
+
+const SOURCE_TOKENS: Record<string, string> = {
+  "suite-run": "套件运行",
+  "suite-task": "回归任务",
+  "excel-import": "Excel 导入",
+  cli: "CLI",
+  panel: "控制台",
+  schedule: "定时计划",
+  runner: "执行机"
+};
+
+const SOURCE_PREFIX: Record<string, string> = {
+  figma: "Figma 生成",
+  pen: "pen.dev 生成",
+  excel: "Excel 导入",
+  schedule: "定时计划"
+};
+
+function sourceLabelText(raw: string): string {
+  const token = SOURCE_TOKENS[raw];
+  if (token !== undefined) return token;
+  const idx = raw.indexOf(":");
+  if (idx > 0) {
+    const prefix = SOURCE_PREFIX[raw.slice(0, idx)];
+    if (prefix !== undefined) {
+      const rest = raw.slice(idx + 1).trim();
+      return rest === "" ? prefix : `${prefix}（${rest}）`;
+    }
+  }
+  return raw;
+}
+
+/** 来源（用例集 source / 批次 source / 任务 createdBy）：中文＋title 原文。 */
+export function sourceHtml(source: string | null | undefined): string {
+  if (source === null || source === undefined || source === "") return "—";
+  return `<span title="${escapeHtml(source)}">${escapeHtml(sourceLabelText(source))}</span>`;
+}
+
+const AUDIT_DOMAINS: Record<string, string> = {
+  panel: "控制台操作",
+  suite: "回归运行",
+  issues: "建单",
+  usage: "使用统计",
+  verdict: "裁决",
+  import: "导入",
+  export: "导出",
+  schedule: "定时计划",
+  runner: "执行机",
+  crash: "崩溃取证",
+  reconcile: "对账"
+};
+
+const AUDIT_ACTIONS: Record<string, string> = {
+  "action.tasks": "派发回归任务",
+  "action.release": "释放回队列",
+  "action.stop": "停止执行",
+  "action.rerun": "重新派发",
+  "action.verdicts": "提交裁决",
+  "action.issues": "建单",
+  "action.schedules": "计划变更",
+  "action.quarantine": "隔离变更",
+  "action.export": "导出记录",
+  "action.import": "导入用例文档",
+  "action.error": "动作异常",
+  "run.recorded": "批次登记",
+  linked: "回写单号",
+  "verdict.saved": "裁决写入",
+  "quarantine.add": "加入隔离",
+  "quarantine.remove": "移除隔离"
+};
+
+function mappedHtml(value: string, map: Record<string, string>): string {
+  const label = map[value];
+  if (label === undefined) return escapeHtml(value);
+  return `<span title="${escapeHtml(value)}">${escapeHtml(label)}</span>`;
+}
+
+export function auditDomainHtml(domain: string): string {
+  return mappedHtml(domain, AUDIT_DOMAINS);
+}
+
+export function auditActionHtml(action: string): string {
+  const label = AUDIT_ACTIONS[action];
+  if (label !== undefined) return `<span title="${escapeHtml(action)}">${escapeHtml(label)}</span>`;
+  if (action.startsWith("action.")) {
+    return `<span title="${escapeHtml(action)}">控制台动作（${escapeHtml(action.slice("action.".length))}）</span>`;
+  }
+  return escapeHtml(action);
+}
+
+const ARTIFACT_KINDS: Record<string, string> = {
+  run: "批次",
+  "case-set": "用例集",
+  report: "报告",
+  diff: "差异",
+  crash: "崩溃",
+  trace: "轨迹"
+};
+
+export function artifactKindLabel(kind: string): string {
+  return ARTIFACT_KINDS[kind] ?? kind;
+}
+
+const VERDICT_LABELS: Record<string, string> = {
+  "case-defect": "案例问题",
+  "execution-deviation": "执行偏差",
+  "app-defect": "应用缺陷",
+  uncertain: "不确定"
+};
+
+export function verdictLabel(verdict: string): string {
+  return VERDICT_LABELS[verdict] ?? verdict;
+}
