@@ -33,10 +33,10 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
         .number()
         .int()
         .positive()
-        .max(50)
+        .max(1000)
         .optional()
         .describe(
-          "生成用例条数上限（透传 figma_generate_tests，默认 10；vision 全量探索路径多时可调大以避免覆盖闸「路径截断」）"
+          "生成用例条数上限（透传 figma_generate_tests，默认 10，上限 1000；vision 全量探索路径多时可调大以避免覆盖闸「路径截断」）"
         ),
       maxDepth: z
         .number()

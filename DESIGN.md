@@ -1822,7 +1822,7 @@ llm_switch(name, force):
 - **测试**：编排透传 +2（显式键原样传给 generate；只给 `maxFlows` 时不出现 `maxDepth` 键）；`native-workflow-tool` schema 用例扩展（暴露两字段；`maxFlows:0/51`、`maxDepth:2.5` 拒绝；`{maxFlows:50,maxDepth:12}` 合法形态放行）。全量 **1641 绿**；lint 0（2 条既有 warning 与本次无关）。
 - **配套（脚本层）**：`scripts/aos-call.mjs` 增加每请求超时 `AOS_CALL_TIMEOUT_MS`（毫秒，默认 600000；上限 clamp 至 2^31−1，防 Node 定时器溢出；此前受 MCP SDK 默认 60 s 约束，长任务直跑会被截断）＋启动行 stderr 提示；README（`design_to_test` 参数）/AGENTS.md 与 docs/接入指南.md（`AOS_CALL_TIMEOUT_MS`）同步。
 - **评审修正（提交 9ee4b8c）**：`nextAction` 同步携带显式 `maxFlows`/`maxDepth`（否则 run:false 的续跑第二步回到默认 10、再次截断——评审发现的真实缺陷）；`CHECK_SUGGESTION` 补「路径截断可加大 maxFlows/maxDepth 重试」；zod/透传测试对称补强（`maxDepth:0/51`、`maxFlows:2.5` 拒绝；仅 maxDepth 透传 + nextAction 断言）；`maxDepth` 描述对齐 `figma_generate_tests`（边数/续段拆分）。全量 **1642 绿**；lint 0。
-- **边界**：默认值（10/30）与覆盖率口径、三闸判定均不变——「截断即 fail-closed」语义保留，只是入口可调参；`figma_generate_tests` 直调路径不受影响。
+- **边界**：默认值（10/30）与覆盖率口径、三闸判定均不变——「截断即 fail-closed」语义保留，只是入口可调参；`figma_generate_tests` 直调路径不受影响。（2026-10-19 修订：`maxFlows` 上限 50 → 1000，见 §13.132。）
 
 ### 13.130 实施记录（pen 视觉识别全量屏：几何兜底 + 上限语义）
 
@@ -1852,4 +1852,12 @@ llm_switch(name, force):
 - **测试**：`test/figma-features.test.js` 替换 1＋新增 2（同屏集并列继承最近一份；屏集不同并列仍新 key；碰撞消歧 `-2`、同调用 key 唯一）、`test/db-default.test.js` hydrate 增屏集优先/回退断言、`test/suite-backfill.test.js` +1；全量 **1653 绿**；lint 0 error（2 条既有 warning）。
 - **真实验证（starbuckstw，修复构建 stdio 重跑）**：vision `23/23` 屏（360 元素/215 导航边/0 失败，无 cap/no-geometry 告警）；`到店自取` 双组键分为 `f-到店自取-06f2c8a0` 与 `f-到店自取-06f2c8a0-2`（带 `feature-identity-collision`）、`行動點餐首頁` 组继承其最近历史键；case-set 仅 1 份（50 用例），不再有字节相同的 `-2` 双份；用真实 ledger 回放模拟下一轮，六组键完全稳定（同键复用）。
 - **边界**：既有 ledger 历史记录（含 genesis 23 屏）不回写——`-2` 键自本轮起稳定，`K` 名义屏集与 slug 归属的历史差异可见但无害。用例→功能归属仍按「屏幕多数归属」：全应用级长路径（平均 19 屏）下最大功能组恒胜，`再次訂購/結帳流程` 等 0 用例属分配口径现状（非身份缺陷；按功能生成/归属另立）。
+
+### 13.132 实施记录（生成上限：`maxFlows` 50 → 1000）
+
+> 实施于 2026-10-19（承接 §13.130/§13.131 的 starbuckstw 全量视觉复盘）。现象：23 屏全量视觉后（237 边，其中 215 条 vision 未决探索边 `to:null`——生成侧口径为「每条保留一次探索用例」），`design_to_test`/`figma_generate_tests` 的 check 报「路径截断」；而 `maxFlows` 已顶到 schema 上限 50。真实图纯函数探测（`linearizeFlowsWithStats`，不落盘不调 LLM）：50/100/200 均截断（探索 207/215 条即被 `maxFlows*4` 探索帽截停），**≥300 全量收敛**（kept=215、dropped=0、`truncated=false`）；`maxDepth` 30 已足够（depthSplits 0）。即「加大上限」的建议因 50 封顶实际不可用——上限本身是唯一堵点。
+
+- **工具与 schema**：`figma_generate_tests` 与 `design_to_test`（透传）两侧 `maxFlows` 上限 50 → **1000**（默认 10 不变；`maxDepth` 上限 50 不变）；描述注明「大体量流程/视觉未决探索边多时可调大以避免覆盖闸『路径截断』」。
+- **测试**：`native-workflow-tool` zod 拒绝点 `maxFlows:51` → `1001`（51 自此合法）、合法形态增 300/1000；新增 `test/native-figma-tool.test.js`（300/1000 通过；1001/0/2.5 拒绝；`maxDepth` 50/51 边界）。全量 **1654 绿**；lint 0 error（2 条既有 warning）。
+- **真实验证（starbuckstw，`reuseExistingFlows` 重生成，不重跑视觉）**：`maxFlows=300` → `explored=kept=215`、`dropped=0`、**check 通过**、`coverage.complete=true`（explore 类亦全绿）；用例分布 行動點餐首頁 73 · 到店自取 142（其余组 0，属归属口径现状，见 §13.131 边界）；case-set 两文件各自独立（500KB / 1.34MB），ledger 键唯一。
 

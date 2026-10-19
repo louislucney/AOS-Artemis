@@ -51,7 +51,13 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
     schema: z.object({
       url: z.string().optional().describe("Figma URL（可选；不传则用 flows.json）"),
       flowsPath: z.string().optional().describe("自定义 flows.json 路径（相对项目根）"),
-      maxFlows: z.number().int().positive().max(50).optional().describe("最多生成条数，默认 10"),
+      maxFlows: z
+        .number()
+        .int()
+        .positive()
+        .max(1000)
+        .optional()
+        .describe("最多生成条数，默认 10；上限 1000（大体量流程/视觉未决探索边多时可调大以避免覆盖闸「路径截断」）"),
       maxDepth: z
         .number()
         .int()
