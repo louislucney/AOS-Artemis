@@ -74,14 +74,30 @@ test("console actions: 释放/停止/重新派发三动作（运行中先停止�
   );
   assert.equal(stopped.status, 200);
   const afterStop = await store.getRegressionTask(rootPath, task.id);
-  assert.equal(afterStop.status, "stopped");
+  assert.equal(afterStop.status, "stopping", "两段停止：先请求（stopping）");
   assert.equal(afterStop.claimedBy, "runner-1", "claimant 历史保留");
+
+  const stopAgain = await handlePanelActionRequest(
+    request("/panel/api/tasks/stop", { project: rootPath, taskId: task.id }),
+    deps
+  );
+  assert.equal(stopAgain.status, 200, "重复停止幂等");
+  assert.equal(JSON.parse(stopAgain.body).status, "stopping");
+
+  const blockedStopRelease = await handlePanelActionRequest(
+    request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
+    deps
+  );
+  assert.equal(blockedStopRelease.status, 409, "停止中不可释放（等待执行机确认）");
+  assert.match(JSON.parse(blockedStopRelease.body).error, /等待执行机确认/);
+
+  await store.updateRegressionTask(rootPath, task.id, { status: "stopped" });
 
   const released = await handlePanelActionRequest(
     request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
     deps
   );
-  assert.equal(released.status, 200, "stopped → pending");
+  assert.equal(released.status, 200, "ack（stopped）→ pending");
   const after = await store.getRegressionTask(rootPath, task.id);
   assert.equal(after.status, "pending");
   assert.equal(after.claimedBy, null);

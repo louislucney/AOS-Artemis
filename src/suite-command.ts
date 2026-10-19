@@ -276,8 +276,8 @@ async function suiteRunTask(
     io.errorLog(`未找到回归任务 ${taskId}`);
     return 2;
   }
-  if (task.status === "stopped") {
-    say("任务已停止：不再执行（等待释放回队列或重新派发）");
+  if (task.status === "stopped" || task.status === "stopping") {
+    say("任务已请求停止：不再执行（等待释放回队列或重新派发）");
     return 2;
   }
   const devices = splitList(flags.list("device"));
@@ -328,8 +328,8 @@ async function suiteRunTask(
   const beforeRun = await runtime.store
     .getRegressionTask(runtime.project.rootDir, task.id)
     .catch(() => null);
-  if (beforeRun?.status === "stopped") {
-    say("任务已停止：不再执行（等待释放回队列或重新派发）");
+  if (beforeRun?.status === "stopped" || beforeRun?.status === "stopping") {
+    say("任务已请求停止：不再执行（等待释放回队列或重新派发）");
     return 2;
   }
 
@@ -483,7 +483,7 @@ async function suiteRunTask(
   const duringRun = await runtime.store
     .getRegressionTask(runtime.project.rootDir, task.id)
     .catch(() => null);
-  const stoppedDuringRun = duringRun?.status === "stopped";
+  const stoppedDuringRun = duringRun?.status === "stopped" || duringRun?.status === "stopping";
   try {
     await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
       ...(stoppedDuringRun ? {} : { status: finalStatus }),

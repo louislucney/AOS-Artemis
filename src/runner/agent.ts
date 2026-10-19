@@ -228,11 +228,20 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         }
         let exitCode: number | null = null;
         let stopRequested = false;
+        let stopAcked = false;
         const stopPoll = setInterval(() => {
           void store
             .getRegressionTask(rootPath, task.id)
-            .then((fresh) => {
-              if (fresh?.status === "stopped") stopRequested = true;
+            .then(async (fresh) => {
+              if (fresh?.status !== "stopping" && fresh?.status !== "stopped") return;
+              stopRequested = true;
+              if (fresh.status === "stopping" && !stopAcked) {
+                stopAcked = true;
+                await store
+                  .updateRegressionTask(rootPath, task.id, { status: "stopped" })
+                  .catch(() => {});
+                io.log(`[runner] 任务 ${task.id} 停止请求已确认（stopping → stopped）`);
+              }
             })
             .catch(() => {});
         }, STOP_POLL_MS);
@@ -246,7 +255,15 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           clearInterval(stopPoll);
         }
         const afterRun = await store.getRegressionTask(rootPath, task.id).catch(() => null);
-        if (afterRun?.status === "stopped") {
+        let afterStatus = afterRun?.status ?? null;
+        if (afterStatus === "stopping") {
+          const acked = await store
+            .updateRegressionTask(rootPath, task.id, { status: "stopped" })
+            .catch(() => false);
+          if (acked) afterStatus = "stopped";
+          io.log(`[runner] 任务 ${task.id} 停止请求已确认（收尾兜底）`);
+        }
+        if (afterStatus === "stopped") {
           io.log(`[runner] 任务 ${task.id} 已停止（面板请求）：保留 stopped，不释放、不重试`);
           if (once) return 0;
           continue;

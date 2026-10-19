@@ -292,7 +292,7 @@ test("面板停止：执行中置 stopped → 不释放/不回写终态，execut
   const { options, logs } = makeOptions(runtime, inv, {
     executeSuite: async (argv, execOptions) => {
       abortType = typeof execOptions?.shouldAbort;
-      await store.updateRegressionTask(rootPath, task.id, { status: "stopped" });
+      await store.updateRegressionTask(rootPath, task.id, { status: "stopping" });
       return 2;
     }
   });
@@ -300,8 +300,9 @@ test("面板停止：执行中置 stopped → 不释放/不回写终态，execut
   assert.equal(code, 0);
   assert.equal(abortType, "function", "注入 shouldAbort（轮询停止请求）");
   const after = await store.getRegressionTask(rootPath, task.id);
-  assert.equal(after.status, "stopped", "保持 stopped：不释放、不重试");
+  assert.equal(after.status, "stopped", "执行机 ack：stopping → stopped（不释放、不重试）");
   assert.ok(logs.some((line) => line.includes("已停止")), "日志如实说明");
+  assert.ok(logs.some((line) => line.includes("停止请求已确认")), "ack 日志");
 });
 
 test("重试上限：永久失败任务达上限置 failed，不再饿死后续任务", async () => {

@@ -444,8 +444,13 @@ async function releaseTask(
   if (taskId === "") return json(400, { error: "缺少 taskId" });
   const task = await deps.store.getRegressionTask(rootPath, taskId);
   if (!task) return json(404, { error: `未知任务 "${taskId}"` });
-  if (task.status === "claimed" || task.status === "running") {
-    return json(409, { error: "任务正在执行：请先「停止执行」，再释放回队列" });
+  if (task.status === "claimed" || task.status === "running" || task.status === "stopping") {
+    return json(409, {
+      error:
+        task.status === "stopping"
+          ? "任务正在停止：等待执行机确认（离线时为下次心跳读取），确认后方可释放"
+          : "任务正在执行：请先「停止执行」，再释放回队列"
+    });
   }
   if (task.status === "completed" || task.status === "failed") {
     return json(400, { error: `任务已终态（${task.status}），无需释放` });
@@ -469,13 +474,21 @@ async function stopTask(
   if (taskId === "") return json(400, { error: "缺少 taskId" });
   const task = await deps.store.getRegressionTask(rootPath, taskId);
   if (!task) return json(404, { error: `未知任务 "${taskId}"` });
-  if (task.status !== "claimed" && task.status !== "running") {
+  if (task.status !== "claimed" && task.status !== "running" && task.status !== "stopping") {
     return json(400, { error: `仅已领取/执行中任务可停止（当前 ${task.status}）` });
   }
-  const ok = await deps.store.updateRegressionTask(rootPath, taskId, { status: "stopped" });
-  if (!ok) return json(500, { ok: false, error: "停止失败" });
+  if (task.status === "stopping") {
+    return json(200, { ok: true, taskId, status: "stopping", note: "停止请求已存在，等待执行机确认" });
+  }
+  const ok = await deps.store.updateRegressionTask(rootPath, taskId, { status: "stopping" });
+  if (!ok) return json(500, { ok: false, error: "停止请求失败" });
   deps.cache?.clear();
-  return json(200, { ok: true, taskId, status: "stopped" });
+  return json(200, {
+    ok: true,
+    taskId,
+    status: "stopping",
+    note: "已请求停止：执行机将在当前用例边界停止并确认（离线时为下次心跳读取）"
+  });
 }
 
 async function rerunTask(

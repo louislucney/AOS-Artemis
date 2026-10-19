@@ -827,7 +827,7 @@ export class PostgresStore implements ProjectStore {
       `UPDATE regression_tasks
           SET status = 'pending', claimed_by = NULL, claimed_at = NULL
         WHERE project_id = $1
-          AND status IN ('claimed', 'running')
+          AND status IN ('claimed', 'running', 'stopping')
           AND claimed_at IS NOT NULL AND claimed_at <= $2
           AND (claimed_by IS NULL OR claimed_by NOT IN (
                 SELECT id FROM runners WHERE project_id = $1 AND last_seen_at > $3))

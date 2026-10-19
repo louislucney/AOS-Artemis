@@ -626,6 +626,16 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   assert.match(claimedHtml.body, /aosInlineConfirm\(b,/, "三动作走站内确认（去原生 confirm）");
   assert.doesNotMatch(claimedHtml.body, /[^a-zA-Z_.]confirm\(/, "无原生 confirm 残留");
   assert.match(claimedHtml.body, /id="task-action-status"[^>]*role="status"/, "动作失败内联回报");
+
+  await store.updateRegressionTask(projectDir, pending.id, { status: "stopping" });
+  const stoppingHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pending.id}`),
+    deps
+  );
+  assert.match(stoppingHtml.body, /停止中/, "stopping 徽章");
+  assert.match(stoppingHtml.body, /等待执行机确认/, "ack 指引（离线时为下次心跳读取）");
+  assert.doesNotMatch(stoppingHtml.body, /data-task-action="release"/, "确认前不可释放");
+  assert.doesNotMatch(stoppingHtml.body, /data-task-action="rerun"/, "确认前不可重派");
   await store.updateRegressionTask(projectDir, pending.id, {
     status: "pending",
     claimedBy: null,

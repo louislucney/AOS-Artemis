@@ -413,7 +413,8 @@ export class MemoryStore implements ProjectStore {
     let released = 0;
     for (const task of this.regressionTasks) {
       if (task.projectId !== project.id) continue;
-      if (task.status !== "claimed" && task.status !== "running") continue;
+      if (task.status !== "claimed" && task.status !== "running" && task.status !== "stopping")
+        continue;
       if (task.claimedAt === null || task.claimedAt > input.claimedBefore) continue;
       if (task.claimedBy !== null && onlineRunnerIds.has(task.claimedBy)) continue;
       task.status = "pending";
