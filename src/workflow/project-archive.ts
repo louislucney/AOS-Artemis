@@ -4,6 +4,7 @@ import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { CaseSetRecord, SuiteRunRecord } from "../db/types.js";
+import { resolveDesignWarnings } from "../design/warnings.js";
 import { designDir, loadDesignFlowGraph, readFlowDocumentMeta } from "../figma/design-store.js";
 import { loadRunManifest, runManifestFileNames, type RunManifest } from "../figma/run-manifest.js";
 import { resolveProvenance } from "../provenance.js";
@@ -105,7 +106,8 @@ export async function projectArchive(
         provenance: {
           screens: provenanceCounts(graph.screens),
           edges: provenanceCounts(graph.edges)
-        }
+        },
+        warnings: resolveDesignWarnings(runtime.configDirAbs).summary
       };
     }
   }

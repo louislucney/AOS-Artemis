@@ -2,6 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { CrashIndexStore } from "../crash/store.js";
+import {
+  resolveDesignWarnings,
+  type WarningSummary
+} from "../design/warnings.js";
 import { collectVisualHotspots } from "../figma/generation-feedback.js";
 import { loadReconciliation, reconciliationFilePath } from "../figma/reconciliation.js";
 import {
@@ -55,11 +59,17 @@ export interface PanelRetentionView {
   categories: Array<Pick<RetentionCategorySummary, "id" | "total" | "overdue" | "overdueBytes">>;
 }
 
+export interface PanelDesignWarningsView extends WarningSummary {
+  source: "tests" | "flows";
+}
+
 export interface PanelDiskAssets {
   crashes: PanelCrashSummaryView | null;
   reconciliation: PanelReconciliationView | null;
   baselines: PanelBaselineView | null;
   retention: PanelRetentionView | null;
+  /** 当前设计源警告快照（tests 优先、flows 回退）；无快照 → null（不折算成 0 条）。 */
+  designWarnings: PanelDesignWarningsView | null;
   warnings: string[];
 }
 
@@ -156,5 +166,15 @@ export async function collectDiskAssets(input: {
     warnings.push(`保留期扫描失败：${errorMessage(error)}`);
   }
 
-  return { crashes, reconciliation, baselines, retention, warnings };
+  let designWarnings: PanelDesignWarningsView | null = null;
+  try {
+    const resolved = resolveDesignWarnings(input.configDirAbs);
+    if (resolved.source !== "none") {
+      designWarnings = { ...resolved.summary, source: resolved.source };
+    }
+  } catch (error) {
+    warnings.push(`设计源警告读取失败：${errorMessage(error)}`);
+  }
+
+  return { crashes, reconciliation, baselines, retention, designWarnings, warnings };
 }

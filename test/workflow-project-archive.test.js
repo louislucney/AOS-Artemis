@@ -248,7 +248,29 @@ test("project_archive: 设计血统（来源/落盘时间/屏边数/provenance �
     provenance: {
       screens: { explicit: 1, "legacy-unknown": 1, inferred: 1 },
       edges: { explicit: 1, "legacy-unknown": 1 }
-    }
+    },
+    warnings: { available: false, total: 0, byCode: {}, codes: [], stale: false }
+  });
+});
+
+test("project_archive: design.warnings 摘要", async () => {
+  const dir = tempDir();
+  const flowsPath = writeFlows(dir, {
+    ...FLOWS_FIXTURE,
+    warnings: [
+      { code: "pen-no-interactions", message: "未检测到原型交互" },
+      { code: "pen-no-interactions", message: "另一屏同样未检测到原型交互" },
+      { code: "screenshot-missing", message: "屏幕截图缺失" }
+    ]
+  });
+  const payload = payloadOf(await projectArchive(stubRuntime(dir), baseDeps()));
+  assert.deepEqual(payload.design.warnings, {
+    available: true,
+    total: 3,
+    byCode: { "pen-no-interactions": 2, "screenshot-missing": 1 },
+    codes: ["pen-no-interactions", "screenshot-missing"],
+    snapshotAt: fs.statSync(flowsPath).mtime.toISOString(),
+    stale: false
   });
 });
 

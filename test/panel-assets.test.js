@@ -116,6 +116,31 @@ test("collectDiskAssets: 崩溃/对账/基线/保留期汇总", async () => {
   assert.equal(reports.overdue, 1);
 });
 
+test("panel assets: 项目页显示设计源警告数量与 codes", async () => {
+  const root = makeTempDir("aos-panel-assets-warn-");
+  const configDir = path.join(root, ".artemis");
+  fs.mkdirSync(path.join(configDir, "design"), { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, "design", "tests.json"),
+    JSON.stringify({
+      designWarnings: [
+        { code: "pen-no-interactions", message: "未检测到原型交互" },
+        { code: "screenshot-missing", message: "屏幕截图缺失", details: ["s1"] },
+        { code: "pen-no-interactions", message: "另一屏同样未检测到原型交互" }
+      ]
+    }),
+    "utf-8"
+  );
+
+  const assets = await collectDiskAssets({ configDirAbs: configDir, projectRoot: root, nowMs: NOW });
+  assert.equal(assets.designWarnings.available, true);
+  assert.equal(assets.designWarnings.total, 3);
+  assert.deepEqual(assets.designWarnings.codes, ["pen-no-interactions", "screenshot-missing"]);
+  assert.equal(assets.designWarnings.source, "tests");
+  assert.equal(assets.designWarnings.stale, false);
+  assert.ok(assets.designWarnings.snapshotAt);
+});
+
 test("collectDiskAssets: 空项目全空态且无警告", async () => {
   const root = makeTempDir("aos-panel-assets-empty-");
   const assets = await collectDiskAssets({
@@ -128,5 +153,6 @@ test("collectDiskAssets: 空项目全空态且无警告", async () => {
   assert.equal(assets.reconciliation.edges, 0);
   assert.equal(assets.baselines.count, 0);
   assert.equal(assets.retention.overdue.count, 0);
+  assert.equal(assets.designWarnings, null);
   assert.deepEqual(assets.warnings, []);
 });

@@ -37,6 +37,7 @@ import {
   verdictLabel
 } from "../console/vocab.js";
 import { storeKindLabel } from "../db/labels.js";
+import type { WarningSummary } from "../design/warnings.js";
 import {
   buildPanelBatchDetail,
   buildPanelOverview,
@@ -626,7 +627,19 @@ function renderProjectCell(row: PanelProjectRow): string {
           : ""
       }</div>`
     : "";
-  return `<span>${lampSpan(row.lamp)}</span>${reasons}${integration}`;
+  const designWarnings =
+    row.designWarnings === null
+      ? ""
+      : `<div class="muted">${escapeHtml(designWarningsText(row.designWarnings))}</div>`;
+  return `<span>${lampSpan(row.lamp)}</span>${reasons}${integration}${designWarnings}`;
+}
+
+function designWarningsText(summary: WarningSummary | null): string {
+  if (summary === null || !summary.available) {
+    return "设计源警告：不可用（缺 tests.json / flows.json 快照）";
+  }
+  const codes = summary.codes.length > 0 ? `（${summary.codes.join("、")}）` : "";
+  return `设计源警告 ${summary.total} 条${codes}`;
 }
 
 function renderLatestBatchCell(row: PanelProjectRow): string {
@@ -1097,6 +1110,7 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
   const warnings = assets.warnings
     .map((warning) => `<p class="note">${escapeHtml(warning)}</p>`)
     .join("");
+  const designWarnings = `<p class="muted">${escapeHtml(designWarningsText(assets.designWarnings))}</p>`;
   return [
     '<section id="disk-assets">',
     "<h2>磁盘资产</h2>",
@@ -1106,6 +1120,8 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
     reconciliation,
     "<h3>设备基线热点</h3>",
     baselines,
+    "<h3>设计源警告</h3>",
+    designWarnings,
     "<h3>保留期</h3>",
     retention,
     warnings,
@@ -2297,6 +2313,9 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
         : `<p>门禁：${gateSpan(gate.result === "pass" ? "pass" : "fail")}（exit ${gate.exitCode}${
             gate.reasons.length > 0 ? ` · ${gate.reasons.map((reason) => escapeHtml(reason)).join("、")}` : ""
           }）</p>`,
+      detail.designWarnings === null
+        ? '<p class="muted">设计源警告：未记录（运行期无 preflight 摘要）</p>'
+        : `<p class="muted">${escapeHtml(designWarningsText(detail.designWarnings))}</p>`,
       warnings,
       "</header>",
       "<main>",

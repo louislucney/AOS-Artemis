@@ -54,7 +54,10 @@ const BASE_OPTIONS = {
   quarantinedCaseIds: []
 };
 
-function makeBatch(dir, { startedIso, traceId, exitCode = 0, failureDomain = null, evidence = null }) {
+function makeBatch(
+  dir,
+  { startedIso, traceId, exitCode = 0, failureDomain = null, evidence = null, designWarningSummary = null }
+) {
   const report = {
     ok: true,
     testsPath: path.join(dir, ".artemis", "design", "tests.json"),
@@ -63,7 +66,23 @@ function makeBatch(dir, { startedIso, traceId, exitCode = 0, failureDomain = nul
     skipped: 0,
     passed: exitCode === 0 ? 1 : 0,
     failed: exitCode === 0 ? 0 : 1,
-    preflight: null,
+    preflight:
+      designWarningSummary === null
+        ? null
+        : {
+            cases: 1,
+            weakCases: [],
+            coverage: {
+              available: true,
+              uncoveredScreens: [],
+              uncoveredEdges: [],
+              explore: { uncoveredScreens: [], uncoveredEdges: [] }
+            },
+            artifacts: { excelPresent: true, excelStale: false },
+            dataPolicy: { missing: [] },
+            generation: null,
+            designWarningSummary
+          },
     apiErrorCatalog: null,
     cases: [
       {
@@ -446,6 +465,85 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
   );
   assert.equal(illegal.status, 200);
   assert.equal(JSON.parse(illegal.body).read, "invalid");
+});
+
+test("panel web: 设计源警告（项目级快照与批次冻结摘要）", async () => {
+  const { deps, projectDir } = await makeHarness();
+  const designDirAbs = path.join(projectDir, ".artemis", "design");
+  fs.mkdirSync(designDirAbs, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDirAbs, "tests.json"),
+    JSON.stringify({
+      designWarnings: [
+        { code: "pen-no-interactions", message: "未检测到原型交互" },
+        { code: "screenshot-missing", message: "屏幕截图缺失" }
+      ]
+    }),
+    "utf-8"
+  );
+
+  const projectJson = JSON.parse(
+    (await handlePanelRequest(new URL(`http://x/panel.json?project=${encodeURIComponent(projectDir)}`), deps)).body
+  );
+  assert.equal(projectJson.diskAssets.designWarnings.total, 2);
+  assert.deepEqual(projectJson.diskAssets.designWarnings.codes, [
+    "pen-no-interactions",
+    "screenshot-missing"
+  ]);
+  assert.equal(projectJson.project.designWarnings.total, 2);
+
+  const projectHtml = (
+    await handlePanelRequest(new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`), deps)
+  ).body;
+  assert.match(projectHtml, /设计源警告 2 条（pen-no-interactions、screenshot-missing）/);
+
+  const summary = {
+    available: true,
+    total: 2,
+    byCode: { "pen-no-interactions": 1, "screenshot-missing": 1 },
+    codes: ["pen-no-interactions", "screenshot-missing"],
+    snapshotAt: "2026-10-13T08:00:00.000Z",
+    stale: false
+  };
+  makeBatch(projectDir, {
+    startedIso: "2026-10-13T09:00:00.000Z",
+    traceId: "trace-warn",
+    designWarningSummary: summary
+  });
+  makeBatch(projectDir, { startedIso: "2026-10-13T10:00:00.000Z", traceId: "trace-plain" });
+  const files = fs
+    .readdirSync(path.join(designDirAbs, "runs"))
+    .filter((name) => name.endsWith(".json"))
+    .sort();
+  assert.equal(files.length, 2);
+
+  const batchJson = JSON.parse(
+    (await handlePanelRequest(
+      new URL(
+        `http://x/panel.json?project=${encodeURIComponent(projectDir)}&batch=${encodeURIComponent(files[0])}`
+      ),
+      deps
+    )).body
+  );
+  assert.deepEqual(batchJson.designWarnings, summary);
+
+  const batchHtml = (
+    await handlePanelRequest(
+      new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&batch=${encodeURIComponent(files[0])}`),
+      deps
+    )
+  ).body;
+  assert.match(batchHtml, /设计源警告 2 条（pen-no-interactions、screenshot-missing）/);
+
+  const plainJson = JSON.parse(
+    (await handlePanelRequest(
+      new URL(
+        `http://x/panel.json?project=${encodeURIComponent(projectDir)}&batch=${encodeURIComponent(files[1])}`
+      ),
+      deps
+    )).body
+  );
+  assert.equal(plainJson.designWarnings, null, "无摘要 → null，不折算成 0 条");
 });
 
 test("panel web: 深探注入（默认纯读；ios=1 显式探测）", async () => {

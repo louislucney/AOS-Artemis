@@ -15,6 +15,7 @@ import type {
   TaskStatRecord
 } from "../db/types.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
+import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
 import { designDir } from "../figma/design-store.js";
 import {
   loadLatestRunManifest,
@@ -97,6 +98,8 @@ export interface PanelProjectRow {
   /** 集成轴就绪（LLM/Figma/Jira）：只报告，不参与执行灯。 */
   integration: { ready: number; total: number; missing: string[] };
   latestBatch: PanelBatchSummary | null;
+  /** 当前设计源警告快照；无快照/磁盘不可达 → null（不折算成 0 条）。 */
+  designWarnings: WarningSummary | null;
   warnings: string[];
 }
 
@@ -378,6 +381,8 @@ export interface PanelBatchDetail {
   failureDomains: Record<string, number> | null;
   options: RunManifest["options"] | null;
   tests: RunManifest["tests"] | null;
+  /** 清单冻结的设计源警告摘要；清单无该字段 → null（不回读当前快照）。 */
+  designWarnings: RunManifest["designWarnings"];
   cases: PanelBatchCaseView[];
   warnings: string[];
 }
@@ -538,6 +543,15 @@ function assetStats(rootPath: string, configDirAbsValue: string): PanelAssetStat
   });
 }
 
+function designWarningsOf(configDirAbsValue: string): WarningSummary | null {
+  try {
+    const resolved = resolveDesignWarnings(configDirAbsValue);
+    return resolved.source === "none" ? null : resolved.summary;
+  } catch {
+    return null;
+  }
+}
+
 function batchSummaryFromRead(read: RunManifestRead | null): PanelBatchSummary | null {
   if (read === null) return null;
   if (read.kind === "ok") {
@@ -636,6 +650,7 @@ async function buildProjectRow(
     lampReasons: [],
     integration: { ready: 0, total: 3, missing: [] },
     latestBatch: null,
+    designWarnings: null,
     warnings: []
   };
   if (!isDiskReachable(input.rootPath)) {
@@ -682,6 +697,7 @@ async function buildProjectRow(
         missing: integrationMissing
       },
       latestBatch: batchSummaryFromRead(latest),
+      designWarnings: designWarningsOf(soft.configDirAbs),
       warnings: []
     };
   } catch (error) {
@@ -1246,6 +1262,7 @@ function emptyBatchDetail(file: string, read: "missing" | "invalid", note: strin
     failureDomains: null,
     options: null,
     tests: null,
+    designWarnings: null,
     cases: [],
     warnings: []
   };
@@ -1292,6 +1309,7 @@ export async function buildPanelBatchDetail(
       failureDomains: null,
       options: null,
       tests: null,
+      designWarnings: null,
       cases: [],
       warnings: []
     };
@@ -1317,6 +1335,7 @@ export async function buildPanelBatchDetail(
     failureDomains: manifest.failureDomains,
     options: manifest.options,
     tests: manifest.tests,
+    designWarnings: manifest.designWarnings ?? null,
     cases: manifest.cases.map((entry) => ({
       caseId: entry.caseId,
       name: entry.name,

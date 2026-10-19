@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+import { summarizeWarnings } from "../dist/design/warnings.js";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
 
@@ -68,6 +70,13 @@ try {
   console.log(
     `① 流程: screens=${flows.counts.screens} edges=${flows.counts.edges} entries=[${flows.entryScreens.join(", ")}] unresolved=${flows.counts.unresolved}`
   );
+  if (Array.isArray(flows.warnings)) {
+    const summary = summarizeWarnings(flows.warnings);
+    const codes = summary.codes.length > 0 ? `（${summary.codes.join("、")}）` : "";
+    console.log(`   设计源警告: ${summary.total} 条${codes}`);
+  } else {
+    console.log("   设计源警告: 不可用（响应未含 warnings）");
+  }
 
   const gaps = await call("figma_gap_analysis", { url });
   console.log(
