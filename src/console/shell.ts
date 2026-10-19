@@ -7,6 +7,8 @@ export type ConsoleNavKey =
   | "overview"
   | "project"
   | "tasks"
+  | "review"
+  | "stats"
   | "dispatch"
   | "library"
   | "archive"
@@ -76,6 +78,8 @@ export function setConsoleShellDefaults(patch: typeof shellDefaults): void {
 const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
   "project",
   "tasks",
+  "review",
+  "stats",
   "dispatch",
   "library",
   "archive",
@@ -89,6 +93,8 @@ export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "overview", label: "总览", href: "/panel" },
   { key: "project", label: "项目", href: "/panel" },
   { key: "tasks", label: "任务", href: "/panel?section=tasks" },
+  { key: "review", label: "归因", href: "/panel" },
+  { key: "stats", label: "回归统计", href: "/panel" },
   { key: "dispatch", label: "下发", href: "/panel?section=dispatch" },
   { key: "library", label: "用例库", href: "/panel?section=library" },
   { key: "archive", label: "档案与产物", href: "/panel?section=archive" },
@@ -107,6 +113,12 @@ function navHref(item: ConsoleNavItem, project: string | null): string | null {
   if (!PROJECT_SCOPED.has(item.key)) return item.href;
   if (project === null || project === "") return null;
   if (item.key === "project") return `/panel?project=${encodeURIComponent(project)}`;
+  if (item.key === "review") {
+    return `/panel?project=${encodeURIComponent(project)}&view=review`;
+  }
+  if (item.key === "stats") {
+    return `/panel?project=${encodeURIComponent(project)}&view=stats`;
+  }
   const params = new URLSearchParams({ project, section: item.key });
   if (item.key === "tasks") return `/panel?${params.toString()}#tasks`;
   if (item.key === "runners") return `/panel?${params.toString()}#runners`;
@@ -154,6 +166,8 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     ["o", "overview", "总览"],
     ["j", "project", "项目"],
     ["t", "tasks", "任务"],
+    ["v", "review", "归因"],
+    ["y", "stats", "回归统计"],
     ["d", "dispatch", "下发"],
     ["l", "library", "用例库"],
     ["f", "archive", "档案"],
@@ -167,7 +181,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     .filter(([, key]) => navTargets[key] !== undefined)
     .map(([letter, , label]) => `<li><span class="c-kbd">g ${letter}</span> ${escapeHtml(label)}</li>`)
     .join("");
-  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({j:"project",t:"tasks",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}var darkMq=window.matchMedia?window.matchMedia("(prefers-color-scheme: dark)"):null;function aosApplyTheme(){if(darkMq&&darkMq.matches){document.documentElement.setAttribute("data-theme","dark");}else{document.documentElement.removeAttribute("data-theme");}}aosApplyTheme();if(darkMq&&darkMq.addEventListener){darkMq.addEventListener("change",aosApplyTheme);}})();</script>`;
+  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({j:"project",t:"tasks",v:"review",y:"stats",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}var darkMq=window.matchMedia?window.matchMedia("(prefers-color-scheme: dark)"):null;function aosApplyTheme(){if(darkMq&&darkMq.matches){document.documentElement.setAttribute("data-theme","dark");}else{document.documentElement.removeAttribute("data-theme");}}aosApplyTheme();if(darkMq&&darkMq.addEventListener){darkMq.addEventListener("change",aosApplyTheme);}})();</script>`;
   const brandHref = input.brandHref ?? "/panel";
   const searchForm =
     input.hideSearch === true

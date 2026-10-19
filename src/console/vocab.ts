@@ -114,3 +114,50 @@ const VERDICT_LABELS: Record<string, string> = {
 export function verdictLabel(verdict: string): string {
   return VERDICT_LABELS[verdict] ?? verdict;
 }
+
+const FAILURE_DOMAIN_LABELS: Record<string, string> = {
+  "app-defect": "应用缺陷",
+  "case-defect": "用例缺陷",
+  environment: "环境",
+  "data-environment": "数据环境",
+  "behavior-design": "行为或设计",
+  behavior: "行为或设计",
+  "design-inference": "设计推断",
+  "design-diff": "设计推断",
+  unknown: "未分类",
+  uncategorized: "未分类"
+};
+
+export function failureDomainLabel(domain: string): string {
+  return FAILURE_DOMAIN_LABELS[domain] ?? domain;
+}
+
+export function failureDomainHtml(domain: string): string {
+  return mappedHtml(domain, FAILURE_DOMAIN_LABELS);
+}
+
+const CONFIDENCE_LABELS: Record<string, string> = {
+  high: "高",
+  medium: "中",
+  low: "低"
+};
+
+export function confidenceLabel(confidence: string): string {
+  return CONFIDENCE_LABELS[confidence] ?? confidence;
+}
+
+const RUN_STATUS_LABELS: Record<string, string> = {
+  passed: "通过",
+  failed: "失败",
+  skipped: "跳过",
+  error: "错误",
+  running: "执行中",
+  pending: "待执行",
+  partial: "部分失败",
+  completed: "已完成",
+  stopped: "已停止"
+};
+
+export function runStatusLabel(status: string): string {
+  return RUN_STATUS_LABELS[status] ?? status;
+}

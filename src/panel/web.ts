@@ -28,7 +28,14 @@ import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
 import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
 import { cBadge, cCard, cEmpty, cStat, cTable } from "../console/components.js";
 import { relativeTime } from "../console/time.js";
-import { sourceHtml, verdictLabel } from "../console/vocab.js";
+import {
+  confidenceLabel,
+  failureDomainHtml,
+  failureDomainLabel,
+  runStatusLabel,
+  sourceHtml,
+  verdictLabel
+} from "../console/vocab.js";
 import { storeKindLabel } from "../db/labels.js";
 import {
   buildPanelBatchDetail,
@@ -736,8 +743,14 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
     cCard({
       tone: "accent",
       title: "下一步",
-      actions: `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`,
-      body: `<p><a href="${escapeHtml(reviewHref(rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(rootPath))}">统计</a></p>`
+      actions:
+        detail.reviewQueue.undecided > 0
+          ? `<a class="c-button c-button-primary" href="${escapeHtml(reviewHref(rootPath))}">先去裁决 ${detail.reviewQueue.undecided} 条 →</a> <a class="c-button" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`
+          : `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`,
+      body:
+        detail.reviewQueue.undecided === 0 && detail.reviewQueue.unissued === 0
+          ? `<p><a href="${escapeHtml(reviewHref(rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(rootPath))}">统计</a></p>`
+          : `<p><a href="${escapeHtml(reviewHref(rootPath))}">待裁决 ${detail.reviewQueue.undecided} 条</a> · <a href="${escapeHtml(statsHref(rootPath))}#issues">未建单缺陷 ${detail.reviewQueue.unissued} 项</a> · <a href="${escapeHtml(statsHref(rootPath))}">统计</a></p>`
     }),
     activityLine,
     "</div>"
@@ -829,7 +842,7 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
       ? "—"
       : escapeHtml(
           Object.entries(batch.failureDomains)
-            .map(([domain, count]) => `${domain}×${count}`)
+            .map(([domain, count]) => `${failureDomainLabel(domain)}×${count}`)
             .join("、") || "—"
         ),
     `<a href="${escapeHtml(batchHref(rootPath, batch.file))}"><code>${escapeHtml(batch.file)}</code></a>` +
@@ -1437,24 +1450,26 @@ function renderReviewPage(view: {
   };
   const rows = items.map((item) => [
     `<input type="checkbox" name="item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}" aria-label="选择用例 ${escapeHtml(item.caseId)}（${escapeHtml(item.name)}）">`,
+    `<code title="${escapeHtml(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</code>`,
+    relativeTime(item.createdAt),
     `<code>${escapeHtml(item.caseId)}</code>`,
     escapeHtml(item.name),
     escapeHtml(item.featureName ?? "—"),
     escapeHtml(item.platform),
     escapeHtml(item.device ?? "—"),
-    escapeHtml(item.status),
+    escapeHtml(runStatusLabel(item.status)),
     item.failureDomain === null
       ? "—"
-      : `<span class="chip">${escapeHtml(item.failureDomain)}</span>${
+      : `${failureDomainHtml(item.failureDomain)}${
           item.failureConfidence === null
             ? ""
-            : ` <span class="muted">${escapeHtml(item.failureConfidence)}</span>`
+            : ` <span class="muted">${escapeHtml(confidenceLabel(item.failureConfidence))}</span>`
         }`,
     escapeHtml(item.failureReason ?? "—"),
     evidenceCell(item),
     item.verdict === null
       ? '<span class="muted">未裁决</span>'
-      : `<span class="chip">${escapeHtml(item.verdict)}</span>${
+      : `<span class="chip" title="${escapeHtml(item.verdict)}">${escapeHtml(verdictLabel(item.verdict))}</span>${
           item.verdictBy === null ? "" : ` <span class="muted">${escapeHtml(item.verdictBy)}</span>`
         }${item.verdictNote === null ? "" : `<br><span class="muted">${escapeHtml(item.verdictNote)}</span>`}`
   ]);
@@ -1476,6 +1491,8 @@ function renderReviewPage(view: {
           renderTable(
             [
               "选择",
+              "运行",
+              "时间",
               "用例",
               "名称",
               "功能",
@@ -1559,7 +1576,7 @@ function environmentNoteSummary(notes: string[]): string {
 }
 
 function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string {
-  const title = '<h3 id="issues">应用缺陷（app-defect）→ 建单（Jira）</h3>';
+  const title = '<h3 id="issues">应用缺陷 → 建单（Jira）</h3>';
   if (items.length === 0) return `${title}<p class="empty">（空）</p>`;
   const rootJson = JSON.stringify(rootPath).replace(/</g, "\\u003c");
   const rows = items.map((item) => [
@@ -1691,7 +1708,10 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
       .map((entry) => (entry === "pass" ? '<span class="ok">✓</span>' : '<span class="err">✗</span>'))
       .join(" "),
     Object.entries(feature.failureDomains)
-      .map(([domain, count]) => `<span class="chip">${escapeHtml(domain)} × ${count}</span>`)
+      .map(
+        ([domain, count]) =>
+          `<span class="chip" title="${escapeHtml(domain)}">${escapeHtml(failureDomainLabel(domain))} × ${count}</span>`
+      )
       .join(" ") || "—",
     Object.entries(feature.verdicts)
       .map(
@@ -1743,7 +1763,7 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
       escapeHtml(environmentNoteSummary(group.notes))
     ]);
     return [
-      "<h3>执行偏差（execution-deviation）→ 环境核对 / 重跑</h3>",
+      "<h3>执行偏差 → 环境核对 / 重跑</h3>",
       renderTable(["设备", "端", "次数", "涉及功能", "最近裁决", "备注摘要"], rows, "无执行偏差裁决", "执行偏差按设备")
     ].join("\n");
   };
@@ -2115,7 +2135,10 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
     detail.failureDomains === null || Object.keys(detail.failureDomains).length === 0
       ? '<p class="empty">无失败域汇总</p>'
       : `<p>${Object.entries(detail.failureDomains)
-          .map(([domain, count]) => `<span class="chip">${escapeHtml(domain)} × ${count}</span>`)
+          .map(
+            ([domain, count]) =>
+              `<span class="chip" title="${escapeHtml(domain)}">${escapeHtml(failureDomainLabel(domain))} × ${count}</span>`
+          )
           .join("")}</p>`;
   const gate = detail.gate;
   const cases = detail.cases.map((entry) => [
@@ -2251,8 +2274,9 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
     case "project":
       return view.active ?? "project";
     case "review":
+      return "review";
     case "stats":
-      return "project";
+      return "stats";
     case "batch":
       return "tasks";
     case "search":

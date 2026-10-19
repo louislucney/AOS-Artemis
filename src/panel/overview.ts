@@ -300,6 +300,7 @@ export interface PanelReviewItem {
   verdictBy: string | null;
   verdictAt: string | null;
   verdictNote: string | null;
+  jiraIssueKey: string | null;
   createdAt: string;
 }
 
@@ -329,6 +330,8 @@ export interface PanelProjectDetail {
   generatedAt: string;
   project: PanelProjectRow;
   integration: PanelIntegration | null;
+  /** 失败路径数字（最近 10 次运行窗）：未裁决 / 未建单缺陷。 */
+  reviewQueue: { undecided: number; unissued: number };
   batches: PanelBatchRow[];
   trend: PanelBatchTrend | null;
   standalones: PanelStandaloneRow[];
@@ -947,10 +950,22 @@ export async function buildPanelProjectDetail(
     warnings.push(`定时回归读取失败：${errorMessage(error)}`);
   }
 
+  const reviewQueue = await buildPanelReviewQueue(deps, rootPath, { limit: 10 })
+    .then((queue) => ({
+      undecided: queue.items.filter((item) => item.verdict === null).length,
+      unissued: queue.items.filter(
+        (item) =>
+          item.verdict === "app-defect" &&
+          (item.jiraIssueKey === null || item.jiraIssueKey === "")
+      ).length
+    }))
+    .catch(() => ({ undecided: 0, unissued: 0 }));
+
   return {
     generatedAt: new Date(now()).toISOString(),
     project: row,
     integration,
+    reviewQueue,
     batches,
     trend,
     standalones,
@@ -1136,6 +1151,7 @@ export async function buildPanelReviewQueue(
         verdictBy: entry.verdictBy,
         verdictAt: entry.verdictAt,
         verdictNote: entry.verdictNote,
+        jiraIssueKey: entry.jiraIssueKey ?? null,
         createdAt: run.createdAt
       });
     }
