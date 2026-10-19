@@ -59,12 +59,14 @@ test("evaluateCandidateCoverage: nodeId / IoU / 中心命中都算 covered", () 
   const candidates = [
     candidate({ id: "1:1", name: "Button/My Order", bbox: { x: 0, y: 0, width: 100, height: 40 } }),
     candidate({ id: "1:2", name: "Icon/Bag", bbox: { x: 200, y: 0, width: 40, height: 40 } }),
-    candidate({ id: "1:3", name: "Tab/Home", bbox: { x: 300, y: 0, width: 80, height: 40 } })
+    candidate({ id: "1:3", name: "Tab/Home", bbox: { x: 300, y: 0, width: 80, height: 40 } }),
+    candidate({ id: "1:4", name: "Button/Iou", bbox: { x: 0, y: 200, width: 100, height: 100 } })
   ];
   const elements = [
     element({ id: "e1", nodeId: "1:1", bbox: { x: 5, y: 5, width: 10, height: 10 } }),
     element({ id: "e2", bbox: { x: 200, y: 0, width: 40, height: 40 } }),
-    element({ id: "e3", bbox: { x: 330, y: 15, width: 10, height: 10 } })
+    element({ id: "e3", bbox: { x: 330, y: 15, width: 10, height: 10 } }),
+    element({ id: "e4", bbox: { x: -60, y: 200, width: 100, height: 100 } })
   ];
   const coverage = evaluateCandidateCoverage({
     state: null,
@@ -74,19 +76,48 @@ test("evaluateCandidateCoverage: nodeId / IoU / 中心命中都算 covered", () 
   });
   assert.equal(coverage.state, null);
   assert.equal(coverage.designNodes, 7);
-  assert.equal(coverage.candidateNodes, 3);
-  assert.equal(coverage.recognizedElements, 3);
+  assert.equal(coverage.candidateNodes, 4);
+  assert.equal(coverage.recognizedElements, 4);
   assert.equal(coverage.groundedElements, 1);
-  assert.equal(coverage.ungroundedElements, 2);
-  assert.equal(coverage.coveredCandidates, 3);
+  assert.equal(coverage.ungroundedElements, 3);
+  assert.equal(coverage.coveredCandidates, 4);
   assert.equal(coverage.uncoveredCandidates, 0);
   assert.equal(coverage.unverifiableCandidates, 0);
   assert.equal(coverage.notEvaluatedCandidates, 0);
   assert.deepEqual(
     coverage.details.map((detail) => detail.status),
-    ["covered", "covered", "covered"]
+    ["covered", "covered", "covered", "covered"]
   );
   assert.equal(coverage.details[0].reason, undefined);
+  assert.equal(coverage.details[3].reason, undefined, "IoU-only path: element center outside candidate bbox");
+});
+
+test("evaluateCandidateCoverage: 无几何但文本命中 → covered", () => {
+  const coverage = evaluateCandidateCoverage({
+    state: "light",
+    designNodes: 2,
+    candidates: [
+      candidate({ id: "6:1", name: "Icon/Bag", textHints: ["购物袋"], state: "light" }),
+      candidate({ id: "6:2", name: "Button/Label", textHints: ["结算"], state: "light" })
+    ],
+    elements: [
+      element({ id: "e1", class: "cart-entry", intent: "navigate", label: "购物袋" }),
+      element({
+        id: "e2",
+        class: "cta",
+        intent: "submit",
+        label: "去结算",
+        bbox: { x: 500, y: 500, width: 20, height: 20 }
+      })
+    ]
+  });
+  assert.equal(coverage.coveredCandidates, 2);
+  assert.equal(coverage.uncoveredCandidates, 0);
+  assert.equal(coverage.unverifiableCandidates, 0);
+  assert.deepEqual(
+    coverage.details.map((detail) => detail.status),
+    ["covered", "covered"]
+  );
 });
 
 test("evaluateCandidateCoverage: 无几何无文本 → unverifiable", () => {
@@ -164,6 +195,7 @@ test("evaluateCandidateCoverage: notEvaluatedReason 全量 not-evaluated", () =>
     candidatesTruncated: 4
   });
   assert.equal(coverage.notEvaluatedCandidates, 2);
+  assert.equal(coverage.notEvaluated, true);
   assert.equal(coverage.coveredCandidates, 0);
   assert.equal(coverage.uncoveredCandidates, 0);
   assert.equal(coverage.unverifiableCandidates, 0);
@@ -210,8 +242,22 @@ test("coverageWarnings: uncovered 具名；unverifiable 每屏一条；零候选
     elements: [],
     notEvaluatedReason: "render-missing"
   });
+  const notEvaluatedEmpty = evaluateCandidateCoverage({
+    state: null,
+    designNodes: 3,
+    candidates: [],
+    elements: [],
+    notEvaluatedReason: "render-missing"
+  });
+  assert.equal(notEvaluatedEmpty.notEvaluated, true);
 
-  const warnings = coverageWarnings("结算页", [main, dark, unmatched, notEvaluated]);
+  const warnings = coverageWarnings("结算页", [
+    main,
+    dark,
+    unmatched,
+    notEvaluated,
+    notEvaluatedEmpty
+  ]);
   const uncovered = warnings.filter((warning) => warning.code === "vision-candidate-uncovered");
   assert.equal(uncovered.length, 2, "one uncovered warning per evaluated state");
   const named = uncovered.flatMap((warning) => warning.details ?? []);

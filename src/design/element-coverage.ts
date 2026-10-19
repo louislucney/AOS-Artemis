@@ -68,6 +68,8 @@ export interface FlowElementCoverage {
   uncoveredCandidates: number;
   unverifiableCandidates: number;
   notEvaluatedCandidates: number;
+  /** 整个 target 未进入 vision（`notEvaluatedReason` 传入时为 true；零候选也可据此区分「未评估」与「词表不适配」）。 */
+  notEvaluated?: boolean;
   candidatesTruncated?: number;
   details: CandidateCoverageDetail[];
 }
@@ -289,6 +291,7 @@ export function evaluateCandidateCoverage(input: {
     notEvaluatedCandidates: notEvaluated,
     details
   };
+  if (input.notEvaluatedReason !== undefined) coverage.notEvaluated = true;
   if (input.candidatesTruncated !== undefined) coverage.candidatesTruncated = input.candidatesTruncated;
   return coverage;
 }
@@ -326,7 +329,7 @@ export function coverageWarnings(
 
   for (const coverage of coverages) {
     if (coverage.designNodes <= 0 || coverage.candidateNodes > 0) continue;
-    if (coverage.notEvaluatedCandidates > 0) continue;
+    if (coverage.notEvaluated === true || coverage.notEvaluatedCandidates > 0) continue;
     warnings.push({
       code: "vision-candidate-vocabulary-unmatched",
       message:
