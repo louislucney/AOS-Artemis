@@ -3,6 +3,13 @@ import path from "node:path";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
+import {
+  mergeWarnings,
+  normalizeWarnings,
+  readFlowsWarnings,
+  summarizeWarnings,
+  type DesignWarning
+} from "../design/warnings.js";
 import { loadDesignFlowGraph } from "../figma/design-store.js";
 import { figmaExtractFlows } from "../figma/flows.js";
 import { coverageGateIssue } from "../figma/gate.js";
@@ -161,6 +168,19 @@ export async function designToTest(
   const designDirAbs = path.join(runtime.configDirAbs, "design");
   const flowsPath = path.join(designDirAbs, "flows.json");
   const testsPath = path.join(designDirAbs, "tests.json");
+  const flowMapPath = path.join(designDirAbs, "flow-map.md");
+  let warnings: DesignWarning[] = [];
+  let warningsAvailable = false;
+  let warningsSnapshotAt: string | null = null;
+  let warningsBySource: Record<string, number> = {};
+  const warningFields = (): Record<string, unknown> => ({
+    warnings,
+    designWarnings: summarizeWarnings(warnings, {
+      available: warningsAvailable,
+      ...(warningsSnapshotAt !== null ? { snapshotAt: warningsSnapshotAt } : {}),
+      ...(Object.keys(warningsBySource).length > 0 ? { bySource: warningsBySource } : {})
+    })
+  });
   const steps: Array<Record<string, unknown>> = [];
   let stepMark = Date.now();
   const recordStep = (entry: Record<string, unknown>): Record<string, unknown> => {
@@ -176,10 +196,16 @@ export async function designToTest(
       return jsonResult({ ok: false, needs: "info", category: "no-flows", questions: [REUSE_NO_FLOWS_QUESTION] });
     }
     const graph = loadDesignFlowGraph(runtime.configDirAbs);
+    const read = readFlowsWarnings(runtime.configDirAbs);
+    warnings = read.warnings;
+    warningsAvailable = read.available;
+    warningsSnapshotAt = read.snapshotAt;
+    warningsBySource = { flows: read.warnings.length };
     recordStep({
       step: "extract",
       reused: true,
-      ...(graph ? { screens: graph.screens.length, edges: graph.edges.length } : {})
+      ...(graph ? { screens: graph.screens.length, edges: graph.edges.length } : {}),
+      warnings: warnings.length
     });
   } else {
     const extractFigma = deps.extractFigma ?? figmaExtractFlows;
@@ -202,7 +228,8 @@ export async function designToTest(
         ok: false,
         failedStep: "extract",
         detail: errorMessage(error),
-        suggestions
+        suggestions,
+        ...warningFields()
       });
     }
     const extractedPayload = payloadOf(extracted);
@@ -211,16 +238,27 @@ export async function designToTest(
         ok: false,
         failedStep: "extract",
         detail: failureDetail(extracted, extractedPayload),
-        suggestions
+        suggestions,
+        ...warningFields()
       });
     }
     const screens = countOf(extractedPayload, "screens");
     const edges = countOf(extractedPayload, "edges");
+    const diskWarnings = readFlowsWarnings(runtime.configDirAbs);
+    const mergedWarnings = mergeWarnings([
+      { source: "extract", warnings: normalizeWarnings(extractedPayload?.warnings) },
+      { source: "flows", warnings: diskWarnings.warnings }
+    ]);
+    warnings = mergedWarnings.warnings;
+    warningsAvailable = true;
+    warningsSnapshotAt = diskWarnings.snapshotAt;
+    warningsBySource = mergedWarnings.bySource;
     recordStep({
       step: "extract",
       source: figmaUrl !== null ? "figma" : "pen",
       ...(screens !== null ? { screens } : {}),
-      ...(edges !== null ? { edges } : {})
+      ...(edges !== null ? { edges } : {}),
+      warnings: warnings.length
     });
   }
 
@@ -237,7 +275,8 @@ export async function designToTest(
         ok: false,
         failedStep: "generate",
         detail: failureDetail(generated, payload),
-        suggestions: GENERATE_SUGGESTIONS
+        suggestions: GENERATE_SUGGESTIONS,
+        ...warningFields()
       });
     }
     generatePayload = payload;
@@ -246,7 +285,8 @@ export async function designToTest(
       ok: false,
       failedStep: "generate",
       detail: errorMessage(error),
-      suggestions: GENERATE_SUGGESTIONS
+      suggestions: GENERATE_SUGGESTIONS,
+      ...warningFields()
     });
   }
 
@@ -265,7 +305,8 @@ export async function designToTest(
       ok: false,
       failedStep: "generate",
       detail: "设计流程没有生成任何用例（flows.json 为空或流程不可达）",
-      suggestions: GENERATE_SUGGESTIONS
+      suggestions: GENERATE_SUGGESTIONS,
+      ...warningFields()
     });
   }
 
@@ -277,7 +318,8 @@ export async function designToTest(
       ok: false,
       failedStep: "check",
       detail: issue,
-      suggestions: [CHECK_SUGGESTION]
+      suggestions: [CHECK_SUGGESTION],
+      ...warningFields()
     });
   }
   recordStep({
@@ -295,6 +337,9 @@ export async function designToTest(
   const source =
     generatedSource ??
     (figmaUrl !== null ? `figma:${figmaUrl}` : penPath !== null ? `pen:${penPath}` : flowsPath);
+  const flowMapArtifact: Record<string, string> = fs.existsSync(flowMapPath)
+    ? { flowMap: flowMapPath }
+    : {};
 
   const logLine = deps.log ?? logInfo;
   let runSummary: Record<string, unknown> | null = null;
@@ -305,13 +350,14 @@ export async function designToTest(
     );
     if (!pick.ok) {
       return pick.needs === "setup"
-        ? jsonResult({ ok: false, needs: "setup", checks: [pick.check] })
+        ? jsonResult({ ok: false, needs: "setup", checks: [pick.check], ...warningFields() })
         : jsonResult({
             ok: false,
             needs: "info",
             category: pick.category,
             questions: pick.questions,
-            context: pick.context
+            context: pick.context,
+            ...warningFields()
           });
     }
     const device = pick.device;
@@ -347,7 +393,8 @@ export async function designToTest(
         ok: false,
         failedStep: "run",
         detail: errorMessage(error),
-        suggestions: [RUN_FAILURE_SUGGESTION]
+        suggestions: [RUN_FAILURE_SUGGESTION],
+        ...warningFields()
       });
     }
     runEntry.ms = Date.now() - execStartedAt;
@@ -359,7 +406,15 @@ export async function designToTest(
         failedStep: "run",
         detail: report.error ?? "套件未执行（无可提交用例）",
         suggestions: RUN_NOT_EXECUTED_SUGGESTIONS,
-        ...(runManifestPath !== null ? { artifacts: { runManifest: runManifestPath } } : {})
+        ...(runManifestPath !== null || Object.keys(flowMapArtifact).length > 0
+          ? {
+              artifacts: {
+                ...(runManifestPath !== null ? { runManifest: runManifestPath } : {}),
+                ...flowMapArtifact
+              }
+            }
+          : {}),
+        ...warningFields()
       });
     }
     const quarantinedFailures = report.cases.filter(
@@ -382,6 +437,7 @@ export async function designToTest(
 
   const artifacts: Record<string, unknown> = {};
   if (fs.existsSync(flowsPath)) artifacts.flows = flowsPath;
+  Object.assign(artifacts, flowMapArtifact);
   artifacts.tests = testsPath;
   if (runManifestPath !== null) artifacts.runManifest = runManifestPath;
   const savedTo = generatePayload?.savedTo;
@@ -405,6 +461,7 @@ export async function designToTest(
     ok: true,
     steps,
     artifacts,
+    ...warningFields(),
     ...(runSummary !== null ? { run: runSummary } : {}),
     ...(nextAction !== null ? { nextAction } : {})
   });

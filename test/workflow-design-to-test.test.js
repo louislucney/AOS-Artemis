@@ -166,7 +166,7 @@ test("figma happy：提取→生成→校验→nextAction（run 缺省 false）"
   assert.equal(calls.execute.length, 0);
 
   assert.equal(payload.steps.length, 3);
-  assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", source: "figma", screens: 2, edges: 1 });
+  assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", source: "figma", screens: 2, edges: 1, warnings: 0 });
   assert.deepEqual(withoutMs(payload.steps[1]), { step: "generate", cases: 2, screens: 2, edges: 1 });
   assert.deepEqual(withoutMs(payload.steps[2]), { step: "check", ok: true });
 
@@ -205,7 +205,7 @@ test("pen happy：vision 透传（前置 pen 检查走 stub exec）", async () =
   assert.deepEqual(calls.pen, [{ path: "/designs/app.pen", vision: "auto" }]);
   assert.equal(calls.figma.length, 0);
   assert.deepEqual(penExecCalls, [{ command: "/opt/pen", args: ["status"] }]);
-  assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", source: "pen", screens: 3, edges: 2 });
+  assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", source: "pen", screens: 3, edges: 2, warnings: 0 });
   assert.deepEqual(payload.nextAction, {
     tool: "design_to_test",
     args: { reuseExistingFlows: true, run: true }
@@ -360,7 +360,7 @@ test("reuseExistingFlows 有 flows.json → 跳过提取（steps 标 reused）",
   const payload = payloadOf(result);
   assert.equal(payload.ok, true);
   assert.equal(calls.figma.length + calls.pen.length, 0);
-  assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", reused: true, screens: 2, edges: 0 });
+  assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", reused: true, screens: 2, edges: 0, warnings: 0 });
   assert.equal(payload.artifacts.flows, path.join(designDir, "flows.json"));
   assert.equal(payload.nextAction.args.reuseExistingFlows, true);
 });
@@ -786,4 +786,120 @@ test("generate 返回 0 条用例：failedStep:generate（不静默成功）", a
   assert.equal(payload.ok, false);
   assert.equal(payload.failedStep, "generate");
   assert.ok(String(payload.detail).includes("没有生成任何用例"));
+});
+
+test("design_to_test: extract warnings 进入最终响应（含 pen-no-interactions）", async () => {
+  const runtime = stubRuntime({ dotenv: { PEN_CLI_KEY: "pen_test" } });
+  const warnings = [
+    { code: "pen-no-interactions", message: "未检测到交互线索，跳转按画板排布推断" },
+    { code: "vision-unavailable", message: "未启用视觉识别", details: ["model 不支持图像"] }
+  ];
+  const { deps } = makeDeps();
+  deps.extractPen = async () =>
+    textResult({ ok: true, counts: { screens: 2, edges: 0, warnings: 2 }, warnings });
+
+  const result = await designToTest(runtime, { penPath: "/designs/app.pen" }, deps);
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.warnings, warnings);
+  assert.deepEqual(payload.designWarnings, {
+    available: true,
+    total: 2,
+    byCode: { "pen-no-interactions": 1, "vision-unavailable": 1 },
+    codes: ["pen-no-interactions", "vision-unavailable"],
+    bySource: { extract: 2, flows: 0 }
+  });
+  assert.deepEqual(withoutMs(payload.steps[0]), {
+    step: "extract",
+    source: "pen",
+    screens: 2,
+    edges: 0,
+    warnings: 2
+  });
+});
+
+test("design_to_test: reuseExistingFlows 读取 flows.json warnings", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-reuse-warnings-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const designDir = path.join(dir, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      screens: [
+        { id: "s1", name: "首页", childNames: [], textHints: [] },
+        { id: "s2", name: "详情", childNames: [], textHints: [] }
+      ],
+      edges: [],
+      entryScreens: ["首页"],
+      unresolvedDestinations: [],
+      warnings: [
+        { code: "pen-no-interactions", message: "未检测到交互线索" },
+        { code: "screenshot-missing", message: "首页截图缺失" }
+      ]
+    })
+  );
+
+  const runtime = stubRuntime({ dir });
+  const { deps } = makeDeps();
+  const result = await designToTest(runtime, { reuseExistingFlows: true }, deps);
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.warnings, [
+    { code: "pen-no-interactions", message: "未检测到交互线索" },
+    { code: "screenshot-missing", message: "首页截图缺失" }
+  ]);
+  assert.equal(payload.designWarnings.available, true);
+  assert.equal(payload.designWarnings.total, 2);
+  assert.deepEqual(payload.designWarnings.codes, ["pen-no-interactions", "screenshot-missing"]);
+  assert.deepEqual(payload.designWarnings.bySource, { flows: 2 });
+  assert.ok(!Number.isNaN(Date.parse(payload.designWarnings.snapshotAt)));
+  assert.equal(withoutMs(payload.steps[0]).warnings, 2);
+});
+
+test("design_to_test: artifacts.flowMap 指向 design/flow-map.md", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-flow-map-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const designDir = path.join(dir, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  const flowMapPath = path.join(designDir, "flow-map.md");
+  fs.writeFileSync(flowMapPath, "# 流程地图\n");
+
+  const runtime = stubRuntime({ dir, dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps();
+  const payload = payloadOf(await designToTest(runtime, { figmaUrl: FIGMA_URL }, deps));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.artifacts.flowMap, flowMapPath);
+
+  const bare = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const barePayload = payloadOf(await designToTest(bare, { figmaUrl: FIGMA_URL }, makeDeps().deps));
+  assert.equal(barePayload.ok, true);
+  assert.equal(barePayload.artifacts.flowMap, undefined);
+});
+
+test("design_to_test: check 失败响应也携带已获得的 warnings", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps({ gate: () => "流程未完整覆盖：未硬覆盖屏幕 1" });
+  deps.extractFigma = async () =>
+    textResult({
+      ok: true,
+      counts: { screens: 1, edges: 0, warnings: 1 },
+      warnings: [{ code: "flow-graph-empty", message: "未发现可用流程" }]
+    });
+
+  const result = await designToTest(runtime, { figmaUrl: FIGMA_URL }, deps);
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.failedStep, "check");
+  assert.deepEqual(payload.warnings, [{ code: "flow-graph-empty", message: "未发现可用流程" }]);
+  assert.equal(payload.designWarnings.available, true);
+  assert.equal(payload.designWarnings.total, 1);
+  assert.deepEqual(payload.designWarnings.codes, ["flow-graph-empty"]);
 });
