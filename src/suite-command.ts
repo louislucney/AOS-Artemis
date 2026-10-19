@@ -30,6 +30,7 @@ import {
   saveReconciliation
 } from "./figma/reconciliation.js";
 import { buildRunReport, buildTaskRunReport } from "./figma/run-report.js";
+import type { WarningSummary } from "./design/warnings.js";
 import {
   executeSuiteBatch,
   loadSuiteQuarantine,
@@ -1375,6 +1376,15 @@ async function suiteBaseline(runtime: Runtime, flags: ParsedFlags, io: { log: (l
   return 0;
 }
 
+/** `suite report` 文本行：明确区分「未知 / 不可用 / 0 条 / N 条」，不伪造 0。 */
+function renderReportDesignWarnings(summary: WarningSummary | null): string {
+  if (summary === null) return "设计源警告: 未知（本次报告未读取到设计快照）";
+  if (!summary.available) return "设计源警告: 不可用（缺 tests.json / flows.json 快照）";
+  const codes = summary.codes.length > 0 ? `（${summary.codes.join("、")}）` : "";
+  const stale = summary.stale === true ? " · stale-snapshot（tests 快照早于 flows.json）" : "";
+  return `设计源警告: ${summary.total} 条${codes}${stale}`;
+}
+
 async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (line: string) => void; errorLog: (line: string) => void }): Promise<number> {
   const taskId = flags.get("task");
   if (taskId) {
@@ -1390,6 +1400,7 @@ async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (lin
       io.log(
         `任务报告: 共 ${report.total} · 通过 ${report.passed} · 失败 ${report.failed} · 待定 ${report.pending}`
       );
+      io.log(renderReportDesignWarnings(report.designWarnings));
       if (report.saved) {
         io.log(`xlsx: ${report.saved.xlsx}`);
         io.log(`junit: ${report.saved.junit}`);
@@ -1416,6 +1427,7 @@ async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (lin
     io.log(JSON.stringify(report, null, 2));
   } else {
     io.log(`运行报告: 共 ${report.total} · 通过 ${report.passed} · 失败 ${report.failed} · 待定 ${report.pending}`);
+    io.log(renderReportDesignWarnings(report.designWarnings));
     if (report.saved) {
       io.log(`xlsx: ${report.saved.xlsx}`);
       io.log(`junit: ${report.saved.junit}`);

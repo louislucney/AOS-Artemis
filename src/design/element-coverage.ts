@@ -49,11 +49,14 @@ export interface CandidateCoverageDetail {
     | "no-text"
     | "ambiguous-text"
     | "vision-off"
+    | "vision-unavailable"
     | "capped"
     | "render-missing"
     | "frame-missing"
     | "rejected"
     | "failed";
+  /** 同 state 共享该归一化文本的候选数（仅 `ambiguous-text` 时给出）。 */
+  matches?: number;
   bbox?: Bbox;
 }
 
@@ -185,7 +188,7 @@ function textFallback(
   candidate: VisionCandidate,
   elements: FlowElement[],
   candidates: VisionCandidate[]
-): { matched: boolean; ambiguous: boolean } {
+): { matched: boolean; ambiguous: boolean; owners: number } {
   const labels = elementLabels(elements);
   for (const hint of candidate.textHints) {
     for (const label of labels) {
@@ -193,16 +196,17 @@ function textFallback(
       const owners = candidates.filter((entry) =>
         entry.textHints.some((entryHint) => textMatches(entryHint, label))
       ).length;
-      return { matched: true, ambiguous: owners > 1 };
+      return { matched: true, ambiguous: owners > 1, owners };
     }
   }
-  return { matched: false, ambiguous: false };
+  return { matched: false, ambiguous: false, owners: 0 };
 }
 
 function detailFor(
   candidate: VisionCandidate,
   status: CandidateCoverageDetail["status"],
-  reason?: CandidateCoverageDetail["reason"]
+  reason?: CandidateCoverageDetail["reason"],
+  matches?: number
 ): CandidateCoverageDetail {
   const bbox = validBbox(candidate.bbox);
   return {
@@ -210,6 +214,7 @@ function detailFor(
     name: candidate.name,
     status,
     ...(reason !== undefined ? { reason } : {}),
+    ...(matches !== undefined ? { matches } : {}),
     ...(bbox ? { bbox } : {})
   };
 }
@@ -265,7 +270,7 @@ export function evaluateCandidateCoverage(input: {
     }
     if (text.matched && text.ambiguous) {
       unverifiable += 1;
-      details.push(detailFor(candidate, "unverifiable", "ambiguous-text"));
+      details.push(detailFor(candidate, "unverifiable", "ambiguous-text", text.owners));
       continue;
     }
     if (bbox) {
@@ -321,14 +326,25 @@ export function coverageWarnings(
     });
   }
 
-  const unverifiable = coverages.reduce(
-    (sum, coverage) => sum + coverage.unverifiableCandidates,
-    0
+  const unverifiableCoverages = coverages.filter(
+    (coverage) => coverage.unverifiableCandidates > 0
   );
-  if (unverifiable > 0) {
+  if (unverifiableCoverages.length > 0) {
+    const total = unverifiableCoverages.reduce(
+      (sum, coverage) => sum + coverage.unverifiableCandidates,
+      0
+    );
+    const perState = unverifiableCoverages.map((coverage) =>
+      coverage.state === null
+        ? `主屏 ${coverage.unverifiableCandidates}`
+        : `状态「${coverage.state}」${coverage.unverifiableCandidates}`
+    );
     warnings.push({
       code: "vision-candidate-unverifiable",
-      message: `屏幕「${screenName}」有 ${unverifiable} 个候选元素缺几何或文本，无法核验（未计入覆盖）`
+      message: `屏幕「${screenName}」有 ${total} 个候选元素缺几何或文本，无法核验（未计入覆盖；${perState.join(
+        " / "
+      )}）`,
+      details: perState
     });
   }
 

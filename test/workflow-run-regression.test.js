@@ -435,6 +435,48 @@ test("run_regression: 响应含跨 set 合并的 designWarnings", async () => {
   assert.equal(payload.designWarnings.missingSets, 0);
 });
 
+test("run_regression: 执行失败响应携带已收集的 designWarnings", async () => {
+  const sets = [
+    record("figma:abc", "2026-10-17T02:00:00.000Z", [
+      featureRecord("/p/a.json", { key: "fa", name: "账户" }),
+      featureRecord("/p/b.json", { key: "fb", name: "交易" })
+    ])
+  ];
+  const summary = {
+    available: true,
+    total: 1,
+    byCode: { "flow-graph-empty": 1 },
+    codes: ["flow-graph-empty"],
+    snapshotAt: "2026-10-17T00:00:00.000Z",
+    stale: false
+  };
+  let executions = 0;
+  const { deps } = makeDeps({
+    listSets: async () => sets,
+    executeBatch: async () => {
+      executions += 1;
+      if (executions === 2) throw new Error("设备掉线");
+      return batchStub(
+        reportStub({
+          preflight: {
+            designWarnings: [{ code: "flow-graph-empty", message: "流程图为空" }],
+            designWarningSummary: summary
+          }
+        }),
+        "/p/runs/1.json"
+      );
+    }
+  });
+
+  const payload = payloadOf(await runRegression(stubRuntime(), { all: true }, deps));
+
+  assert.equal(payload.ok, false);
+  assert.equal(payload.failedStep, "run");
+  assert.equal(payload.designWarnings.available, true);
+  assert.equal(payload.designWarnings.total, 1);
+  assert.deepEqual(payload.designWarnings.bySource, { 账户: 1 });
+});
+
 test("run_regression: 部分 set 缺 preflight 摘要 → designWarnings 披露 missingSets", async () => {
   const sets = [
     record("figma:abc", "2026-10-17T02:00:00.000Z", [

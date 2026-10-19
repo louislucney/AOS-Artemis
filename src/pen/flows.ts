@@ -36,6 +36,8 @@ import {
 } from "../design/vision.js";
 import {
   candidateNameMatches,
+  evaluateCandidateCoverage,
+  parseCandidateTokens,
   type FlowElementCoverage,
   type VisionCandidate
 } from "../design/element-coverage.js";
@@ -728,6 +730,40 @@ function skippedVision(
   };
 }
 
+/** 未进入 vision pass 的候选先落 `not-evaluated` 覆盖（含被排除 target），
+ * 避免能力/渲染早退时候选静默消失。 */
+function preCollectionCoverage(
+  collected: CollectedVision,
+  reason: "vision-off" | "vision-unavailable" | "render-missing"
+): Map<string, FlowElementCoverage> {
+  const coverage = new Map<string, FlowElementCoverage>();
+  for (const target of collected.targets) {
+    coverage.set(
+      target.id,
+      evaluateCandidateCoverage({
+        state: target.stateName ?? null,
+        designNodes: target.designNodes ?? target.nodes.length,
+        candidates: target.candidates ?? [],
+        elements: [],
+        notEvaluatedReason: reason
+      })
+    );
+  }
+  for (const entry of collected.excluded) {
+    coverage.set(
+      entry.screenId,
+      evaluateCandidateCoverage({
+        state: entry.state,
+        designNodes: entry.designNodes,
+        candidates: entry.candidates,
+        elements: [],
+        notEvaluatedReason: entry.reason
+      })
+    );
+  }
+  return coverage;
+}
+
 function visionEnvFlag(dotenv: Record<string, string>): string {
   return (dotenv.AOS_VISION ?? process.env.AOS_VISION ?? "").trim();
 }
@@ -807,31 +843,42 @@ interface InspectedFrame {
   groundingTruncated: number;
 }
 
-/** 候选与 grounding 节点一次采集：候选（最外层）优先、叶子优先、容器兜底。 */
-function inspectFrameNode(frame: PenNode, state: string | null): InspectedFrame {
+/** 候选与 grounding 节点一次采集：候选（最外层）优先、叶子优先、容器兜底。
+ * 候选子树继续下钻以统计 `designNodes` 与几何，但不再采集嵌套候选。 */
+function inspectFrameNode(
+  frame: PenNode,
+  state: string | null,
+  extraTokens: readonly string[] = []
+): InspectedFrame {
   const candidates: VisionCandidate[] = [];
   const geoms: Array<VisionNodeGeom & { container: boolean; candidate: boolean }> = [];
   let candidateMatches = 0;
+  let designNodes = 0;
 
-  const visit = (node: PenNode, ox: number, oy: number): void => {
+  const visit = (node: PenNode, ox: number, oy: number, underCandidate: boolean): void => {
     if (isFlowLayer(node)) return;
+    designNodes += 1;
     const x = numberProp(node, "x");
     const y = numberProp(node, "y");
     const ax = ox + (x ?? 0);
     const ay = oy + (y ?? 0);
     const name = typeof node.name === "string" ? node.name : "";
+    const type = String(node.type ?? "");
     const id = typeof node.id === "string" && node.id !== "" ? node.id : null;
     const width = numberProp(node, "width");
     const height = numberProp(node, "height");
-    const matches = id !== null && name !== "" && candidateNameMatches(name);
+    const matches =
+      !underCandidate &&
+      id !== null &&
+      (candidateNameMatches(name, extraTokens) || node.type === "ref" || node.reusable === true);
 
     if (matches) {
       candidateMatches += 1;
       if (candidates.length < CANDIDATE_NODE_LIMIT) {
         candidates.push({
           id,
-          name,
-          type: String(node.type ?? ""),
+          name: name !== "" ? name : type !== "" ? type : "component",
+          type,
           ...(x !== null && y !== null && width !== null && height !== null && width > 0 && height > 0
             ? { bbox: { x: ax, y: ay, width, height } }
             : {}),
@@ -848,7 +895,7 @@ function inspectFrameNode(frame: PenNode, state: string | null): InspectedFrame 
       geoms.push({
         id,
         name,
-        type: String(node.type ?? ""),
+        type,
         x: ax,
         y: ay,
         width,
@@ -858,10 +905,9 @@ function inspectFrameNode(frame: PenNode, state: string | null): InspectedFrame 
       });
     }
 
-    if (matches) return;
-    for (const child of node.children ?? []) visit(child, ax, ay);
+    for (const child of node.children ?? []) visit(child, ax, ay, underCandidate || matches);
   };
-  for (const child of frame.children ?? []) visit(child, 0, 0);
+  for (const child of frame.children ?? []) visit(child, 0, 0, false);
 
   const rank = (entry: { container: boolean; candidate: boolean }): number =>
     (entry.candidate ? 0 : 2) + (entry.container ? 1 : 0);
@@ -879,7 +925,7 @@ function inspectFrameNode(frame: PenNode, state: string | null): InspectedFrame 
     candidates,
     candidateMatches,
     nodes,
-    designNodes: geoms.length,
+    designNodes,
     groundingTruncated: Math.max(0, geoms.length - GROUNDING_NODE_LIMIT)
   };
 }
@@ -903,7 +949,8 @@ interface VisionTargetSpec {
 export function collectVisionScreens(
   doc: PenDocument,
   screens: PenFlowScreen[],
-  sizeFor?: (screenId: string) => { width: number; height: number } | null
+  sizeFor?: (screenId: string) => { width: number; height: number } | null,
+  extraTokens: readonly string[] = []
 ): CollectedVision {
   const byId = new Map<string, PenNode>();
   const duplicateIds: string[] = [];
@@ -957,7 +1004,7 @@ export function collectVisionScreens(
       });
       continue;
     }
-    const inspected = inspectFrameNode(frame, spec.stateName);
+    const inspected = inspectFrameNode(frame, spec.stateName, extraTokens);
     candidatesTruncated += inspected.candidateMatches - inspected.candidates.length;
     groundingTruncated += inspected.groundingTruncated;
     const fallback = sizeFor ? sizeFor(spec.id) : null;
@@ -1165,13 +1212,26 @@ async function applyVision(
 ): Promise<VisionMerge | null> {
   const requested: VisionMerge["requested"] =
     args.vision === true ? "on" : args.vision === false ? "off" : "auto";
-  if (requested === "off") return null;
 
   const dotenv = runtime.project.dotenvValues ?? {};
+  const extraTokens = parseCandidateTokens(
+    dotenv.AOS_VISION_CANDIDATE_TOKENS ?? process.env.AOS_VISION_CANDIDATE_TOKENS
+  );
+  const preCollection = collectVisionScreens(doc, result.screens, undefined, extraTokens);
+  if (requested === "off") {
+    return skippedVision(requested, "vision:false（调用方关闭）", [], {
+      coverageByTarget: preCollectionCoverage(preCollection, "vision-off")
+    });
+  }
   if (visionEnvFlag(dotenv) === "0") {
-    return skippedVision(requested, "AOS_VISION=0", [
-      { code: "vision-disabled-by-env", message: "视觉识别已跳过：AOS_VISION=0（环境禁用）" }
-    ]);
+    return skippedVision(
+      requested,
+      "AOS_VISION=0",
+      [
+        { code: "vision-disabled-by-env", message: "视觉识别已跳过：AOS_VISION=0（环境禁用）" }
+      ],
+      { coverageByTarget: preCollectionCoverage(preCollection, "vision-off") }
+    );
   }
 
   let chat: ChatFn | null = deps.chat ?? null;
@@ -1184,12 +1244,17 @@ async function applyVision(
     const entry = await runtime.activeEntry();
     model = entry?.model ?? undefined;
     if (!entry || !entry.model || !entry.baseUrl || !entry.apiKey) {
-      return skippedVision(requested, "无可用 active LLM", [
-        {
-          code: "vision-unavailable",
-          message: "视觉识别已跳过：无可用 active LLM（缺 model/baseUrl/key，用 aos_configure 配置）"
-        }
-      ]);
+      return skippedVision(
+        requested,
+        "无可用 active LLM",
+        [
+          {
+            code: "vision-unavailable",
+            message: "视觉识别已跳过：无可用 active LLM（缺 model/baseUrl/key，用 aos_configure 配置）"
+          }
+        ],
+        { coverageByTarget: preCollectionCoverage(preCollection, "vision-unavailable") }
+      );
     }
     const env = { ...process.env, ...dotenv };
     capabilityKey = visionCapabilityKey(entry.baseUrl, entry.model);
@@ -1216,9 +1281,12 @@ async function applyVision(
           resolution.source === "declared"
             ? `视觉识别已跳过：AOS_LLM_VISION 声明 active 模型「${entry.model}」无视觉能力（可 vision:true 强制尝试或切换视觉模型）`
             : `视觉识别已跳过：已记录 active 模型「${entry.model}」不接受图片输入（缓存期内不再尝试；可 vision:true 覆盖或切换视觉模型）`;
-        return skippedVision(requested, `模型「${entry.model}」无视觉能力（${resolution.source}）`, [
-          { code: "vision-unavailable", message }
-        ]);
+        return skippedVision(
+          requested,
+          `模型「${entry.model}」无视觉能力（${resolution.source}）`,
+          [{ code: "vision-unavailable", message }],
+          { coverageByTarget: preCollectionCoverage(preCollection, "vision-unavailable") }
+        );
       }
       if (resolution.capable === "unknown") {
         preWarnings = [
@@ -1236,20 +1304,30 @@ async function applyVision(
   try {
     assets = await loadAssets();
   } catch (error) {
-    return skippedVision(requested, "渲染通道失败", [
-      { code: "vision-render-unavailable", message: `视觉识别已跳过：设计渲染失败（${errorMessage(error)}）` }
-    ]);
+    return skippedVision(
+      requested,
+      "渲染通道失败",
+      [
+        { code: "vision-render-unavailable", message: `视觉识别已跳过：设计渲染失败（${errorMessage(error)}）` }
+      ],
+      { coverageByTarget: preCollectionCoverage(preCollection, "render-missing") }
+    );
   }
   if (assets.channelError !== null) {
-    return skippedVision(requested, "渲染通道失败", [
-      {
-        code: "vision-render-unavailable",
-        message: `视觉识别已跳过：设计渲染失败（${assets.channelError}）`
-      }
-    ]);
+    return skippedVision(
+      requested,
+      "渲染通道失败",
+      [
+        {
+          code: "vision-render-unavailable",
+          message: `视觉识别已跳过：设计渲染失败（${assets.channelError}）`
+        }
+      ],
+      { coverageByTarget: preCollectionCoverage(preCollection, "render-missing") }
+    );
   }
 
-  const collected = collectVisionScreens(doc, result.screens, renderedSizeResolver(assets));
+  const collected = collectVisionScreens(doc, result.screens, renderedSizeResolver(assets), extraTokens);
   const screens = collected.targets;
   const labelOf = (entry: CollectedVisionExclusion): string =>
     entry.state === null ? entry.screenName : `${entry.screenName}·${entry.state}`;
@@ -1283,8 +1361,8 @@ async function applyVision(
     preWarnings = [
       ...preWarnings,
       {
-        code: "vision-duplicate-screen-ids",
-        message: `设计文档存在 ${collected.duplicateIds.length} 个重复节点 id，视觉识别按文档中最后出现的帧解析，需修正设计文件`,
+        code: "pen-duplicate-node-ids",
+        message: `设计文档存在 ${collected.duplicateIds.length} 个重复节点 id，视觉识别按文档中最后出现的帧解析（last-wins），需修正设计文件`,
         details: collected.duplicateIds.slice(0, 10)
       }
     ];
@@ -1331,6 +1409,10 @@ async function applyVision(
     candidatesTruncated: collected.candidatesTruncated,
     groundingTruncated: collected.groundingTruncated
   });
+  const coverageByTarget = preCollectionCoverage(collected, "render-missing");
+  for (const [targetId, coverage] of pass.coverageByTarget) {
+    coverageByTarget.set(targetId, coverage);
+  }
   if (screens.length === 0) {
     const frameMissing = collected.excluded.filter((entry) => entry.reason === "frame-missing").length;
     const noGeometry = collected.excluded.filter((entry) => entry.reason === "no-geometry").length;
@@ -1345,7 +1427,7 @@ async function applyVision(
     return skippedVision(requested, reason, [...preWarnings, ...pass.warnings], {
       stats: pass.stats,
       accounting: pass.accounting,
-      coverageByTarget: pass.coverageByTarget
+      coverageByTarget
     });
   }
   if (
@@ -1370,7 +1452,7 @@ async function applyVision(
       stateEdges: [],
       unresolvedDestinations: [],
       elementsByScreen: new Map(),
-      coverageByTarget: pass.coverageByTarget,
+      coverageByTarget,
       cappedTargets: pass.cappedTargets,
       stats: pass.stats,
       accounting: pass.accounting
@@ -1399,7 +1481,7 @@ async function applyVision(
     stateEdges: pass.stateEdges,
     unresolvedDestinations: pass.unresolvedDestinations,
     elementsByScreen: pass.elementsByScreen,
-    coverageByTarget: pass.coverageByTarget,
+    coverageByTarget,
     cappedTargets: pass.cappedTargets,
     stats: pass.stats,
     accounting: pass.accounting
@@ -1469,6 +1551,23 @@ export async function penExtractFlows(
     const visionElements = vision?.active ? vision.stats?.elements ?? 0 : 0;
     const visionEdges = vision?.active ? vision.edges.length : 0;
     const visionStateEdges = vision?.active ? vision.stateEdges.length : 0;
+    const visionMainElements = vision?.active
+      ? result.screens.reduce(
+          (sum, screen) => sum + (vision.elementsByScreen.get(screen.id)?.length ?? 0),
+          0
+        )
+      : 0;
+    const visionStateElements = vision?.active
+      ? result.screens.reduce(
+          (sum, screen) =>
+            sum +
+            screen.states.reduce(
+              (inner, state) => inner + (vision.elementsByScreen.get(state.id)?.length ?? 0),
+              0
+            ),
+          0
+        )
+      : 0;
     const payload: Record<string, unknown> = {
       ok: true,
       schemaVersion: FLOWS_SCHEMA_VERSION,
@@ -1481,6 +1580,8 @@ export async function penExtractFlows(
         inferredEdges: result.synthesis.inferredEdges,
         interactionSignals: result.synthesis.interactionSignals,
         visionElements,
+        visionMainElements,
+        visionStateElements,
         visionEdges,
         visionStateEdges,
         warnings: result.warnings.length

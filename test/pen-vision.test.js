@@ -508,6 +508,229 @@ test("vision: AOS_VISION=0 disables the pass with an explicit warning", async ()
   assert.equal(payload.counts.visionElements, 0);
 });
 
+test("vision: 未进入 pass 的候选仍落 not-evaluated（vision-off / unavailable / render-missing）", async () => {
+  const offProject = makeProject();
+  const offRuntime = (await loadTestRuntime(offProject, { proxy: new StubProxy() })).runtime;
+  const off = parseToolResult(
+    await penExtractFlows(offRuntime, { vision: false, screens: false })
+  );
+  const offFlows = JSON.parse(fs.readFileSync(off.savedTo.json, "utf-8"));
+  const offCoverage = offFlows.screens
+    .find((screen) => screen.name === "主頁")
+    .elementsCoverage[0];
+  assert.equal(offCoverage.notEvaluated, true);
+  assert.equal(offCoverage.notEvaluatedReason, "vision-off");
+  assert.equal(offCoverage.coveredCandidates, 0);
+  assert.equal(offCoverage.notEvaluatedCandidates, 1);
+  assert.deepEqual(
+    offCoverage.details.map((detail) => [detail.status, detail.reason]),
+    [["not-evaluated", "vision-off"]]
+  );
+
+  const unavailableProject = makeProject();
+  const unavailableRuntime = (
+    await loadTestRuntime(unavailableProject, { proxy: new StubProxy() })
+  ).runtime;
+  const unavailable = parseToolResult(
+    await penExtractFlows(unavailableRuntime, { screens: false })
+  );
+  const unavailableFlows = JSON.parse(fs.readFileSync(unavailable.savedTo.json, "utf-8"));
+  const unavailableCoverage = unavailableFlows.screens
+    .find((screen) => screen.name === "主頁")
+    .elementsCoverage[0];
+  assert.equal(unavailableCoverage.notEvaluatedReason, "vision-unavailable");
+  assert.equal(unavailableCoverage.coveredCandidates, 0);
+
+  const renderProject = makeProject();
+  const renderRuntime = (await loadTestRuntime(renderProject, { proxy: new StubProxy() })).runtime;
+  const renderFailed = parseToolResult(
+    await penExtractFlows(
+      renderRuntime,
+      { screens: false },
+      {
+        chat: fakeChat(),
+        render: async () => ({
+          ok: false,
+          dir: null,
+          files: new Map(),
+          missing: ["home", "store"],
+          error: "pen CLI 未登录"
+        })
+      }
+    )
+  );
+  const renderFlows = JSON.parse(fs.readFileSync(renderFailed.savedTo.json, "utf-8"));
+  const renderCoverage = renderFlows.screens
+    .find((screen) => screen.name === "主頁")
+    .elementsCoverage[0];
+  assert.equal(renderCoverage.notEvaluatedReason, "render-missing");
+  assert.equal(renderCoverage.coveredCandidates, 0);
+  assert.ok(
+    renderCoverage.details.every((detail) => detail.status === "not-evaluated"),
+    "渲染失败不得伪造 covered"
+  );
+});
+
+test("vision: AOS_VISION_CANDIDATE_TOKENS 项目 .env 与进程 env 都能追加词表", async () => {
+  const doc = {
+    version: "2.20",
+    children: [
+      {
+        id: "b1",
+        type: "frame",
+        name: "1. 主流程",
+        x: 0,
+        y: 0,
+        children: [
+          {
+            id: "promo-screen",
+            type: "frame",
+            name: "Frame 500",
+            x: 0,
+            y: 0,
+            width: 390,
+            height: 844,
+            children: [
+              {
+                id: "promo-banner",
+                type: "frame",
+                name: "Promo/Banner",
+                x: 20,
+                y: 20,
+                width: 200,
+                height: 80
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  const withToken = makeProjectWithDoc(doc, {
+    dotenv: "AOS_VISION_CANDIDATE_TOKENS=Promo\n"
+  });
+  const tokenRuntime = (await loadTestRuntime(withToken, { proxy: new StubProxy() })).runtime;
+  const tokenPayload = parseToolResult(
+    await penExtractFlows(tokenRuntime, { vision: false, screens: false })
+  );
+  const tokenFlows = JSON.parse(fs.readFileSync(tokenPayload.savedTo.json, "utf-8"));
+  assert.equal(
+    tokenFlows.screens[0].elementsCoverage[0].candidateNodes,
+    1,
+    "项目 .env 的追加词命中 Promo/Banner"
+  );
+
+  const withoutToken = makeProjectWithDoc(doc);
+  const plainRuntime = (await loadTestRuntime(withoutToken, { proxy: new StubProxy() })).runtime;
+  const plainPayload = parseToolResult(
+    await penExtractFlows(plainRuntime, { vision: false, screens: false })
+  );
+  const plainFlows = JSON.parse(fs.readFileSync(plainPayload.savedTo.json, "utf-8"));
+  assert.equal(plainFlows.screens[0].elementsCoverage[0].candidateNodes, 0);
+
+  const original = process.env.AOS_VISION_CANDIDATE_TOKENS;
+  process.env.AOS_VISION_CANDIDATE_TOKENS = "Promo";
+  try {
+    const envRuntime = (await loadTestRuntime(withoutToken, { proxy: new StubProxy() })).runtime;
+    const envPayload = parseToolResult(
+      await penExtractFlows(envRuntime, { vision: false, screens: false })
+    );
+    const envFlows = JSON.parse(fs.readFileSync(envPayload.savedTo.json, "utf-8"));
+    assert.equal(
+      envFlows.screens[0].elementsCoverage[0].candidateNodes,
+      1,
+      "进程 env 回退同样生效"
+    );
+  } finally {
+    if (original === undefined) delete process.env.AOS_VISION_CANDIDATE_TOKENS;
+    else process.env.AOS_VISION_CANDIDATE_TOKENS = original;
+  }
+});
+
+test("vision: 零候选兜底按全部设计节点计数（auto-layout 无完整几何也告警）", async () => {
+  const doc = {
+    version: "2.20",
+    children: [
+      {
+        id: "b1",
+        type: "frame",
+        name: "1. 主流程",
+        x: 0,
+        y: 0,
+        children: [
+          {
+            id: "auto",
+            type: "frame",
+            name: "Frame 600",
+            x: 0,
+            y: 0,
+            width: "fill_container",
+            children: [
+              { id: "auto-title", type: "text", content: "主頁" },
+              { id: "auto-a", type: "frame", name: "Frame 1", x: 0, y: 40 },
+              { id: "auto-b", type: "frame", name: "Frame 2", x: 0, y: 80 }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+  const dir = makeProjectWithDoc(doc);
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(
+      runtime,
+      { screens: false },
+      { chat: silentChat, render: sizedRender(390, 844) }
+    )
+  );
+  assert.equal(payload.ok, true);
+  const flows = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
+  const coverage = flows.screens[0].elementsCoverage[0];
+  assert.equal(coverage.designNodes, 3, "无几何子节点也计入");
+  assert.equal(coverage.candidateNodes, 0);
+  assert.equal(coverage.notEvaluated, undefined);
+  assert.equal(payload.vision.candidateNodes, 0);
+  const warning = payload.warnings.find(
+    (entry) => entry.code === "vision-candidate-vocabulary-unmatched"
+  );
+  assert.ok(warning, "零候选但设计节点 > 0 必须告警");
+  assert.match(warning.message, /3 个设计节点/);
+});
+
+test("vision: 重复节点 id 告警码对齐 pen-duplicate-node-ids（last-wins）", async () => {
+  const doc = {
+    version: "2.20",
+    children: [
+      {
+        id: "b1",
+        type: "frame",
+        name: "1. 主流程",
+        x: 0,
+        y: 0,
+        children: [
+          { id: "dup", type: "frame", name: "Frame 701", x: 0, y: 0, width: 390, height: 844 },
+          { id: "dup", type: "frame", name: "Frame 702", x: 420, y: 0, width: 390, height: 844 }
+        ]
+      }
+    ]
+  };
+  const dir = makeProjectWithDoc(doc);
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(
+      runtime,
+      { screens: false },
+      { chat: silentChat, render: sizedRender(390, 844) }
+    )
+  );
+  const warning = payload.warnings.find((entry) => entry.code === "pen-duplicate-node-ids");
+  assert.ok(warning, "重复 id 不静默");
+  assert.match(warning.message, /last-wins/);
+  assert.deepEqual(warning.details, ["dup"]);
+});
+
 test("vision: render channel failure and per-screen call failure degrade without aborting", async () => {
   const dir = makeProject();
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
@@ -837,6 +1060,13 @@ test("runVisionPass: 主屏+变体逐 target 识别，state 元素只进 states�
   assert.equal(payload.vision.active, true);
   assert.equal(payload.vision.screensProcessed, 1);
   assert.equal(payload.vision.statesProcessed, 2);
+  assert.equal(payload.counts.visionMainElements, 1);
+  assert.equal(payload.counts.visionStateElements, 2);
+  assert.equal(
+    payload.counts.visionMainElements + payload.counts.visionStateElements,
+    payload.counts.visionElements,
+    "主屏/变体元素计数与总数对齐（变体仅审计，不并入生成）"
+  );
 
   const flows = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
   const home = flows.screens.find((screen) => screen.name === "主頁");
@@ -887,20 +1117,34 @@ test("runVisionPass: state target 计入 statesRequested/Processed，元素带 s
   assert.deepEqual(pass.cappedTargets, []);
 });
 
-test("runVisionPass: 非 1x 渲染先按 renderScale 换算（或显式拒绝）", async () => {
+test("runVisionPass: 2× 渲染图按 renderScale 换算（width/height 为图像像素）", async () => {
   const node = { id: "cta", name: "提交 Button", type: "frame", x: 100, y: 200, width: 60, height: 40 };
-  const bbox = bboxOf(100 * 2, 200 * 2, 60 * 2, 40 * 2);
+  const imageWidth = 390 * 2;
+  const imageHeight = 844 * 2;
+  const bbox = {
+    x: (100 * 2) / imageWidth,
+    y: (200 * 2) / imageHeight,
+    width: (60 * 2) / imageWidth,
+    height: (40 * 2) / imageHeight
+  };
   const chat = async () =>
     JSON.stringify({ elements: [{ class: "cta", intent: "submit", label: "提交", bbox }] });
 
   const scaled = await runVisionPass({
     chat,
-    screens: [target({ nodes: [node], renderScale: 2 })],
+    screens: [
+      target({
+        width: imageWidth,
+        height: imageHeight,
+        nodes: [node],
+        renderScale: 2
+      })
+    ],
     imageFor: () => "data:image/png;base64,AA==",
     renderPath: () => null
   });
   const scaledElement = scaled.elementsByScreen.get("home")[0];
-  assert.equal(scaledElement.nodeId, "cta", "归一化 bbox 先除 renderScale 再做设计 px 判定");
+  assert.equal(scaledElement.nodeId, "cta", "归一化 bbox 乘图像像素后除 renderScale 回到设计 px");
   assert.ok(Math.abs(scaledElement.bbox.x - 100) < 1e-9);
   assert.ok(Math.abs(scaledElement.bbox.y - 200) < 1e-9);
   assert.ok(Math.abs(scaledElement.bbox.width - 60) < 1e-9);
@@ -908,11 +1152,15 @@ test("runVisionPass: 非 1x 渲染先按 renderScale 换算（或显式拒绝）
 
   const unscaled = await runVisionPass({
     chat,
-    screens: [target({ nodes: [node] })],
+    screens: [target({ width: imageWidth, height: imageHeight, nodes: [node] })],
     imageFor: () => "data:image/png;base64,AA==",
     renderPath: () => null
   });
-  assert.equal(unscaled.elementsByScreen.get("home")[0].nodeId, undefined, "不换算会失准（测试锁定换算路径）");
+  assert.equal(
+    unscaled.elementsByScreen.get("home")[0].nodeId,
+    undefined,
+    "不换算会失准（测试锁定换算路径）"
+  );
 });
 
 test("runVisionPass: >40 条 → vision-response-truncated 且 truncatedItems 计入会计", async () => {

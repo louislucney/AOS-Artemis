@@ -1629,7 +1629,7 @@ test("figma_generate_tests: 文件模式把 flows warnings 写进响应/tests.js
   assert.deepEqual(saved.designWarningsSummary, payload.designWarningsSummary);
 
   const markdown = fs.readFileSync(payload.savedTo.markdown, "utf-8");
-  assert.match(markdown, /## 设计源警告（不阻断生成）/);
+  assert.match(markdown, /## 警告（设计源与生成期，不阻断生成）/);
   assert.match(markdown, /unresolved-destinations/);
   assert.match(markdown, /跨文件\/跨页跳转/);
   assert.match(markdown, /明细：Success、Settings/);
@@ -1690,7 +1690,7 @@ test("figma_generate_tests: URL 模式现算 flowGraphWarnings", async () => {
     );
     assert.deepEqual(saved.designWarnings, payload.designWarnings);
     const markdown = fs.readFileSync(path.join(dir, ".artemis", "design", "tests.md"), "utf-8");
-    assert.match(markdown, /## 设计源警告（不阻断生成）/);
+    assert.match(markdown, /## 警告（设计源与生成期，不阻断生成）/);
     assert.match(markdown, /no-interactions/);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1704,10 +1704,10 @@ test("figma_generate_tests: URL 模式现算 flowGraphWarnings", async () => {
 test("figma_generate_tests: 无警告时 md 不出现空小节", () => {
   const cases = generateTestCases(buildFlowGraph(syntheticFlowDocument()));
   const without = renderMarkdown(cases, { source: "t", generatedAt: "now" });
-  assert.doesNotMatch(without, /设计源警告/);
+  assert.doesNotMatch(without, /警告（设计源与生成期/);
 
   const empty = renderMarkdown(cases, { source: "t", generatedAt: "now" }, { designWarnings: [] });
-  assert.doesNotMatch(empty, /设计源警告/);
+  assert.doesNotMatch(empty, /警告（设计源与生成期/);
 });
 
 test("figma_generate_tests: flows 与生成期 warnings 合并去重（同 code+message 只留一条）", async () => {

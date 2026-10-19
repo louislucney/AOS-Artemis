@@ -56,7 +56,8 @@ export interface VisionScreenInput {
   stateOf?: string | null;
   stateName?: string | null;
   candidates?: VisionCandidate[];
-  /** 渲染倍率；默认 1。非 1 时 bbox 先除以它再进入设计 px 判定。 */
+  /** 渲染图倍率；默认 1。`width/height` 在非 1 时表示**渲染图像像素**，
+   * 识别 bbox（归一化）先乘图像尺寸再除以 `renderScale` 得到设计 px。 */
   renderScale?: number;
   /** 采集到的设计节点总数（`nodes` 可能因 grounding 上限被截断）。 */
   designNodes?: number;

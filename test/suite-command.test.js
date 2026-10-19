@@ -246,6 +246,71 @@ test("suite baseline: save/compare lifecycle with --fail-on gating", async () =>
   assert.equal(invalid.code, 2);
 });
 
+test("suite report: 文本两分支都打印设计源警告；JSON 结构不变", async () => {
+  const { runtime, store } = await setupRun({ cases: null });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "tests.json"),
+    JSON.stringify({
+      flows: [],
+      designWarnings: [
+        { code: "pen-no-interactions", message: "未检测到交互线索" },
+        { code: "screenshot-missing", message: "首页截图缺失" }
+      ],
+      designWarningsSummary: {
+        available: true,
+        total: 2,
+        byCode: { "pen-no-interactions": 1, "screenshot-missing": 1 },
+        codes: ["pen-no-interactions", "screenshot-missing"]
+      }
+    })
+  );
+  const { sets } = await seedCaseSets(store, runtime.project.rootDir, designDir);
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: sets[0].id, featureKey: "f-old" }],
+    platforms: ["android"],
+    baseline: "none",
+    createdBy: "test"
+  });
+
+  const normal = await runCli(runtime, ["report", "--no-sync", "--no-save"]);
+  assert.equal(normal.code, 0);
+  assert.ok(
+    normal.logs.some((line) =>
+      line.startsWith("设计源警告: 2 条（pen-no-interactions、screenshot-missing）")
+    ),
+    normal.logs.join("\n")
+  );
+
+  const taskReport = await runCli(runtime, ["report", "--task", task.id, "--no-save"]);
+  assert.equal(taskReport.code, 0);
+  assert.ok(
+    taskReport.logs.some((line) =>
+      line.startsWith("设计源警告: 2 条（pen-no-interactions、screenshot-missing）")
+    ),
+    taskReport.logs.join("\n")
+  );
+
+  const json = await runCli(runtime, ["report", "--no-sync", "--no-save", "--json"]);
+  assert.equal(json.code, 0);
+  const payload = JSON.parse(json.logs.at(-1));
+  assert.equal(payload.designWarnings.total, 2);
+  assert.deepEqual(payload.designWarnings.codes, [
+    "pen-no-interactions",
+    "screenshot-missing"
+  ]);
+
+  const bare = await setupRun({ cases: null });
+  const bareReport = await runCli(bare.runtime, ["report", "--no-sync", "--no-save"]);
+  assert.equal(bareReport.code, 0);
+  assert.ok(
+    bareReport.logs.some((line) => line.startsWith("设计源警告: 不可用")),
+    bareReport.logs.join("\n")
+  );
+});
+
 test("suite report/feedback: ledger-derived artifacts and suggestions", async () => {
   const store = new MemoryStore();
   const { dir, runtime } = await setupRun({

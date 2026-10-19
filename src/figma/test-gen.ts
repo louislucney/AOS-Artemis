@@ -658,7 +658,7 @@ export function renderMarkdown(
     ""
   ];
   if (options.designWarnings && options.designWarnings.length > 0) {
-    lines.push("## 设计源警告（不阻断生成）", "");
+    lines.push("## 警告（设计源与生成期，不阻断生成）", "");
     for (const warning of options.designWarnings) {
       lines.push(`- \`${warning.code}\`：${warning.message}`);
       if (warning.details && warning.details.length > 0) {

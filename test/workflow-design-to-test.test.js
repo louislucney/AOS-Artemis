@@ -882,8 +882,71 @@ test("design_to_test: artifacts.flowMap 指向 design/flow-map.md", async (t) =>
   assert.equal(barePayload.artifacts.flowMap, undefined);
 });
 
+test("design_to_test: 生成期警告合并进最终响应并计入 bySource", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps();
+  deps.generate = async (rt) => {
+    const dir = path.join(rt.configDirAbs, "design");
+    return textResult({
+      ok: true,
+      source: path.join(dir, "flows.json"),
+      counts: { flows: 2, screens: 2, edges: 1 },
+      warnings: [{ code: "feature-without-cases", message: "功能「空组」没有生成用例" }],
+      designWarnings: [{ code: "feature-without-cases", message: "功能「空组」没有生成用例" }]
+    });
+  };
+
+  const payload = payloadOf(await designToTest(runtime, { figmaUrl: FIGMA_URL }, deps));
+
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.warnings, [
+    { code: "feature-without-cases", message: "功能「空组」没有生成用例" }
+  ]);
+  assert.equal(payload.designWarnings.available, true);
+  assert.equal(payload.designWarnings.total, 1);
+  assert.deepEqual(payload.designWarnings.codes, ["feature-without-cases"]);
+  assert.deepEqual(payload.designWarnings.bySource, { extract: 0, flows: 0, generated: 1 });
+});
+
+test("design_to_test: 生成失败响应也携带生成期已返回的 warnings", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps();
+  deps.generate = async () =>
+    textResult(
+      {
+        ok: false,
+        error: "生成失败",
+        warnings: [{ code: "generation-unknown", message: "旧 tests.json 缺少 generation 字段" }]
+      },
+      true
+    );
+
+  const payload = payloadOf(await designToTest(runtime, { figmaUrl: FIGMA_URL }, deps));
+
+  assert.equal(payload.ok, false);
+  assert.equal(payload.failedStep, "generate");
+  assert.deepEqual(payload.warnings, [
+    { code: "generation-unknown", message: "旧 tests.json 缺少 generation 字段" }
+  ]);
+  assert.equal(payload.designWarnings.available, true);
+  assert.equal(payload.designWarnings.total, 1);
+});
+
+test("design_to_test: 无可读警告来源时 available=false（不伪造 0 条可用）", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps();
+  const payload = payloadOf(await designToTest(runtime, { figmaUrl: FIGMA_URL }, deps));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.designWarnings.available, false);
+  assert.equal(payload.designWarnings.total, 0);
+});
+
 test("design_to_test: check 失败响应也携带已获得的 warnings", async () => {
   const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  const flowMapPath = path.join(designDir, "flow-map.md");
+  fs.writeFileSync(flowMapPath, "# 流程地图\n");
   const { deps } = makeDeps({ gate: () => "流程未完整覆盖：未硬覆盖屏幕 1" });
   deps.extractFigma = async () =>
     textResult({
@@ -902,6 +965,7 @@ test("design_to_test: check 失败响应也携带已获得的 warnings", async (
   assert.equal(payload.designWarnings.available, true);
   assert.equal(payload.designWarnings.total, 1);
   assert.deepEqual(payload.designWarnings.codes, ["flow-graph-empty"]);
+  assert.equal(payload.artifacts.flowMap, flowMapPath, "check 失败也返回已算出的 flowMap");
 });
 
 test("design_to_test: extract 与 flows.json 重复警告去重（extract 优先）", async (t) => {

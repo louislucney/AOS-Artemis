@@ -168,6 +168,11 @@ test("evaluateCandidateCoverage: 同 state 重复文本 → ambiguous-text，不
       ["unverifiable", "ambiguous-text"]
     ]
   );
+  assert.deepEqual(
+    coverage.details.map((detail) => detail.matches),
+    [2, 2],
+    "ambiguous-text details 附同文本候选匹配数"
+  );
 
   const dark = evaluateCandidateCoverage({
     state: "dark",
@@ -270,6 +275,8 @@ test("coverageWarnings: uncovered 具名；unverifiable 每屏一条；零候选
   const unverifiable = warnings.filter((warning) => warning.code === "vision-candidate-unverifiable");
   assert.equal(unverifiable.length, 1, "one summary warning per screen, not per candidate");
   assert.ok(unverifiable[0].message.includes("2"), "message counts 2 unverifiable candidates");
+  assert.ok(unverifiable[0].message.includes("状态「dark」"), "state label stays visible");
+  assert.deepEqual(unverifiable[0].details, ["主屏 1", "状态「dark」1"]);
 
   const vocabulary = warnings.filter(
     (warning) => warning.code === "vision-candidate-vocabulary-unmatched"

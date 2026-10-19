@@ -359,7 +359,8 @@ export async function verifyJiraIssue(
         failedStep: "run",
         detail: errorMessage(error),
         suggestions: [RUN_FAILURE_SUGGESTION],
-        artifacts: { sets: summaries }
+        artifacts: { sets: summaries },
+        designWarnings: mergeDesignWarningBatches(designWarningBatches)
       });
     }
     const report = batch.report;
@@ -370,7 +371,8 @@ export async function verifyJiraIssue(
         failedStep: "run",
         detail: report.error ?? "套件未执行（无可提交用例）",
         suggestions: RUN_NOT_EXECUTED_SUGGESTIONS,
-        artifacts: { sets: summaries }
+        artifacts: { sets: summaries },
+        designWarnings: mergeDesignWarningBatches(designWarningBatches)
       });
     }
     if (typeof batch.runId === "string" && batch.runId !== "") {

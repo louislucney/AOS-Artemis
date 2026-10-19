@@ -12,6 +12,7 @@ import {
   visionMaxScreens
 } from "../dist/pen/flows.js";
 import { figmaGenerateTests } from "../dist/figma/test-gen.js";
+import { groundNodeId } from "../dist/design/vision.js";
 import { baseConfig, loadTestRuntime, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
 
 function screen(id, name, x, { label, flowLabel, width = 390, height = 844 } = {}) {
@@ -517,6 +518,119 @@ function collectionDoc() {
     }
   ]);
 }
+
+test("collectVisionScreens: >300 几何节点按候选→叶子→容器排序并锁定 grounding 结果", () => {
+  const leaves = Array.from({ length: 305 }, (_, index) => ({
+    id: `leaf-${index}`,
+    type: "frame",
+    name: `Leaf ${index}`,
+    x: (index % 10) * 30,
+    y: 400 + Math.floor(index / 10) * 30,
+    width: 20,
+    height: 20
+  }));
+  const doc = boardOf([
+    {
+      id: "big",
+      type: "frame",
+      name: "Frame 900",
+      x: 0,
+      y: 0,
+      width: 390,
+      height: 1688,
+      children: [
+        {
+          id: "panel",
+          type: "frame",
+          name: "Panel",
+          x: 0,
+          y: 0,
+          width: 300,
+          height: 300,
+          children: [{ id: "panel-inner", type: "frame", name: "Inner", x: 0, y: 0, width: 10, height: 10 }]
+        },
+        ...leaves,
+        {
+          id: "cta",
+          type: "frame",
+          name: "主要/Button",
+          x: 10,
+          y: 350,
+          width: 100,
+          height: 40,
+          children: [{ id: "cta-label", type: "text", content: "购买" }]
+        }
+      ]
+    }
+  ]);
+  const collected = collectVisionScreens(doc, [{ id: "big", name: "大屏", states: [] }]);
+  const target = collected.targets[0];
+  assert.equal(target.designNodes, 309, "全部访问到的非 Flow 节点都计数");
+  assert.equal(target.nodes.length, 300);
+  assert.equal(collected.groundingTruncated, 8);
+  assert.equal(target.nodes[0].id, "cta", "候选优先于插入顺序");
+  assert.deepEqual(
+    target.nodes.slice(0, 3).map((node) => node.id),
+    ["cta", "panel-inner", "leaf-0"],
+    "候选 → 叶子（遍历序）"
+  );
+  assert.equal(target.nodes.at(-1).id, "leaf-297", "300 上限保留前 298 个叶子");
+  assert.equal(groundNodeId({ x: 210, y: 1270, width: 20, height: 20 }, target), "leaf-297");
+  assert.ok(
+    !target.nodes.some((node) => node.id === "panel"),
+    "容器兜底且超过 300 时不进入 grounding"
+  );
+  assert.equal(
+    groundNodeId({ x: 0, y: 0, width: 300, height: 300 }, target),
+    undefined,
+    "容器被挤出 grounding（旧行为会命中 panel）"
+  );
+  assert.equal(groundNodeId({ x: 10, y: 350, width: 100, height: 40 }, target), "cta");
+});
+
+test("collectVisionScreens: ref/reusable 无词表命名也是候选；嵌套只留最外层", () => {
+  const doc = boardOf([
+    {
+      id: "components",
+      type: "frame",
+      name: "Frame 300",
+      x: 0,
+      y: 0,
+      width: 390,
+      height: 844,
+      children: [
+        { id: "ref-generic", type: "ref", name: "Header 1", x: 0, y: 0, width: 100, height: 40 },
+        { id: "reusable-generic", type: "frame", reusable: true, x: 0, y: 60, width: 100, height: 40 },
+        {
+          id: "outer-ref",
+          type: "ref",
+          name: "Card",
+          x: 0,
+          y: 120,
+          width: 100,
+          height: 100,
+          children: [{ id: "inner-ref", type: "ref", name: "Nested", x: 10, y: 10, width: 20, height: 20 }]
+        },
+        { id: "anon-ref", type: "ref", x: 0, y: 240, width: 40, height: 40 }
+      ]
+    }
+  ]);
+  const collected = collectVisionScreens(doc, [{ id: "components", name: "元件屏", states: [] }]);
+  const target = collected.targets[0];
+  assert.deepEqual(
+    target.candidates.map((candidate) => candidate.id),
+    ["ref-generic", "reusable-generic", "outer-ref", "anon-ref"]
+  );
+  assert.equal(
+    target.candidates.find((candidate) => candidate.id === "anon-ref").name,
+    "ref",
+    "无名称时回退 type"
+  );
+  assert.ok(
+    !target.candidates.some((candidate) => candidate.id === "inner-ref"),
+    "嵌套 ref 不重复采集"
+  );
+});
 
 test("collectVisionScreens: 帧缺 id/重复 id → excluded frame-missing + duplicateIds，不静默 continue", () => {
   const doc = boardOf([

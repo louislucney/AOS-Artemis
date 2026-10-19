@@ -170,6 +170,7 @@ export async function designToTest(
   const testsPath = path.join(designDirAbs, "tests.json");
   const flowMapPath = path.join(designDirAbs, "flow-map.md");
   let warnings: DesignWarning[] = [];
+  let warningSources: Array<{ source: string; warnings: DesignWarning[] }> = [];
   let warningsAvailable = false;
   let warningsSnapshotAt: string | null = null;
   let warningsBySource: Record<string, number> = {};
@@ -183,6 +184,18 @@ export async function designToTest(
   });
   const steps: Array<Record<string, unknown>> = [];
   let stepMark = Date.now();
+  const mergeGeneratedWarnings = (payload: Record<string, unknown> | null): void => {
+    if (payload === null) return;
+    if (!Array.isArray(payload.warnings) && !Array.isArray(payload.designWarnings)) return;
+    warningSources = [
+      ...warningSources,
+      { source: "generated", warnings: normalizeWarnings(payload.warnings) }
+    ];
+    const merged = mergeWarnings(warningSources);
+    warnings = merged.warnings;
+    warningsBySource = merged.bySource;
+    warningsAvailable = true;
+  };
   const recordStep = (entry: Record<string, unknown>): Record<string, unknown> => {
     const now = Date.now();
     const out: Record<string, unknown> = { ...entry, ms: now - stepMark };
@@ -198,6 +211,7 @@ export async function designToTest(
     const graph = loadDesignFlowGraph(runtime.configDirAbs);
     const read = readFlowsWarnings(runtime.configDirAbs);
     warnings = read.warnings;
+    warningSources = [{ source: "flows", warnings: read.warnings }];
     warningsAvailable = read.available;
     warningsSnapshotAt = read.snapshotAt;
     warningsBySource = { flows: read.warnings.length };
@@ -245,12 +259,13 @@ export async function designToTest(
     const screens = countOf(extractedPayload, "screens");
     const edges = countOf(extractedPayload, "edges");
     const diskWarnings = readFlowsWarnings(runtime.configDirAbs);
-    const mergedWarnings = mergeWarnings([
+    warningSources = [
       { source: "extract", warnings: normalizeWarnings(extractedPayload?.warnings) },
       { source: "flows", warnings: diskWarnings.warnings }
-    ]);
+    ];
+    const mergedWarnings = mergeWarnings(warningSources);
     warnings = mergedWarnings.warnings;
-    warningsAvailable = true;
+    warningsAvailable = Array.isArray(extractedPayload?.warnings) || diskWarnings.available;
     warningsSnapshotAt = diskWarnings.snapshotAt;
     warningsBySource = mergedWarnings.bySource;
     recordStep({
@@ -270,6 +285,7 @@ export async function designToTest(
       ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {})
     });
     const payload = payloadOf(generated);
+    mergeGeneratedWarnings(payload);
     if (generated.isError === true || payload?.ok === false) {
       return jsonResult({
         ok: false,
@@ -280,6 +296,7 @@ export async function designToTest(
       });
     }
     generatePayload = payload;
+    mergeGeneratedWarnings(payload);
   } catch (error) {
     return jsonResult({
       ok: false,
@@ -310,6 +327,10 @@ export async function designToTest(
     });
   }
 
+  const flowMapArtifact: Record<string, string> = fs.existsSync(flowMapPath)
+    ? { flowMap: flowMapPath }
+    : {};
+
   const preflight = preflightGeneratedTests(runtime.configDirAbs);
   const gate = deps.gate ?? coverageGateIssue;
   const issue = gate(preflight);
@@ -319,6 +340,7 @@ export async function designToTest(
       failedStep: "check",
       detail: issue,
       suggestions: [CHECK_SUGGESTION],
+      ...(Object.keys(flowMapArtifact).length > 0 ? { artifacts: flowMapArtifact } : {}),
       ...warningFields()
     });
   }
@@ -337,9 +359,6 @@ export async function designToTest(
   const source =
     generatedSource ??
     (figmaUrl !== null ? `figma:${figmaUrl}` : penPath !== null ? `pen:${penPath}` : flowsPath);
-  const flowMapArtifact: Record<string, string> = fs.existsSync(flowMapPath)
-    ? { flowMap: flowMapPath }
-    : {};
 
   const logLine = deps.log ?? logInfo;
   let runSummary: Record<string, unknown> | null = null;
