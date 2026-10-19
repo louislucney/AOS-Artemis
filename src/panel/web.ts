@@ -155,6 +155,7 @@ type PanelView =
       rootLabel: string;
       sets: CaseSetRecord[];
       quarantine: LibraryPageData["quarantine"];
+      caseCandidates: LibraryPageData["caseCandidates"];
     }
   | {
       kind: "archive";
@@ -294,12 +295,27 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     };
   }
   if (section === "library") {
+    const recentRuns = await deps.store
+      .listSuiteRuns(resolved.rootPath, { limit: 5 })
+      .catch(() => []);
+    const candidateMap = new Map<string, LibraryPageData["caseCandidates"][number]>();
+    for (const run of recentRuns) {
+      const full = await deps.store.getSuiteRun(resolved.rootPath, run.id).catch(() => null);
+      const at = full?.finishedAt ?? full?.startedAt ?? run.finishedAt ?? run.startedAt ?? null;
+      for (const entry of full?.cases ?? []) {
+        if (entry.status === "passed") continue;
+        if (candidateMap.has(entry.caseId)) continue;
+        candidateMap.set(entry.caseId, { caseId: entry.caseId, name: entry.name, runId: run.id, at });
+      }
+      if (candidateMap.size >= 100) break;
+    }
     return {
       kind: "library",
       rootPath: resolved.rootPath,
       rootLabel: resolved.name,
       sets: await deps.store.listCaseSets(resolved.rootPath),
-      quarantine: await readQuarantineSummary(resolved.rootPath)
+      quarantine: await readQuarantineSummary(resolved.rootPath),
+      caseCandidates: [...candidateMap.values()]
     };
   }
   if (section === "archive") {
@@ -446,7 +462,7 @@ function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "compare") return { ...view.compare, view: "compare" };
   if (view.kind === "dispatch") return { ok: true, view: "dispatch", previewId: view.previewId, ...view.preview };
   if (view.kind === "library") {
-    return { ok: true, view: "library", sets: view.sets, quarantine: view.quarantine };
+    return { ok: true, view: "library", sets: view.sets, quarantine: view.quarantine, caseCandidates: view.caseCandidates };
   }
   if (view.kind === "archive") return { ok: true, view: "archive", artifacts: view.artifacts, page: view.page };
   if (view.kind === "audit") return { ok: true, view: "audit", events: view.events };
@@ -2399,6 +2415,7 @@ function renderPanelHtml(
       rootLabel: view.rootLabel,
       sets: view.sets,
       quarantine: view.quarantine,
+      caseCandidates: view.caseCandidates,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });

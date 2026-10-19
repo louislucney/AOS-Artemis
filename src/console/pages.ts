@@ -15,6 +15,8 @@ export interface LibraryPageData {
   rootLabel: string;
   sets: CaseSetRecord[];
   quarantine: { active: string[]; stale: number; invalid: number; exists: boolean };
+  /** 最近失败用例候选（隔离点选；去重取最近）。 */
+  caseCandidates: Array<{ caseId: string; name: string; runId: string; at: string | null }>;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
@@ -58,14 +60,26 @@ export function renderLibraryPage(data: LibraryPageData): string {
           )
           .join("")}</ul>`
       : `<p class="muted">${quarantine.exists ? "无隔离用例" : "尚无 quarantine.json（下方加入后生成）"}</p>`;
+  const caseCandidateOptions =
+    data.caseCandidates.length === 0
+      ? ""
+      : `<datalist id="quarantine-case-options">${data.caseCandidates
+          .map(
+            (candidate) =>
+              `<option value="${escapeHtml(candidate.caseId)}">${escapeHtml(candidate.name)}${
+                candidate.at === null ? "" : `（最近失败 ${escapeHtml(candidate.at.slice(0, 10))}）`
+              }</option>`
+          )
+          .join("")}</datalist>`;
   const quarantineBody = [
     `<p>${cBadge({ label: `隔离中 ${quarantine.active.length}`, tone: quarantine.active.length > 0 ? "warning" : "success" })}` +
       ` ${cBadge({ label: `过期 ${quarantine.stale}`, tone: "neutral" })}` +
       ` ${cBadge({ label: `无效 ${quarantine.invalid}`, tone: quarantine.invalid > 0 ? "error" : "neutral" })}</p>`,
     quarantineEntries,
-    `<form id="quarantine-form" data-project="${escapeHtml(data.rootPath)}"><p><label>用例 ID <input type="text" name="caseId" aria-label="用例 ID"${disabledAttr}></label> ` +
-      `<label>签字人 <input type="text" name="owner" aria-label="签字人（owner）"${disabledAttr}></label> ` +
-      `<label>到期时间（可选，ISO） <input type="text" name="until" aria-label="到期时间（ISO）" size="22" placeholder="2026-12-31T00:00:00Z"${disabledAttr}></label> ` +
+    `<form id="quarantine-form" data-project="${escapeHtml(data.rootPath)}"><p><label>用例 ID <input list="quarantine-case-options" name="caseId" placeholder="输入或从最近失败用例选择" aria-label="用例 ID（可搜索最近失败用例）"${disabledAttr}></label>` +
+      caseCandidateOptions +
+      ` <label>签字人 <input type="text" name="owner" aria-label="签字人（owner）"${disabledAttr}></label> ` +
+      `<label>到期日期（可选） <input type="date" name="until" aria-label="到期日期（可选）"${disabledAttr}></label> ` +
       `<button class="c-button" type="submit"${disabledAttr}>加入隔离</button> <span id="quarantine-status" role="status" class="muted"></span></p></form>`,
     actionsReason
   ].join("\n");

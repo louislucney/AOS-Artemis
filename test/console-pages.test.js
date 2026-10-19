@@ -50,8 +50,55 @@ function url(rootPath, section, extra = {}) {
   return new URL(`http://x/panel?${params.toString()}`);
 }
 
-test("console pages: 用例库（份列表＋隔离徽章）", async () => {
+test("console pages: 用例库（份列表＋隔离徽章＋失败用例候选点选）", async () => {
   const { deps, rootPath } = await setup();
+  await deps.store.recordSuiteRun({
+    rootPath,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: {
+      trigger: "suite-run",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: null,
+      featureName: null,
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      status: "failed",
+      startedAt: "2026-10-14T10:00:00.000Z",
+      finishedAt: "2026-10-14T10:05:00.000Z",
+      total: 1,
+      passed: 0,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 应用缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "应用缺陷",
+        failureConfidence: "high",
+        failureReason: "崩溃",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
   const html = await handlePanelRequest(url(rootPath, "library"), deps);
   assert.equal(html.status, 200);
   assert.match(html.body, /用例库/);
@@ -69,10 +116,18 @@ test("console pages: 用例库（份列表＋隔离徽章）", async () => {
   assert.match(html.body, /panel\/api\/import/);
   assert.match(html.body, /id="quarantine-form"/, "隔离表单");
   assert.match(html.body, /aria-label="签字人（owner）"/);
+  assert.match(html.body, /list="quarantine-case-options"/, "用例 ID 可搜索（最近失败候选）");
+  assert.match(
+    html.body,
+    /<option value="case-1">Case 1（最近失败 2026-10-14）<\/option>/,
+    "候选含名称与失败日期"
+  );
+  assert.match(html.body, /<input type="date" name="until"/, "到期用日期控件");
 
   const json = JSON.parse((await handlePanelRequest(new URL(url(rootPath, "library").toString().replace("/panel?", "/panel.json?")), deps)).body);
   assert.equal(json.view, "library");
   assert.equal(json.sets.length, 1);
+  assert.equal(json.caseCandidates.length, 1, "候选随 JSON 暴露");
 });
 
 test("console pages: 档案（索引＋kind 筛选）", async () => {
