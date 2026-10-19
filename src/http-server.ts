@@ -256,7 +256,8 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             store,
             catalog: inProcessToolCatalog(),
             storageNote: reason,
-            env: process.env
+            env: process.env,
+            panelUrl: "/panel"
           });
           res.writeHead(usageResponse.status, { "Content-Type": usageResponse.contentType });
           res.end(usageResponse.body);

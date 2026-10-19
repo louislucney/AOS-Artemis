@@ -102,6 +102,17 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.ok(body.includes('data-zero-call="1"'));
   assert.match(body, /<details class="c-details">[\s\S]{0,200}零调用工具（\d+）/, "零调用工具折叠为目录");
   assert.match(body, /<time datetime="/, "事件/最近调用时间相对化");
+  assert.match(body, /c-table-wrap/, "表格横向滚动容器（对齐 CSDC）");
+  assert.match(body, /记录底座：/, "顶栏记录底座条目");
+  assert.match(body, />成功<\/option>[\s\S]*>失败<\/option>/, "筛选词中文化（成功/失败）");
+  assert.match(body, /独立统计进程（控制台总览：/, "独立进程不渲染死链，改为说明");
+
+  const htmlWithPanel = await handleUsageRequest(
+    new URL("http://localhost/usage?project=alpha"),
+    deps(store, { panelUrl: "/panel" })
+  );
+  assert.match(htmlWithPanel.body, /<a href="\/panel">← 回到控制台<\/a>/, "同进程时给回链");
+  assert.doesNotMatch(htmlWithPanel.body, /独立统计进程（控制台总览/, "有回链不重复说明");
   assert.ok(body.includes("aos_status"));
   assert.ok(!body.includes("aos_usage"));
   assert.ok(body.includes("未知条目 &lt;str&gt;"));

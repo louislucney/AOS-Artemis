@@ -191,7 +191,11 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   const healthChip =
     health === undefined
       ? ""
-      : `<div class="c-store-chip" title="记录底座：持久层与最近写入（点击进入运维与数据）">${health.opsHref === null ? "" : `<a href="${escapeHtml(health.opsHref)}">`}${escapeHtml(health.label)}${health.opsHref === null ? "" : "</a>"}${
+      : `<div class="c-store-chip" title="${
+          health.opsHref === null
+            ? "记录底座：持久层与最近写入"
+            : "记录底座：持久层与最近写入（点击进入运维与数据）"
+        }">${health.opsHref === null ? "" : `<a href="${escapeHtml(health.opsHref)}">`}${escapeHtml(health.label)}${health.opsHref === null ? "" : "</a>"}${
           health.lastWriteAt === null
             ? ""
             : ` · 最近写入 ${relativeTime(health.lastWriteAt)}`

@@ -27,6 +27,8 @@ export interface UsageWebDeps {
   storageNote?: string | null;
   env?: NodeJS.ProcessEnv;
   now?: number;
+  /** 呈现于同一进程的 /panel 路由时传入（如 "/panel"）；独立统计进程缺省 → 不渲染回链。 */
+  panelUrl?: string | null;
 }
 
 export interface UsageWebResponse {
@@ -84,6 +86,7 @@ export interface UsageWebView {
   generatedAt: string;
   usage: { enabled: boolean; storage: "postgres" | "file" | "memory"; note: string | null };
   store: { kind: "postgres" | "file" | "memory"; degraded: boolean; note: string | null };
+  panelUrl: string | null;
   filters: UsageWebFiltersView;
   project: UsageWebProjectView | null;
   projects: UsageWebProjectView[];
@@ -235,6 +238,7 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
       ? { enabled, storage, note: null }
       : { enabled, storage, note: USAGE_DISABLED_NOTE },
     store: { kind: storage, degraded: storage === "memory", note: storageNote },
+    panelUrl: deps.panelUrl ?? null,
     filters: {
       project: project?.name ?? null,
       projectRoot: project?.rootPath ?? null,
@@ -307,7 +311,7 @@ function renderTable(
   const body = rows
     .map((row) => `<tr>${row.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`)
     .join("");
-  return `<table>${captionHtml}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  return `<div class="c-table-wrap"><table>${captionHtml}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderSwitcher(view: UsageWebView): string {
@@ -486,8 +490,8 @@ function renderEvents(view: UsageWebView): string {
   );
   const statusOptions = [
     `<option value=""${view.filters.status === null ? " selected" : ""}>全部</option>`,
-    `<option value="ok"${view.filters.status === "ok" ? " selected" : ""}>ok</option>`,
-    `<option value="error"${view.filters.status === "error" ? " selected" : ""}>error</option>`
+    `<option value="ok"${view.filters.status === "ok" ? " selected" : ""}>成功</option>`,
+    `<option value="error"${view.filters.status === "error" ? " selected" : ""}>失败</option>`
   ].join("");
   fields.push(`<label>状态 <select name="status">${statusOptions}</select></label>`);
   fields.push(
@@ -568,6 +572,10 @@ function renderEvents(view: UsageWebView): string {
 
 export function renderUsageHtml(view: UsageWebView): string {
   const projectLabel = view.project?.name ?? "未注册项目";
+  const backLine =
+    view.panelUrl === null
+      ? '<p class="muted">独立统计进程（控制台总览：<code>panel --web</code>）。</p>'
+      : `<p><a href="${escapeHtml(view.panelUrl)}">← 回到控制台</a></p>`;
   return renderConsoleShell({
     title: `使用统计 · ${projectLabel}`,
     active: "usage",
@@ -575,10 +583,17 @@ export function renderUsageHtml(view: UsageWebView): string {
     meta: escapeHtml(projectLabel),
     brandHref: "/usage",
     hideSearch: true,
+    storeHealth: {
+      label: `记录底座：${storeKindShortLabel(view.store.kind)}`,
+      lastWriteAt: null,
+      writeIssue: null,
+      opsHref: null
+    },
     ...(view.filters.refresh === null ? {} : { autoRefreshSeconds: view.filters.refresh }),
     body: [
       "<header>",
       "<h1>使用统计</h1>",
+      backLine,
       renderSwitcher(view),
       renderBadges(view),
       "</header>",
