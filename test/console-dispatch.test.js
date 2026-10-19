@@ -67,7 +67,10 @@ test("computeDispatchPreview: 关键词匹配多份 / 无 runner 警告 / 空关
     ROOT,
     new URLSearchParams({ source: "keyword", keyword: "" })
   );
-  assert.ok(empty.warnings.some((warning) => warning.includes("关键词为空")));
+  assert.ok(
+    !empty.warnings.some((warning) => warning.includes("关键词为空")),
+    "空关键词不再 warnings 双提示（③ 空态横幅承担）"
+  );
 
   const noRunnerStore = new MemoryStore();
   await noRunnerStore.upsertProject({ rootPath: ROOT, name: "p" });
@@ -76,7 +79,10 @@ test("computeDispatchPreview: 关键词匹配多份 / 无 runner 警告 / 空关
     ROOT,
     new URLSearchParams({ source: "excel", excel: "/x/cases.xlsx" })
   );
-  assert.ok(noRunner.warnings.some((warning) => warning.includes("无在线执行机")));
+  assert.ok(
+    !noRunner.warnings.some((warning) => warning.includes("无在线执行机")),
+    "无在线执行机降级为预览信息行（不再 warning 堆叠）"
+  );
   assert.ok(noRunner.warnings.some((warning) => warning.includes("multipart 上传")));
 });
 

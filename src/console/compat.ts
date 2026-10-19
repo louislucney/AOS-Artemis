@@ -1,5 +1,5 @@
 /** 遗留标记兼容层（合并自原 panel/usage PAGE_CSS；颜色/圆角统一 CSDC token，单一 <style> 注入）。
- * 不再包含 body/:root/链接色/标题字号等与外壳冲突的规则；不再声明 color-scheme（控制台亮色唯一）。 */
+ * 不再包含 body/:root/链接色/标题字号等与外壳冲突的规则；color-scheme 交由 tokens（亮色基准＋暗色跟随系统）。 */
 export const CONSOLE_COMPAT_CSS = `
 section:not(.c-plain){border:1px solid var(--color-border-subtle);border-radius:var(--radius-md);padding:16px;margin:16px 0}
 .c-plain{border:0;border-radius:0;padding:0;margin:16px 0}

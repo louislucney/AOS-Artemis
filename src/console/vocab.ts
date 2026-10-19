@@ -73,8 +73,7 @@ const AUDIT_ACTIONS: Record<string, string> = {
 };
 
 function mappedHtml(value: string, map: Record<string, string>): string {
-  const label = map[value];
-  if (label === undefined) return escapeHtml(value);
+  const label = map[value] ?? value;
   return `<span title="${escapeHtml(value)}">${escapeHtml(label)}</span>`;
 }
 

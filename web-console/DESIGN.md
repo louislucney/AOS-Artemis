@@ -1,7 +1,7 @@
 # Web 控制台视觉体系（CSDC）
 
 > 来源：CSDC 开发者设计系统 `https://html.temvo.com/CSDC/`（用户指定为绑定风格；参考文件存 `.scratch/web-console/references/csdc/`）。
-> 实现：`src/console/tokens.ts`（唯一 CSS 变量源）＋`src/console/shell.ts`（顶栏/侧栏/主区外壳）。只做亮色（暗色为后续项）。
+> 实现：`src/console/tokens.ts`（唯一 CSS 变量源）＋`src/console/shell.ts`（顶栏/侧栏/主区外壳）。**主题**：亮色为基准；暗色已上线并跟随系统 `prefers-color-scheme`（`:root[data-theme="dark"]` 令牌映射；无站内手动开关——已知取舍，评审记录于 `.impeccable/`）。**移动端保底**：≤960 导航横向滚动＋表格 `.c-table-wrap` 横向滚动（不做 <768 卡片化——已知取舍）。
 > 与仓库根 `DESIGN.md`（架构事实源）互不覆盖；本文件只描述控制台表面。
 
 ## Token 表（照抄 CSDC）

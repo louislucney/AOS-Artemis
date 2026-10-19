@@ -220,6 +220,7 @@ test("console pages: 审计（domain 筛选＋结果徽章）", async () => {
   assert.match(all.body, /时间预设/, "时间预设");
   assert.match(all.body, /<th scope="col">关联对象<\/th><th scope="col">恢复<\/th>/, "关联与恢复二列");
   assert.match(all.body, /task=t-abc123/, "taskId → 任务页链接");
+  assert.match(all.body, /&amp;task=t-abc123/, "链接实体转义（无裸 &）");
   assert.match(all.body, /重新打开下发预览/, "失败行就地恢复动作");
   assert.match(all.body, /域 <select name="domain"/, "域改已知集合下拉");
   assert.match(all.body, /回归运行<\/option>/, "域选项中文");

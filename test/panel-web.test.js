@@ -157,6 +157,7 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   assert.match(html.body, /存储：会话内存/);
   assert.match(html.body, /demo/);
   assert.match(html.body, /<time datetime="/, "最后活跃相对化（title 绝对）");
+  assert.match(html.body, /生成时间 刚刚/, "总览生成时间相对化（文本通道）");
   assert.match(html.body, /c-table/, "CSDC 表格");
   assert.match(html.body, /c-badge/, "CSDC 徽章");
   assert.match(html.body, /进入最近活跃项目：demo →/, "首访直达最近活跃项目");
@@ -635,6 +636,9 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   assert.match(claimedHtml.body, /运行中不可直接释放/, "运行中释放指引");
   assert.match(claimedHtml.body, /data-confirm="确认停止该任务？领取方：runner-1/, "停止确认含领取方与后果");
   assert.match(claimedHtml.body, /aosInlineConfirm\(b,/, "三动作走站内确认（去原生 confirm）");
+  assert.match(claimedHtml.body, /window\.aosBindTaskActions=/, "动作绑定可被刷新重绑（P1 修复）");
+  assert.match(claimedHtml.body, /aosOnRefresh=function/, "注册刷新钩子");
+  assert.match(claimedHtml.body, /data-aos-bound/, "重复绑定守卫");
   assert.doesNotMatch(claimedHtml.body, /[^a-zA-Z_.]confirm\(/, "无原生 confirm 残留");
   assert.match(claimedHtml.body, /id="task-action-status"[^>]*role="status"/, "动作失败内联回报");
 
@@ -1723,11 +1727,11 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
     "内联 SVG 迷你图（三点：50%/75%/25%）"
   );
   assert.match(html.body, /flaky 3/, "flaky 为窗口内累加");
-  assert.match(html.body, /<span class="chip">应用缺陷 × 3<\/span>/, "失败域 top3 chips");
-  assert.match(html.body, /<span class="chip">环境 × 1<\/span>/);
+  assert.match(html.body, /<span class="chip" title="应用缺陷">应用缺陷 × 3<\/span>/, "失败域 top3 chips（中文＋title 原文）");
+  assert.match(html.body, /<span class="chip" title="环境">环境 × 1<\/span>/, "失败域 chips 带 title 原文");
   assert.match(html.body, /未裁决失败 0 条 · 未建单缺陷 0 项/, "待办：未裁决/未建单");
-  assert.match(html.body, /任务积压 0（待 0 \/ 领 0 \/ 跑 0） · failed 0/, "待办：积压 p+c+r / failed");
-  assert.match(html.body, /runner 在线 0 · 设备 0/, "运行：runner");
+  assert.match(html.body, /任务积压 0（待 0 \/ 领 0 \/ 跑 0） · 失败 0/, "待办：积压 p+c+r / 失败数");
+  assert.match(html.body, /执行机 在线 0 · 设备 0/, "运行：执行机");
   assert.match(html.body, /定时回归 启用 0 · 最近触发 —/, "运行：定时回归");
 });
 

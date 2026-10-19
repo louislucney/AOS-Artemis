@@ -27,7 +27,7 @@ import {
 import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
 import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
 import { cBadge, cCard, cEmpty, cStat, cTable } from "../console/components.js";
-import { relativeTime } from "../console/time.js";
+import { relativeTime, relativeTimeText } from "../console/time.js";
 import {
   confidenceLabel,
   failureDomainHtml,
@@ -702,7 +702,7 @@ try{
             `<p><a class="c-button c-button-primary" href="${escapeHtml(projectHref(view.projects[0].rootPath))}">进入最近活跃项目：${escapeHtml(view.projects[0].name)} →</a></p>`,
             cCard({
               title: "项目",
-              subtitle: `生成时间 ${view.generatedAt} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
+              subtitle: `生成时间 ${relativeTimeText(view.generatedAt)} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
               body: cTable({
                 columns: ["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
                 rows,
@@ -908,7 +908,10 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
             .join(" → ")}</p>`,
           Object.keys(trend.domainTotals).length > 0
             ? `<p>${Object.entries(trend.domainTotals)
-                .map(([domain, count]) => `<span class="chip">${escapeHtml(domain)} × ${count}</span>`)
+                .map(
+                  ([domain, count]) =>
+                    `<span class="chip" title="${escapeHtml(domain)}">${escapeHtml(failureDomainLabel(domain))} × ${count}</span>`
+                )
                 .join("")}</p>`
             : ""
         ].join("\n");
@@ -1363,13 +1366,16 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
   const runRows = detail.runs.map((run) => [
     escapeHtml(run.platform),
     escapeHtml(run.device ?? "—"),
-    escapeHtml(run.status),
+    escapeHtml(runStatusLabel(run.status)),
     `${run.passed}/${run.total}`,
     run.failed === 0 ? "0" : `<span class="err">${run.failed}</span>`,
     Object.keys(run.failureDomains).length === 0
       ? "—"
       : Object.entries(run.failureDomains)
-          .map(([domain, count]) => `<span class="chip">${escapeHtml(domain)} × ${count}</span>`)
+          .map(
+            ([domain, count]) =>
+              `<span class="chip" title="${escapeHtml(domain)}">${escapeHtml(failureDomainLabel(domain))} × ${count}</span>`
+          )
           .join(""),
     run.comparison === null
       ? "—"
@@ -1452,7 +1458,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
         ]
           .filter((part) => part !== "")
           .join(" ");
-        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun'};document.querySelectorAll('[data-task-action]').forEach(function(b){b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId);return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});})();</script>`;
+        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun'};function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId);return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
         return [
           `<p id="task-actions">${badge} ${buttons}</p>`,
           `<p id="task-action-status" role="status" class="c-banner" hidden></p>`,
@@ -1797,9 +1803,13 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
     entry.failed === 0 ? "0" : `<span class="err">${entry.failed}</span>`,
     String(entry.consecutiveFailures),
     String(entry.flaky),
-    escapeHtml(entry.lastStatus ?? "—"),
-    escapeHtml(entry.lastFailureDomain ?? "—"),
-    entry.verdict === null ? '<span class="muted">未裁决</span>' : escapeHtml(entry.verdict)
+    entry.lastStatus === null ? "—" : escapeHtml(runStatusLabel(entry.lastStatus)),
+    entry.lastFailureDomain === null
+      ? "—"
+      : failureDomainHtml(entry.lastFailureDomain),
+    entry.verdict === null
+      ? '<span class="muted">未裁决</span>'
+      : `<span class="chip" title="${escapeHtml(entry.verdict)}">${escapeHtml(verdictLabel(entry.verdict))}</span>`
   ]);
   const crossRows = stats.crossPlatform.map((delta) => [
     `<code>${escapeHtml(delta.caseId)}</code>`,
@@ -2065,7 +2075,8 @@ function renderCompareLatestCell(project: PanelCompareProject): string {
 
 function renderCompareQualityCell(project: PanelCompareProject): string {
   const domains = project.domains.map(
-    (entry) => `<span class="chip">${escapeHtml(entry.domain)} × ${entry.count}</span>`
+    (entry) =>
+      `<span class="chip" title="${escapeHtml(entry.domain)}">${escapeHtml(failureDomainLabel(entry.domain))} × ${entry.count}</span>`
   );
   return [`flaky ${project.flaky}`, ...domains].join(" ");
 }
@@ -2075,13 +2086,13 @@ function renderCompareTodoCell(project: PanelCompareProject): string {
   const open = backlog.pending + backlog.claimed + backlog.running;
   return [
     `<div>未裁决失败 ${project.pendingVerdicts} 条 · 未建单缺陷 ${project.unissuedAppDefects} 项</div>`,
-    `<div>任务积压 ${open}（待 ${backlog.pending} / 领 ${backlog.claimed} / 跑 ${backlog.running}） · failed ${backlog.failed}</div>`
+    `<div>任务积压 ${open}（待 ${backlog.pending} / 领 ${backlog.claimed} / 跑 ${backlog.running}） · 失败 ${backlog.failed}</div>`
   ].join("");
 }
 
 function renderCompareRunCell(project: PanelCompareProject): string {
   return [
-    `<div>runner 在线 ${project.runners.online} · 设备 ${project.runners.devices}</div>`,
+    `<div>执行机 在线 ${project.runners.online} · 设备 ${project.runners.devices}</div>`,
     `<div>定时回归 启用 ${project.schedules.enabled} · 最近触发 ${escapeHtml(
       project.schedules.lastFiredAt ?? "—"
     )}</div>`

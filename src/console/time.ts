@@ -35,3 +35,14 @@ export function relativeTime(value: string | null | undefined, nowMs: number = D
     relativeLabel(ms, nowMs)
   )}</time>`;
 }
+
+/** 纯文本相对时间（用于会转义的通道，如 card subtitle）；不输出 HTML。 */
+export function relativeTimeText(
+  value: string | null | undefined,
+  nowMs: number = Date.now()
+): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return value;
+  return relativeLabel(ms, nowMs);
+}

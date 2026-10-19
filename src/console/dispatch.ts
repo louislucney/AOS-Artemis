@@ -98,15 +98,13 @@ export async function computeDispatchPreview(
       label = hit.label;
       caseCount = hit.caseCount;
       refDetails.push(hit);
-    } else {
-      warnings.push("未选择份（或份不存在）：请在「来源」中选择");
+    } else if (id !== "") {
+      warnings.push(`未知份「${id}」：请重新选择（可能已被保留期清理）`);
     }
   } else if (mode === "keyword") {
     const keyword = (params.get("keyword") ?? "").trim();
     label = keyword === "" ? "关键词" : `关键词「${keyword}」`;
-    if (keyword === "") {
-      warnings.push("关键词为空：请输入功能关键词");
-    } else {
+    if (keyword !== "") {
       const hits = sets.filter(
         (set) =>
           set.basename.includes(keyword) ||
@@ -145,9 +143,6 @@ export async function computeDispatchPreview(
     host: runner.hostname,
     online: now - Date.parse(runner.lastSeenAt) < ONLINE_WINDOW_MS
   }));
-  if (!runnerCandidates.some((runner) => runner.online)) {
-    warnings.push("无在线执行机：派发后等待执行机领取，或改为手动指定设备（CLI：suite run --device）");
-  }
 
   return {
     source: { mode, label, caseCount },
@@ -235,6 +230,9 @@ export function renderDispatchPage(view: DispatchView): string {
       empty: "无引用（待选择来源）"
     }),
     `<p>执行机候选：${runnerBadges || '<span class="muted">暂无注册执行机</span>'}</p>`,
+    runnerOnline
+      ? ""
+      : `<p class="muted">执行机：无在线（派发后任务将排队，等待执行机上线后领取；可手动执行）。</p>`,
     preview.devices.length === 0
       ? `<p class="muted">设备：由在线执行机在领取时确定；最终设备见任务页。</p>`
       : "",

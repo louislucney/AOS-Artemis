@@ -536,7 +536,7 @@ function renderEvents(view: UsageWebView): string {
   const table =
     view.events.items.length === 0
       ? '<p class="empty">暂无事件</p>'
-      : `<table><caption>事件流水</caption><thead><tr><th scope="col">时间</th><th scope="col">工具</th><th scope="col">家族</th><th scope="col">结果</th><th scope="col">耗时</th><th scope="col">错误类</th><th scope="col">摘要</th><th scope="col">信号</th><th scope="col">参数键</th><th scope="col">trace</th></tr></thead><tbody>${rows}</tbody></table>`;
+      : `<div class="c-table-wrap"><table><caption>事件流水</caption><thead><tr><th scope="col">时间</th><th scope="col">工具</th><th scope="col">家族</th><th scope="col">结果</th><th scope="col">耗时</th><th scope="col">错误类</th><th scope="col">摘要</th><th scope="col">信号</th><th scope="col">参数键</th><th scope="col">trace</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 
   const visibleTotal = Math.min(view.events.total, USAGE_EVENT_LIST_MAX);
   const start = view.events.count === 0 ? 0 : view.filters.offset + 1;

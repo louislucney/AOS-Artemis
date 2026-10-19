@@ -35,6 +35,8 @@ test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动�
   assert.match(html, /DOMParser/, "轮询替换 console-main 局部内容");
   assert.match(html, /if\(reduced\)\{/, "缩小动画偏好分支");
   assert.match(html, /else\{start\(\)/, "未偏好时启动轮询");
+  assert.match(html, /aosOnRefresh/, "替换后回调重绑钩子（任务动作不失效）");
+  assert.match(html, /e\.target\.id!=="aos-live-toggle"/, "暂停按钮文档级委托（替换免疫）");
   assert.ok(!html.includes("总览"), "显式 nav 子集生效");
 });
 

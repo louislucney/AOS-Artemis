@@ -11,6 +11,7 @@ import {
   artifactKindLabel,
   auditActionHtml,
   auditDomainHtml,
+  runStatusLabel,
   sourceHtml,
   AUDIT_DOMAIN_KEYS
 } from "./vocab.js";
@@ -264,10 +265,10 @@ export function renderAuditPage(data: AuditPageData): string {
   const refLink = (key: string, value: string): string => {
     const short = value.length > 12 ? `${value.slice(0, 12)}…` : value;
     if (key === "taskId") {
-      return `<a href="/panel?${base}&task=${encodeURIComponent(value)}" title="taskId=${escapeHtml(value)}">任务 <code>${escapeHtml(short)}</code></a>`;
+      return `<a href="/panel?${base}&amp;task=${encodeURIComponent(value)}" title="taskId=${escapeHtml(value)}">任务 <code>${escapeHtml(short)}</code></a>`;
     }
     if (key === "caseSetId") {
-      return `<a href="/panel?${base}&section=library" title="caseSetId=${escapeHtml(value)}">用例库 <code>${escapeHtml(short)}</code></a>`;
+      return `<a href="/panel?${base}&amp;section=library" title="caseSetId=${escapeHtml(value)}">用例库 <code>${escapeHtml(short)}</code></a>`;
     }
     if (key === "scheduleId") {
       return `<a href="/panel?${base}#schedules" title="scheduleId=${escapeHtml(value)}">计划 <code>${escapeHtml(short)}</code></a>`;
@@ -284,19 +285,19 @@ export function renderAuditPage(data: AuditPageData): string {
   const recoveryLink = (event: AuditEventRecord): string => {
     if (event.result !== "failed") return '<span class="muted">—</span>';
     if (event.action === "action.tasks") {
-      return `<a href="/panel?${base}&section=dispatch">重新打开下发预览</a>`;
+      return `<a href="/panel?${base}&amp;section=dispatch">重新打开下发预览</a>`;
     }
     if (event.action === "action.issues") {
-      return `<a href="/panel?${base}&view=stats#issues">去建单</a>`;
+      return `<a href="/panel?${base}&amp;view=stats#issues">去建单</a>`;
     }
     if (event.action === "action.import") {
-      return `<a href="/panel?${base}&section=library">去用例库导入</a>`;
+      return `<a href="/panel?${base}&amp;section=library">去用例库导入</a>`;
     }
     if (event.action === "action.verdicts") {
-      return `<a href="/panel?${base}&view=review">去归因队列</a>`;
+      return `<a href="/panel?${base}&amp;view=review">去归因队列</a>`;
     }
     if (event.action === "action.quarantine") {
-      return `<a href="/panel?${base}&section=library">去隔离</a>`;
+      return `<a href="/panel?${base}&amp;section=library">去隔离</a>`;
     }
     return '<span class="muted">—</span>';
   };
@@ -400,7 +401,7 @@ export function renderSearchPage(data: SearchPageData): string {
   const taskRows = data.tasks.map((entry) => [
     projectLink(entry.project, entry.project),
     `<a href="/panel?project=${encodeURIComponent(entry.project)}&task=${encodeURIComponent(entry.id)}"><code>${escapeHtml(entry.id)}</code></a>`,
-    escapeHtml(entry.status)
+    escapeHtml(runStatusLabel(entry.status))
   ]);
   const empty = `<h1>搜索</h1>`;
   return renderConsoleShell({
