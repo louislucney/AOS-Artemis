@@ -722,6 +722,17 @@ test("panel issues: dryRun 预览（不触 createIssue；证据以 dryRun:true�
   assert.equal(evidenceCalls[0].dryRun, true);
   const stored = await store.getSuiteRun(rootPath, run.id);
   assert.equal(stored.cases.find((c) => c.caseId === "case-1").jiraIssueKey, null, "dryRun 不回写");
+
+  const failingEvidence = async () => {
+    throw new Error("attachment preview down");
+  };
+  const degraded = await createRunCaseIssues(
+    { store, runtimeFor: async () => fakeRuntime(), clientFor, postEvidence: failingEvidence },
+    { rootPath, items: [{ runId: run.id, caseId: "case-1" }], dryRun: true }
+  );
+  assert.equal(degraded.ok, true);
+  assert.equal(degraded.results[0].attachmentsFailed, true, "附件预览失败如实标注");
+  assert.deepEqual(degraded.results[0].attachments, []);
 });
 
 test("panel issues: 未配置 Jira / runtimeFor 缺失 → ok:false 指引", async () => {

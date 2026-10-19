@@ -1,4 +1,5 @@
 import { USAGE_EVENT_DEFAULT_LIMIT } from "../db/usage-event.js";
+import { relativeTime } from "../console/time.js";
 import type {
   ProjectRecord,
   ProjectStore,
@@ -361,7 +362,13 @@ function renderOverview(view: UsageWebView): string {
     "<h2>概览</h2>",
     '<div class="c-stats-row">',
     cStat({ label: "事件总数", value: String(view.summary.total) }),
-    cStat({ label: "成功率", value: formatPercent(view.summary.successRate) }),
+    cStat({
+      label: "成功率",
+      value:
+        view.summary.total === 0 || view.summary.successRate === null
+          ? "—"
+          : formatPercent(view.summary.successRate)
+    }),
     cStat({ label: "p50", value: formatMs(view.summary.p50) }),
     cStat({ label: "p95", value: formatMs(view.summary.p95) }),
     "</div>",
@@ -370,28 +377,42 @@ function renderOverview(view: UsageWebView): string {
   ].join("\n");
 }
 
+function toolRow(row: UsageWebView["tools"][number]): string {
+  const classes = row.zeroCall ? "zero-call" : "";
+  const rate = row.successRate === null ? "—" : formatPercent(row.successRate);
+  const zero = row.zeroCall ? ' <span class="muted">零调用</span>' : "";
+  return [
+    `<tr class="${classes}" data-tool="${escapeHtml(row.tool)}" data-zero-call="${row.zeroCall ? "1" : "0"}">`,
+    `<td><code>${escapeHtml(row.tool)}</code>${zero}</td>`,
+    `<td>${row.count}</td>`,
+    `<td>${rate}</td>`,
+    `<td>${formatMs(row.p95)}</td>`,
+    `<td>${relativeTime(row.lastCallAt)}</td>`,
+    "</tr>"
+  ].join("");
+}
+
+const TOOL_TABLE_HEAD =
+  '<thead><tr><th scope="col">工具</th><th scope="col">调用</th><th scope="col">成功率</th><th scope="col">p95</th><th scope="col">最近调用</th></tr></thead>';
+
 function renderTools(view: UsageWebView): string {
-  const rows = view.tools
-    .map((row) => {
-      const classes = row.zeroCall ? "zero-call" : "";
-      const rate = row.successRate === null ? "—" : formatPercent(row.successRate);
-      const zero = row.zeroCall ? ' <span class="muted">零调用</span>' : "";
-      return [
-        `<tr class="${classes}" data-tool="${escapeHtml(row.tool)}" data-zero-call="${row.zeroCall ? "1" : "0"}">`,
-        `<td><code>${escapeHtml(row.tool)}</code>${zero}</td>`,
-        `<td>${row.count}</td>`,
-        `<td>${rate}</td>`,
-        `<td>${formatMs(row.p95)}</td>`,
-        `<td>${escapeHtml(row.lastCallAt ?? "—")}</td>`,
-        "</tr>"
-      ].join("");
-    })
-    .join("");
-  const table =
-    view.tools.length === 0
-      ? '<p class="empty">暂无数据</p>'
-      : `<table><caption>工具调用汇总</caption><thead><tr><th scope="col">工具</th><th scope="col">调用</th><th scope="col">成功率</th><th scope="col">p95</th><th scope="col">最近调用</th></tr></thead><tbody>${rows}</tbody></table>`;
-  return `<section id="tools">\n<h2>工具表</h2>\n${table}\n</section>`;
+  if (view.tools.length === 0) {
+    return '<section id="tools">\n<h2>工具表</h2>\n<p class="empty">暂无数据</p>\n</section>';
+  }
+  const called = view.tools.filter((row) => !row.zeroCall);
+  const zeroCalls = view.tools.filter((row) => row.zeroCall);
+  const calledBody =
+    called.length === 0
+      ? '<tr><td colspan="5" class="c-empty-cell">暂无调用（等待首次调用）</td></tr>'
+      : called.map(toolRow).join("");
+  const mainTable = `<div class="c-table-wrap"><table><caption>工具调用汇总</caption>${TOOL_TABLE_HEAD}<tbody>${calledBody}</tbody></table></div>`;
+  const zeroDetails =
+    zeroCalls.length === 0
+      ? ""
+      : `<details class="c-details"><summary>零调用工具（${zeroCalls.length}）</summary><div class="c-table-wrap"><table><caption>零调用工具目录</caption>${TOOL_TABLE_HEAD}<tbody>${zeroCalls
+          .map(toolRow)
+          .join("")}</tbody></table></div></details>`;
+  return `<section id="tools">\n<h2>工具表</h2>\n${mainTable}\n${zeroDetails}\n</section>`;
 }
 
 function renderSignals(view: UsageWebView): string {
@@ -494,7 +515,7 @@ function renderEvents(view: UsageWebView): string {
           .join(", ") || "—";
       return [
         `<tr class="${event.ok ? "ok" : "err"}" data-tool="${escapeHtml(event.tool)}">`,
-        `<td><div>${escapeHtml(event.at)}</div><code class="muted" title="${escapeHtml(event.id)}">${escapeHtml(event.id.slice(0, 8))}</code></td>`,
+        `<td><div>${relativeTime(event.at)}</div><code class="muted" title="${escapeHtml(event.id)}">${escapeHtml(event.id.slice(0, 8))}</code></td>`,
         `<td><code>${escapeHtml(event.tool)}</code></td>`,
         `<td>${escapeHtml(event.family)}</td>`,
         `<td>${result}</td>`,

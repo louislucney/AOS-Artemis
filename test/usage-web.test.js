@@ -100,6 +100,8 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.ok(body.includes('name="project" value="alpha"'), "当前项目回显（名称提交）");
   assert.ok(body.includes('data-tool="llm_list"'));
   assert.ok(body.includes('data-zero-call="1"'));
+  assert.match(body, /<details class="c-details">[\s\S]{0,200}零调用工具（\d+）/, "零调用工具折叠为目录");
+  assert.match(body, /<time datetime="/, "事件/最近调用时间相对化");
   assert.ok(body.includes("aos_status"));
   assert.ok(!body.includes("aos_usage"));
   assert.ok(body.includes("未知条目 &lt;str&gt;"));
@@ -295,6 +297,8 @@ test("usage web: empty store and project without events render empty states", as
   assert.ok(html.body.includes("暂无事件"));
   assert.ok(html.body.includes("存储：会话内存"));
   assert.ok(html.body.includes("会话内存：数据仅当前进程内有效，重启后丢失。"));
+  assert.ok(!html.body.includes("0.0%"), "0 事件成功率显示 —（不再 0.0%）");
+  assert.match(html.body, /成功率<\/div><div class="c-stat-value">—<\/div>/, "成功率空态 —");
 
   const payload = await getJson(empty, "/usage.json");
   assert.equal(payload.project, null);

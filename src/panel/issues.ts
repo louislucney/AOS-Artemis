@@ -47,6 +47,8 @@ export interface IssueItemResult {
   evidence?: "posted" | "skipped" | "error";
   summary?: string;
   attachments?: string[];
+  /** dryRun 附件预览失败（不影响建单，前端如实标注）。 */
+  attachmentsFailed?: boolean;
   reason?: string;
 }
 
@@ -159,16 +161,22 @@ function buildFacts(ctx: ItemContext, run: SuiteRunRecord, c: SuiteRunCaseRecord
   };
 }
 
-async function previewAttachments(ctx: ItemContext, traceId: string): Promise<string[]> {
+async function previewAttachments(
+  ctx: ItemContext,
+  traceId: string
+): Promise<{ attachments: string[]; failed: boolean }> {
   try {
     const payload = await ctx.postEvidence(ctx.runtime, { key: "", traceId, dryRun: true });
     const attachments = payload.attachments;
-    return Array.isArray(attachments)
-      ? attachments.filter((entry): entry is string => typeof entry === "string")
-      : [];
+    return {
+      attachments: Array.isArray(attachments)
+        ? attachments.filter((entry): entry is string => typeof entry === "string")
+        : [],
+      failed: false
+    };
   } catch (error) {
     log(`dryRun 证据预览失败（${traceId}）：${errorMessage(error)}`);
-    return [];
+    return { attachments: [], failed: true };
   }
 }
 
@@ -203,8 +211,18 @@ async function processItem(
   const summary = ctx.summaryInput ?? buildRegressionIssueSummary(facts);
 
   if (ctx.dryRun) {
-    const attachments = c.traceId === null || c.traceId === "" ? [] : await previewAttachments(ctx, c.traceId);
-    return { runId, caseId, status: "preview", summary, attachments };
+    const preview =
+      c.traceId === null || c.traceId === ""
+        ? { attachments: [] as string[], failed: false }
+        : await previewAttachments(ctx, c.traceId);
+    return {
+      runId,
+      caseId,
+      status: "preview",
+      summary,
+      attachments: preview.attachments,
+      ...(preview.failed ? { attachmentsFailed: true } : {})
+    };
   }
 
   let key: string;

@@ -250,6 +250,9 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
   assert.match(html.body, /<fieldset class="c-fieldset"><legend>端<\/legend>/, "计划表单端组有 legend");
   assert.match(html.body, /aosInlineConfirm\(b,'确认删除该计划？'/, "计划删除走站内确认");
   assert.doesNotMatch(html.body, /[^a-zA-Z_.]confirm\(/, "项目页无原生 confirm 残留");
+  assert.match(html.body, /<select name="featureKeys" multiple size="4"/, "计划功能点选（可多选，不再手输逗号串）");
+  assert.match(html.body, /<option value="f-1">登录流程（2 例）<\/option>/, "选项含功能名与条数");
+  assert.match(html.body, /f\.getAll\('featureKeys'\)/, "提交收集多选值");
   assert.match(html.body, /<section id="regression" class="c-plain">/, "CTA 区块不吃遗留 section 边框（无双框）");
   assert.match(html.body, /执行：[\s\S]{0,200}?集成：/, "项目页两轴并列（执行／集成）");
   assert.doesNotMatch(html.body, /项目状态：/, "H1 不再夹灯状态（状态进徽章行）");
@@ -344,6 +347,11 @@ test("panel web: 内联 JS 按首个 | 切分（裁决 items indexOf+slice 形�
     reviewHtml.body,
     /aosBindBulk\('#verdict-form','item','verdict-count'\);/,
     "裁决批量按钮绑定在本页脚本（不再依赖项目页）"
+  );
+  assert.match(
+    reviewHtml.body,
+    /parts=\['裁决已提交 '\+payload\.updated\+' 条'\]/,
+    "裁决部分失败如实播报（更新/跳过/失败计数）"
   );
 
   assert.doesNotMatch(reviewHtml.body, /\.value\.split\('\|'\)/, "裁决表单不得残留 split('|')");

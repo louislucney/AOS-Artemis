@@ -1178,10 +1178,24 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
     ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
     : "";
   const disabledAttr = actionsOff ? " disabled" : "";
+  const seenFeatureKeys = new Set<string>();
+  const featureOptions: string[] = [];
+  for (const ref of detail.regressionRefs) {
+    if (seenFeatureKeys.has(ref.featureKey)) continue;
+    seenFeatureKeys.add(ref.featureKey);
+    featureOptions.push(
+      `<option value="${escapeHtml(ref.featureKey)}">${escapeHtml(ref.featureName)}（${ref.caseCount} 例）</option>`
+    );
+  }
+  const featureField =
+    featureOptions.length > 0
+      ? `<label>功能（可多选） <select name="featureKeys" multiple size="4" aria-label="功能（可多选）"${disabledAttr}>${featureOptions.join("")}</select></label>`
+      : `<label>功能 key <input type="text" name="featureKeys" aria-label="功能 key（暂无可引用份，可手输）" size="28" placeholder="login,pay"${disabledAttr}></label> <span class="muted">暂无可引用用例份</span>`;
   const form = [
     '<form id="schedule-form" data-project="' + escapeHtml(rootPath) + '">',
     '<p><label>名称 <input type="text" name="name" aria-label="计划名称" required' + disabledAttr + '></label> ' +
-      '<label>功能 key（逗号分隔） <input type="text" name="featureKeys" aria-label="功能 key" size="28" placeholder="login,pay"' + disabledAttr + '></label></p>',
+      featureField +
+      "</p>",
     '<fieldset class="c-fieldset"><legend>端</legend>',
     '<label><input type="checkbox" name="platform" value="android" checked' + disabledAttr + '> android</label> ',
     '<label><input type="checkbox" name="platform" value="ios"' + disabledAttr + '> ios</label>',
@@ -1216,7 +1230,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
   ]);
   const script = actionsOff
     ? ""
-    : `<script>(function(){var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var status=document.getElementById('schedule-status');function say(m){status.textContent=m;}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var form=document.getElementById('schedule-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var keys=(f.get('featureKeys')||'').split(',').map(function(s){return s.trim();}).filter(Boolean);var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(i){return i.value;});post({project:root,action:'create',name:(f.get('name')||'').trim(),featureKeys:keys,platforms:platforms,everyMinutes:Number(f.get('everyMinutes')||0)}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已创建 · 已写入审计');location.reload();}else{say('创建失败：'+(res.j.error||res.status));}}).catch(function(err){say('创建失败：'+err);});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-schedule]'):null;if(!b)return;var op=b.getAttribute('data-op');var runScheduleOp=function(){post({project:root,action:op,id:b.getAttribute('data-schedule')}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已更新 · 已写入审计');location.reload();}else{say('操作失败：'+(res.j.error||res.status));}}).catch(function(err){say('操作失败：'+err);});};if(op==='delete'){window.aosInlineConfirm(b,'确认删除该计划？',runScheduleOp);}else{runScheduleOp();}});})();</script>`;
+    : `<script>(function(){var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var status=document.getElementById('schedule-status');function say(m){status.textContent=m;}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var form=document.getElementById('schedule-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var keys=f.getAll('featureKeys').map(function(s){return String(s).trim();}).filter(Boolean);if(keys.length===0){say('请至少选择一个功能');return;}var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(i){return i.value;});post({project:root,action:'create',name:(f.get('name')||'').trim(),featureKeys:keys,platforms:platforms,everyMinutes:Number(f.get('everyMinutes')||0)}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已创建 · 已写入审计');location.reload();}else{say('创建失败：'+(res.j.error||res.status));}}).catch(function(err){say('创建失败：'+err);});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-schedule]'):null;if(!b)return;var op=b.getAttribute('data-op');var runScheduleOp=function(){post({project:root,action:op,id:b.getAttribute('data-schedule')}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已更新 · 已写入审计');location.reload();}else{say('操作失败：'+(res.j.error||res.status));}}).catch(function(err){say('操作失败：'+err);});};if(op==='delete'){window.aosInlineConfirm(b,'确认删除该计划？',runScheduleOp);}else{runScheduleOp();}});})();</script>`;
   return [
     '<section id="schedules">',
     "<h2>定时回归（schedule）</h2>",
@@ -1484,7 +1498,7 @@ function renderReviewPage(view: {
           "  fetch('/panel/api/verdicts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:" +
             rootJson +
             ",items:items,verdict:verdict,note:note})})",
-          "    .then(function(response){return response.json().then(function(payload){if(!response.ok){throw new Error(payload.error||('HTTP '+response.status));}window.aosFlash&&aosFlash('裁决已提交 · 已写入审计');location.reload();});})",
+          "    .then(function(response){return response.json().then(function(payload){if(!response.ok){throw new Error(payload.error||('HTTP '+response.status));}var parts=['裁决已提交 '+payload.updated+' 条'];if(payload.missed>0)parts.push('跳过 '+payload.missed);if(payload.failed>0)parts.push('失败 '+payload.failed);parts.push('已写入审计');window.aosFlash&&aosFlash(parts.join(' · '));location.reload();});})",
           "    .catch(function(error){status.textContent='提交失败：'+error.message;});",
           "  return false;",
           "}",
@@ -1588,6 +1602,7 @@ function renderResults(results){
     if(item.url){var link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noreferrer';link.textContent=' 打开';li.appendChild(link);}
     if(item.reason){var reason=document.createElement('span');reason.className='muted';reason.textContent=' '+item.reason;li.appendChild(reason);}
     if(item.summary){var summary=document.createElement('span');summary.className='muted';summary.textContent=' '+item.summary;li.appendChild(summary);}
+    if(item.attachmentsFailed){var aw=document.createElement('span');aw.className='muted';aw.textContent=' 附件预览失败（不影响建单）';li.appendChild(aw);}
     list.appendChild(li);
   });
   fragment.appendChild(list);
