@@ -1812,3 +1812,13 @@ llm_switch(name, force):
 - **接线**：`runVisionPass` 结果新增 `rejected`（中止后屏幕计入 skipped）；iOS `resolveVisionTarget` 增 `activeVision` 参数（active 复用仅在判定为有视觉时发生——缓存 no 的模型不会被当视觉模型二次复用）；`src/ios/run-loop.ts` 捕获拒绝即 latch；`tool-entry` 按同一判定解析 vision target（启动响应 `vision` 与实际一致）。
 - **测试**：新增 `test/vision-capability.test.js`（7 例：声明解析/TTL/键归一/优先级/拒绝分类/缓存 IO 容错/启发式迁移）；pen 增 3 例（声明 0 不探测、未知被拒→缓存+中止、未知成功→缓存）；iOS 增 1 例（fail-open 附图被拒→latch+缓存）；既有纯文本场景用例显式钉 `mainVision:false` 保持原意图。全量 **1639 绿**；lint 0（2 条既有 warning 与本次无关）。
 - **边界/留档**：缓存是派生数据（可删可重建；多机不同步，探测成本＝一次可忽略的请求，TTL 过期自动重探）；`AOS_LLM_VISION` 作用于 active 条目，多条目细分声明留档；面板/`doctor` 展示判定与缓存状态留档。
+
+### 13.129 实施记录（`design_to_test` 生成参数透传：`maxFlows`/`maxDepth`）
+
+> 实施于 2026-10-19（提交 f72b125 ＋ 本记录）。动机＝一次真实复盘（starbuckstw 项目：`.pen` + `vision:true` 全量识别后探索到 38 条路径，生成步固定走默认 `maxFlows=10` → 28 条丢弃、生成报告 `truncated:true` → 覆盖闸按 fail-closed 判「流程未完整覆盖…路径截断」，响应 `failedStep:"check"`，用户无法在一条龙内调参过闸）。改法：与 `figma_generate_tests` 同口径，给 `design_to_test` 增两个可选生成参数并在编排层透传。
+
+- **工具与 schema（`src/tools/native-tools/workflow.ts`）**：`maxFlows`（生成条数上限，1..50，默认 10）、`maxDepth`（路径最大深度，1..50，默认 30）；字段描述注明「vision 全量探索路径多时可调大以避免覆盖闸『路径截断』」。
+- **编排（`src/workflow/design-to-test.ts`）**：`DesignToTestArgs` 增两字段；生成步仅在显式提供（`typeof === \"number\"` 守卫）时携带，未提供与旧行为完全一致（不产生 `undefined` 键）。
+- **测试**：编排透传 +2（显式键原样传给 generate；只给 `maxFlows` 时不出现 `maxDepth` 键）；`native-workflow-tool` schema 用例扩展（暴露两字段；`maxFlows:0/51`、`maxDepth:2.5` 拒绝；`{maxFlows:50,maxDepth:12}` 合法形态放行）。全量 **1641 绿**；lint 0（2 条既有 warning 与本次无关）。
+- **配套（脚本层）**：`scripts/aos-call.mjs` 增加每请求超时 `AOS_CALL_TIMEOUT_MS`（毫秒，默认 600000；此前受 MCP SDK 默认 60 s 约束，长任务直跑会被截断）＋启动行 stderr 提示；README/AGENTS/接入指南 同步。
+- **边界**：默认值（10/30）与覆盖率口径、三闸判定均不变——「截断即 fail-closed」语义保留，只是入口可调参；`figma_generate_tests` 直调路径不受影响。
