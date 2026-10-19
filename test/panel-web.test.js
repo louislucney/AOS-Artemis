@@ -167,6 +167,7 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   assert.equal(payload.projects[0].name, "demo");
   assert.equal(payload.projects[0].lamp, "yellow");
   assert.ok(payload.projects[0].lampReasons.some((reason) => reason.includes("会话内存")));
+  assert.equal(payload.projects[0].designWarnings, null);
 
   const html = await handlePanelRequest(new URL("http://x/panel"), deps);
   assert.equal(html.status, 200);
@@ -184,6 +185,11 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   assert.match(html.body, /进入任一项目后显示项目级版块/, "无项目上下文时导航给说明而非死项");
   assert.match(html.body, /id="aos-resume"/, "继续上次位点");
   assert.match(html.body, /aos-auto-entered/, "单项目自动进入（每会话一次守卫）");
+  assert.match(
+    html.body,
+    /设计源警告：不可用（缺 tests\.json \/ flows\.json 快照）/,
+    "无设计警告快照的项目行显式未知（不静默）"
+  );
 });
 
 test("panel web: 项目详情（空态→批次→独立运行）与未知项目 404", async () => {

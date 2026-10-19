@@ -284,6 +284,20 @@ test("project_archive: 坏 flows.json → design null＋degraded", async () => {
   assert.deepEqual(payload.degraded, ["flows.json 存在但不可解析（已略过设计血统）"]);
 });
 
+test("project_archive: 坏 tests.json 不影响 design 块（警告回退 flows）", async () => {
+  const dir = tempDir();
+  const flowsPath = writeFlows(dir, {
+    ...FLOWS_FIXTURE,
+    warnings: [{ code: "pen-no-interactions", message: "未检测到原型交互" }]
+  });
+  fs.writeFileSync(path.join(dir, "design", "tests.json"), "{not json", "utf-8");
+  const payload = payloadOf(await projectArchive(stubRuntime(dir), baseDeps()));
+  assert.equal(payload.design.screens, 3);
+  assert.equal(payload.design.warnings.total, 1);
+  assert.deepEqual(payload.design.warnings.codes, ["pen-no-interactions"]);
+  assert.equal(payload.design.warnings.snapshotAt, fs.statSync(flowsPath).mtime.toISOString());
+});
+
 test("project_archive: pen 源 flows → design.source=pen:<path>", async () => {
   const dir = tempDir();
   const { fileKey, ...rest } = FLOWS_FIXTURE;

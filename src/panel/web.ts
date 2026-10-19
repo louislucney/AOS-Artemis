@@ -627,10 +627,7 @@ function renderProjectCell(row: PanelProjectRow): string {
           : ""
       }</div>`
     : "";
-  const designWarnings =
-    row.designWarnings === null
-      ? ""
-      : `<div class="muted">${escapeHtml(designWarningsText(row.designWarnings))}</div>`;
+  const designWarnings = `<div class="muted">${escapeHtml(designWarningsText(row.designWarnings))}</div>`;
   return `<span>${lampSpan(row.lamp)}</span>${reasons}${integration}${designWarnings}`;
 }
 
