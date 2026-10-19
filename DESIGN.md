@@ -1818,7 +1818,8 @@ llm_switch(name, force):
 > 实施于 2026-10-19（提交 f72b125 ＋ 本记录）。动机＝一次真实复盘（starbuckstw 项目：`.pen` + `vision:true` 全量识别后探索到 38 条路径，生成步固定走默认 `maxFlows=10` → 28 条丢弃、生成报告 `truncated:true` → 覆盖闸按 fail-closed 判「流程未完整覆盖…路径截断」，响应 `failedStep:"check"`，用户无法在一条龙内调参过闸）。改法：与 `figma_generate_tests` 同口径，给 `design_to_test` 增两个可选生成参数并在编排层透传。
 
 - **工具与 schema（`src/tools/native-tools/workflow.ts`）**：`maxFlows`（生成条数上限，1..50，默认 10）、`maxDepth`（路径最大深度，1..50，默认 30）；字段描述注明「vision 全量探索路径多时可调大以避免覆盖闸『路径截断』」。
-- **编排（`src/workflow/design-to-test.ts`）**：`DesignToTestArgs` 增两字段；生成步仅在显式提供（`typeof === \"number\"` 守卫）时携带，未提供与旧行为完全一致（不产生 `undefined` 键）。
+- **编排（`src/workflow/design-to-test.ts`）**：`DesignToTestArgs` 增两字段；生成步与 `nextAction` 仅在显式提供（`typeof args.maxFlows/maxDepth === "number"` 守卫）时携带，未提供与旧行为完全一致（不产生 `undefined` 键）。
 - **测试**：编排透传 +2（显式键原样传给 generate；只给 `maxFlows` 时不出现 `maxDepth` 键）；`native-workflow-tool` schema 用例扩展（暴露两字段；`maxFlows:0/51`、`maxDepth:2.5` 拒绝；`{maxFlows:50,maxDepth:12}` 合法形态放行）。全量 **1641 绿**；lint 0（2 条既有 warning 与本次无关）。
-- **配套（脚本层）**：`scripts/aos-call.mjs` 增加每请求超时 `AOS_CALL_TIMEOUT_MS`（毫秒，默认 600000；此前受 MCP SDK 默认 60 s 约束，长任务直跑会被截断）＋启动行 stderr 提示；README/AGENTS/接入指南 同步。
+- **配套（脚本层）**：`scripts/aos-call.mjs` 增加每请求超时 `AOS_CALL_TIMEOUT_MS`（毫秒，默认 600000；上限 clamp 至 2^31−1，防 Node 定时器溢出；此前受 MCP SDK 默认 60 s 约束，长任务直跑会被截断）＋启动行 stderr 提示；README（`design_to_test` 参数）/AGENTS.md 与 docs/接入指南.md（`AOS_CALL_TIMEOUT_MS`）同步。
+- **评审修正（提交 9ee4b8c）**：`nextAction` 同步携带显式 `maxFlows`/`maxDepth`（否则 run:false 的续跑第二步回到默认 10、再次截断——评审发现的真实缺陷）；`CHECK_SUGGESTION` 补「路径截断可加大 maxFlows/maxDepth 重试」；zod/透传测试对称补强（`maxDepth:0/51`、`maxFlows:2.5` 拒绝；仅 maxDepth 透传 + nextAction 断言）；`maxDepth` 描述对齐 `figma_generate_tests`（边数/续段拆分）。全量 **1642 绿**；lint 0。
 - **边界**：默认值（10/30）与覆盖率口径、三闸判定均不变——「截断即 fail-closed」语义保留，只是入口可调参；`figma_generate_tests` 直调路径不受影响。
