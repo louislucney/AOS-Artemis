@@ -311,7 +311,7 @@ function renderTable(
   const body = rows
     .map((row) => `<tr>${row.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`)
     .join("");
-  return `<div class="c-table-wrap"><table>${captionHtml}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="c-table-wrap"><table class="c-table">${captionHtml}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderSwitcher(view: UsageWebView): string {
@@ -409,11 +409,11 @@ function renderTools(view: UsageWebView): string {
     called.length === 0
       ? '<tr><td colspan="5" class="c-empty-cell">暂无调用（等待首次调用）</td></tr>'
       : called.map(toolRow).join("");
-  const mainTable = `<div class="c-table-wrap"><table><caption>工具调用汇总</caption>${TOOL_TABLE_HEAD}<tbody>${calledBody}</tbody></table></div>`;
+  const mainTable = `<div class="c-table-wrap"><table class="c-table"><caption>工具调用汇总</caption>${TOOL_TABLE_HEAD}<tbody>${calledBody}</tbody></table></div>`;
   const zeroDetails =
     zeroCalls.length === 0
       ? ""
-      : `<details class="c-details"><summary>零调用工具（${zeroCalls.length}）</summary><div class="c-table-wrap"><table><caption>零调用工具目录</caption>${TOOL_TABLE_HEAD}<tbody>${zeroCalls
+      : `<details class="c-details"><summary>零调用工具（${zeroCalls.length}）</summary><div class="c-table-wrap"><table class="c-table"><caption>零调用工具目录</caption>${TOOL_TABLE_HEAD}<tbody>${zeroCalls
           .map(toolRow)
           .join("")}</tbody></table></div></details>`;
   return `<section id="tools">\n<h2>工具表</h2>\n${mainTable}\n${zeroDetails}\n</section>`;
@@ -536,7 +536,7 @@ function renderEvents(view: UsageWebView): string {
   const table =
     view.events.items.length === 0
       ? '<p class="empty">暂无事件</p>'
-      : `<div class="c-table-wrap"><table><caption>事件流水</caption><thead><tr><th scope="col">时间</th><th scope="col">工具</th><th scope="col">家族</th><th scope="col">结果</th><th scope="col">耗时</th><th scope="col">错误类</th><th scope="col">摘要</th><th scope="col">信号</th><th scope="col">参数键</th><th scope="col">trace</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      : `<div class="c-table-wrap"><table class="c-table"><caption>事件流水</caption><thead><tr><th scope="col">时间</th><th scope="col">工具</th><th scope="col">家族</th><th scope="col">结果</th><th scope="col">耗时</th><th scope="col">错误类</th><th scope="col">摘要</th><th scope="col">信号</th><th scope="col">参数键</th><th scope="col">trace</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 
   const visibleTotal = Math.min(view.events.total, USAGE_EVENT_LIST_MAX);
   const start = view.events.count === 0 ? 0 : view.filters.offset + 1;

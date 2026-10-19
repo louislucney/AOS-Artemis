@@ -83,7 +83,7 @@ export async function handlePanelActionRequest(
     };
   } else {
     if (!request.body || typeof request.body !== "object" || Array.isArray(request.body)) {
-      return json(400, { error: "invalid JSON body" });
+      return json(400, { error: "请求体不是合法 JSON（检查 Content-Type 与 body）" });
     }
     payload = request.body as Record<string, unknown>;
   }
@@ -173,7 +173,7 @@ export async function handlePanelActionRequest(
       result: "failed",
       summary: `面板动作异常：${errorMessage(error)}`
     });
-    return json(500, { ok: false, error: "internal error" });
+    return json(500, { ok: false, error: "服务内部错误（已写入审计；可重试或查看日志）" });
   }
 }
 

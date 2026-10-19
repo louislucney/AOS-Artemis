@@ -554,12 +554,12 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
 
 function renderTable(headers: string[], rows: string[][], emptyText: string, caption?: string): string {
   if (rows.length === 0) return `<p class="empty">${escapeHtml(emptyText)}</p>`;
-  const head = headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("");
-  const captionHtml = caption === undefined ? "" : `<caption>${escapeHtml(caption)}</caption>`;
-  const body = rows
-    .map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
-    .join("");
-  return `<div class="c-table-wrap"><table>${captionHtml}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return cTable({
+    columns: headers,
+    rows,
+    empty: emptyText,
+    ...(caption === undefined ? {} : { caption })
+  });
 }
 
 function projectHref(rootPath: string): string {
