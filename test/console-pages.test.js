@@ -223,6 +223,9 @@ test("console pages: 审计（domain 筛选＋结果徽章）", async () => {
   assert.match(all.body, /重新打开下发预览/, "失败行就地恢复动作");
   assert.match(all.body, /域 <select name="domain"/, "域改已知集合下拉");
   assert.match(all.body, /回归运行<\/option>/, "域选项中文");
+  assert.match(all.body, /<input type="datetime-local" name="since"/, "起自用日期时间控件");
+  const localSince = await handlePanelRequest(url(rootPath, "audit", { since: "2026-10-01T00:00" }), deps);
+  assert.match(localSince.body, /批次登记/, "本地时间 since 归一（无时区 → 本地 → ISO）");
   assert.match(all.body, /第 1 页/);
   const pager = await handlePanelRequest(url(rootPath, "audit", { offset: "1" }), deps);
   assert.match(pager.body, /第 1 页|第 2 页/, "offset 生效");

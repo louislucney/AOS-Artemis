@@ -198,8 +198,27 @@ type PanelView =
 
 class PanelNotFoundError extends Error {}
 
-function notFound(message = "not found"): PanelWebResponse {
-  return { status: 404, contentType: JSON_CONTENT_TYPE, body: JSON.stringify({ error: message }) };
+function notFound(message = "not found", asJson = false): PanelWebResponse {
+  if (asJson) {
+    return { status: 404, contentType: JSON_CONTENT_TYPE, body: JSON.stringify({ error: message }) };
+  }
+  const html = renderConsoleShell({
+    title: "未找到",
+    active: null,
+    body: [
+      "<h1>未找到</h1>",
+      `<p>${escapeHtml(message)}</p>`,
+      '<p><a class="c-button c-button-primary" href="/panel">← 多项目总览</a></p>'
+    ].join("\n")
+  });
+  return { status: 404, contentType: HTML_CONTENT_TYPE, body: html };
+}
+
+function normalizeSince(raw: string | null): string | null {
+  if (raw === null) return null;
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw)) return raw;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : raw;
 }
 
 function trimmed(value: string | null): string | null {
@@ -333,7 +352,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         ? (kindRaw as ArtifactRecord["kind"])
         : undefined;
     const q = trimmed(url.searchParams.get("q"));
-    const since = trimmed(url.searchParams.get("since"));
+    const since = normalizeSince(trimmed(url.searchParams.get("since")));
     const offsetRaw = trimmed(url.searchParams.get("offset"));
     const offset =
       offsetRaw !== null && Number.isFinite(Number(offsetRaw)) && Number(offsetRaw) > 0
@@ -365,7 +384,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     const resultRaw = trimmed(url.searchParams.get("result"));
     const result =
       resultRaw === "ok" || resultRaw === "skipped" || resultRaw === "failed" ? resultRaw : undefined;
-    const since = trimmed(url.searchParams.get("since"));
+    const since = normalizeSince(trimmed(url.searchParams.get("since")));
     const offsetRaw = trimmed(url.searchParams.get("offset"));
     const offset =
       offsetRaw !== null && Number.isFinite(Number(offsetRaw)) && Number(offsetRaw) > 0
@@ -506,7 +525,9 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
   try {
     view = await buildView(url, deps);
   } catch (error) {
-    if (error instanceof PanelNotFoundError) return notFound(error.message);
+    if (error instanceof PanelNotFoundError) {
+      return notFound(error.message, url.pathname.endsWith(".json"));
+    }
     throw error;
   }
 
@@ -750,7 +771,7 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
     cStat({
       label: "待执行",
       value: String(pending.length),
-      hint: pending.length > 0 ? "等待 runner 领取" : "队列为空"
+      hint: pending.length > 0 ? "等待执行机领取" : "队列为空"
     }),
     cCard({
       tone: "accent",
@@ -1192,7 +1213,7 @@ function renderRunners(detail: PanelProjectDetail): string {
     return [
       '<section id="runners">',
       "<h2>执行机（runner）</h2>",
-      '<p class="empty">暂无执行机心跳（在执行机（项目机）运行 <code>node dist/cli.js suite runner</code>）</p>',
+      '<p class="empty">暂无执行机心跳（在项目机运行 <code>node dist/cli.js suite runner</code>）</p>',
       "</section>"
     ].join("\n");
   }
@@ -1217,7 +1238,7 @@ function renderRunners(detail: PanelProjectDetail): string {
   return [
     '<section id="runners">',
     "<h2>执行机（runner）</h2>",
-    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无 runner", "运行机（执行机）"),
+    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无执行机", "执行机（runner）"),
     "</section>"
   ].join("\n");
 }
@@ -1250,17 +1271,17 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
     : "";
   const disabledAttr = actionsOff ? " disabled" : "";
   const seenFeatureKeys = new Set<string>();
-  const featureOptions: string[] = [];
+  const featureBoxes: string[] = [];
   for (const ref of detail.regressionRefs) {
     if (seenFeatureKeys.has(ref.featureKey)) continue;
     seenFeatureKeys.add(ref.featureKey);
-    featureOptions.push(
-      `<option value="${escapeHtml(ref.featureKey)}">${escapeHtml(ref.featureName)}（${ref.caseCount} 例）</option>`
+    featureBoxes.push(
+      `<label class="dispatch-option"><input type="checkbox" name="featureKeys" value="${escapeHtml(ref.featureKey)}"${disabledAttr}> ${escapeHtml(ref.featureName)}（${ref.caseCount} 例）</label>`
     );
   }
   const featureField =
-    featureOptions.length > 0
-      ? `<label>功能（可多选） <select name="featureKeys" multiple size="4" aria-label="功能（可多选）"${disabledAttr}>${featureOptions.join("")}</select></label>`
+    featureBoxes.length > 0
+      ? `<fieldset class="c-fieldset"><legend>功能（可多选）</legend>${featureBoxes.join(" ")}</fieldset>`
       : `<label>功能 key <input type="text" name="featureKeys" aria-label="功能 key（暂无可引用份，可手输）" size="28" placeholder="login,pay"${disabledAttr}></label> <span class="muted">暂无可引用用例份</span>`;
   const form = [
     '<form id="schedule-form" data-project="' + escapeHtml(rootPath) + '">',
@@ -1276,7 +1297,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
     "</form>",
     reason
   ].join("");
-  const emptyRow = '<p class="empty">暂无定时回归（runner 按窗口自动触发；引用实时取最新份）</p>';
+  const emptyRow = '<p class="empty">暂无定时回归（执行机按窗口自动触发；引用实时取最新份）</p>';
   const rows = detail.schedules.map((schedule) => [
     escapeHtml(schedule.name),
     schedule.featureKeys
@@ -1382,7 +1403,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
   );
   const coverageHint =
     task.status === "pending" && !covered
-      ? '<p class="note">当前无在线 runner 完整覆盖任务目标端（双端任务需单机双端 runner）；可手动执行或等待 runner 上线。</p>'
+      ? '<p class="note">当前无在线执行机完整覆盖任务目标端（双端任务需单机双端执行机）；可手动执行或等待执行机上线。</p>'
       : "";
   return page(
     `回归任务 · ${task.id}`,
@@ -2136,7 +2157,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
     `口径：窗口＝用例集份最近 ${view.window.runs} 批`,
     "仅计入「用例集份」来源批次（suite run --tests／独立运行等其余来源见项目页）",
     `任务积压为最近 ${PANEL_COMPARE_TASK_LIMIT} 条近似`,
-    `runner 为最近 ${PANEL_COMPARE_RUNNER_LIMIT} 条近似`,
+    `执行机为最近 ${PANEL_COMPARE_RUNNER_LIMIT} 条近似`,
     "数据源＝中央台账",
     "精确待办以归因队列为准"
   ].join("；");
@@ -2162,7 +2183,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
             "趋势（最近 10 批）",
             "质量（flaky·失败域 top3）",
             "待办（未裁决·未建单·积压·failed）",
-            "运行（runner·定时回归）"
+            "执行（执行机·定时回归）"
           ],
           rows,
           caption: "项目对比矩阵",

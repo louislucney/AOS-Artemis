@@ -91,6 +91,8 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
   .c-card{min-width:0;max-width:100%}
   .c-table-wrap{max-width:100%}
   .c-topbar-meta{max-width:100%;overflow-wrap:anywhere}
+  .c-button{min-height:44px}
+  .c-nav-item{padding:10px 8px}
 }
 :focus-visible{outline:2px solid var(--color-link);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}

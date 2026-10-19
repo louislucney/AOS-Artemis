@@ -125,6 +125,17 @@ export function renderLibraryPage(data: LibraryPageData): string {
   });
 }
 
+function sinceLocalValue(value: string | undefined): string {
+  if (value === undefined || value === "") return "";
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return "";
+  const date = new Date(ms);
+  const pad = (n: number): string => (n < 10 ? `0${n}` : String(n));
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours()
+  )}:${pad(date.getMinutes())}`;
+}
+
 export interface ArchivePageData {
   rootPath: string;
   rootLabel: string;
@@ -213,7 +224,7 @@ export function renderArchivePage(data: ArchivePageData): string {
               (kind) =>
                 `<option value="${kind}"${data.query.kind === kind ? " selected" : ""}>${artifactKindLabel(kind)}</option>`
             )
-            .join("")}</select> 关键词 <input type="text" name="q" aria-label="产物关键词" value="${q("q")}" placeholder="文件名/路径"> 起自 <input type="text" name="since" aria-label="起始时间（ISO）" value="${q("since")}" size="20" placeholder="ISO 时间"> <button class="c-button" type="submit">筛选</button></p>`,
+            .join("")}</select> 关键词 <input type="text" name="q" aria-label="产物关键词" value="${q("q")}" placeholder="文件名/路径"> 起自 <input type="datetime-local" name="since" aria-label="起自（本地时间）" value="${sinceLocalValue(data.query.since)}"> <button class="c-button" type="submit">筛选</button></p>`,
           `<p>时间预设：${preset("近 24 小时", 24)} ${preset("近 7 天", 168)} ${preset("近 30 天", 720)} <a class="c-button" href="${csvHref}">导出索引 CSV</a></p>`,
           "</form>"
         ].join("\n")
@@ -341,7 +352,7 @@ export function renderAuditPage(data: AuditPageData): string {
               ([value, label]) =>
                 `<option value="${value}"${data.query.result === value ? " selected" : ""}>${label}</option>`
             )
-            .join("")}</select> 起自 <input type="text" name="since" aria-label="起始时间（ISO）" value="${q("since")}" size="20" placeholder="ISO 时间"> <button class="c-button" type="submit">筛选</button></p>`,
+            .join("")}</select> 起自 <input type="datetime-local" name="since" aria-label="起自（本地时间）" value="${sinceLocalValue(data.query.since)}"> <button class="c-button" type="submit">筛选</button></p>`,
           `<p>时间预设：${preset("近 24 小时", 24)} ${preset("近 7 天", 168)} ${preset("近 30 天", 720)} ${data.query.since !== undefined && data.query.since !== "" ? `<a class="c-button" href="${link({ since: null, offset: "0" })}">清除</a>` : ""}</p>`,
           "</form>"
         ].join("\n")

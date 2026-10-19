@@ -260,8 +260,8 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
   assert.match(html.body, /<fieldset class="c-fieldset"><legend>端<\/legend>/, "计划表单端组有 legend");
   assert.match(html.body, /aosInlineConfirm\(b,'确认删除该计划？'/, "计划删除走站内确认");
   assert.doesNotMatch(html.body, /[^a-zA-Z_.]confirm\(/, "项目页无原生 confirm 残留");
-  assert.match(html.body, /<select name="featureKeys" multiple size="4"/, "计划功能点选（可多选，不再手输逗号串）");
-  assert.match(html.body, /<option value="f-1">登录流程（2 例）<\/option>/, "选项含功能名与条数");
+  assert.match(html.body, /<fieldset class="c-fieldset"><legend>功能（可多选）<\/legend>/, "计划功能复选组（替代多选下拉）");
+  assert.match(html.body, /<input type="checkbox" name="featureKeys" value="f-1"[^>]*> 登录流程（2 例）/, "复选含功能名与条数");
   assert.match(html.body, /f\.getAll\('featureKeys'\)/, "提交收集多选值");
   assert.match(html.body, /<section id="regression" class="c-plain">/, "CTA 区块不吃遗留 section 边框（无双框）");
   assert.doesNotMatch(html.body, /id="onboarding"/, "有引用份时不显示入门卡");
@@ -695,6 +695,8 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
     deps
   );
   assert.equal(missing.status, 404);
+  assert.match(missing.contentType, /text\/html/, "HTML 路由 404 出站内错误页");
+  assert.match(missing.body, /← 多项目总览/, "错误页给返回入口");
 
   const priority = JSON.parse(
     (
@@ -1029,14 +1031,14 @@ test("panel web: 任务页 已领取/在线标记/刷新/无端覆盖提示", as
   assert.match(html.body, /DOMParser/, "活动任务页走局部轮询（console-main 就地替换）");
   assert.ok(!html.body.includes('http-equiv="refresh"'), "不再整页刷新");
   assert.match(html.body, /在线执行机会自动领取执行/);
-  assert.doesNotMatch(html.body, /无在线 runner 完整覆盖/);
+  assert.doesNotMatch(html.body, /无在线执行机完整覆盖/);
 
   const pendingTask = await store.createRegressionTask(taskInput(["ios"]));
   const pendingHtml = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pendingTask.id}`),
     deps
   );
-  assert.match(pendingHtml.body, /无在线 runner 完整覆盖/, "pending 且无端覆盖 → 提示");
+  assert.match(pendingHtml.body, /无在线执行机完整覆盖/, "pending 且无端覆盖 → 提示");
 
   await store.updateRegressionTask(projectDir, claimedTask.id, { status: "completed" });
   const doneHtml = await handlePanelRequest(
@@ -1662,7 +1664,7 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
   assert.match(emptyHtml.body, /多项目对比/, "页头标题");
   assert.match(emptyHtml.body, /口径：窗口＝用例集份最近 20 批/, "窗口口径");
   assert.match(emptyHtml.body, /任务积压为最近 200 条近似/, "任务积压近似口径");
-  assert.match(emptyHtml.body, /runner 为最近 100 条近似/, "runner 近似口径");
+  assert.match(emptyHtml.body, /执行机为最近 100 条近似/, "执行机近似口径");
   assert.match(emptyHtml.body, /数据源＝中央台账/, "数据源口径");
   assert.match(emptyHtml.body, /精确待办以归因队列为准/, "精确待办口径");
   assert.match(emptyHtml.body, /无份来源批次/, "无份来源批次 ≠ 读取失败");
@@ -1706,7 +1708,7 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
   assert.match(html.body, /趋势（最近 10 批）/, "列组标记：趋势");
   assert.match(html.body, /质量（flaky·失败域 top3）/, "列组标记：质量");
   assert.match(html.body, /待办（未裁决·未建单·积压·failed）/, "列组标记：待办");
-  assert.match(html.body, /运行（runner·定时回归）/, "列组标记：运行");
+  assert.match(html.body, /执行（执行机·定时回归）/, "列组标记：执行");
   assert.doesNotMatch(html.body, /待办\(待\/领\/跑\/败\)/, "替换 T2 最小表格列");
 
   assert.match(

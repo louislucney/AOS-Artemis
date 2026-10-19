@@ -29,9 +29,12 @@ test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动�
     nav: [{ key: "tasks", label: "任务", href: "/panel?section=tasks" }]
   });
   assert.ok(!html.includes('http-equiv="refresh"'), "不再使用 meta 整页刷新");
-  assert.match(html, /setInterval/, "轮询脚本存在");
+  assert.match(html, /id="aos-live-note"[^>]*>自动刷新中（每 15 秒）/, "刷新可见标注");
+  assert.match(html, /id="aos-live-toggle"/, "暂停/继续控制");
+  assert.match(html, /clearInterval\(timer\)/, "暂停可生效");
   assert.match(html, /DOMParser/, "轮询替换 console-main 局部内容");
-  assert.match(html, /prefers-reduced-motion: reduce[\s\S]*setInterval/, "缩小动画偏好时不启动轮询");
+  assert.match(html, /if\(reduced\)\{/, "缩小动画偏好分支");
+  assert.match(html, /else\{start\(\)/, "未偏好时启动轮询");
   assert.ok(!html.includes("总览"), "显式 nav 子集生效");
 });
 
@@ -90,6 +93,7 @@ test("console shell: 窄屏布局（顶栏换行/主区收宽/表格容器）", 
   assert.match(html, /\.c-topbar\{flex-wrap:wrap/, "顶栏允许换行");
   assert.match(html, /\.c-layout\{flex-direction:column;align-items:stretch\}/, "列向拉伸（主区不再被内容撑宽）");
   assert.match(html, /\.c-table-wrap\{overflow-x:auto/, "表格横向滚动容器");
+  assert.match(html, /\.c-button\{min-height:44px\}/, "移动触达高度 ≥44px");
 });
 
 test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷新）", () => {
@@ -111,6 +115,9 @@ test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷�
   assert.match(html, /术语/, "帮助面板含术语表");
   assert.match(html, /份<\/strong>：一次生成或导入登记的用例集版本/, "份就地定义");
   assert.match(html, /记录底座<\/strong>/, "记录底座术语");
+  assert.match(html, /门禁<\/strong>：批次通过判定/, "术语表补门禁");
+  assert.match(html, /子运行<\/strong>：一次份×设备执行/, "术语表补子运行");
+  assert.match(html, /积压<\/strong>：待执行队列/, "术语表补积压");
 });
 
 test("console shell: 顶栏记录底座指示器（持久层/最近写入/写失败）", () => {

@@ -98,7 +98,7 @@ export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "dispatch", label: "下发", href: "/panel?section=dispatch" },
   { key: "library", label: "用例库", href: "/panel?section=library" },
   { key: "archive", label: "档案与产物", href: "/panel?section=archive" },
-  { key: "runners", label: "运行机", href: "/panel?section=runners" },
+  { key: "runners", label: "执行机", href: "/panel?section=runners" },
   { key: "schedules", label: "计划", href: "/panel?section=schedules" },
   { key: "ops", label: "运维与数据", href: "/panel?section=ops" },
   { key: "audit", label: "审计", href: "/panel?section=audit" },
@@ -171,7 +171,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     ["d", "dispatch", "下发"],
     ["l", "library", "用例库"],
     ["f", "archive", "档案"],
-    ["r", "runners", "运行机"],
+    ["r", "runners", "执行机"],
     ["s", "schedules", "计划"],
     ["p", "ops", "运维"],
     ["a", "audit", "审计"],
@@ -217,16 +217,25 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     ["基线", "对比参照：latest＝与该份最近批次比；none＝重立基准"],
     ["执行机", "运行用例的机器（runner；自动领取任务并在设备上执行）"],
     ["隔离", "quarantine：经 owner 签字暂时不计门禁的用例"],
-    ["记录底座", "服务对结果/过程/数据的强制持久台账（顶栏指示器）"]
+    ["记录底座", "服务对结果/过程/数据的强制持久台账（顶栏指示器）"],
+    ["门禁", "批次通过判定：全部用例通过（隔离项不计）才算通过；空运行不计门禁"],
+    ["子运行", "一次份×设备执行产生的运行记录（一个任务下可有多个）"],
+    ["领取", "执行机从队列取走待执行任务（claimed → running）"],
+    ["积压", "待执行队列中的任务数（等待在线执行机）"],
+    ["flaky", "同一用例时好时坏（重复采样判定）"]
   ];
   const glossaryHtml = `<h2 class="c-card-title">术语</h2><ul>${glossaryRows
     .map(([term, meaning]) => `<li><strong>${escapeHtml(term)}</strong>：${escapeHtml(meaning)}</li>`)
     .join("")}</ul>`;
   const shortcutsPanel = `<div class="c-card" id="console-shortcuts" role="region" aria-label="快捷键与术语"><h2 class="c-card-title">快捷键</h2><ul><li><span class="c-kbd">?</span> 开关本帮助</li><li><span class="c-kbd">/</span> 聚焦筛选框</li>${shortcutRows}</ul>${glossaryHtml}</div>`;
+  const liveNote =
+    input.autoRefreshSeconds === undefined
+      ? ""
+      : `<p class="muted" id="aos-live-note" role="status">自动刷新中（每 ${Math.max(1, Math.floor(input.autoRefreshSeconds))} 秒） <button type="button" class="c-button" id="aos-live-toggle">暂停</button></p>`;
   const livePollScript =
     input.autoRefreshSeconds === undefined
       ? ""
-      : `<script>(function(){var ms=${Math.max(1, Math.floor(input.autoRefreshSeconds))}*1000;try{if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches)return;}catch(e){}setInterval(function(){if(document.hidden)return;var cur=document.getElementById("console-main");if(cur&&cur.contains(document.activeElement)&&document.activeElement!==document.body)return;fetch(location.href).then(function(r){return r.ok?r.text():null;}).then(function(html){if(!html)return;var doc=new DOMParser().parseFromString(html,"text/html");var fresh=doc.getElementById("console-main");var now=document.getElementById("console-main");if(fresh&&now&&!now.contains(document.activeElement)){now.replaceChildren.apply(now,Array.prototype.slice.call(fresh.childNodes));}}).catch(function(){});},ms);})();</script>`;
+      : `<script>(function(){var ms=${Math.max(1, Math.floor(input.autoRefreshSeconds))}*1000;var timer=null;var note=document.getElementById("aos-live-note");var toggle=document.getElementById("aos-live-toggle");function tick(){if(document.hidden)return;var cur=document.getElementById("console-main");if(cur&&cur.contains(document.activeElement)&&document.activeElement!==document.body)return;fetch(location.href).then(function(r){return r.ok?r.text():null;}).then(function(html){if(!html)return;var doc=new DOMParser().parseFromString(html,"text/html");var fresh=doc.getElementById("console-main");var now=document.getElementById("console-main");if(fresh&&now&&!now.contains(document.activeElement)){now.replaceChildren.apply(now,Array.prototype.slice.call(fresh.childNodes));}}).catch(function(){});}function start(){if(timer!==null)return;timer=setInterval(tick,ms);if(toggle)toggle.textContent="暂停";}function stop(){if(timer!==null){clearInterval(timer);timer=null;}if(toggle)toggle.textContent="继续";}var reduced=false;try{reduced=!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);}catch(e){}if(reduced){if(note)note.textContent="已按系统偏好关闭自动刷新";if(toggle)toggle.hidden=true;}else{start();if(toggle)toggle.addEventListener("click",function(){if(timer===null){start();}else{stop();}});}})();</script>`;
   const recordLastProject =
     project === null || project === ""
       ? ""
@@ -255,7 +264,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     actionsBanner,
     '<div class="c-layout">',
     `<aside class="c-aside"><nav aria-label="控制台导航">${navHtml}${navHint}</nav></aside>`,
-    `<main class="c-main" id="console-main">${shortcutsPanel}${input.body}</main>`,
+    `<main class="c-main" id="console-main">${liveNote}${shortcutsPanel}${input.body}</main>`,
     "</div>",
     `<footer class="c-footer">AOS-ARTEMIS · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,
     shortcutsScript,

@@ -101,10 +101,10 @@ test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", asy
   assert.match(html, /id="dispatch-submit"/);
   assert.match(html, /panel\/api\/tasks/);
   assert.match(html, /data-features=/);
-  assert.match(html, /id="dispatch-confirm"[\s\S]*hidden/, "两段确认摘要（默认隐藏）");
-  assert.match(html, /id="dispatch-confirm-yes"/);
-  assert.match(html, /id="dispatch-confirm-text"/, "摘要文本可实时重建");
-  assert.match(html, /data-count=/, "份选项携带条数（客户端重建摘要）");
+  assert.match(html, /id="dispatch-status"[^>]*role="status"/, "提交中状态位");
+  assert.match(html, /aosInlineConfirm\(go,/, "单次确认（站内）替代两段确认");
+  assert.match(html, /提交中…/, "提交中反馈");
+  assert.match(html, /data-count=/, "份选项携带条数");
   assert.match(html, /请至少选择目标端/, "端为空前置校验");
   assert.match(html, /id="dispatch-error"[^>]*role="alert"/, "内联错误区");
   assert.match(html, /id="dispatch-stale"/, "预览过期横幅");
@@ -143,6 +143,8 @@ test("renderDispatchPage: 预览合同（预览数据岛与服务端同源）", 
   assert.ok(html.includes(`"previewId":"${previewId}"`), "岛内 previewId 与服务端同源");
   assert.ok(html.includes(`"formSignature":"${formSignature}"`), "岛内表单签名（客户端复算同式）");
   assert.match(html, /"ready":true/, "非空预览 → ready");
+  assert.match(html, /"runnerOnline":true/, "执行机在线标记入岛");
+  assert.match(html, /refsDetail/, "份明细入岛（单次确认摘要）");
   assert.match(html, /id="dispatch-field-ref"/, "份字段容器（来源联动）");
   assert.match(html, /id="dispatch-field-keyword"/, "关键词字段容器（来源联动）");
   assert.match(html, /go\.disabled=blocked;/, "过期/空预览均禁用确认");

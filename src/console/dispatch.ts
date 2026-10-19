@@ -209,6 +209,8 @@ export function renderDispatchPage(view: DispatchView): string {
     `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本份最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`
   ].join("\n");
 
+  const runnerOnline = preview.runnerCandidates.some((runner) => runner.online);
+  const runnerOnlineCount = preview.runnerCandidates.filter((runner) => runner.online).length;
   const previewBody = [
     `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
     `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：尚未引用任何份。请选择份或输入关键词后点「刷新预览」。</p>`,
@@ -216,7 +218,15 @@ export function renderDispatchPage(view: DispatchView): string {
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
     cStat({ label: "目标端", value: preview.platforms.join("、") || "—" }),
-    cStat({ label: "设备", value: preview.devices.length === 0 ? "runner 自动" : preview.devices.join("、") }),
+    cStat({
+      label: "设备",
+      value:
+        preview.devices.length === 0
+          ? runnerOnline
+            ? "执行机自动"
+            : "待执行机领取（当前无在线）"
+          : preview.devices.join("、")
+    }),
     `</div>`,
     cTable({
       columns: ["份", "用例集", "用例数"],
@@ -224,7 +234,7 @@ export function renderDispatchPage(view: DispatchView): string {
       caption: "引用份明细",
       empty: "无引用（待选择来源）"
     }),
-    `<p>runner 候选：${runnerBadges || '<span class="muted">暂无注册执行机</span>'}</p>`,
+    `<p>执行机候选：${runnerBadges || '<span class="muted">暂无注册执行机</span>'}</p>`,
     preview.devices.length === 0
       ? `<p class="muted">设备：由在线执行机在领取时确定；最终设备见任务页。</p>`
       : "",
@@ -235,9 +245,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const dispatchConfirmScript = `<script>(function(){
 var form=document.getElementById('dispatch-form');if(!form)return;
 var go=document.getElementById('dispatch-submit');if(!go)return;
-var box=document.getElementById('dispatch-confirm');
-var yes=document.getElementById('dispatch-confirm-yes');
-var no=document.getElementById('dispatch-confirm-no');
+var status=document.getElementById('dispatch-status');
 var err=document.getElementById('dispatch-error');
 var stale=document.getElementById('dispatch-stale');
 var island=null;try{island=JSON.parse(document.getElementById('dispatch-preview-data').textContent);}catch(e){island=null;}
@@ -263,7 +271,6 @@ function refreshStale(){
   if(stale)stale.hidden=!staleNow;
   var blocked=staleNow||empty;
   go.disabled=blocked;
-  if(blocked)box.hidden=true;
   return blocked;
 }
 form.addEventListener('input',refreshStale);
@@ -273,35 +280,35 @@ go.addEventListener('click',function(){
   if(refreshStale()){showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择份或输入关键词，再点「刷新预览」');return;}
   if(form.querySelectorAll('input[name="platforms"]:checked').length===0){showErr('请至少选择目标端（iOS/Android）');return;}
   var s=island.summary||{};
-  var text='将创建回归任务：来源「'+(s.label||'—')+'」· 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条 · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+'。';
-  var textEl=document.getElementById('dispatch-confirm-text');if(textEl)textEl.textContent=text;
-  err.hidden=true;box.hidden=false;go.disabled=true;if(yes&&yes.focus)yes.focus();
-});
-no.addEventListener('click',function(){box.hidden=true;go.disabled=false;});
-document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!box.hidden){box.hidden=true;go.disabled=false;}});
-yes.addEventListener('click',function(){
-  var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
-  var payload={project:island.project,previewId:island.previewId,source:mode};
-  if(mode==='keyword'){payload.keyword=((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim();}
-  else{payload.ref=(form.querySelector('select[name="ref"]')||{value:''}).value||'';}
-  payload.platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
-  payload.baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
-  yes.disabled=true;
-  fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-    .then(function(response){return response.json().then(function(p){if(!response.ok){throw new Error(p.error||('HTTP '+response.status));}window.aosFlash&&aosFlash('已派发任务 '+p.task.id+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(island.project)+'&task='+encodeURIComponent(p.task.id);});})
-    .catch(function(error){yes.disabled=false;showErr('创建失败：'+error.message);});
+  var refs=island.refsDetail||[];
+  var refText=refs.length===0?'':(' · 份：'+refs.map(function(r){return r.label+'×'+r.caseCount;}).join('、'));
+  var runner=island.runnerOnline?('在线候选 '+island.runnerOnlineCount+' 台'):'无在线执行机（任务将排队）';
+  var text='将创建回归任务：来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · 执行机：'+runner;
+  window.aosInlineConfirm(go,text,function(){
+    var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
+    var payload={project:island.project,previewId:island.previewId,source:mode};
+    if(mode==='keyword'){payload.keyword=((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim();}
+    else{payload.ref=(form.querySelector('select[name="ref"]')||{value:''}).value||'';}
+    payload.platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
+    payload.baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
+    go.disabled=true;if(status)status.textContent='提交中…';
+    fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(response){return response.json().then(function(p){if(!response.ok){throw new Error(p.error||('HTTP '+response.status));}window.aosFlash&&aosFlash('已派发任务 '+p.task.id+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(island.project)+'&task='+encodeURIComponent(p.task.id);});})
+      .catch(function(error){go.disabled=false;if(status)status.textContent='';showErr('创建失败：'+error.message);});
+  });
 });
 })();</script>`;
   const actionsOff = view.capabilities?.actions === false;
   const confirmBody = actionsOff
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
-        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">派发前显示一次摘要确认；由在线执行机自动领取，或在执行机手动执行（<code>suite run --task</code>）。</span></p>`,
+        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">点击后显示完整摘要（份明细 / 端 / 基线 / 执行机），再创建任务。</span></p>`,
+        `<p id="dispatch-status" role="status" class="muted"></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
-        `<p id="dispatch-confirm" class="c-banner c-banner-accent" role="status" hidden><span id="dispatch-confirm-text"></span> <button class="c-button c-button-primary" type="button" id="dispatch-confirm-yes">确认创建</button> <button class="c-button" type="button" id="dispatch-confirm-no">取消</button></p>`,
-        `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, ready: preview.refs.length > 0, summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
+        `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
         dispatchConfirmScript,
       ].join("\n");
+
 
   return renderConsoleShell({
     title: "下发回归",
