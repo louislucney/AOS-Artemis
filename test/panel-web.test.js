@@ -158,6 +158,9 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   assert.match(html.body, /demo/);
   assert.match(html.body, /c-table/, "CSDC 表格");
   assert.match(html.body, /c-badge/, "CSDC 徽章");
+  assert.match(html.body, /进入最近活跃项目：demo →/, "首访直达最近活跃项目");
+  assert.match(html.body, /进入项目 →/, "每行显式进入动作");
+  assert.match(html.body, /进入任一项目后显示项目级版块/, "无项目上下文时导航给说明而非死项");
 });
 
 test("panel web: 项目详情（空态→批次→独立运行）与未知项目 404", async () => {

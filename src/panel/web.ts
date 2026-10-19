@@ -611,7 +611,7 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
     : view.store.kind === "file"
       ? cBadge({ label: "存储：文件台账", tone: "neutral" })
       : cBadge({ label: "存储：PostgreSQL", tone: "neutral" });  const rows = view.projects.map((row) => [
-    `<a href="${escapeHtml(projectHref(row.rootPath))}"><code>${escapeHtml(row.name)}</code></a>`,
+    `<a href="${escapeHtml(projectHref(row.rootPath))}">${escapeHtml(row.name)}</a> <a class="c-button" href="${escapeHtml(projectHref(row.rootPath))}">进入项目 →</a>`,
     renderProjectCell(row),
     escapeHtml(row.stacks.join("、") || "—"),
     escapeHtml(row.lastSeenAt ?? "—"),
@@ -639,16 +639,19 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
             body: "在 MCP 客户端配置 AOS_PROJECT_DIR 指向项目目录，或把项目放入本次工作区后刷新；接入步骤见项目根 README。",
             action: '<code>node dist/cli.js install</code>（生成客户端挂载配置）'
           })
-        : cCard({
-            title: "项目",
-            subtitle: `生成时间 ${view.generatedAt} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
-            body: cTable({
-              columns: ["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
-              rows,
-              caption: "项目列表",
-              empty: "暂无项目"
-            })
-          })
+        : [
+            `<p><a class="c-button c-button-primary" href="${escapeHtml(projectHref(view.projects[0].rootPath))}">进入最近活跃项目：${escapeHtml(view.projects[0].name)} →</a></p>`,
+            cCard({
+              title: "项目",
+              subtitle: `生成时间 ${view.generatedAt} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
+              body: cTable({
+                columns: ["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
+                rows,
+                caption: "项目列表",
+                empty: "暂无项目"
+              })
+            }).toString()
+          ].join("\n")
     ].join("\n")
   });
 }

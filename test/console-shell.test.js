@@ -163,11 +163,13 @@ test("console shell: 项目上下文与能力标记（导航禁用/横幅）", (
 
   const bare = renderConsoleShell({ title: "总览", active: "overview", body: "" });
   assert.ok(
-    bare.includes('aria-disabled="true"') && bare.includes('title="先进入项目后再使用"'),
-    "无项目上下文时项目级导航禁用而非误指总览"
+    !bare.includes('aria-disabled="true"'),
+    "无项目上下文：项目级导航隐藏而非渲染死项"
   );
-  assert.ok(!bare.includes('tabindex="0"'), "禁用导航不可聚焦（键盘 Tab 不穿过）");
-  assert.match(bare, /role="link" aria-disabled="true"/, "禁用语义保留（屏幕阅读器可播报）");
+  assert.ok(!bare.includes("section=dispatch"), "项目级项不渲染");
+  assert.ok(bare.includes('href="/panel"'), "总览项保留");
+  assert.match(bare, /进入任一项目后显示项目级版块/, "隐藏原因就地说明");
+  assert.ok(!bare.includes('tabindex="0"'), "无不可聚焦残留");
 
   const off = renderConsoleShell({
     title: "总览",

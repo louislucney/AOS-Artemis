@@ -117,18 +117,30 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   const capabilities = input.capabilities ?? shellDefaults.capabilities ?? DEFAULT_CAPABILITIES;
   const project = input.project ?? null;
   const nav = input.nav ?? DEFAULT_CONSOLE_NAV;
-  const navHtml = nav
-    .map((item) => {
-      const current = item.key === input.active ? ' aria-current="page"' : "";
-      const badge = item.badge ? `<span class="c-nav-badge">${escapeHtml(item.badge)}</span>` : "";
-      const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project);
-      if (href === null) {
-        const reason = item.key === "usage" ? "本进程不提供统计页（独立统计服务：usage --web）" : "先进入项目后再使用";
-        return `<span class="c-nav-item c-nav-item-disabled" role="link" aria-disabled="true" aria-label="${escapeHtml(item.label)}（${escapeHtml(reason)}）" title="${escapeHtml(reason)}">${escapeHtml(item.label)}${badge}</span>`;
+  const navParts: string[] = [];
+  let hiddenScoped = 0;
+  for (const item of nav) {
+    const current = item.key === input.active ? ' aria-current="page"' : "";
+    const badge = item.badge ? `<span class="c-nav-badge">${escapeHtml(item.badge)}</span>` : "";
+    const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project);
+    if (href === null) {
+      if (PROJECT_SCOPED.has(item.key)) {
+        hiddenScoped += 1;
+        continue;
       }
-      return `<a class="c-nav-item"${current} href="${escapeHtml(href)}">${escapeHtml(item.label)}${badge}</a>`;
-    })
-    .join("\n");
+      const reason = "本进程不提供统计页（独立统计服务：usage --web）";
+      navParts.push(
+        `<span class="c-nav-item c-nav-item-disabled" role="link" aria-disabled="true" aria-label="${escapeHtml(item.label)}（${escapeHtml(reason)}）" title="${escapeHtml(reason)}">${escapeHtml(item.label)}${badge}</span>`
+      );
+      continue;
+    }
+    navParts.push(`<a class="c-nav-item"${current} href="${escapeHtml(href)}">${escapeHtml(item.label)}${badge}</a>`);
+  }
+  const navHtml = navParts.join("\n");
+  const navHint =
+    hiddenScoped === 0
+      ? ""
+      : `<div class="c-nav-hint muted">进入任一项目后显示项目级版块（任务/下发/用例库/…）</div>`;
   const actionsBanner = capabilities.actions
     ? ""
     : `<div class="c-banner c-banner-warn" role="status" id="capability-banner">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback 访问；或使用 HTTP 模式（<code>serve --http</code>，见 README 接入指南）。当前页面为只读。 <button class="c-button" type="button" id="capability-dismiss">知道了</button></div>`;
@@ -218,7 +230,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     "</header>",
     actionsBanner,
     '<div class="c-layout">',
-    `<aside class="c-aside"><nav aria-label="控制台导航">${navHtml}</nav></aside>`,
+    `<aside class="c-aside"><nav aria-label="控制台导航">${navHtml}${navHint}</nav></aside>`,
     `<main class="c-main" id="console-main">${shortcutsPanel}${input.body}</main>`,
     "</div>",
     `<footer class="c-footer">AOS-ARTEMIS · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,
