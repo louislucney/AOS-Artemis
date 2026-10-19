@@ -2029,11 +2029,15 @@ function renderCompareProjectCell(project: PanelCompareProject): string {
 
 function renderCompareLatestCell(project: PanelCompareProject): string {
   const batch = project.latestBatch;
-  if (batch === null) return '<span class="muted">无批次</span>';
+  if (batch === null) {
+    return `<span class="muted">无份来源批次</span> <a href="${escapeHtml(
+      projectHref(project.rootPath)
+    )}">看项目页</a>`;
+  }
   const rate =
     batch.passRate === null ? "—" : `${Math.round(clampPassRate(batch.passRate) * 100)}%`;
   return [
-    `<div class="muted">${escapeHtml(batch.at ?? "—")}</div>`,
+    `<div class="muted">${relativeTime(batch.at)}</div>`,
     `${gateSpan(batch.gate)} · ${rate}`
   ].join("");
 }
@@ -2130,6 +2134,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
   const warnings = view.warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("");
   const scope = [
     `口径：窗口＝用例集份最近 ${view.window.runs} 批`,
+    "仅计入「用例集份」来源批次（suite run --tests／独立运行等其余来源见项目页）",
     `任务积压为最近 ${PANEL_COMPARE_TASK_LIMIT} 条近似`,
     `runner 为最近 ${PANEL_COMPARE_RUNNER_LIMIT} 条近似`,
     "数据源＝中央台账",
@@ -2153,7 +2158,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
         body: cTable({
           columns: [
             "项目",
-            "最近批次（时间·门禁·通过率）",
+            "最近份批次（时间·门禁·通过率）",
             "趋势（最近 10 批）",
             "质量（flaky·失败域 top3）",
             "待办（未裁决·未建单·积压·failed）",

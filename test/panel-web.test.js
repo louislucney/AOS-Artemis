@@ -1665,7 +1665,8 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
   assert.match(emptyHtml.body, /runner 为最近 100 条近似/, "runner 近似口径");
   assert.match(emptyHtml.body, /数据源＝中央台账/, "数据源口径");
   assert.match(emptyHtml.body, /精确待办以归因队列为准/, "精确待办口径");
-  assert.match(emptyHtml.body, /无批次/, "无批次 ≠ 读取失败");
+  assert.match(emptyHtml.body, /无份来源批次/, "无份来源批次 ≠ 读取失败");
+  assert.match(emptyHtml.body, /看项目页/, "空态给项目页跳转（其余来源）");
   assert.doesNotMatch(emptyHtml.body, /读取失败/, "无 error 不出现降级标注");
 
   await store.recordSuiteRun({
@@ -1700,14 +1701,19 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
 
   const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
   assert.equal(html.status, 200);
-  assert.match(html.body, /最近批次（时间·门禁·通过率）/, "列组标记：最近批次");
+  assert.match(html.body, /最近份批次（时间·门禁·通过率）/, "列组标记：最近份批次");
+  assert.match(html.body, /仅计入「用例集份」来源批次/, "口径显式声明来源范围");
   assert.match(html.body, /趋势（最近 10 批）/, "列组标记：趋势");
   assert.match(html.body, /质量（flaky·失败域 top3）/, "列组标记：质量");
   assert.match(html.body, /待办（未裁决·未建单·积压·failed）/, "列组标记：待办");
   assert.match(html.body, /运行（runner·定时回归）/, "列组标记：运行");
   assert.doesNotMatch(html.body, /待办\(待\/领\/跑\/败\)/, "替换 T2 最小表格列");
 
-  assert.match(html.body, /<div class="muted">2026-10-14T12:00:00.000Z<\/div>/, "最近批次时间");
+  assert.match(
+    html.body,
+    /<div class="muted"><time datetime="2026-10-14T12:00:00\.000Z"[^>]*>[^<]*<\/time><\/div>/,
+    "最近份批次时间（相对＋title 绝对）"
+  );
   assert.match(html.body, /<span class="gate-fail">未通过<\/span> · 25%/, "门禁与通过率");
   assert.match(
     html.body,
