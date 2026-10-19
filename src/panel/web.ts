@@ -1385,6 +1385,7 @@ function renderReviewPage(view: {
   detail: { items: PanelReviewItem[]; warnings: string[] };
 }): string {
   const { items, warnings } = view.detail;
+  const appDefects = items.filter((item) => item.verdict === "app-defect");
   const rootJson = JSON.stringify(view.rootPath).replace(/</g, "\\u003c");
   const evidenceCell = (item: PanelReviewItem): string => {
     if (item.evidencePath === null) return "—";
@@ -1498,6 +1499,11 @@ function renderReviewPage(view: {
       warningsHtml,
       "</header>",
       "<main>",
+      ...(appDefects.length === 0
+        ? []
+        : [
+            `<p><a class="c-button c-button-primary" href="${escapeHtml(statsHref(view.rootPath))}#issues">下一步：去建单（应用缺陷 ${appDefects.length} 条）→</a></p>`
+          ]),
       ...body,
       '<section id="run-hint">',
       "<h2>动作指引</h2>",
@@ -1521,7 +1527,7 @@ function environmentNoteSummary(notes: string[]): string {
 }
 
 function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string {
-  const title = "<h3>应用缺陷（app-defect）→ 建单（Jira）</h3>";
+  const title = '<h3 id="issues">应用缺陷（app-defect）→ 建单（Jira）</h3>';
   if (items.length === 0) return `${title}<p class="empty">（空）</p>`;
   const rootJson = JSON.stringify(rootPath).replace(/</g, "\\u003c");
   const rows = items.map((item) => [
@@ -2165,6 +2171,9 @@ function page(title: string, bodyParts: string, refreshSeconds?: number): string
     capabilities: currentShell.capabilities,
     storeHealth: currentShell.storeHealth,
     projectSwitcher: currentShell.projectSwitcher,
+    ...(currentShell.project === null
+      ? {}
+      : { meta: `项目 <code>${escapeHtml(path.basename(currentShell.project))}</code>` }),
     ...(refreshSeconds === undefined ? {} : { autoRefreshSeconds: refreshSeconds }),
     body: bodyParts.replaceAll("<main>", "").replaceAll("</main>", "")
   });
@@ -2202,7 +2211,9 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
       return view.active ?? "project";
     case "review":
     case "stats":
+      return "project";
     case "batch":
+      return "tasks";
     case "search":
       return null;
     default:

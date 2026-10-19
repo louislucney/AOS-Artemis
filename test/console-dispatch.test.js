@@ -142,9 +142,32 @@ test("renderDispatchPage: 预览合同（预览数据岛与服务端同源）", 
   });
   assert.ok(html.includes(`"previewId":"${previewId}"`), "岛内 previewId 与服务端同源");
   assert.ok(html.includes(`"formSignature":"${formSignature}"`), "岛内表单签名（客户端复算同式）");
+  assert.match(html, /"ready":true/, "非空预览 → ready");
+  assert.match(html, /id="dispatch-field-ref"/, "份字段容器（来源联动）");
+  assert.match(html, /id="dispatch-field-keyword"/, "关键词字段容器（来源联动）");
+  assert.match(html, /go\.disabled=blocked;/, "过期/空预览均禁用确认");
   assert.match(html, /formSignature\(\)!==island\.formSignature/, "字段变更→过期判定");
   assert.match(html, /id="dispatch-stale"/, "过期横幅（role=status）");
   assert.match(html, /role="status"[^>]*hidden|hidden[^>]*role="status"/, "默认隐藏");
+});
+
+test("renderDispatchPage: 空预览（未引用份）→ ready:false＋空态横幅＋确认禁用＋来源显隐", async () => {
+  const { store } = await seed();
+  const params = new URLSearchParams({ source: "case-set", platforms: "android" });
+  const preview = await computeDispatchPreview({ store, env: {}, now: () => NOW }, ROOT, params);
+  const formSignature = dispatchFormSignature(params);
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId: dispatchPreviewId(preview, formSignature),
+    formSignature,
+    query: {}
+  });
+  assert.match(html, /"ready":false/, "空引用预览标记");
+  assert.match(html, /id="dispatch-empty"/, "空态横幅（③ 卡）");
+  assert.match(html, /refField\.hidden=mode==='keyword'/, "来源 radio 联动显隐字段");
+  assert.match(html, /预览为空：先选择份或输入关键词/, "点击拦截文案区分空/过期");
 });
 
 test("renderDispatchPage: 写动作关闭时禁用派发并给可见原因", async () => {

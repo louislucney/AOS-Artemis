@@ -200,8 +200,8 @@ export function renderDispatchPage(view: DispatchView): string {
     `<label class="dispatch-option"><input type="radio" name="source" value="case-set"${mode === "case-set" ? " checked" : ""}> 用例库选份</label>`,
     `<label class="dispatch-option"><input type="radio" name="source" value="keyword"${mode === "keyword" ? " checked" : ""}> 功能关键词</label>`,
     "</fieldset>",
-    `<p><label>份 <select name="ref" aria-label="用例集份"><option value="">（选择份）</option>${setOptions}</select></label></p>`,
-    `<p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label> <span class="muted">Excel 导入经 CLI/API（multipart 上传）。</span></p>`
+    `<div id="dispatch-field-ref"><p><label>份 <select name="ref" aria-label="用例集份"><option value="">（选择份）</option>${setOptions}</select></label></p></div>`,
+    `<div id="dispatch-field-keyword"><p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label> <span class="muted">Excel 导入经 CLI/API（multipart 上传）。</span></p></div>`
   ].join("\n");
 
   const paramsBody = [
@@ -210,6 +210,8 @@ export function renderDispatchPage(view: DispatchView): string {
   ].join("\n");
 
   const previewBody = [
+    `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
+    `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：尚未引用任何份。请选择份或输入关键词后点「刷新预览」。</p>`,
     `<div class="c-stats-row">`,
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
@@ -250,16 +252,25 @@ function formSignature(){
 }
 function refreshStale(){
   var staleNow=formSignature()!==island.formSignature;
+  var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
+  var refField=document.getElementById('dispatch-field-ref');
+  var keywordField=document.getElementById('dispatch-field-keyword');
+  if(refField)refField.hidden=mode==='keyword';
+  if(keywordField)keywordField.hidden=mode!=='keyword';
+  var empty=!island.ready;
+  var emptyEl=document.getElementById('dispatch-empty');
+  if(emptyEl)emptyEl.hidden=!empty;
   if(stale)stale.hidden=!staleNow;
-  go.disabled=staleNow;
-  if(staleNow)box.hidden=true;
-  return staleNow;
+  var blocked=staleNow||empty;
+  go.disabled=blocked;
+  if(blocked)box.hidden=true;
+  return blocked;
 }
 form.addEventListener('input',refreshStale);
 form.addEventListener('change',refreshStale);
 refreshStale();
 go.addEventListener('click',function(){
-  if(refreshStale()){showErr('预览已过期：请先点「刷新预览」');return;}
+  if(refreshStale()){showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择份或输入关键词，再点「刷新预览」');return;}
   if(form.querySelectorAll('input[name="platforms"]:checked').length===0){showErr('请至少选择目标端（iOS/Android）');return;}
   var s=island.summary||{};
   var text='将创建回归任务：来源「'+(s.label||'—')+'」· 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条 · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+'。';
@@ -285,11 +296,10 @@ yes.addEventListener('click',function(){
   const confirmBody = actionsOff
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
-        `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">派发前显示一次摘要确认；由在线执行机自动领取，或在执行机手动执行（<code>suite run --task</code>）。</span></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
         `<p id="dispatch-confirm" class="c-banner c-banner-accent" hidden><span id="dispatch-confirm-text"></span> <button class="c-button c-button-primary" type="button" id="dispatch-confirm-yes">确认创建</button> <button class="c-button" type="button" id="dispatch-confirm-no">取消</button></p>`,
-        `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
+        `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, ready: preview.refs.length > 0, summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
         dispatchConfirmScript,
       ].join("\n");
 

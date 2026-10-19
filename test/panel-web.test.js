@@ -1370,6 +1370,43 @@ test("panel web: stats 环境清单表（设备/端/次数/功能/最近/备注�
   assert.doesNotMatch(emptyHtml.body, /id="issues-form"/, "无应用缺陷 → 不渲染建单表单");
 });
 
+test("panel web: 归因→建单断链接上（CTA＋锚点＋项目导航当前态）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const run = await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T10:05:00.000Z",
+    run: makeStatsRun({}),
+    cases: [
+      makeStatsCase({
+        caseId: "case-app",
+        name: "崩溃用例",
+        failureDomain: "应用缺陷",
+        verdict: "app-defect",
+        verdictBy: "bob",
+        verdictAt: "2026-10-14T12:30:00.000Z"
+      })
+    ]
+  });
+  assert.ok(run.id);
+
+  const review = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=review`),
+    deps
+  );
+  assert.equal(review.status, 200);
+  assert.match(review.body, /下一步：去建单（应用缺陷 1 条）→/, "归因页就地给建单出口");
+  assert.match(review.body, /view=stats/, "CTA 指统计页");
+  assert.match(review.body, /#issues/, "锚点直达建单块");
+  assert.match(review.body, /aria-current="page"[^>]*>项目</, "review 保留「项目」导航当前态");
+
+  const stats = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=stats`),
+    deps
+  );
+  assert.match(stats.body, /<h3 id="issues">/, "统计页建单块锚点");
+  assert.match(stats.body, /aria-current="page"[^>]*>项目</, "stats 保留「项目」导航当前态");
+});
+
 test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS/指引行）", async () => {
   const { deps, projectDir, store } = await makeHarness();
   const run = await store.recordSuiteRun({
