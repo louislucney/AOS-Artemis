@@ -55,6 +55,6 @@ test("cStat / cEmpty: 结构与转义", () => {
   assert.match(stat, /c-stat-label">通过率</);
   assert.match(stat, /c-stat-value">87%</);
   const empty = cEmpty({ title: "还没有数据", body: "先下发一次", action: '<a href="/d">去下发</a>' });
-  assert.match(empty, /<h3>还没有数据<\/h3>/);
+  assert.match(empty, /<h2>还没有数据<\/h2>/);
   assert.match(empty, /<a href="\/d">去下发<\/a>/);
 });

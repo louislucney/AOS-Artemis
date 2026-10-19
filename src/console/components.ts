@@ -87,5 +87,5 @@ export interface CEmptyInput {
 
 export function cEmpty(input: CEmptyInput): string {
   const action = input.action ? `<div class="c-empty-action">${input.action}</div>` : "";
-  return `<div class="c-empty"><h3>${escapeHtml(input.title)}</h3><p>${escapeHtml(input.body)}</p>${action}</div>`;
+  return `<div class="c-empty"><h2>${escapeHtml(input.title)}</h2><p>${escapeHtml(input.body)}</p>${action}</div>`;
 }

@@ -91,6 +91,14 @@ export function auditActionHtml(action: string): string {
   return escapeHtml(action);
 }
 
+/** 纯文本动作标签（审计摘要等服务端文案用）。 */
+export function auditActionLabel(action: string): string {
+  const label = AUDIT_ACTIONS[action];
+  if (label !== undefined) return label;
+  if (action.startsWith("action.")) return `控制台动作（${action.slice("action.".length)}）`;
+  return action;
+}
+
 const ARTIFACT_KINDS: Record<string, string> = {
   run: "批次",
   "case-set": "用例集",

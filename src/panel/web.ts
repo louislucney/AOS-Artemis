@@ -877,12 +877,13 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
             trend.points.length > 20 ? "，仅最近 20 批" : ""
           }）：${trend.points
             .slice(-20)
-            .map(
-              (point) =>
-                `<span class="${point.gate === "fail" ? "gate-fail" : "gate-pass"}">${
-                  point.passed ?? "—"
-                }/${point.total ?? "—"}</span>`
-            )
+            .map((point) => {
+              const empty = point.total !== null && point.total === 0;
+              const cls = empty ? "muted" : point.gate === "fail" ? "gate-fail" : "gate-pass";
+              return `<span class="${cls}"${empty ? ' title="无用例：未执行（不计门禁）"' : ""}>${
+                point.passed ?? "—"
+              }/${point.total ?? "—"}${empty ? "（未执行）" : ""}</span>`;
+            })
             .join(" → ")}</p>`,
           Object.keys(trend.domainTotals).length > 0
             ? `<p>${Object.entries(trend.domainTotals)
@@ -1528,7 +1529,7 @@ function renderReviewPage(view: {
       ? [
           '<section id="queue">',
           "<h2>失败用例</h2>",
-          '<p class="empty">暂无失败用例（最近 10 次运行全部通过）</p>',
+          '<p class="empty">暂无失败用例（最近 10 次运行无失败，或尚无运行记录——完成下发后此处会列出失败用例）</p>',
           "</section>"
         ]
       : [
@@ -1651,7 +1652,7 @@ var result=document.getElementById('issues-result');
 var stale=document.getElementById('issues-stale');
 var previewBtn=document.getElementById('issues-preview');
 var createBtn=document.getElementById('issues-create');
-var previewId=null;
+var previewId=null;var issueStatusLabels={preview:'预览',created:'已创建',existing:'已存在',skipped:'跳过',error:'失败'};function issueStatusLabel(s){return issueStatusLabels[s]||s;}
 function showStale(on){if(stale)stale.hidden=!on;createBtn.disabled=(on||previewId===null);}
 function payload(dryRun){
   var items=Array.prototype.slice.call(form.querySelectorAll('input[name=issue-item]:checked')).map(function(el){var idx=el.value.indexOf('|');return {runId:el.value.slice(0,idx),caseId:el.value.slice(idx+1)};});
@@ -1675,14 +1676,14 @@ function renderResults(results){
   var list=document.createElement('ul');
   results.forEach(function(item){
     var li=document.createElement('li');
-    li.appendChild(document.createTextNode(item.caseId+'（'+item.status+'）'));
+    li.appendChild(document.createTextNode(item.caseId+'（'+issueStatusLabel(item.status)+'）'));
     if(item.key){var code=document.createElement('code');code.textContent=' '+item.key;li.appendChild(code);}
     if(item.url){var link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noreferrer';link.textContent=' 打开';li.appendChild(link);}
     if(item.reason){var reason=document.createElement('span');reason.className='muted';reason.textContent=' '+item.reason;li.appendChild(reason);}
     if(item.summary){var summary=document.createElement('span');summary.className='muted';summary.textContent=' '+item.summary;li.appendChild(summary);}
     if(item.attachments&&item.attachments.length){var at=document.createElement('span');at.className='muted';at.textContent=' 将附证据 '+item.attachments.length+' 个';li.appendChild(at);}
     if(item.evidence==='posted'){var ev=document.createElement('span');ev.className='muted';ev.textContent=' 证据已附';li.appendChild(ev);}
-    else if(item.evidence==='error'){var ev2=document.createElement('span');ev2.className='muted';ev2.textContent=' 证据附加失败';li.appendChild(ev2);}
+    else if(item.evidence==='error'){var ev2=document.createElement('span');ev2.className='muted';ev2.textContent=' 证据附加失败';ev2.setAttribute('data-evidence-note',item.caseId);li.appendChild(ev2);}
     else if(item.evidence==='skipped'){var ev3=document.createElement('span');ev3.className='muted';ev3.textContent=' 无证据（无轨迹）';li.appendChild(ev3);}
     if(item.evidence==='error'&&item.key){var rb=document.createElement('button');rb.type='button';rb.className='c-button';rb.setAttribute('data-evidence-retry',item.runId+'|'+item.caseId);rb.textContent='重试附件';li.appendChild(document.createTextNode(' '));li.appendChild(rb);}
     if(item.attachmentsFailed){var aw=document.createElement('span');aw.className='muted';aw.textContent=' 附件预览失败（不影响建单）';li.appendChild(aw);}
@@ -1722,7 +1723,7 @@ createBtn.addEventListener('click',function(){
 });
 form.addEventListener('input',function(){previewId=null;showStale(true);});
 form.addEventListener('change',function(){previewId=null;showStale(true);});
-result.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-evidence-retry]'):null;if(!b)return;var v=b.getAttribute('data-evidence-retry');var idx=v.indexOf('|');var rId=v.slice(0,idx);var cId=v.slice(idx+1);window.aosInlineConfirm(b,'确认向 Jira 单据重试上传证据附件？',function(){b.disabled=true;fetch('/panel/api/issues/evidence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:${rootJson},runId:rId,caseId:cId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(res.j.evidence==='posted'){status.textContent='证据已补传（'+cId+'） · 已写入审计';if(b.parentNode)b.parentNode.removeChild(b);}else{b.disabled=false;status.textContent='证据重试未成功：'+((res.j&&res.j.reason)||'未知');}}).catch(function(err){b.disabled=false;status.textContent='证据重试失败：'+(err&&err.message?err.message:err);});});});
+result.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-evidence-retry]'):null;if(!b)return;var v=b.getAttribute('data-evidence-retry');var idx=v.indexOf('|');var rId=v.slice(0,idx);var cId=v.slice(idx+1);window.aosInlineConfirm(b,'确认向 Jira 单据重试上传证据附件？',function(){b.disabled=true;fetch('/panel/api/issues/evidence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:${rootJson},runId:rId,caseId:cId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(res.j.evidence==='posted'){status.textContent='证据已补传（'+cId+'） · 已写入审计';var notes=result.querySelectorAll('[data-evidence-note]');for(var i=0;i<notes.length;i++){if(notes[i].getAttribute('data-evidence-note')===cId){notes[i].textContent=' 证据已补传';}}if(b.parentNode)b.parentNode.removeChild(b);}else{b.disabled=false;status.textContent='证据重试未成功：'+((res.j&&res.j.reason)||'未知');}}).catch(function(err){b.disabled=false;status.textContent='证据重试失败：'+(err&&err.message?err.message:err);});});});
 showStale(false);
 })();</script>`;
   return [
@@ -1889,7 +1890,9 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
         const persist =
           health === undefined
             ? "—"
-            : `${escapeHtml(health.label)}${health.writeIssue === null ? "" : `（${escapeHtml(health.writeIssue)}）`}`;
+            : health.writeIssue === null || health.label.includes("会话内存")
+              ? escapeHtml(health.label)
+              : `${escapeHtml(health.label)}（${escapeHtml(health.writeIssue)}）`;
         return `<p>可运行：${lampSpan(axis.lamp)}${escapeHtml(axis.note)} · 可持久：${persist} · 已接入：${row.integration.ready}/${row.integration.total} 就绪${
           row.integration.missing.length > 0
             ? `（缺 ${row.integration.missing.map((item) => escapeHtml(item)).join("、")}；不影响执行）`

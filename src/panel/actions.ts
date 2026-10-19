@@ -16,6 +16,7 @@ import {
   dispatchFormSignature,
   dispatchPreviewId
 } from "../console/dispatch.js";
+import { auditActionLabel } from "../console/vocab.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 
 /** 面板动作层（DESIGN：回归服务 §5.4）：HTTP 模式接线；独立进程需 `AOS_PANEL_ACTIONS=1`＋loopback。
@@ -183,11 +184,25 @@ async function auditPanel(
   response: PanelWebResponse,
   refs?: Record<string, string | undefined>
 ): Promise<void> {
+  let detail = "";
+  if (response.status !== 200) {
+    try {
+      const raw =
+        typeof response.body === "string" ? response.body : response.body.toString("utf8");
+      const payload = JSON.parse(raw) as { error?: unknown };
+      if (typeof payload.error === "string" && payload.error !== "") detail = payload.error;
+    } catch {
+      /* 非 JSON 响应：仅保留状态码 */
+    }
+  }
   await recordAuditSafe(deps.store, rootPath, {
     domain: "panel",
     action,
     result: response.status === 200 ? "ok" : "failed",
-    summary: `面板动作 ${action} → ${response.status}`,
+    summary:
+      response.status === 200
+        ? `${auditActionLabel(action)}：完成`
+        : `${auditActionLabel(action)}：失败（${detail === "" ? `HTTP ${response.status}` : detail}）`,
     ...(refs === undefined ? {} : { refs })
   });
 }

@@ -136,6 +136,15 @@ test("console actions: 释放/停止/重新派发三动作（运行中先停止�
   assert.ok(audit.some((event) => event.action === "action.release"));
   assert.ok(audit.some((event) => event.action === "action.stop"));
   assert.ok(audit.some((event) => event.action === "action.rerun"));
+  assert.ok(
+    audit.some(
+      (event) =>
+        event.action === "action.release" &&
+        event.summary.includes("释放回队列：失败") &&
+        event.summary.includes("任务正在执行")
+    ),
+    "审计摘要中文化并带失败原因"
+  );
 });
 
 test("console actions: 计划 CRUD（create/重复 400/enable/disable/delete）", async () => {
