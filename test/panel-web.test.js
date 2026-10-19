@@ -1518,6 +1518,9 @@ test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS
   assert.match(html.body, /name="issueType"/);
   assert.match(html.body, /placeholder="默认 Bug"/);
   assert.match(html.body, /服务端签发预览回执/, "建单强制预览闸门（服务端回执）");
+  assert.match(html.body, /\/panel\/api\/issues\/evidence/, "证据重试接线");
+  assert.match(html.body, /data-evidence-retry/, "失败项重试按钮（动态渲染）");
+  assert.match(html.body, /重试附件/, "重试按钮文案");
   assert.match(html.body, /建单（外部副作用）/, "按钮明示外部副作用");
   assert.match(html.body, /id="issues-count"/, "建单批量已选计数");
   assert.match(html.body, /bulk-tools/, "批量工具栏");

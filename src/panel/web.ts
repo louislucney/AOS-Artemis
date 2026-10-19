@@ -1684,6 +1684,7 @@ function renderResults(results){
     if(item.evidence==='posted'){var ev=document.createElement('span');ev.className='muted';ev.textContent=' 证据已附';li.appendChild(ev);}
     else if(item.evidence==='error'){var ev2=document.createElement('span');ev2.className='muted';ev2.textContent=' 证据附加失败';li.appendChild(ev2);}
     else if(item.evidence==='skipped'){var ev3=document.createElement('span');ev3.className='muted';ev3.textContent=' 无证据（无轨迹）';li.appendChild(ev3);}
+    if(item.evidence==='error'&&item.key){var rb=document.createElement('button');rb.type='button';rb.className='c-button';rb.setAttribute('data-evidence-retry',item.runId+'|'+item.caseId);rb.textContent='重试附件';li.appendChild(document.createTextNode(' '));li.appendChild(rb);}
     if(item.attachmentsFailed){var aw=document.createElement('span');aw.className='muted';aw.textContent=' 附件预览失败（不影响建单）';li.appendChild(aw);}
     list.appendChild(li);
   });
@@ -1721,6 +1722,7 @@ createBtn.addEventListener('click',function(){
 });
 form.addEventListener('input',function(){previewId=null;showStale(true);});
 form.addEventListener('change',function(){previewId=null;showStale(true);});
+result.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-evidence-retry]'):null;if(!b)return;var v=b.getAttribute('data-evidence-retry');var idx=v.indexOf('|');var rId=v.slice(0,idx);var cId=v.slice(idx+1);window.aosInlineConfirm(b,'确认向 Jira 单据重试上传证据附件？',function(){b.disabled=true;fetch('/panel/api/issues/evidence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:${rootJson},runId:rId,caseId:cId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(res.j.evidence==='posted'){status.textContent='证据已补传（'+cId+'） · 已写入审计';if(b.parentNode)b.parentNode.removeChild(b);}else{b.disabled=false;status.textContent='证据重试未成功：'+((res.j&&res.j.reason)||'未知');}}).catch(function(err){b.disabled=false;status.textContent='证据重试失败：'+(err&&err.message?err.message:err);});});});
 showStale(false);
 })();</script>`;
   return [

@@ -5,7 +5,7 @@ import test from "node:test";
 import { MemoryStore } from "../dist/db/memory.js";
 import { JiraApiError } from "../dist/jira/client.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "../dist/panel/actions.js";
-import { createRunCaseIssues } from "../dist/panel/issues.js";
+import { createRunCaseIssues, retryIssueEvidence } from "../dist/panel/issues.js";
 import { baseConfig, loadTestRuntime, makeTempProject, seedCaseSets } from "./helpers.js";
 
 function request(overrides = {}) {
@@ -735,6 +735,81 @@ test("panel issues: dryRun 预览（不触 createIssue；证据以 dryRun:true�
   assert.deepEqual(degraded.results[0].attachments, []);
 });
 
+test("panel issues: 证据重试（未建单 400 语义／成功回执＋审计／无轨迹／上传失败如实回报）", async () => {
+  const rootPath = "/issues-proj";
+  const store = await issueStore(rootPath);
+  const run = await recordIssueRun(store, rootPath);
+  const calls = [];
+  const postEvidence = async (runtime, args) => {
+    calls.push(args);
+    return { ok: true, attachments: ["a.png"] };
+  };
+
+  const noKey = await retryIssueEvidence(
+    { store, runtimeFor: async () => fakeRuntime(), postEvidence },
+    { rootPath, runId: run.id, caseId: "case-1" }
+  );
+  assert.equal(noKey.ok, false);
+  assert.match(noKey.error, /尚未建单/);
+
+  await store.setCaseIssueKey({ rootPath, runId: run.id, caseId: "case-1", jiraKey: "AOS-7" });
+  const ok = await retryIssueEvidence(
+    { store, runtimeFor: async () => fakeRuntime(), postEvidence },
+    { rootPath, runId: run.id, caseId: "case-1" }
+  );
+  assert.equal(ok.ok, true);
+  assert.equal(ok.evidence, "posted");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].key, "AOS-7");
+  assert.equal(calls[0].dryRun, false);
+  const audit = await store.listAudit(rootPath, { domain: "issues" });
+  assert.ok(audit.some((event) => event.action === "evidence.retried"), "重试落审计");
+
+  const noTraceRun = await recordIssueRun(store, rootPath, {
+    cases: [
+      {
+        caseId: "case-nt",
+        name: "NT",
+        featureKey: null,
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "应用缺陷",
+        failureConfidence: "high",
+        failureReason: "崩溃",
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null,
+        jiraIssueKey: "AOS-8"
+      }
+    ]
+  });
+  const noTrace = await retryIssueEvidence(
+    { store, runtimeFor: async () => fakeRuntime(), postEvidence },
+    { rootPath, runId: noTraceRun.id, caseId: "case-nt" }
+  );
+  assert.equal(noTrace.ok, false);
+  assert.match(noTrace.error, /无轨迹/);
+
+  const failing = await retryIssueEvidence(
+    {
+      store,
+      runtimeFor: async () => fakeRuntime(),
+      postEvidence: async () => {
+        throw new Error("jira down");
+      }
+    },
+    { rootPath, runId: run.id, caseId: "case-1" }
+  );
+  assert.equal(failing.ok, true);
+  assert.equal(failing.evidence, "error");
+  assert.match(failing.reason, /证据上传失败/);
+});
+
 test("panel issues: 未配置 Jira / runtimeFor 缺失 → ok:false 指引", async () => {
   const rootPath = "/issues-proj";
   const store = await issueStore(rootPath);
@@ -998,6 +1073,22 @@ test("panel issues: 路由校验（items 超 20 → 400；labels 非字符串 �
   );
   assert.equal(stalePreview.status, 409, "篡改回执 → 409");
   assert.equal(JSON.parse(stalePreview.body).stale, true);
+
+  const evidenceMissing = await handlePanelActionRequest(
+    request({ url: new URL("http://localhost/panel/api/issues/evidence"), body: body({}) }),
+    deps
+  );
+  assert.equal(evidenceMissing.status, 400, "缺 runId/caseId → 400");
+
+  const evidenceNoKey = await handlePanelActionRequest(
+    request({
+      url: new URL("http://localhost/panel/api/issues/evidence"),
+      body: body({ runId: run.id, caseId: "case-1" })
+    }),
+    deps
+  );
+  assert.equal(evidenceNoKey.status, 400, "未建单用例 → 400（不发网络）");
+  assert.match(JSON.parse(evidenceNoKey.body).error, /尚未建单/);
 });
 
 test("panel issues: 路由级请求错误分支（runtimeFor null / Jira 未配置 → 400 指引）", async () => {

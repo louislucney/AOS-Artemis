@@ -8,7 +8,7 @@ import { recordAuditSafe } from "../db/audit-event.js";
 import { exportProjectData, type ExportWhat } from "../export/index.js";
 import { errorMessage, log, writeFileAtomic } from "../util.js";
 import { importTestDocument } from "../workflow/excel-import.js";
-import { createRunCaseIssues, MAX_ISSUE_ITEMS, normalizeLabels } from "./issues.js";
+import { createRunCaseIssues, MAX_ISSUE_ITEMS, normalizeLabels, retryIssueEvidence } from "./issues.js";
 import { sameOriginAllowed } from "./http-guard.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
 import {
@@ -127,6 +127,18 @@ export async function handlePanelActionRequest(
       await auditPanel(deps, resolved.rootPath, "action.rerun", response, {
         taskId: String(payload.taskId ?? "")
       });
+      return response;
+    }
+    if (request.url.pathname === "/panel/api/issues/evidence") {
+      const runId = typeof payload.runId === "string" ? payload.runId.trim() : "";
+      const caseId = typeof payload.caseId === "string" ? payload.caseId.trim() : "";
+      if (runId === "" || caseId === "") return json(400, { error: "缺少 runId/caseId" });
+      const outcome = await retryIssueEvidence(
+        { store: deps.store, runtimeFor: deps.runtimeFor },
+        { rootPath: resolved.rootPath, runId, caseId }
+      );
+      const response = outcome.ok ? json(200, outcome) : json(400, outcome);
+      await auditPanel(deps, resolved.rootPath, "action.issues.evidence", response, { runId, caseId });
       return response;
     }
     if (request.url.pathname === "/panel/api/schedules") {

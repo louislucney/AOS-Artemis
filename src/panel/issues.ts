@@ -276,6 +276,53 @@ async function processItem(
   return result;
 }
 
+export async function retryIssueEvidence(
+  options: CreateIssuesOptions,
+  input: { rootPath: string; runId: string; caseId: string }
+): Promise<
+  { ok: true; evidence: "posted" | "error"; reason?: string } | { ok: false; error: string }
+> {
+  const runtimeFor = options.runtimeFor ?? defaultRuntimeFor;
+  const postEvidence = options.postEvidence ?? postEvidenceToIssue;
+  const runtime = await runtimeFor(input.rootPath);
+  if (runtime === null) {
+    return { ok: false, error: "项目运行时不可用（仅限 workspace 内项目、HTTP 模式）" };
+  }
+  const run = await options.store.getSuiteRun(input.rootPath, input.runId);
+  const c = run === null ? undefined : run.cases.find((entry) => entry.caseId === input.caseId);
+  if (run === null || c === undefined) return { ok: false, error: "未知运行或用例" };
+  const key = c.jiraIssueKey ?? "";
+  if (key === "") {
+    return { ok: false, error: "该用例尚未建单（无 Jira 单号），无法上传证据" };
+  }
+  if (c.traceId === null || c.traceId === "") {
+    return { ok: false, error: "该用例无轨迹（traceId 为空），无法上传证据" };
+  }
+  try {
+    const payload = await postEvidence(runtime, {
+      key,
+      traceId: c.traceId,
+      platform: evidencePlatform(run.platform),
+      deviceSerial: run.device ?? undefined,
+      dryRun: false
+    });
+    if (payload.ok === true) {
+      await recordAuditSafe(options.store, input.rootPath, {
+        domain: "issues",
+        action: "evidence.retried",
+        result: "ok",
+        summary: `证据重试上传 ${key}`,
+        refs: { runId: input.runId, caseId: input.caseId, issueKey: key }
+      });
+      return { ok: true, evidence: "posted" };
+    }
+    return { ok: true, evidence: "error", reason: "Jira 证据上传未确认（ok=false）" };
+  } catch (error) {
+    log(`证据重试失败（${key}/${c.traceId}）：${errorMessage(error)}`);
+    return { ok: true, evidence: "error", reason: "证据上传失败" };
+  }
+}
+
 export async function createRunCaseIssues(
   options: CreateIssuesOptions,
   input: {
