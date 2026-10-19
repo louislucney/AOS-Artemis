@@ -156,6 +156,7 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   assert.match(html.body, /lamp-yellow/);
   assert.match(html.body, /存储：会话内存/);
   assert.match(html.body, /demo/);
+  assert.match(html.body, /<time datetime="/, "最后活跃相对化（title 绝对）");
   assert.match(html.body, /c-table/, "CSDC 表格");
   assert.match(html.body, /c-badge/, "CSDC 徽章");
   assert.match(html.body, /进入最近活跃项目：demo →/, "首访直达最近活跃项目");
@@ -1354,12 +1355,12 @@ test("panel web: stats 环境清单表（设备/端/次数/功能/最近/备注�
   );
   assert.match(
     html.body,
-    /<tr><td>emulator-5554<\/td><td>android<\/td><td>2<\/td><td>登录流程<\/td><td>2026-10-14T12:30:00.000Z<\/td><td>设备离线；网络抖动<\/td><\/tr>/,
-    "环境行：设备/端/次数/功能/最近裁决（组内最大）/备注（；连接）"
+    /<tr><td>emulator-5554<\/td><td>android<\/td><td>2<\/td><td>登录流程<\/td><td><time datetime="2026-10-14T12:30:00\.000Z"[^>]*>[^<]*<\/time><\/td><td>设备离线；网络抖动<\/td><\/tr>/,
+    "环境行：设备/端/次数/功能/最近裁决（组内最大；相对时间）／备注（；连接）"
   );
   assert.match(
     html.body,
-    /<tr><td>—<\/td><td>ios<\/td><td>1<\/td><td>设置<\/td><td>2026-10-14T13:00:00.000Z<\/td>/,
+    /<tr><td>—<\/td><td>ios<\/td><td>1<\/td><td>设置<\/td><td><time datetime="2026-10-14T13:00:00\.000Z"[^>]*>[^<]*<\/time><\/td>/,
     "设备 null → —"
   );
   assert.ok(html.body.includes(`${longNote.slice(0, 120)}…`), "备注摘要截断 ~120 字");

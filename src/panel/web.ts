@@ -27,6 +27,7 @@ import {
 import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
 import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
 import { cBadge, cCard, cEmpty, cStat, cTable } from "../console/components.js";
+import { relativeTime } from "../console/time.js";
 import { storeKindLabel } from "../db/labels.js";
 import {
   buildPanelBatchDetail,
@@ -594,7 +595,7 @@ function renderLatestBatchCell(row: PanelProjectRow): string {
   return [
     batchGateCell(batch.gate, batch.summary),
     `<code>${escapeHtml(batch.runId ?? "（不可读）")}</code>`,
-    `<div class="muted">${escapeHtml(batch.finishedAt ?? "—")}${summary}${note}</div>`
+    `<div class="muted">${relativeTime(batch.finishedAt)}${summary}${note}</div>`
   ].join("<br>");
 }
 
@@ -627,7 +628,7 @@ try{
     `<a href="${escapeHtml(projectHref(row.rootPath))}">${escapeHtml(row.name)}</a> <a class="c-button" href="${escapeHtml(projectHref(row.rootPath))}">进入项目 →</a>`,
     renderProjectCell(row),
     escapeHtml(row.stacks.join("、") || "—"),
-    escapeHtml(row.lastSeenAt ?? "—"),
+    relativeTime(row.lastSeenAt),
     renderLatestBatchCell(row),
     escapeHtml(row.warnings.join("；") || "—")
   ]);
@@ -771,7 +772,7 @@ function renderIntegration(detail: PanelProjectDetail): string {
     escapeHtml(asset.id),
     `<code>${escapeHtml(asset.path)}</code>`,
     asset.present ? '<span class="ok">存在</span>' : '<span class="muted">缺失</span>',
-    escapeHtml(asset.modifiedAt ?? "—")
+    relativeTime(asset.modifiedAt)
   ]);
   return [
     '<section id="integration">',
@@ -800,8 +801,8 @@ function renderIntegration(detail: PanelProjectDetail): string {
 
 function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
   const rows = detail.batches.map((batch: PanelBatchRow) => [
-    escapeHtml(batch.startedAt ?? "—"),
-    escapeHtml(batch.finishedAt ?? "—"),
+    relativeTime(batch.startedAt),
+    relativeTime(batch.finishedAt),
     escapeHtml(batch.source ?? "—"),
     batchGateCell(batch.gate, batch.summary),
     batch.summary === null
@@ -866,8 +867,8 @@ function renderStandalones(detail: PanelProjectDetail): string {
     outcomeLabel[row.outcome],
     escapeHtml(row.status),
     escapeHtml(row.model ?? "—"),
-    escapeHtml(row.submittedAt),
-    escapeHtml(row.finishedAt ?? "—")
+    relativeTime(row.submittedAt),
+    relativeTime(row.finishedAt)
   ]);
   return [
     '<section id="standalones">',
@@ -980,7 +981,7 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
               escapeHtml(record.package),
               escapeHtml(record.exceptionClass),
               String(record.occurrences),
-              escapeHtml(record.lastSeenAt)
+      relativeTime(record.lastSeenAt)
             ]),
             "无崩溃签名"
           ),
@@ -1138,7 +1139,7 @@ function renderRunners(detail: PanelProjectDetail): string {
           })
           .join(""),
     toolBadges(runner.tools),
-    `<code>${escapeHtml(runner.lastSeenAt)}</code>`,
+    `${relativeTime(runner.lastSeenAt)}`,
     runner.artifactBaseUrl === null ? "—" : `<code>${escapeHtml(runner.artifactBaseUrl)}</code>`
   ]);
   return [
@@ -1156,7 +1157,7 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail): string {
     String(task.refs),
     escapeHtml(task.platforms.join(", ")),
     String(task.runIds),
-    escapeHtml(task.createdAt)
+    relativeTime(task.createdAt)
   ]);
   return [
     '<section id="tasks">',
@@ -1198,7 +1199,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
     escapeHtml(schedule.platforms.join(", ")),
     `每 ${schedule.everyMinutes} 分钟`,
     schedule.enabled ? '<span class="ok">启用</span>' : '<span class="muted">停用</span>',
-    `${escapeHtml(schedule.lastFiredAt ?? "—")}${
+    `${relativeTime(schedule.lastFiredAt)}${
       schedule.lastNote === null ? "" : ` <span class="note">${escapeHtml(schedule.lastNote)}</span>`
     }`,
     schedule.lastTaskId === null
@@ -1271,7 +1272,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
       : run.artifacts.manifestUrl === null
         ? `<code>${escapeHtml(run.manifestPath)}</code>`
         : `<a href="${escapeHtml(run.artifacts.manifestUrl)}" target="_blank" rel="noreferrer"><code>${escapeHtml(run.manifestPath)}</code></a>`,
-    escapeHtml(run.createdAt)
+    relativeTime(run.createdAt)
   ]);
   const crossRows = detail.crossPlatform.map((delta) => [
     `<code>${escapeHtml(delta.caseId)}</code>`,
@@ -1308,7 +1309,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
-      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${escapeHtml(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 <code>${escapeHtml(task.createdBy)}</code>`}</p>`,
+      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 <code>${escapeHtml(task.createdBy)}</code>`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
         const actionsOff = currentShell.capabilities?.actions === false;
@@ -1699,7 +1700,7 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
       escapeHtml(group.platform),
       String(group.count),
       escapeHtml(group.features.join("、") || "—"),
-      escapeHtml(group.lastAt ?? "—"),
+      relativeTime(group.lastAt),
       escapeHtml(environmentNoteSummary(group.notes))
     ]);
     return [
@@ -1776,7 +1777,7 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
           ? `（缺 ${row.integration.missing.map((item) => escapeHtml(item)).join("、")}；不影响执行）`
           : ""
       }</p>`,
-      `<p class="muted"><code>${escapeHtml(row.rootPath)}</code> · 最后活跃 ${escapeHtml(row.lastSeenAt ?? "—")} · ${
+      `<p class="muted"><code>${escapeHtml(row.rootPath)}</code> · 最后活跃 ${relativeTime(row.lastSeenAt)} · ${
         row.diskReachable ? "磁盘可达" : "磁盘不可达"
       }</p>`,
       reasons,
@@ -1978,7 +1979,7 @@ function renderFeatureAlignmentSection(view: PanelCompareView): string {
       String(entry.runs),
       String(entry.flaky),
       String(entry.pendingVerdicts),
-      escapeHtml(entry.latestAt ?? "—")
+      relativeTime(entry.latestAt)
     ]);
     return [
       `<h3>${header}</h3>`,

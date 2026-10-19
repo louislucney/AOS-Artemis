@@ -146,6 +146,7 @@ test("console pages: 审计（domain 筛选＋结果徽章）", async () => {
   assert.equal(all.status, 200);
   assert.match(all.body, /批次登记/);
   assert.match(all.body, /action.tasks/);
+  assert.match(all.body, /<time datetime="2026-10-18T01:00:00\.000Z"/, "审计时间相对化（title 绝对）");
 
   const suiteOnly = await handlePanelRequest(url(rootPath, "audit", { domain: "suite" }), deps);
   assert.match(suiteOnly.body, /批次登记/);

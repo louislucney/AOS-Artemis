@@ -6,6 +6,7 @@ import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
 import { parseQuarantine } from "../figma/quarantine.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cCard, cEmpty, cTable } from "./components.js";
+import { relativeTime } from "./time.js";
 import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
 
 export interface LibraryPageData {
@@ -41,7 +42,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
   const rows = data.sets.map((set) => [
     `<code>${escapeHtml(set.basename)}</code>`,
     escapeHtml(set.source),
-    escapeHtml(set.createdAt),
+    relativeTime(set.createdAt),
     String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
     set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
     `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}`)}">下发该份</a>`
@@ -128,7 +129,7 @@ export function renderArchivePage(data: ArchivePageData): string {
       cBadge({ label: record.kind, tone: "neutral" }),
       `${thumb}<code>${escapeHtml(record.title)}</code>`,
       location,
-      escapeHtml(record.at),
+      relativeTime(record.at),
       isDir ? "目录" : `${record.size} B`
     ];
   });
@@ -228,7 +229,7 @@ export function renderAuditPage(data: AuditPageData): string {
   const auditResultLabel = (result: string): string =>
     result === "ok" ? "成功" : result === "failed" ? "失败" : result === "skipped" ? "跳过" : result;
   const rows = data.events.map((event) => [
-    escapeHtml(event.at),
+    relativeTime(event.at),
     escapeHtml(event.domain),
     escapeHtml(event.action),
     cBadge({
