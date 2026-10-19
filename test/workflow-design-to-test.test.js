@@ -212,6 +212,29 @@ test("pen happy：vision 透传（前置 pen 检查走 stub exec）", async () =
   });
 });
 
+test("生成透传 maxFlows/maxDepth：显式提供的键原样传给 figma_generate_tests", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps, calls } = makeDeps();
+  const result = await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, maxFlows: 50, maxDepth: 12 },
+    deps
+  );
+
+  assert.ok(!result.isError);
+  assert.equal(payloadOf(result).ok, true);
+  assert.deepEqual(calls.generate, [{ maxFlows: 50, maxDepth: 12 }]);
+});
+
+test("生成透传仅带显式提供的键：未给 maxDepth 时不出现该键", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps, calls } = makeDeps();
+  const result = await designToTest(runtime, { figmaUrl: FIGMA_URL, maxFlows: 50 }, deps);
+
+  assert.ok(!result.isError);
+  assert.deepEqual(calls.generate, [{ maxFlows: 50 }]);
+});
+
 test("参数冲突/全缺 → isError 用法错误（不触提取/生成）", async () => {
   const runtime = stubRuntime();
   const { deps, calls } = makeDeps();

@@ -29,6 +29,22 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
         .boolean()
         .optional()
         .describe("复用已有 .artemis/design/flows.json，跳过设计提取，默认 false"),
+      maxFlows: z
+        .number()
+        .int()
+        .positive()
+        .max(50)
+        .optional()
+        .describe(
+          "生成用例条数上限（透传 figma_generate_tests，默认 10；vision 全量探索路径多时可调大以避免覆盖闸「路径截断」）"
+        ),
+      maxDepth: z
+        .number()
+        .int()
+        .positive()
+        .max(50)
+        .optional()
+        .describe("路径最大深度（透传 figma_generate_tests，默认 30）"),
       device: z
         .string()
         .optional()

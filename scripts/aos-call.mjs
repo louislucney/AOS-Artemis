@@ -21,6 +21,9 @@ if (!callsFile) {
 }
 const projectDir = path.resolve(projectArg ?? "C:/LLM/artemis-demo");
 const calls = JSON.parse(fs.readFileSync(callsFile, "utf-8"));
+const envTimeout = Number(process.env.AOS_CALL_TIMEOUT_MS ?? "");
+const requestTimeoutMs = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 600_000;
+console.error(`[aos-call] 项目=${projectDir} 请求超时=${requestTimeoutMs}ms`);
 
 const client = new Client({ name: "aos-call", version: "0.0.1" });
 await client.connect(
@@ -34,7 +37,11 @@ await client.connect(
 
 try {
   for (const c of calls) {
-    const result = await client.callTool({ name: c.name, arguments: c.args ?? {} });
+    const result = await client.callTool(
+      { name: c.name, arguments: c.args ?? {} },
+      undefined,
+      { timeout: requestTimeoutMs }
+    );
     const text = (result.content ?? [])
       .filter((x) => x.type === "text")
       .map((x) => x.text)

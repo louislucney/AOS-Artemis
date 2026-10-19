@@ -26,6 +26,8 @@ export interface DesignToTestArgs {
   penPath?: string;
   vision?: "auto" | boolean;
   reuseExistingFlows?: boolean;
+  maxFlows?: number;
+  maxDepth?: number;
   device?: string;
   run?: boolean;
 }
@@ -224,7 +226,10 @@ export async function designToTest(
   const generate = deps.generate ?? figmaGenerateTests;
   let generatePayload: Record<string, unknown> | null = null;
   try {
-    const generated = await generate(runtime, {});
+    const generated = await generate(runtime, {
+      ...(typeof args.maxFlows === "number" ? { maxFlows: args.maxFlows } : {}),
+      ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {})
+    });
     const payload = payloadOf(generated);
     if (generated.isError === true || payload?.ok === false) {
       return jsonResult({

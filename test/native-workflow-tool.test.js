@@ -50,7 +50,9 @@ test("design_to_test: registered in the catalog and exposed with a minimal optio
       "vision",
       "reuseExistingFlows",
       "device",
-      "run"
+      "run",
+      "maxFlows",
+      "maxDepth"
     ]) {
       assert.ok(key in properties, `inputSchema exposes ${key}`);
     }
@@ -92,7 +94,10 @@ test("design_to_test: zod rejects illegal types, accepts documented shapes", asy
       { reuseExistingFlows: "yes" },
       { vision: "sometimes" },
       { vision: 1 },
-      { figmaUrl: 42 }
+      { figmaUrl: 42 },
+      { maxFlows: 0 },
+      { maxFlows: 51 },
+      { maxDepth: 2.5 }
     ]) {
       const rejected = await harness.client.callTool({ name: "design_to_test", arguments: args });
       assert.equal(rejected.isError, true, JSON.stringify(args));
@@ -107,7 +112,8 @@ test("design_to_test: zod rejects illegal types, accepts documented shapes", asy
       { vision: false },
       { run: true },
       { reuseExistingFlows: false },
-      { device: "emulator-5554" }
+      { device: "emulator-5554" },
+      { maxFlows: 50, maxDepth: 12 }
     ]) {
       const accepted = await harness.client.callTool({ name: "design_to_test", arguments: args });
       assert.ok(!accepted.content[0].text.includes("参数校验失败"), JSON.stringify(args));
