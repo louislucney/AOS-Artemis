@@ -644,6 +644,19 @@ test("flows.json: schemaVersion newer than supported fails loud (version gate)",
   assert.match(payload.error, /schemaVersion 99 .*高于本版本支持范围 3/);
 });
 
+test("parseVisionReply: >40 条返回 truncated 计数，不再静默丢弃", () => {
+  const elements = Array.from({ length: 41 }, (_, index) => ({
+    class: "link",
+    intent: "navigate",
+    label: `入口${index + 1}`,
+    bbox: { x: 0.1, y: 0.1, width: 0.05, height: 0.05 }
+  }));
+  const parsed = parseVisionReply(JSON.stringify({ elements }));
+  assert.equal(parsed.items.length, 40, "只保留前 40 条");
+  assert.equal(parsed.invalid, 0);
+  assert.equal(parsed.truncated, 1, "超出上限的条数单独计数");
+});
+
 test("vision: model heuristic and reply parsing stay deterministic", () => {
   assert.equal(isVisionCapableModel("qwen2.5-vl-72b-instruct"), true);
   assert.equal(isVisionCapableModel("glm-4v-plus"), true);
@@ -664,5 +677,5 @@ test("vision: model heuristic and reply parsing stay deterministic", () => {
   assert.equal(parsed.items.length, 1);
   assert.equal(parsed.invalid, 1, "zero-size bbox is invalid");
   assert.equal(parsed.items[0].className, "cart-entry");
-  assert.deepEqual(parseVisionReply("not json"), { items: [], invalid: 0 });
+  assert.deepEqual(parseVisionReply("not json"), { items: [], invalid: 0, truncated: 0 });
 });

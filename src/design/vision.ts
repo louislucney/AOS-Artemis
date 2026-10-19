@@ -2,6 +2,7 @@ import type { ChatFn, ChatMessage } from "../llm/chat.js";
 import { classifyModalityRejection } from "../llm/vision-capability.js";
 import { confidenceFor } from "../provenance.js";
 import type { FlowEdge, FlowElement, FlowWarning } from "../figma/flows.js";
+import type { VisionCandidate } from "./element-coverage.js";
 import { errorMessage } from "../util.js";
 
 /** Controlled vocabulary for recognized interactive elements (ADR-0010).
@@ -47,6 +48,43 @@ export interface VisionScreenInput {
   width: number;
   height: number;
   nodes: VisionNodeGeom[];
+  stateOf?: string | null;
+  stateName?: string | null;
+  candidates?: VisionCandidate[];
+  /** 渲染倍率；默认 1。非 1 时 bbox 先除以它再进入设计 px 判定。 */
+  renderScale?: number;
+}
+
+export interface VisionStats {
+  screensRequested: number;
+  screensSkipped: number;
+  screensProcessed: number;
+  elements: number;
+  navigationalEdges: number;
+  invalidItems: number;
+  failures: number;
+  screensInput: number;
+  screensNoGeometry: number;
+  screensFrameMissing: number;
+  screensCapped: number;
+  screensFailed: number;
+  truncatedItems: number;
+  groundedElements: number;
+  ungroundedElements: number;
+  candidateNodes: number;
+  coveredCandidates: number;
+  uncoveredCandidates: number;
+  unverifiableCandidates: number;
+  notEvaluatedCandidates: number;
+  targetsRequested: number;
+  statesRequested: number;
+  statesInput: number;
+  statesProcessed: number;
+  statesSkipped: number;
+  statesFailed: number;
+  statesCapped: number;
+  statesNoGeometry: number;
+  statesFrameMissing: number;
 }
 
 export interface VisionPassResult {
@@ -56,15 +94,7 @@ export interface VisionPassResult {
   warnings: FlowWarning[];
   /** 首个「模型不接受图片」的拒绝（400/415/422 类）；命中即中止后续屏幕。 */
   rejected: { screen: string; detail: string } | null;
-  stats: {
-    screensRequested: number;
-    screensSkipped: number;
-    screensProcessed: number;
-    elements: number;
-    navigationalEdges: number;
-    invalidItems: number;
-    failures: number;
-  };
+  stats: VisionStats;
 }
 
 interface RawVisionItem {
@@ -129,11 +159,17 @@ function parseBBox(value: unknown): VisionBBox | null {
   return bbox;
 }
 
-export function parseVisionReply(content: string): { items: RawVisionItem[]; invalid: number } {
+export function parseVisionReply(content: string): {
+  items: RawVisionItem[];
+  invalid: number;
+  truncated: number;
+} {
   const parsed = extractJsonObject(content);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { items: [], invalid: 0 };
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { items: [], invalid: 0, truncated: 0 };
+  }
   const rawElements = (parsed as { elements?: unknown }).elements;
-  if (!Array.isArray(rawElements)) return { items: [], invalid: 0 };
+  if (!Array.isArray(rawElements)) return { items: [], invalid: 0, truncated: 0 };
   const items: RawVisionItem[] = [];
   let invalid = 0;
   for (const entry of rawElements.slice(0, 40)) {
@@ -166,17 +202,21 @@ export function parseVisionReply(content: string): { items: RawVisionItem[]; inv
           : null
     });
   }
-  return { items, invalid };
+  return { items, invalid, truncated: Math.max(0, rawElements.length - 40) };
 }
 
 const GROUND_IOU_THRESHOLD = 0.2;
 
 function bboxInPx(bbox: VisionBBox, screen: VisionScreenInput): VisionBBox {
+  const scale =
+    typeof screen.renderScale === "number" && Number.isFinite(screen.renderScale) && screen.renderScale > 0
+      ? screen.renderScale
+      : 1;
   return {
-    x: bbox.x * screen.width,
-    y: bbox.y * screen.height,
-    width: bbox.width * screen.width,
-    height: bbox.height * screen.height
+    x: (bbox.x * screen.width) / scale,
+    y: (bbox.y * screen.height) / scale,
+    width: (bbox.width * screen.width) / scale,
+    height: (bbox.height * screen.height) / scale
   };
 }
 
@@ -214,14 +254,36 @@ export async function runVisionPass(input: {
   const elementsByScreen = new Map<string, FlowElement[]>();
   const edges: FlowEdge[] = [];
   const unresolvedDestinations: string[] = [];
-  const stats: VisionPassResult["stats"] = {
+  const stats: VisionStats = {
     screensRequested: input.screens.length,
     screensSkipped: 0,
     screensProcessed: 0,
     elements: 0,
     navigationalEdges: 0,
     invalidItems: 0,
-    failures: 0
+    failures: 0,
+    screensInput: 0,
+    screensNoGeometry: 0,
+    screensFrameMissing: 0,
+    screensCapped: 0,
+    screensFailed: 0,
+    truncatedItems: 0,
+    groundedElements: 0,
+    ungroundedElements: 0,
+    candidateNodes: 0,
+    coveredCandidates: 0,
+    uncoveredCandidates: 0,
+    unverifiableCandidates: 0,
+    notEvaluatedCandidates: 0,
+    targetsRequested: 0,
+    statesRequested: 0,
+    statesInput: 0,
+    statesProcessed: 0,
+    statesSkipped: 0,
+    statesFailed: 0,
+    statesCapped: 0,
+    statesNoGeometry: 0,
+    statesFrameMissing: 0
   };
   const cap = input.maxScreens ?? input.screens.length;
   const kept = input.screens.slice(0, Math.max(cap, 0));
