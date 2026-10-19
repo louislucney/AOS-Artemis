@@ -33,7 +33,8 @@ async function setup() {
     action: "action.tasks",
     result: "failed",
     summary: "面板动作 tasks → 400",
-    at: "2026-10-18T02:00:00.000Z"
+    at: "2026-10-18T02:00:00.000Z",
+    refs: { taskId: "t-abc123", caseId: "case-9" }
   });
   const runsDir = join(rootPath, ".artemis", "design", "runs");
   await mkdir(runsDir, { recursive: true });
@@ -217,6 +218,11 @@ test("console pages: 审计（domain 筛选＋结果徽章）", async () => {
   assert.ok(!failedOnly.body.includes("批次登记"));
 
   assert.match(all.body, /时间预设/, "时间预设");
+  assert.match(all.body, /<th scope="col">关联对象<\/th><th scope="col">恢复<\/th>/, "关联与恢复二列");
+  assert.match(all.body, /task=t-abc123/, "taskId → 任务页链接");
+  assert.match(all.body, /重新打开下发预览/, "失败行就地恢复动作");
+  assert.match(all.body, /域 <select name="domain"/, "域改已知集合下拉");
+  assert.match(all.body, /回归运行<\/option>/, "域选项中文");
   assert.match(all.body, /第 1 页/);
   const pager = await handlePanelRequest(url(rootPath, "audit", { offset: "1" }), deps);
   assert.match(pager.body, /第 1 页|第 2 页/, "offset 生效");

@@ -99,6 +99,10 @@ export function auditActionLabel(action: string): string {
   return action;
 }
 
+export const AUDIT_DOMAIN_KEYS: Array<{ key: string; label: string }> = Object.entries(
+  AUDIT_DOMAINS
+).map(([key, label]) => ({ key, label }));
+
 const ARTIFACT_KINDS: Record<string, string> = {
   run: "批次",
   "case-set": "用例集",

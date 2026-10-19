@@ -7,7 +7,13 @@ import { parseQuarantine } from "../figma/quarantine.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cCard, cEmpty, cTable } from "./components.js";
 import { relativeTime } from "./time.js";
-import { artifactKindLabel, auditActionHtml, auditDomainHtml, sourceHtml } from "./vocab.js";
+import {
+  artifactKindLabel,
+  auditActionHtml,
+  auditDomainHtml,
+  sourceHtml,
+  AUDIT_DOMAIN_KEYS
+} from "./vocab.js";
 import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
 
 export interface LibraryPageData {
@@ -243,6 +249,46 @@ export interface AuditPageData {
 export function renderAuditPage(data: AuditPageData): string {
   const auditResultLabel = (result: string): string =>
     result === "ok" ? "成功" : result === "failed" ? "失败" : result === "skipped" ? "跳过" : result;
+  const base = `project=${encodeURIComponent(data.rootPath)}`;
+  const refLink = (key: string, value: string): string => {
+    const short = value.length > 12 ? `${value.slice(0, 12)}…` : value;
+    if (key === "taskId") {
+      return `<a href="/panel?${base}&task=${encodeURIComponent(value)}" title="taskId=${escapeHtml(value)}">任务 <code>${escapeHtml(short)}</code></a>`;
+    }
+    if (key === "caseSetId") {
+      return `<a href="/panel?${base}&section=library" title="caseSetId=${escapeHtml(value)}">用例库 <code>${escapeHtml(short)}</code></a>`;
+    }
+    if (key === "scheduleId") {
+      return `<a href="/panel?${base}#schedules" title="scheduleId=${escapeHtml(value)}">计划 <code>${escapeHtml(short)}</code></a>`;
+    }
+    return `<span title="${escapeHtml(key)}=${escapeHtml(value)}"><code>${escapeHtml(key)}=${escapeHtml(short)}</code></span>`;
+  };
+  const refsCell = (refs: Record<string, string | undefined> | undefined): string => {
+    const entries = Object.entries(refs ?? {}).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== ""
+    );
+    if (entries.length === 0) return '<span class="muted">—</span>';
+    return entries.map(([key, value]) => refLink(key, value)).join(" · ");
+  };
+  const recoveryLink = (event: AuditEventRecord): string => {
+    if (event.result !== "failed") return '<span class="muted">—</span>';
+    if (event.action === "action.tasks") {
+      return `<a href="/panel?${base}&section=dispatch">重新打开下发预览</a>`;
+    }
+    if (event.action === "action.issues") {
+      return `<a href="/panel?${base}&view=stats#issues">去建单</a>`;
+    }
+    if (event.action === "action.import") {
+      return `<a href="/panel?${base}&section=library">去用例库导入</a>`;
+    }
+    if (event.action === "action.verdicts") {
+      return `<a href="/panel?${base}&view=review">去归因队列</a>`;
+    }
+    if (event.action === "action.quarantine") {
+      return `<a href="/panel?${base}&section=library">去隔离</a>`;
+    }
+    return '<span class="muted">—</span>';
+  };
   const rows = data.events.map((event) => [
     relativeTime(event.at),
     auditDomainHtml(event.domain),
@@ -251,7 +297,9 @@ export function renderAuditPage(data: AuditPageData): string {
       label: auditResultLabel(event.result),
       tone: event.result === "ok" ? "success" : event.result === "failed" ? "error" : "warning"
     }),
-    escapeHtml(event.summary)
+    escapeHtml(event.summary),
+    refsCell(event.refs),
+    recoveryLink(event)
   ]);
   const q = (name: string): string => escapeHtml(data.query[name] ?? "");
   const link = (patch: Record<string, string | null>): string => {
@@ -285,7 +333,10 @@ export function renderAuditPage(data: AuditPageData): string {
           `<form method="get" action="/panel">`,
           `<input type="hidden" name="project" value="${escapeHtml(data.rootPath)}">`,
           `<input type="hidden" name="section" value="audit">`,
-          `<p>域 <input type="text" name="domain" aria-label="事件域" value="${q("domain")}" size="12"> 结果 <select name="result" aria-label="结果"><option value="">全部</option>${[["ok", "成功"], ["skipped", "跳过"], ["failed", "失败"]]
+          `<p>域 <select name="domain" aria-label="事件域"><option value="">全部</option>${AUDIT_DOMAIN_KEYS.map(
+            ({ key, label }) =>
+              `<option value="${key}"${data.query.domain === key ? " selected" : ""}>${escapeHtml(label)}</option>`
+          ).join("")}</select> 结果 <select name="result" aria-label="结果"><option value="">全部</option>${[["ok", "成功"], ["skipped", "跳过"], ["failed", "失败"]]
             .map(
               ([value, label]) =>
                 `<option value="${value}"${data.query.result === value ? " selected" : ""}>${label}</option>`
@@ -300,7 +351,7 @@ export function renderAuditPage(data: AuditPageData): string {
         subtitle: `第 ${Math.floor(data.page.offset / data.page.pageSize) + 1} 页 · 本页 ${data.events.length} 条（新→旧）· 保留期 90 天 / 5 万条（AOS_AUDIT_*）`,
         body: [
           cTable({
-            columns: ["时间", "域", "动作", "结果", "摘要"],
+            columns: ["时间", "域", "动作", "结果", "摘要", "关联对象", "恢复"],
             rows,
             caption: "审计事件",
             empty: "暂无审计事件（内部编排动作发生后出现）"
