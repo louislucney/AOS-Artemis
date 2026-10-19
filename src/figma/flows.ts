@@ -95,6 +95,8 @@ export interface FlowElement {
   bbox?: { x: number; y: number; width: number; height: number };
   /** Render evidence (project-relative path). */
   evidence?: { render?: string };
+  /** Merged design variant this element belongs to (absent for the main screen). */
+  state?: string;
   provenance: Provenance;
   confidence?: Confidence;
 }
@@ -138,6 +140,8 @@ export interface FlowEdge {
   navigation?: string;
   actionType: string;
   back?: boolean;
+  /** Merged design variant this edge belongs to (audit only; absent for the main screen). */
+  state?: string;
   /** Evidence source; absent = legacy-unknown (conservative). */
   provenance?: Provenance;
   confidence?: Confidence;

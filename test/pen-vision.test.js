@@ -5,7 +5,13 @@ import test from "node:test";
 
 import { penExtractFlows } from "../dist/pen/flows.js";
 import { figmaGenerateTests } from "../dist/figma/test-gen.js";
-import { isVisionCapableModel, parseVisionReply } from "../dist/design/vision.js";
+import {
+  accountingWarnings,
+  isVisionCapableModel,
+  parseVisionReply,
+  runVisionPass,
+  visionAccounting
+} from "../dist/design/vision.js";
 import { baseConfig, loadTestRuntime, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
 
 /** Shopping-bag fixture: home screen with an icon-only cart FAB (badge "2"),
@@ -432,6 +438,11 @@ test("vision: 未知模型被拒（400 不支持图片）→ 中止并记录缓�
     const first = parseToolResult(await penExtractFlows(runtime, {}, { render: fakeRender() }));
     assert.equal(first.vision.active, false);
     assert.equal(calls.length, 1, "首个屏幕被拒后不再继续对后续屏幕发请求");
+    assert.equal(first.vision.screensSkipped, 2, "当前屏 + 其后未处理屏都进 skipped");
+    assert.equal(first.vision.screensFailed, 0, "拒图不属于 failed 桶");
+    assert.equal(first.vision.screensInput, 2);
+    assert.equal(first.vision.screensRequested, 2);
+    assert.equal(first.vision.accounting.ok, true);
     const codes = first.warnings.map((warning) => warning.code);
     assert.ok(codes.includes("vision-model-rejected"), "保留原始拒绝证据");
     assert.ok(codes.includes("vision-unavailable"), "对外仍是明确的不可用降级");
@@ -523,6 +534,10 @@ test("vision: render channel failure and per-screen call failure degrade without
   assert.equal(callFailed.ok, true);
   assert.equal(callFailed.vision.active, true);
   assert.equal(callFailed.vision.failures, 1);
+  assert.equal(callFailed.vision.screensFailed, 1);
+  assert.equal(callFailed.vision.screensProcessed, 1);
+  assert.equal(callFailed.vision.screensRequested, 2);
+  assert.equal(callFailed.vision.accounting.ok, true);
   assert.equal(callFailed.counts.visionElements, 0);
   const failure = callFailed.warnings.find((warning) => warning.code === "vision-call-failed");
   assert.match(failure.message, /主頁.*HTTP 429/);
@@ -599,7 +614,9 @@ test("vision: default cap of 50 still truncates a 60-screen design with an expli
   const payload = parseToolResult(
     await penExtractFlows(runtime, { screens: false }, { chat: async () => JSON.stringify({ elements: [] }), render: fakeRender() })
   );
-  assert.equal(payload.vision.screensRequested, 60);
+  assert.equal(payload.vision.screensInput, 60);
+  assert.equal(payload.vision.screensRequested, 50, "只有进入 pass 的主屏计入 requested");
+  assert.equal(payload.vision.screensCapped, 10);
   assert.equal(payload.vision.screensProcessed, 50);
   assert.ok(payload.warnings.some((warning) => warning.code === "vision-screen-cap"));
 });
@@ -716,10 +733,432 @@ test("vision: screens:false 仍为主屏 + 变体渲染（同一次渲染，变�
   assert.equal(payload.screenshots, undefined, "screens:false 不附截图摘要");
   assert.deepEqual(calls.screenIds, ["home", "store", "home-loading"]);
   assert.equal(payload.vision.active, true);
-  assert.equal(payload.vision.screensRequested, 3, "变体也算 target");
-  assert.equal(payload.vision.screensProcessed, 3);
+  assert.equal(payload.vision.screensRequested, 2, "主屏数保持独立语义");
+  assert.equal(payload.vision.statesRequested, 1, "变体另计");
+  assert.equal(payload.vision.targetsRequested, 3, "变体也算 target");
+  assert.equal(payload.vision.screensProcessed, 2);
+  assert.equal(payload.vision.statesProcessed, 1);
 });
 
+
+/** One main screen (home) plus two merged variants (login/error). */
+function variantVisionDoc() {
+  return {
+    version: "2.20",
+    children: [
+      {
+        id: "b1",
+        type: "frame",
+        name: "1. 主流程",
+        x: 0,
+        y: 0,
+        children: [
+          {
+            id: "home",
+            type: "frame",
+            name: "Frame 101",
+            x: 0,
+            y: 0,
+            width: 390,
+            height: 844,
+            children: [
+              { id: "home-title", type: "text", content: "主頁" },
+              { id: "main-cta", type: "frame", name: "提交 Button", x: 20, y: 700, width: 200, height: 48 }
+            ]
+          },
+          {
+            id: "home-login",
+            type: "frame",
+            name: "Frame 102",
+            x: 420,
+            y: 0,
+            width: 390,
+            height: 844,
+            children: [
+              { id: "login-title", type: "text", content: "主頁-登入" },
+              { id: "login-cta", type: "frame", name: "登入 Button", x: 40, y: 600, width: 180, height: 44 }
+            ]
+          },
+          {
+            id: "home-error",
+            type: "frame",
+            name: "Frame 103",
+            x: 840,
+            y: 0,
+            width: 390,
+            height: 844,
+            children: [
+              { id: "error-title", type: "text", content: "主頁-錯誤" },
+              { id: "error-cta", type: "frame", name: "重試 Button", x: 60, y: 620, width: 160, height: 44 }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+}
+
+function bboxOf(x, y, width, height) {
+  return { x: x / 390, y: y / 844, width: width / 390, height: height / 844 };
+}
+
+function variantChat() {
+  return async (messages) => {
+    const text = messages[1].content[0].text;
+    if (text.includes("主頁-登入")) {
+      return JSON.stringify({
+        elements: [{ class: "cta", intent: "navigate", label: "登入", bbox: bboxOf(40, 600, 180, 44) }]
+      });
+    }
+    if (text.includes("主頁-錯誤")) {
+      return JSON.stringify({
+        elements: [{ class: "cta", intent: "navigate", label: "重試", bbox: bboxOf(60, 620, 160, 44) }]
+      });
+    }
+    return JSON.stringify({
+      elements: [{ class: "cta", intent: "navigate", label: "提交", bbox: bboxOf(20, 700, 200, 48) }]
+    });
+  };
+}
+
+function target(overrides = {}) {
+  return { id: "home", name: "主頁", width: 390, height: 844, nodes: [], ...overrides };
+}
+
+const silentChat = async () => JSON.stringify({ elements: [] });
+
+test("runVisionPass: 主屏+变体逐 target 识别，state 元素只进 states，不进主屏 elements", async () => {
+  const dir = makeProjectWithDoc(variantVisionDoc());
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, { screens: false }, { chat: variantChat(), render: sizedRender(390, 844) })
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.vision.active, true);
+  assert.equal(payload.vision.screensProcessed, 1);
+  assert.equal(payload.vision.statesProcessed, 2);
+
+  const flows = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
+  const home = flows.screens.find((screen) => screen.name === "主頁");
+  assert.equal(home.elements.length, 1, "主屏只保留主屏元素");
+  assert.equal(home.elements[0].nodeId, "main-cta");
+  assert.equal(home.elements[0].state, undefined);
+  const login = home.states.find((state) => state.label === "主頁-登入");
+  const error = home.states.find((state) => state.label === "主頁-錯誤");
+  assert.equal(login.elements.length, 1);
+  assert.equal(login.elements[0].nodeId, "login-cta");
+  assert.equal(login.elements[0].state, "主頁-登入");
+  assert.equal(error.elements[0].nodeId, "error-cta");
+  assert.equal(error.elements[0].state, "主頁-錯誤");
+
+  assert.equal(login.edges.length, 1, "变体边挂在 state 上");
+  assert.equal(login.edges[0].state, "主頁-登入");
+  assert.equal(flows.edges.filter((edge) => edge.trigger === "VISION").length, 1, "result.edges 只收主屏边");
+  assert.equal(flows.edges.filter((edge) => edge.state !== undefined).length, 0);
+  assert.equal(flows.unresolvedDestinations.length, 1, "变体未决目的地不进入生成侧");
+  assert.match(flows.unresolvedDestinations[0], /主頁 · 提交/);
+});
+
+test("runVisionPass: state target 计入 statesRequested/Processed，元素带 state", async () => {
+  const pass = await runVisionPass({
+    chat: variantChat(),
+    screens: [
+      target(),
+      target({ id: "home-login", name: "主頁-登入", stateOf: "home", stateName: "主頁-登入" })
+    ],
+    imageFor: () => "data:image/png;base64,AA==",
+    renderPath: () => null
+  });
+  assert.equal(pass.stats.screensRequested, 1);
+  assert.equal(pass.stats.statesRequested, 1);
+  assert.equal(pass.stats.targetsRequested, 2);
+  assert.equal(pass.stats.screensProcessed, 1);
+  assert.equal(pass.stats.statesProcessed, 1);
+  assert.equal(pass.stats.statesSkipped, 0);
+  assert.equal(pass.stats.statesFailed, 0);
+  assert.equal(pass.stats.elements, 2);
+  const stateElements = pass.elementsByScreen.get("home-login");
+  assert.equal(stateElements.length, 1);
+  assert.equal(stateElements[0].state, "主頁-登入");
+  assert.equal(pass.edges.length, 1, "主屏边");
+  assert.equal(pass.stateEdges.length, 1, "变体边单独审计");
+  assert.equal(pass.stateEdges[0].state, "主頁-登入");
+  assert.equal(pass.stateEdges[0].from.id, "home-login");
+  assert.deepEqual(pass.cappedTargets, []);
+});
+
+test("runVisionPass: 非 1x 渲染先按 renderScale 换算（或显式拒绝）", async () => {
+  const node = { id: "cta", name: "提交 Button", type: "frame", x: 100, y: 200, width: 60, height: 40 };
+  const bbox = bboxOf(100 * 2, 200 * 2, 60 * 2, 40 * 2);
+  const chat = async () =>
+    JSON.stringify({ elements: [{ class: "cta", intent: "submit", label: "提交", bbox }] });
+
+  const scaled = await runVisionPass({
+    chat,
+    screens: [target({ nodes: [node], renderScale: 2 })],
+    imageFor: () => "data:image/png;base64,AA==",
+    renderPath: () => null
+  });
+  const scaledElement = scaled.elementsByScreen.get("home")[0];
+  assert.equal(scaledElement.nodeId, "cta", "归一化 bbox 先除 renderScale 再做设计 px 判定");
+  assert.ok(Math.abs(scaledElement.bbox.x - 100) < 1e-9);
+  assert.ok(Math.abs(scaledElement.bbox.y - 200) < 1e-9);
+  assert.ok(Math.abs(scaledElement.bbox.width - 60) < 1e-9);
+  assert.ok(Math.abs(scaledElement.bbox.height - 40) < 1e-9);
+
+  const unscaled = await runVisionPass({
+    chat,
+    screens: [target({ nodes: [node] })],
+    imageFor: () => "data:image/png;base64,AA==",
+    renderPath: () => null
+  });
+  assert.equal(unscaled.elementsByScreen.get("home")[0].nodeId, undefined, "不换算会失准（测试锁定换算路径）");
+});
+
+test("runVisionPass: >40 条 → vision-response-truncated 且 truncatedItems 计入会计", async () => {
+  const elements = Array.from({ length: 41 }, (_, index) => ({
+    class: "link",
+    intent: "submit",
+    label: `入口${index + 1}`,
+    bbox: { x: 0.1, y: 0.1, width: 0.05, height: 0.05 }
+  }));
+  const pass = await runVisionPass({
+    chat: async () => JSON.stringify({ elements }),
+    screens: [target()],
+    imageFor: () => "data:image/png;base64,AA==",
+    renderPath: () => null
+  });
+  assert.equal(pass.stats.truncatedItems, 1);
+  assert.equal(pass.stats.elements, 40);
+  assert.equal(pass.accounting.rawElements, 41);
+  assert.equal(pass.accounting.ok, true);
+  const warning = pass.warnings.find((entry) => entry.code === "vision-response-truncated");
+  assert.ok(warning);
+  assert.match(warning.message, /主頁/);
+  assert.match(warning.message, /40/);
+});
+
+test("runVisionPass: 无渲染图 target 进 skipped 桶（主屏/变体分桶）", async () => {
+  const dir = makeProjectWithDoc(variantVisionDoc());
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(
+      runtime,
+      { screens: false },
+      {
+        chat: variantChat(),
+        render: async ({ outDir }) => ({ ok: true, dir: outDir, files: new Map(), missing: [] })
+      }
+    )
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.vision.active, true);
+  assert.equal(payload.vision.screensSkipped, 1);
+  assert.equal(payload.vision.statesSkipped, 2);
+  assert.equal(payload.vision.screensProcessed, 0);
+  assert.equal(payload.vision.statesProcessed, 0);
+  assert.equal(payload.vision.screensRequested, 1);
+  assert.equal(payload.vision.statesRequested, 2);
+  assert.equal(payload.vision.screensInput, 1);
+  assert.equal(payload.vision.statesInput, 2);
+  assert.equal(payload.vision.accounting.ok, true);
+  assert.equal(
+    payload.warnings.filter((warning) => warning.code === "vision-render-no-output").length,
+    3,
+    "每个 target 都具名"
+  );
+  const flows = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
+  assert.equal(flows.screens[0].elementsCoverage[0].notEvaluated, true);
+  const login = flows.screens[0].states.find((state) => state.label === "主頁-登入");
+  assert.equal(login.elementsCoverage[0].details[0].reason, "render-missing");
+});
+
+test("runVisionPass: 变体独有 Button 未识别 → vision-candidate-uncovered 带 state 名", async () => {
+  const pass = await runVisionPass({
+    chat: silentChat,
+    screens: [
+      target({ candidates: [], nodes: [] }),
+      target({
+        id: "home-login",
+        name: "主頁-登入",
+        stateOf: "home",
+        stateName: "主頁-登入",
+        candidates: [
+          {
+            id: "login-cta",
+            name: "登入 Button",
+            type: "frame",
+            bbox: { x: 40, y: 600, width: 180, height: 44 },
+            textHints: ["登入"],
+            state: "主頁-登入"
+          }
+        ],
+        nodes: []
+      })
+    ],
+    imageFor: () => "data:image/png;base64,AA==",
+    renderPath: () => null
+  });
+  const warning = pass.warnings.find((entry) => entry.code === "vision-candidate-uncovered");
+  assert.ok(warning, "变体未覆盖必须告警");
+  assert.match(warning.message, /主頁-登入/);
+  assert.match(warning.message, /状态/);
+  assert.deepEqual(warning.details, ["登入 Button（login-cta）"]);
+  const coverage = pass.coverageByTarget.get("home-login");
+  assert.equal(coverage.uncoveredCandidates, 1);
+  assert.equal(coverage.coveredCandidates, 0);
+  assert.equal(coverage.state, "主頁-登入");
+});
+
+test("runVisionPass: cap 先裁变体，主屏全保留；capped 具名", async () => {
+  const pass = await runVisionPass({
+    chat: silentChat,
+    screens: [
+      target({ id: "main1", name: "主頁" }),
+      target({ id: "main2", name: "門市" }),
+      target({ id: "s1", name: "變體1", stateOf: "main1", stateName: "變體1" }),
+      target({
+        id: "s2",
+        name: "變體2",
+        stateOf: "main1",
+        stateName: "變體2",
+        candidates: [
+          {
+            id: "s2-cta",
+            name: "變體 Button",
+            type: "frame",
+            textHints: [],
+            state: "變體2"
+          }
+        ]
+      }),
+      target({ id: "s3", name: "變體3", stateOf: "main2", stateName: "變體3" })
+    ],
+    excluded: [
+      {
+        screenId: "ghost",
+        screenName: "缺幾何",
+        state: null,
+        reason: "no-geometry",
+        candidates: [],
+        designNodes: 3
+      }
+    ],
+    maxScreens: 3,
+    imageFor: () => "data:image/png;base64,AA==",
+    renderPath: () => null
+  });
+  assert.deepEqual(
+    pass.cappedTargets.map((entry) => entry.id),
+    ["s2", "s3"],
+    "先裁变体；主屏全保留"
+  );
+  assert.equal(pass.stats.screensRequested, 2);
+  assert.equal(pass.stats.statesRequested, 1);
+  assert.equal(pass.stats.targetsRequested, 3);
+  assert.equal(pass.stats.screensCapped, 0);
+  assert.equal(pass.stats.statesCapped, 2);
+  assert.equal(pass.stats.screensNoGeometry, 1, "缺几何先于 cap 分类，且不占 cap 名额");
+  assert.equal(pass.stats.screensInput, 3);
+  assert.equal(pass.stats.statesInput, 3);
+  const cap = pass.warnings.find((entry) => entry.code === "vision-screen-cap");
+  assert.ok(cap);
+  assert.match(cap.message, /AOS_VISION_MAX_SCREENS=0/);
+  assert.ok(cap.details.includes("主頁·變體2"));
+  assert.ok(cap.details.includes("門市·變體3"));
+  assert.equal(pass.coverageByTarget.get("s2").notEvaluated, true);
+  assert.equal(pass.coverageByTarget.get("s2").details[0].reason, "capped");
+});
+
+test("applyVision: 会计公式成立；人为破坏 → vision-accounting-mismatch", async () => {
+  const dir = makeProjectWithDoc(variantVisionDoc());
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, { screens: false }, { chat: variantChat(), render: sizedRender(390, 844) })
+  );
+  const accounting = payload.vision.accounting;
+  assert.equal(accounting.ok, true);
+  assert.equal(accounting.screensInput, 1);
+  assert.equal(accounting.statesInput, 2);
+  assert.equal(accounting.targetsRequested, 3);
+  assert.equal(accounting.elements, 3);
+  assert.equal(accounting.rawElements, 3);
+  assert.ok(Object.values(accounting.formulas).every(Boolean));
+
+  const stats = payload.vision.stats;
+  assert.equal(stats.screensRequested, 1);
+  assert.equal(stats.statesRequested, 2);
+  assert.equal(stats.targetsRequested, 3);
+  assert.equal(stats.elements, stats.groundedElements + stats.ungroundedElements);
+
+  const broken = visionAccounting({ ...stats, screensProcessed: stats.screensProcessed + 1 });
+  assert.equal(broken.ok, false);
+  assert.equal(broken.formulas.screensInput, false);
+  const warnings = accountingWarnings(broken);
+  assert.equal(warnings[0].code, "vision-accounting-mismatch");
+  assert.match(warnings[0].message, /screensInput/);
+});
+
+test("pen payload/flow-map: 屏/变体显示 识别/候选/覆盖/未覆盖/不可核验/未评估", async () => {
+  const dir = makeProjectWithDoc(variantVisionDoc(), { dotenv: "AOS_VISION_MAX_TARGETS=2\n" });
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, { screens: false }, { chat: silentChat, render: sizedRender(390, 844) })
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.vision.statesCapped, 1);
+  const flows = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
+  const home = flows.screens[0];
+  assert.ok(home.elementsCoverage, "主屏覆盖");
+  assert.equal(home.elementsCoverage[0].notEvaluated, undefined);
+  const error = home.states.find((state) => state.label === "主頁-錯誤");
+  assert.equal(error.elementsCoverage[0].notEvaluated, true);
+  assert.equal(error.elementsCoverage[0].details[0].reason, "capped");
+
+  const map = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.match(map, /覆盖：识别 \d+ · 候选 \d+ · 覆盖 \d+ · 未覆盖 \d+ · 不可核验 \d+ · 未评估 \d+/);
+  assert.match(map, /状态「主頁-錯誤」/);
+  assert.match(map, /未评估 1/);
+});
+
+test("applyVision: 全部帧缺失时标题原因区别于「无可用屏幕几何」", async () => {
+  const idless = {
+    version: "2.20",
+    children: [
+      {
+        id: "board",
+        type: "frame",
+        name: "1. 主流程",
+        x: 0,
+        y: 0,
+        children: [
+          {
+            type: "frame",
+            name: "Frame 101",
+            x: 0,
+            y: 0,
+            width: 390,
+            height: 844,
+            children: [{ type: "text", content: "主頁" }]
+          }
+        ]
+      }
+    ]
+  };
+  const dir = makeProjectWithDoc(idless);
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, { screens: false }, { chat: silentChat, render: sizedRender(390, 844) })
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.vision.active, false);
+  assert.match(payload.vision.reason, /设计帧|帧缺失|frame-missing/);
+  assert.doesNotMatch(payload.vision.reason, /^无可用屏幕几何$/);
+  assert.ok(payload.warnings.some((warning) => warning.code === "vision-screen-frame-missing"));
+  assert.equal(payload.vision.screensFrameMissing, 1);
+  assert.equal(payload.vision.screensInput, 1);
+  assert.equal(payload.vision.accounting.ok, true);
+});
 
 test("flows.json: schemaVersion newer than supported fails loud (version gate)", async () => {
   const dir = makeProject();

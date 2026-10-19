@@ -7,6 +7,7 @@ import {
   collectVisionScreens,
   penExtractFlows,
   renderPenFlowMap,
+  screenshotAccounting,
   synthesizePenFlows,
   visionMaxScreens
 } from "../dist/pen/flows.js";
@@ -673,6 +674,76 @@ test("collectVisionScreens: state 帧缺失 → excluded frame-missing（statesF
     1,
     "statesFrameMissing 可由 excluded 的 state 计数得出"
   );
+});
+
+test("renderPenFlowMap: 每屏/变体一行覆盖摘要（识别/候选/覆盖/未覆盖/不可核验/未评估）", () => {
+  const result = synthesizePenFlows(fixtureDoc());
+  const main = result.screens.find((entry) => entry.name === "主頁");
+  main.elements = [
+    {
+      id: "vision-s1-1",
+      class: "cta",
+      intent: "submit",
+      label: "提交",
+      nodeId: "s1-t",
+      provenance: "vision-inferred",
+      confidence: "low"
+    }
+  ];
+  main.elementsCoverage = [
+    {
+      state: null,
+      designNodes: 2,
+      candidateNodes: 2,
+      recognizedElements: 1,
+      groundedElements: 1,
+      ungroundedElements: 0,
+      coveredCandidates: 1,
+      uncoveredCandidates: 1,
+      unverifiableCandidates: 0,
+      notEvaluatedCandidates: 0,
+      details: []
+    }
+  ];
+  const state = main.states.find((entry) => entry.label === "主頁-下滑");
+  state.elementsCoverage = [
+    {
+      state: "主頁-下滑",
+      designNodes: 1,
+      candidateNodes: 1,
+      recognizedElements: 0,
+      groundedElements: 0,
+      ungroundedElements: 0,
+      coveredCandidates: 0,
+      uncoveredCandidates: 0,
+      unverifiableCandidates: 0,
+      notEvaluatedCandidates: 1,
+      notEvaluated: true,
+      details: []
+    }
+  ];
+
+  const markdown = renderPenFlowMap({
+    file: "design.pen",
+    generatedAt: "2026-10-08T00:00:00.000Z",
+    result
+  });
+  assert.match(markdown, /覆盖：识别 1 · 候选 2 · 覆盖 1 · 未覆盖 1 · 不可核验 0 · 未评估 0/);
+  assert.match(markdown, /状态「主頁-下滑」/);
+  assert.match(markdown, /覆盖：识别 0 · 候选 1 · 覆盖 0 · 未覆盖 0 · 不可核验 0 · 未评估 1/);
+});
+
+test("screenshotAccounting: 请求 = 渲染 + 跳过；人为破坏 → mismatch 数字入消息", () => {
+  const ok = screenshotAccounting({ screens: 3, states: 2, rendered: 4, skipped: 1 });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.requested, 5);
+
+  const broken = screenshotAccounting({ screens: 3, states: 2, rendered: 4, skipped: 0 });
+  assert.equal(broken.ok, false);
+  assert.match(broken.message, /请求 5/);
+  assert.match(broken.message, /渲染 4 \+ 跳过 0/);
+  assert.match(broken.message, /主屏 3/);
+  assert.match(broken.message, /变体 2/);
 });
 
 test("visionMaxScreens: AOS_VISION_MAX_TARGETS 优先于旧名；0/all 不限", () => {

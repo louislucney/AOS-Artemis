@@ -27,7 +27,13 @@ import {
   type VisionCapabilityCache,
   type VisionCapabilitySource
 } from "../llm/vision-capability.js";
-import { runVisionPass, type VisionNodeGeom, type VisionScreenInput } from "../design/vision.js";
+import {
+  runVisionPass,
+  type VisionAccounting,
+  type VisionNodeGeom,
+  type VisionScreenInput,
+  type VisionStats
+} from "../design/vision.js";
 import {
   candidateNameMatches,
   type FlowElementCoverage,
@@ -547,6 +553,15 @@ function collectTextHints(node: PenNode, perClassLimit: number): FlowHint[] {
   return hints;
 }
 
+function coverageSummary(coverage: FlowElementCoverage | undefined): string | null {
+  if (!coverage) return null;
+  return (
+    `覆盖：识别 ${coverage.recognizedElements} · 候选 ${coverage.candidateNodes} · ` +
+    `覆盖 ${coverage.coveredCandidates} · 未覆盖 ${coverage.uncoveredCandidates} · ` +
+    `不可核验 ${coverage.unverifiableCandidates} · 未评估 ${coverage.notEvaluatedCandidates}`
+  );
+}
+
 export function renderPenFlowMap(input: {
   file: string;
   generatedAt: string;
@@ -585,6 +600,19 @@ export function renderPenFlowMap(input: {
       const stateLabels = [...new Set(screen.states.map((state) => state.label))];
       const states = stateLabels.length > 0 ? `（状态：${stateLabels.join("、")}）` : "";
       lines.push(`- ${screen.name}${states}`);
+      for (const coverage of screen.elementsCoverage ?? []) {
+        const summary = coverageSummary(coverage);
+        if (summary) lines.push(`  - ${summary}`);
+      }
+      for (const state of screen.states) {
+        const hasStateDetail = (state.elementsCoverage?.length ?? 0) > 0 || (state.elements?.length ?? 0) > 0;
+        if (!hasStateDetail) continue;
+        lines.push(`  - 状态「${state.label}」`);
+        for (const coverage of state.elementsCoverage ?? []) {
+          const summary = coverageSummary(coverage);
+          if (summary) lines.push(`    - ${summary}`);
+        }
+      }
       const image = input.images?.get(screen.id);
       if (image) {
         lines.push(`  - <img src="${image}" alt="${escapeHtml(screen.name)}" height="200">`);
@@ -599,7 +627,11 @@ export function renderPenFlowMap(input: {
       : "（无屏幕）",
     ""
   );
-  const withElements = result.screens.filter((screen) => (screen.elements?.length ?? 0) > 0);
+  const withElements = result.screens.filter(
+    (screen) =>
+      (screen.elements?.length ?? 0) > 0 ||
+      screen.states.some((state) => (state.elements?.length ?? 0) > 0)
+  );
   if (withElements.length > 0) {
     lines.push("## 视觉识别（vision-inferred）", "");
     for (const screen of withElements) {
@@ -607,6 +639,14 @@ export function renderPenFlowMap(input: {
       for (const element of screen.elements ?? []) {
         const grounded = element.nodeId ? ` → ${element.nodeId}` : "";
         lines.push(`  - [${element.class}/${element.intent}] ${element.label ?? "（无标签）"}${grounded}`);
+      }
+      for (const state of screen.states) {
+        if ((state.elements?.length ?? 0) === 0) continue;
+        lines.push(`  - 状态「${state.label}」`);
+        for (const element of state.elements ?? []) {
+          const grounded = element.nodeId ? ` → ${element.nodeId}` : "";
+          lines.push(`    - [${element.class}/${element.intent}] ${element.label ?? "（无标签）"}${grounded}`);
+        }
       }
     }
     lines.push("");
@@ -651,23 +691,24 @@ interface VisionMerge {
   reason?: string;
   warnings: FlowWarning[];
   edges: FlowEdge[];
+  stateEdges: FlowEdge[];
   unresolvedDestinations: string[];
   elementsByScreen: Map<string, FlowElement[]>;
-  stats?: {
-    screensRequested: number;
-    screensSkipped: number;
-    screensProcessed: number;
-    elements: number;
-    navigationalEdges: number;
-    invalidItems: number;
-    failures: number;
-  };
+  coverageByTarget: Map<string, FlowElementCoverage>;
+  cappedTargets: VisionScreenInput[];
+  stats?: VisionStats;
+  accounting?: VisionAccounting;
 }
 
 function skippedVision(
   requested: VisionMerge["requested"],
   reason: string,
-  warnings: FlowWarning[] = []
+  warnings: FlowWarning[] = [],
+  extras: {
+    stats?: VisionStats;
+    accounting?: VisionAccounting;
+    coverageByTarget?: Map<string, FlowElementCoverage>;
+  } = {}
 ): VisionMerge {
   return {
     requested,
@@ -675,8 +716,13 @@ function skippedVision(
     reason,
     warnings,
     edges: [],
+    stateEdges: [],
     unresolvedDestinations: [],
-    elementsByScreen: new Map()
+    elementsByScreen: new Map(),
+    coverageByTarget: extras.coverageByTarget ?? new Map(),
+    cappedTargets: [],
+    ...(extras.stats ? { stats: extras.stats } : {}),
+    ...(extras.accounting ? { accounting: extras.accounting } : {})
   };
 }
 
@@ -723,7 +769,11 @@ export interface CollectedVision {
   targets: VisionScreenInput[];
   excluded: CollectedVisionExclusion[];
   duplicateIds: string[];
+  /** 超过每 target 候选上限 200 的累计条数（含被 no-geometry/frame-missing
+   * 排除的 target）；只进 `vision-candidate-cap` 与 `vision.accounting`，
+   * 不参与四态候选与守恒公式。 */
   candidatesTruncated: number;
+  /** grounding 节点超过 300 上限的累计条数；只进 `vision.accounting`。 */
   groundingTruncated: number;
 }
 
@@ -928,6 +978,7 @@ export function collectVisionScreens(
       width,
       height,
       nodes: inspected.nodes,
+      designNodes: inspected.designNodes,
       ...(spec.stateOf !== null && spec.stateName !== null
         ? { stateOf: spec.stateOf, stateName: spec.stateName }
         : {}),
@@ -935,6 +986,39 @@ export function collectVisionScreens(
     });
   }
   return { targets, excluded, duplicateIds, candidatesTruncated, groundingTruncated };
+}
+
+export interface ScreenshotAccounting {
+  ok: boolean;
+  requested: number;
+  rendered: number;
+  skipped: number;
+  screens: number;
+  states: number;
+  message: string;
+}
+
+/** 截图守恒：`screens + states = rendered + skipped`；不成立时消息带数字。 */
+export function screenshotAccounting(summary: {
+  screens: number;
+  states: number;
+  rendered: number;
+  skipped: number;
+}): ScreenshotAccounting {
+  const requested = summary.screens + summary.states;
+  const actual = summary.rendered + summary.skipped;
+  const ok = requested === actual;
+  return {
+    ok,
+    requested,
+    rendered: summary.rendered,
+    skipped: summary.skipped,
+    screens: summary.screens,
+    states: summary.states,
+    message: ok
+      ? `截图会计成立：请求 ${requested}（主屏 ${summary.screens} / 变体 ${summary.states}）= 渲染 ${summary.rendered} + 跳过 ${summary.skipped}`
+      : `截图会计不平：请求 ${requested} 个 target（主屏 ${summary.screens} / 变体 ${summary.states}）≠ 渲染 ${summary.rendered} + 跳过 ${summary.skipped}`
+  };
 }
 
 interface PenScreenAssets {
@@ -952,6 +1036,7 @@ interface PenScreenAssets {
     rendered: number;
     skipped: number;
     skippedScreens: string[];
+    accounting?: ScreenshotAccounting;
   };
 }
 
@@ -1007,6 +1092,9 @@ async function renderAndImportPenScreens(
     deps: { render: deps.render, exec: deps.exec, ensure: deps.ensure }
   });
   const warnings: FlowWarning[] = [];
+  const stateIds = new Set(screens.flatMap((screen) => screen.states.map((state) => state.id)));
+  const skippedStates = capture.skipped.filter((id) => stateIds.has(id)).length;
+  const skippedMains = capture.skipped.length - skippedStates;
   if (capture.channelError !== null) {
     warnings.push({
       code: SCREENSHOT_RENDER_UNAVAILABLE,
@@ -1020,24 +1108,26 @@ async function renderAndImportPenScreens(
   } else if (capture.skipped.length > 0) {
     warnings.push({
       code: SCREENSHOT_SKIPPED,
-      message: `截图降级：${capture.skipped.length} 屏未产出渲染（${capture.skipped.slice(0, 5).join("、")}${
-        capture.skipped.length > 5 ? " 等" : ""
-      }）`
+      message: `截图降级：${capture.skipped.length} 个 target 未产出渲染（主屏 ${skippedMains} / 变体 ${skippedStates}：${capture.skipped
+        .slice(0, 5)
+        .join("、")}${capture.skipped.length > 5 ? " 等" : ""}）`
     });
   }
+  const summary: PenScreenAssets["summary"] = {
+    dir: relativeScreenPath(path.join(runtime.configDirAbs, "design"), capture.dir),
+    screens: requested.screens,
+    states: requested.states,
+    rendered: capture.imagePaths.size,
+    skipped: capture.skipped.length,
+    skippedScreens: capture.skipped
+  };
+  summary.accounting = screenshotAccounting(summary);
   return {
     channelError: capture.channelError,
     imagePaths: capture.imagePaths,
     skipped: capture.skipped,
     warnings,
-    summary: {
-      dir: relativeScreenPath(path.join(runtime.configDirAbs, "design"), capture.dir),
-      screens: requested.screens,
-      states: requested.states,
-      rendered: capture.imagePaths.size,
-      skipped: capture.skipped.length,
-      skippedScreens: capture.skipped
-    }
+    summary
   };
 }
 
@@ -1202,12 +1292,11 @@ async function applyVision(
       ...preWarnings,
       {
         code: "vision-candidate-cap",
-        message: `候选交互元素超过每屏上限 ${CANDIDATE_NODE_LIMIT}，${collected.candidatesTruncated} 个已截断（覆盖判定按已采集候选）`
+        message:
+          `候选交互元素超过每 target 上限 ${CANDIDATE_NODE_LIMIT}，${collected.candidatesTruncated} 个已截断` +
+          "（含被排除/被 cap 的 target；覆盖判定按已采集候选，数值见 vision.accounting.candidatesTruncated）"
       }
     ];
-  }
-  if (screens.length === 0) {
-    return skippedVision(requested, "无可用屏幕几何", preWarnings);
   }
 
   const imageCache = new Map<string, string | null>();
@@ -1235,9 +1324,32 @@ async function applyVision(
     screens,
     imageFor,
     renderPath: renderPathOf,
-    maxScreens: visionMaxScreens(dotenv)
+    maxScreens: visionMaxScreens(dotenv),
+    excluded: collected.excluded,
+    candidatesTruncated: collected.candidatesTruncated,
+    groundingTruncated: collected.groundingTruncated
   });
-  if (pass.rejected && pass.stats.screensProcessed === 0) {
+  if (screens.length === 0) {
+    const frameMissing = collected.excluded.filter((entry) => entry.reason === "frame-missing").length;
+    const noGeometry = collected.excluded.filter((entry) => entry.reason === "no-geometry").length;
+    const reason =
+      collected.excluded.length === 0
+        ? "无可用屏幕几何"
+        : frameMissing > 0 && noGeometry === 0
+          ? "无对应设计帧（id 缺失或悬空）"
+          : noGeometry > 0 && frameMissing === 0
+            ? "无可用屏幕几何"
+            : `无可用屏幕几何（缺帧 ${frameMissing} / 缺几何 ${noGeometry}）`;
+    return skippedVision(requested, reason, [...preWarnings, ...pass.warnings], {
+      stats: pass.stats,
+      accounting: pass.accounting,
+      coverageByTarget: pass.coverageByTarget
+    });
+  }
+  if (
+    pass.rejected &&
+    pass.stats.screensProcessed + pass.stats.statesProcessed === 0
+  ) {
     capabilityCache?.set(capabilityKey, false);
     return {
       requested,
@@ -1253,8 +1365,13 @@ async function applyVision(
         }
       ],
       edges: [],
+      stateEdges: [],
       unresolvedDestinations: [],
-      elementsByScreen: new Map()
+      elementsByScreen: new Map(),
+      coverageByTarget: pass.coverageByTarget,
+      cappedTargets: pass.cappedTargets,
+      stats: pass.stats,
+      accounting: pass.accounting
     };
   }
   if (pass.rejected) {
@@ -1266,7 +1383,7 @@ async function applyVision(
       }
     ];
   } else if (
-    pass.stats.screensProcessed > 0 &&
+    (pass.stats.screensProcessed > 0 || pass.stats.statesProcessed > 0) &&
     (capabilitySource === "unknown" || capabilitySource === "override")
   ) {
     capabilityCache?.set(capabilityKey, true);
@@ -1277,9 +1394,13 @@ async function applyVision(
     ...(model ? { model } : {}),
     warnings: [...preWarnings, ...pass.warnings],
     edges: pass.edges,
+    stateEdges: pass.stateEdges,
     unresolvedDestinations: pass.unresolvedDestinations,
     elementsByScreen: pass.elementsByScreen,
-    stats: pass.stats
+    coverageByTarget: pass.coverageByTarget,
+    cappedTargets: pass.cappedTargets,
+    stats: pass.stats,
+    accounting: pass.accounting
   };
 }
 
@@ -1311,6 +1432,10 @@ export async function penExtractFlows(
       try {
         screenAssets = await loadAssets();
         result.warnings.push(...screenAssets.warnings);
+        const shot = screenAssets.summary.accounting ?? screenshotAccounting(screenAssets.summary);
+        if (!shot.ok) {
+          result.warnings.push({ code: "screenshot-accounting-mismatch", message: shot.message });
+        }
       } catch (error) {
         result.warnings.push({
           code: SCREENSHOT_RENDER_UNAVAILABLE,
@@ -1323,12 +1448,25 @@ export async function penExtractFlows(
       for (const screen of result.screens) {
         const elements = vision.elementsByScreen.get(screen.id);
         if (elements && elements.length > 0) screen.elements = elements;
+        const coverage = vision.coverageByTarget.get(screen.id);
+        if (coverage) screen.elementsCoverage = [coverage];
+        for (const state of screen.states) {
+          const stateElements = vision.elementsByScreen.get(state.id);
+          if (stateElements && stateElements.length > 0) state.elements = stateElements;
+          const stateCoverage = vision.coverageByTarget.get(state.id);
+          if (stateCoverage) state.elementsCoverage = [stateCoverage];
+          const stateEdgeList = vision.stateEdges.filter(
+            (edge) => edge.state === state.label && edge.from.id === state.id
+          );
+          if (stateEdgeList.length > 0) state.edges = stateEdgeList;
+        }
       }
       result.edges.push(...vision.edges);
       result.warnings.push(...vision.warnings);
     }
     const visionElements = vision?.active ? vision.stats?.elements ?? 0 : 0;
     const visionEdges = vision?.active ? vision.edges.length : 0;
+    const visionStateEdges = vision?.active ? vision.stateEdges.length : 0;
     const payload: Record<string, unknown> = {
       ok: true,
       schemaVersion: FLOWS_SCHEMA_VERSION,
@@ -1342,6 +1480,7 @@ export async function penExtractFlows(
         interactionSignals: result.synthesis.interactionSignals,
         visionElements,
         visionEdges,
+        visionStateEdges,
         warnings: result.warnings.length
       },
       synthesis: result.synthesis,
@@ -1351,7 +1490,8 @@ export async function penExtractFlows(
             active: vision.active,
             ...(vision.model ? { model: vision.model } : {}),
             ...(vision.reason ? { reason: vision.reason } : {}),
-            ...(vision.stats ? vision.stats : {})
+            ...(vision.stats ? { ...vision.stats, stats: vision.stats } : {}),
+            ...(vision.accounting ? { accounting: vision.accounting } : {})
           }
         : { requested: "off", active: false },
       warnings: result.warnings,
