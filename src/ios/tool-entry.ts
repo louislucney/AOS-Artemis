@@ -21,7 +21,7 @@ import {
 } from "./trace-store.js";
 import { persistRun, testSummaryFor, writeStatus } from "./trace-persist.js";
 import type { IosTaskRecord, IosTaskStep, VerifierTarget } from "./types.js";
-import { resolveVisionTarget, type VisionTarget } from "./vision.js";
+import { entryVisionCapability, resolveVisionTarget, type VisionTarget } from "./vision.js";
 
 export interface StartIosTaskDeps {
   device?: IosDevice;
@@ -181,7 +181,12 @@ export async function maybeIosRunTask(
   const visionTarget =
     deps.visionTarget !== undefined
       ? deps.visionTarget
-      : resolveVisionTarget(layeredEnv, await runtime.entries(), entry);
+      : resolveVisionTarget(
+          layeredEnv,
+          await runtime.entries(),
+          entry,
+          entryVisionCapability(runtime, layeredEnv, entry).resolution.capable === true
+        );
   const record: IosTaskRecord = {
     traceId,
     status: "running",

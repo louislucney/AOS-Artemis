@@ -20,7 +20,8 @@ import type { StartIosTaskDeps } from "./tool-entry.js";
 import { captureStepShot, finish, persistRun } from "./trace-persist.js";
 import type { IosTaskRecord, VerifierTarget } from "./types.js";
 import { resolveVerifier, resolveVerifyMode, runVerification } from "./verifier.js";
-import { looksVisionCapable, resolveVisionMode, type IosVisionMode, type VisionTarget } from "./vision.js";
+import { classifyModalityRejection } from "../llm/vision-capability.js";
+import { entryVisionCapability, resolveVisionMode, type IosVisionMode, type VisionTarget } from "./vision.js";
 
 const DEFAULT_MAX_STEPS = 30;
 const MAX_WAIT_MS = 10_000;
@@ -198,7 +199,15 @@ export async function runLoop(
     makeChatFn({ baseUrl: entry.baseUrl ?? "", apiKey: entry.apiKey ?? "", model: entry.model });
   const visionChat = deps.visionChat ?? (visionTarget ? makeChatFn(visionTarget.chat) : null);
   const mode: IosVisionMode = resolveVisionMode(env);
-  const mainVision = deps.mainVision ?? looksVisionCapable(entry.model);
+  const visionCapability = entryVisionCapability(runtime, env, entry);
+  let mainVision =
+    deps.mainVision ??
+    (visionCapability.resolution.capable === true
+      ? true
+      : visionCapability.resolution.capable === false
+        ? false
+        : visionChat === null);
+  let visionVerdictLearned = visionCapability.resolution.capable !== "unknown";
   const maxSteps = resolveMaxSteps(env, deps.maxSteps);
   const stepDelayMs = deps.stepDelayMs ?? 300;
   const settleMs = resolveSettleMs(env, deps.settleMs);
@@ -347,8 +356,21 @@ export async function runLoop(
         try {
           content = await chat(messages);
           perception = "image";
+          if (!visionVerdictLearned) {
+            visionCapability.remember(true);
+            visionVerdictLearned = true;
+          }
         } catch (error) {
-          record.visionDegraded = record.visionDegraded ?? `多模态决策调用失败：${errorMessage(error)}`;
+          const rejection = classifyModalityRejection(error);
+          if (rejection) {
+            mainVision = false;
+            visionCapability.remember(false);
+            visionVerdictLearned = true;
+            record.visionDegraded =
+              record.visionDegraded ?? `多模态决策被拒（模型不接受图片）：${rejection}`;
+          } else {
+            record.visionDegraded = record.visionDegraded ?? `多模态决策调用失败：${errorMessage(error)}`;
+          }
           logWarn(`iOS 多模态降级为纯文本（${record.traceId}）: ${errorMessage(error)}`);
           messages[messages.length - 1] = { role: "user", content: textPrompt };
           perception = "text-degraded";

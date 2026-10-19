@@ -1,5 +1,16 @@
 import type { ChatTarget } from "../llm/chat.js";
 import { entryIssues, type LlmEntry } from "../llm/registry.js";
+import {
+  openVisionCapabilityCache,
+  parseDeclaredVision,
+  resolveVisionCapability,
+  visionCacheTtlMsFromEnv,
+  visionCapabilityKey,
+  isVisionCapableModel,
+  type VisionCapabilityResolution
+} from "../llm/vision-capability.js";
+import type { Runtime } from "../runtime.js";
+import path from "node:path";
 
 export interface VisionTarget {
   chat: ChatTarget;
@@ -7,10 +18,34 @@ export interface VisionTarget {
   source: "entry" | "env" | "active";
 }
 
-const VISION_NAME_PATTERN = /(vision|multimodal|gpt-4o|gpt-4\.1|gemini|claude-3|claude-4|qwen[\w.-]*-vl|-vl\b|vl-)/i;
-
+/** 与设计侧（`isVisionCapableModel`）共用同一启发式，避免两份名单漂移。 */
 export function looksVisionCapable(model: string): boolean {
-  return VISION_NAME_PATTERN.test(model);
+  return isVisionCapableModel(model);
+}
+
+/** active 模型的能力判定（声明 → 缓存 → 启发式 → 未知）；`remember` 写回探测结论缓存。 */
+export interface EntryVisionCapability {
+  resolution: VisionCapabilityResolution;
+  remember(vision: boolean): void;
+}
+
+export function entryVisionCapability(
+  runtime: Runtime,
+  env: NodeJS.ProcessEnv,
+  entry: LlmEntry
+): EntryVisionCapability {
+  const cache = openVisionCapabilityCache(path.join(runtime.configDirAbs, "llm-capabilities.json"));
+  const key = visionCapabilityKey(entry.baseUrl, entry.model);
+  return {
+    resolution: resolveVisionCapability({
+      model: entry.model,
+      baseUrl: entry.baseUrl,
+      declared: parseDeclaredVision(env),
+      cached: cache.get(key),
+      ttlMs: visionCacheTtlMsFromEnv(env)
+    }),
+    remember: (vision) => cache.set(key, vision)
+  };
 }
 
 /** Resolve the dedicated vision model for the iOS runner: an explicitly named
@@ -20,7 +55,8 @@ export function looksVisionCapable(model: string): boolean {
 export function resolveVisionTarget(
   env: NodeJS.ProcessEnv,
   entries: LlmEntry[],
-  active: LlmEntry | null
+  active: LlmEntry | null,
+  activeVision?: boolean
 ): VisionTarget | null {
   const entryName = env.AOS_IOS_VISION_LLM?.trim();
   if (entryName) {
@@ -43,7 +79,7 @@ export function resolveVisionTarget(
     return { chat: { baseUrl, apiKey, model }, model, source: "env" };
   }
 
-  if (active?.apiKey && active.baseUrl && looksVisionCapable(active.model)) {
+  if (active?.apiKey && active.baseUrl && (activeVision ?? looksVisionCapable(active.model))) {
     return {
       chat: { baseUrl: active.baseUrl, apiKey: active.apiKey, model: active.model },
       model: active.model,

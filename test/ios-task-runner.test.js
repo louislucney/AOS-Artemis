@@ -11,6 +11,7 @@ import {
 } from "../dist/ios/task-runner.js";
 import { parseScriptPlan } from "../dist/ios/script-plan.js";
 import { maybeIosInspectTrace } from "../dist/ios/inspect.js";
+import { ChatError } from "../dist/llm/chat.js";
 import {
   baseConfig,
   createImage,
@@ -210,7 +211,7 @@ test("完整执行：动作 → done，落盘 run.json/status.json 与截图证�
     await maybeIosRunTask(
       runtime,
       { task_desc: "点击搜索按钮", device_serial: UDID },
-      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+      { entry: ENTRY, device, chat, mainVision: false, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
     )
   );
   assert.equal(started.status, "running");
@@ -345,6 +346,58 @@ test("视觉调用失败 → 降级纯文本并记录原因", async () => {
   const run = JSON.parse(fs.readFileSync(path.join(record.runDir, "run.json"), "utf-8"));
   assert.match(run.vision_degraded, /视觉调用失败/);
   assert.equal(run.vision.model, "qwen-vl-max");
+});
+
+test("fail-open：未知模型首步附图被拒（400 不支持图片）→ 记住并全程回退文本", async () => {
+  const { runtime, dir } = await makeRuntime();
+  const device = fakeDevice();
+  const { chat } = scriptedChat([
+    JSON.stringify({ thought: "点一下", action: "tap", x: 1, y: 1 }),
+    JSON.stringify({ thought: "完成", action: "done", success: true, summary: "文本完成" })
+  ]);
+  let imageCalls = 0;
+  const guardedChat = async (msgs) => {
+    const withImage = msgs.some(
+      (message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")
+    );
+    if (withImage) {
+      imageCalls += 1;
+      throw new ChatError("LLM 响应 HTTP 400", {
+        status: 400,
+        body: JSON.stringify({ error: { message: "This model does not support image" } })
+      });
+    }
+    return chat(msgs);
+  };
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "文本任务", device_serial: UDID },
+      {
+        entry: ENTRY,
+        device,
+        chat: guardedChat,
+        verifier: null,
+        listSimulators: bootedSims(),
+        stepDelayMs: 0,
+        settleMs: 0
+      }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  assert.equal(record.status, "completed");
+  assert.equal(imageCalls, 1, "被拒后不再向主模型附图");
+  assert.equal(record.steps[0].perception, "text-degraded");
+  assert.equal(record.steps[1].perception, "text");
+  assert.match(record.visionDegraded, /模型不接受图片/);
+
+  const cache = JSON.parse(
+    fs.readFileSync(path.join(dir, ".artemis", "llm-capabilities.json"), "utf-8")
+  );
+  assert.equal(cache.entries["http://127.0.0.1:9/v1|fake-model"].vision, false, "拒绝结论已缓存");
 });
 
 test("模型输出非法 JSON 记为 invalid 并继续", async () => {
@@ -762,6 +815,7 @@ test("no-op：界面无变化下一轮提示并记 noop；wait 不参与判定",
         entry: ENTRY,
         device,
         chat,
+        mainVision: false,
         verifier: null,
         env: { AOS_IOS_LOG_FEEDBACK: "0" },
         listSimulators: bootedSims(),
@@ -793,6 +847,7 @@ test("no-op：界面无变化下一轮提示并记 noop；wait 不参与判定",
         entry: ENTRY,
         device: fakeDevice(),
         chat: waitCase.chat,
+        mainVision: false,
         verifier: null,
         env: { AOS_IOS_LOG_FEEDBACK: "0" },
         listSimulators: bootedSims(),
@@ -1040,6 +1095,7 @@ test("历史压缩：更早步骤输出动作链摘要（AOS_IOS_HISTORY_STEPS=4
         entry: ENTRY,
         device,
         chat,
+        mainVision: false,
         verifier: null,
         env: { AOS_IOS_HISTORY_STEPS: "4", AOS_IOS_LOG_FEEDBACK: "0" },
         listSimulators: bootedSims(),
@@ -1441,6 +1497,7 @@ test("起始屏核对：未命中时提示模型导航，并进入验证证据�
         entry: ENTRY,
         device,
         chat: scripted.chat,
+        mainVision: false,
         verifier,
         listSimulators: bootedSims(),
         stepDelayMs: 0,
@@ -1490,6 +1547,7 @@ test("起始屏核对：命中即 matched（首步），不注入提示", async 
         entry: ENTRY,
         device,
         chat: scripted.chat,
+        mainVision: false,
         verifier,
         listSimulators: bootedSims(),
         stepDelayMs: 0,

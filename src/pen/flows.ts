@@ -19,11 +19,15 @@ import {
 } from "../figma/flows.js";
 import { makeChatFn, type ChatFn } from "../llm/chat.js";
 import {
-  isVisionCapableModel,
-  runVisionPass,
-  type VisionNodeGeom,
-  type VisionScreenInput
-} from "../design/vision.js";
+  openVisionCapabilityCache,
+  parseDeclaredVision,
+  resolveVisionCapability,
+  visionCacheTtlMsFromEnv,
+  visionCapabilityKey,
+  type VisionCapabilityCache,
+  type VisionCapabilitySource
+} from "../llm/vision-capability.js";
+import { runVisionPass, type VisionNodeGeom, type VisionScreenInput } from "../design/vision.js";
 import { confidenceFor, isAnnotationLayerName, type Confidence, type Provenance } from "../provenance.js";
 import {
   relativeScreenPath,
@@ -809,6 +813,9 @@ async function applyVision(
   let chat: ChatFn | null = deps.chat ?? null;
   let model: string | undefined;
   let preWarnings: FlowWarning[] = [];
+  let capabilitySource: VisionCapabilitySource | "override" = "unknown";
+  let capabilityKey = "";
+  let capabilityCache: VisionCapabilityCache | null = null;
   if (!chat) {
     const entry = await runtime.activeEntry();
     model = entry?.model ?? undefined;
@@ -820,21 +827,43 @@ async function applyVision(
         }
       ]);
     }
-    if (!isVisionCapableModel(entry.model)) {
-      if (requested === "auto") {
-        return skippedVision(requested, `模型「${entry.model}」未判定为视觉能力`, [
-          {
-            code: "vision-unavailable",
-            message: `视觉识别已跳过：active 模型「${entry.model}」未判定为视觉能力（可 vision:true 强制尝试或切换视觉模型）`
-          }
-        ]);
-      }
+    const env = { ...process.env, ...dotenv };
+    capabilityKey = visionCapabilityKey(entry.baseUrl, entry.model);
+    capabilityCache = openVisionCapabilityCache(path.join(runtime.configDirAbs, "llm-capabilities.json"));
+    if (requested === "on") {
+      capabilitySource = "override";
       preWarnings = [
         {
           code: "vision-model-unverified",
-          message: `模型「${entry.model}」未判定为视觉能力（vision:true 显式覆盖），仍尝试调用`
+          message: `模型「${entry.model}」按 vision:true 显式强制尝试（不查声明与缓存）`
         }
       ];
+    } else {
+      const resolution = resolveVisionCapability({
+        model: entry.model,
+        baseUrl: entry.baseUrl,
+        declared: parseDeclaredVision(env),
+        cached: capabilityCache.get(capabilityKey),
+        ttlMs: visionCacheTtlMsFromEnv(env)
+      });
+      capabilitySource = resolution.source;
+      if (resolution.capable === false) {
+        const message =
+          resolution.source === "declared"
+            ? `视觉识别已跳过：AOS_LLM_VISION 声明 active 模型「${entry.model}」无视觉能力（可 vision:true 强制尝试或切换视觉模型）`
+            : `视觉识别已跳过：已记录 active 模型「${entry.model}」不接受图片输入（缓存期内不再尝试；可 vision:true 覆盖或切换视觉模型）`;
+        return skippedVision(requested, `模型「${entry.model}」无视觉能力（${resolution.source}）`, [
+          { code: "vision-unavailable", message }
+        ]);
+      }
+      if (resolution.capable === "unknown") {
+        preWarnings = [
+          {
+            code: "vision-model-unverified",
+            message: `模型「${entry.model}」未判定为视觉能力，按尝试处理（若拒绝图片将自动记录并跳过）`
+          }
+        ];
+      }
     }
     chat = makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model });
   }
@@ -883,6 +912,40 @@ async function applyVision(
     renderPath: renderPathOf,
     maxScreens: visionMaxScreens(dotenv)
   });
+  if (pass.rejected && pass.stats.screensProcessed === 0) {
+    capabilityCache?.set(capabilityKey, false);
+    return {
+      requested,
+      active: false,
+      ...(model ? { model } : {}),
+      reason: `模型「${model}」不接受图片输入`,
+      warnings: [
+        ...preWarnings,
+        ...pass.warnings,
+        {
+          code: "vision-unavailable",
+          message: `视觉识别已中止：active 模型「${model}」不接受图片输入（已记录，缓存期内不再尝试；可 vision:true 覆盖或切换视觉模型）`
+        }
+      ],
+      edges: [],
+      unresolvedDestinations: [],
+      elementsByScreen: new Map()
+    };
+  }
+  if (pass.rejected) {
+    preWarnings = [
+      ...preWarnings,
+      {
+        code: "vision-unavailable",
+        message: `视觉识别部分中止：active 模型「${model}」在后续屏幕拒绝图片输入（已完成屏幕结果保留）`
+      }
+    ];
+  } else if (
+    pass.stats.screensProcessed > 0 &&
+    (capabilitySource === "unknown" || capabilitySource === "override")
+  ) {
+    capabilityCache?.set(capabilityKey, true);
+  }
   return {
     requested,
     active: true,

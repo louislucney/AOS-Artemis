@@ -28,7 +28,8 @@ test("looksVisionCapable: 常见多模态命名命中，纯文本不命中", () 
   assert.equal(looksVisionCapable("gpt-4o"), true);
   assert.equal(looksVisionCapable("gemini-2.5-pro"), true);
   assert.equal(looksVisionCapable("claude-3-5-sonnet"), true);
-  assert.equal(looksVisionCapable("deepseek-flash"), false);
+  assert.equal(looksVisionCapable("deepseek-flash"), true);
+  assert.equal(looksVisionCapable("deepseek-v4-pro"), false);
   assert.equal(looksVisionCapable("deepseek-chat"), false);
   assert.equal(looksVisionCapable("kimi-k2"), false);
 });
@@ -76,7 +77,10 @@ test("resolveVisionTarget: env 模型覆盖，可用显式或 active 凭证", ()
 test("resolveVisionTarget: active 本身多模态时直接复用", () => {
   const target = resolveVisionTarget({}, [], entry({ model: "qwen-vl-max", source: "env" }));
   assert.equal(target.source, "active");
-  assert.equal(resolveVisionTarget({}, [], entry({ model: "deepseek-flash", source: "env" })), null);
+  const deepseek = resolveVisionTarget({}, [], entry({ model: "deepseek-flash", source: "env" }));
+  assert.equal(deepseek.source, "active");
+  assert.equal(deepseek.model, "deepseek-flash");
+  assert.equal(resolveVisionTarget({}, [], entry({ model: "deepseek-v4-pro", source: "env" })), null);
   assert.equal(resolveVisionTarget({}, [], null), null);
 });
 

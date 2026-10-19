@@ -985,11 +985,11 @@ llm_switch(name, force):
 
 > 实施于 2026-10-06；`src/ios/vision.ts`（视觉目标解析/多模态命名启发/PNG IHDR 尺寸）、`src/llm/chat.ts`（多模态 content 分片）、`src/ios/task-runner.ts`（按需附图 + 失败降级）；`test/ios-vision.test.js`（6 例）、`test/ios-task-runner.test.js` 增 2 例。
 
-- **视觉目标解析（优先级）**：`AOS_IOS_VISION_LLM=<条目名>`（registry 条目，要求完整）→ `AOS_IOS_VISION_MODEL`（可配 `AOS_IOS_VISION_BASE_URL/API_KEY`，缺省继承 active）→ active 模型名多模态启发（vision/vl/gpt-4o/gemini/claude-3|4 等）→ 无（纯文本模式）。启动响应与 run.json 记录 `vision: {model, source}`。
+- **视觉目标解析（优先级）**：`AOS_IOS_VISION_LLM=<条目名>`（registry 条目，要求完整）→ `AOS_IOS_VISION_MODEL`（可配 `AOS_IOS_VISION_BASE_URL/API_KEY`，缺省继承 active）→ active 模型名多模态启发（vision/vl/gpt-4o/gemini/claude-3|4 等）→ 无（纯文本模式）。启动响应与 run.json 记录 `vision: {model, source}`。（2026-10-19 修订：启发式名单已收口——iOS 与设计侧共用 `isVisionCapableModel` 单源，并增补 `deepseek-flash`；见 §13.127）
 - **按需附图**：可见文本元素 <3 个（层级质量差）或 `AOS_IOS_VISION_ALWAYS=1` 时，该步 user 消息带 `image_url`（`data:image/png;base64,`）分片；文本分片同时给出截图 px 与逻辑 pt/scale（§2.6 约定：坐标输出逻辑点，从截图估计需 ÷scale）；其余步骤纯文本（`perception:"text"`）。
 - **降级**：视觉调用失败（模型不支持图片/鉴权/网络）→ 记录 `vision_degraded`（run.json + status 响应）并当场回退纯文本调用该步（`perception:"text-degraded"`），后续步骤保持可用；不因视觉失败中断任务。
 - **边界**：不做 OCR、不做像素级脱敏；图片不做降采样（v0 直传模拟器原始 PNG，注意 token 成本）；多模态启发可能误判（显式 env 可覆盖）。（§13.59 已换代：默认档位 `AOS_IOS_VISION_MODE=auto` 每步视觉输入，附图为感知/决策分流，`AOS_IOS_VISION_ALWAYS=1` 并入 auto 语义。）
-- **验收**：单测覆盖解析优先级/命名启发/IHDR 尺寸/附图与降级链路；真实验收用 `AOS_IOS_VISION_ALWAYS=1` + 不存在的视觉模型驱动降级（DeepSeek 不支持图片 → 400 → 回退文本完成）。
+- **验收**：单测覆盖解析优先级/命名启发/IHDR 尺寸/附图与降级链路；真实验收用 `AOS_IOS_VISION_ALWAYS=1` + 不存在的视觉模型驱动降级（DeepSeek 不支持图片 → 400 → 回退文本完成）。（2026-10-19 修订：DeepSeek V4.1 Flash 已原生多模态，`deepseek-flash` 现走视觉通道；见 §13.127）
 
 ### 13.46 实施记录（iOS trace 检查器 + 路由下沉：`mobile_inspect_trace` / 设计步骤对比闭环）
 
@@ -1427,7 +1427,7 @@ llm_switch(name, force):
 > 实施于 2026-10-12；ADR-0010。`.pen`（v2.20 无原型交互字段）与无原型链接的 Figma 节点此前只能靠画板排布推断跳转，"图标即入口"（如购物袋 FAB）不可见。新增视觉识别阶段：`src/design/vision.ts`（受控类别/意图词表 + 提示构建 + 回复解析 + bbox→nodeId grounding + `runVisionPass` 编排）、`src/pen/render.ts`（复用 `runPenInteractive` 的 `Export([ids],"png",dir,{scale:1})` 单会话批量渲染，产物落 `.artemis/design/vision/<name>/`）；`pen_extract_flows` 增 `vision: auto|true|false`（默认 auto）。产出：`screens[].elements[]`（元素清单）+ `to:null` 探索边 + `unresolvedDestinations`，flows.json 升 schemaVersion 3；provenance 新增 `vision-inferred`（low）——断言侧只出探索步骤、覆盖率侧豁免硬闸，升权沿用对账闭环（真机观测/人工确认）。测试 +7（`test/pen-vision.test.js`）；全量 888 绿。
 
 - **证据分流（`src/provenance.ts`）**：`isUnconfirmedProvenance` 与 `isHardCoverageTarget` 同时认识新值；`normalizeFlowGraph` 对 `schemaVersion > 3` 显式报错（旧消费者把未知来源当 legacy-unknown → 硬闸，版本闸防止静默误判）。
-- **降级与成本**：不可用/离线/未登录各给独立警告（`vision-unavailable`/`vision-render-unavailable`/`vision-call-failed`/`vision-no-elements`/`vision-invalid-items`/`vision-screen-cap`/`vision-disabled-by-env`/`vision-model-unverified`），全部落 flows.json warnings 与响应，不阻断、不静默；`AOS_VISION=0` 全局关闭，`AOS_VISION_MAX_SCREENS` 默认 20；模型能力用名启发式（`isVisionCapableModel`），`vision:true` 可显式强制。
+- **降级与成本**：不可用/离线/未登录各给独立警告（`vision-unavailable`/`vision-render-unavailable`/`vision-call-failed`/`vision-no-elements`/`vision-invalid-items`/`vision-screen-cap`/`vision-disabled-by-env`/`vision-model-unverified`），全部落 flows.json warnings 与响应，不阻断、不静默；`AOS_VISION=0` 全局关闭，`AOS_VISION_MAX_SCREENS` 默认 20；模型能力用名启发式（`isVisionCapableModel`），`vision:true` 可显式强制。（2026-10-19 修订：增补 `deepseek[^/\s]*flash`——V4.1 Flash 原生多模态但稳定别名不含 vision 词干致漏判；iOS 侧 `looksVisionCapable` 收口为同一实现；见 §13.127）
 - **生成侧（`src/figma/test-gen.ts`）**：未决目的地边不计覆盖目标，但按"每条只探索一次"保留用例（否则视觉边永不执行、对账无观测）；探索步文案带元素名（`探索未知跳转「购物袋」…`）。
 - **不猜目的地**：视觉识别只产意图与元素，目的地只能由真机观测或人工确认绑定（`to:null` + `unresolvedDestinations`）。
 
@@ -1791,3 +1791,24 @@ llm_switch(name, force):
 > - **八评与真问题修正轮（2026-10-19 第三十五批）**：八评 dual-agent **31/40（良好上限，距优秀一步）**——趋势 16→25→18→23→33→28→27→31；A 侧确认"内容与语汇高度特异、布局语法通用骨架属正确取舍"，峰值仍是预览契约/两段停止/建单闭环；B 侧 findings 全部复核为已知误报（对比度 4.66–7.36:1 达标）。**本轮已修**：① **P1 自伤**——自动刷新每 10s `replaceChildren(#console-main)` 导致任务动作按钮与暂停按钮**静默失效**：动作绑定改为 `aosBindTaskActions`＋`data-aos-bound` 守卫＋跨页 `window.aosOnRefresh` 钩子（轮询替换后自动重绑），暂停按钮改**文档级事件委托**（替换免疫），标签每次重查节点；② usage **事件流水表补 `.c-table-wrap`**（390 页面级横向溢出消除，真机复扫 0 条）；③ 总览「生成时间」改相对（新增 `relativeTimeText` 纯文本通道，修 card subtitle 转义后露出标签的问题）；④ 审计 refs/recovery 链接 **7 处裸 `&` → `&amp;`**；⑤ **术语映射漏洞收口**——stats 最不稳用例（状态/失败域/裁决）、任务子运行（状态/失败域）、compare 质量域 chips、搜索任务状态全部中文＋`title` 原文；compare 运行/待办文案「runner/failed」→「执行机/失败」；⑥ **下发首访警告收敛**——空关键词/未选份不再推 warning（③ 空态横幅承担），无在线执行机降级为预览信息行（未知份保留真实 warning）；⑦ 文档漂移修正（`web-console/DESIGN.md` 暗色跟随系统/移动端保底取舍、compat 注释）。测试：重绑钩子与委托断言、usage 事件表容器、总览相对生成时间、审计 `&amp;`、术语映射断言更新。全量 **1627 绿**；lint 0；Edge usage@390 **0 条**。
 > - **表格单源＋死类名清理（2026-10-19 第三十六批，八评结构项）**：① **表格单源**——`renderTable` 收敛为 **cTable 委托**（空态仍用页内 `<p class="empty">`，非空统一 `.c-table` 外观；项目/任务/归因/批次/统计等表格不再双轨）；usage 自有表格（工具汇总/零调用目录/事件流水/信号表）统一 `.c-table`；② **死类名落地**——`.dispatch-option`／`.c-nav-badge`／`.c-banner-actions` 补 CSS（不再悬空）；③ **兜底文案中文化**——`invalid JSON body`→「请求体不是合法 JSON（检查 Content-Type 与 body）」、`internal error`→「服务内部错误（已写入审计；可重试或查看日志）」。测试：全量 **1627 绿**（结构断言兼容）；lint 0；Edge 无新类别；真机验证（项目页 3 张、usage 5 张均为 `c-table`）。
 > - 未做（留档/后续任务）：内部编排审计接线（T4）、产物索引（T5）、三口径导出（T6）、全表面文案整改（T7）。
+
+### 13.127 实施记录（视觉能力启发式修订：DeepSeek Flash 原生多模态）
+
+> 实施于 2026-10-19。`pen_extract_flows` 的 `vision:auto` 对 active 模型 `deepseek-flash` 误报 `vision-unavailable` 跳过：DeepSeek V4.1 Flash 已原生多模态（官方 Vision 指南：`deepseek-flash` 接受 base64 data URL/外链/Files API 图片，单边 ≤8192px，仅 user 消息可带图），但稳定别名不含 `vision` 词干，旧启发式（token `vl/vision/4v/omni/multimodal` + 厂商白名单）漏判；iOS 侧还挂着第二份名单（`src/ios/vision.ts` 的 `VISION_NAME_PATTERN`），两份名单已在细节上漂移（qwen-vl 分支/大小写处理不同）。
+
+- **修复**：`isVisionCapableModel`（`src/design/vision.ts`）增补 `deepseek[^/\s]*flash`——命中 `deepseek-flash`/`deepseek-v4-flash`/`deepseek-v4.1-flash`（含第三方网关 `deepseek/deepseek-flash` 形态）；`deepseek-v4-pro`/`deepseek-chat` 维持不判定（官方文档仅点名 Flash 收图；`vision:true` 仍可显式强制）。`looksVisionCapable`（iOS 执行器 + 终态验证器复用）改为委托同一实现，第二份名单删除。
+- **影响面**：pen 视觉识别、iOS 每步视觉输入（多模态主模型直附图）、`AOS_IOS_VISION_LLM`/`AOS_IOS_VISION_MODEL` 缺省时的 active 复用三处闸门同时放行 `deepseek-flash`；`vision-model-unverified`（`vision:true` 覆盖路径）与其余 `vision-*` 降级语义不变。
+- **测试**：`test/pen-vision.test.js` 增 4 条启发式断言（flash 三形态命中/pro 不命中）＋端到端用例（fetch stub：`auto` 放行 → `makeChatFn` 真实 OpenAI 兼容通道 → user 消息附 `image_url` data URL → 元素与探索边落盘）；`test/ios-vision.test.js` 同步（`looksVisionCapable`、`resolveVisionTarget` active 复用、pro 边界）。全量 **1628 绿**；lint 0（2 条既有 warning 与本次无关）。
+- **同类扫描**：全仓模型名清单复核——`src/llm/providers.ts` 厂商别名（`configure.ts`/`catalog.ts` 仅在**新鲜列表**中命中才生效，缺失回退并告警，过期影响有界）、`src/pen/agent.ts` agent 前缀判定（有显式 `agent` 覆盖）、`src/llm/catalog.ts` `CAPABILITY_TOKENS`（防能力降级的保护名单）均无同类误判风险，本轮不改。
+- **边界**：仍为名启发式——稳定别名可再次掩盖能力（同形态问题大概率仍出自这里）；单源化只防名单漂移、不防认知过期；彻底方案（条目级能力声明或一次真实探测）未纳入本轮，留档。（2026-10-19 追加：已由 §13.128 落地——声明优先＋探测缓存＋未知即尝试，启发式降级为快速通道。）
+
+### 13.128 实施记录（视觉能力判定加固：声明 → 探测缓存 → 启发式 → 未知即尝试）
+
+> 实施于 2026-10-19（承接 §13.127）。名启发式天然随厂商改名/新档位漏判，且稳定别名会掩盖能力；本轮把「能不能视觉」从单一名字猜测改为四段判定链，pen 与 iOS 单源共用（`src/llm/vision-capability.ts`；`isVisionCapableModel` 迁入并保留 `src/design/vision.ts` re-export）。
+
+- **判定链**：`AOS_LLM_VISION`（`1/true/yes`、`0/false/no`；active 模型声明，权威）→ 探测结论缓存（`.artemis/llm-capabilities.json`，键＝`baseUrl|model` 归一；`AOS_VISION_CACHE_DAYS` 默认 7 天，`0` 关闭缓存＝每次都探测）→ 名字启发式（§13.127 名单，快速通道）→ **未知**。
+- **未知即尝试（fail-open）**：pen `vision:auto` 未知时照常渲染并调用（不再跳过；`vision-model-unverified` 提示按尝试处理）；iOS 主模型未知且未配置专用视觉模型时同样先附一次图（有 `AOS_IOS_VISION_LLM/MODEL` 时不浪费主模型调用）。
+- **结论学习**：只有「模型不接受图片」一类失败（HTTP 400/415/422 且措辞同时命中图片/视觉词与 not support/unsupported/仅支持/不支持，`classifyModalityRejection`）才记为无视觉——pen 首屏即中止（新增 `vision-model-rejected` + `vision-unavailable`「已记录」）并写缓存 no；iOS 当场 latch 纯文本（`visionDegraded=多模态决策被拒…`）并写缓存 no。成功（未知或 `vision:true` 强制来源）写缓存 yes。其余失败（鉴权/网络/格式/服务端）不写缓存，保持原有响亮降级。
+- **接线**：`runVisionPass` 结果新增 `rejected`（中止后屏幕计入 skipped）；iOS `resolveVisionTarget` 增 `activeVision` 参数（active 复用仅在判定为有视觉时发生——缓存 no 的模型不会被当视觉模型二次复用）；`src/ios/run-loop.ts` 捕获拒绝即 latch；`tool-entry` 按同一判定解析 vision target（启动响应 `vision` 与实际一致）。
+- **测试**：新增 `test/vision-capability.test.js`（7 例：声明解析/TTL/键归一/优先级/拒绝分类/缓存 IO 容错/启发式迁移）；pen 增 3 例（声明 0 不探测、未知被拒→缓存+中止、未知成功→缓存）；iOS 增 1 例（fail-open 附图被拒→latch+缓存）；既有纯文本场景用例显式钉 `mainVision:false` 保持原意图。全量 **1639 绿**；lint 0（2 条既有 warning 与本次无关）。
+- **边界/留档**：缓存是派生数据（可删可重建；多机不同步，探测成本＝一次可忽略的请求，TTL 过期自动重探）；`AOS_LLM_VISION` 作用于 active 条目，多条目细分声明留档；面板/`doctor` 展示判定与缓存状态留档。

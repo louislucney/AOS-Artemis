@@ -188,6 +188,153 @@ test("vision: no usable active LLM degrades explicitly (auto)", async () => {
   );
 });
 
+test("vision: auto passes the gate for deepseek-flash and uses the real chat channel", async () => {
+  const dir = makeProject({
+    dotenv:
+      "AOS_LLM_MODEL=deepseek-flash\nAOS_LLM_BASE_URL=https://api.deepseek.com\nAOS_LLM_API_KEY=sk-vision-test\n"
+  });
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const href = String(url);
+    const body = JSON.parse(String(init.body));
+    requests.push({ href, body });
+    if (href !== "https://api.deepseek.com/chat/completions") {
+      throw new Error(`unexpected fetch ${href}`);
+    }
+    const prompt = body.messages[1].content[0].text;
+    const elements = prompt.includes("主頁")
+      ? [{ class: "cart-entry", intent: "navigate", label: "购物袋", bbox: CART_BBOX, confidence: 0.9 }]
+      : [];
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ elements }) } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  try {
+    const payload = parseToolResult(await penExtractFlows(runtime, {}, { render: fakeRender() }));
+    assert.equal(payload.ok, true);
+    assert.equal(payload.vision.active, true, "auto 不再被模型名假阴性挡住");
+    assert.equal(payload.counts.visionElements, 1);
+    assert.equal(payload.counts.visionEdges, 1);
+    assert.ok(!payload.warnings.map((warning) => warning.code).includes("vision-unavailable"));
+
+    assert.equal(requests.length, 2, "每屏一次 chat 调用");
+    assert.equal(requests[0].href, "https://api.deepseek.com/chat/completions");
+    assert.equal(requests[0].body.model, "deepseek-flash");
+    const blocks = requests[0].body.messages[1].content;
+    assert.ok(
+      blocks.some((block) => block.type === "image_url" && /^data:image\/png;base64,/.test(block.image_url.url)),
+      "渲染图以 image_url 附在 user 消息"
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("vision: AOS_LLM_VISION=0 声明优先于启发式，auto 不探测直接跳过", async () => {
+  const dir = makeProject({
+    dotenv:
+      "AOS_LLM_VISION=0\nAOS_LLM_MODEL=deepseek-flash\nAOS_LLM_BASE_URL=https://api.deepseek.com\nAOS_LLM_API_KEY=sk-vision-test\n"
+  });
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const original = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("declared-no must not probe");
+  };
+  try {
+    const payload = parseToolResult(await penExtractFlows(runtime, {}, { render: fakeRender() }));
+    assert.equal(payload.vision.active, false);
+    assert.equal(fetchCalls, 0, "声明为无视觉时不应发探测请求");
+    assert.match(
+      payload.warnings.find((warning) => warning.code === "vision-unavailable").message,
+      /AOS_LLM_VISION/
+    );
+    assert.ok(!fs.existsSync(path.join(dir, ".artemis", "llm-capabilities.json")), "声明不是探测结论，不写缓存");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("vision: 未知模型被拒（400 不支持图片）→ 中止并记录缓存，下一次不再探测", async () => {
+  const dir = makeProject({
+    dotenv:
+      "AOS_LLM_MODEL=my-gateway-model\nAOS_LLM_BASE_URL=https://gw.example.com/v1\nAOS_LLM_API_KEY=sk-gw\n"
+  });
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push(String(url));
+    return new Response(
+      JSON.stringify({ error: { message: "This model does not support image" } }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    );
+  };
+  try {
+    const first = parseToolResult(await penExtractFlows(runtime, {}, { render: fakeRender() }));
+    assert.equal(first.vision.active, false);
+    assert.equal(calls.length, 1, "首个屏幕被拒后不再继续对后续屏幕发请求");
+    const codes = first.warnings.map((warning) => warning.code);
+    assert.ok(codes.includes("vision-model-rejected"), "保留原始拒绝证据");
+    assert.ok(codes.includes("vision-unavailable"), "对外仍是明确的不可用降级");
+
+    const cache = JSON.parse(
+      fs.readFileSync(path.join(dir, ".artemis", "llm-capabilities.json"), "utf-8")
+    );
+    assert.equal(cache.entries["https://gw.example.com/v1|my-gateway-model"].vision, false);
+
+    const callsBefore = calls.length;
+    const second = parseToolResult(await penExtractFlows(runtime, {}, { render: fakeRender() }));
+    assert.equal(second.vision.active, false);
+    assert.equal(calls.length, callsBefore, "缓存命中后不再发探测请求");
+    assert.match(
+      second.warnings.find((warning) => warning.code === "vision-unavailable").message,
+      /已记录/
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("vision: 未知模型尝试成功 → 记录能力缓存（下一次跳过重探）", async () => {
+  const dir = makeProject({
+    dotenv:
+      "AOS_LLM_MODEL=my-gateway-model\nAOS_LLM_BASE_URL=https://gw.example.com/v1\nAOS_LLM_API_KEY=sk-gw\n"
+  });
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const body = JSON.parse(String(init.body));
+    const prompt = body.messages[1].content[0].text;
+    const elements = prompt.includes("主頁")
+      ? [{ class: "cart-entry", intent: "navigate", label: "购物袋", bbox: CART_BBOX, confidence: 0.9 }]
+      : [];
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ elements }) } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  try {
+    const payload = parseToolResult(await penExtractFlows(runtime, {}, { render: fakeRender() }));
+    assert.equal(payload.vision.active, true);
+    assert.equal(payload.counts.visionElements, 1);
+    const cache = JSON.parse(
+      fs.readFileSync(path.join(dir, ".artemis", "llm-capabilities.json"), "utf-8")
+    );
+    assert.equal(cache.entries["https://gw.example.com/v1|my-gateway-model"].vision, true, "成功即学习");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("vision: AOS_VISION=0 disables the pass with an explicit warning", async () => {
   const dir = makeProject({ dotenv: "AOS_VISION=0\n" });
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
@@ -262,6 +409,10 @@ test("vision: model heuristic and reply parsing stay deterministic", () => {
   assert.equal(isVisionCapableModel("gpt-4o-mini"), true);
   assert.equal(isVisionCapableModel("claude-sonnet-4"), true);
   assert.equal(isVisionCapableModel("moonshot-v1-8k-vision-preview"), true);
+  assert.equal(isVisionCapableModel("deepseek-flash"), true);
+  assert.equal(isVisionCapableModel("deepseek-v4-flash"), true);
+  assert.equal(isVisionCapableModel("deepseek-v4.1-flash"), true);
+  assert.equal(isVisionCapableModel("deepseek-v4-pro"), false);
   assert.equal(isVisionCapableModel("deepseek-chat"), false);
   assert.equal(isVisionCapableModel(""), false);
   assert.equal(isVisionCapableModel(null), false);

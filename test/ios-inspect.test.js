@@ -95,7 +95,7 @@ async function startFailedTask(runtime, shotPng) {
       await maybeIosRunTask(
         runtime,
         { task_desc: "查找按钮并点击", device_serial: UDID },
-        { entry: ENTRY, device: fakeDevice(shotPng), chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+        { entry: ENTRY, device: fakeDevice(shotPng), chat, mainVision: false, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
       )
     ).content[0].text
   );

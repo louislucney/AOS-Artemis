@@ -1,4 +1,5 @@
 import type { ChatFn, ChatMessage } from "../llm/chat.js";
+import { classifyModalityRejection } from "../llm/vision-capability.js";
 import { confidenceFor } from "../provenance.js";
 import type { FlowEdge, FlowElement, FlowWarning } from "../figma/flows.js";
 import { errorMessage } from "../util.js";
@@ -53,6 +54,8 @@ export interface VisionPassResult {
   edges: FlowEdge[];
   unresolvedDestinations: string[];
   warnings: FlowWarning[];
+  /** 首个「模型不接受图片」的拒绝（400/415/422 类）；命中即中止后续屏幕。 */
+  rejected: { screen: string; detail: string } | null;
   stats: {
     screensRequested: number;
     screensSkipped: number;
@@ -72,17 +75,10 @@ interface RawVisionItem {
   confidence: number | null;
 }
 
-/** Model-name heuristic for vision-capable chat models (the render channel is
- * checked separately). False negatives are covered by the explicit
- * `vision:true` override, which attempts anyway and degrades loudly. */
-export function isVisionCapableModel(model: string | null | undefined): boolean {
-  if (typeof model !== "string" || model.trim() === "") return false;
-  const value = model.trim().toLowerCase();
-  if (/(^|[-_/.])(vl|vision|4v|omni|multimodal)([-_.0-9]|$)/.test(value)) return true;
-  return /gpt-4o|gpt-4\.1|gpt-5|gemini|claude-3|claude-4|claude-5|claude-sonnet|claude-opus|claude-haiku|pixtral|internvl|llava|glm-4v|glm-4\.1v|step-1v|step-2v|doubao[^/]*vision|hunyuan[^/]*vision|kimi[^/]*vision/.test(
-    value
-  );
-}
+/** Model-name heuristic for vision-capable chat models —— 已迁至
+ * `src/llm/vision-capability.ts`（判定链的一环：声明 → 缓存 → 启发式 → 未知即尝试），
+ * 此处保留 re-export 以兼容既有导入。 */
+export { isVisionCapableModel } from "../llm/vision-capability.js";
 
 export function buildVisionMessages(screen: VisionScreenInput, imageDataUrl: string): ChatMessage[] {
   const instruction =
@@ -236,7 +232,9 @@ export async function runVisionPass(input: {
     });
   }
 
-  for (const screen of kept) {
+  let rejected: VisionPassResult["rejected"] = null;
+  for (let index = 0; index < kept.length; index += 1) {
+    const screen = kept[index]!;
     const image = input.imageFor(screen.id);
     if (!image) {
       stats.screensSkipped += 1;
@@ -251,6 +249,16 @@ export async function runVisionPass(input: {
       content = await input.chat(buildVisionMessages(screen, image));
     } catch (error) {
       stats.failures += 1;
+      const rejection = classifyModalityRejection(error);
+      if (rejection) {
+        rejected = { screen: screen.name, detail: rejection };
+        stats.screensSkipped += kept.length - (index + 1);
+        warnings.push({
+          code: "vision-model-rejected",
+          message: `模型拒绝图片输入（屏幕「${screen.name}」）：${rejection}`
+        });
+        break;
+      }
       warnings.push({
         code: "vision-call-failed",
         message: `屏幕「${screen.name}」视觉识别调用失败：${errorMessage(error)}`
@@ -320,5 +328,5 @@ export async function runVisionPass(input: {
     elementsByScreen.set(screen.id, elements);
   }
 
-  return { elementsByScreen, edges, unresolvedDestinations, warnings, stats };
+  return { elementsByScreen, edges, unresolvedDestinations, warnings, stats, rejected };
 }
