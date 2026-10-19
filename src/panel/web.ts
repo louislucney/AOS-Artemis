@@ -784,14 +784,14 @@ function renderIntegration(detail: PanelProjectDetail): string {
     integration.llm.usable
       ? ""
       : `<p class="note">缺项：${escapeHtml(integration.llm.missing.slice(0, 5).join("；"))}</p>`,
-    renderTable(["凭证", "状态", "备注"], renderCredentialRows(detail), "—"),
+    renderTable(["凭证", "状态", "备注"], renderCredentialRows(detail), "—", "接入凭证"),
     validation,
     `<h3>设备宿主</h3><p>${deviceHosts}</p>`,
     `<h3>宿主</h3><p class="muted">deps：${escapeHtml(integration.host.deps)} · 构建：${
       integration.host.buildStale === null ? "未知" : integration.host.buildStale ? "陈旧（需重启）" : "最新"
     }</p>`,
     `<h3>设计资产</h3>`,
-    renderTable(["资产", "路径", "状态", "更新时间"], assets, "暂无资产"),
+    renderTable(["资产", "路径", "状态", "更新时间"], assets, "暂无资产", "磁盘资产"),
     "</section>"
   ]
     .filter((part) => part !== "")
