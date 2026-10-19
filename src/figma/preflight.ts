@@ -10,6 +10,13 @@ import {
 import { loadDesignFlowGraph, readTestsDocument } from "./design-store.js";
 import { hasRealDataPolicy } from "./data-policy.js";
 import { isExploreKind, isHardCoverageValue } from "../provenance.js";
+import {
+  resolveDesignWarnings,
+  type DesignWarning,
+  type WarningSummary
+} from "../design/warnings.js";
+
+export type DesignWarningsSource = "tests" | "flows" | "none";
 
 export interface PreflightWeakStep {
   index: number;
@@ -57,6 +64,30 @@ export interface PreflightReport {
   generation: unknown;
   artifacts: PreflightArtifacts;
   dataPolicy: PreflightDataPolicy;
+  designWarnings: DesignWarning[];
+  designWarningSummary: WarningSummary;
+  designWarningsSource: DesignWarningsSource;
+  designWarningsSnapshotAt: string | null;
+  designWarningsStale: boolean;
+}
+
+export interface DesignWarningLineInput {
+  designWarningSummary: WarningSummary;
+  designWarningsSource: DesignWarningsSource;
+  designWarningsStale: boolean;
+}
+
+/** 单一渲染口径：`suite check` 文本与 `suite loop` markdown 共用。 */
+export function renderDesignWarningLine(input: DesignWarningLineInput): string {
+  const summary = input.designWarningSummary;
+  if (!summary.available) return "设计源警告: 不可用（缺 tests.json/flows.json 快照）";
+  const codes = summary.codes.length > 0 ? `（${summary.codes.join("、")}）` : "";
+  const notes = [`来源 ${input.designWarningsSource}`];
+  if (summary.snapshotAt) notes.push(`快照 ${summary.snapshotAt}`);
+  if (input.designWarningsStale) {
+    notes.push("stale-snapshot（tests 快照早于 flows.json，建议重新生成）");
+  }
+  return `设计源警告: ${summary.total} 条${codes} · ${notes.join(" · ")}`;
 }
 
 export interface PreflightOptions {
@@ -75,6 +106,10 @@ export function preflightGeneratedTests(
     options.testsPath ? { testsPath: options.testsPath } : {}
   );
   if (document === null) return null;
+  const designWarnings = resolveDesignWarnings(
+    configDirAbs,
+    options.testsPath ? { testsPath: options.testsPath } : {}
+  );
   const cases = document.records;
   const caseInputs = cases.map((record) => ({ screens: record.screens }));
 
@@ -158,5 +193,17 @@ export function preflightGeneratedTests(
     };
   }
 
-  return { cases: cases.length, weakCases, coverage, generation: document.generation, artifacts, dataPolicy };
+  return {
+    cases: cases.length,
+    weakCases,
+    coverage,
+    generation: document.generation,
+    artifacts,
+    dataPolicy,
+    designWarnings: designWarnings.warnings,
+    designWarningSummary: designWarnings.summary,
+    designWarningsSource: designWarnings.source,
+    designWarningsSnapshotAt: designWarnings.snapshotAt,
+    designWarningsStale: designWarnings.stale
+  };
 }

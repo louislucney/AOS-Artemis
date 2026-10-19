@@ -846,6 +846,108 @@ test("suite check: route drift warning (test screens absent from design, non-blo
   assert.ok(result.logs.some((line) => line.includes("路线漂移") && line.includes("ObservedOnly")));
 });
 
+test("suite check: 文本与 --json 都显示 designWarnings 摘要", async () => {
+  const { runtime } = await setupRun({ cases: [caseEntry(1)] });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const flowsPath = path.join(designDir, "flows.json");
+  const testsPath = path.join(designDir, "tests.json");
+  const xlsxPath = path.join(designDir, "tests.xlsx");
+  const base = Date.now();
+  fs.writeFileSync(
+    flowsPath,
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: [],
+      warnings: [{ code: "flow-warn", message: "仅在回退时采用" }]
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    testsPath,
+    JSON.stringify({
+      flows: [caseEntry(1)],
+      designWarnings: [
+        { code: "pen-no-interactions", message: "无交互数据" },
+        { code: "screenshot-missing", message: "缺屏幕截图" }
+      ]
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(xlsxPath, "fake-xlsx");
+  fs.utimesSync(flowsPath, new Date(base - 60_000), new Date(base - 60_000));
+  fs.utimesSync(testsPath, new Date(base), new Date(base));
+  fs.utimesSync(xlsxPath, new Date(base), new Date(base));
+
+  const text = await runCli(runtime, ["check"]);
+  assert.equal(text.code, 0, "设计源警告不改变退出码");
+  const line = text.logs.find((entry) => entry.startsWith("设计源警告:"));
+  assert.ok(line, `缺少设计源警告行: ${text.logs.join("\n")}`);
+  assert.match(line, /^设计源警告: 2 条（pen-no-interactions、screenshot-missing）/);
+  assert.match(line, /来源 tests/);
+  assert.match(line, /快照 \d{4}-\d{2}-\d{2}T/);
+  assert.doesNotMatch(line, /stale-snapshot/);
+
+  const jsonRun = await runCli(runtime, ["check", "--json"]);
+  assert.equal(jsonRun.code, 0);
+  const payload = JSON.parse(jsonRun.logs[0]);
+  assert.equal(payload.designWarnings.length, 2);
+  assert.deepEqual(payload.designWarningSummary.codes, [
+    "pen-no-interactions",
+    "screenshot-missing"
+  ]);
+  assert.equal(payload.designWarningSummary.total, 2);
+  assert.equal(payload.designWarningSummary.available, true);
+  assert.equal(payload.designWarningsSource, "tests");
+  assert.equal(payload.designWarningsStale, false);
+  assert.ok(!Number.isNaN(Date.parse(payload.designWarningsSnapshotAt)));
+});
+
+test("suite check: tests 快照早于 flows → stale-snapshot", async () => {
+  const { runtime } = await setupRun({ cases: [caseEntry(1)] });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const flowsPath = path.join(designDir, "flows.json");
+  const testsPath = path.join(designDir, "tests.json");
+  const xlsxPath = path.join(designDir, "tests.xlsx");
+  const base = Date.now();
+  fs.writeFileSync(
+    flowsPath,
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: [],
+      warnings: [{ code: "flow-warn", message: "flows 已更新" }]
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    testsPath,
+    JSON.stringify({
+      flows: [caseEntry(1)],
+      designWarnings: [{ code: "old-snapshot", message: "生成时的旧警告" }]
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(xlsxPath, "fake-xlsx");
+  fs.utimesSync(testsPath, new Date(base), new Date(base));
+  fs.utimesSync(xlsxPath, new Date(base), new Date(base));
+  fs.utimesSync(flowsPath, new Date(base + 60_000), new Date(base + 60_000));
+
+  const text = await runCli(runtime, ["check"]);
+  assert.equal(text.code, 0, "陈旧快照只提示、不阻断");
+  const line = text.logs.find((entry) => entry.startsWith("设计源警告:"));
+  assert.ok(line, `缺少设计源警告行: ${text.logs.join("\n")}`);
+  assert.match(line, /^设计源警告: 1 条（old-snapshot）/);
+  assert.match(line, /来源 tests/);
+  assert.match(line, /stale-snapshot/);
+
+  const jsonRun = await runCli(runtime, ["check", "--json"]);
+  assert.equal(jsonRun.code, 0);
+  const payload = JSON.parse(jsonRun.logs[0]);
+  assert.equal(payload.designWarningsSource, "tests");
+  assert.equal(payload.designWarningsStale, true);
+  assert.equal(payload.designWarningSummary.stale, true);
+  assert.deepEqual(payload.designWarnings.map((entry) => entry.code), ["old-snapshot"]);
+});
+
 test("suite calibrate: aligns xcresult report with the ledger and reports miss rate", async () => {
   const { runtime } = await setupRun({
     cases: [caseEntry(1), caseEntry(2)],

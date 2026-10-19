@@ -1,13 +1,20 @@
 import type { CalibrationReport } from "./calibration.js";
 import type { FeedbackSuggestion, GenerationFeedback } from "./generation-feedback.js";
-import type { PreflightReport } from "./preflight.js";
+import {
+  renderDesignWarningLine,
+  type DesignWarningsSource,
+  type PreflightReport
+} from "./preflight.js";
 import type { SuiteRunReport } from "./suite-runner.js";
+import type { WarningSummary } from "../design/warnings.js";
 
 export interface SuiteLoopCheck {
   testsPath: string;
   preflight: PreflightReport;
   issue: string | null;
   routeDrift: string[];
+  designWarnings: WarningSummary;
+  designWarningsSource: DesignWarningsSource;
 }
 
 export interface SuiteLoopInput {
@@ -31,6 +38,8 @@ export interface SuiteLoopReport {
       uncoveredEdges: number;
       exploreUncoveredScreens: number;
       exploreUncoveredEdges: number;
+      designWarnings: WarningSummary;
+      designWarningsSource: DesignWarningsSource;
       routeDrift: string[];
       issue: string | null;
     } | null;
@@ -158,6 +167,8 @@ export function buildSuiteLoopReport(input: SuiteLoopInput): SuiteLoopReport {
               input.check.preflight.coverage.explore?.uncoveredScreens.length ?? 0,
             exploreUncoveredEdges:
               input.check.preflight.coverage.explore?.uncoveredEdges.length ?? 0,
+            designWarnings: input.check.designWarnings,
+            designWarningsSource: input.check.designWarningsSource,
             routeDrift: input.check.routeDrift,
             issue: input.check.issue
           }
@@ -214,6 +225,15 @@ export function renderSuiteLoopMarkdown(report: SuiteLoopReport): string {
         : "不可用（无 tests.json）"
     }`
   );
+  if (check) {
+    lines.push(
+      `- ${renderDesignWarningLine({
+        designWarningSummary: check.designWarnings,
+        designWarningsSource: check.designWarningsSource,
+        designWarningsStale: check.designWarnings.stale === true
+      })}`
+    );
+  }
   const run = report.steps.run;
   lines.push(
     `- 执行: ${

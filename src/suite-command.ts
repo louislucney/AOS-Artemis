@@ -21,7 +21,7 @@ import { buildCalibration, parseTestResults, type CalibrationReport } from "./fi
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
 import { gateIssueForTests, isImportedTestsFile } from "./figma/gate.js";
-import { preflightGeneratedTests } from "./figma/preflight.js";
+import { preflightGeneratedTests, renderDesignWarningLine } from "./figma/preflight.js";
 import {
   loadReconciliation,
   reconciliationFilePath,
@@ -705,6 +705,11 @@ async function suiteCheck(
           weakCases: preflight.weakCases,
           coverage,
           generation: preflight.generation,
+          designWarnings: preflight.designWarnings,
+          designWarningSummary: preflight.designWarningSummary,
+          designWarningsSource: preflight.designWarningsSource,
+          designWarningsSnapshotAt: preflight.designWarningsSnapshotAt,
+          designWarningsStale: preflight.designWarningsStale,
           routeDrift,
           issue
         },
@@ -715,6 +720,13 @@ async function suiteCheck(
   } else {
     io.log(`静态覆盖检查: ${testsPath}`);
     io.log(`用例: ${preflight.cases} · 弱用例 ${preflight.weakCases.length}`);
+    io.log(
+      renderDesignWarningLine({
+        designWarningSummary: preflight.designWarningSummary,
+        designWarningsSource: preflight.designWarningsSource,
+        designWarningsStale: preflight.designWarningsStale
+      })
+    );
     if (imported) {
       io.log("覆盖: n/a (imported)");
     } else if (!coverage.available) {
@@ -905,7 +917,14 @@ async function suiteLoop(
     const routeDrift = preflight.coverage.available
       ? preflight.coverage.screens.filter((screen) => !preflight.coverage.designScreens.includes(screen))
       : [];
-    check = { testsPath, preflight, issue, routeDrift };
+    check = {
+      testsPath,
+      preflight,
+      issue,
+      routeDrift,
+      designWarnings: preflight.designWarningSummary,
+      designWarningsSource: preflight.designWarningsSource
+    };
   }
 
   const runOptions = suiteRunOptions(flags, deps.logcatCollector, deps.iosLogCollector);
@@ -985,6 +1004,15 @@ async function suiteLoop(
         step.check ? (step.check.issue ? `未通过（${step.check.issue}）` : "通过") : "不可用（无 tests.json）"
       }`
     );
+    if (step.check) {
+      io.log(
+        renderDesignWarningLine({
+          designWarningSummary: step.check.designWarnings,
+          designWarningsSource: step.check.designWarningsSource,
+          designWarningsStale: step.check.designWarnings.stale === true
+        })
+      );
+    }
     io.log(
       `执行: ${
         step.run

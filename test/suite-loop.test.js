@@ -14,7 +14,8 @@ function checkInput({
   uncoveredEdges = [],
   exploreScreens = [],
   exploreEdges = [],
-  drift = []
+  drift = [],
+  warnings = null
 } = {}) {
   return {
     testsPath: "/p/.artemis/design/tests.json",
@@ -35,6 +36,15 @@ function checkInput({
       },
       generation: null
     },
+    designWarnings: warnings ?? {
+      available: true,
+      total: 0,
+      byCode: {},
+      codes: [],
+      snapshotAt: "2026-10-08T00:00:00.000Z",
+      stale: false
+    },
+    designWarningsSource: "tests",
     issue,
     routeDrift: drift
   };
@@ -174,6 +184,37 @@ test("buildSuiteLoopReport: feedback error is reported, not hidden", () => {
   });
   assert.equal(report.steps.feedback.error, "无法读取运行台账");
   assert.match(report.nextActions.join("\n"), /无法读取 tests.json/);
+});
+
+test("suite loop: check 步骤与 markdown 带 designWarnings（含 stale-snapshot）", () => {
+  const report = buildSuiteLoopReport({
+    generatedAt: "2026-10-08T00:00:00.000Z",
+    check: checkInput({
+      warnings: {
+        available: true,
+        total: 2,
+        byCode: { "pen-no-interactions": 1, "screenshot-missing": 1 },
+        codes: ["pen-no-interactions", "screenshot-missing"],
+        snapshotAt: "2026-10-07T00:00:00.000Z",
+        stale: true
+      }
+    }),
+    run: null,
+    feedback: null,
+    calibration: null
+  });
+  assert.equal(report.steps.check.designWarnings.total, 2);
+  assert.deepEqual(report.steps.check.designWarnings.codes, [
+    "pen-no-interactions",
+    "screenshot-missing"
+  ]);
+  assert.equal(report.steps.check.designWarnings.stale, true);
+  assert.equal(report.steps.check.designWarningsSource, "tests");
+
+  const markdown = renderSuiteLoopMarkdown(report);
+  assert.match(markdown, /设计源警告: 2 条（pen-no-interactions、screenshot-missing）/);
+  assert.match(markdown, /来源 tests/);
+  assert.match(markdown, /stale-snapshot/);
 });
 
 test("renderSuiteLoopMarkdown: steps, actions and top suggestions", () => {
