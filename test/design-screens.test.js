@@ -8,6 +8,7 @@ import {
   importScreenFile,
   isPngBuffer,
   penScreensDir,
+  pngDimensions,
   relativeScreenPath,
   sanitizeScreenId,
   SCREENSHOT_MAPPING_MISSING,
@@ -44,6 +45,20 @@ test("isPngBuffer: 魔术头校验", () => {
   assert.equal(isPngBuffer(Buffer.from([0xff, 0xd8, 0xff])), false);
   assert.equal(isPngBuffer(Buffer.from([0x89, 0x50])), false);
   assert.equal(isPngBuffer(Buffer.alloc(0)), false);
+});
+
+test("pngDimensions: IHDR 宽高（pen 视觉屏尺寸兜底），非 PNG/短 buffer 返回 null", () => {
+  const header = Buffer.alloc(24);
+  PNG_MAGIC.copy(header, 0);
+  header.writeUInt32BE(13, 8);
+  header.write("IHDR", 12, "latin1");
+  header.writeUInt32BE(390, 16);
+  header.writeUInt32BE(844, 20);
+  assert.deepEqual(pngDimensions(header), { width: 390, height: 844 });
+  assert.equal(pngDimensions(png("not-a-header")), null);
+  assert.equal(pngDimensions(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), null);
+  assert.equal(pngDimensions(PNG_MAGIC), null);
+  assert.equal(pngDimensions(header.subarray(0, 23)), null);
 });
 
 test("storeScreenPng: 写入 → 幂等跳过 → 变更覆盖 → 损坏替换 → 非法不落盘", () => {

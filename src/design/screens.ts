@@ -36,6 +36,17 @@ export function isPngBuffer(buffer: Buffer): boolean {
   return buffer.length >= PNG_MAGIC.length && buffer.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC);
 }
 
+/** PNG IHDR 宽高（渲染尺寸即设计坐标系，scale 1）；非 PNG/结构不符返回 null。 */
+export function pngDimensions(bytes: Buffer): { width: number; height: number } | null {
+  if (bytes.length < 24) return null;
+  if (!isPngBuffer(bytes)) return null;
+  if (bytes.toString("latin1", 12, 16) !== "IHDR") return null;
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  if (!width || !height) return null;
+  return { width, height };
+}
+
 export function sha256Hex(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }

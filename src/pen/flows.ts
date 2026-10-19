@@ -30,6 +30,7 @@ import {
 import { runVisionPass, type VisionNodeGeom, type VisionScreenInput } from "../design/vision.js";
 import { confidenceFor, isAnnotationLayerName, type Confidence, type Provenance } from "../provenance.js";
 import {
+  pngDimensions,
   relativeScreenPath,
   screensEnabledFrom,
   SCREENSHOT_RENDER_UNAVAILABLE,
@@ -667,26 +668,44 @@ function visionEnvFlag(dotenv: Record<string, string>): string {
   return (dotenv.AOS_VISION ?? process.env.AOS_VISION ?? "").trim();
 }
 
+/** 默认视觉屏数上限：覆盖常见设计文件全量屏，同时给多模态调用成本留闸。 */
+const DEFAULT_VISION_MAX_SCREENS = 50;
+
 function visionMaxScreens(dotenv: Record<string, string>): number {
-  const raw = (dotenv.AOS_VISION_MAX_SCREENS ?? process.env.AOS_VISION_MAX_SCREENS ?? "").trim();
+  const raw = (dotenv.AOS_VISION_MAX_SCREENS ?? process.env.AOS_VISION_MAX_SCREENS ?? "").trim().toLowerCase();
+  if (raw === "0" || raw === "all" || raw === "unlimited") return Number.POSITIVE_INFINITY;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 20;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_VISION_MAX_SCREENS;
 }
 
 /** Screen inputs for the vision pass: frame geometry plus screen-local node
- * geometry (child x/y accumulated from the screen root). */
-function collectVisionScreens(doc: PenDocument, screens: PenFlowScreen[]): VisionScreenInput[] {
+ * geometry (child x/y accumulated from the screen root).
+ *
+ * Auto-layout frames often carry `fill_container` / `fit_content` widths and
+ * no height at all (the layout engine resolves them). Those screens still
+ * render, so the rendered PNG's IHDR size is the authoritative fallback —
+ * rendering is scale 1 in the design coordinate system. */
+function collectVisionScreens(
+  doc: PenDocument,
+  screens: PenFlowScreen[],
+  sizeFor?: (screenId: string) => { width: number; height: number } | null
+): { inputs: VisionScreenInput[]; dropped: string[] } {
   const byId = new Map<string, PenNode>();
   for (const node of collectPenNodes(doc)) {
     if (typeof node.id === "string" && node.id !== "") byId.set(node.id, node);
   }
   const inputs: VisionScreenInput[] = [];
+  const dropped: string[] = [];
   for (const screen of screens) {
     const frame = byId.get(screen.id);
     if (!frame) continue;
-    const width = numberProp(frame, "width");
-    const height = numberProp(frame, "height");
-    if (width === null || height === null || width <= 0 || height <= 0) continue;
+    const fallback = sizeFor ? sizeFor(screen.id) : null;
+    const width = numberProp(frame, "width") ?? fallback?.width ?? null;
+    const height = numberProp(frame, "height") ?? fallback?.height ?? null;
+    if (width === null || height === null || width <= 0 || height <= 0) {
+      dropped.push(screen.name);
+      continue;
+    }
     const nodes: VisionNodeGeom[] = [];
     const visit = (node: PenNode, ox: number, oy: number): void => {
       const x = numberProp(node, "x");
@@ -711,7 +730,7 @@ function collectVisionScreens(doc: PenDocument, screens: PenFlowScreen[]): Visio
     for (const child of frame.children ?? []) visit(child, 0, 0);
     inputs.push({ id: screen.id, name: screen.name, width, height, nodes: nodes.slice(0, 300) });
   }
-  return inputs;
+  return { inputs, dropped };
 }
 
 interface PenScreenAssets {
@@ -786,6 +805,28 @@ async function renderAndImportPenScreens(
   };
 }
 
+/** 渲染尺寸兜底（scale 1，与设计坐标同系）：auto-layout 屏的 `fill_container`
+ * 宽/缺省高由布局引擎解析，PNG IHDR 是唯一权威尺寸；读取失败按无兜底处理。 */
+function renderedSizeResolver(
+  assets: PenScreenAssets
+): (screenId: string) => { width: number; height: number } | null {
+  const cache = new Map<string, { width: number; height: number } | null>();
+  return (screenId) => {
+    if (cache.has(screenId)) return cache.get(screenId) ?? null;
+    const file = assets.imagePaths.get(screenId);
+    let size: { width: number; height: number } | null = null;
+    if (file) {
+      try {
+        size = pngDimensions(fs.readFileSync(file));
+      } catch {
+        size = null;
+      }
+    }
+    cache.set(screenId, size);
+    return size;
+  };
+}
+
 async function applyVision(
   runtime: Runtime,
   args: PenExtractFlowsArgs,
@@ -803,11 +844,6 @@ async function applyVision(
     return skippedVision(requested, "AOS_VISION=0", [
       { code: "vision-disabled-by-env", message: "视觉识别已跳过：AOS_VISION=0（环境禁用）" }
     ]);
-  }
-
-  const screens = collectVisionScreens(doc, result.screens);
-  if (screens.length === 0) {
-    return skippedVision(requested, "无可用屏幕几何");
   }
 
   let chat: ChatFn | null = deps.chat ?? null;
@@ -883,6 +919,26 @@ async function applyVision(
         message: `视觉识别已跳过：设计渲染失败（${assets.channelError}）`
       }
     ]);
+  }
+
+  const { inputs: screens, dropped } = collectVisionScreens(
+    doc,
+    result.screens,
+    renderedSizeResolver(assets)
+  );
+  if (dropped.length > 0) {
+    preWarnings = [
+      ...preWarnings,
+      {
+        code: "vision-screen-no-geometry",
+        message: `${dropped.length} 屏缺尺寸且无渲染图，已跳过视觉识别（${dropped.slice(0, 5).join("、")}${
+          dropped.length > 5 ? " 等" : ""
+        }）`
+      }
+    ];
+  }
+  if (screens.length === 0) {
+    return skippedVision(requested, "无可用屏幕几何", preWarnings);
   }
 
   const imageCache = new Map<string, string | null>();

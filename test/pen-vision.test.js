@@ -65,6 +65,97 @@ function visionDoc() {
 
 const CART_BBOX = { x: 300 / 390, y: 760 / 844, width: 60 / 390, height: 60 / 844 };
 
+/** Auto-layout screens carry `fill_container` / `fit_content` widths and often
+ * no height at all; the rendered PNG is the only source of their pixel size. */
+function autoLayoutDoc() {
+  return {
+    version: "2.20",
+    children: [
+      {
+        id: "b1",
+        type: "frame",
+        name: "1. 主流程",
+        x: 0,
+        y: 0,
+        children: [
+          {
+            id: "home",
+            type: "frame",
+            name: "Frame 101",
+            x: 0,
+            y: 0,
+            width: "fill_container",
+            children: [
+              { id: "home-title", type: "text", content: "主頁" },
+              { id: "cart-fab", type: "frame", name: "Cart FAB", x: 300, y: 760, width: 60, height: 60 }
+            ]
+          },
+          {
+            id: "store",
+            type: "frame",
+            name: "Frame 102",
+            x: 420,
+            y: 0,
+            width: "fill_container",
+            children: [{ id: "store-title", type: "text", content: "門市" }]
+          }
+        ]
+      }
+    ]
+  };
+}
+
+/** Minimal PNG header carrying real IHDR dimensions (enough for the store and
+ * the dimension reader; pixel data is never decoded here). */
+function pngHeader(width, height) {
+  const buffer = Buffer.alloc(24);
+  Buffer.from("89504e470d0a1a0a", "hex").copy(buffer, 0);
+  buffer.writeUInt32BE(13, 8);
+  buffer.write("IHDR", 12, "latin1");
+  buffer.writeUInt32BE(width, 16);
+  buffer.writeUInt32BE(height, 20);
+  return buffer;
+}
+
+function sizedRender(width, height) {
+  return async ({ screenIds, outDir }) => {
+    fs.mkdirSync(outDir, { recursive: true });
+    const files = new Map();
+    for (const id of screenIds) {
+      const file = path.join(outDir, `${id}.png`);
+      fs.writeFileSync(file, pngHeader(width, height));
+      files.set(id, file);
+    }
+    return { ok: true, dir: outDir, files, missing: [] };
+  };
+}
+
+/** Many flat screens: no text, unique layer names, no state merging. */
+function manyScreensDoc(count) {
+  return {
+    version: "2.20",
+    children: [
+      {
+        id: "board",
+        type: "frame",
+        name: "1. 主流程",
+        x: 0,
+        y: 0,
+        children: Array.from({ length: count }, (_, index) => ({
+          id: `screen${index + 1}`,
+          type: "frame",
+          name: `Screen${index + 1}`,
+          x: index * 400,
+          y: 0,
+          width: 390,
+          height: 844,
+          children: [{ id: `label${index + 1}`, type: "text", content: `頁面${index + 1}` }]
+        }))
+      }
+    ]
+  };
+}
+
 function makeProject({ dotenv = "" } = {}) {
   const dir = makeTempProject({ config: baseConfig(), dotenv });
   const designDir = path.join(dir, ".artemis", "design");
@@ -387,6 +478,156 @@ test("vision: AOS_VISION_MAX_SCREENS caps the pass with an explicit warning", as
   assert.equal(payload.vision.screensProcessed, 1);
   assert.equal(payload.counts.visionElements, 1);
 });
+
+test("vision: AOS_VISION_MAX_SCREENS=0 lifts the cap (full pass, no truncation warning)", async () => {
+  const dir = makeProject({ dotenv: "AOS_VISION_MAX_SCREENS=0\n" });
+  fs.writeFileSync(
+    path.join(dir, ".artemis", "design", "design.pen"),
+    JSON.stringify(manyScreensDoc(23)),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, { screens: false }, { chat: async () => JSON.stringify({ elements: [] }), render: fakeRender() })
+  );
+  assert.equal(payload.vision.screensProcessed, 23, "0 means unlimited, not the default 20");
+  assert.ok(!payload.warnings.some((warning) => warning.code === "vision-screen-cap"));
+});
+
+test("vision: AOS_VISION_MAX_SCREENS=all lifts the cap", async () => {
+  const dir = makeProject({ dotenv: "AOS_VISION_MAX_SCREENS=all\n" });
+  fs.writeFileSync(
+    path.join(dir, ".artemis", "design", "design.pen"),
+    JSON.stringify(manyScreensDoc(23)),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, { screens: false }, { chat: async () => JSON.stringify({ elements: [] }), render: fakeRender() })
+  );
+  assert.equal(payload.vision.screensProcessed, 23);
+  assert.ok(!payload.warnings.some((warning) => warning.code === "vision-screen-cap"));
+});
+
+test("vision: default cap of 50 keeps every screen of a 23-screen design (no silent drop)", async () => {
+  const dir = makeProject();
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.writeFileSync(
+    path.join(designDir, "design.pen"),
+    JSON.stringify(manyScreensDoc(23)),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, { screens: false }, { chat: async () => JSON.stringify({ elements: [] }), render: fakeRender() })
+  );
+  assert.equal(payload.counts.screens, 23);
+  assert.equal(payload.vision.screensRequested, 23);
+  assert.equal(payload.vision.screensProcessed, 23);
+  assert.ok(!payload.warnings.some((warning) => warning.code === "vision-screen-cap"));
+});
+
+test("vision: default cap of 50 still truncates a 60-screen design with an explicit warning", async () => {
+  const dir = makeProject();
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.writeFileSync(
+    path.join(designDir, "design.pen"),
+    JSON.stringify(manyScreensDoc(60)),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, { screens: false }, { chat: async () => JSON.stringify({ elements: [] }), render: fakeRender() })
+  );
+  assert.equal(payload.vision.screensRequested, 60);
+  assert.equal(payload.vision.screensProcessed, 50);
+  assert.ok(payload.warnings.some((warning) => warning.code === "vision-screen-cap"));
+});
+
+test("vision: auto-layout screens (fill_container width, no height) use the rendered PNG size", async () => {
+  const dir = makeProject();
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.writeFileSync(path.join(designDir, "design.pen"), JSON.stringify(autoLayoutDoc()), "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const seen = [];
+  const chat = async (messages) => {
+    seen.push(messages[1].content[0].text);
+    return JSON.stringify({
+      elements: [
+        { class: "cart-entry", intent: "navigate", label: "购物袋", bbox: CART_BBOX, confidence: 0.9 }
+      ]
+    });
+  };
+  const payload = parseToolResult(
+    await penExtractFlows(runtime, {}, { chat, render: sizedRender(390, 844) })
+  );
+
+  assert.equal(payload.vision.screensRequested, 2, "no screen is dropped for lacking numeric geometry");
+  assert.equal(payload.vision.screensProcessed, 2);
+  assert.equal(payload.vision.elements, 2);
+  assert.match(seen[0], /390x844/, "normalized bbox is scaled by the rendered size");
+
+  const flows = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
+  const element = flows.screens.find((screen) => screen.name === "主頁").elements[0];
+  assert.equal(element.nodeId, "cart-fab", "grounding uses screen-local node geometry");
+  assert.deepEqual(element.bbox, { x: 300, y: 760, width: 60, height: 60 });
+});
+
+test("vision: screens without numeric geometry and without a render are reported, not silently dropped", async () => {
+  const dir = makeProject();
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.writeFileSync(path.join(designDir, "design.pen"), JSON.stringify(autoLayoutDoc()), "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(
+      runtime,
+      {},
+      {
+        chat: async () => JSON.stringify({ elements: [] }),
+        render: async ({ screenIds, outDir }) => {
+          fs.mkdirSync(outDir, { recursive: true });
+          const files = new Map();
+          const [first] = screenIds;
+          const file = path.join(outDir, `${first}.png`);
+          fs.writeFileSync(file, pngHeader(390, 844));
+          files.set(first, file);
+          return { ok: true, dir: outDir, files, missing: screenIds.slice(1) };
+        }
+      }
+    )
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.vision.active, true);
+  assert.equal(payload.vision.screensRequested, 1);
+  assert.equal(payload.vision.screensProcessed, 1);
+  const warning = payload.warnings.find((entry) => entry.code === "vision-screen-no-geometry");
+  assert.ok(warning, "screens dropped for missing geometry are reported");
+  assert.match(warning.message, /門市/);
+});
+
+test("vision: when every screen lacks geometry the skip reason still carries the warning", async () => {
+  const dir = makeProject();
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.writeFileSync(path.join(designDir, "design.pen"), JSON.stringify(autoLayoutDoc()), "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await penExtractFlows(
+      runtime,
+      {},
+      {
+        chat: async () => JSON.stringify({ elements: [] }),
+        render: async ({ outDir }) => ({ ok: true, dir: outDir, files: new Map(), missing: [] })
+      }
+    )
+  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.vision.active, false);
+  const warning = payload.warnings.find((entry) => entry.code === "vision-screen-no-geometry");
+  assert.ok(warning, "an all-dropped pass must not lose its reason");
+  assert.match(warning.message, /主頁|門市/);
+});
+
 
 test("flows.json: schemaVersion newer than supported fails loud (version gate)", async () => {
   const dir = makeProject();

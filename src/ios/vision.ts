@@ -107,12 +107,5 @@ export function resolveVisionMode(env: NodeJS.ProcessEnv): IosVisionMode {
   return "auto";
 }
 
-export function pngDimensions(bytes: Buffer): { width: number; height: number } | null {
-  if (bytes.length < 24) return null;
-  if (!(bytes[0] === 0x89 && bytes.toString("latin1", 1, 4) === "PNG")) return null;
-  if (bytes.toString("latin1", 12, 16) !== "IHDR") return null;
-  const width = bytes.readUInt32BE(16);
-  const height = bytes.readUInt32BE(20);
-  if (!width || !height) return null;
-  return { width, height };
-}
+/** 单源实现已迁至 `src/design/screens.ts`（pen 视觉识别与本模块共用），此处 re-export 保持既有导入。 */
+export { pngDimensions } from "../design/screens.js";
