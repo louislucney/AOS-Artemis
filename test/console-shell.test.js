@@ -160,6 +160,7 @@ test("console shell: 项目上下文与能力标记（导航禁用/横幅）", (
   assert.ok(withProject.includes("section=dispatch"), "带项目上下文");
   assert.ok(withProject.includes("project=%2Fw%2Fp"), "项目参数编码");
   assert.ok(!withProject.includes('aria-disabled="true"'), "能力全开时无禁用项");
+  assert.match(withProject, /aos-last-project/, "项目页记录上次项目（localStorage）");
 
   const bare = renderConsoleShell({ title: "总览", active: "overview", body: "" });
   assert.ok(
@@ -170,6 +171,7 @@ test("console shell: 项目上下文与能力标记（导航禁用/横幅）", (
   assert.ok(bare.includes('href="/panel"'), "总览项保留");
   assert.match(bare, /进入任一项目后显示项目级版块/, "隐藏原因就地说明");
   assert.ok(!bare.includes('tabindex="0"'), "无不可聚焦残留");
+  assert.ok(!bare.includes("aos-last-project"), "无项目上下文不写上次项目");
 
   const off = renderConsoleShell({
     title: "总览",

@@ -314,10 +314,7 @@ function renderSwitcher(view: UsageWebView): string {
     return '<p class="muted">暂无已注册项目</p>';
   }
   const options = view.projects
-    .map((project) => {
-      const selected = view.project?.rootPath === project.rootPath ? " selected" : "";
-      return `<option value="${escapeHtml(project.rootPath)}"${selected}>${escapeHtml(project.name)}</option>`;
-    })
+    .map((project) => `<option value="${escapeHtml(project.name)}"></option>`)
     .join("");
   const hidden: string[] = [];
   if (view.filters.tool !== null) {
@@ -334,7 +331,8 @@ function renderSwitcher(view: UsageWebView): string {
   }
   return [
     '<form class="switcher" method="get" action="/usage">',
-    `<label>项目 <select name="project">${options}</select></label>`,
+    `<label>项目 <input list="usage-project-options" name="project" value="${escapeHtml(view.project?.name ?? "")}" placeholder="输入名称筛选（${view.projects.length} 个项目）" size="24" autocomplete="off" aria-label="项目（输入名称筛选）"></label>`,
+    `<datalist id="usage-project-options">${options}</datalist>`,
     hidden.join(""),
     '<button type="submit">切换</button>',
     "</form>"

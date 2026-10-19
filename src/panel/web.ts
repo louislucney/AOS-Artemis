@@ -610,7 +610,20 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
     ? cBadge({ label: "存储：会话内存", tone: "warning" })
     : view.store.kind === "file"
       ? cBadge({ label: "存储：文件台账", tone: "neutral" })
-      : cBadge({ label: "存储：PostgreSQL", tone: "neutral" });  const rows = view.projects.map((row) => [
+      : cBadge({ label: "存储：PostgreSQL", tone: "neutral" });
+  const overviewScript =
+    view.projects.length === 0
+      ? ""
+      : `<script>(function(){var projects=${JSON.stringify(
+          view.projects.map((row) => ({ name: row.name, rootPath: row.rootPath, url: projectHref(row.rootPath) }))
+        ).replace(/</g, "\\u003c")};
+try{
+  var last=localStorage.getItem("aos-last-project");
+  if(last){for(var i=0;i<projects.length;i++){if(projects[i].rootPath===last){var box=document.getElementById("aos-resume");if(box){box.textContent="继续上次：";var a=document.createElement("a");a.className="c-button c-button-primary";a.href=projects[i].url;a.textContent=projects[i].name+" →";box.appendChild(a);box.hidden=false;}break;}}}
+  if(projects.length===1&&!sessionStorage.getItem("aos-auto-entered")){sessionStorage.setItem("aos-auto-entered","1");location.replace(projects[0].url);}
+}catch(e){}
+})();</script>`;
+  const rows = view.projects.map((row) => [
     `<a href="${escapeHtml(projectHref(row.rootPath))}">${escapeHtml(row.name)}</a> <a class="c-button" href="${escapeHtml(projectHref(row.rootPath))}">进入项目 →</a>`,
     renderProjectCell(row),
     escapeHtml(row.stacks.join("、") || "—"),
@@ -651,7 +664,9 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
                 empty: "暂无项目"
               })
             }).toString()
-          ].join("\n")
+          ].join("\n"),
+      view.projects.length === 0 ? "" : '<p id="aos-resume" hidden></p>',
+      overviewScript
     ].join("\n")
   });
 }

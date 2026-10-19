@@ -208,6 +208,10 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     input.autoRefreshSeconds === undefined
       ? ""
       : `<script>(function(){var ms=${Math.max(1, Math.floor(input.autoRefreshSeconds))}*1000;try{if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches)return;}catch(e){}setInterval(function(){if(document.hidden)return;var cur=document.getElementById("console-main");if(cur&&cur.contains(document.activeElement)&&document.activeElement!==document.body)return;fetch(location.href).then(function(r){return r.ok?r.text():null;}).then(function(html){if(!html)return;var doc=new DOMParser().parseFromString(html,"text/html");var fresh=doc.getElementById("console-main");var now=document.getElementById("console-main");if(fresh&&now&&!now.contains(document.activeElement)){now.replaceChildren.apply(now,Array.prototype.slice.call(fresh.childNodes));}}).catch(function(){});},ms);})();</script>`;
+  const recordLastProject =
+    project === null || project === ""
+      ? ""
+      : `<script>try{localStorage.setItem("aos-last-project",${JSON.stringify(project).replace(/</g, "\\u003c")});}catch(e){}</script>`;
   const flashScript = `<script>(function(){window.aosFlash=function(message){try{sessionStorage.setItem("aos-flash",message);}catch(e){}};var raw=null;try{raw=sessionStorage.getItem("aos-flash");}catch(e){}if(raw){try{sessionStorage.removeItem("aos-flash");}catch(e){}var main=document.getElementById("console-main");if(main){var box=document.createElement("div");box.className="c-banner c-banner-accent";box.setAttribute("role","status");var text=document.createTextNode(raw);box.appendChild(text);var params=new URLSearchParams(location.search);var project=params.get("project");if(project){box.appendChild(document.createTextNode(" "));var a=document.createElement("a");a.href="/panel?project="+encodeURIComponent(project)+"&section=audit";a.textContent="查看审计";box.appendChild(a);}var sheet=document.getElementById("console-shortcuts");main.insertBefore(box,sheet?sheet.nextSibling:main.firstChild);}}var dismiss=document.getElementById("capability-dismiss");if(dismiss){dismiss.addEventListener("click",function(){try{sessionStorage.setItem("aos-cap-dismissed","1");}catch(e){}var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);});}if(function(){try{return sessionStorage.getItem("aos-cap-dismissed")==="1";}catch(e){return false;}}()){var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);}})();</script>`;
   return [
     "<!doctype html>",
@@ -236,6 +240,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     `<footer class="c-footer">AOS-ARTEMIS · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,
     shortcutsScript,
     livePollScript,
+    recordLastProject,
     flashScript,
     "</body>",
     "</html>"

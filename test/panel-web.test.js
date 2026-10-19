@@ -161,6 +161,8 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   assert.match(html.body, /进入最近活跃项目：demo →/, "首访直达最近活跃项目");
   assert.match(html.body, /进入项目 →/, "每行显式进入动作");
   assert.match(html.body, /进入任一项目后显示项目级版块/, "无项目上下文时导航给说明而非死项");
+  assert.match(html.body, /id="aos-resume"/, "继续上次位点");
+  assert.match(html.body, /aos-auto-entered/, "单项目自动进入（每会话一次守卫）");
 });
 
 test("panel web: 项目详情（空态→批次→独立运行）与未知项目 404", async () => {
@@ -365,6 +367,15 @@ test("panel web: 页面内联脚本可解析（项目/裁决/任务页，防语�
     for (const code of scripts) {
       assert.doesNotThrow(() => new Function(code), `脚本可解析（${label}）`);
     }
+  }
+  const overviewHtml = await handlePanelRequest(new URL("http://x/panel"), deps);
+  assert.equal(overviewHtml.status, 200);
+  const overviewScripts = [...overviewHtml.body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+    (match) => match[1]
+  );
+  assert.ok(overviewScripts.length >= 1, "总览页含内联脚本");
+  for (const code of overviewScripts) {
+    assert.doesNotThrow(() => new Function(code), "脚本可解析（总览页）");
   }
 });
 

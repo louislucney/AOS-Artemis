@@ -94,8 +94,10 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.ok(body.includes("PostgreSQL 不可用，会话数据仅当前进程可见。"));
   assert.match(body, /data-console="shell"/, "统计页套用控制台外壳");
   assert.match(body, /aria-current="page"[^>]*>使用统计</, "使用统计为当前导航项");
-  assert.ok(body.includes('<option value="/w/alpha" selected>alpha</option>'));
-  assert.ok(body.includes('<option value="/w/beta">beta</option>'));
+  assert.ok(body.includes('list="usage-project-options"'), "可搜索项目组合框");
+  assert.ok(body.includes('<option value="alpha"></option>'));
+  assert.ok(body.includes('<option value="beta"></option>'));
+  assert.ok(body.includes('name="project" value="alpha"'), "当前项目回显（名称提交）");
   assert.ok(body.includes('data-tool="llm_list"'));
   assert.ok(body.includes('data-zero-call="1"'));
   assert.ok(body.includes("aos_status"));
@@ -219,6 +221,20 @@ test("usage web: project/tool/status/days/limit/offset filters", async () => {
   );
   assert.equal(missing.status, 404);
   assert.deepEqual(JSON.parse(missing.body), { error: '未知项目 "ghost"' });
+});
+
+test("usage web: 项目切换＝可搜索组合框（datalist＋名称提交可解析）", async () => {
+  const store = await seedStore();
+  const html = await handleUsageRequest(new URL("http://localhost/usage?project=alpha"), deps(store));
+  assert.equal(html.status, 200);
+  assert.match(html.body, /list="usage-project-options"/, "可搜索组合框");
+  assert.match(html.body, /<option value="alpha"><\/option>/, "候选含 alpha");
+  assert.match(html.body, /<option value="beta"><\/option>/, "候选含 beta");
+  assert.match(html.body, /placeholder="输入名称筛选（2 个项目）"/);
+  assert.doesNotMatch(html.body, /<select name="project">/, "旧 select 移除");
+
+  const betaHtml = await handleUsageRequest(new URL("http://localhost/usage?project=beta"), deps(store));
+  assert.match(betaHtml.body, /name="project" value="beta"/, "按名称提交仍可解析（回显当前项目）");
 });
 
 test("usage web: refresh adds the HTML meta refresh and the JSON filter field", async () => {
