@@ -9,11 +9,19 @@ import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resol
 import { computeClassifiedCoverage, type CoverageClass } from "./coverage.js";
 import {
   buildFlowGraph,
+  flowGraphWarnings,
   normalizeFlowGraph,
   normalizeFlowHints,
   type FlowEdge,
   type FlowGraph
 } from "./flows.js";
+import {
+  mergeWarnings,
+  normalizeWarnings,
+  readFlowsWarnings,
+  summarizeWarnings,
+  type DesignWarning
+} from "../design/warnings.js";
 import { deriveCasePreconditions } from "./preconditions.js";
 import { REAL_DATA_CLAUSE } from "./data-policy.js";
 import { applyReconciliationToGraph, loadReconciliation } from "./reconciliation.js";
@@ -636,7 +644,11 @@ export function generateTestCases(
 export function renderMarkdown(
   cases: GeneratedTest[],
   meta: { source: string; generatedAt: string },
-  options: { images?: Map<string, string[]>; feedback?: CaseDefectFeedback } = {}
+  options: {
+    images?: Map<string, string[]>;
+    feedback?: CaseDefectFeedback;
+    designWarnings?: DesignWarning[];
+  } = {}
 ): string {
   const lines: string[] = [
     "# 设计流程测试用例",
@@ -645,6 +657,16 @@ export function renderMarkdown(
     `> 生成时间: ${meta.generatedAt}`,
     ""
   ];
+  if (options.designWarnings && options.designWarnings.length > 0) {
+    lines.push("## 设计源警告（不阻断生成）", "");
+    for (const warning of options.designWarnings) {
+      lines.push(`- \`${warning.code}\`：${warning.message}`);
+      if (warning.details && warning.details.length > 0) {
+        lines.push(`  - 明细：${warning.details.join("、")}`);
+      }
+    }
+    lines.push("");
+  }
   cases.forEach((testCase, index) => {
     lines.push(`## ${index + 1}. ${testCase.name}`, "");
     if (testCase.continuation) {
@@ -967,29 +989,45 @@ export async function figmaGenerateTests(
   deps: GenerateTestsDeps = {}
 ): Promise<CallToolResult> {
   try {
+    const defaultFlowsPath = path.join(runtime.configDirAbs, "design", "flows.json");
     const flowsPath = args.flowsPath
       ? path.resolve(runtime.project.rootDir, args.flowsPath)
-      : path.join(runtime.configDirAbs, "design", "flows.json");
+      : defaultFlowsPath;
 
     let graph: FlowGraph;
     let source: string;
     let fromUrlFileKey: string | null = null;
     let designNameHint: string | null = null;
+    let designSourceWarnings: DesignWarning[] = [];
+    let designWarningSource: "flows" | "generated" = "flows";
+    let designWarningsSnapshotAt: string | null = null;
     if (args.url) {
       const { fileKey } = parseFigmaUrl(args.url);
       fromUrlFileKey = fileKey;
       const file = (await fetchFile(fileKey)) as { name?: string; document?: FigmaNode };
       if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
       graph = buildFlowGraph(file.document);
+      designSourceWarnings = flowGraphWarnings(graph);
+      designWarningSource = "generated";
       designNameHint = typeof file.name === "string" && file.name.trim() !== "" ? file.name : null;
       source = `figma:${fileKey}${file.name ? ` (${file.name})` : ""}`;
     } else {
       if (!fs.existsSync(flowsPath)) {
         throw new Error(`未找到 ${flowsPath}：先运行 figma_extract_flows（或直接传 url）`);
       }
-      const parsed = JSON.parse(fs.readFileSync(flowsPath, "utf-8")) as FlowGraph;
+      const parsed = JSON.parse(fs.readFileSync(flowsPath, "utf-8")) as FlowGraph & {
+        warnings?: unknown;
+      };
       if (!Array.isArray(parsed.screens) || !Array.isArray(parsed.edges)) {
         throw new Error(`${flowsPath} 格式不正确（缺少 screens/edges）`);
+      }
+      if (path.resolve(flowsPath) === path.resolve(defaultFlowsPath)) {
+        const read = readFlowsWarnings(runtime.configDirAbs);
+        designSourceWarnings = read.warnings;
+        designWarningsSnapshotAt = read.snapshotAt;
+      } else {
+        designSourceWarnings = normalizeWarnings(parsed.warnings);
+        designWarningsSnapshotAt = fs.statSync(flowsPath).mtime.toISOString();
       }
       graph = normalizeFlowGraph(parsed);
       source = flowsPath;
@@ -1115,6 +1153,23 @@ export async function figmaGenerateTests(
         "（requireFullCoverage:true 硬覆盖不完整即不落盘）。" +
         splitHint
     };
+    const applyDesignWarnings = (): DesignWarning[] => {
+      const merged = mergeWarnings([
+        { source: designWarningSource, warnings: designSourceWarnings },
+        {
+          source: "generated",
+          warnings: Array.isArray(payload.warnings) ? (payload.warnings as DesignWarning[]) : []
+        }
+      ]);
+      if (merged.warnings.length > 0) payload.warnings = merged.warnings;
+      payload.designWarnings = merged.warnings;
+      payload.designWarningsSummary = summarizeWarnings(merged.warnings, {
+        available: true,
+        bySource: merged.bySource,
+        ...(designWarningsSnapshotAt !== null ? { snapshotAt: designWarningsSnapshotAt } : {})
+      });
+      return merged.warnings;
+    };
 
     if (args.save !== false) {
       const jsonPath = path.join(runtime.configDirAbs, "design", "tests.json");
@@ -1158,6 +1213,7 @@ export async function figmaGenerateTests(
         if (caseScreens.summary) payload.screenshots = caseScreens.summary;
       }
 
+      const designWarnings = applyDesignWarnings();
       const excelBuffer = await renderTestsWorkbook(
         cases,
         { source, generatedAt, counts },
@@ -1168,7 +1224,8 @@ export async function figmaGenerateTests(
         markdownPath,
         renderMarkdown(cases, { source, generatedAt }, {
           images: caseScreens?.caseRefs ?? new Map(),
-          ...(matchedFeedback.length > 0 ? { feedback: { byFeature: matchedFeedback } } : {})
+          ...(matchedFeedback.length > 0 ? { feedback: { byFeature: matchedFeedback } } : {}),
+          designWarnings
         })
       );
       writeFileAtomic(excelPath, excelBuffer);
@@ -1226,7 +1283,8 @@ export async function figmaGenerateTests(
             ) + "\n",
           markdown: renderMarkdown(subset, { source, generatedAt }, {
             images: caseScreens?.caseRefs ?? new Map(),
-            ...(subsetFeedback.length > 0 ? { feedback: { byFeature: subsetFeedback } } : {})
+            ...(subsetFeedback.length > 0 ? { feedback: { byFeature: subsetFeedback } } : {}),
+            designWarnings
           }),
           xlsx: await renderTestsWorkbook(
             subset,
@@ -1276,6 +1334,8 @@ export async function figmaGenerateTests(
         }
       }
     }
+
+    applyDesignWarnings();
 
     return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
   } catch (error) {

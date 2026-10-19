@@ -1597,3 +1597,152 @@ test("renderMarkdown: 带 feedback 追加裁决反馈段；不带/空不出现",
   const empty = renderMarkdown(cases, { source: "t", generatedAt: "now" }, { feedback: { byFeature: [] } });
   assert.doesNotMatch(empty, /上轮案例问题修订提示/);
 });
+
+test("figma_generate_tests: 文件模式把 flows warnings 写进响应/tests.json/tests.md", async () => {
+  const dir = makeFlowsProject();
+  const flowsPath = path.join(dir, ".artemis", "design", "flows.json");
+  const raw = JSON.parse(fs.readFileSync(flowsPath, "utf-8"));
+  const flowsWarnings = [
+    {
+      code: "unresolved-destinations",
+      message: "2 个跳转目标不在当前解析范围内（跨文件/跨页跳转？）：对应边无目的地",
+      details: ["Success", "Settings"]
+    },
+    { code: "no-entry", message: "原型未识别到入口屏（所有屏幕都有入边）" }
+  ];
+  fs.writeFileSync(flowsPath, JSON.stringify({ ...raw, warnings: flowsWarnings }), "utf-8");
+
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { screens: false }));
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.designWarnings.slice(0, 2), flowsWarnings);
+  assert.equal(payload.designWarningsSummary.total, payload.designWarnings.length);
+  assert.equal(payload.designWarningsSummary.byCode["unresolved-destinations"], 1);
+  assert.equal(payload.designWarningsSummary.bySource.flows, 2);
+  assert.ok(
+    payload.warnings.some((entry) => entry.code === "no-entry"),
+    "合并后的 warnings 也含设计源警告"
+  );
+
+  const saved = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
+  assert.deepEqual(saved.designWarnings, payload.designWarnings);
+  assert.deepEqual(saved.designWarningsSummary, payload.designWarningsSummary);
+
+  const markdown = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.match(markdown, /## 设计源警告（不阻断生成）/);
+  assert.match(markdown, /unresolved-destinations/);
+  assert.match(markdown, /跨文件\/跨页跳转/);
+  assert.match(markdown, /明细：Success、Settings/);
+});
+
+test("figma_generate_tests: URL 模式现算 flowGraphWarnings", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const originalFetch = globalThis.fetch;
+  const originalToken = process.env.FIGMA_ACCESS_TOKEN;
+  const originalTtl = process.env.AOS_FIGMA_CACHE_TTL_MS;
+  process.env.FIGMA_ACCESS_TOKEN = "figma-warning-token";
+  process.env.AOS_FIGMA_CACHE_TTL_MS = "0";
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.figma.com" && url.pathname === "/v1/files/warn123") {
+      return new Response(
+        JSON.stringify({
+          name: "Warn App",
+          document: {
+            id: "0:0",
+            name: "Doc",
+            type: "DOCUMENT",
+            children: [
+              {
+                id: "1:0",
+                name: "Page",
+                type: "PAGE",
+                children: [
+                  { id: "2:1", name: "Home", type: "FRAME", children: [] },
+                  { id: "2:2", name: "Detail", type: "FRAME", children: [] }
+                ]
+              }
+            ]
+          }
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    return new Response("not found", { status: 404 });
+  };
+  try {
+    const payload = parseToolResult(
+      await figmaGenerateTests(runtime, {
+        url: "https://www.figma.com/design/warn123/Warn-App",
+        screens: false
+      })
+    );
+    assert.equal(payload.ok, true);
+    const warning = payload.designWarnings.find((entry) => entry.code === "no-interactions");
+    assert.ok(warning, "URL 模式现算 no-interactions");
+    assert.match(warning.message, /2 个屏幕未检测到任何原型交互/);
+    assert.equal(payload.designWarningsSummary.byCode["no-interactions"], 1);
+    assert.ok(payload.designWarningsSummary.bySource.generated >= 1);
+
+    const saved = JSON.parse(
+      fs.readFileSync(path.join(dir, ".artemis", "design", "tests.json"), "utf-8")
+    );
+    assert.deepEqual(saved.designWarnings, payload.designWarnings);
+    const markdown = fs.readFileSync(path.join(dir, ".artemis", "design", "tests.md"), "utf-8");
+    assert.match(markdown, /## 设计源警告（不阻断生成）/);
+    assert.match(markdown, /no-interactions/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.FIGMA_ACCESS_TOKEN;
+    else process.env.FIGMA_ACCESS_TOKEN = originalToken;
+    if (originalTtl === undefined) delete process.env.AOS_FIGMA_CACHE_TTL_MS;
+    else process.env.AOS_FIGMA_CACHE_TTL_MS = originalTtl;
+  }
+});
+
+test("figma_generate_tests: 无警告时 md 不出现空小节", () => {
+  const cases = generateTestCases(buildFlowGraph(syntheticFlowDocument()));
+  const without = renderMarkdown(cases, { source: "t", generatedAt: "now" });
+  assert.doesNotMatch(without, /设计源警告/);
+
+  const empty = renderMarkdown(cases, { source: "t", generatedAt: "now" }, { designWarnings: [] });
+  assert.doesNotMatch(empty, /设计源警告/);
+});
+
+test("figma_generate_tests: flows 与生成期 warnings 合并去重（同 code+message 只留一条）", async () => {
+  const dir = makeFlowsProject();
+  const flowsPath = path.join(dir, ".artemis", "design", "flows.json");
+  const raw = JSON.parse(fs.readFileSync(flowsPath, "utf-8"));
+  const shared = {
+    code: "case-defect-feedback-unavailable",
+    message: "案例问题反馈读取失败（跳过；不影响生成）"
+  };
+  fs.writeFileSync(
+    flowsPath,
+    JSON.stringify({
+      ...raw,
+      warnings: [shared, { code: "no-entry", message: "原型未识别到入口屏" }]
+    }),
+    "utf-8"
+  );
+
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  runtime.store.listSuiteRuns = async () => {
+    throw new Error("store down");
+  };
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+
+  const same = payload.designWarnings.filter((entry) => entry.code === shared.code);
+  assert.equal(same.length, 1, "同 code+message 只保留一条");
+  assert.deepEqual(same[0], shared);
+  assert.equal(payload.designWarningsSummary.bySource.flows, 2);
+  assert.equal(
+    Object.values(payload.designWarningsSummary.bySource).reduce((sum, count) => sum + count, 0),
+    payload.designWarningsSummary.total
+  );
+  assert.ok(
+    payload.warnings.some((entry) => entry.code === shared.code),
+    "生成期 warnings 仍保留"
+  );
+});
