@@ -70,6 +70,8 @@ export interface FlowElementCoverage {
   notEvaluatedCandidates: number;
   /** 整个 target 未进入 vision（`notEvaluatedReason` 传入时为 true；零候选也可据此区分「未评估」与「词表不适配」）。 */
   notEvaluated?: boolean;
+  /** 未评估原因（与 `notEvaluated: true` 同时出现；产物与 flow-map 据此区分零候选的未评估 target）。 */
+  notEvaluatedReason?: CandidateCoverageDetail["reason"];
   candidatesTruncated?: number;
   details: CandidateCoverageDetail[];
 }
@@ -291,7 +293,10 @@ export function evaluateCandidateCoverage(input: {
     notEvaluatedCandidates: notEvaluated,
     details
   };
-  if (input.notEvaluatedReason !== undefined) coverage.notEvaluated = true;
+  if (input.notEvaluatedReason !== undefined) {
+    coverage.notEvaluated = true;
+    coverage.notEvaluatedReason = input.notEvaluatedReason;
+  }
   if (input.candidatesTruncated !== undefined) coverage.candidatesTruncated = input.candidatesTruncated;
   return coverage;
 }

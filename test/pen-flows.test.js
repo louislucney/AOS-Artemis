@@ -719,9 +719,40 @@ test("renderPenFlowMap: 每屏/变体一行覆盖摘要（识别/候选/覆盖/�
       unverifiableCandidates: 0,
       notEvaluatedCandidates: 1,
       notEvaluated: true,
+      notEvaluatedReason: "capped",
       details: []
     }
   ];
+  result.screens.push({
+    id: "ghost",
+    name: "缺失屏",
+    suggestedRoute: "/ghost",
+    childNames: [],
+    textHints: [],
+    sourceBoard: "1. 主流程",
+    sourceFrameName: "Frame 999",
+    inferredName: false,
+    states: [],
+    elementsCoverage: [
+      {
+        state: null,
+        designNodes: 0,
+        candidateNodes: 0,
+        recognizedElements: 0,
+        groundedElements: 0,
+        ungroundedElements: 0,
+        coveredCandidates: 0,
+        uncoveredCandidates: 0,
+        unverifiableCandidates: 0,
+        notEvaluatedCandidates: 0,
+        notEvaluated: true,
+        notEvaluatedReason: "frame-missing",
+        details: []
+      }
+    ],
+    provenance: "inferred",
+    confidence: "low"
+  });
 
   const markdown = renderPenFlowMap({
     file: "design.pen",
@@ -730,7 +761,16 @@ test("renderPenFlowMap: 每屏/变体一行覆盖摘要（识别/候选/覆盖/�
   });
   assert.match(markdown, /覆盖：识别 1 · 候选 2 · 覆盖 1 · 未覆盖 1 · 不可核验 0 · 未评估 0/);
   assert.match(markdown, /状态「主頁-下滑」/);
-  assert.match(markdown, /覆盖：识别 0 · 候选 1 · 覆盖 0 · 未覆盖 0 · 不可核验 0 · 未评估 1/);
+  assert.match(
+    markdown,
+    /覆盖：识别 0 · 候选 1 · 覆盖 0 · 未覆盖 0 · 不可核验 0 · 未评估 1（未评估：capped）/,
+    "变体未评估原因可见"
+  );
+  assert.match(
+    markdown,
+    /覆盖：识别 0 · 候选 0 · 覆盖 0 · 未覆盖 0 · 不可核验 0 · 未评估 0（未评估：frame-missing）/,
+    "零候选的排除 target 也标出未评估原因"
+  );
 });
 
 test("screenshotAccounting: 请求 = 渲染 + 跳过；人为破坏 → mismatch 数字入消息", () => {

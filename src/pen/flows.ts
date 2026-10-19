@@ -555,10 +555,12 @@ function collectTextHints(node: PenNode, perClassLimit: number): FlowHint[] {
 
 function coverageSummary(coverage: FlowElementCoverage | undefined): string | null {
   if (!coverage) return null;
+  const reason =
+    coverage.notEvaluatedReason !== undefined ? `（未评估：${coverage.notEvaluatedReason}）` : "";
   return (
     `覆盖：识别 ${coverage.recognizedElements} · 候选 ${coverage.candidateNodes} · ` +
     `覆盖 ${coverage.coveredCandidates} · 未覆盖 ${coverage.uncoveredCandidates} · ` +
-    `不可核验 ${coverage.unverifiableCandidates} · 未评估 ${coverage.notEvaluatedCandidates}`
+    `不可核验 ${coverage.unverifiableCandidates} · 未评估 ${coverage.notEvaluatedCandidates}${reason}`
   );
 }
 

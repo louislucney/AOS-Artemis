@@ -973,6 +973,113 @@ test("runVisionPass: 无渲染图 target 进 skipped 桶（主屏/变体分桶�
   assert.equal(login.elementsCoverage[0].details[0].reason, "render-missing");
 });
 
+test("runVisionPass: state frame-missing 计入 statesFrameMissing", async () => {
+  const pass = await runVisionPass({
+    chat: silentChat,
+    screens: [target()],
+    excluded: [
+      {
+        screenId: "ghost-state",
+        screenName: "主頁",
+        state: "主頁-錯誤",
+        reason: "frame-missing",
+        candidates: [],
+        designNodes: 0
+      }
+    ],
+    maxScreens: 1,
+    imageFor: () => "data:image/png;base64,AA==",
+    renderPath: () => null
+  });
+  assert.equal(pass.stats.screensInput, 1);
+  assert.equal(pass.stats.statesInput, 1);
+  assert.equal(pass.stats.screensFrameMissing, 0);
+  assert.equal(pass.stats.statesFrameMissing, 1);
+  assert.equal(pass.stats.statesNoGeometry, 0);
+  assert.equal(pass.stats.statesCapped, 0, "排除项不占 cap 名额");
+  assert.equal(pass.stats.screensRequested, 1);
+  assert.equal(pass.stats.statesRequested, 0);
+  assert.equal(pass.stats.targetsRequested, 1);
+  assert.equal(pass.accounting.ok, true);
+  assert.ok(!pass.warnings.some((warning) => warning.code === "vision-accounting-mismatch"));
+  const coverage = pass.coverageByTarget.get("ghost-state");
+  assert.equal(coverage.state, "主頁-錯誤");
+  assert.equal(coverage.notEvaluated, true);
+  assert.equal(coverage.notEvaluatedReason, "frame-missing");
+  assert.equal(coverage.notEvaluatedCandidates, 0);
+});
+
+test("runVisionPass: state no-geometry 计入 statesNoGeometry", async () => {
+  const pass = await runVisionPass({
+    chat: silentChat,
+    screens: [target()],
+    excluded: [
+      {
+        screenId: "size-less-state",
+        screenName: "主頁",
+        state: "主頁-載入",
+        reason: "no-geometry",
+        candidates: [
+          {
+            id: "loading-cta",
+            name: "取消 Button",
+            type: "frame",
+            textHints: ["取消"],
+            state: "主頁-載入"
+          }
+        ],
+        designNodes: 2
+      }
+    ],
+    imageFor: () => "data:image/png;base64,AA==",
+    renderPath: () => null
+  });
+  assert.equal(pass.stats.statesInput, 1);
+  assert.equal(pass.stats.statesNoGeometry, 1);
+  assert.equal(pass.stats.statesFrameMissing, 0);
+  assert.equal(pass.stats.statesCapped, 0);
+  assert.equal(pass.stats.statesRequested, 0);
+  assert.equal(pass.accounting.ok, true);
+  const coverage = pass.coverageByTarget.get("size-less-state");
+  assert.equal(coverage.notEvaluatedReason, "no-geometry");
+  assert.equal(coverage.candidateNodes, 1);
+  assert.equal(coverage.notEvaluatedCandidates, 1);
+  assert.equal(coverage.details[0].reason, "no-geometry");
+});
+
+test("runVisionPass: state 调用失败计入 statesFailed（不是 skipped）", async () => {
+  const chat = async (messages) => {
+    const text = messages[1].content[0].text;
+    if (text.includes("主頁-登入")) throw new Error("HTTP 500");
+    return JSON.stringify({ elements: [] });
+  };
+  const pass = await runVisionPass({
+    chat,
+    screens: [
+      target(),
+      target({ id: "home-login", name: "主頁-登入", stateOf: "home", stateName: "主頁-登入" })
+    ],
+    imageFor: () => "data:image/png;base64,AA==",
+    renderPath: () => null
+  });
+  assert.equal(pass.stats.screensProcessed, 1);
+  assert.equal(pass.stats.screensFailed, 0);
+  assert.equal(pass.stats.statesProcessed, 0);
+  assert.equal(pass.stats.statesFailed, 1);
+  assert.equal(pass.stats.statesSkipped, 0);
+  assert.equal(pass.stats.failures, 1);
+  assert.equal(pass.stats.screensRequested, 1);
+  assert.equal(pass.stats.statesRequested, 1);
+  assert.equal(pass.stats.targetsRequested, 2);
+  assert.equal(pass.accounting.ok, true);
+  assert.ok(!pass.warnings.some((warning) => warning.code === "vision-accounting-mismatch"));
+  const warning = pass.warnings.find((entry) => entry.code === "vision-call-failed");
+  assert.match(warning.message, /主頁-登入/);
+  assert.match(warning.message, /HTTP 500/);
+  const coverage = pass.coverageByTarget.get("home-login");
+  assert.equal(coverage.notEvaluatedReason, "failed");
+});
+
 test("runVisionPass: 变体独有 Button 未识别 → vision-candidate-uncovered 带 state 名", async () => {
   const pass = await runVisionPass({
     chat: silentChat,
