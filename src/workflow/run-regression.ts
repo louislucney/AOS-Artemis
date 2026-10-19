@@ -261,13 +261,11 @@ export async function runRegression(
     executed += report.executed;
     passed += report.passed;
     failed += report.failed;
-    if (report.preflight?.designWarningSummary) {
-      designWarningBatches.push({
-        source: target.feature,
-        warnings: report.preflight.designWarnings ?? [],
-        summary: report.preflight.designWarningSummary
-      });
-    }
+    designWarningBatches.push({
+      source: target.feature,
+      warnings: report.preflight?.designWarnings ?? [],
+      summary: report.preflight?.designWarningSummary ?? null
+    });
     for (const entry of report.cases) {
       if (typeof entry.traceId === "string" && entry.traceId !== "") traceIds.push(entry.traceId);
     }

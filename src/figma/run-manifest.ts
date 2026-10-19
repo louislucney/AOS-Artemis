@@ -221,28 +221,40 @@ function copyWarningSummary(summary: WarningSummary | null | undefined): Warning
 export interface DesignWarningBatch {
   source: string;
   warnings: DesignWarning[];
-  summary: WarningSummary;
+  summary: WarningSummary | null;
 }
 
-/** 跨批次合并：同 code+message 去重、按来源计数；无批次 → null（缺失不折算成 0 条）。 */
-export function mergeDesignWarningBatches(batches: DesignWarningBatch[]): WarningSummary | null {
-  if (batches.length === 0) return null;
+export interface MergedDesignWarnings extends WarningSummary {
+  /** 无设计源警告摘要的集数（preflight 缺失或未产出摘要）；>0 表示合并覆盖不完整。 */
+  missingSets: number;
+}
+
+/** 跨批次合并：同 code+message 去重、按来源计数；无任何摘要 → null（缺失不折算成 0 条）。
+ * 部分集缺摘要时保留已有摘要的合并结果，并以 `missingSets` 显式披露覆盖缺口。 */
+export function mergeDesignWarningBatches(batches: DesignWarningBatch[]): MergedDesignWarnings | null {
+  const present = batches.filter(
+    (batch): batch is DesignWarningBatch & { summary: WarningSummary } => batch.summary !== null
+  );
+  if (present.length === 0) return null;
   const merged = mergeWarnings(
-    batches.map((batch) => ({ source: batch.source, warnings: batch.warnings }))
+    present.map((batch) => ({ source: batch.source, warnings: batch.warnings }))
   );
   const snapshotAts = [
     ...new Set(
-      batches
+      present
         .map((batch) => batch.summary.snapshotAt)
         .filter((value): value is string => typeof value === "string" && value !== "")
     )
   ];
-  return summarizeWarnings(merged.warnings, {
-    available: batches.some((batch) => batch.summary.available),
-    bySource: merged.bySource,
-    ...(snapshotAts.length === 1 ? { snapshotAt: snapshotAts[0] } : {}),
-    stale: batches.some((batch) => batch.summary.stale === true)
-  });
+  return {
+    ...summarizeWarnings(merged.warnings, {
+      available: present.some((batch) => batch.summary.available),
+      bySource: merged.bySource,
+      ...(snapshotAts.length === 1 ? { snapshotAt: snapshotAts[0] } : {}),
+      stale: present.some((batch) => batch.summary.stale === true)
+    }),
+    missingSets: batches.length - present.length
+  };
 }
 
 export function buildRunManifest(input: BuildRunManifestInput): RunManifest {

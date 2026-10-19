@@ -700,7 +700,7 @@ test("verify_jira_issue: 响应含 designWarnings（缺 preflight 摘要 → nul
   const payload = payloadOf(
     await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1", dryRun: true }, withWarnings.deps)
   );
-  assert.deepEqual(payload.designWarnings, { ...summary, bySource: { 账户: 1 } });
+  assert.deepEqual(payload.designWarnings, { ...summary, bySource: { 账户: 1 }, missingSets: 0 });
 
   const withoutWarnings = makeDeps(dir, {
     sets: [record("figma:x", [featureRecord(casesFile, { caseCount: 1 })])],
@@ -711,4 +711,47 @@ test("verify_jira_issue: 响应含 designWarnings（缺 preflight 摘要 → nul
     await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1", dryRun: true }, withoutWarnings.deps)
   );
   assert.equal(plainPayload.designWarnings, null);
+});
+
+test("verify_jira_issue: 部分 set 缺 preflight 摘要 → designWarnings 披露 missingSets", async () => {
+  const dir = tempDir();
+  const accounts = writeCasesFile(dir, "账户登录.json", [{ id: "c1", name: "错误密码" }]);
+  const orders = writeCasesFile(dir, "账户退出.json", [{ id: "c2", name: "退出登录" }]);
+  const summary = {
+    available: true,
+    total: 1,
+    byCode: { "flow-graph-empty": 1 },
+    codes: ["flow-graph-empty"],
+    snapshotAt: "2026-10-18T00:00:00.000Z",
+    stale: false
+  };
+  const { deps } = makeDeps(dir, {
+    sets: [
+      record("figma:x", [
+        featureRecord(accounts, { key: "f-a", name: "账户登录", caseCount: 1 }),
+        featureRecord(orders, { key: "f-b", name: "账户退出", caseCount: 1 })
+      ])
+    ]
+  });
+  deps.executeBatch = async (runtime, request) => {
+    void runtime;
+    const preflight =
+      request.options.testsPath === accounts
+        ? {
+            weakCases: [],
+            designWarnings: [{ code: "flow-graph-empty", message: "流程图为空" }],
+            designWarningSummary: summary
+          }
+        : { weakCases: [] };
+    return batchStub(reportStub({ cases: [caseStub("c1")], preflight }));
+  };
+
+  const payload = payloadOf(
+    await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1", scope: "账户", dryRun: true }, deps)
+  );
+
+  assert.equal(payload.designWarnings.available, true);
+  assert.equal(payload.designWarnings.total, 1);
+  assert.equal(payload.designWarnings.missingSets, 1, "缺摘要的 set 必须显式披露");
+  assert.deepEqual(payload.designWarnings.bySource, { 账户登录: 1 });
 });

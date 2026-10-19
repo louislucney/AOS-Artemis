@@ -376,13 +376,11 @@ export async function verifyJiraIssue(
     if (typeof batch.runId === "string" && batch.runId !== "") {
       runs.push({ runId: batch.runId, caseIds: report.cases.map((entry) => entry.caseId) });
     }
-    if (report.preflight?.designWarningSummary) {
-      designWarningBatches.push({
-        source: target.feature,
-        warnings: report.preflight.designWarnings ?? [],
-        summary: report.preflight.designWarningSummary
-      });
-    }
+    designWarningBatches.push({
+      source: target.feature,
+      warnings: report.preflight?.designWarnings ?? [],
+      summary: report.preflight?.designWarningSummary ?? null
+    });
     const weakIds = new Set((report.preflight?.weakCases ?? []).map((entry) => entry.id));
     for (const entry of report.cases) {
       const classification = classifyCase(entry, weakIds);
