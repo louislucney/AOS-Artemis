@@ -105,6 +105,47 @@ test("resolveDesignWarnings: tests 快照优先，flows 回退，缺省 none", (
   }
 });
 
+test("resolveDesignWarnings: 缺少字段视为不可用，显式空数组才是 0 条", () => {
+  const missingField = tempConfigDir();
+  const emptySnapshot = tempConfigDir();
+  const flowsNoWarnings = tempConfigDir();
+  try {
+    writeJson(path.join(missingField, "design", "flows.json"), {
+      warnings: [{ code: "flow-warn", message: "flows 有效" }]
+    });
+    writeJson(path.join(missingField, "design", "tests.json"), { flows: [] });
+    assert.equal(readTestsWarnings(missingField).available, false, "缺 designWarnings 字段不可用");
+    const fallback = resolveDesignWarnings(missingField);
+    assert.equal(fallback.source, "flows");
+    assert.equal(fallback.summary.available, true);
+    assert.equal(fallback.summary.total, 1);
+    assert.deepEqual(fallback.warnings.map((warning) => warning.code), ["flow-warn"]);
+
+    writeJson(path.join(emptySnapshot, "design", "flows.json"), {
+      warnings: [{ code: "flow-warn", message: "flows 有效" }]
+    });
+    writeJson(path.join(emptySnapshot, "design", "tests.json"), { designWarnings: [] });
+    assert.equal(readTestsWarnings(emptySnapshot).available, true, "显式空数组仍可用");
+    const explicitEmpty = resolveDesignWarnings(emptySnapshot);
+    assert.equal(explicitEmpty.source, "tests");
+    assert.equal(explicitEmpty.summary.available, true);
+    assert.equal(explicitEmpty.summary.total, 0);
+
+    writeJson(path.join(flowsNoWarnings, "design", "flows.json"), { screens: [] });
+    const flows = readFlowsWarnings(flowsNoWarnings);
+    assert.equal(flows.available, false, "缺 warnings 字段不可用");
+    assert.equal(flows.snapshotAt, null);
+    assert.deepEqual(flows.warnings, []);
+    const none = resolveDesignWarnings(flowsNoWarnings);
+    assert.equal(none.source, "none");
+    assert.equal(none.summary.available, false);
+  } finally {
+    for (const dir of [missingField, emptySnapshot, flowsNoWarnings]) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("resolveDesignWarnings: tests 早于 flows 时 stale=true", () => {
   const dir = tempConfigDir();
   try {

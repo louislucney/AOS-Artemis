@@ -72,8 +72,10 @@ function readSnapshot(file: string, field: "warnings" | "designWarnings"): Warni
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
       return unavailableSnapshot();
     }
+    const fieldValue = (parsed as Record<string, unknown>)[field];
+    if (!Array.isArray(fieldValue)) return unavailableSnapshot();
     return {
-      warnings: normalizeWarnings((parsed as Record<string, unknown>)[field]),
+      warnings: normalizeWarnings(fieldValue),
       snapshotAt: stat.mtime.toISOString(),
       available: true,
       mtimeMs: stat.mtime.getTime()
