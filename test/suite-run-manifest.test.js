@@ -213,6 +213,59 @@ test("buildRunManifest：字段映射、汇总、gate 与 failureDomains", () =>
   assert.equal("reset" in manifest.cases[0], false);
 });
 
+test("run manifest: designWarnings 快照写入，历史批次不随 flows 变化", () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const summary = {
+    available: true,
+    total: 2,
+    byCode: { "flow-graph-empty": 1, "vision-degraded": 1 },
+    codes: ["flow-graph-empty", "vision-degraded"],
+    snapshotAt: "2026-10-13T08:00:00.000Z",
+    stale: false
+  };
+  const preflight = {
+    cases: 1,
+    weakCases: [],
+    coverage: {
+      available: false,
+      designScreens: [],
+      screens: [],
+      uncoveredScreens: [],
+      uncoveredEdges: [],
+      explore: { uncoveredScreens: [], uncoveredEdges: [] }
+    },
+    generation: null,
+    artifacts: { testsFile: "t.json", excelFile: "t.xlsx", excelPresent: true, excelStale: false },
+    dataPolicy: { missing: [] },
+    designWarnings: [
+      { code: "flow-graph-empty", message: "流程图为空" },
+      { code: "vision-degraded", message: "视觉识别不可用" }
+    ],
+    designWarningSummary: summary,
+    designWarningsSource: "tests",
+    designWarningsSnapshotAt: summary.snapshotAt,
+    designWarningsStale: false
+  };
+  const manifest = makeManifest("2026-10-13T08:15:00.000Z", { preflight });
+
+  assert.deepEqual(manifest.designWarnings, summary);
+  assert.notEqual(manifest.designWarnings, summary, "摘要为拷贝，不与报告共享引用");
+
+  const file = saveRunManifest(dir, manifest);
+  fs.mkdirSync(path.join(dir, "design"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "design", "flows.json"),
+    JSON.stringify({ warnings: [{ code: "later-warning", message: "后续变化" }] }),
+    "utf-8"
+  );
+
+  const read = loadRunManifest(dir, path.basename(file));
+  assert.equal(read.kind, "ok");
+  assert.deepEqual(read.manifest.designWarnings, summary);
+
+  assert.equal(makeManifest("2026-10-13T08:16:00.000Z").designWarnings, null);
+});
+
 test("buildRunManifest：未执行批次与全通过批次的口径", () => {
   const notExecuted = buildRunManifest({
     report: makeReport([], { ok: false, error: "无法读取用例文件" }),

@@ -3,6 +3,10 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CaseSetRecord } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
 import { executeSuiteBatch } from "../figma/suite-batch.js";
+import {
+  mergeDesignWarningBatches,
+  type DesignWarningBatch
+} from "../figma/run-manifest.js";
 import type { SuiteCaseResult } from "../figma/suite-runner.js";
 import { adfToText } from "../jira/adf.js";
 import type { JiraClient } from "../jira/client.js";
@@ -318,6 +322,7 @@ export async function verifyJiraIssue(
   const runs: Array<{ runId: string; caseIds: string[] }> = [];
   const failedEntries: FailedEntry[] = [];
   const traceIds: string[] = [];
+  const designWarningBatches: DesignWarningBatch[] = [];
   let total = 0;
   let executed = 0;
   let passed = 0;
@@ -370,6 +375,13 @@ export async function verifyJiraIssue(
     }
     if (typeof batch.runId === "string" && batch.runId !== "") {
       runs.push({ runId: batch.runId, caseIds: report.cases.map((entry) => entry.caseId) });
+    }
+    if (report.preflight?.designWarningSummary) {
+      designWarningBatches.push({
+        source: target.feature,
+        warnings: report.preflight.designWarnings ?? [],
+        summary: report.preflight.designWarningSummary
+      });
     }
     const weakIds = new Set((report.preflight?.weakCases ?? []).map((entry) => entry.id));
     for (const entry of report.cases) {
@@ -493,6 +505,7 @@ export async function verifyJiraIssue(
     ...(scope !== null ? { scope: { keyword: scope, hits: totalCases } } : {}),
     steps,
     artifacts: { sets: summaries, ...(testsFile !== null ? { testsFile } : {}) },
+    designWarnings: mergeDesignWarningBatches(designWarningBatches),
     run: {
       device,
       sets: targets.length,

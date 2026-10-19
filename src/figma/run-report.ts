@@ -18,6 +18,7 @@ import type { TaskStatRecord } from "../db/types.js";
 import type { Runtime } from "../runtime.js";
 import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
+import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
 import { loadDesignFlowGraph, loadGeneratedCases, type GeneratedCase } from "./design-store.js";
 import {
   buildTraceability,
@@ -61,6 +62,8 @@ export interface RunReport {
   pending: number;
   cases: RunReportCase[];
   traceability: TraceabilityReport | null;
+  /** 当前设计源警告摘要（tests 快照优先、flows 回退）；读取失败 → null。 */
+  designWarnings: WarningSummary | null;
   saved?: { xlsx: string; junit: string };
   error?: string;
 }
@@ -99,6 +102,14 @@ function readFlowCoverageInputs(runtime: Runtime): { screens: string[]; edges: C
       to: edge.to ? edge.to.name : null
     }))
   };
+}
+
+function designWarningsOf(runtime: Runtime): WarningSummary | null {
+  try {
+    return resolveDesignWarnings(runtime.configDirAbs).summary;
+  } catch {
+    return null;
+  }
 }
 
 function durationOf(task: TaskStatRecord, status: TaskStatus | null): number | null {
@@ -310,6 +321,7 @@ export async function buildRunReport(
       pending: 0,
       cases: [],
       traceability: null,
+      designWarnings: designWarningsOf(runtime),
       error: `无法读取运行台账：${errorMessage(error)}`
     };
   }
@@ -408,7 +420,8 @@ export async function buildRunReport(
     failed: results.length - passed - pending,
     pending,
     cases: results,
-    traceability
+    traceability,
+    designWarnings: designWarningsOf(runtime)
   };
 
   if (options.save !== false) {
@@ -465,6 +478,7 @@ export async function buildTaskRunReport(
       pending: 0,
       cases: [],
       traceability: null,
+      designWarnings: designWarningsOf(runtime),
       error: `未找到回归任务 ${options.taskId}`
     };
   }
@@ -517,7 +531,8 @@ export async function buildTaskRunReport(
     failed: results.length - passed - pending,
     pending,
     cases: results,
-    traceability: null
+    traceability: null,
+    designWarnings: designWarningsOf(runtime)
   };
   if (options.save !== false) {
     const stamp = options.stamp ?? stampOf(new Date(generatedAt));

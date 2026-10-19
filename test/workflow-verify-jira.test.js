@@ -673,3 +673,42 @@ test("verify_jira_issue: >200 份时窗口外功能仍进入候选（默认读�
   assert.deepEqual(payload.mapping, { selected: 1 });
   assert.equal(calls.execute[0].options.testsPath, targetJsonPath);
 });
+
+test("verify_jira_issue: 响应含 designWarnings（缺 preflight 摘要 → null）", async () => {
+  const dir = tempDir();
+  const casesFile = writeCasesFile(dir, "账户.json", [{ id: "c1", name: "错误密码" }]);
+  const summary = {
+    available: true,
+    total: 1,
+    byCode: { "flow-graph-empty": 1 },
+    codes: ["flow-graph-empty"],
+    snapshotAt: "2026-10-18T00:00:00.000Z",
+    stale: false
+  };
+  const withWarnings = makeDeps(dir, {
+    sets: [record("figma:x", [featureRecord(casesFile, { caseCount: 1 })])],
+    mappingReply: '{"caseIds":["c1"]}',
+    report: reportStub({
+      cases: [caseStub("c1")],
+      preflight: {
+        weakCases: [],
+        designWarnings: [{ code: "flow-graph-empty", message: "流程图为空" }],
+        designWarningSummary: summary
+      }
+    })
+  });
+  const payload = payloadOf(
+    await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1", dryRun: true }, withWarnings.deps)
+  );
+  assert.deepEqual(payload.designWarnings, { ...summary, bySource: { 账户: 1 } });
+
+  const withoutWarnings = makeDeps(dir, {
+    sets: [record("figma:x", [featureRecord(casesFile, { caseCount: 1 })])],
+    mappingReply: '{"caseIds":["c1"]}',
+    report: reportStub({ cases: [caseStub("c1")] })
+  });
+  const plainPayload = payloadOf(
+    await verifyJiraIssue(stubRuntime(dir), { issueKey: "AOS-1", dryRun: true }, withoutWarnings.deps)
+  );
+  assert.equal(plainPayload.designWarnings, null);
+});

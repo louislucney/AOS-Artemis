@@ -2,6 +2,10 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { CaseSetRecord } from "../db/types.js";
 import { executeSuiteBatch } from "../figma/suite-batch.js";
+import {
+  mergeDesignWarningBatches,
+  type DesignWarningBatch
+} from "../figma/run-manifest.js";
 import { log as logInfo } from "../log.js";
 import { platformOf } from "../tasks/run-registry.js";
 import type { Runtime } from "../runtime.js";
@@ -208,6 +212,7 @@ export async function runRegression(
   let failed = 0;
   let gate: "passed" | "failed" = "passed";
   const traceIds: string[] = [];
+  const designWarningBatches: DesignWarningBatch[] = [];
   for (const target of targets) {
     let batch;
     try {
@@ -256,6 +261,13 @@ export async function runRegression(
     executed += report.executed;
     passed += report.passed;
     failed += report.failed;
+    if (report.preflight?.designWarningSummary) {
+      designWarningBatches.push({
+        source: target.feature,
+        warnings: report.preflight.designWarnings ?? [],
+        summary: report.preflight.designWarningSummary
+      });
+    }
     for (const entry of report.cases) {
       if (typeof entry.traceId === "string" && entry.traceId !== "") traceIds.push(entry.traceId);
     }
@@ -269,6 +281,7 @@ export async function runRegression(
     ...(scopeHits !== null ? { scope: { keyword: scope, hits: scopeHits } } : {}),
     steps,
     artifacts: { sets: summaries },
+    designWarnings: mergeDesignWarningBatches(designWarningBatches),
     run: {
       device,
       sets: targets.length,

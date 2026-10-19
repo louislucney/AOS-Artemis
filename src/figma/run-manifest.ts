@@ -8,6 +8,12 @@ import {
   type FailureConfidence,
   type FailureDomain
 } from "../artemis/failure-taxonomy.js";
+import {
+  mergeWarnings,
+  summarizeWarnings,
+  type DesignWarning,
+  type WarningSummary
+} from "../design/warnings.js";
 import { designDir } from "./design-store.js";
 import type { SuiteCaseResult, SuiteRunReport } from "./suite-runner.js";
 
@@ -96,6 +102,8 @@ export interface RunManifest {
   tests: { path: string; sha256: string | null; generatedAt: string | null };
   options: RunManifestOptions;
   preflight: RunManifestPreflightSummary | null;
+  /** 运行期设计源警告摘要（冻结快照；无 preflight → null，不回读当前 flows）。 */
+  designWarnings: WarningSummary | null;
   apiErrorCatalog: { file: string; rules: number; errors: string[] } | null;
   summary: {
     total: number;
@@ -200,6 +208,43 @@ export function summarizePreflight(report: SuiteRunReport["preflight"]): RunMani
   };
 }
 
+function copyWarningSummary(summary: WarningSummary | null | undefined): WarningSummary | null {
+  if (!summary) return null;
+  return {
+    ...summary,
+    byCode: { ...summary.byCode },
+    codes: [...summary.codes],
+    ...(summary.bySource ? { bySource: { ...summary.bySource } } : {})
+  };
+}
+
+export interface DesignWarningBatch {
+  source: string;
+  warnings: DesignWarning[];
+  summary: WarningSummary;
+}
+
+/** 跨批次合并：同 code+message 去重、按来源计数；无批次 → null（缺失不折算成 0 条）。 */
+export function mergeDesignWarningBatches(batches: DesignWarningBatch[]): WarningSummary | null {
+  if (batches.length === 0) return null;
+  const merged = mergeWarnings(
+    batches.map((batch) => ({ source: batch.source, warnings: batch.warnings }))
+  );
+  const snapshotAts = [
+    ...new Set(
+      batches
+        .map((batch) => batch.summary.snapshotAt)
+        .filter((value): value is string => typeof value === "string" && value !== "")
+    )
+  ];
+  return summarizeWarnings(merged.warnings, {
+    available: batches.some((batch) => batch.summary.available),
+    bySource: merged.bySource,
+    ...(snapshotAts.length === 1 ? { snapshotAt: snapshotAts[0] } : {}),
+    stale: batches.some((batch) => batch.summary.stale === true)
+  });
+}
+
 export function buildRunManifest(input: BuildRunManifestInput): RunManifest {
   const { report } = input;
   const quarantinedFailed = report.cases.filter(
@@ -240,6 +285,7 @@ export function buildRunManifest(input: BuildRunManifestInput): RunManifest {
     },
     options: input.options,
     preflight: summarizePreflight(report.preflight),
+    designWarnings: copyWarningSummary(report.preflight?.designWarningSummary),
     apiErrorCatalog: report.apiErrorCatalog
       ? {
           file: report.apiErrorCatalog.file,

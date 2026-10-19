@@ -374,6 +374,72 @@ test("run_regression: 同一 Excel 更新后只跑最新份（featureKey 稳定�
   assert.equal(requests[0].options.testsPath, v2.sets[0].jsonPath);
 });
 
+test("run_regression: 响应含跨 set 合并的 designWarnings", async () => {
+  const sets = [
+    record("figma:abc", "2026-10-17T02:00:00.000Z", [
+      featureRecord("/p/a.json", { key: "fa", name: "账户" }),
+      featureRecord("/p/b.json", { key: "fb", name: "交易" })
+    ])
+  ];
+  const shared = { code: "flow-graph-empty", message: "流程图为空" };
+  const preflights = {
+    "/p/a.json": {
+      designWarnings: [{ code: "vision-degraded", message: "视觉识别不可用" }, shared],
+      designWarningSummary: {
+        available: true,
+        total: 2,
+        byCode: { "vision-degraded": 1, "flow-graph-empty": 1 },
+        codes: ["vision-degraded", "flow-graph-empty"],
+        snapshotAt: "2026-10-17T00:00:00.000Z",
+        stale: false
+      }
+    },
+    "/p/b.json": {
+      designWarnings: [shared, { code: "screenshot-missing", message: "缺少屏幕截图" }],
+      designWarningSummary: {
+        available: true,
+        total: 2,
+        byCode: { "flow-graph-empty": 1, "screenshot-missing": 1 },
+        codes: ["flow-graph-empty", "screenshot-missing"],
+        snapshotAt: "2026-10-17T00:00:00.000Z",
+        stale: true
+      }
+    }
+  };
+  const { deps } = makeDeps({
+    listSets: async () => sets,
+    executeBatch: async (runtime, request) =>
+      batchStub(
+        reportStub({ preflight: preflights[request.options.testsPath] }),
+        "/p/runs/1.json"
+      )
+  });
+
+  const payload = payloadOf(await runRegression(stubRuntime(), { all: true }, deps));
+
+  assert.equal(payload.designWarnings.available, true);
+  assert.equal(payload.designWarnings.total, 3, "同 code+message 跨 set 去重");
+  assert.deepEqual(payload.designWarnings.codes, [
+    "vision-degraded",
+    "flow-graph-empty",
+    "screenshot-missing"
+  ]);
+  assert.deepEqual(payload.designWarnings.byCode, {
+    "vision-degraded": 1,
+    "flow-graph-empty": 1,
+    "screenshot-missing": 1
+  });
+  assert.deepEqual(payload.designWarnings.bySource, { 账户: 2, 交易: 1 });
+  assert.equal(payload.designWarnings.snapshotAt, "2026-10-17T00:00:00.000Z");
+  assert.equal(payload.designWarnings.stale, true);
+});
+
+test("run_regression: 缺 preflight 摘要 → designWarnings null（不伪造 0）", async () => {
+  const { deps } = makeDeps();
+  const payload = payloadOf(await runRegression(stubRuntime(), { excelPath: "qa/cases.xlsx" }, deps));
+  assert.equal(payload.designWarnings, null);
+});
+
 test("run_regression: >200 份时 scope 仍命中窗口外功能（默认读取全量）", async () => {
   const dir = makeTempProject({ config: baseConfig() });
   const store = new MemoryStore();

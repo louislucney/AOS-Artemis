@@ -115,6 +115,29 @@ async function setup() {
   return { dir, runtime, designDir, store };
 }
 
+test("run report: 摘要包含 designWarnings", async () => {
+  const { runtime, designDir } = await setup();
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [],
+      edges: [],
+      warnings: [
+        { code: "flow-graph-empty", message: "流程图为空" },
+        { code: "vision-degraded", message: "视觉识别不可用" }
+      ]
+    })
+  );
+
+  const report = await buildRunReport(runtime, { save: false });
+
+  assert.equal(report.designWarnings.available, true);
+  assert.equal(report.designWarnings.total, 2);
+  assert.deepEqual(report.designWarnings.codes, ["flow-graph-empty", "vision-degraded"]);
+  assert.deepEqual(report.designWarnings.byCode, { "flow-graph-empty": 1, "vision-degraded": 1 });
+  assert.ok(!Number.isNaN(Date.parse(report.designWarnings.snapshotAt)));
+});
+
 test("run report: ledger rows get outcome, duration, evidence and failure domain", async () => {
   const { dir, runtime, designDir } = await setup();
   const report = await buildRunReport(runtime, { save: false });
