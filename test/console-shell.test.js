@@ -66,6 +66,8 @@ test("console shell: 项目导航项、切换器与任务锚点", () => {
   );
   assert.doesNotMatch(html, /section=tasks#regression/);
   assert.match(html, /g j<\/span> 项目/, "项目快捷键 j");
+  assert.match(html, /window\.aosInlineConfirm=function/, "站内确认助手随壳提供");
+  assert.match(html, /\.c-confirm-inline\{display:inline-flex/, "站内确认条样式");
 });
 
 test("console shell: 独立统计进程（品牌指 /usage，隐藏全局搜索）", () => {

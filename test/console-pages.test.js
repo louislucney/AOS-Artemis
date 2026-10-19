@@ -59,6 +59,8 @@ test("console pages: 用例库（份列表＋隔离徽章）", async () => {
   assert.match(html.body, /隔离中 0/);
   assert.match(html.body, /按份下发/);
   assert.match(html.body, /&amp;section=dispatch/, "链接实体转义（无裸 &）");
+  assert.match(html.body, /aosInlineConfirm\(b,'确认移除该隔离条目？'/, "隔离移除走站内确认");
+  assert.doesNotMatch(html.body, /[^a-zA-Z_.]confirm\(/, "无原生 confirm 残留");
   assert.match(html.body, /c-table-wrap/, "表格横向滚动容器（窄屏不整页溢出）");
   assert.match(html.body, /下发该份/, "份行内动作");
   assert.match(html.body, /section=dispatch&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");

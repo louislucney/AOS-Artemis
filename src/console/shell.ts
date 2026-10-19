@@ -212,6 +212,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     project === null || project === ""
       ? ""
       : `<script>try{localStorage.setItem("aos-last-project",${JSON.stringify(project).replace(/</g, "\\u003c")});}catch(e){}</script>`;
+  const inlineConfirmScript = `<script>(function(){window.aosInlineConfirm=function(button,message,onConfirm){var host=button.parentNode;var box=document.createElement('span');box.className='c-confirm-inline';box.setAttribute('role','status');var text=document.createElement('span');text.textContent=message;var yes=document.createElement('button');yes.type='button';yes.className='c-button c-button-primary';yes.textContent='确认';var no=document.createElement('button');no.type='button';no.className='c-button';no.textContent='取消';box.appendChild(text);box.appendChild(document.createTextNode(' '));box.appendChild(yes);box.appendChild(document.createTextNode(' '));box.appendChild(no);host.insertBefore(box,button.nextSibling);button.disabled=true;var closed=false;function close(){if(closed)return;closed=true;if(box.parentNode)box.parentNode.removeChild(box);button.disabled=false;document.removeEventListener('keydown',onKey,true);}function onKey(e){if(e.key==='Escape'){e.preventDefault();close();if(button.focus)button.focus();}}yes.addEventListener('click',function(){close();onConfirm();});no.addEventListener('click',function(){close();if(button.focus)button.focus();});document.addEventListener('keydown',onKey,true);yes.focus();};})();</script>`;
   const flashScript = `<script>(function(){window.aosFlash=function(message){try{sessionStorage.setItem("aos-flash",message);}catch(e){}};var raw=null;try{raw=sessionStorage.getItem("aos-flash");}catch(e){}if(raw){try{sessionStorage.removeItem("aos-flash");}catch(e){}var main=document.getElementById("console-main");if(main){var box=document.createElement("div");box.className="c-banner c-banner-accent";box.setAttribute("role","status");var text=document.createTextNode(raw);box.appendChild(text);var params=new URLSearchParams(location.search);var project=params.get("project");if(project){box.appendChild(document.createTextNode(" "));var a=document.createElement("a");a.href="/panel?project="+encodeURIComponent(project)+"&section=audit";a.textContent="查看审计";box.appendChild(a);}var sheet=document.getElementById("console-shortcuts");main.insertBefore(box,sheet?sheet.nextSibling:main.firstChild);}}var dismiss=document.getElementById("capability-dismiss");if(dismiss){dismiss.addEventListener("click",function(){try{sessionStorage.setItem("aos-cap-dismissed","1");}catch(e){}var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);});}if(function(){try{return sessionStorage.getItem("aos-cap-dismissed")==="1";}catch(e){return false;}}()){var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);}})();</script>`;
   return [
     "<!doctype html>",
@@ -241,6 +242,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     shortcutsScript,
     livePollScript,
     recordLastProject,
+    inlineConfirmScript,
     flashScript,
     "</body>",
     "</html>"

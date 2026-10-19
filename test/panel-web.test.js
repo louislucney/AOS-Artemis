@@ -247,6 +247,8 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
   assert.doesNotMatch(html.body, /id="regression-form"/, "内嵌表单已移除（派发唯一真相＝向导）");
   assert.doesNotMatch(html.body, /fetch\('\/panel\/api\/tasks'/);
   assert.match(html.body, /<fieldset class="c-fieldset"><legend>端<\/legend>/, "计划表单端组有 legend");
+  assert.match(html.body, /aosInlineConfirm\(b,'确认删除该计划？'/, "计划删除走站内确认");
+  assert.doesNotMatch(html.body, /[^a-zA-Z_.]confirm\(/, "项目页无原生 confirm 残留");
   assert.match(html.body, /<section id="regression" class="c-plain">/, "CTA 区块不吃遗留 section 边框（无双框）");
   assert.match(html.body, /执行：[\s\S]{0,200}?集成：/, "项目页两轴并列（执行／集成）");
   assert.doesNotMatch(html.body, /项目状态：/, "H1 不再夹灯状态（状态进徽章行）");
@@ -612,6 +614,8 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   assert.match(claimedHtml.body, />停止执行</, "运行中提供停止执行");
   assert.match(claimedHtml.body, /运行中不可直接释放/, "运行中释放指引");
   assert.match(claimedHtml.body, /data-confirm="确认停止该任务？领取方：runner-1/, "停止确认含领取方与后果");
+  assert.match(claimedHtml.body, /aosInlineConfirm\(b,/, "三动作走站内确认（去原生 confirm）");
+  assert.doesNotMatch(claimedHtml.body, /[^a-zA-Z_.]confirm\(/, "无原生 confirm 残留");
   assert.match(claimedHtml.body, /id="task-action-status"[^>]*role="status"/, "动作失败内联回报");
   await store.updateRegressionTask(projectDir, pending.id, {
     status: "pending",
@@ -1482,6 +1486,12 @@ test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS
   assert.doesNotMatch(html.body, /location\.reload\(\)/, "成功后保留结果面板（不再 reload）");
   assert.match(html.body, /重新生成时响应与 tests\.md 会附上轮案例问题提示/, "案例问题指引行更新");
   assert.doesNotMatch(html.body, /后续接线/, "移除「自动化（P3）…后续接线」指引行");
+  const statsScripts = [...html.body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+    (match) => match[1]
+  );
+  for (const code of statsScripts) {
+    assert.doesNotThrow(() => new Function(code), "stats 页脚本可解析");
+  }
 });
 
 test("panel web: Jira 未配置前置拦截（不渲染预览/建单，给配置指引）", async () => {
