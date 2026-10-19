@@ -1153,6 +1153,8 @@ export async function figmaGenerateTests(
         "（requireFullCoverage:true 硬覆盖不完整即不落盘）。" +
         splitHint
     };
+    /** 设计警告快照在 tests.json 落盘前定稿：登记期警告（用例集登记失败）晚于落盘，
+     * 重写 tests.json 会改变已登记指纹，故只留在 `warnings`，不进入该快照。 */
     const applyDesignWarnings = (): DesignWarning[] => {
       const merged = mergeWarnings([
         { source: designWarningSource, warnings: designSourceWarnings },
@@ -1335,7 +1337,7 @@ export async function figmaGenerateTests(
       }
     }
 
-    applyDesignWarnings();
+    if (args.save === false) applyDesignWarnings();
 
     return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
   } catch (error) {

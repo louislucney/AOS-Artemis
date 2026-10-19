@@ -1746,3 +1746,27 @@ test("figma_generate_tests: flows 与生成期 warnings 合并去重（同 code+
     "生成期 warnings 仍保留"
   );
 });
+
+test("figma_generate_tests: 登记失败警告晚于落盘 → 响应与 tests.json 快照一致", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  runtime.store.recordCaseSet = async () => {
+    throw new Error("store down");
+  };
+
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { screens: false }));
+  assert.equal(payload.ok, true);
+  assert.ok(
+    payload.warnings.some((entry) => entry.code === "case-set-registration-failed"),
+    "晚到的登记失败警告仍在 warnings 中可见"
+  );
+  assert.equal(
+    payload.designWarnings.some((entry) => entry.code === "case-set-registration-failed"),
+    false,
+    "登记期警告不进入落盘快照（避免改写已登记指纹）"
+  );
+
+  const saved = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
+  assert.deepEqual(saved.designWarnings, payload.designWarnings);
+  assert.deepEqual(saved.designWarningsSummary, payload.designWarningsSummary);
+});
