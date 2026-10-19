@@ -33,15 +33,28 @@
 ## 状态口径
 
 - 存储三态标签（与 `src/db/labels.ts` 同源）：PostgreSQL／文件台账（.artemis/ledger）／会话内存（仅本次进程，数据不持久）。
-- 危险动作确认分级：常规＝`data-confirm`；外部副作用＝dryRun 预览＋确认；清理类＝输入确认短语。
-- 刷新纪律：整页 `meta refresh` 仅限**无表单**的活跃列表页；含未提交表单的页面不刷新。
+- 危险动作确认分级：常规＝`data-confirm`；外部副作用＝dryRun 预览＋确认；清理类＝输入确认短语。全站站内确认（`aosInlineConfirm`），原生 `confirm()` 已退场。
+- 刷新纪律：**无 `meta refresh`**——自动刷新＝轮询脚本（`#console-main` 就地替换），带「自动刷新中（每 N 秒）」标注＋暂停/继续；`document.hidden`、焦点在主内容、`prefers-reduced-motion` 三守护；替换后经 `window.aosOnRefresh` 重绑页面动作（含文档级委托的暂停按钮）。
 
 ## 组件类名（计划）
 
-`c-topbar/c-brand/c-topbar-meta/c-layout/c-aside/c-nav-item/c-main/c-footer`（Task 1）；`c-card(-accent)/c-badge-*/c-banner-*/c-table/c-stat/c-empty/c-button(-primary/-danger)/c-confirm`（Task 2）。
+`c-topbar/c-brand/c-topbar-meta/c-layout/c-aside/c-nav-item/c-main/c-footer`；`c-card(-accent)/c-badge-*/c-banner-*/c-table/c-stat/c-empty/c-button(-primary/-danger)/c-confirm-inline`。表格单一出口：页面表格一律经 `cTable`（`renderTable` 为其委托）。
 
 导航口径：usage 独立进程显示 `USAGE_STANDALONE_NAV`（`src/console/shell.ts`：仅「统计」自身，不显示跨进程链接）；HTTP 模式下 `/panel` 与 `/usage` 各自导航（/usage 沿用该子集，后续如需并入主导航再议）。
 
 AA 偏差记录：`--color-link-hover` 采用 `#0066CC`（CSDC 原值 `#0077ED` 对白底 4.3:1，低于 AA）；遗留 PAGE_CSS 的 `#888` 已改 `#6E6E73`；`impeccable detect` 对 `scripts/console-fixtures.mjs` 产物为 **0 anti-patterns**。
 
 **critique→polish 轮（2026-10-18）**：样式收敛为**单一源**——`tokens.ts`（CSDC 变量＋组件）＋`compat.ts`（遗留标记兼容层，颜色/圆角对齐 token；不再有第二份 legacy `<style>` 与 `color-scheme` 双色系）；危险按钮 `#B91C1C`（≥4.5:1）；主按钮 hover 保持深色文字（修 4.39:1 边缘）；`.c-skip-link` 跳链；页级能力横幅与禁用态口径见 `src/console/shell.ts` 的 `ConsoleCapabilities`。
+
+## 评审结项（2026-10-19）
+
+**方法**：8 轮 dual-agent critique（盲评设计＋检测证据；Edge 真浏览器 file:// 与在线 URL 双模；静态 CLI `detect` 与浏览器 `detect` 的差异已知并记录）。快照：`.impeccable/critique/`（git-ignored）。
+**趋势**：16 → 25 → 18 → 23 → 33 → 28 → 27 → **31/40**。波动来自评审视角轮换（IA → 失败路径 → 信任链 → 一致性），非质量倒退；每轮新发现的粒度递减（从缺整段状态机到 `&amp;` 级）。
+**停止准则（今后沿用）**：连续一轮 critique **无 P0/P1**、剩余项均为**取舍或体验微调** → 停止评审，进入维护；仅在新功能、大改版、新数据类型或接入规模显著变化时重新评审。
+**已知检测器误报**（复核记录）：`nested-cards`（卡片内表格/统计贴片/横幅/空态块）、`gray-on-color`（徽章与提示条实测 4.66–7.36:1，AA 达标）、`em-dash-overuse`（表格占位「—」与 CLI `--`）。
+**剩余取舍（明确不做，非欠账）**：
+- 暗色主题跟随系统、无站内手动开关（低视力用户的高对比需求未单独覆盖）。
+- <768px 不做「表格转卡片」，以 `.c-table-wrap` 横向滚动为保底。
+- 全局表格无列排序/筛选（归因/审计/档案）；usage 事件表窄屏键盘横滚体验一般。
+- 单项目自动进入使「多项目对比」入口对单项目用户近乎不可见（`sessionStorage` 每会话一次，返回键可回）。
+**重新评审触发**：新增页面族/动作、存储或记账口径变化、移动端真实使用反馈、或接入 >10 项目后的规模问题。
