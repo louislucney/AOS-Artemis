@@ -44,7 +44,8 @@ export interface DesignToTestDeps {
 }
 
 const REUSE_NO_FLOWS_QUESTION = "还没有设计流程——给 Figma 链接或 .pen 路径，或先跑一次设计提取";
-const CHECK_SUGGESTION = "按提示用 figma_generate_tests 修正后重跑";
+const CHECK_SUGGESTION =
+  "按提示用 figma_generate_tests 修正后重跑；路径被截断时可用 maxFlows/maxDepth 加大上限重试";
 const RUN_FAILURE_SUGGESTION =
   "用例与证据已落盘（.artemis/design/runs/、.artemis/traces/），按提示处理后重跑安全";
 const RUN_NOT_EXECUTED_SUGGESTIONS = [
@@ -393,6 +394,8 @@ export async function designToTest(
           args: {
             reuseExistingFlows: true,
             run: true,
+            ...(typeof args.maxFlows === "number" ? { maxFlows: args.maxFlows } : {}),
+            ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {}),
             ...(deviceArg !== null ? { device: deviceArg } : {})
           }
         }

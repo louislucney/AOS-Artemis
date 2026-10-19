@@ -44,7 +44,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
         .positive()
         .max(50)
         .optional()
-        .describe("路径最大深度（透传 figma_generate_tests，默认 30）"),
+        .describe("路径最大深度（边数；透传 figma_generate_tests，默认 30；超限按续段拆分，不丢尾）"),
       device: z
         .string()
         .optional()

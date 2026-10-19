@@ -97,6 +97,9 @@ test("design_to_test: zod rejects illegal types, accepts documented shapes", asy
       { figmaUrl: 42 },
       { maxFlows: 0 },
       { maxFlows: 51 },
+      { maxFlows: 2.5 },
+      { maxDepth: 0 },
+      { maxDepth: 51 },
       { maxDepth: 2.5 }
     ]) {
       const rejected = await harness.client.callTool({ name: "design_to_test", arguments: args });

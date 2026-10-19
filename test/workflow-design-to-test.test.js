@@ -224,6 +224,10 @@ test("生成透传 maxFlows/maxDepth：显式提供的键原样传给 figma_gene
   assert.ok(!result.isError);
   assert.equal(payloadOf(result).ok, true);
   assert.deepEqual(calls.generate, [{ maxFlows: 50, maxDepth: 12 }]);
+  assert.deepEqual(payloadOf(result).nextAction, {
+    tool: "design_to_test",
+    args: { reuseExistingFlows: true, run: true, maxFlows: 50, maxDepth: 12 }
+  });
 });
 
 test("生成透传仅带显式提供的键：未给 maxDepth 时不出现该键", async () => {
@@ -233,6 +237,24 @@ test("生成透传仅带显式提供的键：未给 maxDepth 时不出现该键"
 
   assert.ok(!result.isError);
   assert.deepEqual(calls.generate, [{ maxFlows: 50 }]);
+  assert.deepEqual(payloadOf(result).nextAction, {
+    tool: "design_to_test",
+    args: { reuseExistingFlows: true, run: true, maxFlows: 50 }
+  });
+});
+
+test("生成透传仅带 maxDepth 时：生成与 nextAction 都只携带 maxDepth", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps, calls } = makeDeps();
+  const result = await designToTest(runtime, { figmaUrl: FIGMA_URL, maxDepth: 12 }, deps);
+
+  assert.ok(!result.isError);
+  assert.equal(payloadOf(result).ok, true);
+  assert.deepEqual(calls.generate, [{ maxDepth: 12 }]);
+  assert.deepEqual(payloadOf(result).nextAction, {
+    tool: "design_to_test",
+    args: { reuseExistingFlows: true, run: true, maxDepth: 12 }
+  });
 });
 
 test("参数冲突/全缺 → isError 用法错误（不触提取/生成）", async () => {
@@ -377,7 +399,7 @@ test("gate 失败 → failedStep:check（detail + 修正建议）", async () => 
   assert.equal(payload.ok, false);
   assert.equal(payload.failedStep, "check");
   assert.equal(payload.detail, "流程未完整覆盖：未硬覆盖屏幕 1");
-  assert.deepEqual(payload.suggestions, ["按提示用 figma_generate_tests 修正后重跑"]);
+  assert.deepEqual(payload.suggestions, ["按提示用 figma_generate_tests 修正后重跑；路径被截断时可用 maxFlows/maxDepth 加大上限重试"]);
   assert.equal(gateCalls.length, 1);
   assert.equal(calls.generate.length, 1);
   assert.equal(calls.execute.length, 0);
