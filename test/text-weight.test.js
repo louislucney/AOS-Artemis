@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { measureContractTexts } from "../dist/diff/tool.js";
 import { measureTextWeight } from "../dist/ui/text-weight.js";
 import { createImage, fillRect } from "./helpers.js";
 
@@ -65,6 +66,50 @@ test("text weight: dark background with light text is supported", () => {
   });
   assert.equal(result.status, "checked", result.reason);
   assert.equal(result.weightHint, "heavier");
+});
+
+test("text weight: contract pass closes textsTotal = checked + unverified", () => {
+  const design = bars({ stroke: 1 });
+  const device = bars({ stroke: 3 });
+  const screen = {
+    id: "s1",
+    frameWidth: 120,
+    texts: [
+      {
+        id: "t1",
+        content: "文字",
+        fontFamily: "Test",
+        fontWeight: 400,
+        fontSize: 16,
+        bbox: { x: 8, y: 6, width: 104, height: 28 },
+        bboxSpace: "design-px",
+        geometryStatus: "extracted"
+      },
+      {
+        id: "t2",
+        content: "无几何",
+        fontFamily: "Test",
+        fontWeight: 600,
+        fontSize: 16,
+        bbox: null,
+        bboxSpace: "design-px",
+        geometryStatus: "unverifiable"
+      }
+    ]
+  };
+  const result = measureContractTexts({
+    screen,
+    design,
+    device,
+    geometry: { ratio: 1, offset: { x: 0, y: 0 } },
+    sourceFormat: "png",
+    lossless: true
+  });
+  assert.equal(result.summary.textsTotal, 2);
+  assert.equal(result.summary.checked + result.summary.unverified, 2);
+  assert.equal(result.summary.heavier, 1);
+  assert.equal(result.summary.byReason["no-geometry"], 1);
+  assert.equal(result.items.length, 2);
 });
 
 test("text weight: tiny text and JPEG sources are unverified", () => {

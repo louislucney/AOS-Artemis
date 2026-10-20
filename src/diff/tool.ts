@@ -30,6 +30,7 @@ import {
   type DetailLocalSummary
 } from "./detail.js";
 import { loadScreenMap, localizeRegion, proposeScreenMapEntries, type ProposeResult } from "./screen-map.js";
+import type { UiContract, UiTextContract } from "../ui/contract.js";
 import { measureTextWeight, type TextWeightResult } from "../ui/text-weight.js";
 import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
 
@@ -148,6 +149,156 @@ function sourceFormatOf(bytes: Buffer): "png" | "jpeg" | "unknown" {
   if (isPngBytes(bytes)) return "png";
   if (isJpegBytes(bytes)) return "jpeg";
   return "unknown";
+}
+
+function findContractScreen(
+  runtime: Runtime,
+  args: DesignDeviceDiffArgs
+): { contract: UiContract; screen: UiContract["screens"][number]; screenId: string } | null {
+  const file = path.join(runtime.configDirAbs, "design", "ui-contract.json");
+  let contract: UiContract;
+  try {
+    contract = JSON.parse(fs.readFileSync(file, "utf-8")) as UiContract;
+  } catch {
+    return null;
+  }
+  const urlNodeId = /[?&]node-id=([^&]+)/.exec(args.design.figmaUrl ?? "")?.[1] ?? null;
+  const candidates = [
+    args.design.penPath ? path.basename(args.design.penPath, ".pen") : null,
+    args.design.nodeId ?? null,
+    urlNodeId ? decodeURIComponent(urlNodeId).replace("-", ":") : null
+  ].filter((entry): entry is string => typeof entry === "string" && entry !== "");
+  const screen = contract.screens.find((entry) => candidates.includes(entry.id));
+  return screen ? { contract, screen, screenId: screen.id } : null;
+}
+
+export function measureContractTexts(input: {
+  screen: UiContract["screens"][number];
+  design: ReturnType<typeof decodeImage>;
+  device: ReturnType<typeof decodeImage>;
+  geometry: ReturnType<typeof resolveDetailGeometry>;
+  sourceFormat: "png" | "jpeg" | "unknown";
+  lossless: boolean;
+}): {
+  items: Array<{
+    id: string;
+    content: string;
+    bbox: UiTextContract["bbox"];
+    status: TextWeightResult["status"];
+    weightHint: TextWeightResult["weightHint"];
+    delta: number | null;
+    confidence: number;
+    designWeight: number | null;
+    reason?: string;
+  }>;
+  summary: {
+    scope: "contract";
+    screenId: string;
+    textsTotal: number;
+    checked: number;
+    lighter: number;
+    similar: number;
+    heavier: number;
+    unverified: number;
+    byReason: Record<string, number>;
+  };
+} {
+  const designScale =
+    input.screen.frameWidth !== null && input.screen.frameWidth > 0
+      ? input.design.width / input.screen.frameWidth
+      : 1;
+  const items: Array<{
+    id: string;
+    content: string;
+    bbox: UiTextContract["bbox"];
+    status: TextWeightResult["status"];
+    weightHint: TextWeightResult["weightHint"];
+    delta: number | null;
+    confidence: number;
+    designWeight: number | null;
+    reason?: string;
+  }> = [];
+  for (const text of input.screen.texts) {
+    if (text.bbox === null || text.geometryStatus === "unverifiable") {
+      items.push({
+        id: text.id,
+        content: text.content,
+        bbox: text.bbox,
+        status: "unverified",
+        weightHint: null,
+        delta: null,
+        confidence: 0,
+        designWeight: text.fontWeight,
+        reason: "no-geometry"
+      });
+      continue;
+    }
+    const pad = Math.max(2, Math.round(text.bbox.height * 0.15));
+    const region = {
+      x: Math.max(0, (text.bbox.x - pad) * designScale),
+      y: Math.max(0, (text.bbox.y - pad) * designScale),
+      width: Math.max(1, (text.bbox.width + pad * 2) * designScale),
+      height: Math.max(1, (text.bbox.height + pad * 2) * designScale)
+    };
+    const pair = extractDetailPair({
+      design: input.design,
+      device: input.device,
+      region,
+      geometry: input.geometry
+    });
+    if (pair === null) {
+      items.push({
+        id: text.id,
+        content: text.content,
+        bbox: text.bbox,
+        status: "unverified",
+        weightHint: null,
+        delta: null,
+        confidence: 0,
+        designWeight: text.fontWeight,
+        reason: "out-of-bounds"
+      });
+      continue;
+    }
+    const measured = measureTextWeight({
+      design: pair.design,
+      device: pair.device,
+      designWeight: text.fontWeight,
+      textPixelHeight: pair.device.height,
+      sourceFormat: input.sourceFormat,
+      lossless: input.lossless,
+      localization: "design-bbox"
+    });
+    items.push({
+      id: text.id,
+      content: text.content,
+      bbox: text.bbox,
+      status: measured.status,
+      weightHint: measured.weightHint,
+      delta: measured.delta,
+      confidence: measured.confidence,
+      designWeight: measured.designWeight,
+      ...(measured.reason ? { reason: measured.reason } : {})
+    });
+  }
+  const byReason: Record<string, number> = {};
+  for (const item of items) {
+    if (item.status === "unverified" && item.reason) byReason[item.reason] = (byReason[item.reason] ?? 0) + 1;
+  }
+  return {
+    items,
+    summary: {
+      scope: "contract",
+      screenId: input.screen.id,
+      textsTotal: items.length,
+      checked: items.filter((item) => item.status === "checked").length,
+      lighter: items.filter((item) => item.weightHint === "lighter").length,
+      similar: items.filter((item) => item.weightHint === "similar").length,
+      heavier: items.filter((item) => item.weightHint === "heavier").length,
+      unverified: items.filter((item) => item.status === "unverified").length,
+      byReason
+    }
+  };
 }
 
 export async function designDeviceDiff(
@@ -380,14 +531,27 @@ export async function designDeviceDiff(
       degraded: boolean;
       deviceSource: { format: "png" | "jpeg" | "unknown"; lossless: boolean };
       textStyles: {
-        scope: "text-regions";
+        scope: "contract" | "text-regions";
+        screenId?: string;
         texts: number;
+        textsTotal?: number;
         checked: number;
         lighter: number;
         similar: number;
         heavier: number;
         unverified: number;
         byReason: Record<string, number>;
+        items?: Array<{
+          id: string;
+          content: string;
+          bbox: UiTextContract["bbox"];
+          status: TextWeightResult["status"];
+          weightHint: TextWeightResult["weightHint"];
+          delta: number | null;
+          confidence: number;
+          designWeight: number | null;
+          reason?: string;
+        }>;
       };
     } | null = null;
     let regionDetailsPayload: DetailRegionReport[] | null = null;
@@ -582,6 +746,18 @@ export async function designDeviceDiff(
           textByReason[entry.reason] = (textByReason[entry.reason] ?? 0) + 1;
         }
       }
+      const contractMatch = findContractScreen(runtime, args);
+      const contractTexts =
+        contractMatch === null
+          ? null
+          : measureContractTexts({
+              screen: contractMatch.screen,
+              design: detailDesign,
+              device: detailDevice,
+              geometry,
+              sourceFormat: sourceFormatOf(detailDeviceBytes),
+              lossless: deviceLossless === true
+            });
       detailMeta = {
         enabled: true,
         zoom,
@@ -594,16 +770,23 @@ export async function designDeviceDiff(
           format: sourceFormatOf(detailDeviceBytes),
           lossless: deviceLossless === true
         },
-        textStyles: {
-          scope: "text-regions",
-          texts: textSummaries.length,
-          checked: textSummaries.filter((entry) => entry.status === "checked").length,
-          lighter: textSummaries.filter((entry) => entry.weightHint === "lighter").length,
-          similar: textSummaries.filter((entry) => entry.weightHint === "similar").length,
-          heavier: textSummaries.filter((entry) => entry.weightHint === "heavier").length,
-          unverified: textSummaries.filter((entry) => entry.status === "unverified").length,
-          byReason: textByReason
-        }
+        textStyles:
+          contractTexts !== null
+            ? {
+                ...contractTexts.summary,
+                texts: contractTexts.summary.textsTotal,
+                items: contractTexts.items
+              }
+            : {
+                scope: "text-regions",
+                texts: textSummaries.length,
+                checked: textSummaries.filter((entry) => entry.status === "checked").length,
+                lighter: textSummaries.filter((entry) => entry.weightHint === "lighter").length,
+                similar: textSummaries.filter((entry) => entry.weightHint === "similar").length,
+                heavier: textSummaries.filter((entry) => entry.weightHint === "heavier").length,
+                unverified: textSummaries.filter((entry) => entry.status === "unverified").length,
+                byReason: textByReason
+              }
       };
     }
 

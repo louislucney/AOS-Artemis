@@ -40,6 +40,33 @@ function makeDiffProject({ fileKey }) {
 test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + 产物落盘", async () => {
   await withFigmaToken(async () => {
     const { dir, designPng, deviceJpeg, devicePath, devicePng, figma } = makeDiffProject({ fileKey: "DiffA1" });
+    const contractDir = path.join(dir, ".artemis", "design");
+    fs.mkdirSync(contractDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(contractDir, "ui-contract.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        screens: [
+          {
+            id: "1:2",
+            frameWidth: 390,
+            texts: [
+              {
+                id: "t1",
+                content: "Card",
+                fontFamily: "Test",
+                fontWeight: 600,
+                fontSize: 16,
+                bbox: { x: 40, y: 80, width: 120, height: 60 },
+                bboxSpace: "design-px",
+                geometryStatus: "extracted"
+              }
+            ]
+          }
+        ]
+      }),
+      "utf-8"
+    );
     const proxy = new StubProxy({ running: true });
     stubDevice(proxy, devicePath);
     const { runtime } = await loadTestRuntime(dir, { proxy });
@@ -55,6 +82,12 @@ test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + �
       );
       const payload = parseToolResult(result);
       assert.equal(payload.ok, true, JSON.stringify(payload));
+      assert.equal(payload.detail.textStyles.scope, "contract");
+      assert.equal(payload.detail.textStyles.textsTotal, 1);
+      assert.equal(
+        payload.detail.textStyles.checked + payload.detail.textStyles.unverified,
+        payload.detail.textStyles.textsTotal
+      );
       assert.equal(payload.summary.regions, 1, JSON.stringify(payload.regions));
       assert.ok(Math.abs(payload.regions[0].bbox.x - 40) <= 8, `x=${payload.regions[0].bbox.x}`);
       assert.ok(Math.abs(payload.regions[0].bbox.y - 80) <= 8, `y=${payload.regions[0].bbox.y}`);

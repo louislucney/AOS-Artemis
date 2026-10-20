@@ -41,6 +41,8 @@ export interface UiScreenContract {
   texts: UiTextContract[];
   render: string | null;
   renderScale: number | null;
+  /** Design frame width in design px; used to map text bbox to render pixels. */
+  frameWidth: number | null;
   warnings: string[];
 }
 
@@ -328,6 +330,7 @@ export function buildUiContract(
                 : null;
             })()
           : null,
+      frameWidth: inspected?.frameWidth ?? null,
       warnings: screenWarnings
     };
   });
