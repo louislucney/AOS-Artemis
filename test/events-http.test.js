@@ -1,0 +1,122 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+
+import { MemoryStore } from "../dist/db/memory.js";
+import { createAosHttpServer } from "../dist/http-server.js";
+import { makeTempDir } from "./helpers.js";
+
+async function withServer(fn, env = {}) {
+  const previous = new Map();
+  for (const [key, value] of Object.entries(env)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  const workspace = makeTempDir("aos-events-http-");
+  fs.mkdirSync(path.join(workspace, "demo"));
+  const handle = await createAosHttpServer({
+    port: 0,
+    host: "127.0.0.1",
+    workspaceRoot: workspace,
+    store: new MemoryStore()
+  });
+  try {
+    return await fn(`http://127.0.0.1:${handle.port}`);
+  } finally {
+    await handle.close();
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+const EVENT = {
+  eventId: "e-http-1",
+  type: "case.result",
+  caseId: "TC_1",
+  status: "passed",
+  payload: { note: "hello" }
+};
+
+test("events HTTP: POST/GET、幂等、400/404/413", async () => {
+  await withServer(async (base) => {
+    const first = await fetch(`${base}/events/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(EVENT)
+    });
+    assert.equal(first.status, 202);
+    const ack = await first.json();
+    assert.equal(ack.accepted, true);
+    assert.equal(ack.duplicate, false);
+    assert.equal(ack.storage, "memory");
+    assert.ok("degraded" in ack);
+
+    const dup = await fetch(`${base}/events/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(EVENT)
+    });
+    assert.equal(dup.status, 202);
+    const dupBody = await dup.json();
+    assert.equal(dupBody.accepted, false);
+    assert.equal(dupBody.duplicate, true);
+    assert.equal(dupBody.serverId, ack.serverId);
+    assert.equal(dupBody.receivedAt, ack.receivedAt);
+
+    const list = await fetch(`${base}/events/demo?includePayload=false`);
+    assert.equal(list.status, 200);
+    const listed = await list.json();
+    assert.equal(listed.returned, 1);
+    assert.equal(listed.events[0].payload, undefined);
+    assert.ok("storage" in listed && "degraded" in listed);
+
+    const invalid = await fetch(`${base}/events/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ eventId: "bad", type: "nope" })
+    });
+    assert.equal(invalid.status, 400);
+
+    const traversal = await fetch(`${base}/events/bad%2Fname`, { method: "POST" });
+    assert.equal(traversal.status, 400);
+
+    const missing = await fetch(`${base}/events/missing`);
+    assert.equal(missing.status, 404);
+
+    const tooLarge = await fetch(`${base}/events/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ eventId: "big", type: "log.entry", payload: { data: "x".repeat(70_000) } })
+    });
+    assert.equal(tooLarge.status, 413);
+  });
+});
+
+test("events HTTP: AOS_HTTP_TOKEN 保护事件路由，健康检查豁免", async () => {
+  await withServer(
+    async (base) => {
+      const denied = await fetch(`${base}/events/demo`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(EVENT)
+      });
+      assert.equal(denied.status, 401);
+      const health = await fetch(`${base}/healthz`);
+      assert.equal(health.status, 200);
+      const allowed = await fetch(`${base}/events/demo`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token"
+        },
+        body: JSON.stringify(EVENT)
+      });
+      assert.equal(allowed.status, 202);
+    },
+    { AOS_HTTP_TOKEN: "test-token" }
+  );
+});

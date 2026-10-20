@@ -16,7 +16,16 @@ import {
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
 import { handleArtifactRequest } from "./panel/artifact-route.js";
-import { resolveProjectRoot } from "./events/project-resolver.js";
+import {
+  isValidProjectName,
+  resolveEventProject,
+  resolveProjectRoot
+} from "./events/project-resolver.js";
+import {
+  EventValidationError,
+  listProjectEvents,
+  reportProjectEvent
+} from "./events/ingress.js";
 import { createPanelDeepProbe } from "./panel/deep.js";
 import type { ProjectStore } from "./db/types.js";
 import { Runtime } from "./runtime.js";
@@ -41,6 +50,7 @@ export interface AosHttpHandle {
 }
 
 const PROJECT_NAME_RE = /^[A-Za-z0-9._-]+$/;
+const MAX_EVENT_BODY_BYTES = 64 * 1024;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_PANEL_BODY_BYTES = 256 * 1024;
 const MAX_PANEL_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -321,6 +331,105 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           res.writeHead(actionResponse.status, { "Content-Type": actionResponse.contentType });
           res.end(actionResponse.body);
           return;
+        }
+
+        const eventMatch = /^\/events\/([^/]+)\/?$/.exec(url.pathname);
+        if (eventMatch) {
+          let projectName: string;
+          try {
+            projectName = decodeURIComponent(eventMatch[1]!);
+          } catch {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end('{"error":"invalid project name"}');
+            return;
+          }
+          if (!isValidProjectName(projectName)) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end('{"error":"invalid project name"}');
+            return;
+          }
+          try {
+            if (req.method === "POST") {
+              const project = await resolveEventProject({
+                workspaceRoot,
+                name: projectName,
+                store,
+                write: true
+              });
+              if (project === null) {
+                res.writeHead(404, { "Content-Type": "application/json" });
+                res.end('{"error":"project not found"}');
+                return;
+              }
+              let body: unknown;
+              try {
+                body = await readBody(req, MAX_EVENT_BODY_BYTES);
+              } catch (error) {
+                if (error instanceof BodyTooLargeError) {
+                  res.writeHead(413, { "Content-Type": "application/json" });
+                  res.end('{"error":"event body too large"}');
+                } else {
+                  res.writeHead(400, { "Content-Type": "application/json" });
+                  res.end('{"error":"invalid JSON body"}');
+                }
+                return;
+              }
+              const ack = await reportProjectEvent(
+                { store, rootPath: project.rootPath, storage: store.kind, degraded: reason },
+                body
+              );
+              res.writeHead(202, { "Content-Type": "application/json" });
+              res.end(JSON.stringify(ack));
+              return;
+            }
+            if (req.method === "GET") {
+              const project = await resolveEventProject({
+                workspaceRoot,
+                name: projectName,
+                store,
+                write: false
+              });
+              if (project === null) {
+                res.writeHead(404, { "Content-Type": "application/json" });
+                res.end('{"error":"project not found"}');
+                return;
+              }
+              const includeRaw = url.searchParams.get("includePayload");
+              const orderRaw = url.searchParams.get("order");
+              const limitRaw = url.searchParams.get("limit");
+              const limit = limitRaw === null ? undefined : Number(limitRaw);
+              const listed = await listProjectEvents(
+                { store, rootPath: project.rootPath, storage: store.kind, degraded: reason },
+                {
+                  since: url.searchParams.get("since") ?? undefined,
+                  runId: url.searchParams.get("runId") ?? undefined,
+                  caseId: url.searchParams.get("caseId") ?? undefined,
+                  type: url.searchParams.get("type") ?? undefined,
+                  status: url.searchParams.get("status") ?? undefined,
+                  order:
+                    orderRaw === "asc" || orderRaw === "desc" ? orderRaw : undefined,
+                  limit:
+                    limit !== undefined && Number.isFinite(limit) ? limit : undefined,
+                  includePayload: includeRaw === "true" || includeRaw === "1"
+                }
+              );
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify(listed));
+              return;
+            }
+            res.writeHead(405, { "Content-Type": "application/json" });
+            res.end('{"error":"method not allowed"}');
+            return;
+          } catch (error) {
+            if (error instanceof EventValidationError) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: error.message, field: error.field }));
+              return;
+            }
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end('{"error":"event store unavailable"}');
+            return;
+          }
         }
 
         const match = /^\/mcp\/([^/]+)\/?$/.exec(url.pathname);
