@@ -1,20 +1,65 @@
 import ExcelJS from "exceljs";
 
 import { errorMessage } from "../util.js";
+import {
+  designRefLine,
+  expectedResultLines,
+  openQuestionLines,
+  summarizeCases,
+  testDataLines,
+  type CaseSummary
+} from "./case-view.js";
 import type { GeneratedTest } from "./test-gen.js";
+
+export interface WorkbookCoverage {
+  complete?: boolean;
+  uncoveredScreens?: string[];
+  uncoveredEdges?: string[];
+  explore?: {
+    complete?: boolean;
+    uncoveredScreens?: string[];
+    uncoveredEdges?: string[];
+  };
+}
 
 export interface WorkbookMeta {
   source: string;
   generatedAt: string;
   counts: { cases: number; screens: number; edges: number };
+  summary?: CaseSummary;
+  coverage?: WorkbookCoverage;
+  warnings?: number;
 }
 
 const WORKBOOK_SHEET = "测试用例";
-const WORKBOOK_HEADERS = ["#", "用例名称", "涉及页面", "前置假设", "步骤", "artemis 任务描述"];
+const SUMMARY_SHEET = "汇总";
+const WORKBOOK_HEADERS = [
+  "#",
+  "用例名称",
+  "涉及页面",
+  "前置假设",
+  "步骤",
+  "artemis 任务描述",
+  "用例编号",
+  "模块",
+  "Section",
+  "测试数据",
+  "关联用例",
+  "预期结果",
+  "设计引用",
+  "备注/待确认"
+];
 const CASE_PLACEHOLDER = /\{\{\s*(index|case\.[A-Za-z][\w]*)\s*\}\}/;
 const PLACEHOLDER = /\{\{\s*([A-Za-z][\w.]*)\s*\}\}/g;
 const SINGLE_PLACEHOLDER = /^\s*\{\{\s*([A-Za-z][\w.]*)\s*\}\}\s*$/;
-const NUMERIC_PLACEHOLDERS = new Set(["index", "counts.cases", "counts.screens", "counts.edges"]);
+const NUMERIC_PLACEHOLDERS = new Set([
+  "index",
+  "counts.cases",
+  "counts.screens",
+  "counts.edges",
+  "counts.withTestData",
+  "counts.openQuestions"
+]);
 
 function substitute(text: string, resolve: (key: string) => string | undefined): string {
   return text.replace(PLACEHOLDER, (match, key: string) => resolve(key) ?? match);
@@ -46,27 +91,73 @@ function renderStepsCell(testCase: GeneratedTest): string {
   return [...prelude, ...steps].join("\n");
 }
 
+function textOrFallback(values: string[] | undefined, fallback: string): string {
+  const list = (values ?? []).filter((value) => value.trim() !== "");
+  return list.length > 0 ? list.join("\n") : fallback;
+}
+
+function displayIdOf(testCase: GeneratedTest): string {
+  return testCase.displayId?.trim() ? testCase.displayId : "—";
+}
+
+function moduleOf(testCase: GeneratedTest): string {
+  return testCase.module?.trim() ? testCase.module : "未分组";
+}
+
+function sectionOf(testCase: GeneratedTest): string {
+  return testCase.section?.trim() ? testCase.section : "未指定";
+}
+
+function testDataCell(testCase: GeneratedTest): string {
+  return textOrFallback(testDataLines(testCase), "n/a（无显式数据）");
+}
+
+function expectedCell(testCase: GeneratedTest): string {
+  return textOrFallback(expectedResultLines(testCase), "—（无显式期望）");
+}
+
+function openQuestionsCell(testCase: GeneratedTest): string {
+  return textOrFallback(openQuestionLines(testCase), "—");
+}
+
+function relatedCasesCell(testCase: GeneratedTest): string {
+  const list = (testCase.relatedCases ?? []).filter((value) => value.trim() !== "");
+  return list.length > 0 ? list.join(", ") : "—";
+}
+
 function casePlaceholderValues(testCase: GeneratedTest, index: number): Map<string, string> {
   return new Map([
     ["index", String(index + 1)],
     ["case.name", testCase.name],
     ["case.screens", testCase.screens.join(" → ")],
-    ["case.preconditions", testCase.preconditions.join("；")],
+    ["case.preconditions", (testCase.preconditions ?? []).join("；")],
     ["case.steps", renderStepsCell(testCase)],
     ["case.prelude", (testCase.prelude ?? []).map((step, stepIndex) => `P${stepIndex + 1}) ${step}`).join("\n")],
     ["case.startScreen", testCase.startScreen ?? ""],
     ["case.continuation", testCase.continuation === true ? "是" : "否"],
-    ["case.taskDesc", testCase.taskDesc]
+    ["case.taskDesc", testCase.taskDesc],
+    ["case.displayId", displayIdOf(testCase)],
+    ["case.module", moduleOf(testCase)],
+    ["case.section", sectionOf(testCase)],
+    ["case.testData", testDataLines(testCase).join("\n")],
+    ["case.relatedCases", relatedCasesCell(testCase)],
+    ["case.expectations", expectedResultLines(testCase).join("\n")],
+    ["case.designRefs", designRefLine(testCase)],
+    ["case.openQuestions", openQuestionLines(testCase).join("\n")],
+    ["case.variantLabel", testCase.variant?.label ?? ""],
+    ["case.variantExpected", (testCase.variant?.expected ?? []).join("\n")]
   ]);
 }
 
-function metaPlaceholderValues(meta: WorkbookMeta): Map<string, string> {
+function metaPlaceholderValues(meta: WorkbookMeta, summary: CaseSummary): Map<string, string> {
   return new Map([
     ["meta.source", meta.source],
     ["meta.generatedAt", meta.generatedAt],
     ["counts.cases", String(meta.counts.cases)],
     ["counts.screens", String(meta.counts.screens)],
-    ["counts.edges", String(meta.counts.edges)]
+    ["counts.edges", String(meta.counts.edges)],
+    ["counts.withTestData", String(summary.withTestData)],
+    ["counts.openQuestions", String(summary.openQuestions)]
   ]);
 }
 
@@ -85,8 +176,13 @@ function findCaseTemplateRow(sheet: ExcelJS.Worksheet): number | null {
 /** Fill a user workbook: the first row holding a case-level placeholder is
  * replicated per case (styles preserved), then `{{meta.*}}`/`{{counts.*}}`
  * are substituted everywhere. Unknown placeholders stay verbatim. */
-function applyTemplate(workbook: ExcelJS.Workbook, cases: GeneratedTest[], meta: WorkbookMeta): void {
-  const metaMap = metaPlaceholderValues(meta);
+function applyTemplate(
+  workbook: ExcelJS.Workbook,
+  cases: GeneratedTest[],
+  meta: WorkbookMeta,
+  summary: CaseSummary
+): void {
+  const metaMap = metaPlaceholderValues(meta, summary);
   let templateRows = 0;
   for (const sheet of workbook.worksheets) {
     const templateRow = findCaseTemplateRow(sheet);
@@ -117,7 +213,68 @@ function applyTemplate(workbook: ExcelJS.Workbook, cases: GeneratedTest[], meta:
   }
 }
 
-function defaultTestsWorkbook(cases: GeneratedTest[]): ExcelJS.Workbook {
+function coverageValue(coverage: WorkbookCoverage | undefined): string {
+  if (!coverage) return "n/a";
+  const screens = coverage.uncoveredScreens?.length ?? 0;
+  const edges = coverage.uncoveredEdges?.length ?? 0;
+  const complete = coverage.complete === true;
+  return complete ? "complete" : `incomplete（未覆盖屏幕 ${screens} · 跳转 ${edges}）`;
+}
+
+function exploreCoverageValue(coverage: WorkbookCoverage | undefined): string {
+  const explore = coverage?.explore;
+  if (!explore) return "n/a";
+  const screens = explore.uncoveredScreens?.length ?? 0;
+  const edges = explore.uncoveredEdges?.length ?? 0;
+  return explore.complete === true
+    ? "complete"
+    : `有缺口（未覆盖屏幕 ${screens} · 跳转 ${edges}；仅报告）`;
+}
+
+function addSummarySheet(
+  workbook: ExcelJS.Workbook,
+  cases: GeneratedTest[],
+  meta: WorkbookMeta,
+  summary: CaseSummary
+): void {
+  const sheet = workbook.addWorksheet(SUMMARY_SHEET, {
+    views: [{ state: "frozen", ySplit: 1 }]
+  });
+  sheet.columns = [
+    { header: "项", key: "item", width: 24 },
+    { header: "值", key: "value", width: 54 },
+    { header: "说明", key: "note", width: 46 }
+  ];
+  sheet.getRow(1).font = { bold: true };
+  const rows: Array<[string, string, string]> = [
+    ["来源", meta.source, "生成或导入的输入"],
+    ["生成时间", meta.generatedAt, ""],
+    ["用例总数", String(meta.counts.cases), "当前产物范围"],
+    ["屏幕数", String(meta.counts.screens), ""],
+    ["跳转数", String(meta.counts.edges), ""],
+    ["功能数", String(summary.modules.length), summary.modules.join("、") || "—"],
+    ["Section 数", String(summary.sections.length), summary.sections.join("、") || "—"],
+    ["有测试数据用例", String(summary.withTestData), "来自 acceptance.data"],
+    ["待确认条目", String(summary.openQuestions), "来自 acceptance.questions"],
+    ["变体组数", String(summary.variantGroups), "P1 变体标记"],
+    ["硬覆盖", coverageValue(meta.coverage), "complete 只按硬覆盖判定"],
+    ["探索覆盖", exploreCoverageValue(meta.coverage), "inferred 边仅报告"],
+    ["警告数", meta.warnings === undefined ? "n/a" : String(meta.warnings), "设计源与生成期"],
+    ["执行统计", "待执行（由 suite report 回填）", "生成计划不写执行结果"],
+    ["平台/版本/设备", "n/a", "由运行期台账提供"]
+  ];
+  for (const [item, value, note] of rows) sheet.addRow({ item, value, note });
+  sheet.eachRow((row) => {
+    row.getCell(2).alignment = { wrapText: true, vertical: "top" };
+    row.getCell(3).alignment = { wrapText: true, vertical: "top" };
+  });
+}
+
+function defaultTestsWorkbook(
+  cases: GeneratedTest[],
+  meta: WorkbookMeta,
+  summary: CaseSummary
+): ExcelJS.Workbook {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet(WORKBOOK_SHEET, {
     views: [{ state: "frozen", ySplit: 1 }]
@@ -128,7 +285,15 @@ function defaultTestsWorkbook(cases: GeneratedTest[]): ExcelJS.Workbook {
     { header: WORKBOOK_HEADERS[2], key: "screens", width: 30 },
     { header: WORKBOOK_HEADERS[3], key: "preconditions", width: 40 },
     { header: WORKBOOK_HEADERS[4], key: "steps", width: 60 },
-    { header: WORKBOOK_HEADERS[5], key: "taskDesc", width: 70 }
+    { header: WORKBOOK_HEADERS[5], key: "taskDesc", width: 70 },
+    { header: WORKBOOK_HEADERS[6], key: "displayId", width: 12 },
+    { header: WORKBOOK_HEADERS[7], key: "module", width: 16 },
+    { header: WORKBOOK_HEADERS[8], key: "section", width: 16 },
+    { header: WORKBOOK_HEADERS[9], key: "testData", width: 30 },
+    { header: WORKBOOK_HEADERS[10], key: "relatedCases", width: 18 },
+    { header: WORKBOOK_HEADERS[11], key: "expectations", width: 50 },
+    { header: WORKBOOK_HEADERS[12], key: "designRefs", width: 30 },
+    { header: WORKBOOK_HEADERS[13], key: "openQuestions", width: 30 }
   ];
   sheet.getRow(1).font = { bold: true };
   cases.forEach((testCase, index) => {
@@ -136,14 +301,26 @@ function defaultTestsWorkbook(cases: GeneratedTest[]): ExcelJS.Workbook {
       index: index + 1,
       name: testCase.name,
       screens: testCase.screens.join(" → "),
-      preconditions: testCase.preconditions.join("；"),
+      preconditions: (testCase.preconditions ?? []).join("；"),
       steps: renderStepsCell(testCase),
-      taskDesc: testCase.taskDesc
+      taskDesc: testCase.taskDesc,
+      displayId: displayIdOf(testCase),
+      module: moduleOf(testCase),
+      section: sectionOf(testCase),
+      testData: testDataCell(testCase),
+      relatedCases: relatedCasesCell(testCase),
+      expectations: expectedCell(testCase),
+      designRefs: designRefLine(testCase),
+      openQuestions: openQuestionsCell(testCase)
     });
-    row.getCell(4).alignment = { wrapText: true, vertical: "top" };
-    row.getCell(5).alignment = { wrapText: true, vertical: "top" };
-    row.getCell(6).alignment = { wrapText: true, vertical: "top" };
+    for (const cellIndex of [4, 5, 6, 10, 12, 14]) {
+      row.getCell(cellIndex).alignment = { wrapText: true, vertical: "top" };
+    }
+    for (const cellIndex of [7, 8, 9, 11, 13]) {
+      row.getCell(cellIndex).alignment = { vertical: "top" };
+    }
   });
+  addSummarySheet(workbook, cases, meta, summary);
   return workbook;
 }
 
@@ -154,8 +331,9 @@ export async function renderTestsWorkbook(
   meta: WorkbookMeta,
   options: { templatePath?: string } = {}
 ): Promise<Buffer> {
+  const summary = meta.summary ?? summarizeCases(cases);
   if (!options.templatePath) {
-    const workbook = defaultTestsWorkbook(cases);
+    const workbook = defaultTestsWorkbook(cases, meta, summary);
     workbook.creator = "aos-mcp";
     workbook.lastModifiedBy = "aos-mcp";
     workbook.description = meta.source;
@@ -175,7 +353,7 @@ export async function renderTestsWorkbook(
       `Excel 模版无法读取（仅支持 .xlsx）: ${options.templatePath}（${errorMessage(error)}）`
     );
   }
-  applyTemplate(workbook, cases, meta);
+  applyTemplate(workbook, cases, meta, summary);
   const rendered = await workbook.xlsx.writeBuffer();
   return Buffer.from(rendered);
 }

@@ -26,6 +26,12 @@ export async function createProjectStore(databaseUrl?: string | null): Promise<C
       );
     }
   }
+  const legacyUrl = (process.env.AOS_DATABASE_URL ?? "").trim();
+  if (legacyUrl !== "") {
+    return tryFileStore(
+      "检测到已废弃的 AOS_DATABASE_URL（服务只读取 MOBILE_TESTING_DATABASE_URL，旧名不生效）：已使用项目文件台账（.artemis/ledger），本次数据不会写入 PostgreSQL。请改用 MOBILE_TESTING_DATABASE_URL 后重启。"
+    );
+  }
   return tryFileStore("未配置 MOBILE_TESTING_DATABASE_URL：使用项目文件台账（.artemis/ledger，随项目持久）。");
 }
 

@@ -22,6 +22,7 @@ import {
   renderMarkdown
 } from "../dist/figma/test-gen.js";
 import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
+import { expectedResultLines } from "../dist/figma/case-view.js";
 import { deriveCasePreconditions } from "../dist/figma/preconditions.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
 import { syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
@@ -116,7 +117,15 @@ test("renderTestsWorkbook: default sheet with header, case rows and readable sty
     "涉及页面",
     "前置假设",
     "步骤",
-    "artemis 任务描述"
+    "artemis 任务描述",
+    "用例编号",
+    "模块",
+    "Section",
+    "测试数据",
+    "关联用例",
+    "预期结果",
+    "设计引用",
+    "备注/待确认"
   ]);
   assert.equal(sheet.getRow(1).font.bold, true);
   assert.equal(sheet.views[0].state, "frozen");
@@ -129,6 +138,14 @@ test("renderTestsWorkbook: default sheet with header, case rows and readable sty
   assert.equal(row.getCell(4).value, cases[0].preconditions.join("；"));
   assert.equal(row.getCell(5).value, cases[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n"));
   assert.equal(row.getCell(6).value, cases[0].taskDesc);
+  assert.equal(row.getCell(7).value, "—");
+  assert.equal(row.getCell(8).value, "未分组");
+  assert.equal(row.getCell(9).value, cases[0].preflight.screen);
+  assert.equal(row.getCell(10).value, "n/a（无显式数据）");
+  assert.equal(row.getCell(11).value, "—");
+  assert.equal(row.getCell(12).value, expectedResultLines(cases[0]).join("\n"));
+  assert.equal(row.getCell(13).value, cases[0].screens.join(" → "));
+  assert.equal(row.getCell(14).value, "—");
   assert.equal(row.getCell(4).alignment?.wrapText, true);
   assert.equal(row.getCell(5).alignment?.wrapText, true);
   assert.equal(row.getCell(6).alignment?.wrapText, true);
@@ -1769,4 +1786,172 @@ test("figma_generate_tests: 登记失败警告晚于落盘 → 响应与 tests.j
   const saved = JSON.parse(fs.readFileSync(payload.savedTo.json, "utf-8"));
   assert.deepEqual(saved.designWarnings, payload.designWarnings);
   assert.deepEqual(saved.designWarningsSummary, payload.designWarningsSummary);
+});
+
+test("figma_generate_tests: acceptance v2 enriches display fields, taskDesc, xlsx and summary", async () => {
+  const dir = makeFlowsProject();
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.writeFileSync(
+    path.join(designDir, "acceptance.json"),
+    JSON.stringify(
+      {
+        screens: { Home: ["人工首页口径"] },
+        data: { Home: ["账号：已登录"], Checkout: ["商品：拿铁"] },
+        questions: { Checkout: ["是否支持优惠券？"] },
+        section: { Home: "结算流程" }
+      },
+      null,
+      2
+    )
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.schemaVersion, 2);
+  const testCase = payload.flows[0];
+  assert.match(testCase.displayId, /^TC_[0-9a-f]{6}$/);
+  assert.equal(testCase.section, "结算流程");
+  assert.ok(testCase.module.length > 0, "module 由功能名填充");
+  assert.deepEqual(testCase.testData, ["账号：已登录", "商品：拿铁"]);
+  assert.deepEqual(testCase.openQuestions, ["是否支持优惠券？"]);
+  assert.match(testCase.taskDesc, /【测试数据】/);
+  assert.match(testCase.taskDesc, /- 账号：已登录/);
+  assert.match(testCase.taskDesc, /【待确认】/);
+  assert.match(testCase.taskDesc, /- 是否支持优惠券？/);
+
+  assert.equal(payload.summary.cases, payload.flows.length);
+  assert.equal(payload.summary.withTestData, payload.flows.length);
+  assert.equal(payload.summary.openQuestions, 1);
+  assert.equal(payload.summary.modules.length, 1);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(payload.savedTo.xlsx));
+  const row = workbook.getWorksheet("测试用例").getRow(2);
+  assert.equal(row.getCell(7).value, testCase.displayId);
+  assert.equal(row.getCell(8).value, testCase.module);
+  assert.equal(row.getCell(9).value, "结算流程");
+  assert.match(String(row.getCell(10).value), /账号：已登录/);
+  assert.ok(String(row.getCell(12).value).length > 0, "预期结果与步骤对齐");
+  assert.match(String(row.getCell(14).value), /是否支持优惠券/);
+  const summarySheet = workbook.getWorksheet("汇总");
+  assert.ok(summarySheet, "汇总 sheet 存在");
+  const summaryRows = new Map();
+  summarySheet.eachRow((entry) => {
+    summaryRows.set(String(entry.getCell(1).value), String(entry.getCell(2).value));
+  });
+  assert.equal(summaryRows.get("用例总数"), String(payload.flows.length));
+  assert.match(summaryRows.get("执行统计"), /待执行/);
+
+  const markdown = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.match(markdown, new RegExp(`${testCase.displayId} · .* / 结算流程`));
+  assert.match(markdown, /测试数据：/);
+  assert.match(markdown, /预期结果：/);
+  assert.match(markdown, /待确认：/);
+
+  const caseSet = payload.savedTo.caseSets?.[0];
+  assert.ok(caseSet, "功能归档存在");
+  const caseSetJson = JSON.parse(fs.readFileSync(caseSet.json, "utf-8"));
+  assert.equal(caseSetJson.summary.cases, caseSetJson.flows.length);
+});
+
+test("figma_generate_tests: invalid acceptance details warn without blocking", async () => {
+  const dir = makeFlowsProject();
+  fs.writeFileSync(
+    path.join(dir, ".artemis", "design", "acceptance.json"),
+    JSON.stringify({ data: { Home: "not-an-array" }, questions: { Home: ["待确认项"] }, section: "bad" })
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(payload.ok, true);
+  assert.ok(
+    (payload.warnings ?? []).some((entry) => entry.code === "acceptance-details-invalid"),
+    "非法 acceptance 条目可见"
+  );
+  assert.deepEqual(payload.flows[0].testData, []);
+  assert.deepEqual(payload.flows[0].openQuestions, ["待确认项"]);
+});
+
+test("renderTestsWorkbook: legacy case without new fields falls back to dash/n-a", async () => {
+  const legacy = [
+    {
+      id: "case-123456789012",
+      name: "Legacy → Home",
+      screens: ["Legacy", "Home"],
+      steps: ["点击「继续」"],
+      preconditions: ["应用已安装"],
+      taskDesc: "legacy task",
+      continuation: false,
+      startScreen: "Legacy",
+      prelude: [],
+      expectations: []
+    }
+  ];
+  const buffer = await renderTestsWorkbook(legacy, {
+    source: "legacy",
+    generatedAt: "2026-10-20T00:00:00Z",
+    counts: { cases: 1, screens: 2, edges: 1 }
+  });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const row = workbook.getWorksheet("测试用例").getRow(2);
+  assert.equal(row.getCell(7).value, "—");
+  assert.equal(row.getCell(8).value, "未分组");
+  assert.equal(row.getCell(9).value, "未指定");
+  assert.equal(row.getCell(10).value, "n/a（无显式数据）");
+  assert.equal(row.getCell(11).value, "—");
+  assert.equal(row.getCell(12).value, "1) —（无显式期望）");
+  assert.equal(row.getCell(14).value, "—");
+  assert.ok(workbook.getWorksheet("汇总"));
+});
+
+test("renderTestsWorkbook template: display placeholders and summary counts", async () => {
+  const dir = makeTempDir("aos-tpl-view-");
+  const templatePath = path.join(dir, "template.xlsx");
+  const template = new ExcelJS.Workbook();
+  const sheet = template.addWorksheet("用例");
+  sheet.getRow(1).values = [
+    "{{index}}",
+    "{{case.displayId}}",
+    "{{case.module}}",
+    "{{case.section}}",
+    "{{case.testData}}",
+    "{{case.expectations}}",
+    "{{case.openQuestions}}",
+    "{{counts.withTestData}}",
+    "{{counts.openQuestions}}"
+  ];
+  await template.xlsx.writeFile(templatePath);
+  const testCase = {
+    id: "case-abcdef123456",
+    name: "Home → Checkout",
+    screens: ["Home", "Checkout"],
+    steps: ["点击「Buy now」"],
+    preconditions: ["应用已安装"],
+    taskDesc: "task",
+    continuation: false,
+    startScreen: "Home",
+    prelude: [],
+    expectations: [{ screen: "Checkout", hints: ["订单号"], provenance: "design", confidence: "high", kind: "assert" }],
+    displayId: "TC_123456",
+    module: "结算",
+    section: "首页",
+    testData: ["账号：已登录"],
+    openQuestions: ["是否支持优惠券？"]
+  };
+  const buffer = await renderTestsWorkbook([testCase], {
+    source: "unit-test",
+    generatedAt: "2026-10-20T00:00:00Z",
+    counts: { cases: 1, screens: 2, edges: 1 }
+  }, { templatePath });
+  const rendered = new ExcelJS.Workbook();
+  await rendered.xlsx.load(buffer);
+  const row = rendered.getWorksheet("用例").getRow(1);
+  assert.equal(row.getCell(2).value, "TC_123456");
+  assert.equal(row.getCell(3).value, "结算");
+  assert.equal(row.getCell(4).value, "首页");
+  assert.equal(row.getCell(5).value, "- 账号：已登录");
+  assert.equal(row.getCell(6).value, "1) → Checkout：订单号");
+  assert.equal(row.getCell(7).value, "- 是否支持优惠券？");
+  assert.equal(row.getCell(8).value, 1);
+  assert.equal(row.getCell(9).value, 1);
 });

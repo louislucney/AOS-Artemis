@@ -473,7 +473,7 @@ test("backfill case-sets: 登记 1 归档（缺 xlsx 告警仍登记）、跳过
   const runtime = await makeRuntime(store, dir);
 
   const a = writeArchive(runtime, {
-    stem: "20261014T150000_登录",
+    stem: "20261014_150000_登录",
     source: "pen:login.pen",
     featureKey: "f-登录",
     featureName: "登录流程",
@@ -521,7 +521,7 @@ test("backfill case-sets: 登记 1 归档（缺 xlsx 告警仍登记）、跳过
   const sets = await store.listCaseSets(runtime.project.rootDir);
   const aSet = sets.find((entry) => entry.features.some((feature) => feature.jsonPath === a.jsonPath));
   assert.ok(aSet, "A 登记");
-  assert.equal(aSet.basename, "20261014T150000_登录");
+  assert.equal(aSet.basename, "20261014_150000_登录");
   assert.equal(aSet.designName, null);
   assert.equal(aSet.source, "pen:login.pen");
   assert.equal(aSet.fingerprint, createHash("sha256").update(fs.readFileSync(a.jsonPath)).digest("hex"));

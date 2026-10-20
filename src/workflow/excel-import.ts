@@ -54,6 +54,11 @@ interface ImportedCase {
   steps: string[];
   expectations: Array<Record<string, unknown>>;
   feature: string;
+  displayId?: string;
+  module?: string;
+  section?: string;
+  testData?: string[];
+  openQuestions?: string[];
 }
 
 function normalizeHeader(value: string): string {
@@ -305,7 +310,12 @@ export async function importTestDocument(
           screens: [module],
           steps,
           expectations,
-          feature: featureKey
+          feature: featureKey,
+          displayId: `imp-${sha8}-${row.rowNumber}`,
+          module,
+          section: module,
+          testData: [],
+          openQuestions: []
         };
       });
       allCases.push(...cases);

@@ -14,22 +14,22 @@ test("caseSetsDir: 指向 <configDir>/design/case-sets", () => {
 });
 
 test("caseSetStem: 清洗非法字符与空白、空名回退 feature、超长截断", () => {
-  assert.equal(caseSetStem("登录流程", NOW, new Set()), "20261014T153000_登录流程");
-  assert.equal(caseSetStem('登录 / 流程: "验证"', NOW, new Set()), "20261014T153000_登录-流程-验证");
-  assert.equal(caseSetStem("   ", NOW, new Set()), "20261014T153000_feature");
-  assert.equal(caseSetStem("功".repeat(60), NOW, new Set()), `20261014T153000_${"功".repeat(40)}`);
+  assert.equal(caseSetStem("登录流程", NOW, new Set()), "20261014_153000_登录流程");
+  assert.equal(caseSetStem('登录 / 流程: "验证"', NOW, new Set()), "20261014_153000_登录-流程-验证");
+  assert.equal(caseSetStem("   ", NOW, new Set()), "20261014_153000_feature");
+  assert.equal(caseSetStem("功".repeat(60), NOW, new Set()), `20261014_153000_${"功".repeat(40)}`);
 });
 
 test("caseSetStem: 冲突加后缀 -2、-3", () => {
-  const taken = new Set(["20261014T153000_登录流程"]);
-  assert.equal(caseSetStem("登录流程", NOW, taken), "20261014T153000_登录流程-2");
-  taken.add("20261014T153000_登录流程-2");
-  assert.equal(caseSetStem("登录流程", NOW, taken), "20261014T153000_登录流程-3");
+  const taken = new Set(["20261014_153000_登录流程"]);
+  assert.equal(caseSetStem("登录流程", NOW, taken), "20261014_153000_登录流程-2");
+  taken.add("20261014_153000_登录流程-2");
+  assert.equal(caseSetStem("登录流程", NOW, taken), "20261014_153000_登录流程-3");
 });
 
 test("saveCaseSetFiles: 三件套同 basename 且可读、返回路径一致", async () => {
   const dir = makeTempDir("aos-case-sets-");
-  const stem = "20261014T153000_登录流程";
+  const stem = "20261014_153000_登录流程";
   const saved = await saveCaseSetFiles(dir, stem, {
     json: '{"ok":true}',
     markdown: "# 用例\n",

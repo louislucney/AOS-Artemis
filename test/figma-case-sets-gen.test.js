@@ -10,7 +10,7 @@ import { baseConfig, loadTestRuntime, makeTempProject, parseToolResult, seedCase
 import { pagedFlowDocument, syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
 
 const NOW = () => new Date("2026-10-14T15:30:00.000Z");
-const STAMP = "20261014T153000";
+const STAMP = "20261014_153000";
 
 function makeFlowsProject(document = syntheticFlowDocument(), filterCrossPage = false) {
   const dir = makeTempProject({ config: baseConfig() });

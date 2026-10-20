@@ -5,7 +5,7 @@ import { writeFileAtomic } from "../util.js";
 import { designDir } from "./design-store.js";
 
 /** 用例集归档（DESIGN：回归服务 §5.2）：一份功能段 = 三件套同 basename
- * （`<时间戳>_<功能>.json|md|xlsx`，UTC 紧凑时间戳），供回归引用与追溯。 */
+ * （`<YYYYMMDD_HHmmss>_<功能>.json|md|xlsx`，UTC 紧凑时间戳），供回归引用与追溯。 */
 export const CASE_SETS_DIR = "case-sets";
 
 export function caseSetsDir(configDirAbs: string): string {
@@ -13,7 +13,7 @@ export function caseSetsDir(configDirAbs: string): string {
 }
 
 export function caseSetStem(name: string, now: Date, taken: Set<string>): string {
-  const stamp = now.toISOString().slice(0, 19).replace(/[-:]/g, "");
+  const stamp = now.toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "_");
   const cleaned = name
     .replace(/[/\\:*?"<>|\s]+/g, "-")
     .replace(/^-+|-+$/g, "")

@@ -306,8 +306,8 @@ async function defaultSince(runtime: Runtime, report: BackfillReport): Promise<s
 }
 
 function caseSetCreatedAt(name: string, jsonPath: string): string | null {
-  const prefix = name.slice(0, -".json".length).split("_")[0] ?? "";
-  const match = /^(\d{8})T(\d{6})$/.exec(prefix);
+  const stem = name.slice(0, -".json".length);
+  const match = /^(\d{8})[T_](\d{6})(?:_|$)/.exec(stem);
   if (match) {
     const iso = `${match[1]!.slice(0, 4)}-${match[1]!.slice(4, 6)}-${match[1]!.slice(6, 8)}T${match[2]!.slice(0, 2)}:${match[2]!.slice(2, 4)}:${match[2]!.slice(4, 6)}.000Z`;
     if (!Number.isNaN(Date.parse(iso))) return iso;

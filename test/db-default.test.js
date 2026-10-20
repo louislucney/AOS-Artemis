@@ -48,6 +48,28 @@ test("createProjectStore: no URL → file ledger, data persists across restart",
   }
 });
 
+test("createProjectStore: 仅有废弃 AOS_DATABASE_URL → 文件台账并提示改名", async () => {
+  const home = await mkdtemp(join(tmpdir(), "aos-default-"));
+  try {
+    await withEnv(
+      {
+        MOBILE_TESTING_DATABASE_URL: "",
+        AOS_DATABASE_URL: "postgres://127.0.0.1:1/none",
+        AOS_LEDGER_DIR: home
+      },
+      async () => {
+        const result = await createProjectStore();
+        assert.equal(result.kind, "file");
+        assert.ok(result.reason?.includes("AOS_DATABASE_URL"), "提示旧变量名");
+        assert.ok(result.reason?.includes("MOBILE_TESTING_DATABASE_URL"), "提示新变量名");
+        await result.store.close();
+      }
+    );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("createProjectStore: PG failure falls back to file ledger with honest reason", async () => {
   const home = await mkdtemp(join(tmpdir(), "aos-default-"));
   try {
