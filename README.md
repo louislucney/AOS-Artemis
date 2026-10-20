@@ -532,6 +532,7 @@ node dist/cli.js doctor
 | `aos_events` | 查询当前项目 `project_events`：`runId`/`caseId`/`type`/`status`/`since`/`afterSeq`/`consumed`/`order`/`limit`；返回 `nextSeq`；默认不返回 payload（`includePayload:true` 时 limit ≤50） |
 | `aos_event_poll` | 按 `afterSeq` 游标无丢失轮询事件；无新事件时最多等待 `waitMs`（0-30000）；下一轮把返回的 `nextSeq` 作为 `afterSeq`；`consume:true` 标记已消费 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
+| `aos_ledger_migrate` | 把当前项目文件台账的 `usage_events`/`regression_tasks` 幂等补进中心 PostgreSQL（保留原 id）；默认 `dryRun` 只统计，需 PG 存储；不处理 suite_runs/case_sets（用 `suite backfill`） |
 | `aos_usage` | 使用统计（调用事件）：`summary` 概览 / `signals` 信号分布 / `events` 流水；`tool`/`status`/`days` 筛选，events `limit` ≤200；只统计客户端发起的调用，`AOS_USAGE=0` 时标注采集已关闭但历史仍可查 |
 | `jira_issue_get` | 读取 Jira Cloud issue（key 或 browse URL）→ summary/status/type/labels + 描述纯文本 + 启发式验收标准标注（保留原始 ADF）；缺凭证返回 `howToFix` |
 | `jira_issue_search` | JQL 搜索（`/rest/api/3/search/jql` 游标分页、无 total）：key/url/summary/status/type/labels/updated/assignee；limit 默认 20、上限 100 |

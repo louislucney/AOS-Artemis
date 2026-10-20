@@ -39,6 +39,7 @@ import type {
   UpdateCaseVerdictInput,
   UpsertLlmInput,
   UpsertRunnerInput,
+  LegacyLedgerImportResult,
   UsageEventQuery,
   UsageEventRecord,
   UsagePrunePolicy,
@@ -1303,6 +1304,83 @@ export class PostgresStore implements ProjectStore {
     );
     await this.pruneUsageEvents(record.projectId, policy);
     return record;
+  }
+
+  async importLegacyLedger(
+    rootPath: string,
+    input: { usage: UsageEventRecord[]; regressionTasks: RegressionTaskRecord[] },
+    dryRun = true
+  ): Promise<LegacyLedgerImportResult> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) throw new Error(`PostgresStore: project not registered: ${rootPath}`);
+
+    const usage = { found: input.usage.length, existing: 0, inserted: 0 };
+    for (const entry of input.usage) {
+      const existing = await this.pool.query("SELECT 1 FROM usage_events WHERE id = $1", [entry.id]);
+      if ((existing.rowCount ?? 0) > 0) {
+        usage.existing += 1;
+        continue;
+      }
+      if (dryRun) continue;
+      const inserted = await this.pool.query(
+        `INSERT INTO usage_events
+           (id, project_id, at, tool, family, ok, duration_ms, error_class, error_summary, signals, arg_keys, trace_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ON CONFLICT (id) DO NOTHING
+         RETURNING id`,
+        [
+          entry.id,
+          project.id,
+          entry.at,
+          entry.tool,
+          entry.family,
+          entry.ok,
+          entry.durationMs,
+          entry.errorClass,
+          entry.errorSummary,
+          JSON.stringify(entry.signals),
+          JSON.stringify(entry.argKeys),
+          entry.traceId
+        ]
+      );
+      usage.inserted += Number(inserted.rowCount ?? 0);
+    }
+
+    const regressionTasks = { found: input.regressionTasks.length, existing: 0, inserted: 0 };
+    for (const entry of input.regressionTasks) {
+      const existing = await this.pool.query("SELECT 1 FROM regression_tasks WHERE id = $1", [
+        entry.id
+      ]);
+      if ((existing.rowCount ?? 0) > 0) {
+        regressionTasks.existing += 1;
+        continue;
+      }
+      if (dryRun) continue;
+      const inserted = await this.pool.query(
+        `INSERT INTO regression_tasks
+           (id, project_id, created_at, created_by, refs, platforms, baseline, status, claimed_by, claimed_at, run_ids, attempts)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ON CONFLICT (id) DO NOTHING
+         RETURNING id`,
+        [
+          entry.id,
+          project.id,
+          entry.createdAt,
+          entry.createdBy,
+          JSON.stringify(entry.refs),
+          JSON.stringify(entry.platforms),
+          entry.baseline,
+          entry.status,
+          entry.claimedBy,
+          entry.claimedAt,
+          JSON.stringify(entry.runIds),
+          entry.attempts
+        ]
+      );
+      regressionTasks.inserted += Number(inserted.rowCount ?? 0);
+    }
+
+    return { usage, regressionTasks };
   }
 
   async listUsageEvents(rootPath: string, query: UsageEventQuery = {}): Promise<UsageEventRecord[]> {

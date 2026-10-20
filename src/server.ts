@@ -24,6 +24,7 @@ import { DESIGN_NATIVE_TOOLS } from "./tools/native-tools/design.js";
 import { EVENTS_NATIVE_TOOLS } from "./tools/native-tools/events.js";
 import { FIGMA_NATIVE_TOOLS } from "./tools/native-tools/figma.js";
 import { JIRA_NATIVE_TOOLS } from "./tools/native-tools/jira.js";
+import { LEDGER_NATIVE_TOOLS } from "./tools/native-tools/ledger.js";
 import { LLM_NATIVE_TOOLS } from "./tools/native-tools/llm.js";
 import { PEN_NATIVE_TOOLS } from "./tools/native-tools/pen.js";
 import { WORKFLOW_NATIVE_TOOLS } from "./tools/native-tools/workflow.js";
@@ -31,6 +32,7 @@ import { WORKFLOW_NATIVE_TOOLS } from "./tools/native-tools/workflow.js";
 const NATIVE_TOOLS: NativeToolDefinition[] = [
   ...LLM_NATIVE_TOOLS,
   ...AOS_NATIVE_TOOLS,
+  ...LEDGER_NATIVE_TOOLS,
   ...EVENTS_NATIVE_TOOLS,
   ...JIRA_NATIVE_TOOLS,
   ...DESIGN_NATIVE_TOOLS,

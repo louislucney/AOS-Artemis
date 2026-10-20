@@ -1952,3 +1952,10 @@ llm_switch(name, force):
 > **兼容**：`GET /events/<project>` 保持原语义，新增 `afterSeq/consumed` 参数与 `nextSeq` 字段；`since` 的同毫秒窗口仍只用于展示，游标轮询用 `seq`。
 > **测试**：三存储补 `afterSeq`/`consumed` + 非法值断言；ingress 补“空页→等待→新事件”与消费幂等；HTTP 补 `/poll` 长轮询、`consume` 与 400/405；file 补 `AOS_EVENTS_FSYNC=1` 写入；工具补注册与游标推进；全量 **1756 绿**，lint 0 error（2 条既有 warning）。
 
+### 13.141 实施记录（P1 完成）：历史文件台账迁移工具
+
+> 2026-10-20。替代已退役的外部脚本 `scripts/migrate-ledger-to-pg.mjs`：`aos_ledger_migrate` 只读**当前项目** `.artemis/ledger/usage.jsonl` + `state.json`，项目身份来自 runtime，不接受路径/DB URL；默认 `dryRun:true`，`dryRun:false` 或 `write:true` 才写库。
+> **存储**：仅中心 PostgreSQL（`ProjectStore.importLegacyLedger` 可选方法；PG 用原 id `ON CONFLICT (id) DO NOTHING` 幂等插入并回填当前 project_id）；file/memory 显式返回不可用。
+> **口径**：返回 `found/existing/inserted`；坏 JSON/缺 id/重复 id 记 warnings 不阻断；只覆盖 `usage_events`/`regression_tasks`，`suite_runs`/`case_sets` 仍由 `suite backfill` 处理；审计域 `ledger-migrate`（preview/import，best-effort）。
+> **测试**：新增 `test/ledger-migrate.test.js` 2 例（dryRun/幂等/坏行 warning、非 PG 不可用）；全量 **1758 绿**，lint 0 error（2 条既有 warning）。
+

@@ -91,6 +91,17 @@ export interface UsageEventQuery {
   limit?: number;
 }
 
+export interface LegacyLedgerImportCounts {
+  found: number;
+  existing: number;
+  inserted: number;
+}
+
+export interface LegacyLedgerImportResult {
+  usage: LegacyLedgerImportCounts;
+  regressionTasks: LegacyLedgerImportCounts;
+}
+
 export interface UsagePrunePolicy {
   retentionDays?: number;
   maxEvents?: number;
@@ -516,6 +527,12 @@ export interface ProjectStore {
     input: RecordUsageEventInput,
     policy?: UsagePrunePolicy
   ): Promise<UsageEventRecord>;
+  /** P1 历史文件台账迁移（仅中心 PG 实现；保留原 id 幂等插入）。 */
+  importLegacyLedger?(
+    rootPath: string,
+    input: { usage: UsageEventRecord[]; regressionTasks: RegressionTaskRecord[] },
+    dryRun?: boolean
+  ): Promise<LegacyLedgerImportResult>;
   recordProjectEvent(rootPath: string, input: ProjectEventInput): Promise<RecordProjectEventResult>;
   listProjectEvents(rootPath: string, query?: ProjectEventQuery): Promise<ProjectEventRecord[]>;
   markProjectEventsConsumed(
