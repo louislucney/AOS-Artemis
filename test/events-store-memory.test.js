@@ -47,6 +47,13 @@ test("MemoryStore events: 幂等、mismatch、seq 与查询", async () => {
     .replace(".000Z", "Z");
   const secondsSince = await store.listProjectEvents("/w/p1", { since: sinceSeconds, order: "asc" });
   assert.equal(secondsSince.length, 2);
+
+  const afterFirst = await store.listProjectEvents("/w/p1", { afterSeq: 1, order: "asc" });
+  assert.deepEqual(afterFirst.map((event) => event.eventId), ["e2"]);
+  await assert.rejects(
+    () => store.listProjectEvents("/w/p1", { afterSeq: -1 }),
+    /invalid afterSeq/
+  );
 });
 
 test("MemoryStore events: prune 超限删最旧且 seq 不回收", async () => {

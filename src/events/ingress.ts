@@ -3,6 +3,7 @@ import type {
   ProjectEventRecord,
   ProjectStore
 } from "../db/types.js";
+import { sleep } from "../util.js";
 import { normalizeSince } from "./payload.js";
 import { validateEventInput } from "./protocol.js";
 
@@ -41,9 +42,17 @@ export function degradedReason(store: ProjectStore, note: string | null): string
 export interface EventList {
   events: ProjectEventRecord[];
   returned: number;
+  /** 下一轮游标：本页最大 seq；空页回显请求的 afterSeq。 */
+  nextSeq: number;
   includePayload: boolean;
   storage: "postgres" | "file" | "memory";
   degraded: string | null;
+}
+
+export interface EventPollOptions extends ProjectEventQuery {
+  /** 无新事件时的最长等待（毫秒），上限 30s；0 表示立即返回。 */
+  waitMs?: number;
+  signal?: AbortSignal;
 }
 
 function requireStoreMethod<T>(value: T | undefined): T {
@@ -96,6 +105,12 @@ export async function listProjectEvents(
   if (input.since !== undefined && normalizeSince(input.since) === null) {
     throw new EventValidationError("since 必须是可解析的 ISO 8601 时间", "since");
   }
+  if (
+    input.afterSeq !== undefined &&
+    (!Number.isInteger(input.afterSeq) || input.afterSeq < 0)
+  ) {
+    throw new EventValidationError("afterSeq 必须是非负整数", "afterSeq");
+  }
   const list = requireStoreMethod(context.store.listProjectEvents);
   const includePayload = input.includePayload === true;
   const max = includePayload ? 50 : 200;
@@ -106,11 +121,33 @@ export async function listProjectEvents(
     limit,
     includePayload
   });
+  const nextSeq = events.reduce(
+    (max, event) => (event.seq > max ? event.seq : max),
+    input.afterSeq ?? 0
+  );
   return {
     events,
     returned: events.length,
+    nextSeq,
     includePayload,
     storage: context.storage,
     degraded: context.degraded
   };
+}
+
+export async function pollProjectEvents(
+  context: EventIngressContext,
+  input: EventPollOptions = {}
+): Promise<EventList> {
+  const { waitMs: rawWait, signal, ...query } = input;
+  const waitMs = Math.max(
+    0,
+    Math.min(Number.isFinite(rawWait) ? Math.floor(rawWait ?? 0) : 0, 30_000)
+  );
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const listed = await listProjectEvents(context, { ...query, order: "asc" });
+    if (listed.returned > 0 || Date.now() >= deadline || signal?.aborted) return listed;
+    await sleep(Math.min(250, Math.max(1, deadline - Date.now())));
+  }
 }

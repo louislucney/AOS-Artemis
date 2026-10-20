@@ -26,10 +26,11 @@ import {
   degradedReason,
   EventValidationError,
   listProjectEvents,
+  pollProjectEvents,
   reportProjectEvent
 } from "./events/ingress.js";
 import { createPanelDeepProbe } from "./panel/deep.js";
-import type { ProjectStore } from "./db/types.js";
+import type { ProjectEventQuery, ProjectStore } from "./db/types.js";
 import { Runtime } from "./runtime.js";
 import { RuntimeHost } from "./runtime-host.js";
 import { createServerForRuntime, inProcessToolCatalog } from "./server.js";
@@ -341,8 +342,9 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           return;
         }
 
-        const eventMatch = /^\/events\/([^/]+)\/?$/.exec(url.pathname);
+        const eventMatch = /^\/events\/([^/]+)(\/poll)?\/?$/.exec(url.pathname);
         if (eventMatch) {
+          const isPoll = eventMatch[2] === "/poll";
           let projectName: string;
           try {
             projectName = decodeURIComponent(eventMatch[1]!);
@@ -354,6 +356,11 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           if (!isValidProjectName(projectName)) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end('{"error":"invalid project name"}');
+            return;
+          }
+          if (isPoll && req.method !== "GET") {
+            res.writeHead(405, { "Content-Type": "application/json" });
+            res.end('{"error":"method not allowed"}');
             return;
           }
           try {
@@ -406,21 +413,50 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               const orderRaw = url.searchParams.get("order");
               const limitRaw = url.searchParams.get("limit");
               const limit = limitRaw === null ? undefined : Number(limitRaw);
-              const listed = await listProjectEvents(
-                { store, rootPath: project.rootPath, storage: store.kind, degraded: degradedReason(store, reason) },
-                {
-                  since: url.searchParams.get("since") ?? undefined,
-                  runId: url.searchParams.get("runId") ?? undefined,
-                  caseId: url.searchParams.get("caseId") ?? undefined,
-                  type: url.searchParams.get("type") ?? undefined,
-                  status: url.searchParams.get("status") ?? undefined,
-                  order:
-                    orderRaw === "asc" || orderRaw === "desc" ? orderRaw : undefined,
-                  limit:
-                    limit !== undefined && Number.isFinite(limit) ? limit : undefined,
-                  includePayload: includeRaw === "true" || includeRaw === "1"
+              const afterSeqRaw = url.searchParams.get("afterSeq");
+              const context = {
+                store,
+                rootPath: project.rootPath,
+                storage: store.kind,
+                degraded: degradedReason(store, reason)
+              };
+              const query: ProjectEventQuery = {
+                since: url.searchParams.get("since") ?? undefined,
+                runId: url.searchParams.get("runId") ?? undefined,
+                caseId: url.searchParams.get("caseId") ?? undefined,
+                type: url.searchParams.get("type") ?? undefined,
+                status: url.searchParams.get("status") ?? undefined,
+                afterSeq: afterSeqRaw === null ? undefined : Number(afterSeqRaw),
+                order:
+                  orderRaw === "asc" || orderRaw === "desc" ? orderRaw : undefined,
+                limit:
+                  limit !== undefined && Number.isFinite(limit) ? limit : undefined,
+                includePayload: includeRaw === "true" || includeRaw === "1"
+              };
+              if (isPoll) {
+                const waitRaw = url.searchParams.get("waitMs") ?? url.searchParams.get("wait");
+                const waitMs = waitRaw === null ? 0 : Number(waitRaw);
+                if (!Number.isFinite(waitMs) || waitMs < 0) {
+                  throw new EventValidationError("waitMs 必须是非负数", "waitMs");
                 }
-              );
+                const controller = new AbortController();
+                res.on("close", () => {
+                  if (!res.writableEnded) controller.abort();
+                });
+                const polled = await pollProjectEvents(context, {
+                  ...query,
+                  waitMs,
+                  signal: controller.signal
+                });
+                if (controller.signal.aborted) {
+                  res.end();
+                  return;
+                }
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify(polled));
+                return;
+              }
+              const listed = await listProjectEvents(context, query);
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify(listed));
               return;

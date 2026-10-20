@@ -1425,6 +1425,13 @@ export class PostgresStore implements ProjectStore {
       values.push(since);
       clauses.push(`received_at > $${values.length}`);
     }
+    if (query.afterSeq !== undefined) {
+      if (!Number.isInteger(query.afterSeq) || query.afterSeq < 0) {
+        throw new Error("invalid afterSeq");
+      }
+      values.push(query.afterSeq);
+      clauses.push(`seq > $${values.length}`);
+    }
     const includePayload = query.includePayload === true;
     const max = includePayload ? 50 : 200;
     const requested = query.limit ?? 50;

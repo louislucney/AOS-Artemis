@@ -139,6 +139,8 @@ export interface ProjectEventQuery {
   type?: string;
   status?: string;
   since?: string;
+  /** 无丢失游标：只返回 seq 严格大于该值的事件（P1）。 */
+  afterSeq?: number;
   order?: "asc" | "desc";
   limit?: number;
   includePayload?: boolean;

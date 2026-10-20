@@ -512,6 +512,10 @@ export class FileStore implements ProjectStore {
       if (!project) return [];
       const since = query.since === undefined ? null : normalizeSince(query.since);
       if (query.since !== undefined && since === null) throw new Error("invalid since");
+      const afterSeq = query.afterSeq === undefined ? null : query.afterSeq;
+      if (afterSeq !== null && (!Number.isInteger(afterSeq) || afterSeq < 0)) {
+        throw new Error("invalid afterSeq");
+      }
       const includePayload = query.includePayload === true;
       const limit = includePayload ? 50 : 200;
       const requested = query.limit ?? 50;
@@ -523,6 +527,7 @@ export class FileStore implements ProjectStore {
         .filter((event) => !query.caseId || event.caseId === query.caseId)
         .filter((event) => !query.type || event.type === query.type)
         .filter((event) => !query.status || event.status === query.status)
+        .filter((event) => afterSeq === null || event.seq > afterSeq)
         .filter((event) => since === null || event.receivedAt > since)
         .sort((left, right) =>
           order === "asc"

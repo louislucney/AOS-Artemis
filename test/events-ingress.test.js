@@ -5,6 +5,7 @@ import { MemoryStore } from "../dist/db/memory.js";
 import {
   EventValidationError,
   listProjectEvents,
+  pollProjectEvents,
   reportProjectEvent
 } from "../dist/events/ingress.js";
 
@@ -38,6 +39,7 @@ test("ingress: ack 带 storage/degraded，重复取既有身份", async () => {
 
   const listed = await listProjectEvents(ctx, { includePayload: false });
   assert.equal(listed.returned, 1);
+  assert.equal(listed.nextSeq, listed.events[0].seq);
   assert.equal(listed.events[0].payload, undefined);
   await assert.rejects(
     () => reportProjectEvent(ctx, { eventId: "e2", type: "nope" }),
@@ -65,4 +67,30 @@ test("ingress: 审计异步写入且不包含 payload", async () => {
   assert.equal(audit[0].result, "ok");
   assert.equal(audit[0].refs.eventId, "e-audit");
   assert.equal(JSON.stringify(audit[0]).includes("do-not-log"), false);
+});
+
+test("ingress: pollProjectEvents 按 afterSeq 无丢失推进", async () => {
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  const ctx = { store, rootPath: "/w/p1", storage: "memory", degraded: null };
+  await reportProjectEvent(ctx, { eventId: "e1", type: "log.entry", payload: { n: 1 } });
+  await reportProjectEvent(ctx, { eventId: "e2", type: "log.entry", payload: { n: 2 } });
+
+  const first = await pollProjectEvents(ctx, { afterSeq: 0, waitMs: 0 });
+  assert.deepEqual(first.events.map((event) => event.eventId), ["e1", "e2"]);
+  assert.equal(first.nextSeq, 2);
+
+  const empty = await pollProjectEvents(ctx, { afterSeq: first.nextSeq, waitMs: 0 });
+  assert.equal(empty.returned, 0);
+  assert.equal(empty.nextSeq, 2);
+
+  const pending = pollProjectEvents(ctx, { afterSeq: 2, waitMs: 1_000 });
+  setTimeout(() => {
+    void reportProjectEvent(ctx, { eventId: "e3", type: "log.entry", payload: { n: 3 } });
+  }, 50);
+  const next = await pending;
+  assert.deepEqual(next.events.map((event) => event.eventId), ["e3"]);
+  assert.equal(next.nextSeq, 3);
+
+  await assert.rejects(() => pollProjectEvents(ctx, { afterSeq: -1 }), EventValidationError);
 });

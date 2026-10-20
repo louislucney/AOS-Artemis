@@ -124,6 +124,16 @@ test("FileStore events: 查询过滤、since 秒级、order、includePayload", a
     assert.equal(desc[0].eventId, "e2");
     assert.equal(await store.countProjectEvents(project), 2);
     assert.equal(second.record.runId, "run-1");
+
+    const afterFirst = await store.listProjectEvents(project, {
+      afterSeq: first.record.seq,
+      order: "asc"
+    });
+    assert.deepEqual(afterFirst.map((event) => event.eventId), ["e2"]);
+    await assert.rejects(
+      () => store.listProjectEvents(project, { afterSeq: -1 }),
+      /invalid afterSeq/
+    );
   } finally {
     await store.close();
   }

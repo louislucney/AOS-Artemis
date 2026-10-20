@@ -6,6 +6,7 @@ import {
   degradedReason,
   EventValidationError,
   listProjectEvents,
+  pollProjectEvents,
   reportProjectEvent
 } from "../../events/ingress.js";
 import {
@@ -53,9 +54,14 @@ const querySchema = z.object({
   type: z.enum(EVENT_TYPES).optional(),
   status: z.enum(EVENT_STATUSES).optional(),
   since: z.string().optional(),
+  afterSeq: z.number().int().min(0).optional(),
   order: z.enum(["asc", "desc"]).optional(),
   limit: z.number().int().min(1).max(200).optional(),
   includePayload: z.boolean().optional()
+});
+
+const pollSchema = querySchema.extend({
+  waitMs: z.number().int().min(0).max(30_000).optional()
 });
 
 export const EVENTS_NATIVE_TOOLS: NativeToolDefinition[] = [
@@ -81,11 +87,27 @@ export const EVENTS_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "aos_events",
     description:
-      "查询当前项目的执行事件（project_events）：按 runId/caseId/type/status/since 过滤，默认新→旧、默认不返回 payload（includePayload:true 时 limit ≤ 50）。",
+      "查询当前项目的执行事件（project_events）：按 runId/caseId/type/status/since/afterSeq 过滤，默认新→旧、默认不返回 payload（includePayload:true 时 limit ≤ 50）；返回 nextSeq 供无丢失轮询。",
     schema: querySchema,
     handler: async (runtime, args) => {
       try {
         return jsonResult(await listProjectEvents(context(runtime), args));
+      } catch (error) {
+        if (error instanceof EventValidationError) {
+          return jsonResult({ ok: false, error: error.message, field: error.field }, true);
+        }
+        return jsonResult({ ok: false, error: "event store unavailable" }, true);
+      }
+    }
+  },
+  {
+    name: "aos_event_poll",
+    description:
+      "按 seq 游标轮询当前项目事件（无丢失）：afterSeq 之后无事件时最多等待 waitMs（0-30000）；返回 events/nextSeq，下一轮把 nextSeq 作为 afterSeq。",
+    schema: pollSchema,
+    handler: async (runtime, args) => {
+      try {
+        return jsonResult(await pollProjectEvents(context(runtime), args));
       } catch (error) {
         if (error instanceof EventValidationError) {
           return jsonResult({ ok: false, error: error.message, field: error.field }, true);

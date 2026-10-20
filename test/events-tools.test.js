@@ -28,6 +28,7 @@ test("aos_event_report / aos_events: 注册、ack、幂等与查询", async () =
     const names = tools.map((tool) => tool.name);
     assert.ok(names.includes("aos_event_report"), names.join(","));
     assert.ok(names.includes("aos_events"), names.join(","));
+    assert.ok(names.includes("aos_event_poll"), names.join(","));
 
     const input = {
       eventId: "e-tool-1",
@@ -52,6 +53,22 @@ test("aos_event_report / aos_events: 注册、ack、幂等与查询", async () =
     );
     assert.equal(listed.returned, 1);
     assert.equal(listed.events[0].payload, undefined);
+
+    const polled = parseToolResult(
+      await client.callTool({ name: "aos_event_poll", arguments: { afterSeq: 0, waitMs: 0 } })
+    );
+    assert.equal(polled.returned, 1);
+    assert.equal(polled.events[0].eventId, "e-tool-1");
+    assert.equal(polled.nextSeq, polled.events[0].seq);
+
+    const empty = parseToolResult(
+      await client.callTool({
+        name: "aos_event_poll",
+        arguments: { afterSeq: polled.nextSeq, waitMs: 0 }
+      })
+    );
+    assert.equal(empty.returned, 0);
+    assert.equal(empty.nextSeq, polled.nextSeq);
 
     const invalid = await client.callTool({
       name: "aos_event_report",

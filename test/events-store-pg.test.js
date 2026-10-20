@@ -68,6 +68,16 @@ test("PostgresStore events: 幂等、mismatch、查询与裁剪", async () => {
     const sameSecond = await store.listProjectEvents("/w/p1", { since: sinceSeconds, order: "asc" });
     assert.equal(sameSecond.length, 2, "秒级 since 不丢同秒事件");
 
+    const afterFirst = await store.listProjectEvents("/w/p1", {
+      afterSeq: first.record.seq,
+      order: "asc"
+    });
+    assert.deepEqual(afterFirst.map((event) => event.eventId), ["e2"]);
+    await assert.rejects(
+      () => store.listProjectEvents("/w/p1", { afterSeq: -1 }),
+      /invalid afterSeq/
+    );
+
     process.env.AOS_EVENTS_MAX = "1";
     const deleted = await store.pruneProjectEvents("/w/p1");
     assert.equal(deleted, 1);

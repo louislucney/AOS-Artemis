@@ -122,6 +122,46 @@ test("events HTTP: AOS_HTTP_TOKEN 保护事件路由，健康检查豁免", asyn
   );
 });
 
+test("events HTTP: afterSeq 与 /poll 长轮询", async () => {
+  await withServer(async (base) => {
+    const post = (event) =>
+      fetch(`${base}/events/demo`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(event)
+      });
+    const first = await post(EVENT);
+    assert.equal(first.status, 202);
+
+    const listed = await (await fetch(`${base}/events/demo?order=asc`)).json();
+    assert.equal(listed.returned, 1);
+    assert.equal(listed.nextSeq, listed.events[0].seq);
+
+    const empty = await (
+      await fetch(`${base}/events/demo?afterSeq=${listed.nextSeq}&order=asc`)
+    ).json();
+    assert.equal(empty.returned, 0);
+    assert.equal(empty.nextSeq, listed.nextSeq);
+
+    const pending = fetch(
+      `${base}/events/demo/poll?afterSeq=${listed.nextSeq}&waitMs=1000&order=asc`
+    );
+    setTimeout(() => {
+      void post({ ...EVENT, eventId: "e-http-2", payload: { note: "second" } });
+    }, 50);
+    const polled = await (await pending).json();
+    assert.equal(polled.returned, 1);
+    assert.equal(polled.events[0].eventId, "e-http-2");
+    assert.equal(polled.nextSeq, polled.events[0].seq);
+
+    const invalid = await fetch(`${base}/events/demo/poll?afterSeq=-1`);
+    assert.equal(invalid.status, 400);
+
+    const wrongMethod = await fetch(`${base}/events/demo/poll`, { method: "POST" });
+    assert.equal(wrongMethod.status, 405);
+  });
+});
+
 test("events HTTP: 默认 FileStore ack 不误报 degraded", async () => {
   const workspace = makeTempDir("aos-events-http-file-");
   const project = path.join(workspace, "demo");
