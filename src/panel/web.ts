@@ -1120,6 +1120,29 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
     .map((warning) => `<p class="note">${escapeHtml(warning)}</p>`)
     .join("");
   const designWarnings = `<p class="muted">${escapeHtml(designWarningsText(assets.designWarnings))}</p>`;
+  const vision =
+    assets.vision == null
+      ? '<p class="empty">不可用</p>'
+      : [
+          `<p class="muted">最近 ${assets.vision.checked} 条 iOS trace：降级 ${assets.vision.degraded} 条${
+            assets.vision.checked > 0
+              ? `（${Math.round((assets.vision.degraded / assets.vision.checked) * 100)}%）`
+              : ""
+          }</p>`,
+          assets.vision.byReason.length > 0
+            ? `<p>${assets.vision.byReason
+                .slice(0, 3)
+                .map(
+                  (entry) =>
+                    `<span class="chip" title="${escapeHtml(entry.reason)}">${escapeHtml(
+                      entry.reason
+                    )} × ${entry.count}</span>`
+                )
+                .join("")}</p>`
+            : ""
+        ]
+          .filter((part) => part !== "")
+          .join("\n");
   return [
     '<section id="disk-assets">',
     "<h2>磁盘资产</h2>",
@@ -1131,6 +1154,8 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
     baselines,
     "<h3>设计源警告</h3>",
     designWarnings,
+    "<h3>视觉降级（iOS）</h3>",
+    vision,
     "<h3>保留期</h3>",
     retention,
     warnings,

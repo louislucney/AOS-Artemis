@@ -7,6 +7,7 @@ import {
   type WarningSummary
 } from "../design/warnings.js";
 import { collectVisualHotspots } from "../figma/generation-feedback.js";
+import { scanVisionHealth, type VisionHealth } from "../ios/vision-health.js";
 import { loadReconciliation, reconciliationFilePath } from "../figma/reconciliation.js";
 import {
   buildRetentionReport,
@@ -70,6 +71,8 @@ export interface PanelDiskAssets {
   retention: PanelRetentionView | null;
   /** 当前设计源警告快照（tests 优先、flows 回退）；无快照 → null（不折算成 0 条）。 */
   designWarnings: PanelDesignWarningsView | null;
+  /** iOS 多模态降级（只读 trace 扫描；无 trace → 0/0，不是错误）。 */
+  vision: VisionHealth | null;
   warnings: string[];
 }
 
@@ -176,5 +179,12 @@ export async function collectDiskAssets(input: {
     warnings.push(`设计源警告读取失败：${errorMessage(error)}`);
   }
 
-  return { crashes, reconciliation, baselines, retention, designWarnings, warnings };
+  let vision: VisionHealth | null = null;
+  try {
+    vision = scanVisionHealth(path.join(input.configDirAbs, "traces"), { limit: 50, recentLimit: 5 });
+  } catch (error) {
+    warnings.push(`视觉降级扫描失败：${errorMessage(error)}`);
+  }
+
+  return { crashes, reconciliation, baselines, retention, designWarnings, vision, warnings };
 }

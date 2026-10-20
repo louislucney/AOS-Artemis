@@ -186,6 +186,8 @@ function suiteRunOptions(
     deviceSerial: flags.get("device") ?? undefined,
     lockedAppPackage: flags.get("app") ?? undefined,
     model: flags.get("model") ?? undefined,
+    uiDiff: flags.bool("ui-diff"),
+    uiDiffMax: intOrNull(flags.get("ui-diff-max")) ?? undefined,
     pollTimeoutMs: intOrNull(flags.get("poll-timeout")) ?? undefined,
     apiErrors: !flags.bool("no-api-errors"),
     failOnApiErrors: flags.get("fail-on") === "api-error",
@@ -234,6 +236,7 @@ Usage:
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
+        [--ui-diff] [--ui-diff-max <n>]（访问屏逐屏设计对比；默认关闭，单例最多 3 屏）
         [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine] [--strict] [--no-save]
         [--task <id>（回归任务：与 --tests 互斥；--device 可重复，按端展开子运行）]
 check:  [--tests <path>] [--strict]

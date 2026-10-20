@@ -6,6 +6,7 @@ import { ENV_JIRA_API_TOKEN } from "../jira/config.js";
 import { childLogFilePath, logFilePath } from "../log.js";
 import { PROVIDER_PRESETS, presetSummary } from "../llm/providers.js";
 import { detectProjectStacks } from "../projects/stack.js";
+import { scanVisionHealth } from "../ios/vision-health.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { entryIssues } from "../llm/registry.js";
 import type { Runtime } from "../runtime.js";
@@ -270,6 +271,7 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
       };
     })(),
     ios: await runtime.iosAppiumInfo(),
+    vision: scanVisionHealth(runtime.tracesRoot(), { limit: 50, recentLimit: 5 }),
     logs: {
       file: logFilePath(),
       childFile: childLogFilePath()

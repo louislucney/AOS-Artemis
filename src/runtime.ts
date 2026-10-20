@@ -866,6 +866,11 @@ export class Runtime {
     return projectTracesDir(this.project.config, this.project.rootDir, this.baseEnv);
   }
 
+  /** Public read-only root for trace diagnostics (vision health, audits). */
+  tracesRoot(): string {
+    return this.tracesDir();
+  }
+
   async taskList(limit = 20): Promise<TaskStatRecord[]> {
     return await this.safeStore(
       () => this.store.listTasks(this.project.rootDir, limit),

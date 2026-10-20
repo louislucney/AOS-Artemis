@@ -1994,7 +1994,7 @@ llm_switch(name, force):
 
 > 2026-10-20。功能通过不等于 UI 通过：`SuiteCaseResult` 新增可选 `ui: UiVerification`（`passed|failed|unverified|not-applicable`，含 `reason`/`contractRef`/`screenId`/`sourceFormat`/`lossless`/`detailThreshold`/`regions`/`evidence`）；`SuiteRunReport.ui` 为四态计数；`suite run` 逐例与汇总分别打印 `UI` 状态，**不改变现有功能门禁**。默认 `unverified`：有 `.artemis/design/ui-contract.json` 记 `ui-check-not-run`，否则 `no-ui-contract`；`isUiPass` 要求 `status=passed && sourceFormat=png && lossless=true`。批次清单同步写 `summary.ui` 与 `cases[].ui`（旧清单缺字段按缺省处理）。
 > **截图源**：iOS AOS trace 为 PNG；Android artemis 在 `accessibility_client.py` 将 adb PNG 以 JPEG quality 80 重编码（`pil_to_base64`，RGBA→RGB），data_engine 亦按 `.jpg` 落盘。`design_device_diff` 的 `unit.device` 新增 `sourceFormat`/`lossless`；`detail.deviceSource` 记录细节通道实际源。Android live 细节会二次抓 PNG；step 非 PNG 标 `lossy-source` 并降细节阈值到 0.1。JPEG 的 alpha 丢失对不透明设备截图通常非主因，主要风险是压缩振铃/块效应；`ui:passed` 只接受 PNG，JPEG 源最多 report-only。
-> **面板**：`PanelBatchSummary.ui` 读取清单 `summary.ui`；项目页最新批次与批次表新增 UI 徽标（`UI 未验证 N` / `UI fail N` / `UI pass N`），功能门禁色不变。
+> **面板**：`PanelBatchSummary.ui` 读取清单 `summary.ui`；项目页最新批次与批次表新增 UI 徽标（`UI 未验证 N` / `UI fail N` / `UI pass N`），功能门禁色不变。`aos_status.vision` 与面板磁盘资产「视觉降级（iOS）」扫描最近 50 条 trace 的 `vision_degraded`，按原因聚合；只读、无 trace 即 0/0。
 > **UI 契约（P0 首版）**：`suite ui-contract` 从 `flows.json` + `.artemis/design/pen/screens/<screenId>.pen` 投影 `ui-contract.{json,md}`，共享 `screen.id` 与设计源指纹；逐屏 token（cornerRadius/colors/fonts/fontSizes/fontWeights/spacing）+ 几何四态（`extracted|partial|unverifiable|no-baseline`）+ `presentation`。缺逐屏 `.pen` 标 `no-baseline`，不猜 UI；Figma 源/逐屏 PNG 适配器仍待 P6。当前 iOS 样例 19 屏：4 partial、15 no-baseline。
 > **测试**：新增 `test/ui-verification.test.js` 3 例、`test/ui-contract.test.js` 3 例；`suite-command` 断言 `ui` 计数/清单字段；`design-device-diff`/`diff-detail-tool` 断言源格式。
 
@@ -2006,4 +2006,6 @@ llm_switch(name, force):
 > - `describeChatError` 输出 `message + status + body`（单行、≤200 字符），iOS 多模态警告/`visionDegraded` 使用它；不打印整段 prompt。
 > - `run-loop` 主决策与 `step-observe` 视觉感知对“空 content”**同一截图重试一次**；仍失败才 `text-degraded`。400/415/422 的 modality rejection 仍缓存 false 并停用附图。
 > - 回归：真实 trace 的 step 4 降级、step 5 恢复；单测覆盖 content parts、finish_reason/reasoning 提示、主决策重试成功/失败、视觉感知重试成功。
+>
+> **UI 自动比对（首版）**：`suite run --ui-diff` 对 `testCase.screens` 中能匹配到 `flows.json` 屏幕、且存在逐屏 `.pen` 与 trace 步骤的屏幕调用 `design_device_diff`（`--ui-diff-max` 默认 3）；blocker/major → `ui.failed`，无 blocker/major → `ui.passed`，JPEG/缺基线/未匹配屏保持 `ui-unverified`。功能门禁不变；跨源像素基线未验证前，结果作为 UI 门禁候选而非绝对结论。
 

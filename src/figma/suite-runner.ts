@@ -14,6 +14,7 @@ import { resetApp, type AppResetOptions, type AppResetOutcome, type AppResetRequ
 import type { IosDevice } from "../device/ios-actions.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
+import { autoCheckUi } from "../ui/auto-check.js";
 import {
   summarizeUi,
   unverifiedUi,
@@ -111,6 +112,10 @@ export interface SuiteRunOptions {
   deviceSerial?: string;
   lockedAppPackage?: string;
   model?: string;
+  /** Opt-in: compare screens visited by each case against per-screen design. */
+  uiDiff?: boolean;
+  /** Max screens per case for the opt-in UI diff (default 3). */
+  uiDiffMax?: number;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
   reset?: SuiteResetFn;
@@ -490,6 +495,18 @@ export async function runGeneratedTests(
     });
     if (outcome.submitted) submitted += 1;
     if (outcome.submitError && !firstSubmitError) firstSubmitError = outcome.submitError;
+    if (!outcome.result.ui && options.uiDiff === true && outcome.result.traceId) {
+      try {
+        outcome.result.ui = await autoCheckUi(runtime, {
+          traceId: outcome.result.traceId,
+          screens: testCase.screens,
+          deviceSerial: options.deviceSerial ?? null,
+          maxScreens: options.uiDiffMax
+        });
+      } catch (error) {
+        logWarn(`UI 自动比对失败（${testCase.id}）: ${errorMessage(error)}`);
+      }
+    }
     if (!outcome.result.ui) {
       const hasContract = fs.existsSync(
         path.join(designDir(runtime.configDirAbs), "ui-contract.json")
