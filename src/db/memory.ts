@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import { buildAuditEvent, cloneAuditEvent, normalizeAuditLimit } from "./audit-event.js";
 import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
+import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
+import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
 
 import type {
   AuditEventInput,
@@ -14,6 +16,10 @@ import type {
   ProjectLlmRecord,
   ProjectRecord,
   ProjectStore,
+  ProjectEventInput,
+  ProjectEventQuery,
+  ProjectEventRecord,
+  RecordProjectEventResult,
   PutModelCacheInput,
   RecordCaseSetInput,
   RecordSuiteRunInput,
@@ -55,6 +61,8 @@ export class MemoryStore implements ProjectStore {
   private modelCaches = new Map<string, ModelCacheRecord>();
   private tasks: TaskStatRecord[] = [];
   private usageEvents: UsageEventRecord[] = [];
+  private projectEvents: ProjectEventRecord[] = [];
+  private projectEventSeq = new Map<string, number>();
   private auditEvents: AuditEventRecord[] = [];
   private caseSets: CaseSetRecord[] = [];
   private regressionTasks: RegressionTaskRecord[] = [];
@@ -697,6 +705,103 @@ export class MemoryStore implements ProjectStore {
     return cloneAuditEvent(record);
   }
 
+  async recordProjectEvent(
+    rootPath: string,
+    input: ProjectEventInput
+  ): Promise<RecordProjectEventResult> {
+    const project = this.projects.get(rootPath);
+    if (!project) throw new Error(`MemoryStore: project not registered: ${rootPath}`);
+    const hash = payloadHash(input.payload);
+    const existing = this.projectEvents.find(
+      (event) => event.projectId === project.id && event.eventId === input.eventId
+    );
+    if (existing) {
+      return {
+        record: cloneProjectEvent(existing),
+        duplicate: true,
+        payloadMismatch: existing.payloadSha256 !== hash
+      };
+    }
+    const seq = (this.projectEventSeq.get(rootPath) ?? 0) + 1;
+    this.projectEventSeq.set(rootPath, seq);
+    const receivedAt = new Date().toISOString();
+    const record: ProjectEventRecord = {
+      seq,
+      id: randomUUID(),
+      projectId: project.id,
+      eventId: input.eventId,
+      type: input.type,
+      source: input.source ?? "project",
+      runId: input.runId ?? null,
+      caseId: input.caseId ?? null,
+      step: input.step ?? null,
+      status: input.status ?? null,
+      at: input.at ?? receivedAt,
+      receivedAt,
+      payload: input.payload ?? null,
+      payloadSha256: hash,
+      payloadBytes: payloadBytes(input.payload),
+      consumedAt: null
+    };
+    this.projectEvents.push(record);
+    return { record: cloneProjectEvent(record), duplicate: false, payloadMismatch: false };
+  }
+
+  async listProjectEvents(
+    rootPath: string,
+    query: ProjectEventQuery = {}
+  ): Promise<ProjectEventRecord[]> {
+    const project = this.projects.get(rootPath);
+    if (!project) return [];
+    const since = query.since === undefined ? null : normalizeSince(query.since);
+    if (query.since !== undefined && since === null) throw new Error("invalid since");
+    const includePayload = query.includePayload === true;
+    const limit = includePayload ? 50 : 200;
+    const requested = query.limit ?? 50;
+    const capped = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 50, limit));
+    const order = query.order === "asc" ? "asc" : "desc";
+    return this.projectEvents
+      .filter((event) => event.projectId === project.id)
+      .filter((event) => !query.runId || event.runId === query.runId)
+      .filter((event) => !query.caseId || event.caseId === query.caseId)
+      .filter((event) => !query.type || event.type === query.type)
+      .filter((event) => !query.status || event.status === query.status)
+      .filter((event) => since === null || event.receivedAt > since)
+      .sort((left, right) =>
+        order === "asc"
+          ? left.receivedAt.localeCompare(right.receivedAt) || left.seq - right.seq
+          : right.receivedAt.localeCompare(left.receivedAt) || right.seq - left.seq
+      )
+      .slice(0, capped)
+      .map((event) => cloneProjectEvent(event, !includePayload));
+  }
+
+  async countProjectEvents(rootPath: string): Promise<number> {
+    const project = this.projects.get(rootPath);
+    if (!project) return 0;
+    return this.projectEvents.filter((event) => event.projectId === project.id).length;
+  }
+
+  async pruneProjectEvents(rootPath: string): Promise<number> {
+    const project = this.projects.get(rootPath);
+    if (!project) return 0;
+    const policy = eventRetentionPolicy();
+    const cutoff = eventCutoffIso(policy.days);
+    const before = this.projectEvents.length;
+    this.projectEvents = this.projectEvents.filter(
+      (event) => event.projectId !== project.id || event.receivedAt >= cutoff
+    );
+    const remaining = this.projectEvents
+      .filter((event) => event.projectId === project.id)
+      .sort((left, right) => left.seq - right.seq);
+    const overflow = Math.max(0, remaining.length - policy.max);
+    if (overflow > 0) {
+      const remove = new Set(remaining.slice(0, overflow).map((event) => event.id));
+      this.projectEvents = this.projectEvents.filter((event) => !remove.has(event.id));
+    }
+    return before - this.projectEvents.length;
+  }
+
   async listAudit(rootPath: string, query: AuditQuery = {}): Promise<AuditEventRecord[]> {
     const offset =
       typeof query.offset === "number" && Number.isFinite(query.offset) && query.offset > 0
@@ -863,5 +968,12 @@ function cloneSchedule(record: ScheduleRecord): ScheduleRecord {
     ...record,
     featureKeys: [...record.featureKeys],
     platforms: [...record.platforms]
+  };
+}
+
+function cloneProjectEvent(record: ProjectEventRecord, omitPayload = false): ProjectEventRecord {
+  return {
+    ...record,
+    payload: omitPayload ? undefined : record.payload
   };
 }

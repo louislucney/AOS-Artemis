@@ -96,6 +96,54 @@ export interface UsagePrunePolicy {
   maxEvents?: number;
 }
 
+export interface ProjectEventInput {
+  eventId: string;
+  type: string;
+  source?: string;
+  at?: string;
+  runId?: string | null;
+  caseId?: string | null;
+  step?: number | null;
+  status?: string | null;
+  payload?: unknown;
+}
+
+export interface ProjectEventRecord {
+  seq: number;
+  id: string;
+  projectId: string;
+  eventId: string;
+  type: string;
+  source: string;
+  runId: string | null;
+  caseId: string | null;
+  step: number | null;
+  status: string | null;
+  at: string;
+  receivedAt: string;
+  payload: unknown;
+  payloadSha256: string;
+  payloadBytes: number;
+  consumedAt: string | null;
+}
+
+export interface RecordProjectEventResult {
+  record: ProjectEventRecord;
+  duplicate: boolean;
+  payloadMismatch: boolean;
+}
+
+export interface ProjectEventQuery {
+  runId?: string;
+  caseId?: string;
+  type?: string;
+  status?: string;
+  since?: string;
+  order?: "asc" | "desc";
+  limit?: number;
+  includePayload?: boolean;
+}
+
 export interface AuditEventInput {
   domain: string;
   action: string;
@@ -464,6 +512,10 @@ export interface ProjectStore {
     input: RecordUsageEventInput,
     policy?: UsagePrunePolicy
   ): Promise<UsageEventRecord>;
+  recordProjectEvent?(rootPath: string, input: ProjectEventInput): Promise<RecordProjectEventResult>;
+  listProjectEvents?(rootPath: string, query?: ProjectEventQuery): Promise<ProjectEventRecord[]>;
+  countProjectEvents?(rootPath: string): Promise<number>;
+  pruneProjectEvents?(rootPath: string): Promise<number>;
   listUsageEvents(rootPath: string, query?: UsageEventQuery): Promise<UsageEventRecord[]>;
   recordAudit(rootPath: string, input: AuditEventInput): Promise<AuditEventRecord>;
   /** 新→旧（at DESC, id DESC）；`limit` 缺省＝200。 */
