@@ -16,6 +16,7 @@ import {
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
 import { handleArtifactRequest } from "./panel/artifact-route.js";
+import { resolveProjectRoot } from "./events/project-resolver.js";
 import { createPanelDeepProbe } from "./panel/deep.js";
 import type { ProjectStore } from "./db/types.js";
 import { Runtime } from "./runtime.js";
@@ -170,8 +171,8 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     const existing = runtimes.get(project);
     if (existing) return existing;
 
-    const rootDir = path.join(workspaceRoot, project);
-    if (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()) return null;
+    const rootDir = resolveProjectRoot(workspaceRoot, project);
+    if (rootDir === null) return null;
 
     let runtime: Runtime;
     try {
