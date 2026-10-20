@@ -17,6 +17,10 @@ import type {
   ProjectLlmRecord,
   ProjectRecord,
   ProjectStore,
+  ProjectEventInput,
+  ProjectEventQuery,
+  ProjectEventRecord,
+  RecordProjectEventResult,
   PutModelCacheInput,
   RecordCaseSetInput,
   RecordSuiteRunInput,
@@ -43,6 +47,8 @@ import type {
   AuditQuery
 } from "./types.js";
 import { buildAuditEvent, normalizeAuditLimit } from "./audit-event.js";
+import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
+import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
 
 export interface QueryResultLike {
   rows: Array<Record<string, unknown>>;
@@ -109,6 +115,31 @@ const SCHEMA = [
      arg_keys TEXT NOT NULL DEFAULT '[]',
      trace_id TEXT
    )`,
+  `CREATE TABLE IF NOT EXISTS project_events (
+     seq BIGSERIAL,
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     event_id TEXT NOT NULL,
+     type TEXT NOT NULL,
+     source TEXT NOT NULL,
+     run_id TEXT,
+     case_id TEXT,
+     step INTEGER,
+     status TEXT,
+     at TEXT NOT NULL,
+     received_at TEXT NOT NULL,
+     payload TEXT NOT NULL,
+     payload_sha256 TEXT NOT NULL,
+     payload_bytes INTEGER NOT NULL,
+     consumed_at TEXT,
+     UNIQUE (project_id, event_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS project_events_project_received_idx
+     ON project_events (project_id, received_at DESC, seq DESC)`,
+  `CREATE INDEX IF NOT EXISTS project_events_project_run_idx
+     ON project_events (project_id, run_id, at)`,
+  `CREATE INDEX IF NOT EXISTS project_events_project_consumed_idx
+     ON project_events (project_id, consumed_at)`,
   `CREATE TABLE IF NOT EXISTS llm_model_cache (
      id TEXT PRIMARY KEY,
      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -261,6 +292,7 @@ const MIGRATIONS = [
 
 export class PostgresStore implements ProjectStore {
   readonly kind = "postgres" as const;
+  private readonly eventPruneAt = new Map<string, number>();
 
   constructor(private readonly pool: PoolLike) {}
 
@@ -1301,6 +1333,163 @@ export class PostgresStore implements ProjectStore {
     return result.rows.map(mapUsageEvent);
   }
 
+  async recordProjectEvent(
+    rootPath: string,
+    input: ProjectEventInput
+  ): Promise<RecordProjectEventResult> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) throw new Error(`PostgresStore: project not registered: ${rootPath}`);
+    const hash = payloadHash(input.payload);
+    const existing = await this.pool.query(
+      "SELECT * FROM project_events WHERE project_id = $1 AND event_id = $2",
+      [project.id, input.eventId]
+    );
+    if (existing.rows.length > 0) {
+      const record = mapProjectEvent(existing.rows[0]!, true);
+      return { record, duplicate: true, payloadMismatch: record.payloadSha256 !== hash };
+    }
+    const receivedAt = new Date().toISOString();
+    const inserted = await this.pool.query(
+      `INSERT INTO project_events
+         (id, project_id, event_id, type, source, run_id, case_id, step, status, at, received_at, payload, payload_sha256, payload_bytes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       ON CONFLICT (project_id, event_id) DO NOTHING
+       RETURNING *`,
+      [
+        randomUUID(),
+        project.id,
+        input.eventId,
+        input.type,
+        input.source ?? "project",
+        input.runId ?? null,
+        input.caseId ?? null,
+        input.step ?? null,
+        input.status ?? null,
+        input.at ?? receivedAt,
+        receivedAt,
+        JSON.stringify(input.payload ?? null),
+        hash,
+        payloadBytes(input.payload)
+      ]
+    );
+    if (inserted.rows.length > 0) {
+      this.scheduleEventPrune(rootPath);
+      return {
+        record: mapProjectEvent(inserted.rows[0]!, true),
+        duplicate: false,
+        payloadMismatch: false
+      };
+    }
+    const conflict = await this.pool.query(
+      "SELECT * FROM project_events WHERE project_id = $1 AND event_id = $2",
+      [project.id, input.eventId]
+    );
+    if (conflict.rows.length === 0) {
+      throw new Error(`PostgresStore: event conflict without existing row: ${input.eventId}`);
+    }
+    const record = mapProjectEvent(conflict.rows[0]!, true);
+    return {
+      record,
+      duplicate: true,
+      payloadMismatch: record.payloadSha256 !== hash
+    };
+  }
+
+  async listProjectEvents(
+    rootPath: string,
+    query: ProjectEventQuery = {}
+  ): Promise<ProjectEventRecord[]> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return [];
+    const clauses = ["project_id = $1"];
+    const values: unknown[] = [project.id];
+    if (query.runId) {
+      values.push(query.runId);
+      clauses.push(`run_id = $${values.length}`);
+    }
+    if (query.caseId) {
+      values.push(query.caseId);
+      clauses.push(`case_id = $${values.length}`);
+    }
+    if (query.type) {
+      values.push(query.type);
+      clauses.push(`type = $${values.length}`);
+    }
+    if (query.status) {
+      values.push(query.status);
+      clauses.push(`status = $${values.length}`);
+    }
+    if (query.since !== undefined) {
+      const since = normalizeSince(query.since);
+      if (since === null) throw new Error("invalid since");
+      values.push(since);
+      clauses.push(`received_at > $${values.length}`);
+    }
+    const includePayload = query.includePayload === true;
+    const max = includePayload ? 50 : 200;
+    const requested = query.limit ?? 50;
+    const limit = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 50, max));
+    const order = query.order === "asc" ? "ASC" : "DESC";
+    values.push(limit);
+    const result = await this.pool.query(
+      `SELECT * FROM project_events
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY received_at ${order}, seq ${order}
+       LIMIT $${values.length}`,
+      values
+    );
+    return result.rows.map((row) => mapProjectEvent(row, includePayload));
+  }
+
+  async countProjectEvents(rootPath: string): Promise<number> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return 0;
+    const result = await this.pool.query(
+      "SELECT COUNT(*)::int AS count FROM project_events WHERE project_id = $1",
+      [project.id]
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async pruneProjectEvents(rootPath: string): Promise<number> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return 0;
+    const policy = eventRetentionPolicy();
+    const cutoff = eventCutoffIso(policy.days);
+    const expired = await this.pool.query(
+      "DELETE FROM project_events WHERE project_id = $1 AND received_at < $2",
+      [project.id, cutoff]
+    );
+    const count = await this.countProjectEvents(rootPath);
+    const overflow = Math.max(0, count - policy.max);
+    let removed = Number(expired.rowCount ?? 0);
+    if (overflow > 0) {
+      const overflowRows = await this.pool.query(
+        "SELECT id FROM project_events WHERE project_id = $1 ORDER BY seq ASC LIMIT $2",
+        [project.id, overflow]
+      );
+      for (const row of overflowRows.rows) {
+        const result = await this.pool.query("DELETE FROM project_events WHERE id = $1", [
+          String(row.id)
+        ]);
+        removed += Number(result.rowCount ?? 0);
+      }
+    }
+    return removed;
+  }
+
+  private scheduleEventPrune(rootPath: string): void {
+    const now = Date.now();
+    const last = this.eventPruneAt.get(rootPath) ?? 0;
+    if (now - last < 5 * 60_000) return;
+    this.eventPruneAt.set(rootPath, now);
+    setImmediate(() => {
+      void this.pruneProjectEvents(rootPath).catch((error) => {
+        logWarn(`PG 事件裁剪失败（忽略）：${errorMessage(error)}`);
+      });
+    });
+  }
+
   async recordAudit(rootPath: string, input: AuditEventInput): Promise<AuditEventRecord> {
     const record = buildAuditEvent(rootPath, input);
     await this.pool.query(
@@ -1764,5 +1953,28 @@ function mapSchedule(row: Record<string, unknown>): ScheduleRecord {
     lastNote: nullableString(row.last_note),
     createdAt: String(row.created_at),
     createdBy: nullableString(row.created_by)
+  };
+}
+
+function mapProjectEvent(row: Record<string, unknown>, includePayload: boolean): ProjectEventRecord {
+  const payload = JSON.parse(String(row.payload));
+  return {
+    seq: Number(row.seq),
+    id: String(row.id),
+    projectId: String(row.project_id),
+    eventId: String(row.event_id),
+    type: String(row.type),
+    source: String(row.source),
+    runId: row.run_id === null || row.run_id === undefined ? null : String(row.run_id),
+    caseId: row.case_id === null || row.case_id === undefined ? null : String(row.case_id),
+    step: row.step === null || row.step === undefined ? null : Number(row.step),
+    status: row.status === null || row.status === undefined ? null : String(row.status),
+    at: String(row.at),
+    receivedAt: String(row.received_at),
+    payload: includePayload ? payload : undefined,
+    payloadSha256: String(row.payload_sha256),
+    payloadBytes: Number(row.payload_bytes),
+    consumedAt:
+      row.consumed_at === null || row.consumed_at === undefined ? null : String(row.consumed_at)
   };
 }

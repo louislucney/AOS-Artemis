@@ -512,10 +512,10 @@ export interface ProjectStore {
     input: RecordUsageEventInput,
     policy?: UsagePrunePolicy
   ): Promise<UsageEventRecord>;
-  recordProjectEvent?(rootPath: string, input: ProjectEventInput): Promise<RecordProjectEventResult>;
-  listProjectEvents?(rootPath: string, query?: ProjectEventQuery): Promise<ProjectEventRecord[]>;
-  countProjectEvents?(rootPath: string): Promise<number>;
-  pruneProjectEvents?(rootPath: string): Promise<number>;
+  recordProjectEvent(rootPath: string, input: ProjectEventInput): Promise<RecordProjectEventResult>;
+  listProjectEvents(rootPath: string, query?: ProjectEventQuery): Promise<ProjectEventRecord[]>;
+  countProjectEvents(rootPath: string): Promise<number>;
+  pruneProjectEvents(rootPath: string): Promise<number>;
   listUsageEvents(rootPath: string, query?: UsageEventQuery): Promise<UsageEventRecord[]>;
   recordAudit(rootPath: string, input: AuditEventInput): Promise<AuditEventRecord>;
   /** 新→旧（at DESC, id DESC）；`limit` 缺省＝200。 */
