@@ -367,6 +367,8 @@ export interface SuiteRunRecord {
   id: string;
   projectId: string | null;
   createdAt: string;
+  /** 批次清单 runId（`run-<stamp>-<suffix>`）；用于项目事件回写。 */
+  runId: string | null;
   trigger: string;
   regressionTaskId: string | null;
   caseSetId: string | null;
@@ -511,6 +513,12 @@ export interface ProjectStore {
       limit?: number;
     }
   ): Promise<SuiteRunRecord[]>;
+  /** 项目事件回写（P2）：按批次清单 runId 更新终态；未命中 → false。 */
+  markSuiteRunFinishedByRunId(
+    rootPath: string,
+    runId: string,
+    status: "completed" | "failed"
+  ): Promise<boolean>;
   updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean>;
   setCaseIssueKey(input: SetCaseIssueKeyInput): Promise<boolean>;
   getSuiteRun(rootPath: string, runId: string): Promise<SuiteRunRecord | null>;

@@ -268,6 +268,7 @@ async function registerRun(
     rootPath,
     createdAt: manifest.finishedAt,
     run: {
+      runId: typeof manifest.runId === "string" && manifest.runId !== "" ? manifest.runId : null,
       trigger: "cli",
       regressionTaskId: registration?.regressionTaskId ?? null,
       caseSetId,

@@ -87,6 +87,52 @@ test("ingress: payload.traceId 事件驱动 task_stats 终态", async () => {
   assert.notEqual(tasks[0].finishedAt, null);
 });
 
+test("ingress: run.finished 按 manifest runId 回写 suite_runs", async () => {
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  await store.recordSuiteRun({
+    rootPath: "/w/p1",
+    run: {
+      runId: "run-20261020-abc",
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: null,
+      featureName: null,
+      platform: "android",
+      device: null,
+      appVersion: null,
+      runner: null,
+      status: "completed",
+      startedAt: "2026-10-20T00:00:00.000Z",
+      finishedAt: "2026-10-20T00:01:00.000Z",
+      total: 1,
+      passed: 1,
+      failed: 0,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "pass",
+      exitCode: 0,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: []
+  });
+  const ctx = { store, rootPath: "/w/p1", storage: "memory", degraded: null };
+  await reportProjectEvent(ctx, {
+    eventId: "e-run-finished",
+    type: "run.finished",
+    runId: "run-20261020-abc",
+    status: "failed",
+    payload: {}
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const runs = await store.listSuiteRuns("/w/p1");
+  assert.equal(runs[0].runId, "run-20261020-abc");
+  assert.equal(runs[0].status, "failed");
+});
+
 test("ingress: pollProjectEvents 按 afterSeq 无丢失推进", async () => {
   const store = new MemoryStore();
   await store.upsertProject({ rootPath: "/w/p1", name: "p1" });

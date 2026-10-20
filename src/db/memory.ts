@@ -562,6 +562,23 @@ export class MemoryStore implements ProjectStore {
       .map(cloneSuiteRun);
   }
 
+  async markSuiteRunFinishedByRunId(
+    rootPath: string,
+    runId: string,
+    status: "completed" | "failed"
+  ): Promise<boolean> {
+    const project = this.projects.get(rootPath);
+    if (!project) return false;
+    let updated = false;
+    for (const run of this.suiteRuns) {
+      if (run.projectId === project.id && run.runId === runId) {
+        run.status = status;
+        updated = true;
+      }
+    }
+    return updated;
+  }
+
   async updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean> {
     const project = this.projects.get(input.rootPath);
     if (!project) return false;

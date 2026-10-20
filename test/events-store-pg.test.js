@@ -12,6 +12,54 @@ async function makePgStore() {
   return store;
 }
 
+function suiteRun(runId) {
+  return {
+    runId,
+    trigger: "cli",
+    regressionTaskId: null,
+    caseSetId: null,
+    featureKey: null,
+    featureName: null,
+    platform: "android",
+    device: null,
+    appVersion: null,
+    runner: null,
+    status: "completed",
+    startedAt: "2026-10-20T00:00:00.000Z",
+    finishedAt: "2026-10-20T00:01:00.000Z",
+    total: 1,
+    passed: 1,
+    failed: 0,
+    flaky: 0,
+    quarantined: 0,
+    failureDomains: {},
+    gateResult: "pass",
+    exitCode: 0,
+    manifestPath: null,
+    comparison: null
+  };
+}
+
+test("PostgresStore suite runs: run_id 持久化与按 runId 回写", async () => {
+  const store = await makePgStore();
+  try {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const recorded = await store.recordSuiteRun({
+      rootPath: "/w/p1",
+      run: suiteRun("run-pg-1"),
+      cases: []
+    });
+    assert.equal(recorded.runId, "run-pg-1");
+    assert.equal(await store.markSuiteRunFinishedByRunId("/w/p1", "run-pg-1", "failed"), true);
+    const runs = await store.listSuiteRuns("/w/p1");
+    assert.equal(runs[0].runId, "run-pg-1");
+    assert.equal(runs[0].status, "failed");
+    assert.equal(await store.markSuiteRunFinishedByRunId("/w/p1", "missing", "failed"), false);
+  } finally {
+    await store.close();
+  }
+});
+
 test("PostgresStore events: 幂等、mismatch、查询与裁剪", async () => {
   const previousMax = process.env.AOS_EVENTS_MAX;
   const store = await makePgStore();

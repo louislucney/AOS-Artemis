@@ -10,9 +10,19 @@ export async function applyProjectEventToLedger(
   event: ProjectEventRecord
 ): Promise<boolean> {
   if (event.status === null || !TERMINAL.has(event.status)) return false;
+  let updated = false;
+
+  if (event.type === "run.finished" && event.runId !== null) {
+    const status = event.status === "passed" ? "completed" : "failed";
+    updated = await store.markSuiteRunFinishedByRunId(rootPath, event.runId, status) || updated;
+  }
+
   const payload = event.payload;
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return false;
-  const traceId = (payload as { traceId?: unknown }).traceId;
-  if (typeof traceId !== "string" || traceId.trim() === "") return false;
-  return await store.markTaskFinished(rootPath, traceId.trim(), event.status);
+  if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+    const traceId = (payload as { traceId?: unknown }).traceId;
+    if (typeof traceId === "string" && traceId.trim() !== "") {
+      updated = await store.markTaskFinished(rootPath, traceId.trim(), event.status) || updated;
+    }
+  }
+  return updated;
 }

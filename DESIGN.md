@@ -1974,6 +1974,12 @@ llm_switch(name, force):
 ### 13.144 实施记录（P2 第 3 批）：事件驱动 task_stats
 
 > 2026-10-20。`src/events/consumer.ts`：终态事件（passed/failed/skipped/error）且 `payload.traceId` 为字符串时，`setImmediate` 调 `store.markTaskFinished(rootPath, traceId, status)`；仅新事件（非 duplicate）触发，失败忽略。30s `syncTaskStatuses` 轮询保留为 artemis 权威状态兜底。
-> **未实施**：`suite_runs` 事件映射（`SuiteRunRecord` 无 runId 字段，需先补 `run_id` 列与写入契约）；`run.finished` 目前只更新 task_stats 的 traceId 桥。
+> **当时未实施**：`suite_runs` 事件映射（`SuiteRunRecord` 无 runId 字段）；第 4 批已补 `run_id` 列与回写，见 §13.145。
 > **测试**：`events-ingress` 增 1 例（traceId 事件 → task failed/finishedAt）；全量 **1761 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.145 实施记录（P2 第 4 批）：suite_runs 事件回写
+
+> 2026-10-20。`suite_runs` 新增 `run_id TEXT`（PG 建表 + `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` + `(project_id, run_id)` 索引）；`SuiteRunRecord.runId` 为 `string | null`，登记时由 manifest runId 填充（`buildSuiteRunInput` 可从 `manifestPath` 读取，backfill 直接取 manifest.runId）。
+> **回写**：`ProjectStore.markSuiteRunFinishedByRunId` 三实现；事件消费者在 `run.finished` 且 `runId` 非空时映射 `passed → completed`、其余终态 `→ failed`，与 task_stats 的 `payload.traceId` 桥并行；未命中返回 false，不伪造。
+> **测试**：`events-ingress` 增 1 例（run.finished → suite run failed）；`events-store-pg` 增 1 例（run_id 持久化 + 按 runId 回写 + 未命中）；全量 **1763 绿**，lint 0 error（2 条既有 warning）。
 

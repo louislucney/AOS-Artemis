@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 
 import type { SuiteRunCaseRecord, SuiteRunRecord } from "../db/types.js";
@@ -32,7 +33,19 @@ export interface BuildSuiteRunInput {
   startedAtMs: number;
   finishedAtMs: number;
   manifestPath?: string | null;
+  /** 批次清单 runId；缺省时尝试从 manifestPath 读取。 */
+  runId?: string | null;
   comparison?: unknown;
+}
+
+function runIdFromManifest(manifestPath: string | null | undefined): string | null {
+  if (!manifestPath) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as { runId?: unknown };
+    return typeof parsed.runId === "string" && parsed.runId.trim() !== "" ? parsed.runId : null;
+  } catch {
+    return null;
+  }
 }
 
 export function buildSuiteRunInput(input: BuildSuiteRunInput): {
@@ -51,6 +64,7 @@ export function buildSuiteRunInput(input: BuildSuiteRunInput): {
   const flaky = input.report.cases.filter((entry) => entry.retry?.flaky === true).length;
   return {
     run: {
+      runId: input.runId ?? runIdFromManifest(input.manifestPath),
       trigger: input.trigger,
       regressionTaskId: input.regressionTaskId ?? null,
       caseSetId: input.caseSetId ?? null,

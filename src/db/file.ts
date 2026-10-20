@@ -362,6 +362,17 @@ export class FileStore implements ProjectStore {
     return bucket.mem.listSuiteRuns(rootPath, query);
   }
 
+  async markSuiteRunFinishedByRunId(
+    rootPath: string,
+    runId: string,
+    status: "completed" | "failed"
+  ): Promise<boolean> {
+    const bucket = await this.bucket(rootPath);
+    const updated = await bucket.mem.markSuiteRunFinishedByRunId(rootPath, runId, status);
+    if (updated) await this.persist(bucket, "markSuiteRunFinishedByRunId");
+    return updated;
+  }
+
   async updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean> {
     const bucket = await this.bucket(input.rootPath);
     const updated = await bucket.mem.updateCaseVerdict(input);

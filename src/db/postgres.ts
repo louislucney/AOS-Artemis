@@ -199,6 +199,7 @@ const SCHEMA = [
      device TEXT,
      app_version TEXT,
      runner TEXT,
+     run_id TEXT,
      status TEXT NOT NULL,
      started_at TEXT NOT NULL,
      finished_at TEXT NOT NULL,
@@ -277,6 +278,8 @@ const SCHEMA = [
 const MIGRATIONS = [
   `ALTER TABLE task_stats ADD COLUMN IF NOT EXISTS case_id TEXT`,
   `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS runner TEXT`,
+  `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS run_id TEXT`,
+  `CREATE INDEX IF NOT EXISTS suite_runs_project_run_id_idx ON suite_runs(project_id, run_id)`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_by TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_at TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`,
@@ -879,9 +882,9 @@ export class PostgresStore implements ProjectStore {
       await query(
         `INSERT INTO suite_runs
            (id, project_id, created_at, trigger, regression_task_id, case_set_id, feature_key, feature_name,
-            platform, device, app_version, runner, status, started_at, finished_at, total, passed, failed, flaky,
-            quarantined, failure_domains, gate_result, exit_code, manifest_path, comparison)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)`,
+            platform, device, app_version, runner, run_id, status, started_at, finished_at, total, passed, failed,
+            flaky, quarantined, failure_domains, gate_result, exit_code, manifest_path, comparison)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
         [
           id,
           project?.id ?? null,
@@ -895,6 +898,7 @@ export class PostgresStore implements ProjectStore {
           run.device,
           run.appVersion,
           run.runner ?? null,
+          run.runId ?? null,
           run.status,
           run.startedAt,
           run.finishedAt,
@@ -1001,6 +1005,20 @@ export class PostgresStore implements ProjectStore {
       }
     }
     return runs.rows.map((row) => mapSuiteRun(row, casesByRun.get(String(row.id)) ?? []));
+  }
+
+  async markSuiteRunFinishedByRunId(
+    rootPath: string,
+    runId: string,
+    status: "completed" | "failed"
+  ): Promise<boolean> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return false;
+    const result = await this.pool.query(
+      `UPDATE suite_runs SET status = $3 WHERE project_id = $1 AND run_id = $2`,
+      [project.id, runId, status]
+    );
+    return Number(result.rowCount ?? 0) > 0;
   }
 
   async updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean> {
@@ -1963,6 +1981,7 @@ function mapSuiteRun(
     device: nullableString(row.device),
     appVersion: nullableString(row.app_version),
     runner: nullableString(row.runner),
+    runId: nullableString(row.run_id),
     status: String(row.status),
     startedAt: String(row.started_at),
     finishedAt: String(row.finished_at),
