@@ -22,6 +22,8 @@ test("server instructions: initialize 返回服务定位与常用入口", async 
 
     const instructions = client.getInstructions();
     assert.equal(typeof instructions, "string");
+    const { tools } = await client.listTools();
+    assert.ok(tools.some((tool) => tool.name === "aos_job_status"));
     for (const expected of [
       "Android",
       "iOS",

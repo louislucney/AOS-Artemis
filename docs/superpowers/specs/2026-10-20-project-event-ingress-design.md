@@ -1,7 +1,7 @@
 # 项目事件入口（P0）设计：项目 → MCP 的双向基础
 
 日期：2026-10-20  
-状态：P0 已实施（2026-10-20）；P1 已实施（拉取式反馈：seq 游标 / 长轮询 / consumed_at / fsync / 历史台账迁移，2026-10-20）；P2 未实施  
+状态：P0 已实施（2026-10-20）；P1 已实施（拉取式反馈：seq 游标 / 长轮询 / consumed_at / fsync / 历史台账迁移，2026-10-20）；P2 部分实施（异步 job，2026-10-20）  
 上位问题：MCP 与项目连接非双向、记录与项目脱节、反馈慢。P0 只解决“项目 → MCP”的可靠入口与记录；反馈通道与异步任务分列 P1/P2。
 
 ## 1. 意图
@@ -384,9 +384,9 @@ export interface ProjectEventQuery {
 
 ### P2
 
-- 长操作异步化：`jobId` + 进度事件；`aos_job_status`。
-- 事件驱动更新 `task_stats`/`suite_runs`，替代 30s 轮询。
-- 面板实时刷新/项目状态。
+- **已实施（第 1 批）** 长操作异步化：`run_regression`/`verify_jira_issue`/`design_to_test` 的 `async:true` → `jobId`；进度复用 `run.started`/`run.finished`；`aos_job_status`；结果落 `.artemis/jobs/`。
+- **未实施** 事件驱动更新 `task_stats`/`suite_runs`，替代 30s 轮询。
+- **未实施** 面板实时刷新/项目状态。
 
 ## 11. 验收测试
 

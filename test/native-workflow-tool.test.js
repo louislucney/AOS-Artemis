@@ -51,6 +51,7 @@ test("design_to_test: registered in the catalog and exposed with a minimal optio
       "reuseExistingFlows",
       "device",
       "run",
+      "async",
       "maxFlows",
       "maxDepth"
     ]) {
@@ -145,7 +146,7 @@ test("run_regression: registered in the catalog with the documented schema", asy
     const tool = await namedTool(harness.client, "run_regression");
     assert.ok(tool.description.length > 0);
     const properties = tool.inputSchema.properties ?? {};
-    for (const key of ["excelPath", "scope", "all", "device", "columns"]) {
+    for (const key of ["excelPath", "scope", "all", "device", "columns", "async"]) {
       assert.ok(key in properties, `inputSchema exposes ${key}`);
     }
   } finally {
@@ -201,7 +202,7 @@ test("verify_jira_issue: registered in the catalog with the documented schema", 
     const tool = await namedTool(harness.client, "verify_jira_issue");
     assert.ok(tool.description.length > 0);
     const properties = tool.inputSchema.properties ?? {};
-    for (const key of ["issueKey", "device", "scope", "dryRun"]) {
+    for (const key of ["issueKey", "device", "scope", "dryRun", "async"]) {
       assert.ok(key in properties, `inputSchema exposes ${key}`);
     }
     const required = tool.inputSchema.required ?? [];

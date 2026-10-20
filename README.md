@@ -533,6 +533,7 @@ node dist/cli.js doctor
 | `aos_event_poll` | 按 `afterSeq` 游标无丢失轮询事件；无新事件时最多等待 `waitMs`（0-30000）；下一轮把返回的 `nextSeq` 作为 `afterSeq`；`consume:true` 标记已消费 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
 | `aos_ledger_migrate` | 把当前项目文件台账的 `usage_events`/`regression_tasks` 幂等补进中心 PostgreSQL（保留原 id）；默认 `dryRun` 只统计，需 PG 存储；不处理 suite_runs/case_sets（用 `suite backfill`） |
+| `aos_job_status` | 查询 `async:true` 异步任务：`run_regression`/`verify_jira_issue`/`design_to_test` 立即返回 `jobId`，后台执行；返回 running/passed/failed/error、事件摘要与完整结果（`.artemis/jobs/<jobId>.json`） |
 | `aos_usage` | 使用统计（调用事件）：`summary` 概览 / `signals` 信号分布 / `events` 流水；`tool`/`status`/`days` 筛选，events `limit` ≤200；只统计客户端发起的调用，`AOS_USAGE=0` 时标注采集已关闭但历史仍可查 |
 | `jira_issue_get` | 读取 Jira Cloud issue（key 或 browse URL）→ summary/status/type/labels + 描述纯文本 + 启发式验收标准标注（保留原始 ADF）；缺凭证返回 `howToFix` |
 | `jira_issue_search` | JQL 搜索（`/rest/api/3/search/jql` 游标分页、无 total）：key/url/summary/status/type/labels/updated/assignee；limit 默认 20、上限 100 |
@@ -566,6 +567,8 @@ node dist/cli.js doctor
 | `pen_agent` | agent 生成/修改设计：prompt → `.pen`（默认原位安全更新；`out` 新建/另存；`exportPath` 顺带出图）；凭证复用 active LLM（不落日志）并自动桥接 Anthropic 端点：DeepSeek（已实测）、Kimi/Z.AI/百炼（Bearer+模型 env，待冒烟）；其他 provider 可 `anthropicBaseUrl` 指定 |
 | `mobile_*`（5） | 代理 artemis（schema 原样透传）；`mobile_run_task` 在 setup 未完成时返回结构化 `setup_required`；`device_serial` 为 iOS UDID（模拟器或真机）时由 AOS 接管：`mobile_run_task` 走内置观察-动作执行器（active LLM，无唤醒需轮询 `mobile_manage_task`；默认每步视觉输入——多模态主模型直附图、文本主模型视觉感知融合补充元素；完成时终态验证；失败采集设备日志；开关与降级见「iOS 真机」节），`mobile_manage_task`/`mobile_inspect_trace`（view_summary/view_step_details/view_step_screenshots/search）/`mobile_get_device_state` 均按 UDID 或 iOS trace id 路由；其余仍走 ARTEMIS/adb |
 | Figma 20 | `get_current_selection` … `export_image`（内嵌 dcb，zod 校验）；插件模式走本地桥（锁定 3055，CORS 白名单），REST 模式需 token（缺失时引导 `aos_configure`） |
+
+`run_regression` / `verify_jira_issue` / `design_to_test` 支持 `async:true`：立即返回 `jobId`，后台执行；用 `aos_job_status` 查询（进度事件 `run.started`/`run.finished`，结果落 `.artemis/jobs/<jobId>.json`）。缺省同步执行，行为不变。
 
 ## 产物路径（项目内）
 

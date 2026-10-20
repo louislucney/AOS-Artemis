@@ -14,6 +14,7 @@ import { resolveDepsSource } from "./artemis/bootstrap.js";
 import { configureLogging, installCrashHandlers } from "./log.js";
 import { startBridge } from "./figma/bridge.js";
 import { figmaTools, handleFigmaTool, isFigmaTool } from "./figma/registry.js";
+import { ASYNC_TOOL_NAMES, startAsyncJob } from "./jobs/async.js";
 import { Runtime } from "./runtime.js";
 import { RuntimeHost } from "./runtime-host.js";
 import { usageEventInputFrom } from "./usage/capture.js";
@@ -24,6 +25,7 @@ import { DESIGN_NATIVE_TOOLS } from "./tools/native-tools/design.js";
 import { EVENTS_NATIVE_TOOLS } from "./tools/native-tools/events.js";
 import { FIGMA_NATIVE_TOOLS } from "./tools/native-tools/figma.js";
 import { JIRA_NATIVE_TOOLS } from "./tools/native-tools/jira.js";
+import { JOBS_NATIVE_TOOLS } from "./tools/native-tools/jobs.js";
 import { LEDGER_NATIVE_TOOLS } from "./tools/native-tools/ledger.js";
 import { LLM_NATIVE_TOOLS } from "./tools/native-tools/llm.js";
 import { PEN_NATIVE_TOOLS } from "./tools/native-tools/pen.js";
@@ -32,6 +34,7 @@ import { WORKFLOW_NATIVE_TOOLS } from "./tools/native-tools/workflow.js";
 const NATIVE_TOOLS: NativeToolDefinition[] = [
   ...LLM_NATIVE_TOOLS,
   ...AOS_NATIVE_TOOLS,
+  ...JOBS_NATIVE_TOOLS,
   ...LEDGER_NATIVE_TOOLS,
   ...EVENTS_NATIVE_TOOLS,
   ...JIRA_NATIVE_TOOLS,
@@ -162,7 +165,11 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
       if (!parsed.success) {
         return errorResult(`参数校验失败: ${parsed.error.message}`);
       }
-      return await native.handler(runtime, parsed.data as Record<string, unknown>);
+      const parsedArgs = parsed.data as Record<string, unknown>;
+      if (ASYNC_TOOL_NAMES.has(name) && parsedArgs.async === true) {
+        return await startAsyncJob(runtime, native, parsedArgs);
+      }
+      return await native.handler(runtime, parsedArgs);
     }
 
     // Figma tools work independent of the artemis runtime (plugin mode needs

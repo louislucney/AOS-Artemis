@@ -52,7 +52,11 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
       run: z
         .boolean()
         .optional()
-        .describe("执行生成的用例，默认 false（止于校验，响应含 nextAction 指引续跑）")
+        .describe("执行生成的用例，默认 false（止于校验，响应含 nextAction 指引续跑）"),
+      async: z
+        .boolean()
+        .optional()
+        .describe("后台执行并立即返回 jobId（配 aos_job_status 轮询），默认 false")
     }),
     handler: (runtime, args) => designToTest(runtime, args as unknown as DesignToTestArgs)
   },
@@ -88,7 +92,11 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
           module: z.string().optional()
         })
         .optional()
-        .describe("Excel 列名覆盖（默认自动识别；按字段给出实际表头文本）")
+        .describe("Excel 列名覆盖（默认自动识别；按字段给出实际表头文本）"),
+      async: z
+        .boolean()
+        .optional()
+        .describe("后台执行并立即返回 jobId（配 aos_job_status 轮询），默认 false")
     }),
     handler: (runtime, args) => runRegression(runtime, args as unknown as RunRegressionArgs)
   },
@@ -103,7 +111,11 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
         .string()
         .optional()
         .describe("覆盖映射的范围关键词（功能/用例名，归一化匹配）；给定时不调 LLM 映射"),
-      dryRun: z.boolean().optional().describe("只执行不写回（零外部副作用），响应含结论评论预览")
+      dryRun: z.boolean().optional().describe("只执行不写回（零外部副作用），响应含结论评论预览"),
+      async: z
+        .boolean()
+        .optional()
+        .describe("后台执行并立即返回 jobId（配 aos_job_status 轮询），默认 false")
     }),
     handler: (runtime, args) => verifyJiraIssue(runtime, args as unknown as VerifyJiraIssueArgs)
   },

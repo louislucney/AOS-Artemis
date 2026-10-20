@@ -1959,3 +1959,10 @@ llm_switch(name, force):
 > **口径**：返回 `found/existing/inserted`；坏 JSON/缺 id/重复 id 记 warnings 不阻断；只覆盖 `usage_events`/`regression_tasks`，`suite_runs`/`case_sets` 仍由 `suite backfill` 处理；审计域 `ledger-migrate`（preview/import，best-effort）。
 > **测试**：新增 `test/ledger-migrate.test.js` 2 例（dryRun/幂等/坏行 warning、非 PG 不可用）；全量 **1758 绿**，lint 0 error（2 条既有 warning）。
 
+### 13.142 实施记录（P2 第 1 批）：异步 job
+
+> 2026-10-20。`run_regression` / `verify_jira_issue` / `design_to_test` 的 schema 新增 `async:true`；server 在参数校验后拦截（`src/jobs/async.ts`），先写 `run.started` 事件（jobId=`job-<ts>-<uuid8>`，source=`agent`）再返回 `{async:true, jobId, status:"running", pollWith:"aos_job_status"}`，后台 `setImmediate` 执行原 handler。
+> **状态/进度**：完成写 `run.finished`（passed/failed/error；`failedStep`/`ok:false` 记 failed，异常记 error），payload 含 `tool/durationMs/resultPath/resultBytes/resultPreview`；`aos_job_status` 按 `runId=jobId` 查 `project_events`，返回状态、起止、事件摘要与完整结果（`.artemis/jobs/<jobId>.json`，0600）。
+> **边界**：不新建 job 表，复用事件存储；`suite_runs` 仍是回归权威，异步化不改变门禁口径；进程重启后未完成 job 只能看到 `running`（结果文件不存在），不自动恢复；不提供取消。
+> **测试**：新增 `test/jobs-async.test.js` 2 例（成功/失败 + 结果落盘 + 未知 job）；workflow schema 断言含 `async`；`aos_job_status` 注册；全量 **1760 绿**，lint 0 error（2 条既有 warning）。
+
