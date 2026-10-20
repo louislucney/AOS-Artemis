@@ -1,6 +1,6 @@
 import type { IosDevice } from "../device/ios-actions.js";
 import type { IosUiNode } from "../device/ios.js";
-import type { ChatFn } from "../llm/chat.js";
+import { describeChatError, isMissingContentError, type ChatFn } from "../llm/chat.js";
 import { logWarn } from "../log.js";
 import { errorMessage } from "../util.js";
 import { croppedScreenshotHash, screenSignature } from "./noop.js";
@@ -55,6 +55,20 @@ function visibleElementCount(nodes: IosUiNode[]): number {
 
 /** 步骤观察管线：读屏（节点/尺寸/前置截图）→ 脚本贴合与 preflight → 无进展检测 →
  * 视觉感知融合/降级。观察屏幕失败时抛出 `观察屏幕失败: …`（调用方终态收尾）。 */
+async function visionChatWithRetry(chat: ChatFn, messages: Parameters<ChatFn>[0]): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await chat(messages);
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0 && isMissingContentError(error)) continue;
+      break;
+    }
+  }
+  throw lastError;
+}
+
 export async function observeStep(options: ObserveStepOptions): Promise<StepObservation> {
   const { device, record, step, scriptExpectations, scriptSatisfied, cursor, vision } = options;
   let nodes: IosUiNode[];
@@ -120,7 +134,7 @@ export async function observeStep(options: ObserveStepOptions): Promise<StepObse
       perception = "text-degraded";
     } else {
       try {
-        const content = await vision.visionChat!([
+        const content = await visionChatWithRetry(vision.visionChat!, [
           {
             role: "user",
             content: [
@@ -163,8 +177,9 @@ export async function observeStep(options: ObserveStepOptions): Promise<StepObse
           perception = "vision-text";
         }
       } catch (error) {
-        record.visionDegraded = record.visionDegraded ?? `视觉调用失败：${errorMessage(error)}`;
-        logWarn(`iOS 视觉降级为纯文本（${record.traceId}）: ${errorMessage(error)}`);
+        const detail = describeChatError(error);
+        record.visionDegraded = record.visionDegraded ?? `视觉调用失败：${detail}`;
+        logWarn(`iOS 视觉降级为纯文本（${record.traceId}）: ${detail}`);
         perception = "text-degraded";
       }
     }

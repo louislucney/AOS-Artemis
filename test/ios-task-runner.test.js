@@ -348,6 +348,54 @@ test("视觉调用失败 → 降级纯文本并记录原因", async () => {
   assert.equal(run.vision.model, "qwen-vl-max");
 });
 
+test("视觉感知空 content：同一截图重试一次成功，不降级", async () => {
+  const { runtime } = await makeRuntime();
+  const base = fakeDevice();
+  const device = { ...base, nodes: async () => [] };
+  const text = scriptedChat([
+    JSON.stringify({ thought: "完成", action: "done", success: true, summary: "视觉完成" })
+  ]);
+  let visionCalls = 0;
+  const visionChat = async () => {
+    visionCalls += 1;
+    if (visionCalls === 1) {
+      throw new ChatError("LLM 响应缺少 choices[0].message.content", {
+        body: JSON.stringify({ choices: [{ message: { content: "" } }] })
+      });
+    }
+    return "[]";
+  };
+  const visionTarget = {
+    chat: { baseUrl: "https://v.example.com/v1", apiKey: "vk", model: "qwen-vl-max" },
+    model: "qwen-vl-max",
+    source: "env"
+  };
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "看图确认", device_serial: UDID },
+      {
+        entry: ENTRY,
+        device,
+        chat: text.chat,
+        visionChat,
+        visionTarget,
+        listSimulators: bootedSims(),
+        stepDelayMs: 0,
+        settleMs: 0
+      }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  assert.equal(record.status, "completed");
+  assert.equal(visionCalls, 2, "视觉感知空 content 应同图重试一次");
+  assert.equal(record.steps[0].perception, "vision-text");
+  assert.equal(record.visionDegraded, null);
+});
+
 test("fail-open：未知模型首步附图被拒（400 不支持图片）→ 记住并全程回退文本", async () => {
   const { runtime, dir } = await makeRuntime();
   const device = fakeDevice();
@@ -758,6 +806,93 @@ test("多模态主模型 auto：截图直附主决策调用，历史不留旧截
   assert.equal(typeof messages[1][1].content, "string");
   assert.ok(Array.isArray(messages[1][3].content));
   assert.equal(record.vision, null);
+});
+
+test("多模态空 content：同图重试一次成功，不降级", async () => {
+  const { runtime } = await makeRuntime();
+  const base = fakeDevice();
+  const bigPng = Buffer.from(toPng(createImage(804, 1748)));
+  const device = { ...base, screenshot: async () => bigPng };
+  let imageCalls = 0;
+  const chat = async (msgs) => {
+    const withImage = msgs.some(
+      (message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")
+    );
+    if (!withImage) return JSON.stringify({ thought: "完成", action: "done", success: true, summary: "ok" });
+    imageCalls += 1;
+    if (imageCalls === 1) {
+      throw new ChatError("LLM 响应缺少 choices[0].message.content", {
+        body: JSON.stringify({ choices: [{ message: { content: "" } }] })
+      });
+    }
+    return JSON.stringify({ thought: "完成", action: "done", success: true, summary: "ok" });
+  };
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "多模态重试", device_serial: UDID },
+      {
+        entry: ENTRY,
+        device,
+        chat,
+        mainVision: true,
+        verifier: null,
+        listSimulators: bootedSims(),
+        stepDelayMs: 0,
+        settleMs: 0
+      }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  assert.equal(record.status, "completed");
+  assert.equal(imageCalls, 2, "首次空 content 后应同图重试一次");
+  assert.equal(record.steps[0].perception, "image");
+  assert.equal(record.visionDegraded, null);
+});
+
+test("多模态空 content：重试仍失败 → 文本降级并带 body 摘要", async () => {
+  const { runtime } = await makeRuntime();
+  const base = fakeDevice();
+  const bigPng = Buffer.from(toPng(createImage(804, 1748)));
+  const device = { ...base, screenshot: async () => bigPng };
+  let imageCalls = 0;
+  const chat = async (msgs) => {
+    const withImage = msgs.some(
+      (message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")
+    );
+    if (!withImage) return JSON.stringify({ thought: "完成", action: "done", success: true, summary: "ok" });
+    imageCalls += 1;
+    throw new ChatError("LLM 响应缺少 choices[0].message.content", {
+      body: JSON.stringify({ choices: [{ message: { content: "" } }] })
+    });
+  };
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "多模态降级", device_serial: UDID },
+      {
+        entry: ENTRY,
+        device,
+        chat,
+        mainVision: true,
+        verifier: null,
+        listSimulators: bootedSims(),
+        stepDelayMs: 0,
+        settleMs: 0
+      }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  assert.equal(record.status, "completed");
+  assert.equal(imageCalls, 2, "同一步最多重试一次");
+  assert.equal(record.steps[0].perception, "text-degraded");
+  assert.match(record.visionDegraded, /body=.*choices/);
 });
 
 test("off 档：纯文本决策，不发图不感知", async () => {

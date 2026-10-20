@@ -1,7 +1,13 @@
 import type { IosDevice } from "../device/ios-actions.js";
 import { classifyIosSerial, type IosUiNode } from "../device/ios.js";
 import { IosDeviceLogTail } from "../device/ios-log.js";
-import { makeChatFn, type ChatContent, type ChatMessage } from "../llm/chat.js";
+import {
+  describeChatError,
+  isMissingContentError,
+  makeChatFn,
+  type ChatContent,
+  type ChatMessage
+} from "../llm/chat.js";
 import type { LlmEntry } from "../llm/registry.js";
 import { logWarn } from "../log.js";
 import type { Runtime } from "../runtime.js";
@@ -344,7 +350,7 @@ export async function runLoop(
         historySteps
       );
 
-      let content: string;
+      let content!: string;
       if (mode !== "off" && mainVision && shot) {
         messages.push({
           role: "user",
@@ -353,15 +359,30 @@ export async function runLoop(
             { type: "image_url", image_url: { url: `data:image/png;base64,${shot.bytes.toString("base64")}` } }
           ] satisfies ChatContent
         });
-        try {
-          content = await chat(messages);
+        let visionError: unknown = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            content = await chat(messages);
+            visionError = null;
+            break;
+          } catch (error) {
+            visionError = error;
+            // A 200 response with an empty assistant message is often transient;
+            // retry the same image once before degrading this step to text.
+            if (attempt === 0 && isMissingContentError(error)) continue;
+            break;
+          }
+        }
+        if (visionError === null) {
           perception = "image";
           if (!visionVerdictLearned) {
             visionCapability.remember(true);
             visionVerdictLearned = true;
           }
-        } catch (error) {
+        } else {
+          const error = visionError;
           const rejection = classifyModalityRejection(error);
+          const detail = describeChatError(error);
           if (rejection) {
             mainVision = false;
             visionCapability.remember(false);
@@ -369,9 +390,9 @@ export async function runLoop(
             record.visionDegraded =
               record.visionDegraded ?? `多模态决策被拒（模型不接受图片）：${rejection}`;
           } else {
-            record.visionDegraded = record.visionDegraded ?? `多模态决策调用失败：${errorMessage(error)}`;
+            record.visionDegraded = record.visionDegraded ?? `多模态决策调用失败：${detail}`;
           }
-          logWarn(`iOS 多模态降级为纯文本（${record.traceId}）: ${errorMessage(error)}`);
+          logWarn(`iOS 多模态降级为纯文本（${record.traceId}）: ${detail}`);
           messages[messages.length - 1] = { role: "user", content: textPrompt };
           perception = "text-degraded";
           try {

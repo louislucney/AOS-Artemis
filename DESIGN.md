@@ -1998,3 +1998,12 @@ llm_switch(name, force):
 > **UI 契约（P0 首版）**：`suite ui-contract` 从 `flows.json` + `.artemis/design/pen/screens/<screenId>.pen` 投影 `ui-contract.{json,md}`，共享 `screen.id` 与设计源指纹；逐屏 token（cornerRadius/colors/fonts/fontSizes/fontWeights/spacing）+ 几何四态（`extracted|partial|unverifiable|no-baseline`）+ `presentation`。缺逐屏 `.pen` 标 `no-baseline`，不猜 UI；Figma 源/逐屏 PNG 适配器仍待 P6。当前 iOS 样例 19 屏：4 partial、15 no-baseline。
 > **测试**：新增 `test/ui-verification.test.js` 3 例、`test/ui-contract.test.js` 3 例；`suite-command` 断言 `ui` 计数/清单字段；`design-device-diff`/`diff-detail-tool` 断言源格式。
 
+### 13.148 实施记录（多模态空响应：重试、内容分片与诊断）
+
+> 2026-10-20。iOS 一次真实 trace 在 step 4 出现 `LLM 响应缺少 choices[0].message.content`，step 5 起恢复 `image`——属瞬时 provider 空响应，不是模型永久不支持视觉。处理：
+> - `makeChatFn` 接受 OpenAI content parts 数组（`[{type:"text",text}]`）并拼接文本；仍拒绝空 content。
+> - 缺 content 的错误信息追加 `finish_reason`；若仅有 `reasoning_content` 显式提示（不把 reasoning 当最终答案）。
+> - `describeChatError` 输出 `message + status + body`（单行、≤200 字符），iOS 多模态警告/`visionDegraded` 使用它；不打印整段 prompt。
+> - `run-loop` 主决策与 `step-observe` 视觉感知对“空 content”**同一截图重试一次**；仍失败才 `text-degraded`。400/415/422 的 modality rejection 仍缓存 false 并停用附图。
+> - 回归：真实 trace 的 step 4 降级、step 5 恢复；单测覆盖 content parts、finish_reason/reasoning 提示、主决策重试成功/失败、视觉感知重试成功。
+

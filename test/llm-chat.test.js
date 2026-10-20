@@ -30,6 +30,37 @@ test("makeChatFn: POST chat/completions 并解析 content", async () => {
   assert.equal(requests[0].init.headers.authorization, "Bearer sk-test");
 });
 
+test("makeChatFn: accepts OpenAI content parts and concatenates text", async () => {
+  const chat = makeChatFn(
+    { baseUrl: "https://api.example.com", apiKey: "k", model: "m" },
+    {
+      fetchFn: async () =>
+        jsonResponse({
+          choices: [
+            { message: { content: [{ type: "text", text: '{"action":' }, { type: "text", text: '"done"}' }] } }
+          ]
+        })
+    }
+  );
+  assert.equal(await chat([{ role: "user", content: "x" }]), '{"action":"done"}');
+});
+
+test("makeChatFn: empty content reports finish_reason and reasoning-only hint", async () => {
+  const chat = makeChatFn(
+    { baseUrl: "https://api.example.com", apiKey: "k", model: "m" },
+    {
+      fetchFn: async () =>
+        jsonResponse({
+          choices: [{ message: { content: "", reasoning_content: "thinking" }, finish_reason: "length" }]
+        })
+    }
+  );
+  await assert.rejects(
+    () => chat([{ role: "user", content: "x" }]),
+    /缺少 choices\[0\]\.message\.content（finish_reason=length）（仅返回 reasoning_content/
+  );
+});
+
 test("makeChatFn: HTTP 错误与缺 content 抛出 ChatError", async () => {
   const httpError = makeChatFn(
     { baseUrl: "https://api.example.com", apiKey: "k", model: "m" },
