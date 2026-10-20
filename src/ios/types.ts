@@ -12,6 +12,8 @@ export interface IosTaskStep {
   postShot?: string;
   screen?: string;
   scale?: number;
+  /** Text/accessibility elements observed at this step (logical pt bounds). */
+  texts?: Array<{ text: string; x: number; y: number; width: number; height: number }>;
   perception?: "text" | "image" | "vision-text" | "text-degraded";
   noop?: boolean;
   /** 本条步骤观测时新命中的脚本断言序号（【AOS-EXPECT】，确定性核对）。 */

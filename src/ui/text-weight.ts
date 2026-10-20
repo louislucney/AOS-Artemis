@@ -30,7 +30,7 @@ export interface TextWeightInput {
   textPixelHeight?: number | null;
   sourceFormat?: "png" | "jpeg" | "unknown";
   lossless?: boolean;
-  localization?: "baseline-bbox" | "design-bbox";
+  localization?: "baseline-bbox" | "design-bbox" | "device-text";
 }
 
 const MIN_TEXT_PIXELS = 10;
@@ -245,7 +245,7 @@ export function measureTextWeight(input: TextWeightInput): TextWeightResult {
         (input.sourceFormat === "png" && input.lossless === true ? 0.25 : 0) +
         (rowCorrelation > 0.9 ? 0.15 : 0) +
         (textPixelHeight >= 14 ? 0.1 : 0) +
-        (input.localization === "baseline-bbox" ? 0.1 : 0)
+        (input.localization === "baseline-bbox" || input.localization === "device-text" ? 0.1 : 0)
     ) || 0;
 
   return {

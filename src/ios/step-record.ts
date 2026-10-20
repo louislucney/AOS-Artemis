@@ -12,6 +12,7 @@ export interface StepRecordInput {
   scale?: number | null;
   noop?: boolean;
   scriptHits?: number[];
+  texts?: IosTaskStep["texts"];
   perception: IosTaskStep["perception"];
 }
 
@@ -29,6 +30,7 @@ export function toStepRecord(input: StepRecordInput): IosTaskStep {
     ...(input.scale !== null && input.scale !== undefined ? { scale: input.scale } : {}),
     ...(input.noop ? { noop: true } : {}),
     ...(input.scriptHits && input.scriptHits.length > 0 ? { scriptHits: input.scriptHits } : {}),
+    ...(input.texts && input.texts.length > 0 ? { texts: input.texts } : {}),
     perception: input.perception
   };
 }

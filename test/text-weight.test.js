@@ -103,7 +103,9 @@ test("text weight: contract pass closes textsTotal = checked + unverified", () =
     device,
     geometry: { ratio: 1, offset: { x: 0, y: 0 } },
     sourceFormat: "png",
-    lossless: true
+    lossless: true,
+    deviceTexts: [{ text: "文字", x: 8, y: 6, width: 104, height: 28 }],
+    deviceScale: 1
   });
   assert.equal(result.summary.textsTotal, 2);
   assert.equal(result.summary.checked + result.summary.unverified, 2);

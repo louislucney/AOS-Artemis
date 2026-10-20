@@ -24,7 +24,7 @@ import { observeStep, type ObservationCursor, type StepObservation } from "./ste
 import { toStepRecord } from "./step-record.js";
 import type { StartIosTaskDeps } from "./tool-entry.js";
 import { captureStepShot, finish, persistRun } from "./trace-persist.js";
-import type { IosTaskRecord, VerifierTarget } from "./types.js";
+import type { IosTaskRecord, IosTaskStep, VerifierTarget } from "./types.js";
 import { resolveVerifier, resolveVerifyMode, runVerification } from "./verifier.js";
 import { classifyModalityRejection } from "../llm/vision-capability.js";
 import { entryVisionCapability, resolveVisionMode, type IosVisionMode, type VisionTarget } from "./vision.js";
@@ -40,6 +40,28 @@ function asNumber(value: unknown): number | null {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function traceTexts(nodes: IosUiNode[] | null | undefined): IosTaskStep["texts"] | undefined {
+  if (!nodes || nodes.length === 0) return undefined;
+  const out: NonNullable<IosTaskStep["texts"]> = [];
+  const seen = new Set<string>();
+  for (const node of nodes) {
+    const text = (node.label || node.value || "").trim();
+    if (text === "" || node.rect.width <= 0 || node.rect.height <= 0) continue;
+    const key = `${text}|${node.rect.x}|${node.rect.y}|${node.rect.width}|${node.rect.height}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      text,
+      x: node.rect.x,
+      y: node.rect.y,
+      width: node.rect.width,
+      height: node.rect.height
+    });
+    if (out.length >= 300) break;
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function resolveMaxSteps(env: NodeJS.ProcessEnv, override?: number): number {
@@ -430,6 +452,7 @@ export async function runLoop(
             scale,
             noop,
             scriptHits,
+            texts: traceTexts(nodes),
             perception
           })
         );
@@ -473,6 +496,7 @@ export async function runLoop(
             scale,
             noop,
             scriptHits: [...scriptHits, ...doneHits],
+            texts: traceTexts(doneNodes ?? nodes),
             perception
           })
         );
@@ -528,6 +552,7 @@ export async function runLoop(
           scale,
           noop,
           scriptHits,
+          texts: traceTexts(nodes),
           perception
         })
       );

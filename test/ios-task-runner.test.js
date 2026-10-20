@@ -226,6 +226,9 @@ test("完整执行：动作 → done，落盘 run.json/status.json 与截图证�
   assert.equal(record.status, "completed");
   assert.deepEqual(record.result, { success: true, summary: "已打开搜索" });
   assert.equal(record.steps.length, 2);
+  assert.deepEqual(record.steps[0].texts, [
+    { text: "搜索", x: 100, y: 200, width: 80, height: 40 }
+  ]);
   assert.deepEqual(device.calls[0], ["tap", 140, 220]);
 
   const run = JSON.parse(fs.readFileSync(path.join(record.runDir, "run.json"), "utf-8"));

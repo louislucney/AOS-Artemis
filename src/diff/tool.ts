@@ -172,6 +172,68 @@ function findContractScreen(
   return screen ? { contract, screen, screenId: screen.id } : null;
 }
 
+function readTraceTexts(
+  runtime: Runtime,
+  traceId: string,
+  stepNumber: number | null
+): { texts: Array<{ text: string; x: number; y: number; width: number; height: number }>; scale: number } | null {
+  if (stepNumber === null) return null;
+  try {
+    const run = JSON.parse(
+      fs.readFileSync(path.join(runtime.traceDir(traceId), "run.json"), "utf-8")
+    ) as { steps?: Array<{ step?: unknown; texts?: unknown; scale?: unknown }> };
+    const step = (run.steps ?? []).find((entry) => entry.step === stepNumber);
+    if (!step || !Array.isArray(step.texts)) return null;
+    const texts = step.texts
+      .filter(
+        (entry): entry is { text: string; x: number; y: number; width: number; height: number } =>
+          entry !== null &&
+          typeof entry === "object" &&
+          typeof (entry as { text?: unknown }).text === "string" &&
+          typeof (entry as { x?: unknown }).x === "number" &&
+          typeof (entry as { y?: unknown }).y === "number" &&
+          typeof (entry as { width?: unknown }).width === "number" &&
+          typeof (entry as { height?: unknown }).height === "number" &&
+          (entry as { width: number }).width > 0 &&
+          (entry as { height: number }).height > 0
+      )
+      .map((entry) => ({
+        text: entry.text,
+        x: entry.x,
+        y: entry.y,
+        width: entry.width,
+        height: entry.height
+      }));
+    const scale = typeof step.scale === "number" && Number.isFinite(step.scale) ? step.scale : 1;
+    return { texts, scale };
+  } catch {
+    return null;
+  }
+}
+
+function cropRgba(
+  image: ReturnType<typeof decodeImage>,
+  box: { x: number; y: number; width: number; height: number }
+): ReturnType<typeof decodeImage> | null {
+  const x0 = Math.max(0, Math.floor(box.x));
+  const y0 = Math.max(0, Math.floor(box.y));
+  const x1 = Math.min(image.width, Math.ceil(box.x + box.width));
+  const y1 = Math.min(image.height, Math.ceil(box.y + box.height));
+  if (x1 - x0 < 1 || y1 - y0 < 1) return null;
+  const width = x1 - x0;
+  const height = y1 - y0;
+  const data = new Uint8Array(width * height * 4);
+  for (let row = 0; row < height; row += 1) {
+    const source = ((y0 + row) * image.width + x0) * 4;
+    data.set(image.data.subarray(source, source + width * 4), row * width * 4);
+  }
+  return { width, height, data };
+}
+
+function normalizeText(value: string): string {
+  return value.replace(/\s+/g, "").toLowerCase();
+}
+
 export function measureContractTexts(input: {
   screen: UiContract["screens"][number];
   design: ReturnType<typeof decodeImage>;
@@ -179,6 +241,8 @@ export function measureContractTexts(input: {
   geometry: ReturnType<typeof resolveDetailGeometry>;
   sourceFormat: "png" | "jpeg" | "unknown";
   lossless: boolean;
+  deviceTexts?: Array<{ text: string; x: number; y: number; width: number; height: number }>;
+  deviceScale?: number;
 }): {
   items: Array<{
     id: string;
@@ -232,6 +296,63 @@ export function measureContractTexts(input: {
         reason: "no-geometry"
       });
       continue;
+    }
+    const normalized = normalizeText(text.content);
+    const deviceMatches = (input.deviceTexts ?? []).filter(
+      (entry) => normalizeText(entry.text) === normalized
+    );
+    if (deviceMatches.length > 1) {
+      items.push({
+        id: text.id,
+        content: text.content,
+        bbox: text.bbox,
+        status: "unverified",
+        weightHint: null,
+        delta: null,
+        confidence: 0,
+        designWeight: text.fontWeight,
+        reason: "multiple-device-text"
+      });
+      continue;
+    }
+    if (deviceMatches.length === 1) {
+      const deviceScale = input.deviceScale ?? 1;
+      const match = deviceMatches[0]!;
+      const designCrop = cropRgba(input.design, {
+        x: text.bbox.x * designScale,
+        y: text.bbox.y * designScale,
+        width: text.bbox.width * designScale,
+        height: text.bbox.height * designScale
+      });
+      const deviceCrop = cropRgba(input.device, {
+        x: match.x * deviceScale,
+        y: match.y * deviceScale,
+        width: match.width * deviceScale,
+        height: match.height * deviceScale
+      });
+      if (designCrop !== null && deviceCrop !== null) {
+        const measured = measureTextWeight({
+          design: designCrop,
+          device: deviceCrop,
+          designWeight: text.fontWeight,
+          textPixelHeight: deviceCrop.height,
+          sourceFormat: input.sourceFormat,
+          lossless: input.lossless,
+          localization: "device-text"
+        });
+        items.push({
+          id: text.id,
+          content: text.content,
+          bbox: text.bbox,
+          status: measured.status,
+          weightHint: measured.weightHint,
+          delta: measured.delta,
+          confidence: measured.confidence,
+          designWeight: measured.designWeight,
+          ...(measured.reason ? { reason: measured.reason } : {})
+        });
+        continue;
+      }
     }
     const pad = Math.max(2, Math.round(text.bbox.height * 0.15));
     const region = {
@@ -747,6 +868,10 @@ export async function designDeviceDiff(
         }
       }
       const contractMatch = findContractScreen(runtime, args);
+      const traceTexts =
+        stepRequest !== null
+          ? readTraceTexts(runtime, stepRequest.traceId, resolvedStepNumber)
+          : null;
       const contractTexts =
         contractMatch === null
           ? null
@@ -756,7 +881,8 @@ export async function designDeviceDiff(
               device: detailDevice,
               geometry,
               sourceFormat: sourceFormatOf(detailDeviceBytes),
-              lossless: deviceLossless === true
+              lossless: deviceLossless === true,
+              ...(traceTexts !== null ? { deviceTexts: traceTexts.texts, deviceScale: traceTexts.scale } : {})
             });
       detailMeta = {
         enabled: true,
