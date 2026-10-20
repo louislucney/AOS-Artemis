@@ -1948,6 +1948,7 @@ llm_switch(name, force):
 > **长轮询**：`pollProjectEvents` 在无事件时每 250ms 重查，最长 `waitMs` 30s；`GET /events/<project>/poll?afterSeq=&waitMs=&consume=`（GET-only；客户端断开经 `res.close` 中止）与原生工具 `aos_event_poll` 共用。
 > **消费态**：`markProjectEventsConsumed` 幂等写入 `consumed_at`（PG 单条 UPDATE、file 原子重写、memory 就地）；`consume:true` 时返回事件带 `consumedAt`，重复消费返回 0。
 > **fsync**：`AOS_EVENTS_FSYNC=1` 时文件事件追加、消费态/裁剪重写后对 events json/meta 执行 fsync（默认关，保持 ack 延迟优先）。
+> **反馈口径（拉取式，2026-10-20 定）**：MCP 不生成反向指令队列；项目/执行器用 `aos_event_poll` / `GET /events/<project>/poll` 拉取未消费事件，按自身规则决定重试/补数据/停止，再以 `consume:true` 确认。幂等由 `(project,eventId)` 与 `consumed_at` 保证；服务端只提供游标、过滤与消费态。
 > **兼容**：`GET /events/<project>` 保持原语义，新增 `afterSeq/consumed` 参数与 `nextSeq` 字段；`since` 的同毫秒窗口仍只用于展示，游标轮询用 `seq`。
 > **测试**：三存储补 `afterSeq`/`consumed` + 非法值断言；ingress 补“空页→等待→新事件”与消费幂等；HTTP 补 `/poll` 长轮询、`consume` 与 400/405；file 补 `AOS_EVENTS_FSYNC=1` 写入；工具补注册与游标推进；全量 **1756 绿**，lint 0 error（2 条既有 warning）。
 
