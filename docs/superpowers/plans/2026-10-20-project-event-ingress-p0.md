@@ -81,7 +81,7 @@ Delete:
   - `validateEventInput(input: unknown, now?: Date): { ok: true; value: ValidatedEventInput } | { ok: false; error: string; field?: string }`
   - `interface ValidatedEventInput { eventId; type; source; at; runId; caseId; step; status; payload }` (nullable fields; payload `unknown`)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `test/events-protocol.test.js`:
 ```js
@@ -133,23 +133,23 @@ test("validateEventInput: per-type 必填与 allowlist", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm run build && node --test test/events-protocol.test.js`
 Expected: FAIL (module not found).
 
-- [ ] **Step 3: Implement `stableStringify`/hash/bytes/since and validation**
+- [x] **Step 3: Implement `stableStringify`/hash/bytes/since and validation**
 
 `stableStringify` recursively sorts object keys, preserves arrays, ignores `undefined` object values, and returns `"null"` for top-level `undefined`. `payloadHash` is `sha256(utf8(stableStringify(payload)))`. `payloadBytes` is `Buffer.byteLength(stableStringify(payload))`.
 
 `validateEventInput` enforces: `eventId` 1–128 `[A-Za-z0-9._:-]`; `type` allowlist; `source` default `project` and allowlist; `status` allowlist if present; `at` parseable and normalized to `toISOString()` (default `now`); `runId`/`caseId` ≤128; `step` non-negative integer; `payload` object (not array) when required, `payloadBytes(payload) ≤ 32 * 1024`. Per-type rules from the spec: `run.*` need `runId`; `run.step` needs `step`; `run.finished`/`case.result` need terminal status; `case.*` need `caseId`; `artifact.created` needs `runId` or `caseId` plus payload; `log.entry`/`feedback.request` need payload.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm run build && node --test test/events-protocol.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/events/payload.ts src/events/protocol.ts test/events-protocol.test.js
@@ -174,7 +174,7 @@ git commit -m "feat(events): add event protocol and canonical payload hashing"
   - `eventRetentionPolicy(env?): { days: number; max: number }`
   - `eventCutoffIso(days: number, now?: number): string`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `test/events-store-memory.test.js`:
 ```js
@@ -214,12 +214,12 @@ test("MemoryStore events: 幂等、mismatch、seq 与查询", async () => {
 ```
 Add a prune test with a fixed `range` by setting `AOS_EVENTS_MAX=1` and calling `store.pruneProjectEvents("/w/p1")`, asserting the oldest row is removed and `seq` does not reset.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm run build && node --test test/events-store-memory.test.js`
 Expected: FAIL (`recordProjectEvent` missing).
 
-- [ ] **Step 3: Implement types, retention helpers, MemoryStore**
+- [x] **Step 3: Implement types, retention helpers, MemoryStore**
 
 Add the event types to `src/db/types.ts` exactly as in the spec (§5.4). Add optional methods to `ProjectStore` so existing stores compile until Tasks 3–4:
 ```ts
@@ -232,12 +232,12 @@ MemoryStore keeps `events: Map<rootPath, Map<eventId, ProjectEventRecord>>` and 
 
 `src/events/retention.ts` parses `AOS_EVENTS_RETENTION_DAYS` (positive int, default 30) and `AOS_EVENTS_MAX` (positive int, default 50000); `eventCutoffIso` returns `new Date(now - days*86400000).toISOString()`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm run build && node --test test/events-store-memory.test.js test/events-protocol.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/db/types.ts src/db/memory.ts src/events/retention.ts test/events-store-memory.test.js
@@ -256,7 +256,7 @@ git commit -m "feat(events): add event store contract, retention helpers and mem
 - Consumes: Task 1 payload helpers, Task 2 types/retention.
 - Produces: `FileStore.recordProjectEvent/listProjectEvents/countProjectEvents/pruneProjectEvents`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `test/events-store-file.test.js`:
 ```js
@@ -303,21 +303,21 @@ test("FileStore events: 重启后判重、seq 持久化、裁剪不复用 seq", 
 ```
 Add tests for filters (`since` seconds precision, `runId`, `order`, `includePayload`).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm run build && node --test test/events-store-file.test.js`
 Expected: FAIL (`recordProjectEvent` missing).
 
-- [ ] **Step 3: Implement FileStore event ledger**
+- [x] **Step 3: Implement FileStore event ledger**
 
 Extend the per-project bucket with `eventsPath`, `eventsMetaPath`, `events: Map<string, ProjectEventRecord>`, `eventsLoaded`, `nextSeq`. On first event access, scan `events.jsonl` (skip bad lines with a log warning), index by `eventId`, track max `seq`, read `events.meta.json` `{nextSeq}`, and set `nextSeq = max(maxSeq, meta.nextSeq)`. `recordProjectEvent` checks the index before writing, compares hashes, allocates `seq`, writes `events.meta.json` atomically first, then appends the JSONL line, updates the index, and schedules `pruneProjectEvents` via `setImmediate` (throttle 5 min per root). Throw on append failure. `pruneProjectEvents` filters expired/overflow rows, rewrites the file atomically, updates the index, keeps `nextSeq`, and returns deleted count. Do not touch `state.json`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm run build && node --test test/events-store-file.test.js test/events-store-memory.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/db/file.ts test/events-store-file.test.js
@@ -337,7 +337,7 @@ git commit -m "feat(events): persist project events in the file ledger with stab
 - Consumes: Task 2 types/retention, Task 1 payload helpers.
 - Produces: PG implementations of all four event methods; `ProjectStore` methods become required.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `test/events-store-pg.test.js`:
 ```js
@@ -379,21 +379,21 @@ test("PostgresStore events: 幂等、mismatch、查询与裁剪", async () => {
 ```
 Add a prune test setting `AOS_EVENTS_MAX=1` and calling `pruneProjectEvents`.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm run build && node --test test/events-store-pg.test.js`
 Expected: FAIL (`recordProjectEvent` missing).
 
-- [ ] **Step 3: Implement PG table and methods**
+- [x] **Step 3: Implement PG table and methods**
 
 Add to the MIGRATIONS array a `CREATE TABLE IF NOT EXISTS project_events` with `seq BIGSERIAL`, `payload_bytes INTEGER NOT NULL`, the unique `(project_id,event_id)`, FK, and indexes from the spec. Implement `recordProjectEvent` with `INSERT ... ON CONFLICT (project_id,event_id) DO NOTHING RETURNING *`; on no row, select the existing row and compare `payload_sha256`. Implement `listProjectEvents` with parameterized filters, `order`, `limit`, and optional payload projection; `countProjectEvents`; `pruneProjectEvents` (expired + overflow, return count). Schedule prune asynchronously after writes (throttle 5 min per root). Change the four interface methods from optional to required in `src/db/types.ts`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm run build && node --test test/events-store-pg.test.js test/events-store-file.test.js test/events-store-memory.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/db/postgres.ts src/db/types.ts test/events-store-pg.test.js
@@ -416,7 +416,7 @@ git commit -m "feat(events): persist project events in PostgreSQL"
   - `resolveProjectRoot(workspaceRoot: string, name: string): string | null`
   - `resolveEventProject(input: { workspaceRoot; name; store; write: boolean }): Promise<{ rootPath: string; projectId: string | null } | null>`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `test/events-project-resolver.test.js`:
 ```js
@@ -456,21 +456,21 @@ test("resolveEventProject: POST upsert 与 GET 不写", async () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm run build && node --test test/events-project-resolver.test.js`
 Expected: FAIL (module not found).
 
-- [ ] **Step 3: Implement resolver and reuse root construction**
+- [x] **Step 3: Implement resolver and reuse root construction**
 
 `resolveProjectRoot` validates the name, rejects `.`/`..`, resolves `path.resolve(workspaceRoot, name)`, requires an existing directory, and returns `fs.realpathSync.native(root)`. `resolveEventProject` uses `loadProject({ env: { ...process.env, AOS_PROJECT_DIR: root, AOS_CONFIG: "" }, cwd: root })`; on config errors throw an error whose message starts `project-config-invalid`. For `write:true`, call `store.upsertProject({ rootPath: root, name })`; for `write:false`, call `store.getProjectByPath(root)` and return `projectId: null` if absent. Cache results for 60s keyed by `(workspaceRoot,name,write)`, but never cache errors. Change `getRuntime` in `src/http-server.ts` to use `resolveProjectRoot(workspaceRoot, project)` instead of `path.join` (return null when null).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm run build && node --test test/events-project-resolver.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/events/project-resolver.ts src/http-server.ts test/events-project-resolver.test.js
@@ -493,7 +493,7 @@ git commit -m "feat(events): resolve event projects without creating a runtime"
   - `listProjectEvents(ctx, query: ProjectEventQuery): Promise<{ events; returned; includePayload; storage; degraded }>`
   - `class EventValidationError extends Error { field?: string }`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `test/events-ingress.test.js`:
 ```js
@@ -529,12 +529,12 @@ test("ingress: ack 带 storage/degraded，重复取既有身份，审计脱敏",
 ```
 Add a test that audit rows are written asynchronously with `domain:"project-event"`, `action:type`, `refs.eventId`, and no payload string.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm run build && node --test test/events-ingress.test.js`
 Expected: FAIL (module not found).
 
-- [ ] **Step 3: Implement ingress**
+- [x] **Step 3: Implement ingress**
 
 `reportProjectEvent` validates input, calls `store.recordProjectEvent(ctx.rootPath, value)`, builds the ack, and schedules `store.recordAudit` with `setImmediate`:
 ```ts
@@ -546,12 +546,12 @@ refs: { eventId, runId, caseId, status }
 ```
 No payload in the summary/refs. Duplicate acks return the stored `id`/`receivedAt`. `listProjectEvents` calls `store.listProjectEvents`, normalizes `since` (invalid → `EventValidationError`), clamps limit, and returns `payload` omitted unless requested. If the store lacks the methods (should not after Task 4), throw `"event store unavailable"`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm run build && node --test test/events-ingress.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/events/ingress.ts test/events-ingress.test.js
@@ -570,7 +570,7 @@ git commit -m "feat(events): add ingress service with immediate ack and async au
 - Consumes: Task 5 resolver, Task 6 ingress.
 - Produces: `POST /events/<project>` (202) and `GET /events/<project>`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `test/events-http.test.js`:
 ```js
@@ -586,12 +586,12 @@ test("events HTTP: POST/GET、幂等、400/404/413", async () => {
 ```
 Add an auth test with `AOS_HTTP_TOKEN` set: missing Authorization → 401 for `/events/demo`, while `/healthz` stays exempt.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm run build && node --test test/events-http.test.js`
 Expected: FAIL (404/route missing).
 
-- [ ] **Step 3: Implement routes**
+- [x] **Step 3: Implement routes**
 
 Add `MAX_EVENT_BODY_BYTES = 64 * 1024`. Before the `/mcp` match, handle `POST /events/<project>` and `GET /events/<project>`:
 - validate/decode project name; `resolveEventProject` with `write` true for POST, false for GET;
@@ -599,12 +599,12 @@ Add `MAX_EVENT_BODY_BYTES = 64 * 1024`. Before the `/mcp` match, handle `POST /e
 - GET parse `since/runId/caseId/type/status/limit/order/includePayload`, call `listProjectEvents`, return 200;
 - no Runtime creation.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm run build && node --test test/events-http.test.js test/http-server.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/http-server.ts test/events-http.test.js
@@ -624,7 +624,7 @@ git commit -m "feat(events): add HTTP project event ingress and query routes"
 - Consumes: Task 6 ingress.
 - Produces: native tools `aos_event_report`, `aos_events`; `EVENTS_NATIVE_TOOLS` array.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `test/events-tools.test.js`: use `loadTestRuntime` + `createServerForRuntime` + `InMemoryTransport` (pattern from `test/usage-tool.test.js`). Assert:
 - `tools/list` includes `aos_event_report` and `aos_events`;
@@ -633,21 +633,21 @@ git commit -m "feat(events): add HTTP project event ingress and query routes"
 - query returns the event and omits payload by default;
 - invalid type returns a tool error.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm run build && node --test test/events-tools.test.js`
 Expected: FAIL (tools missing).
 
-- [ ] **Step 3: Implement tools and register**
+- [x] **Step 3: Implement tools and register**
 
 `events.ts` defines `EVENTS_NATIVE_TOOLS` with zod schemas. `aos_event_report` uses `validateEventInput` fields (eventId regex, type/source/status enums, optional runId/caseId/step/at, payload `z.unknown()`); handler calls `reportProjectEvent({ store: runtime.store, rootPath: runtime.project.rootDir, storage: runtime.store.kind, degraded: runtime.storeNote }, args)`. `aos_events` accepts filters and returns the list. Import `EVENTS_NATIVE_TOOLS` in `src/server.ts` and add it to `NATIVE_TOOLS`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm run build && node --test test/events-tools.test.js test/server-smoke.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/tools/native-tools/events.ts src/server.ts test/events-tools.test.js
@@ -670,20 +670,20 @@ git commit -m "feat(events): expose event report and query as MCP tools"
 - Consumes: all previous tasks.
 - Produces: P0 shipped, docs consistent.
 
-- [ ] **Step 1: Delete the external migration path**
+- [x] **Step 1: Delete the external migration path**
 
 ```bash
 rm scripts/migrate-ledger-to-pg.mjs test/migrate-ledger-to-pg.test.js
 ```
 Remove the README “文件台账补 PG（一次性）” bullet and the DESIGN §13.136 reference to the script; keep a note that historical usage/regression-task migration is unavailable until P1 and `suite backfill` still covers runs/case-sets.
 
-- [ ] **Step 2: Update docs**
+- [x] **Step 2: Update docs**
 
 - DESIGN §13.137: change “设计稿（评审修订版，未实施）” to “实施记录（P0）”; list files, event routes/tools, storage behavior, tests, and final test count.
 - README: add `POST/GET /events/<project>` examples and the two MCP tools under the HTTP/tool sections; state that `AOS_HTTP_TOKEN` guards the route.
 - Spec status: “P0 已实施（2026-10-20）；P1/P2 未实施”.
 
-- [ ] **Step 3: Run full verification**
+- [x] **Step 3: Run full verification**
 
 ```bash
 npm run build
@@ -692,7 +692,7 @@ npm run lint
 ```
 Expected: build passes; all tests pass (including new event tests, excluding the deleted migration tests); lint 0 errors (only the two pre-existing warnings).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
