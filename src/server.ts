@@ -104,7 +104,15 @@ function figmaToolSchema(name: string, schema: z.ZodTypeAny): unknown {
 export function createServerForRuntime(runtime: Runtime | null, initError: string | null): Server {
   const server = new Server(
     { name: "aos-mcp", version: AOS_MCP_VERSION },
-    { capabilities: { tools: {} } }
+    {
+      capabilities: { tools: {} },
+      instructions:
+        "AOS × ARTEMIS is a unified MCP service for mobile testing. It supports Android devices/emulators and iOS devices/simulators, Figma/.pen design-to-test generation, regression suites, Jira verification, and project-scoped records under .artemis/. " +
+        "For end-to-end requests prefer the workflow tools: design_to_test (design → test cases → optional run), run_regression (Excel/scope → cases → run), verify_jira_issue (Jira ticket → mapped cases → run → comment), and project_archive (read-only project summary). " +
+        "Use aos_status to check project setup, storage, active LLM, and device readiness. Use mobile_run_task to launch device automation, mobile_manage_task to poll/stop/inject, mobile_get_device_state for live screenshots or UI hierarchy, and mobile_inspect_trace for step-level evidence. device_serial may be an Android serial or an iOS simulator/real-device UDID. " +
+        "When a tool errors, no device is found, or the user reports the service is not working, call mobile_diagnose before retrying. If multiple devices are connected or the target is ambiguous, ask the user which device_serial to use; never guess. " +
+        "Credentials are project-scoped: only call aos_configure with values the user provides, and never print secrets. Design output describes intent, not final test code; verify interactions on a device before treating them as facts."
+    }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {

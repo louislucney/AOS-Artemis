@@ -123,6 +123,8 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 无状态 streamable-HTTP：每个项目独立 Runtime（LLM 关联 / artemis 子进程 / 任务统计）；项目名限 `[A-Za-z0-9._-]`。stdio 与 HTTP 两种入口共用同一套工具。
 
+`initialize` 响应携带 `instructions`（服务定位、常用入口、设备选择与凭证纪律；两种入口共用），客户端 agent 可直接看到；`package.json` 的 description 仅作 npm/服务元数据。
+
 **项目执行事件入口（P0）**：`POST /events/<project>` 上报 `run.*/case.*/artifact.created/log.entry/feedback.request` 事件（幂等 `eventId`，202 返回 `serverId/receivedAt/storage/degraded`）；`GET /events/<project>` 按 `runId/caseId/type/status/since/order/limit/includePayload` 查询。事件先写穿 store 再 ack，不执行 payload、不计入 usage；项目身份由路由解析，不接受任意路径。stdio/无 HTTP 的项目用 `aos_event_report` / `aos_events`。
 
 远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。

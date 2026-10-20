@@ -1935,3 +1935,9 @@ llm_switch(name, force):
 > **裁剪写入**：文件事件压缩改用异步原子写，避免大文件阻塞事件循环。
 > **测试**：`events-http` +2（默认 FileStore ack 不误报、配置损坏 400）、`events-project-resolver` +1（symlink）、`events-store-file` +1（并发幂等/seq）；`events-store-memory`/`events-store-pg` 补秒级 `since` 断言；`npm run build && npm test && npm run lint` → 全量 **1752 绿**，lint 0 error（2 条既有 warning）。
 
+### 13.139 实施记录：MCP initialize instructions
+
+> 2026-10-20。`src/server.ts` 的 `createServerForRuntime()` 在 `Server` 选项里返回 `instructions`，stdio 与 HTTP 两个入口共用同一份说明，客户端 `initialize` 后可直接向 agent 注入服务定位（此前只有 npm `package.json` description，客户端不可见）。
+> **内容**：AOS × ARTEMIS 统一服务；Android 设备/模拟器与 iOS 设备/模拟器；Figma/.pen 设计到用例、回归、Jira 验单、项目档案；`aos_status` 自检；`mobile_run_task`/`mobile_manage_task`/`mobile_get_device_state`/`mobile_inspect_trace` 的用途；`device_serial` 兼容 Android serial 与 iOS UDID；多设备先问用户、不猜测；工具异常先 `mobile_diagnose`；凭证项目级、不回显密钥；设计结论需真机核验。
+> **测试**：新增 `test/server-instructions.test.js`（in-memory initialize 断言说明非空且含 Android/iOS/workflow/mobile/.artemis 关键词）；`npm run build && npm test && npm run lint` → 全量 **1753 绿**，lint 0 error（2 条既有 warning）。
+
