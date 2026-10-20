@@ -21,6 +21,7 @@ import { AOS_MCP_VERSION, errorMessage, log } from "./util.js";
 import { NativeToolDefinition } from "./tools/native-tools/types.js";
 import { AOS_NATIVE_TOOLS } from "./tools/native-tools/aos.js";
 import { DESIGN_NATIVE_TOOLS } from "./tools/native-tools/design.js";
+import { EVENTS_NATIVE_TOOLS } from "./tools/native-tools/events.js";
 import { FIGMA_NATIVE_TOOLS } from "./tools/native-tools/figma.js";
 import { JIRA_NATIVE_TOOLS } from "./tools/native-tools/jira.js";
 import { LLM_NATIVE_TOOLS } from "./tools/native-tools/llm.js";
@@ -30,6 +31,7 @@ import { WORKFLOW_NATIVE_TOOLS } from "./tools/native-tools/workflow.js";
 const NATIVE_TOOLS: NativeToolDefinition[] = [
   ...LLM_NATIVE_TOOLS,
   ...AOS_NATIVE_TOOLS,
+  ...EVENTS_NATIVE_TOOLS,
   ...JIRA_NATIVE_TOOLS,
   ...DESIGN_NATIVE_TOOLS,
   ...FIGMA_NATIVE_TOOLS,
