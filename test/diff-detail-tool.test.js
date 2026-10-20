@@ -95,6 +95,7 @@ test("design_device_diff: 默认 auto 区域核验——对图内联、regionDet
       assert.equal(payload.ok, true, JSON.stringify(payload));
       assert.equal(captureCalls, 1, "细节通道应二次无损抓图一次");
       assert.equal(payload.detail.enabled, true);
+      assert.equal(payload.detail.textStyles.scope, "text-regions");
       assert.equal(payload.detail.zoom, 2);
       assert.equal(payload.detail.tilesUsed, false);
       assert.equal(payload.detail.truncated, false);

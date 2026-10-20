@@ -2,12 +2,25 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { pngDimensions } from "../design/screens.js";
 import { loadPenDocument } from "../pen/paths.js";
 import type { PenNode } from "../pen/read.js";
 import type { Runtime } from "../runtime.js";
 import { writeFileAtomic } from "../util.js";
 
 export type UiContractStatus = "extracted" | "partial" | "unverifiable" | "no-baseline";
+export type UiGeometryStatus = "extracted" | "partial" | "unverifiable";
+
+export interface UiTextContract {
+  id: string;
+  content: string;
+  fontFamily: string | null;
+  fontWeight: number | null;
+  fontSize: number | null;
+  bbox: { x: number; y: number; width: number; height: number } | null;
+  bboxSpace: "design-px";
+  geometryStatus: UiGeometryStatus;
+}
 
 export interface UiScreenContract {
   id: string;
@@ -25,7 +38,9 @@ export interface UiScreenContract {
     spacing: number[];
   };
   components: Array<{ name: string; type: string }>;
+  texts: UiTextContract[];
   render: string | null;
+  renderScale: number | null;
   warnings: string[];
 }
 
@@ -66,10 +81,38 @@ function walkPen(
   }
 }
 
+export function normalizeFontWeight(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.round(value);
+  if (typeof value !== "string") return null;
+  const key = value.toLowerCase().replace(/[\s_-]/g, "");
+  const aliases: Record<string, number> = {
+    thin: 100,
+    hairline: 100,
+    extralight: 200,
+    ultralight: 200,
+    light: 300,
+    regular: 400,
+    normal: 400,
+    book: 400,
+    medium: 500,
+    semibold: 600,
+    demibold: 600,
+    bold: 700,
+    extrabold: 800,
+    heavy: 800,
+    black: 900
+  };
+  if (aliases[key] !== undefined) return aliases[key];
+  const numericWeight = Number.parseInt(key, 10);
+  return Number.isFinite(numericWeight) ? numericWeight : null;
+}
+
 function inspectPen(file: string): {
   tokens: UiScreenContract["tokens"];
   components: Array<{ name: string; type: string }>;
+  texts: UiTextContract[];
   geometry: UiScreenContract["geometry"];
+  frameWidth: number | null;
 } {
   const doc = loadPenDocument(file);
   const cornerRadius: number[] = [];
@@ -79,6 +122,7 @@ function inspectPen(file: string): {
   const fontWeights: string[] = [];
   const spacing: number[] = [];
   const components: Array<{ name: string; type: string }> = [];
+  const texts: UiTextContract[] = [];
   let nodes = 0;
   let withGeometry = 0;
 
@@ -100,10 +144,31 @@ function inspectPen(file: string): {
     if (typeof node.name === "string" && typeof node.type === "string") {
       components.push({ name: node.name, type: node.type });
     }
+    if (typeof node.content === "string" && node.content.trim() !== "") {
+      const geometryFields = [x, y, width, height].filter((value) => value !== null).length;
+      texts.push({
+        id: typeof node.id === "string" ? node.id : "",
+        content: node.content,
+        fontFamily: typeof node.fontFamily === "string" ? node.fontFamily : null,
+        fontWeight: normalizeFontWeight(node.fontWeight),
+        fontSize: numeric(node.fontSize),
+        bbox:
+          x !== null && y !== null && width !== null && height !== null && width > 0 && height > 0
+            ? { x, y, width, height }
+            : null,
+        bboxSpace: "design-px",
+        geometryStatus:
+          geometryFields === 4 ? "extracted" : geometryFields === 0 ? "unverifiable" : "partial"
+      });
+    }
   };
   for (const child of doc.children ?? []) {
     if (child && typeof child === "object") walkPen(child, visit);
   }
+  const firstFrame = (doc.children ?? []).find(
+    (child) => child && typeof child === "object" && numeric(child.width) !== null
+  );
+  const frameWidth = firstFrame ? numeric(firstFrame.width) : null;
 
   return {
     tokens: {
@@ -115,11 +180,13 @@ function inspectPen(file: string): {
       spacing: uniqueNumbers(spacing)
     },
     components: components.slice(0, 80),
+    texts,
     geometry: {
       nodes,
       withGeometry,
       missingGeometry: Math.max(0, nodes - withGeometry)
-    }
+    },
+    frameWidth
   };
 }
 
@@ -250,7 +317,17 @@ export function buildUiContract(
         spacing: []
       },
       components: inspected?.components ?? [],
+      texts: inspected?.texts ?? [],
       render: render === null ? null : path.relative(runtime.project.rootDir, render),
+      renderScale:
+        render !== null && inspected?.frameWidth !== null && inspected?.frameWidth !== undefined
+          ? (() => {
+              const dims = pngDimensions(fs.readFileSync(render));
+              return dims && inspected.frameWidth! > 0
+                ? Number((dims.width / inspected.frameWidth!).toFixed(3))
+                : null;
+            })()
+          : null,
       warnings: screenWarnings
     };
   });
@@ -293,12 +370,17 @@ export function renderUiContractMarkdown(contract: UiContract): string {
     `> 设计源：\`${contract.source.designRoot}\` · 指纹：\`${contract.source.fingerprint}\``,
     `> 状态：extracted ${contract.summary.extracted} / partial ${contract.summary.partial} / unverifiable ${contract.summary.unverifiable} / no-baseline ${contract.summary["no-baseline"]}`,
     "",
-    "| 屏幕 | 状态 | 几何 | 圆角 | 字号 | 字体 | 间距 |",
-    "|---|---|---|---|---|---|---|"
+    "| 屏幕 | 状态 | 几何 | 文本 | 圆角 | 字号 | 字体 | 间距 |",
+    "|---|---|---|---|---|---|---|---|"
   ];
   for (const screen of contract.screens) {
+    const textWeights = uniqueNumbers(
+      screen.texts
+        .map((text) => text.fontWeight)
+        .filter((weight): weight is number => weight !== null)
+    );
     lines.push(
-      `| ${screen.name} (\`${screen.id}\`) | ${screen.status} | ${screen.geometry.withGeometry}/${screen.geometry.nodes} | ${screen.tokens.cornerRadius.join(", ") || "—"} | ${screen.tokens.fontSizes.join(", ") || "—"} | ${screen.tokens.fontFamilies.join(", ") || "—"} | ${screen.tokens.spacing.join(", ") || "—"} |`
+      `| ${screen.name} (\`${screen.id}\`) | ${screen.status} | ${screen.geometry.withGeometry}/${screen.geometry.nodes} | ${screen.texts.length} 条（${textWeights.join(", ") || "—"}） | ${screen.tokens.cornerRadius.join(", ") || "—"} | ${screen.tokens.fontSizes.join(", ") || "—"} | ${screen.tokens.fontFamilies.join(", ") || "—"} | ${screen.tokens.spacing.join(", ") || "—"} |`
     );
   }
   lines.push("", "## 逐屏说明", "");
@@ -309,6 +391,9 @@ export function renderUiContractMarkdown(contract: UiContract): string {
     lines.push(`- 圆角：${screen.tokens.cornerRadius.join(", ") || "（未提取）"}`);
     lines.push(`- 颜色：${screen.tokens.colors.join(", ") || "（未提取）"}`);
     lines.push(`- 字体：${screen.tokens.fontFamilies.join(", ") || "（未提取）"} · 字号：${screen.tokens.fontSizes.join(", ") || "（未提取）"} · 字重：${screen.tokens.fontWeights.join(", ") || "（未提取）"}`);
+    lines.push(
+      `- 文本节点：${screen.texts.length} 条（有几何 ${screen.texts.filter((text) => text.geometryStatus === "extracted").length}）`
+    );
     lines.push(`- 间距：${screen.tokens.spacing.join(", ") || "（未提取）"}`);
     if (screen.warnings.length > 0) {
       lines.push(`- 警告：${screen.warnings.join("；")}`);

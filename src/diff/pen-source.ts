@@ -8,6 +8,7 @@ import type { PenDocument, PenNode } from "../pen/read.js";
 import { penVariableDefaultHex } from "../pen/tokens.js";
 import type { Runtime } from "../runtime.js";
 import { normalizeHexColor } from "../figma/color.js";
+import { normalizeFontWeight } from "../ui/contract.js";
 import type { DesignNode } from "./engine.js";
 
 export interface PenRender {
@@ -68,6 +69,15 @@ export function penDesignNodes(doc: PenDocument): DesignNode[] {
         height,
         depth,
         ...(typeof node.content === "string" && node.content ? { text: node.content } : {}),
+        ...(normalizeFontWeight(node.fontWeight) !== null
+          ? { fontWeight: normalizeFontWeight(node.fontWeight)! }
+          : {}),
+        ...(typeof node.fontSize === "number" && Number.isFinite(node.fontSize)
+          ? { fontSize: node.fontSize }
+          : {}),
+        ...(typeof node.fontFamily === "string" && node.fontFamily
+          ? { fontFamily: node.fontFamily }
+          : {}),
         ...(inheritedFill ? { parentFill: inheritedFill } : {})
       });
     }

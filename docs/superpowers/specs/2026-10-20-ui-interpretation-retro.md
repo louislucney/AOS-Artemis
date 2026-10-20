@@ -73,6 +73,10 @@
 - 生成的 `taskDesc` 带 `【UI 契约】`；项目仓 `AGENTS.md` 由 `install`/`init` 生成指针。
 - 服务仓 AGENTS 只加一条导航指针，不承担 app 实现 agent 的触发。
 
+### P3.1 字重（regular / medium / semibold / bold）检测口径
+
+详细方案见 [`2026-10-20-font-weight-detection-design.md`](./2026-10-20-font-weight-detection-design.md)。摘要：`ui-contract` 记录文本节点级 `fontWeight`（归一 400/500/600/700）；真机侧从 1:1 截图测 `inkRatio`/`runLength`，输出 `weightHint: lighter|similar|heavier`；同平台 baseline 才做硬门禁，设计×真机只提示；medium↔regular 允许低置信，JPEG/上采样/文本变化一律 `unverified`。
+
 ### P6：廉价 PNG 适配器（局部缓解）
 
 给 `design_device_diff` 增加 `design.source:"image"`（`imagePath`）读取 `design/screens/*.png`；报告标 `design-upscaled` 与来源，细节阈值按降级档。它解决“现成截图不能用”的接口问题，不替代高倍 pen/Figma 渲染。

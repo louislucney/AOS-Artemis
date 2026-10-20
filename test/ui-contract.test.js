@@ -87,6 +87,12 @@ test("ui contract: projects flows + per-screen pen tokens with four-state status
   assert.ok(screen.tokens.colors.includes("#ffffffff"));
   assert.ok(screen.tokens.fontSizes.includes(16));
   assert.equal(screen.tokens.fontWeights.includes("600"), true);
+  assert.equal(screen.texts.length, 1);
+  assert.equal(screen.texts[0].content, "早安");
+  assert.equal(screen.texts[0].fontWeight, 600);
+  assert.equal(screen.texts[0].fontSize, 16);
+  assert.equal(screen.texts[0].geometryStatus, "extracted");
+  assert.deepEqual(screen.texts[0].bbox, { x: 32, y: 40, width: 200, height: 24 });
 
   const missing = built.contract.screens.find((entry) => entry.id === "s2");
   assert.equal(missing.status, "no-baseline");

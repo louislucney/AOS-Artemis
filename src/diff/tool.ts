@@ -30,6 +30,7 @@ import {
   type DetailLocalSummary
 } from "./detail.js";
 import { loadScreenMap, localizeRegion, proposeScreenMapEntries, type ProposeResult } from "./screen-map.js";
+import { measureTextWeight, type TextWeightResult } from "../ui/text-weight.js";
 import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
 
 export interface DesignSourceArgs {
@@ -46,6 +47,7 @@ interface DetailRegionReport {
   bbox: Bbox;
   name?: string;
   localSummary: DetailLocalSummary;
+  textStyle?: TextWeightResult;
   crops?: { pair: string };
 }
 
@@ -119,6 +121,15 @@ function jsonError(message: string): CallToolResult {
 
 function diffSlug(nodeId: string): string {
   return nodeId.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "screen";
+}
+
+function intersects(left: Bbox, right: Bbox): boolean {
+  return (
+    left.x < right.x + right.width &&
+    right.x < left.x + left.width &&
+    left.y < right.y + right.height &&
+    right.y < left.y + left.height
+  );
 }
 
 function timestamp(): string {
@@ -368,6 +379,16 @@ export async function designDeviceDiff(
       truncated: boolean;
       degraded: boolean;
       deviceSource: { format: "png" | "jpeg" | "unknown"; lossless: boolean };
+      textStyles: {
+        scope: "text-regions";
+        texts: number;
+        checked: number;
+        lighter: number;
+        similar: number;
+        heavier: number;
+        unverified: number;
+        byReason: Record<string, number>;
+      };
     } | null = null;
     let regionDetailsPayload: DetailRegionReport[] | null = null;
     const pairBuffers: Buffer[] = [];
@@ -464,10 +485,11 @@ export async function designDeviceDiff(
       const degraded = designDegraded || (stepRequest === null ? deviceLossless !== true : stepDeviceLossy);
       const detailDevice = detailDeviceBytes === deviceBytes ? deviceImage : decodeImage(detailDeviceBytes);
 
+      const scaledDesignNodes = scaleDetailNodes(designNodes, detailScale);
       const proposalResult = proposeDetailRegions({
         designWidth: detailDesign.width,
         designHeight: detailDesign.height,
-        nodes: scaleDetailNodes(designNodes, detailScale),
+        nodes: scaledDesignNodes,
         screenRegionBboxes: diffResult.regions.map((region) => ({
           x: region.bbox.x * detailScale,
           y: region.bbox.y * detailScale,
@@ -494,6 +516,26 @@ export async function designDeviceDiff(
         if (pair.clipped) clippedRegions += 1;
         const localSummary = runDetailDiff(pair.design, pair.device, { degraded, thresholds: args.detail });
         pairBuffers.push(composeDetailPair(pair.device, pair.design, { zoom }).png);
+        const textNode = scaledDesignNodes
+          .filter((node) => node.text && intersects(node, region.bbox))
+          .sort(
+            (left, right) =>
+              Math.min(left.width, region.bbox.width) * Math.min(left.height, region.bbox.height) -
+              Math.min(right.width, region.bbox.width) * Math.min(right.height, region.bbox.height)
+          )
+          .at(-1);
+        const textStyle =
+          textNode === undefined
+            ? undefined
+            : measureTextWeight({
+                design: pair.design,
+                device: pair.device,
+                designWeight: textNode.fontWeight ?? null,
+                textPixelHeight: Math.max(1, Math.round(textNode.height * geometry.ratio)),
+                sourceFormat: sourceFormatOf(detailDeviceBytes),
+                lossless: deviceLossless,
+                localization: "design-bbox"
+              });
         const slug = region.name ? diffSlug(region.name) : `r${region.idx}`;
         details.push({
           idx: region.idx,
@@ -501,6 +543,7 @@ export async function designDeviceDiff(
           bbox: region.bbox,
           ...(region.name ? { name: region.name } : {}),
           localSummary,
+          ...(textStyle ? { textStyle } : {}),
           ...(saving ? { crops: { pair: `regions/${String(region.idx).padStart(2, "0")}-${slug}.png` } } : {})
         });
       }
@@ -530,6 +573,15 @@ export async function designDeviceDiff(
       inlinePairBuffers = ordered.slice(0, returnCrops).map((item) => pairBuffers[item.index]!);
 
       regionDetailsPayload = details;
+      const textSummaries = details
+        .map((entry) => entry.textStyle)
+        .filter((entry): entry is TextWeightResult => entry !== undefined);
+      const textByReason: Record<string, number> = {};
+      for (const entry of textSummaries) {
+        if (entry.status === "unverified" && entry.reason) {
+          textByReason[entry.reason] = (textByReason[entry.reason] ?? 0) + 1;
+        }
+      }
       detailMeta = {
         enabled: true,
         zoom,
@@ -541,6 +593,16 @@ export async function designDeviceDiff(
         deviceSource: {
           format: sourceFormatOf(detailDeviceBytes),
           lossless: deviceLossless === true
+        },
+        textStyles: {
+          scope: "text-regions",
+          texts: textSummaries.length,
+          checked: textSummaries.filter((entry) => entry.status === "checked").length,
+          lighter: textSummaries.filter((entry) => entry.weightHint === "lighter").length,
+          similar: textSummaries.filter((entry) => entry.weightHint === "similar").length,
+          heavier: textSummaries.filter((entry) => entry.weightHint === "heavier").length,
+          unverified: textSummaries.filter((entry) => entry.status === "unverified").length,
+          byReason: textByReason
         }
       };
     }

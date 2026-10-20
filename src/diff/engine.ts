@@ -42,6 +42,9 @@ export interface DesignNode {
   height: number;
   depth?: number;
   text?: string;
+  fontWeight?: number;
+  fontSize?: number;
+  fontFamily?: string;
   parentFill?: string;
 }
 

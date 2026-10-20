@@ -2009,3 +2009,10 @@ llm_switch(name, force):
 >
 > **UI 自动比对（首版）**：`suite run --ui-diff` 对 `testCase.screens` 中能匹配到 `flows.json` 屏幕、且存在逐屏 `.pen` 与 trace 步骤的屏幕调用 `design_device_diff`（`--ui-diff-max` 默认 3）；blocker/major → `ui.failed`，无 blocker/major → `ui.passed`，JPEG/缺基线/未匹配屏保持 `ui-unverified`。功能门禁不变；跨源像素基线未验证前，结果作为 UI 门禁候选而非绝对结论。
 
+### 13.149 实施记录（字重检测切片 1–2 + 区域 textStyle）
+
+> 2026-10-20。设计见 `docs/superpowers/specs/2026-10-20-font-weight-detection-design.md`（rev 2）。**契约**：`ui-contract.json` 的屏幕新增 `texts[]`（全量收录；`content/fontFamily/fontWeight/fontSize/bbox/bboxSpace/geometryStatus`），字重归一 100–900（`normal=400/medium=500/semibold=600/bold=700`）；无几何文本保留并标 `unverifiable`，不再丢弃。iOS 样例 19 屏首頁 53 条文本，权重 400/600/700。
+> **测量**：`src/ui/text-weight.ts` 极性感知二值化 + `inkRatio`/`meanRunNorm`；内容/换行守卫用 row profile 相关（≥0.8）、平滑 column profile 相关（≥0.75）、ink extent 宽高比（0.70–1.40）——原始 maskIoU 会把 regular→bold 误判为内容变化，故不用；设备文本像素高 <10、JPEG/非无损源一律 `unverified`。输出 `lighter/similar/heavier` + `delta/confidence/designWeight`，全部 `experimental:true`。
+> **接线（部分）**：`design_device_diff` 的 `regionDetails[].textStyle` 对与设计文本节点相交的区域计算字重；`detail.textStyles` 汇总 `scope:"text-regions"`（lighter/similar/heavier/unverified + byReason）。**尚未完成**：按 `ui-contract.texts` 全量遍历的独立文本 pass（当前只覆盖区域提议命中的文本）、baseline bbox、硬门禁。覆盖会计在独立 pass 落地前不得宣称 `textsTotal = checked + unverified`。
+> **测试**：新增 `test/text-weight.test.js` 5 例（bold/heavier、same/similar、shifted/content、暗色反相、tiny/JPEG）；`ui-contract` 断言文本节点；`diff-detail-tool` 断言 `detail.textStyles`。
+
