@@ -116,11 +116,14 @@ MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/mobile-
 # 服务端（主机运行；workspace 下每个子目录是一个项目）
 node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 # 端点: POST http://<host>:8765/mcp/<project>    健康检查: GET /healthz
+# 事件入口: POST/GET http://<host>:8765/events/<project>（同样受 AOS_HTTP_TOKEN 保护）
 
 # 客户端配置（或 aos-mcp install --mode http --url http://host:8765）
 ```
 
 无状态 streamable-HTTP：每个项目独立 Runtime（LLM 关联 / artemis 子进程 / 任务统计）；项目名限 `[A-Za-z0-9._-]`。stdio 与 HTTP 两种入口共用同一套工具。
+
+**项目执行事件入口（P0）**：`POST /events/<project>` 上报 `run.*/case.*/artifact.created/log.entry/feedback.request` 事件（幂等 `eventId`，202 返回 `serverId/receivedAt/storage/degraded`）；`GET /events/<project>` 按 `runId/caseId/type/status/since/order/limit/includePayload` 查询。事件先写穿 store 再 ack，不执行 payload、不计入 usage；项目身份由路由解析，不接受任意路径。stdio/无 HTTP 的项目用 `aos_event_report` / `aos_events`。
 
 远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。
 
@@ -401,7 +404,6 @@ node dist/cli.js suite backfill [--dry-run] [--since <ISO>] [--project <dir>] [-
 - `report`：从运行台账导出 xlsx 结果页（含「功能」「端」列 + API 错误/处理判定列）+ **追溯矩阵工作表**（design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据，含未覆盖与缺口标注）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）；`--task <id>` 改出**回归任务报告**（逐例来自 `suite_runs`，命名 `<时间戳>_<功能>_回归.xlsx`，多功能 → `多功能N项`）。
 - `feedback`：按屏幕/断言/数据/API 错误维度给出可追踪到 case/trace 的改进建议，并追加**出口清单（按最新裁决）**——案例问题/执行偏差（按设备计数）/应用缺陷（含已建单数），JSON 输出带 `exits`（`appDefects` 每条含 `jiraKey`）；与面板统计/生成侧同源（只读，不自动改写生成物）。
 - `backfill`：从磁盘产物（`.artemis/design/runs/*.json` 批次清单 + `.artemis/design/case-sets/*.json` 归档）**幂等重建登记**，补上降级期间漏登记/无登记的份与运行（**只读扫描、绝不改写产物**；**须中心 PG**，内存降级 exit 2）。重复运行已登记项全部 skip；默认只回填**不早于项目最早登记时间**的产物（`--since <ISO>` 覆盖，须为可解析 ISO（建议 `YYYY-MM-DDTHH:mm:ss.sssZ`），非法 exit 2；`beforeSince` 计数；空库无下界并告警）；`--dry-run` 只报告不写库（`registered` 恒 0、`wouldRegister`＝将登记数）；失效产物计 `invalid` 并告警。**局限**：既有任务/引用的历史 id 不可复原（回填产生新 id，仅同窗口经批次清单 `caseSetJsonPath`/`testsPath` 可达的悬空引用经路径桥修复）、回归服务之前的历史清单不回填。见 DESIGN §13.117。
-- 文件台账补 PG（一次性）：`node scripts/migrate-ledger-to-pg.mjs --project <dir> [--write] [--json]`——只读 `.artemis/ledger/usage.jsonl` 与 `state.json`，把 `usage_events` / `regression_tasks` 按 `root_path` 重映射到 PG 项目 id 后幂等插入（`suite backfill` 不覆盖这两类）；默认 dry-run，`--write` 才写库，不改动文件台账。
 - 公共选项：`--project <dir>`（项目根，默认 cwd/`AOS_PROJECT_DIR`）、`--json`（机器可读输出）。
 
 
@@ -524,6 +526,8 @@ node dist/cli.js doctor
 | `aos_configure` | 写入/更新 LLM（→ PG + 项目 `.env`）并激活；可只给 `vendor`（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）自动选当前模型；可选同时写入 Jira 三件套（`jiraSite`/`jiraEmail`/`jiraApiToken` → 项目 `.env`）；setup 引导入口 |
 | `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 与 Jira（masked）就绪性 |
 | `aos_tasks` | 任务/调用统计（case/trace/状态/模型），含完成态同步与错误终态记录 |
+| `aos_event_report` | 项目执行事件上报（项目 → MCP）：幂等 `eventId`，202/返回 `serverId/receivedAt/storage/degraded`；`run.*`/`case.*`/`artifact.created`/`log.entry`/`feedback.request`，不执行 payload、不写 usage |
+| `aos_events` | 查询当前项目 `project_events`：`runId`/`caseId`/`type`/`status`/`since`/`order`/`limit`；默认不返回 payload（`includePayload:true` 时 limit ≤50） |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
 | `aos_usage` | 使用统计（调用事件）：`summary` 概览 / `signals` 信号分布 / `events` 流水；`tool`/`status`/`days` 筛选，events `limit` ≤200；只统计客户端发起的调用，`AOS_USAGE=0` 时标注采集已关闭但历史仍可查 |
 | `jira_issue_get` | 读取 Jira Cloud issue（key 或 browse URL）→ summary/status/type/labels + 描述纯文本 + 启发式验收标准标注（保留原始 ADF）；缺凭证返回 `howToFix` |

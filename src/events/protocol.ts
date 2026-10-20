@@ -57,7 +57,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function optionalText(value: unknown, field: string): { ok: true; value: string | null } | { ok: false } {
+function optionalText(value: unknown): { ok: true; value: string | null } | { ok: false } {
   if (value === undefined || value === null) return { ok: true, value: null };
   if (typeof value !== "string") return { ok: false };
   const text = value.trim();
@@ -107,9 +107,9 @@ export function validateEventInput(
     status = record.status as EventStatus;
   }
 
-  const runId = optionalText(record.runId, "runId");
+  const runId = optionalText(record.runId);
   if (!runId.ok) return fail("runId 必须是 1-128 字符的字符串", "runId");
-  const caseId = optionalText(record.caseId, "caseId");
+  const caseId = optionalText(record.caseId);
   if (!caseId.ok) return fail("caseId 必须是 1-128 字符的字符串", "caseId");
 
   let step: number | null = null;

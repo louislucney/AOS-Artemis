@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
 import path from "node:path";
 

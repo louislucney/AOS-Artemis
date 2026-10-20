@@ -1911,12 +1911,17 @@ llm_switch(name, force):
 > 验收文件：`acceptance.json` 兼容旧 `{screens}`，新增 `data/questions/section`；非法条目/超限出 `acceptance-details-invalid`/`acceptance-details-truncated` 警告，不阻断生成。
 > 测试：新增/更新 `test/figma-testgen.test.js`（acceptance v2 端到端、非法 acceptance、legacy 回退、模板占位符）；`npm run build && npm test && npm run lint` → 全量 **1732 绿**，lint 0 error（2 条既有 warning）。
 
-### 13.136 实施记录（文件台账 usage/regression_task 一次性补 PG）
+### 13.136 实施记录（文件台账 usage/regression_task 一次性补 PG，已退役）
 
-> 实施于 2026-10-20。新增 `scripts/migrate-ledger-to-pg.mjs`：只读项目 `.artemis/ledger/usage.jsonl` 与 `state.json`，按 `root_path` 解析目标 PG 项目 id（旧 file-ledger projectId 只报告、不写入），对 `usage_events`/`regression_tasks` 按 id `ON CONFLICT DO NOTHING` 幂等插入；默认 dry-run，`--write` 才写库；不改动文件台账。`suite backfill` 仍只覆盖 runs/case-sets。测试 `test/migrate-ledger-to-pg.test.js` 4 例（解析、dry-run、重映射与幂等、项目缺失）；全量 **1736 绿**。
-> **后续判定（2026-10-20）**：该外部脚本绕过服务边界（任意路径/DB URL、无审计），按 §13.137 退役；历史迁移改由服务内事件消费者承担。
+> 2026-10-20。曾新增 `scripts/migrate-ledger-to-pg.mjs`（dry-run/`--write` 幂等补 `usage_events`/`regression_tasks`）。**同日判定退役并删除**：外部脚本可接受任意路径/DB URL、无审计，绕过服务边界；历史迁移改由 P1 服务内事件消费者承担。`suite backfill` 仍只覆盖 runs/case-sets。
 
-### 13.137 设计稿（评审修订版，未实施）：项目事件入口 P0
+### 13.137 实施记录（P0）：项目事件入口
 
-> 2026-10-20。完整设计见 `docs/superpowers/specs/2026-10-20-project-event-ingress-design.md`。要点：新增项目 → MCP 事件入口（HTTP `POST/GET /events/<project>` + 原生工具 `aos_event_report`/`aos_events`），信封含 `eventId/type/source/runId/caseId/step/status/at/payload`（allowlist + per-type 最小必填）；**轻量项目解析**（loadProject + store upsert，不建 Runtime，artemis/LLM 不可用也能上报；`.`/`..` 拒绝、rootPath 与 Runtime 共用归一）；服务先写穿 `project_events`（PG/文件/内存三实现，`(project_id,event_id)` 幂等、stable-stringify 哈希冲突、`seq` 写入时持久化；文件态启动全量索引判重、`events.meta.json` 保 `nextSeq`，裁剪后不回退）再 202 ack；ack 携带 `storage/degraded`，重复取既有 `serverId/receivedAt`；`since` 解析后规范化为 UTC 毫秒再比较（P0 同毫秒窗口声明为展示限制，P1 seq 游标）；列表默认不返回 payload（`includePayload` 显式开，limit 降为 50）；保留 30 天/5 万条异步裁剪；文件台账 P0 不做 fsync；审计异步且不记 payload；事件不计入 `usage_events`；权威口径 P0–P2 仍以 `suite_runs` 为准，AOS runId 复用 manifest；部署拓扑：中心 HTTP + PG 为推荐，file/memory 仅单实例兜底；P0 删除外部迁移脚本，历史 usage/regression task 迁移放 P1；不做反馈推送/SSE/异步 job（P1/P2）。**未实施**，评审通过后再定实施计划。
+> 实施于 2026-10-20。完整设计见 `docs/superpowers/specs/2026-10-20-project-event-ingress-design.md`。
+> **协议**：`src/events/payload.ts`（stable stringify/hash/bytes、`since` 归一）、`src/events/protocol.ts`（type/source/status allowlist、per-type 最小必填、payload ≤32 KiB、`at` 规范化）。
+> **存储**：`project_events`（PG `seq BIGSERIAL` + `payload_bytes` + `(project_id,event_id)` 唯一；文件态 `events.jsonl` + `events.meta.json` 启动索引判重、seq 持久化、裁剪不回收；内存同语义）。保留 30 天/5 万条异步裁剪；文件台账 P0 不做 fsync；事件不计入 `usage_events`。
+> **入口**：`POST/GET /events/<project>`（202 携带 `storage/degraded`；重复取既有 `serverId/receivedAt`；`since` 规范化后比较；列表默认不带 payload）；原生工具 `aos_event_report`/`aos_events`。轻量项目解析 `src/events/project-resolver.ts`（loadProject + store upsert，不建 Runtime；`.`/`..` 拒绝、rootPath 与 `getRuntime` 共用 realpath 归一）。
+> **安全/口径**：项目身份来自路由/runtime，无路径/DB URL 参数；审计异步且不记 payload；P0–P2 权威仍为 `suite_runs`，AOS runId 复用 manifest；中心 HTTP + PG 为推荐拓扑，file/memory 仅单实例兜底。
+> **删除**：外部迁移脚本与其测试（4 例）移除；历史 usage/regression task 迁移留 P1。
+> **测试**：新增 `events-protocol` 4、`events-store-memory` 2、`events-store-file` 2、`events-store-pg` 1、`events-project-resolver` 2、`events-ingress` 2、`events-http` 2、`events-tools` 1；`npm run build && npm test && npm run lint` → 全量 **1748 绿**，lint 0 error（2 条既有 warning）。
 
