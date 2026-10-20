@@ -102,6 +102,32 @@ test("ui contract: projects flows + per-screen pen tokens with four-state status
   assert.match(fs.readFileSync(built.markdownPath, "utf-8"), /首頁/);
 });
 
+test("ui contract: boundsProvider resolves auto-layout text geometry", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  writeDesign(dir, { withPen: true });
+  const pen = path.join(dir, ".artemis", "design", "pen", "screens", "s1.pen");
+  const doc = JSON.parse(fs.readFileSync(pen, "utf-8"));
+  doc.children[0].children.push({
+    type: "text",
+    id: "auto",
+    name: "Auto",
+    content: "自動排版",
+    fontSize: 16,
+    fontWeight: "600"
+  });
+  fs.writeFileSync(pen, JSON.stringify(doc), "utf-8");
+
+  const { runtime } = await loadTestRuntime(dir);
+  const built = buildUiContract(runtime, {
+    designRoot: path.join(dir, ".artemis", "design"),
+    boundsProvider: () => [{ id: "auto", x: 10, y: 20, width: 30, height: 18 }]
+  });
+  const text = built.contract.screens.find((entry) => entry.id === "s1").texts.find((entry) => entry.id === "auto");
+  assert.equal(text.geometryStatus, "extracted");
+  assert.deepEqual(text.bbox, { x: 10, y: 20, width: 30, height: 18 });
+  assert.equal(text.fontWeight, 600);
+});
+
 test("ui contract: partial geometry and missing token availability are explicit", async () => {
   const dir = makeTempProject({ config: baseConfig() });
   writeDesign(dir, { withPen: true });

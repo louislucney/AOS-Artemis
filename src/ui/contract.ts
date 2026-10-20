@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { pngDimensions } from "../design/screens.js";
+import type { PenTextBound } from "../pen/bounds.js";
 import { loadPenDocument } from "../pen/paths.js";
 import type { PenNode } from "../pen/read.js";
 import type { Runtime } from "../runtime.js";
@@ -254,6 +255,8 @@ export interface BuildUiContractOptions {
   /** Design directory; defaults to `<configDir>/design`. */
   designRoot?: string;
   outDir?: string;
+  /** Optional pen CLI bounds provider for auto-layout text geometry. */
+  boundsProvider?: (penFile: string) => PenTextBound[];
 }
 
 export interface UiContractBuildResult {
@@ -301,6 +304,28 @@ export function buildUiContract(
         `部分节点无显式几何（${inspected.geometry.missingGeometry}/${inspected.geometry.nodes}）`
       );
     }
+    let texts = inspected?.texts ?? [];
+    if (options.boundsProvider !== undefined && penFile !== null && texts.length > 0) {
+      try {
+        const byId = new Map(options.boundsProvider(penFile).map((entry) => [entry.id, entry]));
+        let resolved = 0;
+        texts = texts.map((text) => {
+          const bound = byId.get(text.id);
+          if (!bound) return text;
+          resolved += 1;
+          return {
+            ...text,
+            bbox: { x: bound.x, y: bound.y, width: bound.width, height: bound.height },
+            geometryStatus: "extracted" as const
+          };
+        });
+        if (resolved > 0) screenWarnings.push(`pen CLI 解析文本几何 ${resolved}/${texts.length}`);
+      } catch (error) {
+        screenWarnings.push(
+          `pen CLI 文本几何失败：${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
     const status = statusOf(inspected !== null, inspected?.geometry ?? { nodes: 0, withGeometry: 0, missingGeometry: 0 });
     if (status === "no-baseline") warnings.push(`${screen.id} ${screen.name}: no-baseline`);
     return {
@@ -319,7 +344,7 @@ export function buildUiContract(
         spacing: []
       },
       components: inspected?.components ?? [],
-      texts: inspected?.texts ?? [],
+      texts,
       render: render === null ? null : path.relative(runtime.project.rootDir, render),
       renderScale:
         render !== null && inspected?.frameWidth !== null && inspected?.frameWidth !== undefined

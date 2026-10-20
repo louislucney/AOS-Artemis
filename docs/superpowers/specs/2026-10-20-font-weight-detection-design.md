@@ -227,7 +227,7 @@ textsTotal（契约全部文本，含 no-geometry）
 
 ## 10. 实施进度（2026-10-20）
 
-- **切片 1 完成**：`ui-contract.texts` 全量收录、字重归一、`bboxSpace/renderScale/geometryStatus`；iOS 首頁 53 条文本（400/600/700）。
+- **切片 1 完成**：`ui-contract.texts` 全量收录、字重归一、`bboxSpace/renderScale/geometryStatus`；iOS 首頁 53 条文本（400/600/700）。`suite ui-contract` 默认经 pen CLI `Get((n,c)=>c.bounds)` 补 auto-layout 文本绝对 bbox（`--no-bounds` 关闭；4 屏约 19s），首頁 53/53 `extracted`。
 - **切片 2 完成**：`src/ui/text-weight.ts` 极性感知、`inkRatio`/`meanRunNorm`、row/平滑 column profile 守卫、extent 守卫、tiny/JPEG 降级；单测 5 例。
 - **切片 3 完成**：`design_device_diff` 的 `regionDetails[].textStyle` + `detail.textStyles`；找到 `ui-contract` 屏幕时走契约全量 pass（`scope:"contract"`，`textsTotal = checked + unverified`，`items[]` 逐文本），找不到时回退 `scope:"text-regions"`。iOS 首頁实测 53 条：52 条 `no-geometry`、1 条 `no-text-ink`，全部 `unverified`——如实暴露 `.pen` auto-layout 缺几何。
 - **切片 4/5 未开始**：baseline bbox、同平台硬门禁。
