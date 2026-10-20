@@ -1,7 +1,7 @@
 /** 遗留标记兼容层（合并自原 panel/usage PAGE_CSS；颜色/圆角统一 CSDC token，单一 <style> 注入）。
- * 不再包含 body/:root/链接色/标题字号等与外壳冲突的规则；color-scheme 交由 tokens（亮色基准＋暗色跟随系统）。 */
+ * 不再包含 body/:root/链接色/标题字号等与外壳冲突的规则；CSDC 7.4 纯浅色，亮色唯一。 */
 export const CONSOLE_COMPAT_CSS = `
-section:not(.c-plain){border:1px solid var(--color-border-subtle);border-radius:var(--radius-md);padding:16px;margin:16px 0}
+section:not(.c-plain):not(.c-card){border:1px solid var(--color-border-subtle);border-radius:var(--radius-md);padding:16px;margin:16px 0}
 .c-plain{border:0;border-radius:0;padding:0;margin:16px 0}
 table{border-collapse:collapse;width:100%;font-size:13px}
 th,td{border-bottom:1px solid var(--color-border-subtle);padding:6px 8px;text-align:left;vertical-align:top}

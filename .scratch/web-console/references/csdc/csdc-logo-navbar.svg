@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 44" width="100%" height="100%" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">
+  <defs>
+    <linearGradient id="nbBlueSharp" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0055B3"/>
+      <stop offset="100%" stop-color="#0A84FF"/>
+    </linearGradient>
+    <linearGradient id="nbYellowSharp" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFF04D"/>
+      <stop offset="100%" stop-color="#FFE600"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Razor-Sharp Parametric AI Emblem (Scaled & Fitted perfectly to 36x36 box) -->
+  <g transform="translate(22, 22) scale(0.12)">
+    <!-- Blue Loop (Upper) -->
+    <path d="M -130,-45 C -130,-115 -75,-165 0,-165 C 65,-165 115,-125 140,-70 C 160,-25 150,30 115,75 L 85,45 C 108,12 115,-25 100,-55 C 82,-95 45,-122 0,-122 C -50,-122 -88,-85 -88,-45 C -88,-12 -65,15 -35,45 L -65,75 C -105,35 -130,-5 -130,-45 Z" 
+          fill="url(#nbBlueSharp)"/>
+    <!-- Yellow Loop (Lower) -->
+    <path d="M 130,45 C 130,115 75,165 0,165 C -65,165 -115,125 -140,70 C -160,25 -150,-30 -115,-75 L -85,-45 C -108,-12 -115,25 -100,55 C -82,95 -45,122 0,122 C 50,122 88,85 88,45 C 88,12 65,-15 35,-45 L 65,-75 C 105,-35 130,5 130,45 Z" 
+          fill="url(#nbYellowSharp)"/>
+    <!-- Central Optical Weave -->
+    <path d="M -35,45 C -12,22 12,-22 35,-45 C 55,-25 65,-5 65,15 C 65,45 35,75 0,75 C -15,75 -28,65 -35,45 Z" 
+          fill="url(#nbYellowSharp)"/>
+    <path d="M 35,-45 C 12,-22 -12,22 -35,45 C -55,25 -65,5 -65,-15 C -65,-45 -35,-75 0,-75 C 15,-75 28,-65 35,-45 Z" 
+          fill="url(#nbBlueSharp)"/>
+    <!-- Core AI Spark -->
+    <circle cx="0" cy="0" r="18" fill="#FFFFFF"/>
+    <circle cx="0" cy="0" r="11" fill="url(#nbYellowSharp)"/>
+    <circle cx="0" cy="0" r="5" fill="#0066CC"/>
+  </g>
+
+  <!-- Crisp Precision Divider -->
+  <line x1="50" y1="10" x2="50" y2="34" stroke="#D2D2D7" stroke-width="1.2" stroke-linecap="round"/>
+
+  <!-- High-Clarity CSDC Typography -->
+  <g transform="translate(60, 0)">
+    <!-- CSDC Main -->
+    <text x="0" y="24" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif" 
+          font-size="20" font-weight="800" fill="#1D1D1F" letter-spacing="-0.02em">CSDC</text>
+    
+    <!-- Micro Dual-Color Dots -->
+    <circle cx="62" cy="18" r="2.5" fill="#0066CC"/>
+    <circle cx="70" cy="18" r="2.5" fill="#FFE600"/>
+
+    <!-- Chinese Subtitle -->
+    <text x="0" y="37" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', sans-serif" 
+          font-size="10.5" font-weight="600" fill="#6E6E73" letter-spacing="1.5">智能交付中心</text>
+  </g>
+</svg>

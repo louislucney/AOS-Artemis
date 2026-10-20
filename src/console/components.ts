@@ -15,7 +15,8 @@ export function cCard(input: CCardInput): string {
     ? `<p class="c-card-subtitle">${escapeHtml(input.subtitle)}</p>`
     : "";
   const actions = input.actions ? `<div class="c-card-actions">${input.actions}</div>` : "";
-  return `<section class="c-card${toneClass}">${title}${subtitle}${actions}<div class="c-card-body">${input.body}</div></section>`;
+  const header = title || actions ? `<div class="c-card-header">${title}${actions}</div>` : "";
+  return `<section class="c-card${toneClass}">${header}${subtitle}<div class="c-card-body">${input.body}</div></section>`;
 }
 
 export interface CBadgeInput {

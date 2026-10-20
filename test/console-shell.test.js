@@ -140,9 +140,24 @@ test("console shell: 顶栏记录底座指示器（持久层/最近写入/写失
   assert.match(html, /最近写入 <time datetime="2026-10-18T12:03:44\.000Z"[^>]*>[^<]*<\/time>/, "最近写入相对化（title 本地时间）");
   assert.match(html, /c-badge-error">写失败 2 次/);
   assert.match(html, /section=ops/);
-  assert.match(html, /:root\[data-theme="dark"\]/, "暗色主题 token（属性态）");
-  assert.match(html, /--color-surface-light:#1C1C1E/, "暗色面色映射");
-  assert.match(html, /setAttribute\("data-theme","dark"\)/, "按系统偏好应用暗色");
+  assert.match(html, /color-scheme:light/, "CSDC 强制亮色");
+  assert.match(html, /<meta name="color-scheme" content="light">/, "UA 控件也按亮色");
+  assert.ok(!html.includes("data-theme=\"dark\""), "不再跟随系统暗色");
+});
+
+test("console shell: CSDC 官方徽标、全宽布局与组件母版", () => {
+  const html = renderConsoleShell({ title: "总览", active: "overview", body: "" });
+  assert.match(html, /data:image\/svg\+xml;base64,/, "顶栏使用 CSDC 官方徽标（内联 data URI）");
+  assert.match(html, /class="c-nav-group-title">工作区</, "侧栏分组标题");
+  assert.ok(
+    html.includes(".c-layout{display:flex;align-items:flex-start;width:100%;max-width:none;margin:0}"),
+    "布局全宽，不再 1320 居中"
+  );
+  assert.ok(html.includes(".c-aside{width:220px;flex:0 0 220px;"), "侧栏 220px（CSDC 标准）");
+  assert.ok(html.includes(".c-main{flex:1;min-width:0;padding:20px 36px 80px;background:var(--color-surface-white)}"), "主区白底");
+  assert.ok(html.includes(".c-card-header{"), "卡片黄色分区头");
+  assert.ok(html.includes(".c-table th{background:var(--color-surface-light);"), "表格浅灰表头");
+  assert.ok(html.includes("border-radius:var(--radius-pill)"), "按钮/徽章胶囊圆角");
 });
 
 test("console shell: 内联脚本可解析（防语法回归）", () => {

@@ -1,4 +1,5 @@
 import { CONSOLE_COMPAT_CSS } from "./compat.js";
+import { CSDC_LOGO_DATA_URI } from "./logo.js";
 import { CSDC_TOKENS_CSS } from "./tokens.js";
 import { relativeTime } from "./time.js";
 import { CONSOLE_NAME, PRODUCT_NAME } from "../brand.js";
@@ -182,7 +183,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     .filter(([, key]) => navTargets[key] !== undefined)
     .map(([letter, , label]) => `<li><span class="c-kbd">g ${letter}</span> ${escapeHtml(label)}</li>`)
     .join("");
-  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({j:"project",t:"tasks",v:"review",y:"stats",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}var darkMq=window.matchMedia?window.matchMedia("(prefers-color-scheme: dark)"):null;function aosApplyTheme(){if(darkMq&&darkMq.matches){document.documentElement.setAttribute("data-theme","dark");}else{document.documentElement.removeAttribute("data-theme");}}aosApplyTheme();if(darkMq&&darkMq.addEventListener){darkMq.addEventListener("change",aosApplyTheme);}})();</script>`;
+  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({j:"project",t:"tasks",v:"review",y:"stats",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}})();</script>`;
   const brandHref = input.brandHref ?? "/panel";
   const searchForm =
     input.hideSearch === true
@@ -249,6 +250,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     "<head>",
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<meta name="color-scheme" content="light">',
     `<title>${escapeHtml(input.title)} · ${CONSOLE_NAME}</title>`,
     `<style>${CSDC_TOKENS_CSS}\n${CONSOLE_COMPAT_CSS}</style>`,
     input.headExtra ?? "",
@@ -256,7 +258,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     '<body data-console="shell">',
     '<a class="c-skip-link" href="#console-main">跳到主内容</a>',
     '<header class="c-topbar">',
-    `<div class="c-brand"><a href="${escapeHtml(brandHref)}">${CONSOLE_NAME}</a></div>`,
+    `<div class="c-brand"><a href="${escapeHtml(brandHref)}"><img src="${escapeHtml(CSDC_LOGO_DATA_URI)}" alt="CSDC 智能交付中心"><span class="c-brand-product">${CONSOLE_NAME}</span></a></div>`,
     switcher,
     healthChip,
     searchForm,
@@ -264,7 +266,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     "</header>",
     actionsBanner,
     '<div class="c-layout">',
-    `<aside class="c-aside"><nav aria-label="控制台导航">${navHtml}${navHint}</nav></aside>`,
+    `<aside class="c-aside"><div class="c-nav-group-title">工作区</div><nav aria-label="控制台导航">${navHtml}${navHint}</nav></aside>`,
     `<main class="c-main" id="console-main">${liveNote}${shortcutsPanel}${input.body}</main>`,
     "</div>",
     `<footer class="c-footer">${PRODUCT_NAME} · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,

@@ -693,7 +693,7 @@ try{
     `<a href="${escapeHtml(projectHref(row.rootPath))}">${escapeHtml(row.name)}</a> <a class="c-button" href="${escapeHtml(projectHref(row.rootPath))}">进入项目 →</a>`,
     renderProjectCell(row),
     escapeHtml(row.stacks.join("、") || "—"),
-    relativeTime(row.lastSeenAt),
+    `<span class="c-nowrap">${relativeTime(row.lastSeenAt)}</span>`,
     renderLatestBatchCell(row),
     escapeHtml(row.warnings.join("；") || "—")
   ]);

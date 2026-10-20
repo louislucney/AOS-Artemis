@@ -2018,3 +2018,7 @@ llm_switch(name, force):
 > **真机文本 bbox（v1）**：iOS 执行器每步把可访问性文本及逻辑点 `rect` 写入 `run.json` 的 `steps[].texts`（≤300 条，去重）；`design_device_diff` 契约文本 pass 优先按文本内容精确匹配唯一设备文本，用该 rect × step.scale 直接裁设备截图，`localization:"device-text"`；匹配不到时回退 design-bbox。多义匹配标 `multiple-device-text`，不猜。**未开始**：baseline bbox、硬门禁。
 > **测试**：新增 `test/text-weight.test.js` 6 例（bold/heavier、same/similar、shifted/content、暗色反相、tiny/JPEG、contract 覆盖会计）；`ui-contract` 断言文本节点；`design-device-diff`/`diff-detail-tool` 断言 `detail.textStyles` 契约 scope 与覆盖。
 
+
+### 13.150 实施记录（Web 控制台 CSDC 强约束修正）
+
+> 实施于 2026-10-20。用户明确：控制台属于 CSDC 项目，关键元素必须与 CSDC 设计系统一致，而不是“参考”；此前宽屏 1320px 居中窄栏与系统暗色造成“UI 变形”。**修正**：`src/console/tokens.ts` 删除全部 `:root[data-theme="dark"]` 映射与暗色媒体查询，`color-scheme:light`＋`<meta name="color-scheme" content="light">`；`.c-layout` 去掉 1320 上限（全宽），侧栏 220px、主区白底 `20px 36px 80px`、页脚全宽；顶栏使用 CSDC 官方徽标（`src/console/logo.ts` 内联 data URI）＋产品名，侧栏增加「工作区」分组；区块/卡片标题改为 CSDC 黄色 Section Header（`#FFF9CC`＋`#FFE600`），按钮/徽章统一胶囊圆角，表格改为卡片外框＋浅灰表头＋14/22px 单元格，卡片 28px 内边距；`src/console/components.ts` 的 `cCard` 增加 `c-card-header` 包裹标题与动作。**文档**：`web-console/DESIGN.md` 同步亮色唯一/全宽/组件口径。**测试**：`console-shell` 断言官方徽标 data URI、全宽布局、220px 侧栏、白底主区、黄色卡片头、浅灰表头与胶囊圆角，并反向断言不再输出 `data-theme="dark"`；`npm run build && npm test && npm run lint` → 全量 **1794 绿**，lint 0 error（2 条既有 warning）。
