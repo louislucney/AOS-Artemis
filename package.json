@@ -1,5 +1,5 @@
 {
-  "name": "aos-mcp",
+  "name": "mobile-testing-mcp",
   "version": "0.1.0",
   "description": "Unified MCP service for AOS: Figma design context + ARTEMIS Android and iOS device automation with project-scoped LLM profiles and switching.",
   "type": "module",
@@ -8,6 +8,7 @@
     "node": ">=20"
   },
   "bin": {
+    "mobile-testing-mcp": "dist/cli.js",
     "aos-mcp": "dist/cli.js"
   },
   "main": "dist/index.js",
