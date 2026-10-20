@@ -39,7 +39,7 @@ for (const argv of HELP_CASES) {
     const { result, output } = runCliHelp(argv);
     assert.equal(result.signal, null, `不应超时/被杀（signal=${result.signal}）`);
     assert.equal(result.status, 0, `output=${output.slice(0, 400)}`);
-    assert.match(output, /aos-mcp/);
+    assert.match(output, /mobile-testing-mcp/);
     assert.match(output, /(Usage:|用法:)/, `必须是对应用法文本：${output.slice(0, 200)}`);
   });
 }
@@ -68,6 +68,6 @@ test("cli help: 拼写错误子命令也走 help（--help 优先于校验）", (
     const { result, output } = runCliHelp(argv);
     assert.equal(result.signal, null, argv.join(" "));
     assert.equal(result.status, 0, `${argv.join(" ")} output=${output.slice(0, 300)}`);
-    assert.match(output, /aos-mcp/);
+    assert.match(output, /mobile-testing-mcp/);
   }
 });

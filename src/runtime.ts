@@ -41,6 +41,7 @@ import type { CrashCollectorLike, CrashScanReport, CrashScanResult } from "./cra
 import { jiraConfigFrom, type ResolvedJiraConfig } from "./jira/config.js";
 import { detectAppium, type AppiumDetection } from "./ios/appium/detect.js";
 import { IosWdaService } from "./ios/appium/service.js";
+import { autoImportLocalLedger } from "./ledger/auto-import.js";
 import { storeKindShortLabel } from "./db/labels.js";
 import { MemoryStore } from "./db/memory.js";
 import { TERMINAL_TASK_STATUSES } from "./db/types.js";
@@ -352,7 +353,7 @@ export class Runtime {
       () =>
         this.store.upsertProject({
           rootPath: this.project.rootDir,
-          name: path.basename(this.project.rootDir)
+          name: this.project.config.project?.name ?? path.basename(this.project.rootDir)
         }),
       null
     );
@@ -393,6 +394,15 @@ export class Runtime {
     // persist it even before any llm_switch/aos_configure call.
     if (active) {
       this.writeActiveConfig(active);
+    }
+
+    try {
+      const imported = await autoImportLocalLedger(this, { env: this.baseEnv });
+      if (imported.status === "error") {
+        logWarn(`本地台账回流中心 PG 失败：${imported.reason ?? "unknown"}`);
+      }
+    } catch (error) {
+      logWarn(`本地台账回流中心 PG 失败：${errorMessage(error)}`);
     }
   }
 

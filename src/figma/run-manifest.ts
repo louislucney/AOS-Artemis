@@ -14,6 +14,7 @@ import {
   type DesignWarning,
   type WarningSummary
 } from "../design/warnings.js";
+import type { UiSummary, UiVerification } from "../ui/verification.js";
 import { designDir } from "./design-store.js";
 import type { SuiteCaseResult, SuiteRunReport } from "./suite-runner.js";
 
@@ -68,6 +69,8 @@ export interface RunManifestCase {
   traceId: string | null;
   error: string | null;
   failure: { domain: FailureDomain; confidence: FailureConfidence; reason: string } | null;
+  /** UI 核验状态；旧清单没有该字段。 */
+  ui?: UiVerification;
   scriptProvenance: { asserts: number; explores: number } | null;
   apiErrors: ApiErrorObservation[];
   apiErrorsDegraded: string | null;
@@ -113,6 +116,8 @@ export interface RunManifest {
     failed: number;
     flaky: number;
     quarantinedFailed: number;
+    /** UI 核验计数；旧清单没有该字段。 */
+    ui?: UiSummary;
   };
   gate: { result: "pass" | "fail"; exitCode: number; reasons: string[] };
   failureDomains: Partial<Record<FailureDomain, number>>;
@@ -312,7 +317,8 @@ export function buildRunManifest(input: BuildRunManifestInput): RunManifest {
       passed: report.passed,
       failed: report.failed,
       flaky,
-      quarantinedFailed
+      quarantinedFailed,
+      ...(report.ui ? { ui: report.ui } : {})
     },
     gate: {
       result: input.exitCode === 0 ? "pass" : "fail",
@@ -333,6 +339,7 @@ export function buildRunManifest(input: BuildRunManifestInput): RunManifest {
             reason: entry.failure.reason
           }
         : null,
+      ...(entry.ui ? { ui: entry.ui } : {}),
       scriptProvenance: entry.scriptProvenance,
       apiErrors: entry.apiErrors,
       apiErrorsDegraded: entry.apiErrorsDegraded,

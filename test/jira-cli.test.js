@@ -221,10 +221,10 @@ test("jira cli: 裸 --help 与子命令 --help → 0 且无未知噪声", async 
   const bare = await run(["--help"]);
   assert.equal(bare.code, 0);
   assert.equal(bare.errors.length, 0);
-  assert.ok(bare.logs.some((line) => line.includes("aos-mcp jira")));
+  assert.ok(bare.logs.some((line) => line.includes("mobile-testing-mcp jira")));
 
   const deep = await run(["issue", "--help"]);
   assert.equal(deep.code, 0);
   assert.equal(deep.errors.some((line) => line.includes("未知")), false);
-  assert.ok(deep.logs.some((line) => line.includes("aos-mcp jira")));
+  assert.ok(deep.logs.some((line) => line.includes("mobile-testing-mcp jira")));
 });

@@ -56,6 +56,19 @@ test("jsonc comments and trailing commas parse", () => {
   assert.equal(project.config.artemis.configDir, ".artemis");
 });
 
+test("project.name is trimmed; invalid type is rejected", () => {
+  const dir = makeTempProject({
+    config: `{ "project": { "name": "  mobile-testing  " }, "llm": { "profiles": {} }, "artemis": { "repo": "../a" } }`
+  });
+  const project = loadProject({ cwd: dir, env: {} });
+  assert.equal(project.config.project?.name, "mobile-testing");
+
+  const invalid = makeTempProject({
+    config: `{ "project": { "name": 42 }, "llm": { "profiles": {} }, "artemis": { "repo": "../a" } }`
+  });
+  assert.throws(() => loadProject({ cwd: invalid, env: {} }), /project\.name/);
+});
+
 test("missing config is optional: project resolves with null config", () => {
   const empty = makeTempDir("aos-mcp-empty-");
   const project = loadProject({ cwd: empty, env: { AOS_PROJECT_DIR: empty } });

@@ -124,14 +124,18 @@ export class FileStore implements ProjectStore {
     return store;
   }
 
-  async upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord> {
+  async upsertProject(input: {
+    rootPath: string;
+    name: string;
+    updateName?: boolean;
+  }): Promise<ProjectRecord> {
     const bucket = await this.bucket(input.rootPath);
     const record = await bucket.mem.upsertProject(input);
     const existing = this.registry.get(input.rootPath);
     const now = new Date().toISOString();
     const entry: RegistryEntry = {
       rootPath: input.rootPath,
-      name: input.name,
+      name: input.updateName === false && existing ? existing.name : input.name,
       createdAt: existing?.createdAt ?? record.createdAt,
       updatedAt: now
     };

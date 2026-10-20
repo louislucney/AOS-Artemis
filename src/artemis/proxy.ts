@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 
+import { CLI_NAME } from "../brand.js";
 import type { ChildSpec } from "./assembly.js";
 import { AOS_MCP_VERSION, errorMessage, log, terminateProcess, terminateProcessSync, withTimeout } from "../util.js";
 
@@ -96,7 +97,7 @@ export class ArtemisProxy implements ArtemisProxyLike {
       env: spec.env,
       stderr: "pipe"
     });
-    const client = new Client({ name: "aos-mcp", version: AOS_MCP_VERSION });
+    const client = new Client({ name: CLI_NAME, version: AOS_MCP_VERSION });
 
     this.attachStderr(transport);
     this.expectedClose = false;

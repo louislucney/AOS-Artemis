@@ -73,16 +73,16 @@ export interface JiraCliDeps {
 }
 
 export function printJiraUsage(log: (line: string) => void): void {
-  log(`aos-mcp jira — Jira 工作流 CLI（与 MCP 工具共用客户端与凭证）
+  log(`mobile-testing-mcp jira — Jira 工作流 CLI（与 MCP 工具共用客户端与凭证）
 
 Usage:
-  aos-mcp jira issue create --project-key <KEY> --summary <text> [options]
+  mobile-testing-mcp jira issue create --project-key <KEY> --summary <text> [options]
        --type Task|Bug（默认 Task） [--description <text>] [--label a,b]...
        [--parent <KEY>] [--blocks <KEY>]...
-  aos-mcp jira issue comment <KEY> --body <text> [--trace <traceId>]
-  aos-mcp jira issue label <KEY> (--add a,b | --remove c,d)...
-  aos-mcp jira issue transition <KEY> --to "<status name>"
-  aos-mcp jira issue link --inward <KEY> --outward <KEY> [--type Blocks]
+  mobile-testing-mcp jira issue comment <KEY> --body <text> [--trace <traceId>]
+  mobile-testing-mcp jira issue label <KEY> (--add a,b | --remove c,d)...
+  mobile-testing-mcp jira issue transition <KEY> --to "<status name>"
+  mobile-testing-mcp jira issue link --inward <KEY> --outward <KEY> [--type Blocks]
 common: [--project <dir>] [--json]
 exit codes: 0 成功 / 1 请求或配置失败 / 2 用法错误`);
 }
@@ -142,7 +142,7 @@ async function issueCreate(
   const summary = flags.get("summary")?.trim() ?? "";
   const issueType = (flags.get("type") ?? "Task").trim();
   if (projectKey === "" || summary === "") {
-    errorLog("用法: aos-mcp jira issue create --project-key <KEY> --summary <text> [--type Task|Bug] [--description <text>] [--label a,b] [--parent <KEY>] [--blocks <KEY>]");
+    errorLog("用法: mobile-testing-mcp jira issue create --project-key <KEY> --summary <text> [--type Task|Bug] [--description <text>] [--label a,b] [--parent <KEY>] [--blocks <KEY>]");
     return 2;
   }
   if (issueType !== "Task" && issueType !== "Bug") {
@@ -203,7 +203,7 @@ async function issueComment(
   const body = flags.get("body");
   const traceId = flags.get("trace")?.trim() ?? "";
   if (key === null || !body || body.trim() === "") {
-    errorLog("用法: aos-mcp jira issue comment <KEY> --body <text> [--trace <traceId>]");
+    errorLog("用法: mobile-testing-mcp jira issue comment <KEY> --body <text> [--trace <traceId>]");
     return 2;
   }
   const adf = plainTextToAdf(body);
@@ -229,7 +229,7 @@ async function issueLabel(
   const add = splitList(flags.list("add"));
   const remove = splitList(flags.list("remove"));
   if (key === null || (add.length === 0 && remove.length === 0)) {
-    errorLog("用法: aos-mcp jira issue label <KEY> (--add a,b | --remove c,d)");
+    errorLog("用法: mobile-testing-mcp jira issue label <KEY> (--add a,b | --remove c,d)");
     return 2;
   }
   const issue = await client.getIssue(key, ["labels"]);
@@ -256,7 +256,7 @@ async function issueTransition(
   const key = positional[2] ? parseIssueKey(positional[2]) : null;
   const target = flags.get("to")?.trim() ?? "";
   if (key === null || target === "") {
-    errorLog('用法: aos-mcp jira issue transition <KEY> --to "<status name>"');
+    errorLog('用法: mobile-testing-mcp jira issue transition <KEY> --to "<status name>"');
     return 2;
   }
   const transitions = await client.getTransitions(key);
@@ -292,7 +292,7 @@ async function issueLink(
   const inward = parseIssueKey(inwardRaw);
   const outward = parseIssueKey(outwardRaw);
   if (inward === null || outward === null) {
-    errorLog("用法: aos-mcp jira issue link --inward <KEY> --outward <KEY> [--type Blocks]");
+    errorLog("用法: mobile-testing-mcp jira issue link --inward <KEY> --outward <KEY> [--type Blocks]");
     return 2;
   }
   await client.createIssueLink({ typeName, inwardKey: inward, outwardKey: outward });

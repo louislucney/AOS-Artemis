@@ -88,6 +88,8 @@ test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + �
       assert.equal(report.unit.design.source, "figma");
       assert.equal(report.unit.design.nodeId, "1:2");
       assert.equal(report.unit.device.mode, "live");
+      assert.equal(report.unit.device.sourceFormat, "jpeg");
+      assert.equal(report.unit.device.lossless, false);
       assert.equal(report.summary.regions, 1);
 
       assert.deepEqual(fs.readFileSync(payload.saved.design), designPng);

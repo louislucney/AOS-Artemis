@@ -17,6 +17,7 @@ import type {
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
 import { designDir } from "../figma/design-store.js";
+import type { UiSummary } from "../ui/verification.js";
 import {
   loadLatestRunManifest,
   loadRunManifest,
@@ -82,6 +83,8 @@ export interface PanelBatchSummary {
   finishedAt: string | null;
   gate: "pass" | "fail" | null;
   summary: { total: number | null; passed: number | null; failed: number | null } | null;
+  /** UI 核验计数；旧清单/不可读时为 null。 */
+  ui: UiSummary | null;
   note: string | null;
 }
 
@@ -568,6 +571,7 @@ function batchSummaryFromRead(read: RunManifestRead | null): PanelBatchSummary |
         passed: manifest.summary.passed,
         failed: manifest.summary.failed
       },
+      ui: manifest.summary.ui ?? null,
       note: null
     };
   }
@@ -580,13 +584,14 @@ function batchSummaryFromRead(read: RunManifestRead | null): PanelBatchSummary |
       finishedAt: read.base.finishedAt,
       gate: null,
       summary: read.base.summary,
+      ui: null,
       note: `清单版本 ${read.version} 高于当前面板（仅展示公共字段）`
     };
   }
   if (read.kind === "invalid") {
-    return { result: "invalid", runId: null, source: null, startedAt: null, finishedAt: null, gate: null, summary: null, note: `清单不可读：${read.reason}` };
+    return { result: "invalid", runId: null, source: null, startedAt: null, finishedAt: null, gate: null, summary: null, ui: null, note: `清单不可读：${read.reason}` };
   }
-  return { result: "missing", runId: null, source: null, startedAt: null, finishedAt: null, gate: null, summary: null, note: "清单已清理或不可读" };
+  return { result: "missing", runId: null, source: null, startedAt: null, finishedAt: null, gate: null, summary: null, ui: null, note: "清单已清理或不可读" };
 }
 
 function batchRowFromRead(read: RunManifestRead): PanelBatchRow {

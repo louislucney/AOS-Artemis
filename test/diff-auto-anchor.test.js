@@ -111,6 +111,8 @@ test("design_device_diff: 仅 traceId 时用失败证据检索步骤并记录锚
         stepNumber: 7,
         image: "post",
         anchor: "search",
+        sourceFormat: "png",
+        lossless: true,
         serial: "emulator-5554"
       });
 

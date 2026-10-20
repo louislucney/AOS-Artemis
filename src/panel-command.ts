@@ -15,7 +15,7 @@ import {
 } from "./panel/web.js";
 import { errorMessage, isBuildStale } from "./util.js";
 
-/** aos-mcp panel 子命令（overview-panel T6，DESIGN §13.105）：`panel --web` 复用
+/** mobile-testing-mcp panel 子命令（overview-panel T6，DESIGN §13.105）：`panel --web` 复用
  * `/panel` handler 的独立只读看板（默认 loopback、独立端口）；独立进程无跨项目
  * Runtime，故深探层不可用（可用 `--workspace` 并入未注册的工作区目录）。 */
 
@@ -145,13 +145,13 @@ function defaultWaitForShutdown(): Promise<void> {  return new Promise((resolve)
 }
 
 export function printPanelCommand(log: (line: string) => void): void {
-  log(`aos-mcp panel — 多项目总览面板（只读）
+  log(`mobile-testing-mcp panel — 多项目总览面板（只读）
 
 Usage:
-  aos-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]
+  mobile-testing-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]
                     只读面板（复用 /panel 与 /panel.json；默认仅本机）
                     --workspace <dir>  并入该目录下的项目（未注册的工作区目录）
-  aos-mcp panel help
+  mobile-testing-mcp panel help
 
 说明：独立 CLI 进程无跨项目 Runtime（深探层不可用）；跨项目数据来自
 MOBILE_TESTING_DATABASE_URL（未配置时使用项目文件台账，跨项目以工作区扫描为准）。

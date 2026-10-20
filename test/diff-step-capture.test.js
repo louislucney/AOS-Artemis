@@ -72,6 +72,8 @@ test("design_device_diff: mode=step 默认用 post 截图并记录 unit.device",
         stepNumber: 3,
         image: "post",
         anchor: "explicit",
+        sourceFormat: "jpeg",
+        lossless: false,
         serial: "emulator-5554"
       });
 

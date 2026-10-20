@@ -1,6 +1,7 @@
 import { CONSOLE_COMPAT_CSS } from "./compat.js";
 import { CSDC_TOKENS_CSS } from "./tokens.js";
 import { relativeTime } from "./time.js";
+import { CONSOLE_NAME, PRODUCT_NAME } from "../brand.js";
 import { escapeHtml } from "../util.js";
 
 export type ConsoleNavKey =
@@ -248,14 +249,14 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     "<head>",
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    `<title>${escapeHtml(input.title)} · AOS 控制台</title>`,
+    `<title>${escapeHtml(input.title)} · ${CONSOLE_NAME}</title>`,
     `<style>${CSDC_TOKENS_CSS}\n${CONSOLE_COMPAT_CSS}</style>`,
     input.headExtra ?? "",
     "</head>",
     '<body data-console="shell">',
     '<a class="c-skip-link" href="#console-main">跳到主内容</a>',
     '<header class="c-topbar">',
-    `<div class="c-brand"><a href="${escapeHtml(brandHref)}">AOS 控制台</a></div>`,
+    `<div class="c-brand"><a href="${escapeHtml(brandHref)}">${CONSOLE_NAME}</a></div>`,
     switcher,
     healthChip,
     searchForm,
@@ -266,7 +267,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     `<aside class="c-aside"><nav aria-label="控制台导航">${navHtml}${navHint}</nav></aside>`,
     `<main class="c-main" id="console-main">${liveNote}${shortcutsPanel}${input.body}</main>`,
     "</div>",
-    `<footer class="c-footer">AOS-ARTEMIS · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,
+    `<footer class="c-footer">${PRODUCT_NAME} · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,
     shortcutsScript,
     livePollScript,
     recordLastProject,

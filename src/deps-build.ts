@@ -180,7 +180,7 @@ export async function buildDepsBundle(options: DepsBuildOptions = {}): Promise<D
 export async function runDepsCommand(argv: string[]): Promise<number> {
   const [sub = "build", ...rest] = argv;
   if (sub !== "build") {
-    console.error('用法: aos-mcp deps build [--out DIR] [--repo DIR] [--work DIR] [--skip-sync] [--uv PATH]');
+    console.error('用法: mobile-testing-mcp deps build [--out DIR] [--repo DIR] [--work DIR] [--skip-sync] [--uv PATH]');
     return 1;
   }
   const options: DepsBuildOptions = {};

@@ -129,6 +129,16 @@ function isPngBytes(bytes: Buffer): boolean {
   return bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
 }
 
+function isJpegBytes(bytes: Buffer): boolean {
+  return bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
+function sourceFormatOf(bytes: Buffer): "png" | "jpeg" | "unknown" {
+  if (isPngBytes(bytes)) return "png";
+  if (isJpegBytes(bytes)) return "jpeg";
+  return "unknown";
+}
+
 export async function designDeviceDiff(
   runtime: Runtime,
   args: DesignDeviceDiffArgs,
@@ -357,6 +367,7 @@ export async function designDeviceDiff(
       tilesUsed: boolean;
       truncated: boolean;
       degraded: boolean;
+      deviceSource: { format: "png" | "jpeg" | "unknown"; lossless: boolean };
     } | null = null;
     let regionDetailsPayload: DetailRegionReport[] | null = null;
     const pairBuffers: Buffer[] = [];
@@ -526,7 +537,11 @@ export async function designDeviceDiff(
         regionCount: details.length,
         tilesUsed: proposalResult.tilesUsed,
         truncated: proposalResult.truncated,
-        degraded
+        degraded,
+        deviceSource: {
+          format: sourceFormatOf(detailDeviceBytes),
+          lossless: deviceLossless === true
+        }
       };
     }
 
@@ -566,11 +581,15 @@ export async function designDeviceDiff(
                 stepNumber: resolvedStepNumber,
                 image: stepRequest.image,
                 anchor: anchorSource,
+                sourceFormat: sourceFormatOf(deviceBytes),
+                lossless: isPngBytes(deviceBytes),
                 ...(captured.serial ? { serial: captured.serial } : {})
               }
             : {
                 mode: "live" as const,
                 ...(args.device?.platform === "ios" ? { platform: "ios" } : {}),
+                sourceFormat: sourceFormatOf(deviceBytes),
+                lossless: isPngBytes(deviceBytes),
                 ...(args.device?.serial ? { serial: args.device.serial } : {})
               }
       },

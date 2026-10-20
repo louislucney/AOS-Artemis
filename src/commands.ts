@@ -98,7 +98,7 @@ export function runInit(argv: string[]): void {
   console.log("");
   console.log("下一步：");
   console.log("  1) cp .env.example .env 并填入 AOS_LLM_MODEL / AOS_LLM_BASE_URL / AOS_LLM_API_KEY（Figma token 可选）");
-  console.log("  2) Run: aos-mcp doctor");
+  console.log("  2) Run: mobile-testing-mcp doctor");
   console.log("  3) 在 MCP 客户端中挂载本服务（node <service>/dist/index.js，env 注入 AOS_PROJECT_DIR 与 MOBILE_TESTING_DATABASE_URL）");
 }
 

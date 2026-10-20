@@ -118,6 +118,9 @@ test("suite run: missing tests.json exits 2; --json prints the report", async ()
   assert.equal(payload.ok, true);
   assert.equal(payload.passed, 1);
   assert.match(payload.cases[0].caseId, /^case-/);
+  assert.deepEqual(payload.ui, { passed: 0, failed: 0, unverified: 1, notApplicable: 0 });
+  assert.equal(payload.cases[0].ui.status, "unverified");
+  assert.equal(payload.cases[0].ui.reason, "no-ui-contract");
 });
 
 test("suite evidence: aggregates failed items and degrades explicitly", async () => {
@@ -464,7 +467,7 @@ test("suite help and unknown subcommands", async () => {
   const { runtime } = await setupRun({ cases: null });
   const help = await runCli(runtime, ["help"]);
   assert.equal(help.code, 0);
-  assert.ok(help.logs.some((line) => line.includes("aos-mcp suite")));
+  assert.ok(help.logs.some((line) => line.includes("mobile-testing-mcp suite")));
 
   const unknown = await runCli(runtime, ["nope"]);
   assert.equal(unknown.code, 2);
@@ -475,14 +478,14 @@ test("suite bare: 2＋用法（现状锁定）", async () => {
   const { runtime } = await setupRun({ cases: null });
   const { code, logs } = await runCli(runtime, []);
   assert.equal(code, 2);
-  assert.ok(logs.some((line) => line.includes("aos-mcp suite")));
+  assert.ok(logs.some((line) => line.includes("mobile-testing-mcp suite")));
 });
 
 test("suite run --help: 只打印用法、不执行", async () => {
   const { runtime } = await setupRun({ cases: null });
   const { code, logs } = await runCli(runtime, ["run", "--help"]);
   assert.equal(code, 0);
-  assert.ok(logs.some((line) => line.includes("aos-mcp suite")));
+  assert.ok(logs.some((line) => line.includes("mobile-testing-mcp suite")));
   assert.equal(logs.some((line) => line.includes("套件:")), false, "不得走执行路径");
 });
 
@@ -1385,6 +1388,8 @@ test("suite run: 批次清单自动落盘（gate/failureDomains/指纹）", asyn
   assert.equal(manifest.summary.total, 2);
   assert.equal(manifest.summary.passed, 1);
   assert.equal(manifest.summary.failed, 1);
+  assert.deepEqual(manifest.summary.ui, { passed: 0, failed: 0, unverified: 2, notApplicable: 0 });
+  assert.equal(manifest.cases[0].ui.status, "unverified");
   assert.equal(manifest.gate.result, "fail");
   assert.deepEqual(manifest.gate.reasons, ["failed:1"]);
   assert.equal(manifest.failureDomains["behavior-or-design"], 1);

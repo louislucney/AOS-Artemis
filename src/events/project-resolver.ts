@@ -68,7 +68,11 @@ export async function resolveEventProject(input: {
 
   let projectId: string | null = null;
   if (input.write) {
-    const project = await input.store.upsertProject({ rootPath, name: input.name });
+    const project = await input.store.upsertProject({
+      rootPath,
+      name: input.name,
+      updateName: false
+    });
     projectId = project.id;
   } else {
     const project = await input.store.getProjectByPath(rootPath);

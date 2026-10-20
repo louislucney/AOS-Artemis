@@ -30,6 +30,7 @@ import {
   saveReconciliation
 } from "./figma/reconciliation.js";
 import { buildRunReport, buildTaskRunReport } from "./figma/run-report.js";
+import { buildUiContract } from "./ui/contract.js";
 import type { WarningSummary } from "./design/warnings.js";
 import {
   executeSuiteBatch,
@@ -202,32 +203,33 @@ type SuiteIo = {
 };
 
 export function printSuiteUsage(log: (line: string) => void): void {
-  log(`aos-mcp suite — 测试闭环（生成用例的确定性执行与取证）
+  log(`mobile-testing-mcp suite — 测试闭环（生成用例的确定性执行与取证）
 
 Usage:
-  aos-mcp suite run [options]        执行 tests.json：每例复位→提交→轮询→台账→逐例分类（批次清单自动落盘）
-  aos-mcp suite check [options]      静态检查：覆盖 × 三件套（tests.xlsx）× 真实数据约束（不连设备，CI 友好）
-  aos-mcp suite calibrate [options]  确定性套件（xcresult）与 MCP 台账差分校准（漏报/误报率）
-  aos-mcp suite loop [options]       测试闭环：静态检查→执行(可选)→反馈→差分校准(可选)，产出闭环报告与下一步
-  aos-mcp suite flake [options]      重复采样量化确定性：通过率/翻转矩阵/flaky 率（--cases × --runs）
-  aos-mcp suite retention [options]  审计产物保留期只读报告（不删除；--days 默认 90、--limit 默认 20）
-  aos-mcp suite evidence <traceId> [options]
+  mobile-testing-mcp suite run [options]        执行 tests.json：每例复位→提交→轮询→台账→逐例分类（批次清单自动落盘）
+  mobile-testing-mcp suite check [options]      静态检查：覆盖 × 三件套（tests.xlsx）× 真实数据约束（不连设备，CI 友好）
+  mobile-testing-mcp suite calibrate [options]  确定性套件（xcresult）与 MCP 台账差分校准（漏报/误报率）
+  mobile-testing-mcp suite loop [options]       测试闭环：静态检查→执行(可选)→反馈→差分校准(可选)，产出闭环报告与下一步
+  mobile-testing-mcp suite flake [options]      重复采样量化确定性：通过率/翻转矩阵/flaky 率（--cases × --runs）
+  mobile-testing-mcp suite retention [options]  审计产物保留期只读报告（不删除；--days 默认 90、--limit 默认 20）
+  mobile-testing-mcp suite evidence <traceId> [options]
                                      聚合某 trace 的失败证据包（失败项/崩溃/锚点截图/设计差异）
-  aos-mcp suite api-errors <traceId> [options]
+  mobile-testing-mcp suite api-errors <traceId> [options]
                                      按 trace 时间窗采集设备日志，匹配 error-codes.json 并落盘
-  aos-mcp suite baseline save|compare [options]
+  mobile-testing-mcp suite baseline save|compare [options]
                                      设备对设备基线视觉回归（last-known-good）
-  aos-mcp suite report [options]     从运行台账导出 xlsx 结果页 + JUnit XML
-  aos-mcp suite feedback [options]   生成改进建议与出口清单（只读）
-  aos-mcp suite reconcile list|confirm|reject [options]
+  mobile-testing-mcp suite report [options]     从运行台账导出 xlsx 结果页 + JUnit XML
+  mobile-testing-mcp suite feedback [options]   生成改进建议与出口清单（只读）
+  mobile-testing-mcp suite reconcile list|confirm|reject [options]
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
-  aos-mcp suite task create|list|show|release [options]
+  mobile-testing-mcp suite task create|list|show|release [options]
                                      回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none]（引用取该功能最新份）
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
-  aos-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
-  aos-mcp suite schedule add|list|show|enable|disable|remove [options]
+  mobile-testing-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
+  mobile-testing-mcp suite schedule add|list|show|enable|disable|remove [options]
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
-  aos-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
+  mobile-testing-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
+  mobile-testing-mcp suite ui-contract [options] 从 flows.json + 逐屏 .pen 投影 UI 契约（token/几何/状态；--out <dir>）
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -626,8 +628,13 @@ async function suiteRun(
             entry.retry.flaky ? "（flaky，不计首跑）" : ""
           }`
         : "";
+      const uiNote = entry.ui
+        ? entry.ui.status === "unverified"
+          ? ` · UI 未验证${entry.ui.reason ? `(${entry.ui.reason})` : ""}`
+          : ` · UI ${entry.ui.status.toUpperCase()}`
+        : "";
       io.log(
-        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${scriptNote}${apiNote}${degraded}${quarantineNote}${retryNote}`
+        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${scriptNote}${apiNote}${degraded}${quarantineNote}${retryNote}${uiNote}`
       );
       if (entry.traceId && entry.status !== "passed") {
         io.log(`       证据: node dist/cli.js suite evidence ${entry.traceId}`);
@@ -636,6 +643,12 @@ async function suiteRun(
     io.log(
       `结果: pass ${report.passed} / fail ${report.failed} / skipped ${report.skipped}（executed ${report.executed}）`
     );
+    if (report.ui) {
+      io.log(
+        `UI: pass ${report.ui.passed} / fail ${report.ui.failed} / 未验证 ${report.ui.unverified}` +
+          (report.ui.notApplicable > 0 ? ` / n/a ${report.ui.notApplicable}` : "")
+      );
+    }
     const flakyCount = report.cases.filter((entry) => entry.retry?.flaky === true).length;
     if (flakyCount > 0) {
       io.log(`重试转绿 ${flakyCount} 例（flaky，首跑结果仍为准）`);
@@ -794,7 +807,7 @@ async function suiteCalibrate(
   const xcresultFlag = flags.get("xcresult");
   if (!reportFlag && !xcresultFlag) {
     io.errorLog(
-      "用法: aos-mcp suite calibrate (--report <json|junit.xml>|--xcresult <bundle>) [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]"
+      "用法: mobile-testing-mcp suite calibrate (--report <json|junit.xml>|--xcresult <bundle>) [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]"
     );
     return 2;
   }
@@ -1065,7 +1078,7 @@ async function suiteFlake(
   const requested = splitList(flags.list("cases"));
   if (requested.length === 0) {
     io.errorLog(
-      "用法: aos-mcp suite flake --cases <id,id,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>] [--model Flash|Pro] [--fail-on-flaky] [--no-save] [--out <dir>]"
+      "用法: mobile-testing-mcp suite flake --cases <id,id,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>] [--model Flash|Pro] [--fail-on-flaky] [--no-save] [--out <dir>]"
     );
     return 2;
   }
@@ -1188,7 +1201,7 @@ async function suiteApiErrors(
   const traceId = flags.positional[1];
   if (!traceId) {
     io.errorLog(
-      "用法: aos-mcp suite api-errors <traceId> [--serial <s>] [--app <bundleId>] [--no-save] [--json]"
+      "用法: mobile-testing-mcp suite api-errors <traceId> [--serial <s>] [--app <bundleId>] [--no-save] [--json]"
     );
     return 2;
   }
@@ -1277,7 +1290,7 @@ async function suiteApiErrors(
 async function suiteEvidence(runtime: Runtime, flags: ParsedFlags, io: { log: (line: string) => void; errorLog: (line: string) => void }): Promise<number> {
   const traceId = flags.positional[1] ?? flags.get("trace");
   if (!traceId) {
-    io.errorLog("用法: aos-mcp suite evidence <traceId> [--full-trace] [--out <dir>] [--no-save]");
+    io.errorLog("用法: mobile-testing-mcp suite evidence <traceId> [--full-trace] [--out <dir>] [--no-save]");
     return 2;
   }
   const figmaUrl = flags.get("design-figma");
@@ -1325,7 +1338,7 @@ async function suiteBaseline(runtime: Runtime, flags: ParsedFlags, io: { log: (l
   const traceId = flags.get("trace");
   if ((action !== "save" && action !== "compare") || !caseId || stepNumber === null || !traceId) {
     io.errorLog(
-      "用法: aos-mcp suite baseline save|compare --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>] [--ignore x,y,w,h]..."
+      "用法: mobile-testing-mcp suite baseline save|compare --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>] [--ignore x,y,w,h]..."
     );
     return 2;
   }
@@ -2099,6 +2112,50 @@ async function suiteTaskShow(
   return 0;
 }
 
+/** UI 契约：flows.json + 逐屏 .pen 的投影（不另建第二份提取管线）。 */
+async function suiteUiContract(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  try {
+    const out = flags.get("out");
+    const built = buildUiContract(runtime, {
+      ...(out !== null ? { outDir: path.resolve(runtime.project.rootDir, out) } : {})
+    });
+    if (flags.bool("json")) {
+      io.log(
+        JSON.stringify(
+          {
+            ok: true,
+            summary: built.contract.summary,
+            fingerprint: built.contract.source.fingerprint,
+            jsonPath: built.jsonPath,
+            markdownPath: built.markdownPath,
+            screens: built.contract.screens.map((screen) => ({
+              id: screen.id,
+              name: screen.name,
+              status: screen.status
+            }))
+          },
+          null,
+          2
+        )
+      );
+      return 0;
+    }
+    io.log(
+      `UI 契约: 屏 ${built.contract.screens.length} · extracted ${built.contract.summary.extracted} / partial ${built.contract.summary.partial} / unverifiable ${built.contract.summary.unverifiable} / no-baseline ${built.contract.summary["no-baseline"]}`
+    );
+    io.log(`产物: ${built.jsonPath} · ${built.markdownPath}`);
+    for (const warning of built.contract.warnings) io.log(`警告: ${warning}`);
+    return 0;
+  } catch (error) {
+    io.errorLog(`UI 契约生成失败: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+}
+
 /** 回填扫描（只读产物 → 幂等重建登记）：PG 守卫 + 下界 + 报告输出。 */
 async function suiteBackfill(
   runtime: Runtime,
@@ -2155,7 +2212,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "runner", "schedule", "backfill"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "runner", "schedule", "backfill", "ui-contract"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -2208,6 +2265,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "task") return await suiteTask(built.runtime, flags, { log, errorLog });
     if (sub === "schedule") return await suiteSchedule(built.runtime, flags, { log, errorLog });
     if (sub === "backfill") return await suiteBackfill(built.runtime, flags, { log, errorLog });
+    if (sub === "ui-contract") return await suiteUiContract(built.runtime, flags, { log, errorLog });
     if (sub === "runner") {
       return await suiteRunnerCommand(
         built.runtime,

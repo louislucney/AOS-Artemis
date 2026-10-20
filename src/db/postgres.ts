@@ -338,17 +338,28 @@ export class PostgresStore implements ProjectStore {
     }
   }
 
-  async upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord> {
+  async upsertProject(input: {
+    rootPath: string;
+    name: string;
+    updateName?: boolean;
+  }): Promise<ProjectRecord> {
     const now = new Date().toISOString();
     const existing = await this.pool.query("SELECT * FROM projects WHERE root_path = $1", [
       input.rootPath
     ]);
     if (existing.rows.length > 0) {
-      await this.pool.query("UPDATE projects SET name = $2, last_seen_at = $3 WHERE root_path = $1", [
-        input.rootPath,
-        input.name,
-        now
-      ]);
+      if (input.updateName === false) {
+        await this.pool.query("UPDATE projects SET last_seen_at = $2 WHERE root_path = $1", [
+          input.rootPath,
+          now
+        ]);
+      } else {
+        await this.pool.query("UPDATE projects SET name = $2, last_seen_at = $3 WHERE root_path = $1", [
+          input.rootPath,
+          input.name,
+          now
+        ]);
+      }
       const refreshed = await this.pool.query("SELECT * FROM projects WHERE root_path = $1", [
         input.rootPath
       ]);
@@ -387,7 +398,11 @@ export class PostgresStore implements ProjectStore {
   }
 
   async upsertLlm(rootPath: string, input: UpsertLlmInput): Promise<ProjectLlmRecord> {
-    const project = await this.upsertProject({ rootPath, name: projectName(rootPath) });
+    const project = await this.upsertProject({
+      rootPath,
+      name: projectName(rootPath),
+      updateName: false
+    });
     const now = new Date().toISOString();
     const existing = await this.pool.query(
       "SELECT * FROM project_llms WHERE project_id = $1 AND name = $2",
@@ -465,7 +480,11 @@ export class PostgresStore implements ProjectStore {
   }
 
   async putModelCache(rootPath: string, input: PutModelCacheInput): Promise<ModelCacheRecord> {
-    const project = await this.upsertProject({ rootPath, name: projectName(rootPath) });
+    const project = await this.upsertProject({
+      rootPath,
+      name: projectName(rootPath),
+      updateName: false
+    });
     const now = new Date().toISOString();
     const existing = await this.pool.query(
       "SELECT id FROM llm_model_cache WHERE project_id = $1 AND cache_key = $2",

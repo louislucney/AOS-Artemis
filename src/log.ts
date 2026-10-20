@@ -10,6 +10,8 @@ import {
 } from "node:fs";
 import path from "node:path";
 
+import { CLI_NAME } from "./brand.js";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -112,7 +114,7 @@ function writeToFd(fd: number | null, line: string): void {
 export function logAt(level: LogLevel, message: string): void {
   if (LEVEL_ORDER[level] < LEVEL_ORDER[state.minLevel]) return;
   const stamp = new Date().toISOString();
-  const line = `${stamp} ${level.toUpperCase().padEnd(5)} [aos-mcp] ${message}\n`;
+  const line = `${stamp} ${level.toUpperCase().padEnd(5)} [${CLI_NAME}] ${message}\n`;
   if (state.echo) process.stderr.write(line);
   writeToFd(state.fd, line);
 }

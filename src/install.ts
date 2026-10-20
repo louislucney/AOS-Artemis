@@ -120,10 +120,10 @@ export function parseInstallArgs(argv: string[], defaults: InstallOptions = {}):
 
 export function installUsage(): string {
   return [
-    "aos-mcp install — 为项目写入 MCP 客户端配置",
+    "mobile-testing-mcp install — 为项目写入 MCP 客户端配置",
     "",
     "Usage:",
-    "  aos-mcp install [options]",
+    "  mobile-testing-mcp install [options]",
     "",
     "options:",
     "  --project <dir>            目标项目（默认 cwd）",

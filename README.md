@@ -1,6 +1,6 @@
-# AOS MCP
+# mobile-testing-mcp
 
-**AOS × ARTEMIS 合并 MCP 服务**：Figma 设计上下文（[design-context-bridge](https://github.com/CristinaFores/design-context-bridge)，MIT）+ ARTEMIS 真机自动化（[google/artemis](https://github.com/google/artemis)，Apache-2.0）+ **项目级 LLM 关联与切换（PostgreSQL）**。
+**mobile-testing（AOS × ARTEMIS 合并）MCP 服务**：Figma 设计上下文（[design-context-bridge](https://github.com/CristinaFores/design-context-bridge)，MIT）+ ARTEMIS 真机自动化（[google/artemis](https://github.com/google/artemis)，Apache-2.0）+ **项目级 LLM 关联与切换（PostgreSQL）**。
 
 > 设计文档（架构/评审/数据模型）：[DESIGN.md](./DESIGN.md)
 > 项目接入指南（其他项目如何接入与使用：能提供什么、怎么配、怎么用、排障）：[docs/接入指南.md](./docs/接入指南.md)
@@ -72,7 +72,7 @@ node dist/cli.js doctor --install-deps
 | artemis 任务明细（最细粒度） | `artemis/traces/<trace_id>/stdout.log` / `stderr.log` |
 | 客户端侧（stdio） | 服务 stderr 同时被 opencode / Claude Code 捕获进各自 MCP 日志 |
 
-每条工具调用都有审计行，例如：`2026-09-28T15:20:11.123Z INFO  [aos-mcp] tool=mobile_run_task ok=true ms=87 usage=<id>`（失败时附错误摘要，级别 WARN）；`usage=<id>` 对应使用统计里的调用事件，可从日志直接定位事件。
+每条工具调用都有审计行，例如：`2026-09-28T15:20:11.123Z INFO  [mobile-testing-mcp] tool=mobile_run_task ok=true ms=87 usage=<id>`（失败时附错误摘要，级别 WARN）；`usage=<id>` 对应使用统计里的调用事件，可从日志直接定位事件。
 
 **按症状定位**
 
@@ -118,7 +118,7 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 # 端点: POST http://<host>:8765/mcp/<project>    健康检查: GET /healthz
 # 事件入口: POST/GET http://<host>:8765/events/<project>（同样受 AOS_HTTP_TOKEN 保护）
 
-# 客户端配置（或 aos-mcp install --mode http --url http://host:8765）
+# 客户端配置（或 mobile-testing-mcp install --mode http --url http://host:8765；兼容别名 aos-mcp）
 ```
 
 无状态 streamable-HTTP：每个项目独立 Runtime（LLM 关联 / artemis 子进程 / 任务统计）；项目名限 `[A-Za-z0-9._-]`。stdio 与 HTTP 两种入口共用同一套工具。
@@ -157,7 +157,7 @@ curl "http://host:8770/artifact/...?t=$TOKEN"                                   
 - `aos_tasks`：列出本项目 `mobile_run_task` 记录（case id / trace / 状态 / 模型 / 时间），默认先向 artemis 同步完成态；后台每 30s 自动同步；即时报错也会记为 `failed` 终态，生成用例的 `case_id` 由任务描述精确匹配回填。
 - `aos_crashes`：任务终态后自动采集设备 crash buffer，解析为崩溃签名（包名 + 根因异常 + 首个应用帧）并去重计数；`list` 查看、`get` 取完整栈、`scan` 手动扫描。产物在 `.artemis/crashes/`，`AOS_CRASH_CAPTURE=0` 可关闭。
 - `compare_design_and_device`：一次调用返回 **Figma 节点渲染图（PNG@2x）+ 当前真机截图**（MCP image content），交给多模态模型比对布局/间距/颜色/文案。
-- `design_device_diff`：**确定性**设计 vs 真机差异（不依赖多模态）：默认取 Figma 节点 + 实时截图，做对齐与像素判定，输出结构化差异报告（区域/严重度/证据）与标注图并落盘；`alignment.ignoreRegions` 可屏蔽状态栏/视频位等动态区域；`device.platform:"ios"` 支持模拟器（idb→simctl，无损 PNG；`serial` 传 UDID 或自动取唯一已启动模拟器）与**真机（WDA PNG）**，均限 `mode:"live"`；`device:{mode:"step", traceId, stepNumber?, image?}` 可直接复核失败步骤截图（经 `mobile_inspect_trace`，默认 post）；省略 `stepNumber` 时用 `run_outcome` 失败证据检索步骤（Pro，best-effort），报告记录 `anchor`（explicit/search）与候选；设计源 `.pen` 经 pen CLI 渲染（1×，与节点几何对齐），缺 CLI 自动托管安装。
+- `design_device_diff`：**确定性**设计 vs 真机差异（不依赖多模态）：默认取 Figma 节点 + 实时截图，做对齐与像素判定，输出结构化差异报告（区域/严重度/证据）与标注图并落盘；`alignment.ignoreRegions` 可屏蔽状态栏/视频位等动态区域；`device.platform:"ios"` 支持模拟器（idb→simctl，无损 PNG；`serial` 传 UDID 或自动取唯一已启动模拟器）与**真机（WDA PNG）**，均限 `mode:"live"`；`device:{mode:"step", traceId, stepNumber?, image?}` 可直接复核失败步骤截图（经 `mobile_inspect_trace`，默认 post）；省略 `stepNumber` 时用 `run_outcome` 失败证据检索步骤（Pro，best-effort），报告记录 `anchor`（explicit/search）与候选；设计源 `.pen` 经 pen CLI 渲染（1×，与节点几何对齐），缺 CLI 自动托管安装。报告 `unit.device.sourceFormat/lossless` 与 `detail.deviceSource` 记录源保真：iOS 为 PNG；Android live 细节会二次抓 `screencap -p` PNG，step JPEG 会标 `lossy-source` 并降细节阈值；**UI 通过只接受 PNG**。
   **区域核验（放大核验，默认开启）**：按设计叶子节点 ∪ 整屏 diff 命中（无节点源时 tiles 重叠平铺）提议区域 → 在设计渲染×真机**设备原生栅格**上成对裁剪放大 → 1:1 局部判定（细节档 0.05；有损/上采样源自动降为 0.1 并警告）→ 每区域 `device｜design` 并排对图内联前 `returnCrops` 张（hasDiff 优先）并全部落盘 `regions/`；`regions` 可设 `auto|nodes|tiles|none|显式 bbox 数组`（分页＝回传上轮 `regionDetails[].bbox`，序号仅同一响应内有效）、`zoom`（1–4）、`detail` 阈值覆盖；核对纪律：**对比结论必须来自区域级对图（引用区域编号），整屏图仅用于定位**。跨源（设计渲染 vs 真机）误报基线验证中——默认细节档放行以真实项目对基线实验为准（DESIGN §13.118）。
 
 ### 使用统计（usage）
@@ -383,9 +383,11 @@ node dist/cli.js suite task list|show <id> [--json]
 node dist/cli.js suite run --task <id> --device <serial> [--device <serial>...]
 node dist/cli.js suite report --task <id> [--out <dir>] [--no-save] [--json]
 node dist/cli.js suite backfill [--dry-run] [--since <ISO>] [--project <dir>] [--json]
+node dist/cli.js suite ui-contract [--out <dir>] [--project <dir>] [--json]
 ```
 
 - `run`：逐例复位 → 提交 → 轮询终态 → 台账，输出预检摘要、逐例 PASS/FAIL 与失败域（应用缺陷/环境/**API 错误（未处理）**/数据环境/行为或设计/**设计推断**/用例缺陷/未分类；每例附「脚本 断言N/探索M」来源计数）；批次清单自动落盘 `.artemis/design/runs/`（一文件一批次：gate/失败域归并/预检摘要/用例行；`--no-save` 跳过、`AOS_SUITE_RUNS=0` 关闭、`AOS_SUITE_RUNS_MAX` 默认 200，见 DESIGN §13.95）；iOS 运行会把探索步骤命中自动写入对账资产 `.artemis/design/reconciliation.json`（Android 经 `data_engine.db` OCR/归一 taps 同样发现，需 Node ≥ 22.5，缺失自动降级；幂等，下次生成自动升级为硬断言）；同时记录「真机有设计无」的**反向观测**（runtime-only 证据级条目，不参与生成）；失败附 `suite evidence <traceId>` 提示；`--device` 为 iOS 模拟器 UDID 时用例由 AOS iOS 执行器运行（`--app` 经 idb terminate+launch 复位；日志采集标 `ios-log-unsupported` 降级）；`--fail-on-uncovered` 按预检**硬覆盖**判定——未硬覆盖屏幕/跳转、生成截断，或无法校验（缺/坏 `flows.json`）一律 exit 2（inferred 探索缺口仅报告不阻断；`--strict` 追加弱断言门禁），自定义 `--tests` 同样参与校验（流程完整性契约见 DESIGN §6.10）；`--retry N`（≤3）对未通过用例重跑做 flaky 诊断并如实标注（`retry.flaky`）；**首跑结果仍决定门禁**（重跑转绿不计首跑通过）；`.artemis/design/quarantine.json`（须 `owner`+`signedAt`，可选 `expiresAt`）中的隔离用例仍执行并标注，**失败不计门禁**，过期自动恢复；`--no-quarantine` 严格审计跑。**回归任务模式** `--task <id>`（与 `--tests` 互斥）：按引用份×设备展开子运行（`--device` 可重复；同设备内跨份重复 caseId 只跑一次）、逐子运行登记 `suite_runs`/`suite_run_cases`（带任务关联与**同份对比**：修复/回归/仍失败/新增/消失，跨端差异提示）、任务状态机 pending→running→completed/partial/failed；子集运行不做全图覆盖门禁（如实标注；`--fail-on-uncovered` 忽略）。普通 `run`/`loop` 每次执行同样 best-effort 登记（`--no-save` 跳过；store 不可用如实降级、不影响退出码）。
+- **UI 核验与功能分开**：`suite run` 逐例/汇总额外输出 `UI` 状态（`passed|failed|unverified|not-applicable`），批次清单写 `summary.ui` 与 `cases[].ui`，面板最新批次/批次表显示 `UI 未验证 N` 徽标；默认 `unverified`，**功能通过不会冒充 UI 通过**，也不改变现有功能门禁。`ui:passed` 只接受无损 PNG 源（`isUiPass`）；Android trace 的 JPEG 源最多 report-only。
 - `evidence`：一次拿到失败项、崩溃签名、锚定失败步骤截图与可选设计差异引用（默认落 `.artemis/design/evidence/<traceId>/`）。
 - `check`：静态检查（tests.json × flows.json × 三件套 × 真实数据约束），**不连设备**，供 pre-merge CI；未硬覆盖屏幕/跳转、生成截断、缺/坏 flows.json、**缺 tests.xlsx 或 xlsx 早于 tests.json**（三件套强制）、**用例缺 `【真实数据】` 约束标记**（禁止伪造页面/假数据，数据须经真实请求链路）均 exit 2（探索缺口仅报告；`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告。
 - `reconcile`：对账审阅面（`list` 列举差异/来源/命中/决定历史/逆向观测；`confirm` 人工确认 → human-confirmed 硬断言；`reject` 驳回 → 边不进生成；runtime-only 逆向观测仅裁决留痕；幂等、改判追加历史；未裁决不升权；未知边 exit 1、缺参 exit 2）。
@@ -406,6 +408,7 @@ node dist/cli.js suite backfill [--dry-run] [--since <ISO>] [--project <dir>] [-
 - `report`：从运行台账导出 xlsx 结果页（含「功能」「端」列 + API 错误/处理判定列）+ **追溯矩阵工作表**（design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据，含未覆盖与缺口标注）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）；`--task <id>` 改出**回归任务报告**（逐例来自 `suite_runs`，命名 `<时间戳>_<功能>_回归.xlsx`，多功能 → `多功能N项`）。
 - `feedback`：按屏幕/断言/数据/API 错误维度给出可追踪到 case/trace 的改进建议，并追加**出口清单（按最新裁决）**——案例问题/执行偏差（按设备计数）/应用缺陷（含已建单数），JSON 输出带 `exits`（`appDefects` 每条含 `jiraKey`）；与面板统计/生成侧同源（只读，不自动改写生成物）。
 - `backfill`：从磁盘产物（`.artemis/design/runs/*.json` 批次清单 + `.artemis/design/case-sets/*.json` 归档）**幂等重建登记**，补上降级期间漏登记/无登记的份与运行（**只读扫描、绝不改写产物**；**须中心 PG**，内存降级 exit 2）。重复运行已登记项全部 skip；默认只回填**不早于项目最早登记时间**的产物（`--since <ISO>` 覆盖，须为可解析 ISO（建议 `YYYY-MM-DDTHH:mm:ss.sssZ`），非法 exit 2；`beforeSince` 计数；空库无下界并告警）；`--dry-run` 只报告不写库（`registered` 恒 0、`wouldRegister`＝将登记数）；失效产物计 `invalid` 并告警。**局限**：既有任务/引用的历史 id 不可复原（回填产生新 id，仅同窗口经批次清单 `caseSetJsonPath`/`testsPath` 可达的悬空引用经路径桥修复）、回归服务之前的历史清单不回填。见 DESIGN §13.117。
+- `ui-contract`：从 `flows.json` + 逐屏 `.pen` **投影** UI 契约（不另建第二份提取管线），输出 `.artemis/design/ui-contract.{json,md}`：逐屏 token（圆角/颜色/字体/字号/字重/间距）、几何计数与 `extracted|partial|unverifiable|no-baseline` 四态；没有逐屏 `.pen` 的屏幕标 `no-baseline`，不得猜 UI。`--out <dir>` 改输出目录。
 - 公共选项：`--project <dir>`（项目根，默认 cwd/`AOS_PROJECT_DIR`）、`--json`（机器可读输出）。
 
 
@@ -512,11 +515,11 @@ node dist/cli.js doctor
 #               "MOBILE_TESTING_DATABASE_URL": "postgres://user:pass@host:5432/mobile-testing" }
 ```
 
-未配置 `MOBILE_TESTING_DATABASE_URL` 时降级为会话内存存储（`aos_status` 会警告）。
+未配置 `MOBILE_TESTING_DATABASE_URL` 时使用项目文件台账（`.artemis/ledger/`，重启不丢）；只有台账目录不可写才退回会话内存（`aos_status` 会如实标注）。
 
 厂商模型会下线（如 DeepSeek 旧名 `deepseek-v4-flash` 已由 `deepseek-flash` 别名接管）：服务会按 `AOS_MODEL_REFRESH_HOURS`（默认 12h）定时刷新已配置厂商的 `/models` 列表，模型下线时自动修复为厂商稳定别名/同族等价模型（`AOS_LLM_AUTO_REPAIR=0` 关闭），并在 `mobile_run_task` 前拦截无法修复的失效模型，避免任务跑到一半才失败。
 
-公司网络需代理出网时：Node 侧请求（模型目录刷新、Figma REST）需 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（Node ≥ 24；Node 的 fetch 默认不读代理变量）。`aos-mcp install` 会把当前 shell 的代理变量带入客户端配置。
+公司网络需代理出网时：Node 侧请求（模型目录刷新、Figma REST）需 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（Node ≥ 24；Node 的 fetch 默认不读代理变量）。`mobile-testing-mcp install` 会把当前 shell 的代理变量带入客户端配置。
 
 ## 工具
 
@@ -581,7 +584,11 @@ node dist/cli.js doctor
 | 设计 vs 真机差异 | `.artemis/design/diffs/<node>-<时间戳>/`（report.json / annotated.png / design.png / device.png） |
 | 崩溃取证 | `.artemis/crashes/`（Android：crash buffer；iOS trace：宿主机 `~/Library/Logs/DiagnosticReports/*.ips` 按任务窗口采集，`aos_crashes` 的 kind=`ios`） |
 | 测试文档（flows / gaps / tests.{json,md,xlsx} / build-brief 等设计产物） | `.artemis/design/` |
-| AOS 日志 | `.artemis/logs/aos-mcp.log`、`artemis-child.log` |
+| 服务日志 | `.artemis/logs/aos-mcp.log`、`artemis-child.log` |
+
+**存储回流**：配置 `MOBILE_TESTING_DATABASE_URL` 后，服务启动会自动把当前项目 `.artemis/ledger/usage.jsonl`、`state.json` 与 `.artemis/design/{runs,case-sets}` 中的历史记录幂等补进中心 PG（成功后写 `.artemis/ledger/.pg-sync.json` 签名，未变化跳过；`AOS_LEDGER_AUTO_IMPORT=0` 关闭）。未配置 PG 时继续使用项目文件台账，不丢记录。
+
+**项目显示名**：`aos.config.jsonc` 可写 `"project": { "name": "mobile-testing" }`；缺省仍用目录 basename。台账、面板与 `aos_status.project.name` 使用该名称。
 
 ## PostgreSQL 数据模型（v1）
 
@@ -591,7 +598,7 @@ node dist/cli.js doctor
 
 ```
 AOS-ARTEMIS/
-├── src/ test/            # aos-mcp 服务（本仓库）
+├── src/ test/            # mobile-testing-mcp 服务（本仓库）
 ├── artemis/              # git submodule → github.com/google/artemis（Python 子进程依赖）
 ├── design-context-bridge/# git submodule → github.com/CristinaFores/design-context-bridge（vendor 参照）
 └── aos.config.jsonc      # 项目配置（无密钥）

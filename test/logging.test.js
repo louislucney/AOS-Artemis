@@ -27,8 +27,8 @@ test("logger: writes timestamped leveled lines to the file sink", () => {
   log("careful", "warn");
 
   const content = fs.readFileSync(file, "utf-8");
-  assert.match(content, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z INFO {2}\[aos-mcp\] hello 世界$/m);
-  assert.match(content, /WARN {2}\[aos-mcp\] careful/m);
+  assert.match(content, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z INFO {2}\[mobile-testing-mcp\] hello 世界$/m);
+  assert.match(content, /WARN {2}\[mobile-testing-mcp\] careful/m);
   assert.ok(!content.includes("hidden at info level"));
   closeLogging();
 });
@@ -39,7 +39,7 @@ test("logger: debug level reveals debug lines", () => {
   logDebug("visible now");
   assert.match(
     fs.readFileSync(path.join(dir, "aos-mcp.log"), "utf-8"),
-    /DEBUG \[aos-mcp\] visible now/
+    /DEBUG \[mobile-testing-mcp\] visible now/
   );
   closeLogging();
 });

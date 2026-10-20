@@ -7,7 +7,7 @@ import { exportProjectData, type ExportWhat } from "./export/index.js";
 import { errorMessage } from "./util.js";
 
 const USAGE = [
-  "用法: aos-mcp export --what results|process|data [--format json|csv] [--project <dir>]",
+  "用法: mobile-testing-mcp export --what results|process|data [--format json|csv] [--project <dir>]",
   "         [--out <file>] [--since <ISO>] [--limit <n>]",
   "  三口径导出：results（测试结果）/ process（测试过程）/ data（测试用的数据）；缺省 JSON 输出到 stdout"
 ].join("\n");

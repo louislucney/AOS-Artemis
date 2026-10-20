@@ -6,6 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } fr
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
+import { CLI_NAME } from "./brand.js";
 import { loadProject } from "./config/loader.js";
 import { configDirAbs } from "./artemis/assembly.js";
 import { traceIdOf } from "./artemis/task-result.js";
@@ -108,7 +109,7 @@ function figmaToolSchema(name: string, schema: z.ZodTypeAny): unknown {
 /** Build a fully wired MCP Server for one project runtime (stdio or HTTP). */
 export function createServerForRuntime(runtime: Runtime | null, initError: string | null): Server {
   const server = new Server(
-    { name: "aos-mcp", version: AOS_MCP_VERSION },
+    { name: CLI_NAME, version: AOS_MCP_VERSION },
     {
       capabilities: { tools: {} },
       instructions:
@@ -159,7 +160,7 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
 
     if (native) {
       if (!runtime) {
-        return errorResult(`AOS 项目初始化失败：${initError ?? "未知错误"}\nRun: aos-mcp doctor`);
+        return errorResult(`AOS 项目初始化失败：${initError ?? "未知错误"}\nRun: mobile-testing-mcp doctor`);
       }
       const parsed = native.schema.safeParse(args ?? {});
       if (!parsed.success) {
@@ -183,7 +184,7 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
     }
 
     if (!runtime) {
-      return errorResult(`AOS 项目初始化失败：${initError ?? "未知错误"}\nRun: aos-mcp doctor`);
+      return errorResult(`AOS 项目初始化失败：${initError ?? "未知错误"}\nRun: mobile-testing-mcp doctor`);
     }
 
     // setup_required gate: mobile_run_task needs a project LLM; other mobile tools pass.
@@ -267,7 +268,7 @@ export async function runServer(): Promise<void> {
       logDir:
         process.env.AOS_LOG_DIR?.trim() ||
         path.join(configDirAbs(project.config, project.rootDir), "logs"),
-      startupLine: `aos-mcp ${AOS_MCP_VERSION} 启动（stdio）项目=${project.rootDir}`,
+      startupLine: `mobile-testing-mcp ${AOS_MCP_VERSION} 启动（stdio）项目=${project.rootDir}`,
       deps: {
         repoDir: project.config.artemis.repo,
         source: resolveDepsSource(project.config)
@@ -321,5 +322,5 @@ export async function runServer(): Promise<void> {
   });
   process.stdin.on("end", () => void shutdown(0));
 
-  log(`aos-mcp ${AOS_MCP_VERSION} 已启动（stdio）`);
+  log(`mobile-testing-mcp ${AOS_MCP_VERSION} 已启动（stdio）`);
 }

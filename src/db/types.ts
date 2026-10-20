@@ -430,7 +430,9 @@ export interface CreateRegressionTaskInput {
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */
 export interface ProjectStore {
   readonly kind: "postgres" | "file" | "memory";
-  upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord>;
+  /** `updateName: false` keeps an existing display name (used by incidental
+   * records such as model-cache writes that only know the directory basename). */
+  upsertProject(input: { rootPath: string; name: string; updateName?: boolean }): Promise<ProjectRecord>;
   getProjectByPath(rootPath: string): Promise<ProjectRecord | null>;
   setFigmaToken(rootPath: string, token: string | null): Promise<void>;
   listLlms(rootPath: string): Promise<ProjectLlmRecord[]>;

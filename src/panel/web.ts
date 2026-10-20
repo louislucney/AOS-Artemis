@@ -49,6 +49,7 @@ import {
   PANEL_BATCH_LIMIT_MAX,
   type PanelBatchDetail,
   type PanelBatchRow,
+  type PanelBatchSummary,
   type PanelDeps,
   type PanelImprovementItem,
   type PanelOverview,
@@ -600,6 +601,14 @@ function batchGateCell(gate: "pass" | "fail" | null, summary: { total?: number |
     : gateSpan(gate);
 }
 
+function uiBadge(ui: PanelBatchSummary["ui"] | undefined): string {
+  if (ui === null || ui === undefined) return "";
+  if (ui.failed > 0) return `<span class="chip gate-fail">UI fail ${ui.failed}</span>`;
+  if (ui.unverified > 0) return `<span class="chip">UI 未验证 ${ui.unverified}</span>`;
+  if (ui.passed > 0) return `<span class="chip gate-pass">UI pass ${ui.passed}</span>`;
+  return "";
+}
+
 const LAMP_LABELS: Record<PanelProjectRow["lamp"], string> = {
   red: "阻断",
   yellow: "需关注",
@@ -649,9 +658,10 @@ function renderLatestBatchCell(row: PanelProjectRow): string {
   const note = batch.note !== null ? ` · ${escapeHtml(batch.note)}` : "";
   return [
     batchGateCell(batch.gate, batch.summary),
+    uiBadge(batch.ui),
     `<code>${escapeHtml(batch.runId ?? "（不可读）")}</code>`,
     `<div class="muted">${relativeTime(batch.finishedAt)}${summary}${note}</div>`
-  ].join("<br>");
+  ].filter((part) => part !== "").join("<br>");
 }
 
 function hostDepsLabel(status: string): string {
@@ -886,6 +896,7 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
     batch.summary === null
       ? "—"
       : `${batch.summary.passed ?? "—"}/${batch.summary.total ?? "—"}`,
+    uiBadge(batch.ui) || "—",
     batch.failureDomains === null
       ? "—"
       : escapeHtml(
@@ -930,7 +941,7 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
     '<section id="batches">',
     "<h2>测试批次</h2>",
     trendLine,
-    renderTable(["开始", "结束", "来源", "门禁", "通过/总数", "失败域", "清单"], rows, empty, "测试批次"),
+    renderTable(["开始", "结束", "来源", "门禁", "通过/总数", "UI", "失败域", "清单"], rows, empty, "测试批次"),
     "</section>"
   ]
     .filter((part) => part !== "")

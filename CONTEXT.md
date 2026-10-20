@@ -1,4 +1,4 @@
-# CONTEXT — AOS-ARTEMIS 领域术语表
+# CONTEXT — mobile-testing 领域术语表
 
 > 本文件只放术语（glossary），不放实现与规格。
 

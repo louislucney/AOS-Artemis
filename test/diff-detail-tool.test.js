@@ -99,6 +99,7 @@ test("design_device_diff: 默认 auto 区域核验——对图内联、regionDet
       assert.equal(payload.detail.tilesUsed, false);
       assert.equal(payload.detail.truncated, false);
       assert.equal(payload.detail.degraded, false, JSON.stringify(payload.warnings));
+      assert.deepEqual(payload.detail.deviceSource, { format: "png", lossless: true });
       assert.deepEqual(payload.warnings, []);
       assert.ok(payload.detail.regionCount >= 1, JSON.stringify(payload.regionDetails));
       assert.ok(payload.regionDetails.some((region) => region.localSummary.hasDiff));

@@ -59,6 +59,13 @@ export interface FigmaConfig {
   tokenEnv?: string;
 }
 
+/** Project identity shown in records/panel. The directory basename remains the
+ * fallback; an explicit name keeps the display stable when the checkout is
+ * renamed or the service repo is used as its own project. */
+export interface ProjectConfig {
+  name?: string;
+}
+
 export interface ArtemisConfig {
   repo: string;
   python?: string;
@@ -99,6 +106,7 @@ export interface DeviceHostsConfig {
 
 export interface AosConfig {
   llm: LlmConfig;
+  project?: ProjectConfig;
   figma?: FigmaConfig;
   artemis: ArtemisConfig;
   install?: InstallConfig;

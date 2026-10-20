@@ -1,4 +1,4 @@
-# AOS × ARTEMIS 合并 MCP 服务 — 设计文档
+# mobile-testing（AOS × ARTEMIS 合并）MCP 服务 — 设计文档
 
 - **版本**: v0.3（容器化多租户 + PostgreSQL 版）
 - **日期**: 2026-09-28
@@ -1982,4 +1982,19 @@ llm_switch(name, force):
 > 2026-10-20。`suite_runs` 新增 `run_id TEXT`（PG 建表 + `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` + `(project_id, run_id)` 索引）；`SuiteRunRecord.runId` 为 `string | null`，登记时由 manifest runId 填充（`buildSuiteRunInput` 可从 `manifestPath` 读取，backfill 直接取 manifest.runId）。
 > **回写**：`ProjectStore.markSuiteRunFinishedByRunId` 三实现；事件消费者在 `run.finished` 且 `runId` 非空时映射 `passed → completed`、其余终态 `→ failed`，与 task_stats 的 `payload.traceId` 桥并行；未命中返回 false，不伪造。
 > **测试**：`events-ingress` 增 1 例（run.finished → suite run failed）；`events-store-pg` 增 1 例（run_id 持久化 + 按 runId 回写 + 未命中）；全量 **1763 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.146 实施记录（品牌命名 + 项目显示名 + 文件台账自动回流）
+
+> 2026-10-20。**品牌**：用户可见名称统一为 `mobile-testing`（控制台标题/页脚、CLI 帮助、启停日志、README）；CLI 主名 `mobile-testing-mcp`，`aos-mcp` 保留为 bin 别名与 Docker 容器默认名；`AOS_*` 环境变量、`aos.config.jsonc`、`.artemis/`、日志文件名 `aos-mcp.log` 均不变（兼容既有接入）。实现集中：`src/brand.ts`（`PRODUCT_NAME`/`CLI_NAME`/`CONSOLE_NAME`）+ `src/console/shell.ts`、`src/cli.ts`、`src/server.ts`、`src/http-server.ts`。
+> **项目显示名**：`aos.config.jsonc` 新增可选 `project.name`（去空白；非字符串拒绝）；`Runtime.initialize` 以它替代目录 basename 注册项目。`ProjectStore.upsertProject` 新增 `updateName?: boolean`（默认 true）；`upsertLlm`/`putModelCache` 等仅带 basename 的顺带写入传 `updateName:false`，避免覆盖显式显示名。服务仓库自身配置 `project.name = "mobile-testing"`，面板不再显示 `AOS-ARTEMIS`。
+> **自动回流**：存储为 PostgreSQL 时，`Runtime.initialize` 调用 `autoImportLocalLedger`（`src/ledger/auto-import.ts`）：读取 `.artemis/ledger/usage.jsonl` + `state.json` → `migrateLegacyLedger`（保留原 id，幂等）；扫描 `.artemis/design/runs` + `case-sets` → `runBackfill`（幂等登记）。成功后写 `.artemis/ledger/.pg-sync.json`（本地文件签名；未变化则跳过），失败仅 WARN 不阻断启动；`AOS_LEDGER_AUTO_IMPORT=0` 关闭。文件/内存存储不改动本地数据。
+> **当日数据修复**：`starbucks-ios-taiwan` 补 `MOBILE_TESTING_DATABASE_URL` 客户端配置；`suite backfill` 登记 1 个 run/4 份 case set，`aos_ledger_migrate` 导入 26 条历史 usage（保留原 id）。此后该项目的启动会自动回流新增本地记录，不再依赖人工提醒。
+
+### 13.147 实施记录（UI 核验状态与截图源保真）
+
+> 2026-10-20。功能通过不等于 UI 通过：`SuiteCaseResult` 新增可选 `ui: UiVerification`（`passed|failed|unverified|not-applicable`，含 `reason`/`contractRef`/`screenId`/`sourceFormat`/`lossless`/`detailThreshold`/`regions`/`evidence`）；`SuiteRunReport.ui` 为四态计数；`suite run` 逐例与汇总分别打印 `UI` 状态，**不改变现有功能门禁**。默认 `unverified`：有 `.artemis/design/ui-contract.json` 记 `ui-check-not-run`，否则 `no-ui-contract`；`isUiPass` 要求 `status=passed && sourceFormat=png && lossless=true`。批次清单同步写 `summary.ui` 与 `cases[].ui`（旧清单缺字段按缺省处理）。
+> **截图源**：iOS AOS trace 为 PNG；Android artemis 在 `accessibility_client.py` 将 adb PNG 以 JPEG quality 80 重编码（`pil_to_base64`，RGBA→RGB），data_engine 亦按 `.jpg` 落盘。`design_device_diff` 的 `unit.device` 新增 `sourceFormat`/`lossless`；`detail.deviceSource` 记录细节通道实际源。Android live 细节会二次抓 PNG；step 非 PNG 标 `lossy-source` 并降细节阈值到 0.1。JPEG 的 alpha 丢失对不透明设备截图通常非主因，主要风险是压缩振铃/块效应；`ui:passed` 只接受 PNG，JPEG 源最多 report-only。
+> **面板**：`PanelBatchSummary.ui` 读取清单 `summary.ui`；项目页最新批次与批次表新增 UI 徽标（`UI 未验证 N` / `UI fail N` / `UI pass N`），功能门禁色不变。
+> **UI 契约（P0 首版）**：`suite ui-contract` 从 `flows.json` + `.artemis/design/pen/screens/<screenId>.pen` 投影 `ui-contract.{json,md}`，共享 `screen.id` 与设计源指纹；逐屏 token（cornerRadius/colors/fonts/fontSizes/fontWeights/spacing）+ 几何四态（`extracted|partial|unverifiable|no-baseline`）+ `presentation`。缺逐屏 `.pen` 标 `no-baseline`，不猜 UI；Figma 源/逐屏 PNG 适配器仍待 P6。当前 iOS 样例 19 屏：4 partial、15 no-baseline。
+> **测试**：新增 `test/ui-verification.test.js` 3 例、`test/ui-contract.test.js` 3 例；`suite-command` 断言 `ui` 计数/清单字段；`design-device-diff`/`diff-detail-tool` 断言源格式。
 

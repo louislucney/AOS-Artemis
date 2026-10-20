@@ -462,7 +462,7 @@ test("http server: 设 token 后未授权请求被 401 拦截（闸门先于路�
           body: p === "/panel/api/tasks" || p === "/mcp/demo" ? "{}" : undefined
         });
         assert.equal(res.status, 401, `${p} 无凭据应 401`);
-        assert.equal(res.headers.get("www-authenticate"), 'Basic realm="aos-mcp"', p);
+        assert.equal(res.headers.get("www-authenticate"), 'Basic realm="mobile-testing-mcp"', p);
       }
 
       const bearerOk = await fetch(`http://127.0.0.1:${handle.port}/panel`, {

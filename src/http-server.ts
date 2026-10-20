@@ -5,6 +5,7 @@ import path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 import { authorizeRequest, isLoopbackHost, unauthorizedResponse } from "./auth.js";
+import { CLI_NAME } from "./brand.js";
 import { loadProject, defaultArtemisRepo, emptyConfig } from "./config/loader.js";
 import { resolveDepsSource } from "./artemis/bootstrap.js";
 import { startBridge } from "./figma/bridge.js";
@@ -172,7 +173,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   const serviceRepo = path.resolve(process.env.AOS_ARTEMIS_REPO ?? defaultArtemisRepo());
   const runtimeHost = await RuntimeHost.prepare({
     logDir: process.env.AOS_LOG_DIR?.trim() || path.join(workspaceRoot, ".aos-mcp", "logs"),
-    startupLine: `aos-mcp ${AOS_MCP_VERSION} 启动（HTTP）workspace=${workspaceRoot}`,
+    startupLine: `${CLI_NAME} ${AOS_MCP_VERSION} 启动（HTTP）workspace=${workspaceRoot}`,
     deps: { repoDir: serviceRepo, source: resolveDepsSource(emptyConfig(), process.env) }
   });
   const store = options.store ?? runtimeHost.store;
@@ -243,7 +244,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           !isExempt(req.method, url.pathname) &&
           !authorizeRequest({ authorization: req.headers.authorization, token })
         ) {
-          const unauthorized = unauthorizedResponse("aos-mcp");
+          const unauthorized = unauthorizedResponse(CLI_NAME);
           const headers = { ...unauthorized.headers };
           if (req.method === "HEAD") headers["Content-Length"] = "0";
           res.writeHead(unauthorized.status, headers);
@@ -258,7 +259,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
         ) {
           const body = JSON.stringify({
             ok: true,
-            service: "aos-mcp",
+            service: CLI_NAME,
             version: AOS_MCP_VERSION,
             workspaceRoot,
             projects: [...runtimes.keys()]
@@ -552,7 +553,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   });
   const address = httpServer.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
-  log(`aos-mcp HTTP 已启动: http://${host}:${actualPort}/mcp/<project>（workspace: ${workspaceRoot}）`);
+  log(`${CLI_NAME} HTTP 已启动: http://${host}:${actualPort}/mcp/<project>（workspace: ${workspaceRoot}）`);
 
   const close = async (): Promise<void> => {
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));

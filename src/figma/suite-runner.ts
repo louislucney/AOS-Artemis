@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 import { loadApiErrorCatalog, type ApiErrorObservation } from "../artemis/api-errors.js";
@@ -13,6 +14,12 @@ import { resetApp, type AppResetOptions, type AppResetOutcome, type AppResetRequ
 import type { IosDevice } from "../device/ios-actions.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
+import {
+  summarizeUi,
+  unverifiedUi,
+  type UiSummary,
+  type UiVerification
+} from "../ui/verification.js";
 import { executeCase } from "./case-runner.js";
 import { designDir, loadDesignFlowGraph, loadGeneratedCases, type GeneratedCase } from "./design-store.js";
 import {
@@ -61,6 +68,8 @@ export interface SuiteCaseResult {
     stdoutLog: string | null;
   };
   reset: AppResetOutcome | null;
+  /** UI 核验状态；与功能 status 分离。缺省 `unverified`，不得用功能通过冒充 UI 通过。 */
+  ui?: UiVerification;
   /** 在 `.artemis/design/quarantine.json` 中且未过期：如实标注，不计门禁。 */
   quarantined?: boolean;
   /** Present when `--retry` re-ran this non-passed case. Diagnosis only: the
@@ -81,6 +90,8 @@ export interface SuiteRunReport {
   skipped: number;
   passed: number;
   failed: number;
+  /** UI 核验计数（与功能通过/失败分开）。 */
+  ui: UiSummary;
   preflight: PreflightReport | null;
   apiErrorCatalog: { file: string; rules: number; errors: string[] } | null;
   cases: SuiteCaseResult[];
@@ -418,6 +429,7 @@ export async function runGeneratedTests(
       skipped: 0,
       passed: 0,
       failed: 0,
+      ui: { passed: 0, failed: 0, unverified: 0, notApplicable: 0 },
       preflight: null,
       apiErrorCatalog: null,
       cases: [],
@@ -478,6 +490,12 @@ export async function runGeneratedTests(
     });
     if (outcome.submitted) submitted += 1;
     if (outcome.submitError && !firstSubmitError) firstSubmitError = outcome.submitError;
+    if (!outcome.result.ui) {
+      const hasContract = fs.existsSync(
+        path.join(designDir(runtime.configDirAbs), "ui-contract.json")
+      );
+      outcome.result.ui = unverifiedUi(hasContract ? "ui-check-not-run" : "no-ui-contract");
+    }
     results.push(outcome.result);
     if (
       outcome.terminal &&
@@ -501,6 +519,7 @@ export async function runGeneratedTests(
     skipped: cases.length - results.length,
     passed,
     failed,
+    ui: summarizeUi(results),
     preflight,
     apiErrorCatalog: apiCatalog
       ? { file: apiCatalog.file, rules: apiCatalog.rules.size, errors: apiCatalog.errors }

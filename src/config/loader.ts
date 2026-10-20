@@ -10,7 +10,8 @@ import type {
   DeviceHostsConfig,
   FigmaConfig,
   InstallConfig,
-  LlmProfile
+  LlmProfile,
+  ProjectConfig
 } from "./types.js";
 import { DEFAULT_CONFIG_DIR } from "./types.js";
 import { makeResolver, validateConfig, type ValidationResult, type ValueResolver } from "./validate.js";
@@ -132,6 +133,20 @@ export function normalizeConfig(data: unknown): AosConfig {
     if (artemis.repo === undefined || artemis.repo === null) artemis.repo = "";
   }
 
+  const projectRaw = obj.project;
+  let project: ProjectConfig | undefined;
+  if (projectRaw !== undefined && projectRaw !== null) {
+    if (typeof projectRaw !== "object" || Array.isArray(projectRaw)) {
+      throw new Error(`${CONFIG_FILENAME}: "project" must be an object`);
+    }
+    const projectObj = projectRaw as Record<string, unknown>;
+    if (projectObj.name !== undefined && projectObj.name !== null && typeof projectObj.name !== "string") {
+      throw new Error(`${CONFIG_FILENAME}: "project.name" must be a string`);
+    }
+    const name = typeof projectObj.name === "string" ? projectObj.name.trim() : "";
+    project = name === "" ? undefined : { name };
+  }
+
   const deviceHostsRaw = obj.deviceHosts;
   let deviceHosts: DeviceHostsConfig | undefined;
   if (deviceHostsRaw !== undefined && deviceHostsRaw !== null) {
@@ -143,6 +158,7 @@ export function normalizeConfig(data: unknown): AosConfig {
 
   return {
     llm: { defaultProfile, profiles },
+    project,
     figma: (obj.figma as FigmaConfig | undefined) ?? undefined,
     artemis,
     install: (obj.install as InstallConfig | undefined) ?? undefined,

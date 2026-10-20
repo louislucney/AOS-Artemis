@@ -11,36 +11,36 @@ import { runUsageCommand } from "./usage-command.js";
 import { runPanelCommand } from "./panel-command.js";
 
 function printUsage(): void {
-  console.log(`aos-mcp — AOS × ARTEMIS unified MCP service
+  console.log(`mobile-testing-mcp — AOS × ARTEMIS unified MCP service
 
 Usage:
-  aos-mcp serve     Run the MCP server (stdio by default)
-  aos-mcp serve --http [--port 8765] [--host 127.0.0.1] [--workspace <dir>]
+  mobile-testing-mcp serve     Run the MCP server (stdio by default)
+  mobile-testing-mcp serve --http [--port 8765] [--host 127.0.0.1] [--workspace <dir>]
                     Stateless streamable-HTTP endpoint: POST /mcp/<project>
-  aos-mcp init      Generate aos.config.jsonc and .env.example in the current directory
-  aos-mcp doctor [--install-deps]
+  mobile-testing-mcp init      Generate aos.config.jsonc and .env.example in the current directory
+  mobile-testing-mcp doctor [--install-deps]
                     Health check; --install-deps installs artemis dependencies from the
                     configured bundle (AOS_ARTEMIS_DEPS_URL / artemis.depsUrl)
-  aos-mcp install   Write project-level MCP configs for Claude Code / Cursor / VS Code / opencode
-  aos-mcp deps build
+  mobile-testing-mcp install   Write project-level MCP configs for Claude Code / Cursor / VS Code / opencode
+  mobile-testing-mcp deps build
                     Build the artemis dependency bundle (cross-platform, per OS/arch):
                     dist-deps/artemis-deps-<os>-<arch>.tar.gz + .sha256
                     options: --out DIR  --repo DIR  --work DIR  --skip-sync  --uv PATH
-  aos-mcp suite <run|check|calibrate|loop|flake|evidence|baseline|report|feedback> [options]
+  mobile-testing-mcp suite <run|check|calibrate|loop|flake|evidence|baseline|report|feedback> [options]
                     Deterministic test loop over .artemis/design/tests.json:
                     run | check | calibrate | loop | flake | evidence <traceId> | baseline save|compare | report | feedback
-                    (see "aos-mcp suite help" for options; exit codes: 0 ok / 1 test failure / 2 error)
-  aos-mcp jira issue <create|comment|label|transition|link> [options]
-                    Jira 工作流（与 MCP 工具共用客户端与凭证；见 "aos-mcp jira help"；
+                    (see "mobile-testing-mcp suite help" for options; exit codes: 0 ok / 1 test failure / 2 error)
+  mobile-testing-mcp jira issue <create|comment|label|transition|link> [options]
+                    Jira 工作流（与 MCP 工具共用客户端与凭证；见 "mobile-testing-mcp jira help"；
                     exit codes: 0 成功 / 1 请求或配置失败 / 2 用法错误）
-  aos-mcp usage [--json] [--all] [--project <名称>] [--days <n>]
+  mobile-testing-mcp usage [--json] [--all] [--project <名称>] [--days <n>]
                     使用统计：默认当前项目摘要（--days 默认 7）；--json 机器可读；
                     --all 跨项目总览；--project 选择已注册项目
-  aos-mcp usage --web [--port 8766] [--host 127.0.0.1]
+  mobile-testing-mcp usage --web [--port 8766] [--host 127.0.0.1]
                     只读看板（复用 /usage 与 /usage.json）；端口占用 exit 2
-  aos-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]
+  mobile-testing-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]
                     多项目总览面板（只读；复用 /panel 与 /panel.json）
-  aos-mcp export --what results|process|data [--format json|csv] [--project <dir>]
+  mobile-testing-mcp export --what results|process|data [--format json|csv] [--project <dir>]
                     [--out <file>] [--since <ISO>] [--limit <n>]
                     三口径导出：results（测试结果）/ process（测试过程）/ data（测试用的数据）
 
@@ -51,7 +51,7 @@ install options:
                          local = node <service>/dist/index.js (default)
                          docker = docker exec -i -w /workspace/<project> <container> node /app/dist/index.js
                          http = remote URL http://<host>:<port>/mcp/<project>
-  --container <name>     Container name for docker mode (default: aos-mcp)
+  --container <name>     Container name for docker mode (default: aos-mcp, legacy alias)
   --url <base>           Base URL for http mode (default: http://127.0.0.1:8765)
   --service <path>       Service entry path for local mode (default: this install's dist/index.js)
   --force                Overwrite an existing but different aos entry
@@ -149,6 +149,6 @@ void (async () => {
       process.exit(1);
   }
 })().catch((error: unknown) => {
-  console.error("[aos-mcp] fatal:", error);
+  console.error("[mobile-testing-mcp] fatal:", error);
   process.exit(1);
 });

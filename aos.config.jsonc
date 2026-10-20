@@ -4,6 +4,11 @@
   // 并持久化到 PostgreSQL。本文件用于多档案精细控制 / nodeOverrides / 固定设备等。
   // 详见 DESIGN.md §4。
 
+  // 项目显示名（台账/面板）；缺省用目录名。
+  "project": {
+    "name": "mobile-testing"
+  },
+
   "llm": {
     "profiles": {}
   },

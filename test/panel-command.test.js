@@ -139,7 +139,7 @@ test("panel help and parameter errors", async () => {
   const store = new MemoryStore();
   const help = await runCli(["help"], { store });
   assert.equal(help.code, 0);
-  assert.ok(help.logs.some((line) => line.includes("aos-mcp panel")));
+  assert.ok(help.logs.some((line) => line.includes("mobile-testing-mcp panel")));
 
   const bare = await runCli([], { store });
   assert.equal(bare.code, 2);

@@ -80,17 +80,17 @@ const CLI_MEMORY_NOTE =
   "会话内存仅当前进程可见（重启即空）；配置 MOBILE_TESTING_DATABASE_URL 或使用文件台账（.artemis/ledger）可跨进程查询。";
 
 export function printUsageCommand(log: (line: string) => void): void {
-  log(`aos-mcp usage — 使用统计（调用事件）
+  log(`mobile-testing-mcp usage — 使用统计（调用事件）
 
 Usage:
-  aos-mcp usage [--json] [--all] [--project <名称>] [--days <n>]
+  mobile-testing-mcp usage [--json] [--all] [--project <名称>] [--days <n>]
                     默认当前项目文本摘要（--days 默认 7）
                     --json  机器可读 JSON（与文本同源）
                     --all   跨项目总览（每个已注册项目 + 合计）
                     --project <名称>  按名称（或根路径）指定已注册项目
-  aos-mcp usage --web [--port 8766] [--host 127.0.0.1]
+  mobile-testing-mcp usage --web [--port 8766] [--host 127.0.0.1]
                     只读看板（复用 /usage 与 /usage.json，默认仅本机）
-  aos-mcp usage help
+  mobile-testing-mcp usage help
 
 exit codes: 0 成功；2 参数错误或端口被占用`);
 }

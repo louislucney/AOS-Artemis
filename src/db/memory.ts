@@ -70,11 +70,15 @@ export class MemoryStore implements ProjectStore {
   private runners: RunnerRecord[] = [];
   private schedules: ScheduleRecord[] = [];
 
-  async upsertProject(input: { rootPath: string; name: string }): Promise<ProjectRecord> {
+  async upsertProject(input: {
+    rootPath: string;
+    name: string;
+    updateName?: boolean;
+  }): Promise<ProjectRecord> {
     const now = new Date().toISOString();
     const existing = this.projects.get(input.rootPath);
     if (existing) {
-      existing.name = input.name;
+      if (input.updateName !== false) existing.name = input.name;
       existing.lastSeenAt = now;
       return { ...existing };
     }

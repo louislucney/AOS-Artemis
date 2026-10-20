@@ -16,7 +16,7 @@ test("console shell: CSDC chrome, active nav, escaped title, no refresh by defau
   assert.match(html, /aria-label="控制台导航"/);
   assert.match(html, /aria-current="page"/);
   assert.ok(!html.includes("<b>总览</b>"), "title 必须转义");
-  assert.match(html, /<title>&lt;b&gt;总览&lt;\/b&gt; · AOS 控制台<\/title>/);
+  assert.match(html, /<title>&lt;b&gt;总览&lt;\/b&gt; · mobile-testing 控制台<\/title>/);
   assert.ok(!html.includes('http-equiv="refresh"'));
 });
 
