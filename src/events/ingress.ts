@@ -34,6 +34,10 @@ export interface EventAck {
   degraded: string | null;
 }
 
+export function degradedReason(store: ProjectStore, note: string | null): string | null {
+  return store.kind === "memory" ? note ?? "内存会话存储，数据不持久" : null;
+}
+
 export interface EventList {
   events: ProjectEventRecord[];
   returned: number;

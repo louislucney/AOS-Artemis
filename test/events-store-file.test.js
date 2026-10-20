@@ -128,3 +128,36 @@ test("FileStore events: 查询过滤、since 秒级、order、includePayload", a
     await store.close();
   }
 });
+
+test("FileStore events: 并发同 eventId 只接受一次，seq 唯一", async () => {
+  const root = makeTempDir("aos-events-file-");
+  const ledger = path.join(root, "ledger");
+  const project = path.join(root, "project");
+  fs.mkdirSync(project, { recursive: true });
+  const store = await makeFileStore(ledger, project);
+  try {
+    const input = { eventId: "same", type: "log.entry", payload: { a: 1 } };
+    const [left, right] = await Promise.all([
+      store.recordProjectEvent(project, input),
+      store.recordProjectEvent(project, input)
+    ]);
+    assert.equal([left, right].filter((result) => !result.duplicate).length, 1);
+    assert.equal(left.record.id, right.record.id);
+
+    const burst = await Promise.all(
+      Array.from({ length: 10 }, (_, index) =>
+        store.recordProjectEvent(project, {
+          eventId: `burst-${index}`,
+          type: "log.entry",
+          payload: { index }
+        })
+      )
+    );
+    const seqs = burst.map((result) => result.record.seq);
+    assert.equal(new Set(seqs).size, seqs.length);
+    const sorted = [...seqs].sort((a, b) => a - b);
+    assert.equal(sorted[1] - sorted[0], 1);
+  } finally {
+    await store.close();
+  }
+});

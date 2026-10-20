@@ -1925,3 +1925,13 @@ llm_switch(name, force):
 > **删除**：外部迁移脚本与其测试（4 例）移除；历史 usage/regression task 迁移留 P1。
 > **测试**：新增 `events-protocol` 4、`events-store-memory` 2、`events-store-file` 2、`events-store-pg` 1、`events-project-resolver` 2、`events-ingress` 2、`events-http` 2、`events-tools` 1；`npm run build && npm test && npm run lint` → 全量 **1748 绿**，lint 0 error（2 条既有 warning）。
 
+### 13.138 实施记录（P0 加固）：事件入口评审修复
+
+> 2026-10-20，对 `fae3f70..8b359c3` 评审发现的问题做修复；P0 范围与协议不变。
+> **并发**：`FileStore` 事件读写/裁剪按桶串行（`eventQueue`，读也入队），事件索引加载共享同一 Promise；并发同 `eventId` 只接受一次，`seq` 不重复。
+> **ack 诚实**：新增 `degradedReason(store, note)`，仅 `memory` 返回 `degraded`（无 note 时给显式原因）；file/postgres 不再把“未配置 PG / 回退文件台账”误报为降级，`storage` 仍如实返回。
+> **HTTP 映射**：项目配置损坏从 500 改为 400 `project-config-invalid`（`ProjectConfigError`）。
+> **路径归一**：HTTP workspace、`resolveProjectRoot`、`Runtime` 构造统一 `realpath`，symlink 项目根不再产生第二身份；测试夹具 `makeTempDir` 同步返回 canonical 路径（面板“待领取”邻近断言放宽以容纳更长路径）。
+> **裁剪写入**：文件事件压缩改用异步原子写，避免大文件阻塞事件循环。
+> **测试**：`events-http` +2（默认 FileStore ack 不误报、配置损坏 400）、`events-project-resolver` +1（symlink）、`events-store-file` +1（并发幂等/seq）；`events-store-memory`/`events-store-pg` 补秒级 `since` 断言；`npm run build && npm test && npm run lint` → 全量 **1752 绿**，lint 0 error（2 条既有 warning）。
+

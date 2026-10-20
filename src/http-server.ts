@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
 import path from "node:path";
 
@@ -17,10 +18,12 @@ import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.j
 import { handleArtifactRequest } from "./panel/artifact-route.js";
 import {
   isValidProjectName,
+  ProjectConfigError,
   resolveEventProject,
   resolveProjectRoot
 } from "./events/project-resolver.js";
 import {
+  degradedReason,
   EventValidationError,
   listProjectEvents,
   reportProjectEvent
@@ -137,9 +140,15 @@ function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unkn
 export async function createAosHttpServer(options: HttpServerOptions = {}): Promise<AosHttpHandle> {
   const host = options.host ?? process.env.AOS_HTTP_HOST ?? "127.0.0.1";
   const port = options.port ?? Number(process.env.AOS_HTTP_PORT ?? 8765);
-  const workspaceRoot = path.resolve(
+  const requestedWorkspace = path.resolve(
     options.workspaceRoot ?? process.env.AOS_WORKSPACE_ROOT ?? process.cwd()
   );
+  let workspaceRoot = requestedWorkspace;
+  try {
+    workspaceRoot = fs.realpathSync.native(requestedWorkspace);
+  } catch {
+    workspaceRoot = requestedWorkspace;
+  }
   const token = (process.env.AOS_HTTP_TOKEN ?? "").trim();
   const allowInsecure = process.env.AOS_HTTP_ALLOW_INSECURE === "1";
 
@@ -374,7 +383,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
                 return;
               }
               const ack = await reportProjectEvent(
-                { store, rootPath: project.rootPath, storage: store.kind, degraded: reason },
+                { store, rootPath: project.rootPath, storage: store.kind, degraded: degradedReason(store, reason) },
                 body
               );
               res.writeHead(202, { "Content-Type": "application/json" });
@@ -398,7 +407,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               const limitRaw = url.searchParams.get("limit");
               const limit = limitRaw === null ? undefined : Number(limitRaw);
               const listed = await listProjectEvents(
-                { store, rootPath: project.rootPath, storage: store.kind, degraded: reason },
+                { store, rootPath: project.rootPath, storage: store.kind, degraded: degradedReason(store, reason) },
                 {
                   since: url.searchParams.get("since") ?? undefined,
                   runId: url.searchParams.get("runId") ?? undefined,
@@ -423,6 +432,11 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             if (error instanceof EventValidationError) {
               res.writeHead(400, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ error: error.message, field: error.field }));
+              return;
+            }
+            if (error instanceof ProjectConfigError) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "project-config-invalid", detail: error.message }));
               return;
             }
             res.writeHead(500, { "Content-Type": "application/json" });

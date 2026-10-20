@@ -67,6 +67,8 @@ interface ProjectBucket {
   eventsMetaPath: string;
   events: Map<string, ProjectEventRecord>;
   eventsLoaded: boolean;
+  eventsLoad?: Promise<void>;
+  eventQueue: Promise<unknown>;
   nextSeq: number;
   lastEventPruneAt: number;
   mem: MemoryStore;
@@ -447,54 +449,56 @@ export class FileStore implements ProjectStore {
     input: ProjectEventInput
   ): Promise<RecordProjectEventResult> {
     const bucket = await this.bucket(rootPath);
-    await this.ensureEventsLoaded(bucket);
-    const project = await bucket.mem.getProjectByPath(rootPath);
-    if (!project) throw new Error(`FileStore: project not registered: ${rootPath}`);
+    return this.withEventQueue(bucket, async () => {
+      await this.ensureEventsLoaded(bucket);
+      const project = await bucket.mem.getProjectByPath(rootPath);
+      if (!project) throw new Error(`FileStore: project not registered: ${rootPath}`);
 
-    const hash = payloadHash(input.payload);
-    const existing = bucket.events.get(input.eventId);
-    if (existing) {
-      return {
-        record: cloneProjectEvent(existing),
-        duplicate: true,
-        payloadMismatch: existing.payloadSha256 !== hash
+      const hash = payloadHash(input.payload);
+      const existing = bucket.events.get(input.eventId);
+      if (existing) {
+        return {
+          record: cloneProjectEvent(existing),
+          duplicate: true,
+          payloadMismatch: existing.payloadSha256 !== hash
+        };
+      }
+
+      const seq = bucket.nextSeq;
+      const receivedAt = new Date().toISOString();
+      const record: ProjectEventRecord = {
+        seq,
+        id: randomUUID(),
+        projectId: project.id,
+        eventId: input.eventId,
+        type: input.type,
+        source: input.source ?? "project",
+        runId: input.runId ?? null,
+        caseId: input.caseId ?? null,
+        step: input.step ?? null,
+        status: input.status ?? null,
+        at: input.at ?? receivedAt,
+        receivedAt,
+        payload: input.payload ?? null,
+        payloadSha256: hash,
+        payloadBytes: payloadBytes(input.payload),
+        consumedAt: null
       };
-    }
 
-    const seq = bucket.nextSeq;
-    const receivedAt = new Date().toISOString();
-    const record: ProjectEventRecord = {
-      seq,
-      id: randomUUID(),
-      projectId: project.id,
-      eventId: input.eventId,
-      type: input.type,
-      source: input.source ?? "project",
-      runId: input.runId ?? null,
-      caseId: input.caseId ?? null,
-      step: input.step ?? null,
-      status: input.status ?? null,
-      at: input.at ?? receivedAt,
-      receivedAt,
-      payload: input.payload ?? null,
-      payloadSha256: hash,
-      payloadBytes: payloadBytes(input.payload),
-      consumedAt: null
-    };
+      try {
+        await this.ensureDir(bucket);
+        await writeFileAtomic(bucket.eventsMetaPath, `${JSON.stringify({ nextSeq: seq + 1 })}\n`);
+        await appendFile(bucket.eventsPath, `${JSON.stringify(record)}\n`, "utf8");
+      } catch (error) {
+        this.noteWriteFailure(error);
+        throw error;
+      }
 
-    try {
-      await this.ensureDir(bucket);
-      await writeFileAtomic(bucket.eventsMetaPath, `${JSON.stringify({ nextSeq: seq + 1 })}\n`);
-      await appendFile(bucket.eventsPath, `${JSON.stringify(record)}\n`, "utf8");
-    } catch (error) {
-      this.noteWriteFailure(error);
-      throw error;
-    }
-
-    bucket.nextSeq = seq + 1;
-    bucket.events.set(record.eventId, record);
-    this.scheduleEventPrune(rootPath);
-    return { record: cloneProjectEvent(record), duplicate: false, payloadMismatch: false };
+      bucket.nextSeq = seq + 1;
+      bucket.events.set(record.eventId, record);
+      this.scheduleEventPrune(rootPath);
+      return { record: cloneProjectEvent(record), duplicate: false, payloadMismatch: false };
+    });
   }
 
   async listProjectEvents(
@@ -502,109 +506,141 @@ export class FileStore implements ProjectStore {
     query: ProjectEventQuery = {}
   ): Promise<ProjectEventRecord[]> {
     const bucket = await this.bucket(rootPath);
-    await this.ensureEventsLoaded(bucket);
-    const project = await bucket.mem.getProjectByPath(rootPath);
-    if (!project) return [];
-    const since = query.since === undefined ? null : normalizeSince(query.since);
-    if (query.since !== undefined && since === null) throw new Error("invalid since");
-    const includePayload = query.includePayload === true;
-    const limit = includePayload ? 50 : 200;
-    const requested = query.limit ?? 50;
-    const capped = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 50, limit));
-    const order = query.order === "asc" ? "asc" : "desc";
-    return [...bucket.events.values()]
-      .filter((event) => event.projectId === project.id)
-      .filter((event) => !query.runId || event.runId === query.runId)
-      .filter((event) => !query.caseId || event.caseId === query.caseId)
-      .filter((event) => !query.type || event.type === query.type)
-      .filter((event) => !query.status || event.status === query.status)
-      .filter((event) => since === null || event.receivedAt > since)
-      .sort((left, right) =>
-        order === "asc"
-          ? left.receivedAt.localeCompare(right.receivedAt) || left.seq - right.seq
-          : right.receivedAt.localeCompare(left.receivedAt) || right.seq - left.seq
-      )
-      .slice(0, capped)
-      .map((event) => cloneProjectEvent(event, !includePayload));
+    return this.withEventQueue(bucket, async () => {
+      await this.ensureEventsLoaded(bucket);
+      const project = await bucket.mem.getProjectByPath(rootPath);
+      if (!project) return [];
+      const since = query.since === undefined ? null : normalizeSince(query.since);
+      if (query.since !== undefined && since === null) throw new Error("invalid since");
+      const includePayload = query.includePayload === true;
+      const limit = includePayload ? 50 : 200;
+      const requested = query.limit ?? 50;
+      const capped = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 50, limit));
+      const order = query.order === "asc" ? "asc" : "desc";
+      return [...bucket.events.values()]
+        .filter((event) => event.projectId === project.id)
+        .filter((event) => !query.runId || event.runId === query.runId)
+        .filter((event) => !query.caseId || event.caseId === query.caseId)
+        .filter((event) => !query.type || event.type === query.type)
+        .filter((event) => !query.status || event.status === query.status)
+        .filter((event) => since === null || event.receivedAt > since)
+        .sort((left, right) =>
+          order === "asc"
+            ? left.receivedAt.localeCompare(right.receivedAt) || left.seq - right.seq
+            : right.receivedAt.localeCompare(left.receivedAt) || right.seq - left.seq
+        )
+        .slice(0, capped)
+        .map((event) => cloneProjectEvent(event, !includePayload));
+    });
   }
 
   async countProjectEvents(rootPath: string): Promise<number> {
     const bucket = await this.bucket(rootPath);
-    await this.ensureEventsLoaded(bucket);
-    const project = await bucket.mem.getProjectByPath(rootPath);
-    if (!project) return 0;
-    return [...bucket.events.values()].filter((event) => event.projectId === project.id).length;
+    return this.withEventQueue(bucket, async () => {
+      await this.ensureEventsLoaded(bucket);
+      const project = await bucket.mem.getProjectByPath(rootPath);
+      if (!project) return 0;
+      return [...bucket.events.values()].filter((event) => event.projectId === project.id).length;
+    });
   }
 
   async pruneProjectEvents(rootPath: string): Promise<number> {
     const bucket = await this.bucket(rootPath);
-    await this.ensureEventsLoaded(bucket);
-    const project = await bucket.mem.getProjectByPath(rootPath);
-    if (!project) return 0;
-    const policy = eventRetentionPolicy(this.env);
-    const cutoff = eventCutoffIso(policy.days);
-    const current = [...bucket.events.values()].filter((event) => event.projectId === project.id);
-    const recent = current
-      .filter((event) => event.receivedAt >= cutoff)
-      .sort((left, right) => left.seq - right.seq);
-    const keep = new Set(recent.slice(Math.max(0, recent.length - policy.max)).map((event) => event.id));
-    const kept = [...bucket.events.values()].filter(
-      (event) => event.projectId !== project.id || keep.has(event.id)
-    );
-    const deleted = bucket.events.size - kept.length;
-    if (deleted === 0) return 0;
-    try {
-      await writeFileAtomic(
-        bucket.eventsPath,
-        kept.length > 0 ? `${kept.map((event) => JSON.stringify(event)).join("\n")}\n` : ""
+    return this.withEventQueue(bucket, async () => {
+      await this.ensureEventsLoaded(bucket);
+      const project = await bucket.mem.getProjectByPath(rootPath);
+      if (!project) return 0;
+      const policy = eventRetentionPolicy(this.env);
+      const cutoff = eventCutoffIso(policy.days);
+      const current = [...bucket.events.values()].filter((event) => event.projectId === project.id);
+      const recent = current
+        .filter((event) => event.receivedAt >= cutoff)
+        .sort((left, right) => left.seq - right.seq);
+      const keep = new Set(
+        recent.slice(Math.max(0, recent.length - policy.max)).map((event) => event.id)
       );
-    } catch (error) {
-      this.noteWriteFailure(error);
-      log(`文件台账写入失败（pruneProjectEvents）：${errorMessage(error)}`);
-      return 0;
-    }
-    bucket.events = new Map(kept.map((event) => [event.eventId, event]));
-    return deleted;
+      const kept = [...bucket.events.values()].filter(
+        (event) => event.projectId !== project.id || keep.has(event.id)
+      );
+      const deleted = bucket.events.size - kept.length;
+      if (deleted === 0) return 0;
+      try {
+        await writeFileAtomicAsync(
+          bucket.eventsPath,
+          kept.length > 0 ? `${kept.map((event) => JSON.stringify(event)).join("\n")}\n` : ""
+        );
+      } catch (error) {
+        this.noteWriteFailure(error);
+        log(`文件台账写入失败（pruneProjectEvents）：${errorMessage(error)}`);
+        return 0;
+      }
+      bucket.events = new Map(kept.map((event) => [event.eventId, event]));
+      return deleted;
+    });
   }
 
   private async ensureEventsLoaded(bucket: ProjectBucket): Promise<void> {
     if (bucket.eventsLoaded) return;
-    bucket.eventsLoaded = true;
-    const raw = await readIfExists(bucket.eventsPath);
-    let maxSeq = 0;
-    if (raw !== null) {
-      for (const line of raw.split(/\r?\n/)) {
-        if (line.trim() === "") continue;
-        try {
-          const record = JSON.parse(line) as ProjectEventRecord;
-          if (
-            typeof record.eventId !== "string" ||
-            typeof record.seq !== "number" ||
-            typeof record.id !== "string"
-          ) {
-            log(`文件台账 events.jsonl 形状异常（忽略一行）：${bucket.eventsPath}`);
-            continue;
+    if (bucket.eventsLoad === undefined) {
+      bucket.eventsLoad = (async () => {
+        const events = new Map<string, ProjectEventRecord>();
+        let maxSeq = 0;
+        const raw = await readIfExists(bucket.eventsPath);
+        if (raw !== null) {
+          for (const line of raw.split(/\r?\n/)) {
+            if (line.trim() === "") continue;
+            try {
+              const record = JSON.parse(line) as ProjectEventRecord;
+              if (
+                typeof record.eventId !== "string" ||
+                typeof record.seq !== "number" ||
+                typeof record.id !== "string"
+              ) {
+                log(`文件台账 events.jsonl 形状异常（忽略一行）：${bucket.eventsPath}`);
+                continue;
+              }
+              events.set(record.eventId, record);
+              maxSeq = Math.max(maxSeq, record.seq);
+            } catch (error) {
+              log(`文件台账 events.jsonl 解析失败（忽略一行）：${errorMessage(error)}`);
+            }
           }
-          bucket.events.set(record.eventId, record);
-          maxSeq = Math.max(maxSeq, record.seq);
-        } catch (error) {
-          log(`文件台账 events.jsonl 解析失败（忽略一行）：${errorMessage(error)}`);
         }
-      }
-    }
-    let metaNext = 1;
-    const metaRaw = await readIfExists(bucket.eventsMetaPath);
-    if (metaRaw !== null) {
-      try {
-        const parsed = JSON.parse(metaRaw) as { nextSeq?: unknown };
-        if (typeof parsed.nextSeq === "number" && Number.isInteger(parsed.nextSeq) && parsed.nextSeq > 0) {
-          metaNext = parsed.nextSeq;
+        let metaNext = 1;
+        const metaRaw = await readIfExists(bucket.eventsMetaPath);
+        if (metaRaw !== null) {
+          try {
+            const parsed = JSON.parse(metaRaw) as { nextSeq?: unknown };
+            if (
+              typeof parsed.nextSeq === "number" &&
+              Number.isInteger(parsed.nextSeq) &&
+              parsed.nextSeq > 0
+            ) {
+              metaNext = parsed.nextSeq;
+            }
+          } catch (error) {
+            log(`文件台账 events.meta.json 解析失败（忽略）：${errorMessage(error)}`);
+          }
         }
-      } catch (error) {
-        log(`文件台账 events.meta.json 解析失败（忽略）：${errorMessage(error)}`);
-      }
+        bucket.events = events;
+        bucket.nextSeq = Math.max(maxSeq + 1, metaNext);
+        bucket.eventsLoaded = true;
+      })();
+      bucket.eventsLoad = bucket.eventsLoad.catch((error) => {
+        bucket.eventsLoad = undefined;
+        throw error;
+      });
     }
-    bucket.nextSeq = Math.max(maxSeq + 1, metaNext);
+    await bucket.eventsLoad;
+  }
+
+  private withEventQueue<T>(bucket: ProjectBucket, fn: () => Promise<T>): Promise<T> {
+    const run = bucket.eventQueue.then(fn, fn);
+    bucket.eventQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
   }
 
   private scheduleEventPrune(rootPath: string): void {
@@ -688,6 +724,7 @@ export class FileStore implements ProjectStore {
       eventsMetaPath: path.join(dir, "events.meta.json"),
       events: new Map(),
       eventsLoaded: false,
+      eventQueue: Promise.resolve(),
       nextSeq: 1,
       lastEventPruneAt: 0,
       mem: new MemoryStore(),
@@ -1016,4 +1053,15 @@ function cloneProjectEvent(record: ProjectEventRecord, omitPayload = false): Pro
     ...record,
     payload: omitPayload ? undefined : record.payload
   };
+}
+
+async function writeFileAtomicAsync(file: string, content: string): Promise<void> {
+  const tmp = `${file}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    await writeFile(tmp, content, { encoding: "utf8", mode: 0o600 });
+    await rename(tmp, file);
+  } catch (error) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }

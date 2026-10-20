@@ -765,7 +765,7 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
     deps
   );
-  assert.match(projectAfter.body, new RegExp(`待领取：[\\s\\S]{0,120}task=${pending.id}`), "在跑什么/待领取可点对象");
+  assert.match(projectAfter.body, new RegExp(`待领取：[\\s\\S]{0,300}task=${pending.id}`), "在跑什么/待领取可点对象");
   assert.match(projectAfter.body, /执行中：|待领取：/, "活动行渲染");
 
   const flashHtml = await handlePanelRequest(

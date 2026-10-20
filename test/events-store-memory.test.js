@@ -42,10 +42,10 @@ test("MemoryStore events: 幂等、mismatch、seq 与查询", async () => {
   assert.deepEqual(noPayload, []);
   assert.equal(await store.countProjectEvents("/w/p1"), 2);
 
-  const secondsSince = await store.listProjectEvents("/w/p1", {
-    since: new Date(Date.parse(all[0].receivedAt) - 1000).toISOString().replace(".000Z", "Z"),
-    order: "asc"
-  });
+  const sinceSeconds = new Date(Math.floor(Date.parse(all[0].receivedAt) / 1000) * 1000)
+    .toISOString()
+    .replace(".000Z", "Z");
+  const secondsSince = await store.listProjectEvents("/w/p1", { since: sinceSeconds, order: "asc" });
   assert.equal(secondsSince.length, 2);
 });
 

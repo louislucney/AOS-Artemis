@@ -162,6 +162,11 @@ export class Runtime {
   }
 
   constructor(project: LoadedProject, options: RuntimeOptions = {}) {
+    try {
+      project.rootDir = fs.realpathSync.native(project.rootDir);
+    } catch {
+      /* keep the resolved path when realpath is unavailable */
+    }
     this.project = project;
     this.store = options.store ?? new MemoryStore();
     this.storeNote = options.storeNote ?? null;

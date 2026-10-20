@@ -128,7 +128,8 @@ export async function withFigmaToken(fn) {
 }
 
 export function makeTempDir(prefix = "aos-mcp-test-") {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return fs.realpathSync.native(dir);
 }
 
 export function makeTempProject({ config, dotenv = "", configFileName = "aos.config.jsonc" } = {}) {

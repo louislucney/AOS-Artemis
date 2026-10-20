@@ -60,6 +60,13 @@ test("PostgresStore events: 幂等、mismatch、查询与裁剪", async () => {
     assert.equal(second.record.seq, 2);
     const noPayload = await store.listProjectEvents("/w/p1", { order: "asc" });
     assert.equal(noPayload[0].payload, undefined);
+    const sinceSeconds = new Date(
+      Math.floor(Date.parse(first.record.receivedAt) / 1000) * 1000
+    )
+      .toISOString()
+      .replace(".000Z", "Z");
+    const sameSecond = await store.listProjectEvents("/w/p1", { since: sinceSeconds, order: "asc" });
+    assert.equal(sameSecond.length, 2, "秒级 since 不丢同秒事件");
 
     process.env.AOS_EVENTS_MAX = "1";
     const deleted = await store.pruneProjectEvents("/w/p1");

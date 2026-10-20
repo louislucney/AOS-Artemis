@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import type { ProjectStore } from "../../db/types.js";
 import {
+  degradedReason,
   EventValidationError,
   listProjectEvents,
   reportProjectEvent
@@ -26,7 +27,7 @@ function context(runtime: Parameters<NativeToolDefinition["handler"]>[0]) {
     store: runtime.store,
     rootPath: runtime.project.rootDir,
     storage: runtime.store.kind as ProjectStore["kind"],
-    degraded: runtime.storeNote
+    degraded: degradedReason(runtime.store, runtime.storeNote)
   };
 }
 

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { createAosHttpServer } from "../dist/http-server.js";
 import { makeTempDir } from "./helpers.js";
@@ -119,4 +120,55 @@ test("events HTTP: AOS_HTTP_TOKEN 保护事件路由，健康检查豁免", asyn
     },
     { AOS_HTTP_TOKEN: "test-token" }
   );
+});
+
+test("events HTTP: 默认 FileStore ack 不误报 degraded", async () => {
+  const workspace = makeTempDir("aos-events-http-file-");
+  const project = path.join(workspace, "demo");
+  fs.mkdirSync(project);
+  const store = await FileStore.create({ homeDir: path.join(workspace, "ledger-home") });
+  const handle = await createAosHttpServer({
+    port: 0,
+    host: "127.0.0.1",
+    workspaceRoot: workspace,
+    store
+  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/events/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(EVENT)
+    });
+    assert.equal(response.status, 202);
+    const ack = await response.json();
+    assert.equal(ack.storage, "file");
+    assert.equal(ack.degraded, null);
+  } finally {
+    await handle.close();
+  }
+});
+
+test("events HTTP: 配置损坏返回 400 project-config-invalid", async () => {
+  const workspace = makeTempDir("aos-events-http-bad-");
+  const project = path.join(workspace, "demo");
+  fs.mkdirSync(project);
+  fs.writeFileSync(path.join(project, "aos.config.jsonc"), "{not-json");
+  const handle = await createAosHttpServer({
+    port: 0,
+    host: "127.0.0.1",
+    workspaceRoot: workspace,
+    store: new MemoryStore()
+  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/events/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(EVENT)
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.error, "project-config-invalid");
+  } finally {
+    await handle.close();
+  }
 });

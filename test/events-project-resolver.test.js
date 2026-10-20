@@ -44,3 +44,11 @@ test("resolveEventProject: POST upsert 与 GET 不写", async () => {
     /项目名/
   );
 });
+
+test("resolveProjectRoot: symlink 归一到 realpath", () => {
+  const workspace = makeTempDir("aos-events-ws-");
+  const target = path.join(workspace, "real");
+  fs.mkdirSync(target);
+  fs.symlinkSync(target, path.join(workspace, "link"));
+  assert.equal(resolveProjectRoot(workspace, "link"), fs.realpathSync(target));
+});

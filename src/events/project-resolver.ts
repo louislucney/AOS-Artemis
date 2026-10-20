@@ -5,6 +5,13 @@ import { loadProject } from "../config/loader.js";
 import type { ProjectStore } from "../db/types.js";
 
 const PROJECT_NAME_RE = /^[A-Za-z0-9._-]+$/;
+
+export class ProjectConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProjectConfigError";
+  }
+}
 const CACHE_TTL_MS = 60_000;
 
 interface CacheEntry {
@@ -54,7 +61,7 @@ export async function resolveEventProject(input: {
       cwd: rootPath
     });
   } catch (error) {
-    throw new Error(
+    throw new ProjectConfigError(
       `project-config-invalid: ${error instanceof Error ? error.message : String(error)}`
     );
   }
