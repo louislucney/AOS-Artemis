@@ -1,10 +1,10 @@
-# aos-mcp container (single shared container serving multiple projects).
+# mobile-testing-mcp container (single shared container serving multiple projects).
 #
 #   docker compose up -d --build
-#   docker exec -i -w /workspace/<project> aos-mcp node /app/dist/index.js   # MCP stdio
+#   docker exec -i -w /workspace/<project> mobile-testing-mcp node /app/dist/index.js   # MCP stdio
 #
 # Mount the company workspace at /workspace; MCP clients spawn `docker exec`
-# sessions per project (see `aos-mcp install --mode docker`).
+# sessions per project (see `mobile-testing-mcp install --mode docker`).
 
 services:
   # 本地开发用 PostgreSQL（可选 profile：docker compose --profile local-db up -d postgres）
@@ -28,10 +28,10 @@ services:
       retries: 10
     restart: unless-stopped
 
-  aos-mcp:
+  mobile-testing-mcp:
     build: .
-    image: aos-mcp:local
-    container_name: aos-mcp
+    image: mobile-testing-mcp:local
+    container_name: mobile-testing-mcp
     entrypoint: ["sleep", "infinity"]
     environment:
       # PostgreSQL registry (required for persistence; degrades to memory if unset)

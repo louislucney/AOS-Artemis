@@ -9,7 +9,7 @@ Scope:    src/core, src/figma-bridge, src/figma-rest, src/mcp-server/tools
           tool surface is adapted in src/figma/ with zod input schemas).
 
 Modifications (all files also carry inline PATCH notes):
-  1. figma-bridge/store.ts      — temp-file prefix `aos-mcp-figma-` to avoid
+  1. figma-bridge/store.ts      — temp-file prefix `mobile-testing-mcp-figma-` to avoid
                                    clashing with a stock installation.
   2. figma-bridge/ws-server.ts  — rewritten: CORS origin allowlist (null /
                                    loopback only), EADDRINUSE reports

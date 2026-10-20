@@ -81,7 +81,7 @@
 │  CLI 客户端（opencode/Claude Code/Cursor…）                    │
 │     │ stdio（M4: streamable-HTTP）                             │
 │     ▼                                                          │
-│  aos-mcp 服务（Node ≥20）                                      │
+│  mobile-testing-mcp 服务（Node ≥20）                                      │
 │   ├─ 项目层：定位项目（AOS_PROJECT_DIR/工作区扫描）→ 扫描 .env │
 │   ├─ 存储层：PostgreSQL（projects / project_llms / task_stats）│
 │   ├─ 工具：llm_list / llm_switch / aos_configure / aos_status  │
@@ -355,7 +355,7 @@ env:
 - **凭证**：项目 `.env` 的 `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN`（`aos_configure` 可三件套写入，须同时提供）；凭证由 resolver 解析（进程 env 优先；启动与 `aos_configure` 后刷新，手动编辑 `.env` 需重启会话），不落 PG；站点仅接受 `https://<site>.atlassian.net`（去尾斜杠，排除 Server/DC 与自定义域）；`aos_status.jira` 显示 configured/site/email/token（masked）/missing。
 - **客户端**：Basic auth（email:token）；`AbortSignal.timeout`（`AOS_JIRA_TIMEOUT_MS` 默认 30s）；429 按 Figma 模式：`Retry-After ≤ AOS_JIRA_RETRY_MAX_WAIT_MS`（默认 60s）等待一次并重试，否则按凭证指纹记录冷却（冷却期 fail-fast、不发请求）并抛 `JiraRateLimitError`（含 `RateLimit-Reason`）；不做响应缓存；非 2xx 抛 `JiraApiError`（status + body ≤500 截断 + 可行动 hint：400 有界 JQL / 401 token 一年过期轮换 / 403 权限 / 404 可见性 / 413 附件上限）。
 - **读取契约**：issue 上下文规范化为纯文本 + 启发式验收标准（标题段延续到下一标题，外加 `AC:` 行回退；`heuristic:true` 明示不可全信），保留原始 ADF 供深入消费；搜索走 `/rest/api/3/search/jql`（显式字段、游标分页；JQL 需有界，API 侧 400 原样映射）。
-- **里程碑后续**：M8b 已落地——票 03（评论/附件原语）：`jira_issue_comment`（纯文本→ADF；`AOS-TRACE:<traceId>` 页脚 marker 幂等更新/新建；评论属性 best-effort）、`jira_issue_attach`（multipart、确定性命名 `<basename>-<sha8><ext>`、同名同大小去重、上限取站点 meta 与 `AOS_JIRA_ATTACH_MAX_MB` 较小者、超限跳过）；票 04（证据 composite）：`jira_evidence_post`（复用 `traceEvidence` 聚合失败步骤截图/设计差异标注图/失败清单/崩溃签名；`classifyFailure` 确定性失败域；platform/deviceSerial 覆盖或按 serial 推断；`dryRun` 不触网；平台注释）；客户端扩展（comments/attachment meta/list/upload，JSON 请求抽象为 rawRequest 复用冷却与重试；写操作走 requestVoid 兼容 200/201/204/空体）。M8c 票 05（CLI）已落地：`aos-mcp jira issue create|comment|label|transition|link`（同客户端；`--project`/`--json`；exit 0/1/2；建单支持 Task/Bug、描述 ADF、标签、父级与 Blocks 链接；流转按可用 transitions 目标状态名匹配，不匹配列出可用项）；票 06 工作流文档已迁移（`docs/agents/issue-tracker.md` 重写为 Jira 工作流、`triage-labels.md` 加 tracker 映射、AGENTS 摘要同步）；**沙箱端到端验收待使用方提供沙箱凭证后执行**（记录于票据 06 Comments）。
+- **里程碑后续**：M8b 已落地——票 03（评论/附件原语）：`jira_issue_comment`（纯文本→ADF；`AOS-TRACE:<traceId>` 页脚 marker 幂等更新/新建；评论属性 best-effort）、`jira_issue_attach`（multipart、确定性命名 `<basename>-<sha8><ext>`、同名同大小去重、上限取站点 meta 与 `AOS_JIRA_ATTACH_MAX_MB` 较小者、超限跳过）；票 04（证据 composite）：`jira_evidence_post`（复用 `traceEvidence` 聚合失败步骤截图/设计差异标注图/失败清单/崩溃签名；`classifyFailure` 确定性失败域；platform/deviceSerial 覆盖或按 serial 推断；`dryRun` 不触网；平台注释）；客户端扩展（comments/attachment meta/list/upload，JSON 请求抽象为 rawRequest 复用冷却与重试；写操作走 requestVoid 兼容 200/201/204/空体）。M8c 票 05（CLI）已落地：`mobile-testing-mcp jira issue create|comment|label|transition|link`（同客户端；`--project`/`--json`；exit 0/1/2；建单支持 Task/Bug、描述 ADF、标签、父级与 Blocks 链接；流转按可用 transitions 目标状态名匹配，不匹配列出可用项）；票 06 工作流文档已迁移（`docs/agents/issue-tracker.md` 重写为 Jira 工作流、`triage-labels.md` 加 tracker 映射、AGENTS 摘要同步）；**沙箱端到端验收待使用方提供沙箱凭证后执行**（记录于票据 06 Comments）。
 
 ### 6.9 iOS 真机后端（M9a：Appium + WDA）
 
@@ -425,14 +425,14 @@ llm_switch(name, force):
 - 镜像（`Dockerfile`，多阶段）：Node 22 + Python 3.12（artemis venv）+ Android 工具链（adb/ffmpeg；scrcpy 在 Debian 13 已移除 → 尽力而为安装，缺失时仅录像降级）；
 - 挂载：共享工作区（`/workspace`）、Figma 桥端口（`127.0.0.1:3055:3055`）、Android 设备（USB 透传或网络 ADB，`ADB_HOST/ADB_PORT`）；
 - 环境：`MOBILE_TESTING_DATABASE_URL`（PG）、`AOS_WORKSPACE_ROOT`（可选）；
-- 客户端以 `docker exec -i -w /workspace/<project> <container> node /app/dist/index.js` 接入（`aos-mcp install --mode docker` 自动生成）。
+- 客户端以 `docker exec -i -w /workspace/<project> <container> node /app/dist/index.js` 接入（`mobile-testing-mcp install --mode docker` 自动生成）。
 
 ### 8.2 客户端配置（stdio）
 
 ```jsonc
 {
   "command": "docker",                      // 或容器内直接 node
-  "args": ["exec", "aos-mcp", "node", "/app/dist/index.js"],
+  "args": ["exec", "mobile-testing-mcp", "node", "/app/dist/index.js"],
   "env": {
     "AOS_PROJECT_DIR": "/workspace/<project>",
     "MOBILE_TESTING_DATABASE_URL": "postgres://..."
@@ -442,8 +442,8 @@ llm_switch(name, force):
 
 ### 8.3 传输层
 
-- **stdio**（`aos-mcp serve`）：每项目一个进程，`AOS_PROJECT_DIR`/cwd 定位项目；
-- **streamable-HTTP**（`aos-mcp serve --http --port 8765 --workspace /workspace`，无状态模式）：端点 `POST /mcp/<project>`，每项目独立 Runtime（store 关联、artemis 子进程、LLM 条目）；`GET /healthz` 返回 workspace 与已注册项目；非 POST 返回 405（无状态模式不使用 SSE 会话）。项目名做白名单校验（`[A-Za-z0-9._-]`，拒绝 `..`）。
+- **stdio**（`mobile-testing-mcp serve`）：每项目一个进程，`AOS_PROJECT_DIR`/cwd 定位项目；
+- **streamable-HTTP**（`mobile-testing-mcp serve --http --port 8765 --workspace /workspace`，无状态模式）：端点 `POST /mcp/<project>`，每项目独立 Runtime（store 关联、artemis 子进程、LLM 条目）；`GET /healthz` 返回 workspace 与已注册项目；非 POST 返回 405（无状态模式不使用 SSE 会话）。项目名做白名单校验（`[A-Za-z0-9._-]`，拒绝 `..`）。
 - 工具与运行时层不感知传输，两个入口共用 `createServerForRuntime()`。
 
 ### 8.4 `doctor` 更新
@@ -469,7 +469,7 @@ llm_switch(name, force):
 | dcb 桥（M2）    | 端口锁 3055；CORS 收紧；store 前缀命名空间化                                                                                                                                                                           |
 | 子进程          | 只杀 mcp_server 直接子进程；detached 任务进程不动；启动孤儿清理                                                                                                                                                        |
 | 降级            | DB 不可用不阻断；但`aos_status` 明确警告"条目仅会话内有效"                                                                                                                                                           |
-| 日志与审计      | `<project>/.artemis/logs/aos-mcp.log`（时间戳/级别/每次工具调用 name+ok+ms+错误摘要；`uncaughtException` 堆栈落盘）+ `artemis-child.log`（子进程 stderr 持久化）；`AOS_LOG_LEVEL/DIR/DISABLE_FILE/MAX_MB` 可配 |
+| 日志与审计      | `<project>/.artemis/logs/mobile-testing-mcp.log`（时间戳/级别/每次工具调用 name+ok+ms+错误摘要；`uncaughtException` 堆栈落盘）+ `artemis-child.log`（子进程 stderr 持久化）；`AOS_LOG_LEVEL/DIR/DISABLE_FILE/MAX_MB` 可配 |
 | 崩溃取证产物    | 仅落盘本地`<项目>/.artemis/crashes`（gitignore）；工具返回栈/摘录有上限；崩溃日志可能含敏感文本（URL token 等），属已知限制                                                                                          |
 
 ---
@@ -867,7 +867,7 @@ llm_switch(name, force):
 
 ### 13.33 实施记录（开放问题 3 决议：测试闭环 CLI 接线）
 
-> 实施于 2026-10-02；新增 `src/suite-command.ts` 与 `aos-mcp suite` 子命令；测试 `test/suite-command.test.js` 7 例；全量 389 例通过。
+> 实施于 2026-10-02；新增 `src/suite-command.ts` 与 `mobile-testing-mcp suite` 子命令；测试 `test/suite-command.test.js` 7 例；全量 389 例通过。
 
 - **决议**：测试闭环（票据 08/09/11/12/13 的模块）接线为 **CLI 子命令**，不新增 MCP 工具、不动 mobile 透传契约。理由：suite 轮询单次可达数分钟，MCP 同步调用易触发客户端超时；CLI 天然支持长任务、退出码与 CI 门禁，且 `suite run` 失败仍可回到 agent 用 `mobile_run_task`/`suite evidence` 细查。
 - **命令面**（`node dist/cli.js suite …`，公共 `--project <dir>`/`--json`）：`run`（tests.json，`--tests/--max/--stop-on-failure/--device/--app/--model/--poll-timeout`，输出预检摘要 + 逐例 PASS/FAIL + 失败域 + 证据命令）、`evidence <traceId>`（`--full-trace/--out/--no-save/--design-figma|--design-pen/--node`）、`baseline save|compare`（`--case/--step/--trace/--image/--serial/--dpi/--ignore`；compare 支持 `--fail-on new|persisting|any`）、`report`（`--limit/--case/--out/--stamp/--no-save/--no-sync`，默认先同步台账再导出）、`feedback`（`--limit/--min-failures`）。
@@ -1032,7 +1032,7 @@ llm_switch(name, force):
 > 实施于 2026-10-06；`src/install.ts`（`MCP_SERVER_NAME` + `LEGACY_SERVER_NAMES`）、`test/install.test.js`（旧键迁移用例覆盖 `android-testing`），文档同步 README / 接入指南。
 
 - **决策**：iOS 设备后端（§13.41–§13.49）落地后，服务名 `android-testing`（§13.12 因当时仅支持 Android 而定）不再成立，更名为 **`mobile-testing`**——覆盖 Android + iOS 双端真机/模拟器测试。ASCII 硬约束不变（客户端 MCP 列表与工具名前缀只显示该名，工具名本身不变）。
-- **范围**：`install` 生成的四个客户端配置键（`mcpServers.mobile-testing` / `servers.mobile-testing` / `mcp.mobile-testing`）与 Codex 手动片段同步；协议层 Server name（`aos-mcp`）与 CLI/包名不变（沿用 §13.12 先例）。
+- **范围**：`install` 生成的四个客户端配置键（`mcpServers.mobile-testing` / `servers.mobile-testing` / `mcp.mobile-testing`）与 Codex 手动片段同步；协议层 Server name（`mobile-testing-mcp`）与 CLI/包名不变（沿用 §13.12 先例）。
 - **旧键迁移**：`LEGACY_SERVER_NAMES = ["aos", "android-testing"]`，install 写入前移除同一父路径下的两个历史键，避免同一客户端同时加载新旧 server；仅移除历史键，不动其他 server 与注释。已挂载客户端执行一次 `install --force`（或手动改键）后重启即生效。
 
 ### 13.51 实施记录（iOS trace 跨进程持久化与中断归因）
@@ -1498,7 +1498,7 @@ llm_switch(name, force):
 
 ### 13.105 实施记录（CLI `panel --web`：overview-panel T6）
 
-> 实施于 2026-10-14。新增 `src/panel-command.ts`（`aos-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]`；`cli.ts` 接线与 help 更新）：复用 `handlePanelRequest` 同一 handler 的独立只读看板，默认 loopback、端口占用 exit 2；存储经 `createProjectStore(MOBILE_TESTING_DATABASE_URL)`（缺省内存降级并如实提示）；`--workspace` 可选并入未注册工作区目录；独立进程无跨项目 Runtime → **深探层不可用（`deep:null`）**。测试 +3（`test/panel-command.test.js`：临时端口服务与清理、端口冲突 exit 2、help/参数错误）；全量 963 绿。
+> 实施于 2026-10-14。新增 `src/panel-command.ts`（`mobile-testing-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]`；`cli.ts` 接线与 help 更新）：复用 `handlePanelRequest` 同一 handler 的独立只读看板，默认 loopback、端口占用 exit 2；存储经 `createProjectStore(MOBILE_TESTING_DATABASE_URL)`（缺省内存降级并如实提示）；`--workspace` 可选并入未注册工作区目录；独立进程无跨项目 Runtime → **深探层不可用（`deep:null`）**。测试 +3（`test/panel-command.test.js`：临时端口服务与清理、端口冲突 exit 2、help/参数错误）；全量 963 绿。
 
 ### 13.106 实施记录（回归服务 P1a：生成侧——功能切分/命名/身份继承/归档/登记）
 
@@ -1589,7 +1589,7 @@ llm_switch(name, force):
 > 实施于 2026-10-15（设计稿 `docs/superpowers/specs/2026-10-15-regression-service-p3d-design.md`（决策 D1–D8）；计划 `docs/superpowers/plans/2026-10-15-regression-service-p3d-auth.md`，经一轮独立复核修订 C1/I1–I2/M1–M6）。目标：为两个对外网络面（`serve --http` 的 `/mcp`/`/panel*`/`/panel/api/*`/`/usage*` 与 runner 产物服务 `/artifact*`）加**可选静态共享令牌**，默认行为零破坏，并对「非 loopback 且未设令牌」的 `serve --http` 给安全默认。前置 P1–P3c（§13.106–§13.112）已落地。
 >
 > - **机制（`src/auth.ts`，D1/D4/D5）**：**静态共享令牌**（不做账号/角色/OAuth/mTLS）。请求凭据三种形式等价：`Authorization: Bearer <token>`、`Authorization: Basic <base64(user:pass)>`（用户名任意/空、**密码＝token**，浏览器原生弹窗零改造）、产物服务另接受 URL `?t=<token>`（HTTP 服务**不开**查询参数通道）。比较经 `crypto.timingSafeEqual`（先长度归一，长度不等直接 false；等长才逐字节比较，避免时序侧信道）；**空 token 恒 false**；`Authorization` 与 token 值 `trim` 归一。令牌仅读**进程 env**（无项目 `.env` 语义、无 CLI flag）；日志用 `maskSecret` 只回 masked 预览。
-> - **`serve --http` 闸门（`AOS_HTTP_TOKEN`，D2/D7）**：未设＝现状（无鉴权，loopback 本地开发不变）。设置后**先鉴权后路由**——除豁免面外一切路径（含 `/mcp/<project>`、`/panel*`、`/panel/api/*`、`/usage*`、深探层、**禁用路由与未知路径**）未认证一律 `401`（不泄露路由存在性）；豁免仅 `GET|HEAD /` 与 `GET|HEAD /healthz`（serve **补齐 `HEAD` 处理返回 200 无体**，与产物服务 parity）。401 带 `WWW-Authenticate: Basic realm="aos-mcp"`（触发浏览器弹窗）＋ JSON `{"error":"unauthorized"}`，且 **`HEAD` 抑制 body（`Content-Length: 0`）**。启动日志 `认证：已启用（Bearer/Basic，token=<masked>）` / `认证：未启用`。
+> - **`serve --http` 闸门（`AOS_HTTP_TOKEN`，D2/D7）**：未设＝现状（无鉴权，loopback 本地开发不变）。设置后**先鉴权后路由**——除豁免面外一切路径（含 `/mcp/<project>`、`/panel*`、`/panel/api/*`、`/usage*`、深探层、**禁用路由与未知路径**）未认证一律 `401`（不泄露路由存在性）；豁免仅 `GET|HEAD /` 与 `GET|HEAD /healthz`（serve **补齐 `HEAD` 处理返回 200 无体**，与产物服务 parity）。401 带 `WWW-Authenticate: Basic realm="mobile-testing-mcp"`（触发浏览器弹窗）＋ JSON `{"error":"unauthorized"}`，且 **`HEAD` 抑制 body（`Content-Length: 0`）**。启动日志 `认证：已启用（Bearer/Basic，token=<masked>）` / `认证：未启用`。
 > - **安全默认（D2/M1）**：绑定**非 loopback**（`0.0.0.0`/`::`/LAN 地址）且未设 token 且未显式放行 → 抛 `InsecureBindRefusedError`（检查置于 `RuntimeHost.prepare` **之前**，fail-fast 无副作用）→ CLI `serve` 分支捕获 → stderr 指引 ＋ **exit 2**（其余错误维持 exit 1）；`AOS_HTTP_ALLOW_INSECURE=1` 放行并打印**醒目 WARN**；loopback 绑定不受此限。
 > - **runner 产物服务（`AOS_RUNNER_ARTIFACT_TOKEN`，D3/M5）**：未设＝现状（默认 `0.0.0.0`＋既有告警，**不因默认绑定强制**）。设置后 `/artifact/*`（GET/HEAD）要求认证（Bearer/Basic/`?t=`），未认证 → `401` ＋ `WWW-Authenticate: Basic realm="aos-artifact"`（`HEAD` 抑制 body）；**闸门覆盖非 `/artifact*` 路径**（无凭据 401、不泄露路由）；豁免仅 `GET|HEAD /healthz`（`/` **不在**豁免）。复用既有 `env?` 缝读 token（命令层无需改）、启动行 masked；令牌**不随心跳广播**（不落 PG、不出现在面板链接——面板产物链接保持纯 URL，浏览器按弹窗输入）。
 > - **`install --mode http` 注入（`src/install.ts`，D6/M6）**：操作者进程 env 有 `AOS_HTTP_TOKEN` → 各 target 的 http/remote 形状注入 `headers.Authorization: Bearer <token>`（本地 stdio 条目不受影响）；输出附「已注入 Authorization 头…」提示，**但全部 target 都 `skipped_exists` 时不给该提示**（只在确有条目带 token 落位时声明）；未设 token → 不带头并提示「目标服务若启用令牌，请在客户端配置 Authorization」；**token 变更后配置视为「已存在但不同」→ 需 `--force` 重装**；输出**不打印明文**。
@@ -1726,7 +1726,7 @@ llm_switch(name, force):
 > 实施于 2026-10-18（依据：接入/下发可用性评审（B1/B2，B2 三复现实测变红）＋外部评审修订；计划 `docs/superpowers/plans/2026-10-18-onboarding-dispatch-hardening.md`（4 任务 TDD）；提交 32bc772/c36cb24/396ded9/9cbc530/2146bf0 ＋ 本记录）。动机：`--help` 会实际执行命令（`suite run` 真跑机、`serve` 起常驻、`init` 写文件）；"50 份窗口"被用于正确性路径导致**假报不可用**（task create 未知 key／run --task 引用均不可用／resolveRunRefs 归因丢失；runner 经同一路径重试后置 failed）。
 > - **help 短路（B1）**：`cli.ts` 顶部统一守卫（`suite`→suite 用法、其余→全局用法；jira 委托自身守卫）+`runSuiteCommand`/`runJiraCommand` 库级守卫；**`--help/-h` 优先于一切校验**（含拼写错误子命令）；修复裸 `jira --help`（原 exit 2）；零副作用经 spawn 实测（init 不写文件、suite run 不执行、runner 不启动、serve 不常驻）。
 > - **下发窗口修复（B2）**：口径＝**正确性/触发路径按全量读取，展示路径显式分页**（`db/types.ts` listCaseSets 注释）。**Step 0 全枚举分类**后改全量十处：`suite task create`／`run --task`／`schedule add`／`task show`、`resolveRunRefs`、`panel/actions` 建单校验、`test-gen` 身份继承、`run-report` 名称解析、`run-regression`/`verify-jira` 默认读取（原 200 窗口）。保留并记录理由：`excel-import` 200（文件扫描兜底）、`project-archive` 200＋`truncated` 披露、`schedules`/`backfill`/`compare` 已全量、`panel/overview` 展示窗口。
-> - **接入文档三补**：README/接入指南——项目机 runner **常驻化**（systemd/launchd 最小示例＋勿双开/中心 PG/产物令牌注意）、`aos-mcp init` 脚手架引用（§3.2）、**Excel 入料最小样例表**；文档提法逐一 `grep src/` 核对消费点（`AOS_RUNNER_ARTIFACT_TOKEN` 实装 `src/runner/artifact-server.ts:116`，DESIGN §13.113）。
+> - **接入文档三补**：README/接入指南——项目机 runner **常驻化**（systemd/launchd 最小示例＋勿双开/中心 PG/产物令牌注意）、`mobile-testing-mcp init` 脚手架引用（§3.2）、**Excel 入料最小样例表**；文档提法逐一 `grep src/` 核对消费点（`AOS_RUNNER_ARTIFACT_TOKEN` 实装 `src/runner/artifact-server.ts:116`，DESIGN §13.113）。
 > - 未做（留档）：主 help 的 suite 行扩展、`suite task list` 的 runner 覆盖提示、`install` 的 dist 存在校验、`listCaseSets` PG `DISTINCT ON` 下推、task create 可用列表 cap、usage/panel 命令专属帮助文案、`-h` 作 flag 值 quirk。
 > - 测试新增 27（`cli-help` 15、`suite-command` 6、`jira-cli` 1、`panel-actions` 1、`run-registry` 1、`figma-case-sets-gen` 1、`workflow-run-regression` 1、`workflow-verify-jira` 1）；全量 **1530 绿**。
 
@@ -1985,7 +1985,7 @@ llm_switch(name, force):
 
 ### 13.146 实施记录（品牌命名 + 项目显示名 + 文件台账自动回流）
 
-> 2026-10-20。**品牌**：用户可见名称统一为 `mobile-testing`（控制台标题/页脚、CLI 帮助、启停日志、README）；CLI 主名 `mobile-testing-mcp`，`aos-mcp` 保留为 bin 别名与 Docker 容器默认名；`AOS_*` 环境变量、`aos.config.jsonc`、`.artemis/`、日志文件名 `aos-mcp.log` 均不变（兼容既有接入）。实现集中：`src/brand.ts`（`PRODUCT_NAME`/`CLI_NAME`/`CONSOLE_NAME`）+ `src/console/shell.ts`、`src/cli.ts`、`src/server.ts`、`src/http-server.ts`。
+> 2026-10-20。**品牌**：用户可见名称统一为 `mobile-testing`（控制台标题/页脚、CLI 帮助、启停日志、README）；CLI 主名 `mobile-testing-mcp`，Docker 容器默认名同步为 `mobile-testing-mcp`，旧 `aos-mcp` bin 别名已移除。`AOS_*` 环境变量、`aos.config.jsonc`、`.artemis/` 保留（数据/配置契约），日志文件名改为 `mobile-testing-mcp.log`（旧日志文件不迁移）。实现集中：`src/brand.ts`（`PRODUCT_NAME`/`CLI_NAME`/`CONSOLE_NAME`）+ `src/console/shell.ts`、`src/cli.ts`、`src/server.ts`、`src/http-server.ts`、`src/log.ts`。
 > **项目显示名**：`aos.config.jsonc` 新增可选 `project.name`（去空白；非字符串拒绝）；`Runtime.initialize` 以它替代目录 basename 注册项目。`ProjectStore.upsertProject` 新增 `updateName?: boolean`（默认 true）；`upsertLlm`/`putModelCache` 等仅带 basename 的顺带写入传 `updateName:false`，避免覆盖显式显示名。服务仓库自身配置 `project.name = "mobile-testing"`，面板不再显示 `AOS-ARTEMIS`。
 > **自动回流**：存储为 PostgreSQL 时，`Runtime.initialize` 调用 `autoImportLocalLedger`（`src/ledger/auto-import.ts`）：读取 `.artemis/ledger/usage.jsonl` + `state.json` → `migrateLegacyLedger`（保留原 id，幂等）；扫描 `.artemis/design/runs` + `case-sets` → `runBackfill`（幂等登记）。成功后写 `.artemis/ledger/.pg-sync.json`（本地文件签名；未变化则跳过），失败仅 WARN 不阻断启动；`AOS_LEDGER_AUTO_IMPORT=0` 关闭。文件/内存存储不改动本地数据。
 > **当日数据修复**：`starbucks-ios-taiwan` 补 `MOBILE_TESTING_DATABASE_URL` 客户端配置；`suite backfill` 登记 1 个 run/4 份 case set，`aos_ledger_migrate` 导入 26 条历史 usage（保留原 id）。此后该项目的启动会自动回流新增本地记录，不再依赖人工提醒。

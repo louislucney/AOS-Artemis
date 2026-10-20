@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Generic AOS MCP tool caller (temp helper).
+ * Generic mobile-testing MCP tool caller (temp helper).
  *   node scripts/aos-call.mjs <calls.json> [projectDir]
  * calls.json: [{ "name": "tool", "args": {...}, "out": "optional/file.json" }]
  */

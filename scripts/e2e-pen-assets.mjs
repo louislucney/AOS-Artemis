@@ -59,7 +59,7 @@ const parse = (result) => {
   }
 };
 
-const client = new Client({ name: "aos-mcp-pen-assets-e2e", version: "0.0.1" });
+const client = new Client({ name: "mobile-testing-mcp-pen-assets-e2e", version: "0.0.1" });
 try {
   await client.connect(
     new StdioClientTransport({

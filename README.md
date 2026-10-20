@@ -66,7 +66,7 @@ node dist/cli.js doctor --install-deps
 
 | 来源 | 位置 |
 |------|------|
-| 服务日志（启停/依赖/桥/每次工具调用审计） | `<项目>/.artemis/logs/aos-mcp.log`（`aos_status.logs.file` 直接返回路径；`AOS_LOG_DIR` 可改） |
+| 服务日志（启停/依赖/桥/每次工具调用审计） | `<项目>/.artemis/logs/mobile-testing-mcp.log`（`aos_status.logs.file` 直接返回路径；`AOS_LOG_DIR` 可改） |
 | artemis 网关子进程 stderr | `<项目>/.artemis/logs/artemis-child.log`（进程退出也不丢） |
 | HTTP/常驻模式 | 同上 + stderr 同步输出（服务进程日志） |
 | artemis 任务明细（最细粒度） | `artemis/traces/<trace_id>/stdout.log` / `stderr.log` |
@@ -78,11 +78,11 @@ node dist/cli.js doctor --install-deps
 
 | 症状 | 排查路径 |
 |------|----------|
-| 工具列表少了 5 个 `mobile_*` / 提示"artemis 子进程未就绪" | `aos-mcp.log` 的 `依赖状态` 行 → `doctor` → `mobile_diagnose` |
+| 工具列表少了 5 个 `mobile_*` / 提示"artemis 子进程未就绪" | `mobile-testing-mcp.log` 的 `依赖状态` 行 → `doctor` → `mobile_diagnose` |
 | 任务失败 | `aos_tasks` 取 `trace_id` → `artemis/traces/<trace_id>/stderr.log` 尾部 + `mobile_inspect_trace(view_step_details)`；`mobile_diagnose` 会直接给出 `logs.last_failed_task.recent_errors` |
 | LLM 401/超时/余额 | `llm_list` 看 active 与 key 来源；`artemis-child.log` 与任务 stderr 中的 provider 报错 |
-| Figma 桥不通 | `aos-mcp.log` 的 `[bridge]` 行 + `aos_status.figma.bridge` / `GET /healthz` |
-| MCP 连不上 / 服务秒退 | `aos-mcp.log` 末尾（`uncaughtException` 堆栈会落盘；初始化失败也落盘） |
+| Figma 桥不通 | `mobile-testing-mcp.log` 的 `[bridge]` 行 + `aos_status.figma.bridge` / `GET /healthz` |
+| MCP 连不上 / 服务秒退 | `mobile-testing-mcp.log` 末尾（`uncaughtException` 堆栈会落盘；初始化失败也落盘） |
 
 **日志配置**：`AOS_LOG_LEVEL=debug|info|warn|error`（默认 info）、`AOS_LOG_DIR`（改目录）、`AOS_LOG_DISABLE_FILE=1`（关闭文件输出）、`AOS_LOG_MAX_MB`（轮转阈值，默认 5MB，保留 `.1` 备份）。
 
@@ -118,7 +118,8 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 # 端点: POST http://<host>:8765/mcp/<project>    健康检查: GET /healthz
 # 事件入口: POST/GET http://<host>:8765/events/<project>（同样受 AOS_HTTP_TOKEN 保护）
 
-# 客户端配置（或 mobile-testing-mcp install --mode http --url http://host:8765；兼容别名 aos-mcp）
+# 客户端配置（或 mobile-testing-mcp install --mode http --url http://host:8765）
+# 旧 aos-mcp bin 别名已移除；已生成的 MCP 配置使用 node dist/index.js，不受影响
 ```
 
 无状态 streamable-HTTP：每个项目独立 Runtime（LLM 关联 / artemis 子进程 / 任务统计）；项目名限 `[A-Za-z0-9._-]`。stdio 与 HTTP 两种入口共用同一套工具。
@@ -147,7 +148,7 @@ curl -u "any:$AOS_HTTP_TOKEN"                     http://host:8765/panel.json   
 curl "http://host:8770/artifact/...?t=$TOKEN"                                   # 3) ?t= —— 仅产物服务（书签/直链）
 ```
 
-- **serve 安全默认**：绑定**非 loopback**（`0.0.0.0`/`::`/LAN 地址）且未设令牌且未显式放行 → 启动失败并给指引（`exit 2`）；`AOS_HTTP_ALLOW_INSECURE=1` 可放行（仅限可信网络）。loopback 绑定不受此限。401 带 `WWW-Authenticate: Basic realm="aos-mcp"`（`HEAD` 抑制 body）。
+- **serve 安全默认**：绑定**非 loopback**（`0.0.0.0`/`::`/LAN 地址）且未设令牌且未显式放行 → 启动失败并给指引（`exit 2`）；`AOS_HTTP_ALLOW_INSECURE=1` 可放行（仅限可信网络）。loopback 绑定不受此限。401 带 `WWW-Authenticate: Basic realm="mobile-testing-mcp"`（`HEAD` 抑制 body）。
 - **install 注入（幂等）**：`AOS_HTTP_TOKEN` 在 `install --mode http` 的操作者进程 env 中时，生成的客户端条目自动带 `headers.Authorization: Bearer <token>`（token 缺失则不带并提示手配）。**令牌变更后配置视为「已存在但不同」→ 必须 `--force` 重装**才会更新。
 - **浏览器流指引**：令牌启用时，首次打开 `/panel*`（GET）会触发 `WWW-Authenticate` Basic 弹窗；认证按 origin 缓存后，同源 `/panel/api/*` 的 `fetch` 会自动携带凭据（各环境/浏览器或有差异）。**建议先打开一次页面再点动作按钮**。
 - **`?t=` 取舍**：查询参数方式便于书签/直链，但令牌会进入 URL、浏览器历史与访问日志——仅在可信环境使用，或改用 Bearer/Basic。HTTP 服务**不提供**查询参数通道（仅产物服务）。产物服务**目录浏览建议用 Bearer/Basic**；经 `?t=` 认证打开的目录索引会为链接**续带 `?t=`**（**仅当该值自身校验通过**；Bearer/Basic 路径不带），`?t=` 仍以**单文件直链**/书签场景为主（见 DESIGN §13.115）。
@@ -492,7 +493,7 @@ node scripts/adb-safe.mjs devices --json
 | M1 | artemis 代理 + 透传/env 装配 + 退出钩子 | ✅ |
 | M1.5 | PG 存储 + .env 首扫导入 + `aos_configure` + 多条目切换 + 任务统计 | ✅ |
 | M2 | Figma 20 工具内嵌（zod）+ 桥安全补丁 + token 引导 | ✅ |
-| M3 | 容器化（Dockerfile/compose）+ `aos-mcp install` + 真机 E2E 脚本 | ✅ |
+| M3 | 容器化（Dockerfile/compose）+ `mobile-testing-mcp install` + 真机 E2E 脚本 | ✅ |
 | M4 | HTTP 传输（`/mcp/<project>`）+ 任务完成态同步（`aos_tasks`）+ 组合工具（设计 vs 真机） | ✅ |
 | M5 | 崩溃取证：终态自动采集 crash buffer → 签名去重 → `aos_crashes`（`.artemis/crashes/`） | ✅ |
 | M6 | 设计资源唯一性与 i18n 闭环（颜色 tokens / 文本 i18n） | 🚧 M6a/M6b/M6c 完成（五栈写入；复数/倍率/真机验收后续；DESIGN.md §13.9） |
@@ -584,7 +585,7 @@ node dist/cli.js doctor
 | 设计 vs 真机差异 | `.artemis/design/diffs/<node>-<时间戳>/`（report.json / annotated.png / design.png / device.png） |
 | 崩溃取证 | `.artemis/crashes/`（Android：crash buffer；iOS trace：宿主机 `~/Library/Logs/DiagnosticReports/*.ips` 按任务窗口采集，`aos_crashes` 的 kind=`ios`） |
 | 测试文档（flows / gaps / tests.{json,md,xlsx} / build-brief 等设计产物） | `.artemis/design/` |
-| 服务日志 | `.artemis/logs/aos-mcp.log`、`artemis-child.log` |
+| 服务日志 | `.artemis/logs/mobile-testing-mcp.log`、`artemis-child.log` |
 
 **存储回流**：配置 `MOBILE_TESTING_DATABASE_URL` 后，服务启动会自动把当前项目 `.artemis/ledger/usage.jsonl`、`state.json` 与 `.artemis/design/{runs,case-sets}` 中的历史记录幂等补进中心 PG（成功后写 `.artemis/ledger/.pg-sync.json` 签名，未变化跳过；`AOS_LEDGER_AUTO_IMPORT=0` 关闭）。未配置 PG 时继续使用项目文件台账，不丢记录。
 

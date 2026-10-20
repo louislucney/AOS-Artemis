@@ -20,7 +20,7 @@ function tmp() {
 test("logger: writes timestamped leveled lines to the file sink", () => {
   const dir = tmp();
   const file = configureLogging({ logDir: dir, echo: false, level: "info" });
-  assert.equal(file, path.join(dir, "aos-mcp.log"));
+  assert.equal(file, path.join(dir, "mobile-testing-mcp.log"));
 
   log("hello 世界");
   logDebug("hidden at info level");
@@ -38,7 +38,7 @@ test("logger: debug level reveals debug lines", () => {
   configureLogging({ logDir: dir, echo: false, level: "debug" });
   logDebug("visible now");
   assert.match(
-    fs.readFileSync(path.join(dir, "aos-mcp.log"), "utf-8"),
+    fs.readFileSync(path.join(dir, "mobile-testing-mcp.log"), "utf-8"),
     /DEBUG \[mobile-testing-mcp\] visible now/
   );
   closeLogging();
@@ -57,7 +57,7 @@ test("logger: child stderr goes to its own file", () => {
 
 test("logger: rotates to .1 when the file exceeds maxBytes", () => {
   const dir = tmp();
-  const file = path.join(dir, "aos-mcp.log");
+  const file = path.join(dir, "mobile-testing-mcp.log");
   fs.writeFileSync(file, "x".repeat(100));
 
   configureLogging({ logDir: dir, echo: false, maxBytes: 50 });
@@ -77,7 +77,7 @@ test("logger: file sink can be disabled via AOS_LOG_DISABLE_FILE", () => {
     const file = configureLogging({ logDir: dir, echo: false });
     assert.equal(file, null);
     log("no sink");
-    assert.ok(!fs.existsSync(path.join(dir, "aos-mcp.log")));
+    assert.ok(!fs.existsSync(path.join(dir, "mobile-testing-mcp.log")));
     closeLogging();
   } finally {
     if (previous === undefined) delete process.env.AOS_LOG_DISABLE_FILE;

@@ -172,7 +172,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   // 服务级首启/更新引导：artemis 仓库全项目共享（依赖来源见 AOS_ARTEMIS_DEPS_URL / 默认仓库）。
   const serviceRepo = path.resolve(process.env.AOS_ARTEMIS_REPO ?? defaultArtemisRepo());
   const runtimeHost = await RuntimeHost.prepare({
-    logDir: process.env.AOS_LOG_DIR?.trim() || path.join(workspaceRoot, ".aos-mcp", "logs"),
+    logDir: process.env.AOS_LOG_DIR?.trim() || path.join(workspaceRoot, ".mobile-testing-mcp", "logs"),
     startupLine: `${CLI_NAME} ${AOS_MCP_VERSION} 启动（HTTP）workspace=${workspaceRoot}`,
     deps: { repoDir: serviceRepo, source: resolveDepsSource(emptyConfig(), process.env) }
   });

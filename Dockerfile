@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 
 # =============================================================================
-# aos-mcp — containerized AOS × ARTEMIS MCP service
+# mobile-testing-mcp — containerized AOS × ARTEMIS MCP service
 # Stage 1 builds the TypeScript service; stage 2 is the runtime image with
 # Node + Python 3.12 (artemis venv) + Android toolchain (adb/ffmpeg/scrcpy).
 # =============================================================================
 
-########## Stage 1: build the aos-mcp service ##########
+########## Stage 1: build the mobile-testing-mcp service ##########
 FROM node:22-slim AS aos-build
 WORKDIR /build
 COPY package.json package-lock.json tsconfig.json ./
@@ -74,7 +74,7 @@ RUN cd /app/artemis \
  && uv sync --frozen --no-install-project \
  && .venv/bin/python -c "import artemis, mcp_server; print('artemis import ok')"
 
-# ---- aos-mcp service (runtime deps only) ----
+# ---- mobile-testing-mcp service (runtime deps only) ----
 COPY package.json package-lock.json /app/
 RUN cd /app && npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=aos-build /build/dist /app/dist
@@ -86,7 +86,7 @@ VOLUME ["/workspace"]
 EXPOSE 3055
 
 # Container idles by default so MCP clients can `docker exec` per project:
-#   docker exec -i -w /workspace/<project> aos-mcp node /app/dist/index.js
+#   docker exec -i -w /workspace/<project> mobile-testing-mcp node /app/dist/index.js
 # For one-shot stdio use: docker run --rm -i ... node /app/dist/index.js
 WORKDIR /workspace
 ENTRYPOINT ["sleep", "infinity"]

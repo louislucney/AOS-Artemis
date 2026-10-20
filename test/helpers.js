@@ -127,13 +127,13 @@ export async function withFigmaToken(fn) {
   }
 }
 
-export function makeTempDir(prefix = "aos-mcp-test-") {
+export function makeTempDir(prefix = "mobile-testing-mcp-test-") {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   return fs.realpathSync.native(dir);
 }
 
 export function makeTempProject({ config, dotenv = "", configFileName = "aos.config.jsonc" } = {}) {
-  const dir = makeTempDir("aos-mcp-test-");
+  const dir = makeTempDir("mobile-testing-mcp-test-");
   if (config !== undefined) {
     const content = typeof config === "string" ? config : JSON.stringify(config, null, 2);
     fs.writeFileSync(path.join(dir, configFileName), content, "utf-8");

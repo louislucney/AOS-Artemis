@@ -138,7 +138,7 @@ test("install local: carries explicit tool-path env vars into client config", ()
 test("install docker: docker exec with project workdir", () => {
   const dir = makeTempProject({});
   runInstall(
-    ["--project", dir, "--targets", "opencode", "--mode", "docker", "--container", "aos-mcp-test"],
+    ["--project", dir, "--targets", "opencode", "--mode", "docker", "--container", "mobile-testing-mcp-test"],
     { log: silent }
   );
   const opencode = JSON.parse(fs.readFileSync(path.join(dir, "opencode.json"), "utf-8"));
@@ -150,7 +150,7 @@ test("install docker: docker exec with project workdir", () => {
     "-w",
     `/workspace/${path.basename(dir)}`
   ]);
-  assert.ok(command.includes("aos-mcp-test"));
+  assert.ok(command.includes("mobile-testing-mcp-test"));
   assert.ok(command.includes("/app/dist/index.js"));
 });
 
@@ -187,7 +187,7 @@ test("install docker: Codex snippet keeps command out of args", () => {
   const dir = makeTempProject({});
   const lines = [];
   runInstall(
-    ["--project", dir, "--targets", "opencode", "--mode", "docker", "--container", "aos-mcp-test"],
+    ["--project", dir, "--targets", "opencode", "--mode", "docker", "--container", "mobile-testing-mcp-test"],
     { log: (line) => lines.push(line) }
   );
   const argsLine = lines.find((line) => line.trim().startsWith("args = "));
@@ -195,7 +195,7 @@ test("install docker: Codex snippet keeps command out of args", () => {
   const args = JSON.parse(argsLine.trim().slice("args = ".length));
   assert.equal(args[0], "exec");
   assert.ok(!args.includes("docker"));
-  assert.ok(args.includes("aos-mcp-test"));
+  assert.ok(args.includes("mobile-testing-mcp-test"));
 });
 
 

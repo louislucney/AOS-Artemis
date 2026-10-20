@@ -48,7 +48,7 @@ test("usage e2e: tool, CLI, web and audit log agree on the same event", async ()
       at: new Date(Date.now() - 60_000).toISOString()
     });
 
-    const log = fs.readFileSync(path.join(logDir, "aos-mcp.log"), "utf-8");
+    const log = fs.readFileSync(path.join(logDir, "mobile-testing-mcp.log"), "utf-8");
     const logged = /tool=llm_list ok=true ms=(\d+) usage=([0-9a-f-]{36})/.exec(log);
     assert.ok(logged, log);
     const eventId = logged[2];

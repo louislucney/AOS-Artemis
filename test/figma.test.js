@@ -67,8 +67,8 @@ test("figma tool schemas: required fields and enums preserved", () => {
   assert.equal(parsed.success, false);
 });
 
-test("figma store: temp files are namespaced (aos-mcp-figma prefix)", () => {
-  const selectionPath = join(tmpdir(), "aos-mcp-figma-selection.json");
+test("figma store: temp files are namespaced (mobile-testing-mcp-figma prefix)", () => {
+  const selectionPath = join(tmpdir(), "mobile-testing-mcp-figma-selection.json");
   const legacyPath = join(tmpdir(), "design-context-bridge-selection.json");
   fs.rmSync(selectionPath, { force: true });
   store.setContext({ selection: [{ id: "1:1", name: "SeededFrame", type: "FRAME" }] });

@@ -47,7 +47,9 @@ function normalizeLevel(value: string | null | undefined): LogLevel {
   return level === "debug" || level === "warn" || level === "error" ? level : "info";
 }
 
-/** Configure the logger: file sink (<dir>/aos-mcp.log + artemis-child.log), level,
+export const LOG_FILE_NAME = "mobile-testing-mcp.log";
+
+/** Configure the logger: file sink (<dir>/mobile-testing-mcp.log + artemis-child.log), level,
  * stderr echo and size-based rotation (keep one .1 backup). Returns the log path. */
 export function configureLogging(options: LoggingOptions = {}): string | null {
   state.minLevel = normalizeLevel(options.level ?? process.env.AOS_LOG_LEVEL);
@@ -68,7 +70,7 @@ export function configureLogging(options: LoggingOptions = {}): string | null {
   try {
     const resolved = path.resolve(dir);
     mkdirSync(resolved, { recursive: true });
-    const filePath = path.join(resolved, "aos-mcp.log");
+    const filePath = path.join(resolved, LOG_FILE_NAME);
     if (existsSync(filePath) && statSync(filePath).size > state.maxBytes) {
       const backup = `${filePath}.1`;
       try {
@@ -95,7 +97,7 @@ export function logDirPath(): string | null {
 }
 
 export function logFilePath(): string | null {
-  return state.dir ? path.join(state.dir, "aos-mcp.log") : null;
+  return state.dir ? path.join(state.dir, LOG_FILE_NAME) : null;
 }
 
 export function childLogFilePath(): string | null {

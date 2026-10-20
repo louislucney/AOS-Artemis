@@ -77,10 +77,10 @@ test("authorizeRequest: empty token denies every credential", () => {
 });
 
 test("unauthorizedResponse: 401 with Basic challenge and JSON body", () => {
-  const res = unauthorizedResponse("aos-mcp");
+  const res = unauthorizedResponse("mobile-testing-mcp");
   assert.equal(res.status, 401);
   assert.equal(res.headers["Content-Type"], "application/json");
-  assert.equal(res.headers["WWW-Authenticate"], 'Basic realm="aos-mcp"');
+  assert.equal(res.headers["WWW-Authenticate"], 'Basic realm="mobile-testing-mcp"');
   assert.equal(res.body, '{"error":"unauthorized"}');
   assert.deepEqual(JSON.parse(res.body), { error: "unauthorized" });
 

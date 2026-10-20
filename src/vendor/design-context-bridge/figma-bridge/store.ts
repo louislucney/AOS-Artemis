@@ -5,7 +5,7 @@ import type { FigmaDocumentContext } from '../core/types.js';
 
 // PATCH (aos-mcp): namespaced temp files so a stock design-context-bridge
 // installation on the same machine never shares state with this service.
-const STORE_FILE_PREFIX = 'aos-mcp-figma';
+const STORE_FILE_PREFIX = 'mobile-testing-mcp-figma';
 const STORE_PATH = join(tmpdir(), `${STORE_FILE_PREFIX}-selection.json`);
 const REQ_PATH = join(tmpdir(), `${STORE_FILE_PREFIX}-requests.json`);
 const RES_PATH = join(tmpdir(), `${STORE_FILE_PREFIX}-responses.json`);

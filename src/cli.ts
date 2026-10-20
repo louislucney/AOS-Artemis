@@ -51,7 +51,7 @@ install options:
                          local = node <service>/dist/index.js (default)
                          docker = docker exec -i -w /workspace/<project> <container> node /app/dist/index.js
                          http = remote URL http://<host>:<port>/mcp/<project>
-  --container <name>     Container name for docker mode (default: aos-mcp, legacy alias)
+  --container <name>     Container name for docker mode (default: mobile-testing-mcp)
   --url <base>           Base URL for http mode (default: http://127.0.0.1:8765)
   --service <path>       Service entry path for local mode (default: this install's dist/index.js)
   --force                Overwrite an existing but different aos entry

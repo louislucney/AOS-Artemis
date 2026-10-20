@@ -1206,7 +1206,7 @@ function parseIsoMs(value: string | null): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-/** Kill a recorded mcp_server child left behind by a dead aos-mcp instance
+/** Kill a recorded mcp_server child left behind by a dead mobile-testing-mcp instance
  * （经 ChildSupervisor，DESIGN §13.88）。 */
 export async function sweepStaleChild(runtime: Runtime): Promise<string | null> {
   return await runtime.sweepChild();

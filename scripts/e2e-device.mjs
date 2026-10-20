@@ -5,7 +5,7 @@
  *   node scripts/e2e-device.mjs "Open Settings and report the battery level"
  *
  * Prerequisites:
- *   - project .env configured (or run `aos-mcp doctor`)
+ *   - project .env configured (or run `mobile-testing-mcp doctor`)
  *   - artemis venv ready (cd artemis && uv sync)
  *   - an authorized Android device (adb devices)
  *
@@ -33,7 +33,7 @@ const parse = (result) => {
   }
 };
 
-const client = new Client({ name: "aos-mcp-e2e", version: "0.0.1" });
+const client = new Client({ name: "mobile-testing-mcp-e2e", version: "0.0.1" });
 await client.connect(
   new StdioClientTransport({
     command: process.execPath,

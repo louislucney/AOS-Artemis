@@ -18,7 +18,7 @@ const SYNC_INTERVAL_MS = 30_000;
 
 export interface RuntimeHostPrepareOptions {
   logDir: string;
-  /** 启动首行日志（形如 `aos-mcp <version> 启动（stdio）项目=…`）。 */
+  /** 启动首行日志（形如 `mobile-testing-mcp <version> 启动（stdio）项目=…`）。 */
   startupLine: string;
   deps: { repoDir: string; source: DepsSource };
 }

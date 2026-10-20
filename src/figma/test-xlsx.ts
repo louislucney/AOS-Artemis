@@ -334,8 +334,8 @@ export async function renderTestsWorkbook(
   const summary = meta.summary ?? summarizeCases(cases);
   if (!options.templatePath) {
     const workbook = defaultTestsWorkbook(cases, meta, summary);
-    workbook.creator = "aos-mcp";
-    workbook.lastModifiedBy = "aos-mcp";
+    workbook.creator = "mobile-testing-mcp";
+    workbook.lastModifiedBy = "mobile-testing-mcp";
     workbook.description = meta.source;
     const generatedAt = new Date(meta.generatedAt);
     if (!Number.isNaN(generatedAt.getTime())) {

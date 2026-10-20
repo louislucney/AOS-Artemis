@@ -132,7 +132,7 @@ test("usage server: a throwing store only logs a warning and never affects the r
     assert.notEqual(result.isError, true);
     assert.equal(JSON.parse(result.content[0].text).ok, true);
 
-    const log = fs.readFileSync(path.join(logDir, "aos-mcp.log"), "utf-8");
+    const log = fs.readFileSync(path.join(logDir, "mobile-testing-mcp.log"), "utf-8");
     assert.match(log, /使用统计记录失败: pg down/);
     assert.ok(!/tool=llm_list[^\n]*usage=/.test(log));
   } finally {
@@ -147,7 +147,7 @@ test("usage server: audit log carries usage=<id> matching the recorded event id"
   const harness = await makeHarness();
   try {
     await harness.client.callTool({ name: "llm_list", arguments: {} });
-    const log = fs.readFileSync(path.join(logDir, "aos-mcp.log"), "utf-8");
+    const log = fs.readFileSync(path.join(logDir, "mobile-testing-mcp.log"), "utf-8");
     const match = /tool=llm_list ok=true ms=(\d+) usage=([0-9a-f-]{36})/.exec(log);
     assert.ok(match, log);
     const events = await harness.runtime.store.listUsageEvents(harness.dir);
@@ -172,7 +172,7 @@ test("usage server: AOS_USAGE=0 records nothing and omits the log field", async 
     );
     assert.deepEqual(status.usage, { enabled: false, storage: "memory" });
 
-    const log = fs.readFileSync(path.join(logDir, "aos-mcp.log"), "utf-8");
+    const log = fs.readFileSync(path.join(logDir, "mobile-testing-mcp.log"), "utf-8");
     assert.ok(!/tool=llm_list[^\n]*usage=/.test(log));
     assert.ok(!/tool=aos_status[^\n]*usage=/.test(log));
   } finally {

@@ -79,7 +79,7 @@ test("http server: per-project routing and MCP over streamable HTTP", async () =
 
     // HTTP transport records usage: the audit line carries usage=<id>.
     const httpLog = fs.readFileSync(
-      path.join(workspace, ".aos-mcp", "logs", "aos-mcp.log"),
+      path.join(workspace, ".mobile-testing-mcp", "logs", "mobile-testing-mcp.log"),
       "utf-8"
     );
     assert.match(httpLog, /tool=llm_list ok=true ms=\d+ usage=[0-9a-f-]{36}/);
@@ -561,7 +561,7 @@ test("http server: 非 loopback 无 token 拒绝启动（无 prepare 副作用�
         if (handle) await handle.close();
       }
       assert.equal(threw, true, "非 loopback 无 token 应抛 InsecureBindRefusedError");
-      assert.equal(fs.existsSync(path.join(workspace, ".aos-mcp")), false, "抛错前不产生 prepare 副作用");
+      assert.equal(fs.existsSync(path.join(workspace, ".mobile-testing-mcp")), false, "抛错前不产生 prepare 副作用");
     });
   });
 });
@@ -611,7 +611,7 @@ test("http server: 启动日志含 masked token、不含明文", async () => {
     } catch {
       /* already closed */
     }
-    const logPath = path.join(workspace, ".aos-mcp", "logs", "aos-mcp.log");
+    const logPath = path.join(workspace, ".mobile-testing-mcp", "logs", "mobile-testing-mcp.log");
     const content = fs.readFileSync(logPath, "utf-8");
     assert.match(content, /认证：已启用/);
     assert.match(content, /token=\*{4}7d6c/);

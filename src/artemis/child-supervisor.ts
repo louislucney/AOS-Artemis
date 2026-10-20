@@ -92,7 +92,7 @@ export class ChildSupervisor {
     return resolveArtemisPython(this.deps.config.artemis);
   }
 
-  /** Kill a recorded mcp_server child left behind by a dead aos-mcp instance. */
+  /** Kill a recorded mcp_server child left behind by a dead mobile-testing-mcp instance. */
   async sweep(): Promise<string | null> {
     const state = this.deps.state.read();
     const child = state.child;

@@ -26,7 +26,7 @@ test("discovery: AOS_PROJECT_DIR is honored", () => {
 });
 
 test("discovery: AOS_PROJECT_DIR without config yields null config", () => {
-  const dir = makeTempDir("aos-mcp-noconfig-");
+  const dir = makeTempDir("mobile-testing-mcp-noconfig-");
   const resolution = resolveProject({ env: { AOS_PROJECT_DIR: dir }, cwd: os.tmpdir() });
   assert.equal(resolution.rootDir, dir);
   assert.equal(resolution.configPath, null);
@@ -70,7 +70,7 @@ test("project.name is trimmed; invalid type is rejected", () => {
 });
 
 test("missing config is optional: project resolves with null config", () => {
-  const empty = makeTempDir("aos-mcp-empty-");
+  const empty = makeTempDir("mobile-testing-mcp-empty-");
   const project = loadProject({ cwd: empty, env: { AOS_PROJECT_DIR: empty } });
   assert.equal(project.configPath, null);
   assert.equal(Object.keys(project.config.llm.profiles).length, 0);

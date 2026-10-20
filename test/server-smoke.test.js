@@ -27,7 +27,7 @@ async function makeClient(projectDir) {
       AOS_USAGE: "1"
     }
   });
-  const client = new Client({ name: "aos-mcp-smoke", version: "0.0.1" });
+  const client = new Client({ name: "mobile-testing-mcp-smoke", version: "0.0.1" });
   await client.connect(transport);
   return client;
 }
@@ -100,10 +100,10 @@ test("server smoke: handshake, tools, llm_list / llm_switch / aos_status", async
       ["listening", "skipped_occupied"].includes(statusPayload.figma.bridge.status),
       `unexpected bridge status: ${statusPayload.figma.bridge.status}`
     );
-    assert.equal(statusPayload.logs.file, path.join(dir, ".artemis", "logs", "aos-mcp.log"));
+    assert.equal(statusPayload.logs.file, path.join(dir, ".artemis", "logs", "mobile-testing-mcp.log"));
 
     // Log file sink: startup banner + per-tool audit lines with usage correlation.
-    const logText = fs.readFileSync(path.join(dir, ".artemis", "logs", "aos-mcp.log"), "utf-8");
+    const logText = fs.readFileSync(path.join(dir, ".artemis", "logs", "mobile-testing-mcp.log"), "utf-8");
     assert.match(logText, /启动（stdio）/);
     assert.match(logText, /tool=llm_list ok=true ms=\d+ usage=[0-9a-f-]{36}/);
     assert.match(logText, /tool=aos_status ok=true ms=\d+ usage=[0-9a-f-]{36}/);

@@ -286,7 +286,7 @@ export async function runServer(): Promise<void> {
     if (!host) {
       configureLogging({
         logDir:
-          process.env.AOS_LOG_DIR?.trim() || path.join(process.cwd(), ".aos-mcp", "logs")
+          process.env.AOS_LOG_DIR?.trim() || path.join(process.cwd(), ".mobile-testing-mcp", "logs")
       });
       installCrashHandlers();
     }

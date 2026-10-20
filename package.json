@@ -8,8 +8,7 @@
     "node": ">=20"
   },
   "bin": {
-    "mobile-testing-mcp": "dist/cli.js",
-    "aos-mcp": "dist/cli.js"
+    "mobile-testing-mcp": "dist/cli.js"
   },
   "main": "dist/index.js",
   "files": [
