@@ -528,6 +528,10 @@ export class FileStore implements ProjectStore {
         .filter((event) => !query.type || event.type === query.type)
         .filter((event) => !query.status || event.status === query.status)
         .filter((event) => afterSeq === null || event.seq > afterSeq)
+        .filter(
+          (event) =>
+            query.consumed === undefined || (event.consumedAt !== null) === query.consumed
+        )
         .filter((event) => since === null || event.receivedAt > since)
         .sort((left, right) =>
           order === "asc"
@@ -536,6 +540,41 @@ export class FileStore implements ProjectStore {
         )
         .slice(0, capped)
         .map((event) => cloneProjectEvent(event, !includePayload));
+    });
+  }
+
+  async markProjectEventsConsumed(
+    rootPath: string,
+    eventIds: string[],
+    consumedAt: string = new Date().toISOString()
+  ): Promise<number> {
+    const bucket = await this.bucket(rootPath);
+    return this.withEventQueue(bucket, async () => {
+      await this.ensureEventsLoaded(bucket);
+      const project = await bucket.mem.getProjectByPath(rootPath);
+      if (!project) return 0;
+      const ids = new Set(eventIds);
+      const changed: ProjectEventRecord[] = [];
+      for (const event of bucket.events.values()) {
+        if (event.projectId !== project.id || !ids.has(event.eventId) || event.consumedAt !== null) {
+          continue;
+        }
+        event.consumedAt = consumedAt;
+        changed.push(event);
+      }
+      if (changed.length === 0) return 0;
+      try {
+        await writeFileAtomicAsync(
+          bucket.eventsPath,
+          `${[...bucket.events.values()].map((event) => JSON.stringify(event)).join("\n")}\n`
+        );
+      } catch (error) {
+        for (const event of changed) event.consumedAt = null;
+        this.noteWriteFailure(error);
+        log(`文件台账写入失败（markProjectEventsConsumed）：${errorMessage(error)}`);
+        return 0;
+      }
+      return changed.length;
     });
   }
 

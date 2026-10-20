@@ -55,13 +55,15 @@ const querySchema = z.object({
   status: z.enum(EVENT_STATUSES).optional(),
   since: z.string().optional(),
   afterSeq: z.number().int().min(0).optional(),
+  consumed: z.boolean().optional(),
   order: z.enum(["asc", "desc"]).optional(),
   limit: z.number().int().min(1).max(200).optional(),
   includePayload: z.boolean().optional()
 });
 
 const pollSchema = querySchema.extend({
-  waitMs: z.number().int().min(0).max(30_000).optional()
+  waitMs: z.number().int().min(0).max(30_000).optional(),
+  consume: z.boolean().optional()
 });
 
 export const EVENTS_NATIVE_TOOLS: NativeToolDefinition[] = [
@@ -87,7 +89,7 @@ export const EVENTS_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "aos_events",
     description:
-      "查询当前项目的执行事件（project_events）：按 runId/caseId/type/status/since/afterSeq 过滤，默认新→旧、默认不返回 payload（includePayload:true 时 limit ≤ 50）；返回 nextSeq 供无丢失轮询。",
+      "查询当前项目的执行事件（project_events）：按 runId/caseId/type/status/since/afterSeq/consumed 过滤，默认新→旧、默认不返回 payload（includePayload:true 时 limit ≤ 50）；返回 nextSeq 供无丢失轮询。",
     schema: querySchema,
     handler: async (runtime, args) => {
       try {
@@ -103,7 +105,7 @@ export const EVENTS_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "aos_event_poll",
     description:
-      "按 seq 游标轮询当前项目事件（无丢失）：afterSeq 之后无事件时最多等待 waitMs（0-30000）；返回 events/nextSeq，下一轮把 nextSeq 作为 afterSeq。",
+      "按 seq 游标轮询当前项目事件（无丢失）：afterSeq 之后无事件时最多等待 waitMs（0-30000）；返回 events/nextSeq，下一轮把 nextSeq 作为 afterSeq；consume:true 时把返回事件标记为已消费。",
     schema: pollSchema,
     handler: async (runtime, args) => {
       try {

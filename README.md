@@ -125,7 +125,7 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 `initialize` 响应携带 `instructions`（服务定位、常用入口、设备选择与凭证纪律；两种入口共用），客户端 agent 可直接看到；`package.json` 的 description 仅作 npm/服务元数据。
 
-**项目执行事件入口（P0/P1）**：`POST /events/<project>` 上报 `run.*/case.*/artifact.created/log.entry/feedback.request` 事件（幂等 `eventId`，202 返回 `serverId/receivedAt/storage/degraded`）；`GET /events/<project>` 按 `runId/caseId/type/status/since/afterSeq/order/limit/includePayload` 查询（返回 `nextSeq` 游标）。`GET /events/<project>/poll?afterSeq=<nextSeq>&waitMs=<0-30000>` 长轮询无丢失事件；stdio/无 HTTP 的项目用 `aos_event_report` / `aos_events` / `aos_event_poll`。事件先写穿 store 再 ack，不执行 payload、不计入 usage；项目身份由路由解析，不接受任意路径。
+**项目执行事件入口（P0/P1）**：`POST /events/<project>` 上报 `run.*/case.*/artifact.created/log.entry/feedback.request` 事件（幂等 `eventId`，202 返回 `serverId/receivedAt/storage/degraded`）；`GET /events/<project>` 按 `runId/caseId/type/status/since/afterSeq/order/limit/includePayload` 查询（返回 `nextSeq` 游标）。`GET /events/<project>/poll?afterSeq=<nextSeq>&waitMs=<0-30000>&consume=true` 长轮询无丢失事件（`consume` 标记 `consumed_at`，`GET /events/<project>?consumed=false` 查未消费）；stdio/无 HTTP 的项目用 `aos_event_report` / `aos_events` / `aos_event_poll`。事件先写穿 store 再 ack，不执行 payload、不计入 usage；项目身份由路由解析，不接受任意路径。
 
 远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。
 
@@ -529,8 +529,8 @@ node dist/cli.js doctor
 | `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 与 Jira（masked）就绪性 |
 | `aos_tasks` | 任务/调用统计（case/trace/状态/模型），含完成态同步与错误终态记录 |
 | `aos_event_report` | 项目执行事件上报（项目 → MCP）：幂等 `eventId`，202/返回 `serverId/receivedAt/storage/degraded`；`run.*`/`case.*`/`artifact.created`/`log.entry`/`feedback.request`，不执行 payload、不写 usage |
-| `aos_events` | 查询当前项目 `project_events`：`runId`/`caseId`/`type`/`status`/`since`/`afterSeq`/`order`/`limit`；返回 `nextSeq`；默认不返回 payload（`includePayload:true` 时 limit ≤50） |
-| `aos_event_poll` | 按 `afterSeq` 游标无丢失轮询事件；无新事件时最多等待 `waitMs`（0-30000）；下一轮把返回的 `nextSeq` 作为 `afterSeq` |
+| `aos_events` | 查询当前项目 `project_events`：`runId`/`caseId`/`type`/`status`/`since`/`afterSeq`/`consumed`/`order`/`limit`；返回 `nextSeq`；默认不返回 payload（`includePayload:true` 时 limit ≤50） |
+| `aos_event_poll` | 按 `afterSeq` 游标无丢失轮询事件；无新事件时最多等待 `waitMs`（0-30000）；下一轮把返回的 `nextSeq` 作为 `afterSeq`；`consume:true` 标记已消费 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
 | `aos_usage` | 使用统计（调用事件）：`summary` 概览 / `signals` 信号分布 / `events` 流水；`tool`/`status`/`days` 筛选，events `limit` ≤200；只统计客户端发起的调用，`AOS_USAGE=0` 时标注采集已关闭但历史仍可查 |
 | `jira_issue_get` | 读取 Jira Cloud issue（key 或 browse URL）→ summary/status/type/labels + 描述纯文本 + 启发式验收标准标注（保留原始 ADF）；缺凭证返回 `howToFix` |

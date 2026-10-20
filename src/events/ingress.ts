@@ -52,6 +52,8 @@ export interface EventList {
 export interface EventPollOptions extends ProjectEventQuery {
   /** 无新事件时的最长等待（毫秒），上限 30s；0 表示立即返回。 */
   waitMs?: number;
+  /** 返回后把本页事件标记为已消费（consumed_at）。 */
+  consume?: boolean;
   signal?: AbortSignal;
 }
 
@@ -139,7 +141,7 @@ export async function pollProjectEvents(
   context: EventIngressContext,
   input: EventPollOptions = {}
 ): Promise<EventList> {
-  const { waitMs: rawWait, signal, ...query } = input;
+  const { waitMs: rawWait, consume, signal, ...query } = input;
   const waitMs = Math.max(
     0,
     Math.min(Number.isFinite(rawWait) ? Math.floor(rawWait ?? 0) : 0, 30_000)
@@ -147,7 +149,15 @@ export async function pollProjectEvents(
   const deadline = Date.now() + waitMs;
   for (;;) {
     const listed = await listProjectEvents(context, { ...query, order: "asc" });
-    if (listed.returned > 0 || Date.now() >= deadline || signal?.aborted) return listed;
+    if (listed.returned > 0 || Date.now() >= deadline || signal?.aborted) {
+      if (consume === true && listed.returned > 0) {
+        const mark = requireStoreMethod(context.store.markProjectEventsConsumed);
+        const consumedAt = new Date().toISOString();
+        await mark.call(context.store, context.rootPath, listed.events.map((event) => event.eventId), consumedAt);
+        listed.events = listed.events.map((event) => ({ ...event, consumedAt }));
+      }
+      return listed;
+    }
     await sleep(Math.min(250, Math.max(1, deadline - Date.now())));
   }
 }

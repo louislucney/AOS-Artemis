@@ -80,6 +80,12 @@ test("ingress: pollProjectEvents 按 afterSeq 无丢失推进", async () => {
   assert.deepEqual(first.events.map((event) => event.eventId), ["e1", "e2"]);
   assert.equal(first.nextSeq, 2);
 
+  const consumed = await pollProjectEvents(ctx, { afterSeq: 0, waitMs: 0, consume: true });
+  assert.equal(consumed.returned, 2);
+  assert.equal(consumed.events.every((event) => event.consumedAt !== null), true);
+  const unconsumed = await pollProjectEvents(ctx, { afterSeq: 0, waitMs: 0, consumed: false });
+  assert.equal(unconsumed.returned, 0);
+
   const empty = await pollProjectEvents(ctx, { afterSeq: first.nextSeq, waitMs: 0 });
   assert.equal(empty.returned, 0);
   assert.equal(empty.nextSeq, 2);

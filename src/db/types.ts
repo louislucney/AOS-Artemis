@@ -141,6 +141,8 @@ export interface ProjectEventQuery {
   since?: string;
   /** 无丢失游标：只返回 seq 严格大于该值的事件（P1）。 */
   afterSeq?: number;
+  /** P1 消费态过滤：true=已消费，false=未消费。 */
+  consumed?: boolean;
   order?: "asc" | "desc";
   limit?: number;
   includePayload?: boolean;
@@ -516,6 +518,11 @@ export interface ProjectStore {
   ): Promise<UsageEventRecord>;
   recordProjectEvent(rootPath: string, input: ProjectEventInput): Promise<RecordProjectEventResult>;
   listProjectEvents(rootPath: string, query?: ProjectEventQuery): Promise<ProjectEventRecord[]>;
+  markProjectEventsConsumed(
+    rootPath: string,
+    eventIds: string[],
+    consumedAt?: string
+  ): Promise<number>;
   countProjectEvents(rootPath: string): Promise<number>;
   pruneProjectEvents(rootPath: string): Promise<number>;
   listUsageEvents(rootPath: string, query?: UsageEventQuery): Promise<UsageEventRecord[]>;

@@ -143,6 +143,14 @@ test("events HTTP: afterSeq 与 /poll 长轮询", async () => {
     assert.equal(empty.returned, 0);
     assert.equal(empty.nextSeq, listed.nextSeq);
 
+    const consumed = await (
+      await fetch(`${base}/events/demo/poll?afterSeq=0&waitMs=0&consume=true`)
+    ).json();
+    assert.equal(consumed.returned, 1);
+    assert.equal(consumed.events[0].consumedAt !== null, true);
+    const unconsumed = await (await fetch(`${base}/events/demo?consumed=false`)).json();
+    assert.equal(unconsumed.returned, 0);
+
     const pending = fetch(
       `${base}/events/demo/poll?afterSeq=${listed.nextSeq}&waitMs=1000&order=asc`
     );

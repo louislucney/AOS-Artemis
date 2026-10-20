@@ -414,6 +414,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               const limitRaw = url.searchParams.get("limit");
               const limit = limitRaw === null ? undefined : Number(limitRaw);
               const afterSeqRaw = url.searchParams.get("afterSeq");
+              const consumedRaw = url.searchParams.get("consumed");
               const context = {
                 store,
                 rootPath: project.rootPath,
@@ -427,6 +428,14 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
                 type: url.searchParams.get("type") ?? undefined,
                 status: url.searchParams.get("status") ?? undefined,
                 afterSeq: afterSeqRaw === null ? undefined : Number(afterSeqRaw),
+                consumed:
+                  consumedRaw === null
+                    ? undefined
+                    : consumedRaw === "true" || consumedRaw === "1"
+                      ? true
+                      : consumedRaw === "false" || consumedRaw === "0"
+                        ? false
+                        : undefined,
                 order:
                   orderRaw === "asc" || orderRaw === "desc" ? orderRaw : undefined,
                 limit:
@@ -446,6 +455,9 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
                 const polled = await pollProjectEvents(context, {
                   ...query,
                   waitMs,
+                  consume:
+                    url.searchParams.get("consume") === "true" ||
+                    url.searchParams.get("consume") === "1",
                   signal: controller.signal
                 });
                 if (controller.signal.aborted) {

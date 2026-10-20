@@ -1432,6 +1432,9 @@ export class PostgresStore implements ProjectStore {
       values.push(query.afterSeq);
       clauses.push(`seq > $${values.length}`);
     }
+    if (query.consumed !== undefined) {
+      clauses.push(query.consumed ? "consumed_at IS NOT NULL" : "consumed_at IS NULL");
+    }
     const includePayload = query.includePayload === true;
     const max = includePayload ? 50 : 200;
     const requested = query.limit ?? 50;
@@ -1446,6 +1449,26 @@ export class PostgresStore implements ProjectStore {
       values
     );
     return result.rows.map((row) => mapProjectEvent(row, includePayload));
+  }
+
+  async markProjectEventsConsumed(
+    rootPath: string,
+    eventIds: string[],
+    consumedAt: string = new Date().toISOString()
+  ): Promise<number> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project || eventIds.length === 0) return 0;
+    let changed = 0;
+    for (const eventId of eventIds) {
+      const result = await this.pool.query(
+        `UPDATE project_events
+         SET consumed_at = $3
+         WHERE project_id = $1 AND event_id = $2 AND consumed_at IS NULL`,
+        [project.id, eventId, consumedAt]
+      );
+      changed += Number(result.rowCount ?? 0);
+    }
+    return changed;
   }
 
   async countProjectEvents(rootPath: string): Promise<number> {

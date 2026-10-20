@@ -134,6 +134,13 @@ test("FileStore events: 查询过滤、since 秒级、order、includePayload", a
       () => store.listProjectEvents(project, { afterSeq: -1 }),
       /invalid afterSeq/
     );
+
+    assert.equal(await store.markProjectEventsConsumed(project, ["e1"]), 1);
+    assert.equal(await store.markProjectEventsConsumed(project, ["e1"]), 0);
+    const unconsumed = await store.listProjectEvents(project, { consumed: false, order: "asc" });
+    assert.deepEqual(unconsumed.map((event) => event.eventId), ["e2"]);
+    const consumed = await store.listProjectEvents(project, { consumed: true, order: "asc" });
+    assert.deepEqual(consumed.map((event) => event.eventId), ["e1"]);
   } finally {
     await store.close();
   }

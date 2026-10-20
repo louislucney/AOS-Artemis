@@ -771,6 +771,10 @@ export class MemoryStore implements ProjectStore {
       .filter((event) => !query.type || event.type === query.type)
       .filter((event) => !query.status || event.status === query.status)
       .filter((event) => afterSeq === null || event.seq > afterSeq)
+      .filter(
+        (event) =>
+          query.consumed === undefined || (event.consumedAt !== null) === query.consumed
+      )
       .filter((event) => since === null || event.receivedAt > since)
       .sort((left, right) =>
         order === "asc"
@@ -779,6 +783,25 @@ export class MemoryStore implements ProjectStore {
       )
       .slice(0, capped)
       .map((event) => cloneProjectEvent(event, !includePayload));
+  }
+
+  async markProjectEventsConsumed(
+    rootPath: string,
+    eventIds: string[],
+    consumedAt: string = new Date().toISOString()
+  ): Promise<number> {
+    const project = this.projects.get(rootPath);
+    if (!project) return 0;
+    const ids = new Set(eventIds);
+    let changed = 0;
+    for (const event of this.projectEvents) {
+      if (event.projectId !== project.id || !ids.has(event.eventId) || event.consumedAt !== null) {
+        continue;
+      }
+      event.consumedAt = consumedAt;
+      changed += 1;
+    }
+    return changed;
   }
 
   async countProjectEvents(rootPath: string): Promise<number> {
