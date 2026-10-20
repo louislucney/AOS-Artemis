@@ -691,6 +691,7 @@ try{
     title: "多项目总览",
     active: "overview",
     meta: `项目 ${view.projects.length} 个 · ${escapeHtml(cacheNote)}`,
+    autoRefreshSeconds: 15,
     project: currentShell.project,
     capabilities: currentShell.capabilities,
     body: [
@@ -1973,7 +1974,8 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       renderStandalones(detail),
       "</details>",
       "</main>"
-    ].join("\n")
+    ].join("\n"),
+    15
   );
 }
 

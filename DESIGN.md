@@ -1966,3 +1966,8 @@ llm_switch(name, force):
 > **边界**：不新建 job 表，复用事件存储；`suite_runs` 仍是回归权威，异步化不改变门禁口径；进程重启后未完成 job 只能看到 `running`（结果文件不存在），不自动恢复；不提供取消。
 > **测试**：新增 `test/jobs-async.test.js` 2 例（成功/失败 + 结果落盘 + 未知 job）；workflow schema 断言含 `async`；`aos_job_status` 注册；全量 **1760 绿**，lint 0 error（2 条既有 warning）。
 
+### 13.143 实施记录（P2 第 2 批）：面板轮询刷新
+
+> 2026-10-20。复用既有 `autoRefreshSeconds` 外壳（`src/console/shell.ts`）：总览与项目页 15s、运行中任务页沿用 10s；页面隐藏或焦点在表单内时暂停替换，支持 `prefers-reduced-motion` 关闭与“暂停/继续”按钮。面板仍是拉取式刷新，不引入 SSE/WebSocket。
+> **测试**：既有 `panel-web`/`console-pages` 42 例通过；全量 **1760 绿**，lint 0 error（2 条既有 warning）。
+
