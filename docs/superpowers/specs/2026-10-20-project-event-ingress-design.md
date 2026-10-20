@@ -1,7 +1,7 @@
 # 项目事件入口（P0）设计：项目 → MCP 的双向基础
 
 日期：2026-10-20  
-状态：P0 已实施（2026-10-20）；P1 已实施（拉取式反馈：seq 游标 / 长轮询 / consumed_at / fsync / 历史台账迁移，2026-10-20）；P2 部分实施（异步 job、面板轮询刷新，2026-10-20；事件驱动统计未实施）  
+状态：P0 已实施（2026-10-20）；P1 已实施（拉取式反馈：seq 游标 / 长轮询 / consumed_at / fsync / 历史台账迁移，2026-10-20）；P2 部分实施（异步 job、面板轮询刷新、task_stats 事件回写，2026-10-20；suite_runs 映射未实施）  
 上位问题：MCP 与项目连接非双向、记录与项目脱节、反馈慢。P0 只解决“项目 → MCP”的可靠入口与记录；反馈通道与异步任务分列 P1/P2。
 
 ## 1. 意图
@@ -385,7 +385,7 @@ export interface ProjectEventQuery {
 ### P2
 
 - **已实施（第 1 批）** 长操作异步化：`run_regression`/`verify_jira_issue`/`design_to_test` 的 `async:true` → `jobId`；进度复用 `run.started`/`run.finished`；`aos_job_status`；结果落 `.artemis/jobs/`。
-- **未实施** 事件驱动更新 `task_stats`/`suite_runs`，替代 30s 轮询。
+- **部分实施（第 3 批）** 事件驱动 `task_stats`：终态事件 `payload.traceId` → `markTaskFinished`（异步、best-effort；30s 轮询保底）；`suite_runs` 映射未实施（需先补 runId 列）。
 - **已实施（第 2 批）** 面板轮询刷新：总览/项目页 15s、运行中任务页 10s（页面隐藏/表单聚焦暂停，可手动暂停）；未引入 SSE/WebSocket。
 
 ## 11. 验收测试

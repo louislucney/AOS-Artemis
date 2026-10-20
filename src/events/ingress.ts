@@ -4,6 +4,7 @@ import type {
   ProjectStore
 } from "../db/types.js";
 import { sleep } from "../util.js";
+import { applyProjectEventToLedger } from "./consumer.js";
 import { normalizeSince } from "./payload.js";
 import { validateEventInput } from "./protocol.js";
 
@@ -88,6 +89,13 @@ export async function reportProjectEvent(
         /* audit is best-effort and must not affect the ack */
       });
   });
+  if (!result.duplicate) {
+    setImmediate(() => {
+      void applyProjectEventToLedger(context.store, context.rootPath, result.record).catch(() => {
+        /* ledger projection is best-effort; polling remains the fallback */
+      });
+    });
+  }
   return {
     accepted: !result.duplicate,
     duplicate: result.duplicate,

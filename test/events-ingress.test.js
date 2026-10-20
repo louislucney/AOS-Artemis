@@ -69,6 +69,24 @@ test("ingress: 审计异步写入且不包含 payload", async () => {
   assert.equal(JSON.stringify(audit[0]).includes("do-not-log"), false);
 });
 
+test("ingress: payload.traceId 事件驱动 task_stats 终态", async () => {
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  await store.recordTask({ rootPath: "/w/p1", traceId: "trace-1", status: "running" });
+  const ctx = { store, rootPath: "/w/p1", storage: "memory", degraded: null };
+  await reportProjectEvent(ctx, {
+    eventId: "e-task-1",
+    type: "case.result",
+    caseId: "TC_1",
+    status: "failed",
+    payload: { traceId: "trace-1", failureDomain: "应用缺陷" }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const tasks = await store.listTasks("/w/p1");
+  assert.equal(tasks[0].status, "failed");
+  assert.notEqual(tasks[0].finishedAt, null);
+});
+
 test("ingress: pollProjectEvents 按 afterSeq 无丢失推进", async () => {
   const store = new MemoryStore();
   await store.upsertProject({ rootPath: "/w/p1", name: "p1" });

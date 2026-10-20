@@ -1971,3 +1971,9 @@ llm_switch(name, force):
 > 2026-10-20。复用既有 `autoRefreshSeconds` 外壳（`src/console/shell.ts`）：总览与项目页 15s、运行中任务页沿用 10s；页面隐藏或焦点在表单内时暂停替换，支持 `prefers-reduced-motion` 关闭与“暂停/继续”按钮。面板仍是拉取式刷新，不引入 SSE/WebSocket。
 > **测试**：既有 `panel-web`/`console-pages` 42 例通过；全量 **1760 绿**，lint 0 error（2 条既有 warning）。
 
+### 13.144 实施记录（P2 第 3 批）：事件驱动 task_stats
+
+> 2026-10-20。`src/events/consumer.ts`：终态事件（passed/failed/skipped/error）且 `payload.traceId` 为字符串时，`setImmediate` 调 `store.markTaskFinished(rootPath, traceId, status)`；仅新事件（非 duplicate）触发，失败忽略。30s `syncTaskStatuses` 轮询保留为 artemis 权威状态兜底。
+> **未实施**：`suite_runs` 事件映射（`SuiteRunRecord` 无 runId 字段，需先补 `run_id` 列与写入契约）；`run.finished` 目前只更新 task_stats 的 traceId 桥。
+> **测试**：`events-ingress` 增 1 例（traceId 事件 → task failed/finishedAt）；全量 **1761 绿**，lint 0 error（2 条既有 warning）。
+
