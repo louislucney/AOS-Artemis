@@ -146,6 +146,32 @@ test("FileStore events: 查询过滤、since 秒级、order、includePayload", a
   }
 });
 
+test("FileStore events: AOS_EVENTS_FSYNC=1 写入与消费态正常", async () => {
+  const previous = process.env.AOS_EVENTS_FSYNC;
+  process.env.AOS_EVENTS_FSYNC = "1";
+  const root = makeTempDir("aos-events-file-");
+  const ledger = path.join(root, "ledger");
+  const project = path.join(root, "project");
+  fs.mkdirSync(project, { recursive: true });
+  const store = await makeFileStore(ledger, project);
+  try {
+    const first = await store.recordProjectEvent(project, {
+      eventId: "fsync-1",
+      type: "log.entry",
+      payload: { fsync: true }
+    });
+    assert.equal(first.record.seq, 1);
+    assert.equal(await store.markProjectEventsConsumed(project, ["fsync-1"]), 1);
+    const consumed = await store.listProjectEvents(project, { consumed: true });
+    assert.equal(consumed.length, 1);
+    assert.notEqual(consumed[0].consumedAt, null);
+  } finally {
+    await store.close();
+    if (previous === undefined) delete process.env.AOS_EVENTS_FSYNC;
+    else process.env.AOS_EVENTS_FSYNC = previous;
+  }
+});
+
 test("FileStore events: 并发同 eventId 只接受一次，seq 唯一", async () => {
   const root = makeTempDir("aos-events-file-");
   const ledger = path.join(root, "ledger");

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -102,6 +102,7 @@ export class FileStore implements ProjectStore {
 
   private readonly homeDir: string;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly eventsFsync: boolean;
   private readonly buckets = new Map<string, ProjectBucket>();
   private readonly registry = new Map<string, RegistryEntry>();
   private failedWrites = 0;
@@ -110,6 +111,7 @@ export class FileStore implements ProjectStore {
   private constructor(homeDir: string, env: NodeJS.ProcessEnv) {
     this.homeDir = homeDir;
     this.env = env;
+    this.eventsFsync = (env.AOS_EVENTS_FSYNC ?? "").trim() === "1";
   }
 
   static async create(options: FileStoreOptions = {}): Promise<FileStore> {
@@ -489,6 +491,10 @@ export class FileStore implements ProjectStore {
         await this.ensureDir(bucket);
         await writeFileAtomic(bucket.eventsMetaPath, `${JSON.stringify({ nextSeq: seq + 1 })}\n`);
         await appendFile(bucket.eventsPath, `${JSON.stringify(record)}\n`, "utf8");
+        if (this.eventsFsync) {
+          await fsyncPath(bucket.eventsPath);
+          await fsyncPath(bucket.eventsMetaPath);
+        }
       } catch (error) {
         this.noteWriteFailure(error);
         throw error;
@@ -568,6 +574,7 @@ export class FileStore implements ProjectStore {
           bucket.eventsPath,
           `${[...bucket.events.values()].map((event) => JSON.stringify(event)).join("\n")}\n`
         );
+        if (this.eventsFsync) await fsyncPath(bucket.eventsPath);
       } catch (error) {
         for (const event of changed) event.consumedAt = null;
         this.noteWriteFailure(error);
@@ -613,6 +620,7 @@ export class FileStore implements ProjectStore {
           bucket.eventsPath,
           kept.length > 0 ? `${kept.map((event) => JSON.stringify(event)).join("\n")}\n` : ""
         );
+        if (this.eventsFsync) await fsyncPath(bucket.eventsPath);
       } catch (error) {
         this.noteWriteFailure(error);
         log(`文件台账写入失败（pruneProjectEvents）：${errorMessage(error)}`);
@@ -1097,6 +1105,15 @@ function cloneProjectEvent(record: ProjectEventRecord, omitPayload = false): Pro
     ...record,
     payload: omitPayload ? undefined : record.payload
   };
+}
+
+async function fsyncPath(file: string): Promise<void> {
+  const handle = await open(file, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 async function writeFileAtomicAsync(file: string, content: string): Promise<void> {

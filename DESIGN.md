@@ -1947,6 +1947,7 @@ llm_switch(name, force):
 > **查询**：`ProjectEventQuery.afterSeq`（非负整数，`seq > afterSeq`）与 `consumed`（true=已消费/false=未消费）在 PG/file/memory 三实现一致；`EventList.nextSeq` 为本页最大 seq（空页回显 `afterSeq`），作为下一轮游标。
 > **长轮询**：`pollProjectEvents` 在无事件时每 250ms 重查，最长 `waitMs` 30s；`GET /events/<project>/poll?afterSeq=&waitMs=&consume=`（GET-only；客户端断开经 `res.close` 中止）与原生工具 `aos_event_poll` 共用。
 > **消费态**：`markProjectEventsConsumed` 幂等写入 `consumed_at`（PG 单条 UPDATE、file 原子重写、memory 就地）；`consume:true` 时返回事件带 `consumedAt`，重复消费返回 0。
+> **fsync**：`AOS_EVENTS_FSYNC=1` 时文件事件追加、消费态/裁剪重写后对 events json/meta 执行 fsync（默认关，保持 ack 延迟优先）。
 > **兼容**：`GET /events/<project>` 保持原语义，新增 `afterSeq/consumed` 参数与 `nextSeq` 字段；`since` 的同毫秒窗口仍只用于展示，游标轮询用 `seq`。
-> **测试**：三存储补 `afterSeq`/`consumed` + 非法值断言；ingress 补“空页→等待→新事件”与消费幂等；HTTP 补 `/poll` 长轮询、`consume` 与 400/405；工具补注册与游标推进；全量 **1755 绿**，lint 0 error（2 条既有 warning）。
+> **测试**：三存储补 `afterSeq`/`consumed` + 非法值断言；ingress 补“空页→等待→新事件”与消费幂等；HTTP 补 `/poll` 长轮询、`consume` 与 400/405；file 补 `AOS_EVENTS_FSYNC=1` 写入；工具补注册与游标推进；全量 **1756 绿**，lint 0 error（2 条既有 warning）。
 
