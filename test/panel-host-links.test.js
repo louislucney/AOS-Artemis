@@ -401,8 +401,9 @@ test("功能对齐按 (host, path) 识别项目：同路径两主机不虚报 2 
   const group = view.featureAlignment.groups[0];
   assert.equal(group.entries.length, 2);
   assert.deepEqual(
-    new Set(group.entries.map((entry) => entry.project)),
-    new Set(["app · MAC-A", "app · MAC-C"])
+    group.entries.map((entry) => entry.project),
+    ["app · MAC-A", "app · MAC-C"],
+    "同路径两主机固定取 hostId 最小的代表标签"
   );
 });
 

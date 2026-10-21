@@ -85,7 +85,7 @@ export function alignFeatureRuns(projects: FeatureAlignmentInput[]): {
   let unmatched = 0;
   for (const features of byGroupKey.values()) {
     const unique = new Map<string, FeatureAccumulator>();
-    for (const feature of features) {
+    for (const feature of [...features].sort(compareByHost)) {
       if (!unique.has(feature.projectKey)) unique.set(feature.projectKey, feature);
     }
     const distinct = [...unique.values()];
@@ -121,6 +121,7 @@ interface FeatureAccumulator {
   key: string;
   projectKey: string;
   project: string;
+  hostId: string | null;
   featureKey: string;
   name: string;
   source: string;
@@ -194,6 +195,7 @@ function mergeProjectFeatures(project: FeatureAlignmentInput): FeatureAccumulato
         key,
         projectKey,
         project: projectLabel,
+        hostId: project.hostId ?? null,
         featureKey: unit.featureKey,
         name: unit.name,
         source: unit.source,
@@ -249,7 +251,14 @@ function passRateRange(group: FeatureAlignmentGroup): number {
 }
 
 function compareByProject(left: FeatureAccumulator, right: FeatureAccumulator): number {
-  return compareStrings(left.project, right.project);
+  const project = compareStrings(left.project, right.project);
+  return project !== 0 ? project : compareStrings(left.projectKey, right.projectKey);
+}
+
+/** 代表性条目：hostId 升序（NULL 在前），再按展示名/项目键稳定排序。 */
+function compareByHost(left: FeatureAccumulator, right: FeatureAccumulator): number {
+  const host = compareStrings(left.hostId ?? "", right.hostId ?? "");
+  return host !== 0 ? host : compareByProject(left, right);
 }
 
 function compareStrings(left: string, right: string): number {
