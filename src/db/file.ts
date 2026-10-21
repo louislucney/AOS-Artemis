@@ -528,6 +528,11 @@ export class FileStore implements ProjectStore {
     return this.scopedMem(bucket, this.hostId).listRunners(rootPath, limit);
   }
 
+  async getRunner(rootPath: string, runnerId: string): Promise<RunnerRecord | null> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).getRunner(rootPath, runnerId);
+  }
+
   async markRunnerStopped(input: {
     rootPath: string;
     runnerId: string;

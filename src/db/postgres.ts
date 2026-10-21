@@ -1628,6 +1628,16 @@ export class PostgresStore implements ProjectStore {
     return result.rows.map((row) => mapRunner(row));
   }
 
+  async getRunner(rootPath: string, runnerId: string): Promise<RunnerRecord | null> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return null;
+    const result = await this.pool.query(
+      "SELECT * FROM runners WHERE project_id = $1 AND id = $2",
+      [project.id, runnerId]
+    );
+    return result.rows[0] ? mapRunner(result.rows[0]) : null;
+  }
+
   async markRunnerStopped(input: {
     rootPath: string;
     runnerId: string;

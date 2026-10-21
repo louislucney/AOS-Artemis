@@ -981,6 +981,15 @@ export class MemoryStore implements ProjectStore {
       .map(cloneRunner);
   }
 
+  async getRunner(rootPath: string, runnerId: string): Promise<RunnerRecord | null> {
+    const project = this.getProjectRecord(rootPath);
+    if (!project) return null;
+    const found = this.runners.find(
+      (entry) => entry.projectId === project.id && entry.id === runnerId
+    );
+    return found ? cloneRunner(found) : null;
+  }
+
   async markRunnerStopped(input: {
     rootPath: string;
     runnerId: string;

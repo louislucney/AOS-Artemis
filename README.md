@@ -221,11 +221,14 @@ curl "http://host:8770/artifact/...?t=$TOKEN"                                   
 
 ```bash
 node dist/cli.js usage                        # 当前项目文本摘要（最近 7 天）
-node dist/cli.js usage --json                 # 机器可读（与文本同源）
-node dist/cli.js usage --all                  # 跨项目总览（含合计）
+node dist/cli.js usage --json                 # 机器可读（与文本同源，含项目 hostId）
+node dist/cli.js usage --all                  # 跨项目总览（含合计；多机同名项目分别列出）
 node dist/cli.js usage --project <名称> --days 30
+node dist/cli.js usage --host <id|主机名> --all # 只看该主机的项目（多机同路径时用于消歧）
 node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:8766（端口占用 exit 2）
 ```
+
+`--host` 在文本/JSON/`--all` 下是**项目过滤**（id 精确优先、主机名需唯一；重复主机名 exit 2 并列出候选 id，未知主机 exit 2）；`--web` 下的 `--host` 仍是**监听地址**。同路径多主机但未指定 `--host` 时，`usage` 不猜：默认当前项目/`--project` 命中多行会 exit 2 列出候选主机；未归属 legacy 行与主机行同路径时同样 exit 2，并提示 `--host` 或 `host adopt-legacy`。
 
 ### 记录导出（export）
 
@@ -257,7 +260,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读�
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
 | `ops` **运维与数据** | 存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
 
-写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel 导入支持 multipart 上传（`.xlsx`≤20MB，单飞）。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层（导入需 HTTP 模式的运行时解析）。
+写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel 导入支持 multipart 上传（`.xlsx`≤20MB，单飞）：面板表单提交到 `/panel/api/import?project=<项目根路径>[&host=<主机 id>]`，HTTP 模式经该项目的运行时解析并登记为最新份。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层（导入需 HTTP 模式的运行时解析）。
 
 **页面按能力标记渲染**（critique 修复轮）：独立进程默认只读时页级横幅＋写 CTA 禁用并给原因（不再"点了才 404"）；导航携带项目上下文（从项目页跳转不再丢项目；无项目时项目级项禁用而非误指总览）；**派发为两段确认**（摘要→确认创建）且 refs 由服务端按 `source/ref/keyword` 重解析（不再信渲染期快照）；成功后有回执（任务 id＋审计互链）。样式为**单一 CSDC 源**（tokens＋compat 合并注入；无 legacy 覆盖、无 `color-scheme` 双色系）。
 

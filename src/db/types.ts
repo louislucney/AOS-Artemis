@@ -839,6 +839,8 @@ export interface ProjectStore {
   ): Promise<{ runs: string | null; caseSets: string | null }>;
   upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord>;
   listRunners(rootPath: string, limit?: number): Promise<RunnerRecord[]>;
+  /** 按 id 精确取执行机行（清扫器等只需单行的场景，避免全量扫描）；未命中/未注册项目 → null。 */
+  getRunner(rootPath: string, runnerId: string): Promise<RunnerRecord | null>;
   /** 优雅停机：把本实例的 runner 行标记为陈旧（last_seen_at 置早），下一个实例可立即接管。 */
   markRunnerStopped(input: {
     rootPath: string;

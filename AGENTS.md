@@ -45,7 +45,7 @@ mobile-testing（AOS × ARTEMIS 合并）MCP 服务：Figma 设计上下文（�
 | 安装/更新依赖 | `node dist/cli.js doctor --install-deps`（serve 首次运行自动执行） |
 | 真机验收（手动） | `node scripts/e2e-device.mjs "…"`（需 artemis venv + 已授权设备） |
 | 崩溃取证验收（手动） | `node scripts/e2e-crash.mjs --package <pkg> [--serial S] [--collect-only]`（需 adb + 已授权设备；`am crash` 或手动触发后采集） |
-| 使用统计（CLI） | `node dist/cli.js usage [--json\|--all\|--project <名\|根路径>\|--days <n>]`（默认当前项目摘要、最近 7 天；`AOS_USAGE=0` 标注采集关闭、历史仍可查） |
+| 使用统计（CLI） | `node dist/cli.js usage [--json\|--all\|--project <名\|根路径>\|--host <id\|主机名>\|--days <n>]`（默认当前项目摘要、最近 7 天；`--host` 过滤该主机项目（`--web` 下仍是监听地址），同路径多主机未指定时 exit 2 列候选；`AOS_USAGE=0` 标注采集关闭、历史仍可查） |
 | 使用统计看板 | `node dist/cli.js usage --web [--port 8766] [--host 127.0.0.1]`（只读看板复用 `/usage`+`/usage.json`，默认 loopback；端口占用 exit 2） |
 | 总览面板 | `node dist/cli.js panel --web [--port 8767] [--workspace <dir>]`（只读，复用 `/panel`+`/panel.json`；`?view=compare` 多项目对比，见 DESIGN §13.112/§13.114；HTTP 模式自带该路由与深探层（`?ios=1` 显式 iOS 环境检测，缓存 60s），见 DESIGN §13.97/§13.98/§13.104/§13.105） |
 | 记录导出（CLI） | `node dist/cli.js export --what results\|process\|data [--format json\|csv] [--project <dir>] [--out <file>] [--since <ISO>] [--limit <n>]`（三口径：测试结果/测试过程/测试用的数据，exit 0/2） |

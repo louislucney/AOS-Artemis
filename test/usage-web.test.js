@@ -359,6 +359,28 @@ test("usage web: unknown path returns 404", async () => {
   assert.equal(res.status, 404);
 });
 
+test("usage web: 未归属 legacy 路径与主机行同路径 → 409 候选主机（不 500）", async () => {
+  const store = new MemoryStore();
+  await store.upsertHost({ id: "h-a", hostname: "mac-a", osPlatform: "darwin" });
+  await store.upsertProject({ rootPath: "/w/shared", name: "legacy-app" });
+  await store.scopeHost("h-a").upsertProject({ rootPath: "/w/shared", name: "app" });
+
+  const res = await handleUsageRequest(
+    new URL("http://localhost/usage.json?project=legacy-app"),
+    deps(store)
+  );
+  assert.equal(res.status, 409, res.body);
+  assert.match(res.contentType, /application\/json/);
+  const payload = JSON.parse(res.body);
+  assert.match(payload.error, /跨主机重复/);
+  assert.ok(payload.candidates.some((candidate) => candidate.hostId === "h-a"));
+  assert.ok(payload.candidates.some((candidate) => candidate.hostId === null));
+  assert.deepEqual(
+    payload.candidates.map((candidate) => candidate.rootPath),
+    ["/w/shared", "/w/shared"]
+  );
+});
+
 test("usage web: 同 rootPath 两主机按 host 作用域读事件（不再 AmbiguousProjectError）", async () => {
   const mem = newDb();
   const { Pool } = mem.adapters.createPg();

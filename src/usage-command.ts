@@ -2,9 +2,16 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path";
 
 import { loadProject } from "./config/loader.js";
+import { resolveHostReference } from "./center/store.js";
 import { createProjectStore, type CreateStoreResult } from "./db/index.js";
 import { storeKindShortLabel } from "./db/labels.js";
-import type { ProjectRecord, ProjectStore, UsageEventQuery, UsageEventRecord } from "./db/types.js";
+import {
+  AmbiguousProjectError,
+  type ProjectRecord,
+  type ProjectStore,
+  type UsageEventQuery,
+  type UsageEventRecord
+} from "./db/types.js";
 import {
   usageSignals,
   usageSummary,
@@ -40,6 +47,8 @@ export interface UsageCliDeps {
 export interface UsageProjectView {
   name: string;
   rootPath: string;
+  /** 项目所属主机；NULL＝未归属的 legacy 行（按未绑定 store 读取）。 */
+  hostId: string | null;
   summary: UsageSummary;
   signals: UsageSignals;
 }
@@ -83,11 +92,13 @@ export function printUsageCommand(log: (line: string) => void): void {
   log(`mobile-testing-mcp usage — 使用统计（调用事件）
 
 Usage:
-  mobile-testing-mcp usage [--json] [--all] [--project <名称>] [--days <n>]
+  mobile-testing-mcp usage [--json] [--all] [--project <名称>] [--host <id|主机名>] [--days <n>]
                     默认当前项目文本摘要（--days 默认 7）
                     --json  机器可读 JSON（与文本同源）
                     --all   跨项目总览（每个已注册项目 + 合计）
                     --project <名称>  按名称（或根路径）指定已注册项目
+                    --host <id|主机名>  只看该主机的项目（多机同路径时用于消歧；
+                                        普通/JSON/--all 模式下为过滤条件，--web 模式下为监听地址）
   mobile-testing-mcp usage --web [--port 8766] [--host 127.0.0.1]
                     只读看板（复用 /usage 与 /usage.json，默认仅本机）
   mobile-testing-mcp usage help
@@ -231,6 +242,10 @@ function renderToolLines(summary: UsageSummary): string[] {
   return lines;
 }
 
+function projectLineLabel(view: UsageProjectView): string {
+  return `${view.name} (${view.rootPath})${view.hostId === null ? "" : ` · 主机 ${view.hostId}`}`;
+}
+
 function renderReport(report: UsageCliReport, all: boolean): string[] {
   const lines: string[] = [];
   const label = all ? "全部项目" : (report.projects[0]?.name ?? "未注册项目");
@@ -245,7 +260,7 @@ function renderReport(report: UsageCliReport, all: boolean): string[] {
     if (report.projects.length === 0) lines.push("  暂无已注册项目");
     for (const view of report.projects) {
       lines.push(
-        `  ${view.name} (${view.rootPath})  ${view.summary.total} 次 · 成功率 ${formatPercent(view.summary.successRate)} · p50 ${formatMs(view.summary.p50)} · p95 ${formatMs(view.summary.p95)}`
+        `  ${projectLineLabel(view)}  ${view.summary.total} 次 · 成功率 ${formatPercent(view.summary.successRate)} · p50 ${formatMs(view.summary.p50)} · p95 ${formatMs(view.summary.p95)}`
       );
     }
     lines.push(...renderSignalBlock(report.totals.signals));
@@ -263,12 +278,17 @@ function renderReport(report: UsageCliReport, all: boolean): string[] {
   return lines;
 }
 
-function resolveRegisteredProject(projects: readonly ProjectRecord[], key: string): ProjectRecord | null {
-  return (
-    projects.find((project) => project.rootPath === key) ??
-    projects.find((project) => project.name === key) ??
-    null
-  );
+function resolveRegisteredProjectCandidates(
+  projects: readonly ProjectRecord[],
+  key: string
+): ProjectRecord[] {
+  const byRoot = projects.filter((project) => project.rootPath === key);
+  if (byRoot.length > 0) return byRoot;
+  return projects.filter((project) => project.name === key);
+}
+
+function hostLabel(hostId: string | null): string {
+  return hostId ?? "（未归属）";
 }
 
 function isAddrInUse(error: unknown): boolean {
@@ -467,40 +487,103 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
       });
     }
 
-    const records = await store.listProjects();
+    let hostFilter: string | null = null;
+    const hostRef = flags.bool("web") ? null : flags.get("host");
+    if (hostRef !== null) {
+      const lookup = await resolveHostReference(store, hostRef);
+      if (!lookup.ok) {
+        if (lookup.reason === "ambiguous") {
+          errorLog(
+            `主机名不唯一 "${hostRef}"，请改用主机 id：${lookup.candidates
+              .map((host) => host.id)
+              .join("、")}`
+          );
+        } else {
+          errorLog(
+            `未知主机 "${hostRef}"（当前存储没有该主机记录；跨主机过滤需要中心 PostgreSQL，或先 host register）`
+          );
+        }
+        return 2;
+      }
+      hostFilter = lookup.host.id;
+    }
+
+    const records = (await store.listProjects()).filter(
+      (project) => hostFilter === null || project.hostId === hostFilter
+    );
     const since = new Date(nowMs - days * 86_400_000).toISOString();
     const query: UsageEventQuery = { since, limit: usageEventSampleLimit(env) };
-    let selected: Array<{ name: string; rootPath: string }>;
+    let selected: Array<{ name: string; rootPath: string; hostId: string | null }>;
     if (flags.bool("all")) {
-      selected = records.map((project) => ({ name: project.name, rootPath: project.rootPath }));
+      selected = records.map((project) => ({
+        name: project.name,
+        rootPath: project.rootPath,
+        hostId: project.hostId
+      }));
     } else if (flags.get("project") !== null) {
       const key = flags.get("project")!;
-      const record = resolveRegisteredProject(records, key);
-      if (!record) {
+      const candidates = resolveRegisteredProjectCandidates(records, key);
+      if (candidates.length === 0) {
         const known = records.map((project) => project.name).join("、");
         errorLog(
           `未知项目 "${key}"${known ? `；已注册项目: ${known}` : "；当前存储中没有已注册项目"}`
         );
         return 2;
       }
-      selected = [{ name: record.name, rootPath: record.rootPath }];
+      if (candidates.length > 1) {
+        errorLog(
+          `项目 "${key}" 在多台主机下都有登记：${candidates
+            .map((project) => hostLabel(project.hostId))
+            .join("、")}；请用 --host <id> 指定`
+        );
+        return 2;
+      }
+      const record = candidates[0]!;
+      selected = [{ name: record.name, rootPath: record.rootPath, hostId: record.hostId }];
     } else {
       const loaded = loadProject({ cwd: deps.cwd, env });
-      const record =
-        records.find((project) => project.rootPath === loaded.rootDir) ?? null;
+      const matches = records.filter((project) => project.rootPath === loaded.rootDir);
+      if (matches.length > 1) {
+        errorLog(
+          `当前项目路径在多台主机下都有登记：${matches
+            .map((project) => hostLabel(project.hostId))
+            .join("、")}；请用 --host <id> 指定`
+        );
+        return 2;
+      }
+      const record = matches[0] ?? null;
       selected = [
-        { name: record?.name ?? path.basename(loaded.rootDir), rootPath: loaded.rootDir }
+        {
+          name: record?.name ?? path.basename(loaded.rootDir),
+          rootPath: loaded.rootDir,
+          hostId: record?.hostId ?? hostFilter
+        }
       ];
     }
 
     const views: UsageProjectView[] = [];
     const allEvents: UsageEventRecord[] = [];
     for (const entry of selected) {
-      const events = await store.listUsageEvents(entry.rootPath, query);
+      const scoped = entry.hostId === null ? store : store.scopeHost(entry.hostId);
+      let events: UsageEventRecord[];
+      try {
+        events = await scoped.listUsageEvents(entry.rootPath, query);
+      } catch (error) {
+        if (error instanceof AmbiguousProjectError) {
+          const hosts = error.candidates.map((candidate) => hostLabel(candidate.hostId)).join("、");
+          errorLog(
+            `项目 "${entry.rootPath}" 未绑定主机，但同一路径已登记在：${hosts}；` +
+              `请用 --host <id> 指定（或先在该主机执行 host adopt-legacy 认领历史行）`
+          );
+          return 2;
+        }
+        throw error;
+      }
       allEvents.push(...events);
       views.push({
         name: entry.name,
         rootPath: entry.rootPath,
+        hostId: entry.hostId,
         summary: usageSummary(events, catalog),
         signals: usageSignals(events)
       });

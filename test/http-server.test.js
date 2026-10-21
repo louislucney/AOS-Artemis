@@ -9,6 +9,7 @@ import { makeTempDir } from "./helpers.js";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import ExcelJS from "exceljs";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { createAosHttpServer } from "../dist/http-server.js";
@@ -280,6 +281,47 @@ test("http server: panel action routes over real HTTP", async () => {
     assert.equal(missed.status, 400, "裁决未命中 → 400");
 
     assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel`)).status, 200, "只读面板不受影响");
+  } finally {
+    await handle.close();
+  }
+});
+
+test("http server: 面板 multipart 导入（rawBody + project 查询参数）→ 200", async () => {
+  const workspace = makeWorkspace();
+  const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Sheet1");
+    sheet.addRow(["用例名", "步骤", "预期", "前置"]);
+    sheet.addRow(["登录", "输入账号密码并点击登录", "进入首页", "应用已安装"]);
+    const bytes = await workbook.xlsx.writeBuffer();
+
+    const form = new FormData();
+    form.set(
+      "file",
+      new Blob([bytes], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      }),
+      "cases.xlsx"
+    );
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/panel/api/import?project=demo`,
+      {
+        method: "POST",
+        headers: { "X-AOS-Console": "1" },
+        body: form
+      }
+    );
+    const body = await res.text();
+    assert.equal(res.status, 200, body);
+    const payload = JSON.parse(body);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.caseCount, 1);
+    assert.equal(payload.features.length, 1);
+    assert.ok(
+      fs.existsSync(path.join(workspace, "demo", ".artemis", "design")),
+      "导入产物落在项目 .artemis/design"
+    );
   } finally {
     await handle.close();
   }

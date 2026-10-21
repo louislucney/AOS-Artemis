@@ -101,9 +101,15 @@ export async function handlePanelActionRequest(
     };
   } else {
     if (!request.body || typeof request.body !== "object" || Array.isArray(request.body)) {
-      return json(400, { error: "请求体不是合法 JSON（检查 Content-Type 与 body）" });
+      if (request.rawBody !== undefined) {
+        // multipart 上传（导入）：字段不在 JSON body 中，project/host 由查询参数携带。
+        payload = {};
+      } else {
+        return json(400, { error: "请求体不是合法 JSON（检查 Content-Type 与 body）" });
+      }
+    } else {
+      payload = request.body as Record<string, unknown>;
     }
-    payload = request.body as Record<string, unknown>;
   }
   if (request.url.pathname === "/panel/api/hosts/register") {
     const response = await registerHost(deps, payload);
@@ -167,7 +173,9 @@ export async function handlePanelActionRequest(
     if (response.status === 200) deps.cache?.clear();
     return response;
   }
-  const projectKey = typeof payload.project === "string" ? payload.project.trim() : "";
+  const projectKey =
+    (typeof payload.project === "string" ? payload.project.trim() : "") ||
+    (request.url.searchParams.get("project") ?? "").trim();
   if (projectKey === "") return json(400, { error: "缺少 project" });
   const hostParam =
     (request.url.searchParams.get("host") ?? "").trim() ||

@@ -532,7 +532,11 @@ test("verdicts / schedules / quarantine / import 动作体携带 host", async ()
   );
   assert.match(library, /host:hostId,action:'add'/);
   assert.ok(library.includes("fd.append('host',hostId)"));
-  assert.ok(library.includes("'/panel/api/import'+(hostId?'?host='+encodeURIComponent(hostId):'')"));
+  assert.ok(
+    library.includes(
+      "'/panel/api/import?project='+encodeURIComponent(root)+(hostId?'&host='+encodeURIComponent(hostId):'')"
+    )
+  );
   const quarantine = await handlePanelActionRequest(
     action("/panel/api/quarantine", {
       project: root,

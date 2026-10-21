@@ -39,13 +39,11 @@ function appendedNote(note: string | null, marker: string): string {
 
 function claimedRunnerIsOnline(
   task: RegressionTaskRecord,
-  runners: Map<string, { lastSeenAt: string; instanceId: string | null }>,
+  runner: { lastSeenAt: string; instanceId: string | null } | null,
   nowMs: number,
   runnerTtlMs: number
 ): boolean {
-  if (task.claimedBy === null) return false;
-  const runner = runners.get(task.claimedBy);
-  if (runner === undefined) return false;
+  if (task.claimedBy === null || runner === null) return false;
   if (
     task.claimedInstanceId !== null &&
     runner.instanceId !== null &&
@@ -114,16 +112,23 @@ async function sweepProject(
   ).filter((task) => isPastGrace(task, options.cutoff));
   if (stale.length === 0) return 0;
 
-  const runners = await store.listRunners(rootPath, 100_000);
-  const byId = new Map(
-    runners.map((runner) => [
-      runner.id,
-      { lastSeenAt: runner.lastSeenAt, instanceId: runner.instanceId }
-    ])
-  );
+  const runnerCache = new Map<string, { lastSeenAt: string; instanceId: string | null } | null>();
   let cancelled = 0;
   for (const task of stale) {
-    if (claimedRunnerIsOnline(task, byId, options.nowMs, options.runnerTtlMs)) continue;
+    let runner: { lastSeenAt: string; instanceId: string | null } | null = null;
+    if (task.claimedBy !== null) {
+      if (!runnerCache.has(task.claimedBy)) {
+        const record = await store.getRunner(rootPath, task.claimedBy);
+        runnerCache.set(
+          task.claimedBy,
+          record === null
+            ? null
+            : { lastSeenAt: record.lastSeenAt, instanceId: record.instanceId }
+        );
+      }
+      runner = runnerCache.get(task.claimedBy) ?? null;
+    }
+    if (claimedRunnerIsOnline(task, runner, options.nowMs, options.runnerTtlMs)) continue;
     const legacy = task.cancelSource === null;
     const marker = legacy ? "legacy-stopping" : "runner-offline";
     const finalized = await store.finalizeCancellation({

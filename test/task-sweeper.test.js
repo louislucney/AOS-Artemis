@@ -113,6 +113,41 @@ test("离线 runner 超宽限 → cancelled（runner-offline）；在线 → 保
   }
 });
 
+test("清扫按 claimedBy 精确取 runner（getRunner，不再全量扫描）", async () => {
+  for (const store of await stores()) {
+    const scoped = store.scopeHost("h-a");
+    await scoped.upsertProject({ rootPath: ROOT, name: "p", hostId: "h-a" });
+    const runner = await seedRunner(scoped, ROOT);
+    const nowMs = Date.now();
+    const task = await seedTask(scoped, ROOT, {
+      claim: runner.id,
+      hostId: "h-a",
+      instanceId: "inst-1",
+      stop: true,
+      at: new Date(nowMs - 120_000).toISOString()
+    });
+
+    assert.equal((await scoped.getRunner(ROOT, runner.id))?.id, runner.id);
+    assert.equal(await scoped.getRunner(ROOT, "missing-runner"), null);
+
+    let scans = 0;
+    scoped.listRunners = async () => {
+      scans += 1;
+      throw new Error("listRunners should not be used by the sweeper");
+    };
+    const result = await sweepStaleTasks({
+      store: scoped,
+      rootPath: ROOT,
+      now: () => nowMs + 5 * 60_000,
+      graceMs: 90_000,
+      runnerTtlMs: 90_000
+    });
+    assert.equal(result.cancelled, 1);
+    assert.equal(scans, 0, "只按 id 取 runner 行");
+    assert.equal((await scoped.getRegressionTask(ROOT, task.id)).status, "cancelled");
+  }
+});
+
 test("未超宽限的 stopping 即使 runner 离线也不清扫", async () => {
   for (const store of await stores()) {
     const scoped = store.scopeHost("h-a");

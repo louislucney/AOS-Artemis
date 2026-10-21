@@ -1,11 +1,12 @@
 import { USAGE_EVENT_DEFAULT_LIMIT } from "../db/usage-event.js";
 import { relativeTime } from "../console/time.js";
-import type {
-  ProjectRecord,
-  ProjectStore,
-  UsageEventQuery,
-  UsageEventRecord,
-  UsageSignal
+import {
+  AmbiguousProjectError,
+  type ProjectRecord,
+  type ProjectStore,
+  type UsageEventQuery,
+  type UsageEventRecord,
+  type UsageSignal
 } from "../db/types.js";
 import {
   USAGE_EVENT_LIST_MAX,
@@ -281,6 +282,24 @@ export async function handleUsageRequest(
         status: 404,
         contentType: JSON_CONTENT_TYPE,
         body: JSON.stringify({ error: error.message })
+      };
+    }
+    if (error instanceof AmbiguousProjectError) {
+      return {
+        status: 409,
+        contentType: JSON_CONTENT_TYPE,
+        body: JSON.stringify(
+          {
+            error: error.message,
+            candidates: error.candidates.map((candidate) => ({
+              hostId: candidate.hostId,
+              rootPath: candidate.rootPath,
+              name: candidate.name
+            }))
+          },
+          null,
+          2
+        )
       };
     }
     throw error;

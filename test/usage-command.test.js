@@ -256,6 +256,104 @@ test("usage --web: port conflict exits 2 with a clear message", async () => {
   }
 });
 
+async function seedMultiHostStore() {
+  const store = new MemoryStore();
+  await store.upsertHost({ id: "h-a", hostname: "mac-a", osPlatform: "darwin" });
+  await store.upsertHost({ id: "h-b", hostname: "mac-b", osPlatform: "darwin" });
+  const a = store.scopeHost("h-a");
+  const b = store.scopeHost("h-b");
+  await a.upsertProject({ rootPath: "/w/shared", name: "shared" });
+  await b.upsertProject({ rootPath: "/w/shared", name: "shared" });
+  await a.recordUsageEvent(
+    "/w/shared",
+    eventInput({ tool: "llm_list", at: new Date(NOW - 60_000).toISOString() })
+  );
+  await b.recordUsageEvent(
+    "/w/shared",
+    eventInput({ tool: "aos_status", at: new Date(NOW - 30_000).toISOString() })
+  );
+  return store;
+}
+
+test("usage --all: 同路径两台主机分别统计，JSON 带 hostId", async () => {
+  const store = await seedMultiHostStore();
+  const { code, logs, errors } = await runCli(["--all", "--json"], { store });
+  assert.equal(code, 0);
+  assert.deepEqual(errors, []);
+  const payload = JSON.parse(logs.at(-1));
+  assert.equal(payload.projects.length, 2);
+  const byHost = new Map(payload.projects.map((view) => [view.hostId, view]));
+  assert.equal(byHost.get("h-a").summary.total, 1);
+  assert.equal(byHost.get("h-b").summary.total, 1);
+  assert.equal(byHost.get("h-a").summary.byTool[0].tool, "llm_list");
+  assert.equal(byHost.get("h-b").summary.byTool[0].tool, "aos_status");
+  assert.equal(payload.totals.summary.total, 2);
+
+  const text = await runCli(["--all"], { store });
+  assert.equal(text.code, 0);
+  assert.ok(text.logs.some((line) => line.includes("主机 h-a")));
+  assert.ok(text.logs.some((line) => line.includes("主机 h-b")));
+});
+
+test("usage --host: 只包含该主机项目（支持 id 与唯一主机名）", async () => {
+  const store = await seedMultiHostStore();
+  const byId = await runCli(["--all", "--json", "--host", "h-b"], { store });
+  assert.equal(byId.code, 0);
+  const payload = JSON.parse(byId.logs.at(-1));
+  assert.deepEqual(payload.projects.map((view) => view.hostId), ["h-b"]);
+  assert.equal(payload.projects[0].summary.total, 1);
+  assert.equal(payload.totals.summary.total, 1);
+
+  const byName = await runCli(["--all", "--json", "--host", "mac-b"], { store });
+  assert.equal(byName.code, 0);
+  assert.deepEqual(
+    JSON.parse(byName.logs.at(-1)).projects.map((view) => view.hostId),
+    ["h-b"]
+  );
+
+  const unknown = await runCli(["--all", "--host", "ghost"], { store });
+  assert.equal(unknown.code, 2);
+  assert.ok(unknown.errors.some((line) => line.includes('未知主机 "ghost"')));
+});
+
+test("usage --host: 主机名重复 → exit 2 并列出候选 id", async () => {
+  const store = await seedMultiHostStore();
+  await store.upsertHost({ id: "h-c", hostname: "mac-b", osPlatform: "linux" });
+  const { code, errors } = await runCli(["--all", "--host", "mac-b"], { store });
+  assert.equal(code, 2);
+  assert.ok(errors.some((line) => line.includes("主机名不唯一")));
+  assert.ok(errors.some((line) => line.includes("h-b") && line.includes("h-c")));
+});
+
+test("usage: 未归属 legacy 路径与主机行同路径 → exit 2 并给出候选主机", async () => {
+  const store = new MemoryStore();
+  await store.upsertHost({ id: "h-a", hostname: "mac-a", osPlatform: "darwin" });
+  await store.upsertProject({ rootPath: "/w/shared", name: "legacy-app" });
+  await store.scopeHost("h-a").upsertProject({ rootPath: "/w/shared", name: "app" });
+
+  const legacy = await runCli(["--project", "legacy-app", "--json"], { store });
+  assert.equal(legacy.code, 2);
+  assert.ok(
+    legacy.errors.some(
+      (line) => line.includes("未绑定主机") && line.includes("h-a") && line.includes("--host")
+    ),
+    legacy.errors.join("\n")
+  );
+
+  const current = await runCli([], { store, cwd: "/w/shared" });
+  assert.equal(current.code, 2);
+  assert.ok(current.errors.some((line) => line.includes("多台主机") && line.includes("h-a")));
+});
+
+test("usage --project: 同路径多主机且未指定 --host → exit 2", async () => {
+  const store = await seedMultiHostStore();
+  const { code, errors } = await runCli(["--project", "shared", "--json"], { store });
+  assert.equal(code, 2);
+  assert.ok(
+    errors.some((line) => line.includes("多台主机") && line.includes("h-a") && line.includes("h-b"))
+  );
+});
+
 test("usage help and parameter errors", async () => {
   const store = new MemoryStore();
   const help = await runCli(["help"], { store });
