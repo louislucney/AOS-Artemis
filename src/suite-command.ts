@@ -55,6 +55,7 @@ import {
 import { Runtime } from "./runtime.js";
 import { runRunnerAgent } from "./runner/agent.js";
 import { startRunnerArtifactServer, type RunnerArtifactServer } from "./runner/artifact-server.js";
+import type { HostSnapshot } from "./runner/host-snapshot.js";
 import type { RunnerInventory } from "./runner/inventory.js";
 import { isRunnerOnline, runnerTtlFrom } from "./runner/status.js";
 import { logWarn } from "./log.js";
@@ -87,6 +88,10 @@ export interface SuiteCliDeps {
   runner?: {
     executeSuite?: (argv: string[], options?: { shouldAbort?: () => boolean }) => Promise<number | null>;
     collectInventory?: () => Promise<RunnerInventory>;
+    collectHostSnapshot?: (input: {
+      projectRoot: string;
+      env: NodeJS.ProcessEnv;
+    }) => Promise<HostSnapshot>;
     sleep?: (ms: number) => Promise<void>;
     shouldStop?: () => boolean;
   };
@@ -2061,6 +2066,7 @@ async function suiteRunnerCommand(
             shouldAbort: options?.shouldAbort
           })),
       collectInventory: seam.collectInventory,
+      collectHostSnapshot: seam.collectHostSnapshot,
       io: { log: io.log, errorLog: io.errorLog },
       sleep: seam.sleep
     });

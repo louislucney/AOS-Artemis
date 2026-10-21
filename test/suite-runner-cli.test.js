@@ -35,6 +35,26 @@ function androidInventory() {
   };
 }
 
+function androidHostSnapshot() {
+  return {
+    identity: {
+      id: "runner-host",
+      hardwareId: null,
+      hostname: "runner-host",
+      username: "runner",
+      osPlatform: "linux",
+      osVersion: "1.0.0",
+      arch: "x64",
+      kind: "linux",
+      identitySource: "env"
+    },
+    env: { collectedAt: "2026-10-21T09:00:00.000Z" },
+    capabilities: ["android"],
+    ipPrimary: "10.0.0.9",
+    addresses: []
+  };
+}
+
 async function runCli(runtime, args, extraDeps = {}) {
   const logs = [];
   const errors = [];
@@ -101,6 +121,7 @@ test("suite runner --once 冒烟：心跳落库 + 领取执行（假执行器）
   const { code, logs } = await runCli(runtime, ["runner", "--once", "--artifact-port", "0"], {
     runner: {
       collectInventory: async () => androidInventory(),
+      collectHostSnapshot: async () => androidHostSnapshot(),
       executeSuite: async (argv) => {
         executed.push(argv);
         await store.updateRegressionTask(rootPath, task.id, { status: "completed" });

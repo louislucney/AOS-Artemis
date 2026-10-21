@@ -682,7 +682,20 @@ test("领取守卫：attempts 超上限 → 置 failed、不执行、毒丸防�
   const rootPath = runtime.project.rootDir;
   const task = await store.createRegressionTask(taskInput(rootPath));
   for (let i = 0; i < 3; i += 1) {
-    await store.claimRegressionTask({ rootPath, runnerId: "seed", platforms: ["android"] });
+    await store.claimRegressionTask({
+      rootPath,
+      runnerId: "seed",
+      hostId: "seed-host",
+      instanceId: "seed-inst",
+      platforms: ["android"],
+      capabilities: ["android"]
+    });
+    await store.beginExecution({
+      rootPath,
+      taskId: task.id,
+      runnerId: "seed",
+      instanceId: "seed-inst"
+    });
     await store.releaseRegressionTask({
       rootPath,
       runnerId: "seed",
@@ -709,12 +722,25 @@ test("领取守卫：attempts 超上限 → 置 failed、不执行、毒丸防�
   assert.ok(logs.some((line) => line.includes("超上限")), "有超上限说明");
 });
 
-test("领取守卫边界：attempts === maxAttempts → 仍执行（守卫为 >）", async () => {
+test("领取守卫边界：attempts < maxAttempts → 仍执行（beginExecution 后达 max）", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;
   const task = await store.createRegressionTask(taskInput(rootPath));
   for (let i = 0; i < 2; i += 1) {
-    await store.claimRegressionTask({ rootPath, runnerId: "seed", platforms: ["android"] });
+    await store.claimRegressionTask({
+      rootPath,
+      runnerId: "seed",
+      hostId: "seed-host",
+      instanceId: "seed-inst",
+      platforms: ["android"],
+      capabilities: ["android"]
+    });
+    await store.beginExecution({
+      rootPath,
+      taskId: task.id,
+      runnerId: "seed",
+      instanceId: "seed-inst"
+    });
     await store.releaseRegressionTask({
       rootPath,
       runnerId: "seed",
@@ -734,7 +760,7 @@ test("领取守卫边界：attempts === maxAttempts → 仍执行（守卫为 >�
   });
   const code = await runRunnerAgent(options);
   assert.equal(code, 0);
-  assert.equal(calls.length, 1, "attempts=3==max 不越界、仍执行");
+  assert.equal(calls.length, 1, "attempts=2<max 不越界、仍执行（beginExecution → 3）");
   const after = await store.getRegressionTask(rootPath, task.id);
   assert.equal(after.status, "completed");
   assert.ok(!logs.some((line) => line.includes("毒丸防护")), "未触发毒丸");
@@ -745,7 +771,20 @@ test("领取守卫：置 failed 返回 false → errorLog（可能已被并发�
   const rootPath = runtime.project.rootDir;
   const task = await store.createRegressionTask(taskInput(rootPath));
   for (let i = 0; i < 3; i += 1) {
-    await store.claimRegressionTask({ rootPath, runnerId: "seed", platforms: ["android"] });
+    await store.claimRegressionTask({
+      rootPath,
+      runnerId: "seed",
+      hostId: "seed-host",
+      instanceId: "seed-inst",
+      platforms: ["android"],
+      capabilities: ["android"]
+    });
+    await store.beginExecution({
+      rootPath,
+      taskId: task.id,
+      runnerId: "seed",
+      instanceId: "seed-inst"
+    });
     await store.releaseRegressionTask({
       rootPath,
       runnerId: "seed",

@@ -293,6 +293,28 @@ export interface RegressionTaskRecord {
   claimedAt: string | null;
   attempts: number;
   runIds: string[];
+  targetHostId: string | null;
+  createdHostId: string | null;
+  claimedHostId: string | null;
+  claimedInstanceId: string | null;
+  priority: number;
+  lastProgressAt: string | null;
+  startedAt: string | null;
+}
+
+/** 能力门禁：任务平台 ⊆ 本机能力（`ios` 需 `ios-simulator`/`ios-real` 之一；`android` 需 `android`）。
+ * `capabilities` 缺省（历史调用方）视为未知、跳过门禁。 */
+export function capabilitiesSatisfyPlatforms(
+  capabilities: string[] | undefined,
+  platforms: string[]
+): boolean {
+  if (capabilities === undefined) return true;
+  const has = new Set(capabilities);
+  return platforms.every((platform) => {
+    if (platform === "ios") return has.has("ios-simulator") || has.has("ios-real");
+    if (platform === "android") return has.has("android");
+    return true;
+  });
 }
 
 export interface RunnerDevice {
@@ -566,6 +588,9 @@ export interface CreateRegressionTaskInput {
   platforms: string[];
   baseline: "latest" | "none";
   createdBy?: string | null;
+  targetHostId?: string | null;
+  priority?: number;
+  createdHostId?: string | null;
 }
 
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */
@@ -614,13 +639,25 @@ export interface ProjectStore {
   ): Promise<boolean>;
   /** 原子领取：任务端 ⊆ runner 端且 status='pending' 的最旧任务 → claimed（竞争失败 → null）。
    * `allowPartial === true && onlineBefore 提供` 时，无完全覆盖候选则按交集≥1 部分领取
-   * （仅当无他者在线 runner 完全覆盖该任务端时）；否则严格旧行为。 */
+   * （仅当无他者在线 runner 完全覆盖该任务端时）；否则严格旧行为。
+   * 定向任务仅目标主机可领（`targetHostId`）；`capabilities` 再做 OS/工具门禁。 */
   claimRegressionTask(input: {
     rootPath: string;
     runnerId: string;
     platforms: string[];
     onlineBefore?: string;
     allowPartial?: boolean;
+    hostId?: string;
+    instanceId?: string;
+    capabilities?: string[];
+  }): Promise<RegressionTaskRecord | null>;
+  /** 领取 → 执行开始：`claimed` 且 `claimed_instance_id` 相符才 CAS 置 `running`、`attempts+1`、写 `started_at`；失败 → null。 */
+  beginExecution(input: {
+    rootPath: string;
+    taskId: string;
+    runnerId: string;
+    instanceId: string;
+    at?: string;
   }): Promise<RegressionTaskRecord | null>;
   /** 释放本 runner 的全部未完成领取（claimed/running）→ pending；返回条数。 */
   releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number>;

@@ -54,6 +54,7 @@ import type {
 } from "./types.js";
 import {
   AmbiguousProjectError,
+  capabilitiesSatisfyPlatforms,
   isRunnerActive,
   RUNNER_ACTIVE_DEFAULT_MS,
   RunnerAlreadyActiveError
@@ -198,7 +199,14 @@ const SCHEMA = [
      claimed_by TEXT,
      claimed_at TEXT,
      attempts INTEGER NOT NULL DEFAULT 0,
-     run_ids TEXT NOT NULL DEFAULT '[]'
+     run_ids TEXT NOT NULL DEFAULT '[]',
+     target_host_id TEXT,
+     created_host_id TEXT,
+     claimed_host_id TEXT,
+     claimed_instance_id TEXT,
+     priority INTEGER NOT NULL DEFAULT 0,
+     last_progress_at TEXT,
+     started_at TEXT
     )`,
   `CREATE TABLE IF NOT EXISTS suite_runs (
      id TEXT PRIMARY KEY,
@@ -355,6 +363,13 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_by TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_at TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS target_host_id TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS created_host_id TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_host_id TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_instance_id TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS last_progress_at TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS started_at TEXT`,
   `ALTER TABLE suite_run_cases ADD COLUMN IF NOT EXISTS jira_issue_key TEXT`,
   `DELETE FROM runners WHERE id IN (
      SELECT r1.id FROM runners r1
@@ -831,8 +846,10 @@ export class PostgresStore implements ProjectStore {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
     await this.pool.query(
-      `INSERT INTO regression_tasks (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO regression_tasks
+         (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids,
+          target_host_id, created_host_id, priority)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         id,
         project?.id ?? null,
@@ -842,7 +859,10 @@ export class PostgresStore implements ProjectStore {
         JSON.stringify(input.platforms),
         input.baseline,
         "pending",
-        "[]"
+        "[]",
+        input.targetHostId ?? null,
+        input.createdHostId ?? null,
+        typeof input.priority === "number" ? input.priority : 0
       ]
     );
     return {
@@ -857,7 +877,14 @@ export class PostgresStore implements ProjectStore {
       claimedBy: null,
       claimedAt: null,
       attempts: 0,
-      runIds: []
+      runIds: [],
+      targetHostId: input.targetHostId ?? null,
+      createdHostId: input.createdHostId ?? null,
+      claimedHostId: null,
+      claimedInstanceId: null,
+      priority: typeof input.priority === "number" ? input.priority : 0,
+      lastProgressAt: null,
+      startedAt: null
     };
   }
 
@@ -920,21 +947,27 @@ export class PostgresStore implements ProjectStore {
     platforms: string[];
     onlineBefore?: string;
     allowPartial?: boolean;
+    hostId?: string;
+    instanceId?: string;
+    capabilities?: string[];
   }): Promise<RegressionTaskRecord | null> {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) return null;
+    const hostId = input.hostId ?? null;
     const candidates = await this.pool.query(
       `SELECT id, platforms FROM regression_tasks
         WHERE project_id = $1 AND status = 'pending'
+          AND (target_host_id IS NULL OR target_host_id = $2)
         ORDER BY created_at ASC`,
-      [project.id]
+      [project.id, hostId]
     );
     const rows = candidates.rows;
     const fullMatch = rows.find((row) => {
       const taskPlatforms = parseStringArray(row.platforms);
       return (
         taskPlatforms.length > 0 &&
-        taskPlatforms.every((platform) => input.platforms.includes(platform))
+        taskPlatforms.every((platform) => input.platforms.includes(platform)) &&
+        capabilitiesSatisfyPlatforms(input.capabilities, taskPlatforms)
       );
     });
     let match = fullMatch;
@@ -949,6 +982,7 @@ export class PostgresStore implements ProjectStore {
         .map((row) => parseStringArray(row.platforms));
       for (const row of rows) {
         const taskPlatforms = parseStringArray(row.platforms);
+        if (!capabilitiesSatisfyPlatforms(input.capabilities, taskPlatforms)) continue;
         const intersection = taskPlatforms.filter((platform) =>
           input.platforms.includes(platform)
         );
@@ -964,13 +998,34 @@ export class PostgresStore implements ProjectStore {
     if (!match) return null;
     const claimed = await this.pool.query(
       `UPDATE regression_tasks
-          SET status = 'claimed', claimed_by = $2, claimed_at = $3, attempts = attempts + 1
-        WHERE project_id = $1 AND id = $4 AND status = 'pending'
+          SET status = 'claimed', claimed_by = $2, claimed_at = $3,
+              claimed_host_id = $4, claimed_instance_id = $5
+        WHERE project_id = $1 AND id = $6 AND status = 'pending'
       RETURNING *`,
-      [project.id, input.runnerId, new Date().toISOString(), String(match.id)]
+      [project.id, input.runnerId, new Date().toISOString(), hostId, input.instanceId ?? null, String(match.id)]
     );
     if (claimed.rows.length === 0) return null;
     return mapRegressionTask(claimed.rows[0]!);
+  }
+
+  async beginExecution(input: {
+    rootPath: string;
+    taskId: string;
+    runnerId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return null;
+    const updated = await this.pool.query(
+      `UPDATE regression_tasks
+          SET status = 'running', attempts = attempts + 1, started_at = $3
+        WHERE project_id = $1 AND id = $2 AND status = 'claimed' AND claimed_instance_id = $4
+      RETURNING *`,
+      [project.id, input.taskId, input.at ?? new Date().toISOString(), input.instanceId]
+    );
+    if (updated.rows.length === 0) return null;
+    return mapRegressionTask(updated.rows[0]!);
   }
 
   async releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number> {
@@ -2459,7 +2514,14 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     claimedAt: nullableString(row.claimed_at),
     attempts:
       row.attempts === null || row.attempts === undefined ? 0 : Number(row.attempts),
-    runIds: parseStringArray(row.run_ids)
+    runIds: parseStringArray(row.run_ids),
+    targetHostId: nullableString(row.target_host_id),
+    createdHostId: nullableString(row.created_host_id),
+    claimedHostId: nullableString(row.claimed_host_id),
+    claimedInstanceId: nullableString(row.claimed_instance_id),
+    priority: row.priority === null || row.priority === undefined ? 0 : Number(row.priority),
+    lastProgressAt: nullableString(row.last_progress_at),
+    startedAt: nullableString(row.started_at)
   };
 }
 

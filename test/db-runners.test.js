@@ -259,7 +259,7 @@ test("claimRegressionTask: 单任务被领后不复领（第二个 runner → nu
       platforms: ["android"]
     });
     assert.ok(first);
-    assert.equal(first.attempts, 1, "领取累加 attempts");
+    assert.equal(first.attempts, 0, "领取不累加 attempts");
     assert.equal(
       await store.claimRegressionTask({
         rootPath: "/w/p1",
@@ -389,7 +389,7 @@ test("claimRegressionTask 部分领取：无他者在线全覆盖 → 领最早�
     assert.ok(claimed, "交集≥1 且无他者全覆盖 → 部分领取");
     assert.equal(claimed.id, dual.id);
     assert.equal(claimed.status, "claimed");
-    assert.equal(claimed.attempts, 1);
+    assert.equal(claimed.attempts, 0);
   }
 });
 
@@ -499,7 +499,7 @@ test("claimRegressionTask 部分领取：已被领取后不复领（CAS）", asy
       allowPartial: true
     });
     assert.ok(first);
-    assert.equal(first.attempts, 1);
+    assert.equal(first.attempts, 0);
     assert.equal(
       await store.claimRegressionTask({
         rootPath: "/w/p1",
@@ -634,7 +634,7 @@ test("存量库迁移：旧 regression_tasks 缺 claimed_by/claimed_at → init 
   assert.ok(claimed, "补列后可领取");
   assert.equal(claimed.status, "claimed");
   assert.equal(claimed.claimedBy, "r-legacy");
-  assert.equal(claimed.attempts, 1, "补列后 attempts 可累加");
+  assert.equal(claimed.attempts, 0, "补列后领取不累加 attempts");
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -709,12 +709,12 @@ test("releaseStaleClaims: 超龄+失联→pending；在线/未超龄/终态→0�
     assert.equal(reclaimed.status, "pending");
     assert.equal(reclaimed.claimedBy, null);
     assert.equal(reclaimed.claimedAt, null);
-    assert.equal(reclaimed.attempts, 1, "attempts 保留");
+    assert.equal(reclaimed.attempts, 0, "attempts 保留");
 
     const kept = await store.getRegressionTask("/w/p1", staleOnline);
     assert.equal(kept.status, "claimed", "在线 runner 不回收");
     assert.equal(kept.claimedBy, online.id);
-    assert.equal(kept.attempts, 1);
+    assert.equal(kept.attempts, 0);
 
     assert.equal((await store.getRegressionTask("/w/p1", freshOffline)).status, "claimed", "未超龄不回收");
     assert.equal((await store.getRegressionTask("/w/p1", emptyClaimedBy)).status, "pending", "空 claimed_by 且超龄回收");

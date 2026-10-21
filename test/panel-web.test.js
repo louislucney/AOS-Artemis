@@ -1288,7 +1288,16 @@ test("panel web: 任务页显示重试次数（attempts > 1）", async () => {
   await store.claimRegressionTask({
     rootPath: projectDir,
     runnerId: "r-x",
-    platforms: ["android"]
+    hostId: "h-x",
+    instanceId: "i-x",
+    platforms: ["android"],
+    capabilities: ["android"]
+  });
+  await store.beginExecution({
+    rootPath: projectDir,
+    taskId: task.id,
+    runnerId: "r-x",
+    instanceId: "i-x"
   });
   await store.releaseRegressionTask({
     rootPath: projectDir,
@@ -1298,7 +1307,16 @@ test("panel web: 任务页显示重试次数（attempts > 1）", async () => {
   await store.claimRegressionTask({
     rootPath: projectDir,
     runnerId: "r-x",
-    platforms: ["android"]
+    hostId: "h-x",
+    instanceId: "i-x",
+    platforms: ["android"],
+    capabilities: ["android"]
+  });
+  await store.beginExecution({
+    rootPath: projectDir,
+    taskId: task.id,
+    runnerId: "r-x",
+    instanceId: "i-x"
   });
 
   const html = await handlePanelRequest(
@@ -1306,7 +1324,7 @@ test("panel web: 任务页显示重试次数（attempts > 1）", async () => {
     deps
   );
   assert.match(html.body, /已尝试 2 次/);
-  assert.match(html.body, /已领取/);
+  assert.match(html.body, /执行中/);
 });
 
 test("panel web: 定时回归区块 + 任务页来源显示", async () => {

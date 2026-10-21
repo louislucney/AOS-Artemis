@@ -197,13 +197,16 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
             io.errorLog(`[runner] 调度检查失败：${errorMessage(error)}`);
           }
         }
-        const snapshot = inventory;
+        const currentInventory = inventory;
         let task: RegressionTaskRecord | null;
         try {
           task = await store.claimRegressionTask({
             rootPath,
             runnerId: me.id,
-            platforms: snapshot.platforms,
+            hostId: snapshot.identity.id,
+            instanceId,
+            capabilities: snapshot.capabilities,
+            platforms: currentInventory.platforms,
             onlineBefore: new Date(nowMs - runnerTtlMs).toISOString(),
             allowPartial: partialClaim
           });
@@ -219,7 +222,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           continue;
         }
 
-        if (task.attempts > maxAttempts) {
+        if (task.attempts >= maxAttempts) {
           try {
             const released = await store.releaseRegressionTask({
               rootPath,
@@ -229,7 +232,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
             });
             if (released) {
               io.log(
-                `[runner] 任务 ${task.id} 领取次数 ${task.attempts} 超上限 ${maxAttempts}，标记 failed（毒丸防护，不进入执行）`
+                `[runner] 任务 ${task.id} 已尝试 ${task.attempts} 次，超上限 ${maxAttempts}，标记 failed（毒丸防护，不进入执行）`
               );
             } else {
               io.errorLog(
@@ -244,7 +247,29 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           continue;
         }
 
-        const devices = snapshot.devices
+        let running: RegressionTaskRecord | null;
+        try {
+          running = await store.beginExecution({
+            rootPath,
+            taskId: task.id,
+            runnerId: me.id,
+            instanceId
+          });
+        } catch (error) {
+          io.errorLog(`[runner] 任务 ${task.id} 开始执行失败：${errorMessage(error)}`);
+          running = null;
+        }
+        if (running === null) {
+          await store
+            .releaseRegressionTask({ rootPath, runnerId: me.id, taskId: task.id, to: "pending" })
+            .catch(() => false);
+          if (once) return 0;
+          await sleep(pollMs);
+          continue;
+        }
+        task = running;
+
+        const devices = currentInventory.devices
           .filter((device) => task.platforms.includes(device.platform))
           .map((device) => device.serial);
         const argv = [
@@ -255,11 +280,11 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           ...devices.flatMap((serial) => ["--device", serial])
         ];
         const missing = task.platforms.filter(
-          (platform) => !snapshot.platforms.some((mine) => mine === platform)
+          (platform) => !currentInventory.platforms.some((mine) => mine === platform)
         );
         if (missing.length > 0) {
           const covered = task.platforms.filter((platform) =>
-            snapshot.platforms.some((mine) => mine === platform)
+            currentInventory.platforms.some((mine) => mine === platform)
           );
           io.log(
             `[runner] 领取任务 ${task.id}（部分端 ${covered.join(",")}，缺 ${missing.join(",")}——在线无全覆盖执行机）`

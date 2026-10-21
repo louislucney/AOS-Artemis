@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { buildAuditEvent, cloneAuditEvent, normalizeAuditLimit } from "./audit-event.js";
 import {
   AmbiguousProjectError,
+  capabilitiesSatisfyPlatforms,
   isRunnerActive,
   RUNNER_ACTIVE_DEFAULT_MS,
   RunnerAlreadyActiveError
@@ -341,7 +342,14 @@ export class MemoryStore implements ProjectStore {
       claimedBy: null,
       claimedAt: null,
       attempts: 0,
-      runIds: []
+      runIds: [],
+      targetHostId: input.targetHostId ?? null,
+      createdHostId: input.createdHostId ?? null,
+      claimedHostId: null,
+      claimedInstanceId: null,
+      priority: typeof input.priority === "number" ? input.priority : 0,
+      lastProgressAt: null,
+      startedAt: null
     };
     this.regressionTasks.push(record);
     return cloneRegressionTask(record);
@@ -395,16 +403,26 @@ export class MemoryStore implements ProjectStore {
     platforms: string[];
     onlineBefore?: string;
     allowPartial?: boolean;
+    hostId?: string;
+    instanceId?: string;
+    capabilities?: string[];
   }): Promise<RegressionTaskRecord | null> {
     const project = this.getProjectRecord(input.rootPath);
     if (!project) return null;
+    const hostId = input.hostId ?? null;
     const candidates = this.regressionTasks
-      .filter((task) => task.projectId === project.id && task.status === "pending")
+      .filter(
+        (task) =>
+          task.projectId === project.id &&
+          task.status === "pending" &&
+          (task.targetHostId === null || task.targetHostId === hostId)
+      )
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
     const fullMatch = candidates.find(
       (task) =>
         task.platforms.length > 0 &&
-        task.platforms.every((platform) => input.platforms.includes(platform))
+        task.platforms.every((platform) => input.platforms.includes(platform)) &&
+        capabilitiesSatisfyPlatforms(input.capabilities, task.platforms)
     );
     let match = fullMatch;
     if (!match && input.allowPartial === true && input.onlineBefore !== undefined) {
@@ -418,6 +436,7 @@ export class MemoryStore implements ProjectStore {
         )
         .map((runner) => runner.platforms);
       for (const task of candidates) {
+        if (!capabilitiesSatisfyPlatforms(input.capabilities, task.platforms)) continue;
         const intersection = task.platforms.filter((platform) =>
           input.platforms.includes(platform)
         );
@@ -434,8 +453,29 @@ export class MemoryStore implements ProjectStore {
     match.status = "claimed";
     match.claimedBy = input.runnerId;
     match.claimedAt = new Date().toISOString();
-    match.attempts += 1;
+    match.claimedHostId = hostId;
+    match.claimedInstanceId = input.instanceId ?? null;
     return cloneRegressionTask(match);
+  }
+
+  async beginExecution(input: {
+    rootPath: string;
+    taskId: string;
+    runnerId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null> {
+    const project = this.getProjectRecord(input.rootPath);
+    if (!project) return null;
+    const task = this.regressionTasks.find(
+      (entry) => entry.projectId === project.id && entry.id === input.taskId
+    );
+    if (!task) return null;
+    if (task.status !== "claimed" || task.claimedInstanceId !== input.instanceId) return null;
+    task.status = "running";
+    task.attempts += 1;
+    task.startedAt = input.at ?? new Date().toISOString();
+    return cloneRegressionTask(task);
   }
 
   async releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number> {
@@ -1342,7 +1382,14 @@ function cloneRegressionTask(task: RegressionTaskRecord): RegressionTaskRecord {
     ...task,
     refs: task.refs.map((ref) => ({ ...ref })),
     platforms: [...task.platforms],
-    runIds: [...task.runIds]
+    runIds: [...task.runIds],
+    targetHostId: task.targetHostId ?? null,
+    createdHostId: task.createdHostId ?? null,
+    claimedHostId: task.claimedHostId ?? null,
+    claimedInstanceId: task.claimedInstanceId ?? null,
+    priority: typeof task.priority === "number" ? task.priority : 0,
+    lastProgressAt: task.lastProgressAt ?? null,
+    startedAt: task.startedAt ?? null
   };
 }
 

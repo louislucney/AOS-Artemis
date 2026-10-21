@@ -291,10 +291,26 @@ export class FileStore implements ProjectStore {
     platforms: string[];
     onlineBefore?: string;
     allowPartial?: boolean;
+    hostId?: string;
+    instanceId?: string;
+    capabilities?: string[];
   }): Promise<RegressionTaskRecord | null> {
     const bucket = await this.bucket(input.rootPath);
     const record = await this.scopedMem(bucket, this.hostId).claimRegressionTask(input);
     if (record !== null) await this.persist(bucket, "claimRegressionTask");
+    return record;
+  }
+
+  async beginExecution(input: {
+    rootPath: string;
+    taskId: string;
+    runnerId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null> {
+    const bucket = await this.bucket(input.rootPath);
+    const record = await this.scopedMem(bucket, this.hostId).beginExecution(input);
+    if (record !== null) await this.persist(bucket, "beginExecution");
     return record;
   }
 
