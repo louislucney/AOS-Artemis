@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
-import type { ProjectStore } from "../db/types.js";
+import type { HostRecord, ProjectStore } from "../db/types.js";
+import { clientTtlFrom, isClientOnline } from "../host/online.js";
+import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cBanner, cCard, cStat, cTable } from "./components.js";
 import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
@@ -9,6 +11,8 @@ export interface DispatchDeps {
   store: ProjectStore;
   env: NodeJS.ProcessEnv;
   now?: () => number;
+  /** 主机作用域存储视图；未提供时回退 `store.scopeHost(hostId)`。 */
+  storeForHost?: (hostId: string) => ProjectStore | null;
 }
 
 export interface DispatchRefDetail {
@@ -16,6 +20,16 @@ export interface DispatchRefDetail {
   label: string;
   caseCount: number;
   featureKeys: string[];
+}
+
+export interface DispatchHost {
+  id: string;
+  label: string | null;
+  hostname: string;
+  kind: string;
+  online: boolean;
+  capabilities: string[];
+  queueDepth: number;
 }
 
 export interface DispatchPreview {
@@ -27,6 +41,8 @@ export interface DispatchPreview {
   devices: string[];
   baseline: "latest" | "none";
   runnerCandidates: { id: string; host: string; online: boolean }[];
+  hosts: DispatchHost[];
+  selectedHostId: string | null;
   warnings: string[];
 }
 
@@ -69,6 +85,87 @@ export function dispatchPreviewId(preview: DispatchPreview, formSignature: strin
 
 const ONLINE_WINDOW_MS = 5 * 60_000;
 
+export interface HostPrecheckInput {
+  id: string;
+  kind: string;
+  osPlatform: string;
+  capabilities: string[];
+  online: boolean;
+}
+
+/** 任务下发前的目标主机预检：能力不满足 → ok:false（离线只告警，仍可入队）。 */
+export function precheckTask(
+  host: HostPrecheckInput,
+  platforms: string[]
+): { ok: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  let ok = true;
+  const capabilities = new Set(host.capabilities);
+  if (platforms.includes("ios")) {
+    const macLike = host.osPlatform === "darwin" || host.kind === "mac";
+    const iosCapable = [...capabilities].some((capability) => capability.startsWith("ios-"));
+    if (!macLike || !iosCapable) {
+      reasons.push("iOS 需要 macOS 或 iOS 能力");
+      ok = false;
+    }
+  }
+  if (platforms.includes("android") && !capabilities.has("android")) {
+    reasons.push("Android 需要目标主机具备 Android 能力");
+    ok = false;
+  }
+  if (!host.online) reasons.push("目标主机离线，任务会排队等待");
+  return { ok, reasons };
+}
+
+export function isHostOnline(
+  host: Pick<HostRecord, "clientSeenAt" | "runnerSeenAt">,
+  nowMs: number,
+  env: NodeJS.ProcessEnv
+): boolean {
+  if (isClientOnline(host.clientSeenAt, nowMs, clientTtlFrom(env))) return true;
+  return host.runnerSeenAt !== null && isRunnerOnline(host.runnerSeenAt, nowMs, runnerTtlFrom(env));
+}
+
+/** 目标主机作用域存储：优先注入视图，其次 `scopeHost`，最后回退当前 store。 */
+export function hostScopedStore(
+  deps: Pick<DispatchDeps, "store" | "storeForHost">,
+  hostId: string | null
+): ProjectStore {
+  if (hostId === null) return deps.store;
+  const injected = deps.storeForHost?.(hostId);
+  if (injected) return injected;
+  try {
+    return deps.store.scopeHost(hostId);
+  } catch {
+    return deps.store;
+  }
+}
+
+async function hostQueueDepth(
+  store: ProjectStore,
+  hostId: string,
+  projects: Awaited<ReturnType<ProjectStore["listProjects"]>>
+): Promise<number> {
+  const owned = projects.filter((project) => project.hostId === hostId);
+  if (owned.length === 0) return 0;
+  let scoped: ProjectStore;
+  try {
+    scoped = store.scopeHost(hostId);
+  } catch {
+    scoped = store;
+  }
+  let depth = 0;
+  for (const project of owned) {
+    try {
+      const tasks = await scoped.listRegressionTasks(project.rootPath, 200);
+      depth += tasks.filter((task) => task.status === "pending").length;
+    } catch {
+      /* 单项目读取失败不阻断预览 */
+    }
+  }
+  return depth;
+}
+
 export async function computeDispatchPreview(
   deps: DispatchDeps,
   rootPath: string,
@@ -78,7 +175,67 @@ export async function computeDispatchPreview(
   const modeRaw = (params.get("source") ?? "case-set").trim();
   const mode: DispatchPreview["source"]["mode"] =
     modeRaw === "keyword" || modeRaw === "excel" ? modeRaw : "case-set";
-  const sets = await deps.store.listCaseSets(rootPath);
+  const platforms = (params.get("platforms") ?? "android")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value): value is "ios" | "android" => value === "ios" || value === "android");
+
+  const warnings: string[] = [];
+  const hostParam = (params.get("host") ?? "").trim();
+  const targetRef = hostParam !== "" ? hostParam : (deps.store.localHostId ?? "");
+  let hostRecords: HostRecord[] = [];
+  try {
+    hostRecords = await deps.store.listHosts();
+  } catch {
+    hostRecords = [];
+  }
+  const targetHost =
+    targetRef === "" ? null : (hostRecords.find((host) => host.id === targetRef) ?? null);
+  if (hostParam !== "" && targetHost === null) {
+    warnings.push(`未知主机「${hostParam}」：请重新选择（可能已下线或未登记）`);
+  }
+  const targetStore = hostScopedStore(deps, targetHost?.id ?? null);
+  if (targetHost !== null) {
+    const targetProject = await targetStore.getProjectByPath(rootPath).catch(() => null);
+    if (targetProject === null) {
+      warnings.push(`主机「${targetHost.id}」未登记项目「${rootPath}」：请先在目标机接入项目`);
+    }
+    warnings.push(...precheckTask({
+      id: targetHost.id,
+      kind: targetHost.kind,
+      osPlatform: targetHost.osPlatform,
+      capabilities: targetHost.capabilities,
+      online: isHostOnline(targetHost, now, deps.env)
+    }, platforms).reasons);
+  }
+
+  let allProjects: Awaited<ReturnType<ProjectStore["listProjects"]>> = [];
+  try {
+    allProjects = await deps.store.listProjects();
+  } catch {
+    allProjects = [];
+  }
+  const hosts: DispatchHost[] = [];
+  for (const host of hostRecords) {
+    hosts.push({
+      id: host.id,
+      label: host.label,
+      hostname: host.hostname,
+      kind: host.kind,
+      online: isHostOnline(host, now, deps.env),
+      capabilities: [...host.capabilities],
+      queueDepth: await hostQueueDepth(deps.store, host.id, allProjects)
+    });
+  }
+  if (targetHost !== null) {
+    const index = hosts.findIndex((host) => host.id === targetHost.id);
+    if (index > 0) {
+      const [selected] = hosts.splice(index, 1);
+      if (selected) hosts.unshift(selected);
+    }
+  }
+
+  const sets = await targetStore.listCaseSets(rootPath);
   const setOptions: DispatchRefDetail[] = sets.map((set) => ({
     id: set.id,
     label: set.basename,
@@ -86,7 +243,6 @@ export async function computeDispatchPreview(
     featureKeys: set.features.map((feature) => feature.key)
   }));
 
-  const warnings: string[] = [];
   let label = "";
   let caseCount = 0;
   const refDetails: DispatchRefDetail[] = [];
@@ -126,10 +282,6 @@ export async function computeDispatchPreview(
     else warnings.push("Excel 导入经 CLI/API（multipart 上传）；本表单提交支持「用例库选份」与「功能关键词」");
   }
 
-  const platforms = (params.get("platforms") ?? "android")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value): value is "ios" | "android" => value === "ios" || value === "android");
   const devices = (params.get("devices") ?? "")
     .split(",")
     .map((value) => value.trim())
@@ -137,7 +289,7 @@ export async function computeDispatchPreview(
   const baseline: "latest" | "none" =
     (params.get("baseline") ?? "latest").trim() === "none" ? "none" : "latest";
 
-  const runners = await deps.store.listRunners(rootPath);
+  const runners = await targetStore.listRunners(rootPath);
   const runnerCandidates = runners.map((runner) => ({
     id: runner.id,
     host: runner.hostname,
@@ -153,6 +305,8 @@ export async function computeDispatchPreview(
     devices,
     baseline,
     runnerCandidates,
+    hosts,
+    selectedHostId: targetHost?.id ?? null,
     warnings
   };
 }
@@ -189,6 +343,31 @@ export function renderDispatchPage(view: DispatchView): string {
   const warnings = preview.warnings
     .map((warning) => cBanner({ tone: "warn", title: warning }))
     .join("");
+  const hostOptions = preview.hosts
+    .map((host) => {
+      const title =
+        host.label === null ? host.hostname : `${host.label}（${host.hostname}）`;
+      const meta = [
+        host.kind,
+        host.online ? "在线" : "离线",
+        host.queueDepth > 0 ? `队列 ${host.queueDepth}` : ""
+      ]
+        .filter((part) => part !== "")
+        .join(" · ");
+      return `<option value="${escapeHtml(host.id)}"${host.id === preview.selectedHostId ? " selected" : ""}>${escapeHtml(title)} · ${escapeHtml(meta)}</option>`;
+    })
+    .join("");
+  const hostSelect =
+    preview.hosts.length === 0
+      ? `<p class="muted">单机模式（未登记中心主机）：任务将在本机执行。</p>`
+      : [
+          `<p><label>主机 <select name="host" aria-label="目标主机">`,
+          preview.hosts.some((host) => host.id === preview.selectedHostId)
+            ? ""
+            : '<option value="">（选择主机）</option>',
+          hostOptions,
+          `</select></label> <span class="muted">先选目标主机，用例份选项按该主机作用域展示。</span></p>`
+        ].join("");
 
   const sourceBody = [
     '<fieldset class="c-fieldset"><legend>来源</legend>',
@@ -257,7 +436,8 @@ function formSignature(){
   return [mode,refOrKeyword,platforms,baseline].join('|');
 }
 function refreshStale(){
-  var staleNow=formSignature()!==island.formSignature;
+  var host=(form.querySelector('select[name="host"]')||{value:''}).value;
+  var staleNow=formSignature()!==island.formSignature||host!==(island.hostId||'');
   var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
   var refField=document.getElementById('dispatch-field-ref');
   var keywordField=document.getElementById('dispatch-field-keyword');
@@ -281,10 +461,13 @@ go.addEventListener('click',function(){
   var refs=island.refsDetail||[];
   var refText=refs.length===0?'':(' · 份：'+refs.map(function(r){return r.label+'×'+r.caseCount;}).join('、'));
   var runner=island.runnerOnline?('在线候选 '+island.runnerOnlineCount+' 台'):'无在线执行机（任务将排队）';
-  var text='将创建回归任务：来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · 执行机：'+runner;
+  var hostName=(island.hostLabel||island.hostId||'本机');
+  var text='将创建回归任务：目标主机「'+hostName+'」 · 来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · 执行机：'+runner;
   window.aosInlineConfirm(go,text,function(){
     var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
     var payload={project:island.project,previewId:island.previewId,source:mode};
+    var hostSel=form.querySelector('select[name="host"]');
+    if(hostSel&&hostSel.value){payload.host=hostSel.value;}
     if(mode==='keyword'){payload.keyword=((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim();}
     else{payload.ref=(form.querySelector('select[name="ref"]')||{value:''}).value||'';}
     payload.platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
@@ -303,7 +486,10 @@ go.addEventListener('click',function(){
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">点击后显示完整摘要（份明细 / 端 / 基线 / 执行机），再创建任务。</span></p>`,
         `<p id="dispatch-status" role="status" class="muted"></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
-        `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
+        `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, hostId: preview.selectedHostId, hostLabel:
+          preview.hosts.find((host) => host.id === preview.selectedHostId)?.label ??
+          preview.hosts.find((host) => host.id === preview.selectedHostId)?.hostname ??
+          null, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
         dispatchConfirmScript,
       ].join("\n");
 
@@ -321,6 +507,7 @@ go.addEventListener('click',function(){
       `<form id="dispatch-form" method="get" action="/panel">`,
       `<input type="hidden" name="project" value="${escapeHtml(view.rootPath)}">`,
       `<input type="hidden" name="section" value="dispatch">`,
+      cCard({ title: "⓪ 主机", body: hostSelect }),
       cCard({ title: "① 来源", body: sourceBody }),
       cCard({ title: "② 参数", body: paramsBody }),
       cCard({ title: "③ 预览回显", tone: "accent", body: previewBody }),

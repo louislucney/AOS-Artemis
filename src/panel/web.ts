@@ -404,7 +404,11 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   const section = trimmed(url.searchParams.get("section"));
   if (section === "dispatch") {
     const preview = await computeDispatchPreview(
-      { store: projectStore, env: deps.env ?? process.env },
+      {
+        store: projectStore,
+        env: deps.env ?? process.env,
+        ...(deps.storeForHost ? { storeForHost: deps.storeForHost } : {})
+      },
       resolved.rootPath,
       url.searchParams
     );

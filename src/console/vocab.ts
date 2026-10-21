@@ -55,6 +55,7 @@ const AUDIT_DOMAINS: Record<string, string> = {
 
 const AUDIT_ACTIONS: Record<string, string> = {
   "action.tasks": "派发回归任务",
+  "action.hosts.register": "登记主机",
   "action.release": "释放回队列",
   "action.stop": "停止执行",
   "action.rerun": "重新派发",

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { AmbiguousProjectError } from "../db/types.js";
-import type { CaseVerdict } from "../db/types.js";
+import type { CaseVerdict, HostRecord } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
 import { exportProjectData, type ExportWhat } from "../export/index.js";
 import { errorMessage, log, writeFileAtomic } from "../util.js";
@@ -15,7 +15,10 @@ import { parseMultipartUpload, UploadError } from "./upload.js";
 import {
   computeDispatchPreview,
   dispatchFormSignature,
-  dispatchPreviewId
+  dispatchPreviewId,
+  hostScopedStore,
+  isHostOnline,
+  precheckTask
 } from "../console/dispatch.js";
 import { auditActionLabel } from "../console/vocab.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
@@ -87,6 +90,20 @@ export async function handlePanelActionRequest(
       return json(400, { error: "请求体不是合法 JSON（检查 Content-Type 与 body）" });
     }
     payload = request.body as Record<string, unknown>;
+  }
+  if (request.url.pathname === "/panel/api/hosts/register") {
+    const response = await registerHost(deps, payload);
+    const hostId = typeof payload.host === "string" ? payload.host.trim() : "";
+    const auditRoot = await hostAuditRoot(deps, payload, hostId);
+    await auditPanel(
+      deps,
+      auditRoot,
+      "action.hosts.register",
+      response,
+      hostId === "" ? undefined : { hostId }
+    );
+    if (response.status === 200) deps.cache?.clear();
+    return response;
   }
   const projectKey = typeof payload.project === "string" ? payload.project.trim() : "";
   if (projectKey === "") return json(400, { error: "缺少 project" });
@@ -230,6 +247,85 @@ async function auditPanel(
   });
 }
 
+const EXPECTED_OS = new Set(["darwin", "win32", "linux"]);
+
+type RegistrationField = { ok: true; value: string | null | undefined } | { ok: false };
+
+function registrationField(payload: Record<string, unknown>, key: string): RegistrationField {
+  const raw = payload[key];
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== "string") return { ok: false };
+  const trimmed = raw.trim();
+  return { ok: true, value: trimmed === "" ? null : trimmed };
+}
+
+async function registerHost(
+  deps: PanelWebDeps,
+  payload: Record<string, unknown>
+): Promise<PanelWebResponse> {
+  const hostRef = typeof payload.host === "string" ? payload.host.trim() : "";
+  if (hostRef === "") return json(400, { error: "缺少 host" });
+  const host = await deps.store.getHost(hostRef).catch(() => null);
+  if (!host) return json(404, { error: `未知主机 "${hostRef}"（先用 host list 查看已登记主机）` });
+
+  const label = registrationField(payload, "label");
+  const owner = registrationField(payload, "owner");
+  const expectedHostname = registrationField(payload, "expectedHostname");
+  const expectedOs = registrationField(payload, "expectedOs");
+  for (const [field, value] of [
+    ["label", label],
+    ["owner", owner],
+    ["expectedHostname", expectedHostname],
+    ["expectedOs", expectedOs]
+  ] as const) {
+    if (!value.ok) return json(400, { error: `${field} 必须是字符串或 null` });
+  }
+  if (
+    expectedOs.ok &&
+    typeof expectedOs.value === "string" &&
+    !EXPECTED_OS.has(expectedOs.value.toLowerCase())
+  ) {
+    return json(400, { error: "expectedOs 仅支持 darwin/win32/linux" });
+  }
+
+  const record = await deps.store.updateHostRegistration({
+    id: host.id,
+    ...(label.ok && label.value !== undefined ? { label: label.value } : {}),
+    ...(owner.ok && owner.value !== undefined ? { owner: owner.value } : {}),
+    ...(expectedHostname.ok && expectedHostname.value !== undefined
+      ? { expectedHostname: expectedHostname.value }
+      : {}),
+    ...(expectedOs.ok && expectedOs.value !== undefined
+      ? {
+          expectedOs:
+            expectedOs.value === null ? null : expectedOs.value.toLowerCase()
+        }
+      : {}),
+    registeredBy: "panel"
+  });
+  if (!record) return json(404, { error: `未知主机 "${hostRef}"` });
+  return json(200, { ok: true, host: record });
+}
+
+async function hostAuditRoot(
+  deps: PanelWebDeps,
+  payload: Record<string, unknown>,
+  hostId: string
+): Promise<string> {
+  const project = typeof payload.project === "string" ? payload.project.trim() : "";
+  if (project !== "") return project;
+  if (hostId === "") return "";
+  try {
+    const projects = (await deps.store.listProjects())
+      .filter((record) => record.hostId === hostId)
+      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
+    return projects[0]?.rootPath ?? "";
+  } catch {
+    return "";
+  }
+}
+
 async function checkDispatchPreviewFreshness(
   deps: PanelWebDeps,
   rootPath: string,
@@ -247,8 +343,14 @@ async function checkDispatchPreviewFreshness(
     : [];
   params.set("platforms", platforms.join(","));
   params.set("baseline", payload.baseline === "none" ? "none" : "latest");
+  const host = typeof payload.host === "string" ? payload.host.trim() : "";
+  if (host !== "") params.set("host", host);
   const preview = await computeDispatchPreview(
-    { store: deps.store, env: deps.env ?? process.env },
+    {
+      store: deps.store,
+      env: deps.env ?? process.env,
+      ...(deps.storeForHost ? { storeForHost: deps.storeForHost } : {})
+    },
     rootPath,
     params
   );
@@ -270,7 +372,33 @@ async function createTask(
 ): Promise<PanelWebResponse> {
   const stalePreview = await checkDispatchPreviewFreshness(deps, rootPath, payload);
   if (stalePreview !== null) return stalePreview;
-  const sets = await deps.store.listCaseSets(rootPath);
+  const hostParam = typeof payload.host === "string" ? payload.host.trim() : "";
+  const explicitHost = hostParam !== "";
+  const hostRef = explicitHost ? hostParam : (deps.store.localHostId ?? "");
+  let targetHost: HostRecord | null = null;
+  let targetStore = deps.store;
+  if (hostRef !== "") {
+    let hosts: HostRecord[] = [];
+    try {
+      hosts = await deps.store.listHosts();
+    } catch {
+      hosts = [];
+    }
+    targetHost = hosts.find((host) => host.id === hostRef) ?? null;
+    if (targetHost === null && explicitHost) {
+      return json(404, { error: `未知主机 "${hostRef}"（请刷新预览后重选）` });
+    }
+    if (targetHost !== null) {
+      targetStore = hostScopedStore(deps, targetHost.id);
+      const project = await targetStore.getProjectByPath(rootPath).catch(() => null);
+      if (!project) {
+        return json(404, {
+          error: `主机 "${targetHost.id}" 未登记项目 "${rootPath}"：请先在目标机接入项目`
+        });
+      }
+    }
+  }
+  const sets = await targetStore.listCaseSets(rootPath);
   let refs: Array<{ caseSetId: string; featureKey: string }> = [];
   const sourceMode = payload.source;
   if (sourceMode === "case-set" || sourceMode === "keyword") {
@@ -337,14 +465,40 @@ async function createTask(
   }
   const baseline = payload.baseline === "none" ? "none" : "latest";
 
-  const task = await deps.store.createRegressionTask({
+  let warnings: string[] = [];
+  if (targetHost !== null) {
+    const precheck = precheckTask(
+      {
+        id: targetHost.id,
+        kind: targetHost.kind,
+        osPlatform: targetHost.osPlatform,
+        capabilities: targetHost.capabilities,
+        online: isHostOnline(targetHost, deps.now?.() ?? Date.now(), deps.env ?? process.env)
+      },
+      uniquePlatforms
+    );
+    if (!precheck.ok) {
+      return json(400, {
+        ok: false,
+        error: "目标主机无法满足所需平台",
+        reasons: precheck.reasons
+      });
+    }
+    warnings = precheck.reasons;
+  }
+
+  const targetHostId =
+    targetHost?.id ?? (explicitHost ? null : (deps.store.localHostId ?? null));
+  const task = await targetStore.createRegressionTask({
     rootPath,
     refs,
     platforms: uniquePlatforms,
     baseline,
-    createdBy: "panel"
+    createdBy: "panel",
+    targetHostId,
+    createdHostId: targetHostId
   });
-  return json(200, { ok: true, task });
+  return json(200, { ok: true, task, ...(warnings.length > 0 ? { warnings } : {}) });
 }
 
 async function saveVerdicts(
