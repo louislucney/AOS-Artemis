@@ -166,7 +166,7 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 
 **主机与在线口径**：`IDE 在线`＝MCP 客户端会话（`host_sessions`/`client_seen_at`，`AOS_CLIENT_TTL_MS` 内）；`执行机在线`＝runner 心跳（`runners.last_seen_at`，`AOS_RUNNER_TTL_MS`）；登记画像（`expectedOs`/`expectedHostname`）与实际不符只显示漂移。下发预检只看执行层与 OS/工具/设备能力，主机离线仍可入队等待。
 
-**面板路由**：主机/执行机视图 `GET /panel?section=runners`（`/panel.json` 同源，双在线状态与队列动作）；定向派发 `?section=dispatch&host=<id>&project=<rootPath>`；队列动作 `POST /panel/api/queue/pause|resume`；主机登记 `POST /panel/api/hosts/register`。
+**面板路由**：主机/执行机视图 `GET /panel?section=runners`（`/panel.json` 同源，双在线状态与队列动作）；定向派发 `?section=dispatch&host=<id>&project=<rootPath>`；只读主机列表 `GET /panel/api/hosts`（展示字段投影，不含 env/工具路径；HTTP 模式与独立 `panel --web` 均可用，不受 `AOS_PANEL_ACTIONS` 影响，单机模式返回 `{ok:true,hosts:[]}`）；队列动作 `POST /panel/api/queue/pause|resume`；主机登记 `POST /panel/api/hosts/register`。
 
 **多机相关环境变量**：
 
@@ -228,7 +228,7 @@ node dist/cli.js usage --host <id|主机名> --all # 只看该主机的项目（
 node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:8766（端口占用 exit 2）
 ```
 
-`--host` 在文本/JSON/`--all` 下是**项目过滤**（id 精确优先、主机名需唯一；重复主机名 exit 2 并列出候选 id，未知主机 exit 2）；`--web` 下的 `--host` 仍是**监听地址**。同路径多主机但未指定 `--host` 时，`usage` 不猜：默认当前项目/`--project` 命中多行会 exit 2 列出候选主机；未归属 legacy 行与主机行同路径时同样 exit 2，并提示 `--host` 或 `host adopt-legacy`。`--all` 下单个 legacy 歧义按项目降级（stderr 标注「未能读取（候选主机…）」，其余项目照常输出、exit 0）；默认当前项目配 `--host` 但该主机下未登记该项目时 exit 2（不输出零统计）。
+`--host` 在文本/JSON/`--all` 下是**项目过滤**（id 精确优先、主机名需唯一；重复主机名 exit 2 并列出候选 id，未知主机 exit 2）；`--web` 下的 `--host` 仍是**监听地址**。同路径多主机但未指定 `--host` 时，`usage` 不猜：默认当前项目/`--project` 命中多行会 exit 2 列出候选主机；未归属 legacy 行与主机行同路径时同样 exit 2，并提示 `--host` 或 `host adopt-legacy`。`--all` 下单个 legacy 歧义按项目降级（stderr 标注「未能读取（候选主机…）」，其余项目照常输出、exit 0；JSON 增 `readErrors[]` 记录 `{projectId,name,rootPath,hostId,error,candidates}`，无降级时为空数组，便于机器消费时发现缺口）；默认当前项目配 `--host` 但该主机下未登记该项目时 exit 2（不输出零统计）。Web 看板同样支持 `?host=<id>&project=<rootPath>` 消歧（分页/筛选/重置链接保留 `host`）；未带 `host` 的同路径/同名多行返回 409 与候选主机。
 
 ### 记录导出（export）
 

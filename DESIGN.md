@@ -2193,3 +2193,12 @@ llm_switch(name, force):
 - **`/usage` 未归属 legacy 路径**：`src/usage/web.ts` 捕获 `AmbiguousProjectError` → **409** `{error, candidates:[{hostId,rootPath,name}]}`（与面板同形），同一路径先按 `hostId` 作用域读取的既有行为不变；HTTP/独立看板不再 500。显式 `?project=<名称|路径>` 命中多行（同名不同路径 / 同路径多主机）同样 409 列候选，不再静默取第一行；缺省项目（无 `project` 参数）仍取 `listProjects` 首行。
 - **面板 multipart 导入**：`src/panel/actions.ts` 入口在缺少 JSON body 但带 `rawBody` 时允许通过（payload 置空），`project`/`host` 从查询参数读取——**查询参数 `project` 仅在 `POST /panel/api/import` 且带 `rawBody` 时生效**，其余动作仍只认 JSON body；JSON body 路径保持原优先级（既有「body + rawBody」测试不回归）。`src/console/pages.ts` 导入表单提交到 `/panel/api/import?project=<rootPath>[&host=<id>]`。HTTP 级测试用真实工作簿断言 200 与登记条数。
 - **清扫器 runner 行**：新增 `ProjectStore.getRunner(rootPath, runnerId)`（Postgres/Memory/File；File 委托同源内存视图）。`sweepStaleTasks` 改为按 `claimedBy` 精确取行（同一任务集内缓存），不再 `listRunners(rootPath, 100000)` 全量扫描；语义（在线/实例轮换/行缺失）不变。
+
+### 13.168 修复（usage 主机贯穿与面板主机列表 API）
+
+> 2026-10-21。多机收口遗留：`/usage` 自身链接不带 host、`usage --all --json` 缺口不可见、设计稿 §12.2 的 `GET /panel/api/hosts` 未接线。
+
+- **`/usage` 主机贯穿**：`handleUsageRequest` 解析 `?host=<machine_id>`，`UsageWebProjectView` 与 `UsageWebFiltersView` 增 `hostId`。传 host 时项目库按 `project.hostId === host` 过滤后再按路径/名称解析（同路径多主机不再误判 409）；未传 host 保持原规则（跨主机唯一匹配、多行 409 + 候选）。事件读取用 `store.scopeHost(project.hostId)`；`hostId === null` 的 legacy 行回退未绑定 store。选择器/筛选表单的隐藏 `host`、重置链接、`eventsPageHref` 上一页/下一页均保留 `host`，翻页与筛选不再丢失作用域。`/usage.json` 的 `filters.hostId` 与 `projects[].hostId` 同源暴露。
+- **`usage --all --json` 的 `readErrors`**：新增 `UsageReadError[]`（`projectId?/name/rootPath/hostId/error/candidates?`）。`--all` 中单个 legacy 未绑定主机且同路径歧义时，仍写 stderr 降级、其余项目照常聚合、exit 0，同时在 JSON 明确列出被跳过项目与候选主机；无降级时为 `[]`（显式 `--project`/默认当前项目仍 exit 2）。
+- **`GET /panel/api/hosts`**：`src/panel/web.ts` 新增 `handlePanelHostsRequest`/`panelHostApiRow`，HTTP 与独立 `panel --web` 在动作层之前路由（只读、无需 `AOS_PANEL_ACTIONS`；受 `AOS_PANEL_WEB` 与 HTTP 静态令牌闸门约束）。响应 `{ok:true,hosts:[...]}`，投影仅含 `id/label/owner/hostname/kind/osPlatform/osVersion/arch/capabilities/clientSeenAt/runnerSeenAt/lastSeenAt/queuePaused/registeredAt/expectedOs/expectedHostname`（不含 `env`、`hardwareId`、`username`、`ipPrimary`、工具路径与完整行）。`store.kind !== "postgres"`（文件台账/会话内存）返回 `{ok:true,hosts:[]}`，不报错。
+- **测试**：`test/usage-web.test.js` 新增 host 作用域分页/筛选/重置与 409 回归；`test/usage-command.test.js` 校验 `readErrors` 与空数组；`test/panel-hosts.test.js` 校验安全投影、单机空列表、动作开关无关；`test/panel-command.test.js` 与 `test/http-server.test.js` 覆盖独立/HTTP 路由。

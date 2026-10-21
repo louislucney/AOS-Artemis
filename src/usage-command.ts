@@ -53,6 +53,15 @@ export interface UsageProjectView {
   signals: UsageSignals;
 }
 
+export interface UsageReadError {
+  projectId?: string | null;
+  name: string;
+  rootPath: string;
+  hostId: string | null;
+  error: string;
+  candidates?: Array<{ hostId: string | null; rootPath: string; name: string }>;
+}
+
 export interface UsageCliReport {
   ok: boolean;
   generatedAt: string;
@@ -61,6 +70,8 @@ export interface UsageCliReport {
   usage: { enabled: boolean; note: string | null };
   store: { kind: "postgres" | "file" | "memory"; degraded: boolean; note: string | null };
   projects: UsageProjectView[];
+  /** `--all` 单项目降级记录（legacy 未绑定主机且同路径歧义）；文本模式同时写 stderr。 */
+  readErrors: UsageReadError[];
   totals: { summary: UsageSummary; signals: UsageSignals };
 }
 
@@ -513,9 +524,15 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
     );
     const since = new Date(nowMs - days * 86_400_000).toISOString();
     const query: UsageEventQuery = { since, limit: usageEventSampleLimit(env) };
-    let selected: Array<{ name: string; rootPath: string; hostId: string | null }>;
+    let selected: Array<{
+      projectId: string | null;
+      name: string;
+      rootPath: string;
+      hostId: string | null;
+    }>;
     if (flags.bool("all")) {
       selected = records.map((project) => ({
+        projectId: project.id,
         name: project.name,
         rootPath: project.rootPath,
         hostId: project.hostId
@@ -539,7 +556,14 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
         return 2;
       }
       const record = candidates[0]!;
-      selected = [{ name: record.name, rootPath: record.rootPath, hostId: record.hostId }];
+      selected = [
+        {
+          projectId: record.id,
+          name: record.name,
+          rootPath: record.rootPath,
+          hostId: record.hostId
+        }
+      ];
     } else {
       const loaded = loadProject({ cwd: deps.cwd, env });
       const matches = records.filter((project) => project.rootPath === loaded.rootDir);
@@ -561,6 +585,7 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
       }
       selected = [
         {
+          projectId: record?.id ?? null,
           name: record?.name ?? path.basename(loaded.rootDir),
           rootPath: loaded.rootDir,
           hostId: record?.hostId ?? hostFilter
@@ -569,6 +594,7 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
     }
 
     const views: UsageProjectView[] = [];
+    const readErrors: UsageReadError[] = [];
     const allEvents: UsageEventRecord[] = [];
     for (const entry of selected) {
       const scoped = entry.hostId === null ? store : store.scopeHost(entry.hostId);
@@ -580,6 +606,18 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
           const hosts = error.candidates.map((candidate) => hostLabel(candidate.hostId)).join("、");
           if (flags.bool("all")) {
             errorLog(`  ${entry.name} (${entry.rootPath})：未能读取（候选主机：${hosts}）`);
+            readErrors.push({
+              projectId: entry.projectId,
+              name: entry.name,
+              rootPath: entry.rootPath,
+              hostId: entry.hostId,
+              error: `未能读取：同一路径已登记在 ${hosts}`,
+              candidates: error.candidates.map((candidate) => ({
+                hostId: candidate.hostId,
+                rootPath: candidate.rootPath,
+                name: candidate.name
+              }))
+            });
             continue;
           }
           errorLog(
@@ -608,6 +646,7 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
       usage: enabled ? { enabled, note: null } : { enabled, note: USAGE_DISABLED_NOTE },
       store: storage,
       projects: views,
+      readErrors,
       totals: {
         summary: usageSummary(allEvents, catalog),
         signals: usageSignals(allEvents)

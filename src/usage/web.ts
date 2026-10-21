@@ -41,12 +41,16 @@ export interface UsageWebResponse {
 export interface UsageWebProjectView {
   name: string;
   rootPath: string;
+  /** 项目所属主机；NULL＝未归属的 legacy 行。 */
+  hostId: string | null;
   lastSeenAt: string;
 }
 
 export interface UsageWebFiltersView {
   project: string | null;
   projectRoot: string | null;
+  /** 显式 `?host=` 过滤（多机同路径消歧）；未传时为 null。 */
+  hostId: string | null;
   tool: string | null;
   status: "ok" | "error" | null;
   days: number | null;
@@ -130,7 +134,12 @@ function usageWebEnabled(env: NodeJS.ProcessEnv): boolean {
 }
 
 function projectView(project: ProjectRecord): UsageWebProjectView {
-  return { name: project.name, rootPath: project.rootPath, lastSeenAt: project.lastSeenAt };
+  return {
+    name: project.name,
+    rootPath: project.rootPath,
+    hostId: project.hostId,
+    lastSeenAt: project.lastSeenAt
+  };
 }
 
 function eventView(event: UsageEventRecord): UsageWebEventView {
@@ -166,7 +175,11 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
     ? [...new Set(deps.catalog)].filter((name) => name !== "aos_usage").sort()
     : undefined;
 
-  const projects = await deps.store.listProjects();
+  const allProjects = await deps.store.listProjects();
+  const hostId = trimmed(params.get("host"));
+  // 显式 host：作用域内解析（同路径多主机消歧）；未传 host 保持「跨主机唯一匹配，多行 409」。
+  const projects =
+    hostId === null ? allProjects : allProjects.filter((project) => project.hostId === hostId);
   const projectKey = trimmed(params.get("project"));
   const candidates =
     projectKey === null ? [] : resolveProjectCandidates(projects, projectKey);
@@ -202,6 +215,7 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
   if (status !== null) query.status = status;
   if (since !== null) query.since = since;
 
+  // host 显式传入时项目必属该主机；legacy hostId=null 行走未绑定 store（不丢数据）。
   const projectStore =
     project !== null && project.hostId !== null ? deps.store.scopeHost(project.hostId) : deps.store;
   const stored = project ? await projectStore.listUsageEvents(project.rootPath, query) : [];
@@ -250,6 +264,7 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
     filters: {
       project: project?.name ?? null,
       projectRoot: project?.rootPath ?? null,
+      hostId,
       tool,
       status,
       days,
@@ -348,6 +363,9 @@ function renderSwitcher(view: UsageWebView): string {
     .map((project) => `<option value="${escapeHtml(project.name)}"></option>`)
     .join("");
   const hidden: string[] = [];
+  if (view.filters.hostId !== null) {
+    hidden.push(`<input type="hidden" name="host" value="${escapeHtml(view.filters.hostId)}">`);
+  }
   if (view.filters.tool !== null) {
     hidden.push(`<input type="hidden" name="tool" value="${escapeHtml(view.filters.tool)}">`);
   }
@@ -495,6 +513,7 @@ function renderSignals(view: UsageWebView): string {
 function eventsPageHref(view: UsageWebView, offset: number): string {
   const params = new URLSearchParams();
   if (view.project) params.set("project", view.project.rootPath);
+  if (view.filters.hostId !== null) params.set("host", view.filters.hostId);
   if (view.filters.tool !== null) params.set("tool", view.filters.tool);
   if (view.filters.status !== null) params.set("status", view.filters.status);
   if (view.filters.days !== null) params.set("days", String(view.filters.days));
@@ -510,6 +529,9 @@ function renderEvents(view: UsageWebView): string {
     fields.push(
       `<input type="hidden" name="project" value="${escapeHtml(view.project.rootPath)}">`
     );
+  }
+  if (view.filters.hostId !== null) {
+    fields.push(`<input type="hidden" name="host" value="${escapeHtml(view.filters.hostId)}">`);
   }
   fields.push(
     `<label>工具 <input type="text" name="tool" value="${escapeHtml(view.filters.tool ?? "")}"></label>`
@@ -531,6 +553,7 @@ function renderEvents(view: UsageWebView): string {
   }
   const resetParams = new URLSearchParams();
   if (view.project) resetParams.set("project", view.project.rootPath);
+  if (view.filters.hostId !== null) resetParams.set("host", view.filters.hostId);
   if (view.filters.refresh !== null) resetParams.set("refresh", String(view.filters.refresh));
   const resetQuery = resetParams.toString();
   fields.push('<button type="submit">筛选</button>');

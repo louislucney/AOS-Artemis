@@ -293,7 +293,12 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           res.end(response.body);
           return;
         }
-        if (req.method === "GET" && (url.pathname === "/panel" || url.pathname === "/panel.json")) {
+        if (
+          req.method === "GET" &&
+          (url.pathname === "/panel" ||
+            url.pathname === "/panel.json" ||
+            url.pathname === "/panel/api/hosts")
+        ) {
           const panelResponse = await handlePanelRequest(url, panelDeps);
           res.writeHead(panelResponse.status, { "Content-Type": panelResponse.contentType });
           res.end(panelResponse.body);

@@ -139,6 +139,7 @@ test("usage web: /usage.json exposes the stable machine-readable contract", asyn
   assert.deepEqual(payload.filters, {
     project: "alpha",
     projectRoot: "/w/alpha",
+    hostId: null,
     tool: null,
     status: null,
     days: null,
@@ -418,6 +419,64 @@ test("usage web: 同 rootPath 两主机按 host 作用域读事件（不再 Ambi
     pathPayload.candidates.map((candidate) => candidate.hostId).sort(),
     ["h-a", "h-b"]
   );
+});
+
+test("usage web: ?host 作用域读事件，分页/筛选链接保留 host（下一页仍 200）", async () => {
+  const store = new MemoryStore();
+  await store.upsertHost({ id: "h-a", hostname: "mac-a", osPlatform: "darwin" });
+  await store.upsertHost({ id: "h-b", hostname: "mac-b", osPlatform: "linux" });
+  const a = store.scopeHost("h-a");
+  const b = store.scopeHost("h-b");
+  await a.upsertProject({ rootPath: "/w/shared", name: "shared" });
+  await b.upsertProject({ rootPath: "/w/shared", name: "shared" });
+  await a.recordUsageEvent(
+    "/w/shared",
+    eventInput({ tool: "llm_list", at: new Date(NOW - 60_000).toISOString() })
+  );
+  await b.recordUsageEvent(
+    "/w/shared",
+    eventInput({ tool: "aos_status", at: new Date(NOW - 90_000).toISOString() })
+  );
+  await b.recordUsageEvent(
+    "/w/shared",
+    eventInput({ tool: "aos_status", at: new Date(NOW - 30_000).toISOString() })
+  );
+
+  const scopedPath = "/usage?host=h-b&project=%2Fw%2Fshared&limit=1";
+  const res = await handleUsageRequest(new URL(`http://localhost${scopedPath}`), deps(store));
+  assert.equal(res.status, 200, res.body);
+  assert.match(res.body, /name="host" value="h-b"/, "筛选表单保留 host");
+  assert.match(res.body, /下一页/, "两页事件产生下一页链接");
+  const nextHrefRaw = /<a href="([^"]+)">下一页<\/a>/.exec(res.body)?.[1];
+  assert.ok(nextHrefRaw, "下一页链接存在");
+  const nextHref = nextHrefRaw.replaceAll("&amp;", "&");
+  const nextUrl = new URL(nextHref, "http://localhost");
+  assert.equal(nextUrl.searchParams.get("host"), "h-b");
+  assert.equal(nextUrl.searchParams.get("project"), "/w/shared");
+
+  const next = await handleUsageRequest(new URL(nextHref, "http://localhost"), deps(store));
+  assert.equal(next.status, 200, next.body);
+  const nextEvents = next.body.split('<section id="events">')[1] ?? "";
+  assert.match(nextEvents, /data-tool="aos_status"/);
+  assert.doesNotMatch(nextEvents, /data-tool="llm_list"/, "只显示 h-b 事件");
+
+  const resetHrefRaw = /<a class="reset" href="([^"]+)"/.exec(res.body)?.[1];
+  assert.ok(resetHrefRaw);
+  assert.equal(
+    new URL(resetHrefRaw.replaceAll("&amp;", "&"), "http://localhost").searchParams.get("host"),
+    "h-b"
+  );
+
+  const json = await getJson(store, "/usage.json?host=h-b&project=%2Fw%2Fshared");
+  assert.equal(json.project.hostId, "h-b");
+  assert.equal(json.filters.hostId, "h-b");
+  assert.deepEqual(json.events.items.map((event) => event.tool), ["aos_status", "aos_status"]);
+
+  const ambiguous = await handleUsageRequest(
+    new URL("http://localhost/usage.json?project=%2Fw%2Fshared"),
+    deps(store)
+  );
+  assert.equal(ambiguous.status, 409, "未带 host 的同路径仍 409");
 });
 
 test("usage web: 同名多项目 → 409 候选（不再静默取第一个）", async () => {

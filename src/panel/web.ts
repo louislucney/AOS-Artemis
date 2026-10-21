@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { AmbiguousProjectError } from "../db/types.js";
-import type { ProjectRecord, ProjectStore, RunnerTools } from "../db/types.js";
+import type { HostRecord, ProjectRecord, ProjectStore, RunnerTools } from "../db/types.js";
 import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
@@ -667,9 +667,71 @@ function toJsonView(view: PanelView): Record<string, unknown> {
   return { ok: true, view: "batch", ...view.detail };
 }
 
+/** `GET /panel/api/hosts` 的只读投影：只暴露展示字段（不含 env/工具路径/完整行）。 */
+export interface PanelHostApiRow {
+  id: string;
+  label: string | null;
+  owner: string | null;
+  hostname: string;
+  kind: string;
+  osPlatform: string;
+  osVersion: string | null;
+  arch: string | null;
+  capabilities: string[];
+  clientSeenAt: string | null;
+  runnerSeenAt: string | null;
+  lastSeenAt: string;
+  queuePaused: boolean;
+  registeredAt: string | null;
+  expectedOs: string | null;
+  expectedHostname: string | null;
+}
+
+export function panelHostApiRow(host: HostRecord): PanelHostApiRow {
+  return {
+    id: host.id,
+    label: host.label,
+    owner: host.owner,
+    hostname: host.hostname,
+    kind: host.kind,
+    osPlatform: host.osPlatform,
+    osVersion: host.osVersion,
+    arch: host.arch,
+    capabilities: [...host.capabilities],
+    clientSeenAt: host.clientSeenAt,
+    runnerSeenAt: host.runnerSeenAt,
+    lastSeenAt: host.lastSeenAt,
+    queuePaused: host.queuePaused,
+    registeredAt: host.registeredAt,
+    expectedOs: host.expectedOs,
+    expectedHostname: host.expectedHostname
+  };
+}
+
+/** 只读主机列表（设计稿 §12.2）：不受 `AOS_PANEL_ACTIONS` 影响；
+ * 单机模式（file/memory）无中心主机台账 → `{ok:true,hosts:[]}`。 */
+export async function handlePanelHostsRequest(deps: PanelWebDeps): Promise<PanelWebResponse> {
+  const env = deps.env ?? process.env;
+  if (!panelWebEnabled(env)) return notFound();
+  if (deps.store.kind !== "postgres") {
+    return {
+      status: 200,
+      contentType: JSON_CONTENT_TYPE,
+      body: JSON.stringify({ ok: true, hosts: [] }, null, 2)
+    };
+  }
+  const hosts = await deps.store.listHosts().catch(() => [] as HostRecord[]);
+  return {
+    status: 200,
+    contentType: JSON_CONTENT_TYPE,
+    body: JSON.stringify({ ok: true, hosts: hosts.map(panelHostApiRow) }, null, 2)
+  };
+}
+
 export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<PanelWebResponse> {
   const env = deps.env ?? process.env;
   if (!panelWebEnabled(env)) return notFound();
+  if (url.pathname === "/panel/api/hosts") return handlePanelHostsRequest(deps);
   if (url.pathname !== "/panel" && url.pathname !== "/panel.json") return notFound();
 
   const cacheKey = `${url.pathname}${url.search}`;

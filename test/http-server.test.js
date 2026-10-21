@@ -214,6 +214,11 @@ test("http server: panel dashboard over real HTTP", async () => {
     const unknown = await fetch(`http://127.0.0.1:${handle.port}/panel.json?project=nope`);
     assert.equal(unknown.status, 404);
 
+    const hosts = await fetch(`http://127.0.0.1:${handle.port}/panel/api/hosts`);
+    assert.equal(hosts.status, 200);
+    assert.match(hosts.headers.get("content-type"), /application\/json/);
+    assert.deepEqual(await hosts.json(), { ok: true, hosts: [] }, "file 模式无中心主机台账");
+
     const health = await fetch(`http://127.0.0.1:${handle.port}/healthz`);
     assert.equal(health.status, 200);
   } finally {
@@ -229,6 +234,7 @@ test("http server: AOS_PANEL_WEB=0 disables /panel routes only", async () => {
   try {
     assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel`)).status, 404);
     assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel.json`)).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel/api/hosts`)).status, 404);
     assert.equal((await fetch(`http://127.0.0.1:${handle.port}/usage`)).status, 200);
     assert.equal((await fetch(`http://127.0.0.1:${handle.port}/healthz`)).status, 200);
   } finally {

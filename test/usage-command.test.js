@@ -377,12 +377,29 @@ test("usage --all: legacy 同路径歧义按项目降级，其余项目继续", 
     ["app", "other"]
   );
   assert.equal(payload.totals.summary.total, 2);
+  assert.equal(payload.readErrors.length, 1, "JSON 明确标记被降级的项目");
+  const [readError] = payload.readErrors;
+  assert.equal(readError.name, "legacy-app");
+  assert.equal(readError.rootPath, "/w/shared");
+  assert.equal(readError.hostId, null);
+  assert.match(readError.error, /未能读取/);
+  assert.deepEqual(
+    readError.candidates.map((candidate) => candidate.hostId).sort(),
+    [null, "h-a"].sort()
+  );
   assert.ok(
     errors.some(
       (line) => line.includes("legacy-app") && line.includes("未能读取") && line.includes("h-a")
     ),
     errors.join("\n")
   );
+});
+
+test("usage --all: 无降级项目时 readErrors 为空数组", async () => {
+  const store = await seedMultiHostStore();
+  const { code, logs } = await runCli(["--all", "--json"], { store });
+  assert.equal(code, 0);
+  assert.deepEqual(JSON.parse(logs.at(-1)).readErrors, []);
 });
 
 test("usage --host: 当前项目不属于该主机 → exit 2 而非零统计", async () => {

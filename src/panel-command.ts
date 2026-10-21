@@ -213,7 +213,12 @@ async function runPanelWeb(options: {
           res.end(response.body);
           return;
         }
-        if (req.method === "GET" && (url.pathname === "/panel" || url.pathname === "/panel.json")) {
+        if (
+          req.method === "GET" &&
+          (url.pathname === "/panel" ||
+            url.pathname === "/panel.json" ||
+            url.pathname === "/panel/api/hosts")
+        ) {
           const response = await handlePanelRequest(url, deps);
           res.writeHead(response.status, { "Content-Type": response.contentType });
           res.end(response.body);

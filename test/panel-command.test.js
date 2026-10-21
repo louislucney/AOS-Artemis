@@ -70,6 +70,22 @@ test("panel --web: 动作门默认关闭；AOS_PANEL_ACTIONS=1＋loopback 才开
   });
 });
 
+test("panel --web: GET /panel/api/hosts 只读可用（不依赖 AOS_PANEL_ACTIONS）", async () => {
+  const store = new MemoryStore();
+  const dir = makeTempDir("aos-panel-hosts-api-");
+  fs.mkdirSync(path.join(dir, "ws-app"), { recursive: true });
+  await runCli(["--web", "--port", "0", "--workspace", dir], {
+    store,
+    env: { ...process.env, AOS_PANEL_ACTIONS: "0" },
+    waitForShutdown: async (handle) => {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/panel/api/hosts`);
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get("content-type"), /application\/json/);
+      assert.deepEqual(await res.json(), { ok: true, hosts: [] });
+    }
+  });
+});
+
 test("panel --web: serves /panel on an ephemeral port and closes cleanly", async () => {
   const store = new MemoryStore();
   const dir = makeTempDir("aos-panel-cli-");
