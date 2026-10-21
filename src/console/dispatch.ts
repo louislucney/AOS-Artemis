@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { HostRecord, ProjectStore } from "../db/types.js";
 import { clientTtlFrom, isClientOnline } from "../host/online.js";
+import { LEGACY_HOST_REASON } from "../host/legacy.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cBanner, cCard, cStat, cTable } from "./components.js";
@@ -62,6 +63,8 @@ export interface DispatchView {
   rootPath: string;
   rootLabel: string;
   hostId: string | null;
+  /** 解析到的项目是已登记的 legacy（host_id 为空）行（工作区未登记目录不算）。 */
+  legacyHostless?: boolean;
   preview: DispatchPreview;
   /** 预览 ID：POST 时服务端复算比对（预览过期 → 409）。 */
   previewId: string;
@@ -373,11 +376,12 @@ export async function computeDispatchPreview(
 
 export function renderDispatchPage(view: DispatchView): string {
   const preview = view.preview;
-  const legacyHostless = view.hostId === null && preview.hosts.length > 0;
-  const legacyNote =
-    "该项目是未归属主机的历史数据，请先在对应机器运行 host adopt-legacy --local --apply";
+  const legacyHostless = view.legacyHostless === true && preview.hosts.length > 0;
   const legacyNoteHtml = legacyHostless
-    ? `<p class="note">该项目是未归属主机的历史数据，请先在对应机器运行 <code>host adopt-legacy --local --apply</code>。</p>`
+    ? `<p class="note">${escapeHtml(LEGACY_HOST_REASON).replace(
+        "host adopt-legacy --local --apply",
+        "<code>host adopt-legacy --local --apply</code>"
+      )}。</p>`
     : "";
   const query = (name: string, fallback = ""): string => escapeHtml(view.query[name] ?? fallback);
   const mode = preview.source.mode;
@@ -571,7 +575,7 @@ refreshStale();
 go.addEventListener('click',function(){
   var pickedHost=(form.querySelector('select[name="host"]')||{value:''}).value;
   if(refreshStale()){
-    if(island.legacyHostless&&!island.hostId){showErr('该项目是未归属主机的历史数据：请先在对应机器运行 host adopt-legacy --local --apply');return;}
+    if(island.legacyHostless&&!island.hostId){showErr(${JSON.stringify(LEGACY_HOST_REASON)});return;}
     if(island.hostRequired&&!pickedHost){showErr('请先选择目标主机');return;}
     if(island.hostBlocked){showErr('目标主机无法满足所选平台：请调整目标端或更换主机后刷新预览');return;}
     showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择份或输入关键词，再点「刷新预览」');return;
@@ -617,7 +621,7 @@ go.addEventListener('click',function(){
   const needsHostPick = preview.hosts.length > 0 && preview.selectedHostId === null;
   const submitBlocked = legacyHostless || preview.hostBlocked || needsHostPick || noProjects;
   const blockedReason = legacyHostless
-    ? legacyNote
+    ? LEGACY_HOST_REASON
     : noProjects
       ? "该主机尚未登记项目"
       : needsHostPick
@@ -627,7 +631,6 @@ go.addEventListener('click',function(){
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（份明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
-        legacyNoteHtml,
         noProjects
           ? `<p class="note">该主机尚未登记项目：请先在目标机接入项目并刷新本页。</p>`
           : needsHostPick && !legacyHostless

@@ -1915,11 +1915,12 @@ test("panel web: compare 降级行（读取失败标注 + 其余列 —）", asy
   const rowChunk = html.body.split("<tr>").find((chunk) => chunk.includes("读取失败"));
   assert.ok(rowChunk, "降级行存在");
   const cells = [...rowChunk.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((match) => match[1]);
-  assert.equal(cells.length, 6, "六个列组");
+  assert.equal(cells.length, 7, "七个列组");
+  assert.match(cells[1], /未归属主机/, "降级行仍显示主机列");
   assert.deepEqual(
-    cells.slice(1),
+    cells.slice(2),
     Array(5).fill('<span class="muted">—</span>'),
-    "error 行其余列全部 —"
+    "error 行其余数据列全部 —"
   );
 });
 
@@ -1952,7 +1953,7 @@ test("panel web: compare 空态（无项目）", async () => {
   const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
   assert.equal(html.status, 200);
   assert.match(html.body, /暂无项目/, "空态提示");
-  assert.match(html.body, /c-empty-cell" colspan="6">暂无项目/, "空态占位行（colspan=6，无数据行）");
+  assert.match(html.body, /c-empty-cell" colspan="7">暂无项目/, "空态占位行（colspan=7，无数据行）");
 });
 
 test("panel web: compare 与总览互链；项目名链接项目页", async () => {

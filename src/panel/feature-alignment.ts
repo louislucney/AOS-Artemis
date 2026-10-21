@@ -52,6 +52,9 @@ export interface FeatureAlignmentGroup {
 export interface FeatureAlignmentInput {
   name: string;
   rootPath: string;
+  hostId?: string | null;
+  /** 主机显示标签（`name · hostLabel` 作为条目展示名）。 */
+  hostLabel?: string | null;
   runs: Array<{
     caseSetId: string | null;
     featureKey: string | null;
@@ -81,15 +84,20 @@ export function alignFeatureRuns(projects: FeatureAlignmentInput[]): {
   const groups: FeatureAlignmentGroup[] = [];
   let unmatched = 0;
   for (const features of byGroupKey.values()) {
-    if (features.length < 2) {
+    const unique = new Map<string, FeatureAccumulator>();
+    for (const feature of features) {
+      if (!unique.has(feature.projectKey)) unique.set(feature.projectKey, feature);
+    }
+    const distinct = [...unique.values()];
+    if (distinct.length < 2) {
       unmatched += 1;
       continue;
     }
-    features.sort(compareByProject);
+    distinct.sort(compareByProject);
     groups.push({
-      sourceLabel: features[0].source,
-      displayName: features[0].name,
-      entries: features.map(toEntry)
+      sourceLabel: distinct[0]!.source,
+      displayName: distinct[0]!.name,
+      entries: distinct.map(toEntry)
     });
   }
 
@@ -111,6 +119,7 @@ interface FeatureUnit {
 
 interface FeatureAccumulator {
   key: string;
+  projectKey: string;
   project: string;
   featureKey: string;
   name: string;
@@ -166,6 +175,15 @@ function collectUnits(project: FeatureAlignmentInput): FeatureUnit[] {
 
 function mergeProjectFeatures(project: FeatureAlignmentInput): FeatureAccumulator[] {
   const merged = new Map<string, FeatureAccumulator>();
+  const projectKey = `${project.name}\u0000${project.rootPath}`;
+  const projectLabel =
+    project.hostId === undefined ||
+    project.hostId === null ||
+    project.hostLabel === undefined ||
+    project.hostLabel === null ||
+    project.hostLabel === ""
+      ? project.name
+      : `${project.name} · ${project.hostLabel}`;
 
   for (const unit of collectUnits(project)) {
     /** 组键 = 归一化设计源|归一化功能名；键成分（caseSetId/featureKey/source/name）不含 `|`，拼接不产生歧义。 */
@@ -174,7 +192,8 @@ function mergeProjectFeatures(project: FeatureAlignmentInput): FeatureAccumulato
     if (existing === undefined) {
       merged.set(key, {
         key,
-        project: project.name,
+        projectKey,
+        project: projectLabel,
         featureKey: unit.featureKey,
         name: unit.name,
         source: unit.source,

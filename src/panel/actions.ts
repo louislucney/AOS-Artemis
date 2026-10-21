@@ -6,6 +6,7 @@ import path from "node:path";
 import { AmbiguousProjectError } from "../db/types.js";
 import type { CaseVerdict, HostRecord } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
+import { LEGACY_HOST_REASON } from "../host/legacy.js";
 import { exportProjectData, type ExportWhat } from "../export/index.js";
 import { errorMessage, log, writeFileAtomic } from "../util.js";
 import { importTestDocument } from "../workflow/excel-import.js";
@@ -37,8 +38,6 @@ export interface PanelActionRequest {
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 const MAX_REFS = 100;
 const MAX_VERDICT_ITEMS = 500;
-const LEGACY_HOST_REASON =
-  "该项目是未归属主机的历史数据，请先在对应机器运行 host adopt-legacy --local --apply";
 
 const CASE_VERDICTS = new Set<CaseVerdict>([
   "case-defect",

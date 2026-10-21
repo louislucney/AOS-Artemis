@@ -12,6 +12,7 @@ import {
   computeDispatchPreview,
   dispatchFormSignature,
   dispatchPreviewId,
+  hostScopedStore,
   renderDispatchPage,
   type DispatchPreview
 } from "../console/dispatch.js";
@@ -46,6 +47,7 @@ import {
   buildPanelReviewQueue,
   buildPanelStatsView,
   buildPanelTaskDetail,
+  hostDisplayLabel,
   PANEL_BATCH_LIMIT_DEFAULT,
   PANEL_BATCH_LIMIT_MAX,
   type PanelBatchDetail,
@@ -53,7 +55,6 @@ import {
   type PanelBatchSummary,
   type PanelDeps,
   type PanelImprovementItem,
-  type PanelMachineRow,
   type PanelOverview,
   type PanelProjectDetail,
   type PanelProjectRow,
@@ -157,6 +158,7 @@ type PanelView =
       kind: "dispatch";
       rootPath: string;
       hostId: string | null;
+      legacyHostless: boolean;
       rootLabel: string;
       preview: DispatchPreview;
       previewId: string;
@@ -401,6 +403,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         kind: "dispatch",
         rootPath: "",
         hostId: hostParam,
+        legacyHostless: false,
         rootLabel: "未选择项目",
         preview,
         previewId: dispatchPreviewId(preview, formSignature),
@@ -450,10 +453,15 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     const query: Record<string, string> = {};
     for (const [key, value] of url.searchParams) query[key] = value;
     const formSignature = dispatchFormSignature(url.searchParams);
+    const legacyRecord =
+      resolved.hostId === null
+        ? await deps.store.getProjectByPath(resolved.rootPath).catch(() => null)
+        : null;
     return {
       kind: "dispatch",
       rootPath: resolved.rootPath,
       hostId: resolved.hostId,
+      legacyHostless: legacyRecord !== null && legacyRecord.hostId === null,
       rootLabel: resolved.name,
       preview,
       previewId: dispatchPreviewId(preview, formSignature),
@@ -774,15 +782,6 @@ function lampDot(lamp: PanelProjectRow["lamp"]): string {
 
 function lampSpan(lamp: PanelProjectRow["lamp"]): string {
   return `${lampDot(lamp)}${LAMP_LABELS[lamp]}`;
-}
-
-function hostDisplayLabel(hostId: string | null, machines: PanelMachineRow[]): string {
-  if (hostId === null) return "未归属主机";
-  const machine = machines.find((entry) => entry.id === hostId);
-  if (!machine) return hostId.slice(0, 8);
-  return machine.label !== null && machine.label !== ""
-    ? `${machine.label}（${machine.hostname}）`
-    : machine.hostname;
 }
 
 function renderProjectCell(row: PanelProjectRow): string {
@@ -1630,7 +1629,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: s
   ]);
   const script = actionsOff
     ? ""
-    : `<script>(function(){var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var status=document.getElementById('schedule-status');function say(m){status.textContent=m;}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var form=document.getElementById('schedule-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var keys=f.getAll('featureKeys').map(function(s){return String(s).trim();}).filter(Boolean);if(keys.length===0){say('请至少选择一个功能');return;}var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(i){return i.value;});post({project:root,action:'create',name:(f.get('name')||'').trim(),featureKeys:keys,platforms:platforms,everyMinutes:Number(f.get('everyMinutes')||0)}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已创建 · 已写入审计');location.reload();}else{say('创建失败：'+(res.j.error||res.status));}}).catch(function(err){say('创建失败：'+err);});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-schedule]'):null;if(!b)return;var op=b.getAttribute('data-op');var runScheduleOp=function(){post({project:root,action:op,id:b.getAttribute('data-schedule')}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已更新 · 已写入审计');location.reload();}else{say('操作失败：'+(res.j.error||res.status));}}).catch(function(err){say('操作失败：'+err);});};if(op==='delete'){window.aosInlineConfirm(b,'确认删除该计划？',runScheduleOp);}else{runScheduleOp();}});})();</script>`;
+    : `<script>(function(){var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var hostId=${JSON.stringify(hostId).replace(/</g, "\\u003c")};var status=document.getElementById('schedule-status');function say(m){status.textContent=m;}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var form=document.getElementById('schedule-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var keys=f.getAll('featureKeys').map(function(s){return String(s).trim();}).filter(Boolean);if(keys.length===0){say('请至少选择一个功能');return;}var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(i){return i.value;});post({project:root,host:hostId,action:'create',name:(f.get('name')||'').trim(),featureKeys:keys,platforms:platforms,everyMinutes:Number(f.get('everyMinutes')||0)}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已创建 · 已写入审计');location.reload();}else{say('创建失败：'+(res.j.error||res.status));}}).catch(function(err){say('创建失败：'+err);});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-schedule]'):null;if(!b)return;var op=b.getAttribute('data-op');var runScheduleOp=function(){post({project:root,host:hostId,action:op,id:b.getAttribute('data-schedule')}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已更新 · 已写入审计');location.reload();}else{say('操作失败：'+(res.j.error||res.status));}}).catch(function(err){say('操作失败：'+err);});};if(op==='delete'){window.aosInlineConfirm(b,'确认删除该计划？',runScheduleOp);}else{runScheduleOp();}});})();</script>`;
   return [
     '<section id="schedules">',
     "<h2>定时回归（schedule）</h2>",
@@ -1768,7 +1767,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         ]
           .filter((part) => part !== "")
           .join(" ");
-        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var hostId=${JSON.stringify(view.hostId)};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun'};function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId,host:hostId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
+        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var hostId=${JSON.stringify(view.hostId).replace(/</g, "\\u003c")};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun'};function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId,host:hostId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
         return [
           `<p id="task-actions">${badge} ${priorityBadge} ${buttons}</p>`,
           `<p id="task-action-status" role="status" class="c-banner" hidden></p>`,
@@ -1816,6 +1815,7 @@ function renderReviewPage(view: {
   const { items, warnings } = view.detail;
   const appDefects = items.filter((item) => item.verdict === "app-defect");
   const rootJson = JSON.stringify(view.rootPath).replace(/</g, "\\u003c");
+  const hostJson = JSON.stringify(view.hostId).replace(/</g, "\\u003c");
   const evidenceCell = (item: PanelReviewItem): string => {
     if (item.evidencePath === null) return "—";
     let present = false;
@@ -1914,6 +1914,8 @@ function renderReviewPage(view: {
           "  status.textContent='提交中…';",
           "  fetch('/panel/api/verdicts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:" +
             rootJson +
+            ",host:" +
+            hostJson +
             ",items:items,verdict:verdict,note:note})})",
           "    .then(function(response){return response.json().then(function(payload){if(!response.ok){throw new Error(payload.error||('HTTP '+response.status));}var parts=['裁决已提交 '+payload.updated+' 条'];if(payload.missed>0)parts.push('跳过 '+payload.missed);if(payload.failed>0)parts.push('失败 '+payload.failed);parts.push('已写入审计');window.aosFlash&&aosFlash(parts.join(' · '));location.reload();});})",
           "    .catch(function(error){status.textContent='提交失败：'+error.message;});",
@@ -1959,10 +1961,15 @@ function environmentNoteSummary(notes: string[]): string {
     : `${joined.slice(0, ENVIRONMENT_NOTE_SUMMARY_MAX)}…`;
 }
 
-function appDefectBlock(rootPath: string, items: PanelImprovementItem[]): string {
+function appDefectBlock(
+  rootPath: string,
+  hostId: string | null,
+  items: PanelImprovementItem[]
+): string {
   const title = '<h3 id="issues">应用缺陷 → 建单（Jira）</h3>';
   if (items.length === 0) return `${title}<p class="empty">（空）</p>`;
   const rootJson = JSON.stringify(rootPath).replace(/</g, "\\u003c");
+  const hostJson = JSON.stringify(hostId).replace(/</g, "\\u003c");
   const rows = items.map((item) => [
     `<input type="checkbox" name="issue-item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}" aria-label="选择应用缺陷 ${escapeHtml(item.caseId)}（${escapeHtml(item.name)}）">`,
     `<code>${escapeHtml(item.caseId)}</code>`,
@@ -1994,7 +2001,7 @@ var previewId=null;var issueStatusLabels={preview:'预览',created:'已创建',e
 function showStale(on){if(stale)stale.hidden=!on;createBtn.disabled=(on||previewId===null);}
 function payload(dryRun){
   var items=Array.prototype.slice.call(form.querySelectorAll('input[name=issue-item]:checked')).map(function(el){var idx=el.value.indexOf('|');return {runId:el.value.slice(0,idx),caseId:el.value.slice(idx+1)};});
-  var data={project:${rootJson},items:items,dryRun:dryRun};
+  var data={project:${rootJson},host:${hostJson},items:items,dryRun:dryRun};
   if(previewId!==null)data.previewId=previewId;
   var projectKey=form.querySelector('input[name=projectKey]').value.trim();
   var issueType=form.querySelector('input[name=issueType]').value.trim();
@@ -2061,7 +2068,7 @@ createBtn.addEventListener('click',function(){
 });
 form.addEventListener('input',function(){previewId=null;showStale(true);});
 form.addEventListener('change',function(){previewId=null;showStale(true);});
-result.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-evidence-retry]'):null;if(!b)return;var v=b.getAttribute('data-evidence-retry');var idx=v.indexOf('|');var rId=v.slice(0,idx);var cId=v.slice(idx+1);window.aosInlineConfirm(b,'确认向 Jira 单据重试上传证据附件？',function(){b.disabled=true;fetch('/panel/api/issues/evidence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:${rootJson},runId:rId,caseId:cId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(res.j.evidence==='posted'){status.textContent='证据已补传（'+cId+'） · 已写入审计';var notes=result.querySelectorAll('[data-evidence-note]');for(var i=0;i<notes.length;i++){if(notes[i].getAttribute('data-evidence-note')===cId){notes[i].textContent=' 证据已补传';}}if(b.parentNode)b.parentNode.removeChild(b);}else{b.disabled=false;status.textContent='证据重试未成功：'+((res.j&&res.j.reason)||'未知');}}).catch(function(err){b.disabled=false;status.textContent='证据重试失败：'+(err&&err.message?err.message:err);});});});
+result.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-evidence-retry]'):null;if(!b)return;var v=b.getAttribute('data-evidence-retry');var idx=v.indexOf('|');var rId=v.slice(0,idx);var cId=v.slice(idx+1);window.aosInlineConfirm(b,'确认向 Jira 单据重试上传证据附件？',function(){b.disabled=true;fetch('/panel/api/issues/evidence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:${rootJson},host:${hostJson},runId:rId,caseId:cId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(res.j.evidence==='posted'){status.textContent='证据已补传（'+cId+'） · 已写入审计';var notes=result.querySelectorAll('[data-evidence-note]');for(var i=0;i<notes.length;i++){if(notes[i].getAttribute('data-evidence-note')===cId){notes[i].textContent=' 证据已补传';}}if(b.parentNode)b.parentNode.removeChild(b);}else{b.disabled=false;status.textContent='证据重试未成功：'+((res.j&&res.j.reason)||'未知');}}).catch(function(err){b.disabled=false;status.textContent='证据重试失败：'+(err&&err.message?err.message:err);});});});
 showStale(false);
 })();</script>`;
   return [
@@ -2196,7 +2203,7 @@ function renderStatsPage(view: { rootPath: string; hostId: string | null; detail
       "<h2>改进出口</h2>",
       improvementList("案例问题（case-defect）→ 修订期望 / 重新生成", improvement.caseDefects),
       environmentTable(improvement.environment),
-      appDefectBlock(view.rootPath, improvement.appDefects),
+      appDefectBlock(view.rootPath, view.hostId, improvement.appDefects),
       guidanceHtml,
       "</section>",
       "</main>"
@@ -2373,6 +2380,12 @@ function renderCompareProjectCell(project: PanelCompareProject): string {
   )}</code></a> ${lampSpan(project.lamp)}${reasons}${error}`;
 }
 
+function renderCompareHostCell(project: PanelCompareProject): string {
+  return `<span title="${escapeHtml(project.hostId ?? "未归属主机")}">${escapeHtml(
+    project.hostLabel
+  )}</span>`;
+}
+
 function renderCompareLatestCell(project: PanelCompareProject): string {
   const batch = project.latestBatch;
   if (batch === null) {
@@ -2416,12 +2429,14 @@ function renderCompareRunCell(project: PanelCompareProject): string {
 
 function renderCompareRow(project: PanelCompareProject): string[] {
   const projectCell = renderCompareProjectCell(project);
+  const hostCell = renderCompareHostCell(project);
   if (project.error !== null) {
-    return [projectCell, DASH_CELL, DASH_CELL, DASH_CELL, DASH_CELL, DASH_CELL];
+    return [projectCell, hostCell, DASH_CELL, DASH_CELL, DASH_CELL, DASH_CELL, DASH_CELL];
   }
   const spark = trendPassRateSvg(project.trend);
   return [
     projectCell,
+    hostCell,
     renderCompareLatestCell(project),
     spark === "" ? DASH_CELL : spark,
     renderCompareQualityCell(project),
@@ -2505,6 +2520,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
         body: cTable({
           columns: [
             "项目",
+            "主机",
             "最近份批次（时间·门禁·通过率）",
             "趋势（最近 10 批）",
             "质量（flaky·失败域 top3）",
@@ -2782,7 +2798,7 @@ async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPag
         });
       else data.truncated = true;
     }
-    const projectStore = project.hostId === null ? deps.store : (deps.storeForHost?.(project.hostId) ?? deps.store);
+    const projectStore = hostScopedStore(deps, project.hostId);
     const sets = await projectStore.listCaseSets(project.rootPath).catch(() => []);
     for (const set of sets) {
       const matched =
@@ -2898,6 +2914,7 @@ function renderPanelHtml(
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
       hostId: view.hostId,
+      legacyHostless: view.legacyHostless === true,
       preview: view.preview,
       previewId: view.previewId,
       formSignature: view.formSignature,

@@ -9,6 +9,7 @@ import {
 } from "./feature-alignment.js";
 import {
   buildPanelOverview,
+  hostDisplayLabel,
   type PanelDeps,
   type PanelLamp,
   type PanelProjectRow
@@ -29,6 +30,8 @@ export interface PanelCompareProject {
   name: string;
   rootPath: string;
   hostId: string | null;
+  /** 主机显示标签（总览同源；NULL＝未归属主机）。 */
+  hostLabel: string;
   lamp: PanelLamp;
   lampReasons: string[];
   /** 集成轴就绪（LLM/Figma/Jira）：只报告，不参与执行灯。 */
@@ -95,11 +98,12 @@ function compareRank(row: PanelCompareProject): number {
   return row.latestBatch.gate === "fail" ? 1 : 2;
 }
 
-function emptyCompareRow(row: PanelProjectRow): PanelCompareProject {
+function emptyCompareRow(row: PanelProjectRow, hostLabel: string): PanelCompareProject {
   return {
     name: row.name,
     rootPath: row.rootPath,
     hostId: row.hostId,
+    hostLabel,
     lamp: row.lamp,
     lampReasons: row.lampReasons,
     integration: row.integration,
@@ -130,9 +134,10 @@ function compareStore(deps: PanelDeps, hostId: string | null): ProjectStore {
 async function buildCompareRow(
   deps: PanelDeps,
   row: PanelProjectRow,
-  nowMs: number
+  nowMs: number,
+  hostLabel: string
 ): Promise<{ row: PanelCompareProject; runs: FeatureAlignmentInput["runs"]; sets: FeatureAlignmentInput["sets"] }> {
-  const base = emptyCompareRow(row);
+  const base = emptyCompareRow(row, hostLabel);
   const store = compareStore(deps, row.hostId);
   let lineage: SuiteRunRecord[] = [];
   try {
@@ -235,7 +240,8 @@ export async function buildPanelCompare(deps: PanelDeps): Promise<PanelCompareVi
   const projects: PanelCompareProject[] = [];
   const builds: Array<{ row: PanelCompareProject; runs: FeatureAlignmentInput["runs"]; sets: FeatureAlignmentInput["sets"] }> = [];
   for (const row of overview.projects) {
-    const built = await buildCompareRow(deps, row, nowMs);
+    const hostLabel = hostDisplayLabel(row.hostId, overview.machines);
+    const built = await buildCompareRow(deps, row, nowMs, hostLabel);
     builds.push(built);
     projects.push(built.row);
   }
@@ -250,6 +256,8 @@ export async function buildPanelCompare(deps: PanelDeps): Promise<PanelCompareVi
     builds.map((built) => ({
       name: built.row.name,
       rootPath: built.row.rootPath,
+      hostId: built.row.hostId,
+      hostLabel: built.row.hostLabel,
       runs: built.runs,
       sets: built.sets
     }))

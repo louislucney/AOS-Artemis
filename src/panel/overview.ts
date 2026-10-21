@@ -154,6 +154,16 @@ export interface PanelMachineRow {
   ipShared: boolean;
 }
 
+/** 主机显示标签（总览/对比同源）：`label（hostname）` → hostname → hostId 前 8 位；NULL＝未归属主机。 */
+export function hostDisplayLabel(hostId: string | null, machines: PanelMachineRow[]): string {
+  if (hostId === null) return "未归属主机";
+  const machine = machines.find((entry) => entry.id === hostId);
+  if (!machine) return hostId.slice(0, 8);
+  return machine.label !== null && machine.label !== ""
+    ? `${machine.label}（${machine.hostname}）`
+    : machine.hostname;
+}
+
 export interface PanelAssetStat {
   id: string;
   path: string;
@@ -498,13 +508,42 @@ interface SoftProjectRead {
   jira: ResolvedJiraConfig;
   penKeyPresent: boolean;
   deviceHosts: { configured: boolean; iosAppiumUrl: string | null; androidAdbHost: string | null };
+  /** 主机作用域存储不可用/读取失败（面板照常渲染，但显式告警，不静默当空）。 */
+  warnings: string[];
 }
 
-async function softReadProject(deps: PanelDeps, rootPath: string): Promise<SoftProjectRead> {
+function hostScopedRead(deps: PanelDeps, hostId: string | null): { store: ProjectStore; warning: string | null } {
+  if (hostId === null) return { store: deps.store, warning: null };
+  try {
+    const injected = deps.storeForHost?.(hostId);
+    if (injected) return { store: injected, warning: null };
+    return { store: deps.store.scopeHost(hostId), warning: null };
+  } catch (error) {
+    return {
+      store: deps.store,
+      warning: `主机 ${hostId} 作用域存储不可用（${errorMessage(error)}）：已回退公共台账，健康数据可能不完整`
+    };
+  }
+}
+
+async function softReadProject(
+  deps: PanelDeps,
+  rootPath: string,
+  hostId: string | null = null
+): Promise<SoftProjectRead> {
   const env = deps.env ?? process.env;
   const project = loadProject({ env: { ...env, AOS_PROJECT_DIR: rootPath, AOS_CONFIG: "" } });
   const scan = scanProjectEnv(project.resolver);
-  const storeEntries = await safeStore(() => deps.store.listLlms(rootPath), [] as ProjectLlmRecord[]);
+  const scoped = hostScopedRead(deps, hostId);
+  const warnings: string[] = scoped.warning === null ? [] : [scoped.warning];
+  let storeEntries: ProjectLlmRecord[] = [];
+  try {
+    storeEntries = await scoped.store.listLlms(rootPath);
+  } catch (error) {
+    warnings.push(
+      `主机 ${hostId ?? "本机"} 台账读取失败（${errorMessage(error)}）：LLM/健康信息可能不完整`
+    );
+  }
   const configEntries = entriesFromConfig(project.config, project.resolver);
 
   const storeUsable = storeEntries.some(
@@ -552,7 +591,8 @@ async function softReadProject(deps: PanelDeps, rootPath: string): Promise<SoftP
       configured: ios.appiumUrl !== null || android !== null,
       iosAppiumUrl: ios.appiumUrl,
       androidAdbHost: android?.socket ?? null
-    }
+    },
+    warnings
   };
 }
 
@@ -708,12 +748,12 @@ async function buildProjectRow(
   }
 
   try {
-    const soft = await softReadProject(deps, input.rootPath);
+    const soft = await softReadProject(deps, input.rootPath, input.record?.hostId ?? null);
     const figmaPresent = soft.scan.figmaToken !== null || (input.record?.figmaToken ?? null) !== null;
     const artifacts = artifactChecks(soft.configDirAbs);
     const latest = loadLatestRunManifest(soft.configDirAbs);
 
-    const reasons: string[] = [];
+    const reasons: string[] = [...soft.warnings];
     let lamp: PanelLamp = "green";
     if (input.host.deps.status === "stale" || input.host.deps.status === "missing") {
       reasons.push(`宿主依赖 ${input.host.deps.status}：运行 doctor --install-deps`);
@@ -743,7 +783,7 @@ async function buildProjectRow(
       },
       latestBatch: batchSummaryFromRead(latest),
       designWarnings: designWarningsOf(soft.configDirAbs),
-      warnings: []
+      warnings: soft.warnings
     };
   } catch (error) {
     return {
