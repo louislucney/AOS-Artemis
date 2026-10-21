@@ -362,12 +362,18 @@ const MIGRATIONS = [
      WHERE r1.last_seen_at < r2.last_seen_at
         OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_host_idx ON runners(project_id, host_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS suite_runs_project_manifest_idx ON suite_runs(project_id, manifest_path) WHERE manifest_path IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS audit_events_root_at_idx ON audit_events(root_path, at)`,
   `ALTER TABLE project_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
   `ALTER TABLE runners ADD COLUMN IF NOT EXISTS host_id TEXT`,
   `ALTER TABLE runners ADD COLUMN IF NOT EXISTS instance_id TEXT`,
+  `DELETE FROM runners WHERE id IN (
+     SELECT r1.id FROM runners r1
+     JOIN runners r2 ON r1.project_id = r2.project_id AND r1.host_id = r2.host_id
+     WHERE r1.host_id IS NOT NULL
+        AND (r1.last_seen_at < r2.last_seen_at
+             OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id)))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_host_idx ON runners(project_id, host_id)`,
   `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
   `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS session_id TEXT`
 ];

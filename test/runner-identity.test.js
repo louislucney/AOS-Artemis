@@ -258,3 +258,51 @@ test("PG upsertRunner：同 host 不同实例且活跃 → 抛；陈旧 → CAS 
   assert.equal(rows.rows.length, 2, "h1 与 legacy 各一行");
   assert.equal(project.id.length > 0, true);
 });
+
+test("PG upsertRunner：同 host 不同 name → 撞 host 唯一索引 → 抛 RunnerAlreadyActiveError", async () => {
+  const { store, pool } = await makePgStore();
+  await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+  await store.upsertRunner(pgRunnerInput({ name: "runner-a", instanceId: "i-1" }));
+
+  await assert.rejects(
+    store.upsertRunner(pgRunnerInput({ name: "runner-b", instanceId: "i-2" })),
+    (error) => error?.name === "RunnerAlreadyActiveError",
+    "同名之外的同 host 行也由 host 唯一索引拦截"
+  );
+
+  const listed = await store.listRunners("/w/p1");
+  assert.equal(listed.length, 1, "不产生第二行");
+  assert.equal(listed[0].name, "runner-a");
+});
+
+test("PG 迁移顺序：旧 runners 表（无 host_id 列）init 后 host 唯一索引生效（先建列后建索引）", async () => {
+  const mem = newDb({ noAstCoverageCheck: true });
+  const { Pool } = mem.adapters.createPg();
+  const pool = new Pool();
+  await pool.query(
+    `CREATE TABLE projects (
+       id TEXT PRIMARY KEY, root_path TEXT NOT NULL, name TEXT NOT NULL,
+       figma_token TEXT, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`
+  );
+  await pool.query(
+    `CREATE TABLE runners (
+       id TEXT PRIMARY KEY, project_id TEXT, name TEXT NOT NULL, hostname TEXT NOT NULL,
+       platforms TEXT NOT NULL, devices TEXT NOT NULL, tools TEXT NOT NULL DEFAULT '{}',
+       artifact_base_url TEXT, version TEXT, last_seen_at TEXT NOT NULL, created_at TEXT NOT NULL)`
+  );
+  await pool.query(
+    `INSERT INTO projects (id, root_path, name, figma_token, created_at, last_seen_at)
+     VALUES ('proj-1', '/w/p1', 'p1', NULL, $1, $1)`,
+    ["2026-10-01T00:00:00.000Z"]
+  );
+
+  const store = new PostgresStore(pool);
+  await store.init();
+
+  await store.upsertRunner(pgRunnerInput({ name: "runner-a", instanceId: "i-1" }));
+  await assert.rejects(
+    store.upsertRunner(pgRunnerInput({ name: "runner-b", instanceId: "i-2" })),
+    (error) => error?.name === "RunnerAlreadyActiveError",
+    "迁移后 host 唯一索引应拦截同 host 不同 name"
+  );
+});
