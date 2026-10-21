@@ -47,6 +47,8 @@ export interface ConsoleShellInput {
   autoRefreshSeconds?: number;
   /** 当前项目根路径：项目级导航项据此携带 project 上下文；缺省时项目级项渲染为禁用。 */
   project?: string | null;
+  /** 当前项目所属主机：项目级导航链接保留 `?host=`（跨主机同路径不丢上下文）。 */
+  projectHostId?: string | null;
   capabilities?: ConsoleCapabilities;
   /** 顶栏"记录底座"常驻指示（持久层/最近写入/写失败）。 */
   storeHealth?: {
@@ -111,21 +113,22 @@ export const USAGE_STANDALONE_NAV: ConsoleNavItem[] = [
   { key: "usage", label: "使用统计", href: "/usage" }
 ];
 
-function navHref(item: ConsoleNavItem, project: string | null): string | null {
+function navHref(item: ConsoleNavItem, project: string | null, hostId: string | null): string | null {
   if (!PROJECT_SCOPED.has(item.key)) return item.href;
   if (project === null || project === "") return null;
-  if (item.key === "project") return `/panel?project=${encodeURIComponent(project)}`;
+  const host = hostId ? `&host=${encodeURIComponent(hostId)}` : "";
+  if (item.key === "project") return `/panel?project=${encodeURIComponent(project)}${host}`;
   if (item.key === "review") {
-    return `/panel?project=${encodeURIComponent(project)}&view=review`;
+    return `/panel?project=${encodeURIComponent(project)}&view=review${host}`;
   }
   if (item.key === "stats") {
-    return `/panel?project=${encodeURIComponent(project)}&view=stats`;
+    return `/panel?project=${encodeURIComponent(project)}&view=stats${host}`;
   }
   const params = new URLSearchParams({ project, section: item.key });
-  if (item.key === "tasks") return `/panel?${params.toString()}#tasks`;
-  if (item.key === "runners") return `/panel?${params.toString()}#runners`;
-  if (item.key === "schedules") return `/panel?${params.toString()}#schedules`;
-  return `/panel?${params.toString()}`;
+  if (item.key === "tasks") return `/panel?${params.toString()}${host}#tasks`;
+  if (item.key === "runners") return `/panel?${params.toString()}${host}#runners`;
+  if (item.key === "schedules") return `/panel?${params.toString()}${host}#schedules`;
+  return `/panel?${params.toString()}${host}`;
 }
 
 export function renderConsoleShell(input: ConsoleShellInput): string {
@@ -137,7 +140,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   for (const item of nav) {
     const current = item.key === input.active ? ' aria-current="page"' : "";
     const badge = item.badge ? `<span class="c-nav-badge">${escapeHtml(item.badge)}</span>` : "";
-    const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project);
+    const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project, input.projectHostId ?? null);
     if (href === null) {
       if (PROJECT_SCOPED.has(item.key)) {
         hiddenScoped += 1;
@@ -161,7 +164,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     : `<div class="c-banner c-banner-warn" role="status" id="capability-banner">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback 访问；或使用 HTTP 模式（<code>serve --http</code>，见 README 接入指南）。当前页面为只读。 <button class="c-button" type="button" id="capability-dismiss">知道了</button></div>`;
   const navTargets: Record<string, string> = {};
   for (const item of nav) {
-    const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project);
+    const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project, input.projectHostId ?? null);
     if (href !== null) navTargets[item.key] = href;
   }
   const shortcutKeys: Array<[string, ConsoleNavKey, string]> = [

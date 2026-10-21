@@ -20,6 +20,7 @@ import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } 
 export interface LibraryPageData {
   rootPath: string;
   rootLabel: string;
+  hostId?: string | null;
   sets: CaseSetRecord[];
   quarantine: { active: string[]; stale: number; invalid: number; exists: boolean };
   /** 最近失败用例候选（隔离点选；去重取最近）。 */
@@ -44,6 +45,7 @@ export function readQuarantineSummary(rootPath: string): Promise<LibraryPageData
 }
 
 export function renderLibraryPage(data: LibraryPageData): string {
+  const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
   const actionsOff = data.capabilities?.actions === false;
   const disabledAttr = actionsOff ? " disabled" : "";
   const actionsReason = actionsOff
@@ -55,7 +57,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
     relativeTime(set.createdAt),
     String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
     set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
-    `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}`)}">下发该份</a>`
+    `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}${hostQuery}`)}">下发该份</a>`
   ]);
   const quarantine = data.quarantine;
   const quarantineEntries =
@@ -104,6 +106,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
     active: "library",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
+    projectHostId: data.hostId ?? null,
     capabilities: data.capabilities,
     storeHealth: data.storeHealth,
     body: [
@@ -117,7 +120,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
           caption: "用例集（份）列表",
           empty: "暂无用例集（下方导入或先生成）"
         }),
-        actions: `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch`)}">按份下发</a>`
+        actions: `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch${hostQuery}`)}">按份下发</a>`
       }),
       cCard({ title: "导入 Excel（用例文档）", body: importBody }),
       cCard({ title: "隔离（quarantine）", body: quarantineBody }),
@@ -140,6 +143,7 @@ function sinceLocalValue(value: string | undefined): string {
 export interface ArchivePageData {
   rootPath: string;
   rootLabel: string;
+  hostId?: string | null;
   artifacts: ArtifactRecord[];
   query: Record<string, string>;
   page: { offset: number; hasNext: boolean; pageSize: number };
@@ -147,8 +151,9 @@ export interface ArchivePageData {
 }
 
 export function renderArchivePage(data: ArchivePageData): string {
+  const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
   const artifactUrl = (record: ArtifactRecord): string =>
-    `/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(record.path)}`;
+    `/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(record.path)}${hostQuery}`;
   const rows = data.artifacts.map((record) => {
     const isDir = record.meta?.type === "dir";
     const isImage = !isDir && /\.(png|jpe?g|webp|gif)$/i.test(record.title);
@@ -169,6 +174,7 @@ export function renderArchivePage(data: ArchivePageData): string {
   const q = (name: string): string => escapeHtml(data.query[name] ?? "");
   const archiveLink = (patch: Record<string, string | null>): string => {
     const params = new URLSearchParams({ project: data.rootPath, section: "archive" });
+    if (data.hostId) params.set("host", data.hostId);
     for (const key of ["kind", "q", "since"]) {
       const value = data.query[key];
       if (value !== undefined && value !== "") params.set(key, value);
@@ -201,6 +207,7 @@ export function renderArchivePage(data: ArchivePageData): string {
   const preset = (label: string, hours: number): string =>
     `<a class="c-button" href="${archiveLink({ since: new Date(Date.now() - hours * 3600_000).toISOString() })}">${label}</a>`;
   const csvParams = new URLSearchParams({ project: data.rootPath, format: "csv" });
+  if (data.hostId) csvParams.set("host", data.hostId);
   for (const key of ["kind", "q", "since"]) {
     const value = data.query[key];
     if (value !== undefined && value !== "") csvParams.set(key, value);
@@ -211,6 +218,7 @@ export function renderArchivePage(data: ArchivePageData): string {
     active: "archive",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
+    projectHostId: data.hostId ?? null,
     storeHealth: data.storeHealth,
     body: [
       "<h1>档案与产物</h1>",
@@ -220,6 +228,7 @@ export function renderArchivePage(data: ArchivePageData): string {
           `<form method="get" action="/panel">`,
           `<input type="hidden" name="project" value="${escapeHtml(data.rootPath)}">`,
           `<input type="hidden" name="section" value="archive">`,
+          ...(data.hostId ? [`<input type="hidden" name="host" value="${escapeHtml(data.hostId)}">`] : []),
           `<p>类型 <select name="kind" aria-label="产物类型"><option value="">全部</option>${["run", "case-set", "report", "diff", "crash", "trace"]
             .map(
               (kind) =>
@@ -252,6 +261,7 @@ export function renderArchivePage(data: ArchivePageData): string {
 export interface AuditPageData {
   rootPath: string;
   rootLabel: string;
+  hostId?: string | null;
   events: AuditEventRecord[];
   query: Record<string, string>;
   page: { offset: number; hasNext: boolean; pageSize: number };
@@ -261,7 +271,9 @@ export interface AuditPageData {
 export function renderAuditPage(data: AuditPageData): string {
   const auditResultLabel = (result: string): string =>
     result === "ok" ? "成功" : result === "failed" ? "失败" : result === "skipped" ? "跳过" : result;
-  const base = `project=${encodeURIComponent(data.rootPath)}`;
+  const base = `project=${encodeURIComponent(data.rootPath)}${
+    data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : ""
+  }`;
   const refLink = (key: string, value: string): string => {
     const short = value.length > 12 ? `${value.slice(0, 12)}…` : value;
     if (key === "taskId") {
@@ -316,6 +328,7 @@ export function renderAuditPage(data: AuditPageData): string {
   const q = (name: string): string => escapeHtml(data.query[name] ?? "");
   const link = (patch: Record<string, string | null>): string => {
     const params = new URLSearchParams({ project: data.rootPath, section: "audit" });
+    if (data.hostId) params.set("host", data.hostId);
     for (const key of ["domain", "result", "since"]) {
       const value = data.query[key];
       if (value !== undefined && value !== "") params.set(key, value);
@@ -336,6 +349,7 @@ export function renderAuditPage(data: AuditPageData): string {
     active: "audit",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
+    projectHostId: data.hostId ?? null,
     storeHealth: data.storeHealth,
     body: [
       "<h1>审计</h1>",
@@ -345,6 +359,7 @@ export function renderAuditPage(data: AuditPageData): string {
           `<form method="get" action="/panel">`,
           `<input type="hidden" name="project" value="${escapeHtml(data.rootPath)}">`,
           `<input type="hidden" name="section" value="audit">`,
+          ...(data.hostId ? [`<input type="hidden" name="host" value="${escapeHtml(data.hostId)}">`] : []),
           `<p>域 <select name="domain" aria-label="事件域"><option value="">全部</option>${AUDIT_DOMAIN_KEYS.map(
             ({ key, label }) =>
               `<option value="${key}"${data.query.domain === key ? " selected" : ""}>${escapeHtml(label)}</option>`
@@ -377,30 +392,39 @@ export function renderAuditPage(data: AuditPageData): string {
 
 export interface SearchPageData {
   q: string;
-  projects: Array<{ name: string; rootPath: string }>;
-  caseSets: Array<{ project: string; id: string; basename: string; source: string; features: string }>;
-  tasks: Array<{ project: string; id: string; status: string }>;
+  projects: Array<{ name: string; rootPath: string; hostId: string | null }>;
+  caseSets: Array<{
+    project: string;
+    hostId: string | null;
+    id: string;
+    basename: string;
+    source: string;
+    features: string;
+  }>;
+  tasks: Array<{ project: string; hostId: string | null; id: string; status: string }>;
   truncated: boolean;
 }
 
 export function renderSearchPage(data: SearchPageData): string {
   const q = escapeHtml(data.q);
-  const projectLink = (name: string, rootPath: string): string =>
-    `<a href="/panel?project=${encodeURIComponent(rootPath)}"><code>${escapeHtml(name)}</code></a>`;
+  const hostQuery = (hostId: string | null): string =>
+    hostId ? `&host=${encodeURIComponent(hostId)}` : "";
+  const projectLink = (name: string, rootPath: string, hostId: string | null): string =>
+    `<a href="/panel?project=${encodeURIComponent(rootPath)}${hostQuery(hostId)}"><code>${escapeHtml(name)}</code></a>`;
   const projectRows = data.projects.map((project) => [
-    projectLink(project.name, project.rootPath),
+    projectLink(project.name, project.rootPath, project.hostId),
     `<code>${escapeHtml(project.rootPath)}</code>`
   ]);
   const caseSetRows = data.caseSets.map((entry) => [
-    projectLink(entry.project, entry.project),
+    projectLink(entry.project, entry.project, entry.hostId),
     `<code>${escapeHtml(entry.basename)}</code>`,
     escapeHtml(entry.source),
     escapeHtml(entry.features),
-    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&section=dispatch&source=case-set&ref=${encodeURIComponent(entry.id)}">下发该份</a>`
+    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&section=dispatch&source=case-set&ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId)}">下发该份</a>`
   ]);
   const taskRows = data.tasks.map((entry) => [
-    projectLink(entry.project, entry.project),
-    `<a href="/panel?project=${encodeURIComponent(entry.project)}&task=${encodeURIComponent(entry.id)}"><code>${escapeHtml(entry.id)}</code></a>`,
+    projectLink(entry.project, entry.project, entry.hostId),
+    `<a href="/panel?project=${encodeURIComponent(entry.project)}&task=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId)}"><code>${escapeHtml(entry.id)}</code></a>`,
     escapeHtml(runStatusLabel(entry.status))
   ]);
   const empty = `<h1>搜索</h1>`;
@@ -443,6 +467,7 @@ export function renderSearchPage(data: SearchPageData): string {
 export interface OpsPageData {
   rootPath: string;
   rootLabel: string;
+  hostId?: string | null;
   storeKind: string;
   storeNote: string | null;
   storeLabel: string;
@@ -456,7 +481,9 @@ export function renderOpsPage(data: OpsPageData): string {
   const actionsOff = data.capabilities?.actions === false;
   const exportLink = (what: string, format: string, label: string): string => {
     const href = escapeHtml(
-      `/panel/api/export?project=${encodeURIComponent(data.rootPath)}&what=${what}&format=${format}`
+      `/panel/api/export?project=${encodeURIComponent(data.rootPath)}&what=${what}&format=${format}${
+        data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : ""
+      }`
     );
     return actionsOff
       ? `<span class="c-button c-nav-item-disabled" aria-disabled="true" title="写动作未启用">${label}</span>`
@@ -467,6 +494,7 @@ export function renderOpsPage(data: OpsPageData): string {
     active: "ops",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
+    projectHostId: data.hostId ?? null,
     capabilities: data.capabilities,
     storeHealth: data.storeHealth,
     body: [

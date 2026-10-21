@@ -61,6 +61,7 @@ export interface DispatchPreview {
 export interface DispatchView {
   rootPath: string;
   rootLabel: string;
+  hostId: string | null;
   preview: DispatchPreview;
   /** 预览 ID：POST 时服务端复算比对（预览过期 → 409）。 */
   previewId: string;
@@ -372,6 +373,12 @@ export async function computeDispatchPreview(
 
 export function renderDispatchPage(view: DispatchView): string {
   const preview = view.preview;
+  const legacyHostless = view.hostId === null && preview.hosts.length > 0;
+  const legacyNote =
+    "该项目是未归属主机的历史数据，请先在对应机器运行 host adopt-legacy --local --apply";
+  const legacyNoteHtml = legacyHostless
+    ? `<p class="note">该项目是未归属主机的历史数据，请先在对应机器运行 <code>host adopt-legacy --local --apply</code>。</p>`
+    : "";
   const query = (name: string, fallback = ""): string => escapeHtml(view.query[name] ?? fallback);
   const mode = preview.source.mode;
   const platformChecks = (["android", "ios"] as const)
@@ -428,15 +435,23 @@ export function renderDispatchPage(view: DispatchView): string {
           `</select></label> <span class="muted">先选目标主机，用例份选项按该主机作用域展示。</span></p>`
         ].join("");
 
-  const projectOptions = preview.projects
-    .map((project) => {
+  const projectOptions = (() => {
+    const labels = preview.projects.map((project) => {
       const tail = project.rootPath.split(/[\\/]/).filter((part) => part !== "").pop() ?? "";
-      const label = tail === "" || tail === project.name ? project.name : `${project.name}（${tail}）`;
-      return `<option value="${escapeHtml(project.rootPath)}"${
-        project.rootPath === view.rootPath ? " selected" : ""
-      }>${escapeHtml(label)}</option>`;
-    })
-    .join("");
+      return tail === "" || tail === project.name ? project.name : `${project.name}（${tail}）`;
+    });
+    const counts = new Map<string, number>();
+    for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+    return preview.projects
+      .map((project, index) => {
+        const base = labels[index]!;
+        const label = (counts.get(base) ?? 0) > 1 ? `${project.name}（${project.rootPath}）` : base;
+        return `<option value="${escapeHtml(project.rootPath)}"${
+          project.rootPath === view.rootPath ? " selected" : ""
+        }>${escapeHtml(label)}</option>`;
+      })
+      .join("");
+  })();
   const currentListed = preview.projects.some((project) => project.rootPath === view.rootPath);
   const currentLabel = view.rootPath === "" ? "未选择项目" : `${view.rootLabel}（当前项目）`;
   const currentOption = currentListed
@@ -452,7 +467,7 @@ export function renderDispatchPage(view: DispatchView): string {
   ]
     .filter((part) => part !== "")
     .join("\n");
-  const hostCardBody = [hostSelect, projectSelect].join("\n");
+  const hostCardBody = [hostSelect, legacyNoteHtml, projectSelect].filter((part) => part !== "").join("\n");
 
   const priorityField =
     view.priorityEditable === true
@@ -545,7 +560,8 @@ function refreshStale(){
   if(emptyEl)emptyEl.hidden=!empty;
   if(stale)stale.hidden=!staleNow;
   var missingHost=island.hostRequired&&!host;
-  var blocked=staleNow||empty||missingHost||island.hostBlocked;
+  var legacy=island.legacyHostless;
+  var blocked=staleNow||empty||missingHost||island.hostBlocked||legacy;
   go.disabled=blocked;
   return blocked;
 }
@@ -555,6 +571,7 @@ refreshStale();
 go.addEventListener('click',function(){
   var pickedHost=(form.querySelector('select[name="host"]')||{value:''}).value;
   if(refreshStale()){
+    if(island.legacyHostless&&!island.hostId){showErr('该项目是未归属主机的历史数据：请先在对应机器运行 host adopt-legacy --local --apply');return;}
     if(island.hostRequired&&!pickedHost){showErr('请先选择目标主机');return;}
     if(island.hostBlocked){showErr('目标主机无法满足所选平台：请调整目标端或更换主机后刷新预览');return;}
     showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择份或输入关键词，再点「刷新预览」');return;
@@ -598,19 +615,22 @@ go.addEventListener('click',function(){
 })();</script>`;
   const actionsOff = view.capabilities?.actions === false;
   const needsHostPick = preview.hosts.length > 0 && preview.selectedHostId === null;
-  const submitBlocked = preview.hostBlocked || needsHostPick || noProjects;
-  const blockedReason = noProjects
-    ? "该主机尚未登记项目"
-    : needsHostPick
-      ? "请先选择目标主机"
-      : "目标主机无法满足所选平台";
+  const submitBlocked = legacyHostless || preview.hostBlocked || needsHostPick || noProjects;
+  const blockedReason = legacyHostless
+    ? legacyNote
+    : noProjects
+      ? "该主机尚未登记项目"
+      : needsHostPick
+        ? "请先选择目标主机"
+        : "目标主机无法满足所选平台";
   const confirmBody = actionsOff
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（份明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
+        legacyNoteHtml,
         noProjects
           ? `<p class="note">该主机尚未登记项目：请先在目标机接入项目并刷新本页。</p>`
-          : needsHostPick
+          : needsHostPick && !legacyHostless
             ? `<p class="note">请先选择目标主机：已登记主机时不再隐式回退本机。</p>`
             : preview.hostBlocked
               ? `<p class="note">目标主机无法满足所选平台：请调整目标端或更换主机，刷新预览后再试。</p>`
@@ -620,7 +640,7 @@ go.addEventListener('click',function(){
         `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, hostId: preview.selectedHostId, hostLabel:
           preview.hosts.find((host) => host.id === preview.selectedHostId)?.label ??
           preview.hosts.find((host) => host.id === preview.selectedHostId)?.hostname ??
-          null, hostRequired: preview.hosts.length > 0, hostBlocked: preview.hostBlocked, priority: preview.priority, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
+          null, hostRequired: preview.hosts.length > 0, hostBlocked: preview.hostBlocked, legacyHostless, priority: preview.priority, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
         dispatchConfirmScript,
       ].filter((part) => part !== "").join("\n");
 
@@ -632,6 +652,7 @@ go.addEventListener('click',function(){
     active: "dispatch",
     meta: `项目 <code>${escapeHtml(view.rootLabel)}</code>`,
     project: view.rootPath,
+    projectHostId: view.hostId,
     capabilities: view.capabilities,
     storeHealth: view.storeHealth,
     body: [

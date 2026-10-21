@@ -1,7 +1,7 @@
 import { collectVerdictExits } from "../tasks/verdict-exits.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import { errorMessage } from "../util.js";
-import type { SuiteRunRecord } from "../db/types.js";
+import type { SuiteRunRecord, ProjectStore } from "../db/types.js";
 import {
   alignFeatureRuns,
   type FeatureAlignmentGroup,
@@ -28,6 +28,7 @@ export const PANEL_COMPARE_RUNNER_LIMIT = 100;
 export interface PanelCompareProject {
   name: string;
   rootPath: string;
+  hostId: string | null;
   lamp: PanelLamp;
   lampReasons: string[];
   /** 集成轴就绪（LLM/Figma/Jira）：只报告，不参与执行灯。 */
@@ -98,6 +99,7 @@ function emptyCompareRow(row: PanelProjectRow): PanelCompareProject {
   return {
     name: row.name,
     rootPath: row.rootPath,
+    hostId: row.hostId,
     lamp: row.lamp,
     lampReasons: row.lampReasons,
     integration: row.integration,
@@ -114,15 +116,27 @@ function emptyCompareRow(row: PanelProjectRow): PanelCompareProject {
   };
 }
 
+function compareStore(deps: PanelDeps, hostId: string | null): ProjectStore {
+  if (hostId === null) return deps.store;
+  const injected = deps.storeForHost?.(hostId);
+  if (injected) return injected;
+  try {
+    return deps.store.scopeHost(hostId);
+  } catch {
+    return deps.store;
+  }
+}
+
 async function buildCompareRow(
   deps: PanelDeps,
   row: PanelProjectRow,
   nowMs: number
 ): Promise<{ row: PanelCompareProject; runs: FeatureAlignmentInput["runs"]; sets: FeatureAlignmentInput["sets"] }> {
   const base = emptyCompareRow(row);
+  const store = compareStore(deps, row.hostId);
   let lineage: SuiteRunRecord[] = [];
   try {
-    const runs = await deps.store.listSuiteRuns(row.rootPath, { limit: PANEL_COMPARE_RUNS_LIMIT });
+    const runs = await store.listSuiteRuns(row.rootPath, { limit: PANEL_COMPARE_RUNS_LIMIT });
     lineage = runs.filter((run) => run.featureKey !== null).slice(0, PANEL_COMPARE_WINDOW);
 
     if (lineage.length > 0) {
@@ -162,7 +176,7 @@ async function buildCompareRow(
       (entry) => entry.jiraKey === null
     ).length;
 
-    const tasks = await deps.store.listRegressionTasks(row.rootPath, PANEL_COMPARE_TASK_LIMIT);
+    const tasks = await store.listRegressionTasks(row.rootPath, PANEL_COMPARE_TASK_LIMIT);
     const taskBacklog = { pending: 0, claimed: 0, running: 0, failed: 0 };
     for (const task of tasks) {
       if (task.status === "pending") taskBacklog.pending += 1;
@@ -173,7 +187,7 @@ async function buildCompareRow(
     base.taskBacklog = taskBacklog;
 
     const ttlMs = runnerTtlFrom(deps.env ?? process.env);
-    const runners = await deps.store.listRunners(row.rootPath, PANEL_COMPARE_RUNNER_LIMIT);
+    const runners = await store.listRunners(row.rootPath, PANEL_COMPARE_RUNNER_LIMIT);
     let online = 0;
     let devices = 0;
     for (const runner of runners) {
@@ -184,7 +198,7 @@ async function buildCompareRow(
     }
     base.runners = { online, devices };
 
-    const schedules = await deps.store.listSchedules(row.rootPath);
+    const schedules = await store.listSchedules(row.rootPath);
     let enabled = 0;
     let lastFiredAt: string | null = null;
     for (const schedule of schedules) {
@@ -200,7 +214,7 @@ async function buildCompareRow(
 
   let sets: FeatureAlignmentInput["sets"] = null;
   try {
-    const caseSets = await deps.store.listCaseSets(row.rootPath);
+    const caseSets = await store.listCaseSets(row.rootPath);
     sets = caseSets.map((set) => ({
       id: set.id,
       source: set.source,

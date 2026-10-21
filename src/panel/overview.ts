@@ -965,13 +965,19 @@ export async function buildPanelOverview(deps: PanelDeps): Promise<PanelOverview
 
   const records = await safeStore(() => deps.store.listProjects(), [] as ProjectRecord[]);
   const merged = new Map<string, { record: ProjectRecord | null; name: string; rootPath: string }>();
+  const registeredRoots = new Set<string>();
   for (const record of records) {
-    merged.set(record.rootPath, { record, name: record.name, rootPath: record.rootPath });
+    merged.set(`${record.hostId ?? ""}\u0000${record.rootPath}`, {
+      record,
+      name: record.name,
+      rootPath: record.rootPath
+    });
+    registeredRoots.add(record.rootPath);
   }
   if (deps.workspaceRoot) {
     for (const entry of listWorkspaceDirs(deps.workspaceRoot)) {
-      if (!merged.has(entry.rootPath)) {
-        merged.set(entry.rootPath, { record: null, name: entry.name, rootPath: entry.rootPath });
+      if (!registeredRoots.has(entry.rootPath)) {
+        merged.set(`\u0000${entry.rootPath}`, { record: null, name: entry.name, rootPath: entry.rootPath });
       }
     }
   }

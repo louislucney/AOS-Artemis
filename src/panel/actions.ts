@@ -746,6 +746,8 @@ async function rerunTask(
     platforms: [...task.platforms],
     baseline: task.baseline,
     createdBy: "panel",
+    targetHostId: task.targetHostId,
+    createdHostId: task.createdHostId,
     priority: task.priority
   });
   deps.cache?.clear();

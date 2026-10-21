@@ -53,6 +53,7 @@ import {
   type PanelBatchSummary,
   type PanelDeps,
   type PanelImprovementItem,
+  type PanelMachineRow,
   type PanelOverview,
   type PanelProjectDetail,
   type PanelProjectRow,
@@ -775,6 +776,15 @@ function lampSpan(lamp: PanelProjectRow["lamp"]): string {
   return `${lampDot(lamp)}${LAMP_LABELS[lamp]}`;
 }
 
+function hostDisplayLabel(hostId: string | null, machines: PanelMachineRow[]): string {
+  if (hostId === null) return "未归属主机";
+  const machine = machines.find((entry) => entry.id === hostId);
+  if (!machine) return hostId.slice(0, 8);
+  return machine.label !== null && machine.label !== ""
+    ? `${machine.label}（${machine.hostname}）`
+    : machine.hostname;
+}
+
 function renderProjectCell(row: PanelProjectRow): string {
   const reasons =
     row.lampReasons.length > 0
@@ -926,6 +936,9 @@ try{
     const href = projectHref(row.rootPath, row.hostId);
     return [
       `<a class="c-project-link" href="${escapeHtml(href)}" title="进入项目：${escapeHtml(row.name)}">${escapeHtml(row.name)}<span class="c-project-arrow" aria-hidden="true">→</span></a>`,
+      `<span title="${escapeHtml(row.hostId ?? "未归属主机")}">${escapeHtml(
+        hostDisplayLabel(row.hostId, view.machines)
+      )}</span>`,
       renderProjectCell(row),
       escapeHtml(row.stacks.join("、") || "—"),
       `<span class="c-nowrap">${relativeTime(row.lastSeenAt)}</span>`,
@@ -962,8 +975,8 @@ try{
               title: "项目",
               subtitle: `生成时间 ${relativeTimeText(view.generatedAt)} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
               body: cTable({
-                columns: ["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
-                columnWidths: ["20%", "30%", "13%", "10%", "22%", "5%"],
+                columns: ["项目", "主机", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
+                columnWidths: ["18%", "12%", "25%", "10%", "10%", "20%", "5%"],
                 rows,
                 empty: "暂无项目"
               })
@@ -1755,7 +1768,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         ]
           .filter((part) => part !== "")
           .join(" ");
-        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun'};function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
+        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var hostId=${JSON.stringify(view.hostId)};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun'};function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId,host:hostId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
         return [
           `<p id="task-actions">${badge} ${priorityBadge} ${buttons}</p>`,
           `<p id="task-action-status" role="status" class="c-banner" hidden></p>`,
@@ -2263,23 +2276,26 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
   );
 }
 
-function artifactHref(rootPath: string, filePath: string): string {
+function artifactHref(rootPath: string, filePath: string, hostId?: string | null): string {
   const rel = filePath.startsWith(rootPath)
     ? filePath.slice(rootPath.length).replace(/^[/\\]/, "")
     : filePath;
-  return `/panel/artifact?project=${encodeURIComponent(rootPath)}&path=${encodeURIComponent(rel)}`;
+  return `/panel/artifact?project=${encodeURIComponent(rootPath)}&path=${encodeURIComponent(rel)}${
+    hostId ? `&host=${encodeURIComponent(hostId)}` : ""
+  }`;
 }
 
 function renderEvidence(
   links: PanelBatchDetail["cases"][number]["evidence"],
-  rootPath: string
+  rootPath: string,
+  hostId: string | null
 ): string {
   if (links.length === 0) return '<span class="muted">—</span>';
   return links
     .map((link) => {
       const label = `${escapeHtml(link.kind)}: <code>${escapeHtml(link.path)}</code>`;
       if (link.status !== "present") return `${label} <span class="muted">[已清理]</span>`;
-      return `<a href="${escapeHtml(artifactHref(rootPath, link.path))}">${label}</a>`;
+      return `<a href="${escapeHtml(artifactHref(rootPath, link.path, hostId))}">${label}</a>`;
     })
     .join("<br>");
 }
@@ -2352,7 +2368,7 @@ function renderCompareProjectCell(project: PanelCompareProject): string {
       : "";
   const error =
     project.error === null ? "" : `<div class="note">读取失败：${escapeHtml(project.error)}</div>`;
-  return `<a href="${escapeHtml(projectHref(project.rootPath))}"><code>${escapeHtml(
+  return `<a href="${escapeHtml(projectHref(project.rootPath, project.hostId))}"><code>${escapeHtml(
     project.name
   )}</code></a> ${lampSpan(project.lamp)}${reasons}${error}`;
 }
@@ -2361,7 +2377,7 @@ function renderCompareLatestCell(project: PanelCompareProject): string {
   const batch = project.latestBatch;
   if (batch === null) {
     return `<span class="muted">无份来源批次</span> <a href="${escapeHtml(
-      projectHref(project.rootPath)
+      projectHref(project.rootPath, project.hostId)
     )}">看项目页</a>`;
   }
   const rate =
@@ -2562,7 +2578,7 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
     [entry.quarantined ? "隔离" : null, entry.flaky ? "flaky" : null]
       .filter((tag): tag is string => tag !== null)
       .join("、") || "—",
-    renderEvidence(entry.evidence, view.rootPath)
+    renderEvidence(entry.evidence, view.rootPath, view.hostId)
   ]);
   const options = detail.options;
   const optionRows: string[][] = options
@@ -2641,6 +2657,7 @@ function page(title: string, bodyParts: string, refreshSeconds?: number): string
     title,
     active: currentShell.active,
     project: currentShell.project,
+    projectHostId: currentShell.projectHostId ?? null,
     capabilities: currentShell.capabilities,
     storeHealth: currentShell.storeHealth,
     projectSwitcher: currentShell.projectSwitcher,
@@ -2655,6 +2672,7 @@ function page(title: string, bodyParts: string, refreshSeconds?: number): string
 interface ShellCtx {
   active: ConsoleNavKey | null;
   project: string | null;
+  projectHostId?: string | null;
   capabilities?: ConsoleCapabilities;
   jiraDefaults?: { projectKey?: string; issueType?: string; labels?: string };
   /** 进程 env 中 Jira 凭据三件套齐备（未提供 → 未知，不前置拦截；服务端仍硬闸）。 */
@@ -2756,10 +2774,16 @@ async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPag
       project.name.toLowerCase().includes(needle) ||
       project.rootPath.toLowerCase().includes(needle)
     ) {
-      if (data.projects.length < 20) data.projects.push({ name: project.name, rootPath: project.rootPath });
+      if (data.projects.length < 20)
+        data.projects.push({
+          name: project.name,
+          rootPath: project.rootPath,
+          hostId: project.hostId
+        });
       else data.truncated = true;
     }
-    const sets = await deps.store.listCaseSets(project.rootPath).catch(() => []);
+    const projectStore = project.hostId === null ? deps.store : (deps.storeForHost?.(project.hostId) ?? deps.store);
+    const sets = await projectStore.listCaseSets(project.rootPath).catch(() => []);
     for (const set of sets) {
       const matched =
         set.basename.toLowerCase().includes(needle) ||
@@ -2776,20 +2800,21 @@ async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPag
       }
       data.caseSets.push({
         project: project.rootPath,
+        hostId: project.hostId,
         id: set.id,
         basename: set.basename,
         source: set.source,
         features: set.features.map((feature) => feature.name).join("、")
       });
     }
-    const tasks = await deps.store.listRegressionTasks(project.rootPath, 50).catch(() => []);
+    const tasks = await projectStore.listRegressionTasks(project.rootPath, 50).catch(() => []);
     for (const task of tasks) {
       if (!task.id.toLowerCase().includes(needle)) continue;
       if (data.tasks.length >= 20) {
         data.truncated = true;
         break;
       }
-      data.tasks.push({ project: project.rootPath, id: task.id, status: task.status });
+      data.tasks.push({ project: project.rootPath, hostId: project.hostId, id: task.id, status: task.status });
     }
   }
   return data;
@@ -2803,27 +2828,39 @@ async function loadProjectSwitcher(
     view.kind === "overview" || view.kind === "compare" || view.kind === "search"
       ? null
       : view.rootPath;
+  const currentHostId =
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
+      ? null
+      : view.hostId;
   const projects = await deps.store.listProjects().catch(() => []);
   const hosts = await deps.store.listHosts().catch(() => []);
   const hostById = new Map(hosts.map((host) => [host.id, host]));
-  return {
-    options: projects.slice(0, 20).map((project) => {
-      const host = project.hostId === null ? null : (hostById.get(project.hostId) ?? null);
-      const hostLabel =
-        project.hostId === null
-          ? ""
-          : host !== null && host.label !== null && host.label !== ""
-            ? host.label
-            : host !== null && host.hostname !== ""
-              ? host.hostname
-              : project.hostId.slice(0, 8);
-      return {
-        label: hostLabel === "" ? project.name : `${project.name} · ${hostLabel}`,
-        href: projectHref(project.rootPath, project.hostId),
-        ...(project.rootPath === current ? { current: true } : {})
-      };
-    })
-  };
+  const options = projects.slice(0, 20).map((project) => {
+    const host = project.hostId === null ? null : (hostById.get(project.hostId) ?? null);
+    const hostLabel =
+      project.hostId === null
+        ? ""
+        : host !== null && host.label !== null && host.label !== ""
+          ? host.label
+          : host !== null && host.hostname !== ""
+            ? host.hostname
+            : project.hostId.slice(0, 8);
+    return {
+      label: hostLabel === "" ? project.name : `${project.name} · ${hostLabel}`,
+      href: projectHref(project.rootPath, project.hostId),
+      ...(current !== null && project.rootPath === current && project.hostId === currentHostId
+        ? { current: true }
+        : {})
+    };
+  });
+  const labelCounts = new Map<string, number>();
+  for (const option of options) labelCounts.set(option.label, (labelCounts.get(option.label) ?? 0) + 1);
+  for (const [index, option] of options.entries()) {
+    if ((labelCounts.get(option.label) ?? 0) > 1) {
+      option.label = `${option.label}（${projects[index]!.rootPath}）`;
+    }
+  }
+  return { options };
 }
 
 function renderPanelHtml(
@@ -2836,6 +2873,8 @@ function renderPanelHtml(
   currentShell = {
     active: activeForView(view),
     project: view.kind === "overview" || view.kind === "compare" || view.kind === "search" ? null : view.rootPath,
+    projectHostId:
+      view.kind === "overview" || view.kind === "compare" || view.kind === "search" ? null : view.hostId,
     capabilities: deps.capabilities,
     jiraDefaults: {
       projectKey: deps.env?.JIRA_ISSUE_PROJECT?.trim() || undefined,
@@ -2858,6 +2897,7 @@ function renderPanelHtml(
     return renderDispatchPage({
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
+      hostId: view.hostId,
       preview: view.preview,
       previewId: view.previewId,
       formSignature: view.formSignature,
@@ -2871,6 +2911,7 @@ function renderPanelHtml(
     return renderLibraryPage({
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
+      hostId: view.hostId,
       sets: view.sets,
       quarantine: view.quarantine,
       caseCandidates: view.caseCandidates,
@@ -2882,6 +2923,7 @@ function renderPanelHtml(
     return renderArchivePage({
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
+      hostId: view.hostId,
       artifacts: view.artifacts,
       query: view.query,
       page: view.page,
@@ -2892,6 +2934,7 @@ function renderPanelHtml(
     return renderAuditPage({
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
+      hostId: view.hostId,
       events: view.events,
       query: view.query,
       page: view.page,
@@ -2902,6 +2945,7 @@ function renderPanelHtml(
     return renderOpsPage({
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
+      hostId: view.hostId,
       storeKind: view.storeKind,
       storeLabel: storeKindLabel(view.storeKind),
       storeNote: coherentStoreNote(view.storeKind, view.storeNote),
