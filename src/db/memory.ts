@@ -661,6 +661,8 @@ export class MemoryStore implements ProjectStore {
     const project = this.projects.get(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
     const now = new Date().toISOString();
+    const hostId = input.hostId ?? input.host?.identity.id ?? null;
+    const instanceId = input.instanceId ?? null;
     const existing = this.runners.find(
       (entry) => entry.projectId === project.id && entry.name === input.name
     );
@@ -671,6 +673,8 @@ export class MemoryStore implements ProjectStore {
       existing.tools = { ...input.tools };
       existing.artifactBaseUrl = input.artifactBaseUrl ?? null;
       existing.version = input.version ?? null;
+      existing.hostId = hostId;
+      existing.instanceId = instanceId;
       existing.lastSeenAt = now;
       return cloneRunner(existing);
     }
@@ -684,6 +688,8 @@ export class MemoryStore implements ProjectStore {
       tools: { ...input.tools },
       artifactBaseUrl: input.artifactBaseUrl ?? null,
       version: input.version ?? null,
+      hostId,
+      instanceId,
       lastSeenAt: now,
       createdAt: now
     };

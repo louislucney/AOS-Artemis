@@ -1,3 +1,5 @@
+import type { HostSnapshot } from "../runner/host-snapshot.js";
+
 export interface ProjectRecord {
   id: string;
   rootPath: string;
@@ -303,6 +305,8 @@ export interface RunnerRecord {
   tools: RunnerTools;
   artifactBaseUrl: string | null;
   version: string | null;
+  hostId: string | null;
+  instanceId: string | null;
   lastSeenAt: string;
   createdAt: string;
 }
@@ -316,6 +320,10 @@ export interface UpsertRunnerInput {
   tools: RunnerTools;
   artifactBaseUrl?: string | null;
   version?: string | null;
+  hostId?: string | null;
+  instanceId?: string | null;
+  /** 主机快照（缺省不写主机；仅用于 hostId 缺省时的身份推导）。 */
+  host?: HostSnapshot;
 }
 
 export type HostAddressSource = "self" | "observed-pg" | "observed-http";

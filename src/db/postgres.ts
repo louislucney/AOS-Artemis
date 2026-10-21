@@ -250,6 +250,8 @@ const SCHEMA = [
      tools TEXT NOT NULL DEFAULT '{}',
      artifact_base_url TEXT,
      version TEXT,
+     host_id TEXT,
+     instance_id TEXT,
      last_seen_at TEXT NOT NULL,
      created_at TEXT NOT NULL
     )`,
@@ -350,7 +352,9 @@ const MIGRATIONS = [
   `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS suite_runs_project_manifest_idx ON suite_runs(project_id, manifest_path) WHERE manifest_path IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS audit_events_root_at_idx ON audit_events(root_path, at)`,
-  `ALTER TABLE project_events ADD COLUMN IF NOT EXISTS host_id TEXT`
+  `ALTER TABLE project_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
+  `ALTER TABLE runners ADD COLUMN IF NOT EXISTS host_id TEXT`,
+  `ALTER TABLE runners ADD COLUMN IF NOT EXISTS instance_id TEXT`
 ];
 
 /** 迁移 advisory lock 的固定键（避免并发首启各自跑 DDL）。 */
@@ -1211,11 +1215,13 @@ export class PostgresStore implements ProjectStore {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
     const now = new Date().toISOString();
+    const hostId = input.hostId ?? input.host?.identity.id ?? null;
+    const instanceId = input.instanceId ?? null;
     try {
       const inserted = await this.pool.query(
         `INSERT INTO runners
-           (id, project_id, name, hostname, platforms, devices, tools, artifact_base_url, version, last_seen_at, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           (id, project_id, name, hostname, platforms, devices, tools, artifact_base_url, version, host_id, instance_id, last_seen_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING *`,
         [
           randomUUID(),
@@ -1227,6 +1233,8 @@ export class PostgresStore implements ProjectStore {
           JSON.stringify(input.tools),
           input.artifactBaseUrl ?? null,
           input.version ?? null,
+          hostId,
+          instanceId,
           now,
           now
         ]
@@ -1237,7 +1245,8 @@ export class PostgresStore implements ProjectStore {
       const updated = await this.pool.query(
         `UPDATE runners
             SET hostname = $3, platforms = $4, devices = $5, tools = $6,
-                artifact_base_url = $7, version = $8, last_seen_at = $9
+                artifact_base_url = $7, version = $8, host_id = $9, instance_id = $10,
+                last_seen_at = $11
           WHERE project_id = $1 AND name = $2
         RETURNING *`,
         [
@@ -1249,6 +1258,8 @@ export class PostgresStore implements ProjectStore {
           JSON.stringify(input.tools),
           input.artifactBaseUrl ?? null,
           input.version ?? null,
+          hostId,
+          instanceId,
           now
         ]
       );
@@ -1306,6 +1317,7 @@ export class PostgresStore implements ProjectStore {
         values
       );
       const refreshed = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [input.id]);
+      await this.recordObservedPgAddress(input.id);
       return mapHost(refreshed.rows[0]!);
     }
     const record = hostRecordFromInput(input, now);
@@ -1336,7 +1348,30 @@ export class PostgresStore implements ProjectStore {
         record.createdAt
       ]
     );
+    await this.recordObservedPgAddress(input.id);
     return record;
+  }
+
+  /** PG 观测地址（`inet_client_addr()`）：非空则以 `observed-pg` 记录；unix socket（NULL）或报错时跳过。 */
+  private async recordObservedPgAddress(hostId: string): Promise<void> {
+    try {
+      const result = await this.pool.query("SELECT inet_client_addr() AS addr");
+      const addr = result.rows[0]?.addr;
+      if (typeof addr !== "string" || addr.trim() === "") return;
+      await this.upsertHostAddresses({
+        hostId,
+        addresses: [
+          {
+            source: "observed-pg",
+            iface: "",
+            family: addr.includes(":") ? "ipv6" : "ipv4",
+            address: addr.trim()
+          }
+        ]
+      });
+    } catch {
+      /* pg-mem / 无观测能力连接：跳过，不影响自报地址 */
+    }
   }
 
   async getHost(id: string): Promise<HostRecord | null> {
@@ -2370,6 +2405,8 @@ function mapRunner(row: Record<string, unknown>): RunnerRecord {
     tools: parseRunnerTools(row.tools),
     artifactBaseUrl: nullableString(row.artifact_base_url),
     version: nullableString(row.version),
+    hostId: nullableString(row.host_id),
+    instanceId: nullableString(row.instance_id),
     lastSeenAt: String(row.last_seen_at),
     createdAt: String(row.created_at)
   };

@@ -1,8 +1,14 @@
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 
 import { defaultBuildRuntime, type CliRuntimeBundle } from "../cli-runtime.js";
 import type { RegressionTaskRecord, RunnerRecord } from "../db/types.js";
 import { AOS_MCP_VERSION, errorMessage } from "../util.js";
+import {
+  collectHostSnapshot,
+  upsertHostInputFromSnapshot,
+  type HostSnapshot
+} from "./host-snapshot.js";
 import { collectRunnerInventory, type RunnerInventory } from "./inventory.js";
 import { fireDueSchedules } from "./schedules.js";
 import { runnerTtlFrom } from "./status.js";
@@ -26,6 +32,10 @@ export interface RunnerAgentOptions {
   buildRuntime?: (projectDir: string | null) => Promise<CliRuntimeBundle>;
   executeSuite: (argv: string[], options?: { shouldAbort?: () => boolean }) => Promise<number | null>;
   collectInventory?: () => Promise<RunnerInventory>;
+  collectHostSnapshot?: (input: {
+    projectRoot: string;
+    env: NodeJS.ProcessEnv;
+  }) => Promise<HostSnapshot>;
   io?: RunnerAgentIO;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -50,6 +60,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
   const runnerTtlMs = runnerTtlFrom(env);
   const staleClaimMs = staleClaimMsFromEnv(env.AOS_RUNNER_STALE_CLAIM_MS);
   const partialClaim = env.AOS_RUNNER_PARTIAL_CLAIM === "1";
+  const envRefreshMs = intFromEnv(env.AOS_HOST_ENV_REFRESH_MS, 600_000);
   const schedulesEnabled =
     options.schedulesEnabled ?? (env.AOS_RUNNER_SCHEDULES ?? "").trim() !== "0";
   const now = options.now ?? ((): number => Date.now());
@@ -62,6 +73,10 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
   const buildRuntime = options.buildRuntime ?? defaultBuildRuntime;
   const collectInventory = options.collectInventory ?? ((): Promise<RunnerInventory> =>
     collectRunnerInventory({ env }));
+  const collectSnapshot =
+    options.collectHostSnapshot ??
+    ((input: { projectRoot: string; env: NodeJS.ProcessEnv }): Promise<HostSnapshot> =>
+      collectHostSnapshot(input));
   const once = options.once === true;
   const stopped = (): boolean => options.shouldStop?.() === true;
 
@@ -70,6 +85,9 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     const store = bundle.runtime.store;
     const rootPath = bundle.runtime.project.rootDir;
     let inventory: RunnerInventory = EMPTY_INVENTORY;
+    let snapshot: HostSnapshot = await collectSnapshot({ projectRoot: rootPath, env });
+    let snapshotAt = now();
+    const instanceId = randomUUID();
 
     const refreshInventory = async (): Promise<void> => {
       try {
@@ -78,8 +96,22 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         /* 保留上次清单 */
       }
     };
+    const refreshSnapshot = async (): Promise<void> => {
+      if (now() - snapshotAt < envRefreshMs) return;
+      try {
+        snapshot = await collectSnapshot({ projectRoot: rootPath, env });
+        snapshotAt = now();
+      } catch {
+        /* 保留上次快照 */
+      }
+    };
     const heartbeat = async (): Promise<RunnerRecord> => {
       await refreshInventory();
+      await refreshSnapshot();
+      const hostId = snapshot.identity.id;
+      const seenAt = new Date(now()).toISOString();
+      await store.upsertHost(upsertHostInputFromSnapshot(snapshot, hostId, seenAt));
+      await store.upsertHostAddresses({ hostId, addresses: snapshot.addresses });
       return store.upsertRunner({
         rootPath,
         name,
@@ -88,7 +120,9 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         devices: inventory.devices,
         tools: inventory.tools,
         artifactBaseUrl: options.artifactBaseUrl ?? null,
-        version: AOS_MCP_VERSION
+        version: AOS_MCP_VERSION,
+        hostId,
+        instanceId
       });
     };
 
