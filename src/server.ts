@@ -30,6 +30,7 @@ import { JOBS_NATIVE_TOOLS } from "./tools/native-tools/jobs.js";
 import { LEDGER_NATIVE_TOOLS } from "./tools/native-tools/ledger.js";
 import { LLM_NATIVE_TOOLS } from "./tools/native-tools/llm.js";
 import { PEN_NATIVE_TOOLS } from "./tools/native-tools/pen.js";
+import { TASK_NATIVE_TOOLS } from "./tools/native-tools/tasks.js";
 import { WORKFLOW_NATIVE_TOOLS } from "./tools/native-tools/workflow.js";
 
 const NATIVE_TOOLS: NativeToolDefinition[] = [
@@ -42,6 +43,7 @@ const NATIVE_TOOLS: NativeToolDefinition[] = [
   ...DESIGN_NATIVE_TOOLS,
   ...FIGMA_NATIVE_TOOLS,
   ...PEN_NATIVE_TOOLS,
+  ...TASK_NATIVE_TOOLS,
   ...WORKFLOW_NATIVE_TOOLS
 ];
 

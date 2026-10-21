@@ -311,6 +311,23 @@ async function suiteRunTask(
     io.errorLog(`未找到回归任务 ${taskId}`);
     return 2;
   }
+  const localHostId = runtime.hostIdentity?.id ?? null;
+  if (task.targetHostId !== null && localHostId === null) {
+    io.errorLog(`本机身份未知，拒绝执行定向任务 ${taskId}（目标主机 ${task.targetHostId}）`);
+    return 2;
+  }
+  if (task.targetHostId !== null && task.targetHostId !== localHostId) {
+    io.errorLog(`任务 ${taskId} 不属于本机（目标主机 ${task.targetHostId}），拒绝执行`);
+    return 2;
+  }
+  if (task.claimedHostId !== null && localHostId === null) {
+    io.errorLog(`本机身份未知，拒绝执行已认领任务 ${taskId}（认领主机 ${task.claimedHostId}）`);
+    return 2;
+  }
+  if (task.claimedHostId !== null && task.claimedHostId !== localHostId) {
+    io.errorLog(`任务 ${taskId} 不属于本机（认领主机 ${task.claimedHostId}），拒绝执行`);
+    return 2;
+  }
   if (
     task.status === "cancelled" ||
     task.status === "stopped" ||

@@ -544,6 +544,7 @@ node dist/cli.js doctor
 | `aos_event_poll` | 按 `afterSeq` 游标无丢失轮询事件；无新事件时最多等待 `waitMs`（0-30000）；下一轮把返回的 `nextSeq` 作为 `afterSeq`；`consume:true` 标记已消费 |
 | `aos_crashes` | 崩溃取证：`list`/`get`/`scan`；任务终态自动采集 logcat crash buffer，按签名（包名+根因异常+应用帧）去重计数，产物 `.artemis/crashes/` |
 | `aos_ledger_migrate` | 把当前项目文件台账的 `usage_events`/`regression_tasks` 幂等补进中心 PostgreSQL（保留原 id）；默认 `dryRun` 只统计，需 PG 存储；不处理 suite_runs/case_sets（用 `suite backfill`） |
+| `regression_task_cancel` | 取消本机当前项目的回归任务（作用域＝本机＋本项目）：`pending` → `cancelled`；`claimed/running` → `stopping`（等执行机确认）；记录来源 `local-mcp`、操作人（`AOS_ACTOR` 或系统用户名）、本机 hostId 与审计（channel=`mcp`）；定向/认领给其他主机的任务拒绝取消；未知任务返回 `ok:false` |
 | `aos_job_status` | 查询 `async:true` 异步任务：`run_regression`/`verify_jira_issue`/`design_to_test` 立即返回 `jobId`，后台执行；返回 running/passed/failed/error、事件摘要与完整结果（`.artemis/jobs/<jobId>.json`） |
 | `aos_usage` | 使用统计（调用事件）：`summary` 概览 / `signals` 信号分布 / `events` 流水；`tool`/`status`/`days` 筛选，events `limit` ≤200；只统计客户端发起的调用，`AOS_USAGE=0` 时标注采集已关闭但历史仍可查 |
 | `jira_issue_get` | 读取 Jira Cloud issue（key 或 browse URL）→ summary/status/type/labels + 描述纯文本 + 启发式验收标准标注（保留原始 ADF）；缺凭证返回 `howToFix` |
