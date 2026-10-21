@@ -58,6 +58,7 @@ const AUDIT_ACTIONS: Record<string, string> = {
   "action.hosts.register": "登记主机",
   "action.release": "释放回队列",
   "action.stop": "停止执行",
+  "action.tasks.cancel": "取消任务",
   "action.rerun": "重新派发",
   "action.verdicts": "提交裁决",
   "action.issues": "建单",
@@ -167,7 +168,8 @@ const RUN_STATUS_LABELS: Record<string, string> = {
   pending: "待执行",
   partial: "部分失败",
   completed: "已完成",
-  stopped: "已停止"
+  stopped: "已停止",
+  cancelled: "已取消"
 };
 
 export function runStatusLabel(status: string): string {

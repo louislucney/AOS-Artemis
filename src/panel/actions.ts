@@ -162,6 +162,22 @@ export async function handlePanelActionRequest(
       await auditPanel(scopedDeps, resolved.rootPath, "action.issues", response);
       return response;
     }
+    if (request.url.pathname === "/panel/api/tasks/cancel") {
+      const response = await cancelTask(scopedDeps, resolved.rootPath, payload, resolved.hostId);
+      if (response.status === 200) scopedDeps.cache?.clear();
+      await auditPanel(
+        scopedDeps,
+        resolved.rootPath,
+        "action.tasks.cancel",
+        response,
+        {
+          taskId: String(payload.taskId ?? ""),
+          ...(resolved.hostId === null ? {} : { hostId: resolved.hostId })
+        },
+        { actor: "panel", actorHostId: resolved.hostId, channel: "panel" }
+      );
+      return response;
+    }
     if (request.url.pathname === "/panel/api/tasks/release") {
       const response = await releaseTask(scopedDeps, resolved.rootPath, payload);
       await auditPanel(scopedDeps, resolved.rootPath, "action.release", response, {
@@ -170,7 +186,7 @@ export async function handlePanelActionRequest(
       return response;
     }
     if (request.url.pathname === "/panel/api/tasks/stop") {
-      const response = await stopTask(scopedDeps, resolved.rootPath, payload);
+      const response = await stopTask(scopedDeps, resolved.rootPath, payload, resolved.hostId);
       await auditPanel(scopedDeps, resolved.rootPath, "action.stop", response, {
         taskId: String(payload.taskId ?? "")
       });
@@ -235,7 +251,12 @@ async function auditPanel(
   rootPath: string,
   action: string,
   response: PanelWebResponse,
-  refs?: Record<string, string | undefined>
+  refs?: Record<string, string | undefined>,
+  meta?: {
+    actor?: string | null;
+    actorHostId?: string | null;
+    channel?: string | null;
+  }
 ): Promise<void> {
   let detail = "";
   if (response.status !== 200) {
@@ -256,7 +277,14 @@ async function auditPanel(
       response.status === 200
         ? `${auditActionLabel(action)}：完成`
         : `${auditActionLabel(action)}：失败（${detail === "" ? `HTTP ${response.status}` : detail}）`,
-    ...(refs === undefined ? {} : { refs })
+    ...(refs === undefined ? {} : { refs }),
+    ...(meta === undefined
+      ? {}
+      : {
+          actor: meta.actor ?? null,
+          actorHostId: meta.actorHostId ?? null,
+          channel: meta.channel ?? null
+        })
   });
 }
 
@@ -671,6 +699,33 @@ async function createIssues(
   return json(200, outcome);
 }
 
+async function cancelTask(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>,
+  hostId: string | null
+): Promise<PanelWebResponse> {
+  const taskId = typeof payload.taskId === "string" ? payload.taskId.trim() : "";
+  if (taskId === "") return json(400, { error: "缺少 taskId" });
+  const note = typeof payload.note === "string" && payload.note.trim() !== "" ? payload.note.trim() : null;
+  const task = await deps.store.cancelRegressionTask({
+    rootPath,
+    taskId,
+    source: "panel",
+    actor: "panel",
+    actorHostId: hostId,
+    note
+  });
+  if (!task) return json(404, { error: `未知任务 "${taskId}"` });
+  const noteText =
+    task.status === "stopping"
+      ? "已请求取消：执行机将在当前用例边界停止并确认（离线时为下次心跳读取）"
+      : task.status === "cancelled"
+        ? "任务已取消"
+        : `任务状态为 ${task.status}，未改动`;
+  return json(200, { ok: true, taskId, status: task.status, note: noteText, task });
+}
+
 async function releaseTask(
   deps: PanelWebDeps,
   rootPath: string,
@@ -688,7 +743,7 @@ async function releaseTask(
           : "任务正在执行：请先「停止执行」，再释放回队列"
     });
   }
-  if (task.status === "completed" || task.status === "failed") {
+  if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
     return json(400, { error: `任务已终态（${task.status}），无需释放` });
   }
   const ok = await deps.store.updateRegressionTask(rootPath, taskId, {
@@ -704,7 +759,8 @@ async function releaseTask(
 async function stopTask(
   deps: PanelWebDeps,
   rootPath: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  hostId: string | null
 ): Promise<PanelWebResponse> {
   const taskId = typeof payload.taskId === "string" ? payload.taskId.trim() : "";
   if (taskId === "") return json(400, { error: "缺少 taskId" });
@@ -716,13 +772,20 @@ async function stopTask(
   if (task.status === "stopping") {
     return json(200, { ok: true, taskId, status: "stopping", note: "停止请求已存在，等待执行机确认" });
   }
-  const ok = await deps.store.updateRegressionTask(rootPath, taskId, { status: "stopping" });
-  if (!ok) return json(500, { ok: false, error: "停止请求失败" });
+  const updated = await deps.store.cancelRegressionTask({
+    rootPath,
+    taskId,
+    source: "panel",
+    actor: "panel",
+    actorHostId: hostId,
+    note: null
+  });
+  if (!updated) return json(500, { ok: false, error: "停止请求失败" });
   deps.cache?.clear();
   return json(200, {
     ok: true,
     taskId,
-    status: "stopping",
+    status: updated.status,
     note: "已请求停止：执行机将在当前用例边界停止并确认（离线时为下次心跳读取）"
   });
 }

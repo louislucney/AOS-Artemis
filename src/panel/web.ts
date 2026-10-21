@@ -1475,6 +1475,7 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   running: "执行中",
   stopping: "停止中",
   stopped: "已停止",
+  cancelled: "已取消",
   completed: "已完成",
   partial: "部分失败",
   failed: "失败"
@@ -1489,7 +1490,7 @@ function taskStatusTone(status: string): "accent" | "success" | "warning" | "err
   if (status === "failed") return "error";
   if (status === "claimed" || status === "running") return "accent";
   if (status === "stopping") return "warning";
-  if (status === "stopped") return "neutral";
+  if (status === "stopped" || status === "cancelled") return "neutral";
   if (status === "pending" || status === "partial") return "warning";
   return "neutral";
 }
@@ -1746,7 +1747,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
             : `${detail.runner.name}（${detail.runner.online ? "在线" : "失联"}）`;
         const running = task.status === "claimed" || task.status === "running";
         const stopping = task.status === "stopping";
-        const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生子运行 ${detail.runs.length} 个保留）；状态先为「停止中」，执行机确认后转「已停止」方可释放。`;
+        const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生子运行 ${detail.runs.length} 个保留）；状态先为「停止中」，执行机确认后转「已取消」。`;
         const releaseConfirm = `确认释放该任务回待领取？已完成子运行 ${detail.runs.length} 个（保留）；释放后可能被重新领取执行。`;
         const rerunConfirm = "确认重新派发？将按原引用/端/基线创建一个新任务（当前任务保留）。";
         const buttons = [
@@ -1754,7 +1755,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
             ? `<button class="c-button c-button-danger" type="button" data-task-action="stop" data-confirm="${escapeHtml(stopConfirm)}">停止执行</button>`
             : "",
           stopping
-            ? '<span class="muted">停止中：等待执行机确认（离线时为下次心跳读取）；确认后方可释放</span>'
+            ? '<span class="muted">停止中：等待执行机确认（离线时为下次心跳读取）；确认后为「已取消」终态</span>'
             : "",
           task.status === "stopped"
             ? `<button class="c-button" type="button" data-task-action="release" data-confirm="${escapeHtml(releaseConfirm)}">释放回队列</button>`

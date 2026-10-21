@@ -301,14 +301,20 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           void store
             .getRegressionTask(rootPath, task.id)
             .then(async (fresh) => {
-              if (fresh?.status !== "stopping" && fresh?.status !== "stopped") return;
+              if (
+                fresh?.status !== "stopping" &&
+                fresh?.status !== "cancelled" &&
+                fresh?.status !== "stopped"
+              ) {
+                return;
+              }
               stopRequested = true;
-              if (fresh.status === "stopping" && !stopAcked) {
+              if ((fresh.status === "stopping" || fresh.status === "stopped") && !stopAcked) {
                 stopAcked = true;
                 await store
-                  .updateRegressionTask(rootPath, task.id, { status: "stopped" })
-                  .catch(() => {});
-                io.log(`[runner] 任务 ${task.id} 停止请求已确认（stopping → stopped）`);
+                  .ackCancellation({ rootPath, taskId: task.id })
+                  .catch(() => null);
+                io.log(`[runner] 任务 ${task.id} 停止请求已确认（stopping → cancelled）`);
               }
             })
             .catch(() => {});
@@ -326,13 +332,13 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         let afterStatus = afterRun?.status ?? null;
         if (afterStatus === "stopping") {
           const acked = await store
-            .updateRegressionTask(rootPath, task.id, { status: "stopped" })
-            .catch(() => false);
-          if (acked) afterStatus = "stopped";
+            .ackCancellation({ rootPath, taskId: task.id })
+            .catch(() => null);
+          if (acked) afterStatus = acked.status;
           io.log(`[runner] 任务 ${task.id} 停止请求已确认（收尾兜底）`);
         }
-        if (afterStatus === "stopped") {
-          io.log(`[runner] 任务 ${task.id} 已停止（面板请求）：保留 stopped，不释放、不重试`);
+        if (afterStatus === "cancelled" || afterStatus === "stopped") {
+          io.log(`[runner] 任务 ${task.id} 已取消（面板请求）：保留 cancelled，不释放、不重试`);
           if (once) return 0;
           continue;
         }

@@ -5,6 +5,7 @@ import {
   AmbiguousProjectError,
   capabilitiesSatisfyPlatforms,
   isRunnerActive,
+  normalizeRegressionTask,
   RUNNER_ACTIVE_DEFAULT_MS,
   RunnerAlreadyActiveError
 } from "./types.js";
@@ -16,6 +17,7 @@ import type {
   AuditEventInput,
   AuditEventRecord,
   AuditQuery,
+  CancelSource,
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
@@ -349,7 +351,13 @@ export class MemoryStore implements ProjectStore {
       claimedInstanceId: null,
       priority: typeof input.priority === "number" ? input.priority : 0,
       lastProgressAt: null,
-      startedAt: null
+      startedAt: null,
+      cancelSource: null,
+      cancelledBy: null,
+      cancelledHostId: null,
+      cancelledAt: null,
+      cancelNote: null,
+      cancelRequestedAt: null
     };
     this.regressionTasks.push(record);
     return cloneRegressionTask(record);
@@ -395,6 +403,61 @@ export class MemoryStore implements ProjectStore {
     if (patch.claimedBy !== undefined) task.claimedBy = patch.claimedBy;
     if (patch.claimedAt !== undefined) task.claimedAt = patch.claimedAt;
     return true;
+  }
+
+  async cancelRegressionTask(input: {
+    rootPath: string;
+    taskId: string;
+    source: CancelSource;
+    actor: string;
+    actorHostId: string | null;
+    note?: string | null;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null> {
+    const project = this.getProjectRecord(input.rootPath);
+    if (!project) return null;
+    const task = this.regressionTasks.find(
+      (entry) => entry.projectId === project.id && entry.id === input.taskId
+    );
+    if (!task) return null;
+    const at = input.at ?? new Date().toISOString();
+    if (task.status === "pending") {
+      task.status = "cancelled";
+      task.cancelSource = input.source;
+      task.cancelledBy = input.actor;
+      task.cancelledHostId = input.actorHostId;
+      task.cancelledAt = at;
+      task.cancelRequestedAt = at;
+      task.cancelNote = input.note ?? null;
+    } else if (task.status === "claimed" || task.status === "running") {
+      task.status = "stopping";
+      task.cancelSource = input.source;
+      task.cancelledBy = input.actor;
+      task.cancelledHostId = input.actorHostId;
+      task.cancelRequestedAt = at;
+      task.cancelNote = input.note ?? null;
+    }
+    return cloneRegressionTask(task);
+  }
+
+  async ackCancellation(input: {
+    rootPath: string;
+    taskId: string;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null> {
+    const project = this.getProjectRecord(input.rootPath);
+    if (!project) return null;
+    const task = this.regressionTasks.find(
+      (entry) => entry.projectId === project.id && entry.id === input.taskId
+    );
+    if (!task) return null;
+    if (task.status === "stopping") {
+      const at = input.at ?? new Date().toISOString();
+      task.status = "cancelled";
+      task.cancelledAt = task.cancelledAt ?? at;
+      task.cancelRequestedAt = task.cancelRequestedAt ?? at;
+    }
+    return cloneRegressionTask(task);
   }
 
   async claimRegressionTask(input: {
@@ -1411,18 +1474,19 @@ function cloneCaseSet(record: CaseSetRecord): CaseSetRecord {
 }
 
 function cloneRegressionTask(task: RegressionTaskRecord): RegressionTaskRecord {
+  const normalized = normalizeRegressionTask(task);
   return {
-    ...task,
-    refs: task.refs.map((ref) => ({ ...ref })),
-    platforms: [...task.platforms],
-    runIds: [...task.runIds],
-    targetHostId: task.targetHostId ?? null,
-    createdHostId: task.createdHostId ?? null,
-    claimedHostId: task.claimedHostId ?? null,
-    claimedInstanceId: task.claimedInstanceId ?? null,
-    priority: typeof task.priority === "number" ? task.priority : 0,
-    lastProgressAt: task.lastProgressAt ?? null,
-    startedAt: task.startedAt ?? null
+    ...normalized,
+    refs: normalized.refs.map((ref) => ({ ...ref })),
+    platforms: [...normalized.platforms],
+    runIds: [...normalized.runIds],
+    targetHostId: normalized.targetHostId ?? null,
+    createdHostId: normalized.createdHostId ?? null,
+    claimedHostId: normalized.claimedHostId ?? null,
+    claimedInstanceId: normalized.claimedInstanceId ?? null,
+    priority: typeof normalized.priority === "number" ? normalized.priority : 0,
+    lastProgressAt: normalized.lastProgressAt ?? null,
+    startedAt: normalized.startedAt ?? null
   };
 }
 

@@ -310,7 +310,7 @@ test("非零退出码但已置终态 → 守卫拒绝不覆盖（partial 保持�
   assert.deepEqual(after.runIds, ["r-1"]);
 });
 
-test("面板停止：执行中置 stopped → 不释放/不回写终态，executeSuite 收到 shouldAbort", async () => {
+test("面板停止：执行中置 stopping → 执行机确认 cancelled（不释放/不回写终态，保留取消元数据）", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;
   const task = await store.createRegressionTask(taskInput(rootPath));
@@ -318,7 +318,15 @@ test("面板停止：执行中置 stopped → 不释放/不回写终态，execut
   const { options, logs } = makeOptions(runtime, inv, {
     executeSuite: async (argv, execOptions) => {
       abortType = typeof execOptions?.shouldAbort;
-      await store.updateRegressionTask(rootPath, task.id, { status: "stopping" });
+      await store.cancelRegressionTask({
+        rootPath,
+        taskId: task.id,
+        source: "panel",
+        actor: "panel",
+        actorHostId: "h-a",
+        note: "面板取消",
+        at: "2026-10-21T02:00:00.000Z"
+      });
       return 2;
     }
   });
@@ -326,8 +334,12 @@ test("面板停止：执行中置 stopped → 不释放/不回写终态，execut
   assert.equal(code, 0);
   assert.equal(abortType, "function", "注入 shouldAbort（轮询停止请求）");
   const after = await store.getRegressionTask(rootPath, task.id);
-  assert.equal(after.status, "stopped", "执行机 ack：stopping → stopped（不释放、不重试）");
-  assert.ok(logs.some((line) => line.includes("已停止")), "日志如实说明");
+  assert.equal(after.status, "cancelled", "执行机 ack：stopping → cancelled（不释放、不重试）");
+  assert.equal(after.cancelSource, "panel");
+  assert.equal(after.cancelNote, "面板取消");
+  assert.equal(after.cancelRequestedAt, "2026-10-21T02:00:00.000Z");
+  assert.ok(after.cancelledAt, "确认时补完成时间");
+  assert.ok(logs.some((line) => line.includes("已取消")), "日志如实说明");
   assert.ok(logs.some((line) => line.includes("停止请求已确认")), "ack 日志");
 });
 

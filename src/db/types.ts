@@ -184,6 +184,12 @@ export interface AuditEventInput {
   /** 已由调用方脱敏；超 300 字符截断。 */
   summary: string;
   refs?: Record<string, string | undefined>;
+  /** 操作人（面板固定 `panel`；CLI/MCP 取 `AOS_ACTOR` 或系统用户名）。 */
+  actor?: string | null;
+  /** 操作发起宿主；本机未绑定主机时为 null。 */
+  actorHostId?: string | null;
+  /** 调用通道：`panel` / `cli` / `mcp` / `runner`。 */
+  channel?: string | null;
   /** 显式时间（测试/导入）；缺省＝当前时间。 */
   at?: string;
 }
@@ -280,6 +286,19 @@ export interface RegressionTaskRef {
   featureKey: string;
 }
 
+export type CancelSource = "panel" | "local-cli" | "local-mcp" | "runner" | "admin";
+
+export type RegressionTaskStatus =
+  | "pending"
+  | "claimed"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "cancelled"
+  | "completed"
+  | "partial"
+  | "failed";
+
 export interface RegressionTaskRecord {
   id: string;
   projectId: string | null;
@@ -288,7 +307,7 @@ export interface RegressionTaskRecord {
   refs: RegressionTaskRef[];
   platforms: string[];
   baseline: "latest" | "none";
-  status: "pending" | "claimed" | "running" | "stopping" | "stopped" | "completed" | "partial" | "failed";
+  status: RegressionTaskStatus;
   claimedBy: string | null;
   claimedAt: string | null;
   attempts: number;
@@ -300,6 +319,27 @@ export interface RegressionTaskRecord {
   priority: number;
   lastProgressAt: string | null;
   startedAt: string | null;
+  cancelSource: CancelSource | null;
+  cancelledBy: string | null;
+  cancelledHostId: string | null;
+  cancelledAt: string | null;
+  cancelNote: string | null;
+  cancelRequestedAt: string | null;
+}
+
+/** 旧 `stopped` 行对外统一读作 `cancelled`（`cancelSource=panel` 仅作历史来源标注）。 */
+export function normalizeRegressionTask(record: RegressionTaskRecord): RegressionTaskRecord {
+  const legacy = record.status === "stopped";
+  return {
+    ...record,
+    status: legacy ? "cancelled" : record.status,
+    cancelSource: record.cancelSource ?? (legacy ? "panel" : null),
+    cancelledBy: record.cancelledBy ?? null,
+    cancelledHostId: record.cancelledHostId ?? null,
+    cancelledAt: record.cancelledAt ?? (legacy ? (record.startedAt ?? null) : null),
+    cancelNote: record.cancelNote ?? (legacy ? "legacy stopped" : null),
+    cancelRequestedAt: record.cancelRequestedAt ?? null
+  };
 }
 
 /** 能力门禁（fail-closed）：任务平台 ⊆ 本机能力（`ios` 需 `ios-simulator`/`ios-real` 之一；`android` 需 `android`）。
@@ -623,6 +663,24 @@ export interface ProjectStore {
   createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord>;
   getRegressionTask(rootPath: string, id: string): Promise<RegressionTaskRecord | null>;
   listRegressionTasks(rootPath: string, limit?: number): Promise<RegressionTaskRecord[]>;
+  /** 取消任务（先写先赢）：`pending` → `cancelled`（同时写 `cancelledAt`）；`claimed`/`running` →
+   * `stopping`（只写请求时间，等执行机 `ackCancellation`）；`stopping`/`cancelled`/终态保持原状。
+   * 未知任务 → null。 */
+  cancelRegressionTask(input: {
+    rootPath: string;
+    taskId: string;
+    source: CancelSource;
+    actor: string;
+    actorHostId: string | null;
+    note?: string | null;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null>;
+  /** 执行机确认停止请求：`stopping` → `cancelled`（保留取消元数据，补 `cancelledAt`；幂等）。 */
+  ackCancellation(input: {
+    rootPath: string;
+    taskId: string;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null>;
   updateRegressionTask(
     rootPath: string,
     id: string,

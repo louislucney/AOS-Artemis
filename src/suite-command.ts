@@ -48,6 +48,7 @@ import {
   type SuiteLoopCheck
 } from "./figma/suite-loop.js";
 import type { TaskStatRecord, ProjectStore } from "./db/types.js";
+import { recordAuditSafe } from "./db/audit-event.js";
 import {
   runGeneratedTests,
   type SuiteRunOptions,
@@ -250,10 +251,11 @@ Usage:
   mobile-testing-mcp suite feedback [options]   生成改进建议与出口清单（只读）
   mobile-testing-mcp suite reconcile list|confirm|reject [options]
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
-  mobile-testing-mcp suite task create|list|show|release [options]
+  mobile-testing-mcp suite task create|list|show|release|cancel [options]
                                      回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none]（引用取该功能最新份）
-                                     中心模式：create|list --host <id|hostname> [--project <rootPath>]（只连 PG，不构建本机 Runtime）
+                                     中心模式：create|list|cancel --host <id|hostname> [--project <rootPath>]（只连 PG，不构建本机 Runtime）
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
+                                     cancel <taskId> [--note <text>]：取消任务（pending → 已取消；执行中 → 停止中，待执行机确认）
   mobile-testing-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
   mobile-testing-mcp suite schedule add|list|show|enable|disable|remove [options]
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
@@ -309,8 +311,12 @@ async function suiteRunTask(
     io.errorLog(`未找到回归任务 ${taskId}`);
     return 2;
   }
-  if (task.status === "stopped" || task.status === "stopping") {
-    say("任务已请求停止：不再执行（等待释放回队列或重新派发）");
+  if (
+    task.status === "cancelled" ||
+    task.status === "stopped" ||
+    task.status === "stopping"
+  ) {
+    say("任务已取消或已请求停止：不再执行（可重新派发新任务）");
     return 2;
   }
   const devices = splitList(flags.list("device"));
@@ -361,8 +367,12 @@ async function suiteRunTask(
   const beforeRun = await runtime.store
     .getRegressionTask(runtime.project.rootDir, task.id)
     .catch(() => null);
-  if (beforeRun?.status === "stopped" || beforeRun?.status === "stopping") {
-    say("任务已请求停止：不再执行（等待释放回队列或重新派发）");
+  if (
+    beforeRun?.status === "cancelled" ||
+    beforeRun?.status === "stopped" ||
+    beforeRun?.status === "stopping"
+  ) {
+    say("任务已取消或已请求停止：不再执行（可重新派发新任务）");
     return 2;
   }
 
@@ -516,13 +526,16 @@ async function suiteRunTask(
   const duringRun = await runtime.store
     .getRegressionTask(runtime.project.rootDir, task.id)
     .catch(() => null);
-  const stoppedDuringRun = duringRun?.status === "stopped" || duringRun?.status === "stopping";
+  const stoppedDuringRun =
+    duringRun?.status === "cancelled" ||
+    duringRun?.status === "stopped" ||
+    duringRun?.status === "stopping";
   try {
     await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
       ...(stoppedDuringRun ? {} : { status: finalStatus }),
       runIds
     });
-    if (stoppedDuringRun) say("任务已停止：保留 stopped（不回写终态、不自动重试）");
+    if (stoppedDuringRun) say("任务已取消：保留 cancelled（不回写终态、不自动重试）");
   } catch (error) {
     logWarn(`任务状态回写失败: ${errorMessage(error)}`);
     say("注意: 任务状态回写失败（运行结果不受影响）");
@@ -1688,14 +1701,16 @@ function parseTaskTargeting(
 async function suiteTask(
   runtime: Runtime,
   flags: ParsedFlags,
-  io: { log: (line: string) => void; errorLog: (line: string) => void }
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  env: NodeJS.ProcessEnv
 ): Promise<number> {
   const action = flags.positional[1];
   if (action === "create") return await suiteTaskCreate(runtime, flags, io);
   if (action === "list") return await suiteTaskList(runtime, flags, io);
   if (action === "show") return await suiteTaskShow(runtime, flags, io);
   if (action === "release") return await suiteTaskRelease(runtime, flags, io);
-  io.errorLog("用法: suite task create|list|show|release …（见 suite help）");
+  if (action === "cancel") return await suiteTaskCancel(runtime, flags, io, env);
+  io.errorLog("用法: suite task create|list|show|release|cancel …（见 suite help）");
   return 2;
 }
 
@@ -1799,7 +1814,10 @@ async function suiteTaskOnCenterHost(
     const action = flags.positional[1];
     if (action === "create") return await suiteTaskCreateOnHost(scoped, hostId, flags, io);
     if (action === "list") return await suiteTaskListOnHost(store, scoped, hostId, flags, io);
-    io.errorLog(`suite task ${action ?? ""} 暂不支持 --host（中心模式支持 create|list）`);
+    if (action === "cancel") {
+      return await suiteTaskCancelOnHost(scoped, hostId, flags, io, env);
+    }
+    io.errorLog(`suite task ${action ?? ""} 暂不支持 --host（中心模式支持 create|list|cancel）`);
     return 2;
   } catch (error) {
     io.errorLog(`suite task --host 失败：${errorMessage(error)}`);
@@ -1915,6 +1933,131 @@ async function suiteTaskListOnHost(
       `${task.id} · ${task.status} · refs ${task.refs.length} · platforms ${task.platforms.join(",")} · runs ${task.runIds.length} · ${task.createdAt}`
     );
   }
+  return 0;
+}
+
+function actorFromEnv(env: NodeJS.ProcessEnv): string {
+  const raw = (env.AOS_ACTOR ?? "").trim();
+  if (raw !== "") return raw;
+  try {
+    return os.userInfo().username;
+  } catch {
+    return "unknown";
+  }
+}
+
+function cancelStatusNote(status: string): string {
+  if (status === "stopping") return "已请求取消（等待执行机确认）";
+  if (status === "cancelled") return "已取消";
+  return `当前状态 ${status}，未改动`;
+}
+
+async function suiteTaskCancel(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  env: NodeJS.ProcessEnv
+): Promise<number> {
+  const taskId = flags.positional[2];
+  if (!taskId) {
+    io.errorLog("用法: suite task cancel <taskId> [--note <text>]");
+    return 2;
+  }
+  const rootPath = runtime.project.rootDir;
+  const existing = await runtime.store.getRegressionTask(rootPath, taskId);
+  if (!existing) {
+    io.errorLog(`未找到回归任务 ${taskId}`);
+    return 2;
+  }
+  const actor = actorFromEnv(env);
+  const actorHostId = runtime.hostIdentity?.id ?? null;
+  const note = flags.get("note");
+  const task = await runtime.store.cancelRegressionTask({
+    rootPath,
+    taskId,
+    source: "local-cli",
+    actor,
+    actorHostId,
+    note
+  });
+  if (!task) {
+    io.errorLog(`未找到回归任务 ${taskId}`);
+    return 2;
+  }
+  await recordAuditSafe(runtime.store, rootPath, {
+    domain: "suite",
+    action: "action.tasks.cancel",
+    result: "ok",
+    summary: `取消回归任务 ${taskId}（${cancelStatusNote(task.status)}）`,
+    refs: {
+      taskId,
+      status: task.status,
+      ...(actorHostId === null ? {} : { hostId: actorHostId })
+    },
+    actor,
+    actorHostId,
+    channel: "cli"
+  });
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, task }, null, 2));
+    return 0;
+  }
+  io.log(`回归任务 ${taskId}：${cancelStatusNote(task.status)}（status=${task.status}）`);
+  return 0;
+}
+
+async function suiteTaskCancelOnHost(
+  scoped: ProjectStore,
+  hostId: string,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  env: NodeJS.ProcessEnv
+): Promise<number> {
+  const taskId = flags.positional[2];
+  const rawProject = flags.get("project");
+  const rootPath = rawProject === null ? null : normalizeRootPath(rawProject);
+  if (!taskId || rootPath === null || rootPath === "") {
+    io.errorLog(
+      "用法: suite task cancel <taskId> --host <id|hostname> --project <rootPath> [--note <text>]"
+    );
+    return 2;
+  }
+  if ((await scoped.getProjectByPath(rootPath)) === null) {
+    const known = await knownRootPaths(scoped, hostId);
+    io.errorLog(
+      `未知项目：${rootPath}（主机 ${hostId} 已登记：${known.length > 0 ? known.join("、") : "无"}；请先在目标机接入项目）`
+    );
+    return 2;
+  }
+  const actor = actorFromEnv(env);
+  const note = flags.get("note");
+  const task = await scoped.cancelRegressionTask({
+    rootPath,
+    taskId,
+    source: "panel",
+    actor,
+    actorHostId: null,
+    note
+  });
+  if (!task) {
+    io.errorLog(`未找到回归任务 ${taskId}`);
+    return 2;
+  }
+  await recordAuditSafe(scoped, rootPath, {
+    domain: "suite",
+    action: "action.tasks.cancel",
+    result: "ok",
+    summary: `中心取消回归任务 ${taskId}（${cancelStatusNote(task.status)}）`,
+    refs: { taskId, status: task.status, hostId },
+    actor,
+    actorHostId: null,
+    channel: "cli"
+  });
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, hostId, task }, null, 2));
+    return 0;
+  }
+  io.log(`回归任务 ${taskId}（host=${hostId}）：${cancelStatusNote(task.status)}（status=${task.status}）`);
   return 0;
 }
 
@@ -2488,7 +2631,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "baseline") return await suiteBaseline(built.runtime, flags, { log, errorLog });
     if (sub === "report") return await suiteReport(built.runtime, flags, { log, errorLog });
     if (sub === "reconcile") return await suiteReconcile(built.runtime, flags, { log, errorLog });
-    if (sub === "task") return await suiteTask(built.runtime, flags, { log, errorLog });
+    if (sub === "task") return await suiteTask(built.runtime, flags, { log, errorLog }, deps.env ?? process.env);
     if (sub === "schedule") return await suiteSchedule(built.runtime, flags, { log, errorLog });
     if (sub === "backfill") return await suiteBackfill(built.runtime, flags, { log, errorLog });
     if (sub === "ui-contract") return await suiteUiContract(built.runtime, flags, { log, errorLog });

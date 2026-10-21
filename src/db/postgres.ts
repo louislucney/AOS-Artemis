@@ -10,6 +10,7 @@ import {
 } from "./usage-event.js";
 
 import type {
+  CancelSource,
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
@@ -56,6 +57,7 @@ import {
   AmbiguousProjectError,
   capabilitiesSatisfyPlatforms,
   isRunnerActive,
+  normalizeRegressionTask,
   RUNNER_ACTIVE_DEFAULT_MS,
   RunnerAlreadyActiveError
 } from "./types.js";
@@ -206,7 +208,13 @@ const SCHEMA = [
      claimed_instance_id TEXT,
      priority INTEGER NOT NULL DEFAULT 0,
      last_progress_at TEXT,
-     started_at TEXT
+     started_at TEXT,
+     cancel_source TEXT,
+     cancelled_by TEXT,
+     cancelled_host_id TEXT,
+     cancelled_at TEXT,
+     cancel_note TEXT,
+     cancel_requested_at TEXT
     )`,
   `CREATE TABLE IF NOT EXISTS suite_runs (
      id TEXT PRIMARY KEY,
@@ -295,7 +303,10 @@ const SCHEMA = [
      action TEXT NOT NULL,
      result TEXT NOT NULL,
      summary TEXT NOT NULL,
-     refs TEXT NOT NULL DEFAULT '{}'
+     refs TEXT NOT NULL DEFAULT '{}',
+     actor TEXT,
+     actor_host_id TEXT,
+     channel TEXT
     )`,
   `CREATE TABLE IF NOT EXISTS hosts (
      id TEXT PRIMARY KEY,
@@ -370,6 +381,15 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS last_progress_at TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS started_at TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancel_source TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancelled_by TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancelled_host_id TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancelled_at TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancel_note TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancel_requested_at TEXT`,
+  `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor TEXT`,
+  `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_host_id TEXT`,
+  `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS channel TEXT`,
   `ALTER TABLE suite_run_cases ADD COLUMN IF NOT EXISTS jira_issue_key TEXT`,
   `DELETE FROM runners WHERE id IN (
      SELECT r1.id FROM runners r1
@@ -884,7 +904,13 @@ export class PostgresStore implements ProjectStore {
       claimedInstanceId: null,
       priority: typeof input.priority === "number" ? input.priority : 0,
       lastProgressAt: null,
-      startedAt: null
+      startedAt: null,
+      cancelSource: null,
+      cancelledBy: null,
+      cancelledHostId: null,
+      cancelledAt: null,
+      cancelNote: null,
+      cancelRequestedAt: null
     };
   }
 
@@ -939,6 +965,61 @@ export class PostgresStore implements ProjectStore {
       values
     );
     return updated.rows.length > 0;
+  }
+
+  async cancelRegressionTask(input: {
+    rootPath: string;
+    taskId: string;
+    source: CancelSource;
+    actor: string;
+    actorHostId: string | null;
+    note?: string | null;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return null;
+    const at = input.at ?? new Date().toISOString();
+    const note = input.note ?? null;
+    const pending = await this.pool.query(
+      `UPDATE regression_tasks
+          SET status = 'cancelled', cancel_source = $3, cancelled_by = $4,
+              cancelled_host_id = $5, cancelled_at = $6, cancel_requested_at = $6,
+              cancel_note = $7
+        WHERE project_id = $1 AND id = $2 AND status = 'pending'
+      RETURNING *`,
+      [project.id, input.taskId, input.source, input.actor, input.actorHostId, at, note]
+    );
+    if (pending.rows.length > 0) return mapRegressionTask(pending.rows[0]!);
+    const requested = await this.pool.query(
+      `UPDATE regression_tasks
+          SET status = 'stopping', cancel_source = $3, cancelled_by = $4,
+              cancelled_host_id = $5, cancel_requested_at = $6, cancel_note = $7
+        WHERE project_id = $1 AND id = $2 AND status IN ('claimed', 'running')
+      RETURNING *`,
+      [project.id, input.taskId, input.source, input.actor, input.actorHostId, at, note]
+    );
+    if (requested.rows.length > 0) return mapRegressionTask(requested.rows[0]!);
+    return this.getRegressionTask(input.rootPath, input.taskId);
+  }
+
+  async ackCancellation(input: {
+    rootPath: string;
+    taskId: string;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return null;
+    const at = input.at ?? new Date().toISOString();
+    const updated = await this.pool.query(
+      `UPDATE regression_tasks
+          SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, $3),
+              cancel_requested_at = COALESCE(cancel_requested_at, $3)
+        WHERE project_id = $1 AND id = $2 AND status = 'stopping'
+      RETURNING *`,
+      [project.id, input.taskId, at]
+    );
+    if (updated.rows.length > 0) return mapRegressionTask(updated.rows[0]!);
+    return this.getRegressionTask(input.rootPath, input.taskId);
   }
 
   async claimRegressionTask(input: {
@@ -1947,8 +2028,10 @@ export class PostgresStore implements ProjectStore {
       if (dryRun) continue;
       const inserted = await this.pool.query(
         `INSERT INTO regression_tasks
-           (id, project_id, created_at, created_by, refs, platforms, baseline, status, claimed_by, claimed_at, run_ids, attempts)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           (id, project_id, created_at, created_by, refs, platforms, baseline, status, claimed_by, claimed_at,
+            run_ids, attempts, cancel_source, cancelled_by, cancelled_host_id, cancelled_at, cancel_note,
+            cancel_requested_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
          ON CONFLICT (id) DO NOTHING
          RETURNING id`,
         [
@@ -1963,7 +2046,13 @@ export class PostgresStore implements ProjectStore {
           entry.claimedBy,
           entry.claimedAt,
           JSON.stringify(entry.runIds),
-          entry.attempts
+          entry.attempts,
+          entry.cancelSource,
+          entry.cancelledBy,
+          entry.cancelledHostId,
+          entry.cancelledAt,
+          entry.cancelNote,
+          entry.cancelRequestedAt
         ]
       );
       regressionTasks.inserted += Number(inserted.rowCount ?? 0);
@@ -2191,8 +2280,8 @@ export class PostgresStore implements ProjectStore {
   async recordAudit(rootPath: string, input: AuditEventInput): Promise<AuditEventRecord> {
     const record = buildAuditEvent(rootPath, input);
     await this.pool.query(
-      `INSERT INTO audit_events (id, root_path, at, domain, action, result, summary, refs)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO audit_events (id, root_path, at, domain, action, result, summary, refs, actor, actor_host_id, channel)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         record.id,
         record.rootPath,
@@ -2201,7 +2290,10 @@ export class PostgresStore implements ProjectStore {
         record.action,
         record.result,
         record.summary,
-        JSON.stringify(record.refs)
+        JSON.stringify(record.refs),
+        record.actor ?? null,
+        record.actorHostId ?? null,
+        record.channel ?? null
       ]
     );
     return record;
@@ -2372,7 +2464,10 @@ function mapAudit(row: Record<string, unknown>): AuditEventRecord {
     action: String(row.action),
     result: String(row.result) as AuditEventRecord["result"],
     summary: String(row.summary),
-    refs
+    refs,
+    actor: nullableString(row.actor),
+    actorHostId: nullableString(row.actor_host_id),
+    channel: nullableString(row.channel)
   };
 }
 
@@ -2520,7 +2615,7 @@ function nullableString(value: unknown): string | null {
 }
 
 function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
-  return {
+  return normalizeRegressionTask({
     id: String(row.id),
     projectId: nullableString(row.project_id),
     createdAt: String(row.created_at),
@@ -2540,8 +2635,14 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     claimedInstanceId: nullableString(row.claimed_instance_id),
     priority: row.priority === null || row.priority === undefined ? 0 : Number(row.priority),
     lastProgressAt: nullableString(row.last_progress_at),
-    startedAt: nullableString(row.started_at)
-  };
+    startedAt: nullableString(row.started_at),
+    cancelSource: nullableString(row.cancel_source) as CancelSource | null,
+    cancelledBy: nullableString(row.cancelled_by),
+    cancelledHostId: nullableString(row.cancelled_host_id),
+    cancelledAt: nullableString(row.cancelled_at),
+    cancelNote: nullableString(row.cancel_note),
+    cancelRequestedAt: nullableString(row.cancel_requested_at)
+  });
 }
 
 function mapSuiteRunCase(row: Record<string, unknown>): SuiteRunCaseRecord {

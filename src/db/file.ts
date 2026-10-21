@@ -14,6 +14,7 @@ import type {
   AuditEventInput,
   AuditEventRecord,
   AuditQuery,
+  CancelSource,
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
@@ -283,6 +284,32 @@ export class FileStore implements ProjectStore {
     const updated = await this.scopedMem(bucket, this.hostId).updateRegressionTask(rootPath, id, patch);
     if (updated) await this.persist(bucket, "updateRegressionTask");
     return updated;
+  }
+
+  async cancelRegressionTask(input: {
+    rootPath: string;
+    taskId: string;
+    source: CancelSource;
+    actor: string;
+    actorHostId: string | null;
+    note?: string | null;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null> {
+    const bucket = await this.bucket(input.rootPath);
+    const record = await this.scopedMem(bucket, this.hostId).cancelRegressionTask(input);
+    if (record !== null) await this.persist(bucket, "cancelRegressionTask");
+    return record;
+  }
+
+  async ackCancellation(input: {
+    rootPath: string;
+    taskId: string;
+    at?: string;
+  }): Promise<RegressionTaskRecord | null> {
+    const bucket = await this.bucket(input.rootPath);
+    const record = await this.scopedMem(bucket, this.hostId).ackCancellation(input);
+    if (record !== null) await this.persist(bucket, "ackCancellation");
+    return record;
   }
 
   async claimRegressionTask(input: {

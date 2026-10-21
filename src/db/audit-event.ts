@@ -15,7 +15,10 @@ export function buildAuditEvent(rootPath: string, input: AuditEventInput): Audit
     action: input.action,
     result: input.result,
     summary: input.summary.slice(0, AUDIT_SUMMARY_MAX),
-    refs: input.refs ? { ...input.refs } : {}
+    refs: input.refs ? { ...input.refs } : {},
+    actor: input.actor ?? null,
+    actorHostId: input.actorHostId ?? null,
+    channel: input.channel ?? null
   };
 }
 

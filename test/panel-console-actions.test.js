@@ -91,19 +91,30 @@ test("console actions: 释放/停止/重新派发三动作（运行中先停止�
   assert.equal(blockedStopRelease.status, 409, "停止中不可释放（等待执行机确认）");
   assert.match(JSON.parse(blockedStopRelease.body).error, /等待执行机确认/);
 
-  await store.updateRegressionTask(rootPath, task.id, { status: "stopped" });
+  await store.ackCancellation({ rootPath, taskId: task.id });
+  const cancelled = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(cancelled.status, "cancelled", "执行机确认 → cancelled 终态");
+  assert.equal(cancelled.cancelSource, "panel");
+  assert.ok(cancelled.cancelledAt);
 
   const released = await handlePanelActionRequest(
     request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
     deps
   );
-  assert.equal(released.status, 200, "ack（stopped）→ pending");
+  assert.equal(released.status, 400, "cancelled 为终态，不可释放回队列");
   const after = await store.getRegressionTask(rootPath, task.id);
-  assert.equal(after.status, "pending");
-  assert.equal(after.claimedBy, null);
+  assert.equal(after.status, "cancelled");
+  assert.equal(after.claimedBy, "runner-1", "终态不清理领取历史");
 
+  const freshPending = await store.createRegressionTask({
+    rootPath,
+    refs: [{ caseSetId: "cs", featureKey: "f" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
   const stopPending = await handlePanelActionRequest(
-    request("/panel/api/tasks/stop", { project: rootPath, taskId: task.id }),
+    request("/panel/api/tasks/stop", { project: rootPath, taskId: freshPending.id }),
     deps
   );
   assert.equal(stopPending.status, 400, "pending 无执行可停止");
