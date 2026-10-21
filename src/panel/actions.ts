@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { AmbiguousProjectError } from "../db/types.js";
 import type { CaseVerdict } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
 import { exportProjectData, type ExportWhat } from "../export/index.js";
@@ -92,7 +93,22 @@ export async function handlePanelActionRequest(
   const hostParam =
     (request.url.searchParams.get("host") ?? "").trim() ||
     (typeof payload.host === "string" ? payload.host.trim() : "");
-  const resolved = await resolveProjectKey(deps, projectKey, hostParam === "" ? undefined : hostParam);
+  let resolved: { rootPath: string; name: string; hostId: string | null } | null;
+  try {
+    resolved = await resolveProjectKey(deps, projectKey, hostParam === "" ? undefined : hostParam);
+  } catch (error) {
+    if (error instanceof AmbiguousProjectError) {
+      return json(409, {
+        error: error.message,
+        candidates: error.candidates.map((candidate) => ({
+          hostId: candidate.hostId,
+          rootPath: candidate.rootPath,
+          name: candidate.name
+        }))
+      });
+    }
+    throw error;
+  }
   if (!resolved) return json(404, { error: `未知项目 "${projectKey}"` });
   const scopedDeps: PanelWebDeps =
     resolved.hostId === null

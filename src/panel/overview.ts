@@ -100,6 +100,7 @@ export interface PanelBatchSummary {
 export interface PanelProjectRow {
   name: string;
   rootPath: string;
+  hostId: string | null;
   registered: boolean;
   lastSeenAt: string | null;
   diskReachable: boolean;
@@ -684,6 +685,7 @@ async function buildProjectRow(
   const base: PanelProjectRow = {
     name: input.name,
     rootPath: input.rootPath,
+    hostId: input.record?.hostId ?? null,
     registered: input.record !== null,
     lastSeenAt: input.record?.lastSeenAt ?? null,
     diskReachable: false,

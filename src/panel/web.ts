@@ -661,8 +661,10 @@ function renderTable(headers: string[], rows: string[][], emptyText: string, cap
   });
 }
 
-function projectHref(rootPath: string): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}`;
+function projectHref(rootPath: string, hostId?: string | null): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}${
+    hostId ? `&host=${encodeURIComponent(hostId)}` : ""
+  }`;
 }
 
 function dispatchHref(rootPath: string): string {
@@ -860,7 +862,7 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
     view.projects.length === 0
       ? ""
       : `<script>(function(){var projects=${JSON.stringify(
-          view.projects.map((row) => ({ name: row.name, rootPath: row.rootPath, url: projectHref(row.rootPath) }))
+          view.projects.map((row) => ({ name: row.name, rootPath: row.rootPath, url: projectHref(row.rootPath, row.hostId) }))
         ).replace(/</g, "\\u003c")};
 try{
   var last=localStorage.getItem("aos-last-project");
@@ -869,7 +871,7 @@ try{
 }catch(e){}
 })();</script>`;
   const rows = view.projects.map((row) => {
-    const href = projectHref(row.rootPath);
+    const href = projectHref(row.rootPath, row.hostId);
     return [
       `<a class="c-project-link" href="${escapeHtml(href)}" title="进入项目：${escapeHtml(row.name)}">${escapeHtml(row.name)}<span class="c-project-arrow" aria-hidden="true">→</span></a>`,
       renderProjectCell(row),
@@ -903,7 +905,7 @@ try{
             action: '<code>node dist/cli.js install</code>（生成客户端挂载配置）'
           })
         : [
-            `<p><a class="c-button c-button-primary" href="${escapeHtml(projectHref(view.projects[0].rootPath))}">进入最近活跃项目：${escapeHtml(view.projects[0].name)} →</a></p>`,
+            `<p><a class="c-button c-button-primary" href="${escapeHtml(projectHref(view.projects[0].rootPath, view.projects[0].hostId))}">进入最近活跃项目：${escapeHtml(view.projects[0].name)} →</a></p>`,
             cCard({
               title: "项目",
               subtitle: `生成时间 ${relativeTimeText(view.generatedAt)} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
@@ -2735,7 +2737,7 @@ async function loadProjectSwitcher(
   return {
     options: projects.slice(0, 20).map((project) => ({
       label: project.name,
-      href: `/panel?project=${encodeURIComponent(project.rootPath)}`,
+      href: projectHref(project.rootPath, project.hostId),
       ...(project.rootPath === current ? { current: true } : {})
     }))
   };

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { handlePanelActionRequest } from "../dist/panel/actions.js";
+import { handleArtifactRequest } from "../dist/panel/artifact-route.js";
 import { handlePanelRequest, resolveProjectKey } from "../dist/panel/web.js";
 
 const ROOT_PATH = "/Users/louis/app";
@@ -134,3 +135,67 @@ test("动作层带 host 命中远端项目（裁决写回 h-b 不串 h-a）", as
   assert.equal((await hB.getSuiteRun(ROOT_PATH, runB.id)).cases[0].verdict, "case-defect");
   assert.equal((await hA.getSuiteRun(ROOT_PATH, runA.id)).cases[0].verdict, null);
 });
+
+test("同路径两主机产生互异的带 host 链接（切换器/总览）", async () => {
+  const { store, deps } = makeDeps();
+  await seedSuiteRun(store.scopeHost("h-a"), ROOT_PATH, "run-a");
+  await seedSuiteRun(store.scopeHost("h-b"), ROOT_PATH, "run-b");
+
+  const html = String((await handlePanelRequest(new URL("http://x/panel"), deps)).body);
+  const enc = encodeURIComponent(ROOT_PATH);
+  assert.match(html, new RegExp(`${enc}&amp;host=h-a`));
+  assert.match(html, new RegExp(`${enc}&amp;host=h-b`));
+});
+
+test("动作层无 host 且同路径跨主机 → 409（非 500）", async () => {
+  const { store, deps } = makeDeps();
+  await seedSuiteRun(store.scopeHost("h-a"), ROOT_PATH, "run-a");
+  await seedSuiteRun(store.scopeHost("h-b"), ROOT_PATH, "run-b");
+
+  const res = await handlePanelActionRequest(
+    {
+      method: "POST",
+      url: new URL("http://localhost/panel/api/verdicts"),
+      body: {
+        project: ROOT_PATH,
+        verdict: "case-defect",
+        items: [{ runId: "x", caseId: "y" }]
+      }
+    },
+    deps
+  );
+  assert.equal(res.status, 409);
+  const body = JSON.parse(res.body);
+  assert.match(body.error, /跨主机重复/);
+  assert.deepEqual(
+    new Set(body.candidates.map((candidate) => candidate.hostId)),
+    new Set(["h-a", "h-b"])
+  );
+});
+
+test("产物路由无 host 且同路径跨主机 → 409（非 500）", async () => {
+  const { store, deps } = makeDeps();
+  await seedSuiteRun(store.scopeHost("h-a"), ROOT_PATH, "run-a");
+  await seedSuiteRun(store.scopeHost("h-b"), ROOT_PATH, "run-b");
+
+  const res = await handleArtifactRequest(
+    new URL(`http://x/panel/artifact?project=${encodeURIComponent(ROOT_PATH)}&path=foo.txt`),
+    deps
+  );
+  assert.equal(res.status, 409);
+  const body = JSON.parse(res.body);
+  assert.match(body.error, /跨主机重复/);
+  assert.deepEqual(
+    new Set(body.candidates.map((candidate) => candidate.hostId)),
+    new Set(["h-a", "h-b"])
+  );
+
+  const scoped = await handleArtifactRequest(
+    new URL(
+      `http://x/panel/artifact?project=${encodeURIComponent(ROOT_PATH)}&host=h-b&path=foo.txt`
+    ),
+    deps
+  );
+  assert.notEqual(scoped.status, 409, "带 host 时不再歧义");
+});
+

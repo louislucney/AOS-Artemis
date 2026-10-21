@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { AmbiguousProjectError } from "../db/types.js";
 import { errorMessage } from "../util.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 
@@ -33,7 +34,27 @@ export async function handleArtifactRequest(
   });
   const project = (url.searchParams.get("project") ?? "").trim();
   if (project === "") return jsonError(400, "缺少 project");
-  const resolved = await resolveProjectKey(deps, project);
+  const hostParam = (url.searchParams.get("host") ?? "").trim();
+  let resolved: { rootPath: string; name: string; hostId: string | null } | null;
+  try {
+    resolved = await resolveProjectKey(deps, project, hostParam === "" ? undefined : hostParam);
+  } catch (error) {
+    if (error instanceof AmbiguousProjectError) {
+      return {
+        status: 409,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify({
+          error: error.message,
+          candidates: error.candidates.map((candidate) => ({
+            hostId: candidate.hostId,
+            rootPath: candidate.rootPath,
+            name: candidate.name
+          }))
+        })
+      };
+    }
+    throw error;
+  }
   if (!resolved) return jsonError(404, `未知项目 "${project}"`);
   if (url.searchParams.get("format") === "csv") {
     const kindRaw = (url.searchParams.get("kind") ?? "").trim();
