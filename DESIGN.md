@@ -2022,3 +2022,7 @@ llm_switch(name, force):
 ### 13.150 实施记录（Web 控制台 CSDC 强约束修正）
 
 > 实施于 2026-10-20。用户明确：控制台属于 CSDC 项目，关键元素必须与 CSDC 设计系统一致，而不是“参考”；此前宽屏 1320px 居中窄栏与系统暗色造成“UI 变形”。**修正**：`src/console/tokens.ts` 删除全部 `:root[data-theme="dark"]` 映射与暗色媒体查询，`color-scheme:light`＋`<meta name="color-scheme" content="light">`；`.c-layout` 去掉 1320 上限（全宽），侧栏 220px、主区白底 `20px 36px 80px`、页脚全宽；顶栏使用 CSDC 官方徽标（`src/console/logo.ts` 内联 data URI）＋产品名，侧栏增加「工作区」分组；区块/卡片标题改为 CSDC 黄色 Section Header（`#FFF9CC`＋`#FFE600`），按钮/徽章统一胶囊圆角，表格改为卡片外框＋浅灰表头＋14/22px 单元格，卡片 28px 内边距；`src/console/components.ts` 的 `cCard` 增加 `c-card-header` 包裹标题与动作。**文档**：`web-console/DESIGN.md` 同步亮色唯一/全宽/组件口径。**测试**：`console-shell` 断言官方徽标 data URI、全宽布局、220px 侧栏、白底主区、黄色卡片头、浅灰表头与胶囊圆角，并反向断言不再输出 `data-theme="dark"`；`npm run build && npm test && npm run lint` → 全量 **1794 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.151 实施记录（总览表格重排：去嵌套卡片 + 固定列宽）
+
+> 实施于 2026-10-21。用户反馈总览表格占比小、列设计不合理。`cTable` 新增可选 `columnWidths`（长度与列数一致时渲染 `<colgroup>` 并启用 `.c-table--fixed{table-layout:fixed}`）；总览按项目 20% / 接入健康 30% / 栈 13% / 最后活跃 10% / 最新批次 22% / 备注 5% 固定列宽。区块内表格（`#console-main > section... .c-table-wrap`、`.c-card .c-table-wrap`）去掉自带卡片边框/阴影，消除“卡片套表格”；总览删除每行重复「进入项目」按钮，项目名改为 `.c-project-link`（带箭头，title 说明），首屏 CTA 保留。批次列改为「状态 + 相对时间」一行、run id 一行；`.c-run-id` 单行省略并保留 title 全文，避免 1440 四行折行。`web-console/DESIGN.md` 同步。测试：`cTable` 固定列宽/列数不匹配回退、总览列宽与项目链接、区块内表格 flush；`npm run build && npm test && npm run lint` → 全量 **1794 绿**，lint 0 error（2 条既有 warning）。

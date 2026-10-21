@@ -157,6 +157,11 @@ test("console shell: CSDC 官方徽标、全宽布局与组件母版", () => {
   assert.ok(html.includes(".c-main{flex:1;min-width:0;padding:20px 36px 80px;background:var(--color-surface-white)}"), "主区白底");
   assert.ok(html.includes(".c-card-header{"), "卡片黄色分区头");
   assert.ok(html.includes(".c-table th{background:var(--color-surface-light);"), "表格浅灰表头");
+  assert.ok(html.includes(".c-table--fixed{table-layout:fixed}"), "固定列宽表格");
+  assert.ok(
+    html.includes("#console-main > section:not(.c-plain):not(.c-card) .c-table-wrap"),
+    "表格在区块内不再嵌套卡片"
+  );
   assert.ok(html.includes("border-radius:var(--radius-pill)"), "按钮/徽章胶囊圆角");
 });
 

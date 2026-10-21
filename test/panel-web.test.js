@@ -181,7 +181,9 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   assert.match(html.body, /c-table/, "CSDC 表格");
   assert.match(html.body, /c-badge/, "CSDC 徽章");
   assert.match(html.body, /进入最近活跃项目：demo →/, "首访直达最近活跃项目");
-  assert.match(html.body, /进入项目 →/, "每行显式进入动作");
+  assert.match(html.body, /class="c-project-link"[^>]*>demo<span class="c-project-arrow"/, "项目名即进入动作");
+  assert.match(html.body, /c-table--fixed/, "总览表格固定列宽");
+  assert.match(html.body, /<col style="width:20%">/, "项目列宽按信息优先级分配");
   assert.match(html.body, /进入任一项目后显示项目级版块/, "无项目上下文时导航给说明而非死项");
   assert.match(html.body, /id="aos-resume"/, "继续上次位点");
   assert.match(html.body, /aos-auto-entered/, "单项目自动进入（每会话一次守卫）");

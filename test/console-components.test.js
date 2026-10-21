@@ -48,6 +48,16 @@ test("cTable: rowsText 自动转义 / rows 原样 / 空态 / 语义表头", () =
 
   const empty = cTable({ columns: ["x", "y"], rowsText: [], empty: "暂无项目" });
   assert.match(empty, /colspan="2"[^>]*>暂无项目</);
+
+  const fixed = cTable({
+    columns: ["项目", "健康"],
+    rowsText: [["demo", "健康"]],
+    columnWidths: ["22%", "78%"]
+  });
+  assert.match(fixed, /class="c-table c-table--fixed"/);
+  assert.match(fixed, /<colgroup><col style="width:22%"><col style="width:78%"><\/colgroup>/);
+  const mismatch = cTable({ columns: ["x"], rowsText: [], columnWidths: ["100%", "0%"] });
+  assert.doesNotMatch(mismatch, /c-table--fixed/, "列宽数量不匹配时不启用固定布局");
 });
 
 test("cStat / cEmpty: 结构与转义", () => {

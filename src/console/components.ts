@@ -53,6 +53,8 @@ export interface CTableInput {
   rowsText?: string[][];
   empty?: string;
   caption?: string;
+  /** 固定列宽（百分比/px）；提供时启用 table-layout:fixed，避免宽屏列被内容摊薄。 */
+  columnWidths?: string[];
 }
 
 export function cTable(input: CTableInput): string {
@@ -62,11 +64,16 @@ export function cTable(input: CTableInput): string {
       : (input.rows ?? []);
   const head = input.columns.map((column) => `<th scope="col">${escapeHtml(column)}</th>`).join("");
   const caption = input.caption ? `<caption>${escapeHtml(input.caption)}</caption>` : "";
+  const widths =
+    input.columnWidths?.length === input.columns.length
+      ? `<colgroup>${input.columnWidths.map((width) => `<col style="width:${escapeHtml(width)}">`).join("")}</colgroup>`
+      : "";
+  const fixed = widths === "" ? "" : " c-table--fixed";
   const body =
     rows.length === 0
       ? `<tr><td class="c-empty-cell" colspan="${input.columns.length}">${escapeHtml(input.empty ?? "暂无数据")}</td></tr>`
       : rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
-  return `<div class="c-table-wrap"><table class="c-table">${caption}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="c-table-wrap"><table class="c-table${fixed}">${caption}${widths}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 export interface CStatInput {

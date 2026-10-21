@@ -102,15 +102,25 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
   border:1px solid var(--color-border-subtle);border-radius:var(--radius-card);box-shadow:var(--shadow-card)}
 .c-table{width:100%;border-collapse:collapse;font-size:var(--font-size-callout);background:var(--color-surface-white);text-align:left}
 .c-table th{background:var(--color-surface-light);padding:14px 22px;font-weight:var(--font-weight-semibold);
-  font-size:11px;color:var(--color-text-secondary);border-bottom:1px solid var(--color-border-subtle);
+  font-size:12px;color:var(--color-text-secondary);border-bottom:1px solid var(--color-border-subtle);
   letter-spacing:.02em;text-transform:uppercase;white-space:nowrap}
 .c-table td{padding:16px 22px;border-bottom:1px solid rgba(0,0,0,.05);color:var(--color-text-secondary);vertical-align:top}
 .c-table tr:last-child td{border-bottom:none}
 .c-table tr:hover td{background:#FAFAFB}
 .c-table caption{text-align:left;padding:14px 22px;color:var(--color-text-secondary);font-size:var(--font-size-caption);
   letter-spacing:.02em;text-transform:uppercase;background:var(--color-surface-white)}
+.c-table--fixed{table-layout:fixed}
 .c-empty-cell{color:var(--color-text-secondary);text-align:center;padding:32px 16px}
 .c-nowrap{white-space:nowrap}
+.c-run-id{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--color-text-secondary)}
+.c-batch-cell{display:flex;flex-direction:column;gap:2px;min-width:0}
+.c-batch-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}
+.c-batch-time{color:var(--color-text-secondary);font-size:12px;overflow-wrap:anywhere}
+.c-project-link{display:inline-flex;align-items:center;gap:8px;font-weight:var(--font-weight-semibold);color:var(--color-link)}
+.c-project-arrow{color:var(--color-text-tertiary);font-size:14px;transition:transform .15s ease,color .15s ease}
+.c-project-link:hover .c-project-arrow{transform:translateX(2px);color:var(--color-link)}
+#console-main > section:not(.c-plain):not(.c-card) .c-table-wrap,
+.c-card .c-table-wrap{border:0;border-radius:0;box-shadow:none;background:transparent}
 
 /* ── 徽章 / 横幅 / 统计贴片 ─────────────────────────────────────── */
 .c-badge{display:inline-block;border:1px solid var(--color-border);border-radius:var(--radius-pill);

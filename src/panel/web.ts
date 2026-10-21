@@ -656,12 +656,13 @@ function renderLatestBatchCell(row: PanelProjectRow): string {
       ? ""
       : ` · 通过 ${batch.summary.passed ?? "—"}/${batch.summary.total ?? "—"}`;
   const note = batch.note !== null ? ` · ${escapeHtml(batch.note)}` : "";
+  const runId = batch.runId ?? "（不可读）";
   return [
-    batchGateCell(batch.gate, batch.summary),
-    uiBadge(batch.ui),
-    `<code>${escapeHtml(batch.runId ?? "（不可读）")}</code>`,
-    `<div class="muted">${relativeTime(batch.finishedAt)}${summary}${note}</div>`
-  ].filter((part) => part !== "").join("<br>");
+    '<div class="c-batch-cell">',
+    `<div class="c-batch-head">${batchGateCell(batch.gate, batch.summary)}${uiBadge(batch.ui)}<span class="c-batch-time">· ${relativeTime(batch.finishedAt)}${summary}${note}</span></div>`,
+    `<code class="c-run-id" title="${escapeHtml(runId)}">${escapeHtml(runId)}</code>`,
+    "</div>"
+  ].join("");
 }
 
 function hostDepsLabel(status: string): string {
@@ -689,14 +690,17 @@ try{
   if(projects.length===1&&!sessionStorage.getItem("aos-auto-entered")){sessionStorage.setItem("aos-auto-entered","1");location.replace(projects[0].url);}
 }catch(e){}
 })();</script>`;
-  const rows = view.projects.map((row) => [
-    `<a href="${escapeHtml(projectHref(row.rootPath))}">${escapeHtml(row.name)}</a> <a class="c-button" href="${escapeHtml(projectHref(row.rootPath))}">进入项目 →</a>`,
-    renderProjectCell(row),
-    escapeHtml(row.stacks.join("、") || "—"),
-    `<span class="c-nowrap">${relativeTime(row.lastSeenAt)}</span>`,
-    renderLatestBatchCell(row),
-    escapeHtml(row.warnings.join("；") || "—")
-  ]);
+  const rows = view.projects.map((row) => {
+    const href = projectHref(row.rootPath);
+    return [
+      `<a class="c-project-link" href="${escapeHtml(href)}" title="进入项目：${escapeHtml(row.name)}">${escapeHtml(row.name)}<span class="c-project-arrow" aria-hidden="true">→</span></a>`,
+      renderProjectCell(row),
+      escapeHtml(row.stacks.join("、") || "—"),
+      `<span class="c-nowrap">${relativeTime(row.lastSeenAt)}</span>`,
+      renderLatestBatchCell(row),
+      escapeHtml(row.warnings.join("；") || "—")
+    ];
+  });
   return renderConsoleShell({
     title: "多项目总览",
     active: "overview",
@@ -726,8 +730,8 @@ try{
               subtitle: `生成时间 ${relativeTimeText(view.generatedAt)} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
               body: cTable({
                 columns: ["项目", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
+                columnWidths: ["20%", "30%", "13%", "10%", "22%", "5%"],
                 rows,
-                caption: "项目列表",
                 empty: "暂无项目"
               })
             }).toString()
