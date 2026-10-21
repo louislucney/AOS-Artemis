@@ -893,8 +893,9 @@ export class MemoryStore implements ProjectStore {
         rows.sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0));
         for (const row of rows.slice(0, maxPerSource)) keep.add(row);
       }
-      this.hostAddresses = this.hostAddresses.filter(
-        (row) => row.hostId !== input.hostId || keep.has(row)
+      replaceInPlace(
+        this.hostAddresses,
+        this.hostAddresses.filter((row) => row.hostId !== input.hostId || keep.has(row))
       );
     }
   }
@@ -1131,17 +1132,18 @@ export class MemoryStore implements ProjectStore {
     const policy = eventRetentionPolicy();
     const cutoff = eventCutoffIso(policy.days);
     const before = this.projectEvents.length;
-    this.projectEvents = this.projectEvents.filter(
+    let kept = this.projectEvents.filter(
       (event) => event.projectId !== project.id || event.receivedAt >= cutoff
     );
-    const remaining = this.projectEvents
+    const remaining = kept
       .filter((event) => event.projectId === project.id)
       .sort((left, right) => left.seq - right.seq);
     const overflow = Math.max(0, remaining.length - policy.max);
     if (overflow > 0) {
       const remove = new Set(remaining.slice(0, overflow).map((event) => event.id));
-      this.projectEvents = this.projectEvents.filter((event) => !remove.has(event.id));
+      kept = kept.filter((event) => !remove.has(event.id));
     }
+    replaceInPlace(this.projectEvents, kept);
     return before - this.projectEvents.length;
   }
 
@@ -1234,8 +1236,9 @@ export class MemoryStore implements ProjectStore {
     const retentionDays = policy.retentionDays ?? 0;
     if (retentionDays > 0) {
       const cutoff = retentionCutoffIso(retentionDays);
-      this.usageEvents = this.usageEvents.filter(
-        (event) => !inBucket(event) || event.at >= cutoff
+      replaceInPlace(
+        this.usageEvents,
+        this.usageEvents.filter((event) => !inBucket(event) || event.at >= cutoff)
       );
     }
     const maxEvents = policy.maxEvents ?? 0;
@@ -1247,8 +1250,9 @@ export class MemoryStore implements ProjectStore {
           .slice(0, maxEvents)
           .map((event) => event.id)
       );
-      this.usageEvents = this.usageEvents.filter(
-        (event) => !inBucket(event) || keep.has(event.id)
+      replaceInPlace(
+        this.usageEvents,
+        this.usageEvents.filter((event) => !inBucket(event) || keep.has(event.id))
       );
     }
   }
@@ -1269,6 +1273,11 @@ export class MemoryStore implements ProjectStore {
 
 function byNewestUsageEvent(a: UsageEventRecord, b: UsageEventRecord): number {
   return b.at.localeCompare(a.at) || b.id.localeCompare(a.id);
+}
+
+function replaceInPlace<T>(target: T[], next: T[]): void {
+  target.length = 0;
+  for (const item of next) target.push(item);
 }
 
 function projectKey(hostId: string | null, rootPath: string): string {
