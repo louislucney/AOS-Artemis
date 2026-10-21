@@ -174,6 +174,18 @@ function splitList(values: string[]): string[] {
   return values.flatMap((value) => value.split(",")).filter((value) => value !== "");
 }
 
+function normalizeRootPath(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed === "" || trimmed === "/") return trimmed;
+  const stripped = trimmed.replace(/\/+$/, "");
+  return stripped === "" ? "/" : stripped;
+}
+
+async function knownRootPaths(store: ProjectStore, hostId: string): Promise<string[]> {
+  const projects = (await store.listProjects()).filter((project) => project.hostId === hostId);
+  return [...new Set(projects.map((project) => project.rootPath))].sort();
+}
+
 function parseIgnoreRegions(values: string[]): Array<{ x: number; y: number; width: number; height: number }> | null {
   const regions: Array<{ x: number; y: number; width: number; height: number }> = [];
   for (const value of values) {
@@ -1764,7 +1776,7 @@ async function suiteTaskOnCenterHost(
   if (store === null) {
     try {
       store = center.openStore ? await center.openStore() : await openCenterStore(env);
-      opened = center.openStore === undefined;
+      opened = true;
     } catch (error) {
       io.errorLog(`suite task --host 需要中心 PG：${errorMessage(error)}`);
       return 2;
@@ -1809,7 +1821,8 @@ async function suiteTaskCreateOnHost(
   flags: ParsedFlags,
   io: { log: (line: string) => void; errorLog: (line: string) => void }
 ): Promise<number> {
-  const rootPath = flags.get("project");
+  const rawProject = flags.get("project");
+  const rootPath = rawProject === null ? null : normalizeRootPath(rawProject);
   if (rootPath === null || rootPath === "") {
     io.errorLog(
       "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none]"
@@ -1825,7 +1838,10 @@ async function suiteTaskCreateOnHost(
   }
   const project = await scoped.getProjectByPath(rootPath);
   if (project === null) {
-    io.errorLog(`未知项目：${rootPath}（主机 ${hostId} 未登记该路径；请先在目标机接入项目）`);
+    const known = await knownRootPaths(scoped, hostId);
+    io.errorLog(
+      `未知项目：${rootPath}（主机 ${hostId} 已登记：${known.length > 0 ? known.join("、") : "无"}；请先在目标机接入项目）`
+    );
     return 2;
   }
   const resolved = resolveTaskRefsFromSets(await scoped.listCaseSets(rootPath), refs, io);
@@ -1863,11 +1879,15 @@ async function suiteTaskListOnHost(
   flags: ParsedFlags,
   io: { log: (line: string) => void; errorLog: (line: string) => void }
 ): Promise<number> {
-  const projectArg = flags.get("project");
+  const rawProject = flags.get("project");
+  const projectArg = rawProject === null ? null : normalizeRootPath(rawProject);
   const rootPaths: string[] = [];
   if (projectArg !== null && projectArg !== "") {
     if ((await scoped.getProjectByPath(projectArg)) === null) {
-      io.errorLog(`未知项目：${projectArg}（主机 ${hostId} 未登记该路径）`);
+      const known = await knownRootPaths(scoped, hostId);
+      io.errorLog(
+        `未知项目：${projectArg}（主机 ${hostId} 已登记：${known.length > 0 ? known.join("、") : "无"}）`
+      );
       return 2;
     }
     rootPaths.push(projectArg);

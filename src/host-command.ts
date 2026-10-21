@@ -67,13 +67,42 @@ export function printHostUsage(log: (line: string) => void): void {
 中心主机登记（只连 PostgreSQL，不读本机 .artemis；需 MOBILE_TESTING_DATABASE_URL）：
   host list [--json]                         列出已登记主机
   host show <id|hostname> [--json]           查看主机（hostname 重名时报错列 id）
-  host register <id> [--label <名>] [--owner <人>] [--expected-os <os>]
-                [--expected-hostname <名>]   登记标签/负责人/期望环境
+  host register <id|hostname> [--label <名>] [--owner <人>] [--expected-os <os>]
+                [--expected-hostname <名>]   登记标签/负责人/期望环境（hostname 须唯一）
   host adopt-legacy --local [--dry-run|--apply]
                                              把本机存在路径的 legacy（未绑定主机）项目认领到本机
-  host adopt-legacy --host <id> --path <rootPath> [--dry-run|--apply]
+  host adopt-legacy --host <id|hostname> --path <rootPath> [--dry-run|--apply] [--allow-unknown-host]
                                              显式把某个 legacy 项目认领到指定主机
-  缺省 dry-run；--apply 才写库并记审计。`);
+  缺省 dry-run；--apply 才写库并记审计。--allow-unknown-host 允许写入尚未接入的主机 id（先迁移后接入）。`);
+}
+
+const HOST_ACTIONS = new Set(["list", "show", "register", "adopt-legacy"]);
+const ADOPT_USAGE =
+  "用法: host adopt-legacy --local [--dry-run|--apply] 或 host adopt-legacy --host <id|hostname> --path <rootPath> [--dry-run|--apply] [--allow-unknown-host]";
+
+/** 子命令必填参数/冲突在开库前判定（`host bogus`/缺参不应先报 PG 错误）。 */
+function hostInvocationError(action: string, flags: ParsedFlags): string | null {
+  if (action === "show") {
+    return flags.positional[1] ?? flags.get("id")
+      ? null
+      : "用法: host show <id|hostname> [--json]";
+  }
+  if (action === "register") {
+    return flags.positional[1] ?? flags.get("id")
+      ? null
+      : "用法: host register <id|hostname> [--label <名>] [--owner <人>] [--expected-os <os>] [--expected-hostname <名>]";
+  }
+  if (action !== "adopt-legacy") return null;
+  if (flags.bool("apply") && flags.bool("dry-run")) return "--apply 与 --dry-run 不能同时使用";
+  const hostArg = flags.get("host");
+  const pathArg = flags.get("path");
+  if (flags.bool("local")) {
+    return hostArg !== null || pathArg !== null ? "--local 与 --host/--path 不能同时使用" : null;
+  }
+  if (hostArg === null || hostArg.trim() === "" || pathArg === null || pathArg.trim() === "") {
+    return ADOPT_USAGE;
+  }
+  return null;
 }
 
 export async function runHostCommand(
@@ -88,12 +117,20 @@ export async function runHostCommand(
     printHostUsage(io.log);
     return action ? 0 : 2;
   }
+  if (!HOST_ACTIONS.has(action)) {
+    io.errorLog(`未知 host 子命令 "${action}"`);
+    printHostUsage(io.errorLog);
+    return 2;
+  }
+  const invocationError = hostInvocationError(action, flags);
+  if (invocationError !== null) {
+    io.errorLog(invocationError);
+    return 2;
+  }
   let store = deps.store ?? null;
-  let opened = false;
   if (store === null) {
     try {
       store = await openCenterStore(env);
-      opened = true;
     } catch (error) {
       io.errorLog(
         `${errorMessage(error)}（host 命令只支持中心 PG；请在客户端配置或环境变量中设置 ${CENTER_DATABASE_ENV}）`
@@ -105,15 +142,12 @@ export async function runHostCommand(
     if (action === "list") return await hostList(store, flags, io);
     if (action === "show") return await hostShow(store, flags, io);
     if (action === "register") return await hostRegister(store, flags, io);
-    if (action === "adopt-legacy") return await hostAdoptLegacy(store, flags, io, env);
-    io.errorLog(`未知 host 子命令 "${action}"`);
-    printHostUsage(io.errorLog);
-    return 2;
+    return await hostAdoptLegacy(store, flags, io, env);
   } catch (error) {
     io.errorLog(`host ${action} 失败：${errorMessage(error)}`);
     return 2;
   } finally {
-    if (opened && store !== null) {
+    if (deps.store === undefined && store !== null) {
       try {
         await store.close();
       } catch {
@@ -176,16 +210,12 @@ async function hostRegister(
   flags: ParsedFlags,
   io: HostCommandIo
 ): Promise<number> {
-  const id = flags.positional[1] ?? flags.get("id");
-  if (!id) {
-    io.errorLog(
-      "用法: host register <id> [--label <名>] [--owner <人>] [--expected-os <os>] [--expected-hostname <名>]"
-    );
-    return 2;
-  }
+  const reference = flags.positional[1] ?? flags.get("id") ?? "";
+  const host = await lookupHost(store, reference, io);
+  if (host === null) return 2;
   const registeredBy = flags.get("registered-by") ?? "cli";
   const record = await store.updateHostRegistration({
-    id,
+    id: host.id,
     label: flags.has("label") ? flags.get("label") : undefined,
     owner: flags.has("owner") ? flags.get("owner") : undefined,
     expectedOs: flags.has("expected-os") ? flags.get("expected-os") : undefined,
@@ -193,7 +223,7 @@ async function hostRegister(
     registeredBy
   });
   if (record === null) {
-    io.errorLog(`未知主机 ${id}（先用 host list 查看已登记主机）`);
+    io.errorLog(`未知主机 ${reference}（先用 host list 查看已登记主机）`);
     return 2;
   }
   if (flags.bool("json")) {
@@ -213,28 +243,36 @@ async function hostAdoptLegacy(
   io: HostCommandIo,
   env: NodeJS.ProcessEnv
 ): Promise<number> {
-  if (flags.bool("apply") && flags.bool("dry-run")) {
-    io.errorLog("--apply 与 --dry-run 不能同时使用");
-    return 2;
-  }
   const apply = flags.bool("apply");
   const hostArg = flags.get("host");
   const pathArg = flags.get("path");
   if (flags.bool("local")) {
-    if (hostArg !== null || pathArg !== null) {
-      io.errorLog("--local 与 --host/--path 不能同时使用");
-      return 2;
-    }
     const hostId = await localHostId(env);
     return await adoptLocalProjects(store, hostId, apply, flags, io);
   }
   if (hostArg === null || pathArg === null) {
+    io.errorLog(ADOPT_USAGE);
+    return 2;
+  }
+  const lookup = await resolveHostReference(store, hostArg);
+  let hostId: string;
+  if (lookup.ok) {
+    hostId = lookup.host.id;
+  } else if (lookup.reason === "ambiguous") {
     io.errorLog(
-      "用法: host adopt-legacy --local [--dry-run|--apply] 或 host adopt-legacy --host <id> --path <rootPath> [--dry-run|--apply]"
+      `主机名不唯一：${hostArg}（${lookup.candidates.map((host) => host.id).join("、")}）；请改用主机 id`
+    );
+    return 2;
+  } else if (flags.bool("allow-unknown-host")) {
+    // 逃逸口：先把历史项目挂到尚未接入的机器（按操作员给定的 id 原样写入），接入后自动接上。
+    hostId = hostArg.trim();
+  } else {
+    io.errorLog(
+      `未知主机 ${hostArg}（用 host list 查看已登记主机；确认要先把项目迁到尚未接入的主机时加 --allow-unknown-host）`
     );
     return 2;
   }
-  return await adoptOneProject(store, hostArg, pathArg, apply, flags, io);
+  return await adoptOneProject(store, hostId, pathArg, apply, flags, io);
 }
 
 async function adoptLocalProjects(
@@ -248,15 +286,17 @@ async function adoptLocalProjects(
     (project) => project.hostId === null && fs.existsSync(project.rootPath)
   );
   if (flags.bool("json") && !apply) {
-    io.log(JSON.stringify({ ok: true, hostId, dryRun: true, candidates }, null, 2));
+    io.log(
+      JSON.stringify({ ok: true, hostId, dryRun: true, candidates: candidates.map(adoptionView) }, null, 2)
+    );
     return 0;
   }
   if (apply) {
-    const adopted: Array<{ rootPath: string; projectId: string; adopted: boolean }> = [];
+    const adopted: Array<ReturnType<typeof adoptionView> & { adopted: boolean }> = [];
     const jsonMode = flags.bool("json");
     for (const project of candidates) {
       const changed = await adoptLegacyProject(store, project, hostId);
-      adopted.push({ rootPath: project.rootPath, projectId: project.id, adopted: changed });
+      adopted.push({ ...adoptionView(project), hostId, adopted: changed });
       if (!jsonMode) {
         io.log(
           changed
@@ -304,7 +344,7 @@ async function adoptOneProject(
   }
   if (!apply) {
     if (flags.bool("json")) {
-      io.log(JSON.stringify({ ok: true, hostId, dryRun: true, candidates: [project] }, null, 2));
+      io.log(JSON.stringify({ ok: true, hostId, dryRun: true, candidates: [adoptionView(project)] }, null, 2));
     } else {
       io.log(`将认领 ${project.rootPath} → ${hostId}（项目 ${project.name}；dry-run，加 --apply 执行）`);
     }
@@ -316,7 +356,13 @@ async function adoptOneProject(
     return 2;
   }
   if (flags.bool("json")) {
-    io.log(JSON.stringify({ ok: true, hostId, dryRun: false, adopted: [project] }, null, 2));
+    io.log(
+      JSON.stringify(
+        { ok: true, hostId, dryRun: false, adopted: [{ ...adoptionView(project), hostId }] },
+        null,
+        2
+      )
+    );
     return 0;
   }
   io.log(`已认领 ${project.rootPath} → ${hostId}`);
@@ -367,6 +413,19 @@ async function lookupHost(
     `主机名不唯一：${reference}（${lookup.candidates.map((host) => host.id).join("、")}）；请改用主机 id`
   );
   return null;
+}
+
+function adoptionView(project: ProjectRecord): Pick<
+  ProjectRecord,
+  "id" | "hostId" | "rootPath" | "name" | "lastSeenAt"
+> {
+  return {
+    id: project.id,
+    hostId: project.hostId,
+    rootPath: project.rootPath,
+    name: project.name,
+    lastSeenAt: project.lastSeenAt
+  };
 }
 
 function describeHostLine(host: HostRecord): string {

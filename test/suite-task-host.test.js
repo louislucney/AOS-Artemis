@@ -152,6 +152,7 @@ test("suite task create/list --host 未登记的项目路径 → exit 2", async 
   );
   assert.equal(create, 2);
   assert.match(createErrors.join("\n"), /未知项目/);
+  assert.match(createErrors.join("\n"), /\/w\/app/);
 
   const listErrors = [];
   const list = await runSuiteCommand(["task", "list", "--host", "h-b", "--project", "/w/other"], {
@@ -175,5 +176,50 @@ test("suite task --host 无 PG → exit 2 且提示 MOBILE_TESTING_DATABASE_URL"
   });
   assert.equal(code, 2);
   assert.match(errors.join("\n"), /MOBILE_TESTING_DATABASE_URL/);
+});
+
+test("suite task create --host 容忍 --project 结尾斜杠", async () => {
+  const store = await makePgStore();
+  await store.upsertHost({ id: "h-b", hostname: "mac-b" });
+  await seedHostProject(store, "h-b", "/w/app", "f-1");
+  const errors = [];
+  const code = await runSuiteCommand(
+    ["task", "create", "--host", "h-b", "--project", "/w/app/", "--ref", "f-1"],
+    {
+      buildRuntime: throwBuildRuntime,
+      log: () => {},
+      errorLog: (line) => errors.push(line),
+      center: { store }
+    }
+  );
+  assert.equal(code, 0, errors.join("\n"));
+  const tasks = await store.scopeHost("h-b").listRegressionTasks("/w/app");
+  assert.equal(tasks.length, 1);
+});
+
+test("suite task --host 关闭 openStore 打开的存储", async () => {
+  const store = await makePgStore();
+  await store.upsertHost({ id: "h-b", hostname: "mac-b" });
+  await seedHostProject(store, "h-b", "/w/app", "f-1");
+  let closed = false;
+  const proxy = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === "close") {
+        return async () => {
+          closed = true;
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  const code = await runSuiteCommand(["task", "list", "--host", "h-b"], {
+    buildRuntime: throwBuildRuntime,
+    log: () => {},
+    errorLog: () => {},
+    center: { openStore: async () => proxy }
+  });
+  assert.equal(code, 0);
+  assert.equal(closed, true);
 });
 

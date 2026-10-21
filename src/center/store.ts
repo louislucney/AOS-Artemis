@@ -26,7 +26,10 @@ export async function resolveHostReference(
   if (trimmed === "") return { ok: false, reason: "not-found" };
   const exact = await store.getHost(trimmed);
   if (exact !== null) return { ok: true, host: exact };
-  const matches = (await store.listHosts()).filter((host) => host.hostname === trimmed);
+  const needle = trimmed.toLowerCase();
+  const matches = (await store.listHosts()).filter(
+    (host) => host.hostname.toLowerCase() === needle
+  );
   if (matches.length === 1) return { ok: true, host: matches[0]! };
   if (matches.length === 0) return { ok: false, reason: "not-found" };
   return { ok: false, reason: "ambiguous", candidates: matches };
