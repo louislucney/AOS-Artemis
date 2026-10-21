@@ -2234,3 +2234,33 @@ llm_switch(name, force):
 - **行为**：`src/panel/artifact-route.ts` 在 `.artemis` 范围校验后先 `stat`：目录 → 浅索引（HTML，条目排序、名称转义、目录尾 `/`、`← 上级`、>500 截断），文件 → 原白名单 MIME；不存在/非普通文件 → 404（此前「未知扩展名且不存在」先报 400，现统一 404）。索引内链接续带 `project`/`host`，可逐级下钻与返回。
 - **口径**：与 runner 产物服务 `/artifact/<rel>` 的目录浅索引一致（不递归、转义、截断）；仍只读、仅 `.artemis` 范围、无目录穿越；不新增鉴权（面板沿用 `serve --http` 的 `AOS_HTTP_TOKEN`）。
 - **测试**：`test/panel-artifact-route.test.js` +1（目录 200/HTML、子目录与上级链接、名称转义、`.artemis` 根无上级；既有「非白名单类型」用例改为先落盘 `raw.bin` 再断言 400）。全量 2036 绿。
+
+### 13.172 调整（面板信息架构第一刀：去顶栏状态、收敛项目页锚点）
+
+> 2026-10-21。反馈：左侧入口多而杂、同一件事有多个入口；顶栏的「PostgreSQL / 最近写入」对使用者无操作价值。
+
+- **顶栏**：移除存储状态胶囊（持久层标签、最近写入、写失败徽标）；`storeHealth` 数据仍保留，持久层信息只在项目页「可持久」行与运维页出现。
+- **导航**：`DEFAULT_CONSOLE_NAV` 由 12 项收敛到 9 项——删除 `tasks`/`runners`/`schedules` 三个一级入口（它们本就是项目页内锚点）；`g t/r/s` 快捷键仍指向对应锚点，深链 `?section=…` 不破坏。项目页新增「页内：任务 · 执行机 · 计划」跳转行；任务/批次详情页的导航当前态回落到「项目」。
+- **测试**：`console-shell`（默认 nav、快捷键锚点、顶栏无胶囊）、`panel-web`（项目页无胶囊、可持久行）、`usage-web`（顶栏无记录底座）同步更新；全量 2036 绿。
+
+### 13.173 调整（面板信息架构第二刀：结果/运维合并与术语收敛）
+
+> 2026-10-21。接 §13.172：同级页面合并、术语降噪。
+
+- **导航 8 项**（HTTP 模式含使用统计）：总览 / 项目 / 结果 / 下发 / 用例库 / 档案 / 运维（独立面板进程隐藏使用统计）。结果＝失败分析（`view=review`）+ 统计（`view=stats`）；运维＝数据（`section=ops`）+ 审计（`section=audit`）。旧 URL 原样可用，导航当前态统一高亮组合入口（stats→review、audit→ops）。
+- **页签**：`renderGroupTabs`（`src/console/shell.ts`）在四个页面顶部渲染「失败分析 / 统计」「数据 / 审计」，`.c-tabs` 复用 CSDC 胶囊样式。
+- **术语收敛**：项目页标题去英文/工程词——接入信息→接入、磁盘资产→磁盘文件、测试批次→最近运行、独立运行→单次运行、新建回归测试→新建任务、执行机（runner）→执行机、回归任务→任务、定时回归（schedule）→定时任务；三轴改「运行 / 存储 / 接入」；术语表收进折叠 `<details>`；只读横幅文案缩短。
+- **测试**：相关断言同步（nav、页签、标题、三轴、横幅、快捷键）；全量 2036 绿。
+
+### 13.174 新功能（CMS 开放服务：静态设计图 → design.md + cases.xlsx）
+
+> 2026-10-21。面向 CMS 网页的独立开放服务；只生成、不执行、不接设备。
+
+- **入口**：`node dist/cli.js cms-open --host 127.0.0.1 --port 8780 [--cors …] [--allowed-hosts …] [--max-queue 20] [--max-concurrent 3] [--job-timeout-ms 600000] [--retention-ms 7200000] [--check]`。独立进程，不读项目配置、不依赖 PG；默认 loopback、无鉴权；CORS 默认拒绝跨源，写请求校验 `Origin` 与 `Host`（multipart 属 CORS 安全清单类型，不能只靠响应头）。
+- **接口**：`POST /jobs`（JSON ≤1MB / multipart 单文件 ≤50MB）→ `{jobId}`；`GET /jobs/:id`（状态/步骤/错误）；`DELETE /jobs/:id`（queued→cancelled，running→协作式取消标记）；`GET /jobs/:id/download`（done 200 / 未完成 409 / 过期 410 / 未知或重启 404+`job_not_found`）；`GET /healthz`（bootId）。
+- **任务模型**：内存 JobManager（FIFO、并发 3、队列 20、单任务 10 分钟、产物 TTL 2 小时）；zip 先落临时文件再发送；`meta.json` 必含 source/generatedAt/model/maxFlows/maxDepth/counts/warnings。
+- **凭证注入**：新增 `DesignRuntimeLike`（`src/figma/design-runtime.ts`）作为唯一注入口；`figma_extract_flows`/`figma_generate_tests`/`pen_extract_flows`/`render` 接受显式 `figmaToken`/`chat`，不写 `process.env`。vendored Figma client 增加 per-call token 参数，响应缓存键含 token 指纹（NOTICE 第 7 条）。
+- **静态 Figma 合成**（`src/open/figma-static.ts`）：无原型交互时按「箭头/连线 → 画板旁文字注释（正则，失败可走 LLM 结构化抽取）→ 画布顺序」推断 `FlowGraph`；所有推断边 `provenance=inferred`/`confidence=low`；md 标注需复核；无屏幕 → `no_screens`，无箭头/注释 → `layout-fallback`。
+- **用例与模版**：复用线性化与用例模型，Web 文案去掉 `mobile_run_task` 描述（`src/figma/web-wording.ts`）；Excel 默认 7 列，模版有 `{{case.*}}/{{index}}` 走原占位符引擎，否则按表头映射（必需：用例名称/操作步骤/预期结果；别名与额外列留空）；缺列报 `template_invalid`。
+- **`.pen`**：上传文件写入 job 临时项目，复用 `pen_extract_flows`；渲染/截图使用服务机登录态（`pen login`/`PEN_CLI_KEY`），未就绪显式 `pen_unavailable`，不静默降级。
+- **测试**：`open-credentials`（token 隔离/缓存不串）、`open-figma-static`（箭头/注释/布局）、`open-template-map`（7 列/表头映射/缺列/占位符）、`open-jobs`（队列/并发/超时/取消/TTL）、`open-zip`、`open-pipeline`（静态/pen/无用例）、`open-server`（路由/CORS/限额/取消/410）、`open-command`；全量 2064 绿。

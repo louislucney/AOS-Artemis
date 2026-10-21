@@ -52,6 +52,8 @@ export interface OpenPipelineDeps {
   generate?: typeof figmaGenerateTests;
   penReady?: () => Promise<{ ok: true } | { ok: false; hint: string }>;
   now?: () => Date;
+  /** Cooperative cancel: checked at step boundaries. */
+  isCancelled?: () => boolean;
 }
 
 export interface OpenJobResult {
@@ -253,7 +255,22 @@ export async function runOpenJob(
     }
   }
 
+  const flowsFile = path.join(designDir, "flows.json");
+  if (fs.existsSync(flowsFile)) {
+    try {
+      const parsed = JSON.parse(await readFile(flowsFile, "utf-8")) as {
+        screens?: unknown;
+        warnings?: unknown;
+      };
+      if (screenCount === 0 && Array.isArray(parsed.screens)) screenCount = parsed.screens.length;
+      warnings = [...new Set([...warnings, ...warningMessages(parsed.warnings)])];
+    } catch {
+      /* flows.json is optional for the summary */
+    }
+  }
+
   const generate = deps.generate ?? figmaGenerateTests;
+  if (deps.isCancelled?.()) throw new OpenJobError("cancelled", "任务已取消");
   const generated = await generate(
     runtime,
     {
@@ -283,6 +300,7 @@ export async function runOpenJob(
   }
 
   const webCases = rewriteCasesForWeb(cases as never);
+  if (deps.isCancelled?.()) throw new OpenJobError("cancelled", "任务已取消");
   const xlsx = await renderCmsWorkbook(webCases, {
     source: input.source === "figma" ? "figma" : "pen",
     generatedAt,

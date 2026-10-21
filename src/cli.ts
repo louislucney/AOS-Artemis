@@ -10,6 +10,7 @@ import { runServer } from "./server.js";
 import { printSuiteUsage, runSuiteCommand } from "./suite-command.js";
 import { runUsageCommand } from "./usage-command.js";
 import { runPanelCommand } from "./panel-command.js";
+import { runCmsOpen } from "./open/command.js";
 
 function printUsage(): void {
   console.log(`mobile-testing-mcp — AOS × ARTEMIS unified MCP service
@@ -46,6 +47,8 @@ Usage:
                     只读看板（复用 /usage 与 /usage.json）；端口占用 exit 2
   mobile-testing-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]
                     多项目总览面板（只读；复用 /panel 与 /panel.json）
+  mobile-testing-mcp cms-open [--host 127.0.0.1] [--port 8780] [--cors <origins>]
+                    CMS 开放服务：静态 Figma/.pen → design.md + cases.xlsx（zip）；默认只读本机
   mobile-testing-mcp export --what results|process|data [--format json|csv] [--project <dir>]
                     [--out <file>] [--since <ISO>] [--limit <n>]
                     三口径导出：results（测试结果）/ process（测试过程）/ data（测试用的数据）
@@ -69,7 +72,7 @@ const [command = "serve", ...rest] = process.argv.slice(2);
 void (async () => {
   // `--help/-h` 优先于一切校验（含拼写错误子命令）：只打印对应用法，不进入任何命令分支。
   const wantsHelp = rest.includes("-h") || rest.includes("--help");
-  if (wantsHelp && command !== "jira") {
+  if (wantsHelp && command !== "jira" && command !== "cms-open") {
     if (command === "suite") printSuiteUsage((line) => console.log(line));
     else if (command === "host") printHostUsage((line) => console.log(line));
     else printUsage();
@@ -140,6 +143,11 @@ void (async () => {
     }
     case "panel": {
       const code = await runPanelCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "cms-open": {
+      const code = await runCmsOpen(rest);
       process.exit(code);
       break;
     }

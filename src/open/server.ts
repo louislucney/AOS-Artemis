@@ -1,0 +1,426 @@
+import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+
+import { JobManager, JobQueueFullError, type JobError } from "./jobs.js";
+import { isJson, isMultipart, parseMultipart } from "./multipart.js";
+import {
+  OpenJobError,
+  runOpenJob,
+  type OpenJobInput,
+  type OpenJobResult
+} from "./pipeline.js";
+
+const JSON_LIMIT = 1 * 1024 * 1024;
+const MULTIPART_LIMIT = 55 * 1024 * 1024;
+const FILE_LIMIT = 50 * 1024 * 1024;
+
+export interface CmsOpenServerOptions {
+  host?: string;
+  port?: number;
+  cors?: string[];
+  allowedHosts?: string[];
+  maxQueue?: number;
+  maxConcurrent?: number;
+  jobTimeoutMs?: number;
+  retentionMs?: number;
+  workRoot?: string;
+  now?: () => number;
+  runner?: (
+    input: OpenJobInput,
+    workDir: string,
+    isCancelled: () => boolean
+  ) => Promise<OpenJobResult>;
+}
+
+export interface CmsOpenServer {
+  host: string;
+  port: number;
+  bootId: string;
+  close: () => Promise<void>;
+}
+
+class HttpError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly hint?: string;
+  constructor(status: number, code: string, message: string, hint?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.hint = hint;
+  }
+}
+
+function hostNameOf(header: string | undefined): string {
+  if (!header) return "";
+  if (header.startsWith("[")) {
+    const end = header.indexOf("]");
+    return end >= 0 ? header.slice(1, end) : header;
+  }
+  return header.split(":")[0] ?? "";
+}
+
+function defaultHosts(host: string): string[] {
+  const allowed = new Set(["127.0.0.1", "localhost", "::1"]);
+  if (host !== "0.0.0.0" && host !== "::") allowed.add(host);
+  return [...allowed];
+}
+
+async function readBody(request: http.IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > limit) {
+      throw new HttpError(413, "payload_too_large", `请求体超过上限（${limit} bytes）`);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+function parseLlm(value: unknown): OpenJobInput["llm"] {
+  if (value === undefined || value === null || value === "") return null;
+  let raw: unknown;
+  try {
+    raw = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  } catch {
+    throw new HttpError(400, "invalid_request", "llm 不是合法 JSON");
+  }
+  if (!raw || typeof raw !== "object") throw new HttpError(400, "invalid_request", "llm 必须是对象");
+  const record = raw as { baseUrl?: unknown; model?: unknown; apiKey?: unknown };
+  if (
+    typeof record.baseUrl !== "string" ||
+    typeof record.model !== "string" ||
+    typeof record.apiKey !== "string" ||
+    record.baseUrl.trim() === "" ||
+    record.model.trim() === "" ||
+    record.apiKey.trim() === ""
+  ) {
+    throw new HttpError(400, "invalid_request", "llm 需要 baseUrl / model / apiKey");
+  }
+  return { baseUrl: record.baseUrl, model: record.model, apiKey: record.apiKey };
+}
+
+function sourceOf(value: unknown): { type: "figma" | "pen"; url?: string; token?: string; nodeId?: string } {
+  if (typeof value === "string") {
+    if (value === "figma" || value === "pen") return { type: value };
+    throw new HttpError(400, "invalid_source", `未知 source：${value}`);
+  }
+  if (!value || typeof value !== "object") {
+    throw new HttpError(400, "invalid_source", "缺少 source");
+  }
+  const record = value as { type?: unknown; url?: unknown; token?: unknown; nodeId?: unknown };
+  const type = record.type === "pen" ? "pen" : record.type === "figma" ? "figma" : null;
+  if (type === null) throw new HttpError(400, "invalid_source", "source.type 必须是 figma 或 pen");
+  return {
+    type,
+    ...(typeof record.url === "string" ? { url: record.url } : {}),
+    ...(typeof record.token === "string" ? { token: record.token } : {}),
+    ...(typeof record.nodeId === "string" ? { nodeId: record.nodeId } : {})
+  };
+}
+
+function numberField(value: unknown, name: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new HttpError(400, "invalid_request", `${name} 必须是正数`);
+  }
+  return Math.trunc(parsed);
+}
+
+function validateFigma(source: { type: string; url?: string }, penFile?: string): void {
+  if (source.type === "figma" && !source.url) {
+    throw new HttpError(400, "invalid_source", "缺少 figmaUrl");
+  }
+  if (source.type === "pen" && !penFile) {
+    throw new HttpError(400, "invalid_source", "缺少 penFile 上传");
+  }
+}
+
+async function saveUpload(
+  file: { filename: string; data: Buffer },
+  workDir: string,
+  fallback: string,
+  extensions: string[]
+): Promise<string> {
+  const ext = path.extname(file.filename).toLowerCase();
+  if (!extensions.includes(ext)) {
+    throw new HttpError(400, "invalid_source", `仅支持 ${extensions.join("/")} 文件`);
+  }
+  if (file.data.length > FILE_LIMIT) {
+    throw new HttpError(413, "payload_too_large", "单文件超过 50 MB");
+  }
+  const target = path.join(workDir, `${fallback}${ext}`);
+  await mkdir(workDir, { recursive: true });
+  await writeFile(target, file.data);
+  return target;
+}
+
+export async function startCmsOpenServer(
+  options: CmsOpenServerOptions = {}
+): Promise<CmsOpenServer> {
+  const host = options.host ?? "127.0.0.1";
+  const cors = options.cors ?? [];
+  const allowedHosts = new Set([...defaultHosts(host), ...(options.allowedHosts ?? [])]);
+  const workRoot = path.resolve(options.workRoot ?? path.join(os.tmpdir(), "aos-cms-open"));
+  await mkdir(workRoot, { recursive: true });
+  const bootId = randomUUID();
+  const manager = new JobManager({
+    maxQueue: options.maxQueue,
+    maxConcurrent: options.maxConcurrent,
+    jobTimeoutMs: options.jobTimeoutMs,
+    retentionMs: options.retentionMs,
+    now: options.now
+  });
+  const inputs = new Map<string, OpenJobInput>();
+  const runner =
+    options.runner ??
+    ((input, workDir, isCancelled) => runOpenJob(input, workDir, { isCancelled }));
+  let active = 0;
+
+  const pump = (): void => {
+    while (active < (options.maxConcurrent ?? 3)) {
+      const job = manager.claimNext();
+      if (!job) return;
+      const input = inputs.get(job.id);
+      if (!input) {
+        manager.fail(job.id, { code: "internal", message: "任务输入丢失" });
+        continue;
+      }
+      active += 1;
+      const workDir = path.join(workRoot, job.id);
+      runner(input, workDir, () => manager.cancelRequested(job.id))
+        .then((result) => {
+          if (manager.cancelRequested(job.id)) manager.markCancelled(job.id);
+          else manager.complete(job.id, result.zipPath);
+        })
+        .catch((error: unknown) => {
+          manager.fail(job.id, toJobError(error));
+        })
+        .finally(() => {
+          active -= 1;
+          inputs.delete(job.id);
+          pump();
+        });
+    }
+  };
+
+  const json = (res: http.ServerResponse, status: number, payload: unknown, origin: string | null): void => {
+    const headers: Record<string, string> = { "content-type": "application/json; charset=utf-8" };
+    if (origin !== null) {
+      headers["access-control-allow-origin"] = origin;
+      headers.vary = "Origin";
+    }
+    res.writeHead(status, headers);
+    res.end(JSON.stringify(payload));
+  };
+  const fail = (res: http.ServerResponse, error: HttpError, origin: string | null): void => {
+    json(res, error.status, { error: error.message, code: error.code, ...(error.hint ? { hint: error.hint } : {}) }, origin);
+  };
+
+  const server = http.createServer(async (request, response) => {
+    const originHeader = request.headers.origin;
+    const origin = typeof originHeader === "string" ? originHeader : null;
+    const allowedOrigin = origin !== null && (cors.includes("*") || cors.includes(origin)) ? origin : null;
+    try {
+      const hostName = hostNameOf(request.headers.host);
+      if ((origin !== null && allowedOrigin === null) || !allowedHosts.has(hostName)) {
+        throw new HttpError(403, "forbidden", "来源或主机不在允许列表");
+      }
+      if (request.method === "OPTIONS") {
+        if (origin !== null && allowedOrigin === null) {
+          throw new HttpError(403, "forbidden", "来源不在 CORS 白名单");
+        }
+        const headers: Record<string, string> = {
+          "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
+          "access-control-allow-headers": "content-type,authorization"
+        };
+        if (allowedOrigin !== null) {
+          headers["access-control-allow-origin"] = allowedOrigin;
+          headers.vary = "Origin";
+        }
+        response.writeHead(204, headers);
+        response.end();
+        return;
+      }
+      const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+      if (request.method === "GET" && url.pathname === "/healthz") {
+        json(response, 200, { ok: true, bootId }, allowedOrigin);
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/jobs") {
+        const contentType = request.headers["content-type"] ?? "";
+        const limit = isMultipart(request) ? MULTIPART_LIMIT : JSON_LIMIT;
+        if (!isJson(request) && !isMultipart(request)) {
+          throw new HttpError(400, "invalid_request", "仅支持 application/json 或 multipart/form-data");
+        }
+        const body = await readBody(request, limit);
+        let input: OpenJobInput;
+        let penUpload: { filename: string; data: Buffer } | null = null;
+        let templateUpload: { filename: string; data: Buffer } | null = null;
+        if (isMultipart(request)) {
+          const parsed = await parseMultipart(body, String(contentType));
+          const source = sourceOf(
+            parsed.fields.get("source") ??
+              parsed.fields.get("sourceType") ??
+              (parsed.fields.get("figmaUrl") ? "figma" : undefined)
+          );
+          const urlField = parsed.fields.get("figmaUrl")?.trim();
+          const tokenField = parsed.fields.get("figmaToken")?.trim();
+          const nodeField = parsed.fields.get("figmaNodeId")?.trim();
+          const merged = {
+            type: source.type,
+            ...(source.url ?? (urlField ? urlField : undefined)
+              ? { url: source.url ?? urlField }
+              : {}),
+            ...(source.token ?? (tokenField ? tokenField : undefined)
+              ? { token: source.token ?? tokenField }
+              : {}),
+            ...(source.nodeId ?? (nodeField ? nodeField : undefined)
+              ? { nodeId: source.nodeId ?? nodeField }
+              : {})
+          };
+          penUpload = parsed.files.get("penFile") ?? null;
+          templateUpload = parsed.files.get("template") ?? null;
+          validateFigma(merged, penUpload ? "pending" : undefined);
+          input = {
+            source: merged.type,
+            ...(merged.url ? { figmaUrl: merged.url } : {}),
+            ...(merged.token ? { figmaToken: merged.token } : {}),
+            ...(merged.nodeId ? { nodeId: merged.nodeId } : {}),
+            llm: parseLlm(parsed.fields.get("llm")),
+            ...(numberField(parsed.fields.get("maxFlows"), "maxFlows") === undefined
+              ? {}
+              : { maxFlows: numberField(parsed.fields.get("maxFlows"), "maxFlows") }),
+            ...(numberField(parsed.fields.get("maxDepth"), "maxDepth") === undefined
+              ? {}
+              : { maxDepth: numberField(parsed.fields.get("maxDepth"), "maxDepth") })
+          };
+        } else {
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = JSON.parse(body.toString("utf-8") || "{}") as Record<string, unknown>;
+          } catch {
+            throw new HttpError(400, "invalid_request", "请求体不是合法 JSON");
+          }
+          const source = sourceOf(parsed.source);
+          validateFigma(source);
+          input = {
+            source: source.type,
+            ...(source.url ? { figmaUrl: source.url } : {}),
+            ...(source.token ? { figmaToken: source.token } : {}),
+            ...(source.nodeId ? { nodeId: source.nodeId } : {}),
+            llm: parseLlm(parsed.llm),
+            ...(numberField(parsed.maxFlows, "maxFlows") === undefined
+              ? {}
+              : { maxFlows: numberField(parsed.maxFlows, "maxFlows") }),
+            ...(numberField(parsed.maxDepth, "maxDepth") === undefined
+              ? {}
+              : { maxDepth: numberField(parsed.maxDepth, "maxDepth") })
+          };
+        }
+        const job = manager.create();
+        const workDir = path.join(workRoot, job.id);
+        if (penUpload) {
+          input.penFile = await saveUpload(penUpload, workDir, "input", [".pen"]);
+        }
+        if (templateUpload) {
+          input.templatePath = await saveUpload(templateUpload, workDir, "template", [".xlsx"]);
+        }
+        inputs.set(job.id, input);
+        json(response, 202, { jobId: job.id }, allowedOrigin);
+        pump();
+        return;
+      }
+      const match = /^\/jobs\/([^/]+)(\/download)?$/.exec(url.pathname);
+      if (match) {
+        const jobId = decodeURIComponent(match[1]!);
+        const job = manager.get(jobId);
+        if (!job) {
+          throw new HttpError(
+            404,
+            "job_not_found",
+            "任务不存在或服务已重启",
+            "请重新提交生成任务"
+          );
+        }
+        if (request.method === "GET" && match[2] === undefined) {
+          json(response, 200, job, allowedOrigin);
+          return;
+        }
+        if (request.method === "DELETE" && match[2] === undefined) {
+          json(response, 200, manager.cancel(jobId), allowedOrigin);
+          return;
+        }
+        if (request.method === "GET" && match[2] === "/download") {
+          if (job.status !== "done" || job.artifactPath === null) {
+            throw new HttpError(409, "job_not_ready", `任务状态 ${job.status}，暂不可下载`);
+          }
+          try {
+            await stat(job.artifactPath);
+          } catch {
+            throw new HttpError(410, "job_expired", "产物已过期或已清理");
+          }
+          const headers: Record<string, string> = {
+            "content-type": "application/zip",
+            "content-disposition": `attachment; filename="design-tests-${jobId}.zip"`
+          };
+          if (allowedOrigin !== null) {
+            headers["access-control-allow-origin"] = allowedOrigin;
+            headers.vary = "Origin";
+          }
+          response.writeHead(200, headers);
+          createReadStream(job.artifactPath).pipe(response);
+          return;
+        }
+      }
+      throw new HttpError(404, "not_found", "not found");
+    } catch (error) {
+      if (error instanceof HttpError) {
+        fail(response, error, allowedOrigin);
+        return;
+      }
+      if (error instanceof JobQueueFullError) {
+        fail(response, new HttpError(429, "queue_full", error.message, "稍后重试"), allowedOrigin);
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      fail(response, new HttpError(500, "internal", message), allowedOrigin);
+    }
+  });
+
+  const ticker = setInterval(() => manager.tick(), 30_000);
+  ticker.unref();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(options.port ?? 8780, host, () => resolve());
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : (options.port ?? 8780);
+  return {
+    host,
+    port,
+    bootId,
+    close: async () => {
+      clearInterval(ticker);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  };
+}
+
+function toJobError(error: unknown): JobError {
+  if (error instanceof OpenJobError) {
+    return { code: error.code, message: error.message, ...(error.hint ? { hint: error.hint } : {}) };
+  }
+  return {
+    code: "internal",
+    message: error instanceof Error ? error.message : String(error)
+  };
+}

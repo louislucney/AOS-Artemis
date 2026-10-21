@@ -515,6 +515,22 @@ pen.dev 写回/导出/agent（`pen_export`/`pen_import_assets`/`pen_apply_tokens
 
 检测结果可在 `aos_status.stack` 查看，`gaps.json` 会记录 `detectedStacks` 与实际采用的 `rules`；显式传 `assetGlobs/tokenFiles` 可覆盖。
 
+### CMS 开放服务（cms-open）
+
+独立 HTTP 服务：把**静态 Figma 稿 / .pen** 转成 `design.md`（流程理解 + 截图）+ `cases.xlsx`（Web/CMS 用例）的 zip，供 CMS 网页调用；不执行测试、不接设备、不依赖项目目录或中心 PG。
+
+```bash
+node dist/cli.js cms-open --port 8780 --cors https://cms.example.com
+```
+
+- 默认只监听 `127.0.0.1`、无鉴权；CORS 默认拒绝跨源，`--cors` 显式放行，并校验 `Origin`/`Host`（LAN 访问需 `--allowed-hosts`）。
+- 接口：`POST /jobs` → `{jobId}`；`GET /jobs/:id` 轮询；`GET /jobs/:id/download` 下载 zip；`DELETE /jobs/:id` 取消。
+- 入参（JSON）：`source`（`{type:"figma",url,token}` 或 `pen`）、`llm`（`baseUrl/model/apiKey`，可选）、`maxFlows/maxDepth`；multipart 另支持 `penFile`、`template` 上传。
+- 静态稿流程按「原型边 → 箭头/连线 → 画板旁文字注释 → 画布顺序」推断，标 `INFERRED`，md 注明需复核。
+- Excel：无模版时 7 列（用例编号/功能/用例名称/前置条件/操作步骤/预期结果/优先级）；上传模版时，有 `{{case.*}}` 占位符走占位符，否则按表头映射（必需：用例名称/操作步骤/预期结果）。
+- `.pen` 渲染/截图使用**服务机登录态**（`pen login` 或 `PEN_CLI_KEY`）；未就绪时任务显式失败并提示。
+- 限额：JSON 1 MB、单文件 50 MB、并发 3、队列 20、单任务 10 分钟、产物保留 2 小时；进程重启后任务丢失。
+
 ## 客户端安装器
 
 ```bash
