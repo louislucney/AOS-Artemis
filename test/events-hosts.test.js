@@ -75,6 +75,31 @@ test("resolveEventProject: 无显式 host 且同路径跨主机 → 返回 null�
   assert.equal(resolved, null);
 });
 
+test("resolveEventProject: 显式非本机 host 且 store 查询失败 → 抛错而非返回 null", async () => {
+  const store = {
+    kind: "memory",
+    localHostId: "h-a",
+    scopeHost() {
+      return {
+        listProjects: async () => {
+          throw new Error("store down");
+        }
+      };
+    }
+  };
+  await assert.rejects(
+    () =>
+      resolveEventProject({
+        workspaceRoot: "/w",
+        hostId: "h-b",
+        name: "app",
+        store,
+        write: false
+      }),
+    /store down/
+  );
+});
+
 test("事件路由按 host 归属：/events/h-b/app 落到 h-b，旧 /events/app 不串 h-b", async () => {
   const { store, rowB } = await makeStore();
   const workspace = makeTempDir("aos-events-hosts-http-");
