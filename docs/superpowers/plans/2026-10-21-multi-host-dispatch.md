@@ -526,6 +526,7 @@ Expected: FAIL — methods missing.
 - [ ] **Step 3: Implement**
 
 - `Runtime.initialize`：若 `options.hostIdentity` 缺省 → `resolveHostIdentity()`；`this.hostIdentity = ...`；`projectRecord = upsertProject({rootPath, name, hostId: identity.id})`；`clientSessionId = randomUUID()`。
+- **测试隔离**：`test/helpers.js` 的 `loadTestRuntime` 默认注入固定 `hostIdentity`（`id:"test-host"`），CLI 测试设置 `AOS_HOST_DIR` 到临时目录；避免测试写用户 `~/.aos/host-id`。
 - `startClientSession`：`touchHostSession({id: clientSessionId, hostId, projectId: projectRecord?.id ?? null, rootPath, username, client, clientVersion, pid: process.pid})`；失败只 `log(..., "warn")`。
 - `noteClientPresence`：距上次 ≥30s 才写；同样 fire-and-forget。
 - `endClientSession`：`endHostSession(id)`。
