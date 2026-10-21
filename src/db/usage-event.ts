@@ -35,7 +35,9 @@ export function buildUsageEvent(
     errorSummary: summary === null ? null : summary.slice(0, USAGE_ERROR_SUMMARY_MAX),
     signals: (input.signals ?? []).map((signal) => ({ ...signal })),
     argKeys: [...(input.argKeys ?? [])],
-    traceId: input.traceId ?? null
+    traceId: input.traceId ?? null,
+    hostId: input.hostId ?? null,
+    sessionId: input.sessionId ?? null
   };
 }
 

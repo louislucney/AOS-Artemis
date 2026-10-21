@@ -119,7 +119,9 @@ const SCHEMA = [
      error_summary TEXT,
      signals TEXT NOT NULL DEFAULT '[]',
      arg_keys TEXT NOT NULL DEFAULT '[]',
-     trace_id TEXT
+     trace_id TEXT,
+     host_id TEXT,
+     session_id TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS project_events (
      seq BIGSERIAL,
@@ -354,7 +356,9 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS audit_events_root_at_idx ON audit_events(root_path, at)`,
   `ALTER TABLE project_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
   `ALTER TABLE runners ADD COLUMN IF NOT EXISTS host_id TEXT`,
-  `ALTER TABLE runners ADD COLUMN IF NOT EXISTS instance_id TEXT`
+  `ALTER TABLE runners ADD COLUMN IF NOT EXISTS instance_id TEXT`,
+  `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
+  `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS session_id TEXT`
 ];
 
 /** 迁移 advisory lock 的固定键（避免并发首启各自跑 DDL）。 */
@@ -1691,8 +1695,8 @@ export class PostgresStore implements ProjectStore {
     const record = buildUsageEvent(input, project?.id ?? null);
     await this.pool.query(
       `INSERT INTO usage_events
-         (id, project_id, at, tool, family, ok, duration_ms, error_class, error_summary, signals, arg_keys, trace_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+         (id, project_id, at, tool, family, ok, duration_ms, error_class, error_summary, signals, arg_keys, trace_id, host_id, session_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         record.id,
         record.projectId,
@@ -1705,7 +1709,9 @@ export class PostgresStore implements ProjectStore {
         record.errorSummary,
         JSON.stringify(record.signals),
         JSON.stringify(record.argKeys),
-        record.traceId
+        record.traceId,
+        record.hostId,
+        record.sessionId
       ]
     );
     await this.pruneUsageEvents(record.projectId, policy);
@@ -1730,8 +1736,8 @@ export class PostgresStore implements ProjectStore {
       if (dryRun) continue;
       const inserted = await this.pool.query(
         `INSERT INTO usage_events
-           (id, project_id, at, tool, family, ok, duration_ms, error_class, error_summary, signals, arg_keys, trace_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           (id, project_id, at, tool, family, ok, duration_ms, error_class, error_summary, signals, arg_keys, trace_id, host_id, session_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          ON CONFLICT (id) DO NOTHING
          RETURNING id`,
         [
@@ -1746,7 +1752,9 @@ export class PostgresStore implements ProjectStore {
           entry.errorSummary,
           JSON.stringify(entry.signals),
           JSON.stringify(entry.argKeys),
-          entry.traceId
+          entry.traceId,
+          entry.hostId ?? null,
+          entry.sessionId ?? null
         ]
       );
       usage.inserted += Number(inserted.rowCount ?? 0);
@@ -2117,7 +2125,9 @@ function mapUsageEvent(row: Record<string, unknown>): UsageEventRecord {
         : String(row.error_summary),
     signals: parseJsonArray(row.signals, isUsageSignal),
     argKeys: parseJsonArray(row.arg_keys, (item): item is string => typeof item === "string"),
-    traceId: row.trace_id === null || row.trace_id === undefined ? null : String(row.trace_id)
+    traceId: row.trace_id === null || row.trace_id === undefined ? null : String(row.trace_id),
+    hostId: nullableString(row.host_id),
+    sessionId: nullableString(row.session_id)
   };
 }
 

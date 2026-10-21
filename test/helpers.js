@@ -358,6 +358,18 @@ export function modelFetcher(models, options = {}) {
   return impl;
 }
 
+export const TEST_HOST_IDENTITY = {
+  id: "test-host",
+  hardwareId: null,
+  hostname: "test-machine",
+  username: "tester",
+  osPlatform: "darwin",
+  osVersion: "1.0.0",
+  arch: "arm64",
+  kind: "mac",
+  identitySource: "env"
+};
+
 export async function loadTestRuntime(
   dir,
   {
@@ -370,6 +382,7 @@ export async function loadTestRuntime(
     iosCrashRetry,
     modelFetcher,
     buildModuleUrl,
+    hostIdentity = TEST_HOST_IDENTITY,
     appiumDetector = async () => ({
       appium: { found: false, path: null, version: null },
       xcuitest: { installed: false, version: null },
@@ -387,6 +400,7 @@ export async function loadTestRuntime(
     iosCrashRetry,
     modelFetcher,
     buildModuleUrl,
+    hostIdentity,
     appiumDetector
   });
   await runtime.initialize();

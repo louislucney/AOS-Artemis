@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -55,6 +56,7 @@ import type {
   UsageEventRecord
 } from "./db/types.js";
 import { writeEnvUpdates } from "./env-file.js";
+import { resolveHostIdentity, type HostIdentity } from "./host/identity.js";
 import { ModelCatalog, type FetchLike, type ModelReport, type RefreshReport } from "./llm/catalog.js";
 import {
   entriesFromConfig,
@@ -87,6 +89,7 @@ export interface RuntimeOptions {
   modelFetcher?: FetchLike;
   appiumDetector?: () => Promise<AppiumDetection>;
   buildModuleUrl?: string;
+  hostIdentity?: HostIdentity;
 }
 
 export interface ActivateResult {
@@ -129,6 +132,7 @@ export class Runtime {
   readonly crashStore: CrashIndexStore;
   readonly crashScanner: CrashScanner;
   readonly modelCatalog: ModelCatalog;
+  readonly clientSessionId: string = randomUUID();
   private readonly appiumDetector: () => Promise<AppiumDetection>;
 
   private readonly buildModuleUrl: string;
@@ -140,6 +144,10 @@ export class Runtime {
   private activeCache: { name: string; entry: LlmEntry } | null = null;
   private initialized = false;
   private lastStoreError: string | null = null;
+  private _hostIdentity: HostIdentity | null = null;
+  private readonly hostIdentityOption: HostIdentity | null;
+  private lastClient: { name: string; version?: string } | null = null;
+  private lastClientPresenceAtMs = 0;
   private activationChain: Promise<unknown> = Promise.resolve();
   private crashScanChain: Promise<unknown> = Promise.resolve();
   private modelRefreshChain: Promise<unknown> = Promise.resolve();
@@ -162,6 +170,10 @@ export class Runtime {
     };
   }
 
+  get hostIdentity(): HostIdentity | null {
+    return this._hostIdentity;
+  }
+
   constructor(project: LoadedProject, options: RuntimeOptions = {}) {
     try {
       project.rootDir = fs.realpathSync.native(project.rootDir);
@@ -172,6 +184,7 @@ export class Runtime {
     this.store = options.store ?? new MemoryStore();
     this.storeNote = options.storeNote ?? null;
     this.baseEnv = options.baseEnv ?? process.env;
+    this.hostIdentityOption = options.hostIdentity ?? null;
     // iOS 签名/Appium 配置：config（deviceHosts 高级层）打底、项目 .env、进程 env（客户端配置）覆盖。
     this.iosEnv = { ...deviceHostEnvFromConfig(project.config), ...project.dotenvValues, ...this.baseEnv };
     this.iosCrashCollector = options.iosCrashCollector ?? null;
@@ -348,6 +361,9 @@ export class Runtime {
   async initialize(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
+
+    this._hostIdentity =
+      this.hostIdentityOption ?? (await resolveHostIdentity({ env: this.baseEnv }));
 
     this.projectRecord = await this.safeStore(
       () =>
@@ -967,7 +983,12 @@ export class Runtime {
     try {
       return await this.store.recordUsageEvent(
         this.project.rootDir,
-        { ...input, at },
+        {
+          ...input,
+          at,
+          hostId: this.hostIdentity?.id ?? null,
+          sessionId: this.clientSessionId
+        },
         usagePolicyFrom(this.baseEnv)
       );
     } catch (error) {
@@ -981,6 +1002,57 @@ export class Runtime {
       () => this.store.listUsageEvents(this.project.rootDir, query),
       [] as UsageEventRecord[]
     );
+  }
+
+  // ------------------------------------------------------------------
+  // Client presence: stdio 接入会话心跳（host_sessions upsert + 节流）
+  // ------------------------------------------------------------------
+
+  async startClientSession(client: { name: string; version?: string } | null): Promise<void> {
+    this.lastClient = client;
+    await this.touchClientSession(client);
+  }
+
+  async noteClientPresence(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastClientPresenceAtMs < this.clientPresenceIntervalMs()) return;
+    this.lastClientPresenceAtMs = now;
+    await this.touchClientSession(this.lastClient);
+  }
+
+  async endClientSession(): Promise<void> {
+    try {
+      await this.store.endHostSession(this.clientSessionId);
+    } catch (error) {
+      logWarn(`接入会话结束登记失败: ${errorMessage(error)}`);
+    }
+  }
+
+  private async touchClientSession(client: { name: string; version?: string } | null): Promise<void> {
+    const identity = this.hostIdentity;
+    if (!identity) return;
+    try {
+      await this.store.touchHostSession({
+        id: this.clientSessionId,
+        hostId: identity.id,
+        projectId: this.projectRecord?.id ?? null,
+        rootPath: this.project.rootDir,
+        username: identity.username,
+        client: client?.name ?? null,
+        clientVersion: client?.version ?? null,
+        pid: process.pid
+      });
+    } catch (error) {
+      logWarn(`接入会话登记失败: ${errorMessage(error)}`);
+    }
+  }
+
+  private clientPresenceIntervalMs(): number {
+    const raw = this.baseEnv.AOS_CLIENT_PRESENCE_MS?.trim() ?? "";
+    if (raw === "") return CLIENT_PRESENCE_MS_DEFAULT;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0) return CLIENT_PRESENCE_MS_DEFAULT;
+    return Math.floor(value);
   }
 
   // ------------------------------------------------------------------
@@ -1193,6 +1265,7 @@ export class Runtime {
 
 const CRASH_SCAN_BATCH = 10;
 const CRASH_MAX_RECORDS_DEFAULT = 200;
+const CLIENT_PRESENCE_MS_DEFAULT = 30_000;
 
 function resolveCrashMaxRecords(env: NodeJS.ProcessEnv): number {
   const raw = Number(env.AOS_CRASH_MAX_RECORDS ?? "");

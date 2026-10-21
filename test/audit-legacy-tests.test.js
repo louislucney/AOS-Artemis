@@ -53,7 +53,10 @@ function makeProject(parent, name, kind) {
 }
 
 function runAudit(args) {
-  return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf-8" });
+  return spawnSync(process.execPath, [SCRIPT, ...args], {
+    encoding: "utf-8",
+    env: { ...process.env, AOS_HOST_ID: "test-host" }
+  });
 }
 
 test("audit: 工作区扫描——md-only/缺xlsx/过期/缺标记分类 + 干净项目通过 + exit 1", () => {

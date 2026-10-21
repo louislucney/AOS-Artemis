@@ -68,6 +68,8 @@ export interface UsageEventRecord {
   signals: UsageSignal[];
   argKeys: string[];
   traceId: string | null;
+  hostId: string | null;
+  sessionId: string | null;
 }
 
 export interface RecordUsageEventInput {
@@ -80,6 +82,8 @@ export interface RecordUsageEventInput {
   signals?: UsageSignal[];
   argKeys?: string[];
   traceId?: string | null;
+  hostId?: string | null;
+  sessionId?: string | null;
   at?: string;
 }
 

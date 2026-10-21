@@ -107,7 +107,12 @@ function figmaToolSchema(name: string, schema: z.ZodTypeAny): unknown {
 }
 
 /** Build a fully wired MCP Server for one project runtime (stdio or HTTP). */
-export function createServerForRuntime(runtime: Runtime | null, initError: string | null): Server {
+export function createServerForRuntime(
+  runtime: Runtime | null,
+  initError: string | null,
+  options: { presence?: boolean } = {}
+): Server {
+  const presence = options.presence === true;
   const server = new Server(
     { name: CLI_NAME, version: AOS_MCP_VERSION },
     {
@@ -120,6 +125,12 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
         "Credentials are project-scoped: only call aos_configure with values the user provides, and never print secrets. Design output describes intent, not final test code; verify interactions on a device before treating them as facts."
     }
   );
+
+  if (presence && runtime) {
+    server.oninitialized = () => {
+      void runtime.startClientSession(server.getClientVersion() ?? null);
+    };
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools: Array<{ name: string; description: string; inputSchema: unknown }> =
@@ -226,6 +237,7 @@ export function createServerForRuntime(runtime: Runtime | null, initError: strin
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const started = Date.now();
     const name = request.params.name;
+    if (presence && runtime) void runtime.noteClientPresence();
     let result: CallToolResult;
     try {
       result = await handleCall(
@@ -300,12 +312,13 @@ export async function runServer(): Promise<void> {
     log(`Figma 桥启动失败: ${errorMessage(error)}`);
   }
 
-  const server = createServerForRuntime(runtime, initError);
+  const server = createServerForRuntime(runtime, initError, { presence: true });
 
   let shuttingDown = false;
   const shutdown = async (code: number): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    await runtime?.endClientSession();
     await host?.shutdown();
     process.exit(code);
   };

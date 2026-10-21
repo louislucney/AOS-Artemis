@@ -16,6 +16,7 @@ import { createAosHttpServer } from "../dist/http-server.js";
 process.env.AOS_MODEL_REFRESH_HOURS = "0";
 process.env.AOS_USAGE = "1";
 process.env.AOS_LEDGER_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "aos-http-ledger-"));
+process.env.AOS_HOST_ID = "test-host";
 
 const TOKEN = "aos-http-secret-token-9f8e7d6c";
 const basic = (user, pass) => `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;

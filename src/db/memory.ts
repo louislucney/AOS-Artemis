@@ -1224,7 +1224,9 @@ function cloneUsageEvent(event: UsageEventRecord): UsageEventRecord {
   return {
     ...event,
     signals: event.signals.map((signal) => ({ ...signal })),
-    argKeys: [...event.argKeys]
+    argKeys: [...event.argKeys],
+    hostId: event.hostId ?? null,
+    sessionId: event.sessionId ?? null
   };
 }
 
