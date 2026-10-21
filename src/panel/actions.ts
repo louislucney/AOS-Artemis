@@ -293,7 +293,13 @@ export async function handlePanelActionRequest(
       return response;
     }
     if (request.url.pathname === "/panel/api/import") {
-      const response = await runImport(scopedDeps, resolved.rootPath, payload, request);
+      const response = await runImport(
+        scopedDeps,
+        resolved.rootPath,
+        payload,
+        request,
+        resolved.hostId
+      );
       if (response.status === 200) scopedDeps.cache?.clear();
       await auditPanel(scopedDeps, resolved.rootPath, "action.import", response);
       return response;
@@ -1062,9 +1068,20 @@ async function runImport(
   deps: PanelWebDeps,
   rootPath: string,
   payload: Record<string, unknown>,
-  request: PanelActionRequest
+  request: PanelActionRequest,
+  hostId: string | null
 ): Promise<PanelWebResponse> {
   if (importInFlight) return json(409, { error: "已有导入在进行（单飞）" });
+  if (
+    hostId !== null &&
+    deps.localHostId !== undefined &&
+    deps.localHostId !== null &&
+    hostId !== deps.localHostId
+  ) {
+    return json(400, {
+      error: "跨主机导入请在该项目机上执行，或使用 HTTP 模式"
+    });
+  }
   importInFlight = true;
   let tmpPath: string | null = null;
   try {

@@ -2160,7 +2160,7 @@ llm_switch(name, force):
 | `AOS_CLIENT_TTL_MS` | 120000 | 接入会话在线判定窗口（`host_sessions`/`client_seen_at`） |
 | `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 空闲接入心跳间隔与工具调用刷新节流；`0` 关闭 presence（不写会话/主机心跳） |
 | `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL；续租周期为其 1/3，runner 心跳同时收敛到该间隔 |
-| `AOS_TASK_MAX_RUNTIME_MS` | 0（关闭） | runner 单任务执行硬上限；超时按“取消（source=runner）”终结（`attempts` 不增、不释放重试、租约照常释放） |
+| `AOS_TASK_MAX_RUNTIME_MS` | 0（关闭） | runner 单任务执行上限（协作式中止，`executeSuite` 轮询 `shouldAbort`）；超时按“取消（source=runner）”终结（`attempts` 不增、不释放重试、租约照常释放）；超过 32 位毫秒上限收敛并 WARN |
 | `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限；非法/≤0 回退默认 |
 | `AOS_HOST_STRICT` | 0 | `=1`/`=true` 时严格主机模式：`claimRegressionTask` 拒绝缺 `hostId` 的调用（返回 null），本地 `suite run --task` / `suite task cancel` / MCP `regression_task_cancel` 在本机身份未知时拒绝。**仅约束本版本**；旧 runner 二进制自跑旧 SQL，不会被拦截（需停用/升级） |
 | `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板下发开放优先级编辑；API/CLI 始终可传 `priority` |
@@ -2205,11 +2205,11 @@ llm_switch(name, force):
 - **测试**：`test/usage-web.test.js` 新增 host 作用域分页/筛选/重置与 409 回归；`test/usage-command.test.js` 校验 `readErrors` 与空数组；`test/panel-hosts.test.js` 校验安全投影、单机空列表、动作开关无关；`test/panel-command.test.js` 与 `test/http-server.test.js` 覆盖独立/HTTP 路由。
 - **复审加固**：`/panel/api/hosts` 在 PostgreSQL 读取异常时返回 **503** `{ok:false,error:"主机台账读取失败"}`（不再把故障伪装成空主机表）；`AOS_PANEL_WEB=0` 对该 API 返回 JSON 404（而非 HTML）。`/usage` 的显式 `?host=` 在 PostgreSQL 下先校验 `listHosts`：未知主机 id → 404 `未知主机 "<id>"`（文件/会话内存保持宽松，读取失败不拦截）。面板导航「使用统计」在项目上下文携带 `?project=<rootPath>[&host=<hostId>]`；README 标注该端点同样受 `AOS_PANEL_WEB` 约束。
 
-### 13.169 修复（独立面板 multipart 导入与 runner 任务硬上限）
+### 13.169 修复（独立面板 multipart 导入与 runner 任务执行上限）
 
 > 2026-10-21。收口多机规格 §8.4/§12.2 的两项遗留；默认关闭/向后兼容。
 
-- **独立 `panel --web` multipart 导入**：`src/panel-command.ts` 在构造 `PanelActionRequest` 时按 `content-type` 分派——仅 `POST /panel/api/import` 且 `multipart/form-data` 读取原始体（上限 20MB＋256KB 余量）并转发 `rawBody`/`contentType`；其余 POST 仍走 JSON 解析（行为不变）。独立面板新增 `runtimeFor`（`PanelCliDeps` 可注入）：缺省按项目根 `loadProject` 懒建 `Runtime`（复用本进程 store、`initialize()` 登记项目行并解析配置目录），同项目缓存复用，面板 `close()` 时 `proxy.disposeSync()` 释放；初始化失败记 errorLog 并返回 null（动作层仍给出既有“需要运行时”指引）。`test/panel-command.test.js` 用真实工作簿断言 `POST /panel/api/import?project=<rootPath>` 返回 200、`caseCount=1` 且 `listCaseSets` 已登记。
-- **`AOS_TASK_MAX_RUNTIME_MS`（§8.4 强制上限）**：`src/runner/agent.ts` 读取该变量（缺省/非法/≤0 关闭），在 `beginExecution` 之后、`executeSuite` 之前用可注入 `scheduleTimeout` 起 `unref` 定时器（测试可注入调度/时钟）；触发后置 `runtimeExceeded`，并纳入 `shouldAbort: () => stopRequested || leaseLost || runtimeExceeded`。执行返回后（且未被面板取消抢先终结）调用 `cancelRegressionTask({source:"runner", actor:"runner", actorHostId:<本机>, note:"任务超过 AOS_TASK_MAX_RUNTIME_MS（<ms>）"})` → `ackCancellation` 落 `cancelled`；**不走失败/重试路径、不释放回 pending**，`attempts` 仅 `beginExecution` 的一次增量；设备租约仍在任务块 `finally` 释放，定时器同步清理。日志说明上限值与“不释放、不重试”。
-- **测试**：`test/runner-agent.test.js` 新增超时用例（注入调度器触发、断言 cancelled/来源/操作者/宿主/备注/attempts/租约释放/日志）与 `0`/非法值关闭用例（不排定时器、走正常失败释放）。
-- **文档**：README 多机环境变量表与 runner 段、DESIGN 环境变量表、`.env.example`、多机规格 §17 同步。
+- **独立 `panel --web` multipart 导入**：`src/panel-command.ts` 在构造 `PanelActionRequest` 时按 `content-type` 分派——仅 `POST /panel/api/import` 且 `multipart/form-data` 读取原始体（共享 `src/panel/limits.ts` 的 20MB＋256KB 上限）并转发 `rawBody`/`contentType`；其余 POST 仍走 JSON 解析。超限统一 **413**（不再伪装成 400 解析失败）。独立面板新增 `runtimeFor`（`PanelCliDeps` 可注入）：缺省按项目根 `loadProject` 懒建 `Runtime`（复用本进程 store、`initialize()` 登记项目行并解析配置目录），同项目缓存复用，面板 `close()` 时 `proxy.disposeSync()` 释放；**失败（null）不缓存**，下次导入可重试。该 `runtimeFor` 同时启用依赖运行时的「一键建单/证据重试」动作。**跨主机保护**：`runImport` 接收解析后的 `hostId`；非空且与本机身份（`PanelWebDeps.localHostId`）不同时直接 **400**「跨主机导入请在该项目机上执行，或使用 HTTP 模式」，不建 Runtime、不写项目行/用例文件。
+- **`AOS_TASK_MAX_RUNTIME_MS`（§8.4 执行上限，协作式中止）**：`src/runner/agent.ts` 读取该变量（缺省/非法/≤0 关闭），在 `beginExecution` 之后、`executeSuite` 之前用可注入 `scheduleTimeout` 起 `unref` 定时器（测试可注入调度/时钟）；触发后置 `runtimeExceeded`，并纳入 `shouldAbort`。**不是强杀**：执行器需轮询 `shouldAbort` 才会提前结束。执行返回后（且未被面板取消抢先终结）调用 `cancelRegressionTask({source:"runner", actor:"runner", actorHostId:<本机>, note:"任务超过 AOS_TASK_MAX_RUNTIME_MS（<ms>）"})` → `ackCancellation`；**仅在确认 `cancelled`/`stopped` 时**记录成功日志与 `task.cancel` 审计（`channel=runner`），否则记失败日志交由面板/清扫器兜底。**不走失败/重试路径、不释放回 pending**，`attempts` 仅 `beginExecution` 的一次增量；设备租约仍在任务块 `finally` 释放，定时器同步清理。上限超过 setTimeout 32 位毫秒上限（2,147,483,647）时收敛并打 WARN。
+- **测试**：`test/panel-command.test.js` 覆盖独立面板导入 200/登记、跨主机 400（无项目行/无文件）、超限 413；`test/runner-agent.test.js` 覆盖超时取消（cancelled/来源/操作者/宿主/备注/attempts/租约释放/审计/日志/`unref`）、上限收敛告警、`0`/非法值关闭。
+- **文档**：README（动作层/独立导入/跨主机保护）、`panel help`、DESIGN 环境变量表、`.env.example`、AGENTS 环境变量清单、多机规格 §17 同步。

@@ -4,9 +4,15 @@ import path from "node:path";
 import { loadProject } from "./config/loader.js";
 import { createProjectStore, type CreateStoreResult } from "./db/index.js";
 import { storeKindShortLabel } from "./db/labels.js";
+import { resolveHostIdentity, type HostIdentity } from "./host/identity.js";
 import { handlePanelActionRequest } from "./panel/actions.js";
 import { handleArtifactRequest } from "./panel/artifact-route.js";
 import { loopbackHostAllowed } from "./panel/http-guard.js";
+import {
+  MAX_PANEL_BODY_BYTES,
+  MAX_PANEL_IMPORT_BYTES,
+  PanelBodyTooLargeError
+} from "./panel/limits.js";
 import type { ProjectStore } from "./db/types.js";
 import { Runtime } from "./runtime.js";
 import {
@@ -25,7 +31,6 @@ import { errorMessage, isBuildStale } from "./util.js";
 export const PANEL_WEB_DEFAULT_PORT = 8767;
 const DEFAULT_WEB_HOST = "127.0.0.1";
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
-const MAX_PANEL_IMPORT_BYTES = 20 * 1024 * 1024 + 256 * 1024;
 
 export interface PanelCliDeps {
   store?: ProjectStore;
@@ -105,7 +110,10 @@ function listen(
   });
 }
 
-function readStandaloneJsonBody(req: IncomingMessage, maxBytes = 256 * 1024): Promise<unknown> {
+function readStandaloneJsonBody(
+  req: IncomingMessage,
+  maxBytes = MAX_PANEL_BODY_BYTES
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -115,7 +123,8 @@ function readStandaloneJsonBody(req: IncomingMessage, maxBytes = 256 * 1024): Pr
       size += chunk.length;
       if (size > maxBytes) {
         oversized = true;
-        reject(new Error("body too large"));
+        chunks.length = 0;
+        reject(new PanelBodyTooLargeError());
         return;
       }
       chunks.push(chunk);
@@ -153,7 +162,7 @@ function readStandaloneRawBody(
       if (size > maxBytes) {
         oversized = true;
         chunks.length = 0;
-        reject(new Error("body too large"));
+        reject(new PanelBodyTooLargeError());
         return;
       }
       chunks.push(chunk);
@@ -187,8 +196,9 @@ Usage:
                     --workspace <dir>  并入该目录下的项目（未注册的工作区目录）
   mobile-testing-mcp panel help
 
-说明：独立 CLI 进程无跨项目 Runtime（深探层不可用）；跨项目数据来自
-MOBILE_TESTING_DATABASE_URL（未配置时使用项目文件台账，跨项目以工作区扫描为准）。
+说明：独立 CLI 进程无跨项目深探 Runtime；导入/建单/证据动作按项目根懒建并复用本进程 store
+（失败不缓存、退出释放）；跨项目数据来自 MOBILE_TESTING_DATABASE_URL（未配置时使用项目文件台账，
+跨项目以工作区扫描为准）；跨主机导入请在该项目机上执行，或使用 HTTP 模式。
 
 exit codes: 0 成功；2 参数错误或端口被占用`);
 }
@@ -215,6 +225,9 @@ async function runPanelWeb(options: {
   const workspaceRoot = workspaceRaw === null ? null : path.resolve(workspaceRaw);
 
   let actualPort = port;
+  const localHostIdentity: HostIdentity | null = await resolveHostIdentity({ env }).catch(
+    () => null
+  );
   const runtimes = new Map<string, Promise<Runtime | null>>();
   const runtimeFor =
     options.runtimeFor ??
@@ -229,7 +242,8 @@ async function runPanelWeb(options: {
           const runtime = new Runtime(project, {
             store,
             storeNote: options.storageNote,
-            baseEnv: env
+            baseEnv: env,
+            ...(localHostIdentity === null ? {} : { hostIdentity: localHostIdentity })
           });
           await runtime.initialize();
           return runtime;
@@ -239,6 +253,9 @@ async function runPanelWeb(options: {
         }
       })();
       runtimes.set(rootPath, created);
+      void created.then((runtime) => {
+        if (runtime === null && runtimes.get(rootPath) === created) runtimes.delete(rootPath);
+      });
       return created;
     });
   const deps: PanelWebDeps = {
@@ -248,6 +265,7 @@ async function runPanelWeb(options: {
     buildStale: isBuildStale(import.meta.url, Date.now() - Math.round(process.uptime() * 1000)),
     cache: createPanelWebCache(panelCacheTtlFrom(env)),
     runtimeFor,
+    localHostId: localHostIdentity?.id ?? null,
     storeNote: options.storageNote,
     storeForHost: (hostId) => store.scopeHost(hostId),
     capabilities: {
@@ -304,18 +322,28 @@ async function runPanelWeb(options: {
           if (isMultipartImport) {
             try {
               rawBody = await readStandaloneRawBody(req);
-            } catch {
-              res.writeHead(400, { "Content-Type": JSON_CONTENT_TYPE });
-              res.end('{"error":"invalid multipart body"}');
+            } catch (error) {
+              const oversized = error instanceof PanelBodyTooLargeError;
+              res.writeHead(oversized ? 413 : 400, { "Content-Type": JSON_CONTENT_TYPE });
+              res.end(
+                oversized
+                  ? '{"error":"request body too large"}'
+                  : '{"error":"invalid multipart body"}'
+              );
               return;
             }
             requestContentType = contentTypeValue;
           } else if (req.method === "POST") {
             try {
               body = await readStandaloneJsonBody(req);
-            } catch {
-              res.writeHead(400, { "Content-Type": JSON_CONTENT_TYPE });
-              res.end('{"error":"invalid JSON body"}');
+            } catch (error) {
+              const oversized = error instanceof PanelBodyTooLargeError;
+              res.writeHead(oversized ? 413 : 400, { "Content-Type": JSON_CONTENT_TYPE });
+              res.end(
+                oversized
+                  ? '{"error":"request body too large"}'
+                  : '{"error":"invalid JSON body"}'
+              );
               return;
             }
           }

@@ -95,6 +95,8 @@ export interface PanelWebDeps {
   deep?: PanelDeepProbe | null;
   /** 面板建单动作的运行时解析（HTTP 模式注入 deepRuntimeFor）。 */
   runtimeFor?: (rootPath: string) => Promise<Runtime | null>;
+  /** 面板进程本机主机身份（用于拒绝跨主机项目导入；缺省不校验）。 */
+  localHostId?: string | null;
   /** 存储回退说明（装配期 reason；运维页展示）。 */
   storeNote?: string | null;
   /** 主机作用域存储视图（跨主机同路径解析用）；未提供时回退 `deps.store`。 */

@@ -16,6 +16,8 @@ import {
   type PanelWebDeps
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
+import { MAX_PANEL_BODY_BYTES, MAX_PANEL_UPLOAD_BYTES } from "./panel/limits.js";
+import { resolveHostIdentity } from "./host/identity.js";
 import { handleArtifactRequest } from "./panel/artifact-route.js";
 import {
   isValidProjectName,
@@ -57,8 +59,6 @@ export interface AosHttpHandle {
 const PROJECT_NAME_RE = /^[A-Za-z0-9._-]+$/;
 const MAX_EVENT_BODY_BYTES = 64 * 1024;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
-const MAX_PANEL_BODY_BYTES = 256 * 1024;
-const MAX_PANEL_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 /** 非 loopback 且未配置静态令牌、未显式放行时拒绝启动（fail-fast，无副作用）。 */
 export class InsecureBindRefusedError extends Error {
@@ -231,6 +231,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     cache: createPanelWebCache(panelCacheTtlFrom(process.env)),
     deep: createPanelDeepProbe({ createRuntime: deepRuntimeFor }),
     runtimeFor: deepRuntimeFor,
+    localHostId: (await resolveHostIdentity({ env: process.env }).catch(() => null))?.id ?? null,
     storeNote: runtimeHost.storeNote,
     storeForHost: (hostId) => store.scopeHost(hostId),
     capabilities: { actions: panelActionsEnabled(process.env), usage: true, mode: "http" }

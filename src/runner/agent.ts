@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 
 import { defaultBuildRuntime, type CliRuntimeBundle } from "../cli-runtime.js";
+import { recordAuditSafe } from "../db/audit-event.js";
 import {
   deviceLeaseTtlMs,
   RunnerAlreadyActiveError,
@@ -74,7 +75,8 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     options.heartbeatMs ?? intFromEnv(env.AOS_RUNNER_HEARTBEAT_MS, 30_000);
   const heartbeatMs = clampRunnerHeartbeatMs(configuredHeartbeatMs, env);
   const maxAttempts = options.maxAttempts ?? intFromEnv(env.AOS_RUNNER_MAX_ATTEMPTS, 3);
-  const maxRuntimeMs = options.maxRuntimeMs ?? runtimeCapFromEnv(env.AOS_TASK_MAX_RUNTIME_MS);
+  const configuredMaxRuntimeMs =
+    options.maxRuntimeMs ?? runtimeCapFromEnv(env.AOS_TASK_MAX_RUNTIME_MS);
   const scheduleTimeout =
     options.scheduleTimeout ??
     ((fn: () => void, ms: number): RunnerTimerHandle => {
@@ -97,6 +99,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     log: (line: string): void => console.log(line),
     errorLog: (line: string): void => console.error(line)
   };
+  const maxRuntimeMs = clampRuntimeCap(configuredMaxRuntimeMs, io);
   if (heartbeatMs < configuredHeartbeatMs) {
     io.log(
       `[runner] 心跳间隔 ${configuredHeartbeatMs}ms 超过设备租约 TTL/3，已收敛为 ${heartbeatMs}ms（否则租约可能先过期）`
@@ -519,19 +522,40 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
             continue;
           }
           if (runtimeExceeded) {
+            const note = `任务超过 AOS_TASK_MAX_RUNTIME_MS（${maxRuntimeMs}）`;
             try {
-              await store.cancelRegressionTask({
+              const requested = await store.cancelRegressionTask({
                 rootPath,
                 taskId: task.id,
                 source: "runner",
                 actor: "runner",
                 actorHostId: hostId,
-                note: `任务超过 AOS_TASK_MAX_RUNTIME_MS（${maxRuntimeMs}）`
+                note
               });
-              await store.ackCancellation({ rootPath, taskId: task.id });
-              io.log(
-                `[runner] 任务 ${task.id} 超过 AOS_TASK_MAX_RUNTIME_MS（${maxRuntimeMs}ms）：已按取消终结（source=runner，不释放、不重试）`
-              );
+              const acked =
+                requested === null
+                  ? null
+                  : await store.ackCancellation({ rootPath, taskId: task.id });
+              if (acked !== null && (acked.status === "cancelled" || acked.status === "stopped")) {
+                io.log(
+                  `[runner] 任务 ${task.id} 超过 AOS_TASK_MAX_RUNTIME_MS（${maxRuntimeMs}ms）：已按取消终结（source=runner，不释放、不重试）`
+                );
+                await recordAuditSafe(store, rootPath, {
+                  domain: "task",
+                  action: "task.cancel",
+                  result: "ok",
+                  summary: `回归任务 ${task.id} 超过执行上限 ${maxRuntimeMs}ms，由 runner 取消（${hostId}）`,
+                  refs: { taskId: task.id, source: "runner", hostId, note },
+                  actor: "runner",
+                  actorHostId: hostId,
+                  channel: "runner"
+                });
+              } else {
+                const status = acked?.status ?? requested?.status ?? "unknown";
+                io.errorLog(
+                  `[runner] 任务 ${task.id} 超时取消未生效（当前 ${status}）：未确认 cancelled，请检查面板/清扫器兜底`
+                );
+              }
             } catch (error) {
               io.errorLog(
                 `[runner] 任务 ${task.id} 超时取消落库失败：${errorMessage(error)}`
@@ -605,6 +629,19 @@ function runtimeCapFromEnv(raw: string | undefined): number {
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   const truncated = Math.trunc(parsed);
   return truncated > 0 ? truncated : 0;
+}
+
+/** setTimeout 的 32 位毫秒上限；超出会立即触发（1ms），故收敛并告警。 */
+const MAX_TIMER_MS = 2_147_483_647;
+
+function clampRuntimeCap(raw: number, io: RunnerAgentIO): number {
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  const truncated = Math.trunc(raw);
+  if (truncated <= MAX_TIMER_MS) return truncated;
+  io.errorLog(
+    `[runner] AOS_TASK_MAX_RUNTIME_MS=${truncated} 超过 setTimeout 上限，已收敛为 ${MAX_TIMER_MS}ms`
+  );
+  return MAX_TIMER_MS;
 }
 
 /** tick 间隔不超过设备租约 TTL 的 1/3：续租失败后仍有一次 tick 的止损窗口。 */

@@ -138,6 +138,94 @@ test("panel --web: multipart 导入转发 rawBody/contentType → 200 且登记�
   });
 });
 
+test("panel --web: 跨主机导入 → 400（不建运行时、不登记、不写本地文件）", async () => {
+  const workspace = makeTempDir("aos-panel-import-remote-");
+  const projectDir = path.join(workspace, "remote-demo");
+  fs.mkdirSync(projectDir, { recursive: true });
+  const store = new MemoryStore();
+  await store.upsertProject({
+    rootPath: projectDir,
+    name: "remote-demo",
+    hostId: "remote-host"
+  });
+
+  await runCli(["--web", "--port", "0", "--workspace", workspace], {
+    store,
+    env: {
+      ...process.env,
+      AOS_PANEL_ACTIONS: "1",
+      AOS_HOST_ID: "panel-import-host",
+      AOS_LEDGER_AUTO_IMPORT: "0",
+      AOS_USAGE: "0"
+    },
+    waitForShutdown: async (handle) => {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["用例名", "步骤", "预期", "前置"]);
+      sheet.addRow(["登录", "输入账号密码并点击登录", "进入首页", "应用已安装"]);
+      const bytes = await workbook.xlsx.writeBuffer();
+      const form = new FormData();
+      form.set(
+        "file",
+        new Blob([bytes], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }),
+        "cases.xlsx"
+      );
+      const res = await fetch(
+        `http://127.0.0.1:${handle.port}/panel/api/import?host=remote-host&project=${encodeURIComponent(projectDir)}`,
+        {
+          method: "POST",
+          headers: { "X-AOS-Console": "1" },
+          body: form
+        }
+      );
+      const body = await res.text();
+      assert.equal(res.status, 400, body);
+      assert.match(body, /跨主机导入/);
+      assert.equal(
+        fs.existsSync(path.join(projectDir, ".artemis")),
+        false,
+        "未在面板机写用例文件"
+      );
+      const phantom = await store
+        .scopeHost("panel-import-host")
+        .getProjectByPath(projectDir);
+      assert.equal(phantom, null, "未登记本机幻影项目行");
+      assert.deepEqual(await store.scopeHost("remote-host").listCaseSets(projectDir), []);
+    }
+  });
+});
+
+test("panel --web: multipart 超限 → 413（共享上限）", async () => {
+  const workspace = makeTempDir("aos-panel-import-big-");
+  const store = new MemoryStore();
+  await runCli(["--web", "--port", "0", "--workspace", workspace], {
+    store,
+    env: {
+      ...process.env,
+      AOS_PANEL_ACTIONS: "1",
+      AOS_USAGE: "0"
+    },
+    waitForShutdown: async (handle) => {
+      const oversized = Buffer.alloc(20 * 1024 * 1024 + 256 * 1024 + 1);
+      const res = await fetch(
+        `http://127.0.0.1:${handle.port}/panel/api/import?project=demo`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "multipart/form-data; boundary=aos",
+            "X-AOS-Console": "1"
+          },
+          body: oversized
+        }
+      );
+      assert.equal(res.status, 413);
+      assert.match(await res.text(), /too large/);
+    }
+  });
+});
+
 test("panel --web: serves /panel on an ephemeral port and closes cleanly", async () => {
   const store = new MemoryStore();
   const dir = makeTempDir("aos-panel-cli-");

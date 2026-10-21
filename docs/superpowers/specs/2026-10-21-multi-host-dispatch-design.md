@@ -452,7 +452,7 @@ UPDATE regression_tasks
   - `attempts` 不增长；
   - 停止轮询（3s）仍能中止。
 - 面板用 `last_progress_at` 区分“运行中 / 疑似卡住（> 3 个心跳周期）”。
-- v1 不自动杀超时任务；新增 `AOS_TASK_MAX_RUNTIME_MS`（0 = 关闭）作为可选的强制上限，超时按“取消（source=runner）”处理。
+- v1 不自动杀超时任务；新增 `AOS_TASK_MAX_RUNTIME_MS`（0 = 关闭）作为可选的执行上限（协作式中止：执行器轮询 `shouldAbort`），超时按“取消（source=runner）”处理。
 - 真正的用例级进度（step/case 回调）列为后续增强。
 
 ### 8.5 队列控制
@@ -693,19 +693,19 @@ POST /panel/api/hosts/register     # { host, label?, owner?, expectedOs?, expect
 
 P1（可见性）、P2（定向下发）、P3（队列控制）均已落地；P4（HTTP 客户端记录、跨主机逻辑项目分组）不在本期。实现口径以 `DESIGN.md` §13.152–§13.165 为准，本节只记与设计稿的**实际偏差**。
 
-**验证结果**：`npm run build && npm test && npm run lint` 全绿——**1977 tests / 1977 pass / 0 fail**，lint **0 error**（2 条既有 warning：`src/console/pages.ts`、`src/panel/web.ts` 未使用变量）；测试不依赖真实 PG / 设备 / 外网（SQL 用 pg-mem、artemis 用假子进程、Figma 不触网）。
+**验证结果**：`npm run build && npm test && npm run lint` 全绿——**2020 tests / 2020 pass / 0 fail**，lint **0 error**（2 条既有 warning：`src/console/pages.ts`、`src/panel/web.ts` 未使用变量）；测试不依赖真实 PG / 设备 / 外网（SQL 用 pg-mem、artemis 用假子进程、Figma 不触网）。
 
 **偏差**
 
 1. **`AOS_HOST_STRICT` 已接线（2026-10-21 补）**：严格模式在本版本实现四处入口——`claimRegressionTask`（Postgres/Memory，File 委托，无 `hostId` → null）、本地 `suite run --task` / `suite task cancel`、MCP `regression_task_cancel`（本机身份未知时拒绝）；仅字面 `1`/`true` 开启，缺省保持升级窗口兼容。**作用域**：旧 runner 二进制用自己的旧 SQL 连 PG，不读取该开关，也不会被服务端拦截；严格模式只约束本版本的 claim 与本地命令，旧 runner 必须停用/升级。见 `DESIGN.md` §13.166。
 2. **本地 MCP 接入心跳已创建 `hosts` 行**：`startClientSession` 会 upsert 本机 `hosts`（含 `client_seen_at`/IP），并按 `AOS_CLIENT_PRESENCE_MS` 起 `unref` 空闲心跳；仅开本地 MCP（无 runner）也能在面板看到「IDE 在线」的主机与项目。接入心跳不写 `capabilities`/`env`，因此下发预检对这类主机只告警「尚无执行机上报，任务会排队等待」。
 3. **手动 `suite run --task` 已占设备租约（2026-10-21 补）**：设计稿 §8.3 的设备独占语义现已覆盖手动执行——执行前按 `--device` 获取租约（冲突 exit 2），执行结束/失败在 `finally` 释放；见 `DESIGN.md` §13.166。
-4. **面板 multipart 导入已修复（2026-10-21 补）**：动作层入口允许缺少 JSON body 但带 `rawBody` 的 multipart 请求通过，`project`/`host` 由查询参数携带（面板导入表单提交到 `/panel/api/import?project=<rootPath>[&host=<id>]`），`runImport` 收到 `rawBody`/`contentType` 后解析上传文件；HTTP 级测试用真实工作簿断言 200。**独立 `panel --web` 已补齐**：按 `content-type` 读取/转发 multipart 原始体，并按项目根懒建 Runtime（复用本进程 store，关闭时释放），同一工作簿在独立面板同样返回 200 并登记用例。见 `DESIGN.md` §13.167/§13.169。
+4. **面板 multipart 导入已修复（2026-10-21 补）**：动作层入口允许缺少 JSON body 但带 `rawBody` 的 multipart 请求通过，`project`/`host` 由查询参数携带（面板导入表单提交到 `/panel/api/import?project=<rootPath>[&host=<id>]`），`runImport` 收到 `rawBody`/`contentType` 后解析上传文件；HTTP 级测试用真实工作簿断言 200。**独立 `panel --web` 已补齐**：按 `content-type` 读取/转发 multipart 原始体（超限 413），并按项目根懒建 Runtime（复用本进程 store，失败不缓存，关闭时释放），同一工作簿在独立面板同样返回 200 并登记用例。**跨主机保护**：`?host=` 指向非本机主机时返回 400（“跨主机导入请在该项目机上执行，或使用 HTTP 模式”），不建项目行/不写文件。见 `DESIGN.md` §13.167/§13.169。
 5. **文件台账是单主机视图**：`FileStore.adoptProjectHost` 恒 false，项目行恒 `host_id=NULL`；`hosts`/`host_addresses`/`host_sessions`/`device_leases`/队列暂停虽在 File 实现里可读写，但语义上是单机状态文件，不能跨机共享。`host`/`queue` 命令、runner、定时回归、中心清扫均要求中心 PG（无 PG exit 2）。
 6. **清扫器作用域**：设计稿 §9.3 写「中心或任意存活 runner」；实现进一步收敛为 HTTP 服务/`panel --web` 用 `allHosts=true` 跨主机清扫，runner 只扫本机。CAS `stopping → cancelled` 保证多个清扫器只成功一次，中心可能先于离线 runner 终结（符合预期）。
 7. **旧 runner 行**：`runners.host_id` 为 NULL 的行保留旧唯一索引兼容，可领本项目非定向任务；主机视图按 `runner.host_id` 分组，NULL 行被跳过，不归入任何主机。需升级并在该机重启 runner 后由心跳补齐身份。
 8. **usage 多主机读取已收口（2026-10-21 补）**：CLI `usage` 按项目 `hostId` 用 `scopeHost` 读事件，`--host <id|主机名>` 过滤（歧义/未归属 legacy 同路径均 exit 2 列候选，不抛栈）；`/usage`+`/usage.json` 对 legacy 同路径返回 409（与面板同形）；清扫器改用 `getRunner(rootPath, id)` 精确取行。见 `DESIGN.md` §13.167。
-9. **`AOS_TASK_MAX_RUNTIME_MS` 已接线（2026-10-21 补）**：§8.4 的可选强制上限落地于 runner（缺省 0 关闭；非法/≤0 同样关闭）。`beginExecution` 之后起 `unref` 定时器（测试可注入调度器），触发后进入 `shouldAbort`；执行返回后按“取消（`source=runner`，`actor=runner`，备注含上限毫秒）”经 `cancelRegressionTask` → `ackCancellation` 落 `cancelled`，不走失败/重试路径、不回 `pending`，`attempts` 不额外增长，设备租约仍在 `finally` 释放。见 `DESIGN.md` §13.169。
+9. **`AOS_TASK_MAX_RUNTIME_MS` 已接线（2026-10-21 补）**：§8.4 的可选执行上限（协作式中止）落地于 runner（缺省 0 关闭；非法/≤0 同样关闭；超过 setTimeout 32 位毫秒上限时收敛并 WARN）。`beginExecution` 之后起 `unref` 定时器（测试可注入调度器），触发后进入 `shouldAbort`；执行返回后按“取消（`source=runner`，`actor=runner`，备注含上限毫秒）”经 `cancelRegressionTask` → `ackCancellation`，确认 `cancelled` 才记成功日志/`task.cancel` 审计，否则记失败日志；不走失败/重试路径、不回 `pending`，`attempts` 不额外增长，设备租约仍在 `finally` 释放。见 `DESIGN.md` §13.169。
 
 **已知限制（设计即如此）**
 

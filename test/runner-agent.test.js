@@ -401,6 +401,7 @@ test("执行超过 AOS_TASK_MAX_RUNTIME_MS：按 runner 取消终结（不释放
   const timers = [];
   let scheduledMs = null;
   let timerCancelled = false;
+  let unrefCalled = false;
   let aborted = false;
   let released = 0;
   const originalRelease = store.releaseDeviceLeases.bind(store);
@@ -417,7 +418,9 @@ test("执行超过 AOS_TASK_MAX_RUNTIME_MS：按 runner 取消终结（不释放
         cancel: () => {
           timerCancelled = true;
         },
-        unref: () => {}
+        unref: () => {
+          unrefCalled = true;
+        }
       };
     },
     executeSuite: async (_argv, execOptions) => {
@@ -431,6 +434,7 @@ test("执行超过 AOS_TASK_MAX_RUNTIME_MS：按 runner 取消终结（不释放
   assert.equal(scheduledMs, 120000, "按环境变量上限排定时器");
   assert.equal(aborted, true, "超时进入 shouldAbort");
   assert.equal(timerCancelled, true, "执行结束清理定时器");
+  assert.equal(unrefCalled, true, "定时器 unref（不阻塞进程退出）");
   const after = await store.getRegressionTask(rootPath, task.id);
   assert.equal(after.status, "cancelled", "超时按取消终结");
   assert.equal(after.cancelSource, "runner");
@@ -444,6 +448,40 @@ test("执行超过 AOS_TASK_MAX_RUNTIME_MS：按 runner 取消终结（不释放
     logs.some((line) => line.includes("AOS_TASK_MAX_RUNTIME_MS") && line.includes("120000")),
     "日志说明上限"
   );
+  const audits = await store.listAudit(rootPath, { domain: "task" });
+  const cancelAudit = audits.find(
+    (event) => event.action === "task.cancel" && event.refs.taskId === task.id
+  );
+  assert.ok(cancelAudit, "写入 task.cancel 审计");
+  assert.equal(cancelAudit.actor, "runner");
+  assert.equal(cancelAudit.actorHostId, TEST_HOST_ID);
+  assert.equal(cancelAudit.refs.source, "runner");
+  assert.equal(cancelAudit.refs.note, "任务超过 AOS_TASK_MAX_RUNTIME_MS（120000）");
+});
+
+test("AOS_TASK_MAX_RUNTIME_MS 超 32 位上限：收敛并告警", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  let scheduledMs = null;
+  const timers = [];
+  const { options, errors } = makeOptions(runtime, inv, {
+    env: { AOS_TASK_MAX_RUNTIME_MS: "9999999999999" },
+    scheduleTimeout: (fn, ms) => {
+      scheduledMs = ms;
+      timers.push(fn);
+      return { cancel: () => {}, unref: () => {} };
+    },
+    executeSuite: async () => {
+      timers[0]?.();
+      return 2;
+    }
+  });
+  assert.equal(await runRunnerAgent(options), 0);
+  assert.equal(scheduledMs, 2_147_483_647, "收敛到 setTimeout 上限");
+  assert.ok(errors.some((line) => line.includes("超过 setTimeout 上限")), "WARN 说明收敛");
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "cancelled");
 });
 
 test("AOS_TASK_MAX_RUNTIME_MS=0/非法：不启用超时取消（正常失败重试路径）", async () => {
