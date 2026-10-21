@@ -10,6 +10,8 @@ import { scanVisionHealth } from "../ios/vision-health.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { entryIssues } from "../llm/registry.js";
 import type { Runtime } from "../runtime.js";
+import { clientTtlFrom, isClientOnline } from "../host/online.js";
+import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 
 export interface LlmSwitchArgs {
   name: string;
@@ -171,6 +173,82 @@ export async function aosTasks(runtime: Runtime, args: AosTasksArgs): Promise<Ca
   });
 }
 
+/** 本机身份 + 接入会话/执行机/队列状态（无中心台账时全部降级为默认值，不报错）。 */
+async function hostStatusView(runtime: Runtime): Promise<{
+  identity: {
+    id: string;
+    hostname: string;
+    username: string;
+    osPlatform: NodeJS.Platform;
+    osVersion: string;
+    arch: string;
+    kind: string;
+    identitySource: string;
+  } | null;
+  clientOnline: boolean;
+  runnerOnline: boolean;
+  clientSessions: number;
+  queue: { paused: boolean; pending: number; running: number };
+}> {
+  const identity = runtime.hostIdentity;
+  const nowMs = Date.now();
+  const clientTtl = clientTtlFrom(process.env);
+  const runnerTtl = runnerTtlFrom(process.env);
+  let clientOnline = false;
+  let runnerOnline = false;
+  let clientSessions = 0;
+  let paused = false;
+  let pending = 0;
+  let running = 0;
+
+  if (identity) {
+    try {
+      const host = await runtime.store.getHost(identity.id);
+      if (host) {
+        clientOnline = isClientOnline(host.clientSeenAt, nowMs, clientTtl);
+        paused = host.queuePaused;
+      }
+      clientSessions = (
+        await runtime.store.listHostSessions(identity.id, {
+          onlineWithinMs: clientTtl,
+          now: nowMs
+        })
+      ).length;
+      const runners = await runtime.store.listRunners(runtime.project.rootDir, 100);
+      runnerOnline = runners.some(
+        (runner) =>
+          runner.hostId === identity.id && isRunnerOnline(runner.lastSeenAt, nowMs, runnerTtl)
+      );
+      const tasks = await runtime.store.listRegressionTasks(runtime.project.rootDir, 200);
+      pending = tasks.filter((task) => task.status === "pending").length;
+      running = tasks.filter(
+        (task) => task.status === "claimed" || task.status === "running"
+      ).length;
+    } catch {
+      /* 无中心台账或读取失败：全部保持默认 */
+    }
+  }
+
+  return {
+    identity: identity
+      ? {
+          id: identity.id,
+          hostname: identity.hostname,
+          username: identity.username,
+          osPlatform: identity.osPlatform,
+          osVersion: identity.osVersion,
+          arch: identity.arch,
+          kind: identity.kind,
+          identitySource: identity.identitySource
+        }
+      : null,
+    clientOnline,
+    runnerOnline,
+    clientSessions,
+    queue: { paused, pending, running }
+  };
+}
+
 export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
   const python = runtime.artemisPython();
   const active = await runtime.activeEntry();
@@ -178,12 +256,14 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
   const setup = await runtime.setupInfo();
   const figma = await runtime.figmaTokenInfo();
   const project = runtime.projectSummary();
+  const host = await hostStatusView(runtime);
 
   return jsonResult({
     ok: true,
     version: AOS_MCP_VERSION,
     configPath: runtime.project.configPath,
     rootDir: runtime.project.rootDir,
+    host,
     build: {
       module: runtime.build.moduleUrl,
       startedAt: new Date(runtime.build.startedAtMs).toISOString(),

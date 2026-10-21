@@ -5,6 +5,9 @@ import { configDirAbs, projectTracesDir } from "../artemis/assembly.js";
 import { depsStatus, type DepsStatus } from "../artemis/bootstrap.js";
 import { defaultArtemisRepo, loadProject, type LoadedProject } from "../config/loader.js";
 import type {
+  HostAddressRecord,
+  HostRecord,
+  HostSessionRecord,
   ProjectLlmRecord,
   ProjectRecord,
   ProjectStore,
@@ -14,6 +17,7 @@ import type {
   RunnerTools,
   TaskStatRecord
 } from "../db/types.js";
+import { clientTtlFrom, isClientOnline } from "../host/online.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
 import { designDir } from "../figma/design-store.js";
@@ -51,6 +55,9 @@ export const PANEL_BATCH_LIMIT_DEFAULT = 20;
 export const PANEL_BATCH_LIMIT_MAX = 100;
 export const PANEL_TASK_SCAN_LIMIT_DEFAULT = 100;
 export const PANEL_STANDALONE_LIMIT_DEFAULT = 20;
+
+/** `ip-shared` 判定窗口：同一 `observed-pg` 地址在 10 分钟内出现于多台主机。 */
+export const PANEL_IP_SHARED_WINDOW_MS = 600_000;
 
 /** 批次空态原因清单（面板不做断言式归因：读不到 runner 进程 env）。 */
 export const PANEL_BATCH_EMPTY_CAUSES = [
@@ -113,7 +120,35 @@ export interface PanelOverview {
   host: { serviceRepo: string; deps: DepsStatus["status"]; buildStale: boolean | null };
   workspaceRoot: string | null;
   projects: PanelProjectRow[];
+  /** 接入主机注册表（中心 PG 专属）；无台账时为空，面板显示“单机模式”。 */
+  machines: PanelMachineRow[];
   warnings: string[];
+}
+
+export interface PanelMachineRow {
+  id: string;
+  label: string | null;
+  hostname: string;
+  kind: string;
+  osPlatform: string;
+  osVersion: string | null;
+  arch: string | null;
+  clientOnline: boolean;
+  clientSessions: number;
+  runnerOnline: boolean;
+  lastSeenAt: string;
+  ipPrimary: string | null;
+  addresses: string[];
+  capabilities: string[];
+  tools: Record<string, { present: boolean; version: string | null }>;
+  queuePaused: boolean;
+  pendingTasks: number;
+  registered: boolean;
+  drift: string[];
+  /** IP 变更提示（主地址与历史主地址不同）；仅提示，不参与在线判定。 */
+  ipChange: { prior: string; changedAt: string } | null;
+  /** observed-pg 地址最近 10 分钟内在 ≥2 台主机出现（NAT/复用），只告警不合并。 */
+  ipShared: boolean;
 }
 
 export interface PanelAssetStat {
@@ -758,8 +793,168 @@ function listWorkspaceDirs(workspaceRoot: string): Array<{ name: string; rootPat
     .map((entry) => ({ name: entry.name, rootPath: path.join(workspaceRoot, entry.name) }));
 }
 
+function machineTools(env: Record<string, unknown>): PanelMachineRow["tools"] {
+  const tools: PanelMachineRow["tools"] = {};
+  const raw = env.tools;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return tools;
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const tool = value as { present?: unknown; version?: unknown };
+    tools[name] = {
+      present: tool.present === true,
+      version: typeof tool.version === "string" ? tool.version : null
+    };
+  }
+  return tools;
+}
+
+function machineIpChange(host: HostRecord, addresses: HostAddressRecord[]): PanelMachineRow["ipChange"] {
+  const primary = host.ipPrimary;
+  if (primary === null) return null;
+  const primaryFirst =
+    addresses
+      .filter((entry) => entry.address === primary)
+      .map((entry) => Date.parse(entry.firstSeenAt))
+      .filter((ms) => Number.isFinite(ms))
+      .sort((left, right) => left - right)[0] ?? null;
+  const prior =
+    addresses
+      .filter((entry) => entry.address !== primary)
+      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt))[0] ?? null;
+  if (prior === null) return null;
+  if (primaryFirst === null) return null;
+  const priorLast = Date.parse(prior.lastSeenAt);
+  if (!Number.isFinite(priorLast)) return null;
+  if (priorLast >= primaryFirst) return null;
+  return { prior: prior.address, changedAt: new Date(primaryFirst).toISOString() };
+}
+
+/** 主机注册表 → 面板行：双在线（IDE/执行机）、登记漂移、IP 变更/复用、队列待执行数。
+ * 全部 best-effort：任何存储读取失败都不阻断总览，仅该主机字段降级为空。 */
+async function buildMachineRows(
+  deps: PanelDeps,
+  projectRoots: string[],
+  nowMs: number
+): Promise<PanelMachineRow[]> {
+  const env = deps.env ?? process.env;
+  const clientTtl = clientTtlFrom(env);
+  const runnerTtl = runnerTtlFrom(env);
+
+  const hosts = await safeStore(() => deps.store.listHosts(), [] as HostRecord[]);
+  if (hosts.length === 0) return [];
+
+  const runnersByHost = new Map<string, RunnerRecord[]>();
+  const runnerRootsByHost = new Map<string, Set<string>>();
+  const pendingByProject = new Map<string, number>();
+  for (const rootPath of projectRoots) {
+    let runners: RunnerRecord[] = [];
+    try {
+      runners = await deps.store.listRunners(rootPath, 100);
+    } catch {
+      /* runner 读取失败不阻断主机视图 */
+    }
+    for (const runner of runners) {
+      if (runner.hostId === null) continue;
+      const bucket = runnersByHost.get(runner.hostId) ?? [];
+      bucket.push(runner);
+      runnersByHost.set(runner.hostId, bucket);
+      const roots = runnerRootsByHost.get(runner.hostId) ?? new Set<string>();
+      roots.add(rootPath);
+      runnerRootsByHost.set(runner.hostId, roots);
+    }
+    let pending = 0;
+    try {
+      pending = (await deps.store.listRegressionTasks(rootPath, 200)).filter(
+        (task) => task.status === "pending"
+      ).length;
+    } catch {
+      /* ignore */
+    }
+    pendingByProject.set(rootPath, pending);
+  }
+
+  const observedPgByAddress = new Map<string, number>();
+  const addressesByHost = new Map<string, HostAddressRecord[]>();
+  const sessionsByHost = new Map<string, HostSessionRecord[]>();
+  for (const host of hosts) {
+    let addresses: HostAddressRecord[] = [];
+    try {
+      addresses = await deps.store.listHostAddresses(host.id);
+    } catch {
+      /* ignore */
+    }
+    addressesByHost.set(host.id, addresses);
+    for (const entry of addresses) {
+      if (entry.source !== "observed-pg") continue;
+      const at = Date.parse(entry.lastSeenAt);
+      if (!Number.isFinite(at) || nowMs - at > PANEL_IP_SHARED_WINDOW_MS) continue;
+      observedPgByAddress.set(entry.address, (observedPgByAddress.get(entry.address) ?? 0) + 1);
+    }
+    let sessions: HostSessionRecord[] = [];
+    try {
+      sessions = await deps.store.listHostSessions(host.id, { onlineWithinMs: clientTtl, now: nowMs });
+    } catch {
+      /* ignore */
+    }
+    sessionsByHost.set(host.id, sessions);
+  }
+
+  return hosts.map((host) => {
+    const drift: string[] = [];
+    if (host.expectedOs !== null && host.expectedOs !== "" && host.expectedOs !== host.osPlatform) {
+      drift.push(`OS 与登记不符（登记 ${host.expectedOs}，实际 ${host.osPlatform}）`);
+    }
+    if (
+      host.expectedHostname !== null &&
+      host.expectedHostname !== "" &&
+      host.expectedHostname !== host.hostname
+    ) {
+      drift.push(`主机名与登记不符（登记 ${host.expectedHostname}，实际 ${host.hostname}）`);
+    }
+
+    const addresses = addressesByHost.get(host.id) ?? [];
+    const sessions = sessionsByHost.get(host.id) ?? [];
+    const runners = runnersByHost.get(host.id) ?? [];
+    const runnerOnline = runners.some((runner) => isRunnerOnline(runner.lastSeenAt, nowMs, runnerTtl));
+
+    const roots = new Set<string>(sessions.map((session) => session.rootPath));
+    for (const root of runnerRootsByHost.get(host.id) ?? []) roots.add(root);
+    let pendingTasks = 0;
+    for (const root of roots) pendingTasks += pendingByProject.get(root) ?? 0;
+
+    const ipShared = addresses.some(
+      (entry) => entry.source === "observed-pg" && (observedPgByAddress.get(entry.address) ?? 0) > 1
+    );
+
+    return {
+      id: host.id,
+      label: host.label,
+      hostname: host.hostname,
+      kind: host.kind,
+      osPlatform: host.osPlatform,
+      osVersion: host.osVersion,
+      arch: host.arch,
+      clientOnline: isClientOnline(host.clientSeenAt, nowMs, clientTtl),
+      clientSessions: sessions.length,
+      runnerOnline,
+      lastSeenAt: host.lastSeenAt,
+      ipPrimary: host.ipPrimary,
+      addresses: addresses.map((entry) => entry.address),
+      capabilities: host.capabilities,
+      tools: machineTools(host.env),
+      queuePaused: host.queuePaused,
+      pendingTasks,
+      registered: host.registeredAt !== null,
+      drift,
+      ipChange: machineIpChange(host, addresses),
+      ipShared
+    };
+  });
+}
+
 export async function buildPanelOverview(deps: PanelDeps): Promise<PanelOverview> {
   const now = deps.now ?? (() => Date.now());
+  const nowMs = now();
   const host = hostStatus(deps);
   const storeDegraded = deps.store.kind === "memory";
 
@@ -796,13 +991,20 @@ export async function buildPanelOverview(deps: PanelDeps): Promise<PanelOverview
     );
   }
 
+  const machines = await buildMachineRows(
+    deps,
+    ordered.map((entry) => entry.rootPath),
+    nowMs
+  );
+
   return {
     ok: true,
-    generatedAt: new Date(now()).toISOString(),
+    generatedAt: new Date(nowMs).toISOString(),
     store: { kind: deps.store.kind, degraded: storeDegraded },
     host: { serviceRepo: host.serviceRepo, deps: host.deps.status, buildStale: host.buildStale },
     workspaceRoot: deps.workspaceRoot ?? null,
     projects,
+    machines,
     warnings: []
   };
 }

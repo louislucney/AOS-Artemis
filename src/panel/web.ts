@@ -672,6 +672,87 @@ function hostDepsLabel(status: string): string {
   return status;
 }
 
+function machineKindLabel(kind: string): string {
+  if (kind === "mac") return "Mac";
+  if (kind === "pc") return "PC";
+  if (kind === "linux") return "Linux";
+  return kind;
+}
+
+function renderMachinesSection(view: PanelOverview): string {
+  if (view.machines.length === 0) {
+    return [
+      '<section id="machines">',
+      "<h2>接入主机</h2>",
+      '<p class="empty">单机模式（无中心台账）</p>',
+      "</section>"
+    ].join("\n");
+  }
+  const rows = view.machines.map((machine) => {
+    const system = [machineKindLabel(machine.kind), machine.osPlatform, machine.osVersion, machine.arch]
+      .filter((part) => part !== null && part !== "")
+      .join(" · ");
+    const ide = machine.clientOnline
+      ? `${cBadge({ label: "IDE 在线", tone: "success" })}${
+          machine.clientSessions > 0 ? ` <span class="muted">${machine.clientSessions} 会话</span>` : ""
+        }`
+      : cBadge({ label: "IDE 离线", tone: "neutral" });
+    const runner = machine.runnerOnline
+      ? cBadge({ label: "执行机在线", tone: "success" })
+      : cBadge({ label: "执行机离线", tone: "warning" });
+    const ip = [
+      machine.ipPrimary === null
+        ? '<span class="muted">—</span>'
+        : `<code>${escapeHtml(machine.ipPrimary)}</code>`,
+      machine.ipChange === null
+        ? ""
+        : ` <span class="note">上次 ${escapeHtml(machine.ipChange.prior)}，变更于 ${relativeTime(
+            machine.ipChange.changedAt
+          )}</span>`,
+      machine.ipShared ? ' <span class="chip gate-fail" title="同一观测地址最近 10 分钟出现在多台主机（NAT/复用）">IP 复用</span>' : ""
+    ].join("");
+    const capabilities =
+      machine.capabilities.length === 0
+        ? '<span class="muted">—</span>'
+        : machine.capabilities
+            .map((capability) => `<span class="chip">${escapeHtml(capability)}</span>`)
+            .join(" ");
+    const queue = machine.queuePaused
+      ? `${cBadge({ label: `队列暂停`, tone: "warning" })} <span class="muted">待 ${machine.pendingTasks}</span>`
+      : `<span class="muted">待 ${machine.pendingTasks}</span>`;
+    const drift =
+      machine.drift.length === 0
+        ? '<span class="muted">—</span>'
+        : machine.drift.map((line) => `<span class="note">${escapeHtml(line)}</span>`).join("<br>");
+    const registration = machine.registered
+      ? cBadge({ label: "已登记", tone: "neutral" })
+      : cBadge({ label: "未登记", tone: "neutral" });
+    return [
+      `<code>${escapeHtml(machine.hostname)}</code>${
+        machine.label === null ? "" : ` <span class="muted">${escapeHtml(machine.label)}</span>`
+      } ${registration}`,
+      escapeHtml(system),
+      `${ide} / ${runner}`,
+      ip,
+      capabilities,
+      queue,
+      `<span class="c-nowrap">${relativeTime(machine.lastSeenAt)}</span>`,
+      drift
+    ];
+  });
+  return [
+    '<section id="machines">',
+    "<h2>接入主机</h2>",
+    renderTable(
+      ["主机", "系统", "IDE/执行机", "IP", "能力", "队列", "最后活跃", "漂移"],
+      rows,
+      "单机模式（无中心台账）",
+      "接入主机"
+    ),
+    "</section>"
+  ].join("\n");
+}
+
 function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
   const store = view.store.degraded
     ? cBadge({ label: "存储：会话内存", tone: "warning" })
@@ -717,6 +798,7 @@ try{
         tone: view.host.buildStale === null ? "neutral" : view.host.buildStale ? "warning" : "success"
       })}</p>`,
       "</header>",
+      renderMachinesSection(view),
       view.projects.length === 0
         ? cEmpty({
             title: "还没有接入项目",

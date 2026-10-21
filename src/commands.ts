@@ -128,6 +128,34 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
     });
   }
 
+  // 1.5 本机身份与环境（只读本机，不依赖 PG / 项目定位）
+  try {
+    const { resolveHostIdentity } = await import("./host/identity.js");
+    const { detectHostEnvironment } = await import("./host/env.js");
+    const identity = await resolveHostIdentity({ env: process.env });
+    const hostEnv = await detectHostEnvironment({ projectRoot: process.cwd() });
+    const tools = Object.entries(hostEnv.tools)
+      .filter(([, tool]) => tool.present)
+      .map(([name, tool]) => `${name}${tool.version ? ` ${tool.version}` : ""}`);
+    lines.push({
+      icon: "OK",
+      title: `host identity: ${identity.id} · ${identity.kind} · ${identity.osPlatform} · ${identity.arch}`,
+      details: [
+        `hostname: ${identity.hostname}`,
+        `os version: ${identity.osVersion}`,
+        `node ${hostEnv.node} · aos ${hostEnv.aos}`,
+        tools.length > 0 ? `tools: ${tools.join(", ")}` : "tools: 无可用设备工具"
+      ]
+    });
+  } catch (error) {
+    degraded = true;
+    lines.push({
+      icon: "WARN",
+      title: "本机身份/环境采集失败",
+      details: [errorMessage(error)]
+    });
+  }
+
   // 2. Project resolution + .env LLM scan
   const env = process.env;
   let rootDir: string | null = null;
