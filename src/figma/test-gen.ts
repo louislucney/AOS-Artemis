@@ -62,7 +62,7 @@ import type { PenExecFn } from "../pen/cli.js";
 import type { PenEnsureFn } from "../pen/install.js";
 import type { PenScreenRenderInput, PenScreenRenderResult } from "../pen/render.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
-import type { Runtime } from "../runtime.js";
+import type { DesignRuntimeLike } from "./design-runtime.js";
 import {
   collectCaseDefectFeedback,
   type CaseDefectFeedback
@@ -461,7 +461,7 @@ function lookupI18nKey(text: string | undefined, i18nKeys: Map<string, string> |
 /** Element-level identifier suggestions (screen-map elements; best-hit first,
  * keyed by normalized text — same text on several screens suggests the same
  * identifier, which is the conventional cross-screen behavior). */
-function loadIdentifierSuggestions(runtime: Runtime): Map<string, string> {
+function loadIdentifierSuggestions(runtime: DesignRuntimeLike): Map<string, string> {
   const map = new Map<string, string>();
   const elements = [...loadScreenMap(runtime.configDirAbs).elements].sort(
     (a, b) => b.hits - a.hits || a.text.localeCompare(b.text)
@@ -609,7 +609,7 @@ function readSectionMap(value: unknown, warnings: DesignWarning[]): Map<string, 
   return map;
 }
 
-function loadAcceptanceDetails(runtime: Runtime): AcceptanceDetails {
+function loadAcceptanceDetails(runtime: DesignRuntimeLike): AcceptanceDetails {
   const details = emptyAcceptanceDetails();
   try {
     const file = path.join(runtime.configDirAbs, "design", "acceptance.json");
@@ -879,6 +879,8 @@ export interface GenerateTestsDeps {
   sleep?: (ms: number) => Promise<void>;
   /** 功能命名 LLM 注入（测试；缺省解析 active LLM）。 */
   chat?: ChatFn | null;
+  /** 本请求的 Figma token（缺省回退 FIGMA_ACCESS_TOKEN；open 服务必须显式传）。 */
+  figmaToken?: string | null;
   /** 归档时间戳注入（测试）。 */
   now?: () => Date;
 }
@@ -923,7 +925,7 @@ function screenCaptureWarnings(
 /** 按用例收集屏幕截图（design-screenshots T4）：flows 来源（fileKey/pen source）决定通道，
  * 屏幕名 → nodeId 映射后一次批量渲染；映射缺失/渲染失败逐级降级，不阻断。 */
 async function captureCaseScreens(
-  runtime: Runtime,
+  runtime: DesignRuntimeLike,
   input: {
     flowsPath: string;
     fromUrlFileKey: string | null;
@@ -981,7 +983,10 @@ async function captureCaseScreens(
   let dir: string;
   if (meta.fileKey !== null) {
     channel = "figma";
-    const capture = await captureFigmaScreens(meta.fileKey, ids, { sleep: input.deps.sleep });
+    const capture = await captureFigmaScreens(meta.fileKey, ids, {
+      sleep: input.deps.sleep,
+      figmaToken: input.deps.figmaToken
+    });
     const targetDir = figmaScreensDir(runtime.configDirAbs, meta.fileKey);
     imagePaths = new Map();
     for (const [id, png] of capture.pngById) {
@@ -1029,7 +1034,7 @@ async function captureCaseScreens(
 }
 
 /** Load the frozen text→key mapping produced by figma_import_strings (M6b). */
-function loadI18nKeys(runtime: Runtime): Map<string, string> {
+function loadI18nKeys(runtime: DesignRuntimeLike): Map<string, string> {
   const stringsPath = path.join(runtime.configDirAbs, "design", "strings.json");
   const map = new Map<string, string>();
   try {
@@ -1047,13 +1052,17 @@ function loadI18nKeys(runtime: Runtime): Map<string, string> {
   return map;
 }
 
-async function resolveNamingChat(runtime: Runtime): Promise<ChatFn | null> {
+async function resolveNamingChat(runtime: DesignRuntimeLike): Promise<ChatFn | null> {
+  if (!runtime.activeEntry) return null;
   const entry = await runtime.activeEntry();
   if (!entry || !entry.model || !entry.baseUrl || !entry.apiKey) return null;
   return makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model });
 }
 
-async function resolveDesignName(runtime: Runtime): Promise<string | null> {
+async function resolveDesignName(
+  runtime: DesignRuntimeLike,
+  figmaToken?: string | null
+): Promise<string | null> {
   const meta = readFlowDocumentMeta(runtime.configDirAbs);
   if (!meta) return null;
   if (meta.penPath) {
@@ -1062,7 +1071,7 @@ async function resolveDesignName(runtime: Runtime): Promise<string | null> {
   }
   if (!meta.fileKey) return null;
   try {
-    const file = (await fetchFile(meta.fileKey, 1)) as { name?: string };
+    const file = (await fetchFile(meta.fileKey, 1, figmaToken ?? undefined)) as { name?: string };
     return typeof file.name === "string" && file.name.trim() !== "" ? file.name : null;
   } catch {
     return null;
@@ -1070,7 +1079,7 @@ async function resolveDesignName(runtime: Runtime): Promise<string | null> {
 }
 
 async function loadPriorFeatures(
-  runtime: Runtime
+  runtime: DesignRuntimeLike
 ): Promise<{ features: PriorFeature[]; warnings: FeatureWarning[] }> {
   try {
     const records = await runtime.store.listCaseSets(runtime.project.rootDir);
@@ -1096,7 +1105,7 @@ async function loadPriorFeatures(
 }
 
 async function assignFeatures(
-  runtime: Runtime,
+  runtime: DesignRuntimeLike,
   graph: FlowGraph,
   cases: GeneratedTest[],
   deps: GenerateTestsDeps,
@@ -1109,7 +1118,7 @@ async function assignFeatures(
     })),
     edges: graph.edges.map((edge) => ({ from: edge.from.name, to: edge.to ? edge.to.name : null }))
   });
-  const designName = designNameHint ?? (await resolveDesignName(runtime));
+  const designName = designNameHint ?? (await resolveDesignName(runtime, deps.figmaToken));
   for (const group of split) {
     if (group.signal === "fallback" && group.candidateName === null && designName) {
       group.candidateName = designName;
@@ -1174,7 +1183,7 @@ export function enrichGeneratedCases(cases: GeneratedTest[], input: EnrichCasesI
 }
 
 export async function figmaGenerateTests(
-  runtime: Runtime,
+  runtime: DesignRuntimeLike,
   args: GenerateTestsArgs,
   deps: GenerateTestsDeps = {}
 ): Promise<CallToolResult> {
@@ -1194,7 +1203,7 @@ export async function figmaGenerateTests(
     if (args.url) {
       const { fileKey } = parseFigmaUrl(args.url);
       fromUrlFileKey = fileKey;
-      const file = (await fetchFile(fileKey)) as { name?: string; document?: FigmaNode };
+      const file = (await fetchFile(fileKey, undefined, deps.figmaToken ?? undefined)) as { name?: string; document?: FigmaNode };
       if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
       graph = buildFlowGraph(file.document);
       designSourceWarnings = flowGraphWarnings(graph);

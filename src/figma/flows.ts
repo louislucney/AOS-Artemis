@@ -5,7 +5,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import { walk, type FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import { errorMessage, escapeHtml, writeFileAtomic } from "../util.js";
-import type { Runtime } from "../runtime.js";
+import type { DesignRuntimeLike } from "./design-runtime.js";
 import {
   figmaScreensDir,
   relativeScreenPath,
@@ -661,6 +661,8 @@ export interface ExtractFlowsArgs {
 export interface FigmaFlowsDeps {
   /** 渲染重试等待（测试注入；默认真实等待）。 */
   sleep?: (ms: number) => Promise<void>;
+  /** 本请求的 Figma token（缺省回退 FIGMA_ACCESS_TOKEN；open 服务必须显式传）。 */
+  figmaToken?: string | null;
 }
 
 interface FigmaScreensResult {
@@ -671,7 +673,7 @@ interface FigmaScreensResult {
 
 /** 批量渲染屏幕 → 原子入库 `design/screens/figma-<fileKey>/`；失败逐屏/通道级降级。 */
 async function captureAndStoreFigmaScreens(
-  runtime: Runtime,
+  runtime: DesignRuntimeLike,
   fileKey: string,
   screens: FlowScreen[],
   deps: FigmaFlowsDeps
@@ -782,13 +784,13 @@ export function renderFigmaFlowMap(input: {
 }
 
 export async function figmaExtractFlows(
-  runtime: Runtime,
+  runtime: DesignRuntimeLike,
   args: ExtractFlowsArgs,
   deps: FigmaFlowsDeps = {}
 ): Promise<CallToolResult> {
   try {
     const { fileKey } = parseFigmaUrl(args.url);
-    const file = (await fetchFile(fileKey)) as {
+    const file = (await fetchFile(fileKey, undefined, deps.figmaToken ?? undefined)) as {
       name?: string;
       version?: unknown;
       lastModified?: unknown;

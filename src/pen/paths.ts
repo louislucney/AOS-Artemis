@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { Runtime } from "../runtime.js";
+import type { DesignRuntimeLike } from "../figma/design-runtime.js";
 import { parsePenText, type PenDocument } from "./read.js";
 
 export const PEN_HINT =
@@ -18,7 +18,7 @@ export function newestPen(designDir: string): string | null {
   return files[0]!;
 }
 
-export function resolvePenTarget(runtime: Runtime, explicit?: string): string | null {
+export function resolvePenTarget(runtime: DesignRuntimeLike, explicit?: string): string | null {
   if (explicit) {
     return path.isAbsolute(explicit) ? explicit : path.join(runtime.project.rootDir, explicit);
   }
@@ -30,6 +30,6 @@ export function loadPenDocument(target: string): PenDocument {
   return parsePenText(fs.readFileSync(target, "utf-8"));
 }
 
-export function penRelativePath(runtime: Runtime, target: string): string {
+export function penRelativePath(runtime: DesignRuntimeLike, target: string): string {
   return path.relative(runtime.project.rootDir, target);
 }

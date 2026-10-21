@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { FailureClassification } from "../artemis/failure-taxonomy.js";
-import type { Runtime } from "../runtime.js";
+import type { DesignRuntimeLike } from "./design-runtime.js";
 import {
   collectVerdictExits,
   type VerdictExitCase,
@@ -99,7 +99,7 @@ interface CaseMeta {
   steps: string[];
 }
 
-function loadCaseMeta(runtime: Runtime): Map<string, CaseMeta> {
+function loadCaseMeta(runtime: DesignRuntimeLike): Map<string, CaseMeta> {
   const map = new Map<string, CaseMeta>();
   const document = readTestsDocument(runtime.configDirAbs);
   if (document === null) return map;
@@ -214,7 +214,7 @@ function collectVerdictSuggestions(exits: VerdictExits): FeedbackSuggestion[] {
     });
 }
 
-async function loadVerdictExits(runtime: Runtime): Promise<VerdictExits | undefined> {
+async function loadVerdictExits(runtime: DesignRuntimeLike): Promise<VerdictExits | undefined> {
   try {
     const runs = await runtime.store.listSuiteRuns(runtime.project.rootDir, { limit: 100 });
     return collectVerdictExits(runs);
@@ -232,9 +232,11 @@ export interface CaseDefectFeedback {
   }>;
 }
 
+import type { Runtime } from "../runtime.js";
+
 /** 案例问题反馈（按 featureKey 分组；store 不可用 → null；供生成侧只读消费）。 */
 export async function collectCaseDefectFeedback(
-  runtime: Runtime
+  runtime: DesignRuntimeLike
 ): Promise<CaseDefectFeedback | null> {
   let exits: VerdictExits;
   try {

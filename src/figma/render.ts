@@ -131,7 +131,11 @@ const SCREEN_RETRY_WAIT_MS = 1000;
 export async function captureFigmaScreens(
   fileKey: string,
   nodeIds: string[],
-  deps: { scale?: number; sleep?: (ms: number) => Promise<void> } = {}
+  deps: {
+    scale?: number;
+    sleep?: (ms: number) => Promise<void>;
+    figmaToken?: string | null;
+  } = {}
 ): Promise<FigmaScreenCapture> {
   const ids = [...new Set(nodeIds.filter((id) => id.trim() !== ""))];
   if (ids.length === 0) return { pngById: new Map(), skipped: [], channelError: null };
@@ -140,7 +144,7 @@ export async function captureFigmaScreens(
 
   let urls: Record<string, string | null>;
   try {
-    const first = await fetchImages(fileKey, ids, "png", scale);
+    const first = await fetchImages(fileKey, ids, "png", scale, {}, deps.figmaToken ?? undefined);
     urls = { ...(first.images ?? {}) };
   } catch (error) {
     return { pngById: new Map(), skipped: ids, channelError: errorMessage(error) };
@@ -150,7 +154,7 @@ export async function captureFigmaScreens(
   if (unresolved.length > 0) {
     await sleep(SCREEN_RETRY_WAIT_MS);
     try {
-      const retry = await fetchImages(fileKey, unresolved, "png", scale, { noCache: true });
+      const retry = await fetchImages(fileKey, unresolved, "png", scale, { noCache: true }, deps.figmaToken ?? undefined);
       for (const id of unresolved) {
         const url = retry.images?.[id];
         if (url) urls[id] = url;

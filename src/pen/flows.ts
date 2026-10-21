@@ -4,7 +4,7 @@ import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { errorMessage, escapeHtml, writeFileAtomic } from "../util.js";
-import type { Runtime } from "../runtime.js";
+import type { DesignRuntimeLike } from "../figma/design-runtime.js";
 import {
   acceptanceItemOf,
   flowGraphWarnings,
@@ -1112,7 +1112,7 @@ function requestedScreenIds(screens: PenFlowScreen[]): {
 /** 一次渲染两用（design-screenshots T2）：截图与 vision 共享同一批渲染；
  * 渲染到私有临时目录 → 逐张校验后原子入库 `screens/pen-<slug>/` → 清理临时目录。 */
 function screenAssetLoader(
-  runtime: Runtime,
+  runtime: DesignRuntimeLike,
   target: string,
   screens: PenFlowScreen[],
   deps: PenFlowsDeps,
@@ -1126,7 +1126,7 @@ function screenAssetLoader(
 }
 
 async function renderAndImportPenScreens(
-  runtime: Runtime,
+  runtime: DesignRuntimeLike,
   target: string,
   screens: PenFlowScreen[],
   deps: PenFlowsDeps,
@@ -1203,7 +1203,7 @@ function renderedSizeResolver(
 }
 
 async function applyVision(
-  runtime: Runtime,
+  runtime: DesignRuntimeLike,
   args: PenExtractFlowsArgs,
   doc: PenDocument,
   result: PenFlowResult,
@@ -1241,7 +1241,7 @@ async function applyVision(
   let capabilityKey = "";
   let capabilityCache: VisionCapabilityCache | null = null;
   if (!chat) {
-    const entry = await runtime.activeEntry();
+    const entry = runtime.activeEntry ? await runtime.activeEntry() : null;
     model = entry?.model ?? undefined;
     if (!entry || !entry.model || !entry.baseUrl || !entry.apiKey) {
       return skippedVision(
@@ -1493,7 +1493,7 @@ function jsonResult(payload: unknown, isError = false): CallToolResult {
 }
 
 export async function penExtractFlows(
-  runtime: Runtime,
+  runtime: DesignRuntimeLike,
   args: PenExtractFlowsArgs,
   deps: PenFlowsDeps = {}
 ): Promise<CallToolResult> {

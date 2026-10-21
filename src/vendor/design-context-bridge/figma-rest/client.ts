@@ -4,8 +4,8 @@ import { createHash } from 'node:crypto';
 
 const FIGMA_API = 'https://api.figma.com/v1';
 
-function getToken(): string {
-  const token = process.env.FIGMA_ACCESS_TOKEN;
+function getToken(override?: string): string {
+  const token = override !== undefined ? override : process.env.FIGMA_ACCESS_TOKEN;
   if (!token) {
     throw new Error(
       'FIGMA_ACCESS_TOKEN is not set. Add it to the project .env (FIGMA_ACCESS_TOKEN=figd_...), ' +
@@ -70,15 +70,19 @@ async function figmaFetch(
   attempt = 0,
   // PATCH (aos-mcp): `noCache` bypasses the response cache for bounded retries
   // (a cached null render URL would otherwise defeat an /images retry).
-  options: { noCache?: boolean } = {}
+  options: { noCache?: boolean } = {},
+  // PATCH (aos-mcp): per-request token override keeps concurrent callers isolated;
+  // cache keys include the token fingerprint so responses never cross tokens.
+  tokenOverride?: string
 ): Promise<unknown> {
+  const token = getToken(tokenOverride);
+  const fingerprint = tokenFingerprint(token);
+  const cacheKey = `${fingerprint}:${path}`;
   const ttl = cacheTtlMs();
   if (ttl > 0 && options.noCache !== true) {
-    const cached = cache.get(path);
+    const cached = cache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) return cached.data;
   }
-  const token = getToken();
-  const fingerprint = tokenFingerprint(token);
   const cooldown = cooldowns.get(fingerprint);
   if (cooldown && Date.now() < cooldown.until) {
     const remaining = Math.ceil((cooldown.until - Date.now()) / 1000);
@@ -92,7 +96,7 @@ async function figmaFetch(
     const seconds = parseRetryAfter(res) ?? 60;
     if (seconds * 1000 <= retryMaxWaitMs() && attempt < 1) {
       await new Promise((r) => setTimeout(r, seconds * 1000));
-      return figmaFetch(path, attempt + 1, options);
+      return figmaFetch(path, attempt + 1, options, tokenOverride);
     }
     cooldowns.set(fingerprint, { until: Date.now() + seconds * 1000, tier, retryAfterSeconds: seconds });
     throw new FigmaRateLimitError(seconds, tier);
@@ -106,7 +110,7 @@ async function figmaFetch(
     for (const [key, entry] of cache) {
       if (Date.now() >= entry.expiresAt) cache.delete(key);
     }
-    cache.set(path, { data, expiresAt: Date.now() + ttl });
+    cache.set(cacheKey, { data, expiresAt: Date.now() + ttl });
   }
   return data;
 }
@@ -124,19 +128,19 @@ export function parseFigmaUrl(url: string): { fileKey: string; nodeId?: string }
  * Fetch a whole file. `depth` limits how many levels of the tree are returned;
  * omit it to get the full tree (needed for scanning and analysis).
  */
-export async function fetchFile(fileKey: string, depth?: number): Promise<unknown> {
+export async function fetchFile(fileKey: string, depth?: number, token?: string): Promise<unknown> {
   const query = typeof depth === 'number' ? `?depth=${depth}` : '';
-  return figmaFetch(`/files/${fileKey}${query}`);
+  return figmaFetch(`/files/${fileKey}${query}`, 0, {}, token);
 }
 
-export async function fetchNodes(fileKey: string, nodeIds: string[]): Promise<unknown> {
+export async function fetchNodes(fileKey: string, nodeIds: string[], token?: string): Promise<unknown> {
   const ids = nodeIds.map((id) => encodeURIComponent(id)).join(',');
-  return figmaFetch(`/files/${fileKey}/nodes?ids=${ids}`);
+  return figmaFetch(`/files/${fileKey}/nodes?ids=${ids}`, 0, {}, token);
 }
 
 /** Local variables (design tokens). Enterprise-plan only — callers must handle 403. */
-export async function fetchLocalVariables(fileKey: string): Promise<unknown> {
-  return figmaFetch(`/files/${fileKey}/variables/local`);
+export async function fetchLocalVariables(fileKey: string, token?: string): Promise<unknown> {
+  return figmaFetch(`/files/${fileKey}/variables/local`, 0, {}, token);
 }
 
 /**
@@ -150,10 +154,11 @@ export async function fetchImages(
   scale = 1,
   // PATCH (aos-mcp): `noCache` passthrough for bounded render retries.
   options: { noCache?: boolean } = {},
+  token?: string,
 ): Promise<{ images: Record<string, string | null>; err?: string }> {
   const ids = nodeIds.map((id) => encodeURIComponent(id)).join(',');
   const scaleQuery = format === 'svg' ? '' : `&scale=${scale}`;
-  return figmaFetch(`/images/${fileKey}?ids=${ids}&format=${format}${scaleQuery}`, 0, options) as Promise<{
+  return figmaFetch(`/images/${fileKey}?ids=${ids}&format=${format}${scaleQuery}`, 0, options, token) as Promise<{
     images: Record<string, string | null>;
     err?: string;
   }>;

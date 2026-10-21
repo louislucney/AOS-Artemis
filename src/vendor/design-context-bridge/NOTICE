@@ -36,6 +36,11 @@ Modifications (all files also carry inline PATCH notes):
                                    bounded screen-render retries must bypass the
                                    response cache (a cached null image URL would
                                    defeat the retry — design-pipeline screens).
+  7. figma-rest/client.ts       — optional per-call token override on
+                                   figmaFetch/fetchFile/fetchNodes/fetchImages/
+                                   fetchLocalVariables; cache keys include the
+                                   token fingerprint so concurrent callers with
+                                   different tokens never share responses.
 
 Everything else is unmodified upstream code. The original MIT license and
 copyright notices are preserved in LICENSE.
