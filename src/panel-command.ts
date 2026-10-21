@@ -1,12 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 
+import { loadProject } from "./config/loader.js";
 import { createProjectStore, type CreateStoreResult } from "./db/index.js";
 import { storeKindShortLabel } from "./db/labels.js";
 import { handlePanelActionRequest } from "./panel/actions.js";
 import { handleArtifactRequest } from "./panel/artifact-route.js";
 import { loopbackHostAllowed } from "./panel/http-guard.js";
 import type { ProjectStore } from "./db/types.js";
+import { Runtime } from "./runtime.js";
 import {
   createPanelWebCache,
   handlePanelRequest,
@@ -23,6 +25,7 @@ import { errorMessage, isBuildStale } from "./util.js";
 export const PANEL_WEB_DEFAULT_PORT = 8767;
 const DEFAULT_WEB_HOST = "127.0.0.1";
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
+const MAX_PANEL_IMPORT_BYTES = 20 * 1024 * 1024 + 256 * 1024;
 
 export interface PanelCliDeps {
   store?: ProjectStore;
@@ -31,6 +34,8 @@ export interface PanelCliDeps {
   log?: (line: string) => void;
   errorLog?: (line: string) => void;
   waitForShutdown?: (handle: PanelWebHandle) => Promise<void>;
+  /** 独立面板的导入运行时（缺省按项目根懒建并复用本进程 store）。 */
+  runtimeFor?: (rootPath: string) => Promise<Runtime | null>;
 }
 
 interface ParsedFlags {
@@ -134,6 +139,34 @@ function readStandaloneJsonBody(req: IncomingMessage, maxBytes = 256 * 1024): Pr
   });
 }
 
+function readStandaloneRawBody(
+  req: IncomingMessage,
+  maxBytes = MAX_PANEL_IMPORT_BYTES
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let oversized = false;
+    req.on("data", (chunk: Buffer) => {
+      if (oversized) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        oversized = true;
+        chunks.length = 0;
+        reject(new Error("body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!oversized) resolve(Buffer.concat(chunks));
+    });
+    req.on("error", (error) => {
+      if (!oversized) reject(error);
+    });
+  });
+}
+
 function defaultWaitForShutdown(): Promise<void> {  return new Promise((resolve) => {
     const done = (): void => {
       process.removeListener("SIGINT", done);
@@ -168,6 +201,7 @@ async function runPanelWeb(options: {
   log: (line: string) => void;
   errorLog: (line: string) => void;
   waitForShutdown: (handle: PanelWebHandle) => Promise<void>;
+  runtimeFor?: (rootPath: string) => Promise<Runtime | null>;
 }): Promise<number> {
   const { flags, store, env } = options;
   const host = flags.get("host") ?? DEFAULT_WEB_HOST;
@@ -181,12 +215,39 @@ async function runPanelWeb(options: {
   const workspaceRoot = workspaceRaw === null ? null : path.resolve(workspaceRaw);
 
   let actualPort = port;
+  const runtimes = new Map<string, Promise<Runtime | null>>();
+  const runtimeFor =
+    options.runtimeFor ??
+    ((rootPath: string): Promise<Runtime | null> => {
+      const cached = runtimes.get(rootPath);
+      if (cached) return cached;
+      const created = (async (): Promise<Runtime | null> => {
+        try {
+          const project = loadProject({
+            env: { ...env, AOS_PROJECT_DIR: rootPath, AOS_CONFIG: "" }
+          });
+          const runtime = new Runtime(project, {
+            store,
+            storeNote: options.storageNote,
+            baseEnv: env
+          });
+          await runtime.initialize();
+          return runtime;
+        } catch (error) {
+          options.errorLog(`面板运行时初始化失败（${rootPath}）: ${errorMessage(error)}`);
+          return null;
+        }
+      })();
+      runtimes.set(rootPath, created);
+      return created;
+    });
   const deps: PanelWebDeps = {
     store,
     env,
     workspaceRoot,
     buildStale: isBuildStale(import.meta.url, Date.now() - Math.round(process.uptime() * 1000)),
     cache: createPanelWebCache(panelCacheTtlFrom(env)),
+    runtimeFor,
     storeNote: options.storageNote,
     storeForHost: (hostId) => store.scopeHost(hostId),
     capabilities: {
@@ -231,7 +292,25 @@ async function runPanelWeb(options: {
           (req.method === "POST" || req.method === "GET")
         ) {
           let body: unknown;
-          if (req.method === "POST") {
+          let rawBody: Buffer | undefined;
+          let requestContentType: string | undefined;
+          const headerType = req.headers["content-type"];
+          const contentTypeValue = Array.isArray(headerType) ? headerType[0] : headerType;
+          const isMultipartImport =
+            req.method === "POST" &&
+            url.pathname === "/panel/api/import" &&
+            typeof contentTypeValue === "string" &&
+            contentTypeValue.toLowerCase().includes("multipart/form-data");
+          if (isMultipartImport) {
+            try {
+              rawBody = await readStandaloneRawBody(req);
+            } catch {
+              res.writeHead(400, { "Content-Type": JSON_CONTENT_TYPE });
+              res.end('{"error":"invalid multipart body"}');
+              return;
+            }
+            requestContentType = contentTypeValue;
+          } else if (req.method === "POST") {
             try {
               body = await readStandaloneJsonBody(req);
             } catch {
@@ -241,7 +320,14 @@ async function runPanelWeb(options: {
             }
           }
           const response = await handlePanelActionRequest(
-            { method: req.method ?? "GET", url, body, headers: req.headers },
+            {
+              method: req.method ?? "GET",
+              url,
+              body,
+              headers: req.headers,
+              ...(rawBody === undefined ? {} : { rawBody }),
+              ...(requestContentType === undefined ? {} : { contentType: requestContentType })
+            },
             deps
           );
           res.writeHead(response.status, { "Content-Type": response.contentType });
@@ -297,6 +383,16 @@ async function runPanelWeb(options: {
       server.close(() => resolve());
       server.closeAllConnections();
     });
+    for (const pending of runtimes.values()) {
+      const runtime = await pending.catch(() => null);
+      if (runtime === null) continue;
+      try {
+        runtime.proxy.disposeSync();
+      } catch {
+        /* best effort */
+      }
+    }
+    runtimes.clear();
   };
 
   options.log(`总览面板已启动: ${url}`);
@@ -368,7 +464,8 @@ export async function runPanelCommand(argv: string[], deps: PanelCliDeps = {}): 
       env,
       log,
       errorLog,
-      waitForShutdown: deps.waitForShutdown ?? defaultWaitForShutdown
+      waitForShutdown: deps.waitForShutdown ?? defaultWaitForShutdown,
+      ...(deps.runtimeFor === undefined ? {} : { runtimeFor: deps.runtimeFor })
     });
   } catch (error) {
     errorLog(`panel 失败: ${errorMessage(error)}`);

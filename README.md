@@ -178,6 +178,7 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 | `AOS_CLIENT_TTL_MS` | 120000 | IDE 会话在线判定窗口 |
 | `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 接入心跳/刷新节流；`0` 关闭 |
 | `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL（续租周期 TTL/3） |
+| `AOS_TASK_MAX_RUNTIME_MS` | 0（关闭） | runner 单任务硬上限；超时按“取消（source=runner）”终结，不释放重试 |
 | `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限 |
 | `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板开放优先级编辑 |
 | `AOS_HOST_STRICT` | 0 | `=1`/`=true` 时严格主机模式：**本版本**的领取与本地手动执行/取消在无主机身份时拒绝。旧 runner 二进制仍按自己的 SQL 连 PG，需停用/升级，不会被此开关拦截（见 DESIGN §13.165/§13.166） |
@@ -247,7 +248,7 @@ node dist/cli.js export --what results|process|data [--format json|csv] \
 HTTP 模式挂总览面板：`GET /panel`（服务端渲染 HTML）与 `GET /panel.json`（同源 JSON，`view: overview|project|batch|task|review|stats|compare`）。三层视图：**L1 项目总览**（接入健康灯 + 最新批次摘要）、**L2 项目详情**（集成信息 + **深探信息** + 批次列表与**批次趋势** + **回归引用**（新建回归测试：勾选份 → 创建任务）+ **回归任务**列表 + **执行机（runner）**区块 + **定时回归（schedule）**区块 + **磁盘资产**（崩溃签名/对账/设备基线热点/保留期摘要）+ 独立运行 + 设计资产）、**L3 批次详情**（归纳分类：门禁/失败域/置信度/用例/证据链）；L1/L2 每 15s 轮询刷新（运行中任务页 10s；页面隐藏或表单聚焦时暂停，可手动暂停/继续）；回归视图：**任务页**（`?task=<id>`：状态/领取方（在线/失联）/来源/子运行/对比/跨端差异/活跃态自动刷新/产物链接）、**归因队列**（`?view=review`：失败用例初判+证据+批量裁决，写库后 reload 可见；含「打开证据」链接）、**统计下钻**（`?view=stats`：功能通过率/趋势、最不稳用例、跨端差异、改进出口三清单）。
 
 ```bash
-node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读看板（HTTP 模式自带 /panel；动作层仅 HTTP 模式）
+node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板（动作层：AOS_PANEL_ACTIONS=1 ＋ loopback）
 ```
 
 **控制台形态（CSDC 设计体系）**：`/panel` 已按 CSDC 重构（毛玻璃顶栏＋分区导航＋黄底当前项）。`?section=` 直达功能页：
@@ -260,7 +261,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读�
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
 | `ops` **运维与数据** | 存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
 
-写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel 导入支持 multipart 上传（`.xlsx`≤20MB，单飞）：面板表单提交到 `/panel/api/import?project=<项目根路径>[&host=<主机 id>]`，HTTP 模式经该项目的运行时解析并登记为最新份。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层（导入需 HTTP 模式的运行时解析）。
+写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel 导入支持 multipart 上传（`.xlsx`≤20MB，单飞）：面板表单提交到 `/panel/api/import?project=<项目根路径>[&host=<主机 id>]`，HTTP 模式与独立 `panel --web` 均经该项目运行时解析并登记为最新份。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层；导入按项目根懒建并复用本进程 store 的 Runtime（退出时释放）。
 
 **页面按能力标记渲染**（critique 修复轮）：独立进程默认只读时页级横幅＋写 CTA 禁用并给原因（不再"点了才 404"）；导航携带项目上下文（从项目页跳转不再丢项目；无项目时项目级项禁用而非误指总览）；**派发为两段确认**（摘要→确认创建）且 refs 由服务端按 `source/ref/keyword` 重解析（不再信渲染期快照）；成功后有回执（任务 id＋审计互链）。样式为**单一 CSDC 源**（tokens＋compat 合并注入；无 legacy 覆盖、无 `color-scheme` 双色系）。
 
@@ -291,7 +292,7 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
 ```
 
 - 设备盘点：adb devices（emulator-* 归 emulator）＋模拟器（darwin，仅 Booted 可用）＋真机 `idevice_id -l`（best-effort）；**真机 UDID 请用 `AOS_RUNNER_DEVICES="udid1,udid2"` 显式列入**（设了即覆盖全部来源）。
-- 命名与登记：`--name <n>`＝心跳/登记名（缺省 hostname）；runner 执行的任务子运行 `suite_runs.runner` 记录该名（显式透传，不影响手动运行归因）。优雅退出（SIGINT/TERM、`--once` 结束）会把本实例行标记为陈旧，**立即重启可直接接管**（崩溃仍按 TTL 接管）。环境变量：`AOS_RUNNER_POLL_MS`（5000）、`AOS_RUNNER_HEARTBEAT_MS`（30000）、`AOS_RUNNER_TTL_MS`（在线判定，90000）、`AOS_RUNNER_MAX_ATTEMPTS`（失败重试上限，默认 3）、`AOS_RUNNER_STALE_CLAIM_MS`（失联领取自动回收阈值，默认 900000＝15min，`0` 关闭）、`AOS_CANCEL_GRACE_MS`（离线取消宽限，默认 90000）、`AOS_RUNNER_PARTIAL_CLAIM`（`=1` 开启按端部分领取，默认关）、`AOS_RUNNER_ARTIFACT_PORT/HOST`、`AOS_RUNNER_ADVERTISE_URL`（LAN 无 DNS 时用 IP 覆盖基址）。
+- 命名与登记：`--name <n>`＝心跳/登记名（缺省 hostname）；runner 执行的任务子运行 `suite_runs.runner` 记录该名（显式透传，不影响手动运行归因）。优雅退出（SIGINT/TERM、`--once` 结束）会把本实例行标记为陈旧，**立即重启可直接接管**（崩溃仍按 TTL 接管）。环境变量：`AOS_RUNNER_POLL_MS`（5000）、`AOS_RUNNER_HEARTBEAT_MS`（30000）、`AOS_RUNNER_TTL_MS`（在线判定，90000）、`AOS_RUNNER_MAX_ATTEMPTS`（失败重试上限，默认 3）、`AOS_RUNNER_STALE_CLAIM_MS`（失联领取自动回收阈值，默认 900000＝15min，`0` 关闭）、`AOS_TASK_MAX_RUNTIME_MS`（单任务执行硬上限，默认 0 关闭；超时按取消 `source=runner` 终结、不释放不重试）、`AOS_CANCEL_GRACE_MS`（离线取消宽限，默认 90000）、`AOS_RUNNER_PARTIAL_CLAIM`（`=1` 开启按端部分领取，默认关）、`AOS_RUNNER_ARTIFACT_PORT/HOST`、`AOS_RUNNER_ADVERTISE_URL`（LAN 无 DNS 时用 IP 覆盖基址）。
 - 失败重试：任务未达终态（如引用份失效、执行前置失败）自动释放重试；**连续失败达上限置 `failed`**（不再自动重试、不阻塞后续任务；修复引用后请新建任务）。`suite task release` 对 `claimed_by` 为空的数据异常态需配 `--force`。
 - 领取条件：**任务目标端 ⊆ 该 runner 的设备端集合**（缺端不领）；**双端任务需单机双端 runner**（两端分属两台机时请拆单端任务或手动执行）；面板对「pending 且无 runner 可覆盖」会给提示。默认严格子集；设 `AOS_RUNNER_PARTIAL_CLAIM=1` 后可**按端部分领取**——仅当**无任一在线 runner 可全覆盖**该任务时按交集端领取（完全覆盖仍优先，双端齐备在场时绝不部分抢占）；缺端**不自动补跑**、不新增状态字段，仅领取日志「部分端执行（缺 X——在线无全覆盖执行机）」＋执行侧既有缺端标注；**端覆盖审计反推口径**＝任务 `runIds` 关联的 `suite_runs.platform` 集合 vs 任务 `platforms`（统计下钻分母按实际已跑端）。
 - 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需；启动打印醒目告警）；**可选令牌 `AOS_RUNNER_ARTIFACT_TOKEN`**——设置后 `/artifact*` 强制认证（Bearer/Basic/`?t=`，`GET|HEAD /healthz` 豁免，见「鉴权」段），未设则维持「无鉴权」内网口径；暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。

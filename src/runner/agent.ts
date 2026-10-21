@@ -24,6 +24,11 @@ export interface RunnerAgentIO {
   errorLog: (line: string) => void;
 }
 
+export interface RunnerTimerHandle {
+  cancel: () => void;
+  unref?: () => void;
+}
+
 export interface RunnerAgentOptions {
   projectDir?: string | null;
   name?: string;
@@ -43,6 +48,9 @@ export interface RunnerAgentOptions {
     projectRoot: string;
     env: NodeJS.ProcessEnv;
   }) => Promise<HostSnapshot>;
+  /** 可选任务硬上限（毫秒；缺省读 `AOS_TASK_MAX_RUNTIME_MS`，0/非法关闭）。 */
+  maxRuntimeMs?: number;
+  scheduleTimeout?: (fn: () => void, ms: number) => RunnerTimerHandle;
   io?: RunnerAgentIO;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -66,6 +74,16 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     options.heartbeatMs ?? intFromEnv(env.AOS_RUNNER_HEARTBEAT_MS, 30_000);
   const heartbeatMs = clampRunnerHeartbeatMs(configuredHeartbeatMs, env);
   const maxAttempts = options.maxAttempts ?? intFromEnv(env.AOS_RUNNER_MAX_ATTEMPTS, 3);
+  const maxRuntimeMs = options.maxRuntimeMs ?? runtimeCapFromEnv(env.AOS_TASK_MAX_RUNTIME_MS);
+  const scheduleTimeout =
+    options.scheduleTimeout ??
+    ((fn: () => void, ms: number): RunnerTimerHandle => {
+      const timer = setTimeout(fn, ms);
+      return {
+        cancel: () => clearTimeout(timer),
+        unref: () => timer.unref()
+      };
+    });
   const runnerTtlMs = runnerTtlFrom(env);
   const staleClaimMs = staleClaimMsFromEnv(env.AOS_RUNNER_STALE_CLAIM_MS);
   const partialClaim = env.AOS_RUNNER_PARTIAL_CLAIM === "1";
@@ -438,6 +456,17 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           let exitCode: number | null = null;
           let stopRequested = false;
           let stopAcked = false;
+          let runtimeExceeded = false;
+          let runtimeTimer: RunnerTimerHandle | null = null;
+          if (maxRuntimeMs > 0) {
+            runtimeTimer = scheduleTimeout(() => {
+              runtimeExceeded = true;
+              io.errorLog(
+                `[runner] 任务 ${task.id} 超过 AOS_TASK_MAX_RUNTIME_MS（${maxRuntimeMs}ms）：请求中止并取消`
+              );
+            }, maxRuntimeMs);
+            runtimeTimer.unref?.();
+          }
           const stopPoll = setInterval(() => {
             void store
               .getRegressionTask(rootPath, task.id)
@@ -466,13 +495,14 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           stopPoll.unref?.();
           try {
             exitCode = await options.executeSuite(argv, {
-              shouldAbort: () => stopRequested || leaseLost
+              shouldAbort: () => stopRequested || leaseLost || runtimeExceeded
             });
             io.log(`[runner] 任务 ${task.id} 执行结束（退出码 ${exitCode}）`);
           } catch (error) {
             io.errorLog(`[runner] 任务 ${task.id} 执行异常：${errorMessage(error)}`);
           } finally {
             clearInterval(stopPoll);
+            runtimeTimer?.cancel();
           }
           const afterRun = await store.getRegressionTask(rootPath, task.id).catch(() => null);
           let afterStatus = afterRun?.status ?? null;
@@ -485,6 +515,28 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           }
           if (afterStatus === "cancelled" || afterStatus === "stopped") {
             io.log(`[runner] 任务 ${task.id} 已取消（面板请求）：保留 cancelled，不释放、不重试`);
+            if (once) return 0;
+            continue;
+          }
+          if (runtimeExceeded) {
+            try {
+              await store.cancelRegressionTask({
+                rootPath,
+                taskId: task.id,
+                source: "runner",
+                actor: "runner",
+                actorHostId: hostId,
+                note: `任务超过 AOS_TASK_MAX_RUNTIME_MS（${maxRuntimeMs}）`
+              });
+              await store.ackCancellation({ rootPath, taskId: task.id });
+              io.log(
+                `[runner] 任务 ${task.id} 超过 AOS_TASK_MAX_RUNTIME_MS（${maxRuntimeMs}ms）：已按取消终结（source=runner，不释放、不重试）`
+              );
+            } catch (error) {
+              io.errorLog(
+                `[runner] 任务 ${task.id} 超时取消落库失败：${errorMessage(error)}`
+              );
+            }
             if (once) return 0;
             continue;
           }
@@ -545,6 +597,14 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
 function intFromEnv(raw: string | undefined, fallback: number): number {
   const parsed = Number((raw ?? "").trim());
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+/** `AOS_TASK_MAX_RUNTIME_MS`：缺省/非法/<=0 一律关闭（0）。 */
+function runtimeCapFromEnv(raw: string | undefined): number {
+  const parsed = Number((raw ?? "").trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  const truncated = Math.trunc(parsed);
+  return truncated > 0 ? truncated : 0;
 }
 
 /** tick 间隔不超过设备租约 TTL 的 1/3：续租失败后仍有一次 tick 的止损窗口。 */

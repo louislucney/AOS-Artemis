@@ -2160,6 +2160,7 @@ llm_switch(name, force):
 | `AOS_CLIENT_TTL_MS` | 120000 | 接入会话在线判定窗口（`host_sessions`/`client_seen_at`） |
 | `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 空闲接入心跳间隔与工具调用刷新节流；`0` 关闭 presence（不写会话/主机心跳） |
 | `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL；续租周期为其 1/3，runner 心跳同时收敛到该间隔 |
+| `AOS_TASK_MAX_RUNTIME_MS` | 0（关闭） | runner 单任务执行硬上限；超时按“取消（source=runner）”终结（`attempts` 不增、不释放重试、租约照常释放） |
 | `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限；非法/≤0 回退默认 |
 | `AOS_HOST_STRICT` | 0 | `=1`/`=true` 时严格主机模式：`claimRegressionTask` 拒绝缺 `hostId` 的调用（返回 null），本地 `suite run --task` / `suite task cancel` / MCP `regression_task_cancel` 在本机身份未知时拒绝。**仅约束本版本**；旧 runner 二进制自跑旧 SQL，不会被拦截（需停用/升级） |
 | `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板下发开放优先级编辑；API/CLI 始终可传 `priority` |
@@ -2172,7 +2173,7 @@ llm_switch(name, force):
 - **旧 runner 行 `host_id NULL`**：保留旧唯一索引兼容，不参与定向领取；主机视图按 `runner.host_id` 分组，NULL 行被跳过（不归入任何主机）。需在该机升级并重启 runner 后由心跳补齐身份。缺省 `AOS_HOST_STRICT=0` 仍允许旧调用方领取非定向任务；设 `AOS_HOST_STRICT=1` 后**本版本**的无 `hostId` claim 返回 null，本地手动执行/取消与 MCP 取消拒绝无主机身份。**注意作用域**：旧 runner 二进制用自己的旧 SQL 连 PG，不读取本开关，也不会被服务端拒绝；严格模式只约束本版本的 claim 与本地命令，旧 runner 必须停用/升级（见 §13.166）。
 - **仅开本地 MCP 的机器已可见但不可执行**：接入心跳会创建 `hosts` 行并刷新 `client_seen_at`/IP，面板显示「IDE 在线」；`capabilities` 仍为空，下发只告警「任务会排队等待」，需 runner 上报后才进入执行。无 PG 时接入心跳静默跳过（文件台账仅单机语义）。
 - 队列暂停为**整机**粒度（无项目级/单任务暂停、无整机串行开关）；P4 的跨主机逻辑项目分组（`project_key`）与 HTTP 客户端记录（`project_clients`）未实现。
-- **面板 HTTP multipart 导入**：`http-server` 只传 `rawBody`（不解析 JSON）；动作层现允许无 JSON body 的 multipart 请求通过入口检查，`project`/`host` 由查询参数携带（面板页导入表单已带 `?project=<rootPath>`），`runImport` 收到 `rawBody`/`contentType` 后解析上传文件。独立 `panel --web` 进程仍无运行时，导入需 HTTP 模式（自带 `runtimeFor`）或 CLI `suite task create --excel`（§13.167）。
+- **面板 HTTP multipart 导入**：`http-server` 只传 `rawBody`（不解析 JSON）；动作层现允许无 JSON body 的 multipart 请求通过入口检查，`project`/`host` 由查询参数携带（面板页导入表单已带 `?project=<rootPath>`），`runImport` 收到 `rawBody`/`contentType` 后解析上传文件。独立 `panel --web` 同样转发 multipart 原始体并按项目根懒建 Runtime（缺省复用本进程 store，退出时释放），导入在两种承载模式均可用（§13.169）。
 - 同路径 legacy 行一旦被本机新版进程新建的行「占位」，`adopt-legacy` 将跳过（见迁移顺序第 2 步的注意事项），历史数据保留在 legacy 行、不并入新行。
 
 ### 13.166 修复（严格主机模式接线与手动执行设备租约）
@@ -2203,3 +2204,12 @@ llm_switch(name, force):
 - **`GET /panel/api/hosts`**：`src/panel/web.ts` 新增 `handlePanelHostsRequest`/`panelHostApiRow`，HTTP 与独立 `panel --web` 在动作层之前路由（只读、无需 `AOS_PANEL_ACTIONS`；受 `AOS_PANEL_WEB` 与 HTTP 静态令牌闸门约束）。响应 `{ok:true,hosts:[...]}`，投影仅含 `id/label/owner/hostname/kind/osPlatform/osVersion/arch/capabilities/clientSeenAt/runnerSeenAt/lastSeenAt/queuePaused/registeredAt/expectedOs/expectedHostname`（不含 `env`、`hardwareId`、`username`、`ipPrimary`、工具路径与完整行）。`store.kind !== "postgres"`（文件台账/会话内存）返回 `{ok:true,hosts:[]}`，不报错。
 - **测试**：`test/usage-web.test.js` 新增 host 作用域分页/筛选/重置与 409 回归；`test/usage-command.test.js` 校验 `readErrors` 与空数组；`test/panel-hosts.test.js` 校验安全投影、单机空列表、动作开关无关；`test/panel-command.test.js` 与 `test/http-server.test.js` 覆盖独立/HTTP 路由。
 - **复审加固**：`/panel/api/hosts` 在 PostgreSQL 读取异常时返回 **503** `{ok:false,error:"主机台账读取失败"}`（不再把故障伪装成空主机表）；`AOS_PANEL_WEB=0` 对该 API 返回 JSON 404（而非 HTML）。`/usage` 的显式 `?host=` 在 PostgreSQL 下先校验 `listHosts`：未知主机 id → 404 `未知主机 "<id>"`（文件/会话内存保持宽松，读取失败不拦截）。面板导航「使用统计」在项目上下文携带 `?project=<rootPath>[&host=<hostId>]`；README 标注该端点同样受 `AOS_PANEL_WEB` 约束。
+
+### 13.169 修复（独立面板 multipart 导入与 runner 任务硬上限）
+
+> 2026-10-21。收口多机规格 §8.4/§12.2 的两项遗留；默认关闭/向后兼容。
+
+- **独立 `panel --web` multipart 导入**：`src/panel-command.ts` 在构造 `PanelActionRequest` 时按 `content-type` 分派——仅 `POST /panel/api/import` 且 `multipart/form-data` 读取原始体（上限 20MB＋256KB 余量）并转发 `rawBody`/`contentType`；其余 POST 仍走 JSON 解析（行为不变）。独立面板新增 `runtimeFor`（`PanelCliDeps` 可注入）：缺省按项目根 `loadProject` 懒建 `Runtime`（复用本进程 store、`initialize()` 登记项目行并解析配置目录），同项目缓存复用，面板 `close()` 时 `proxy.disposeSync()` 释放；初始化失败记 errorLog 并返回 null（动作层仍给出既有“需要运行时”指引）。`test/panel-command.test.js` 用真实工作簿断言 `POST /panel/api/import?project=<rootPath>` 返回 200、`caseCount=1` 且 `listCaseSets` 已登记。
+- **`AOS_TASK_MAX_RUNTIME_MS`（§8.4 强制上限）**：`src/runner/agent.ts` 读取该变量（缺省/非法/≤0 关闭），在 `beginExecution` 之后、`executeSuite` 之前用可注入 `scheduleTimeout` 起 `unref` 定时器（测试可注入调度/时钟）；触发后置 `runtimeExceeded`，并纳入 `shouldAbort: () => stopRequested || leaseLost || runtimeExceeded`。执行返回后（且未被面板取消抢先终结）调用 `cancelRegressionTask({source:"runner", actor:"runner", actorHostId:<本机>, note:"任务超过 AOS_TASK_MAX_RUNTIME_MS（<ms>）"})` → `ackCancellation` 落 `cancelled`；**不走失败/重试路径、不释放回 pending**，`attempts` 仅 `beginExecution` 的一次增量；设备租约仍在任务块 `finally` 释放，定时器同步清理。日志说明上限值与“不释放、不重试”。
+- **测试**：`test/runner-agent.test.js` 新增超时用例（注入调度器触发、断言 cancelled/来源/操作者/宿主/备注/attempts/租约释放/日志）与 `0`/非法值关闭用例（不排定时器、走正常失败释放）。
+- **文档**：README 多机环境变量表与 runner 段、DESIGN 环境变量表、`.env.example`、多机规格 §17 同步。

@@ -394,6 +394,80 @@ test("面板停止：执行中置 stopping → 执行机确认 cancelled（不�
   assert.ok(logs.some((line) => line.includes("停止请求已确认")), "ack 日志");
 });
 
+test("执行超过 AOS_TASK_MAX_RUNTIME_MS：按 runner 取消终结（不释放、不重试）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  const timers = [];
+  let scheduledMs = null;
+  let timerCancelled = false;
+  let aborted = false;
+  let released = 0;
+  const originalRelease = store.releaseDeviceLeases.bind(store);
+  store.releaseDeviceLeases = async (input) => {
+    released += 1;
+    return originalRelease(input);
+  };
+  const { options, logs } = makeOptions(runtime, inv, {
+    env: { AOS_TASK_MAX_RUNTIME_MS: "120000" },
+    scheduleTimeout: (fn, ms) => {
+      scheduledMs = ms;
+      timers.push(fn);
+      return {
+        cancel: () => {
+          timerCancelled = true;
+        },
+        unref: () => {}
+      };
+    },
+    executeSuite: async (_argv, execOptions) => {
+      timers[0]?.();
+      aborted = execOptions?.shouldAbort?.() === true;
+      return 2;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(scheduledMs, 120000, "按环境变量上限排定时器");
+  assert.equal(aborted, true, "超时进入 shouldAbort");
+  assert.equal(timerCancelled, true, "执行结束清理定时器");
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "cancelled", "超时按取消终结");
+  assert.equal(after.cancelSource, "runner");
+  assert.equal(after.cancelledBy, "runner");
+  assert.equal(after.cancelledHostId, TEST_HOST_ID);
+  assert.equal(after.cancelNote, "任务超过 AOS_TASK_MAX_RUNTIME_MS（120000）");
+  assert.ok(after.cancelledAt, "写取消完成时间");
+  assert.equal(after.attempts, 1, "仅 beginExecution 加一次（不重试）");
+  assert.ok(released >= 1, "设备租约在 finally 释放");
+  assert.ok(
+    logs.some((line) => line.includes("AOS_TASK_MAX_RUNTIME_MS") && line.includes("120000")),
+    "日志说明上限"
+  );
+});
+
+test("AOS_TASK_MAX_RUNTIME_MS=0/非法：不启用超时取消（正常失败重试路径）", async () => {
+  for (const value of ["0", "abc", "-5"]) {
+    const { runtime, store, inventory: inv } = await setupFixture();
+    const rootPath = runtime.project.rootDir;
+    const task = await store.createRegressionTask(taskInput(rootPath));
+    let scheduled = 0;
+    const { options } = makeOptions(runtime, inv, {
+      env: { AOS_TASK_MAX_RUNTIME_MS: value },
+      scheduleTimeout: () => {
+        scheduled += 1;
+        return { cancel: () => {}, unref: () => {} };
+      },
+      executeSuite: async () => 2
+    });
+    assert.equal(await runRunnerAgent(options), 0);
+    assert.equal(scheduled, 0, `${value}: 不排定时器`);
+    const after = await store.getRegressionTask(rootPath, task.id);
+    assert.equal(after.status, "pending", `${value}: 走正常失败释放`);
+    assert.equal(after.cancelSource, null);
+  }
+});
+
 test("领取与 beginExecution 之间取消：确认 cancelled，不执行也不释放", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;

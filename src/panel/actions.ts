@@ -1084,7 +1084,7 @@ async function runImport(
     const runtime = deps.runtimeFor ? await deps.runtimeFor(rootPath) : null;
     if (!runtime) {
       return json(400, {
-        error: "导入需要运行时解析（HTTP 模式自带；独立面板请用 CLI：suite task create --excel <file>）"
+        error: "导入需要运行时解析（项目运行时不可用；可改用 CLI：suite task create --excel <file>）"
       });
     }
     const result = await importTestDocument(runtime, { excelPath });

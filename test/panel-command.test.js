@@ -4,6 +4,8 @@ import { createServer, request as httpRequest } from "node:http";
 import path from "node:path";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
+
 import { MemoryStore } from "../dist/db/memory.js";
 import { runPanelCommand } from "../dist/panel-command.js";
 import { makeTempDir } from "./helpers.js";
@@ -82,6 +84,56 @@ test("panel --web: GET /panel/api/hosts 只读可用（不依赖 AOS_PANEL_ACTIO
       assert.equal(res.status, 200);
       assert.match(res.headers.get("content-type"), /application\/json/);
       assert.deepEqual(await res.json(), { ok: true, hosts: [] });
+    }
+  });
+});
+
+test("panel --web: multipart 导入转发 rawBody/contentType → 200 且登记用例", async () => {
+  const workspace = makeTempDir("aos-panel-import-");
+  const projectDir = path.join(workspace, "demo");
+  fs.mkdirSync(projectDir, { recursive: true });
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: projectDir, name: "demo", hostId: "panel-import-host" });
+
+  await runCli(["--web", "--port", "0", "--workspace", workspace], {
+    store,
+    env: {
+      ...process.env,
+      AOS_PANEL_ACTIONS: "1",
+      AOS_HOST_ID: "panel-import-host",
+      AOS_LEDGER_AUTO_IMPORT: "0",
+      AOS_USAGE: "0"
+    },
+    waitForShutdown: async (handle) => {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["用例名", "步骤", "预期", "前置"]);
+      sheet.addRow(["登录", "输入账号密码并点击登录", "进入首页", "应用已安装"]);
+      const bytes = await workbook.xlsx.writeBuffer();
+      const form = new FormData();
+      form.set(
+        "file",
+        new Blob([bytes], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }),
+        "cases.xlsx"
+      );
+      const res = await fetch(
+        `http://127.0.0.1:${handle.port}/panel/api/import?project=${encodeURIComponent(projectDir)}`,
+        {
+          method: "POST",
+          headers: { "X-AOS-Console": "1" },
+          body: form
+        }
+      );
+      const body = await res.text();
+      assert.equal(res.status, 200, body);
+      const payload = JSON.parse(body);
+      assert.equal(payload.ok, true);
+      assert.equal(payload.caseCount, 1);
+      const sets = await store.listCaseSets(projectDir);
+      assert.equal(sets.length, 1, "导入用例已登记");
+      assert.equal(sets[0].features[0].caseCount, 1);
     }
   });
 });
