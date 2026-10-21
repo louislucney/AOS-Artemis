@@ -130,6 +130,60 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。
 
+## 多机部署（中心 + 项目机）
+
+中心 Mac 跑 PostgreSQL、面板与中心 CLI；项目目录留在各自 Mac/PC，由该机的**本地 MCP**（stdio 或 HTTP）与 **`suite runner`** 执行。项目身份＝`(主机, 路径)`，同一路径在两台机器上是两个独立项目；任务可定向下发到「某台机器上的某个项目」。
+
+```bash
+# 中心：主机登记与查看（只连 PostgreSQL，不写本机 .artemis）
+node dist/cli.js host list [--json]
+node dist/cli.js host show <id|hostname> [--json]
+node dist/cli.js host register <id|hostname> --label <名> --owner <人> \
+        [--expected-os mac|pc|linux] [--expected-hostname <名>]
+
+# 中心：定向创建回归任务（必须给目标机上的项目根路径）
+node dist/cli.js suite task create --host <id|hostname> --project <rootPath> \
+        --ref <featureKey>... [--platform ios|android]... [--baseline latest|none]
+node dist/cli.js suite task list --host <id|hostname> [--project <rootPath>]
+node dist/cli.js suite task cancel <taskId> --host <id|hostname> --project <rootPath> [--note <text>]
+
+# 项目机：本地取消（本机 + 本项目作用域，写取消来源与审计）
+node dist/cli.js suite task cancel <taskId> [--note <text>]
+
+# 整机队列闸门（阻断 runner 自动领取；不影响已领取/手动执行）
+node dist/cli.js suite queue status [--host <id|hostname>] [--json]
+node dist/cli.js suite queue pause  [--host <id|hostname>] [--note <text>]
+node dist/cli.js suite queue resume [--host <id|hostname>]
+```
+
+**升级/迁移顺序**（详见 DESIGN §13.165）：
+
+1. **升级中心 PG**：任一进程启动即跑 `MIGRATIONS`（advisory lock 串行化）；首次升级选低峰窗口。
+2. **每台项目机在启动新版 MCP/runner（或本地 `suite` 命令）之前**：`host adopt-legacy --local --dry-run` 核对，再 `--apply` 认领 legacy NULL-host 项目。**不要**在中心做一次性认领；新版进程启动后再认领会因同路径新行已存在而被跳过。
+3. 按需 `host register` 写期望画像（只提示漂移，不拒绝任务）。
+4. 启动项目机本地 MCP 与 `suite runner`（runner/定时回归需中心 PG）；`AOS_HOST_ID` 集群内唯一。
+5. 面板核对双在线状态与项目归属后，再开放定向下发。
+
+**主机与在线口径**：`IDE 在线`＝MCP 客户端会话（`host_sessions`/`client_seen_at`，`AOS_CLIENT_TTL_MS` 内）；`执行机在线`＝runner 心跳（`runners.last_seen_at`，`AOS_RUNNER_TTL_MS`）；登记画像（`expectedOs`/`expectedHostname`）与实际不符只显示漂移。下发预检只看执行层与 OS/工具/设备能力，主机离线仍可入队等待。
+
+**面板路由**：主机/执行机视图 `GET /panel?section=runners`（`/panel.json` 同源，双在线状态与队列动作）；定向派发 `?section=dispatch&host=<id>&project=<rootPath>`；队列动作 `POST /panel/api/queue/pause|resume`；主机登记 `POST /panel/api/hosts/register`。
+
+**多机相关环境变量**：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AOS_HOST_ID` | 无 | 显式主机 id（优先于文件）；集群内每机唯一 |
+| `AOS_HOST_DIR` | `~/.aos` | `host-id` 文件目录；不可写时退化为派生 ID（不可迁移） |
+| `AOS_HOST_ENV_REFRESH_MS` | 600000 | runner 主机环境快照刷新周期 |
+| `AOS_CLIENT_TTL_MS` | 120000 | IDE 会话在线判定窗口 |
+| `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 接入心跳/刷新节流；`0` 关闭 |
+| `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL（续租周期 TTL/3） |
+| `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限 |
+| `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板开放优先级编辑 |
+| `AOS_HOST_STRICT` | 0 | 保留未接线（严格拒绝旧 runner，本期未实现） |
+
+**已知限制**：手动 `suite run --task` 不占设备租约（需互斥时先暂停该机队列）；文件台账为单主机视图（`host`/`queue`/runner/定时回归需中心 PG）；中心清扫 `allHosts=true` 可能先于离线 runner 终结取消；旧 runner 行 `host_id NULL` 需升级重启后补齐；队列暂停是整机粒度；P4 跨主机逻辑项目分组与 HTTP 客户端记录未实现。完整清单见 DESIGN §13.165。
+
 ## 鉴权（可选静态令牌，P3d，§13.113）
 
 两个对外网络面支持**可选静态共享令牌**（默认不设＝现状，对既有内网部署零破坏）：
@@ -213,7 +267,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立只读�
 
   **功能对齐（跨项目，§13.114）**：对比页**第二区块**「功能对齐（跨项目）」把同源功能并排对照，回答「同一功能在多个项目里的通过率/flaky/待办各如何」。**匹配规则**＝**同设计源身份 ＋ 归一化功能名**，仅**组内 ≥2 个项目**展示；源身份归一化——`figma:<fileKey>`（取 `figma:` 后首个 token，**不 lower**）｜`pen:<相对路径>`（posix＋小写）｜绝对/相对文件路径（**相对该项目根** posix＋小写，跨项目同布局即可对齐；越界/不可相对化则原样小写）；功能名归一化＝NFC·trim·折叠空白·小写（CJK 不变，**不剥词形**）。**误报口径**：对齐是**并列对照、非统计合并**（**不产出跨项目聚合通过率/总分/排名**，每行数据均标注来源项目）；同名不同源不成组、不做自动别名；**已声明边界**——同一 Figma 文件的「工具 url 形式 vs 管道路径形式」**不互相匹配**（v1 纯文本归一化）。**窗口**＝**份血统运行最近 20 批**（与项目级区块同窗）；名称取 **case set 冻结名**（set 缺该 key 时回退运行功能名）；`unmatched`＝**仅出现在 1 个项目中的功能组数**（`featureKey` 为空或无 case-set 映射的运行**不参与**计数）；组表头显示**原始 source**（路径式会显示生成项目的路径）。对齐区块**全部展示、不截断**（区别于项目级区块前 50 行封顶）。
 
-- **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用份创建回归任务，可选 `priority` 0–100，缺省 0、非法 400；body ≤256KB，超限 413；重复提交会创建多个任务，无幂等去重）、`POST /panel/api/tasks/cancel`（取消任务：`{project,host,taskId,note?}`；pending→cancelled，claimed/running→stopping→执行机确认 cancelled；写取消来源/操作人/宿主/备注与审计）、`POST /panel/api/tasks/stop|release|rerun`（停止/释放/重派，均带 host 作用域与审计）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）、`POST /panel/api/issues`（应用缺陷**一键建 Jira 单**：`{project, items:[{runId,caseId}]}`≤20 条，逐条建单＋证据评论/附件＋回写单号；`dryRun` 预览不触网；仅对存在且非 passed、无裁决或裁决为 app-defect、未建单的用例生效，已有单号返回 existing 幂等）。**可选令牌保护**——HTTP 模式下受 `AOS_HTTP_TOKEN` 闸门（先鉴权后路由；`serve` 非 loopback 未设令牌则启动失败的安全默认，见「鉴权」段）；**未设令牌时**任何能访问端口者可写任务、裁决与**建立真实 Jira 单（外部副作用）**，故仅在受控内网部署；独立 CLI 看板保持只读；`AOS_PANEL_WEB=0` 不影响动作层（两开关相互独立）。
+- **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用份创建回归任务，可选 `priority` 0–100，缺省 0、非法 400；body ≤256KB，超限 413；重复提交会创建多个任务，无幂等去重）、`POST /panel/api/tasks/cancel`（取消任务：`{project,host,taskId,note?}`；pending→cancelled，claimed/running→stopping→执行机确认 cancelled；写取消来源/操作人/宿主/备注与审计）、`POST /panel/api/tasks/stop|release|rerun`（停止/释放/重派，均带 host 作用域与审计）、`POST /panel/api/queue/pause|resume`（整机队列闸门：`{host,note?}`，host 级路由、不要求 project；hostname 唯一匹配，歧义 400、未知 404、缺 host 400；阻断 runner 自动领取，不影响已领取任务）、`POST /panel/api/hosts/register`（登记 label/owner/expectedOs/expectedHostname）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）、`POST /panel/api/issues`（应用缺陷**一键建 Jira 单**：`{project, items:[{runId,caseId}]}`≤20 条，逐条建单＋证据评论/附件＋回写单号；`dryRun` 预览不触网；仅对存在且非 passed、无裁决或裁决为 app-defect、未建单的用例生效，已有单号返回 existing 幂等）。**可选令牌保护**——HTTP 模式下受 `AOS_HTTP_TOKEN` 闸门（先鉴权后路由；`serve` 非 loopback 未设令牌则启动失败的安全默认，见「鉴权」段）；**未设令牌时**任何能访问端口者可写任务、裁决与**建立真实 Jira 单（外部副作用）**，故仅在受控内网部署；独立 CLI 看板保持只读；`AOS_PANEL_WEB=0` 不影响动作层（两开关相互独立）。
 - **改进出口（统计下钻，§13.111）**：统计视图按最新裁决呈现三个出口——**案例问题**（case-defect，指引修订期望/重新生成）、**执行偏差环境清单**（execution-deviation，按设备/端分组：次数/涉及功能/最近/备注摘要）、**应用缺陷**（app-defect，勾选 → 一键建单）。**一键建单为外部副作用**：建单走项目 Jira 凭证与 `jira_evidence_post` 同源证据逻辑（失败 best-effort 不回滚）；缺省值可写项目 `.env` 的 `JIRA_ISSUE_PROJECT`（必填缺省）/`JIRA_ISSUE_TYPE`（默认 `Bug`）/`JIRA_ISSUE_LABELS`（逗号分隔），表单输入优先；已建单条目显示单号纯文本（面板无 Jira 站点来源、不出链接）。**并发双开为已接受限制**（同条目并发可能各建一张；顺序重复点击幂等）。
 - 数据源：批次清单 `.artemis/design/runs/`（`suite run`/`loop` 自动落盘，权威）+ PG 台账（含 `regression_tasks`/`suite_runs`/`suite_run_cases`，裁决写回 `suite_run_cases.verdict*`）+ 项目软读（无子进程/无网络）；磁盘不可达的项目降级为"仅台账"；缺件/清理/高版本清单一律如实占位，不猜测。
 - **深探**（HTTP 模式）：项目页懒建 Runtime 后取纯读子集（active Profile/存储/artemis 子进程/桥/日志/构建状态；**不拉起子进程、不触网**）；URL 加 `?ios=1` 显式执行 **iOS 环境检测**（调用本地 appium CLI，结果缓存 60s）；独立 CLI 进程无深探层。

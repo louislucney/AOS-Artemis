@@ -2031,7 +2031,7 @@ llm_switch(name, force):
 
 > 实施于 2026-10-21。中心 CLI 只连 PostgreSQL：`src/center/store.ts` 的 `openCenterStore(env)` 要求 `MOBILE_TESTING_DATABASE_URL`，缺失抛 `host/queue 命令需要 MOBILE_TESTING_DATABASE_URL`，**不回落文件台账/内存**，不会构造本机 Runtime 或写本机 `.artemis`。`--host` 解析统一经 `resolveHostReference`：精确 id 优先，否则按 hostname 唯一匹配；重名返回候选 id 列表并报错（不猜）。
 > **`host` 命令**（`src/host-command.ts`，CLI `host`）：`list`/`show` 读取 `listHosts`/`getHost`；`register <id|hostname>` 经 `resolveHostReference` 解析（精确 id 优先、hostname 大小写不敏感且须唯一）后 `updateHostRegistration` 写 label/owner/expectedOs/expectedHostname（`registeredBy=cli`），未知/歧义 exit 2；`adopt-legacy` 认领 legacy（`host_id IS NULL`）项目到主机——`--local` 取 `AOS_HOST_ID`（缺省本机身份）且仅认领 `fs.existsSync(rootPath)` 的行，`--host <id|hostname> --path <rootPath>` 先经 `resolveHostReference`（歧义 exit 2 列 id；未登记 exit 2，只有显式 `--allow-unknown-host` 才按给定 id 原样写入，用于「先迁移、后接入」）；缺省 dry-run，`--apply` 才写库，每成功一行记审计 `domain=host/action=adopt-legacy`。子命令/必填参数在开库前校验（`host bogus` 不会报 PG 错误）。JSON 输出只含 `id/hostId/rootPath/name/lastSeenAt`（不含 `figmaToken`）。`ProjectStore.adoptProjectHost({projectId,hostId})`：PG 单语句 `UPDATE … WHERE host_id IS NULL AND NOT EXISTS(同 host 同路径)`（目标已存在时不重复建行，返回 false），Memory 重键并改 hostId，File 台账无跨主机行返回 false（中心命令仅 PG）。
-> **远端套件任务**：`suite task create|list --host <id|hostname>` 在 `runSuiteCommand` 中**先于** `buildRuntime` 分流（测试注入的 `buildRuntime` 不会被调用），打开中心 store 后 `scopeHost(hostId)`；`create` 必须 `--project <rootPath>`（去尾部斜杠；该主机未登记该路径 exit 2 并列出已登记路径），引用取 `latestFeatureRefs(await scoped.listCaseSets(rootPath))`，平台/基线校验与本地同口径，写入 `targetHostId=createdHostId=hostId`；`list` 带 `--project` 时校验归属，省略时汇总该主机所有已登记项目（`listProjects().filter(hostId)`）的任务（各取 50 条、按 createdAt 倒序，不猜路径）。`center.openStore` 打开的存储由命令关闭，注入的 `center.store` 归调用方。`show/release` 带 `--host` 明确 exit 2（仍走本机台账）；`suite task cancel` / `suite queue` 不在本批范围（Task 13/15）。
+> **远端套件任务**：`suite task create|list --host <id|hostname>` 在 `runSuiteCommand` 中**先于** `buildRuntime` 分流（测试注入的 `buildRuntime` 不会被调用），打开中心 store 后 `scopeHost(hostId)`；`create` 必须 `--project <rootPath>`（去尾部斜杠；该主机未登记该路径 exit 2 并列出已登记路径），引用取 `latestFeatureRefs(await scoped.listCaseSets(rootPath))`，平台/基线校验与本地同口径，写入 `targetHostId=createdHostId=hostId`；`list` 带 `--project` 时校验归属，省略时汇总该主机所有已登记项目（`listProjects().filter(hostId)`）的任务（各取 50 条、按 createdAt 倒序，不猜路径）。`center.openStore` 打开的存储由命令关闭，注入的 `center.store` 归调用方。`show/release` 带 `--host` 明确 exit 2（仍走本机台账）；`suite task cancel` / `suite queue` 后续已实现（中心取消见 §13.158，队列暂停/租约见 §13.162）。
 > **测试**：`test/host-command.test.js`（无 PG 文案、register 字段/hostname、hostname 唯一/歧义/大小写、adopt-legacy dry-run/apply/显式/未知/歧义/逃逸口、JSON 不泄露 token、`adoptProjectHost` 冲突、未知子命令不开库，Memory+PG 双实现）、`test/suite-task-host.test.js`（host 定向创建/列表、未知主机/项目、缺 `--project`、无 PG、尾斜杠、openStore 关闭）；全量 1879 绿。
 
 ### 13.153 实施记录（面板定向下发与主机登记，Task 12a）
@@ -2093,8 +2093,8 @@ llm_switch(name, force):
 
 ### 13.163 实施记录（离线取消清扫器与多宿主幂等终结，Task 16）
 
-> 实施于 2026-10-21。**CAS 终结**：`ProjectStore.finalizeCancellation({rootPath,taskId,at?,note?,source?})` 仅 `status='stopping'` → `cancelled`（PG `UPDATE … WHERE … AND status='stopping' RETURNING *`；Memory 前置判定；File 委托同源并落盘），`cancelled_at/cancel_source/cancel_note` 均 `COALESCE` 补缺、不覆盖已有取消元数据；任务不存在或 CAS 未命中 → null（返回行即“本次完成转移”，供多清扫器精确计数）。`ackCancellation` 保持原语义（幂等返回当前行）。
-> **清扫器**：`src/tasks/sweeper.ts` 的 `sweepStaleTasks({store,rootPath?,now?,graceMs?,runnerTtlMs?})` → `{cancelled,released}`。按 `listProjects` 遍历，`rootPath` 限定单项目；绑定本机的 store 仅处理 `hostId` 为本机或 NULL 的项目（同路径跨主机互不越权），未绑定 store 按项目 `hostId` 逐项 `scopeHost`。候选＝`stopping` 且 `cancelRequestedAt <= now-graceMs`（legacy 无 `cancelRequestedAt` 且无 `cancelSource` 也纳入）；领取执行机在 `listRunners` 中且 `isRunnerOnline(lastSeenAt,now,runnerTtlMs)` → 保持；`claimedBy` 为空、runner 行缺失或离线 → 终结。legacy 补 `source=panel`、`note=legacy-stopping`；其余保留来源并仅在无备注时写 `runner-offline`。`released` 恒 0（绝不回退 `pending`，与 `releaseStaleClaims` 排除 `stopping` 一致）。`graceMs` 缺省 `AOS_CANCEL_GRACE_MS`（90000），`runnerTtlMs` 缺省 `runnerTtlFrom`。
+> 实施于 2026-10-21。**CAS 终结**：`ProjectStore.finalizeCancellation({rootPath,taskId,at?,note?,source?})` 仅 `status='stopping'` → `cancelled`（PG `UPDATE … WHERE … AND status='stopping' RETURNING *`；Memory 前置判定；File 委托同源并落盘）。`cancelled_at`/`cancel_source` 仅在缺失时补齐（`COALESCE`，保留首次取消元数据）；`cancel_note` 由调用方传入**合并后的文案**（传值即覆盖、缺省保留原值；清扫器在原文后追加标记，见 §13.164）。任务不存在或 CAS 未命中 → null（返回行即“本次完成转移”，供多清扫器精确计数）。`ackCancellation` 保持原语义（幂等返回当前行）。
+> **清扫器**：`src/tasks/sweeper.ts` 的 `sweepStaleTasks({store,rootPath?,now?,graceMs?,runnerTtlMs?})` → `{cancelled,released}`。按 `listProjects` 遍历，`rootPath` 限定单项目；绑定本机的 store 仅处理 `hostId` 为本机或 NULL 的项目（同路径跨主机互不越权），未绑定 store 按项目 `hostId` 逐项 `scopeHost`。候选＝`stopping` 且 `cancelRequestedAt <= now-graceMs`（legacy 无 `cancelRequestedAt` 且无 `cancelSource` 也纳入）；领取执行机在 `listRunners` 中且 `isRunnerOnline(lastSeenAt,now,runnerTtlMs)` → 保持；`claimedBy` 为空、runner 行缺失或离线 → 终结。legacy 补 `source=panel`、备注追加 `; legacy-stopping`（空备注只写标记）；其余保留来源并追加 `; runner-offline`。`released` 恒 0（绝不回退 `pending`，与 `releaseStaleClaims` 排除 `stopping` 一致）。`graceMs` 缺省 `AOS_CANCEL_GRACE_MS`（90000），`runnerTtlMs` 缺省 `runnerTtlFrom`。
 > **接线**：runner 主循环每 30s（`SWEEP_INTERVAL_MS`，首轮立即）在领取前清扫本机项目；HTTP 服务与独立 `panel --web` 各起 30s 后台循环（`unref`，关闭时清理）。无 leader 选举，CAS 保证多实例幂等。
 > **测试**：`test/task-sweeper.test.js` 5 例（离线 runner 超宽限→cancelled/runner-offline、在线与宽限内保持 stopping、legacy→panel/legacy-stopping、并发两清扫器仅一次、cancelled 不被 releaseStaleClaims 复活且 stopping 不回收、h-a 不扫 h-b 同路径；Memory+pg-mem 双实现）。全量 **1963 绿**，lint 0 error（2 条既有 warning）。
 
@@ -2104,3 +2104,73 @@ llm_switch(name, force):
 > **中心作用域**：`sweepStaleTasks` 增 `allHosts?: boolean`。true 时忽略本机过滤，逐项目 `scopeHost(project.hostId)`（`scopeHost` 参数放宽为 `string|null`，NULL 返回未绑定视图）——HTTP/服务与独立 `panel --web` 传 true，runner 默认 false；修复 `Runtime.initialize` 的 `bindHost` 使共享 store 变成本机作用域后中心循环只扫本机的问题。两处后台循环也改为启动即扫一次、随后每 30s。
 > **按状态读取**：`ProjectStore.listStoppingTasks({rootPath,deadline?,limit?})` 只取 `status='stopping'` 且（deadline 给定）`cancel_requested_at <= deadline OR IS NULL`；PG 单条 SELECT、Memory 过滤、File 委托同源，缺省 limit 1000。清扫器改用它，不再 `listRegressionTasks(100000)`。`withinGrace` 更名 `isPastGrace`；无 `cancelRequestedAt` 仅 legacy（`cancelSource=null`）视为超宽限，有来源但缺时间为畸形数据不清扫。**备注/审计**：终结备注改为追加标记（`原备注; runner-offline`／`原备注; legacy-stopping`），每笔成功终结 best-effort 写审计 `task/task.cancel.sweep`；`AmbiguousProjectError`（legacy 同路径歧义）静默跳过，不再每 30s WARN。
 > **测试**：`test/task-sweeper.test.js` 扩到 9 例（+重启 instance 轮换、+allHosts 跨 h-a/h-b、+listStoppingTasks deadline、+既有备注追加）；`test/runner-agent.test.js` +1（启动终结自己遗留 stopping、不执行、不回 pending）。全量 **1968 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.165 多机部署与迁移（主机身份、定向下发、队列控制）
+
+> 汇总 Task 1–16 的现行口径，作为**部署/升级的操作事实源**；逐批实现细节与测试计数见 §13.152–§13.164。本期形态：中心 Mac 提供 PG、面板与中心 CLI；每个项目目录留在**项目机**，由该机的本地 MCP（stdio/HTTP）与 `suite runner` 执行。
+
+**主机身份与三层信号**
+
+- 身份解析 `resolveHostIdentity`（`src/host/identity.ts`）：`AOS_HOST_ID`（`identitySource=env`）→ `AOS_HOST_DIR` 下 `host-id` 文件（`file`，默认 `~/.aos`，`randomUUID` 原子写 0600）→ 派生 ID（`derived`，硬件/主机名/用户名哈希；目录不可写时稳定但**不可迁移**，序列化/换机前须显式指定 `AOS_HOST_ID`）。
+- `hosts` 行由 runner 心跳、`suite queue pause/resume` 与面板 `hosts/register` 创建/更新；仅开本地 MCP（无 runner）不会写 `hosts` 行（见「已知限制」）。任何路径都**不自动认领**历史 `host_id IS NULL` 数据（认领只走显式 `host adopt-legacy`）。IP 历史写 `host_addresses`（按 `(source, iface, family, address)` upsert，变更不产生新主机；共享 IP 仅告警），`ip_primary` 只做展示。
+- 三层信号独立建模，不互相代替：
+  - **接入层**＝MCP 客户端会话：`host_sessions` + `hosts.client_seen_at`；stdio `initialize` 登记、工具调用按 `AOS_CLIENT_PRESENCE_MS` 节流刷新、退出写 `ended_at`；`AOS_CLIENT_TTL_MS` 内为「IDE 在线」。只回答「谁在本机开着客户端」，**不参与领取/下发**。
+  - **执行层**＝runner 心跳：以 `runners.last_seen_at` 经 `isRunnerOnline` + `AOS_RUNNER_TTL_MS` 判定；`hosts.runner_seen_at` 仅展示投影，不作为判定源。回答「这台机器现在能不能跑」。
+  - **期望层**＝登记画像：`expected_os`/`expected_hostname` 与实际不符 → `drift` 文案；只提示、不拒绝任务。
+  - 面板同时显示「IDE 在线」「执行机在线」，两者都离线才显示「离线」；下发预检只看执行层与能力/设备清单。
+
+**项目身份与作用域**
+
+- `projects` 唯一身份＝`(host_id, root_path)`（旧全局 `root_path` 唯一约束已删除）。`host_id IS NULL` 为 legacy 历史行，面板显示「未归属主机」，**不参与定向下发**。
+- 作用域读写的唯一入口是 `ProjectStore.scopeHost(hostId)`（`null` → 未绑定视图）；跨主机同路径/同名项目互不串数据。
+- 面板/动作层项目解析顺序：显式 `host`（缺省本机 `store.localHostId`）时先在该主机作用域内 `byPath` → `name`（路径须存在）；显式 `host` 仍未命中才回退 workspace 目录（结果附该 `host`）；仅本机 host 时作用域内未命中再走跨主机 unbound 匹配；**完全无** `host` 时才跨主机匹配（路径 → workspace → 名称），多行命中抛 `AmbiguousProjectError`（409 并列候选），**绝不取任意一行**。
+- 定向下发：任务写 `target_host_id`/`created_host_id` 与 `priority`（0–100）；领取顺序 `priority DESC, created_at ASC`。派发前 `precheckTask` 校验目标主机的 OS/工具/设备覆盖（iOS 需 darwin + `ios-*`），主机离线只告警、仍可入队等待。legacy NULL-host 项目不出现在任何主机的项目下拉；显式下发返回 409 并指引 `host adopt-legacy --local --apply`。
+- 远端任务：`suite task create --host <id|hostname> --project <rootPath>` 只连中心 PG、在目标主机作用域建任务；`list` 可汇总该主机已登记项目。手动 `suite run --task` 读取任务后校验 `targetHostId`/`claimedHostId` 必须匹配本机，否则 exit 2（任务不变更）。
+
+**队列控制**
+
+- 状态机：`pending → claimed → running → completed|partial|failed`（`attempts` 只在 `beginExecution` 递增，设备忙不算尝试）；取消：`pending → cancelled`（即时），`claimed|running → stopping`（只写 `cancel_requested_at` 与来源/操作人/宿主/备注，不写 `cancelled_at`），由执行机 `ackCancellation` 或清扫器 `finalizeCancellation` CAS 终结为 `cancelled`。`cancelled` 为终态、不可复活；`stopped` 仅读兼容（映射 `cancelled`、`cancelledAt=null`）。
+- 取消入口：面板 `POST /panel/api/tasks/cancel`、CLI `suite task cancel`（本地 `source=local-cli`；`--host --project` 走中心、`source=panel`）、MCP `regression_task_cancel`（`source=local-mcp`，仅限本机本项目）。任务行写 `cancel_source/cancelled_by/cancelled_host_id/cancelled_at/cancel_note`，审计带 `actor/actor_host_id/channel`。
+- 清扫器 `sweepStaleTasks`：`stopping` 超过 `AOS_CANCEL_GRACE_MS` 且领取机 runner 离线/行缺失/实例已轮换 → CAS `cancelled`（备注追加 `; runner-offline` 或 `; legacy-stopping`）；在线且实例一致则保持；**绝不回退 `pending`**。runner 每 30s 扫本机项目；HTTP 服务与独立 `panel --web` 每 30s 以 `allHosts=true` 扫全部主机。无 leader 选举，CAS 幂等（中心先终结时 runner 的后续 CAS 返回 null）。
+- 队列暂停（Task 15）：`hosts.queue_paused` 为**整机**闸门，`claimRegressionTask` 在主机行暂停时直接返回 null；只阻断 runner 自动领取，手动执行与已领取/执行中任务不受影响。入口 `suite queue status|pause|resume` 与 `POST /panel/api/queue/pause|resume`。
+- 设备租约（Task 15）：`device_leases(host_id, serial)` 主键；领取顺序固定 `claim → 毒丸 → devices（任务端 ∩ 本机库存）→ acquireDeviceLeases → beginExecution → 执行`。租约单事务全有或全无（过期可抢占、同任务重入幂等），冲突返回 `{ok:false,busy}` → 任务释放回 `pending`、`attempts` 不增加、按 poll 间隔重试；执行 `finally` 释放。统一 30s tick 同时心跳、写 `last_progress_at`、续租本任务 serials；续租丢失/抛错即中止执行并释放领取。TTL `AOS_DEVICE_LEASE_MS`（默认 90000），心跳间隔自动收敛到 TTL/3。
+
+**部署与迁移顺序（从单机/旧版本升级）**
+
+1. **先升级中心 PG**：任意进程正常启动一次即执行 `MIGRATIONS`（`ADD COLUMN IF NOT EXISTS`、去重后建唯一索引），全程 `pg_advisory_lock` 串行化，拿不到锁等待而非并发执行；首次升级选低峰窗口，DDL 幂等可重试。
+2. **在每台项目机上、启动新版 MCP/runner 之前**执行：
+   ```bash
+   node dist/cli.js host adopt-legacy --local --dry-run   # 只列本机磁盘存在的 NULL-host 项目
+   node dist/cli.js host adopt-legacy --local --apply     # 确认后写归属 + 审计
+   ```
+   **禁止**在中心对所有 NULL 行做一次性认领（`--local` 以本机路径证据为界）。确需跨机指派时逐项执行 `host adopt-legacy --host <id|hostname> --path <rootPath>`（未登记主机须显式 `--allow-unknown-host`，用于「先迁移、后接入」）。
+   - 顺序很关键：新版 MCP/runner（以及本地 `suite queue`/`suite task` 等会构建本机 Runtime 的命令）首次启动会按本机身份新建 `(host_id, rootPath)` 项目行；一旦同路径新行存在，`adopt-legacy` 会「跳过（目标主机已有同路径项目）」，legacy 历史行不再可认领（只能留作归档或人工合并）。
+3. 按需登记期望画像：`host register <id|hostname> --label <名> --owner <人> --expected-os mac|pc|linux --expected-hostname <名>`；漂移只提示。
+4. 启动项目机**本地 MCP**（stdio/HTTP）与 `suite runner`（runner/定时回归需中心 PG）。`AOS_HOST_ID` 在集群内必须唯一（或用互不共享的 `AOS_HOST_DIR`）；不要两台机器共用同一 `host-id`。
+5. 面板核对：主机视图「IDE 在线/执行机在线」、项目归属、无「未归属主机」残留，再开放定向下发与自动领取。
+- `host`/`adopt-legacy` 只连 PG（缺 `MOBILE_TESTING_DATABASE_URL` exit 2），不构建本机 Runtime、不写本机 `.artemis`、也不创建项目行；`suite queue --host` 同为纯中心。**本地** `suite queue`/`suite task`/`suite runner` 会构建本机 Runtime（沿用项目行创建/心跳），故认领应在它们首次运行前完成。
+
+**环境变量**
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `AOS_HOST_ID` | 无 | 显式主机 id（最高优先级；集群内每机唯一） |
+| `AOS_HOST_DIR` | `~/.aos` | `host-id` 文件目录（`AOS_HOST_ID` 缺省时）；不可写则退化为派生 ID |
+| `AOS_HOST_ENV_REFRESH_MS` | 600000 | runner 主机环境快照刷新周期（心跳只带缓存快照） |
+| `AOS_CLIENT_TTL_MS` | 120000 | 接入会话在线判定窗口（`host_sessions`/`client_seen_at`） |
+| `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 接入心跳与工具调用刷新节流；`0` 关闭 presence（不写会话） |
+| `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL；续租周期为其 1/3，runner 心跳同时收敛到该间隔 |
+| `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限；非法/≤0 回退默认 |
+| `AOS_HOST_STRICT` | 0 | **保留未接线**：严格拒绝无 `host_id` 的旧 runner，本期未实现（见下） |
+| `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板下发开放优先级编辑；API/CLI 始终可传 `priority` |
+
+**已知限制**
+
+- 手动 `suite run --task` **不占设备租约**（只做主机归属守卫与状态 CAS）：与同机 runner 同时执行可能争用同一设备；需要互斥时先 `suite queue pause --host <本机>`。
+- **文件台账是单主机视图**：`adoptProjectHost` 恒 false、项目行恒 `host_id=NULL`；`host`/`queue` 命令、主机/地址/会话/租约表均为 PG 专属（无 PG exit 2）；runner、定时回归、中心清扫同样要求中心 PG。文件台账只推荐单机使用。
+- **中心清扫跨主机**（`allHosts=true`）而 runner 只扫本机；中心可能先于离线 runner 终结任务（符合预期，CAS 保证只计一次）。
+- **旧 runner 行 `host_id NULL`**：保留旧唯一索引兼容，不参与定向领取；主机视图按 `runner.host_id` 分组，NULL 行被跳过（不归入任何主机）。需在该机升级并重启 runner 后由心跳补齐身份。`AOS_HOST_STRICT` 未接线，旧行不会被强制拒绝。
+- **仅开本地 MCP 的机器不出现主机视图**：`hosts` 行由 runner 心跳 / `queue pause|resume` / 面板 `hosts/register` 创建；`host_sessions` 与项目行仍写入 PG，但面板主机视图以 `listHosts()` 为准。机器至少启动过一次 runner 后即可见（不影响派发：无 runner 本就无法自动执行）。
+- 队列暂停为**整机**粒度（无项目级/单任务暂停、无整机串行开关）；P4 的跨主机逻辑项目分组（`project_key`）与 HTTP 客户端记录（`project_clients`）未实现。
+- 面板 HTTP multipart 导入为**既有缺陷**（与多机无关）：`http-server` 只传 `rawBody`，动作层入口要求 JSON 对象 body，故 HTTP 下导入不可达；现有测试同时注入 body+rawBody 掩盖了该路径，待单独修复。
+- 同路径 legacy 行一旦被本机新版进程新建的行「占位」，`adopt-legacy` 将跳过（见迁移顺序第 2 步的注意事项），历史数据保留在 legacy 行、不并入新行。

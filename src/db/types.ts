@@ -729,7 +729,8 @@ export interface ProjectStore {
     taskId: string;
     at?: string;
   }): Promise<RegressionTaskRecord | null>;
-  /** 后台清扫的 CAS 终结：仅 `stopping` → `cancelled`，缺失字段按 COALESCE 补齐；
+  /** 后台清扫的 CAS 终结：仅 `stopping` → `cancelled`；`cancelledAt`/`cancelSource` 缺失才补，
+   * `cancelNote` 由调用方传合并后的文案（传值即覆盖、缺省保留原值；清扫器追加标记）。
    * 任务不存在或已非 `stopping`（竞争失败/已终结）→ null。 */
   finalizeCancellation(input: {
     rootPath: string;

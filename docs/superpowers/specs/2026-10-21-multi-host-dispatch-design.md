@@ -1,7 +1,7 @@
 # 多机接入：主机身份、环境探测与下发队列（设计）
 
 - 日期：2026-10-21
-- 状态：待评审
+- 状态：已实现（2026-10-21）
 - 范围：mobile-testing（AOS × ARTEMIS）中心/项目机部署形态（形态 B）
 - 关联：`DESIGN.md` §13.109（runner）、§13.116（领取加固）、§13.125（存储装配）
 
@@ -688,5 +688,28 @@ POST /panel/api/hosts/register     # { host, label?, owner?, expectedOs?, expect
 ### 待你拍板
 
 无。若对以上收口无异议，下一步进入实现计划（`writing-plans`），仍不写代码。
+
+## 17. 实现偏差与已知限制（2026-10-21）
+
+P1（可见性）、P2（定向下发）、P3（队列控制）均已落地；P4（HTTP 客户端记录、跨主机逻辑项目分组）不在本期。实现口径以 `DESIGN.md` §13.152–§13.165 为准，本节只记与设计稿的**实际偏差**。
+
+**验证结果**：`npm run build && npm test && npm run lint` 全绿——**1968 tests / 1968 pass / 0 fail**，lint **0 error**（2 条既有 warning：`src/console/pages.ts`、`src/panel/web.ts` 未使用变量）；测试不依赖真实 PG / 设备 / 外网（SQL 用 pg-mem、artemis 用假子进程、Figma 不触网）。
+
+**偏差**
+
+1. **`AOS_HOST_STRICT` 未接线**：设计稿 §13.6/§16.12 的严格模式（拒绝无 `host_id` 的旧 runner）未实现，变量名为保留位、当前无效果。原因：定向任务已由 `target_host_id` 过滤，旧 runner 行不会领到定向任务；严格拒绝会破坏「升级窗口内旧 runner 继续跑非定向任务」的兼容承诺。后续如需强制，可在 `claimRegressionTask` 与本地命令入口补两道守卫。
+2. **本地 MCP 单独运行不创建 `hosts` 行**：设计稿 §13.1 要求「每个进程启动确保本机 hosts 记录」。实际只有 runner 心跳、`suite queue pause/resume`、面板 `hosts/register` 会 `upsertHost`；仅开本地 MCP（无 runner）时，`host_sessions` 与项目行仍写入 PG，但面板主机视图以 `listHosts()` 为准，机器不会出现。这不影响派发（无 runner 本就不能执行），但「IDE 开着、没跑任务也看得见机器」只在 runner 至少启动过一次后成立。
+3. **手动 `suite run --task` 不占设备租约**：设计稿 §9.2 只要求主机归属守卫，实际也只做了 `targetHostId`/`claimedHostId` 校验与状态 CAS，未接入 `device_leases`。与同机 runner 并发时可能争用同一设备；需要互斥时先 `suite queue pause`。
+4. **面板 HTTP multipart 导入为既有缺陷**（与多机无关）：`http-server` 对 `/panel/api/import` 只设置 `rawBody`，而 `handlePanelActionRequest` 入口要求 JSON 对象 body，故 HTTP 下导入在到达 `runImport` 前即 400；现有测试以同时注入 `body` + `rawBody` 覆盖，掩盖了该路径。本期未修，待单独工单。
+5. **文件台账是单主机视图**：`FileStore.adoptProjectHost` 恒 false，项目行恒 `host_id=NULL`；`hosts`/`host_addresses`/`host_sessions`/`device_leases`/队列暂停虽在 File 实现里可读写，但语义上是单机状态文件，不能跨机共享。`host`/`queue` 命令、runner、定时回归、中心清扫均要求中心 PG（无 PG exit 2）。
+6. **清扫器作用域**：设计稿 §9.3 写「中心或任意存活 runner」；实现进一步收敛为 HTTP 服务/`panel --web` 用 `allHosts=true` 跨主机清扫，runner 只扫本机。CAS `stopping → cancelled` 保证多个清扫器只成功一次，中心可能先于离线 runner 终结（符合预期）。
+7. **旧 runner 行**：`runners.host_id` 为 NULL 的行保留旧唯一索引兼容，可领本项目非定向任务；主机视图按 `runner.host_id` 分组，NULL 行被跳过，不归入任何主机。需升级并在该机重启 runner 后由心跳补齐身份。
+
+**已知限制（设计即如此）**
+
+- 队列暂停为**整机**粒度，无项目级/单任务暂停；同一项目不要混跑新旧 runner。
+- 取消是终态：`cancelled`/历史 `stopped` 不复活，重跑需 `rerun` 或新建任务；手动执行不受队列暂停影响。
+- P4 的 `project_clients`（HTTP 客户端记录）与跨主机逻辑项目分组（`project_key`）未实现；同一 App 跨主机按两个独立项目处理。
+- `suite backfill`、中心任务列表等仍以 `rootPath` 为键；项目历史 id 不可复原，迁移认领须在启动新版进程前完成（见 DESIGN §13.165）。
 
 
