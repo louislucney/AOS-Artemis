@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { newDb } from "pg-mem";
 
+import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 
@@ -13,13 +17,18 @@ async function makeStores() {
   return [new MemoryStore(), pg];
 }
 
+async function tempHome() {
+  return mkdtemp(join(tmpdir(), "aos-host-ledger-"));
+}
+
 test("upsertHost: client/runner 两个在线信号独立，lastSeenAt 取最大", async () => {
   for (const store of await makeStores()) {
     await store.upsertHost({
       id: "h1", hardwareId: "hw1", hostname: "mac-a", username: "louis",
       osPlatform: "darwin", osVersion: "14.6.1", arch: "arm64",
       identitySource: "file", kind: "mac", capabilities: ["android"],
-      env: {}, envAt: null, ipPrimary: "10.0.0.5"
+      env: {}, envAt: null, ipPrimary: "10.0.0.5",
+      firstSeenAt: "2026-10-21T09:00:00.000Z"
     });
     await store.upsertHost({ id: "h1", hostname: "mac-a", clientSeenAt: "2026-10-21T10:00:00.000Z" });
     const host = await store.upsertHost({ id: "h1", hostname: "mac-a", runnerSeenAt: "2026-10-21T10:01:00.000Z" });
@@ -71,5 +80,69 @@ test("setHostQueuePaused 写入/恢复", async () => {
     assert.equal(paused.queuePausedBy, "panel");
     const resumed = await store.setHostQueuePaused({ hostId: "h1", paused: false, by: "panel" });
     assert.equal(resumed.queuePaused, false);
+    assert.equal(resumed.queuePausedBy, null);
+  }
+});
+
+test("FileStore: host/address/session 重启保留（persist 落盘 + 重载还原）", async () => {
+  const home = await tempHome();
+  const root = join(home, "proj");
+  await mkdir(root, { recursive: true });
+  try {
+    let store = await FileStore.create({ homeDir: home });
+    await store.upsertProject({ rootPath: root, name: "proj" });
+    await store.upsertHost({ id: "h1", hostname: "mac-a", firstSeenAt: "2026-10-21T09:00:00.000Z" });
+    await store.upsertHostAddresses({
+      hostId: "h1",
+      addresses: [{ source: "self", iface: "en0", family: "ipv4", address: "10.0.0.5" }],
+      at: "2026-10-21T10:00:00.000Z"
+    });
+    await store.touchHostSession({
+      id: "s1", hostId: "h1", projectId: null, rootPath: root,
+      username: "louis", client: "cursor", clientVersion: "1.0", pid: 42,
+      at: "2026-10-21T10:00:00.000Z"
+    });
+    await store.close();
+
+    store = await FileStore.create({ homeDir: home });
+    await store.upsertProject({ rootPath: root, name: "proj" });
+    assert.equal((await store.listHosts()).length, 1);
+    assert.equal((await store.listHostAddresses("h1")).length, 1);
+    assert.equal(
+      (await store.listHostSessions("h1", {
+        onlineWithinMs: 120_000,
+        now: Date.parse("2026-10-21T10:01:00.000Z")
+      })).length,
+      1
+    );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("FileStore: host 合并遵守磁盘胜（陈旧写者不回滚已落盘更新）", async () => {
+  const home = await tempHome();
+  const root = join(home, "proj");
+  await mkdir(root, { recursive: true });
+  try {
+    const a = await FileStore.create({ homeDir: home });
+    await a.upsertProject({ rootPath: root, name: "proj" });
+    await a.upsertHost({ id: "h1", hostname: "mac-a", firstSeenAt: "2026-10-21T09:00:00.000Z" });
+
+    const b = await FileStore.create({ homeDir: home });
+    await b.upsertProject({ rootPath: root, name: "proj" });
+    assert.equal((await b.listHosts())[0].hostname, "mac-a");
+
+    await b.upsertHost({ id: "h1", hostname: "mac-b" });
+
+    await a.upsertHost({ id: "h1", osVersion: "stale" });
+    await a.listHosts();
+
+    const c = await FileStore.create({ homeDir: home });
+    await c.upsertProject({ rootPath: root, name: "proj" });
+    const host = (await c.listHosts())[0];
+    assert.equal(host.hostname, "mac-b", "磁盘上的 mac-b 不被陈旧写者 a 回滚");
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 });

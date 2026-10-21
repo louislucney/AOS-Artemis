@@ -373,18 +373,23 @@ export class PostgresStore implements ProjectStore {
   }
 
   async init(): Promise<void> {
+    const client = this.pool.connect ? await this.pool.connect() : null;
+    const run = (text: string, values?: unknown[]): Promise<QueryResultLike> =>
+      client ? client.query(text, values) : this.pool.query(text, values);
     let locked = false;
     try {
-      await this.pool.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_ID]);
-      locked = true;
-    } catch (error) {
-      if (!isUndefinedFunction(error)) throw error;
-      /* pg-mem 不实现 advisory lock：继续无锁迁移（测试不依赖锁）。 */
-    }
-    try {
+      if (client) {
+        try {
+          await run("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_ID]);
+          locked = true;
+        } catch (error) {
+          if (!isUndefinedFunction(error)) throw error;
+          /* 引擎不支持 advisory lock（pg-mem）：继续无锁迁移。 */
+        }
+      }
       for (const statement of SCHEMA) {
         try {
-          await this.pool.query(statement);
+          await run(statement);
         } catch (error) {
           if (!isIdempotentSchemaRace(error)) throw error;
           logWarn(`建表竞态（忽略，已有并发建表者）: ${errorMessage(error)}`);
@@ -392,7 +397,7 @@ export class PostgresStore implements ProjectStore {
       }
       for (const statement of MIGRATIONS) {
         try {
-          await this.pool.query(statement);
+          await run(statement);
         } catch (error) {
           /* best effort: fresh schema already carries the column */
           logWarn(`迁移语句失败（忽略）: ${errorMessage(error)}`);
@@ -401,11 +406,12 @@ export class PostgresStore implements ProjectStore {
     } finally {
       if (locked) {
         try {
-          await this.pool.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_ID]);
+          await run("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_ID]);
         } catch {
           /* best effort */
         }
       }
+      client?.release?.();
     }
   }
 
@@ -1443,7 +1449,7 @@ export class PostgresStore implements ProjectStore {
        DO UPDATE SET last_seen_at = CASE
          WHEN host_sessions.last_seen_at > EXCLUDED.last_seen_at THEN host_sessions.last_seen_at
          ELSE EXCLUDED.last_seen_at
-       END`,
+       END, ended_at = NULL`,
       [
         input.id,
         input.hostId,
@@ -1498,7 +1504,12 @@ export class PostgresStore implements ProjectStore {
     const updated = await this.pool.query(
       `UPDATE hosts SET queue_paused = $2, queue_paused_at = $3, queue_paused_by = $4
         WHERE id = $1 RETURNING *`,
-      [input.hostId, input.paused, input.at ?? new Date().toISOString(), input.paused ? input.by : null]
+      [
+        input.hostId,
+        input.paused,
+        input.paused ? input.at ?? new Date().toISOString() : null,
+        input.paused ? input.by : null
+      ]
     );
     return updated.rows.length > 0 ? mapHost(updated.rows[0]!) : null;
   }

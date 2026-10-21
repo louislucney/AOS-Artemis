@@ -427,14 +427,19 @@ export class FileStore implements ProjectStore {
   }
 
   async upsertHost(input: UpsertHostInput): Promise<HostRecord> {
-    return this.hostMem.upsertHost(input);
+    await this.syncHostFromDisk();
+    const record = await this.hostMem.upsertHost(input);
+    await this.persistHostState("upsertHost");
+    return record;
   }
 
   async getHost(id: string): Promise<HostRecord | null> {
+    await this.syncHostFromDisk();
     return this.hostMem.getHost(id);
   }
 
   async listHosts(): Promise<HostRecord[]> {
+    await this.syncHostFromDisk();
     return this.hostMem.listHosts();
   }
 
@@ -446,7 +451,10 @@ export class FileStore implements ProjectStore {
     expectedHostname?: string | null;
     registeredBy: string;
   }): Promise<HostRecord | null> {
-    return this.hostMem.updateHostRegistration(input);
+    await this.syncHostFromDisk();
+    const record = await this.hostMem.updateHostRegistration(input);
+    if (record !== null) await this.persistHostState("updateHostRegistration");
+    return record;
   }
 
   async upsertHostAddresses(input: {
@@ -455,10 +463,13 @@ export class FileStore implements ProjectStore {
     at?: string;
     maxPerSource?: number;
   }): Promise<void> {
+    await this.syncHostFromDisk();
     await this.hostMem.upsertHostAddresses(input);
+    await this.persistHostState("upsertHostAddresses");
   }
 
   async listHostAddresses(hostId: string): Promise<HostAddressRecord[]> {
+    await this.syncHostFromDisk();
     return this.hostMem.listHostAddresses(hostId);
   }
 
@@ -473,17 +484,24 @@ export class FileStore implements ProjectStore {
     pid: number | null;
     at?: string;
   }): Promise<HostSessionRecord> {
-    return this.hostMem.touchHostSession(input);
+    await this.syncHostFromDisk();
+    const record = await this.hostMem.touchHostSession(input);
+    await this.persistHostState("touchHostSession");
+    return record;
   }
 
   async endHostSession(id: string, at?: string): Promise<boolean> {
-    return this.hostMem.endHostSession(id, at);
+    await this.syncHostFromDisk();
+    const ended = await this.hostMem.endHostSession(id, at);
+    if (ended) await this.persistHostState("endHostSession");
+    return ended;
   }
 
   async listHostSessions(
     hostId: string,
     options?: { limit?: number; onlineWithinMs?: number; now?: number }
   ): Promise<HostSessionRecord[]> {
+    await this.syncHostFromDisk();
     return this.hostMem.listHostSessions(hostId, options);
   }
 
@@ -493,7 +511,10 @@ export class FileStore implements ProjectStore {
     by: string;
     at?: string;
   }): Promise<HostRecord | null> {
-    return this.hostMem.setHostQueuePaused(input);
+    await this.syncHostFromDisk();
+    const record = await this.hostMem.setHostQueuePaused(input);
+    if (record !== null) await this.persistHostState("setHostQueuePaused");
+    return record;
   }
 
   async recordUsageEvent(
@@ -974,14 +995,28 @@ export class FileStore implements ProjectStore {
     if (!disk.hosts && !disk.hostAddresses && !disk.hostSessions) return;
     const local = this.hostMem.exportState();
     this.hostMem.importState({
-      hosts: disk.hosts ? unionBy(local.hosts, disk.hosts, (host) => host.id) : undefined,
+      hosts: disk.hosts ? unionBy(disk.hosts, local.hosts, (host) => host.id) : undefined,
       hostAddresses: disk.hostAddresses
-        ? unionBy(local.hostAddresses, disk.hostAddresses, hostAddressKey)
+        ? unionBy(disk.hostAddresses, local.hostAddresses, hostAddressKey)
         : undefined,
       hostSessions: disk.hostSessions
-        ? unionBy(local.hostSessions, disk.hostSessions, (session) => session.id)
+        ? unionBy(disk.hostSessions, local.hostSessions, (session) => session.id)
         : undefined
     });
+  }
+
+  private async syncHostFromDisk(): Promise<void> {
+    for (const bucket of this.buckets.values()) {
+      if (!bucket.loaded) continue;
+      await this.syncFromDisk(bucket);
+    }
+  }
+
+  private async persistHostState(op: string): Promise<void> {
+    for (const bucket of this.buckets.values()) {
+      if (!bucket.loaded) continue;
+      await this.persist(bucket, op);
+    }
   }
 
   private async persist(bucket: ProjectBucket, op: string): Promise<void> {

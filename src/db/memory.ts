@@ -868,6 +868,7 @@ export class MemoryStore implements ProjectStore {
     const existing = this.hostSessions.find((session) => session.id === input.id);
     if (existing) {
       existing.lastSeenAt = maxIso(existing.lastSeenAt, at);
+      existing.endedAt = null;
       return cloneHostSession(existing);
     }
     const record: HostSessionRecord = {
@@ -921,7 +922,7 @@ export class MemoryStore implements ProjectStore {
     const host = this.hosts.find((entry) => entry.id === input.hostId);
     if (!host) return null;
     host.queuePaused = input.paused;
-    host.queuePausedAt = input.at ?? new Date().toISOString();
+    host.queuePausedAt = input.paused ? input.at ?? new Date().toISOString() : null;
     host.queuePausedBy = input.paused ? input.by : null;
     return cloneHost(host);
   }
