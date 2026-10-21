@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +19,11 @@ async function makeStores() {
 
 async function tempHome() {
   return mkdtemp(join(tmpdir(), "aos-project-hosts-"));
+}
+
+async function tempProject() {
+  const root = await mkdtemp(join(tmpdir(), "aos-project-host-proj-"));
+  return root;
 }
 
 test("同一 rootPath 两台主机是两行；作用域解析不串台", async () => {
@@ -55,20 +60,64 @@ test("绑定 host 后 upsertProject 使用该 host；旧 NULL 行不被隐式接
 
 test("FileStore: scopeHost 两行往返且重启保留", async () => {
   const home = await tempHome();
+  const root = await tempProject();
   try {
     const store = await FileStore.create({ homeDir: home });
     const a = store.scopeHost("h-a");
     const b = store.scopeHost("h-b");
-    const ra = await a.upsertProject({ rootPath: "/Users/louis/app", name: "app" });
-    const rb = await b.upsertProject({ rootPath: "/Users/louis/app", name: "app" });
+    const ra = await a.upsertProject({ rootPath: root, name: "app" });
+    const rb = await b.upsertProject({ rootPath: root, name: "app" });
     assert.notEqual(ra.id, rb.id);
 
     const reopened = await FileStore.create({ homeDir: home });
     const a2 = reopened.scopeHost("h-a");
     const b2 = reopened.scopeHost("h-b");
-    assert.equal((await a2.getProjectByPath("/Users/louis/app")).id, ra.id);
-    assert.equal((await b2.getProjectByPath("/Users/louis/app")).id, rb.id);
+    assert.equal((await a2.getProjectByPath(root)).id, ra.id);
+    assert.equal((await b2.getProjectByPath(root)).id, rb.id);
   } finally {
     await rm(home, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("FileStore: 同 rootPath 两主机各自解析项目数据（无 AmbiguousProjectError、不串数据）", async () => {
+  const home = await tempHome();
+  const root = await tempProject();
+  try {
+    const store = await FileStore.create({ homeDir: home });
+    const a = store.scopeHost("h-a");
+    const b = store.scopeHost("h-b");
+    await a.upsertProject({ rootPath: root, name: "app" });
+    await b.upsertProject({ rootPath: root, name: "app" });
+
+    await a.setFigmaToken(root, "token-a");
+    assert.equal((await a.getProjectByPath(root)).figmaToken, "token-a");
+    assert.equal((await b.getProjectByPath(root)).figmaToken, null);
+
+    await a.recordTask({ rootPath: root, traceId: "t-a", status: "submitted" });
+    assert.equal((await a.listTasks(root)).length, 1);
+    assert.equal((await b.listTasks(root)).length, 0);
+
+    await a.recordCaseSet({
+      rootPath: root,
+      source: "test",
+      basename: "feature-a",
+      features: [
+        {
+          key: "f1",
+          name: "F1",
+          caseCount: 1,
+          screens: [],
+          jsonPath: join(root, "f1.json"),
+          mdPath: join(root, "f1.md"),
+          xlsxPath: join(root, "f1.xlsx")
+        }
+      ]
+    });
+    assert.equal((await a.listCaseSets(root)).length, 1);
+    assert.equal((await b.listCaseSets(root)).length, 0);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 });

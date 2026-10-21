@@ -182,91 +182,91 @@ export class FileStore implements ProjectStore {
 
   async setFigmaToken(rootPath: string, token: string | null): Promise<void> {
     const bucket = await this.bucket(rootPath);
-    await bucket.mem.setFigmaToken(rootPath, token);
+    await this.scopedMem(bucket, this.hostId).setFigmaToken(rootPath, token);
     await this.persist(bucket, "setFigmaToken");
   }
 
   async listLlms(rootPath: string): Promise<ProjectLlmRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listLlms(rootPath);
+    return this.scopedMem(bucket, this.hostId).listLlms(rootPath);
   }
 
   async upsertLlm(rootPath: string, input: UpsertLlmInput): Promise<ProjectLlmRecord> {
     const bucket = await this.bucket(rootPath);
-    const record = await bucket.mem.upsertLlm(rootPath, input);
+    const record = await this.scopedMem(bucket, this.hostId).upsertLlm(rootPath, input);
     await this.persist(bucket, "upsertLlm");
     return record;
   }
 
   async setActiveLlm(rootPath: string, name: string): Promise<boolean> {
     const bucket = await this.bucket(rootPath);
-    const updated = await bucket.mem.setActiveLlm(rootPath, name);
+    const updated = await this.scopedMem(bucket, this.hostId).setActiveLlm(rootPath, name);
     if (updated) await this.persist(bucket, "setActiveLlm");
     return updated;
   }
 
   async getModelCache(rootPath: string, cacheKey: string): Promise<ModelCacheRecord | null> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.getModelCache(rootPath, cacheKey);
+    return this.scopedMem(bucket, this.hostId).getModelCache(rootPath, cacheKey);
   }
 
   async putModelCache(rootPath: string, input: PutModelCacheInput): Promise<ModelCacheRecord> {
     const bucket = await this.bucket(rootPath);
-    const record = await bucket.mem.putModelCache(rootPath, input);
+    const record = await this.scopedMem(bucket, this.hostId).putModelCache(rootPath, input);
     await this.persist(bucket, "putModelCache");
     return record;
   }
 
   async recordTask(input: RecordTaskInput): Promise<void> {
     const bucket = await this.bucket(input.rootPath);
-    await bucket.mem.recordTask(input);
+    await this.scopedMem(bucket, this.hostId).recordTask(input);
     await this.persist(bucket, "recordTask");
   }
 
   async listTasks(rootPath: string, limit?: number): Promise<TaskStatRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listTasks(rootPath, limit);
+    return this.scopedMem(bucket, this.hostId).listTasks(rootPath, limit);
   }
 
   async listPendingTasks(rootPath: string, limit?: number): Promise<TaskStatRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listPendingTasks(rootPath, limit);
+    return this.scopedMem(bucket, this.hostId).listPendingTasks(rootPath, limit);
   }
 
   async markTaskFinished(rootPath: string, traceId: string, status: string): Promise<boolean> {
     const bucket = await this.bucket(rootPath);
-    const updated = await bucket.mem.markTaskFinished(rootPath, traceId, status);
+    const updated = await this.scopedMem(bucket, this.hostId).markTaskFinished(rootPath, traceId, status);
     if (updated) await this.persist(bucket, "markTaskFinished");
     return updated;
   }
 
   async recordCaseSet(input: RecordCaseSetInput): Promise<CaseSetRecord> {
     const bucket = await this.bucket(input.rootPath);
-    const record = await bucket.mem.recordCaseSet(input);
+    const record = await this.scopedMem(bucket, this.hostId).recordCaseSet(input);
     await this.persist(bucket, "recordCaseSet");
     return record;
   }
 
   async listCaseSets(rootPath: string, limit?: number): Promise<CaseSetRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listCaseSets(rootPath, limit);
+    return this.scopedMem(bucket, this.hostId).listCaseSets(rootPath, limit);
   }
 
   async createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord> {
     const bucket = await this.bucket(input.rootPath);
-    const record = await bucket.mem.createRegressionTask(input);
+    const record = await this.scopedMem(bucket, this.hostId).createRegressionTask(input);
     await this.persist(bucket, "createRegressionTask");
     return record;
   }
 
   async getRegressionTask(rootPath: string, id: string): Promise<RegressionTaskRecord | null> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.getRegressionTask(rootPath, id);
+    return this.scopedMem(bucket, this.hostId).getRegressionTask(rootPath, id);
   }
 
   async listRegressionTasks(rootPath: string, limit?: number): Promise<RegressionTaskRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listRegressionTasks(rootPath, limit);
+    return this.scopedMem(bucket, this.hostId).listRegressionTasks(rootPath, limit);
   }
 
   async updateRegressionTask(
@@ -280,7 +280,7 @@ export class FileStore implements ProjectStore {
     }
   ): Promise<boolean> {
     const bucket = await this.bucket(rootPath);
-    const updated = await bucket.mem.updateRegressionTask(rootPath, id, patch);
+    const updated = await this.scopedMem(bucket, this.hostId).updateRegressionTask(rootPath, id, patch);
     if (updated) await this.persist(bucket, "updateRegressionTask");
     return updated;
   }
@@ -293,14 +293,14 @@ export class FileStore implements ProjectStore {
     allowPartial?: boolean;
   }): Promise<RegressionTaskRecord | null> {
     const bucket = await this.bucket(input.rootPath);
-    const record = await bucket.mem.claimRegressionTask(input);
+    const record = await this.scopedMem(bucket, this.hostId).claimRegressionTask(input);
     if (record !== null) await this.persist(bucket, "claimRegressionTask");
     return record;
   }
 
   async releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number> {
     const bucket = await this.bucket(input.rootPath);
-    const released = await bucket.mem.releaseRegressionTasks(input);
+    const released = await this.scopedMem(bucket, this.hostId).releaseRegressionTasks(input);
     if (released > 0) await this.persist(bucket, "releaseRegressionTasks");
     return released;
   }
@@ -312,7 +312,7 @@ export class FileStore implements ProjectStore {
     to?: "pending" | "failed";
   }): Promise<boolean> {
     const bucket = await this.bucket(input.rootPath);
-    const released = await bucket.mem.releaseRegressionTask(input);
+    const released = await this.scopedMem(bucket, this.hostId).releaseRegressionTask(input);
     if (released) await this.persist(bucket, "releaseRegressionTask");
     return released;
   }
@@ -323,26 +323,26 @@ export class FileStore implements ProjectStore {
     claimedBefore: string;
   }): Promise<number> {
     const bucket = await this.bucket(input.rootPath);
-    const released = await bucket.mem.releaseStaleClaims(input);
+    const released = await this.scopedMem(bucket, this.hostId).releaseStaleClaims(input);
     if (released > 0) await this.persist(bucket, "releaseStaleClaims");
     return released;
   }
 
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
     const bucket = await this.bucket(input.rootPath);
-    const record = await bucket.mem.createSchedule(input);
+    const record = await this.scopedMem(bucket, this.hostId).createSchedule(input);
     await this.persist(bucket, "createSchedule");
     return record;
   }
 
   async listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listSchedules(rootPath, limit);
+    return this.scopedMem(bucket, this.hostId).listSchedules(rootPath, limit);
   }
 
   async getSchedule(rootPath: string, id: string): Promise<ScheduleRecord | null> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.getSchedule(rootPath, id);
+    return this.scopedMem(bucket, this.hostId).getSchedule(rootPath, id);
   }
 
   async updateSchedule(
@@ -351,14 +351,14 @@ export class FileStore implements ProjectStore {
     patch: { enabled?: boolean; everyMinutes?: number; lastNote?: string | null }
   ): Promise<boolean> {
     const bucket = await this.bucket(rootPath);
-    const updated = await bucket.mem.updateSchedule(rootPath, id, patch);
+    const updated = await this.scopedMem(bucket, this.hostId).updateSchedule(rootPath, id, patch);
     if (updated) await this.persist(bucket, "updateSchedule");
     return updated;
   }
 
   async deleteSchedule(rootPath: string, id: string): Promise<boolean> {
     const bucket = await this.bucket(rootPath);
-    const deleted = await bucket.mem.deleteSchedule(rootPath, id);
+    const deleted = await this.scopedMem(bucket, this.hostId).deleteSchedule(rootPath, id);
     if (deleted) await this.persist(bucket, "deleteSchedule");
     return deleted;
   }
@@ -370,14 +370,14 @@ export class FileStore implements ProjectStore {
     cutoff: string;
   }): Promise<boolean> {
     const bucket = await this.bucket(input.rootPath);
-    const won = await bucket.mem.claimScheduleWindow(input);
+    const won = await this.scopedMem(bucket, this.hostId).claimScheduleWindow(input);
     if (won) await this.persist(bucket, "claimScheduleWindow");
     return won;
   }
 
   async recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord> {
     const bucket = await this.bucket(input.rootPath);
-    const record = await bucket.mem.recordSuiteRun(input);
+    const record = await this.scopedMem(bucket, this.hostId).recordSuiteRun(input);
     await this.persist(bucket, "recordSuiteRun");
     return record;
   }
@@ -393,7 +393,7 @@ export class FileStore implements ProjectStore {
     }
   ): Promise<SuiteRunRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listSuiteRuns(rootPath, query);
+    return this.scopedMem(bucket, this.hostId).listSuiteRuns(rootPath, query);
   }
 
   async markSuiteRunFinishedByRunId(
@@ -402,52 +402,52 @@ export class FileStore implements ProjectStore {
     status: "completed" | "failed"
   ): Promise<boolean> {
     const bucket = await this.bucket(rootPath);
-    const updated = await bucket.mem.markSuiteRunFinishedByRunId(rootPath, runId, status);
+    const updated = await this.scopedMem(bucket, this.hostId).markSuiteRunFinishedByRunId(rootPath, runId, status);
     if (updated) await this.persist(bucket, "markSuiteRunFinishedByRunId");
     return updated;
   }
 
   async updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean> {
     const bucket = await this.bucket(input.rootPath);
-    const updated = await bucket.mem.updateCaseVerdict(input);
+    const updated = await this.scopedMem(bucket, this.hostId).updateCaseVerdict(input);
     if (updated) await this.persist(bucket, "updateCaseVerdict");
     return updated;
   }
 
   async setCaseIssueKey(input: SetCaseIssueKeyInput): Promise<boolean> {
     const bucket = await this.bucket(input.rootPath);
-    const updated = await bucket.mem.setCaseIssueKey(input);
+    const updated = await this.scopedMem(bucket, this.hostId).setCaseIssueKey(input);
     if (updated) await this.persist(bucket, "setCaseIssueKey");
     return updated;
   }
 
   async getSuiteRun(rootPath: string, runId: string): Promise<SuiteRunRecord | null> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.getSuiteRun(rootPath, runId);
+    return this.scopedMem(bucket, this.hostId).getSuiteRun(rootPath, runId);
   }
 
   async listRegisteredManifestPaths(rootPath: string): Promise<string[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listRegisteredManifestPaths(rootPath);
+    return this.scopedMem(bucket, this.hostId).listRegisteredManifestPaths(rootPath);
   }
 
   async getEarliestRegistrationCreatedAt(
     rootPath: string
   ): Promise<{ runs: string | null; caseSets: string | null }> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.getEarliestRegistrationCreatedAt(rootPath);
+    return this.scopedMem(bucket, this.hostId).getEarliestRegistrationCreatedAt(rootPath);
   }
 
   async upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord> {
     const bucket = await this.bucket(input.rootPath);
-    const record = await bucket.mem.upsertRunner(input);
+    const record = await this.scopedMem(bucket, this.hostId).upsertRunner(input);
     await this.persist(bucket, "upsertRunner");
     return record;
   }
 
   async listRunners(rootPath: string, limit?: number): Promise<RunnerRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listRunners(rootPath, limit);
+    return this.scopedMem(bucket, this.hostId).listRunners(rootPath, limit);
   }
 
   async upsertHost(input: UpsertHostInput): Promise<HostRecord> {
@@ -548,7 +548,7 @@ export class FileStore implements ProjectStore {
   ): Promise<UsageEventRecord> {
     const bucket = await this.bucket(rootPath);
     const before = bucket.mem.exportState().usageEvents.length;
-    const record = await bucket.mem.recordUsageEvent(rootPath, input, policy);
+    const record = await this.scopedMem(bucket, this.hostId).recordUsageEvent(rootPath, input, policy);
     const after = bucket.mem.exportState().usageEvents.length;
     try {
       await this.ensureDir(bucket);
@@ -564,7 +564,7 @@ export class FileStore implements ProjectStore {
 
   async listUsageEvents(rootPath: string, query: UsageEventQuery = {}): Promise<UsageEventRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.listUsageEvents(rootPath, query);
+    return this.scopedMem(bucket, this.hostId).listUsageEvents(rootPath, query);
   }
 
   async recordAudit(rootPath: string, input: AuditEventInput): Promise<AuditEventRecord> {
