@@ -148,6 +148,7 @@ export class Runtime {
   private readonly hostIdentityOption: HostIdentity | null;
   private lastClient: { name: string; version?: string } | null = null;
   private lastClientPresenceAtMs = 0;
+  private presenceStarted = false;
   private activationChain: Promise<unknown> = Promise.resolve();
   private crashScanChain: Promise<unknown> = Promise.resolve();
   private modelRefreshChain: Promise<unknown> = Promise.resolve();
@@ -987,7 +988,7 @@ export class Runtime {
           ...input,
           at,
           hostId: this.hostIdentity?.id ?? null,
-          sessionId: this.clientSessionId
+          sessionId: this.presenceStarted ? this.clientSessionId : null
         },
         usagePolicyFrom(this.baseEnv)
       );
@@ -1009,11 +1010,15 @@ export class Runtime {
   // ------------------------------------------------------------------
 
   async startClientSession(client: { name: string; version?: string } | null): Promise<void> {
+    if (!this.presenceEnabled()) return;
+    this.presenceStarted = true;
     this.lastClient = client;
+    this.lastClientPresenceAtMs = Date.now();
     await this.touchClientSession(client);
   }
 
   async noteClientPresence(): Promise<void> {
+    if (!this.presenceEnabled()) return;
     const now = Date.now();
     if (now - this.lastClientPresenceAtMs < this.clientPresenceIntervalMs()) return;
     this.lastClientPresenceAtMs = now;
@@ -1021,6 +1026,7 @@ export class Runtime {
   }
 
   async endClientSession(): Promise<void> {
+    if (!this.presenceEnabled()) return;
     try {
       await this.store.endHostSession(this.clientSessionId);
     } catch (error) {
@@ -1047,11 +1053,15 @@ export class Runtime {
     }
   }
 
+  private presenceEnabled(): boolean {
+    return this.clientPresenceIntervalMs() > 0;
+  }
+
   private clientPresenceIntervalMs(): number {
     const raw = this.baseEnv.AOS_CLIENT_PRESENCE_MS?.trim() ?? "";
     if (raw === "") return CLIENT_PRESENCE_MS_DEFAULT;
     const value = Number(raw);
-    if (!Number.isFinite(value) || value < 0) return CLIENT_PRESENCE_MS_DEFAULT;
+    if (!Number.isFinite(value) || value <= 0) return 0;
     return Math.floor(value);
   }
 

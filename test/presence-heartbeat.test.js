@@ -60,9 +60,9 @@ test("Runtime.startClientSession/note/end 写 host_sessions 并节流", async ()
   assert.equal(rows[0].pid, process.pid);
 
   await runtime.noteClientPresence();
-  assert.equal(store.touchCount, 2);
+  assert.equal(store.touchCount, 1, "startClientSession 已播种时间戳：30s 内首次心跳被节流");
   await runtime.noteClientPresence();
-  assert.equal(store.touchCount, 2, "30s 内节流：第二次心跳不应落盘");
+  assert.equal(store.touchCount, 1, "30s 内节流：心跳不应落盘");
 
   await runtime.endClientSession();
   assert.equal(store.endCount, 1);
@@ -100,6 +100,37 @@ test("usage 事件带 hostId/sessionId（经 InMemoryTransport 工具调用）",
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].client, "cursor");
     assert.equal(sessions[0].clientVersion, "1.0");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("AOS_CLIENT_PRESENCE_MS=0 关闭 presence：不写会话、sessionId 为 null", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const { runtime } = await loadTestRuntime(dir, {
+    proxy: new StubProxy({ running: true }),
+    store,
+    baseEnv: { AOS_CLIENT_PRESENCE_MS: "0" },
+    hostIdentity: hostIdentity("h1")
+  });
+
+  const server = createServerForRuntime(runtime, null, { presence: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "cursor", version: "1.0" });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const result = await client.callTool({ name: "aos_status", arguments: {} });
+    assert.notEqual(result.isError, true);
+
+    assert.equal((await store.listHostSessions("h1")).length, 0);
+
+    const events = await store.listUsageEvents(dir);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].hostId, "h1");
+    assert.equal(events[0].sessionId, null);
   } finally {
     await client.close();
     await server.close();
