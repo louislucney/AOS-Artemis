@@ -53,9 +53,25 @@ function staticGraph() {
 
 function deps({ cases = [generatedCase()] } = {}) {
   return {
-    fetchFile: async () => ({ document: { id: "0:0", type: "DOCUMENT", name: "Doc", children: [] } }),
-    synthesize: async () => ({ graph: staticGraph(), warnings: [] }),
-    captureScreens: async () => ({ pngById: new Map([["1:1", PNG]]), skipped: [], channelError: null }),
+    extractFigma: async (runtime) => {
+      const design = join(runtime.configDirAbs, "design");
+      await mkdir(join(design, "screens", "figma-ABC123"), { recursive: true });
+      await writeFile(
+        join(design, "flows.json"),
+        JSON.stringify({
+          schemaVersion: 3,
+          screens: staticGraph().screens,
+          edges: staticGraph().edges,
+          entryScreens: staticGraph().entryScreens,
+          unresolvedDestinations: [],
+          warnings: [{ code: "static-flow-inferred", message: "静态稿推断" }]
+        }),
+        "utf-8"
+      );
+      await writeFile(join(design, "flow-map.md"), "# 设计流程（静态稿推断）\n", "utf-8");
+      await writeFile(join(design, "screens", "figma-ABC123", "1-1.png"), PNG);
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+    },
     generate: async (runtime) => {
       const design = join(runtime.configDirAbs, "design");
       await mkdir(design, { recursive: true });

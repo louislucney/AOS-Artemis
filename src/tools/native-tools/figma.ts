@@ -13,7 +13,7 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_extract_flows",
     description:
-      "解析 Figma 文件的原型交互 → 流程图：screens（含建议路由）+ edges（元素/触发器/导航/转场，支持 ON_CLICK/AFTER_TIMEOUT/拖拽/BACK 等连续动作）+ entryScreens；屏幕截图（screens，默认开）批量渲染各屏嵌入 flow-map.md（图片落 .artemis/design/screens/figma-<fileKey>/，相对路径引用；单屏未就绪有界重试后逐屏降级 screenshot-skipped / screenshot-render-unavailable，不阻断）。落盘 <项目>/.artemis/design/flows.json + flow-map.md。REST 模式需 FIGMA_ACCESS_TOKEN。",
+      "解析 Figma 文件的原型交互 → 流程图：screens（含建议路由）+ edges（元素/触发器/导航/转场，支持 ON_CLICK/AFTER_TIMEOUT/拖拽/BACK 等连续动作）+ entryScreens；无原型交互时默认按箭头/连线、画板旁文字注释、画布顺序合成流程（staticFallback，INFERRED/low；staticFallback:false 或 AOS_STATIC_FALLBACK=0 关闭）；屏幕截图（screens，默认开）批量渲染各屏嵌入 flow-map.md（图片落 .artemis/design/screens/figma-<fileKey>/，相对路径引用；单屏未就绪有界重试后逐屏降级 screenshot-skipped / screenshot-render-unavailable，不阻断）。落盘 <项目>/.artemis/design/flows.json + flow-map.md。REST 模式需 FIGMA_ACCESS_TOKEN。",
     schema: z.object({
       url: z.string().min(1).describe("Figma 文件 URL（可选带 node-id 限定范围）"),
       nodeId: z.string().optional().describe("可选：只解析该节点子树"),
@@ -21,7 +21,11 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
       screens: z
         .boolean()
         .optional()
-        .describe("渲染屏幕截图并嵌入 flow-map.md，默认 true；AOS_SCREENS=0 全局关闭（显式 true 覆盖）")
+        .describe("渲染屏幕截图并嵌入 flow-map.md，默认 true；AOS_SCREENS=0 全局关闭（显式 true 覆盖）"),
+      staticFallback: z
+        .boolean()
+        .optional()
+        .describe("无原型交互时按箭头/连线/文字注释/画布顺序合成流程（INFERRED）；默认开，false 或 AOS_STATIC_FALLBACK=0 关闭")
     }),
     handler: (runtime, args) => figmaExtractFlows(runtime, args as unknown as ExtractFlowsArgs)
   },

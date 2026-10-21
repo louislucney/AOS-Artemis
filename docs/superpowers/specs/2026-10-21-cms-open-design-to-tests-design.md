@@ -125,7 +125,7 @@ interface JobContext {
 
 ### 4.2 设计源解析
 
-**Figma（静态稿为主）**：现有 `figma_extract_flows` 只从原型交互生成边，静态稿会 0 路径。新增**静态流程合成**（`src/open/figma-static.ts` 或复用 `src/pen/flows.ts` 的合成器）：
+**Figma（静态稿为主）**：现有 `figma_extract_flows` 只从原型交互生成边，静态稿会 0 路径。新增**静态流程合成**（`src/figma/static-flows.ts`，与 App/CMS 共用），并接入 `figma_extract_flows` 作为 fallback（原型边优先；默认开，`staticFallback:false` 或 `AOS_STATIC_FALLBACK=0` 关闭）：
 
 1. 屏幕：顶层 `FRAME`（排除组件/隐藏），按画布位置排序（上→下、左→右）。
 2. 连线：`LINE`/`VECTOR`（含箭头 marker）节点；端点落在/靠近画板 → 边；方向取箭头端；无法判定方向时按画布顺序。

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { synthesizeStaticFlows } from "../dist/open/figma-static.js";
+import { synthesizeStaticFlows } from "../dist/figma/static-flows.js";
 
 function frame(id, name, x, texts = []) {
   return {

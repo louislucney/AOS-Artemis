@@ -7,6 +7,7 @@ import {
   type FlowWarning
 } from "../figma/flows.js";
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
+import { walk } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 
@@ -27,6 +28,8 @@ export interface StaticSynthesisResult {
 export interface StaticSynthesisOptions {
   chat?: ChatFn;
   maxScreens?: number;
+  /** 只解析该节点子树（与 figma_extract_flows 的 nodeId 对齐）。 */
+  nodeId?: string;
 }
 
 const MAX_FRAMES = 200;
@@ -84,34 +87,49 @@ function normalizedName(name: string): string {
     .toLowerCase();
 }
 
-function collectFrames(document: FigmaNode): FrameInfo[] {
+function collectFrames(root: FigmaNode): FrameInfo[] {
   const frames: FrameInfo[] = [];
   let order = 0;
+  const addFrame = (node: FigmaNode, pageName: string | null): void => {
+    const bounds = boundsOf(node);
+    if (!bounds) return;
+    frames.push({
+      node,
+      id: node.id,
+      name: node.name,
+      bounds,
+      page: pageName,
+      order: order++
+    });
+  };
+  if (root.type === "FRAME" || root.type === "SECTION") {
+    addFrame(root, null);
+    return frames;
+  }
   const visitPage = (page: FigmaNode, pageName: string | null): void => {
     for (const node of childNodes(page)) {
       if (node.type !== "FRAME" && node.type !== "SECTION") continue;
-      const bounds = boundsOf(node);
-      if (!bounds) continue;
-      frames.push({
-        node,
-        id: node.id,
-        name: node.name,
-        bounds,
-        page: pageName,
-        order: order++
-      });
+      addFrame(node, pageName);
       if (frames.length >= MAX_FRAMES) return;
     }
   };
-  const pages = childNodes(document).filter(
+  const pages = childNodes(root).filter(
     (node) => node.type === "CANVAS" || node.type === "PAGE"
   );
   if (pages.length > 0) {
     for (const page of pages) visitPage(page, page.name);
   } else {
-    visitPage(document, document.name);
+    visitPage(root, root.name);
   }
   return frames.sort((a, b) => a.order - b.order || a.bounds.y - b.bounds.y || a.bounds.x - b.bounds.x);
+}
+
+function findNode(root: FigmaNode, nodeId: string): FigmaNode | null {
+  let found: FigmaNode | null = null;
+  walk(root, (node) => {
+    if (node.id === nodeId) found = node;
+  });
+  return found;
 }
 
 function collectHints(frame: FigmaNode): FlowHint[] {
@@ -235,7 +253,20 @@ export async function synthesizeStaticFlows(
     warnings.push({ code: "no-screens", message: "设计文件没有 document 数据" });
     return { graph: { screens: [], edges: [], entryScreens: [], unresolvedDestinations: [] }, warnings };
   }
-  const frames = collectFrames(document).slice(0, options.maxScreens ?? MAX_FRAMES);
+  let scope = document;
+  if (options.nodeId) {
+    const found = findNode(document, options.nodeId);
+    if (found) {
+      scope = found;
+    } else {
+      warnings.push({
+        code: "node-not-found",
+        message: `节点 ${options.nodeId} 不在文件中，已按整份文件合成`,
+        details: [options.nodeId]
+      });
+    }
+  }
+  const frames = collectFrames(scope).slice(0, options.maxScreens ?? MAX_FRAMES);
   if (frames.length === 0) {
     warnings.push({ code: "no-screens", message: "未找到顶层画板（FRAME），无法合成流程" });
     return { graph: { screens: [], edges: [], entryScreens: [], unresolvedDestinations: [] }, warnings };

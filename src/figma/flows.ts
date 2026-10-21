@@ -15,6 +15,8 @@ import {
   storeScreenPng
 } from "../design/screens.js";
 import { captureFigmaScreens } from "./render.js";
+import { synthesizeStaticFlows } from "./static-flows.js";
+import type { ChatFn } from "../llm/chat.js";
 import {
   confidenceFor,
   isAnnotationLayerName,
@@ -240,6 +242,11 @@ export function routeFor(name: string): string {
 /** Build a prototype flow graph from a Figma document tree.
  * Consecutive actions are preserved: every interaction becomes an edge
  * labelled with its element, trigger and navigation. */
+/** Figma REST uses CANVAS for pages; pen/older fixtures use PAGE. */
+function isPageNode(node: FigmaNode): boolean {
+  return node.type === "PAGE" || node.type === "CANVAS";
+}
+
 export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {}): FlowGraph {
   let scope: FigmaNode | null = null;
   if (options.nodeId) {
@@ -264,10 +271,10 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     if (!current) return null;
     for (;;) {
       const parentId = parentOf.get(current.id);
-      if (!parentId) return current.type === "PAGE" ? null : current;
+      if (!parentId) return isPageNode(current) ? null : current;
       const parent = byId.get(parentId);
       if (!parent) return current;
-      if (parent.type === "PAGE") return current;
+      if (isPageNode(parent)) return current;
       current = parent;
     }
   };
@@ -349,9 +356,9 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
 
   const screenNodes: FigmaNode[] = [];
   walk(scopeRoot, (node) => {
-    if (node.type === "PAGE") screenNodes.push(...(node.children ?? []));
+    if (isPageNode(node)) screenNodes.push(...(node.children ?? []));
   });
-  if (screenNodes.length === 0 && scopeRoot.type !== "DOCUMENT" && scopeRoot.type !== "PAGE") {
+  if (screenNodes.length === 0 && scopeRoot.type !== "DOCUMENT" && !isPageNode(scopeRoot)) {
     screenNodes.push(scopeRoot);
   }
 
@@ -396,7 +403,7 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     while (currentId) {
       const current = byId.get(currentId);
       if (!current) return null;
-      if (current.type === "PAGE") return current.name;
+      if (isPageNode(current)) return current.name;
       currentId = parentOf.get(currentId);
     }
     return null;
@@ -656,6 +663,8 @@ export interface ExtractFlowsArgs {
   save?: boolean;
   /** 渲染屏幕截图并嵌入 flow-map.md（默认 true；`AOS_SCREENS=0` 全局关闭）。 */
   screens?: boolean;
+  /** 无原型交互时按箭头/注释/画布顺序合成流程（默认开；`false` 或 `AOS_STATIC_FALLBACK=0` 关闭）。 */
+  staticFallback?: boolean;
 }
 
 export interface FigmaFlowsDeps {
@@ -663,6 +672,8 @@ export interface FigmaFlowsDeps {
   sleep?: (ms: number) => Promise<void>;
   /** 本请求的 Figma token（缺省回退 FIGMA_ACCESS_TOKEN；open 服务必须显式传）。 */
   figmaToken?: string | null;
+  /** 静态合成时解析画板旁文字注释（可选；缺省只走确定性正则）。 */
+  chat?: ChatFn | null;
 }
 
 interface FigmaScreensResult {
@@ -798,13 +809,31 @@ export async function figmaExtractFlows(
     };
     if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
 
-    const graph = buildFlowGraph(file.document, { nodeId: args.nodeId });
+    let graph = buildFlowGraph(file.document, { nodeId: args.nodeId });
+    let staticWarnings: FlowWarning[] = [];
+    const staticFallback =
+      args.staticFallback ?? (process.env.AOS_STATIC_FALLBACK ?? "") !== "0";
+    if (staticFallback && graph.edges.length === 0 && graph.screens.length > 0) {
+      const synthesized = await synthesizeStaticFlows(file, {
+        chat: deps.chat ?? undefined,
+        ...(args.nodeId ? { nodeId: args.nodeId } : {})
+      });
+      graph = synthesized.graph;
+      staticWarnings = synthesized.warnings;
+    }
     const dotenv = runtime.project.dotenvValues ?? {};
     const wantScreens = screensEnabledFrom({ ...process.env, ...dotenv }, args.screens);
     const screens = wantScreens
       ? await captureAndStoreFigmaScreens(runtime, fileKey, graph.screens, deps)
       : null;
-    const warnings: FlowWarning[] = [...flowGraphWarnings(graph), ...(screens?.warnings ?? [])];
+    const baseWarnings = flowGraphWarnings(graph);
+    const warnings: FlowWarning[] = [
+      ...(staticWarnings.length > 0
+        ? baseWarnings.filter((warning) => warning.code !== "no-interactions")
+        : baseWarnings),
+      ...staticWarnings,
+      ...(screens?.warnings ?? [])
+    ];
     const fileVersion = typeof file.version === "string" ? file.version : null;
     const lastModified = typeof file.lastModified === "string" ? file.lastModified : null;
     const payload: Record<string, unknown> = {

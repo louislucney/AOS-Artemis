@@ -4,20 +4,15 @@ import path from "node:path";
 
 import { MemoryStore } from "../db/memory.js";
 import { makeChatFn, type ChatFn } from "../llm/chat.js";
-import { figmaScreensDir, relativeScreenPath, storeScreenPng } from "../design/screens.js";
-import { buildFlowGraph, figmaExtractFlows, type FlowGraph, type FlowWarning } from "../figma/flows.js";
+import { figmaExtractFlows } from "../figma/flows.js";
 import { figmaGenerateTests } from "../figma/test-gen.js";
 import type { DesignRuntimeLike } from "../figma/design-runtime.js";
 import { rewriteCasesForWeb } from "../figma/web-wording.js";
 import { penExtractFlows } from "../pen/flows.js";
 import { ensurePenCli } from "../pen/install.js";
 import { penEnvFrom, penExec } from "../pen/cli.js";
-import { captureFigmaScreens } from "../figma/render.js";
-import { fetchFile } from "../vendor/design-context-bridge/figma-rest/client.js";
-import { parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import { buildZip, type ZipEntry } from "./zip.js";
 import { renderCmsWorkbook } from "./template-map.js";
-import { synthesizeStaticFlows } from "./figma-static.js";
 
 export class OpenJobError extends Error {
   readonly code: string;
@@ -44,9 +39,6 @@ export interface OpenJobInput {
 }
 
 export interface OpenPipelineDeps {
-  fetchFile?: typeof fetchFile;
-  synthesize?: typeof synthesizeStaticFlows;
-  captureScreens?: typeof captureFigmaScreens;
   extractFigma?: typeof figmaExtractFlows;
   extractPen?: typeof penExtractFlows;
   generate?: typeof figmaGenerateTests;
@@ -87,40 +79,6 @@ function warningMessages(value: unknown): string[] {
   return value
     .map((entry) => (entry && typeof entry === "object" ? (entry as { message?: unknown }).message : null))
     .filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
-}
-
-function renderStaticMap(
-  name: string,
-  graph: FlowGraph,
-  images: Map<string, string>,
-  warnings: string[],
-  generatedAt: string
-): string {
-  const lines = [
-    `# ${name} · 设计流程（静态稿推断）`,
-    "",
-    `> 生成时间 ${generatedAt} · 推断流程需复核（INFERRED / low）`,
-    ""
-  ];
-  if (warnings.length > 0) {
-    lines.push("## 警告", "", ...warnings.map((warning) => `- ${warning}`), "");
-  }
-  lines.push("## 页面", "");
-  for (const screen of graph.screens) {
-    lines.push(`### ${screen.name}`, "");
-    const image = images.get(screen.id);
-    if (image) lines.push(`![${screen.name}](${image})`, "");
-    const hints = screen.textHints.map((hint) => hint.text).filter((text) => text.trim() !== "");
-    if (hints.length > 0) lines.push(`可见文本：${hints.slice(0, 8).join("、")}`, "");
-  }
-  lines.push("## 流程", "");
-  if (graph.edges.length === 0) lines.push("- （无跳转，单屏用例）");
-  for (const edge of graph.edges) {
-    const target = edge.to?.name ?? "（未决）";
-    lines.push(`- ${edge.from.name} → ${target}（${edge.element.type}）`);
-  }
-  lines.push("");
-  return lines.join("\n");
 }
 
 async function collectScreens(designDir: string): Promise<ZipEntry[]> {
@@ -182,56 +140,13 @@ export async function runOpenJob(
 
   if (input.source === "figma") {
     if (!input.figmaUrl) throw new OpenJobError("invalid_source", "缺少 figmaUrl");
-    const { fileKey } = parseFigmaUrl(input.figmaUrl);
-    designName = fileKey;
-    const file = await (deps.fetchFile ?? fetchFile)(
-      fileKey,
-      undefined,
-      input.figmaToken ?? undefined
+    const result = await (deps.extractFigma ?? figmaExtractFlows)(
+      runtime,
+      { url: input.figmaUrl, nodeId: input.nodeId, screens: true, save: true },
+      { figmaToken: input.figmaToken, chat }
     );
-    const document = (file as { document?: unknown }).document;
-    if (!document) throw new OpenJobError("invalid_source", "Figma 文件没有 document 数据");
-    const prototype = buildFlowGraph(document as never, { nodeId: input.nodeId });
-    if (prototype.edges.length > 0) {
-      const result = await (deps.extractFigma ?? figmaExtractFlows)(
-        runtime,
-        { url: input.figmaUrl, nodeId: input.nodeId, screens: true, save: true },
-        { figmaToken: input.figmaToken }
-      );
-      const error = toolError(result);
-      if (error !== null) throw new OpenJobError("figma_extract_failed", error);
-      screenCount = prototype.screens.length;
-    } else {
-      const synthesized = await (deps.synthesize ?? synthesizeStaticFlows)(file, {
-        chat: chat ?? undefined
-      });
-      const flowDoc = {
-        schemaVersion: 3,
-        source: `figma-static:${fileKey}`,
-        generatedAt,
-        ...synthesized.graph,
-        warnings: synthesized.warnings
-      };
-      await writeFile(path.join(designDir, "flows.json"), JSON.stringify(flowDoc, null, 2), "utf-8");
-      warnings = synthesized.warnings.map((warning) => warning.message);
-      screenCount = synthesized.graph.screens.length;
-      const capture = await (deps.captureScreens ?? captureFigmaScreens)(
-        fileKey,
-        synthesized.graph.screens.map((screen) => screen.id),
-        { figmaToken: input.figmaToken }
-      );
-      const imagePaths = new Map<string, string>();
-      const targetDir = figmaScreensDir(configDir, fileKey);
-      for (const [id, png] of capture.pngById) {
-        const stored = storeScreenPng(targetDir, id, png);
-        if (stored.status !== "invalid") imagePaths.set(id, relativeScreenPath(designDir, stored.path));
-      }
-      await writeFile(
-        path.join(designDir, "flow-map.md"),
-        renderStaticMap(fileKey, synthesized.graph, imagePaths, warnings, generatedAt),
-        "utf-8"
-      );
-    }
+    const error = toolError(result);
+    if (error !== null) throw new OpenJobError("figma_extract_failed", error);
   } else {
     const ready = await (deps.penReady ?? defaultPenReady)();
     if (!ready.ok) throw new OpenJobError("pen_unavailable", ready.hint, ready.hint);
@@ -341,4 +256,3 @@ export async function runOpenJob(
   };
 }
 
-export type { FlowWarning };

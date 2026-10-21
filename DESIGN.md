@@ -2260,7 +2260,16 @@ llm_switch(name, force):
 - **接口**：`POST /jobs`（JSON ≤1MB / multipart 单文件 ≤50MB）→ `{jobId}`；`GET /jobs/:id`（状态/步骤/错误）；`DELETE /jobs/:id`（queued→cancelled，running→协作式取消标记）；`GET /jobs/:id/download`（done 200 / 未完成 409 / 过期 410 / 未知或重启 404+`job_not_found`）；`GET /healthz`（bootId）。
 - **任务模型**：内存 JobManager（FIFO、并发 3、队列 20、单任务 10 分钟、产物 TTL 2 小时）；zip 先落临时文件再发送；`meta.json` 必含 source/generatedAt/model/maxFlows/maxDepth/counts/warnings。
 - **凭证注入**：新增 `DesignRuntimeLike`（`src/figma/design-runtime.ts`）作为唯一注入口；`figma_extract_flows`/`figma_generate_tests`/`pen_extract_flows`/`render` 接受显式 `figmaToken`/`chat`，不写 `process.env`。vendored Figma client 增加 per-call token 参数，响应缓存键含 token 指纹（NOTICE 第 7 条）。
-- **静态 Figma 合成**（`src/open/figma-static.ts`）：无原型交互时按「箭头/连线 → 画板旁文字注释（正则，失败可走 LLM 结构化抽取）→ 画布顺序」推断 `FlowGraph`；所有推断边 `provenance=inferred`/`confidence=low`；md 标注需复核；无屏幕 → `no_screens`，无箭头/注释 → `layout-fallback`。
+- **静态 Figma 合成**（`src/figma/static-flows.ts`，App/CMS 共用）：无原型交互时按「箭头/连线 → 画板旁文字注释（正则，失败可走 LLM 结构化抽取）→ 画布顺序」推断 `FlowGraph`；所有推断边 `provenance=inferred`/`confidence=low`；md 标注需复核；无屏幕 → `no_screens`，无箭头/注释 → `layout-fallback`。
 - **用例与模版**：复用线性化与用例模型，Web 文案去掉 `mobile_run_task` 描述（`src/figma/web-wording.ts`）；Excel 默认 7 列，模版有 `{{case.*}}/{{index}}` 走原占位符引擎，否则按表头映射（必需：用例名称/操作步骤/预期结果；别名与额外列留空）；缺列报 `template_invalid`。
 - **`.pen`**：上传文件写入 job 临时项目，复用 `pen_extract_flows`；渲染/截图使用服务机登录态（`pen login`/`PEN_CLI_KEY`），未就绪显式 `pen_unavailable`，不静默降级。
 - **测试**：`open-credentials`（token 隔离/缓存不串）、`open-figma-static`（箭头/注释/布局）、`open-template-map`（7 列/表头映射/缺列/占位符）、`open-jobs`（队列/并发/超时/取消/TTL）、`open-zip`、`open-pipeline`（静态/pen/无用例）、`open-server`（路由/CORS/限额/取消/410）、`open-command`；全量 2064 绿。
+
+### 13.175 改进（App 静态稿：无原型时按箭头/注释/画布顺序合成）
+
+> 2026-10-21。把 CMS 的静态合成回灌到现有 `figma_extract_flows`，App 静态稿同样受益。
+
+- **fallback**：`figma_extract_flows` 在原型边为 0 且存在屏幕时默认调用 `synthesizeStaticFlows`（原型边优先）；`staticFallback:false` 或 `AOS_STATIC_FALLBACK=0` 关闭。推断边 `inferred/low`，`no-interactions` 警告替换为 `static-flow-inferred`（有线索）或 `layout-fallback`（纯画布顺序）；截图与 flow-map 沿用原渲染链。
+- **CANVAS 修复**：`buildFlowGraph` 此前只认 `PAGE`，Figma REST 实际页面类型是 `CANVAS`，真实文件可能 0 屏；`screenOf`/`pageNameOf`/屏幕收集统一接受 `CANVAS` 与 `PAGE`。
+- **模块归位**：合成器从 `src/open/` 移到 `src/figma/static-flows.ts`，App/CMS 共用，避免 figma→open 的反向依赖。
+- **测试**：`test/figma-static-fallback.test.js` 2 例（默认合成、`staticFallback:false` 保留 `no-interactions`）；全量 2066 绿。
