@@ -227,8 +227,8 @@ test("启动释放：预置 claimed_by=me → 先释放再领取执行；他人�
   });
   const mineTask = await store.createRegressionTask(taskInput(rootPath));
   const otherTask = await store.createRegressionTask(taskInput(rootPath));
-  await store.claimRegressionTask({ rootPath, runnerId: me.id, platforms: ["android"] });
-  await store.claimRegressionTask({ rootPath, runnerId: other.id, platforms: ["android"] });
+  await store.claimRegressionTask({ rootPath, runnerId: me.id, platforms: ["android"], capabilities: ["android"] });
+  await store.claimRegressionTask({ rootPath, runnerId: other.id, platforms: ["android"], capabilities: ["android"] });
 
   const calls = [];
   const { options, logs } = makeOptions(runtime, inv, {

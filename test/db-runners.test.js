@@ -209,7 +209,8 @@ test("claimRegressionTask: 最旧可领 pending → claimed（端子集条件）
     const claimed = await store.claimRegressionTask({
       rootPath: "/w/p1",
       runnerId: "r-android",
-      platforms: ["android"]
+      platforms: ["android"],
+      capabilities: ["android"]
     });
     assert.ok(claimed);
     assert.equal(claimed.id, androidTask.id, "最旧可领");
@@ -221,7 +222,8 @@ test("claimRegressionTask: 最旧可领 pending → claimed（端子集条件）
       await store.claimRegressionTask({
         rootPath: "/w/p1",
         runnerId: "r-android",
-        platforms: ["android"]
+        platforms: ["android"],
+        capabilities: ["android"]
       }),
       null,
       "ios-only 任务缺端不领"
@@ -230,7 +232,8 @@ test("claimRegressionTask: 最旧可领 pending → claimed（端子集条件）
     const dual = await store.claimRegressionTask({
       rootPath: "/w/p1",
       runnerId: "r-dual",
-      platforms: ["ios", "android"]
+      platforms: ["ios", "android"],
+      capabilities: ["ios-simulator", "android"]
     });
     assert.ok(dual);
     assert.equal(dual.id, iosTask.id);
@@ -240,7 +243,8 @@ test("claimRegressionTask: 最旧可领 pending → claimed（端子集条件）
       await store.claimRegressionTask({
         rootPath: "/w/p1",
         runnerId: "r-late",
-        platforms: ["ios", "android"]
+        platforms: ["ios", "android"],
+        capabilities: ["ios-simulator", "android"]
       }),
       null,
       "全被领走 → null"
@@ -256,7 +260,8 @@ test("claimRegressionTask: 单任务被领后不复领（第二个 runner → nu
     const first = await store.claimRegressionTask({
       rootPath: "/w/p1",
       runnerId: "r-1",
-      platforms: ["android"]
+      platforms: ["android"],
+      capabilities: ["android"]
     });
     assert.ok(first);
     assert.equal(first.attempts, 0, "领取不累加 attempts");
@@ -264,7 +269,8 @@ test("claimRegressionTask: 单任务被领后不复领（第二个 runner → nu
       await store.claimRegressionTask({
         rootPath: "/w/p1",
         runnerId: "r-2",
-        platforms: ["android"]
+        platforms: ["android"],
+        capabilities: ["android"]
       }),
       null
     );
@@ -286,7 +292,8 @@ test("releaseRegressionTask: to='failed' 终态化；runnerId=null 仅命中 cla
     const claimedNormal = await store.claimRegressionTask({
       rootPath: "/w/p1",
       runnerId: "r-1",
-      platforms: ["android"]
+      platforms: ["android"],
+      capabilities: ["android"]
     });
     assert.equal(claimedNormal.id, normal.id);
 
@@ -327,7 +334,8 @@ test("claimRegressionTask: 无候选窗截断（>50 条缺端任务不饿死后�
     const claimed = await store.claimRegressionTask({
       rootPath: "/w/p1",
       runnerId: "r-android",
-      platforms: ["android"]
+      platforms: ["android"],
+      capabilities: ["android"]
     });
     assert.ok(claimed, "更晚的 android 任务不被头部缺端任务饿死");
     assert.equal(claimed.id, android.id);
@@ -343,7 +351,8 @@ test("claimRegressionTask: 无新参数 → 严格子集（不部分领取）", 
       await store.claimRegressionTask({
         rootPath: "/w/p1",
         runnerId: "r-android",
-        platforms: ["android"]
+        platforms: ["android"],
+        capabilities: ["android"]
       }),
       null,
       "无 allowPartial → 严格子集，部分交集不领"
@@ -364,6 +373,7 @@ test("claimRegressionTask: 完全覆盖优先（较新完全覆盖 vs 较旧部�
       rootPath: "/w/p1",
       runnerId: "r-self",
       platforms: ["android"],
+      capabilities: ["android"],
       onlineBefore,
       allowPartial: true
     });
@@ -383,6 +393,7 @@ test("claimRegressionTask 部分领取：无他者在线全覆盖 → 领最早�
       rootPath: "/w/p1",
       runnerId: "r-self",
       platforms: ["android"],
+      capabilities: ["android"],
       onlineBefore,
       allowPartial: true
     });
@@ -404,6 +415,7 @@ test("claimRegressionTask 部分领取：他者在线全覆盖 → null 等待",
       rootPath: "/w/p1",
       runnerId: "r-self",
       platforms: ["android"],
+      capabilities: ["android"],
       onlineBefore,
       allowPartial: true
     });
@@ -425,6 +437,7 @@ test("claimRegressionTask 部分领取：self 自身 runner 行不阻塞（排�
       rootPath: "/w/p1",
       runnerId: self.id,
       platforms: ["android"],
+      capabilities: ["android"],
       onlineBefore,
       allowPartial: true
     });
@@ -444,6 +457,7 @@ test("claimRegressionTask: allowPartial:false 或 onlineBefore 缺省 → 严格
         rootPath: "/w/p1",
         runnerId: "r-android",
         platforms: ["android"],
+        capabilities: ["android"],
         onlineBefore,
         allowPartial: false
       }),
@@ -455,6 +469,7 @@ test("claimRegressionTask: allowPartial:false 或 onlineBefore 缺省 → 严格
         rootPath: "/w/p1",
         runnerId: "r-android",
         platforms: ["android"],
+        capabilities: ["android"],
         allowPartial: true
       }),
       null,
@@ -475,6 +490,7 @@ test("claimRegressionTask 部分领取：交集 0 → null", async () => {
         rootPath: "/w/p1",
         runnerId: "r-android",
         platforms: ["android"],
+        capabilities: ["android"],
         onlineBefore,
         allowPartial: true
       }),
@@ -495,6 +511,7 @@ test("claimRegressionTask 部分领取：已被领取后不复领（CAS）", asy
       rootPath: "/w/p1",
       runnerId: "r-1",
       platforms: ["android"],
+      capabilities: ["android"],
       onlineBefore,
       allowPartial: true
     });
@@ -505,6 +522,7 @@ test("claimRegressionTask 部分领取：已被领取后不复领（CAS）", asy
         rootPath: "/w/p1",
         runnerId: "r-2",
         platforms: ["android"],
+        capabilities: ["android"],
         onlineBefore,
         allowPartial: true
       }),
@@ -523,12 +541,14 @@ test("release 语义：全量仅释放自己；单任务守卫（他人/已终�
     const mine = await store.claimRegressionTask({
       rootPath: "/w/p1",
       runnerId: "r-me",
-      platforms: ["android"]
+      platforms: ["android"],
+      capabilities: ["android"]
     });
     const theirs = await store.claimRegressionTask({
       rootPath: "/w/p1",
       runnerId: "r-other",
-      platforms: ["android"]
+      platforms: ["android"],
+      capabilities: ["android"]
     });
     assert.ok(mine && theirs);
 
@@ -555,7 +575,7 @@ test("release 语义：全量仅释放自己；单任务守卫（他人/已终�
     assert.equal(reMine.claimedAt, null);
     assert.equal(reTheirs.status, "claimed", "他人持有不动");
 
-    await store.claimRegressionTask({ rootPath: "/w/p1", runnerId: "r-me", platforms: ["android"] });
+    await store.claimRegressionTask({ rootPath: "/w/p1", runnerId: "r-me", platforms: ["android"], capabilities: ["android"] });
     assert.equal(
       await store.releaseRegressionTask({
         rootPath: "/w/p1",
@@ -586,7 +606,8 @@ test("updateRegressionTask: 键缺省不动 / null 显式置空；status-only �
     const claimed = await store.claimRegressionTask({
       rootPath: "/w/p1",
       runnerId: "r-1",
-      platforms: ["android"]
+      platforms: ["android"],
+      capabilities: ["android"]
     });
     assert.ok(claimed);
 
@@ -629,7 +650,8 @@ test("存量库迁移：旧 regression_tasks 缺 claimed_by/claimed_at → init 
   const claimed = await store.claimRegressionTask({
     rootPath: "/w/p1",
     runnerId: "r-legacy",
-    platforms: ["android"]
+    platforms: ["android"],
+    capabilities: ["android"]
   });
   assert.ok(claimed, "补列后可领取");
   assert.equal(claimed.status, "claimed");
@@ -650,7 +672,8 @@ async function seedClaimed(store, rootPath, { claimedBy, claimedAt, status = "cl
   const claimed = await store.claimRegressionTask({
     rootPath,
     runnerId: claimedBy ?? "seed-runner",
-    platforms: ["android"]
+    platforms: ["android"],
+    capabilities: ["android"]
   });
   await store.updateRegressionTask(rootPath, claimed.id, {
     status,

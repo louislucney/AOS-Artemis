@@ -210,3 +210,57 @@ test("createRegressionTask 落盘新增字段：targetHostId/createdHostId/prior
     assert.equal(reread.priority, 7);
   }
 });
+
+test("部分领取：capabilities 只覆盖交集端（android 能力可领 dual 任务的 android 部分）", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/a", name: "a" });
+    const onlineBefore = new Date(Date.now() - 60_000).toISOString();
+    const dual = await store.createRegressionTask(taskInput({ platforms: ["android", "ios"] }));
+    const claimed = await store.claimRegressionTask({
+      rootPath: "/w/a",
+      runnerId: "r-android",
+      hostId: "h-a",
+      instanceId: "i-a",
+      platforms: ["android"],
+      capabilities: ["android"],
+      onlineBefore,
+      allowPartial: true
+    });
+    assert.ok(claimed, "android 能力可部分领取 android 端");
+    assert.equal(claimed.id, dual.id);
+    assert.equal(claimed.status, "claimed");
+  }
+});
+
+test("能力门禁 fail-closed：capabilities 空/缺失 → iOS 任务领不到", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/a", name: "a" });
+    const task = await store.createRegressionTask(taskInput({ platforms: ["ios"] }));
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/a",
+        runnerId: "r-x",
+        hostId: "h-x",
+        instanceId: "i-x",
+        platforms: ["ios"],
+        capabilities: []
+      }),
+      null,
+      "空 capabilities → fail-closed"
+    );
+    assert.equal(
+      await store.claimRegressionTask({
+        rootPath: "/w/a",
+        runnerId: "r-x",
+        hostId: "h-x",
+        instanceId: "i-x",
+        platforms: ["ios"]
+      }),
+      null,
+      "缺 capabilities → fail-closed"
+    );
+    assert.equal((await store.getRegressionTask("/w/a", task.id)).status, "pending");
+  }
+});

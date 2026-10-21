@@ -405,11 +405,12 @@ export class MemoryStore implements ProjectStore {
     allowPartial?: boolean;
     hostId?: string;
     instanceId?: string;
-    capabilities?: string[];
+    capabilities: string[];
   }): Promise<RegressionTaskRecord | null> {
     const project = this.getProjectRecord(input.rootPath);
     if (!project) return null;
     const hostId = input.hostId ?? null;
+    const capabilities = input.capabilities ?? [];
     const candidates = this.regressionTasks
       .filter(
         (task) =>
@@ -422,7 +423,7 @@ export class MemoryStore implements ProjectStore {
       (task) =>
         task.platforms.length > 0 &&
         task.platforms.every((platform) => input.platforms.includes(platform)) &&
-        capabilitiesSatisfyPlatforms(input.capabilities, task.platforms)
+        capabilitiesSatisfyPlatforms(capabilities, task.platforms)
     );
     let match = fullMatch;
     if (!match && input.allowPartial === true && input.onlineBefore !== undefined) {
@@ -436,11 +437,11 @@ export class MemoryStore implements ProjectStore {
         )
         .map((runner) => runner.platforms);
       for (const task of candidates) {
-        if (!capabilitiesSatisfyPlatforms(input.capabilities, task.platforms)) continue;
         const intersection = task.platforms.filter((platform) =>
           input.platforms.includes(platform)
         );
         if (intersection.length === 0) continue;
+        if (!capabilitiesSatisfyPlatforms(capabilities, intersection)) continue;
         const coveredByOther = otherOnline.some((platforms) =>
           task.platforms.every((platform) => platforms.includes(platform))
         );
@@ -471,7 +472,13 @@ export class MemoryStore implements ProjectStore {
       (entry) => entry.projectId === project.id && entry.id === input.taskId
     );
     if (!task) return null;
-    if (task.status !== "claimed" || task.claimedInstanceId !== input.instanceId) return null;
+    if (
+      task.status !== "claimed" ||
+      task.claimedBy !== input.runnerId ||
+      task.claimedInstanceId !== input.instanceId
+    ) {
+      return null;
+    }
     task.status = "running";
     task.attempts += 1;
     task.startedAt = input.at ?? new Date().toISOString();
@@ -488,6 +495,9 @@ export class MemoryStore implements ProjectStore {
       task.status = "pending";
       task.claimedBy = null;
       task.claimedAt = null;
+      task.claimedHostId = null;
+      task.claimedInstanceId = null;
+      task.startedAt = null;
       released += 1;
     }
     return released;
@@ -511,6 +521,9 @@ export class MemoryStore implements ProjectStore {
     task.status = input.to === "failed" ? "failed" : "pending";
     task.claimedBy = null;
     task.claimedAt = null;
+    task.claimedHostId = null;
+    task.claimedInstanceId = null;
+    task.startedAt = null;
     return true;
   }
 
@@ -538,6 +551,9 @@ export class MemoryStore implements ProjectStore {
       task.status = "pending";
       task.claimedBy = null;
       task.claimedAt = null;
+      task.claimedHostId = null;
+      task.claimedInstanceId = null;
+      task.startedAt = null;
       released += 1;
     }
     return released;

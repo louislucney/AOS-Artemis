@@ -544,7 +544,7 @@ test("suite task release：离线/未知执行机 → 重置；在线未 --force
     });
 
   const offlineTask = await mk();
-  await store.claimRegressionTask({ rootPath, runnerId: "r-ghost", platforms: ["android"] });
+  await store.claimRegressionTask({ rootPath, runnerId: "r-ghost", platforms: ["android"], capabilities: ["android"] });
 
   const onlineTask = await mk();
   const runner = await store.upsertRunner({
@@ -555,7 +555,7 @@ test("suite task release：离线/未知执行机 → 重置；在线未 --force
     devices: [],
     tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false }
   });
-  await store.claimRegressionTask({ rootPath, runnerId: runner.id, platforms: ["android"] });
+  await store.claimRegressionTask({ rootPath, runnerId: runner.id, platforms: ["android"], capabilities: ["android"] });
 
   const refused = await runCli(runtime, ["task", "release", onlineTask.id]);
   assert.equal(refused.code, 2);
@@ -661,7 +661,8 @@ test("claimed 任务可手动执行（不因领取状态阻塞，契约锁）", 
   await store.claimRegressionTask({
     rootPath: runtime.project.rootDir,
     runnerId: "r-ghost",
-    platforms: ["android"]
+    platforms: ["android"],
+    capabilities: ["android"]
   });
   assert.equal(
     (await store.getRegressionTask(runtime.project.rootDir, tasks[0].id)).status,

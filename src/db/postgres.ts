@@ -949,11 +949,12 @@ export class PostgresStore implements ProjectStore {
     allowPartial?: boolean;
     hostId?: string;
     instanceId?: string;
-    capabilities?: string[];
+    capabilities: string[];
   }): Promise<RegressionTaskRecord | null> {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) return null;
     const hostId = input.hostId ?? null;
+    const capabilities = input.capabilities ?? [];
     const candidates = await this.pool.query(
       `SELECT id, platforms FROM regression_tasks
         WHERE project_id = $1 AND status = 'pending'
@@ -967,7 +968,7 @@ export class PostgresStore implements ProjectStore {
       return (
         taskPlatforms.length > 0 &&
         taskPlatforms.every((platform) => input.platforms.includes(platform)) &&
-        capabilitiesSatisfyPlatforms(input.capabilities, taskPlatforms)
+        capabilitiesSatisfyPlatforms(capabilities, taskPlatforms)
       );
     });
     let match = fullMatch;
@@ -982,11 +983,11 @@ export class PostgresStore implements ProjectStore {
         .map((row) => parseStringArray(row.platforms));
       for (const row of rows) {
         const taskPlatforms = parseStringArray(row.platforms);
-        if (!capabilitiesSatisfyPlatforms(input.capabilities, taskPlatforms)) continue;
         const intersection = taskPlatforms.filter((platform) =>
           input.platforms.includes(platform)
         );
         if (intersection.length === 0) continue;
+        if (!capabilitiesSatisfyPlatforms(capabilities, intersection)) continue;
         const coveredByOther = otherOnline.some((platforms) =>
           taskPlatforms.every((platform) => platforms.includes(platform))
         );
@@ -1020,9 +1021,10 @@ export class PostgresStore implements ProjectStore {
     const updated = await this.pool.query(
       `UPDATE regression_tasks
           SET status = 'running', attempts = attempts + 1, started_at = $3
-        WHERE project_id = $1 AND id = $2 AND status = 'claimed' AND claimed_instance_id = $4
+        WHERE project_id = $1 AND id = $2 AND status = 'claimed'
+          AND claimed_instance_id = $4 AND claimed_by = $5
       RETURNING *`,
-      [project.id, input.taskId, input.at ?? new Date().toISOString(), input.instanceId]
+      [project.id, input.taskId, input.at ?? new Date().toISOString(), input.instanceId, input.runnerId]
     );
     if (updated.rows.length === 0) return null;
     return mapRegressionTask(updated.rows[0]!);
@@ -1033,7 +1035,8 @@ export class PostgresStore implements ProjectStore {
     if (!project) return 0;
     const released = await this.pool.query(
       `UPDATE regression_tasks
-          SET status = 'pending', claimed_by = NULL, claimed_at = NULL
+          SET status = 'pending', claimed_by = NULL, claimed_at = NULL,
+              claimed_host_id = NULL, claimed_instance_id = NULL, started_at = NULL
         WHERE project_id = $1 AND claimed_by = $2 AND status IN ('claimed', 'running')
       RETURNING id`,
       [project.id, input.runnerId]
@@ -1058,7 +1061,8 @@ export class PostgresStore implements ProjectStore {
     }
     const released = await this.pool.query(
       `UPDATE regression_tasks
-          SET status = '${target}', claimed_by = NULL, claimed_at = NULL
+          SET status = '${target}', claimed_by = NULL, claimed_at = NULL,
+              claimed_host_id = NULL, claimed_instance_id = NULL, started_at = NULL
         WHERE project_id = $1 AND id = $2 AND ${runnerClause} AND status IN ('claimed', 'running')
       RETURNING id`,
       values
@@ -1075,7 +1079,8 @@ export class PostgresStore implements ProjectStore {
     if (!project) return 0;
     const released = await this.pool.query(
       `UPDATE regression_tasks
-          SET status = 'pending', claimed_by = NULL, claimed_at = NULL
+          SET status = 'pending', claimed_by = NULL, claimed_at = NULL,
+              claimed_host_id = NULL, claimed_instance_id = NULL, started_at = NULL
         WHERE project_id = $1
           AND status IN ('claimed', 'running', 'stopping')
           AND claimed_at IS NOT NULL AND claimed_at <= $2

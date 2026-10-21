@@ -293,7 +293,7 @@ export class FileStore implements ProjectStore {
     allowPartial?: boolean;
     hostId?: string;
     instanceId?: string;
-    capabilities?: string[];
+    capabilities: string[];
   }): Promise<RegressionTaskRecord | null> {
     const bucket = await this.bucket(input.rootPath);
     const record = await this.scopedMem(bucket, this.hostId).claimRegressionTask(input);

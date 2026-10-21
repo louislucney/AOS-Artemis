@@ -1129,7 +1129,8 @@ test("panel web: 任务页 已领取/在线标记/刷新/无端覆盖提示", as
   await store.claimRegressionTask({
     rootPath: projectDir,
     runnerId: runner.id,
-    platforms: ["android"]
+    platforms: ["android"],
+    capabilities: ["android"]
   });
 
   const html = await handlePanelRequest(
@@ -1257,7 +1258,8 @@ test("panel web: 产物链接（任务页/归因队列；无 runner → 纯路�
   await store.claimRegressionTask({
     rootPath: projectDir,
     runnerId: runner.id,
-    platforms: ["android"]
+    platforms: ["android"],
+    capabilities: ["android"]
   });
 
   const html = await handlePanelRequest(

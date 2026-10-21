@@ -931,7 +931,7 @@ test("panel detail: 任务详情 runner 匹配（claimedBy=runner id；未领取
     devices: [],
     tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false }
   });
-  await store.claimRegressionTask({ rootPath: dir, runnerId: runner.id, platforms: ["android"] });
+  await store.claimRegressionTask({ rootPath: dir, runnerId: runner.id, platforms: ["android"], capabilities: ["android"] });
   const deps = {
     store,
     serviceRepo: repo,
@@ -1067,7 +1067,7 @@ test("panel detail: 产物链接（manifestUrl/jsonUrl/xlsxUrl/evidenceUrl；无
     tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false },
     artifactBaseUrl: "http://mac-1:8770"
   });
-  await store.claimRegressionTask({ rootPath: dir, runnerId: runner.id, platforms: ["android"] });
+  await store.claimRegressionTask({ rootPath: dir, runnerId: runner.id, platforms: ["android"], capabilities: ["android"] });
 
   const detail = await buildPanelTaskDetail(deps, dir, task.id);
   assert.equal(detail.runner.name, "r-1");
