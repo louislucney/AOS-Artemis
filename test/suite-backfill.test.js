@@ -27,7 +27,7 @@ async function makeRuntime(store, dir) {
     proxy: new SuiteProxy({ running: false }),
     store
   });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+  await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
   return runtime;
 }
 

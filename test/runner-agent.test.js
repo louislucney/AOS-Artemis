@@ -51,8 +51,7 @@ async function setupFixture() {
   const dir = makeTempProject({ config: baseConfig() });
   const store = new MemoryStore();
   const { runtime } = await loadTestRuntime(dir, { store });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
-  return { dir, runtime, store, inventory: inventory() };
+  return { dir, runtime, store: runtime.store, inventory: inventory() };
 }
 
 function makeOptions(runtime, inv, overrides = {}) {
@@ -958,4 +957,44 @@ test("回收：非法 AOS_RUNNER_STALE_CLAIM_MS → 回退 900000（非关闭）
     offlineBefore: new Date(RECLAIM_NOW - 90_000).toISOString(),
     claimedBefore: new Date(RECLAIM_NOW - 900_000).toISOString()
   });
+});
+
+test("心跳失败不跳过租约续期：单次心跳异常仍续租并在丢失时置 leaseLost", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  await store.createRegressionTask(taskInput(rootPath));
+  const original = store.upsertRunner.bind(store);
+  let heartbeats = 0;
+  store.upsertRunner = async (input) => {
+    heartbeats += 1;
+    if (heartbeats >= 2) throw new Error("hb down");
+    return original(input);
+  };
+  let renewCalls = 0;
+  store.renewDeviceLeases = async (input) => {
+    renewCalls += 1;
+    return 0;
+  };
+  const state = { stop: false, aborted: false };
+  const { options, errors } = makeOptions(runtime, inv, {
+    once: false,
+    heartbeatMs: 1,
+    shouldStop: () => state.stop,
+    executeSuite: async (_argv, execOptions) => {
+      const deadline = Date.now() + 2_000;
+      while (!execOptions?.shouldAbort?.() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      state.aborted = execOptions?.shouldAbort?.() === true;
+      state.stop = true;
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.ok(heartbeats >= 2, "心跳确实失败过");
+  assert.ok(renewCalls >= 1, "心跳失败后仍尝试续租");
+  assert.equal(state.aborted, true, "续租丢失 → leaseLost 让执行器中止");
+  assert.ok(errors.some((line) => line.includes("心跳失败")), "心跳失败有日志");
+  assert.ok(errors.some((line) => line.includes("设备租约丢失")), "租约丢失有日志");
 });

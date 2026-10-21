@@ -527,6 +527,18 @@ export class FileStore implements ProjectStore {
     return this.scopedMem(bucket, this.hostId).listRunners(rootPath, limit);
   }
 
+  async markRunnerStopped(input: {
+    rootPath: string;
+    runnerId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<boolean> {
+    const bucket = await this.bucket(input.rootPath);
+    const stopped = await this.scopedMem(bucket, this.hostId).markRunnerStopped(input);
+    if (stopped) await this.persist(bucket, "markRunnerStopped");
+    return stopped;
+  }
+
   async upsertHost(input: UpsertHostInput): Promise<HostRecord> {
     await this.syncHostFromDisk();
     const record = await this.hostMem.upsertHost(input);

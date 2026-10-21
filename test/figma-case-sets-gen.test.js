@@ -201,7 +201,7 @@ test("figma_generate_tests: 子集归档 JSON 的 feedback 与 markdown 同源�
   const dir = makeFlowsProject(pagedFlowDocument(), true);
   const store = new MemoryStore();
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy(), store });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+  await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
 
   const first = parseToolResult(await figmaGenerateTests(runtime, { save: false }, { now: NOW, chat: null }));
   const keyByName = new Map(first.features.map((entry) => [entry.name, entry.key]));

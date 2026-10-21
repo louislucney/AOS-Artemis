@@ -67,7 +67,7 @@ export function upsertHostInputFromSnapshot(
   };
 }
 
-function selfReportedAddresses(
+export function selfReportedAddresses(
   networkInterfaces: () => NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces
 ): HostAddressInput[] {
   const interfaces = networkInterfaces();
@@ -102,7 +102,7 @@ function isLoopback(address: string, family: HostAddressInput["family"]): boolea
   return address === "::1";
 }
 
-function primaryIp(addresses: HostAddressInput[]): string | null {
+export function primaryIp(addresses: HostAddressInput[]): string | null {
   return (
     addresses.find((entry) => entry.family === "ipv4")?.address ??
     addresses.find((entry) => entry.family === "ipv6")?.address ??

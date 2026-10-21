@@ -6,16 +6,9 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { MemoryStore } from "../dist/db/memory.js";
 import { closeLogging, configureLogging } from "../dist/log.js";
 import { createServerForRuntime } from "../dist/server.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, StubProxy } from "./helpers.js";
-
-class ThrowingUsageStore extends MemoryStore {
-  async recordUsageEvent() {
-    throw new Error("pg down");
-  }
-}
 
 async function makeHarness({ store, baseEnv, proxy } = {}) {
   const dir = makeTempProject({
@@ -126,7 +119,10 @@ test("usage server: validation failures and unknown tools count; aos_usage is ex
 test("usage server: a throwing store only logs a warning and never affects the result", async () => {
   const logDir = makeTempDir("aos-usage-log-");
   configureLogging({ logDir, echo: false });
-  const harness = await makeHarness({ store: new ThrowingUsageStore() });
+  const harness = await makeHarness();
+  harness.runtime.store.recordUsageEvent = async () => {
+    throw new Error("pg down");
+  };
   try {
     const result = await harness.client.callTool({ name: "llm_list", arguments: {} });
     assert.notEqual(result.isError, true);

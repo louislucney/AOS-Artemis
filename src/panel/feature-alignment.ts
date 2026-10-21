@@ -176,7 +176,7 @@ function collectUnits(project: FeatureAlignmentInput): FeatureUnit[] {
 
 function mergeProjectFeatures(project: FeatureAlignmentInput): FeatureAccumulator[] {
   const merged = new Map<string, FeatureAccumulator>();
-  const projectKey = `${project.name}\u0000${project.rootPath}`;
+  const projectKey = `${project.hostId ?? ""}\u0000${project.name}\u0000${project.rootPath}`;
   const projectLabel =
     project.hostId === undefined ||
     project.hostId === null ||

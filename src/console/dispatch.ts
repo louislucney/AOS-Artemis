@@ -119,17 +119,32 @@ export function precheckTask(
   const reasons: string[] = [];
   let ok = true;
   const capabilities = new Set(host.capabilities);
+  const hasCapabilities = host.capabilities.length > 0;
+  let warnedNoRunner = false;
+  const warnNoRunner = (): void => {
+    if (warnedNoRunner) return;
+    warnedNoRunner = true;
+    reasons.push("该主机尚无执行机上报，任务会排队等待");
+  };
   if (platforms.includes("ios")) {
     const macLike = host.osPlatform === "darwin" || host.kind === "mac";
     const iosCapable = [...capabilities].some((capability) => capability.startsWith("ios-"));
-    if (!macLike || !iosCapable) {
+    if (!macLike) {
+      reasons.push("iOS 需要 macOS 或 iOS 能力");
+      ok = false;
+    } else if (!hasCapabilities) {
+      warnNoRunner();
+    } else if (!iosCapable) {
       reasons.push("iOS 需要 macOS 或 iOS 能力");
       ok = false;
     }
   }
-  if (platforms.includes("android") && !capabilities.has("android")) {
-    reasons.push("Android 需要目标主机具备 Android 能力");
-    ok = false;
+  if (platforms.includes("android")) {
+    if (!hasCapabilities) warnNoRunner();
+    else if (!capabilities.has("android")) {
+      reasons.push("Android 需要目标主机具备 Android 能力");
+      ok = false;
+    }
   }
   if (!host.online) reasons.push("目标主机离线，任务会排队等待");
   return { ok, reasons };

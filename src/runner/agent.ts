@@ -136,12 +136,14 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         artifactBaseUrl: options.artifactBaseUrl ?? null,
         version: AOS_MCP_VERSION,
         hostId,
-        instanceId
+        instanceId,
+        activeWithinMs: runnerTtlMs
       });
     };
 
     await refreshInventory();
     let me: RunnerRecord;
+    let runnerId: string | null = null;
     try {
       me = await heartbeat();
     } catch (error) {
@@ -152,6 +154,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
       }
       return 2;
     }
+    runnerId = me.id;
     io.log(
       `[runner] 启动：name=${name} project=${rootPath}（端 ${inventory.platforms.join(",") || "无"}）`
     );
@@ -216,7 +219,11 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     };
 
     const tick = async (): Promise<void> => {
-      await heartbeat();
+      try {
+        await heartbeat();
+      } catch (error) {
+        io.errorLog(`[runner] 心跳失败：${errorMessage(error)}`);
+      }
       const current = active;
       if (current === null) return;
       const at = new Date(now()).toISOString();
@@ -518,6 +525,17 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     } finally {
       stopHeartbeat = true;
       await settleWithin(heartbeatTask, 2_000);
+      if (runnerId !== null) {
+        try {
+          await store.markRunnerStopped({
+            rootPath,
+            runnerId,
+            instanceId
+          });
+        } catch (error) {
+          io.errorLog(`[runner] 标记停止失败：${errorMessage(error)}`);
+        }
+      }
     }
   } finally {
     await bundle.dispose();

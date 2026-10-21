@@ -58,7 +58,7 @@ async function setupRun({ cases = [caseEntry(1)], statuses = {}, store, running 
     fs.writeFileSync(path.join(designDir, "tests.json"), JSON.stringify({ flows: cases }));
     fs.writeFileSync(path.join(designDir, "tests.xlsx"), "fake-xlsx");
   }
-  return { dir, runtime, store: projectStore, proxy };
+  return { dir, runtime, store: runtime.store, proxy };
 }
 
 function writeStatus(runtime, traceId, payload) {
@@ -1494,7 +1494,7 @@ test("suite run: 指向归档 JSON 时解析份血统并写对比（修复）", 
   const proxy = new SuiteProxy({ statuses: { "trace-1": { status: "completed" } }, running: true });
   const crashCollector = { collect: async () => ({ status: "skipped", reason: "disabled" }) };
   const { runtime } = await loadTestRuntime(dir, { proxy, store, crashCollector });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+  await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
   const design = path.join(runtime.configDirAbs, "design");
   const archiveDir = path.join(design, "case-sets");
   fs.mkdirSync(archiveDir, { recursive: true });

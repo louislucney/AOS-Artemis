@@ -33,8 +33,8 @@ test("project name: incidental LLM writes do not overwrite the display name", as
   });
   const store = await makePgStore();
   try {
-    await loadTestRuntime(dir, { store });
-    await store.upsertLlm(dir, {
+    const { runtime } = await loadTestRuntime(dir, { store });
+    await runtime.store.upsertLlm(dir, {
       name: "incidental",
       provider: "custom",
       model: "deepseek-chat"

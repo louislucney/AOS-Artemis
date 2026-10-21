@@ -31,7 +31,7 @@ async function setupProject({ statuses = {} } = {}) {
     proxy: new SuiteProxy({ statuses, running: true }),
     store
   });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+  await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
   return { dir, store, runtime, rootPath: runtime.project.rootDir };
 }
 

@@ -403,6 +403,9 @@ export interface UpsertRunnerInput {
 /** runner 双启保护活跃窗口默认值。 */
 export const RUNNER_ACTIVE_DEFAULT_MS = 90_000;
 
+/** 优雅停机的 runner 行时间戳：置为纪元，确保下一个实例立即判定为陈旧并接管。 */
+export const STOPPED_RUNNER_SEEN_AT = "1970-01-01T00:00:00.000Z";
+
 export interface DeviceLeaseRecord {
   hostId: string;
   serial: string;
@@ -836,6 +839,13 @@ export interface ProjectStore {
   ): Promise<{ runs: string | null; caseSets: string | null }>;
   upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord>;
   listRunners(rootPath: string, limit?: number): Promise<RunnerRecord[]>;
+  /** 优雅停机：把本实例的 runner 行标记为陈旧（last_seen_at 置早），下一个实例可立即接管。 */
+  markRunnerStopped(input: {
+    rootPath: string;
+    runnerId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<boolean>;
   upsertHost(input: UpsertHostInput): Promise<HostRecord>;
   getHost(id: string): Promise<HostRecord | null>;
   listHosts(): Promise<HostRecord[]>;

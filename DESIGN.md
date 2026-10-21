@@ -2112,9 +2112,9 @@ llm_switch(name, force):
 **主机身份与三层信号**
 
 - 身份解析 `resolveHostIdentity`（`src/host/identity.ts`）：`AOS_HOST_ID`（`identitySource=env`）→ `AOS_HOST_DIR` 下 `host-id` 文件（`file`，默认 `~/.aos`，`randomUUID` 原子写 0600）→ 派生 ID（`derived`，硬件/主机名/用户名哈希；目录不可写时稳定但**不可迁移**，序列化/换机前须显式指定 `AOS_HOST_ID`）。
-- `hosts` 行由 runner 心跳、`suite queue pause/resume` 与面板 `hosts/register` 创建/更新；仅开本地 MCP（无 runner）不会写 `hosts` 行（见「已知限制」）。任何路径都**不自动认领**历史 `host_id IS NULL` 数据（认领只走显式 `host adopt-legacy`）。IP 历史写 `host_addresses`（按 `(source, iface, family, address)` upsert，变更不产生新主机；共享 IP 仅告警），`ip_primary` 只做展示。
+- `hosts` 行由 runner 心跳、本地 MCP 接入心跳（`startClientSession` 起即 upsert `hosts`）、`suite queue pause/resume` 与面板 `hosts/register` 创建/更新；**仅开本地 MCP（无 runner）也会出现主机视图**（IDE 在线、能力为空）。任何路径都**不自动认领**历史 `host_id IS NULL` 数据（认领只走显式 `host adopt-legacy`）。IP 历史写 `host_addresses`（按 `(source, iface, family, address)` upsert，变更不产生新主机；共享 IP 仅告警），`ip_primary` 只做展示。
 - 三层信号独立建模，不互相代替：
-  - **接入层**＝MCP 客户端会话：`host_sessions` + `hosts.client_seen_at`；stdio `initialize` 登记、工具调用按 `AOS_CLIENT_PRESENCE_MS` 节流刷新、退出写 `ended_at`；`AOS_CLIENT_TTL_MS` 内为「IDE 在线」。只回答「谁在本机开着客户端」，**不参与领取/下发**。
+  - **接入层**＝MCP 客户端会话：`host_sessions` + `hosts.client_seen_at`；stdio `initialize` 登记、进程内 `AOS_CLIENT_PRESENCE_MS`（默认 30s，`unref`）空闲心跳 + 工具调用节流刷新、退出写 `ended_at`；`AOS_CLIENT_TTL_MS` 内为「IDE 在线」。只回答「谁在本机开着客户端」，**不参与领取/下发**；接入心跳不写 `capabilities`/`env`，避免把「IDE 在线」误当「可执行」。
   - **执行层**＝runner 心跳：以 `runners.last_seen_at` 经 `isRunnerOnline` + `AOS_RUNNER_TTL_MS` 判定；`hosts.runner_seen_at` 仅展示投影，不作为判定源。回答「这台机器现在能不能跑」。
   - **期望层**＝登记画像：`expected_os`/`expected_hostname` 与实际不符 → `drift` 文案；只提示、不拒绝任务。
   - 面板同时显示「IDE 在线」「执行机在线」，两者都离线才显示「离线」；下发预检只看执行层与能力/设备清单。
@@ -2122,9 +2122,9 @@ llm_switch(name, force):
 **项目身份与作用域**
 
 - `projects` 唯一身份＝`(host_id, root_path)`（旧全局 `root_path` 唯一约束已删除）。`host_id IS NULL` 为 legacy 历史行，面板显示「未归属主机」，**不参与定向下发**。
-- 作用域读写的唯一入口是 `ProjectStore.scopeHost(hostId)`（`null` → 未绑定视图）；跨主机同路径/同名项目互不串数据。
+- 作用域读写的唯一入口是 `ProjectStore.scopeHost(hostId)`（`null` → 未绑定视图）；跨主机同路径/同名项目互不串数据。`Runtime.initialize` 用 `baseStore.scopeHost(identity.id)` 生成本 Runtime 视图，**不改写注入的共享 store**（HTTP 多项目共享同一 store 时中心读/清扫仍以未绑定视图工作）。
 - 面板/动作层项目解析顺序：显式 `host`（缺省本机 `store.localHostId`）时先在该主机作用域内 `byPath` → `name`（路径须存在）；显式 `host` 仍未命中才回退 workspace 目录（结果附该 `host`）；仅本机 host 时作用域内未命中再走跨主机 unbound 匹配；**完全无** `host` 时才跨主机匹配（路径 → workspace → 名称），多行命中抛 `AmbiguousProjectError`（409 并列候选），**绝不取任意一行**。
-- 定向下发：任务写 `target_host_id`/`created_host_id` 与 `priority`（0–100）；领取顺序 `priority DESC, created_at ASC`。派发前 `precheckTask` 校验目标主机的 OS/工具/设备覆盖（iOS 需 darwin + `ios-*`），主机离线只告警、仍可入队等待。legacy NULL-host 项目不出现在任何主机的项目下拉；显式下发返回 409 并指引 `host adopt-legacy --local --apply`。
+- 定向下发：任务写 `target_host_id`/`created_host_id` 与 `priority`（0–100）；`created_host_id` 记**派发方**本机（中心/本地 CLI/面板所在主机，未绑定则为空），`target_host_id` 缺省由项目 `host_id` 派生。领取顺序 `priority DESC, created_at ASC`。派发前 `precheckTask` 校验目标主机的 OS/工具/设备覆盖（iOS 需 darwin + `ios-*`）；能力为空的主机（尚无执行机上报）只告警「任务会排队等待」而不硬拒绝，主机离线只告警、仍可入队等待。legacy NULL-host 项目不出现在任何主机的项目下拉；显式下发返回 409 并指引 `host adopt-legacy --local --apply`。
 - 远端任务：`suite task create --host <id|hostname> --project <rootPath>` 只连中心 PG、在目标主机作用域建任务；`list` 可汇总该主机已登记项目。手动 `suite run --task` 读取任务后校验 `targetHostId`/`claimedHostId` 必须匹配本机，否则 exit 2（任务不变更）。
 
 **队列控制**
@@ -2133,7 +2133,7 @@ llm_switch(name, force):
 - 取消入口：面板 `POST /panel/api/tasks/cancel`、CLI `suite task cancel`（本地 `source=local-cli`；`--host --project` 走中心、`source=panel`）、MCP `regression_task_cancel`（`source=local-mcp`，仅限本机本项目）。任务行写 `cancel_source/cancelled_by/cancelled_host_id/cancelled_at/cancel_note`，审计带 `actor/actor_host_id/channel`。
 - 清扫器 `sweepStaleTasks`：`stopping` 超过 `AOS_CANCEL_GRACE_MS` 且领取机 runner 离线/行缺失/实例已轮换 → CAS `cancelled`（备注追加 `; runner-offline` 或 `; legacy-stopping`）；在线且实例一致则保持；**绝不回退 `pending`**。runner 每 30s 扫本机项目；HTTP 服务与独立 `panel --web` 每 30s 以 `allHosts=true` 扫全部主机。无 leader 选举，CAS 幂等（中心先终结时 runner 的后续 CAS 返回 null）。
 - 队列暂停（Task 15）：`hosts.queue_paused` 为**整机**闸门，`claimRegressionTask` 在主机行暂停时直接返回 null；只阻断 runner 自动领取，手动执行与已领取/执行中任务不受影响。入口 `suite queue status|pause|resume` 与 `POST /panel/api/queue/pause|resume`。
-- 设备租约（Task 15）：`device_leases(host_id, serial)` 主键；领取顺序固定 `claim → 毒丸 → devices（任务端 ∩ 本机库存）→ acquireDeviceLeases → beginExecution → 执行`。租约单事务全有或全无（过期可抢占、同任务重入幂等），冲突返回 `{ok:false,busy}` → 任务释放回 `pending`、`attempts` 不增加、按 poll 间隔重试；执行 `finally` 释放。统一 30s tick 同时心跳、写 `last_progress_at`、续租本任务 serials；续租丢失/抛错即中止执行并释放领取。TTL `AOS_DEVICE_LEASE_MS`（默认 90000），心跳间隔自动收敛到 TTL/3。
+- 设备租约（Task 15）：`device_leases(host_id, serial)` 主键；领取顺序固定 `claim → 毒丸 → devices（任务端 ∩ 本机库存）→ acquireDeviceLeases → beginExecution → 执行`。租约单事务全有或全无（过期可抢占、同任务重入幂等），冲突返回 `{ok:false,busy}` → 任务释放回 `pending`、`attempts` 不增加、按 poll 间隔重试；执行 `finally` 释放。统一 30s tick 同时心跳、写 `last_progress_at`、续租本任务 serials；**心跳失败仍继续续租**，续租丢失/抛错即中止执行并释放领取。TTL `AOS_DEVICE_LEASE_MS`（默认 90000），心跳间隔自动收敛到 TTL/3。runner 优雅退出（SIGINT/TERM、`--once` 结束）把本实例行标记为陈旧（`last_seen_at` 置纪元），下一次启动可立即接管而不会被 90s 双启保护误挡；进程崩溃仍按 TTL 接管。
 
 **部署与迁移顺序（从单机/旧版本升级）**
 
@@ -2158,7 +2158,7 @@ llm_switch(name, force):
 | `AOS_HOST_DIR` | `~/.aos` | `host-id` 文件目录（`AOS_HOST_ID` 缺省时）；不可写则退化为派生 ID |
 | `AOS_HOST_ENV_REFRESH_MS` | 600000 | runner 主机环境快照刷新周期（心跳只带缓存快照） |
 | `AOS_CLIENT_TTL_MS` | 120000 | 接入会话在线判定窗口（`host_sessions`/`client_seen_at`） |
-| `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 接入心跳与工具调用刷新节流；`0` 关闭 presence（不写会话） |
+| `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 空闲接入心跳间隔与工具调用刷新节流；`0` 关闭 presence（不写会话/主机心跳） |
 | `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL；续租周期为其 1/3，runner 心跳同时收敛到该间隔 |
 | `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限；非法/≤0 回退默认 |
 | `AOS_HOST_STRICT` | 0 | **保留未接线**：严格拒绝无 `host_id` 的旧 runner，本期未实现（见下） |
@@ -2170,7 +2170,7 @@ llm_switch(name, force):
 - **文件台账是单主机视图**：`adoptProjectHost` 恒 false、项目行恒 `host_id=NULL`；`host`/`queue` 命令、主机/地址/会话/租约表均为 PG 专属（无 PG exit 2）；runner、定时回归、中心清扫同样要求中心 PG。文件台账只推荐单机使用。
 - **中心清扫跨主机**（`allHosts=true`）而 runner 只扫本机；中心可能先于离线 runner 终结任务（符合预期，CAS 保证只计一次）。
 - **旧 runner 行 `host_id NULL`**：保留旧唯一索引兼容，不参与定向领取；主机视图按 `runner.host_id` 分组，NULL 行被跳过（不归入任何主机）。需在该机升级并重启 runner 后由心跳补齐身份。`AOS_HOST_STRICT` 未接线，旧行不会被强制拒绝。
-- **仅开本地 MCP 的机器不出现主机视图**：`hosts` 行由 runner 心跳 / `queue pause|resume` / 面板 `hosts/register` 创建；`host_sessions` 与项目行仍写入 PG，但面板主机视图以 `listHosts()` 为准。机器至少启动过一次 runner 后即可见（不影响派发：无 runner 本就无法自动执行）。
+- **仅开本地 MCP 的机器已可见但不可执行**：接入心跳会创建 `hosts` 行并刷新 `client_seen_at`/IP，面板显示「IDE 在线」；`capabilities` 仍为空，下发只告警「任务会排队等待」，需 runner 上报后才进入执行。无 PG 时接入心跳静默跳过（文件台账仅单机语义）。
 - 队列暂停为**整机**粒度（无项目级/单任务暂停、无整机串行开关）；P4 的跨主机逻辑项目分组（`project_key`）与 HTTP 客户端记录（`project_clients`）未实现。
 - 面板 HTTP multipart 导入为**既有缺陷**（与多机无关）：`http-server` 只传 `rawBody`，动作层入口要求 JSON 对象 body，故 HTTP 下导入不可达；现有测试同时注入 body+rawBody 掩盖了该路径，待单独修复。
 - 同路径 legacy 行一旦被本机新版进程新建的行「占位」，`adopt-legacy` 将跳过（见迁移顺序第 2 步的注意事项），历史数据保留在 legacy 行、不并入新行。

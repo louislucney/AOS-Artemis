@@ -404,7 +404,7 @@ test("命令层接线: suite runner 以 env AOS_RUNNER_ARTIFACT_TOKEN 启动 →
   await store.init();
   const dir = makeTempProject({ config: baseConfig() });
   const { runtime } = await loadTestRuntime(dir, { store });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+  await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
   const artifactDir = path.join(runtime.project.rootDir, ".artemis", "design");
   fs.mkdirSync(artifactDir, { recursive: true });
   fs.writeFileSync(path.join(artifactDir, "note.json"), '{"ok":true}');

@@ -1536,7 +1536,7 @@ test("figma_generate_tests: 匹配的案例问题裁决进入 feedback.caseDefec
   assert.equal(first.feedback, undefined, "无裁决 → 无 feedback 字段");
   const featureKey = first.features[0].key;
 
-  await store.upsertProject({ rootPath: dir, name: "p" });
+  await runtime.store.upsertProject({ rootPath: dir, name: "p" });
   await store.recordSuiteRun({
     rootPath: dir,
     createdAt: "2026-10-14T10:05:00.000Z",

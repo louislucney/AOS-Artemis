@@ -126,6 +126,7 @@ export async function handlePanelActionRequest(
     const paused = request.url.pathname === "/panel/api/queue/pause";
     const hostRef = typeof payload.host === "string" ? payload.host.trim() : "";
     let response: PanelWebResponse;
+    let resolvedHostId: string | null = null;
     if (hostRef === "") {
       response = json(400, { error: "缺少 host" });
     } else {
@@ -139,6 +140,7 @@ export async function handlePanelActionRequest(
               })
             : json(404, { error: `未知主机 "${hostRef}"（先用 host list 查看已登记主机）` });
       } else {
+        resolvedHostId = lookup.host.id;
         const record = await deps.store.setHostQueuePaused({
           hostId: lookup.host.id,
           paused,
@@ -157,10 +159,10 @@ export async function handlePanelActionRequest(
       paused ? "action.queue.pause" : "action.queue.resume",
       response,
       {
-        ...(hostRef === "" ? {} : { hostId: hostRef }),
+        ...(resolvedHostId === null ? {} : { hostId: resolvedHostId }),
         ...(note === "" ? {} : { note })
       },
-      { actor: "panel", actorHostId: hostRef === "" ? null : hostRef, channel: "panel" }
+      { actor: "panel", actorHostId: resolvedHostId, channel: "panel" }
     );
     if (response.status === 200) deps.cache?.clear();
     return response;
@@ -194,7 +196,13 @@ export async function handlePanelActionRequest(
 
   try {
     if (request.url.pathname === "/panel/api/tasks") {
-      const response = await createTask(scopedDeps, resolved.rootPath, payload, resolved.hostId);
+      const response = await createTask(
+        scopedDeps,
+        resolved.rootPath,
+        payload,
+        resolved.hostId,
+        deps.store.localHostId ?? null
+      );
       if (response.status === 200) scopedDeps.cache?.clear();
       await auditPanel(scopedDeps, resolved.rootPath, "action.tasks", response);
       return response;
@@ -456,7 +464,8 @@ async function createTask(
   deps: PanelWebDeps,
   rootPath: string,
   payload: Record<string, unknown>,
-  resolvedHostId: string | null
+  resolvedHostId: string | null,
+  dispatcherHostId: string | null
 ): Promise<PanelWebResponse> {
   const hostParam = typeof payload.host === "string" ? payload.host.trim() : "";
   const explicitHost = hostParam !== "";
@@ -490,10 +499,11 @@ async function createTask(
   const stalePreview = await checkDispatchPreviewFreshness(deps, rootPath, payload);
   if (stalePreview !== null) return stalePreview;
   let targetStore = deps.store;
+  let targetProject: { hostId: string | null } | null = null;
   if (targetHost !== null) {
     targetStore = hostScopedStore(deps, targetHost.id);
-    const project = await targetStore.getProjectByPath(rootPath).catch(() => null);
-    if (!project) {
+    targetProject = await targetStore.getProjectByPath(rootPath).catch(() => null);
+    if (!targetProject) {
       return json(404, {
         error: `主机 "${targetHost.id}" 未登记项目 "${rootPath}"：请先在目标机接入项目`
       });
@@ -593,7 +603,9 @@ async function createTask(
   }
 
   const targetHostId =
-    targetHost?.id ?? (explicitHost ? null : (deps.store.localHostId ?? null));
+    targetHost?.id ??
+    targetProject?.hostId ??
+    (explicitHost ? null : (deps.store.localHostId ?? null));
   const task = await targetStore.createRegressionTask({
     rootPath,
     refs,
@@ -601,7 +613,7 @@ async function createTask(
     baseline,
     createdBy: "panel",
     targetHostId,
-    createdHostId: targetHostId,
+    createdHostId: dispatcherHostId,
     priority
   });
   return json(200, { ok: true, task, ...(warnings.length > 0 ? { warnings } : {}) });

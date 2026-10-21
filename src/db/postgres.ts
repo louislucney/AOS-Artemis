@@ -65,7 +65,8 @@ import {
   isRunnerActive,
   normalizeRegressionTask,
   RUNNER_ACTIVE_DEFAULT_MS,
-  RunnerAlreadyActiveError
+  RunnerAlreadyActiveError,
+  STOPPED_RUNNER_SEEN_AT
 } from "./types.js";
 import { buildAuditEvent, normalizeAuditLimit } from "./audit-event.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
@@ -1619,6 +1620,27 @@ export class PostgresStore implements ProjectStore {
       [project.id, limit]
     );
     return result.rows.map((row) => mapRunner(row));
+  }
+
+  async markRunnerStopped(input: {
+    rootPath: string;
+    runnerId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<boolean> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return false;
+    const result = await this.pool.query(
+      `UPDATE runners SET last_seen_at = $3
+        WHERE id = $1 AND project_id = $2 AND instance_id = $4`,
+      [
+        input.runnerId,
+        project.id,
+        input.at ?? STOPPED_RUNNER_SEEN_AT,
+        input.instanceId
+      ]
+    );
+    return Number(result.rowCount ?? 0) > 0;
   }
 
   async upsertHost(input: UpsertHostInput): Promise<HostRecord> {

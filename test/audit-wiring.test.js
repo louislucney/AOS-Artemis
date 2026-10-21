@@ -55,7 +55,7 @@ async function setupProject() {
   const dir = makeTempProject({ config: baseConfig() });
   const store = new MemoryStore();
   const { runtime } = await loadTestRuntime(dir, { store });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
+  await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
   return { runtime, store };
 }
 

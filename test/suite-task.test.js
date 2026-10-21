@@ -37,7 +37,6 @@ async function setupTaskProject({ statuses = {}, running = true } = {}) {
   const proxy = new SuiteProxy({ statuses, running });
   const crashCollector = { collect: async () => ({ status: "skipped", reason: "disabled" }) };
   const { runtime } = await loadTestRuntime(dir, { proxy, store, crashCollector });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
   const archiveDir = path.join(runtime.configDirAbs, "design", "case-sets");
   fs.mkdirSync(archiveDir, { recursive: true });
   const older = path.join(archiveDir, "20261010T090000_登录.json");
@@ -88,7 +87,7 @@ async function setupTaskProject({ statuses = {}, running = true } = {}) {
       { key: "f-下单-bbbb2222", name: "下单流程", caseCount: 3, screens: ["下单"], ...paths(other) }
     ]
   });
-  return { dir, runtime, store, proxy, older, newer, other, oldSet, newSet, otherSet };
+  return { dir, runtime, store: runtime.store, proxy, older, newer, other, oldSet, newSet, otherSet };
 }
 
 test("suite task create: 解析最新份并落库", async () => {
@@ -712,6 +711,8 @@ test("claimed 任务可手动执行（不因领取状态阻塞，契约锁）", 
   await store.claimRegressionTask({
     rootPath: runtime.project.rootDir,
     runnerId: "r-ghost",
+    hostId: runtime.hostIdentity.id,
+    instanceId: "i-ghost",
     platforms: ["android"],
     capabilities: ["android"]
   });

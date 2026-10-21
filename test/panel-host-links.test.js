@@ -386,7 +386,7 @@ test("对比表显示主机标签：同路径两主机可区分", async () => {
   assert.match(html, /MAC-B/);
 });
 
-test("功能对齐按 (host, path) 识别项目：同路径两主机不虚报 2 个项目", async () => {
+test("功能对齐按 (host, path) 识别项目：同路径两主机并列不折叠", async () => {
   const { store, root, dir } = makeHarness();
   await addHost(store, { id: HOST_A, hostname: "MAC-A", kind: "mac", osPlatform: "darwin" });
   await addHost(store, { id: HOST_B, hostname: "MAC-B", kind: "mac", osPlatform: "darwin" });
@@ -400,14 +400,15 @@ test("功能对齐按 (host, path) 识别项目：同路径两主机不虚报 2 
   await addFeatureRun(store, otherRoot, "h-c");
 
   const view = await buildPanelCompare(makeDeps(store));
-  assert.equal(view.featureAlignment.groups.length, 1, "A 与 C 是不同项目；B 与 A 同项目不另计");
+  assert.equal(view.featureAlignment.groups.length, 1, "同源同名功能全部并列");
   const group = view.featureAlignment.groups[0];
-  assert.equal(group.entries.length, 2);
+  assert.equal(group.entries.length, 3, "A/B 同 App 同路径、C 另一路径，三台主机各自一条");
   assert.deepEqual(
     group.entries.map((entry) => entry.project),
-    ["app · MAC-A", "app · MAC-C"],
-    "同路径两主机固定取 hostId 最小的代表标签"
+    ["app · MAC-A", "app · MAC-B", "app · MAC-C"],
+    "按 hostId 稳定排序，不折叠任何主机"
   );
+  assert.equal(view.featureAlignment.unmatched, 0);
 });
 
 test("总览按行主机作用域读台账：同路径不误报缺 LLM", async () => {

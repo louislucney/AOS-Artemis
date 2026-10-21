@@ -57,6 +57,7 @@ import type {
 } from "./db/types.js";
 import { writeEnvUpdates } from "./env-file.js";
 import { resolveHostIdentity, type HostIdentity } from "./host/identity.js";
+import { primaryIp, selfReportedAddresses } from "./runner/host-snapshot.js";
 import { ModelCatalog, type FetchLike, type ModelReport, type RefreshReport } from "./llm/catalog.js";
 import {
   entriesFromConfig,
@@ -90,6 +91,9 @@ export interface RuntimeOptions {
   appiumDetector?: () => Promise<AppiumDetection>;
   buildModuleUrl?: string;
   hostIdentity?: HostIdentity;
+  /** 接入心跳定时器（测试注入；缺省全局 setInterval/clearInterval）。 */
+  setInterval?: (callback: () => void, ms: number) => NodeJS.Timeout;
+  clearInterval?: (handle: NodeJS.Timeout) => void;
 }
 
 export interface ActivateResult {
@@ -124,7 +128,8 @@ export interface ModelPreflight {
 
 export class Runtime {
   readonly project: LoadedProject;
-  readonly store: ProjectStore;
+  /** 本 Runtime 的主机作用域视图；`initialize` 后与注入的共享 store 解耦（不改动共享实例）。 */
+  store: ProjectStore;
   readonly proxy: ArtemisProxyLike;
   readonly storeNote: string | null;
   readonly configDirAbs: string;
@@ -137,7 +142,10 @@ export class Runtime {
 
   private readonly buildModuleUrl: string;
   private readonly buildStartedAtMs: number;
-  private readonly baseEnv: NodeJS.ProcessEnv;
+  private readonly _baseEnv: NodeJS.ProcessEnv;
+  private readonly baseStore: ProjectStore;
+  private readonly timerSetInterval: (callback: () => void, ms: number) => NodeJS.Timeout;
+  private readonly timerClearInterval: (handle: NodeJS.Timeout) => void;
   private iosEnv: NodeJS.ProcessEnv;
   private scanResult: EnvScanResult;
   private projectRecord: ProjectRecord | null = null;
@@ -149,6 +157,7 @@ export class Runtime {
   private lastClient: { name: string; version?: string } | null = null;
   private lastClientPresenceAtMs = 0;
   private presenceStarted = false;
+  private presenceTimer: NodeJS.Timeout | null = null;
   private activationChain: Promise<unknown> = Promise.resolve();
   private crashScanChain: Promise<unknown> = Promise.resolve();
   private modelRefreshChain: Promise<unknown> = Promise.resolve();
@@ -175,6 +184,11 @@ export class Runtime {
     return this._hostIdentity;
   }
 
+  /** 宿主进程/项目环境（TTL 等运行时配置读取用，避免误读全局 process.env）。 */
+  get baseEnv(): NodeJS.ProcessEnv {
+    return this._baseEnv;
+  }
+
   constructor(project: LoadedProject, options: RuntimeOptions = {}) {
     try {
       project.rootDir = fs.realpathSync.native(project.rootDir);
@@ -182,12 +196,15 @@ export class Runtime {
       /* keep the resolved path when realpath is unavailable */
     }
     this.project = project;
-    this.store = options.store ?? new MemoryStore();
+    this.baseStore = options.store ?? new MemoryStore();
+    this.store = this.baseStore;
     this.storeNote = options.storeNote ?? null;
-    this.baseEnv = options.baseEnv ?? process.env;
+    this._baseEnv = options.baseEnv ?? process.env;
+    this.timerSetInterval = options.setInterval ?? setInterval;
+    this.timerClearInterval = options.clearInterval ?? clearInterval;
     this.hostIdentityOption = options.hostIdentity ?? null;
     // iOS 签名/Appium 配置：config（deviceHosts 高级层）打底、项目 .env、进程 env（客户端配置）覆盖。
-    this.iosEnv = { ...deviceHostEnvFromConfig(project.config), ...project.dotenvValues, ...this.baseEnv };
+    this.iosEnv = { ...deviceHostEnvFromConfig(project.config), ...project.dotenvValues, ...this._baseEnv };
     this.iosCrashCollector = options.iosCrashCollector ?? null;
     this.iosCrashRetry = {
       attempts: Math.max(1, options.iosCrashRetry?.attempts ?? 3),
@@ -209,22 +226,22 @@ export class Runtime {
     // Model-catalog knobs read project .env first, then the process env
     // (client-config env wins so fleet-wide policy can override).
     this.modelCatalog = new ModelCatalog({
-      env: { ...project.dotenvValues, ...this.baseEnv },
+      env: { ...project.dotenvValues, ...this._baseEnv },
       fetchImpl: options.modelFetcher
     });
     this.crashStore = new CrashIndexStore(path.join(this.configDirAbs, "crashes"), {
-      maxRecords: resolveCrashMaxRecords(this.baseEnv)
+      maxRecords: resolveCrashMaxRecords(this._baseEnv)
     });
     this.crashScanner = new CrashScanner({
       tracesDir: this.tracesDir(),
       store: this.crashStore,
-      env: this.baseEnv,
+      env: this._baseEnv,
       collector: options.crashCollector
     });
     this.childSupervisor = new ChildSupervisor({
       config: this.project.config,
       rootDir: this.project.rootDir,
-      baseEnv: this.baseEnv,
+      baseEnv: this._baseEnv,
       state: this.state,
       activeEntry: () => this.activeCache?.entry ?? null,
       proxy: () => this.proxy,
@@ -235,7 +252,7 @@ export class Runtime {
       projectRoot: this.project.rootDir,
       configDirAbs: this.configDirAbs,
       tracesDir: this.tracesDir(),
-      store: this.store,
+      store: () => this.store,
       proxy: this.proxy,
       safeStore: (fn, fallback) => this.safeStore(fn, fallback),
       onTerminalTask: (task, status) => {
@@ -308,7 +325,7 @@ export class Runtime {
     const materialized = await materializeAppPathUrl({
       appPath,
       cacheDir: path.join(this.configDirAbs, "cache", "apps"),
-      timeoutMs: resolveAppDownloadTimeoutMs(this.baseEnv)
+      timeoutMs: resolveAppDownloadTimeoutMs(this._baseEnv)
     });
     if (!materialized.ok) {
       return { error: `app_path 远端产物不可用：${materialized.error}` };
@@ -364,9 +381,9 @@ export class Runtime {
     this.initialized = true;
 
     const identity =
-      this.hostIdentityOption ?? (await resolveHostIdentity({ env: this.baseEnv }));
+      this.hostIdentityOption ?? (await resolveHostIdentity({ env: this._baseEnv }));
     this._hostIdentity = identity;
-    this.store.bindHost(identity.id);
+    this.store = this.baseStore.scopeHost(identity.id);
 
     this.projectRecord = await this.safeStore(
       () =>
@@ -417,7 +434,7 @@ export class Runtime {
     }
 
     try {
-      const imported = await autoImportLocalLedger(this, { env: this.baseEnv });
+      const imported = await autoImportLocalLedger(this, { env: this._baseEnv });
       if (imported.status === "error") {
         logWarn(`本地台账回流中心 PG 失败：${imported.reason ?? "unknown"}`);
       }
@@ -526,10 +543,10 @@ export class Runtime {
    * 已知边界：已懒创建的 `IosWdaService` 仍持旧 env 快照（会话不重签）；下次进程/服务重建生效。 */
   refreshProjectEnv(): void {
     this.project.dotenvValues = loadDotenvValues(this.project.rootDir);
-    this.project.resolver = makeResolver(this.project.dotenvValues, this.baseEnv);
+    this.project.resolver = makeResolver(this.project.dotenvValues, this._baseEnv);
     this.scanResult = scanProjectEnv(this.project.resolver);
-    this.iosEnv = { ...deviceHostEnvFromConfig(this.project.config), ...this.project.dotenvValues, ...this.baseEnv };
-    this.modelCatalog.updateEnv({ ...this.project.dotenvValues, ...this.baseEnv });
+    this.iosEnv = { ...deviceHostEnvFromConfig(this.project.config), ...this.project.dotenvValues, ...this._baseEnv };
+    this.modelCatalog.updateEnv({ ...this.project.dotenvValues, ...this._baseEnv });
   }
 
   // ------------------------------------------------------------------
@@ -883,7 +900,7 @@ export class Runtime {
   }
 
   private tracesDir(): string {
-    return projectTracesDir(this.project.config, this.project.rootDir, this.baseEnv);
+    return projectTracesDir(this.project.config, this.project.rootDir, this._baseEnv);
   }
 
   /** Public read-only root for trace diagnostics (vision health, audits). */
@@ -969,11 +986,11 @@ export class Runtime {
   private lastUsageAtMs = 0;
 
   usageEnabled(): boolean {
-    return usageEnabledFrom(this.baseEnv);
+    return usageEnabledFrom(this._baseEnv);
   }
 
   usageSampleLimit(): number {
-    return usageEventSampleLimit(this.baseEnv);
+    return usageEventSampleLimit(this._baseEnv);
   }
 
   async recordUsage(input: RecordUsageEventInput): Promise<UsageEventRecord | null> {
@@ -993,7 +1010,7 @@ export class Runtime {
           hostId: this.hostIdentity?.id ?? null,
           sessionId: this.presenceStarted ? this.clientSessionId : null
         },
-        usagePolicyFrom(this.baseEnv)
+        usagePolicyFrom(this._baseEnv)
       );
     } catch (error) {
       logWarn(`使用统计记录失败: ${errorMessage(error)}`);
@@ -1018,6 +1035,7 @@ export class Runtime {
     this.lastClient = client;
     this.lastClientPresenceAtMs = Date.now();
     await this.touchClientSession(client);
+    this.startPresenceTimer();
   }
 
   async noteClientPresence(): Promise<void> {
@@ -1029,7 +1047,8 @@ export class Runtime {
   }
 
   async endClientSession(): Promise<void> {
-    if (!this.presenceEnabled()) return;
+    this.stopPresenceTimer();
+    if (!this.presenceStarted) return;
     try {
       await this.store.endHostSession(this.clientSessionId);
     } catch (error) {
@@ -1037,10 +1056,45 @@ export class Runtime {
     }
   }
 
+  /** 空闲 IDE 在场心跳（spec §7.4）：`unref` 定时器保证不阻止进程退出。 */
+  private startPresenceTimer(): void {
+    if (this.presenceTimer !== null) return;
+    const intervalMs = this.clientPresenceIntervalMs();
+    if (intervalMs <= 0) return;
+    this.presenceTimer = this.timerSetInterval(() => {
+      this.lastClientPresenceAtMs = Date.now();
+      void this.touchClientSession(this.lastClient);
+    }, intervalMs);
+    this.presenceTimer.unref?.();
+  }
+
+  private stopPresenceTimer(): void {
+    if (this.presenceTimer === null) return;
+    this.timerClearInterval(this.presenceTimer);
+    this.presenceTimer = null;
+  }
+
   private async touchClientSession(client: { name: string; version?: string } | null): Promise<void> {
     const identity = this.hostIdentity;
     if (!identity) return;
     try {
+      const addresses = selfReportedAddresses();
+      await this.store.upsertHost({
+        id: identity.id,
+        hardwareId: identity.hardwareId,
+        hostname: identity.hostname,
+        username: identity.username,
+        osPlatform: identity.osPlatform,
+        osVersion: identity.osVersion,
+        arch: identity.arch,
+        identitySource: identity.identitySource,
+        kind: identity.kind,
+        ipPrimary: primaryIp(addresses),
+        clientSeenAt: new Date().toISOString()
+      });
+      if (addresses.length > 0) {
+        await this.store.upsertHostAddresses({ hostId: identity.id, addresses });
+      }
       await this.store.touchHostSession({
         id: this.clientSessionId,
         hostId: identity.id,
@@ -1061,7 +1115,7 @@ export class Runtime {
   }
 
   private clientPresenceIntervalMs(): number {
-    const raw = this.baseEnv.AOS_CLIENT_PRESENCE_MS?.trim() ?? "";
+    const raw = this._baseEnv.AOS_CLIENT_PRESENCE_MS?.trim() ?? "";
     if (raw === "") return CLIENT_PRESENCE_MS_DEFAULT;
     const value = Number(raw);
     if (!Number.isFinite(value) || value <= 0) return 0;

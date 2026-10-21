@@ -698,7 +698,7 @@ P1（可见性）、P2（定向下发）、P3（队列控制）均已落地；P4
 **偏差**
 
 1. **`AOS_HOST_STRICT` 未接线**：设计稿 §13.6/§16.12 的严格模式（拒绝无 `host_id` 的旧 runner）未实现，变量名为保留位、当前无效果。原因：定向任务已由 `target_host_id` 过滤，旧 runner 行不会领到定向任务；严格拒绝会破坏「升级窗口内旧 runner 继续跑非定向任务」的兼容承诺。后续如需强制，可在 `claimRegressionTask` 与本地命令入口补两道守卫。
-2. **本地 MCP 单独运行不创建 `hosts` 行**：设计稿 §13.1 要求「每个进程启动确保本机 hosts 记录」。实际只有 runner 心跳、`suite queue pause/resume`、面板 `hosts/register` 会 `upsertHost`；仅开本地 MCP（无 runner）时，`host_sessions` 与项目行仍写入 PG，但面板主机视图以 `listHosts()` 为准，机器不会出现。这不影响派发（无 runner 本就不能执行），但「IDE 开着、没跑任务也看得见机器」只在 runner 至少启动过一次后成立。
+2. **本地 MCP 接入心跳已创建 `hosts` 行**：`startClientSession` 会 upsert 本机 `hosts`（含 `client_seen_at`/IP），并按 `AOS_CLIENT_PRESENCE_MS` 起 `unref` 空闲心跳；仅开本地 MCP（无 runner）也能在面板看到「IDE 在线」的主机与项目。接入心跳不写 `capabilities`/`env`，因此下发预检对这类主机只告警「尚无执行机上报，任务会排队等待」。
 3. **手动 `suite run --task` 不占设备租约**：设计稿 §9.2 只要求主机归属守卫，实际也只做了 `targetHostId`/`claimedHostId` 校验与状态 CAS，未接入 `device_leases`。与同机 runner 并发时可能争用同一设备；需要互斥时先 `suite queue pause`。
 4. **面板 HTTP multipart 导入为既有缺陷**（与多机无关）：`http-server` 对 `/panel/api/import` 只设置 `rawBody`，而 `handlePanelActionRequest` 入口要求 JSON 对象 body，故 HTTP 下导入在到达 `runImport` 前即 400；现有测试以同时注入 `body` + `rawBody` 覆盖，掩盖了该路径。本期未修，待单独工单。
 5. **文件台账是单主机视图**：`FileStore.adoptProjectHost` 恒 false，项目行恒 `host_id=NULL`；`hosts`/`host_addresses`/`host_sessions`/`device_leases`/队列暂停虽在 File 实现里可读写，但语义上是单机状态文件，不能跨机共享。`host`/`queue` 命令、runner、定时回归、中心清扫均要求中心 PG（无 PG exit 2）。

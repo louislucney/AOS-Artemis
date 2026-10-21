@@ -12,7 +12,7 @@ async function setup() {
   const store = new MemoryStore();
   const { runtime } = await loadTestRuntime(dir, { store });
   const rootPath = runtime.project.rootDir;
-  await store.upsertProject({ rootPath, name: "p" });
+  await runtime.store.upsertProject({ rootPath, name: "p" });
   const set = await store.recordCaseSet({
     rootPath,
     source: "figma:x",

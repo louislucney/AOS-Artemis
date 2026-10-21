@@ -181,12 +181,12 @@ test("createTask 写 targetHostId/createdHostId；任务行落在目标主机项
       platforms: ["ios"],
       baseline: "latest"
     }),
-    makeDeps(store)
+    makeDeps(store.scopeHost("h-win"))
   );
   assert.equal(res.status, 200);
   const body = JSON.parse(res.body);
   assert.equal(body.task.targetHostId, "h-mac");
-  assert.equal(body.task.createdHostId, "h-mac");
+  assert.equal(body.task.createdHostId, "h-win", "createdHostId = 派发方（面板本机），非目标主机");
   assert.equal(body.task.createdBy, "panel");
 
   const macStore = store.scopeHost("h-mac");
@@ -235,6 +235,69 @@ test("目标主机离线只告警仍入队；targetHostId 照写", async () => {
   assert.equal(body.task.targetHostId, "h-linux");
   assert.ok(body.warnings.some((warning) => warning.includes("目标主机离线")));
   assert.equal((await store.scopeHost("h-linux").listRegressionTasks(root)).length, 1);
+});
+
+test("presence-only host（capabilities []）+ android → 告警排队仍可创建；win32+ios 仍硬拒绝", async () => {
+  const { store, root } = await makeHarness();
+  await store.upsertHost({
+    id: "h-fresh",
+    hostname: "FRESH-01",
+    kind: "mac",
+    osPlatform: "darwin",
+    capabilities: [],
+    clientSeenAt: ago(60_000)
+  });
+  await store.scopeHost("h-fresh").upsertProject({ rootPath: root, name: "fresh-app" });
+  const set = await addSet(store, root, "h-fresh", "Fresh 回归", "fresh-login", 1);
+  const deps = makeDeps(store);
+
+  const preview = await computeDispatchPreview(
+    deps,
+    root,
+    new URLSearchParams({ host: "h-fresh", platforms: "android", source: "case-set", ref: set.id })
+  );
+  assert.equal(preview.hosts[0].online, true);
+  assert.match(preview.warnings.join(" "), /尚无执行机上报，任务会排队等待/);
+  assert.deepEqual(preview.setOptions.map((option) => option.id), [set.id], "无能力不阻断预览");
+
+  const res = await handlePanelActionRequest(
+    action("/panel/api/tasks", {
+      project: root,
+      host: "h-fresh",
+      source: "case-set",
+      ref: set.id,
+      platforms: ["android"],
+      baseline: "latest"
+    }),
+    deps
+  );
+  assert.equal(res.status, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.task.targetHostId, "h-fresh");
+  assert.ok(body.warnings.some((warning) => warning.includes("尚无执行机上报")));
+
+  await store.upsertHost({
+    id: "h-win",
+    hostname: "WIN-01",
+    kind: "pc",
+    osPlatform: "win32",
+    capabilities: ["android"]
+  });
+  await store.scopeHost("h-win").upsertProject({ rootPath: root, name: "win-app" });
+  const winSet = await addSet(store, root, "h-win", "Win 回归", "win-login", 1);
+  const rejected = await handlePanelActionRequest(
+    action("/panel/api/tasks", {
+      project: root,
+      host: "h-win",
+      source: "case-set",
+      ref: winSet.id,
+      platforms: ["ios"],
+      baseline: "latest"
+    }),
+    deps
+  );
+  assert.equal(rejected.status, 400);
+  assert.match(JSON.parse(rejected.body).reasons.join(" "), /iOS 需要 macOS/);
 });
 
 test("POST /panel/api/hosts/register 写 label/owner/expected 并审计", async () => {

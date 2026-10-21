@@ -106,6 +106,11 @@ export class RuntimeHost {
     clearInterval(this.syncTimer);
     for (const runtime of this.runtimes) {
       try {
+        await runtime.endClientSession();
+      } catch {
+        /* best effort */
+      }
+      try {
         await runtime.proxy.dispose();
       } catch {
         /* best effort */

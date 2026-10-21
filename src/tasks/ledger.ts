@@ -15,7 +15,7 @@ export interface TaskLedgerDeps {
   projectRoot: string;
   configDirAbs: string;
   tracesDir: string;
-  store: ProjectStore;
+  store: () => ProjectStore;
   proxy: ArtemisProxyLike;
   safeStore: <T>(fn: () => Promise<T>, fallback: T) => Promise<T>;
   onTerminalTask: (task: TaskStatRecord, status: string) => void;
@@ -51,7 +51,7 @@ export class TaskLedger {
       }
     }
     await this.deps.safeStore<void>(async () => {
-      await this.deps.store.recordTask({
+      await this.deps.store().recordTask({
         rootPath: this.deps.projectRoot,
         traceId,
         model: input.model ?? null,
@@ -107,7 +107,7 @@ export class TaskLedger {
 
   async syncTaskStatuses(): Promise<{ checked: number; updated: number }> {
     const pending = await this.deps.safeStore(
-      () => this.deps.store.listPendingTasks(this.deps.projectRoot, 20),
+      () => this.deps.store().listPendingTasks(this.deps.projectRoot, 20),
       [] as TaskStatRecord[]
     );
     let updated = 0;
@@ -116,7 +116,7 @@ export class TaskLedger {
       if (status === null) status = await this.queryTaskStatusViaProxy(task.traceId);
       if (status && (TERMINAL_TASK_STATUSES as readonly string[]).includes(status)) {
         const done = await this.deps.safeStore(
-          () => this.deps.store.markTaskFinished(this.deps.projectRoot, task.traceId, status!),
+          () => this.deps.store().markTaskFinished(this.deps.projectRoot, task.traceId, status!),
           false
         );
         if (done) {

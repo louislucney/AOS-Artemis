@@ -252,8 +252,7 @@ async function setupRunnerFixture() {
   const dir = makeTempProject({ config: baseConfig() });
   const store = new MemoryStore();
   const { runtime } = await loadTestRuntime(dir, { store });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
-  return { dir, runtime, store, inventory: inventory() };
+  return { dir, runtime, store: runtime.store, inventory: inventory() };
 }
 
 function makeRunnerOptions(runtime, inv, overrides = {}) {
@@ -477,8 +476,7 @@ async function setupCliRuntime() {
   const dir = makeTempProject({ config: baseConfig() });
   const store = new MemoryStore();
   const { runtime } = await loadTestRuntime(dir, { store });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
-  return { store, runtime, rootPath: runtime.project.rootDir };
+  return { store: runtime.store, runtime, rootPath: runtime.project.rootDir };
 }
 
 function runLocalQueue(runtime, args) {

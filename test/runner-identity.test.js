@@ -68,8 +68,7 @@ async function fixture() {
   const dir = makeTempProject({ config: baseConfig() });
   const store = new MemoryStore();
   const { runtime } = await loadTestRuntime(dir, { store });
-  await store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
-  return { runtime, store };
+  return { runtime, store: runtime.store };
 }
 
 function baseOptions(runtime, overrides = {}) {
@@ -90,8 +89,16 @@ function baseOptions(runtime, overrides = {}) {
 test("同机同项目第二个 runner 启动 → exit 2，不覆写第一实例", async () => {
   const { runtime, store } = await fixture();
   const root = runtime.project.rootDir;
-  const first = await runRunnerAgent(baseOptions(runtime, { instanceId: "i-1" }));
-  assert.equal(first, 0);
+  await store.upsertRunner({
+    rootPath: root,
+    name: "runner-1",
+    hostname: "mac-a",
+    platforms: ["android", "ios"],
+    devices: DEVICES,
+    tools: TOOLS,
+    hostId: "h1",
+    instanceId: "i-1"
+  });
 
   const errors = [];
   const second = await runRunnerAgent(
@@ -305,4 +312,21 @@ test("PG 迁移顺序：旧 runners 表（无 host_id 列）init 后 host 唯一
     (error) => error?.name === "RunnerAlreadyActiveError",
     "迁移后 host 唯一索引应拦截同 host 不同 name"
   );
+});
+
+test("runner --once 优雅结束标记陈旧：立即重启可接管且仍单行", async () => {
+  const { runtime, store } = await fixture();
+  const root = runtime.project.rootDir;
+
+  const first = await runRunnerAgent(baseOptions(runtime, { instanceId: "i-1" }));
+  assert.equal(first, 0);
+  const rowsAfterFirst = await store.listRunners(root);
+  assert.equal(rowsAfterFirst.length, 1);
+  assert.equal(rowsAfterFirst[0].instanceId, "i-1");
+
+  const second = await runRunnerAgent(baseOptions(runtime, { instanceId: "i-2" }));
+  assert.equal(second, 0, "立即重启不被 90s 双启保护挡住");
+  const rowsAfterSecond = await store.listRunners(root);
+  assert.equal(rowsAfterSecond.length, 1, "接管同一行");
+  assert.equal(rowsAfterSecond[0].instanceId, "i-2");
 });

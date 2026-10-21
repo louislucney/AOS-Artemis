@@ -179,24 +179,19 @@ test("importTestDocument: 同一文档内容更新 → featureKey 稳定（最�
   assert.equal(sets[0].features[0].key, v1.sets[0].featureKey);
 });
 
-class FlakyStore extends MemoryStore {
-  constructor() {
-    super();
-    this.failures = 1;
-  }
-  async recordCaseSet(input) {
-    if (this.failures > 0) {
-      this.failures -= 1;
-      throw new Error("db down");
-    }
-    return super.recordCaseSet(input);
-  }
-}
-
 test("importTestDocument: 登记失败回滚本地归档，重试可重新导入（不落 skipped 假象）", async () => {
   const dir = makeTempProject({ config: baseConfig() });
-  const store = new FlakyStore();
+  const store = new MemoryStore();
   const { runtime } = await loadTestRuntime(dir, { store });
+  let failures = 1;
+  const originalRecordCaseSet = runtime.store.recordCaseSet.bind(runtime.store);
+  runtime.store.recordCaseSet = async (input) => {
+    if (failures > 0) {
+      failures -= 1;
+      throw new Error("db down");
+    }
+    return originalRecordCaseSet(input);
+  };
   const file = path.join(dir, "cases.xlsx");
   await writeSheet(file, [
     ["用例名", "步骤", "预期"],

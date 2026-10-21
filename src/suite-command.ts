@@ -10,6 +10,7 @@ import {
   matchApiErrors
 } from "./artemis/api-errors.js";
 import { defaultBuildRuntime, type CliRuntimeBundle } from "./cli-runtime.js";
+import { isHostOnline, precheckTask } from "./console/dispatch.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
 import { classifyIosSerial } from "./device/ios.js";
 import { latestFeatureRefs, type ResolvedTaskRef } from "./tasks/feature-refs.js";
@@ -1762,6 +1763,24 @@ function resolveTaskRefsFromSets(
   return resolved;
 }
 
+function parseTaskPriority(
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): number | null {
+  const raw = (flags.get("priority") ?? "").trim();
+  if (raw === "") return 0;
+  if (!/^\d+$/.test(raw)) {
+    io.errorLog(`非法 --priority：${raw}（须为 0–100 的整数）`);
+    return null;
+  }
+  const value = Number.parseInt(raw, 10);
+  if (value < 0 || value > 100) {
+    io.errorLog(`非法 --priority：${raw}（须为 0–100 的整数）`);
+    return null;
+  }
+  return value;
+}
+
 function parseTaskTargeting(
   flags: ParsedFlags,
   io: { log: (line: string) => void; errorLog: (line: string) => void }
@@ -1820,13 +1839,20 @@ async function suiteTaskCreate(
   if (resolved === null) return 2;
   const targeting = parseTaskTargeting(flags, io);
   if (targeting === null) return 2;
+  const priority = parseTaskPriority(flags, io);
+  if (priority === null) return 2;
   const { platforms: uniquePlatforms, baseline } = targeting;
+  const projectRecord = runtime.projectSummary();
+  const localHostId = runtime.store.localHostId ?? null;
   const task = await runtime.store.createRegressionTask({
     rootPath: runtime.project.rootDir,
     refs: resolved.map((entry) => ({ caseSetId: entry.caseSetId, featureKey: entry.featureKey })),
     platforms: uniquePlatforms,
     baseline,
-    createdBy: "cli"
+    createdBy: "cli",
+    targetHostId: projectRecord?.hostId ?? localHostId,
+    createdHostId: localHostId,
+    priority
   });
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
@@ -2137,7 +2163,9 @@ async function suiteTaskOnCenterHost(
     const hostId = lookup.host.id;
     const scoped = store.scopeHost(hostId);
     const action = flags.positional[1];
-    if (action === "create") return await suiteTaskCreateOnHost(scoped, hostId, flags, io);
+    if (action === "create") {
+      return await suiteTaskCreateOnHost(scoped, lookup.host, store.localHostId ?? null, flags, io, env);
+    }
     if (action === "list") return await suiteTaskListOnHost(store, scoped, hostId, flags, io);
     if (action === "cancel") {
       return await suiteTaskCancelOnHost(scoped, hostId, flags, io, env);
@@ -2160,10 +2188,13 @@ async function suiteTaskOnCenterHost(
 
 async function suiteTaskCreateOnHost(
   scoped: ProjectStore,
-  hostId: string,
+  host: HostRecord,
+  createdHostId: string | null,
   flags: ParsedFlags,
-  io: { log: (line: string) => void; errorLog: (line: string) => void }
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  env: NodeJS.ProcessEnv
 ): Promise<number> {
+  const hostId = host.id;
   const rawProject = flags.get("project");
   const rootPath = rawProject === null ? null : normalizeRootPath(rawProject);
   if (rootPath === null || rootPath === "") {
@@ -2191,6 +2222,23 @@ async function suiteTaskCreateOnHost(
   if (resolved === null) return 2;
   const targeting = parseTaskTargeting(flags, io);
   if (targeting === null) return 2;
+  const priority = parseTaskPriority(flags, io);
+  if (priority === null) return 2;
+  const precheck = precheckTask(
+    {
+      id: host.id,
+      kind: host.kind,
+      osPlatform: host.osPlatform,
+      capabilities: host.capabilities,
+      online: isHostOnline(host, Date.now(), env)
+    },
+    targeting.platforms
+  );
+  if (!precheck.ok) {
+    io.errorLog(`目标主机无法满足所需平台：${precheck.reasons.join("；")}`);
+    return 2;
+  }
+  for (const reason of precheck.reasons) io.log(`警告：${reason}`);
   const task = await scoped.createRegressionTask({
     rootPath,
     refs: resolved.map((entry) => ({ caseSetId: entry.caseSetId, featureKey: entry.featureKey })),
@@ -2198,7 +2246,8 @@ async function suiteTaskCreateOnHost(
     baseline: targeting.baseline,
     createdBy: "cli",
     targetHostId: hostId,
-    createdHostId: hostId
+    createdHostId,
+    priority
   });
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));

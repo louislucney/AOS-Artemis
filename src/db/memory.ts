@@ -8,7 +8,8 @@ import {
   isRunnerActive,
   normalizeRegressionTask,
   RUNNER_ACTIVE_DEFAULT_MS,
-  RunnerAlreadyActiveError
+  RunnerAlreadyActiveError,
+  STOPPED_RUNNER_SEEN_AT
 } from "./types.js";
 import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
@@ -973,6 +974,25 @@ export class MemoryStore implements ProjectStore {
       .sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0))
       .slice(0, limit)
       .map(cloneRunner);
+  }
+
+  async markRunnerStopped(input: {
+    rootPath: string;
+    runnerId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<boolean> {
+    const project = this.getProjectRecord(input.rootPath);
+    if (!project) return false;
+    const runner = this.runners.find(
+      (entry) =>
+        entry.id === input.runnerId &&
+        entry.projectId === project.id &&
+        entry.instanceId === input.instanceId
+    );
+    if (!runner) return false;
+    runner.lastSeenAt = input.at ?? STOPPED_RUNNER_SEEN_AT;
+    return true;
   }
 
   async upsertHost(input: UpsertHostInput): Promise<HostRecord> {

@@ -192,8 +192,8 @@ async function hostStatusView(runtime: Runtime): Promise<{
 }> {
   const identity = runtime.hostIdentity;
   const nowMs = Date.now();
-  const clientTtl = clientTtlFrom(process.env);
-  const runnerTtl = runnerTtlFrom(process.env);
+  const clientTtl = clientTtlFrom(runtime.baseEnv);
+  const runnerTtl = runnerTtlFrom(runtime.baseEnv);
   let clientOnline = false;
   let runnerOnline = false;
   let clientSessions = 0;
