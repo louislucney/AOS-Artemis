@@ -48,6 +48,18 @@ const CASE_VERDICTS = new Set<CaseVerdict>([
 ]);
 const PLATFORMS = new Set(["ios", "android"]);
 
+function taskPriority(value: unknown): number | null {
+  if (value === undefined || value === null) return 0;
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value.trim())
+        : Number.NaN;
+  if (!Number.isInteger(numeric) || numeric < 0 || numeric > 100) return null;
+  return numeric;
+}
+
 export function panelActionsEnabled(env: NodeJS.ProcessEnv): boolean {
   const raw = env.AOS_PANEL_ACTIONS;
   return typeof raw !== "string" || raw.trim() !== "0";
@@ -480,6 +492,10 @@ async function createTask(
     return json(400, { error: "baseline 仅支持 latest/none" });
   }
   const baseline = payload.baseline === "none" ? "none" : "latest";
+  const priority = taskPriority(payload.priority);
+  if (priority === null) {
+    return json(400, { error: "优先级须为 0–100 的整数（priority）" });
+  }
 
   let warnings: string[] = [];
   if (targetHost !== null) {
@@ -512,7 +528,8 @@ async function createTask(
     baseline,
     createdBy: "panel",
     targetHostId,
-    createdHostId: targetHostId
+    createdHostId: targetHostId,
+    priority
   });
   return json(200, { ok: true, task, ...(warnings.length > 0 ? { warnings } : {}) });
 }

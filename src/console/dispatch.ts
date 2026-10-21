@@ -32,6 +32,12 @@ export interface DispatchHost {
   queueDepth: number;
 }
 
+export interface DispatchProject {
+  hostId: string;
+  rootPath: string;
+  name: string;
+}
+
 export interface DispatchPreview {
   source: { mode: "case-set" | "keyword" | "excel"; label: string; caseCount: number };
   refs: string[];
@@ -43,6 +49,10 @@ export interface DispatchPreview {
   runnerCandidates: { id: string; host: string; online: boolean }[];
   hosts: DispatchHost[];
   selectedHostId: string | null;
+  /** 选中主机上已登记的项目（无主机台账时仅当前项目）。 */
+  projects: DispatchProject[];
+  /** 队列优先级：0 默认，越大越先领取（0–100）。 */
+  priority: number;
   /** 目标主机能力/项目不满足：前端禁用确认（离线只告警，不置位）。 */
   hostBlocked: boolean;
   warnings: string[];
@@ -59,6 +69,8 @@ export interface DispatchView {
   query: Record<string, string>;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
+  /** `AOS_PANEL_PRIORITY=1` 时才放开优先级编辑（默认只读，防误操作插队）。 */
+  priorityEditable?: boolean;
 }
 
 /** 表单字段签名（与预览同源；客户端复算同式）。 */
@@ -183,6 +195,15 @@ export async function computeDispatchPreview(
     .filter((value): value is "ios" | "android" => value === "ios" || value === "android");
 
   const warnings: string[] = [];
+  const priorityRaw = (params.get("priority") ?? "").trim();
+  let priority = 0;
+  if (priorityRaw !== "") {
+    if (!/^[+-]?\d+$/.test(priorityRaw)) {
+      warnings.push("优先级须为 0–100 的整数：已按 0 处理");
+    } else {
+      priority = Math.min(100, Math.max(0, Number.parseInt(priorityRaw, 10)));
+    }
+  }
   const hostParam = (params.get("host") ?? "").trim();
   const targetRef = hostParam !== "" ? hostParam : (deps.store.localHostId ?? "");
   let hostRecords: HostRecord[] = [];
@@ -216,6 +237,37 @@ export async function computeDispatchPreview(
     );
     warnings.push(...precheck.reasons);
     if (!precheck.ok) hostBlocked = true;
+  }
+
+  let projects: DispatchProject[] = [];
+  if (targetHost !== null) {
+    try {
+      const localHostId = deps.store.localHostId;
+      projects = (await targetStore.listProjects())
+        .filter(
+          (project) =>
+            project.hostId === targetHost.id ||
+            (project.hostId === null && targetHost.id === localHostId)
+        )
+        .map((project) => ({
+          hostId: targetHost.id,
+          rootPath: project.rootPath,
+          name: project.name
+        }));
+    } catch {
+      projects = [];
+    }
+    if (projects.length === 0) hostBlocked = true;
+  } else {
+    const current = await targetStore.getProjectByPath(rootPath).catch(() => null);
+    const fallbackName = rootPath.split(/[\\/]/).filter((part) => part !== "").pop() ?? rootPath;
+    projects = [
+      {
+        hostId: current?.hostId ?? deps.store.localHostId ?? "",
+        rootPath,
+        name: current?.name ?? fallbackName
+      }
+    ];
   }
 
   let allProjects: Awaited<ReturnType<ProjectStore["listProjects"]>> = [];
@@ -316,6 +368,8 @@ export async function computeDispatchPreview(
     runnerCandidates,
     hosts,
     selectedHostId: targetHost?.id ?? null,
+    projects,
+    priority,
     hostBlocked,
     warnings
   };
@@ -379,6 +433,35 @@ export function renderDispatchPage(view: DispatchView): string {
           `</select></label> <span class="muted">先选目标主机，用例份选项按该主机作用域展示。</span></p>`
         ].join("");
 
+  const projectOptions = preview.projects
+    .map(
+      (project) =>
+        `<option value="${escapeHtml(project.rootPath)}"${
+          project.rootPath === view.rootPath ? " selected" : ""
+        }>${escapeHtml(project.name)}</option>`
+    )
+    .join("");
+  const currentListed = preview.projects.some((project) => project.rootPath === view.rootPath);
+  const currentOption = currentListed
+    ? ""
+    : `<option value="${escapeHtml(view.rootPath)}" selected>${escapeHtml(view.rootLabel)}（当前项目）</option>`;
+  const projectOptionsHtml = currentOption + projectOptions;
+  const noProjects = preview.selectedHostId !== null && preview.projects.length === 0;
+  const projectSelect = [
+    `<p><label>项目 <select name="project" aria-label="项目">${projectOptionsHtml}</select></label> <span class="muted">先选主机，再选该主机上的项目。</span></p>`,
+    noProjects
+      ? `<p class="muted">该主机尚未登记项目：请先在目标机接入项目，再刷新本页。</p>`
+      : ""
+  ]
+    .filter((part) => part !== "")
+    .join("\n");
+  const hostCardBody = [hostSelect, projectSelect].join("\n");
+
+  const priorityField =
+    view.priorityEditable === true
+      ? `<p><label>优先级 <input type="number" name="priority" aria-label="优先级" min="0" max="100" step="1" value="${preview.priority}"></label> <span class="muted">0 为默认；数值越大越先领取（0–100）。</span></p>`
+      : `<p>优先级 <span class="c-badge" title="优先级（越大越先领取）">P${preview.priority}</span> <span class="muted">只读（防误操作插队）：设置 <code>AOS_PANEL_PRIORITY=1</code> 后可编辑。</span></p>`;
+
   const sourceBody = [
     '<fieldset class="c-fieldset"><legend>来源</legend>',
     `<label class="dispatch-option"><input type="radio" name="source" value="case-set"${mode === "case-set" ? " checked" : ""}> 用例库选份</label>`,
@@ -390,7 +473,8 @@ export function renderDispatchPage(view: DispatchView): string {
 
   const paramsBody = [
     `<fieldset class="c-fieldset"><legend>目标端</legend>${platformChecks}</fieldset>`,
-    `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本份最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`
+    `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本份最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`,
+    priorityField
   ].join("\n");
 
   const runnerOnline = preview.runnerCandidates.some((runner) => runner.online);
@@ -401,6 +485,7 @@ export function renderDispatchPage(view: DispatchView): string {
     `<div class="c-stats-row">`,
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
+    cStat({ label: "优先级", value: `P${preview.priority}` }),
     cStat({ label: "目标端", value: preview.platforms.join("、") || "—" }),
     cStat({
       label: "设备",
@@ -429,6 +514,10 @@ export function renderDispatchPage(view: DispatchView): string {
     `<p><button class="c-button" type="submit">刷新预览</button></p>`
   ].join("\n");
 
+  const priorityReadScript =
+    view.priorityEditable === true
+      ? `function readPriority(){var el=form.querySelector('input[name="priority"]');var value=el?Number(el.value||'0'):(island.priority||0);if(!isFinite(value)||Math.floor(value)!==value||value<0||value>100){showErr('优先级须为 0–100 的整数');return null;}return value;}`
+      : `function readPriority(){return island.priority||0;}`;
   const dispatchConfirmScript = `<script>(function(){
 var form=document.getElementById('dispatch-form');if(!form)return;
 var go=document.getElementById('dispatch-submit');if(!go)return;
@@ -438,6 +527,7 @@ var stale=document.getElementById('dispatch-stale');
 var island=null;try{island=JSON.parse(document.getElementById('dispatch-preview-data').textContent);}catch(e){island=null;}
 if(!island){return;}
 function showErr(m){err.textContent=m;err.hidden=false;}
+${priorityReadScript}
 function formSignature(){
   var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
   var refOrKeyword=mode==='keyword'?((form.querySelector('input[name="keyword"]')||{value:''}).value||'').trim():((form.querySelector('select[name="ref"]')||{value:''}).value||'');
@@ -473,12 +563,14 @@ go.addEventListener('click',function(){
     showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择份或输入关键词，再点「刷新预览」');return;
   }
   if(form.querySelectorAll('input[name="platforms"]:checked').length===0){showErr('请至少选择目标端（iOS/Android）');return;}
+  var priority=readPriority();
+  if(priority===null){return;}
   var s=island.summary||{};
   var refs=island.refsDetail||[];
   var refText=refs.length===0?'':(' · 份：'+refs.map(function(r){return r.label+'×'+r.caseCount;}).join('、'));
   var runner=island.runnerOnline?('在线候选 '+island.runnerOnlineCount+' 台'):'无在线执行机（任务将排队）';
   var hostName=(island.hostLabel||island.hostId||'本机');
-  var text='将创建回归任务：目标主机「'+hostName+'」 · 来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · 执行机：'+runner;
+  var text='将创建回归任务：目标主机「'+hostName+'」 · 来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · 优先级 P'+priority+' · 执行机：'+runner;
   window.aosInlineConfirm(go,text,function(){
     var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
     var payload={project:island.project,previewId:island.previewId,source:mode};
@@ -488,6 +580,7 @@ go.addEventListener('click',function(){
     else{payload.ref=(form.querySelector('select[name="ref"]')||{value:''}).value||'';}
     payload.platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
     payload.baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
+    payload.priority=priority;
     go.disabled=true;if(status)status.textContent='提交中…';
     fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(response){return response.json().then(function(p){
@@ -508,25 +601,33 @@ go.addEventListener('click',function(){
 })();</script>`;
   const actionsOff = view.capabilities?.actions === false;
   const needsHostPick = preview.hosts.length > 0 && preview.selectedHostId === null;
-  const submitBlocked = preview.hostBlocked || needsHostPick;
+  const submitBlocked = preview.hostBlocked || needsHostPick || noProjects;
+  const blockedReason = noProjects
+    ? "该主机尚未登记项目"
+    : needsHostPick
+      ? "请先选择目标主机"
+      : "目标主机无法满足所选平台";
   const confirmBody = actionsOff
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
-        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${needsHostPick ? "请先选择目标主机" : "目标主机无法满足所选平台"}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（份明细 / 端 / 基线 / 执行机），再创建任务。</span></p>`,
-        needsHostPick
-          ? `<p class="note">请先选择目标主机：已登记主机时不再隐式回退本机。</p>`
-          : preview.hostBlocked
-            ? `<p class="note">目标主机无法满足所选平台：请调整目标端或更换主机，刷新预览后再试。</p>`
-            : "",
+        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（份明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
+        noProjects
+          ? `<p class="note">该主机尚未登记项目：请先在目标机接入项目并刷新本页。</p>`
+          : needsHostPick
+            ? `<p class="note">请先选择目标主机：已登记主机时不再隐式回退本机。</p>`
+            : preview.hostBlocked
+              ? `<p class="note">目标主机无法满足所选平台：请调整目标端或更换主机，刷新预览后再试。</p>`
+              : "",
         `<p id="dispatch-status" role="status" class="muted"></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
         `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, hostId: preview.selectedHostId, hostLabel:
           preview.hosts.find((host) => host.id === preview.selectedHostId)?.label ??
           preview.hosts.find((host) => host.id === preview.selectedHostId)?.hostname ??
-          null, hostRequired: preview.hosts.length > 0, hostBlocked: preview.hostBlocked, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
+          null, hostRequired: preview.hosts.length > 0, hostBlocked: preview.hostBlocked, priority: preview.priority, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
         dispatchConfirmScript,
       ].filter((part) => part !== "").join("\n");
 
+  const projectNavScript = `<script>(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams();params.set('project',select.value);params.set('section','dispatch');if(host&&host.value)params.set('host',host.value);location.href='/panel?'+params.toString();});})();</script>`;
 
   return renderConsoleShell({
     title: "下发回归",
@@ -539,14 +640,14 @@ go.addEventListener('click',function(){
       "<h1>下发回归</h1>",
       `<p class="muted"><code>${escapeHtml(view.rootPath)}</code> · 四步：来源 → 参数 → 预览回显 → 确认派发</p>`,
       `<form id="dispatch-form" method="get" action="/panel">`,
-      `<input type="hidden" name="project" value="${escapeHtml(view.rootPath)}">`,
       `<input type="hidden" name="section" value="dispatch">`,
-      cCard({ title: "⓪ 主机", body: hostSelect }),
+      cCard({ title: "⓪ 主机与项目", body: hostCardBody }),
       cCard({ title: "① 来源", body: sourceBody }),
       cCard({ title: "② 参数", body: paramsBody }),
       cCard({ title: "③ 预览回显", tone: "accent", body: previewBody }),
       cCard({ title: "④ 确认", body: confirmBody }),
-      "</form>"
+      "</form>",
+      projectNavScript
     ].join("\n")
   });
 }

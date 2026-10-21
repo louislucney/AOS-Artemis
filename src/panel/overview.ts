@@ -222,6 +222,7 @@ export interface PanelRegressionRef {
 export interface PanelTaskRow {
   id: string;
   status: string;
+  priority: number;
   refs: number;
   platforms: string[];
   runIds: number;
@@ -1131,6 +1132,7 @@ export async function buildPanelProjectDetail(
       taskRows.push({
         id: task.id,
         status: task.status,
+        priority: task.priority,
         refs: task.refs.length,
         platforms: task.platforms,
         runIds: task.runIds.length,

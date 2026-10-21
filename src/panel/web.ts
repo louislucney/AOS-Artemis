@@ -1502,6 +1502,11 @@ function renderRunners(detail: PanelProjectDetail): string {
 function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: string | null): string {
   const rows = detail.tasks.map((task) => [
     `<a href="${escapeHtml(taskHref(rootPath, task.id, hostId))}"><code>${escapeHtml(task.id)}</code></a>`,
+    cBadge({
+      label: `P${task.priority}`,
+      tone: task.priority > 0 ? "warning" : "neutral",
+      title: "优先级（越大越先领取）"
+    }),
     escapeHtml(taskStatusLabel(task.status)),
     String(task.refs),
     escapeHtml(task.platforms.join(", ")),
@@ -1512,7 +1517,7 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: st
     '<section id="tasks">',
     "<h2>回归任务</h2>",
     renderTable(
-      ["任务", "状态", "引用份数", "目标端", "运行数", "创建时间"],
+      ["任务", "优先级", "状态", "引用份数", "目标端", "运行数", "创建时间"],
       rows,
       "暂无回归任务（上方「新建回归测试」创建）"
     ),
@@ -1675,9 +1680,14 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
-      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
+      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
+        const priorityBadge = cBadge({
+          label: `P${task.priority}`,
+          tone: task.priority > 0 ? "warning" : "neutral",
+          title: "优先级（越大越先领取）"
+        });
         const actionsOff = currentShell.capabilities?.actions === false;
         if (actionsOff) {
           return `<p>${badge} <button class="c-button" type="button" disabled title="写动作未启用">任务动作</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</span></p>`;
@@ -1713,7 +1723,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
           .join(" ");
         const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun'};function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
         return [
-          `<p id="task-actions">${badge} ${buttons}</p>`,
+          `<p id="task-actions">${badge} ${priorityBadge} ${buttons}</p>`,
           `<p id="task-action-status" role="status" class="c-banner" hidden></p>`,
           actionsScript
         ].join("\n");
@@ -2819,7 +2829,8 @@ function renderPanelHtml(
       formSignature: view.formSignature,
       query: view.query,
       capabilities: deps.capabilities,
-      storeHealth: currentShell.storeHealth
+      storeHealth: currentShell.storeHealth,
+      priorityEditable: (deps.env ?? process.env).AOS_PANEL_PRIORITY?.trim() === "1"
     });
   }
   if (view.kind === "library") {
