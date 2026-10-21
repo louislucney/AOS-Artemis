@@ -57,3 +57,37 @@ test("命令失败/超时不抛错，探测为 present=false", async () => {
   assert.equal(env.tools.adb.present, false);
   assert.equal(env.tools.xcodebuild.present, false);
 });
+
+test("darwin 有 idevice_id + idb 但无 Appium → 仍可推导 iOS 真机", async () => {
+  const env = await detectHostEnvironment({
+    projectRoot: "/w/app",
+    platform: "darwin",
+    exec: fakeExec({
+      "xcrun simctl help": "Usage: simctl",
+      "idb --version": "idb 1.1.8",
+      "which idevice_id": "/usr/local/bin/idevice_id"
+    }),
+    statfs: async () => ({ freeBytes: 1, totalBytes: 2 })
+  });
+  assert.equal(env.tools.ideviceId.present, true);
+  assert.equal(env.tools.appium.present, false);
+  assert.deepEqual(deriveCapabilities("darwin", env.tools).sort(), ["ios-real", "ios-simulator"]);
+});
+
+test("Appium 已配置但探测失败 → present=false 且不产生 iOS 真机", async () => {
+  const env = await detectHostEnvironment({
+    projectRoot: "/w/app",
+    platform: "darwin",
+    env: { AOS_APPIUM_URL: "http://127.0.0.1:4723" },
+    exec: fakeExec({ "xcrun simctl help": "Usage: simctl" }),
+    statfs: async () => ({ freeBytes: 1, totalBytes: 2 }),
+    appiumStatus: async () => {
+      throw new Error("connect ECONNREFUSED 127.0.0.1:4723");
+    }
+  });
+  assert.equal(env.tools.appium.present, false);
+  assert.equal(env.tools.appium.configured, true);
+  assert.equal(env.tools.appium.reachable, false);
+  assert.match(env.tools.appium.note, /ECONNREFUSED/);
+  assert.deepEqual(deriveCapabilities("darwin", env.tools), ["ios-simulator"]);
+});

@@ -9,6 +9,8 @@ export interface ToolProbe {
   version: string | null;
   path: string | null;
   note?: string | null;
+  configured?: boolean;
+  reachable?: boolean;
 }
 
 export interface HostEnvSnapshot {
@@ -23,6 +25,7 @@ export interface HostEnvSnapshot {
     xcodebuild: ToolProbe;
     simctl: ToolProbe;
     idb: ToolProbe;
+    ideviceId: ToolProbe;
     idevicesyslog: ToolProbe;
     appium: ToolProbe;
     uv: ToolProbe;
@@ -69,18 +72,14 @@ export function deriveCapabilities(
   const capabilities: string[] = [];
   if (platform === "darwin") {
     if (tools.simctl.present) capabilities.push("ios-simulator");
-    const ideviceId = (tools as HostToolsWithIdeviceId).ideviceId;
-    const ideviceIdReady =
-      typeof ideviceId === "object" && ideviceId !== null ? ideviceId.present : ideviceId === true;
-    if (tools.appium.present || (ideviceIdReady && tools.idb.present)) {
+    const appiumReachable = tools.appium.reachable ?? tools.appium.present;
+    if (appiumReachable || (tools.ideviceId.present && tools.idb.present)) {
       capabilities.push("ios-real");
     }
   }
   if (tools.adb.present) capabilities.push("android");
   return capabilities;
 }
-
-type HostToolsWithIdeviceId = HostEnvSnapshot["tools"] & { ideviceId?: ToolProbe | boolean };
 
 export async function detectHostEnvironment(
   input: DetectHostEnvironmentInput
@@ -91,15 +90,20 @@ export async function detectHostEnvironment(
   const now = input.now ?? Date.now;
   const statfs = input.statfs ?? defaultStatfs;
 
-  const syslogPathCommand = platform === "win32" ? "where" : "which";
-  const [adb, xcodebuild, simctl, idb, idevicesyslog, uv, disk] = await Promise.all([
+  const pathLookupCommand = platform === "win32" ? "where" : "which";
+  const probeIdeviceTools = platform === "darwin";
+  const probeLibimobiledevice = platform === "darwin" || platform === "linux";
+  const [adb, xcodebuild, simctl, idb, ideviceId, idevicesyslog, uv, disk] = await Promise.all([
     probeTool(exec, ADB_PROBE),
-    platform === "darwin" ? probeTool(exec, XCODEBUILD_PROBE) : missingTool(),
-    platform === "darwin" ? probeTool(exec, SIMCTL_PROBE) : missingTool(),
-    platform === "darwin" ? probeTool(exec, IDB_PROBE) : missingTool(),
-    platform === "darwin"
+    probeIdeviceTools ? probeTool(exec, XCODEBUILD_PROBE) : missingTool(),
+    probeIdeviceTools ? probeTool(exec, SIMCTL_PROBE) : missingTool(),
+    probeIdeviceTools ? probeTool(exec, IDB_PROBE) : missingTool(),
+    probeIdeviceTools
+      ? probeTool(exec, { command: pathLookupCommand, args: ["idevice_id"], pathFromStdout: true })
+      : missingTool(),
+    probeLibimobiledevice
       ? probeTool(exec, {
-          command: syslogPathCommand,
+          command: pathLookupCommand,
           args: ["idevicesyslog"],
           pathFromStdout: true
         })
@@ -118,7 +122,7 @@ export async function detectHostEnvironment(
     cpu: { model: cpus[0]?.model?.trim() || "unknown", count: cpus.length },
     memory: { totalBytes: os.totalmem() },
     disk,
-    tools: { adb, xcodebuild, simctl, idb, idevicesyslog, appium, uv }
+    tools: { adb, xcodebuild, simctl, idb, ideviceId, idevicesyslog, appium, uv }
   };
 }
 
@@ -129,7 +133,12 @@ function missingTool(): Promise<ToolProbe> {
 async function probeTool(exec: ExecFn, spec: ProbeSpec): Promise<ToolProbe> {
   const result = await runProbe(exec, spec.command, spec.args);
   if (result === null || result.error !== undefined || result.code !== 0) {
-    return { present: false, version: null, path: null, note: result?.error ?? null };
+    return {
+      present: false,
+      version: null,
+      path: null,
+      note: result === null ? null : (result.error?.trim() || firstLine(result.stderr))
+    };
   }
   const stdout = result.stdout ?? "";
   return {
@@ -158,18 +167,46 @@ async function probeAppium(
   appiumStatus: DetectHostEnvironmentInput["appiumStatus"]
 ): Promise<ToolProbe> {
   const url = (env.AOS_APPIUM_URL ?? "").trim();
-  if (url === "") return { present: false, version: null, path: null, note: null };
+  if (url === "") {
+    return {
+      present: false,
+      version: null,
+      path: null,
+      note: null,
+      configured: false,
+      reachable: false
+    };
+  }
   const status = appiumStatus ?? fetchAppiumStatus;
   try {
     const result = await status(url);
+    if (result === null) {
+      return {
+        present: false,
+        version: null,
+        path: url,
+        note: "status 探测失败",
+        configured: true,
+        reachable: false
+      };
+    }
     return {
       present: true,
-      version: result?.version ?? null,
+      version: result.version ?? null,
       path: url,
-      note: result === null ? "status 探测失败" : null
+      note: null,
+      configured: true,
+      reachable: true
     };
   } catch (error) {
-    return { present: true, version: null, path: url, note: errorMessage(error) };
+    return {
+      present: false,
+      version: null,
+      path: url,
+      note: errorMessage(error),
+      configured: true,
+      reachable: false
+    };
   }
 }
 
