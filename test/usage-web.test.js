@@ -75,7 +75,7 @@ async function getJson(store, path, extra = {}) {
   return JSON.parse(res.body);
 }
 
-test("usage web: HTML renders the four sections, storage badge and project switcher", async () => {
+test("usage web: HTML 四段、页面内存储标注与项目切换器", async () => {
   const store = await seedStore();
   const res = await handleUsageRequest(
     new URL("http://localhost/usage?project=alpha"),
@@ -106,7 +106,7 @@ test("usage web: HTML renders the four sections, storage badge and project switc
   assert.match(body, /<time datetime="/, "事件/最近调用时间相对化");
   assert.match(body, /c-table-wrap/, "表格横向滚动容器（对齐 CSDC）");
   assert.match(body, /<div class="c-table-wrap"><table class="c-table"><caption>事件流水<\/caption>/, "事件流水表也含容器（390 不整页溢出）");
-  assert.match(body, /记录底座：/, "顶栏记录底座条目");
+  assert.ok(!body.includes("记录底座："), "顶栏不再有存储状态胶囊");
   assert.match(body, />成功<\/option>[\s\S]*>失败<\/option>/, "筛选词中文化（成功/失败）");
   assert.match(body, /独立统计进程（控制台总览：/, "独立进程不渲染死链，改为说明");
 

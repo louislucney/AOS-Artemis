@@ -7,7 +7,7 @@ import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
-import { renderConsoleShell, setConsoleShellDefaults, type ConsoleCapabilities, type ConsoleNavKey, type ConsoleShellInput } from "../console/shell.js";
+import { renderConsoleShell, renderGroupTabs, setConsoleShellDefaults, type ConsoleCapabilities, type ConsoleNavKey, type ConsoleShellInput } from "../console/shell.js";
 import {
   computeDispatchPreview,
   dispatchFormSignature,
@@ -1124,16 +1124,16 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string, hostId
       title: "下一步",
       actions:
         detail.reviewQueue.undecided > 0
-          ? `<a class="c-button c-button-primary" href="${escapeHtml(reviewHref(rootPath, hostId))}">先去裁决 ${detail.reviewQueue.undecided} 条 →</a> <a class="c-button" href="${escapeHtml(dispatchHref(rootPath, hostId))}">新建回归任务</a>`
+          ? `<a class="c-button c-button-primary" href="${escapeHtml(reviewHref(rootPath, hostId))}">先去裁决 ${detail.reviewQueue.undecided} 条 →</a> <a class="c-button" href="${escapeHtml(dispatchHref(rootPath, hostId))}">新建任务</a>`
         : detail.regressionRefs.length === 0
         ? `<a class="c-button c-button-primary" href="${escapeHtml(
             `/panel?project=${encodeURIComponent(rootPath)}&section=library${hostSuffix(hostId)}`
           )}">先去生成/导入用例 →</a>`
-        : `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath, hostId))}">新建回归任务</a>`,
+        : `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath, hostId))}">新建任务</a>`,
       body:
         detail.reviewQueue.undecided === 0 && detail.reviewQueue.unissued === 0
-          ? `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">归因队列</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
-          : `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">待裁决 ${detail.reviewQueue.undecided} 条</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}#issues">未建单缺陷 ${detail.reviewQueue.unissued} 项</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
+          ? `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">失败分析</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
+          : `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">待判定 ${detail.reviewQueue.undecided} 条</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}#issues">未建单缺陷 ${detail.reviewQueue.unissued} 项</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
     }),
     activityLine,
     "</div>"
@@ -1160,7 +1160,7 @@ function renderIntegration(detail: PanelProjectDetail): string {
   if (integration === null) {
     return [
       '<section id="integration">',
-      "<h2>接入信息</h2>",
+      "<h2>接入</h2>",
       '<p class="note">磁盘不可达：集成软读不可用（仅台账视图）。</p>',
       "</section>"
     ].join("\n");
@@ -1189,7 +1189,7 @@ function renderIntegration(detail: PanelProjectDetail): string {
   ]);
   return [
     '<section id="integration">',
-    "<h2>接入信息</h2>",
+    "<h2>接入</h2>",
     '<div class="cards">',
     `<div class="card"><div class="k">LLM 条目</div><div class="v">${integration.llm.entries}</div></div>`,
     `<div class="card"><div class="k">active</div><div class="v">${escapeHtml(integration.llm.activeName ?? "—")}</div></div>`,
@@ -1205,7 +1205,7 @@ function renderIntegration(detail: PanelProjectDetail): string {
       integration.host.buildStale === null ? "未知" : integration.host.buildStale ? "陈旧（需重启）" : "最新"
     }</p>`,
     `<h3>设计资产</h3>`,
-    renderTable(["资产", "路径", "状态", "更新时间"], assets, "暂无资产", "磁盘资产"),
+    renderTable(["资产", "路径", "状态", "更新时间"], assets, "暂无资产", "磁盘文件"),
     "</section>"
   ]
     .filter((part) => part !== "")
@@ -1264,9 +1264,9 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string, hostId: str
         ].join("\n");
   return [
     '<section id="batches">',
-    "<h2>测试批次</h2>",
+    "<h2>最近运行</h2>",
     trendLine,
-    renderTable(["开始", "结束", "来源", "门禁", "通过/总数", "UI", "失败域", "清单"], rows, empty, "测试批次"),
+    renderTable(["开始", "结束", "来源", "门禁", "通过/总数", "UI", "失败域", "清单"], rows, empty, "最近运行"),
     "</section>"
   ]
     .filter((part) => part !== "")
@@ -1290,8 +1290,8 @@ function renderStandalones(detail: PanelProjectDetail): string {
   ]);
   return [
     '<section id="standalones">',
-    "<h2>独立运行</h2>",
-    renderTable(["trace", "用例", "结果", "台账状态", "模型", "提交", "完成"], rows, "暂无独立运行"),
+    "<h2>单次运行</h2>",
+    renderTable(["trace", "用例", "结果", "台账状态", "模型", "提交", "完成"], rows, "暂无单次运行"),
     "</section>"
   ].join("\n");
 }
@@ -1470,7 +1470,7 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
           .join("\n");
   return [
     '<section id="disk-assets">',
-    "<h2>磁盘资产</h2>",
+    "<h2>磁盘文件</h2>",
     "<h3>崩溃签名</h3>",
     crashes,
     "<h3>对账信息</h3>",
@@ -1515,7 +1515,7 @@ function renderDispatchCta(rootPath: string, detail: PanelProjectDetail, hostId:
       : `当前有 ${refs.length} 份可引用的用例集；关键词模式可批量匹配多份，预览逐份列出。`;
   return [
     '<section id="regression" class="c-plain">',
-    "<h2>新建回归测试</h2>",
+    "<h2>新建任务</h2>",
     cCard({
       title: "使用下发向导（唯一入口）",
       body: [
@@ -1591,7 +1591,7 @@ function renderRunners(detail: PanelProjectDetail): string {
   if (detail.runners.length === 0) {
     return [
       '<section id="runners">',
-      "<h2>执行机（runner）</h2>",
+      "<h2>执行机</h2>",
       '<p class="empty">暂无执行机心跳（在项目机运行 <code>node dist/cli.js suite runner</code>）</p>',
       "</section>"
     ].join("\n");
@@ -1616,8 +1616,8 @@ function renderRunners(detail: PanelProjectDetail): string {
   ]);
   return [
     '<section id="runners">',
-    "<h2>执行机（runner）</h2>",
-    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无执行机", "执行机（runner）"),
+    "<h2>执行机</h2>",
+    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无执行机", "执行机"),
     "</section>"
   ].join("\n");
 }
@@ -1638,11 +1638,11 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: st
   ]);
   return [
     '<section id="tasks">',
-    "<h2>回归任务</h2>",
+    "<h2>任务</h2>",
     renderTable(
       ["任务", "优先级", "状态", "引用份数", "目标端", "运行数", "创建时间"],
       rows,
-      "暂无回归任务（上方「新建回归测试」创建）"
+      "暂无任务（上方「新建任务」创建）"
     ),
     "</section>"
   ].join("\n");
@@ -1681,7 +1681,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: s
     "</form>",
     reason
   ].join("");
-  const emptyRow = '<p class="empty">暂无定时回归（执行机按窗口自动触发；引用实时取最新份）</p>';
+  const emptyRow = '<p class="empty">暂无定时任务（执行机按窗口自动触发；引用实时取最新份）</p>';
   const rows = detail.schedules.map((schedule) => [
     escapeHtml(schedule.name),
     schedule.featureKeys
@@ -1709,14 +1709,14 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: s
     : `<script>(function(){var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var hostId=${JSON.stringify(hostId).replace(/</g, "\\u003c")};var status=document.getElementById('schedule-status');function say(m){status.textContent=m;}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var form=document.getElementById('schedule-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var keys=f.getAll('featureKeys').map(function(s){return String(s).trim();}).filter(Boolean);if(keys.length===0){say('请至少选择一个功能');return;}var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(i){return i.value;});post({project:root,host:hostId,action:'create',name:(f.get('name')||'').trim(),featureKeys:keys,platforms:platforms,everyMinutes:Number(f.get('everyMinutes')||0)}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已创建 · 已写入审计');location.reload();}else{say('创建失败：'+(res.j.error||res.status));}}).catch(function(err){say('创建失败：'+err);});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-schedule]'):null;if(!b)return;var op=b.getAttribute('data-op');var runScheduleOp=function(){post({project:root,host:hostId,action:op,id:b.getAttribute('data-schedule')}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已更新 · 已写入审计');location.reload();}else{say('操作失败：'+(res.j.error||res.status));}}).catch(function(err){say('操作失败：'+err);});};if(op==='delete'){window.aosInlineConfirm(b,'确认删除该计划？',runScheduleOp);}else{runScheduleOp();}});})();</script>`;
   return [
     '<section id="schedules">',
-    "<h2>定时回归（schedule）</h2>",
+    "<h2>定时任务</h2>",
     form,
     detail.schedules.length === 0
       ? emptyRow
       : renderTable(
           ["名称", "功能", "端", "节奏", "状态", "上次触发", "最近任务", "操作"],
           rows,
-          "暂无定时回归"
+          "暂无定时任务"
         ),
     script,
     "</section>"
@@ -1800,7 +1800,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       ? '<p class="note">当前无在线执行机完整覆盖任务目标端（双端任务需单机双端执行机）；可手动执行或等待执行机上线。</p>'
       : "";
   return page(
-    `回归任务 · ${task.id}`,
+    `任务 · ${task.id}`,
     [
       ...(view.flash === undefined
         ? []
@@ -1809,7 +1809,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
           ]),
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
-      `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
+      `<h1>任务 <code>${escapeHtml(task.id)}</code></h1>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
@@ -2011,11 +2011,17 @@ function renderReviewPage(view: {
           "</script>"
         ];
   return page(
-    `归因队列 · ${path.basename(view.rootPath)}`,
+    `失败分析 · ${path.basename(view.rootPath)}`,
     [
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
-      "<h1>归因队列</h1>",
+      "<h1>失败分析</h1>",
+      renderGroupTabs({
+        group: "results",
+        active: "review",
+        project: view.rootPath,
+        hostId: view.hostId
+      }),
       `<p class="muted">最近 10 次运行的失败用例 · 共 ${items.length} 条 · 未裁决 ${undecided} 条</p>`,
       warningsHtml,
       "</header>",
@@ -2257,11 +2263,17 @@ function renderStatsPage(view: { rootPath: string; hostId: string | null; detail
     .map((warning) => `<p class="note">${escapeHtml(warning)}</p>`)
     .join("");
   return page(
-    `回归统计 · ${path.basename(view.rootPath)}`,
+    `统计 · ${path.basename(view.rootPath)}`,
     [
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
-      "<h1>回归统计</h1>",
+      "<h1>统计</h1>",
+      renderGroupTabs({
+        group: "results",
+        active: "stats",
+        project: view.rootPath,
+        hostId: view.hostId
+      }),
       warningsHtml,
       "</header>",
       "<main>",
@@ -2328,7 +2340,7 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
             : health.writeIssue === null || health.label.includes("会话内存")
               ? escapeHtml(health.label)
               : `${escapeHtml(health.label)}（${escapeHtml(health.writeIssue)}）`;
-        return `<p>可运行：${lampSpan(axis.lamp)}${escapeHtml(axis.note)} · 可持久：${persist} · 已接入：${row.integration.ready}/${row.integration.total} 就绪${
+        return `<p>运行：${lampSpan(axis.lamp)}${escapeHtml(axis.note)} · 存储：${persist} · 接入：${row.integration.ready}/${row.integration.total} 就绪${
           row.integration.missing.length > 0
             ? `（缺 ${row.integration.missing.map((item) => escapeHtml(item)).join("、")}；不影响执行）`
             : ""
@@ -2340,7 +2352,8 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
       reasons,
       warnings,
       `<p class="muted">生成时间 ${relativeTime(detail.generatedAt)} · ${escapeHtml(cacheNote)}</p>`,
-      `<p><a href="${escapeHtml(reviewHref(view.rootPath, view.hostId))}">归因队列</a> · <a href="${escapeHtml(statsHref(view.rootPath, view.hostId))}">统计</a></p>`,
+      '<p class="muted">页内：<a href="#tasks">任务</a> · <a href="#runners">执行机</a> · <a href="#schedules">计划</a></p>',
+      `<p><a href="${escapeHtml(reviewHref(view.rootPath, view.hostId))}">失败分析</a> · <a href="${escapeHtml(statsHref(view.rootPath, view.hostId))}">统计</a></p>`,
       "</header>",
       "<main>",
       ...(emptyProject ? [renderOnboarding(view.rootPath, view.hostId)] : []),
@@ -2357,7 +2370,7 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
       ...(emptyProject ? ["</details>"] : []),
       renderDispatchCta(view.rootPath, detail, view.hostId),
       '<details class="c-details">',
-      "<summary>环境自查与明细（接入自检 / 运行时细节 / 磁盘资产 / 独立运行）</summary>",
+      "<summary>环境自查与明细（接入自检 / 运行时细节 / 磁盘文件 / 单次运行）</summary>",
       renderIntegration(detail),
       renderDeepSection(detail),
       renderDiskAssets(detail),
@@ -2507,7 +2520,7 @@ function renderCompareTodoCell(project: PanelCompareProject): string {
 function renderCompareRunCell(project: PanelCompareProject): string {
   return [
     `<div>执行机 在线 ${project.runners.online} · 设备 ${project.runners.devices}</div>`,
-    `<div>定时回归 启用 ${project.schedules.enabled} · 最近触发 ${escapeHtml(
+    `<div>定时任务 启用 ${project.schedules.enabled} · 最近触发 ${escapeHtml(
       project.schedules.lastFiredAt ?? "—"
     )}</div>`
   ].join("");
@@ -2582,11 +2595,11 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
   const warnings = view.warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("");
   const scope = [
     `口径：窗口＝用例集份最近 ${view.window.runs} 批`,
-    "仅计入「用例集份」来源批次（suite run --tests／独立运行等其余来源见项目页）",
+    "仅计入「用例集份」来源批次（suite run --tests／单次运行等其余来源见项目页）",
     `任务积压为最近 ${PANEL_COMPARE_TASK_LIMIT} 条近似`,
     `执行机为最近 ${PANEL_COMPARE_RUNNER_LIMIT} 条近似`,
     "数据源＝中央台账",
-    "精确待办以归因队列为准"
+    "精确待办以失败分析为准"
   ].join("；");
   return page(
     "多项目对比",
@@ -2611,7 +2624,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
             "趋势（最近 10 批）",
             "质量（flaky·失败域 top3）",
             "待办（未裁决·未建单·积压·failed）",
-            "执行（执行机·定时回归）"
+            "执行（执行机·定时任务）"
           ],
           rows,
           caption: "项目对比矩阵",
@@ -2797,21 +2810,23 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
     case "archive":
       return "archive";
     case "audit":
-      return "audit";
+      return "ops";
     case "ops":
       return "ops";
     case "project":
-      return view.active ?? "project";
+      return view.active === "tasks" || view.active === "runners" || view.active === "schedules"
+        ? "project"
+        : (view.active ?? "project");
     case "review":
       return "review";
     case "stats":
-      return "stats";
+      return "review";
     case "batch":
-      return "tasks";
+      return "project";
     case "search":
       return null;
     default:
-      return "tasks";
+      return "project";
   }
 }
 

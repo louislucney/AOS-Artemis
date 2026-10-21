@@ -194,7 +194,7 @@ test("console pages: 独立进程能力同源（只读横幅＋统计导航禁�
   for (const [section, extra] of pages) {
     const html = await handlePanelRequest(url(rootPath, section, extra), standalone);
     assert.equal(html.status, 200, section);
-    assert.match(html.body, /capability-banner|写动作未启用/, `${section}: 只读横幅断档修复`);
+    assert.match(html.body, /capability-banner|只读模式/, `${section}: 只读横幅断档修复`);
     assert.match(html.body, /本进程不提供统计页/, `${section}: 统计导航按能力禁用（不再 404）`);
   }
 });
@@ -261,11 +261,11 @@ test("console pages: 全局搜索（项目/用例集/任务）与空态", async 
   assert.equal(payload.caseSets.length, 1);
 });
 
-test("console pages: 运维与数据（存储徽章＋写失败信号位＋导出链接）", async () => {
+test("console pages: 运维（存储徽章＋写失败信号位＋导出链接）", async () => {
   const { deps, rootPath } = await setup();
   const html = await handlePanelRequest(url(rootPath, "ops"), deps);
   assert.equal(html.status, 200);
-  assert.match(html.body, /运维与数据/);
+  assert.match(html.body, /运维/);
   assert.match(html.body, /会话内存/, "MemoryStore 显示会话内存");
   assert.ok(!html.body.includes("文件台账"), "存储口径同源（不出现矛盾的台账说明）");
   assert.match(html.body, /panel\/api\/export\?project=/);

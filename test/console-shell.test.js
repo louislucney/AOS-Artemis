@@ -42,8 +42,11 @@ test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动�
 
 test("console shell: 默认 nav 覆盖控制台版块", () => {
   const keys = DEFAULT_CONSOLE_NAV.map((item) => item.key);
-  for (const expected of ["overview", "project", "tasks", "dispatch", "library", "archive", "runners", "schedules", "ops", "audit", "usage"]) {
+  for (const expected of ["overview", "project", "review", "dispatch", "library", "archive", "ops", "usage"]) {
     assert.ok(keys.includes(expected), expected);
+  }
+  for (const removed of ["tasks", "runners", "schedules", "stats", "audit"]) {
+    assert.ok(!keys.includes(removed), `${removed} 已并入同级版块，不再占一级导航`);
   }
 });
 
@@ -66,8 +69,8 @@ test("console shell: 项目导航项、切换器与任务锚点", () => {
   assert.match(html, /<option value="\/panel\?project=%2Fw%2Fa" selected>A<\/option>/, "当前项目预选");
   assert.match(
     html,
-    /href="\/panel\?project=%2Fw%2Fp&amp;section=tasks#tasks"/,
-    "任务锚点指向任务列表"
+    /"tasks":"\/panel\?project=%2Fw%2Fp&section=tasks#tasks"/,
+    "任务锚点仍可由快捷键触达"
   );
   assert.doesNotMatch(html, /section=tasks#regression/);
   assert.match(html, /g j<\/span> 项目/, "项目快捷键 j");
@@ -122,10 +125,10 @@ test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷�
   assert.match(html, /积压<\/strong>：待执行队列/, "术语表补积压");
 });
 
-test("console shell: 顶栏记录底座指示器（持久层/最近写入/写失败）", () => {
+test("console shell: 顶栏不再显示存储/最近写入（信息只在运维页）", () => {
   const html = renderConsoleShell({
-    title: "任务",
-    active: "tasks",
+    title: "项目",
+    active: "project",
     body: "",
     project: "/w/p",
     storeHealth: {
@@ -135,11 +138,8 @@ test("console shell: 顶栏记录底座指示器（持久层/最近写入/写失
       opsHref: "/panel?project=%2Fw%2Fp&section=ops"
     }
   });
-  assert.match(html, /c-store-chip/);
-  assert.match(html, /文件台账/);
-  assert.match(html, /最近写入 <time datetime="2026-10-18T12:03:44\.000Z"[^>]*>[^<]*<\/time>/, "最近写入相对化（title 本地时间）");
-  assert.match(html, /c-badge-error">写失败 2 次/);
-  assert.match(html, /section=ops/);
+  assert.ok(!html.includes("c-store-chip"), "顶栏不再有存储状态胶囊");
+  assert.ok(!html.includes("最近写入"), "顶栏不再有最近写入");
   assert.match(html, /color-scheme:light/, "CSDC 强制亮色");
   assert.match(html, /<meta name="color-scheme" content="light">/, "UA 控件也按亮色");
   assert.ok(!html.includes("data-theme=\"dark\""), "不再跟随系统暗色");
@@ -223,7 +223,7 @@ test("console shell: 项目上下文与能力标记（导航禁用/横幅）", (
     body: "",
     capabilities: { actions: false, usage: false, mode: "standalone" }
   });
-  assert.ok(off.includes("写动作未启用"), "能力横幅出现");
+  assert.ok(off.includes("只读模式"), "能力横幅出现");
   assert.ok(off.includes("本进程不提供统计页"), "统计导航按能力禁用");
   assert.ok(!off.includes('href="/usage"'), "统计不再是无用链接");
 });

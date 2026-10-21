@@ -202,7 +202,7 @@ test("http server: panel dashboard over real HTTP", async () => {
     const project = await fetch(`http://127.0.0.1:${handle.port}/panel?project=demo`);
     assert.equal(project.status, 200);
     const projectBody = await project.text();
-    assert.match(projectBody, /接入信息/);
+    assert.match(projectBody, /接入/);
     assert.match(projectBody, /运行时细节/);
 
     const deepJson = await fetch(`http://127.0.0.1:${handle.port}/panel.json?project=demo`);
@@ -347,7 +347,7 @@ test("http server: 任务视图路由（未知 task → 404）", async () => {
   }
 });
 
-test("http server: 归因队列（GET view=review + POST 裁决后队列更新）", async () => {
+test("http server: 失败分析（GET view=review + POST 裁决后队列更新）", async () => {
   const store = new MemoryStore();
   const workspace = makeWorkspace();
   const projectDir = path.join(workspace, "demo");

@@ -154,11 +154,13 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-main code{overflow-wrap:anywhere}
 .c-nav-item-disabled{color:var(--color-text-tertiary);cursor:not-allowed}
 .c-nav-item-disabled:hover{background:transparent;text-decoration:none;color:var(--color-text-tertiary)}
+.c-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.c-tabs a{padding:5px 14px;border:1px solid var(--color-border);border-radius:var(--radius-pill);font-size:var(--font-size-callout);font-weight:var(--font-weight-medium);color:var(--color-text-secondary)}
+.c-tabs a:hover{background:var(--color-accent-hover);text-decoration:none;color:var(--color-text-primary)}
+.c-tabs a[aria-current="page"]{background:var(--color-accent);border-color:var(--color-accent);color:var(--color-text-primary);font-weight:var(--font-weight-semibold)}
 .c-nav-hint{font-size:12px;color:var(--color-text-secondary);padding:8px 4px;line-height:1.5}
 .c-nav-badge{display:inline-block;margin-left:6px;min-width:16px;padding:0 5px;border-radius:var(--radius-pill);background:var(--color-accent);font-size:11px;text-align:center}
 .c-confirm-inline{display:inline-flex;align-items:center;gap:6px;background:var(--color-accent-surface);border:1.5px solid var(--color-accent-border);border-radius:var(--radius-sm);padding:5px 10px;font-size:12px;margin-left:8px;flex-wrap:wrap}
-.c-store-chip{margin-left:12px;font-size:12px;color:var(--color-text-secondary)}
-.c-store-chip a{color:inherit;text-decoration:underline}
 .c-search{display:flex;gap:6px;align-items:center;margin-left:16px}
 .c-search input[type=search]{padding:6px 10px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-surface-white);color:var(--color-text-primary);font-size:12px;min-width:200px}
 .c-search button{padding:5px 12px;font-size:12px}
@@ -193,7 +195,6 @@ body.c-shortcuts-open #console-shortcuts{display:block}
   .c-search input[type=search]{min-width:0;width:100%}
   .c-switcher{margin-left:0;max-width:100%}
   .c-switcher select{max-width:100%}
-  .c-store-chip{margin-left:0;max-width:100%;overflow-wrap:anywhere}
   .c-card{min-width:0;max-width:100%}
   .c-table-wrap{max-width:100%}
   .c-topbar-meta{width:100%;max-width:100%;margin-left:0;overflow-wrap:anywhere}

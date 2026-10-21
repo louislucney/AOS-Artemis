@@ -15,7 +15,7 @@ import {
   sourceHtml,
   AUDIT_DOMAIN_KEYS
 } from "./vocab.js";
-import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
+import { renderConsoleShell, renderGroupTabs, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
 
 export interface LibraryPageData {
   rootPath: string;
@@ -346,13 +346,19 @@ export function renderAuditPage(data: AuditPageData): string {
     `<a class="c-button" href="${link({ since: new Date(Date.now() - hours * 3600_000).toISOString(), offset: "0" })}">${label}</a>`;
   return renderConsoleShell({
     title: "审计",
-    active: "audit",
+    active: "ops",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
     projectHostId: data.hostId ?? null,
     storeHealth: data.storeHealth,
     body: [
       "<h1>审计</h1>",
+      renderGroupTabs({
+        group: "ops",
+        active: "audit",
+        project: data.rootPath,
+        hostId: data.hostId ?? null
+      }),
       cCard({
         title: "筛选",
         body: [
@@ -490,7 +496,7 @@ export function renderOpsPage(data: OpsPageData): string {
       : `<a class="c-button" href="${href}">${label}</a>`;
   };
   return renderConsoleShell({
-    title: "运维与数据",
+    title: "运维",
     active: "ops",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
@@ -498,7 +504,13 @@ export function renderOpsPage(data: OpsPageData): string {
     capabilities: data.capabilities,
     storeHealth: data.storeHealth,
     body: [
-      "<h1>运维与数据</h1>",
+      "<h1>运维</h1>",
+      renderGroupTabs({
+        group: "ops",
+        active: "ops",
+        project: data.rootPath,
+        hostId: data.hostId ?? null
+      }),
       cCard({
         title: "存储",
         body: [

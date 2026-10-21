@@ -1,7 +1,6 @@
 import { CONSOLE_COMPAT_CSS } from "./compat.js";
 import { CSDC_LOGO_DATA_URI } from "./logo.js";
 import { CSDC_TOKENS_CSS } from "./tokens.js";
-import { relativeTime } from "./time.js";
 import { CONSOLE_NAME, PRODUCT_NAME } from "../brand.js";
 import { escapeHtml } from "../util.js";
 
@@ -96,16 +95,11 @@ const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
 export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "overview", label: "总览", href: "/panel" },
   { key: "project", label: "项目", href: "/panel" },
-  { key: "tasks", label: "任务", href: "/panel?section=tasks" },
-  { key: "review", label: "归因", href: "/panel" },
-  { key: "stats", label: "回归统计", href: "/panel" },
+  { key: "review", label: "结果", href: "/panel" },
   { key: "dispatch", label: "下发", href: "/panel?section=dispatch" },
   { key: "library", label: "用例库", href: "/panel?section=library" },
-  { key: "archive", label: "档案与产物", href: "/panel?section=archive" },
-  { key: "runners", label: "执行机", href: "/panel?section=runners" },
-  { key: "schedules", label: "计划", href: "/panel?section=schedules" },
-  { key: "ops", label: "运维与数据", href: "/panel?section=ops" },
-  { key: "audit", label: "审计", href: "/panel?section=audit" },
+  { key: "archive", label: "档案", href: "/panel?section=archive" },
+  { key: "ops", label: "运维", href: "/panel?section=ops" },
   { key: "usage", label: "使用统计", href: "/usage" }
 ];
 
@@ -113,8 +107,7 @@ export const USAGE_STANDALONE_NAV: ConsoleNavItem[] = [
   { key: "usage", label: "使用统计", href: "/usage" }
 ];
 
-function navHref(item: ConsoleNavItem, project: string | null, hostId: string | null): string | null {
-  if (item.key === "usage") {
+function navHref(item: ConsoleNavItem, project: string | null, hostId: string | null): string | null {  if (item.key === "usage") {
     if (project === null || project === "") return item.href;
     const params = new URLSearchParams({ project });
     if (hostId) params.set("host", hostId);
@@ -135,6 +128,32 @@ function navHref(item: ConsoleNavItem, project: string | null, hostId: string | 
   if (item.key === "runners") return `/panel?${params.toString()}${host}#runners`;
   if (item.key === "schedules") return `/panel?${params.toString()}${host}#schedules`;
   return `/panel?${params.toString()}${host}`;
+}
+
+/** 合并版块内的页签（结果＝失败分析/统计；运维＝数据/审计）。 */
+export function renderGroupTabs(input: {
+  group: "results" | "ops";
+  active: "review" | "stats" | "ops" | "audit";
+  project: string;
+  hostId: string | null;
+}): string {
+  const host = input.hostId ? `&host=${encodeURIComponent(input.hostId)}` : "";
+  const base = `/panel?project=${encodeURIComponent(input.project)}`;
+  const entries =
+    input.group === "results"
+      ? [
+          { key: "review", label: "失败分析", href: `${base}&view=review${host}` },
+          { key: "stats", label: "统计", href: `${base}&view=stats${host}` }
+        ]
+      : [
+          { key: "ops", label: "数据", href: `${base}&section=ops${host}` },
+          { key: "audit", label: "审计", href: `${base}&section=audit${host}` }
+        ];
+  const links = entries.map(
+    (entry) =>
+      `<a href="${escapeHtml(entry.href)}"${entry.key === input.active ? ' aria-current="page"' : ""}>${escapeHtml(entry.label)}</a>`
+  );
+  return `<nav class="c-tabs" aria-label="${input.group === "results" ? "结果视图" : "运维视图"}">${links.join("")}</nav>`;
 }
 
 export function renderConsoleShell(input: ConsoleShellInput): string {
@@ -167,18 +186,29 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
       : `<div class="c-nav-hint muted">进入任一项目后显示项目级版块（任务/下发/用例库/…）</div>`;
   const actionsBanner = capabilities.actions
     ? ""
-    : `<div class="c-banner c-banner-warn" role="status" id="capability-banner">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback 访问；或使用 HTTP 模式（<code>serve --http</code>，见 README 接入指南）。当前页面为只读。 <button class="c-button" type="button" id="capability-dismiss">知道了</button></div>`;
+    : `<div class="c-banner c-banner-warn" role="status" id="capability-banner">只读模式：本进程未开启写操作。用 <code>serve --http</code>，或设 <code>AOS_PANEL_ACTIONS=1</code>（仅 loopback）。 <button class="c-button" type="button" id="capability-dismiss">知道了</button></div>`;
   const navTargets: Record<string, string> = {};
   for (const item of nav) {
     const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project, input.projectHostId ?? null);
     if (href !== null) navTargets[item.key] = href;
   }
+  // 任务/执行机/计划 是项目页内的锚点，不再占一级导航；快捷键仍然可达。
+  if (project !== null && project !== "") {
+    const base = `/panel?project=${encodeURIComponent(project)}${
+      input.projectHostId ? `&host=${encodeURIComponent(input.projectHostId)}` : ""
+    }`;
+    navTargets.tasks = `${base}&section=tasks#tasks`;
+    navTargets.runners = `${base}&section=runners#runners`;
+    navTargets.schedules = `${base}&section=schedules#schedules`;
+    navTargets.stats = `${base}&view=stats`;
+    navTargets.audit = `${base}&section=audit`;
+  }
   const shortcutKeys: Array<[string, ConsoleNavKey, string]> = [
     ["o", "overview", "总览"],
     ["j", "project", "项目"],
     ["t", "tasks", "任务"],
-    ["v", "review", "归因"],
-    ["y", "stats", "回归统计"],
+    ["v", "review", "失败分析"],
+    ["y", "stats", "统计"],
     ["d", "dispatch", "下发"],
     ["l", "library", "用例库"],
     ["f", "archive", "档案"],
@@ -198,19 +228,6 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     input.hideSearch === true
       ? ""
       : `<form class="c-search" method="get" action="/panel" role="search"><input type="hidden" name="section" value="search"><input type="search" name="q" aria-label="全局搜索（项目/用例集/任务）" placeholder="搜索项目 / 用例集 / 任务" value="${escapeHtml(input.searchQuery ?? "")}"><button class="c-button" type="submit">搜索</button></form>`;
-  const health = input.storeHealth ?? shellDefaults.storeHealth;
-  const healthChip =
-    health === undefined
-      ? ""
-      : `<div class="c-store-chip" title="${
-          health.opsHref === null
-            ? "记录底座：持久层与最近写入"
-            : "记录底座：持久层与最近写入（点击进入运维与数据）"
-        }">${health.opsHref === null ? "" : `<a href="${escapeHtml(health.opsHref)}">`}${escapeHtml(health.label)}${health.opsHref === null ? "" : "</a>"}${
-          health.lastWriteAt === null
-            ? ""
-            : ` · 最近写入 ${relativeTime(health.lastWriteAt)}`
-        }${health.writeIssue === null ? "" : ` <span class="c-badge c-badge-error">${escapeHtml(health.writeIssue)}</span>`}</div>`;
   const switcherOptions = (input.projectSwitcher ?? shellDefaults.projectSwitcher)?.options ?? [];
   const switcher =
     switcherOptions.length === 0
@@ -235,9 +252,9 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     ["积压", "待执行队列中的任务数（等待在线执行机）"],
     ["flaky", "同一用例时好时坏（重复采样判定）"]
   ];
-  const glossaryHtml = `<h2 class="c-card-title">术语</h2><ul>${glossaryRows
+  const glossaryHtml = `<details class="c-details"><summary>术语（${glossaryRows.length}）</summary><ul>${glossaryRows
     .map(([term, meaning]) => `<li><strong>${escapeHtml(term)}</strong>：${escapeHtml(meaning)}</li>`)
-    .join("")}</ul>`;
+    .join("")}</ul></details>`;
   const shortcutsPanel = `<div class="c-card" id="console-shortcuts" role="region" aria-label="快捷键与术语"><h2 class="c-card-title">快捷键</h2><ul><li><span class="c-kbd">?</span> 开关本帮助</li><li><span class="c-kbd">/</span> 聚焦筛选框</li>${shortcutRows}</ul>${glossaryHtml}</div>`;
   const liveNote =
     input.autoRefreshSeconds === undefined
@@ -269,7 +286,6 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     '<header class="c-topbar">',
     `<div class="c-brand"><a href="${escapeHtml(brandHref)}"><img src="${escapeHtml(CSDC_LOGO_DATA_URI)}" alt="CSDC 智能交付中心"><span class="c-brand-product">${CONSOLE_NAME}</span></a></div>`,
     switcher,
-    healthChip,
     searchForm,
     input.meta ? `<div class="c-topbar-meta">${input.meta}</div>` : "",
     "</header>",

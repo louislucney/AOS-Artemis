@@ -194,7 +194,7 @@ test("panel web: 总览 JSON 与 HTML", async () => {
   );
 });
 
-test("panel web: 项目详情（空态→批次→独立运行）与未知项目 404", async () => {
+test("panel web: 项目详情（空态→批次→单次运行）与未知项目 404", async () => {
   const { deps, projectDir, store } = await makeHarness();
   const projectUrl = new URL(`http://x/panel.json?project=${encodeURIComponent(projectDir)}`);
 
@@ -233,11 +233,12 @@ test("panel web: 项目详情（空态→批次→独立运行）与未知项目
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
     deps
   );
-  assert.match(projectHtml.body, /磁盘资产/);
+  assert.match(projectHtml.body, /磁盘文件/);
   assert.match(projectHtml.body, /对账信息/);
   assert.match(projectHtml.body, /在跑什么/, "一屏三问");
-  assert.match(projectHtml.body, /c-store-chip/, "顶栏记录底座指示器");
-  assert.match(projectHtml.body, /会话内存（不持久）|文件台账/, "指示器显示持久层");
+  assert.ok(!projectHtml.body.includes("c-store-chip"), "顶栏不再有存储状态胶囊");
+  assert.ok(!projectHtml.body.includes("最近写入"), "顶栏不再有最近写入");
+  assert.match(projectHtml.body, /会话内存|文件台账/, "可持久行仍显示持久层");
   assert.match(projectHtml.body, /&(amp;)?section=dispatch/, "下发入口");
   assert.match(
     projectHtml.body,
@@ -251,7 +252,7 @@ test("panel web: 项目详情（空态→批次→独立运行）与未知项目
   );
 });
 
-test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌表单）", async () => {
+test("panel web: 新建任务指向下发向导（唯一入口，无内嵌表单）", async () => {
   const { deps, projectDir, store } = await makeHarness();
   await store.recordCaseSet({
     rootPath: projectDir,
@@ -275,7 +276,7 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
     deps
   );
   assert.equal(html.status, 200);
-  assert.match(html.body, /新建回归测试/);
+  assert.match(html.body, /新建任务/);
   assert.match(html.body, /去下发向导/);
   assert.match(
     html.body,
@@ -293,7 +294,7 @@ test("panel web: 新建回归测试指向下发向导（唯一入口，无内嵌
   assert.match(html.body, /f\.getAll\('featureKeys'\)/, "提交收集多选值");
   assert.match(html.body, /<section id="regression" class="c-plain">/, "CTA 区块不吃遗留 section 边框（无双框）");
   assert.doesNotMatch(html.body, /id="onboarding"/, "有引用份时不显示入门卡");
-  assert.match(html.body, /可运行：[\s\S]{0,260}?可持久：[\s\S]{0,120}?已接入：/, "项目页三轴并列（可运行／可持久／已接入）");
+  assert.match(html.body, /运行：[\s\S]{0,260}?存储：[\s\S]{0,120}?接入：/, "项目页三轴并列（运行／存储／接入）");
   assert.doesNotMatch(html.body, /项目状态：/, "H1 不再夹灯状态（状态进徽章行）");
   assert.match(html.body, /<details class="c-details">/, "环境自查与明细折叠");
   assert.match(html.body, /<summary>环境自查与明细/);
@@ -705,7 +706,7 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
     deps
   );
   assert.equal(html.status, 200);
-  assert.match(html.body, /回归任务/);
+  assert.match(html.body, /<h1>任务 <code>/);
   assert.match(html.body, /partial/);
   assert.match(html.body, /登录流程/);
   assert.match(html.body, /emulator-5554/);
@@ -806,7 +807,7 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pending.id}`),
     gatedDeps
   );
-  assert.match(gatedHtml.body, /写动作未启用：独立进程需/, "能力关闭时释放给可见原因");
+  assert.match(gatedHtml.body, /只读模式/, "能力关闭时释放给可见原因");
 
   const json = JSON.parse(
     (
@@ -942,7 +943,7 @@ test("panel web: review HTML（radio 四选项、批量复选框、fetch、证�
     deps
   );
   assert.equal(html.status, 200);
-  assert.match(html.body, /归因队列/);
+  assert.match(html.body, /失败分析/);
   assert.match(html.body, /value="case-defect"/);
   assert.match(html.body, /value="execution-deviation"/);
   assert.match(html.body, /value="app-defect"/);
@@ -964,7 +965,7 @@ test("panel web: review HTML（radio 四选项、批量复选框、fetch、证�
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
     deps
   );
-  assert.match(projectHtml.body, /view=review/, "项目页有归因队列入口");
+  assert.match(projectHtml.body, /view=review/, "项目页有失败分析入口");
 });
 
 test("panel web: stats HTML（功能表/最不稳用例/跨端/三清单/指引）", async () => {
@@ -1074,7 +1075,7 @@ test("panel web: stats HTML（功能表/最不稳用例/跨端/三清单/指引�
     deps
   );
   assert.equal(html.status, 200);
-  assert.match(html.body, /回归统计/);
+  assert.match(html.body, /统计/);
   assert.match(html.body, /登录流程/);
   assert.match(html.body, /33%/);
   assert.match(html.body, /案例问题/);
@@ -1109,7 +1110,7 @@ test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标�
     deps
   );
   assert.equal(html.status, 200);
-  assert.match(html.body, /执行机（runner）/);
+  assert.match(html.body, /执行机/);
   assert.match(html.body, /c-badge-success/, "在线徽章");
   assert.match(html.body, /在线/);
   assert.match(html.body, /emulator-5554/);
@@ -1179,7 +1180,7 @@ test("panel web: 任务页 已领取/在线标记/刷新/无端覆盖提示", as
   assert.doesNotMatch(doneHtml.body, /DOMParser/, "终态不轮询");
 });
 
-test("panel web: 产物链接（任务页/归因队列；无 runner → 纯路径）", async () => {
+test("panel web: 产物链接（任务页/失败分析；无 runner → 纯路径）", async () => {
   const { deps, projectDir, store } = await makeHarness();
   const caseSetsDir = path.join(projectDir, ".artemis", "design", "case-sets");
   const set = await store.recordCaseSet({
@@ -1372,7 +1373,7 @@ test("panel web: 定时回归区块 + 任务页来源显示", async () => {
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
     deps
   );
-  assert.match(html.body, /定时回归（schedule）/);
+  assert.match(html.body, /定时任务/);
   assert.match(html.body, /夜间回归/);
   assert.match(html.body, /每 720 分钟/);
   assert.match(html.body, /启用/);
@@ -1386,7 +1387,7 @@ test("panel web: 定时回归区块 + 任务页来源显示", async () => {
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
     { ...deps, capabilities: { actions: false, usage: false, mode: "standalone" } }
   );
-  assert.match(gatedSchedule.body, /写动作未启用：独立进程需/, "能力关闭时计划动作给原因");
+  assert.match(gatedSchedule.body, /只读模式/, "能力关闭时计划动作给原因");
   assert.ok(!gatedSchedule.body.includes("panel/api/schedules"), "关闭时不渲染动作脚本");
 
   const taskHtml = await handlePanelRequest(
@@ -1405,7 +1406,7 @@ test("panel web: 定时回归区块 + 任务页来源显示", async () => {
     new URL(`http://x/panel?project=${encodeURIComponent(clean.projectDir)}`),
     clean.deps
   );
-  assert.match(cleanHtml.body, /暂无定时回归/);
+  assert.match(cleanHtml.body, /暂无定时任务/);
 });
 
 function makeStatsRun({
@@ -1586,7 +1587,7 @@ test("panel web: 归因→建单断链接上（CTA＋锚点＋项目导航当前
   assert.match(review.body, /下一步：去建单（应用缺陷 1 条）→/, "归因页就地给建单出口");
   assert.match(review.body, /view=stats/, "CTA 指统计页");
   assert.match(review.body, /#issues/, "锚点直达建单块");
-  assert.match(review.body, /aria-current="page"[^>]*>归因</, "review 高亮「归因」导航（一级入口）");
+  assert.match(review.body, /aria-current="page"[^>]*>结果</, "review 高亮「结果」导航");
   assert.match(review.body, /<th scope="col">运行<\/th><th scope="col">时间<\/th>/, "行身份二列（运行短 id＋失败时间）");
 
   const stats = await handlePanelRequest(
@@ -1594,7 +1595,7 @@ test("panel web: 归因→建单断链接上（CTA＋锚点＋项目导航当前
     deps
   );
   assert.match(stats.body, /<h3 id="issues">/, "统计页建单块锚点");
-  assert.match(stats.body, /aria-current="page"[^>]*>回归统计</, "stats 高亮「回归统计」导航（一级入口）");
+  assert.match(stats.body, /aria-current="page"[^>]*>结果</, "stats 高亮「结果」导航（同组合并）");
 
   const projectHtml = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
@@ -1815,7 +1816,7 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
   assert.match(emptyHtml.body, /任务积压为最近 200 条近似/, "任务积压近似口径");
   assert.match(emptyHtml.body, /执行机为最近 100 条近似/, "执行机近似口径");
   assert.match(emptyHtml.body, /数据源＝中央台账/, "数据源口径");
-  assert.match(emptyHtml.body, /精确待办以归因队列为准/, "精确待办口径");
+  assert.match(emptyHtml.body, /精确待办以失败分析为准/, "精确待办口径");
   assert.match(emptyHtml.body, /无份来源批次/, "无份来源批次 ≠ 读取失败");
   assert.match(emptyHtml.body, /看项目页/, "空态给项目页跳转（其余来源）");
   assert.doesNotMatch(emptyHtml.body, /读取失败/, "无 error 不出现降级标注");
@@ -1857,7 +1858,7 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
   assert.match(html.body, /趋势（最近 10 批）/, "列组标记：趋势");
   assert.match(html.body, /质量（flaky·失败域 top3）/, "列组标记：质量");
   assert.match(html.body, /待办（未裁决·未建单·积压·failed）/, "列组标记：待办");
-  assert.match(html.body, /执行（执行机·定时回归）/, "列组标记：执行");
+  assert.match(html.body, /执行（执行机·定时任务）/, "列组标记：执行");
   assert.doesNotMatch(html.body, /待办\(待\/领\/跑\/败\)/, "替换 T2 最小表格列");
 
   assert.match(
@@ -1877,7 +1878,7 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
   assert.match(html.body, /未裁决失败 0 条 · 未建单缺陷 0 项/, "待办：未裁决/未建单");
   assert.match(html.body, /任务积压 0（待 0 \/ 领 0 \/ 跑 0） · 失败 0/, "待办：积压 p+c+r / 失败数");
   assert.match(html.body, /执行机 在线 0 · 设备 0/, "运行：执行机");
-  assert.match(html.body, /定时回归 启用 0 · 最近触发 —/, "运行：定时回归");
+  assert.match(html.body, /定时任务 启用 0 · 最近触发 —/, "运行：定时回归");
 });
 
 test("panel web: trendPassRateSvg 纯函数（钳制 0–100/断点/≤10 点/空）", () => {
@@ -2173,7 +2174,7 @@ test("panel web: workspace 内未登记项目可经绝对路径直达（overview
     deps
   );
   assert.equal(html.status, 200);
-  assert.match(html.body, /接入信息/);
+  assert.match(html.body, /接入/);
 
   const outside = await handlePanelRequest(
     new URL(`http://x/panel.json?project=${encodeURIComponent(repo)}`),
