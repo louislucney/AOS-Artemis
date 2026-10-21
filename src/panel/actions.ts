@@ -37,6 +37,8 @@ export interface PanelActionRequest {
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 const MAX_REFS = 100;
 const MAX_VERDICT_ITEMS = 500;
+const LEGACY_HOST_REASON =
+  "该项目是未归属主机的历史数据，请先在对应机器运行 host adopt-legacy --local --apply";
 
 const CASE_VERDICTS = new Set<CaseVerdict>([
   "case-defect",
@@ -134,7 +136,7 @@ export async function handlePanelActionRequest(
 
   try {
     if (request.url.pathname === "/panel/api/tasks") {
-      const response = await createTask(scopedDeps, resolved.rootPath, payload);
+      const response = await createTask(scopedDeps, resolved.rootPath, payload, resolved.hostId);
       if (response.status === 200) scopedDeps.cache?.clear();
       await auditPanel(scopedDeps, resolved.rootPath, "action.tasks", response);
       return response;
@@ -368,34 +370,48 @@ async function checkDispatchPreviewFreshness(
 async function createTask(
   deps: PanelWebDeps,
   rootPath: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  resolvedHostId: string | null
 ): Promise<PanelWebResponse> {
-  const stalePreview = await checkDispatchPreviewFreshness(deps, rootPath, payload);
-  if (stalePreview !== null) return stalePreview;
   const hostParam = typeof payload.host === "string" ? payload.host.trim() : "";
   const explicitHost = hostParam !== "";
+  let hosts: HostRecord[] = [];
+  try {
+    hosts = await deps.store.listHosts();
+  } catch {
+    hosts = [];
+  }
+  if (resolvedHostId === null && hosts.length > 0) {
+    const legacy = (await deps.store.listProjects().catch(() => [])).some(
+      (project) => project.rootPath === rootPath && project.hostId === null
+    );
+    if (legacy) {
+      return json(409, {
+        ok: false,
+        error: "该项目是未归属主机的历史数据，无法定向下发",
+        reasons: [LEGACY_HOST_REASON]
+      });
+    }
+  }
+  if (hostParam === "" && hosts.length > 0) {
+    return json(400, { ok: false, error: "缺少 host（已登记主机时必选）" });
+  }
   const hostRef = explicitHost ? hostParam : (deps.store.localHostId ?? "");
-  let targetHost: HostRecord | null = null;
+  const targetHost =
+    hostRef === "" ? null : (hosts.find((host) => host.id === hostRef) ?? null);
+  if (targetHost === null && explicitHost) {
+    return json(404, { error: `未知主机 "${hostRef}"（请刷新预览后重选）` });
+  }
+  const stalePreview = await checkDispatchPreviewFreshness(deps, rootPath, payload);
+  if (stalePreview !== null) return stalePreview;
   let targetStore = deps.store;
-  if (hostRef !== "") {
-    let hosts: HostRecord[] = [];
-    try {
-      hosts = await deps.store.listHosts();
-    } catch {
-      hosts = [];
-    }
-    targetHost = hosts.find((host) => host.id === hostRef) ?? null;
-    if (targetHost === null && explicitHost) {
-      return json(404, { error: `未知主机 "${hostRef}"（请刷新预览后重选）` });
-    }
-    if (targetHost !== null) {
-      targetStore = hostScopedStore(deps, targetHost.id);
-      const project = await targetStore.getProjectByPath(rootPath).catch(() => null);
-      if (!project) {
-        return json(404, {
-          error: `主机 "${targetHost.id}" 未登记项目 "${rootPath}"：请先在目标机接入项目`
-        });
-      }
+  if (targetHost !== null) {
+    targetStore = hostScopedStore(deps, targetHost.id);
+    const project = await targetStore.getProjectByPath(rootPath).catch(() => null);
+    if (!project) {
+      return json(404, {
+        error: `主机 "${targetHost.id}" 未登记项目 "${rootPath}"：请先在目标机接入项目`
+      });
     }
   }
   const sets = await targetStore.listCaseSets(rootPath);

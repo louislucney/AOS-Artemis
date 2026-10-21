@@ -314,6 +314,130 @@ test("未知主机下发 → 400/404 且不建任务", async () => {
   assert.equal((await store.scopeHost("h-mac").listRegressionTasks(root)).length, 0);
 });
 
+test("未知主机预览：告警、不选中且禁用派发", async () => {
+  const { store, root } = await makeHarness();
+  await addHost(store, root, {
+    id: "h-mac",
+    hostname: "MAC-01",
+    kind: "mac",
+    osPlatform: "darwin",
+    capabilities: ["ios-simulator", "android"]
+  });
+
+  const preview = await computeDispatchPreview(
+    makeDeps(store),
+    root,
+    new URLSearchParams({ host: "h-nope", platforms: "android" })
+  );
+  assert.equal(preview.selectedHostId, null);
+  assert.equal(preview.hostBlocked, true);
+  assert.match(preview.warnings.join(" "), /未知主机/);
+  assert.equal(preview.hosts.length, 1);
+});
+
+test("目标主机未登记项目 → 404（不建任务）", async () => {
+  const { store, root, dir } = await makeHarness();
+  await addHost(store, root, {
+    id: "h-mac",
+    hostname: "MAC-01",
+    kind: "mac",
+    osPlatform: "darwin",
+    capabilities: ["ios-simulator", "android"]
+  });
+  const set = await addSet(store, root, "h-mac", "Mac 回归", "mac-login", 1);
+  await store.upsertHost({
+    id: "h-win",
+    hostname: "WIN-01",
+    kind: "pc",
+    osPlatform: "win32",
+    capabilities: ["android"]
+  });
+
+  const res = await handlePanelActionRequest(
+    action("/panel/api/tasks", {
+      project: root,
+      host: "h-win",
+      source: "case-set",
+      ref: set.id,
+      platforms: ["android"],
+      baseline: "latest"
+    }),
+    makeDeps(store, { workspaceRoot: dir })
+  );
+  assert.equal(res.status, 404);
+  assert.match(JSON.parse(res.body).error, /未登记项目/);
+  assert.equal((await store.scopeHost("h-win").listRegressionTasks(root)).length, 0);
+});
+
+test("历史 NULL-host 项目 → 409＋adopt-legacy 指引（不隐式认领）", async () => {
+  const { store, root } = await makeHarness();
+  await store.upsertHost({
+    id: "h-mac",
+    hostname: "MAC-01",
+    kind: "mac",
+    osPlatform: "darwin",
+    capabilities: ["ios-simulator", "android"]
+  });
+  await store.upsertProject({ rootPath: root, name: "legacy" });
+  const legacySet = await store.recordCaseSet({
+    rootPath: root,
+    source: "pen:legacy.pen",
+    basename: "旧项目",
+    features: [
+      {
+        key: "legacy-login",
+        name: "旧项目",
+        caseCount: 1,
+        screens: [],
+        jsonPath: "/x/legacy.json",
+        mdPath: "/x/legacy.md",
+        xlsxPath: "/x/legacy.xlsx"
+      }
+    ]
+  });
+
+  const res = await handlePanelActionRequest(
+    action("/panel/api/tasks", {
+      project: root,
+      source: "case-set",
+      ref: legacySet.id,
+      platforms: ["android"],
+      baseline: "latest"
+    }),
+    makeDeps(store)
+  );
+  assert.equal(res.status, 409);
+  const body = JSON.parse(res.body);
+  assert.match(body.reasons.join(" "), /host adopt-legacy --local --apply/);
+  assert.equal((await store.listRegressionTasks(root)).length, 0);
+});
+
+test("已登记主机时缺 host → 400（不再隐式回退本机）", async () => {
+  const { store, root } = await makeHarness();
+  await addHost(store, root, {
+    id: "h-mac",
+    hostname: "MAC-01",
+    kind: "mac",
+    osPlatform: "darwin",
+    capabilities: ["ios-simulator", "android"]
+  });
+  const set = await addSet(store, root, "h-mac", "Mac 回归", "mac-login", 1);
+
+  const res = await handlePanelActionRequest(
+    action("/panel/api/tasks", {
+      project: root,
+      source: "case-set",
+      ref: set.id,
+      platforms: ["android"],
+      baseline: "latest"
+    }),
+    makeDeps(store)
+  );
+  assert.equal(res.status, 400);
+  assert.match(JSON.parse(res.body).error, /缺少 host（已登记主机时必选）/);
+  assert.equal((await store.scopeHost("h-mac").listRegressionTasks(root)).length, 0);
+});
+
 test("下发页渲染主机下拉与空态", async () => {
   const { store, root } = await makeHarness();
   await addHost(store, root, {
@@ -347,6 +471,35 @@ test("下发页渲染主机下拉与空态", async () => {
   assert.match(html, /<option value="h-win"[^>]*selected/);
   assert.match(html, /Windows 机/);
   assert.match(html, /iOS 需要 macOS/);
+  assert.match(html, /目标主机无法满足所选平台/);
+  assert.match(html, /id="dispatch-submit"[^>]*disabled/, "能力不满足时确认按钮禁用");
+  assert.match(html, /"hostRequired":true/);
+  assert.match(html, /"hostBlocked":true/);
+  assert.match(html, /p\.reasons/, "错误原因回显");
+  assert.match(html, /p\.warnings/, "成功告警回显");
+  assert.ok(
+    html.includes("(host?'&host='+encodeURIComponent(host):'')"),
+    "派发成功跳转携带 host"
+  );
+  assert.ok(html.includes('"&host="+encodeURIComponent(host)'), "审计 flash 链接携带 host");
+
+  const pickStore = new MemoryStore();
+  await pickStore.upsertHost({
+    id: "h-win",
+    hostname: "WIN-01",
+    kind: "pc",
+    osPlatform: "win32",
+    capabilities: ["android"]
+  });
+  const pick = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(root)}&section=dispatch`),
+    makeDeps(pickStore, { workspaceRoot: path.dirname(root) })
+  );
+  const pickHtml = String(pick.body);
+  assert.match(pickHtml, /"hostRequired":true/);
+  assert.match(pickHtml, /"hostId":null/);
+  assert.match(pickHtml, /id="dispatch-submit"[^>]*disabled/, "未选主机时确认按钮禁用");
+  assert.match(pickHtml, /请先选择目标主机/);
 
   const emptyStore = new MemoryStore();
   await emptyStore.upsertProject({ rootPath: root, name: "app" });

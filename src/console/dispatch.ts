@@ -43,6 +43,8 @@ export interface DispatchPreview {
   runnerCandidates: { id: string; host: string; online: boolean }[];
   hosts: DispatchHost[];
   selectedHostId: string | null;
+  /** 目标主机能力/项目不满足：前端禁用确认（离线只告警，不置位）。 */
+  hostBlocked: boolean;
   warnings: string[];
 }
 
@@ -195,18 +197,25 @@ export async function computeDispatchPreview(
     warnings.push(`未知主机「${hostParam}」：请重新选择（可能已下线或未登记）`);
   }
   const targetStore = hostScopedStore(deps, targetHost?.id ?? null);
+  let hostBlocked = hostParam !== "" && targetHost === null;
   if (targetHost !== null) {
     const targetProject = await targetStore.getProjectByPath(rootPath).catch(() => null);
     if (targetProject === null) {
       warnings.push(`主机「${targetHost.id}」未登记项目「${rootPath}」：请先在目标机接入项目`);
+      hostBlocked = true;
     }
-    warnings.push(...precheckTask({
-      id: targetHost.id,
-      kind: targetHost.kind,
-      osPlatform: targetHost.osPlatform,
-      capabilities: targetHost.capabilities,
-      online: isHostOnline(targetHost, now, deps.env)
-    }, platforms).reasons);
+    const precheck = precheckTask(
+      {
+        id: targetHost.id,
+        kind: targetHost.kind,
+        osPlatform: targetHost.osPlatform,
+        capabilities: targetHost.capabilities,
+        online: isHostOnline(targetHost, now, deps.env)
+      },
+      platforms
+    );
+    warnings.push(...precheck.reasons);
+    if (!precheck.ok) hostBlocked = true;
   }
 
   let allProjects: Awaited<ReturnType<ProjectStore["listProjects"]>> = [];
@@ -307,6 +316,7 @@ export async function computeDispatchPreview(
     runnerCandidates,
     hosts,
     selectedHostId: targetHost?.id ?? null,
+    hostBlocked,
     warnings
   };
 }
@@ -447,7 +457,8 @@ function refreshStale(){
   var emptyEl=document.getElementById('dispatch-empty');
   if(emptyEl)emptyEl.hidden=!empty;
   if(stale)stale.hidden=!staleNow;
-  var blocked=staleNow||empty;
+  var missingHost=island.hostRequired&&!host;
+  var blocked=staleNow||empty||missingHost||island.hostBlocked;
   go.disabled=blocked;
   return blocked;
 }
@@ -455,7 +466,12 @@ form.addEventListener('input',refreshStale);
 form.addEventListener('change',refreshStale);
 refreshStale();
 go.addEventListener('click',function(){
-  if(refreshStale()){showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择份或输入关键词，再点「刷新预览」');return;}
+  var pickedHost=(form.querySelector('select[name="host"]')||{value:''}).value;
+  if(refreshStale()){
+    if(island.hostRequired&&!pickedHost){showErr('请先选择目标主机');return;}
+    if(island.hostBlocked){showErr('目标主机无法满足所选平台：请调整目标端或更换主机后刷新预览');return;}
+    showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择份或输入关键词，再点「刷新预览」');return;
+  }
   if(form.querySelectorAll('input[name="platforms"]:checked').length===0){showErr('请至少选择目标端（iOS/Android）');return;}
   var s=island.summary||{};
   var refs=island.refsDetail||[];
@@ -474,24 +490,42 @@ go.addEventListener('click',function(){
     payload.baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
     go.disabled=true;if(status)status.textContent='提交中…';
     fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-      .then(function(response){return response.json().then(function(p){if(!response.ok){throw new Error(p.error||('HTTP '+response.status));}window.aosFlash&&aosFlash('已派发任务 '+p.task.id+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(island.project)+'&task='+encodeURIComponent(p.task.id);});})
+      .then(function(response){return response.json().then(function(p){
+        if(!response.ok){
+          var message=p.error||('HTTP '+response.status);
+          if(p.reasons&&p.reasons.length){message+='：'+p.reasons.join('；');}
+          throw new Error(message);
+        }
+        var flash='已派发任务 '+p.task.id+' · 已写入审计';
+        if(p.warnings&&p.warnings.length){flash+=' · '+p.warnings.join('；');}
+        window.aosFlash&&aosFlash(flash);
+        var host=payload.host||'';
+        location.href='/panel?project='+encodeURIComponent(island.project)+'&task='+encodeURIComponent(p.task.id)+(host?'&host='+encodeURIComponent(host):'');
+      });})
       .catch(function(error){go.disabled=false;if(status)status.textContent='';showErr('创建失败：'+error.message);});
   });
 });
 })();</script>`;
   const actionsOff = view.capabilities?.actions === false;
+  const needsHostPick = preview.hosts.length > 0 && preview.selectedHostId === null;
+  const submitBlocked = preview.hostBlocked || needsHostPick;
   const confirmBody = actionsOff
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
-        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit">确认派发</button> <span class="muted">点击后显示完整摘要（份明细 / 端 / 基线 / 执行机），再创建任务。</span></p>`,
+        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${needsHostPick ? "请先选择目标主机" : "目标主机无法满足所选平台"}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（份明细 / 端 / 基线 / 执行机），再创建任务。</span></p>`,
+        needsHostPick
+          ? `<p class="note">请先选择目标主机：已登记主机时不再隐式回退本机。</p>`
+          : preview.hostBlocked
+            ? `<p class="note">目标主机无法满足所选平台：请调整目标端或更换主机，刷新预览后再试。</p>`
+            : "",
         `<p id="dispatch-status" role="status" class="muted"></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
         `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, hostId: preview.selectedHostId, hostLabel:
           preview.hosts.find((host) => host.id === preview.selectedHostId)?.label ??
           preview.hosts.find((host) => host.id === preview.selectedHostId)?.hostname ??
-          null, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
+          null, hostRequired: preview.hosts.length > 0, hostBlocked: preview.hostBlocked, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
         dispatchConfirmScript,
-      ].join("\n");
+      ].filter((part) => part !== "").join("\n");
 
 
   return renderConsoleShell({
