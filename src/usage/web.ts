@@ -149,12 +149,13 @@ function eventView(event: UsageEventRecord): UsageWebEventView {
   };
 }
 
-function resolveProject(projects: readonly ProjectRecord[], key: string): ProjectRecord | null {
-  return (
-    projects.find((project) => project.rootPath === key) ??
-    projects.find((project) => project.name === key) ??
-    null
-  );
+function resolveProjectCandidates(
+  projects: readonly ProjectRecord[],
+  key: string
+): ProjectRecord[] {
+  const byRoot = projects.filter((project) => project.rootPath === key);
+  if (byRoot.length > 0) return byRoot;
+  return projects.filter((project) => project.name === key);
 }
 
 async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
@@ -167,11 +168,15 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
 
   const projects = await deps.store.listProjects();
   const projectKey = trimmed(params.get("project"));
-  const requested = projectKey === null ? null : resolveProject(projects, projectKey);
-  if (projectKey !== null && requested === null) {
+  const candidates =
+    projectKey === null ? [] : resolveProjectCandidates(projects, projectKey);
+  if (projectKey !== null && candidates.length === 0) {
     throw new UsageWebNotFoundError(`未知项目 "${projectKey}"`);
   }
-  const project = projectKey === null ? (projects[0] ?? null) : requested;
+  if (candidates.length > 1) {
+    throw new AmbiguousProjectError(projectKey!, candidates);
+  }
+  const project = projectKey === null ? (projects[0] ?? null) : candidates[0]!;
 
   const tool = trimmed(params.get("tool"));
   const statusRaw = trimmed(params.get("status"));

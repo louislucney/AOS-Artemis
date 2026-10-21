@@ -38,9 +38,10 @@ Usage:
   mobile-testing-mcp jira issue <create|comment|label|transition|link> [options]
                     Jira 工作流（与 MCP 工具共用客户端与凭证；见 "mobile-testing-mcp jira help"；
                     exit codes: 0 成功 / 1 请求或配置失败 / 2 用法错误）
-  mobile-testing-mcp usage [--json] [--all] [--project <名称>] [--days <n>]
+  mobile-testing-mcp usage [--json] [--all] [--project <名称>] [--host <id|主机名>] [--days <n>]
                     使用统计：默认当前项目摘要（--days 默认 7）；--json 机器可读；
-                    --all 跨项目总览；--project 选择已注册项目
+                    --all 跨项目总览；--project 选择已注册项目；
+                    --host 只看该主机项目（--web 下仍为监听地址）
   mobile-testing-mcp usage --web [--port 8766] [--host 127.0.0.1]
                     只读看板（复用 /usage 与 /usage.json）；端口占用 exit 2
   mobile-testing-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]

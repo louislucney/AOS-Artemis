@@ -173,9 +173,12 @@ export async function handlePanelActionRequest(
     if (response.status === 200) deps.cache?.clear();
     return response;
   }
+  const queryProject =
+    request.url.pathname === "/panel/api/import" && request.rawBody !== undefined
+      ? (request.url.searchParams.get("project") ?? "").trim()
+      : "";
   const projectKey =
-    (typeof payload.project === "string" ? payload.project.trim() : "") ||
-    (request.url.searchParams.get("project") ?? "").trim();
+    (typeof payload.project === "string" ? payload.project.trim() : "") || queryProject;
   if (projectKey === "") return json(400, { error: "缺少 project" });
   const hostParam =
     (request.url.searchParams.get("host") ?? "").trim() ||

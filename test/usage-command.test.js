@@ -354,6 +354,47 @@ test("usage --project: 同路径多主机且未指定 --host → exit 2", async 
   );
 });
 
+test("usage --all: legacy 同路径歧义按项目降级，其余项目继续", async () => {
+  const store = new MemoryStore();
+  await store.upsertHost({ id: "h-a", hostname: "mac-a", osPlatform: "darwin" });
+  await store.upsertProject({ rootPath: "/w/shared", name: "legacy-app" });
+  await store.scopeHost("h-a").upsertProject({ rootPath: "/w/shared", name: "app" });
+  await store.scopeHost("h-a").recordUsageEvent(
+    "/w/shared",
+    eventInput({ tool: "llm_list", at: new Date(NOW - 60_000).toISOString() })
+  );
+  await store.upsertProject({ rootPath: "/w/other", name: "other" });
+  await store.recordUsageEvent(
+    "/w/other",
+    eventInput({ tool: "aos_status", at: new Date(NOW - 30_000).toISOString() })
+  );
+
+  const { code, logs, errors } = await runCli(["--all", "--json"], { store });
+  assert.equal(code, 0);
+  const payload = JSON.parse(logs.at(-1));
+  assert.deepEqual(
+    payload.projects.map((view) => view.name).sort(),
+    ["app", "other"]
+  );
+  assert.equal(payload.totals.summary.total, 2);
+  assert.ok(
+    errors.some(
+      (line) => line.includes("legacy-app") && line.includes("未能读取") && line.includes("h-a")
+    ),
+    errors.join("\n")
+  );
+});
+
+test("usage --host: 当前项目不属于该主机 → exit 2 而非零统计", async () => {
+  const store = await seedMultiHostStore();
+  const { code, errors } = await runCli(["--host", "h-b"], { store, cwd: "/w/other" });
+  assert.equal(code, 2);
+  assert.ok(
+    errors.some((line) => line.includes("/w/other") && line.includes("h-b") && line.includes("--project")),
+    errors.join("\n")
+  );
+});
+
 test("usage help and parameter errors", async () => {
   const store = new MemoryStore();
   const help = await runCli(["help"], { store });

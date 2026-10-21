@@ -228,7 +228,7 @@ node dist/cli.js usage --host <id|主机名> --all # 只看该主机的项目（
 node dist/cli.js usage --web                  # 只读看板，默认 127.0.0.1:8766（端口占用 exit 2）
 ```
 
-`--host` 在文本/JSON/`--all` 下是**项目过滤**（id 精确优先、主机名需唯一；重复主机名 exit 2 并列出候选 id，未知主机 exit 2）；`--web` 下的 `--host` 仍是**监听地址**。同路径多主机但未指定 `--host` 时，`usage` 不猜：默认当前项目/`--project` 命中多行会 exit 2 列出候选主机；未归属 legacy 行与主机行同路径时同样 exit 2，并提示 `--host` 或 `host adopt-legacy`。
+`--host` 在文本/JSON/`--all` 下是**项目过滤**（id 精确优先、主机名需唯一；重复主机名 exit 2 并列出候选 id，未知主机 exit 2）；`--web` 下的 `--host` 仍是**监听地址**。同路径多主机但未指定 `--host` 时，`usage` 不猜：默认当前项目/`--project` 命中多行会 exit 2 列出候选主机；未归属 legacy 行与主机行同路径时同样 exit 2，并提示 `--host` 或 `host adopt-legacy`。`--all` 下单个 legacy 歧义按项目降级（stderr 标注「未能读取（候选主机…）」，其余项目照常输出、exit 0）；默认当前项目配 `--host` 但该主机下未登记该项目时 exit 2（不输出零统计）。
 
 ### 记录导出（export）
 

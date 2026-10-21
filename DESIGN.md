@@ -2188,8 +2188,8 @@ llm_switch(name, force):
 
 - **CLI `usage --host`**：`src/usage-command.ts` 不再用未绑定 store 直接按 `rootPath` 读事件（同路径两台主机会抛 `AmbiguousProjectError`）。选择项目时带出 `hostId`，读取用 `store.scopeHost(hostId)`，仅 `hostId === null` 的 legacy 行走未绑定 store；`UsageProjectView`/JSON 增加 `hostId`，`--all` 文本行附「· 主机 <id>」。
   - `--host <id|主机名>`（文本/JSON/`--all`）经 `resolveHostReference` 解析：id 精确优先，主机名需唯一；重复主机名 exit 2 并列出候选 id，未知主机 exit 2 提示中心 PG/`host register`。过滤在 `listProjects` 之后、选择之前，`--all`/`--project`/默认当前项目都只包含该主机项目。
-  - 选择歧义显式化：默认当前项目路径命中多台主机、或 `--project` 命中多行 → exit 2 并列出候选主机；选中 legacy 行后仍歧义（同路径已有主机行、且没有 `--host`）→ exit 2「未绑定主机…请用 --host <id> 指定（或先 host adopt-legacy）」，不再抛栈。
-  - `usage --web` 的 `--host` 保持现有语义（监听地址），不与过滤参数冲突；已在 help/README 写明。
-- **`/usage` 未归属 legacy 路径**：`src/usage/web.ts` 捕获 `AmbiguousProjectError` → **409** `{error, candidates:[{hostId,rootPath,name}]}`（与面板同形），同一路径先按 `hostId` 作用域读取的既有行为不变；HTTP/独立看板不再 500。
-- **面板 multipart 导入**：`src/panel/actions.ts` 入口在缺少 JSON body 但带 `rawBody` 时允许通过（payload 置空），`project`/`host` 从查询参数读取；JSON body 路径保持原优先级（既有「body + rawBody」测试不回归）。`src/console/pages.ts` 导入表单提交到 `/panel/api/import?project=<rootPath>[&host=<id>]`。HTTP 级测试用真实工作簿断言 200 与登记条数。
+  - 选择歧义显式化：默认当前项目路径命中多台主机、或 `--project` 命中多行 → exit 2 并列出候选主机；选中 legacy 行后仍歧义（同路径已有主机行、且没有 `--host`）→ exit 2「未绑定主机…请用 --host <id> 指定（或先 host adopt-legacy）」，不再抛栈。**`--all` 是总览**：单个 legacy 歧义项目按项目降级——stderr 打印 `未能读取（候选主机…）`，其余项目照常聚合/输出、exit 0；显式 `--project`/默认当前项目仍 exit 2。默认当前项目配 `--host` 但该主机下未登记该项目 → exit 2（不输出零统计）。
+  - `usage --web` 的 `--host` 保持现有语义（监听地址）；`--web` 在项目选择前已返回，过滤只作用于文本/JSON 路径。
+- **`/usage` 未归属 legacy 路径**：`src/usage/web.ts` 捕获 `AmbiguousProjectError` → **409** `{error, candidates:[{hostId,rootPath,name}]}`（与面板同形），同一路径先按 `hostId` 作用域读取的既有行为不变；HTTP/独立看板不再 500。显式 `?project=<名称|路径>` 命中多行（同名不同路径 / 同路径多主机）同样 409 列候选，不再静默取第一行；缺省项目（无 `project` 参数）仍取 `listProjects` 首行。
+- **面板 multipart 导入**：`src/panel/actions.ts` 入口在缺少 JSON body 但带 `rawBody` 时允许通过（payload 置空），`project`/`host` 从查询参数读取——**查询参数 `project` 仅在 `POST /panel/api/import` 且带 `rawBody` 时生效**，其余动作仍只认 JSON body；JSON body 路径保持原优先级（既有「body + rawBody」测试不回归）。`src/console/pages.ts` 导入表单提交到 `/panel/api/import?project=<rootPath>[&host=<id>]`。HTTP 级测试用真实工作簿断言 200 与登记条数。
 - **清扫器 runner 行**：新增 `ProjectStore.getRunner(rootPath, runnerId)`（Postgres/Memory/File；File 委托同源内存视图）。`sweepStaleTasks` 改为按 `claimedBy` 精确取行（同一任务集内缓存），不再 `listRunners(rootPath, 100000)` 全量扫描；语义（在线/实例轮换/行缺失）不变。

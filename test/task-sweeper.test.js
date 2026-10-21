@@ -3,9 +3,11 @@ import test from "node:test";
 
 import { newDb } from "pg-mem";
 
+import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { sweepStaleTasks } from "../dist/tasks/sweeper.js";
+import { makeTempDir } from "./helpers.js";
 
 const ROOT = "/w/sweep";
 const TOOLS = { adb: true, idb: false, simctl: false, ideviceId: false, appium: false };
@@ -135,6 +137,7 @@ test("清扫按 claimedBy 精确取 runner（getRunner，不再全量扫描）",
       scans += 1;
       throw new Error("listRunners should not be used by the sweeper");
     };
+    scoped.scopeHost = () => scoped;
     const result = await sweepStaleTasks({
       store: scoped,
       rootPath: ROOT,
@@ -146,6 +149,21 @@ test("清扫按 claimedBy 精确取 runner（getRunner，不再全量扫描）",
     assert.equal(scans, 0, "只按 id 取 runner 行");
     assert.equal((await scoped.getRegressionTask(ROOT, task.id)).status, "cancelled");
   }
+});
+
+test("FileStore getRunner 精确取行且按 host 作用域隔离", async () => {
+  const dir = makeTempDir("aos-file-runner-");
+  const store = await FileStore.create({ homeDir: dir, env: {} });
+  const scoped = store.scopeHost("h-a");
+  await scoped.upsertProject({ rootPath: ROOT, name: "p" });
+  const runner = await seedRunner(scoped, ROOT);
+  assert.equal((await scoped.getRunner(ROOT, runner.id))?.id, runner.id);
+  assert.equal(await scoped.getRunner(ROOT, "missing-runner"), null);
+  assert.equal(
+    await store.scopeHost("h-b").getRunner(ROOT, runner.id),
+    null,
+    "不同 host 视图不串"
+  );
 });
 
 test("未超宽限的 stopping 即使 runner 离线也不清扫", async () => {

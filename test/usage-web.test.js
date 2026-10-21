@@ -408,9 +408,33 @@ test("usage web: 同 rootPath 两主机按 host 作用域读事件（不再 Ambi
 
   const fallback = await getJson(store, "/usage.json");
   assert.equal(fallback.summary.total, 1, "缺省项目取最新注册的一行且不抛歧义");
-  const html = await handleUsageRequest(
+  const ambiguousPath = await handleUsageRequest(
     new URL("http://localhost/usage?project=%2Fw%2Fshared"),
     deps(store)
   );
-  assert.equal(html.status, 200);
+  assert.equal(ambiguousPath.status, 409, "同路径多主机不再任取一行");
+  const pathPayload = JSON.parse(ambiguousPath.body);
+  assert.deepEqual(
+    pathPayload.candidates.map((candidate) => candidate.hostId).sort(),
+    ["h-a", "h-b"]
+  );
 });
+
+test("usage web: 同名多项目 → 409 候选（不再静默取第一个）", async () => {
+  const store = new MemoryStore();
+  await store.upsertHost({ id: "h-a", hostname: "mac-a", osPlatform: "darwin" });
+  await store.scopeHost("h-a").upsertProject({ rootPath: "/w/a/app", name: "app" });
+  await store.scopeHost("h-a").upsertProject({ rootPath: "/w/b/app", name: "app" });
+
+  const res = await handleUsageRequest(
+    new URL("http://localhost/usage.json?project=app"),
+    deps(store)
+  );
+  assert.equal(res.status, 409, res.body);
+  const payload = JSON.parse(res.body);
+  assert.deepEqual(
+    payload.candidates.map((candidate) => candidate.rootPath).sort(),
+    ["/w/a/app", "/w/b/app"]
+  );
+});
+

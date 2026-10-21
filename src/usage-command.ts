@@ -488,7 +488,7 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
     }
 
     let hostFilter: string | null = null;
-    const hostRef = flags.bool("web") ? null : flags.get("host");
+    const hostRef = flags.get("host");
     if (hostRef !== null) {
       const lookup = await resolveHostReference(store, hostRef);
       if (!lookup.ok) {
@@ -552,6 +552,13 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
         return 2;
       }
       const record = matches[0] ?? null;
+      if (hostFilter !== null && record === null) {
+        errorLog(
+          `当前项目 ${loaded.rootDir} 不属于主机 ${hostFilter}（该主机下未登记该项目）；` +
+            `请用 --project <名称> 指定该主机的项目`
+        );
+        return 2;
+      }
       selected = [
         {
           name: record?.name ?? path.basename(loaded.rootDir),
@@ -571,6 +578,10 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
       } catch (error) {
         if (error instanceof AmbiguousProjectError) {
           const hosts = error.candidates.map((candidate) => hostLabel(candidate.hostId)).join("、");
+          if (flags.bool("all")) {
+            errorLog(`  ${entry.name} (${entry.rootPath})：未能读取（候选主机：${hosts}）`);
+            continue;
+          }
           errorLog(
             `项目 "${entry.rootPath}" 未绑定主机，但同一路径已登记在：${hosts}；` +
               `请用 --host <id> 指定（或先在该主机执行 host adopt-legacy 认领历史行）`

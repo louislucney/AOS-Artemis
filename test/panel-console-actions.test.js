@@ -300,6 +300,16 @@ test("console actions: 导入（无运行时 → 400 指引；缺路径 → 400�
   assert.match(noRuntime.body, /运行时/);
 });
 
+test("console actions: project 查询参数只用于 multipart 导入", async () => {
+  const { deps, rootPath } = await setup();
+  const res = await handlePanelActionRequest(
+    request(`/panel/api/tasks?project=${encodeURIComponent(rootPath)}`, {}),
+    deps
+  );
+  assert.equal(res.status, 400);
+  assert.match(res.body, /缺少 project/);
+});
+
 test("console actions: 服务端重解析（case-set/keyword 不信客户端 refs；陈旧份 400）", async () => {
   const { deps, rootPath, store } = await setup();
   await store.recordCaseSet({
