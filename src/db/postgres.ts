@@ -10,10 +10,13 @@ import {
 } from "./usage-event.js";
 
 import type {
+  AcquireDeviceLeasesInput,
+  AcquireDeviceLeasesResult,
   CancelSource,
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
+  DeviceLeaseRecord,
   HostAddressInput,
   HostAddressRecord,
   HostRecord,
@@ -34,6 +37,7 @@ import type {
   RegressionTaskRecord,
   RegressionTaskRef,
   RegressionTaskStatus,
+  RenewDeviceLeasesInput,
   RunnerDevice,
   RunnerRecord,
   RunnerTools,
@@ -57,6 +61,7 @@ import type {
 import {
   AmbiguousProjectError,
   capabilitiesSatisfyPlatforms,
+  deviceLeaseTtlMs,
   isRunnerActive,
   normalizeRegressionTask,
   RUNNER_ACTIVE_DEFAULT_MS,
@@ -361,7 +366,17 @@ const SCHEMA = [
      last_seen_at TEXT NOT NULL,
      ended_at TEXT
    )`,
-  `CREATE INDEX IF NOT EXISTS host_sessions_host_seen_idx ON host_sessions(host_id, last_seen_at)`
+  `CREATE INDEX IF NOT EXISTS host_sessions_host_seen_idx ON host_sessions(host_id, last_seen_at)`,
+  `CREATE TABLE IF NOT EXISTS device_leases (
+     host_id TEXT NOT NULL,
+     serial TEXT NOT NULL,
+     task_id TEXT NOT NULL,
+     project_id TEXT,
+     acquired_at TEXT NOT NULL,
+     renew_at TEXT NOT NULL,
+     expires_at TEXT NOT NULL,
+     PRIMARY KEY (host_id, serial)
+   )`
 ];
 
 const MIGRATIONS = [
@@ -943,6 +958,7 @@ export class PostgresStore implements ProjectStore {
       runIds?: string[];
       claimedBy?: string | null;
       claimedAt?: string | null;
+      lastProgressAt?: string | null;
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
@@ -959,6 +975,7 @@ export class PostgresStore implements ProjectStore {
     if (patch.runIds !== undefined) add("run_ids", JSON.stringify(patch.runIds));
     if (patch.claimedBy !== undefined) add("claimed_by", patch.claimedBy);
     if (patch.claimedAt !== undefined) add("claimed_at", patch.claimedAt);
+    if (patch.lastProgressAt !== undefined) add("last_progress_at", patch.lastProgressAt);
     const guards: string[] = [];
     if (patch.expectStatuses !== undefined) {
       const placeholders = patch.expectStatuses.map((status) => {
@@ -1050,6 +1067,10 @@ export class PostgresStore implements ProjectStore {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) return null;
     const hostId = input.hostId ?? null;
+    if (hostId !== null) {
+      const host = await this.pool.query("SELECT queue_paused FROM hosts WHERE id = $1", [hostId]);
+      if (host.rows.length > 0 && Boolean(host.rows[0]!.queue_paused)) return null;
+    }
     const capabilities = input.capabilities ?? [];
     const candidates = await this.pool.query(
       `SELECT id, platforms FROM regression_tasks
@@ -1822,6 +1843,96 @@ export class PostgresStore implements ProjectStore {
       ]
     );
     return updated.rows.length > 0 ? mapHost(updated.rows[0]!) : null;
+  }
+
+  async acquireDeviceLeases(input: AcquireDeviceLeasesInput): Promise<AcquireDeviceLeasesResult> {
+    const ttlMs = input.ttlMs ?? deviceLeaseTtlMs();
+    const at = input.at ?? new Date().toISOString();
+    const expiresAt = new Date(Date.parse(at) + ttlMs).toISOString();
+    const serials = [...new Set(input.serials)];
+    if (serials.length === 0) return { ok: true, leases: [] };
+    const placeholders = serials.map((_, index) => `$${index + 2}`).join(", ");
+    try {
+      return await this.withTransaction(async (run) => {
+        await run(
+          `DELETE FROM device_leases
+            WHERE host_id = $1 AND serial IN (${placeholders}) AND expires_at <= $${serials.length + 2}`,
+          [input.hostId, ...serials, at]
+        );
+        const conflicts = await run(
+          `SELECT serial FROM device_leases
+            WHERE host_id = $1 AND serial IN (${placeholders}) AND task_id <> $${serials.length + 2}`,
+          [input.hostId, ...serials, input.taskId]
+        );
+        const busy = conflicts.rows.map((row) => String(row.serial));
+        if (busy.length > 0) throw new DeviceLeaseBusyError(busy);
+        await run(
+          `DELETE FROM device_leases
+            WHERE host_id = $1 AND serial IN (${placeholders}) AND task_id = $${serials.length + 2}`,
+          [input.hostId, ...serials, input.taskId]
+        );
+        for (const serial of serials) {
+          await run(
+            `INSERT INTO device_leases
+               (host_id, serial, task_id, project_id, acquired_at, renew_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $5, $6)`,
+            [input.hostId, serial, input.taskId, input.projectId ?? null, at, expiresAt]
+          );
+        }
+        const rows = await run(
+          `SELECT * FROM device_leases
+            WHERE host_id = $1 AND task_id = $2 AND serial IN (${serials
+              .map((_, index) => `$${index + 3}`)
+              .join(", ")})`,
+          [input.hostId, input.taskId, ...serials]
+        );
+        const bySerial = new Map(rows.rows.map((row) => [String(row.serial), mapDeviceLease(row)]));
+        return {
+          ok: true as const,
+          leases: serials
+            .map((serial) => bySerial.get(serial))
+            .filter((lease): lease is DeviceLeaseRecord => lease !== undefined)
+        };
+      });
+    } catch (error) {
+      if (error instanceof DeviceLeaseBusyError) return { ok: false, busy: error.busy };
+      if ((error as { code?: string }).code === "23505") {
+        const held = await this.pool.query(
+          `SELECT serial FROM device_leases
+            WHERE host_id = $1 AND serial IN (${placeholders}) AND task_id <> $${serials.length + 2}`,
+          [input.hostId, ...serials, input.taskId]
+        );
+        const busy = held.rows.map((row) => String(row.serial));
+        return { ok: false, busy: busy.length > 0 ? busy : serials };
+      }
+      throw error;
+    }
+  }
+
+  async renewDeviceLeases(input: RenewDeviceLeasesInput): Promise<number> {
+    const ttlMs = input.ttlMs ?? deviceLeaseTtlMs();
+    const at = input.at ?? new Date().toISOString();
+    const expiresAt = new Date(Date.parse(at) + ttlMs).toISOString();
+    const serials = [...new Set(input.serials)];
+    if (serials.length === 0) return 0;
+    const placeholders = serials.map((_, index) => `$${index + 3}`).join(", ");
+    const renewed = await this.pool.query(
+      `UPDATE device_leases
+          SET renew_at = $1, expires_at = $2
+        WHERE host_id = $${serials.length + 3} AND task_id = $${serials.length + 4}
+          AND serial IN (${placeholders})
+      RETURNING serial`,
+      [at, expiresAt, ...serials, input.hostId, input.taskId]
+    );
+    return renewed.rows.length;
+  }
+
+  async releaseDeviceLeases(input: { hostId: string; taskId: string }): Promise<number> {
+    const released = await this.pool.query(
+      `DELETE FROM device_leases WHERE host_id = $1 AND task_id = $2 RETURNING serial`,
+      [input.hostId, input.taskId]
+    );
+    return released.rows.length;
   }
 
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
@@ -2627,6 +2738,27 @@ function parseTaskRefs(value: unknown): RegressionTaskRef[] {
 
 function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
+}
+
+class DeviceLeaseBusyError extends Error {
+  readonly busy: string[];
+  constructor(busy: string[]) {
+    super(`device-busy: ${busy.join(",")}`);
+    this.name = "DeviceLeaseBusyError";
+    this.busy = busy;
+  }
+}
+
+function mapDeviceLease(row: Record<string, unknown>): DeviceLeaseRecord {
+  return {
+    hostId: String(row.host_id),
+    serial: String(row.serial),
+    taskId: String(row.task_id),
+    projectId: nullableString(row.project_id),
+    acquiredAt: String(row.acquired_at),
+    renewAt: String(row.renew_at),
+    expiresAt: String(row.expires_at)
+  };
 }
 
 function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {

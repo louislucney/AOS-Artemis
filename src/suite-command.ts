@@ -47,7 +47,12 @@ import {
   renderSuiteLoopMarkdown,
   type SuiteLoopCheck
 } from "./figma/suite-loop.js";
-import type { TaskStatRecord, ProjectStore, RegressionTaskStatus } from "./db/types.js";
+import type {
+  TaskStatRecord,
+  ProjectStore,
+  RegressionTaskStatus,
+  HostRecord
+} from "./db/types.js";
 import { recordAuditSafe } from "./db/audit-event.js";
 import {
   runGeneratedTests,
@@ -257,6 +262,9 @@ Usage:
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
                                      cancel <taskId> [--note <text>]：取消任务（pending → 已取消；执行中 → 停止中，待执行机确认）
   mobile-testing-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
+  mobile-testing-mcp suite queue status|pause|resume [options]
+                                     主机队列：status 显示暂停状态与待执行数；pause/resume 暂停/恢复自动领取
+                                     中心模式：--host <id|hostname>（只连 PG，不构建本机 Runtime）
   mobile-testing-mcp suite schedule add|list|show|enable|disable|remove [options]
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
   mobile-testing-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
@@ -1857,6 +1865,218 @@ async function suiteTaskList(
   return 0;
 }
 
+async function suiteQueuePending(
+  scoped: ProjectStore,
+  hostId: string,
+  fallbackRootPaths: string[] = []
+): Promise<number> {
+  const roots = [
+    ...new Set([
+      ...(await scoped.listProjects())
+        .filter((project) => project.hostId === hostId)
+        .map((project) => project.rootPath),
+      ...fallbackRootPaths
+    ])
+  ];
+  let pending = 0;
+  for (const rootPath of roots) {
+    const tasks = await scoped.listRegressionTasks(rootPath, 1000);
+    pending += tasks.filter((task) => task.status === "pending").length;
+  }
+  return pending;
+}
+
+function queueStatusLine(host: HostRecord, pending: number): string {
+  const state = host.queuePaused
+    ? `暂停（by=${host.queuePausedBy ?? "?"}，at=${host.queuePausedAt ?? "?"}）`
+    : "运行";
+  return `主机 ${host.id}（${host.hostname}）队列：${state}；待执行 ${pending} 条`;
+}
+
+function queueJson(host: HostRecord, pending: number) {
+  return {
+    ok: true,
+    hostId: host.id,
+    paused: host.queuePaused,
+    pausedAt: host.queuePausedAt,
+    pausedBy: host.queuePausedBy,
+    pending
+  };
+}
+
+async function suiteQueue(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  env: NodeJS.ProcessEnv
+): Promise<number> {
+  const action = flags.positional[1] ?? "status";
+  if (action !== "status" && action !== "pause" && action !== "resume") {
+    io.errorLog("用法: suite queue status|pause|resume [--host <id|hostname>] [--json]");
+    return 2;
+  }
+  const identity = runtime.hostIdentity;
+  if (!identity) {
+    io.errorLog("本机身份未知：无法确定队列所属主机（检查主机身份配置）");
+    return 2;
+  }
+  const existing = await runtime.store.getHost(identity.id).catch(() => null);
+  const host =
+    existing ??
+    (await runtime.store.upsertHost({
+      id: identity.id,
+      hostname: identity.hostname,
+      hardwareId: identity.hardwareId,
+      username: identity.username,
+      osPlatform: identity.osPlatform,
+      osVersion: identity.osVersion,
+      arch: identity.arch,
+      kind: identity.kind,
+      identitySource: identity.identitySource
+    }));
+  const actor = actorFromEnv(env);
+  if (action === "status") {
+    const pending = await suiteQueuePending(runtime.store, host.id, [
+      runtime.project.rootDir
+    ]);
+    if (flags.bool("json")) {
+      io.log(JSON.stringify(queueJson(host, pending), null, 2));
+      return 0;
+    }
+    io.log(queueStatusLine(host, pending));
+    return 0;
+  }
+  const paused = action === "pause";
+  const record = await runtime.store.setHostQueuePaused({
+    hostId: host.id,
+    paused,
+    by: actor
+  });
+  if (!record) {
+    io.errorLog(`未知主机 ${host.id}（无法${paused ? "暂停" : "恢复"}队列）`);
+    return 2;
+  }
+  const pending = await suiteQueuePending(runtime.store, record.id, [
+    runtime.project.rootDir
+  ]);
+  const note = flags.get("note")?.trim() ?? "";
+  await recordAuditSafe(runtime.store, runtime.project.rootDir, {
+    domain: "suite",
+    action: paused ? "action.queue.pause" : "action.queue.resume",
+    result: "ok",
+    summary: `${paused ? "暂停" : "恢复"}主机 ${record.id} 队列（待执行 ${pending} 条）`,
+    refs: { hostId: record.id, ...(note === "" ? {} : { note }) },
+    actor,
+    actorHostId: identity.id,
+    channel: "cli"
+  });
+  if (flags.bool("json")) {
+    io.log(JSON.stringify(queueJson(record, pending), null, 2));
+    return 0;
+  }
+  io.log(
+    paused
+      ? `主机 ${record.id} 队列已暂停（by=${record.queuePausedBy ?? actor}）；待执行 ${pending} 条`
+      : `主机 ${record.id} 队列已恢复；待执行 ${pending} 条`
+  );
+  return 0;
+}
+
+async function suiteQueueOnCenterHost(
+  hostReference: string,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  center: NonNullable<SuiteCliDeps["center"]>,
+  env: NodeJS.ProcessEnv
+): Promise<number> {
+  const action = flags.positional[1] ?? "status";
+  if (action !== "status" && action !== "pause" && action !== "resume") {
+    io.errorLog("用法: suite queue status|pause|resume [--host <id|hostname>] [--json]");
+    return 2;
+  }
+  let store = center.store ?? null;
+  let opened = false;
+  if (store === null) {
+    try {
+      store = center.openStore ? await center.openStore() : await openCenterStore(env);
+      opened = true;
+    } catch (error) {
+      io.errorLog(`suite queue --host 需要中心 PG：${errorMessage(error)}`);
+      return 2;
+    }
+  }
+  try {
+    const lookup = await resolveHostReference(store, hostReference);
+    if (!lookup.ok) {
+      if (lookup.reason === "not-found") {
+        io.errorLog(`未知主机 ${hostReference}（用 host list 查看已登记主机）`);
+      } else {
+        io.errorLog(
+          `主机名不唯一：${hostReference}（${lookup.candidates.map((host) => host.id).join("、")}）；请改用主机 id`
+        );
+      }
+      return 2;
+    }
+    const scoped = store.scopeHost(lookup.host.id);
+    if (action === "status") {
+      const pending = await suiteQueuePending(scoped, lookup.host.id);
+      if (flags.bool("json")) {
+        io.log(JSON.stringify(queueJson(lookup.host, pending), null, 2));
+        return 0;
+      }
+      io.log(queueStatusLine(lookup.host, pending));
+      return 0;
+    }
+    const actor = actorFromEnv(env);
+    const paused = action === "pause";
+    const record = await store.setHostQueuePaused({
+      hostId: lookup.host.id,
+      paused,
+      by: actor
+    });
+    if (!record) {
+      io.errorLog(`未知主机 ${lookup.host.id}（无法${paused ? "暂停" : "恢复"}队列）`);
+      return 2;
+    }
+    const pending = await suiteQueuePending(scoped, record.id);
+    const note = flags.get("note")?.trim() ?? "";
+    const projects = (await scoped.listProjects())
+      .filter((project) => project.hostId === record.id)
+      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
+    await recordAuditSafe(scoped, projects[0]?.rootPath ?? "", {
+      domain: "suite",
+      action: paused ? "action.queue.pause" : "action.queue.resume",
+      result: "ok",
+      summary: `中心${paused ? "暂停" : "恢复"}主机 ${record.id} 队列（待执行 ${pending} 条）`,
+      refs: { hostId: record.id, ...(note === "" ? {} : { note }) },
+      actor,
+      actorHostId: null,
+      channel: "cli"
+    });
+    if (flags.bool("json")) {
+      io.log(JSON.stringify(queueJson(record, pending), null, 2));
+      return 0;
+    }
+    io.log(
+      paused
+        ? `主机 ${record.id} 队列已暂停（by=${record.queuePausedBy ?? actor}）；待执行 ${pending} 条`
+        : `主机 ${record.id} 队列已恢复；待执行 ${pending} 条`
+    );
+    return 0;
+  } catch (error) {
+    io.errorLog(`suite queue --host 失败：${errorMessage(error)}`);
+    return 2;
+  } finally {
+    if (opened && store !== null) {
+      try {
+        await store.close();
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+}
+
 async function suiteTaskOnCenterHost(
   hostReference: string,
   flags: ParsedFlags,
@@ -2645,7 +2865,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "runner", "schedule", "backfill", "ui-contract"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -2653,6 +2873,20 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
   }
 
   const buildRuntime = deps.buildRuntime ?? defaultBuildRuntime;
+  if (sub === "queue" && flags.has("host")) {
+    const hostReference = flags.get("host");
+    if (hostReference === null || hostReference.trim() === "") {
+      errorLog("--host 需要主机 id 或 hostname（用 host list 查看已登记主机）");
+      return 2;
+    }
+    return await suiteQueueOnCenterHost(
+      hostReference,
+      flags,
+      { log, errorLog },
+      deps.center ?? {},
+      deps.env ?? process.env
+    );
+  }
   if (sub === "task" && flags.has("host")) {
     const hostReference = flags.get("host");
     if (hostReference === null || hostReference.trim() === "") {
@@ -2710,6 +2944,9 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "report") return await suiteReport(built.runtime, flags, { log, errorLog });
     if (sub === "reconcile") return await suiteReconcile(built.runtime, flags, { log, errorLog });
     if (sub === "task") return await suiteTask(built.runtime, flags, { log, errorLog }, deps.env ?? process.env);
+    if (sub === "queue") {
+      return await suiteQueue(built.runtime, flags, { log, errorLog }, deps.env ?? process.env);
+    }
     if (sub === "schedule") return await suiteSchedule(built.runtime, flags, { log, errorLog });
     if (sub === "backfill") return await suiteBackfill(built.runtime, flags, { log, errorLog });
     if (sub === "ui-contract") return await suiteUiContract(built.runtime, flags, { log, errorLog });

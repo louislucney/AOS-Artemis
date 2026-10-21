@@ -118,6 +118,46 @@ export async function handlePanelActionRequest(
     if (response.status === 200) deps.cache?.clear();
     return response;
   }
+  if (
+    request.url.pathname === "/panel/api/queue/pause" ||
+    request.url.pathname === "/panel/api/queue/resume"
+  ) {
+    const paused = request.url.pathname === "/panel/api/queue/pause";
+    const hostRef = typeof payload.host === "string" ? payload.host.trim() : "";
+    let response: PanelWebResponse;
+    if (hostRef === "") {
+      response = json(400, { error: "缺少 host" });
+    } else {
+      const host = await deps.store.getHost(hostRef).catch(() => null);
+      if (!host) {
+        response = json(404, { error: `未知主机 "${hostRef}"（先用 host list 查看已登记主机）` });
+      } else {
+        const record = await deps.store.setHostQueuePaused({
+          hostId: host.id,
+          paused,
+          by: "panel"
+        });
+        response = record
+          ? json(200, { ok: true, host: record })
+          : json(404, { error: `未知主机 "${hostRef}"` });
+      }
+    }
+    const note = typeof payload.note === "string" ? payload.note.trim() : "";
+    const auditRoot = await hostAuditRoot(deps, payload, hostRef);
+    await auditPanel(
+      deps,
+      auditRoot,
+      paused ? "action.queue.pause" : "action.queue.resume",
+      response,
+      {
+        ...(hostRef === "" ? {} : { hostId: hostRef }),
+        ...(note === "" ? {} : { note })
+      },
+      { actor: "panel", actorHostId: hostRef === "" ? null : hostRef, channel: "panel" }
+    );
+    if (response.status === 200) deps.cache?.clear();
+    return response;
+  }
   const projectKey = typeof payload.project === "string" ? payload.project.trim() : "";
   if (projectKey === "") return json(400, { error: "缺少 project" });
   const hostParam =

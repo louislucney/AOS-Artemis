@@ -11,6 +11,8 @@ import { retentionCutoffIso } from "./usage-event.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
 import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
 import type {
+  AcquireDeviceLeasesInput,
+  AcquireDeviceLeasesResult,
   AuditEventInput,
   AuditEventRecord,
   AuditQuery,
@@ -18,6 +20,7 @@ import type {
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
+  DeviceLeaseRecord,
   HostAddressInput,
   HostAddressRecord,
   HostRecord,
@@ -37,6 +40,7 @@ import type {
   RecordUsageEventInput,
   RegressionTaskRecord,
   RegressionTaskStatus,
+  RenewDeviceLeasesInput,
   RunnerRecord,
   ScheduleRecord,
   SetCaseIssueKeyInput,
@@ -279,6 +283,7 @@ export class FileStore implements ProjectStore {
       runIds?: string[];
       claimedBy?: string | null;
       claimedAt?: string | null;
+      lastProgressAt?: string | null;
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
@@ -584,6 +589,27 @@ export class FileStore implements ProjectStore {
     const record = await this.hostMem.setHostQueuePaused(input);
     if (record !== null) await this.persistHostState("setHostQueuePaused");
     return record;
+  }
+
+  async acquireDeviceLeases(input: AcquireDeviceLeasesInput): Promise<AcquireDeviceLeasesResult> {
+    await this.syncHostFromDisk();
+    const result = await this.hostMem.acquireDeviceLeases(input);
+    if (result.ok) await this.persistHostState("acquireDeviceLeases");
+    return result;
+  }
+
+  async renewDeviceLeases(input: RenewDeviceLeasesInput): Promise<number> {
+    await this.syncHostFromDisk();
+    const renewed = await this.hostMem.renewDeviceLeases(input);
+    if (renewed > 0) await this.persistHostState("renewDeviceLeases");
+    return renewed;
+  }
+
+  async releaseDeviceLeases(input: { hostId: string; taskId: string }): Promise<number> {
+    await this.syncHostFromDisk();
+    const released = await this.hostMem.releaseDeviceLeases(input);
+    if (released > 0) await this.persistHostState("releaseDeviceLeases");
+    return released;
   }
 
   async recordUsageEvent(
@@ -1068,7 +1094,7 @@ export class FileStore implements ProjectStore {
   }
 
   private hydrateHostState(disk: Partial<MemoryStoreState>): void {
-    if (!disk.hosts && !disk.hostAddresses && !disk.hostSessions) return;
+    if (!disk.hosts && !disk.hostAddresses && !disk.hostSessions && !disk.deviceLeases) return;
     const local = this.hostMem.exportState();
     this.hostMem.importState({
       hosts: disk.hosts ? unionBy(disk.hosts, local.hosts, (host) => host.id) : undefined,
@@ -1077,6 +1103,9 @@ export class FileStore implements ProjectStore {
         : undefined,
       hostSessions: disk.hostSessions
         ? unionBy(disk.hostSessions, local.hostSessions, (session) => session.id)
+        : undefined,
+      deviceLeases: disk.deviceLeases
+        ? mergeDeviceLeases(disk.deviceLeases, local.deviceLeases)
         : undefined
     });
   }
@@ -1113,7 +1142,8 @@ export class FileStore implements ProjectStore {
         schedules: full.schedules,
         hosts: this.hostMem.exportState().hosts,
         hostAddresses: this.hostMem.exportState().hostAddresses,
-        hostSessions: this.hostMem.exportState().hostSessions
+        hostSessions: this.hostMem.exportState().hostSessions,
+        deviceLeases: this.hostMem.exportState().deviceLeases
       };
       await this.ensureDir(bucket);
       const payload = JSON.stringify({
@@ -1214,6 +1244,21 @@ function unionBy<T>(local: T[], disk: T[], key: (value: T) => string): T[] {
 
 function hostAddressKey(address: HostAddressRecord): string {
   return `${address.hostId}\u0000${address.source}\u0000${address.iface}\u0000${address.address}`;
+}
+
+function mergeDeviceLeases(
+  disk: DeviceLeaseRecord[],
+  local: DeviceLeaseRecord[]
+): DeviceLeaseRecord[] {
+  const merged = new Map<string, DeviceLeaseRecord>();
+  for (const lease of [...disk, ...local]) {
+    const key = `${lease.hostId}\u0000${lease.serial}`;
+    const existing = merged.get(key);
+    if (existing === undefined || lease.renewAt > existing.renewAt) {
+      merged.set(key, { ...lease });
+    }
+  }
+  return [...merged.values()];
 }
 
 function mergeStates(disk: Partial<MemoryStoreState>, local: MemoryStoreState): Partial<MemoryStoreState> {

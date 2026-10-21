@@ -403,6 +403,47 @@ export interface UpsertRunnerInput {
 /** runner 双启保护活跃窗口默认值。 */
 export const RUNNER_ACTIVE_DEFAULT_MS = 90_000;
 
+export interface DeviceLeaseRecord {
+  hostId: string;
+  serial: string;
+  taskId: string;
+  projectId: string | null;
+  acquiredAt: string;
+  renewAt: string;
+  expiresAt: string;
+}
+
+export interface AcquireDeviceLeasesInput {
+  hostId: string;
+  taskId: string;
+  projectId?: string | null;
+  serials: string[];
+  ttlMs?: number;
+  at?: string;
+}
+
+export type AcquireDeviceLeasesResult =
+  | { ok: true; leases: DeviceLeaseRecord[] }
+  | { ok: false; busy: string[] };
+
+export interface RenewDeviceLeasesInput {
+  hostId: string;
+  taskId: string;
+  serials: string[];
+  ttlMs?: number;
+  at?: string;
+}
+
+/** 设备租约默认 TTL（`AOS_DEVICE_LEASE_MS`，续租周期 30s）。 */
+export const DEVICE_LEASE_DEFAULT_MS = 90_000;
+
+export function deviceLeaseTtlMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.AOS_DEVICE_LEASE_MS ?? "").trim();
+  if (raw === "") return DEVICE_LEASE_DEFAULT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : DEVICE_LEASE_DEFAULT_MS;
+}
+
 /** lastSeenAt 距 nowMs 仍在活跃窗口内（非法时间视为陈旧，允许接管）。 */
 export function isRunnerActive(lastSeenAt: string, nowMs: number, activeWithinMs: number): boolean {
   const seen = Date.parse(lastSeenAt);
@@ -689,6 +730,7 @@ export interface ProjectStore {
       runIds?: string[];
       claimedBy?: string | null;
       claimedAt?: string | null;
+      lastProgressAt?: string | null;
       /** CAS 守卫：仅当当前状态在此列表内才写入（空数组＝永不命中）；不满足返回 false。 */
       expectStatuses?: RegressionTaskStatus[];
     }
@@ -817,6 +859,12 @@ export interface ProjectStore {
     by: string;
     at?: string;
   }): Promise<HostRecord | null>;
+  /** 设备租约（host+serial 唯一）：全有或全无；`expires_at <= at` 视为可抢占。 */
+  acquireDeviceLeases(input: AcquireDeviceLeasesInput): Promise<AcquireDeviceLeasesResult>;
+  /** 仅续租本任务持有的 serial，返回续租条数。 */
+  renewDeviceLeases(input: RenewDeviceLeasesInput): Promise<number>;
+  /** 释放本任务在该 host 的全部租约，返回释放条数。 */
+  releaseDeviceLeases(input: { hostId: string; taskId: string }): Promise<number>;
   recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,

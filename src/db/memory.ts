@@ -4,6 +4,7 @@ import { buildAuditEvent, cloneAuditEvent, normalizeAuditLimit } from "./audit-e
 import {
   AmbiguousProjectError,
   capabilitiesSatisfyPlatforms,
+  deviceLeaseTtlMs,
   isRunnerActive,
   normalizeRegressionTask,
   RUNNER_ACTIVE_DEFAULT_MS,
@@ -14,6 +15,8 @@ import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js"
 import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
 
 import type {
+  AcquireDeviceLeasesInput,
+  AcquireDeviceLeasesResult,
   AuditEventInput,
   AuditEventRecord,
   AuditQuery,
@@ -21,6 +24,7 @@ import type {
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
+  DeviceLeaseRecord,
   HostAddressInput,
   HostAddressRecord,
   HostRecord,
@@ -40,6 +44,7 @@ import type {
   RecordUsageEventInput,
   RegressionTaskRecord,
   RegressionTaskStatus,
+  RenewDeviceLeasesInput,
   RunnerRecord,
   ScheduleRecord,
   SetCaseIssueKeyInput,
@@ -69,6 +74,7 @@ export interface MemoryStoreState {
   hosts: HostRecord[];
   hostAddresses: HostAddressRecord[];
   hostSessions: HostSessionRecord[];
+  deviceLeases: DeviceLeaseRecord[];
 }
 
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
@@ -91,6 +97,7 @@ export class MemoryStore implements ProjectStore {
   private hosts: HostRecord[] = [];
   private hostAddresses: HostAddressRecord[] = [];
   private hostSessions: HostSessionRecord[] = [];
+  private deviceLeases: DeviceLeaseRecord[] = [];
 
   constructor(hostId: string | null = null) {
     this.hostId = hostId;
@@ -122,6 +129,7 @@ export class MemoryStore implements ProjectStore {
     view.hosts = this.hosts;
     view.hostAddresses = this.hostAddresses;
     view.hostSessions = this.hostSessions;
+    view.deviceLeases = this.deviceLeases;
     return view;
   }
 
@@ -391,6 +399,7 @@ export class MemoryStore implements ProjectStore {
       runIds?: string[];
       claimedBy?: string | null;
       claimedAt?: string | null;
+      lastProgressAt?: string | null;
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
@@ -410,6 +419,7 @@ export class MemoryStore implements ProjectStore {
     if (patch.runIds !== undefined) task.runIds = [...patch.runIds];
     if (patch.claimedBy !== undefined) task.claimedBy = patch.claimedBy;
     if (patch.claimedAt !== undefined) task.claimedAt = patch.claimedAt;
+    if (patch.lastProgressAt !== undefined) task.lastProgressAt = patch.lastProgressAt;
     return true;
   }
 
@@ -481,6 +491,10 @@ export class MemoryStore implements ProjectStore {
     const project = this.getProjectRecord(input.rootPath);
     if (!project) return null;
     const hostId = input.hostId ?? null;
+    if (hostId !== null) {
+      const host = this.hosts.find((entry) => entry.id === hostId);
+      if (host?.queuePaused === true) return null;
+    }
     const capabilities = input.capabilities ?? [];
     const candidates = this.regressionTasks
       .filter(
@@ -1145,6 +1159,77 @@ export class MemoryStore implements ProjectStore {
     return cloneHost(host);
   }
 
+  async acquireDeviceLeases(input: AcquireDeviceLeasesInput): Promise<AcquireDeviceLeasesResult> {
+    const ttlMs = input.ttlMs ?? deviceLeaseTtlMs();
+    const at = input.at ?? new Date().toISOString();
+    const nowMs = Date.parse(at);
+    const expiresAt = new Date(nowMs + ttlMs).toISOString();
+    const serials = [...new Set(input.serials)];
+    if (serials.length === 0) return { ok: true, leases: [] };
+    const busy = serials.filter((serial) => {
+      const lease = this.deviceLeases.find(
+        (entry) => entry.hostId === input.hostId && entry.serial === serial
+      );
+      if (lease === undefined || lease.taskId === input.taskId) return false;
+      return Date.parse(lease.expiresAt) > nowMs;
+    });
+    if (busy.length > 0) return { ok: false, busy };
+    replaceInPlace(
+      this.deviceLeases,
+      this.deviceLeases.filter(
+        (entry) =>
+          !(
+            entry.hostId === input.hostId &&
+            serials.includes(entry.serial) &&
+            (entry.taskId === input.taskId || !(Date.parse(entry.expiresAt) > nowMs))
+          )
+      )
+    );
+    const leases = serials.map((serial) => ({
+      hostId: input.hostId,
+      serial,
+      taskId: input.taskId,
+      projectId: input.projectId ?? null,
+      acquiredAt: at,
+      renewAt: at,
+      expiresAt
+    }));
+    this.deviceLeases.push(...leases);
+    return { ok: true, leases: leases.map((lease) => ({ ...lease })) };
+  }
+
+  async renewDeviceLeases(input: RenewDeviceLeasesInput): Promise<number> {
+    const ttlMs = input.ttlMs ?? deviceLeaseTtlMs();
+    const at = input.at ?? new Date().toISOString();
+    const expiresAt = new Date(Date.parse(at) + ttlMs).toISOString();
+    const serials = new Set(input.serials);
+    let renewed = 0;
+    for (const lease of this.deviceLeases) {
+      if (
+        lease.hostId !== input.hostId ||
+        lease.taskId !== input.taskId ||
+        !serials.has(lease.serial)
+      ) {
+        continue;
+      }
+      lease.renewAt = at;
+      lease.expiresAt = expiresAt;
+      renewed += 1;
+    }
+    return renewed;
+  }
+
+  async releaseDeviceLeases(input: { hostId: string; taskId: string }): Promise<number> {
+    const before = this.deviceLeases.length;
+    replaceInPlace(
+      this.deviceLeases,
+      this.deviceLeases.filter(
+        (lease) => !(lease.hostId === input.hostId && lease.taskId === input.taskId)
+      )
+    );
+    return before - this.deviceLeases.length;
+  }
+
   async ping(): Promise<boolean> {
     return true;
   }
@@ -1369,7 +1454,8 @@ export class MemoryStore implements ProjectStore {
       auditEvents: this.auditEvents.map(cloneAuditEvent),
       hosts: this.hosts.map(cloneHost),
       hostAddresses: this.hostAddresses.map(cloneHostAddress),
-      hostSessions: this.hostSessions.map(cloneHostSession)
+      hostSessions: this.hostSessions.map(cloneHostSession),
+      deviceLeases: this.deviceLeases.map((lease) => ({ ...lease }))
     };
   }
 
@@ -1403,6 +1489,7 @@ export class MemoryStore implements ProjectStore {
     if (data.hosts) this.hosts = data.hosts.map(cloneHost);
     if (data.hostAddresses) this.hostAddresses = data.hostAddresses.map(cloneHostAddress);
     if (data.hostSessions) this.hostSessions = data.hostSessions.map(cloneHostSession);
+    if (data.deviceLeases) this.deviceLeases = data.deviceLeases.map((lease) => ({ ...lease }));
   }
 
   private pruneUsageEvents(projectId: string | null, policy: UsagePrunePolicy): void {

@@ -153,6 +153,30 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     } catch (error) {
       io.errorLog(`[runner] 释放未完成领取失败：${errorMessage(error)}`);
     }
+    const projectId = (await store.getProjectByPath(rootPath).catch(() => null))?.id ?? null;
+    let active: { taskId: string; serials: string[] } | null = null;
+
+    const tick = async (): Promise<void> => {
+      await heartbeat();
+      const current = active;
+      if (current === null) return;
+      const at = new Date(now()).toISOString();
+      try {
+        await store.updateRegressionTask(rootPath, current.taskId, { lastProgressAt: at });
+      } catch (error) {
+        io.errorLog(`[runner] 任务 ${current.taskId} 进度写入失败：${errorMessage(error)}`);
+      }
+      try {
+        await store.renewDeviceLeases({
+          hostId: snapshot.identity.id,
+          taskId: current.taskId,
+          serials: current.serials,
+          at
+        });
+      } catch (error) {
+        io.errorLog(`[runner] 任务 ${current.taskId} 设备租约续期失败：${errorMessage(error)}`);
+      }
+    };
 
     let stopHeartbeat = false;
     let heartbeatTask: Promise<void> = Promise.resolve();
@@ -167,7 +191,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           }
           if (stopHeartbeat) break;
           try {
-            await heartbeat();
+            await tick();
           } catch (error) {
             io.errorLog(`[runner] 心跳失败：${errorMessage(error)}`);
           }
@@ -247,6 +271,39 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           continue;
         }
 
+        const taskPlatforms = task.platforms;
+        const devices = currentInventory.devices
+          .filter((device) => taskPlatforms.includes(device.platform))
+          .map((device) => device.serial);
+        const hostId = snapshot.identity.id;
+        let acquired: boolean;
+        try {
+          const leases = await store.acquireDeviceLeases({
+            hostId,
+            taskId: task.id,
+            projectId,
+            serials: devices,
+            at: new Date(nowMs).toISOString()
+          });
+          acquired = leases.ok;
+          if (!leases.ok) {
+            io.log(
+              `[runner] 任务 ${task.id} device-busy（设备 ${leases.busy.join(",") || "无"} 被其他任务占用），释放回待执行（不计尝试）`
+            );
+          }
+        } catch (error) {
+          io.errorLog(`[runner] 任务 ${task.id} 设备租约获取失败：${errorMessage(error)}`);
+          acquired = false;
+        }
+        if (!acquired) {
+          await store
+            .releaseRegressionTask({ rootPath, runnerId: me.id, taskId: task.id, to: "pending" })
+            .catch(() => false);
+          if (once) return 0;
+          await sleep(pollMs);
+          continue;
+        }
+
         let running: RegressionTaskRecord | null;
         try {
           running = await store.beginExecution({
@@ -260,6 +317,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           running = null;
         }
         if (running === null) {
+          await store.releaseDeviceLeases({ hostId, taskId: task.id }).catch(() => 0);
           const acknowledged = await store
             .ackCancellation({ rootPath, taskId: task.id })
             .catch(() => null);
@@ -289,10 +347,8 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           continue;
         }
         task = running;
+        active = { taskId: task.id, serials: devices };
 
-        const devices = currentInventory.devices
-          .filter((device) => task.platforms.includes(device.platform))
-          .map((device) => device.serial);
         const argv = [
           "run",
           "--task",
@@ -300,96 +356,104 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           ...(options.projectDir ? ["--project", options.projectDir] : []),
           ...devices.flatMap((serial) => ["--device", serial])
         ];
-        const missing = task.platforms.filter(
-          (platform) => !currentInventory.platforms.some((mine) => mine === platform)
-        );
-        if (missing.length > 0) {
-          const covered = task.platforms.filter((platform) =>
-            currentInventory.platforms.some((mine) => mine === platform)
-          );
-          io.log(
-            `[runner] 领取任务 ${task.id}（部分端 ${covered.join(",")}，缺 ${missing.join(",")}——在线无全覆盖执行机）`
-          );
-        } else {
-          io.log(
-            `[runner] 领取任务 ${task.id}（端 ${task.platforms.join(",")} · 设备 ${devices.join(",") || "无"}）`
-          );
-        }
-        let exitCode: number | null = null;
-        let stopRequested = false;
-        let stopAcked = false;
-        const stopPoll = setInterval(() => {
-          void store
-            .getRegressionTask(rootPath, task.id)
-            .then(async (fresh) => {
-              if (
-                fresh?.status !== "stopping" &&
-                fresh?.status !== "cancelled" &&
-                fresh?.status !== "stopped"
-              ) {
-                return;
-              }
-              stopRequested = true;
-              if ((fresh.status === "stopping" || fresh.status === "stopped") && !stopAcked) {
-                stopAcked = true;
-                await store
-                  .ackCancellation({ rootPath, taskId: task.id })
-                  .catch(() => null);
-                io.log(`[runner] 任务 ${task.id} 停止请求已确认（stopping → cancelled）`);
-              }
-            })
-            .catch(() => {});
-        }, STOP_POLL_MS);
-        stopPoll.unref?.();
         try {
-          exitCode = await options.executeSuite(argv, { shouldAbort: () => stopRequested });
-          io.log(`[runner] 任务 ${task.id} 执行结束（退出码 ${exitCode}）`);
-        } catch (error) {
-          io.errorLog(`[runner] 任务 ${task.id} 执行异常：${errorMessage(error)}`);
-        } finally {
-          clearInterval(stopPoll);
-        }
-        const afterRun = await store.getRegressionTask(rootPath, task.id).catch(() => null);
-        let afterStatus = afterRun?.status ?? null;
-        if (afterStatus === "stopping") {
-          const acked = await store
-            .ackCancellation({ rootPath, taskId: task.id })
-            .catch(() => null);
-          if (acked) afterStatus = acked.status;
-          io.log(`[runner] 任务 ${task.id} 停止请求已确认（收尾兜底）`);
-        }
-        if (afterStatus === "cancelled" || afterStatus === "stopped") {
-          io.log(`[runner] 任务 ${task.id} 已取消（面板请求）：保留 cancelled，不释放、不重试`);
-          if (once) return 0;
-          continue;
-        }
-        const failed = exitCode === null || exitCode !== 0;
-        if (failed) {
-          try {
-            const exhausted = task.attempts >= maxAttempts;
-            const released = await store.releaseRegressionTask({
-              rootPath,
-              runnerId: me.id,
-              taskId: task.id,
-              to: exhausted ? "failed" : "pending"
-            });
-            if (released) {
-              io.log(
-                exhausted
-                  ? `[runner] 任务 ${task.id} 第 ${task.attempts} 次失败（上限 ${maxAttempts}），标记 failed（不再自动重试；修复引用后请新建任务）`
-                  : `[runner] 任务 ${task.id} 未达终态，已释放回待执行（第 ${task.attempts} 次尝试）`
-              );
-            } else {
-              io.errorLog(
-                `[runner] 任务 ${task.id} 守卫释放未生效（可能已被并发处理/终态）`
-              );
-            }
-          } catch (releaseError) {
-            io.errorLog(`[runner] 释放任务失败：${errorMessage(releaseError)}`);
+          const missing = task.platforms.filter(
+            (platform) => !currentInventory.platforms.some((mine) => mine === platform)
+          );
+          if (missing.length > 0) {
+            const covered = task.platforms.filter((platform) =>
+              currentInventory.platforms.some((mine) => mine === platform)
+            );
+            io.log(
+              `[runner] 领取任务 ${task.id}（部分端 ${covered.join(",")}，缺 ${missing.join(",")}——在线无全覆盖执行机）`
+            );
+          } else {
+            io.log(
+              `[runner] 领取任务 ${task.id}（端 ${task.platforms.join(",")} · 设备 ${devices.join(",") || "无"}）`
+            );
           }
+          let exitCode: number | null = null;
+          let stopRequested = false;
+          let stopAcked = false;
+          const stopPoll = setInterval(() => {
+            void store
+              .getRegressionTask(rootPath, task.id)
+              .then(async (fresh) => {
+                if (
+                  fresh?.status !== "stopping" &&
+                  fresh?.status !== "cancelled" &&
+                  fresh?.status !== "stopped"
+                ) {
+                  return;
+                }
+                stopRequested = true;
+                if (
+                  (fresh.status === "stopping" || fresh.status === "stopped") &&
+                  !stopAcked
+                ) {
+                  stopAcked = true;
+                  await store
+                    .ackCancellation({ rootPath, taskId: task.id })
+                    .catch(() => null);
+                  io.log(`[runner] 任务 ${task.id} 停止请求已确认（stopping → cancelled）`);
+                }
+              })
+              .catch(() => {});
+          }, STOP_POLL_MS);
+          stopPoll.unref?.();
+          try {
+            exitCode = await options.executeSuite(argv, { shouldAbort: () => stopRequested });
+            io.log(`[runner] 任务 ${task.id} 执行结束（退出码 ${exitCode}）`);
+          } catch (error) {
+            io.errorLog(`[runner] 任务 ${task.id} 执行异常：${errorMessage(error)}`);
+          } finally {
+            clearInterval(stopPoll);
+          }
+          const afterRun = await store.getRegressionTask(rootPath, task.id).catch(() => null);
+          let afterStatus = afterRun?.status ?? null;
+          if (afterStatus === "stopping") {
+            const acked = await store
+              .ackCancellation({ rootPath, taskId: task.id })
+              .catch(() => null);
+            if (acked) afterStatus = acked.status;
+            io.log(`[runner] 任务 ${task.id} 停止请求已确认（收尾兜底）`);
+          }
+          if (afterStatus === "cancelled" || afterStatus === "stopped") {
+            io.log(`[runner] 任务 ${task.id} 已取消（面板请求）：保留 cancelled，不释放、不重试`);
+            if (once) return 0;
+            continue;
+          }
+          const failed = exitCode === null || exitCode !== 0;
+          if (failed) {
+            try {
+              const exhausted = task.attempts >= maxAttempts;
+              const released = await store.releaseRegressionTask({
+                rootPath,
+                runnerId: me.id,
+                taskId: task.id,
+                to: exhausted ? "failed" : "pending"
+              });
+              if (released) {
+                io.log(
+                  exhausted
+                    ? `[runner] 任务 ${task.id} 第 ${task.attempts} 次失败（上限 ${maxAttempts}），标记 failed（不再自动重试；修复引用后请新建任务）`
+                    : `[runner] 任务 ${task.id} 未达终态，已释放回待执行（第 ${task.attempts} 次尝试）`
+                );
+              } else {
+                io.errorLog(
+                  `[runner] 任务 ${task.id} 守卫释放未生效（可能已被并发处理/终态）`
+                );
+              }
+            } catch (releaseError) {
+              io.errorLog(`[runner] 释放任务失败：${errorMessage(releaseError)}`);
+            }
+          }
+          if (once) return 0;
+          if (failed) await sleep(pollMs);
+        } finally {
+          active = null;
+          await store.releaseDeviceLeases({ hostId, taskId: task.id }).catch(() => 0);
         }
-        if (once) return 0;
-        if (failed) await sleep(pollMs);
       }
       return 0;
     } finally {
