@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 import { logWarn } from "../log.js";
-import { hostSessionRetentionDaysFrom } from "../host/online.js";
+import {
+  hostAddressHistoryFrom,
+  hostSessionRetentionDaysFrom
+} from "../host/online.js";
 import { hostStrictFrom } from "../host/strict.js";
 import { errorMessage } from "../util.js";
 import {
@@ -438,6 +441,27 @@ const MIGRATION_LOCK_ID = 89121476;
 /** 迁移后置校验：这些索引缺失意味着 DDL best-effort 失败，启动必须失败而不是带病运行。 */
 const REQUIRED_INDEXES = ["projects_host_path_idx", "runners_project_host_idx"] as const;
 
+export const MIGRATION_INCOMPLETE_CODE = "AOS_MIGRATION_INCOMPLETE";
+
+/** 迁移未完成：调用方必须显式失败，不能降级到文件台账掩盖 schema 问题。 */
+export class MigrationIncompleteError extends Error {
+  readonly code = MIGRATION_INCOMPLETE_CODE;
+
+  constructor(readonly missingIndexes: readonly string[]) {
+    super(
+      `数据库迁移未完成：缺少必需索引 ${missingIndexes.join(", ")}；请检查迁移失败日志（MIGRATIONS 为 best-effort）后重试启动或手工修复`
+    );
+    this.name = "MigrationIncompleteError";
+  }
+}
+
+export function isMigrationIncompleteError(error: unknown): boolean {
+  return (
+    error instanceof MigrationIncompleteError ||
+    (error as { code?: unknown } | null)?.code === MIGRATION_INCOMPLETE_CODE
+  );
+}
+
 async function assertRequiredIndexes(
   run: (text: string, values?: unknown[]) => Promise<QueryResultLike>
 ): Promise<void> {
@@ -458,9 +482,7 @@ async function assertRequiredIndexes(
     if (result.rows.length === 0) missing.push(index);
   }
   if (missing.length > 0) {
-    throw new Error(
-      `数据库迁移未完成：缺少必需索引 ${missing.join(", ")}；请检查迁移失败日志（MIGRATIONS 为 best-effort）后重试启动或手工修复`
-    );
+    throw new MigrationIncompleteError(missing);
   }
 }
 
@@ -1793,7 +1815,8 @@ export class PostgresStore implements ProjectStore {
             family: addr.includes(":") ? "ipv6" : "ipv4",
             address: addr.trim()
           }
-        ]
+        ],
+        ...(hostAddressHistoryFrom(this.env) ? {} : { maxPerSource: 1 })
       });
     } catch {
       /* pg-mem / 无观测能力连接：跳过，不影响自报地址 */
@@ -1860,7 +1883,7 @@ export class PostgresStore implements ProjectStore {
     if (maxPerSource > 0) {
       const rows = await this.pool.query(
         `SELECT source, iface, address FROM host_addresses WHERE host_id = $1
-         ORDER BY last_seen_at DESC, address ASC`,
+         ORDER BY last_seen_at DESC, address ASC, iface ASC`,
         [input.hostId]
       );
       const bySource = new Map<string, Array<Record<string, unknown>>>();
@@ -1957,16 +1980,26 @@ export class PostgresStore implements ProjectStore {
   }
 
   async pruneHostSessions(
-    input: { now?: number; retentionDays?: number } = {}
+    input: { now?: number; retentionDays?: number; hostId?: string | null } = {}
   ): Promise<number> {
     const retentionDays = input.retentionDays ?? hostSessionRetentionDaysFrom(this.env);
     if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+    const hostId = input.hostId !== undefined ? input.hostId : this.hostId;
     const cutoff = new Date(
       (input.now ?? Date.now()) - retentionDays * 86_400_000
     ).toISOString();
+    const values: unknown[] = [cutoff];
+    const clauses = [
+      "ended_at IS NOT NULL",
+      "(CASE WHEN ended_at > last_seen_at THEN ended_at ELSE last_seen_at END) < $1"
+    ];
+    if (hostId !== null) {
+      values.push(hostId);
+      clauses.push(`host_id = $${values.length}`);
+    }
     const result = await this.pool.query(
-      `DELETE FROM host_sessions WHERE ended_at IS NOT NULL AND last_seen_at < $1`,
-      [cutoff]
+      `DELETE FROM host_sessions WHERE ${clauses.join(" AND ")}`,
+      values
     );
     return Number(result.rowCount ?? 0);
   }

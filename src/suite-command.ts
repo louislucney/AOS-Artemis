@@ -10,6 +10,7 @@ import {
   matchApiErrors
 } from "./artemis/api-errors.js";
 import { defaultBuildRuntime, type CliRuntimeBundle } from "./cli-runtime.js";
+import { isMigrationIncompleteError } from "./db/index.js";
 import { hostStrictFrom } from "./host/strict.js";
 import { isHostOnline, precheckTask } from "./console/dispatch.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
@@ -3134,6 +3135,10 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     }
     return await suiteFeedback(built.runtime, flags, { log, errorLog });
   } catch (error) {
+    if (isMigrationIncompleteError(error)) {
+      errorLog(errorMessage(error));
+      return 2;
+    }
     errorLog(`suite ${sub} 失败: ${errorMessage(error)}`);
     return 1;
   } finally {

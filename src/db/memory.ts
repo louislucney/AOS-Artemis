@@ -1143,7 +1143,12 @@ export class MemoryStore implements ProjectStore {
       }
       const keep = new Set<HostAddressRecord>();
       for (const rows of bySource.values()) {
-        rows.sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0));
+        rows.sort(
+          (a, b) =>
+            (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0) ||
+            a.address.localeCompare(b.address) ||
+            a.iface.localeCompare(b.iface)
+        );
         for (const row of rows.slice(0, maxPerSource)) keep.add(row);
       }
       replaceInPlace(
@@ -1224,16 +1229,21 @@ export class MemoryStore implements ProjectStore {
   }
 
   async pruneHostSessions(
-    input: { now?: number; retentionDays?: number } = {}
+    input: { now?: number; retentionDays?: number; hostId?: string | null } = {}
   ): Promise<number> {
     const retentionDays = input.retentionDays ?? hostSessionRetentionDaysFrom(this.env);
     if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+    const hostId = input.hostId !== undefined ? input.hostId : this.hostId;
     const cutoff = new Date(
       (input.now ?? Date.now()) - retentionDays * 86_400_000
     ).toISOString();
-    const kept = this.hostSessions.filter(
-      (session) => session.endedAt === null || session.lastSeenAt >= cutoff
-    );
+    const kept = this.hostSessions.filter((session) => {
+      if (session.endedAt === null) return true;
+      if (hostId !== null && session.hostId !== hostId) return true;
+      const lastActivity =
+        session.endedAt > session.lastSeenAt ? session.endedAt : session.lastSeenAt;
+      return lastActivity >= cutoff;
+    });
     const removed = this.hostSessions.length - kept.length;
     if (removed > 0) replaceInPlace(this.hostSessions, kept);
     return removed;

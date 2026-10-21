@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import os from "node:os";
 import test from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -72,6 +73,46 @@ test("Runtime.startClientSession/note/end 写 host_sessions 并节流", async ()
   assert.ok(ended);
   assert.notEqual(ended.endedAt, null);
   assert.equal((await store.listHostSessions("h1")).length, 0);
+});
+
+test("presence 地址历史关闭（AOS_HOST_ADDR_HISTORY=0）时按 maxPerSource:1 写入", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  const { runtime } = await loadTestRuntime(dir, {
+    proxy: new StubProxy(),
+    store,
+    baseEnv: { AOS_HOST_ADDR_HISTORY: "0" },
+    hostIdentity: hostIdentity("h1")
+  });
+  const scoped = runtime.store;
+  const calls = [];
+  const originalAddresses = scoped.upsertHostAddresses.bind(scoped);
+  scoped.upsertHostAddresses = async (input) => {
+    calls.push(input);
+    return originalAddresses(input);
+  };
+
+  const originalInterfaces = os.networkInterfaces;
+  os.networkInterfaces = () => ({
+    en0: [
+      {
+        address: "10.0.0.5",
+        netmask: "255.255.255.0",
+        family: "IPv4",
+        mac: "",
+        internal: false,
+        cidr: "10.0.0.5/24"
+      }
+    ]
+  });
+  try {
+    await runtime.startClientSession({ name: "cursor", version: "1.0" });
+  } finally {
+    os.networkInterfaces = originalInterfaces;
+  }
+  assert.ok(calls.length > 0, "本机应至少上报一个非内部地址");
+  assert.equal(calls[0].maxPerSource, 1);
+  await runtime.endClientSession();
 });
 
 test("usage 事件带 hostId/sessionId（经 InMemoryTransport 工具调用）", async () => {

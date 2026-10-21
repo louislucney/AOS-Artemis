@@ -625,10 +625,13 @@ export class FileStore implements ProjectStore {
   }
 
   async pruneHostSessions(
-    input: { now?: number; retentionDays?: number } = {}
+    input: { now?: number; retentionDays?: number; hostId?: string | null } = {}
   ): Promise<number> {
     await this.syncHostFromDisk();
-    const removed = await this.hostMem.pruneHostSessions(input);
+    const removed = await this.hostMem.pruneHostSessions({
+      ...input,
+      hostId: input.hostId !== undefined ? input.hostId : this.hostId
+    });
     if (removed > 0) await this.persistHostState("pruneHostSessions");
     return removed;
   }

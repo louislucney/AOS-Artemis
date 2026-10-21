@@ -5,6 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createProjectStore } from "../dist/db/index.js";
+import {
+  MIGRATION_INCOMPLETE_CODE,
+  MigrationIncompleteError
+} from "../dist/db/postgres.js";
 
 async function withEnv(values, fn) {
   const saved = new Map();
@@ -84,6 +88,32 @@ test("createProjectStore: PG failure falls back to file ledger with honest reaso
         await result.store.close();
       }
     );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("createProjectStore: 迁移未完成错误不降级到文件台账（保留 code 供 CLI 显式失败）", async () => {
+  const home = await mkdtemp(join(tmpdir(), "aos-default-"));
+  try {
+    await withEnv({ AOS_LEDGER_DIR: home }, async () => {
+      await assert.rejects(
+        createProjectStore("postgres://center.example/aos", {
+          createPostgres: async () => {
+            throw new MigrationIncompleteError([
+              "projects_host_path_idx",
+              "runners_project_host_idx"
+            ]);
+          }
+        }),
+        (error) => {
+          assert.equal(error?.code, MIGRATION_INCOMPLETE_CODE);
+          assert.match(error.message, /数据库迁移未完成/);
+          assert.match(error.message, /projects_host_path_idx/);
+          return true;
+        }
+      );
+    });
   } finally {
     await rm(home, { recursive: true, force: true });
   }

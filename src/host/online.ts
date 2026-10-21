@@ -11,13 +11,13 @@ export function clientTtlFrom(env: NodeJS.ProcessEnv): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : CLIENT_TTL_DEFAULT_MS;
 }
 
-/** 缺省 7 天；非法回退 7；`0` 显式关闭清理。 */
+/** 缺省 7 天；非法/非整数（含 <1 的小数、溢出）回退 7；`0` 显式关闭清理。 */
 export function hostSessionRetentionDaysFrom(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.AOS_CLIENT_SESSION_RETENTION_DAYS?.trim();
   if (!raw) return CLIENT_SESSION_RETENTION_DAYS_DEFAULT;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) return CLIENT_SESSION_RETENTION_DAYS_DEFAULT;
-  return Math.trunc(parsed);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return CLIENT_SESSION_RETENTION_DAYS_DEFAULT;
+  return parsed;
 }
 
 /** 地址历史保留（`AOS_HOST_ADDR_HISTORY`）：仅字面 `0`/`false` 关闭；缺省开启。 */

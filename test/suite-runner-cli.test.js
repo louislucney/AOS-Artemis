@@ -5,7 +5,7 @@ import test from "node:test";
 import { newDb } from "pg-mem";
 
 import { MemoryStore } from "../dist/db/memory.js";
-import { PostgresStore } from "../dist/db/postgres.js";
+import { MigrationIncompleteError, PostgresStore } from "../dist/db/postgres.js";
 import { runSuiteCommand } from "../dist/suite-command.js";
 import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
 
@@ -111,6 +111,20 @@ test("suite runner: 非法 --poll-ms → exit 2", async () => {
   const { code, errors } = await runCli(runtime, ["runner", "--poll-ms", "abc"]);
   assert.equal(code, 2);
   assert.ok(errors.some((line) => line.includes("--poll-ms")));
+});
+
+test("suite runner: 迁移未完成 → 打印可操作消息并 exit 2", async () => {
+  const errors = [];
+  const code = await runSuiteCommand(["runner", "--once"], {
+    buildRuntime: async () => {
+      throw new MigrationIncompleteError(["projects_host_path_idx"]);
+    },
+    log: () => {},
+    errorLog: (line) => errors.push(line)
+  });
+  assert.equal(code, 2);
+  assert.ok(errors.some((line) => line.includes("数据库迁移未完成")));
+  assert.ok(errors.some((line) => line.includes("projects_host_path_idx")));
 });
 
 test("suite runner --once 冒烟：心跳落库 + 领取执行（假执行器）", async () => {

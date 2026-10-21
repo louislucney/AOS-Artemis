@@ -180,6 +180,18 @@ async function seedRetentionSessions(store) {
   });
   await store.endHostSession("s-ended-recent", "2026-10-20T10:01:00.000Z");
   await store.touchHostSession({
+    id: "s-ended-today",
+    hostId: "h1",
+    projectId: null,
+    rootPath: "/w/app",
+    username: "louis",
+    client: "cursor",
+    clientVersion: "1.0",
+    pid: 4,
+    at: "2026-09-01T10:00:00.000Z"
+  });
+  await store.endHostSession("s-ended-today", "2026-10-21T09:59:00.000Z");
+  await store.touchHostSession({
     id: "s-current",
     hostId: "h1",
     projectId: null,
@@ -192,7 +204,7 @@ async function seedRetentionSessions(store) {
   });
 }
 
-test("pruneHostSessions: 只清理过期已结束会话；0 关闭；进行中会话保留", async () => {
+test("pruneHostSessions: 只清理过期已结束会话；0 关闭；max(last_seen,ended) 与进行中保留", async () => {
   for (const store of await makeStores()) {
     await seedRetentionSessions(store);
     assert.equal(
@@ -203,7 +215,7 @@ test("pruneHostSessions: 只清理过期已结束会话；0 关闭；进行中�
     assert.equal(
       await store.pruneHostSessions({ now: RETENTION_NOW, retentionDays: 7 }),
       1,
-      "仅过期已结束会话被删除"
+      "仅过期已结束会话被删除（今天结束的旧 last_seen 会话保留）"
     );
     const sessions = await store.listHostSessions("h1");
     assert.deepEqual(sessions.map((session) => session.id), ["s-current"]);
@@ -245,11 +257,84 @@ test("FileStore pruneHostSessions: 落盘清理且重启后不回潮", async () 
   }
 });
 
-test("hostSessionRetentionDaysFrom: 默认 7、非法回退 7、0 关闭", () => {
+async function seedOldSession(store, hostId, id) {
+  await store.upsertHost({ id: hostId, hostname: hostId });
+  await store.touchHostSession({
+    id,
+    hostId,
+    projectId: null,
+    rootPath: "/w/app",
+    username: "louis",
+    client: "cursor",
+    clientVersion: "1.0",
+    pid: 1,
+    at: "2026-09-01T10:00:00.000Z"
+  });
+  await store.endHostSession(id, "2026-09-01T10:01:00.000Z");
+}
+
+test("pruneHostSessions: scoped store 只删本主机会话；未绑定仍全局", async () => {
+  for (const store of await makeStores()) {
+    await seedOldSession(store, "h-a", "s-a-old");
+    await seedOldSession(store, "h-b", "s-b-old");
+    assert.equal(
+      await store.scopeHost("h-a").pruneHostSessions({
+        now: RETENTION_NOW,
+        retentionDays: 7
+      }),
+      1,
+      "h-a 作用域只删自己的 1 条"
+    );
+    assert.equal(
+      await store.scopeHost("h-b").pruneHostSessions({
+        now: RETENTION_NOW,
+        retentionDays: 7
+      }),
+      1,
+      "h-b 会话仍在，直到自己的作用域清理"
+    );
+    assert.equal(
+      await store.pruneHostSessions({ now: RETENTION_NOW, retentionDays: 7 }),
+      0,
+      "全中心作用域此时无剩余可删"
+    );
+  }
+});
+
+test("FileStore pruneHostSessions: scoped store 只删本主机会话", async () => {
+  const home = await tempHome();
+  const root = join(home, "proj");
+  await mkdir(root, { recursive: true });
+  try {
+    const store = await FileStore.create({ homeDir: home });
+    await store.upsertProject({ rootPath: root, name: "proj" });
+    await seedOldSession(store, "h-a", "s-a-old");
+    await seedOldSession(store, "h-b", "s-b-old");
+    assert.equal(
+      await store.scopeHost("h-a").pruneHostSessions({
+        now: RETENTION_NOW,
+        retentionDays: 7
+      }),
+      1
+    );
+    assert.equal(
+      await store.scopeHost("h-b").pruneHostSessions({
+        now: RETENTION_NOW,
+        retentionDays: 7
+      }),
+      1
+    );
+    await store.close();
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("hostSessionRetentionDaysFrom: 默认 7、非法/小数/溢出回退 7、0 关闭", () => {
   assert.equal(hostSessionRetentionDaysFrom({}), 7);
   assert.equal(hostSessionRetentionDaysFrom({ AOS_CLIENT_SESSION_RETENTION_DAYS: "3" }), 3);
   assert.equal(hostSessionRetentionDaysFrom({ AOS_CLIENT_SESSION_RETENTION_DAYS: "0" }), 0);
-  for (const invalid of ["-1", "abc", "NaN"]) {
+  for (const invalid of ["-1", "abc", "NaN", "0.5", "1.9", String(Number.MAX_SAFE_INTEGER + 1)]) {
     assert.equal(
       hostSessionRetentionDaysFrom({ AOS_CLIENT_SESSION_RETENTION_DAYS: invalid }),
       7,
@@ -300,6 +385,22 @@ test("host_addresses: 默认保留历史；AOS_HOST_ADDR_HISTORY=0 只保留每�
     });
     const rows = await store.listHostAddresses("h-off");
     assert.deepEqual(rows.map((row) => row.address), ["10.0.0.2"]);
+
+    await store.upsertHost({ id: "h-tie", hostname: "mac-c" });
+    await store.upsertHostAddresses({
+      hostId: "h-tie",
+      addresses: [
+        { source: "self", iface: "en1", family: "ipv4", address: "10.0.0.9" },
+        { source: "self", iface: "en0", family: "ipv4", address: "10.0.0.2" }
+      ],
+      at: "2026-10-21T10:00:00.000Z",
+      maxPerSource: 1
+    });
+    assert.deepEqual(
+      (await store.listHostAddresses("h-tie")).map((row) => row.address),
+      ["10.0.0.2"],
+      "同一时间戳的多网卡按 address 升序确定（PG/Memory/File 一致）"
+    );
   }
 });
 

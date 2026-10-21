@@ -12,16 +12,16 @@ import { makeTempDir } from "./helpers.js";
 const ROOT = "/w/sweep";
 const TOOLS = { adb: true, idb: false, simctl: false, ideviceId: false, appium: false };
 
-async function makePgStore() {
+async function makePgStore(env = process.env) {
   const mem = newDb();
   const { Pool } = mem.adapters.createPg();
-  const store = new PostgresStore(new Pool());
+  const store = new PostgresStore(new Pool(), null, env);
   await store.init();
   return store;
 }
 
-async function stores() {
-  return [new MemoryStore(), await makePgStore()];
+async function stores(env = process.env) {
+  return [new MemoryStore(null, env), await makePgStore(env)];
 }
 
 function taskInput(rootPath) {
@@ -403,7 +403,7 @@ test("自动终结在既有备注后追加 runner-offline", async () => {
 
 test("清扫器顺带清理过期接入会话；清理失败不阻断任务清扫", async () => {
   const nowMs = Date.parse("2026-10-21T10:00:00.000Z");
-  for (const store of await stores()) {
+  for (const store of await stores({ AOS_CLIENT_SESSION_RETENTION_DAYS: "7" })) {
     const scoped = store.scopeHost("h-a");
     await scoped.upsertProject({ rootPath: ROOT, name: "p", hostId: "h-a" });
     await scoped.upsertHost({ id: "h-a", hostname: "mac-a" });
@@ -442,10 +442,21 @@ test("清扫器顺带清理过期接入会话；清理失败不阻断任务清�
       ["s-current"]
     );
 
+    const task = await seedTask(scoped, ROOT, {
+      claim: "ghost-runner",
+      hostId: "h-a",
+      stop: true,
+      at: new Date(nowMs - 120_000).toISOString()
+    });
     const failing = Object.create(scoped);
     failing.pruneHostSessions = async () => {
       throw new Error("prune boom");
     };
-    await sweepStaleTasks({ store: failing, now: () => nowMs });
+    const result = await sweepStaleTasks({ store: failing, now: () => nowMs });
+    assert.equal(result.cancelled, 1, "会话清理失败不影响任务取消清扫");
+    assert.equal(
+      (await scoped.getRegressionTask(ROOT, task.id)).status,
+      "cancelled"
+    );
   }
 });

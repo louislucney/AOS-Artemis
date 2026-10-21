@@ -164,7 +164,7 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 4. 启动项目机本地 MCP 与 `suite runner`（runner/定时回归需中心 PG）；`AOS_HOST_ID` 集群内唯一。
 5. 面板核对双在线状态与项目归属后，再开放定向下发。
 
-**主机与在线口径**：`IDE 在线`＝MCP 客户端会话（`host_sessions`/`client_seen_at`，`AOS_CLIENT_TTL_MS` 内）；`执行机在线`＝runner 心跳（`runners.last_seen_at`，`AOS_RUNNER_TTL_MS`）；登记画像（`expectedOs`/`expectedHostname`）与实际不符只显示漂移。下发预检只看执行层与 OS/工具/设备能力，主机离线仍可入队等待。已结束的接入会话由 30s 清扫器按 `AOS_CLIENT_SESSION_RETENTION_DAYS`（默认 7 天）清理，进行中会话不删；`AOS_HOST_ADDR_HISTORY=0` 时地址只留每来源最新值。
+**主机与在线口径**：`IDE 在线`＝MCP 客户端会话（`host_sessions`/`client_seen_at`，`AOS_CLIENT_TTL_MS` 内）；`执行机在线`＝runner 心跳（`runners.last_seen_at`，`AOS_RUNNER_TTL_MS`）；登记画像（`expectedOs`/`expectedHostname`）与实际不符只显示漂移。下发预检只看执行层与 OS/工具/设备能力，主机离线仍可入队等待。已结束的接入会话由 30s 清扫器按 `AOS_CLIENT_SESSION_RETENTION_DAYS`（默认 7 天，按 `max(last_seen_at, ended_at)`）清理，项目机只清本机会话、中心清全台账，进行中会话不删；`AOS_HOST_ADDR_HISTORY=0` 时地址只留每来源最新值（同时间戳多网卡按地址升序）。
 
 **面板路由**：主机/执行机视图 `GET /panel?section=runners`（`/panel.json` 同源，双在线状态与队列动作）；定向派发 `?section=dispatch&host=<id>&project=<rootPath>`；只读主机列表 `GET /panel/api/hosts`（展示字段投影，不含 env/工具路径；HTTP 模式与独立 `panel --web` 均可用，受 `AOS_PANEL_WEB` 约束但不受 `AOS_PANEL_ACTIONS` 影响，单机模式返回 `{ok:true,hosts:[]}`，PostgreSQL 读取失败返回 503）；队列动作 `POST /panel/api/queue/pause|resume`；主机登记 `POST /panel/api/hosts/register`。
 
