@@ -693,7 +693,7 @@ POST /panel/api/hosts/register     # { host, label?, owner?, expectedOs?, expect
 
 P1（可见性）、P2（定向下发）、P3（队列控制）均已落地；P4（HTTP 客户端记录、跨主机逻辑项目分组）不在本期。实现口径以 `DESIGN.md` §13.152–§13.165 为准，本节只记与设计稿的**实际偏差**。
 
-**验证结果**：`npm run build && npm test && npm run lint` 全绿——**1968 tests / 1968 pass / 0 fail**，lint **0 error**（2 条既有 warning：`src/console/pages.ts`、`src/panel/web.ts` 未使用变量）；测试不依赖真实 PG / 设备 / 外网（SQL 用 pg-mem、artemis 用假子进程、Figma 不触网）。
+**验证结果**：`npm run build && npm test && npm run lint` 全绿——**1977 tests / 1977 pass / 0 fail**，lint **0 error**（2 条既有 warning：`src/console/pages.ts`、`src/panel/web.ts` 未使用变量）；测试不依赖真实 PG / 设备 / 外网（SQL 用 pg-mem、artemis 用假子进程、Figma 不触网）。
 
 **偏差**
 

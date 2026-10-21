@@ -1758,7 +1758,6 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
           task.status === "pending" || running || stopping;
         const cancelConfirm = `确认取消该任务？${running || stopping ? "执行机将在当前用例边界停止并确认（状态先为「停止中」，确认后「已取消」）。" : "任务尚未执行，将直接标记为「已取消」。"}取消为终态：不释放、不自动重试；需重跑请用「重新派发」或新建任务。`;
         const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生子运行 ${detail.runs.length} 个保留）；状态先为「停止中」，执行机确认后转「已取消」。`;
-        const releaseConfirm = `确认释放该任务回待领取？已完成子运行 ${detail.runs.length} 个（保留）；释放后可能被重新领取执行。`;
         const rerunConfirm = "确认重新派发？将按原引用/端/基线创建一个新任务（当前任务保留）。";
         const buttons = [
           cancellable
@@ -1769,9 +1768,6 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
             : "",
           stopping
             ? '<span class="muted">停止中：等待执行机确认（离线时为下次心跳读取）；确认后为「已取消」终态</span>'
-            : "",
-          task.status === "stopped"
-            ? `<button class="c-button" type="button" data-task-action="release" data-confirm="${escapeHtml(releaseConfirm)}">释放回队列</button>`
             : "",
           !running && !stopping && task.status !== "pending"
             ? `<button class="c-button c-button-primary" type="button" data-task-action="rerun" data-confirm="${escapeHtml(rerunConfirm)}">重新派发</button>`

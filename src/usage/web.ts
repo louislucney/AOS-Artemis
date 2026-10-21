@@ -196,7 +196,9 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
   if (status !== null) query.status = status;
   if (since !== null) query.since = since;
 
-  const stored = project ? await deps.store.listUsageEvents(project.rootPath, query) : [];
+  const projectStore =
+    project !== null && project.hostId !== null ? deps.store.scopeHost(project.hostId) : deps.store;
+  const stored = project ? await projectStore.listUsageEvents(project.rootPath, query) : [];
   const summary = usageSummary(stored, catalog);
   const signals = usageSignals(stored);
   const newest = usageEvents(stored, { ...query, limit: USAGE_EVENT_LIST_MAX });

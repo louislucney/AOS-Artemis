@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { newDb } from "pg-mem";
 
 import { MemoryStore } from "../dist/db/memory.js";
+import { PostgresStore } from "../dist/db/postgres.js";
 import { handleUsageRequest } from "../dist/usage/web.js";
 
 const DAY = 86_400_000;
@@ -355,4 +357,38 @@ test("usage web: unknown path returns 404", async () => {
   const store = await seedStore();
   const res = await handleUsageRequest(new URL("http://localhost/other"), deps(store));
   assert.equal(res.status, 404);
+});
+
+test("usage web: 同 rootPath 两主机按 host 作用域读事件（不再 AmbiguousProjectError）", async () => {
+  const mem = newDb();
+  const { Pool } = mem.adapters.createPg();
+  const store = new PostgresStore(new Pool());
+  await store.init();
+  const a = store.scopeHost("h-a");
+  const b = store.scopeHost("h-b");
+  await a.upsertProject({ rootPath: "/w/shared", name: "shared-a" });
+  await b.upsertProject({ rootPath: "/w/shared", name: "shared-b" });
+  await a.recordUsageEvent(
+    "/w/shared",
+    eventInput({ tool: "llm_list", at: new Date(NOW - 60_000).toISOString() })
+  );
+  await b.recordUsageEvent(
+    "/w/shared",
+    eventInput({ tool: "aos_status", at: new Date(NOW - 30_000).toISOString() })
+  );
+
+  const first = await getJson(store, "/usage.json?project=shared-a");
+  assert.equal(first.project.name, "shared-a");
+  assert.deepEqual(first.events.items.map((event) => event.tool), ["llm_list"]);
+  const second = await getJson(store, "/usage.json?project=shared-b");
+  assert.equal(second.project.name, "shared-b");
+  assert.deepEqual(second.events.items.map((event) => event.tool), ["aos_status"]);
+
+  const fallback = await getJson(store, "/usage.json");
+  assert.equal(fallback.summary.total, 1, "缺省项目取最新注册的一行且不抛歧义");
+  const html = await handleUsageRequest(
+    new URL("http://localhost/usage?project=%2Fw%2Fshared"),
+    deps(store)
+  );
+  assert.equal(html.status, 200);
 });
