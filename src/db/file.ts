@@ -329,6 +329,11 @@ export class FileStore implements ProjectStore {
     instanceId?: string;
     capabilities: string[];
   }): Promise<RegressionTaskRecord | null> {
+    if (input.hostId !== undefined && input.hostId !== null) {
+      await this.syncHostFromDisk();
+      const host = await this.hostMem.getHost(input.hostId);
+      if (host?.queuePaused === true) return null;
+    }
     const bucket = await this.bucket(input.rootPath);
     const record = await this.scopedMem(bucket, this.hostId).claimRegressionTask(input);
     if (record !== null) await this.persist(bucket, "claimRegressionTask");

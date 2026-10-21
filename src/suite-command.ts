@@ -263,7 +263,7 @@ Usage:
                                      cancel <taskId> [--note <text>]：取消任务（pending → 已取消；执行中 → 停止中，待执行机确认）
   mobile-testing-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
   mobile-testing-mcp suite queue status|pause|resume [options]
-                                     主机队列：status 显示暂停状态与待执行数；pause/resume 暂停/恢复自动领取
+                                     主机队列：status 显示暂停状态与待执行数；pause/resume 暂停/恢复自动领取（[--note <text>] 写入审计）
                                      中心模式：--host <id|hostname>（只连 PG，不构建本机 Runtime）
   mobile-testing-mcp suite schedule add|list|show|enable|disable|remove [options]
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
@@ -1893,15 +1893,31 @@ function queueStatusLine(host: HostRecord, pending: number): string {
   return `主机 ${host.id}（${host.hostname}）队列：${state}；待执行 ${pending} 条`;
 }
 
-function queueJson(host: HostRecord, pending: number) {
+function queueJson(input: {
+  hostId: string;
+  paused: boolean;
+  pausedAt: string | null;
+  pausedBy: string | null;
+  pending: number;
+}) {
   return {
     ok: true,
+    hostId: input.hostId,
+    paused: input.paused,
+    pausedAt: input.pausedAt,
+    pausedBy: input.pausedBy,
+    pending: input.pending
+  };
+}
+
+function queueJsonFromHost(host: HostRecord, pending: number) {
+  return queueJson({
     hostId: host.id,
     paused: host.queuePaused,
     pausedAt: host.queuePausedAt,
     pausedBy: host.queuePausedBy,
     pending
-  };
+  });
 }
 
 async function suiteQueue(
@@ -1921,6 +1937,29 @@ async function suiteQueue(
     return 2;
   }
   const existing = await runtime.store.getHost(identity.id).catch(() => null);
+  const actor = actorFromEnv(env);
+  if (action === "status") {
+    const pending = await suiteQueuePending(runtime.store, identity.id, [
+      runtime.project.rootDir
+    ]);
+    const view = {
+      hostId: identity.id,
+      paused: existing?.queuePaused ?? false,
+      pausedAt: existing?.queuePausedAt ?? null,
+      pausedBy: existing?.queuePausedBy ?? null,
+      pending
+    };
+    if (flags.bool("json")) {
+      io.log(JSON.stringify(queueJson(view), null, 2));
+      return 0;
+    }
+    io.log(
+      existing
+        ? queueStatusLine(existing, pending)
+        : `主机 ${identity.id}（${identity.hostname}）队列：运行（未登记）；待执行 ${pending} 条`
+    );
+    return 0;
+  }
   const host =
     existing ??
     (await runtime.store.upsertHost({
@@ -1934,18 +1973,6 @@ async function suiteQueue(
       kind: identity.kind,
       identitySource: identity.identitySource
     }));
-  const actor = actorFromEnv(env);
-  if (action === "status") {
-    const pending = await suiteQueuePending(runtime.store, host.id, [
-      runtime.project.rootDir
-    ]);
-    if (flags.bool("json")) {
-      io.log(JSON.stringify(queueJson(host, pending), null, 2));
-      return 0;
-    }
-    io.log(queueStatusLine(host, pending));
-    return 0;
-  }
   const paused = action === "pause";
   const record = await runtime.store.setHostQueuePaused({
     hostId: host.id,
@@ -1971,7 +1998,7 @@ async function suiteQueue(
     channel: "cli"
   });
   if (flags.bool("json")) {
-    io.log(JSON.stringify(queueJson(record, pending), null, 2));
+    io.log(JSON.stringify(queueJsonFromHost(record, pending), null, 2));
     return 0;
   }
   io.log(
@@ -2021,7 +2048,7 @@ async function suiteQueueOnCenterHost(
     if (action === "status") {
       const pending = await suiteQueuePending(scoped, lookup.host.id);
       if (flags.bool("json")) {
-        io.log(JSON.stringify(queueJson(lookup.host, pending), null, 2));
+        io.log(JSON.stringify(queueJsonFromHost(lookup.host, pending), null, 2));
         return 0;
       }
       io.log(queueStatusLine(lookup.host, pending));
@@ -2054,7 +2081,7 @@ async function suiteQueueOnCenterHost(
       channel: "cli"
     });
     if (flags.bool("json")) {
-      io.log(JSON.stringify(queueJson(record, pending), null, 2));
+      io.log(JSON.stringify(queueJsonFromHost(record, pending), null, 2));
       return 0;
     }
     io.log(

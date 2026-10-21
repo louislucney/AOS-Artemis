@@ -10,7 +10,7 @@ import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { handlePanelActionRequest } from "../dist/panel/actions.js";
-import { runRunnerAgent } from "../dist/runner/agent.js";
+import { runRunnerAgent, clampRunnerHeartbeatMs } from "../dist/runner/agent.js";
 import { runSuiteCommand } from "../dist/suite-command.js";
 import { baseConfig, loadTestRuntime, makeTempProject, TEST_HOST_IDENTITY } from "./helpers.js";
 
@@ -169,6 +169,27 @@ test("FileStore 设备租约随主机状态持久化并可释放", async () => {
   try {
     const first = await FileStore.create({ homeDir: home, env: {} });
     await first.upsertProject({ rootPath, name: "app" });
+    await first.upsertHost({ id: "h", hostname: "h" });
+    await first.createRegressionTask({
+      rootPath,
+      refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+      platforms: ["android"],
+      baseline: "latest",
+      createdBy: "cli"
+    });
+    await first.setHostQueuePaused({ hostId: "h", paused: true, by: "cli" });
+    const claimInput = {
+      rootPath,
+      runnerId: "r-1",
+      platforms: ["android"],
+      hostId: "h",
+      instanceId: "i-1",
+      capabilities: ["android"]
+    };
+    assert.equal(await first.claimRegressionTask(claimInput), null);
+    await first.setHostQueuePaused({ hostId: "h", paused: false, by: "cli" });
+    assert.ok(await first.claimRegressionTask(claimInput));
+
     const acquired = await first.acquireDeviceLeases({
       hostId: "h",
       taskId: "t1",
@@ -284,6 +305,102 @@ test("设备忙：释放回 pending 且 attempts 不增加、不执行", async (
   assert.ok(logs.some((line) => line.includes("device-busy")));
 });
 
+test("设备忙期间取消：确认 cancelled，不落回 pending", async () => {
+  const { runtime, store, inventory: inv } = await setupRunnerFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  store.acquireDeviceLeases = async () => {
+    await store.cancelRegressionTask({
+      rootPath,
+      taskId: task.id,
+      source: "panel",
+      actor: "panel",
+      actorHostId: null
+    });
+    return { ok: false, busy: ["emulator-5554"] };
+  };
+  const { options, logs } = makeRunnerOptions(runtime, inv);
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "cancelled");
+  assert.equal(after.attempts, 0);
+  assert.ok(logs.some((line) => line.includes("已确认 cancelled")));
+});
+
+test("beginExecution 失败：释放租约并释放回 pending", async () => {
+  const { runtime, store, inventory: inv } = await setupRunnerFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  store.beginExecution = async () => null;
+  const { options } = makeRunnerOptions(runtime, inv);
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "pending");
+  assert.equal(after.attempts, 0);
+  assert.equal(after.claimedBy, null);
+  const probe = await store.acquireDeviceLeases({
+    hostId: TEST_HOST_ID,
+    taskId: "probe",
+    serials: ["emulator-5554"]
+  });
+  assert.equal(probe.ok, true);
+});
+
+test("租约续期丢失：中止执行、错误日志并在收尾释放", async () => {
+  const { runtime, store, inventory: inv } = await setupRunnerFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  let clock = Date.parse("2026-10-21T10:00:00.000Z");
+  const sleep = async (ms) => {
+    clock += ms;
+  };
+  store.renewDeviceLeases = async () => 0;
+  let stop = false;
+  let aborted = false;
+  const { options, errors } = makeRunnerOptions(runtime, inv, {
+    once: false,
+    heartbeatMs: 30_000,
+    now: () => clock,
+    sleep,
+    shouldStop: () => stop,
+    executeSuite: async (_argv, execOptions) => {
+      for (let index = 0; index < 1200; index += 1) {
+        await sleep(250);
+        if (execOptions.shouldAbort()) {
+          aborted = true;
+          stop = true;
+          return 2;
+        }
+      }
+      stop = true;
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(aborted, true);
+  assert.ok(errors.some((line) => line.includes("设备租约丢失")));
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "pending");
+  assert.equal(after.attempts, 1);
+  const probe = await store.acquireDeviceLeases({
+    hostId: TEST_HOST_ID,
+    taskId: "probe",
+    serials: ["emulator-5554"]
+  });
+  assert.equal(probe.ok, true);
+});
+
+test("心跳间隔按设备租约 TTL/3 收敛", () => {
+  assert.equal(clampRunnerHeartbeatMs(60_000, { AOS_DEVICE_LEASE_MS: "90000" }), 30_000);
+  assert.equal(clampRunnerHeartbeatMs(10_000, { AOS_DEVICE_LEASE_MS: "90000" }), 10_000);
+  assert.equal(clampRunnerHeartbeatMs(60_000, {}), 30_000);
+  assert.equal(clampRunnerHeartbeatMs(60_000, { AOS_DEVICE_LEASE_MS: "3000" }), 1_000);
+  assert.equal(clampRunnerHeartbeatMs(60_000, { AOS_DEVICE_LEASE_MS: "0" }), 30_000);
+});
+
 test("长执行统一 tick：心跳在线、租约续期、lastProgressAt 前进、attempts 不变", async () => {
   const { runtime, store, inventory: inv } = await setupRunnerFixture();
   const rootPath = runtime.project.rootDir;
@@ -345,6 +462,15 @@ test("长执行统一 tick：心跳在线、租约续期、lastProgressAt 前进
   assert.ok(Date.parse(observed.afterProgress) > start);
   assert.ok(runnerLastSeenAt.length >= 2);
   assert.ok(Number.isFinite(Date.parse(observed.runnerSeenAt)));
+  const host = await store.getHost(TEST_HOST_ID);
+  assert.ok(host?.runnerSeenAt);
+  assert.ok(Date.parse(host.runnerSeenAt) > start);
+  const probe = await store.acquireDeviceLeases({
+    hostId: TEST_HOST_ID,
+    taskId: "probe",
+    serials: ["emulator-5554"]
+  });
+  assert.equal(probe.ok, true);
 });
 
 async function setupCliRuntime() {
@@ -373,6 +499,7 @@ test("CLI suite queue：本机 status/pause/resume 与审计", async () => {
   const before = await runLocalQueue(runtime, ["queue", "status"]);
   assert.equal(before.code, 0, before.errors.join("\n"));
   assert.ok(before.logs.some((line) => line.includes("运行") && line.includes("待执行 1")));
+  assert.equal(await store.getHost(TEST_HOST_ID), null, "status 不自动登记主机");
 
   const paused = await runLocalQueue(runtime, ["queue", "pause"]);
   assert.equal(paused.code, 0, paused.errors.join("\n"));
@@ -479,7 +606,7 @@ test("panel API 队列暂停/恢复：host 级、审计、400/404", async () => 
   assert.equal(pauseAudit.refs.note, "维护窗口");
 
   const resumed = await handlePanelActionRequest(
-    panelRequest("/panel/api/queue/resume", { host: "h-a" }),
+    panelRequest("/panel/api/queue/resume", { host: "mac-a" }),
     deps
   );
   assert.equal(resumed.status, 200, resumed.body);
@@ -489,4 +616,14 @@ test("panel API 队列暂停/恢复：host 级、审计、400/404", async () => 
       (entry) => entry.action === "action.queue.resume" && entry.result === "ok"
     )
   );
+
+  const originalGetHost = store.getHost.bind(store);
+  store.getHost = async () => {
+    throw new Error("db down");
+  };
+  await assert.rejects(
+    () => handlePanelActionRequest(panelRequest("/panel/api/queue/pause", { host: "h-a" }), deps),
+    /db down/
+  );
+  store.getHost = originalGetHost;
 });

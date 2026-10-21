@@ -6,6 +6,7 @@ import path from "node:path";
 import { AmbiguousProjectError } from "../db/types.js";
 import type { CaseVerdict, HostRecord } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
+import { resolveHostReference } from "../center/store.js";
 import { LEGACY_HOST_REASON } from "../host/legacy.js";
 import { exportProjectData, type ExportWhat } from "../export/index.js";
 import { errorMessage, log, writeFileAtomic } from "../util.js";
@@ -128,12 +129,18 @@ export async function handlePanelActionRequest(
     if (hostRef === "") {
       response = json(400, { error: "缺少 host" });
     } else {
-      const host = await deps.store.getHost(hostRef).catch(() => null);
-      if (!host) {
-        response = json(404, { error: `未知主机 "${hostRef}"（先用 host list 查看已登记主机）` });
+      const lookup = await resolveHostReference(deps.store, hostRef);
+      if (!lookup.ok) {
+        response =
+          lookup.reason === "ambiguous"
+            ? json(400, {
+                error: `主机名不唯一 "${hostRef}"，请改用主机 id`,
+                candidates: lookup.candidates.map((host) => host.id)
+              })
+            : json(404, { error: `未知主机 "${hostRef}"（先用 host list 查看已登记主机）` });
       } else {
         const record = await deps.store.setHostQueuePaused({
-          hostId: host.id,
+          hostId: lookup.host.id,
           paused,
           by: "panel"
         });

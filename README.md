@@ -383,7 +383,7 @@ node dist/cli.js suite reconcile list|confirm|reject [--from <screen> --to <scre
 node dist/cli.js suite task create --ref <featureKey>... [--platform ios|android]... [--baseline latest|none]
 node dist/cli.js suite task list|show <id> [--json]
 node dist/cli.js suite task create|list|cancel --host <id|hostname> --project <rootPath> ...   # 中心模式（仅 PG）
-node dist/cli.js suite queue status|pause|resume [--host <id|hostname>] [--json]
+node dist/cli.js suite queue status|pause|resume [--host <id|hostname>] [--note <text>] [--json]
 node dist/cli.js host list|show <id|hostname> [--json]
 node dist/cli.js host register <id|hostname> [--label <名>] [--owner <人>] [--expected-os <os>] [--expected-hostname <名>]
 node dist/cli.js host adopt-legacy --local [--dry-run|--apply]
@@ -401,7 +401,7 @@ node dist/cli.js suite ui-contract [--out <dir>] [--project <dir>] [--json]
 - `reconcile`：对账审阅面（`list` 列举差异/来源/命中/决定历史/逆向观测；`confirm` 人工确认 → human-confirmed 硬断言；`reject` 驳回 → 边不进生成；runtime-only 逆向观测仅裁决留痕；幂等、改判追加历史；未裁决不升权；未知边 exit 1、缺参 exit 2）。
 - `task`：回归任务台账——`create` 引用 feature key（取该功能**最新份**；未知 key exit 2 并列出可用项；`--platform` 默认 ios+android、`--baseline latest|none`）、`list`/`show` 查看状态、引用解析结果与运行列表（`--json` 支持）。**中心模式**：`suite task create|list --host <id|hostname>` 只连中心 PG（`MOBILE_TESTING_DATABASE_URL`，缺配置 exit 2），**不构建本机 Runtime、不写本机 `.artemis`**；`create` 必须给 `--project <rootPath>`（远程项目根路径，未登记 exit 2），任务写 `targetHostId=createdHostId=<host>`；`list` 省略 `--project` 时汇总该主机所有已登记项目的任务（不猜路径）。`show/release` 仍走本机台账。`cancel <id> [--note <text>]` 取消任务：`pending` 直接 `cancelled`；`claimed/running` 先置 `stopping`，执行机确认后 `cancelled`（终态，不释放、不重试；需重跑用 `rerun`/新建任务）；取消来源/操作人/宿主/时间与备注写入任务行及审计（`source=local-cli|panel`）。中心模式 `cancel --host <id|hostname> --project <rootPath>` 只连 PG、不建本机 Runtime。
 - `host`：中心主机登记（同样只连 PG）——`list`/`show <id|hostname>`（id 精确优先，hostname 大小写不敏感、重名报错列 id，不猜）、`register <id|hostname>` 写 label/owner/expectedOs/expectedHostname（登记人 `cli`）、`adopt-legacy` 把 legacy（未绑定主机）项目认领到主机：`--local` 仅认领本机存在路径（`AOS_HOST_ID` 或本机身份），`--host <id|hostname> --path <rootPath>` 显式认领（未登记主机 exit 2；确认「先迁移、后接入」时加 `--allow-unknown-host`，歧义 hostname 不提供逃逸）；缺省 dry-run，`--apply` 才写库并记审计（`domain=host/action=adopt-legacy`）；`--json` 只输出 `id/hostId/rootPath/name/lastSeenAt`，不回显 token。见 DESIGN §13.152。
-- `queue`：主机队列闸门——`status` 显示当前主机 `paused/by/at` 与待执行任务数；`pause`/`resume` 写 `hosts.queue_paused` 并记审计（`action.queue.pause|resume`，本地 `channel=cli`）。暂停只阻断 runner 自动领取，手动 `suite run --task` 与已领取任务不受影响。`--host <id|hostname>` 为中心模式（只连 PG、不建本机 Runtime；未知主机 exit 2）。本地首次使用时按本机身份补登记主机。见 DESIGN §13.162。
+- `queue`：主机队列闸门——`status` 显示当前主机 `paused/by/at` 与待执行任务数（不写库、不自动登记主机）；`pause`/`resume` 写 `hosts.queue_paused` 并记审计（`action.queue.pause|resume`，本地 `channel=cli`；可选 `--note <text>` 写入审计 refs）。暂停只阻断 runner 自动领取，手动 `suite run --task` 与已领取任务不受影响。`--host <id|hostname>` 为中心模式（hostname 唯一匹配、只连 PG、不建本机 Runtime；未知主机 exit 2）。本地首次 pause/resume 时按本机身份补登记主机。见 DESIGN §13.162。
 
 - **Excel 入料最小样例**（`run_regression excelPath` 导入；另存为 `.xlsx`、勿合并单元格、首行表头）：
 

@@ -3,6 +3,7 @@ import os from "node:os";
 
 import { defaultBuildRuntime, type CliRuntimeBundle } from "../cli-runtime.js";
 import {
+  deviceLeaseTtlMs,
   RunnerAlreadyActiveError,
   type RegressionTaskRecord,
   type RunnerRecord
@@ -60,7 +61,9 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
   const env = options.env ?? process.env;
   const name = options.name?.trim() || os.hostname();
   const pollMs = options.pollMs ?? intFromEnv(env.AOS_RUNNER_POLL_MS, 5_000);
-  const heartbeatMs = options.heartbeatMs ?? intFromEnv(env.AOS_RUNNER_HEARTBEAT_MS, 30_000);
+  const configuredHeartbeatMs =
+    options.heartbeatMs ?? intFromEnv(env.AOS_RUNNER_HEARTBEAT_MS, 30_000);
+  const heartbeatMs = clampRunnerHeartbeatMs(configuredHeartbeatMs, env);
   const maxAttempts = options.maxAttempts ?? intFromEnv(env.AOS_RUNNER_MAX_ATTEMPTS, 3);
   const runnerTtlMs = runnerTtlFrom(env);
   const staleClaimMs = staleClaimMsFromEnv(env.AOS_RUNNER_STALE_CLAIM_MS);
@@ -75,6 +78,11 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     log: (line: string): void => console.log(line),
     errorLog: (line: string): void => console.error(line)
   };
+  if (heartbeatMs < configuredHeartbeatMs) {
+    io.log(
+      `[runner] 心跳间隔 ${configuredHeartbeatMs}ms 超过设备租约 TTL/3，已收敛为 ${heartbeatMs}ms（否则租约可能先过期）`
+    );
+  }
   const buildRuntime = options.buildRuntime ?? defaultBuildRuntime;
   const collectInventory = options.collectInventory ?? ((): Promise<RunnerInventory> =>
     collectRunnerInventory({ env }));
@@ -155,6 +163,36 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     }
     const projectId = (await store.getProjectByPath(rootPath).catch(() => null))?.id ?? null;
     let active: { taskId: string; serials: string[] } | null = null;
+    let leaseLost = false;
+
+    const settleClaimFailure = async (
+      taskId: string,
+      context: string
+    ): Promise<"stopped" | "released"> => {
+      const acknowledged = await store
+        .ackCancellation({ rootPath, taskId })
+        .catch(() => null);
+      let fresh = acknowledged;
+      if (fresh === null) {
+        fresh = await store.getRegressionTask(rootPath, taskId).catch(() => null);
+      }
+      if (fresh?.status === "cancelled" || fresh?.status === "stopped") {
+        io.log(
+          `[runner] 任务 ${taskId} 在领取与执行之间被取消（${context}）：已确认 cancelled（不执行、不释放）`
+        );
+        return "stopped";
+      }
+      if (fresh?.status === "stopping") {
+        io.log(
+          `[runner] 任务 ${taskId} 在领取与执行之间取消确认未生效（${context}）：仍为 stopping，等待心跳/收尾兜底`
+        );
+        return "stopped";
+      }
+      await store
+        .releaseRegressionTask({ rootPath, runnerId: me.id, taskId, to: "pending" })
+        .catch(() => false);
+      return "released";
+    };
 
     const tick = async (): Promise<void> => {
       await heartbeat();
@@ -167,14 +205,23 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         io.errorLog(`[runner] 任务 ${current.taskId} 进度写入失败：${errorMessage(error)}`);
       }
       try {
-        await store.renewDeviceLeases({
+        const renewed = await store.renewDeviceLeases({
           hostId: snapshot.identity.id,
           taskId: current.taskId,
           serials: current.serials,
           at
         });
+        if (renewed < current.serials.length) {
+          leaseLost = true;
+          io.errorLog(
+            `[runner] 任务 ${current.taskId} 设备租约丢失（续租 ${renewed}/${current.serials.length}）：停止执行并释放领取`
+          );
+        }
       } catch (error) {
-        io.errorLog(`[runner] 任务 ${current.taskId} 设备租约续期失败：${errorMessage(error)}`);
+        leaseLost = true;
+        io.errorLog(
+          `[runner] 任务 ${current.taskId} 设备租约续期失败（停止执行并释放领取）：${errorMessage(error)}`
+        );
       }
     };
 
@@ -288,7 +335,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           acquired = leases.ok;
           if (!leases.ok) {
             io.log(
-              `[runner] 任务 ${task.id} device-busy（设备 ${leases.busy.join(",") || "无"} 被其他任务占用），释放回待执行（不计尝试）`
+              `[runner] 任务 ${task.id} device-busy（设备 ${leases.busy.join(",") || "无"} 被其他任务占用），停止本次领取（不计尝试）`
             );
           }
         } catch (error) {
@@ -296,11 +343,9 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           acquired = false;
         }
         if (!acquired) {
-          await store
-            .releaseRegressionTask({ rootPath, runnerId: me.id, taskId: task.id, to: "pending" })
-            .catch(() => false);
+          const outcome = await settleClaimFailure(task.id, "设备租约获取失败");
           if (once) return 0;
-          await sleep(pollMs);
+          if (outcome === "released") await sleep(pollMs);
           continue;
         }
 
@@ -318,36 +363,14 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         }
         if (running === null) {
           await store.releaseDeviceLeases({ hostId, taskId: task.id }).catch(() => 0);
-          const acknowledged = await store
-            .ackCancellation({ rootPath, taskId: task.id })
-            .catch(() => null);
-          let fresh = acknowledged;
-          if (fresh === null) {
-            fresh = await store.getRegressionTask(rootPath, task.id).catch(() => null);
-          }
-          if (fresh?.status === "cancelled" || fresh?.status === "stopped") {
-            io.log(
-              `[runner] 任务 ${task.id} 在领取与执行之间被取消：已确认 cancelled（不执行、不释放）`
-            );
-            if (once) return 0;
-            continue;
-          }
-          if (fresh?.status === "stopping") {
-            io.log(
-              `[runner] 任务 ${task.id} 取消确认未生效（仍为 stopping）：等待下次心跳/收尾兜底`
-            );
-            if (once) return 0;
-            continue;
-          }
-          await store
-            .releaseRegressionTask({ rootPath, runnerId: me.id, taskId: task.id, to: "pending" })
-            .catch(() => false);
+          const outcome = await settleClaimFailure(task.id, "开始执行失败");
           if (once) return 0;
-          await sleep(pollMs);
+          if (outcome === "released") await sleep(pollMs);
           continue;
         }
         task = running;
         active = { taskId: task.id, serials: devices };
+        leaseLost = false;
 
         const argv = [
           "run",
@@ -402,7 +425,9 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           }, STOP_POLL_MS);
           stopPoll.unref?.();
           try {
-            exitCode = await options.executeSuite(argv, { shouldAbort: () => stopRequested });
+            exitCode = await options.executeSuite(argv, {
+              shouldAbort: () => stopRequested || leaseLost
+            });
             io.log(`[runner] 任务 ${task.id} 执行结束（退出码 ${exitCode}）`);
           } catch (error) {
             io.errorLog(`[runner] 任务 ${task.id} 执行异常：${errorMessage(error)}`);
@@ -452,6 +477,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           if (failed) await sleep(pollMs);
         } finally {
           active = null;
+          leaseLost = false;
           await store.releaseDeviceLeases({ hostId, taskId: task.id }).catch(() => 0);
         }
       }
@@ -468,6 +494,16 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
 function intFromEnv(raw: string | undefined, fallback: number): number {
   const parsed = Number((raw ?? "").trim());
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+/** tick 间隔不超过设备租约 TTL 的 1/3：续租失败后仍有一次 tick 的止损窗口。 */
+export function clampRunnerHeartbeatMs(
+  heartbeatMs: number,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const limit = Math.floor(deviceLeaseTtlMs(env) / 3);
+  if (limit <= 0) return heartbeatMs;
+  return Math.min(heartbeatMs, limit);
 }
 
 const STALE_CLAIM_DEFAULT_MS = 900_000;
