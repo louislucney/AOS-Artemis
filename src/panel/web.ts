@@ -366,13 +366,47 @@ function resolveWorkspaceKey(
 }
 
 async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
-  const projectKey = trimmed(url.searchParams.get("project"));
+  let projectKey = trimmed(url.searchParams.get("project"));
   const hostParam = trimmed(url.searchParams.get("host"));
-  if (trimmed(url.searchParams.get("section")) === "search") {
+  const sectionParam = trimmed(url.searchParams.get("section"));
+  if (sectionParam === "search") {
     return {
       kind: "search",
       data: await buildSearch(deps, trimmed(url.searchParams.get("q")) ?? "")
     };
+  }
+
+  if (projectKey === null && sectionParam === "dispatch" && hostParam !== null) {
+    const projects = (await deps.store.listProjects().catch(() => []))
+      .filter((project) => project.hostId === hostParam)
+      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
+    const picked = projects[0];
+    if (picked !== undefined) {
+      projectKey = picked.rootPath;
+    } else {
+      const query: Record<string, string> = {};
+      for (const [key, value] of url.searchParams) query[key] = value;
+      const preview = await computeDispatchPreview(
+        {
+          store: deps.store,
+          env: deps.env ?? process.env,
+          ...(deps.storeForHost ? { storeForHost: deps.storeForHost } : {})
+        },
+        "",
+        url.searchParams
+      );
+      const formSignature = dispatchFormSignature(url.searchParams);
+      return {
+        kind: "dispatch",
+        rootPath: "",
+        hostId: hostParam,
+        rootLabel: "未选择项目",
+        preview,
+        previewId: dispatchPreviewId(preview, formSignature),
+        formSignature,
+        query
+      };
+    }
   }
 
   const resolved =
@@ -401,7 +435,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   }
   if (!resolved) throw new PanelNotFoundError(`未知项目 "${projectKey}"`);
 
-  const section = trimmed(url.searchParams.get("section"));
+  const section = sectionParam;
   if (section === "dispatch") {
     const preview = await computeDispatchPreview(
       {
@@ -1690,7 +1724,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         });
         const actionsOff = currentShell.capabilities?.actions === false;
         if (actionsOff) {
-          return `<p>${badge} <button class="c-button" type="button" disabled title="写动作未启用">任务动作</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</span></p>`;
+          return `<p>${badge} ${priorityBadge} <button class="c-button" type="button" disabled title="写动作未启用">任务动作</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</span></p>`;
         }
         const projectJson = JSON.stringify(view.rootPath).replace(/</g, "\\u003c");
         const taskJson = JSON.stringify(task.id).replace(/</g, "\\u003c");

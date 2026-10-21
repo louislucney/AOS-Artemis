@@ -242,13 +242,8 @@ export async function computeDispatchPreview(
   let projects: DispatchProject[] = [];
   if (targetHost !== null) {
     try {
-      const localHostId = deps.store.localHostId;
       projects = (await targetStore.listProjects())
-        .filter(
-          (project) =>
-            project.hostId === targetHost.id ||
-            (project.hostId === null && targetHost.id === localHostId)
-        )
+        .filter((project) => project.hostId === targetHost.id)
         .map((project) => ({
           hostId: targetHost.id,
           rootPath: project.rootPath,
@@ -434,17 +429,19 @@ export function renderDispatchPage(view: DispatchView): string {
         ].join("");
 
   const projectOptions = preview.projects
-    .map(
-      (project) =>
-        `<option value="${escapeHtml(project.rootPath)}"${
-          project.rootPath === view.rootPath ? " selected" : ""
-        }>${escapeHtml(project.name)}</option>`
-    )
+    .map((project) => {
+      const tail = project.rootPath.split(/[\\/]/).filter((part) => part !== "").pop() ?? "";
+      const label = tail === "" || tail === project.name ? project.name : `${project.name}（${tail}）`;
+      return `<option value="${escapeHtml(project.rootPath)}"${
+        project.rootPath === view.rootPath ? " selected" : ""
+      }>${escapeHtml(label)}</option>`;
+    })
     .join("");
   const currentListed = preview.projects.some((project) => project.rootPath === view.rootPath);
+  const currentLabel = view.rootPath === "" ? "未选择项目" : `${view.rootLabel}（当前项目）`;
   const currentOption = currentListed
     ? ""
-    : `<option value="${escapeHtml(view.rootPath)}" selected>${escapeHtml(view.rootLabel)}（当前项目）</option>`;
+    : `<option value="${escapeHtml(view.rootPath)}" selected>${escapeHtml(currentLabel)}</option>`;
   const projectOptionsHtml = currentOption + projectOptions;
   const noProjects = preview.selectedHostId !== null && preview.projects.length === 0;
   const projectSelect = [
@@ -627,7 +624,8 @@ go.addEventListener('click',function(){
         dispatchConfirmScript,
       ].filter((part) => part !== "").join("\n");
 
-  const projectNavScript = `<script>(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams();params.set('project',select.value);params.set('section','dispatch');if(host&&host.value)params.set('host',host.value);location.href='/panel?'+params.toString();});})();</script>`;
+  const hostNavScript = `<script id="dispatch-host-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="host"]');if(!select)return;select.addEventListener('change',function(){var params=new URLSearchParams();params.set('section','dispatch');if(select.value)params.set('host',select.value);location.href='/panel?'+params.toString();});})();</script>`;
+  const projectNavScript = `<script id="dispatch-project-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams();params.set('project',select.value);params.set('section','dispatch');if(host&&host.value)params.set('host',host.value);location.href='/panel?'+params.toString();});})();</script>`;
 
   return renderConsoleShell({
     title: "下发回归",
@@ -638,7 +636,7 @@ go.addEventListener('click',function(){
     storeHealth: view.storeHealth,
     body: [
       "<h1>下发回归</h1>",
-      `<p class="muted"><code>${escapeHtml(view.rootPath)}</code> · 四步：来源 → 参数 → 预览回显 → 确认派发</p>`,
+      `<p class="muted"><code>${escapeHtml(view.rootPath === "" ? "未选择项目" : view.rootPath)}</code> · 四步：来源 → 参数 → 预览回显 → 确认派发</p>`,
       `<form id="dispatch-form" method="get" action="/panel">`,
       `<input type="hidden" name="section" value="dispatch">`,
       cCard({ title: "⓪ 主机与项目", body: hostCardBody }),
@@ -647,6 +645,7 @@ go.addEventListener('click',function(){
       cCard({ title: "③ 预览回显", tone: "accent", body: previewBody }),
       cCard({ title: "④ 确认", body: confirmBody }),
       "</form>",
+      hostNavScript,
       projectNavScript
     ].join("\n")
   });

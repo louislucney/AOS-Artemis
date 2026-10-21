@@ -959,7 +959,7 @@ export class PostgresStore implements ProjectStore {
       `SELECT id, platforms FROM regression_tasks
         WHERE project_id = $1 AND status = 'pending'
           AND (target_host_id IS NULL OR target_host_id = $2)
-        ORDER BY created_at ASC`,
+        ORDER BY priority DESC, created_at ASC`,
       [project.id, hostId]
     );
     const rows = candidates.rows;

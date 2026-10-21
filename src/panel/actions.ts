@@ -745,7 +745,8 @@ async function rerunTask(
     refs: task.refs,
     platforms: [...task.platforms],
     baseline: task.baseline,
-    createdBy: "panel"
+    createdBy: "panel",
+    priority: task.priority
   });
   deps.cache?.clear();
   return json(200, { ok: true, task: created, sourceTaskId: task.id });

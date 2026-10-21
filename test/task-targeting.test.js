@@ -211,6 +211,35 @@ test("createRegressionTask 落盘新增字段：targetHostId/createdHostId/prior
   }
 });
 
+test("领取顺序按 priority DESC 再 created_at ASC", async () => {
+  const stores = [new MemoryStore(), (await makePgStore()).store];
+  for (const store of stores) {
+    await store.upsertProject({ rootPath: "/w/a", name: "a" });
+    const lowOlder = await store.createRegressionTask(taskInput({ priority: 0 }));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const highNewer = await store.createRegressionTask(taskInput({ priority: 10 }));
+    const claim = (rootPath) =>
+      store.claimRegressionTask({
+        rootPath,
+        runnerId: "r-a",
+        hostId: "h-a",
+        instanceId: "i-a",
+        platforms: ["android"],
+        capabilities: ["android"]
+      });
+    assert.equal((await claim("/w/a")).id, highNewer.id, "P10 新任务先于 P0 旧任务");
+    assert.equal((await claim("/w/a")).id, lowOlder.id);
+
+    await store.upsertProject({ rootPath: "/w/b", name: "b" });
+    const highOlder = await store.createRegressionTask(
+      taskInput({ rootPath: "/w/b", priority: 10 })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await store.createRegressionTask(taskInput({ rootPath: "/w/b", priority: 0 }));
+    assert.equal((await claim("/w/b")).id, highOlder.id, "P10 旧任务先于 P0 新任务");
+  }
+});
+
 test("部分领取：capabilities 只覆盖交集端（android 能力可领 dual 任务的 android 部分）", async () => {
   const stores = [new MemoryStore(), (await makePgStore()).store];
   for (const store of stores) {

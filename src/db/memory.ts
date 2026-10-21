@@ -418,7 +418,11 @@ export class MemoryStore implements ProjectStore {
           task.status === "pending" &&
           (task.targetHostId === null || task.targetHostId === hostId)
       )
-      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+      .sort(
+        (a, b) =>
+          b.priority - a.priority ||
+          (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0)
+      );
     const fullMatch = candidates.find(
       (task) =>
         task.platforms.length > 0 &&
