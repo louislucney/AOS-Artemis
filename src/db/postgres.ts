@@ -52,7 +52,12 @@ import type {
   AuditEventRecord,
   AuditQuery
 } from "./types.js";
-import { AmbiguousProjectError } from "./types.js";
+import {
+  AmbiguousProjectError,
+  isRunnerActive,
+  RUNNER_ACTIVE_DEFAULT_MS,
+  RunnerAlreadyActiveError
+} from "./types.js";
 import { buildAuditEvent, normalizeAuditLimit } from "./audit-event.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
 import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
@@ -357,6 +362,7 @@ const MIGRATIONS = [
      WHERE r1.last_seen_at < r2.last_seen_at
         OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_host_idx ON runners(project_id, host_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS suite_runs_project_manifest_idx ON suite_runs(project_id, manifest_path) WHERE manifest_path IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS audit_events_root_at_idx ON audit_events(root_path, at)`,
   `ALTER TABLE project_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
@@ -1253,8 +1259,11 @@ export class PostgresStore implements ProjectStore {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
     const now = new Date().toISOString();
+    const nowMs = Date.now();
     const hostId = input.hostId ?? null;
     const instanceId = input.instanceId ?? null;
+    const activeWithinMs = input.activeWithinMs ?? RUNNER_ACTIVE_DEFAULT_MS;
+    const hasIdentity = hostId !== null && instanceId !== null;
     try {
       const inserted = await this.pool.query(
         `INSERT INTO runners
@@ -1280,16 +1289,54 @@ export class PostgresStore implements ProjectStore {
       return mapRunner(inserted.rows[0]!);
     } catch (error) {
       if ((error as { code?: string }).code !== "23505") throw error;
+      const existing = await this.findRunnerRow(project.id, hostId, input.name, hasIdentity);
+      if (!existing) throw error;
+      if (!hasIdentity) {
+        const updated = await this.pool.query(
+          `UPDATE runners
+              SET hostname = $3, platforms = $4, devices = $5, tools = $6,
+                  artifact_base_url = $7, version = $8, host_id = $9, instance_id = $10,
+                  last_seen_at = $11
+            WHERE project_id = $1 AND name = $2
+          RETURNING *`,
+          [
+            project.id,
+            input.name,
+            input.hostname,
+            JSON.stringify(input.platforms),
+            JSON.stringify(input.devices),
+            JSON.stringify(input.tools),
+            input.artifactBaseUrl ?? null,
+            input.version ?? null,
+            hostId,
+            instanceId,
+            now
+          ]
+        );
+        return mapRunner(updated.rows[0]!);
+      }
+      const existingInstanceId = nullableString(existing.instance_id);
+      if (
+        existingInstanceId !== instanceId &&
+        isRunnerActive(String(existing.last_seen_at), nowMs, activeWithinMs)
+      ) {
+        throw new RunnerAlreadyActiveError({
+          projectId: project.id,
+          hostId,
+          existingInstanceId,
+          incomingInstanceId: instanceId
+        });
+      }
       const updated = await this.pool.query(
         `UPDATE runners
             SET hostname = $3, platforms = $4, devices = $5, tools = $6,
                 artifact_base_url = $7, version = $8, host_id = $9, instance_id = $10,
                 last_seen_at = $11
-          WHERE project_id = $1 AND name = $2
+          WHERE id = $1 AND (instance_id = $2 OR (instance_id IS NULL AND $2 IS NULL))
         RETURNING *`,
         [
-          project.id,
-          input.name,
+          String(existing.id),
+          existingInstanceId,
           input.hostname,
           JSON.stringify(input.platforms),
           JSON.stringify(input.devices),
@@ -1301,8 +1348,36 @@ export class PostgresStore implements ProjectStore {
           now
         ]
       );
+      if (updated.rows.length === 0) {
+        throw new RunnerAlreadyActiveError({
+          projectId: project.id,
+          hostId,
+          existingInstanceId,
+          incomingInstanceId: instanceId
+        });
+      }
       return mapRunner(updated.rows[0]!);
     }
+  }
+
+  private async findRunnerRow(
+    projectId: string,
+    hostId: string | null,
+    name: string,
+    hasIdentity: boolean
+  ): Promise<Record<string, unknown> | null> {
+    if (hasIdentity) {
+      const byHost = await this.pool.query(
+        "SELECT * FROM runners WHERE project_id = $1 AND host_id = $2",
+        [projectId, hostId]
+      );
+      if (byHost.rows[0]) return byHost.rows[0] as Record<string, unknown>;
+    }
+    const byName = await this.pool.query(
+      "SELECT * FROM runners WHERE project_id = $1 AND name = $2",
+      [projectId, name]
+    );
+    return (byName.rows[0] as Record<string, unknown>) ?? null;
   }
 
   async listRunners(rootPath: string, limit = 20): Promise<RunnerRecord[]> {

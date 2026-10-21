@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 
 import { defaultBuildRuntime, type CliRuntimeBundle } from "../cli-runtime.js";
-import type { RegressionTaskRecord, RunnerRecord } from "../db/types.js";
+import {
+  RunnerAlreadyActiveError,
+  type RegressionTaskRecord,
+  type RunnerRecord
+} from "../db/types.js";
 import { AOS_MCP_VERSION, errorMessage } from "../util.js";
 import {
   collectHostSnapshot,
@@ -28,6 +32,7 @@ export interface RunnerAgentOptions {
   once?: boolean;
   shouldStop?: () => boolean;
   artifactBaseUrl?: string | null;
+  instanceId?: string;
   env?: NodeJS.ProcessEnv;
   buildRuntime?: (projectDir: string | null) => Promise<CliRuntimeBundle>;
   executeSuite: (argv: string[], options?: { shouldAbort?: () => boolean }) => Promise<number | null>;
@@ -87,7 +92,7 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     let inventory: RunnerInventory = EMPTY_INVENTORY;
     let snapshot: HostSnapshot = await collectSnapshot({ projectRoot: rootPath, env });
     let snapshotAt = now();
-    const instanceId = randomUUID();
+    const instanceId = options.instanceId ?? randomUUID();
 
     const refreshInventory = async (): Promise<void> => {
       try {
@@ -131,7 +136,11 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     try {
       me = await heartbeat();
     } catch (error) {
-      io.errorLog(`[runner] 首轮心跳失败：${errorMessage(error)}`);
+      if (error instanceof RunnerAlreadyActiveError) {
+        io.errorLog(`[runner] 双启保护：${error.message}`);
+      } else {
+        io.errorLog(`[runner] 首轮心跳失败：${errorMessage(error)}`);
+      }
       return 2;
     }
     io.log(

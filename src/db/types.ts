@@ -338,6 +338,41 @@ export interface UpsertRunnerInput {
   version?: string | null;
   hostId?: string | null;
   instanceId?: string | null;
+  /** 双启保护的活跃窗口（默认 90s，与 runner 心跳 TTL 对齐）。 */
+  activeWithinMs?: number;
+}
+
+/** runner 双启保护活跃窗口默认值。 */
+export const RUNNER_ACTIVE_DEFAULT_MS = 90_000;
+
+/** lastSeenAt 距 nowMs 仍在活跃窗口内（非法时间视为陈旧，允许接管）。 */
+export function isRunnerActive(lastSeenAt: string, nowMs: number, activeWithinMs: number): boolean {
+  const seen = Date.parse(lastSeenAt);
+  if (!Number.isFinite(seen)) return false;
+  return nowMs - seen <= activeWithinMs;
+}
+
+/** 同 host+project 已有活跃实例在心跳时，第二个进程接管被拒（双启保护）。 */
+export class RunnerAlreadyActiveError extends Error {
+  readonly projectId: string;
+  readonly hostId: string | null;
+  readonly existingInstanceId: string | null;
+  readonly incomingInstanceId: string | null;
+  constructor(input: {
+    projectId: string;
+    hostId: string | null;
+    existingInstanceId: string | null;
+    incomingInstanceId: string | null;
+  }) {
+    super(
+      `runner 已在该主机活跃（host=${input.hostId ?? "<null>"}，已有实例 ${input.existingInstanceId ?? "<null>"}，拒绝 ${input.incomingInstanceId ?? "<null>"} 接管）`
+    );
+    this.name = "RunnerAlreadyActiveError";
+    this.projectId = input.projectId;
+    this.hostId = input.hostId;
+    this.existingInstanceId = input.existingInstanceId;
+    this.incomingInstanceId = input.incomingInstanceId;
+  }
 }
 
 export type HostAddressSource = "self" | "observed-pg" | "observed-http";

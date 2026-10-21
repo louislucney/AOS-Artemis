@@ -7,6 +7,8 @@ import { runRunnerAgent } from "../dist/runner/agent.js";
 import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
 
 const TOOLS = { adb: true, idb: true, simctl: true, ideviceId: true, appium: false };
+const TEST_HOST_ID = "test-host";
+const TEST_INSTANCE_ID = "inst-1";
 
 function inventory() {
   return {
@@ -22,6 +24,26 @@ function inventory() {
       }
     ],
     tools: TOOLS
+  };
+}
+
+function snapshot() {
+  return {
+    identity: {
+      id: TEST_HOST_ID,
+      hardwareId: null,
+      hostname: "test-machine",
+      username: "tester",
+      osPlatform: "darwin",
+      osVersion: "1.0.0",
+      arch: "arm64",
+      kind: "mac",
+      identitySource: "env"
+    },
+    env: { collectedAt: "2026-10-21T09:00:00.000Z" },
+    capabilities: ["android", "ios-simulator"],
+    ipPrimary: "10.0.0.5",
+    addresses: [{ source: "self", iface: "en0", family: "ipv4", address: "10.0.0.5" }]
   };
 }
 
@@ -45,6 +67,8 @@ function makeOptions(runtime, inv, overrides = {}) {
     buildRuntime: async () => ({ runtime, dispose: async () => {} }),
     executeSuite: async () => 0,
     collectInventory: async () => inv,
+    collectHostSnapshot: async () => snapshot(),
+    instanceId: TEST_INSTANCE_ID,
     io: { log: (line) => logs.push(line), errorLog: (line) => errors.push(line) },
     sleep: async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -189,7 +213,9 @@ test("启动释放：预置 claimed_by=me → 先释放再领取执行；他人�
     hostname: os.hostname(),
     platforms: ["android"],
     devices: [inv.devices[0]],
-    tools: TOOLS
+    tools: TOOLS,
+    hostId: TEST_HOST_ID,
+    instanceId: TEST_INSTANCE_ID
   });
   const other = await store.upsertRunner({
     rootPath,

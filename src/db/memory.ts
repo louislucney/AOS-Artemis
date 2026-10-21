@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 
 import { buildAuditEvent, cloneAuditEvent, normalizeAuditLimit } from "./audit-event.js";
-import { AmbiguousProjectError } from "./types.js";
+import {
+  AmbiguousProjectError,
+  isRunnerActive,
+  RUNNER_ACTIVE_DEFAULT_MS,
+  RunnerAlreadyActiveError
+} from "./types.js";
 import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
 import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
@@ -711,40 +716,66 @@ export class MemoryStore implements ProjectStore {
     const project = this.getProjectRecord(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
     const now = new Date().toISOString();
+    const nowMs = Date.now();
     const hostId = input.hostId ?? null;
     const instanceId = input.instanceId ?? null;
-    const existing = this.runners.find(
-      (entry) => entry.projectId === project.id && entry.name === input.name
-    );
-    if (existing) {
-      existing.hostname = input.hostname;
-      existing.platforms = [...input.platforms];
-      existing.devices = input.devices.map((device) => ({ ...device }));
-      existing.tools = { ...input.tools };
-      existing.artifactBaseUrl = input.artifactBaseUrl ?? null;
-      existing.version = input.version ?? null;
-      existing.hostId = hostId;
-      existing.instanceId = instanceId;
-      existing.lastSeenAt = now;
-      return cloneRunner(existing);
+    const activeWithinMs = input.activeWithinMs ?? RUNNER_ACTIVE_DEFAULT_MS;
+    const hasIdentity = hostId !== null && instanceId !== null;
+
+    let existing = hasIdentity
+      ? this.runners.find((entry) => entry.projectId === project.id && entry.hostId === hostId)
+      : undefined;
+    if (!existing) {
+      existing = this.runners.find(
+        (entry) => entry.projectId === project.id && entry.name === input.name
+      );
     }
-    const record: RunnerRecord = {
-      id: randomUUID(),
-      projectId: project.id,
-      name: input.name,
-      hostname: input.hostname,
-      platforms: [...input.platforms],
-      devices: input.devices.map((device) => ({ ...device })),
-      tools: { ...input.tools },
-      artifactBaseUrl: input.artifactBaseUrl ?? null,
-      version: input.version ?? null,
-      hostId,
-      instanceId,
-      lastSeenAt: now,
-      createdAt: now
-    };
-    this.runners.push(record);
-    return cloneRunner(record);
+
+    if (!existing) {
+      const record: RunnerRecord = {
+        id: randomUUID(),
+        projectId: project.id,
+        name: input.name,
+        hostname: input.hostname,
+        platforms: [...input.platforms],
+        devices: input.devices.map((device) => ({ ...device })),
+        tools: { ...input.tools },
+        artifactBaseUrl: input.artifactBaseUrl ?? null,
+        version: input.version ?? null,
+        hostId,
+        instanceId,
+        lastSeenAt: now,
+        createdAt: now
+      };
+      this.runners.push(record);
+      return cloneRunner(record);
+    }
+
+    if (hasIdentity) {
+      const existingInstanceId = existing.instanceId ?? null;
+      if (
+        existingInstanceId !== instanceId &&
+        isRunnerActive(existing.lastSeenAt, nowMs, activeWithinMs)
+      ) {
+        throw new RunnerAlreadyActiveError({
+          projectId: project.id,
+          hostId,
+          existingInstanceId,
+          incomingInstanceId: instanceId
+        });
+      }
+    }
+
+    existing.hostname = input.hostname;
+    existing.platforms = [...input.platforms];
+    existing.devices = input.devices.map((device) => ({ ...device }));
+    existing.tools = { ...input.tools };
+    existing.artifactBaseUrl = input.artifactBaseUrl ?? null;
+    existing.version = input.version ?? null;
+    existing.hostId = hostId;
+    existing.instanceId = instanceId;
+    existing.lastSeenAt = now;
+    return cloneRunner(existing);
   }
 
   async listRunners(rootPath: string, limit = 20): Promise<RunnerRecord[]> {
