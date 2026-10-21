@@ -191,6 +191,19 @@ test("console shell: 项目上下文与能力标记（导航禁用/横幅）", (
   assert.ok(withProject.includes("section=dispatch"), "带项目上下文");
   assert.ok(withProject.includes("project=%2Fw%2Fp"), "项目参数编码");
   assert.ok(!withProject.includes('aria-disabled="true"'), "能力全开时无禁用项");
+  const hostScoped = renderConsoleShell({
+    title: "任务",
+    active: "tasks",
+    body: "",
+    project: "/w/p",
+    projectHostId: "h-b",
+    capabilities: { actions: true, usage: true, mode: "http" }
+  });
+  assert.match(
+    hostScoped,
+    /href="\/usage\?project=%2Fw%2Fp&amp;host=h-b"/,
+    "统计导航携带项目与主机"
+  );
   assert.match(withProject, /aos-last-project/, "项目页记录上次项目（localStorage）");
 
   const bare = renderConsoleShell({ title: "总览", active: "overview", body: "" });

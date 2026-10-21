@@ -166,7 +166,7 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 
 **主机与在线口径**：`IDE 在线`＝MCP 客户端会话（`host_sessions`/`client_seen_at`，`AOS_CLIENT_TTL_MS` 内）；`执行机在线`＝runner 心跳（`runners.last_seen_at`，`AOS_RUNNER_TTL_MS`）；登记画像（`expectedOs`/`expectedHostname`）与实际不符只显示漂移。下发预检只看执行层与 OS/工具/设备能力，主机离线仍可入队等待。
 
-**面板路由**：主机/执行机视图 `GET /panel?section=runners`（`/panel.json` 同源，双在线状态与队列动作）；定向派发 `?section=dispatch&host=<id>&project=<rootPath>`；只读主机列表 `GET /panel/api/hosts`（展示字段投影，不含 env/工具路径；HTTP 模式与独立 `panel --web` 均可用，不受 `AOS_PANEL_ACTIONS` 影响，单机模式返回 `{ok:true,hosts:[]}`）；队列动作 `POST /panel/api/queue/pause|resume`；主机登记 `POST /panel/api/hosts/register`。
+**面板路由**：主机/执行机视图 `GET /panel?section=runners`（`/panel.json` 同源，双在线状态与队列动作）；定向派发 `?section=dispatch&host=<id>&project=<rootPath>`；只读主机列表 `GET /panel/api/hosts`（展示字段投影，不含 env/工具路径；HTTP 模式与独立 `panel --web` 均可用，受 `AOS_PANEL_WEB` 约束但不受 `AOS_PANEL_ACTIONS` 影响，单机模式返回 `{ok:true,hosts:[]}`，PostgreSQL 读取失败返回 503）；队列动作 `POST /panel/api/queue/pause|resume`；主机登记 `POST /panel/api/hosts/register`。
 
 **多机相关环境变量**：
 

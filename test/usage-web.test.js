@@ -459,6 +459,12 @@ test("usage web: ?host 作用域读事件，分页/筛选链接保留 host（下
   const nextEvents = next.body.split('<section id="events">')[1] ?? "";
   assert.match(nextEvents, /data-tool="aos_status"/);
   assert.doesNotMatch(nextEvents, /data-tool="llm_list"/, "只显示 h-b 事件");
+  const prevHrefRaw = /<a href="([^"]+)">上一页<\/a>/.exec(next.body)?.[1];
+  assert.ok(prevHrefRaw, "第二页出现上一页链接");
+  assert.equal(
+    new URL(prevHrefRaw.replaceAll("&amp;", "&"), "http://localhost").searchParams.get("host"),
+    "h-b"
+  );
 
   const resetHrefRaw = /<a class="reset" href="([^"]+)"/.exec(res.body)?.[1];
   assert.ok(resetHrefRaw);
@@ -477,6 +483,25 @@ test("usage web: ?host 作用域读事件，分页/筛选链接保留 host（下
     deps(store)
   );
   assert.equal(ambiguous.status, 409, "未带 host 的同路径仍 409");
+});
+
+test("usage web: PostgreSQL 未知 host → 404（不静默显示零项目）", async () => {
+  const mem = newDb();
+  const { Pool } = mem.adapters.createPg();
+  const store = new PostgresStore(new Pool());
+  await store.init();
+  await store.upsertHost({ id: "h-a", hostname: "mac-a", osPlatform: "darwin" });
+  await store.scopeHost("h-a").upsertProject({ rootPath: "/w/app", name: "app" });
+
+  const unknown = await handleUsageRequest(
+    new URL("http://localhost/usage.json?host=ghost&project=%2Fw%2Fapp"),
+    deps(store)
+  );
+  assert.equal(unknown.status, 404, unknown.body);
+  assert.match(JSON.parse(unknown.body).error, /未知主机 "ghost"/);
+
+  const known = await getJson(store, "/usage.json?host=h-a&project=%2Fw%2Fapp");
+  assert.equal(known.project.hostId, "h-a");
 });
 
 test("usage web: 同名多项目 → 409 候选（不再静默取第一个）", async () => {

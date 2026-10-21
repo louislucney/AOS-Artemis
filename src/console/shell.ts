@@ -114,6 +114,12 @@ export const USAGE_STANDALONE_NAV: ConsoleNavItem[] = [
 ];
 
 function navHref(item: ConsoleNavItem, project: string | null, hostId: string | null): string | null {
+  if (item.key === "usage") {
+    if (project === null || project === "") return item.href;
+    const params = new URLSearchParams({ project });
+    if (hostId) params.set("host", hostId);
+    return `/usage?${params.toString()}`;
+  }
   if (!PROJECT_SCOPED.has(item.key)) return item.href;
   if (project === null || project === "") return null;
   const host = hostId ? `&host=${encodeURIComponent(hostId)}` : "";

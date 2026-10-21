@@ -177,6 +177,12 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
 
   const allProjects = await deps.store.listProjects();
   const hostId = trimmed(params.get("host"));
+  if (hostId !== null && deps.store.kind === "postgres") {
+    const hosts = await deps.store.listHosts().catch(() => null);
+    if (hosts !== null && !hosts.some((host) => host.id === hostId)) {
+      throw new UsageWebNotFoundError(`未知主机 "${hostId}"`);
+    }
+  }
   // 显式 host：作用域内解析（同路径多主机消歧）；未传 host 保持「跨主机唯一匹配，多行 409」。
   const projects =
     hostId === null ? allProjects : allProjects.filter((project) => project.hostId === hostId);

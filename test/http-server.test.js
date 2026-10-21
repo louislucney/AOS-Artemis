@@ -499,6 +499,7 @@ test("http server: 设 token 后未授权请求被 401 拦截（闸门先于路�
       const noCreds = [
         "/panel",
         "/panel.json",
+        "/panel/api/hosts",
         "/usage",
         "/usage.json",
         "/panel/api/tasks",
@@ -518,6 +519,12 @@ test("http server: 设 token 后未授权请求被 401 拦截（闸门先于路�
         headers: { Authorization: `Bearer ${TOKEN}` }
       });
       assert.equal(bearerOk.status, 200, "Bearer 应通过");
+
+      const hostsOk = await fetch(`http://127.0.0.1:${handle.port}/panel/api/hosts`, {
+        headers: { Authorization: `Bearer ${TOKEN}` }
+      });
+      assert.equal(hostsOk.status, 200, "Bearer 应通过主机列表");
+      assert.equal((await hostsOk.json()).ok, true);
 
       const basicOk = await fetch(`http://127.0.0.1:${handle.port}/panel`, {
         headers: { Authorization: basic("alice", TOKEN) }
@@ -582,6 +589,8 @@ test("http server: 禁用路由与未知路径——无凭据 401、有凭据 40
           const auth = { headers: { Authorization: `Bearer ${TOKEN}` } };
           assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel`)).status, 401, "禁用路由无凭据 401");
           assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel`, auth)).status, 404, "禁用路由有凭据 404");
+          assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel/api/hosts`)).status, 401);
+          assert.equal((await fetch(`http://127.0.0.1:${handle.port}/panel/api/hosts`, auth)).status, 404);
           assert.equal((await fetch(`http://127.0.0.1:${handle.port}/usage`)).status, 401);
           assert.equal((await fetch(`http://127.0.0.1:${handle.port}/nope`)).status, 401, "未知路径无凭据 401");
           assert.equal((await fetch(`http://127.0.0.1:${handle.port}/nope`, auth)).status, 404, "未知路径有凭据 404");

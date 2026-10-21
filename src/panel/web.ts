@@ -708,11 +708,12 @@ export function panelHostApiRow(host: HostRecord): PanelHostApiRow {
   };
 }
 
-/** 只读主机列表（设计稿 §12.2）：不受 `AOS_PANEL_ACTIONS` 影响；
- * 单机模式（file/memory）无中心主机台账 → `{ok:true,hosts:[]}`。 */
+/** 只读主机列表（设计稿 §12.2）：不受 `AOS_PANEL_ACTIONS` 影响；受 `AOS_PANEL_WEB` 约束。
+ * 单机模式（file/memory）无中心主机台账 → `{ok:true,hosts:[]}`；
+ * PostgreSQL 读取失败 → 503（不能伪装成空台账）。 */
 export async function handlePanelHostsRequest(deps: PanelWebDeps): Promise<PanelWebResponse> {
   const env = deps.env ?? process.env;
-  if (!panelWebEnabled(env)) return notFound();
+  if (!panelWebEnabled(env)) return notFound("not found", true);
   if (deps.store.kind !== "postgres") {
     return {
       status: 200,
@@ -720,7 +721,16 @@ export async function handlePanelHostsRequest(deps: PanelWebDeps): Promise<Panel
       body: JSON.stringify({ ok: true, hosts: [] }, null, 2)
     };
   }
-  const hosts = await deps.store.listHosts().catch(() => [] as HostRecord[]);
+  let hosts: HostRecord[];
+  try {
+    hosts = await deps.store.listHosts();
+  } catch {
+    return {
+      status: 503,
+      contentType: JSON_CONTENT_TYPE,
+      body: JSON.stringify({ ok: false, error: "主机台账读取失败" }, null, 2)
+    };
+  }
   return {
     status: 200,
     contentType: JSON_CONTENT_TYPE,
@@ -730,7 +740,9 @@ export async function handlePanelHostsRequest(deps: PanelWebDeps): Promise<Panel
 
 export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<PanelWebResponse> {
   const env = deps.env ?? process.env;
-  if (!panelWebEnabled(env)) return notFound();
+  if (!panelWebEnabled(env)) {
+    return url.pathname === "/panel/api/hosts" ? notFound("not found", true) : notFound();
+  }
   if (url.pathname === "/panel/api/hosts") return handlePanelHostsRequest(deps);
   if (url.pathname !== "/panel" && url.pathname !== "/panel.json") return notFound();
 

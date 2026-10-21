@@ -185,3 +185,33 @@ test("GET /panel/api/hosts: AOS_PANEL_ACTIONS=0 不影响只读主机列表", as
   assert.equal(res.status, 200);
   assert.deepEqual(JSON.parse(String(res.body)), { ok: true, hosts: [] });
 });
+
+test("GET /panel/api/hosts: PostgreSQL 读取失败返回 503 而非空台账", async () => {
+  const store = {
+    kind: "postgres",
+    listHosts: async () => {
+      throw new Error("pg down");
+    }
+  };
+  const res = await handlePanelRequest(new URL("http://127.0.0.1/panel/api/hosts"), {
+    store,
+    env: {}
+  });
+  assert.equal(res.status, 503);
+  assert.match(res.contentType, /application\/json/);
+  assert.deepEqual(JSON.parse(String(res.body)), {
+    ok: false,
+    error: "主机台账读取失败"
+  });
+});
+
+test("GET /panel/api/hosts: AOS_PANEL_WEB=0 返回 JSON 404", async () => {
+  const store = { kind: "postgres", listHosts: async () => [] };
+  const res = await handlePanelRequest(new URL("http://127.0.0.1/panel/api/hosts"), {
+    store,
+    env: { AOS_PANEL_WEB: "0" }
+  });
+  assert.equal(res.status, 404);
+  assert.match(res.contentType, /application\/json/);
+  assert.deepEqual(JSON.parse(String(res.body)), { error: "not found" });
+});
