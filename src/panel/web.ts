@@ -155,6 +155,7 @@ type PanelView =
   | {
       kind: "dispatch";
       rootPath: string;
+      hostId: string | null;
       rootLabel: string;
       preview: DispatchPreview;
       previewId: string;
@@ -164,6 +165,7 @@ type PanelView =
   | {
       kind: "library";
       rootPath: string;
+      hostId: string | null;
       rootLabel: string;
       sets: CaseSetRecord[];
       quarantine: LibraryPageData["quarantine"];
@@ -172,6 +174,7 @@ type PanelView =
   | {
       kind: "archive";
       rootPath: string;
+      hostId: string | null;
       rootLabel: string;
       artifacts: ArtifactRecord[];
       query: Record<string, string>;
@@ -180,6 +183,7 @@ type PanelView =
   | {
       kind: "audit";
       rootPath: string;
+      hostId: string | null;
       rootLabel: string;
       events: AuditEventRecord[];
       query: Record<string, string>;
@@ -188,18 +192,19 @@ type PanelView =
   | {
       kind: "ops";
       rootPath: string;
+      hostId: string | null;
       rootLabel: string;
       storeKind: ProjectStore["kind"];
       storeNote: string | null;
       writeError: string | null;
       artifacts: number;
     }
-  | { kind: "project"; rootPath: string; detail: PanelProjectDetail; active?: ConsoleNavKey | null }
+  | { kind: "project"; rootPath: string; hostId: string | null; detail: PanelProjectDetail; active?: ConsoleNavKey | null }
   | { kind: "search"; data: SearchPageData }
-  | { kind: "task"; rootPath: string; detail: PanelTaskDetail; flash?: string }
-  | { kind: "review"; rootPath: string; detail: { items: PanelReviewItem[]; warnings: string[] } }
-  | { kind: "stats"; rootPath: string; detail: PanelStatsView }
-  | { kind: "batch"; rootPath: string; detail: PanelBatchDetail };
+  | { kind: "task"; rootPath: string; hostId: string | null; detail: PanelTaskDetail; flash?: string }
+  | { kind: "review"; rootPath: string; hostId: string | null; detail: { items: PanelReviewItem[]; warnings: string[] } }
+  | { kind: "stats"; rootPath: string; hostId: string | null; detail: PanelStatsView }
+  | { kind: "batch"; rootPath: string; hostId: string | null; detail: PanelBatchDetail };
 
 class PanelNotFoundError extends Error {}
 
@@ -409,6 +414,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return {
       kind: "dispatch",
       rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
       rootLabel: resolved.name,
       preview,
       previewId: dispatchPreviewId(preview, formSignature),
@@ -434,6 +440,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return {
       kind: "library",
       rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
       rootLabel: resolved.name,
       sets: await projectStore.listCaseSets(resolved.rootPath),
       quarantine: await readQuarantineSummary(resolved.rootPath),
@@ -469,6 +476,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return {
       kind: "archive",
       rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
       rootLabel: resolved.name,
       artifacts,
       query,
@@ -501,6 +509,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return {
       kind: "audit",
       rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
       rootLabel: resolved.name,
       events,
       query,
@@ -515,6 +524,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return {
       kind: "ops",
       rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
       rootLabel: resolved.name,
       storeKind: projectStore.kind,
       storeNote: deps.storeNote ?? null,
@@ -534,6 +544,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return {
       kind: "task",
       rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
       detail,
       ...(dispatched === null ? {} : { flash: dispatched })
     };
@@ -543,17 +554,17 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   if (batchFile !== null) {
     const detail = await buildPanelBatchDetail(panelDeps, resolved.rootPath, batchFile);
     if (!detail) throw new PanelNotFoundError(`未知项目 "${projectKey}"`);
-    return { kind: "batch", rootPath: resolved.rootPath, detail };
+    return { kind: "batch", rootPath: resolved.rootPath, hostId: resolved.hostId, detail };
   }
 
   if (trimmed(url.searchParams.get("view")) === "review") {
     const detail = await buildPanelReviewQueue(panelDeps, resolved.rootPath, { limit: 10 });
-    return { kind: "review", rootPath: resolved.rootPath, detail };
+    return { kind: "review", rootPath: resolved.rootPath, hostId: resolved.hostId, detail };
   }
 
   if (trimmed(url.searchParams.get("view")) === "stats") {
     const detail = await buildPanelStatsView(panelDeps, resolved.rootPath);
-    return { kind: "stats", rootPath: resolved.rootPath, detail };
+    return { kind: "stats", rootPath: resolved.rootPath, hostId: resolved.hostId, detail };
   }
 
   const limitRaw = intParam(url.searchParams, "limit");
@@ -574,6 +585,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   return {
     kind: "project",
     rootPath: resolved.rootPath,
+    hostId: resolved.hostId,
     detail,
     ...(sectionActive === null ? {} : { active: sectionActive })
   };
@@ -661,30 +673,32 @@ function renderTable(headers: string[], rows: string[][], emptyText: string, cap
   });
 }
 
+function hostSuffix(hostId?: string | null): string {
+  return hostId ? `&host=${encodeURIComponent(hostId)}` : "";
+}
+
 function projectHref(rootPath: string, hostId?: string | null): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}${
-    hostId ? `&host=${encodeURIComponent(hostId)}` : ""
-  }`;
+  return `/panel?project=${encodeURIComponent(rootPath)}${hostSuffix(hostId)}`;
 }
 
-function dispatchHref(rootPath: string): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}&section=dispatch`;
+function dispatchHref(rootPath: string, hostId?: string | null): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}&section=dispatch${hostSuffix(hostId)}`;
 }
 
-function batchHref(rootPath: string, file: string): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}&batch=${encodeURIComponent(file)}`;
+function batchHref(rootPath: string, file: string, hostId?: string | null): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}&batch=${encodeURIComponent(file)}${hostSuffix(hostId)}`;
 }
 
-function taskHref(rootPath: string, taskId: string): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}&task=${encodeURIComponent(taskId)}`;
+function taskHref(rootPath: string, taskId: string, hostId?: string | null): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}&task=${encodeURIComponent(taskId)}${hostSuffix(hostId)}`;
 }
 
-function reviewHref(rootPath: string): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}&view=review`;
+function reviewHref(rootPath: string, hostId?: string | null): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}&view=review${hostSuffix(hostId)}`;
 }
 
-function statsHref(rootPath: string): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}&view=stats`;
+function statsHref(rootPath: string, hostId?: string | null): string {
+  return `/panel?project=${encodeURIComponent(rootPath)}&view=stats${hostSuffix(hostId)}`;
 }
 
 function gateSpan(gate: "pass" | "fail" | null): string {
@@ -932,7 +946,7 @@ function runnableAxis(detail: PanelProjectDetail): { lamp: PanelProjectRow["lamp
   return { lamp: "green", note: `（在线执行机 ${online}）` };
 }
 
-function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): string {
+function renderProjectPulse(detail: PanelProjectDetail, rootPath: string, hostId: string | null): string {
   const row = detail.project;
   const axis = runnableAxis(detail);
   const active = detail.tasks.filter(
@@ -945,14 +959,14 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
     .slice(0, 3)
     .map(
       (task) =>
-        `<a href="${escapeHtml(taskHref(rootPath, task.id))}">${escapeHtml(task.status)} · <code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
+        `<a href="${escapeHtml(taskHref(rootPath, task.id, hostId))}">${escapeHtml(task.status)} · <code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
     )
     .join(" · ");
   const pendingLinks = pending
     .slice(0, 3)
     .map(
       (task) =>
-        `<a href="${escapeHtml(taskHref(rootPath, task.id))}">待领取 · <code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
+        `<a href="${escapeHtml(taskHref(rootPath, task.id, hostId))}">待领取 · <code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
     )
     .join(" · ");
   const activityLine =
@@ -984,16 +998,16 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string): strin
       title: "下一步",
       actions:
         detail.reviewQueue.undecided > 0
-          ? `<a class="c-button c-button-primary" href="${escapeHtml(reviewHref(rootPath))}">先去裁决 ${detail.reviewQueue.undecided} 条 →</a> <a class="c-button" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`
+          ? `<a class="c-button c-button-primary" href="${escapeHtml(reviewHref(rootPath, hostId))}">先去裁决 ${detail.reviewQueue.undecided} 条 →</a> <a class="c-button" href="${escapeHtml(dispatchHref(rootPath, hostId))}">新建回归任务</a>`
         : detail.regressionRefs.length === 0
         ? `<a class="c-button c-button-primary" href="${escapeHtml(
-            `/panel?project=${encodeURIComponent(rootPath)}&section=library`
+            `/panel?project=${encodeURIComponent(rootPath)}&section=library${hostSuffix(hostId)}`
           )}">先去生成/导入用例 →</a>`
-        : `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">新建回归任务</a>`,
+        : `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath, hostId))}">新建回归任务</a>`,
       body:
         detail.reviewQueue.undecided === 0 && detail.reviewQueue.unissued === 0
-          ? `<p><a href="${escapeHtml(reviewHref(rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(rootPath))}">统计</a></p>`
-          : `<p><a href="${escapeHtml(reviewHref(rootPath))}">待裁决 ${detail.reviewQueue.undecided} 条</a> · <a href="${escapeHtml(statsHref(rootPath))}#issues">未建单缺陷 ${detail.reviewQueue.unissued} 项</a> · <a href="${escapeHtml(statsHref(rootPath))}">统计</a></p>`
+          ? `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">归因队列</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
+          : `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">待裁决 ${detail.reviewQueue.undecided} 条</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}#issues">未建单缺陷 ${detail.reviewQueue.unissued} 项</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
     }),
     activityLine,
     "</div>"
@@ -1072,7 +1086,7 @@ function renderIntegration(detail: PanelProjectDetail): string {
     .join("\n");
 }
 
-function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
+function renderBatches(detail: PanelProjectDetail, rootPath: string, hostId: string | null): string {
   const rows = detail.batches.map((batch: PanelBatchRow) => [
     relativeTime(batch.startedAt),
     relativeTime(batch.finishedAt),
@@ -1089,7 +1103,7 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string): string {
             .map(([domain, count]) => `${failureDomainLabel(domain)}×${count}`)
             .join("、") || "—"
         ),
-    `<a href="${escapeHtml(batchHref(rootPath, batch.file))}"><code>${escapeHtml(batch.file)}</code></a>` +
+    `<a href="${escapeHtml(batchHref(rootPath, batch.file, hostId))}"><code>${escapeHtml(batch.file)}</code></a>` +
       (batch.note !== null ? `<div class="muted">${escapeHtml(batch.note)}</div>` : "")
   ]);
   const empty =
@@ -1348,9 +1362,9 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
   ].join("\n");
 }
 
-function renderOnboarding(rootPath: string): string {
-  const libraryHref = `/panel?project=${encodeURIComponent(rootPath)}&section=library`;
-  const opsHref = `/panel?project=${encodeURIComponent(rootPath)}&section=ops`;
+function renderOnboarding(rootPath: string, hostId: string | null): string {
+  const libraryHref = `/panel?project=${encodeURIComponent(rootPath)}&section=library${hostSuffix(hostId)}`;
+  const opsHref = `/panel?project=${encodeURIComponent(rootPath)}&section=ops${hostSuffix(hostId)}`;
   return [
     '<section id="onboarding">',
     "<h2>三步开始</h2>",
@@ -1359,7 +1373,7 @@ function renderOnboarding(rootPath: string): string {
         "<ol>",
         `<li><strong>接入检查（可选）</strong>：LLM / Figma / Jira 缺失不影响执行（缺 LLM 不生成用例、缺 Jira 不建单）；详见 <a href="${escapeHtml(opsHref)}">运维与数据</a> 与下方「环境自查与明细」。</li>`,
         `<li><strong>生成或导入第一份用例</strong>：MCP 工具 <code>figma_generate_tests</code> / <code>pen_extract_flows</code>，或 <a href="${escapeHtml(libraryHref)}">用例库 → Excel 导入</a>。</li>`,
-        `<li><strong>下发第一条回归</strong>：<a href="${escapeHtml(dispatchHref(rootPath))}">去下发向导</a>（需先完成第 ② 步；预览与确认同源、字段变更即失效）。</li>`,
+        `<li><strong>下发第一条回归</strong>：<a href="${escapeHtml(dispatchHref(rootPath, hostId))}">去下发向导</a>（需先完成第 ② 步；预览与确认同源、字段变更即失效）。</li>`,
         "</ol>"
       ].join("\n")
     }),
@@ -1367,7 +1381,7 @@ function renderOnboarding(rootPath: string): string {
   ].join("\n");
 }
 
-function renderDispatchCta(rootPath: string, detail: PanelProjectDetail): string {
+function renderDispatchCta(rootPath: string, detail: PanelProjectDetail, hostId: string | null): string {
   const refs = detail.regressionRefs;
   const hint =
     refs.length === 0
@@ -1382,9 +1396,9 @@ function renderDispatchCta(rootPath: string, detail: PanelProjectDetail): string
         `<p>四步完成：选来源 → 设参数 → 看预览回显 → 确认派发。${hint}</p>`,
         refs.length === 0
           ? `<p><span class="muted">完成「生成或导入用例」后可下发。</span> <a class="c-button" href="${escapeHtml(
-              `/panel?project=${encodeURIComponent(rootPath)}&section=library`
+              `/panel?project=${encodeURIComponent(rootPath)}&section=library${hostSuffix(hostId)}`
             )}">去用例库</a></p>`
-          : `<p><a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath))}">去下发向导</a></p>`
+          : `<p><a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath, hostId))}">去下发向导</a></p>`
       ].join("\n")
     }),
     "</section>"
@@ -1481,9 +1495,9 @@ function renderRunners(detail: PanelProjectDetail): string {
   ].join("\n");
 }
 
-function renderTaskList(rootPath: string, detail: PanelProjectDetail): string {
+function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: string | null): string {
   const rows = detail.tasks.map((task) => [
-    `<a href="${escapeHtml(taskHref(rootPath, task.id))}"><code>${escapeHtml(task.id)}</code></a>`,
+    `<a href="${escapeHtml(taskHref(rootPath, task.id, hostId))}"><code>${escapeHtml(task.id)}</code></a>`,
     escapeHtml(taskStatusLabel(task.status)),
     String(task.refs),
     escapeHtml(task.platforms.join(", ")),
@@ -1502,7 +1516,7 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail): string {
   ].join("\n");
 }
 
-function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
+function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: string | null): string {
   const actionsOff = currentShell.capabilities?.actions === false;
   const reason = actionsOff
     ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
@@ -1549,7 +1563,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
     }`,
     schedule.lastTaskId === null
       ? "—"
-      : `<a href="${escapeHtml(taskHref(rootPath, schedule.lastTaskId))}">${escapeHtml(
+      : `<a href="${escapeHtml(taskHref(rootPath, schedule.lastTaskId, hostId))}">${escapeHtml(
           schedule.lastTaskStatus ?? "任务"
         )}</a>`,
     `<button class="c-button" type="button" data-schedule="${escapeHtml(schedule.id)}" data-op="${
@@ -1579,7 +1593,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail): string {
     .join("\n");
 }
 
-function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash?: string }): string {
+function renderTaskPage(view: { rootPath: string; hostId: string | null; detail: PanelTaskDetail; flash?: string }): string {
   const { detail } = view;
   const task = detail.task;
   const refRows = detail.refs.map((ref) => [
@@ -1652,10 +1666,10 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
       ...(view.flash === undefined
         ? []
         : [
-            `<div class="c-banner c-banner-accent" role="status">已派发任务 <code>${escapeHtml(view.flash)}</code>；已写入审计（<a href="/panel?project=${encodeURIComponent(view.rootPath)}&section=audit">查看审计</a>）。</div>`
+            `<div class="c-banner c-banner-accent" role="status">已派发任务 <code>${escapeHtml(view.flash)}</code>；已写入审计（<a href="/panel?project=${encodeURIComponent(view.rootPath)}&section=audit${hostSuffix(view.hostId)}">查看审计</a>）。</div>`
           ]),
       "<header>",
-      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
       `<h1>回归任务 <code>${escapeHtml(task.id)}</code></h1>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
@@ -1735,6 +1749,7 @@ function renderTaskPage(view: { rootPath: string; detail: PanelTaskDetail; flash
 
 function renderReviewPage(view: {
   rootPath: string;
+  hostId: string | null;
   detail: { items: PanelReviewItem[]; warnings: string[] };
 }): string {
   const { items, warnings } = view.detail;
@@ -1850,7 +1865,7 @@ function renderReviewPage(view: {
     `归因队列 · ${path.basename(view.rootPath)}`,
     [
       "<header>",
-      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
       "<h1>归因队列</h1>",
       `<p class="muted">最近 10 次运行的失败用例 · 共 ${items.length} 条 · 未裁决 ${undecided} 条</p>`,
       warningsHtml,
@@ -1859,7 +1874,7 @@ function renderReviewPage(view: {
       ...(appDefects.length === 0
         ? []
         : [
-            `<p><a class="c-button c-button-primary" href="${escapeHtml(statsHref(view.rootPath))}#issues">下一步：去建单（应用缺陷 ${appDefects.length} 条）→</a></p>`
+            `<p><a class="c-button c-button-primary" href="${escapeHtml(statsHref(view.rootPath, view.hostId))}#issues">下一步：去建单（应用缺陷 ${appDefects.length} 条）→</a></p>`
           ]),
       ...body,
       '<section id="run-hint">',
@@ -2007,7 +2022,7 @@ showStale(false);
   ].join("\n");
 }
 
-function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): string {
+function renderStatsPage(view: { rootPath: string; hostId: string | null; detail: PanelStatsView }): string {
   const { stats, improvement, guidance, warnings } = view.detail;
   const featureRows = stats.features.map((feature) => [
     `<code>${escapeHtml(feature.featureKey)}</code>`,
@@ -2091,7 +2106,7 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
     `回归统计 · ${path.basename(view.rootPath)}`,
     [
       "<header>",
-      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
       "<h1>回归统计</h1>",
       warningsHtml,
       "</header>",
@@ -2128,7 +2143,7 @@ function renderStatsPage(view: { rootPath: string; detail: PanelStatsView }): st
   );
 }
 
-function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail }, cacheNote: string): string {
+function renderProjectPage(view: { rootPath: string; hostId: string | null; detail: PanelProjectDetail }, cacheNote: string): string {
   const { detail } = view;
   const row = detail.project;
   const reasons =
@@ -2171,22 +2186,22 @@ function renderProjectPage(view: { rootPath: string; detail: PanelProjectDetail 
       reasons,
       warnings,
       `<p class="muted">生成时间 ${relativeTime(detail.generatedAt)} · ${escapeHtml(cacheNote)}</p>`,
-      `<p><a href="${escapeHtml(reviewHref(view.rootPath))}">归因队列</a> · <a href="${escapeHtml(statsHref(view.rootPath))}">统计</a></p>`,
+      `<p><a href="${escapeHtml(reviewHref(view.rootPath, view.hostId))}">归因队列</a> · <a href="${escapeHtml(statsHref(view.rootPath, view.hostId))}">统计</a></p>`,
       "</header>",
       "<main>",
-      ...(emptyProject ? [renderOnboarding(view.rootPath)] : []),
-      renderProjectPulse(detail, view.rootPath),
+      ...(emptyProject ? [renderOnboarding(view.rootPath, view.hostId)] : []),
+      renderProjectPulse(detail, view.rootPath, view.hostId),
       ...(emptyProject
         ? [
             '<details class="c-details"><summary>详细状态（批次 / 任务 / 执行机 / 计划）</summary>'
           ]
         : []),
-      renderBatches(detail, view.rootPath),
-      renderTaskList(view.rootPath, detail),
+      renderBatches(detail, view.rootPath, view.hostId),
+      renderTaskList(view.rootPath, detail, view.hostId),
       renderRunners(detail),
-      renderSchedules(view.rootPath, detail),
+      renderSchedules(view.rootPath, detail, view.hostId),
       ...(emptyProject ? ["</details>"] : []),
-      renderDispatchCta(view.rootPath, detail),
+      renderDispatchCta(view.rootPath, detail, view.hostId),
       '<details class="c-details">',
       "<summary>环境自查与明细（接入自检 / 运行时细节 / 磁盘资产 / 独立运行）</summary>",
       renderIntegration(detail),
@@ -2443,7 +2458,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
   );
 }
 
-function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): string {
+function renderBatchPage(view: { rootPath: string; hostId: string | null; detail: PanelBatchDetail }): string {
   const { detail } = view;
   const meta = [
     `来源 ${sourceHtml(detail.source)}`,
@@ -2457,7 +2472,7 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
       `批次 · ${detail.file}`,
       [
         "<header>",
-        `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
+        `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
         `<h1>批次 ${escapeHtml(detail.runId ?? detail.file)}</h1>`,
         `<p class="muted">${meta}</p>`,
         "</header>",
@@ -2525,7 +2540,7 @@ function renderBatchPage(view: { rootPath: string; detail: PanelBatchDetail }): 
     `批次 · ${detail.runId ?? detail.file}`,
     [
       "<header>",
-      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath))}">项目</a></p>`,
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
       `<h1>批次 ${escapeHtml(detail.runId ?? detail.file)}</h1>`,
       `<p class="muted">${meta}</p>`,
       gate === null
@@ -2652,6 +2667,10 @@ async function loadStoreHealth(
     view.kind === "overview" || view.kind === "compare" || view.kind === "search"
       ? null
       : view.rootPath;
+  const projectHostId =
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
+      ? null
+      : view.hostId;
   let lastWriteAt: string | null = null;
   if (project !== null) {
     try {
@@ -2670,7 +2689,10 @@ async function loadStoreHealth(
         : kind === "memory"
           ? "会话内存（不持久）"
           : null,
-    opsHref: project === null ? null : `/panel?project=${encodeURIComponent(project)}&section=ops`
+    opsHref:
+      project === null
+        ? null
+        : `/panel?project=${encodeURIComponent(project)}&section=ops${hostSuffix(projectHostId)}`
   };
 }
 
@@ -2734,12 +2756,25 @@ async function loadProjectSwitcher(
       ? null
       : view.rootPath;
   const projects = await deps.store.listProjects().catch(() => []);
+  const hosts = await deps.store.listHosts().catch(() => []);
+  const hostById = new Map(hosts.map((host) => [host.id, host]));
   return {
-    options: projects.slice(0, 20).map((project) => ({
-      label: project.name,
-      href: projectHref(project.rootPath, project.hostId),
-      ...(project.rootPath === current ? { current: true } : {})
-    }))
+    options: projects.slice(0, 20).map((project) => {
+      const host = project.hostId === null ? null : (hostById.get(project.hostId) ?? null);
+      const hostLabel =
+        project.hostId === null
+          ? ""
+          : host !== null && host.label !== null && host.label !== ""
+            ? host.label
+            : host !== null && host.hostname !== ""
+              ? host.hostname
+              : project.hostId.slice(0, 8);
+      return {
+        label: hostLabel === "" ? project.name : `${project.name} · ${hostLabel}`,
+        href: projectHref(project.rootPath, project.hostId),
+        ...(project.rootPath === current ? { current: true } : {})
+      };
+    })
   };
 }
 

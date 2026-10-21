@@ -199,3 +199,41 @@ test("产物路由无 host 且同路径跨主机 → 409（非 500）", async ()
   assert.notEqual(scoped.status, 409, "带 host 时不再歧义");
 });
 
+test("详情页下发/归因/统计/back-link 均带 host=h-b", async () => {
+  const { store, deps } = makeDeps();
+  await seedSuiteRun(store.scopeHost("h-a"), ROOT_PATH, "run-a");
+  await seedSuiteRun(store.scopeHost("h-b"), ROOT_PATH, "run-b");
+  const enc = encodeURIComponent(ROOT_PATH);
+
+  const projectHtml = String(
+    (await handlePanelRequest(new URL(`http://x/panel?host=h-b&project=${enc}`), deps)).body
+  );
+  assert.match(projectHtml, new RegExp(`${enc}&amp;section=dispatch&amp;host=h-b`));
+  assert.match(projectHtml, new RegExp(`${enc}&amp;view=review&amp;host=h-b`));
+  assert.match(projectHtml, new RegExp(`${enc}&amp;view=stats&amp;host=h-b`));
+
+  const reviewHtml = String(
+    (await handlePanelRequest(new URL(`http://x/panel?host=h-b&project=${enc}&view=review`), deps))
+      .body
+  );
+  assert.match(reviewHtml, new RegExp(`${enc}&amp;host=h-b`));
+
+  const statsHtml = String(
+    (await handlePanelRequest(new URL(`http://x/panel?host=h-b&project=${enc}&view=stats`), deps))
+      .body
+  );
+  assert.match(statsHtml, new RegExp(`${enc}&amp;host=h-b`));
+});
+
+test("切换器同路径两主机标签可区分（名称 · 主机名）", async () => {
+  const { store, deps } = makeDeps();
+  await store.upsertHost({ id: "h-a", hostname: "Mac-A" });
+  await store.upsertHost({ id: "h-b", hostname: "Mac-B" });
+  await seedSuiteRun(store.scopeHost("h-a"), ROOT_PATH, "run-a");
+  await seedSuiteRun(store.scopeHost("h-b"), ROOT_PATH, "run-b");
+
+  const html = String((await handlePanelRequest(new URL("http://x/panel"), deps)).body);
+  assert.match(html, /app · Mac-A/);
+  assert.match(html, /app · Mac-B/);
+});
+
