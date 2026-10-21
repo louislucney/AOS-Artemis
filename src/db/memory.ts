@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { buildAuditEvent, cloneAuditEvent, normalizeAuditLimit } from "./audit-event.js";
+import { AmbiguousProjectError } from "./types.js";
 import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
 import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
@@ -64,6 +65,7 @@ export interface MemoryStoreState {
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
 export class MemoryStore implements ProjectStore {
   readonly kind = "memory" as const;
+  private hostId: string | null;
   private projects = new Map<string, ProjectRecord>();
   private llms = new Map<string, ProjectLlmRecord[]>();
   private modelCaches = new Map<string, ModelCacheRecord>();
@@ -81,13 +83,49 @@ export class MemoryStore implements ProjectStore {
   private hostAddresses: HostAddressRecord[] = [];
   private hostSessions: HostSessionRecord[] = [];
 
+  constructor(hostId: string | null = null) {
+    this.hostId = hostId;
+  }
+
+  get localHostId(): string | null {
+    return this.hostId;
+  }
+
+  bindHost(hostId: string): void {
+    this.hostId = hostId;
+  }
+
+  scopeHost(hostId: string): ProjectStore {
+    const view = new MemoryStore(hostId);
+    view.projects = this.projects;
+    view.llms = this.llms;
+    view.modelCaches = this.modelCaches;
+    view.tasks = this.tasks;
+    view.usageEvents = this.usageEvents;
+    view.projectEvents = this.projectEvents;
+    view.projectEventSeq = this.projectEventSeq;
+    view.auditEvents = this.auditEvents;
+    view.caseSets = this.caseSets;
+    view.regressionTasks = this.regressionTasks;
+    view.suiteRuns = this.suiteRuns;
+    view.runners = this.runners;
+    view.schedules = this.schedules;
+    view.hosts = this.hosts;
+    view.hostAddresses = this.hostAddresses;
+    view.hostSessions = this.hostSessions;
+    return view;
+  }
+
   async upsertProject(input: {
     rootPath: string;
     name: string;
+    hostId?: string | null;
     updateName?: boolean;
   }): Promise<ProjectRecord> {
     const now = new Date().toISOString();
-    const existing = this.projects.get(input.rootPath);
+    const hostId = input.hostId !== undefined ? input.hostId : this.hostId;
+    const key = projectKey(hostId, input.rootPath);
+    const existing = this.projects.get(key);
     if (existing) {
       if (input.updateName !== false) existing.name = input.name;
       existing.lastSeenAt = now;
@@ -95,23 +133,35 @@ export class MemoryStore implements ProjectStore {
     }
     const record: ProjectRecord = {
       id: randomUUID(),
+      hostId,
       rootPath: input.rootPath,
       name: input.name,
       figmaToken: null,
       createdAt: now,
       lastSeenAt: now
     };
-    this.projects.set(input.rootPath, record);
+    this.projects.set(key, record);
     return { ...record };
   }
 
   async getProjectByPath(rootPath: string): Promise<ProjectRecord | null> {
-    const found = this.projects.get(rootPath);
+    const found = this.getProjectRecord(rootPath);
     return found ? { ...found } : null;
   }
 
+  private getProjectRecord(rootPath: string): ProjectRecord | null {
+    if (this.hostId !== null) {
+      return this.projects.get(projectKey(this.hostId, rootPath)) ?? null;
+    }
+    const matches = [...this.projects.values()].filter((project) => project.rootPath === rootPath);
+    if (matches.length > 1) {
+      throw new AmbiguousProjectError(rootPath, matches.map((project) => ({ ...project })));
+    }
+    return matches[0] ?? null;
+  }
+
   async setFigmaToken(rootPath: string, token: string | null): Promise<void> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (project) project.figmaToken = token;
   }
 
@@ -120,7 +170,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async upsertLlm(rootPath: string, input: UpsertLlmInput): Promise<ProjectLlmRecord> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) throw new Error(`MemoryStore: project not registered: ${rootPath}`);
     const now = new Date().toISOString();
     const list = this.llms.get(rootPath) ?? [];
@@ -167,7 +217,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async putModelCache(rootPath: string, input: PutModelCacheInput): Promise<ModelCacheRecord> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) throw new Error(`MemoryStore: project not registered: ${rootPath}`);
     const key = `${rootPath}\u0000${input.cacheKey}`;
     const now = new Date().toISOString();
@@ -199,7 +249,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async recordTask(input: RecordTaskInput): Promise<void> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     this.tasks.push({
       id: randomUUID(),
       projectId: project?.id ?? null,
@@ -215,7 +265,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async listTasks(rootPath: string, limit = 20): Promise<TaskStatRecord[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     return this.tasks
       .filter((task) => task.projectId === project.id)
@@ -225,7 +275,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async listPendingTasks(rootPath: string, limit = 20): Promise<TaskStatRecord[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     return this.tasks
       .filter((task) => task.projectId === project.id && task.status === "submitted")
@@ -234,7 +284,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async markTaskFinished(rootPath: string, traceId: string, status: string): Promise<boolean> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return false;
     let updated = false;
     for (const task of this.tasks) {
@@ -248,7 +298,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async recordCaseSet(input: RecordCaseSetInput): Promise<CaseSetRecord> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     const record: CaseSetRecord = {
       id: randomUUID(),
       projectId: project?.id ?? null,
@@ -264,7 +314,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async listCaseSets(rootPath: string, limit?: number): Promise<CaseSetRecord[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     const all = this.caseSets
       .filter((record) => record.projectId === project.id)
@@ -273,7 +323,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     const record: RegressionTaskRecord = {
       id: randomUUID(),
       projectId: project?.id ?? null,
@@ -293,7 +343,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async getRegressionTask(rootPath: string, id: string): Promise<RegressionTaskRecord | null> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return null;
     const found = this.regressionTasks.find(
       (task) => task.projectId === project.id && task.id === id
@@ -302,7 +352,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async listRegressionTasks(rootPath: string, limit = 50): Promise<RegressionTaskRecord[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     return this.regressionTasks
       .filter((task) => task.projectId === project.id)
@@ -321,7 +371,7 @@ export class MemoryStore implements ProjectStore {
       claimedAt?: string | null;
     }
   ): Promise<boolean> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return false;
     const task = this.regressionTasks.find(
       (entry) => entry.projectId === project.id && entry.id === id
@@ -341,7 +391,7 @@ export class MemoryStore implements ProjectStore {
     onlineBefore?: string;
     allowPartial?: boolean;
   }): Promise<RegressionTaskRecord | null> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     if (!project) return null;
     const candidates = this.regressionTasks
       .filter((task) => task.projectId === project.id && task.status === "pending")
@@ -384,7 +434,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async releaseRegressionTasks(input: { rootPath: string; runnerId: string }): Promise<number> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     if (!project) return 0;
     let released = 0;
     for (const task of this.regressionTasks) {
@@ -404,7 +454,7 @@ export class MemoryStore implements ProjectStore {
     taskId: string;
     to?: "pending" | "failed";
   }): Promise<boolean> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     if (!project) return false;
     const task = this.regressionTasks.find(
       (entry) =>
@@ -424,7 +474,7 @@ export class MemoryStore implements ProjectStore {
     offlineBefore: string;
     claimedBefore: string;
   }): Promise<number> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     if (!project) return 0;
     const onlineRunnerIds = new Set(
       this.runners
@@ -449,7 +499,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
     const existing = this.schedules.find(
       (entry) => entry.projectId === project.id && entry.name === input.name
@@ -476,7 +526,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     const all = this.schedules
       .filter((entry) => entry.projectId === project.id)
@@ -485,7 +535,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async getSchedule(rootPath: string, id: string): Promise<ScheduleRecord | null> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return null;
     const found = this.schedules.find(
       (entry) => entry.projectId === project.id && entry.id === id
@@ -498,7 +548,7 @@ export class MemoryStore implements ProjectStore {
     id: string,
     patch: { enabled?: boolean; everyMinutes?: number; lastNote?: string | null }
   ): Promise<boolean> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return false;
     const schedule = this.schedules.find(
       (entry) => entry.projectId === project.id && entry.id === id
@@ -511,7 +561,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async deleteSchedule(rootPath: string, id: string): Promise<boolean> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return false;
     const index = this.schedules.findIndex(
       (entry) => entry.projectId === project.id && entry.id === id
@@ -527,7 +577,7 @@ export class MemoryStore implements ProjectStore {
     firedAt: string;
     cutoff: string;
   }): Promise<boolean> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     if (!project) return false;
     const schedule = this.schedules.find(
       (entry) => entry.projectId === project.id && entry.id === input.scheduleId
@@ -539,7 +589,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     const record: SuiteRunRecord = {
       id: randomUUID(),
       projectId: project?.id ?? null,
@@ -564,7 +614,7 @@ export class MemoryStore implements ProjectStore {
       limit?: number;
     } = {}
   ): Promise<SuiteRunRecord[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     return this.suiteRuns
       .filter((run) => run.projectId === project.id)
@@ -582,7 +632,7 @@ export class MemoryStore implements ProjectStore {
     runId: string,
     status: "completed" | "failed"
   ): Promise<boolean> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return false;
     let updated = false;
     for (const run of this.suiteRuns) {
@@ -595,7 +645,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     if (!project) return false;
     const run = this.suiteRuns.find(
       (entry) => entry.projectId === project.id && entry.id === input.runId
@@ -611,7 +661,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async setCaseIssueKey(input: SetCaseIssueKeyInput): Promise<boolean> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     if (!project) return false;
     const run = this.suiteRuns.find(
       (entry) => entry.projectId === project.id && entry.id === input.runId
@@ -624,7 +674,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async getSuiteRun(rootPath: string, runId: string): Promise<SuiteRunRecord | null> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return null;
     const run = this.suiteRuns.find(
       (entry) => entry.projectId === project.id && entry.id === runId
@@ -633,7 +683,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async listRegisteredManifestPaths(rootPath: string): Promise<string[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     return this.suiteRuns.flatMap((run) =>
       run.projectId === project.id && run.manifestPath !== null ? [run.manifestPath] : []
@@ -643,7 +693,7 @@ export class MemoryStore implements ProjectStore {
   async getEarliestRegistrationCreatedAt(
     rootPath: string
   ): Promise<{ runs: string | null; caseSets: string | null }> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return { runs: null, caseSets: null };
     const runTimes = this.suiteRuns
       .filter((run) => run.projectId === project.id)
@@ -658,7 +708,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord> {
-    const project = this.projects.get(input.rootPath);
+    const project = this.getProjectRecord(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
     const now = new Date().toISOString();
     const hostId = input.hostId ?? null;
@@ -698,7 +748,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async listRunners(rootPath: string, limit = 20): Promise<RunnerRecord[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     return this.runners
       .filter((entry) => entry.projectId === project.id)
@@ -942,7 +992,7 @@ export class MemoryStore implements ProjectStore {
     input: RecordUsageEventInput,
     policy: UsagePrunePolicy = {}
   ): Promise<UsageEventRecord> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     const record = buildUsageEvent(input, project?.id ?? null);
     this.usageEvents.push(record);
     this.pruneUsageEvents(record.projectId, policy);
@@ -950,7 +1000,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   async listUsageEvents(rootPath: string, query: UsageEventQuery = {}): Promise<UsageEventRecord[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     return this.usageEvents
       .filter((event) => event.projectId === project.id)
@@ -973,7 +1023,7 @@ export class MemoryStore implements ProjectStore {
     rootPath: string,
     input: ProjectEventInput
   ): Promise<RecordProjectEventResult> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) throw new Error(`MemoryStore: project not registered: ${rootPath}`);
     const hash = payloadHash(input.payload);
     const existing = this.projectEvents.find(
@@ -1015,7 +1065,7 @@ export class MemoryStore implements ProjectStore {
     rootPath: string,
     query: ProjectEventQuery = {}
   ): Promise<ProjectEventRecord[]> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return [];
     const since = query.since === undefined ? null : normalizeSince(query.since);
     if (query.since !== undefined && since === null) throw new Error("invalid since");
@@ -1054,7 +1104,7 @@ export class MemoryStore implements ProjectStore {
     eventIds: string[],
     consumedAt: string = new Date().toISOString()
   ): Promise<number> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return 0;
     const ids = new Set(eventIds);
     let changed = 0;
@@ -1069,13 +1119,13 @@ export class MemoryStore implements ProjectStore {
   }
 
   async countProjectEvents(rootPath: string): Promise<number> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return 0;
     return this.projectEvents.filter((event) => event.projectId === project.id).length;
   }
 
   async pruneProjectEvents(rootPath: string): Promise<number> {
-    const project = this.projects.get(rootPath);
+    const project = this.getProjectRecord(rootPath);
     if (!project) return 0;
     const policy = eventRetentionPolicy();
     const cutoff = eventCutoffIso(policy.days);
@@ -1148,7 +1198,12 @@ export class MemoryStore implements ProjectStore {
 
   importState(data: Partial<MemoryStoreState>): void {
     if (data.projects) {
-      this.projects = new Map(data.projects.map((project) => [project.rootPath, { ...project }]));
+      this.projects = new Map(
+        data.projects.map((project) => [
+          projectKey(project.hostId ?? null, project.rootPath),
+          { ...project }
+        ])
+      );
     }
     if (data.llms) {
       this.llms = new Map(
@@ -1213,6 +1268,10 @@ export class MemoryStore implements ProjectStore {
 
 function byNewestUsageEvent(a: UsageEventRecord, b: UsageEventRecord): number {
   return b.at.localeCompare(a.at) || b.id.localeCompare(a.id);
+}
+
+function projectKey(hostId: string | null, rootPath: string): string {
+  return `${hostId ?? "legacy"}\u0000${rootPath}`;
 }
 
 function minIso(values: string[]): string | null {

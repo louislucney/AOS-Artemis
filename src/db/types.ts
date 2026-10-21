@@ -1,10 +1,23 @@
 export interface ProjectRecord {
   id: string;
+  hostId: string | null;
   rootPath: string;
   name: string;
   figmaToken: string | null;
   createdAt: string;
   lastSeenAt: string;
+}
+
+/** 未绑定 host 的 store 按 root_path 查询命中多行（跨主机同路径）时的歧义错误。 */
+export class AmbiguousProjectError extends Error {
+  readonly rootPath: string;
+  readonly candidates: ProjectRecord[];
+  constructor(rootPath: string, candidates: ProjectRecord[]) {
+    super(`项目路径跨主机重复：${rootPath}（${candidates.length} 行）`);
+    this.name = "AmbiguousProjectError";
+    this.rootPath = rootPath;
+    this.candidates = candidates;
+  }
 }
 
 export interface ProjectLlmRecord {
@@ -522,9 +535,20 @@ export interface CreateRegressionTaskInput {
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */
 export interface ProjectStore {
   readonly kind: "postgres" | "file" | "memory";
+  /** 绑定到本机 host（若无显式 hostId，写入/查询都以它作用域）；未绑定＝legacy NULL。 */
+  readonly localHostId: string | null;
+  /** 就地绑定本 store 到 host（下一个写入/查询生效；对同一实例生效）。 */
+  bindHost(hostId: string): void;
+  /** 返回共享同一底层存储但绑定到 hostId 的新视图（不改动父 store 的 hostId）。 */
+  scopeHost(hostId: string): ProjectStore;
   /** `updateName: false` keeps an existing display name (used by incidental
    * records such as model-cache writes that only know the directory basename). */
-  upsertProject(input: { rootPath: string; name: string; updateName?: boolean }): Promise<ProjectRecord>;
+  upsertProject(input: {
+    rootPath: string;
+    name: string;
+    hostId?: string | null;
+    updateName?: boolean;
+  }): Promise<ProjectRecord>;
   getProjectByPath(rootPath: string): Promise<ProjectRecord | null>;
   setFigmaToken(rootPath: string, token: string | null): Promise<void>;
   listLlms(rootPath: string): Promise<ProjectLlmRecord[]>;

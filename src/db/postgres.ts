@@ -52,6 +52,7 @@ import type {
   AuditEventRecord,
   AuditQuery
 } from "./types.js";
+import { AmbiguousProjectError } from "./types.js";
 import { buildAuditEvent, normalizeAuditLimit } from "./audit-event.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
 import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
@@ -76,7 +77,8 @@ export interface PoolLike {
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS projects (
      id TEXT PRIMARY KEY,
-     root_path TEXT NOT NULL UNIQUE,
+     host_id TEXT,
+     root_path TEXT NOT NULL,
      name TEXT NOT NULL,
      figma_token TEXT,
      created_at TEXT NOT NULL,
@@ -338,6 +340,9 @@ const SCHEMA = [
 ];
 
 const MIGRATIONS = [
+  `ALTER TABLE projects ADD COLUMN IF NOT EXISTS host_id TEXT`,
+  `ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_root_path_key`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS projects_host_path_idx ON projects(host_id, root_path)`,
   `ALTER TABLE task_stats ADD COLUMN IF NOT EXISTS case_id TEXT`,
   `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS runner TEXT`,
   `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS run_id TEXT`,
@@ -367,8 +372,23 @@ const MIGRATION_LOCK_ID = 89121476;
 export class PostgresStore implements ProjectStore {
   readonly kind = "postgres" as const;
   private readonly eventPruneAt = new Map<string, number>();
+  private hostId: string | null;
 
-  constructor(private readonly pool: PoolLike) {}
+  constructor(private readonly pool: PoolLike, hostId: string | null = null) {
+    this.hostId = hostId;
+  }
+
+  get localHostId(): string | null {
+    return this.hostId;
+  }
+
+  bindHost(hostId: string): void {
+    this.hostId = hostId;
+  }
+
+  scopeHost(hostId: string): ProjectStore {
+    return new PostgresStore(this.pool, hostId);
+  }
 
   static async create(connectionString: string): Promise<PostgresStore> {
     const pgModule = await import("pg");
@@ -435,48 +455,62 @@ export class PostgresStore implements ProjectStore {
   async upsertProject(input: {
     rootPath: string;
     name: string;
+    hostId?: string | null;
     updateName?: boolean;
   }): Promise<ProjectRecord> {
     const now = new Date().toISOString();
-    const existing = await this.pool.query("SELECT * FROM projects WHERE root_path = $1", [
-      input.rootPath
-    ]);
+    const hostId = input.hostId !== undefined ? input.hostId : this.hostId;
+    const hostClause = hostId === null ? "host_id IS NULL" : "host_id = $1";
+    const hostValues: unknown[] = hostId === null ? [] : [hostId];
+    const rootParam = hostValues.length + 1;
+    const existing = await this.pool.query(
+      `SELECT * FROM projects WHERE ${hostClause} AND root_path = $${rootParam}`,
+      [...hostValues, input.rootPath]
+    );
     if (existing.rows.length > 0) {
+      const id = String(existing.rows[0]!.id);
       if (input.updateName === false) {
-        await this.pool.query("UPDATE projects SET last_seen_at = $2 WHERE root_path = $1", [
-          input.rootPath,
-          now
-        ]);
+        await this.pool.query("UPDATE projects SET last_seen_at = $2 WHERE id = $1", [id, now]);
       } else {
-        await this.pool.query("UPDATE projects SET name = $2, last_seen_at = $3 WHERE root_path = $1", [
-          input.rootPath,
+        await this.pool.query("UPDATE projects SET name = $2, last_seen_at = $3 WHERE id = $1", [
+          id,
           input.name,
           now
         ]);
       }
-      const refreshed = await this.pool.query("SELECT * FROM projects WHERE root_path = $1", [
-        input.rootPath
-      ]);
+      const refreshed = await this.pool.query("SELECT * FROM projects WHERE id = $1", [id]);
       return mapProject(refreshed.rows[0]!);
     }
     const id = randomUUID();
     await this.pool.query(
-      `INSERT INTO projects (id, root_path, name, figma_token, created_at, last_seen_at)
-       VALUES ($1, $2, $3, NULL, $4, $4)`,
-      [id, input.rootPath, input.name, now]
+      `INSERT INTO projects (id, host_id, root_path, name, figma_token, created_at, last_seen_at)
+       VALUES ($1, $2, $3, $4, NULL, $5, $5)`,
+      [id, hostId, input.rootPath, input.name, now]
     );
     const inserted = await this.pool.query("SELECT * FROM projects WHERE id = $1", [id]);
     return mapProject(inserted.rows[0]!);
   }
 
   async getProjectByPath(rootPath: string): Promise<ProjectRecord | null> {
+    if (this.hostId !== null) {
+      const result = await this.pool.query(
+        "SELECT * FROM projects WHERE host_id = $1 AND root_path = $2",
+        [this.hostId, rootPath]
+      );
+      return result.rows.length > 0 ? mapProject(result.rows[0]!) : null;
+    }
     const result = await this.pool.query("SELECT * FROM projects WHERE root_path = $1", [rootPath]);
+    if (result.rows.length > 1) {
+      throw new AmbiguousProjectError(rootPath, result.rows.map((row) => mapProject(row)));
+    }
     return result.rows.length > 0 ? mapProject(result.rows[0]!) : null;
   }
 
   async setFigmaToken(rootPath: string, token: string | null): Promise<void> {
-    await this.pool.query("UPDATE projects SET figma_token = $2 WHERE root_path = $1", [
-      rootPath,
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return;
+    await this.pool.query("UPDATE projects SET figma_token = $2 WHERE id = $1", [
+      project.id,
       token
     ]);
   }
@@ -2189,6 +2223,7 @@ function mapAudit(row: Record<string, unknown>): AuditEventRecord {
 function mapProject(row: Record<string, unknown>): ProjectRecord {
   return {
     id: String(row.id),
+    hostId: row.host_id === null || row.host_id === undefined ? null : String(row.host_id),
     rootPath: String(row.root_path),
     name: String(row.name),
     figmaToken: row.figma_token === null || row.figma_token === undefined ? null : String(row.figma_token),

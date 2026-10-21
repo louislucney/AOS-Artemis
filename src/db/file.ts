@@ -108,16 +108,18 @@ export class FileStore implements ProjectStore {
   private readonly homeDir: string;
   private readonly env: NodeJS.ProcessEnv;
   private readonly eventsFsync: boolean;
-  private readonly buckets = new Map<string, ProjectBucket>();
-  private readonly registry = new Map<string, RegistryEntry>();
-  private readonly hostMem = new MemoryStore();
+  private buckets = new Map<string, ProjectBucket>();
+  private registry = new Map<string, RegistryEntry>();
+  private hostMem = new MemoryStore();
+  private hostId: string | null;
   private failedWrites = 0;
   private lastWriteError: string | null = null;
 
-  private constructor(homeDir: string, env: NodeJS.ProcessEnv) {
+  private constructor(homeDir: string, env: NodeJS.ProcessEnv, hostId: string | null = null) {
     this.homeDir = homeDir;
     this.env = env;
     this.eventsFsync = (env.AOS_EVENTS_FSYNC ?? "").trim() === "1";
+    this.hostId = hostId;
   }
 
   static async create(options: FileStoreOptions = {}): Promise<FileStore> {
@@ -130,13 +132,35 @@ export class FileStore implements ProjectStore {
     return store;
   }
 
+  get localHostId(): string | null {
+    return this.hostId;
+  }
+
+  bindHost(hostId: string): void {
+    this.hostId = hostId;
+  }
+
+  scopeHost(hostId: string): ProjectStore {
+    const view = new FileStore(this.homeDir, this.env, hostId);
+    view.buckets = this.buckets;
+    view.registry = this.registry;
+    view.hostMem = this.hostMem;
+    return view;
+  }
+
+  private scopedMem(bucket: ProjectBucket, hostId: string | null): MemoryStore {
+    return hostId === null ? bucket.mem : (bucket.mem.scopeHost(hostId) as MemoryStore);
+  }
+
   async upsertProject(input: {
     rootPath: string;
     name: string;
+    hostId?: string | null;
     updateName?: boolean;
   }): Promise<ProjectRecord> {
     const bucket = await this.bucket(input.rootPath);
-    const record = await bucket.mem.upsertProject(input);
+    const hostId = input.hostId !== undefined ? input.hostId : this.hostId;
+    const record = await this.scopedMem(bucket, hostId).upsertProject(input);
     const existing = this.registry.get(input.rootPath);
     const now = new Date().toISOString();
     const entry: RegistryEntry = {
@@ -153,7 +177,7 @@ export class FileStore implements ProjectStore {
 
   async getProjectByPath(rootPath: string): Promise<ProjectRecord | null> {
     const bucket = await this.bucket(rootPath);
-    return bucket.mem.getProjectByPath(rootPath);
+    return this.scopedMem(bucket, this.hostId).getProjectByPath(rootPath);
   }
 
   async setFigmaToken(rootPath: string, token: string | null): Promise<void> {
@@ -565,7 +589,7 @@ export class FileStore implements ProjectStore {
     const bucket = await this.bucket(rootPath);
     return this.withEventQueue(bucket, async () => {
       await this.ensureEventsLoaded(bucket);
-      const project = await bucket.mem.getProjectByPath(rootPath);
+      const project = await this.scopedMem(bucket, this.hostId).getProjectByPath(rootPath);
       if (!project) throw new Error(`FileStore: project not registered: ${rootPath}`);
 
       const hash = payloadHash(input.payload);
@@ -626,7 +650,7 @@ export class FileStore implements ProjectStore {
     const bucket = await this.bucket(rootPath);
     return this.withEventQueue(bucket, async () => {
       await this.ensureEventsLoaded(bucket);
-      const project = await bucket.mem.getProjectByPath(rootPath);
+      const project = await this.scopedMem(bucket, this.hostId).getProjectByPath(rootPath);
       if (!project) return [];
       const since = query.since === undefined ? null : normalizeSince(query.since);
       if (query.since !== undefined && since === null) throw new Error("invalid since");
@@ -669,7 +693,7 @@ export class FileStore implements ProjectStore {
     const bucket = await this.bucket(rootPath);
     return this.withEventQueue(bucket, async () => {
       await this.ensureEventsLoaded(bucket);
-      const project = await bucket.mem.getProjectByPath(rootPath);
+      const project = await this.scopedMem(bucket, this.hostId).getProjectByPath(rootPath);
       if (!project) return 0;
       const ids = new Set(eventIds);
       const changed: ProjectEventRecord[] = [];
@@ -701,7 +725,7 @@ export class FileStore implements ProjectStore {
     const bucket = await this.bucket(rootPath);
     return this.withEventQueue(bucket, async () => {
       await this.ensureEventsLoaded(bucket);
-      const project = await bucket.mem.getProjectByPath(rootPath);
+      const project = await this.scopedMem(bucket, this.hostId).getProjectByPath(rootPath);
       if (!project) return 0;
       return [...bucket.events.values()].filter((event) => event.projectId === project.id).length;
     });
@@ -711,7 +735,7 @@ export class FileStore implements ProjectStore {
     const bucket = await this.bucket(rootPath);
     return this.withEventQueue(bucket, async () => {
       await this.ensureEventsLoaded(bucket);
-      const project = await bucket.mem.getProjectByPath(rootPath);
+      const project = await this.scopedMem(bucket, this.hostId).getProjectByPath(rootPath);
       if (!project) return 0;
       const policy = eventRetentionPolicy(this.env);
       const cutoff = eventCutoffIso(policy.days);
@@ -830,6 +854,7 @@ export class FileStore implements ProjectStore {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name))
       .map((entry) => ({
         id: `file:${entry.rootPath}`,
+        hostId: null,
         rootPath: entry.rootPath,
         name: entry.name,
         figmaToken: null,
@@ -1142,7 +1167,7 @@ function hostAddressKey(address: HostAddressRecord): string {
 
 function mergeStates(disk: Partial<MemoryStoreState>, local: MemoryStoreState): Partial<MemoryStoreState> {
   const out: Partial<MemoryStoreState> = {};
-  if (disk.projects) out.projects = unionBy(disk.projects, local.projects, (project) => project.rootPath);
+  if (disk.projects) out.projects = unionBy(disk.projects, local.projects, (project) => `${project.hostId ?? "legacy"}\u0000${project.rootPath}`);
   if (disk.llms) out.llms = mergeLlmBuckets(disk.llms, local.llms);
   if (disk.modelCaches) out.modelCaches = unionBy(disk.modelCaches, local.modelCaches, (entry) => entry.key);
   if (disk.tasks) out.tasks = unionBy(disk.tasks, local.tasks, (task) => task.id);
