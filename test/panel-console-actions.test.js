@@ -46,7 +46,7 @@ test("console actions: 同源守卫（cross-site 403；自定义头放行）", a
   assert.equal(allowed.status, 404, "守卫通过后进入业务（未知任务 404）");
 });
 
-test("console actions: 释放/停止/重新派发三动作（运行中先停止；终态 400；未知 404；落审计）", async () => {
+test("console actions: 释放/停止/重新派发三动作（claimed 可释放；停止中/终态拒绝；未知 404；落审计）", async () => {
   const { deps, rootPath, store } = await setup();
   const task = await store.createRegressionTask({
     rootPath,
@@ -61,13 +61,21 @@ test("console actions: 释放/停止/重新派发三动作（运行中先停止�
     claimedAt: "2026-10-18T00:00:00.000Z"
   });
 
-  const blockedRelease = await handlePanelActionRequest(
+  const released = await handlePanelActionRequest(
     request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
     deps
   );
-  assert.equal(blockedRelease.status, 409, "运行中不可直接释放");
-  assert.match(JSON.parse(blockedRelease.body).error, /停止执行/);
+  assert.equal(released.status, 200, "claimed 可直接释放回队列");
+  const releasedPayload = JSON.parse(released.body);
+  assert.equal(releasedPayload.task.status, "pending");
+  assert.equal(releasedPayload.task.claimedBy, null);
+  assert.equal((await store.getRegressionTask(rootPath, task.id)).status, "pending");
 
+  await store.updateRegressionTask(rootPath, task.id, {
+    status: "claimed",
+    claimedBy: "runner-1",
+    claimedAt: "2026-10-18T00:00:00.000Z"
+  });
   const stopped = await handlePanelActionRequest(
     request("/panel/api/tasks/stop", { project: rootPath, taskId: task.id }),
     deps
@@ -97,11 +105,11 @@ test("console actions: 释放/停止/重新派发三动作（运行中先停止�
   assert.equal(cancelled.cancelSource, "panel");
   assert.ok(cancelled.cancelledAt);
 
-  const released = await handlePanelActionRequest(
+  const cancelledRelease = await handlePanelActionRequest(
     request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
     deps
   );
-  assert.equal(released.status, 400, "cancelled 为终态，不可释放回队列");
+  assert.equal(cancelledRelease.status, 409, "cancelled 为终态，不可释放回队列");
   const after = await store.getRegressionTask(rootPath, task.id);
   assert.equal(after.status, "cancelled");
   assert.equal(after.claimedBy, "runner-1", "终态不清理领取历史");
@@ -152,7 +160,7 @@ test("console actions: 释放/停止/重新派发三动作（运行中先停止�
       (event) =>
         event.action === "action.release" &&
         event.summary.includes("释放回队列：失败") &&
-        event.summary.includes("任务正在执行")
+        event.summary.includes("任务正在停止")
     ),
     "审计摘要中文化并带失败原因"
   );

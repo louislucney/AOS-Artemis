@@ -145,12 +145,52 @@ test("panel release: 已取消任务不复活（终态/守卫双保险）", asyn
     request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
     { store, env: {} }
   );
-  assert.equal(released.status, 400);
+  assert.equal(released.status, 409);
   const after = await store.getRegressionTask(rootPath, task.id);
   assert.equal(after.status, "cancelled");
   assert.equal(after.cancelledBy, "louis");
   assert.equal(after.cancelNote, "终态保护");
   assert.equal(after.cancelledAt, cancelled.cancelledAt);
+});
+
+test("panel release: claimed → pending，返回重载任务；cancelled 不复活", async () => {
+  const { store, rootPath } = await setupLocal();
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  await store.claimRegressionTask({
+    rootPath,
+    runnerId: "runner-1",
+    platforms: ["android"],
+    capabilities: ["android"],
+    instanceId: "inst-release"
+  });
+  const released = await handlePanelActionRequest(
+    request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
+    { store, env: {} }
+  );
+  assert.equal(released.status, 200);
+  const payload = bodyOf(released);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.task.status, "pending");
+  assert.equal(payload.task.claimedBy, null);
+  assert.equal((await store.getRegressionTask(rootPath, task.id)).status, "pending");
+
+  const cancelledTask = await store.createRegressionTask(taskInput(rootPath));
+  await store.cancelRegressionTask({
+    rootPath,
+    taskId: cancelledTask.id,
+    source: "admin",
+    actor: "ops",
+    actorHostId: null,
+    note: "不复活"
+  });
+  const rejected = await handlePanelActionRequest(
+    request("/panel/api/tasks/release", { project: rootPath, taskId: cancelledTask.id }),
+    { store, env: {} }
+  );
+  assert.equal(rejected.status, 409);
+  const after = await store.getRegressionTask(rootPath, cancelledTask.id);
+  assert.equal(after.status, "cancelled");
+  assert.equal(after.cancelNote, "不复活");
 });
 
 test("CLI suite task cancel：本地来源 local-cli，actor/host 与审计落库", async () => {

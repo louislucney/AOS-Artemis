@@ -368,6 +368,30 @@ test("FileStore: ackCancellation 落盘并在重启后保留", async () => {
   assert.equal(again.cancelledAt, "2026-10-21T00:05:00.000Z");
 });
 
+test("updateRegressionTask：空 patch 也执行 expectStatuses 守卫", async () => {
+  for (const store of await stores()) {
+    await store.upsertProject({ rootPath: "/w/p8", name: "p8" });
+    const task = await store.createRegressionTask(taskInput("/w/p8"));
+    assert.equal(
+      await store.updateRegressionTask("/w/p8", task.id, { expectStatuses: ["pending"] }),
+      true
+    );
+    assert.equal(
+      await store.updateRegressionTask("/w/p8", task.id, { expectStatuses: ["claimed"] }),
+      false
+    );
+    assert.equal(
+      await store.updateRegressionTask("/w/p8", "task-missing", { expectStatuses: ["pending"] }),
+      false
+    );
+    assert.equal(
+      (await store.getRegressionTask("/w/p8", task.id)).status,
+      "pending",
+      "空 patch 不写状态"
+    );
+  }
+});
+
 test("FileStore: cancelled 与取消元数据落盘并在重启后保留", async () => {
   const home = await mkdtemp(join(tmpdir(), "aos-cancel-"));
   const rootPath = join(home, "proj");

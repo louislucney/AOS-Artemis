@@ -968,7 +968,11 @@ export class PostgresStore implements ProjectStore {
       guards.push(`status IN (${placeholders.join(", ")})`);
     }
     if (sets.length === 0) {
-      return (await this.getRegressionTask(rootPath, id)) !== null;
+      if (patch.expectStatuses === undefined) {
+        return (await this.getRegressionTask(rootPath, id)) !== null;
+      }
+      const current = await this.getRegressionTask(rootPath, id);
+      return current !== null && patch.expectStatuses.includes(current.status);
     }
     const updated = await this.pool.query(
       `UPDATE regression_tasks SET ${sets.join(", ")}

@@ -746,7 +746,9 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
     deps
   );
   assert.match(claimedHtml.body, />停止执行</, "运行中提供停止执行");
-  assert.match(claimedHtml.body, /运行中不可直接释放/, "运行中释放指引");
+  assert.match(claimedHtml.body, /data-task-action="cancel"/, "claimed 提供取消");
+  assert.match(claimedHtml.body, /id="task-cancel-note"/, "claimed 取消备注输入");
+  assert.match(claimedHtml.body, /运行中可直接释放回队列/, "运行中释放指引");
   assert.match(claimedHtml.body, /data-confirm="确认停止该任务？领取方：runner-1/, "停止确认含领取方与后果");
   assert.match(claimedHtml.body, /aosInlineConfirm\(b,/, "三动作走站内确认（去原生 confirm）");
   assert.match(claimedHtml.body, /window\.aosBindTaskActions=/, "动作绑定可被刷新重绑（P1 修复）");
@@ -755,12 +757,22 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   assert.doesNotMatch(claimedHtml.body, /[^a-zA-Z_.]confirm\(/, "无原生 confirm 残留");
   assert.match(claimedHtml.body, /id="task-action-status"[^>]*role="status"/, "动作失败内联回报");
 
+  await store.updateRegressionTask(projectDir, pending.id, { status: "running" });
+  const runningHtml = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pending.id}`),
+    deps
+  );
+  assert.match(runningHtml.body, /data-task-action="cancel"/, "running 提供取消");
+  assert.match(runningHtml.body, /id="task-cancel-note"/, "running 取消备注输入");
+
   await store.updateRegressionTask(projectDir, pending.id, { status: "stopping" });
   const stoppingHtml = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${pending.id}`),
     deps
   );
   assert.match(stoppingHtml.body, /停止中/, "stopping 徽章");
+  assert.match(stoppingHtml.body, /data-task-action="cancel"/, "stopping 仍可重复取消（幂等）");
+  assert.match(stoppingHtml.body, /id="task-cancel-note"/, "stopping 取消备注输入");
   assert.match(stoppingHtml.body, /等待执行机确认/, "ack 指引（离线时为下次心跳读取）");
   assert.doesNotMatch(stoppingHtml.body, /data-task-action="release"/, "确认前不可释放");
   assert.doesNotMatch(stoppingHtml.body, /data-task-action="rerun"/, "确认前不可重派");

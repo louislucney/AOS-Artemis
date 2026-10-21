@@ -164,7 +164,6 @@ export async function handlePanelActionRequest(
     }
     if (request.url.pathname === "/panel/api/tasks/cancel") {
       const response = await cancelTask(scopedDeps, resolved.rootPath, payload, resolved.hostId);
-      if (response.status === 200) scopedDeps.cache?.clear();
       await auditPanel(
         scopedDeps,
         resolved.rootPath,
@@ -717,6 +716,7 @@ async function cancelTask(
     note
   });
   if (!task) return json(404, { error: `未知任务 "${taskId}"` });
+  deps.cache?.clear();
   const noteText =
     task.status === "stopping"
       ? "已请求取消：执行机将在当前用例边界停止并确认（离线时为下次心跳读取）"
@@ -735,15 +735,15 @@ async function releaseTask(
   if (taskId === "") return json(400, { error: "缺少 taskId" });
   const task = await deps.store.getRegressionTask(rootPath, taskId);
   if (!task) return json(404, { error: `未知任务 "${taskId}"` });
-  if (task.status === "claimed" || task.status === "running" || task.status === "stopping") {
+  if (task.status === "stopping") {
     return json(409, {
-      error:
-        task.status === "stopping"
-          ? "任务正在停止：等待执行机确认（离线时为下次心跳读取），确认后方可释放"
-          : "任务正在执行：请先「停止执行」，再释放回队列"
+      error: "任务正在停止：等待执行机确认（离线时为下次心跳读取），确认后方可释放"
     });
   }
-  if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
+  if (task.status === "cancelled") {
+    return json(409, { error: "任务已取消（终态），不释放、不重置" });
+  }
+  if (task.status === "completed" || task.status === "failed") {
     return json(400, { error: `任务已终态（${task.status}），无需释放` });
   }
   const ok = await deps.store.updateRegressionTask(rootPath, taskId, {
@@ -756,7 +756,7 @@ async function releaseTask(
     const fresh = await deps.store.getRegressionTask(rootPath, taskId);
     if (!fresh) return json(404, { error: `未知任务 "${taskId}"` });
     if (fresh.status === "cancelled") {
-      return json(400, { error: "任务已取消（终态），不释放、不重置" });
+      return json(409, { ok: false, error: "任务已取消（终态），不释放、不重置" });
     }
     return json(409, {
       ok: false,
@@ -764,7 +764,8 @@ async function releaseTask(
     });
   }
   deps.cache?.clear();
-  return json(200, { ok: true, taskId, status: "pending" });
+  const reloaded = await deps.store.getRegressionTask(rootPath, taskId);
+  return json(200, { ok: true, taskId, status: "pending", task: reloaded });
 }
 
 async function stopTask(

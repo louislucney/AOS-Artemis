@@ -1777,7 +1777,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
             ? `<button class="c-button c-button-primary" type="button" data-task-action="rerun" data-confirm="${escapeHtml(rerunConfirm)}">重新派发</button>`
             : "",
           task.status === "pending" ? '<span class="muted">等待执行机领取</span>' : "",
-          running ? '<span class="muted">运行中不可直接释放：先「停止执行」</span>' : ""
+          running ? '<span class="muted">运行中可直接释放回队列，或先「取消任务」等执行机确认</span>' : ""
         ]
           .filter((part) => part !== "")
           .join(" ");
