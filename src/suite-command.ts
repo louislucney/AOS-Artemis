@@ -55,6 +55,7 @@ import type {
   RegressionTaskStatus,
   HostRecord
 } from "./db/types.js";
+import { deviceLeaseTtlMs } from "./db/types.js";
 import { recordAuditSafe } from "./db/audit-event.js";
 import {
   runGeneratedTests,
@@ -80,6 +81,16 @@ type LogcatCollector = (request: {
 }) => Promise<LogcatWindowResult>;
 
 type IosLogCollectorFn = (request: IosLogWindowRequest) => Promise<LogcatWindowResult>;
+
+/** 手动执行设备租约续租的时钟/调度注入缝（测试用；缺省真实时钟与 setInterval）。 */
+export interface ManualLeaseTimers {
+  now?: () => number;
+  setInterval?: (
+    callback: () => void | Promise<void>,
+    ms: number
+  ) => ReturnType<typeof setInterval>;
+  clearInterval?: (handle: ReturnType<typeof setInterval>) => void;
+}
 
 export interface SuiteCliDeps {
   buildRuntime?: (
@@ -110,6 +121,8 @@ export interface SuiteCliDeps {
   shouldAbort?: () => boolean;
   /** runner 内嵌调用 `suite run --task`：设备租约由 runner 生命周期持有，内层不再获取/释放。 */
   leasesHeld?: boolean;
+  /** 手动执行租约续租的时钟/调度（测试注入；缺省 Date.now + setInterval）。 */
+  leaseTimers?: ManualLeaseTimers;
   /** 中心模式（`suite task … --host`）：注入 store 或自建；带 `--host` 时不构建本地 Runtime。 */
   center?: {
     store?: ProjectStore;
@@ -240,6 +253,7 @@ type SuiteIo = {
   shouldAbort?: () => boolean;
   /** runner 已持有本任务设备租约（内嵌 `suite run --task` 不再重复获取/释放；缺省 CLI 自行管理）。 */
   leasesHeld?: boolean;
+  leaseTimers?: ManualLeaseTimers;
 };
 
 export function printSuiteUsage(log: (line: string) => void): void {
@@ -414,18 +428,56 @@ async function suiteRunTask(
   }
 
   let leaseHeld = false;
+  const manualLeaseId = `manual:${task.id}`;
+  let leaseTimer: ReturnType<typeof setInterval> | null = null;
+  let clearLeaseTimer: ((handle: ReturnType<typeof setInterval>) => void) | null = null;
   if (io.leasesHeld !== true && localHostId !== null && devices.length > 0) {
-    const acquired = await runtime.store.acquireDeviceLeases({
-      hostId: localHostId,
-      taskId: task.id,
-      projectId: runtime.projectSummary()?.id ?? null,
-      serials: devices
-    });
+    const hostId = localHostId;
+    const now = io.leaseTimers?.now ?? (() => Date.now());
+    const schedule =
+      io.leaseTimers?.setInterval ??
+      ((callback: () => void | Promise<void>, ms: number) => setInterval(callback, ms));
+    const clear =
+      io.leaseTimers?.clearInterval ??
+      ((handle: ReturnType<typeof setInterval>) => clearInterval(handle));
+    const ttlMs = deviceLeaseTtlMs(io.env ?? process.env);
+    let acquired: Awaited<ReturnType<Runtime["store"]["acquireDeviceLeases"]>>;
+    try {
+      acquired = await runtime.store.acquireDeviceLeases({
+        hostId,
+        taskId: manualLeaseId,
+        projectId: runtime.projectSummary()?.id ?? null,
+        serials: devices,
+        ttlMs,
+        at: new Date(now()).toISOString()
+      });
+    } catch (error) {
+      io.errorLog(`设备租约获取失败：${errorMessage(error)}`);
+      return 2;
+    }
     if (!acquired.ok) {
       io.errorLog(`设备被占用：${acquired.busy.join("、")}（先等待或释放租约）`);
       return 2;
     }
     leaseHeld = true;
+    clearLeaseTimer = clear;
+    leaseTimer = schedule(async () => {
+      try {
+        const renewed = await runtime.store.renewDeviceLeases({
+          hostId,
+          taskId: manualLeaseId,
+          serials: devices,
+          ttlMs,
+          at: new Date(now()).toISOString()
+        });
+        if (renewed < devices.length) {
+          logWarn(`手动执行设备租约续租不足（${renewed}/${devices.length}）`);
+        }
+      } catch (error) {
+        logWarn(`手动执行设备租约续租失败: ${errorMessage(error)}`);
+      }
+    }, Math.max(1, Math.trunc(ttlMs / 3)));
+    (leaseTimer as { unref?: () => void }).unref?.();
   }
 
   try {
@@ -693,9 +745,10 @@ async function suiteRunTask(
     }
     return exitCode;
   } finally {
+    if (leaseTimer !== null && clearLeaseTimer !== null) clearLeaseTimer(leaseTimer);
     if (leaseHeld && localHostId !== null) {
       try {
-        await runtime.store.releaseDeviceLeases({ hostId: localHostId, taskId: task.id });
+        await runtime.store.releaseDeviceLeases({ hostId: localHostId, taskId: manualLeaseId });
       } catch (error) {
         logWarn(`释放设备租约失败: ${errorMessage(error)}`);
       }
@@ -2374,16 +2427,16 @@ async function suiteTaskCancel(
     return 2;
   }
   const rootPath = runtime.project.rootDir;
+  const existing = await runtime.store.getRegressionTask(rootPath, taskId);
+  if (!existing) {
+    io.errorLog(`未找到回归任务 ${taskId}`);
+    return 2;
+  }
   const localHostId = runtime.hostIdentity?.id ?? null;
   if (hostStrictFrom(env) && localHostId === null) {
     io.errorLog(
       "AOS_HOST_STRICT=1：本机主机身份未知，拒绝取消回归任务（先确认 AOS_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
     );
-    return 2;
-  }
-  const existing = await runtime.store.getRegressionTask(rootPath, taskId);
-  if (!existing) {
-    io.errorLog(`未找到回归任务 ${taskId}`);
     return 2;
   }
   const actor = actorFromEnv(env);
@@ -3028,7 +3081,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
       return await suiteRun(
         built.runtime,
         flags,
-        { log, errorLog, env: deps.env ?? process.env, runnerName: deps.runnerName ?? null, shouldAbort: deps.shouldAbort, leasesHeld: deps.leasesHeld === true },
+        { log, errorLog, env: deps.env ?? process.env, runnerName: deps.runnerName ?? null, shouldAbort: deps.shouldAbort, leasesHeld: deps.leasesHeld === true, leaseTimers: deps.leaseTimers },
         deps.logcatCollector,
         deps.iosLogCollector
       );

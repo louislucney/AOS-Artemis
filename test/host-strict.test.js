@@ -11,6 +11,7 @@ import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { hostStrictFrom } from "../dist/host/strict.js";
 import { runSuiteCommand } from "../dist/suite-command.js";
+import { TASK_NATIVE_TOOLS } from "../dist/tools/native-tools/tasks.js";
 import { makeTempProject } from "./helpers.js";
 
 const STRICT_ENV = { AOS_HOST_STRICT: "1" };
@@ -72,7 +73,7 @@ for (const [name, factory] of [
 }
 
 test("strict 缺省关闭：无 hostId 的旧调用方仍可领取", async () => {
-  const store = new MemoryStore();
+  const store = new MemoryStore(null, {});
   await store.upsertProject({ rootPath: "/w/app", name: "app" });
   await store.createRegressionTask(taskInput("/w/app"));
   const claimed = await store.claimRegressionTask(claimInput("/w/app"));
@@ -152,4 +153,25 @@ test("strict 缺省时无本机身份的本地命令保持旧行为", async () =
   const { code, errors } = await runWith(runtime, ["task", "cancel", task.id], {});
   assert.equal(code, 0, errors.join("\n"));
   assert.equal((await store.getRegressionTask(dir, task.id)).status, "cancelled");
+});
+
+test("strict + regression_task_cancel 无本机身份 → ok:false 且不改动", async () => {
+  const { dir, store, task } = await seedTask();
+  const tool = TASK_NATIVE_TOOLS.find((entry) => entry.name === "regression_task_cancel");
+  assert.ok(tool);
+  const previous = process.env.AOS_HOST_STRICT;
+  process.env.AOS_HOST_STRICT = "1";
+  try {
+    const result = await tool.handler(
+      { project: { rootDir: dir }, store, hostIdentity: null },
+      { taskId: task.id }
+    );
+    assert.equal(result.isError, true);
+    const payload = JSON.parse(result.content[0].text);
+    assert.match(payload.error, /AOS_HOST_STRICT=1：本机主机身份未知/);
+    assert.equal((await store.getRegressionTask(dir, task.id)).status, "pending");
+  } finally {
+    if (previous === undefined) delete process.env.AOS_HOST_STRICT;
+    else process.env.AOS_HOST_STRICT = previous;
+  }
 });

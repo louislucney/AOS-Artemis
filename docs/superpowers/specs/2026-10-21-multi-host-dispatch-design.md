@@ -190,7 +190,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS runners_project_host_idx ON runners(project_id
   - 禁止照抄“23505 后盲 UPDATE”，否则第二个进程会覆写第一个实例的心跳与领取身份。
 - 升级窗口：旧 runner（`host_id=NULL`，按 `(project_id,name)` 复用行）与升级后 runner 同机同项目可能共享同一行。发布说明明确“同一项目不要混跑新旧 runner”；检测到旧行（`host_id IS NULL` 且 `name=hostname`）时新 runner 提示并要求 `AOS_HOST_STRICT=1` 或停旧启新。
 - `claimed_by` 仍指向 runner 行 id；新增 `regression_tasks.claimed_instance_id` 记录领取时的实例，便于审计与排障。
-- 旧 runner（无 `instance_id`/`host_id`）继续可用，但只能领非定向任务；`AOS_HOST_STRICT=1` 的拒绝点在两处：claim SQL 前（runner 侧）与本地命令入口（`suite run --task` / `suite task cancel`），不依赖面板。
+- 旧 runner（无 `instance_id`/`host_id`）继续可用，但只能领非定向任务；`AOS_HOST_STRICT=1` 只在本版本的 claim 与本地命令入口（`suite run --task` / `suite task cancel` / MCP 取消）生效，旧 runner 二进制需停用/升级，不依赖面板。
 
 ### 6.5 `regression_tasks` 扩展
 
@@ -631,7 +631,7 @@ POST /panel/api/hosts/register     # { host, label?, owner?, expectedOs?, expect
    - 两台机器同路径时，先执行的一方拿到历史行；另一方启动时会因其 `host_id` 已非空而创建自己的新行（历史归属以先到者为准，面板显示归属审计）。
 4. `runners` 增列 `host_id`/`instance_id`；**保留**旧唯一索引 `(project_id, name)`，新增 `(project_id, host_id)`。旧 runner 继续按旧索引 upsert，不会因 `host_id=NULL` 每次心跳插新行。
 5. `regression_tasks` 增列；旧行 `target_host_id=NULL`，按项目行归属领取（与现状一致），不要求主机匹配。
-6. 旧 runner 未升级：可领其所属项目的非定向任务；面板标“身份未升级”；`AOS_HOST_STRICT=1` 时完全拒绝。
+6. 旧 runner 未升级：可领其所属项目的非定向任务；面板标“身份未升级”；`AOS_HOST_STRICT=1` 只收紧本版本的 claim/本地命令，旧 runner 二进制需停用/升级（开关无法拦截其旧 SQL）。
 7. 旧面板 URL：无 `host` 参数时本地优先；跨主机同名/同路径歧义 → 409 并列出候选主机。
 8. `stopped` 历史状态读作 `cancelled`；写入只产生 `cancelled`。
 9. 所有迁移走 `MIGRATIONS` 的 `ADD COLUMN IF NOT EXISTS` / `DROP ... IF EXISTS`，建唯一索引前先去重（沿用 `runners` 的既有模式）；`adopt-legacy` 是显式命令，不放进 `init()`。
@@ -681,7 +681,7 @@ POST /panel/api/hosts/register     # { host, label?, owner?, expectedOs?, expect
 9. **本地取消入口**：本期 CLI + MCP 工具 `regression_task_cancel`；面板为中心侧入口。
 10. **三层信号**：接入层（MCP 会话）、执行层（runner）、期望层（登记画像）分开建模；下发只用后两层。
 11. **队列暂停按整台主机**：面板文案明确影响该机所有项目。
-12. **旧 runner**：保留旧唯一索引，允许领其项目的非定向任务并标“身份未升级”；`AOS_HOST_STRICT=1` 可收紧。
+12. **旧 runner**：保留旧唯一索引，允许领其项目的非定向任务并标“身份未升级”；`AOS_HOST_STRICT=1` 只约束本版本的 claim 与本地命令（旧 runner 二进制需停用/升级）。
 13. **历史归属**：不自动认领，用显式 `host adopt-legacy`。
 14. **评审修订已并入**：项目解析规则与调用面盘点（§6.9）、历史归属改为按本机路径证据（§13.3）、attempts 单一计数点与设备忙分离（§8.2/§8.3）、执行期统一 tick（§8.4）、手动执行主机守卫（§9.2）、清扫器多点幂等（§9.3）、双启时序（§6.4）、空闲 IDE 心跳（§7.4）、租约原子性与 TTL（§8.3）、迁移 advisory lock（§13.10）、事件入口主机维度（§6.10）。
 
@@ -697,7 +697,7 @@ P1（可见性）、P2（定向下发）、P3（队列控制）均已落地；P4
 
 **偏差**
 
-1. **`AOS_HOST_STRICT` 已接线（2026-10-21 补）**：严格模式（拒绝无 `host_id` 的旧 runner）在 `claimRegressionTask`（Postgres/Memory，File 委托）与本地 `suite run --task`/`suite task cancel` 两处入口实现，仅字面 `1`/`true` 开启，缺省保持升级窗口兼容；见 `DESIGN.md` §13.166。
+1. **`AOS_HOST_STRICT` 已接线（2026-10-21 补）**：严格模式在本版本实现四处入口——`claimRegressionTask`（Postgres/Memory，File 委托，无 `hostId` → null）、本地 `suite run --task` / `suite task cancel`、MCP `regression_task_cancel`（本机身份未知时拒绝）；仅字面 `1`/`true` 开启，缺省保持升级窗口兼容。**作用域**：旧 runner 二进制用自己的旧 SQL 连 PG，不读取该开关，也不会被服务端拦截；严格模式只约束本版本的 claim 与本地命令，旧 runner 必须停用/升级。见 `DESIGN.md` §13.166。
 2. **本地 MCP 接入心跳已创建 `hosts` 行**：`startClientSession` 会 upsert 本机 `hosts`（含 `client_seen_at`/IP），并按 `AOS_CLIENT_PRESENCE_MS` 起 `unref` 空闲心跳；仅开本地 MCP（无 runner）也能在面板看到「IDE 在线」的主机与项目。接入心跳不写 `capabilities`/`env`，因此下发预检对这类主机只告警「尚无执行机上报，任务会排队等待」。
 3. **手动 `suite run --task` 已占设备租约（2026-10-21 补）**：设计稿 §8.3 的设备独占语义现已覆盖手动执行——执行前按 `--device` 获取租约（冲突 exit 2），执行结束/失败在 `finally` 释放；见 `DESIGN.md` §13.166。
 4. **面板 HTTP multipart 导入为既有缺陷**（与多机无关）：`http-server` 对 `/panel/api/import` 只设置 `rawBody`，而 `handlePanelActionRequest` 入口要求 JSON 对象 body，故 HTTP 下导入在到达 `runImport` 前即 400；现有测试以同时注入 `body` + `rawBody` 覆盖，掩盖了该路径。本期未修，待单独工单。

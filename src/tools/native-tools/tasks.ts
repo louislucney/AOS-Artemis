@@ -4,6 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import type { NativeToolDefinition } from "./types.js";
+import { hostStrictFrom } from "../../host/strict.js";
 
 function jsonResult(payload: unknown, isError = false): CallToolResult {
   return {
@@ -44,6 +45,16 @@ export const TASK_NATIVE_TOOLS: NativeToolDefinition[] = [
       const task = await runtime.store.getRegressionTask(rootPath, taskId);
       if (!task) {
         return jsonResult({ ok: false, error: `未找到回归任务 ${taskId}` }, true);
+      }
+      if (hostStrictFrom(process.env) && hostId === null) {
+        return jsonResult(
+          {
+            ok: false,
+            error:
+              "AOS_HOST_STRICT=1：本机主机身份未知，拒绝取消回归任务（先确认 AOS_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
+          },
+          true
+        );
       }
       const targetHostId = foreignHost(task.targetHostId, hostId);
       if (targetHostId !== null) {

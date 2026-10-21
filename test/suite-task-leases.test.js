@@ -139,3 +139,106 @@ test("runner 内嵌执行（leasesHeld）不重复获取或释放 runner 持有�
   assert.deepEqual(probe.busy, [DEVICE]);
   assert.equal(await store.releaseDeviceLeases({ hostId, taskId: task.id }), 1);
 });
+
+test("手动执行超过 TTL 时按 TTL/3 续租，竞争获取仍 busy", async () => {
+  const { store, runtime, task, proxy } = await setupRunnableTask();
+  const hostId = TEST_HOST_IDENTITY.id;
+  let clock = Date.parse("2026-10-21T10:00:00.000Z");
+  let captured = null;
+  let cleared = false;
+  const leaseTimers = {
+    now: () => clock,
+    setInterval: (callback, ms) => {
+      captured = { callback, ms };
+      return "manual-timer";
+    },
+    clearInterval: (handle) => {
+      assert.equal(handle, "manual-timer");
+      cleared = true;
+    }
+  };
+  let busyDuringRun = null;
+  const baseCall = proxy.callTool.bind(proxy);
+  proxy.callTool = async (name, args) => {
+    if (name === "mobile_run_task" && captured !== null) {
+      clock += 100_000;
+      await captured.callback();
+      const competing = await store.acquireDeviceLeases({
+        hostId,
+        taskId: "competing",
+        serials: [DEVICE],
+        at: new Date(clock).toISOString()
+      });
+      busyDuringRun = competing.ok ? null : competing.busy;
+    }
+    return baseCall(name, args);
+  };
+
+  const result = await runTask(runtime, task.id, {
+    env: { AOS_DEVICE_LEASE_MS: "90000" },
+    leaseTimers
+  });
+  assert.equal(result.code, 0, result.errors.join("\n"));
+  assert.ok(captured);
+  assert.equal(captured.ms, 30_000);
+  assert.equal(cleared, true, "finally 清理续租定时器");
+  assert.deepEqual(busyDuringRun, [DEVICE], "续租后竞争获取仍 busy");
+
+  const after = await store.acquireDeviceLeases({
+    hostId,
+    taskId: "after",
+    serials: [DEVICE],
+    at: new Date(clock).toISOString()
+  });
+  assert.equal(after.ok, true, "执行结束后释放手动租约");
+});
+
+test("runner 持有同任务租约时手动执行 exit 2，runner 租约保留", async () => {
+  const { store, runtime, task } = await setupRunnableTask();
+  const hostId = TEST_HOST_IDENTITY.id;
+  const held = await store.acquireDeviceLeases({
+    hostId,
+    taskId: task.id,
+    serials: [DEVICE],
+    ttlMs: 600_000
+  });
+  assert.equal(held.ok, true);
+
+  const busy = await runTask(runtime, task.id);
+  assert.equal(busy.code, 2);
+  assert.match(busy.errors.join("\n"), /设备被占用：emulator-5554/);
+
+  const probe = await store.acquireDeviceLeases({ hostId, taskId: "probe", serials: [DEVICE] });
+  assert.equal(probe.ok, false, "runner 的同任务租约未被手动执行删除");
+  assert.deepEqual(probe.busy, [DEVICE]);
+  assert.equal(await store.releaseDeviceLeases({ hostId, taskId: task.id }), 1);
+});
+
+test("手动执行只释放 manual:* 租约，不碰 runner 的同任务其他设备租约", async () => {
+  const { store, runtime, task } = await setupRunnableTask();
+  const hostId = TEST_HOST_IDENTITY.id;
+  const runnerOnlySerial = "udid-runner-only";
+  const held = await store.acquireDeviceLeases({
+    hostId,
+    taskId: task.id,
+    serials: [runnerOnlySerial],
+    ttlMs: 600_000
+  });
+  assert.equal(held.ok, true);
+
+  const run = await runTask(runtime, task.id);
+  assert.equal(run.code, 0, run.errors.join("\n"));
+
+  const runnerLease = await store.acquireDeviceLeases({
+    hostId,
+    taskId: "probe",
+    serials: [runnerOnlySerial]
+  });
+  assert.equal(runnerLease.ok, false, "runner 租约仍在");
+  assert.deepEqual(runnerLease.busy, [runnerOnlySerial]);
+
+  const manualLease = await store.acquireDeviceLeases({ hostId, taskId: "probe-2", serials: [DEVICE] });
+  assert.equal(manualLease.ok, true, "manual:* 租约已释放");
+  await store.releaseDeviceLeases({ hostId, taskId: task.id });
+  await store.releaseDeviceLeases({ hostId, taskId: "probe-2" });
+});
