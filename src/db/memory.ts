@@ -661,7 +661,7 @@ export class MemoryStore implements ProjectStore {
     const project = this.projects.get(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
     const now = new Date().toISOString();
-    const hostId = input.hostId ?? input.host?.identity.id ?? null;
+    const hostId = input.hostId ?? null;
     const instanceId = input.instanceId ?? null;
     const existing = this.runners.find(
       (entry) => entry.projectId === project.id && entry.name === input.name
@@ -1257,7 +1257,9 @@ function cloneRunner(record: RunnerRecord): RunnerRecord {
     ...record,
     platforms: [...record.platforms],
     devices: record.devices.map((device) => ({ ...device })),
-    tools: { ...record.tools }
+    tools: { ...record.tools },
+    hostId: record.hostId ?? null,
+    instanceId: record.instanceId ?? null
   };
 }
 

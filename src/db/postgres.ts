@@ -1215,7 +1215,7 @@ export class PostgresStore implements ProjectStore {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
     const now = new Date().toISOString();
-    const hostId = input.hostId ?? input.host?.identity.id ?? null;
+    const hostId = input.hostId ?? null;
     const instanceId = input.instanceId ?? null;
     try {
       const inserted = await this.pool.query(

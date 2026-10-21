@@ -18,6 +18,7 @@ export interface CollectHostSnapshotInput {
   env?: NodeJS.ProcessEnv;
   exec?: ExecFn;
   platform?: NodeJS.Platform;
+  networkInterfaces?: () => NodeJS.Dict<os.NetworkInterfaceInfo[]>;
 }
 
 /** 启动时全量采集：身份 + 环境 + 能力 + 自报地址；`ipPrimary` 取首个非链路本地 IPv4，否则 IPv6。 */
@@ -32,7 +33,7 @@ export async function collectHostSnapshot(input: CollectHostSnapshotInput): Prom
     platform,
     exec
   });
-  const addresses = selfReportedAddresses();
+  const addresses = selfReportedAddresses(input.networkInterfaces);
   return {
     identity,
     env: hostEnv,
@@ -66,8 +67,10 @@ export function upsertHostInputFromSnapshot(
   };
 }
 
-function selfReportedAddresses(): HostAddressInput[] {
-  const interfaces = os.networkInterfaces();
+function selfReportedAddresses(
+  networkInterfaces: () => NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces
+): HostAddressInput[] {
+  const interfaces = networkInterfaces();
   const addresses: HostAddressInput[] = [];
   for (const [iface, entries] of Object.entries(interfaces)) {
     for (const entry of entries ?? []) {

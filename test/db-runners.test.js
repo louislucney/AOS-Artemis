@@ -94,6 +94,33 @@ test("upsertRunner: 首次落库 + 二次更新同一条（id 稳定、devices �
   }
 });
 
+test("MemoryStore: importState 旧 runner 行缺 hostId/instanceId → 归一化为 null", async () => {
+  const store = new MemoryStore();
+  store.importState({
+    projects: [
+      { id: "p1", rootPath: "/w/p1", name: "p1", figmaToken: null, createdAt: "x", lastSeenAt: "x" }
+    ],
+    runners: [
+      {
+        id: "r-old",
+        projectId: "p1",
+        name: "runner-a",
+        hostname: "host-a",
+        platforms: [],
+        devices: [],
+        tools: { adb: false, idb: false, simctl: false, ideviceId: false, appium: false },
+        artifactBaseUrl: null,
+        version: null,
+        lastSeenAt: "x",
+        createdAt: "x"
+      }
+    ]
+  });
+  const listed = await store.listRunners("/w/p1");
+  assert.equal(listed[0].hostId, null);
+  assert.equal(listed[0].instanceId, null);
+});
+
 test("upsertRunner: 未注册项目 → 抛错（memory + pg-mem）", async () => {
   const stores = [new MemoryStore(), (await makePgStore()).store];
   for (const store of stores) {
