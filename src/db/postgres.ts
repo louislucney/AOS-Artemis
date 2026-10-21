@@ -2243,6 +2243,20 @@ export class PostgresStore implements ProjectStore {
     return result.rows.map(mapProject);
   }
 
+  async adoptProjectHost(input: { projectId: string; hostId: string }): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE projects SET host_id = $2
+       WHERE id = $1 AND host_id IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM projects target
+           WHERE target.host_id = $2
+             AND target.root_path = (SELECT root_path FROM projects WHERE id = $1)
+         )`,
+      [input.projectId, input.hostId]
+    );
+    return Number(result.rowCount ?? 0) > 0;
+  }
+
   private async pruneUsageEvents(
     projectId: string | null,
     policy: UsagePrunePolicy

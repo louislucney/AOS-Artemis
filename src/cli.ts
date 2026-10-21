@@ -2,6 +2,7 @@
 import { runDoctor, runInit } from "./commands.js";
 import { runDepsCommand } from "./deps-build.js";
 import { runExportCommand } from "./export-command.js";
+import { printHostUsage, runHostCommand } from "./host-command.js";
 import { runHttpServer, InsecureBindRefusedError, type HttpServerOptions } from "./http-server.js";
 import { runInstall } from "./install.js";
 import { runJiraCommand } from "./jira-command.js";
@@ -30,6 +31,10 @@ Usage:
                     Deterministic test loop over .artemis/design/tests.json:
                     run | check | calibrate | loop | flake | evidence <traceId> | baseline save|compare | report | feedback
                     (see "mobile-testing-mcp suite help" for options; exit codes: 0 ok / 1 test failure / 2 error)
+  mobile-testing-mcp host <list|show|register|adopt-legacy> [options]
+                    中心主机登记（只连 PostgreSQL，需 MOBILE_TESTING_DATABASE_URL）：
+                    list | show <id|hostname> | register <id> | adopt-legacy --local|--host <id> --path <rootPath>
+                    (见 "mobile-testing-mcp host help"；缺省 dry-run，--apply 才写库)
   mobile-testing-mcp jira issue <create|comment|label|transition|link> [options]
                     Jira 工作流（与 MCP 工具共用客户端与凭证；见 "mobile-testing-mcp jira help"；
                     exit codes: 0 成功 / 1 请求或配置失败 / 2 用法错误）
@@ -65,6 +70,7 @@ void (async () => {
   const wantsHelp = rest.includes("-h") || rest.includes("--help");
   if (wantsHelp && command !== "jira") {
     if (command === "suite") printSuiteUsage((line) => console.log(line));
+    else if (command === "host") printHostUsage((line) => console.log(line));
     else printUsage();
     return;
   }
@@ -115,6 +121,14 @@ void (async () => {
     }
     case "suite": {
       const code = await runSuiteCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "host": {
+      const code = await runHostCommand(rest, {
+        log: (line) => console.log(line),
+        errorLog: (line) => console.error(line)
+      });
       process.exit(code);
       break;
     }

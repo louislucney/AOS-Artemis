@@ -880,6 +880,11 @@ export class FileStore implements ProjectStore {
       }));
   }
 
+  /** 文件台账按项目目录存放、天然属于本机，没有可迁移的跨主机行（中心 `host adopt-legacy` 仅对 PG 生效）。 */
+  async adoptProjectHost(): Promise<boolean> {
+    return false;
+  }
+
   async ping(): Promise<boolean> {
     return true;
   }

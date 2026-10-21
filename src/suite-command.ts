@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { traceEvidence } from "./artemis/evidence.js";
+import { openCenterStore, resolveHostReference } from "./center/store.js";
 import {
   API_ERRORS_ARTIFACT,
   loadApiErrorCatalog,
@@ -46,7 +47,7 @@ import {
   renderSuiteLoopMarkdown,
   type SuiteLoopCheck
 } from "./figma/suite-loop.js";
-import type { TaskStatRecord } from "./db/types.js";
+import type { TaskStatRecord, ProjectStore } from "./db/types.js";
 import {
   runGeneratedTests,
   type SuiteRunOptions,
@@ -99,6 +100,11 @@ export interface SuiteCliDeps {
   runnerName?: string;
   /** 面板停止请求（runner 注入；true → 用例边界停止后续）。 */
   shouldAbort?: () => boolean;
+  /** 中心模式（`suite task … --host`）：注入 store 或自建；带 `--host` 时不构建本地 Runtime。 */
+  center?: {
+    store?: ProjectStore;
+    openStore?: () => Promise<ProjectStore>;
+  };
 }
 
 interface ParsedFlags {
@@ -106,6 +112,7 @@ interface ParsedFlags {
   get: (key: string) => string | null;
   bool: (key: string) => boolean;
   list: (key: string) => string[];
+  has: (key: string) => boolean;
 }
 
 function parseFlags(argv: string[]): ParsedFlags {
@@ -152,7 +159,8 @@ function parseFlags(argv: string[]): ParsedFlags {
       const value = flags.get(key);
       if (value === undefined || value === true) return [];
       return Array.isArray(value) ? value : [value];
-    }
+    },
+    has: (key) => flags.has(key)
   };
 }
 
@@ -232,6 +240,7 @@ Usage:
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
   mobile-testing-mcp suite task create|list|show|release [options]
                                      回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none]（引用取该功能最新份）
+                                     中心模式：create|list --host <id|hostname> [--project <rootPath>]（只连 PG，不构建本机 Runtime）
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
   mobile-testing-mcp suite runner [options]     项目机常驻 runner：心跳/自动领取执行/产物只读服务（--once 单轮冒烟）
   mobile-testing-mcp suite schedule add|list|show|enable|disable|remove [options]
@@ -1616,6 +1625,54 @@ async function suiteReconcile(
   return 0;
 }
 
+type CaseSetList = Awaited<ReturnType<ProjectStore["listCaseSets"]>>;
+
+function resolveTaskRefsFromSets(
+  sets: CaseSetList,
+  keys: string[],
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): ResolvedTaskRef[] | null {
+  const latest = latestFeatureRefs(sets);
+  const resolved: ResolvedTaskRef[] = [];
+  const missing: string[] = [];
+  for (const key of keys) {
+    const hit = latest.get(key);
+    if (!hit) {
+      missing.push(key);
+      continue;
+    }
+    resolved.push(hit);
+  }
+  if (missing.length > 0) {
+    const available = [...latest.keys()].sort().join("、");
+    io.errorLog(`未知 feature key：${missing.join("、")}（可用：${available || "无"}）`);
+    return null;
+  }
+  return resolved;
+}
+
+function parseTaskTargeting(
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): { platforms: string[]; baseline: "latest" | "none" } | null {
+  const platforms =
+    flags.list("platform").length > 0 ? splitList(flags.list("platform")) : ["ios", "android"];
+  const invalidPlatforms = platforms.filter(
+    (platform) => platform !== "ios" && platform !== "android"
+  );
+  if (invalidPlatforms.length > 0) {
+    io.errorLog(`非法 --platform：${invalidPlatforms.join("、")}（仅支持 ios/android）`);
+    return null;
+  }
+  const uniquePlatforms = [...new Set(platforms)];
+  const rawBaseline = flags.get("baseline");
+  if (rawBaseline !== null && rawBaseline !== "latest" && rawBaseline !== "none") {
+    io.errorLog(`非法 --baseline：${rawBaseline}（仅支持 latest/none）`);
+    return null;
+  }
+  return { platforms: uniquePlatforms, baseline: rawBaseline === "none" ? "none" : "latest" };
+}
+
 async function suiteTask(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -1642,39 +1699,15 @@ async function suiteTaskCreate(
     );
     return 2;
   }
-  const sets = await runtime.store.listCaseSets(runtime.project.rootDir);
-  const latest = latestFeatureRefs(sets);
-  const resolved: ResolvedTaskRef[] = [];
-  const missing: string[] = [];
-  for (const key of refs) {
-    const hit = latest.get(key);
-    if (!hit) {
-      missing.push(key);
-      continue;
-    }
-    resolved.push(hit);
-  }
-  if (missing.length > 0) {
-    const available = [...latest.keys()].sort().join("、");
-    io.errorLog(`未知 feature key：${missing.join("、")}（可用：${available || "无"}）`);
-    return 2;
-  }
-  const platforms =
-    flags.list("platform").length > 0 ? splitList(flags.list("platform")) : ["ios", "android"];
-  const invalidPlatforms = platforms.filter(
-    (platform) => platform !== "ios" && platform !== "android"
+  const resolved = resolveTaskRefsFromSets(
+    await runtime.store.listCaseSets(runtime.project.rootDir),
+    refs,
+    io
   );
-  if (invalidPlatforms.length > 0) {
-    io.errorLog(`非法 --platform：${invalidPlatforms.join("、")}（仅支持 ios/android）`);
-    return 2;
-  }
-  const uniquePlatforms = [...new Set(platforms)];
-  const rawBaseline = flags.get("baseline");
-  if (rawBaseline !== null && rawBaseline !== "latest" && rawBaseline !== "none") {
-    io.errorLog(`非法 --baseline：${rawBaseline}（仅支持 latest/none）`);
-    return 2;
-  }
-  const baseline = rawBaseline === "none" ? "none" : "latest";
+  if (resolved === null) return 2;
+  const targeting = parseTaskTargeting(flags, io);
+  if (targeting === null) return 2;
+  const { platforms: uniquePlatforms, baseline } = targeting;
   const task = await runtime.store.createRegressionTask({
     rootPath: runtime.project.rootDir,
     refs: resolved.map((entry) => ({ caseSetId: entry.caseSetId, featureKey: entry.featureKey })),
@@ -1709,6 +1742,152 @@ async function suiteTaskList(
   }
   if (tasks.length === 0) {
     io.log("暂无回归任务（suite task create 创建）");
+    return 0;
+  }
+  for (const task of tasks) {
+    io.log(
+      `${task.id} · ${task.status} · refs ${task.refs.length} · platforms ${task.platforms.join(",")} · runs ${task.runIds.length} · ${task.createdAt}`
+    );
+  }
+  return 0;
+}
+
+async function suiteTaskOnCenterHost(
+  hostReference: string,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  center: NonNullable<SuiteCliDeps["center"]>,
+  env: NodeJS.ProcessEnv
+): Promise<number> {
+  let store = center.store ?? null;
+  let opened = false;
+  if (store === null) {
+    try {
+      store = center.openStore ? await center.openStore() : await openCenterStore(env);
+      opened = center.openStore === undefined;
+    } catch (error) {
+      io.errorLog(`suite task --host 需要中心 PG：${errorMessage(error)}`);
+      return 2;
+    }
+  }
+  try {
+    const lookup = await resolveHostReference(store, hostReference);
+    if (!lookup.ok) {
+      if (lookup.reason === "not-found") {
+        io.errorLog(`未知主机 ${hostReference}（用 host list 查看已登记主机）`);
+      } else {
+        io.errorLog(
+          `主机名不唯一：${hostReference}（${lookup.candidates.map((host) => host.id).join("、")}）；请改用主机 id`
+        );
+      }
+      return 2;
+    }
+    const hostId = lookup.host.id;
+    const scoped = store.scopeHost(hostId);
+    const action = flags.positional[1];
+    if (action === "create") return await suiteTaskCreateOnHost(scoped, hostId, flags, io);
+    if (action === "list") return await suiteTaskListOnHost(store, scoped, hostId, flags, io);
+    io.errorLog(`suite task ${action ?? ""} 暂不支持 --host（中心模式支持 create|list）`);
+    return 2;
+  } catch (error) {
+    io.errorLog(`suite task --host 失败：${errorMessage(error)}`);
+    return 2;
+  } finally {
+    if (opened && store !== null) {
+      try {
+        await store.close();
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+}
+
+async function suiteTaskCreateOnHost(
+  scoped: ProjectStore,
+  hostId: string,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const rootPath = flags.get("project");
+  if (rootPath === null || rootPath === "") {
+    io.errorLog(
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none]"
+    );
+    return 2;
+  }
+  const refs = splitList(flags.list("ref"));
+  if (refs.length === 0) {
+    io.errorLog(
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none]"
+    );
+    return 2;
+  }
+  const project = await scoped.getProjectByPath(rootPath);
+  if (project === null) {
+    io.errorLog(`未知项目：${rootPath}（主机 ${hostId} 未登记该路径；请先在目标机接入项目）`);
+    return 2;
+  }
+  const resolved = resolveTaskRefsFromSets(await scoped.listCaseSets(rootPath), refs, io);
+  if (resolved === null) return 2;
+  const targeting = parseTaskTargeting(flags, io);
+  if (targeting === null) return 2;
+  const task = await scoped.createRegressionTask({
+    rootPath,
+    refs: resolved.map((entry) => ({ caseSetId: entry.caseSetId, featureKey: entry.featureKey })),
+    platforms: targeting.platforms,
+    baseline: targeting.baseline,
+    createdBy: "cli",
+    targetHostId: hostId,
+    createdHostId: hostId
+  });
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
+    return 0;
+  }
+  io.log(
+    `回归任务 ${task.id}（host=${hostId} · status=${task.status} · platforms=${targeting.platforms.join(",")} · baseline=${targeting.baseline}）`
+  );
+  for (const entry of resolved) {
+    io.log(
+      `- ${entry.featureName}（${entry.featureKey}）· caseSet=${entry.caseSetId} · 用例 ${entry.caseCount} · ${entry.jsonPath}`
+    );
+  }
+  return 0;
+}
+
+async function suiteTaskListOnHost(
+  store: ProjectStore,
+  scoped: ProjectStore,
+  hostId: string,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const projectArg = flags.get("project");
+  const rootPaths: string[] = [];
+  if (projectArg !== null && projectArg !== "") {
+    if ((await scoped.getProjectByPath(projectArg)) === null) {
+      io.errorLog(`未知项目：${projectArg}（主机 ${hostId} 未登记该路径）`);
+      return 2;
+    }
+    rootPaths.push(projectArg);
+  } else {
+    const projects = (await store.listProjects()).filter((project) => project.hostId === hostId);
+    for (const project of projects) {
+      if (!rootPaths.includes(project.rootPath)) rootPaths.push(project.rootPath);
+    }
+  }
+  const tasks: Awaited<ReturnType<ProjectStore["listRegressionTasks"]>> = [];
+  for (const rootPath of rootPaths) {
+    tasks.push(...(await scoped.listRegressionTasks(rootPath, 50)));
+  }
+  tasks.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  if (flags.bool("json")) {
+    io.log(JSON.stringify({ ok: true, hostId, tasks }, null, 2));
+    return 0;
+  }
+  if (tasks.length === 0) {
+    io.log(`主机 ${hostId} 暂无回归任务（suite task create --host ${hostId} 创建）`);
     return 0;
   }
   for (const task of tasks) {
@@ -2233,6 +2412,20 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
   }
 
   const buildRuntime = deps.buildRuntime ?? defaultBuildRuntime;
+  if (sub === "task" && flags.has("host")) {
+    const hostReference = flags.get("host");
+    if (hostReference === null || hostReference.trim() === "") {
+      errorLog("--host 需要主机 id 或 hostname（用 host list 查看已登记主机）");
+      return 2;
+    }
+    return await suiteTaskOnCenterHost(
+      hostReference,
+      flags,
+      { log, errorLog },
+      deps.center ?? {},
+      deps.env ?? process.env
+    );
+  }
   let built: Awaited<ReturnType<typeof defaultBuildRuntime>> | null = null;
   try {
     built = await buildRuntime(flags.get("project"));

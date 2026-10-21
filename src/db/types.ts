@@ -782,6 +782,8 @@ export interface ProjectStore {
   /** 新→旧（at DESC, id DESC）；`limit` 缺省＝200。 */
   listAudit(rootPath: string, query?: AuditQuery): Promise<AuditEventRecord[]>;
   listProjects(): Promise<ProjectRecord[]>;
+  /** 把 legacy（host_id 为空）项目行认领到 hostId；目标 host 已有同路径行时不重复创建（返回 false）。 */
+  adoptProjectHost(input: { projectId: string; hostId: string }): Promise<boolean>;
   ping(): Promise<boolean>;
   close(): Promise<void>;
 }

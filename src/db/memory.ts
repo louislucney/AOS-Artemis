@@ -1257,6 +1257,19 @@ export class MemoryStore implements ProjectStore {
       .map((project) => ({ ...project }));
   }
 
+  async adoptProjectHost(input: { projectId: string; hostId: string }): Promise<boolean> {
+    const entry = [...this.projects.entries()].find(([, project]) => project.id === input.projectId);
+    if (!entry) return false;
+    const [key, project] = entry;
+    if (project.hostId !== null) return false;
+    const targetKey = projectKey(input.hostId, project.rootPath);
+    if (this.projects.has(targetKey)) return false;
+    this.projects.delete(key);
+    project.hostId = input.hostId;
+    this.projects.set(targetKey, project);
+    return true;
+  }
+
   usageEventCount(): number {
     return this.usageEvents.length;
   }
