@@ -344,12 +344,29 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           return;
         }
 
-        const eventMatch = /^\/events\/([^/]+)(\/poll)?\/?$/.exec(url.pathname);
-        if (eventMatch) {
-          const isPoll = eventMatch[2] === "/poll";
+        const eventSegments = url.pathname.split("/").filter((segment) => segment !== "");
+        let eventHost: string | null = null;
+        let eventProject: string | null = null;
+        let eventPoll = false;
+        if (eventSegments[0] === "events") {
+          const rest = eventSegments.slice(1);
+          if (rest.length >= 2 && rest[rest.length - 1] === "poll") {
+            eventPoll = true;
+            rest.pop();
+          }
+          if (rest.length === 2) {
+            eventHost = rest[0]!;
+            eventProject = rest[1]!;
+          } else if (rest.length === 1) {
+            eventProject = rest[0]!;
+          }
+        }
+        if (eventProject !== null) {
           let projectName: string;
+          let hostId: string | null = null;
           try {
-            projectName = decodeURIComponent(eventMatch[1]!);
+            projectName = decodeURIComponent(eventProject);
+            if (eventHost !== null) hostId = decodeURIComponent(eventHost);
           } catch {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end('{"error":"invalid project name"}');
@@ -360,24 +377,32 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             res.end('{"error":"invalid project name"}');
             return;
           }
-          if (isPoll && req.method !== "GET") {
+          if (eventPoll && req.method !== "GET") {
+            res.writeHead(405, { "Content-Type": "application/json" });
+            res.end('{"error":"method not allowed"}');
+            return;
+          }
+          if (req.method !== "POST" && req.method !== "GET") {
             res.writeHead(405, { "Content-Type": "application/json" });
             res.end('{"error":"method not allowed"}');
             return;
           }
           try {
+            const resolved = await resolveEventProject({
+              workspaceRoot,
+              name: projectName,
+              hostId,
+              store,
+              write: req.method === "POST"
+            });
+            if (resolved === null) {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end('{"error":"project not found"}');
+              return;
+            }
+            const scopedStore =
+              resolved.hostId !== null ? store.scopeHost(resolved.hostId) : store;
             if (req.method === "POST") {
-              const project = await resolveEventProject({
-                workspaceRoot,
-                name: projectName,
-                store,
-                write: true
-              });
-              if (project === null) {
-                res.writeHead(404, { "Content-Type": "application/json" });
-                res.end('{"error":"project not found"}');
-                return;
-              }
               let body: unknown;
               try {
                 body = await readBody(req, MAX_EVENT_BODY_BYTES);
@@ -392,7 +417,12 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
                 return;
               }
               const ack = await reportProjectEvent(
-                { store, rootPath: project.rootPath, storage: store.kind, degraded: degradedReason(store, reason) },
+                {
+                  store: scopedStore,
+                  rootPath: resolved.rootPath,
+                  storage: store.kind,
+                  degraded: degradedReason(store, reason)
+                },
                 body
               );
               res.writeHead(202, { "Content-Type": "application/json" });
@@ -400,17 +430,6 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               return;
             }
             if (req.method === "GET") {
-              const project = await resolveEventProject({
-                workspaceRoot,
-                name: projectName,
-                store,
-                write: false
-              });
-              if (project === null) {
-                res.writeHead(404, { "Content-Type": "application/json" });
-                res.end('{"error":"project not found"}');
-                return;
-              }
               const includeRaw = url.searchParams.get("includePayload");
               const orderRaw = url.searchParams.get("order");
               const limitRaw = url.searchParams.get("limit");
@@ -418,8 +437,8 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               const afterSeqRaw = url.searchParams.get("afterSeq");
               const consumedRaw = url.searchParams.get("consumed");
               const context = {
-                store,
-                rootPath: project.rootPath,
+                store: scopedStore,
+                rootPath: resolved.rootPath,
                 storage: store.kind,
                 degraded: degradedReason(store, reason)
               };
@@ -444,7 +463,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
                   limit !== undefined && Number.isFinite(limit) ? limit : undefined,
                 includePayload: includeRaw === "true" || includeRaw === "1"
               };
-              if (isPoll) {
+              if (eventPoll) {
                 const waitRaw = url.searchParams.get("waitMs") ?? url.searchParams.get("wait");
                 const waitMs = waitRaw === null ? 0 : Number(waitRaw);
                 if (!Number.isFinite(waitMs) || waitMs < 0) {

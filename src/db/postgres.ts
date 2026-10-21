@@ -1877,13 +1877,14 @@ export class PostgresStore implements ProjectStore {
     const receivedAt = new Date().toISOString();
     const inserted = await this.pool.query(
       `INSERT INTO project_events
-         (id, project_id, event_id, type, source, run_id, case_id, step, status, at, received_at, payload, payload_sha256, payload_bytes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         (id, project_id, host_id, event_id, type, source, run_id, case_id, step, status, at, received_at, payload, payload_sha256, payload_bytes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        ON CONFLICT (project_id, event_id) DO NOTHING
        RETURNING *`,
       [
         randomUUID(),
         project.id,
+        project.hostId,
         input.eventId,
         input.type,
         input.source ?? "project",
@@ -2647,6 +2648,7 @@ function mapProjectEvent(row: Record<string, unknown>, includePayload: boolean):
     seq: Number(row.seq),
     id: String(row.id),
     projectId: String(row.project_id),
+    hostId: row.host_id === null || row.host_id === undefined ? null : String(row.host_id),
     eventId: String(row.event_id),
     type: String(row.type),
     source: String(row.source),

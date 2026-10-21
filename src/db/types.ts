@@ -140,6 +140,7 @@ export interface ProjectEventRecord {
   seq: number;
   id: string;
   projectId: string;
+  hostId: string | null;
   eventId: string;
   type: string;
   source: string;

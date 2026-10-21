@@ -1043,6 +1043,7 @@ export class MemoryStore implements ProjectStore {
       seq,
       id: randomUUID(),
       projectId: project.id,
+      hostId: project.hostId,
       eventId: input.eventId,
       type: input.type,
       source: input.source ?? "project",
@@ -1359,6 +1360,7 @@ function maxIso(...values: Array<string | null | undefined>): string {
 function cloneProjectEvent(record: ProjectEventRecord, omitPayload = false): ProjectEventRecord {
   return {
     ...record,
+    hostId: record.hostId ?? null,
     payload: omitPayload ? undefined : record.payload
   };
 }

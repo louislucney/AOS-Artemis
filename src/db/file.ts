@@ -608,6 +608,7 @@ export class FileStore implements ProjectStore {
         seq,
         id: randomUUID(),
         projectId: project.id,
+        hostId: project.hostId,
         eventId: input.eventId,
         type: input.type,
         source: input.source ?? "project",
@@ -1277,6 +1278,7 @@ function pruneUsageEvents(
 function cloneProjectEvent(record: ProjectEventRecord, omitPayload = false): ProjectEventRecord {
   return {
     ...record,
+    hostId: record.hostId ?? null,
     payload: omitPayload ? undefined : record.payload
   };
 }
