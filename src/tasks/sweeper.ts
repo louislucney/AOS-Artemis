@@ -99,6 +99,11 @@ export async function sweepStaleTasks(
       );
     }
   }
+  try {
+    await input.store.pruneHostSessions({ now: nowMs });
+  } catch (error) {
+    logWarn(`接入会话清理失败：${error instanceof Error ? error.message : String(error)}`);
+  }
   return { cancelled, released: 0 };
 }
 

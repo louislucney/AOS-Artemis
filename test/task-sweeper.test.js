@@ -400,3 +400,52 @@ test("自动终结在既有备注后追加 runner-offline", async () => {
     assert.equal(after.cancelNote, "面板取消; runner-offline");
   }
 });
+
+test("清扫器顺带清理过期接入会话；清理失败不阻断任务清扫", async () => {
+  const nowMs = Date.parse("2026-10-21T10:00:00.000Z");
+  for (const store of await stores()) {
+    const scoped = store.scopeHost("h-a");
+    await scoped.upsertProject({ rootPath: ROOT, name: "p", hostId: "h-a" });
+    await scoped.upsertHost({ id: "h-a", hostname: "mac-a" });
+    await scoped.touchHostSession({
+      id: "s-old",
+      hostId: "h-a",
+      projectId: null,
+      rootPath: ROOT,
+      username: "louis",
+      client: "cursor",
+      clientVersion: "1.0",
+      pid: 1,
+      at: "2026-09-01T10:00:00.000Z"
+    });
+    await scoped.endHostSession("s-old", "2026-09-01T10:01:00.000Z");
+    await scoped.touchHostSession({
+      id: "s-current",
+      hostId: "h-a",
+      projectId: null,
+      rootPath: ROOT,
+      username: "louis",
+      client: "cursor",
+      clientVersion: "1.0",
+      pid: 2,
+      at: "2026-10-21T09:59:00.000Z"
+    });
+
+    await sweepStaleTasks({ store: scoped, now: () => nowMs });
+    assert.equal(
+      await scoped.pruneHostSessions({ now: nowMs, retentionDays: 7 }),
+      0,
+      "清扫器应已删除过期已结束会话"
+    );
+    assert.deepEqual(
+      (await scoped.listHostSessions("h-a")).map((session) => session.id),
+      ["s-current"]
+    );
+
+    const failing = Object.create(scoped);
+    failing.pruneHostSessions = async () => {
+      throw new Error("prune boom");
+    };
+    await sweepStaleTasks({ store: failing, now: () => nowMs });
+  }
+});

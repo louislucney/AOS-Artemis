@@ -114,3 +114,29 @@ test("启动快照在心跳窗口内复用（once 不重复采集）", async () 
   );
   assert.equal(calls, 1);
 });
+
+test("AOS_HOST_ADDR_HISTORY=0：连续心跳只保留每来源最新地址", async () => {
+  const { runtime, store } = await fixture();
+  let clock = Date.parse("2026-10-21T10:00:00.000Z");
+  const withAddress = (address) => ({
+    ...snapshot(),
+    addresses: [{ source: "self", iface: "en0", family: "ipv4", address }]
+  });
+  await runRunnerAgent(
+    baseOptions(runtime, {
+      env: { AOS_HOST_ADDR_HISTORY: "0" },
+      now: () => clock,
+      collectHostSnapshot: async () => withAddress("10.0.0.1")
+    })
+  );
+  clock += 60_000;
+  await runRunnerAgent(
+    baseOptions(runtime, {
+      env: { AOS_HOST_ADDR_HISTORY: "0" },
+      now: () => clock,
+      collectHostSnapshot: async () => withAddress("10.0.0.2")
+    })
+  );
+  const rows = await store.listHostAddresses("h1");
+  assert.deepEqual(rows.map((row) => row.address), ["10.0.0.2"]);
+});

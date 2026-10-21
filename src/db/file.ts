@@ -624,6 +624,15 @@ export class FileStore implements ProjectStore {
     return this.hostMem.listHostSessions(hostId, options);
   }
 
+  async pruneHostSessions(
+    input: { now?: number; retentionDays?: number } = {}
+  ): Promise<number> {
+    await this.syncHostFromDisk();
+    const removed = await this.hostMem.pruneHostSessions(input);
+    if (removed > 0) await this.persistHostState("pruneHostSessions");
+    return removed;
+  }
+
   async setHostQueuePaused(input: {
     hostId: string;
     paused: boolean;

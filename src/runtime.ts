@@ -57,6 +57,7 @@ import type {
 } from "./db/types.js";
 import { writeEnvUpdates } from "./env-file.js";
 import { resolveHostIdentity, type HostIdentity } from "./host/identity.js";
+import { hostAddressHistoryFrom } from "./host/online.js";
 import { primaryIp, selfReportedAddresses } from "./runner/host-snapshot.js";
 import { ModelCatalog, type FetchLike, type ModelReport, type RefreshReport } from "./llm/catalog.js";
 import {
@@ -1093,7 +1094,11 @@ export class Runtime {
         clientSeenAt: new Date().toISOString()
       });
       if (addresses.length > 0) {
-        await this.store.upsertHostAddresses({ hostId: identity.id, addresses });
+        await this.store.upsertHostAddresses({
+          hostId: identity.id,
+          addresses,
+          ...(hostAddressHistoryFrom(this._baseEnv) ? {} : { maxPerSource: 1 })
+        });
       }
       await this.store.touchHostSession({
         id: this.clientSessionId,

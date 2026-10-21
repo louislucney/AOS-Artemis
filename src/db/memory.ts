@@ -12,6 +12,7 @@ import {
   STOPPED_RUNNER_SEEN_AT
 } from "./types.js";
 import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
+import { hostSessionRetentionDaysFrom } from "../host/online.js";
 import { hostStrictFrom } from "../host/strict.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
 import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
@@ -1220,6 +1221,22 @@ export class MemoryStore implements ProjectStore {
     return (options.limit === undefined ? rows : rows.slice(0, options.limit)).map(
       cloneHostSession
     );
+  }
+
+  async pruneHostSessions(
+    input: { now?: number; retentionDays?: number } = {}
+  ): Promise<number> {
+    const retentionDays = input.retentionDays ?? hostSessionRetentionDaysFrom(this.env);
+    if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+    const cutoff = new Date(
+      (input.now ?? Date.now()) - retentionDays * 86_400_000
+    ).toISOString();
+    const kept = this.hostSessions.filter(
+      (session) => session.endedAt === null || session.lastSeenAt >= cutoff
+    );
+    const removed = this.hostSessions.length - kept.length;
+    if (removed > 0) replaceInPlace(this.hostSessions, kept);
+    return removed;
   }
 
   async setHostQueuePaused(input: {

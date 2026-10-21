@@ -2159,6 +2159,8 @@ llm_switch(name, force):
 | `AOS_HOST_ENV_REFRESH_MS` | 600000 | runner 主机环境快照刷新周期（心跳只带缓存快照） |
 | `AOS_CLIENT_TTL_MS` | 120000 | 接入会话在线判定窗口（`host_sessions`/`client_seen_at`） |
 | `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 空闲接入心跳间隔与工具调用刷新节流；`0` 关闭 presence（不写会话/主机心跳） |
+| `AOS_CLIENT_SESSION_RETENTION_DAYS` | 7 | 已结束 `host_sessions` 保留天数（30s 清扫器清理；非法回退 7，`0` 关闭；进行中会话永不删除） |
+| `AOS_HOST_ADDR_HISTORY` | 1 | `=0`/`=false` 时每来源只保留最新地址；缺省每来源最多 20 条历史 |
 | `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL；续租周期为其 1/3，runner 心跳同时收敛到该间隔 |
 | `AOS_TASK_MAX_RUNTIME_MS` | 0（关闭） | runner 单任务执行上限（协作式中止，`executeSuite` 轮询 `shouldAbort`）；超时按“取消（source=runner）”终结（`attempts` 不增、不释放重试、租约照常释放）；超过 32 位毫秒上限收敛并 WARN |
 | `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限；非法/≤0 回退默认 |
@@ -2213,3 +2215,14 @@ llm_switch(name, force):
 - **`AOS_TASK_MAX_RUNTIME_MS`（§8.4 执行上限，协作式中止）**：`src/runner/agent.ts` 读取该变量（缺省/非法/≤0 关闭），在 `beginExecution` 之后、`executeSuite` 之前用可注入 `scheduleTimeout` 起 `unref` 定时器（测试可注入调度/时钟）；触发后置 `runtimeExceeded`，并纳入 `shouldAbort`。**不是强杀**：执行器需轮询 `shouldAbort` 才会提前结束。执行返回后（且未被面板取消抢先终结）调用 `cancelRegressionTask({source:"runner", actor:"runner", actorHostId:<本机>, note:"任务超过 AOS_TASK_MAX_RUNTIME_MS（<ms>）"})` → `ackCancellation`；**仅在确认 `cancelled`/`stopped` 时**记录成功日志与 `task.cancel` 审计（`channel=runner`），否则记失败日志交由面板/清扫器兜底。**不走失败/重试路径、不释放回 pending**，`attempts` 仅 `beginExecution` 的一次增量；设备租约仍在任务块 `finally` 释放，定时器同步清理。上限超过 setTimeout 32 位毫秒上限（2,147,483,647）时收敛并打 WARN。
 - **测试**：`test/panel-command.test.js` 覆盖独立面板导入 200/登记、跨主机 400（无项目行/无文件）、超限 413；`test/runner-agent.test.js` 覆盖超时取消（cancelled/来源/操作者/宿主/备注/attempts/租约释放/审计/日志/`unref`）、上限收敛告警、`0`/非法值关闭。
 - **文档**：README（动作层/独立导入/跨主机保护）、`panel help`、DESIGN 环境变量表、`.env.example`、AGENTS 环境变量清单、多机规格 §17 同步。
+
+### 13.170 修复（多机数据卫生：会话保留、地址历史、迁移后置校验、host 首写竞态）
+
+> 2026-10-21。收口多机规格 §6.2/§6.7/§13 的数据卫生活项；默认行为兼容，新增两个环境变量。
+
+- **`host_sessions` 保留**：新增 `ProjectStore.pruneHostSessions({now?,retentionDays?})`（Postgres/Memory/File）——删除 `ended_at IS NOT NULL AND last_seen_at < now - retentionDays` 的行，**进行中会话永不删除**；`retentionDays` 缺省读 `AOS_CLIENT_SESSION_RETENTION_DAYS`（默认 7，非法回退 7，`0` 关闭）。`sweepStaleTasks` 在任务清扫后以 `{now}` best-effort 调用（失败仅 WARN，不阻断取消清扫）；File 实现仅在有删除时落盘。FileStore 语义仍是单机状态文件（不跨机共享），但保留策略同源。
+- **`AOS_HOST_ADDR_HISTORY`**：新增 `hostAddressHistoryFrom(env)`（`src/host/online.ts`，仅字面 `0`/`false` 关闭，缺省开启）。关闭时 runner 心跳与本地 MCP 接入心跳调用 `upsertHostAddresses({...,maxPerSource:1})`，每来源只保留最新一条；缺省沿用每来源最多 20 条。runner 地址写入同时显式带心跳时间 `at: seenAt`，保证“最新”判定与心跳时钟一致。
+- **迁移后置校验**：`MIGRATIONS` 仍逐条 best-effort（fresh schema 已含列/索引），但随后 `assertRequiredIndexes` 检查 `projects_host_path_idx`/`runners_project_host_idx`：`pg_indexes` 查询不受支持（pg-mem / 无权限以外的不存在错误）→ WARN 跳过；可查询且缺失 → `init()` 抛“数据库迁移未完成：缺少必需索引 …”，不再带病启动。真实 PG 权限错误（42501）照常抛出。
+- **`upsertHost` 首写竞态**：先查再插的窗口内两个并发心跳可能同时 INSERT；现在捕获 `23505` 后**重跑合并更新分支**（重新 SELECT 当前行 → 计算 `client_seen_at`/`runner_seen_at` max → UPDATE），不再把异常抛给 runner 导致退出 2。正常路径仍为首查命中直接更新，无额外写入。
+- **测试**：`test/db-hosts.test.js` 覆盖保留/关闭/进行中保留、File 落盘与重启、地址历史默认/关闭、helper 边界、`upsertHost` 23505 合并更新；`test/task-sweeper.test.js` 覆盖清扫器顺带清理与清理失败不阻断；`test/db-init-tolerance.test.js` 覆盖索引缺失失败、pg_indexes 不支持跳过、建表竞态；`test/runner-host-heartbeat.test.js` 覆盖 `AOS_HOST_ADDR_HISTORY=0` 连续心跳只留最新地址。
+- **文档**：README 多机环境变量表与在线口径、DESIGN 环境变量表、`.env.example`、多机规格 §6.2/§6.7/§13 同步。

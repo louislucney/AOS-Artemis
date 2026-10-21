@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS host_addresses (
 );
 ```
 
-保留策略：每主机每来源最多保留 20 条，按 `last_seen_at` 清理；`AOS_HOST_ADDR_HISTORY=0` 关闭历史（只留当前）。清理与 `ip-shared` 判定由心跳写入方（30s，幂等 upsert）和中心清扫器（5min）各做一次，谁先到谁生效。
+保留策略：每主机每来源最多保留 20 条，按 `last_seen_at` 清理；`AOS_HOST_ADDR_HISTORY=0`（或字面 `false`）关闭历史（只留当前，`maxPerSource: 1`）。清理与 `ip-shared` 判定由心跳写入方（30s，幂等 upsert）和中心清扫器（5min）各做一次，谁先到谁生效。实现见 `hostAddressHistoryFrom(env)`（`src/host/online.ts`）与 `upsertHostAddresses` 的 `maxPerSource`。
 
 ### 6.3 `projects` 增加 `host_id`，并明确解析规则
 
@@ -252,7 +252,7 @@ CREATE INDEX IF NOT EXISTS host_sessions_host_seen_idx ON host_sessions(host_id,
 
 - 在线判定：`ended_at IS NULL AND last_seen_at > now - AOS_CLIENT_TTL_MS`（默认 120s）。
 - 一个进程对应一行；优雅退出写 `ended_at`，异常退出靠 TTL 过期。
-- 保留：`AOS_CLIENT_SESSION_RETENTION_DAYS`（默认 7）清理已结束会话；当前会话不删。
+- 保留：`AOS_CLIENT_SESSION_RETENTION_DAYS`（默认 7）清理已结束会话；当前会话不删。实现：`ProjectStore.pruneHostSessions({now?, retentionDays?})` 由 30s `sweepStaleTasks` best-effort 调用（失败仅 WARN）；非法值回退 7，`0` 关闭。
 - 只记录“哪个项目被哪个客户端在使用”，不记录工具参数与内容（与 usage 事件的隐私口径一致）。
 
 ### 6.8 `usage_events` 增加主机/会话维度
@@ -637,6 +637,7 @@ POST /panel/api/hosts/register     # { host, label?, owner?, expectedOs?, expect
 9. 所有迁移走 `MIGRATIONS` 的 `ADD COLUMN IF NOT EXISTS` / `DROP ... IF EXISTS`，建唯一索引前先去重（沿用 `runners` 的既有模式）；`adopt-legacy` 是显式命令，不放进 `init()`。
 10. **迁移并发与锁**：每台项目机启动都会跑 `MIGRATIONS`。本次包含 `DROP CONSTRAINT`（ACCESS EXCLUSIVE），必须先用 `pg_advisory_lock` 串行化整个迁移过程，拿不到锁等待而不是并发执行；发布说明标注“首次升级选择低峰窗口”，失败可重试（DDL 幂等）。
 11. **文件台账/会话内存模式**：`hosts`、`host_addresses`、`host_sessions`、`device_leases`、队列暂停是**中心 PG 专属**。无 PG 时面板显示“单机模式（无中心台账）”，`aos_status.host` 只显示本机 identity/env（接入会话不落库），`host`/`queue` 命令 exit 2 并给出配置指引；`FileStore`/`MemoryStore` 实现返回空集合，不报错。
+12. **迁移后置校验（2026-10-21 补）**：`MIGRATIONS` 逐条失败仍只 WARN，但随后必须校验 `projects_host_path_idx`/`runners_project_host_idx` 存在；`pg_indexes` 不可查（pg-mem）时 WARN 跳过，可查且缺失则 `init()` 抛“数据库迁移未完成：缺少必需索引 …”。`upsertHost` 首次并发插入撞 `23505` 时重跑合并更新分支，不再让 runner 退出。
 
 ## 14. 测试策略
 
@@ -693,7 +694,7 @@ POST /panel/api/hosts/register     # { host, label?, owner?, expectedOs?, expect
 
 P1（可见性）、P2（定向下发）、P3（队列控制）均已落地；P4（HTTP 客户端记录、跨主机逻辑项目分组）不在本期。实现口径以 `DESIGN.md` §13.152–§13.165 为准，本节只记与设计稿的**实际偏差**。
 
-**验证结果**：`npm run build && npm test && npm run lint` 全绿——**2020 tests / 2020 pass / 0 fail**，lint **0 error**（2 条既有 warning：`src/console/pages.ts`、`src/panel/web.ts` 未使用变量）；测试不依赖真实 PG / 设备 / 外网（SQL 用 pg-mem、artemis 用假子进程、Figma 不触网）。
+**验证结果**：`npm run build && npm test && npm run lint` 全绿——**2030 tests / 2030 pass / 0 fail**，lint **0 error**（2 条既有 warning：`src/console/pages.ts`、`src/panel/web.ts` 未使用变量）；测试不依赖真实 PG / 设备 / 外网（SQL 用 pg-mem、artemis 用假子进程、Figma 不触网）。
 
 **偏差**
 

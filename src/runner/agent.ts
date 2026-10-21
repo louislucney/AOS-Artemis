@@ -11,6 +11,7 @@ import {
 } from "../db/types.js";
 import { AOS_MCP_VERSION, errorMessage } from "../util.js";
 import { sweepStaleTasks, SWEEP_INTERVAL_MS } from "../tasks/sweeper.js";
+import { hostAddressHistoryFrom } from "../host/online.js";
 import {
   collectHostSnapshot,
   upsertHostInputFromSnapshot,
@@ -146,7 +147,12 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
       const hostId = snapshot.identity.id;
       const seenAt = new Date(now()).toISOString();
       await store.upsertHost(upsertHostInputFromSnapshot(snapshot, hostId, seenAt));
-      await store.upsertHostAddresses({ hostId, addresses: snapshot.addresses });
+      await store.upsertHostAddresses({
+        hostId,
+        addresses: snapshot.addresses,
+        at: seenAt,
+        ...(hostAddressHistoryFrom(env) ? {} : { maxPerSource: 1 })
+      });
       return store.upsertRunner({
         rootPath,
         name,

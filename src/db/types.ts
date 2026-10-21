@@ -882,6 +882,8 @@ export interface ProjectStore {
     hostId: string,
     options?: { limit?: number; onlineWithinMs?: number; now?: number }
   ): Promise<HostSessionRecord[]>;
+  /** 清理已结束且 `last_seen_at` 早于保留期的会话；进行中会话永不删除。 */
+  pruneHostSessions(input?: { now?: number; retentionDays?: number }): Promise<number>;
   setHostQueuePaused(input: {
     hostId: string;
     paused: boolean;

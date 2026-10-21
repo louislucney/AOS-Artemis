@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { logWarn } from "../log.js";
+import { hostSessionRetentionDaysFrom } from "../host/online.js";
 import { hostStrictFrom } from "../host/strict.js";
 import { errorMessage } from "../util.js";
 import {
@@ -434,6 +435,35 @@ const MIGRATIONS = [
 /** 迁移 advisory lock 的固定键（避免并发首启各自跑 DDL）。 */
 const MIGRATION_LOCK_ID = 89121476;
 
+/** 迁移后置校验：这些索引缺失意味着 DDL best-effort 失败，启动必须失败而不是带病运行。 */
+const REQUIRED_INDEXES = ["projects_host_path_idx", "runners_project_host_idx"] as const;
+
+async function assertRequiredIndexes(
+  run: (text: string, values?: unknown[]) => Promise<QueryResultLike>
+): Promise<void> {
+  const missing: string[] = [];
+  for (const index of REQUIRED_INDEXES) {
+    let result: QueryResultLike;
+    try {
+      result = await run("SELECT 1 FROM pg_indexes WHERE indexname = $1 LIMIT 1", [index]);
+    } catch (error) {
+      if (isUndefinedFunction(error)) {
+        logWarn(
+          `迁移后置校验不可用（引擎不支持 pg_indexes），已跳过：${errorMessage(error)}`
+        );
+        return;
+      }
+      throw error;
+    }
+    if (result.rows.length === 0) missing.push(index);
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `数据库迁移未完成：缺少必需索引 ${missing.join(", ")}；请检查迁移失败日志（MIGRATIONS 为 best-effort）后重试启动或手工修复`
+    );
+  }
+}
+
 export class PostgresStore implements ProjectStore {
   readonly kind = "postgres" as const;
   private readonly eventPruneAt = new Map<string, number>();
@@ -500,6 +530,7 @@ export class PostgresStore implements ProjectStore {
           logWarn(`迁移语句失败（忽略）: ${errorMessage(error)}`);
         }
       }
+      await assertRequiredIndexes(run);
     } finally {
       if (locked) {
         try {
@@ -1661,77 +1692,90 @@ export class PostgresStore implements ProjectStore {
 
   async upsertHost(input: UpsertHostInput): Promise<HostRecord> {
     const now = new Date().toISOString();
-    const existing = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [input.id]);
-    if (existing.rows.length > 0) {
-      const current = mapHost(existing.rows[0]!);
-      const sets: string[] = [];
-      const values: unknown[] = [input.id];
-      const add = (column: string, value: unknown): void => {
-        values.push(value);
-        sets.push(`${column} = $${values.length}`);
-      };
-      const newClientSeenAt =
-        input.clientSeenAt === undefined
-          ? current.clientSeenAt
-          : maxIso(current.clientSeenAt, input.clientSeenAt);
-      const newRunnerSeenAt =
-        input.runnerSeenAt === undefined
-          ? current.runnerSeenAt
-          : maxIso(current.runnerSeenAt, input.runnerSeenAt);
-      if (input.hostname !== undefined) add("hostname", input.hostname);
-      if (input.hardwareId !== undefined) add("hardware_id", input.hardwareId);
-      if (input.username !== undefined) add("username", input.username);
-      if (input.osPlatform !== undefined) add("os_platform", input.osPlatform);
-      if (input.osVersion !== undefined) add("os_version", input.osVersion);
-      if (input.arch !== undefined) add("arch", input.arch);
-      if (input.identitySource !== undefined) add("identity_source", input.identitySource);
-      if (input.kind !== undefined) add("kind", input.kind);
-      if (input.capabilities !== undefined) add("capabilities", JSON.stringify(input.capabilities));
-      if (input.env !== undefined) add("env", JSON.stringify(input.env));
-      if (input.envAt !== undefined) add("env_at", input.envAt);
-      if (input.ipPrimary !== undefined) add("ip_primary", input.ipPrimary);
-      if (input.clientSeenAt !== undefined) add("client_seen_at", newClientSeenAt);
-      if (input.runnerSeenAt !== undefined) add("runner_seen_at", newRunnerSeenAt);
-      if (sets.length === 0) return cloneHostRow(current);
-      add("last_seen_at", maxIso(current.lastSeenAt, newClientSeenAt, newRunnerSeenAt));
-      await this.pool.query(
-        `UPDATE hosts SET ${sets.join(", ")} WHERE id = $1`,
-        values
-      );
-      const refreshed = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [input.id]);
+    const updated = await this.updateExistingHost(input);
+    if (updated !== null) {
       await this.recordObservedPgAddress(input.id);
-      return mapHost(refreshed.rows[0]!);
+      return updated;
     }
     const record = hostRecordFromInput(input, now);
-    await this.pool.query(
-      `INSERT INTO hosts
-         (id, hardware_id, hostname, username, os_platform, os_version, arch, identity_source, kind,
-          capabilities, env, env_at, ip_primary, client_seen_at, runner_seen_at, last_seen_at,
-          queue_paused, first_seen_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, FALSE, $17, $18)`,
-      [
-        record.id,
-        record.hardwareId,
-        record.hostname,
-        record.username,
-        record.osPlatform,
-        record.osVersion,
-        record.arch,
-        record.identitySource,
-        record.kind,
-        JSON.stringify(record.capabilities),
-        JSON.stringify(record.env),
-        record.envAt,
-        record.ipPrimary,
-        record.clientSeenAt,
-        record.runnerSeenAt,
-        record.lastSeenAt,
-        record.firstSeenAt,
-        record.createdAt
-      ]
-    );
+    try {
+      await this.pool.query(
+        `INSERT INTO hosts
+           (id, hardware_id, hostname, username, os_platform, os_version, arch, identity_source, kind,
+            capabilities, env, env_at, ip_primary, client_seen_at, runner_seen_at, last_seen_at,
+            queue_paused, first_seen_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, FALSE, $17, $18)`,
+        [
+          record.id,
+          record.hardwareId,
+          record.hostname,
+          record.username,
+          record.osPlatform,
+          record.osVersion,
+          record.arch,
+          record.identitySource,
+          record.kind,
+          JSON.stringify(record.capabilities),
+          JSON.stringify(record.env),
+          record.envAt,
+          record.ipPrimary,
+          record.clientSeenAt,
+          record.runnerSeenAt,
+          record.lastSeenAt,
+          record.firstSeenAt,
+          record.createdAt
+        ]
+      );
+    } catch (error) {
+      /* 并发首次心跳：对方已插入 → 重跑合并更新，避免 runner 因 23505 退出。 */
+      if ((error as { code?: string } | null)?.code !== "23505") throw error;
+      const raced = await this.updateExistingHost(input);
+      if (raced === null) throw error;
+      await this.recordObservedPgAddress(input.id);
+      return raced;
+    }
     await this.recordObservedPgAddress(input.id);
     return record;
+  }
+
+  /** 既有 host 行的合并更新；行不存在返回 null（并发首写者由调用方处理 23505）。 */
+  private async updateExistingHost(input: UpsertHostInput): Promise<HostRecord | null> {
+    const existing = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [input.id]);
+    if (existing.rows.length === 0) return null;
+    const current = mapHost(existing.rows[0]!);
+    const sets: string[] = [];
+    const values: unknown[] = [input.id];
+    const add = (column: string, value: unknown): void => {
+      values.push(value);
+      sets.push(`${column} = $${values.length}`);
+    };
+    const newClientSeenAt =
+      input.clientSeenAt === undefined
+        ? current.clientSeenAt
+        : maxIso(current.clientSeenAt, input.clientSeenAt);
+    const newRunnerSeenAt =
+      input.runnerSeenAt === undefined
+        ? current.runnerSeenAt
+        : maxIso(current.runnerSeenAt, input.runnerSeenAt);
+    if (input.hostname !== undefined) add("hostname", input.hostname);
+    if (input.hardwareId !== undefined) add("hardware_id", input.hardwareId);
+    if (input.username !== undefined) add("username", input.username);
+    if (input.osPlatform !== undefined) add("os_platform", input.osPlatform);
+    if (input.osVersion !== undefined) add("os_version", input.osVersion);
+    if (input.arch !== undefined) add("arch", input.arch);
+    if (input.identitySource !== undefined) add("identity_source", input.identitySource);
+    if (input.kind !== undefined) add("kind", input.kind);
+    if (input.capabilities !== undefined) add("capabilities", JSON.stringify(input.capabilities));
+    if (input.env !== undefined) add("env", JSON.stringify(input.env));
+    if (input.envAt !== undefined) add("env_at", input.envAt);
+    if (input.ipPrimary !== undefined) add("ip_primary", input.ipPrimary);
+    if (input.clientSeenAt !== undefined) add("client_seen_at", newClientSeenAt);
+    if (input.runnerSeenAt !== undefined) add("runner_seen_at", newRunnerSeenAt);
+    if (sets.length === 0) return cloneHostRow(current);
+    add("last_seen_at", maxIso(current.lastSeenAt, newClientSeenAt, newRunnerSeenAt));
+    await this.pool.query(`UPDATE hosts SET ${sets.join(", ")} WHERE id = $1`, values);
+    const refreshed = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [input.id]);
+    return mapHost(refreshed.rows[0]!);
   }
 
   /** PG 观测地址（`inet_client_addr()`）：非空则以 `observed-pg` 记录；unix socket（NULL）或报错时跳过。 */
@@ -1910,6 +1954,21 @@ export class PostgresStore implements ProjectStore {
     }
     const result = await this.pool.query(sql, values);
     return result.rows.map(mapHostSession);
+  }
+
+  async pruneHostSessions(
+    input: { now?: number; retentionDays?: number } = {}
+  ): Promise<number> {
+    const retentionDays = input.retentionDays ?? hostSessionRetentionDaysFrom(this.env);
+    if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+    const cutoff = new Date(
+      (input.now ?? Date.now()) - retentionDays * 86_400_000
+    ).toISOString();
+    const result = await this.pool.query(
+      `DELETE FROM host_sessions WHERE ended_at IS NOT NULL AND last_seen_at < $1`,
+      [cutoff]
+    );
+    return Number(result.rowCount ?? 0);
   }
 
   async setHostQueuePaused(input: {
