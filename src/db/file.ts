@@ -116,7 +116,7 @@ export class FileStore implements ProjectStore {
   private readonly eventsFsync: boolean;
   private buckets = new Map<string, ProjectBucket>();
   private registry = new Map<string, RegistryEntry>();
-  private hostMem = new MemoryStore();
+  private hostMem: MemoryStore;
   private hostId: string | null;
   private failedWrites = 0;
   private lastWriteError: string | null = null;
@@ -126,6 +126,7 @@ export class FileStore implements ProjectStore {
     this.env = env;
     this.eventsFsync = (env.AOS_EVENTS_FSYNC ?? "").trim() === "1";
     this.hostId = hostId;
+    this.hostMem = new MemoryStore(null, env);
   }
 
   static async create(options: FileStoreOptions = {}): Promise<FileStore> {
@@ -1032,7 +1033,7 @@ export class FileStore implements ProjectStore {
       eventQueue: Promise.resolve(),
       nextSeq: 1,
       lastEventPruneAt: 0,
-      mem: new MemoryStore(),
+      mem: new MemoryStore(null, this.env),
       loaded: false,
       seenStateMtimeMs: null,
       seenUsageMtimeMs: null,

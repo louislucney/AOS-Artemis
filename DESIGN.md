@@ -2133,7 +2133,7 @@ llm_switch(name, force):
 - 取消入口：面板 `POST /panel/api/tasks/cancel`、CLI `suite task cancel`（本地 `source=local-cli`；`--host --project` 走中心、`source=panel`）、MCP `regression_task_cancel`（`source=local-mcp`，仅限本机本项目）。任务行写 `cancel_source/cancelled_by/cancelled_host_id/cancelled_at/cancel_note`，审计带 `actor/actor_host_id/channel`。
 - 清扫器 `sweepStaleTasks`：`stopping` 超过 `AOS_CANCEL_GRACE_MS` 且领取机 runner 离线/行缺失/实例已轮换 → CAS `cancelled`（备注追加 `; runner-offline` 或 `; legacy-stopping`）；在线且实例一致则保持；**绝不回退 `pending`**。runner 每 30s 扫本机项目；HTTP 服务与独立 `panel --web` 每 30s 以 `allHosts=true` 扫全部主机。无 leader 选举，CAS 幂等（中心先终结时 runner 的后续 CAS 返回 null）。
 - 队列暂停（Task 15）：`hosts.queue_paused` 为**整机**闸门，`claimRegressionTask` 在主机行暂停时直接返回 null；只阻断 runner 自动领取，手动执行与已领取/执行中任务不受影响。入口 `suite queue status|pause|resume` 与 `POST /panel/api/queue/pause|resume`。
-- 设备租约（Task 15）：`device_leases(host_id, serial)` 主键；领取顺序固定 `claim → 毒丸 → devices（任务端 ∩ 本机库存）→ acquireDeviceLeases → beginExecution → 执行`。租约单事务全有或全无（过期可抢占、同任务重入幂等），冲突返回 `{ok:false,busy}` → 任务释放回 `pending`、`attempts` 不增加、按 poll 间隔重试；执行 `finally` 释放。统一 30s tick 同时心跳、写 `last_progress_at`、续租本任务 serials；**心跳失败仍继续续租**，续租丢失/抛错即中止执行并释放领取。TTL `AOS_DEVICE_LEASE_MS`（默认 90000），心跳间隔自动收敛到 TTL/3。runner 优雅退出（SIGINT/TERM、`--once` 结束）把本实例行标记为陈旧（`last_seen_at` 置纪元），下一次启动可立即接管而不会被 90s 双启保护误挡；进程崩溃仍按 TTL 接管。
+- 设备租约（Task 15）：`device_leases(host_id, serial)` 主键；领取顺序固定 `claim → 毒丸 → devices（任务端 ∩ 本机库存）→ acquireDeviceLeases → beginExecution → 执行`。租约单事务全有或全无（过期可抢占、同任务重入幂等），冲突返回 `{ok:false,busy}` → 任务释放回 `pending`、`attempts` 不增加、按 poll 间隔重试；执行 `finally` 释放。统一 30s tick 同时心跳、写 `last_progress_at`、续租本任务 serials；**心跳失败仍继续续租**，续租丢失/抛错即中止执行并释放领取。TTL `AOS_DEVICE_LEASE_MS`（默认 90000），心跳间隔自动收敛到 TTL/3。runner 优雅退出（SIGINT/TERM、`--once` 结束）把本实例行标记为陈旧（`last_seen_at` 置纪元），下一次启动可立即接管而不会被 90s 双启保护误挡；进程崩溃仍按 TTL 接管。**手动 `suite run --task` 同口径占租约**：主机守卫通过且 `--device` 非空、本机有主机身份时，执行前 `acquireDeviceLeases({hostId, taskId, projectId, serials: devices})`；冲突 → exit 2「设备被占用：<serial>（先等待或释放租约）」且不执行、不改任务状态；执行（含失败/异常）在 `finally` 释放（§13.166）。
 
 **部署与迁移顺序（从单机/旧版本升级）**
 
@@ -2161,16 +2161,23 @@ llm_switch(name, force):
 | `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 空闲接入心跳间隔与工具调用刷新节流；`0` 关闭 presence（不写会话/主机心跳） |
 | `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL；续租周期为其 1/3，runner 心跳同时收敛到该间隔 |
 | `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限；非法/≤0 回退默认 |
-| `AOS_HOST_STRICT` | 0 | **保留未接线**：严格拒绝无 `host_id` 的旧 runner，本期未实现（见下） |
+| `AOS_HOST_STRICT` | 0 | `=1` 时严格主机模式：`claimRegressionTask` 拒绝缺 `hostId` 的调用（返回 null），本地 `suite run --task` / `suite task cancel` 在本机身份未知时 exit 2；仅字面 `1`/`true` 开启 |
 | `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板下发开放优先级编辑；API/CLI 始终可传 `priority` |
 
 **已知限制**
 
-- 手动 `suite run --task` **不占设备租约**（只做主机归属守卫与状态 CAS）：与同机 runner 同时执行可能争用同一设备；需要互斥时先 `suite queue pause --host <本机>`。
+- **手动 `suite run --task` 占设备租约**：与 runner 自动领取同口径（§13.166）；同机多进程争用同一设备时后到者 exit 2，需等待或释放租约。队列暂停仍不阻断手动执行（暂停只作用于自动领取）。
 - **文件台账是单主机视图**：`adoptProjectHost` 恒 false、项目行恒 `host_id=NULL`；`host`/`queue` 命令、主机/地址/会话/租约表均为 PG 专属（无 PG exit 2）；runner、定时回归、中心清扫同样要求中心 PG。文件台账只推荐单机使用。
 - **中心清扫跨主机**（`allHosts=true`）而 runner 只扫本机；中心可能先于离线 runner 终结任务（符合预期，CAS 保证只计一次）。
-- **旧 runner 行 `host_id NULL`**：保留旧唯一索引兼容，不参与定向领取；主机视图按 `runner.host_id` 分组，NULL 行被跳过（不归入任何主机）。需在该机升级并重启 runner 后由心跳补齐身份。`AOS_HOST_STRICT` 未接线，旧行不会被强制拒绝。
+- **旧 runner 行 `host_id NULL`**：保留旧唯一索引兼容，不参与定向领取；主机视图按 `runner.host_id` 分组，NULL 行被跳过（不归入任何主机）。需在该机升级并重启 runner 后由心跳补齐身份。缺省 `AOS_HOST_STRICT=0` 仍允许旧调用方领取非定向任务；设 `AOS_HOST_STRICT=1` 后无 `hostId` 的 claim 直接返回 null，本地手动执行/取消也拒绝无主机身份（升级窗口可用开关收紧，见 §13.166）。
 - **仅开本地 MCP 的机器已可见但不可执行**：接入心跳会创建 `hosts` 行并刷新 `client_seen_at`/IP，面板显示「IDE 在线」；`capabilities` 仍为空，下发只告警「任务会排队等待」，需 runner 上报后才进入执行。无 PG 时接入心跳静默跳过（文件台账仅单机语义）。
 - 队列暂停为**整机**粒度（无项目级/单任务暂停、无整机串行开关）；P4 的跨主机逻辑项目分组（`project_key`）与 HTTP 客户端记录（`project_clients`）未实现。
 - 面板 HTTP multipart 导入为**既有缺陷**（与多机无关）：`http-server` 只传 `rawBody`，动作层入口要求 JSON 对象 body，故 HTTP 下导入不可达；现有测试同时注入 body+rawBody 掩盖了该路径，待单独修复。
 - 同路径 legacy 行一旦被本机新版进程新建的行「占位」，`adopt-legacy` 将跳过（见迁移顺序第 2 步的注意事项），历史数据保留在 legacy 行、不并入新行。
+
+### 13.166 修复（严格主机模式接线与手动执行设备租约）
+
+> 2026-10-21。补齐设计稿 §6.4/§13.6/§8.3 的两处缺口，均为**默认关闭/向后兼容**的收紧。
+> **`AOS_HOST_STRICT`**：`hostStrictFrom(env)`（`src/host/strict.ts`）仅对字面 `1`/`true`（trim 后）返回 true，其余（含未设置、`0`、`yes`）一律 false。三处接线——① `PostgresStore`/`MemoryStore` 的 `claimRegressionTask` 在解析项目之前，若 strict 且 `input.hostId == null` 直接返回 null（旧 runner/无主机调用方领不到任何任务，含非定向任务）；`FileStore` 委托同源内存实现。② 本地 `suite run --task` 在读到任务后、主机归属守卫之前，strict 且 `runtime.hostIdentity?.id` 为空 → exit 2「AOS_HOST_STRICT=1：本机主机身份未知，拒绝执行回归任务」。③ 本地 `suite task cancel` 同样检查 → exit 2（不写取消元数据）。中心 `--host` 路径不经过这两处守卫（它们显式指定目标和操作主机）。仓库构造 `MemoryStore`/`PostgresStore` 时可选注入 `env`（缺省 `process.env`），`scopeHost` 原样传递，便于测试不污染进程环境。
+> **手动设备租约**：`suiteRunTask` 在设备清单解析与任务取消预检之后、置 `running` 之前，若本机有主机身份且 `devices` 非空，调用 `acquireDeviceLeases({hostId: runtime.hostIdentity.id, taskId: task.id, projectId: runtime.projectSummary()?.id ?? null, serials: devices})`；`{ok:false}` → `errorLog("设备被占用：<busy 逗号分隔>（先等待或释放租约）")` + exit 2（`mobile_run_task` 不会被调用，任务保持原状态，无 `suite_runs` 登记）。执行主体包在 `try/finally`，无论成功、用例失败、执行异常还是提前 return 都用 `releaseDeviceLeases({hostId, taskId})` 释放；释放失败只 WARN 不影响退出码。**runner 内嵌调用不重复管理**：`suite runner` 的默认 `executeSuite` 以 `SuiteCliDeps.leasesHeld=true` 调用 `suite run --task`（租约由 runner 领取/续租/收尾释放），内层跳过获取与释放，避免在 runner 仍持有租约时提前释放导致续租丢失而中止。runner 自动领取的租约路径不变（仍为 claim→acquire→beginExecution→执行→finally 释放）。
+> **测试**：`test/host-strict.test.js` 8 例（helper 字面值、Memory/Postgres strict claim 无 hostId→null / 有 hostId→claimed、缺省兼容、FileStore 委托、suite run 与 suite task cancel 无身份 exit 2、缺省保持旧行为）；`test/suite-task-leases.test.js` 3 例（设备被占 → exit 2 且未执行，释放后成功并回收租约；失败执行也在 finally 释放；runner 内嵌 `leasesHeld` 不重复释放）。全量见本次提交报告。

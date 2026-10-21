@@ -180,9 +180,9 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 | `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL（续租周期 TTL/3） |
 | `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限 |
 | `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板开放优先级编辑 |
-| `AOS_HOST_STRICT` | 0 | 保留未接线（严格拒绝旧 runner，本期未实现） |
+| `AOS_HOST_STRICT` | 0 | `=1` 时严格主机模式：拒绝无主机身份的领取与本地手动执行/取消（旧 runner 升级窗口用；见 DESIGN §13.165/§13.166） |
 
-**已知限制**：手动 `suite run --task` 不占设备租约（需互斥时先暂停该机队列）；文件台账为单主机视图（`host`/`queue`/runner/定时回归需中心 PG）；中心清扫 `allHosts=true` 可能先于离线 runner 终结取消；旧 runner 行 `host_id NULL` 需升级重启后补齐；队列暂停是整机粒度；P4 跨主机逻辑项目分组与 HTTP 客户端记录未实现。完整清单见 DESIGN §13.165。
+**已知限制**：文件台账为单主机视图（`host`/`queue`/runner/定时回归需中心 PG）；中心清扫 `allHosts=true` 可能先于离线 runner 终结取消；旧 runner 行 `host_id NULL` 需升级重启后补齐；队列暂停是整机粒度；P4 跨主机逻辑项目分组与 HTTP 客户端记录未实现。完整清单见 DESIGN §13.165。
 
 ## 鉴权（可选静态令牌，P3d，§13.113）
 
@@ -292,7 +292,7 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
 - 失败重试：任务未达终态（如引用份失效、执行前置失败）自动释放重试；**连续失败达上限置 `failed`**（不再自动重试、不阻塞后续任务；修复引用后请新建任务）。`suite task release` 对 `claimed_by` 为空的数据异常态需配 `--force`。
 - 领取条件：**任务目标端 ⊆ 该 runner 的设备端集合**（缺端不领）；**双端任务需单机双端 runner**（两端分属两台机时请拆单端任务或手动执行）；面板对「pending 且无 runner 可覆盖」会给提示。默认严格子集；设 `AOS_RUNNER_PARTIAL_CLAIM=1` 后可**按端部分领取**——仅当**无任一在线 runner 可全覆盖**该任务时按交集端领取（完全覆盖仍优先，双端齐备在场时绝不部分抢占）；缺端**不自动补跑**、不新增状态字段，仅领取日志「部分端执行（缺 X——在线无全覆盖执行机）」＋执行侧既有缺端标注；**端覆盖审计反推口径**＝任务 `runIds` 关联的 `suite_runs.platform` 集合 vs 任务 `platforms`（统计下钻分母按实际已跑端）。
 - 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需；启动打印醒目告警）；**可选令牌 `AOS_RUNNER_ARTIFACT_TOKEN`**——设置后 `/artifact*` 强制认证（Bearer/Basic/`?t=`，`GET|HEAD /healthz` 豁免，见「鉴权」段），未设则维持「无鉴权」内网口径；暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
-- 崩溃/失联救济：runner 重启自动释放自己的未完成领取；**在线 runner 每轮自动回收超龄＋失联的领取**（`claimed_at` 超 `AOS_RUNNER_STALE_CLAIM_MS` 且领取机离线／归属悬空 → 回待执行，`attempts` 保留；毒丸任务在超上限的下一次领取处直接置 `failed` 不执行——「无在线 runner 则无人回收」为自洽性质）；机器报废等场景用 `suite task release`（默认要求该执行机离线）。无 runner 时手动路径不变：`suite run --task <id> --device <serial>`（claimed 不阻塞手动执行）。见 DESIGN §13.109/§13.116。
+- 崩溃/失联救济：runner 重启自动释放自己的未完成领取；**在线 runner 每轮自动回收超龄＋失联的领取**（`claimed_at` 超 `AOS_RUNNER_STALE_CLAIM_MS` 且领取机离线／归属悬空 → 回待执行，`attempts` 保留；毒丸任务在超上限的下一次领取处直接置 `failed` 不执行——「无在线 runner 则无人回收」为自洽性质）；机器报废等场景用 `suite task release`（默认要求该执行机离线）。无 runner 时手动路径不变：`suite run --task <id> --device <serial>`（claimed 不阻塞手动执行；若该任务正由 runner 持有设备租约则 exit 2）；手动执行在本机有主机身份时**同样获取 `--device` 的设备租约**，被占用 exit 2，结束/失败在 `finally` 释放。见 DESIGN §13.109/§13.116/§13.166。
 - **常驻化（项目机）**：前台跑适合调试；长期运行交给系统服务管理器（工作目录＝服务仓库，自动拉起；`MOBILE_TESTING_DATABASE_URL` 须在该机环境可得）。systemd 最小示例（`/etc/systemd/system/aos-runner.service`，改 `User` 后 `systemctl daemon-reload && systemctl enable --now aos-runner`）：
 
   ```ini

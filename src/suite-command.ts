@@ -10,6 +10,7 @@ import {
   matchApiErrors
 } from "./artemis/api-errors.js";
 import { defaultBuildRuntime, type CliRuntimeBundle } from "./cli-runtime.js";
+import { hostStrictFrom } from "./host/strict.js";
 import { isHostOnline, precheckTask } from "./console/dispatch.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
 import { classifyIosSerial } from "./device/ios.js";
@@ -107,6 +108,8 @@ export interface SuiteCliDeps {
   runnerName?: string;
   /** 面板停止请求（runner 注入；true → 用例边界停止后续）。 */
   shouldAbort?: () => boolean;
+  /** runner 内嵌调用 `suite run --task`：设备租约由 runner 生命周期持有，内层不再获取/释放。 */
+  leasesHeld?: boolean;
   /** 中心模式（`suite task … --host`）：注入 store 或自建；带 `--host` 时不构建本地 Runtime。 */
   center?: {
     store?: ProjectStore;
@@ -235,6 +238,8 @@ type SuiteIo = {
   env?: NodeJS.ProcessEnv;
   runnerName?: string | null;
   shouldAbort?: () => boolean;
+  /** runner 已持有本任务设备租约（内嵌 `suite run --task` 不再重复获取/释放；缺省 CLI 自行管理）。 */
+  leasesHeld?: boolean;
 };
 
 export function printSuiteUsage(log: (line: string) => void): void {
@@ -321,6 +326,12 @@ async function suiteRunTask(
     return 2;
   }
   const localHostId = runtime.hostIdentity?.id ?? null;
+  if (hostStrictFrom(io.env ?? process.env) && localHostId === null) {
+    io.errorLog(
+      "AOS_HOST_STRICT=1：本机主机身份未知，拒绝执行回归任务（先确认 AOS_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
+    );
+    return 2;
+  }
   if (task.targetHostId !== null && localHostId === null) {
     io.errorLog(`本机身份未知，拒绝执行定向任务 ${taskId}（目标主机 ${task.targetHostId}）`);
     return 2;
@@ -402,269 +413,294 @@ async function suiteRunTask(
     return 2;
   }
 
-  let markedRunning = false;
-  try {
-    markedRunning = await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
-      status: "running",
-      expectStatuses: ["claimed", "running"]
+  let leaseHeld = false;
+  if (io.leasesHeld !== true && localHostId !== null && devices.length > 0) {
+    const acquired = await runtime.store.acquireDeviceLeases({
+      hostId: localHostId,
+      taskId: task.id,
+      projectId: runtime.projectSummary()?.id ?? null,
+      serials: devices
     });
-  } catch (error) {
-    logWarn(`任务状态回写失败: ${errorMessage(error)}`);
-    say("注意: 任务状态回写失败（运行结果不受影响）");
-  }
-  if (!markedRunning) {
-    const fresh = await runtime.store
-      .getRegressionTask(runtime.project.rootDir, task.id)
-      .catch(() => null);
-    if (
-      fresh?.status === "cancelled" ||
-      fresh?.status === "stopped" ||
-      fresh?.status === "stopping"
-    ) {
-      say("任务已取消或已请求停止：不再执行（可重新派发新任务）");
+    if (!acquired.ok) {
+      io.errorLog(`设备被占用：${acquired.busy.join("、")}（先等待或释放租约）`);
       return 2;
     }
-    if (fresh?.status === "pending") {
-      try {
-        markedRunning = await runtime.store.updateRegressionTask(
-          runtime.project.rootDir,
-          task.id,
-          { status: "running", expectStatuses: ["pending"] }
-        );
-      } catch (error) {
-        logWarn(`任务状态回写失败: ${errorMessage(error)}`);
-      }
-      if (!markedRunning) {
-        const again = await runtime.store
-          .getRegressionTask(runtime.project.rootDir, task.id)
-          .catch(() => null);
-        if (
-          again?.status === "cancelled" ||
-          again?.status === "stopped" ||
-          again?.status === "stopping"
-        ) {
-          say("任务已取消或已请求停止：不再执行（可重新派发新任务）");
-          return 2;
-        }
-        say(`注意: 任务状态未能置为执行中（当前 ${again?.status ?? "未知"}），继续执行`);
-      }
-    } else {
-      say(`注意: 任务状态为 ${fresh?.status ?? "未知"}，未改写为执行中`);
-    }
+    leaseHeld = true;
   }
 
-  const subRuns: Array<{
-    device: string;
-    platform: string;
-    feature: string;
-    total: number;
-    passed: number;
-    failed: number;
-    fixed: number;
-    regressed: number;
-    runId: string | null;
-  }> = [];
-  const runIds: string[] = [];
-  const seenByDevice = new Map<string, Set<string>>();
-  const platformCases = new Map<string, CompareCaseInput[]>();
-  let anyFailure = false;
-  let anyExecError = false;
-  let anyExecuted = false;
-
-  for (const device of devices) {
-    const platform = platformOf(device);
-    const seen = seenByDevice.get(device) ?? new Set<string>();
-    seenByDevice.set(device, seen);
-    for (const ref of resolvedRefs) {
-      const archive = readTestsDocument(runtime.configDirAbs, { testsPath: ref.jsonPath });
-      if (!archive) {
-        io.errorLog(`份不可读（跳过）：${ref.jsonPath}`);
-        anyExecError = true;
-        continue;
-      }
-      const caseIds = archive.records.map((record) => record.id).filter((id) => !seen.has(id));
-      const deduped = archive.records.length - caseIds.length;
-      if (deduped > 0) {
-        say(`[${platform}] ${ref.featureName}: 去重 ${deduped} 例（跨份重复 caseId 只跑一次）`);
-      }
-      if (caseIds.length === 0) {
-        say(`[${platform}] ${ref.featureName}: 用例均已在前序份执行（去重跳过）`);
-        continue;
-      }
-      for (const id of caseIds) seen.add(id);
-      const startedAtMs = Date.now();
-      const report = await runGeneratedTests(runtime, {
-        ...baseOptions,
-        testsPath: ref.jsonPath,
-        deviceSerial: device,
-        caseIds,
-        ...(shouldAbort === undefined ? {} : { shouldAbort })
+  try {
+    let markedRunning = false;
+    try {
+      markedRunning = await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
+        status: "running",
+        expectStatuses: ["claimed", "running"]
       });
-      anyExecuted = true;
-      const quarantinedFailures = report.cases.filter(
-        (entry) => entry.quarantined === true && entry.status !== "passed"
-      ).length;
-      const exitCode = !report.ok ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
-      if (!report.ok) {
-        anyExecError = true;
-      } else if (exitCode !== 0) {
-        anyFailure = true;
+    } catch (error) {
+      logWarn(`任务状态回写失败: ${errorMessage(error)}`);
+      say("注意: 任务状态回写失败（运行结果不受影响）");
+    }
+    if (!markedRunning) {
+      const fresh = await runtime.store
+        .getRegressionTask(runtime.project.rootDir, task.id)
+        .catch(() => null);
+      if (
+        fresh?.status === "cancelled" ||
+        fresh?.status === "stopped" ||
+        fresh?.status === "stopping"
+      ) {
+        say("任务已取消或已请求停止：不再执行（可重新派发新任务）");
+        return 2;
       }
-      const comparison = compareRuns(
-        task.baseline === "none"
-          ? null
-          : await baselineFor(runtime, {
-              caseSetId: ref.caseSetId,
-              featureKey: ref.featureKey,
-              platform
-            }),
-        outcomeCasesOf(report)
-      );
-      const runId = await registerSuiteRun(runtime, {
-        report,
-        trigger: "cli",
-        regressionTaskId: task.id,
-        caseSetId: ref.caseSetId,
-        featureKey: ref.featureKey,
-        featureName: ref.featureName,
-        platform,
-        device,
-        runner: io.runnerName ?? null,
-        exitCode,
-        startedAtMs,
-        finishedAtMs: Date.now(),
-        manifestPath: flags.bool("no-save")
-          ? null
-          : await persistSuiteRunManifest(runtime, report, io, {
-              source: "suite-run",
-              startedAtMs,
-              exitCode,
-              coverageIssue: null,
-              strict: flags.bool("strict"),
-              failOnUncovered: false,
-              retry: retryCountOf(flags),
-              options: {
-                ...baseOptions,
-                testsPath: ref.jsonPath,
-                deviceSerial: device,
-                caseIds
-              },
-              quarantinedCaseIds: quarantine.ids,
-              registration: {
-                regressionTaskId: task.id,
+      if (fresh?.status === "pending") {
+        try {
+          markedRunning = await runtime.store.updateRegressionTask(
+            runtime.project.rootDir,
+            task.id,
+            { status: "running", expectStatuses: ["pending"] }
+          );
+        } catch (error) {
+          logWarn(`任务状态回写失败: ${errorMessage(error)}`);
+        }
+        if (!markedRunning) {
+          const again = await runtime.store
+            .getRegressionTask(runtime.project.rootDir, task.id)
+            .catch(() => null);
+          if (
+            again?.status === "cancelled" ||
+            again?.status === "stopped" ||
+            again?.status === "stopping"
+          ) {
+            say("任务已取消或已请求停止：不再执行（可重新派发新任务）");
+            return 2;
+          }
+          say(`注意: 任务状态未能置为执行中（当前 ${again?.status ?? "未知"}），继续执行`);
+        }
+      } else {
+        say(`注意: 任务状态为 ${fresh?.status ?? "未知"}，未改写为执行中`);
+      }
+    }
+
+    const subRuns: Array<{
+      device: string;
+      platform: string;
+      feature: string;
+      total: number;
+      passed: number;
+      failed: number;
+      fixed: number;
+      regressed: number;
+      runId: string | null;
+    }> = [];
+    const runIds: string[] = [];
+    const seenByDevice = new Map<string, Set<string>>();
+    const platformCases = new Map<string, CompareCaseInput[]>();
+    let anyFailure = false;
+    let anyExecError = false;
+    let anyExecuted = false;
+
+    for (const device of devices) {
+      const platform = platformOf(device);
+      const seen = seenByDevice.get(device) ?? new Set<string>();
+      seenByDevice.set(device, seen);
+      for (const ref of resolvedRefs) {
+        const archive = readTestsDocument(runtime.configDirAbs, { testsPath: ref.jsonPath });
+        if (!archive) {
+          io.errorLog(`份不可读（跳过）：${ref.jsonPath}`);
+          anyExecError = true;
+          continue;
+        }
+        const caseIds = archive.records.map((record) => record.id).filter((id) => !seen.has(id));
+        const deduped = archive.records.length - caseIds.length;
+        if (deduped > 0) {
+          say(`[${platform}] ${ref.featureName}: 去重 ${deduped} 例（跨份重复 caseId 只跑一次）`);
+        }
+        if (caseIds.length === 0) {
+          say(`[${platform}] ${ref.featureName}: 用例均已在前序份执行（去重跳过）`);
+          continue;
+        }
+        for (const id of caseIds) seen.add(id);
+        const startedAtMs = Date.now();
+        const report = await runGeneratedTests(runtime, {
+          ...baseOptions,
+          testsPath: ref.jsonPath,
+          deviceSerial: device,
+          caseIds,
+          ...(shouldAbort === undefined ? {} : { shouldAbort })
+        });
+        anyExecuted = true;
+        const quarantinedFailures = report.cases.filter(
+          (entry) => entry.quarantined === true && entry.status !== "passed"
+        ).length;
+        const exitCode = !report.ok ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
+        if (!report.ok) {
+          anyExecError = true;
+        } else if (exitCode !== 0) {
+          anyFailure = true;
+        }
+        const comparison = compareRuns(
+          task.baseline === "none"
+            ? null
+            : await baselineFor(runtime, {
                 caseSetId: ref.caseSetId,
                 featureKey: ref.featureKey,
-                featureName: ref.featureName,
-                platform,
-                runner: io.runnerName ?? os.hostname(),
-                caseSetJsonPath: ref.jsonPath
-              }
-            }),
-        comparison
-      });
-      if (runId) runIds.push(runId);
-      platformCases.set(platform, [
-        ...(platformCases.get(platform) ?? []),
-        ...outcomeCasesOf(report)
-      ]);
-      subRuns.push({
-        device,
-        platform,
-        feature: ref.featureName,
-        total: report.total,
-        passed: report.passed,
-        failed: report.failed,
-        fixed: comparison.fixed,
-        regressed: comparison.regressed,
-        runId
-      });
-      say(
-        `[${platform}] ${ref.featureName}: pass ${report.passed}/${report.total} · 修复${comparison.fixed} 回归${comparison.regressed}` +
-          (comparison.baseline === "established" ? "（基准建立）" : "") +
-          (runId ? ` · run ${runId}` : " · 未登记")
-      );
-    }
-  }
-
-  const finalStatus: "completed" | "partial" | "failed" = !anyExecuted
-    ? "failed"
-    : anyFailure || anyExecError
-      ? "partial"
-      : "completed";
-  const duringRun = await runtime.store
-    .getRegressionTask(runtime.project.rootDir, task.id)
-    .catch(() => null);
-  const stoppedDuringRun =
-    duringRun?.status === "cancelled" ||
-    duringRun?.status === "stopped" ||
-    duringRun?.status === "stopping";
-  let finalWritten = false;
-  try {
-    finalWritten = await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
-      ...(stoppedDuringRun
-        ? {}
-        : { status: finalStatus, expectStatuses: ["running"] satisfies RegressionTaskStatus[] }),
-      runIds
-    });
-  } catch (error) {
-    logWarn(`任务状态回写失败: ${errorMessage(error)}`);
-  }
-  if (!finalWritten) {
-    const fresh = await runtime.store
-      .getRegressionTask(runtime.project.rootDir, task.id)
-      .catch(() => null);
-    if (
-      stoppedDuringRun ||
-      fresh?.status === "cancelled" ||
-      fresh?.status === "stopped" ||
-      fresh?.status === "stopping"
-    ) {
-      say("任务已取消：保留取消状态（不回写终态、不自动重试）");
-    } else {
-      logWarn(`任务状态已变化（${fresh?.status ?? "未知"}），未覆盖终态`);
-      say(`注意: 任务状态已变化（当前 ${fresh?.status ?? "未知"}），未覆盖终态`);
-    }
-  } else if (stoppedDuringRun) {
-    say("任务已取消：保留取消状态（不回写终态、不自动重试）");
-  }
-
-  const deltas = crossPlatformDeltas(
-    [...platformCases.entries()].map(([platform, cases]) => ({ platform, cases }))
-  );
-  const totalPassed = subRuns.reduce((sum, entry) => sum + entry.passed, 0);
-  const totalCases = subRuns.reduce((sum, entry) => sum + entry.total, 0);
-  const exitCode = !anyExecuted ? 2 : anyExecError ? 2 : anyFailure ? 1 : 0;
-  if (jsonMode) {
-    io.log(
-      JSON.stringify(
-        {
-          ok: exitCode === 0,
-          taskId: task.id,
-          status: finalStatus,
-          runIds,
-          subRuns,
-          crossPlatform: deltas
-        },
-        null,
-        2
-      )
-    );
-  } else {
-    if (deltas.length > 0) {
-      io.log(`跨端差异 ${deltas.length} 条：`);
-      for (const delta of deltas.slice(0, 10)) {
-        io.log(
-          `- ${delta.name}：${Object.entries(delta.results)
-            .map(([platform, outcome]) => `${platform}=${outcome}`)
-            .join(" ")}`
+                platform
+              }),
+          outcomeCasesOf(report)
+        );
+        const runId = await registerSuiteRun(runtime, {
+          report,
+          trigger: "cli",
+          regressionTaskId: task.id,
+          caseSetId: ref.caseSetId,
+          featureKey: ref.featureKey,
+          featureName: ref.featureName,
+          platform,
+          device,
+          runner: io.runnerName ?? null,
+          exitCode,
+          startedAtMs,
+          finishedAtMs: Date.now(),
+          manifestPath: flags.bool("no-save")
+            ? null
+            : await persistSuiteRunManifest(runtime, report, io, {
+                source: "suite-run",
+                startedAtMs,
+                exitCode,
+                coverageIssue: null,
+                strict: flags.bool("strict"),
+                failOnUncovered: false,
+                retry: retryCountOf(flags),
+                options: {
+                  ...baseOptions,
+                  testsPath: ref.jsonPath,
+                  deviceSerial: device,
+                  caseIds
+                },
+                quarantinedCaseIds: quarantine.ids,
+                registration: {
+                  regressionTaskId: task.id,
+                  caseSetId: ref.caseSetId,
+                  featureKey: ref.featureKey,
+                  featureName: ref.featureName,
+                  platform,
+                  runner: io.runnerName ?? os.hostname(),
+                  caseSetJsonPath: ref.jsonPath
+                }
+              }),
+          comparison
+        });
+        if (runId) runIds.push(runId);
+        platformCases.set(platform, [
+          ...(platformCases.get(platform) ?? []),
+          ...outcomeCasesOf(report)
+        ]);
+        subRuns.push({
+          device,
+          platform,
+          feature: ref.featureName,
+          total: report.total,
+          passed: report.passed,
+          failed: report.failed,
+          fixed: comparison.fixed,
+          regressed: comparison.regressed,
+          runId
+        });
+        say(
+          `[${platform}] ${ref.featureName}: pass ${report.passed}/${report.total} · 修复${comparison.fixed} 回归${comparison.regressed}` +
+            (comparison.baseline === "established" ? "（基准建立）" : "") +
+            (runId ? ` · run ${runId}` : " · 未登记")
         );
       }
     }
-    io.log(
-      `回归任务 ${task.id}: ${finalStatus} · 子运行 ${subRuns.length} · pass ${totalPassed}/${totalCases}`
+
+    const finalStatus: "completed" | "partial" | "failed" = !anyExecuted
+      ? "failed"
+      : anyFailure || anyExecError
+        ? "partial"
+        : "completed";
+    const duringRun = await runtime.store
+      .getRegressionTask(runtime.project.rootDir, task.id)
+      .catch(() => null);
+    const stoppedDuringRun =
+      duringRun?.status === "cancelled" ||
+      duringRun?.status === "stopped" ||
+      duringRun?.status === "stopping";
+    let finalWritten = false;
+    try {
+      finalWritten = await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
+        ...(stoppedDuringRun
+          ? {}
+          : { status: finalStatus, expectStatuses: ["running"] satisfies RegressionTaskStatus[] }),
+        runIds
+      });
+    } catch (error) {
+      logWarn(`任务状态回写失败: ${errorMessage(error)}`);
+    }
+    if (!finalWritten) {
+      const fresh = await runtime.store
+        .getRegressionTask(runtime.project.rootDir, task.id)
+        .catch(() => null);
+      if (
+        stoppedDuringRun ||
+        fresh?.status === "cancelled" ||
+        fresh?.status === "stopped" ||
+        fresh?.status === "stopping"
+      ) {
+        say("任务已取消：保留取消状态（不回写终态、不自动重试）");
+      } else {
+        logWarn(`任务状态已变化（${fresh?.status ?? "未知"}），未覆盖终态`);
+        say(`注意: 任务状态已变化（当前 ${fresh?.status ?? "未知"}），未覆盖终态`);
+      }
+    } else if (stoppedDuringRun) {
+      say("任务已取消：保留取消状态（不回写终态、不自动重试）");
+    }
+
+    const deltas = crossPlatformDeltas(
+      [...platformCases.entries()].map(([platform, cases]) => ({ platform, cases }))
     );
+    const totalPassed = subRuns.reduce((sum, entry) => sum + entry.passed, 0);
+    const totalCases = subRuns.reduce((sum, entry) => sum + entry.total, 0);
+    const exitCode = !anyExecuted ? 2 : anyExecError ? 2 : anyFailure ? 1 : 0;
+    if (jsonMode) {
+      io.log(
+        JSON.stringify(
+          {
+            ok: exitCode === 0,
+            taskId: task.id,
+            status: finalStatus,
+            runIds,
+            subRuns,
+            crossPlatform: deltas
+          },
+          null,
+          2
+        )
+      );
+    } else {
+      if (deltas.length > 0) {
+        io.log(`跨端差异 ${deltas.length} 条：`);
+        for (const delta of deltas.slice(0, 10)) {
+          io.log(
+            `- ${delta.name}：${Object.entries(delta.results)
+              .map(([platform, outcome]) => `${platform}=${outcome}`)
+              .join(" ")}`
+          );
+        }
+      }
+      io.log(
+        `回归任务 ${task.id}: ${finalStatus} · 子运行 ${subRuns.length} · pass ${totalPassed}/${totalCases}`
+      );
+    }
+    return exitCode;
+  } finally {
+    if (leaseHeld && localHostId !== null) {
+      try {
+        await runtime.store.releaseDeviceLeases({ hostId: localHostId, taskId: task.id });
+      } catch (error) {
+        logWarn(`释放设备租约失败: ${errorMessage(error)}`);
+      }
+    }
   }
-  return exitCode;
 }
 
 async function suiteRun(
@@ -2338,6 +2374,13 @@ async function suiteTaskCancel(
     return 2;
   }
   const rootPath = runtime.project.rootDir;
+  const localHostId = runtime.hostIdentity?.id ?? null;
+  if (hostStrictFrom(env) && localHostId === null) {
+    io.errorLog(
+      "AOS_HOST_STRICT=1：本机主机身份未知，拒绝取消回归任务（先确认 AOS_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
+    );
+    return 2;
+  }
   const existing = await runtime.store.getRegressionTask(rootPath, taskId);
   if (!existing) {
     io.errorLog(`未找到回归任务 ${taskId}`);
@@ -2779,7 +2822,8 @@ async function suiteRunnerCommand(
             errorLog: io.errorLog,
             env,
             runnerName: name,
-            shouldAbort: options?.shouldAbort
+            shouldAbort: options?.shouldAbort,
+            leasesHeld: true
           })),
       collectInventory: seam.collectInventory,
       collectHostSnapshot: seam.collectHostSnapshot,
@@ -2984,7 +3028,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
       return await suiteRun(
         built.runtime,
         flags,
-        { log, errorLog, env: deps.env ?? process.env, runnerName: deps.runnerName ?? null, shouldAbort: deps.shouldAbort },
+        { log, errorLog, env: deps.env ?? process.env, runnerName: deps.runnerName ?? null, shouldAbort: deps.shouldAbort, leasesHeld: deps.leasesHeld === true },
         deps.logcatCollector,
         deps.iosLogCollector
       );

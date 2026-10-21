@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { logWarn } from "../log.js";
+import { hostStrictFrom } from "../host/strict.js";
 import { errorMessage } from "../util.js";
 import {
   buildUsageEvent,
@@ -438,7 +439,11 @@ export class PostgresStore implements ProjectStore {
   private readonly eventPruneAt = new Map<string, number>();
   private hostId: string | null;
 
-  constructor(private readonly pool: PoolLike, hostId: string | null = null) {
+  constructor(
+    private readonly pool: PoolLike,
+    hostId: string | null = null,
+    private readonly env: NodeJS.ProcessEnv = process.env
+  ) {
     this.hostId = hostId;
   }
 
@@ -451,7 +456,7 @@ export class PostgresStore implements ProjectStore {
   }
 
   scopeHost(hostId: string | null): ProjectStore {
-    return new PostgresStore(this.pool, hostId);
+    return new PostgresStore(this.pool, hostId, this.env);
   }
 
   static async create(connectionString: string): Promise<PostgresStore> {
@@ -1113,6 +1118,7 @@ export class PostgresStore implements ProjectStore {
     instanceId?: string;
     capabilities: string[];
   }): Promise<RegressionTaskRecord | null> {
+    if (hostStrictFrom(this.env) && input.hostId == null) return null;
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) return null;
     const hostId = input.hostId ?? null;

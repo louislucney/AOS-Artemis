@@ -12,6 +12,7 @@ import {
   STOPPED_RUNNER_SEEN_AT
 } from "./types.js";
 import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
+import { hostStrictFrom } from "../host/strict.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
 import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
 
@@ -100,7 +101,10 @@ export class MemoryStore implements ProjectStore {
   private hostSessions: HostSessionRecord[] = [];
   private deviceLeases: DeviceLeaseRecord[] = [];
 
-  constructor(hostId: string | null = null) {
+  constructor(
+    hostId: string | null = null,
+    private readonly env: NodeJS.ProcessEnv = process.env
+  ) {
     this.hostId = hostId;
   }
 
@@ -113,7 +117,7 @@ export class MemoryStore implements ProjectStore {
   }
 
   scopeHost(hostId: string | null): ProjectStore {
-    const view = new MemoryStore(hostId);
+    const view = new MemoryStore(hostId, this.env);
     view.projects = this.projects;
     view.llms = this.llms;
     view.modelCaches = this.modelCaches;
@@ -532,6 +536,7 @@ export class MemoryStore implements ProjectStore {
     instanceId?: string;
     capabilities: string[];
   }): Promise<RegressionTaskRecord | null> {
+    if (hostStrictFrom(this.env) && input.hostId == null) return null;
     const project = this.getProjectRecord(input.rootPath);
     if (!project) return null;
     const hostId = input.hostId ?? null;
