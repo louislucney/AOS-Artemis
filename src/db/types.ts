@@ -677,8 +677,8 @@ export interface ProjectStore {
   readonly localHostId: string | null;
   /** 就地绑定本 store 到 host（下一个写入/查询生效；对同一实例生效）。 */
   bindHost(hostId: string): void;
-  /** 返回共享同一底层存储但绑定到 hostId 的新视图（不改动父 store 的 hostId）。 */
-  scopeHost(hostId: string): ProjectStore;
+  /** 返回共享同一底层存储但绑定到 hostId 的新视图（不改动父 store 的 hostId；null＝未绑定）。 */
+  scopeHost(hostId: string | null): ProjectStore;
   /** `updateName: false` keeps an existing display name (used by incidental
    * records such as model-cache writes that only know the directory basename). */
   upsertProject(input: {
@@ -704,6 +704,13 @@ export interface ProjectStore {
   createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord>;
   getRegressionTask(rootPath: string, id: string): Promise<RegressionTaskRecord | null>;
   listRegressionTasks(rootPath: string, limit?: number): Promise<RegressionTaskRecord[]>;
+  /** 只取 `stopping`（可选 deadline：`cancel_requested_at <= deadline OR IS NULL`）；
+   * `limit` 缺省 1000。后台清扫专用，避免全表读取。 */
+  listStoppingTasks(input: {
+    rootPath: string;
+    deadline?: string;
+    limit?: number;
+  }): Promise<RegressionTaskRecord[]>;
   /** 取消任务（先写先赢）：`pending` → `cancelled`（同时写 `cancelledAt`）；`claimed`/`running` →
    * `stopping`（只写请求时间，等执行机 `ackCancellation`）；`stopping`/`cancelled`/终态保持原状。
    * 未知任务 → null。 */

@@ -146,7 +146,7 @@ export class FileStore implements ProjectStore {
     this.hostId = hostId;
   }
 
-  scopeHost(hostId: string): ProjectStore {
+  scopeHost(hostId: string | null): ProjectStore {
     const view = new FileStore(this.homeDir, this.env, hostId);
     view.buckets = this.buckets;
     view.registry = this.registry;
@@ -273,6 +273,15 @@ export class FileStore implements ProjectStore {
   async listRegressionTasks(rootPath: string, limit?: number): Promise<RegressionTaskRecord[]> {
     const bucket = await this.bucket(rootPath);
     return this.scopedMem(bucket, this.hostId).listRegressionTasks(rootPath, limit);
+  }
+
+  async listStoppingTasks(input: {
+    rootPath: string;
+    deadline?: string;
+    limit?: number;
+  }): Promise<RegressionTaskRecord[]> {
+    const bucket = await this.bucket(input.rootPath);
+    return this.scopedMem(bucket, this.hostId).listStoppingTasks(input);
   }
 
   async updateRegressionTask(

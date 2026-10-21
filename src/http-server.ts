@@ -576,13 +576,15 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   const actualPort = typeof address === "object" && address ? address.port : port;
   log(`${CLI_NAME} HTTP 已启动: http://${host}:${actualPort}/mcp/<project>（workspace: ${workspaceRoot}）`);
 
-  const sweepTimer = setInterval(() => {
-    void sweepStaleTasks({ store })
+  const runCancellationSweep = (): void => {
+    void sweepStaleTasks({ store, allHosts: true })
       .then((result) => {
         if (result.cancelled > 0) log(`离线取消终结：${result.cancelled} 条`);
       })
       .catch((error) => log(`离线取消清扫失败: ${errorMessage(error)}`, "warn"));
-  }, SWEEP_INTERVAL_MS);
+  };
+  runCancellationSweep();
+  const sweepTimer = setInterval(runCancellationSweep, SWEEP_INTERVAL_MS);
   sweepTimer.unref?.();
 
   const close = async (): Promise<void> => {

@@ -449,7 +449,7 @@ export class PostgresStore implements ProjectStore {
     this.hostId = hostId;
   }
 
-  scopeHost(hostId: string): ProjectStore {
+  scopeHost(hostId: string | null): ProjectStore {
     return new PostgresStore(this.pool, hostId);
   }
 
@@ -950,6 +950,32 @@ export class PostgresStore implements ProjectStore {
     return result.rows.map(mapRegressionTask);
   }
 
+  async listStoppingTasks(input: {
+    rootPath: string;
+    deadline?: string;
+    limit?: number;
+  }): Promise<RegressionTaskRecord[]> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return [];
+    const limit = input.limit ?? 1_000;
+    const result =
+      input.deadline === undefined
+        ? await this.pool.query(
+            `SELECT * FROM regression_tasks
+              WHERE project_id = $1 AND status = 'stopping'
+              ORDER BY created_at ASC LIMIT $2`,
+            [project.id, limit]
+          )
+        : await this.pool.query(
+            `SELECT * FROM regression_tasks
+              WHERE project_id = $1 AND status = 'stopping'
+                AND (cancel_requested_at <= $2 OR cancel_requested_at IS NULL)
+              ORDER BY created_at ASC LIMIT $3`,
+            [project.id, input.deadline, limit]
+          );
+    return result.rows.map(mapRegressionTask);
+  }
+
   async updateRegressionTask(
     rootPath: string,
     id: string,
@@ -1068,7 +1094,7 @@ export class PostgresStore implements ProjectStore {
       `UPDATE regression_tasks
           SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, $3),
               cancel_source = COALESCE(cancel_source, $4),
-              cancel_note = COALESCE(cancel_note, $5)
+              cancel_note = COALESCE($5, cancel_note)
         WHERE project_id = $1 AND id = $2 AND status = 'stopping'
       RETURNING *`,
       [project.id, input.taskId, at, input.source ?? null, input.note ?? null]

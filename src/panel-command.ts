@@ -272,13 +272,15 @@ async function runPanelWeb(options: {
   if (address !== null && typeof address === "object") actualPort = address.port;
   const url = `http://${host}:${actualPort}/panel`;
 
-  const sweepTimer = setInterval(() => {
-    void sweepStaleTasks({ store })
+  const runCancellationSweep = (): void => {
+    void sweepStaleTasks({ store, allHosts: true })
       .then((result) => {
         if (result.cancelled > 0) options.log(`离线取消终结：${result.cancelled} 条`);
       })
       .catch((error) => options.errorLog(`离线取消清扫失败: ${errorMessage(error)}`));
-  }, SWEEP_INTERVAL_MS);
+  };
+  runCancellationSweep();
+  const sweepTimer = setInterval(runCancellationSweep, SWEEP_INTERVAL_MS);
   sweepTimer.unref?.();
 
   let closed = false;

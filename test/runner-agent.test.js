@@ -249,6 +249,58 @@ test("启动释放：预置 claimed_by=me → 先释放再领取执行；他人�
   assert.equal(finalOther.claimedBy, other.id, "他人持有不动");
 });
 
+test("重启：启动终结自己遗留的 stopping 任务（不执行、不回 pending）", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const me = await store.upsertRunner({
+    rootPath,
+    name: "runner-1",
+    hostname: os.hostname(),
+    platforms: ["android"],
+    devices: [inv.devices[0]],
+    tools: TOOLS,
+    hostId: TEST_HOST_ID,
+    instanceId: "inst-old"
+  });
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  await store.claimRegressionTask({
+    rootPath,
+    runnerId: me.id,
+    platforms: ["android"],
+    capabilities: ["android"],
+    hostId: TEST_HOST_ID,
+    instanceId: "inst-old"
+  });
+  await store.cancelRegressionTask({
+    rootPath,
+    taskId: task.id,
+    source: "panel",
+    actor: "panel",
+    actorHostId: TEST_HOST_ID,
+    note: "旧停止",
+    at: "2026-10-21T02:00:00.000Z"
+  });
+  const state = store.exportState();
+  state.runners[0].lastSeenAt = new Date(Date.now() - 10 * 60_000).toISOString();
+  store.importState(state);
+
+  const calls = [];
+  const { options, logs } = makeOptions(runtime, inv, {
+    executeSuite: async (argv) => {
+      calls.push(argv);
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(calls.length, 0, "遗留 stopping 不进入执行");
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "cancelled");
+  assert.notEqual(after.status, "pending");
+  assert.equal(after.cancelNote, "旧停止; runner-restart");
+  assert.ok(logs.some((line) => line.includes("重启终结遗留停止任务：1 条")));
+});
+
 test("执行器抛错 → 释放本次领取（回 pending 可再领）＋errorLog＋不中断", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;

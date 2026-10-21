@@ -162,6 +162,26 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     } catch (error) {
       io.errorLog(`[runner] 释放未完成领取失败：${errorMessage(error)}`);
     }
+    try {
+      let drained = 0;
+      for (const task of await store.listStoppingTasks({ rootPath })) {
+        if (task.claimedBy !== me.id) continue;
+        const legacy = task.cancelSource === null;
+        const finalized = await store.finalizeCancellation({
+          rootPath,
+          taskId: task.id,
+          note:
+            task.cancelNote === null || task.cancelNote.trim() === ""
+              ? "runner-restart"
+              : `${task.cancelNote}; runner-restart`,
+          source: legacy ? "panel" : null
+        });
+        if (finalized !== null) drained += 1;
+      }
+      if (drained > 0) io.log(`[runner] 重启终结遗留停止任务：${drained} 条`);
+    } catch (error) {
+      io.errorLog(`[runner] 重启终结遗留停止任务失败：${errorMessage(error)}`);
+    }
     const projectId = (await store.getProjectByPath(rootPath).catch(() => null))?.id ?? null;
     let active: { taskId: string; serials: string[] } | null = null;
     let leaseLost = false;

@@ -111,7 +111,7 @@ export class MemoryStore implements ProjectStore {
     this.hostId = hostId;
   }
 
-  scopeHost(hostId: string): ProjectStore {
+  scopeHost(hostId: string | null): ProjectStore {
     const view = new MemoryStore(hostId);
     view.projects = this.projects;
     view.llms = this.llms;
@@ -391,6 +391,28 @@ export class MemoryStore implements ProjectStore {
       .map(cloneRegressionTask);
   }
 
+  async listStoppingTasks(input: {
+    rootPath: string;
+    deadline?: string;
+    limit?: number;
+  }): Promise<RegressionTaskRecord[]> {
+    const project = this.getProjectRecord(input.rootPath);
+    if (!project) return [];
+    const deadline = input.deadline;
+    return this.regressionTasks
+      .filter(
+        (task) =>
+          task.projectId === project.id &&
+          task.status === "stopping" &&
+          (deadline === undefined ||
+            task.cancelRequestedAt === null ||
+            task.cancelRequestedAt <= deadline)
+      )
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))
+      .slice(0, input.limit ?? 1_000)
+      .map(cloneRegressionTask);
+  }
+
   async updateRegressionTask(
     rootPath: string,
     id: string,
@@ -495,7 +517,7 @@ export class MemoryStore implements ProjectStore {
     task.status = "cancelled";
     task.cancelledAt = task.cancelledAt ?? at;
     task.cancelSource = task.cancelSource ?? input.source ?? null;
-    task.cancelNote = task.cancelNote ?? input.note ?? null;
+    task.cancelNote = input.note ?? task.cancelNote;
     return cloneRegressionTask(task);
   }
 
