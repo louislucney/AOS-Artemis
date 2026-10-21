@@ -89,43 +89,50 @@ export async function handlePanelActionRequest(
   }
   const projectKey = typeof payload.project === "string" ? payload.project.trim() : "";
   if (projectKey === "") return json(400, { error: "缺少 project" });
-  const resolved = await resolveProjectKey(deps, projectKey);
+  const hostParam =
+    (request.url.searchParams.get("host") ?? "").trim() ||
+    (typeof payload.host === "string" ? payload.host.trim() : "");
+  const resolved = await resolveProjectKey(deps, projectKey, hostParam === "" ? undefined : hostParam);
   if (!resolved) return json(404, { error: `未知项目 "${projectKey}"` });
+  const scopedDeps: PanelWebDeps =
+    resolved.hostId === null
+      ? deps
+      : { ...deps, store: deps.storeForHost?.(resolved.hostId) ?? deps.store };
 
   try {
     if (request.url.pathname === "/panel/api/tasks") {
-      const response = await createTask(deps, resolved.rootPath, payload);
-      if (response.status === 200) deps.cache?.clear();
-      await auditPanel(deps, resolved.rootPath, "action.tasks", response);
+      const response = await createTask(scopedDeps, resolved.rootPath, payload);
+      if (response.status === 200) scopedDeps.cache?.clear();
+      await auditPanel(scopedDeps, resolved.rootPath, "action.tasks", response);
       return response;
     }
     if (request.url.pathname === "/panel/api/verdicts") {
-      const response = await saveVerdicts(deps, resolved.rootPath, payload);
-      await auditPanel(deps, resolved.rootPath, "action.verdicts", response);
+      const response = await saveVerdicts(scopedDeps, resolved.rootPath, payload);
+      await auditPanel(scopedDeps, resolved.rootPath, "action.verdicts", response);
       return response;
     }
     if (request.url.pathname === "/panel/api/issues") {
-      const response = await createIssues(deps, resolved.rootPath, payload);
-      await auditPanel(deps, resolved.rootPath, "action.issues", response);
+      const response = await createIssues(scopedDeps, resolved.rootPath, payload);
+      await auditPanel(scopedDeps, resolved.rootPath, "action.issues", response);
       return response;
     }
     if (request.url.pathname === "/panel/api/tasks/release") {
-      const response = await releaseTask(deps, resolved.rootPath, payload);
-      await auditPanel(deps, resolved.rootPath, "action.release", response, {
+      const response = await releaseTask(scopedDeps, resolved.rootPath, payload);
+      await auditPanel(scopedDeps, resolved.rootPath, "action.release", response, {
         taskId: String(payload.taskId ?? "")
       });
       return response;
     }
     if (request.url.pathname === "/panel/api/tasks/stop") {
-      const response = await stopTask(deps, resolved.rootPath, payload);
-      await auditPanel(deps, resolved.rootPath, "action.stop", response, {
+      const response = await stopTask(scopedDeps, resolved.rootPath, payload);
+      await auditPanel(scopedDeps, resolved.rootPath, "action.stop", response, {
         taskId: String(payload.taskId ?? "")
       });
       return response;
     }
     if (request.url.pathname === "/panel/api/tasks/rerun") {
-      const response = await rerunTask(deps, resolved.rootPath, payload);
-      await auditPanel(deps, resolved.rootPath, "action.rerun", response, {
+      const response = await rerunTask(scopedDeps, resolved.rootPath, payload);
+      await auditPanel(scopedDeps, resolved.rootPath, "action.rerun", response, {
         taskId: String(payload.taskId ?? "")
       });
       return response;
@@ -135,39 +142,39 @@ export async function handlePanelActionRequest(
       const caseId = typeof payload.caseId === "string" ? payload.caseId.trim() : "";
       if (runId === "" || caseId === "") return json(400, { error: "缺少 runId/caseId" });
       const outcome = await retryIssueEvidence(
-        { store: deps.store, runtimeFor: deps.runtimeFor },
+        { store: scopedDeps.store, runtimeFor: scopedDeps.runtimeFor },
         { rootPath: resolved.rootPath, runId, caseId }
       );
       const response = outcome.ok ? json(200, outcome) : json(400, outcome);
-      await auditPanel(deps, resolved.rootPath, "action.issues.evidence", response, { runId, caseId });
+      await auditPanel(scopedDeps, resolved.rootPath, "action.issues.evidence", response, { runId, caseId });
       return response;
     }
     if (request.url.pathname === "/panel/api/schedules") {
-      const response = await manageSchedules(deps, resolved.rootPath, payload);
-      await auditPanel(deps, resolved.rootPath, "action.schedules", response);
+      const response = await manageSchedules(scopedDeps, resolved.rootPath, payload);
+      await auditPanel(scopedDeps, resolved.rootPath, "action.schedules", response);
       return response;
     }
     if (request.url.pathname === "/panel/api/quarantine") {
       const response = await manageQuarantine(resolved.rootPath, payload);
-      if (response.status === 200) deps.cache?.clear();
-      await auditPanel(deps, resolved.rootPath, "action.quarantine", response);
+      if (response.status === 200) scopedDeps.cache?.clear();
+      await auditPanel(scopedDeps, resolved.rootPath, "action.quarantine", response);
       return response;
     }
     if (request.url.pathname === "/panel/api/export") {
-      const response = await runExport(deps, resolved.rootPath, payload);
-      await auditPanel(deps, resolved.rootPath, "action.export", response);
+      const response = await runExport(scopedDeps, resolved.rootPath, payload);
+      await auditPanel(scopedDeps, resolved.rootPath, "action.export", response);
       return response;
     }
     if (request.url.pathname === "/panel/api/import") {
-      const response = await runImport(deps, resolved.rootPath, payload, request);
-      if (response.status === 200) deps.cache?.clear();
-      await auditPanel(deps, resolved.rootPath, "action.import", response);
+      const response = await runImport(scopedDeps, resolved.rootPath, payload, request);
+      if (response.status === 200) scopedDeps.cache?.clear();
+      await auditPanel(scopedDeps, resolved.rootPath, "action.import", response);
       return response;
     }
     return json(404, { error: "not found" });
   } catch (error) {
     log(`面板动作失败: ${errorMessage(error)}`);
-    await recordAuditSafe(deps.store, resolved.rootPath, {
+    await recordAuditSafe(scopedDeps.store, resolved.rootPath, {
       domain: "panel",
       action: "action.error",
       result: "failed",

@@ -80,6 +80,8 @@ export interface PanelDeps {
   now?: () => number;
   /** 深探层（HTTP 模式注入；懒建 Runtime 纯读子集，见 deep.ts）。 */
   deepProbe?: PanelDeepProbe | null;
+  /** 主机作用域存储视图（跨主机同路径解析用）；未提供时回退 `store`。 */
+  storeForHost?: (hostId: string) => ProjectStore | null;
 }
 
 export interface PanelBatchSummary {

@@ -187,6 +187,7 @@ async function runPanelWeb(options: {
     buildStale: isBuildStale(import.meta.url, Date.now() - Math.round(process.uptime() * 1000)),
     cache: createPanelWebCache(panelCacheTtlFrom(env)),
     storeNote: options.storageNote,
+    storeForHost: (hostId) => store.scopeHost(hostId),
     capabilities: {
       actions: (env.AOS_PANEL_ACTIONS ?? "").trim() === "1",
       usage: false,

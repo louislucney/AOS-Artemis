@@ -231,6 +231,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     deep: createPanelDeepProbe({ createRuntime: deepRuntimeFor }),
     runtimeFor: deepRuntimeFor,
     storeNote: runtimeHost.storeNote,
+    storeForHost: (hostId) => store.scopeHost(hostId),
     capabilities: { actions: panelActionsEnabled(process.env), usage: true, mode: "http" }
   };
 

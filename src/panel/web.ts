@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { ProjectStore, RunnerTools } from "../db/types.js";
+import { AmbiguousProjectError } from "../db/types.js";
+import type { ProjectRecord, ProjectStore, RunnerTools } from "../db/types.js";
 import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
@@ -94,6 +95,8 @@ export interface PanelWebDeps {
   runtimeFor?: (rootPath: string) => Promise<Runtime | null>;
   /** 存储回退说明（装配期 reason；运维页展示）。 */
   storeNote?: string | null;
+  /** 主机作用域存储视图（跨主机同路径解析用）；未提供时回退 `deps.store`。 */
+  storeForHost?: (hostId: string) => ProjectStore | null;
   /** 能力标记（承载模式/写动作/统计页）；缺省按 HTTP 全开渲染。 */
   capabilities?: ConsoleCapabilities;
 }
@@ -216,6 +219,45 @@ function notFound(message = "not found", asJson = false): PanelWebResponse {
   return { status: 404, contentType: HTML_CONTENT_TYPE, body: html };
 }
 
+function ambiguousProjectResponse(error: AmbiguousProjectError, asJson: boolean): PanelWebResponse {
+  if (asJson) {
+    return {
+      status: 409,
+      contentType: JSON_CONTENT_TYPE,
+      body: JSON.stringify(
+        {
+          error: error.message,
+          candidates: error.candidates.map((candidate) => ({
+            hostId: candidate.hostId,
+            rootPath: candidate.rootPath,
+            name: candidate.name
+          }))
+        },
+        null,
+        2
+      )
+    };
+  }
+  const html = renderConsoleShell({
+    title: "项目歧义",
+    active: null,
+    body: [
+      "<h1>项目路径跨主机重复</h1>",
+      `<p>${escapeHtml(error.message)}</p>`,
+      "<ul>",
+      ...error.candidates.map(
+        (candidate) =>
+          `<li><code>${escapeHtml(candidate.hostId ?? "（无主机）")}</code> · ${escapeHtml(
+            candidate.name
+          )}（${escapeHtml(candidate.rootPath)}）</li>`
+      ),
+      "</ul>",
+      "<p>请用 <code>?host=&lt;machine_id&gt;</code> 指定主机。</p>"
+    ].join("\n")
+  });
+  return { status: 409, contentType: HTML_CONTENT_TYPE, body: html };
+}
+
 function normalizeSince(raw: string | null): string | null {
   if (raw === null) return null;
   if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw)) return raw;
@@ -238,16 +280,62 @@ function intParam(params: URLSearchParams, key: string): number | null {
 
 export async function resolveProjectKey(
   deps: PanelWebDeps,
-  key: string
-): Promise<{ rootPath: string; name: string } | null> {
-  let projects: Array<{ name: string; rootPath: string }> = [];
+  key: string,
+  hostId?: string
+): Promise<{ rootPath: string; name: string; hostId: string | null } | null> {
+  let projects: ProjectRecord[] = [];
   try {
     projects = await deps.store.listProjects();
   } catch {
     projects = [];
   }
-  const byPath = projects.find((project) => project.rootPath === key);
-  if (byPath) return { rootPath: byPath.rootPath, name: byPath.name };
+
+  const explicitHost =
+    typeof hostId === "string" && hostId.trim() !== "" ? hostId.trim() : null;
+  const localHost = explicitHost ?? deps.store.localHostId;
+
+  // 主机作用域解析优先（显式 host，或本机 host）。
+  if (localHost !== null) {
+    const scoped = deps.storeForHost?.(localHost) ?? deps.store;
+    const byPath = await scoped.getProjectByPath(key).catch(() => null);
+    if (byPath) return { rootPath: byPath.rootPath, name: byPath.name, hostId: byPath.hostId };
+    const byName = projects.find(
+      (project) =>
+        project.hostId === localHost && project.name === key && fs.existsSync(project.rootPath)
+    );
+    if (byName) return { rootPath: byName.rootPath, name: byName.name, hostId: byName.hostId };
+    if (explicitHost !== null) {
+      const workspace = resolveWorkspaceKey(deps, key);
+      return workspace ? { ...workspace, hostId: explicitHost } : null;
+    }
+  }
+
+  // 无 host：跨主机唯一匹配（路径优先，再工作区目录，再名称）；多行歧义即抛错，不取其一。
+  const byPath = projects.filter((project) => project.rootPath === key);
+  if (byPath.length === 1) {
+    const project = byPath[0]!;
+    return { rootPath: project.rootPath, name: project.name, hostId: project.hostId };
+  }
+  if (byPath.length > 1) throw new AmbiguousProjectError(key, byPath);
+
+  const workspace = resolveWorkspaceKey(deps, key);
+  if (workspace) return { ...workspace, hostId: null };
+
+  const byName = projects.filter(
+    (project) => project.name === key && fs.existsSync(project.rootPath)
+  );
+  if (byName.length === 1) {
+    const project = byName[0]!;
+    return { rootPath: project.rootPath, name: project.name, hostId: project.hostId };
+  }
+  if (byName.length > 1) throw new AmbiguousProjectError(key, byName);
+  return null;
+}
+
+function resolveWorkspaceKey(
+  deps: PanelWebDeps,
+  key: string
+): { rootPath: string; name: string } | null {
   if (deps.workspaceRoot !== null && path.isAbsolute(key)) {
     const candidate = path.resolve(key);
     const within = candidate === deps.workspaceRoot || candidate.startsWith(deps.workspaceRoot + path.sep);
@@ -269,43 +357,49 @@ export async function resolveProjectKey(
       /* fall through */
     }
   }
-  const byName = projects.find(
-    (project) => project.name === key && fs.existsSync(project.rootPath)
-  );
-  if (byName) return { rootPath: byName.rootPath, name: byName.name };
   return null;
 }
 
 async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
-  const panelDeps: PanelDeps = {
-    store: deps.store,
-    env: deps.env ?? process.env,
-    workspaceRoot: deps.workspaceRoot ?? null,
-    ...(deps.serviceRepo !== undefined ? { serviceRepo: deps.serviceRepo } : {}),
-    buildStale: deps.buildStale ?? null,
-    ...(deps.now ? { now: deps.now } : {}),
-    ...(deps.deep !== undefined ? { deepProbe: deps.deep } : {})
-  };
   const projectKey = trimmed(url.searchParams.get("project"));
+  const hostParam = trimmed(url.searchParams.get("host"));
   if (trimmed(url.searchParams.get("section")) === "search") {
     return {
       kind: "search",
       data: await buildSearch(deps, trimmed(url.searchParams.get("q")) ?? "")
     };
   }
+
+  const resolved =
+    projectKey === null ? null : await resolveProjectKey(deps, projectKey, hostParam ?? undefined);
+  const projectStore =
+    resolved !== null && resolved.hostId !== null
+      ? (deps.storeForHost?.(resolved.hostId) ?? deps.store)
+      : deps.store;
+
+  const panelDeps: PanelDeps = {
+    store: projectStore,
+    env: deps.env ?? process.env,
+    workspaceRoot: deps.workspaceRoot ?? null,
+    ...(deps.serviceRepo !== undefined ? { serviceRepo: deps.serviceRepo } : {}),
+    buildStale: deps.buildStale ?? null,
+    ...(deps.now ? { now: deps.now } : {}),
+    ...(deps.deep !== undefined ? { deepProbe: deps.deep } : {}),
+    ...(deps.storeForHost ? { storeForHost: deps.storeForHost } : {})
+  };
+
   if (projectKey === null) {
     if (trimmed(url.searchParams.get("view")) === "compare") {
       return { kind: "compare", compare: await buildPanelCompare(panelDeps) };
     }
     return { kind: "overview", overview: await buildPanelOverview(panelDeps) };
   }
-  const resolved = await resolveProjectKey(deps, projectKey);
   if (!resolved) throw new PanelNotFoundError(`未知项目 "${projectKey}"`);
 
   const section = trimmed(url.searchParams.get("section"));
   if (section === "dispatch") {
     const preview = await computeDispatchPreview(
-      { store: deps.store, env: deps.env ?? process.env },
+      { store: projectStore, env: deps.env ?? process.env },
       resolved.rootPath,
       url.searchParams
     );
@@ -323,12 +417,12 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     };
   }
   if (section === "library") {
-    const recentRuns = await deps.store
+    const recentRuns = await projectStore
       .listSuiteRuns(resolved.rootPath, { limit: 5 })
       .catch(() => []);
     const candidateMap = new Map<string, LibraryPageData["caseCandidates"][number]>();
     for (const run of recentRuns) {
-      const full = await deps.store.getSuiteRun(resolved.rootPath, run.id).catch(() => null);
+      const full = await projectStore.getSuiteRun(resolved.rootPath, run.id).catch(() => null);
       const at = full?.finishedAt ?? full?.startedAt ?? run.finishedAt ?? run.startedAt ?? null;
       for (const entry of full?.cases ?? []) {
         if (entry.status === "passed") continue;
@@ -341,7 +435,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       kind: "library",
       rootPath: resolved.rootPath,
       rootLabel: resolved.name,
-      sets: await deps.store.listCaseSets(resolved.rootPath),
+      sets: await projectStore.listCaseSets(resolved.rootPath),
       quarantine: await readQuarantineSummary(resolved.rootPath),
       caseCandidates: [...candidateMap.values()]
     };
@@ -393,7 +487,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         ? Math.floor(Number(offsetRaw))
         : 0;
     const pageSize = 50;
-    const page = await deps.store.listAudit(resolved.rootPath, {
+    const page = await projectStore.listAudit(resolved.rootPath, {
       ...(domain === null ? {} : { domain }),
       ...(result === undefined ? {} : { result }),
       ...(since === null ? {} : { since }),
@@ -415,14 +509,14 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   }
   if (section === "ops") {
     const health = (
-      deps.store as { writeErrors?: () => { count: number; lastError: string | null } }
+      projectStore as { writeErrors?: () => { count: number; lastError: string | null } }
     ).writeErrors?.();
     const artifacts = (await listArtifacts(resolved.rootPath, { limit: 500 })).length;
     return {
       kind: "ops",
       rootPath: resolved.rootPath,
       rootLabel: resolved.name,
-      storeKind: deps.store.kind,
+      storeKind: projectStore.kind,
       storeNote: deps.storeNote ?? null,
       writeError:
         health && health.count > 0
@@ -529,6 +623,9 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
   } catch (error) {
     if (error instanceof PanelNotFoundError) {
       return notFound(error.message, url.pathname.endsWith(".json"));
+    }
+    if (error instanceof AmbiguousProjectError) {
+      return ambiguousProjectResponse(error, url.pathname.endsWith(".json"));
     }
     throw error;
   }

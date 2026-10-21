@@ -363,14 +363,17 @@ export class Runtime {
     if (this.initialized) return;
     this.initialized = true;
 
-    this._hostIdentity =
+    const identity =
       this.hostIdentityOption ?? (await resolveHostIdentity({ env: this.baseEnv }));
+    this._hostIdentity = identity;
+    this.store.bindHost(identity.id);
 
     this.projectRecord = await this.safeStore(
       () =>
         this.store.upsertProject({
           rootPath: this.project.rootDir,
-          name: this.project.config.project?.name ?? path.basename(this.project.rootDir)
+          name: this.project.config.project?.name ?? path.basename(this.project.rootDir),
+          hostId: identity.id
         }),
       null
     );
