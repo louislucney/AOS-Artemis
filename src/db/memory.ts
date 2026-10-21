@@ -478,6 +478,27 @@ export class MemoryStore implements ProjectStore {
     return cloneRegressionTask(task);
   }
 
+  async finalizeCancellation(input: {
+    rootPath: string;
+    taskId: string;
+    at?: string;
+    note?: string | null;
+    source?: CancelSource | null;
+  }): Promise<RegressionTaskRecord | null> {
+    const project = this.getProjectRecord(input.rootPath);
+    if (!project) return null;
+    const task = this.regressionTasks.find(
+      (entry) => entry.projectId === project.id && entry.id === input.taskId
+    );
+    if (!task || task.status !== "stopping") return null;
+    const at = input.at ?? new Date().toISOString();
+    task.status = "cancelled";
+    task.cancelledAt = task.cancelledAt ?? at;
+    task.cancelSource = task.cancelSource ?? input.source ?? null;
+    task.cancelNote = task.cancelNote ?? input.note ?? null;
+    return cloneRegressionTask(task);
+  }
+
   async claimRegressionTask(input: {
     rootPath: string;
     runnerId: string;

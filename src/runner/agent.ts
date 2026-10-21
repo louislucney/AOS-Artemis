@@ -9,6 +9,7 @@ import {
   type RunnerRecord
 } from "../db/types.js";
 import { AOS_MCP_VERSION, errorMessage } from "../util.js";
+import { sweepStaleTasks, SWEEP_INTERVAL_MS } from "../tasks/sweeper.js";
 import {
   collectHostSnapshot,
   upsertHostInputFromSnapshot,
@@ -247,8 +248,20 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
     }
 
     try {
+      let lastSweepAt = Number.NEGATIVE_INFINITY;
       while (!stopped()) {
         const nowMs = now();
+        if (nowMs - lastSweepAt >= SWEEP_INTERVAL_MS) {
+          lastSweepAt = nowMs;
+          try {
+            const swept = await sweepStaleTasks({ store, rootPath, now, runnerTtlMs });
+            if (swept.cancelled > 0) {
+              io.log(`[runner] 离线取消终结：${swept.cancelled} 条`);
+            }
+          } catch (error) {
+            io.errorLog(`[runner] 离线取消清扫失败：${errorMessage(error)}`);
+          }
+        }
         if (staleClaimMs > 0) {
           try {
             const reclaimed = await store.releaseStaleClaims({

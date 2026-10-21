@@ -13,6 +13,7 @@ import {
   panelCacheTtlFrom,
   type PanelWebDeps
 } from "./panel/web.js";
+import { sweepStaleTasks, SWEEP_INTERVAL_MS } from "./tasks/sweeper.js";
 import { errorMessage, isBuildStale } from "./util.js";
 
 /** mobile-testing-mcp panel 子命令（overview-panel T6，DESIGN §13.105）：`panel --web` 复用
@@ -271,10 +272,20 @@ async function runPanelWeb(options: {
   if (address !== null && typeof address === "object") actualPort = address.port;
   const url = `http://${host}:${actualPort}/panel`;
 
+  const sweepTimer = setInterval(() => {
+    void sweepStaleTasks({ store })
+      .then((result) => {
+        if (result.cancelled > 0) options.log(`离线取消终结：${result.cancelled} 条`);
+      })
+      .catch((error) => options.errorLog(`离线取消清扫失败: ${errorMessage(error)}`));
+  }, SWEEP_INTERVAL_MS);
+  sweepTimer.unref?.();
+
   let closed = false;
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
+    clearInterval(sweepTimer);
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
       server.closeAllConnections();

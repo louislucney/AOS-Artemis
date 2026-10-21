@@ -1054,6 +1054,28 @@ export class PostgresStore implements ProjectStore {
     return this.getRegressionTask(input.rootPath, input.taskId);
   }
 
+  async finalizeCancellation(input: {
+    rootPath: string;
+    taskId: string;
+    at?: string;
+    note?: string | null;
+    source?: CancelSource | null;
+  }): Promise<RegressionTaskRecord | null> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return null;
+    const at = input.at ?? new Date().toISOString();
+    const updated = await this.pool.query(
+      `UPDATE regression_tasks
+          SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, $3),
+              cancel_source = COALESCE(cancel_source, $4),
+              cancel_note = COALESCE(cancel_note, $5)
+        WHERE project_id = $1 AND id = $2 AND status = 'stopping'
+      RETURNING *`,
+      [project.id, input.taskId, at, input.source ?? null, input.note ?? null]
+    );
+    return updated.rows.length > 0 ? mapRegressionTask(updated.rows[0]!) : null;
+  }
+
   async claimRegressionTask(input: {
     rootPath: string;
     runnerId: string;

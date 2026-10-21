@@ -319,6 +319,19 @@ export class FileStore implements ProjectStore {
     return record;
   }
 
+  async finalizeCancellation(input: {
+    rootPath: string;
+    taskId: string;
+    at?: string;
+    note?: string | null;
+    source?: CancelSource | null;
+  }): Promise<RegressionTaskRecord | null> {
+    const bucket = await this.bucket(input.rootPath);
+    const record = await this.scopedMem(bucket, this.hostId).finalizeCancellation(input);
+    if (record !== null) await this.persist(bucket, "finalizeCancellation");
+    return record;
+  }
+
   async claimRegressionTask(input: {
     rootPath: string;
     runnerId: string;
