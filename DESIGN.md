@@ -2226,3 +2226,11 @@ llm_switch(name, force):
 - **`upsertHost` 首写竞态**：先查再插的窗口内两个并发心跳可能同时 INSERT；现在捕获 `23505` 后**重跑合并更新分支**（重新 SELECT 当前行 → 计算 `client_seen_at`/`runner_seen_at` max → UPDATE），不再把异常抛给 runner 导致退出 2。正常路径仍为首查命中直接更新，无额外写入。
 - **测试**：`test/db-hosts.test.js` 覆盖保留/关闭/进行中保留、File 落盘与重启、地址历史默认/关闭、helper 边界、`upsertHost` 23505 合并更新；`test/task-sweeper.test.js` 覆盖清扫器顺带清理与清理失败不阻断；`test/db-init-tolerance.test.js` 覆盖索引缺失失败、pg_indexes 不支持跳过、建表竞态；`test/runner-host-heartbeat.test.js` 覆盖 `AOS_HOST_ADDR_HISTORY=0` 连续心跳只留最新地址。
 - **文档**：README 多机环境变量表与在线口径、DESIGN 环境变量表、`.env.example`、多机规格 §6.2/§6.7/§13 同步。
+
+### 13.171 修复（面板产物路由：证据链目录浅索引）
+
+> 2026-10-21。批次用例证据把 `trace`/`notes` 指向**目录**（`src/panel/overview.ts` 的 `evidenceLinks`），但 `/panel/artifact` 只接受白名单扩展名的**文件**——目录命中「不支持的产物类型 (无扩展名)」→ 400，证据链在面板里点不开。
+
+- **行为**：`src/panel/artifact-route.ts` 在 `.artemis` 范围校验后先 `stat`：目录 → 浅索引（HTML，条目排序、名称转义、目录尾 `/`、`← 上级`、>500 截断），文件 → 原白名单 MIME；不存在/非普通文件 → 404（此前「未知扩展名且不存在」先报 400，现统一 404）。索引内链接续带 `project`/`host`，可逐级下钻与返回。
+- **口径**：与 runner 产物服务 `/artifact/<rel>` 的目录浅索引一致（不递归、转义、截断）；仍只读、仅 `.artemis` 范围、无目录穿越；不新增鉴权（面板沿用 `serve --http` 的 `AOS_HTTP_TOKEN`）。
+- **测试**：`test/panel-artifact-route.test.js` +1（目录 200/HTML、子目录与上级链接、名称转义、`.artemis` 根无上级；既有「非白名单类型」用例改为先落盘 `raw.bin` 再断言 400）。全量 2036 绿。

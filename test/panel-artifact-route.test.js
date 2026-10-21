@@ -15,6 +15,7 @@ async function setup() {
   const dir = join(root, ".artemis", "design", "diffs");
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  await writeFile(join(dir, "raw.bin"), Buffer.from([0x00, 0x01, 0x02]));
   await writeFile(join(root, "aos.config.jsonc"), "{}", "utf8");
   return { root, deps };
 }
@@ -48,6 +49,34 @@ test("artifact route: 索引 CSV 导出（含筛选）", async () => {
     assert.match(csv.contentType, /text\/csv/);
     assert.match(String(csv.body), /kind,path,title,at,size/);
     assert.match(String(csv.body), /shot\.png/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: 目录返回浅索引（可下钻、可回上级、名称转义）", async () => {
+  const { root, deps } = await setup();
+  try {
+    const traceDir = join(root, ".artemis", "traces", "ios-demo");
+    await mkdir(join(traceDir, "shots"), { recursive: true });
+    await writeFile(join(traceDir, "run.json"), "{}", "utf8");
+    await writeFile(join(traceDir, "shots", "step-1.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await writeFile(join(traceDir, "<script>.json"), "{}", "utf8");
+
+    const index = await handleArtifactRequest(url(root, ".artemis/traces/ios-demo"), deps);
+    assert.equal(index.status, 200);
+    assert.match(index.contentType, /text\/html/);
+    const html = String(index.body);
+    assert.match(html, /\/panel\/artifact\?project=/);
+    assert.match(html, /run\.json/);
+    assert.match(html, /shots\//);
+    assert.match(html, /← 上级/);
+    assert.match(html, /&lt;script&gt;\.json/);
+    assert.ok(!html.includes("<script>.json"), "条目名称必须转义");
+
+    const artemisRoot = await handleArtifactRequest(url(root, ".artemis"), deps);
+    assert.equal(artemisRoot.status, 200);
+    assert.ok(!String(artemisRoot.body).includes("← 上级"), ".artemis 根无上级");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
