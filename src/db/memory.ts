@@ -12,6 +12,10 @@ import type {
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
+  HostAddressInput,
+  HostAddressRecord,
+  HostRecord,
+  HostSessionRecord,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
@@ -32,6 +36,7 @@ import type {
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
+  UpsertHostInput,
   UpsertLlmInput,
   UpsertRunnerInput,
   UsageEventQuery,
@@ -51,6 +56,9 @@ export interface MemoryStoreState {
   runners: RunnerRecord[];
   schedules: ScheduleRecord[];
   auditEvents: AuditEventRecord[];
+  hosts: HostRecord[];
+  hostAddresses: HostAddressRecord[];
+  hostSessions: HostSessionRecord[];
 }
 
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
@@ -69,6 +77,9 @@ export class MemoryStore implements ProjectStore {
   private suiteRuns: SuiteRunRecord[] = [];
   private runners: RunnerRecord[] = [];
   private schedules: ScheduleRecord[] = [];
+  private hosts: HostRecord[] = [];
+  private hostAddresses: HostAddressRecord[] = [];
+  private hostSessions: HostSessionRecord[] = [];
 
   async upsertProject(input: {
     rootPath: string;
@@ -690,6 +701,231 @@ export class MemoryStore implements ProjectStore {
       .map(cloneRunner);
   }
 
+  async upsertHost(input: UpsertHostInput): Promise<HostRecord> {
+    const now = new Date().toISOString();
+    const existing = this.hosts.find((host) => host.id === input.id);
+    if (existing) {
+      if (input.hostname !== undefined) existing.hostname = input.hostname;
+      if (input.hardwareId !== undefined) existing.hardwareId = input.hardwareId;
+      if (input.username !== undefined) existing.username = input.username;
+      if (input.osPlatform !== undefined) existing.osPlatform = input.osPlatform;
+      if (input.osVersion !== undefined) existing.osVersion = input.osVersion;
+      if (input.arch !== undefined) existing.arch = input.arch;
+      if (input.identitySource !== undefined) existing.identitySource = input.identitySource;
+      if (input.kind !== undefined) existing.kind = input.kind;
+      if (input.capabilities !== undefined) existing.capabilities = [...input.capabilities];
+      if (input.env !== undefined) existing.env = { ...input.env };
+      if (input.envAt !== undefined) existing.envAt = input.envAt;
+      if (input.ipPrimary !== undefined) existing.ipPrimary = input.ipPrimary;
+      if (input.clientSeenAt !== undefined) {
+        existing.clientSeenAt = maxIso(existing.clientSeenAt, input.clientSeenAt);
+      }
+      if (input.runnerSeenAt !== undefined) {
+        existing.runnerSeenAt = maxIso(existing.runnerSeenAt, input.runnerSeenAt);
+      }
+      existing.lastSeenAt = maxIso(existing.lastSeenAt, existing.clientSeenAt, existing.runnerSeenAt);
+      return cloneHost(existing);
+    }
+    const record: HostRecord = {
+      id: input.id,
+      hardwareId: input.hardwareId ?? null,
+      hostname: input.hostname ?? "",
+      username: input.username ?? null,
+      osPlatform: input.osPlatform ?? "other",
+      osVersion: input.osVersion ?? null,
+      arch: input.arch ?? null,
+      identitySource: input.identitySource ?? "file",
+      kind: input.kind ?? "other",
+      capabilities: [...(input.capabilities ?? [])],
+      env: { ...(input.env ?? {}) },
+      envAt: input.envAt ?? null,
+      ipPrimary: input.ipPrimary ?? null,
+      label: null,
+      owner: null,
+      expectedOs: null,
+      expectedHostname: null,
+      registeredAt: null,
+      registeredBy: null,
+      clientSeenAt: input.clientSeenAt ?? null,
+      runnerSeenAt: input.runnerSeenAt ?? null,
+      lastSeenAt: input.firstSeenAt ?? now,
+      queuePaused: false,
+      queuePausedAt: null,
+      queuePausedBy: null,
+      firstSeenAt: input.firstSeenAt ?? now,
+      createdAt: input.createdAt ?? now
+    };
+    record.lastSeenAt = maxIso(
+      record.lastSeenAt,
+      record.clientSeenAt,
+      record.runnerSeenAt
+    );
+    this.hosts.push(record);
+    return cloneHost(record);
+  }
+
+  async getHost(id: string): Promise<HostRecord | null> {
+    const found = this.hosts.find((host) => host.id === id);
+    return found ? cloneHost(found) : null;
+  }
+
+  async listHosts(): Promise<HostRecord[]> {
+    return [...this.hosts]
+      .sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0))
+      .map(cloneHost);
+  }
+
+  async updateHostRegistration(input: {
+    id: string;
+    label?: string | null;
+    owner?: string | null;
+    expectedOs?: string | null;
+    expectedHostname?: string | null;
+    registeredBy: string;
+  }): Promise<HostRecord | null> {
+    const host = this.hosts.find((entry) => entry.id === input.id);
+    if (!host) return null;
+    if (input.label !== undefined) host.label = input.label;
+    if (input.owner !== undefined) host.owner = input.owner;
+    if (input.expectedOs !== undefined) host.expectedOs = input.expectedOs;
+    if (input.expectedHostname !== undefined) host.expectedHostname = input.expectedHostname;
+    host.registeredAt = new Date().toISOString();
+    host.registeredBy = input.registeredBy;
+    return cloneHost(host);
+  }
+
+  async upsertHostAddresses(input: {
+    hostId: string;
+    addresses: HostAddressInput[];
+    at?: string;
+    maxPerSource?: number;
+  }): Promise<void> {
+    const at = input.at ?? new Date().toISOString();
+    const maxPerSource = input.maxPerSource ?? 20;
+    for (const address of input.addresses) {
+      const existing = this.hostAddresses.find(
+        (row) =>
+          row.hostId === input.hostId &&
+          row.source === address.source &&
+          row.iface === address.iface &&
+          row.address === address.address
+      );
+      if (existing) {
+        existing.lastSeenAt = maxIso(existing.lastSeenAt, at);
+      } else {
+        this.hostAddresses.push({
+          hostId: input.hostId,
+          source: address.source,
+          iface: address.iface,
+          family: address.family,
+          address: address.address,
+          firstSeenAt: at,
+          lastSeenAt: at
+        });
+      }
+    }
+    if (maxPerSource > 0) {
+      const bySource = new Map<string, HostAddressRecord[]>();
+      for (const row of this.hostAddresses) {
+        if (row.hostId !== input.hostId) continue;
+        const bucket = bySource.get(row.source) ?? [];
+        bucket.push(row);
+        bySource.set(row.source, bucket);
+      }
+      const keep = new Set<HostAddressRecord>();
+      for (const rows of bySource.values()) {
+        rows.sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0));
+        for (const row of rows.slice(0, maxPerSource)) keep.add(row);
+      }
+      this.hostAddresses = this.hostAddresses.filter(
+        (row) => row.hostId !== input.hostId || keep.has(row)
+      );
+    }
+  }
+
+  async listHostAddresses(hostId: string): Promise<HostAddressRecord[]> {
+    return this.hostAddresses
+      .filter((row) => row.hostId === hostId)
+      .sort(
+        (a, b) =>
+          b.lastSeenAt.localeCompare(a.lastSeenAt) || a.address.localeCompare(b.address)
+      )
+      .map(cloneHostAddress);
+  }
+
+  async touchHostSession(input: {
+    id: string;
+    hostId: string;
+    projectId: string | null;
+    rootPath: string;
+    username: string | null;
+    client: string | null;
+    clientVersion: string | null;
+    pid: number | null;
+    at?: string;
+  }): Promise<HostSessionRecord> {
+    const at = input.at ?? new Date().toISOString();
+    const existing = this.hostSessions.find((session) => session.id === input.id);
+    if (existing) {
+      existing.lastSeenAt = maxIso(existing.lastSeenAt, at);
+      return cloneHostSession(existing);
+    }
+    const record: HostSessionRecord = {
+      id: input.id,
+      hostId: input.hostId,
+      projectId: input.projectId,
+      rootPath: input.rootPath,
+      username: input.username,
+      client: input.client,
+      clientVersion: input.clientVersion,
+      pid: input.pid,
+      startedAt: at,
+      lastSeenAt: at,
+      endedAt: null
+    };
+    this.hostSessions.push(record);
+    return cloneHostSession(record);
+  }
+
+  async endHostSession(id: string, at?: string): Promise<boolean> {
+    const session = this.hostSessions.find((entry) => entry.id === id);
+    if (!session) return false;
+    session.endedAt = at ?? new Date().toISOString();
+    return true;
+  }
+
+  async listHostSessions(
+    hostId: string,
+    options: { limit?: number; onlineWithinMs?: number; now?: number } = {}
+  ): Promise<HostSessionRecord[]> {
+    const nowMs = options.now ?? Date.now();
+    const cutoff =
+      options.onlineWithinMs === undefined
+        ? null
+        : new Date(nowMs - options.onlineWithinMs).toISOString();
+    const rows = this.hostSessions
+      .filter((session) => session.hostId === hostId && session.endedAt === null)
+      .filter((session) => cutoff === null || session.lastSeenAt > cutoff)
+      .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt) || b.id.localeCompare(a.id));
+    return (options.limit === undefined ? rows : rows.slice(0, options.limit)).map(
+      cloneHostSession
+    );
+  }
+
+  async setHostQueuePaused(input: {
+    hostId: string;
+    paused: boolean;
+    by: string;
+    at?: string;
+  }): Promise<HostRecord | null> {
+    const host = this.hosts.find((entry) => entry.id === input.hostId);
+    if (!host) return null;
+    host.queuePaused = input.paused;
+    host.queuePausedAt = input.at ?? new Date().toISOString();
+    host.queuePausedBy = input.paused ? input.by : null;
+    return cloneHost(host);
+  }
+
   async ping(): Promise<boolean> {
     return true;
   }
@@ -896,7 +1132,10 @@ export class MemoryStore implements ProjectStore {
       suiteRuns: this.suiteRuns.map(cloneSuiteRun),
       runners: this.runners.map(cloneRunner),
       schedules: this.schedules.map(cloneSchedule),
-      auditEvents: this.auditEvents.map(cloneAuditEvent)
+      auditEvents: this.auditEvents.map(cloneAuditEvent),
+      hosts: this.hosts.map(cloneHost),
+      hostAddresses: this.hostAddresses.map(cloneHostAddress),
+      hostSessions: this.hostSessions.map(cloneHostSession)
     };
   }
 
@@ -922,6 +1161,9 @@ export class MemoryStore implements ProjectStore {
     if (data.runners) this.runners = data.runners.map(cloneRunner);
     if (data.schedules) this.schedules = data.schedules.map(cloneSchedule);
     if (data.auditEvents) this.auditEvents = data.auditEvents.map(cloneAuditEvent);
+    if (data.hosts) this.hosts = data.hosts.map(cloneHost);
+    if (data.hostAddresses) this.hostAddresses = data.hostAddresses.map(cloneHostAddress);
+    if (data.hostSessions) this.hostSessions = data.hostSessions.map(cloneHostSession);
   }
 
   private pruneUsageEvents(projectId: string | null, policy: UsagePrunePolicy): void {
@@ -1018,6 +1260,30 @@ function cloneSchedule(record: ScheduleRecord): ScheduleRecord {
     featureKeys: [...record.featureKeys],
     platforms: [...record.platforms]
   };
+}
+
+function cloneHost(record: HostRecord): HostRecord {
+  return {
+    ...record,
+    capabilities: [...record.capabilities],
+    env: { ...record.env }
+  };
+}
+
+function cloneHostAddress(record: HostAddressRecord): HostAddressRecord {
+  return { ...record };
+}
+
+function cloneHostSession(record: HostSessionRecord): HostSessionRecord {
+  return { ...record };
+}
+
+function maxIso(...values: Array<string | null | undefined>): string {
+  let best = "";
+  for (const value of values) {
+    if (typeof value === "string" && value > best) best = value;
+  }
+  return best;
 }
 
 function cloneProjectEvent(record: ProjectEventRecord, omitPayload = false): ProjectEventRecord {

@@ -318,6 +318,90 @@ export interface UpsertRunnerInput {
   version?: string | null;
 }
 
+export type HostAddressSource = "self" | "observed-pg" | "observed-http";
+export type HostAddressFamily = "ipv4" | "ipv6";
+
+export interface HostAddressInput {
+  source: HostAddressSource;
+  iface: string;
+  family: HostAddressFamily;
+  address: string;
+}
+
+export interface HostAddressRecord {
+  hostId: string;
+  source: string;
+  iface: string;
+  family: string;
+  address: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface HostRecord {
+  id: string;
+  hardwareId: string | null;
+  hostname: string;
+  username: string | null;
+  osPlatform: string;
+  osVersion: string | null;
+  arch: string | null;
+  identitySource: string;
+  kind: string;
+  capabilities: string[];
+  env: Record<string, unknown>;
+  envAt: string | null;
+  ipPrimary: string | null;
+  label: string | null;
+  owner: string | null;
+  expectedOs: string | null;
+  expectedHostname: string | null;
+  registeredAt: string | null;
+  registeredBy: string | null;
+  clientSeenAt: string | null;
+  runnerSeenAt: string | null;
+  lastSeenAt: string;
+  queuePaused: boolean;
+  queuePausedAt: string | null;
+  queuePausedBy: string | null;
+  firstSeenAt: string;
+  createdAt: string;
+}
+
+export interface UpsertHostInput {
+  id: string;
+  hostname?: string;
+  hardwareId?: string | null;
+  username?: string | null;
+  osPlatform?: string;
+  osVersion?: string | null;
+  arch?: string | null;
+  identitySource?: string;
+  kind?: string;
+  capabilities?: string[];
+  env?: Record<string, unknown>;
+  envAt?: string | null;
+  ipPrimary?: string | null;
+  clientSeenAt?: string | null;
+  runnerSeenAt?: string | null;
+  firstSeenAt?: string | null;
+  createdAt?: string | null;
+}
+
+export interface HostSessionRecord {
+  id: string;
+  hostId: string;
+  projectId: string | null;
+  rootPath: string;
+  username: string | null;
+  client: string | null;
+  clientVersion: string | null;
+  pid: number | null;
+  startedAt: string;
+  lastSeenAt: string;
+  endedAt: string | null;
+}
+
 export interface ScheduleRecord {
   id: string;
   projectId: string | null;
@@ -532,6 +616,46 @@ export interface ProjectStore {
   ): Promise<{ runs: string | null; caseSets: string | null }>;
   upsertRunner(input: UpsertRunnerInput): Promise<RunnerRecord>;
   listRunners(rootPath: string, limit?: number): Promise<RunnerRecord[]>;
+  upsertHost(input: UpsertHostInput): Promise<HostRecord>;
+  getHost(id: string): Promise<HostRecord | null>;
+  listHosts(): Promise<HostRecord[]>;
+  updateHostRegistration(input: {
+    id: string;
+    label?: string | null;
+    owner?: string | null;
+    expectedOs?: string | null;
+    expectedHostname?: string | null;
+    registeredBy: string;
+  }): Promise<HostRecord | null>;
+  upsertHostAddresses(input: {
+    hostId: string;
+    addresses: HostAddressInput[];
+    at?: string;
+    maxPerSource?: number;
+  }): Promise<void>;
+  listHostAddresses(hostId: string): Promise<HostAddressRecord[]>;
+  touchHostSession(input: {
+    id: string;
+    hostId: string;
+    projectId: string | null;
+    rootPath: string;
+    username: string | null;
+    client: string | null;
+    clientVersion: string | null;
+    pid: number | null;
+    at?: string;
+  }): Promise<HostSessionRecord>;
+  endHostSession(id: string, at?: string): Promise<boolean>;
+  listHostSessions(
+    hostId: string,
+    options?: { limit?: number; onlineWithinMs?: number; now?: number }
+  ): Promise<HostSessionRecord[]>;
+  setHostQueuePaused(input: {
+    hostId: string;
+    paused: boolean;
+    by: string;
+    at?: string;
+  }): Promise<HostRecord | null>;
   recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,

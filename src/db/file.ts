@@ -17,6 +17,10 @@ import type {
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
+  HostAddressInput,
+  HostAddressRecord,
+  HostRecord,
+  HostSessionRecord,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
@@ -37,6 +41,7 @@ import type {
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
+  UpsertHostInput,
   UpsertLlmInput,
   UpsertRunnerInput,
   UsageEventQuery,
@@ -105,6 +110,7 @@ export class FileStore implements ProjectStore {
   private readonly eventsFsync: boolean;
   private readonly buckets = new Map<string, ProjectBucket>();
   private readonly registry = new Map<string, RegistryEntry>();
+  private readonly hostMem = new MemoryStore();
   private failedWrites = 0;
   private lastWriteError: string | null = null;
 
@@ -418,6 +424,76 @@ export class FileStore implements ProjectStore {
   async listRunners(rootPath: string, limit?: number): Promise<RunnerRecord[]> {
     const bucket = await this.bucket(rootPath);
     return bucket.mem.listRunners(rootPath, limit);
+  }
+
+  async upsertHost(input: UpsertHostInput): Promise<HostRecord> {
+    return this.hostMem.upsertHost(input);
+  }
+
+  async getHost(id: string): Promise<HostRecord | null> {
+    return this.hostMem.getHost(id);
+  }
+
+  async listHosts(): Promise<HostRecord[]> {
+    return this.hostMem.listHosts();
+  }
+
+  async updateHostRegistration(input: {
+    id: string;
+    label?: string | null;
+    owner?: string | null;
+    expectedOs?: string | null;
+    expectedHostname?: string | null;
+    registeredBy: string;
+  }): Promise<HostRecord | null> {
+    return this.hostMem.updateHostRegistration(input);
+  }
+
+  async upsertHostAddresses(input: {
+    hostId: string;
+    addresses: HostAddressInput[];
+    at?: string;
+    maxPerSource?: number;
+  }): Promise<void> {
+    await this.hostMem.upsertHostAddresses(input);
+  }
+
+  async listHostAddresses(hostId: string): Promise<HostAddressRecord[]> {
+    return this.hostMem.listHostAddresses(hostId);
+  }
+
+  async touchHostSession(input: {
+    id: string;
+    hostId: string;
+    projectId: string | null;
+    rootPath: string;
+    username: string | null;
+    client: string | null;
+    clientVersion: string | null;
+    pid: number | null;
+    at?: string;
+  }): Promise<HostSessionRecord> {
+    return this.hostMem.touchHostSession(input);
+  }
+
+  async endHostSession(id: string, at?: string): Promise<boolean> {
+    return this.hostMem.endHostSession(id, at);
+  }
+
+  async listHostSessions(
+    hostId: string,
+    options?: { limit?: number; onlineWithinMs?: number; now?: number }
+  ): Promise<HostSessionRecord[]> {
+    return this.hostMem.listHostSessions(hostId, options);
+  }
+
+  async setHostQueuePaused(input: {
+    hostId: string;
+    paused: boolean;
+    by: string;
+    at?: string;
+  }): Promise<HostRecord | null> {
+    return this.hostMem.setHostQueuePaused(input);
   }
 
   async recordUsageEvent(
@@ -826,6 +902,7 @@ export class FileStore implements ProjectStore {
           const parsed = JSON.parse(stateRaw) as { v?: number; state?: Partial<MemoryStoreState> };
           if (parsed && typeof parsed === "object" && parsed.state && typeof parsed.state === "object") {
             bucket.mem.importState(parsed.state);
+            this.hydrateHostState(parsed.state);
           } else {
             log(`文件台账 state.json 形状异常（忽略）：${bucket.statePath}`);
           }
@@ -867,6 +944,7 @@ export class FileStore implements ProjectStore {
           if (parsed && typeof parsed === "object" && parsed.state) {
             const merged = mergeStates(parsed.state, bucket.mem.exportState());
             bucket.mem.importState(merged);
+            this.hydrateHostState(parsed.state);
           }
         } catch (error) {
           log(`文件台账合并读取失败（忽略）：${errorMessage(error)}`);
@@ -892,6 +970,20 @@ export class FileStore implements ProjectStore {
     bucket.seenAuditMtimeMs = auditMtime ?? bucket.seenAuditMtimeMs;
   }
 
+  private hydrateHostState(disk: Partial<MemoryStoreState>): void {
+    if (!disk.hosts && !disk.hostAddresses && !disk.hostSessions) return;
+    const local = this.hostMem.exportState();
+    this.hostMem.importState({
+      hosts: disk.hosts ? unionBy(local.hosts, disk.hosts, (host) => host.id) : undefined,
+      hostAddresses: disk.hostAddresses
+        ? unionBy(local.hostAddresses, disk.hostAddresses, hostAddressKey)
+        : undefined,
+      hostSessions: disk.hostSessions
+        ? unionBy(local.hostSessions, disk.hostSessions, (session) => session.id)
+        : undefined
+    });
+  }
+
   private async persist(bucket: ProjectBucket, op: string): Promise<void> {
     try {
       const full = bucket.mem.exportState();
@@ -907,7 +999,10 @@ export class FileStore implements ProjectStore {
         regressionTasks: full.regressionTasks,
         suiteRuns: full.suiteRuns,
         runners: full.runners,
-        schedules: full.schedules
+        schedules: full.schedules,
+        hosts: this.hostMem.exportState().hosts,
+        hostAddresses: this.hostMem.exportState().hostAddresses,
+        hostSessions: this.hostMem.exportState().hostSessions
       };
       await this.ensureDir(bucket);
       const payload = JSON.stringify({
@@ -1004,6 +1099,10 @@ function unionBy<T>(local: T[], disk: T[], key: (value: T) => string): T[] {
     }
   }
   return out;
+}
+
+function hostAddressKey(address: HostAddressRecord): string {
+  return `${address.hostId}\u0000${address.source}\u0000${address.iface}\u0000${address.address}`;
 }
 
 function mergeStates(disk: Partial<MemoryStoreState>, local: MemoryStoreState): Partial<MemoryStoreState> {

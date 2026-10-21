@@ -13,6 +13,10 @@ import type {
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
+  HostAddressInput,
+  HostAddressRecord,
+  HostRecord,
+  HostSessionRecord,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
@@ -37,6 +41,7 @@ import type {
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
+  UpsertHostInput,
   UpsertLlmInput,
   UpsertRunnerInput,
   LegacyLedgerImportResult,
@@ -272,7 +277,60 @@ const SCHEMA = [
      result TEXT NOT NULL,
      summary TEXT NOT NULL,
      refs TEXT NOT NULL DEFAULT '{}'
-    )`
+    )`,
+  `CREATE TABLE IF NOT EXISTS hosts (
+     id TEXT PRIMARY KEY,
+     hardware_id TEXT,
+     hostname TEXT NOT NULL,
+     username TEXT,
+     os_platform TEXT NOT NULL,
+     os_version TEXT,
+     arch TEXT,
+     identity_source TEXT NOT NULL DEFAULT 'file',
+     kind TEXT NOT NULL DEFAULT 'other',
+     capabilities TEXT NOT NULL DEFAULT '[]',
+     env TEXT NOT NULL DEFAULT '{}',
+     env_at TEXT,
+     ip_primary TEXT,
+     label TEXT,
+     owner TEXT,
+     expected_os TEXT,
+     expected_hostname TEXT,
+     registered_at TEXT,
+     registered_by TEXT,
+     client_seen_at TEXT,
+     runner_seen_at TEXT,
+     last_seen_at TEXT NOT NULL,
+     queue_paused BOOLEAN NOT NULL DEFAULT FALSE,
+     queue_paused_at TEXT,
+     queue_paused_by TEXT,
+     first_seen_at TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS host_addresses (
+     host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+     source TEXT NOT NULL,
+     iface TEXT NOT NULL DEFAULT '',
+     family TEXT NOT NULL DEFAULT 'ipv4',
+     address TEXT NOT NULL,
+     first_seen_at TEXT NOT NULL,
+     last_seen_at TEXT NOT NULL,
+     PRIMARY KEY (host_id, source, iface, address)
+   )`,
+  `CREATE TABLE IF NOT EXISTS host_sessions (
+     id TEXT PRIMARY KEY,
+     host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     root_path TEXT NOT NULL,
+     username TEXT,
+     client TEXT,
+     client_version TEXT,
+     pid INTEGER,
+     started_at TEXT NOT NULL,
+     last_seen_at TEXT NOT NULL,
+     ended_at TEXT
+   )`,
+  `CREATE INDEX IF NOT EXISTS host_sessions_host_seen_idx ON host_sessions(host_id, last_seen_at)`
 ];
 
 const MIGRATIONS = [
@@ -291,8 +349,12 @@ const MIGRATIONS = [
         OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS suite_runs_project_manifest_idx ON suite_runs(project_id, manifest_path) WHERE manifest_path IS NOT NULL`,
-  `CREATE INDEX IF NOT EXISTS audit_events_root_at_idx ON audit_events(root_path, at)`
+  `CREATE INDEX IF NOT EXISTS audit_events_root_at_idx ON audit_events(root_path, at)`,
+  `ALTER TABLE project_events ADD COLUMN IF NOT EXISTS host_id TEXT`
 ];
+
+/** 迁移 advisory lock 的固定键（避免并发首启各自跑 DDL）。 */
+const MIGRATION_LOCK_ID = 89121476;
 
 export class PostgresStore implements ProjectStore {
   readonly kind = "postgres" as const;
@@ -311,20 +373,38 @@ export class PostgresStore implements ProjectStore {
   }
 
   async init(): Promise<void> {
-    for (const statement of SCHEMA) {
-      try {
-        await this.pool.query(statement);
-      } catch (error) {
-        if (!isIdempotentSchemaRace(error)) throw error;
-        logWarn(`建表竞态（忽略，已有并发建表者）: ${errorMessage(error)}`);
-      }
+    let locked = false;
+    try {
+      await this.pool.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_ID]);
+      locked = true;
+    } catch (error) {
+      if (!isUndefinedFunction(error)) throw error;
+      /* pg-mem 不实现 advisory lock：继续无锁迁移（测试不依赖锁）。 */
     }
-    for (const statement of MIGRATIONS) {
-      try {
-        await this.pool.query(statement);
-      } catch (error) {
-        /* best effort: fresh schema already carries the column */
-        logWarn(`迁移语句失败（忽略）: ${errorMessage(error)}`);
+    try {
+      for (const statement of SCHEMA) {
+        try {
+          await this.pool.query(statement);
+        } catch (error) {
+          if (!isIdempotentSchemaRace(error)) throw error;
+          logWarn(`建表竞态（忽略，已有并发建表者）: ${errorMessage(error)}`);
+        }
+      }
+      for (const statement of MIGRATIONS) {
+        try {
+          await this.pool.query(statement);
+        } catch (error) {
+          /* best effort: fresh schema already carries the column */
+          logWarn(`迁移语句失败（忽略）: ${errorMessage(error)}`);
+        }
+      }
+    } finally {
+      if (locked) {
+        try {
+          await this.pool.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_ID]);
+        } catch {
+          /* best effort */
+        }
       }
     }
   }
@@ -1180,6 +1260,249 @@ export class PostgresStore implements ProjectStore {
     return result.rows.map((row) => mapRunner(row));
   }
 
+  async upsertHost(input: UpsertHostInput): Promise<HostRecord> {
+    const now = new Date().toISOString();
+    const existing = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [input.id]);
+    if (existing.rows.length > 0) {
+      const current = mapHost(existing.rows[0]!);
+      const sets: string[] = [];
+      const values: unknown[] = [input.id];
+      const add = (column: string, value: unknown): void => {
+        values.push(value);
+        sets.push(`${column} = $${values.length}`);
+      };
+      const newClientSeenAt =
+        input.clientSeenAt === undefined
+          ? current.clientSeenAt
+          : maxIso(current.clientSeenAt, input.clientSeenAt);
+      const newRunnerSeenAt =
+        input.runnerSeenAt === undefined
+          ? current.runnerSeenAt
+          : maxIso(current.runnerSeenAt, input.runnerSeenAt);
+      if (input.hostname !== undefined) add("hostname", input.hostname);
+      if (input.hardwareId !== undefined) add("hardware_id", input.hardwareId);
+      if (input.username !== undefined) add("username", input.username);
+      if (input.osPlatform !== undefined) add("os_platform", input.osPlatform);
+      if (input.osVersion !== undefined) add("os_version", input.osVersion);
+      if (input.arch !== undefined) add("arch", input.arch);
+      if (input.identitySource !== undefined) add("identity_source", input.identitySource);
+      if (input.kind !== undefined) add("kind", input.kind);
+      if (input.capabilities !== undefined) add("capabilities", JSON.stringify(input.capabilities));
+      if (input.env !== undefined) add("env", JSON.stringify(input.env));
+      if (input.envAt !== undefined) add("env_at", input.envAt);
+      if (input.ipPrimary !== undefined) add("ip_primary", input.ipPrimary);
+      if (input.clientSeenAt !== undefined) add("client_seen_at", newClientSeenAt);
+      if (input.runnerSeenAt !== undefined) add("runner_seen_at", newRunnerSeenAt);
+      if (sets.length === 0) return cloneHostRow(current);
+      add("last_seen_at", maxIso(current.lastSeenAt, newClientSeenAt, newRunnerSeenAt));
+      await this.pool.query(
+        `UPDATE hosts SET ${sets.join(", ")} WHERE id = $1`,
+        values
+      );
+      const refreshed = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [input.id]);
+      return mapHost(refreshed.rows[0]!);
+    }
+    const record = hostRecordFromInput(input, now);
+    await this.pool.query(
+      `INSERT INTO hosts
+         (id, hardware_id, hostname, username, os_platform, os_version, arch, identity_source, kind,
+          capabilities, env, env_at, ip_primary, client_seen_at, runner_seen_at, last_seen_at,
+          queue_paused, first_seen_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, FALSE, $17, $18)`,
+      [
+        record.id,
+        record.hardwareId,
+        record.hostname,
+        record.username,
+        record.osPlatform,
+        record.osVersion,
+        record.arch,
+        record.identitySource,
+        record.kind,
+        JSON.stringify(record.capabilities),
+        JSON.stringify(record.env),
+        record.envAt,
+        record.ipPrimary,
+        record.clientSeenAt,
+        record.runnerSeenAt,
+        record.lastSeenAt,
+        record.firstSeenAt,
+        record.createdAt
+      ]
+    );
+    return record;
+  }
+
+  async getHost(id: string): Promise<HostRecord | null> {
+    const result = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [id]);
+    return result.rows.length > 0 ? mapHost(result.rows[0]!) : null;
+  }
+
+  async listHosts(): Promise<HostRecord[]> {
+    const result = await this.pool.query(
+      "SELECT * FROM hosts ORDER BY last_seen_at DESC, id ASC"
+    );
+    return result.rows.map(mapHost);
+  }
+
+  async updateHostRegistration(input: {
+    id: string;
+    label?: string | null;
+    owner?: string | null;
+    expectedOs?: string | null;
+    expectedHostname?: string | null;
+    registeredBy: string;
+  }): Promise<HostRecord | null> {
+    const existing = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [input.id]);
+    if (existing.rows.length === 0) return null;
+    const sets: string[] = ["registered_at = $2", "registered_by = $3"];
+    const values: unknown[] = [input.id, new Date().toISOString(), input.registeredBy];
+    const add = (column: string, value: unknown): void => {
+      values.push(value);
+      sets.push(`${column} = $${values.length}`);
+    };
+    if (input.label !== undefined) add("label", input.label);
+    if (input.owner !== undefined) add("owner", input.owner);
+    if (input.expectedOs !== undefined) add("expected_os", input.expectedOs);
+    if (input.expectedHostname !== undefined) add("expected_hostname", input.expectedHostname);
+    await this.pool.query(`UPDATE hosts SET ${sets.join(", ")} WHERE id = $1`, values);
+    const refreshed = await this.pool.query("SELECT * FROM hosts WHERE id = $1", [input.id]);
+    return mapHost(refreshed.rows[0]!);
+  }
+
+  async upsertHostAddresses(input: {
+    hostId: string;
+    addresses: HostAddressInput[];
+    at?: string;
+    maxPerSource?: number;
+  }): Promise<void> {
+    const at = input.at ?? new Date().toISOString();
+    const maxPerSource = input.maxPerSource ?? 20;
+    for (const address of input.addresses) {
+      await this.pool.query(
+        `INSERT INTO host_addresses (host_id, source, iface, family, address, first_seen_at, last_seen_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $6)
+         ON CONFLICT (host_id, source, iface, address)
+         DO UPDATE SET last_seen_at = CASE
+           WHEN host_addresses.last_seen_at > EXCLUDED.last_seen_at THEN host_addresses.last_seen_at
+           ELSE EXCLUDED.last_seen_at
+         END`,
+        [input.hostId, address.source, address.iface, address.family, address.address, at]
+      );
+    }
+    if (maxPerSource > 0) {
+      const rows = await this.pool.query(
+        `SELECT source, iface, address FROM host_addresses WHERE host_id = $1
+         ORDER BY last_seen_at DESC, address ASC`,
+        [input.hostId]
+      );
+      const bySource = new Map<string, Array<Record<string, unknown>>>();
+      for (const row of rows.rows) {
+        const source = String(row.source);
+        const bucket = bySource.get(source) ?? [];
+        bucket.push(row);
+        bySource.set(source, bucket);
+      }
+      for (const bucket of bySource.values()) {
+        for (const row of bucket.slice(maxPerSource)) {
+          await this.pool.query(
+            `DELETE FROM host_addresses
+              WHERE host_id = $1 AND source = $2 AND iface = $3 AND address = $4`,
+            [input.hostId, String(row.source), String(row.iface), String(row.address)]
+          );
+        }
+      }
+    }
+  }
+
+  async listHostAddresses(hostId: string): Promise<HostAddressRecord[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM host_addresses WHERE host_id = $1 ORDER BY last_seen_at DESC, address ASC`,
+      [hostId]
+    );
+    return result.rows.map(mapHostAddress);
+  }
+
+  async touchHostSession(input: {
+    id: string;
+    hostId: string;
+    projectId: string | null;
+    rootPath: string;
+    username: string | null;
+    client: string | null;
+    clientVersion: string | null;
+    pid: number | null;
+    at?: string;
+  }): Promise<HostSessionRecord> {
+    const at = input.at ?? new Date().toISOString();
+    await this.pool.query(
+      `INSERT INTO host_sessions
+         (id, host_id, project_id, root_path, username, client, client_version, pid, started_at, last_seen_at, ended_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, NULL)
+       ON CONFLICT (id)
+       DO UPDATE SET last_seen_at = CASE
+         WHEN host_sessions.last_seen_at > EXCLUDED.last_seen_at THEN host_sessions.last_seen_at
+         ELSE EXCLUDED.last_seen_at
+       END`,
+      [
+        input.id,
+        input.hostId,
+        input.projectId,
+        input.rootPath,
+        input.username,
+        input.client,
+        input.clientVersion,
+        input.pid,
+        at
+      ]
+    );
+    const result = await this.pool.query("SELECT * FROM host_sessions WHERE id = $1", [input.id]);
+    return mapHostSession(result.rows[0]!);
+  }
+
+  async endHostSession(id: string, at?: string): Promise<boolean> {
+    const result = await this.pool.query(
+      "UPDATE host_sessions SET ended_at = $2 WHERE id = $1",
+      [id, at ?? new Date().toISOString()]
+    );
+    return Number(result.rowCount ?? 0) > 0;
+  }
+
+  async listHostSessions(
+    hostId: string,
+    options: { limit?: number; onlineWithinMs?: number; now?: number } = {}
+  ): Promise<HostSessionRecord[]> {
+    const clauses = ["host_id = $1", "ended_at IS NULL"];
+    const values: unknown[] = [hostId];
+    if (options.onlineWithinMs !== undefined) {
+      const nowMs = options.now ?? Date.now();
+      values.push(new Date(nowMs - options.onlineWithinMs).toISOString());
+      clauses.push(`last_seen_at > $${values.length}`);
+    }
+    let sql = `SELECT * FROM host_sessions WHERE ${clauses.join(" AND ")}
+         ORDER BY last_seen_at DESC, id ASC`;
+    if (options.limit !== undefined) {
+      values.push(options.limit);
+      sql += ` LIMIT $${values.length}`;
+    }
+    const result = await this.pool.query(sql, values);
+    return result.rows.map(mapHostSession);
+  }
+
+  async setHostQueuePaused(input: {
+    hostId: string;
+    paused: boolean;
+    by: string;
+    at?: string;
+  }): Promise<HostRecord | null> {
+    const updated = await this.pool.query(
+      `UPDATE hosts SET queue_paused = $2, queue_paused_at = $3, queue_paused_by = $4
+        WHERE id = $1 RETURNING *`,
+      [input.hostId, input.paused, input.at ?? new Date().toISOString(), input.paused ? input.by : null]
+    );
+    return updated.rows.length > 0 ? mapHost(updated.rows[0]!) : null;
+  }
+
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);
@@ -1778,6 +2101,13 @@ function isIdempotentSchemaRace(error: unknown): boolean {
   return message.includes("duplicate key value") || message.includes("already exists");
 }
 
+/** pg-mem 等未实现 advisory lock 的引擎会报 undefined function（42883）。 */
+function isUndefinedFunction(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  if (code === "42883") return true;
+  return errorMessage(error).includes("does not exist");
+}
+
 function mapAudit(row: Record<string, unknown>): AuditEventRecord {
   let refs: Record<string, string | undefined> = {};
   try {
@@ -2100,6 +2430,122 @@ function mapSchedule(row: Record<string, unknown>): ScheduleRecord {
     createdAt: String(row.created_at),
     createdBy: nullableString(row.created_by)
   };
+}
+
+function mapHost(row: Record<string, unknown>): HostRecord {
+  return {
+    id: String(row.id),
+    hardwareId: nullableString(row.hardware_id),
+    hostname: String(row.hostname),
+    username: nullableString(row.username),
+    osPlatform: String(row.os_platform),
+    osVersion: nullableString(row.os_version),
+    arch: nullableString(row.arch),
+    identitySource: String(row.identity_source),
+    kind: String(row.kind),
+    capabilities: parseStringArray(row.capabilities),
+    env: parseJsonObject(row.env),
+    envAt: nullableString(row.env_at),
+    ipPrimary: nullableString(row.ip_primary),
+    label: nullableString(row.label),
+    owner: nullableString(row.owner),
+    expectedOs: nullableString(row.expected_os),
+    expectedHostname: nullableString(row.expected_hostname),
+    registeredAt: nullableString(row.registered_at),
+    registeredBy: nullableString(row.registered_by),
+    clientSeenAt: nullableString(row.client_seen_at),
+    runnerSeenAt: nullableString(row.runner_seen_at),
+    lastSeenAt: String(row.last_seen_at),
+    queuePaused: Boolean(row.queue_paused),
+    queuePausedAt: nullableString(row.queue_paused_at),
+    queuePausedBy: nullableString(row.queue_paused_by),
+    firstSeenAt: String(row.first_seen_at),
+    createdAt: String(row.created_at)
+  };
+}
+
+function mapHostAddress(row: Record<string, unknown>): HostAddressRecord {
+  return {
+    hostId: String(row.host_id),
+    source: String(row.source),
+    iface: String(row.iface),
+    family: String(row.family),
+    address: String(row.address),
+    firstSeenAt: String(row.first_seen_at),
+    lastSeenAt: String(row.last_seen_at)
+  };
+}
+
+function mapHostSession(row: Record<string, unknown>): HostSessionRecord {
+  return {
+    id: String(row.id),
+    hostId: String(row.host_id),
+    projectId: nullableString(row.project_id),
+    rootPath: String(row.root_path),
+    username: nullableString(row.username),
+    client: nullableString(row.client),
+    clientVersion: nullableString(row.client_version),
+    pid: row.pid === null || row.pid === undefined ? null : Number(row.pid),
+    startedAt: String(row.started_at),
+    lastSeenAt: String(row.last_seen_at),
+    endedAt: nullableString(row.ended_at)
+  };
+}
+
+function hostRecordFromInput(input: UpsertHostInput, now: string): HostRecord {
+  const record: HostRecord = {
+    id: input.id,
+    hardwareId: input.hardwareId ?? null,
+    hostname: input.hostname ?? "",
+    username: input.username ?? null,
+    osPlatform: input.osPlatform ?? "other",
+    osVersion: input.osVersion ?? null,
+    arch: input.arch ?? null,
+    identitySource: input.identitySource ?? "file",
+    kind: input.kind ?? "other",
+    capabilities: [...(input.capabilities ?? [])],
+    env: { ...(input.env ?? {}) },
+    envAt: input.envAt ?? null,
+    ipPrimary: input.ipPrimary ?? null,
+    label: null,
+    owner: null,
+    expectedOs: null,
+    expectedHostname: null,
+    registeredAt: null,
+    registeredBy: null,
+    clientSeenAt: input.clientSeenAt ?? null,
+    runnerSeenAt: input.runnerSeenAt ?? null,
+    lastSeenAt: input.firstSeenAt ?? now,
+    queuePaused: false,
+    queuePausedAt: null,
+    queuePausedBy: null,
+    firstSeenAt: input.firstSeenAt ?? now,
+    createdAt: input.createdAt ?? now
+  };
+  record.lastSeenAt = maxIso(record.lastSeenAt, record.clientSeenAt, record.runnerSeenAt);
+  return record;
+}
+
+function cloneHostRow(record: HostRecord): HostRecord {
+  return {
+    ...record,
+    capabilities: [...record.capabilities],
+    env: { ...record.env }
+  };
+}
+
+function maxIso(...values: Array<string | null | undefined>): string {
+  let best = "";
+  for (const value of values) {
+    if (typeof value === "string" && value > best) best = value;
+  }
+  return best;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  return parsed as Record<string, unknown>;
 }
 
 function mapProjectEvent(row: Record<string, unknown>, includePayload: boolean): ProjectEventRecord {
