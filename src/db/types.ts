@@ -336,7 +336,7 @@ export function normalizeRegressionTask(record: RegressionTaskRecord): Regressio
     cancelSource: record.cancelSource ?? (legacy ? "panel" : null),
     cancelledBy: record.cancelledBy ?? null,
     cancelledHostId: record.cancelledHostId ?? null,
-    cancelledAt: record.cancelledAt ?? (legacy ? (record.startedAt ?? null) : null),
+    cancelledAt: record.cancelledAt ?? null,
     cancelNote: record.cancelNote ?? (legacy ? "legacy stopped" : null),
     cancelRequestedAt: record.cancelRequestedAt ?? null
   };
@@ -689,6 +689,8 @@ export interface ProjectStore {
       runIds?: string[];
       claimedBy?: string | null;
       claimedAt?: string | null;
+      /** CAS 守卫：仅当当前状态在此列表内才写入（空数组＝永不命中）；不满足返回 false。 */
+      expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean>;
   /** 原子领取：任务端 ⊆ runner 端且 status='pending' 的最旧任务 → claimed（竞争失败 → null）。

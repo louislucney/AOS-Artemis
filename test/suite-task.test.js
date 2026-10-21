@@ -187,6 +187,57 @@ test("suite run --task: 展开 refs×devices、逐例登记带 task 关联、状
   assert.ok(run.logs.some((line) => line.includes("子集运行不做全图覆盖门禁")));
 });
 
+test("suite run --task: 运行中取消不被终态覆盖（守卫写 + 重读）", async () => {
+  const { runtime, store } = await setupTaskProject({
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" },
+      "trace-3": { status: "completed" }
+    }
+  });
+  const create = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--ref",
+    "f-下单-bbbb2222",
+    "--platform",
+    "android"
+  ]);
+  assert.equal(create.code, 0);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+
+  const baseGet = store.getRegressionTask.bind(store);
+  let cancelled = false;
+  store.getRegressionTask = async (rootPath, id) => {
+    const record = await baseGet(rootPath, id);
+    if (!cancelled && record?.status === "running") {
+      cancelled = true;
+      await store.cancelRegressionTask({
+        rootPath,
+        taskId: record.id,
+        source: "panel",
+        actor: "panel",
+        actorHostId: null,
+        note: "运行中取消"
+      });
+    }
+    return record;
+  };
+
+  const run = await runCli(runtime, ["run", "--task", tasks[0].id, "--device", "emulator-5554"]);
+  assert.equal(run.code, 0, "用例本身全通过，退出码不因取消改写");
+  assert.ok(cancelled, "取消发生在运行期间");
+  const after = await store.getRegressionTask(runtime.project.rootDir, tasks[0].id);
+  assert.equal(after.status, "stopping", "取消请求保留，终态不覆盖");
+  assert.equal(after.cancelledBy, "panel");
+  assert.equal(after.cancelNote, "运行中取消");
+  assert.equal(after.cancelledAt, null, "未确认前不写完成时间");
+  const runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.equal(runs.length, 2, "子运行仍登记");
+});
+
 test("suite run --task: 有失败 → 退出码 1、状态 partial、对比含回归", async () => {
   const { runtime, store } = await setupTaskProject({
     statuses: {

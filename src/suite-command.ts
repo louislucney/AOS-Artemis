@@ -47,7 +47,7 @@ import {
   renderSuiteLoopMarkdown,
   type SuiteLoopCheck
 } from "./figma/suite-loop.js";
-import type { TaskStatRecord, ProjectStore } from "./db/types.js";
+import type { TaskStatRecord, ProjectStore, RegressionTaskStatus } from "./db/types.js";
 import { recordAuditSafe } from "./db/audit-event.js";
 import {
   runGeneratedTests,
@@ -376,13 +376,55 @@ async function suiteRunTask(
     return 2;
   }
 
+  let markedRunning = false;
   try {
-    await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
-      status: "running"
+    markedRunning = await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
+      status: "running",
+      expectStatuses: ["claimed", "running"]
     });
   } catch (error) {
     logWarn(`任务状态回写失败: ${errorMessage(error)}`);
     say("注意: 任务状态回写失败（运行结果不受影响）");
+  }
+  if (!markedRunning) {
+    const fresh = await runtime.store
+      .getRegressionTask(runtime.project.rootDir, task.id)
+      .catch(() => null);
+    if (
+      fresh?.status === "cancelled" ||
+      fresh?.status === "stopped" ||
+      fresh?.status === "stopping"
+    ) {
+      say("任务已取消或已请求停止：不再执行（可重新派发新任务）");
+      return 2;
+    }
+    if (fresh?.status === "pending") {
+      try {
+        markedRunning = await runtime.store.updateRegressionTask(
+          runtime.project.rootDir,
+          task.id,
+          { status: "running", expectStatuses: ["pending"] }
+        );
+      } catch (error) {
+        logWarn(`任务状态回写失败: ${errorMessage(error)}`);
+      }
+      if (!markedRunning) {
+        const again = await runtime.store
+          .getRegressionTask(runtime.project.rootDir, task.id)
+          .catch(() => null);
+        if (
+          again?.status === "cancelled" ||
+          again?.status === "stopped" ||
+          again?.status === "stopping"
+        ) {
+          say("任务已取消或已请求停止：不再执行（可重新派发新任务）");
+          return 2;
+        }
+        say(`注意: 任务状态未能置为执行中（当前 ${again?.status ?? "未知"}），继续执行`);
+      }
+    } else {
+      say(`注意: 任务状态为 ${fresh?.status ?? "未知"}，未改写为执行中`);
+    }
   }
 
   const subRuns: Array<{
@@ -530,15 +572,34 @@ async function suiteRunTask(
     duringRun?.status === "cancelled" ||
     duringRun?.status === "stopped" ||
     duringRun?.status === "stopping";
+  let finalWritten = false;
   try {
-    await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
-      ...(stoppedDuringRun ? {} : { status: finalStatus }),
+    finalWritten = await runtime.store.updateRegressionTask(runtime.project.rootDir, task.id, {
+      ...(stoppedDuringRun
+        ? {}
+        : { status: finalStatus, expectStatuses: ["running"] satisfies RegressionTaskStatus[] }),
       runIds
     });
-    if (stoppedDuringRun) say("任务已取消：保留 cancelled（不回写终态、不自动重试）");
   } catch (error) {
     logWarn(`任务状态回写失败: ${errorMessage(error)}`);
-    say("注意: 任务状态回写失败（运行结果不受影响）");
+  }
+  if (!finalWritten) {
+    const fresh = await runtime.store
+      .getRegressionTask(runtime.project.rootDir, task.id)
+      .catch(() => null);
+    if (
+      stoppedDuringRun ||
+      fresh?.status === "cancelled" ||
+      fresh?.status === "stopped" ||
+      fresh?.status === "stopping"
+    ) {
+      say("任务已取消：保留取消状态（不回写终态、不自动重试）");
+    } else {
+      logWarn(`任务状态已变化（${fresh?.status ?? "未知"}），未覆盖终态`);
+      say(`注意: 任务状态已变化（当前 ${fresh?.status ?? "未知"}），未覆盖终态`);
+    }
+  } else if (stoppedDuringRun) {
+    say("任务已取消：保留取消状态（不回写终态、不自动重试）");
   }
 
   const deltas = crossPlatformDeltas(

@@ -156,10 +156,24 @@ test("claimed/running 取消 → stopping + 元数据（无 cancelledAt）；run
   }
 });
 
-test("stopped 旧行读作 cancelled（legacy 元数据）", async () => {
+test("stopped 旧行读作 cancelled（legacy 元数据，不臆造取消时间）", async () => {
   for (const store of await stores()) {
     await store.upsertProject({ rootPath: "/w/p3", name: "p3" });
     const task = await store.createRegressionTask(taskInput("/w/p3"));
+    await store.claimRegressionTask({
+      rootPath: "/w/p3",
+      runnerId: "runner-1",
+      platforms: ["android"],
+      capabilities: ["android"],
+      instanceId: "inst-legacy"
+    });
+    await store.beginExecution({
+      rootPath: "/w/p3",
+      taskId: task.id,
+      runnerId: "runner-1",
+      instanceId: "inst-legacy",
+      at: "2026-10-21T07:00:00.000Z"
+    });
     await store.updateRegressionTask("/w/p3", task.id, {
       status: "stopped",
       claimedAt: "2026-10-21T07:00:00.000Z"
@@ -168,7 +182,7 @@ test("stopped 旧行读作 cancelled（legacy 元数据）", async () => {
     assert.equal(listed.status, "cancelled", "旧 stopped 对外读作 cancelled");
     assert.equal(listed.cancelSource, "panel");
     assert.equal(listed.cancelNote, "legacy stopped");
-    assert.equal(listed.cancelledAt, null, "无 startedAt 时不臆造时间");
+    assert.equal(listed.cancelledAt, null, "有 startedAt 也不臆造取消时间");
 
     const fetched = await store.getRegressionTask("/w/p3", task.id);
     assert.equal(fetched.status, "cancelled");
@@ -236,6 +250,122 @@ test("审计写入 actor/actor_host_id/channel 并可读回", async () => {
     assert.equal(event.actorHostId, "h-a");
     assert.equal(event.channel, "cli");
   }
+});
+
+test("stopping 不被失联领取回收为 pending（保留给离线取消确认）", async () => {
+  for (const store of await stores()) {
+    await store.upsertProject({ rootPath: "/w/p6", name: "p6" });
+    const task = await store.createRegressionTask(taskInput("/w/p6"));
+    await store.claimRegressionTask({
+      rootPath: "/w/p6",
+      runnerId: "runner-offline",
+      platforms: ["android"],
+      capabilities: ["android"],
+      instanceId: "inst-offline"
+    });
+    await store.cancelRegressionTask({
+      rootPath: "/w/p6",
+      taskId: task.id,
+      source: "panel",
+      actor: "panel",
+      actorHostId: "h-a",
+      note: "离线取消"
+    });
+    const reclaimed = await store.releaseStaleClaims({
+      rootPath: "/w/p6",
+      offlineBefore: "2030-01-01T00:00:00.000Z",
+      claimedBefore: "2030-01-01T00:00:00.000Z"
+    });
+    assert.equal(reclaimed, 0, "stopping 不在回收范围");
+    const after = await store.getRegressionTask("/w/p6", task.id);
+    assert.equal(after.status, "stopping");
+    assert.equal(after.cancelNote, "离线取消");
+    assert.equal(after.cancelRequestedAt !== null, true);
+  }
+});
+
+test("ackCancellation 幂等：重复确认不改首次 cancelledAt/元数据", async () => {
+  for (const store of await stores()) {
+    await store.upsertProject({ rootPath: "/w/p7", name: "p7" });
+    const task = await store.createRegressionTask(taskInput("/w/p7"));
+    await store.claimRegressionTask({
+      rootPath: "/w/p7",
+      runnerId: "runner-1",
+      platforms: ["android"],
+      capabilities: ["android"],
+      instanceId: "inst-ack"
+    });
+    await store.cancelRegressionTask({
+      rootPath: "/w/p7",
+      taskId: task.id,
+      source: "local-cli",
+      actor: "louis",
+      actorHostId: "h-a",
+      note: "确认幂等",
+      at: "2026-10-21T01:00:00.000Z"
+    });
+    const first = await store.ackCancellation({
+      rootPath: "/w/p7",
+      taskId: task.id,
+      at: "2026-10-21T01:10:00.000Z"
+    });
+    assert.equal(first.status, "cancelled");
+    assert.equal(first.cancelledAt, "2026-10-21T01:10:00.000Z");
+    const again = await store.ackCancellation({
+      rootPath: "/w/p7",
+      taskId: task.id,
+      at: "2026-10-21T02:00:00.000Z"
+    });
+    assert.equal(again.status, "cancelled");
+    assert.equal(again.cancelledAt, first.cancelledAt);
+    assert.equal(again.cancelRequestedAt, "2026-10-21T01:00:00.000Z");
+    assert.equal(again.cancelNote, "确认幂等");
+  }
+});
+
+test("FileStore: ackCancellation 落盘并在重启后保留", async () => {
+  const home = await mkdtemp(join(tmpdir(), "aos-cancel-ack-"));
+  const rootPath = join(home, "proj");
+  await mkdir(rootPath, { recursive: true });
+  const store = await FileStore.create({ homeDir: home });
+  await store.upsertProject({ rootPath, name: "p" });
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  await store.claimRegressionTask({
+    rootPath,
+    runnerId: "runner-file",
+    platforms: ["android"],
+    capabilities: ["android"],
+    instanceId: "inst-file"
+  });
+  await store.cancelRegressionTask({
+    rootPath,
+    taskId: task.id,
+    source: "panel",
+    actor: "panel",
+    actorHostId: "h-file",
+    note: "文件确认",
+    at: "2026-10-21T00:00:00.000Z"
+  });
+  const acked = await store.ackCancellation({
+    rootPath,
+    taskId: task.id,
+    at: "2026-10-21T00:05:00.000Z"
+  });
+  assert.equal(acked.status, "cancelled");
+
+  const reopened = await FileStore.create({ homeDir: home });
+  const after = await reopened.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "cancelled");
+  assert.equal(after.cancelSource, "panel");
+  assert.equal(after.cancelledBy, "panel");
+  assert.equal(after.cancelNote, "文件确认");
+  assert.equal(after.cancelledAt, "2026-10-21T00:05:00.000Z");
+  const again = await reopened.ackCancellation({
+    rootPath,
+    taskId: task.id,
+    at: "2026-10-21T00:30:00.000Z"
+  });
+  assert.equal(again.cancelledAt, "2026-10-21T00:05:00.000Z");
 });
 
 test("FileStore: cancelled 与取消元数据落盘并在重启后保留", async () => {

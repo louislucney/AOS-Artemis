@@ -244,7 +244,10 @@ test("任务动作 POST 携带 host；重跑跳转带 host 且继承 targetHostI
     ).body
   );
   assert.match(detail, /var hostId="h-b"/);
-  assert.match(detail, /body:JSON\.stringify\(\{project:project,taskId:taskId,host:hostId\}\)/);
+  assert.match(
+    detail,
+    /body:JSON\.stringify\(\{project:project,taskId:taskId,host:hostId,note:/
+  );
   assert.match(detail, /"&host=h-b"/, "重跑跳转保留 host");
 
   const rerun = await handlePanelActionRequest(

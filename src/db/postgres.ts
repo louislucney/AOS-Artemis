@@ -33,6 +33,7 @@ import type {
   RecordUsageEventInput,
   RegressionTaskRecord,
   RegressionTaskRef,
+  RegressionTaskStatus,
   RunnerDevice,
   RunnerRecord,
   RunnerTools,
@@ -942,10 +943,12 @@ export class PostgresStore implements ProjectStore {
       runIds?: string[];
       claimedBy?: string | null;
       claimedAt?: string | null;
+      expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
     const project = await this.getProjectByPath(rootPath);
     if (!project) return false;
+    if (patch.expectStatuses !== undefined && patch.expectStatuses.length === 0) return false;
     const sets: string[] = [];
     const values: unknown[] = [project.id, id];
     const add = (column: string, value: unknown): void => {
@@ -956,12 +959,20 @@ export class PostgresStore implements ProjectStore {
     if (patch.runIds !== undefined) add("run_ids", JSON.stringify(patch.runIds));
     if (patch.claimedBy !== undefined) add("claimed_by", patch.claimedBy);
     if (patch.claimedAt !== undefined) add("claimed_at", patch.claimedAt);
+    const guards: string[] = [];
+    if (patch.expectStatuses !== undefined) {
+      const placeholders = patch.expectStatuses.map((status) => {
+        values.push(status);
+        return `$${values.length}`;
+      });
+      guards.push(`status IN (${placeholders.join(", ")})`);
+    }
     if (sets.length === 0) {
       return (await this.getRegressionTask(rootPath, id)) !== null;
     }
     const updated = await this.pool.query(
       `UPDATE regression_tasks SET ${sets.join(", ")}
-        WHERE project_id = $1 AND id = $2 RETURNING id`,
+        WHERE project_id = $1 AND id = $2${guards.length === 0 ? "" : ` AND ${guards.join(" AND ")}`} RETURNING id`,
       values
     );
     return updated.rows.length > 0;
@@ -1163,7 +1174,7 @@ export class PostgresStore implements ProjectStore {
           SET status = 'pending', claimed_by = NULL, claimed_at = NULL,
               claimed_host_id = NULL, claimed_instance_id = NULL, started_at = NULL
         WHERE project_id = $1
-          AND status IN ('claimed', 'running', 'stopping')
+          AND status IN ('claimed', 'running')
           AND claimed_at IS NOT NULL AND claimed_at <= $2
           AND (claimed_by IS NULL OR claimed_by NOT IN (
                 SELECT id FROM runners WHERE project_id = $1 AND last_seen_at > $3))

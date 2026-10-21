@@ -343,6 +343,46 @@ test("面板停止：执行中置 stopping → 执行机确认 cancelled（不�
   assert.ok(logs.some((line) => line.includes("停止请求已确认")), "ack 日志");
 });
 
+test("领取与 beginExecution 之间取消：确认 cancelled，不执行也不释放", async () => {
+  const { runtime, store, inventory: inv } = await setupFixture();
+  const rootPath = runtime.project.rootDir;
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  const baseClaim = store.claimRegressionTask.bind(store);
+  store.claimRegressionTask = async (input) => {
+    const claimed = await baseClaim(input);
+    if (claimed) {
+      await store.cancelRegressionTask({
+        rootPath,
+        taskId: claimed.id,
+        source: "panel",
+        actor: "panel",
+        actorHostId: "h-a",
+        note: "领取窗口取消"
+      });
+    }
+    return claimed;
+  };
+  let executed = 0;
+  const { options, logs } = makeOptions(runtime, inv, {
+    executeSuite: async () => {
+      executed += 1;
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(executed, 0, "取消请求落在执行窗口：不启动用例");
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "cancelled");
+  assert.equal(after.cancelSource, "panel");
+  assert.equal(after.cancelNote, "领取窗口取消");
+  assert.ok(after.cancelledAt, "窗口内确认补取消时间");
+  assert.ok(
+    logs.some((line) => line.includes("领取与执行之间被取消")),
+    "日志说明领取窗口取消"
+  );
+});
+
 test("重试上限：永久失败任务达上限置 failed，不再饿死后续任务", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;

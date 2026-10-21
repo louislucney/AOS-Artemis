@@ -749,9 +749,20 @@ async function releaseTask(
   const ok = await deps.store.updateRegressionTask(rootPath, taskId, {
     status: "pending",
     claimedBy: null,
-    claimedAt: null
+    claimedAt: null,
+    expectStatuses: ["claimed", "running"]
   });
-  if (!ok) return json(500, { ok: false, error: "释放失败" });
+  if (!ok) {
+    const fresh = await deps.store.getRegressionTask(rootPath, taskId);
+    if (!fresh) return json(404, { error: `未知任务 "${taskId}"` });
+    if (fresh.status === "cancelled") {
+      return json(400, { error: "任务已取消（终态），不释放、不重置" });
+    }
+    return json(409, {
+      ok: false,
+      error: `任务状态已变化（当前 ${fresh.status}），未释放`
+    });
+  }
   deps.cache?.clear();
   return json(200, { ok: true, taskId, status: "pending" });
 }

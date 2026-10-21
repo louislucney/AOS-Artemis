@@ -260,6 +260,27 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           running = null;
         }
         if (running === null) {
+          const acknowledged = await store
+            .ackCancellation({ rootPath, taskId: task.id })
+            .catch(() => null);
+          let fresh = acknowledged;
+          if (fresh === null) {
+            fresh = await store.getRegressionTask(rootPath, task.id).catch(() => null);
+          }
+          if (fresh?.status === "cancelled" || fresh?.status === "stopped") {
+            io.log(
+              `[runner] 任务 ${task.id} 在领取与执行之间被取消：已确认 cancelled（不执行、不释放）`
+            );
+            if (once) return 0;
+            continue;
+          }
+          if (fresh?.status === "stopping") {
+            io.log(
+              `[runner] 任务 ${task.id} 取消确认未生效（仍为 stopping）：等待下次心跳/收尾兜底`
+            );
+            if (once) return 0;
+            continue;
+          }
           await store
             .releaseRegressionTask({ rootPath, runnerId: me.id, taskId: task.id, to: "pending" })
             .catch(() => false);

@@ -39,6 +39,7 @@ import type {
   RecordTaskInput,
   RecordUsageEventInput,
   RegressionTaskRecord,
+  RegressionTaskStatus,
   RunnerRecord,
   ScheduleRecord,
   SetCaseIssueKeyInput,
@@ -390,6 +391,7 @@ export class MemoryStore implements ProjectStore {
       runIds?: string[];
       claimedBy?: string | null;
       claimedAt?: string | null;
+      expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
     const project = this.getProjectRecord(rootPath);
@@ -398,6 +400,12 @@ export class MemoryStore implements ProjectStore {
       (entry) => entry.projectId === project.id && entry.id === id
     );
     if (!task) return false;
+    if (
+      patch.expectStatuses !== undefined &&
+      !patch.expectStatuses.includes(task.status)
+    ) {
+      return false;
+    }
     if (patch.status !== undefined) task.status = patch.status;
     if (patch.runIds !== undefined) task.runIds = [...patch.runIds];
     if (patch.claimedBy !== undefined) task.claimedBy = patch.claimedBy;
@@ -611,8 +619,7 @@ export class MemoryStore implements ProjectStore {
     let released = 0;
     for (const task of this.regressionTasks) {
       if (task.projectId !== project.id) continue;
-      if (task.status !== "claimed" && task.status !== "running" && task.status !== "stopping")
-        continue;
+      if (task.status !== "claimed" && task.status !== "running") continue;
       if (task.claimedAt === null || task.claimedAt > input.claimedBefore) continue;
       if (task.claimedBy !== null && onlineRunnerIds.has(task.claimedBy)) continue;
       task.status = "pending";

@@ -36,6 +36,7 @@ import type {
   RecordTaskInput,
   RecordUsageEventInput,
   RegressionTaskRecord,
+  RegressionTaskStatus,
   RunnerRecord,
   ScheduleRecord,
   SetCaseIssueKeyInput,
@@ -278,6 +279,7 @@ export class FileStore implements ProjectStore {
       runIds?: string[];
       claimedBy?: string | null;
       claimedAt?: string | null;
+      expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
     const bucket = await this.bucket(rootPath);

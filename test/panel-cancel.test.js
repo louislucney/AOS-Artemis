@@ -129,6 +129,30 @@ test("panel cancel: 空 taskId 400；未知任务 404；已取消幂等不覆盖
   assert.equal(payload.task.cancelledAt, first.cancelledAt);
 });
 
+test("panel release: 已取消任务不复活（终态/守卫双保险）", async () => {
+  const { store, rootPath } = await setupLocal();
+  const task = await store.createRegressionTask(taskInput(rootPath));
+  const cancelled = await store.cancelRegressionTask({
+    rootPath,
+    taskId: task.id,
+    source: "local-cli",
+    actor: "louis",
+    actorHostId: null,
+    note: "终态保护",
+    at: "2026-10-21T02:00:00.000Z"
+  });
+  const released = await handlePanelActionRequest(
+    request("/panel/api/tasks/release", { project: rootPath, taskId: task.id }),
+    { store, env: {} }
+  );
+  assert.equal(released.status, 400);
+  const after = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(after.status, "cancelled");
+  assert.equal(after.cancelledBy, "louis");
+  assert.equal(after.cancelNote, "终态保护");
+  assert.equal(after.cancelledAt, cancelled.cancelledAt);
+});
+
 test("CLI suite task cancel：本地来源 local-cli，actor/host 与审计落库", async () => {
   const { store, runtime, rootPath } = await setupLocal();
   const task = await store.createRegressionTask(taskInput(rootPath));

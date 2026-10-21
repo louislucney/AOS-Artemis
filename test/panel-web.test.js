@@ -728,6 +728,13 @@ test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", a
   assert.match(pendingHtml.body, /等待执行机领取/, "pending 无释放动作（等待领取）");
   assert.match(pendingHtml.body, /panel\/api\/tasks\/stop/, "动作脚本覆盖三入口");
   assert.doesNotMatch(pendingHtml.body, />释放回队列</, "pending 不渲染释放按钮");
+  assert.match(pendingHtml.body, /data-task-action="cancel"/, "pending 可取消");
+  assert.match(pendingHtml.body, /id="task-cancel-note"/, "取消备注输入");
+  assert.match(
+    pendingHtml.body,
+    /note:action==='cancel'&&noteEl\?noteEl\.value:undefined/,
+    "取消提交携带可选备注"
+  );
 
   await store.updateRegressionTask(projectDir, pending.id, {
     status: "claimed",
@@ -2161,4 +2168,39 @@ test("panel web: workspace 内未登记项目可经绝对路径直达（overview
     deps
   );
   assert.equal(outside.status, 404, "工作区外绝对路径必须 404");
+});
+
+test("panel web: 任务卡展示取消来源/操作人/备注/时间（取消后不再渲染取消按钮）", async () => {
+  const store = new MemoryStore();
+  const repo = makeReadyRepo();
+  const projectDir = makeTempDir("aos-panel-cancel-");
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, "aos.config.jsonc"), JSON.stringify(baseConfig()), "utf-8");
+  await store.upsertProject({ rootPath: projectDir, name: "p" });
+  const task = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: "cs", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.cancelRegressionTask({
+    rootPath: projectDir,
+    taskId: task.id,
+    source: "local-cli",
+    actor: "louis",
+    actorHostId: "h-a",
+    note: "面板核对",
+    at: "2026-10-21T02:00:00.000Z"
+  });
+  const deps = { store, env: {}, serviceRepo: repo, buildStale: false };
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${encodeURIComponent(task.id)}`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /已取消/, "状态中文文案");
+  assert.match(html.body, /取消：来源 local-cli · 操作人 louis · 时间 2026-10-21T02:00:00\.000Z · 备注 面板核对/);
+  assert.doesNotMatch(html.body, /data-task-action="cancel"/, "终态不再提供取消");
+  assert.doesNotMatch(html.body, /id="task-cancel-note"/, "终态不渲染备注输入");
 });
