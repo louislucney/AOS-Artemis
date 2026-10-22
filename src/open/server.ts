@@ -135,6 +135,15 @@ function numberField(value: unknown, name: string): number | undefined {
   return Math.trunc(parsed);
 }
 
+function booleanField(value: unknown, name: string): boolean | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "boolean") return value;
+  const text = String(value).trim().toLowerCase();
+  if (["true", "1", "yes"].includes(text)) return true;
+  if (["false", "0", "no"].includes(text)) return false;
+  throw new HttpError(400, "invalid_request", `${name} 必须是布尔值`);
+}
+
 function validateFigma(source: { type: string; url?: string }, penFile?: string): void {
   if (source.type === "figma" && !source.url) {
     throw new HttpError(400, "invalid_source", "缺少 figmaUrl");
@@ -295,11 +304,16 @@ export async function startCmsOpenServer(
           penUpload = parsed.files.get("penFile") ?? null;
           templateUpload = parsed.files.get("template") ?? null;
           validateFigma(merged, penUpload ? "pending" : undefined);
+          const staticFallback = booleanField(
+            parsed.fields.get("staticFallback"),
+            "staticFallback"
+          );
           input = {
             source: merged.type,
             ...(merged.url ? { figmaUrl: merged.url } : {}),
             ...(merged.token ? { figmaToken: merged.token } : {}),
             ...(merged.nodeId ? { nodeId: merged.nodeId } : {}),
+            ...(staticFallback === undefined ? {} : { staticFallback }),
             llm: parseLlm(parsed.fields.get("llm")),
             ...(numberField(parsed.fields.get("maxFlows"), "maxFlows") === undefined
               ? {}
@@ -317,11 +331,13 @@ export async function startCmsOpenServer(
           }
           const source = sourceOf(parsed.source);
           validateFigma(source);
+          const staticFallback = booleanField(parsed.staticFallback, "staticFallback");
           input = {
             source: source.type,
             ...(source.url ? { figmaUrl: source.url } : {}),
             ...(source.token ? { figmaToken: source.token } : {}),
             ...(source.nodeId ? { nodeId: source.nodeId } : {}),
+            ...(staticFallback === undefined ? {} : { staticFallback }),
             llm: parseLlm(parsed.llm),
             ...(numberField(parsed.maxFlows, "maxFlows") === undefined
               ? {}

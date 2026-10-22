@@ -146,6 +146,7 @@ test("server: cors default rejects cross-origin and multipart is parsed", async 
     async (base) => {
       const form = new FormData();
       form.set("source", "pen");
+      form.set("staticFallback", "false");
       form.set("llm", JSON.stringify({ baseUrl: "https://api.example.com/v1", model: "m", apiKey: "k" }));
       form.set("penFile", new Blob([Buffer.from("{}")], { type: "application/octet-stream" }), "design.pen");
       form.set("template", new Blob([Buffer.from("x")], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "t.xlsx");
@@ -159,6 +160,7 @@ test("server: cors default rejects cross-origin and multipart is parsed", async 
       const { jobId } = await response.json();
       await waitTerminal(base, jobId);
       assert.equal(captured.source, "pen");
+      assert.equal(captured.staticFallback, false);
       assert.match(captured.penFile, /input\.pen$/);
       assert.match(captured.templatePath, /template\.xlsx$/);
     }

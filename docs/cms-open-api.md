@@ -27,7 +27,8 @@ Base URL（调试环境）：`http://192.168.102.165:8780`
     "apiKey": "sk-xxx"
   },
   "maxFlows": 20,                  // 可选，默认 10
-  "maxDepth": 30                   // 可选，默认 30
+  "maxDepth": 30,                  // 可选，默认 30
+  "staticFallback": true           // 可选；Figma 无原型时是否按箭头/注释/画布顺序合成，默认 true
 }
 ```
 
@@ -46,6 +47,7 @@ Base URL（调试环境）：`http://192.168.102.165:8780`
 | `penFile` | 文件 | `.pen` 时 | `.pen` 文件；JSON 模式无法上传，`.pen` 必须用 multipart |
 | `template` | 文件 | 否 | `.xlsx` 用例模版 |
 | `maxFlows` / `maxDepth` | 文本 | 否 | 数字 |
+| `staticFallback` | 文本 | 否 | `true`/`false`；Figma 无原型时是否合成静态流程，默认 `true` |
 
 ```bash
 curl -s http://192.168.102.165:8780/jobs \
@@ -54,6 +56,23 @@ curl -s http://192.168.102.165:8780/jobs \
   -F 'penFile=@design.pen' \
   -F 'template=@company-template.xlsx'
 ```
+
+### Figma 输入
+
+- `source.type` 必须为 `figma`，`url` 必填（`figma.com/file|design/<fileKey>` 链接）。
+- `token` 按请求传；省略时回退服务进程的 `FIGMA_ACCESS_TOKEN`。
+- `nodeId` 可选（如 `1:2`），限定解析子树。
+- 原型交互优先；没有原型时默认走静态合成（箭头/连线、画板旁文字注释、画布顺序）；`staticFallback:false` 关闭。
+- 截图默认生成，落 `screens/figma-<fileKey>/`。
+- 失败码：`figma_auth`（401/403/token 无效）、`figma_not_found`（404/坏 URL）、`figma_rate_limit`（429/冷却）、`figma_extract_failed`（其他提取失败）。
+
+### .pen 输入
+
+- **必须 multipart**（JSON 无法携带文件），`penFile` 必填，≤50 MB。
+- 渲染/截图使用**服务机登录态**：`pen login` 或进程环境 `PEN_CLI_KEY`；不按请求传 pen key。
+- 任务开始前会执行 `pen` CLI 可用性与登录预检；未就绪 → `pen_unavailable`，错误 `hint` 给出安装/登录指引。
+- `llm` 可选：提供且模型支持视觉时，额外识别交互元素；不支持则 `vision-*` 警告降级，不阻断流程合成。
+- 产物截图落 `screens/pen-<文件名>/`。
 
 ## GET /jobs/{jobId}
 
@@ -117,7 +136,7 @@ meta.json        # source/generatedAt/model/maxFlows/maxDepth/counts/warnings
 | 429 | `queue_full` | 队列已满 |
 | 500 | `internal` | 未预期错误 |
 
-任务执行失败不改变 HTTP 状态：`GET /jobs/{id}` 返回 `status=failed`，`error.code` 可能为 `figma_extract_failed` / `generation_failed` / `no_cases` / `pen_unavailable` / `job_timeout` / `cancelled`。
+任务执行失败不改变 HTTP 状态：`GET /jobs/{id}` 返回 `status=failed`，`error.code` 可能为 `figma_auth` / `figma_not_found` / `figma_rate_limit` / `figma_extract_failed` / `pen_unavailable` / `pen_extract_failed` / `generation_failed` / `no_cases` / `template_invalid` / `job_timeout` / `cancelled`。
 
 ## Excel 模版
 

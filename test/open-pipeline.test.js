@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import ExcelJS from "exceljs";
 
 import { runOpenJob } from "../dist/open/pipeline.js";
 
@@ -153,6 +154,58 @@ test("pipeline: pen source uses host pen readiness and packaged screenshots", as
     const entries = zipEntries(await readFile(result.zipPath));
     assert.ok(entries.some((entry) => entry.name === "screens/pen-demo/1.png"));
     assert.equal(result.counts.screens, 2);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("pipeline: staticFallback is passed to extraction", async () => {
+  const workDir = await mkdtemp(join(tmpdir(), "aos-open-pipeline-"));
+  try {
+    let captured = null;
+    const base = deps();
+    const extract = base.extractFigma;
+    base.extractFigma = async (runtime, args, deps2) => {
+      captured = args;
+      return extract(runtime, args, deps2);
+    };
+    await runOpenJob(
+      {
+        source: "figma",
+        figmaUrl: "https://www.figma.com/design/ABC123/demo",
+        staticFallback: false,
+        llm: null
+      },
+      workDir,
+      base
+    );
+    assert.equal(captured.staticFallback, false);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("pipeline: bad template fails with template_invalid", async () => {
+  const workDir = await mkdtemp(join(tmpdir(), "aos-open-pipeline-"));
+  const template = join(workDir, "bad.xlsx");
+  try {
+    const workbook = new ExcelJS.Workbook();
+    workbook.addWorksheet("模版").addRow(["用例编号"]);
+    await workbook.xlsx.writeFile(template);
+    await assert.rejects(
+      () =>
+        runOpenJob(
+          {
+            source: "figma",
+            figmaUrl: "https://www.figma.com/design/ABC123/demo",
+            templatePath: template,
+            llm: null
+          },
+          workDir,
+          deps()
+        ),
+      (error) => error.code === "template_invalid"
+    );
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }

@@ -13,6 +13,7 @@ import { ensurePenCli } from "../pen/install.js";
 import { penEnvFrom, penExec } from "../pen/cli.js";
 import { buildZip, type ZipEntry } from "./zip.js";
 import { renderCmsWorkbook } from "./template-map.js";
+import { errorMessage } from "../util.js";
 
 export class OpenJobError extends Error {
   readonly code: string;
@@ -36,6 +37,8 @@ export interface OpenJobInput {
   llm: { baseUrl: string; model: string; apiKey: string } | null;
   maxFlows?: number;
   maxDepth?: number;
+  /** Figma 无原型交互时是否按箭头/注释/画布顺序合成（默认 true）。 */
+  staticFallback?: boolean;
 }
 
 export interface OpenPipelineDeps {
@@ -74,6 +77,15 @@ function toolError(result: { isError?: boolean; content?: Array<{ type: string; 
     /* fall through */
   }
   return text || "生成失败";
+}
+
+function classifyFigmaError(message: string): string {
+  if (/Figma API 401|Figma API 403|FIGMA_ACCESS_TOKEN|Invalid token/i.test(message)) {
+    return "figma_auth";
+  }
+  if (/Figma API 404|Cannot parse Figma file key/i.test(message)) return "figma_not_found";
+  if (/rate limit|429|retry-after/i.test(message)) return "figma_rate_limit";
+  return "figma_extract_failed";
 }
 
 function warningMessages(value: unknown): string[] {
@@ -144,11 +156,19 @@ export async function runOpenJob(
     if (!input.figmaUrl) throw new OpenJobError("invalid_source", "缺少 figmaUrl");
     const result = await (deps.extractFigma ?? figmaExtractFlows)(
       runtime,
-      { url: input.figmaUrl, nodeId: input.nodeId, screens: true, save: true },
+      {
+        url: input.figmaUrl,
+        nodeId: input.nodeId,
+        screens: true,
+        save: true,
+        ...(input.staticFallback === undefined ? {} : { staticFallback: input.staticFallback })
+      },
       { figmaToken: input.figmaToken, chat }
     );
     const error = toolError(result);
-    if (error !== null) throw new OpenJobError("figma_extract_failed", error);
+    if (error !== null) {
+      throw new OpenJobError(classifyFigmaError(error), error);
+    }
   } else {
     const ready = await (deps.penReady ?? defaultPenReady)();
     if (!ready.ok) throw new OpenJobError("pen_unavailable", ready.hint, ready.hint);
@@ -220,15 +240,21 @@ export async function runOpenJob(
   const webCases = rewriteCasesForWeb(cases as never);
   if (deps.isCancelled?.()) throw new OpenJobError("cancelled", "任务已取消");
   deps.onStep?.("packaging");
-  const xlsx = await renderCmsWorkbook(webCases, {
-    source: input.source === "figma" ? "figma" : "pen",
-    generatedAt,
-    model: input.llm?.model ?? null,
-    ...(input.maxFlows === undefined ? {} : { maxFlows: input.maxFlows }),
-    ...(input.maxDepth === undefined ? {} : { maxDepth: input.maxDepth }),
-    counts: { cases: cases.length, screens: screenCount },
-    warnings
-  }, { templatePath: input.templatePath });
+  const xlsx = await (async (): Promise<Buffer> => {
+    try {
+      return await renderCmsWorkbook(webCases, {
+        source: input.source === "figma" ? "figma" : "pen",
+        generatedAt,
+        model: input.llm?.model ?? null,
+        ...(input.maxFlows === undefined ? {} : { maxFlows: input.maxFlows }),
+        ...(input.maxDepth === undefined ? {} : { maxDepth: input.maxDepth }),
+        counts: { cases: cases.length, screens: screenCount },
+        warnings
+      }, { templatePath: input.templatePath });
+    } catch (error) {
+      throw new OpenJobError("template_invalid", errorMessage(error));
+    }
+  })();
 
   const designPath = path.join(designDir, "flow-map.md");
   const designMd = fs.existsSync(designPath)
