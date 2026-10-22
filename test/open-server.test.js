@@ -161,8 +161,8 @@ test("server: cors default rejects cross-origin and multipart is parsed", async 
       await waitTerminal(base, jobId);
       assert.equal(captured.source, "pen");
       assert.equal(captured.staticFallback, false);
-      assert.match(captured.penFile, /input\.pen$/);
-      assert.match(captured.templatePath, /template\.xlsx$/);
+      assert.match(captured.penFile, /design\.pen$/);
+      assert.match(captured.templatePath, /\.xlsx$/);
     }
   );
 });

@@ -166,7 +166,13 @@ async function saveUpload(
   if (file.data.length > FILE_LIMIT) {
     throw new HttpError(413, "payload_too_large", "单文件超过 50 MB");
   }
-  const target = path.join(workDir, `${fallback}${ext}`);
+  const rawBase = path.basename(file.filename, ext);
+  const safeBase =
+    rawBase
+      .replace(/[^\w\u4e00-\u9fff.-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64) || fallback;
+  const target = path.join(workDir, `${safeBase}${ext}`);
   await mkdir(workDir, { recursive: true });
   await writeFile(target, file.data);
   return target;
@@ -350,7 +356,7 @@ export async function startCmsOpenServer(
         const job = manager.create();
         const workDir = path.join(workRoot, job.id);
         if (penUpload) {
-          input.penFile = await saveUpload(penUpload, workDir, "input", [".pen"]);
+          input.penFile = await saveUpload(penUpload, workDir, "design", [".pen"]);
         }
         if (templateUpload) {
           input.templatePath = await saveUpload(templateUpload, workDir, "template", [".xlsx"]);
