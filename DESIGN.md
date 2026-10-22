@@ -2273,3 +2273,65 @@ llm_switch(name, force):
 - **CANVAS 修复**：`buildFlowGraph` 此前只认 `PAGE`，Figma REST 实际页面类型是 `CANVAS`，真实文件可能 0 屏；`screenOf`/`pageNameOf`/屏幕收集统一接受 `CANVAS` 与 `PAGE`。
 - **模块归位**：合成器从 `src/open/` 移到 `src/figma/static-flows.ts`，App/CMS 共用，避免 figma→open 的反向依赖。
 - **测试**：`test/figma-static-fallback.test.js` 2 例（默认合成、`staticFallback:false` 保留 `no-interactions`）；全量 2066 绿。
+
+### 13.176 修复（CMS 开放服务读取真实 tests.json 形态）
+
+> 2026-10-22。CMS Open 的 Figma/pen 任务在真实产物下必现 `no_cases`：生成阶段已完成，却拿不到 zip。
+
+- **根因**：`src/open/pipeline.ts` 直接解析 `tests.json` 的 `cases` 字段，而 `figma_generate_tests` 的落盘形态是 `flows`（`test-gen.ts` payload）；`test/open-pipeline.test.js` 的 fixture 恰好写 `{cases}`，测试全绿掩盖了漂移。
+- **修复**：`TestsDocument` 增 `rawFlows`（完整原始 `flows[]`，`records` 仍是消费方投影）；CMS Open 改用 `readTestsDocument(...).rawFlows`，不再自行解析，落实 `design-store` 单一读取口径。
+- **测试**：`open-pipeline` fixture 改为真实 `{flows}` 形态（静态/pen/模版/无用例 5 例全部覆盖）；`design-store` 增 `rawFlows` 断言。全量 2068 绿，lint 0 error（2 条既有 warning）。
+- **边界**：接口与产物格式不变；仅修复读取口径，`flows` 缺失仍按 `no_cases` 显式失败。
+
+### 13.177 优化（design_to_test 重复开销：截图复用 / 阶段复用 / save 粒度）
+
+> 2026-10-22。设计→用例链路的重复成本：提取已落盘的截图在生成阶段又被下载/渲染一遍；`run:false → run:true` 续跑会完整重跑生成；CMS Open 生成后丢弃 md/xlsx/case-sets。
+
+- **截图复用（`src/design/screens.ts` + `src/figma/test-gen.ts`）**：`existingScreenPath` 校验已落盘 PNG；`captureCaseScreens` 按 nodeId 分区，仅缺失/损坏的屏走 Figma `/images` 或 pen 渲染，已有图直接复用（不重新下载/渲染）。响应 `screenshots.reused` 记录复用屏数；figma/pen 两通道一致。提取阶段仍按设计源重新渲染（设计可能变更），复用只发生在生成阶段（flows 为事实源）。
+- **阶段复用（`src/workflow/design-to-test.ts` + `src/tools/native-tools/workflow.ts`）**：`design_to_test` 新增 `reuseExistingTests`（需与 `reuseExistingFlows` 同用）；复用 `tests.json` 时跳过 `figma_generate_tests`（含功能命名 LLM、md/xlsx、case-set 归档），直接走 preflight/覆盖闸；`steps[generate]` 标 `reused:true`；`nextAction` 同时携带 `reuseExistingTests:true`。缺 tests.json 返回 `needs-info`（`category:"no-tests"`，先问不猜）；警告从 preflight 快照回填。
+- **save 粒度（`src/figma/test-gen.ts` + `src/tools/native-tools/figma.ts`）**：`saveArtifacts` 可分别关闭 `markdown`/`xlsx`/`caseSets`；`tests.json` 在 `save !== false` 时始终落盘（供 check/run 复用），`savedTo` 只列实际写出的路径；截图只在需要 md（或 case-set md）时采集。CMS Open 改为只落 `tests.json`，不再生成并丢弃 `tests.md`/`tests.xlsx`/`discard.xlsx`/case-sets。
+- **测试**：`figma-test-screens` +2（figma 二次生成不再请求 `/images`/下载；pen 二次生成不再渲染）、`figma-testgen` +1（saveArtifacts 只落 tests.json）、`native-figma-tool` +1（saveArtifacts schema）、`workflow-design-to-test` +3（复用 tests 跳过生成、缺 tests → needs-info、未配 reuseExistingFlows → 用法错误）并同步 nextAction 断言、`native-workflow-tool` 暴露新字段。全量 2073 绿，lint 0 error（2 条既有 warning）。
+- **边界**：默认行为不变（三件套仍全量落盘、生成仍执行）；`reuseExistingTests` 仅在显式传参时生效，覆盖闸/三件套校验口径不变。
+
+### 13.178 加固（CMS 开放服务运维：台账持久化 / 清理 / 进度超时 / 鉴权）
+
+> 2026-10-22。承接 §13.174/§13.176：服务重启后任务全丢、工作目录只增不减、超时不感知进度、公网监听无鉴权。
+
+- **台账持久化（`src/open/job-store.ts` + `src/open/jobs.ts`）**：`workRoot/jobs.json` 原子写（临时文件 → rename，0600），只存状态/时间戳/产物路径，不存请求凭证；`JobManager.snapshot()/initial/onChange` 负责恢复与变更落盘。启动时 queued/running 统一标记 `failed` + `error.code="job_interrupted"`（不假装恢复执行）；已完成任务在保留期内仍可查询/下载。文件损坏/缺失按空台账启动。
+- **清理**：保留期到期由 `onExpire` 删除 `workRoot/<jobId>`；启动时清理没有台账记录的孤儿工作目录；`close()` 落盘最终快照。`tick()` 保留手动触发入口（测试/运维）。
+- **进度感知超时**：`lastProgressAtMs` 在 claim 与每次 `setStep` 时刷新；tick 按“距上次进度”判定，消息改为「>N 秒无进度」。避免提取耗时较长但已进入生成阶段的任务被启动时间误杀。
+- **鉴权**：`--token` 或 `AOS_CMS_OPEN_TOKEN` 启用 Bearer；除 `GET /healthz` 与 CORS 预检外所有端点校验 `Authorization`（常量时间比较），失败 401 `unauthorized` + `WWW-Authenticate: Bearer`；`--cors` 预检仍不要求令牌。CLI 日志只显示“已启用/未启用”，不打印 token。
+- **测试**：`open-jobs` +3（进度超时、snapshot/restore、onExpire）、`open-job-store` +2（roundtrip、坏文件）、`open-server` +6（重启恢复完成态、重启中断态、孤儿清理、tick 清理、Bearer 全端点、持久化不含凭证）、`open-command` +1（flag/env token 日志）。全量 2085 绿，lint 0 error（2 条既有 warning）。
+- **边界**：不恢复执行中断任务（凭证只在内存、避免静默重放外部副作用）；`artifactPath` 仍为服务端内部字段，客户端下载走 `/jobs/:id/download`。
+
+### 13.179 优化（覆盖预算误判与混合稿补边）
+
+> 2026-10-22。`maxFlows` 命中探索帽时即使硬/探索覆盖已完整也报 `truncated`，导致覆盖闸失败与“调大上限重试”；混合稿有原型边时静态合成完全不触发。
+
+- **截断语义（`src/figma/test-gen.ts`）**：`truncated` 不再等价于“探索停止”。先计算 `knownGap`（全屏/全跳转/全未决目的地是否被 kept 路径覆盖 + 剩余候选是否仍有覆盖增量），仅当 `knownGap && (探索帽命中 || maxFlows 命中)` 才判截断。命中探索帽但覆盖已完整 → `truncated:false`，覆盖闸不再误杀。
+- **探索预算**：固定 `guard<500` 改为按图规模 `min(20000, max(500, screens*20 + edges*4))`，大图不再因固定帽提前停；仍保留 `maxFlows*4` 候选上限与 20k 硬上限。
+- **混合稿补边（`src/figma/static-flows.ts` + `src/figma/flows.ts`）**：`reachableScreenIds` 从入口沿已有边求可达；`mergeStaticEdges` 仅对入口不可达的屏补边——优先采用静态合成的箭头/注释/画布顺序边，仍不可达的剩余屏按合成器画布顺序串链；显式原型边与入口不变，新增边 `inferred/low`。提取阶段仅在图有边且存在不可达屏时才调用合成器（避免全连通文件多跑一次）。
+- **警告**：补边成功追加 `static-flow-inferred`（“部分屏无原型交互：补充 N 条推断边（需复核）”，details ≤10 条）；`flowGraphWarnings` 在合并后重算，不可达告警随实际图变化。
+- **测试**：`figma-testgen` +1（探索帽命中但覆盖完整不判截断）、`figma-static-fallback` +2（混合稿循环组件补边、`mergeStaticEdges` 静态线索 + 画布链）。全量 2088 绿，lint 0 error（2 条既有 warning）。
+- **边界**：`maxFlows` 默认 10 不变（成本闸保留）；`entryScreens` 仍由显式边自动推导，混合补边只处理“入口不可达”的组件，不强行把多入口设计合并成单流程。
+
+### 13.180 优化（首轮 a11y 标识预挖）
+
+> 2026-10-22。生成步骤的 `a11y:` 注记此前只来自 screen-map `elements`（需要先跑过一轮 iOS 套件才自动发现），首次生成只能靠可见文本定位。
+
+- **图层名启发（`src/figma/test-gen.ts`）**：`identifierFromLayerName` 只接受显式前缀（`testID:`/`a11y=`/`id:`/`accessibilityIdentifier=`/`contentDescription=`）、snake/kebab/dot/colon（`btn_login`/`login-button`）或 lowerCamel（`loginButton`）；含空格、纯单词、中文标签一律不猜（避免把 `Button`/`登录按钮` 当标识）。
+- **文本关联**：`identifierSuggestionsFromGraph` 把交互元素图层名与 `edge.textHints` 的运行期文本关联（同文本取首个）；`loadIdentifierSuggestions` 先读 screen-map 观测结果（命中优先），再用预挖结果补空。figma/pen 共用（都经 flows.json 的 edge.element）。
+- **效果**：首次生成即可在步骤中输出 `a11y: btn_login`（无需先跑一轮）；人工 `screen_map save` 的 manual identifier 仍最高优先。
+- **测试**：`figma-testgen` +2（启发式边界、生成步骤含预挖 `a11y`）。全量 2090 绿，lint 0 error（2 条既有 warning）。
+- **边界**：只处理“有运行期文本的交互元素”；纯图标/无文本元素不猜；代码 locator 扫描（testID/contentDescription 与源码映射）留作后续。
+
+### 13.181 优化（源码 locator 预挖）
+
+> 2026-10-22。接 §13.180：设计图层名之外，源码里的 `testID`/`accessibilityIdentifier` 等才是应用真实定位符，首次生成也应能用上。
+
+- **扫描器（`src/figma/code-identifiers.ts`）**：按扩展名（tsx/ts/jsx/js/swift/kt/java/xml/dart）递归扫描项目，跳过 `node_modules`/`build`/`dist`/`Pods`/`.artemis` 等目录与符号链接；单文件 ≤512KB、最多 800 文件/500 条提示（超限 `truncated`）。
+- **配对**：标识模式 `testID`/`data-testid`/`testTag`/`.accessibilityIdentifier`/`accessibilityIdentifier`/`Key|ValueKey`/`android:id`；文本模式 `Text(...)`/`<Text>…</Text>`/`text=`/`setTitle`/`label|title|placeholder`/`android:text`。仅同文件行距 ≤4 行配对，取最近；文本含代码符号/过长/本身像标识（`loginButton`）则丢弃，避免把 key 当文案。
+- **优先级**：screen-map 观测（manual/自动发现）> 源码 locator > 设计图层名预挖；`AOS_CODE_IDENTIFIERS=0` 关闭源码扫描。
+- **重构**：`identifierFromLayerName` 移到 `src/design/identifiers.ts`（test-gen 仍 re-export，测试兼容），源码扫描复用同一保守校验。
+- **测试**：新增 `test/code-identifiers.test.js` 4 例（RN/SwiftUI/Flutter/Android XML、远距离不配对、忽略目录）；`figma-testgen` +1（源码 `testID` → 生成步骤 `a11y: loginButton`）。全量 2095 绿，lint 0 error（2 条既有 warning）。
+- **边界**：行级启发式，多行 JSX/复杂 DSL 可能漏配；只映射“附近有可见文本”的标识，纯图标元素不猜；扫描上限与缓存策略后续按真实项目调。

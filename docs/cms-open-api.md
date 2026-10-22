@@ -3,9 +3,9 @@
 Base URL（调试环境）：`http://192.168.102.165:8780`
 
 - 当前 CORS：`*`（回显实际 Origin）；Host 白名单：`192.168.102.165`、`louisdeMacBook-Pro.local`、loopback
-- 无鉴权；仅建议在可信内网调试
+- 默认无鉴权；设置 `--token` 或 `AOS_CMS_OPEN_TOKEN` 后，除 `GET /healthz` 与 CORS 预检外需 `Authorization: Bearer <token>`（缺失/错误 → 401 `unauthorized`）
 - JSON body ≤ 1 MB；multipart 单文件 ≤ 50 MB、总量 ≤ 55 MB
-- 并发 3、队列 20、单任务 10 分钟、产物保留 2 小时；进程重启后 job 丢失
+- 并发 3、队列 20、单任务 10 分钟无进度超时、产物保留 2 小时；任务台账落 `workRoot/jobs.json`，进程重启后运行中/排队任务标记 `job_interrupted`，已完成任务在保留期内仍可查询/下载
 
 ## 通用端点
 
@@ -142,13 +142,14 @@ curl -s http://192.168.102.165:8780/jobs \
   "createdAt": "2026-10-22T02:00:00.000Z",
   "finishedAt": null,
   "error": null,
-  "artifactPath": null,
   "cancelRequested": false
 }
 ```
 
+- 状态响应不返回服务端绝对路径；下载统一走 `GET /jobs/{jobId}/download`
 - `error` 失败时为 `{ "code": "...", "message": "...", "hint": "..." }`
-- 未知 job / 服务重启：`404 {"code":"job_not_found","hint":"请重新提交生成任务"}`
+- 未知 job：`404 {"code":"job_not_found","hint":"请重新提交生成任务"}`
+- 服务重启：运行中/排队任务变为 `failed`（`error.code="job_interrupted"`）；已完成任务在保留期内仍可查询/下载
 - 未完成下载：`409 {"code":"job_not_ready"}`
 - 产物过期：`410 {"code":"job_expired"}`
 
@@ -170,6 +171,7 @@ meta.json      # source/model/maxFlows/maxDepth/counts/warnings
 | 400 | `invalid_request` | 缺字段、JSON/LLM 格式错、数字非法 |
 | 400 | `invalid_source` | 缺 figmaUrl / penFile，或类型不支持 |
 | 403 | `forbidden` | `Origin` 不在 CORS 白名单，或 `Host` 不在允许列表 |
+| 401 | `unauthorized` | 已启用 `--token`，但缺少/错误的 `Authorization: Bearer` |
 | 404 | `job_not_found` | job 不存在或服务已重启 |
 | 409 | `job_not_ready` | 未完成就下载 |
 | 410 | `job_expired` | 产物已过期 |
@@ -179,7 +181,7 @@ meta.json      # source/model/maxFlows/maxDepth/counts/warnings
 
 任务执行失败不改变 HTTP 状态：`GET /jobs/{id}` 返回 `status=failed`，`error.code` 可能为：
 
-`figma_auth` / `figma_not_found` / `figma_rate_limit` / `figma_extract_failed` / `pen_unavailable` / `pen_extract_failed` / `generation_failed` / `no_cases` / `template_invalid` / `job_timeout` / `cancelled`。
+`figma_auth` / `figma_not_found` / `figma_rate_limit` / `figma_extract_failed` / `pen_unavailable` / `pen_extract_failed` / `generation_failed` / `no_cases` / `template_invalid` / `job_timeout` / `job_interrupted` / `cancelled`。
 
 ---
 
