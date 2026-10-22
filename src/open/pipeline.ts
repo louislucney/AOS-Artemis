@@ -46,6 +46,8 @@ export interface OpenPipelineDeps {
   now?: () => Date;
   /** Cooperative cancel: checked at step boundaries. */
   isCancelled?: () => boolean;
+  /** Progress hook for the job manager (`extracting` → `generating` → `packaging`). */
+  onStep?: (step: string) => void;
 }
 
 export interface OpenJobResult {
@@ -186,6 +188,7 @@ export async function runOpenJob(
 
   const generate = deps.generate ?? figmaGenerateTests;
   if (deps.isCancelled?.()) throw new OpenJobError("cancelled", "任务已取消");
+  deps.onStep?.("generating");
   const generated = await generate(
     runtime,
     {
@@ -216,6 +219,7 @@ export async function runOpenJob(
 
   const webCases = rewriteCasesForWeb(cases as never);
   if (deps.isCancelled?.()) throw new OpenJobError("cancelled", "任务已取消");
+  deps.onStep?.("packaging");
   const xlsx = await renderCmsWorkbook(webCases, {
     source: input.source === "figma" ? "figma" : "pen",
     generatedAt,

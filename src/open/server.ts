@@ -180,9 +180,7 @@ export async function startCmsOpenServer(
     now: options.now
   });
   const inputs = new Map<string, OpenJobInput>();
-  const runner =
-    options.runner ??
-    ((input, workDir, isCancelled) => runOpenJob(input, workDir, { isCancelled }));
+  const customRunner = options.runner;
   let active = 0;
 
   const pump = (): void => {
@@ -196,7 +194,14 @@ export async function startCmsOpenServer(
       }
       active += 1;
       const workDir = path.join(workRoot, job.id);
-      runner(input, workDir, () => manager.cancelRequested(job.id))
+      const run =
+        customRunner ??
+        ((jobInput: OpenJobInput, dir: string, isCancelled: () => boolean) =>
+          runOpenJob(jobInput, dir, {
+            isCancelled,
+            onStep: (step) => manager.setStep(job.id, step)
+          }));
+      run(input, workDir, () => manager.cancelRequested(job.id))
         .then((result) => {
           if (manager.cancelRequested(job.id)) manager.markCancelled(job.id);
           else manager.complete(job.id, result.zipPath);
@@ -352,11 +357,17 @@ export async function startCmsOpenServer(
           );
         }
         if (request.method === "GET" && match[2] === undefined) {
-          json(response, 200, job, allowedOrigin);
+          json(response, 200, { ...job, jobId: job.id }, allowedOrigin);
           return;
         }
         if (request.method === "DELETE" && match[2] === undefined) {
-          json(response, 200, manager.cancel(jobId), allowedOrigin);
+          const cancelled = manager.cancel(jobId);
+          json(
+            response,
+            200,
+            cancelled === null ? cancelled : { ...cancelled, jobId: cancelled.id },
+            allowedOrigin
+          );
           return;
         }
         if (request.method === "GET" && match[2] === "/download") {
