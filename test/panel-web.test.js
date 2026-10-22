@@ -413,6 +413,15 @@ test("panel web: 页面内联脚本可解析（项目/裁决/任务页，防语�
       deps
     );
     assert.equal(html.status, 200);
+    if (suffix === "") {
+      assert.doesNotMatch(html.body, /待领取：待领取/, "活动行不重复状态词");
+      assert.match(html.body, /待领取：<a[^>]*><code>/, "活动行链接只显示任务短 id");
+      assert.doesNotMatch(html.body, /<caption>最近运行<\/caption>/, "表题不与 h2 重复");
+      assert.doesNotMatch(html.body, /<caption>执行机<\/caption>/, "表题不与 h2 重复");
+    }
+    if (suffix.startsWith("&task=")) {
+      assert.doesNotMatch(html.body, /<caption>跨端差异<\/caption>/, "表题不与 h2 重复");
+    }
     const label = suffix === "" ? "项目页" : suffix === "&view=review" ? "裁决页" : "任务页";
     const scripts = [...html.body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
     assert.ok(scripts.length >= 1, `页面含内联脚本（${label}）`);

@@ -2345,3 +2345,11 @@ llm_switch(name, force):
 - **空态文案**：任务列表改为「暂无任务（从上方「下一步」创建）」，不再指向已删除的「新建任务」区。
 - **重复入口**：页头的「失败分析 · 统计」与「下一步」卡重复，移除页头行；统计入口只在卡片内（失败分析仍有全局导航）。
 - **测试**：`panel-web` 更新断言（无 `section#regression`/空 `<h2>新建任务</h2>`；保留份数、dispatch href、去用例库与计划表单断言）。全量 2095 绿，lint 0 error（2 条既有 warning）。
+
+### 13.183 调整（项目页活动行与表题去重）
+
+> 2026-10-22。接 §13.182 的同类问题排查：活动行出现「待领取：待领取 · id」重复状态词；表格 caption 与 section h2 同名（最近运行/执行机/跨端差异）形成视觉重复。
+
+- **活动行**：`activeLinks`/`pendingLinks` 只显示任务短 id，前缀保留「执行中：」「待领取：」；不再在链接内重复状态词。
+- **表题**：移除 `renderBatches`、`renderRunners`、`renderTaskPage`/`renderStats` 跨端表中与 h2 完全同名的 caption；保留有区分度的表题（接入凭证/任务引用份等）。
+- **测试**：`panel-web` 增断言（活动行无重复状态词、项目页无 `caption>最近运行/执行机`、任务页无 `caption>跨端差异`）。全量 2095 绿，lint 0 error（2 条既有 warning）。

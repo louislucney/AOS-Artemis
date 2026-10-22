@@ -1085,14 +1085,14 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string, hostId
     .slice(0, 3)
     .map(
       (task) =>
-        `<a href="${escapeHtml(taskHref(rootPath, task.id, hostId))}">${escapeHtml(task.status)} · <code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
+        `<a href="${escapeHtml(taskHref(rootPath, task.id, hostId))}"><code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
     )
     .join(" · ");
   const pendingLinks = pending
     .slice(0, 3)
     .map(
       (task) =>
-        `<a href="${escapeHtml(taskHref(rootPath, task.id, hostId))}">待领取 · <code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
+        `<a href="${escapeHtml(taskHref(rootPath, task.id, hostId))}"><code>${escapeHtml(task.id.slice(0, 8))}</code></a>`
     )
     .join(" · ");
   const activityLine =
@@ -1277,7 +1277,7 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string, hostId: str
     '<section id="batches">',
     "<h2>最近运行</h2>",
     trendLine,
-    renderTable(["开始", "结束", "来源", "门禁", "通过/总数", "UI", "失败域", "清单"], rows, empty, "最近运行"),
+    renderTable(["开始", "结束", "来源", "门禁", "通过/总数", "UI", "失败域", "清单"], rows, empty),
     "</section>"
   ]
     .filter((part) => part !== "")
@@ -1604,7 +1604,7 @@ function renderRunners(detail: PanelProjectDetail): string {
   return [
     '<section id="runners">',
     "<h2>执行机</h2>",
-    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无执行机", "执行机"),
+    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无执行机"),
     "</section>"
   ].join("\n");
 }
@@ -1866,7 +1866,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       "</section>",
       '<section id="cross">',
       "<h2>跨端差异</h2>",
-      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）", "跨端差异"),
+      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）"),
       "</section>",
       '<section id="run-hint">',
       "<h2>触发执行</h2>",
@@ -2282,7 +2282,7 @@ function renderStatsPage(view: { rootPath: string; hostId: string | null; detail
       "</section>",
       '<section id="cross">',
       "<h2>跨端差异</h2>",
-      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）", "跨端差异"),
+      renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）"),
       "</section>",
       '<section id="improvement">',
       "<h2>改进出口</h2>",
