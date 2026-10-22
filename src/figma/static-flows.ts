@@ -398,6 +398,96 @@ export async function synthesizeStaticFlows(
   };
 }
 
+/** 从入口屏沿显式/已有边可达的屏幕 id 集合（无入口屏 → 空集）。 */
+export function reachableScreenIds(graph: FlowGraph): Set<string> {
+  const byName = new Map(graph.screens.map((screen) => [screen.name, screen.id]));
+  const queue = graph.entryScreens
+    .map((name) => byName.get(name))
+    .filter((id): id is string => typeof id === "string");
+  const reachable = new Set<string>();
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    for (const edge of graph.edges) {
+      if (edge.from.id === id && edge.to && !reachable.has(edge.to.id)) queue.push(edge.to.id);
+    }
+  }
+  return reachable;
+}
+
+export interface StaticEdgeMergeResult {
+  graph: FlowGraph;
+  added: number;
+  /** 新增边的人类可读明细（`from → to（来源）`），供 warning details 截断展示。 */
+  details: string[];
+}
+
+/** 混合稿补边：显式原型边保留；静态合成边只用于把入口不可达的屏接回主图，
+ * 仍不可达的剩余屏按合成器画布顺序串链（inferred/low）。 */
+export function mergeStaticEdges(
+  explicit: FlowGraph,
+  synthesized: FlowGraph
+): StaticEdgeMergeResult {
+  if (explicit.entryScreens.length === 0) return { graph: explicit, added: 0, details: [] };
+  const byId = new Map(explicit.screens.map((screen) => [screen.id, screen]));
+  const edges = [...explicit.edges];
+  const pairs = new Set(edges.map((edge) => `${edge.from.id}->${edge.to?.id ?? ""}`));
+  const details: string[] = [];
+  const add = (edge: FlowEdge, reason: string): boolean => {
+    if (!edge.to || edge.from.id === edge.to.id) return false;
+    if (!byId.has(edge.from.id) || !byId.has(edge.to.id)) return false;
+    const key = `${edge.from.id}->${edge.to.id}`;
+    if (pairs.has(key)) return false;
+    edges.push(edge);
+    pairs.add(key);
+    details.push(`${edge.from.name} → ${edge.to.name}（${reason}）`);
+    return true;
+  };
+
+  let reachable = reachableScreenIds({ ...explicit, edges });
+  const handled = new Set(reachable);
+  for (const edge of synthesized.edges) {
+    if (!edge.to) continue;
+    if (handled.has(edge.from.id) && handled.has(edge.to.id)) continue;
+    if (add(edge, "静态线索")) {
+      handled.add(edge.from.id);
+      handled.add(edge.to.id);
+    }
+  }
+  reachable = reachableScreenIds({ ...explicit, edges });
+
+  const order = synthesized.screens.map((screen) => screen.id).filter((id) => byId.has(id));
+  let anchor: string | null = null;
+  for (const id of order) {
+    if (reachable.has(id)) {
+      anchor = id;
+      continue;
+    }
+    if (anchor === null) {
+      anchor = order.find((candidate) => reachable.has(candidate)) ?? null;
+      if (anchor === null) break;
+    }
+    const from = byId.get(anchor)!;
+    const to = byId.get(id)!;
+    const layoutEdge: FlowEdge = {
+      from: { id: from.id, name: from.name },
+      to: { id: to.id, name: to.name },
+      element: { id: `layout:${from.id}`, name: "画布顺序", type: "layout" },
+      textHints: [],
+      trigger: "INFERRED",
+      actionType: "INFERRED",
+      provenance: "inferred",
+      confidence: "low"
+    };
+    if (!add(layoutEdge, "画布顺序")) continue;
+    anchor = id;
+    reachable = reachableScreenIds({ ...explicit, edges });
+  }
+
+  return { graph: { ...explicit, edges }, added: details.length, details };
+}
+
 // Keep the imported type referenced for declaration consumers.
 export type { FigmaNode };
 export type { Bounds };

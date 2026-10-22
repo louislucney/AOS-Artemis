@@ -51,7 +51,7 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_generate_tests",
     description:
-      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程（覆盖贪心 + 长路径优先：先长主链、再补覆盖缺口，冗余短片段不产出），生成可直接传给 mobile_run_task 的自然语言任务描述；默认（save !== false）三份同时落盘：tests.json + tests.md + tests.xlsx（响应 savedTo 给出三个路径；Excel 可用 excelPath 指定路径、excelTemplate 指定 .xlsx 模版），仅 save:false 才不写任何文件。tests.md 默认按用例嵌入屏幕截图（screens，默认开：按 flows 来源自动分派 figma/pen 渲染通道，每用例 ≤3 张缩略图；映射缺失/渲染失败降级 screenshot-mapping-missing / screenshot-skipped / screenshot-render-unavailable，不阻断）。覆盖保证：响应与 tests.json 内含 coverage（硬覆盖：未覆盖屏幕/跳转、路径截断、entryFallback；explore：inferred 探索缺口，仅报告不阻断）；requireFullCoverage:true 时硬覆盖不完整即报错且三份都不落盘。",
+      "流程 → 测试用例：读取 .artemis/design/flows.json（或直接给 Figma URL 现场提取），把连续交互线性化为端到端流程（覆盖贪心 + 长路径优先：先长主链、再补覆盖缺口，冗余短片段不产出），生成可直接传给 mobile_run_task 的自然语言任务描述；默认（save !== false）三份同时落盘：tests.json + tests.md + tests.xlsx（响应 savedTo 给出三个路径；Excel 可用 excelPath 指定路径、excelTemplate 指定 .xlsx 模版），仅 save:false 才不写任何文件；saveArtifacts 可单独关闭 tests.md / tests.xlsx / case-sets（tests.json 仍落盘，供后续 check/run 复用）。tests.md 默认按用例嵌入屏幕截图（screens，默认开：按 flows 来源自动分派 figma/pen 渲染通道，每用例 ≤3 张缩略图；映射缺失/渲染失败降级 screenshot-mapping-missing / screenshot-skipped / screenshot-render-unavailable，不阻断）。覆盖保证：响应与 tests.json 内含 coverage（硬覆盖：未覆盖屏幕/跳转、路径截断、entryFallback；explore：inferred 探索缺口，仅报告不阻断）；requireFullCoverage:true 时硬覆盖不完整即报错且三份都不落盘。",
     schema: z.object({
       url: z.string().optional().describe("Figma URL（可选；不传则用 flows.json）"),
       flowsPath: z.string().optional().describe("自定义 flows.json 路径（相对项目根）"),
@@ -70,6 +70,14 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
         .optional()
         .describe("路径最大深度（边数），默认 30；长流程可调大以生成更长的连续用例（超限按续段拆分，不丢尾）"),
       save: z.boolean().optional().describe("是否落盘 tests.json/tests.md/tests.xlsx，默认 true"),
+      saveArtifacts: z
+        .object({
+          markdown: z.boolean().optional().describe("是否落盘 tests.md，默认 true"),
+          xlsx: z.boolean().optional().describe("是否落盘 tests.xlsx，默认 true"),
+          caseSets: z.boolean().optional().describe("是否按功能归档 case-sets 并登记，默认 true")
+        })
+        .optional()
+        .describe("次级产物开关；tests.json 在 save!==false 时始终落盘"),
       screens: z
         .boolean()
         .optional()

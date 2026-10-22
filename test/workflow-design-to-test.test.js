@@ -179,7 +179,7 @@ test("figma happy：提取→生成→校验→nextAction（run 缺省 false）"
   });
   assert.deepEqual(payload.nextAction, {
     tool: "design_to_test",
-    args: { reuseExistingFlows: true, run: true }
+    args: { reuseExistingFlows: true, reuseExistingTests: true, run: true }
   });
   assert.equal(payload.run, undefined);
 });
@@ -208,7 +208,7 @@ test("pen happy：vision 透传（前置 pen 检查走 stub exec）", async () =
   assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", source: "pen", screens: 3, edges: 2, warnings: 0 });
   assert.deepEqual(payload.nextAction, {
     tool: "design_to_test",
-    args: { reuseExistingFlows: true, run: true }
+    args: { reuseExistingFlows: true, reuseExistingTests: true, run: true }
   });
 });
 
@@ -226,7 +226,7 @@ test("生成透传 maxFlows/maxDepth：显式提供的键原样传给 figma_gene
   assert.deepEqual(calls.generate, [{ maxFlows: 50, maxDepth: 12 }]);
   assert.deepEqual(payloadOf(result).nextAction, {
     tool: "design_to_test",
-    args: { reuseExistingFlows: true, run: true, maxFlows: 50, maxDepth: 12 }
+    args: { reuseExistingFlows: true, reuseExistingTests: true, run: true, maxFlows: 50, maxDepth: 12 }
   });
 });
 
@@ -239,7 +239,7 @@ test("生成透传仅带显式提供的键：未给 maxDepth 时不出现该键"
   assert.deepEqual(calls.generate, [{ maxFlows: 50 }]);
   assert.deepEqual(payloadOf(result).nextAction, {
     tool: "design_to_test",
-    args: { reuseExistingFlows: true, run: true, maxFlows: 50 }
+    args: { reuseExistingFlows: true, reuseExistingTests: true, run: true, maxFlows: 50 }
   });
 });
 
@@ -253,7 +253,7 @@ test("生成透传仅带 maxDepth 时：生成与 nextAction 都只携带 maxDep
   assert.deepEqual(calls.generate, [{ maxDepth: 12 }]);
   assert.deepEqual(payloadOf(result).nextAction, {
     tool: "design_to_test",
-    args: { reuseExistingFlows: true, run: true, maxDepth: 12 }
+    args: { reuseExistingFlows: true, reuseExistingTests: true, run: true, maxDepth: 12 }
   });
 });
 
@@ -363,6 +363,102 @@ test("reuseExistingFlows 有 flows.json → 跳过提取（steps 标 reused）",
   assert.deepEqual(withoutMs(payload.steps[0]), { step: "extract", reused: true, screens: 2, edges: 0, warnings: 0 });
   assert.equal(payload.artifacts.flows, path.join(designDir, "flows.json"));
   assert.equal(payload.nextAction.args.reuseExistingFlows, true);
+});
+
+test("reuseExistingTests 有 tests.json → 跳过生成（steps 标 reused）", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-reuse-tests-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const designDir = path.join(dir, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      screens: [{ id: "s1", name: "首页", childNames: [], textHints: [] }],
+      edges: [],
+      entryScreens: ["首页"],
+      unresolvedDestinations: []
+    })
+  );
+  fs.writeFileSync(
+    path.join(designDir, "tests.json"),
+    JSON.stringify({
+      flows: [
+        {
+          id: "c1",
+          name: "首页用例",
+          taskDesc: "任务",
+          steps: ["应看到首页"],
+          screens: ["首页"],
+          preconditions: [],
+          expectations: []
+        }
+      ]
+    })
+  );
+
+  const runtime = stubRuntime({ dir });
+  const { deps, calls } = makeDeps();
+  const result = await designToTest(
+    runtime,
+    { reuseExistingFlows: true, reuseExistingTests: true },
+    deps
+  );
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true);
+  assert.equal(calls.generate.length, 0, "复用 tests.json 不调用生成");
+  assert.deepEqual(withoutMs(payload.steps[1]), { step: "generate", reused: true, cases: 1 });
+  assert.equal(payload.artifacts.tests, path.join(designDir, "tests.json"));
+  assert.equal(payload.nextAction.args.reuseExistingTests, true);
+});
+
+test("reuseExistingTests 缺 tests.json → needs-info(no-tests)", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-reuse-no-tests-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const designDir = path.join(dir, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      screens: [{ id: "s1", name: "首页", childNames: [], textHints: [] }],
+      edges: [],
+      entryScreens: ["首页"],
+      unresolvedDestinations: []
+    })
+  );
+
+  const runtime = stubRuntime({ dir });
+  const { deps, calls } = makeDeps();
+  const result = await designToTest(
+    runtime,
+    { reuseExistingFlows: true, reuseExistingTests: true },
+    deps
+  );
+
+  assert.ok(!result.isError);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.needs, "info");
+  assert.equal(payload.category, "no-tests");
+  assert.ok(payload.questions[0].includes("tests.json"));
+  assert.equal(calls.generate.length, 0);
+});
+
+test("reuseExistingTests 未与 reuseExistingFlows 同用 → 用法错误", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps, calls } = makeDeps();
+  const result = await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, reuseExistingTests: true },
+    deps
+  );
+
+  assert.equal(result.isError, true);
+  assert.ok(payloadOf(result).error.includes("reuseExistingFlows"));
+  assert.equal(calls.figma.length + calls.generate.length, 0);
 });
 
 test("提取失败 → failedStep:extract（detail 透传 + 建议）", async () => {
@@ -513,7 +609,7 @@ test("run 缺省时 nextAction 回显 device", async () => {
   const payload = payloadOf(result);
   assert.deepEqual(payload.nextAction, {
     tool: "design_to_test",
-    args: { reuseExistingFlows: true, run: true, device: "emulator-5554" }
+    args: { reuseExistingFlows: true, reuseExistingTests: true, run: true, device: "emulator-5554" }
   });
 });
 

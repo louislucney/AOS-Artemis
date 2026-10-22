@@ -49,7 +49,9 @@ import { makeChatFn, type ChatFn } from "../llm/chat.js";
 import { testsFingerprint } from "./run-manifest.js";
 import { captureFigmaScreens } from "./render.js";
 import {
+  existingScreenPath,
   figmaScreensDir,
+  penScreensDir,
   relativeScreenPath,
   screensEnabledFrom,
   SCREENSHOT_MAPPING_MISSING,
@@ -252,6 +254,10 @@ export function linearizeFlowsWithStats(
     prefixByFlow.set(flow, prefix);
   };
   let guard = 0;
+  const guardLimit = Math.min(
+    20_000,
+    Math.max(500, graph.screens.length * 20 + graph.edges.length * 4)
+  );
   const stack: ExploreNode[] = startIds.map((id) => ({
     screenId: id,
     path: [],
@@ -259,7 +265,7 @@ export function linearizeFlowsWithStats(
     visited: new Set([id]),
     continuation: false
   }));
-  while (stack.length > 0 && flows.length < maxFlows * 4 && guard < 500) {
+  while (stack.length > 0 && flows.length < maxFlows * 4 && guard < guardLimit) {
     guard += 1;
     const { screenId, path, prefix, visited, continuation } = stack.pop()!;
     const outgoing = outgoingByScreen.get(screenId) ?? [];
@@ -381,9 +387,20 @@ export function linearizeFlowsWithStats(
     for (const id of picked.unresolved) coveredUnresolved.add(id);
   }
 
-  const explorationStopped = guard >= 500 || flows.length >= maxFlows * 4;
-  const truncatedAtCap =
-    kept.length >= maxFlows && remaining.some((candidate) => gainOf(candidate) > 0);
+  const explorationStopped = guard >= guardLimit || flows.length >= maxFlows * 4;
+  const droppedCoverage = remaining.some((candidate) => gainOf(candidate) > 0);
+  const truncatedAtCap = kept.length >= maxFlows && droppedCoverage;
+  const allScreensCovered = graph.screens.every((screen) => coveredScreens.has(screen.name));
+  const allPairsCovered = graph.edges.every((edge) => {
+    if (!edge.to || edge.from.name === edge.to.name) return true;
+    return coveredPairs.has(`${edge.from.name} → ${edge.to.name}`);
+  });
+  const allUnresolvedCovered = graph.edges.every((edge) =>
+    edge.to ? true : coveredUnresolved.has(`${edge.from.id}|${edge.element.id}`)
+  );
+  const knownGap =
+    !allScreensCovered || !allPairsCovered || !allUnresolvedCovered || droppedCoverage;
+  const truncated = knownGap && (explorationStopped || truncatedAtCap);
   return {
     paths: kept,
     prefixes: kept.map((flow) => prefixByFlow.get(flow) ?? []),
@@ -395,7 +412,7 @@ export function linearizeFlowsWithStats(
       keptPaths: kept.length,
       droppedPaths: Math.max(0, deduped.length - kept.length),
       depthSplits: kept.filter((flow) => continuationFlows.has(flow)).length,
-      truncated: explorationStopped || truncatedAtCap
+      truncated
     }
   };
 }
@@ -458,10 +475,33 @@ function lookupI18nKey(text: string | undefined, i18nKeys: Map<string, string> |
   return i18nKeys.get(canonical) ?? i18nKeys.get(normalizedText(text)) ?? null;
 }
 
+import { identifierFromLayerName } from "../design/identifiers.js";
+import { scanCodeIdentifierHints } from "./code-identifiers.js";
+
+export { identifierFromLayerName };
+
+/** 从 flows 图预挖：交互元素图层名像标识时，把它与元素运行期文本关联。
+ * screen-map 的观测结果优先（调用方先写入）。 */
+export function identifierSuggestionsFromGraph(graph: FlowGraph): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const edge of graph.edges) {
+    const identifier = identifierFromLayerName(edge.element.name);
+    if (identifier === null) continue;
+    for (const text of runtimeHintTexts(edge.textHints)) {
+      const key = normalizeElementLabel(text);
+      if (key !== "" && !map.has(key)) map.set(key, identifier);
+    }
+  }
+  return map;
+}
+
 /** Element-level identifier suggestions (screen-map elements; best-hit first,
  * keyed by normalized text — same text on several screens suggests the same
  * identifier, which is the conventional cross-screen behavior). */
-function loadIdentifierSuggestions(runtime: DesignRuntimeLike): Map<string, string> {
+function loadIdentifierSuggestions(
+  runtime: DesignRuntimeLike,
+  graph: FlowGraph
+): Map<string, string> {
   const map = new Map<string, string>();
   const elements = [...loadScreenMap(runtime.configDirAbs).elements].sort(
     (a, b) => b.hits - a.hits || a.text.localeCompare(b.text)
@@ -469,6 +509,16 @@ function loadIdentifierSuggestions(runtime: DesignRuntimeLike): Map<string, stri
   for (const element of elements) {
     const key = normalizeElementLabel(element.text);
     if (key !== "" && !map.has(key)) map.set(key, element.identifier);
+  }
+  if (process.env.AOS_CODE_IDENTIFIERS !== "0") {
+    const code = scanCodeIdentifierHints(runtime.project.rootDir);
+    for (const hint of code.hints) {
+      const key = normalizeElementLabel(hint.text);
+      if (key !== "" && !map.has(key)) map.set(key, hint.identifier);
+    }
+  }
+  for (const [key, identifier] of identifierSuggestionsFromGraph(graph)) {
+    if (!map.has(key)) map.set(key, identifier);
   }
   return map;
 }
@@ -863,6 +913,12 @@ export interface GenerateTestsArgs {
   maxFlows?: number;
   maxDepth?: number;
   save?: boolean;
+  /** 次级产物开关（tests.json 在 save!==false 时始终落盘）。 */
+  saveArtifacts?: {
+    markdown?: boolean;
+    xlsx?: boolean;
+    caseSets?: boolean;
+  };
   excelPath?: string;
   excelTemplate?: string;
   requireFullCoverage?: boolean;
@@ -892,6 +948,8 @@ interface CaseScreensResult {
     channel: "figma" | "pen";
     dir: string;
     rendered: number;
+    /** 复用已落盘 PNG 的屏数（不重新请求/渲染）。 */
+    reused: number;
     skipped: number;
     skippedScreens: string[];
   } | null;
@@ -920,6 +978,21 @@ function screenCaptureWarnings(
     return [{ code: SCREENSHOT_SKIPPED, message: `截图降级：${skipped.length} 屏未产出渲染` }];
   }
   return [];
+}
+
+/** 按已落盘 PNG 分区：可复用的直接返回路径，缺失/损坏的交给渲染通道。 */
+function partitionExistingScreens(
+  ids: string[],
+  targetDir: string
+): { reused: Map<string, string>; missing: string[] } {
+  const reused = new Map<string, string>();
+  const missing: string[] = [];
+  for (const id of ids) {
+    const existing = existingScreenPath(targetDir, id);
+    if (existing !== null) reused.set(id, existing);
+    else missing.push(id);
+  }
+  return { reused, missing };
 }
 
 /** 按用例收集屏幕截图（design-screenshots T4）：flows 来源（fileKey/pen source）决定通道，
@@ -979,16 +1052,22 @@ async function captureCaseScreens(
   const designDirAbs = path.join(runtime.configDirAbs, "design");
   let imagePaths: Map<string, string>;
   let skipped: string[];
+  let reusedCount = 0;
   let channel: "figma" | "pen";
   let dir: string;
   if (meta.fileKey !== null) {
     channel = "figma";
-    const capture = await captureFigmaScreens(meta.fileKey, ids, {
-      sleep: input.deps.sleep,
-      figmaToken: input.deps.figmaToken
-    });
     const targetDir = figmaScreensDir(runtime.configDirAbs, meta.fileKey);
-    imagePaths = new Map();
+    const { reused, missing } = partitionExistingScreens(ids, targetDir);
+    reusedCount = reused.size;
+    const capture =
+      missing.length > 0
+        ? await captureFigmaScreens(meta.fileKey, missing, {
+            sleep: input.deps.sleep,
+            figmaToken: input.deps.figmaToken
+          })
+        : { pngById: new Map<string, Buffer>(), skipped: missing, channelError: null };
+    imagePaths = new Map(reused);
     for (const [id, png] of capture.pngById) {
       const stored = storeScreenPng(targetDir, id, png);
       if (stored.status !== "invalid") imagePaths.set(id, stored.path);
@@ -998,15 +1077,22 @@ async function captureCaseScreens(
     warnings.push(...screenCaptureWarnings("Figma", capture.channelError, imagePaths.size, skipped));
   } else {
     channel = "pen";
-    const capture = await capturePenScreens({
-      configDirAbs: runtime.configDirAbs,
-      target: path.resolve(runtime.project.rootDir, meta.penPath!),
-      screenIds: ids,
-      dotenv: input.dotenv,
-      deps: { render: input.deps.render, exec: input.deps.exec, ensure: input.deps.ensure }
-    });
-    imagePaths = capture.imagePaths;
-    skipped = capture.skipped;
+    const target = path.resolve(runtime.project.rootDir, meta.penPath!);
+    const targetDir = penScreensDir(runtime.configDirAbs, target);
+    const { reused, missing } = partitionExistingScreens(ids, targetDir);
+    reusedCount = reused.size;
+    const capture =
+      missing.length > 0
+        ? await capturePenScreens({
+            configDirAbs: runtime.configDirAbs,
+            target,
+            screenIds: missing,
+            dotenv: input.dotenv,
+            deps: { render: input.deps.render, exec: input.deps.exec, ensure: input.deps.ensure }
+          })
+        : { dir: targetDir, imagePaths: new Map<string, string>(), skipped: missing, channelError: null };
+    imagePaths = new Map([...reused, ...capture.imagePaths]);
+    skipped = ids.filter((id) => !imagePaths.has(id));
     dir = capture.dir;
     warnings.push(...screenCaptureWarnings("pen", capture.channelError, imagePaths.size, skipped));
   }
@@ -1027,6 +1113,7 @@ async function captureCaseScreens(
       channel,
       dir: relativeScreenPath(designDirAbs, dir),
       rendered: imagePaths.size,
+      reused: reusedCount,
       skipped: skipped.length,
       skippedScreens: skipped
     }
@@ -1244,7 +1331,7 @@ export async function figmaGenerateTests(
       maxFlows: args.maxFlows ?? 10,
       maxDepth: args.maxDepth,
       i18nKeys: loadI18nKeys(runtime),
-      identifiers: loadIdentifierSuggestions(runtime),
+      identifiers: loadIdentifierSuggestions(runtime, graph),
       testDataByScreen: acceptance.data,
       questionsByScreen: acceptance.questions,
       sectionByScreen: acceptance.section,
@@ -1393,9 +1480,14 @@ export async function figmaGenerateTests(
       const templatePath = args.excelTemplate
         ? path.resolve(runtime.project.rootDir, args.excelTemplate)
         : undefined;
+      const artifacts = args.saveArtifacts ?? {};
+      const wantMarkdown = artifacts.markdown !== false;
+      const wantXlsx = artifacts.xlsx !== false;
+      const wantCaseSets = artifacts.caseSets !== false;
 
       const dotenv = runtime.project.dotenvValues ?? {};
-      const wantScreens = screensEnabledFrom({ ...process.env, ...dotenv }, args.screens);
+      const wantScreens =
+        (wantMarkdown || wantCaseSets) && screensEnabledFrom({ ...process.env, ...dotenv }, args.screens);
       let caseScreens: CaseScreensResult | null = null;
       if (wantScreens) {
         try {
@@ -1427,139 +1519,150 @@ export async function figmaGenerateTests(
       }
 
       const designWarnings = applyDesignWarnings();
-      const excelBuffer = await renderTestsWorkbook(
-        cases,
-        {
-          source,
-          generatedAt,
-          counts,
-          summary: summarizeCases(cases),
-          coverage,
-          warnings: designWarnings.length
-        },
-        { templatePath }
-      );
-      writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
-      writeFileAtomic(
-        markdownPath,
-        renderMarkdown(cases, { source, generatedAt }, {
-          images: caseScreens?.caseRefs ?? new Map(),
-          ...(matchedFeedback.length > 0 ? { feedback: { byFeature: matchedFeedback } } : {}),
-          designWarnings
-        })
-      );
-      writeFileAtomic(excelPath, excelBuffer);
-      payload.savedTo = { json: jsonPath, markdown: markdownPath, xlsx: excelPath };
-      if (templatePath) payload.excel = { template: templatePath };
-
-      const caseSetsBase = caseSetsDir(runtime.configDirAbs);
-      const taken = new Set<string>();
-      try {
-        for (const name of fs.readdirSync(caseSetsBase)) {
-          if (name.endsWith(".json")) taken.add(name.slice(0, -".json".length));
-        }
-      } catch {
-        /* 目录不存在：全新 */
+      let excelBuffer: Buffer | null = null;
+      if (wantXlsx) {
+        excelBuffer = await renderTestsWorkbook(
+          cases,
+          {
+            source,
+            generatedAt,
+            counts,
+            summary: summarizeCases(cases),
+            coverage,
+            warnings: designWarnings.length
+          },
+          { templatePath }
+        );
       }
-      const stampNow = deps.now ? deps.now() : new Date();
-      const caseSetEntries: Array<{ feature: string; json: string; md: string; xlsx: string }> = [];
-      const registrationFeatures: Array<{
-        key: string;
-        name: string;
-        caseCount: number;
-        screens: string[];
-        jsonPath: string;
-        mdPath: string;
-        xlsxPath: string;
-      }> = [];
-      for (const group of featureAssignment.groups) {
-        const subset = cases.filter((testCase) => testCase.feature === group.key);
-        if (subset.length === 0) continue;
-        const stem = caseSetStem(group.name, stampNow, taken);
-        taken.add(stem);
-        const subsetFeedback = matchedFeedback.filter((entry) => entry.featureKey === group.key);
-        const subsetCoverage = computeFlowCoverage(graph, subset);
-        const saved = await saveCaseSetFiles(caseSetsBase, stem, {
-          json:
-            JSON.stringify(
-              {
-                ...payload,
-                ...(subsetFeedback.length > 0
-                  ? {
-                      feedback: {
-                        caseDefects: {
-                          total: subsetFeedback.reduce((sum, entry) => sum + entry.count, 0),
-                          byFeature: subsetFeedback
+      writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
+      if (wantMarkdown) {
+        writeFileAtomic(
+          markdownPath,
+          renderMarkdown(cases, { source, generatedAt }, {
+            images: caseScreens?.caseRefs ?? new Map(),
+            ...(matchedFeedback.length > 0 ? { feedback: { byFeature: matchedFeedback } } : {}),
+            designWarnings
+          })
+        );
+      }
+      if (excelBuffer !== null) writeFileAtomic(excelPath, excelBuffer);
+      payload.savedTo = {
+        json: jsonPath,
+        ...(wantMarkdown ? { markdown: markdownPath } : {}),
+        ...(wantXlsx ? { xlsx: excelPath } : {})
+      };
+      if (wantXlsx && templatePath) payload.excel = { template: templatePath };
+
+      if (wantCaseSets) {
+        const caseSetsBase = caseSetsDir(runtime.configDirAbs);
+        const taken = new Set<string>();
+        try {
+          for (const name of fs.readdirSync(caseSetsBase)) {
+            if (name.endsWith(".json")) taken.add(name.slice(0, -".json".length));
+          }
+        } catch {
+          /* 目录不存在：全新 */
+        }
+        const stampNow = deps.now ? deps.now() : new Date();
+        const caseSetEntries: Array<{ feature: string; json: string; md: string; xlsx: string }> = [];
+        const registrationFeatures: Array<{
+          key: string;
+          name: string;
+          caseCount: number;
+          screens: string[];
+          jsonPath: string;
+          mdPath: string;
+          xlsxPath: string;
+        }> = [];
+        for (const group of featureAssignment.groups) {
+          const subset = cases.filter((testCase) => testCase.feature === group.key);
+          if (subset.length === 0) continue;
+          const stem = caseSetStem(group.name, stampNow, taken);
+          taken.add(stem);
+          const subsetFeedback = matchedFeedback.filter((entry) => entry.featureKey === group.key);
+          const subsetCoverage = computeFlowCoverage(graph, subset);
+          const saved = await saveCaseSetFiles(caseSetsBase, stem, {
+            json:
+              JSON.stringify(
+                {
+                  ...payload,
+                  ...(subsetFeedback.length > 0
+                    ? {
+                        feedback: {
+                          caseDefects: {
+                            total: subsetFeedback.reduce((sum, entry) => sum + entry.count, 0),
+                            byFeature: subsetFeedback
+                          }
                         }
                       }
-                    }
-                  : { feedback: undefined }),
-                counts: { flows: subset.length, screens: counts.screens, edges: counts.edges },
+                    : { feedback: undefined }),
+                  counts: { flows: subset.length, screens: counts.screens, edges: counts.edges },
+                  summary: summarizeCases(subset),
+                  coverage: subsetCoverage,
+                  features: featurePayload.filter((entry) => entry.key === group.key),
+                  flows: subset
+                },
+                null,
+                2
+              ) + "\n",
+            markdown: renderMarkdown(subset, { source, generatedAt }, {
+              images: caseScreens?.caseRefs ?? new Map(),
+              ...(subsetFeedback.length > 0 ? { feedback: { byFeature: subsetFeedback } } : {}),
+              designWarnings
+            }),
+            xlsx: await renderTestsWorkbook(
+              subset,
+              {
+                source,
+                generatedAt,
+                counts: { cases: subset.length, screens: counts.screens, edges: counts.edges },
                 summary: summarizeCases(subset),
                 coverage: subsetCoverage,
-                features: featurePayload.filter((entry) => entry.key === group.key),
-                flows: subset
+                warnings: designWarnings.length
               },
-              null,
-              2
-            ) + "\n",
-          markdown: renderMarkdown(subset, { source, generatedAt }, {
-            images: caseScreens?.caseRefs ?? new Map(),
-            ...(subsetFeedback.length > 0 ? { feedback: { byFeature: subsetFeedback } } : {}),
-            designWarnings
-          }),
-          xlsx: await renderTestsWorkbook(
-            subset,
-            {
-              source,
-              generatedAt,
-              counts: { cases: subset.length, screens: counts.screens, edges: counts.edges },
-              summary: summarizeCases(subset),
-              coverage: subsetCoverage,
-              warnings: designWarnings.length
-            },
-            { templatePath }
-          )
-        });
-        caseSetEntries.push({
-          feature: group.name,
-          json: saved.jsonPath,
-          md: saved.mdPath,
-          xlsx: saved.xlsxPath
-        });
-        registrationFeatures.push({
-          key: group.key,
-          name: group.name,
-          caseCount: subset.length,
-          screens: [...group.screens],
-          jsonPath: saved.jsonPath,
-          mdPath: saved.mdPath,
-          xlsxPath: saved.xlsxPath
-        });
-      }
-      if (caseSetEntries.length > 0) {
-        (payload.savedTo as Record<string, unknown>).caseSets = caseSetEntries;
-        try {
-          const fingerprint = testsFingerprint(jsonPath);
-          await runtime.store.recordCaseSet({
-            rootPath: runtime.project.rootDir,
-            source,
-            designName: featureAssignment.designName,
-            fingerprint: fingerprint.sha256,
-            basename: path.basename(jsonPath, ".json"),
-            features: registrationFeatures
+              { templatePath }
+            )
           });
-        } catch (error) {
-          const current = Array.isArray(payload.warnings)
-            ? (payload.warnings as FeatureWarning[])
-            : [];
-          payload.warnings = [
-            ...current,
-            {
-              code: "case-set-registration-failed",
-              message: `用例集登记失败（本地归档已写入）：${errorMessage(error)}`
-            }
-          ];
+          caseSetEntries.push({
+            feature: group.name,
+            json: saved.jsonPath,
+            md: saved.mdPath,
+            xlsx: saved.xlsxPath
+          });
+          registrationFeatures.push({
+            key: group.key,
+            name: group.name,
+            caseCount: subset.length,
+            screens: [...group.screens],
+            jsonPath: saved.jsonPath,
+            mdPath: saved.mdPath,
+            xlsxPath: saved.xlsxPath
+          });
+        }
+        if (caseSetEntries.length > 0) {
+          (payload.savedTo as Record<string, unknown>).caseSets = caseSetEntries;
+          try {
+            const fingerprint = testsFingerprint(jsonPath);
+            await runtime.store.recordCaseSet({
+              rootPath: runtime.project.rootDir,
+              source,
+              designName: featureAssignment.designName,
+              fingerprint: fingerprint.sha256,
+              basename: path.basename(jsonPath, ".json"),
+              features: registrationFeatures
+            });
+          } catch (error) {
+            const current = Array.isArray(payload.warnings)
+              ? (payload.warnings as FeatureWarning[])
+              : [];
+            payload.warnings = [
+              ...current,
+              {
+                code: "case-set-registration-failed",
+                message: `用例集登记失败（本地归档已写入）：${errorMessage(error)}`
+              }
+            ];
+          }
         }
       }
     }

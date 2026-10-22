@@ -1,11 +1,12 @@
-import { randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createReadStream, rmSync } from "node:fs";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import { JobManager, JobQueueFullError, type JobError } from "./jobs.js";
+import { JobManager, JobQueueFullError, type JobError, type JobRecord } from "./jobs.js";
+import { loadJobs, saveJobs } from "./job-store.js";
 import { isJson, isMultipart, parseMultipart } from "./multipart.js";
 import {
   OpenJobError,
@@ -23,6 +24,8 @@ export interface CmsOpenServerOptions {
   port?: number;
   cors?: string[];
   allowedHosts?: string[];
+  /** 设置后除 GET /healthz 与 OPTIONS 外必须携带 Authorization: Bearer <token>。 */
+  authToken?: string;
   maxQueue?: number;
   maxConcurrent?: number;
   jobTimeoutMs?: number;
@@ -40,6 +43,8 @@ export interface CmsOpenServer {
   host: string;
   port: number;
   bootId: string;
+  /** 手动触发超时/保留期检查（测试与运维用；正常由 30s ticker 驱动）。 */
+  tick: () => void;
   close: () => Promise<void>;
 }
 
@@ -47,12 +52,29 @@ class HttpError extends Error {
   readonly status: number;
   readonly code: string;
   readonly hint?: string;
-  constructor(status: number, code: string, message: string, hint?: string) {
+  readonly headers?: Record<string, string>;
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    hint?: string,
+    headers?: Record<string, string>
+  ) {
     super(message);
     this.status = status;
     this.code = code;
     this.hint = hint;
+    this.headers = headers;
   }
+}
+
+function isAuthorized(header: string | undefined, token: string): boolean {
+  if (!header) return false;
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  if (!match) return false;
+  const provided = Buffer.from(match[1]!);
+  const expected = Buffer.from(token);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
 function hostNameOf(header: string | undefined): string {
@@ -68,6 +90,12 @@ function defaultHosts(host: string): string[] {
   const allowed = new Set(["127.0.0.1", "localhost", "::1"]);
   if (host !== "0.0.0.0" && host !== "::") allowed.add(host);
   return [...allowed];
+}
+
+/** HTTP 状态响应不暴露服务端绝对路径；下载统一走 /jobs/:id/download。 */
+function publicJob(job: JobRecord): Omit<JobRecord, "artifactPath"> {
+  const { artifactPath: _artifactPath, ...rest } = job;
+  return rest;
 }
 
 async function readBody(request: http.IncomingMessage, limit: number): Promise<Buffer> {
@@ -187,16 +215,42 @@ export async function startCmsOpenServer(
   const workRoot = path.resolve(options.workRoot ?? path.join(os.tmpdir(), "aos-cms-open"));
   await mkdir(workRoot, { recursive: true });
   const bootId = randomUUID();
+  const jobsFile = path.join(workRoot, "jobs.json");
+  const authToken = options.authToken?.trim() || null;
   const manager = new JobManager({
     maxQueue: options.maxQueue,
     maxConcurrent: options.maxConcurrent,
     jobTimeoutMs: options.jobTimeoutMs,
     retentionMs: options.retentionMs,
-    now: options.now
+    now: options.now,
+    initial: loadJobs(jobsFile),
+    onChange: (snapshot) => saveJobs(jobsFile, snapshot),
+    onExpire: (id) => {
+      try {
+        rmSync(path.join(workRoot, id), { recursive: true, force: true });
+      } catch {
+        /* 清理失败不阻断 tick */
+      }
+    }
   });
+  // 启动时把 queued/running 标为 job_interrupted，并清掉没有台账记录的孤儿工作目录。
+  saveJobs(jobsFile, manager.snapshot());
+  const knownJobs = new Set(manager.snapshot().map((job) => job.id));
+  for (const entry of await readdir(workRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || knownJobs.has(entry.name)) continue;
+    try {
+      await rm(path.join(workRoot, entry.name), { recursive: true, force: true });
+    } catch {
+      /* 孤儿清理 best effort */
+    }
+  }
   const inputs = new Map<string, OpenJobInput>();
   const customRunner = options.runner;
   let active = 0;
+
+  const tick = (): void => {
+    manager.tick();
+  };
 
   const pump = (): void => {
     while (active < (options.maxConcurrent ?? 3)) {
@@ -232,8 +286,17 @@ export async function startCmsOpenServer(
     }
   };
 
-  const json = (res: http.ServerResponse, status: number, payload: unknown, origin: string | null): void => {
-    const headers: Record<string, string> = { "content-type": "application/json; charset=utf-8" };
+  const json = (
+    res: http.ServerResponse,
+    status: number,
+    payload: unknown,
+    origin: string | null,
+    extraHeaders: Record<string, string> = {}
+  ): void => {
+    const headers: Record<string, string> = {
+      "content-type": "application/json; charset=utf-8",
+      ...extraHeaders
+    };
     if (origin !== null) {
       headers["access-control-allow-origin"] = origin;
       headers.vary = "Origin";
@@ -242,7 +305,13 @@ export async function startCmsOpenServer(
     res.end(JSON.stringify(payload));
   };
   const fail = (res: http.ServerResponse, error: HttpError, origin: string | null): void => {
-    json(res, error.status, { error: error.message, code: error.code, ...(error.hint ? { hint: error.hint } : {}) }, origin);
+    json(
+      res,
+      error.status,
+      { error: error.message, code: error.code, ...(error.hint ? { hint: error.hint } : {}) },
+      origin,
+      error.headers ?? {}
+    );
   };
 
   const server = http.createServer(async (request, response) => {
@@ -274,6 +343,15 @@ export async function startCmsOpenServer(
       if (request.method === "GET" && url.pathname === "/healthz") {
         json(response, 200, { ok: true, bootId }, allowedOrigin);
         return;
+      }
+      if (authToken !== null && !isAuthorized(request.headers.authorization, authToken)) {
+        throw new HttpError(
+          401,
+          "unauthorized",
+          "缺少或错误的访问令牌",
+          "请在 Authorization 头使用 Bearer <token>",
+          { "www-authenticate": "Bearer" }
+        );
       }
       if (request.method === "POST" && url.pathname === "/jobs") {
         const contentType = request.headers["content-type"] ?? "";
@@ -379,7 +457,7 @@ export async function startCmsOpenServer(
           );
         }
         if (request.method === "GET" && match[2] === undefined) {
-          json(response, 200, { ...job, jobId: job.id }, allowedOrigin);
+          json(response, 200, { ...publicJob(job), jobId: job.id }, allowedOrigin);
           return;
         }
         if (request.method === "DELETE" && match[2] === undefined) {
@@ -387,7 +465,7 @@ export async function startCmsOpenServer(
           json(
             response,
             200,
-            cancelled === null ? cancelled : { ...cancelled, jobId: cancelled.id },
+            cancelled === null ? cancelled : { ...publicJob(cancelled), jobId: cancelled.id },
             allowedOrigin
           );
           return;
@@ -429,7 +507,7 @@ export async function startCmsOpenServer(
     }
   });
 
-  const ticker = setInterval(() => manager.tick(), 30_000);
+  const ticker = setInterval(tick, 30_000);
   ticker.unref();
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -441,8 +519,14 @@ export async function startCmsOpenServer(
     host,
     port,
     bootId,
+    tick,
     close: async () => {
       clearInterval(ticker);
+      try {
+        saveJobs(jobsFile, manager.snapshot());
+      } catch {
+        /* 关闭时持久化 best effort */
+      }
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   };

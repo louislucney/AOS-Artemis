@@ -66,6 +66,8 @@ export interface GeneratedCaseRecord {
 export interface TestsDocument {
   records: GeneratedCaseRecord[];
   generation: unknown;
+  /** 原始 flows[]（保留渲染/导出所需的完整字段；records 是消费方投影）。 */
+  rawFlows: unknown[];
 }
 
 function stringArray(raw: unknown): string[] {
@@ -101,7 +103,7 @@ export function readTestsDocument(
           typeof record.feature === "string" && record.feature !== "" ? record.feature : null
       });
     }
-    return { records, generation: parsed.generation ?? null };
+    return { records, generation: parsed.generation ?? null, rawFlows: flows };
   } catch {
     return null;
   }

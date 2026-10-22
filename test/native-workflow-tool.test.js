@@ -49,6 +49,7 @@ test("design_to_test: registered in the catalog and exposed with a minimal optio
       "penPath",
       "vision",
       "reuseExistingFlows",
+      "reuseExistingTests",
       "device",
       "run",
       "async",

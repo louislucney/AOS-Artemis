@@ -21,6 +21,7 @@ const USAGE = `mobile-testing-mcp cms-open [options]
     --job-timeout-ms <ms>    单任务超时（默认 600000）
     --retention-ms <ms>      产物保留（默认 7200000）
     --work-root <dir>        临时工作目录（默认系统临时目录下 aos-cms-open）
+    --token <token>          访问令牌（默认读 AOS_CMS_OPEN_TOKEN；设置后除 /healthz 外需 Bearer）
     --check                  启动自检后立即退出（部署/CI 用）
     --help                   显示本帮助
 `;
@@ -92,14 +93,21 @@ export async function runCmsOpen(
   const cors = listFlag(flags, "cors");
   const allowedHosts = listFlag(flags, "allowed-hosts");
   const workRoot = flags.get("work-root")?.trim() || undefined;
+  const token =
+    flags.get("token")?.trim() || deps.env?.AOS_CMS_OPEN_TOKEN?.trim() || undefined;
   if (host === "0.0.0.0" || host === "::") {
-    log(`WARN 监听 ${host}：服务无鉴权，请确认处于可信内网；浏览器来源默认仍拒绝（--cors 显式放行）。`);
+    log(
+      token
+        ? `WARN 监听 ${host}：已启用 Bearer 鉴权；浏览器来源默认仍拒绝（--cors 显式放行）。`
+        : `WARN 监听 ${host}：服务无鉴权，请确认处于可信内网；浏览器来源默认仍拒绝（--cors 显式放行）。`
+    );
   }
   const server = await startCmsOpenServer({
     host,
     port: port!,
     cors,
     allowedHosts,
+    ...(token ? { authToken: token } : {}),
     maxQueue: maxQueue!,
     maxConcurrent: maxConcurrent!,
     jobTimeoutMs: jobTimeoutMs!,
@@ -108,6 +116,7 @@ export async function runCmsOpen(
   });
   log(`CMS 开放服务: http://${host}:${server.port}`);
   log(`CORS: ${cors.length === 0 ? "未启用（默认拒绝跨源）" : cors.join(", ")}`);
+  log(`鉴权: ${token ? "Bearer token 已启用（/healthz 豁免）" : "未启用（仅建议可信内网）"}`);
   log("pen: 使用服务机登录态（pen login / PEN_CLI_KEY）；未就绪时 .pen 任务显式失败");
   if (flags.has("check")) {
     await server.close();

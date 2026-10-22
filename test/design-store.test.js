@@ -49,6 +49,8 @@ test("readTestsDocument：缺失/坏 JSON → null；记录投影与 generation 
   assert.deepEqual(document.records[0].preconditions, ["已登录"]);
   assert.deepEqual(document.records[0].steps, ["点击 A"]);
   assert.deepEqual(document.generation, { source: "figma:abc" });
+  assert.equal(document.rawFlows.length, 2);
+  assert.equal(document.rawFlows[1].id, "case-1");
 
   fs.writeFileSync(path.join(design, "tests.json"), "{not json");
   assert.equal(readTestsDocument(configDirAbs), null);

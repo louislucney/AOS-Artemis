@@ -17,10 +17,13 @@ import {
   computeFlowCoverage,
   figmaGenerateTests,
   generateTestCases,
+  identifierFromLayerName,
+  identifierSuggestionsFromGraph,
   linearizeFlows,
   linearizeFlowsWithStats,
   renderMarkdown
 } from "../dist/figma/test-gen.js";
+import { normalizeElementLabel } from "../dist/diff/screen-map.js";
 import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
 import { expectedResultLines } from "../dist/figma/case-view.js";
 import { deriveCasePreconditions } from "../dist/figma/preconditions.js";
@@ -184,6 +187,28 @@ test("figma_generate_tests: default run writes tests.xlsx alongside json and md"
     payload.flows[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n")
   );
   assert.equal(sheet.getRow(2).getCell(6).value, payload.flows[0].taskDesc);
+});
+
+test("figma_generate_tests: saveArtifacts 可关闭 md/xlsx/caseSets，tests.json 仍落盘", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const payload = parseToolResult(
+    await figmaGenerateTests(runtime, {
+      saveArtifacts: { markdown: false, xlsx: false, caseSets: false }
+    })
+  );
+  assert.equal(payload.ok, true);
+  assert.ok(payload.savedTo.json);
+  assert.equal(payload.savedTo.markdown, undefined);
+  assert.equal(payload.savedTo.xlsx, undefined);
+  assert.equal(payload.savedTo.caseSets, undefined);
+
+  const designDir = path.join(dir, ".artemis", "design");
+  assert.equal(fs.existsSync(path.join(designDir, "tests.json")), true);
+  assert.equal(fs.existsSync(path.join(designDir, "tests.md")), false);
+  assert.equal(fs.existsSync(path.join(designDir, "tests.xlsx")), false);
+  assert.equal(fs.existsSync(path.join(designDir, "case-sets")), false);
 });
 
 test("figma_generate_tests: excelPath overrides output and save:false writes nothing", async () => {
@@ -433,6 +458,21 @@ test("linearizeFlows: redundant parallel-edge paths are dropped once coverage is
   assert.equal(stats.keptPaths, 2);
   assert.equal(stats.droppedPaths, 1);
   assert.equal(stats.truncated, false);
+});
+
+test("linearizeFlows: hitting the exploration cap with full coverage is not truncation", () => {
+  const graph = chainGraph();
+  graph.screens = graph.screens.filter((screen) => screen.name !== "E");
+  graph.edges = graph.edges.filter((edge) => edge.to?.name !== "E");
+  for (const edge of [...graph.edges]) {
+    graph.edges.push({
+      ...edge,
+      element: { id: `${edge.element.id}b`, name: `${edge.element.name} alt`, type: "BUTTON" }
+    });
+  }
+  const { paths, stats } = linearizeFlowsWithStats(graph, { maxFlows: 1 });
+  assert.equal(paths.length, 1);
+  assert.equal(stats.truncated, false, "all screens/edges are covered; cap only dropped duplicates");
 });
 
 test("linearizeFlows: case order is deterministic across runs", () => {
@@ -1954,4 +1994,110 @@ test("renderTestsWorkbook template: display placeholders and summary counts", as
   assert.equal(row.getCell(7).value, "- 是否支持优惠券？");
   assert.equal(row.getCell(8).value, 1);
   assert.equal(row.getCell(9).value, 1);
+});
+
+test("identifier pre-mining: conservative layer-name heuristics", () => {
+  assert.equal(identifierFromLayerName("btn_login"), "btn_login");
+  assert.equal(identifierFromLayerName("login-button"), "login-button");
+  assert.equal(identifierFromLayerName("loginButton"), "loginButton");
+  assert.equal(identifierFromLayerName("testID: login_button"), "login_button");
+  assert.equal(identifierFromLayerName("a11y=checkoutButton"), "checkoutButton");
+  assert.equal(identifierFromLayerName("Button"), null);
+  assert.equal(identifierFromLayerName("CTA Button"), null);
+  assert.equal(identifierFromLayerName("登录按钮"), null);
+
+  const graph = {
+    screens: [],
+    edges: [
+      {
+        from: { id: "s1", name: "Home" },
+        to: { id: "s2", name: "Checkout" },
+        element: { id: "e1", name: "btn_login", type: "BUTTON" },
+        textHints: [{ text: "Buy now", textClass: "runtime-text" }],
+        trigger: "ON_CLICK",
+        actionType: "NODE",
+        provenance: "explicit",
+        confidence: "high"
+      }
+    ],
+    entryScreens: ["Home"],
+    unresolvedDestinations: []
+  };
+  const map = identifierSuggestionsFromGraph(graph);
+  assert.equal(map.get(normalizeElementLabel("Buy now")), "btn_login");
+});
+
+test("figma_generate_tests: pre-mines a11y identifier from interaction layer name", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      screens: [
+        { id: "s1", name: "Home", childNames: [], textHints: [] },
+        { id: "s2", name: "Checkout", childNames: [], textHints: [] }
+      ],
+      edges: [
+        {
+          from: { id: "s1", name: "Home" },
+          to: { id: "s2", name: "Checkout" },
+          element: { id: "e1", name: "btn_login", type: "BUTTON" },
+          textHints: [{ text: "Buy now", textClass: "runtime-text" }],
+          trigger: "ON_CLICK",
+          actionType: "NODE",
+          provenance: "explicit",
+          confidence: "high"
+        }
+      ],
+      entryScreens: ["Home"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(payload.ok, true);
+  assert.match(payload.flows[0].steps[0], /a11y: btn_login/);
+});
+
+test("figma_generate_tests: pre-mines a11y identifier from source locators", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      screens: [
+        { id: "s1", name: "Home", childNames: [], textHints: [] },
+        { id: "s2", name: "Checkout", childNames: [], textHints: [] }
+      ],
+      edges: [
+        {
+          from: { id: "s1", name: "Home" },
+          to: { id: "s2", name: "Checkout" },
+          element: { id: "e1", name: "Button", type: "BUTTON" },
+          textHints: [{ text: "Buy now", textClass: "runtime-text" }],
+          trigger: "ON_CLICK",
+          actionType: "NODE",
+          provenance: "explicit",
+          confidence: "high"
+        }
+      ],
+      entryScreens: ["Home"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "App.tsx"),
+    '<Text testID="loginButton">Buy now</Text>\n',
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(payload.ok, true);
+  assert.match(payload.flows[0].steps[0], /a11y: loginButton/);
 });

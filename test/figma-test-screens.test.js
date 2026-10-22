@@ -127,6 +127,14 @@ test("figma_generate_tests: pen 来源按用例嵌图（≤3 张、一次渲染�
   const file = path.join(dir, ".artemis", "design", "screens", "pen-design", "s1.png");
   assert.equal(fs.existsSync(file), true);
   assert.equal(fs.readFileSync(file).subarray(0, 4).toString("hex"), "89504e47");
+
+  const second = parseToolResult(
+    await figmaGenerateTests(runtime, {}, { render: fakePenRender(calls) })
+  );
+  assert.equal(second.ok, true);
+  assert.equal(calls.count, 1, "第二次生成复用已落盘截图，不再调用 pen 渲染");
+  assert.equal(second.screenshots.reused, 2);
+  assert.equal(second.screenshots.skipped, 0);
 });
 
 test("figma_generate_tests: figma 来源批量渲染并嵌图", async () => {
@@ -146,6 +154,13 @@ test("figma_generate_tests: figma 来源批量渲染并嵌图", async () => {
     assert.equal(stub.calls.imageQueries.length, 1, "generate 阶段一次批量 /images");
     const md = fs.readFileSync(payload.savedTo.markdown, "utf-8");
     assert.match(md, /<img src="screens\/figma-TestKey123\/10-1\.png" height="160">/);
+
+    const downloadsAfterFirst = stub.calls.downloads;
+    const reused = parseToolResult(await figmaGenerateTests(runtime, {}));
+    assert.equal(reused.ok, true);
+    assert.equal(stub.calls.imageQueries.length, 1, "复用已落盘截图，不再请求 /images");
+    assert.equal(stub.calls.downloads, downloadsAfterFirst, "复用已落盘截图，不再下载 PNG");
+    assert.equal(reused.screenshots.reused, payload.screenshots.rendered);
   } finally {
     stub.restore();
   }

@@ -55,6 +55,29 @@ export function screenFileName(nodeId: string): string {
   return `${sanitizeScreenId(nodeId)}.png`;
 }
 
+/** 已落盘且通过 PNG 校验的屏幕图路径；缺失/损坏 → null（生成阶段复用，避免重复下载/渲染）。
+ * 只读魔术头，不整文件读盘。 */
+export function existingScreenPath(targetDir: string, nodeId: string): string | null {
+  const file = path.join(targetDir, screenFileName(nodeId));
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const magic = Buffer.alloc(PNG_MAGIC.length);
+    const read = fs.readSync(fd, magic, 0, magic.length, 0);
+    return read === magic.length && isPngBuffer(magic) ? file : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+}
+
 export function screensRoot(configDirAbs: string): string {
   return path.join(designDir(configDirAbs), "screens");
 }

@@ -52,6 +52,54 @@ test("jobs: timeout fails running job", () => {
   assert.equal(failed?.error?.code, "job_timeout");
 });
 
+test("jobs: timeout is progress-aware (setStep renews the window)", () => {
+  const { jobs, advance } = manager();
+  const job = jobs.create();
+  jobs.claimNext();
+  advance(40_000);
+  jobs.setStep(job.id, "generating");
+  advance(40_000);
+  assert.equal(jobs.tick(), 0, "40s since last progress < 60s timeout");
+  advance(30_000);
+  assert.equal(jobs.tick(), 1, "70s since last progress > 60s timeout");
+  assert.equal(jobs.get(job.id)?.error?.code, "job_timeout");
+});
+
+test("jobs: snapshot/restore marks queued/running jobs interrupted", () => {
+  const { jobs } = manager({ maxConcurrent: 2 });
+  const running = jobs.create();
+  const done = jobs.create();
+  jobs.claimNext();
+  jobs.claimNext();
+  jobs.complete(done.id, "/tmp/done.zip");
+  const snapshot = jobs.snapshot();
+  assert.equal(snapshot.length, 2);
+
+  const restored = new JobManager({
+    maxQueue: 2,
+    maxConcurrent: 1,
+    jobTimeoutMs: 60_000,
+    retentionMs: 120_000,
+    initial: snapshot
+  });
+  const interrupted = restored.get(running.id);
+  assert.equal(interrupted?.status, "failed");
+  assert.equal(interrupted?.error?.code, "job_interrupted");
+  assert.equal(restored.get(done.id)?.status, "done");
+  assert.equal(restored.get(done.id)?.artifactPath, "/tmp/done.zip");
+});
+
+test("jobs: retention calls onExpire for removed job", () => {
+  const expired = [];
+  const { jobs, advance } = manager({ onExpire: (id) => expired.push(id) });
+  const job = jobs.create();
+  jobs.claimNext();
+  jobs.complete(job.id, "/tmp/a.zip");
+  advance(121_000);
+  assert.equal(jobs.tick(), 1);
+  assert.deepEqual(expired, [job.id]);
+});
+
 test("jobs: cancel queued and running", () => {
   const { jobs } = manager();
   const queued = jobs.create();

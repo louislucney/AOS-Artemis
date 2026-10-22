@@ -33,6 +33,7 @@ export interface DesignToTestArgs {
   penPath?: string;
   vision?: "auto" | boolean;
   reuseExistingFlows?: boolean;
+  reuseExistingTests?: boolean;
   maxFlows?: number;
   maxDepth?: number;
   device?: string;
@@ -51,6 +52,8 @@ export interface DesignToTestDeps {
 }
 
 const REUSE_NO_FLOWS_QUESTION = "还没有设计流程——给 Figma 链接或 .pen 路径，或先跑一次设计提取";
+const REUSE_NO_TESTS_QUESTION =
+  "还没有可复用的用例（tests.json 缺失或不可读）——先跑一次生成，或去掉 reuseExistingTests";
 const CHECK_SUGGESTION =
   "按提示用 figma_generate_tests 修正后重跑；路径被截断时可用 maxFlows/maxDepth 加大上限重试";
 const RUN_FAILURE_SUGGESTION =
@@ -134,6 +137,7 @@ export async function designToTest(
   const deviceArg =
     typeof args.device === "string" && args.device.trim() !== "" ? args.device.trim() : null;
   const reuse = args.reuseExistingFlows === true;
+  const reuseTests = args.reuseExistingTests === true;
 
   if (figmaUrl !== null && penPath !== null) {
     return usageError("figmaUrl 与 penPath 互斥：一次只处理一个设计来源");
@@ -141,6 +145,11 @@ export async function designToTest(
   if (figmaUrl === null && penPath === null && !reuse) {
     return usageError(
       "缺少设计来源：给 figmaUrl 或 penPath；已有 flows.json 可传 reuseExistingFlows:true"
+    );
+  }
+  if (reuseTests && !reuse) {
+    return usageError(
+      "reuseExistingTests 需与 reuseExistingFlows 同用：先复用已有 flows，再复用 tests"
     );
   }
   if (nodeId !== null && figmaUrl === null) {
@@ -277,45 +286,69 @@ export async function designToTest(
     });
   }
 
-  const generate = deps.generate ?? figmaGenerateTests;
+  let preflight: ReturnType<typeof preflightGeneratedTests> = null;
   let generatePayload: Record<string, unknown> | null = null;
-  try {
-    const generated = await generate(runtime, {
-      ...(typeof args.maxFlows === "number" ? { maxFlows: args.maxFlows } : {}),
-      ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {})
-    });
-    const payload = payloadOf(generated);
-    mergeGeneratedWarnings(payload);
-    if (generated.isError === true || payload?.ok === false) {
+  let generatedCases: number | null = null;
+  if (reuseTests) {
+    preflight = preflightGeneratedTests(runtime.configDirAbs);
+    if (preflight === null) {
+      return jsonResult({
+        ok: false,
+        needs: "info",
+        category: "no-tests",
+        questions: [REUSE_NO_TESTS_QUESTION]
+      });
+    }
+    generatedCases = preflight.cases;
+    const reusedWarnings = preflight.designWarnings;
+    const warningSource =
+      preflight.designWarningsSource === "none" ? "tests" : preflight.designWarningsSource;
+    warnings = reusedWarnings;
+    warningSources = [{ source: warningSource, warnings: reusedWarnings }];
+    warningsAvailable = preflight.designWarningsSource !== "none";
+    warningsSnapshotAt = preflight.designWarningsSnapshotAt;
+    warningsBySource = { [warningSource]: reusedWarnings.length };
+    recordStep({ step: "generate", reused: true, cases: generatedCases });
+  } else {
+    const generate = deps.generate ?? figmaGenerateTests;
+    try {
+      const generated = await generate(runtime, {
+        ...(typeof args.maxFlows === "number" ? { maxFlows: args.maxFlows } : {}),
+        ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {})
+      });
+      const payload = payloadOf(generated);
+      mergeGeneratedWarnings(payload);
+      if (generated.isError === true || payload?.ok === false) {
+        return jsonResult({
+          ok: false,
+          failedStep: "generate",
+          detail: failureDetail(generated, payload),
+          suggestions: GENERATE_SUGGESTIONS,
+          ...warningFields()
+        });
+      }
+      generatePayload = payload;
+      mergeGeneratedWarnings(payload);
+    } catch (error) {
       return jsonResult({
         ok: false,
         failedStep: "generate",
-        detail: failureDetail(generated, payload),
+        detail: errorMessage(error),
         suggestions: GENERATE_SUGGESTIONS,
         ...warningFields()
       });
     }
-    generatePayload = payload;
-    mergeGeneratedWarnings(payload);
-  } catch (error) {
-    return jsonResult({
-      ok: false,
-      failedStep: "generate",
-      detail: errorMessage(error),
-      suggestions: GENERATE_SUGGESTIONS,
-      ...warningFields()
+
+    generatedCases = countOf(generatePayload, "flows");
+    const generatedScreens = countOf(generatePayload, "screens");
+    const generatedEdges = countOf(generatePayload, "edges");
+    recordStep({
+      step: "generate",
+      ...(generatedCases !== null ? { cases: generatedCases } : {}),
+      ...(generatedScreens !== null ? { screens: generatedScreens } : {}),
+      ...(generatedEdges !== null ? { edges: generatedEdges } : {})
     });
   }
-
-  const generatedCases = countOf(generatePayload, "flows");
-  const generatedScreens = countOf(generatePayload, "screens");
-  const generatedEdges = countOf(generatePayload, "edges");
-  recordStep({
-    step: "generate",
-    ...(generatedCases !== null ? { cases: generatedCases } : {}),
-    ...(generatedScreens !== null ? { screens: generatedScreens } : {}),
-    ...(generatedEdges !== null ? { edges: generatedEdges } : {})
-  });
 
   if (generatedCases === 0) {
     return jsonResult({
@@ -331,7 +364,7 @@ export async function designToTest(
     ? { flowMap: flowMapPath }
     : {};
 
-  const preflight = preflightGeneratedTests(runtime.configDirAbs);
+  preflight = preflight ?? preflightGeneratedTests(runtime.configDirAbs);
   const gate = deps.gate ?? coverageGateIssue;
   const issue = gate(preflight);
   if (issue !== null && issue !== undefined) {
@@ -468,6 +501,7 @@ export async function designToTest(
           tool: "design_to_test",
           args: {
             reuseExistingFlows: true,
+            reuseExistingTests: true,
             run: true,
             ...(typeof args.maxFlows === "number" ? { maxFlows: args.maxFlows } : {}),
             ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {}),

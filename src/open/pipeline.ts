@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { MemoryStore } from "../db/memory.js";
 import { makeChatFn, type ChatFn } from "../llm/chat.js";
+import { readTestsDocument } from "../figma/design-store.js";
 import { figmaExtractFlows } from "../figma/flows.js";
 import { figmaGenerateTests } from "../figma/test-gen.js";
 import type { DesignRuntimeLike } from "../figma/design-runtime.js";
@@ -214,7 +215,7 @@ export async function runOpenJob(
     {
       save: true,
       screens: false,
-      excelPath: ".artemis/design/discard.xlsx",
+      saveArtifacts: { markdown: false, xlsx: false, caseSets: false },
       ...(input.maxFlows === undefined ? {} : { maxFlows: input.maxFlows }),
       ...(input.maxDepth === undefined ? {} : { maxDepth: input.maxDepth })
     },
@@ -223,12 +224,7 @@ export async function runOpenJob(
   const generationError = toolError(generated);
   if (generationError !== null) throw new OpenJobError("generation_failed", generationError);
 
-  const testsPath = path.join(designDir, "tests.json");
-  let cases: unknown[] = [];
-  if (fs.existsSync(testsPath)) {
-    const parsed = JSON.parse(await readFile(testsPath, "utf-8")) as { cases?: unknown };
-    if (Array.isArray(parsed.cases)) cases = parsed.cases;
-  }
+  const cases: unknown[] = readTestsDocument(runtime.configDirAbs)?.rawFlows ?? [];
   if (cases.length === 0) {
     throw new OpenJobError(
       "no_cases",

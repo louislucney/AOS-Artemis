@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -17,7 +18,7 @@ async function withServer(options, run) {
   });
   const base = `http://127.0.0.1:${server.port}`;
   try {
-    await run(base, server);
+    await run(base, server, workRoot);
   } finally {
     await server.close();
     await rm(workRoot, { recursive: true, force: true });
@@ -31,14 +32,24 @@ async function zipRunner(_input, workDir) {
   return { zipPath, counts: { screens: 1, cases: 1 }, warnings: [] };
 }
 
-async function waitTerminal(base, jobId) {
+async function waitTerminal(base, jobId, headers = {}) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const response = await fetch(`${base}/jobs/${jobId}`);
+    const response = await fetch(`${base}/jobs/${jobId}`, { headers });
     const body = await response.json();
     if (["done", "failed", "cancelled"].includes(body.status)) return body;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("job did not finish");
+}
+
+async function waitStatus(base, jobId, status, headers = {}) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const response = await fetch(`${base}/jobs/${jobId}`, { headers });
+    const body = await response.json();
+    if (body.status === status) return body;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`job did not reach ${status}`);
 }
 
 test("server: create -> poll -> download", async () => {
@@ -55,6 +66,7 @@ test("server: create -> poll -> download", async () => {
     const { jobId } = await created.json();
     const job = await waitTerminal(base, jobId);
     assert.equal(job.status, "done");
+    assert.equal("artifactPath" in job, false, "状态响应不暴露服务端路径");
     const download = await fetch(`${base}/jobs/${jobId}/download`);
     assert.equal(download.status, 200);
     assert.match(download.headers.get("content-disposition"), /design-tests-/);
@@ -207,4 +219,219 @@ test("server: cancelling a running job", async () => {
       assert.equal(job.status, "cancelled");
     }
   );
+});
+
+test("server: completed jobs survive restart (metadata + artifact)", async () => {
+  const workRoot = await mkdtemp(join(tmpdir(), "aos-cms-open-restart-"));
+  let jobId = "";
+  const server1 = await startCmsOpenServer({
+    port: 0,
+    host: "127.0.0.1",
+    workRoot,
+    runner: zipRunner
+  });
+  try {
+    const created = await fetch(`http://127.0.0.1:${server1.port}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: { type: "figma", url: "https://www.figma.com/design/ABC/demo" } })
+    });
+    jobId = (await created.json()).jobId;
+    await waitTerminal(`http://127.0.0.1:${server1.port}`, jobId);
+  } finally {
+    await server1.close();
+  }
+
+  const server2 = await startCmsOpenServer({
+    port: 0,
+    host: "127.0.0.1",
+    workRoot,
+    runner: zipRunner
+  });
+  try {
+    const base = `http://127.0.0.1:${server2.port}`;
+    const job = await (await fetch(`${base}/jobs/${jobId}`)).json();
+    assert.equal(job.status, "done");
+    const download = await fetch(`${base}/jobs/${jobId}/download`);
+    assert.equal(download.status, 200);
+  } finally {
+    await server2.close();
+    await rm(workRoot, { recursive: true, force: true });
+  }
+});
+
+test("server: running jobs become job_interrupted after restart", async () => {
+  const workRoot = await mkdtemp(join(tmpdir(), "aos-cms-open-interrupt-"));
+  const never = new Promise(() => {});
+  const server1 = await startCmsOpenServer({
+    port: 0,
+    host: "127.0.0.1",
+    workRoot,
+    runner: async () => never
+  });
+  let jobId = "";
+  try {
+    const base = `http://127.0.0.1:${server1.port}`;
+    const created = await fetch(`${base}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: { type: "figma", url: "https://www.figma.com/design/ABC/demo" } })
+    });
+    jobId = (await created.json()).jobId;
+    await waitStatus(base, jobId, "running");
+  } finally {
+    await server1.close();
+  }
+
+  const server2 = await startCmsOpenServer({
+    port: 0,
+    host: "127.0.0.1",
+    workRoot,
+    runner: zipRunner
+  });
+  try {
+    const job = await (await fetch(`http://127.0.0.1:${server2.port}/jobs/${jobId}`)).json();
+    assert.equal(job.status, "failed");
+    assert.equal(job.error.code, "job_interrupted");
+  } finally {
+    await server2.close();
+    await rm(workRoot, { recursive: true, force: true });
+  }
+});
+
+test("server: startup removes orphan work directories", async () => {
+  const workRoot = await mkdtemp(join(tmpdir(), "aos-cms-open-orphan-"));
+  const orphan = join(workRoot, "orphan-job");
+  await mkdir(orphan, { recursive: true });
+  await writeFile(join(orphan, "leftover.txt"), "x");
+  const server = await startCmsOpenServer({
+    port: 0,
+    host: "127.0.0.1",
+    workRoot,
+    runner: zipRunner
+  });
+  try {
+    assert.equal(existsSync(orphan), false);
+  } finally {
+    await server.close();
+    await rm(workRoot, { recursive: true, force: true });
+  }
+});
+
+test("server: tick removes expired job record and work directory", async () => {
+  const workRoot = await mkdtemp(join(tmpdir(), "aos-cms-open-expire-"));
+  const server = await startCmsOpenServer({
+    port: 0,
+    host: "127.0.0.1",
+    workRoot,
+    retentionMs: 1,
+    runner: zipRunner
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const created = await fetch(`${base}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: { type: "figma", url: "https://www.figma.com/design/ABC/demo" } })
+    });
+    const { jobId } = await created.json();
+    await waitTerminal(base, jobId);
+    const jobDir = join(workRoot, jobId);
+    assert.equal(existsSync(jobDir), true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    server.tick();
+    assert.equal(existsSync(jobDir), false);
+    const missing = await fetch(`${base}/jobs/${jobId}`);
+    assert.equal(missing.status, 404);
+  } finally {
+    await server.close();
+    await rm(workRoot, { recursive: true, force: true });
+  }
+});
+
+test("server: bearer token protects all endpoints except healthz", async () => {
+  await withServer({ runner: zipRunner, authToken: "secret" }, async (base) => {
+    const health = await fetch(`${base}/healthz`);
+    assert.equal(health.status, 200);
+
+    const payload = JSON.stringify({
+      source: { type: "figma", url: "https://www.figma.com/design/ABC/demo" }
+    });
+    const denied = await fetch(`${base}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: payload
+    });
+    assert.equal(denied.status, 401);
+    assert.match(denied.headers.get("www-authenticate") ?? "", /Bearer/);
+    assert.equal((await denied.json()).code, "unauthorized");
+
+    const wrong = await fetch(`${base}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer nope" },
+      body: payload
+    });
+    assert.equal(wrong.status, 401);
+
+    const created = await fetch(`${base}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer secret" },
+      body: payload
+    });
+    assert.equal(created.status, 202);
+    const { jobId } = await created.json();
+    const auth = { authorization: "Bearer secret" };
+    await waitTerminal(base, jobId, auth);
+    const polled = await fetch(`${base}/jobs/${jobId}`, { headers: auth });
+    assert.equal(polled.status, 200);
+    const unauthenticated = await fetch(`${base}/jobs/${jobId}`);
+    assert.equal(unauthenticated.status, 401);
+
+    const preflight = await fetch(`${base}/jobs`, {
+      method: "OPTIONS",
+      headers: { origin: "https://cms.example" }
+    });
+    assert.equal(preflight.status, 204);
+  });
+});
+
+test("server: persisted jobs never contain request credentials", async () => {
+  const workRoot = await mkdtemp(join(tmpdir(), "aos-cms-open-secrets-"));
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const server = await startCmsOpenServer({
+    port: 0,
+    host: "127.0.0.1",
+    workRoot,
+    runner: async (input, workDir) => {
+      await gate;
+      return zipRunner(input, workDir);
+    }
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const created = await fetch(`${base}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source: {
+          type: "figma",
+          url: "https://www.figma.com/design/ABC/demo",
+          token: "figd_secret"
+        },
+        llm: { baseUrl: "https://api.example.com/v1", model: "m", apiKey: "sk_secret" }
+      })
+    });
+    const { jobId } = await created.json();
+    await waitStatus(base, jobId, "running");
+    const persisted = await readFile(join(workRoot, "jobs.json"), "utf-8");
+    assert.doesNotMatch(persisted, /figd_secret|sk_secret/);
+    release();
+    await waitTerminal(base, jobId);
+  } finally {
+    await server.close();
+    await rm(workRoot, { recursive: true, force: true });
+  }
 });

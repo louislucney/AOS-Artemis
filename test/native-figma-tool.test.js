@@ -19,3 +19,13 @@ test("figma_generate_tests: maxFlows 上限 1000（大体量视觉探索路径�
   assert.equal(schema.safeParse({ maxDepth: 50 }).success, true);
   assert.equal(schema.safeParse({ maxDepth: 51 }).success, false);
 });
+
+test("figma_generate_tests: saveArtifacts 可关闭 md/xlsx/caseSets", () => {
+  const schema = schemaOf("figma_generate_tests");
+  assert.equal(
+    schema.safeParse({ saveArtifacts: { markdown: false, xlsx: false, caseSets: false } }).success,
+    true
+  );
+  assert.equal(schema.safeParse({ saveArtifacts: { markdown: true } }).success, true);
+  assert.equal(schema.safeParse({ saveArtifacts: { markdown: "no" } }).success, false);
+});

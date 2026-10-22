@@ -76,7 +76,7 @@ function deps({ cases = [generatedCase()] } = {}) {
     generate: async (runtime) => {
       const design = join(runtime.configDirAbs, "design");
       await mkdir(design, { recursive: true });
-      await writeFile(join(design, "tests.json"), JSON.stringify({ cases }), "utf-8");
+      await writeFile(join(design, "tests.json"), JSON.stringify({ flows: cases }), "utf-8");
       return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
     }
   };

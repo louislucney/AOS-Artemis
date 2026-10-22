@@ -15,7 +15,7 @@ import {
   storeScreenPng
 } from "../design/screens.js";
 import { captureFigmaScreens } from "./render.js";
-import { synthesizeStaticFlows } from "./static-flows.js";
+import { mergeStaticEdges, reachableScreenIds, synthesizeStaticFlows } from "./static-flows.js";
 import type { ChatFn } from "../llm/chat.js";
 import {
   confidenceFor,
@@ -813,13 +813,34 @@ export async function figmaExtractFlows(
     let staticWarnings: FlowWarning[] = [];
     const staticFallback =
       args.staticFallback ?? (process.env.AOS_STATIC_FALLBACK ?? "") !== "0";
-    if (staticFallback && graph.edges.length === 0 && graph.screens.length > 0) {
-      const synthesized = await synthesizeStaticFlows(file, {
-        chat: deps.chat ?? undefined,
-        ...(args.nodeId ? { nodeId: args.nodeId } : {})
-      });
-      graph = synthesized.graph;
-      staticWarnings = synthesized.warnings;
+    if (staticFallback && graph.screens.length > 0) {
+      const reachable = reachableScreenIds(graph);
+      const needsStatic =
+        graph.edges.length === 0 || graph.screens.some((screen) => !reachable.has(screen.id));
+      if (needsStatic) {
+        const synthesized = await synthesizeStaticFlows(file, {
+          chat: deps.chat ?? undefined,
+          ...(args.nodeId ? { nodeId: args.nodeId } : {})
+        });
+        if (graph.edges.length === 0) {
+          graph = synthesized.graph;
+          staticWarnings = synthesized.warnings;
+        } else {
+          const merged = mergeStaticEdges(graph, synthesized.graph);
+          staticWarnings = synthesized.warnings.filter(
+            (warning) =>
+              warning.code !== "static-flow-inferred" && warning.code !== "layout-fallback"
+          );
+          if (merged.added > 0) {
+            graph = merged.graph;
+            staticWarnings.push({
+              code: "static-flow-inferred",
+              message: `部分屏无原型交互：补充 ${merged.added} 条推断边（需复核）`,
+              details: merged.details.slice(0, 10)
+            });
+          }
+        }
+      }
     }
     const dotenv = runtime.project.dotenvValues ?? {};
     const wantScreens = screensEnabledFrom({ ...process.env, ...dotenv }, args.screens);
