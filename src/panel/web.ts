@@ -2340,7 +2340,6 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
       warnings,
       `<p class="muted">生成时间 ${relativeTime(detail.generatedAt)} · ${escapeHtml(cacheNote)}</p>`,
       '<p class="muted">页内：<a href="#tasks">任务</a> · <a href="#runners">执行机</a> · <a href="#schedules">计划</a></p>',
-      `<p><a href="${escapeHtml(reviewHref(view.rootPath, view.hostId))}">失败分析</a> · <a href="${escapeHtml(statsHref(view.rootPath, view.hostId))}">统计</a></p>`,
       "</header>",
       "<main>",
       ...(emptyProject ? [renderOnboarding(view.rootPath, view.hostId)] : []),
