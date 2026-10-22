@@ -2352,4 +2352,5 @@ llm_switch(name, force):
 
 - **活动行**：`activeLinks`/`pendingLinks` 只显示任务短 id，前缀保留「执行中：」「待领取：」；不再在链接内重复状态词。
 - **表题**：移除 `renderBatches`、`renderRunners`、`renderTaskPage`/`renderStats` 跨端表中与 h2 完全同名的 caption；保留有区分度的表题（接入凭证/任务引用份等）。
-- **测试**：`panel-web` 增断言（活动行无重复状态词、项目页无 `caption>最近运行/执行机`、任务页无 `caption>跨端差异`）。全量 2095 绿，lint 0 error（2 条既有 warning）。
+- **批次摘要标题**：`归纳分类` → `结果概览`（内容为用例/通过/失败计数 + 失败域，旧标题不直白）；README L3 描述同步。
+- **测试**：`panel-web` 增断言（活动行无重复状态词、项目页无 `caption>最近运行/执行机`、任务页无 `caption>跨端差异`、批次页无「归纳分类」）。全量 2095 绿，lint 0 error（2 条既有 warning）。

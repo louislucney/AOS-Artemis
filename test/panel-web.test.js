@@ -468,6 +468,8 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
     `http://x/panel?project=${encodeURIComponent(projectDir)}&batch=${encodeURIComponent(file)}`
   );
   const htmlBody = (await handlePanelRequest(htmlUrl, deps)).body;
+  assert.match(htmlBody, /结果概览/);
+  assert.doesNotMatch(htmlBody, /归纳分类/, "批次摘要标题直白");
   assert.match(htmlBody, /失败域汇总/);
   assert.match(htmlBody, /已清理/);
   assert.match(htmlBody, /断言 4 \/ 探索 1/);

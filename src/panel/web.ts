@@ -2719,7 +2719,7 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
       "</header>",
       "<main>",
       '<section id="summary">',
-      "<h2>归纳分类</h2>",
+      "<h2>结果概览</h2>",
       summary === null
         ? ""
         : [
