@@ -570,7 +570,7 @@ async function createTask(
     const unknown = refs.filter((ref) => !known.has(`${ref.caseSetId}|${ref.featureKey}`));
     if (unknown.length > 0) {
       return json(400, {
-        error: `未知引用份：${unknown.map((ref) => ref.featureKey).join("、")}（先重新生成/登记用例集）`
+        error: `未知用例集：${unknown.map((ref) => ref.featureKey).join("、")}（先重新生成/登记用例集）`
       });
     }
   }

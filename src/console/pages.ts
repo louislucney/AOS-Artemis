@@ -57,7 +57,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
     relativeTime(set.createdAt),
     String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
     set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
-    `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}${hostQuery}`)}">下发该份</a>`
+    `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}${hostQuery}`)}">下发该用例集</a>`
   ]);
   const quarantine = data.quarantine;
   const quarantineEntries =
@@ -95,7 +95,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
   const importBody = [
     `<form id="import-form" data-project="${escapeHtml(data.rootPath)}"><p><input type="file" name="file" accept=".xlsx" aria-label="Excel 文件"${disabledAttr}> ` +
       `<button class="c-button" type="submit"${disabledAttr}>上传导入</button> <span id="import-status" role="status" class="muted"></span></p>` +
-      `<p class="muted">≤20MB、仅 .xlsx；导入后自动登记为最新份（需 HTTP 模式运行时；独立进程请用 CLI <code>suite task create --excel</code>）。</p></form>`,
+      `<p class="muted">≤20MB、仅 .xlsx；导入后自动登记为最新用例集（需 HTTP 模式运行时；独立进程请用 CLI <code>suite task create --excel</code>）。</p></form>`,
     actionsReason
   ].join("\n");
   const script = actionsOff
@@ -112,15 +112,15 @@ export function renderLibraryPage(data: LibraryPageData): string {
     body: [
       "<h1>用例库</h1>",
       cCard({
-        title: "用例集（份）",
-        subtitle: `共 ${data.sets.length} 份 · 来源与条数为登记口径`,
+        title: "用例集",
+        subtitle: `共 ${data.sets.length} 份用例集 · 来源与条数为登记口径`,
         body: cTable({
-          columns: ["份", "来源", "登记时间", "用例数", "功能", "动作"],
+          columns: ["用例集", "来源", "登记时间", "用例数", "功能", "动作"],
           rows,
-          caption: "用例集（份）列表",
+          caption: "用例集列表",
           empty: "暂无用例集（下方导入或先生成）"
         }),
-        actions: `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch${hostQuery}`)}">按份下发</a>`
+        actions: `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch${hostQuery}`)}">按用例集下发</a>`
       }),
       cCard({ title: "导入 Excel（用例文档）", body: importBody }),
       cCard({ title: "隔离（quarantine）", body: quarantineBody }),
@@ -426,7 +426,7 @@ export function renderSearchPage(data: SearchPageData): string {
     `<code>${escapeHtml(entry.basename)}</code>`,
     escapeHtml(entry.source),
     escapeHtml(entry.features),
-    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&section=dispatch&source=case-set&ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId)}">下发该份</a>`
+    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&section=dispatch&source=case-set&ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId)}">下发该用例集</a>`
   ]);
   const taskRows = data.tasks.map((entry) => [
     projectLink(entry.project, entry.project, entry.hostId),
@@ -440,7 +440,7 @@ export function renderSearchPage(data: SearchPageData): string {
     searchQuery: data.q,
     body:
       data.q === ""
-        ? [empty, cEmpty({ title: "输入关键词开始搜索", body: "按名称/路径搜项目，按份名/来源/功能搜用例集，按任务 id 搜任务；顶栏搜索框或 `/` 键直达。", action: '<span class="muted">示例：登录 / AOS / regression</span>' })].join("\n")
+        ? [empty, cEmpty({ title: "输入关键词开始搜索", body: "按名称/路径搜项目，按用例集名/来源/功能搜用例集，按任务 id 搜任务；顶栏搜索框或 `/` 键直达。", action: '<span class="muted">示例：登录 / AOS / regression</span>' })].join("\n")
         : [
             empty,
             `<p class="muted">关键词「${q}」· 项目 ${data.projects.length} · 用例集 ${data.caseSets.length} · 任务 ${data.tasks.length}${data.truncated ? "（结果已截断）" : ""}</p>`,
@@ -449,9 +449,9 @@ export function renderSearchPage(data: SearchPageData): string {
               body: cTable({ columns: ["项目", "路径"], rows: projectRows, caption: "匹配项目", empty: "无匹配项目" })
             }),
             cCard({
-              title: "用例集（份）",
+              title: "用例集",
               body: cTable({
-                columns: ["项目", "份", "来源", "功能", "动作"],
+                columns: ["项目", "用例集", "来源", "功能", "动作"],
                 rows: caseSetRows,
                 caption: "匹配用例集",
                 empty: "无匹配用例集"

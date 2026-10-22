@@ -330,7 +330,7 @@ export async function computeDispatchPreview(
       caseCount = hit.caseCount;
       refDetails.push(hit);
     } else if (id !== "") {
-      warnings.push(`未知份「${id}」：请重新选择（可能已被保留期清理）`);
+      warnings.push(`未知用例集「${id}」：请重新选择（可能已被保留期清理）`);
     }
   } else if (mode === "keyword") {
     const keyword = (params.get("keyword") ?? "").trim();
@@ -348,13 +348,13 @@ export async function computeDispatchPreview(
         refDetails.push(detail);
         caseCount += detail.caseCount;
       }
-      if (hits.length === 0) warnings.push(`关键词「${keyword}」未匹配到任何份`);
+      if (hits.length === 0) warnings.push(`关键词「${keyword}」未匹配到任何用例集`);
     }
   } else {
     const excelPath = (params.get("excel") ?? "").trim();
     label = excelPath === "" ? "Excel 导入" : `Excel：${excelPath}`;
     if (excelPath === "") warnings.push("未指定 Excel 路径");
-    else warnings.push("Excel 导入经 CLI/API（multipart 上传）；本表单提交支持「用例库选份」与「功能关键词」");
+    else warnings.push("Excel 导入经 CLI/API（multipart 上传）；本表单提交支持「用例库选用例集」与「功能关键词」");
   }
 
   const devices = (params.get("devices") ?? "")
@@ -451,7 +451,7 @@ export function renderDispatchPage(view: DispatchView): string {
             ? ""
             : '<option value="">（选择主机）</option>',
           hostOptions,
-          `</select></label> <span class="muted">先选目标主机，用例份选项按该主机作用域展示。</span></p>`
+          `</select></label> <span class="muted">先选目标主机，用例集选项按该主机作用域展示。</span></p>`
         ].join("");
 
   const projectOptions = (() => {
@@ -495,16 +495,16 @@ export function renderDispatchPage(view: DispatchView): string {
 
   const sourceBody = [
     '<fieldset class="c-fieldset"><legend>来源</legend>',
-    `<label class="dispatch-option"><input type="radio" name="source" value="case-set"${mode === "case-set" ? " checked" : ""}> 用例库选份</label>`,
+    `<label class="dispatch-option"><input type="radio" name="source" value="case-set"${mode === "case-set" ? " checked" : ""}> 用例库选用例集</label>`,
     `<label class="dispatch-option"><input type="radio" name="source" value="keyword"${mode === "keyword" ? " checked" : ""}> 功能关键词</label>`,
     "</fieldset>",
-    `<div id="dispatch-field-ref"><p><label>份 <select name="ref" aria-label="用例集份"><option value="">（选择份）</option>${setOptions}</select></label></p></div>`,
+    `<div id="dispatch-field-ref"><p><label>用例集 <select name="ref" aria-label="用例集"><option value="">（选择用例集）</option>${setOptions}</select></label></p></div>`,
     `<div id="dispatch-field-keyword"><p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label> <span class="muted">Excel 导入经 CLI/API（multipart 上传）。</span></p></div>`
   ].join("\n");
 
   const paramsBody = [
     `<fieldset class="c-fieldset"><legend>目标端</legend>${platformChecks}</fieldset>`,
-    `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本份最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`,
+    `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本用例集最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`,
     priorityField
   ].join("\n");
 
@@ -512,7 +512,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const runnerOnlineCount = preview.runnerCandidates.filter((runner) => runner.online).length;
   const previewBody = [
     `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
-    `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：尚未引用任何份。请选择份或输入关键词后点「刷新预览」。</p>`,
+    `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：尚未引用任何用例集。请选择用例集或输入关键词后点「刷新预览」。</p>`,
     `<div class="c-stats-row">`,
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
@@ -529,9 +529,9 @@ export function renderDispatchPage(view: DispatchView): string {
     }),
     `</div>`,
     cTable({
-      columns: ["份", "用例集", "用例数"],
+      columns: ["用例集", "用例集 ID", "用例数"],
       rows: refRows,
-      caption: "引用份明细",
+      caption: "引用用例集明细",
       empty: "无引用（待选择来源）"
     }),
     `<p>执行机候选：${runnerBadges || '<span class="muted">暂无注册执行机</span>'}</p>`,
@@ -593,14 +593,14 @@ go.addEventListener('click',function(){
     if(island.legacyHostless&&!island.hostId){showErr(${JSON.stringify(LEGACY_HOST_REASON)});return;}
     if(island.hostRequired&&!pickedHost){showErr('请先选择目标主机');return;}
     if(island.hostBlocked){showErr('目标主机无法满足所选平台：请调整目标端或更换主机后刷新预览');return;}
-    showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择份或输入关键词，再点「刷新预览」');return;
+    showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择用例集或输入关键词，再点「刷新预览」');return;
   }
   if(form.querySelectorAll('input[name="platforms"]:checked').length===0){showErr('请至少选择目标端（iOS/Android）');return;}
   var priority=readPriority();
   if(priority===null){return;}
   var s=island.summary||{};
   var refs=island.refsDetail||[];
-  var refText=refs.length===0?'':(' · 份：'+refs.map(function(r){return r.label+'×'+r.caseCount;}).join('、'));
+  var refText=refs.length===0?'':(' · 用例集：'+refs.map(function(r){return r.label+'×'+r.caseCount;}).join('、'));
   var runner=island.runnerOnline?('在线候选 '+island.runnerOnlineCount+' 台'):'无在线执行机（任务将排队）';
   var hostName=(island.hostLabel||island.hostId||'本机');
   var text='将创建回归任务：目标主机「'+hostName+'」 · 来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · 优先级 P'+priority+' · 执行机：'+runner;
@@ -645,7 +645,7 @@ go.addEventListener('click',function(){
   const confirmBody = actionsOff
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
-        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（份明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
+        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（用例集明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
         noProjects
           ? `<p class="note">该主机尚未登记项目：请先在目标机接入项目并刷新本页。</p>`
           : needsHostPick && !legacyHostless

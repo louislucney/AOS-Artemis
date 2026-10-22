@@ -119,7 +119,7 @@ test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", asy
   assert.match(html, /island\.previewId/, "POST 携带 previewId（服务端复算比对）");
   assert.ok(!html.includes('value="excel"'), "Excel 死选项已移除");
   assert.ok(!html.includes('name="devices"'), "设备手输已移除（执行时在项目机确定）");
-  assert.match(html, /aria-label="用例集份"/);
+  assert.match(html, /aria-label="用例集"/);
   assert.match(html, /aria-label="功能关键词"/);
   assert.match(html, /aria-label="基线"/);
   assert.match(html, /登录回归/);
@@ -175,7 +175,7 @@ test("renderDispatchPage: 空预览（未引用份）→ ready:false＋空态横
   assert.match(html, /"ready":false/, "空引用预览标记");
   assert.match(html, /id="dispatch-empty"/, "空态横幅（③ 卡）");
   assert.match(html, /refField\.hidden=mode==='keyword'/, "来源 radio 联动显隐字段");
-  assert.match(html, /预览为空：先选择份或输入关键词/, "点击拦截文案区分空/过期");
+  assert.match(html, /预览为空：先选择用例集或输入关键词/, "点击拦截文案区分空/过期");
 });
 
 test("renderDispatchPage: 写动作关闭时禁用派发并给可见原因", async () => {

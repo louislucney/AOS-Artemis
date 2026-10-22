@@ -1269,7 +1269,7 @@ function comparisonView(value: unknown): PanelTaskRunView["comparison"] {
   };
 }
 
-/** 回归任务详情（DESIGN：回归服务 §5.4 屏 B）：引用解析 + 子运行 + 跨端差异；
+/** 回归任务详情（DESIGN：回归服务 §5.4 屏 B）：引用解析 + 设备运行 + 跨端差异；
  * 产物路径仅展示（P1 不内联预览）。未知 task → null。 */
 export async function buildPanelTaskDetail(
   deps: PanelDeps,

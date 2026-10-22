@@ -1627,7 +1627,7 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: st
     '<section id="tasks">',
     "<h2>任务</h2>",
     renderTable(
-      ["任务", "优先级", "状态", "引用份数", "目标端", "运行数", "创建时间"],
+      ["任务", "优先级", "状态", "引用用例集数", "目标端", "运行数", "创建时间"],
       rows,
       "暂无任务（从上方「下一步」创建）"
     ),
@@ -1653,7 +1653,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: s
   const featureField =
     featureBoxes.length > 0
       ? `<fieldset class="c-fieldset"><legend>功能（可多选）</legend>${featureBoxes.join(" ")}</fieldset>`
-      : `<label>功能 key <input type="text" name="featureKeys" aria-label="功能 key（暂无可引用份，可手输）" size="28" placeholder="login,pay"${disabledAttr}></label> <span class="muted">暂无可引用用例份</span>`;
+      : `<label>功能 key <input type="text" name="featureKeys" aria-label="功能 key（暂无可引用用例集，可手输）" size="28" placeholder="login,pay"${disabledAttr}></label> <span class="muted">暂无可引用用例集</span>`;
   const form = [
     '<form id="schedule-form" data-project="' + escapeHtml(rootPath) + '">',
     '<p><label>名称 <input type="text" name="name" aria-label="计划名称" required' + disabledAttr + '></label> ' +
@@ -1668,7 +1668,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: s
     "</form>",
     reason
   ].join("");
-  const emptyRow = '<p class="empty">暂无定时任务（执行机按窗口自动触发；引用实时取最新份）</p>';
+  const emptyRow = '<p class="empty">暂无定时任务（执行机按窗口自动触发；引用实时取最新用例集）</p>';
   const rows = detail.schedules.map((schedule) => [
     escapeHtml(schedule.name),
     schedule.featureKeys
@@ -1720,7 +1720,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
     `<code>${escapeHtml(ref.caseSetId)}</code>`,
     ref.caseCount === null ? "—" : String(ref.caseCount),
     ref.jsonPath === null
-      ? '<span class="muted">（份已清理）</span>'
+      ? '<span class="muted">（用例集已清理）</span>'
       : `${
           ref.jsonUrl === null
             ? `<code>${escapeHtml(ref.jsonPath)}</code>`
@@ -1797,7 +1797,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
       `<h1>任务 <code>${escapeHtml(task.id)}</code></h1>`,
-      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个子运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
+      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个设备运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
         const priorityBadge = cBadge({
@@ -1820,7 +1820,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         const cancellable =
           task.status === "pending" || running || stopping;
         const cancelConfirm = `确认取消该任务？${running || stopping ? "执行机将在当前用例边界停止并确认（状态先为「停止中」，确认后「已取消」）。" : "任务尚未执行，将直接标记为「已取消」。"}取消为终态：不释放、不自动重试；需重跑请用「重新派发」或新建任务。`;
-        const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生子运行 ${detail.runs.length} 个保留）；状态先为「停止中」，执行机确认后转「已取消」。`;
+        const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生设备运行 ${detail.runs.length} 个保留）；状态先为「停止中」，执行机确认后转「已取消」。`;
         const rerunConfirm = "确认重新派发？将按原引用/端/基线创建一个新任务（当前任务保留）。";
         const buttons = [
           cancellable
@@ -1853,11 +1853,11 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       "</header>",
       "<main>",
       '<section id="refs">',
-      "<h2>引用份</h2>",
-      renderTable(["功能", "用例集", "用例数", "存档路径"], refRows, "无引用", "任务引用份"),
+      "<h2>引用用例集</h2>",
+      renderTable(["功能", "用例集", "用例数", "存档路径"], refRows, "无引用", "任务引用用例集"),
       "</section>",
       '<section id="runs">',
-      "<h2>子运行</h2>",
+      "<h2>设备运行</h2>",
       renderTable(
         ["端", "设备", "状态", "通过", "失败", "失败域", "对比", "清单", "时间"],
         runRows,
@@ -2023,7 +2023,7 @@ function renderReviewPage(view: {
       "<h2>动作指引</h2>",
       '<p class="muted">重跑：<code>node dist/cli.js suite run --task &lt;task-id&gt; --device &lt;serial&gt;</code>（整任务）或 <code>node dist/cli.js suite run --tests &lt;tests.json&gt; --case &lt;caseId&gt; --device &lt;serial&gt;</code>（单用例）。</p>',
       '<p class="muted">隔离：写入 <code>.artemis/design/quarantine.json</code>（owner 签字名单；suite run 默认跳过，<code>--no-quarantine</code> 严格跑）。</p>',
-      '<p class="muted">口径：仅「用例集份」来源的运行参与统计与改进出口/生成建议；无份运行（<code>suite run --tests</code>）的裁决仅存档。</p>',
+      '<p class="muted">口径：仅「用例集」来源的运行参与统计与改进出口/生成建议；无用例集来源的运行（<code>suite run --tests</code>）的裁决仅存档。</p>',
       "</section>",
       "</main>"
     ].join("\n")
@@ -2269,7 +2269,7 @@ function renderStatsPage(view: { rootPath: string; hostId: string | null; detail
       renderTable(
         ["功能", "名称", "运行", "通过率", "趋势", "失败域", "归因构成"],
         featureRows,
-        '暂无「用例集份」来源运行（先创建回归任务并执行）'
+        '暂无用例集来源运行（先创建回归任务并执行）'
       ),
       "</section>",
       '<section id="cases">',
@@ -2473,7 +2473,7 @@ function renderCompareHostCell(project: PanelCompareProject): string {
 function renderCompareLatestCell(project: PanelCompareProject): string {
   const batch = project.latestBatch;
   if (batch === null) {
-    return `<span class="muted">无份来源批次</span> <a href="${escapeHtml(
+    return `<span class="muted">无用例集来源批次</span> <a href="${escapeHtml(
       projectHref(project.rootPath, project.hostId)
     )}">看项目页</a>`;
   }
@@ -2533,7 +2533,7 @@ function renderFeatureAlignmentSection(view: PanelCompareView): string {
   const { groups, unmatched } = view.featureAlignment;
   const scope = [
     "匹配规则：设计源归一化（figma:fileKey / pen:相对路径 / 相对化路径）＋功能名归一（NFC·trim·折叠空白·小写）一致才成组",
-    `窗口＝用例集份最近 ${view.window.runs} 批`,
+    `窗口＝用例集最近 ${view.window.runs} 批`,
     "误报口径：flaky 为窗口内累加；未裁决＝状态非 passed 且未裁决的用例数",
     `未匹配 ${unmatched} 个（仅单项目出现）`
   ].join("；");
@@ -2579,8 +2579,8 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
   const rows = view.projects.map((project) => renderCompareRow(project));
   const warnings = view.warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("");
   const scope = [
-    `口径：窗口＝用例集份最近 ${view.window.runs} 批`,
-    "仅计入「用例集份」来源批次（suite run --tests／单次运行等其余来源见项目页）",
+    `口径：窗口＝用例集最近 ${view.window.runs} 批`,
+    "仅计入「用例集」来源批次（suite run --tests／单次运行等其余来源见项目页）",
     `任务积压为最近 ${PANEL_COMPARE_TASK_LIMIT} 条近似`,
     `执行机为最近 ${PANEL_COMPARE_RUNNER_LIMIT} 条近似`,
     "数据源＝中央台账",
@@ -2605,7 +2605,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
           columns: [
             "项目",
             "主机",
-            "最近份批次（时间·门禁·通过率）",
+            "最近用例集批次（时间·门禁·通过率）",
             "趋势（最近 10 批）",
             "质量（flaky·失败域 top3）",
             "待办（未裁决·未建单·积压·failed）",

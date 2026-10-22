@@ -639,7 +639,7 @@ test("panel web: 进程内缓存 TTL（TTL 内命中、过期重算）", async (
   assert.notEqual(third.generatedAt, first.generatedAt, "TTL 过期后重算");
 });
 
-test("panel web: 任务视图（状态/子运行/指引）与未知 task 404", async () => {
+test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404", async () => {
   const { deps, projectDir, store } = await makeHarness();
   const set = await store.recordCaseSet({
     rootPath: projectDir,
@@ -1824,12 +1824,12 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
   const emptyHtml = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
   assert.equal(emptyHtml.status, 200);
   assert.match(emptyHtml.body, /多项目对比/, "页头标题");
-  assert.match(emptyHtml.body, /口径：窗口＝用例集份最近 20 批/, "窗口口径");
+  assert.match(emptyHtml.body, /口径：窗口＝用例集最近 20 批/, "窗口口径");
   assert.match(emptyHtml.body, /任务积压为最近 200 条近似/, "任务积压近似口径");
   assert.match(emptyHtml.body, /执行机为最近 100 条近似/, "执行机近似口径");
   assert.match(emptyHtml.body, /数据源＝中央台账/, "数据源口径");
   assert.match(emptyHtml.body, /精确待办以失败分析为准/, "精确待办口径");
-  assert.match(emptyHtml.body, /无份来源批次/, "无份来源批次 ≠ 读取失败");
+  assert.match(emptyHtml.body, /无用例集来源批次/, "无用例集来源批次 ≠ 读取失败");
   assert.match(emptyHtml.body, /看项目页/, "空态给项目页跳转（其余来源）");
   assert.doesNotMatch(emptyHtml.body, /读取失败/, "无 error 不出现降级标注");
 
@@ -1865,8 +1865,8 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
 
   const html = await handlePanelRequest(new URL("http://x/panel?view=compare"), deps);
   assert.equal(html.status, 200);
-  assert.match(html.body, /最近份批次（时间·门禁·通过率）/, "列组标记：最近份批次");
-  assert.match(html.body, /仅计入「用例集份」来源批次/, "口径显式声明来源范围");
+  assert.match(html.body, /最近用例集批次（时间·门禁·通过率）/, "列组标记：最近用例集批次");
+  assert.match(html.body, /仅计入「用例集」来源批次/, "口径显式声明来源范围");
   assert.match(html.body, /趋势（最近 10 批）/, "列组标记：趋势");
   assert.match(html.body, /质量（flaky·失败域 top3）/, "列组标记：质量");
   assert.match(html.body, /待办（未裁决·未建单·积压·failed）/, "列组标记：待办");
@@ -2137,7 +2137,7 @@ test("panel web: compare 功能对齐区块（表头/小表/口径说明/未匹�
   assert.match(html.body, /50%/, "通过率（a 2/4）");
   assert.match(html.body, /75%/, "通过率（b 3/4）");
   assert.match(html.body, /匹配规则/, "口径说明：匹配规则");
-  assert.match(html.body, /窗口＝用例集份最近 20 批/, "口径说明：窗口");
+  assert.match(html.body, /窗口＝用例集最近 20 批/, "口径说明：窗口");
   assert.match(html.body, /误报口径/, "口径说明：误报口径");
   assert.match(html.body, /未匹配 1 个（仅单项目出现）/, "口径说明：未匹配计数");
 });

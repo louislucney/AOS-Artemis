@@ -68,7 +68,7 @@ test("console a11y: 表格语义（th scope）与表单页刷新纪律", async (
   assert.match(project.body, /<th scope="col">/, "遗留表格补 scope");
   const dispatch = await handlePanelRequest(sectionUrl(rootPath, "dispatch"), deps);
   assert.match(dispatch.body, /<form/);
-  assert.match(dispatch.body, /aria-label="用例集份"/);
+  assert.match(dispatch.body, /aria-label="用例集"/);
   assert.match(dispatch.body, /aria-label="基线"/);
   assert.ok(!dispatch.body.includes('http-equiv="refresh"'), "含表单页永不整页刷新");
   assert.match(archive.body, /aria-label="产物类型"/);

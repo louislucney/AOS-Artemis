@@ -118,10 +118,10 @@ test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷�
   assert.match(html, /按 <span class="c-kbd">\?<\/span> 查看快捷键/);
   assert.match(html, /g o<\/span> 总览|g t<\/span> 任务/, "跳转键表");
   assert.match(html, /术语/, "帮助面板含术语表");
-  assert.match(html, /份<\/strong>：一次生成或导入登记的用例集版本/, "份就地定义");
+  assert.match(html, /用例集<\/strong>：一次生成或导入登记的一个用例版本/, "用例集就地定义");
   assert.match(html, /记录底座<\/strong>/, "记录底座术语");
   assert.match(html, /门禁<\/strong>：批次通过判定/, "术语表补门禁");
-  assert.match(html, /子运行<\/strong>：一次份×设备执行/, "术语表补子运行");
+  assert.match(html, /设备运行<\/strong>：一次用例集×设备执行/, "术语表补设备运行");
   assert.match(html, /积压<\/strong>：待执行队列/, "术语表补积压");
 });
 
