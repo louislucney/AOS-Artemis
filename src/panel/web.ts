@@ -1099,6 +1099,14 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string, hostId
     activeLinks === "" && pendingLinks === ""
       ? ""
       : `<p class="muted">${activeLinks === "" ? "" : `执行中：${activeLinks}`}${activeLinks !== "" && pendingLinks !== "" ? "　" : ""}${pendingLinks === "" ? "" : `待领取：${pendingLinks}`}</p>`;
+  const refs = detail.regressionRefs.length;
+  const libraryHref = `/panel?project=${encodeURIComponent(rootPath)}&section=library${hostSuffix(hostId)}`;
+  const dispatchHintHtml =
+    refs === 0
+      ? `<p>先生成或导入用例，再走下发向导。 <a href="${escapeHtml(libraryHref)}">去用例库</a></p>`
+      : `<p>${escapeHtml(
+          `当前有 ${refs} 份可引用的用例集；新建任务走下发向导：选来源 → 设参数 → 预览 → 确认。`
+        )}</p>`;
   return [
     '<div class="c-stats-row">',
     cStat({
@@ -1131,9 +1139,12 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string, hostId
           )}">先去生成/导入用例 →</a>`
         : `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath, hostId))}">新建任务</a>`,
       body:
-        detail.reviewQueue.undecided === 0 && detail.reviewQueue.unissued === 0
-          ? `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">失败分析</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
-          : `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">待判定 ${detail.reviewQueue.undecided} 条</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}#issues">未建单缺陷 ${detail.reviewQueue.unissued} 项</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
+        [
+          dispatchHintHtml,
+          detail.reviewQueue.undecided === 0 && detail.reviewQueue.unissued === 0
+            ? `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">失败分析</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
+            : `<p><a href="${escapeHtml(reviewHref(rootPath, hostId))}">待判定 ${detail.reviewQueue.undecided} 条</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}#issues">未建单缺陷 ${detail.reviewQueue.unissued} 项</a> · <a href="${escapeHtml(statsHref(rootPath, hostId))}">统计</a></p>`
+        ].join("\n")
     }),
     activityLine,
     "</div>"
@@ -1507,30 +1518,6 @@ function renderOnboarding(rootPath: string, hostId: string | null): string {
   ].join("\n");
 }
 
-function renderDispatchCta(rootPath: string, detail: PanelProjectDetail, hostId: string | null): string {
-  const refs = detail.regressionRefs;
-  const hint =
-    refs.length === 0
-      ? "当前暂无可引用的用例份（先运行 figma_generate_tests 生成并登记用例集）。"
-      : `当前有 ${refs.length} 份可引用的用例集；关键词模式可批量匹配多份，预览逐份列出。`;
-  return [
-    '<section id="regression" class="c-plain">',
-    "<h2>新建任务</h2>",
-    cCard({
-      title: "使用下发向导（唯一入口）",
-      body: [
-        `<p>四步完成：选来源 → 设参数 → 看预览回显 → 确认派发。${hint}</p>`,
-        refs.length === 0
-          ? `<p><span class="muted">完成「生成或导入用例」后可下发。</span> <a class="c-button" href="${escapeHtml(
-              `/panel?project=${encodeURIComponent(rootPath)}&section=library${hostSuffix(hostId)}`
-            )}">去用例库</a></p>`
-          : `<p><a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath, hostId))}">去下发向导</a></p>`
-      ].join("\n")
-    }),
-    "</section>"
-  ].join("\n");
-}
-
 function bulkBindScript(formSelector: string, itemName: string, countId: string): string[] {
   return [
     "function aosBindBulk(scopeSel,itemName,countId){",
@@ -1642,7 +1629,7 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: st
     renderTable(
       ["任务", "优先级", "状态", "引用份数", "目标端", "运行数", "创建时间"],
       rows,
-      "暂无任务（上方「新建任务」创建）"
+      "暂无任务（从上方「下一步」创建）"
     ),
     "</section>"
   ].join("\n");
@@ -2368,7 +2355,6 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
       renderRunners(detail),
       renderSchedules(view.rootPath, detail, view.hostId),
       ...(emptyProject ? ["</details>"] : []),
-      renderDispatchCta(view.rootPath, detail, view.hostId),
       '<details class="c-details">',
       "<summary>环境自查与明细（接入自检 / 运行时细节 / 磁盘文件 / 单次运行）</summary>",
       renderIntegration(detail),

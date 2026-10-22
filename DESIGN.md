@@ -2335,3 +2335,12 @@ llm_switch(name, force):
 - **重构**：`identifierFromLayerName` 移到 `src/design/identifiers.ts`（test-gen 仍 re-export，测试兼容），源码扫描复用同一保守校验。
 - **测试**：新增 `test/code-identifiers.test.js` 4 例（RN/SwiftUI/Flutter/Android XML、远距离不配对、忽略目录）；`figma-testgen` +1（源码 `testID` → 生成步骤 `a11y: loginButton`）。全量 2095 绿，lint 0 error（2 条既有 warning）。
 - **边界**：行级启发式，多行 JSX/复杂 DSL 可能漏配；只映射“附近有可见文本”的标识，纯图标元素不猜；扫描上限与缓存策略后续按真实项目调。
+
+### 13.182 调整（项目页：合并重复的「新建任务」区）
+
+> 2026-10-22。用户反馈底部「新建任务」只有一个无内容的黄色标题条＋嵌套卡片，既无独立功能也不清楚用途。
+
+- **移除重复区**：删除 `renderDispatchCta`（`section#regression.c-plain` + `<h2>新建任务</h2>` + 「使用下发向导（唯一入口）」卡片）；其信息并入顶部「下一步」卡。
+- **信息不丢**：有引用份时显示「当前有 N 份可引用的用例集；新建任务走下发向导：选来源 → 设参数 → 预览 → 确认」并保留「新建任务」按钮；无份时给「先去生成/导入用例」按钮＋「去用例库」链接。
+- **空态文案**：任务列表改为「暂无任务（从上方「下一步」创建）」，不再指向已删除的「新建任务」区。
+- **测试**：`panel-web` 更新断言（无 `section#regression`/空 `<h2>新建任务</h2>`；保留份数、dispatch href、去用例库与计划表单断言）。全量 2095 绿，lint 0 error（2 条既有 warning）。

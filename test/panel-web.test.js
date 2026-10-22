@@ -252,7 +252,7 @@ test("panel web: 项目详情（空态→批次→单次运行）与未知项目
   );
 });
 
-test("panel web: 新建任务指向下发向导（唯一入口，无内嵌表单）", async () => {
+test("panel web: 新建任务统一走顶部「下一步」卡（无重复空栏）", async () => {
   const { deps, projectDir, store } = await makeHarness();
   await store.recordCaseSet({
     rootPath: projectDir,
@@ -277,13 +277,15 @@ test("panel web: 新建任务指向下发向导（唯一入口，无内嵌表单
   );
   assert.equal(html.status, 200);
   assert.match(html.body, /新建任务/);
-  assert.match(html.body, /去下发向导/);
+  assert.match(html.body, /新建任务走下发向导/);
   assert.match(
     html.body,
     /href="\/panel\?project=[^"]+&amp;section=dispatch"/,
     "CTA 携带项目上下文直达向导"
   );
   assert.match(html.body, /当前有 1 份可引用的用例集/);
+  assert.doesNotMatch(html.body, /<section id="regression"/, "不再渲染重复的空栏");
+  assert.doesNotMatch(html.body, /<h2>新建任务<\/h2>/, "不再出现无内容的黄色标题条");
   assert.doesNotMatch(html.body, /id="regression-form"/, "内嵌表单已移除（派发唯一真相＝向导）");
   assert.doesNotMatch(html.body, /fetch\('\/panel\/api\/tasks'/);
   assert.match(html.body, /<fieldset class="c-fieldset"><legend>端<\/legend>/, "计划表单端组有 legend");
@@ -292,7 +294,6 @@ test("panel web: 新建任务指向下发向导（唯一入口，无内嵌表单
   assert.match(html.body, /<fieldset class="c-fieldset"><legend>功能（可多选）<\/legend>/, "计划功能复选组（替代多选下拉）");
   assert.match(html.body, /<input type="checkbox" name="featureKeys" value="f-1"[^>]*> 登录流程（2 例）/, "复选含功能名与条数");
   assert.match(html.body, /f\.getAll\('featureKeys'\)/, "提交收集多选值");
-  assert.match(html.body, /<section id="regression" class="c-plain">/, "CTA 区块不吃遗留 section 边框（无双框）");
   assert.doesNotMatch(html.body, /id="onboarding"/, "有引用份时不显示入门卡");
   assert.match(html.body, /运行：[\s\S]{0,260}?存储：[\s\S]{0,120}?接入：/, "项目页三轴并列（运行／存储／接入）");
   assert.doesNotMatch(html.body, /项目状态：/, "H1 不再夹灯状态（状态进徽章行）");
