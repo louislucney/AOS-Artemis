@@ -517,7 +517,7 @@ pen.dev 写回/导出/agent（`pen_export`/`pen_import_assets`/`pen_apply_tokens
 
 ### CMS 开放服务（cms-open）
 
-独立 HTTP 服务：把**静态 Figma 稿 / .pen** 转成 `design.md`（流程理解 + 截图）+ `cases.xlsx`（Web/CMS 用例）的 zip，供 CMS 网页调用；不执行测试、不接设备、不依赖项目目录或中心 PG。
+独立 HTTP 服务：把**静态 Figma 稿 / .pen** 转成 `design.md`（流程理解 + 截图）+ `cases.xlsx`（Web/CMS 用例）的 zip，供 CMS 网页调用；不执行测试、不接设备、不依赖项目目录或中心 PG。完整 API 契约见 [`docs/cms-open-api.md`](docs/cms-open-api.md)。
 
 ```bash
 node dist/cli.js cms-open --port 8780 --cors https://cms.example.com
