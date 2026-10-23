@@ -2570,3 +2570,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **R11 API 说明持久化**：`SuiteRunRecord` 增 `apiReview`（PG `suite_runs.api_review`；file/memory 同步），登记时从 `tests.json` 快照；`suite backfill` 从清单快照回填。面板批次详情优先读台账，清单缺失/损坏时按 `manifest_path` 回退台账，仍展示 `apiReview` 与用例摘要。
 - **R12 内容指纹**：新增 `flowGraphFingerprint(graph)`；`flowsFingerprint` 改为内容指纹，`designFingerprintFor` 支持从实际 `FlowGraph` 计算（URL 源拼接 URL + 内容），同一 URL 的文本/连线/acceptance 变化可被 parity/API carry-forward 检测。
 - **测试**：新增 `run-registry`/`suite-backfill`/`panel-overview`/`console-pages`/`figma-testgen` 用例；全量 **2138 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.206 实施记录（风险修订第三批：R5/R6/R7）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-dual-layer-risk-assessment.md` rev 3 的第三批实施。
+
+- **R5 统一用例选择器**：`design-store.resolveCaseSelector(selector, cases)` 精确匹配 `caseId` → `semanticId` → `displayId`；同选择器多条命中返回 `ambiguous` 与候选 `caseId`，不静默取首条。`suite run --case`、`suite flake --cases`、`suite baseline --case`、`suite report --case` 与 `quarantine.json` 隔离匹配均接入；`GeneratedCase` 投影补 `semanticId`/`displayId`（旧产物为 null）。
+- **R6 功能身份持久化**：`flows.json` 顶层可选 `features: [{key,name,screens}]`；生成时作为最高优先 `PriorFeature` 交给既有 `applyIdentity`，优先级高于 `case_sets` 历史；首次命名后（`save !== false` 且非 URL 源）写回 `flows.json`。写回按 key/name/screen 集合幂等，`save:false` 不动 flows；URL 源不写本地 flows。
+- **R7 vision 人类标签**：`humanElementLabel(edge, graph?)` 优先顺序固定为「运行期可见文本 → 已 grounding 的 vision 元素 label（按 `nodeId`/`id` 匹配）→ 去通用词图层名 → 通用控件名」；无文字图标/按钮不再一律退化为「按钮」。
+- **测试**：新增 `design-store` 选择器、`suite-command` 的 run/flake/quarantine/baseline/report 选择器、`figma-testgen` 的 features 继承/写回/`save:false`/vision label 用例；全量 **2147 绿**，lint 0 error（2 条既有 warning）。

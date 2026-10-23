@@ -20,7 +20,12 @@ import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/baseline.js";
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
 import type { VerdictExits } from "./tasks/verdict-exits.js";
-import { designDir, readTestsDocument } from "./figma/design-store.js";
+import {
+  designDir,
+  loadGeneratedCases,
+  readTestsDocument,
+  resolveCaseSelector
+} from "./figma/design-store.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
@@ -266,6 +271,40 @@ function pendingApiBlocked(flags: ParsedFlags, testsPath: string): boolean {
   return !flags.bool("allow-pending-api") && apiReviewPendingInTests(testsPath);
 }
 
+function resolveCaseSelectors(
+  configDirAbs: string,
+  testsPath: string,
+  selectors: string[],
+  options: { allowUnresolved?: boolean } = {}
+): { ids: string[]; errors: string[] } {
+  if (selectors.length === 0) return { ids: [], errors: [] };
+  const cases = loadGeneratedCases(configDirAbs, { testsPath });
+  if (cases === null) {
+    return options.allowUnresolved === true
+      ? { ids: [...selectors], errors: [] }
+      : { ids: [], errors: [`无法读取用例文件：${testsPath}`] };
+  }
+  const ids: string[] = [];
+  const errors: string[] = [];
+  for (const selector of selectors) {
+    const resolved = resolveCaseSelector(selector, cases);
+    if (!resolved.ok) {
+      if (resolved.reason === "not-found" && options.allowUnresolved === true) {
+        if (!ids.includes(selector)) ids.push(selector);
+        continue;
+      }
+      errors.push(
+        resolved.reason === "ambiguous"
+          ? `用例选择器歧义：${selector}（候选：${resolved.candidates.join("、")}；请改传完整 caseId）`
+          : `用例不存在于 ${testsPath}: ${selector}`
+      );
+      continue;
+    }
+    if (!ids.includes(resolved.caseId)) ids.push(resolved.caseId);
+  }
+  return { ids, errors };
+}
+
 type SuiteIo = {
   log: (line: string) => void;
   errorLog: (line: string) => void;
@@ -314,7 +353,7 @@ Usage:
   mobile-testing-mcp suite parity --a <tests.json> --b <tests.json> [--json] 对比两端人类层用例（semanticId/步骤/预期/屏幕），忽略 taskDesc/i18n/a11y）
 
 common: [--project <dir>] [--json]
-run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
+run:    [--tests <path>] [--case <caseId|semanticId|displayId>]... [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
         [--ui-diff] [--ui-diff-max <n>]（访问屏逐屏设计对比；默认关闭，单例最多 3 屏）
         [--allow-pending-api]（API 说明 pending 时仍执行；默认 check/run 阻断）
@@ -324,14 +363,14 @@ check:  [--tests <path>] [--strict] [--allow-pending-api]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
         [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-quarantine] [--no-save] [--out <dir>]
-flake:  --cases <id,id,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>]
+flake:  --cases <caseId|semanticId|displayId,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>]
         [--model Flash|Pro] [--poll-timeout <ms>] [--no-api-errors] [--fail-on-flaky] [--no-save] [--out <dir>]
 retention: [--days <n>] [--limit <n>]
 evidence: [--full-trace] [--out <dir>] [--no-save] [--design-figma <url>|--design-pen <path>] [--node <id>]
 api-errors: [--serial <s>] [--app <bundleId>] [--no-save] [--json]
-baseline: --case <caseId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>]
+baseline: --case <caseId|semanticId|displayId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>]
           [--ignore x,y,w,h]... [--no-save] [--fail-on new|persisting|any]
-report: [--limit <n>] [--case <id>]... [--out <dir>] [--stamp <s>] [--no-save] [--no-sync] [--task <id>（回归任务报告：命名 <时间>_<功能>_回归.xlsx）]
+report: [--limit <n>] [--case <caseId|semanticId|displayId>]... [--out <dir>] [--stamp <s>] [--no-save] [--no-sync] [--task <id>（回归任务报告：命名 <时间>_<功能>_回归.xlsx）]
 feedback: [--limit <n>] [--min-failures <n>]
 reconcile: list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>]
 runner: [--name <n>] [--poll-ms <n>] [--heartbeat-ms <n>] [--artifact-port <n>（0 关闭）] [--artifact-host <h>] [--once]
@@ -445,7 +484,11 @@ async function suiteRunTask(
   }
 
   const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
-  const quarantine = loadSuiteQuarantine(runtime, flags.bool("no-quarantine"));
+  const quarantine = loadSuiteQuarantine(
+    runtime,
+    flags.bool("no-quarantine"),
+    flags.get("tests") ?? undefined
+  );
   baseOptions.quarantinedCaseIds = quarantine.ids;
 
   const beforeRun = await runtime.store
@@ -808,6 +851,15 @@ async function suiteRun(
   if (!isImportedTestsFile(pendingPath) && pendingApiBlocked(flags, pendingPath)) {
     io.errorLog(`API 变更说明待补充（apiReview.status=pending）：先补 apiSpec，或传 --allow-pending-api；${pendingPath}`);
     return 2;
+  }
+  const requestedCases = splitList(flags.list("case"));
+  if (requestedCases.length > 0) {
+    const selected = resolveCaseSelectors(runtime.configDirAbs, pendingPath, requestedCases);
+    if (selected.errors.length > 0) {
+      for (const line of selected.errors) io.errorLog(line);
+      return 2;
+    }
+    runOptions.caseIds = selected.ids;
   }
   const retryCount = retryCountOf(flags);
   const batch = await executeSuiteBatch(
@@ -1359,9 +1411,15 @@ async function suiteFlake(
     io.errorLog(`无法读取用例文件：${testsPath}`);
     return 2;
   }
+  const selected = resolveCaseSelectors(runtime.configDirAbs, testsPath, requested);
+  if (selected.errors.length > 0) {
+    for (const line of selected.errors) io.errorLog(line);
+    return 2;
+  }
+  const selectedIds = selected.ids;
   const caseNames = new Map<string, string>();
   for (const record of flakeDocument.records) caseNames.set(record.id, record.name);
-  const missingIds = requested.filter((caseId) => !caseNames.has(caseId));
+  const missingIds = selectedIds.filter((caseId) => !caseNames.has(caseId));
   if (missingIds.length > 0) {
     io.errorLog(`用例不存在于 ${testsPath}: ${missingIds.join("、")}`);
     return 2;
@@ -1369,7 +1427,7 @@ async function suiteFlake(
 
   const rounds: SuiteRunReport["cases"][] = [];
   for (let round = 0; round < runs; round += 1) {
-    const report = await runGeneratedTests(runtime, { ...runOptions, caseIds: requested });
+    const report = await runGeneratedTests(runtime, { ...runOptions, caseIds: selectedIds });
     if (report.cases.length === 0) {
       io.errorLog(`第 ${round + 1} 轮执行失败: ${report.error ?? "无可提交用例"}`);
       return 2;
@@ -1379,7 +1437,7 @@ async function suiteFlake(
 
   const flake = buildFlakeReport({
     generatedAt: new Date().toISOString(),
-    caseIds: requested,
+    caseIds: selectedIds,
     caseNames,
     rounds
   });
@@ -1606,6 +1664,18 @@ async function suiteBaseline(runtime: Runtime, flags: ParsedFlags, io: { log: (l
     );
     return 2;
   }
+  let resolvedCaseId = caseId;
+  const baselineCases = loadGeneratedCases(runtime.configDirAbs);
+  if (baselineCases !== null) {
+    const resolved = resolveCaseSelector(caseId, baselineCases);
+    if (!resolved.ok && resolved.reason === "ambiguous") {
+      io.errorLog(
+        `用例选择器歧义：${caseId}（候选：${resolved.candidates.join("、")}；请改传完整 caseId）`
+      );
+      return 2;
+    }
+    if (resolved.ok) resolvedCaseId = resolved.caseId;
+  }
   const image = flags.get("image") === "pre" ? "pre" : "post";
   const ignoreValues = flags.list("ignore");
   const ignoreRegions = ignoreValues.length === 0 ? [] : parseIgnoreRegions(ignoreValues);
@@ -1614,7 +1684,7 @@ async function suiteBaseline(runtime: Runtime, flags: ParsedFlags, io: { log: (l
     return 2;
   }
   const request: BaselineRequest = {
-    caseId,
+    caseId: resolvedCaseId,
     stepNumber,
     traceId,
     image,
@@ -1627,7 +1697,7 @@ async function suiteBaseline(runtime: Runtime, flags: ParsedFlags, io: { log: (l
     if (flags.bool("json")) {
       io.log(JSON.stringify(saved, null, 2));
     } else {
-      io.log(`已保存基线 serial=${saved.meta.serial} case=${caseId} step=${stepNumber} ${image}`);
+      io.log(`已保存基线 serial=${saved.meta.serial} case=${resolvedCaseId} step=${stepNumber} ${image}`);
       io.log(`产物: ${saved.image}`);
     }
     return 0;
@@ -1693,9 +1763,22 @@ async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (lin
     await runtime.syncTaskStatuses();
     await runtime.flushCrashScans();
   }
+  const reportSelectors = splitList(flags.list("case"));
+  let reportCaseIds: string[] = [];
+  if (reportSelectors.length > 0) {
+    const testsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+    const resolved = resolveCaseSelectors(runtime.configDirAbs, testsPath, reportSelectors, {
+      allowUnresolved: true
+    });
+    if (resolved.errors.length > 0) {
+      for (const line of resolved.errors) io.errorLog(line);
+      return 2;
+    }
+    reportCaseIds = resolved.ids;
+  }
   const report = await buildRunReport(runtime, {
     limit: intOrNull(flags.get("limit")) ?? undefined,
-    caseIds: splitList(flags.list("case")),
+    caseIds: reportCaseIds,
     outputDir: flags.get("out") ?? undefined,
     stamp: flags.get("stamp") ?? undefined,
     save: !flags.bool("no-save")

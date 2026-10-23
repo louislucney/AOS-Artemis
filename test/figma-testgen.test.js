@@ -20,6 +20,7 @@ import {
   figmaGenerateTests,
   flowGraphFingerprint,
   generateTestCases,
+  humanElementLabel,
   identifierFromLayerName,
   identifierSuggestionsFromGraph,
   linearizeFlows,
@@ -2316,4 +2317,68 @@ test("disambiguateSemanticIds: 同路径重复出现追加稳定序号，不合�
     cases.map((entry) => entry.semanticId),
     ["sem-same", "sem-same-2", "sem-other", "sem-same-3"]
   );
+});
+
+test("figma_generate_tests: flows.features 作为最高优先 prior，并回写稳定 key/name", async () => {
+  const dir = makeFlowsProject();
+  const flowsPath = path.join(dir, ".artemis", "design", "flows.json");
+  const flows = JSON.parse(fs.readFileSync(flowsPath, "utf-8"));
+  const screens = flows.screens.map((screen) => screen.name);
+  flows.features = [{ key: "f-pay-fixed", name: "支付流程", screens }];
+  fs.writeFileSync(flowsPath, JSON.stringify(flows), "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+
+  const first = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(first.ok, true);
+  assert.equal(first.features[0].key, "f-pay-fixed");
+  assert.equal(first.features[0].name, "支付流程");
+  assert.equal(first.flows[0].module, "支付流程");
+  const persisted = JSON.parse(fs.readFileSync(flowsPath, "utf-8"));
+  assert.deepEqual(persisted.features, [{ key: "f-pay-fixed", name: "支付流程", screens }]);
+
+  const second = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(second.features[0].key, "f-pay-fixed");
+  assert.equal(second.features[0].name, "支付流程");
+});
+
+test("figma_generate_tests: 首次生成把 features 写回 flows.json，save:false 不写", async () => {
+  const dir = makeFlowsProject();
+  const flowsPath = path.join(dir, ".artemis", "design", "flows.json");
+  const before = fs.readFileSync(flowsPath, "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const dry = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
+  assert.equal(dry.ok, true);
+  assert.equal(fs.readFileSync(flowsPath, "utf-8"), before, "save:false 不修改 flows");
+
+  const saved = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(saved.ok, true);
+  const persisted = JSON.parse(fs.readFileSync(flowsPath, "utf-8"));
+  assert.ok(Array.isArray(persisted.features));
+  assert.equal(persisted.features.length, saved.features.length);
+  assert.equal(persisted.features[0].key, saved.features[0].key);
+});
+
+test("humanElementLabel: 无可见文本时优先消费已 grounding 的 vision label", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  const edge = graph.edges[0];
+  assert.ok(edge);
+  const screen = graph.screens.find((entry) => entry.name === edge.from.name);
+  assert.ok(screen);
+  screen.elements = [
+    {
+      id: "vision-1",
+      class: "button",
+      intent: "submit",
+      label: "立即购买",
+      nodeId: edge.element.id,
+      provenance: "vision-inferred",
+      confidence: "low"
+    }
+  ];
+  edge.textHints = [];
+  const label = humanElementLabel(edge, graph);
+  assert.equal(label.label, "立即购买");
+  assert.equal(label.fallback, false);
+  const cases = generateTestCases(graph);
+  assert.match((cases[0].humanSteps ?? []).join("\n"), /立即购买/);
 });

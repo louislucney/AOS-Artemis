@@ -11,6 +11,7 @@ import { logWarn } from "../log.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
 import { loadQuarantine } from "./quarantine.js";
+import { loadGeneratedCases, resolveCaseSelector } from "./design-store.js";
 import {
   buildRunManifest,
   pruneRunManifests,
@@ -71,14 +72,34 @@ export interface SuiteBatchResult {
 
 export function loadSuiteQuarantine(
   runtime: Runtime,
-  disabled = false
+  disabled = false,
+  testsPath?: string
 ): { ids: Set<string> | undefined; messages: string[] } {
   if (disabled) return { ids: undefined, messages: [] };
   const load = loadQuarantine(runtime.configDirAbs);
   if (!load.exists) return { ids: undefined, messages: [] };
   const messages: string[] = [];
-  if (load.active.size > 0) {
-    messages.push(`quarantine: ${load.active.size} 条生效（失败不计门禁）`);
+  const cases = loadGeneratedCases(runtime.configDirAbs, testsPath ? { testsPath } : {});
+  const resolvedIds = new Set<string>();
+  for (const selector of load.active.keys()) {
+    if (cases === null || cases.some((testCase) => testCase.id === selector)) {
+      resolvedIds.add(selector);
+      continue;
+    }
+    const resolved = resolveCaseSelector(selector, cases);
+    if (resolved.ok) {
+      resolvedIds.add(resolved.caseId);
+    } else if (resolved.reason === "ambiguous") {
+      messages.push(
+        `quarantine 选择器歧义，未隔离: ${selector}（候选：${resolved.candidates.join("、")}）`
+      );
+    } else {
+      resolvedIds.add(selector);
+      messages.push(`quarantine 选择器未匹配当前用例，按原值保留: ${selector}`);
+    }
+  }
+  if (resolvedIds.size > 0) {
+    messages.push(`quarantine: ${resolvedIds.size} 条生效（失败不计门禁）`);
   }
   for (const entry of load.stale) {
     messages.push(`quarantine 已过期、恢复门禁: ${entry.caseId}（owner=${entry.owner}）`);
@@ -86,7 +107,7 @@ export function loadSuiteQuarantine(
   for (const message of load.invalid) {
     messages.push(`quarantine 无效忽略: ${message}`);
   }
-  return { ids: load.active.size > 0 ? new Set(load.active.keys()) : undefined, messages };
+  return { ids: resolvedIds.size > 0 ? resolvedIds : undefined, messages };
 }
 
 async function applyRetryDiagnostics(
@@ -243,7 +264,11 @@ export async function executeSuiteBatch(
   io: SuiteBatchIo
 ): Promise<SuiteBatchResult> {
   const startedAtMs = request.startedAtMs ?? Date.now();
-  const quarantine = loadSuiteQuarantine(runtime, request.quarantine === "skip");
+  const quarantine = loadSuiteQuarantine(
+    runtime,
+    request.quarantine === "skip",
+    request.options.testsPath
+  );
   const options: SuiteRunOptions = {
     ...request.options,
     ...(quarantine.ids !== undefined ? { quarantinedCaseIds: quarantine.ids } : {})

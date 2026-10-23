@@ -54,6 +54,10 @@ export function readFlowDocumentMeta(
 export interface GeneratedCaseRecord {
   id: string;
   name: string;
+  /** 跨端语义身份（旧产物缺失 → null）。 */
+  semanticId: string | null;
+  /** 人类展示编号（旧产物缺失 → null）。 */
+  displayId: string | null;
   preconditions: string[];
   taskDesc: string | null;
   screens: string[];
@@ -94,6 +98,14 @@ export function readTestsDocument(
       records.push({
         id: record.id,
         name: typeof record.name === "string" ? record.name : record.id,
+        semanticId:
+          typeof record.semanticId === "string" && record.semanticId !== ""
+            ? record.semanticId
+            : null,
+        displayId:
+          typeof record.displayId === "string" && record.displayId !== ""
+            ? record.displayId
+            : null,
         preconditions: stringArray(record.preconditions),
         taskDesc: typeof record.taskDesc === "string" ? record.taskDesc : null,
         screens: stringArray(record.screens),
@@ -160,6 +172,8 @@ function exploreStepsOf(raw: unknown): ExploreStepSignal[] {
 export interface GeneratedCase {
   id: string;
   name: string;
+  semanticId: string | null;
+  displayId: string | null;
   preconditions: string[];
   taskDesc: string;
   screens: string[];
@@ -177,6 +191,8 @@ export function toGeneratedCase(record: GeneratedCaseRecord): GeneratedCase {
   return {
     id: record.id,
     name: record.name,
+    semanticId: record.semanticId,
+    displayId: record.displayId,
     preconditions: record.preconditions,
     taskDesc: record.taskDesc ?? "",
     screens: record.screens,
@@ -185,6 +201,46 @@ export function toGeneratedCase(record: GeneratedCaseRecord): GeneratedCase {
     hintScreens: hintScreensOf(record.expectations),
     scriptProvenance: summarizeScriptProvenance(record.expectations)
   };
+}
+
+export interface CaseSelectorCase {
+  id: string;
+  semanticId: string | null;
+  displayId: string | null;
+}
+
+export type CaseSelectorResolution =
+  | { ok: true; caseId: string; matchedBy: "caseId" | "semanticId" | "displayId" }
+  | { ok: false; reason: "not-found" | "ambiguous"; selector: string; candidates: string[] };
+
+/** 统一用例选择器（DESIGN §13.206）：精确 caseId 优先，其次 semanticId/displayId；
+ * 同一选择器对应多条 → 显式 ambiguous 并列出候选，绝不静默取首条。 */
+export function resolveCaseSelector(
+  selector: string,
+  cases: readonly CaseSelectorCase[]
+): CaseSelectorResolution {
+  const wanted = selector.trim();
+  if (wanted === "") {
+    return { ok: false, reason: "not-found", selector, candidates: [] };
+  }
+  const exact = cases.find((entry) => entry.id === wanted);
+  if (exact) return { ok: true, caseId: exact.id, matchedBy: "caseId" };
+  for (const [matchedBy, key] of [
+    ["semanticId", "semanticId"],
+    ["displayId", "displayId"]
+  ] as const) {
+    const hits = cases.filter((entry) => entry[key] === wanted);
+    if (hits.length === 1) return { ok: true, caseId: hits[0]!.id, matchedBy };
+    if (hits.length > 1) {
+      return {
+        ok: false,
+        reason: "ambiguous",
+        selector,
+        candidates: hits.map((entry) => entry.id)
+      };
+    }
+  }
+  return { ok: false, reason: "not-found", selector, candidates: [] };
 }
 
 /** 富用例列表：无 taskDesc 的条目按既有语义跳过（等价原 suite-runner.loadCases）。 */

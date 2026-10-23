@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   loadDesignFlowGraph,
   loadGeneratedCases,
+  resolveCaseSelector,
   readTestsDocument
 } from "../dist/figma/design-store.js";
 import { baseConfig, makeTempProject } from "./helpers.js";
@@ -111,4 +112,27 @@ test("loadGeneratedCases：无 taskDesc 条目跳过、maxCases 截断、explore
     limited.map((item) => item.id),
     ["case-1"]
   );
+});
+
+
+test("resolveCaseSelector：caseId / semanticId / displayId 均可定位，碰撞显式列候选", () => {
+  const cases = [
+    { id: "case-1", semanticId: "sem-1", displayId: "TC_001" },
+    { id: "case-2", semanticId: "sem-2", displayId: "TC_002" },
+    { id: "case-3", semanticId: "sem-2", displayId: "TC_002" }
+  ];
+  assert.deepEqual(resolveCaseSelector("case-1", cases), {
+    ok: true,
+    caseId: "case-1",
+    matchedBy: "caseId"
+  });
+  assert.equal(resolveCaseSelector("sem-1", cases).caseId, "case-1");
+  assert.equal(resolveCaseSelector("TC_001", cases).caseId, "case-1");
+  const ambiguous = resolveCaseSelector("sem-2", cases);
+  assert.equal(ambiguous.ok, false);
+  assert.equal(ambiguous.reason, "ambiguous");
+  assert.deepEqual(ambiguous.candidates, ["case-2", "case-3"]);
+  const missing = resolveCaseSelector("TC_999", cases);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.reason, "not-found");
 });

@@ -1790,3 +1790,134 @@ test("suite check: apiReview pending 默认阻断，--allow-pending-api 放行�
   const allowed = await runCli(runtime, ["check", "--allow-pending-api"]);
   assert.doesNotMatch(allowed.errors.join("\n"), /apiReview\.status=pending/);
 });
+
+test("suite selectors: flake 支持 semanticId/displayId，歧义显式列候选", async () => {
+  const { runtime } = await setupRun({
+    cases: [
+      caseEntry(1, { semanticId: "sem-1", displayId: "TC_001" }),
+      caseEntry(2, { semanticId: "sem-2", displayId: "TC_002" })
+    ],
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" }
+    }
+  });
+  const bySemantic = await runCli(runtime, ["flake", "--cases", "sem-1", "--runs", "1", "--json"]);
+  assert.equal(bySemantic.code, 0);
+  assert.equal(JSON.parse(bySemantic.logs.at(-1)).cases[0].caseId, "case-1");
+
+  const byDisplay = await runCli(runtime, ["flake", "--cases", "TC_002", "--runs", "1", "--json"]);
+  assert.equal(byDisplay.code, 0);
+  assert.equal(JSON.parse(byDisplay.logs.at(-1)).cases[0].caseId, "case-2");
+
+  const ambiguousRuntime = await setupRun({
+    cases: [
+      caseEntry(1, { displayId: "TC_DUP" }),
+      caseEntry(2, { displayId: "TC_DUP" })
+    ]
+  });
+  const ambiguous = await runCli(ambiguousRuntime.runtime, ["flake", "--cases", "TC_DUP", "--runs", "1"]);
+  assert.equal(ambiguous.code, 2);
+  assert.match(ambiguous.errors.join("\n"), /歧义|候选/);
+});
+
+test("suite selectors: quarantine 支持 displayId/semanticId 条目匹配", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1, { semanticId: "sem-1", displayId: "TC_001" })],
+    statuses: { "trace-1": { status: "failed", error: "known" } }
+  });
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "quarantine.json"),
+    JSON.stringify({
+      entries: [
+        {
+          caseId: "TC_001",
+          owner: "alice",
+          signedAt: "2026-10-01T00:00:00.000Z",
+          expiresAt: "2099-01-01T00:00:00.000Z"
+        }
+      ]
+    }),
+    "utf-8"
+  );
+  const result = await runCli(runtime, ["run"]);
+  assert.equal(result.code, 0);
+  assert.ok(result.logs.some((line) => line.includes("quarantine: 1 条生效")));
+  assert.ok(result.logs.some((line) => line.includes("已隔离（不计门禁）")));
+});
+
+test("suite selectors: run --case 支持 semanticId/displayId 并只跑选中用例", async () => {
+  const { runtime } = await setupRun({
+    cases: [
+      caseEntry(1, { semanticId: "sem-1", displayId: "TC_001" }),
+      caseEntry(2, { semanticId: "sem-2", displayId: "TC_002" })
+    ],
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" }
+    }
+  });
+  const bySemantic = await runCli(runtime, ["run", "--case", "sem-2", "--json"]);
+  assert.equal(bySemantic.code, 0);
+  const payload = JSON.parse(bySemantic.logs.at(-1));
+  assert.deepEqual(payload.cases.map((entry) => entry.caseId), ["case-2"]);
+
+  const byDisplay = await runCli(runtime, ["run", "--case", "TC_001", "--json"]);
+  assert.equal(byDisplay.code, 0);
+  assert.deepEqual(
+    JSON.parse(byDisplay.logs.at(-1)).cases.map((entry) => entry.caseId),
+    ["case-1"]
+  );
+});
+
+test("suite selectors: baseline --case 支持 displayId 并归一为 caseId", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const shotPath = path.join(dir, "baseline-selector.png");
+  const image = createImage(390, 844);
+  fillRect(image, 40, 80, 120, 60, [30, 64, 175, 255]);
+  fs.writeFileSync(shotPath, toPng(image));
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "tests.json"),
+    JSON.stringify({
+      flows: [
+        {
+          id: "case-1",
+          name: "Case 1",
+          displayId: "TC_001",
+          semanticId: "sem-1",
+          taskDesc: "run case-1"
+        }
+      ]
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir, {
+    proxy: new ShotProxy({ shots: { 2: { post: shotPath } } })
+  });
+  const saved = await runCli(runtime, [
+    "baseline",
+    "save",
+    "--case",
+    "TC_001",
+    "--step",
+    "2",
+    "--trace",
+    "trace-1"
+  ]);
+  assert.equal(saved.code, 0);
+  assert.ok(saved.logs.some((line) => line.includes("case=case-1")));
+});
+
+test("suite report: 历史 case 选择器无法解析时按原值保留，不阻断报告", async () => {
+  const { runtime } = await setupRun({ cases: null });
+  const result = await runCli(runtime, [
+    "report",
+    "--no-sync",
+    "--no-save",
+    "--case",
+    "case-old"
+  ]);
+  assert.equal(result.code, 0);
+});

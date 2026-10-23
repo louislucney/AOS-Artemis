@@ -567,14 +567,27 @@ function genericElementLabel(type: string, rawName: string): string {
   return "可点击区域";
 }
 
-/** 人类层元素标签：可见文本优先，其次“去掉通用词后仍有意义”的图层名，最后回退通用控件名。 */
-export function humanElementLabel(edge: FlowEdge): {
+function visionElementLabel(edge: FlowEdge, graph: FlowGraph): string | null {
+  const screen = graph.screens.find((entry) => entry.name === edge.from.name);
+  const element = screen?.elements?.find(
+    (entry) => entry.nodeId === edge.element.id || entry.id === edge.element.id
+  );
+  const label = element?.label?.trim();
+  return label !== undefined && label !== "" ? label : null;
+}
+
+/** 人类层元素标签：可见文本 → grounded vision label → 去掉通用词后的图层名 → 通用控件名。 */
+export function humanElementLabel(edge: FlowEdge, graph?: FlowGraph): {
   label: string;
   fallback: boolean;
   raw: string;
 } {
   const hint = runtimeHintTexts(edge.textHints)[0]?.trim();
   if (hint) return { label: hint, fallback: false, raw: edge.element.name };
+  const visionLabel = graph === undefined ? null : visionElementLabel(edge, graph);
+  if (visionLabel !== null) {
+    return { label: visionLabel, fallback: false, raw: edge.element.name };
+  }
   const raw = edge.element.name.trim();
   const generic = genericElementLabel(edge.element.type, raw);
   let cleaned = raw.replace(GENERIC_ELEMENT_PREFIX, "").replace(GENERIC_ELEMENT_SUFFIX, "").trim();
@@ -648,14 +661,14 @@ function humanStepFor(
         label: displayName(edge.to.name)
       };
     }
-    const label = humanElementLabel(edge);
+    const label = humanElementLabel(edge, graph);
     return {
       text: `探索未知跳转「${label.label}」（来源未确认）：尝试触发该元素并记录实际页面变化；不参与断言判定`,
       fallback: label.fallback,
       label: label.label
     };
   }
-  const element = humanElementLabel(edge);
+  const element = humanElementLabel(edge, graph);
   const target = edge.to ? `「${displayName(edge.to.name)}」` : null;
   const assertion = assertionFor(graph, edge);
   const label = `「${element.label}」`;
@@ -1710,22 +1723,90 @@ async function resolveDesignName(
   }
 }
 
+function parseFlowFeatures(raw: unknown): PriorFeature[] {
+  if (!Array.isArray(raw)) return [];
+  const features: PriorFeature[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.key !== "string" || record.key.trim() === "") continue;
+    if (typeof record.name !== "string" || record.name.trim() === "") continue;
+    const screens = Array.isArray(record.screens)
+      ? record.screens.filter((screen): screen is string => typeof screen === "string")
+      : [];
+    if (screens.length === 0) continue;
+    features.push({ key: record.key, name: record.name, screens });
+  }
+  return features;
+}
+
+function loadFlowFeatures(flowsPath: string | null): PriorFeature[] {
+  if (flowsPath === null) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(flowsPath, "utf-8")) as { features?: unknown };
+    return parseFlowFeatures(parsed.features);
+  } catch {
+    return [];
+  }
+}
+
+function persistFlowFeatures(
+  flowsPath: string,
+  groups: FeatureGroup[]
+): FeatureWarning | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(flowsPath, "utf-8")) as Record<string, unknown>;
+    const next = groups.map((group) => ({
+      key: group.key,
+      name: group.name,
+      screens: [...group.screens]
+    }));
+    const prior = parseFlowFeatures(parsed.features);
+    const normalizedScreens = (screens: string[]): string[] => [...screens].sort();
+    const same = (a: PriorFeature[], b: PriorFeature[]): boolean =>
+      a.length === b.length &&
+      a.every((feature) => {
+        const other = b.find((entry) => entry.key === feature.key);
+        return (
+          other !== undefined &&
+          other.name === feature.name &&
+          JSON.stringify(normalizedScreens(other.screens)) ===
+            JSON.stringify(normalizedScreens(feature.screens))
+        );
+      });
+    if (same(prior, next)) return null;
+    parsed.features = next;
+    writeFileAtomic(flowsPath, JSON.stringify(parsed, null, 2) + "\n");
+    return null;
+  } catch (error) {
+    return {
+      code: "feature-persist-failed",
+      message: `功能身份写回 flows.json 失败（不影响生成）：${errorMessage(error)}`
+    };
+  }
+}
+
 async function loadPriorFeatures(
-  runtime: DesignRuntimeLike
+  runtime: DesignRuntimeLike,
+  flowsPath: string | null = null
 ): Promise<{ features: PriorFeature[]; warnings: FeatureWarning[] }> {
+  const flowFeatures = loadFlowFeatures(flowsPath);
   try {
     const records = await runtime.store.listCaseSets(runtime.project.rootDir);
-    const features: PriorFeature[] = [];
+    const features: PriorFeature[] = [...flowFeatures];
+    const keys = new Set(features.map((feature) => feature.key));
     for (const record of records) {
       if (record.source.startsWith("imported:")) continue;
       for (const feature of record.features) {
+        if (keys.has(feature.key)) continue;
+        keys.add(feature.key);
         features.push({ key: feature.key, name: feature.name, screens: [...feature.screens] });
       }
     }
     return { features, warnings: [] };
   } catch (error) {
     return {
-      features: [],
+      features: flowFeatures,
       warnings: [
         {
           code: "case-set-registry-unavailable",
@@ -1741,7 +1822,8 @@ async function assignFeatures(
   graph: FlowGraph,
   cases: GeneratedTest[],
   deps: GenerateTestsDeps,
-  designNameHint: string | null
+  designNameHint: string | null,
+  flowsPath: string | null = null
 ): Promise<{ groups: FeatureGroup[]; warnings: FeatureWarning[]; designName: string | null }> {
   const split = splitFeatures({
     screens: graph.screens.map((screen) => ({
@@ -1757,7 +1839,7 @@ async function assignFeatures(
     }
   }
   const named = await nameFeatures(split, { chat: deps.chat ?? (await resolveNamingChat(runtime)) });
-  const prior = await loadPriorFeatures(runtime);
+  const prior = await loadPriorFeatures(runtime, flowsPath);
   const identity = applyIdentity(named.groups, prior.features);
   for (const testCase of cases) {
     testCase.feature = assignCaseFeature(testCase.screens, identity.groups) ?? undefined;
@@ -1993,7 +2075,18 @@ export async function figmaGenerateTests(
           "或去掉 requireFullCoverage 仅生成并查看 coverage。"
       );
     }
-    const featureAssignment = await assignFeatures(runtime, graph, cases, deps, designNameHint);
+    const featureAssignment = await assignFeatures(
+      runtime,
+      graph,
+      cases,
+      deps,
+      designNameHint,
+      args.url ? null : flowsPath
+    );
+    if (args.save !== false && !args.url && fs.existsSync(flowsPath)) {
+      const persistWarning = persistFlowFeatures(flowsPath, featureAssignment.groups);
+      if (persistWarning !== null) featureAssignment.warnings.push(persistWarning);
+    }
     enrichGeneratedCases(cases, {
       groups: featureAssignment.groups,
       data: acceptance.data,
