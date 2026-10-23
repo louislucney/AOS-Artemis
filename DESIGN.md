@@ -2539,3 +2539,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **批次**：`RunManifest` 增 `apiReview` 快照（change/status/specSha256/designFingerprint/carriedForward/designChanged）。
 - **测试**：新增人类层/API pending+provided/补说明/截图关闭/Excel 回环（未编辑+编辑）用例；全量 2122 绿，lint 0 error（2 条既有 warning）。
 - **边界**：旧产物无新字段仍可读；自定义 Excel 模板可能含技术信息；case-set 归档在补说明时按 `savedTo.json` 匹配更新，未匹配的不强改。
+
+### 13.203 改进（跨端语义身份与 parity）
+
+> 2026-10-23。Android/iOS 同一份 `.pen` 生成结果不一致的根因是 flows 变体不同（replanned 19 屏/32 边 vs inferred 23 屏/22 边），且 caseId 仍含平台 a11y/i18n grounding。
+
+- **semanticId**：`GeneratedTest` 增 `semanticId`（`sem-<sha12>`），只由 canonical `screens`/`humanSteps`/`preconditions`/`expectations(screen,hints,kind,provenance)` 派生；不含 taskDesc、i18n、a11y、模块名。旧 `id`（caseId）保留用于历史兼容。
+- **displayId**：新产物 `displayId` 改由 `semanticId` 派生（`TC_<6>`），同源跨端应一致；旧产物仍读旧值。
+- **指纹**：`tests.json` 顶层增 `designFingerprint` 与 `flowsFingerprint`（flows 文件/URL 哈希）；两端不一致可机械发现。
+- **CLI**：新增 `suite parity --a <tests.json> --b <tests.json> [--json]`：比较 semanticId/displayId/名称/屏幕/人类步骤/前置/预期/测试数据/section/module，忽略 taskDesc/i18n/a11y；报告 design/flows 指纹差异；exit 0 一致 / 1 差异 / 2 读取失败。
+- **测试**：`parity` 4 例（机器层差异忽略、人类层差异/缺失、指纹差异、CLI JSON）；全量 2126 绿，lint 0 error（2 条既有 warning）。
+- **边界**：旧 tests.json 无 semanticId 时 parity 用 `id` fallback 并警告；功能命名/LLM 随机仍可能造成 module/section 差异，parity 会如实报告。

@@ -146,6 +146,8 @@ export interface GeneratedTest {
   feature?: string;
   /** 可读编号（TC_xxxxxx）；与机器身份 id 分离，展示/沟通用。 */
   displayId?: string;
+  /** 跨端语义身份：只由 neutral 屏幕/人类步骤/预期派生，Android/iOS 同源应一致。 */
+  semanticId?: string;
   /** 功能名；生成接线后填充，缺失展示为「未分组」。 */
   module?: string;
   /** 用例入口屏 / 人工覆盖的 Section。 */
@@ -747,6 +749,27 @@ function caseIdFor(name: string, screens: string[], steps: string[]): string {
   return `case-${createHash("sha256").update(basis).digest("hex").slice(0, 12)}`;
 }
 
+/** 跨平台语义身份：不包含 taskDesc/i18n/a11y/模块名；只依赖 canonical flows 与人类层。 */
+function semanticIdFor(input: {
+  screens: string[];
+  humanSteps: string[];
+  preconditions: string[];
+  expectations: StepExpectation[];
+}): string {
+  const basis = JSON.stringify({
+    screens: input.screens,
+    steps: input.humanSteps,
+    preconditions: input.preconditions,
+    expectations: input.expectations.map((entry) => ({
+      screen: entry.screen,
+      hints: entry.hints,
+      kind: entry.kind,
+      provenance: entry.provenance
+    }))
+  });
+  return `sem-${createHash("sha256").update(basis).digest("hex").slice(0, 12)}`;
+}
+
 /** Manual acceptance overrides (`.artemis/design/acceptance.json`):
  * `{screens: {"<屏名>": ["条目", …]}}` plus optional `data/questions/section`
  * maps. Human-confirmed criteria replace the screen's annotation-derived
@@ -985,6 +1008,12 @@ export function generateTestCases(
     ].join("\n");
     return {
       id: caseIdFor(idName, screens, steps),
+      semanticId: semanticIdFor({
+        screens,
+        humanSteps,
+        preconditions,
+        expectations
+      }),
       name,
       screens,
       displayScreens,
@@ -1701,7 +1730,7 @@ export function enrichGeneratedCases(cases: GeneratedTest[], input: EnrichCasesI
   const featureNames = new Map(input.groups.map((group) => [group.key, group.name]));
   const used = new Map<string, number>();
   for (const testCase of cases) {
-    const base = `TC_${testCase.id.replace(/^case-/, "").slice(-6)}`;
+    const base = `TC_${(testCase.semanticId ?? testCase.id).replace(/^(case-|sem-)/, "").slice(-6)}`;
     const count = (used.get(base) ?? 0) + 1;
     used.set(base, count);
     testCase.displayId = count === 1 ? base : `${base}-${count}`;
@@ -1924,6 +1953,8 @@ export async function figmaGenerateTests(
       schemaVersion: 2,
       source,
       generatedAt,
+      designFingerprint,
+      flowsFingerprint: designFingerprint,
       apiReview,
       ...(apiReview.status === "pending"
         ? { apiReviewNextAction: "provide-api-spec" }

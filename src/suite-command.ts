@@ -36,6 +36,7 @@ import {
 import { buildRunReport, buildTaskRunReport } from "./figma/run-report.js";
 import { buildUiContract } from "./ui/contract.js";
 import { runUiLint } from "./ui/lint.js";
+import { compareParityDocs, readParityDoc } from "./figma/parity.js";
 import { readPenTextBounds } from "./pen/bounds.js";
 import type { WarningSummary } from "./design/warnings.js";
 import {
@@ -292,6 +293,7 @@ Usage:
   mobile-testing-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
   mobile-testing-mcp suite ui-contract [options] 从 flows.json + 逐屏 .pen 投影 UI 契约（token/几何/状态；--out <dir>；默认经 pen CLI 补 auto-layout 文本几何，--no-bounds 关闭）
   mobile-testing-mcp suite ui-lint [options] 检查源码圆角字面量是否来自 ui-contract token（--contract/--allowlist/--changed/--require-complete/--fail-on-expiring/--expiry-warn-days <n>；--json；exit 0/1/2）
+  mobile-testing-mcp suite parity --a <tests.json> --b <tests.json> [--json] 对比两端人类层用例（semanticId/步骤/预期/屏幕），忽略 taskDesc/i18n/a11y）
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -3059,6 +3061,46 @@ async function suiteUiLint(
   }
 }
 
+function suiteParity(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): number {
+  const a = flags.get("a");
+  const b = flags.get("b");
+  if (a === null || b === null) {
+    io.errorLog("parity 需要 --a <tests.json> 与 --b <tests.json>");
+    return 2;
+  }
+  try {
+    const report = compareParityDocs(
+      readParityDoc(path.resolve(runtime.project.rootDir, a)),
+      readParityDoc(path.resolve(runtime.project.rootDir, b))
+    );
+    if (flags.bool("json")) {
+      io.log(JSON.stringify(report, null, 2));
+      return report.ok ? 0 : 1;
+    }
+    io.log(
+      `Parity: A ${report.a.cases} 条 · B ${report.b.cases} 条 · 差异 ${report.diffs.length}`
+    );
+    for (const diff of report.diffs) {
+      if (diff.kind === "field") {
+        io.log(`  [${diff.field}] ${diff.message}`);
+        io.log(`    A=${JSON.stringify(diff.a)}`);
+        io.log(`    B=${JSON.stringify(diff.b)}`);
+      } else {
+        io.log(`  [${diff.kind}] ${diff.message}`);
+      }
+    }
+    for (const warning of report.warnings) io.log(`警告: ${warning}`);
+    return report.ok ? 0 : 1;
+  } catch (error) {
+    io.errorLog(`parity 失败: ${errorMessage(error)}`);
+    return 2;
+  }
+}
+
 /** 回填扫描（只读产物 → 幂等重建登记）：PG 守卫 + 下界 + 报告输出。 */
 async function suiteBackfill(
   runtime: Runtime,
@@ -3115,7 +3157,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract", "ui-lint"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract", "ui-lint", "parity"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -3201,6 +3243,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "backfill") return await suiteBackfill(built.runtime, flags, { log, errorLog });
     if (sub === "ui-contract") return await suiteUiContract(built.runtime, flags, { log, errorLog });
     if (sub === "ui-lint") return await suiteUiLint(built.runtime, flags, { log, errorLog });
+    if (sub === "parity") return suiteParity(built.runtime, flags, { log, errorLog });
     if (sub === "runner") {
       return await suiteRunnerCommand(
         built.runtime,

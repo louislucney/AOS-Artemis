@@ -328,7 +328,8 @@ function addExecutorSheet(workbook: ExcelJS.Workbook, cases: GeneratedTest[]): v
     { header: "展示编号", key: "displayId", width: 14 },
     { header: "人类步骤哈希", key: "humanStepsHash", width: 20 },
     { header: "artemis 任务描述", key: "taskDesc", width: 90 },
-    { header: "设计引用", key: "designRefs", width: 40 }
+    { header: "设计引用", key: "designRefs", width: 40 },
+    { header: "语义编号", key: "semanticId", width: 20 }
   ];
   sheet.getRow(1).font = { bold: true };
   for (const testCase of cases) {
@@ -337,7 +338,8 @@ function addExecutorSheet(workbook: ExcelJS.Workbook, cases: GeneratedTest[]): v
       displayId: displayIdOf(testCase),
       humanStepsHash: humanStepsHash(testCase),
       taskDesc: testCase.taskDesc,
-      designRefs: designRefLine(testCase)
+      designRefs: designRefLine(testCase),
+      semanticId: testCase.semanticId ?? ""
     });
     row.getCell(4).alignment = { wrapText: true, vertical: "top" };
     row.getCell(5).alignment = { wrapText: true, vertical: "top" };
