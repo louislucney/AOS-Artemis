@@ -2515,3 +2515,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **鉴权**：不豁免 Bearer（与业务端点一致，便于内网/网关统一）；不受分钟限流/每日任务配额影响（只读快照，不创建任务）。
 - **边界**：单进程快照，不持久化历史；不含请求输入、项目路径或凭证；高基数标签仅 status（5 个固定值）。
 - **测试**：`open-server` 新增 /metrics 用例（格式/容量/ready/boot_id、启用 Bearer 时 401/200）；全量 2114 绿，lint 0 error（2 条既有 warning）。
+
+### 13.201 改进（面板排除服务仓等项目）
+
+> 2026-10-23。业务方反馈：服务仓自身作为项目会话运行时，会把自己注册进中心台账，导致总览项目列表「自己监控自己」。
+
+- **入口**：`AOS_PANEL_EXCLUDE_PROJECTS` 逗号分隔项目名（大小写不敏感）或绝对根路径；非法/相对路径按项目名处理，不做 glob。
+- **范围**：`buildPanelOverview` 合并注册行与 workspace 行后过滤，`PanelOverview.excludedProjects` 暴露隐藏数；`buildPanelCompare` 复用总览行并透传该数；页面标注「已按 AOS_PANEL_EXCLUDE_PROJECTS 隐藏 N 个项目」。
+- **不影响**：直接 `?project=<rootPath>`、项目详情、统计、任务、台账/运行；只是列表可见性。
+- **测试**：`panel-overview` 增名称/路径隐藏与直接详情仍可访问；`panel-web` 增 JSON/HTML 提示与直接 URL；全量 2116 绿，lint 0 error（2 条既有 warning）。
+- **边界**：进程级 env，需重启面板；usage CLI/Web 不读取该变量（统计仍可按项目查询）。

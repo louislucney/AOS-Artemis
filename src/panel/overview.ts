@@ -129,6 +129,8 @@ export interface PanelOverview {
   host: { serviceRepo: string; deps: DepsStatus["status"]; buildStale: boolean | null };
   workspaceRoot: string | null;
   projects: PanelProjectRow[];
+  /** 被 `AOS_PANEL_EXCLUDE_PROJECTS` 从总览/对比隐藏的项目数（直接项目 URL 仍可访问）。 */
+  excludedProjects: number;
   /** 接入主机注册表（中心 PG 专属）；无台账时为空，面板显示“单机模式”。 */
   machines: PanelMachineRow[];
   warnings: string[];
@@ -1087,6 +1089,26 @@ async function buildMachineRows(
   });
 }
 
+/** 排除名单：逗号分隔的项目名（大小写不敏感）或绝对根路径；不解析相对路径/glob。 */
+export function panelProjectExcluded(
+  entry: { name: string; rootPath: string },
+  raw: string | undefined
+): boolean {
+  const tokens = (raw ?? "")
+    .split(",")
+    .map((token) => token.trim())
+    .filter((token) => token !== "");
+  if (tokens.length === 0) return false;
+  const root = path.resolve(entry.rootPath);
+  return tokens.some((token) => {
+    const value = token.replace(/\\/g, "/");
+    if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) {
+      return path.resolve(value) === root;
+    }
+    return value.toLowerCase() === entry.name.toLowerCase();
+  });
+}
+
 export async function buildPanelOverview(deps: PanelDeps): Promise<PanelOverview> {
   const now = deps.now ?? (() => Date.now());
   const nowMs = now();
@@ -1112,7 +1134,11 @@ export async function buildPanelOverview(deps: PanelDeps): Promise<PanelOverview
     }
   }
 
-  const ordered = [...merged.values()].sort((left, right) => {
+  const excludeRaw = (deps.env ?? process.env).AOS_PANEL_EXCLUDE_PROJECTS;
+  const allEntries = [...merged.values()];
+  const visibleEntries = allEntries.filter((entry) => !panelProjectExcluded(entry, excludeRaw));
+  const excludedProjects = allEntries.length - visibleEntries.length;
+  const ordered = [...visibleEntries].sort((left, right) => {
     const leftSeen = left.record?.lastSeenAt ?? "";
     const rightSeen = right.record?.lastSeenAt ?? "";
     if (leftSeen !== rightSeen) return leftSeen < rightSeen ? 1 : -1;
@@ -1145,6 +1171,7 @@ export async function buildPanelOverview(deps: PanelDeps): Promise<PanelOverview
     host: { serviceRepo: host.serviceRepo, deps: host.deps.status, buildStale: host.buildStale },
     workspaceRoot: deps.workspaceRoot ?? null,
     projects,
+    excludedProjects,
     machines,
     warnings: []
   };

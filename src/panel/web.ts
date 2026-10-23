@@ -1062,6 +1062,8 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
     : view.store.kind === "file"
       ? cBadge({ label: "存储：文件台账", tone: "neutral" })
       : cBadge({ label: "存储：PostgreSQL", tone: "neutral" });
+  const excludedNote =
+    view.excludedProjects > 0 ? ` · 已隐藏 ${view.excludedProjects} 个排除项目` : "";
   const overviewScript =
     view.projects.length === 0
       ? ""
@@ -1091,7 +1093,7 @@ try{
   return renderConsoleShell({
     title: "多项目总览",
     active: "overview",
-    meta: `项目 ${view.projects.length} 个 · ${escapeHtml(cacheNote)}`,
+    meta: `项目 ${view.projects.length} 个${escapeHtml(excludedNote)} · ${escapeHtml(cacheNote)}`,
     autoRefreshSeconds: 15,
     project: currentShell.project,
     capabilities: currentShell.capabilities,
@@ -1104,6 +1106,9 @@ try{
         tone: view.host.buildStale === null ? "neutral" : view.host.buildStale ? "warning" : "success"
       })}</p>`,
       "</header>",
+      view.excludedProjects > 0
+        ? `<p class="muted">已按 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> 隐藏 ${view.excludedProjects} 个项目；直接项目 URL 仍可访问。</p>`
+        : "",
       renderMachinesSection(view),
       view.projects.length === 0
         ? cEmpty({
@@ -1115,7 +1120,7 @@ try{
             `<p><a class="c-button c-button-primary" href="${escapeHtml(projectHref(view.projects[0].rootPath, view.projects[0].hostId))}">进入最近活跃项目：${escapeHtml(view.projects[0].name)} →</a></p>`,
             cCard({
               title: "项目",
-              subtitle: `生成时间 ${relativeTimeText(view.generatedAt)} · 项目 ${view.projects.length} 个 · ${cacheNote}`,
+              subtitle: `生成时间 ${relativeTimeText(view.generatedAt)} · 项目 ${view.projects.length} 个${excludedNote} · ${cacheNote}`,
               body: cTable({
                 columns: ["项目", "主机", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
                 columnWidths: ["18%", "12%", "25%", "10%", "10%", "20%", "5%"],
@@ -2755,7 +2760,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
       "<h1>多项目对比</h1>",
       `<p class="muted">生成时间 ${relativeTime(view.generatedAt)} · 项目 ${view.projects.length} 个${
         view.truncated ? "（已截断）" : ""
-      } · ${escapeHtml(cacheNote)}</p>`,
+      }${view.excludedProjects > 0 ? ` · 已隐藏 ${view.excludedProjects} 个排除项目` : ""} · ${escapeHtml(cacheNote)}</p>`,
       `<p class="muted">${escapeHtml(scope)}</p>`,
       warnings,
       "</header>",

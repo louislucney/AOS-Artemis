@@ -56,6 +56,8 @@ export interface PanelCompareView {
   store: { kind: "postgres" | "file" | "memory"; degraded: boolean };
   window: { runs: number };
   projects: PanelCompareProject[];
+  /** 被 AOS_PANEL_EXCLUDE_PROJECTS 隐藏的项目数。 */
+  excludedProjects: number;
   truncated: boolean;
   warnings: string[];
   featureAlignment: { groups: FeatureAlignmentGroup[]; unmatched: number };
@@ -269,6 +271,7 @@ export async function buildPanelCompare(deps: PanelDeps): Promise<PanelCompareVi
     store: { kind: deps.store.kind, degraded: deps.store.kind === "memory" },
     window: { runs: PANEL_COMPARE_WINDOW },
     projects: rows,
+    excludedProjects: overview.excludedProjects,
     truncated,
     warnings,
     featureAlignment

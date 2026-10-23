@@ -2407,3 +2407,20 @@ test("panel web: 项目事件页（筛选/消费状态）", async () => {
   assert.match(payloadHtml.body, /显示 payload/);
   assert.match(payloadHtml.body, /请补充失败证据/);
 });
+
+test("panel web: 排除名单隐藏项目并显示提示（直接项目 URL 仍可访问）", async () => {
+  const { deps, projectDir } = await makeHarness();
+  const excluded = { ...deps, env: { AOS_PANEL_EXCLUDE_PROJECTS: "demo" } };
+  const json = JSON.parse((await handlePanelRequest(new URL("http://x/panel.json"), excluded)).body);
+  assert.equal(json.projects.length, 0);
+  assert.equal(json.excludedProjects, 1);
+
+  const html = await handlePanelRequest(new URL("http://x/panel"), excluded);
+  assert.match(html.body, /已隐藏 1 个排除项目/);
+
+  const direct = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    excluded
+  );
+  assert.equal(direct.status, 200, "排除只影响列表，不阻断直接访问");
+});

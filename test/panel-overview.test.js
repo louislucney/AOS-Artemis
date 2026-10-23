@@ -1145,3 +1145,37 @@ test("panel detail: schedules 聚合 + lastTask 匹配（schedule:<name>）", as
   );
   assert.deepEqual(empty.schedules, []);
 });
+
+test("panel overview: AOS_PANEL_EXCLUDE_PROJECTS 按名称/路径隐藏，但不影响直接访问", async () => {
+  const store = new MemoryStore();
+  const repo = makeReadyRepo();
+  const a = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  const b = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: a, name: "mobile-testing" });
+  await store.upsertProject({ rootPath: b, name: "app-b" });
+
+  const byName = await buildPanelOverview({
+    store,
+    serviceRepo: repo,
+    buildStale: false,
+    env: { AOS_PANEL_EXCLUDE_PROJECTS: "mobile-testing" }
+  });
+  assert.deepEqual(byName.projects.map((row) => row.name), ["app-b"]);
+  assert.equal(byName.excludedProjects, 1);
+
+  const byPath = await buildPanelOverview({
+    store,
+    serviceRepo: repo,
+    buildStale: false,
+    env: { AOS_PANEL_EXCLUDE_PROJECTS: b }
+  });
+  assert.deepEqual(byPath.projects.map((row) => row.name), ["mobile-testing"]);
+  assert.equal(byPath.excludedProjects, 1);
+
+  const detail = await buildPanelProjectDetail(
+    { store, serviceRepo: repo, buildStale: false, env: { AOS_PANEL_EXCLUDE_PROJECTS: "mobile-testing" } },
+    a
+  );
+  assert.ok(detail, "直接项目 URL 不受排除名单影响");
+  assert.equal(detail.project.name, "mobile-testing");
+});
