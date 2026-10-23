@@ -2506,3 +2506,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **CLI**：`--expiry-warn-days <n>`（默认 7）控制提醒窗口；`--fail-on-expiring` 有即将到期条目时 `ok=false` → exit 1；摘要行回显 allowlist 条数与即将到期数；`--json` 原样输出。
 - **测试**：`ui-lint` 增到期用例（3 天后到期 → expiring 1/警告/`--fail-on-expiring` 失败）；全量 2113 绿，lint 0 error（2 条既有 warning）。
 - **边界**：只提醒/阻塞，不自动续期或删除；到期后条目继续按过期忽略；仅影响 `ui-lint` 退出码，不改变面板/运行门禁。
+
+### 13.200 产品化（CMS 开放服务：Prometheus /metrics）
+
+> 2026-10-23。接 P2「CMS Open 独立产品化」：`/readyz` 适合探活，但 SLA/容量趋势需要可抓取的时序指标。
+
+- **端点**：`GET /metrics`（Prometheus text exposition v0.0.4）：`cms_open_jobs{status=...}`、`cms_open_queue_capacity`、`cms_open_worker_capacity`、`cms_open_ready`、`cms_open_build_info{boot_id}`。
+- **鉴权**：不豁免 Bearer（与业务端点一致，便于内网/网关统一）；不受分钟限流/每日任务配额影响（只读快照，不创建任务）。
+- **边界**：单进程快照，不持久化历史；不含请求输入、项目路径或凭证；高基数标签仅 status（5 个固定值）。
+- **测试**：`open-server` 新增 /metrics 用例（格式/容量/ready/boot_id、启用 Bearer 时 401/200）；全量 2114 绿，lint 0 error（2 条既有 warning）。

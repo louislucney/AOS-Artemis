@@ -528,7 +528,7 @@ node dist/cli.js cms-open --port 8780 --cors https://cms.example.com
 ```
 
 - 默认只监听 `127.0.0.1`、默认无鉴权；`--token` 或 `AOS_CMS_OPEN_TOKEN` 启用 Bearer（`/healthz` 豁免）；CORS 默认拒绝跨源，`--cors` 显式放行，并校验 `Origin`/`Host`（LAN 访问需 `--allowed-hosts`）；`--rate-limit <n>` / `AOS_CMS_OPEN_RATE_LIMIT` 开启每客户端每分钟请求上限（0=关闭，超限 429 `rate_limited` + `Retry-After`）；`--max-jobs-per-day <n>` / `AOS_CMS_OPEN_MAX_JOBS_PER_DAY` 限制每客户端每 UTC 日成功入队任务数（0=关闭，超限 429 `quota_exceeded` + `Retry-After`）。
-- 接口：`POST /jobs` → `{jobId}`；`GET /jobs/:id` 轮询；`GET /jobs/:id/download` 下载 zip；`DELETE /jobs/:id` 取消；`GET /healthz` 探活、`GET /readyz` 队列/容量就绪检查（均免 Bearer）。
+- 接口：`POST /jobs` → `{jobId}`；`GET /jobs/:id` 轮询；`GET /jobs/:id/download` 下载 zip；`DELETE /jobs/:id` 取消；`GET /healthz` 探活、`GET /readyz` 队列/容量就绪检查（均免 Bearer）、`GET /metrics` Prometheus 队列/容量/就绪指标（启用 Bearer 时需认证）。
 - 入参（JSON）：`source`（`{type:"figma",url,token}` 或 `pen`）、`llm`（`baseUrl/model/apiKey`，可选）、`maxFlows/maxDepth`；multipart 另支持 `penFile`、`template` 上传。
 - 静态稿流程按「原型边 → 箭头/连线 → 画板旁文字注释 → 画布顺序」推断，标 `INFERRED`，md 注明需复核。
 - Excel：无模版时 7 列（用例编号/功能/用例名称/前置条件/操作步骤/预期结果/优先级）；上传模版时，有 `{{case.*}}` 占位符走占位符，否则按表头映射（必需：用例名称/操作步骤/预期结果）。

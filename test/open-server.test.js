@@ -522,3 +522,29 @@ test("server: /readyz exposes queue capacity and stays unauthenticated", async (
     }
   );
 });
+
+test("server: /metrics exposes queue gauges and respects auth", async () => {
+  await withServer(
+    { runner: zipRunner, maxQueue: 4, maxConcurrent: 2 },
+    async (base) => {
+      const metrics = await fetch(`${base}/metrics`);
+      assert.equal(metrics.status, 200);
+      assert.match(metrics.headers.get("content-type"), /text\/plain/);
+      const text = await metrics.text();
+      assert.match(text, /cms_open_jobs\{status="queued"\} 0/);
+      assert.match(text, /cms_open_queue_capacity 4/);
+      assert.match(text, /cms_open_worker_capacity 2/);
+      assert.match(text, /cms_open_ready 1/);
+      assert.match(text, /cms_open_build_info\{boot_id="[^"]+"\} 1/);
+    }
+  );
+
+  await withServer({ runner: zipRunner, authToken: "secret" }, async (base) => {
+    assert.equal((await fetch(`${base}/metrics`)).status, 401);
+    const authorized = await fetch(`${base}/metrics`, {
+      headers: { authorization: "Bearer secret" }
+    });
+    assert.equal(authorized.status, 200);
+    assert.match(await authorized.text(), /cms_open_ready 1/);
+  });
+});

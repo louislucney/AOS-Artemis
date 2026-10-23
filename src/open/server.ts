@@ -460,6 +460,47 @@ export async function startCmsOpenServer(
           { "www-authenticate": "Bearer" }
         );
       }
+      if (request.method === "GET" && url.pathname === "/metrics") {
+        const counts: Record<JobStatus, number> = {
+          queued: 0,
+          running: 0,
+          done: 0,
+          failed: 0,
+          cancelled: 0
+        };
+        for (const job of manager.snapshot()) counts[job.status] += 1;
+        const maxQueue = options.maxQueue ?? 20;
+        const maxConcurrent = options.maxConcurrent ?? 3;
+        const lines = [
+          "# HELP cms_open_jobs Jobs by status",
+          "# TYPE cms_open_jobs gauge",
+          ...Object.entries(counts).map(
+            ([status, count]) => `cms_open_jobs{status="${status}"} ${count}`
+          ),
+          "# HELP cms_open_queue_capacity Configured queue capacity",
+          "# TYPE cms_open_queue_capacity gauge",
+          `cms_open_queue_capacity ${maxQueue}`,
+          "# HELP cms_open_worker_capacity Configured worker capacity",
+          "# TYPE cms_open_worker_capacity gauge",
+          `cms_open_worker_capacity ${maxConcurrent}`,
+          "# HELP cms_open_ready 1 when queue is not full",
+          "# TYPE cms_open_ready gauge",
+          `cms_open_ready ${counts.queued < maxQueue ? 1 : 0}`,
+          "# HELP cms_open_build_info Build identity",
+          "# TYPE cms_open_build_info gauge",
+          `cms_open_build_info{boot_id="${bootId}"} 1`
+        ];
+        const headers: Record<string, string> = {
+          "content-type": "text/plain; version=0.0.4; charset=utf-8"
+        };
+        if (allowedOrigin !== null) {
+          headers["access-control-allow-origin"] = allowedOrigin;
+          headers.vary = "Origin";
+        }
+        response.writeHead(200, headers);
+        response.end(`${lines.join("\n")}\n`);
+        return;
+      }
       checkRateLimit(request);
       if (request.method === "POST" && url.pathname === "/jobs") {
         const contentType = request.headers["content-type"] ?? "";

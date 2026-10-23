@@ -19,6 +19,7 @@ Base URL（调试环境）：`http://192.168.102.165:8780`
 | GET | `/jobs/{jobId}/download` | 下载 zip |
 | GET | `/healthz` | 健康检查，返回 `{"ok":true,"bootId":"..."}` |
 | GET | `/readyz` | 就绪/容量检查，返回 `ready`、队列（queued/running/maxQueue/maxConcurrent）与任务状态计数；免 Bearer |
+| GET | `/metrics` | Prometheus 文本指标（任务状态、队列/worker 容量、ready、boot_id）；启用 Bearer 时需认证 |
 
 ---
 
