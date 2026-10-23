@@ -278,7 +278,7 @@ Usage:
   mobile-testing-mcp suite reconcile list|confirm|reject [options]
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
   mobile-testing-mcp suite task create|list|show|release|cancel [options]
-                                     回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none]（引用取该功能最新份）
+                                     回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none]（引用取该功能最新用例集）
                                      中心模式：create|list|cancel --host <id|hostname> [--project <rootPath>]（只连 PG，不构建本机 Runtime）
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
                                      cancel <taskId> [--note <text>]：取消任务（pending → 已取消；执行中 → 停止中，待执行机确认）
@@ -296,7 +296,7 @@ run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
         [--ui-diff] [--ui-diff-max <n>]（访问屏逐屏设计对比；默认关闭，单例最多 3 屏）
         [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine] [--strict] [--no-save]
-        [--task <id>（回归任务：与 --tests 互斥；--device 可重复，按端展开子运行）]
+        [--task <id>（回归任务：与 --tests 互斥；--device 可重复，按端展开设备运行）]
 check:  [--tests <path>] [--strict]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
@@ -332,7 +332,7 @@ async function suiteRunTask(
   const jsonMode = flags.bool("json");
   const say = jsonMode ? (_line: string): void => {} : (line: string): void => io.log(line);
   if (flags.get("tests") !== null) {
-    io.errorLog("--task 与 --tests 不能同用（task 引用份存档，--tests 指定单一用例文件）");
+    io.errorLog("--task 与 --tests 不能同用（task 引用用例集存档，--tests 指定单一用例文件）");
     return 2;
   }
   const task = await runtime.store.getRegressionTask(runtime.project.rootDir, taskId);
@@ -389,7 +389,7 @@ async function suiteRunTask(
       .get(ref.caseSetId)
       ?.features.find((entry) => entry.key === ref.featureKey);
     if (!feature) {
-      say(`注意: 引用份已不可用（跳过）：caseSet=${ref.caseSetId} feature=${ref.featureKey}`);
+      say(`注意: 引用用例集已不可用（跳过）：caseSet=${ref.caseSetId} feature=${ref.featureKey}`);
       continue;
     }
     resolvedRefs.push({
@@ -401,7 +401,7 @@ async function suiteRunTask(
     });
   }
   if (resolvedRefs.length === 0) {
-    io.errorLog(`回归任务 ${taskId} 的引用份均不可用（先重新生成/登记用例集）`);
+    io.errorLog(`回归任务 ${taskId} 的引用用例集均不可用（先重新生成/登记用例集）`);
     return 2;
   }
 
@@ -741,7 +741,7 @@ async function suiteRunTask(
         }
       }
       io.log(
-        `回归任务 ${task.id}: ${finalStatus} · 子运行 ${subRuns.length} · pass ${totalPassed}/${totalCases}`
+        `回归任务 ${task.id}: ${finalStatus} · 设备运行 ${subRuns.length} · pass ${totalPassed}/${totalCases}`
       );
     }
     return exitCode;

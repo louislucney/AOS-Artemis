@@ -173,7 +173,7 @@ test("run_regression: description pins the regression protocol (no drift)", asyn
       "执行前",
       "日志",
       "缺省",
-      "最新份",
+      "最新用例集",
       "全量"
     ]) {
       assert.ok(tool.description.includes(phrase), `description must mention "${phrase}"`);

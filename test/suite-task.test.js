@@ -234,7 +234,7 @@ test("suite run --task: 运行中取消不被终态覆盖（守卫写 + 重读�
   assert.equal(after.cancelNote, "运行中取消");
   assert.equal(after.cancelledAt, null, "未确认前不写完成时间");
   const runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
-  assert.equal(runs.length, 2, "子运行仍登记");
+  assert.equal(runs.length, 2, "设备运行仍登记");
 });
 
 test("suite run --task: 有失败 → 退出码 1、状态 partial、对比含回归", async () => {
@@ -727,7 +727,7 @@ test("claimed 任务可手动执行（不因领取状态阻塞，契约锁）", 
   assert.equal(after.status, "completed");
 });
 
-test("suite run --task: 子运行批次清单落盘并登记 manifest_path（--no-save/AOS_SUITE_RUNS=0 → null）", async () => {
+test("suite run --task: 设备运行批次清单落盘并登记 manifest_path（--no-save/AOS_SUITE_RUNS=0 → null）", async () => {
   const { runtime, store } = await setupTaskProject({
     statuses: {
       "trace-1": { status: "completed" },

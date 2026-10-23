@@ -144,7 +144,7 @@ test("fireDueSchedules: 部分缺失子集建任务 + lastNote 缺项；全缺�
   });
   assert.equal(await fireDueSchedules({ store, rootPath, now: () => NOW, io }), 0);
   const missing = await store.getSchedule(rootPath, allMissing.id);
-  assert.equal(missing.lastNote, "引用份均不可用");
+  assert.equal(missing.lastNote, "引用用例集均不可用");
   assert.equal(missing.lastFiredAt, NOON, "窗口仍推进");
   assert.equal((await store.listRegressionTasks(rootPath)).length, 1, "不建任务");
 });
@@ -215,7 +215,7 @@ test("fireDueSchedules: store 抛错 → 0 且不抛（best-effort）；建任�
   assert.ok(secondIo.errors.some((line) => line.includes("insert fail")));
 });
 
-test("fireDueSchedules: >50 份时仍解析视野外的引用份（全量扫描，不静默停摆）", async () => {
+test("fireDueSchedules: >50 份时仍解析视野外的引用用例集（全量扫描，不静默停摆）", async () => {
   const { store, rootPath } = await setup();
   const base = Date.parse("2026-10-01T00:00:00.000Z");
   const oldest = await seedCaseSet(store, rootPath, {

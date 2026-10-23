@@ -5,7 +5,7 @@
 > 设计文档（架构/评审/数据模型）：[DESIGN.md](./DESIGN.md)
 > 项目接入指南（其他项目如何接入与使用：能提供什么、怎么配、怎么用、排障）：[docs/接入指南.md](./docs/接入指南.md)
 
-## 核心模型（v0.3）
+## 核心模型
 
 - **项目自带凭证**：每个项目在自己的 `.env` 声明 LLM（OpenAI 兼容三元组）与可选 Figma token；key 的支付方即项目方。
 - **首次启用首扫导入**：服务扫描项目 `.env` → 导入 PostgreSQL（多条目 + active 指针）；缺失则返回 `setup_required`，用 `aos_configure` 工具补全。
@@ -119,7 +119,6 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 # 事件入口: POST/GET http://<host>:8765/events/<project>（同样受 AOS_HTTP_TOKEN 保护）
 
 # 客户端配置（或 mobile-testing-mcp install --mode http --url http://host:8765）
-# 旧 aos-mcp bin 别名已移除；已生成的 MCP 配置使用 node dist/index.js，不受影响
 ```
 
 无状态 streamable-HTTP：每个项目独立 Runtime（LLM 关联 / artemis 子进程 / 任务统计）；项目名限 `[A-Za-z0-9._-]`。stdio 与 HTTP 两种入口共用同一套工具。
@@ -257,21 +256,21 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 
 | 版块 | 内容与动作 |
 |---|---|
-| `dispatch` **下发向导** | 四步（来源→参数→预览回显→确认）；**先选主机、再选该主机上的项目**（换主机丢弃项目并取该主机最近活跃项目，换项目即按新作用域重载预览）；支持用例库选份/关键词；预览显示条数、runner 候选与告警；**两段确认**派发（refs 服务端重解析）；优先级默认 `P0` **只读**，`AOS_PANEL_PRIORITY=1` 时开放 0–100 编辑（防误操作插队；仅约束面板 UI，API 可直接传 `priority`）；领取顺序为 `priority DESC, created_at ASC` |
-| `library` **用例库** | 份列表（来源/条数/功能）＋**行内「下发该份」**＋**Excel 上传导入**（multipart，≤20MB）＋隔离（quarantine：**加入/移除表单，owner 签字**） |
-| `archive` **档案与产物** | 批次/份/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
+| `dispatch` **下发向导** | 四步（来源→参数→预览回显→确认）；**先选主机、再选该主机上的项目**（换主机丢弃项目并取该主机最近活跃项目，换项目即按新作用域重载预览）；支持用例库选用例集/关键词；预览显示条数、runner 候选与告警；**两段确认**派发（refs 服务端重解析）；优先级默认 `P0` **只读**，`AOS_PANEL_PRIORITY=1` 时开放 0–100 编辑（防误操作插队；仅约束面板 UI，API 可直接传 `priority`）；领取顺序为 `priority DESC, created_at ASC` |
+| `library` **用例库** | 用例集列表（来源/条数/功能）＋**行内「下发该用例集」**＋**Excel 上传导入**（multipart，≤20MB）＋隔离（quarantine：**加入/移除表单，owner 签字**） |
+| `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
 | `ops` **运维与数据** | 存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
 
-写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel 导入支持 multipart 上传（`.xlsx`≤20MB，单飞）：面板表单提交到 `/panel/api/import?project=<项目根路径>[&host=<主机 id>]`，HTTP 模式与独立 `panel --web` 均经该项目运行时解析并登记为最新份。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层；导入按项目根懒建并复用本进程 store 的 Runtime（失败不缓存、退出时释放），并同时启用依赖运行时的「一键建单/证据重试」动作。**跨主机保护**：`?host=` 指向非本机主机时导入返回 400（“跨主机导入请在该项目机上执行，或使用 HTTP 模式”），不会在面板机建项目行或写用例文件。
+写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel 导入支持 multipart 上传（`.xlsx`≤20MB，单飞）：面板表单提交到 `/panel/api/import?project=<项目根路径>[&host=<主机 id>]`，HTTP 模式与独立 `panel --web` 均经该项目运行时解析并登记为最新用例集。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层；导入按项目根懒建并复用本进程 store 的 Runtime（失败不缓存、退出时释放），并同时启用依赖运行时的「一键建单/证据重试」动作。**跨主机保护**：`?host=` 指向非本机主机时导入返回 400（“跨主机导入请在该项目机上执行，或使用 HTTP 模式”），不会在面板机建项目行或写用例文件。
 
 **页面按能力标记渲染**（critique 修复轮）：独立进程默认只读时页级横幅＋写 CTA 禁用并给原因（不再"点了才 404"）；导航携带项目上下文（从项目页跳转不再丢项目；无项目时项目级项禁用而非误指总览）；**派发为两段确认**（摘要→确认创建）且 refs 由服务端按 `source/ref/keyword` 重解析（不再信渲染期快照）；成功后有回执（任务 id＋审计互链）。样式为**单一 CSDC 源**（tokens＋compat 合并注入；无 legacy 覆盖、无 `color-scheme` 双色系）。
 
 **快捷键**：`?` 开关帮助面板、`/` 聚焦筛选框、`g` 后按 `o/t/d/l/f/r/s/p/a/u` 跳转（总览/任务/下发/用例库/档案/运行机/计划/运维/审计/统计；无项目上下文时对应项不生效）。系统 `prefers-reduced-motion: reduce` 时会自动移除整页刷新。计划/隔离/导入均有控制台表单（web.ts 计划区块与用例库页；能力关闭时禁用并给原因）。
 
-- **多项目对比**（`?view=compare` ＋ `/panel.json?view=compare`，§13.112；`panel --web` 独立看板自动可用）：补上「项目」这一层的只读运营面，回答「哪个项目需要关注」——行＝项目，列为**项目**（名链接项目页＋接入健康灯，复用 L1 行）｜**最近批次**（时间·门禁·通过率）｜**趋势**（内联 SVG 迷你图，最近 ≤10 批通过率）｜**质量**（flaky·失败域 top3）｜**待办**（未裁决失败·未建单应用缺陷·任务积压·failed）｜**运行**（runner 在线/设备·定时回归 enabled/最近触发）。**口径**：数据源以**中央台账为主**（磁盘不可达的项目机同样可比，不读批次清单）；窗口＝**份血统运行**最近 **20** 批，「最近批次」列与排序键取台账窗口最新一批（L1 的「最新批次」软读列与灯不变）；`flaky`＝窗口内运行级之和、失败域取窗口合并 top3；**两列待办口径不同**——未裁决失败＝窗内**发生次数**，未建单应用缺陷＝按（份,用例）**最新裁决去重**且未建单（与统计视图/一键建单同源）；任务积压为**最近 200 条近似**、runner 为**最近 100 条近似**，精确待办以**归因队列**（近 10 次口径）为准。**排序**＝固定「关注优先」（无批次 → 门禁 fail → 通过率升 → 名），**先排序后截断前 50** 并标注；**行级降级**——单项目台账读取失败只标注该行（`读取失败：…`），不整页失败。与 **L1 总览**的关系：同源列表与灯、独立视图、只加互链；与**统计下钻**的关系：统计是单项目「功能→用例」维度，对比是跨项目「项目」维度。**严格只读**（无子进程/无网络/无写盘），`?view=compare` 带 `project` 参数时不命中（回退项目页）。
+- **多项目对比**（`?view=compare` ＋ `/panel.json?view=compare`，§13.112；`panel --web` 独立看板自动可用）：补上「项目」这一层的只读运营面，回答「哪个项目需要关注」——行＝项目，列为**项目**（名链接项目页＋接入健康灯，复用 L1 行）｜**最近批次**（时间·门禁·通过率）｜**趋势**（内联 SVG 迷你图，最近 ≤10 批通过率）｜**质量**（flaky·失败域 top3）｜**待办**（未裁决失败·未建单应用缺陷·任务积压·failed）｜**运行**（runner 在线/设备·定时回归 enabled/最近触发）。**口径**：数据源以**中央台账为主**（磁盘不可达的项目机同样可比，不读批次清单）；窗口＝**用例集血统运行**最近 **20** 批，「最近批次」列与排序键取台账窗口最新一批（L1 的「最新批次」软读列与灯不变）；`flaky`＝窗口内运行级之和、失败域取窗口合并 top3；**两列待办口径不同**——未裁决失败＝窗内**发生次数**，未建单应用缺陷＝按（用例集,用例）**最新裁决去重**且未建单（与统计视图/一键建单同源）；任务积压为**最近 200 条近似**、runner 为**最近 100 条近似**，精确待办以**归因队列**（近 10 次口径）为准。**排序**＝固定「关注优先」（无批次 → 门禁 fail → 通过率升 → 名），**先排序后截断前 50** 并标注；**行级降级**——单项目台账读取失败只标注该行（`读取失败：…`），不整页失败。与 **L1 总览**的关系：同源列表与灯、独立视图、只加互链；与**统计下钻**的关系：统计是单项目「功能→用例」维度，对比是跨项目「项目」维度。**严格只读**（无子进程/无网络/无写盘），`?view=compare` 带 `project` 参数时不命中（回退项目页）。
 
-  **功能对齐（跨项目，§13.114）**：对比页**第二区块**「功能对齐（跨项目）」把同源功能并排对照，回答「同一功能在多个项目里的通过率/flaky/待办各如何」。**匹配规则**＝**同设计源身份 ＋ 归一化功能名**，仅**组内 ≥2 个项目**展示；源身份归一化——`figma:<fileKey>`（取 `figma:` 后首个 token，**不 lower**）｜`pen:<相对路径>`（posix＋小写）｜绝对/相对文件路径（**相对该项目根** posix＋小写，跨项目同布局即可对齐；越界/不可相对化则原样小写）；功能名归一化＝NFC·trim·折叠空白·小写（CJK 不变，**不剥词形**）。**误报口径**：对齐是**并列对照、非统计合并**（**不产出跨项目聚合通过率/总分/排名**，每行数据均标注来源项目）；同名不同源不成组、不做自动别名；**已声明边界**——同一 Figma 文件的「工具 url 形式 vs 管道路径形式」**不互相匹配**（v1 纯文本归一化）。**窗口**＝**份血统运行最近 20 批**（与项目级区块同窗）；名称取 **case set 冻结名**（set 缺该 key 时回退运行功能名）；`unmatched`＝**仅出现在 1 个项目中的功能组数**（`featureKey` 为空或无 case-set 映射的运行**不参与**计数）；组表头显示**原始 source**（路径式会显示生成项目的路径）。对齐区块**全部展示、不截断**（区别于项目级区块前 50 行封顶）。
+  **功能对齐（跨项目，§13.114）**：对比页**第二区块**「功能对齐（跨项目）」把同源功能并排对照，回答「同一功能在多个项目里的通过率/flaky/待办各如何」。**匹配规则**＝**同设计源身份 ＋ 归一化功能名**，仅**组内 ≥2 个项目**展示；源身份归一化——`figma:<fileKey>`（取 `figma:` 后首个 token，**不 lower**）｜`pen:<相对路径>`（posix＋小写）｜绝对/相对文件路径（**相对该项目根** posix＋小写，跨项目同布局即可对齐；越界/不可相对化则原样小写）；功能名归一化＝NFC·trim·折叠空白·小写（CJK 不变，**不剥词形**）。**误报口径**：对齐是**并列对照、非统计合并**（**不产出跨项目聚合通过率/总分/排名**，每行数据均标注来源项目）；同名不同源不成组、不做自动别名；**已声明边界**——同一 Figma 文件的「工具 url 形式 vs 管道路径形式」**不互相匹配**（v1 纯文本归一化）。**窗口**＝**用例集血统运行最近 20 批**（与项目级区块同窗）；名称取 **case set 冻结名**（set 缺该 key 时回退运行功能名）；`unmatched`＝**仅出现在 1 个项目中的功能组数**（`featureKey` 为空或无 case-set 映射的运行**不参与**计数）；组表头显示**原始 source**（路径式会显示生成项目的路径）。对齐区块**全部展示、不截断**（区别于项目级区块前 50 行封顶）。
 
 - **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用用例集创建回归任务，可选 `priority` 0–100，缺省 0、非法 400；body ≤256KB，超限 413；重复提交会创建多个任务，无幂等去重）、`POST /panel/api/tasks/cancel`（取消任务：`{project,host,taskId,note?}`；pending→cancelled，claimed/running→stopping→执行机确认 cancelled；写取消来源/操作人/宿主/备注与审计）、`POST /panel/api/tasks/stop|release|rerun`（停止/释放/重派，均带 host 作用域与审计）、`POST /panel/api/queue/pause|resume`（整机队列闸门：`{host,note?}`，host 级路由、不要求 project；hostname 唯一匹配，歧义 400、未知 404、缺 host 400；阻断 runner 自动领取，不影响已领取任务）、`POST /panel/api/hosts/register`（登记 label/owner/expectedOs/expectedHostname）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）、`POST /panel/api/issues`（应用缺陷**一键建 Jira 单**：`{project, items:[{runId,caseId}]}`≤20 条，逐条建单＋证据评论/附件＋回写单号；`dryRun` 预览不触网；仅对存在且非 passed、无裁决或裁决为 app-defect、未建单的用例生效，已有单号返回 existing 幂等）。**可选令牌保护**——HTTP 模式下受 `AOS_HTTP_TOKEN` 闸门（先鉴权后路由；`serve` 非 loopback 未设令牌则启动失败的安全默认，见「鉴权」段）；**未设令牌时**任何能访问端口者可写任务、裁决与**建立真实 Jira 单（外部副作用）**，故仅在受控内网部署；独立 CLI 看板保持只读；`AOS_PANEL_WEB=0` 不影响动作层（两开关相互独立）。
 - **改进出口（统计下钻，§13.111）**：统计视图按最新裁决呈现三个出口——**案例问题**（case-defect，指引修订期望/重新生成）、**执行偏差环境清单**（execution-deviation，按设备/端分组：次数/涉及功能/最近/备注摘要）、**应用缺陷**（app-defect，勾选 → 一键建单）。**一键建单为外部副作用**：建单走项目 Jira 凭证与 `jira_evidence_post` 同源证据逻辑（失败 best-effort 不回滚）；缺省值可写项目 `.env` 的 `JIRA_ISSUE_PROJECT`（必填缺省）/`JIRA_ISSUE_TYPE`（默认 `Bug`）/`JIRA_ISSUE_LABELS`（逗号分隔），表单输入优先；已建单条目显示单号纯文本（面板无 Jira 站点来源、不出链接）。**并发双开为已接受限制**（同条目并发可能各建一张；顺序重复点击幂等）。
@@ -282,7 +281,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 
 ### 项目机 runner（回归自动领取执行 + 产物只读预览）
 
-项目机常驻 runner 自动领取面板/CLI 创建的回归任务并按 P1 同一契约执行回写；同进程提供只读产物服务，中心面板据此给「清单/份/xlsx/证据」链接（大件仍留在项目机磁盘）。
+项目机常驻 runner 自动领取面板/CLI 创建的回归任务并按 P1 同一契约执行回写；同进程提供只读产物服务，中心面板据此给「清单/用例集/xlsx/证据」链接（大件仍留在项目机磁盘）。
 
 ```bash
 node dist/cli.js suite runner [--name <n>] [--poll-ms n] [--heartbeat-ms n]
@@ -337,7 +336,7 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
   ```
 
   注意：**必须显式绑定目标项目**（`--project /srv/projects/<项目>`；缺省会落在服务仓库自身）——启动日志 `[runner] 启动：… project=…` 可核对；中心 PG 以**服务级环境**提供（systemd `Environment=`／launchd `EnvironmentVariables`，**不要**放进项目 `.env`）；单项目**勿双开同名 runner**；产物令牌 `AOS_RUNNER_ARTIFACT_TOKEN` 可选（未设＝内网无鉴权，暴露范围与风险见上文与 DESIGN §13.109/§13.113）。
-- **定时回归**：`node dist/cli.js suite schedule add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（runner 到点**自动建任务并执行**；引用按功能实时取最新份；**同名拒绝**；`list/show/enable/disable/remove` 管理，`--json` 可选）；`AOS_RUNNER_SCHEDULES=0` 关闭触发。注意：platforms 需与项目内至少一台 runner 的设备端匹配，否则任务会**逐窗口累积 pending**（在面板任务列表关注）。（**默认严格子集**下如此；开启 `AOS_RUNNER_PARTIAL_CLAIM=1` 后，**仅当无任一在线 runner 可全覆盖时**按交集端部分领取执行、缺端不补跑，见 DESIGN §13.116）面板项目页「定时回归」区块与任务页「来源」可见。见 DESIGN §13.110。
+- **定时回归**：`node dist/cli.js suite schedule add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（runner 到点**自动建任务并执行**；引用按功能实时取最新用例集；**同名拒绝**；`list/show/enable/disable/remove` 管理，`--json` 可选）；`AOS_RUNNER_SCHEDULES=0` 关闭触发。注意：platforms 需与项目内至少一台 runner 的设备端匹配，否则任务会**逐窗口累积 pending**（在面板任务列表关注）。（**默认严格子集**下如此；开启 `AOS_RUNNER_PARTIAL_CLAIM=1` 后，**仅当无任一在线 runner 可全覆盖时**按交集端部分领取执行、缺端不补跑，见 DESIGN §13.116）面板项目页「定时回归」区块与任务页「来源」可见。见 DESIGN §13.110。
 
 ### Jira 接入（M8a：读取）
 
@@ -459,7 +458,7 @@ node dist/cli.js suite ui-contract [--out <dir>] [--project <dir>] [--json]
 - `evidence`：一次拿到失败项、崩溃签名、锚定失败步骤截图与可选设计差异引用（默认落 `.artemis/design/evidence/<traceId>/`）。
 - `check`：静态检查（tests.json × flows.json × 三件套 × 真实数据约束），**不连设备**，供 pre-merge CI；未硬覆盖屏幕/跳转、生成截断、缺/坏 flows.json、**缺 tests.xlsx 或 xlsx 早于 tests.json**（三件套强制）、**用例缺 `【真实数据】` 约束标记**（禁止伪造页面/假数据，数据须经真实请求链路）均 exit 2（探索缺口仅报告；`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告。
 - `reconcile`：对账审阅面（`list` 列举差异/来源/命中/决定历史/逆向观测；`confirm` 人工确认 → human-confirmed 硬断言；`reject` 驳回 → 边不进生成；runtime-only 逆向观测仅裁决留痕；幂等、改判追加历史；未裁决不升权；未知边 exit 1、缺参 exit 2）。
-- `task`：回归任务台账——`create` 引用 feature key（取该功能**最新份**；未知 key exit 2 并列出可用项；`--platform` 默认 ios+android、`--baseline latest|none`、`--priority 0–100`）、`list`/`show` 查看状态、引用解析结果与运行列表（`--json` 支持）。**中心模式**：`suite task create|list --host <id|hostname>` 只连中心 PG（`MOBILE_TESTING_DATABASE_URL`，缺配置 exit 2），**不构建本机 Runtime、不写本机 `.artemis`**；`create` 必须给 `--project <rootPath>`（远程项目根路径，未登记 exit 2），任务写 `targetHostId=<目标 host>`，`createdHostId` 记派发方本机（中心未绑定主机时为空）；下发前按目标主机 OS/能力预检（`win32 + ios` 等硬拒绝 exit 2；尚无执行机上报/离线只告警排队）；`list` 省略 `--project` 时汇总该主机所有已登记项目的任务（不猜路径）。`show/release` 仍走本机台账。`cancel <id> [--note <text>]` 取消任务：`pending` 直接 `cancelled`；`claimed/running` 先置 `stopping`，执行机确认后 `cancelled`（终态，不释放、不重试；需重跑用 `rerun`/新建任务）；取消来源/操作人/宿主/时间与备注写入任务行及审计（`source=local-cli|panel`）。中心模式 `cancel --host <id|hostname> --project <rootPath>` 只连 PG、不建本机 Runtime。
+- `task`：回归任务台账——`create` 引用 feature key（取该功能**最新用例集**；未知 key exit 2 并列出可用项；`--platform` 默认 ios+android、`--baseline latest|none`、`--priority 0–100`）、`list`/`show` 查看状态、引用解析结果与运行列表（`--json` 支持）。**中心模式**：`suite task create|list --host <id|hostname>` 只连中心 PG（`MOBILE_TESTING_DATABASE_URL`，缺配置 exit 2），**不构建本机 Runtime、不写本机 `.artemis`**；`create` 必须给 `--project <rootPath>`（远程项目根路径，未登记 exit 2），任务写 `targetHostId=<目标 host>`，`createdHostId` 记派发方本机（中心未绑定主机时为空）；下发前按目标主机 OS/能力预检（`win32 + ios` 等硬拒绝 exit 2；尚无执行机上报/离线只告警排队）；`list` 省略 `--project` 时汇总该主机所有已登记项目的任务（不猜路径）。`show/release` 仍走本机台账。`cancel <id> [--note <text>]` 取消任务：`pending` 直接 `cancelled`；`claimed/running` 先置 `stopping`，执行机确认后 `cancelled`（终态，不释放、不重试；需重跑用 `rerun`/新建任务）；取消来源/操作人/宿主/时间与备注写入任务行及审计（`source=local-cli|panel`）。中心模式 `cancel --host <id|hostname> --project <rootPath>` 只连 PG、不建本机 Runtime。
 - `host`：中心主机登记（同样只连 PG）——`list`/`show <id|hostname>`（id 精确优先，hostname 大小写不敏感、重名报错列 id，不猜）、`register <id|hostname>` 写 label/owner/expectedOs/expectedHostname（登记人 `cli`）、`adopt-legacy` 把 legacy（未绑定主机）项目认领到主机：`--local` 仅认领本机存在路径（`AOS_HOST_ID` 或本机身份），`--host <id|hostname> --path <rootPath>` 显式认领（未登记主机 exit 2；确认「先迁移、后接入」时加 `--allow-unknown-host`，歧义 hostname 不提供逃逸）；缺省 dry-run，`--apply` 才写库并记审计（`domain=host/action=adopt-legacy`）；`--json` 只输出 `id/hostId/rootPath/name/lastSeenAt`，不回显 token。见 DESIGN §13.152。
 - `queue`：主机队列闸门——`status` 显示当前主机 `paused/by/at` 与待执行任务数（不写库、不自动登记主机）；`pause`/`resume` 写 `hosts.queue_paused` 并记审计（`action.queue.pause|resume`，本地 `channel=cli`；可选 `--note <text>` 写入审计 refs）。暂停只阻断 runner 自动领取，手动 `suite run --task` 与已领取任务不受影响。`--host <id|hostname>` 为中心模式（hostname 唯一匹配、只连 PG、不建本机 Runtime；未知主机 exit 2）。本地首次 pause/resume 时按本机身份补登记主机。见 DESIGN §13.162。
 
@@ -477,7 +476,7 @@ node dist/cli.js suite ui-contract [--out <dir>] [--project <dir>] [--json]
 - `baseline`：设备对设备像素回归（last-known-good）；`--fail-on` 触发时退出码 2，可直接做 CI 门禁。
 - `report`：从运行台账导出 xlsx 结果页（含「功能」「端」列 + API 错误/处理判定列）+ **追溯矩阵工作表**（design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据，含未覆盖与缺口标注）+ JUnit XML 到 `.artemis/design/reports/`（不覆盖 `tests.xlsx`）；`--task <id>` 改出**回归任务报告**（逐例来自 `suite_runs`，命名 `<时间戳>_<功能>_回归.xlsx`，多功能 → `多功能N项`）。
 - `feedback`：按屏幕/断言/数据/API 错误维度给出可追踪到 case/trace 的改进建议，并追加**出口清单（按最新裁决）**——案例问题/执行偏差（按设备计数）/应用缺陷（含已建单数），JSON 输出带 `exits`（`appDefects` 每条含 `jiraKey`）；与面板统计/生成侧同源（只读，不自动改写生成物）。
-- `backfill`：从磁盘产物（`.artemis/design/runs/*.json` 批次清单 + `.artemis/design/case-sets/*.json` 归档）**幂等重建登记**，补上降级期间漏登记/无登记的份与运行（**只读扫描、绝不改写产物**；**须中心 PG**，内存降级 exit 2）。重复运行已登记项全部 skip；默认只回填**不早于项目最早登记时间**的产物（`--since <ISO>` 覆盖，须为可解析 ISO（建议 `YYYY-MM-DDTHH:mm:ss.sssZ`），非法 exit 2；`beforeSince` 计数；空库无下界并告警）；`--dry-run` 只报告不写库（`registered` 恒 0、`wouldRegister`＝将登记数）；失效产物计 `invalid` 并告警。**局限**：既有任务/引用的历史 id 不可复原（回填产生新 id，仅同窗口经批次清单 `caseSetJsonPath`/`testsPath` 可达的悬空引用经路径桥修复）、回归服务之前的历史清单不回填。见 DESIGN §13.117。
+- `backfill`：从磁盘产物（`.artemis/design/runs/*.json` 批次清单 + `.artemis/design/case-sets/*.json` 归档）**幂等重建登记**，补上降级期间漏登记/无登记的用例集与运行（**只读扫描、绝不改写产物**；**须中心 PG**，内存降级 exit 2）。重复运行已登记项全部 skip；默认只回填**不早于项目最早登记时间**的产物（`--since <ISO>` 覆盖，须为可解析 ISO（建议 `YYYY-MM-DDTHH:mm:ss.sssZ`），非法 exit 2；`beforeSince` 计数；空库无下界并告警）；`--dry-run` 只报告不写库（`registered` 恒 0、`wouldRegister`＝将登记数）；失效产物计 `invalid` 并告警。**局限**：既有任务/引用的历史 id 不可复原（回填产生新 id，仅同窗口经批次清单 `caseSetJsonPath`/`testsPath` 可达的悬空引用经路径桥修复）、回归服务之前的历史清单不回填。见 DESIGN §13.117。
 - `ui-contract`：从 `flows.json` + 逐屏 `.pen` **投影** UI 契约（不另建第二份提取管线），输出 `.artemis/design/ui-contract.{json,md}`：逐屏 token（圆角/颜色/字体/字号/字重/间距）、文本节点（content/fontWeight/fontSize/bbox/geometryStatus）、几何计数与 `extracted|partial|unverifiable|no-baseline` 四态；没有逐屏 `.pen` 的屏幕标 `no-baseline`，不得猜 UI。默认经 pen CLI `Get` 解析 auto-layout 文本绝对 bbox（每屏约 4–5s，`--no-bounds` 关闭）；`--out <dir>` 改输出目录。
 - 公共选项：`--project <dir>`（项目根，默认 cwd/`AOS_PROJECT_DIR`）、`--json`（机器可读输出）。
 
@@ -572,16 +571,7 @@ node scripts/adb-safe.mjs devices --json
 
 ## 状态
 
-| 里程碑 | 内容 | 状态 |
-|--------|------|------|
-| M0 | 脚手架 / 配置加载 / init / doctor | ✅ |
-| M1 | artemis 代理 + 透传/env 装配 + 退出钩子 | ✅ |
-| M1.5 | PG 存储 + .env 首扫导入 + `aos_configure` + 多条目切换 + 任务统计 | ✅ |
-| M2 | Figma 20 工具内嵌（zod）+ 桥安全补丁 + token 引导 | ✅ |
-| M3 | 容器化（Dockerfile/compose）+ `mobile-testing-mcp install` + 真机 E2E 脚本 | ✅ |
-| M4 | HTTP 传输（`/mcp/<project>`）+ 任务完成态同步（`aos_tasks`）+ 组合工具（设计 vs 真机） | ✅ |
-| M5 | 崩溃取证：终态自动采集 crash buffer → 签名去重 → `aos_crashes`（`.artemis/crashes/`） | ✅ |
-| M6 | 设计资源唯一性与 i18n 闭环（颜色 tokens / 文本 i18n） | 🚧 M6a/M6b/M6c 完成（五栈写入；复数/倍率/真机验收后续；DESIGN.md §13.9） |
+当前能力、里程碑与剩余项以 `DESIGN.md` §11/§13 和本 README 的工具表为准；本文件不再维护里程碑快照。
 
 ## 快速开始
 
@@ -630,17 +620,17 @@ node dist/cli.js doctor
 | `jira_issue_comment` | 评论回写：纯文本→ADF；`traceId` 提供时按 `AOS-TRACE:` 页脚 marker 幂等（存在则更新，否则新建）并 best-effort 写评论属性；`dryRun` 预览 |
 | `jira_issue_attach` | 附件回写：项目根内路径；multipart（`X-Atlassian-Token: no-check`）；确定性命名 `<basename>-<sha8><ext>`，同名同大小去重；上限=站点 meta 与 `AOS_JIRA_ATTACH_MAX_MB`（默认 20）取小，超限 warning 跳过；`dryRun` 预览 |
 | `jira_evidence_post` | 失败证据 composite：聚合失败步骤截图 + 设计差异标注图（annotated.png 优先）+ 失败清单 + 失败域（确定性分类）+ 崩溃签名摘要 → 中文评论（traceId 幂等回写）+ 附件（≤6，去重上传）；`platform`/`deviceSerial` 覆盖或推断（推断不出记 unknown）；`dryRun` 不触网 |
-| `run_regression` | 回归一条龙：Excel 测试文档（`excelPath`，.xlsx，首行表头「用例名/步骤」＋可选「预期/前置/模块」，合并单元格显式报错；列名可用 `columns` 覆盖）导入用例库（按模块拆集、同内容幂等复用、同名文档更新按最新份取代、`source=imported:<文件>@<sha8>` 可追溯）并执行；无文档时按 `scope`（功能/模块/用例名，归一化匹配）选库内最新份，或 `all`/缺省跑每个功能最新一份全量。前置 LLM＋在线设备先于导入/选择（needs-setup/needs-info 非错误，先问不猜）；执行前回显回归目标（功能×条数＋导入自/生成自）并写服务日志；逐集走共享批次（quarantine/批次清单/`suite_runs` 登记）后聚合（`run.gate`、`artifacts.sets[].manifestPath`） |
+| `run_regression` | 回归一条龙：Excel 测试文档（`excelPath`，.xlsx，首行表头「用例名/步骤」＋可选「预期/前置/模块」，合并单元格显式报错；列名可用 `columns` 覆盖）导入用例库（按模块拆集、同内容幂等复用、同名文档更新按最新用例集取代、`source=imported:<文件>@<sha8>` 可追溯）并执行；无文档时按 `scope`（功能/模块/用例名，归一化匹配）选库内最新用例集，或 `all`/缺省跑每个功能最新一份全量。前置 LLM＋在线设备先于导入/选择（needs-setup/needs-info 非错误，先问不猜）；执行前回显回归目标（功能×条数＋导入自/生成自）并写服务日志；逐集走共享批次（quarantine/批次清单/`suite_runs` 登记）后聚合（`run.gate`、`artifacts.sets[].manifestPath`） |
 | `compare_design_and_device` | 组合工具：Figma 渲染图 + 真机截图 → 双图返回供多模态比对 |
 | `design_device_diff` | 设计 vs 真机差异（确定性）：设计源 Figma 节点或 `.pen`（`design:{source:"pen"}`，pen CLI 渲染）+ 截图（`live` 实时，或 `step` + `traceId`（`stepNumber` 可省略→失败证据自动检索）对比失败步骤，默认 post；`device.platform:"ios"` 支持模拟器 idb/simctl 与真机 WDA）→ 对齐（insets/ignoreRegions/降采样）→ 像素差异判定 + 设计节点几何分类（missing/extra/text/asset/position-size/color）→ 差异报告 + 标注图，落盘 `.artemis/design/diffs/<node>-<时间戳>/`；**区域核验（放大核验，默认开启）**：区域提议（节点∪diff／tiles／显式）→ 设备原生栅格成对裁剪放大 → 1:1 局部判定与对图输出（`regions`/`zoom`/`returnCrops`/`detail`；分页＝回传 `regionDetails[].bbox`；`regions:"none"` 关闭）；`dryRun` 只回计划 |
 | `screen_map` | 持久屏幕映射 `.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 候选（confidence/unmatched）、`save` 幂等/merge、`list`；差异报告输出 `localized`；**`elements`**：元素级映射（设计运行期文本 ↔ 观察标签 + accessibilityIdentifier 建议；iOS 套件运行自动发现、`save` 人工补且 manual 优先）；条目带 `designNodeId`/归一 `bounds`（同屏重名按几何/tap 消歧，见 DESIGN §13.72），供生成步骤 `a11y:` 注记 |
 | `reconciliation` | 对账资产审阅 `.artemis/design/reconciliation.json`（设计边 ↔ 真机观测/升级/审阅）：`list`（来源/命中/traces/审阅记录）、`confirm`（human-confirmed，下一次生成硬断言；幂等，记录 reviewer/时间）、`reject`（边不进生成）；未裁决不升权；iOS 套件运行自动写入观测（DESIGN §13.67/§13.68） |
 | `design_to_test` | 一句话 CR 流程：前置自检→读设计→懂交互→出用例→校验→可选执行一条龙（设计来源 `figmaUrl`/`penPath` 二选一，已有 flows.json 可 `reuseExistingFlows:true`，已有 tests.json 可再传 `reuseExistingTests:true` 跳过生成直接复用（需与 reuseExistingFlows 同用））；缺前置返回 needs-setup 结构化指引（非错误；`checks[]` 每项 missing/howTo），信息不足返回 needs-info（先问不猜）；`run` 缺省 false 止于校验、响应含 `nextAction` 指引续跑，显式 `run:true` 执行前写服务日志并回显将跑用例（数量/来源/设备，设备缺省自动盘点、多于一台先问）；可选 `maxFlows`/`maxDepth`（`maxFlows`≤1000、`maxDepth`≤50）透传生成上限/路径深度（默认 10/30；vision 全量后路径多时可调大以避免覆盖闸「路径截断」）；单步失败返回 `failedStep`/`detail`/`suggestions` |
-| `verify_jira_issue` | Jira 验证一条龙：读单分档（详细单→用例库映射——LLM 只能从清单中选或答没有，库空/无匹配→「单子即用例」直跑并注明来源；粗单→needs-info 先问功能/触发条件/期望）→ 执行（前置 Jira 凭证＋LLM＋在线设备自查，先于映射；执行前回显将跑用例数量×来源×设备）→ 聚合（**任一强断言失败→FAIL**；全弱/全探索→无法判定并披露构成"弱断言仅记录路径，不代表验证通过"；quarantine 失败不计门禁）→ 回写（失败证据评论/附件幂等＋结论评论同单复用 marker `AOS-VERIFY:<单号>` 并标注自动验证；只写 `jira_issue_key` 关联、不写 verdict；`dryRun` 零写回（不产生任何外部副作用；读单/评论读取不变）＋结论预览）；`scope` 给定时覆盖映射（按关键词选用例库最新份，不调 LLM）；单步失败返回 `failedStep`/`detail`/`suggestions` |
-| `project_archive` | 档案只读摘要（无参数）：项目与栈 / 设计血统（flows 来源·落盘时间·屏边数·provenance 构成）/ 用例库（每功能最新份＋导入自/生成自）/ 最近运行（近 10 批清单：gate·通过/失败计数·失败域·`unreadable` 计数）/ 裁决与 Jira 关联摘要（`jiraKeys` 独立扫全部 cases，含 `verify_jira_issue` 的自动关联）/ 前置状态（figma/pen/jira/llm 静态就绪＋masked＋「未复核」）。**只读铁律**：不触网、无子进程、不写盘；PG 不可用（内存 store）/flows.json 坏/清单坏件 → `degraded[]` 如实标注，恒 `ok:true` |
+| `verify_jira_issue` | Jira 验证一条龙：读单分档（详细单→用例库映射——LLM 只能从清单中选或答没有，库空/无匹配→「单子即用例」直跑并注明来源；粗单→needs-info 先问功能/触发条件/期望）→ 执行（前置 Jira 凭证＋LLM＋在线设备自查，先于映射；执行前回显将跑用例数量×来源×设备）→ 聚合（**任一强断言失败→FAIL**；全弱/全探索→无法判定并披露构成"弱断言仅记录路径，不代表验证通过"；quarantine 失败不计门禁）→ 回写（失败证据评论/附件幂等＋结论评论同单复用 marker `AOS-VERIFY:<单号>` 并标注自动验证；只写 `jira_issue_key` 关联、不写 verdict；`dryRun` 零写回（不产生任何外部副作用；读单/评论读取不变）＋结论预览）；`scope` 给定时覆盖映射（按关键词选用例库最新用例集，不调 LLM）；单步失败返回 `failedStep`/`detail`/`suggestions` |
+| `project_archive` | 档案只读摘要（无参数）：项目与栈 / 设计血统（flows 来源·落盘时间·屏边数·provenance 构成）/ 用例库（每功能最新用例集＋导入自/生成自）/ 最近运行（近 10 批清单：gate·通过/失败计数·失败域·`unreadable` 计数）/ 裁决与 Jira 关联摘要（`jiraKeys` 独立扫全部 cases，含 `verify_jira_issue` 的自动关联）/ 前置状态（figma/pen/jira/llm 静态就绪＋masked＋「未复核」）。**只读铁律**：不触网、无子进程、不写盘；PG 不可用（内存 store）/flows.json 坏/清单坏件 → `degraded[]` 如实标注，恒 `ok:true` |
 | `figma_extract_flows` | 解析 Figma 原型交互 → 流程图（screens/edges/entryScreens，支持连续动作与 BACK）；**无原型交互时默认按箭头/连线、画板旁文字注释、画布顺序合成流程**（`staticFallback`，推断边 `provenance=inferred`/`low`；`staticFallback:false` 或 `AOS_STATIC_FALLBACK=0` 关闭；**混合稿**仅对入口不可达的屏补 inferred 边，显式边原样保留）；落盘 `.artemis/design/flows.json` + **`flow-map.md`**（**v2**：screens/edges 携带来源 `explicit`/置信度、文本类别；`Flow/AC*`/`AC:` 验收标注 → `screens[].acceptance`；`no-interactions` 告警见下）；**屏幕截图**：`screens` 默认开——一次批量渲染各屏嵌入流程地图（`.artemis/design/screens/figma-<fileKey>/`，scale=1；单屏 null 有界重试一次后逐屏降级 `screenshot-skipped`/`screenshot-render-unavailable` 不阻断；`AOS_SCREENS=0` 关闭） |
 | `figma_gap_analysis` | 缺口分析：设计资源/色板 vs 项目现有资产/ tokens 文件，落盘 `.artemis/design/gaps.json` |
-| `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md` + `tests.xlsx`（可用 `excelPath`/`excelTemplate` 定制 Excel 输出与模版；默认 14 列：原 6 列 + 用例编号/模块/Section/测试数据/关联用例/预期结果/设计引用/备注待确认，另出「汇总」sheet；`acceptance.json` 可给 `data`/`questions`/`section`，taskDesc 增【测试数据】【待确认】），内含可直接传给 `mobile_run_task` 的任务描述；响应含 `coverage` 完整度报告（**硬/探索分离**：`complete` 只按硬覆盖判定，inferred 边不虚高门禁，`explore` 仅报告），`requireFullCoverage:true` 时硬覆盖不完整即报错不落盘；**自动消费对账资产**（`.artemis/design/reconciliation.json` 中已被真机观测走通并升级的边，直接生成硬断言，响应 `reconciliation.upgradedEdges`）；长流程超 `maxDepth` 按续段拆分（`continuation/startScreen/prelude`，续段自带前导导航可独立执行）；每步断言与起始屏以 `【AOS-EXPECT】` 块随 taskDesc 输出，iOS 执行器逐步核对并汇总 `adherence` 与 `preflight`；每步 expectations 携带来源/置信度（旧 flows.json 缺字段保守归一 `legacy-unknown`）；断言候选只消费运行期文本与验收口径（设计批注/图层名不进断言——`Flow/AC*`/`AC:` 口径经 `acceptance` 字段进入，详见 DESIGN §13.70）；推断/legacy 边生成**探索步骤**（`kind=explore`：可执行、不断言、不参与 PASS/FAIL）；步骤元素注记可带 `a11y:` 标识建议（来自 screen-map `elements`，以及交互图层名预挖：`btn_login`/`loginButton`/`testID: login_button` 等；人类标签不猜；源码 locator 预挖：`testID`/`accessibilityIdentifier`/`testTag`/`Key`/`android:id` 与附近可见文本配对，`AOS_CODE_IDENTIFIERS=0` 关闭）；assert 期望优先取验收口径（`hintsSource:"acceptance"`；`.artemis/design/acceptance.json` 人工确认覆盖优先），无口径回退运行期文本（`hintsSource:"runtime-text"`）；**tests.md 截图**：`screens` 默认开——按 flows 来源自动分派 figma/pen 渲染通道，每用例 ≤3 张缩略图（落 `.artemis/design/screens/figma-<fileKey>|pen-<名>/`），映射缺失/渲染失败降级 `screenshot-mapping-missing`/`screenshot-skipped`/`screenshot-render-unavailable` 不阻断；`AOS_SCREENS=0` 关闭；生成阶段复用已落盘截图（按 nodeId，仅缺失/损坏重渲染，响应 `screenshots.reused`）；`saveArtifacts` 可关 `tests.md`/`tests.xlsx`/`case-sets`（`tests.json` 仍落盘，供后续 check/run 复用）；**用例集归档（回归服务 P1a）**：生成时按功能切份（页面 → 屏幕名前缀 → 连通分量 → 单组回退；功能名由 MCP 生成：候选名 → LLM → `功能N`），每份三件套归档 `.artemis/design/case-sets/<UTC YYYYMMDD_HHmmss>_<功能名>.{json,md,xlsx}`（响应 `savedTo.caseSets`；live 三件套契约不变）；用例带 `feature`、响应含 `features[]`；用例集登记入库（身份跨生成按屏幕重叠继承；store 不可用/登记失败如实告警不阻断） |
+| `figma_generate_tests` | 流程 → 测试用例：flows.json（或现场 URL）→ `tests.json` + `tests.md` + `tests.xlsx`（可用 `excelPath`/`excelTemplate` 定制 Excel 输出与模版；默认 14 列：原 6 列 + 用例编号/模块/Section/测试数据/关联用例/预期结果/设计引用/备注待确认，另出「汇总」sheet；`acceptance.json` 可给 `data`/`questions`/`section`，taskDesc 增【测试数据】【待确认】），内含可直接传给 `mobile_run_task` 的任务描述；响应含 `coverage` 完整度报告（**硬/探索分离**：`complete` 只按硬覆盖判定，inferred 边不虚高门禁，`explore` 仅报告），`requireFullCoverage:true` 时硬覆盖不完整即报错不落盘；**自动消费对账资产**（`.artemis/design/reconciliation.json` 中已被真机观测走通并升级的边，直接生成硬断言，响应 `reconciliation.upgradedEdges`）；长流程超 `maxDepth` 按续段拆分（`continuation/startScreen/prelude`，续段自带前导导航可独立执行）；每步断言与起始屏以 `【AOS-EXPECT】` 块随 taskDesc 输出，iOS 执行器逐步核对并汇总 `adherence` 与 `preflight`；每步 expectations 携带来源/置信度（旧 flows.json 缺字段保守归一 `legacy-unknown`）；断言候选只消费运行期文本与验收口径（设计批注/图层名不进断言——`Flow/AC*`/`AC:` 口径经 `acceptance` 字段进入，详见 DESIGN §13.70）；推断/legacy 边生成**探索步骤**（`kind=explore`：可执行、不断言、不参与 PASS/FAIL）；步骤元素注记可带 `a11y:` 标识建议（来自 screen-map `elements`，以及交互图层名预挖：`btn_login`/`loginButton`/`testID: login_button` 等；人类标签不猜；源码 locator 预挖：`testID`/`accessibilityIdentifier`/`testTag`/`Key`/`android:id` 与附近可见文本配对，`AOS_CODE_IDENTIFIERS=0` 关闭）；assert 期望优先取验收口径（`hintsSource:"acceptance"`；`.artemis/design/acceptance.json` 人工确认覆盖优先），无口径回退运行期文本（`hintsSource:"runtime-text"`）；**tests.md 截图**：`screens` 默认开——按 flows 来源自动分派 figma/pen 渲染通道，每用例 ≤3 张缩略图（落 `.artemis/design/screens/figma-<fileKey>|pen-<名>/`），映射缺失/渲染失败降级 `screenshot-mapping-missing`/`screenshot-skipped`/`screenshot-render-unavailable` 不阻断；`AOS_SCREENS=0` 关闭；生成阶段复用已落盘截图（按 nodeId，仅缺失/损坏重渲染，响应 `screenshots.reused`）；`saveArtifacts` 可关 `tests.md`/`tests.xlsx`/`case-sets`（`tests.json` 仍落盘，供后续 check/run 复用）；**用例集归档（回归服务 P1a）**：生成时按功能切分（页面 → 屏幕名前缀 → 连通分量 → 单组回退；功能名由 MCP 生成：候选名 → LLM → `功能N`），每份三件套归档 `.artemis/design/case-sets/<UTC YYYYMMDD_HHmmss>_<功能名>.{json,md,xlsx}`（响应 `savedTo.caseSets`；live 三件套契约不变）；用例带 `feature`、响应含 `features[]`；用例集登记入库（身份跨生成按屏幕重叠继承；store 不可用/登记失败如实告警不阻断） |
 | `figma_import_assets` | 资源导入：按 gaps.json 从 Figma 导出缺失资源，按技术栈命名/目录幂等写入（dryRun 可预览）；PNG 默认按栈倍率集导出（Android `drawable-xhdpi/-xxhdpi`、Flutter `2.0x/3.0x`、iOS `.imageset`+Contents.json、RN `@2x/@3x`；`densities:false` 回退单文件 @2x）；**唯一性**：内容 sha256 去重（批次内 + 项目资产索引，重复项记 `duplicate_of`） |
 | `figma_export_brief` | 构建简报：tokens/路由/组件变体/流程概览/缺口/栈约定 + **a11y 标识建议**（screen-map elements） → `build-brief.{json,md}`；`scaffold` 可选按栈生成组件骨架（幂等） |
 | `figma_import_tokens` | 颜色 token 导入：Figma 颜色（含 alpha）→ `.artemis/design/tokens.json`（DTCG，modes 预留）+ 栈 token 文件（Android/Flutter/RN/Web）；裸色扫描 + enforcement；人工命名 `token-names.json` |
@@ -693,10 +683,6 @@ AOS-ARTEMIS/
 
 克隆：`git clone --recurse-submodules https://github.com/louislucney/AOS-Artemis.git`
 （已 clone 过的补齐：`git submodule update --init --recursive`）
-
-## 运行时副本说明
-
-系统里曾有一份独立的 artemis **运行时安装** `/Users/louis/artemis`（旧 daemon :8000、旧 mcp_server 挂载）。迁移已完成、该目录已移除（2026-10-08）；统一服务现在只使用工作区副本 `./artemis`（自持 venv：`cd artemis && uv sync` 或依赖包机制）。
 
 ## 开发
 

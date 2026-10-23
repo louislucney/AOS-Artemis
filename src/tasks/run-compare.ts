@@ -1,4 +1,4 @@
-/** 运行对比（DESIGN：回归服务 §5.6）：同份血统的逐用例差量与跨端差异。
+/** 运行对比（DESIGN：回归服务 §5.6）：同用例集血统的逐用例差量与跨端差异。
  * pending 不参与计数；无基线 → `established`（全部按新增计）。输出按 caseId 确定性排序。 */
 export type RunCaseOutcome = "passed" | "failed" | "pending";
 

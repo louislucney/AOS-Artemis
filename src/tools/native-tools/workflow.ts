@@ -69,7 +69,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "run_regression",
     description:
-      "回归一条龙：用户要做回归/重跑验证时优先用它——有 Excel 测试文档（excelPath，.xlsx）时导入用例库（按模块拆集、同内容幂等复用）并执行；没有文档时按 scope 关键词（功能/模块/用例名）在用例库里选最新份，或 all/缺省跑库内每个功能的最新一份全量。执行前回显回归目标（功能×条数＋来源：导入自 x / 生成自 y）并写服务日志；逐集执行后聚合报告（run manifest 路径、通过/失败计数与 gate：用例失败但已执行仍 ok:true）。前置自检：LLM 连通性与在线设备先于导入/选择——无设备→needs-setup、多台未指定→needs-info，needs-setup/needs-info 均为非 isError 的结构化指引（先问不猜、补全后重跑）；单步失败返回 failedStep/detail/suggestions。Excel 导入要求首行表头（用例名、步骤；可选：预期、前置、模块），列名可用 columns 覆盖，合并单元格会显式报错。",
+      "回归一条龙：用户要做回归/重跑验证时优先用它——有 Excel 测试文档（excelPath，.xlsx）时导入用例库（按模块拆集、同内容幂等复用）并执行；没有文档时按 scope 关键词（功能/模块/用例名）在用例库里选最新用例集，或 all/缺省跑库内每个功能的最新一份全量。执行前回显回归目标（功能×条数＋来源：导入自 x / 生成自 y）并写服务日志；逐集执行后聚合报告（run manifest 路径、通过/失败计数与 gate：用例失败但已执行仍 ok:true）。前置自检：LLM 连通性与在线设备先于导入/选择——无设备→needs-setup、多台未指定→needs-info，needs-setup/needs-info 均为非 isError 的结构化指引（先问不猜、补全后重跑）；单步失败返回 failedStep/detail/suggestions。Excel 导入要求首行表头（用例名、步骤；可选：预期、前置、模块），列名可用 columns 覆盖，合并单元格会显式报错。",
     schema: z.object({
       excelPath: z
         .string()
@@ -109,7 +109,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "verify_jira_issue",
     description:
-      "Jira 验证一条龙：用户给出 Jira 单号（issueKey，如 AOS-123 或 browse URL）并要求验证/复验该单时优先用它——读单分档 → 用例库映射或单子即用例 → 执行 → 聚合 → 回写。详细单优先做用例库映射（LLM 辅助但约束只能从清单中选或答没有；库空/无匹配时按单子步骤直接合成「单子即用例」执行并注明来源）；粗单（一句话/无步骤/无预期）返回 needs-info 先问（功能页面、触发条件、期望结果）。执行前回显将跑的用例（数量＋来源＋设备）并写服务日志。聚合口径：任一强断言失败→FAIL；全弱/全探索→无法判定（弱断言仅记录路径，不代表验证通过，评论披露构成）；quarantine 失败不计门禁。回写（外部副作用，默认执行）：失败证据评论/附件幂等＋结论评论同单复用（marker AOS-VERIFY:<单号>，显式标注自动验证）；不自动写 verdict，只写 jira_issue_key 关联；dryRun 零写回（不产生任何外部副作用；读单/评论读取不变）；响应含结论预览。前置：Jira 凭证＋LLM 连通性＋在线设备——缺→needs-setup、多台未指定→needs-info（均非 isError 结构化指引，先问不猜）；scope 给定时覆盖映射（按关键词选用例库最新份，不调 LLM）；device 缺省自动盘点。单步失败返回 failedStep/detail/suggestions。",
+      "Jira 验证一条龙：用户给出 Jira 单号（issueKey，如 AOS-123 或 browse URL）并要求验证/复验该单时优先用它——读单分档 → 用例库映射或单子即用例 → 执行 → 聚合 → 回写。详细单优先做用例库映射（LLM 辅助但约束只能从清单中选或答没有；库空/无匹配时按单子步骤直接合成「单子即用例」执行并注明来源）；粗单（一句话/无步骤/无预期）返回 needs-info 先问（功能页面、触发条件、期望结果）。执行前回显将跑的用例（数量＋来源＋设备）并写服务日志。聚合口径：任一强断言失败→FAIL；全弱/全探索→无法判定（弱断言仅记录路径，不代表验证通过，评论披露构成）；quarantine 失败不计门禁。回写（外部副作用，默认执行）：失败证据评论/附件幂等＋结论评论同单复用（marker AOS-VERIFY:<单号>，显式标注自动验证）；不自动写 verdict，只写 jira_issue_key 关联；dryRun 零写回（不产生任何外部副作用；读单/评论读取不变）；响应含结论预览。前置：Jira 凭证＋LLM 连通性＋在线设备——缺→needs-setup、多台未指定→needs-info（均非 isError 结构化指引，先问不猜）；scope 给定时覆盖映射（按关键词选用例库最新用例集，不调 LLM）；device 缺省自动盘点。单步失败返回 failedStep/detail/suggestions。",
     schema: z.object({
       issueKey: z.string().describe("Jira 单号（如 AOS-123）或 browse URL；必填"),
       device: z.string().optional().describe("目标设备 serial / UDID；缺省自动盘点（多于一台先问）"),
@@ -128,7 +128,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "project_archive",
     description:
-      "项目档案（只读摘要面）：汇总 项目与栈 / 设计血统（flows 来源/落盘时间/屏边数/provenance 构成）/ 用例库（每功能最新份与导入自/生成自来源）/ 最近运行（近 10 批清单：gate/通过率/失败域）/ 裁决与 Jira 关联摘要 / 前置状态（figma/pen/jira/llm 就绪，masked 预览）。只读铁律：不触网、无子进程、不写盘；前置项仅静态存在性并显式「未复核」（真实复核在各流程工具首步）。缺数据如实标注：未配置持久台账（登记读自会话内存）/flows.json 不可解析/清单坏件等以 degraded[] 标注，恒返回 ok:true（非 isError）。无参数。",
+      "项目档案（只读摘要面）：汇总 项目与栈 / 设计血统（flows 来源/落盘时间/屏边数/provenance 构成）/ 用例库（每功能最新用例集与导入自/生成自来源）/ 最近运行（近 10 批清单：gate/通过率/失败域）/ 裁决与 Jira 关联摘要 / 前置状态（figma/pen/jira/llm 就绪，masked 预览）。只读铁律：不触网、无子进程、不写盘；前置项仅静态存在性并显式「未复核」（真实复核在各流程工具首步）。缺数据如实标注：未配置持久台账（登记读自会话内存）/flows.json 不可解析/清单坏件等以 degraded[] 标注，恒返回 ok:true（非 isError）。无参数。",
     schema: z.object({}),
     handler: (runtime) => projectArchive(runtime)
   }

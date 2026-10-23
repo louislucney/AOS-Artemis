@@ -3,7 +3,7 @@ import fs from "node:fs";
 import type { CaseSetRecord } from "../db/types.js";
 
 /** 用例选择共享原语（`run_regression` 与 `verify_jira_issue` 共用）：关键词归一、
- * 最新份解析、现场读用例清单。 */
+ * 最新用例集解析、现场读用例清单。 */
 
 export interface CaseTarget {
   feature: string;

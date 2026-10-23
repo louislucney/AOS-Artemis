@@ -10,7 +10,7 @@ export interface FireSchedulesOptions {
   io?: { log: (line: string) => void; errorLog: (line: string) => void };
 }
 
-/** 检查到期调度：CAS 赢窗口 → 实时解析最新份 → 建回归任务；返回新建任务数。
+/** 检查到期调度：CAS 赢窗口 → 实时解析最新用例集 → 建回归任务；返回新建任务数。
  * best-effort：任何异常仅告警，不抛出；CAS 败（他 runner 已领）静默跳过。 */
 export async function fireDueSchedules(options: FireSchedulesOptions): Promise<number> {
   const nowMs = (options.now ?? (() => Date.now()))();
@@ -65,9 +65,9 @@ export async function fireDueSchedules(options: FireSchedulesOptions): Promise<n
 
       if (refs.length === 0) {
         io.errorLog(
-          `[schedule] ${schedule.name}：引用份均不可用（${missing.join(",")}），跳过本次`
+          `[schedule] ${schedule.name}：引用用例集均不可用（${missing.join(",")}），跳过本次`
         );
-        await safeUpdateNote(options, schedule.id, "引用份均不可用", io);
+        await safeUpdateNote(options, schedule.id, "引用用例集均不可用", io);
         continue;
       }
 

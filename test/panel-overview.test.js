@@ -518,7 +518,7 @@ test("panel detail: 磁盘不可达降级为仅台账（standalones = 全部台�
   assert.equal(unknown, null);
 });
 
-test("panel detail: buildPanelTaskDetail（引用解析/子运行/对比/跨端；未知 task → null）", async () => {
+test("panel detail: buildPanelTaskDetail（引用解析/设备运行/对比/跨端；未知 task → null）", async () => {
   const store = await makePgStore();
   const repo = makeReadyRepo();
   const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });

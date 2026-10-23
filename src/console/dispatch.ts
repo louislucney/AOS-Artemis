@@ -92,7 +92,7 @@ export function dispatchFormSignature(params: URLSearchParams): string {
   return [mode, refOrKeyword, platforms, baseline].join("|");
 }
 
-/** 预览 ID＝表单签名＋服务端解析结果（份集合/用例数）短哈希；服务端复算不一致即视为过期。 */
+/** 预览 ID＝表单签名＋服务端解析结果（用例集集合/用例数）短哈希；服务端复算不一致即视为过期。 */
 export function dispatchPreviewId(preview: DispatchPreview, formSignature: string): string {
   const resolved = preview.refs.slice().sort().join(",");
   return createHash("sha256")

@@ -3,7 +3,7 @@ import { crossPlatformDeltas, type CompareCaseInput } from "../tasks/run-compare
 
 /** 回归统计聚合（DESIGN：回归服务 §5.8）：feature 级跨份连续（feature key），
  * case 级仅同份累计（（caseSetId＋caseId）分组，禁止跨份按 caseId 聚合）。
- * 仅参与份血统的运行计入（featureKey/caseSetId 为 null 的普通运行跳过）；
+ * 仅参与用例集血统的运行计入（featureKey/caseSetId 为 null 的普通运行跳过）；
  * 入参乱序亦按 createdAt 自排（新→旧），趋势/连败与入参顺序无关。 */
 export interface FeatureStat {
   featureKey: string;
