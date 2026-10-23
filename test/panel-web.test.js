@@ -1000,6 +1000,8 @@ test("panel web: review HTML（radio 四选项、批量复选框、fetch、证�
   );
   assert.equal(html.status, 200);
   assert.match(html.body, /失败分析/);
+  assert.match(html.body, /失败处理路径/, "结果页按失败处理旅程组织");
+  assert.match(html.body, /发现 → 证据 → 裁决 → 修用例\/建单 → 复跑/);
   assert.match(html.body, /value="case-defect"/);
   assert.match(html.body, /value="execution-deviation"/);
   assert.match(html.body, /value="app-defect"/);

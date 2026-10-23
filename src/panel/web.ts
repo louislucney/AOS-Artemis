@@ -2111,6 +2111,23 @@ function renderReviewPage(view: {
       warningsHtml,
       "</header>",
       "<main>",
+      ...(items.length === 0
+        ? []
+        : [
+            cCard({
+              title: "失败处理路径",
+              subtitle: "发现 → 证据 → 裁决 → 修用例/建单 → 复跑",
+              body: [
+                "<ol>",
+                `<li><strong>发现</strong>：最近 10 次运行的失败用例；当前未裁决 ${undecided} 条。</li>`,
+                '<li><strong>证据</strong>：在下方队列查看证据，打开 trace / 截图 / 日志。</li>',
+                '<li><strong>裁决</strong>：勾选用例后提交（应用缺陷 / 用例缺陷 / 执行偏差 / 不确定）。</li>',
+                `<li><strong>修用例或建单</strong>：<a href="#improvement">改进出口</a> · <a href="${escapeHtml(statsHref(view.rootPath, view.hostId))}#issues">应用缺陷建单</a>。</li>`,
+                '<li><strong>复跑</strong>：按 <a href="#run-hint">动作指引</a> 重跑整任务或单用例。</li>',
+                "</ol>"
+              ].join("\n")
+            })
+          ]),
       ...(appDefects.length === 0
         ? []
         : [
