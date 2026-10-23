@@ -18,6 +18,7 @@ const USAGE = `mobile-testing-mcp cms-open [options]
     --allowed-hosts <hosts>  额外允许的 Host 头，逗号分隔（LAN 访问时必须显式配置）
     --max-queue <n>          队列上限（默认 20）
     --max-concurrent <n>     并发生成数（默认 3）
+    --rate-limit <n>         每客户端每分钟请求上限（默认 0=关闭；AOS_CMS_OPEN_RATE_LIMIT）
     --job-timeout-ms <ms>    单任务超时（默认 600000）
     --retention-ms <ms>      产物保留（默认 7200000）
     --work-root <dir>        临时工作目录（默认系统临时目录下 aos-cms-open）
@@ -84,9 +85,18 @@ export async function runCmsOpen(
   const port = intFlag(flags, "port", 8780, 0, 65535, errorLog);
   const maxQueue = intFlag(flags, "max-queue", 20, 1, 1000, errorLog);
   const maxConcurrent = intFlag(flags, "max-concurrent", 3, 1, 32, errorLog);
+  const rateFlags = new Map(flags);
+  if (!rateFlags.has("rate-limit") && deps.env?.AOS_CMS_OPEN_RATE_LIMIT !== undefined) {
+    rateFlags.set("rate-limit", deps.env.AOS_CMS_OPEN_RATE_LIMIT);
+  }
+  const rateLimitPerMinute = intFlag(rateFlags, "rate-limit", 0, 0, 6_000, errorLog);
   const jobTimeoutMs = intFlag(flags, "job-timeout-ms", 600_000, 1_000, 3_600_000, errorLog);
   const retentionMs = intFlag(flags, "retention-ms", 7_200_000, 0, 86_400_000, errorLog);
-  if ([port, maxQueue, maxConcurrent, jobTimeoutMs, retentionMs].some((value) => value === null)) {
+  if (
+    [port, maxQueue, maxConcurrent, rateLimitPerMinute, jobTimeoutMs, retentionMs].some(
+      (value) => value === null
+    )
+  ) {
     return 2;
   }
   const host = flags.get("host")?.trim() || "127.0.0.1";
@@ -110,6 +120,7 @@ export async function runCmsOpen(
     ...(token ? { authToken: token } : {}),
     maxQueue: maxQueue!,
     maxConcurrent: maxConcurrent!,
+    rateLimitPerMinute: rateLimitPerMinute!,
     jobTimeoutMs: jobTimeoutMs!,
     retentionMs: retentionMs!,
     ...(workRoot ? { workRoot } : {})
@@ -117,6 +128,7 @@ export async function runCmsOpen(
   log(`CMS 开放服务: http://${host}:${server.port}`);
   log(`CORS: ${cors.length === 0 ? "未启用（默认拒绝跨源）" : cors.join(", ")}`);
   log(`鉴权: ${token ? "Bearer token 已启用（/healthz 豁免）" : "未启用（仅建议可信内网）"}`);
+  log(`限流: ${rateLimitPerMinute === 0 ? "未启用" : `${rateLimitPerMinute} 次/分钟/客户端`}`);
   log("pen: 使用服务机登录态（pen login / PEN_CLI_KEY）；未就绪时 .pen 任务显式失败");
   if (flags.has("check")) {
     await server.close();

@@ -435,3 +435,28 @@ test("server: persisted jobs never contain request credentials", async () => {
     await rm(workRoot, { recursive: true, force: true });
   }
 });
+
+test("server: rate limit per client (healthz exempt, window resets)", async () => {
+  let now = 1_000_000;
+  await withServer(
+    { runner: zipRunner, rateLimitPerMinute: 2, now: () => now },
+    async (base) => {
+      for (let index = 0; index < 2; index += 1) {
+        const response = await fetch(`${base}/jobs/missing`);
+        assert.equal(response.status, 404);
+      }
+      const limited = await fetch(`${base}/jobs/missing`);
+      assert.equal(limited.status, 429);
+      const body = await limited.json();
+      assert.equal(body.code, "rate_limited");
+      assert.match(String(limited.headers.get("retry-after")), /^\d+$/);
+
+      const health = await fetch(`${base}/healthz`);
+      assert.equal(health.status, 200, "健康检查不受限流");
+
+      now += 60_001;
+      const afterWindow = await fetch(`${base}/jobs/missing`);
+      assert.equal(afterWindow.status, 404, "窗口过后恢复");
+    }
+  );
+});

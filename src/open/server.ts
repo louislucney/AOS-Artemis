@@ -28,6 +28,8 @@ export interface CmsOpenServerOptions {
   authToken?: string;
   maxQueue?: number;
   maxConcurrent?: number;
+  /** 每客户端每分钟请求上限；0/未设置关闭（仅内存进程内计数）。 */
+  rateLimitPerMinute?: number;
   jobTimeoutMs?: number;
   retentionMs?: number;
   workRoot?: string;
@@ -217,6 +219,32 @@ export async function startCmsOpenServer(
   const bootId = randomUUID();
   const jobsFile = path.join(workRoot, "jobs.json");
   const authToken = options.authToken?.trim() || null;
+  const rateLimit = Math.max(0, Math.trunc(options.rateLimitPerMinute ?? 0));
+  const rateBuckets = new Map<string, number[]>();
+  const checkRateLimit = (request: http.IncomingMessage): void => {
+    if (rateLimit === 0) return;
+    const nowMs = (options.now ?? Date.now)();
+    const cutoff = nowMs - 60_000;
+    const key = request.socket.remoteAddress ?? "unknown";
+    const hits = (rateBuckets.get(key) ?? []).filter((at) => at > cutoff);
+    if (hits.length >= rateLimit) {
+      const retryAfter = Math.max(1, Math.ceil((hits[0]! + 60_000 - nowMs) / 1000));
+      throw new HttpError(
+        429,
+        "rate_limited",
+        `请求过于频繁（上限 ${rateLimit} 次/分钟）`,
+        "请稍后重试",
+        { "retry-after": String(retryAfter) }
+      );
+    }
+    hits.push(nowMs);
+    rateBuckets.set(key, hits);
+    if (rateBuckets.size > 1024) {
+      for (const [bucketKey, bucket] of rateBuckets) {
+        if (bucket.every((at) => at <= cutoff)) rateBuckets.delete(bucketKey);
+      }
+    }
+  };
   const manager = new JobManager({
     maxQueue: options.maxQueue,
     maxConcurrent: options.maxConcurrent,
@@ -353,6 +381,7 @@ export async function startCmsOpenServer(
           { "www-authenticate": "Bearer" }
         );
       }
+      checkRateLimit(request);
       if (request.method === "POST" && url.pathname === "/jobs") {
         const contentType = request.headers["content-type"] ?? "";
         const limit = isMultipart(request) ? MULTIPART_LIMIT : JSON_LIMIT;

@@ -17,7 +17,7 @@ test("cms-open: help lists flags", async () => {
   const code = await runCmsOpen(["--help"], { log: (line) => lines.push(line) });
   assert.equal(code, 0);
   const text = lines.join("\n");
-  for (const flag of ["--cors", "--max-queue", "--job-timeout-ms", "--retention-ms", "--token", "--check"]) {
+  for (const flag of ["--cors", "--max-queue", "--rate-limit", "--job-timeout-ms", "--retention-ms", "--token", "--check"]) {
     assert.match(text, new RegExp(flag));
   }
 });
@@ -47,4 +47,28 @@ test("cms-open: --check starts, warns on 0.0.0.0, and exits", async () => {
   assert.equal(code, 0);
   assert.match(lines.join("\n"), /WARN 监听 0\.0\.0\.0/);
   assert.match(lines.join("\n"), /自检通过/);
+});
+
+test("cms-open: rate limit flag/env validated and logged", async () => {
+  const lines = [];
+  const code = await runCmsOpen(["--port", "0", "--check", "--rate-limit", "60"], {
+    log: (line) => lines.push(line)
+  });
+  assert.equal(code, 0);
+  assert.match(lines.join("\n"), /限流: 60 次\/分钟\/客户端/);
+
+  const errors = [];
+  const badFlag = await runCmsOpen(["--rate-limit", "-1"], {
+    errorLog: (line) => errors.push(line)
+  });
+  assert.equal(badFlag, 2);
+  assert.match(errors.join("\n"), /--rate-limit/);
+
+  const envErrors = [];
+  const badEnv = await runCmsOpen(["--port", "0", "--check"], {
+    env: { AOS_CMS_OPEN_RATE_LIMIT: "abc" },
+    errorLog: (line) => envErrors.push(line)
+  });
+  assert.equal(badEnv, 2);
+  assert.match(envErrors.join("\n"), /--rate-limit/);
 });

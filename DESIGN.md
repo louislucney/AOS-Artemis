@@ -2410,3 +2410,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **渲染**：失败分析页在队列上方新增「失败处理路径」卡片，按 **发现 → 证据 → 裁决 → 修用例/建单 → 复跑** 列出当前未裁决数与对应页内锚点/链接（`#improvement`、`#issues`、`#run-hint`）；无失败用例时不渲染。
 - **边界**：只读导航，不改变裁决/建单/复跑逻辑；文案链接复用既有页面锚点。
 - **测试**：`panel-web` 失败分析用例新增路径卡与五步文案断言；全量 2096 绿，lint 0 error（2 条既有 warning）。
+
+### 13.190 加固（CMS 开放服务：可选每客户端限流）
+
+> 2026-10-23。接业务梳理 P2「CMS Open 独立产品化」：已有 Bearer 鉴权、队列/并发/超时/体积上限，缺少面向外部调用方的请求频率上限。
+
+- **入口**：`cms-open --rate-limit <n>` 或 `AOS_CMS_OPEN_RATE_LIMIT`（0=关闭，最大 6000）；启动日志回显当前限流；`--help` 与 `--check` 同步。
+- **服务**：`CmsOpenServerOptions.rateLimitPerMinute`；进程内按 `request.socket.remoteAddress` 维护 60s 滑动窗口（不信任 `X-Forwarded-For`），鉴权通过后、路由前计数；`/healthz` 与 CORS 预检豁免；超限抛 429 `rate_limited`，带 `Retry-After`；窗口内恢复；Map 超过 1024 个客户端时清理空桶。
+- **边界**：单进程内存计数，不跨实例/重启；反向代理后所有客户端共享代理 IP，需在代理层另做限流；未新增持久化/表。
+- **测试**：`open-server` 新增限流用例（第 3 次 429、`Retry-After`、healthz 豁免、窗口后恢复）；`open-command` 补 flag/env 校验与日志；全量 2098 绿，lint 0 error（2 条既有 warning）。
