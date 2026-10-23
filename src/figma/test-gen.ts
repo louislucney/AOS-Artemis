@@ -15,6 +15,7 @@ import {
   type FlowEdge,
   type FlowGraph
 } from "./flows.js";
+import { loadApiErrorCatalog } from "../artemis/api-errors.js";
 import {
   mergeWarnings,
   normalizeWarnings,
@@ -39,6 +40,7 @@ import {
   testDataLines
 } from "./case-view.js";
 import { readFlowDocumentMeta } from "./design-store.js";
+import { designFlowsPath } from "./design-source.js";
 import { caseSetStem, caseSetsDir, saveCaseSetFiles } from "./case-sets.js";
 import {
   applyIdentity,
@@ -1377,6 +1379,57 @@ function resolveApiSpec(
   return { spec: null, warning: null };
 }
 
+/** 从自由文本 apiSpec 提取确定性线索：错误码/HTTP 路径/状态码（仅提示，不解析业务语义）。 */
+export function apiSpecHints(spec: string): {
+  codes: string[];
+  paths: string[];
+  statuses: string[];
+} {
+  const codes = [
+    ...new Set(
+      (spec.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) ?? []).filter(
+        (code) => !["HTTP", "HTTPS", "API", "REST", "JSON", "URL"].includes(code)
+      )
+    )
+  ];
+  const paths = [
+    ...new Set(
+      (spec.match(/(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\/[^\s,，。;；]+)/g) ?? []).map(
+        (entry) => entry.trim()
+      )
+    )
+  ];
+  const statuses = [...new Set(spec.match(/\b[1-5]\d{2}\b/g) ?? [])];
+  return { codes, paths, statuses };
+}
+
+function apiSpecCatalogWarnings(configDirAbs: string, spec: string): DesignWarning[] {
+  const hints = apiSpecHints(spec);
+  const required = hints.codes.length > 0 ? hints.codes : hints.paths;
+  if (required.length === 0) return [];
+  const catalog = loadApiErrorCatalog(configDirAbs);
+  const unmatched = required.filter(
+    (hint) => ![...catalog.rules.values()].some((rule) => rule.match.test(hint))
+  );
+  if (catalog.rules.size > 0 && unmatched.length === 0) return [];
+  const context = [
+    hints.paths.length > 0 ? `路径 ${hints.paths.join("、")}` : null,
+    hints.statuses.length > 0 ? `HTTP ${hints.statuses.join("、")}` : null
+  ]
+    .filter((entry): entry is string => entry !== null)
+    .join("；");
+  return [
+    {
+      code: catalog.rules.size === 0 ? "api-spec-error-codes-missing" : "api-spec-error-codes-gap",
+      message:
+        catalog.rules.size === 0
+          ? `API 说明包含错误码/路径 ${required.join("、")}，但项目未配置 error-codes.json；运行期 api-errors 将无法归类，请补 .artemis/design/error-codes.json`
+          : `API 说明中的错误码/路径 ${unmatched.join("、")} 在 error-codes.json 中无匹配规则；请补对应 match 规则`,
+      details: [context].filter((entry) => entry !== "")
+    }
+  ];
+}
+
 export function resolveApiReview(
   runtime: DesignRuntimeLike,
   args: Pick<GenerateTestsArgs, "apiChange" | "apiSpec" | "apiSpecPath">,
@@ -1416,6 +1469,7 @@ export function resolveApiReview(
         warnings
       };
     }
+    warnings.push(...apiSpecCatalogWarnings(runtime.configDirAbs, spec));
     return {
       review: {
         change: explicit,
@@ -1441,6 +1495,9 @@ export function resolveApiReview(
         code: "apiReview-carried-forward",
         message: "沿用上次 API 说明；请复核是否仍适用"
       });
+    }
+    if (prior.apiSpec !== null && prior.apiSpec.trim() !== "") {
+      warnings.push(...apiSpecCatalogWarnings(runtime.configDirAbs, prior.apiSpec));
     }
     return {
       review: {
@@ -1708,7 +1765,9 @@ async function resolveDesignName(
   runtime: DesignRuntimeLike,
   figmaToken?: string | null
 ): Promise<string | null> {
-  const meta = readFlowDocumentMeta(runtime.configDirAbs);
+  const meta = readFlowDocumentMeta(runtime.configDirAbs, {
+    flowsPath: designFlowsPath(runtime)
+  });
   if (!meta) return null;
   if (meta.penPath) {
     const name = path.basename(meta.penPath, ".pen");
@@ -1976,7 +2035,7 @@ export async function figmaGenerateTests(
   deps: GenerateTestsDeps = {}
 ): Promise<CallToolResult> {
   try {
-    const defaultFlowsPath = path.join(runtime.configDirAbs, "design", "flows.json");
+    const defaultFlowsPath = designFlowsPath(runtime);
     const flowsPath = args.flowsPath
       ? path.resolve(runtime.project.rootDir, args.flowsPath)
       : defaultFlowsPath;

@@ -7,6 +7,7 @@ import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc
 import type {
   AosConfig,
   ArtemisConfig,
+  DesignConfig,
   DeviceHostsConfig,
   FigmaConfig,
   InstallConfig,
@@ -147,6 +148,24 @@ export function normalizeConfig(data: unknown): AosConfig {
     project = name === "" ? undefined : { name };
   }
 
+  const designRaw = obj.design;
+  let design: DesignConfig | undefined;
+  if (designRaw !== undefined && designRaw !== null) {
+    if (typeof designRaw !== "object" || Array.isArray(designRaw)) {
+      throw new Error(`${CONFIG_FILENAME}: "design" must be an object`);
+    }
+    const designObj = designRaw as Record<string, unknown>;
+    if (
+      designObj.sharedDir !== undefined &&
+      designObj.sharedDir !== null &&
+      typeof designObj.sharedDir !== "string"
+    ) {
+      throw new Error(`${CONFIG_FILENAME}: "design.sharedDir" must be a string`);
+    }
+    const sharedDir = typeof designObj.sharedDir === "string" ? designObj.sharedDir.trim() : "";
+    design = sharedDir === "" ? undefined : { sharedDir };
+  }
+
   const deviceHostsRaw = obj.deviceHosts;
   let deviceHosts: DeviceHostsConfig | undefined;
   if (deviceHostsRaw !== undefined && deviceHostsRaw !== null) {
@@ -160,6 +179,7 @@ export function normalizeConfig(data: unknown): AosConfig {
     llm: { defaultProfile, profiles },
     project,
     figma: (obj.figma as FigmaConfig | undefined) ?? undefined,
+    design,
     artemis,
     install: (obj.install as InstallConfig | undefined) ?? undefined,
     deviceHosts

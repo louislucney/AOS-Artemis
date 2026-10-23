@@ -152,13 +152,16 @@ export function summarizeWarnings(
 /** tests 快照优先、flows 回退；仅当采用 tests 且 flows 更新时标 stale（需重跑生成）。 */
 export function resolveDesignWarnings(
   configDirAbs: string,
-  options: { testsPath?: string; prefer?: "tests" | "flows" } = {}
+  options: { testsPath?: string; flowsPath?: string; prefer?: "tests" | "flows" } = {}
 ): ResolvedDesignWarnings {
   const tests = readSnapshot(
     options.testsPath ?? path.join(designDir(configDirAbs), "tests.json"),
     "designWarnings"
   );
-  const flows = readSnapshot(path.join(designDir(configDirAbs), "flows.json"), "warnings");
+  const flows = readSnapshot(
+    options.flowsPath ?? path.join(designDir(configDirAbs), "flows.json"),
+    "warnings"
+  );
   const prefer = options.prefer === "flows" ? "flows" : "tests";
   const ordered: Array<{ source: "tests" | "flows"; snapshot: WarningSnapshot }> =
     prefer === "flows"

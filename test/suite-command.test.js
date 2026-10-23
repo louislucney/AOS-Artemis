@@ -1921,3 +1921,68 @@ test("suite report: 历史 case 选择器无法解析时按原值保留，不阻
   ]);
   assert.equal(result.code, 0);
 });
+
+test("suite check: flowsFingerprint 与当前 flows 不一致时显式 stale", async () => {
+  const { runtime } = await setupRun({ cases: null });
+  const design = path.join(runtime.configDirAbs, "design");
+  fs.mkdirSync(design, { recursive: true });
+  fs.writeFileSync(
+    path.join(design, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "s1", name: "Home", childNames: [], textHints: [] }],
+      edges: [],
+      entryScreens: ["Home"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    path.join(design, "tests.json"),
+    JSON.stringify({ flowsFingerprint: "old-fp", flows: [] }),
+    "utf-8"
+  );
+  fs.writeFileSync(path.join(design, "tests.xlsx"), "fake", "utf-8");
+  const result = await runCli(runtime, ["check", "--json"]);
+  const payload = JSON.parse(result.logs.at(-1));
+  assert.equal(payload.flowsFingerprint.stale, true);
+});
+
+test("suite check: design.sharedDir 共享 flows 参与覆盖校验", async () => {
+  const shared = os.tmpdir() + `/aos-shared-check-${process.pid}-${Date.now()}`;
+  fs.mkdirSync(shared, { recursive: true });
+  const dir = makeTempProject({ config: baseConfig({ design: { sharedDir: shared } }) });
+  fs.writeFileSync(
+    path.join(shared, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "s1", name: "Home", childNames: [], textHints: [] }],
+      edges: [],
+      entryScreens: ["Home"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  const design = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(design, { recursive: true });
+  fs.writeFileSync(
+    path.join(design, "tests.json"),
+    JSON.stringify({
+      flowsFingerprint: "placeholder",
+      flows: [
+        {
+          id: "case-1",
+          name: "Case 1",
+          screens: ["Home"],
+          steps: ["应看到首页"],
+          taskDesc: "run（【真实数据】须经真实请求链路，禁止伪造页面/假数据）"
+        }
+      ]
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(path.join(design, "tests.xlsx"), "fake", "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new SuiteProxy({ running: false }) });
+  const result = await runCli(runtime, ["check", "--json"]);
+  const payload = JSON.parse(result.logs.at(-1));
+  assert.equal(payload.coverage.available, true);
+  assert.deepEqual(payload.coverage.designScreens, ["Home"]);
+});

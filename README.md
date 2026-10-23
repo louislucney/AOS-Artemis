@@ -127,6 +127,8 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 **项目执行事件入口（P0/P1）**：`POST /events/<project>` 上报 `run.*/case.*/artifact.created/log.entry/feedback.request` 事件（幂等 `eventId`，202 返回 `serverId/receivedAt/storage/degraded`）；`GET /events/<project>` 按 `runId/caseId/type/status/since/afterSeq/order/limit/includePayload` 查询（返回 `nextSeq` 游标）。`GET /events/<project>/poll?afterSeq=<nextSeq>&waitMs=<0-30000>&consume=true` 长轮询无丢失事件（`consume` 标记 `consumed_at`，`GET /events/<project>?consumed=false` 查未消费）；stdio/无 HTTP 的项目用 `aos_event_report` / `aos_events` / `aos_event_poll`。保留 `AOS_EVENTS_RETENTION_DAYS`（默认 30）/`AOS_EVENTS_MAX`（默认 50000）；`AOS_EVENTS_FSYNC=1` 开启文件事件写入 fsync（默认关，优先 ack 延迟）。反馈采用**拉取式**：项目轮询未消费事件并自行决定重试/补数据/停止，服务端不维护反向指令队列。终态事件若在 `payload.traceId` 携带 AOS trace id，会异步回写 `task_stats` 终态（30s 轮询仍作兜底）；`run.finished` 的 `runId` 命中 `suite_runs.run_id` 时回写批次终态。事件先写穿 store 再 ack，不执行 payload、不计入 usage；项目身份由路由解析，不接受任意路径。
 
+**同机双端共享设计源（可选）**：`aos.config.jsonc` 的 `design.sharedDir` 或 `AOS_SHARED_DESIGN_DIR`（env > 项目 `.env` > config）指向共享目录；服务把其中的 `flows.json` 作为 canonical 只读源（`figma_generate_tests`/`suite check`/runner/UI 核验同源），tests/台账仍写各项目本地。跨主机不要共享磁盘；现场提取仍写本地，确认后 promote 到共享目录。`suite check` 发现 `tests.json.flowsFingerprint` 与当前 flows 不一致会标 stale；`suite parity` 报 `flowsFingerprintStale`。`apiSpec` 含错误码/路径但 `error-codes.json` 缺规则时生成 `api-spec-error-codes-missing/gap` 警告（不改 taskDesc）。
+
 远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。
 
 ## 多机部署（中心 + 项目机）

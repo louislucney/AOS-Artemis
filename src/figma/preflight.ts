@@ -91,10 +91,10 @@ export function renderDesignWarningLine(input: DesignWarningLineInput): string {
 }
 
 export interface PreflightOptions {
-  /** Absolute path of the cases file; defaults to <configDir>/design/tests.json.
-   * flows.json is always read from <configDir>/design/ (custom case subsets are
-   * still validated against the project flows). */
+  /** Absolute path of the cases file; defaults to <configDir>/design/tests.json. */
   testsPath?: string;
+  /** Effective flows path (shared design source or local); defaults to <configDir>/design/flows.json. */
+  flowsPath?: string;
 }
 
 export function preflightGeneratedTests(
@@ -106,10 +106,10 @@ export function preflightGeneratedTests(
     options.testsPath ? { testsPath: options.testsPath } : {}
   );
   if (document === null) return null;
-  const designWarnings = resolveDesignWarnings(
-    configDirAbs,
-    options.testsPath ? { testsPath: options.testsPath } : {}
-  );
+  const designWarnings = resolveDesignWarnings(configDirAbs, {
+    ...(options.testsPath ? { testsPath: options.testsPath } : {}),
+    ...(options.flowsPath ? { flowsPath: options.flowsPath } : {})
+  });
   const cases = document.records;
   const caseInputs = cases.map((record) => ({ screens: record.screens }));
 
@@ -154,7 +154,10 @@ export function preflightGeneratedTests(
     }
   }
 
-  const graph = loadDesignFlowGraph(configDirAbs);
+  const graph = loadDesignFlowGraph(
+    configDirAbs,
+    options.flowsPath ? { flowsPath: options.flowsPath } : {}
+  );
   let coverage: PreflightCoverage;
   if (graph) {
     const screenInputs = graph.screens.map((screen) => ({

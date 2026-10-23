@@ -2579,3 +2579,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **R6 功能身份持久化**：`flows.json` 顶层可选 `features: [{key,name,screens}]`；生成时作为最高优先 `PriorFeature` 交给既有 `applyIdentity`，优先级高于 `case_sets` 历史；首次命名后（`save !== false` 且非 URL 源）写回 `flows.json`。写回按 key/name/screen 集合幂等，`save:false` 不动 flows；URL 源不写本地 flows。
 - **R7 vision 人类标签**：`humanElementLabel(edge, graph?)` 优先顺序固定为「运行期可见文本 → 已 grounding 的 vision 元素 label（按 `nodeId`/`id` 匹配）→ 去通用词图层名 → 通用控件名」；无文字图标/按钮不再一律退化为「按钮」。
 - **测试**：新增 `design-store` 选择器、`suite-command` 的 run/flake/quarantine/baseline/report 选择器、`figma-testgen` 的 features 继承/写回/`save:false`/vision label 用例；全量 **2147 绿**，lint 0 error（2 条既有 warning）。
+
+
+### 13.207 实施记录（风险修订第四批：R3/R4；R9 边界）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-dual-layer-risk-assessment.md` rev 3 收口。
+
+- **R3 共享设计真源**：新增 `design.sharedDir`（`aos.config.jsonc`）与 `AOS_SHARED_DESIGN_DIR`（项目 `.env`/进程 env，优先级 env > .env > config）。共享目录作为**只读 canonical flows**：`figma_generate_tests` 默认读取、`preflight`/`suite check`/`suite runner`/`design_to_test`/`run-report`/UI 核验读取同一路径；共享 `flows.json` 缺失时回退项目本地。现场提取仍写项目本地，确认后由人工/脚本原子 promote 到共享目录；跨主机不共享磁盘，仍用 Git/parity。
+- **R3 版本步调**：`suite check` 比对 `tests.json.flowsFingerprint` 与当前生效 flows 的内容指纹，不一致在 JSON 输出 `flowsFingerprint.stale=true` 并打印警告；`suite parity` 对同目录 flows 内容指纹与 tests 声明不一致报 `flowsFingerprintStale` profile 差异。
+- **R4 API 说明联动**：`apiSpec` 中提取错误码/HTTP 路径线索，当项目 `error-codes.json` 缺失或没有匹配规则时生成 warnings：`api-spec-error-codes-missing` / `api-spec-error-codes-gap`（不阻断生成，进入 tests.json.designWarnings；运行期仍由 `api-errors` 规则匹配）。不修改 taskDesc。
+- **R9 边界**：面板角色/CMS 配额仍为单进程内存级；反向代理/多实例部署继续视为内网单实例边界，不引入 PG 侧角色表或网关限流。
+- **测试**：新增 sharedDir 配置/读取、`suite check` 覆盖与 stale、parity stale、apiSpec error-codes 告警用例；全量 **2154 绿**，lint 0 error（2 条既有 warning）。

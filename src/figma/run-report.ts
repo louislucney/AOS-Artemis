@@ -20,6 +20,7 @@ import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
 import { loadDesignFlowGraph, loadGeneratedCases, type GeneratedCase } from "./design-store.js";
+import { designFlowsPath } from "./design-source.js";
 import {
   buildTraceability,
   type TraceabilityCaseInput,
@@ -93,7 +94,9 @@ function loadCases(runtime: Runtime): GeneratedIndex {
 }
 
 function readFlowCoverageInputs(runtime: Runtime): { screens: string[]; edges: CoverageEdge[] } | null {
-  const graph = loadDesignFlowGraph(runtime.configDirAbs);
+  const graph = loadDesignFlowGraph(runtime.configDirAbs, {
+    flowsPath: designFlowsPath(runtime)
+  });
   if (!graph) return null;
   return {
     screens: graph.screens.map((screen) => screen.name),

@@ -22,10 +22,13 @@ import { buildGenerationFeedback } from "./figma/generation-feedback.js";
 import type { VerdictExits } from "./tasks/verdict-exits.js";
 import {
   designDir,
+  loadDesignFlowGraph,
   loadGeneratedCases,
   readTestsDocument,
   resolveCaseSelector
 } from "./figma/design-store.js";
+import { designFlowsPath } from "./figma/design-source.js";
+import { flowGraphFingerprint } from "./figma/test-gen.js";
 import { buildCalibration, parseTestResults, type CalibrationReport } from "./figma/calibration.js";
 import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
@@ -984,6 +987,29 @@ async function suiteRun(
   return batch.exitCode;
 }
 
+function flowsFingerprintStatus(
+  configDirAbs: string,
+  testsPath: string,
+  flowsPath: string
+): { declared: string | null; current: string | null; stale: boolean } {
+  let declared: string | null = null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as { flowsFingerprint?: unknown };
+    if (typeof parsed.flowsFingerprint === "string" && parsed.flowsFingerprint !== "") {
+      declared = parsed.flowsFingerprint;
+    }
+  } catch {
+    return { declared: null, current: null, stale: false };
+  }
+  const graph = loadDesignFlowGraph(configDirAbs, { flowsPath });
+  const current = graph === null ? null : flowGraphFingerprint(graph);
+  return {
+    declared,
+    current,
+    stale: declared !== null && current !== null && declared !== current
+  };
+}
+
 /** Pure static coverage check: no device, no case submission (CI pre-merge). */
 async function suiteCheck(
   runtime: Runtime,
@@ -993,7 +1019,11 @@ async function suiteCheck(
   const defaultTestsPath = path.join(runtime.configDirAbs, "design", "tests.json");
   const customTests = flags.get("tests");
   const testsPath = customTests ? path.resolve(runtime.project.rootDir, customTests) : defaultTestsPath;
-  const preflight = preflightGeneratedTests(runtime.configDirAbs, { testsPath });
+  const effectiveFlowsPath = designFlowsPath(runtime);
+  const preflight = preflightGeneratedTests(runtime.configDirAbs, {
+    testsPath,
+    flowsPath: effectiveFlowsPath
+  });
   if (!preflight) {
     const message = `无法读取用例文件：${testsPath}`;
     if (flags.bool("json")) {
@@ -1010,6 +1040,7 @@ async function suiteCheck(
   }
   const coverage = preflight.coverage;
   const imported = isImportedTestsFile(testsPath);
+  const flowsFingerprint = flowsFingerprintStatus(runtime.configDirAbs, testsPath, effectiveFlowsPath);
   const issue = gateIssueForTests(testsPath, preflight, { strict: flags.bool("strict") });
   const routeDrift =
     !imported && coverage.available
@@ -1041,6 +1072,7 @@ async function suiteCheck(
           designWarningsSnapshotAt: preflight.designWarningsSnapshotAt,
           designWarningsStale: preflight.designWarningsStale,
           routeDrift,
+          flowsFingerprint,
           issue
         },
         null,
@@ -1049,6 +1081,9 @@ async function suiteCheck(
     );
   } else {
     io.log(`静态覆盖检查: ${testsPath}`);
+    if (flowsFingerprint.stale) {
+      io.log("警告: flows.json 已更新（flowsFingerprint 不一致）；请重新生成用例以保持跨端同步");
+    }
     io.log(`用例: ${preflight.cases} · 弱用例 ${preflight.weakCases.length}`);
     io.log(
       renderDesignWarningLine({
@@ -1240,7 +1275,10 @@ async function suiteLoop(
   const customTests = flags.get("tests");
   const testsPath = customTests ? path.resolve(runtime.project.rootDir, customTests) : defaultTestsPath;
 
-  const preflight = preflightGeneratedTests(runtime.configDirAbs, { testsPath });
+  const preflight = preflightGeneratedTests(runtime.configDirAbs, {
+    testsPath,
+    flowsPath: designFlowsPath(runtime)
+  });
   let check: SuiteLoopCheck | null = null;
   if (preflight) {
     const issue = flags.bool("allow-uncovered") ? null : gateIssueForTests(testsPath, preflight);

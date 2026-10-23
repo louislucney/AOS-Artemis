@@ -22,6 +22,7 @@ import {
   type UiVerification
 } from "../ui/verification.js";
 import { executeCase } from "./case-runner.js";
+import { designFlowsPath } from "./design-source.js";
 import { designDir, loadDesignFlowGraph, loadGeneratedCases, type GeneratedCase } from "./design-store.js";
 import {
   hitsFromRunSteps,
@@ -151,7 +152,9 @@ interface DesignContext {
  * reverse (runtime-only) observations. Null when flows.json is missing or
  * unreadable (text-only path). */
 function loadDesignContext(runtime: Runtime): DesignContext | null {
-  const graph = loadDesignFlowGraph(runtime.configDirAbs);
+  const graph = loadDesignFlowGraph(runtime.configDirAbs, {
+    flowsPath: designFlowsPath(runtime)
+  });
   if (!graph) return null;
   try {
     const meta = new Map<string, FlowHintMeta>();
@@ -446,7 +449,10 @@ export async function runGeneratedTests(
     cases = cases.filter((testCase) => wanted.has(testCase.id));
   }
 
-  const preflight = preflightGeneratedTests(runtime.configDirAbs, { testsPath });
+  const preflight = preflightGeneratedTests(runtime.configDirAbs, {
+    testsPath,
+    flowsPath: designFlowsPath(runtime)
+  });
   const serial = options.deviceSerial ?? null;
   const serialKind = serial !== null ? classifyIosSerial(serial) : null;
   const resetFn = options.reset ?? suiteResetFor(serial);

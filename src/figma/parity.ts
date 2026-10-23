@@ -1,4 +1,8 @@
 import fs from "node:fs";
+import path from "node:path";
+
+import { normalizeFlowGraph } from "./flows.js";
+import { flowGraphFingerprint } from "./test-gen.js";
 
 export interface ParityCase {
   semanticId: string;
@@ -20,6 +24,8 @@ export interface ParityDoc {
   designFingerprint: string | null;
   flowsFingerprint: string | null;
   reconciliationFingerprint: string | null;
+  /** 与 tests.json 同目录的当前 flows.json 内容指纹（无文件 → null）。 */
+  currentFlowsFingerprint: string | null;
   generation: { maxFlows: number | null; maxDepth: number | null } | null;
   cases: ParityCase[];
 }
@@ -83,6 +89,14 @@ export function readParityDoc(filePath: string): ParityDoc {
     designFingerprint: stringOrNull(parsed.designFingerprint),
     flowsFingerprint: stringOrNull(parsed.flowsFingerprint),
     reconciliationFingerprint: stringOrNull(parsed.reconciliationFingerprint),
+    currentFlowsFingerprint: (() => {
+      try {
+        const flowsPath = path.join(path.dirname(filePath), "flows.json");
+        return flowGraphFingerprint(normalizeFlowGraph(JSON.parse(fs.readFileSync(flowsPath, "utf-8"))));
+      } catch {
+        return null;
+      }
+    })(),
     generation:
       parsed.generation && typeof parsed.generation === "object" && !Array.isArray(parsed.generation)
         ? {
@@ -153,6 +167,25 @@ export function compareParityDocs(a: ParityDoc, b: ParityDoc): ParityReport {
       b: b.flowsFingerprint,
       message: "flows 指纹不一致：两端使用了不同 flows（replanned/inferred 或版本不同）"
     });
+  }
+  for (const [side, doc] of [
+    ["A", a],
+    ["B", b]
+  ] as const) {
+    if (
+      doc.flowsFingerprint !== null &&
+      doc.currentFlowsFingerprint !== null &&
+      doc.flowsFingerprint !== doc.currentFlowsFingerprint
+    ) {
+      diffs.push({
+        kind: "profile",
+        semanticId: null,
+        field: "flowsFingerprintStale",
+        a: doc.flowsFingerprint,
+        b: doc.currentFlowsFingerprint,
+        message: `${side} 的 tests.json.flowsFingerprint 与当前 flows.json 不一致：flows 已更新，请重新生成用例`
+      });
+    }
   }
   if (
     a.reconciliationFingerprint !== b.reconciliationFingerprint

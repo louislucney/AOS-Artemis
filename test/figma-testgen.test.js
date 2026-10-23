@@ -2382,3 +2382,58 @@ test("humanElementLabel: 无可见文本时优先消费已 grounding 的 vision 
   const cases = generateTestCases(graph);
   assert.match((cases[0].humanSteps ?? []).join("\n"), /立即购买/);
 });
+
+test("figma_generate_tests: apiSpec 显式错误码缺少 error-codes 规则时给出可操作告警", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(
+    await figmaGenerateTests(runtime, {
+      apiChange: "new",
+      apiSpec: "POST /api/orders\n业务错误码 ORDER_NOT_FOUND（HTTP 404）"
+    })
+  );
+  const warning = payload.designWarnings.find(
+    (entry) => entry.code === "api-spec-error-codes-missing" || entry.code === "api-spec-error-codes-gap"
+  );
+  assert.ok(warning, "缺规则时应告警");
+  assert.match(warning.message, /error-codes\.json/);
+
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.writeFileSync(
+    path.join(designDir, "error-codes.json"),
+    JSON.stringify({
+      codes: {
+        ORDER_NOT_FOUND: {
+          match: "ORDER_NOT_FOUND",
+          expect: "业务拒绝",
+          handledPattern: "toast"
+        }
+      }
+    }),
+    "utf-8"
+  );
+  const matched = parseToolResult(
+    await figmaGenerateTests(runtime, {
+      apiChange: "new",
+      apiSpec: "POST /api/orders\n业务错误码 ORDER_NOT_FOUND（HTTP 404）"
+    })
+  );
+  assert.equal(
+    matched.designWarnings.some(
+      (entry) => entry.code === "api-spec-error-codes-missing" || entry.code === "api-spec-error-codes-gap"
+    ),
+    false
+  );
+});
+
+test("figma_generate_tests: design.sharedDir 共享 flows 作为默认设计源", async () => {
+  const shared = makeTempDir("aos-shared-flow-");
+  const dir = makeTempProject({ config: baseConfig({ design: { sharedDir: shared } }) });
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  fs.writeFileSync(path.join(shared, "flows.json"), JSON.stringify(graph), "utf-8");
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(payload.ok, true);
+  assert.match(payload.source, new RegExp(shared.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.ok(fs.existsSync(path.join(dir, ".artemis", "design", "tests.json")), "产物仍写项目本地");
+});

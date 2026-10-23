@@ -10,6 +10,7 @@ import {
 } from "../tasks/verdict-exits.js";
 import { readTestsDocument } from "./design-store.js";
 import { preflightGeneratedTests } from "./preflight.js";
+import { designFlowsPath } from "./design-source.js";
 import { buildRunReport, type RunReportCase } from "./run-report.js";
 
 export interface FeedbackTarget {
@@ -363,7 +364,9 @@ export async function buildGenerationFeedback(
     }
   }
 
-  const preflight = preflightGeneratedTests(runtime.configDirAbs);
+  const preflight = preflightGeneratedTests(runtime.configDirAbs, {
+    flowsPath: designFlowsPath(runtime)
+  });
   const weakAssertions: WeakAssertionIssue[] = [];
   for (const weakCase of preflight?.weakCases ?? []) {
     for (const weakStep of weakCase.weakSteps) {

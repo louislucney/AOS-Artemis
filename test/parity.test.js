@@ -127,3 +127,22 @@ test("parity: semanticId 重复时显式报告 duplicate，不静默合并", () 
   assert.equal(report.ok, false);
   assert.ok(report.diffs.some((diff) => diff.kind === "duplicate"));
 });
+
+test("parity: tests.json 与同目录 flows.json 指纹不一致报告 stale", () => {
+  const dir = makeTempDir("aos-parity-stale-");
+  fs.writeFileSync(
+    path.join(dir, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "s1", name: "Home", childNames: [], textHints: [] }],
+      edges: [],
+      entryScreens: ["Home"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  const a = readParityDoc(writeDoc(dir, "a.json", { ...makeDoc(), flowsFingerprint: "old-fp" }));
+  const b = readParityDoc(writeDoc(dir, "b.json", { ...makeDoc(), flowsFingerprint: "old-fp" }));
+  const report = compareParityDocs(a, b);
+  assert.equal(report.ok, false);
+  assert.ok(report.diffs.some((diff) => diff.field === "flowsFingerprintStale"));
+});

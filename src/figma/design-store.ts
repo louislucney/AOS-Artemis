@@ -122,9 +122,12 @@ export function readTestsDocument(
 }
 
 /** flows.json（默认 `<configDir>/design/flows.json`）：缺失/不可解析 → null；始终归一化。 */
-export function loadDesignFlowGraph(configDirAbs: string): FlowGraph | null {
+export function loadDesignFlowGraph(
+  configDirAbs: string,
+  options: { flowsPath?: string } = {}
+): FlowGraph | null {
   try {
-    const flowsPath = path.join(designDir(configDirAbs), "flows.json");
+    const flowsPath = options.flowsPath ?? path.join(designDir(configDirAbs), "flows.json");
     return normalizeFlowGraph(JSON.parse(fs.readFileSync(flowsPath, "utf-8")));
   } catch {
     return null;

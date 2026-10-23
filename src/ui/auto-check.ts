@@ -4,6 +4,7 @@ import path from "node:path";
 import { designDeviceDiff } from "../diff/tool.js";
 import { classifyIosSerial } from "../device/ios.js";
 import { designDir, loadDesignFlowGraph } from "../figma/design-store.js";
+import { designFlowsPath } from "../figma/design-source.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage, logWarn } from "../util.js";
 import { unverifiedUi, type UiSourceFormat, type UiVerification } from "./verification.js";
@@ -110,7 +111,9 @@ export async function autoCheckUi(
   const diff = deps.designDeviceDiff ?? designDeviceDiff;
   const contractPath = path.join(designDir(runtime.configDirAbs), "ui-contract.json");
   if (!fs.existsSync(contractPath)) return unverifiedUi("no-ui-contract");
-  const flows = loadDesignFlowGraph(runtime.configDirAbs);
+  const flows = loadDesignFlowGraph(runtime.configDirAbs, {
+    flowsPath: designFlowsPath(runtime)
+  });
   if (flows === null) return unverifiedUi("no-flows");
 
   const steps = readTraceSteps(runtime.traceDir(input.traceId));

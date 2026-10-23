@@ -1,4 +1,5 @@
 import type { ProjectStore } from "../db/types.js";
+import type { DesignConfig } from "../config/types.js";
 
 /** Minimal LLM entry the design pipeline needs (active entry shape). */
 export interface DesignLlmEntry {
@@ -13,7 +14,11 @@ export interface DesignLlmEntry {
  * object so credentials never fall back to process env / project `.env`. */
 export interface DesignRuntimeLike {
   configDirAbs: string;
-  project: { rootDir: string; dotenvValues?: Record<string, string> };
+  project: {
+    rootDir: string;
+    dotenvValues?: Record<string, string>;
+    config?: { design?: DesignConfig };
+  };
   store: ProjectStore;
   /** Only called when no explicit `chat` is injected; the open service always injects. */
   activeEntry?: () => Promise<DesignLlmEntry | null>;

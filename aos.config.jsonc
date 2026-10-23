@@ -13,6 +13,11 @@
     "profiles": {}
   },
 
+  // 同机双端共享设计真源（可选；跨主机不要共享磁盘）。
+  // 共享目录只作为 canonical 只读源：里面放 flows.json/acceptance.json 等；
+  // 本服务的 tests.json 与运行台账仍写各项目本地。
+  // "design": { "sharedDir": "../shared-design" },
+
   "artemis": {
     // 留空 = 使用服务安装目录旁的 ./artemis（容器内默认）
     "repo": "",

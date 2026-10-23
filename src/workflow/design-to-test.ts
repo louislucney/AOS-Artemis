@@ -14,6 +14,7 @@ import { loadDesignFlowGraph } from "../figma/design-store.js";
 import { figmaExtractFlows } from "../figma/flows.js";
 import { coverageGateIssue } from "../figma/gate.js";
 import { preflightGeneratedTests } from "../figma/preflight.js";
+import { designFlowsPath, sharedDesignDir } from "../figma/design-source.js";
 import { executeSuiteBatch, type SuiteBatchResult } from "../figma/suite-batch.js";
 import type { SuiteRunOptions, SuiteRunReport } from "../figma/suite-runner.js";
 import {
@@ -185,7 +186,12 @@ export async function designToTest(
   }
 
   const designDirAbs = path.join(runtime.configDirAbs, "design");
-  const flowsPath = path.join(designDirAbs, "flows.json");
+  const localFlowsPath = path.join(designDirAbs, "flows.json");
+  // 现场提取会刷新本地 flows；共享只作为已有设计的只读 canonical 源。
+  const flowsPath =
+    args.figmaUrl !== undefined || args.penPath !== undefined
+      ? localFlowsPath
+      : designFlowsPath(runtime);
   const testsPath = path.join(designDirAbs, "tests.json");
   const flowMapPath = path.join(designDirAbs, "flow-map.md");
   let warnings: DesignWarning[] = [];
@@ -227,7 +233,7 @@ export async function designToTest(
     if (!fs.existsSync(flowsPath)) {
       return jsonResult({ ok: false, needs: "info", category: "no-flows", questions: [REUSE_NO_FLOWS_QUESTION] });
     }
-    const graph = loadDesignFlowGraph(runtime.configDirAbs);
+    const graph = loadDesignFlowGraph(runtime.configDirAbs, { flowsPath });
     const read = readFlowsWarnings(runtime.configDirAbs);
     warnings = read.warnings;
     warningSources = [{ source: "flows", warnings: read.warnings }];
@@ -301,7 +307,7 @@ export async function designToTest(
   let generatedCases: number | null = null;
   let apiReviewUpdate: Awaited<ReturnType<typeof updateTestsApiReview>> | null = null;
   if (reuseTests) {
-    preflight = preflightGeneratedTests(runtime.configDirAbs);
+    preflight = preflightGeneratedTests(runtime.configDirAbs, { flowsPath });
     if (preflight === null) {
       return jsonResult({
         ok: false,
@@ -352,6 +358,10 @@ export async function designToTest(
     try {
       const generated = await generate(runtime, {
         screens: args.screens ?? true,
+        ...(sharedDesignDir(runtime) !== null &&
+        (args.figmaUrl !== undefined || args.penPath !== undefined)
+          ? { flowsPath: localFlowsPath }
+          : {}),
         ...(typeof args.maxFlows === "number" ? { maxFlows: args.maxFlows } : {}),
         ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {}),
         ...(args.apiChange !== undefined ? { apiChange: args.apiChange } : {}),
@@ -406,7 +416,7 @@ export async function designToTest(
     ? { flowMap: flowMapPath }
     : {};
 
-  preflight = preflight ?? preflightGeneratedTests(runtime.configDirAbs);
+  preflight = preflight ?? preflightGeneratedTests(runtime.configDirAbs, { flowsPath });
   const gate = deps.gate ?? coverageGateIssue;
   const issue = gate(preflight);
   if (issue !== null && issue !== undefined) {

@@ -59,6 +59,11 @@ export interface FigmaConfig {
   tokenEnv?: string;
 }
 
+/** Shared design source (same-machine dual-project only): canonical flows/acceptance. */
+export interface DesignConfig {
+  sharedDir?: string;
+}
+
 /** Project identity shown in records/panel. The directory basename remains the
  * fallback; an explicit name keeps the display stable when the checkout is
  * renamed or the service repo is used as its own project. */
@@ -108,6 +113,7 @@ export interface AosConfig {
   llm: LlmConfig;
   project?: ProjectConfig;
   figma?: FigmaConfig;
+  design?: DesignConfig;
   artemis: ArtemisConfig;
   install?: InstallConfig;
   deviceHosts?: DeviceHostsConfig;

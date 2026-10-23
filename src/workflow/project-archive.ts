@@ -5,7 +5,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { CaseSetRecord, SuiteRunRecord } from "../db/types.js";
 import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
-import { designDir, loadDesignFlowGraph, readFlowDocumentMeta } from "../figma/design-store.js";
+import { loadDesignFlowGraph, readFlowDocumentMeta } from "../figma/design-store.js";
+import { designFlowsPath } from "../figma/design-source.js";
 import { loadRunManifest, runManifestFileNames, type RunManifest } from "../figma/run-manifest.js";
 import { resolveProvenance } from "../provenance.js";
 import { detectProjectStacks } from "../projects/stack.js";
@@ -75,7 +76,6 @@ export async function projectArchive(
   deps: ProjectArchiveDeps = {}
 ): Promise<CallToolResult> {
   const degraded: string[] = [];
-  const designDirAbs = designDir(runtime.configDirAbs);
   const root = runtime.project.rootDir;
 
   if (runtime.store !== undefined && runtime.store.kind === "memory") {
@@ -83,13 +83,13 @@ export async function projectArchive(
   }
 
   let design: Record<string, unknown> | null = null;
-  const flowsPath = path.join(designDirAbs, "flows.json");
+  const flowsPath = designFlowsPath(runtime);
   if (fs.existsSync(flowsPath)) {
-    const graph = loadDesignFlowGraph(runtime.configDirAbs);
+    const graph = loadDesignFlowGraph(runtime.configDirAbs, { flowsPath });
     if (graph === null) {
       degraded.push("flows.json 存在但不可解析（已略过设计血统）");
     } else {
-      const meta = readFlowDocumentMeta(runtime.configDirAbs);
+      const meta = readFlowDocumentMeta(runtime.configDirAbs, { flowsPath });
       let savedAt: string | null = null;
       try {
         savedAt = fs.statSync(flowsPath).mtime.toISOString();
