@@ -16,6 +16,7 @@ export type ConsoleNavKey =
   | "runners"
   | "schedules"
   | "ops"
+  | "events"
   | "audit"
   | "usage";
 
@@ -89,6 +90,7 @@ const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
   "runners",
   "schedules",
   "ops",
+  "events",
   "audit"
 ]);
 
@@ -130,10 +132,10 @@ function navHref(item: ConsoleNavItem, project: string | null, hostId: string | 
   return `/panel?${params.toString()}${host}`;
 }
 
-/** 合并版块内的页签（结果＝失败分析/统计；运维＝数据/审计）。 */
+/** 合并版块内的页签（结果＝失败分析/统计；运维＝数据/审计/事件）。 */
 export function renderGroupTabs(input: {
   group: "results" | "ops";
-  active: "review" | "stats" | "ops" | "audit";
+  active: "review" | "stats" | "ops" | "events" | "audit";
   project: string;
   hostId: string | null;
 }): string {
@@ -147,7 +149,8 @@ export function renderGroupTabs(input: {
         ]
       : [
           { key: "ops", label: "数据", href: `${base}&section=ops${host}` },
-          { key: "audit", label: "审计", href: `${base}&section=audit${host}` }
+          { key: "audit", label: "审计", href: `${base}&section=audit${host}` },
+          { key: "events", label: "事件", href: `${base}&section=events${host}` }
         ];
   const links = entries.map(
     (entry) =>

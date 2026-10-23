@@ -2273,3 +2273,52 @@ test("panel web: 任务卡展示取消来源/操作人/备注/时间（取消后
   assert.doesNotMatch(html.body, /data-task-action="cancel"/, "终态不再提供取消");
   assert.doesNotMatch(html.body, /id="task-cancel-note"/, "终态不渲染备注输入");
 });
+
+test("panel web: 项目事件页（筛选/消费状态）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  await store.recordProjectEvent(projectDir, {
+    eventId: "evt-run-1",
+    type: "run.finished",
+    source: "runner",
+    runId: "run-1",
+    status: "passed",
+    payload: { ok: true }
+  });
+  await store.recordProjectEvent(projectDir, {
+    eventId: "evt-feedback-1",
+    type: "feedback.request",
+    source: "agent",
+    status: "open",
+    payload: { message: "请补充失败证据" }
+  });
+
+  const base = `http://x/panel.json?project=${encodeURIComponent(projectDir)}&section=events`;
+  const all = JSON.parse((await handlePanelRequest(new URL(base), deps)).body);
+  assert.equal(all.view, "events");
+  assert.equal(all.events.length, 2);
+  assert.equal(all.events[0].type, "feedback.request", "事件新→旧");
+  assert.equal(all.events[0].consumedAt, null);
+
+  const pending = JSON.parse(
+    (await handlePanelRequest(new URL(`${base}&type=feedback.request&consumed=0`), deps)).body
+  );
+  assert.equal(pending.events.length, 1);
+  assert.equal(pending.events[0].eventId, "evt-feedback-1");
+
+  assert.equal(await store.markProjectEventsConsumed(projectDir, ["evt-feedback-1"]), 1);
+  const consumed = JSON.parse(
+    (await handlePanelRequest(new URL(`${base}&type=feedback.request&consumed=1`), deps)).body
+  );
+  assert.equal(consumed.events.length, 1);
+
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&section=events`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /<h1>项目事件<\/h1>/);
+  assert.match(html.body, /feedback\.request/);
+  assert.match(html.body, /未消费|已消费/);
+  assert.match(html.body, /反馈请求/, "反馈过滤入口");
+  assert.match(html.body, /aos_event_poll|GET \/events\//, "轮询/上报入口");
+});

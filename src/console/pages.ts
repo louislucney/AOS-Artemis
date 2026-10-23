@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ArtifactRecord } from "../artifacts/index.js";
-import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
+import type { AuditEventRecord, CaseSetRecord, ProjectEventRecord } from "../db/types.js";
 import { parseQuarantine } from "../figma/quarantine.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cCard, cEmpty, cTable } from "./components.js";
@@ -390,6 +390,113 @@ export function renderAuditPage(data: AuditPageData): string {
             empty: "暂无审计事件（内部编排动作发生后出现）"
           }),
           `<div class="pager">${prevHref === null ? "" : `<a href="${prevHref}">← 上一页</a>`}${prevHref !== null && nextHref !== null ? " · " : ""}${nextHref === null ? "" : `<a href="${nextHref}">下一页 →</a>`}</div>`
+        ].join("\n")
+      })
+    ].join("\n")
+  });
+}
+
+export interface EventsPageData {
+  rootPath: string;
+  rootLabel: string;
+  hostId?: string | null;
+  events: ProjectEventRecord[];
+  query: Record<string, string>;
+  error?: string | null;
+  storeHealth?: ConsoleShellInput["storeHealth"];
+}
+
+export function renderEventsPage(data: EventsPageData): string {
+  const q = (name: string): string => escapeHtml(data.query[name] ?? "");
+  const link = (patch: Record<string, string | null>): string => {
+    const params = new URLSearchParams({ project: data.rootPath, section: "events" });
+    if (data.hostId) params.set("host", data.hostId);
+    for (const key of ["type", "status", "consumed", "since"]) {
+      const value = data.query[key];
+      if (value !== undefined && value !== "") params.set(key, value);
+    }
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+    }
+    return escapeHtml(`/panel?${params.toString()}`);
+  };
+  const preset = (label: string, hours: number): string =>
+    `<a class="c-button" href="${link({ since: new Date(Date.now() - hours * 3600_000).toISOString() })}">${label}</a>`;
+  const rows = data.events.map((event) => {
+    const refs = [
+      event.runId === null ? "" : `run <code>${escapeHtml(event.runId)}</code>`,
+      event.caseId === null ? "" : `case <code>${escapeHtml(event.caseId)}</code>`
+    ]
+      .filter((part) => part !== "")
+      .join(" · ");
+    return [
+      String(event.seq),
+      `<span title="${escapeHtml(event.receivedAt)}">${relativeTime(event.receivedAt)}</span>`,
+      `<code>${escapeHtml(event.type)}</code>${
+        event.type === "feedback.request" ? ` ${cBadge({ label: "反馈", tone: "warning" })}` : ""
+      }`,
+      event.status === null ? "—" : escapeHtml(event.status),
+      refs === "" ? "—" : refs,
+      cBadge({
+        label: event.consumedAt === null ? "未消费" : "已消费",
+        tone: event.consumedAt === null ? "warning" : "success",
+        ...(event.consumedAt === null ? {} : { title: event.consumedAt })
+      }),
+      `${event.payloadBytes} B`
+    ];
+  });
+  return renderConsoleShell({
+    title: "项目事件",
+    active: "ops",
+    meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
+    projectHostId: data.hostId ?? null,
+    storeHealth: data.storeHealth,
+    body: [
+      "<h1>项目事件</h1>",
+      renderGroupTabs({
+        group: "ops",
+        active: "events",
+        project: data.rootPath,
+        hostId: data.hostId ?? null
+      }),
+      cCard({
+        title: "筛选",
+        body: [
+          `<form method="get" action="/panel">`,
+          `<input type="hidden" name="project" value="${escapeHtml(data.rootPath)}">`,
+          `<input type="hidden" name="section" value="events">`,
+          ...(data.hostId ? [`<input type="hidden" name="host" value="${escapeHtml(data.hostId)}">`] : []),
+          `<p>类型 <input name="type" value="${q("type")}" placeholder="feedback.request" aria-label="事件类型"> 状态 <input name="status" value="${q("status")}" placeholder="passed" aria-label="事件状态"> 消费 <select name="consumed" aria-label="消费状态"><option value="">全部</option><option value="0"${data.query.consumed === "0" ? " selected" : ""}>未消费</option><option value="1"${data.query.consumed === "1" ? " selected" : ""}>已消费</option></select> 起自 <input type="datetime-local" name="since" aria-label="起自（本地时间）" value="${sinceLocalValue(data.query.since)}"> <button class="c-button" type="submit">筛选</button></p>`,
+          `<p>快捷：<a class="c-button" href="${link({ type: null, status: null, consumed: null, since: null })}">全部</a> <a class="c-button" href="${link({ consumed: "0" })}">未消费</a> <a class="c-button" href="${link({ type: "feedback.request", consumed: null })}">反馈请求</a> ${preset("近 24 小时", 24)} ${preset("近 7 天", 168)}</p>`,
+          "</form>"
+        ].join("\n")
+      }),
+      ...(data.error
+        ? [
+            cCard({
+              title: "读取失败",
+              tone: "accent",
+              body: `<p>${escapeHtml(data.error)}</p>`
+            })
+          ]
+        : []),
+      cCard({
+        title: "事件流",
+        subtitle: `最近 ${data.events.length} 条（新→旧，最多 200）· payload 默认不回显`,
+        body: cTable({
+          columns: ["seq", "时间", "类型", "状态", "关联", "消费", "大小"],
+          rows,
+          caption: "项目事件",
+          empty: "暂无项目事件（执行器上报 run/case/artifact/feedback 事件后出现）"
+        })
+      }),
+      cCard({
+        title: "上报与消费",
+        body: [
+          `<p>上报：<code>POST /events/&lt;project&gt;</code> 或 <code>aos_event_report</code>；轮询/消费：<code>aos_event_poll</code> / <code>GET /events/&lt;project&gt;/poll?consume=true</code>。</p>`,
+          `<p class="muted">反馈请求（<code>feedback.request</code>）可按类型筛选；页签入口与审计、数据并列。</p>`
         ].join("\n")
       })
     ].join("\n")

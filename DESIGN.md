@@ -2382,3 +2382,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **任务页**：`PanelTaskRunView` 增 `ui: UiSummary | null`；`buildPanelTaskDetail` 按台账 `manifestPath` 读取本机批次清单的 `summary.ui`，远端执行机/清单不可读 → `null`；「设备运行」表新增 **UI** 列并回显计数 chip。`loadRunManifest` 支持绝对路径（面板直接使用台账路径）。
 - **测试**：`panel-web` 批次详情与任务页用例构造 `ui.failed` 清单，断言 JSON `ui`/`cases[].ui` 与 HTML `UI` 列、`UI 失败 1`。全量 2095 绿，lint 0 error（2 条既有 warning）。
 - **边界**：只读展示，不改变功能门禁；未改 `suite_runs` schema，任务页 UI 汇总依赖清单在本机可读（远端执行机显示 `—`）。
+
+### 13.187 实施记录（P1：面板项目事件入口）
+
+> 2026-10-23。接业务梳理 P1「事件/反馈入口」：`project_events` 已有 `aos_event_report/aos_events/aos_event_poll` 与 `/events/<project>`，但面板只能看内部审计，看不到项目执行事件与 `feedback.request`。
+
+- **路由**：`GET /panel?section=events`（HTML）与 `GET /panel.json?project=…&section=events`（JSON `view:"events"`）；运维版块页签「数据 / 审计 / 事件」，`ConsoleNavKey` 增 `events`。
+- **筛选**：`type` / `status` / `consumed`（0=未消费，1=已消费）/ `since`；`ProjectStore.listProjectEvents` 新→旧、最多 200 条，payload 默认不回显；读取异常在页内卡片标注，不整页失败。
+- **渲染**：`renderEventsPage` 显示 seq/时间/类型/状态/关联（runId/caseId）/消费态/大小；`feedback.request` 加「反馈」徽章；快捷筛选「全部 / 未消费 / 反馈请求 / 近 24 小时 / 近 7 天」；底部说明上报与轮询入口。
+- **边界**：面板只读，消费确认仍由 `aos_event_poll` / `GET /events/<project>/poll?consume=true` 完成；按主机作用域 store 读取（`?host=` 保留）；不新增表、不改事件协议。
+- **测试**：`panel-web` 新增项目事件用例（事件新→旧、`type=feedback.request&consumed=0` 过滤、消费后 `consumed=1`、HTML 事件页与反馈入口）；全量 2096 绿，lint 0 error（2 条既有 warning）。

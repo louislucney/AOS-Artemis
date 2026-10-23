@@ -260,6 +260,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 | `library` **用例库** | 用例集列表（来源/条数/功能）＋**行内「下发该用例集」**＋**Excel 上传导入**（multipart，≤20MB）＋隔离（quarantine：**加入/移除表单，owner 签字**） |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
+| `events` **项目事件** | 执行事件流（run/case/artifact/log/feedback.request），类型/状态/消费筛选＋快捷「未消费/反馈请求」；消费态与 `aos_event_poll` 同源，payload 默认不回显 |
 | `ops` **运维与数据** | 存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
 
 写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel 导入支持 multipart 上传（`.xlsx`≤20MB，单飞）：面板表单提交到 `/panel/api/import?project=<项目根路径>[&host=<主机 id>]`，HTTP 模式与独立 `panel --web` 均经该项目运行时解析并登记为最新用例集。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层；导入按项目根懒建并复用本进程 store 的 Runtime（失败不缓存、退出时释放），并同时启用依赖运行时的「一键建单/证据重试」动作。**跨主机保护**：`?host=` 指向非本机主机时导入返回 400（“跨主机导入请在该项目机上执行，或使用 HTTP 模式”），不会在面板机建项目行或写用例文件。

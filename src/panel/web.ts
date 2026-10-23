@@ -20,6 +20,7 @@ import {
   readQuarantineSummary,
   renderArchivePage,
   renderAuditPage,
+  renderEventsPage,
   renderLibraryPage,
   renderOpsPage,
   renderSearchPage,
@@ -27,7 +28,7 @@ import {
   type SearchPageData
 } from "../console/pages.js";
 import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
-import type { AuditEventRecord, CaseSetRecord } from "../db/types.js";
+import type { AuditEventRecord, CaseSetRecord, ProjectEventRecord } from "../db/types.js";
 import { cBadge, cCard, cEmpty, cStat, cTable } from "../console/components.js";
 import { relativeTime, relativeTimeText } from "../console/time.js";
 import {
@@ -203,6 +204,15 @@ type PanelView =
       storeNote: string | null;
       writeError: string | null;
       artifacts: number;
+    }
+  | {
+      kind: "events";
+      rootPath: string;
+      hostId: string | null;
+      rootLabel: string;
+      events: ProjectEventRecord[];
+      query: Record<string, string>;
+      error: string | null;
     }
   | { kind: "project"; rootPath: string; hostId: string | null; detail: PanelProjectDetail; active?: ConsoleNavKey | null }
   | { kind: "search"; data: SearchPageData }
@@ -565,6 +575,39 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       page: { offset, hasNext, pageSize }
     };
   }
+  if (section === "events") {
+    const type = trimmed(url.searchParams.get("type"));
+    const status = trimmed(url.searchParams.get("status"));
+    const consumedRaw = trimmed(url.searchParams.get("consumed"));
+    const consumed =
+      consumedRaw === "0" ? false : consumedRaw === "1" ? true : undefined;
+    const since = normalizeSince(trimmed(url.searchParams.get("since")));
+    const query: Record<string, string> = {};
+    for (const [key, value] of url.searchParams) query[key] = value;
+    let events: ProjectEventRecord[] = [];
+    let error: string | null = null;
+    try {
+      events = await projectStore.listProjectEvents(resolved.rootPath, {
+        ...(type === null ? {} : { type }),
+        ...(status === null ? {} : { status }),
+        ...(consumed === undefined ? {} : { consumed }),
+        ...(since === null ? {} : { since }),
+        order: "desc",
+        limit: 200
+      });
+    } catch (cause) {
+      error = `项目事件读取失败：${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+    return {
+      kind: "events",
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rootLabel: resolved.name,
+      events,
+      query,
+      error
+    };
+  }
   if (section === "ops") {
     const health = (
       projectStore as { writeErrors?: () => { count: number; lastError: string | null } }
@@ -649,6 +692,9 @@ function toJsonView(view: PanelView): Record<string, unknown> {
   }
   if (view.kind === "archive") return { ok: true, view: "archive", artifacts: view.artifacts, page: view.page };
   if (view.kind === "audit") return { ok: true, view: "audit", events: view.events };
+  if (view.kind === "events") {
+    return { ok: true, view: "events", events: view.events, error: view.error, query: view.query };
+  }
   if (view.kind === "ops") {
     return {
       ok: true,
@@ -2809,6 +2855,8 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
       return "archive";
     case "audit":
       return "ops";
+    case "events":
+      return "ops";
     case "ops":
       return "ops";
     case "project":
@@ -3054,6 +3102,17 @@ function renderPanelHtml(
       events: view.events,
       query: view.query,
       page: view.page,
+      storeHealth: currentShell.storeHealth
+    });
+  }
+  if (view.kind === "events") {
+    return renderEventsPage({
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      hostId: view.hostId,
+      events: view.events,
+      query: view.query,
+      error: view.error,
       storeHealth: currentShell.storeHealth
     });
   }
