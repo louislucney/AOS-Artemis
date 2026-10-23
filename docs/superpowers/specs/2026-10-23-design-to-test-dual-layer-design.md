@@ -1,7 +1,7 @@
 # design_to_test：人类/执行器双层产物设计
 
 > 日期：2026-10-23
-> 状态：待确认
+> 状态：已实施（2026-10-23）
 > 范围：`design_to_test` / `figma_generate_tests` 产物、API 变更交互、tests.md 截图链路
 
 ## 1. 背景与问题
