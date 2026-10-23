@@ -1154,12 +1154,26 @@ test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标�
     rootPath: projectDir,
     name: "r-1",
     hostname: "mac-1",
+    hostId: "h-1",
     platforms: ["android"],
     devices: [
       { serial: "emulator-5554", name: "", platform: "android", kind: "emulator", state: "device" }
     ],
     tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false },
     artifactBaseUrl: "http://mac-1:8770"
+  });
+  const fleetTask = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: "cs-fleet", featureKey: "f-fleet" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.acquireDeviceLeases({
+    hostId: "h-1",
+    taskId: fleetTask.id,
+    projectId: "p-fleet",
+    serials: ["emulator-5554"]
   });
   const html = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
@@ -1173,7 +1187,25 @@ test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标�
   assert.match(html.body, /adb ✓/);
   assert.match(html.body, /appium ✗/);
   assert.match(html.body, /http:\/\/mac-1:8770/);
+  assert.match(html.body, /设备容量/);
+  assert.match(html.body, /任务队列/);
+  assert.match(html.body, /设备租约/);
+  assert.match(html.body, /有效/, "租约状态");
   assert.doesNotMatch(html.body, /http-equiv="refresh"/, "含表单项目页不整页刷新（修复 I4）");
+
+  const fleetJson = JSON.parse(
+    (
+      await handlePanelRequest(
+        new URL(`http://x/panel.json?project=${encodeURIComponent(projectDir)}`),
+        deps
+      )
+    ).body
+  );
+  assert.deepEqual(fleetJson.fleet.runners, { online: 1, offline: 0 });
+  assert.deepEqual(fleetJson.fleet.devices, { total: 1, ios: 0, android: 1, busy: 1 });
+  assert.equal(fleetJson.fleet.queue.pending, 1);
+  assert.equal(fleetJson.fleet.leases.length, 1);
+  assert.equal(fleetJson.fleet.leases[0].taskId, fleetTask.id);
 
   const clean = await makeHarness();
   const cleanHtml = await handlePanelRequest(

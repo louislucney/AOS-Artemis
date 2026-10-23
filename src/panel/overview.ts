@@ -5,6 +5,7 @@ import { configDirAbs, projectTracesDir } from "../artemis/assembly.js";
 import { depsStatus, type DepsStatus } from "../artemis/bootstrap.js";
 import { defaultArtemisRepo, loadProject, type LoadedProject } from "../config/loader.js";
 import type {
+  DeviceLeaseRecord,
   HostAddressRecord,
   HostRecord,
   HostSessionRecord,
@@ -293,6 +294,23 @@ export interface PanelRunnerView {
   artifactBaseUrl: string | null;
 }
 
+export interface PanelFleetLeaseView {
+  hostId: string;
+  serial: string;
+  taskId: string;
+  expiresAt: string;
+  expired: boolean;
+}
+
+/** 项目页机队摘要：执行机在线/失联、设备容量、任务队列与设备租约。 */
+export interface PanelFleetView {
+  runners: { online: number; offline: number };
+  devices: { total: number; ios: number; android: number; busy: number };
+  queue: { pending: number; claimed: number; running: number; stopping: number };
+  leases: PanelFleetLeaseView[];
+  warnings: string[];
+}
+
 export interface PanelScheduleView {
   id: string;
   name: string;
@@ -318,6 +336,65 @@ function runnerView(record: RunnerRecord, nowMs: number, ttlMs: number): PanelRu
     devices: record.devices,
     tools: record.tools,
     artifactBaseUrl: record.artifactBaseUrl
+  };
+}
+
+async function buildFleetView(
+  deps: PanelDeps,
+  rootPath: string,
+  runners: PanelRunnerView[],
+  nowMs: number
+): Promise<PanelFleetView> {
+  const warnings: string[] = [];
+  const queue = { pending: 0, claimed: 0, running: 0, stopping: 0 };
+  try {
+    for (const task of await deps.store.listRegressionTasks(rootPath, 200)) {
+      if (task.status === "pending") queue.pending += 1;
+      else if (task.status === "claimed") queue.claimed += 1;
+      else if (task.status === "running") queue.running += 1;
+      else if (task.status === "stopping") queue.stopping += 1;
+    }
+  } catch (error) {
+    warnings.push(`任务队列读取失败：${errorMessage(error)}`);
+  }
+
+  let leases: DeviceLeaseRecord[] = [];
+  try {
+    leases = await deps.store.listDeviceLeases();
+  } catch (error) {
+    warnings.push(`设备租约读取失败：${errorMessage(error)}`);
+  }
+  const activeSerials = new Set<string>();
+  const leaseViews: PanelFleetLeaseView[] = leases.map((lease) => {
+    const expired = Date.parse(lease.expiresAt) <= nowMs;
+    if (!expired) activeSerials.add(`${lease.hostId}:${lease.serial}`);
+    return {
+      hostId: lease.hostId,
+      serial: lease.serial,
+      taskId: lease.taskId,
+      expiresAt: lease.expiresAt,
+      expired
+    };
+  });
+
+  const devices = { total: 0, ios: 0, android: 0, busy: activeSerials.size };
+  for (const runner of runners) {
+    for (const device of runner.devices) {
+      devices.total += 1;
+      if (device.platform === "ios") devices.ios += 1;
+      else if (device.platform === "android") devices.android += 1;
+    }
+  }
+
+  return {
+    runners: {
+      online: runners.filter((runner) => runner.online).length,
+      offline: runners.filter((runner) => !runner.online).length
+    },
+    devices,
+    queue,
+    leases: leaseViews,
+    warnings
   };
 }
 
@@ -395,6 +472,7 @@ export interface PanelProjectDetail {
   regressionRefs: PanelRegressionRef[];
   tasks: PanelTaskRow[];
   runners: PanelRunnerView[];
+  fleet: PanelFleetView;
   schedules: PanelScheduleView[];
   diskAssets: PanelDiskAssets | null;
   deep: PanelDeepView | null;
@@ -1196,15 +1274,17 @@ export async function buildPanelProjectDetail(
   }
 
   const runners: PanelRunnerView[] = [];
+  const ttlMs = runnerTtlFrom(deps.env ?? process.env);
+  const nowMs = now();
   try {
-    const ttlMs = runnerTtlFrom(deps.env ?? process.env);
-    const nowMs = now();
     for (const record of await deps.store.listRunners(rootPath)) {
       runners.push(runnerView(record, nowMs, ttlMs));
     }
   } catch (error) {
     warnings.push(`执行机读取失败：${errorMessage(error)}`);
   }
+  const fleet = await buildFleetView(deps, rootPath, runners, nowMs);
+  warnings.push(...fleet.warnings);
 
   const schedulesView: PanelScheduleView[] = [];
   try {
@@ -1253,6 +1333,7 @@ export async function buildPanelProjectDetail(
     regressionRefs,
     tasks: taskRows,
     runners,
+    fleet,
     schedules: schedulesView,
     diskAssets,
     deep,

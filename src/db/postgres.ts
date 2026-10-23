@@ -2113,6 +2113,20 @@ export class PostgresStore implements ProjectStore {
     return released.rows.length;
   }
 
+  async listDeviceLeases(input: { hostId?: string } = {}): Promise<DeviceLeaseRecord[]> {
+    const hostId = input.hostId ?? this.hostId;
+    const result =
+      hostId === null
+        ? await this.pool.query(
+            "SELECT * FROM device_leases ORDER BY acquired_at DESC, host_id ASC, serial ASC"
+          )
+        : await this.pool.query(
+            "SELECT * FROM device_leases WHERE host_id = $1 ORDER BY acquired_at DESC, serial ASC",
+            [hostId]
+          );
+    return result.rows.map(mapDeviceLease);
+  }
+
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
     const project = await this.getProjectByPath(input.rootPath);
     if (!project) throw new Error(`项目未注册：${input.rootPath}`);

@@ -1334,6 +1334,13 @@ export class MemoryStore implements ProjectStore {
     return before - this.deviceLeases.length;
   }
 
+  async listDeviceLeases(input: { hostId?: string } = {}): Promise<DeviceLeaseRecord[]> {
+    const hostId = input.hostId ?? this.hostId;
+    return this.deviceLeases
+      .filter((lease) => hostId === null || lease.hostId === hostId)
+      .map((lease) => ({ ...lease }));
+  }
+
   async ping(): Promise<boolean> {
     return true;
   }

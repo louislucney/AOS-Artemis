@@ -669,6 +669,12 @@ export class FileStore implements ProjectStore {
     return released;
   }
 
+  async listDeviceLeases(input: { hostId?: string } = {}): Promise<DeviceLeaseRecord[]> {
+    await this.syncHostFromDisk();
+    const hostId = input.hostId ?? this.hostId;
+    return this.hostMem.listDeviceLeases(hostId === null ? {} : { hostId });
+  }
+
   async recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,

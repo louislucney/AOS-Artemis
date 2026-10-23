@@ -901,6 +901,8 @@ export interface ProjectStore {
   renewDeviceLeases(input: RenewDeviceLeasesInput): Promise<number>;
   /** 释放本任务在该 host 的全部租约，返回释放条数。 */
   releaseDeviceLeases(input: { hostId: string; taskId: string }): Promise<number>;
+  /** 读取设备租约（只读，面板机队视图）；缺省按 store 主机作用域。 */
+  listDeviceLeases(input?: { hostId?: string }): Promise<DeviceLeaseRecord[]>;
   recordUsageEvent(
     rootPath: string,
     input: RecordUsageEventInput,

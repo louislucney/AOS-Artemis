@@ -1630,12 +1630,51 @@ function toolBadges(tools: RunnerTools): string {
     .join(" ");
 }
 
-function renderRunners(detail: PanelProjectDetail): string {
+function renderRunners(detail: PanelProjectDetail, rootPath: string, hostId: string | null): string {
+  const fleet = detail.fleet;
+  const fleetStats = `<div class="c-stats-row">${[
+    cStat({
+      label: "执行机",
+      value: `${fleet.runners.online} 在线`,
+      hint: `失联 ${fleet.runners.offline}`
+    }),
+    cStat({
+      label: "设备容量",
+      value: String(fleet.devices.total),
+      hint: `iOS ${fleet.devices.ios} · Android ${fleet.devices.android} · 租约中 ${fleet.devices.busy}`
+    }),
+    cStat({
+      label: "任务队列",
+      value: String(fleet.queue.pending),
+      hint: `待领取 · 领取中 ${fleet.queue.claimed} · 运行中 ${fleet.queue.running} · 停止中 ${fleet.queue.stopping}`
+    }),
+    cStat({
+      label: "设备租约",
+      value: String(fleet.leases.filter((lease) => !lease.expired).length),
+      hint: `已过期 ${fleet.leases.filter((lease) => lease.expired).length}`
+    })
+  ].join("")}</div>`;
+  const leaseRows = fleet.leases.map((lease) => [
+    `<code>${escapeHtml(lease.serial)}</code>`,
+    escapeHtml(lease.hostId),
+    `<a href="${escapeHtml(taskHref(rootPath, lease.taskId, hostId))}"><code>${escapeHtml(lease.taskId)}</code></a>`,
+    relativeTime(lease.expiresAt),
+    cBadge({
+      label: lease.expired ? "已过期" : "有效",
+      tone: lease.expired ? "warning" : "success"
+    })
+  ]);
+  const leases = [
+    "<h3>设备租约</h3>",
+    renderTable(["设备", "主机", "任务", "到期", "状态"], leaseRows, "暂无设备租约")
+  ].join("\n");
   if (detail.runners.length === 0) {
     return [
       '<section id="runners">',
       "<h2>执行机</h2>",
+      fleetStats,
       '<p class="empty">暂无执行机心跳（在项目机运行 <code>node dist/cli.js suite runner</code>）</p>',
+      leases,
       "</section>"
     ].join("\n");
   }
@@ -1660,7 +1699,9 @@ function renderRunners(detail: PanelProjectDetail): string {
   return [
     '<section id="runners">',
     "<h2>执行机</h2>",
+    fleetStats,
     renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无执行机"),
+    leases,
     "</section>"
   ].join("\n");
 }
@@ -2408,7 +2449,7 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
         : []),
       renderBatches(detail, view.rootPath, view.hostId),
       renderTaskList(view.rootPath, detail, view.hostId),
-      renderRunners(detail),
+      renderRunners(detail, view.rootPath, view.hostId),
       renderSchedules(view.rootPath, detail, view.hostId),
       ...(emptyProject ? ["</details>"] : []),
       '<details class="c-details">',

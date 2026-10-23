@@ -2392,3 +2392,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **渲染**：`renderEventsPage` 显示 seq/时间/类型/状态/关联（runId/caseId）/消费态/大小；`feedback.request` 加「反馈」徽章；快捷筛选「全部 / 未消费 / 反馈请求 / 近 24 小时 / 近 7 天」；底部说明上报与轮询入口。
 - **边界**：面板只读，消费确认仍由 `aos_event_poll` / `GET /events/<project>/poll?consume=true` 完成；按主机作用域 store 读取（`?host=` 保留）；不新增表、不改事件协议。
 - **测试**：`panel-web` 新增项目事件用例（事件新→旧、`type=feedback.request&consumed=0` 过滤、消费后 `consumed=1`、HTML 事件页与反馈入口）；全量 2096 绿，lint 0 error（2 条既有 warning）。
+
+### 13.188 实施记录（P2：项目页机队视图）
+
+> 2026-10-23。接业务梳理 P2「多机机队视图（队列/容量/租约/离线）」：项目页原执行机表只列名称/设备/工具/心跳，缺少队列积压、容量与租约占用。
+
+- **数据**：`ProjectStore` 增 `listDeviceLeases({hostId?})`（Memory/File/PG 三实现；缺省按 store 主机作用域，PG 直读 `device_leases`）；`PanelProjectDetail` 增 `fleet: PanelFleetView`。
+- **口径**：执行机在线/失联复用 runner TTL；设备容量按 runner 上报的 `devices[]` 统计（total/iOS/Android），`busy`＝未过期租约的去重 `host:serial`；队列按最近 200 条回归任务的 `pending/claimed/running/stopping` 计数（近似，精确以任务页为准）；租约表含 host/serial/task/到期/有效或已过期。
+- **渲染**：项目页执行机区块新增四张摘要卡（执行机/设备容量/任务队列/设备租约）＋「设备租约」表（任务可点回任务页）；无 runner 时也保留机队摘要与租约空态。
+- **测试**：`queue-lease` 三存储补 `listDeviceLeases`（host 过滤、文件重开后租约仍在）；`panel-web` 项目页断言机队四卡、租约状态与 JSON `fleet` 计数。全量 2096 绿，lint 0 error（2 条既有 warning）。
+- **边界**：只读；不新增表/迁移；队列计数为最近 200 条近似，租约读取按主机作用域，跨项目租约在主机机队视图内可见。

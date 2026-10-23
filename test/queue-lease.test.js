@@ -55,6 +55,12 @@ for (const [name, factory] of STORE_IMPLS) {
     assert.equal(first.leases[0].taskId, "t1");
     assert.equal(first.leases[0].hostId, "h");
     assert.equal(first.leases[0].expiresAt, "2026-10-21T10:01:30.000Z");
+    const listed = await store.listDeviceLeases({ hostId: "h" });
+    assert.deepEqual(
+      listed.map((lease) => lease.serial),
+      ["a", "b"]
+    );
+    assert.equal((await store.listDeviceLeases({ hostId: "other" })).length, 0);
 
     const second = await store.acquireDeviceLeases({
       hostId: "h",
@@ -200,6 +206,10 @@ test("FileStore 设备租约随主机状态持久化并可释放", async () => {
 
     const reopened = await FileStore.create({ homeDir: home, env: {} });
     assert.ok(await reopened.getProjectByPath(rootPath));
+    const persistedLeases = await reopened.listDeviceLeases({ hostId: "h" });
+    assert.equal(persistedLeases.length, 1);
+    assert.equal(persistedLeases[0].serial, "a");
+    assert.equal(persistedLeases[0].taskId, "t1");
     const busy = await reopened.acquireDeviceLeases({
       hostId: "h",
       taskId: "t2",
