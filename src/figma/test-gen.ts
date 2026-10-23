@@ -1428,7 +1428,8 @@ function screenshotEmbedWarning(
   markdown: string,
   refs: Map<string, string[]>
 ): DesignWarning | null {
-  const expected = [...refs.values()].reduce((sum, list) => sum + list.length, 0);
+  // renderMarkdown 每个用例最多嵌入 3 张图；期望值须按同一上限计算。
+  const expected = [...refs.values()].reduce((sum, list) => sum + Math.min(list.length, 3), 0);
   if (expected === 0) return null;
   const actual = (markdown.match(/<img\s/gi) ?? []).length;
   if (actual >= expected) return null;

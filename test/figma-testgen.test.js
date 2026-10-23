@@ -2228,3 +2228,17 @@ test("figma_generate_tests: screens:false 写入可见 warning", async () => {
   const markdown = fs.readFileSync(payload.savedTo.markdown, "utf-8");
   assert.doesNotMatch(markdown, /<img src=/);
 });
+
+test("renderMarkdown: >3 屏截断为 3 张图时不应误报 screenshot-embed-mismatch", () => {
+  const graph = chainGraph();
+  const cases = generateTestCases(graph);
+  assert.ok(cases[0].screens.length > 3, "用例包含超过 3 个屏幕");
+  const images = new Map([[cases[0].id, ["a.png", "b.png", "c.png", "d.png"]]]);
+  const markdown = renderMarkdown(
+    [cases[0]],
+    { source: "unit", generatedAt: "2026-10-23T00:00:00Z" },
+    { images }
+  );
+  assert.equal((markdown.match(/<img\s/gi) ?? []).length, 3);
+  assert.match(markdown, /…（共 4 屏）/);
+});
