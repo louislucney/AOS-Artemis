@@ -113,6 +113,35 @@ test("ui-lint: --require-complete blocks non-extracted screens", () => {
   assert.equal(strict.contract.incomplete[0].status, "no-baseline");
 });
 
+test("ui-lint: allowlist expiration is reported and can fail CI", () => {
+  const root = makeTempDir("aos-ui-lint-expiry-");
+  const design = writeContract(root);
+  writeSource(root, "app/src/A.kt", "val a = RoundedCornerShape(99.dp)\n");
+  fs.writeFileSync(
+    path.join(design, "ui-lint-allowlist.json"),
+    JSON.stringify({
+      version: 1,
+      entries: [
+        {
+          file: "app/src/A.kt",
+          value: 99,
+          owner: "qa",
+          reason: "legacy",
+          expiresAt: "2026-10-26T00:00:00.000Z"
+        }
+      ]
+    })
+  );
+  const now = () => Date.parse("2026-10-23T00:00:00.000Z");
+  const report = runUiLint({ rootDir: root, now });
+  assert.equal(report.ok, true);
+  assert.equal(report.allowlist.expiring.length, 1);
+  assert.equal(report.allowlist.expiring[0].daysLeft, 3);
+  assert.match(report.warnings.join("\n"), /即将过期/);
+  const strict = runUiLint({ rootDir: root, now, failOnExpiring: true });
+  assert.equal(strict.ok, false);
+});
+
 test("ui-lint: --changed only scans working tree changes", () => {
   const root = makeTempDir("aos-ui-lint-changed-");
   writeContract(root);

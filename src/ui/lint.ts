@@ -30,6 +30,16 @@ export interface UiLintReport {
   scanned: { files: number; skipped: number };
   findings: UiLintFinding[];
   allowlisted: number;
+  allowlist: {
+    entries: number;
+    expiring: Array<{
+      file: string;
+      owner: string;
+      reason: string;
+      expiresAt: string;
+      daysLeft: number;
+    }>;
+  };
   warnings: string[];
 }
 
@@ -48,6 +58,10 @@ export interface UiLintOptions {
   changed?: boolean;
   /** 契约必须全部 screen status=extracted；否则 ok=false（exit 1）。 */
   requireComplete?: boolean;
+  /** allowlist 到期前提醒天数（默认 7）。 */
+  expiryWarnDays?: number;
+  /** allowlist 有即将到期条目时 ok=false（exit 1）。 */
+  failOnExpiring?: boolean;
   now?: () => number;
   maxFiles?: number;
   maxFileBytes?: number;
@@ -408,9 +422,26 @@ export function runUiLint(options: UiLintOptions): UiLintReport {
   }
 
   const allowlisted = findings.filter((finding) => finding.allowlisted).length;
+  const expiryWarnDays = Math.max(0, Math.trunc(options.expiryWarnDays ?? 7));
+  const expiring = allow.entries
+    .map((entry) => ({
+      file: entry.file,
+      owner: entry.owner,
+      reason: entry.reason,
+      expiresAt: entry.expiresAt,
+      daysLeft: Math.ceil((Date.parse(entry.expiresAt) - nowMs) / 86_400_000)
+    }))
+    .filter((entry) => entry.daysLeft <= expiryWarnDays)
+    .sort((left, right) => left.daysLeft - right.daysLeft || left.file.localeCompare(right.file));
+  for (const entry of expiring) {
+    warnings.push(
+      `allowlist 即将过期：${entry.file} · ${entry.owner} · ${entry.expiresAt}（${entry.daysLeft} 天）`
+    );
+  }
   const contractComplete = options.requireComplete !== true || contract.incomplete.length === 0;
+  const expiryOk = options.failOnExpiring !== true || expiring.length === 0;
   return {
-    ok: findings.every((finding) => finding.allowlisted) && contractComplete,
+    ok: findings.every((finding) => finding.allowlisted) && contractComplete && expiryOk,
     contract,
     scanned: {
       files: selected.length,
@@ -418,6 +449,7 @@ export function runUiLint(options: UiLintOptions): UiLintReport {
     },
     findings,
     allowlisted,
+    allowlist: { entries: allow.entries.length, expiring },
     warnings
   };
 }

@@ -291,7 +291,7 @@ Usage:
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
   mobile-testing-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
   mobile-testing-mcp suite ui-contract [options] 从 flows.json + 逐屏 .pen 投影 UI 契约（token/几何/状态；--out <dir>；默认经 pen CLI 补 auto-layout 文本几何，--no-bounds 关闭）
-  mobile-testing-mcp suite ui-lint [options] 检查源码圆角字面量是否来自 ui-contract token（--contract/--allowlist/--changed/--require-complete；--json；exit 0/1/2）
+  mobile-testing-mcp suite ui-lint [options] 检查源码圆角字面量是否来自 ui-contract token（--contract/--allowlist/--changed/--require-complete/--fail-on-expiring/--expiry-warn-days <n>；--json；exit 0/1/2）
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -2994,6 +2994,12 @@ async function suiteUiLint(
     const rootDir = runtime.project.rootDir;
     const contract = flags.get("contract");
     const allowlist = flags.get("allowlist");
+    const expiryRaw = flags.get("expiry-warn-days");
+    const expiryWarnDays = expiryRaw === null ? 7 : intOrNull(expiryRaw);
+    if (expiryWarnDays === null || expiryWarnDays < 0) {
+      io.errorLog("--expiry-warn-days 需要非负整数");
+      return 2;
+    }
     const report = runUiLint({
       rootDir,
       contractPath: path.resolve(
@@ -3004,15 +3010,17 @@ async function suiteUiLint(
         rootDir,
         allowlist ?? path.join(designDir(runtime.configDirAbs), "ui-lint-allowlist.json")
       ),
+      expiryWarnDays,
       ...(flags.bool("changed") ? { changed: true } : {}),
-      ...(flags.bool("require-complete") ? { requireComplete: true } : {})
+      ...(flags.bool("require-complete") ? { requireComplete: true } : {}),
+      ...(flags.bool("fail-on-expiring") ? { failOnExpiring: true } : {})
     });
     if (flags.bool("json")) {
       io.log(JSON.stringify(report, null, 2));
       return report.ok ? 0 : 1;
     }
     io.log(
-      `UI lint: 契约 ${report.contract.screens} 屏（未完成 ${report.contract.incomplete.length}）· 允许圆角 ${report.contract.radii.join(", ")} · 扫描 ${report.scanned.files} 文件 · 命中 ${report.findings.length}（allowlist ${report.allowlisted}）`
+      `UI lint: 契约 ${report.contract.screens} 屏（未完成 ${report.contract.incomplete.length}）· 允许圆角 ${report.contract.radii.join(", ")} · 扫描 ${report.scanned.files} 文件 · 命中 ${report.findings.length}（allowlist ${report.allowlisted}）· allowlist ${report.allowlist.entries} 条（即将到期 ${report.allowlist.expiring.length}）`
     );
     for (const finding of report.findings) {
       const suffix = finding.allowlisted
@@ -3037,6 +3045,11 @@ async function suiteUiLint(
     if (report.contract.incomplete.length > 0) {
       io.errorLog(
         `契约未完成 ${report.contract.incomplete.length} 屏（no-baseline/partial/unverifiable/unknown）；先补设计或契约，或去掉 --require-complete。`
+      );
+    }
+    if (flags.bool("fail-on-expiring") && report.allowlist.expiring.length > 0) {
+      io.errorLog(
+        `allowlist 有 ${report.allowlist.expiring.length} 条将在 ${expiryWarnDays} 天内到期（--fail-on-expiring）；请续期或清理。`
       );
     }
     return 1;

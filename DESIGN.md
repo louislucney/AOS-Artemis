@@ -2497,3 +2497,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **端点**：`GET /readyz`（免 Bearer、免限流，与 `/healthz` 同层）返回 `{ok, ready, bootId, queue:{queued,running,maxQueue,maxConcurrent}, jobs:{queued,running,done,failed,cancelled}}`；`ready = queued < maxQueue`。
 - **边界**：只读快照，不触发清理/调度；`maxQueue/maxConcurrent` 回显启动参数；不暴露工作目录、任务输入或凭证；进程级单实例口径。
 - **测试**：`open-server` 新增 readyz 用例（无鉴权 200、容量字段、完成后 done 计数）；全量 2112 绿，lint 0 error（2 条既有 warning）。
+
+### 13.199 治理（ui-lint：allowlist 到期提醒/门禁）
+
+> 2026-10-23。接 retro「被接受的差异回写白名单，避免每次回归重报」：allowlist 只校验字段/过期，缺到期前的可见提醒与 CI 收紧开关。
+
+- **数据**：`UiLintReport.allowlist` 增 `{entries, expiring[{file,owner,reason,expiresAt,daysLeft}]}`；默认阈值 7 天，按剩余天数升序；过期条目仍由原逻辑忽略并告警。
+- **CLI**：`--expiry-warn-days <n>`（默认 7）控制提醒窗口；`--fail-on-expiring` 有即将到期条目时 `ok=false` → exit 1；摘要行回显 allowlist 条数与即将到期数；`--json` 原样输出。
+- **测试**：`ui-lint` 增到期用例（3 天后到期 → expiring 1/警告/`--fail-on-expiring` 失败）；全量 2113 绿，lint 0 error（2 条既有 warning）。
+- **边界**：只提醒/阻塞，不自动续期或删除；到期后条目继续按过期忽略；仅影响 `ui-lint` 退出码，不改变面板/运行门禁。
