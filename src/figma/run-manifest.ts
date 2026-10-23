@@ -421,7 +421,8 @@ function baseRunManifest(record: Record<string, unknown>): RunManifestBase {
 }
 
 export function loadRunManifest(configDirAbs: string, fileName: string): RunManifestRead {
-  const file = path.join(runManifestDir(configDirAbs), fileName);
+  // 面板任务页持有台账里的绝对清单路径；允许直接读取，避免反推项目目录。
+  const file = path.isAbsolute(fileName) ? fileName : path.join(runManifestDir(configDirAbs), fileName);
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf-8");

@@ -247,6 +247,8 @@ export interface PanelTaskRunView {
   total: number;
   passed: number;
   failed: number;
+  /** UI 核验计数；清单缺失/远端不可读 → null。 */
+  ui: UiSummary | null;
   failureDomains: Record<string, number>;
   comparison: {
     baseline: string;
@@ -1275,6 +1277,14 @@ function comparisonView(value: unknown): PanelTaskRunView["comparison"] {
 
 /** 回归任务详情（DESIGN：回归服务 §5.4 屏 B）：引用解析 + 设备运行 + 跨端差异；
  * 产物路径仅展示（P1 不内联预览）。未知 task → null。 */
+/** 任务页的 UI 汇总来自批次清单；远端执行机的清单在本机不可读时如实留空。 */
+function taskRunUi(rootPath: string, manifestPath: string | null): UiSummary | null {
+  if (manifestPath === null) return null;
+  const abs = path.isAbsolute(manifestPath) ? manifestPath : path.resolve(rootPath, manifestPath);
+  const read = loadRunManifest(rootPath, abs);
+  return read.kind === "ok" ? (read.manifest.summary.ui ?? null) : null;
+}
+
 export async function buildPanelTaskDetail(
   deps: PanelDeps,
   rootPath: string,
@@ -1352,6 +1362,7 @@ export async function buildPanelTaskDetail(
     total: run.total,
     passed: run.passed,
     failed: run.failed,
+    ui: taskRunUi(rootPath, run.manifestPath),
     failureDomains: run.failureDomains,
     comparison: comparisonView(run.comparison),
     manifestPath: run.manifestPath,

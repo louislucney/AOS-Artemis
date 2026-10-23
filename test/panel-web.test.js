@@ -682,6 +682,20 @@ test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404"
     createdBy: "cli"
   });
   await store.updateRegressionTask(projectDir, task.id, { status: "partial", runIds: ["r1"] });
+  makeBatch(projectDir, {
+    startedIso: "2026-10-14T10:00:00.000Z",
+    traceId: "trace-task",
+    exitCode: 1,
+    ui: { status: "failed", reason: "像素差异" },
+    uiSummary: { passed: 0, failed: 1, unverified: 0, notApplicable: 0 }
+  });
+  const manifestPath = path.join(
+    projectDir,
+    ".artemis",
+    "design",
+    "runs",
+    fs.readdirSync(path.join(projectDir, ".artemis", "design", "runs")).find((name) => name.endsWith(".json"))
+  );
   await store.recordSuiteRun({
     rootPath: projectDir,
     createdAt: "2026-10-14T10:05:00.000Z",
@@ -705,7 +719,7 @@ test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404"
       failureDomains: { 用例缺陷: 1 },
       gateResult: "fail",
       exitCode: 1,
-      manifestPath: "/m/android.json",
+      manifestPath,
       comparison: { baseline: "compared", fixed: 0, regressed: 1, newFailed: 0, vanished: 0 }
     },
     cases: [
@@ -735,6 +749,19 @@ test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404"
     deps
   );
   assert.equal(html.status, 200);
+  const taskJson = JSON.parse(
+    (
+      await handlePanelRequest(
+        new URL(
+          `http://x/panel.json?project=${encodeURIComponent(projectDir)}&task=${encodeURIComponent(task.id)}`
+        ),
+        deps
+      )
+    ).body
+  );
+  assert.deepEqual(taskJson.runs[0].ui, { passed: 0, failed: 1, unverified: 0, notApplicable: 0 });
+  assert.match(html.body, /<th scope="col">UI<\/th>/, "设备运行表含 UI 列");
+  assert.match(html.body, /UI 失败 1/, "设备运行回显 UI 失败计数");
   assert.match(html.body, /<h1>任务 <code>/);
   assert.match(html.body, /partial/);
   assert.match(html.body, /登录流程/);

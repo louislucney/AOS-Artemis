@@ -1747,6 +1747,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
     escapeHtml(runStatusLabel(run.status)),
     `${run.passed}/${run.total}`,
     run.failed === 0 ? "0" : `<span class="err">${run.failed}</span>`,
+    uiBadge(run.ui) || "—",
     Object.keys(run.failureDomains).length === 0
       ? "—"
       : Object.entries(run.failureDomains)
@@ -1869,7 +1870,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       '<section id="runs">',
       "<h2>设备运行</h2>",
       renderTable(
-        ["端", "设备", "状态", "通过", "失败", "失败域", "对比", "清单", "时间"],
+        ["端", "设备", "状态", "通过", "失败", "UI", "失败域", "对比", "清单", "时间"],
         runRows,
         "暂无运行（触发执行见下方指引）"
       ),

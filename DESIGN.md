@@ -2379,5 +2379,6 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 - **数据**：`PanelBatchDetail` 增 `ui: UiSummary | null`；`PanelBatchCaseView` 增 `ui: UiVerification | null`；`buildPanelBatchDetail` 从 `manifest.summary.ui`/`cases[].ui` 读取，旧清单缺字段 → `null`。
 - **渲染**：批次详情「结果概览」显示 UI 计数 chip（失败/未验证/通过）；「用例结果」表新增 **UI** 列，四态显示为通过/失败/未验证/不适用，`reason` 进 `title`；旧清单显示 `—`。
-- **测试**：`panel-web` 批次详情用例构造 `ui.failed` 清单，断言 JSON `ui`/`cases[].ui` 与 HTML `UI` 列、`UI 失败 1`。全量 2095 绿，lint 0 error（2 条既有 warning）。
-- **边界**：只读展示，不改变功能门禁；任务页 UI 汇总需把 UI 计数落 `suite_runs`（后续 P2）。
+- **任务页**：`PanelTaskRunView` 增 `ui: UiSummary | null`；`buildPanelTaskDetail` 按台账 `manifestPath` 读取本机批次清单的 `summary.ui`，远端执行机/清单不可读 → `null`；「设备运行」表新增 **UI** 列并回显计数 chip。`loadRunManifest` 支持绝对路径（面板直接使用台账路径）。
+- **测试**：`panel-web` 批次详情与任务页用例构造 `ui.failed` 清单，断言 JSON `ui`/`cases[].ui` 与 HTML `UI` 列、`UI 失败 1`。全量 2095 绿，lint 0 error（2 条既有 warning）。
+- **边界**：只读展示，不改变功能门禁；未改 `suite_runs` schema，任务页 UI 汇总依赖清单在本机可读（远端执行机显示 `—`）。
