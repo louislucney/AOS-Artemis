@@ -2419,3 +2419,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **服务**：`CmsOpenServerOptions.rateLimitPerMinute`；进程内按 `request.socket.remoteAddress` 维护 60s 滑动窗口（不信任 `X-Forwarded-For`），鉴权通过后、路由前计数；`/healthz` 与 CORS 预检豁免；超限抛 429 `rate_limited`，带 `Retry-After`；窗口内恢复；Map 超过 1024 个客户端时清理空桶。
 - **边界**：单进程内存计数，不跨实例/重启；反向代理后所有客户端共享代理 IP，需在代理层另做限流；未新增持久化/表。
 - **测试**：`open-server` 新增限流用例（第 3 次 429、`Retry-After`、healthz 豁免、窗口后恢复）；`open-command` 补 flag/env 校验与日志；全量 2098 绿，lint 0 error（2 条既有 warning）。
+
+### 13.191 实施记录（P2：ui-lint 最小规则）
+
+> 2026-10-23。接业务梳理 P2「`ui-lint` 机械规则与 UI 基线治理」的第一条：先只做圆角字面量，不铺 presentation/hero 等尚未有稳定映射的规则。
+
+- **命令**：`suite ui-lint [--contract <json>] [--allowlist <json>] [--project <dir>] [--json]`；默认读 `.artemis/design/ui-contract.json` 与 `.artemis/design/ui-lint-allowlist.json`；缺契约/解析失败 exit 2，未登记圆角 exit 1，全通过（含 allowlist）exit 0。
+- **规则**：扫描 Compose `RoundedCornerShape/CornerRadius`、SwiftUI `cornerRadius/RoundedRectangle`、Flutter `BorderRadius.circular`、CSS `border-radius`、JS/RN `borderRadius`、Android XML `android:radius`；值必须命中契约 `screens[].tokens.cornerRadius`（另允许 `0`）。启发式命中只报文件/行/列/栈/片段，不自动改代码。
+- **范围**：跳过 `.artemis`、测试、构建、依赖、vendor 目录与符号链接；单文件 ≤1 MB、最多 5000 个文件；不做设计→代码映射，`mapping-confidence` 留待后续（当前按全局 token 集合校验）。
+- **allowlist**：`{version, entries:[{file,value?,owner,reason,expiresAt}]}`；缺字段、非法/过期时间不生效并告警；命中的 finding 标 `allowlisted`，不阻塞退出码。
+- **边界**：仅圆角规则；颜色/字体/presentation/hero 资源/逐屏映射未实现，文档与输出不冒充；不接 `suite run` 门禁，需手动/CI 调用。
+- **测试**：新增 `ui-lint` 4 例（契约通过/未登记失败、allowlist 生效/过期、缺契约硬错、CLI JSON 与 0/1/2 退出码）；全量 2102 绿，lint 0 error（2 条既有 warning）。

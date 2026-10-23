@@ -35,6 +35,7 @@ import {
 } from "./figma/reconciliation.js";
 import { buildRunReport, buildTaskRunReport } from "./figma/run-report.js";
 import { buildUiContract } from "./ui/contract.js";
+import { runUiLint } from "./ui/lint.js";
 import { readPenTextBounds } from "./pen/bounds.js";
 import type { WarningSummary } from "./design/warnings.js";
 import {
@@ -290,6 +291,7 @@ Usage:
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
   mobile-testing-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
   mobile-testing-mcp suite ui-contract [options] 从 flows.json + 逐屏 .pen 投影 UI 契约（token/几何/状态；--out <dir>；默认经 pen CLI 补 auto-layout 文本几何，--no-bounds 关闭）
+  mobile-testing-mcp suite ui-lint [options] 检查源码圆角字面量是否来自 ui-contract token（--contract/--allowlist；--json；exit 0/1/2）
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -2983,6 +2985,57 @@ async function suiteUiContract(
   }
 }
 
+async function suiteUiLint(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  try {
+    const rootDir = runtime.project.rootDir;
+    const contract = flags.get("contract");
+    const allowlist = flags.get("allowlist");
+    const report = runUiLint({
+      rootDir,
+      contractPath: path.resolve(
+        rootDir,
+        contract ?? path.join(designDir(runtime.configDirAbs), "ui-contract.json")
+      ),
+      allowlistPath: path.resolve(
+        rootDir,
+        allowlist ?? path.join(designDir(runtime.configDirAbs), "ui-lint-allowlist.json")
+      )
+    });
+    if (flags.bool("json")) {
+      io.log(JSON.stringify(report, null, 2));
+      return report.ok ? 0 : 1;
+    }
+    io.log(
+      `UI lint: 契约 ${report.contract.screens} 屏 · 允许圆角 ${report.contract.radii.join(", ")} · 扫描 ${report.scanned.files} 文件 · 命中 ${report.findings.length}（allowlist ${report.allowlisted}）`
+    );
+    for (const finding of report.findings) {
+      const suffix = finding.allowlisted
+        ? ` [allowlist ${finding.allowlist?.owner ?? ""}：${finding.allowlist?.reason ?? ""}]`
+        : "";
+      io.log(
+        `  ${finding.file}:${finding.line}:${finding.column} ${finding.stack} 圆角 ${finding.value}（允许 ${finding.allowed.join("/")}）${suffix}`
+      );
+      if (finding.snippet !== "") io.log(`    ${finding.snippet}`);
+    }
+    for (const warning of report.warnings) io.log(`警告: ${warning}`);
+    if (report.ok) {
+      io.log(report.findings.length === 0 ? "通过：未发现未登记圆角。" : "通过：未登记圆角均在 allowlist 内。");
+      return 0;
+    }
+    io.errorLog(
+      `未登记圆角 ${report.findings.filter((finding) => !finding.allowlisted).length} 处；请改用契约 token 或登记 ui-lint-allowlist.json（owner/reason/expiresAt）。`
+    );
+    return 1;
+  } catch (error) {
+    io.errorLog(`UI lint 失败: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+}
+
 /** 回填扫描（只读产物 → 幂等重建登记）：PG 守卫 + 下界 + 报告输出。 */
 async function suiteBackfill(
   runtime: Runtime,
@@ -3039,7 +3092,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract", "ui-lint"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -3124,6 +3177,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "schedule") return await suiteSchedule(built.runtime, flags, { log, errorLog });
     if (sub === "backfill") return await suiteBackfill(built.runtime, flags, { log, errorLog });
     if (sub === "ui-contract") return await suiteUiContract(built.runtime, flags, { log, errorLog });
+    if (sub === "ui-lint") return await suiteUiLint(built.runtime, flags, { log, errorLog });
     if (sub === "runner") {
       return await suiteRunnerCommand(
         built.runtime,
