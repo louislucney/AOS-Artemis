@@ -27,7 +27,11 @@ import { REAL_DATA_CLAUSE } from "./data-policy.js";
 import { applyReconciliationToGraph, loadReconciliation } from "./reconciliation.js";
 import { loadScreenMap, normalizeElementLabel } from "../diff/screen-map.js";
 import { canonicalizePlaceholders, normalizedText } from "./strings.js";
-import { renderTestsWorkbook } from "./test-xlsx.js";
+import {
+  renderTestsWorkbook,
+  updateWorkbookApiReview,
+  upsertApiReviewMarkdown
+} from "./test-xlsx.js";
 import {
   expectedResultLines,
   openQuestionLines,
@@ -57,6 +61,8 @@ import {
   SCREENSHOT_MAPPING_MISSING,
   SCREENSHOT_RENDER_UNAVAILABLE,
   SCREENSHOT_SKIPPED,
+  SCREENSHOT_DISABLED,
+  SCREENSHOT_EMBED_MISMATCH,
   storeScreenPng
 } from "../design/screens.js";
 import { capturePenScreens } from "../pen/screens.js";
@@ -105,7 +111,21 @@ export interface GeneratedTest {
   id: string;
   name: string;
   screens: string[];
+  /** 人类可读屏幕名；仅展示，不参与截图映射/caseId。 */
+  displayScreens?: string[];
+  /** 人类可读用例名；仅展示，不参与 caseId。 */
+  displayName?: string;
+  /** 执行器步骤（含设计元素/a11y/i18n 等 grounding 信息；caseId 哈希依据）。 */
   steps: string[];
+  /** 人类层步骤（净化后）；仅用于 Excel/Markdown 展示。 */
+  humanSteps?: string[];
+  /** 人类标签回退统计；用于在文档中暴露“按钮 ×3”式降级。 */
+  humanization?: {
+    elements: number;
+    fallbacks: number;
+    fallbackLabels: string[];
+    density: number;
+  };
   /** Explicit data/launch assumptions the case relies on (deterministic). */
   preconditions: string[];
   /** Ready-to-run mobile_run_task description. */
@@ -116,6 +136,8 @@ export interface GeneratedTest {
   startScreen: string;
   /** Navigation-only steps from the entry to `startScreen`; empty unless continuation. */
   prelude: string[];
+  /** 人类层前导导航；仅展示。 */
+  humanPrelude?: string[];
   /** Per-step destination expectations, aligned with `steps` (deterministic audit). */
   expectations: StepExpectation[];
   /** Deterministic start-state check: the executor verifies the journey entry screen. */
@@ -523,6 +545,154 @@ function loadIdentifierSuggestions(
   return map;
 }
 
+const TECHNICAL_SCREEN_NAME = /^(Frame|Group|Rectangle|Component(?: Set)?|Vector|Ellipse|Image|Layer|Line|Boolean|Union|Subtract|Intersect|Exclude|Star|Polygon|Slice|Text)[\s_-]*\d*$/i;
+const GENERIC_ELEMENT_PREFIX = /^(icons?|images?|frames?|groups?|components?|component set|vectors?|rectangles?|ellipses?|layers?|app)\b[\s_/-]*/i;
+const GENERIC_ELEMENT_SUFFIX = /[\s_/-]*\b(button|btn|text|label|input|field|view|container|icon|image|frame|group)\b$/i;
+
+function hasCjk(value: string): boolean {
+  return /[\u3400-\u9fff]/.test(value);
+}
+
+function genericElementLabel(type: string, rawName: string): string {
+  const kind = type.toUpperCase();
+  if (kind.includes("BUTTON") || kind.includes("INSTANCE") || kind.includes("COMPONENT")) return "按钮";
+  if (kind.includes("INPUT") || kind.includes("TEXT_FIELD") || kind.includes("TEXTFIELD")) return "输入框";
+  if (kind.includes("SWITCH") || kind.includes("TOGGLE")) return "开关";
+  if (kind.includes("TAB")) return "标签页";
+  if (kind.includes("IMAGE")) return "图片";
+  if (kind.includes("TEXT")) return "文字";
+  if (/^icons?[\\/]/i.test(rawName.trim())) return "图标";
+  return "可点击区域";
+}
+
+/** 人类层元素标签：可见文本优先，其次“去掉通用词后仍有意义”的图层名，最后回退通用控件名。 */
+export function humanElementLabel(edge: FlowEdge): {
+  label: string;
+  fallback: boolean;
+  raw: string;
+} {
+  const hint = runtimeHintTexts(edge.textHints)[0]?.trim();
+  if (hint) return { label: hint, fallback: false, raw: edge.element.name };
+  const raw = edge.element.name.trim();
+  const generic = genericElementLabel(edge.element.type, raw);
+  let cleaned = raw.replace(GENERIC_ELEMENT_PREFIX, "").replace(GENERIC_ELEMENT_SUFFIX, "").trim();
+  cleaned = cleaned.replace(/^[\s_/.-]+|[\s_/.-]+$/g, "");
+  if (cleaned !== "" && hasCjk(cleaned) && cleaned.length <= 30) {
+    return { label: cleaned, fallback: false, raw };
+  }
+  if (
+    cleaned !== "" &&
+    /^[A-Za-z0-9 &'.,:-]+$/.test(cleaned) &&
+    cleaned.length <= 48 &&
+    cleaned.split(/\s+/).filter(Boolean).length >= 2
+  ) {
+    return { label: `${cleaned}${generic === "可点击区域" ? "" : generic}`, fallback: false, raw };
+  }
+  return { label: generic, fallback: true, raw };
+}
+
+function humanScreenLabel(name: string, hints: string[]): string {
+  const trimmed = name.trim();
+  const readable =
+    trimmed !== "" &&
+    !TECHNICAL_SCREEN_NAME.test(trimmed) &&
+    !/[\\/]/.test(trimmed) &&
+    !/[a-z][A-Z]/.test(trimmed);
+  if (readable) return trimmed;
+  const hint = hints.map((entry) => entry.trim()).find((entry) => entry !== "" && !/[\\/]/.test(entry));
+  return hint !== undefined && hint.length <= 30 ? hint : "未命名页面";
+}
+
+function humanScreenLabels(graph: FlowGraph): Map<string, string> {
+  const labels = new Map<string, string>();
+  const used = new Map<string, number>();
+  for (const screen of graph.screens) {
+    const base = humanScreenLabel(screen.name, runtimeHintTexts(screen.textHints));
+    const count = (used.get(base) ?? 0) + 1;
+    used.set(base, count);
+    labels.set(screen.name, count === 1 ? base : `${base} (${count})`);
+  }
+  return labels;
+}
+
+function humanStepFor(
+  graph: FlowGraph,
+  edge: FlowEdge,
+  labels: Map<string, string>
+): { text: string; fallback: boolean; label: string } {
+  const provenance = resolveProvenance(edge.provenance);
+  const displayName = (name: string): string => labels.get(name) ?? name;
+  if (isUnconfirmedProvenance(provenance)) {
+    if (edge.trigger === "AFTER_TIMEOUT") {
+      const seconds = ((edge.triggerTimeoutMs ?? 0) / 1000).toFixed(1).replace(/\.0$/, "");
+      const destination = edge.to ? `「${displayName(edge.to.name)}」` : "下一屏";
+      return {
+        text: `等待 ${seconds} 秒后确认到达${destination}（来源未确认；记录实际页面变化，不参与断言判定）`,
+        fallback: false,
+        label: destination
+      };
+    }
+    if (edge.back) {
+      return {
+        text: "探索返回上一屏（来源未确认）：记录实际页面变化；不参与断言判定",
+        fallback: false,
+        label: "上一屏"
+      };
+    }
+    if (edge.to) {
+      return {
+        text: `探索到达「${displayName(edge.to.name)}」（来源未确认）：自行尝试触发通往该页的交互，记录实际路径与页面变化；不参与断言判定`,
+        fallback: false,
+        label: displayName(edge.to.name)
+      };
+    }
+    const label = humanElementLabel(edge);
+    return {
+      text: `探索未知跳转「${label.label}」（来源未确认）：尝试触发该元素并记录实际页面变化；不参与断言判定`,
+      fallback: label.fallback,
+      label: label.label
+    };
+  }
+  const element = humanElementLabel(edge);
+  const target = edge.to ? `「${displayName(edge.to.name)}」` : null;
+  const assertion = assertionFor(graph, edge);
+  const label = `「${element.label}」`;
+  if (edge.trigger === "AFTER_TIMEOUT") {
+    const seconds = ((edge.triggerTimeoutMs ?? 0) / 1000).toFixed(1).replace(/\.0$/, "");
+    return {
+      text: `等待 ${seconds} 秒${target ? `，页面应自动进入${target}${assertion}` : ""}`,
+      fallback: false,
+      label: target ?? "自动跳转"
+    };
+  }
+  if (edge.back) {
+    return {
+      text: `点击${label}返回上一页${target ? `（应回到${target}${assertion}）` : ""}`,
+      fallback: element.fallback,
+      label: element.label
+    };
+  }
+  if (edge.trigger === "ON_DRAG") {
+    return {
+      text: `在${label}上执行拖拽操作${target ? `，验证进入${target}${assertion}` : ""}`,
+      fallback: element.fallback,
+      label: element.label
+    };
+  }
+  if (edge.trigger.startsWith("ON_")) {
+    return {
+      text: `点击${label}${target ? `，验证进入${target}${assertion}` : "（应停留在本页不产生跳转）"}`,
+      fallback: element.fallback,
+      label: element.label
+    };
+  }
+  return {
+    text: `触发${label}（${edge.trigger}）${target ? `，验证进入${target}${assertion}` : ""}`,
+    fallback: element.fallback,
+    label: element.label
+  };
+}
+
 function stepFor(
   graph: FlowGraph,
   edge: FlowEdge,
@@ -723,6 +893,7 @@ export function generateTestCases(
     maxDepth: options.maxDepth
   });
   options.onStats?.(stats);
+  const screenLabels = humanScreenLabels(graph);
   return paths.map((flowPath, pathIndex) => {
     const prefix = prefixes[pathIndex] ?? [];
     const continuation = prefix.length > 0;
@@ -737,14 +908,24 @@ export function generateTestCases(
     for (const edge of flowPath) pushScreen(edge.to?.name);
     const steps = flowPath.map((edge) => stepFor(graph, edge, options.i18nKeys, options.identifiers));
     const prelude = prefix.map((edge) => stepFor(graph, edge, options.i18nKeys, options.identifiers));
+    const humanSteps = flowPath.map((edge) => humanStepFor(graph, edge, screenLabels).text);
+    const humanPrelude = prefix.map((edge) => humanStepFor(graph, edge, screenLabels).text);
+    const humanizationEdges = [...prefix, ...flowPath].map((edge) => humanStepFor(graph, edge, screenLabels));
+    const humanFallbacks = humanizationEdges.filter((entry) => entry.fallback);
     const expectations = flowPath.map((edge) => expectationFor(graph, edge));
     const exploreCount = [...prefix, ...flowPath].filter((edge) =>
       isUnconfirmedProvenance(resolveProvenance(edge.provenance))
     ).length;
-    const baseName =
+    const displayScreens = screens.map((screen) => screenLabels.get(screen) ?? screen);
+    const machineBaseName =
       screens.length <= 4 ? screens.join(" → ") : `${screens.slice(0, 4).join(" → ")} → …`;
+    const idName = continuation ? `${machineBaseName}（续段）` : machineBaseName;
+    const baseName =
+      displayScreens.length <= 4
+        ? displayScreens.join(" → ")
+        : `${displayScreens.slice(0, 4).join(" → ")} → …`;
     const name = continuation ? `${baseName}（续段）` : baseName;
-    const preconditions = deriveCasePreconditions(screens, {
+    const preconditions = deriveCasePreconditions(displayScreens, {
       entryFallback: stats.entryFallback
     });
     const entryScreen = screens[0]!;
@@ -755,7 +936,7 @@ export function generateTestCases(
     };
     const testData = collectScreenValues(screens, options.testDataByScreen ?? new Map(), 12);
     const openQuestions = collectScreenValues(screens, options.questionsByScreen ?? new Map(), 10);
-    const section = options.sectionByScreen?.get(entryScreen) ?? entryScreen;
+    const section = options.sectionByScreen?.get(entryScreen) ?? screenLabels.get(entryScreen) ?? entryScreen;
     const expectationLine = `脚本断言（供 iOS 执行器自动核对，执行时无需处理）：【AOS-EXPECT】${JSON.stringify(
       {
         ...(preflight.hints.length > 0
@@ -803,15 +984,28 @@ export function generateTestCases(
       expectationLine
     ].join("\n");
     return {
-      id: caseIdFor(name, screens, steps),
+      id: caseIdFor(idName, screens, steps),
       name,
       screens,
+      displayScreens,
+      displayName: name,
       steps,
+      humanSteps,
+      humanization: {
+        elements: humanizationEdges.length,
+        fallbacks: humanFallbacks.length,
+        fallbackLabels: [...new Set(humanFallbacks.map((entry) => entry.label))],
+        density:
+          humanizationEdges.length === 0
+            ? 0
+            : Number((humanFallbacks.length / humanizationEdges.length).toFixed(2))
+      },
       preconditions,
       taskDesc,
       continuation,
       startScreen: first.from.name,
       prelude,
+      humanPrelude,
       expectations,
       preflight,
       section,
@@ -828,6 +1022,7 @@ export function renderMarkdown(
     images?: Map<string, string[]>;
     feedback?: CaseDefectFeedback;
     designWarnings?: DesignWarning[];
+    apiReview?: ApiReview | null;
   } = {}
 ): string {
   const lines: string[] = [
@@ -837,6 +1032,21 @@ export function renderMarkdown(
     `> 生成时间: ${meta.generatedAt}`,
     ""
   ];
+  if (options.apiReview !== undefined && options.apiReview !== null) {
+    const review = options.apiReview;
+    const label =
+      review.status === "provided"
+        ? "已提供 API 说明"
+        : review.status === "pending"
+          ? "待补充 API 说明（先生成，相关执行前需补齐）"
+          : review.status === "not-applicable"
+            ? "无 API 变更"
+            : "API 变更未确认";
+    lines.push(`> **API 变更：${label}**${review.carriedForward ? "（沿用上次说明，请复核）" : ""}`, "");
+    if (review.apiSpec !== null && review.apiSpec.trim() !== "") {
+      lines.push("<details>", "<summary>API 说明</summary>", "", "```text", review.apiSpec, "```", "", "</details>", "");
+    }
+  }
   if (options.designWarnings && options.designWarnings.length > 0) {
     lines.push("## 警告（设计源与生成期，不阻断生成）", "");
     for (const warning of options.designWarnings) {
@@ -853,7 +1063,10 @@ export function renderMarkdown(
     const section = testCase.section ?? "未指定";
     lines.push(`## ${index + 1}. ${displayId} · ${module} / ${section} — ${testCase.name}`, "");
     if (testCase.continuation) {
-      lines.push(`> 接续段：先按前导导航到「${testCase.startScreen}」（不计断言）`, "");
+      const startDisplay =
+        testCase.displayScreens?.[testCase.screens.indexOf(testCase.startScreen)] ??
+        testCase.startScreen;
+      lines.push(`> 接续段：先按前导导航到「${startDisplay}」（不计断言）`, "");
     }
     const refs = options.images?.get(testCase.id) ?? [];
     if (refs.length > 0) {
@@ -869,16 +1082,27 @@ export function renderMarkdown(
     if (testData.length > 0) {
       lines.push("测试数据：", ...testData.map((line) => `  ${line}`), "");
     }
-    if ((testCase.prelude ?? []).length > 0) {
+    const humanPrelude = testCase.humanPrelude ?? testCase.prelude ?? [];
+    if (humanPrelude.length > 0) {
       lines.push("- 前导导航（仅到达起点）：");
-      testCase.prelude.forEach((step, stepIndex) => {
+      humanPrelude.forEach((step, stepIndex) => {
         lines.push(`  - [ ] P${stepIndex + 1}) ${step}`);
       });
       lines.push("");
     }
-    testCase.steps.forEach((step, stepIndex) => {
+    (testCase.humanSteps ?? testCase.steps).forEach((step, stepIndex) => {
       lines.push(`- [ ] ${stepIndex + 1}) ${step}`);
     });
+    const humanization = testCase.humanization;
+    if (
+      humanization !== undefined &&
+      (humanization.fallbacks >= 3 || humanization.density > 0.2)
+    ) {
+      lines.push(
+        "",
+        `> 人类层降级：${humanization.fallbacks}/${humanization.elements} 个元素回退为通用名称（${humanization.fallbackLabels.join("、") || "—"}），请结合设计图核对。`
+      );
+    }
     const expected = expectedResultLines(testCase);
     if (expected.length > 0) {
       lines.push("", "预期结果：", ...expected.map((line) => `- ${line}`));
@@ -887,7 +1111,18 @@ export function renderMarkdown(
     if (questions.length > 0) {
       lines.push("", "待确认：", ...questions.map((line) => `  ${line}`));
     }
-    lines.push("", "### artemis 任务描述（可直接传给 mobile_run_task）", "", "```text", testCase.taskDesc, "```", "");
+    lines.push(
+      "",
+      "<details>",
+      "<summary>执行器指令（agent 读取）</summary>",
+      "",
+      "```text",
+      testCase.taskDesc,
+      "```",
+      "",
+      "</details>",
+      ""
+    );
   });
   if (options.feedback && options.feedback.byFeature.length > 0) {
     lines.push("## 上轮案例问题修订提示（裁决反馈）", "");
@@ -907,12 +1142,33 @@ export function renderMarkdown(
 }
 
 
+const API_SPEC_MAX_BYTES = 64 * 1024;
+
+export type ApiChange = "none" | "new" | "modified" | "unknown";
+export type ApiReviewStatus = "not-applicable" | "provided" | "pending" | "unknown";
+
+export interface ApiReview {
+  change: ApiChange;
+  status: ApiReviewStatus;
+  /** 内联接口说明；受 64 KiB 上限约束。 */
+  apiSpec: string | null;
+  apiSpecSha256: string | null;
+  /** 用于判断 carriedForward 是否跨设计源。 */
+  designFingerprint: string | null;
+  carriedForward?: boolean;
+  designChanged?: boolean;
+  updatedAt: string;
+}
+
 export interface GenerateTestsArgs {
   url?: string;
   flowsPath?: string;
   maxFlows?: number;
   maxDepth?: number;
   save?: boolean;
+  apiChange?: ApiChange;
+  apiSpec?: string;
+  apiSpecPath?: string;
   /** 次级产物开关（tests.json 在 save!==false 时始终落盘）。 */
   saveArtifacts?: {
     markdown?: boolean;
@@ -924,6 +1180,182 @@ export interface GenerateTestsArgs {
   requireFullCoverage?: boolean;
   /** 按用例嵌入屏幕截图到 tests.md（默认 true；`AOS_SCREENS=0` 全局关闭）。 */
   screens?: boolean;
+}
+
+export function designFingerprintFor(
+  runtime: DesignRuntimeLike,
+  input: { flowsPath: string; url?: string }
+): string {
+  if (typeof input.url === "string" && input.url.trim() !== "") {
+    return createHash("sha256").update(`figma:${input.url.trim()}`).digest("hex");
+  }
+  try {
+    return createHash("sha256").update(fs.readFileSync(input.flowsPath)).digest("hex");
+  } catch {
+    return createHash("sha256").update(path.resolve(input.flowsPath)).digest("hex");
+  }
+}
+
+function priorApiReview(runtime: DesignRuntimeLike): ApiReview | null {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(runtime.configDirAbs, "design", "tests.json"), "utf-8")
+    ) as { apiReview?: unknown };
+    const value = parsed.apiReview;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const change =
+      record.change === "none" ||
+      record.change === "new" ||
+      record.change === "modified" ||
+      record.change === "unknown"
+        ? record.change
+        : "unknown";
+    const status =
+      record.status === "not-applicable" ||
+      record.status === "provided" ||
+      record.status === "pending" ||
+      record.status === "unknown"
+        ? record.status
+        : "unknown";
+    return {
+      change,
+      status,
+      apiSpec: typeof record.apiSpec === "string" ? record.apiSpec : null,
+      apiSpecSha256: typeof record.apiSpecSha256 === "string" ? record.apiSpecSha256 : null,
+      designFingerprint:
+        typeof record.designFingerprint === "string" ? record.designFingerprint : null,
+      carriedForward: record.carriedForward === true,
+      designChanged: record.designChanged === true,
+      updatedAt:
+        typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString()
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveApiSpec(
+  runtime: DesignRuntimeLike,
+  args: Pick<GenerateTestsArgs, "apiSpec" | "apiSpecPath">
+): { spec: string | null; warning: string | null } {
+  if (args.apiSpec !== undefined && args.apiSpecPath !== undefined) {
+    throw new Error("apiSpec 与 apiSpecPath 互斥：只提供一种接口说明");
+  }
+  if (args.apiSpecPath !== undefined && args.apiSpecPath.trim() !== "") {
+    const root = path.resolve(runtime.project.rootDir);
+    const abs = path.resolve(root, args.apiSpecPath);
+    const rel = path.relative(root, abs);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      throw new Error("apiSpecPath 必须位于项目根目录内");
+    }
+    let spec: string;
+    try {
+      spec = fs.readFileSync(abs, "utf-8");
+    } catch (error) {
+      throw new Error(`apiSpecPath 不可读：${errorMessage(error)}`);
+    }
+    if (Buffer.byteLength(spec, "utf8") > API_SPEC_MAX_BYTES) {
+      throw new Error(`apiSpec 超过 ${API_SPEC_MAX_BYTES} 字节上限`);
+    }
+    return { spec, warning: null };
+  }
+  if (args.apiSpec !== undefined) {
+    if (Buffer.byteLength(args.apiSpec, "utf8") > API_SPEC_MAX_BYTES) {
+      throw new Error(`apiSpec 超过 ${API_SPEC_MAX_BYTES} 字节上限`);
+    }
+    return { spec: args.apiSpec, warning: null };
+  }
+  return { spec: null, warning: null };
+}
+
+export function resolveApiReview(
+  runtime: DesignRuntimeLike,
+  args: Pick<GenerateTestsArgs, "apiChange" | "apiSpec" | "apiSpecPath">,
+  designFingerprint: string,
+  now = new Date()
+): { review: ApiReview; warnings: DesignWarning[] } {
+  const { spec } = resolveApiSpec(runtime, args);
+  const explicit =
+    args.apiChange ?? (spec !== null && args.apiChange === undefined ? "new" : undefined);
+  const prior = priorApiReview(runtime);
+  const warnings: DesignWarning[] = [];
+  const updatedAt = now.toISOString();
+  if (explicit === "none") {
+    return {
+      review: {
+        change: "none",
+        status: "not-applicable",
+        apiSpec: null,
+        apiSpecSha256: null,
+        designFingerprint,
+        updatedAt
+      },
+      warnings
+    };
+  }
+  if (explicit === "new" || explicit === "modified") {
+    if (spec === null) {
+      return {
+        review: {
+          change: explicit,
+          status: "pending",
+          apiSpec: null,
+          apiSpecSha256: null,
+          designFingerprint,
+          updatedAt
+        },
+        warnings
+      };
+    }
+    return {
+      review: {
+        change: explicit,
+        status: "provided",
+        apiSpec: spec,
+        apiSpecSha256: createHash("sha256").update(spec).digest("hex"),
+        designFingerprint,
+        updatedAt
+      },
+      warnings
+    };
+  }
+  if (prior !== null) {
+    const designChanged =
+      prior.designFingerprint !== null && prior.designFingerprint !== designFingerprint;
+    if (designChanged) {
+      warnings.push({
+        code: "apiReview-design-changed",
+        message: "沿用上次 API 说明，但设计源指纹已变化；请复核接口说明是否仍适用"
+      });
+    } else if (prior.status === "provided") {
+      warnings.push({
+        code: "apiReview-carried-forward",
+        message: "沿用上次 API 说明；请复核是否仍适用"
+      });
+    }
+    return {
+      review: {
+        ...prior,
+        carriedForward: true,
+        designChanged,
+        designFingerprint,
+        updatedAt
+      },
+      warnings
+    };
+  }
+  return {
+    review: {
+      change: "unknown",
+      status: "unknown",
+      apiSpec: null,
+      apiSpecSha256: null,
+      designFingerprint,
+      updatedAt
+    },
+    warnings
+  };
 }
 
 export interface GenerateTestsDeps {
@@ -953,6 +1385,20 @@ interface CaseScreensResult {
     skipped: number;
     skippedScreens: string[];
   } | null;
+}
+
+function screenshotEmbedWarning(
+  markdown: string,
+  refs: Map<string, string[]>
+): DesignWarning | null {
+  const expected = [...refs.values()].reduce((sum, list) => sum + list.length, 0);
+  if (expected === 0) return null;
+  const actual = (markdown.match(/<img\s/gi) ?? []).length;
+  if (actual >= expected) return null;
+  return {
+    code: SCREENSHOT_EMBED_MISMATCH,
+    message: `截图嵌入不完整：映射 ${expected} 张，Markdown 实际 ${actual} 张`
+  };
 }
 
 function screenCaptureWarnings(
@@ -1269,6 +1715,80 @@ export function enrichGeneratedCases(cases: GeneratedTest[], input: EnrichCasesI
   }
 }
 
+export async function updateTestsApiReview(
+  runtime: DesignRuntimeLike,
+  args: Pick<GenerateTestsArgs, "apiChange" | "apiSpec" | "apiSpecPath">
+): Promise<{ review: ApiReview; updatedArtifacts: string[]; warnings: DesignWarning[] }> {
+  const testsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+  if (!fs.existsSync(testsPath)) {
+    throw new Error(`未找到 ${testsPath}：先运行生成，再补 API 说明`);
+  }
+  const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as Record<string, unknown>;
+  const prior =
+    parsed.apiReview && typeof parsed.apiReview === "object" && !Array.isArray(parsed.apiReview)
+      ? (parsed.apiReview as Record<string, unknown>)
+      : null;
+  const priorFingerprint =
+    prior !== null && typeof prior.designFingerprint === "string"
+      ? prior.designFingerprint
+      : null;
+  const fingerprint =
+    priorFingerprint ??
+    designFingerprintFor(runtime, {
+      flowsPath: path.join(runtime.configDirAbs, "design", "flows.json")
+    });
+  const { review, warnings } = resolveApiReview(runtime, args, fingerprint);
+  parsed.apiReview = review;
+  if (typeof parsed.generatedAt !== "string") parsed.generatedAt = review.updatedAt;
+  writeFileAtomic(testsPath, JSON.stringify(parsed, null, 2) + "\n");
+  const updatedArtifacts = [testsPath];
+
+  const markdownPath = path.join(runtime.configDirAbs, "design", "tests.md");
+  if (fs.existsSync(markdownPath)) {
+    writeFileAtomic(
+      markdownPath,
+      upsertApiReviewMarkdown(fs.readFileSync(markdownPath, "utf-8"), review)
+    );
+    updatedArtifacts.push(markdownPath);
+  }
+  const excelPath = path.join(runtime.configDirAbs, "design", "tests.xlsx");
+  if (await updateWorkbookApiReview(excelPath, review)) updatedArtifacts.push(excelPath);
+
+  const setsDir = caseSetsDir(runtime.configDirAbs);
+  try {
+    for (const name of fs.readdirSync(setsDir)) {
+      if (!name.endsWith(".json")) continue;
+      const jsonPath = path.join(setsDir, name);
+      let caseSet: Record<string, unknown>;
+      try {
+        caseSet = JSON.parse(fs.readFileSync(jsonPath, "utf-8")) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const savedTo = caseSet.savedTo;
+      const savedJson =
+        savedTo && typeof savedTo === "object" && !Array.isArray(savedTo)
+          ? (savedTo as Record<string, unknown>).json
+          : null;
+      if (typeof savedJson !== "string" || path.resolve(savedJson) !== testsPath) continue;
+      caseSet.apiReview = review;
+      writeFileAtomic(jsonPath, JSON.stringify(caseSet, null, 2) + "\n");
+      updatedArtifacts.push(jsonPath);
+      const stem = name.slice(0, -".json".length);
+      const setMd = path.join(setsDir, `${stem}.md`);
+      if (fs.existsSync(setMd)) {
+        writeFileAtomic(setMd, upsertApiReviewMarkdown(fs.readFileSync(setMd, "utf-8"), review));
+        updatedArtifacts.push(setMd);
+      }
+      const setXlsx = path.join(setsDir, `${stem}.xlsx`);
+      if (await updateWorkbookApiReview(setXlsx, review)) updatedArtifacts.push(setXlsx);
+    }
+  } catch {
+    /* case-set 目录不可读：live 三件套已更新 */
+  }
+  return { review, updatedArtifacts, warnings };
+}
+
 export async function figmaGenerateTests(
   runtime: DesignRuntimeLike,
   args: GenerateTestsArgs,
@@ -1341,6 +1861,10 @@ export async function figmaGenerateTests(
     });
     const generation = generationRef.stats;
     const generatedAt = new Date().toISOString();
+    const designFingerprint = designFingerprintFor(runtime, { flowsPath, ...(args.url ? { url: args.url } : {}) });
+    const apiReviewResult = resolveApiReview(runtime, args, designFingerprint, new Date(generatedAt));
+    const apiReview = apiReviewResult.review;
+    const apiReviewWarnings = apiReviewResult.warnings;
     const counts = { cases: cases.length, screens: graph.screens.length, edges: graph.edges.length };
     const coverage = computeFlowCoverage(graph, cases, generation);
     if (args.requireFullCoverage === true && !coverage.complete) {
@@ -1399,6 +1923,13 @@ export async function figmaGenerateTests(
       ok: true,
       schemaVersion: 2,
       source,
+      generatedAt,
+      apiReview,
+      ...(apiReview.status === "pending"
+        ? { apiReviewNextAction: "provide-api-spec" }
+        : apiReview.status === "unknown"
+          ? { apiReviewNextAction: "confirm-api-change" }
+          : {}),
       counts: { flows: counts.cases, screens: counts.screens, edges: counts.edges },
       summary: summarizeCases(cases),
       generation,
@@ -1457,6 +1988,7 @@ export async function figmaGenerateTests(
           source: "generated",
           warnings: [
             ...acceptance.warnings,
+            ...apiReviewWarnings,
             ...(Array.isArray(payload.warnings) ? (payload.warnings as DesignWarning[]) : [])
           ]
         }
@@ -1488,6 +2020,18 @@ export async function figmaGenerateTests(
       const dotenv = runtime.project.dotenvValues ?? {};
       const wantScreens =
         (wantMarkdown || wantCaseSets) && screensEnabledFrom({ ...process.env, ...dotenv }, args.screens);
+      if (!wantScreens && (wantMarkdown || wantXlsx)) {
+        const priorWarnings = Array.isArray(payload.warnings)
+          ? (payload.warnings as DesignWarning[])
+          : [];
+        payload.warnings = [
+          ...priorWarnings,
+          {
+            code: SCREENSHOT_DISABLED,
+            message: "截图已关闭（screens:false 或 AOS_SCREENS=0）：tests.md/xlsx 不含设计图"
+          }
+        ];
+      }
       let caseScreens: CaseScreensResult | null = null;
       if (wantScreens) {
         try {
@@ -1529,22 +2073,31 @@ export async function figmaGenerateTests(
             counts,
             summary: summarizeCases(cases),
             coverage,
-            warnings: designWarnings.length
+            warnings: designWarnings.length,
+            apiReview
           },
           { templatePath }
         );
       }
-      writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
       if (wantMarkdown) {
-        writeFileAtomic(
-          markdownPath,
-          renderMarkdown(cases, { source, generatedAt }, {
-            images: caseScreens?.caseRefs ?? new Map(),
-            ...(matchedFeedback.length > 0 ? { feedback: { byFeature: matchedFeedback } } : {}),
-            designWarnings
-          })
-        );
+        const markdown = renderMarkdown(cases, { source, generatedAt }, {
+          images: caseScreens?.caseRefs ?? new Map(),
+          ...(matchedFeedback.length > 0 ? { feedback: { byFeature: matchedFeedback } } : {}),
+          designWarnings,
+          apiReview
+        });
+        const embedWarning = screenshotEmbedWarning(markdown, caseScreens?.caseRefs ?? new Map());
+        if (embedWarning !== null && !designWarnings.some((entry) => entry.code === embedWarning.code)) {
+          designWarnings.push(embedWarning);
+          const priorWarnings = Array.isArray(payload.warnings)
+            ? (payload.warnings as DesignWarning[])
+            : [];
+          payload.warnings = [...priorWarnings, embedWarning];
+          payload.designWarnings = designWarnings;
+        }
+        writeFileAtomic(markdownPath, markdown);
       }
+      writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
       if (excelBuffer !== null) writeFileAtomic(excelPath, excelBuffer);
       payload.savedTo = {
         json: jsonPath,
@@ -1608,7 +2161,8 @@ export async function figmaGenerateTests(
             markdown: renderMarkdown(subset, { source, generatedAt }, {
               images: caseScreens?.caseRefs ?? new Map(),
               ...(subsetFeedback.length > 0 ? { feedback: { byFeature: subsetFeedback } } : {}),
-              designWarnings
+              designWarnings,
+              apiReview
             }),
             xlsx: await renderTestsWorkbook(
               subset,
@@ -1618,7 +2172,8 @@ export async function figmaGenerateTests(
                 counts: { cases: subset.length, screens: counts.screens, edges: counts.edges },
                 summary: summarizeCases(subset),
                 coverage: subsetCoverage,
-                warnings: designWarnings.length
+                warnings: designWarnings.length,
+                apiReview
               },
               { templatePath }
             )

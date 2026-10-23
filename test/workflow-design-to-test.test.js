@@ -162,7 +162,7 @@ test("figma happy：提取→生成→校验→nextAction（run 缺省 false）"
   assert.deepEqual(calls.figma, [{ url: FIGMA_URL, nodeId: "1:2" }]);
   assert.equal(calls.pen.length, 0);
   assert.equal(calls.generate.length, 1);
-  assert.deepEqual(calls.generate[0], {});
+  assert.deepEqual(calls.generate[0], { screens: true });
   assert.equal(calls.execute.length, 0);
 
   assert.equal(payload.steps.length, 3);
@@ -223,7 +223,7 @@ test("生成透传 maxFlows/maxDepth：显式提供的键原样传给 figma_gene
 
   assert.ok(!result.isError);
   assert.equal(payloadOf(result).ok, true);
-  assert.deepEqual(calls.generate, [{ maxFlows: 50, maxDepth: 12 }]);
+  assert.deepEqual(calls.generate, [{ screens: true, maxFlows: 50, maxDepth: 12 }]);
   assert.deepEqual(payloadOf(result).nextAction, {
     tool: "design_to_test",
     args: { reuseExistingFlows: true, reuseExistingTests: true, run: true, maxFlows: 50, maxDepth: 12 }
@@ -236,7 +236,7 @@ test("生成透传仅带显式提供的键：未给 maxDepth 时不出现该键"
   const result = await designToTest(runtime, { figmaUrl: FIGMA_URL, maxFlows: 50 }, deps);
 
   assert.ok(!result.isError);
-  assert.deepEqual(calls.generate, [{ maxFlows: 50 }]);
+  assert.deepEqual(calls.generate, [{ screens: true, maxFlows: 50 }]);
   assert.deepEqual(payloadOf(result).nextAction, {
     tool: "design_to_test",
     args: { reuseExistingFlows: true, reuseExistingTests: true, run: true, maxFlows: 50 }
@@ -250,7 +250,7 @@ test("生成透传仅带 maxDepth 时：生成与 nextAction 都只携带 maxDep
 
   assert.ok(!result.isError);
   assert.equal(payloadOf(result).ok, true);
-  assert.deepEqual(calls.generate, [{ maxDepth: 12 }]);
+  assert.deepEqual(calls.generate, [{ screens: true, maxDepth: 12 }]);
   assert.deepEqual(payloadOf(result).nextAction, {
     tool: "design_to_test",
     args: { reuseExistingFlows: true, reuseExistingTests: true, run: true, maxDepth: 12 }
@@ -1100,4 +1100,25 @@ test("design_to_test: extract 与 flows.json 重复警告去重（extract 优先
   assert.deepEqual(payload.designWarnings.bySource, { extract: 1, flows: 0 });
   assert.equal(payload.designWarnings.total, 1, "total 为去重后条数");
   assert.equal(withoutMs(payload.steps[0]).warnings, 1);
+});
+
+test("design_to_test: API 参数与 screens=false 透传给生成器", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps, calls } = makeDeps();
+  const result = await designToTest(
+    runtime,
+    {
+      figmaUrl: FIGMA_URL,
+      apiChange: "new",
+      apiSpec: "POST /orders\nrequest: {sku}",
+      screens: false
+    },
+    deps
+  );
+  assert.ok(!result.isError);
+  assert.deepEqual(calls.generate[0], {
+    screens: false,
+    apiChange: "new",
+    apiSpec: "POST /orders\nrequest: {sku}"
+  });
 });

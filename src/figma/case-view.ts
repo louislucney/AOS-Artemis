@@ -35,6 +35,12 @@ function expectationKind(expectation: unknown): string | null {
   return record && typeof record.kind === "string" ? record.kind : null;
 }
 
+function displayScreen(testCase: GeneratedTest, screen: string | null): string | null {
+  if (screen === null) return null;
+  const index = testCase.screens.indexOf(screen);
+  return index >= 0 ? (testCase.displayScreens?.[index] ?? screen) : screen;
+}
+
 export function expectedResultLines(testCase: GeneratedTest): string[] {
   const lines: string[] = [];
   for (let index = 0; index < (testCase.prelude ?? []).length; index += 1) {
@@ -51,7 +57,7 @@ export function expectedResultLines(testCase: GeneratedTest): string[] {
       lines.push(`${index + 1}) （探索，不判定）`);
       return;
     }
-    const screen = expectationScreen(expectation);
+    const screen = displayScreen(testCase, expectationScreen(expectation));
     const hints = expectationHints(expectation).slice(0, 3);
     const source =
       (expectation as StepExpectation).hintsSource === "acceptance" ? "（验收口径）" : "";

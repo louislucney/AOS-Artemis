@@ -288,10 +288,10 @@ env:
 
 `setup_required` 语义：无任何可用条目时，`llm_list` 正常返回并带 `setupRequired: true` + 指引；`mobile_run_task` 直接返回结构化 `setup_required` 错误（不调用子进程）；其余 mobile 工具放行。
 
-**测试用例 Excel 导出（`figma_generate_tests`，2026-10-01）**：`save !== false` 时除 `tests.json`/`tests.md` 外默认落盘 `tests.xlsx`（`excelPath` 改路径）；无模版时生成开箱表（sheet `测试用例`，表头 `#/用例名称/涉及页面/前置假设/步骤/artemis 任务描述`，表头加粗、首行冻结、步骤与任务描述自动换行）；任务描述含 `【真实数据】` 硬约束条款与 `【AOS-EXPECT】` 断言块（§13.93）。传 `excelTemplate`（`.xlsx`）时读取用户模版填充占位符：
+**测试用例 Excel 导出（`figma_generate_tests`，2026-10-23 双层）**：`save !== false` 时除 `tests.json`/`tests.md` 外默认落盘 `tests.xlsx`（`excelPath` 改路径）；无模版时生成开箱表：人类主表 `#/用例名称/涉及页面/前置假设/步骤/用例编号/模块/Section/测试数据/关联用例/预期结果/备注待确认`，隐藏「执行器」sheet 放 `caseId/displayId/humanStepsHash/taskDesc/设计引用`；任务描述含 `【真实数据】` 硬约束条款与 `【AOS-EXPECT】` 断言块（§13.93）。`apiReview` 存在时另出「API 说明」sheet。传 `excelTemplate`（`.xlsx`）时读取用户模版填充占位符（`case.steps` 为人类步骤、`case.taskDesc` 为机器描述）：
 
 - 元数据（任意 sheet 单元格内子串替换；独占单元格的数字写为数字）：`{{meta.source}}`、`{{meta.generatedAt}}`、`{{counts.cases}}`、`{{counts.screens}}`、`{{counts.edges}}`。
-- 行模版：含 `{{index}}`/`{{case.name}}`/`{{case.screens}}`/`{{case.steps}}`/`{{case.taskDesc}}` 的**首个**行按用例数复制（样式随行复制），逐行填充；多 sheet 各自可有行模版，纯元数据 sheet 允许；0 用例时行模版行被移除。
+- 行模版：含 `{{index}}`/`{{case.name}}`/`{{case.screens}}`/`{{case.steps}}`/`{{case.humanSteps}}`/`{{case.taskDesc}}` 的**首个**行按用例数复制（样式随行复制），逐行填充；多 sheet 各自可有行模版，纯元数据 sheet 允许；0 用例时行模版行被移除。
 - 未识别的 `{{...}}` 原样保留；整个模版无行级占位符 → 报错且**不写任何文件**（模版读取与渲染在写盘前完成，Buffer 先行）。实现依赖 `exceljs`（仅运行时，测试不联网）。
 
 ### 6.2 Figma 20 工具（M2，vendor + zod）
@@ -2525,3 +2525,17 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **不影响**：直接 `?project=<rootPath>`、项目详情、统计、任务、台账/运行；只是列表可见性。
 - **测试**：`panel-overview` 增名称/路径隐藏与直接详情仍可访问；`panel-web` 增 JSON/HTML 提示与直接 URL；全量 2116 绿，lint 0 error（2 条既有 warning）。
 - **边界**：进程级 env，需重启面板；usage CLI/Web 不读取该变量（统计仍可按项目查询）。
+
+### 13.202 实施记录（design_to_test：人类层/执行器层与 API 说明）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-design-to-test-dual-layer-design.md` 实施：净化人类层、保留执行器层，补 API 变更状态与截图可见性。
+
+- **人类层**：`GeneratedTest` 增 `humanSteps/displayName/displayScreens/humanization`（additive；`steps`/`name`/`screens` 机器语义与 caseId 哈希不变）。人类步骤优先可见文本，其次剥离通用词后的可读图层名，最后回退控件通用名；回退密度 >20% 或 ≥3 个自动进备注；MD 正文不展示 `设计元素/i18n/a11y`。
+- **Excel**：主表 12 列（保留导入所需的用例编号/模块/Section/关联用例），隐藏「执行器」sheet 存 `caseId/displayId/humanStepsHash/taskDesc/设计引用`；新增「API 说明」sheet；模板占位符 `case.steps` 输出人类步骤，`case.taskDesc` 仍为机器描述。
+- **Markdown**：每个用例设计图嵌入（有图时），执行器 `taskDesc` 放 `<details>`；API 状态块展示 pending/provided/无变更/未确认。
+- **API**：`design_to_test`/`figma_generate_tests` 增 `apiChange/apiSpec/apiSpecPath`；`apiSpec` 内联到 `tests.json.apiReview`（≤64 KiB，`apiSpecPath` 限项目内），随 case-set JSON 复制；`new/modified` 缺说明时生成并标 `pending`，响应 `apiReviewNextAction`；补说明走 `reuseExistingTests:true + apiSpec` 原位更新 tests/md/xlsx 与匹配 case-set，不重生成、不改 caseId；`apiChange:"none"` 覆盖为 not-applicable；未传时沿用上次并标 `carriedForward`，设计指纹变化升级 warning。
+- **截图**：`design_to_test` 默认 `screens:true`（显式覆盖 `AOS_SCREENS=0`）；关闭/失败写 `screens-disabled`/`screenshot-*`；MD 实际 `<img>` 数与映射数不一致写 `screenshot-embed-mismatch`。
+- **导入回环**：`readCaseSheet` 解析隐藏执行器 sheet；`importTestDocument` 按 displayId 匹配并比对 humanStepsHash，未编辑复用 taskDesc+caseId，编辑后重建并保留 caseId、返回 `warnings`；`run_regression` 回显 `importWarnings`。
+- **批次**：`RunManifest` 增 `apiReview` 快照（change/status/specSha256/designFingerprint/carriedForward/designChanged）。
+- **测试**：新增人类层/API pending+provided/补说明/截图关闭/Excel 回环（未编辑+编辑）用例；全量 2122 绿，lint 0 error（2 条既有 warning）。
+- **边界**：旧产物无新字段仍可读；自定义 Excel 模板可能含技术信息；case-set 归档在补说明时按 `savedTo.json` 匹配更新，未匹配的不强改。

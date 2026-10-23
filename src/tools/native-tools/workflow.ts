@@ -51,6 +51,23 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
         .max(50)
         .optional()
         .describe("路径最大深度（边数；透传 figma_generate_tests，默认 30；超限按续段拆分，不丢尾）"),
+      apiChange: z
+        .enum(["none", "new", "modified", "unknown"])
+        .optional()
+        .describe("本次功能修改是否涉及 API；new|modified 缺 apiSpec 时生成并标记 pending，后续可复用 tests 补说明"),
+      apiSpec: z
+        .string()
+        .max(65536)
+        .optional()
+        .describe("接口说明文本（Markdown/OpenAPI 片段均可，≤64 KiB）；与 apiSpecPath 二选一"),
+      apiSpecPath: z
+        .string()
+        .optional()
+        .describe("项目内接口说明文件路径（相对项目根；≤64 KiB）；与 apiSpec 二选一"),
+      screens: z
+        .boolean()
+        .optional()
+        .describe("tests.md/xlsx 嵌入设计图，默认 true（显式覆盖 AOS_SCREENS=0）"),
       device: z
         .string()
         .optional()

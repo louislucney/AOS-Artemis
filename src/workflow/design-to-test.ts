@@ -16,7 +16,11 @@ import { coverageGateIssue } from "../figma/gate.js";
 import { preflightGeneratedTests } from "../figma/preflight.js";
 import { executeSuiteBatch, type SuiteBatchResult } from "../figma/suite-batch.js";
 import type { SuiteRunOptions, SuiteRunReport } from "../figma/suite-runner.js";
-import { figmaGenerateTests } from "../figma/test-gen.js";
+import {
+  figmaGenerateTests,
+  updateTestsApiReview,
+  type ApiChange
+} from "../figma/test-gen.js";
 import { log as logInfo } from "../log.js";
 import { penExtractFlows } from "../pen/flows.js";
 import type { Runtime } from "../runtime.js";
@@ -36,6 +40,10 @@ export interface DesignToTestArgs {
   reuseExistingTests?: boolean;
   maxFlows?: number;
   maxDepth?: number;
+  apiChange?: ApiChange;
+  apiSpec?: string;
+  apiSpecPath?: string;
+  screens?: boolean;
   device?: string;
   run?: boolean;
 }
@@ -289,6 +297,7 @@ export async function designToTest(
   let preflight: ReturnType<typeof preflightGeneratedTests> = null;
   let generatePayload: Record<string, unknown> | null = null;
   let generatedCases: number | null = null;
+  let apiReviewUpdate: Awaited<ReturnType<typeof updateTestsApiReview>> | null = null;
   if (reuseTests) {
     preflight = preflightGeneratedTests(runtime.configDirAbs);
     if (preflight === null) {
@@ -309,12 +318,43 @@ export async function designToTest(
     warningsSnapshotAt = preflight.designWarningsSnapshotAt;
     warningsBySource = { [warningSource]: reusedWarnings.length };
     recordStep({ step: "generate", reused: true, cases: generatedCases });
+    const hasApiInput =
+      args.apiChange !== undefined ||
+      args.apiSpec !== undefined ||
+      args.apiSpecPath !== undefined;
+    if (hasApiInput) {
+      try {
+        apiReviewUpdate = await updateTestsApiReview(runtime, {
+          ...(args.apiChange !== undefined ? { apiChange: args.apiChange } : {}),
+          ...(args.apiSpec !== undefined ? { apiSpec: args.apiSpec } : {}),
+          ...(args.apiSpecPath !== undefined ? { apiSpecPath: args.apiSpecPath } : {})
+        });
+        warnings = [...warnings, ...apiReviewUpdate.warnings];
+        recordStep({
+          step: "api-review",
+          status: apiReviewUpdate.review.status,
+          artifacts: apiReviewUpdate.updatedArtifacts.length
+        });
+      } catch (error) {
+        return jsonResult({
+          ok: false,
+          failedStep: "api-review",
+          detail: errorMessage(error),
+          suggestions: ["确认 tests.json 存在，apiSpecPath 位于项目内且可读"],
+          ...warningFields()
+        });
+      }
+    }
   } else {
     const generate = deps.generate ?? figmaGenerateTests;
     try {
       const generated = await generate(runtime, {
+        screens: args.screens ?? true,
         ...(typeof args.maxFlows === "number" ? { maxFlows: args.maxFlows } : {}),
-        ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {})
+        ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {}),
+        ...(args.apiChange !== undefined ? { apiChange: args.apiChange } : {}),
+        ...(args.apiSpec !== undefined ? { apiSpec: args.apiSpec } : {}),
+        ...(args.apiSpecPath !== undefined ? { apiSpecPath: args.apiSpecPath } : {})
       });
       const payload = payloadOf(generated);
       mergeGeneratedWarnings(payload);
@@ -510,11 +550,30 @@ export async function designToTest(
         }
       : null;
 
+  const apiReview =
+    apiReviewUpdate !== null
+      ? apiReviewUpdate.review
+      : generatePayload !== null &&
+          typeof generatePayload.apiReview === "object" &&
+          generatePayload.apiReview !== null
+        ? (generatePayload.apiReview as Record<string, unknown>)
+        : null;
+  if (apiReviewUpdate !== null) {
+    for (const artifact of apiReviewUpdate.updatedArtifacts) artifacts[artifact.endsWith(".json") ? "apiReviewJson" : artifact.endsWith(".md") ? "apiReviewMarkdown" : "apiReviewXlsx"] = artifact;
+  }
+  const apiNextAction =
+    apiReview?.status === "pending"
+      ? "provide-api-spec"
+      : apiReview?.status === "unknown"
+        ? "confirm-api-change"
+        : null;
   return jsonResult({
     ok: true,
     steps,
     artifacts,
     ...warningFields(),
+    ...(apiReview !== null ? { apiReview } : {}),
+    ...(apiNextAction !== null ? { apiReviewNextAction: apiNextAction } : {}),
     ...(runSummary !== null ? { run: runSummary } : {}),
     ...(nextAction !== null ? { nextAction } : {})
   });

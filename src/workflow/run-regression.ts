@@ -117,6 +117,7 @@ export async function runRegression(
   let mode: "import" | "scope" | "all";
   let targets: CaseTarget[];
   let importOutcome: "imported" | "skipped" | null = null;
+  let importWarnings: string[] = [];
 
   if (excelPath !== null) {
     mode = "import";
@@ -142,6 +143,7 @@ export async function runRegression(
       sourceCopy: imported.sourceCopy
     });
     importOutcome = imported.status;
+    importWarnings = imported.warnings ?? [];
     targets = importedTargets(imported.sets, imported.sourceId);
     if (keyword !== null) {
       targets = selectByScope(targets, keyword);
@@ -278,6 +280,7 @@ export async function runRegression(
   return jsonResult({
     ok: true,
     ...(importOutcome !== null ? { import: { outcome: importOutcome } } : {}),
+    ...(importWarnings.length > 0 ? { importWarnings } : {}),
     ...(scopeHits !== null ? { scope: { keyword: scope, hits: scopeHits } } : {}),
     steps,
     artifacts: { sets: summaries },

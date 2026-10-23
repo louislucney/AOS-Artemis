@@ -21,12 +21,14 @@ import {
   identifierSuggestionsFromGraph,
   linearizeFlows,
   linearizeFlowsWithStats,
-  renderMarkdown
+  renderMarkdown,
+  updateTestsApiReview
 } from "../dist/figma/test-gen.js";
 import { normalizeElementLabel } from "../dist/diff/screen-map.js";
 import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
 import { expectedResultLines } from "../dist/figma/case-view.js";
 import { deriveCasePreconditions } from "../dist/figma/preconditions.js";
+import { importTestDocument } from "../dist/workflow/excel-import.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
 import { syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
 
@@ -120,14 +122,12 @@ test("renderTestsWorkbook: default sheet with header, case rows and readable sty
     "涉及页面",
     "前置假设",
     "步骤",
-    "artemis 任务描述",
     "用例编号",
     "模块",
     "Section",
     "测试数据",
     "关联用例",
     "预期结果",
-    "设计引用",
     "备注/待确认"
   ]);
   assert.equal(sheet.getRow(1).font.bold, true);
@@ -139,19 +139,29 @@ test("renderTestsWorkbook: default sheet with header, case rows and readable sty
   assert.equal(row.getCell(2).value, cases[0].name);
   assert.equal(row.getCell(3).value, cases[0].screens.join(" → "));
   assert.equal(row.getCell(4).value, cases[0].preconditions.join("；"));
-  assert.equal(row.getCell(5).value, cases[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n"));
-  assert.equal(row.getCell(6).value, cases[0].taskDesc);
-  assert.equal(row.getCell(7).value, "—");
-  assert.equal(row.getCell(8).value, "未分组");
-  assert.equal(row.getCell(9).value, cases[0].preflight.screen);
-  assert.equal(row.getCell(10).value, "n/a（无显式数据）");
-  assert.equal(row.getCell(11).value, "—");
-  assert.equal(row.getCell(12).value, expectedResultLines(cases[0]).join("\n"));
-  assert.equal(row.getCell(13).value, cases[0].screens.join(" → "));
-  assert.equal(row.getCell(14).value, "—");
+  assert.equal(
+    row.getCell(5).value,
+    (cases[0].humanSteps ?? cases[0].steps)
+      .map((step, index) => `${index + 1}) ${step}`)
+      .join("\n")
+  );
+  assert.equal(row.getCell(6).value, "—");
+  assert.equal(row.getCell(7).value, "未分组");
+  assert.equal(row.getCell(8).value, cases[0].preflight.screen);
+  assert.equal(row.getCell(9).value, "n/a（无显式数据）");
+  assert.equal(row.getCell(10).value, "—");
+  assert.equal(row.getCell(11).value, expectedResultLines(cases[0]).join("\n"));
+  assert.equal(row.getCell(12).value, "—");
   assert.equal(row.getCell(4).alignment?.wrapText, true);
   assert.equal(row.getCell(5).alignment?.wrapText, true);
-  assert.equal(row.getCell(6).alignment?.wrapText, true);
+
+  const executor = workbook.getWorksheet("执行器");
+  assert.ok(executor, "隐藏执行器 sheet 存在");
+  assert.equal(executor.state, "hidden");
+  assert.equal(executor.getRow(2).getCell(1).value, cases[0].id);
+  assert.equal(executor.getRow(2).getCell(4).value, cases[0].taskDesc);
+  assert.match(String(executor.getRow(2).getCell(5).value), /Home/);
+  assert.doesNotMatch(String(sheet.getRow(2).getCell(5).value), /设计元素|i18n|a11y/);
 });
 
 function makeFlowsProject() {
@@ -179,14 +189,20 @@ test("figma_generate_tests: default run writes tests.xlsx alongside json and md"
   const sheet = workbook.getWorksheet("测试用例");
   assert.ok(sheet);
   assert.equal(sheet.getRow(2).getCell(1).value, 1);
-  assert.equal(sheet.getRow(2).getCell(2).value, payload.flows[0].name);
-  assert.equal(sheet.getRow(2).getCell(3).value, payload.flows[0].screens.join(" → "));
+  assert.equal(sheet.getRow(2).getCell(2).value, payload.flows[0].displayName ?? payload.flows[0].name);
+  assert.equal(
+    sheet.getRow(2).getCell(3).value,
+    (payload.flows[0].displayScreens ?? payload.flows[0].screens).join(" → ")
+  );
   assert.equal(sheet.getRow(2).getCell(4).value, payload.flows[0].preconditions.join("；"));
   assert.equal(
     sheet.getRow(2).getCell(5).value,
-    payload.flows[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n")
+    (payload.flows[0].humanSteps ?? payload.flows[0].steps)
+      .map((step, index) => `${index + 1}) ${step}`)
+      .join("\n")
   );
-  assert.equal(sheet.getRow(2).getCell(6).value, payload.flows[0].taskDesc);
+  const executor = workbook.getWorksheet("执行器");
+  assert.equal(executor.getRow(2).getCell(4).value, payload.flows[0].taskDesc);
 });
 
 test("figma_generate_tests: saveArtifacts 可关闭 md/xlsx/caseSets，tests.json 仍落盘", async () => {
@@ -376,7 +392,9 @@ test("figma_generate_tests: excelTemplate fills the workbook and reports the tem
   assert.equal(sheet.getRow(3).getCell(2).value, payload.flows[0].name);
   assert.equal(
     sheet.getRow(3).getCell(3).value,
-    payload.flows[0].steps.map((step, index) => `${index + 1}) ${step}`).join("\n")
+    (payload.flows[0].humanSteps ?? payload.flows[0].steps)
+      .map((step, index) => `${index + 1}) ${step}`)
+      .join("\n")
   );
 });
 
@@ -405,7 +423,7 @@ test("renderMarkdown: checklist + embedded task descriptions", () => {
   assert.match(markdown, /# 设计流程测试用例/);
   assert.match(markdown, /- 前置假设：应用已安装且可正常启动/);
   assert.match(markdown, /- \[ \] 1\) 点击「Buy now」/);
-  assert.match(markdown, /### artemis 任务描述/);
+  assert.match(markdown, /<summary>执行器指令（agent 读取）<\/summary>/);
   assert.match(markdown, /```text/);
 });
 
@@ -1867,12 +1885,12 @@ test("figma_generate_tests: acceptance v2 enriches display fields, taskDesc, xls
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(fs.readFileSync(payload.savedTo.xlsx));
   const row = workbook.getWorksheet("测试用例").getRow(2);
-  assert.equal(row.getCell(7).value, testCase.displayId);
-  assert.equal(row.getCell(8).value, testCase.module);
-  assert.equal(row.getCell(9).value, "结算流程");
-  assert.match(String(row.getCell(10).value), /账号：已登录/);
-  assert.ok(String(row.getCell(12).value).length > 0, "预期结果与步骤对齐");
-  assert.match(String(row.getCell(14).value), /是否支持优惠券/);
+  assert.equal(row.getCell(6).value, testCase.displayId);
+  assert.equal(row.getCell(7).value, testCase.module);
+  assert.equal(row.getCell(8).value, "结算流程");
+  assert.match(String(row.getCell(9).value), /账号：已登录/);
+  assert.ok(String(row.getCell(11).value).length > 0, "预期结果与步骤对齐");
+  assert.match(String(row.getCell(12).value), /是否支持优惠券/);
   const summarySheet = workbook.getWorksheet("汇总");
   assert.ok(summarySheet, "汇总 sheet 存在");
   const summaryRows = new Map();
@@ -1934,13 +1952,13 @@ test("renderTestsWorkbook: legacy case without new fields falls back to dash/n-a
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
   const row = workbook.getWorksheet("测试用例").getRow(2);
-  assert.equal(row.getCell(7).value, "—");
-  assert.equal(row.getCell(8).value, "未分组");
-  assert.equal(row.getCell(9).value, "未指定");
-  assert.equal(row.getCell(10).value, "n/a（无显式数据）");
-  assert.equal(row.getCell(11).value, "—");
-  assert.equal(row.getCell(12).value, "1) —（无显式期望）");
-  assert.equal(row.getCell(14).value, "—");
+  assert.equal(row.getCell(6).value, "—");
+  assert.equal(row.getCell(7).value, "未分组");
+  assert.equal(row.getCell(8).value, "未指定");
+  assert.equal(row.getCell(9).value, "n/a（无显式数据）");
+  assert.equal(row.getCell(10).value, "—");
+  assert.equal(row.getCell(11).value, "1) —（无显式期望）");
+  assert.equal(row.getCell(12).value, "—");
   assert.ok(workbook.getWorksheet("汇总"));
 });
 
@@ -2100,4 +2118,113 @@ test("figma_generate_tests: pre-mines a11y identifier from source locators", asy
   const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
   assert.equal(payload.ok, true);
   assert.match(payload.flows[0].steps[0], /a11y: loginButton/);
+});
+
+test("generateTestCases: humanSteps 不污染技术引用，机器 steps 保留 grounding", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  const [testCase] = generateTestCases(graph, {
+    i18nKeys: new Map([["Buy now", "home.cta_button"]]),
+    identifiers: new Map([[normalizeElementLabel("Buy now"), "buy-button"]])
+  });
+  assert.match(testCase.steps[0], /设计元素/);
+  assert.match(testCase.steps[0], /i18n: home\.cta_button/);
+  assert.match(testCase.steps[0], /a11y: buy-button/);
+  assert.doesNotMatch((testCase.humanSteps ?? []).join("\n"), /设计元素|i18n|a11y|nodeId/);
+  assert.ok(Array.isArray(testCase.displayScreens));
+  assert.equal(testCase.displayScreens?.length, testCase.screens.length);
+});
+
+test("renderMarkdown: 嵌入设计图与 API 待补充区块", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  const cases = generateTestCases(graph);
+  const markdown = renderMarkdown(
+    cases,
+    { source: "unit-test", generatedAt: "2026-10-23T00:00:00Z" },
+    {
+      images: new Map([[cases[0].id, ["screens/figma-abc/Home.png"]]]),
+      apiReview: {
+        change: "new",
+        status: "pending",
+        apiSpec: null,
+        apiSpecSha256: null,
+        designFingerprint: "fp",
+        updatedAt: "2026-10-23T00:00:00Z"
+      }
+    }
+  );
+  assert.match(markdown, /<img src="screens\/figma-abc\/Home.png"/);
+  assert.match(markdown, /待补充 API 说明/);
+  assert.doesNotMatch(markdown, /### artemis 任务描述/);
+  assert.match(markdown, /<summary>执行器指令/);
+});
+
+test("figma_generate_tests: API pending/provided + 补说明保留 caseId 与三件套", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const pending = parseToolResult(await figmaGenerateTests(runtime, { apiChange: "new" }));
+  assert.equal(pending.apiReview.status, "pending");
+  assert.equal(pending.apiReviewNextAction, "provide-api-spec");
+  const caseIds = pending.flows.map((entry) => entry.id);
+  const originalTaskDesc = pending.flows[0].taskDesc;
+  const markdownPath = path.join(dir, ".artemis", "design", "tests.md");
+  assert.match(fs.readFileSync(markdownPath, "utf-8"), /待补充 API 说明/);
+
+  const updated = await updateTestsApiReview(runtime, {
+    apiChange: "new",
+    apiSpec: "POST /orders\nrequest: {sku}\nresponse: {orderId}"
+  });
+  assert.equal(updated.review.status, "provided");
+  assert.ok(updated.updatedArtifacts.some((file) => file.endsWith("tests.md")));
+  assert.ok(updated.updatedArtifacts.some((file) => file.endsWith("tests.xlsx")));
+  const tests = JSON.parse(fs.readFileSync(path.join(dir, ".artemis", "design", "tests.json"), "utf-8"));
+  assert.deepEqual(tests.flows.map((entry) => entry.id), caseIds, "补说明不改变 caseId");
+  assert.equal(tests.flows[0].taskDesc, originalTaskDesc, "补说明不改变 taskDesc");
+  assert.match(fs.readFileSync(markdownPath, "utf-8"), /POST \/orders/);
+  const caseSetsDir = path.join(dir, ".artemis", "design", "case-sets");
+  const caseSetFile = fs.readdirSync(caseSetsDir).find((name) => name.endsWith(".json"));
+  assert.ok(caseSetFile);
+  const caseSet = JSON.parse(fs.readFileSync(path.join(caseSetsDir, caseSetFile), "utf-8"));
+  assert.equal(caseSet.apiReview.status, "provided", "case-set 归档携带 API 说明");
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(path.join(dir, ".artemis", "design", "tests.xlsx")));
+  assert.ok(workbook.getWorksheet("API 说明"));
+});
+
+test("importTestDocument: 生成工作簿回环复用隐藏 taskDesc；编辑后重建并保留 caseId", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const generated = parseToolResult(await figmaGenerateTests(runtime, {}));
+  const excelPath = path.join(dir, ".artemis", "design", "tests.xlsx");
+  const imported = await importTestDocument(runtime, { excelPath });
+  assert.equal(imported.ok, true);
+  const firstSet = JSON.parse(fs.readFileSync(imported.sets[0].jsonPath, "utf-8"));
+  const firstCase = firstSet.flows[0];
+  assert.equal(firstCase.id, generated.flows[0].id, "导入保留隐藏 caseId");
+  assert.equal(firstCase.taskDesc, generated.flows[0].taskDesc, "未编辑复用机器 taskDesc");
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(excelPath));
+  const sheet = workbook.getWorksheet("测试用例");
+  sheet.getRow(2).getCell(5).value = "1) 点击「Buy now」后输入备注并继续";
+  const editedPath = path.join(dir, "qa-edited.xlsx");
+  await workbook.xlsx.writeFile(editedPath);
+  const edited = await importTestDocument(runtime, { excelPath: editedPath });
+  assert.equal(edited.ok, true);
+  assert.match(edited.warnings.join("\n"), /步骤已编辑/);
+  const editedSet = JSON.parse(fs.readFileSync(edited.sets[0].jsonPath, "utf-8"));
+  assert.equal(editedSet.flows[0].id, generated.flows[0].id, "编辑后仍保留 caseId");
+  assert.match(editedSet.flows[0].taskDesc, /输入备注并继续/);
+});
+
+test("figma_generate_tests: screens:false 写入可见 warning", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, { screens: false }));
+  assert.equal(payload.ok, true);
+  assert.ok(
+    payload.warnings.some((warning) => warning.code === "screens-disabled"),
+    "关闭截图不能静默"
+  );
+  const markdown = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.doesNotMatch(markdown, /<img src=/);
 });

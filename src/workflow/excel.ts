@@ -3,9 +3,19 @@ import path from "node:path";
 
 import ExcelJS from "exceljs";
 
+export interface ExecutorRow {
+  caseId: string;
+  displayId: string;
+  humanStepsHash: string;
+  taskDesc: string;
+  designRefs: string;
+}
+
 export interface CaseSheet {
   headers: string[];
   rows: string[][];
+  /** 隐藏「执行器」sheet（生成工作簿专有）；普通导入工作簿为空。 */
+  executor: Map<string, ExecutorRow>;
 }
 
 const MAX_ROWS = 10000;
@@ -85,5 +95,46 @@ export async function readCaseSheet(filePath: string): Promise<CaseSheet> {
   while (rows.length > 0 && rows[rows.length - 1]!.every((cell) => cell === "")) {
     rows.pop();
   }
-  return { headers, rows };
+  return { headers, rows, executor: readExecutor(sheet.workbook) };
+}
+
+function readExecutor(workbook: ExcelJS.Workbook): Map<string, ExecutorRow> {
+  const result = new Map<string, ExecutorRow>();
+  const sheet = workbook.worksheets.find((candidate) => candidate.name.trim() === "执行器");
+  if (!sheet) return result;
+  const headers: string[] = [];
+  for (let column = 1; column <= sheet.columnCount; column += 1) {
+    headers.push(normalizeHeader(cellText(sheet.getRow(1).getCell(column).value)));
+  }
+  const indexOf = (...aliases: string[]): number => {
+    const normalized = aliases.map(normalizeHeader);
+    return headers.findIndex((header) => normalized.includes(header));
+  };
+  const caseIdIndex = indexOf("用例编号", "caseid");
+  const displayIdIndex = indexOf("展示编号", "displayid");
+  const hashIndex = indexOf("人类步骤哈希", "humanstepshash");
+  const taskIndex = indexOf("artemis任务描述", "taskdesc", "artemis 任务描述");
+  const refsIndex = indexOf("设计引用", "designrefs");
+  if (taskIndex < 0) return result;
+  for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber += 1) {
+    const row = sheet.getRow(rowNumber);
+    const value = (index: number): string => (index < 0 ? "" : cellText(row.getCell(index + 1).value));
+    const displayId = value(displayIdIndex);
+    const caseId = value(caseIdIndex);
+    if (displayId === "" && caseId === "") continue;
+    const entry: ExecutorRow = {
+      caseId,
+      displayId,
+      humanStepsHash: value(hashIndex),
+      taskDesc: value(taskIndex),
+      designRefs: value(refsIndex)
+    };
+    if (displayId !== "") result.set(`display:${displayId}`, entry);
+    if (caseId !== "") result.set(`case:${caseId}`, entry);
+  }
+  return result;
+}
+
+function normalizeHeader(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, "").replace(/[\s_-]+/g, "");
 }

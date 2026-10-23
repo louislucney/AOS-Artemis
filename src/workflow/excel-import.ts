@@ -5,7 +5,7 @@ import path from "node:path";
 import { caseSetStem, caseSetsDir, saveCaseSetFiles } from "../figma/case-sets.js";
 import { REAL_DATA_CLAUSE } from "../figma/data-policy.js";
 import { recordAuditSafe } from "../db/audit-event.js";
-import { renderTestsWorkbook } from "../figma/test-xlsx.js";
+import { humanStepsHashFromParts, renderTestsWorkbook } from "../figma/test-xlsx.js";
 import type { GeneratedTest } from "../figma/test-gen.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
@@ -17,6 +17,7 @@ export interface ImportColumns {
   expected?: string;
   preconditions?: string;
   module?: string;
+  displayId?: string;
 }
 
 export interface ImportedSet {
@@ -30,19 +31,27 @@ export interface ImportedSet {
 }
 
 export type ImportResult =
-  | { ok: true; status: "imported" | "skipped"; sourceId: string; sets: ImportedSet[]; sourceCopy: string }
+  | {
+      ok: true;
+      status: "imported" | "skipped";
+      sourceId: string;
+      sets: ImportedSet[];
+      sourceCopy: string;
+      warnings: string[];
+    }
   | { ok: false; error: string };
 
 type Field = keyof ImportColumns;
 
-const FIELDS: Field[] = ["name", "steps", "expected", "preconditions", "module"];
+const FIELDS: Field[] = ["name", "steps", "expected", "preconditions", "module", "displayId"];
 
 const COLUMN_ALIASES: Record<Field, string[]> = {
   name: ["用例名", "用例名称", "标题", "case", "casename", "name", "title"],
   steps: ["步骤", "操作步骤", "测试步骤", "steps", "step", "操作"],
   expected: ["预期", "预期结果", "期望结果", "期望", "expected", "expectation", "result"],
   preconditions: ["前置", "前置条件", "前置假设", "preconditions", "precondition"],
-  module: ["模块", "功能", "功能模块", "所属模块", "module", "feature"]
+  module: ["模块", "功能", "功能模块", "所属模块", "module", "feature"],
+  displayId: ["用例编号", "展示编号", "displayid", "caseid", "编号"]
 };
 
 interface ImportedCase {
@@ -197,7 +206,14 @@ export async function importTestDocument(
   const dir = caseSetsDir(runtime.configDirAbs);
   const skipped = await existingSets(runtime, sourceId);
   if (skipped) {
-    return { ok: true, status: "skipped", sourceId, sets: skipped, sourceCopy: findSourceCopy(dir, baseName) };
+    return {
+      ok: true,
+      status: "skipped",
+      sourceId,
+      sets: skipped,
+      sourceCopy: findSourceCopy(dir, baseName),
+      warnings: []
+    };
   }
 
   let sheet: CaseSheet;
@@ -224,7 +240,15 @@ export async function importTestDocument(
     const index = indexes[field];
     return index === null ? "" : (cells[index] ?? "").trim();
   };
-  const drafts: Array<{ rowNumber: number; name: string; steps: string; expected: string; preconditions: string; module: string }> = [];
+  const drafts: Array<{
+    rowNumber: number;
+    name: string;
+    steps: string;
+    expected: string;
+    preconditions: string;
+    module: string;
+    displayId: string;
+  }> = [];
   const rowIssues: string[] = [];
   sheet.rows.forEach((cells, rowIndex) => {
     const rowNumber = rowIndex + 2;
@@ -245,7 +269,8 @@ export async function importTestDocument(
       steps,
       expected: pick(cells, "expected"),
       preconditions: pick(cells, "preconditions"),
-      module: pick(cells, "module") || path.parse(excelPath).name
+      module: pick(cells, "module") || path.parse(excelPath).name,
+      displayId: pick(cells, "displayId")
     });
   });
   if (rowIssues.length > 0) {
@@ -255,7 +280,17 @@ export async function importTestDocument(
     return { ok: false, error: "测试文档没有有效用例行（表头下的数据为空）" };
   }
 
-  const groups = new Map<string, Array<{ rowNumber: number; name: string; steps: string; expected: string; preconditions: string }>>();
+  const groups = new Map<
+    string,
+    Array<{
+      rowNumber: number;
+      name: string;
+      steps: string;
+      expected: string;
+      preconditions: string;
+      displayId: string;
+    }>
+  >();
   for (const draft of drafts) {
     const bucket = groups.get(draft.module) ?? [];
     bucket.push(draft);
@@ -278,6 +313,7 @@ export async function importTestDocument(
   const sets: ImportedSet[] = [];
   const allCases: ImportedCase[] = [];
   const createdFiles: string[] = [];
+  const importWarnings: string[] = [];
   try {
     for (const [module, rows] of groups) {
       const moduleSlug = slug(module);
@@ -293,17 +329,32 @@ export async function importTestDocument(
           expectations.push({ kind: "explore" });
         }
         const preconditions = row.preconditions === "" ? [] : [row.preconditions];
-        const taskDesc = [
-          REAL_DATA_CLAUSE,
-          `用例：${row.name}`,
-          preconditions.length > 0 ? `前置：${preconditions.join("；")}` : null,
-          `步骤：${row.steps}`,
-          row.expected !== "" ? `预期：${row.expected}` : null
-        ]
-          .filter((line): line is string => line !== null)
-          .join("\n");
+        const executor = sheet.executor ?? new Map();
+        const hidden =
+          row.displayId === ""
+            ? undefined
+            : (executor.get(`display:${row.displayId}`) ?? executor.get(`case:${row.displayId}`));
+        const reusable =
+          hidden !== undefined &&
+          hidden.taskDesc.trim() !== "" &&
+          hidden.humanStepsHash === humanStepsHashFromParts(row.steps, preconditions);
+        const taskDesc = reusable
+          ? hidden.taskDesc
+          : [
+              REAL_DATA_CLAUSE,
+              `用例：${row.name}`,
+              preconditions.length > 0 ? `前置：${preconditions.join("；")}` : null,
+              `步骤：${row.steps}`,
+              row.expected !== "" ? `预期：${row.expected}` : null
+            ]
+              .filter((line): line is string => line !== null)
+              .join("\n");
+        if (hidden !== undefined && !reusable) {
+          importWarnings.push(`第 ${row.rowNumber} 行步骤已编辑：执行描述按人类步骤重建，保留原 caseId`);
+        }
+        const caseId = hidden?.caseId?.trim() || `imp-${sha8}-${row.rowNumber}`;
         return {
-          id: `imp-${sha8}-${row.rowNumber}`,
+          id: caseId,
           name: row.name,
           preconditions,
           taskDesc,
@@ -311,7 +362,7 @@ export async function importTestDocument(
           steps,
           expectations,
           feature: featureKey,
-          displayId: `imp-${sha8}-${row.rowNumber}`,
+          displayId: row.displayId || caseId,
           module,
           section: module,
           testData: [],
@@ -421,5 +472,5 @@ export async function importTestDocument(
     return { ok: false, error: `用例集登记失败（已回滚本地归档）：${errorMessage(error)}` };
   }
 
-  return { ok: true, status: "imported", sourceId, sets, sourceCopy };
+  return { ok: true, status: "imported", sourceId, sets, sourceCopy, warnings: importWarnings };
 }

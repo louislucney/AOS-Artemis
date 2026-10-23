@@ -107,6 +107,15 @@ export interface RunManifest {
   preflight: RunManifestPreflightSummary | null;
   /** 运行期设计源警告摘要（冻结快照；无 preflight → null，不回读当前 flows）。 */
   designWarnings: WarningSummary | null;
+  /** 运行期 API 说明快照（冻结；旧清单没有该字段）。 */
+  apiReview: {
+    change: string;
+    status: string;
+    specSha256: string | null;
+    designFingerprint: string | null;
+    carriedForward: boolean;
+    designChanged: boolean;
+  } | null;
   apiErrorCatalog: { file: string; rules: number; errors: string[] } | null;
   summary: {
     total: number;
@@ -262,6 +271,26 @@ export function mergeDesignWarningBatches(batches: DesignWarningBatch[]): Merged
   };
 }
 
+function apiReviewSnapshot(testsPath: string): RunManifest["apiReview"] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as { apiReview?: unknown };
+    const value = parsed.apiReview;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    return {
+      change: typeof record.change === "string" ? record.change : "unknown",
+      status: typeof record.status === "string" ? record.status : "unknown",
+      specSha256: typeof record.apiSpecSha256 === "string" ? record.apiSpecSha256 : null,
+      designFingerprint:
+        typeof record.designFingerprint === "string" ? record.designFingerprint : null,
+      carriedForward: record.carriedForward === true,
+      designChanged: record.designChanged === true
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function buildRunManifest(input: BuildRunManifestInput): RunManifest {
   const { report } = input;
   const quarantinedFailed = report.cases.filter(
@@ -303,6 +332,7 @@ export function buildRunManifest(input: BuildRunManifestInput): RunManifest {
     options: input.options,
     preflight: summarizePreflight(report.preflight),
     designWarnings: copyWarningSummary(report.preflight?.designWarningSummary),
+    apiReview: apiReviewSnapshot(input.testsPath),
     apiErrorCatalog: report.apiErrorCatalog
       ? {
           file: report.apiErrorCatalog.file,

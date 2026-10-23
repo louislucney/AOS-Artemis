@@ -82,6 +82,19 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
         .boolean()
         .optional()
         .describe("按用例嵌入屏幕截图到 tests.md，默认 true；AOS_SCREENS=0 全局关闭（显式 true 覆盖）"),
+      apiChange: z
+        .enum(["none", "new", "modified", "unknown"])
+        .optional()
+        .describe("本次功能修改是否涉及 API：none/new/modified/unknown；new|modified 缺 apiSpec 时生成并标记 pending"),
+      apiSpec: z
+        .string()
+        .max(65536)
+        .optional()
+        .describe("接口说明文本（Markdown/OpenAPI 片段均可，≤64 KiB）；与 apiSpecPath 二选一"),
+      apiSpecPath: z
+        .string()
+        .optional()
+        .describe("项目内接口说明文件路径（相对项目根；≤64 KiB）；与 apiSpec 二选一"),
       excelPath: z
         .string()
         .optional()

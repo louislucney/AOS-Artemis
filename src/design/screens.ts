@@ -12,6 +12,8 @@ import { writeFileAtomic } from "../util.js";
 export const SCREENSHOT_SKIPPED = "screenshot-skipped";
 export const SCREENSHOT_RENDER_UNAVAILABLE = "screenshot-render-unavailable";
 export const SCREENSHOT_MAPPING_MISSING = "screenshot-mapping-missing";
+export const SCREENSHOT_DISABLED = "screens-disabled";
+export const SCREENSHOT_EMBED_MISMATCH = "screenshot-embed-mismatch";
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
