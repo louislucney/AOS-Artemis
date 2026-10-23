@@ -1,124 +1,142 @@
-# 双层测试产物与跨端一致性：当前风险与收敛评估
+# 双层测试产物与跨端一致性：当前风险与收敛评估（rev 2）
 
-> 日期：2026-10-23
-> 状态：待评审
+> 日期：2026-10-23（rev 2 吸收评审反馈：补齐 A/B/C/D 四个缺席视角、修正 R2/R3/R4/R6/R8 方案与定级）
+> 状态：已评审待实施
 > 关联设计：`docs/superpowers/specs/2026-10-23-design-to-test-dual-layer-design.md`
 > 关联实现：提交 `8217b7d` / `82ef0ca` / `da9d133` / `a9966ed`（DESIGN §13.202–§13.203）
 
 ## 1. 背景
 
-在完成「人类层 / 执行器层双层产物」「API 变更四态」「跨端 `semanticId` 与 `suite parity`」并在 `starbuckstw`（Android）与 `starbucks-ios-taiwan`（iOS）上完成同源生成核验后，以下为当前系统中仍然存在的真实风险点。
+在完成「人类层 / 执行器层双层产物」「API 变更四态」「跨端 `semanticId` 与 `suite parity`」并在 `starbuckstw`（Android）与 `starbucks-ios-taiwan`（iOS）上完成同源生成核验后，本文档汇总当前系统中仍然存在的真实风险点。
 
-本文档按影响等级（P0 / P1 / P2）罗列现状、触发条件、后果及建议方案，供决策哪些进入下一轮实现。
+rev 2 对照代码现状核实并吸收了评审意见：
+
+- 补入 **R1 对偶面（步骤编辑后重建的执行质量降级）**、**`semanticId` 派生稳定性（防对账/口径微调打断配对）**、**`apiReview` 在面板/中心台账的可回溯性**；
+- 推翻 R4 原“将 `apiSpec` 注入 `taskDesc`”的方案（避免破坏 `taskDesc` 精确匹配回填 `case_id` 的契约），改为挂接 `error-codes.json` / `api-errors` 归类；
+- 为 R2 补齐 **runner 领取路径** 与 **导入集 `n/a (imported)` 豁免**；
+- 为 R3 补齐 **写者仲裁、版本步调校验与单机/多机边界声明**。
 
 ---
 
 ## 2. 风险总览
 
-| # | 等级 | 风险项 | 触发条件 | 建议动作 | 工作量 |
+| # | 等级 | 风险项 | 触发条件 | 修正后方案 | 工作量 |
 |---|---|---|---|---|---|
-| R1 | **P0** | Excel 编辑「预期结果/测试数据」不触发 `taskDesc` 重建 | 测试人员只改预期或数据、未改步骤便导入 | 哈希扩为 `steps + preconditions + expected + testData` | 小（~30 行） |
-| R2 | **P0** | `apiReview.status = pending` 时未阻断执行 | 声明有新/改 API 但未补说明就直接跑 `suite run` | `suite check` / `suite run` 默认拦截 pending，`--allow-pending-api` 放行 | 小（~50 行） |
-| R3 | **P0** | Android / iOS 仍各自存放 `flows.json` 与 `reconciliation.json` | 单端重提设计或单端跑出新对账升级边 | `aos.config.jsonc` 增加 `design.sharedDir` 指向共享设计目录 | 中（半天） |
-| R4 | **P0** | `apiSpec` 只留档，未进入执行器与错误码校验 | 新接口字段/状态码异常但 UI 勉强走通 | 将 `apiSpec` 摘要注入 `taskDesc`，并可选关联 `error-codes.json` | 中（半天） |
-| R5 | **P1** | `displayId`（跟 `semanticId`）与执行/隔离 ID（`caseId`）双轨 | 两端 locator 不同导致 `caseId` 不同但 `TC_` 相同 | 隔离/基线/统计支持按 `semanticId` 或 `displayId` 定位 | 中（半天） |
-| R6 | **P1** | 功能分组命名（`module`）存在 LLM 非确定性 | 无候选名时两端分别调 LLM 起名 | 按 `flowsFingerprint + screenSet` 缓存功能名 | 小（~40 行） |
-| R7 | **P2** | 设计稿无文字且图层名技术化时退化为「点击『按钮』」 | 同屏多个无文字图标/按钮 | 优先消费 `vision` 语义 label，其次保留备注降级提示 | 小–中 |
-| R8 | **P2** | `tests.md` 每条用例最多嵌入 3 张设计图 | 4 屏以上的长流程用例 | 去重后按用例涉及的全部屏幕嵌入（或可配上限） | 小（~20 行） |
+| R1 | **P0** | Excel 编辑回环：改预期/数据不触发重建；改步骤重建时丢失设计引用/定位提示 | 测试人员改预期/测试数据（静默忽略）或改步骤（重建后丢 grounding） | 哈希扩为 `steps + preconditions + expected + testData`；已编辑分支保留原 `designRefs` 与可复用 locator 提示并给出明确 warning | 小（~50 行） |
+| R2 | **P0** | `apiReview.status = pending` 时未阻断执行（含 runner 路径） | 声明有新/改 API 但未补说明就直接跑 `suite run` 或被 runner 领取 | `check` / `run` / `runner` / `design_to_test(run:true)` 默认拦截 pending（`--allow-pending-api` 放行；导入集 `n/a (imported)` 自动豁免） | 小–中（~70 行） |
+| R3 | **P0** | Android / iOS 各自存放 `flows.json` 与 `reconciliation.json`，且直接共享写会制造新漂移 | 单端重提设计或单端跑出新对账升级边；或两端并发写共享文件 | 限定单机双项目可选 `design.sharedDir`：canonical `flows.json` 只读共享 + `tests.json` 强校验 `flowsFingerprint` 步调；对账升级走写前指纹 CAS 或显式 promote，不破坏多机独立取舍 | 中（半天） |
+| R10 | **P1（偏 P0）** | `semanticId` 派生包含 `expectations.hints/provenance`，易被单端对账或文案微调打断配对 | 一端有 `reconciliation.json` 升级边或 `acceptance.json` 覆盖，另一端没有 | `semanticId` 基底收紧为**纯路径结构**（归一化屏幕序列 + 动作类型 + 目标屏）；期望/来源差异留给 `suite parity` 报字段级 diff，不打断用例配对 | 小（~35 行） |
+| R4 | **P1**（原 P0） | `apiSpec` 只留档，未进入运行期 API 错误校验（**禁改 `taskDesc`**） | 新接口返回异常状态码/业务码，执行器与失败分域无感知 | **不注入 `taskDesc`**（保护 `task_stats.case_id` 精确匹配与稳定性）；改为从 `apiSpec` 提取/校验 `error-codes.json` 规则并在 `api-errors` 分域与 preflight 中消费 | 中（半天） |
+| R5 | **P1** | `displayId`（`TC_xxxxxx`）与 `caseId`（`case-xxx`）双轨，消费端只认 `caseId` | 两端 locator 不同导致 `caseId` 不同但 `TC_` 相同 | 统一解析器：支持 `caseId` / `semanticId` / `displayId` 定位（`--case`、`flake`、`quarantine`），内部台账主键仍为 `caseId` | 小–中（~60 行） |
+| R6 | **P1** | 功能分组命名（`module`）的 LLM 非确定性，且需与既有 `feature key` 体系对齐 | 无候选名时两端分别调 LLM 起名 | 挂靠既有 `applyIdentity`（`feature key` + 屏幕重叠继承）：将命名结果持久化到 `flows.json` 的 feature 元数据中，同源 flows 直接继承 | 小（~45 行） |
+| R11 | **P1** | `apiReview` 虽已入 `RunManifest`，但未进面板批次详情与中心台账摘要 | 远端 runner 清单不可达或清单清理后，事后归因查不到当时是否缺 API 说明 | `PanelBatchDetail` 暴露 `apiReview` 快照；`suite_runs` / 批次摘要回显 `api-pending` 标记 | 小（~40 行） |
+| R7 | **P2** | 设计稿无文字且图层名技术化时退化为「点击『按钮』」 | 同屏多个无文字图标/按钮 | `humanElementLabel` 在 `textHints` 缺失时优先消费 `flows.json` 中已 grounding 的 `vision` 语义 label，其次才回退通用控件名 | 小–中 |
+| R8 | **P2** | `tests.md` 每条用例最多嵌入 3 张设计图，长流程后半段无图 | 4 屏以上的长流程用例 | 按用例内**去重后的屏幕顺序**嵌入，上限由 3 提高到 **8**（兼顾长流程可读性与 Markdown/面板渲染性能） | 小（~20 行） |
 | R9 | **P2** | 面板角色与 CMS 限流/配额为单进程内存级 | 反向代理部署或进程重启 | 维持内网边界声明；跨实例时再落 PG/网关 | 暂不改 |
 
 ---
 
-## 3. 逐项详细评估
+## 3. 逐项详细评估与方案定稿
 
-### R1（P0）：Excel 编辑「预期结果 / 测试数据」不会触发 `taskDesc` 重建
+### R1（P0）：Excel 编辑回环的完整性（哈希范围 + 已编辑分支保真）
 
-- **现状**：隐藏「执行器」sheet 中的 `humanStepsHash` 目前只计算 `steps + preconditions`（`src/figma/test-xlsx.ts`）。`importTestDocument` 导入时若哈希一致，直接复用隐藏 sheet 的原始 `taskDesc`。
-- **问题**：测试人员在 Excel 里没有改步骤，只修改了「预期结果」或「测试数据」列，然后用 `run_regression` 导入执行——系统会认为“未编辑”，继续执行旧的预期和旧的测试数据。
-- **后果**：测试人员以为改了预期/数据，实际真机跑的还是旧指令（静默失效）。
-- **方案**：
-  1. 将哈希输入扩为：`steps + preconditions + expectations + testData`；
-  2. 当「步骤未改、仅预期或测试数据被编辑」时，可选择重建 `taskDesc` 并在 `importWarnings` 中明确指出修改了哪一列；
-  3. 补一条单测：只改 Excel 的「预期结果」列后导入，断言 `taskDesc` 更新且 `caseId` 保留。
+- **代码现状核实**：
+  1. **未编辑分支**（`src/figma/test-xlsx.ts`）：`humanStepsHash` 目前只计算 `steps + preconditions`。测试人员若只修改 Excel 的「预期结果」或「测试数据」列而未改「步骤」列，导入时哈希一致，会**静默复用旧 `taskDesc`**，新预期/新测试数据丢失。
+  2. **已编辑分支**（`src/workflow/excel-import.ts:346`，评审缺席项 A）：代码已实现“哈希不一致 → 按人类列重建 `taskDesc` + 保留原 `caseId` + 推入 `importWarnings`”，不会报错阻断；**但重建出的合成 `taskDesc` 丢失了隐藏 sheet 里的 `设计引用`（`designRefs`）以及原有的起止屏结构**，导致轻微编辑后真机执行可靠性陡降。
+- **定稿方案**：
+  1. 将隐藏 sheet 的哈希升级为 `humanCaseHash(steps, preconditions, expectations, testData)`；
+  2. 细化变更检测：区分「完全未改（直接复用原 `taskDesc`）」「仅预期/测试数据已编辑」「步骤已编辑」；
+  3. 重建 `taskDesc` 时，从隐藏「执行器」sheet 继承 `designRefs`（设计页面/节点引用）附在末尾，并在 `importWarnings` 中精确提示修改了哪些列（如 `第 2 行预期结果已编辑：执行描述已同步更新，保留原 caseId`）。
 
-### R2（P0）：`apiChange = new | modified` 且 `status = pending` 时未阻断真机执行
+### R2（P0）：`apiReview.status = pending` 的执行门禁（含 runner 与豁免族）
 
-- **现状**：生成阶段支持“先生成、待后续补充 API 说明”（`apiReview.status = "pending"`）。但 `preflightGeneratedTests`、`suite check`、`suite run` 和 `design_to_test(run:true)` 目前不检查 `apiReview.status`。
-- **问题**：用例处于“已知涉及新/改 API 但尚未提供接口说明”的状态时，仍然可以直接上真机执行。
-- **后果**：执行器在不知道新接口契约的情况下跑失败，结果被归类为应用缺陷或环境问题，污染回归统计。
-- **方案**：
-  1. `preflightGeneratedTests` 读取 `tests.json.apiReview`；
-  2. 当 `status === "pending"` 时，`suite check` / `suite run` / `design_to_test(run:true)` 默认拦截并提示先补充 `apiSpec`（或传 `--allow-pending-api` / `allowPendingApi:true` 显式放行）；
-  3. `status === "unknown"` 时只给 warning，不硬拦截（兼容存量未声明项目）。
+- **现状**：生成阶段允许 `apiChange = "new" | "modified"` 在缺 `apiSpec` 时先生成并标 `status: "pending"`。但 `preflightGeneratedTests`、`suite check`、`suite run`、`suite runner` 与 `design_to_test(run:true)` 均未拦截 `pending`。
+- **评审修正点**：
+  1. **必须覆盖 runner 领取执行路径**：`suite runner` 自动领取回归任务并调用 `suite run --task` 时，若引用的用例集 `apiReview.status === "pending"`，同样应在执行前阻断并标记失败原因，防止无人值守跑批污染统计；
+  2. **导入集豁免**：经 Excel 导入的用例集（`isImportedTestsFile`，覆盖闸为 `n/a (imported)`）天然无 `apiReview`，门禁必须自动豁免；
+  3. **CI / 非交互口径**：默认 fail-closed（exit 2，提示补充 `apiSpec` 或传 `--allow-pending-api`）；`status === "unknown"`（未显式声明 `apiChange` 的存量产物）只出 warning，不硬拦截。
 
-### R3（P0）：Android / iOS 各自持有 `flows.json` 与 `reconciliation.json`，容易再次漂移
+### R3（P0）：跨端共享设计真源（解决写者仲裁、版本步调与多机边界）
 
-- **现状**：本次验证通过把同一份 `flows.json` 与 `reconciliation.json` 同步到两个项目，证明了同源输入下 `suite parity` 差异为 0。但两个项目的 `.artemis/design/` 仍是独立目录。
-- **问题**：
-  - 只在一端运行 `pen_extract_flows` / `figma_extract_flows`；
-  - 或只在一端运行 `suite run` 触发探索边自动升级写回 `reconciliation.json`；
-  两端下一次生成就会再次产生不同的步骤（例如一端是探索步、另一端是点击 Banner 的硬断言）。
-- **方案**：
-  - 在 `aos.config.jsonc` 支持可选 `design.sharedDir`（或环境变量 `AOS_SHARED_DESIGN_DIR`）；
-  - canonical 资产（`flows.json`、`acceptance.json`、`reconciliation.json`、`ui-contract.json`、`screens/`）读写共享目录；
-  - 平台专属资产（`screen-map.json`、生成的 `tests.*`、`case-sets/`、`runs/`）仍留在各自项目的 `.artemis/design/`。
+- **现状**：手工同步 `flows.json` + `reconciliation.json` 后两端 `parity=0`，但日常各自目录独立存放，单端重提或单端对账升级即再次分叉。
+- **评审指出的三个方案缺陷及定稿解法**：
+  1. **多机边界声明**：多机设计（§16.2）已确定“跨主机项目独立、不共享本地磁盘”。因此 `design.sharedDir`（或 `AOS_SHARED_DESIGN_DIR`）**明确限定为“同机双端工作区（单机同时开发 Android 与 iOS）”的可选能力**；跨主机场景不共用目录，而是通过 Git 提交共享设计包或用 `suite parity` 校验。
+  2. **写者仲裁（防并发互相覆盖）**：共享目录只放**设计真源与经确认的契约**（`flows.json`、`acceptance.json`、`ui-contract.json`、`screens/`）；提取写入采用原子替换 + 源指纹记录。运行期自动产生的 `reconciliation.json` **默认仍写项目本地**，仅在人工执行 `suite reconcile confirm`（或显式同步）时才将 `human-confirmed` 边合并进共享源，避免两端跑批并发覆写。
+  3. **版本步调校验**：`tests.json` 已记录 `flowsFingerprint`。`suite check` 与 `suite parity` 增加步调检查：若当前 `tests.json.flowsFingerprint` 与生效的 `flows.json` 指纹不一致，显式告警/阻断（提示 `flows.json 已更新，请重新生成用例以保持跨端同步`），防止 A 端已升 v2 而 B 端仍拿 v1 的旧 `tests.json` 跑。
 
-### R4（P0）：`apiSpec` 仅作为文档留档，未进入执行器与 `api-errors`
+### R10（P1 偏 P0，新增）：`semanticId` 派生的跨端稳定性
 
-- **现状**：`apiSpec` 内联保存在 `tests.json.apiReview.apiSpec`，并渲染到 `tests.md` 与 `tests.xlsx` 的「API 说明」sheet。但 `taskDesc` 生成时不读取 `apiSpec`。
-- **问题**：agent / 执行器拿到的 `taskDesc` 不包含本次新增或修改的接口说明；同时 `.artemis/design/error-codes.json` 也不会自动获知新接口的错误码。
-- **方案**：
-  1. 当 `apiReview.status === "provided"` 时，在 `taskDesc` 的 `【真实数据】` 条款后追加精简的 `【API 变更说明】`（截断至合理长度，如 ≤1500 字），让执行器在真实请求链路发生异常时能对照接口说明报告 blocked/failed；
-  2. 保持 `semanticId` 与人类层步骤不受 `apiSpec` 文本影响。
+- **现状**：`semanticIdFor`（`src/figma/test-gen.ts:590`）当前把 `screens`、`humanSteps`、`preconditions` 和 `expectations(screen, hints, kind, provenance)` 全部纳入哈希。
+- **问题（本轮实测已复现）**：当一端有 `reconciliation.json` 把某条边从 `inferred` 升级为 `runtime-observed`（或一端配了本地 `acceptance.json`），`expectations` 与 `humanSteps` 里的断言描述就会变化，导致**同一条业务路径在两端的 `semanticId` 与 `TC_xxxxxx` 直接分叉**，`suite parity` 报成“少一条 + 多一条”，而不是报“同一条用例的第 2 步不一致”。
+- **定稿方案**：
+  - 将 `semanticId` 的派生基底收紧为**纯路径骨架**：`起点屏 + 每步(fromScreen, toScreen, triggerType, back)`（或归一化后的 `screens` 序列 + 边序号）；
+  - 剥离易受对账状态、文案微调和本地验收口径影响的 `hints`、`provenance`、`humanSteps` 文本；
+  - 效果：只要两端走的是同一条页面跳转路径，`semanticId` 与 `TC_xxxxxx` 就恒定一致；步骤文案、断言口径或对账状态的差异由 `suite parity` 在该 `semanticId` 下精确报告为 `field` 差异。
 
-### R5（P1）：`displayId`（`TC_xxxxxx`）与 `caseId`（`case-xxxxxxxxxxxx`）双轨
+### R4（P1，原 P0）：`apiSpec` 与执行/错误码校验联动（严禁污染 `taskDesc`）
 
-- **现状**：`displayId` 已改为从跨端稳定的 `semanticId` 派生，保证 Android/iOS 的 Excel 主表编号一致；而 `caseId` 为兼容历史台账/基线/隔离，仍包含机器层 `steps`（含 i18n/a11y）。
-- **问题**：当一端有 a11y 标识、另一端没有时，两端的 `TC_xxxxxx` 相同，但底层的 `caseId` 不同。用户在 CLI 执行 `suite flake --cases` 或配置 `quarantine.json` 时若填了 `TC_xxxxxx` 或跨端混用 `caseId` 会不命中。
-- **方案**：
-  - `quarantine.json`、`suite run --case`、`suite flake --cases` 同时接受 `caseId`、`semanticId` 和 `displayId` 匹配；
-  - 内部台账主键仍保持 `caseId` 不变，零迁移成本。
+- **评审关键纠正**：
+  - `mobile_run_task` 提交后，`src/tasks/ledger.ts` 依靠 `taskDesc` 全文精确匹配来回填 `task_stats.case_id`；且双层设计 §12.1 锁死了机器步骤与 `taskDesc` 契约不动。
+  - 若在原位补充 `apiSpec` 时把接口说明拼进 `taskDesc`，会导致 `taskDesc` 变化、破坏历史回填与稳定性契约。
+- **定稿方案**：
+  1. **绝不修改 `taskDesc`**；
+  2. 在 `preflightGeneratedTests` 与运行报告中暴露 `apiReview` 状态；
+  3. 提供轻量辅助：当 `apiSpec` 中包含显式错误码/HTTP 路径声明，且项目未配置 `.artemis/design/error-codes.json`（或缺少对应规则）时，在生成/校验期给出可操作的提示，由现有的 `api-errors` 日志匹配机制在运行期做确定性捕获与失败分域。
 
-### R6（P1）：功能分组命名（`module`）的 LLM 非确定性
+### R5（P1）：三类用例 ID（`caseId` / `semanticId` / `displayId`）的统一解析
 
-- **现状**：`nameFeatures` 在没有候选名时会调用 active LLM 生成功能名。
-- **问题**：即使 `flows.json` 完全相同，Android 和 iOS 分别调用 `figma_generate_tests` 时，LLM 可能返回不同措辞，导致 `module` 与 case-set 文件名不一致，`suite parity` 在 `module` 字段报警。
-- **方案**：
-  - 将功能命名结果按 `flowsFingerprint + 屏幕集合` 缓存在 `flows.json`（或共享设计目录）中；
-  - 同一份 flows 二次生成直接复用已命名的 feature 名称，不再重复调 LLM。
+- **现状**：内部台账与历史资产用 `caseId`（`case-xxx`），跨端对齐用 `semanticId`（`sem-xxx`），测试人员沟通与 Excel 主表用 `displayId`（`TC_xxxxxx`）。
+- **定稿方案**：
+  - 在 `design-store.ts` 提供统一解析函数 `resolveCaseSelector(selector, cases)`：输入任意一种 ID，均解析为目标用例的机器 `caseId`；
+  - 接线到 `suite run --case`、`suite flake --cases`、`suite baseline --case` 与 `quarantine.json` 匹配逻辑；
+  - 若同一个 `displayId` / `semanticId` 因罕见碰撞对应多条 `caseId`，显式列出候选并要求传完整 ID（不静默猜首条）。
 
-### R7（P2）：设计稿无文字且图层名技术化时，人类层退化为通用控件名
+### R6（P1）：功能分组命名挂靠既有 `feature key` 体系
 
-- **现状**：当节点没有 `textHints`，且图层名为 `Frame 2444` / `App Button` / `Icons/search` 时，人类层会净化为「按钮」「图标」「可点击区域」，并在转化率超阈值（回退 ≥3 或密度 >20%）时写入「备注/待确认」。
-- **问题**：虽然消除了技术词，但同屏若有多个无文字图标，测试人员只看步骤文字无法区分点哪一个。
-- **方案**：
-  - 若 `flows.json` 含 `vision` 识别出的语义元素（`label` / `intent`），`humanElementLabel` 在 `textHints` 缺失时优先采用 vision label，其次才回退通用控件名。
+- **现状**：`nameFeatures` 在无候选名时调 LLM；既有 `applyIdentity`（`src/figma/features.ts:271`）已通过 `prior: PriorFeature[]`（按屏幕集合相等或 ≥50% 重叠）继承历史 `key` 与 `name`。
+- **评审修正点**：不要在 `applyIdentity` 之外另建一套孤立缓存，否则两套机制打架。
+- **定稿方案**：
+  - 直接复用 ` PriorFeature` 结构：在 `flows.json` 顶层可选保存 `features: Array<{ key, name, screens }>`；
+  - `figma_generate_tests` 读取 `flows.json.features` 作为最高优先级的 `prior` 传给 `applyIdentity`，并在首次命名后写回 `flows.json.features`；
+  - 这样同一份 `flows.json` 无论在 Android 还是 iOS 生成，都走同一套 `applyIdentity` 继承完全相同的 `feature key` 与中文 `module` 名，零 LLM 随机漂移。
 
-### R8（P2）：`tests.md` 每条用例最多只嵌入 3 张设计图
+### R11（P1，新增）：`apiReview` 在面板批次详情与台账中的可回溯性
 
-- **现状**：`renderMarkdown` 对每条用例只取 `refs.slice(0, 3)`，超出部分显示 `…（共 N 屏）`。
-- **问题**：长流程（如 7–8 步点单全链路）后半段涉及的页面在 Markdown 中没有缩略图。
-- **方案**：
-  - 按用例内去重后的屏幕顺序嵌入全部屏幕图片（或将上限提高到 8–10 张），避免长流程后半段无图可看。
+- **现状**：`RunManifest` 顶层已冻结 `apiReview` 快照（`src/figma/run-manifest.ts:340`），但 `PanelBatchDetail`（`src/panel/overview.ts`）与 `renderBatchPage`（`src/panel/web.ts`）尚未读取和渲染它。
+- **定稿方案**：
+  - `PanelBatchDetail` 增加 `apiReview: RunManifest["apiReview"]`；
+  - 批次详情页「结果概览」在 `apiReview.status === "pending"` 时渲染醒目黄色 chip `API 说明待补`（`provided` 渲染 `API 已核备`）；
+  - 让半年后翻查历史失败批次时，一眼能看到“当时是在缺少 API 说明的情况下跑的”。
 
-### R9（P2）：面板角色与 CMS 限流/配额为单进程内存级
+### R7（P2）：无文字节点优先消费 `vision` 语义标签
 
-- **现状**：`AOS_PANEL_ROLE` 为进程级角色；CMS Open 的 `--rate-limit` 与 `--max-jobs-per-day` 按 `socket.remoteAddress` 存于进程内存。
-- **问题**：进程重启后配额计数归零；若前置反向代理，所有客户端共享代理 IP；面板无法按登录账号区分权限。
-- **方案**：当前符合内网工具与轻量开放服务定位，已在 `DESIGN.md` 与 `README.md` 声明边界；未来若多实例公网化，再接入网关鉴权或 PG 配额表。
+- **定稿方案**：`humanElementLabel` 优先级固定为：
+  `运行期可见文本 (textHints)` → `已 grounding 的 vision 元素 label` → `剥离通用词后的可读图层名` → `通用控件名（按钮/图标/…）`。
+
+### R8（P2）：`tests.md` 截图嵌入去重与上限调整
+
+- **定稿方案**：
+  - 对单条用例的 `screens` 先按首次出现顺序**去重**（例如 `首頁 → … → 首頁` 不重复贴两张首頁图），再将单用例嵌入上限从 `3` 调为 **`8`**；
+  - `screenshotEmbedWarning` 同步按 `Math.min(deduped.length, 8)` 校验，兼顾 7–8 步完整业务链路的看图需求与 Markdown 体积上限。
+
+### R9（P2）：面板角色与 CMS 配额的进程级边界
+
+- **定稿方案**：保持现状与文档声明，不在本阶段引入多租户 DB 表。
 
 ---
 
-## 4. 建议落地顺序
+## 4. 实施批次建议（更新后）
 
-1. **第一批（建议立即做，小改高收益）**：
-   - **R1**：修 Excel 导入哈希，纳入预期结果与测试数据；
-   - **R2**：`apiReview.status === "pending"` 在 `check/run` 阶段默认拦截；
-   - **R8**：放宽 `tests.md` 每用例 3 张图的限制（按去重屏幕展示）。
-2. **第二批（跨端与执行闭环）**：
-   - **R4**：`apiSpec` 注入 `taskDesc`；
-   - **R5**：`--case` / `quarantine` 支持 `displayId` 与 `semanticId`；
-   - **R6**：功能命名写回/缓存，消除跨端 LLM 命名漂移。
-3. **第三批（架构共享源）**：
-   - **R3**：`design.sharedDir` 共享设计真源目录；
-   - **R7**：`humanElementLabel` 串联 vision 语义标签。
+1. **第一批（立即可做，修复静默错误与核心分叉，约 1–2 小时）**：
+   - **R1**：Excel `humanCaseHash` 覆盖 `steps + preconditions + expectations + testData`，编辑重建时保留 `designRefs`；
+   - **R10**：`semanticId` 改为纯路径骨架派生，彻底消除因单端对账/文案微调导致的跨端 ID 断裂；
+   - **R2**：`apiReview.status === "pending"` 接入 `check` / `run` / `runner` / `design_to_test(run:true)` 门禁（含导入集豁免与 `--allow-pending-api`）；
+   - **R8**：`tests.md` 截图去重 + 上限提升至 8 张。
+2. **第二批（可观测性与跨端体验收口）**：
+   - **R11**：面板批次详情展示 `apiReview` 冻结快照；
+   - **R5**：`--case` / `flake` / `quarantine` 统一支持 `caseId` / `semanticId` / `displayId`；
+   - **R6**：`flows.json` 持久化 `features` 并接入 `applyIdentity`，消除跨端 `module` 命名漂移。
+3. **第三批（增强项）**：
+   - **R3**：单机双端 `design.sharedDir` 与 `flowsFingerprint` 步调检查；
+   - **R4**：`apiSpec` 与 `error-codes.json` 校验提示联动；
+   - **R7**：`humanElementLabel` 消费 `vision` 标签。
