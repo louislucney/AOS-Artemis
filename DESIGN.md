@@ -2449,3 +2449,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **渲染**：表格新增「内容」列；优先取 payload 的 `message/summary/note/text/reason/title/comment`，否则 JSON 序列化；单元格截断 220 字、`title` 截断 500；「反馈请求」快捷入口自动带 `payload=1`。
 - **边界**：payload 可能含业务/日志文本，面板按内网只读面处理；不做脱敏与全文检索；消费确认仍走 `aos_event_poll`。
 - **测试**：`panel-web` 项目事件用例补默认不返回 payload、`payload=1` JSON 回显与 HTML「内容」列/反馈正文；全量 2103 绿，lint 0 error（2 条既有 warning）。
+
+### 13.194 加固（ui-lint：契约完整性闸门）
+
+> 2026-10-23。retro P0 要求「缺契约或 no-baseline 不得进入实现」；ui-lint 原先只查圆角，契约不完整也能通过。
+
+- **入口**：`suite ui-lint --require-complete`；默认不影响退出码，供实现前/CI 显式收紧。
+- **口径**：契约 `screens[].status` 必须全部为 `extracted`；`partial/unverifiable/no-baseline/unknown` 计入 `contract.incomplete`，无屏幕时记 `missing`。报告 JSON 增 `statusCounts` 与 `incomplete[{id,name,status}]`；`ok=false` → exit 1。
+- **输出**：摘要行显示「契约 N 屏（未完成 M）」；未完成与未登记圆角分别报错，避免把契约缺口误报成圆角问题；`--json` 原样带出。
+- **边界**：不自动补设计/契约；仍不检查 presentation/hero/颜色等规则；与圆角 allowlist 独立。
+- **测试**：`ui-lint` 增 `--require-complete` 用例（默认通过、严格失败、CLI JSON/exit 1）；全量 2104 绿，lint 0 error（2 条既有 warning）。

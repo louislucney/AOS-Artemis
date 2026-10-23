@@ -24,6 +24,8 @@ export interface UiLintReport {
     screens: number;
     fingerprint: string | null;
     radii: number[];
+    statusCounts: Record<string, number>;
+    incomplete: Array<{ id: string; name: string; status: string }>;
   };
   scanned: { files: number; skipped: number };
   findings: UiLintFinding[];
@@ -44,6 +46,8 @@ export interface UiLintOptions {
   allowlistPath?: string;
   /** 只扫工作区变更文件（git diff HEAD + untracked）；非 git 仓库报错。 */
   changed?: boolean;
+  /** 契约必须全部 screen status=extracted；否则 ok=false（exit 1）。 */
+  requireComplete?: boolean;
   now?: () => number;
   maxFiles?: number;
   maxFileBytes?: number;
@@ -135,11 +139,21 @@ function loadContract(file: string): UiLintReport["contract"] {
   const record = parsed as Record<string, unknown>;
   const screens = Array.isArray(record.screens) ? record.screens : [];
   const radii = new Set<number>([0]);
+  const statusCounts: Record<string, number> = {};
+  const incomplete: Array<{ id: string; name: string; status: string }> = [];
   let screenCount = 0;
   for (const screen of screens) {
     if (!screen || typeof screen !== "object") continue;
     screenCount += 1;
-    const tokens = (screen as { tokens?: unknown }).tokens;
+    const value = screen as Record<string, unknown>;
+    const status = typeof value.status === "string" && value.status.trim() !== "" ? value.status : "unknown";
+    statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+    if (status !== "extracted") {
+      const id = typeof value.id === "string" ? value.id : "";
+      const name = typeof value.name === "string" ? value.name : id;
+      incomplete.push({ id, name, status });
+    }
+    const tokens = value.tokens;
     if (!tokens || typeof tokens !== "object") continue;
     const values = (tokens as { cornerRadius?: unknown }).cornerRadius;
     if (!Array.isArray(values)) continue;
@@ -148,6 +162,10 @@ function loadContract(file: string): UiLintReport["contract"] {
         radii.add(roundRadius(value));
       }
     }
+  }
+  if (screenCount === 0) {
+    incomplete.push({ id: "", name: "（契约无屏幕）", status: "missing" });
+    statusCounts.missing = (statusCounts.missing ?? 0) + 1;
   }
   const source = record.source;
   const fingerprint =
@@ -158,7 +176,9 @@ function loadContract(file: string): UiLintReport["contract"] {
     path: file,
     screens: screenCount,
     fingerprint,
-    radii: [...radii].sort((left, right) => left - right)
+    radii: [...radii].sort((left, right) => left - right),
+    statusCounts,
+    incomplete
   };
 }
 
@@ -388,8 +408,9 @@ export function runUiLint(options: UiLintOptions): UiLintReport {
   }
 
   const allowlisted = findings.filter((finding) => finding.allowlisted).length;
+  const contractComplete = options.requireComplete !== true || contract.incomplete.length === 0;
   return {
-    ok: findings.every((finding) => finding.allowlisted),
+    ok: findings.every((finding) => finding.allowlisted) && contractComplete,
     contract,
     scanned: {
       files: selected.length,

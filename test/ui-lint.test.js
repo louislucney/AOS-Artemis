@@ -9,7 +9,7 @@ import { runSuiteCommand } from "../dist/suite-command.js";
 import { runUiLint } from "../dist/ui/lint.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, SuiteProxy } from "./helpers.js";
 
-function writeContract(root, radii = [12, 16]) {
+function writeContract(root, radii = [12, 16], screens = null) {
   const design = path.join(root, ".artemis", "design");
   fs.mkdirSync(design, { recursive: true });
   fs.writeFileSync(
@@ -17,7 +17,7 @@ function writeContract(root, radii = [12, 16]) {
     JSON.stringify({
       schemaVersion: 1,
       source: { fingerprint: "fp-test" },
-      screens: [{ id: "home", name: "Home", tokens: { cornerRadius: radii } }],
+      screens: screens ?? [{ id: "home", name: "Home", tokens: { cornerRadius: radii } }],
       summary: { extracted: 1, partial: 0, unverifiable: 0, "no-baseline": 0 },
       warnings: []
     })
@@ -97,6 +97,22 @@ test("ui-lint: missing contract is a hard error", () => {
   assert.throws(() => runUiLint({ rootDir: root }), /ui-contract/);
 });
 
+test("ui-lint: --require-complete blocks non-extracted screens", () => {
+  const root = makeTempDir("aos-ui-lint-complete-");
+  writeContract(root, [12], [
+    { id: "home", name: "Home", status: "extracted", tokens: { cornerRadius: [12] } },
+    { id: "detail", name: "Detail", status: "no-baseline", tokens: { cornerRadius: [12] } }
+  ]);
+  writeSource(root, "app/src/A.kt", "val a = RoundedCornerShape(12.dp)\n");
+  const normal = runUiLint({ rootDir: root });
+  assert.equal(normal.ok, true);
+  assert.equal(normal.contract.incomplete.length, 1);
+  const strict = runUiLint({ rootDir: root, requireComplete: true });
+  assert.equal(strict.ok, false);
+  assert.equal(strict.contract.incomplete[0].id, "detail");
+  assert.equal(strict.contract.incomplete[0].status, "no-baseline");
+});
+
 test("ui-lint: --changed only scans working tree changes", () => {
   const root = makeTempDir("aos-ui-lint-changed-");
   writeContract(root);
@@ -168,6 +184,13 @@ test("suite ui-lint: CLI JSON + exit 1/0 + missing contract exit 2", async () =>
   const allowed = await run(["ui-lint", "--json"]);
   assert.equal(allowed.code, 0);
   assert.equal(JSON.parse(allowed.logs.join("\n")).allowlisted, 1);
+
+  writeContract(dir, [12], [
+    { id: "home", name: "Home", status: "no-baseline", tokens: { cornerRadius: [12] } }
+  ]);
+  const incomplete = await run(["ui-lint", "--require-complete", "--json"]);
+  assert.equal(incomplete.code, 1);
+  assert.equal(JSON.parse(incomplete.logs.join("\n")).contract.incomplete.length, 1);
 
   fs.rmSync(path.join(design, "ui-contract.json"));
   const missing = await run(["ui-lint"]);
