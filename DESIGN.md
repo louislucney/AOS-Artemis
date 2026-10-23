@@ -2430,3 +2430,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **allowlist**：`{version, entries:[{file,value?,owner,reason,expiresAt}]}`；缺字段、非法/过期时间不生效并告警；命中的 finding 标 `allowlisted`，不阻塞退出码。
 - **边界**：仅圆角规则；颜色/字体/presentation/hero 资源/逐屏映射未实现，文档与输出不冒充；不接 `suite run` 门禁，需手动/CI 调用。
 - **测试**：新增 `ui-lint` 4 例（契约通过/未登记失败、allowlist 生效/过期、缺契约硬错、CLI JSON 与 0/1/2 退出码）；全量 2102 绿，lint 0 error（2 条既有 warning）。
+
+### 13.192 改进（ui-lint：仅扫工作区变更）
+
+> 2026-10-23。接 retro「存量与例外：只扫变更文件/新 ticket」：全量扫描存量项目会一次报出大量历史圆角，白名单压力大。
+
+- **入口**：`suite ui-lint --changed`；只取 `git diff --name-only --diff-filter=ACMR HEAD`（已提交后的暂存/未暂存改动）与 `git ls-files --others --exclude-standard`（未跟踪文件）的交集，再按源码扩展名过滤。
+- **行为**：仍走同一契约/allowlist/规则；`scanned.files` 为变更后实际扫描数；空仓库无 `HEAD` 时回退 untracked；非 git 仓库抛错 → CLI exit 2；不改变默认全量行为。
+- **测试**：`ui-lint` 增 1 例（提交后只改 A → 全量命中 A+B、`--changed` 只命中 A；非 git 仓库报错）；全量 2103 绿，lint 0 error（2 条既有 warning）。
+- **边界**：不解析 `--since <ref>`/PR diff；重命名按新路径；CI 可在 checkout 后直接对工作区差异跑。

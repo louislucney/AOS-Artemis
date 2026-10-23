@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -94,6 +95,34 @@ test("ui-lint: allowlist with owner/reason/expiry suppresses finding", () => {
 test("ui-lint: missing contract is a hard error", () => {
   const root = makeTempDir("aos-ui-lint-missing-");
   assert.throws(() => runUiLint({ rootDir: root }), /ui-contract/);
+});
+
+test("ui-lint: --changed only scans working tree changes", () => {
+  const root = makeTempDir("aos-ui-lint-changed-");
+  writeContract(root);
+  writeSource(root, "app/src/A.kt", "val a = RoundedCornerShape(12.dp)\n");
+  writeSource(root, "app/src/B.kt", "val b = RoundedCornerShape(99.dp)\n");
+  const git = (args) =>
+    execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=test", ...args], {
+      cwd: root,
+      stdio: "ignore"
+    });
+  git(["init", "-q"]);
+  git(["add", "-A"]);
+  git(["commit", "-qm", "init"]);
+
+  writeSource(root, "app/src/A.kt", "val a = RoundedCornerShape(99.dp)\n");
+  const all = runUiLint({ rootDir: root });
+  assert.equal(all.findings.length, 2, "全量扫描同时命中 A/B");
+  const changed = runUiLint({ rootDir: root, changed: true });
+  assert.equal(changed.findings.length, 1);
+  assert.equal(changed.findings[0].file, "app/src/A.kt");
+  assert.equal(changed.scanned.files, 1);
+
+  const outside = makeTempDir("aos-ui-lint-nogit-");
+  writeContract(outside);
+  writeSource(outside, "app/src/A.kt", "val a = RoundedCornerShape(99.dp)\n");
+  assert.throws(() => runUiLint({ rootDir: outside, changed: true }), /git 仓库/);
 });
 
 test("suite ui-lint: CLI JSON + exit 1/0 + missing contract exit 2", async () => {

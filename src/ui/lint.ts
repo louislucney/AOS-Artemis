@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -41,6 +42,8 @@ export interface UiLintOptions {
   rootDir: string;
   contractPath?: string;
   allowlistPath?: string;
+  /** 只扫工作区变更文件（git diff HEAD + untracked）；非 git 仓库报错。 */
+  changed?: boolean;
   now?: () => number;
   maxFiles?: number;
   maxFileBytes?: number;
@@ -272,6 +275,32 @@ function walkSourceFiles(
   return { files, skipped };
 }
 
+function gitChangedFiles(rootDir: string): Set<string> {
+  const git = (args: string[]): string => {
+    try {
+      return execFileSync("git", args, { cwd: rootDir, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      throw new UiLintError("--changed 需要可用的 git 仓库（且 git 已安装）");
+    }
+  };
+  let tracked = "";
+  try {
+    tracked = git(["diff", "--name-only", "--diff-filter=ACMR", "HEAD"]);
+  } catch {
+    // 空仓库没有 HEAD：仍可用 untracked 列表扫描。
+    if (!fs.existsSync(path.join(rootDir, ".git"))) {
+      throw new UiLintError("--changed 需要可用的 git 仓库（且 git 已安装）");
+    }
+  }
+  const untracked = git(["ls-files", "--others", "--exclude-standard"]);
+  const files = new Set<string>();
+  for (const line of `${tracked}\n${untracked}`.split("\n")) {
+    const normalized = line.trim().replace(/\\/g, "/");
+    if (normalized !== "") files.add(normalized);
+  }
+  return files;
+}
+
 function lineColumn(content: string, index: number): { line: number; column: number } {
   const before = content.slice(0, index);
   const line = before.split("\n").length;
@@ -297,10 +326,17 @@ export function runUiLint(options: UiLintOptions): UiLintReport {
     Math.max(1, Math.trunc(options.maxFiles ?? 5_000)),
     Math.max(1, Math.trunc(options.maxFileBytes ?? 1_048_576))
   );
+  const changed = options.changed === true ? gitChangedFiles(rootDir) : null;
+  const selected =
+    changed === null
+      ? files
+      : files.filter((file) =>
+          changed.has(path.relative(rootDir, file).replace(/\\/g, "/"))
+        );
 
   const findings: UiLintFinding[] = [];
   const seen = new Set<string>();
-  for (const file of files) {
+  for (const file of selected) {
     let content: string;
     try {
       content = fs.readFileSync(file, "utf-8");
@@ -355,7 +391,10 @@ export function runUiLint(options: UiLintOptions): UiLintReport {
   return {
     ok: findings.every((finding) => finding.allowlisted),
     contract,
-    scanned: { files: files.length, skipped: skipped + allow.skipped },
+    scanned: {
+      files: selected.length,
+      skipped: skipped + (files.length - selected.length) + allow.skipped
+    },
     findings,
     allowlisted,
     warnings

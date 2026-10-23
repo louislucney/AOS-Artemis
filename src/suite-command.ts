@@ -291,7 +291,7 @@ Usage:
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
   mobile-testing-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
   mobile-testing-mcp suite ui-contract [options] 从 flows.json + 逐屏 .pen 投影 UI 契约（token/几何/状态；--out <dir>；默认经 pen CLI 补 auto-layout 文本几何，--no-bounds 关闭）
-  mobile-testing-mcp suite ui-lint [options] 检查源码圆角字面量是否来自 ui-contract token（--contract/--allowlist；--json；exit 0/1/2）
+  mobile-testing-mcp suite ui-lint [options] 检查源码圆角字面量是否来自 ui-contract token（--contract/--allowlist/--changed；--json；exit 0/1/2）
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -3003,7 +3003,8 @@ async function suiteUiLint(
       allowlistPath: path.resolve(
         rootDir,
         allowlist ?? path.join(designDir(runtime.configDirAbs), "ui-lint-allowlist.json")
-      )
+      ),
+      ...(flags.bool("changed") ? { changed: true } : {})
     });
     if (flags.bool("json")) {
       io.log(JSON.stringify(report, null, 2));
