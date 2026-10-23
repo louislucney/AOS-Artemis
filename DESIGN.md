@@ -2459,3 +2459,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **输出**：摘要行显示「契约 N 屏（未完成 M）」；未完成与未登记圆角分别报错，避免把契约缺口误报成圆角问题；`--json` 原样带出。
 - **边界**：不自动补设计/契约；仍不检查 presentation/hero/颜色等规则；与圆角 allowlist 独立。
 - **测试**：`ui-lint` 增 `--require-complete` 用例（默认通过、严格失败、CLI JSON/exit 1）；全量 2104 绿，lint 0 error（2 条既有 warning）。
+
+### 13.195 改进（统计下钻：调用量与成本代理）
+
+> 2026-10-23。接业务梳理 P2「质量趋势与成本指标」：flaky/趋势已有，生成/执行投入只能去 `aos_usage` 另查；不引入虚构的计费单价，先给调用量与耗时口径。
+
+- **数据**：`buildPanelStatsView` 读取最近 7 天 `usage_events`（`limit ≤ 10000`，客户端调用口径，ADR-0006），`buildPanelUsageCostView` 聚合总调用/成功率/p95、生成/执行/其他分组与 top5 工具（复用 `usageSummary`）。
+- **分类**：生成＝`design_to_test`、`figma_*`、`pen_*`；执行＝`run_regression`、`verify_jira_issue`、`mobile_*`；其余计其他；不含内部编排调用，也不是计费金额。
+- **渲染**：统计页新增「调用量与耗时（近 7 天）」区块：总调用/成功率/p95、生成与执行的调用数及 p95、top5 工具表；无事件显示采集关闭/无调用空态。
+- **测试**：`panel-web` stats 用例补 3 条 usage 事件（生成 1 / 执行 2），断言 HTML 区块与 JSON `usage.total/generation/execution`；全量 2104 绿，lint 0 error（2 条既有 warning）。
+- **边界**：仅客户端调用；`AOS_USAGE=0` 停采集但历史仍可读；无 token/金额字段，UI/文档均标注「成本代理，不是计费」。

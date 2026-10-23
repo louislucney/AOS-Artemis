@@ -42,7 +42,12 @@ import {
   type VerdictEnvironmentGroup
 } from "../tasks/verdict-exits.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
-import { buildRegressionStats, type PanelRegressionStats } from "./stats.js";
+import {
+  buildPanelUsageCostView,
+  buildRegressionStats,
+  type PanelRegressionStats,
+  type PanelUsageCostView
+} from "./stats.js";
 import { errorMessage } from "../util.js";
 import { collectDiskAssets, type PanelDiskAssets } from "./assets.js";
 import type { PanelDeepProbe, PanelDeepView } from "./deep.js";
@@ -451,6 +456,7 @@ export interface PanelImprovementItem {
 
 export interface PanelStatsView {
   stats: PanelRegressionStats;
+  usage: PanelUsageCostView;
   improvement: {
     caseDefects: PanelImprovementItem[];
     environment: VerdictEnvironmentGroup[];
@@ -1548,6 +1554,18 @@ export async function buildPanelStatsView(deps: PanelDeps, rootPath: string): Pr
   }
   const stats = buildRegressionStats(runs);
 
+  let usageEvents: Awaited<ReturnType<ProjectStore["listUsageEvents"]>> = [];
+  try {
+    const nowMs = (deps.now ?? (() => Date.now()))();
+    usageEvents = await deps.store.listUsageEvents(rootPath, {
+      since: new Date(nowMs - 7 * 24 * 3600_000).toISOString(),
+      limit: 10_000
+    });
+  } catch (error) {
+    warnings.push(`调用统计读取失败：${errorMessage(error)}`);
+  }
+  const usage = buildPanelUsageCostView(usageEvents, 7);
+
   const exits = collectVerdictExits(runs);
   const toItem = (entry: (typeof exits.caseDefects)[number]): PanelImprovementItem => ({
     caseId: entry.caseId,
@@ -1582,7 +1600,7 @@ export async function buildPanelStatsView(deps: PanelDeps, rootPath: string): Pr
     );
   }
 
-  return { stats, improvement, guidance, warnings };
+  return { stats, usage, improvement, guidance, warnings };
 }
 
 function evidenceLinks(tracesDir: string, rootPath: string, entry: RunManifest["cases"][number]): PanelEvidenceLink[] {

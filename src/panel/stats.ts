@@ -1,10 +1,93 @@
-import type { SuiteRunRecord } from "../db/types.js";
+import type { SuiteRunRecord, UsageEventRecord } from "../db/types.js";
 import { crossPlatformDeltas, type CompareCaseInput } from "../tasks/run-compare.js";
+import { usageSummary } from "../usage/aggregate.js";
 
 /** 回归统计聚合（DESIGN：回归服务 §5.8）：feature 级跨份连续（feature key），
  * case 级仅同份累计（（caseSetId＋caseId）分组，禁止跨份按 caseId 聚合）。
  * 仅参与用例集血统的运行计入（featureKey/caseSetId 为 null 的普通运行跳过）；
  * 入参乱序亦按 createdAt 自排（新→旧），趋势/连败与入参顺序无关。 */
+/** 生成/执行成本代理：只统计客户端经 stdio/HTTP 发起的工具调用（ADR-0006），
+ * 用调用数与耗时近似投入，不读计费单价，因此不声称金额。 */
+export interface PanelUsageCostView {
+  available: boolean;
+  days: number;
+  total: number;
+  successRate: number;
+  p95: number | null;
+  generation: { calls: number; p95: number | null };
+  execution: { calls: number; p95: number | null };
+  other: { calls: number };
+  top: Array<{ tool: string; calls: number; p95: number | null }>;
+}
+
+const GENERATION_TOOLS = new Set([
+  "design_to_test",
+  "figma_extract_flows",
+  "figma_generate_tests",
+  "figma_import_assets",
+  "figma_import_strings",
+  "figma_import_tokens",
+  "figma_export_brief",
+  "pen_extract_flows",
+  "pen_import_assets",
+  "pen_import_strings",
+  "pen_import_tokens",
+  "pen_export_brief",
+  "pen_agent"
+]);
+
+function toolCostClass(tool: string): "generation" | "execution" | "other" {
+  if (GENERATION_TOOLS.has(tool) || tool.startsWith("figma_") || tool.startsWith("pen_")) {
+    return "generation";
+  }
+  if (
+    tool === "run_regression" ||
+    tool === "verify_jira_issue" ||
+    tool.startsWith("mobile_")
+  ) {
+    return "execution";
+  }
+  return "other";
+}
+
+function p95(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const rank = Math.ceil(0.95 * sorted.length);
+  return sorted[Math.min(sorted.length, Math.max(1, rank)) - 1] ?? null;
+}
+
+export function buildPanelUsageCostView(
+  events: readonly UsageEventRecord[],
+  days = 7
+): PanelUsageCostView {
+  const summary = usageSummary(events);
+  const generationDurations: number[] = [];
+  const executionDurations: number[] = [];
+  let other = 0;
+  for (const event of events) {
+    const kind = toolCostClass(event.tool);
+    if (kind === "generation") generationDurations.push(event.durationMs);
+    else if (kind === "execution") executionDurations.push(event.durationMs);
+    else other += 1;
+  }
+  return {
+    available: events.length > 0,
+    days,
+    total: summary.total,
+    successRate: summary.successRate,
+    p95: summary.p95,
+    generation: { calls: generationDurations.length, p95: p95(generationDurations) },
+    execution: { calls: executionDurations.length, p95: p95(executionDurations) },
+    other: { calls: other },
+    top: summary.byTool.slice(0, 5).map((entry) => ({
+      tool: entry.tool,
+      calls: entry.count,
+      p95: entry.p95
+    }))
+  };
+}
+
 export interface FeatureStat {
   featureKey: string;
   featureName: string | null;

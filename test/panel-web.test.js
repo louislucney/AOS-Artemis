@@ -1128,6 +1128,26 @@ test("panel web: stats HTML（功能表/最不稳用例/跨端/三清单/指引�
     ]
   });
 
+  await store.recordUsageEvent(projectDir, {
+    tool: "design_to_test",
+    family: "native",
+    ok: true,
+    durationMs: 1_200
+  });
+  await store.recordUsageEvent(projectDir, {
+    tool: "mobile_run_task",
+    family: "mobile",
+    ok: true,
+    durationMs: 5_000
+  });
+  await store.recordUsageEvent(projectDir, {
+    tool: "mobile_run_task",
+    family: "mobile",
+    ok: false,
+    durationMs: 7_000,
+    errorClass: "artemis"
+  });
+
   const html = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=stats`),
     deps
@@ -1142,6 +1162,22 @@ test("panel web: stats HTML（功能表/最不稳用例/跨端/三清单/指引�
   assert.match(html.body, /figma_generate_tests/);
   assert.match(html.body, /jira issue create/);
   assert.match(html.body, /case-1/);
+  assert.match(html.body, /调用量与耗时（近 7 天）/);
+  assert.match(html.body, /生成 1（p95 1200 ms）/);
+  assert.match(html.body, /执行 2（p95 7000 ms）/);
+  assert.match(html.body, /design_to_test/);
+
+  const statsJson = JSON.parse(
+    (
+      await handlePanelRequest(
+        new URL(`http://x/panel.json?project=${encodeURIComponent(projectDir)}&view=stats`),
+        deps
+      )
+    ).body
+  );
+  assert.equal(statsJson.usage.total, 3);
+  assert.deepEqual(statsJson.usage.generation, { calls: 1, p95: 1_200 });
+  assert.deepEqual(statsJson.usage.execution, { calls: 2, p95: 7_000 });
 
   const projectHtml = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),

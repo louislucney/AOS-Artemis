@@ -2296,7 +2296,7 @@ showStale(false);
 }
 
 function renderStatsPage(view: { rootPath: string; hostId: string | null; detail: PanelStatsView }): string {
-  const { stats, improvement, guidance, warnings } = view.detail;
+  const { stats, usage, improvement, guidance, warnings } = view.detail;
   const featureRows = stats.features.map((feature) => [
     `<code>${escapeHtml(feature.featureKey)}</code>`,
     escapeHtml(feature.featureName ?? "—"),
@@ -2375,6 +2375,22 @@ function renderStatsPage(view: { rootPath: string; hostId: string | null; detail
   const warningsHtml = warnings
     .map((warning) => `<p class="note">${escapeHtml(warning)}</p>`)
     .join("");
+  const usageRows = usage.top.map((entry) => [
+    `<code>${escapeHtml(entry.tool)}</code>`,
+    String(entry.calls),
+    entry.p95 === null ? "—" : String(entry.p95)
+  ]);
+  const usageHtml = usage.available
+    ? [
+        '<p class="muted">客户端工具调用口径（内部编排不计入）；耗时为本地观测，不是计费金额。</p>',
+        `<p>总调用 ${usage.total} · 成功率 ${Math.round(usage.successRate * 100)}% · p95 ${
+          usage.p95 ?? "—"
+        } ms · 生成 ${usage.generation.calls}（p95 ${usage.generation.p95 ?? "—"} ms） · 执行 ${
+          usage.execution.calls
+        }（p95 ${usage.execution.p95 ?? "—"} ms） · 其他 ${usage.other.calls}</p>`,
+        renderTable(["工具", "调用", "p95 ms"], usageRows, "无工具调用")
+      ].join("\n")
+    : '<p class="empty">近 7 天无客户端工具调用（内部编排不计入；AOS_USAGE=0 时采集关闭）。</p>';
   return page(
     `统计 · ${path.basename(view.rootPath)}`,
     [
@@ -2409,6 +2425,10 @@ function renderStatsPage(view: { rootPath: string; hostId: string | null; detail
       '<section id="cross">',
       "<h2>跨端差异</h2>",
       renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）"),
+      "</section>",
+      '<section id="usage">',
+      "<h2>调用量与耗时（近 7 天）</h2>",
+      usageHtml,
       "</section>",
       '<section id="improvement">',
       "<h2>改进出口</h2>",
