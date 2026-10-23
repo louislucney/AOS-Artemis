@@ -2439,3 +2439,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **行为**：仍走同一契约/allowlist/规则；`scanned.files` 为变更后实际扫描数；空仓库无 `HEAD` 时回退 untracked；非 git 仓库抛错 → CLI exit 2；不改变默认全量行为。
 - **测试**：`ui-lint` 增 1 例（提交后只改 A → 全量命中 A+B、`--changed` 只命中 A；非 git 仓库报错）；全量 2103 绿，lint 0 error（2 条既有 warning）。
 - **边界**：不解析 `--since <ref>`/PR diff；重命名按新路径；CI 可在 checkout 后直接对工作区差异跑。
+
+### 13.193 改进（项目事件页：可选 payload）
+
+> 2026-10-23。事件/反馈入口此前只有类型/状态/消费态，`feedback.request` 的具体诉求拿不到，仍需改走 `aos_events`/HTTP。
+
+- **入口**：`?section=events&payload=1` 或页内勾选「显示 payload」；默认关闭保持列表轻量。
+- **数据**：`includePayload:true` 时沿用事件存储上限（最多 50 条），JSON 同源返回 `events[].payload` 与 `includePayload`；默认仍不回显。
+- **渲染**：表格新增「内容」列；优先取 payload 的 `message/summary/note/text/reason/title/comment`，否则 JSON 序列化；单元格截断 220 字、`title` 截断 500；「反馈请求」快捷入口自动带 `payload=1`。
+- **边界**：payload 可能含业务/日志文本，面板按内网只读面处理；不做脱敏与全文检索；消费确认仍走 `aos_event_poll`。
+- **测试**：`panel-web` 项目事件用例补默认不返回 payload、`payload=1` JSON 回显与 HTML「内容」列/反馈正文；全量 2103 绿，lint 0 error（2 条既有 warning）。

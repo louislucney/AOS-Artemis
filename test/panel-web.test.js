@@ -2338,6 +2338,12 @@ test("panel web: 项目事件页（筛选/消费状态）", async () => {
   );
   assert.equal(pending.events.length, 1);
   assert.equal(pending.events[0].eventId, "evt-feedback-1");
+  assert.equal(pending.events[0].payload, undefined, "默认不回显 payload");
+
+  const withPayload = JSON.parse(
+    (await handlePanelRequest(new URL(`${base}&payload=1`), deps)).body
+  );
+  assert.equal(withPayload.events[0].payload.message, "请补充失败证据");
 
   assert.equal(await store.markProjectEventsConsumed(projectDir, ["evt-feedback-1"]), 1);
   const consumed = JSON.parse(
@@ -2355,4 +2361,13 @@ test("panel web: 项目事件页（筛选/消费状态）", async () => {
   assert.match(html.body, /未消费|已消费/);
   assert.match(html.body, /反馈请求/, "反馈过滤入口");
   assert.match(html.body, /aos_event_poll|GET \/events\//, "轮询/上报入口");
+
+  const payloadHtml = await handlePanelRequest(
+    new URL(
+      `http://x/panel?project=${encodeURIComponent(projectDir)}&section=events&payload=1`
+    ),
+    deps
+  );
+  assert.match(payloadHtml.body, /显示 payload/);
+  assert.match(payloadHtml.body, /请补充失败证据/);
 });

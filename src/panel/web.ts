@@ -212,6 +212,7 @@ type PanelView =
       rootLabel: string;
       events: ProjectEventRecord[];
       query: Record<string, string>;
+      includePayload: boolean;
       error: string | null;
     }
   | { kind: "project"; rootPath: string; hostId: string | null; detail: PanelProjectDetail; active?: ConsoleNavKey | null }
@@ -581,6 +582,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     const consumedRaw = trimmed(url.searchParams.get("consumed"));
     const consumed =
       consumedRaw === "0" ? false : consumedRaw === "1" ? true : undefined;
+    const includePayload = trimmed(url.searchParams.get("payload")) === "1";
     const since = normalizeSince(trimmed(url.searchParams.get("since")));
     const query: Record<string, string> = {};
     for (const [key, value] of url.searchParams) query[key] = value;
@@ -592,8 +594,9 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         ...(status === null ? {} : { status }),
         ...(consumed === undefined ? {} : { consumed }),
         ...(since === null ? {} : { since }),
+        includePayload,
         order: "desc",
-        limit: 200
+        limit: includePayload ? 50 : 200
       });
     } catch (cause) {
       error = `项目事件读取失败：${cause instanceof Error ? cause.message : String(cause)}`;
@@ -605,6 +608,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       rootLabel: resolved.name,
       events,
       query,
+      includePayload,
       error
     };
   }
@@ -693,7 +697,14 @@ function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "archive") return { ok: true, view: "archive", artifacts: view.artifacts, page: view.page };
   if (view.kind === "audit") return { ok: true, view: "audit", events: view.events };
   if (view.kind === "events") {
-    return { ok: true, view: "events", events: view.events, error: view.error, query: view.query };
+    return {
+      ok: true,
+      view: "events",
+      events: view.events,
+      includePayload: view.includePayload,
+      error: view.error,
+      query: view.query
+    };
   }
   if (view.kind === "ops") {
     return {
@@ -3170,6 +3181,7 @@ function renderPanelHtml(
       hostId: view.hostId,
       events: view.events,
       query: view.query,
+      includePayload: view.includePayload,
       error: view.error,
       storeHealth: currentShell.storeHealth
     });

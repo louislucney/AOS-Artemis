@@ -402,8 +402,26 @@ export interface EventsPageData {
   hostId?: string | null;
   events: ProjectEventRecord[];
   query: Record<string, string>;
+  includePayload: boolean;
   error?: string | null;
   storeHealth?: ConsoleShellInput["storeHealth"];
+}
+
+function eventPayloadText(payload: unknown): string {
+  if (payload === undefined || payload === null) return "—";
+  if (typeof payload === "string") return payload;
+  if (typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    for (const key of ["message", "summary", "note", "text", "reason", "title", "comment"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim() !== "") return value;
+    }
+  }
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    return String(payload);
+  }
 }
 
 export function renderEventsPage(data: EventsPageData): string {
@@ -411,7 +429,7 @@ export function renderEventsPage(data: EventsPageData): string {
   const link = (patch: Record<string, string | null>): string => {
     const params = new URLSearchParams({ project: data.rootPath, section: "events" });
     if (data.hostId) params.set("host", data.hostId);
-    for (const key of ["type", "status", "consumed", "since"]) {
+    for (const key of ["type", "status", "consumed", "since", "payload"]) {
       const value = data.query[key];
       if (value !== undefined && value !== "") params.set(key, value);
     }
@@ -430,21 +448,33 @@ export function renderEventsPage(data: EventsPageData): string {
     ]
       .filter((part) => part !== "")
       .join(" · ");
-    return [
+    const row = [
       String(event.seq),
       `<span title="${escapeHtml(event.receivedAt)}">${relativeTime(event.receivedAt)}</span>`,
       `<code>${escapeHtml(event.type)}</code>${
         event.type === "feedback.request" ? ` ${cBadge({ label: "反馈", tone: "warning" })}` : ""
       }`,
       event.status === null ? "—" : escapeHtml(event.status),
-      refs === "" ? "—" : refs,
+      refs === "" ? "—" : refs
+    ];
+    if (data.includePayload) {
+      const text = eventPayloadText(event.payload);
+      const short = text.length > 220 ? `${text.slice(0, 220)}…` : text;
+      row.push(
+        text === "—"
+          ? '<span class="muted">—</span>'
+          : `<code title="${escapeHtml(text.slice(0, 500))}">${escapeHtml(short)}</code>`
+      );
+    }
+    row.push(
       cBadge({
         label: event.consumedAt === null ? "未消费" : "已消费",
         tone: event.consumedAt === null ? "warning" : "success",
         ...(event.consumedAt === null ? {} : { title: event.consumedAt })
       }),
       `${event.payloadBytes} B`
-    ];
+    );
+    return row;
   });
   return renderConsoleShell({
     title: "项目事件",
@@ -468,8 +498,8 @@ export function renderEventsPage(data: EventsPageData): string {
           `<input type="hidden" name="project" value="${escapeHtml(data.rootPath)}">`,
           `<input type="hidden" name="section" value="events">`,
           ...(data.hostId ? [`<input type="hidden" name="host" value="${escapeHtml(data.hostId)}">`] : []),
-          `<p>类型 <input name="type" value="${q("type")}" placeholder="feedback.request" aria-label="事件类型"> 状态 <input name="status" value="${q("status")}" placeholder="passed" aria-label="事件状态"> 消费 <select name="consumed" aria-label="消费状态"><option value="">全部</option><option value="0"${data.query.consumed === "0" ? " selected" : ""}>未消费</option><option value="1"${data.query.consumed === "1" ? " selected" : ""}>已消费</option></select> 起自 <input type="datetime-local" name="since" aria-label="起自（本地时间）" value="${sinceLocalValue(data.query.since)}"> <button class="c-button" type="submit">筛选</button></p>`,
-          `<p>快捷：<a class="c-button" href="${link({ type: null, status: null, consumed: null, since: null })}">全部</a> <a class="c-button" href="${link({ consumed: "0" })}">未消费</a> <a class="c-button" href="${link({ type: "feedback.request", consumed: null })}">反馈请求</a> ${preset("近 24 小时", 24)} ${preset("近 7 天", 168)}</p>`,
+          `<p>类型 <input name="type" value="${q("type")}" placeholder="feedback.request" aria-label="事件类型"> 状态 <input name="status" value="${q("status")}" placeholder="passed" aria-label="事件状态"> 消费 <select name="consumed" aria-label="消费状态"><option value="">全部</option><option value="0"${data.query.consumed === "0" ? " selected" : ""}>未消费</option><option value="1"${data.query.consumed === "1" ? " selected" : ""}>已消费</option></select> 起自 <input type="datetime-local" name="since" aria-label="起自（本地时间）" value="${sinceLocalValue(data.query.since)}"> <label><input type="checkbox" name="payload" value="1"${data.includePayload ? " checked" : ""}> 显示 payload（最多 50 条）</label> <button class="c-button" type="submit">筛选</button></p>`,
+          `<p>快捷：<a class="c-button" href="${link({ type: null, status: null, consumed: null, since: null, payload: null })}">全部</a> <a class="c-button" href="${link({ consumed: "0" })}">未消费</a> <a class="c-button" href="${link({ type: "feedback.request", consumed: null, payload: "1" })}">反馈请求</a> ${preset("近 24 小时", 24)} ${preset("近 7 天", 168)}</p>`,
           "</form>"
         ].join("\n")
       }),
@@ -484,9 +514,13 @@ export function renderEventsPage(data: EventsPageData): string {
         : []),
       cCard({
         title: "事件流",
-        subtitle: `最近 ${data.events.length} 条（新→旧，最多 200）· payload 默认不回显`,
+        subtitle: `最近 ${data.events.length} 条（新→旧，最多 ${data.includePayload ? 50 : 200}）· ${
+          data.includePayload ? "含 payload" : "payload 默认不回显"
+        }`,
         body: cTable({
-          columns: ["seq", "时间", "类型", "状态", "关联", "消费", "大小"],
+          columns: data.includePayload
+            ? ["seq", "时间", "类型", "状态", "关联", "内容", "消费", "大小"]
+            : ["seq", "时间", "类型", "状态", "关联", "消费", "大小"],
           rows,
           caption: "项目事件",
           empty: "暂无项目事件（执行器上报 run/case/artifact/feedback 事件后出现）"
@@ -496,7 +530,7 @@ export function renderEventsPage(data: EventsPageData): string {
         title: "上报与消费",
         body: [
           `<p>上报：<code>POST /events/&lt;project&gt;</code> 或 <code>aos_event_report</code>；轮询/消费：<code>aos_event_poll</code> / <code>GET /events/&lt;project&gt;/poll?consume=true</code>。</p>`,
-          `<p class="muted">反馈请求（<code>feedback.request</code>）可按类型筛选；页签入口与审计、数据并列。</p>`
+          `<p class="muted">反馈请求（<code>feedback.request</code>）可按类型筛选；勾选「显示 payload」或加 <code>payload=1</code> 查看内容（最多 50 条）。页签入口与审计、数据并列。</p>`
         ].join("\n")
       })
     ].join("\n")
