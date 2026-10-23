@@ -3,7 +3,7 @@
 Base URL（调试环境）：`http://192.168.102.165:8780`
 
 - 当前 CORS：`*`（回显实际 Origin）；Host 白名单：`192.168.102.165`、`louisdeMacBook-Pro.local`、loopback
-- 默认无鉴权；设置 `--token` 或 `AOS_CMS_OPEN_TOKEN` 后，除 `GET /healthz` 与 CORS 预检外需 `Authorization: Bearer <token>`（缺失/错误 → 401 `unauthorized`）
+- 默认无鉴权；设置 `--token` 或 `AOS_CMS_OPEN_TOKEN` 后，除 `GET /healthz`、`GET /readyz` 与 CORS 预检外需 `Authorization: Bearer <token>`（缺失/错误 → 401 `unauthorized`）
 - JSON body ≤ 1 MB；multipart 单文件 ≤ 50 MB、总量 ≤ 55 MB
 - 并发 3、队列 20、单任务 10 分钟无进度超时、产物保留 2 小时；任务台账落 `workRoot/jobs.json`，进程重启后运行中/排队任务标记 `job_interrupted`，已完成任务在保留期内仍可查询/下载
 - 可选限流：`--rate-limit <n>` 或 `AOS_CMS_OPEN_RATE_LIMIT`（每客户端每分钟请求上限，0=关闭）；超限返回 429 `rate_limited` 与 `Retry-After` 秒数，`GET /healthz` 不计入
@@ -18,6 +18,7 @@ Base URL（调试环境）：`http://192.168.102.165:8780`
 | DELETE | `/jobs/{jobId}` | 取消 |
 | GET | `/jobs/{jobId}/download` | 下载 zip |
 | GET | `/healthz` | 健康检查，返回 `{"ok":true,"bootId":"..."}` |
+| GET | `/readyz` | 就绪/容量检查，返回 `ready`、队列（queued/running/maxQueue/maxConcurrent）与任务状态计数；免 Bearer |
 
 ---
 

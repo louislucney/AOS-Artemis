@@ -2489,3 +2489,11 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **服务**：`CmsOpenServerOptions.maxJobsPerDay`；进程内按客户端地址 + UTC 日计数，`POST /jobs` 校验通过、`manager.create()` 成功后计数（队列满等失败不消耗配额）；超限 429 `quota_exceeded` + `Retry-After` 到次日 UTC；`/healthz` 不受影响；Map 超过 1024 时清理非当日桶。
 - **边界**：单进程内存、不跨实例/重启；反向代理后共享代理 IP；只统计成功入队，不统计执行失败；与分钟限流独立叠加。
 - **测试**：`open-server` 新增每日配额用例（首个 202、第二个 429、healthz 豁免、UTC 日切换恢复）；`open-command` 补 flag/env 校验与日志；全量 2111 绿，lint 0 error（2 条既有 warning）。
+
+### 13.198 产品化（CMS 开放服务：/readyz 容量就绪）
+
+> 2026-10-23。接 P2「CMS Open 独立产品化」：`/healthz` 只证明进程活着，负载均衡/运维看不到队列是否已满、任务是否在跑。
+
+- **端点**：`GET /readyz`（免 Bearer、免限流，与 `/healthz` 同层）返回 `{ok, ready, bootId, queue:{queued,running,maxQueue,maxConcurrent}, jobs:{queued,running,done,failed,cancelled}}`；`ready = queued < maxQueue`。
+- **边界**：只读快照，不触发清理/调度；`maxQueue/maxConcurrent` 回显启动参数；不暴露工作目录、任务输入或凭证；进程级单实例口径。
+- **测试**：`open-server` 新增 readyz 用例（无鉴权 200、容量字段、完成后 done 计数）；全量 2112 绿，lint 0 error（2 条既有 warning）。

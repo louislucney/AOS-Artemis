@@ -5,7 +5,13 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import { JobManager, JobQueueFullError, type JobError, type JobRecord } from "./jobs.js";
+import {
+  JobManager,
+  JobQueueFullError,
+  type JobError,
+  type JobRecord,
+  type JobStatus
+} from "./jobs.js";
 import { loadJobs, saveJobs } from "./job-store.js";
 import { isJson, isMultipart, parseMultipart } from "./multipart.js";
 import {
@@ -413,6 +419,36 @@ export async function startCmsOpenServer(
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
       if (request.method === "GET" && url.pathname === "/healthz") {
         json(response, 200, { ok: true, bootId }, allowedOrigin);
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/readyz") {
+        const counts: Record<JobStatus, number> = {
+          queued: 0,
+          running: 0,
+          done: 0,
+          failed: 0,
+          cancelled: 0
+        };
+        for (const job of manager.snapshot()) counts[job.status] += 1;
+        const maxQueue = options.maxQueue ?? 20;
+        const maxConcurrent = options.maxConcurrent ?? 3;
+        json(
+          response,
+          200,
+          {
+            ok: true,
+            ready: counts.queued < maxQueue,
+            bootId,
+            queue: {
+              queued: counts.queued,
+              running: counts.running,
+              maxQueue,
+              maxConcurrent
+            },
+            jobs: counts
+          },
+          allowedOrigin
+        );
         return;
       }
       if (authToken !== null && !isAuthorized(request.headers.authorization, authToken)) {

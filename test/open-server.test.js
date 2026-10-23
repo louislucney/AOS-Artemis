@@ -491,3 +491,34 @@ test("server: daily job quota per client", async () => {
     }
   );
 });
+
+test("server: /readyz exposes queue capacity and stays unauthenticated", async () => {
+  await withServer(
+    { runner: zipRunner, authToken: "secret", maxQueue: 2, maxConcurrent: 1 },
+    async (base) => {
+      const before = await fetch(`${base}/readyz`);
+      assert.equal(before.status, 200);
+      const beforeBody = await before.json();
+      assert.equal(beforeBody.ready, true);
+      assert.deepEqual(beforeBody.queue, {
+        queued: 0,
+        running: 0,
+        maxQueue: 2,
+        maxConcurrent: 1
+      });
+      assert.equal(beforeBody.jobs.done, 0);
+
+      const created = await fetch(`${base}/jobs`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer secret" },
+        body: JSON.stringify({ source: { type: "figma", url: "https://www.figma.com/design/ABC/demo", token: "t" } })
+      });
+      assert.equal(created.status, 202);
+      const { jobId } = await created.json();
+      await waitTerminal(base, jobId, { authorization: "Bearer secret" });
+
+      const after = await (await fetch(`${base}/readyz`)).json();
+      assert.equal(after.jobs.done, 1);
+    }
+  );
+});
