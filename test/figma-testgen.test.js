@@ -15,7 +15,10 @@ import {
 import { serializeScreenMap } from "../dist/diff/screen-map.js";
 import {
   computeFlowCoverage,
+  designFingerprintFor,
+  disambiguateSemanticIds,
   figmaGenerateTests,
+  flowGraphFingerprint,
   generateTestCases,
   identifierFromLayerName,
   identifierSuggestionsFromGraph,
@@ -2280,4 +2283,37 @@ test("semanticId 只依赖路径骨架：机器 locator/i18n 变化不影响跨�
   assert.equal(a[0].semanticId, b[0].semanticId);
   assert.equal(a[0].displayId, b[0].displayId);
   assert.notEqual(a[0].steps[0], b[0].steps[0], "机器步骤仍可含平台 locator");
+});
+
+
+test("designFingerprintFor/flowsFingerprint: 同一 URL 的内容变化必须改变指纹", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  const changed = JSON.parse(JSON.stringify(graph));
+  changed.screens[0].textHints = [
+    ...(changed.screens[0].textHints ?? []),
+    { text: "New copy", textClass: "runtime-text" }
+  ];
+  const url = "https://www.figma.com/design/same-key/Same-Name";
+  const baseFlow = flowGraphFingerprint(graph);
+  const changedFlow = flowGraphFingerprint(changed);
+  assert.notEqual(changedFlow, baseFlow);
+  assert.equal(flowGraphFingerprint(JSON.parse(JSON.stringify(graph))), baseFlow);
+
+  const baseDesign = designFingerprintFor({}, { flowsPath: "/tmp/flows.json", url, graph });
+  const changedDesign = designFingerprintFor({}, { flowsPath: "/tmp/flows.json", url, graph: changed });
+  assert.notEqual(changedDesign, baseDesign);
+});
+
+test("disambiguateSemanticIds: 同路径重复出现追加稳定序号，不合并用例", () => {
+  const cases = [
+    { semanticId: "sem-same" },
+    { semanticId: "sem-same" },
+    { semanticId: "sem-other" },
+    { semanticId: "sem-same" }
+  ];
+  disambiguateSemanticIds(cases);
+  assert.deepEqual(
+    cases.map((entry) => entry.semanticId),
+    ["sem-same", "sem-same-2", "sem-other", "sem-same-3"]
+  );
 });

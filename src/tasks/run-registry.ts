@@ -5,6 +5,7 @@ import type { SuiteRunCaseRecord, SuiteRunRecord } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
 import { classifyIosSerial } from "../device/ios.js";
 import type { SuiteRunReport } from "../figma/suite-runner.js";
+import { apiReviewSnapshot } from "../figma/run-manifest.js";
 import { logWarn } from "../log.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
@@ -86,7 +87,8 @@ export function buildSuiteRunInput(input: BuildSuiteRunInput): {
       gateResult: input.exitCode === 0 ? "pass" : "fail",
       exitCode: input.exitCode,
       manifestPath: input.manifestPath ?? null,
-      comparison: input.comparison ?? null
+      comparison: input.comparison ?? null,
+      apiReview: apiReviewSnapshot(input.report.testsPath)
     },
     cases: input.report.cases.map((entry) => ({
       caseId: entry.caseId,

@@ -16,6 +16,7 @@ import type {
   RunnerDevice,
   RunnerRecord,
   RunnerTools,
+  SuiteRunRecord,
   TaskStatRecord
 } from "../db/types.js";
 import { clientTtlFrom, isClientOnline } from "../host/online.js";
@@ -527,6 +528,8 @@ export interface PanelBatchDetail {
   tests: RunManifest["tests"] | null;
   /** 清单冻结的设计源警告摘要；清单无该字段 → null（不回读当前快照）。 */
   designWarnings: RunManifest["designWarnings"];
+  /** 运行期 API 说明快照：优先台账，清单兜底；旧记录为 null。 */
+  apiReview: RunManifest["apiReview"];
   cases: PanelBatchCaseView[];
   warnings: string[];
 }
@@ -1664,8 +1667,62 @@ function emptyBatchDetail(file: string, read: "missing" | "invalid", note: strin
     options: null,
     tests: null,
     designWarnings: null,
+    apiReview: null,
     cases: [],
     warnings: []
+  };
+}
+
+function batchDetailFromLedger(
+  file: string,
+  run: SuiteRunRecord,
+  read: "missing" | "invalid",
+  note: string
+): PanelBatchDetail {
+  const gateResult =
+    run.gateResult === "pass" || run.gateResult === "fail"
+      ? run.gateResult
+      : run.exitCode === 0
+        ? "pass"
+        : "fail";
+  return {
+    file,
+    read,
+    note,
+    runId: run.runId ?? run.id,
+    source: run.trigger,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    taxonomyVersion: null,
+    gate: { result: gateResult, exitCode: run.exitCode, reasons: [] },
+    summary: { total: run.total, passed: run.passed, failed: run.failed },
+    ui: null,
+    failureDomains: run.failureDomains,
+    options: null,
+    tests: null,
+    designWarnings: null,
+    apiReview: run.apiReview ?? null,
+    cases: run.cases.map((entry) => ({
+      caseId: entry.caseId,
+      name: entry.name,
+      status: entry.status,
+      traceId: entry.traceId,
+      error: null,
+      failure:
+        entry.failureDomain === null
+          ? null
+          : {
+              domain: entry.failureDomain,
+              confidence: entry.failureConfidence ?? "unknown",
+              reason: entry.failureReason ?? ""
+            },
+      scriptProvenance: null,
+      ui: null,
+      quarantined: entry.quarantined,
+      flaky: entry.flaky,
+      evidence: []
+    })),
+    warnings: [note]
   };
 }
 
@@ -1692,8 +1749,20 @@ export async function buildPanelBatchDetail(
   }
 
   const read = loadRunManifest(soft.configDirAbs, file);
-  if (read.kind === "missing") return emptyBatchDetail(file, "missing", "清单已清理或不可读");
-  if (read.kind === "invalid") return emptyBatchDetail(file, "invalid", `清单不可读：${read.reason}`);
+  const ledger = await safeStore(
+    () => deps.store.getSuiteRunByManifestPath(rootPath, read.file),
+    null as SuiteRunRecord | null
+  );
+  if (read.kind === "missing") {
+    return ledger === null
+      ? emptyBatchDetail(file, "missing", "清单已清理或不可读")
+      : batchDetailFromLedger(file, ledger, "missing", "批次清单已清理或不可读；以下为台账记录");
+  }
+  if (read.kind === "invalid") {
+    return ledger === null
+      ? emptyBatchDetail(file, "invalid", `清单不可读：${read.reason}`)
+      : batchDetailFromLedger(file, ledger, "invalid", `清单不可读（${read.reason}）；以下为台账记录`);
+  }
   if (read.kind === "newer") {
     const base: RunManifestBase = read.base;
     return {
@@ -1712,6 +1781,7 @@ export async function buildPanelBatchDetail(
       options: null,
       tests: null,
       designWarnings: null,
+      apiReview: ledger?.apiReview ?? null,
       cases: [],
       warnings: []
     };
@@ -1739,6 +1809,7 @@ export async function buildPanelBatchDetail(
     options: manifest.options,
     tests: manifest.tests,
     designWarnings: manifest.designWarnings ?? null,
+    apiReview: ledger?.apiReview ?? manifest.apiReview ?? null,
     cases: manifest.cases.map((entry) => ({
       caseId: entry.caseId,
       name: entry.name,

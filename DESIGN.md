@@ -2544,10 +2544,10 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-10-23。Android/iOS 同一份 `.pen` 生成结果不一致的根因是 flows 变体不同（replanned 19 屏/32 边 vs inferred 23 屏/22 边），且 caseId 仍含平台 a11y/i18n grounding。
 
-- **semanticId**：`GeneratedTest` 增 `semanticId`（`sem-<sha12>`），只由 canonical `screens`/`humanSteps`/`preconditions`/`expectations(screen,hints,kind,provenance)` 派生；不含 taskDesc、i18n、a11y、模块名。旧 `id`（caseId）保留用于历史兼容。
+- **semanticId**：`GeneratedTest` 增 `semanticId`（`sem-<sha12>`），只由 canonical 路径骨架（屏幕序列 + 边 from/to/trigger/back）派生；不含 taskDesc、i18n、a11y、模块名、人类步骤、预期或对账来源。同一路径骨架重复出现时追加 `-2`/`-3` 稳定序号，避免不同用例合并。旧 `id`（caseId）保留用于历史兼容。
 - **displayId**：新产物 `displayId` 改由 `semanticId` 派生（`TC_<6>`），同源跨端应一致；旧产物仍读旧值。
-- **指纹**：`tests.json` 顶层增 `designFingerprint` 与 `flowsFingerprint`（flows 文件/URL 哈希）；两端不一致可机械发现。
-- **CLI**：新增 `suite parity --a <tests.json> --b <tests.json> [--json]`：比较 semanticId/displayId/名称/屏幕/人类步骤/前置/预期/测试数据/section/module，忽略 taskDesc/i18n/a11y；报告 design/flows/reconciliation 指纹与 maxFlows/maxDepth 差异；exit 0 一致 / 1 差异 / 2 读取失败。
+- **指纹**：`tests.json` 顶层增 `designFingerprint` 与 `flowsFingerprint`；`flowsFingerprint` 哈希 canonical `FlowGraph`（屏幕/边/文本提示/来源），同一 Figma URL 内容变化也会变化；`designFingerprint` 对 URL 源同样吸收内容指纹（非 URL 源直接用内容指纹）。
+- **CLI**：新增 `suite parity --a <tests.json> --b <tests.json> [--json]`：比较 semanticId/displayId/名称/屏幕/人类步骤/前置/预期/测试数据/section/module，忽略 taskDesc/i18n/a11y；重复 semanticId 单独报 `duplicate`（不静默合并）；报告 design/flows/reconciliation 指纹与 maxFlows/maxDepth 差异；exit 0 一致 / 1 差异 / 2 读取失败。
 - **测试**：`parity` 5 例（机器层差异忽略、人类层差异/缺失、指纹差异、reconciliation/generation 差异、CLI JSON）；全量 2127 绿，lint 0 error（2 条既有 warning）。
 - **边界**：旧 tests.json 无 semanticId 时 parity 用 `id` fallback 并警告；功能命名/LLM 随机仍可能造成 module/section 差异，parity 会如实报告。
 
@@ -2560,3 +2560,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **R8 截图**：`tests.md` 按用例先对屏幕引用去重，单用例上限从 3 提到 8；`screenshotEmbedWarning` 同步按去重后 `min(n,8)` 校验。
 - **R10 semanticId**：派生改为纯路径骨架（归一化屏幕序列 + 边 from/to/trigger/back），剥离 `hints/provenance/humanSteps`，避免单端 reconciliation/acceptance 打断跨端配对；`displayId` 随 semanticId 稳定。
 - **测试**：`figma-testgen`/`figma-test-screens`/`suite-command` 增补；全量 **2131 绿**，lint 0 error（2 条既有 warning）。
+
+
+### 13.205 实施记录（风险修订第二批：R10 碰撞/R11 持久化/R12 内容指纹）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-dual-layer-risk-assessment.md` rev 3 的第二批实施。
+
+- **R10 碰撞消歧**：`generateTestCases` 生成后执行 `disambiguateSemanticIds`，同一纯路径骨架的第二/第三条追加 `-2`/`-3`；同一路径不同数据不再共享 semanticId，`displayId` 随最终身份派生；旧产物重复 semanticId 由 `suite parity` 报 `duplicate`。
+- **R11 API 说明持久化**：`SuiteRunRecord` 增 `apiReview`（PG `suite_runs.api_review`；file/memory 同步），登记时从 `tests.json` 快照；`suite backfill` 从清单快照回填。面板批次详情优先读台账，清单缺失/损坏时按 `manifest_path` 回退台账，仍展示 `apiReview` 与用例摘要。
+- **R12 内容指纹**：新增 `flowGraphFingerprint(graph)`；`flowsFingerprint` 改为内容指纹，`designFingerprintFor` 支持从实际 `FlowGraph` 计算（URL 源拼接 URL + 内容），同一 URL 的文本/连线/acceptance 变化可被 parity/API carry-forward 检测。
+- **测试**：新增 `run-registry`/`suite-backfill`/`panel-overview`/`console-pages`/`figma-testgen` 用例；全量 **2138 绿**，lint 0 error（2 条既有 warning）。

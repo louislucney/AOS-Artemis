@@ -902,6 +902,26 @@ function uiBadge(ui: PanelBatchSummary["ui"] | undefined): string {
   return "";
 }
 
+/** 批次 API 说明状态（台账优先；旧记录无该字段 → 未记录）。 */
+function apiReviewBadge(review: PanelBatchDetail["apiReview"]): string {
+  if (review === null) return '<span class="muted">API 说明：未记录</span>';
+  const suffix = review.carriedForward
+    ? review.designChanged
+      ? "（沿用上次，设计已变）"
+      : "（沿用上次）"
+    : "";
+  if (review.status === "pending") {
+    return `<span class="chip gate-fail">API 说明待补充${suffix}</span>`;
+  }
+  if (review.status === "provided") {
+    return `<span class="chip gate-pass">API 说明已提供${suffix}</span>`;
+  }
+  if (review.status === "not-applicable") {
+    return `<span class="chip">API 无变更${suffix}</span>`;
+  }
+  return `<span class="chip">API 说明未确认${suffix}</span>`;
+}
+
 /** 批次用例级 UI 状态；旧清单无该字段 → —。 */
 function uiCaseCell(ui: PanelBatchDetail["cases"][number]["ui"]): string {
   if (ui === null || ui === undefined) return '<span class="muted">—</span>';
@@ -2812,6 +2832,7 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
         `<p class="note">读取结果：${escapeHtml(detail.read)}${
           detail.note !== null ? ` · ${escapeHtml(detail.note)}` : ""
         }</p>`,
+        `<p>${apiReviewBadge(detail.apiReview)}</p>`,
         "</section>",
         "</main>"
       ].join("\n")
@@ -2882,6 +2903,7 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
       detail.designWarnings === null
         ? '<p class="muted">设计源警告：未记录（运行期无 preflight 摘要）</p>'
         : `<p class="muted">${escapeHtml(designWarningsText(detail.designWarnings))}</p>`,
+      `<p>${apiReviewBadge(detail.apiReview)}</p>`,
       warnings,
       "</header>",
       "<main>",

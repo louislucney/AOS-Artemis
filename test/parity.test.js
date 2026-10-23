@@ -116,3 +116,14 @@ test("parity: reconciliation / generation 参数不同报告 profile 差异", ()
   assert.ok(report.diffs.some((diff) => diff.kind === "profile" && diff.field === "reconciliationFingerprint"));
   assert.ok(report.diffs.some((diff) => diff.kind === "profile" && diff.field === "generation"));
 });
+
+test("parity: semanticId 重复时显式报告 duplicate，不静默合并", () => {
+  const dir = makeTempDir("aos-parity-dup-");
+  const doc = makeDoc();
+  doc.flows.push({ ...makeDoc().flows[0], id: "case-2", name: "第二条同路径用例" });
+  const a = readParityDoc(writeDoc(dir, "a.json", doc));
+  const b = readParityDoc(writeDoc(dir, "b.json", doc));
+  const report = compareParityDocs(a, b);
+  assert.equal(report.ok, false);
+  assert.ok(report.diffs.some((diff) => diff.kind === "duplicate"));
+});

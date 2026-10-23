@@ -606,6 +606,16 @@ export interface SuiteRunCaseRecord {
   jiraIssueKey: string | null;
 }
 
+/** 批次 API 说明的冻结快照（清单/台账共用；旧记录为 null）。 */
+export interface ApiReviewSnapshot {
+  change: string;
+  status: string;
+  specSha256: string | null;
+  designFingerprint: string | null;
+  carriedForward: boolean;
+  designChanged: boolean;
+}
+
 export interface SuiteRunRecord {
   id: string;
   projectId: string | null;
@@ -634,6 +644,8 @@ export interface SuiteRunRecord {
   exitCode: number;
   manifestPath: string | null;
   comparison: unknown;
+  /** 运行期 API 说明快照（与批次清单同源；旧记录为 null）。 */
+  apiReview: ApiReviewSnapshot | null;
   cases: SuiteRunCaseRecord[];
 }
 
@@ -831,6 +843,11 @@ export interface ProjectStore {
   updateCaseVerdict(input: UpdateCaseVerdictInput): Promise<boolean>;
   setCaseIssueKey(input: SetCaseIssueKeyInput): Promise<boolean>;
   getSuiteRun(rootPath: string, runId: string): Promise<SuiteRunRecord | null>;
+  /** 按批次清单路径取台账行（面板清单清理后的降级读取；未命中 → null）。 */
+  getSuiteRunByManifestPath(
+    rootPath: string,
+    manifestPath: string
+  ): Promise<SuiteRunRecord | null>;
   /** 已登记清单路径（仅非 null）；未注册项目 → []。 */
   listRegisteredManifestPaths(rootPath: string): Promise<string[]>;
   /** 最早登记时间：suite_runs 与 case_sets 各自的 MIN(created_at)；无行/未注册项目 → null。 */

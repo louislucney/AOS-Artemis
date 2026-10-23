@@ -45,7 +45,7 @@ function runCase(caseId, overrides = {}) {
   };
 }
 
-function manifestRecord({ runId, startedAt, finishedAt, exitCode = 0, registration, deviceSerial = null, cases = [] }) {
+function manifestRecord({ runId, startedAt, finishedAt, exitCode = 0, registration, deviceSerial = null, cases = [], apiReview = null }) {
   return {
     schemaVersion: 1,
     runId,
@@ -71,6 +71,7 @@ function manifestRecord({ runId, startedAt, finishedAt, exitCode = 0, registrati
       quarantinedCaseIds: []
     },
     preflight: null,
+    apiReview,
     apiErrorCatalog: null,
     summary: {
       total: cases.length,
@@ -178,6 +179,14 @@ test("backfill runs: 登记 2 份、跳过已登记、坏 JSON invalid；登记�
     startedAt: "2026-10-14T14:59:00.000Z",
     finishedAt: "2026-10-14T15:00:00.000Z",
     deviceSerial: "emulator-5554",
+    apiReview: {
+      change: "new",
+      status: "pending",
+      specSha256: null,
+      designFingerprint: "design-fp",
+      carriedForward: false,
+      designChanged: false
+    },
     registration: {
       regressionTaskId: "task-1",
       caseSetId: "cs-a",
@@ -236,6 +245,8 @@ test("backfill runs: 登记 2 份、跳过已登记、坏 JSON invalid；登记�
   assert.equal(a.featureName, "功能A");
   assert.equal(a.runner, "host-x");
   assert.equal(a.appVersion, null);
+  assert.equal(a.apiReview.status, "pending");
+  assert.equal(a.apiReview.designFingerprint, "design-fp");
   assert.equal(a.createdAt, "2026-10-14T15:00:00.000Z");
   assert.equal(a.status, "completed");
   assert.equal(a.gateResult, "pass");
@@ -724,4 +735,31 @@ test("suite backfill: 从导入归档重建登记（top-level source + features�
   assert.equal(sets[0].source, imported.sourceId);
   assert.equal(sets[0].features[0].caseCount, 1);
   assert.equal(sets[0].features[0].key, imported.sets[0].featureKey);
+});
+
+test("PostgresStore: suite_runs.api_review 与 manifest_path 查询往返", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const store = await makePgStore();
+  const runtime = await makeRuntime(store, dir);
+  const manifestPath = path.join(runtime.configDirAbs, "design", "runs", "run-api.json");
+  await store.recordSuiteRun({
+    rootPath: runtime.project.rootDir,
+    createdAt: "2026-10-23T00:00:00.000Z",
+    run: minimalRun({
+      manifestPath,
+      apiReview: {
+        change: "new",
+        status: "pending",
+        specSha256: null,
+        designFingerprint: "fp",
+        carriedForward: false,
+        designChanged: false
+      }
+    }),
+    cases: []
+  });
+  const run = await store.getSuiteRunByManifestPath(runtime.project.rootDir, manifestPath);
+  assert.ok(run);
+  assert.equal(run.apiReview.status, "pending");
+  assert.equal(run.apiReview.designFingerprint, "fp");
 });

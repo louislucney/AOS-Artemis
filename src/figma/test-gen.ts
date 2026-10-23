@@ -749,7 +749,19 @@ function caseIdFor(name: string, screens: string[], steps: string[]): string {
   return `case-${createHash("sha256").update(basis).digest("hex").slice(0, 12)}`;
 }
 
-/** 跨平台语义身份：不包含 taskDesc/i18n/a11y/模块名；只依赖 canonical flows 与人类层。 */
+/** 同一路径骨架出现多次时追加稳定序号（不依赖 locator/测试数据）。 */
+export function disambiguateSemanticIds(cases: Array<{ semanticId?: string }>): void {
+  const seen = new Map<string, number>();
+  for (const testCase of cases) {
+    const base = testCase.semanticId;
+    if (!base) continue;
+    const occurrence = (seen.get(base) ?? 0) + 1;
+    seen.set(base, occurrence);
+    if (occurrence > 1) testCase.semanticId = `${base}-${occurrence}`;
+  }
+}
+
+/** 跨平台语义身份：不包含 taskDesc/i18n/a11y/模块名；只依赖 canonical 路径骨架。 */
 function semanticIdFor(input: {
   screens: string[];
   edges: Array<Pick<FlowEdge, "from" | "to" | "trigger" | "back">>;
@@ -915,7 +927,7 @@ export function generateTestCases(
   });
   options.onStats?.(stats);
   const screenLabels = humanScreenLabels(graph);
-  return paths.map((flowPath, pathIndex) => {
+  const cases = paths.map((flowPath, pathIndex) => {
     const prefix = prefixes[pathIndex] ?? [];
     const continuation = prefix.length > 0;
     const first = flowPath[0]!;
@@ -1038,6 +1050,8 @@ export function generateTestCases(
       openQuestions
     };
   });
+  disambiguateSemanticIds(cases);
+  return cases;
 }
 
 export function renderMarkdown(
@@ -1215,17 +1229,65 @@ function optionalFileFingerprint(file: string): string | null {
   }
 }
 
+/** 设计内容指纹：只哈希会影响流程/断言的稳定字段，不吸收生成参数或对账状态。 */
+export function flowGraphFingerprint(graph: FlowGraph): string {
+  const canonical = {
+    screens: graph.screens.map((screen) => ({
+      id: screen.id,
+      name: screen.name,
+      suggestedRoute: screen.suggestedRoute,
+      page: screen.page ?? null,
+      childNames: screen.childNames,
+      textHints: screen.textHints,
+      bounds: screen.bounds ?? null,
+      acceptance: screen.acceptance ?? null,
+      elements: screen.elements ?? null,
+      provenance: screen.provenance ?? null,
+      confidence: screen.confidence ?? null
+    })),
+    edges: graph.edges.map((edge) => ({
+      from: edge.from,
+      to: edge.to,
+      element: edge.element,
+      textHints: edge.textHints,
+      trigger: edge.trigger,
+      triggerTimeoutMs: edge.triggerTimeoutMs ?? null,
+      navigation: edge.navigation ?? null,
+      actionType: edge.actionType,
+      back: edge.back === true,
+      state: edge.state ?? null,
+      provenance: edge.provenance ?? null,
+      confidence: edge.confidence ?? null
+    })),
+    entryScreens: graph.entryScreens,
+    unresolvedDestinations: graph.unresolvedDestinations,
+    interactionNodes: graph.interactionNodes ?? null
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
 export function designFingerprintFor(
   runtime: DesignRuntimeLike,
-  input: { flowsPath: string; url?: string }
+  input: { flowsPath: string; url?: string; graph?: FlowGraph }
 ): string {
+  if (input.graph !== undefined) {
+    const content = flowGraphFingerprint(input.graph);
+    return typeof input.url === "string" && input.url.trim() !== ""
+      ? createHash("sha256").update(`figma:${input.url.trim()}\n${content}`).digest("hex")
+      : content;
+  }
   if (typeof input.url === "string" && input.url.trim() !== "") {
     return createHash("sha256").update(`figma:${input.url.trim()}`).digest("hex");
   }
   try {
-    return createHash("sha256").update(fs.readFileSync(input.flowsPath)).digest("hex");
+    const parsed = JSON.parse(fs.readFileSync(input.flowsPath, "utf-8")) as unknown;
+    return flowGraphFingerprint(normalizeFlowGraph(parsed));
   } catch {
-    return createHash("sha256").update(path.resolve(input.flowsPath)).digest("hex");
+    try {
+      return createHash("sha256").update(fs.readFileSync(input.flowsPath)).digest("hex");
+    } catch {
+      return createHash("sha256").update(path.resolve(input.flowsPath)).digest("hex");
+    }
   }
 }
 
@@ -1876,6 +1938,13 @@ export async function figmaGenerateTests(
       source = flowsPath;
     }
 
+    const designFingerprint = designFingerprintFor(runtime, {
+      flowsPath,
+      ...(args.url ? { url: args.url } : {}),
+      graph
+    });
+    const flowsFingerprint = flowGraphFingerprint(graph);
+
     const reconciliationApplied = applyReconciliationToGraph(
       graph,
       loadReconciliation(runtime.configDirAbs)
@@ -1898,7 +1967,6 @@ export async function figmaGenerateTests(
     });
     const generation = generationRef.stats;
     const generatedAt = new Date().toISOString();
-    const designFingerprint = designFingerprintFor(runtime, { flowsPath, ...(args.url ? { url: args.url } : {}) });
     const apiReviewResult = resolveApiReview(runtime, args, designFingerprint, new Date(generatedAt));
     const apiReview = apiReviewResult.review;
     const apiReviewWarnings = apiReviewResult.warnings;
@@ -1962,7 +2030,7 @@ export async function figmaGenerateTests(
       source,
       generatedAt,
       designFingerprint,
-      flowsFingerprint: designFingerprint,
+      flowsFingerprint,
       reconciliationFingerprint: optionalFileFingerprint(
         path.join(runtime.configDirAbs, "design", "reconciliation.json")
       ),

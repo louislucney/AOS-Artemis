@@ -253,3 +253,43 @@ test("resolveRunRefs: >50 份仍归因窗口外既有份", async () => {
   assert.ok(ref, "应能归因窗口外的既有份");
   assert.equal(ref.featureKey, "f-old");
 });
+
+test("buildSuiteRunInput/registerSuiteRun: apiReview 从 tests.json 快照并随台账往返", async () => {
+  const { runtime, store } = await setupProject();
+  const testsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+  fs.mkdirSync(path.dirname(testsPath), { recursive: true });
+  fs.writeFileSync(
+    testsPath,
+    JSON.stringify({
+      apiReview: {
+        change: "new",
+        status: "pending",
+        apiSpec: null,
+        apiSpecSha256: null,
+        designFingerprint: "design-fp",
+        carriedForward: false,
+        designChanged: false,
+        updatedAt: "2026-10-23T00:00:00.000Z"
+      }
+    }),
+    "utf-8"
+  );
+  const input = {
+    report: makeReport({ testsPath }),
+    trigger: "cli",
+    platform: "android",
+    device: "emulator-5554",
+    exitCode: 0,
+    startedAtMs: Date.parse("2026-10-23T00:00:00Z"),
+    finishedAtMs: Date.parse("2026-10-23T00:01:00Z")
+  };
+  const built = buildSuiteRunInput(input);
+  assert.equal(built.run.apiReview.status, "pending");
+  assert.equal(built.run.apiReview.designFingerprint, "design-fp");
+
+  const id = await registerSuiteRun(runtime, input);
+  assert.ok(id);
+  const run = (await store.listSuiteRuns(runtime.project.rootDir))[0];
+  assert.equal(run.apiReview.status, "pending");
+  assert.equal(run.apiReview.specSha256, null);
+});

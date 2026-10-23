@@ -16,6 +16,7 @@ import {
 
 import type {
   AcquireDeviceLeasesInput,
+  ApiReviewSnapshot,
   AcquireDeviceLeasesResult,
   CancelSource,
   CaseSetRecord,
@@ -254,7 +255,8 @@ const SCHEMA = [
      gate_result TEXT,
      exit_code INTEGER NOT NULL,
      manifest_path TEXT,
-     comparison TEXT
+     comparison TEXT,
+     api_review TEXT
     )`,
   `CREATE TABLE IF NOT EXISTS suite_run_cases (
      run_id TEXT NOT NULL REFERENCES suite_runs(id) ON DELETE CASCADE,
@@ -392,6 +394,7 @@ const MIGRATIONS = [
   `ALTER TABLE task_stats ADD COLUMN IF NOT EXISTS case_id TEXT`,
   `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS runner TEXT`,
   `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS run_id TEXT`,
+  `ALTER TABLE suite_runs ADD COLUMN IF NOT EXISTS api_review TEXT`,
   `CREATE INDEX IF NOT EXISTS suite_runs_project_run_id_idx ON suite_runs(project_id, run_id)`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_by TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS claimed_at TEXT`,
@@ -1327,8 +1330,8 @@ export class PostgresStore implements ProjectStore {
         `INSERT INTO suite_runs
            (id, project_id, created_at, trigger, regression_task_id, case_set_id, feature_key, feature_name,
             platform, device, app_version, runner, run_id, status, started_at, finished_at, total, passed, failed,
-            flaky, quarantined, failure_domains, gate_result, exit_code, manifest_path, comparison)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
+            flaky, quarantined, failure_domains, gate_result, exit_code, manifest_path, comparison, api_review)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)`,
         [
           id,
           project?.id ?? null,
@@ -1355,7 +1358,8 @@ export class PostgresStore implements ProjectStore {
           run.gateResult,
           run.exitCode,
           run.manifestPath,
-          run.comparison === undefined || run.comparison === null ? null : JSON.stringify(run.comparison)
+          run.comparison === undefined || run.comparison === null ? null : JSON.stringify(run.comparison),
+          run.apiReview === undefined || run.apiReview === null ? null : JSON.stringify(run.apiReview)
         ]
       );
       for (const entry of input.cases) {
@@ -1513,6 +1517,25 @@ export class PostgresStore implements ProjectStore {
     const cases = await this.pool.query(
       "SELECT * FROM suite_run_cases WHERE run_id = $1 ORDER BY case_id ASC",
       [runId]
+    );
+    return mapSuiteRun(row, cases.rows);
+  }
+
+  async getSuiteRunByManifestPath(
+    rootPath: string,
+    manifestPath: string
+  ): Promise<SuiteRunRecord | null> {
+    const project = await this.getProjectByPath(rootPath);
+    if (!project) return null;
+    const runs = await this.pool.query(
+      "SELECT * FROM suite_runs WHERE project_id = $1 AND manifest_path = $2 ORDER BY created_at DESC LIMIT 1",
+      [project.id, manifestPath]
+    );
+    const row = runs.rows[0];
+    if (!row) return null;
+    const cases = await this.pool.query(
+      "SELECT * FROM suite_run_cases WHERE run_id = $1 ORDER BY case_id ASC",
+      [row.id]
     );
     return mapSuiteRun(row, cases.rows);
   }
@@ -3007,6 +3030,20 @@ function mapSuiteRunCase(row: Record<string, unknown>): SuiteRunCaseRecord {
   };
 }
 
+function parseApiReview(value: unknown): ApiReviewSnapshot | null {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  return {
+    change: typeof record.change === "string" ? record.change : "unknown",
+    status: typeof record.status === "string" ? record.status : "unknown",
+    specSha256: typeof record.specSha256 === "string" ? record.specSha256 : null,
+    designFingerprint: typeof record.designFingerprint === "string" ? record.designFingerprint : null,
+    carriedForward: record.carriedForward === true,
+    designChanged: record.designChanged === true
+  };
+}
+
 function mapSuiteRun(
   row: Record<string, unknown>,
   caseRows: Array<Record<string, unknown>>
@@ -3038,6 +3075,7 @@ function mapSuiteRun(
     exitCode: Number(row.exit_code),
     manifestPath: nullableString(row.manifest_path),
     comparison: parseJsonValue(row.comparison),
+    apiReview: parseApiReview(row.api_review),
     cases: caseRows.map(mapSuiteRunCase)
   };
 }

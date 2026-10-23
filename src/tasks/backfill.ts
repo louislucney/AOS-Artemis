@@ -290,7 +290,8 @@ async function registerRun(
       gateResult: manifest.gate.result,
       exitCode: manifest.gate.exitCode,
       manifestPath,
-      comparison: null
+      comparison: null,
+      apiReview: manifest.apiReview ?? null
     },
     cases
   });

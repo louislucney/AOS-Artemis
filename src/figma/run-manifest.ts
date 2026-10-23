@@ -16,6 +16,7 @@ import {
 } from "../design/warnings.js";
 import type { UiSummary, UiVerification } from "../ui/verification.js";
 import { designDir } from "./design-store.js";
+import type { ApiReviewSnapshot } from "../db/types.js";
 import type { SuiteCaseResult, SuiteRunReport } from "./suite-runner.js";
 
 /** 批次清单（run manifest，DESIGN §13.95）：一次 suite run/loop 的一等实体，
@@ -108,14 +109,7 @@ export interface RunManifest {
   /** 运行期设计源警告摘要（冻结快照；无 preflight → null，不回读当前 flows）。 */
   designWarnings: WarningSummary | null;
   /** 运行期 API 说明快照（冻结；旧清单没有该字段）。 */
-  apiReview: {
-    change: string;
-    status: string;
-    specSha256: string | null;
-    designFingerprint: string | null;
-    carriedForward: boolean;
-    designChanged: boolean;
-  } | null;
+  apiReview: ApiReviewSnapshot | null;
   apiErrorCatalog: { file: string; rules: number; errors: string[] } | null;
   summary: {
     total: number;
@@ -271,7 +265,7 @@ export function mergeDesignWarningBatches(batches: DesignWarningBatch[]): Merged
   };
 }
 
-function apiReviewSnapshot(testsPath: string): RunManifest["apiReview"] {
+export function apiReviewSnapshot(testsPath: string): ApiReviewSnapshot | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as { apiReview?: unknown };
     const value = parsed.apiReview;

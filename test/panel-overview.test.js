@@ -1179,3 +1179,99 @@ test("panel overview: AOS_PANEL_EXCLUDE_PROJECTS 按名称/路径隐藏，但不
   assert.ok(detail, "直接项目 URL 不受排除名单影响");
   assert.equal(detail.project.name, "mobile-testing");
 });
+
+test("panel batch detail: 优先台账 apiReview，清单清理后仍可读", async () => {
+  const store = new MemoryStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "ledger-api-app" });
+  const design = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(design, { recursive: true });
+  fs.writeFileSync(
+    path.join(design, "tests.json"),
+    JSON.stringify({
+      apiReview: {
+        change: "new",
+        status: "pending",
+        apiSpec: null,
+        apiSpecSha256: null,
+        designFingerprint: "fp",
+        carriedForward: false,
+        designChanged: false,
+        updatedAt: "2026-10-23T00:00:00.000Z"
+      }
+    }),
+    "utf-8"
+  );
+  const manifest = makeBatch(dir, { startedIso: "2026-10-23T00:00:00.000Z", traceId: "trace-ledger" });
+  const runsDir = path.join(design, "runs");
+  const file = fs.readdirSync(runsDir).find((name) => name.endsWith(".json"));
+  const manifestPath = path.join(runsDir, file);
+  await store.recordSuiteRun({
+    rootPath: dir,
+    createdAt: manifest.finishedAt,
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: null,
+      featureName: null,
+      platform: "android",
+      device: null,
+      appVersion: null,
+      runner: null,
+      status: "completed",
+      startedAt: manifest.startedAt,
+      finishedAt: manifest.finishedAt,
+      total: 1,
+      passed: 1,
+      failed: 0,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "pass",
+      exitCode: 0,
+      manifestPath,
+      comparison: null,
+      apiReview: {
+        change: "new",
+        status: "provided",
+        specSha256: "spec-sha",
+        designFingerprint: "fp",
+        carriedForward: false,
+        designChanged: false
+      }
+    },
+    cases: [
+      {
+        caseId: "case-x",
+        name: "Case X",
+        featureKey: null,
+        platform: "android",
+        status: "passed",
+        traceId: "trace-ledger",
+        failureDomain: null,
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null,
+        jiraIssueKey: null
+      }
+    ]
+  });
+
+  const deps = { store, serviceRepo: repo, buildStale: false, env: {} };
+  const pref = await buildPanelBatchDetail(deps, dir, file);
+  assert.equal(pref.apiReview.status, "provided", "台账覆盖清单快照");
+  fs.rmSync(manifestPath);
+  const fallback = await buildPanelBatchDetail(deps, dir, file);
+  assert.equal(fallback.read, "missing");
+  assert.equal(fallback.apiReview.status, "provided");
+  assert.equal(fallback.cases[0].caseId, "case-x");
+  assert.match(fallback.warnings.join("\n"), /台账/);
+});

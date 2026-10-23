@@ -1,7 +1,7 @@
 # 双层测试产物与跨端一致性：当前风险与收敛评估（rev 2）
 
 > 日期：2026-10-23（rev 3 吸收二次审核：补 R12 URL 内容指纹、R13 semanticId 碰撞、R1 重建字段、R11 台账持久化）
-> 状态：部分实施（第一批 R1/R2/R8/R10 已完成，见 DESIGN §13.204）
+> 状态：部分实施（R1/R2/R8/R10/R11/R12 已完成，见 DESIGN §13.204/§13.205；其余待排期）
 > 关联设计：`docs/superpowers/specs/2026-10-23-design-to-test-dual-layer-design.md`
 > 关联实现：提交 `8217b7d` / `82ef0ca` / `da9d133` / `a9966ed`（DESIGN §13.202–§13.203）
 

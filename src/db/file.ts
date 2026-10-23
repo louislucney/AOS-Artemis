@@ -504,6 +504,14 @@ export class FileStore implements ProjectStore {
     return this.scopedMem(bucket, this.hostId).getSuiteRun(rootPath, runId);
   }
 
+  async getSuiteRunByManifestPath(
+    rootPath: string,
+    manifestPath: string
+  ): Promise<SuiteRunRecord | null> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).getSuiteRunByManifestPath(rootPath, manifestPath);
+  }
+
   async listRegisteredManifestPaths(rootPath: string): Promise<string[]> {
     const bucket = await this.bucket(rootPath);
     return this.scopedMem(bucket, this.hostId).listRegisteredManifestPaths(rootPath);

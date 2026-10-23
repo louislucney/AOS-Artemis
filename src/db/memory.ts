@@ -797,6 +797,7 @@ export class MemoryStore implements ProjectStore {
       runner: input.run.runner ?? null,
       failureDomains: { ...input.run.failureDomains },
       comparison: input.run.comparison ?? null,
+      apiReview: input.run.apiReview ?? null,
       cases: input.cases.map((entry) => ({ ...entry, jiraIssueKey: entry.jiraIssueKey ?? null }))
     };
     this.suiteRuns.push(record);
@@ -878,6 +879,18 @@ export class MemoryStore implements ProjectStore {
     const run = this.suiteRuns.find(
       (entry) => entry.projectId === project.id && entry.id === runId
     );
+    return run ? cloneSuiteRun(run) : null;
+  }
+
+  async getSuiteRunByManifestPath(
+    rootPath: string,
+    manifestPath: string
+  ): Promise<SuiteRunRecord | null> {
+    const project = this.getProjectRecord(rootPath);
+    if (!project) return null;
+    const run = this.suiteRuns
+      .filter((entry) => entry.projectId === project.id && entry.manifestPath === manifestPath)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))[0];
     return run ? cloneSuiteRun(run) : null;
   }
 
@@ -1699,6 +1712,7 @@ function cloneSuiteRun(run: SuiteRunRecord): SuiteRunRecord {
   return {
     ...run,
     failureDomains: { ...run.failureDomains },
+    apiReview: run.apiReview ?? null,
     cases: run.cases.map((entry) => ({ ...entry, jiraIssueKey: entry.jiraIssueKey ?? null }))
   };
 }

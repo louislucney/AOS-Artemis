@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
+import { buildRunManifest, saveRunManifest } from "../dist/figma/run-manifest.js";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
@@ -289,4 +291,87 @@ test("console pages: 角色 scope 关闭用例库写入口", async () => {
   assert.equal(html.status, 200);
   assert.match(html.body, /写动作未启用/);
   assert.match(html.body, /disabled/);
+});
+
+
+test("console pages: 批次详情展示台账 API 说明（清单已清理仍可读）", async () => {
+  const { deps, rootPath } = await setup();
+  const report = {
+    ok: true,
+    testsPath: join(rootPath, ".artemis", "design", "tests.json"),
+    total: 0,
+    executed: 0,
+    skipped: 0,
+    passed: 0,
+    failed: 0,
+    preflight: null,
+    apiErrorCatalog: null,
+    cases: []
+  };
+  const manifest = buildRunManifest({
+    report,
+    source: "suite-run",
+    startedAtMs: Date.parse("2026-10-18T04:00:00.000Z"),
+    finishedAtMs: Date.parse("2026-10-18T04:01:00.000Z"),
+    exitCode: 0,
+    coverageIssue: null,
+    testsPath: report.testsPath,
+    testsSha256: null,
+    testsGeneratedAt: null,
+    options: {
+      deviceSerial: null,
+      lockedAppPackage: null,
+      model: null,
+      maxCases: null,
+      stopOnFailure: false,
+      apiErrors: true,
+      failOnApiErrors: false,
+      strict: false,
+      failOnUncovered: false,
+      retry: 0,
+      quarantinedCaseIds: []
+    }
+  });
+  const manifestPath = saveRunManifest(join(rootPath, ".artemis"), manifest);
+  await deps.store.recordSuiteRun({
+    rootPath,
+    createdAt: manifest.finishedAt,
+    run: {
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: null,
+      featureName: null,
+      platform: "android",
+      device: null,
+      appVersion: null,
+      runner: null,
+      status: "completed",
+      startedAt: manifest.startedAt,
+      finishedAt: manifest.finishedAt,
+      total: 0,
+      passed: 0,
+      failed: 0,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "pass",
+      exitCode: 0,
+      manifestPath,
+      comparison: null,
+      apiReview: {
+        change: "new",
+        status: "provided",
+        specSha256: "sha",
+        designFingerprint: "fp",
+        carriedForward: false,
+        designChanged: false
+      }
+    },
+    cases: []
+  });
+  const file = manifestPath.split("/").pop();
+  const html = await handlePanelRequest(url(rootPath, "project", { batch: file }), deps);
+  assert.equal(html.status, 200);
+  assert.match(html.body, /API 说明已提供/);
 });

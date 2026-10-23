@@ -25,7 +25,7 @@ export interface ParityDoc {
 }
 
 export interface ParityDiff {
-  kind: "fingerprint" | "profile" | "missing" | "extra" | "field";
+  kind: "fingerprint" | "profile" | "missing" | "extra" | "field" | "duplicate";
   semanticId: string | null;
   field?: string;
   a?: unknown;
@@ -185,6 +185,28 @@ export function compareParityDocs(a: ParityDoc, b: ParityDoc): ParityReport {
   }
   if (a.cases.some((entry) => entry.semanticId === "") || b.cases.some((entry) => entry.semanticId === "")) {
     warnings.push("存在旧产物（无 semanticId）：使用 id 作为 fallback");
+  }
+  const duplicateIds = (cases: ParityCase[]): string[] => {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    for (const entry of cases) {
+      if (entry.semanticId === "") continue;
+      if (seen.has(entry.semanticId)) duplicates.add(entry.semanticId);
+      seen.add(entry.semanticId);
+    }
+    return [...duplicates];
+  };
+  for (const [side, cases] of [
+    ["A", a.cases],
+    ["B", b.cases]
+  ] as const) {
+    for (const semanticId of duplicateIds(cases)) {
+      diffs.push({
+        kind: "duplicate",
+        semanticId,
+        message: `${side} 存在重复 semanticId ${semanticId}：请重新生成以启用路径出现序号`
+      });
+    }
   }
   const byA = new Map(a.cases.map((entry) => [entry.semanticId, entry]));
   const byB = new Map(b.cases.map((entry) => [entry.semanticId, entry]));
