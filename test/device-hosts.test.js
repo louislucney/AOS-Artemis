@@ -112,6 +112,8 @@ test("probeAppiumStatus: /status 可达/不可达/异常三态", async () => {
 
 test("probeAdbSocket: adb host:version 握手（OKAY）/端口不通", async () => {
   const server = net.createServer((socket) => {
+    // 探针收到 OKAY 后会主动断开；服务端 socket 需吞掉随之而来的 ECONNRESET。
+    socket.on("error", () => {});
     socket.on("data", (chunk) => {
       assert.equal(chunk.toString("utf-8"), "000Chost:version");
       socket.write("OKAY0004");
