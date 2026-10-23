@@ -24,6 +24,11 @@ import {
 } from "../console/dispatch.js";
 import { auditActionLabel } from "../console/vocab.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
+import {
+  panelRequiredRoleForPath,
+  panelRoleAtLeast,
+  panelRoleFrom
+} from "./roles.js";
 
 /** 面板动作层（DESIGN：回归服务 §5.4）：HTTP 模式接线；独立进程需 `AOS_PANEL_ACTIONS=1`＋loopback。
  * 写请求加同源校验（CSRF 纵深防御）；`AOS_PANEL_ACTIONS=0` 整体关闭。body 为已解析 JSON。 */
@@ -78,6 +83,16 @@ export async function handlePanelActionRequest(
   if (!request.url.pathname.startsWith("/panel/api/")) return json(404, { error: "not found" });
   if (!sameOriginAllowed(request.headers)) {
     return json(403, { error: "跨站请求被拒绝（同源校验失败）" });
+  }
+  const role = panelRoleFrom(env);
+  const required = panelRequiredRoleForPath(request.url.pathname);
+  if (required !== null && !panelRoleAtLeast(role, required)) {
+    return json(403, {
+      error: `当前角色 ${role} 无权限执行该动作（需要 ${required}）`,
+      code: "role_forbidden",
+      role,
+      required
+    });
   }
   const isExportDownload =
     request.method === "GET" && request.url.pathname === "/panel/api/export";

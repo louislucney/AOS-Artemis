@@ -227,3 +227,21 @@ test("console shell: 项目上下文与能力标记（导航禁用/横幅）", (
   assert.ok(off.includes("本进程不提供统计页"), "统计导航按能力禁用");
   assert.ok(!off.includes('href="/usage"'), "统计不再是无用链接");
 });
+
+test("console shell: 顶栏显示进程级角色", () => {
+  const html = renderConsoleShell({
+    title: "项目",
+    active: "project",
+    body: "",
+    meta: "<code>/w/p</code>",
+    capabilities: {
+      actions: true,
+      usage: true,
+      mode: "http",
+      role: "dispatcher",
+      scopes: { dispatch: true, tasks: true, verdicts: false }
+    }
+  });
+  assert.match(html, /角色：派发/);
+  assert.match(html, /AOS_PANEL_ROLE/);
+});

@@ -6,6 +6,7 @@ import { createProjectStore, type CreateStoreResult } from "./db/index.js";
 import { storeKindShortLabel } from "./db/labels.js";
 import { resolveHostIdentity, type HostIdentity } from "./host/identity.js";
 import { handlePanelActionRequest } from "./panel/actions.js";
+import { panelRoleFrom, panelRoleScopes, type PanelRole } from "./panel/roles.js";
 import { handleArtifactRequest } from "./panel/artifact-route.js";
 import { loopbackHostAllowed } from "./panel/http-guard.js";
 import {
@@ -258,6 +259,8 @@ async function runPanelWeb(options: {
       });
       return created;
     });
+  const panelRole: PanelRole =
+    (env.AOS_PANEL_ACTIONS ?? "").trim() === "1" ? panelRoleFrom(env) : "viewer";
   const deps: PanelWebDeps = {
     store,
     env,
@@ -269,7 +272,9 @@ async function runPanelWeb(options: {
     storeNote: options.storageNote,
     storeForHost: (hostId) => store.scopeHost(hostId),
     capabilities: {
-      actions: (env.AOS_PANEL_ACTIONS ?? "").trim() === "1",
+      actions: panelRole !== "viewer",
+      role: panelRole,
+      scopes: panelRoleScopes(panelRole),
       usage: false,
       mode: "standalone"
     }

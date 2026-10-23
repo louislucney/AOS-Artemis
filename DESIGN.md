@@ -525,7 +525,7 @@ llm_switch(name, force):
 | 崩溃日志含敏感文本                      | 本地泄露面                   | 仅存`.artemis/crashes`（gitignore）+ 工具返回截断；后续可加脱敏                                          |
 | release 混淆栈                          | 签名可去重但难读、可能撞签名 | 签名固定基于原始栈；mapping.txt/retrace 后续增强                                                           |
 
-**未决**：① 是否引入列级加密（当前按需求明文）；② HTTP 已有可选静态令牌（`AOS_HTTP_TOKEN`）与 CMS/runner 产物令牌，多用户/角色鉴权仍待定。
+**未决**：① 是否引入列级加密（当前按需求明文）；② HTTP 已有可选静态令牌（`AOS_HTTP_TOKEN`）与 CMS/runner 产物令牌，进程级 `AOS_PANEL_ROLE` 已落地（§13.196），多用户/身份级鉴权仍待定。
 
 ---
 
@@ -2469,3 +2469,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **渲染**：统计页新增「调用量与耗时（近 7 天）」区块：总调用/成功率/p95、生成与执行的调用数及 p95、top5 工具表；无事件显示采集关闭/无调用空态。
 - **测试**：`panel-web` stats 用例补 3 条 usage 事件（生成 1 / 执行 2），断言 HTML 区块与 JSON `usage.total/generation/execution`；全量 2104 绿，lint 0 error（2 条既有 warning）。
 - **边界**：仅客户端调用；`AOS_USAGE=0` 停采集但历史仍可读；无 token/金额字段，UI/文档均标注「成本代理，不是计费」。
+
+### 13.196 实施记录（P2：面板进程级角色/权限）
+
+> 2026-10-23。接业务梳理 P2「角色/权限模型（看/派/改/建单）」：先做内网单租户的进程级最小模型，不引入多用户登录/身份表。
+
+- **角色**：`AOS_PANEL_ROLE=viewer|dispatcher|maintainer|admin`；未配置时 HTTP 默认 `admin`、`AOS_PANEL_ACTIONS=0` 强制 `viewer`，非法值 fail closed 为 `viewer`；独立 `panel --web` 仍要求 `AOS_PANEL_ACTIONS=1`。
+- **动作范围**：viewer 只读；dispatcher＝任务创建/取消/停止/释放/重派 + 队列暂停/恢复 + 导出；maintainer＝+裁决/计划/隔离/导入/主机登记；admin＝+Jira 建单/证据重试。
+- **服务端**：`src/panel/roles.ts` 提供角色解析、`panelRequiredRoleForPath` 与 rank；`handlePanelActionRequest` 在同源校验后、路由前强制，越权 `403 {code:"role_forbidden",role,required}`；`AOS_PANEL_ACTIONS=0` 仍整体 404。
+- **UI**：`ConsoleCapabilities` 增 `role/scopes`；顶栏显示「角色：派发/维护/管理/只读」；派发、任务动作、裁决、建单、用例库写入口、计划、导出按 scope 禁用并给可见原因；裁决页只读时 checkbox/提交禁用，建单区块提示需要 admin。
+- **边界**：进程级单角色，不识别具体用户/会话；不替代 HTTP 令牌/反向代理鉴权；非法角色 fail closed；Jira 建单仍是外部副作用。
+- **测试**：新增角色解析/路由拒绝（panel-actions）、顶栏角色（console-shell）、派发 scope（console-dispatch）、用例库 scope（console-pages）；全量 2109 绿，lint 0 error（2 条既有 warning）。

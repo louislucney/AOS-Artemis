@@ -46,7 +46,8 @@ export function readQuarantineSummary(rootPath: string): Promise<LibraryPageData
 
 export function renderLibraryPage(data: LibraryPageData): string {
   const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
-  const actionsOff = data.capabilities?.actions === false;
+  const actionsOff =
+    data.capabilities?.actions === false || data.capabilities?.scopes?.library === false;
   const disabledAttr = actionsOff ? " disabled" : "";
   const actionsReason = actionsOff
     ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
@@ -625,7 +626,8 @@ export interface OpsPageData {
 }
 
 export function renderOpsPage(data: OpsPageData): string {
-  const actionsOff = data.capabilities?.actions === false;
+  const actionsOff =
+    data.capabilities?.actions === false || data.capabilities?.scopes?.export === false;
   const exportLink = (what: string, format: string, label: string): string => {
     const href = escapeHtml(
       `/panel/api/export?project=${encodeURIComponent(data.rootPath)}&what=${what}&format=${format}${

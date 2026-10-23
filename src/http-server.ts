@@ -15,7 +15,8 @@ import {
   panelCacheTtlFrom,
   type PanelWebDeps
 } from "./panel/web.js";
-import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
+import { handlePanelActionRequest } from "./panel/actions.js";
+import { panelRoleFrom, panelRoleScopes } from "./panel/roles.js";
 import { MAX_PANEL_BODY_BYTES, MAX_PANEL_UPLOAD_BYTES } from "./panel/limits.js";
 import { resolveHostIdentity } from "./host/identity.js";
 import { handleArtifactRequest } from "./panel/artifact-route.js";
@@ -222,6 +223,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     if (!PROJECT_NAME_RE.test(name) || name === "." || name === "..") return null;
     return await getRuntime(name);
   };
+  const panelRole = panelRoleFrom(process.env);
   const panelDeps: PanelWebDeps = {
     store,
     env: process.env,
@@ -234,7 +236,13 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     localHostId: (await resolveHostIdentity({ env: process.env }).catch(() => null))?.id ?? null,
     storeNote: runtimeHost.storeNote,
     storeForHost: (hostId) => store.scopeHost(hostId),
-    capabilities: { actions: panelActionsEnabled(process.env), usage: true, mode: "http" }
+    capabilities: {
+      actions: panelRole !== "viewer",
+      role: panelRole,
+      scopes: panelRoleScopes(panelRole),
+      usage: true,
+      mode: "http"
+    }
   };
 
   const httpServer = createServer((req, res) => {

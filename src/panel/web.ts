@@ -1744,7 +1744,9 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: st
 }
 
 function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: string | null): string {
-  const actionsOff = currentShell.capabilities?.actions === false;
+  const actionsOff =
+    currentShell.capabilities?.actions === false ||
+    currentShell.capabilities?.scopes?.schedules === false;
   const reason = actionsOff
     ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
     : "";
@@ -1914,7 +1916,9 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
           tone: task.priority > 0 ? "warning" : "neutral",
           title: "优先级（越大越先领取）"
         });
-        const actionsOff = currentShell.capabilities?.actions === false;
+        const actionsOff =
+          currentShell.capabilities?.actions === false ||
+          currentShell.capabilities?.scopes?.tasks === false;
         if (actionsOff) {
           return `<p>${badge} ${priorityBadge} <button class="c-button" type="button" disabled title="写动作未启用">任务动作</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</span></p>`;
         }
@@ -1996,6 +2000,10 @@ function renderReviewPage(view: {
 }): string {
   const { items, warnings } = view.detail;
   const appDefects = items.filter((item) => item.verdict === "app-defect");
+  const canVerdict =
+    currentShell.capabilities?.actions !== false &&
+    currentShell.capabilities?.scopes?.verdicts !== false;
+  const verdictDisabled = canVerdict ? "" : " disabled";
   const rootJson = JSON.stringify(view.rootPath).replace(/</g, "\\u003c");
   const hostJson = JSON.stringify(view.hostId).replace(/</g, "\\u003c");
   const evidenceCell = (item: PanelReviewItem): string => {
@@ -2015,7 +2023,7 @@ function renderReviewPage(view: {
       : `<code>${escapeHtml(item.evidencePath)}</code> <span class="muted">[已清理]</span>${link}`;
   };
   const rows = items.map((item) => [
-    `<input type="checkbox" name="item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}" aria-label="选择用例 ${escapeHtml(item.caseId)}（${escapeHtml(item.name)}）">`,
+    `<input type="checkbox" name="item" value="${escapeHtml(`${item.runId}|${item.caseId}`)}" aria-label="选择用例 ${escapeHtml(item.caseId)}（${escapeHtml(item.name)}）"${verdictDisabled}>`,
     `<code title="${escapeHtml(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</code>`,
     relativeTime(item.createdAt),
     `<code>${escapeHtml(item.caseId)}</code>`,
@@ -2053,6 +2061,7 @@ function renderReviewPage(view: {
           "</section>"
         ]
       : [
+          canVerdict ? "" : '<p class="note">当前角色无裁决权限（需要 maintainer）。</p>',
           '<form id="verdict-form" onsubmit="return submitVerdicts(event)">',
           renderTable(
             [
@@ -2073,15 +2082,15 @@ function renderReviewPage(view: {
             rows,
             "暂无失败用例"
           ),
-          '<p class="bulk-tools"><button type="button" class="c-button" data-bulk="all">全选</button> <button type="button" class="c-button" data-bulk="none">清空</button> <span class="muted">已选 <span id="verdict-count">0</span> 条</span></p>',
+          `<p class="bulk-tools"><button type="button" class="c-button" data-bulk="all"${verdictDisabled}>全选</button> <button type="button" class="c-button" data-bulk="none"${verdictDisabled}>清空</button> <span class="muted">已选 <span id="verdict-count">0</span> 条</span></p>`,
           '<fieldset class="c-fieldset"><legend>裁决（对所选条目批量写入）</legend>',
-          '<label><input type="radio" name="verdict" value="case-defect" checked> 案例问题</label> ',
-          '<label><input type="radio" name="verdict" value="execution-deviation"> 执行偏差</label> ',
-          '<label><input type="radio" name="verdict" value="app-defect"> 应用缺陷</label> ',
-          '<label><input type="radio" name="verdict" value="uncertain"> 不确定</label>',
+          `<label><input type="radio" name="verdict" value="case-defect" checked${verdictDisabled}> 案例问题</label> `,
+          `<label><input type="radio" name="verdict" value="execution-deviation"${verdictDisabled}> 执行偏差</label> `,
+          `<label><input type="radio" name="verdict" value="app-defect"${verdictDisabled}> 应用缺陷</label> `,
+          `<label><input type="radio" name="verdict" value="uncertain"${verdictDisabled}> 不确定</label>`,
           "</fieldset>",
-          '<p><label>备注：<input type="text" name="note" size="40" placeholder="可选（写入裁决历史）"></label></p>',
-          '<p><button type="submit">提交裁决</button> <span id="verdict-status" role="status" class="muted"></span></p>',
+          `<p><label>备注：<input type="text" name="note" size="40" placeholder="可选（写入裁决历史）"${verdictDisabled}></label></p>`,
+          `<p><button type="submit"${verdictDisabled}>提交裁决</button> <span id="verdict-status" role="status" class="muted"></span></p>`,
           '<p class="note">需启用 JavaScript 提交；勾选多条 → 同一裁决批量写入。</p>',
           "</form>",
           "<script>",
@@ -2173,6 +2182,9 @@ function appDefectBlock(
 ): string {
   const title = '<h3 id="issues">应用缺陷 → 建单（Jira）</h3>';
   if (items.length === 0) return `${title}<p class="empty">（空）</p>`;
+  const canIssues =
+    currentShell.capabilities?.actions !== false &&
+    currentShell.capabilities?.scopes?.issues !== false;
   const rootJson = JSON.stringify(rootPath).replace(/</g, "\\u003c");
   const hostJson = JSON.stringify(hostId).replace(/</g, "\\u003c");
   const rows = items.map((item) => [
@@ -2185,6 +2197,9 @@ function appDefectBlock(
       : `<span class="chip">${escapeHtml(item.jiraKey)}</span>`
   ]);
   const table = renderTable(["选择", "用例", "名称", "功能", "已建单"], rows, "无应用缺陷裁决", "应用缺陷（可建单）");
+  if (!canIssues) {
+    return [title, table, '<p class="note">当前角色无建单权限（需要 admin）。</p>'].join("\n");
+  }
   if (currentShell.jiraReady === false) {
     return [
       title,

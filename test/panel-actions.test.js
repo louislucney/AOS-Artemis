@@ -5,6 +5,11 @@ import test from "node:test";
 import { MemoryStore } from "../dist/db/memory.js";
 import { JiraApiError } from "../dist/jira/client.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "../dist/panel/actions.js";
+import {
+  panelRequiredRoleForPath,
+  panelRoleFrom,
+  panelRoleScopes
+} from "../dist/panel/roles.js";
 import { createRunCaseIssues, retryIssueEvidence } from "../dist/panel/issues.js";
 import { baseConfig, loadTestRuntime, makeTempProject, seedCaseSets } from "./helpers.js";
 
@@ -1154,4 +1159,65 @@ test("panel actions: >50 份时窗口外引用可建任务（与 CLI 同口径�
     deps
   );
   assert.equal(created.status, 200, String(created.body));
+});
+
+test("panel roles: 默认/显式角色与动作范围", () => {
+  assert.equal(panelRoleFrom({}), "admin");
+  assert.equal(panelRoleFrom({ AOS_PANEL_ACTIONS: "0" }), "viewer");
+  assert.equal(panelRoleFrom({ AOS_PANEL_ACTIONS: "0", AOS_PANEL_ROLE: "admin" }), "viewer");
+  assert.equal(panelRoleFrom({ AOS_PANEL_ROLE: "dispatcher" }), "dispatcher");
+  assert.equal(panelRoleFrom({ AOS_PANEL_ROLE: "nope" }), "viewer", "非法值 fail closed");
+  assert.equal(panelRequiredRoleForPath("/panel/api/tasks"), "dispatcher");
+  assert.equal(panelRequiredRoleForPath("/panel/api/verdicts"), "maintainer");
+  assert.equal(panelRequiredRoleForPath("/panel/api/issues"), "admin");
+  assert.equal(panelRequiredRoleForPath("/panel/api/unknown"), null);
+  assert.deepEqual(panelRoleScopes("viewer"), {
+    dispatch: false,
+    tasks: false,
+    export: false,
+    verdicts: false,
+    library: false,
+    schedules: false,
+    issues: false
+  });
+  const dispatcher = panelRoleScopes("dispatcher");
+  assert.equal(dispatcher.tasks, true);
+  assert.equal(dispatcher.verdicts, false);
+  const maintainer = panelRoleScopes("maintainer");
+  assert.equal(maintainer.verdicts, true);
+  assert.equal(maintainer.issues, false);
+  assert.equal(panelRoleScopes("admin").issues, true);
+});
+
+test("panel roles: 动作路由按角色拒绝", async () => {
+  const { deps } = await setup();
+  const create = (overrides = {}) => request(overrides);
+
+  const viewer = await handlePanelActionRequest(create(), {
+    ...deps,
+    env: { AOS_PANEL_ROLE: "viewer" }
+  });
+  assert.equal(viewer.status, 403);
+  assert.equal(JSON.parse(viewer.body).code, "role_forbidden");
+  assert.equal(JSON.parse(viewer.body).required, "dispatcher");
+
+  const dispatcherVerdict = await handlePanelActionRequest(
+    create({ url: new URL("http://localhost/panel/api/verdicts"), body: {} }),
+    { ...deps, env: { AOS_PANEL_ROLE: "dispatcher" } }
+  );
+  assert.equal(dispatcherVerdict.status, 403);
+  assert.equal(JSON.parse(dispatcherVerdict.body).required, "maintainer");
+
+  const maintainerIssue = await handlePanelActionRequest(
+    create({ url: new URL("http://localhost/panel/api/issues"), body: {} }),
+    { ...deps, env: { AOS_PANEL_ROLE: "maintainer" } }
+  );
+  assert.equal(maintainerIssue.status, 403);
+  assert.equal(JSON.parse(maintainerIssue.body).required, "admin");
+
+  const adminVerdict = await handlePanelActionRequest(
+    create({ url: new URL("http://localhost/panel/api/verdicts"), body: {} }),
+    { ...deps, env: { AOS_PANEL_ROLE: "admin" } }
+  );
+  assert.notEqual(adminVerdict.status, 403, "admin 不应被角色闸门拦截");
 });

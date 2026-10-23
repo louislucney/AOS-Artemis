@@ -632,7 +632,8 @@ go.addEventListener('click',function(){
   });
 });
 })();</script>`;
-  const actionsOff = view.capabilities?.actions === false;
+  const actionsOff =
+    view.capabilities?.actions === false || view.capabilities?.scopes?.dispatch === false;
   const needsHostPick = preview.hosts.length > 0 && preview.selectedHostId === null;
   const submitBlocked = legacyHostless || preview.hostBlocked || needsHostPick || noProjects;
   const blockedReason = legacyHostless

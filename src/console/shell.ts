@@ -27,11 +27,22 @@ export interface ConsoleNavItem {
   badge?: string;
 }
 
-/** 能力标记：写动作是否可用、统计页是否由本进程提供、承载模式。页面据此渲染横幅/禁用态/导航子集。 */
+export type ConsoleActionScope =
+  | "dispatch"
+  | "tasks"
+  | "verdicts"
+  | "issues"
+  | "library"
+  | "schedules"
+  | "export";
+
+/** 能力标记：写动作是否可用、角色/动作范围、统计页是否由本进程提供、承载模式。页面据此渲染横幅/禁用态/导航子集。 */
 export interface ConsoleCapabilities {
   actions: boolean;
   usage: boolean;
   mode: "http" | "standalone" | "stdio";
+  role?: string;
+  scopes?: Partial<Record<ConsoleActionScope, boolean>>;
 }
 
 export const DEFAULT_CAPABILITIES: ConsoleCapabilities = { actions: true, usage: true, mode: "http" };
@@ -189,7 +200,22 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
       : `<div class="c-nav-hint muted">进入任一项目后显示项目级版块（任务/下发/用例库/…）</div>`;
   const actionsBanner = capabilities.actions
     ? ""
-    : `<div class="c-banner c-banner-warn" role="status" id="capability-banner">只读模式：本进程未开启写操作。用 <code>serve --http</code>，或设 <code>AOS_PANEL_ACTIONS=1</code>（仅 loopback）。 <button class="c-button" type="button" id="capability-dismiss">知道了</button></div>`;
+    : `<div class="c-banner c-banner-warn" role="status" id="capability-banner">只读模式：本进程未开启写操作${
+        capabilities.role === "viewer" ? "（或当前角色为 viewer）" : ""
+      }。用 <code>serve --http</code>，或设 <code>AOS_PANEL_ACTIONS=1</code>（仅 loopback）。 <button class="c-button" type="button" id="capability-dismiss">知道了</button></div>`;
+  const roleLabels: Record<string, string> = {
+    viewer: "只读",
+    dispatcher: "派发",
+    maintainer: "维护",
+    admin: "管理"
+  };
+  const roleLabel =
+    capabilities.role === undefined
+      ? ""
+      : `<span title="进程级角色（AOS_PANEL_ROLE）">角色：${escapeHtml(
+          roleLabels[capabilities.role] ?? capabilities.role
+        )}</span>`;
+  const topMeta = [input.meta, roleLabel].filter((part) => part !== "").join(" · ");
   const navTargets: Record<string, string> = {};
   for (const item of nav) {
     const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project, input.projectHostId ?? null);
@@ -290,7 +316,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     `<div class="c-brand"><a href="${escapeHtml(brandHref)}"><img src="${escapeHtml(CSDC_LOGO_DATA_URI)}" alt="CSDC 智能交付中心"><span class="c-brand-product">${CONSOLE_NAME}</span></a></div>`,
     switcher,
     searchForm,
-    input.meta ? `<div class="c-topbar-meta">${input.meta}</div>` : "",
+    topMeta ? `<div class="c-topbar-meta">${topMeta}</div>` : "",
     "</header>",
     actionsBanner,
     '<div class="c-layout">',

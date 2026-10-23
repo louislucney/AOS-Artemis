@@ -272,3 +272,21 @@ test("console pages: 运维（存储徽章＋写失败信号位＋导出链接�
   assert.match(html.body, /node dist\/cli\.js export/);
   assert.ok(!html.body.includes('http-equiv="refresh"'), "运维表单页不自动刷新");
 });
+
+test("console pages: 角色 scope 关闭用例库写入口", async () => {
+  const { deps, rootPath } = await setup();
+  const scoped = {
+    ...deps,
+    capabilities: {
+      actions: true,
+      usage: true,
+      mode: "http",
+      role: "dispatcher",
+      scopes: { library: false }
+    }
+  };
+  const html = await handlePanelRequest(url(rootPath, "library"), scoped);
+  assert.equal(html.status, 200);
+  assert.match(html.body, /写动作未启用/);
+  assert.match(html.body, /disabled/);
+});

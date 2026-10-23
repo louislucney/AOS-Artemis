@@ -217,3 +217,27 @@ test("renderDispatchPage: 份名转义（存储型 XSS 回归）", async () => {
   assert.ok(!html.includes("<img src=x"), "份名不得原样进 HTML（rows 通道）");
   assert.ok(html.includes("&lt;img src=x"), "份名转义后可见");
 });
+
+test("renderDispatchPage: 角色 scope 关闭派发时禁用提交", async () => {
+  const { store, setA } = await seed();
+  const preview = await computeDispatchPreview(
+    { store, env: {} },
+    ROOT,
+    new URLSearchParams({ source: "case-set", ref: setA.id })
+  );
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    query: {},
+    capabilities: {
+      actions: true,
+      usage: true,
+      mode: "http",
+      role: "viewer",
+      scopes: { dispatch: false }
+    }
+  });
+  assert.match(html, /disabled title="写动作未启用"/);
+  assert.ok(!html.includes('id="dispatch-submit"'), "scope 关闭不渲染可点提交");
+});
