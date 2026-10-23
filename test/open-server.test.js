@@ -460,3 +460,34 @@ test("server: rate limit per client (healthz exempt, window resets)", async () =
     }
   );
 });
+
+test("server: daily job quota per client", async () => {
+  let now = Date.parse("2026-10-23T10:00:00.000Z");
+  await withServer(
+    { runner: zipRunner, maxJobsPerDay: 1, now: () => now },
+    async (base) => {
+      const create = () =>
+        fetch(`${base}/jobs`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: { type: "figma", url: "https://www.figma.com/design/ABC/demo", token: "t" }
+          })
+        });
+      const first = await create();
+      assert.equal(first.status, 202);
+      const limited = await create();
+      assert.equal(limited.status, 429);
+      const body = await limited.json();
+      assert.equal(body.code, "quota_exceeded");
+      assert.match(String(limited.headers.get("retry-after")), /^\d+$/);
+
+      const health = await fetch(`${base}/healthz`);
+      assert.equal(health.status, 200, "健康检查不受配额影响");
+
+      now += 24 * 3600_000;
+      const nextDay = await create();
+      assert.equal(nextDay.status, 202, "UTC 日切换后恢复");
+    }
+  );
+});

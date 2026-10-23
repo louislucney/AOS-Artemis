@@ -30,6 +30,8 @@ export interface CmsOpenServerOptions {
   maxConcurrent?: number;
   /** 每客户端每分钟请求上限；0/未设置关闭（仅内存进程内计数）。 */
   rateLimitPerMinute?: number;
+  /** 每客户端每日成功入队任务上限（UTC 日）；0/未设置关闭。 */
+  maxJobsPerDay?: number;
   jobTimeoutMs?: number;
   retentionMs?: number;
   workRoot?: string;
@@ -244,6 +246,47 @@ export async function startCmsOpenServer(
         if (bucket.every((at) => at <= cutoff)) rateBuckets.delete(bucketKey);
       }
     }
+  };
+  const maxJobsPerDay = Math.max(0, Math.trunc(options.maxJobsPerDay ?? 0));
+  const jobQuota = new Map<string, { day: string; count: number }>();
+  const quotaState = (request: http.IncomingMessage): { day: string; count: number } => {
+    const nowMs = (options.now ?? Date.now)();
+    const day = new Date(nowMs).toISOString().slice(0, 10);
+    const key = request.socket.remoteAddress ?? "unknown";
+    const current = jobQuota.get(key);
+    if (current === undefined || current.day !== day) {
+      const next = { day, count: 0 };
+      jobQuota.set(key, next);
+      if (jobQuota.size > 1024) {
+        for (const [bucketKey, bucket] of jobQuota) {
+          if (bucket.day !== day) jobQuota.delete(bucketKey);
+        }
+      }
+      return next;
+    }
+    return current;
+  };
+  const assertJobQuota = (request: http.IncomingMessage): { day: string; count: number } | null => {
+    if (maxJobsPerDay === 0) return null;
+    const state = quotaState(request);
+    if (state.count >= maxJobsPerDay) {
+      const nowMs = (options.now ?? Date.now)();
+      const date = new Date(nowMs);
+      const nextDay = Date.UTC(
+        date.getUTCFullYear(),
+        date.getUTCMonth(),
+        date.getUTCDate() + 1
+      );
+      const retryAfter = Math.max(1, Math.ceil((nextDay - nowMs) / 1000));
+      throw new HttpError(
+        429,
+        "quota_exceeded",
+        `每日任务上限 ${maxJobsPerDay} 次（UTC 日）`,
+        "请明日再试或联系管理员",
+        { "retry-after": String(retryAfter) }
+      );
+    }
+    return state;
   };
   const manager = new JobManager({
     maxQueue: options.maxQueue,
@@ -460,7 +503,9 @@ export async function startCmsOpenServer(
               : { maxDepth: numberField(parsed.maxDepth, "maxDepth") })
           };
         }
+        const quota = assertJobQuota(request);
         const job = manager.create();
+        if (quota !== null) quota.count += 1;
         const workDir = path.join(workRoot, job.id);
         if (penUpload) {
           input.penFile = await saveUpload(penUpload, workDir, "design", [".pen"]);

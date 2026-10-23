@@ -2480,3 +2480,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **UI**：`ConsoleCapabilities` 增 `role/scopes`；顶栏显示「角色：派发/维护/管理/只读」；派发、任务动作、裁决、建单、用例库写入口、计划、导出按 scope 禁用并给可见原因；裁决页只读时 checkbox/提交禁用，建单区块提示需要 admin。
 - **边界**：进程级单角色，不识别具体用户/会话；不替代 HTTP 令牌/反向代理鉴权；非法角色 fail closed；Jira 建单仍是外部副作用。
 - **测试**：新增角色解析/路由拒绝（panel-actions）、顶栏角色（console-shell）、派发 scope（console-dispatch）、用例库 scope（console-pages）；全量 2109 绿，lint 0 error（2 条既有 warning）。
+
+### 13.197 加固（CMS 开放服务：每日任务配额）
+
+> 2026-10-23。接 P2「CMS Open 独立产品化」：限流只约束频率，不能防止外部调用方一天内大量建任务；补一个可选的每日成功入队配额。
+
+- **入口**：`cms-open --max-jobs-per-day <n>` 或 `AOS_CMS_OPEN_MAX_JOBS_PER_DAY`（0=关闭，最大 100000）；启动日志/`--help`/`--check` 回显。
+- **服务**：`CmsOpenServerOptions.maxJobsPerDay`；进程内按客户端地址 + UTC 日计数，`POST /jobs` 校验通过、`manager.create()` 成功后计数（队列满等失败不消耗配额）；超限 429 `quota_exceeded` + `Retry-After` 到次日 UTC；`/healthz` 不受影响；Map 超过 1024 时清理非当日桶。
+- **边界**：单进程内存、不跨实例/重启；反向代理后共享代理 IP；只统计成功入队，不统计执行失败；与分钟限流独立叠加。
+- **测试**：`open-server` 新增每日配额用例（首个 202、第二个 429、healthz 豁免、UTC 日切换恢复）；`open-command` 补 flag/env 校验与日志；全量 2111 绿，lint 0 error（2 条既有 warning）。

@@ -17,7 +17,7 @@ test("cms-open: help lists flags", async () => {
   const code = await runCmsOpen(["--help"], { log: (line) => lines.push(line) });
   assert.equal(code, 0);
   const text = lines.join("\n");
-  for (const flag of ["--cors", "--max-queue", "--rate-limit", "--job-timeout-ms", "--retention-ms", "--token", "--check"]) {
+  for (const flag of ["--cors", "--max-queue", "--rate-limit", "--max-jobs-per-day", "--job-timeout-ms", "--retention-ms", "--token", "--check"]) {
     assert.match(text, new RegExp(flag));
   }
 });
@@ -71,4 +71,28 @@ test("cms-open: rate limit flag/env validated and logged", async () => {
   });
   assert.equal(badEnv, 2);
   assert.match(envErrors.join("\n"), /--rate-limit/);
+});
+
+test("cms-open: daily job quota flag/env validated and logged", async () => {
+  const lines = [];
+  const code = await runCmsOpen(["--port", "0", "--check", "--max-jobs-per-day", "5"], {
+    log: (line) => lines.push(line)
+  });
+  assert.equal(code, 0);
+  assert.match(lines.join("\n"), /每日任务配额: 5 次\/客户端\/UTC 日/);
+
+  const envLines = [];
+  const envCode = await runCmsOpen(["--port", "0", "--check"], {
+    env: { AOS_CMS_OPEN_MAX_JOBS_PER_DAY: "9" },
+    log: (line) => envLines.push(line)
+  });
+  assert.equal(envCode, 0);
+  assert.match(envLines.join("\n"), /每日任务配额: 9/);
+
+  const errors = [];
+  const bad = await runCmsOpen(["--max-jobs-per-day", "abc"], {
+    errorLog: (line) => errors.push(line)
+  });
+  assert.equal(bad, 2);
+  assert.match(errors.join("\n"), /--max-jobs-per-day/);
 });

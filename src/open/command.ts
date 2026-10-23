@@ -19,6 +19,7 @@ const USAGE = `mobile-testing-mcp cms-open [options]
     --max-queue <n>          队列上限（默认 20）
     --max-concurrent <n>     并发生成数（默认 3）
     --rate-limit <n>         每客户端每分钟请求上限（默认 0=关闭；AOS_CMS_OPEN_RATE_LIMIT）
+    --max-jobs-per-day <n>   每客户端每日成功任务上限（默认 0=关闭；AOS_CMS_OPEN_MAX_JOBS_PER_DAY）
     --job-timeout-ms <ms>    单任务超时（默认 600000）
     --retention-ms <ms>      产物保留（默认 7200000）
     --work-root <dir>        临时工作目录（默认系统临时目录下 aos-cms-open）
@@ -90,10 +91,15 @@ export async function runCmsOpen(
     rateFlags.set("rate-limit", deps.env.AOS_CMS_OPEN_RATE_LIMIT);
   }
   const rateLimitPerMinute = intFlag(rateFlags, "rate-limit", 0, 0, 6_000, errorLog);
+  const dailyJobFlags = new Map(flags);
+  if (!dailyJobFlags.has("max-jobs-per-day") && deps.env?.AOS_CMS_OPEN_MAX_JOBS_PER_DAY !== undefined) {
+    dailyJobFlags.set("max-jobs-per-day", deps.env.AOS_CMS_OPEN_MAX_JOBS_PER_DAY);
+  }
+  const maxJobsPerDay = intFlag(dailyJobFlags, "max-jobs-per-day", 0, 0, 100_000, errorLog);
   const jobTimeoutMs = intFlag(flags, "job-timeout-ms", 600_000, 1_000, 3_600_000, errorLog);
   const retentionMs = intFlag(flags, "retention-ms", 7_200_000, 0, 86_400_000, errorLog);
   if (
-    [port, maxQueue, maxConcurrent, rateLimitPerMinute, jobTimeoutMs, retentionMs].some(
+    [port, maxQueue, maxConcurrent, rateLimitPerMinute, maxJobsPerDay, jobTimeoutMs, retentionMs].some(
       (value) => value === null
     )
   ) {
@@ -121,6 +127,7 @@ export async function runCmsOpen(
     maxQueue: maxQueue!,
     maxConcurrent: maxConcurrent!,
     rateLimitPerMinute: rateLimitPerMinute!,
+    maxJobsPerDay: maxJobsPerDay!,
     jobTimeoutMs: jobTimeoutMs!,
     retentionMs: retentionMs!,
     ...(workRoot ? { workRoot } : {})
@@ -129,6 +136,7 @@ export async function runCmsOpen(
   log(`CORS: ${cors.length === 0 ? "未启用（默认拒绝跨源）" : cors.join(", ")}`);
   log(`鉴权: ${token ? "Bearer token 已启用（/healthz 豁免）" : "未启用（仅建议可信内网）"}`);
   log(`限流: ${rateLimitPerMinute === 0 ? "未启用" : `${rateLimitPerMinute} 次/分钟/客户端`}`);
+  log(`每日任务配额: ${maxJobsPerDay === 0 ? "未启用" : `${maxJobsPerDay} 次/客户端/UTC 日`}`);
   log("pen: 使用服务机登录态（pen login / PEN_CLI_KEY）；未就绪时 .pen 任务显式失败");
   if (flags.has("check")) {
     await server.close();

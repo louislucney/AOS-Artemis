@@ -7,6 +7,7 @@ Base URL（调试环境）：`http://192.168.102.165:8780`
 - JSON body ≤ 1 MB；multipart 单文件 ≤ 50 MB、总量 ≤ 55 MB
 - 并发 3、队列 20、单任务 10 分钟无进度超时、产物保留 2 小时；任务台账落 `workRoot/jobs.json`，进程重启后运行中/排队任务标记 `job_interrupted`，已完成任务在保留期内仍可查询/下载
 - 可选限流：`--rate-limit <n>` 或 `AOS_CMS_OPEN_RATE_LIMIT`（每客户端每分钟请求上限，0=关闭）；超限返回 429 `rate_limited` 与 `Retry-After` 秒数，`GET /healthz` 不计入
+- 可选每日任务配额：`--max-jobs-per-day <n>` 或 `AOS_CMS_OPEN_MAX_JOBS_PER_DAY`（每客户端每 UTC 日成功入队任务数，0=关闭）；超限返回 429 `quota_exceeded` 与到次日 UTC 的 `Retry-After`，已入队/已完成任务不受影响
 
 ## 通用端点
 
@@ -179,6 +180,7 @@ meta.json      # source/model/maxFlows/maxDepth/counts/warnings
 | 413 | `payload_too_large` | 超过 body/文件上限 |
 | 429 | `queue_full` | 队列已满 |
 | 429 | `rate_limited` | 超过每客户端每分钟请求上限（响应带 `Retry-After`） |
+| 429 | `quota_exceeded` | 超过每客户端每日成功入队任务配额（响应带 `Retry-After`） |
 | 500 | `internal` | 未预期错误 |
 
 任务执行失败不改变 HTTP 状态：`GET /jobs/{id}` 返回 `status=failed`，`error.code` 可能为：
