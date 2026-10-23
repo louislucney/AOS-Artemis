@@ -106,3 +106,13 @@ test("suite parity CLI: JSON 报告与退出码", async () => {
   const report = JSON.parse(logs.join("\n"));
   assert.equal(report.ok, false);
 });
+
+test("parity: reconciliation / generation 参数不同报告 profile 差异", () => {
+  const dir = makeTempDir("aos-parity-profile-");
+  const a = readParityDoc(writeDoc(dir, "a.json", { ...makeDoc(), reconciliationFingerprint: "r-a", generation: { maxFlows: 24, maxDepth: 30 } }));
+  const b = readParityDoc(writeDoc(dir, "b.json", { ...makeDoc(), reconciliationFingerprint: null, generation: { maxFlows: 10, maxDepth: 30 } }));
+  const report = compareParityDocs(a, b);
+  assert.equal(report.ok, false);
+  assert.ok(report.diffs.some((diff) => diff.kind === "profile" && diff.field === "reconciliationFingerprint"));
+  assert.ok(report.diffs.some((diff) => diff.kind === "profile" && diff.field === "generation"));
+});

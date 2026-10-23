@@ -19,11 +19,13 @@ export interface ParityDoc {
   path: string;
   designFingerprint: string | null;
   flowsFingerprint: string | null;
+  reconciliationFingerprint: string | null;
+  generation: { maxFlows: number | null; maxDepth: number | null } | null;
   cases: ParityCase[];
 }
 
 export interface ParityDiff {
-  kind: "fingerprint" | "missing" | "extra" | "field";
+  kind: "fingerprint" | "profile" | "missing" | "extra" | "field";
   semanticId: string | null;
   field?: string;
   a?: unknown;
@@ -80,6 +82,20 @@ export function readParityDoc(filePath: string): ParityDoc {
     path: filePath,
     designFingerprint: stringOrNull(parsed.designFingerprint),
     flowsFingerprint: stringOrNull(parsed.flowsFingerprint),
+    reconciliationFingerprint: stringOrNull(parsed.reconciliationFingerprint),
+    generation:
+      parsed.generation && typeof parsed.generation === "object" && !Array.isArray(parsed.generation)
+        ? {
+            maxFlows:
+              typeof (parsed.generation as Record<string, unknown>).maxFlows === "number"
+                ? ((parsed.generation as Record<string, unknown>).maxFlows as number)
+                : null,
+            maxDepth:
+              typeof (parsed.generation as Record<string, unknown>).maxDepth === "number"
+                ? ((parsed.generation as Record<string, unknown>).maxDepth as number)
+                : null
+          }
+        : null,
     cases: flows.map(readCase).filter((entry): entry is ParityCase => entry !== null)
   };
 }
@@ -136,6 +152,32 @@ export function compareParityDocs(a: ParityDoc, b: ParityDoc): ParityReport {
       a: a.flowsFingerprint,
       b: b.flowsFingerprint,
       message: "flows 指纹不一致：两端使用了不同 flows（replanned/inferred 或版本不同）"
+    });
+  }
+  if (
+    a.reconciliationFingerprint !== b.reconciliationFingerprint
+  ) {
+    diffs.push({
+      kind: "profile",
+      semanticId: null,
+      field: "reconciliationFingerprint",
+      a: a.reconciliationFingerprint,
+      b: b.reconciliationFingerprint,
+      message: "项目级 reconciliation 证据不同：一端应用了真机观测/对账，另一端没有"
+    });
+  }
+  if (
+    a.generation !== null &&
+    b.generation !== null &&
+    JSON.stringify(a.generation) !== JSON.stringify(b.generation)
+  ) {
+    diffs.push({
+      kind: "profile",
+      semanticId: null,
+      field: "generation",
+      a: a.generation,
+      b: b.generation,
+      message: "生成参数不同（maxFlows/maxDepth）"
     });
   }
   if (a.cases.some((entry) => entry.legacySteps) || b.cases.some((entry) => entry.legacySteps)) {

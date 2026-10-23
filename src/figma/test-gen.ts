@@ -1211,6 +1211,14 @@ export interface GenerateTestsArgs {
   screens?: boolean;
 }
 
+function optionalFileFingerprint(file: string): string | null {
+  try {
+    return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
 export function designFingerprintFor(
   runtime: DesignRuntimeLike,
   input: { flowsPath: string; url?: string }
@@ -1955,6 +1963,9 @@ export async function figmaGenerateTests(
       generatedAt,
       designFingerprint,
       flowsFingerprint: designFingerprint,
+      reconciliationFingerprint: optionalFileFingerprint(
+        path.join(runtime.configDirAbs, "design", "reconciliation.json")
+      ),
       apiReview,
       ...(apiReview.status === "pending"
         ? { apiReviewNextAction: "provide-api-spec" }
