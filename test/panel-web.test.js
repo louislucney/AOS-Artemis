@@ -56,7 +56,16 @@ const BASE_OPTIONS = {
 
 function makeBatch(
   dir,
-  { startedIso, traceId, exitCode = 0, failureDomain = null, evidence = null, designWarningSummary = null }
+  {
+    startedIso,
+    traceId,
+    exitCode = 0,
+    failureDomain = null,
+    evidence = null,
+    designWarningSummary = null,
+    ui = null,
+    uiSummary = null
+  }
 ) {
   const report = {
     ok: true,
@@ -66,6 +75,7 @@ function makeBatch(
     skipped: 0,
     passed: exitCode === 0 ? 1 : 0,
     failed: exitCode === 0 ? 0 : 1,
+    ...(uiSummary === null ? {} : { ui: uiSummary }),
     preflight:
       designWarningSummary === null
         ? null
@@ -95,6 +105,7 @@ function makeBatch(
         failure: failureDomain
           ? { domain: failureDomain, confidence: "high", reason: "崩溃签名匹配", evidence: [] }
           : null,
+        ...(ui === null ? {} : { ui }),
         scriptProvenance: { asserts: 4, explores: 1 },
         apiErrors: [],
         apiErrorsDegraded: null,
@@ -446,7 +457,9 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
     startedIso: "2026-10-13T09:00:00.000Z",
     traceId: "trace-1",
     exitCode: 1,
-    failureDomain: "app-defect"
+    failureDomain: "app-defect",
+    ui: { status: "failed", reason: "像素差异" },
+    uiSummary: { passed: 0, failed: 1, unverified: 0, notApplicable: 0 }
   });
   const runsDir = path.join(projectDir, ".artemis", "design", "runs");
   const file = fs.readdirSync(runsDir).find((name) => name.endsWith(".json"));
@@ -459,6 +472,8 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
   assert.equal(payload.read, "ok");
   assert.equal(payload.runId, manifest.runId);
   assert.equal(payload.cases[0].failure.domain, "app-defect");
+  assert.equal(payload.cases[0].ui.status, "failed");
+  assert.deepEqual(payload.ui, { passed: 0, failed: 1, unverified: 0, notApplicable: 0 });
   assert.deepEqual(payload.cases[0].scriptProvenance, { asserts: 4, explores: 1 });
   assert.deepEqual(payload.failureDomains, { "app-defect": 1 });
   const trace = payload.cases[0].evidence.find((link) => link.kind === "trace");
@@ -470,6 +485,8 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
   const htmlBody = (await handlePanelRequest(htmlUrl, deps)).body;
   assert.match(htmlBody, /结果概览/);
   assert.doesNotMatch(htmlBody, /归纳分类/, "批次摘要标题直白");
+  assert.match(htmlBody, /<th scope="col">UI<\/th>/, "批次用例结果含 UI 列");
+  assert.match(htmlBody, /UI 失败 1/, "批次摘要回显 UI 失败计数");
   assert.match(htmlBody, /失败域汇总/);
   assert.match(htmlBody, /已清理/);
   assert.match(htmlBody, /断言 4 \/ 探索 1/);

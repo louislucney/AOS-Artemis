@@ -21,7 +21,7 @@ import { clientTtlFrom, isClientOnline } from "../host/online.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
 import { designDir } from "../figma/design-store.js";
-import type { UiSummary } from "../ui/verification.js";
+import type { UiSummary, UiVerification } from "../ui/verification.js";
 import {
   loadLatestRunManifest,
   loadRunManifest,
@@ -414,6 +414,8 @@ export interface PanelBatchCaseView {
   error: string | null;
   failure: { domain: string; confidence: string; reason: string } | null;
   scriptProvenance: { asserts: number; explores: number } | null;
+  /** UI 核验状态；旧清单没有该字段 → null。 */
+  ui: UiVerification | null;
   quarantined: boolean;
   flaky: boolean;
   evidence: PanelEvidenceLink[];
@@ -430,6 +432,8 @@ export interface PanelBatchDetail {
   taxonomyVersion: number | null;
   gate: { result: string; exitCode: number; reasons: string[] } | null;
   summary: { total: number | null; passed: number | null; failed: number | null } | null;
+  /** UI 核验计数；旧清单没有该字段 → null。 */
+  ui: UiSummary | null;
   failureDomains: Record<string, number> | null;
   options: RunManifest["options"] | null;
   tests: RunManifest["tests"] | null;
@@ -1518,6 +1522,7 @@ function emptyBatchDetail(file: string, read: "missing" | "invalid", note: strin
     taxonomyVersion: null,
     gate: null,
     summary: null,
+    ui: null,
     failureDomains: null,
     options: null,
     tests: null,
@@ -1565,6 +1570,7 @@ export async function buildPanelBatchDetail(
       taxonomyVersion: null,
       gate: null,
       summary: base.summary,
+      ui: null,
       failureDomains: null,
       options: null,
       tests: null,
@@ -1591,6 +1597,7 @@ export async function buildPanelBatchDetail(
       passed: manifest.summary.passed,
       failed: manifest.summary.failed
     },
+    ui: manifest.summary.ui ?? null,
     failureDomains: manifest.failureDomains,
     options: manifest.options,
     tests: manifest.tests,
@@ -1603,6 +1610,7 @@ export async function buildPanelBatchDetail(
       error: entry.error,
       failure: entry.failure,
       scriptProvenance: entry.scriptProvenance,
+      ui: entry.ui ?? null,
       quarantined: entry.quarantined,
       flaky: entry.retry?.flaky === true,
       evidence: evidenceLinks(tracesDir, rootPath, entry)

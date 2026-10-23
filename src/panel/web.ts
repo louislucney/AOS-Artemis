@@ -839,10 +839,20 @@ function batchGateCell(gate: "pass" | "fail" | null, summary: { total?: number |
 
 function uiBadge(ui: PanelBatchSummary["ui"] | undefined): string {
   if (ui === null || ui === undefined) return "";
-  if (ui.failed > 0) return `<span class="chip gate-fail">UI fail ${ui.failed}</span>`;
+  if (ui.failed > 0) return `<span class="chip gate-fail">UI 失败 ${ui.failed}</span>`;
   if (ui.unverified > 0) return `<span class="chip">UI 未验证 ${ui.unverified}</span>`;
-  if (ui.passed > 0) return `<span class="chip gate-pass">UI pass ${ui.passed}</span>`;
+  if (ui.passed > 0) return `<span class="chip gate-pass">UI 通过 ${ui.passed}</span>`;
   return "";
+}
+
+/** 批次用例级 UI 状态；旧清单无该字段 → —。 */
+function uiCaseCell(ui: PanelBatchDetail["cases"][number]["ui"]): string {
+  if (ui === null || ui === undefined) return '<span class="muted">—</span>';
+  const title = ui.reason ? ` title="${escapeHtml(ui.reason)}"` : "";
+  if (ui.status === "passed") return `<span class="ok"${title}>通过</span>`;
+  if (ui.status === "failed") return `<span class="err"${title}>失败</span>`;
+  if (ui.status === "not-applicable") return `<span class="muted"${title}>不适用</span>`;
+  return `<span class="muted"${title}>未验证</span>`;
 }
 
 const LAMP_LABELS: Record<PanelProjectRow["lamp"], string> = {
@@ -2667,6 +2677,7 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
     `<code>${escapeHtml(entry.caseId)}</code>`,
     escapeHtml(entry.name),
     entry.status === "passed" ? '<span class="ok">通过</span>' : `<span class="err">${escapeHtml(entry.status)}</span>`,
+    uiCaseCell(entry.ui),
     entry.failure === null
       ? '<span class="muted">—</span>'
       : `${escapeHtml(entry.failure.domain)}（${escapeHtml(entry.failure.confidence)}）<div class="muted">${escapeHtml(
@@ -2720,6 +2731,7 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
       "<main>",
       '<section id="summary">',
       "<h2>结果概览</h2>",
+      uiBadge(detail.ui) === "" ? "" : `<p>${uiBadge(detail.ui)}</p>`,
       summary === null
         ? ""
         : [
@@ -2734,7 +2746,7 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
       "</section>",
       '<section id="cases">',
       "<h2>用例结果</h2>",
-      renderTable(["用例", "名称", "状态", "失败域", "脚本来源", "标记", "证据"], cases, "暂无用例"),
+      renderTable(["用例", "名称", "状态", "UI", "失败域", "脚本来源", "标记", "证据"], cases, "暂无用例"),
       "</section>",
       '<section id="context">',
       "<h2>批次上下文</h2>",

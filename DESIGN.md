@@ -2372,3 +2372,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **过期内容清理**：README 删除 M0–M6 里程碑快照与 `/Users/louis/artemis` 旧运行时说明；DESIGN §1.3 删除“不做 iOS”旧非目标；DESIGN §13 删除 M6 未实施期的“现状评估”旧表，改为当前状态 + 历史记录术语说明；AGENTS 里程碑行改为“当前主线能力已落地，详见 DESIGN”。
 - **边界**：`docs/superpowers/plans|specs` 历史计划保留当时措辞；DB/API/代码标识符不变。
 - **测试**：`fire-schedules`/`native-workflow-tool` 同步断言。全量 2095 绿，lint 0 error（2 条既有 warning）。
+
+### 13.186 改进（批次详情：UI 保真入口）
+
+> 2026-10-23。接业务梳理 P1「UI 保真入口」：`suite run --ui-diff` 已有 UI 四态，但批次详情只显示功能状态，UI 结果只能从清单 JSON 里翻。
+
+- **数据**：`PanelBatchDetail` 增 `ui: UiSummary | null`；`PanelBatchCaseView` 增 `ui: UiVerification | null`；`buildPanelBatchDetail` 从 `manifest.summary.ui`/`cases[].ui` 读取，旧清单缺字段 → `null`。
+- **渲染**：批次详情「结果概览」显示 UI 计数 chip（失败/未验证/通过）；「用例结果」表新增 **UI** 列，四态显示为通过/失败/未验证/不适用，`reason` 进 `title`；旧清单显示 `—`。
+- **测试**：`panel-web` 批次详情用例构造 `ui.failed` 清单，断言 JSON `ui`/`cases[].ui` 与 HTML `UI` 列、`UI 失败 1`。全量 2095 绿，lint 0 error（2 条既有 warning）。
+- **边界**：只读展示，不改变功能门禁；任务页 UI 汇总需把 UI 计数落 `suite_runs`（后续 P2）。
