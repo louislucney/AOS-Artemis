@@ -2550,3 +2550,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **CLI**：新增 `suite parity --a <tests.json> --b <tests.json> [--json]`：比较 semanticId/displayId/名称/屏幕/人类步骤/前置/预期/测试数据/section/module，忽略 taskDesc/i18n/a11y；报告 design/flows/reconciliation 指纹与 maxFlows/maxDepth 差异；exit 0 一致 / 1 差异 / 2 读取失败。
 - **测试**：`parity` 5 例（机器层差异忽略、人类层差异/缺失、指纹差异、reconciliation/generation 差异、CLI JSON）；全量 2127 绿，lint 0 error（2 条既有 warning）。
 - **边界**：旧 tests.json 无 semanticId 时 parity 用 `id` fallback 并警告；功能命名/LLM 随机仍可能造成 module/section 差异，parity 会如实报告。
+
+### 13.204 实施记录（风险修订第一批：R1/R2/R8/R10）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-dual-layer-risk-assessment.md` rev 3 的第一批实施。
+
+- **R1 导入回环**：`humanStepsHash` 扩展为 `steps + preconditions + expected + testData`；Excel 导入新增「测试数据」列解析；步骤/预期/数据任一变化都会重建 `taskDesc` 并保留 `caseId`，重建时追加隐藏执行器层 `设计引用`；测试覆盖“只改预期/测试数据”。
+- **R2 API pending 门禁**：`suite check`、`suite run`（含 `--task`/runner 领取路径）与 `design_to_test(run:true)` 默认阻断 `apiReview.status=pending`；新增 `--allow-pending-api` / `allowPendingApi:true`；Excel 导入集保持 `n/a (imported)` 豁免。
+- **R8 截图**：`tests.md` 按用例先对屏幕引用去重，单用例上限从 3 提到 8；`screenshotEmbedWarning` 同步按去重后 `min(n,8)` 校验。
+- **R10 semanticId**：派生改为纯路径骨架（归一化屏幕序列 + 边 from/to/trigger/back），剥离 `hints/provenance/humanSteps`，避免单端 reconciliation/acceptance 打断跨端配对；`displayId` 随 semanticId 稳定。
+- **测试**：`figma-testgen`/`figma-test-screens`/`suite-command` 增补；全量 **2131 绿**，lint 0 error（2 条既有 warning）。

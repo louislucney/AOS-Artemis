@@ -752,19 +752,17 @@ function caseIdFor(name: string, screens: string[], steps: string[]): string {
 /** 跨平台语义身份：不包含 taskDesc/i18n/a11y/模块名；只依赖 canonical flows 与人类层。 */
 function semanticIdFor(input: {
   screens: string[];
-  humanSteps: string[];
-  preconditions: string[];
-  expectations: StepExpectation[];
+  edges: Array<Pick<FlowEdge, "from" | "to" | "trigger" | "back">>;
 }): string {
+  // 纯路径骨架：只保留 canonical 页面序列与交互类型；不吸收
+  // reconciliation/acceptance/i18n/a11y 等会因项目或运行历史变化的内容。
   const basis = JSON.stringify({
     screens: input.screens,
-    steps: input.humanSteps,
-    preconditions: input.preconditions,
-    expectations: input.expectations.map((entry) => ({
-      screen: entry.screen,
-      hints: entry.hints,
-      kind: entry.kind,
-      provenance: entry.provenance
+    edges: input.edges.map((edge) => ({
+      from: edge.from.name,
+      to: edge.to?.name ?? null,
+      trigger: edge.trigger,
+      back: edge.back === true
     }))
   });
   return `sem-${createHash("sha256").update(basis).digest("hex").slice(0, 12)}`;
@@ -1010,9 +1008,7 @@ export function generateTestCases(
       id: caseIdFor(idName, screens, steps),
       semanticId: semanticIdFor({
         screens,
-        humanSteps,
-        preconditions,
-        expectations
+        edges: [...prefix, ...flowPath]
       }),
       name,
       screens,
@@ -1097,9 +1093,9 @@ export function renderMarkdown(
         testCase.startScreen;
       lines.push(`> 接续段：先按前导导航到「${startDisplay}」（不计断言）`, "");
     }
-    const refs = options.images?.get(testCase.id) ?? [];
+    const refs = [...new Set(options.images?.get(testCase.id) ?? [])];
     if (refs.length > 0) {
-      const shown = refs.slice(0, 3);
+      const shown = refs.slice(0, 8);
       lines.push(shown.map((ref) => `<img src="${ref}" height="160">`).join(" "));
       if (refs.length > shown.length) lines.push(`…（共 ${refs.length} 屏）`);
       lines.push("");
@@ -1429,7 +1425,10 @@ function screenshotEmbedWarning(
   refs: Map<string, string[]>
 ): DesignWarning | null {
   // renderMarkdown 每个用例最多嵌入 3 张图；期望值须按同一上限计算。
-  const expected = [...refs.values()].reduce((sum, list) => sum + Math.min(list.length, 3), 0);
+  const expected = [...refs.values()].reduce(
+    (sum, list) => sum + Math.min(new Set(list).size, 8),
+    0
+  );
   if (expected === 0) return null;
   const actual = (markdown.match(/<img\s/gi) ?? []).length;
   if (actual >= expected) return null;

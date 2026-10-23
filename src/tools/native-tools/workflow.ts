@@ -68,6 +68,10 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
         .boolean()
         .optional()
         .describe("tests.md/xlsx 嵌入设计图，默认 true（显式覆盖 AOS_SCREENS=0）"),
+      allowPendingApi: z
+        .boolean()
+        .optional()
+        .describe("API 说明 pending 时仍允许 run:true 执行，默认阻断"),
       device: z
         .string()
         .optional()

@@ -46,6 +46,8 @@ export interface DesignToTestArgs {
   screens?: boolean;
   device?: string;
   run?: boolean;
+  /** API 说明 pending 时仍允许执行（默认阻断）。 */
+  allowPendingApi?: boolean;
 }
 
 export interface DesignToTestDeps {
@@ -433,6 +435,26 @@ export async function designToTest(
     generatedSource ??
     (figmaUrl !== null ? `figma:${figmaUrl}` : penPath !== null ? `pen:${penPath}` : flowsPath);
 
+  const reviewedApi =
+    apiReviewUpdate !== null
+      ? apiReviewUpdate.review
+      : generatePayload !== null &&
+          typeof generatePayload.apiReview === "object" &&
+          generatePayload.apiReview !== null
+        ? (generatePayload.apiReview as Record<string, unknown>)
+        : null;
+  if (args.run === true && reviewedApi?.status === "pending" && args.allowPendingApi !== true) {
+    return jsonResult({
+      ok: false,
+      needs: "info",
+      category: "api-spec-pending",
+      questions: [
+        "本次功能涉及新增/修改 API，但接口说明尚未提供；请先补充 apiSpec/apiSpecPath，或显式传 allowPendingApi:true 继续执行。"
+      ],
+      ...(reviewedApi !== null ? { apiReview: reviewedApi } : {}),
+      ...warningFields()
+    });
+  }
   const logLine = deps.log ?? logInfo;
   let runSummary: Record<string, unknown> | null = null;
   let runManifestPath: string | null = null;
@@ -550,14 +572,7 @@ export async function designToTest(
         }
       : null;
 
-  const apiReview =
-    apiReviewUpdate !== null
-      ? apiReviewUpdate.review
-      : generatePayload !== null &&
-          typeof generatePayload.apiReview === "object" &&
-          generatePayload.apiReview !== null
-        ? (generatePayload.apiReview as Record<string, unknown>)
-        : null;
+  const apiReview = reviewedApi;
   if (apiReviewUpdate !== null) {
     for (const artifact of apiReviewUpdate.updatedArtifacts) artifacts[artifact.endsWith(".json") ? "apiReviewJson" : artifact.endsWith(".md") ? "apiReviewMarkdown" : "apiReviewXlsx"] = artifact;
   }

@@ -18,6 +18,7 @@ export interface ImportColumns {
   preconditions?: string;
   module?: string;
   displayId?: string;
+  testData?: string;
 }
 
 export interface ImportedSet {
@@ -43,7 +44,15 @@ export type ImportResult =
 
 type Field = keyof ImportColumns;
 
-const FIELDS: Field[] = ["name", "steps", "expected", "preconditions", "module", "displayId"];
+const FIELDS: Field[] = [
+  "name",
+  "steps",
+  "expected",
+  "preconditions",
+  "module",
+  "displayId",
+  "testData"
+];
 
 const COLUMN_ALIASES: Record<Field, string[]> = {
   name: ["用例名", "用例名称", "标题", "case", "casename", "name", "title"],
@@ -51,7 +60,8 @@ const COLUMN_ALIASES: Record<Field, string[]> = {
   expected: ["预期", "预期结果", "期望结果", "期望", "expected", "expectation", "result"],
   preconditions: ["前置", "前置条件", "前置假设", "preconditions", "precondition"],
   module: ["模块", "功能", "功能模块", "所属模块", "module", "feature"],
-  displayId: ["用例编号", "展示编号", "displayid", "caseid", "编号"]
+  displayId: ["用例编号", "展示编号", "displayid", "caseid", "编号"],
+  testData: ["测试数据", "testdata", "data"]
 };
 
 interface ImportedCase {
@@ -248,6 +258,7 @@ export async function importTestDocument(
     preconditions: string;
     module: string;
     displayId: string;
+    testData: string;
   }> = [];
   const rowIssues: string[] = [];
   sheet.rows.forEach((cells, rowIndex) => {
@@ -270,7 +281,8 @@ export async function importTestDocument(
       expected: pick(cells, "expected"),
       preconditions: pick(cells, "preconditions"),
       module: pick(cells, "module") || path.parse(excelPath).name,
-      displayId: pick(cells, "displayId")
+      displayId: pick(cells, "displayId"),
+      testData: pick(cells, "testData")
     });
   });
   if (rowIssues.length > 0) {
@@ -289,6 +301,7 @@ export async function importTestDocument(
       expected: string;
       preconditions: string;
       displayId: string;
+      testData: string;
     }>
   >();
   for (const draft of drafts) {
@@ -329,6 +342,13 @@ export async function importTestDocument(
           expectations.push({ kind: "explore" });
         }
         const preconditions = row.preconditions === "" ? [] : [row.preconditions];
+        const testData =
+          row.testData === "" || row.testData === "n/a（无显式数据）" || row.testData === "—"
+            ? []
+            : row.testData
+                .split(/\r?\n/)
+                .map((entry) => entry.replace(/^-\s*/, "").trim())
+                .filter((entry) => entry !== "");
         const executor = sheet.executor ?? new Map();
         const hidden =
           row.displayId === ""
@@ -337,7 +357,8 @@ export async function importTestDocument(
         const reusable =
           hidden !== undefined &&
           hidden.taskDesc.trim() !== "" &&
-          hidden.humanStepsHash === humanStepsHashFromParts(row.steps, preconditions);
+          hidden.humanStepsHash ===
+            humanStepsHashFromParts(row.steps, preconditions, row.expected, row.testData);
         const taskDesc = reusable
           ? hidden.taskDesc
           : [
@@ -345,7 +366,9 @@ export async function importTestDocument(
               `用例：${row.name}`,
               preconditions.length > 0 ? `前置：${preconditions.join("；")}` : null,
               `步骤：${row.steps}`,
-              row.expected !== "" ? `预期：${row.expected}` : null
+              row.expected !== "" ? `预期：${row.expected}` : null,
+              ...(testData.length > 0 ? ["【测试数据】", ...testData.map((item) => `- ${item}`)] : []),
+              ...(hidden?.designRefs ? [`设计引用：${hidden.designRefs}`] : [])
             ]
               .filter((line): line is string => line !== null)
               .join("\n");
@@ -365,7 +388,7 @@ export async function importTestDocument(
           displayId: row.displayId || caseId,
           module,
           section: module,
-          testData: [],
+          testData,
           openQuestions: []
         };
       });

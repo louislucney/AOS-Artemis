@@ -99,19 +99,31 @@ function renderStepsCell(testCase: GeneratedTest): string {
   return [...prelude, ...steps].join("\n");
 }
 
-export function humanStepsHashFromParts(steps: string, preconditions: string[]): string {
+export function humanStepsHashFromParts(
+  steps: string,
+  preconditions: string[],
+  expected = "",
+  testData = ""
+): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
         steps: steps.replace(/\r\n/g, "\n").trim(),
-        preconditions: preconditions.join("；")
+        preconditions: preconditions.join("；"),
+        expected: expected.replace(/\r\n/g, "\n").trim(),
+        testData: testData.replace(/\r\n/g, "\n").trim()
       })
     )
     .digest("hex");
 }
 
 export function humanStepsHash(testCase: GeneratedTest): string {
-  return humanStepsHashFromParts(renderStepsCell(testCase), testCase.preconditions ?? []);
+  return humanStepsHashFromParts(
+    renderStepsCell(testCase),
+    testCase.preconditions ?? [],
+    expectedCell(testCase),
+    testDataCell(testCase)
+  );
 }
 
 function textOrFallback(values: string[] | undefined, fallback: string): string {

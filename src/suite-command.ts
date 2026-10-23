@@ -248,6 +248,24 @@ function suiteRunOptions(
   };
 }
 
+function apiReviewPendingInTests(testsPath: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8")) as { apiReview?: unknown };
+    return (
+      parsed.apiReview !== null &&
+      typeof parsed.apiReview === "object" &&
+      !Array.isArray(parsed.apiReview) &&
+      (parsed.apiReview as { status?: unknown }).status === "pending"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function pendingApiBlocked(flags: ParsedFlags, testsPath: string): boolean {
+  return !flags.bool("allow-pending-api") && apiReviewPendingInTests(testsPath);
+}
+
 type SuiteIo = {
   log: (line: string) => void;
   errorLog: (line: string) => void;
@@ -299,9 +317,10 @@ common: [--project <dir>] [--json]
 run:    [--tests <path>] [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
         [--ui-diff] [--ui-diff-max <n>]（访问屏逐屏设计对比；默认关闭，单例最多 3 屏）
+        [--allow-pending-api]（API 说明 pending 时仍执行；默认 check/run 阻断）
         [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine] [--strict] [--no-save]
         [--task <id>（回归任务：与 --tests 互斥；--device 可重复，按端展开设备运行）]
-check:  [--tests <path>] [--strict]
+check:  [--tests <path>] [--strict] [--allow-pending-api]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
         [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-quarantine] [--no-save] [--out <dir>]
@@ -407,6 +426,15 @@ async function suiteRunTask(
   if (resolvedRefs.length === 0) {
     io.errorLog(`回归任务 ${taskId} 的引用用例集均不可用（先重新生成/登记用例集）`);
     return 2;
+  }
+  if (!flags.bool("allow-pending-api")) {
+    const pending = resolvedRefs.find((ref) => apiReviewPendingInTests(ref.jsonPath));
+    if (pending) {
+      io.errorLog(
+        `任务 ${taskId} 的引用用例集 API 说明待补充（apiReview.status=pending）：${pending.jsonPath}；先补 apiSpec，或传 --allow-pending-api`
+      );
+      return 2;
+    }
   }
 
   const devicePlatforms = new Set<string>(devices.map((device) => platformOf(device)));
@@ -773,6 +801,14 @@ async function suiteRun(
     return await suiteRunTask(runtime, flags, io, taskId, logcatCollector, iosLogCollector, io.shouldAbort);
   }
   const runOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
+  const configuredTests = flags.get("tests");
+  const pendingPath = configuredTests
+    ? path.resolve(runtime.project.rootDir, configuredTests)
+    : path.join(runtime.configDirAbs, "design", "tests.json");
+  if (!isImportedTestsFile(pendingPath) && pendingApiBlocked(flags, pendingPath)) {
+    io.errorLog(`API 变更说明待补充（apiReview.status=pending）：先补 apiSpec，或传 --allow-pending-api；${pendingPath}`);
+    return 2;
+  }
   const retryCount = retryCountOf(flags);
   const batch = await executeSuiteBatch(
     runtime,
@@ -916,6 +952,10 @@ async function suiteCheck(
     return 2;
   }
 
+  if (!isImportedTestsFile(testsPath) && pendingApiBlocked(flags, testsPath)) {
+    io.errorLog(`API 变更说明待补充（apiReview.status=pending）：先补 apiSpec，或传 --allow-pending-api；${testsPath}`);
+    return 2;
+  }
   const coverage = preflight.coverage;
   const imported = isImportedTestsFile(testsPath);
   const issue = gateIssueForTests(testsPath, preflight, { strict: flags.bool("strict") });

@@ -1,7 +1,7 @@
 # 双层测试产物与跨端一致性：当前风险与收敛评估（rev 2）
 
-> 日期：2026-10-23（rev 2 吸收评审反馈：补齐 A/B/C/D 四个缺席视角、修正 R2/R3/R4/R6/R8 方案与定级）
-> 状态：已评审待实施
+> 日期：2026-10-23（rev 3 吸收二次审核：补 R12 URL 内容指纹、R13 semanticId 碰撞、R1 重建字段、R11 台账持久化）
+> 状态：部分实施（第一批 R1/R2/R8/R10 已完成，见 DESIGN §13.204）
 > 关联设计：`docs/superpowers/specs/2026-10-23-design-to-test-dual-layer-design.md`
 > 关联实现：提交 `8217b7d` / `82ef0ca` / `da9d133` / `a9966ed`（DESIGN §13.202–§13.203）
 
@@ -140,3 +140,32 @@ rev 2 对照代码现状核实并吸收了评审意见：
    - **R3**：单机双端 `design.sharedDir` 与 `flowsFingerprint` 步调检查；
    - **R4**：`apiSpec` 与 `error-codes.json` 校验提示联动；
    - **R7**：`humanElementLabel` 消费 `vision` 标签。
+
+
+## 5. rev 3 二次审核补充
+
+### 5.1 R1 的可执行细节补齐
+
+- `humanCaseHash` 明确输入为 CSV 单元格等价值：`步骤列 + 前置列 + 预期结果列 + 测试数据列`；导入器需新增解析「测试数据」列。
+- 重建分支（步骤/预期/数据任一变化）必须把新预期、新测试数据写回 `taskDesc`，并把隐藏 sheet 的 `设计引用` 追加到机器描述末尾；否则“检测到变化但执行描述仍旧”仍是静默错误。
+- 若隐藏执行器 sheet 被用户删除或 Excel 重存剥离，导入应显式 warning「执行器层缺失：按人类列重建」，不得假装复用。
+
+### 5.2 R10 的碰撞约束
+
+- 纯路径骨架（起点屏 + 归一化屏幕序列 + 动作类型/目标屏）之外，必须再加一个稳定的区分项：`variant`/`testData` 摘要或路径出现序号；否则同一路径不同数据的用例共享 semanticId。
+- `suite parity` 对 semanticId 相同但字段不同的条目按 field diff 报告，不把不同用例合并。
+
+### 5.3 R11 的持久化要求
+
+- 不能只从 `RunManifest` 读：`apiReview` 状态必须随 `SuiteRunRecord`（PG/file/memory）持久化，或在 case-set JSON 中保留；面板优先读台账，清单仅作为补充。
+- `suite runs` / 批次详情在清单被清理后仍能显示“当时 API 说明 pending”。
+
+### 5.4 R12（新增，P1）：URL 类设计源的指纹不检测内容变化
+
+- 当前 `designFingerprintFor` 对 `args.url` 只哈希 URL；同一 Figma URL 的设计内容更新后，`designFingerprint`/`flowsFingerprint` 不变，parity 会误判同源。
+- 修复：`flowsFingerprint` 哈希实际生成的 `FlowGraph`（屏幕/边/文本提示/来源）；或记录 Figma `version`/`lastModified` 参与指纹。
+
+### 5.5 R13（新增，P1）：`apiSpec` 的结构化校验边界
+
+- `apiSpec` 是自由文本，自动从中提取错误码/路径不可靠；R4 只在 `apiSpec` 含显式规则或项目已有 `error-codes.json` 时联动，不能承诺自动覆盖全部接口。
+- 若未来要硬门禁，应增加结构化 `apiChecks`（method/path/expectedStatus/errorCode）而不是解析自由文本。

@@ -213,7 +213,7 @@ test("figma_generate_tests: screens:false / AOS_SCREENS=0 关闭；显式 true �
   assert.equal(forced.screenshots.channel, "pen");
 });
 
-test("renderMarkdown: ≤3 张截断并提示总数", () => {
+test("renderMarkdown: ≤8 张截断并提示总数", () => {
   const cases = [
     {
       id: "c1",
@@ -228,13 +228,23 @@ test("renderMarkdown: ≤3 张截断并提示总数", () => {
   const refs = new Map([
     [
       "c1",
-      ["screens/x/1.png", "screens/x/2.png", "screens/x/3.png", "screens/x/4.png", "screens/x/5.png"]
+      [
+        "screens/x/1.png",
+        "screens/x/2.png",
+        "screens/x/3.png",
+        "screens/x/4.png",
+        "screens/x/5.png",
+        "screens/x/6.png",
+        "screens/x/7.png",
+        "screens/x/8.png",
+        "screens/x/9.png"
+      ]
     ]
   ]);
   const md = renderMarkdown(cases, { source: "t", generatedAt: "now" }, { images: refs });
-  assert.equal((md.match(/<img /g) ?? []).length, 3);
-  assert.match(md, /…（共 5 屏）/);
-  assert.doesNotMatch(md, /screens\/x\/4\.png/);
+  assert.equal((md.match(/<img /g) ?? []).length, 8);
+  assert.match(md, /…（共 9 屏）/);
+  assert.doesNotMatch(md, /screens\/x\/9\.png/);
 
   const without = renderMarkdown(cases, { source: "t", generatedAt: "now" });
   assert.doesNotMatch(without, /<img/);

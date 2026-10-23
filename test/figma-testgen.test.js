@@ -2229,7 +2229,7 @@ test("figma_generate_tests: screens:false 写入可见 warning", async () => {
   assert.doesNotMatch(markdown, /<img src=/);
 });
 
-test("renderMarkdown: >3 屏截断为 3 张图时不应误报 screenshot-embed-mismatch", () => {
+test("renderMarkdown: 4 屏全量嵌入且去重后不误报 screenshot-embed-mismatch", () => {
   const graph = chainGraph();
   const cases = generateTestCases(graph);
   assert.ok(cases[0].screens.length > 3, "用例包含超过 3 个屏幕");
@@ -2239,6 +2239,45 @@ test("renderMarkdown: >3 屏截断为 3 张图时不应误报 screenshot-embed-m
     { source: "unit", generatedAt: "2026-10-23T00:00:00Z" },
     { images }
   );
-  assert.equal((markdown.match(/<img\s/gi) ?? []).length, 3);
-  assert.match(markdown, /…（共 4 屏）/);
+  assert.equal((markdown.match(/<img\s/gi) ?? []).length, 4);
+  const deduped = renderMarkdown(
+    [cases[0]],
+    { source: "unit", generatedAt: "2026-10-23T00:00:00Z" },
+    { images: new Map([[cases[0].id, ["a.png", "a.png", "b.png"]]]) }
+  );
+  assert.equal((deduped.match(/<img\s/gi) ?? []).length, 2);
+});
+
+test("importTestDocument: 仅改预期/测试数据也重建 taskDesc 并保留 caseId", async () => {
+  const dir = makeFlowsProject();
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const generated = parseToolResult(await figmaGenerateTests(runtime, {}));
+  const excelPath = path.join(dir, ".artemis", "design", "tests.xlsx");
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(excelPath);
+  const sheet = workbook.getWorksheet("测试用例");
+  sheet.getRow(2).getCell(9).value = "账号：test-user";
+  sheet.getRow(2).getCell(11).value = "页面显示新的确认提示";
+  const editedPath = path.join(dir, "qa-data-edited.xlsx");
+  await workbook.xlsx.writeFile(editedPath);
+  const imported = await importTestDocument(runtime, { excelPath: editedPath });
+  assert.equal(imported.ok, true);
+  assert.match(imported.warnings.join("\n"), /步骤已编辑|执行描述/);
+  const set = JSON.parse(fs.readFileSync(imported.sets[0].jsonPath, "utf-8"));
+  const first = set.flows[0];
+  assert.equal(first.id, generated.flows[0].id, "保留 caseId");
+  assert.match(first.taskDesc, /页面显示新的确认提示/);
+  assert.match(first.taskDesc, /账号：test-user/);
+});
+
+test("semanticId 只依赖路径骨架：机器 locator/i18n 变化不影响跨端身份", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  const a = generateTestCases(graph, {});
+  const b = generateTestCases(graph, {
+    i18nKeys: new Map([["Buy now", "home.cta_button"]]),
+    identifiers: new Map([[normalizeElementLabel("Buy now"), "buy-button"]])
+  });
+  assert.equal(a[0].semanticId, b[0].semanticId);
+  assert.equal(a[0].displayId, b[0].displayId);
+  assert.notEqual(a[0].steps[0], b[0].steps[0], "机器步骤仍可含平台 locator");
 });

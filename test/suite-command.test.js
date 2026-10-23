@@ -1769,3 +1769,24 @@ test("suite task show: >50 份不误报「份已清理」", async () => {
   assert.ok(logs.some((line) => line.includes("目标功能")));
   assert.equal(logs.some((line) => line.includes("份已清理")), false);
 });
+
+test("suite check: apiReview pending 默认阻断，--allow-pending-api 放行门禁", async () => {
+  const { runtime } = await setupRun({ cases: [caseEntry(1)] });
+  const testsPath = path.join(runtime.configDirAbs, "design", "tests.json");
+  const parsed = JSON.parse(fs.readFileSync(testsPath, "utf-8"));
+  parsed.apiReview = {
+    change: "new",
+    status: "pending",
+    apiSpec: null,
+    apiSpecSha256: null,
+    designFingerprint: "fp",
+    updatedAt: "2026-10-23T00:00:00Z"
+  };
+  fs.writeFileSync(testsPath, JSON.stringify(parsed));
+  const blocked = await runCli(runtime, ["check"]);
+  assert.equal(blocked.code, 2);
+  assert.match(blocked.errors.join("\n"), /apiReview\.status=pending/);
+
+  const allowed = await runCli(runtime, ["check", "--allow-pending-api"]);
+  assert.doesNotMatch(allowed.errors.join("\n"), /apiReview\.status=pending/);
+});
