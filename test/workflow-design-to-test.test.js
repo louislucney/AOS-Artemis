@@ -1122,3 +1122,166 @@ test("design_to_test: API 参数与 screens=false 透传给生成器", async () 
     apiSpec: "POST /orders\nrequest: {sku}"
   });
 });
+
+function readingStub(overrides = {}) {
+  return {
+    ok: true,
+    status: "read",
+    reason: null,
+    reading: {
+      completeness: { screensRead: 8, screensTotal: 8 },
+      questions: [{ id: "q-1", screenId: "s1", screenName: "S1", element: "search", question: "搜索去哪？", why: "x" }],
+      answers: [{ id: "a-1", match: { screenId: "s1" }, answer: "人工结论" }],
+      spine: { title: "主线", summary: "x", screenIds: ["s1"], edgeIds: [], statusSummary: { observed: 0, inferred: 0, unconfirmed: 0 }, status: "inferred", basis: [], confidence: null }
+    },
+    artifacts: { json: "/tmp/reading.json", markdown: "/tmp/reading.md", chunksDir: "/tmp/chunks" },
+    warnings: [],
+    stats: {
+      chunksRequested: 4,
+      chunksProcessed: 4,
+      chunksReused: 0,
+      chunksFailed: 0,
+      calls: 4,
+      screens: 8,
+      screensRead: 8,
+      screensTotal: 8,
+      droppedScreens: [],
+      truncatedScreens: [],
+      observed: 0,
+      inferred: 1,
+      unconfirmed: 0
+    },
+    ...overrides
+  };
+}
+
+test("design_to_test: 8 屏自动阅读，steps = extract/read/generate/check", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const readCalls = [];
+  const { deps } = makeDeps({
+    extractFigma: async (runtime, args) =>
+      textResult({ ok: true, counts: { screens: 8, edges: 1 }, savedTo: { json: path.join(runtime.configDirAbs, "design", "flows.json") } }),
+    readDesign: async (input) => {
+      readCalls.push(input);
+      return readingStub();
+    },
+    readingChat: async () => "",
+    readingModel: "test-reading"
+  });
+  const result = await designToTest(runtime, { figmaUrl: FIGMA_URL, reading: "auto" }, deps);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true);
+  assert.equal(readCalls.length, 1);
+  assert.equal(readCalls[0].model, "test-reading");
+  assert.deepEqual(withoutMs(payload.steps[1]), {
+    step: "read",
+    chunks: 4,
+    screens: 8,
+    observed: 0,
+    inferred: 1,
+    unconfirmed: 0
+  });
+  assert.equal(payload.steps[0].step, "extract");
+  assert.equal(payload.steps[2].step, "generate");
+  assert.equal(payload.steps[3].step, "check");
+  assert.equal(payload.reading.questions[0].id, "q-1");
+  assert.equal(payload.reading.answers[0].id, "a-1");
+  assert.equal(payload.artifacts.readingJson, "/tmp/reading.json");
+});
+
+test("design_to_test: reading:false 与 2 屏 auto 都不触发阅读", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const readCalls = [];
+  const { deps } = makeDeps({
+    readDesign: async () => {
+      readCalls.push(1);
+      return readingStub();
+    },
+    readingChat: async () => "",
+    readingModel: "test-reading"
+  });
+  const off = await designToTest(runtime, { figmaUrl: FIGMA_URL, reading: false }, deps);
+  assert.equal(payloadOf(off).reading, undefined);
+  assert.equal(readCalls.length, 0);
+
+  const small = await designToTest(runtime, { figmaUrl: FIGMA_URL }, deps);
+  assert.equal(payloadOf(small).reading, undefined);
+  assert.equal(readCalls.length, 0);
+  assert.equal(payloadOf(small).steps.length, 3);
+});
+
+test("design_to_test: reading:true + 非视觉模型 → 不发读图请求，skipped + warning", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test", AOS_LLM_VISION: "0" } });
+  const readCalls = [];
+  const { deps } = makeDeps({
+    readDesign: async () => {
+      readCalls.push(1);
+      return readingStub();
+    }
+  });
+  const result = await designToTest(runtime, { figmaUrl: FIGMA_URL, reading: true }, deps);
+  const payload = payloadOf(result);
+  assert.equal(readCalls.length, 0);
+  assert.equal(payload.reading.status, "skipped");
+  assert.ok(payload.reading.warnings.some((warning) => warning.code === "vision-required"));
+  assert.equal(payload.ok, true);
+});
+
+test("design_to_test: AOS_LLM_VISION=1 让非匹配模型名也能阅读", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test", AOS_LLM_VISION: "1" } });
+  const readCalls = [];
+  const { deps } = makeDeps({
+    readDesign: async (input) => {
+      readCalls.push(input);
+      return readingStub();
+    }
+  });
+  const result = await designToTest(runtime, { figmaUrl: FIGMA_URL, reading: true }, deps);
+  assert.equal(payloadOf(result).ok, true);
+  assert.equal(readCalls.length, 1);
+  assert.equal(readCalls[0].model, "deepseek-chat");
+});
+
+test("design_to_test: 阅读失败仍继续生成，reading skipped；后续生成失败仍带 reading questions", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  let generateCalls = 0;
+  const { deps } = makeDeps({
+    extractFigma: async (runtime) =>
+      textResult({ ok: true, counts: { screens: 8, edges: 1 }, savedTo: { json: path.join(runtime.configDirAbs, "design", "flows.json") } }),
+    readDesign: async () => {
+      throw new Error("vision down");
+    },
+    generate: async (runtime) => {
+      generateCalls += 1;
+      return textResult({ ok: false, error: "generate down" });
+    }
+  });
+  const result = await designToTest(runtime, { figmaUrl: FIGMA_URL, reading: true }, deps);
+  const payload = payloadOf(result);
+  assert.equal(generateCalls, 1, "阅读失败不阻断生成");
+  assert.equal(payload.ok, false);
+  assert.equal(payload.failedStep, "generate");
+  assert.equal(payload.reading.status, "skipped");
+});
+
+test("design_to_test: readingStates 透传 includeStates", async () => {
+  const runtime = stubRuntime({ dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const readCalls = [];
+  const { deps } = makeDeps({
+    extractFigma: async (runtime) =>
+      textResult({ ok: true, counts: { screens: 8, edges: 1 }, savedTo: { json: path.join(runtime.configDirAbs, "design", "flows.json") } }),
+    readDesign: async (input) => {
+      readCalls.push(input);
+      return readingStub();
+    },
+    readingChat: async () => "",
+    readingModel: "test-reading"
+  });
+  await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, reading: true, readingMaxScreens: 60, readingStates: true },
+    deps
+  );
+  assert.equal(readCalls[0].options.maxScreens, 60);
+  assert.equal(readCalls[0].options.includeStates, true);
+});

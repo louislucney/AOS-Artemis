@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { autoCheckUi } from "../dist/ui/auto-check.js";
+import { summarizeUi, summarizeUiCoverage } from "../dist/ui/verification.js";
 import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
 
 function writeDesign(dir) {
@@ -75,6 +76,91 @@ test("ui auto-check: matched visited screen with PNG source passes", async () =>
   assert.equal(ui.lossless, true);
   assert.equal(ui.regions, 1);
   assert.deepEqual(ui.evidence, ["/tmp/ui-report"]);
+  assert.deepEqual(ui.coverage, {
+    requested: 1,
+    matched: 1,
+    compared: 1,
+    skipped: 0,
+    unmatched: 0,
+    comparedScreens: [{ id: "s1", name: "首頁" }],
+    skippedScreens: [],
+    unmatchedScreens: []
+  });
+  const coverage = summarizeUiCoverage(
+    [{ ui }],
+    [
+      { id: "s1", name: "首頁" },
+      { id: "s2", name: "其他" }
+    ]
+  );
+  assert.deepEqual(coverage, {
+    cases: 1,
+    requested: 1,
+    matched: 1,
+    compared: 1,
+    skipped: 0,
+    unmatched: 0,
+    comparedScreens: [{ id: "s1", name: "首頁" }],
+    skippedScreens: [],
+    unmatchedScreens: [],
+    contractScreens: 2,
+    contractNotCompared: [{ id: "s2", name: "其他" }]
+  });
+  assert.equal(
+    summarizeUiCoverage([{ ui: { status: "unverified" } }]),
+    null,
+    "未跑 UI diff 时不伪造覆盖率"
+  );
+});
+
+test("ui auto-check: text weight styles are report-only aggregate", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  writeDesign(dir);
+  const { runtime } = await loadTestRuntime(dir);
+  writeTrace(runtime, "ios-t-text");
+  const fake = async () => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          ok: true,
+          summary: { regions: 0, bySeverity: {} },
+          unit: { device: { sourceFormat: "png", lossless: true } },
+          detail: {
+            textStyles: {
+              scope: "contract",
+              screenId: "s1",
+              textsTotal: 3,
+              checked: 2,
+              lighter: 0,
+              similar: 1,
+              heavier: 1,
+              highConfidenceHeavier: 1,
+              unverified: 1,
+              byReason: { "no-geometry": 1 }
+            }
+          }
+        })
+      }
+    ]
+  });
+  const ui = await autoCheckUi(
+    runtime,
+    { traceId: "ios-t-text", screens: ["首頁"], deviceSerial: null, maxScreens: 3 },
+    { designDeviceDiff: fake }
+  );
+  assert.equal(ui.status, "passed");
+  assert.deepEqual(ui.textStyles, {
+    textsTotal: 3,
+    checked: 2,
+    lighter: 0,
+    similar: 1,
+    heavier: 1,
+    highConfidenceHeavier: 1,
+    unverified: 1,
+    byReason: { "no-geometry": 1 }
+  });
+  assert.deepEqual(summarizeUi([{ ui }]).textStyles, ui.textStyles);
 });
 
 test("ui auto-check: blocker difference fails UI", async () => {
@@ -116,4 +202,14 @@ test("ui auto-check: screen without per-screen .pen stays unverified", async () 
   );
   assert.equal(ui.status, "unverified");
   assert.equal(ui.reason, "no-comparable-screen");
+  assert.deepEqual(ui.coverage, {
+    requested: 1,
+    matched: 1,
+    compared: 0,
+    skipped: 1,
+    unmatched: 0,
+    comparedScreens: [],
+    skippedScreens: [{ id: "s1", name: "首頁" }],
+    unmatchedScreens: []
+  });
 });

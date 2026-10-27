@@ -24,6 +24,7 @@ import {
   usageEventSampleLimit
 } from "./usage/capture.js";
 import { handleUsageRequest } from "./usage/web.js";
+import { projectExcluded } from "./project-visibility.js";
 import { errorMessage } from "./util.js";
 
 export interface UsageWebHandle {
@@ -520,7 +521,9 @@ export async function runUsageCommand(argv: string[], deps: UsageCliDeps = {}): 
     }
 
     const records = (await store.listProjects()).filter(
-      (project) => hostFilter === null || project.hostId === hostFilter
+      (project) =>
+        (hostFilter === null || project.hostId === hostFilter) &&
+        (!flags.bool("all") || !projectExcluded(project, env.AOS_PANEL_EXCLUDE_PROJECTS))
     );
     const since = new Date(nowMs - days * 86_400_000).toISOString();
     const query: UsageEventQuery = { since, limit: usageEventSampleLimit(env) };

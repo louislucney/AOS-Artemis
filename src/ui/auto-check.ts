@@ -7,7 +7,16 @@ import { designDir, loadDesignFlowGraph } from "../figma/design-store.js";
 import { designFlowsPath } from "../figma/design-source.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage, logWarn } from "../util.js";
-import { unverifiedUi, type UiSourceFormat, type UiVerification } from "./verification.js";
+import {
+  addUiTextStyles,
+  normalizeUiTextStyles,
+  unverifiedUi,
+  type UiCoverage,
+  type UiScreenRef,
+  type UiSourceFormat,
+  type UiTextStyleSummary,
+  type UiVerification
+} from "./verification.js";
 
 interface TraceStep {
   step: number;
@@ -17,6 +26,8 @@ interface TraceStep {
 interface ScreenMatch {
   screen: NonNullable<ReturnType<typeof loadDesignFlowGraph>>["screens"][number];
   step: TraceStep;
+  /** 原始请求串（testCase.screens），用于未匹配/覆盖率账本。 */
+  requested: string;
 }
 
 function readTraceSteps(traceDir: string): TraceStep[] {
@@ -63,7 +74,7 @@ function matchScreens(
       }
       if (score > 0 && (best === null || score >= best.score)) best = { step, score };
     }
-    if (best !== null) matches.push({ screen, step: best.step });
+    if (best !== null) matches.push({ screen, step: best.step, requested });
   }
   return matches;
 }
@@ -95,6 +106,30 @@ function sourceOf(payload: Record<string, unknown>): {
   return { format, lossless: source?.lossless === true };
 }
 
+function buildCoverage(input: {
+  requested: string[];
+  matchedRequests: Set<string>;
+  compared: UiScreenRef[];
+  skipped: UiScreenRef[];
+}): UiCoverage {
+  const unmatchedScreens = input.requested.filter((screen) => !input.matchedRequests.has(screen));
+  const matched = input.requested.length - unmatchedScreens.length;
+  return {
+    requested: input.requested.length,
+    matched,
+    compared: input.compared.length,
+    skipped: input.skipped.length,
+    unmatched: unmatchedScreens.length,
+    comparedScreens: [...input.compared],
+    skippedScreens: [...input.skipped],
+    unmatchedScreens
+  };
+}
+
+function attachCoverage(ui: UiVerification, coverage: UiCoverage): UiVerification {
+  return { ...ui, coverage };
+}
+
 /** Auto UI check for screens actually visited by the case. First version only
  * compares screens with a per-screen `.pen` and a matching trace step; other
  * screens stay `unverified` (coverage gap, never a fake pass). */
@@ -109,29 +144,56 @@ export async function autoCheckUi(
   deps: { designDeviceDiff?: typeof designDeviceDiff } = {}
 ): Promise<UiVerification> {
   const diff = deps.designDeviceDiff ?? designDeviceDiff;
+  const requested = input.screens;
+  const noMatchCoverage = (): UiCoverage =>
+    buildCoverage({
+      requested,
+      matchedRequests: new Set<string>(),
+      compared: [],
+      skipped: []
+    });
   const contractPath = path.join(designDir(runtime.configDirAbs), "ui-contract.json");
-  if (!fs.existsSync(contractPath)) return unverifiedUi("no-ui-contract");
+  if (!fs.existsSync(contractPath)) {
+    return attachCoverage(unverifiedUi("no-ui-contract"), noMatchCoverage());
+  }
   const flows = loadDesignFlowGraph(runtime.configDirAbs, {
     flowsPath: designFlowsPath(runtime)
   });
-  if (flows === null) return unverifiedUi("no-flows");
+  if (flows === null) return attachCoverage(unverifiedUi("no-flows"), noMatchCoverage());
 
   const steps = readTraceSteps(runtime.traceDir(input.traceId));
-  if (steps.length === 0) return unverifiedUi("no-trace-steps");
-  const matches = matchScreens(input.screens, flows, steps).slice(
+  if (steps.length === 0) {
+    return attachCoverage(unverifiedUi("no-trace-steps"), noMatchCoverage());
+  }
+  const matches = matchScreens(requested, flows, steps).slice(
     0,
     Math.max(1, Math.trunc(input.maxScreens ?? 3))
   );
-  if (matches.length === 0) return unverifiedUi("no-screen-match");
+  if (matches.length === 0) {
+    return attachCoverage(unverifiedUi("no-screen-match"), noMatchCoverage());
+  }
 
   const platform = classifyIosSerial(input.deviceSerial ?? "") === null ? "android" : "ios";
   const evidence: string[] = [];
-  let checked = 0;
   let failed = 0;
   let regions = 0;
-  let skipped = 0;
   let sourceFormat: UiSourceFormat = "unknown";
   let lossless = false;
+  let textStyles: UiTextStyleSummary | undefined;
+  const comparedScreens: UiScreenRef[] = [];
+  const skippedScreens: UiScreenRef[] = [];
+  const matchedRequests = new Set(matches.map((match) => match.requested));
+  const coverageNow = (): UiCoverage =>
+    buildCoverage({
+      requested,
+      matchedRequests,
+      compared: comparedScreens,
+      skipped: skippedScreens
+    });
+  const finish = (ui: UiVerification): UiVerification => {
+    const withCoverage = attachCoverage(ui, coverageNow());
+    return textStyles === undefined ? withCoverage : { ...withCoverage, textStyles };
+  };
 
   for (const match of matches) {
     const penPath = path.join(
@@ -141,7 +203,7 @@ export async function autoCheckUi(
       `${match.screen.id}.pen`
     );
     if (!fs.existsSync(penPath)) {
-      skipped += 1;
+      skippedScreens.push({ id: match.screen.id, name: match.screen.name });
       continue;
     }
     try {
@@ -160,70 +222,77 @@ export async function autoCheckUi(
         returnCrops: 0
       });
       if (result.isError === true) {
-        skipped += 1;
+        skippedScreens.push({ id: match.screen.id, name: match.screen.name });
         continue;
       }
       const payload = parseResult(result);
       if (payload === null || payload.ok !== true) {
-        skipped += 1;
+        skippedScreens.push({ id: match.screen.id, name: match.screen.name });
         continue;
       }
       const source = sourceOf(payload);
       sourceFormat = source.format;
       lossless = source.lossless;
+      const textStyleValue = (
+        payload as { detail?: { textStyles?: unknown } }
+      ).detail?.textStyles;
+      const textStyle = normalizeUiTextStyles(textStyleValue);
+      if (textStyle !== null) textStyles = addUiTextStyles(textStyles, textStyle);
       const summary = payload.summary as { regions?: unknown; bySeverity?: Record<string, unknown> } | undefined;
       const bySeverity = summary?.bySeverity ?? {};
       const major = Number(bySeverity.blocker ?? 0) + Number(bySeverity.major ?? 0);
       regions += typeof summary?.regions === "number" ? summary.regions : 0;
       const saved = payload.saved as { dir?: unknown } | undefined;
       if (typeof saved?.dir === "string") evidence.push(saved.dir);
-      checked += 1;
+      comparedScreens.push({ id: match.screen.id, name: match.screen.name });
       if (major > 0) failed += 1;
     } catch (error) {
       logWarn(`UI 自动比对失败（${match.screen.name} / ${input.traceId}）: ${errorMessage(error)}`);
-      skipped += 1;
+      skippedScreens.push({ id: match.screen.id, name: match.screen.name });
     }
   }
 
-  if (checked === 0) {
-    return unverifiedUi(skipped > 0 ? "no-comparable-screen" : "no-screen-match");
+  if (comparedScreens.length === 0) {
+    return finish(
+      unverifiedUi(skippedScreens.length > 0 ? "no-comparable-screen" : "no-screen-match")
+    );
   }
   if (sourceFormat !== "png" || !lossless) {
-    return {
+    return finish({
       status: "unverified",
       reason: "lossy-source",
       sourceFormat,
       lossless,
       regions,
       ...(evidence.length > 0 ? { evidence } : {})
-    };
+    });
   }
   if (failed > 0) {
-    return {
+    return finish({
       status: "failed",
       reason: "auto-diff",
       sourceFormat,
       lossless,
       regions,
       evidence
-    };
+    });
   }
-  if (skipped > 0) {
-    return {
+  if (skippedScreens.length > 0) {
+    return finish({
       status: "unverified",
       reason: "partial-screen-coverage",
       sourceFormat,
       lossless,
       regions,
       evidence
-    };
+    });
   }
-  return {
+  return finish({
     status: "passed",
     reason: "auto-diff",
     sourceFormat,
     lossless,
     regions,
     evidence
-  };
+  });
 }

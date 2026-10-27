@@ -19,6 +19,7 @@ import {
 import { cBadge, cStat } from "../console/components.js";
 import { USAGE_DISABLED_NOTE, usageEnabledFrom, usageEventSampleLimit } from "./capture.js";
 import { escapeHtml } from "../util.js";
+import { projectExcluded } from "../project-visibility.js";
 import { storeKindShortLabel } from "../db/labels.js";
 import { renderConsoleShell, USAGE_STANDALONE_NAV } from "../console/shell.js";
 
@@ -95,6 +96,8 @@ export interface UsageWebView {
   filters: UsageWebFiltersView;
   project: UsageWebProjectView | null;
   projects: UsageWebProjectView[];
+  /** 被 AOS_PANEL_EXCLUDE_PROJECTS 隐藏的项目数（列表/默认选择；显式项目仍可访问）。 */
+  excludedProjects: number;
   tools: UsageWebToolRow[];
   summary: UsageSummary;
   signals: UsageSignals;
@@ -175,7 +178,10 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
     ? [...new Set(deps.catalog)].filter((name) => name !== "aos_usage").sort()
     : undefined;
 
-  const allProjects = await deps.store.listProjects();
+  const rawProjects = await deps.store.listProjects();
+  const excludeRaw = env.AOS_PANEL_EXCLUDE_PROJECTS;
+  const visibleProjects = rawProjects.filter((project) => !projectExcluded(project, excludeRaw));
+  const excludedProjects = rawProjects.length - visibleProjects.length;
   const hostId = trimmed(params.get("host"));
   if (hostId !== null && deps.store.kind === "postgres") {
     const hosts = await deps.store.listHosts().catch(() => null);
@@ -183,12 +189,19 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
       throw new UsageWebNotFoundError(`未知主机 "${hostId}"`);
     }
   }
-  // 显式 host：作用域内解析（同路径多主机消歧）；未传 host 保持「跨主机唯一匹配，多行 409」。
+  // 列表/默认项目只看可见项目；显式 project 仍在原始集合内解析（直接 URL 可访问被隐藏项目）。
   const projects =
-    hostId === null ? allProjects : allProjects.filter((project) => project.hostId === hostId);
+    hostId === null ? visibleProjects : visibleProjects.filter((project) => project.hostId === hostId);
   const projectKey = trimmed(params.get("project"));
   const candidates =
-    projectKey === null ? [] : resolveProjectCandidates(projects, projectKey);
+    projectKey === null
+      ? []
+      : resolveProjectCandidates(
+          hostId === null
+            ? rawProjects
+            : rawProjects.filter((project) => project.hostId === hostId),
+          projectKey
+        );
   if (projectKey !== null && candidates.length === 0) {
     throw new UsageWebNotFoundError(`未知项目 "${projectKey}"`);
   }
@@ -281,6 +294,7 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
     },
     project: project ? projectView(project) : null,
     projects: projects.map(projectView),
+    excludedProjects,
     tools,
     summary,
     signals,
@@ -402,6 +416,11 @@ function renderBadges(view: UsageWebView): string {
     ` ${cBadge({ label: usageLabel, tone: view.usage.enabled ? "neutral" : "warning" })}</p>`
   ];
   if (view.store.note) parts.push(`<p class="note">${escapeHtml(view.store.note)}</p>`);
+  if (view.excludedProjects > 0) {
+    parts.push(
+      `<p class="note">已按 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> 隐藏 ${view.excludedProjects} 个项目（直接项目 URL 仍可访问）。</p>`
+    );
+  }
   if (view.usage.note) parts.push(`<p class="note">${escapeHtml(view.usage.note)}</p>`);
   return parts.join("");
 }

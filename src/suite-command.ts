@@ -17,8 +17,19 @@ import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js"
 import { classifyIosSerial } from "./device/ios.js";
 import { latestFeatureRefs, type ResolvedTaskRef } from "./tasks/feature-refs.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
-import { compareBaseline, saveBaseline, type BaselineRequest } from "./diff/baseline.js";
+import {
+  compareBaseline,
+  saveBaseline,
+  textWeightGateFails,
+  type BaselineRequest
+} from "./diff/baseline.js";
 import { buildGenerationFeedback } from "./figma/generation-feedback.js";
+import {
+  INTEGRATION_LABELS,
+  integrationReadinessFromFailures,
+  type IntegrationFailureInput,
+  type IntegrationReadiness
+} from "./figma/integration-readiness.js";
 import type { VerdictExits } from "./tasks/verdict-exits.js";
 import {
   designDir,
@@ -41,9 +52,30 @@ import {
   reviewEdge,
   saveReconciliation
 } from "./figma/reconciliation.js";
-import { buildRunReport, buildTaskRunReport } from "./figma/run-report.js";
-import { buildUiContract } from "./ui/contract.js";
+import {
+  buildRunReport,
+  buildTaskRunReport,
+  updateTestsWorkbookWithResults,
+  type RunReport
+} from "./figma/run-report.js";
+import { buildUiContract, type UiContract, type UiScreenContract } from "./ui/contract.js";
 import { runUiLint } from "./ui/lint.js";
+import { auditUiParity } from "./ui/parity.js";
+import {
+  loadUiParityBaseline,
+  partitionByBaseline,
+  writeUiParityBaseline,
+  type UiParityBaselineEntry
+} from "./ui/parity-baseline.js";
+import { loadUiRuntimeSnapshot } from "./ui/parity-source.js";
+import { loadUiSemantics, semanticsForScreen } from "./ui/semantics.js";
+import {
+  defaultContractPath,
+  defaultSemanticsPath,
+  initUiSemantics,
+  UiSemanticsInitError
+} from "./ui/semantics-init.js";
+import { runTextWeightCalibration } from "./ui/text-calibrate.js";
 import { compareParityDocs, readParityDoc } from "./figma/parity.js";
 import { readPenTextBounds } from "./pen/bounds.js";
 import type { WarningSummary } from "./design/warnings.js";
@@ -64,12 +96,14 @@ import type {
   TaskStatRecord,
   ProjectStore,
   RegressionTaskStatus,
-  HostRecord
+  HostRecord,
+  SuiteRunRecord
 } from "./db/types.js";
 import { deviceLeaseTtlMs } from "./db/types.js";
 import { recordAuditSafe } from "./db/audit-event.js";
 import {
   runGeneratedTests,
+  type SuiteCaseResult,
   type SuiteRunOptions,
   type SuiteRunReport
 } from "./figma/suite-runner.js";
@@ -248,6 +282,8 @@ function suiteRunOptions(
     model: flags.get("model") ?? undefined,
     uiDiff: flags.bool("ui-diff"),
     uiDiffMax: intOrNull(flags.get("ui-diff-max")) ?? undefined,
+    failOnUi: flags.bool("fail-on-ui"),
+    failOnUiWeight: flags.bool("fail-on-ui-weight"),
     pollTimeoutMs: intOrNull(flags.get("poll-timeout")) ?? undefined,
     apiErrors: !flags.bool("no-api-errors"),
     failOnApiErrors: flags.get("fail-on") === "api-error",
@@ -352,28 +388,38 @@ Usage:
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
   mobile-testing-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
   mobile-testing-mcp suite ui-contract [options] 从 flows.json + 逐屏 .pen 投影 UI 契约（token/几何/状态；--out <dir>；默认经 pen CLI 补 auto-layout 文本几何，--no-bounds 关闭）
-  mobile-testing-mcp suite ui-lint [options] 检查源码圆角字面量是否来自 ui-contract token（--contract/--allowlist/--changed/--require-complete/--fail-on-expiring/--expiry-warn-days <n>；--json；exit 0/1/2）
+  mobile-testing-mcp suite ui-semantics init [options] 从 ui-contract 生成 draft 语义骨架（逐屏 regions:[]；--contract/--out/--force/--json；owner 确认前 draft 不会假绿）
+  mobile-testing-mcp suite ui-parity (--trace <traceId> --step <n> | --snapshot <json>) [--visual-text <json>] [--region <id>] [--screen <id|name>] [--contract/--semantics/--baseline] [--update-baseline] [--json]
+                                     语义一致性：分类树/截断/IA/覆盖率/动态资产；单屏只给部分覆盖，unverified/offscreen > 0 不返回 layout-compatible（exit 0/1/2）
+  mobile-testing-mcp suite ui-lint [options] 检查源码圆角/颜色/字号/字重/字体族字面量是否来自 ui-contract token；--per-screen 按 screen-map 逐屏收窄、--require-mapping 要求 extracted 屏有显式映射、--fail-on-stale-contract 契约指纹过期即失败（--contract/--allowlist/--screen-map/--changed/--require-complete/--fail-on-expiring/--expiry-warn-days <n>/--max-total-bytes <n>；--json；exit 0/1/2）
   mobile-testing-mcp suite parity --a <tests.json> --b <tests.json> [--json] 对比两端人类层用例（semanticId/步骤/预期/屏幕），忽略 taskDesc/i18n/a11y）
+  mobile-testing-mcp suite text-weight-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]
+                                     离线字重校准：成对图片 → 混淆矩阵/高置信误报/delta 分布/阈值建议
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--case <caseId|semanticId|displayId>]... [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
         [--ui-diff] [--ui-diff-max <n>]（访问屏逐屏设计对比；默认关闭，单例最多 3 屏）
+        [--fail-on-ui]（窄门禁：非隔离用例 ui.status=failed → exit 2；unverified 不阻断）
+        [--fail-on-ui-weight]（窄门禁：非隔离用例高置信字重 heavier → exit 2；默认关闭，待样本校准）
         [--allow-pending-api]（API 说明 pending 时仍执行；默认 check/run 阻断）
         [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine] [--strict] [--no-save]
         [--task <id>（回归任务：与 --tests 互斥；--device 可重复，按端展开设备运行）]
-check:  [--tests <path>] [--strict] [--allow-pending-api]
+check:  [--tests <path>] [--strict] [--allow-pending-api] [--semantics <path>]
+        [--fail-on-dynamic] [--dynamic-baseline <json>] [--update-dynamic-baseline]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
-        [--device <serial>] [--app <package>] [--model Flash|Pro] [--allow-uncovered] [--no-quarantine] [--no-save] [--out <dir>]
+        [--device <serial>] [--app <package>] [--model Flash|Pro] [--ui-diff] [--fail-on-ui] [--fail-on-ui-weight]
+        [--allow-uncovered] [--no-quarantine] [--no-save] [--out <dir>]
 flake:  --cases <caseId|semanticId|displayId,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>]
         [--model Flash|Pro] [--poll-timeout <ms>] [--no-api-errors] [--fail-on-flaky] [--no-save] [--out <dir>]
 retention: [--days <n>] [--limit <n>]
 evidence: [--full-trace] [--out <dir>] [--no-save] [--design-figma <url>|--design-pen <path>] [--node <id>]
 api-errors: [--serial <s>] [--app <bundleId>] [--no-save] [--json]
 baseline: --case <caseId|semanticId|displayId> --step <n> --trace <traceId> [--image post|pre] [--serial <s>] [--dpi <n>]
-          [--ignore x,y,w,h]... [--no-save] [--fail-on new|persisting|any]
+          [--ignore x,y,w,h]... [--screen <name|id>] [--no-save] [--fail-on new|persisting|any|text-weight（仅同平台 baseline 高置信 heavier）]
 report: [--limit <n>] [--case <caseId|semanticId|displayId>]... [--out <dir>] [--stamp <s>] [--no-save] [--no-sync] [--task <id>（回归任务报告：命名 <时间>_<功能>_回归.xlsx）]
+        [--update-tests [--tests-xlsx <path>]]（把结果写入 tests.xlsx 的「执行结果」sheet；默认 .artemis/design/tests.xlsx）
 feedback: [--limit <n>] [--min-failures <n>]
 reconcile: list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>]
 runner: [--name <n>] [--poll-ms <n>] [--heartbeat-ms <n>] [--artifact-port <n>（0 关闭）] [--artifact-host <h>] [--once]
@@ -383,6 +429,43 @@ backfill: [--dry-run] [--since <ISO>] [--project <dir>] [--json]
 
 exit codes: 0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误或 --fail-on 命中（基线回归/未处理 API 错误/流程未覆盖或无法校验）
 错误码注册表: .artemis/design/error-codes.json（未配置时 api-errors 跳过并如实标注 degraded）`);
+}
+
+function integrationFailuresOfSuite(cases: SuiteCaseResult[]): IntegrationFailureInput[] {
+  return cases
+    .filter((entry) => entry.status !== "passed" && entry.quarantined !== true)
+    .map((entry) => ({
+      caseId: entry.caseId,
+      traceId: entry.traceId,
+      domain: entry.failure?.domain ?? null,
+      reason: entry.error ?? entry.failure?.reason ?? null,
+      failedItemTexts: (entry.testSummary?.failedItems ?? []).flatMap((item) => [
+        item.itemText ?? "",
+        item.evidence ?? ""
+      ]),
+      apiErrorHandled: (entry.apiErrors ?? []).map((error) => error.handled)
+    }));
+}
+
+function readinessOfSuite(report: SuiteRunReport): IntegrationReadiness {
+  return integrationReadinessFromFailures(integrationFailuresOfSuite(report.cases));
+}
+
+function logIntegrationReadiness(
+  readiness: IntegrationReadiness,
+  log: (line: string) => void
+): void {
+  if (!readiness.needed) return;
+  log("接入检查（按失败证据）：");
+  for (const check of readiness.checks) {
+    const refs = [
+      check.caseIds.length > 0 ? `cases=${check.caseIds.join(",")}` : null,
+      check.traceIds.length > 0 ? `traces=${check.traceIds.join(",")}` : null
+    ]
+      .filter(Boolean)
+      .join(" ");
+    log(`- [${check.code}] ${INTEGRATION_LABELS[check.code]}：${check.message}${refs ? ` （${refs}）` : ""}`);
+  }
 }
 
 async function suiteRunTask(
@@ -622,12 +705,15 @@ async function suiteRunTask(
       regressed: number;
       runId: string | null;
     }> = [];
+    const readinessFailures: IntegrationFailureInput[] = [];
     const runIds: string[] = [];
     const seenByDevice = new Map<string, Set<string>>();
     const platformCases = new Map<string, CompareCaseInput[]>();
     let anyFailure = false;
     let anyExecError = false;
     let anyExecuted = false;
+    let anyUiFailure = false;
+    let anyUiWeightFailure = false;
 
     for (const device of devices) {
       const platform = platformOf(device);
@@ -659,10 +745,32 @@ async function suiteRunTask(
           ...(shouldAbort === undefined ? {} : { shouldAbort })
         });
         anyExecuted = true;
+        readinessFailures.push(...integrationFailuresOfSuite(report.cases));
         const quarantinedFailures = report.cases.filter(
           (entry) => entry.quarantined === true && entry.status !== "passed"
         ).length;
-        const exitCode = !report.ok ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
+        const uiFailures = report.cases.filter(
+          (entry) => entry.quarantined !== true && entry.ui?.status === "failed"
+        ).length;
+        const uiWeightFailures = report.cases.filter(
+          (entry) =>
+            entry.quarantined !== true &&
+            (entry.ui?.textStyles?.highConfidenceHeavier ?? 0) > 0
+        ).length;
+        const uiGate =
+          (baseOptions.failOnUi === true && uiFailures > 0) ||
+          (baseOptions.failOnUiWeight === true && uiWeightFailures > 0);
+        if (uiGate) anyUiFailure = true;
+        if (baseOptions.failOnUiWeight === true && uiWeightFailures > 0) {
+          anyUiWeightFailure = true;
+        }
+        const exitCode = !report.ok
+          ? 2
+          : uiGate
+            ? 2
+            : report.failed - quarantinedFailures === 0
+              ? 0
+              : 1;
         if (!report.ok) {
           anyExecError = true;
         } else if (exitCode !== 0) {
@@ -746,7 +854,7 @@ async function suiteRunTask(
 
     const finalStatus: "completed" | "partial" | "failed" = !anyExecuted
       ? "failed"
-      : anyFailure || anyExecError
+      : anyFailure || anyExecError || anyUiFailure || anyUiWeightFailure
         ? "partial"
         : "completed";
     const duringRun = await runtime.store
@@ -791,7 +899,8 @@ async function suiteRunTask(
     );
     const totalPassed = subRuns.reduce((sum, entry) => sum + entry.passed, 0);
     const totalCases = subRuns.reduce((sum, entry) => sum + entry.total, 0);
-    const exitCode = !anyExecuted ? 2 : anyExecError ? 2 : anyFailure ? 1 : 0;
+    const exitCode = !anyExecuted ? 2 : anyExecError ? 2 : anyUiFailure ? 2 : anyUiWeightFailure ? 2 : anyFailure ? 1 : 0;
+    const readiness = integrationReadinessFromFailures(readinessFailures);
     if (jsonMode) {
       io.log(
         JSON.stringify(
@@ -801,7 +910,8 @@ async function suiteRunTask(
             status: finalStatus,
             runIds,
             subRuns,
-            crossPlatform: deltas
+            crossPlatform: deltas,
+            readiness
           },
           null,
           2
@@ -821,6 +931,7 @@ async function suiteRunTask(
       io.log(
         `回归任务 ${task.id}: ${finalStatus} · 设备运行 ${subRuns.length} · pass ${totalPassed}/${totalCases}`
       );
+      logIntegrationReadiness(readiness, io.log);
     }
     return exitCode;
   } finally {
@@ -888,8 +999,9 @@ async function suiteRun(
   );
   const report = batch.report;
   const coverageIssue = batch.coverageIssue;
+  const readiness = readinessOfSuite(report);
   if (flags.bool("json")) {
-    io.log(JSON.stringify(report, null, 2));
+    io.log(JSON.stringify({ ...report, readiness }, null, 2));
   } else {
     io.log(`套件: ${report.testsPath}`);
     if (flags.bool("strict") && !flags.bool("fail-on-uncovered")) {
@@ -964,6 +1076,48 @@ async function suiteRun(
           (report.ui.notApplicable > 0 ? ` / n/a ${report.ui.notApplicable}` : "")
       );
     }
+    if (report.uiCoverage) {
+      const coverage = report.uiCoverage;
+      const missing = coverage.contractNotCompared;
+      const missingText =
+        missing.length === 0
+          ? ""
+          : ` · 契约未覆盖 ${missing.length}（${missing
+              .slice(0, 8)
+              .map((screen) => screen.name || screen.id)
+              .join("、")}${missing.length > 8 ? "…" : ""}）`;
+      io.log(
+        `UI 覆盖: 契约 ${coverage.contractScreens} 屏 · 已比对 ${coverage.comparedScreens.length} 屏` +
+          missingText +
+          ` · 请求 ${coverage.requested}/匹配 ${coverage.matched}/跳过 ${coverage.skipped}/未匹配 ${coverage.unmatched}`
+      );
+    }
+    if (flags.bool("fail-on-ui")) {
+      const uiFailures = report.cases.filter(
+        (entry) => entry.quarantined !== true && entry.ui?.status === "failed"
+      ).length;
+      io.log(`UI 门禁: ${uiFailures > 0 ? "未通过" : "通过"}（fail ${uiFailures}；unverified 不阻断）`);
+      if (uiFailures > 0) {
+        io.errorLog(
+          `--fail-on-ui：${uiFailures} 例 UI failed（仅 lossless PNG 的 blocker/major；unverified 不阻断）。`
+        );
+      }
+    }
+    if (flags.bool("fail-on-ui-weight")) {
+      const weightFailures = report.cases.filter(
+        (entry) =>
+          entry.quarantined !== true &&
+          (entry.ui?.textStyles?.highConfidenceHeavier ?? 0) > 0
+      ).length;
+      io.log(
+        `UI 字重门禁: ${weightFailures > 0 ? "未通过" : "通过"}（高置信 heavier ${weightFailures} 例；unverified 不阻断）`
+      );
+      if (weightFailures > 0) {
+        io.errorLog(
+          `--fail-on-ui-weight：${weightFailures} 例命中高置信字重 heavier（confidence ≥0.7）。`
+        );
+      }
+    }
     const flakyCount = report.cases.filter((entry) => entry.retry?.flaky === true).length;
     if (flakyCount > 0) {
       io.log(`重试转绿 ${flakyCount} 例（flaky，首跑结果仍为准）`);
@@ -974,6 +1128,7 @@ async function suiteRun(
     if (quarantinedFailed > 0) {
       io.log(`隔离 ${quarantinedFailed} 例失败（不计门禁）`);
     }
+    logIntegrationReadiness(readiness, io.log);
     if (!report.ok) io.errorLog(`套件未执行: ${report.error ?? "无可提交用例"}`);
     if (coverageIssue) io.errorLog(coverageIssue);
     if (!flags.bool("no-save")) {
@@ -1020,9 +1175,35 @@ async function suiteCheck(
   const customTests = flags.get("tests");
   const testsPath = customTests ? path.resolve(runtime.project.rootDir, customTests) : defaultTestsPath;
   const effectiveFlowsPath = designFlowsPath(runtime);
+  const semanticsFlag = flags.get("semantics");
+  const semanticsPath =
+    semanticsFlag !== null
+      ? path.resolve(runtime.project.rootDir, semanticsFlag)
+      : path.join(runtime.configDirAbs, "design", "ui-semantics.json");
+  const dynamicBaselineFlag = flags.get("dynamic-baseline");
+  const dynamicBaselinePath =
+    dynamicBaselineFlag !== null
+      ? path.resolve(runtime.project.rootDir, dynamicBaselineFlag)
+      : path.join(runtime.configDirAbs, "design", "ui-dynamic-baseline.json");
+  const updateDynamicBaseline = flags.bool("update-dynamic-baseline");
+  const dynamicBaselineExists = fs.existsSync(dynamicBaselinePath);
+  let dynamicBaseline: Awaited<ReturnType<typeof loadUiParityBaseline>>["file"] = null;
+  if (
+    (dynamicBaselineFlag !== null || dynamicBaselineExists) &&
+    !(updateDynamicBaseline && !dynamicBaselineExists)
+  ) {
+    const loaded = loadUiParityBaseline(dynamicBaselinePath);
+    if (loaded.errors.length > 0) {
+      io.errorLog(`读取 dynamic baseline 失败: ${loaded.errors.join(" | ")}`);
+      return 2;
+    }
+    dynamicBaseline = loaded.file;
+  }
   const preflight = preflightGeneratedTests(runtime.configDirAbs, {
     testsPath,
-    flowsPath: effectiveFlowsPath
+    flowsPath: effectiveFlowsPath,
+    semanticsPath,
+    ...(dynamicBaseline !== null ? { dynamicBaseline } : {})
   });
   if (!preflight) {
     const message = `无法读取用例文件：${testsPath}`;
@@ -1038,6 +1219,40 @@ async function suiteCheck(
     io.errorLog(`API 变更说明待补充（apiReview.status=pending）：先补 apiSpec，或传 --allow-pending-api；${testsPath}`);
     return 2;
   }
+  if (
+    preflight.dynamicContent.semanticsError !== null &&
+    (semanticsFlag !== null || fs.existsSync(semanticsPath))
+  ) {
+    io.errorLog(`ui-semantics 解析失败: ${preflight.dynamicContent.semanticsError}`);
+    return 2;
+  }
+  let dynamicContent = preflight.dynamicContent;
+  if (updateDynamicBaseline) {
+    const entries: UiParityBaselineEntry[] = [];
+    for (const entry of dynamicContent.cases) {
+      for (const text of entry.texts) {
+        entries.push({
+          tool: "check-dynamic",
+          caseId: entry.caseId,
+          kind: "dynamic-content",
+          text
+        });
+      }
+    }
+    try {
+      writeUiParityBaseline(dynamicBaselinePath, entries);
+    } catch (error) {
+      io.errorLog(`写入 dynamic baseline 失败: ${errorMessage(error)}`);
+      return 2;
+    }
+    dynamicContent = {
+      ...dynamicContent,
+      cases: dynamicContent.cases.map((entry) => ({ ...entry, baselined: false })),
+      fresh: dynamicContent.total,
+      baselined: 0
+    };
+  }
+  const failOnDynamic = flags.bool("fail-on-dynamic");
   const coverage = preflight.coverage;
   const imported = isImportedTestsFile(testsPath);
   const flowsFingerprint = flowsFingerprintStatus(runtime.configDirAbs, testsPath, effectiveFlowsPath);
@@ -1059,13 +1274,14 @@ async function suiteCheck(
     io.log(
       JSON.stringify(
         {
-          ok: issue === null,
+          ok: issue === null && !(failOnDynamic && dynamicContent.fresh > 0),
           testsPath,
           imported,
           cases: preflight.cases,
           weakCases: preflight.weakCases,
           coverage,
           generation: preflight.generation,
+          dynamicContent,
           designWarnings: preflight.designWarnings,
           designWarningSummary: preflight.designWarningSummary,
           designWarningsSource: preflight.designWarningsSource,
@@ -1085,6 +1301,19 @@ async function suiteCheck(
       io.log("警告: flows.json 已更新（flowsFingerprint 不一致）；请重新生成用例以保持跨端同步");
     }
     io.log(`用例: ${preflight.cases} · 弱用例 ${preflight.weakCases.length}`);
+    if (dynamicContent.semanticsPath === null) {
+      io.log("动态内容: 未配置 ui-semantics/dynamicExamples（不检查；非穷尽）");
+    } else {
+      io.log(
+        `动态内容: ${dynamicContent.total} 例（fresh ${dynamicContent.fresh} / baselined ${dynamicContent.baselined}）` +
+          " · 仅匹配已登记 dynamicExamples/dynamicPatterns，非穷尽；新动态值需 owner 更新词表"
+      );
+      for (const entry of dynamicContent.cases) {
+        io.log(
+          `  - ${entry.caseId} ${entry.name}: ${entry.texts.join("、")}${entry.baselined ? "（baselined）" : ""}`
+        );
+      }
+    }
     io.log(
       renderDesignWarningLine({
         designWarningSummary: preflight.designWarningSummary,
@@ -1119,10 +1348,17 @@ async function suiteCheck(
     if (routeDrift.length > 0) {
       io.log(`路线漂移（测试引用、设计缺失）: ${routeDrift.join("、")}（警告，不阻断）`);
     }
+    if (failOnDynamic && dynamicContent.fresh > 0) {
+      io.errorLog(
+        `动态内容未基线化：${dynamicContent.fresh} 例把设计样例/动态值写成断言；用 --update-dynamic-baseline 固化历史或修正用例`
+      );
+    }
     if (issue) io.errorLog(issue);
-    else io.log(flags.bool("strict") ? "结论: 完整（--strict 弱断言 0）" : "结论: 完整");
+    else if (!(failOnDynamic && dynamicContent.fresh > 0)) {
+      io.log(flags.bool("strict") ? "结论: 完整（--strict 弱断言 0）" : "结论: 完整");
+    }
   }
-  return issue === null ? 0 : 2;
+  return issue === null && !(failOnDynamic && dynamicContent.fresh > 0) ? 0 : 2;
 }
 
 async function defaultXcResultReader(xcresultPath: string): Promise<unknown> {
@@ -1388,6 +1624,28 @@ async function suiteLoop(
           : "未执行（--skip-run）"
       }`
     );
+    if (report?.ui) {
+      io.log(
+        `UI: pass ${report.ui.passed} / fail ${report.ui.failed} / 未验证 ${report.ui.unverified}` +
+          (report.ui.notApplicable > 0 ? ` / n/a ${report.ui.notApplicable}` : "")
+      );
+    }
+    if (report?.uiCoverage) {
+      const coverage = report.uiCoverage;
+      io.log(
+        `UI 覆盖: 契约 ${coverage.contractScreens} 屏 · 已比对 ${coverage.comparedScreens.length} · 契约未覆盖 ${coverage.contractNotCompared.length} · 请求 ${coverage.requested}/匹配 ${coverage.matched}/跳过 ${coverage.skipped}/未匹配 ${coverage.unmatched}`
+      );
+    }
+    if (report && flags.bool("fail-on-ui-weight")) {
+      const weightFailures = report.cases.filter(
+        (entry) =>
+          entry.quarantined !== true &&
+          (entry.ui?.textStyles?.highConfidenceHeavier ?? 0) > 0
+      ).length;
+      io.log(
+        `UI 字重门禁: ${weightFailures > 0 ? "未通过" : "通过"}（高置信 heavier ${weightFailures} 例）`
+      );
+    }
     io.log(
       `反馈: ${
         step.feedback
@@ -1404,6 +1662,18 @@ async function suiteLoop(
           : "未提供"
       }`
     );
+    if (loopReport.readiness.needed) {
+      io.log("接入检查（按失败证据）:");
+      for (const check of loopReport.readiness.checks) {
+        const refs = [
+          check.caseIds.length > 0 ? `cases=${check.caseIds.join(",")}` : null,
+          check.traceIds.length > 0 ? `traces=${check.traceIds.join(",")}` : null
+        ]
+          .filter(Boolean)
+          .join(" ");
+        io.log(`  - [${check.code}] ${check.message}${refs ? ` （${refs}）` : ""}`);
+      }
+    }
     io.log("下一步:");
     loopReport.nextActions.forEach((action, index) => io.log(`  ${index + 1}) ${action}`));
     if (payload.savedTo) {
@@ -1419,6 +1689,26 @@ async function suiteLoop(
   const quarantinedFailures = report.cases.filter(
     (entry) => entry.quarantined === true && entry.status !== "passed"
   ).length;
+  const uiFailures = report.cases.filter(
+    (entry) => entry.quarantined !== true && entry.ui?.status === "failed"
+  ).length;
+  if (flags.bool("fail-on-ui") && uiFailures > 0) {
+    io.errorLog(
+      `--fail-on-ui：${uiFailures} 例 UI failed（仅 lossless PNG 的 blocker/major；unverified 不阻断）。`
+    );
+    return 2;
+  }
+  const weightFailures = report.cases.filter(
+    (entry) =>
+      entry.quarantined !== true &&
+      (entry.ui?.textStyles?.highConfidenceHeavier ?? 0) > 0
+  ).length;
+  if (flags.bool("fail-on-ui-weight") && weightFailures > 0) {
+    io.errorLog(
+      `--fail-on-ui-weight：${weightFailures} 例命中高置信字重 heavier（confidence ≥0.7）。`
+    );
+    return 2;
+  }
   return report.failed - quarantinedFailures === 0 ? 0 : 1;
 }
 
@@ -1728,7 +2018,8 @@ async function suiteBaseline(runtime: Runtime, flags: ParsedFlags, io: { log: (l
     image,
     serial: flags.get("serial"),
     dpi: intOrNull(flags.get("dpi")),
-    ignoreRegions
+    ignoreRegions,
+    screen: flags.get("screen")
   };
   if (action === "save") {
     const saved = await saveBaseline(runtime, request);
@@ -1736,6 +2027,9 @@ async function suiteBaseline(runtime: Runtime, flags: ParsedFlags, io: { log: (l
       io.log(JSON.stringify(saved, null, 2));
     } else {
       io.log(`已保存基线 serial=${saved.meta.serial} case=${resolvedCaseId} step=${stepNumber} ${image}`);
+      io.log(
+        `文本基线: ${saved.texts} 条（来源 ${saved.textSource}；trace 优先，缺省 design-bbox；0 表示无可用 bbox）`
+      );
       io.log(`产物: ${saved.image}`);
     }
     return 0;
@@ -1752,9 +2046,23 @@ async function suiteBaseline(runtime: Runtime, flags: ParsedFlags, io: { log: (l
     for (const region of report.regions) {
       io.log(`- [${region.change}] ${region.category} @ ${region.bbox.x},${region.bbox.y} ${region.bbox.width}x${region.bbox.height}`);
     }
+    if (report.textStyles) {
+      io.log(
+        `文本字重: ${report.textStyles.checked}/${report.textStyles.textsTotal} 已判（lighter ${report.textStyles.lighter} / similar ${report.textStyles.similar} / heavier ${report.textStyles.heavier}，高置信 heavier ${report.textStyles.highConfidenceHeavier}）· unverified ${report.textStyles.unverified}`
+      );
+      for (const item of report.textStyles.items) {
+        const hint = item.weightHint ?? "unverified";
+        io.log(
+          `- [${hint}] ${item.content} @ ${item.bbox.x},${item.bbox.y} ${item.bbox.width}x${item.bbox.height}${item.reason ? `（${item.reason}）` : ""}`
+        );
+      }
+    } else {
+      io.log("文本字重: 无文本基线（保存基线时 trace 无 texts）");
+    }
     if (report.saved) io.log(`差异记录: ${report.saved.lastDiff}`);
   }
   const failOn = flags.get("fail-on");
+  if (textWeightGateFails(report, failOn)) return 2;
   if (failOn === "new") return report.summary.new > 0 ? 2 : 0;
   if (failOn === "persisting") return report.summary.persisting > 0 ? 2 : 0;
   if (failOn === "any") return report.summary.new + report.summary.persisting > 0 ? 2 : 0;
@@ -1771,6 +2079,40 @@ function renderReportDesignWarnings(summary: WarningSummary | null): string {
 }
 
 async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (line: string) => void; errorLog: (line: string) => void }): Promise<number> {
+  const applyTestsUpdate = async (report: RunReport): Promise<void> => {
+    if (!flags.bool("update-tests")) return;
+    const target = flags.get("tests-xlsx")
+      ? path.resolve(runtime.project.rootDir, flags.get("tests-xlsx")!)
+      : path.join(runtime.configDirAbs, "design", "tests.xlsx");
+    let runs: SuiteRunRecord[] = [];
+    try {
+      runs = await runtime.store.listSuiteRuns(runtime.project.rootDir, {
+        ...(flags.get("task") ? { taskId: flags.get("task")! } : {}),
+        limit: 100
+      });
+    } catch (error) {
+      if (!flags.bool("json")) {
+        io.errorLog(`执行结果历史读取失败: ${errorMessage(error)}`);
+      }
+    }
+    try {
+      report.testsUpdated = await updateTestsWorkbookWithResults(target, report, { runs });
+      if (!flags.bool("json")) {
+        const history =
+          report.testsUpdated.historyRows === undefined
+            ? ""
+            : `，跨端对比 ${report.testsUpdated.historyRows} 条`;
+        io.log(
+          `执行结果已回填: ${report.testsUpdated.path}（${report.testsUpdated.rows} 条${history}）`
+        );
+      }
+    } catch (error) {
+      report.testsUpdateError = errorMessage(error);
+      if (!flags.bool("json")) {
+        io.errorLog(`执行结果回填失败: ${errorMessage(error)}`);
+      }
+    }
+  };
   const taskId = flags.get("task");
   if (taskId) {
     const report = await buildTaskRunReport(runtime, {
@@ -1779,6 +2121,7 @@ async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (lin
       stamp: flags.get("stamp") ?? undefined,
       save: !flags.bool("no-save")
     });
+    await applyTestsUpdate(report);
     if (flags.bool("json")) {
       io.log(JSON.stringify(report, null, 2));
     } else {
@@ -1795,7 +2138,7 @@ async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (lin
     if (!report.ok) {
       return report.error?.includes("未找到回归任务") ? 2 : 1;
     }
-    return 0;
+    return report.testsUpdateError ? 1 : 0;
   }
   if (!flags.bool("no-sync")) {
     await runtime.syncTaskStatuses();
@@ -1821,6 +2164,7 @@ async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (lin
     stamp: flags.get("stamp") ?? undefined,
     save: !flags.bool("no-save")
   });
+  await applyTestsUpdate(report);
   if (flags.bool("json")) {
     io.log(JSON.stringify(report, null, 2));
   } else {
@@ -1832,7 +2176,7 @@ async function suiteReport(runtime: Runtime, flags: ParsedFlags, io: { log: (lin
     }
     if (report.error) io.errorLog(report.error);
   }
-  return report.ok ? 0 : 1;
+  return report.ok ? (report.testsUpdateError ? 1 : 0) : 1;
 }
 
 /** 出口清单文本面（与面板/JSON 同源）：三行 + 空态。 */
@@ -1883,6 +2227,18 @@ async function suiteFeedback(runtime: Runtime, flags: ParsedFlags, io: { log: (l
         .filter(Boolean)
         .join(" ");
       io.log(`- [${suggestion.kind}] ${suggestion.message}${refs ? ` （${refs}）` : ""}`);
+    }
+    if (feedback.readiness.needed) {
+      io.log("接入检查（按失败证据）：");
+      for (const check of feedback.readiness.checks) {
+        const refs = [
+          check.caseIds.length > 0 ? `cases=${check.caseIds.join(",")}` : null,
+          check.traceIds.length > 0 ? `traces=${check.traceIds.join(",")}` : null
+        ]
+          .filter(Boolean)
+          .join(" ");
+        io.log(`- [${check.code}] ${check.message}${refs ? ` （${refs}）` : ""}`);
+      }
     }
     if (feedback.suggestions.length === 0) io.log("无改进建议（数据不足或均已满足阈值）。");
     if (feedback.exits) renderVerdictExits(feedback.exits, io.log);
@@ -3148,6 +3504,337 @@ async function suiteUiContract(
   }
 }
 
+async function suiteUiSemantics(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const action = flags.positional[1];
+  if (action !== "init") {
+    io.errorLog(`未知 ui-semantics 动作 "${action ?? ""}"（可用：init）`);
+    return 2;
+  }
+  const rootDir = runtime.project.rootDir;
+  const contractFlag = flags.get("contract");
+  const outFlag = flags.get("out");
+  const contractAbs =
+    contractFlag === null
+      ? defaultContractPath(runtime.configDirAbs)
+      : path.resolve(rootDir, contractFlag);
+  const outAbs =
+    outFlag === null ? defaultSemanticsPath(runtime.configDirAbs) : path.resolve(rootDir, outFlag);
+  const contractRef =
+    contractFlag === null
+      ? path.relative(rootDir, contractAbs)
+      : path.isAbsolute(contractFlag)
+        ? path.relative(rootDir, contractAbs)
+        : contractFlag;
+  try {
+    const result = initUiSemantics({
+      contractPath: contractAbs,
+      outPath: outAbs,
+      contractRef,
+      force: flags.bool("force"),
+      generatedAt: new Date().toISOString()
+    });
+    if (flags.bool("json")) {
+      io.log(JSON.stringify({ ok: true, ...result }, null, 2));
+    } else {
+      io.log(`UI 语义草稿: ${result.path} · 屏 ${result.screens} · draft（owner 确认前不会假绿）`);
+      for (const warning of result.warnings) io.log(`警告: ${warning}`);
+    }
+    return 0;
+  } catch (error) {
+    if (error instanceof UiSemanticsInitError) {
+      io.errorLog(error.message);
+      return 2;
+    }
+    io.errorLog(`UI 语义草稿生成失败: ${errorMessage(error)}`);
+    return 2;
+  }
+}
+
+function resolveContractScreen(
+  contract: UiContract,
+  query: string
+): { screen: UiScreenContract } | { error: string } {
+  const normalized = query.trim().toLowerCase();
+  const exact = contract.screens.filter((screen) => screen.id === query);
+  if (exact.length === 1) return { screen: exact[0]! };
+  if (exact.length > 1) return { error: `屏幕 "${query}" 匹配到多个 contract id` };
+  const byId = contract.screens.filter((screen) => screen.id.toLowerCase() === normalized);
+  if (byId.length === 1) return { screen: byId[0]! };
+  if (byId.length > 1) return { error: `屏幕 "${query}" 匹配到多个 contract id` };
+  const byName = contract.screens.filter(
+    (screen) => typeof screen.name === "string" && screen.name.trim().toLowerCase() === normalized
+  );
+  if (byName.length === 1) return { screen: byName[0]! };
+  if (byName.length > 1) return { error: `屏幕 "${query}" 匹配到多个 contract name` };
+  return { error: `未知屏幕 "${query}"（contract 屏：${contract.screens.map((screen) => screen.id).join(", ")}）` };
+}
+
+async function suiteUiParity(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const rootDir = runtime.project.rootDir;
+  const design = designDir(runtime.configDirAbs);
+  const contractFlag = flags.get("contract");
+  const semanticsFlag = flags.get("semantics");
+  const baselineFlag = flags.get("baseline");
+  const contractPath =
+    contractFlag === null ? path.join(design, "ui-contract.json") : path.resolve(rootDir, contractFlag);
+  const semanticsPath =
+    semanticsFlag === null ? path.join(design, "ui-semantics.json") : path.resolve(rootDir, semanticsFlag);
+  const baselinePath =
+    baselineFlag === null ? path.join(design, "ui-parity-baseline.json") : path.resolve(rootDir, baselineFlag);
+
+  let contract: UiContract;
+  try {
+    contract = JSON.parse(fs.readFileSync(contractPath, "utf-8")) as UiContract;
+  } catch (error) {
+    io.errorLog(`读取 ui-contract 失败: ${errorMessage(error)}`);
+    return 2;
+  }
+  if (!contract || !Array.isArray(contract.screens)) {
+    io.errorLog("ui-contract 格式错误：缺少 screens[]");
+    return 2;
+  }
+
+  const semanticsLoaded = loadUiSemantics(runtime.configDirAbs, { path: semanticsPath });
+  if (semanticsLoaded.errors.length > 0) {
+    io.errorLog(`读取 ui-semantics 失败: ${semanticsLoaded.errors.join(" | ")}`);
+    return 2;
+  }
+  if (semanticsLoaded.file === null) {
+    io.errorLog(
+      `缺少 ui-semantics：${semanticsPath}；先运行 "suite ui-semantics init" 并由 owner 填写 invariant/taxonomy`
+    );
+    return 2;
+  }
+  const contractIds = new Set(contract.screens.map((screen) => screen.id));
+  for (const screen of semanticsLoaded.file.screens) {
+    if (!contractIds.has(screen.screenId)) {
+      io.errorLog(`semantics 死屏：${screen.screenId} 不在 contract 中`);
+      return 2;
+    }
+  }
+  const semanticsIds = new Set(semanticsLoaded.file.screens.map((screen) => screen.screenId));
+  const missingSemantics = contract.screens.filter((screen) => !semanticsIds.has(screen.id));
+  const warnings: string[] = [];
+  if (missingSemantics.length > 0) {
+    warnings.push(
+      `contract 有 ${missingSemantics.length} 屏没有 semantics（会 insufficient-data）：${missingSemantics
+        .slice(0, 10)
+        .map((screen) => screen.id)
+        .join("、")}${missingSemantics.length > 10 ? "…" : ""}`
+    );
+  }
+  const contractFingerprint =
+    contract && typeof contract.source?.fingerprint === "string" ? contract.source.fingerprint : null;
+  const semanticsFingerprint = semanticsLoaded.file.source?.contractFingerprint ?? null;
+  if (
+    contractFingerprint !== null &&
+    semanticsFingerprint !== null &&
+    contractFingerprint !== semanticsFingerprint
+  ) {
+    warnings.push(
+      `semantics-stale：source.contractFingerprint=${semanticsFingerprint} 与当前 contract ${contractFingerprint} 不一致`
+    );
+  }
+
+  const traceId = flags.get("trace") ?? undefined;
+  const snapshotPath = flags.get("snapshot") ?? undefined;
+  const visualText = flags.get("visual-text") ?? undefined;
+  const stepRaw = flags.get("step");
+  const stepNumber = stepRaw === null ? undefined : intOrNull(stepRaw);
+  if (traceId !== undefined && snapshotPath !== undefined) {
+    io.errorLog("--trace 与 --snapshot 二选一");
+    return 2;
+  }
+  if (traceId !== undefined && (stepNumber === undefined || stepNumber === null || stepNumber <= 0)) {
+    io.errorLog("--trace 需要正整数 --step <n>");
+    return 2;
+  }
+  if (traceId === undefined && snapshotPath === undefined) {
+    io.errorLog("需要 --trace <traceId> --step <n> 或 --snapshot <json>");
+    return 2;
+  }
+
+  let snapshot: ReturnType<typeof loadUiRuntimeSnapshot>;
+  try {
+    snapshot = loadUiRuntimeSnapshot(runtime, {
+      ...(traceId !== undefined ? { traceId } : {}),
+      ...(stepNumber !== undefined && stepNumber !== null ? { stepNumber } : {}),
+      ...(snapshotPath !== undefined ? { snapshotPath } : {}),
+      ...(visualText !== undefined ? { visualTextPath: visualText } : {})
+    });
+  } catch (error) {
+    io.errorLog(`读取运行时快照失败: ${errorMessage(error)}`);
+    return 2;
+  }
+
+  let screenQuery =
+    flags.get("screen") ??
+    snapshot.screen ??
+    (semanticsLoaded.file.screens.length === 1 ? semanticsLoaded.file.screens[0]!.screenId : null) ??
+    (contract.screens.length === 1 ? contract.screens[0]!.id : null);
+  if (screenQuery === null && snapshot.screenText !== undefined) {
+    const text = snapshot.screenText.toLowerCase();
+    const candidates = contract.screens.filter((screen) => {
+      const name = screen.name.trim().toLowerCase();
+      const base = name.split(/[_\s]/u)[0] ?? name;
+      return name !== "" && (text.includes(name) || (base.length >= 2 && text.includes(base)));
+    });
+    if (candidates.length === 1) screenQuery = candidates[0]!.id;
+  }
+  if (screenQuery === null) {
+    io.errorLog("无法确定屏幕；请用 --screen <id|name> 指定（trace screen 摘要无法唯一匹配 contract 屏名）");
+    return 2;
+  }
+  const resolved = resolveContractScreen(contract, screenQuery);
+  if ("error" in resolved) {
+    io.errorLog(resolved.error);
+    return 2;
+  }
+  const screen = resolved.screen;
+  const semanticsScreen =
+    semanticsForScreen(semanticsLoaded.file, screen.id) ?? semanticsForScreen(semanticsLoaded.file, screen.name);
+  if (semanticsScreen === null) {
+    warnings.push(`contract 屏 ${screen.id} 没有 semantics；该屏会 insufficient-data`);
+  }
+  const regionId = flags.get("region") ?? undefined;
+  if (regionId !== undefined && semanticsScreen !== null && !semanticsScreen.regions.some((region) => region.id === regionId)) {
+    io.errorLog(`未知 region "${regionId}"（可用：${semanticsScreen.regions.map((region) => region.id).join(", ")}）`);
+    return 2;
+  }
+
+  const report = auditUiParity({
+    screen,
+    semantics: semanticsScreen,
+    ...(semanticsLoaded.file.draft === true ? { draft: true } : {}),
+    runtime: {
+      ...(snapshot.screen !== undefined ? { screen: snapshot.screen } : {}),
+      ...(snapshot.viewport !== undefined ? { viewport: snapshot.viewport } : {}),
+      texts: snapshot.texts,
+      ...(snapshot.assets !== undefined ? { assets: snapshot.assets } : {}),
+      space: snapshot.space,
+      ...(snapshot.source === "trace" ? { coverageComplete: true } : {}),
+      ...(regionId !== undefined ? { regionId } : {})
+    }
+  });
+
+  let findings = report.findings;
+  let baselined = 0;
+  const explicitBaseline = baselineFlag !== null;
+  const baselineExists = fs.existsSync(baselinePath);
+  const updateBaseline = flags.bool("update-baseline");
+  let baseline = null;
+  if (explicitBaseline && !(updateBaseline && !baselineExists)) {
+    const loadedBaseline = loadUiParityBaseline(baselinePath);
+    if (loadedBaseline.errors.length > 0) {
+      io.errorLog(`读取 parity baseline 失败: ${loadedBaseline.errors.join(" | ")}`);
+      return 2;
+    }
+    baseline = loadedBaseline.file;
+  }
+  if (updateBaseline) {
+    const entries: UiParityBaselineEntry[] = report.findings
+      .filter((finding) => finding.severity !== "info")
+      .map((finding) => ({
+        tool: "ui-parity",
+        screenId: screen.id,
+        kind: finding.kind,
+        text: finding.designText ?? finding.text,
+        ...(finding.role !== undefined ? { role: finding.role } : {})
+      }));
+    try {
+      writeUiParityBaseline(baselinePath, entries);
+    } catch (error) {
+      io.errorLog(`写入 parity baseline 失败: ${errorMessage(error)}`);
+      return 2;
+    }
+    baseline = null;
+  } else if (baseline !== null) {
+    const partition = partitionByBaseline(report.findings, baseline, {
+      screenId: screen.id,
+      tool: "ui-parity"
+    });
+    findings = [...partition.fresh, ...partition.baselined];
+    baselined = partition.baselined.length;
+  }
+
+  const baselineCovers =
+    baseline !== null &&
+    findings.length > 0 &&
+    findings.every((finding) => finding.baselined === true || finding.severity === "info") &&
+    report.verdict !== "no-invariants" &&
+    report.verdict !== "insufficient-data";
+  const freshBlocking = findings.filter(
+    (finding) => finding.baselined !== true && finding.severity === "error"
+  ).length;
+  const coverageIncomplete = report.counts.unverified + report.counts.offscreen > 0;
+  const blockingVerdict =
+    report.verdict === "no-invariants" ||
+    report.verdict === "truncated-labels" ||
+    report.verdict === "ia-mismatch" ||
+    report.verdict === "insufficient-coverage" ||
+    report.verdict === "insufficient-data";
+  const exitCode =
+    report.verdict === "insufficient-data"
+      ? 2
+      : blockingVerdict && !(baselineCovers && freshBlocking === 0 && !coverageIncomplete)
+        ? 1
+        : 0;
+
+  if (flags.bool("json")) {
+    io.log(
+      JSON.stringify(
+        {
+          ok: exitCode === 0,
+          verdict: report.verdict,
+          screenId: report.screenId,
+          counts: report.counts,
+          findings,
+          warnings: [...new Set([...report.warnings, ...warnings])],
+          snapshot: {
+            source: snapshot.source,
+            space: snapshot.space,
+            step: snapshot.step ?? null,
+            viewport: snapshot.viewport ?? null
+          },
+          baseline: {
+            path: baselinePath,
+            baselined,
+            fresh: findings.filter((finding) => finding.baselined !== true).length
+          }
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    io.log(
+      `UI 一致性: ${screen.id} · ${report.verdict} · invariant ${report.counts.matched}/${report.counts.invariant} · visible ${report.counts.visible} · truncated ${report.counts.truncated} · unverified ${report.counts.unverified} · offscreen ${report.counts.offscreen} · taxonomy ${report.counts.taxonomyMatched}/${report.counts.taxonomyExpected} · assets ${report.counts.assetsPresent}/${report.counts.assetsExpected} · baselined ${baselined}`
+    );
+    for (const warning of new Set([...report.warnings, ...warnings])) io.log(`警告: ${warning}`);
+    for (const finding of findings) {
+      const suffix = [
+        finding.role ? `role=${finding.role}` : null,
+        finding.designText ? `design=${finding.designText}` : null,
+        finding.runtimeText ? `runtime=${finding.runtimeText}` : null,
+        finding.baselined ? "baselined" : null
+      ]
+        .filter((entry): entry is string => entry !== null)
+        .join(" ");
+      io.log(`- [${finding.severity}] ${finding.kind} ${finding.text}${suffix ? `（${suffix}）` : ""}`);
+    }
+    if (updateBaseline) io.log(`baseline 已更新: ${baselinePath}`);
+  }
+  return exitCode;
+}
+
 async function suiteUiLint(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -3157,6 +3844,13 @@ async function suiteUiLint(
     const rootDir = runtime.project.rootDir;
     const contract = flags.get("contract");
     const allowlist = flags.get("allowlist");
+    const screenMap = flags.get("screen-map");
+    const maxTotalRaw = flags.get("max-total-bytes");
+    const maxTotalBytes = maxTotalRaw === null ? null : intOrNull(maxTotalRaw);
+    if (maxTotalRaw !== null && (maxTotalBytes === null || maxTotalBytes <= 0)) {
+      io.errorLog("--max-total-bytes 需要正整数");
+      return 2;
+    }
     const expiryRaw = flags.get("expiry-warn-days");
     const expiryWarnDays = expiryRaw === null ? 7 : intOrNull(expiryRaw);
     if (expiryWarnDays === null || expiryWarnDays < 0) {
@@ -3173,41 +3867,102 @@ async function suiteUiLint(
         rootDir,
         allowlist ?? path.join(designDir(runtime.configDirAbs), "ui-lint-allowlist.json")
       ),
+      screenMapPath: path.resolve(
+        rootDir,
+        screenMap ?? path.join(designDir(runtime.configDirAbs), "screen-map.json")
+      ),
+      ...(maxTotalBytes === null ? {} : { maxTotalBytes }),
       expiryWarnDays,
       ...(flags.bool("changed") ? { changed: true } : {}),
       ...(flags.bool("require-complete") ? { requireComplete: true } : {}),
-      ...(flags.bool("fail-on-expiring") ? { failOnExpiring: true } : {})
+      ...(flags.bool("fail-on-expiring") ? { failOnExpiring: true } : {}),
+      ...(flags.bool("per-screen") ? { perScreen: true } : {}),
+      ...(flags.bool("require-mapping") ? { requireMapping: true } : {}),
+      ...(flags.bool("fail-on-stale-contract") ? { failOnStaleContract: true } : {})
     });
     if (flags.bool("json")) {
       io.log(JSON.stringify(report, null, 2));
       return report.ok ? 0 : 1;
     }
+    const ruleLabel = (rule: string): string =>
+      rule === "radius"
+        ? "圆角"
+        : rule === "color"
+          ? "颜色"
+          : rule === "font-size"
+            ? "字号"
+            : rule === "font-weight"
+              ? "字重"
+              : "字体族";
+    const allowedText = (allowed: Array<number | string>): string => {
+      const shown = allowed.slice(0, 10).join("/");
+      return allowed.length > 10 ? `${shown}…（共 ${allowed.length}）` : shown;
+    };
     io.log(
-      `UI lint: 契约 ${report.contract.screens} 屏（未完成 ${report.contract.incomplete.length}）· 允许圆角 ${report.contract.radii.join(", ")} · 扫描 ${report.scanned.files} 文件 · 命中 ${report.findings.length}（allowlist ${report.allowlisted}）· allowlist ${report.allowlist.entries} 条（即将到期 ${report.allowlist.expiring.length}）`
+      `UI lint: 契约 ${report.contract.screens} 屏（未完成 ${report.contract.incomplete.length}）· 指纹 ${report.contract.fingerprintStatus} · 允许 圆角 ${report.contract.radii.join(", ") || "—"} / 颜色 ${report.contract.colors.length} / 字号 ${report.contract.fontSizes.join(", ") || "—"} / 字重 ${report.contract.fontWeights.join(", ") || "—"} / 字体族 ${report.contract.fontFamilies.length} · 扫描 ${report.scanned.files} 文件 · 命中 ${report.findings.length}（allowlist ${report.allowlisted}）· allowlist ${report.allowlist.entries} 条（即将到期 ${report.allowlist.expiring.length}）`
+    );
+    io.log(
+      `逐屏映射: screen-map ${report.mapping.screenMapPath} · 屏 ${report.mapping.screens.mapped}/${report.mapping.screens.total} · 文件逐屏可用 ${report.mapping.files.scoped} / 显式 ${report.mapping.files.explicit} / 启发式 ${report.mapping.files.heuristic} / 全局回退 ${report.mapping.files.globalFallback}${flags.bool("per-screen") ? " · per-screen 已启用" : ""}`
     );
     for (const finding of report.findings) {
       const suffix = finding.allowlisted
         ? ` [allowlist ${finding.allowlist?.owner ?? ""}：${finding.allowlist?.reason ?? ""}]`
         : "";
+      const scope =
+        finding.scope === "screen"
+          ? `逐屏 ${(finding.screens ?? []).join("/")}；`
+          : "";
       io.log(
-        `  ${finding.file}:${finding.line}:${finding.column} ${finding.stack} 圆角 ${finding.value}（允许 ${finding.allowed.join("/")}）${suffix}`
+        `  ${finding.file}:${finding.line}:${finding.column} ${finding.stack} ${ruleLabel(finding.rule)} ${finding.value}（${scope}允许 ${allowedText(finding.allowed)}）${suffix}`
       );
       if (finding.snippet !== "") io.log(`    ${finding.snippet}`);
     }
     for (const warning of report.warnings) io.log(`警告: ${warning}`);
     if (report.ok) {
-      io.log(report.findings.length === 0 ? "通过：未发现未登记圆角。" : "通过：未登记圆角均在 allowlist 内。");
+      io.log(
+        report.findings.length === 0
+          ? "通过：未发现未登记字面量。"
+          : "通过：未登记字面量均在 allowlist 内。"
+      );
       return 0;
     }
-    const unregistered = report.findings.filter((finding) => !finding.allowlisted).length;
-    if (unregistered > 0) {
+    const unregistered = report.findings.filter((finding) => !finding.allowlisted);
+    if (unregistered.length > 0) {
+      const counts = {
+        radius: 0,
+        color: 0,
+        "font-size": 0,
+        "font-weight": 0,
+        "font-family": 0
+      };
+      for (const finding of unregistered) counts[finding.rule] += 1;
       io.errorLog(
-        `未登记圆角 ${unregistered} 处；请改用契约 token 或登记 ui-lint-allowlist.json（owner/reason/expiresAt）。`
+        `未登记字面量 ${unregistered.length} 处（圆角 ${counts.radius} / 颜色 ${counts.color} / 字号 ${counts["font-size"]} / 字重 ${counts["font-weight"]} / 字体族 ${counts["font-family"]}）；请改用契约 token 或登记 ui-lint-allowlist.json（rule?/owner/reason/expiresAt）。`
       );
     }
     if (report.contract.incomplete.length > 0) {
       io.errorLog(
         `契约未完成 ${report.contract.incomplete.length} 屏（no-baseline/partial/unverifiable/unknown）；先补设计或契约，或去掉 --require-complete。`
+      );
+    }
+    if (flags.bool("require-mapping")) {
+      const missing = report.mapping.screens.unmapped.filter(
+        (screen) => screen.status === "extracted"
+      );
+      if (missing.length > 0) {
+        io.errorLog(
+          `--require-mapping：${missing.length} 个 extracted 屏缺少高置信显式映射（${missing
+            .map((screen) => screen.name || screen.id)
+            .join("、")}）；请在 screen-map.json 补 code.file/component，或去掉该开关。`
+        );
+      }
+    }
+    if (
+      flags.bool("fail-on-stale-contract") &&
+      report.contract.fingerprintStatus !== "current"
+    ) {
+      io.errorLog(
+        `--fail-on-stale-contract：契约指纹 ${report.contract.fingerprintStatus}（契约 ${report.contract.fingerprint?.slice(0, 12) ?? "—"}…，当前 ${report.contract.fingerprintNow?.slice(0, 12) ?? "—"}…）；请重新运行 suite ui-contract 或去掉该开关。`
       );
     }
     if (flags.bool("fail-on-expiring") && report.allowlist.expiring.length > 0) {
@@ -3220,6 +3975,57 @@ async function suiteUiLint(
     io.errorLog(`UI lint 失败: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
+}
+
+async function suiteTextWeightCalibrate(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const manifest = flags.get("manifest");
+  if (manifest === null) {
+    io.errorLog("字重校准需要 --manifest <json>");
+    return 2;
+  }
+  const out = flags.get("out");
+  const report = await runTextWeightCalibration({
+    manifestPath: path.resolve(runtime.project.rootDir, manifest),
+    outputDir: out
+      ? path.resolve(runtime.project.rootDir, out)
+      : path.join(designDir(runtime.configDirAbs), "reports"),
+    save: !flags.bool("no-save"),
+    strict: flags.bool("strict")
+  });
+  if (flags.bool("json")) {
+    io.log(JSON.stringify(report, null, 2));
+    return report.ok ? 0 : report.total === 0 ? 2 : 1;
+  }
+  io.log(
+    `字重校准: 共 ${report.total} 对 · labeled ${report.labeled} · checked ${report.checked} · unverified ${report.unverified} · 高置信误报 ${report.highConfidenceMismatches.length}（false-heavier ${report.highConfidenceFalseHeavier}）· labeled 不一致 ${report.labeledMismatches}`
+  );
+  for (const [expected, counts] of Object.entries(report.confusion)) {
+    io.log(
+      `  expected ${expected}: lighter ${counts.lighter ?? 0} / similar ${counts.similar ?? 0} / heavier ${counts.heavier ?? 0} / unverified ${counts.unverified ?? 0}`
+    );
+  }
+  for (const stats of report.deltaStats) {
+    io.log(
+      `  delta ${stats.expected}: n=${stats.count} mean=${stats.mean} sd=${stats.stddev} min=${stats.min} max=${stats.max}`
+    );
+  }
+  if (report.thresholdHint.separated !== null) {
+    io.log(
+      `  阈值建议: min(heavier)=${report.thresholdHint.minHeavierDelta ?? "—"} · max(non-heavier)=${report.thresholdHint.maxNonHeavierDelta ?? "—"} · separated=${report.thresholdHint.separated}${report.thresholdHint.suggestedHeavierDelta !== null ? ` · suggested=${report.thresholdHint.suggestedHeavierDelta}` : ""}`
+    );
+  }
+  for (const mismatch of report.highConfidenceMismatches) {
+    io.errorLog(
+      `高置信不一致: ${mismatch.name} expected=${mismatch.expected} actual=${mismatch.actual} delta=${mismatch.delta ?? "—"} conf=${mismatch.confidence}`
+    );
+  }
+  for (const error of report.errors) io.errorLog(`错误: ${error}`);
+  if (report.saved) io.log(`报告: ${report.saved}`);
+  return report.ok ? 0 : report.total === 0 ? 2 : 1;
 }
 
 function suiteParity(
@@ -3318,7 +4124,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract", "ui-lint", "parity"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract", "ui-semantics", "ui-parity", "ui-lint", "parity", "text-weight-calibrate"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -3403,7 +4209,12 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "schedule") return await suiteSchedule(built.runtime, flags, { log, errorLog });
     if (sub === "backfill") return await suiteBackfill(built.runtime, flags, { log, errorLog });
     if (sub === "ui-contract") return await suiteUiContract(built.runtime, flags, { log, errorLog });
+    if (sub === "ui-semantics") return await suiteUiSemantics(built.runtime, flags, { log, errorLog });
+    if (sub === "ui-parity") return await suiteUiParity(built.runtime, flags, { log, errorLog });
     if (sub === "ui-lint") return await suiteUiLint(built.runtime, flags, { log, errorLog });
+    if (sub === "text-weight-calibrate") {
+      return await suiteTextWeightCalibrate(built.runtime, flags, { log, errorLog });
+    }
     if (sub === "parity") return suiteParity(built.runtime, flags, { log, errorLog });
     if (sub === "runner") {
       return await suiteRunnerCommand(

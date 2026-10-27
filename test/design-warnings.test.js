@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   mergeWarnings,
+  normalizeWarnings,
   readFlowsWarnings,
   readTestsWarnings,
   resolveDesignWarnings,
@@ -22,6 +23,21 @@ function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(value));
 }
+
+test("normalizeWarnings: preserves valid screen/case scope, drops invalid", () => {
+  const warnings = normalizeWarnings([
+    {
+      code: "scoped",
+      message: "m",
+      scope: { screens: ["Home", "", 1], caseIds: ["case-1", null] }
+    },
+    { code: "bad-scope", message: "m", scope: "bad" },
+    { code: "empty-scope", message: "m", scope: { screens: [] } }
+  ]);
+  assert.deepEqual(warnings[0].scope, { screens: ["Home"], caseIds: ["case-1"] });
+  assert.equal(warnings[1].scope, undefined);
+  assert.equal(warnings[2].scope, undefined);
+});
 
 test("readFlowsWarnings: 读取数组并丢弃坏条目", () => {
   const dir = tempConfigDir();

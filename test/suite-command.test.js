@@ -4,8 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
+
 import { MemoryStore } from "../dist/db/memory.js";
 import { loadLatestRunManifest } from "../dist/figma/run-manifest.js";
+import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
 import { runSuiteCommand } from "../dist/suite-command.js";
 import {
   baseConfig,
@@ -100,6 +103,36 @@ test("suite run: failure keeps classification and hints at evidence", async () =
   assert.ok(logs.some((line) => line.startsWith("[FAIL]") && line.includes("behavior-or-design")));
   assert.ok(logs.some((line) => line.includes("suite evidence trace-2")));
   assert.ok(logs.some((line) => line.startsWith("结果: pass 1 / fail 1")));
+  assert.ok(logs.some((line) => line.startsWith("接入检查（按失败证据）")));
+  assert.ok(
+    logs.some((line) => line.includes("[page-reuse]") && line.includes("trace-2")),
+    "行为/页面失败给页面复用检查"
+  );
+  assert.ok(
+    logs.some((line) => line.includes("[rewrite]") && line.includes("trace-2")),
+    "行为/页面失败给重写检查"
+  );
+});
+
+test("suite run: data-environment 失败提醒 API，设备日志附注不算环境", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: {
+      "trace-1": {
+        status: "failed",
+        error: "行動預點載入失敗：网络连接失败；设备日志已采集（1 行，来源 simctl-log）",
+        test_summary: {
+          task_status: "failed",
+          failed_items: [{ item_text: "行動預點", evidence: "页面内容一直未渲染" }]
+        }
+      }
+    }
+  });
+  const { code, logs } = await runCli(runtime, ["run"]);
+  assert.equal(code, 1);
+  assert.ok(logs.some((line) => line.includes("[api]") && line.includes("trace-1")));
+  assert.ok(logs.some((line) => line.includes("[page-reuse]") && line.includes("trace-1")));
+  assert.ok(!logs.some((line) => line.includes("[environment]")), "设备日志附注不得误判为环境失败");
 });
 
 test("suite run: missing tests.json exits 2; --json prints the report", async () => {
@@ -121,6 +154,7 @@ test("suite run: missing tests.json exits 2; --json prints the report", async ()
   assert.deepEqual(payload.ui, { passed: 0, failed: 0, unverified: 1, notApplicable: 0 });
   assert.equal(payload.cases[0].ui.status, "unverified");
   assert.equal(payload.cases[0].ui.reason, "no-ui-contract");
+  assert.equal(payload.readiness.needed, false);
 });
 
 test("suite evidence: aggregates failed items and degrades explicitly", async () => {
@@ -364,6 +398,174 @@ test("suite report/feedback: ledger-derived artifacts and suggestions", async ()
   const feedbackPayload = JSON.parse(feedback.logs.at(-1));
   assert.ok(feedbackPayload.suggestions.some((suggestion) => suggestion.kind === "data"));
   assert.ok(feedbackPayload.suggestions.every((suggestion) => Array.isArray(suggestion.traceIds)));
+});
+
+test("suite report --update-tests: 回填执行结果 sheet，失败时 exit 1", async () => {
+  const { runtime, store } = await setupRun({
+    cases: [{ ...caseEntry(1), displayId: "TC_000001", expectations: [] }]
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.writeFileSync(
+    path.join(designDir, "tests.xlsx"),
+    await renderTestsWorkbook(
+      [{ ...caseEntry(1), displayId: "TC_000001", expectations: [] }],
+      {
+        source: "test",
+        generatedAt: "2026-10-26T00:00:00Z",
+        counts: { cases: 1, screens: 1, edges: 1 }
+      }
+    )
+  );
+  writeStatus(runtime, "trace-1", { status: "completed" });
+  await store.recordTask({
+    rootPath: runtime.project.rootDir,
+    traceId: "trace-1",
+    caseId: "case-1",
+    status: "completed",
+    taskDesc: "run case 1",
+    finishedAt: "2026-10-26T00:00:20.000Z"
+  });
+  await store.recordSuiteRun({
+    rootPath: runtime.project.rootDir,
+    run: {
+      runId: "run-1",
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: null,
+      featureName: null,
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      runner: null,
+      status: "completed",
+      startedAt: "2026-10-26T00:00:00.000Z",
+      finishedAt: "2026-10-26T00:00:20.000Z",
+      total: 1,
+      passed: 1,
+      failed: 0,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "pass",
+      exitCode: 0,
+      manifestPath: null,
+      comparison: null,
+      apiReview: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: null,
+        platform: "android",
+        status: "passed",
+        traceId: "trace-1",
+        failureDomain: null,
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null,
+        jiraIssueKey: null
+      }
+    ]
+  });
+
+  const result = await runCli(runtime, [
+    "report",
+    "--no-sync",
+    "--no-save",
+    "--update-tests",
+    "--json"
+  ]);
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.logs.at(-1));
+  assert.equal(payload.testsUpdated.rows, 1);
+  assert.equal(payload.testsUpdated.historyRows, 1);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(path.join(designDir, "tests.xlsx"));
+  const sheet = workbook.getWorksheet("执行结果");
+  assert.ok(sheet);
+  assert.equal(sheet.getRow(2).getCell(2).value, "TC_000001");
+  assert.equal(sheet.getRow(2).getCell(5).value, "passed");
+  const cross = workbook.getWorksheet("跨端对比");
+  assert.ok(cross);
+  assert.equal(cross.getRow(2).getCell(6).value, "passed");
+  assert.equal(cross.getRow(2).getCell(7).value, "Android:新增");
+
+  fs.rmSync(path.join(designDir, "tests.xlsx"));
+  const missing = await runCli(runtime, [
+    "report",
+    "--no-sync",
+    "--no-save",
+    "--update-tests",
+    "--json"
+  ]);
+  assert.equal(missing.code, 1);
+  const missingPayload = JSON.parse(missing.logs.at(-1));
+  assert.match(missingPayload.testsUpdateError, /未找到 tests.xlsx/);
+});
+
+test("suite text-weight-calibrate: CLI JSON, strict and missing manifest exits", async () => {
+  const { dir, runtime } = await setupRun({ cases: null });
+  const bars = (stroke, shift = 0) => {
+    const image = createImage(120, 40);
+    for (let index = 0; index < 6; index += 1) {
+      fillRect(image, 10 + index * 18 + shift, 8, stroke, 24, [0, 0, 0, 255]);
+    }
+    return toPng(image);
+  };
+  fs.writeFileSync(path.join(dir, "regular.png"), bars(1));
+  fs.writeFileSync(path.join(dir, "bold.png"), bars(3));
+  fs.writeFileSync(path.join(dir, "shifted.png"), bars(3, 40));
+  fs.writeFileSync(
+    path.join(dir, "calibration.json"),
+    JSON.stringify({
+      pairs: [
+        { design: "regular.png", device: "bold.png", expected: "heavier" },
+        { design: "regular.png", device: "regular.png", expected: "similar" },
+        { design: "regular.png", device: "shifted.png", expected: "similar" }
+      ]
+    })
+  );
+
+  const normal = await runCli(runtime, [
+    "text-weight-calibrate",
+    "--manifest",
+    "calibration.json",
+    "--json",
+    "--no-save"
+  ]);
+  assert.equal(normal.code, 0);
+  const payload = JSON.parse(normal.logs.at(-1));
+  assert.equal(payload.total, 3);
+  assert.equal(payload.checked, 2);
+  assert.equal(payload.unverified, 1);
+
+  const strict = await runCli(runtime, [
+    "text-weight-calibrate",
+    "--manifest",
+    "calibration.json",
+    "--json",
+    "--no-save",
+    "--strict"
+  ]);
+  assert.equal(strict.code, 1, "strict 把 unverified 判失败");
+
+  const missing = await runCli(runtime, [
+    "text-weight-calibrate",
+    "--manifest",
+    "missing.json",
+    "--json",
+    "--no-save"
+  ]);
+  assert.equal(missing.code, 2);
+  assert.ok(JSON.parse(missing.logs.at(-1)).errors.length > 0);
 });
 
 function verdictRun(overrides = {}) {
@@ -1985,4 +2187,110 @@ test("suite check: design.sharedDir 共享 flows 参与覆盖校验", async () =
   const payload = JSON.parse(result.logs.at(-1));
   assert.equal(payload.coverage.available, true);
   assert.deepEqual(payload.coverage.designScreens, ["Home"]);
+});
+
+test("suite check: dynamic content warn/fail/baseline", async () => {
+  const { runtime } = await setupRun({
+    cases: [
+      caseEntry(1, { taskDesc: "點擊「冰蘋果山茶花風味美式」，價格 $120 起（【真实数据】须经真实请求链路）" }),
+      caseEntry(2)
+    ]
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: []
+    })
+  );
+  const semanticsPath = path.join(designDir, "ui-semantics.json");
+  const writeSemantics = (examples) =>
+    fs.writeFileSync(
+      semanticsPath,
+      JSON.stringify({
+        version: 1,
+        screens: [
+          {
+            screenId: "home",
+            regions: [
+              {
+                id: "list",
+                role: "product-list",
+                dynamicExamples: examples,
+                dynamicPatterns: ["\\$[0-9]+"]
+              }
+            ]
+          }
+        ]
+      })
+    );
+  writeSemantics(["冰蘋果山茶花風味美式", "$120 起"]);
+
+  const warn = await runCli(runtime, ["check", "--json"]);
+  assert.equal(warn.code, 0, warn.errors.join("\n"));
+  const payload = JSON.parse(warn.logs[0]);
+  assert.equal(payload.dynamicContent.total, 1);
+  assert.equal(payload.dynamicContent.fresh, 1);
+  assert.equal(payload.dynamicContent.cases[0].caseId, "case-1");
+
+  const fail = await runCli(runtime, ["check", "--fail-on-dynamic"]);
+  assert.equal(fail.code, 2);
+  assert.ok(fail.errors.some((line) => line.includes("动态内容未基线化")));
+
+  const text = await runCli(runtime, ["check"]);
+  assert.ok(text.logs.some((line) => line.includes("非穷尽")));
+
+  const update = await runCli(runtime, ["check", "--update-dynamic-baseline", "--json"]);
+  assert.equal(update.code, 0, update.errors.join("\n"));
+  const baseline = path.join(designDir, "ui-dynamic-baseline.json");
+  assert.ok(fs.existsSync(baseline));
+
+  const suppressed = await runCli(runtime, [
+    "check", "--fail-on-dynamic", "--dynamic-baseline", baseline, "--json"
+  ]);
+  assert.equal(suppressed.code, 0, suppressed.errors.join("\n"));
+  const suppressedPayload = JSON.parse(suppressed.logs[0]);
+  assert.equal(suppressedPayload.dynamicContent.baselined, 1);
+  assert.equal(suppressedPayload.dynamicContent.fresh, 0);
+
+  writeSemantics(["冰蘋果山茶花風味美式", "$120 起", "另一個動態商品"]);
+  fs.writeFileSync(
+    path.join(designDir, "tests.json"),
+    JSON.stringify({
+      flows: [
+        caseEntry(1, { taskDesc: "點擊「冰蘋果山茶花風味美式」" }),
+        caseEntry(2, { taskDesc: "點擊「另一個動態商品」" })
+      ]
+    })
+  );
+  const fresh = await runCli(runtime, [
+    "check", "--fail-on-dynamic", "--dynamic-baseline", baseline, "--json"
+  ]);
+  assert.equal(fresh.code, 2);
+  const freshPayload = JSON.parse(fresh.logs[0]);
+  assert.equal(freshPayload.dynamicContent.fresh, 1);
+
+  const bad = path.join(designDir, "bad-dynamic-baseline.json");
+  fs.writeFileSync(bad, "{broken");
+  const badResult = await runCli(runtime, ["check", "--dynamic-baseline", bad, "--json"]);
+  assert.equal(badResult.code, 2);
+});
+
+test("suite check: malformed ui-semantics exits 2 instead of silently disabling dynamic scan", async () => {
+  const { runtime } = await setupRun({
+    cases: [caseEntry(1, { taskDesc: "點擊「冰蘋果山茶花風味美式」" })]
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      screens: [{ id: "1", name: "Home", suggestedRoute: "/", childNames: [], textHints: [] }],
+      edges: []
+    })
+  );
+  fs.writeFileSync(path.join(designDir, "ui-semantics.json"), "{broken");
+  const result = await runCli(runtime, ["check", "--fail-on-dynamic", "--json"]);
+  assert.equal(result.code, 2);
+  assert.ok(result.errors.some((line) => line.includes("ui-semantics 解析失败")));
 });

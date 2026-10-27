@@ -12,12 +12,18 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import ExcelJS from "exceljs";
 
 import { MemoryStore } from "../dist/db/memory.js";
-import { createAosHttpServer } from "../dist/http-server.js";
+import { addStoredUser, revokeStoredUser, rotateStoredUser } from "../dist/auth/users.js";
+import { AuthConfigError, createAosHttpServer } from "../dist/http-server.js";
 
 process.env.AOS_MODEL_REFRESH_HOURS = "0";
 process.env.AOS_USAGE = "1";
 process.env.AOS_LEDGER_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "aos-http-ledger-"));
 process.env.AOS_HOST_ID = "test-host";
+// 默认用户文件在 ~/.aos：测试必须指向临时路径，避免读到开发机真实用户。
+process.env.AOS_HTTP_USERS_FILE = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), "aos-http-users-")),
+  "http-users.json"
+);
 
 const TOKEN = "aos-http-secret-token-9f8e7d6c";
 const basic = (user, pass) => `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
@@ -489,6 +495,206 @@ test("http server: MCP 端点 body >4MB → 413（排空后可继续请求）", 
   } finally {
     await handle.close();
   }
+});
+
+test("http server: AOS_HTTP_USERS 命名令牌 → 身份/角色，viewer 动作 403", async () => {
+  const workspace = makeWorkspace();
+  const users = JSON.stringify([
+    { name: "admin-user", token: "admin-token-1234567890", role: "admin" },
+    { name: "viewer-user", token: "viewer-token-123456789", role: "viewer" }
+  ]);
+  await withEnv("AOS_HTTP_TOKEN", "", async () => {
+    await withEnv("AOS_HTTP_USERS", users, async () => {
+      const handle = await createAosHttpServer({
+        port: 0,
+        host: "127.0.0.1",
+        workspaceRoot: workspace
+      });
+      try {
+        const noCreds = await fetch(`http://127.0.0.1:${handle.port}/panel`);
+        assert.equal(noCreds.status, 401, "启用用户令牌后无凭据 401");
+
+        const viewerPage = await fetch(`http://127.0.0.1:${handle.port}/panel`, {
+          headers: { Authorization: "Bearer viewer-token-123456789" }
+        });
+        assert.equal(viewerPage.status, 200);
+        assert.match(await viewerPage.text(), /角色：只读/, "面板按请求身份渲染角色");
+
+        const viewerAction = await fetch(`http://127.0.0.1:${handle.port}/panel/api/tasks`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer viewer-token-123456789",
+            "Content-Type": "application/json"
+          },
+          body: "{}"
+        });
+        assert.equal(viewerAction.status, 403);
+        assert.equal((await viewerAction.json()).code, "role_forbidden");
+
+        const adminAction = await fetch(`http://127.0.0.1:${handle.port}/panel/api/tasks`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer admin-token-1234567890",
+            "Content-Type": "application/json"
+          },
+          body: "{}"
+        });
+        assert.notEqual(adminAction.status, 403, "admin 通过角色闸门（后续参数错误可为 400）");
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+});
+
+test("http server: 用户文件令牌按身份授权，热轮换/吊销无需重启", async () => {
+  const workspace = makeWorkspace();
+  const file = path.join(makeTempDir("aos-http-users-file-"), "http-users.json");
+  const viewer = addStoredUser(file, { name: "viewer-file", role: "viewer" });
+  const admin = addStoredUser(file, { name: "admin-file", role: "admin" });
+
+  await withEnv("AOS_HTTP_TOKEN", "", async () => {
+    await withEnv("AOS_HTTP_USERS", "", async () => {
+      await withEnv("AOS_HTTP_USERS_FILE", file, async () => {
+        const handle = await createAosHttpServer({
+          port: 0,
+          host: "127.0.0.1",
+          workspaceRoot: workspace
+        });
+        try {
+          const base = `http://127.0.0.1:${handle.port}`;
+          assert.equal((await fetch(`${base}/panel`)).status, 401, "文件用户启用认证");
+
+          const viewerPage = await fetch(`${base}/panel`, {
+            headers: { Authorization: `Bearer ${viewer.token}` }
+          });
+          assert.equal(viewerPage.status, 200);
+          assert.match(await viewerPage.text(), /角色：只读/);
+
+          const viewerAction = await fetch(`${base}/panel/api/tasks`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${viewer.token}`,
+              "Content-Type": "application/json"
+            },
+            body: "{}"
+          });
+          assert.equal(viewerAction.status, 403);
+
+          const adminAction = await fetch(`${base}/panel/api/tasks`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${admin.token}`,
+              "Content-Type": "application/json"
+            },
+            body: "{}"
+          });
+          assert.notEqual(adminAction.status, 403, "文件 admin 通过角色闸门");
+
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          const rotated = rotateStoredUser(file, "admin-file");
+          assert.ok(rotated);
+          assert.equal(
+            (
+              await fetch(`${base}/panel`, {
+                headers: { Authorization: `Bearer ${admin.token}` }
+              })
+            ).status,
+            401,
+            "旧令牌热失效"
+          );
+          assert.equal(
+            (
+              await fetch(`${base}/panel`, {
+                headers: { Authorization: `Bearer ${rotated.token}` }
+              })
+            ).status,
+            200,
+            "新令牌热生效"
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          revokeStoredUser(file, "viewer-file");
+          assert.equal(
+            (
+              await fetch(`${base}/panel`, {
+                headers: { Authorization: `Bearer ${viewer.token}` }
+              })
+            ).status,
+            401,
+            "吊销热生效"
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          revokeStoredUser(file, "admin-file");
+          fs.rmSync(file);
+          assert.equal((await fetch(`${base}/panel`)).status, 401, "清空/删除用户文件不放开匿名访问");
+        } finally {
+          await handle.close();
+        }
+      });
+    });
+  });
+});
+
+test("http server: 用户文件启动后出现 → 动态启用认证", async () => {
+  const workspace = makeWorkspace();
+  const file = path.join(makeTempDir("aos-http-users-late-"), "http-users.json");
+  await withEnv("AOS_HTTP_TOKEN", "", async () => {
+    await withEnv("AOS_HTTP_USERS", "", async () => {
+      await withEnv("AOS_HTTP_USERS_FILE", file, async () => {
+        const handle = await createAosHttpServer({
+          port: 0,
+          host: "127.0.0.1",
+          workspaceRoot: workspace
+        });
+        try {
+          const base = `http://127.0.0.1:${handle.port}`;
+          assert.equal((await fetch(`${base}/panel`)).status, 200, "未配置用户时匿名可读");
+          const added = addStoredUser(file, { name: "late", role: "viewer" });
+          assert.equal((await fetch(`${base}/panel`)).status, 401, "文件出现后启用认证");
+          assert.equal(
+            (
+              await fetch(`${base}/panel`, {
+                headers: { Authorization: `Bearer ${added.token}` }
+              })
+            ).status,
+            200
+          );
+        } finally {
+          await handle.close();
+        }
+      });
+    });
+  });
+});
+
+test("http server: 用户文件非法启动失败（fail closed）", async () => {
+  const workspace = makeWorkspace();
+  const file = path.join(makeTempDir("aos-http-users-bad-"), "http-users.json");
+  fs.writeFileSync(file, JSON.stringify({ version: 1, users: [{ name: "x", role: "root" }] }));
+  await withEnv("AOS_HTTP_TOKEN", "", async () => {
+    await withEnv("AOS_HTTP_USERS", "", async () => {
+      await withEnv("AOS_HTTP_USERS_FILE", file, async () => {
+        await assert.rejects(
+          createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace }),
+          AuthConfigError
+        );
+      });
+    });
+  });
+});
+
+test("http server: 非法 AOS_HTTP_USERS 启动失败（fail closed）", async () => {
+  const workspace = makeWorkspace();
+  await withEnv("AOS_HTTP_TOKEN", "", async () => {
+    await withEnv("AOS_HTTP_USERS", "{}", async () => {
+      await assert.rejects(
+        createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace }),
+        AuthConfigError
+      );
+    });
+  });
 });
 
 test("http server: 设 token 后未授权请求被 401 拦截（闸门先于路由）", async () => {

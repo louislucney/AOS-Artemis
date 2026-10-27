@@ -29,12 +29,13 @@ export const DESIGN_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "design_device_diff",
     description:
-      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG 渲染，或 `design:{source:\"pen\"}` 经 pen CLI 渲染 .pen）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId（stepNumber 可选：省略则用失败证据自动检索步骤）指定失败步骤截图，默认 post；device.platform=\"ios\" 支持模拟器 idb→simctl 与真机 WDA，均 PNG），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）。区域核验（默认开启，regions:\"auto\"）：按设计叶子节点 ∪ 整屏 diff 命中（无节点源时 tiles 重叠平铺）提议区域 → 在设计渲染×真机设备原生栅格上成对裁剪 → 1:1 局部判定（细节档 0.05；有损/上采样源自动降为 0.1 并警告）→ 每区域 device｜design 并排对图（内联前 returnCrops 张、hasDiff 优先；全部落盘 regions/）＋ regionDetails[].localSummary；regions 可设 auto|nodes|tiles|none|显式 bbox 数组（分页=回传上轮 regionDetails[].bbox，序号仅同一响应内有效）；zoom（1-4）与 detail 阈值可调；detail.degraded/truncated 如实标注。核对纪律：对比结论必须来自区域级对图核对（引用区域编号），整屏图仅用于定位。（跨源细节档验证中：同源四类差异实证 4/4；设计渲染×真机渲染的误报基线待真实项目对实验，不得将其视为已放行的权威结论。）dryRun 只回计划；判定不依赖 LLM。",
+      "设计 vs 真机差异：取设计渲染（Figma 节点 PNG 渲染、`design:{source:\"pen\"}` 经 pen CLI 渲染 .pen，或 `design:{source:\"image\",imagePath}` 读现成 PNG 截图）与真机截图（device.mode=live 实时截图，或 device.mode=step + traceId（stepNumber 可选：省略则用失败证据自动检索步骤）指定失败步骤截图，默认 post；device.platform=\"ios\" 支持模拟器 idb→simctl 与真机 WDA，均 PNG），做确定性对齐（设计宽度缩放 + 顶部对齐；insets/ignoreRegions/降采样可配）与像素差异判定，产出结构化差异报告（区域/严重度/证据）与标注图，默认落盘 <项目>/.artemis/design/diffs/<node>-<时间戳>/（report.json / annotated.png / design.png / device.png）。现成 PNG 源无设计节点几何（pixel 分类、tiles 区域核验，低分辨率触发 design-upscaled），只作廉价适配器、不替代高倍 pen/Figma 渲染。区域核验（默认开启，regions:\"auto\"）：按设计叶子节点 ∪ 整屏 diff 命中（无节点源时 tiles 重叠平铺）提议区域 → 在设计渲染×真机设备原生栅格上成对裁剪 → 1:1 局部判定（细节档 0.05；有损/上采样源自动降为 0.1 并警告）→ 每区域 device｜design 并排对图（内联前 returnCrops 张、hasDiff 优先；全部落盘 regions/）＋ regionDetails[].localSummary；regions 可设 auto|nodes|tiles|none|显式 bbox 数组（分页=回传上轮 regionDetails[].bbox，序号仅同一响应内有效）；zoom（1-4）与 detail 阈值可调；detail.degraded/truncated 如实标注。核对纪律：对比结论必须来自区域级对图核对（引用区域编号），整屏图仅用于定位。（跨源细节档验证中：同源四类差异实证 4/4；设计渲染×真机渲染的误报基线待真实项目对实验，不得将其视为已放行的权威结论。）dryRun 只回计划；判定不依赖 LLM。",
     schema: z.object({
       design: z.object({
-        source: z.enum(["figma", "pen"]).optional().describe("设计源；省略时按 figmaUrl/penPath 推断"),
+        source: z.enum(["figma", "pen", "image"]).optional().describe("设计源；省略时按 figmaUrl/penPath/imagePath 推断"),
         figmaUrl: z.string().optional().describe("Figma 文件 URL（建议带 ?node-id=；source=figma 或推断）"),
         penPath: z.string().optional().describe("相对项目根或绝对路径的 .pen（source=pen；缺省取 .artemis/design 下最新）"),
+        imagePath: z.string().optional().describe("现成 PNG 设计截图（source=image；相对项目根或绝对路径；仅 PNG，无节点几何）"),
         nodeId: z.string().optional().describe("覆盖 URL 中的 node-id"),
         renderOut: z.string().optional().describe("pen 渲染输出路径（相对项目根；默认 .artemis/design/pen/<name>.png）")
       }),
@@ -69,7 +70,22 @@ export const DESIGN_NATIVE_TOOLS: NativeToolDefinition[] = [
           ignoreRegions: z
             .array(z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }))
             .optional()
-            .describe("按设计坐标屏蔽的区域（动态内容：视频位/轮播/时钟等）")
+            .describe("按设计坐标屏蔽的区域（动态内容：视频位/轮播/时钟等）"),
+          designCrop: z
+            .object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() })
+            .optional()
+            .describe("设计裁剪（design-source 像素；越界/0 宽高报错且不写产物；裁剪后 ignoreRegions 用 cropped-design 坐标）")
+        })
+        .optional(),
+      ui: z
+        .object({
+          semanticsPath: z.string().optional().describe("ui-semantics.json 路径（相对项目根或绝对）"),
+          screenId: z.string().optional().describe("语义屏 id/name（缺省取唯一屏）"),
+          ignoreDynamicRegions: z.boolean().optional().describe("忽略 isDynamic/dynamicAssets 且含 designBbox 的 region"),
+          expectedAssets: z
+            .boolean()
+            .optional()
+            .describe("动态资产存在性：声明 expectedAssets 的 region 不整块忽略；存在性/placeholder 由 suite ui-parity 检查")
         })
         .optional(),
       diff: z

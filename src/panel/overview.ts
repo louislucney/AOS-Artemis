@@ -23,7 +23,12 @@ import { clientTtlFrom, isClientOnline } from "../host/online.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
 import { designDir } from "../figma/design-store.js";
-import type { UiSummary, UiVerification } from "../ui/verification.js";
+import {
+  integrationReadinessFromFailures,
+  type IntegrationReadiness
+} from "../figma/integration-readiness.js";
+import { projectExcluded } from "../project-visibility.js";
+import type { UiCoverageSummary, UiSummary, UiVerification } from "../ui/verification.js";
 import {
   loadLatestRunManifest,
   loadRunManifest,
@@ -101,6 +106,8 @@ export interface PanelBatchSummary {
   summary: { total: number | null; passed: number | null; failed: number | null } | null;
   /** UI 核验计数；旧清单/不可读时为 null。 */
   ui: UiSummary | null;
+  /** UI 访问屏/契约屏覆盖；旧清单无该字段 → null。 */
+  uiCoverage?: UiCoverageSummary | null;
   note: string | null;
 }
 
@@ -523,6 +530,8 @@ export interface PanelBatchDetail {
   summary: { total: number | null; passed: number | null; failed: number | null } | null;
   /** UI 核验计数；旧清单没有该字段 → null。 */
   ui: UiSummary | null;
+  /** UI 访问屏/契约屏覆盖；旧清单没有该字段 → null。 */
+  uiCoverage: UiCoverageSummary | null;
   failureDomains: Record<string, number> | null;
   options: RunManifest["options"] | null;
   tests: RunManifest["tests"] | null;
@@ -531,6 +540,8 @@ export interface PanelBatchDetail {
   /** 运行期 API 说明快照：优先台账，清单兜底；旧记录为 null。 */
   apiReview: RunManifest["apiReview"];
   cases: PanelBatchCaseView[];
+  /** 失败证据 → 接入检查（API／页面复用／重写）；无失败或旧记录为空。 */
+  readiness: IntegrationReadiness;
   warnings: string[];
 }
 
@@ -746,6 +757,7 @@ function batchSummaryFromRead(read: RunManifestRead | null): PanelBatchSummary |
         failed: manifest.summary.failed
       },
       ui: manifest.summary.ui ?? null,
+      uiCoverage: manifest.summary.uiCoverage ?? null,
       note: null
     };
   }
@@ -1093,24 +1105,7 @@ async function buildMachineRows(
 }
 
 /** 排除名单：逗号分隔的项目名（大小写不敏感）或绝对根路径；不解析相对路径/glob。 */
-export function panelProjectExcluded(
-  entry: { name: string; rootPath: string },
-  raw: string | undefined
-): boolean {
-  const tokens = (raw ?? "")
-    .split(",")
-    .map((token) => token.trim())
-    .filter((token) => token !== "");
-  if (tokens.length === 0) return false;
-  const root = path.resolve(entry.rootPath);
-  return tokens.some((token) => {
-    const value = token.replace(/\\/g, "/");
-    if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) {
-      return path.resolve(value) === root;
-    }
-    return value.toLowerCase() === entry.name.toLowerCase();
-  });
-}
+export const panelProjectExcluded = projectExcluded;
 
 export async function buildPanelOverview(deps: PanelDeps): Promise<PanelOverview> {
   const now = deps.now ?? (() => Date.now());
@@ -1650,6 +1645,21 @@ function evidenceLinks(tracesDir: string, rootPath: string, entry: RunManifest["
   return links;
 }
 
+function batchReadiness(cases: PanelBatchCaseView[]): IntegrationReadiness {
+  return integrationReadinessFromFailures(
+    cases
+      .filter((entry) => entry.status !== "passed")
+      .map((entry) => ({
+        caseId: entry.caseId,
+        traceId: entry.traceId,
+        domain: entry.failure?.domain ?? null,
+        reason: [entry.failure?.reason, entry.error]
+          .filter((part): part is string => typeof part === "string" && part.trim() !== "")
+          .join(" ")
+      }))
+  );
+}
+
 function emptyBatchDetail(file: string, read: "missing" | "invalid", note: string): PanelBatchDetail {
   return {
     file,
@@ -1663,12 +1673,14 @@ function emptyBatchDetail(file: string, read: "missing" | "invalid", note: strin
     gate: null,
     summary: null,
     ui: null,
+    uiCoverage: null,
     failureDomains: null,
     options: null,
     tests: null,
     designWarnings: null,
     apiReview: null,
     cases: [],
+    readiness: { needed: false, checks: [] },
     warnings: []
   };
 }
@@ -1685,6 +1697,26 @@ function batchDetailFromLedger(
       : run.exitCode === 0
         ? "pass"
         : "fail";
+  const cases: PanelBatchCaseView[] = run.cases.map((entry) => ({
+    caseId: entry.caseId,
+    name: entry.name,
+    status: entry.status,
+    traceId: entry.traceId,
+    error: null,
+    failure:
+      entry.failureDomain === null
+        ? null
+        : {
+            domain: entry.failureDomain,
+            confidence: entry.failureConfidence ?? "unknown",
+            reason: entry.failureReason ?? ""
+          },
+    scriptProvenance: null,
+    ui: null,
+    quarantined: entry.quarantined,
+    flaky: entry.flaky,
+    evidence: []
+  }));
   return {
     file,
     read,
@@ -1697,31 +1729,14 @@ function batchDetailFromLedger(
     gate: { result: gateResult, exitCode: run.exitCode, reasons: [] },
     summary: { total: run.total, passed: run.passed, failed: run.failed },
     ui: null,
+    uiCoverage: null,
     failureDomains: run.failureDomains,
     options: null,
     tests: null,
     designWarnings: null,
     apiReview: run.apiReview ?? null,
-    cases: run.cases.map((entry) => ({
-      caseId: entry.caseId,
-      name: entry.name,
-      status: entry.status,
-      traceId: entry.traceId,
-      error: null,
-      failure:
-        entry.failureDomain === null
-          ? null
-          : {
-              domain: entry.failureDomain,
-              confidence: entry.failureConfidence ?? "unknown",
-              reason: entry.failureReason ?? ""
-            },
-      scriptProvenance: null,
-      ui: null,
-      quarantined: entry.quarantined,
-      flaky: entry.flaky,
-      evidence: []
-    })),
+    cases,
+    readiness: batchReadiness(cases),
     warnings: [note]
   };
 }
@@ -1777,18 +1792,33 @@ export async function buildPanelBatchDetail(
       gate: null,
       summary: base.summary,
       ui: null,
+      uiCoverage: null,
       failureDomains: null,
       options: null,
       tests: null,
       designWarnings: null,
       apiReview: ledger?.apiReview ?? null,
       cases: [],
+      readiness: { needed: false, checks: [] },
       warnings: []
     };
   }
 
   const manifest = read.manifest;
   const tracesDir = projectTracesDir(soft.project.config, rootPath, deps.env ?? process.env);
+  const cases: PanelBatchCaseView[] = manifest.cases.map((entry) => ({
+    caseId: entry.caseId,
+    name: entry.name,
+    status: entry.status,
+    traceId: entry.traceId,
+    error: entry.error,
+    failure: entry.failure,
+    scriptProvenance: entry.scriptProvenance,
+    ui: entry.ui ?? null,
+    quarantined: entry.quarantined,
+    flaky: entry.retry?.flaky === true,
+    evidence: evidenceLinks(tracesDir, rootPath, entry)
+  }));
   return {
     file,
     read: "ok",
@@ -1805,24 +1835,14 @@ export async function buildPanelBatchDetail(
       failed: manifest.summary.failed
     },
     ui: manifest.summary.ui ?? null,
+    uiCoverage: manifest.summary.uiCoverage ?? null,
     failureDomains: manifest.failureDomains,
     options: manifest.options,
     tests: manifest.tests,
     designWarnings: manifest.designWarnings ?? null,
     apiReview: ledger?.apiReview ?? manifest.apiReview ?? null,
-    cases: manifest.cases.map((entry) => ({
-      caseId: entry.caseId,
-      name: entry.name,
-      status: entry.status,
-      traceId: entry.traceId,
-      error: entry.error,
-      failure: entry.failure,
-      scriptProvenance: entry.scriptProvenance,
-      ui: entry.ui ?? null,
-      quarantined: entry.quarantined,
-      flaky: entry.retry?.flaky === true,
-      evidence: evidenceLinks(tracesDir, rootPath, entry)
-    })),
+    cases,
+    readiness: batchReadiness(cases),
     warnings: []
   };
 }

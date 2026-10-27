@@ -108,6 +108,8 @@ test("design_device_diff: Figma × 实时截图 → 差异报告 + 标注图 + �
         "alignment",
         "designScreens",
         "ignoredRegions",
+        "dynamicIgnoreRegions",
+        "dynamicRegions",
         "designNodes",
         "thresholds",
         "warnings",
@@ -253,6 +255,173 @@ test("design_device_diff: insets 过大时差异计算报错且不写盘", async
   });
 });
 
+test("design_device_diff: image source accepts a PNG and reports raster-only degradation", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designImage = createImage(390, 844);
+  fillRect(designImage, 40, 80, 120, 60, [30, 64, 175, 255]);
+  const designPng = toPng(designImage);
+  const designPath = path.join(dir, ".artemis", "design", "screens", "home.png");
+  fs.mkdirSync(path.dirname(designPath), { recursive: true });
+  fs.writeFileSync(designPath, designPng);
+
+  const deviceImage = createImage(390, 844);
+  const devicePng = toPng(deviceImage);
+  const devicePath = path.join(dir, "device-screen.png");
+  fs.writeFileSync(devicePath, devicePng);
+  const proxy = new StubProxy({ running: true });
+  stubDevice(proxy, devicePath);
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+
+  const result = await designDeviceDiff(
+    runtime,
+    {
+      design: { source: "image", imagePath: ".artemis/design/screens/home.png" },
+      regions: "none",
+      save: false
+    },
+    {
+      capturePng: async () => ({
+        ok: true,
+        bytes: devicePng,
+        serial: "S1",
+        adb: { path: "/fake/adb", source: "env" }
+      })
+    }
+  );
+  const payload = parseToolResult(result);
+  assert.equal(payload.ok, true, JSON.stringify(payload));
+  assert.deepEqual(payload.design, {
+    source: "image",
+    path: ".artemis/design/screens/home.png",
+    format: "png"
+  });
+  assert.equal(payload.designNodes, 0);
+  assert.equal(payload.alignment.scale, 1);
+  assert.equal(payload.regions.length, 1);
+  assert.equal(payload.regions[0].category, "pixel");
+  assert.ok(
+    payload.warnings.some((warning) => warning.includes("image-source")),
+    "明确标注无节点几何/像素分类"
+  );
+});
+
+test("design_device_diff: image source low resolution warns design-upscaled", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designImage = createImage(195, 422);
+  fillRect(designImage, 20, 40, 60, 30, [200, 40, 40, 255]);
+  const designPath = path.join(dir, ".artemis", "design", "screens", "small.png");
+  fs.mkdirSync(path.dirname(designPath), { recursive: true });
+  fs.writeFileSync(designPath, toPng(designImage));
+
+  const deviceImage = createImage(390, 844);
+  const devicePng = toPng(deviceImage);
+  const devicePath = path.join(dir, "device-screen.png");
+  fs.writeFileSync(devicePath, devicePng);
+  const proxy = new StubProxy({ running: true });
+  stubDevice(proxy, devicePath);
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+
+  const result = await designDeviceDiff(
+    runtime,
+    {
+      design: { source: "image", imagePath: ".artemis/design/screens/small.png" },
+      save: false
+    },
+    {
+      capturePng: async () => ({
+        ok: true,
+        bytes: devicePng,
+        serial: "S1",
+        adb: { path: "/fake/adb", source: "env" }
+      })
+    }
+  );
+  const payload = parseToolResult(result);
+  assert.equal(payload.ok, true, JSON.stringify(payload));
+  assert.equal(payload.alignment.scale, 0.5);
+  assert.equal(payload.detail.tilesUsed, true);
+  assert.ok(
+    payload.warnings.some((warning) => warning.includes("design-upscaled")),
+    JSON.stringify(payload.warnings)
+  );
+});
+
+test("design_device_diff: image source dryRun and validation errors", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designPath = path.join(dir, ".artemis", "design", "screens", "home.png");
+  fs.mkdirSync(path.dirname(designPath), { recursive: true });
+  fs.writeFileSync(designPath, toPng(createImage(390, 844)));
+  const jpegPath = path.join(dir, ".artemis", "design", "screens", "home.jpg");
+  fs.writeFileSync(jpegPath, toJpeg(createImage(390, 844), 85));
+  const proxy = new StubProxy({ running: true });
+  stubDevice(proxy, designPath);
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+
+  const dry = parseToolResult(
+    await designDeviceDiff(runtime, {
+      design: { source: "image", imagePath: ".artemis/design/screens/home.png" },
+      dryRun: true
+    })
+  );
+  assert.equal(dry.ok, true);
+  assert.equal(dry.dryRun, true);
+  assert.deepEqual(dry.design, {
+    source: "image",
+    imagePath: ".artemis/design/screens/home.png",
+    resolved: ".artemis/design/screens/home.png",
+    format: "png"
+  });
+
+  const missingPath = parseToolResult(
+    await designDeviceDiff(runtime, { design: { source: "image" }, dryRun: true })
+  );
+  assert.match(missingPath.error, /需要 design\.imagePath/);
+
+  const jpeg = parseToolResult(
+    await designDeviceDiff(runtime, {
+      design: { source: "image", imagePath: ".artemis/design/screens/home.jpg" },
+      dryRun: true
+    })
+  );
+  assert.equal(jpeg.ok, true, "dryRun 不读盘/不校验格式");
+
+  const ambiguous = parseToolResult(
+    await designDeviceDiff(runtime, {
+      design: {
+        source: "image",
+        imagePath: ".artemis/design/screens/home.png",
+        figmaUrl: "https://www.figma.com/design/DiffH8/File?node-id=1-2"
+      },
+      dryRun: true
+    })
+  );
+  assert.match(ambiguous.error, /只能给/);
+
+  const capturePng = async () => ({
+    ok: true,
+    bytes: toPng(createImage(390, 844)),
+    serial: "S1",
+    adb: { path: "/fake/adb", source: "env" }
+  });
+  const jpegActual = parseToolResult(
+    await designDeviceDiff(
+      runtime,
+      { design: { source: "image", imagePath: ".artemis/design/screens/home.jpg" } },
+      { capturePng }
+    )
+  );
+  assert.match(jpegActual.error, /仅支持 PNG/);
+
+  const missingActual = parseToolResult(
+    await designDeviceDiff(
+      runtime,
+      { design: { source: "image", imagePath: ".artemis/design/screens/missing.png" } },
+      { capturePng }
+    )
+  );
+  assert.match(missingActual.error, /不存在/);
+});
+
 test("design_device_diff: 写盘失败时清理并报错", async () => {
   await withFigmaToken(async () => {
     const { dir, devicePath, devicePng, figma } = makeDiffProject({ fileKey: "DiffG7" });
@@ -279,4 +448,211 @@ test("design_device_diff: 写盘失败时清理并报错", async () => {
       figma.restore();
     }
   });
+});
+
+function writeSemantics(root, regions, screenId = "home") {
+  const dir = path.join(root, ".artemis", "design");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "ui-semantics.json"),
+    JSON.stringify({
+      version: 1,
+      screens: [{ screenId, screenName: "Home", viewport: { width: 390, height: 400, scale: 1 }, regions }]
+    })
+  );
+}
+
+function cropFixture() {
+  const dir = makeTempProject({ config: baseConfig() });
+  const design = createImage(390, 1000, [255, 255, 255, 255]);
+  fillRect(design, 0, 0, 390, 600, [220, 38, 38, 255]);
+  fillRect(design, 0, 600, 390, 400, [30, 64, 175, 255]);
+  const designPath = path.join(dir, ".artemis", "design", "screens", "home.png");
+  fs.mkdirSync(path.dirname(designPath), { recursive: true });
+  fs.writeFileSync(designPath, toPng(design));
+
+  const device = createImage(390, 400, [30, 64, 175, 255]);
+  const devicePath = path.join(dir, "device.png");
+  fs.writeFileSync(devicePath, toPng(device));
+  const proxy = new StubProxy({ running: true });
+  stubDevice(proxy, devicePath);
+  return { dir, designPath, device, devicePath, proxy };
+}
+
+test("design_device_diff: designCrop aligns lower section and reports crop", async () => {
+  const fixture = cropFixture();
+  const { runtime } = await loadTestRuntime(fixture.dir, { proxy: fixture.proxy });
+  const capturePng = async () => ({
+    ok: true,
+    bytes: toPng(fixture.device),
+    serial: "S1",
+    adb: { path: "/fake/adb", source: "env" }
+  });
+
+  const cropped = await designDeviceDiff(
+    runtime,
+    {
+      design: { source: "image", imagePath: ".artemis/design/screens/home.png" },
+      alignment: { designCrop: { x: 0, y: 600, width: 390, height: 400 } },
+      regions: "none",
+      save: false
+    },
+    { capturePng }
+  );
+  const payload = parseToolResult(cropped);
+  assert.equal(payload.ok, true, JSON.stringify(payload));
+  assert.deepEqual(payload.alignment.designCrop, { x: 0, y: 600, width: 390, height: 400 });
+  assert.equal(payload.alignment.scale, 1);
+  assert.equal(payload.regions.length, 0);
+
+  const uncropped = await designDeviceDiff(
+    runtime,
+    {
+      design: { source: "image", imagePath: ".artemis/design/screens/home.png" },
+      regions: "none",
+      save: false
+    },
+    { capturePng }
+  );
+  assert.ok(parseToolResult(uncropped).regions.length > 0);
+});
+
+test("design_device_diff: invalid designCrop fails before writing artifacts", async () => {
+  const fixture = cropFixture();
+  const { runtime } = await loadTestRuntime(fixture.dir, { proxy: fixture.proxy });
+  const result = await designDeviceDiff(
+    runtime,
+    {
+      design: { source: "image", imagePath: ".artemis/design/screens/home.png" },
+      alignment: { designCrop: { x: 0, y: 600, width: 390, height: 500 } }
+    },
+    {
+      capturePng: async () => ({
+        ok: true,
+        bytes: toPng(fixture.device),
+        serial: "S1",
+        adb: { path: "/fake/adb", source: "env" }
+      })
+    }
+  );
+  assert.equal(result.isError, true);
+  assert.match(parseToolResult(result).error, /designCrop/);
+  assert.equal(fs.existsSync(path.join(fixture.dir, ".artemis", "design", "diffs")), false);
+});
+
+test("design_device_diff: ignoreDynamicRegions keeps invariant area compared", async () => {
+  const fixture = cropFixture();
+  const design = createImage(390, 1000, [255, 255, 255, 255]);
+  fillRect(design, 0, 600, 390, 100, [30, 64, 175, 255]);
+  fillRect(design, 0, 700, 390, 300, [22, 163, 74, 255]);
+  fs.writeFileSync(fixture.designPath, toPng(design));
+  const device = createImage(390, 400, [30, 64, 175, 255]);
+  fillRect(device, 0, 0, 390, 100, [220, 38, 38, 255]);
+  fillRect(device, 0, 100, 390, 300, [234, 179, 8, 255]);
+  fs.writeFileSync(fixture.devicePath, toPng(device));
+  writeSemantics(fixture.dir, [
+    { id: "list", role: "product-list", isDynamic: true, designBbox: { x: 0, y: 700, width: 390, height: 300 } }
+  ]);
+  const { runtime } = await loadTestRuntime(fixture.dir, { proxy: fixture.proxy });
+  const result = await designDeviceDiff(
+    runtime,
+    {
+      design: { source: "image", imagePath: ".artemis/design/screens/home.png" },
+      alignment: { designCrop: { x: 0, y: 600, width: 390, height: 400 } },
+      ui: { screenId: "home", ignoreDynamicRegions: true },
+      regions: "none",
+      save: false
+    },
+    {
+      capturePng: async () => ({
+        ok: true,
+        bytes: toPng(device),
+        serial: "S1",
+        adb: { path: "/fake/adb", source: "env" }
+      })
+    }
+  );
+  const payload = parseToolResult(result);
+  assert.equal(payload.ok, true, JSON.stringify(payload));
+  assert.deepEqual(payload.dynamicIgnoreRegions, [{ x: 0, y: 100, width: 390, height: 300 }]);
+  assert.equal(payload.dynamicRegions.ignored, 1);
+  assert.ok(payload.regions.length >= 1);
+  assert.ok(payload.regions[0].bbox.y < 100, `y=${payload.regions[0].bbox.y}`);
+});
+
+test("design_device_diff: dynamic region without bbox is warned, expectedAssets is not ignored", async () => {
+  const fixture = cropFixture();
+  writeSemantics(fixture.dir, [
+    { id: "no-bbox", role: "banner", isDynamic: true },
+    {
+      id: "hero",
+      role: "banner",
+      dynamicAssets: true,
+      expectedAssets: 1,
+      designBbox: { x: 0, y: 600, width: 390, height: 400 }
+    }
+  ]);
+  const { runtime } = await loadTestRuntime(fixture.dir, { proxy: fixture.proxy });
+  const result = await designDeviceDiff(
+    runtime,
+    {
+      design: { source: "image", imagePath: ".artemis/design/screens/home.png" },
+      alignment: { designCrop: { x: 0, y: 600, width: 390, height: 400 } },
+      ui: { screenId: "home", ignoreDynamicRegions: true, expectedAssets: true },
+      regions: "none",
+      save: false
+    },
+    {
+      capturePng: async () => ({
+        ok: true,
+        bytes: toPng(fixture.device),
+        serial: "S1",
+        adb: { path: "/fake/adb", source: "env" }
+      })
+    }
+  );
+  const payload = parseToolResult(result);
+  assert.equal(payload.ok, true, JSON.stringify(payload));
+  assert.equal(payload.dynamicRegions.ignored, 0);
+  assert.equal(payload.dynamicRegions.skipped, 1);
+  assert.ok(payload.warnings.some((warning) => warning.includes("dynamic-region-without-bbox")));
+  assert.ok(payload.warnings.some((warning) => warning.includes("dynamic-assets-not-ignored")));
+
+  const onlyAssets = await designDeviceDiff(
+    runtime,
+    {
+      design: { source: "image", imagePath: ".artemis/design/screens/home.png" },
+      alignment: { designCrop: { x: 0, y: 600, width: 390, height: 400 } },
+      ui: { screenId: "home", expectedAssets: true },
+      regions: "none",
+      save: false
+    },
+    {
+      capturePng: async () => ({
+        ok: true,
+        bytes: toPng(fixture.device),
+        serial: "S1",
+        adb: { path: "/fake/adb", source: "env" }
+      })
+    }
+  );
+  const onlyAssetsPayload = parseToolResult(onlyAssets);
+  assert.equal(onlyAssetsPayload.ok, true, JSON.stringify(onlyAssetsPayload));
+  assert.equal(onlyAssetsPayload.dynamicIgnoreRegions.length, 0);
+  assert.ok(onlyAssetsPayload.warnings.some((warning) => warning.includes("dynamic-assets-not-ignored")));
+});
+
+test("design_device_diff: dryRun reports crop and ui plan", async () => {
+  const fixture = cropFixture();
+  const { runtime } = await loadTestRuntime(fixture.dir, { proxy: fixture.proxy });
+  const result = await designDeviceDiff(runtime, {
+    design: { source: "image", imagePath: ".artemis/design/screens/home.png" },
+    alignment: { designCrop: { x: 0, y: 600, width: 390, height: 400 } },
+    ui: { ignoreDynamicRegions: true, expectedAssets: true },
+    dryRun: true
+  });
+  const payload = parseToolResult(result);
+  assert.equal(payload.dryRun, true);
+  assert.deepEqual(payload.alignment.designCrop, { x: 0, y: 600, width: 390, height: 400 });
+  assert.deepEqual(payload.ui, { ignoreDynamicRegions: true, expectedAssets: true });
 });

@@ -6,8 +6,33 @@ import test from "node:test";
 import ExcelJS from "exceljs";
 
 import { MemoryStore } from "../dist/db/memory.js";
-import { buildRunReport, buildTaskRunReport } from "../dist/figma/run-report.js";
+import {
+  buildRunReport,
+  buildTaskRunReport,
+  updateTestsWorkbookWithResults
+} from "../dist/figma/run-report.js";
+import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
 import { baseConfig, loadTestRuntime, makeTempProject, StubProxy } from "./helpers.js";
+
+const TEST_RESULT_HEADERS = [
+  "#",
+  "用例编号",
+  "caseId",
+  "用例名称",
+  "结果",
+  "台账状态",
+  "功能",
+  "端",
+  "设备",
+  "耗时(ms)",
+  "traceId",
+  "失败域",
+  "失败原因",
+  "API 错误",
+  "证据路径",
+  "批次",
+  "运行时间"
+];
 
 const CASES = [
   {
@@ -214,6 +239,27 @@ test("run report: writes xlsx result sheet and JUnit XML without touching tests.
   assert.match(junit, /<skipped message="pending \(submitted\)"\/>/);
 });
 
+test("run report: caseId 缺失时按 taskDesc 回填生成用例", async () => {
+  const { dir, runtime } = await setup();
+  fs.mkdirSync(runtime.traceDir("trace-4"), { recursive: true });
+  fs.writeFileSync(
+    path.join(runtime.traceDir("trace-4"), "status.json"),
+    JSON.stringify({ status: "completed" })
+  );
+  await runtime.store.recordTask({
+    rootPath: dir,
+    traceId: "trace-4",
+    caseId: null,
+    model: "deepseek-chat",
+    status: "completed",
+    taskDesc: "run case 2",
+    finishedAt: "2026-10-02T00:00:40.000Z"
+  });
+  const report = await buildRunReport(runtime);
+  const entry = report.cases.find((item) => item.traceId === "trace-4");
+  assert.equal(entry.caseId, "case-2", "taskDesc 命中时回填 caseId");
+});
+
 test("run report: caseIds filter and save:false leave no artifacts", async () => {
   const { runtime, designDir } = await setup();
   const filtered = await buildRunReport(runtime, { caseIds: ["case-2"] });
@@ -397,4 +443,215 @@ test("task report: 多功能 → 多功能N项 命名", async () => {
     path.join(runtime.configDirAbs, "design", "reports", "20261014-101000_多功能2项_回归.xlsx")
   );
   assert.ok(fs.existsSync(report.saved.xlsx));
+});
+
+test("updateTestsWorkbookWithResults: 独立执行结果 sheet，幂等且不动计划", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const testsXlsx = path.join(dir, "tests.xlsx");
+  const workbookCases = CASES.map((entry, index) => ({
+    ...entry,
+    displayId: `TC_00000${index + 1}`,
+    continuation: false,
+    startScreen: entry.screens[0],
+    prelude: [],
+    expectations: entry.expectations ?? []
+  }));
+  fs.writeFileSync(
+    testsXlsx,
+    await renderTestsWorkbook(workbookCases, {
+      source: "test",
+      generatedAt: "2026-10-26T00:00:00Z",
+      counts: { cases: 2, screens: 2, edges: 2 }
+    })
+  );
+  const report = {
+    ok: true,
+    generatedAt: "2026-10-26T00:00:00Z",
+    total: 2,
+    passed: 1,
+    failed: 1,
+    pending: 0,
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Home → Checkout",
+        traceId: "trace-1",
+        outcome: "passed",
+        ledgerStatus: "completed",
+        durationMs: 1200,
+        model: null,
+        feature: "f-1",
+        platform: "android",
+        runId: "run-1",
+        device: "emulator-5554",
+        startedAt: "2026-10-26T00:00:00Z",
+        appVersion: "1.0",
+        failure: null,
+        scriptProvenance: null,
+        failedItems: [],
+        apiErrors: [],
+        apiErrorsDegraded: null,
+        evidence: {
+          traceDir: "/tmp/trace-1",
+          notesDir: null,
+          stderrLog: null,
+          stdoutLog: null
+        }
+      },
+      {
+        caseId: "case-2",
+        name: "我的 → 登录",
+        traceId: "trace-2",
+        outcome: "failed",
+        ledgerStatus: "failed",
+        durationMs: 3400,
+        model: null,
+        feature: "f-1",
+        platform: "ios",
+        runId: "run-1",
+        device: "iPhone",
+        startedAt: "2026-10-26T00:00:01Z",
+        appVersion: "1.0",
+        failure: { domain: "app-defect", confidence: "high", reason: "崩溃", evidence: [] },
+        scriptProvenance: null,
+        failedItems: [],
+        apiErrors: [],
+        apiErrorsDegraded: null,
+        evidence: {
+          traceDir: "/tmp/trace-2",
+          notesDir: null,
+          stderrLog: null,
+          stdoutLog: null
+        }
+      }
+    ],
+    traceability: null,
+    designWarnings: null
+  };
+  const historyRun = (runId, platform, finishedAt, cases) => {
+    const passed = cases.filter((entry) => entry.status === "passed").length;
+    return {
+      id: `run-${runId}`,
+      projectId: null,
+      createdAt: finishedAt,
+      runId,
+      trigger: "cli",
+      regressionTaskId: null,
+      caseSetId: null,
+      featureKey: "f-1",
+      featureName: "登录",
+      platform,
+      device: platform === "ios" ? "iPhone" : "emulator-5554",
+      appVersion: "1.0",
+      runner: null,
+      status: "completed",
+      startedAt: finishedAt,
+      finishedAt,
+      total: cases.length,
+      passed,
+      failed: cases.length - passed,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "pass",
+      exitCode: 0,
+      manifestPath: null,
+      comparison: null,
+      apiReview: null,
+      cases: cases.map((entry) => ({
+        caseId: entry.caseId,
+        name: entry.name,
+        featureKey: "f-1",
+        platform,
+        status: entry.status,
+        traceId: null,
+        failureDomain: null,
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null,
+        jiraIssueKey: null
+      }))
+    };
+  };
+  const runs = [
+    historyRun("run-ios", "ios", "2026-10-26T03:10:00Z", [
+      { caseId: "case-1", name: "Home → Checkout", status: "failed" },
+      { caseId: "case-2", name: "我的 → 登录", status: "passed" }
+    ]),
+    historyRun("run-android-new", "android", "2026-10-26T03:00:00Z", [
+      { caseId: "case-1", name: "Home → Checkout", status: "passed" },
+      { caseId: "case-2", name: "我的 → 登录", status: "failed" }
+    ]),
+    historyRun("run-android-old", "android", "2026-10-26T02:00:00Z", [
+      { caseId: "case-1", name: "Home → Checkout", status: "failed" },
+      { caseId: "case-2", name: "我的 → 登录", status: "passed" }
+    ])
+  ];
+  const first = await updateTestsWorkbookWithResults(testsXlsx, report, { runs });
+  assert.deepEqual(first, { path: testsXlsx, rows: 2, historyRows: 2 });
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(testsXlsx);
+  assert.ok(workbook.getWorksheet("测试用例"), "计划 sheet 保留");
+  const sheet = workbook.getWorksheet("执行结果");
+  assert.ok(sheet);
+  assert.deepEqual(sheet.getRow(1).values.slice(1), TEST_RESULT_HEADERS);
+  assert.equal(sheet.getRow(2).getCell(2).value, "TC_000001");
+  assert.equal(sheet.getRow(2).getCell(5).value, "passed");
+  assert.equal(sheet.getRow(2).getCell(9).value, "emulator-5554");
+  assert.equal(sheet.getRow(2).getCell(16).value, "run-1");
+  assert.equal(sheet.getRow(3).getCell(2).value, "TC_000002");
+  assert.equal(sheet.getRow(3).getCell(12).value, "app-defect");
+  assert.equal(sheet.getRow(3).getCell(13).value, "崩溃");
+
+  const cross = workbook.getWorksheet("跨端对比");
+  assert.ok(cross, "跨端对比 sheet");
+  assert.deepEqual(cross.getRow(1).values.slice(1), [
+    "#",
+    "用例编号",
+    "caseId",
+    "用例名称",
+    "功能",
+    "Android",
+    "iOS",
+    "变化",
+    "最近批次",
+    "最近时间"
+  ]);
+  assert.equal(cross.getRow(2).getCell(1).value, 1);
+  assert.equal(cross.getRow(2).getCell(2).value, "TC_000001");
+  assert.equal(cross.getRow(2).getCell(6).value, "passed");
+  assert.equal(cross.getRow(2).getCell(7).value, "failed");
+  assert.equal(cross.getRow(2).getCell(8).value, "Android:修复；iOS:新增");
+  assert.equal(cross.getRow(2).getCell(9).value, "run-ios");
+  assert.equal(cross.getRow(3).getCell(6).value, "failed");
+  assert.equal(cross.getRow(3).getCell(7).value, "passed");
+  assert.equal(cross.getRow(3).getCell(8).value, "Android:回归；iOS:新增");
+
+  await updateTestsWorkbookWithResults(testsXlsx, report, { runs });
+  const reread = new ExcelJS.Workbook();
+  await reread.xlsx.readFile(testsXlsx);
+  assert.equal(
+    reread.worksheets.filter((entry) => entry.name === "执行结果").length,
+    1,
+    "重复回填替换而非追加"
+  );
+  assert.equal(reread.getWorksheet("执行结果").rowCount, 3);
+  assert.equal(
+    reread.worksheets.filter((entry) => entry.name === "跨端对比").length,
+    1,
+    "跨端对比也幂等"
+  );
+  assert.equal(reread.getWorksheet("跨端对比").rowCount, 3);
+
+  await assert.rejects(
+    updateTestsWorkbookWithResults(path.join(dir, "missing.xlsx"), report),
+    /未找到 tests.xlsx/
+  );
 });

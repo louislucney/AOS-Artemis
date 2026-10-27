@@ -111,7 +111,7 @@ test("真实设备基准：报告 schema 快照", () => {
     "severity"
   ]);
   assert.deepEqual(Object.keys(region.bbox).sort(), ["height", "width", "x", "y"]);
-  assert.deepEqual(Object.keys(result.alignment).sort(), ["insets", "offset", "scale"]);
+  assert.deepEqual(Object.keys(result.alignment).sort(), ["designCrop", "insets", "offset", "scale"]);
   assert.deepEqual(Object.keys(result.summary).sort(), ["byCategory", "bySeverity", "regions"]);
 });
 

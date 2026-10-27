@@ -412,6 +412,18 @@ test("usage --host: 当前项目不属于该主机 → exit 2 而非零统计", 
   );
 });
 
+test("usage --all: AOS_PANEL_EXCLUDE_PROJECTS filters the project list", async () => {
+  const store = await seedStore();
+  const { code, logs } = await runCli(["--all", "--json"], {
+    store,
+    env: { AOS_PANEL_EXCLUDE_PROJECTS: "beta" }
+  });
+  assert.equal(code, 0);
+  const payload = JSON.parse(logs.at(-1));
+  assert.equal(payload.projects.length, 1);
+  assert.equal(payload.projects[0].name, "alpha");
+});
+
 test("usage help and parameter errors", async () => {
   const store = new MemoryStore();
   const help = await runCli(["help"], { store });

@@ -75,6 +75,23 @@ async function getJson(store, path, extra = {}) {
   return JSON.parse(res.body);
 }
 
+test("usage web: AOS_PANEL_EXCLUDE_PROJECTS hides projects but explicit URL still works", async () => {
+  const store = await seedStore();
+  const env = { AOS_PANEL_EXCLUDE_PROJECTS: "beta" };
+  const payload = await getJson(store, "/usage.json", { env });
+  assert.equal(payload.projects.length, 1);
+  assert.equal(payload.projects[0].name, "alpha");
+  assert.equal(payload.excludedProjects, 1);
+
+  const explicit = await getJson(store, "/usage.json?project=beta", { env });
+  assert.equal(explicit.project.name, "beta", "显式项目仍可访问");
+  assert.equal(explicit.projects.length, 1, "项目选择器仍只列可见项目");
+
+  const html = await handleUsageRequest(new URL("http://localhost/usage"), deps(store, { env }));
+  assert.match(html.body, /已按 <code>AOS_PANEL_EXCLUDE_PROJECTS<\/code> 隐藏 1 个项目/);
+  assert.doesNotMatch(html.body, /<option value="beta"><\/option>/, "隐藏项目不出现在 datalist");
+});
+
 test("usage web: HTML 四段、页面内存储标注与项目切换器", async () => {
   const store = await seedStore();
   const res = await handleUsageRequest(

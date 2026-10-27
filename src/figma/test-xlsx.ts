@@ -327,10 +327,16 @@ function humanizationNote(testCase: GeneratedTest): string {
 }
 
 function notesCell(testCase: GeneratedTest): string {
+  const parts: string[] = [];
   const notes = openQuestionsCell(testCase);
+  if (notes !== "—") parts.push(notes);
   const degradation = humanizationNote(testCase);
-  if (degradation === "") return notes;
-  return notes === "—" ? degradation : `${notes}\n${degradation}`;
+  if (degradation !== "") parts.push(degradation);
+  const warnings = (testCase.designWarnings ?? []).map(
+    (warning) => `设计警告（${warning.code}）：${warning.message}`
+  );
+  if (warnings.length > 0) parts.push(...warnings);
+  return parts.length === 0 ? "—" : parts.join("\n");
 }
 
 function addExecutorSheet(workbook: ExcelJS.Workbook, cases: GeneratedTest[]): void {

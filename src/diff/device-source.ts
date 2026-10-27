@@ -107,7 +107,7 @@ export async function captureLiveScreenshot(
         : "";
       const hint = observation.busy
         ? `设备正被任务占用（device_busy，观测有界等待超时）${frameNote}；稍后重试。`
-        : "请确认 Appium/WDA 可用（doctor 查看）与 iOS 18+ 隧道已建立。";
+        : "请确认 Appium/WDA 可用（doctor 查看）且 iOS 18+ Remote XPC 隧道进程正在运行。";
       throw new Error(`iOS 真机截图失败（${observation.error}）；${hint}`);
     }
     const hint = IOS_ERROR_HINTS[observation.error ?? ""] ?? "请确认模拟器已启动且 idb/simctl 可用。";

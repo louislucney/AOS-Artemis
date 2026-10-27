@@ -12,6 +12,17 @@ import {
 } from "../design/warnings.js";
 import { loadDesignFlowGraph } from "../figma/design-store.js";
 import { figmaExtractFlows } from "../figma/flows.js";
+import {
+  openVisionCapabilityCache,
+  parseDeclaredVision,
+  resolveVisionCapability,
+  visionCacheTtlMsFromEnv,
+  visionCapabilityKey
+} from "../llm/vision-capability.js";
+import { makeChatFn, type ChatFn } from "../llm/chat.js";
+import { runDesignReading } from "../design/reading/run.js";
+import type { DesignReadingResult } from "../design/reading/types.js";
+import { emptyReadingStats } from "../design/reading/types.js";
 import { coverageGateIssue } from "../figma/gate.js";
 import { preflightGeneratedTests } from "../figma/preflight.js";
 import { designFlowsPath, sharedDesignDir } from "../figma/design-source.js";
@@ -47,6 +58,11 @@ export interface DesignToTestArgs {
   screens?: boolean;
   device?: string;
   run?: boolean;
+  /** "auto"（默认，屏 ≥6 且视觉可用时读）| true 强制 | false 关闭。 */
+  reading?: "auto" | boolean;
+  readingMaxScreens?: number;
+  /** 是否把 pen 状态变体也纳入阅读（默认 false）。 */
+  readingStates?: boolean;
   /** API 说明 pending 时仍允许执行（默认阻断）。 */
   allowPendingApi?: boolean;
 }
@@ -60,6 +76,9 @@ export interface DesignToTestDeps {
   execute?: (runtime: Runtime, options: SuiteRunOptions) => Promise<SuiteRunReport>;
   setup?: SetupDeps;
   log?: (line: string) => void;
+  readDesign?: typeof runDesignReading;
+  readingChat?: ChatFn;
+  readingModel?: string;
 }
 
 const REUSE_NO_FLOWS_QUESTION = "还没有设计流程——给 Figma 链接或 .pen 路径，或先跑一次设计提取";
@@ -128,6 +147,43 @@ function countOf(payload: Record<string, unknown> | null, key: string): number |
   if (counts === null || typeof counts !== "object" || Array.isArray(counts)) return null;
   const value = (counts as Record<string, unknown>)[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readingResponse(result: DesignReadingResult): Record<string, unknown> {
+  const common = {
+    status: result.status,
+    ...(result.reason === null ? {} : { reason: result.reason }),
+    warnings: result.warnings
+  };
+  if (result.reading === null) return common;
+  return {
+    ...common,
+    summary: `读到 ${result.reading.completeness.screensRead}/${result.reading.completeness.screensTotal} 屏 · 块 ${result.stats.chunksProcessed}/${result.stats.chunksRequested} · 问题 ${result.reading.questions.length}${
+      result.reading.completeness.questionsAnswered > 0
+        ? ` · 已回答 ${result.reading.completeness.questionsAnswered}`
+        : ""
+    }`,
+    spine: result.reading.spine,
+    questions: result.reading.questions,
+    ...(result.reading.answers === undefined || result.reading.answers.length === 0
+      ? {}
+      : { answers: result.reading.answers }),
+    completeness: result.reading.completeness,
+    stats: result.stats,
+    artifacts: result.artifacts
+  };
+}
+
+function skippedReading(reason: string, code: string): DesignReadingResult {
+  return {
+    ok: false,
+    status: "skipped",
+    reason,
+    reading: null,
+    artifacts: null,
+    warnings: [{ code, message: reason }],
+    stats: emptyReadingStats()
+  };
 }
 
 /** CR 一条龙编排：前置检查 → 设计提取 → 用例生成 → 静态校验 →（可选）执行。
@@ -199,6 +255,7 @@ export async function designToTest(
   let warningsAvailable = false;
   let warningsSnapshotAt: string | null = null;
   let warningsBySource: Record<string, number> = {};
+  let reading: DesignReadingResult | null = null;
   const warningFields = (): Record<string, unknown> => ({
     warnings,
     designWarnings: summarizeWarnings(warnings, {
@@ -207,6 +264,8 @@ export async function designToTest(
       ...(Object.keys(warningsBySource).length > 0 ? { bySource: warningsBySource } : {})
     })
   });
+  const readingField = (): Record<string, unknown> =>
+    reading === null ? {} : { reading: readingResponse(reading) };
   const steps: Array<Record<string, unknown>> = [];
   let stepMark = Date.now();
   const mergeGeneratedWarnings = (payload: Record<string, unknown> | null): void => {
@@ -229,11 +288,13 @@ export async function designToTest(
     return out;
   };
 
+  let screenCount: number | null = null;
   if (reuse) {
     if (!fs.existsSync(flowsPath)) {
       return jsonResult({ ok: false, needs: "info", category: "no-flows", questions: [REUSE_NO_FLOWS_QUESTION] });
     }
     const graph = loadDesignFlowGraph(runtime.configDirAbs, { flowsPath });
+    screenCount = graph?.screens.length ?? null;
     const read = readFlowsWarnings(runtime.configDirAbs);
     warnings = read.warnings;
     warningSources = [{ source: "flows", warnings: read.warnings }];
@@ -268,7 +329,7 @@ export async function designToTest(
         failedStep: "extract",
         detail: errorMessage(error),
         suggestions,
-        ...warningFields()
+        ...warningFields(), ...readingField()
       });
     }
     const extractedPayload = payloadOf(extracted);
@@ -278,11 +339,12 @@ export async function designToTest(
         failedStep: "extract",
         detail: failureDetail(extracted, extractedPayload),
         suggestions,
-        ...warningFields()
+        ...warningFields(), ...readingField()
       });
     }
     const screens = countOf(extractedPayload, "screens");
     const edges = countOf(extractedPayload, "edges");
+    screenCount = screens;
     const diskWarnings = readFlowsWarnings(runtime.configDirAbs);
     warningSources = [
       { source: "extract", warnings: normalizeWarnings(extractedPayload?.warnings) },
@@ -300,6 +362,104 @@ export async function designToTest(
       ...(edges !== null ? { edges } : {}),
       warnings: warnings.length
     });
+  }
+
+  const readingMode = args.reading ?? "auto";
+  if (readingMode !== false && (readingMode === true || (screenCount ?? 0) >= 6)) {
+    let chat = deps.readingChat;
+    let model = deps.readingModel ?? null;
+    if (chat === undefined) {
+      const entry = await runtime.activeEntry().catch(() => null);
+      if (entry === null) {
+        reading = skippedReading("未配置 active LLM，跳过设计阅读", "vision-required");
+      } else {
+        const baseUrl = entry.baseUrl ?? "";
+        const apiKey = entry.apiKey ?? "";
+        const env = { ...process.env, ...(runtime.project.dotenvValues ?? {}) };
+        const cache = openVisionCapabilityCache(
+          path.join(runtime.configDirAbs, "llm-capabilities.json")
+        );
+        const resolution = resolveVisionCapability({
+          model: entry.model,
+          baseUrl,
+          declared: parseDeclaredVision(env),
+          cached: cache.get(visionCapabilityKey(baseUrl, entry.model)),
+          ttlMs: visionCacheTtlMsFromEnv(env)
+        });
+        if (baseUrl === "" || apiKey === "") {
+          reading = skippedReading("active LLM 缺 baseUrl/apiKey，跳过设计阅读", "vision-required");
+        } else if (resolution.capable === false) {
+          reading = skippedReading(
+            `当前模型「${entry.model}」无视觉能力（${resolution.source}），拒绝发送设计图；可切换视觉模型或 reading:false`,
+            "vision-required"
+          );
+        } else if (resolution.capable === "unknown" && readingMode !== true) {
+          reading = skippedReading(
+            `当前模型「${entry.model}」视觉能力未确认，自动阅读已跳过；可设 AOS_LLM_VISION=1 或 reading:true 强制尝试`,
+            "vision-model-unverified"
+          );
+        } else {
+          if (resolution.capable === "unknown") {
+            warnings = [
+              ...warnings,
+              ...normalizeWarnings([
+                {
+                  code: "vision-model-unverified",
+                  message: `模型「${entry.model}」视觉能力未确认，按 reading:true 强制尝试`
+                }
+              ])
+            ];
+            warningsAvailable = true;
+          }
+          chat = makeChatFn({ baseUrl, apiKey, model: entry.model });
+          model = entry.model;
+        }
+      }
+    }
+    if (chat !== undefined && model !== null) {
+      try {
+        const readingOptions = {
+          ...(args.readingMaxScreens !== undefined
+            ? { maxScreens: args.readingMaxScreens }
+            : {}),
+          ...(args.readingStates !== undefined
+            ? { includeStates: args.readingStates }
+            : {})
+        };
+        reading = await (deps.readDesign ?? runDesignReading)({
+          runtime,
+          flowsPath,
+          ...(Object.keys(readingOptions).length > 0 ? { options: readingOptions } : {}),
+          model,
+          chat,
+          env: { ...process.env, ...(runtime.project.dotenvValues ?? {}) }
+        });
+      } catch (error) {
+        reading = skippedReading(`设计阅读异常：${errorMessage(error)}`, "reading-failed");
+      }
+    }
+    if (reading !== null) {
+      recordStep({
+        step: "read",
+        ...(reading.status === "skipped"
+          ? { skipped: true, reason: reading.reason }
+          : {
+              chunks: reading.stats.chunksProcessed,
+              screens: reading.stats.screensRead,
+              observed: reading.stats.observed,
+              inferred: reading.stats.inferred,
+              unconfirmed: reading.stats.unconfirmed
+            })
+      });
+      if (reading.warnings.length > 0) {
+        warnings = [...warnings, ...normalizeWarnings(reading.warnings)];
+        warningsBySource = {
+          ...warningsBySource,
+          reading: (warningsBySource.reading ?? 0) + reading.warnings.length
+        };
+        warningsAvailable = true;
+      }
+    }
   }
 
   let preflight: ReturnType<typeof preflightGeneratedTests> = null;
@@ -349,7 +509,7 @@ export async function designToTest(
           failedStep: "api-review",
           detail: errorMessage(error),
           suggestions: ["确认 tests.json 存在，apiSpecPath 位于项目内且可读"],
-          ...warningFields()
+          ...warningFields(), ...readingField()
         });
       }
     }
@@ -376,7 +536,7 @@ export async function designToTest(
           failedStep: "generate",
           detail: failureDetail(generated, payload),
           suggestions: GENERATE_SUGGESTIONS,
-          ...warningFields()
+          ...warningFields(), ...readingField()
         });
       }
       generatePayload = payload;
@@ -387,7 +547,7 @@ export async function designToTest(
         failedStep: "generate",
         detail: errorMessage(error),
         suggestions: GENERATE_SUGGESTIONS,
-        ...warningFields()
+        ...warningFields(), ...readingField()
       });
     }
 
@@ -408,7 +568,7 @@ export async function designToTest(
       failedStep: "generate",
       detail: "设计流程没有生成任何用例（flows.json 为空或流程不可达）",
       suggestions: GENERATE_SUGGESTIONS,
-      ...warningFields()
+      ...warningFields(), ...readingField()
     });
   }
 
@@ -426,7 +586,7 @@ export async function designToTest(
       detail: issue,
       suggestions: [CHECK_SUGGESTION],
       ...(Object.keys(flowMapArtifact).length > 0 ? { artifacts: flowMapArtifact } : {}),
-      ...warningFields()
+      ...warningFields(), ...readingField()
     });
   }
   recordStep({
@@ -462,7 +622,7 @@ export async function designToTest(
         "本次功能涉及新增/修改 API，但接口说明尚未提供；请先补充 apiSpec/apiSpecPath，或显式传 allowPendingApi:true 继续执行。"
       ],
       ...(reviewedApi !== null ? { apiReview: reviewedApi } : {}),
-      ...warningFields()
+      ...warningFields(), ...readingField()
     });
   }
   const logLine = deps.log ?? logInfo;
@@ -474,14 +634,14 @@ export async function designToTest(
     );
     if (!pick.ok) {
       return pick.needs === "setup"
-        ? jsonResult({ ok: false, needs: "setup", checks: [pick.check], ...warningFields() })
+        ? jsonResult({ ok: false, needs: "setup", checks: [pick.check], ...warningFields(), ...readingField() })
         : jsonResult({
             ok: false,
             needs: "info",
             category: pick.category,
             questions: pick.questions,
             context: pick.context,
-            ...warningFields()
+            ...warningFields(), ...readingField()
           });
     }
     const device = pick.device;
@@ -518,7 +678,7 @@ export async function designToTest(
         failedStep: "run",
         detail: errorMessage(error),
         suggestions: [RUN_FAILURE_SUGGESTION],
-        ...warningFields()
+        ...warningFields(), ...readingField()
       });
     }
     runEntry.ms = Date.now() - execStartedAt;
@@ -538,7 +698,7 @@ export async function designToTest(
               }
             }
           : {}),
-        ...warningFields()
+        ...warningFields(), ...readingField()
       });
     }
     const quarantinedFailures = report.cases.filter(
@@ -564,6 +724,10 @@ export async function designToTest(
   Object.assign(artifacts, flowMapArtifact);
   artifacts.tests = testsPath;
   if (runManifestPath !== null) artifacts.runManifest = runManifestPath;
+  if (reading?.artifacts !== null && reading?.artifacts !== undefined) {
+    artifacts.readingJson = reading.artifacts.json;
+    artifacts.readingMarkdown = reading.artifacts.markdown;
+  }
   const savedTo = generatePayload?.savedTo;
   if (savedTo !== undefined && savedTo !== null) artifacts.savedTo = savedTo;
 
@@ -577,6 +741,10 @@ export async function designToTest(
             run: true,
             ...(typeof args.maxFlows === "number" ? { maxFlows: args.maxFlows } : {}),
             ...(typeof args.maxDepth === "number" ? { maxDepth: args.maxDepth } : {}),
+            ...(typeof args.reading !== "undefined" ? { reading: args.reading } : {}),
+            ...(typeof args.readingMaxScreens === "number"
+              ? { readingMaxScreens: args.readingMaxScreens }
+              : {}),
             ...(deviceArg !== null ? { device: deviceArg } : {})
           }
         }
@@ -596,10 +764,11 @@ export async function designToTest(
     ok: true,
     steps,
     artifacts,
-    ...warningFields(),
+    ...warningFields(), ...readingField(),
     ...(apiReview !== null ? { apiReview } : {}),
     ...(apiNextAction !== null ? { apiReviewNextAction: apiNextAction } : {}),
     ...(runSummary !== null ? { run: runSummary } : {}),
+    ...(reading !== null ? { reading: readingResponse(reading) } : {}),
     ...(nextAction !== null ? { nextAction } : {})
   });
 }

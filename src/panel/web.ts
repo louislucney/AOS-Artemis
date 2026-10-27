@@ -8,6 +8,7 @@ import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
 import { renderConsoleShell, renderGroupTabs, setConsoleShellDefaults, type ConsoleCapabilities, type ConsoleNavKey, type ConsoleShellInput } from "../console/shell.js";
+import { INTEGRATION_ACTIONS, INTEGRATION_LABELS } from "../figma/integration-readiness.js";
 import {
   computeDispatchPreview,
   dispatchFormSignature,
@@ -51,6 +52,7 @@ import {
   hostDisplayLabel,
   PANEL_BATCH_LIMIT_DEFAULT,
   PANEL_BATCH_LIMIT_MAX,
+  panelProjectExcluded,
   type PanelBatchDetail,
   type PanelBatchRow,
   type PanelBatchSummary,
@@ -104,6 +106,8 @@ export interface PanelWebDeps {
   storeForHost?: (hostId: string) => ProjectStore | null;
   /** 能力标记（承载模式/写动作/统计页）；缺省按 HTTP 全开渲染。 */
   capabilities?: ConsoleCapabilities;
+  /** 当前请求身份名（HTTP 认证用户）；缺省审计记 panel。 */
+  actor?: string;
 }
 
 export interface PanelWebResponse {
@@ -805,7 +809,8 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
   if (url.pathname === "/panel/api/hosts") return handlePanelHostsRequest(deps);
   if (url.pathname !== "/panel" && url.pathname !== "/panel.json") return notFound();
 
-  const cacheKey = `${url.pathname}${url.search}`;
+  // 角色影响能力/按钮可见性：缓存必须按角色隔离，避免 viewer 命中 admin 页面。
+  const cacheKey = `${url.pathname}${url.search}|role=${deps.capabilities?.role ?? ""}`;
   const cached = deps.cache?.get(cacheKey);
   if (cached) return cached;
 
@@ -894,12 +899,42 @@ function batchGateCell(gate: "pass" | "fail" | null, summary: { total?: number |
     : gateSpan(gate);
 }
 
-function uiBadge(ui: PanelBatchSummary["ui"] | undefined): string {
+function uiBadge(
+  ui: PanelBatchSummary["ui"] | undefined,
+  coverage?: PanelBatchSummary["uiCoverage"]
+): string {
   if (ui === null || ui === undefined) return "";
-  if (ui.failed > 0) return `<span class="chip gate-fail">UI 失败 ${ui.failed}</span>`;
-  if (ui.unverified > 0) return `<span class="chip">UI 未验证 ${ui.unverified}</span>`;
-  if (ui.passed > 0) return `<span class="chip gate-pass">UI 通过 ${ui.passed}</span>`;
-  return "";
+  const status =
+    ui.failed > 0
+      ? `<span class="chip gate-fail">UI 失败 ${ui.failed}</span>`
+      : ui.unverified > 0
+        ? `<span class="chip">UI 未验证 ${ui.unverified}</span>`
+        : ui.passed > 0
+          ? `<span class="chip gate-pass">UI 通过 ${ui.passed}</span>`
+          : "";
+  const text = ui.textStyles;
+  const weight =
+    text !== undefined && (text.checked > 0 || text.unverified > 0)
+      ? `<span class="chip" title="字重仅提示，不参与 UI 门禁">字重 heavier ${text.heavier}/${text.checked}${text.unverified > 0 ? ` · 未验证 ${text.unverified}` : ""}</span>`
+      : "";
+  const coverageChip =
+    coverage !== undefined && coverage !== null && coverage.contractScreens > 0
+      ? (() => {
+          const missing = coverage.contractNotCompared
+            .slice(0, 10)
+            .map((screen) => screen.name || screen.id)
+            .join("、");
+          const title = `UI 覆盖：已比对 ${coverage.comparedScreens.length} / 契约 ${coverage.contractScreens}；未覆盖 ${coverage.contractNotCompared.length}${
+            missing === "" ? "" : `（${missing}${coverage.contractNotCompared.length > 10 ? "…" : ""}）`
+          }`;
+          return `<span class="chip" title="${escapeHtml(title)}">UI 覆盖 ${coverage.comparedScreens.length}/${coverage.contractScreens}${
+            coverage.contractNotCompared.length > 0
+              ? ` · 未覆盖 ${coverage.contractNotCompared.length}`
+              : ""
+          }</span>`;
+        })()
+      : "";
+  return `${status}${weight}${coverageChip}`;
 }
 
 /** 批次 API 说明状态（台账优先；旧记录无该字段 → 未记录）。 */
@@ -926,10 +961,10 @@ function apiReviewBadge(review: PanelBatchDetail["apiReview"]): string {
 function uiCaseCell(ui: PanelBatchDetail["cases"][number]["ui"]): string {
   if (ui === null || ui === undefined) return '<span class="muted">—</span>';
   const title = ui.reason ? ` title="${escapeHtml(ui.reason)}"` : "";
-  if (ui.status === "passed") return `<span class="ok"${title}>通过</span>`;
-  if (ui.status === "failed") return `<span class="err"${title}>失败</span>`;
-  if (ui.status === "not-applicable") return `<span class="muted"${title}>不适用</span>`;
-  return `<span class="muted"${title}>未验证</span>`;
+  if (ui.status === "passed") return `<span class="ok c-nowrap"${title}>通过</span>`;
+  if (ui.status === "failed") return `<span class="err c-nowrap"${title}>失败</span>`;
+  if (ui.status === "not-applicable") return `<span class="muted c-nowrap"${title}>不适用</span>`;
+  return `<span class="muted c-nowrap"${title}>未验证</span>`;
 }
 
 const LAMP_LABELS: Record<PanelProjectRow["lamp"], string> = {
@@ -982,7 +1017,7 @@ function renderLatestBatchCell(row: PanelProjectRow): string {
   const runId = batch.runId ?? "（不可读）";
   return [
     '<div class="c-batch-cell">',
-    `<div class="c-batch-head">${batchGateCell(batch.gate, batch.summary)}${uiBadge(batch.ui)}<span class="c-batch-time">· ${relativeTime(batch.finishedAt)}${summary}${note}</span></div>`,
+    `<div class="c-batch-head">${batchGateCell(batch.gate, batch.summary)}${uiBadge(batch.ui, batch.uiCoverage)}<span class="c-batch-time">· ${relativeTime(batch.finishedAt)}${summary}${note}</span></div>`,
     `<code class="c-run-id" title="${escapeHtml(runId)}">${escapeHtml(runId)}</code>`,
     "</div>"
   ].join("");
@@ -1324,7 +1359,7 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string, hostId: str
     batch.summary === null
       ? "—"
       : `${batch.summary.passed ?? "—"}/${batch.summary.total ?? "—"}`,
-    uiBadge(batch.ui) || "—",
+    uiBadge(batch.ui, batch.uiCoverage) || "—",
     batch.failureDomains === null
       ? "—"
       : escapeHtml(
@@ -1769,77 +1804,112 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: st
 }
 
 function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: string | null): string {
+  const capabilities = currentShell.capabilities;
   const actionsOff =
-    currentShell.capabilities?.actions === false ||
-    currentShell.capabilities?.scopes?.schedules === false;
-  const reason = actionsOff
-    ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
+    capabilities?.actions === false || capabilities?.scopes?.schedules === false;
+  const role = capabilities?.role ?? "";
+  const readOnlyReason =
+    capabilities?.actions === false
+      ? capabilities.mode === "standalone"
+        ? '独立看板默认只读。用 <code>AOS_PANEL_ACTIONS=1 node dist/cli.js panel --web …</code> 重启（仅 loopback 可用）后即可创建、启停与删除计划；或在 HTTP 模式用 maintainer/admin 身份访问。'
+        : `当前身份角色为 <strong>${escapeHtml(role === "" ? "viewer" : role)}</strong>；计划写操作需要 maintainer 或 admin 角色。`
+      : `当前角色为 <strong>${escapeHtml(role === "" ? "viewer" : role)}</strong>，没有「计划」写权限；需要 maintainer 或 admin。`;
+  const readOnlyNote = actionsOff
+    ? `<div class="c-banner c-banner-info" role="status"><strong>只读：定时任务动作已关闭</strong><p>${readOnlyReason}</p></div>`
     : "";
-  const disabledAttr = actionsOff ? " disabled" : "";
+  const featureNames = new Map<string, string>();
+  for (const ref of detail.regressionRefs) {
+    if (!featureNames.has(ref.featureKey)) featureNames.set(ref.featureKey, ref.featureName);
+  }
   const seenFeatureKeys = new Set<string>();
   const featureBoxes: string[] = [];
   for (const ref of detail.regressionRefs) {
     if (seenFeatureKeys.has(ref.featureKey)) continue;
     seenFeatureKeys.add(ref.featureKey);
     featureBoxes.push(
-      `<label class="dispatch-option"><input type="checkbox" name="featureKeys" value="${escapeHtml(ref.featureKey)}"${disabledAttr}> ${escapeHtml(ref.featureName)}（${ref.caseCount} 例）</label>`
+      `<label class="dispatch-option"><input type="checkbox" name="featureKeys" value="${escapeHtml(ref.featureKey)}"> ${escapeHtml(ref.featureName)}（${ref.caseCount} 例）</label>`
     );
   }
   const featureField =
     featureBoxes.length > 0
-      ? `<fieldset class="c-fieldset"><legend>功能（可多选）</legend>${featureBoxes.join(" ")}</fieldset>`
-      : `<label>功能 key <input type="text" name="featureKeys" aria-label="功能 key（暂无可引用用例集，可手输）" size="28" placeholder="login,pay"${disabledAttr}></label> <span class="muted">暂无可引用用例集</span>`;
-  const form = [
-    '<form id="schedule-form" data-project="' + escapeHtml(rootPath) + '">',
-    '<p><label>名称 <input type="text" name="name" aria-label="计划名称" required' + disabledAttr + '></label> ' +
-      featureField +
-      "</p>",
-    '<fieldset class="c-fieldset"><legend>端</legend>',
-    '<label><input type="checkbox" name="platform" value="android" checked' + disabledAttr + '> android</label> ',
-    '<label><input type="checkbox" name="platform" value="ios"' + disabledAttr + '> ios</label>',
-    "</fieldset>",
-    '<p><label>每 <input type="number" name="everyMinutes" aria-label="间隔分钟" value="60" min="1" style="width:5em"' + disabledAttr + '> 分钟</label> ' +
-      '<button class="c-button" type="submit"' + disabledAttr + '>创建计划</button> <span id="schedule-status" role="status" class="muted"></span></p>',
-    "</form>",
-    reason
-  ].join("");
-  const emptyRow = '<p class="empty">暂无定时任务（执行机按窗口自动触发；引用实时取最新用例集）</p>';
-  const rows = detail.schedules.map((schedule) => [
-    escapeHtml(schedule.name),
-    schedule.featureKeys
-      .map((key) => `<span class="chip">${escapeHtml(key)}</span>`)
-      .join(""),
-    escapeHtml(schedule.platforms.join(", ")),
-    `每 ${schedule.everyMinutes} 分钟`,
-    schedule.enabled ? '<span class="ok">启用</span>' : '<span class="muted">停用</span>',
-    `${relativeTime(schedule.lastFiredAt)}${
-      schedule.lastNote === null ? "" : ` <span class="note">${escapeHtml(schedule.lastNote)}</span>`
-    }`,
-    schedule.lastTaskId === null
-      ? "—"
-      : `<a href="${escapeHtml(taskHref(rootPath, schedule.lastTaskId, hostId))}">${escapeHtml(
-          schedule.lastTaskStatus ?? "任务"
-        )}</a>`,
-    `<button class="c-button" type="button" data-schedule="${escapeHtml(schedule.id)}" data-op="${
-      schedule.enabled ? "disable" : "enable"
-    }"${disabledAttr}>${schedule.enabled ? "停用" : "启用"}</button> <button class="c-button c-button-danger" type="button" data-schedule="${escapeHtml(
-      schedule.id
-    )}" data-op="delete"${disabledAttr}>删除</button>`
-  ]);
+      ? `<fieldset class="c-fieldset"><legend>功能（可多选）</legend><div class="c-check-grid">${featureBoxes.join("")}</div></fieldset>`
+      : `<label class="c-form-field">功能 key <input type="text" name="featureKeys" aria-label="功能 key（暂无可引用用例集，可手输）" size="28" placeholder="login,pay"></label> <span class="muted">暂无可引用用例集；多个用英文逗号分隔</span>`;
+  const form = actionsOff
+    ? ""
+    : [
+        `<form id="schedule-form" class="c-form" data-project="${escapeHtml(rootPath)}">`,
+        '<div class="c-form-row">',
+        '<label class="c-form-field">名称 <input type="text" name="name" aria-label="计划名称" placeholder="例：每日回归" required></label>',
+        '<label class="c-form-field">每 <input type="number" name="everyMinutes" aria-label="间隔分钟" value="60" min="1" step="1" style="width:5em"> 分钟</label>',
+        "</div>",
+        featureField,
+        '<fieldset class="c-fieldset"><legend>端</legend><div class="c-check-grid">',
+        '<label><input type="checkbox" name="platform" value="android" checked> android</label>',
+        '<label><input type="checkbox" name="platform" value="ios"> ios</label>',
+        "</div></fieldset>",
+        '<p class="c-form-actions"><button class="c-button c-button-primary" type="submit">创建计划</button> <span id="schedule-status" role="status" class="muted"></span></p>',
+        "</form>"
+      ].join("\n");
+  const rows = detail.schedules.map((schedule) => {
+    const featureChips = schedule.featureKeys
+      .map((key) => {
+        const name = featureNames.get(key) ?? key;
+        return `<span class="chip" title="${escapeHtml(key)}">${escapeHtml(name)}</span>`;
+      })
+      .join(" ");
+    const cells = [
+      escapeHtml(schedule.name),
+      featureChips,
+      escapeHtml(schedule.platforms.join(", ")),
+      `每 ${schedule.everyMinutes} 分钟`,
+      schedule.enabled
+        ? cBadge({ label: "启用", tone: "success" })
+        : cBadge({ label: "停用", tone: "neutral" }),
+      `${relativeTime(schedule.lastFiredAt)}${
+        schedule.lastNote === null ? "" : ` <span class="note">${escapeHtml(schedule.lastNote)}</span>`
+      }`,
+      schedule.lastTaskId === null
+        ? "—"
+        : `<a href="${escapeHtml(taskHref(rootPath, schedule.lastTaskId, hostId))}">${escapeHtml(
+            schedule.lastTaskStatus ?? "任务"
+          )}</a>`
+    ];
+    if (!actionsOff) {
+      cells.push(
+        `<button class="c-button" type="button" data-schedule="${escapeHtml(schedule.id)}" data-op="${
+          schedule.enabled ? "disable" : "enable"
+        }">${schedule.enabled ? "停用" : "启用"}</button> <button class="c-button c-button-danger" type="button" data-schedule="${escapeHtml(
+          schedule.id
+        )}" data-op="delete">删除</button>`
+      );
+    }
+    return cells;
+  });
+  const headers = [
+    "名称",
+    "功能",
+    "端",
+    "节奏",
+    "状态",
+    "上次触发",
+    "最近任务",
+    ...(actionsOff ? [] : ["操作"])
+  ];
+  const emptyRow =
+    '<div class="c-empty"><p><strong>暂无定时任务</strong></p><p class="muted">创建后由执行机按窗口自动触发；每次触发引用该功能的最新用例集。</p></div>';
+  const table =
+    rows.length === 0
+      ? emptyRow
+      : cTable({ columns: headers, rows, caption: "已登记的定时任务" });
   const script = actionsOff
     ? ""
-    : `<script>(function(){var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var hostId=${JSON.stringify(hostId).replace(/</g, "\\u003c")};var status=document.getElementById('schedule-status');function say(m){status.textContent=m;}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var form=document.getElementById('schedule-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var keys=f.getAll('featureKeys').map(function(s){return String(s).trim();}).filter(Boolean);if(keys.length===0){say('请至少选择一个功能');return;}var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(i){return i.value;});post({project:root,host:hostId,action:'create',name:(f.get('name')||'').trim(),featureKeys:keys,platforms:platforms,everyMinutes:Number(f.get('everyMinutes')||0)}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已创建 · 已写入审计');location.reload();}else{say('创建失败：'+(res.j.error||res.status));}}).catch(function(err){say('创建失败：'+err);});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-schedule]'):null;if(!b)return;var op=b.getAttribute('data-op');var runScheduleOp=function(){post({project:root,host:hostId,action:op,id:b.getAttribute('data-schedule')}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('计划已更新 · 已写入审计');location.reload();}else{say('操作失败：'+(res.j.error||res.status));}}).catch(function(err){say('操作失败：'+err);});};if(op==='delete'){window.aosInlineConfirm(b,'确认删除该计划？',runScheduleOp);}else{runScheduleOp();}});})();</script>`;
+    : `<script>(function(){if(window.__aosSchedulesBound){return;}window.__aosSchedulesBound=true;var root=${JSON.stringify(rootPath).replace(/</g, "\\u003c")};var hostId=${JSON.stringify(hostId).replace(/</g, "\\u003c")};function say(message,ok){var status=document.getElementById('schedule-status');if(!status)return;status.textContent=message;status.className=ok?'ok':'note';}function post(body){return fetch('/panel/api/schedules',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}function done(message){if(window.aosFlash){window.aosFlash(message);}location.reload();}document.addEventListener('submit',function(e){var form=e.target;if(!form||form.id!=='schedule-form')return;e.preventDefault();var name=String((form.querySelector('input[name="name"]')||{}).value||'').trim();if(name===''){say('请填写计划名称');return;}var boxes=form.querySelectorAll('input[type="checkbox"][name="featureKeys"]');var keys;if(boxes.length>0){keys=Array.prototype.slice.call(boxes).filter(function(box){return box.checked;}).map(function(box){return String(box.value).trim();}).filter(Boolean);}else{var input=form.querySelector('input[name="featureKeys"]');keys=String(input?input.value:'').split(',').map(function(key){return key.trim();}).filter(Boolean);}if(keys.length===0){say('请至少选择一个功能');return;}var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platform"]:checked')).map(function(box){return box.value;});if(platforms.length===0){say('请至少选择一个端');return;}var every=Number((form.querySelector('input[name="everyMinutes"]')||{}).value||0);if(!isFinite(every)||Math.floor(every)!==every||every<=0){say('间隔须为正整数分钟');return;}var button=form.querySelector('button[type="submit"]');if(button)button.disabled=true;post({project:root,host:hostId,action:'create',name:name,featureKeys:keys,platforms:platforms,everyMinutes:every}).then(function(res){if(res.ok&&res.j.ok){done('计划已创建 · 已写入审计');return;}if(button)button.disabled=false;say('创建失败：'+((res.j&&res.j.error)||('HTTP '+res.status)));}).catch(function(err){if(button)button.disabled=false;say('创建失败：'+err);});});document.addEventListener('click',function(e){var button=e.target&&e.target.closest?e.target.closest('button[data-schedule]'):null;if(!button)return;var op=button.getAttribute('data-op');var id=button.getAttribute('data-schedule');function run(){post({project:root,host:hostId,action:op,id:id}).then(function(res){if(res.ok&&res.j.ok){done('计划已更新 · 已写入审计');return;}say('操作失败：'+((res.j&&res.j.error)||('HTTP '+res.status)));}).catch(function(err){say('操作失败：'+err);});}if(op==='delete'){if(window.aosInlineConfirm){window.aosInlineConfirm(button,'确认删除该计划？',run);}else{run();}}else{run();}});})();</script>`;
   return [
     '<section id="schedules">',
     "<h2>定时任务</h2>",
+    readOnlyNote,
     form,
-    detail.schedules.length === 0
-      ? emptyRow
-      : renderTable(
-          ["名称", "功能", "端", "节奏", "状态", "上次触发", "最近任务", "操作"],
-          rows,
-          "暂无定时任务"
-        ),
+    table,
     script,
     "</section>"
   ]
@@ -2853,7 +2923,7 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
   const cases = detail.cases.map((entry) => [
     `<code>${escapeHtml(entry.caseId)}</code>`,
     escapeHtml(entry.name),
-    entry.status === "passed" ? '<span class="ok">通过</span>' : `<span class="err">${escapeHtml(entry.status)}</span>`,
+    entry.status === "passed" ? '<span class="ok">通过</span>' : `<span class="err c-nowrap">${escapeHtml(entry.status)}</span>`,
     uiCaseCell(entry.ui),
     entry.failure === null
       ? '<span class="muted">—</span>'
@@ -2887,6 +2957,42 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
     detail.warnings.length > 0
       ? detail.warnings.map((warning) => `<p class="note">${escapeHtml(warning)}</p>`).join("")
       : "";
+  const readiness = detail.readiness;
+  const readinessBody = readiness.needed
+    ? [
+        '<section id="readiness">',
+        "<h2>接入检查（按失败证据）</h2>",
+        '<p class="c-readiness-lead">失败不一定是应用缺陷。按顺序核查，确认后再决定是否重写。</p>',
+        '<ol class="c-readiness">',
+        ...readiness.checks.map((check, index) => {
+          const count = [
+            check.caseIds.length > 0 ? `${check.caseIds.length} 例` : "",
+            check.traceIds.length > 0 ? `${check.traceIds.length} trace` : ""
+          ]
+            .filter((part) => part !== "")
+            .join(" · ");
+          const refs = [
+            check.caseIds.length > 0
+              ? `用例 ${check.caseIds
+                  .map((id) => `<code class="c-id">${escapeHtml(id)}</code>`)
+                  .join("、")}`
+              : "",
+            check.traceIds.length > 0
+              ? `trace ${check.traceIds
+                  .map((id) => `<code class="c-id">${escapeHtml(id)}</code>`)
+                  .join("、")}`
+              : ""
+          ]
+            .filter((part) => part !== "")
+            .join(" · ");
+          return `<li><details class="c-readiness-item" data-readiness-code="${check.code}"><summary><span class="c-readiness-step" aria-hidden="true">${index + 1}</span><span class="c-readiness-title">[${check.code}] ${escapeHtml(INTEGRATION_LABELS[check.code])}</span><span class="c-readiness-action">${escapeHtml(INTEGRATION_ACTIONS[check.code])}</span><span class="c-readiness-count">${escapeHtml(count)}</span><span class="c-readiness-toggle" aria-hidden="true"></span></summary><div class="c-readiness-body"><p>${escapeHtml(check.message)}</p>${
+            refs === "" ? "" : `<p class="c-readiness-refs">关联：${refs}</p>`
+          }</div></details></li>`;
+        }),
+        "</ol>",
+        "</section>"
+      ].join("\n")
+    : "";
 
   return page(
     `批次 · ${detail.runId ?? detail.file}`,
@@ -2909,7 +3015,7 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
       "<main>",
       '<section id="summary">',
       "<h2>结果概览</h2>",
-      uiBadge(detail.ui) === "" ? "" : `<p>${uiBadge(detail.ui)}</p>`,
+      uiBadge(detail.ui, detail.uiCoverage) === "" ? "" : `<p>${uiBadge(detail.ui, detail.uiCoverage)}</p>`,
       summary === null
         ? ""
         : [
@@ -2922,13 +3028,26 @@ function renderBatchPage(view: { rootPath: string; hostId: string | null; detail
       "<h3>失败域汇总</h3>",
       failureDomains,
       "</section>",
+      readinessBody,
       '<section id="cases">',
       "<h2>用例结果</h2>",
-      renderTable(["用例", "名称", "状态", "UI", "失败域", "脚本来源", "标记", "证据"], cases, "暂无用例"),
+      cTable({
+        columns: ["用例", "名称", "状态", "UI", "失败域", "脚本来源", "标记", "证据"],
+        rows: cases,
+        empty: "暂无用例",
+        columnWidths: ["13%", "12%", "7%", "6%", "31%", "9%", "6%", "16%"]
+      }),
       "</section>",
       '<section id="context">',
       "<h2>批次上下文</h2>",
-      optionRows.length === 0 ? "" : renderTable(["选项", "值"], optionRows, "—"),
+      optionRows.length === 0
+        ? ""
+        : cTable({
+            columns: ["选项", "值"],
+            rows: optionRows,
+            empty: "—",
+            columnWidths: ["16%", "84%"]
+          }),
       tests === null
         ? ""
         : `<p class="muted">tests：<code>${escapeHtml(tests.path)}</code> · sha256 ${
@@ -3060,7 +3179,10 @@ async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPag
   const data: SearchPageData = { q: query, projects: [], caseSets: [], tasks: [], truncated: false };
   if (query === "") return data;
   const needle = query.toLowerCase();
-  const projects = await deps.store.listProjects().catch(() => []);
+  const excludeRaw = (deps.env ?? process.env).AOS_PANEL_EXCLUDE_PROJECTS;
+  const projects = (await deps.store.listProjects().catch(() => [])).filter(
+    (project) => !panelProjectExcluded(project, excludeRaw)
+  );
   const capped = projects.slice(0, 50);
   data.truncated = projects.length > capped.length;
   for (const project of capped) {
@@ -3126,7 +3248,10 @@ async function loadProjectSwitcher(
     view.kind === "overview" || view.kind === "compare" || view.kind === "search"
       ? null
       : view.hostId;
-  const projects = await deps.store.listProjects().catch(() => []);
+  const excludeRaw = (deps.env ?? process.env).AOS_PANEL_EXCLUDE_PROJECTS;
+  const projects = (await deps.store.listProjects().catch(() => [])).filter(
+    (project) => !panelProjectExcluded(project, excludeRaw)
+  );
   const hosts = await deps.store.listHosts().catch(() => []);
   const hostById = new Map(hosts.map((host) => [host.id, host]));
   const options = projects.slice(0, 20).map((project) => {

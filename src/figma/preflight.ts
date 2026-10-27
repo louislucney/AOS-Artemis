@@ -15,6 +15,15 @@ import {
   type DesignWarning,
   type WarningSummary
 } from "../design/warnings.js";
+import {
+  baselineEntryKey,
+  type UiParityBaselineFile
+} from "../ui/parity-baseline.js";
+import {
+  loadUiSemantics,
+  matchesDynamicExample,
+  matchesDynamicPattern
+} from "../ui/semantics.js";
 
 export type DesignWarningsSource = "tests" | "flows" | "none";
 
@@ -57,6 +66,23 @@ export interface PreflightDataPolicy {
   missing: Array<{ id: string; name: string }>;
 }
 
+export interface PreflightDynamicCase {
+  caseId: string;
+  name: string;
+  texts: string[];
+  baselined: boolean;
+}
+
+export interface PreflightDynamicContent {
+  cases: PreflightDynamicCase[];
+  total: number;
+  fresh: number;
+  baselined: number;
+  semanticsPath: string | null;
+  /** 文件存在但解析失败时的错误；缺文件为 null。 */
+  semanticsError: string | null;
+}
+
 export interface PreflightReport {
   cases: number;
   weakCases: PreflightWeakCase[];
@@ -64,6 +90,7 @@ export interface PreflightReport {
   generation: unknown;
   artifacts: PreflightArtifacts;
   dataPolicy: PreflightDataPolicy;
+  dynamicContent: PreflightDynamicContent;
   designWarnings: DesignWarning[];
   designWarningSummary: WarningSummary;
   designWarningsSource: DesignWarningsSource;
@@ -95,6 +122,81 @@ export interface PreflightOptions {
   testsPath?: string;
   /** Effective flows path (shared design source or local); defaults to <configDir>/design/flows.json. */
   flowsPath?: string;
+  /** ui-semantics.json path; defaults to <configDir>/design/ui-semantics.json. */
+  semanticsPath?: string;
+  /** 已加载的 check-dynamic 基线；缺省不启用。 */
+  dynamicBaseline?: UiParityBaselineFile;
+}
+
+function collectDynamicContent(
+  configDirAbs: string,
+  records: Array<{ id: string; name: string; taskDesc: string | null; steps: string[] }>,
+  options: PreflightOptions
+): PreflightDynamicContent {
+  const semanticsPath = options.semanticsPath ?? path.join(configDirAbs, "design", "ui-semantics.json");
+  const loaded = loadUiSemantics(configDirAbs, { path: semanticsPath });
+  if (loaded.errors.length > 0) {
+    return {
+      cases: [],
+      total: 0,
+      fresh: 0,
+      baselined: 0,
+      semanticsPath,
+      semanticsError: loaded.errors.join(" | ")
+    };
+  }
+  if (loaded.file === null) {
+    return { cases: [], total: 0, fresh: 0, baselined: 0, semanticsPath: null, semanticsError: null };
+  }
+  const examples = new Set<string>();
+  const patterns = new Set<string>();
+  for (const screen of loaded.file.screens) {
+    for (const region of screen.regions) {
+      for (const example of region.dynamicExamples ?? []) examples.add(example);
+      for (const pattern of region.dynamicPatterns ?? []) patterns.add(pattern);
+    }
+  }
+  if (examples.size === 0 && patterns.size === 0) {
+    return { cases: [], total: 0, fresh: 0, baselined: 0, semanticsPath: null, semanticsError: null };
+  }
+  const baselineKeys = new Set(
+    (options.dynamicBaseline?.entries ?? []).map((entry) => baselineEntryKey(entry))
+  );
+  const cases: PreflightDynamicCase[] = [];
+  for (const record of records) {
+    const haystack = [record.taskDesc ?? "", ...record.steps].join("\n");
+    const matched = new Set<string>();
+    for (const example of examples) {
+      if (matchesDynamicExample(haystack, example)) matched.add(example);
+    }
+    if (matched.size === 0) {
+      for (const pattern of patterns) {
+        if (matchesDynamicPattern(haystack, [pattern])) matched.add(pattern);
+      }
+    }
+    if (matched.size === 0) continue;
+    const texts = [...matched];
+    const baselined = texts.every((text) =>
+      baselineKeys.has(
+        baselineEntryKey({
+          tool: "check-dynamic",
+          caseId: record.id,
+          kind: "dynamic-content",
+          text
+        })
+      )
+    );
+    cases.push({ caseId: record.id, name: record.name, texts, baselined });
+  }
+  const baselined = cases.filter((entry) => entry.baselined).length;
+  return {
+    cases,
+    total: cases.length,
+    fresh: cases.length - baselined,
+    baselined,
+    semanticsPath,
+    semanticsError: null
+  };
 }
 
 export function preflightGeneratedTests(
@@ -203,6 +305,7 @@ export function preflightGeneratedTests(
     generation: document.generation,
     artifacts,
     dataPolicy,
+    dynamicContent: collectDynamicContent(configDirAbs, cases, options),
     designWarnings: designWarnings.warnings,
     designWarningSummary: designWarnings.summary,
     designWarningsSource: designWarnings.source,

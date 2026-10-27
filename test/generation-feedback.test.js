@@ -148,12 +148,85 @@ function verdictRun(overrides = {}) {
   };
 }
 
+test("generation feedback: behavior/design failures ask for page reuse and rewrite", async () => {
+  const { dir, runtime } = await setup();
+  const traceId = "trace-3";
+  const traceDir = runtime.traceDir(traceId);
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "status.json"),
+    JSON.stringify({
+      status: "failed",
+      error: "页面不存在",
+      test_summary: {
+        task_status: "failed",
+        failed_items: [{ item_text: "關閉", evidence: "设计有「關閉」，实际页面不存在该控件" }]
+      }
+    })
+  );
+  await runtime.store.recordTask({
+    rootPath: dir,
+    traceId,
+    caseId: "case-1",
+    model: "deepseek-chat",
+    status: "failed",
+    taskDesc: "run case 1",
+    finishedAt: "2026-10-02T00:00:30.000Z"
+  });
+  const feedback = await buildGenerationFeedback(runtime);
+  const codes = feedback.readiness.checks.map((check) => check.code);
+  assert.ok(codes.includes("page-reuse"), JSON.stringify(codes));
+  assert.ok(codes.includes("rewrite"), JSON.stringify(codes));
+  const page = feedback.readiness.checks.find((check) => check.code === "page-reuse");
+  assert.ok(page.caseIds.includes("case-1"));
+  assert.ok(page.traceIds.includes(traceId));
+});
+
+test("generation feedback: 设备日志附注不算环境失败，且按 taskDesc 回填 caseId", async () => {
+  const { dir, runtime } = await setup();
+  const traceId = "trace-3";
+  const traceDir = runtime.traceDir(traceId);
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "status.json"),
+    JSON.stringify({
+      status: "failed",
+      error: "行動預點載入失敗：网络连接失败；设备日志已采集（1 行，来源 simctl-log）",
+      test_summary: {
+        task_status: "failed",
+        failed_items: [{ item_text: "行動預點", evidence: "页面内容一直未渲染" }]
+      }
+    })
+  );
+  await runtime.store.recordTask({
+    rootPath: dir,
+    traceId,
+    caseId: null,
+    model: "deepseek-chat",
+    status: "failed",
+    taskDesc: "run case 1",
+    finishedAt: "2026-10-02T00:00:30.000Z"
+  });
+  const feedback = await buildGenerationFeedback(runtime);
+  const codes = feedback.readiness.checks.map((check) => check.code);
+  assert.ok(codes.includes("api"), JSON.stringify(codes));
+  assert.ok(codes.includes("page-reuse"), JSON.stringify(codes));
+  assert.ok(codes.includes("rewrite"), JSON.stringify(codes));
+  assert.ok(!codes.includes("environment"), "设备日志附注不得误判为环境失败");
+  const api = feedback.readiness.checks.find((check) => check.code === "api");
+  assert.ok(api.caseIds.includes("case-1"), "taskDesc 命中生成用例时回填 caseId");
+  assert.ok(api.traceIds.includes(traceId));
+});
+
 test("generation feedback: aggregates screens, data assumptions and weak assertions", async () => {
   const { runtime } = await setup();
   const feedback = await buildGenerationFeedback(runtime);
 
   assert.equal(feedback.ok, true);
   assert.deepEqual(feedback.generatedFrom, { tasks: 2, failed: 2, baselines: 1 });
+  assert.equal(feedback.readiness.needed, true);
+  assert.deepEqual(feedback.readiness.checks.map((check) => check.code), ["api"]);
+  assert.deepEqual(feedback.readiness.checks[0].traceIds.sort(), ["trace-1", "trace-2"]);
 
   assert.deepEqual(feedback.issues.screens, [
     { screen: "我的", failures: 2, caseIds: ["case-2"], traceIds: ["trace-1", "trace-2"] },

@@ -4,7 +4,14 @@ import path from "node:path";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-import { authorizeRequest, isLoopbackHost, unauthorizedResponse } from "./auth.js";
+import {
+  isLoopbackHost,
+  parseAuthUsers,
+  resolveRequestIdentity,
+  unauthorizedResponse,
+  type AuthIdentity
+} from "./auth.js";
+import { defaultUsersFile, HttpUserDirectory } from "./auth/users.js";
 import { CLI_NAME } from "./brand.js";
 import { loadProject, defaultArtemisRepo, emptyConfig } from "./config/loader.js";
 import { resolveDepsSource } from "./artemis/bootstrap.js";
@@ -15,7 +22,7 @@ import {
   panelCacheTtlFrom,
   type PanelWebDeps
 } from "./panel/web.js";
-import { handlePanelActionRequest } from "./panel/actions.js";
+import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
 import { panelRoleFrom, panelRoleScopes } from "./panel/roles.js";
 import { MAX_PANEL_BODY_BYTES, MAX_PANEL_UPLOAD_BYTES } from "./panel/limits.js";
 import { resolveHostIdentity } from "./host/identity.js";
@@ -66,6 +73,13 @@ export class InsecureBindRefusedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "InsecureBindRefusedError";
+  }
+}
+
+export class AuthConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthConfigError";
   }
 }
 
@@ -154,18 +168,30 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     workspaceRoot = requestedWorkspace;
   }
   const token = (process.env.AOS_HTTP_TOKEN ?? "").trim();
+  const authUsers = parseAuthUsers(process.env.AOS_HTTP_USERS);
+  if (authUsers.errors.length > 0) {
+    throw new AuthConfigError(`AOS_HTTP_USERS 配置非法：${authUsers.errors.join("；")}`);
+  }
+  const userFile = defaultUsersFile(process.env);
+  const userDirectory = new HttpUserDirectory(userFile, authUsers.users);
+  const userFileErrors = userDirectory.initialize();
+  if (userFileErrors.length > 0) {
+    throw new AuthConfigError(`${userFile} 配置非法：${userFileErrors.join("；")}`);
+  }
+  const initialUserSnapshot = userDirectory.snapshot();
+  const authEnabled = token !== "" || authUsers.users.length > 0 || initialUserSnapshot.hashed.length > 0;
   const allowInsecure = process.env.AOS_HTTP_ALLOW_INSECURE === "1";
 
-  if (!isLoopbackHost(host) && token === "" && !allowInsecure) {
+  if (!isLoopbackHost(host) && !authEnabled && !allowInsecure) {
     throw new InsecureBindRefusedError(
       `拒绝在非 loopback 主机（${host}）上无鉴权启动 HTTP 服务：请设置 AOS_HTTP_TOKEN` +
-        `（静态令牌，请求经 Authorization: Bearer/Basic 校验），或显式 AOS_HTTP_ALLOW_INSECURE=1` +
+        `（静态令牌）或 AOS_HTTP_USERS（命名令牌），或显式 AOS_HTTP_ALLOW_INSECURE=1` +
         `（仅限可信网络，不安全）。`
     );
   }
-  if (allowInsecure && !isLoopbackHost(host) && token === "") {
+  if (allowInsecure && !isLoopbackHost(host) && !authEnabled) {
     log(
-      `WARN：非 loopback 主机（${host}）且未设置 AOS_HTTP_TOKEN，已按 AOS_HTTP_ALLOW_INSECURE=1` +
+      `WARN：非 loopback 主机（${host}）且未设置 AOS_HTTP_TOKEN/AOS_HTTP_USERS，已按 AOS_HTTP_ALLOW_INSECURE=1` +
         ` 放行（无鉴权，仅限可信网络）。`,
       "warn"
     );
@@ -182,9 +208,9 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   const reason = runtimeHost.storeNote;
 
   log(
-    token === ""
+    !authEnabled
       ? "认证：未启用"
-      : `认证：已启用（Bearer/Basic，token=${maskSecret(token)}）`
+      : `认证：已启用（用户 ${authUsers.users.length + initialUserSnapshot.hashed.length} 个，文件 ${userFile}${token === "" ? "" : `，静态 token=${maskSecret(token)}`}）`
   );
 
   const runtimes = new Map<string, Runtime>();
@@ -245,16 +271,47 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     }
   };
 
+  const panelDepsFor = (identity: AuthIdentity): PanelWebDeps => ({
+    ...panelDeps,
+    actor: identity.name,
+    capabilities: {
+      actions: panelActionsEnabled(process.env) && identity.role !== "viewer",
+      usage: panelDeps.capabilities?.usage ?? true,
+      mode: panelDeps.capabilities?.mode ?? "http",
+      role: identity.role,
+      scopes: panelRoleScopes(identity.role)
+    }
+  });
+
+  let lastUserFileError: string | null = null;
+  // 认证闩锁：一旦启用（启动时或运行期文件出现），清空用户/删除文件也不再放开匿名访问。
+  let authRequired = authEnabled;
+
   const httpServer = createServer((req, res) => {
     void (async () => {
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
 
-        if (
-          token !== "" &&
-          !isExempt(req.method, url.pathname) &&
-          !authorizeRequest({ authorization: req.headers.authorization, token })
-        ) {
+        const userSnapshot = userDirectory.snapshot();
+        const userFileProblem = userSnapshot.errors[0] ?? null;
+        if (userFileProblem !== null && userFileProblem !== lastUserFileError) {
+          log(`WARN：${userFileProblem}`, "warn");
+        }
+        lastUserFileError = userFileProblem;
+
+        const requestAuthEnabled =
+          token !== "" || userSnapshot.plain.length > 0 || userSnapshot.hashed.length > 0;
+        if (requestAuthEnabled) authRequired = true;
+        const identity = resolveRequestIdentity({
+          authorization: req.headers.authorization,
+          staticToken: token,
+          users: userSnapshot.plain,
+          hashedUsers: userSnapshot.hashed,
+          fallbackRole: panelRole,
+          staticActor: process.env.AOS_ACTOR,
+          authRequired
+        });
+        if (authRequired && !isExempt(req.method, url.pathname) && identity === null) {
           const unauthorized = unauthorizedResponse(CLI_NAME);
           const headers = { ...unauthorized.headers };
           if (req.method === "HEAD") headers["Content-Length"] = "0";
@@ -263,6 +320,8 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           else res.end(unauthorized.body);
           return;
         }
+        const requestIdentity: AuthIdentity =
+          identity ?? { name: "anonymous", role: panelRole, source: "anonymous" };
 
         if (
           (req.method === "GET" || req.method === "HEAD") &&
@@ -308,7 +367,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             url.pathname === "/panel.json" ||
             url.pathname === "/panel/api/hosts")
         ) {
-          const panelResponse = await handlePanelRequest(url, panelDeps);
+          const panelResponse = await handlePanelRequest(url, panelDepsFor(requestIdentity));
           res.writeHead(panelResponse.status, { "Content-Type": panelResponse.contentType });
           res.end(panelResponse.body);
           return;
@@ -349,6 +408,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               url,
               body,
               headers: req.headers,
+              identity: requestIdentity,
               ...(rawBody === undefined ? {} : { rawBody }),
               ...(contentType === undefined ? {} : { contentType })
             },

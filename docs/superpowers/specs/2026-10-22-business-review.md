@@ -6,11 +6,14 @@
 
 AOS × ARTEMIS 已经不是“MCP 工具集”，而是**项目级测试数据底座 + 设计→用例→执行→证据→回归/Jira 的闭环服务**；当前主要矛盾不在能力，而在业务叙事与入口结构落后于能力。rev 2 补上 UI 保真度、事件/反馈两条横向线，给“记录是产品”接上行动，并为术语工程划定作用域。
 
-## 0.1 P0 进展（2026-10-23）
+## 0.1 进展（2026-10-23，2026-10-26 复核）
 
 - 面板术语第一刀完成（DESIGN §13.184）：用例集/设备运行/引用用例集/按用例集下发/用例集来源。
 - CLI、README、AGENTS、DESIGN、接入指南术语收口与过期内容清理（DESIGN §13.185）；DB/API/代码标识符未改。
-- 仍待：UI 保真入口（P1）、事件/反馈入口（P1）、记录/档案一等导航（P1）、角色权限/机队/CMS 产品化（P2）。
+- P1 已完成：面板按域重排、记录/档案一等导航、失败处理路径、UI 保真入口、事件/反馈入口（DESIGN §13.172/§13.173/§13.186/§13.187/§13.189）。
+- CMS 用例包→Excel 导入→用例库漏斗已有跨链路测试（`test/cms-import-funnel.test.js`）：7 列工作簿→按模块拆集→displayId/前置/预期回环→按用例名选中。
+- P2 已完成：机队视图、CMS 产品化（鉴权/限流/配额/readyz/metrics）、质量与成本指标（DESIGN §13.178/§13.188/§13.190/§13.195/§13.197/§13.198/§13.200）、用例字段执行结果回填 + 跨端/历史对比（§13.211）+ 设计警告 scope 映射（§13.212）；角色为进程级（§13.196），`ui-lint` 圆角/颜色/字号/字重/字体族规则（§13.191/§13.208/§13.210/§13.213）。
+- 仍待：`ui-lint` 扩展（presentation/hero）、字重硬门禁的默认启用（机制已落地、默认关，待真实样本校准，§13.224）、Jira 沙箱端到端验收；身份级权限（§13.216/§13.217）与 ui-lint 逐屏映射（§13.218）已落地。
 
 ## 1. 现有业务事实
 
@@ -69,7 +72,7 @@ ui-contract（token/文本/几何）
   → 实现/页面
   → suite run --ui-diff / design_device_diff
   → UI 核验四态 + 区域对图/基线
-  → 设计/实现修订（ui-lint 机械规则为 retro P2，尚未落地）
+  → 设计/实现修订（ui-lint 最小圆角/颜色/字号/字重规则已落地，扩展规则为 retro P2）
 
 事件/反馈支线：
 项目 run/case/artifact/feedback 事件
@@ -152,8 +155,8 @@ ui-contract（token/文本/几何）
 #### G. 实现保真（UI Fidelity）
 
 - **定位**：横跨 A/B/C 的横向门禁线，不是独立运营域。
-- **已落地**：`suite ui-contract` 从 flows + 逐屏 `.pen` 投影 `ui-contract.{json,md}`（token/文本字重/几何/四态）；`design_device_diff` 做区域级设计 vs 真机差异；`suite run --ui-diff` 产出 `passed/failed/unverified/not-applicable`；逐屏 diff 证据可回写批次/任务。
-- **未落地**：`ui-lint` 机械规则（retro P2，需先解决存量/例外/白名单），不在当前能力清单里冒充已实现。
+- **已落地**：`suite ui-contract` 从 flows + 逐屏 `.pen` 投影 `ui-contract.{json,md}`（token/文本字重/几何/四态）；`design_device_diff` 做区域级设计 vs 真机差异；`suite run --ui-diff` 产出 `passed/failed/unverified/not-applicable` 并把字重 `detail.textStyles` 汇总进 `ui.textStyles`（report-only；面板显示中性字重 chip）；`suite baseline` 记录 trace 文本 bbox 并输出同平台 `textStyles`（`--fail-on text-weight` 为 opt-in 门禁，§13.214）；`suite text-weight-calibrate` 提供离线成对图片校准（§13.215）；逐屏 diff 证据可回写批次/任务。
+- **部分落地**：`ui-lint` 圆角/颜色/字号/字重/字体族规则（DESIGN §13.191/§13.208/§13.210/§13.213）；presentation/hero/逐屏映射与 UI 基线治理仍为 retro P2。
 - **闭环**：契约 → 实现 → `suite run --ui-diff` / `design_device_diff` → 保真门禁/基线 → 设计或实现修订。
 - **入口/指标**：`suite ui-contract`、`design_device_diff`、面板结果/任务 UI 列；指标＝UI 通过率、unverified 率、区域误报率、保真返工次数。
 
@@ -285,5 +288,5 @@ ui-contract（token/文本/几何）
 ## 11. 结论与事实核对
 
 - 当前系统能力密度高，主要矛盾在**业务叙事、入口结构、术语作用域**；rev 2 把 UI 保真、事件/反馈、记录主线补回地图，并给出可执行的 P0/P1/P2。
-- 事实核对：`suite calibrate`、`suite ui-contract` 均已在 CLI/README 中存在；`ui-lint` 是 retro P2 计划项，尚未落地，本文按“未落地”标注，不冒充已实现。
+- 事实核对：`suite calibrate`、`suite ui-contract` 均已在 CLI/README 中存在；`ui-lint` 圆角/颜色/字号/字重/字体族规则已落地（DESIGN §13.191/§13.208/§13.210/§13.213），逐屏映射见 §13.218；presentation/hero 与 UI 基线治理仍未实现，本文按“部分落地”标注。
 - 建议先通过 P0 语言/地图，再动 P1 面板与失败闭环；业务地图稳定前不新增并列入口。

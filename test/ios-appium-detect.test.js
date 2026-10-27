@@ -34,6 +34,8 @@ test("ios detect: appium 与 xcuitest 就绪（驱动列表走 stderr）", async
   assert.equal(detection.appium.version, "3.8.0");
   assert.deepEqual(detection.xcuitest, { installed: true, version: "12.15.0" });
   assert.ok(detection.guidance.some((line) => line.includes("tunnel-creation")));
+  assert.ok(detection.guidance.some((line) => line.includes("保持") && line.includes("tunnel-creation")));
+  assert.ok(detection.guidance.some((line) => line.includes("不代为 sudo 启动")));
   assert.ok(detection.guidance.some((line) => line.includes("AOS_IOS_XCODE_ORG_ID")));
 });
 

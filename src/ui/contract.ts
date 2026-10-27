@@ -234,6 +234,11 @@ function fingerprintOf(flowsPath: string, designRoot: string): string {
   return hash.digest("hex");
 }
 
+/** ui-lint 的契约漂移校验（DESIGN §13.220）：与 `suite ui-contract` 同源指纹。 */
+export function uiContractFingerprint(flowsPath: string, designRoot: string): string {
+  return fingerprintOf(flowsPath, designRoot);
+}
+
 function readFlows(flowsPath: string): Array<{ id: string; name: string; sourceFrameName?: string }> {
   const parsed = JSON.parse(fs.readFileSync(flowsPath, "utf-8")) as {
     screens?: Array<{ id?: unknown; name?: unknown; sourceFrameName?: unknown }>;

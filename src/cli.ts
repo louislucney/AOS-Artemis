@@ -3,9 +3,15 @@ import { runDoctor, runInit } from "./commands.js";
 import { runDepsCommand } from "./deps-build.js";
 import { runExportCommand } from "./export-command.js";
 import { printHostUsage, runHostCommand } from "./host-command.js";
-import { runHttpServer, InsecureBindRefusedError, type HttpServerOptions } from "./http-server.js";
+import {
+  runHttpServer,
+  AuthConfigError,
+  InsecureBindRefusedError,
+  type HttpServerOptions
+} from "./http-server.js";
 import { runInstall } from "./install.js";
 import { runJiraCommand } from "./jira-command.js";
+import { printUserUsage, runUserCommand } from "./user-command.js";
 import { runServer } from "./server.js";
 import { printSuiteUsage, runSuiteCommand } from "./suite-command.js";
 import { runUsageCommand } from "./usage-command.js";
@@ -39,6 +45,9 @@ Usage:
   mobile-testing-mcp jira issue <create|comment|label|transition|link> [options]
                     Jira 工作流（与 MCP 工具共用客户端与凭证；见 "mobile-testing-mcp jira help"；
                     exit codes: 0 成功 / 1 请求或配置失败 / 2 用法错误）
+  mobile-testing-mcp user <add|list|revoke|rotate> [options]
+                    HTTP 命名用户生命周期（令牌只存 SHA-256、HTTP 热加载；见 "mobile-testing-mcp user help"；
+                    exit codes: 0 成功 / 1 操作失败 / 2 用法错误）
   mobile-testing-mcp usage [--json] [--all] [--project <名称>] [--host <id|主机名>] [--days <n>]
                     使用统计：默认当前项目摘要（--days 默认 7）；--json 机器可读；
                     --all 跨项目总览；--project 选择已注册项目；
@@ -75,6 +84,7 @@ void (async () => {
   if (wantsHelp && command !== "jira" && command !== "cms-open") {
     if (command === "suite") printSuiteUsage((line) => console.log(line));
     else if (command === "host") printHostUsage((line) => console.log(line));
+    else if (command === "user") printUserUsage((line) => console.log(line));
     else printUsage();
     return;
   }
@@ -94,7 +104,7 @@ void (async () => {
         try {
           await runHttpServer(options);
         } catch (error) {
-          if (error instanceof InsecureBindRefusedError) {
+          if (error instanceof InsecureBindRefusedError || error instanceof AuthConfigError) {
             console.error(error.message);
             process.exit(2);
           }
@@ -158,6 +168,11 @@ void (async () => {
     }
     case "jira": {
       const code = await runJiraCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "user": {
+      const code = runUserCommand(rest);
       process.exit(code);
       break;
     }

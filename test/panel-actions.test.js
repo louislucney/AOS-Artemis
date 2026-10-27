@@ -181,6 +181,39 @@ test("panel actions: POST tasks 创建成功 / 未知项目 404 / refs 空 400 /
   assert.equal(badBaseline.status, 400);
 });
 
+test("panel actions: request identity drives role and audit actor", async () => {
+  const { runtime, store, set, deps } = await setup();
+  const rootPath = runtime.project.rootDir;
+  const body = {
+    project: rootPath,
+    refs: [{ caseSetId: set.id, featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "none"
+  };
+
+  const viewer = await handlePanelActionRequest(
+    request({
+      body,
+      identity: { name: "alice", role: "viewer", source: "user" }
+    }),
+    deps
+  );
+  assert.equal(viewer.status, 403);
+  assert.equal(JSON.parse(viewer.body).code, "role_forbidden");
+
+  const admin = await handlePanelActionRequest(
+    request({
+      body,
+      identity: { name: "bob", role: "admin", source: "user" }
+    }),
+    deps
+  );
+  assert.equal(admin.status, 200, admin.body);
+  const audit = await store.listAudit(rootPath, { domain: "panel" });
+  const created = audit.find((event) => event.action === "action.tasks");
+  assert.equal(created?.actor, "bob", "审计 actor 使用请求身份");
+});
+
 test("panel actions: POST verdicts 批量裁决（重复幂等）/ 全未命中 400 / 非法裁决 400", async () => {
   const { runtime, store, run, deps } = await setup();
   const url = new URL("http://localhost/panel/api/verdicts");

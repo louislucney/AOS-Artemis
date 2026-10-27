@@ -11,7 +11,7 @@
 - **设计→代码映射未解决**：`screen-map.json` 有 `code.file/component` 形状，但 iOS 当前 `entries=0`；17 条 `elements` 是设备观察↔设计文本，不是设计节点→app 代码。P2 的“检查 bottom-sheet 锚点”不能假装已有映射。
 - **视觉验证是事后可选**：`design_device_diff` 能出区域报告，但本次是用户指出后才运行；跨源噪声基线（D12）仍未验证。
 - **截图格式不一致**：iOS AOS trace 写 PNG（`src/ios/trace-persist.ts:219`）；Android artemis 先在 `accessibility_client.py` 用 `adb exec-out screencap -p` 取 PNG，再在 `pil_to_base64` 以 JPEG quality 80 重编码（`artemis/third_party/mobile_use/clients/ui_automator_client.py:150`，RGBA→RGB），trace 的 `data_engine` 也按 `.jpg` 落盘（`artemis/artemis/data_engine/engine.py:834/851`）。`design_device_diff` 对 step 非 PNG 会标 `lossy-source` 并把细节阈值降到 0.1；live Android 细节会二次抓 PNG，但整屏通道仍可能用初始 JPEG。
-- **`design/screens/*.png` 完整但被工具拒绝**：`design_device_diff` 的 `design.source` 只接受 `figma|pen`；现成 PNG 不能作为源。拒绝原因是接口形态，不是保真；但 PNG 750×1710 vs 设备 1320×2868 会触发 `design-upscaled`，只能作为廉价适配器，不能替代高倍渲染。
+- **`design/screens/*.png` 完整但被工具拒绝**：原 `design_device_diff` 的 `design.source` 只接受 `figma|pen`；现成 PNG 不能作为源。拒绝原因是接口形态，不是保真；但 PNG 750×1710 vs 设备 1320×2868 会触发 `design-upscaled`，只能作为廉价适配器，不能替代高倍渲染。（2026-10-26 已补 `design.source:"image"`，见 DESIGN §13.219。）
 - **基线缺失**：当前没有“UI 差异平均多晚被发现/每屏多少差异”的分母；本次只有 1 次人工触发、5 屏审计、首頁 5 个区域、自动 UI 门禁 0 个。
 
 ## 2. 根因
@@ -40,6 +40,7 @@
 - **taskDesc**：除 `【真实数据】` 外，加入 `【UI 契约】<contractRef>` 与逐屏 must-match；没有契约的用例显式标 `ui-unverified`，不静默。
 - **Jira**：沿用现有 `verify_jira_issue`/`jira_evidence_post` 轨道；ticket 模板加 `Design contract` 与 `Verification` 两节，verify 阶段可机械检查是否缺失。
 - **范围**：先覆盖已访问屏；未访问屏记 `ui-unverified` 覆盖率缺口，不伪造通过。
+- **覆盖账本已落地（2026-10-26，DESIGN §13.222）**：逐例 `ui.coverage` + 批次 `uiCoverage` 记录请求/匹配/比对/跳过/未匹配与 `contractNotCompared`；文本与批次清单可见，仍不自动导览未访问屏。
 
 ### P2：机械规则（先解决三个前提）
 
@@ -62,6 +63,7 @@
 - **平台 profile**：iOS/Android 的 `insets`/`ignoreRegions` 持久化到项目配置；不允许每屏手填。
 - **源保真**：`ui:passed` 只接受 PNG 源（iOS 原生 PNG；Android live 用 `lossless:true` 的 `screencap -p`）。Android trace `.jpg`（artemis JPEG quality 80、无 alpha）只能 `report-only`/`ui-unverified`，不得作为细节门禁；结果记录 `sourceFormat`/`lossless`/`detailThreshold`。JPEG 的 alpha 丢失对不透明设备截图通常不是主要问题，**主要风险是压缩振铃/块效应**；细节阈值被降到 0.1 后，1–4px 细节可能漏报。设计侧透明占位/阴影按统一背景合成后再比，避免把 alpha 当成内容差异。
 - **边界**：提取警告（`extraction-warning`）永不阻断；阻断的是**已验证的实现差异**，两个信号不得耦合。
+- **窄门禁已落地（2026-10-26，DESIGN §13.221）**：`suite run --ui-diff --fail-on-ui`（含 `--task` / `loop`）只对非隔离 `ui.status=failed` 阻断（exit 2），`unverified` 不阻断；仅 lossless PNG 可产生 failed，仍保持“先窄后宽”。
 
 ### P4：review 增加 UI 轴
 
@@ -75,16 +77,16 @@
 
 ### P3.1 字重（regular / medium / semibold / bold）检测口径
 
-详细方案见 [`2026-10-20-font-weight-detection-design.md`](./2026-10-20-font-weight-detection-design.md)。摘要：`ui-contract` 记录文本节点级 `fontWeight`（归一 400/500/600/700）；真机侧从 1:1 截图测 `inkRatio`/`runLength`，输出 `weightHint: lighter|similar|heavier`；同平台 baseline 才做硬门禁，设计×真机只提示；medium↔regular 允许低置信，JPEG/上采样/文本变化一律 `unverified`。
+详细方案见 [`2026-10-20-font-weight-detection-design.md`](./2026-10-20-font-weight-detection-design.md)。摘要：`ui-contract` 记录文本节点级 `fontWeight`（归一 400/500/600/700）；真机侧从 1:1 截图测 `inkRatio`/`runLength`，输出 `weightHint: lighter|similar|heavier`；同平台 baseline 才做硬门禁，设计×真机只提示；medium↔regular 允许低置信，JPEG/上采样/文本变化一律 `unverified`。**机制进展（2026-10-26，DESIGN §13.224）**：`suite run/loop --fail-on-ui-weight` 已提供 opt-in 高置信 heavier 门禁，**默认关闭**；真实样本校准仍待。
 
 ### P6：廉价 PNG 适配器（局部缓解）
 
-给 `design_device_diff` 增加 `design.source:"image"`（`imagePath`）读取 `design/screens/*.png`；报告标 `design-upscaled` 与来源，细节阈值按降级档。它解决“现成截图不能用”的接口问题，不替代高倍 pen/Figma 渲染。
+给 `design_device_diff` 增加 `design.source:"image"`（`imagePath`）读取 `design/screens/*.png`；报告标 `design-upscaled` 与来源，细节阈值按降级档。它解决“现成截图不能用”的接口问题，不替代高倍 pen/Figma 渲染。**已完成（2026-10-26，DESIGN §13.219）**：PNG-only、无节点几何（pixel/tiles）、`image-source` 与 `design-upscaled` 标注。
 
 ### P7：基线与 token 版本化
 
 - **基线**：记录当前“人工触发、5 屏、首頁 5 区域、自动 UI 门禁 0、suite 无 UI 字段”；改进后按月统计“UI 差异在实现前/后被发现的占比”。
-- **token 版本化**：契约 `fingerprint` 绑定设计源（复用 case-set 指纹模式）；设计源变化但 token 未更新时告警，避免下一轮静默漂移。
+- **token 版本化**：契约 `fingerprint` 绑定设计源（复用 case-set 指纹模式）；设计源变化但 token 未更新时告警，避免下一轮静默漂移。**已完成（2026-10-26，DESIGN §13.220）**：`ui-lint` 每次重算 flows + 逐屏 `.pen` 指纹，`stale/unverifiable/missing` 告警，`--fail-on-stale-contract` 可升门禁。
 
 ## 4. 落地顺序
 
@@ -132,5 +134,5 @@
 
 - **P0 首版完成**：`suite ui-contract` 从 `flows.json` + 逐屏 `.pen` 投影 `ui-contract.{json,md}`；共享 screen id/指纹；逐屏 token + 几何四态 + `presentation`。iOS 样例 19 屏：4 partial、15 no-baseline（缺逐屏 `.pen`）。
 - **P1 部分完成**：`SuiteCaseResult.ui` / `SuiteRunReport.ui` / 批次清单 `summary.ui` + `cases[].ui` 已落地；默认 `unverified`，CLI 逐例与汇总、面板批次徽标显示 UI 状态，不改变功能门禁。
-- **P3 源保真部分完成**：`design_device_diff` 报告新增 `unit.device.sourceFormat/lossless` 与 `detail.deviceSource`；`isUiPass` 只接受 PNG + lossless。Android trace JPEG 仍为 `ui-unverified`/report-only。
-- **未完成**：P1 逐例 UI 实际对比（trace/访问屏）、P2 `ui:lint`、P3 批量门禁、P4 review 轴、P6 PNG 适配器。
+- **P3 源保真部分完成**：`design_device_diff` 报告新增 `unit.device.sourceFormat/lossless` 与 `detail.deviceSource`；`isUiPass` 只接受 PNG + lossless。Android trace JPEG 仍为 `ui-unverified`/report-only；窄门禁 `--fail-on-ui` 已落地（§13.221）。
+- **未完成**：P1 未访问屏自动导览（逐例 `--ui-diff` 与覆盖账本已落地，见 §13.222）、P2 `ui:lint` 的 presentation/hero 规则（五规则与逐屏映射已落地，见 §13.218）、P3 更宽门禁（像素簇/展示/hero，待基线）、P4 review 轴；P6 PNG 适配器（§13.219）与 P7 契约指纹漂移告警（§13.220）已落地。

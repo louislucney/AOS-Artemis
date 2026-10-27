@@ -7,7 +7,8 @@ export const REAL_DATA_MARKER = "【真实数据】";
 export const REAL_DATA_CLAUSE =
   `${REAL_DATA_MARKER}数据必须经被测应用的真实请求链路准备（界面操作或其后端 API 请求），` +
   "禁止伪造/写死页面或数据（禁止 mock、手造页面、跳过真实请求）；" +
-  "无法通过真实链路满足数据或进入目标页时，停止并报告 blocked（说明缺失的数据与接口），不得以假数据继续。";
+  "无法通过真实链路满足数据或进入目标页时，先核对接入项目是否已有可用 API、可复用页面/入口；" +
+  "两者都没有时，明确需要新增或重写的页面/接口并报告 blocked（说明缺失的数据与接口），不得用假数据、替代商品或替代页面继续。";
 
 export function hasRealDataPolicy(taskDesc: string | null | undefined): boolean {
   return typeof taskDesc === "string" && taskDesc.includes(REAL_DATA_MARKER);

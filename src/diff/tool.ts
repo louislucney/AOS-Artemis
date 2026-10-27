@@ -18,7 +18,7 @@ import {
   type LiveCaptureOptions,
   type StepAnchor
 } from "./device-source.js";
-import { decodeImage, diffScreens, encodePng, type Bbox, type Insets } from "./engine.js";
+import { decodeImage, diffScreens, encodePng, normalizeDesignCrop, type Bbox, type Insets } from "./engine.js";
 import { renderPenDesign } from "./pen-source.js";
 import {
   composeDetailPair,
@@ -31,13 +31,16 @@ import {
 } from "./detail.js";
 import { loadScreenMap, localizeRegion, proposeScreenMapEntries, type ProposeResult } from "./screen-map.js";
 import type { UiContract, UiTextContract } from "../ui/contract.js";
+import { loadUiSemantics, semanticsForScreen } from "../ui/semantics.js";
 import { measureTextWeight, type TextWeightResult } from "../ui/text-weight.js";
 import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
 
 export interface DesignSourceArgs {
-  source?: "figma" | "pen";
+  source?: "figma" | "pen" | "image";
   figmaUrl?: string;
   penPath?: string;
+  /** 设计源为现成 PNG 截图（相对项目根或绝对路径；仅 PNG）。 */
+  imagePath?: string;
   nodeId?: string;
   renderOut?: string;
 }
@@ -63,7 +66,13 @@ export interface DesignDeviceDiffArgs {
     image?: "post" | "pre";
     lossless?: boolean;
   };
-  alignment?: { insets?: Partial<Insets>; ignoreRegions?: Bbox[] };
+  alignment?: { insets?: Partial<Insets>; ignoreRegions?: Bbox[]; designCrop?: Bbox };
+  ui?: {
+    semanticsPath?: string;
+    screenId?: string;
+    ignoreDynamicRegions?: boolean;
+    expectedAssets?: boolean;
+  };
   diff?: {
     pixelThreshold?: number;
     minAreaRatio?: number;
@@ -93,20 +102,117 @@ export interface DesignDeviceDiffDeps {
   captureIosPng?: LiveCaptureOptions["captureIosPng"];
 }
 
-function resolveDesignSource(design: DesignSourceArgs): { kind: "figma" } | { kind: "pen" } | { error: string } {
+function resolveDesignSource(
+  design: DesignSourceArgs
+): { kind: "figma" } | { kind: "pen" } | { kind: "image" } | { error: string } {
   const hasFigma = typeof design.figmaUrl === "string" && design.figmaUrl.length > 0;
   const hasPen = typeof design.penPath === "string" && design.penPath.length > 0;
-  if (design.source === "pen") return { kind: "pen" };
+  const hasImage = typeof design.imagePath === "string" && design.imagePath.length > 0;
+  const provided = [hasFigma, hasPen, hasImage].filter(Boolean).length;
+  if (provided > 1) {
+    return { error: "design 只能给 figmaUrl / penPath / imagePath 之一。" };
+  }
   if (design.source === "figma") {
     return hasFigma ? { kind: "figma" } : { error: "design.source=figma 需要 design.figmaUrl。" };
   }
-  if (hasFigma && hasPen) return { error: "design 只能给 figmaUrl 或 penPath 之一。" };
+  if (design.source === "image") {
+    return hasImage
+      ? { kind: "image" }
+      : { error: 'design.source=image 需要 design.imagePath（现成 PNG 截图）。' };
+  }
+  if (design.source === "pen" && hasImage) {
+    return { error: "design.source=pen 不能同时给 design.imagePath。" };
+  }
+  if (design.source === "pen") return { kind: "pen" };
   if (hasFigma) return { kind: "figma" };
   if (hasPen) return { kind: "pen" };
+  if (hasImage) return { kind: "image" };
   return {
     error:
-      'design 需要设计源：figmaUrl（Figma 链接）或 source:"pen"（可选 penPath，缺省取 .artemis/design 下最新 .pen）。'
+      'design 需要设计源：figmaUrl（Figma 链接）、source:"pen"（可选 penPath，缺省取 .artemis/design 下最新 .pen）或 source:"image" + imagePath（现成 PNG）。'
   };
+}
+
+/** 现成设计截图只做路径解析；读取/PNG 校验在真正取源时做（dryRun 不读盘）。 */
+function resolveDesignImagePath(
+  runtime: Runtime,
+  imagePath: string
+): { absolute: string; relative: string } {
+  const absolute = path.isAbsolute(imagePath)
+    ? imagePath
+    : path.resolve(runtime.project.rootDir, imagePath);
+  return { absolute, relative: path.relative(runtime.project.rootDir, absolute) };
+}
+
+function intersectDesignCrop(box: Bbox, crop: Bbox): Bbox | null {
+  const x0 = Math.max(box.x, crop.x);
+  const y0 = Math.max(box.y, crop.y);
+  const x1 = Math.min(box.x + box.width, crop.x + crop.width);
+  const y1 = Math.min(box.y + box.height, crop.y + crop.height);
+  if (x1 <= x0 || y1 <= y0) return null;
+  return { x: x0 - crop.x, y: y0 - crop.y, width: x1 - x0, height: y1 - y0 };
+}
+
+function loadDynamicIgnoreRegions(
+  runtime: Runtime,
+  ui: DesignDeviceDiffArgs["ui"],
+  designCrop: Bbox | null
+): { ignore: Bbox[]; warnings: string[]; ignored: number; skipped: number } {
+  if (ui?.ignoreDynamicRegions !== true && ui?.expectedAssets !== true) {
+    return { ignore: [], warnings: [], ignored: 0, skipped: 0 };
+  }
+  const warnings: string[] = [];
+  const shouldIgnore = ui.ignoreDynamicRegions === true;
+  const semanticsPath = ui.semanticsPath
+    ? path.resolve(runtime.project.rootDir, ui.semanticsPath)
+    : undefined;
+  const loaded = loadUiSemantics(runtime.configDirAbs, semanticsPath ? { path: semanticsPath } : undefined);
+  if (loaded.errors.length > 0) {
+    warnings.push(`semantics 解析失败，动态区域未忽略：${loaded.errors.join(" | ")}`);
+    return { ignore: [], warnings, ignored: 0, skipped: 0 };
+  }
+  if (loaded.file === null) {
+    warnings.push("未找到 ui-semantics，动态区域未忽略");
+    return { ignore: [], warnings, ignored: 0, skipped: 0 };
+  }
+  if (loaded.file.draft === true) {
+    warnings.push("semantics 仍是 draft（owner 未确认），动态区域不自动忽略");
+    return { ignore: [], warnings, ignored: 0, skipped: 0 };
+  }
+  const screen =
+    ui.screenId !== undefined
+      ? semanticsForScreen(loaded.file, ui.screenId)
+      : loaded.file.screens.length === 1
+        ? loaded.file.screens[0]!
+        : null;
+  if (screen === null) {
+    warnings.push(`未找到 semantics 屏 ${ui.screenId ?? "(未指定)"}，动态区域未忽略`);
+    return { ignore: [], warnings, ignored: 0, skipped: 0 };
+  }
+  const ignore: Bbox[] = [];
+  let skipped = 0;
+  for (const region of screen.regions) {
+    if (region.isDynamic !== true && region.dynamicAssets !== true) continue;
+    if ((region.expectedAssets ?? 0) > 0) {
+      warnings.push(
+        `dynamic-assets-not-ignored：${region.id} 声明 expectedAssets，需用 suite ui-parity 检查存在性/placeholder，不能整块忽略`
+      );
+      continue;
+    }
+    if (!shouldIgnore) continue;
+    if (region.designBbox === undefined) {
+      skipped += 1;
+      warnings.push(`dynamic-region-without-bbox：${region.id} 没有 designBbox，无法自动忽略`);
+      continue;
+    }
+    const box = designCrop === null ? region.designBbox : intersectDesignCrop(region.designBbox, designCrop);
+    if (box === null) {
+      warnings.push(`dynamic-region-outside-crop：${region.id} 完全在设计裁剪范围外`);
+      continue;
+    }
+    ignore.push(box);
+  }
+  return { ignore, warnings, ignored: ignore.length, skipped };
 }
 
 const FIGMA_HINT =
@@ -165,6 +271,9 @@ function findContractScreen(
   const urlNodeId = /[?&]node-id=([^&]+)/.exec(args.design.figmaUrl ?? "")?.[1] ?? null;
   const candidates = [
     args.design.penPath ? path.basename(args.design.penPath, ".pen") : null,
+    args.design.imagePath
+      ? path.basename(args.design.imagePath, path.extname(args.design.imagePath))
+      : null,
     args.design.nodeId ?? null,
     urlNodeId ? decodeURIComponent(urlNodeId).replace("-", ":") : null
   ].filter((entry): entry is string => typeof entry === "string" && entry !== "");
@@ -172,7 +281,7 @@ function findContractScreen(
   return screen ? { contract, screen, screenId: screen.id } : null;
 }
 
-function readTraceTexts(
+export function readTraceTexts(
   runtime: Runtime,
   traceId: string,
   stepNumber: number | null
@@ -211,7 +320,7 @@ function readTraceTexts(
   }
 }
 
-function cropRgba(
+export function cropRgba(
   image: ReturnType<typeof decodeImage>,
   box: { x: number; y: number; width: number; height: number }
 ): ReturnType<typeof decodeImage> | null {
@@ -461,6 +570,10 @@ export async function designDeviceDiff(
       plannedNodeId = null;
     }
     const penTarget = source.kind === "pen" ? resolvePenTarget(runtime, args.design.penPath) : null;
+    const imageTarget =
+      source.kind === "image" && args.design.imagePath !== undefined
+        ? resolveDesignImagePath(runtime, args.design.imagePath)
+        : null;
 
     if (args.dryRun === true) {
       const slug =
@@ -468,16 +581,27 @@ export async function designDeviceDiff(
           ? plannedNodeId
             ? diffSlug(plannedNodeId)
             : "screen"
-          : penTarget
-            ? diffSlug(path.basename(penTarget, ".pen"))
-            : "screen";
+          : source.kind === "pen"
+            ? penTarget
+              ? diffSlug(path.basename(penTarget, ".pen"))
+              : "screen"
+            : imageTarget
+              ? diffSlug(path.basename(imageTarget.absolute, path.extname(imageTarget.absolute)))
+              : "screen";
       return jsonResult({
         ok: true,
         dryRun: true,
         design:
           source.kind === "figma"
             ? { source: "figma", figmaUrl: args.design.figmaUrl, nodeId: plannedNodeId }
-            : { source: "pen", penPath: args.design.penPath ?? null, resolved: penTarget ? path.relative(runtime.project.rootDir, penTarget) : null, renderOut: args.design.renderOut ?? null },
+            : source.kind === "pen"
+              ? { source: "pen", penPath: args.design.penPath ?? null, resolved: penTarget ? path.relative(runtime.project.rootDir, penTarget) : null, renderOut: args.design.renderOut ?? null }
+              : {
+                  source: "image",
+                  imagePath: args.design.imagePath ?? null,
+                  resolved: imageTarget?.relative ?? null,
+                  format: "png"
+                },
         device:
           stepRequest !== null
             ? {
@@ -493,6 +617,11 @@ export async function designDeviceDiff(
                 ...(args.device?.platform === "ios" ? { platform: "ios" } : {}),
                 serial: args.device?.serial ?? null
               },
+        alignment: {
+          designCrop: args.alignment?.designCrop ?? null,
+          ignoreRegions: args.alignment?.ignoreRegions ?? []
+        },
+        ...(args.ui !== undefined ? { ui: args.ui } : {}),
         plannedDir: path.join(runtime.configDirAbs, "design", "diffs", `${slug}-<timestamp>`),
         hint: "dryRun 不拉取设计/设备截图、不写盘。"
       });
@@ -561,7 +690,7 @@ export async function designDeviceDiff(
       } catch (error) {
         nodeWarning = `设计节点几何获取失败（分类降级为 pixel）：${errorMessage(error)}`;
       }
-    } else {
+    } else if (source.kind === "pen") {
       try {
         const rendered = await renderPenDesign(runtime, {
           penPath: args.design.penPath,
@@ -585,6 +714,27 @@ export async function designDeviceDiff(
           true
         );
       }
+    } else {
+      const target = imageTarget;
+      if (target === null) {
+        return jsonError("design.source=image 缺少 design.imagePath。");
+      }
+      if (!fs.existsSync(target.absolute)) {
+        return jsonError(`design.imagePath 不存在：${args.design.imagePath}`);
+      }
+      try {
+        designPng = fs.readFileSync(target.absolute);
+      } catch (error) {
+        return jsonError(`design.imagePath 读取失败：${errorMessage(error)}`);
+      }
+      if (!isPngBytes(designPng)) {
+        return jsonError(`design.imagePath 仅支持 PNG（无损源）：${args.design.imagePath}`);
+      }
+      designUnit = { source: "image", path: target.relative, format: "png" };
+      designResponse = { source: "image", path: target.relative, format: "png" };
+      designSlug = diffSlug(path.basename(target.absolute, path.extname(target.absolute)));
+      nodeWarning =
+        "image-source：现成截图无设计节点几何，差异分类按 pixel、区域核验用 tiles；细节档随源分辨率降级。";
     }
 
     const resolvedStepNumber = stepRequest !== null ? stepNumber : null;
@@ -603,17 +753,31 @@ export async function designDeviceDiff(
     let annotated: Buffer;
     let deviceImage: ReturnType<typeof decodeImage>;
     let diffResult: ReturnType<typeof diffScreens>;
+    let croppedDesign: ReturnType<typeof decodeImage> | null = null;
+    let dynamicRegions: ReturnType<typeof loadDynamicIgnoreRegions> = {
+      ignore: [],
+      warnings: [],
+      ignored: 0,
+      skipped: 0
+    };
     try {
       const design = decodeImage(designPng);
       const device = decodeImage(deviceBytes);
       deviceImage = device;
+      const designCrop = normalizeDesignCrop(args.alignment?.designCrop, design);
+      croppedDesign = designCrop === null ? null : cropRgba(design, designCrop);
+      if (designCrop !== null && croppedDesign === null) {
+        return jsonError("designCrop 裁剪失败");
+      }
+      dynamicRegions = loadDynamicIgnoreRegions(runtime, args.ui, designCrop);
       diffResult = diffScreens(design, device, {
         insets: args.alignment?.insets,
-        ignoreRegions: args.alignment?.ignoreRegions,
+        ignoreRegions: [...(args.alignment?.ignoreRegions ?? []), ...dynamicRegions.ignore],
+        ...(args.alignment?.designCrop !== undefined ? { designCrop: args.alignment.designCrop } : {}),
         designNodes,
         ...args.diff
       });
-      annotated = renderAnnotatedPng(design, diffResult.regions);
+      annotated = renderAnnotatedPng(croppedDesign ?? design, diffResult.regions);
     } catch (error) {
       return jsonError(`差异计算失败: ${errorMessage(error)}`);
     }
@@ -660,6 +824,7 @@ export async function designDeviceDiff(
         lighter: number;
         similar: number;
         heavier: number;
+        highConfidenceHeavier: number;
         unverified: number;
         byReason: Record<string, number>;
         items?: Array<{
@@ -698,14 +863,19 @@ export async function designDeviceDiff(
       const maxRegions = Math.max(1, Math.trunc(args.diff?.maxRegions ?? 20));
       const insets = diffResult.alignment.insets;
 
-      let detailDesignPng = designPng;
+      let detailDesignPng = croppedDesign !== null ? encodePng(croppedDesign) : designPng;
       let detailScale = 1;
-      let designRetryReason: string | null = null;
+      let designRetryReason: string | null =
+        croppedDesign !== null
+          ? "designCrop 启用（细节档使用裁剪图，不重渲染）"
+          : source.kind === "image"
+            ? "image-source（固定栅格，不重渲染）"
+            : null;
       const deviceCroppedWidth = deviceImage.width - insets.left - insets.right;
       const rootWidth = screens.find((node) => node.width > 0)?.width ?? null;
-      if (rootWidth !== null) {
+      if (rootWidth !== null && croppedDesign === null) {
         const target = Math.min(4, Math.max(1, Math.round((deviceCroppedWidth / rootWidth) * 100) / 100));
-        if (target > 1.02) {
+        if (target > 1.02 && source.kind !== "image") {
           try {
             if (source.kind === "figma") {
               const render = await fetchFigmaRenderPng(args.design.figmaUrl!, args.design.nodeId, target);
@@ -873,7 +1043,7 @@ export async function designDeviceDiff(
           ? readTraceTexts(runtime, stepRequest.traceId, resolvedStepNumber)
           : null;
       const contractTexts =
-        contractMatch === null
+        contractMatch === null || croppedDesign !== null
           ? null
           : measureContractTexts({
               screen: contractMatch.screen,
@@ -884,6 +1054,23 @@ export async function designDeviceDiff(
               lossless: deviceLossless === true,
               ...(traceTexts !== null ? { deviceTexts: traceTexts.texts, deviceScale: traceTexts.scale } : {})
             });
+      if (croppedDesign !== null && contractMatch !== null) {
+        detailWarnings.push("designCrop 启用：contract 文本字重检查跳过（bbox 为 design-source，未整体平移）");
+      }
+      const highConfidenceHeavier =
+        contractTexts !== null
+          ? contractTexts.items.filter(
+              (item) =>
+                item.status === "checked" &&
+                item.weightHint === "heavier" &&
+                item.confidence >= 0.7
+            ).length
+          : textSummaries.filter(
+              (entry) =>
+                entry.status === "checked" &&
+                entry.weightHint === "heavier" &&
+                entry.confidence >= 0.7
+            ).length;
       detailMeta = {
         enabled: true,
         zoom,
@@ -901,6 +1088,7 @@ export async function designDeviceDiff(
             ? {
                 ...contractTexts.summary,
                 texts: contractTexts.summary.textsTotal,
+                highConfidenceHeavier,
                 items: contractTexts.items
               }
             : {
@@ -910,6 +1098,7 @@ export async function designDeviceDiff(
                 lighter: textSummaries.filter((entry) => entry.weightHint === "lighter").length,
                 similar: textSummaries.filter((entry) => entry.weightHint === "similar").length,
                 heavier: textSummaries.filter((entry) => entry.weightHint === "heavier").length,
+                highConfidenceHeavier,
                 unverified: textSummaries.filter((entry) => entry.status === "unverified").length,
                 byReason: textByReason
               }
@@ -924,6 +1113,7 @@ export async function designDeviceDiff(
       ...(anchorAmbiguous
         ? [`失败证据命中 ${stepAnchor!.candidates.length} 个步骤，已取首个 Step ${stepAnchor!.stepNumber}；可用 device.stepNumber 显式指定。`]
         : []),
+      ...dynamicRegions.warnings,
       ...detailWarnings
     ];
     const designScreens = screens
@@ -933,6 +1123,8 @@ export async function designDeviceDiff(
       alignment: diffResult.alignment,
       designScreens,
       ignoredRegions: diffResult.ignoredRegions,
+      dynamicIgnoreRegions: dynamicRegions.ignore,
+      dynamicRegions: { ignored: dynamicRegions.ignored, skipped: dynamicRegions.skipped },
       designNodes: designNodes.length,
       thresholds: diffResult.thresholds,
       warnings,
@@ -978,7 +1170,7 @@ export async function designDeviceDiff(
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(path.join(dir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
         fs.writeFileSync(path.join(dir, "annotated.png"), annotated);
-        fs.writeFileSync(path.join(dir, "design.png"), designPng);
+        fs.writeFileSync(path.join(dir, "design.png"), croppedDesign !== null ? encodePng(croppedDesign) : designPng);
         fs.writeFileSync(path.join(dir, "device.png"), encodePng(deviceImage));
         if (regionDetailsPayload !== null && regionDetailsPayload.length > 0) {
           fs.mkdirSync(path.join(dir, "regions"), { recursive: true });

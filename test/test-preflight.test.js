@@ -227,3 +227,114 @@ test("linearizeFlowsWithStats: reports truncation, dropped paths and entry fallb
   assert.equal(fallback.stats.entryFallback, true);
   assert.equal(fallback.stats.truncated, false);
 });
+
+test("preflightGeneratedTests: dynamicContent flags design sample values in taskDesc/steps", () => {
+  const tests = JSON.stringify({
+    flows: [
+      {
+        id: "case-1",
+        name: "推薦飲料",
+        screens: ["Home"],
+        taskDesc: "點擊「冰蘋果山茶花風味美式」並確認價格 $120 起",
+        steps: ["點擊「冰蘋果山茶花風味美式」，驗證進入「單品頁」"]
+      },
+      {
+        id: "case-2",
+        name: "穩定結構",
+        screens: ["Home"],
+        taskDesc: "驗證「推薦」「咖啡飲品」仍可見",
+        steps: ["驗證「推薦」可見"]
+      }
+    ]
+  });
+  const configDir = makeDesignDir({ tests });
+  fs.writeFileSync(
+    path.join(configDir, "design", "ui-semantics.json"),
+    JSON.stringify({
+      version: 1,
+      screens: [
+        {
+          screenId: "home",
+          regions: [
+            {
+              id: "list",
+              role: "product-list",
+              dynamicExamples: ["冰蘋果山茶花風味美式", "$120 起"],
+              dynamicPatterns: ["\\$[0-9]+"]
+            }
+          ]
+        }
+      ]
+    })
+  );
+  const report = preflightGeneratedTests(configDir);
+  assert.ok(report);
+  assert.equal(report.dynamicContent.total, 1);
+  assert.equal(report.dynamicContent.fresh, 1);
+  assert.equal(report.dynamicContent.baselined, 0);
+  assert.equal(report.dynamicContent.cases[0].caseId, "case-1");
+  assert.deepEqual(report.dynamicContent.cases[0].texts.sort(), ["$120 起", "冰蘋果山茶花風味美式"].sort());
+  assert.ok(report.dynamicContent.semanticsPath?.endsWith("ui-semantics.json"));
+});
+
+test("preflightGeneratedTests: missing semantics/dynamicExamples is neutral", () => {
+  const tests = JSON.stringify({
+    flows: [{ id: "case-1", name: "Home", screens: ["Home"], taskDesc: "驗證「推薦」", steps: [] }]
+  });
+  const configDir = makeDesignDir({ tests });
+  const missing = preflightGeneratedTests(configDir);
+  assert.equal(missing.dynamicContent.total, 0);
+  assert.equal(missing.dynamicContent.semanticsPath, null);
+
+  fs.writeFileSync(
+    path.join(configDir, "design", "ui-semantics.json"),
+    JSON.stringify({ version: 1, screens: [{ screenId: "home", regions: [] }] })
+  );
+  const noExamples = preflightGeneratedTests(configDir);
+  assert.equal(noExamples.dynamicContent.total, 0);
+  assert.equal(noExamples.dynamicContent.semanticsPath, null);
+});
+
+test("preflightGeneratedTests: dynamic baseline marks cases baselined", () => {
+  const tests = JSON.stringify({
+    flows: [
+      {
+        id: "case-1",
+        name: "推薦飲料",
+        screens: ["Home"],
+        taskDesc: "點擊「冰蘋果山茶花風味美式」",
+        steps: []
+      }
+    ]
+  });
+  const configDir = makeDesignDir({ tests });
+  fs.writeFileSync(
+    path.join(configDir, "design", "ui-semantics.json"),
+    JSON.stringify({
+      version: 1,
+      screens: [
+        {
+          screenId: "home",
+          regions: [{ id: "list", role: "product-list", dynamicExamples: ["冰蘋果山茶花風味美式"] }]
+        }
+      ]
+    })
+  );
+  const report = preflightGeneratedTests(configDir, {
+    dynamicBaseline: {
+      version: 1,
+      entries: [
+        {
+          tool: "check-dynamic",
+          caseId: "case-1",
+          kind: "dynamic-content",
+          text: "冰蘋果山茶花風味美式"
+        }
+      ]
+    }
+  });
+  assert.equal(report.dynamicContent.total, 1);
+  assert.equal(report.dynamicContent.baselined, 1);
+  assert.equal(report.dynamicContent.fresh, 0);
+  assert.equal(report.dynamicContent.cases[0].baselined, true);
+});

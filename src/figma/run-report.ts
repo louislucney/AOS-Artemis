@@ -14,7 +14,7 @@ import {
   type ApiErrorObservation
 } from "../artemis/api-errors.js";
 import type { TaskFailedItem, TaskStatus } from "../artemis/task-result.js";
-import type { TaskStatRecord } from "../db/types.js";
+import type { SuiteRunRecord, TaskStatRecord } from "../db/types.js";
 import type { Runtime } from "../runtime.js";
 import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
@@ -30,6 +30,10 @@ import type { CoverageEdge } from "./coverage.js";
 
 export type RunReportOutcome = TaskOutcome;
 
+const TEST_RESULTS_SHEET = "执行结果";
+const CROSS_PLATFORM_SHEET = "跨端对比";
+const EXECUTOR_SHEET = "执行器";
+
 export interface RunReportCase {
   caseId: string | null;
   name: string;
@@ -40,6 +44,11 @@ export interface RunReportCase {
   model: string | null;
   feature: string | null;
   platform: string | null;
+  /** 任务报告可用的批次/设备/开始时间；task_stats 报告为 null/缺省。 */
+  runId?: string | null;
+  device?: string | null;
+  startedAt?: string | null;
+  appVersion?: string | null;
   failure: FailureClassification | null;
   /** Script provenance summary (assert vs explore steps; null for legacy). */
   scriptProvenance: { asserts: number; explores: number } | null;
@@ -66,6 +75,9 @@ export interface RunReport {
   /** 当前设计源警告摘要（tests 快照优先、flows 回退）；读取失败 → null。 */
   designWarnings: WarningSummary | null;
   saved?: { xlsx: string; junit: string };
+  /** `--update-tests` 回填结果。 */
+  testsUpdated?: { path: string; rows: number; historyRows?: number };
+  testsUpdateError?: string;
   error?: string;
 }
 
@@ -305,6 +317,257 @@ async function renderWorkbook(report: RunReport): Promise<Buffer> {
   return Buffer.from(rendered);
 }
 
+function displayIdsFromWorkbook(workbook: ExcelJS.Workbook): Map<string, string> {
+  const map = new Map<string, string>();
+  const sheet = workbook.getWorksheet(EXECUTOR_SHEET);
+  if (!sheet) return map;
+  const header = sheet.getRow(1);
+  let caseColumn = 0;
+  let displayColumn = 0;
+  header.eachCell((cell, column) => {
+    if (cell.value === "用例编号") caseColumn = column;
+    if (cell.value === "展示编号") displayColumn = column;
+  });
+  if (caseColumn === 0 || displayColumn === 0) return map;
+  for (let row = 2; row <= sheet.rowCount; row += 1) {
+    const caseId = String(sheet.getRow(row).getCell(caseColumn).value ?? "").trim();
+    const displayId = String(sheet.getRow(row).getCell(displayColumn).value ?? "").trim();
+    if (caseId !== "" && displayId !== "") map.set(caseId, displayId);
+  }
+  return map;
+}
+
+interface PlatformHistoryCell {
+  name: string;
+  status: string;
+  runId: string | null;
+  finishedAt: string;
+  device: string | null;
+  traceId: string | null;
+  featureKey: string | null;
+}
+
+interface PlatformHistoryRow {
+  caseId: string;
+  name: string;
+  latest: Map<string, PlatformHistoryCell>;
+  changes: Map<string, string>;
+}
+
+function platformLabel(platform: string): string {
+  if (platform === "android") return "Android";
+  if (platform === "ios") return "iOS";
+  return platform === "" ? "—" : platform[0]!.toUpperCase() + platform.slice(1);
+}
+
+function normalizedStatus(status: string): "passed" | "failed" | "pending" {
+  if (status === "passed") return "passed";
+  if (status === "pending") return "pending";
+  return "failed";
+}
+
+function changeLabel(latest: string, previous: string | null): string {
+  const current = normalizedStatus(latest);
+  if (previous === null) return "新增";
+  const prior = normalizedStatus(previous);
+  if (prior === "pending" || current === "pending") return "—";
+  if (prior === "passed" && current === "passed") return "仍通过";
+  if (prior === "failed" && current === "passed") return "修复";
+  if (prior === "passed" && current === "failed") return "回归";
+  if (prior === "failed" && current === "failed") return "仍失败";
+  return "—";
+}
+
+function buildPlatformHistory(
+  runs: SuiteRunRecord[],
+  caseIds: Set<string> | null
+): { platforms: string[]; rows: PlatformHistoryRow[] } {
+  const latest = new Map<string, Map<string, PlatformHistoryCell>>();
+  const previous = new Map<string, Map<string, string>>();
+  const ordered = [...runs].sort((left, right) => {
+    const leftAt = Date.parse(left.finishedAt || left.createdAt);
+    const rightAt = Date.parse(right.finishedAt || right.createdAt);
+    return rightAt - leftAt;
+  });
+  for (const run of ordered) {
+    for (const entry of run.cases) {
+      if (caseIds !== null && !caseIds.has(entry.caseId)) continue;
+      const byPlatform = latest.get(entry.caseId) ?? new Map<string, PlatformHistoryCell>();
+      if (!byPlatform.has(run.platform)) {
+        byPlatform.set(run.platform, {
+          name: entry.name,
+          status: entry.status,
+          runId: run.runId,
+          finishedAt: run.finishedAt || run.createdAt,
+          device: run.device,
+          traceId: entry.traceId,
+          featureKey: entry.featureKey ?? run.featureKey
+        });
+        latest.set(entry.caseId, byPlatform);
+        continue;
+      }
+      const prior = previous.get(entry.caseId) ?? new Map<string, string>();
+      if (!prior.has(run.platform)) {
+        prior.set(run.platform, entry.status);
+        previous.set(entry.caseId, prior);
+      }
+    }
+  }
+  const rows: PlatformHistoryRow[] = [...latest.entries()]
+    .map(([caseId, byPlatform]) => {
+      const changes = new Map<string, string>();
+      for (const [platform, cell] of byPlatform) {
+        const prior = previous.get(caseId)?.get(platform) ?? null;
+        changes.set(platform, changeLabel(cell.status, prior));
+      }
+      const first = byPlatform.values().next().value as PlatformHistoryCell | undefined;
+      return {
+        caseId,
+        name: first?.name ?? caseId,
+        latest: byPlatform,
+        changes
+      };
+    })
+    .sort((left, right) => left.caseId.localeCompare(right.caseId));
+  const platformSet = new Set<string>();
+  for (const row of rows) {
+    for (const platform of row.latest.keys()) platformSet.add(platform);
+  }
+  const platforms = [...platformSet].sort((left, right) => {
+    const order = (platform: string): number =>
+      platform === "android" ? 0 : platform === "ios" ? 1 : 2;
+    return order(left) - order(right) || left.localeCompare(right);
+  });
+  return { platforms, rows };
+}
+
+/** 把运行结果写入 `tests.xlsx` 的「执行结果」+「跨端对比」sheet；不动生成计划，幂等替换。 */
+export async function updateTestsWorkbookWithResults(
+  testsXlsxPath: string,
+  report: RunReport,
+  options: { runs?: SuiteRunRecord[] } = {}
+): Promise<{ path: string; rows: number; historyRows?: number }> {
+  if (!fs.existsSync(testsXlsxPath)) {
+    throw new Error(`未找到 tests.xlsx：${testsXlsxPath}`);
+  }
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(testsXlsxPath);
+  const existing = workbook.getWorksheet(TEST_RESULTS_SHEET);
+  if (existing) workbook.removeWorksheet(existing.id);
+  const existingCross = workbook.getWorksheet(CROSS_PLATFORM_SHEET);
+  if (existingCross) workbook.removeWorksheet(existingCross.id);
+  const displayIds = displayIdsFromWorkbook(workbook);
+  const sheet = workbook.addWorksheet(TEST_RESULTS_SHEET, {
+    views: [{ state: "frozen", ySplit: 1 }]
+  });
+  sheet.columns = [
+    { header: "#", key: "index", width: 5 },
+    { header: "用例编号", key: "displayId", width: 14 },
+    { header: "caseId", key: "caseId", width: 20 },
+    { header: "用例名称", key: "name", width: 36 },
+    { header: "结果", key: "outcome", width: 10 },
+    { header: "台账状态", key: "ledgerStatus", width: 12 },
+    { header: "功能", key: "feature", width: 16 },
+    { header: "端", key: "platform", width: 8 },
+    { header: "设备", key: "device", width: 18 },
+    { header: "耗时(ms)", key: "duration", width: 10 },
+    { header: "traceId", key: "traceId", width: 24 },
+    { header: "失败域", key: "domain", width: 18 },
+    { header: "失败原因", key: "reason", width: 50 },
+    { header: "API 错误", key: "apiErrors", width: 24 },
+    { header: "证据路径", key: "evidence", width: 50 },
+    { header: "批次", key: "runId", width: 22 },
+    { header: "运行时间", key: "startedAt", width: 24 }
+  ];
+  sheet.getRow(1).font = { bold: true };
+  report.cases.forEach((entry, index) => {
+    const row = sheet.addRow({
+      index: index + 1,
+      displayId: entry.caseId ? displayIds.get(entry.caseId) ?? "—" : "—",
+      caseId: entry.caseId ?? "",
+      name: entry.name,
+      outcome: entry.outcome,
+      ledgerStatus: entry.ledgerStatus,
+      feature: entry.feature ?? "—",
+      platform: entry.platform ?? "—",
+      device: entry.device ?? "—",
+      duration: entry.durationMs ?? "",
+      traceId: entry.traceId,
+      domain: entry.failure?.domain ?? "",
+      reason: entry.failure?.reason ?? "",
+      apiErrors: apiErrorsText(entry),
+      evidence: entry.evidence.traceDir,
+      runId: entry.runId ?? "—",
+      startedAt: entry.startedAt ?? "—"
+    });
+    row.getCell("reason").alignment = { wrapText: true, vertical: "top" };
+    row.getCell("evidence").alignment = { wrapText: true, vertical: "top" };
+  });
+  const wanted = new Set(
+    report.cases
+      .map((entry) => entry.caseId)
+      .filter((caseId): caseId is string => typeof caseId === "string" && caseId !== "")
+  );
+  const history = buildPlatformHistory(options.runs ?? [], wanted.size > 0 ? wanted : null);
+  if (history.rows.length > 0) {
+    const cross = workbook.addWorksheet(CROSS_PLATFORM_SHEET, {
+      views: [{ state: "frozen", ySplit: 1 }]
+    });
+    const platformKeys = history.platforms.map((_, index) => `platform${index}`);
+    cross.columns = [
+      { header: "#", key: "index", width: 5 },
+      { header: "用例编号", key: "displayId", width: 14 },
+      { header: "caseId", key: "caseId", width: 20 },
+      { header: "用例名称", key: "name", width: 36 },
+      { header: "功能", key: "feature", width: 16 },
+      ...history.platforms.map((platform, index) => ({
+        header: platformLabel(platform),
+        key: platformKeys[index]!,
+        width: 10
+      })),
+      { header: "变化", key: "changes", width: 30 },
+      { header: "最近批次", key: "runId", width: 22 },
+      { header: "最近时间", key: "finishedAt", width: 24 }
+    ];
+    cross.getRow(1).font = { bold: true };
+    history.rows.forEach((row, index) => {
+      const cells = [...row.latest.values()].sort(
+        (left, right) => Date.parse(right.finishedAt) - Date.parse(left.finishedAt)
+      );
+      const latest = cells[0];
+      const data: Record<string, string | number> = {
+        index: index + 1,
+        displayId: displayIds.get(row.caseId) ?? "—",
+        caseId: row.caseId,
+        name: row.name,
+        feature: latest?.featureKey ?? "—",
+        changes:
+          history.platforms
+            .map((platform) => {
+              const change = row.changes.get(platform);
+              return change === undefined || change === "—"
+                ? null
+                : `${platformLabel(platform)}:${change}`;
+            })
+            .filter((value): value is string => value !== null)
+            .join("；") || "—",
+        runId: latest?.runId ?? "—",
+        finishedAt: latest?.finishedAt ?? "—"
+      };
+      history.platforms.forEach((platform, platformIndex) => {
+        data[platformKeys[platformIndex]!] = row.latest.get(platform)?.status ?? "—";
+      });
+      cross.addRow(data);
+    });
+  }
+  writeFileAtomic(testsXlsxPath, Buffer.from(await workbook.xlsx.writeBuffer()));
+  return {
+    path: testsXlsxPath,
+    rows: report.cases.length,
+    ...(history.rows.length > 0 ? { historyRows: history.rows.length } : {})
+  };
+}
+
 export async function buildRunReport(
   runtime: Runtime,
   options: RunReportOptions = {}
@@ -361,11 +624,12 @@ export async function buildRunReport(
     const outcome = outcomeOf(task.status);
     const apiArtifact = readApiErrorsArtifact(runtime.traceDir(task.traceId));
     const apiErrors = apiArtifact?.errors ?? [];
+    const resolvedCaseId = task.caseId ?? generated?.id ?? null;
     results.push({
-      caseId: task.caseId,
+      caseId: resolvedCaseId,
       name:
         generated?.name ??
-        task.caseId ??
+        resolvedCaseId ??
         (task.taskDesc ? task.taskDesc.split("\n")[0]! : task.traceId),
       traceId: task.traceId,
       outcome,
@@ -401,8 +665,8 @@ export async function buildRunReport(
       }
     });
     traceCases.push({
-      id: task.caseId ?? task.traceId,
-      name: generated?.name ?? task.caseId ?? task.traceId,
+      id: resolvedCaseId ?? task.traceId,
+      name: generated?.name ?? resolvedCaseId ?? task.traceId,
       screens: generated?.screens ?? [],
       traceId: task.traceId,
       hasEvidence: fs.existsSync(runtime.traceDir(task.traceId))
@@ -502,6 +766,10 @@ export async function buildTaskRunReport(
         model: null,
         feature: run.featureName ?? run.featureKey,
         platform: run.platform,
+        runId: run.runId,
+        device: run.device,
+        startedAt: run.startedAt,
+        appVersion: run.appVersion,
         failure: entry.failureDomain
           ? {
               domain: entry.failureDomain as FailureClassification["domain"],

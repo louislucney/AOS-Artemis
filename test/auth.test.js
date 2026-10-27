@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { authorizeRequest, isLoopbackHost, unauthorizedResponse } from "../dist/auth.js";
+import {
+  authorizeRequest,
+  isLoopbackHost,
+  parseAuthUsers,
+  resolveRequestIdentity,
+  unauthorizedResponse
+} from "../dist/auth.js";
 
 const TOKEN = "s3cr3t-token";
 const basic = (user, pass) => `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
@@ -74,6 +80,80 @@ test("authorizeRequest: empty token denies every credential", () => {
   assert.equal(authorizeRequest({ authorization: basic("alice", ""), token: "" }), false);
   assert.equal(authorizeRequest({ authorization: undefined, queryToken: "x", token: "", allowQueryToken: true }), false);
   assert.equal(authorizeRequest({ authorization: undefined, queryToken: "", token: "", allowQueryToken: true }), false);
+});
+
+test("parseAuthUsers: valid users, fail-closed errors and duplicates", () => {
+  const valid = parseAuthUsers(
+    JSON.stringify([
+      { name: "alice", token: "alice-token-123456", role: "admin" },
+      { name: "bob", token: "bob-token-12345678", role: "viewer" }
+    ])
+  );
+  assert.deepEqual(valid.errors, []);
+  assert.deepEqual(valid.users, [
+    { name: "alice", token: "alice-token-123456", role: "admin" },
+    { name: "bob", token: "bob-token-12345678", role: "viewer" }
+  ]);
+
+  assert.match(parseAuthUsers("not-json").errors[0], /不是合法 JSON/);
+  assert.match(parseAuthUsers("{}").errors[0], /必须是数组/);
+  const invalid = parseAuthUsers(
+    JSON.stringify([
+      { name: "", token: "short", role: "root" },
+      { name: "alice", token: "alice-token-123456", role: "admin" },
+      { name: "alice", token: "alice-token-123456", role: "admin" }
+    ])
+  );
+  assert.ok(invalid.errors.some((entry) => entry.includes("缺 name")));
+  assert.ok(invalid.errors.some((entry) => entry.includes("token 至少 16")));
+  assert.ok(invalid.errors.some((entry) => entry.includes("role 必须是")));
+  assert.ok(invalid.errors.some((entry) => entry.includes("名字重复")));
+  assert.ok(invalid.errors.some((entry) => entry.includes("令牌重复")));
+});
+
+test("resolveRequestIdentity: static/user/anonymous and no-match", () => {
+  const users = parseAuthUsers(
+    JSON.stringify([{ name: "alice", token: "alice-token-123456", role: "maintainer" }])
+  ).users;
+  const staticIdentity = resolveRequestIdentity({
+    authorization: `Bearer ${TOKEN}`,
+    staticToken: TOKEN,
+    users,
+    fallbackRole: "admin",
+    staticActor: "ops"
+  });
+  assert.deepEqual(staticIdentity, { name: "ops", role: "admin", source: "static" });
+
+  const userIdentity = resolveRequestIdentity({
+    authorization: basic("alice", "alice-token-123456"),
+    staticToken: TOKEN,
+    users,
+    fallbackRole: "admin"
+  });
+  assert.deepEqual(userIdentity, {
+    name: "alice",
+    role: "maintainer",
+    source: "user"
+  });
+
+  assert.equal(
+    resolveRequestIdentity({
+      authorization: "Bearer wrong-token-xxxx",
+      staticToken: TOKEN,
+      users,
+      fallbackRole: "admin"
+    }),
+    null
+  );
+  assert.deepEqual(
+    resolveRequestIdentity({
+      authorization: undefined,
+      staticToken: "",
+      users: [],
+      fallbackRole: "viewer"
+    }),
+    { name: "anonymous", role: "viewer", source: "anonymous" }
+  );
 });
 
 test("unauthorizedResponse: 401 with Basic challenge and JSON body", () => {

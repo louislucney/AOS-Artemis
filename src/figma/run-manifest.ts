@@ -14,7 +14,7 @@ import {
   type DesignWarning,
   type WarningSummary
 } from "../design/warnings.js";
-import type { UiSummary, UiVerification } from "../ui/verification.js";
+import type { UiCoverageSummary, UiSummary, UiVerification } from "../ui/verification.js";
 import { designDir } from "./design-store.js";
 import type { ApiReviewSnapshot } from "../db/types.js";
 import type { SuiteCaseResult, SuiteRunReport } from "./suite-runner.js";
@@ -42,6 +42,10 @@ export interface RunManifestOptions {
   stopOnFailure: boolean;
   apiErrors: boolean;
   failOnApiErrors: boolean;
+  /** Opt-in narrow UI gate (non-quarantined ui.status=failed). */
+  failOnUi?: boolean;
+  /** Opt-in text-weight gate (non-quarantined high-confidence heavier). */
+  failOnUiWeight?: boolean;
   strict: boolean;
   failOnUncovered: boolean;
   retry: number;
@@ -121,6 +125,8 @@ export interface RunManifest {
     quarantinedFailed: number;
     /** UI 核验计数；旧清单没有该字段。 */
     ui?: UiSummary;
+    /** UI 访问屏/契约屏覆盖；旧清单/未跑 UI diff 没有该字段。 */
+    uiCoverage?: UiCoverageSummary;
   };
   gate: { result: "pass" | "fail"; exitCode: number; reasons: string[] };
   failureDomains: Partial<Record<FailureDomain, number>>;
@@ -342,7 +348,8 @@ export function buildRunManifest(input: BuildRunManifestInput): RunManifest {
       failed: report.failed,
       flaky,
       quarantinedFailed,
-      ...(report.ui ? { ui: report.ui } : {})
+      ...(report.ui ? { ui: report.ui } : {}),
+      ...(report.uiCoverage ? { uiCoverage: report.uiCoverage } : {})
     },
     gate: {
       result: input.exitCode === 0 ? "pass" : "fail",

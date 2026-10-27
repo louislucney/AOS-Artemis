@@ -74,6 +74,17 @@ export interface ApiErrorIssue {
   traceIds: string[];
 }
 
+import {
+  integrationReadinessFromFailures,
+  type IntegrationReadiness
+} from "./integration-readiness.js";
+
+export type {
+  IntegrationCheck,
+  IntegrationCheckCode,
+  IntegrationReadiness
+} from "./integration-readiness.js";
+
 export interface GenerationFeedback {
   ok: boolean;
   generatedFrom: { tasks: number; failed: number; baselines: number };
@@ -86,6 +97,7 @@ export interface GenerationFeedback {
     apiErrors: ApiErrorIssue[];
   };
   suggestions: FeedbackSuggestion[];
+  readiness: IntegrationReadiness;
   exits?: VerdictExits;
   error?: string;
 }
@@ -275,6 +287,23 @@ export async function collectCaseDefectFeedback(
   return { byFeature };
 }
 
+/** 失败证据 → 接入检查（共享判定见 integration-readiness.ts）。 */
+function integrationReadiness(failed: RunReportCase[]): IntegrationReadiness {
+  return integrationReadinessFromFailures(
+    failed.map((task) => ({
+      caseId: task.caseId,
+      traceId: task.traceId,
+      domain: task.failure?.domain ?? null,
+      reason: task.failure?.reason ?? null,
+      failedItemTexts: task.failedItems.flatMap((item) => [
+        item.itemText ?? "",
+        item.evidence ?? ""
+      ]),
+      apiErrorHandled: task.apiErrors.map((error) => error.handled)
+    }))
+  );
+}
+
 /** Read-only aggregation over the run ledger plus device baselines. Produces
  * suggestions with case/trace back-references; it never rewrites generated
  * artifacts (the caller decides whether to apply them). */
@@ -295,7 +324,8 @@ export async function buildGenerationFeedback(
       visualHotspots: [],
       apiErrors: []
     },
-    suggestions: []
+    suggestions: [],
+    readiness: { needed: false, checks: [] }
   };
   if (!report.ok) {
     return { ...empty, error: report.error ?? "运行台账不可读" };
@@ -304,6 +334,7 @@ export async function buildGenerationFeedback(
   const exits = await loadVerdictExits(runtime);
   const meta = loadCaseMeta(runtime);
   const failed = report.cases.filter((entry) => entry.outcome === "failed");
+  const readiness = integrationReadiness(failed);
 
   const screens = new Map<string, ScreenIssue>();
   const assertions = new Map<string, AssertionIssue>();
@@ -480,6 +511,7 @@ export async function buildGenerationFeedback(
       apiErrors: apiIssues
     },
     suggestions,
+    readiness,
     ...(exits ? { exits } : {})
   };
 }

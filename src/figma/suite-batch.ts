@@ -177,6 +177,8 @@ export async function persistSuiteRunManifest(
         stopOnFailure: input.options.stopOnFailure === true,
         apiErrors: input.options.apiErrors !== false,
         failOnApiErrors: input.options.failOnApiErrors === true,
+        failOnUi: input.options.failOnUi === true,
+        failOnUiWeight: input.options.failOnUiWeight === true,
         strict: input.strict,
         failOnUncovered: input.failOnUncovered,
         retry: input.retry,
@@ -283,8 +285,25 @@ export async function executeSuiteBatch(
   const quarantinedFailures = report.cases.filter(
     (entry) => entry.quarantined === true && entry.status !== "passed"
   ).length;
+  const uiFailures = report.cases.filter(
+    (entry) => entry.quarantined !== true && entry.ui?.status === "failed"
+  ).length;
+  const uiWeightFailures = report.cases.filter(
+    (entry) =>
+      entry.quarantined !== true &&
+      (entry.ui?.textStyles?.highConfidenceHeavier ?? 0) > 0
+  ).length;
+  const uiGateFailed =
+    (options.failOnUi === true && uiFailures > 0) ||
+    (options.failOnUiWeight === true && uiWeightFailures > 0);
   const exitCode =
-    !report.ok ? 2 : coverageIssue !== null ? 2 : report.failed - quarantinedFailures === 0 ? 0 : 1;
+    !report.ok
+      ? 2
+      : coverageIssue !== null || uiGateFailed
+        ? 2
+        : report.failed - quarantinedFailures === 0
+          ? 0
+          : 1;
 
   let manifestPath: string | null = null;
   let runId: string | null = null;

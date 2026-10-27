@@ -65,6 +65,13 @@ export function expectedResultLines(testCase: GeneratedTest): string[] {
     const tail = hints.length > 0 ? `${head !== "" ? "：" : ""}${hints.join("、")}` : "";
     lines.push(`${index + 1}) ${head}${tail || (head === "" ? "—" : "")}${source}`);
   });
+  const variant = testCase.variant;
+  if (variant) {
+    for (const item of variant.expected ?? []) {
+      const text = item.trim();
+      if (text !== "") lines.push(`变体预期（${variant.label}）：${text}`);
+    }
+  }
   return lines;
 }
 

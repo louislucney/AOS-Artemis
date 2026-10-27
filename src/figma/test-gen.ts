@@ -166,6 +166,8 @@ export interface GeneratedTest {
   };
   /** 待确认项（人工 acceptance questions）。 */
   openQuestions?: string[];
+  /** 作用域命中本用例的设计警告（P2）。 */
+  designWarnings?: DesignWarning[];
   /** 变体标记（P1）。 */
   variant?: {
     group: string;
@@ -799,11 +801,19 @@ function semanticIdFor(input: {
  * `{screens: {"<屏名>": ["条目", …]}}` plus optional `data/questions/section`
  * maps. Human-confirmed criteria replace the screen's annotation-derived
  * acceptance. Invalid files/entries are ignored with a visible warning. */
+export interface AcceptanceVariant {
+  screen: string;
+  label: string;
+  data: string[];
+  expected: string[];
+}
+
 export interface AcceptanceDetails {
   screens: Map<string, string[]>;
   data: Map<string, string[]>;
   questions: Map<string, string[]>;
   section: Map<string, string>;
+  variants: AcceptanceVariant[];
   warnings: DesignWarning[];
 }
 
@@ -813,8 +823,54 @@ function emptyAcceptanceDetails(): AcceptanceDetails {
     data: new Map(),
     questions: new Map(),
     section: new Map(),
+    variants: [],
     warnings: []
   };
+}
+
+function pushDesignWarning(
+  warnings: DesignWarning[],
+  code: string,
+  message: string,
+  screens?: string[]
+): void {
+  warnings.push({
+    code,
+    message,
+    ...(screens !== undefined && screens.length > 0 ? { scope: { screens } } : {})
+  });
+}
+
+function readStringList(
+  value: unknown,
+  limit: number,
+  label: string,
+  warnings: DesignWarning[],
+  scopeScreen?: string
+): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    pushDesignWarning(
+      warnings,
+      "acceptance-details-invalid",
+      `acceptance.json 的 ${label} 不是数组，已忽略`,
+      scopeScreen !== undefined ? [scopeScreen] : undefined
+    );
+    return [];
+  }
+  const list = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item !== "");
+  if (list.length > limit) {
+    pushDesignWarning(
+      warnings,
+      "acceptance-details-truncated",
+      `acceptance.json 的 ${label} 超过 ${limit} 条，已截断`,
+      scopeScreen !== undefined ? [scopeScreen] : undefined
+    );
+  }
+  return [...new Set(list)].slice(0, limit);
 }
 
 function readStringListMap(
@@ -835,27 +891,73 @@ function readStringListMap(
   for (const [rawName, items] of Object.entries(value as Record<string, unknown>)) {
     const name = rawName.trim();
     if (name === "") continue;
-    if (!Array.isArray(items)) {
-      warnings.push({
-        code: "acceptance-details-invalid",
-        message: `acceptance.json 的 ${label}.${name} 不是数组，已忽略`
-      });
-      continue;
-    }
-    const list = items
-      .filter((item): item is string => typeof item === "string")
-      .map((item) => item.trim())
-      .filter((item) => item !== "");
+    const list = readStringList(items, limit, `${label}.${name}`, warnings, name);
     if (list.length === 0) continue;
-    if (list.length > limit) {
-      warnings.push({
-        code: "acceptance-details-truncated",
-        message: `acceptance.json 的 ${label}.${name} 超过 ${limit} 条，已截断`
-      });
-    }
-    map.set(name, [...new Set(list)].slice(0, limit));
+    map.set(name, list);
   }
   return map;
+}
+
+function readVariants(value: unknown, warnings: DesignWarning[]): AcceptanceVariant[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    pushDesignWarning(
+      warnings,
+      "acceptance-details-invalid",
+      "acceptance.json 的 variants 不是数组，已忽略"
+    );
+    return [];
+  }
+  const variants: AcceptanceVariant[] = [];
+  const seen = new Set<string>();
+  value.forEach((raw, index) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      pushDesignWarning(
+        warnings,
+        "acceptance-details-invalid",
+        `acceptance.json 的 variants[${index}] 不是对象，已忽略`
+      );
+      return;
+    }
+    const record = raw as Record<string, unknown>;
+    const screen = typeof record.screen === "string" ? record.screen.trim() : "";
+    const label = typeof record.label === "string" ? record.label.trim() : "";
+    if (screen === "" || label === "") {
+      pushDesignWarning(
+        warnings,
+        "acceptance-details-invalid",
+        `acceptance.json 的 variants[${index}] 缺 screen/label，已忽略`,
+        screen !== "" ? [screen] : undefined
+      );
+      return;
+    }
+    const key = `${screen}\u0000${label}`;
+    if (seen.has(key)) {
+      pushDesignWarning(
+        warnings,
+        "acceptance-details-invalid",
+        `acceptance.json 的 variants[${index}] 重复（screen/label），已忽略`,
+        [screen]
+      );
+      return;
+    }
+    seen.add(key);
+    variants.push({
+      screen,
+      label: label.slice(0, 80),
+      data: readStringList(record.data, 20, `variants[${index}].data`, warnings, screen),
+      expected: readStringList(record.expected, 20, `variants[${index}].expected`, warnings, screen)
+    });
+  });
+  if (variants.length > 20) {
+    pushDesignWarning(
+      warnings,
+      "acceptance-details-truncated",
+      "acceptance.json 的 variants 超过 20 条，已截断"
+    );
+    return variants.slice(0, 20);
+  }
+  return variants;
 }
 
 function readSectionMap(value: unknown, warnings: DesignWarning[]): Map<string, string> {
@@ -870,9 +972,27 @@ function readSectionMap(value: unknown, warnings: DesignWarning[]): Map<string, 
   }
   for (const [rawName, rawSection] of Object.entries(value as Record<string, unknown>)) {
     const name = rawName.trim();
-    if (name === "" || typeof rawSection !== "string") continue;
+    if (name === "") continue;
+    if (typeof rawSection !== "string") {
+      pushDesignWarning(
+        warnings,
+        "acceptance-details-invalid",
+        `acceptance.json 的 section.${name} 不是字符串，已忽略`,
+        [name]
+      );
+      continue;
+    }
     const section = rawSection.trim();
-    if (section !== "") map.set(name, section.slice(0, 40));
+    if (section === "") {
+      pushDesignWarning(
+        warnings,
+        "acceptance-details-invalid",
+        `acceptance.json 的 section.${name} 为空，已忽略`,
+        [name]
+      );
+      continue;
+    }
+    map.set(name, section.slice(0, 40));
   }
   return map;
 }
@@ -895,6 +1015,7 @@ function loadAcceptanceDetails(runtime: DesignRuntimeLike): AcceptanceDetails {
     details.data = readStringListMap(record.data, 20, "data", details.warnings);
     details.questions = readStringListMap(record.questions, 20, "questions", details.warnings);
     details.section = readSectionMap(record.section, details.warnings);
+    details.variants = readVariants(record.variants, details.warnings);
   } catch (error) {
     details.warnings.push({
       code: "acceptance-details-invalid",
@@ -1164,6 +1285,14 @@ export function renderMarkdown(
     const questions = openQuestionLines(testCase);
     if (questions.length > 0) {
       lines.push("", "待确认：", ...questions.map((line) => `  ${line}`));
+    }
+    const scopedWarnings = testCase.designWarnings ?? [];
+    if (scopedWarnings.length > 0) {
+      lines.push(
+        "",
+        "设计警告：",
+        ...scopedWarnings.map((warning) => `- \`${warning.code}\`：${warning.message}`)
+      );
     }
     lines.push(
       "",
@@ -1912,6 +2041,7 @@ async function assignFeatures(
 
 export interface EnrichCasesInput {
   groups: FeatureGroup[];
+  graph: FlowGraph;
   data: Map<string, string[]>;
   questions: Map<string, string[]>;
   section: Map<string, string>;
@@ -1935,10 +2065,158 @@ function collectScreenValues(
   return result;
 }
 
+function sharedScreenCount(left: GeneratedTest, right: GeneratedTest): number {
+  const screens = new Set(left.screens);
+  let count = 0;
+  for (const screen of right.screens) {
+    if (screens.has(screen)) count += 1;
+  }
+  return count;
+}
+
+/** 把带 screens/caseIds 作用域的设计警告挂到命中的用例；无作用域警告保持全局。 */
+export function attachDesignWarningsToCases(
+  cases: GeneratedTest[],
+  warnings: DesignWarning[]
+): void {
+  for (const testCase of cases) {
+    const matched = warnings.filter((warning) => {
+      const scope = warning.scope;
+      if (scope === undefined) return false;
+      if (scope.caseIds !== undefined && scope.caseIds.includes(testCase.id)) return true;
+      return (scope.screens ?? []).some((screen) => testCase.screens.includes(screen));
+    });
+    if (matched.length > 0) testCase.designWarnings = matched;
+  }
+}
+
+/** 同一产物范围内的关联用例：同 module 或共享至少 1 屏；共享屏数降序 → displayId 升序，取前 3。 */
+export function assignRelatedCases(cases: GeneratedTest[]): void {
+  for (const testCase of cases) {
+    const module = testCase.module ?? "未分组";
+    const related = cases
+      .filter((candidate) => candidate !== testCase)
+      .map((candidate) => ({
+        displayId: candidate.displayId?.trim() ?? "",
+        shared: sharedScreenCount(testCase, candidate),
+        sameModule: (candidate.module ?? "未分组") === module
+      }))
+      .filter((entry) => entry.displayId !== "" && (entry.sameModule || entry.shared > 0))
+      .sort(
+        (left, right) =>
+          right.shared - left.shared || left.displayId.localeCompare(right.displayId)
+      )
+      .slice(0, 3)
+      .map((entry) => entry.displayId);
+    testCase.relatedCases = [...new Set(related)];
+  }
+}
+
+const MAX_VARIANT_CLONES = 20;
+
+function uniqueStrings(values: string[], limit: number): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const text = value.trim();
+    if (text === "" || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function appendVariantTaskDesc(taskDesc: string, variant: AcceptanceVariant): string {
+  const block = [`【变体：${variant.label}】`];
+  for (const item of variant.data) block.push(`- 数据：${item}`);
+  for (const item of variant.expected) block.push(`- 预期：${item}`);
+  if (block.length === 1) block.push("- 无额外数据/预期");
+  const marker = "【AOS-EXPECT】";
+  const index = taskDesc.indexOf(marker);
+  const text = block.join("\n");
+  return index === -1
+    ? `${taskDesc}\n${text}`
+    : `${taskDesc.slice(0, index)}${text}\n${taskDesc.slice(index)}`;
+}
+
+function cloneVariant(
+  base: GeneratedTest,
+  variant: AcceptanceVariant,
+  existing: GeneratedTest[]
+): GeneratedTest {
+  const variantKey = JSON.stringify([variant.screen, variant.label]);
+  const semanticId = `sem-${createHash("sha256")
+    .update(`${base.semanticId ?? base.id}|variant:${variantKey}`)
+    .digest("hex")
+    .slice(0, 12)}`;
+  const used = new Set(
+    existing
+      .map((testCase) => testCase.displayId)
+      .filter((value): value is string => typeof value === "string" && value !== "")
+  );
+  const code = semanticId.slice(-6);
+  let displayId = `TC_${code}`;
+  let suffix = 2;
+  while (used.has(displayId)) {
+    displayId = `TC_${code}-${suffix}`;
+    suffix += 1;
+  }
+  return {
+    ...base,
+    id: caseIdFor(`${base.name} [variant:${variantKey}]`, base.screens, base.steps),
+    semanticId,
+    displayId,
+    name: `${base.name}（变体：${variant.label}）`,
+    displayName: `${base.displayName ?? base.name}（变体：${variant.label}）`,
+    testData: uniqueStrings([...(base.testData ?? []), ...variant.data], 12),
+    relatedCases: [],
+    variant: {
+      group: variant.screen,
+      label: variant.label,
+      ...(variant.expected.length > 0 ? { expected: [...variant.expected] } : {})
+    },
+    taskDesc: appendVariantTaskDesc(base.taskDesc, variant)
+  };
+}
+
+/** 按 acceptance.variants 克隆命中屏幕的基准用例；不重写 steps/expectations。 */
+export function applyAcceptanceVariants(
+  cases: GeneratedTest[],
+  variants: AcceptanceVariant[],
+  warnings: DesignWarning[]
+): void {
+  if (variants.length === 0) return;
+  const clones: GeneratedTest[] = [];
+  for (const variant of variants) {
+    const bases = cases.filter((testCase) => testCase.screens.includes(variant.screen));
+    if (bases.length === 0) {
+      warnings.push({
+        code: "variant-screen-unmatched",
+        message: `acceptance.variants 的屏幕「${variant.screen}」未命中任何用例（${variant.label}）`,
+        scope: { screens: [variant.screen] }
+      });
+      continue;
+    }
+    if (bases.length > MAX_VARIANT_CLONES) {
+      warnings.push({
+        code: "variant-clone-truncated",
+        message: `变体「${variant.label}」命中 ${bases.length} 条用例，仅克隆前 ${MAX_VARIANT_CLONES} 条`,
+        scope: { screens: [variant.screen] }
+      });
+    }
+    for (const base of bases.slice(0, MAX_VARIANT_CLONES)) {
+      clones.push(cloneVariant(base, variant, [...cases, ...clones]));
+    }
+  }
+  cases.push(...clones);
+}
+
 /** 生成后按功能段与人工 acceptance 补齐展示字段：displayId/module/section/
- * testData/openQuestions。放在 assignFeatures 之后，因为 module 依赖功能命名。 */
+ * testData/openQuestions/designRefs。放在 assignFeatures 之后，因为 module 依赖功能命名。 */
 export function enrichGeneratedCases(cases: GeneratedTest[], input: EnrichCasesInput): void {
   const featureNames = new Map(input.groups.map((group) => [group.key, group.name]));
+  const screenByName = new Map(input.graph.screens.map((screen) => [screen.name, screen]));
   const used = new Map<string, number>();
   for (const testCase of cases) {
     const base = `TC_${(testCase.semanticId ?? testCase.id).replace(/^(case-|sem-)/, "").slice(-6)}`;
@@ -1952,6 +2230,12 @@ export function enrichGeneratedCases(cases: GeneratedTest[], input: EnrichCasesI
     testCase.section = section.trim() === "" ? "未指定" : section;
     testCase.testData = collectScreenValues(testCase.screens, input.data, 12);
     testCase.openQuestions = collectScreenValues(testCase.screens, input.questions, 10);
+    const route = screenByName.get(entry)?.suggestedRoute?.trim() ?? "";
+    testCase.designRefs = {
+      screens: [...testCase.screens],
+      nodeIds: testCase.screens.map((screen) => screenByName.get(screen)?.id ?? ""),
+      ...(route !== "" ? { route } : {})
+    };
   }
 }
 
@@ -2111,7 +2395,6 @@ export async function figmaGenerateTests(
     const apiReviewResult = resolveApiReview(runtime, args, designFingerprint, new Date(generatedAt));
     const apiReview = apiReviewResult.review;
     const apiReviewWarnings = apiReviewResult.warnings;
-    const counts = { cases: cases.length, screens: graph.screens.length, edges: graph.edges.length };
     const coverage = computeFlowCoverage(graph, cases, generation);
     if (args.requireFullCoverage === true && !coverage.complete) {
       const reasons: string[] = [];
@@ -2148,10 +2431,14 @@ export async function figmaGenerateTests(
     }
     enrichGeneratedCases(cases, {
       groups: featureAssignment.groups,
+      graph,
       data: acceptance.data,
       questions: acceptance.questions,
       section: acceptance.section
     });
+    applyAcceptanceVariants(cases, acceptance.variants, acceptance.warnings);
+    assignRelatedCases(cases);
+    const counts = { cases: cases.length, screens: graph.screens.length, edges: graph.edges.length };
     const featurePayload = featureAssignment.groups.map((group) => ({
       key: group.key,
       name: group.name,
@@ -2325,6 +2612,7 @@ export async function figmaGenerateTests(
       }
 
       const designWarnings = applyDesignWarnings();
+      attachDesignWarningsToCases(cases, designWarnings);
       let excelBuffer: Buffer | null = null;
       if (wantXlsx) {
         excelBuffer = await renderTestsWorkbook(
@@ -2392,6 +2680,8 @@ export async function figmaGenerateTests(
         for (const group of featureAssignment.groups) {
           const subset = cases.filter((testCase) => testCase.feature === group.key);
           if (subset.length === 0) continue;
+          const subsetView = subset.map((testCase) => ({ ...testCase }));
+          assignRelatedCases(subsetView);
           const stem = caseSetStem(group.name, stampNow, taken);
           taken.add(stem);
           const subsetFeedback = matchedFeedback.filter((entry) => entry.featureKey === group.key);
@@ -2411,28 +2701,28 @@ export async function figmaGenerateTests(
                         }
                       }
                     : { feedback: undefined }),
-                  counts: { flows: subset.length, screens: counts.screens, edges: counts.edges },
-                  summary: summarizeCases(subset),
+                  counts: { flows: subsetView.length, screens: counts.screens, edges: counts.edges },
+                  summary: summarizeCases(subsetView),
                   coverage: subsetCoverage,
                   features: featurePayload.filter((entry) => entry.key === group.key),
-                  flows: subset
+                  flows: subsetView
                 },
                 null,
                 2
               ) + "\n",
-            markdown: renderMarkdown(subset, { source, generatedAt }, {
+            markdown: renderMarkdown(subsetView, { source, generatedAt }, {
               images: caseScreens?.caseRefs ?? new Map(),
               ...(subsetFeedback.length > 0 ? { feedback: { byFeature: subsetFeedback } } : {}),
               designWarnings,
               apiReview
             }),
             xlsx: await renderTestsWorkbook(
-              subset,
+              subsetView,
               {
                 source,
                 generatedAt,
-                counts: { cases: subset.length, screens: counts.screens, edges: counts.edges },
-                summary: summarizeCases(subset),
+                counts: { cases: subsetView.length, screens: counts.screens, edges: counts.edges },
+                summary: summarizeCases(subsetView),
                 coverage: subsetCoverage,
                 warnings: designWarnings.length,
                 apiReview

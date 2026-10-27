@@ -44,7 +44,7 @@
 | CR | Figma（项目 `.env` 的 `FIGMA_ACCESS_TOKEN`）**或** pen（认证一次；状态可复查即"记录"） | 项目 `.env` / pen 会话 |
 | Jira 验证 | Jira token＋指定 workspace（站点＋工单项目） | 项目 `.env`（现有 Jira 契约） |
 | 回归 | 测试文档：Excel 导入（进用例库）**或**一句话说明范围 | 项目档案（用例库） |
-| **执行类**（⑤/回归/Jira 跑设备时） | **设备就绪**：真机已连接并授权、或模拟器已启动（iOS 真机另需 WDA 可达） | howTo：`scripts/adb-safe.mjs devices`／`doctor` 探活／iOS 隧道命令 |
+| **执行类**（⑤/回归/Jira 跑设备时） | **设备就绪**：真机已连接并授权、或模拟器已启动（iOS 真机另需 WDA 可达） | howTo：`scripts/adb-safe.mjs devices`／`doctor` 探活／iOS 18+ 隧道进程（`tunnel-creation`，需保持运行） |
 | 三类共同 | **LLM 每次运行都要校验** | 现有条目机制（PG/`.env`） |
 
 - **LLM 校验口径**：每次运行前对 active 条目做一次**最小真实调用**（chat ping，短超时；失败给出 `aos_configure`/`.env` 修复指引）；**不跨运行缓存"已校验"状态**；结果与耗时入日志。

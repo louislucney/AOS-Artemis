@@ -61,10 +61,12 @@ function makeBatch(
     traceId,
     exitCode = 0,
     failureDomain = null,
+    failureReason = "崩溃签名匹配",
     evidence = null,
     designWarningSummary = null,
     ui = null,
-    uiSummary = null
+    uiSummary = null,
+    uiCoverage = null
   }
 ) {
   const report = {
@@ -76,6 +78,7 @@ function makeBatch(
     passed: exitCode === 0 ? 1 : 0,
     failed: exitCode === 0 ? 0 : 1,
     ...(uiSummary === null ? {} : { ui: uiSummary }),
+    ...(uiCoverage === null ? {} : { uiCoverage }),
     preflight:
       designWarningSummary === null
         ? null
@@ -103,7 +106,7 @@ function makeBatch(
         error: null,
         testSummary: null,
         failure: failureDomain
-          ? { domain: failureDomain, confidence: "high", reason: "崩溃签名匹配", evidence: [] }
+          ? { domain: failureDomain, confidence: "high", reason: failureReason, evidence: [] }
           : null,
         ...(ui === null ? {} : { ui }),
         scriptProvenance: { asserts: 4, explores: 1 },
@@ -300,11 +303,11 @@ test("panel web: 新建任务统一走顶部「下一步」卡（无重复空栏
   assert.doesNotMatch(html.body, /id="regression-form"/, "内嵌表单已移除（派发唯一真相＝向导）");
   assert.doesNotMatch(html.body, /fetch\('\/panel\/api\/tasks'/);
   assert.match(html.body, /<fieldset class="c-fieldset"><legend>端<\/legend>/, "计划表单端组有 legend");
-  assert.match(html.body, /aosInlineConfirm\(b,'确认删除该计划？'/, "计划删除走站内确认");
+  assert.match(html.body, /aosInlineConfirm\(button,'确认删除该计划？'/, "计划删除走站内确认");
   assert.doesNotMatch(html.body, /[^a-zA-Z_.]confirm\(/, "项目页无原生 confirm 残留");
   assert.match(html.body, /<fieldset class="c-fieldset"><legend>功能（可多选）<\/legend>/, "计划功能复选组（替代多选下拉）");
   assert.match(html.body, /<input type="checkbox" name="featureKeys" value="f-1"[^>]*> 登录流程（2 例）/, "复选含功能名与条数");
-  assert.match(html.body, /f\.getAll\('featureKeys'\)/, "提交收集多选值");
+  assert.match(html.body, /querySelectorAll\('input\[type="checkbox"\]\[name="featureKeys"\]'\)/, "提交收集多选值");
   assert.doesNotMatch(html.body, /id="onboarding"/, "有引用份时不显示入门卡");
   assert.match(html.body, /运行：[\s\S]{0,260}?存储：[\s\S]{0,120}?接入：/, "项目页三轴并列（运行／存储／接入）");
   assert.doesNotMatch(html.body, /项目状态：/, "H1 不再夹灯状态（状态进徽章行）");
@@ -459,7 +462,38 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
     exitCode: 1,
     failureDomain: "app-defect",
     ui: { status: "failed", reason: "像素差异" },
-    uiSummary: { passed: 0, failed: 1, unverified: 0, notApplicable: 0 }
+    uiSummary: {
+      passed: 0,
+      failed: 1,
+      unverified: 0,
+      notApplicable: 0,
+      textStyles: {
+        textsTotal: 3,
+        checked: 2,
+        lighter: 0,
+        similar: 1,
+        heavier: 1,
+        highConfidenceHeavier: 1,
+        unverified: 1,
+        byReason: { "no-geometry": 1 }
+      }
+    },
+    uiCoverage: {
+      cases: 1,
+      requested: 2,
+      matched: 2,
+      compared: 2,
+      skipped: 0,
+      unmatched: 0,
+      comparedScreens: [
+        { id: "s1", name: "首页" },
+        { id: "s2", name: "详情" }
+      ],
+      skippedScreens: [],
+      unmatchedScreens: [],
+      contractScreens: 3,
+      contractNotCompared: [{ id: "s3", name: "设置" }]
+    }
   });
   const runsDir = path.join(projectDir, ".artemis", "design", "runs");
   const file = fs.readdirSync(runsDir).find((name) => name.endsWith(".json"));
@@ -473,9 +507,30 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
   assert.equal(payload.runId, manifest.runId);
   assert.equal(payload.cases[0].failure.domain, "app-defect");
   assert.equal(payload.cases[0].ui.status, "failed");
-  assert.deepEqual(payload.ui, { passed: 0, failed: 1, unverified: 0, notApplicable: 0 });
+  assert.deepEqual(payload.ui, {
+    passed: 0,
+    failed: 1,
+    unverified: 0,
+    notApplicable: 0,
+    textStyles: {
+      textsTotal: 3,
+      checked: 2,
+      lighter: 0,
+      similar: 1,
+      heavier: 1,
+      highConfidenceHeavier: 1,
+      unverified: 1,
+      byReason: { "no-geometry": 1 }
+    }
+  });
   assert.deepEqual(payload.cases[0].scriptProvenance, { asserts: 4, explores: 1 });
   assert.deepEqual(payload.failureDomains, { "app-defect": 1 });
+  assert.equal(payload.uiCoverage.contractScreens, 3);
+  assert.equal(payload.uiCoverage.contractNotCompared[0].name, "设置");
+  assert.equal(payload.readiness.needed, true);
+  assert.deepEqual(payload.readiness.checks.map((check) => check.code), ["app-defect"]);
+  assert.deepEqual(payload.readiness.checks[0].caseIds, ["case-x"]);
+  assert.deepEqual(payload.readiness.checks[0].traceIds, ["trace-1"]);
   const trace = payload.cases[0].evidence.find((link) => link.kind === "trace");
   assert.equal(trace.status, "missing");
 
@@ -487,7 +542,17 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
   assert.doesNotMatch(htmlBody, /归纳分类/, "批次摘要标题直白");
   assert.match(htmlBody, /<th scope="col">UI<\/th>/, "批次用例结果含 UI 列");
   assert.match(htmlBody, /UI 失败 1/, "批次摘要回显 UI 失败计数");
+  assert.match(htmlBody, /UI 覆盖 2\/3 · 未覆盖 1/, "批次摘要回显 UI 覆盖账本");
+  assert.match(htmlBody, /设置/, "覆盖 chip 的 title 带未覆盖屏名");
+  assert.match(htmlBody, /字重 heavier 1\/2/, "字重提示 report-only chip");
+  assert.match(htmlBody, /不参与 UI 门禁/, "字重 chip 标明不参与门禁");
   assert.match(htmlBody, /失败域汇总/);
+  assert.match(htmlBody, /接入检查（按失败证据）/);
+  assert.match(htmlBody, /class="c-readiness"/);
+  assert.match(htmlBody, /data-readiness-code="app-defect"/);
+  assert.match(htmlBody, /\[app-defect\] 应用缺陷/);
+  assert.match(htmlBody, /先修应用缺陷，再重跑/);
+  assert.match(htmlBody, /关联：用例 <code class="c-id">case-x<\/code>/);
   assert.match(htmlBody, /已清理/);
   assert.match(htmlBody, /断言 4 \/ 探索 1/);
 
@@ -503,6 +568,50 @@ test("panel web: 批次详情（证据缺失占位/失败域）与非法文件�
   );
   assert.equal(illegal.status, 200);
   assert.equal(JSON.parse(illegal.body).read, "invalid");
+});
+
+test("panel web: 批次接入检查（数据/页面失败提醒 API／页面复用／重写，设备日志不误判环境）", async () => {
+  const { deps, projectDir } = await makeHarness();
+  makeBatch(projectDir, {
+    startedIso: "2026-10-13T10:00:00.000Z",
+    traceId: "trace-readiness",
+    exitCode: 1,
+    failureDomain: "data-environment",
+    failureReason:
+      "行動預點載入失敗：网络连接失败；页面内容一直未渲染；设备日志已采集（1 行，来源 simctl-log）"
+  });
+  const runsDir = path.join(projectDir, ".artemis", "design", "runs");
+  const file = fs.readdirSync(runsDir).find((name) => name.endsWith(".json"));
+  const payload = JSON.parse(
+    (
+      await handlePanelRequest(
+        new URL(
+          `http://x/panel.json?project=${encodeURIComponent(projectDir)}&batch=${encodeURIComponent(file)}`
+        ),
+        deps
+      )
+    ).body
+  );
+  assert.deepEqual(
+    payload.readiness.checks.map((check) => check.code),
+    ["api", "page-reuse", "rewrite"]
+  );
+  assert.ok(!payload.readiness.checks.some((check) => check.code === "environment"));
+  assert.deepEqual(payload.readiness.checks[0].caseIds, ["case-x"]);
+  assert.deepEqual(payload.readiness.checks[0].traceIds, ["trace-readiness"]);
+
+  const html = (
+    await handlePanelRequest(
+      new URL(
+        `http://x/panel?project=${encodeURIComponent(projectDir)}&batch=${encodeURIComponent(file)}`
+      ),
+      deps
+    )
+  ).body;
+  assert.match(html, /接入检查（按失败证据）/);
+  assert.match(html, /\[api\] API／数据/);
+  assert.match(html, /\[page-reuse\] 页面复用/);
+  assert.doesNotMatch(html, /\[environment\]/, "设备日志附注不得误判为环境失败");
 });
 
 test("panel web: 设计源警告（项目级快照与批次冻结摘要）", async () => {
@@ -1506,15 +1615,26 @@ test("panel web: 定时回归区块 + 任务页来源显示", async () => {
   assert.match(html.body, /缺 f-2/);
   assert.match(html.body, new RegExp(`task=${task.id}`), "最近任务链接");
   assert.match(html.body, /id="schedule-form"/, "计划创建表单");
+  assert.match(html.body, /class="c-form"/, "计划表单使用统一表单布局");
+  assert.match(html.body, /class="c-button c-button-primary"/, "创建计划为主行动");
   assert.match(html.body, /panel\/api\/schedules/, "控制台动作端点");
+  assert.match(html.body, /addEventListener\('submit'/, "提交走文档级委托（自动刷新后仍可用）");
+  assert.ok(
+    !/<p><label>名称[\s\S]*?<fieldset/.test(html.body),
+    "fieldset 不得嵌在 p 内（无效 HTML）"
+  );
   assert.match(html.body, new RegExp(`data-op="disable"[^>]*>停用|data-schedule="${schedule.id}"[^>]*data-op="disable"`));
 
   const gatedSchedule = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
     { ...deps, capabilities: { actions: false, usage: false, mode: "standalone" } }
   );
-  assert.match(gatedSchedule.body, /只读模式/, "能力关闭时计划动作给原因");
+  assert.match(gatedSchedule.body, /只读：定时任务动作已关闭/, "能力关闭时计划动作给原因");
+  assert.match(gatedSchedule.body, /AOS_PANEL_ACTIONS=1/, "只读态给启用命令");
+  assert.ok(!gatedSchedule.body.includes('id="schedule-form"'), "只读态不渲染不可用的计划表单");
+  assert.ok(!gatedSchedule.body.includes("data-schedule="), "只读态不渲染不可用的计划动作按钮");
   assert.ok(!gatedSchedule.body.includes("panel/api/schedules"), "关闭时不渲染动作脚本");
+  assert.match(gatedSchedule.body, /夜间回归/, "只读态仍可查看已有计划");
 
   const taskHtml = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${task.id}`),
@@ -2417,6 +2537,11 @@ test("panel web: 排除名单隐藏项目并显示提示（直接项目 URL 仍�
 
   const html = await handlePanelRequest(new URL("http://x/panel"), excluded);
   assert.match(html.body, /已隐藏 1 个排除项目/);
+  assert.doesNotMatch(
+    html.body,
+    /<option[^>]*>[^<]*demo/,
+    "项目切换器也遵守排除名单"
+  );
 
   const direct = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),

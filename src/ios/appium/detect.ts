@@ -49,7 +49,9 @@ export async function detectAppium(options: AppiumDetectorOptions = {}): Promise
       "真机签名需 AOS_IOS_XCODE_ORG_ID（证书 OU 团队 ID；可在 Xcode Settings → Accounts 查看）。"
     );
   }
-  guidance.push(`iOS 18+ 真机首次使用需建立隧道：${APPIUM_TUNNEL_HINT}（已建立则复用）。`);
+  guidance.push(
+    `iOS 18+ 真机需先建立并保持 Remote XPC 隧道：${APPIUM_TUNNEL_HINT}（独立常驻进程；主机重启、设备重连/新增设备或进程退出后需重跑；AOS 只给指引，不代为 sudo 启动）。`
+  );
 
   return {
     appium: {

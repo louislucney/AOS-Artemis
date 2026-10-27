@@ -1,7 +1,7 @@
 # 字重检测设计（regular / medium / semibold / bold）
 
 > 2026-10-20 · rev 2（已吸收评审：内容变化守卫、跨源可用性门槛、覆盖会计、量纲/暗色/字号/切片顺序）。
-> 状态：设计稿，待评审；**未实施**。
+> 状态：切片 1–4 已实施（2026-10-26，含 design-bbox bootstrap）；切片 5 机制落地（`--fail-on text-weight`，默认关闭，待真实样本校准）。
 > 关联：`2026-10-20-ui-interpretation-retro.md` P3.1、`2026-10-16-design-device-detail-verification-design.md`（区域核验与 D12 跨源基线）。
 
 ## 1. 问题
@@ -231,5 +231,8 @@ textsTotal（契约全部文本，含 no-geometry）
 - **切片 2 完成**：`src/ui/text-weight.ts` 极性感知、`inkRatio`/`meanRunNorm`、row/平滑 column profile 守卫、extent 守卫、tiny/JPEG 降级；单测 5 例。
 - **切片 3 完成**：`design_device_diff` 的 `regionDetails[].textStyle` + `detail.textStyles`；找到 `ui-contract` 屏幕时走契约全量 pass（`scope:"contract"`，`textsTotal = checked + unverified`，`items[]` 逐文本），找不到时回退 `scope:"text-regions"`。iOS 首頁实测 53 条：52 条 `no-geometry`、1 条 `no-text-ink`，全部 `unverified`——如实暴露 `.pen` auto-layout 缺几何。
 - **真机文本定位增强（v1）**：iOS `run.json` 每步新增 `texts[]`（可访问性文本 + 逻辑点 rect）；`design_device_diff` 契约文本 pass 优先按内容唯一匹配设备文本，直接裁设备截图（`localization:"device-text"`），匹配不到才回退 design-bbox；多义匹配 `multiple-device-text` 不猜。基线 trace 需重跑后才有该字段。
-- **切片 4/5 未开始**：baseline bbox、同平台硬门禁。
+- **切片 4 完成（2026-10-26）**：`suite baseline save` 优先从 trace `run.json` 的 `steps[].texts` 记录设备文本 bbox（逻辑点 × scale → 设备像素）；trace 无 texts 时用 `ui-contract` + `--screen`（缺省按步骤屏文本唯一匹配）做 design-bbox bootstrap（frameWidth→设备宽缩放）。`compare` 用同 bbox 裁 baseline/current，调用 `measureTextWeight(localization:"baseline-bbox")`，输出 `textStyles`（textsTotal/checked/lighter/similar/heavier/highConfidenceHeavier/unverified/byReason/items）。无文本基线为 `null`；baseline/current 任一非 PNG 时按 lossy 降级。
+- **切片 5 机制落地（2026-10-26）**：`--fail-on text-weight` 仅在 `status=ok` 且同平台 baseline 高置信 `heavier`（confidence ≥0.7）时 exit 2；默认关闭，真实样本未校准前不进入 `suite run --ui-diff` 门禁。`suite run --ui-diff` 已接线 report-only：`autoCheckUi` 汇总 `detail.textStyles` 到 `UiVerification.textStyles` / `UiSummary.textStyles`，不改 UI 通过/失败；面板批次/任务 UI 徽标显示中性 `字重 heavier x/y` chip。
+- **离线校准 harness（2026-10-26）**：`suite text-weight-calibrate --manifest <json>` 读成对图片，输出混淆矩阵/高置信误报/delta/阈值建议，默认落 `.artemis/design/reports/`；`--strict` 严格失败。真实样本到位后直接跑，不改 `measureTextWeight` 阈值。
+- **切片 4/5 剩余**：真实样本校准（同字重 N≥20 高置信误报=0、regular↔semibold↔bold 双向）、Android 实机矩阵、跨源硬门禁。
 - **重要修正**：原稿的 `maskIoU < 0.55` 会把 regular→bold 误判为内容变化；实现改用 row profile 相关 + 平滑 column profile 相关 + extent 比。

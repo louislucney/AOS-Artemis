@@ -4,10 +4,17 @@ import path from "node:path";
 import { designDir } from "../figma/design-store.js";
 
 /** 设计源警告的统一形态：flows.json `warnings` 与 tests.json `designWarnings` 同构。 */
+export interface WarningScope {
+  screens?: string[];
+  caseIds?: string[];
+}
+
 export interface DesignWarning {
   code: string;
   message: string;
   details?: string[];
+  /** 可选作用域：用于把设计警告映射到具体用例；缺省表示全局警告。 */
+  scope?: WarningScope;
 }
 
 export interface WarningSummary {
@@ -55,6 +62,22 @@ export function normalizeWarnings(raw: unknown): DesignWarning[] {
     if (Array.isArray(record.details)) {
       const details = record.details.filter((detail): detail is string => typeof detail === "string");
       if (details.length > 0) warning.details = details;
+    }
+    const scope = (record as { scope?: unknown }).scope;
+    if (scope !== null && typeof scope === "object" && !Array.isArray(scope)) {
+      const value = scope as { screens?: unknown; caseIds?: unknown };
+      const screens = Array.isArray(value.screens)
+        ? [...new Set(value.screens.filter((screen): screen is string => typeof screen === "string" && screen.trim() !== ""))]
+        : [];
+      const caseIds = Array.isArray(value.caseIds)
+        ? [...new Set(value.caseIds.filter((caseId): caseId is string => typeof caseId === "string" && caseId.trim() !== ""))]
+        : [];
+      if (screens.length > 0 || caseIds.length > 0) {
+        warning.scope = {
+          ...(screens.length > 0 ? { screens } : {}),
+          ...(caseIds.length > 0 ? { caseIds } : {})
+        };
+      }
     }
     warnings.push(warning);
   }

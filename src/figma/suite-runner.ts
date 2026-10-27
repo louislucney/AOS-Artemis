@@ -17,7 +17,10 @@ import { errorMessage } from "../util.js";
 import { autoCheckUi } from "../ui/auto-check.js";
 import {
   summarizeUi,
+  summarizeUiCoverage,
   unverifiedUi,
+  type UiCoverageSummary,
+  type UiScreenRef,
   type UiSummary,
   type UiVerification
 } from "../ui/verification.js";
@@ -94,6 +97,8 @@ export interface SuiteRunReport {
   failed: number;
   /** UI 核验计数（与功能通过/失败分开）。 */
   ui: UiSummary;
+  /** 访问屏/契约屏 UI 覆盖账本；未跑 UI diff 时省略。 */
+  uiCoverage?: UiCoverageSummary;
   preflight: PreflightReport | null;
   apiErrorCatalog: { file: string; rules: number; errors: string[] } | null;
   cases: SuiteCaseResult[];
@@ -117,6 +122,10 @@ export interface SuiteRunOptions {
   uiDiff?: boolean;
   /** Max screens per case for the opt-in UI diff (default 3). */
   uiDiffMax?: number;
+  /** Opt-in narrow UI gate: non-quarantined `ui.status=failed` → batch exit 2; unverified does not block. */
+  failOnUi?: boolean;
+  /** Opt-in text-weight gate: non-quarantined `ui.textStyles.highConfidenceHeavier > 0` → exit 2. */
+  failOnUiWeight?: boolean;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
   reset?: SuiteResetFn;
@@ -416,6 +425,25 @@ async function ingestTraceObservations(
   }
 }
 
+function uiContractScreens(runtime: Runtime): UiScreenRef[] {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(designDir(runtime.configDirAbs), "ui-contract.json"), "utf-8")
+    ) as { screens?: Array<{ id?: unknown; name?: unknown }> };
+    if (!Array.isArray(parsed.screens)) return [];
+    return parsed.screens
+      .filter(
+        (screen): screen is { id: string; name: string } =>
+          typeof screen?.id === "string" &&
+          screen.id !== "" &&
+          typeof screen?.name === "string"
+      )
+      .map((screen) => ({ id: screen.id, name: screen.name }));
+  } catch {
+    return [];
+  }
+}
+
 export async function runGeneratedTests(
   runtime: Runtime,
   options: SuiteRunOptions = {}
@@ -534,6 +562,7 @@ export async function runGeneratedTests(
   const passed = results.filter((entry) => entry.status === "passed").length;
   const failed = results.length - passed;
   const ok = submitted > 0;
+  const uiCoverage = summarizeUiCoverage(results, uiContractScreens(runtime));
   const report: SuiteRunReport = {
     ok,
     testsPath,
@@ -543,6 +572,7 @@ export async function runGeneratedTests(
     passed,
     failed,
     ui: summarizeUi(results),
+    ...(uiCoverage === null ? {} : { uiCoverage }),
     preflight,
     apiErrorCatalog: apiCatalog
       ? { file: apiCatalog.file, rules: apiCatalog.rules.size, errors: apiCatalog.errors }

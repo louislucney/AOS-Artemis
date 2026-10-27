@@ -15,7 +15,7 @@
 - **成功标准（v3 修订）**：**同一套用例与工具面 + 证据链按平台能力对等**——不承诺"证据链完全相同"（Android 靠 logcat/crash buffer，iOS 靠 sysdiagnose/MetricKit/devicectl，形态结构性不同，见 §2.5）。
 - **执行模型不变**：客户端主入口仍是 `mobile_run_task`；逐步操控工具只作 passthrough 给服务内子代理。
 - **接口意图化 + 能力标志**：跨端接口表达意图，平台差异用 capability 降级，上层不写平台分支。
-- **工具链（v3 修订）**：模拟器默认后端**不预设**——P0 用**双探针（idb vs WDA/XCUITest）**在同一模拟器对比后择一；`simctl` 始终作为零依赖兜底；真机候选顺序 idb → WDA 直连 → Appium（仅签名/会话）；`pymobiledevice3` 管真机隧道/日志。
+- **工具链（v3 修订）**：模拟器默认后端**不预设**——P0 用**双探针（idb vs WDA/XCUITest）**在同一模拟器对比后择一；`simctl` 始终作为零依赖兜底；真机候选顺序 idb → WDA 直连 → Appium（仅签名/会话）；iOS/tvOS 18+ 真机 Remote XPC 隧道由 Appium XCUITest `tunnel-creation` 建立并保持运行（独立常驻进程；`pymobiledevice3` 仅作日志/诊断备选）。
 - **坐标系显式约定（v3 新增）**：接口层统一 **logical point**，截图带 `scale`，任何从截图推导的坐标（视觉/OCR）必须换算后才可执行（见 §2.6）。
 - **弹窗策略化 + 源头治理**：系统弹窗按 suite/case 规则按需拦截；模拟器优先用权限预授权把弹窗变环境噪音（见 §2.4）。
 - **视觉一等公民但按档触发**：树 → OCR（Apple Vision 本地优先）→ 视觉；纯文本 active LLM 强制 fallback 专用视觉模型。
@@ -122,7 +122,7 @@ interface UiNode {
 | 生命周期/安装/启动 | `simctl`（零依赖兜底，始终可用） | 模拟器生命周期正统；idb 亦可 |
 | 截图/录屏 | idb `screenshot`/`record-video`、`simctl io` | 真机：WDA `/screenshot`、WDA MJPEG |
 | 日志/崩溃 | `simctl spawn log` / `idevicesyslog` / `pymobiledevice3 syslog` | 崩溃见 §2.5 |
-| 真机隧道/配对 | `pymobiledevice3`（iOS 17+ RemoteXPC） | libimobiledevice 补充 |
+| 真机隧道/配对 | Appium XCUITest `tunnel-creation`（iOS/tvOS 18+ Remote XPC） | 独立常驻进程，需 sudo；主机重启/设备重连/新增设备后重跑；`pymobiledevice3` 仅作日志/诊断备选 |
 | WDA 构建/签名 | Appium XCUITest driver 或 `xcodebuild`（**仅工具链**） | 若 P0 选择 WDA 路线 |
 
 事实校核（2026-10，已核对上游仓库）：

@@ -3,7 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { compareBaseline, saveBaseline } from "../dist/diff/baseline.js";
+import {
+  compareBaseline,
+  saveBaseline,
+  textWeightGateFails
+} from "../dist/diff/baseline.js";
 import { baseConfig, createImage, fillRect, loadTestRuntime, makeTempProject, toPng } from "./helpers.js";
 
 function textJson(payload) {
@@ -75,6 +79,14 @@ function pagePng({ withSquare = true, width = 390, height = 844 } = {}) {
   return toPng(image);
 }
 
+function barsPng({ stroke = 1, width = 390, height = 844 } = {}) {
+  const image = createImage(width, height);
+  for (let index = 0; index < 6; index += 1) {
+    fillRect(image, 10 + index * 18, 8, stroke, 24, [0, 0, 0, 255]);
+  }
+  return toPng(image);
+}
+
 async function setup({ serial = "emulator-5554" } = {}) {
   const dir = makeTempProject({ config: baseConfig() });
   const shotPath = path.join(dir, "step-post.png");
@@ -98,6 +110,8 @@ test("saveBaseline: device bucket, image and full metadata", async () => {
   assert.equal(saved.meta.height, 844);
   assert.equal(saved.meta.dpi, null);
   assert.deepEqual(saved.meta.ignoreRegions, []);
+  assert.equal(saved.texts, 0, "无 trace texts 时文本基线为空");
+  assert.equal(saved.textSource, "none");
   assert.ok(
     saved.dir.endsWith(path.join("baselines", "emulator-5554", "case-1", "step-2-post"))
   );
@@ -173,6 +187,117 @@ test("compareBaseline: stored ignoreRegions mask dynamic content", async () => {
   const report = await compareBaseline(runtime, request);
   assert.equal(report.status, "ok");
   assert.equal(report.summary.regions, 0);
+});
+
+test("baseline text bbox: save from trace texts and compare same-platform weight", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const shotPath = path.join(dir, "step-post.png");
+  fs.writeFileSync(shotPath, barsPng({ stroke: 1 }));
+  const proxy = new BaselineProxy({ shots: { 2: { post: shotPath } }, serial: "emulator-5554" });
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+  const traceDir = runtime.traceDir("trace-1");
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "run.json"),
+    JSON.stringify({
+      steps: [
+        {
+          step: 2,
+          scale: 1,
+          texts: [{ text: "Hello", x: 10, y: 8, width: 120, height: 40 }]
+        }
+      ]
+    })
+  );
+
+  const saved = await saveBaseline(runtime, request);
+  assert.equal(saved.texts, 1);
+  assert.deepEqual(saved.meta.texts, [
+    {
+      content: "Hello",
+      bbox: { x: 10, y: 8, width: 120, height: 40 },
+      scale: 1,
+      source: "trace"
+    }
+  ]);
+
+  const same = await compareBaseline(runtime, request);
+  assert.equal(same.status, "ok");
+  assert.ok(same.textStyles);
+  assert.equal(same.textStyles.textsTotal, 1);
+  assert.equal(same.textStyles.checked, 1);
+  assert.equal(same.textStyles.similar, 1);
+  assert.equal(same.textStyles.highConfidenceHeavier, 0);
+  assert.equal(textWeightGateFails(same, "text-weight"), false);
+
+  fs.writeFileSync(shotPath, barsPng({ stroke: 3 }));
+  const heavier = await compareBaseline(runtime, request);
+  assert.equal(heavier.status, "ok");
+  assert.equal(heavier.textStyles.heavier, 1);
+  assert.equal(heavier.textStyles.highConfidenceHeavier, 1);
+  assert.equal(heavier.textStyles.items[0].weightHint, "heavier");
+  assert.equal(textWeightGateFails(heavier, "text-weight"), true);
+  assert.equal(textWeightGateFails(heavier, "new"), false);
+});
+
+test("baseline text bbox: design-bbox bootstrap when trace texts are missing", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "ui-contract.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      source: { fingerprint: "fp" },
+      screens: [
+        {
+          id: "home",
+          name: "Home",
+          frameWidth: 390,
+          texts: [
+            {
+              id: "t1",
+              content: "Hello",
+              fontFamily: "Test",
+              fontWeight: 400,
+              fontSize: 16,
+              bbox: { x: 10, y: 8, width: 120, height: 40 },
+              bboxSpace: "design-px",
+              geometryStatus: "extracted"
+            }
+          ]
+        }
+      ],
+      summary: { extracted: 1, partial: 0, unverifiable: 0, "no-baseline": 0 },
+      warnings: []
+    })
+  );
+  const shotPath = path.join(dir, "step-post.png");
+  fs.writeFileSync(shotPath, barsPng({ stroke: 1 }));
+  const proxy = new BaselineProxy({ shots: { 2: { post: shotPath } }, serial: "emulator-5554" });
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+  const traceDir = runtime.traceDir("trace-1");
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "run.json"),
+    JSON.stringify({ steps: [{ step: 2, scale: 1, screen: "Hello | Other" }] })
+  );
+
+  const saved = await saveBaseline(runtime, request);
+  assert.equal(saved.textSource, "design-bbox");
+  assert.equal(saved.texts, 1);
+  assert.deepEqual(saved.meta.texts?.[0]?.bbox, {
+    x: 10,
+    y: 8,
+    width: 120,
+    height: 40
+  });
+  assert.equal(saved.meta.texts?.[0]?.source, "design-bbox");
+
+  fs.writeFileSync(shotPath, barsPng({ stroke: 3 }));
+  const report = await compareBaseline(runtime, request);
+  assert.equal(report.status, "ok");
+  assert.equal(report.textStyles?.heavier, 1);
 });
 
 test("compareBaseline: missing baseline reports no-baseline; serial falls back to default", async () => {

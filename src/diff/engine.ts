@@ -67,6 +67,8 @@ export interface DiffAlignment {
   scale: number;
   offset: { x: number; y: number };
   insets: Insets;
+  /** 设计裁剪框（design-source 坐标）；null 表示未裁剪。 */
+  designCrop: Bbox | null;
   downsampledTo?: number;
 }
 
@@ -102,6 +104,8 @@ export interface DiffOptions {
   maxRegions?: number;
   maxEdge?: number;
   insets?: Partial<Insets>;
+  /** design-source 像素；裁剪后再按设计宽度缩放。 */
+  designCrop?: Bbox;
   ignoreRegions?: Bbox[];
   designNodes?: DesignNode[];
   nodeProximity?: number;
@@ -433,6 +437,38 @@ function classifyRegion(
   return { category: "extra" };
 }
 
+export function normalizeDesignCrop(crop: Bbox | undefined, design: RgbaImage): Bbox | null {
+  if (crop === undefined) return null;
+  const values = [crop.x, crop.y, crop.width, crop.height];
+  if (values.some((value) => !Number.isFinite(value)) || crop.width <= 0 || crop.height <= 0) {
+    throw new Error("designCrop: 需要有限 x/y 且 width/height > 0");
+  }
+  if (crop.x < 0 || crop.y < 0 || crop.x + crop.width > design.width || crop.y + crop.height > design.height) {
+    throw new Error(
+      `designCrop 越界：${crop.x},${crop.y},${crop.width},${crop.height} 超出设计 ${design.width}×${design.height}`
+    );
+  }
+  return {
+    x: Math.floor(crop.x),
+    y: Math.floor(crop.y),
+    width: Math.max(1, Math.floor(crop.width)),
+    height: Math.max(1, Math.floor(crop.height))
+  };
+}
+
+function cropImage(image: RgbaImage, box: Bbox): RgbaImage {
+  const x0 = Math.max(0, Math.floor(box.x));
+  const y0 = Math.max(0, Math.floor(box.y));
+  const width = Math.max(1, Math.min(image.width - x0, Math.floor(box.width)));
+  const height = Math.max(1, Math.min(image.height - y0, Math.floor(box.height)));
+  const data = new Uint8Array(width * height * 4);
+  for (let row = 0; row < height; row += 1) {
+    const srcStart = ((y0 + row) * image.width + x0) * 4;
+    data.set(image.data.subarray(srcStart, srcStart + width * 4), row * width * 4);
+  }
+  return { width, height, data };
+}
+
 export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffOptions = {}): DiffResult {
   const pixelThreshold = options.pixelThreshold ?? DEFAULTS.pixelThreshold;
   const minAreaRatio = options.minAreaRatio ?? DEFAULTS.minAreaRatio;
@@ -446,9 +482,36 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
   const insets = normalizeInsets(options.insets, device);
   const cropped = cropInsets(device, insets);
 
-  const designLongest = Math.max(design.width, design.height);
+  const designCrop = normalizeDesignCrop(options.designCrop, design);
+  const designSource = designCrop === null ? design : cropImage(design, designCrop);
+  const designNodes =
+    designCrop === null
+      ? options.designNodes
+      : (options.designNodes ?? [])
+          .filter(
+            (node) =>
+              node.x + node.width > designCrop.x &&
+              node.y + node.height > designCrop.y &&
+              node.x < designCrop.x + designCrop.width &&
+              node.y < designCrop.y + designCrop.height
+          )
+          .map((node) => {
+            const x0 = Math.max(node.x, designCrop.x);
+            const y0 = Math.max(node.y, designCrop.y);
+            const x1 = Math.min(node.x + node.width, designCrop.x + designCrop.width);
+            const y1 = Math.min(node.y + node.height, designCrop.y + designCrop.height);
+            return {
+              ...node,
+              x: x0 - designCrop.x,
+              y: y0 - designCrop.y,
+              width: Math.max(1, x1 - x0),
+              height: Math.max(1, y1 - y0)
+            };
+          });
+
+  const designLongest = Math.max(designSource.width, designSource.height);
   const factor = designLongest > maxEdge ? maxEdge / designLongest : 1;
-  const designWork = factor < 1 ? resize(design, Math.max(1, Math.round(design.width * factor)), Math.max(1, Math.round(design.height * factor))) : design;
+  const designWork = factor < 1 ? resize(designSource, Math.max(1, Math.round(designSource.width * factor)), Math.max(1, Math.round(designSource.height * factor))) : designSource;
 
   const scale = designWork.width / cropped.width;
   const deviceScaledHeight = Math.max(1, Math.round(cropped.height * scale));
@@ -497,7 +560,7 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
   const components = mergeComponents(findComponents(mask, designWork.width, designWork.height), clusterGap);
   const areaTotal = designWork.width * designWork.height;
   const minimumArea = Math.max(1, Math.round(minAreaRatio * areaTotal));
-  const workingNodes: WorkingNode[] = (options.designNodes ?? []).map((node) => ({
+  const workingNodes: WorkingNode[] = (designNodes ?? []).map((node) => ({
     ...node,
     wx: node.x * factor,
     wy: node.y * factor,
@@ -562,6 +625,7 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
       scale,
       offset: { x: 0, y: 0 },
       insets,
+      designCrop,
       ...(factor < 1 ? { downsampledTo: maxEdge } : {})
     },
     ignoredRegions,

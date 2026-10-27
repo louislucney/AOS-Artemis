@@ -68,6 +68,23 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
         .boolean()
         .optional()
         .describe("tests.md/xlsx 嵌入设计图，默认 true（显式覆盖 AOS_SCREENS=0）"),
+      reading: z
+        .union([z.literal("auto"), z.boolean()])
+        .optional()
+        .describe(
+          '设计稿分块阅读：auto（默认，屏幕 ≥6 且视觉可用时自动读）| true 强制 | false 关闭；阅读是同一入口的内部阶段'
+        ),
+      readingMaxScreens: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe("设计阅读最多读多少屏，默认 50；超出显式截断"),
+      readingStates: z
+        .boolean()
+        .optional()
+        .describe("是否把 pen 状态变体（如「行動預點-下滑」）也作为独立屏阅读，默认 false"),
       allowPendingApi: z
         .boolean()
         .optional()

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -7,6 +8,11 @@ import { MemoryStore } from "../dist/db/memory.js";
 import { resolveEventProject } from "../dist/events/project-resolver.js";
 import { createAosHttpServer } from "../dist/http-server.js";
 import { makeTempDir } from "./helpers.js";
+
+process.env.AOS_HTTP_USERS_FILE = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), "aos-http-users-")),
+  "http-users.json"
+);
 
 const REMOTE_PATH = "/Users/louis/app";
 

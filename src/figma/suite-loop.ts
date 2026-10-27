@@ -1,5 +1,5 @@
 import type { CalibrationReport } from "./calibration.js";
-import type { FeedbackSuggestion, GenerationFeedback } from "./generation-feedback.js";
+import type { FeedbackSuggestion, GenerationFeedback, IntegrationReadiness } from "./generation-feedback.js";
 import {
   renderDesignWarningLine,
   type DesignWarningsSource,
@@ -66,6 +66,7 @@ export interface SuiteLoopReport {
   };
   nextActions: string[];
   topSuggestions: FeedbackSuggestion[];
+  readiness: IntegrationReadiness;
 }
 
 function percent(value: number | null): string {
@@ -208,7 +209,8 @@ export function buildSuiteLoopReport(input: SuiteLoopInput): SuiteLoopReport {
         : null
     },
     nextActions: deriveLoopActions(input),
-    topSuggestions: (input.feedback?.suggestions ?? []).slice(0, 10)
+    topSuggestions: (input.feedback?.suggestions ?? []).slice(0, 10),
+    readiness: input.feedback?.readiness ?? { needed: false, checks: [] }
   };
 }
 
@@ -277,6 +279,18 @@ export function renderSuiteLoopMarkdown(report: SuiteLoopReport): string {
         .filter(Boolean)
         .join(" ");
       lines.push(`- [${suggestion.kind}] ${suggestion.message}${refs ? `（${refs}）` : ""}`);
+    }
+  }
+  if (report.readiness.needed) {
+    lines.push("", "## 接入检查（按失败证据）", "");
+    for (const check of report.readiness.checks) {
+      const refs = [
+        check.caseIds.length > 0 ? `cases=${check.caseIds.join(",")}` : null,
+        check.traceIds.length > 0 ? `traces=${check.traceIds.join(",")}` : null
+      ]
+        .filter(Boolean)
+        .join(" ");
+      lines.push(`- [${check.code}] ${check.message}${refs ? `（${refs}）` : ""}`);
     }
   }
   return lines.join("\n") + "\n";

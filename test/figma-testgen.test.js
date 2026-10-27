@@ -14,6 +14,8 @@ import {
 } from "../dist/figma/reconciliation.js";
 import { serializeScreenMap } from "../dist/diff/screen-map.js";
 import {
+  applyAcceptanceVariants,
+  assignRelatedCases,
   computeFlowCoverage,
   designFingerprintFor,
   disambiguateSemanticIds,
@@ -35,6 +37,81 @@ import { deriveCasePreconditions } from "../dist/figma/preconditions.js";
 import { importTestDocument } from "../dist/workflow/excel-import.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, parseToolResult, StubProxy } from "./helpers.js";
 import { syntheticFlowDocument } from "./fixtures/figma-flow-doc.mjs";
+
+test("assignRelatedCases: module/shared screens, cap 3, subset scope", () => {
+  const make = (id, displayId, module, screens) => ({
+    id,
+    displayId,
+    module,
+    screens,
+    name: id,
+    steps: [],
+    preconditions: [],
+    taskDesc: "",
+    continuation: false,
+    startScreen: screens[0],
+    prelude: [],
+    expectations: [],
+    preflight: { screen: screens[0], hints: [] }
+  });
+  const a = make("a", "TC_000001", "结算", ["Home", "Checkout", "Done"]);
+  const b = make("b", "TC_000002", "结算", ["Home", "Checkout", "Done"]);
+  const c = make("c", "TC_000003", "结算", ["Home"]);
+  const d = make("d", "TC_000004", "支付", ["Other"]);
+  const cases = [a, b, c, d];
+  assignRelatedCases(cases);
+  assert.deepEqual(a.relatedCases, ["TC_000002", "TC_000003"]);
+  assert.deepEqual(b.relatedCases, ["TC_000001", "TC_000003"]);
+  assert.deepEqual(c.relatedCases, ["TC_000001", "TC_000002"]);
+  assert.deepEqual(d.relatedCases, []);
+
+  const many = [
+    a,
+    b,
+    c,
+    make("e", "TC_000005", "结算", ["Checkout"]),
+    make("f", "TC_000006", "结算", ["Done"])
+  ];
+  assignRelatedCases(many);
+  assert.equal(a.relatedCases.length, 3, "最多 3 条");
+
+  assignRelatedCases([a, b]);
+  assert.deepEqual(a.relatedCases, ["TC_000002"], "子集只引用子集内用例");
+  assert.deepEqual(b.relatedCases, ["TC_000001"]);
+});
+
+test("applyAcceptanceVariants: same label on different screens keeps unique ids", () => {
+  const base = {
+    id: "case-aaaaaa111111",
+    semanticId: "sem-aaaaaa111111",
+    displayId: "TC_111111",
+    name: "Home → Checkout",
+    displayName: "Home → Checkout",
+    screens: ["Home", "Checkout"],
+    steps: ["点击「Buy now」"],
+    preconditions: [],
+    taskDesc: "task\n【AOS-EXPECT】{}",
+    continuation: false,
+    startScreen: "Home",
+    prelude: [],
+    expectations: [],
+    preflight: { screen: "Home", hints: [] }
+  };
+  const cases = [base];
+  applyAcceptanceVariants(
+    cases,
+    [
+      { screen: "Home", label: "same", data: [], expected: [] },
+      { screen: "Checkout", label: "same", data: [], expected: [] }
+    ],
+    []
+  );
+  assert.equal(cases.length, 3);
+  const clones = cases.filter((testCase) => testCase.variant !== undefined);
+  assert.equal(new Set(clones.map((testCase) => testCase.id)).size, 2);
+  assert.equal(new Set(clones.map((testCase) => testCase.semanticId)).size, 2);
+  assert.equal(new Set(clones.map((testCase) => testCase.displayId)).size, 2);
+});
 
 test("linearizeFlows: chains consecutive interactions into a path and stops at back edges", () => {
   const graph = buildFlowGraph(syntheticFlowDocument());
@@ -1874,6 +1951,16 @@ test("figma_generate_tests: acceptance v2 enriches display fields, taskDesc, xls
   assert.match(testCase.displayId, /^TC_[0-9a-f]{6}$/);
   assert.equal(testCase.section, "结算流程");
   assert.ok(testCase.module.length > 0, "module 由功能名填充");
+  assert.deepEqual(testCase.designRefs.screens, testCase.screens);
+  assert.equal(testCase.designRefs.nodeIds.length, testCase.screens.length);
+  assert.ok(
+    testCase.designRefs.nodeIds.every((id) => typeof id === "string" && id.length > 0),
+    "屏幕按顺序带节点 id"
+  );
+  assert.ok(
+    typeof testCase.designRefs.route === "string" && testCase.designRefs.route.length > 0,
+    "入口屏路由存在"
+  );
   assert.deepEqual(testCase.testData, ["账号：已登录", "商品：拿铁"]);
   assert.deepEqual(testCase.openQuestions, ["是否支持优惠券？"]);
   assert.match(testCase.taskDesc, /【测试数据】/);
@@ -1920,7 +2007,12 @@ test("figma_generate_tests: invalid acceptance details warn without blocking", a
   const dir = makeFlowsProject();
   fs.writeFileSync(
     path.join(dir, ".artemis", "design", "acceptance.json"),
-    JSON.stringify({ data: { Home: "not-an-array" }, questions: { Home: ["待确认项"] }, section: "bad" })
+    JSON.stringify({
+      data: { Home: "not-an-array" },
+      questions: { Home: ["待确认项"] },
+      section: "bad",
+      variants: [{ screen: "Home" }, { screen: "Checkout", label: "bad-data", data: "nope" }, "nope"]
+    })
   );
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
   const payload = parseToolResult(await figmaGenerateTests(runtime, {}));
@@ -1929,8 +2021,138 @@ test("figma_generate_tests: invalid acceptance details warn without blocking", a
     (payload.warnings ?? []).some((entry) => entry.code === "acceptance-details-invalid"),
     "非法 acceptance 条目可见"
   );
+  assert.ok(
+    (payload.warnings ?? []).some(
+      (entry) => entry.code === "acceptance-details-invalid" && entry.message.includes("variants")
+    ),
+    "非法 variants 条目可见"
+  );
   assert.deepEqual(payload.flows[0].testData, []);
   assert.deepEqual(payload.flows[0].openQuestions, ["待确认项"]);
+  const scopedWarnings = payload.flows[0].designWarnings ?? [];
+  assert.ok(
+    scopedWarnings.some(
+      (warning) =>
+        warning.code === "acceptance-details-invalid" &&
+        (warning.scope?.screens ?? []).includes("Home")
+    ),
+    "Home 作用域的设计警告挂到用例"
+  );
+  const markdown = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.match(markdown, /设计警告：/);
+  assert.match(markdown, /acceptance-details-invalid/);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(payload.savedTo.xlsx));
+  assert.match(
+    String(workbook.getWorksheet("测试用例").getRow(2).getCell(12).value),
+    /设计警告（acceptance-details-invalid）/
+  );
+});
+
+test("figma_generate_tests: P1 variants clone with unique ids, expectations, related cases and design refs", async () => {
+  const dir = makeFlowsProject();
+  const designDir = path.join(dir, ".artemis", "design");
+  fs.writeFileSync(
+    path.join(designDir, "acceptance.json"),
+    JSON.stringify(
+      {
+        data: { Checkout: ["商品：拿铁"] },
+        variants: [
+          {
+            screen: "Checkout",
+            label: "优惠券已满",
+            data: ["优惠券：已满"],
+            expected: ["提示不可用"]
+          }
+        ]
+      },
+      null,
+      2
+    )
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(payload.ok, true);
+  const bases = payload.flows.filter(
+    (testCase) => testCase.variant === undefined && testCase.screens.includes("Checkout")
+  );
+  assert.ok(bases.length > 0, "存在覆盖 Checkout 的基准用例");
+  const clones = payload.flows.filter(
+    (testCase) => testCase.variant?.label === "优惠券已满"
+  );
+  assert.equal(clones.length, bases.length, "每条命中基准用例克隆一次");
+  const base = bases[0];
+  const clone = clones.find(
+    (testCase) => testCase.screens.join("|") === base.screens.join("|")
+  );
+  assert.ok(clone, "基准用例有对应克隆");
+  assert.notEqual(clone.id, base.id);
+  assert.notEqual(clone.displayId, base.displayId);
+  assert.deepEqual(clone.variant, {
+    group: "Checkout",
+    label: "优惠券已满",
+    expected: ["提示不可用"]
+  });
+  assert.deepEqual(clone.steps, base.steps);
+  assert.deepEqual(clone.expectations, base.expectations);
+  assert.ok(clone.testData.includes("商品：拿铁"));
+  assert.ok(clone.testData.includes("优惠券：已满"));
+  assert.match(clone.taskDesc, /【变体：优惠券已满】/);
+  assert.match(clone.taskDesc, /- 数据：优惠券：已满/);
+  assert.match(clone.taskDesc, /- 预期：提示不可用/);
+  assert.ok(base.relatedCases.includes(clone.displayId));
+  assert.ok(clone.relatedCases.includes(base.displayId));
+  assert.ok(clone.designRefs.screens.includes("Checkout"));
+  assert.equal(payload.summary.variantGroups, 1);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(payload.savedTo.xlsx));
+  const sheet = workbook.getWorksheet("测试用例");
+  let cloneRow = null;
+  for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber += 1) {
+    if (sheet.getRow(rowNumber).getCell(6).value === clone.displayId) {
+      cloneRow = sheet.getRow(rowNumber);
+      break;
+    }
+  }
+  assert.ok(cloneRow, "变体行存在");
+  assert.match(String(cloneRow.getCell(10).value), new RegExp(base.displayId));
+  assert.match(String(cloneRow.getCell(11).value), /变体预期（优惠券已满）：提示不可用/);
+
+  const markdown = fs.readFileSync(payload.savedTo.markdown, "utf-8");
+  assert.match(markdown, /变体预期（优惠券已满）：提示不可用/);
+});
+
+test("figma_generate_tests: variant unmatched warns and >20 variants truncate", async () => {
+  const dir = makeFlowsProject();
+  const designDir = path.join(dir, ".artemis", "design");
+  const variants = [
+    { screen: "Nope", label: "no-screen" },
+    ...Array.from({ length: 21 }, (_, index) => ({ screen: "Home", label: `v${index}` }))
+  ];
+  fs.writeFileSync(
+    path.join(designDir, "acceptance.json"),
+    JSON.stringify({ variants }, null, 2)
+  );
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
+  const payload = parseToolResult(await figmaGenerateTests(runtime, {}));
+  assert.equal(payload.ok, true);
+  assert.ok(
+    (payload.warnings ?? []).some((entry) => entry.code === "variant-screen-unmatched"),
+    "未命中屏幕告警"
+  );
+  assert.ok(
+    (payload.warnings ?? []).some((entry) => entry.code === "acceptance-details-truncated"),
+    "超过 20 条 variants 截断"
+  );
+  const homeBases = payload.flows.filter(
+    (testCase) => testCase.variant === undefined && testCase.screens.includes("Home")
+  ).length;
+  assert.equal(
+    payload.flows.filter((testCase) => testCase.variant !== undefined).length,
+    19 * homeBases,
+    "前 20 条 variants 中 1 条未命中，其余 19 条各克隆一次"
+  );
 });
 
 test("renderTestsWorkbook: legacy case without new fields falls back to dash/n-a", async () => {
@@ -1979,8 +2201,13 @@ test("renderTestsWorkbook template: display placeholders and summary counts", as
     "{{case.testData}}",
     "{{case.expectations}}",
     "{{case.openQuestions}}",
+    "{{case.relatedCases}}",
+    "{{case.designRefs}}",
+    "{{case.variantLabel}}",
+    "{{case.variantExpected}}",
     "{{counts.withTestData}}",
-    "{{counts.openQuestions}}"
+    "{{counts.openQuestions}}",
+    "{{case.unknown}}"
   ];
   await template.xlsx.writeFile(templatePath);
   const testCase = {
@@ -1998,7 +2225,18 @@ test("renderTestsWorkbook template: display placeholders and summary counts", as
     module: "结算",
     section: "首页",
     testData: ["账号：已登录"],
-    openQuestions: ["是否支持优惠券？"]
+    relatedCases: ["TC_654321"],
+    designRefs: {
+      screens: ["Home", "Checkout"],
+      nodeIds: ["1:1", "1:2"],
+      route: "/"
+    },
+    openQuestions: ["是否支持优惠券？"],
+    variant: {
+      group: "Checkout",
+      label: "优惠券已满",
+      expected: ["提示不可用"]
+    }
   };
   const buffer = await renderTestsWorkbook([testCase], {
     source: "unit-test",
@@ -2012,10 +2250,15 @@ test("renderTestsWorkbook template: display placeholders and summary counts", as
   assert.equal(row.getCell(3).value, "结算");
   assert.equal(row.getCell(4).value, "首页");
   assert.equal(row.getCell(5).value, "- 账号：已登录");
-  assert.equal(row.getCell(6).value, "1) → Checkout：订单号");
+  assert.equal(row.getCell(6).value, "1) → Checkout：订单号\n变体预期（优惠券已满）：提示不可用");
   assert.equal(row.getCell(7).value, "- 是否支持优惠券？");
-  assert.equal(row.getCell(8).value, 1);
-  assert.equal(row.getCell(9).value, 1);
+  assert.equal(row.getCell(8).value, "TC_654321");
+  assert.equal(row.getCell(9).value, "Home(1:1) → Checkout(1:2)");
+  assert.equal(row.getCell(10).value, "优惠券已满");
+  assert.equal(row.getCell(11).value, "提示不可用");
+  assert.equal(row.getCell(12).value, 1);
+  assert.equal(row.getCell(13).value, 1);
+  assert.equal(row.getCell(14).value, "{{case.unknown}}", "未知占位符原样保留");
 });
 
 test("identifier pre-mining: conservative layer-name heuristics", () => {

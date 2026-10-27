@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import type { AuthIdentity } from "../auth.js";
 import { AmbiguousProjectError } from "../db/types.js";
 import type { CaseVerdict, HostRecord } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
@@ -39,6 +40,8 @@ export interface PanelActionRequest {
   headers?: Record<string, string | string[] | undefined>;
   rawBody?: Buffer;
   contentType?: string;
+  /** HTTP 认证解析出的用户身份；stdio/独立面板缺省回退环境角色。 */
+  identity?: AuthIdentity;
 }
 
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
@@ -84,7 +87,8 @@ export async function handlePanelActionRequest(
   if (!sameOriginAllowed(request.headers)) {
     return json(403, { error: "跨站请求被拒绝（同源校验失败）" });
   }
-  const role = panelRoleFrom(env);
+  const role = request.identity?.role ?? panelRoleFrom(env);
+  const actor = request.identity?.name ?? deps.actor ?? "panel";
   const required = panelRequiredRoleForPath(request.url.pathname);
   if (required !== null && !panelRoleAtLeast(role, required)) {
     return json(403, {
@@ -183,7 +187,7 @@ export async function handlePanelActionRequest(
         ...(resolvedHostId === null ? {} : { hostId: resolvedHostId }),
         ...(note === "" ? {} : { note })
       },
-      { actor: "panel", actorHostId: resolvedHostId, channel: "panel" }
+      { actor, actorHostId: resolvedHostId, channel: "panel" }
     );
     if (response.status === 200) deps.cache?.clear();
     return response;
@@ -215,10 +219,12 @@ export async function handlePanelActionRequest(
     throw error;
   }
   if (!resolved) return json(404, { error: `未知项目 "${projectKey}"` });
-  const scopedDeps: PanelWebDeps =
-    resolved.hostId === null
+  const scopedDeps: PanelWebDeps = {
+    ...(resolved.hostId === null
       ? deps
-      : { ...deps, store: deps.storeForHost?.(resolved.hostId) ?? deps.store };
+      : { ...deps, store: deps.storeForHost?.(resolved.hostId) ?? deps.store }),
+    actor: deps.actor ?? actor
+  };
 
   try {
     if (request.url.pathname === "/panel/api/tasks") {
@@ -244,7 +250,7 @@ export async function handlePanelActionRequest(
       return response;
     }
     if (request.url.pathname === "/panel/api/tasks/cancel") {
-      const response = await cancelTask(scopedDeps, resolved.rootPath, payload, resolved.hostId);
+      const response = await cancelTask(scopedDeps, resolved.rootPath, payload, resolved.hostId, actor);
       await auditPanel(
         scopedDeps,
         resolved.rootPath,
@@ -254,7 +260,7 @@ export async function handlePanelActionRequest(
           taskId: String(payload.taskId ?? ""),
           ...(resolved.hostId === null ? {} : { hostId: resolved.hostId })
         },
-        { actor: "panel", actorHostId: resolved.hostId, channel: "panel" }
+        { actor, actorHostId: resolved.hostId, channel: "panel" }
       );
       return response;
     }
@@ -266,7 +272,7 @@ export async function handlePanelActionRequest(
       return response;
     }
     if (request.url.pathname === "/panel/api/tasks/stop") {
-      const response = await stopTask(scopedDeps, resolved.rootPath, payload, resolved.hostId);
+      const response = await stopTask(scopedDeps, resolved.rootPath, payload, resolved.hostId, actor);
       await auditPanel(scopedDeps, resolved.rootPath, "action.stop", response, {
         taskId: String(payload.taskId ?? "")
       });
@@ -326,6 +332,7 @@ export async function handlePanelActionRequest(
       domain: "panel",
       action: "action.error",
       result: "failed",
+      actor,
       summary: `面板动作异常：${errorMessage(error)}`
     });
     return json(500, { ok: false, error: "服务内部错误（已写入审计；可重试或查看日志）" });
@@ -364,13 +371,9 @@ async function auditPanel(
         ? `${auditActionLabel(action)}：完成`
         : `${auditActionLabel(action)}：失败（${detail === "" ? `HTTP ${response.status}` : detail}）`,
     ...(refs === undefined ? {} : { refs }),
-    ...(meta === undefined
-      ? {}
-      : {
-          actor: meta.actor ?? null,
-          actorHostId: meta.actorHostId ?? null,
-          channel: meta.channel ?? null
-        })
+    actor: meta?.actor ?? deps.actor ?? null,
+    actorHostId: meta?.actorHostId ?? null,
+    channel: meta?.channel ?? null
   });
 }
 
@@ -793,7 +796,8 @@ async function cancelTask(
   deps: PanelWebDeps,
   rootPath: string,
   payload: Record<string, unknown>,
-  hostId: string | null
+  hostId: string | null,
+  actor: string
 ): Promise<PanelWebResponse> {
   const taskId = typeof payload.taskId === "string" ? payload.taskId.trim() : "";
   if (taskId === "") return json(400, { error: "缺少 taskId" });
@@ -802,7 +806,7 @@ async function cancelTask(
     rootPath,
     taskId,
     source: "panel",
-    actor: "panel",
+    actor,
     actorHostId: hostId,
     note
   });
@@ -863,7 +867,8 @@ async function stopTask(
   deps: PanelWebDeps,
   rootPath: string,
   payload: Record<string, unknown>,
-  hostId: string | null
+  hostId: string | null,
+  actor: string
 ): Promise<PanelWebResponse> {
   const taskId = typeof payload.taskId === "string" ? payload.taskId.trim() : "";
   if (taskId === "") return json(400, { error: "缺少 taskId" });
@@ -879,7 +884,7 @@ async function stopTask(
     rootPath,
     taskId,
     source: "panel",
-    actor: "panel",
+    actor,
     actorHostId: hostId,
     note: null
   });

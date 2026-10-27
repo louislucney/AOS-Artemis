@@ -268,7 +268,7 @@ env:
 | `jira_issue_get`            | `{key}`                                                                            | 读取 Jira Cloud issue（key 或 browse URL）→ 规范化上下文：summary/status/statusCategory/type/labels/project/assignee/reporter/updated/created + `description.text`（ADF→纯文本）/`acceptanceCriteria`（启发式：标题段与 `AC:` 行，`heuristic:true`）/`raw`（原始 ADF）；缺凭证返回 `howToFix`（M8a，§6.8/§13.55）                                                    |
 | `jira_issue_search`         | `{jql, limit?, fields?, nextPageToken?}`                                           | JQL 搜索（`POST /rest/api/3/search/jql` 游标分页、无 total）：key/url/summary/status/type/labels/updated/assignee；limit 默认 20、上限 100；`nextPageToken`/`isLast` 透传（M8a，§6.8/§13.55）                                                                                                                                                                        |
 | `compare_design_and_device` | `{figmaUrl, nodeId?, deviceSerial?}`                                               | 组合工具：Figma 节点渲染图（PNG@2x）+ 真机截图，一并以 image content 返回供多模态比对                                                                                                                                                                                                                                                                                  |
-| `design_device_diff`        | `{design:{source?,figmaUrl?,penPath?,nodeId?,renderOut?}, device?:{mode?,serial?,traceId?,stepNumber?,image?,lossless?}, alignment?:{insets?,ignoreRegions?}, diff?:{pixelThreshold?,minAreaRatio?,clusterGap?,maxRegions?,maxEdge?,nodeProximity?,colorTolerance?,systemBandRatio?}, save?, dryRun?}` | 设计 vs 真机差异（设计源 Figma 或 `.pen`（`design:{source:"pen",penPath?,renderOut?}`，pen CLI 渲染）；设备源 live 实时截图或 step（traceId 必填；stepNumber 可省略 → 失败证据自动检索，记录 anchor 来源/候选；默认 post）；live 可加 `lossless:true` 经 adb 抓无损 PNG（避免 JPEG 伪影，失败自动回退 live JPEG））：确定性对齐（设计宽度缩放 + 顶部对齐，insets 修正，默认按设计图最长边降采样到 1440px）+ 像素差异判定（pixelmatch，抗 JPEG 噪声：阈值/最小面积/聚类/上限可配）→ 结构化差异报告（区域/类别 `missing/extra/text/asset/position-size/color`（无节点几何时 `pixel`）/严重度/证据，设计节点几何与阈值入报告）+ 标注图；默认落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`（report.json / annotated.png / design.png / device.png），响应摘要 + 标注图 + 路径；`ignoreRegions` 屏蔽动态区域；`dryRun` 不取图不写盘；判定不依赖 LLM（ADR-0001/0002）；差异区域经 `screen-map.json` 输出 `localized`（mapped=`mapEntry`/unmapped=候选/no-candidates=原因） |
+| `design_device_diff`        | `{design:{source?,figmaUrl?,penPath?,imagePath?,nodeId?,renderOut?}, device?:{mode?,serial?,traceId?,stepNumber?,image?,lossless?}, alignment?:{insets?,ignoreRegions?}, diff?:{pixelThreshold?,minAreaRatio?,clusterGap?,maxRegions?,maxEdge?,nodeProximity?,colorTolerance?,systemBandRatio?}, save?, dryRun?}` | 设计 vs 真机差异（设计源 Figma、`.pen`（`design:{source:"pen",penPath?,renderOut?}`，pen CLI 渲染）或现成 PNG（`design:{source:"image",imagePath}`，仅 PNG；无节点几何 → pixel/tiles、低分辨率 `design-upscaled`）；设备源 live 实时截图或 step（traceId 必填；stepNumber 可省略 → 失败证据自动检索，记录 anchor 来源/候选；默认 post）；live 可加 `lossless:true` 经 adb 抓无损 PNG（避免 JPEG 伪影，失败自动回退 live JPEG））：确定性对齐（设计宽度缩放 + 顶部对齐，insets 修正，默认按设计图最长边降采样到 1440px）+ 像素差异判定（pixelmatch，抗 JPEG 噪声：阈值/最小面积/聚类/上限可配）→ 结构化差异报告（区域/类别 `missing/extra/text/asset/position-size/color`（无节点几何时 `pixel`）/严重度/证据，设计节点几何与阈值入报告）+ 标注图；默认落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`（report.json / annotated.png / design.png / device.png），响应摘要 + 标注图 + 路径；`ignoreRegions` 屏蔽动态区域；`dryRun` 不取图不写盘；判定不依赖 LLM（ADR-0001/0002）；差异区域经 `screen-map.json` 输出 `localized`（mapped=`mapEntry`/unmapped=候选/no-candidates=原因） |
 | `screen_map` | `{action:"list/propose/save", entries?, merge?}` | 持久屏幕映射 `<项目>/.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 基于 build-brief + 栈约定给粗粒度候选（confidence/unmatched，需 agent 复核）；`save` 显式写入（幂等，`merge` 增量）；`list` 读取；差异报告据此定位（ADR-0004） |
 | `figma_extract_flows`       | `{url, nodeId?, save?}`                                                            | 原型交互 → 流程图（screens/edges/entryScreens/unresolved + `warnings`：`no-entry`/`unreachable-screens`/`unresolved-destinations`/`no-interactions`），落盘`.artemis/design/flows.json`；供后续"流程→测试生成"消费（M-B；契约见 §6.10）                                                                                                                                                                                                                                     |
 | `figma_gap_analysis`        | `{url, id?, assetGlobs?, tokenFiles?, save?}`                                      | 设计资源/色板 vs 项目资产/tokens 缺口（missingAssets/missingColors），**扫描规则按检测到的技术栈选择**（`src/projects/stack.ts`：Flutter/RN/原生 Android/iOS/Web 档案，含资产目录/定位/代码/命名约定），缺失资源按栈重命名（如 Android `ic_home.svg`、Flutter `home_icon.svg`）并给出目标目录；落盘 `.artemis/design/gaps.json`；供"资源导入"消费（M-C） |
@@ -348,7 +348,7 @@ env:
 - **测试文档**：`figma_generate_tests` 等设计流水线产物仍在 `<项目>/.artemis/design/`（见 §13），本次不变。
 - **注意**：`ARTEMIS_*` 变量属于客户端/进程 env（项目 `.env` 不注入子进程），覆盖要写在 MCP 客户端配置的 env 或 shell 环境。
 
-### 6.8 Jira Cloud 接入（M8a：读取）
+### 6.8 Jira Cloud 接入（M8a 读取；M8b/M8c 见 §13.55）
 
 **范围**：M8a 为客户端 + 凭证 + 读取（`jira_issue_get`/`jira_issue_search`）；证据回写（M8b）与 CLI/工作流迁移（M8c）见 §11 M8 与 §13.55。
 
@@ -357,7 +357,7 @@ env:
 - **读取契约**：issue 上下文规范化为纯文本 + 启发式验收标准（标题段延续到下一标题，外加 `AC:` 行回退；`heuristic:true` 明示不可全信），保留原始 ADF 供深入消费；搜索走 `/rest/api/3/search/jql`（显式字段、游标分页；JQL 需有界，API 侧 400 原样映射）。
 - **里程碑后续**：M8b 已落地——票 03（评论/附件原语）：`jira_issue_comment`（纯文本→ADF；`AOS-TRACE:<traceId>` 页脚 marker 幂等更新/新建；评论属性 best-effort）、`jira_issue_attach`（multipart、确定性命名 `<basename>-<sha8><ext>`、同名同大小去重、上限取站点 meta 与 `AOS_JIRA_ATTACH_MAX_MB` 较小者、超限跳过）；票 04（证据 composite）：`jira_evidence_post`（复用 `traceEvidence` 聚合失败步骤截图/设计差异标注图/失败清单/崩溃签名；`classifyFailure` 确定性失败域；platform/deviceSerial 覆盖或按 serial 推断；`dryRun` 不触网；平台注释）；客户端扩展（comments/attachment meta/list/upload，JSON 请求抽象为 rawRequest 复用冷却与重试；写操作走 requestVoid 兼容 200/201/204/空体）。M8c 票 05（CLI）已落地：`mobile-testing-mcp jira issue create|comment|label|transition|link`（同客户端；`--project`/`--json`；exit 0/1/2；建单支持 Task/Bug、描述 ADF、标签、父级与 Blocks 链接；流转按可用 transitions 目标状态名匹配，不匹配列出可用项）；票 06 工作流文档已迁移（`docs/agents/issue-tracker.md` 重写为 Jira 工作流、`triage-labels.md` 加 tracker 映射、AGENTS 摘要同步）；**沙箱端到端验收待使用方提供沙箱凭证后执行**（记录于票据 06 Comments）。
 
-### 6.9 iOS 真机后端（M9a：Appium + WDA）
+### 6.9 iOS 真机后端（Appium + WDA；M9a–M9c）
 
 真机 UDID（`classifyIosSerial=device`）由 AOS 接管并走 Appium + WebDriverAgent（模拟器保持 idb/simctl 双后端）：
 
@@ -366,7 +366,7 @@ env:
 - **能力**：截图、层级（page source XML 经 fast-xml-parser；解析失败 `parse_failed` 回退截图）、tap/swipe（W3C actions）、文本输入（先聚焦→有界等键盘→`POST /keys`；`mobile: typeText` 在 xcuitest 12.15 已移除）、terminate/activate/install/deepLink。
 - **签名**：`AOS_IOS_XCODE_ORG_ID`（证书 OU 团队 ID，真机必填）、`AOS_IOS_XCODE_SIGNING_ID`（默认 Apple Development）、`AOS_IOS_WDA_BUNDLE_ID`（默认 com.aos.mcp.wda）；`useNewWDA=false` + `allowProvisioningDeviceRegistration=true`（真机实测）；多项目团队各异时各自在项目 `.env` 声明（分层规则见 §13.57）。
 - **路由**：`mobile_get_device_state` device 分支（busy/parse_failed 降级）、`captureLiveScreenshot`（design diff / compare 真机截图，note "iOS 真机 WDA PNG" 即 backend 标识）、`mobile_run_task`（执行器设备 façade 对 device 走 WDA）。观察读取统一经 `src/ios/observation.ts`、执行器为门面 + 分模块（§13.81/§13.77）。真机崩溃经 `devicectl systemCrashLogs`、真机日志经 `idevicesyslog` 实时尾采样（M9c，窗口近似 `clockWarning`；缺工具降级 `ios-log-tool-missing`）。
-- **排障**：doctor/`aos_status.ios` 显示 Appium/xcuitest/签名/隧道指引；iOS 18+ 需一次性 `sudo appium driver run xcuitest tunnel-creation`。
+- **排障**：doctor/`aos_status.ios` 显示 Appium/xcuitest/签名/隧道指引；iOS 18+ 真机需建立并**保持运行** Remote XPC 隧道（`sudo appium driver run xcuitest tunnel-creation`；独立常驻进程，可被多个 Appium server/会话复用；主机重启、设备重连/新增设备或进程退出后需重跑；AOS 只给指引，不代为 sudo 启动；运行中的 registry 由 Appium 自动发现/复用）。
 
 ### 6.10 接入契约：流程完整性保证（2026-10-08）
 
@@ -501,13 +501,13 @@ llm_switch(name, force):
 | M3             | 容器化打包（Dockerfile）+ 客户端安装器 + 真机 E2E                                                  | ✅ 已完成（镜像构建 + docker exec 端到端验证：29 工具含容器内 artemis） |
 | M4             | HTTP 传输 + 任务状态同步 + 组合工具                                                                | ✅ 已完成（79 测试全绿；HTTP/stdio 双入口实测）                         |
 | M5             | 崩溃取证（M1 范围：终态采集 → 签名 → 文件索引 →`aos_crashes`）                                | ✅ 已完成（新增 35 用例全绿）                                           |
-| M6             | 设计资源唯一性与 i18n 闭环（颜色 tokens / 图片补强 / 文本 i18n）                                   | 🚧 部分实施（M6a/M6b/M6c 完成，复数与 iOS stringsdict、位图倍率集均已落地；真机验收待后续，见 §13.9/§13.34/§13.35） |
+| M6             | 设计资源唯一性与 i18n 闭环（颜色 tokens / 图片补强 / 文本 i18n）                                   | 🚧 代码完成（M6a/M6b/M6c；复数、iOS stringsdict、位图倍率集均已落地；真机验收记录待补，见 §13.9/§13.34/§13.35） |
 | M7             | 厂商模型目录定时刷新 + 模型下线自动修复 +`mobile_run_task` 预检（8 家国产预设、`llm_models`）    | ✅ 已完成（新增 19 用例）                                               |
 | D1             | 设计 vs 真机确定性差异（Figma/.pen × live/step/自动锚点；分类/严重度；screen_map 定位；真实基准） | ✅ 已完成（票据 01–07；307 用例；见 §13.13–13.19）                       |
 | D2             | 测试闭环深化（用例身份台账、状态复位、套件运行器、失败证据/分类、设备基线、运行报告、生成反馈、CLI 接线）   | ✅ 已完成（票据 01–14；389 用例；见 §13.20–13.33）                       |
 | U1             | 使用统计（客户端调用事件采集/存储/聚合 + `aos_usage` 工具 / `usage` CLI / Web 看板三消费面；ADR-0006）     | ✅ 已完成（票据 01–07；610 用例；见 §13.54）                             |
-| M8             | Jira Cloud 接入（产品级读取/证据回写 + 仓库 issue tracker 迁移 CLI；spec 与票据见 `.scratch/jira-integration/`） | 🚧 部分实施（M8a 完成：client/凭证/`jira_issue_get`+`jira_issue_search`；M8b/M8c 为票据 03–06；见 §13.55） |
-| M9             | iOS 真机后端（Appium+WDA：观测/动作/设计对比 + 执行器；日志/崩溃 M9c 与 .ipa 安装待续；spec/票据见 `.scratch/ios-real-device/`） | ✅ 代码完成（M9a/M9b 经真机端到端验证；M9c 崩溃走 devicectl、日志走 idevicesyslog 尾采样，真机冒烟待人工执行；见 §13.56） |
+| M8             | Jira Cloud 接入（产品级读取/证据回写 + 仓库 issue tracker 迁移 CLI；spec 与票据见 `.scratch/jira-integration/`） | ✅ 代码完成（M8a 读取、M8b 证据回写、M8c CLI/tracker 迁移；沙箱端到端验收待凭证，见 §6.8/§13.55/§13.111） |
+| M9             | iOS 真机后端（Appium+WDA：观测/动作/设计对比 + 执行器；日志/崩溃 M9c 与 .ipa 安装已接线；spec/票据见 `.scratch/ios-real-device/`） | ✅ 代码完成（M9a/M9b 经真机端到端验证；M9c 崩溃走 devicectl、日志走 idevicesyslog 尾采样，真机冒烟待人工执行；见 §13.56） |
 | M9.1           | iOS 执行器理解强化（感知档位/视觉融合/遮挡/no-op/终态验证/历史/失败日志/平台语义；spec 见 `.scratch/ios-understanding-parity/`） | ✅ 已完成（786 用例；见 §13.59） |
 
 ---
@@ -525,7 +525,7 @@ llm_switch(name, force):
 | 崩溃日志含敏感文本                      | 本地泄露面                   | 仅存`.artemis/crashes`（gitignore）+ 工具返回截断；后续可加脱敏                                          |
 | release 混淆栈                          | 签名可去重但难读、可能撞签名 | 签名固定基于原始栈；mapping.txt/retrace 后续增强                                                           |
 
-**未决**：① 是否引入列级加密（当前按需求明文）；② HTTP 已有可选静态令牌（`AOS_HTTP_TOKEN`）与 CMS/runner 产物令牌，进程级 `AOS_PANEL_ROLE` 已落地（§13.196），多用户/身份级鉴权仍待定。
+**未决**：① 是否引入列级加密（当前按需求明文）；② HTTP 已有可选静态令牌（`AOS_HTTP_TOKEN`）/命名用户令牌（`AOS_HTTP_USERS`，§13.216）/用户文件生命周期（`AOS_HTTP_USERS_FILE` + `user` CLI，§13.217）与 CMS/runner 产物令牌，进程级 `AOS_PANEL_ROLE` 已落地（§13.196）；OAuth/OIDC/会话/PG 用户表仍待定。
 
 ---
 
@@ -1786,6 +1786,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > - **下发单次确认＋术语统一＋P3 杂项（2026-10-19 第三十四批，七评留档清空）**：**Wave 1 下发确认收敛**——「确认派发」单击即弹**站内单次确认**（`aosInlineConfirm`，摘要含来源/用例/用例集明细（`refsDetail` 入岛）/端/基线/执行机在线态），确认后按钮禁用＋「**提交中…**」（`#dispatch-status`）；移除两段确认框；设备卡在无在线执行机时写「**待执行机领取（当前无在线）**」而非"runner 自动"。**Wave 2 术语统一**——全站归为「**执行机（runner）**」（导航/快捷键/候选/空态/完整覆盖提示/compare 口径与列组"执行（执行机·定时回归）"）；术语表补 **门禁/设备运行/领取/积压/flaky** 五条。**Wave 3 P3 杂项**——① **404 站内错误页**（HTML 路由出站内页＋「← 多项目总览」，`.json` 保持 JSON）；② **「起自」改 `datetime-local`**（服务端 `normalizeSince`：无时区按本地解析转 ISO，预设链接仍 ISO）；③ **计划功能多选下拉 → 复选组**（fieldset＋checkbox，`getAll` 不变）；④ **自动刷新可见标注＋暂停**（`#aos-live-note`「自动刷新中（每 N 秒）」＋暂停/继续按钮，`clearInterval` 生效；reduced-motion 分支显示"已按系统偏好关闭自动刷新"）；⑤ **移动触达高度**（≤960 `.c-button{min-height:44px}`）。测试：单次确认/提交中/岛字段、术语表五词、导航标签、404 双态、datetime-local 与本地归一、功能复选、刷新标注与暂停脚本、44px CSS。全量 **1627 绿**；lint 0；Edge 无新类别；真机验证（执行机导航/门禁术语/404 页/刷新标注）。
 > - **八评与真问题修正轮（2026-10-19 第三十五批）**：八评 dual-agent **31/40（良好上限，距优秀一步）**——趋势 16→25→18→23→33→28→27→31；A 侧确认"内容与语汇高度特异、布局语法通用骨架属正确取舍"，峰值仍是预览契约/两段停止/建单闭环；B 侧 findings 全部复核为已知误报（对比度 4.66–7.36:1 达标）。**本轮已修**：① **P1 自伤**——自动刷新每 10s `replaceChildren(#console-main)` 导致任务动作按钮与暂停按钮**静默失效**：动作绑定改为 `aosBindTaskActions`＋`data-aos-bound` 守卫＋跨页 `window.aosOnRefresh` 钩子（轮询替换后自动重绑），暂停按钮改**文档级事件委托**（替换免疫），标签每次重查节点；② usage **事件流水表补 `.c-table-wrap`**（390 页面级横向溢出消除，真机复扫 0 条）；③ 总览「生成时间」改相对（新增 `relativeTimeText` 纯文本通道，修 card subtitle 转义后露出标签的问题）；④ 审计 refs/recovery 链接 **7 处裸 `&` → `&amp;`**；⑤ **术语映射漏洞收口**——stats 最不稳用例（状态/失败域/裁决）、任务设备运行（状态/失败域）、compare 质量域 chips、搜索任务状态全部中文＋`title` 原文；compare 运行/待办文案「runner/failed」→「执行机/失败」；⑥ **下发首访警告收敛**——空关键词/未选份不再推 warning（③ 空态横幅承担），无在线执行机降级为预览信息行（未知份保留真实 warning）；⑦ 文档漂移修正（`web-console/DESIGN.md` 暗色跟随系统/移动端保底取舍、compat 注释）。测试：重绑钩子与委托断言、usage 事件表容器、总览相对生成时间、审计 `&amp;`、术语映射断言更新。全量 **1627 绿**；lint 0；Edge usage@390 **0 条**。
 > - **表格单源＋死类名清理（2026-10-19 第三十六批，八评结构项）**：① **表格单源**——`renderTable` 收敛为 **cTable 委托**（空态仍用页内 `<p class="empty">`，非空统一 `.c-table` 外观；项目/任务/归因/批次/统计等表格不再双轨）；usage 自有表格（工具汇总/零调用目录/事件流水/信号表）统一 `.c-table`；② **死类名落地**——`.dispatch-option`／`.c-nav-badge`／`.c-banner-actions` 补 CSS（不再悬空）；③ **兜底文案中文化**——`invalid JSON body`→「请求体不是合法 JSON（检查 Content-Type 与 body）」、`internal error`→「服务内部错误（已写入审计；可重试或查看日志）」。测试：全量 **1627 绿**（结构断言兼容）；lint 0；Edge 无新类别；真机验证（项目页 3 张、usage 5 张均为 `c-table`）。
+> - **计划区块可读性与刷新修复（2026-10-26）**：定时任务在只读态不再渲染整块禁用表单与动作按钮，改为一条只读横幅（独立进程给出 `AOS_PANEL_ACTIONS=1` 重启命令；HTTP viewer 给出 maintainer/admin 角色要求），已有计划仍可查看；可写态表单改统一 `c-form` 栅格（名称/间隔、功能、端分行，主行动 `c-button-primary`），修正 `fieldset` 嵌在 `p` 内造成的无效 HTML；提交与启停/删除改文档级事件委托（`__aosSchedulesBound` 防重），15s 自动刷新替换 `#console-main` 后仍然可用；列表功能列优先显示功能名（key 进 `title`），空态改 `c-empty`。
 > - 未做（留档/后续任务）：内部编排审计接线（T4）、产物索引（T5）、三口径导出（T6）、全表面文案整改（T7）。
 
 ### 13.127 实施记录（视觉能力启发式修订：DeepSeek Flash 原生多模态）
@@ -1898,9 +1899,9 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 实施于 2026-10-20。`caseSetStem` 归档 basename 由 `<UTC YYYYMMDDTHHmmss>_<功能>` 改为 `<UTC YYYYMMDD_HHmmss>_<功能>`（示例 `20261019_105551_到店自取`；未指定 `excelTemplate` 时仍用内置工作簿，不套模版）；`suite backfill` 的 `createdAt` 解析同时接受新旧两种前缀（旧归档不迁移、不重命名）。`createProjectStore` 在仅配置已废弃 `AOS_DATABASE_URL` 时把原因写进 `store.reason`（明确旧名不生效、当前落文件台账），避免接入项目静默丢中心库记录。starbuckstw 接入配置已切换 `MOBILE_TESTING_DATABASE_URL`（`127.0.0.1:5432/mobile-testing`），`suite backfill` 回填 17 份 case sets；历史 usage_events（60 条，含当日 44 条）与 1 条 regression task 仍在文件台账，未自动回流。测试 +1（db-default 旧名提示；case-sets/backfill 断言随命名更新）；全量 1728 绿。
 
-### 13.135 实施记录（测试用例字段与 Excel 契约 P0）
+### 13.135 实施记录（测试用例字段与 Excel 契约 P0/P1）
 
-> 实施于 2026-10-20。来源：人工用例 `v4.9.0- Test Case.xlsx` 的字段经验；设计见 `docs/superpowers/specs/2026-10-20-test-case-authoring-design.md`（P0 已实施，P1/P2 未实施）。
+> 实施于 2026-10-20（P0）/ 2026-10-26（P1/P2）。来源：人工用例 `v4.9.0- Test Case.xlsx` 的字段经验；设计见 `docs/superpowers/specs/2026-10-20-test-case-authoring-design.md`（P0/P1/P2 已实施；P2 见 §13.211/§13.212）。
 > 数据模型：`GeneratedTest` 增 `displayId/module/section/testData/openQuestions`（P1 字段 `relatedCases/designRefs/variant` 已预留类型）；`displayId` 取机器 `id` 后 6 位（`TC_xxxxxx`，冲突 `-2`），不替代既有机器 `caseId`；`tests.json` 增 `schemaVersion:2` 与 `summary`（live/每个功能归档子集分别计算）。
 > 生成规则：`module`＝功能名；`section`＝入口屏（acceptance `section` 可覆盖）；`testData/openQuestions` 只从 `acceptance.json` 的 `data/questions` 按用例屏幕收集（各上限 12/10），无来源显式 `n/a`，不臆造；设计警告不逐条挂用例（仍走 warnings 面）；`taskDesc` 在 `【真实数据】` 后注入 `【测试数据】`/`【待确认】`（空不注入）。
 > Excel/Markdown：`src/figma/case-view.ts` 统一预期结果/测试数据/待确认/设计引用/汇总派生；默认 `tests.xlsx` 保留前 6 列并追加 `用例编号/模块/Section/测试数据/关联用例/预期结果/设计引用/备注待确认` + `汇总` sheet（执行统计留空，不伪造结果）；模板新增 `{{case.displayId}}` 等占位符，未知占位符原样保留；`tests.md` 标题与新增小节同步；Excel 导入路径共用同一 14 列契约（缺字段 `—/n/a`）。
@@ -1991,7 +1992,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > 2026-10-20。功能通过不等于 UI 通过：`SuiteCaseResult` 新增可选 `ui: UiVerification`（`passed|failed|unverified|not-applicable`，含 `reason`/`contractRef`/`screenId`/`sourceFormat`/`lossless`/`detailThreshold`/`regions`/`evidence`）；`SuiteRunReport.ui` 为四态计数；`suite run` 逐例与汇总分别打印 `UI` 状态，**不改变现有功能门禁**。默认 `unverified`：有 `.artemis/design/ui-contract.json` 记 `ui-check-not-run`，否则 `no-ui-contract`；`isUiPass` 要求 `status=passed && sourceFormat=png && lossless=true`。批次清单同步写 `summary.ui` 与 `cases[].ui`（旧清单缺字段按缺省处理）。
 > **截图源**：iOS AOS trace 为 PNG；Android artemis 在 `accessibility_client.py` 将 adb PNG 以 JPEG quality 80 重编码（`pil_to_base64`，RGBA→RGB），data_engine 亦按 `.jpg` 落盘。`design_device_diff` 的 `unit.device` 新增 `sourceFormat`/`lossless`；`detail.deviceSource` 记录细节通道实际源。Android live 细节会二次抓 PNG；step 非 PNG 标 `lossy-source` 并降细节阈值到 0.1。JPEG 的 alpha 丢失对不透明设备截图通常非主因，主要风险是压缩振铃/块效应；`ui:passed` 只接受 PNG，JPEG 源最多 report-only。
 > **面板**：`PanelBatchSummary.ui` 读取清单 `summary.ui`；项目页最新批次与批次表新增 UI 徽标（`UI 未验证 N` / `UI fail N` / `UI pass N`），功能门禁色不变。`aos_status.vision` 与面板磁盘资产「视觉降级（iOS）」扫描最近 50 条 trace 的 `vision_degraded`，按原因聚合；只读、无 trace 即 0/0。
-> **UI 契约（P0 首版）**：`suite ui-contract` 从 `flows.json` + `.artemis/design/pen/screens/<screenId>.pen` 投影 `ui-contract.{json,md}`，共享 `screen.id` 与设计源指纹；逐屏 token（cornerRadius/colors/fonts/fontSizes/fontWeights/spacing）+ 几何四态（`extracted|partial|unverifiable|no-baseline`）+ `presentation`。缺逐屏 `.pen` 标 `no-baseline`，不猜 UI；Figma 源/逐屏 PNG 适配器仍待 P6。当前 iOS 样例 19 屏：4 partial、15 no-baseline。
+> **UI 契约（P0 首版）**：`suite ui-contract` 从 `flows.json` + `.artemis/design/pen/screens/<screenId>.pen` 投影 `ui-contract.{json,md}`，共享 `screen.id` 与设计源指纹；逐屏 token（cornerRadius/colors/fonts/fontSizes/fontWeights/spacing）+ 几何四态（`extracted|partial|unverifiable|no-baseline`）+ `presentation`。缺逐屏 `.pen` 标 `no-baseline`，不猜 UI；Figma 源仍待；逐屏 PNG 适配器已落地（§13.219），但不产生契约几何。当前 iOS 样例 19 屏：4 partial、15 no-baseline。
 > **测试**：新增 `test/ui-verification.test.js` 3 例、`test/ui-contract.test.js` 3 例；`suite-command` 断言 `ui` 计数/清单字段；`design-device-diff`/`diff-detail-tool` 断言源格式。
 
 ### 13.148 实施记录（多模态空响应：重试、内容分片与诊断）
@@ -2428,7 +2429,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **规则**：扫描 Compose `RoundedCornerShape/CornerRadius`、SwiftUI `cornerRadius/RoundedRectangle`、Flutter `BorderRadius.circular`、CSS `border-radius`、JS/RN `borderRadius`、Android XML `android:radius`；值必须命中契约 `screens[].tokens.cornerRadius`（另允许 `0`）。启发式命中只报文件/行/列/栈/片段，不自动改代码。
 - **范围**：跳过 `.artemis`、测试、构建、依赖、vendor 目录与符号链接；单文件 ≤1 MB、最多 5000 个文件；不做设计→代码映射，`mapping-confidence` 留待后续（当前按全局 token 集合校验）。
 - **allowlist**：`{version, entries:[{file,value?,owner,reason,expiresAt}]}`；缺字段、非法/过期时间不生效并告警；命中的 finding 标 `allowlisted`，不阻塞退出码。
-- **边界**：仅圆角规则；颜色/字体/presentation/hero 资源/逐屏映射未实现，文档与输出不冒充；不接 `suite run` 门禁，需手动/CI 调用。
+- **边界**：本批仅圆角规则；颜色/字号见 §13.208，字体族/字重见 §13.213/§13.210，逐屏映射见 §13.218；presentation/hero 资源仍未实现，文档与输出不冒充；不接 `suite run` 门禁，需手动/CI 调用。
 - **测试**：新增 `ui-lint` 4 例（契约通过/未登记失败、allowlist 生效/过期、缺契约硬错、CLI JSON 与 0/1/2 退出码）；全量 2102 绿，lint 0 error（2 条既有 warning）。
 
 ### 13.192 改进（ui-lint：仅扫工作区变更）
@@ -2457,7 +2458,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **入口**：`suite ui-lint --require-complete`；默认不影响退出码，供实现前/CI 显式收紧。
 - **口径**：契约 `screens[].status` 必须全部为 `extracted`；`partial/unverifiable/no-baseline/unknown` 计入 `contract.incomplete`，无屏幕时记 `missing`。报告 JSON 增 `statusCounts` 与 `incomplete[{id,name,status}]`；`ok=false` → exit 1。
 - **输出**：摘要行显示「契约 N 屏（未完成 M）」；未完成与未登记圆角分别报错，避免把契约缺口误报成圆角问题；`--json` 原样带出。
-- **边界**：不自动补设计/契约；仍不检查 presentation/hero/颜色等规则；与圆角 allowlist 独立。
+- **边界**：不自动补设计/契约；颜色/字号见 §13.208；字体族/字重见 §13.213/§13.210，逐屏映射见 §13.218；presentation/hero 等仍未检查；allowlist 按 `rule` 作用域与各规则共用。
 - **测试**：`ui-lint` 增 `--require-complete` 用例（默认通过、严格失败、CLI JSON/exit 1）；全量 2104 绿，lint 0 error（2 条既有 warning）。
 
 ### 13.195 改进（统计下钻：调用量与成本代理）
@@ -2478,7 +2479,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **动作范围**：viewer 只读；dispatcher＝任务创建/取消/停止/释放/重派 + 队列暂停/恢复 + 导出；maintainer＝+裁决/计划/隔离/导入/主机登记；admin＝+Jira 建单/证据重试。
 - **服务端**：`src/panel/roles.ts` 提供角色解析、`panelRequiredRoleForPath` 与 rank；`handlePanelActionRequest` 在同源校验后、路由前强制，越权 `403 {code:"role_forbidden",role,required}`；`AOS_PANEL_ACTIONS=0` 仍整体 404。
 - **UI**：`ConsoleCapabilities` 增 `role/scopes`；顶栏显示「角色：派发/维护/管理/只读」；派发、任务动作、裁决、建单、用例库写入口、计划、导出按 scope 禁用并给可见原因；裁决页只读时 checkbox/提交禁用，建单区块提示需要 admin。
-- **边界**：进程级单角色，不识别具体用户/会话；不替代 HTTP 令牌/反向代理鉴权；非法角色 fail closed；Jira 建单仍是外部副作用。
+- **边界**：进程级单角色；HTTP 命名令牌（§13.216）按请求用户角色覆盖，独立面板/静态令牌仍用进程角色；不替代反向代理鉴权；非法角色 fail closed；Jira 建单仍是外部副作用。
 - **测试**：新增角色解析/路由拒绝（panel-actions）、顶栏角色（console-shell）、派发 scope（console-dispatch）、用例库 scope（console-pages）；全量 2109 绿，lint 0 error（2 条既有 warning）。
 
 ### 13.197 加固（CMS 开放服务：每日任务配额）
@@ -2521,8 +2522,8 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > 2026-10-23。业务方反馈：服务仓自身作为项目会话运行时，会把自己注册进中心台账，导致总览项目列表「自己监控自己」。
 
 - **入口**：`AOS_PANEL_EXCLUDE_PROJECTS` 逗号分隔项目名（大小写不敏感）或绝对根路径；非法/相对路径按项目名处理，不做 glob。
-- **范围**：`buildPanelOverview` 合并注册行与 workspace 行后过滤，`PanelOverview.excludedProjects` 暴露隐藏数；`buildPanelCompare` 复用总览行并透传该数；页面标注「已按 AOS_PANEL_EXCLUDE_PROJECTS 隐藏 N 个项目」。
-- **不影响**：直接 `?project=<rootPath>`、项目详情、统计、任务、台账/运行；只是列表可见性。
+- **范围**：`buildPanelOverview` 合并注册行与 workspace 行后过滤，`PanelOverview.excludedProjects` 暴露隐藏数；`buildPanelCompare` 复用总览行并透传该数；页面标注「已按 AOS_PANEL_EXCLUDE_PROJECTS 隐藏 N 个项目」；2026-10-26 扩展：面板项目切换器/搜索、usage 看板列表与 `usage --all` 同源过滤（见 §13.226）。
+- **不影响**：直接 `?project=<rootPath>`、项目详情、统计、任务、台账/运行；只是列表可见性。显式 usage `?project=`/`--project` 仍可访问被隐藏项目。
 - **测试**：`panel-overview` 增名称/路径隐藏与直接详情仍可访问；`panel-web` 增 JSON/HTML 提示与直接 URL；全量 2116 绿，lint 0 error（2 条既有 warning）。
 - **边界**：进程级 env，需重启面板；usage CLI/Web 不读取该变量（统计仍可按项目查询）。
 
@@ -2590,3 +2591,259 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **R4 API 说明联动**：`apiSpec` 中提取错误码/HTTP 路径线索，当项目 `error-codes.json` 缺失或没有匹配规则时生成 warnings：`api-spec-error-codes-missing` / `api-spec-error-codes-gap`（不阻断生成，进入 tests.json.designWarnings；运行期仍由 `api-errors` 规则匹配）。不修改 taskDesc。
 - **R9 边界**：面板角色/CMS 配额仍为单进程内存级；反向代理/多实例部署继续视为内网单实例边界，不引入 PG 侧角色表或网关限流。
 - **测试**：新增 sharedDir 配置/读取、`suite check` 覆盖与 stale、parity stale、apiSpec error-codes 告警用例；全量 **2154 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.208 实施记录（ui-lint：颜色与字号规则）
+
+> 2026-10-26。接 §13.191/§13.194 的规则扩展：在圆角之外补颜色与字号字面量，仍保持「机械规则 + allowlist 收口」，不推断设计→代码映射。
+
+- **规则**：`suite ui-lint` 扫描 `tokens.colors` 与 `tokens.fontSizes`。颜色支持 `#RGB/#RGBA/#RRGGBB/#RRGGBBAA` 与 `0xAARRGGBB`，统一成 `#rrggbbaa` 比较；`.xml` 的 8 位按 Android `#AARRGGBB`，其余按 `#RRGGBBAA`。字号支持 `fontSize`/`font-size`/SwiftUI `.system(size:)`/UIKit `systemFont(ofSize:)`/Android `textSize`，只比较数值，不换算 rem/em/%。
+- **契约**：`loadContract` 增读 `screens[].tokens.colors/fontSizes`；契约缺对应 token 时跳过该规则并 warning（避免全量误报），`--require-complete` 仍只判屏幕 status。
+- **allowlist**：条目增可选 `rule: radius|color|font-size`；缺省 `radius` 兼容旧条目；颜色 value 归一后比较；非法 rule/value 告警并忽略。finding 增 `rule` 与颜色 `normalized`，JSON additive。
+- **CLI**：摘要分别显示允许圆角/颜色/字号；未登记按规则计数；通过/失败文案改为通用「字面量」。
+- **边界**：启发式命中（注释、CSS 选择器、整数 `0x...`、rem/em 不换算）可能误报，靠 allowlist 收口；颜色 token 取契约 `tokens.colors`（pen fill；stroke/渐变未提取时可能误报）；字重见 §13.210、字体族见 §13.213、逐屏映射见 §13.218；presentation/hero/图片位仍未实现；不接 `suite run` 门禁。
+- **测试**：`ui-lint` 新增 3 例（颜色/字号契约命中与失败、Android/Compose leading-alpha 归一、allowlist rule 作用域与旧条目兼容）；全量 **2158 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.209 实施记录（测试用例字段 P1：relatedCases/designRefs/variants）
+
+> 2026-10-26。按 `docs/superpowers/specs/2026-10-20-test-case-authoring-design.md` P1 实施；P2（执行结果回填/跨平台结果列/warning scope）未开始。
+
+- **relatedCases**：`assignRelatedCases` 按同 module 或共享 ≥1 屏，共享屏数降序 → `displayId` 升序取前 3；只引用传入数组内的 `displayId`。live 在全量 cases 上计算；每个功能 case-set 用浅拷贝子集重算，归档不跨子集引用。
+- **designRefs**：`enrichGeneratedCases` 接收 graph，按 `case.screens` 顺序写 `nodeIds`（缺失写空串，不伪造），入口屏 `suggestedRoute` 非空时写 `route`。
+- **variants**：`acceptance.json` 增 `variants`（`screen`+`label` 必填，`data`/`expected` 各 ≤20，variants ≤20，重复 `screen+label` 忽略）；对每条 variant 克隆 `screens` 包含该屏的基准用例，每 variant 最多 20 个克隆（超出 `variant-clone-truncated`；无命中 `variant-screen-unmatched`）。克隆 `id`/`semanticId` 哈希纳入 `screen + label`（JSON 编码避免分隔符歧义；当前 `displayId` 由 `semanticId` 派生，避免撞身份/parity duplicate）；`steps`/`expectations` 不变；`testData` 合并 `variant.data`（去重 ≤12）；`taskDesc` 在 `【AOS-EXPECT】` 前加 `【变体：label】`（数据/预期）；`expectedResultLines` 在编号预期后追加 `变体预期（label）：...`；`summary.variantGroups` 计数。
+- **模板**：复用既有 `{{case.relatedCases}}/{{case.designRefs}}/{{case.variantLabel}}/{{case.variantExpected}}`，未知占位符原样保留。默认 Excel 沿用 P0 的 12 列 + 隐藏执行器（designRefs 在隐藏 sheet），变体预期追加到「预期结果」列，不新增可见列。
+- **边界**：克隆为浅拷贝；变体不写执行结果（P2）；`taskDesc` 的 `【变体】` 块为执行语义补充，不改 `expectations`；变体选择规则为「覆盖该屏的基准用例」，不是按 Section 猜测。
+- **测试**：`assignRelatedCases` 子集/上限、P1 变体克隆/Excel/MD/relatedCases/designRefs、未命中/超 20 截断、同 label 不同屏身份唯一、模板占位符扩展；全量 **2162 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.210 实施记录（ui-lint：字重规则）
+
+> 2026-10-26。接 §13.208 的字体维度：补字重字面量，仍保持机械规则 + allowlist 收口。
+
+- **规则**：`suite ui-lint` 读 `tokens.fontWeights`，经 `normalizeFontWeight` 统一为 100–900；扫描 `fontWeight`/`font-weight`/`.fontWeight(.semibold)`/`.weight: .bold`/`FontWeight.w600`；名称与数字等价（bold=700、semibold=600、w600=600）；变量/无法解析的值跳过，不误报。
+- **契约/allowlist**：契约缺字重 token 时跳过并 warning；allowlist 支持 `rule:"font-weight"` 数字值；CLI 摘要/错误按规则计数。
+- **边界**：字体族见 §13.213；逐屏映射见 §13.218；presentation/hero/图片位仍未实现；CSS 变量/主题引用不是字面量，不检查；仍不接 `suite run` 门禁。
+- **测试**：`ui-lint` 新增 1 例（名称/数字归一、CSS/SwiftUI/Flutter/RN 命中、allowlist 作用域）；全量 **2163 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.211 实施记录（P2：执行结果回填 + 跨端对比）
+
+> 2026-10-26。接 §13.135 spec P2：`suite report --update-tests` 把运行结果写入 `tests.xlsx` 独立「执行结果」sheet，并按 `suite_runs` 生成「跨端对比」sheet；不改生成计划。
+
+- **入口**：`suite report [--task <id>] --update-tests [--tests-xlsx <path>]`；默认 `.artemis/design/tests.xlsx`；`--tests-xlsx` 相对项目根解析。
+- **数据**：沿用 `RunReport`（`buildRunReport`/`buildTaskRunReport`）；任务报告补 `runId/device/startedAt/appVersion`（task_stats 报告缺省为 `—`）。跨端历史读 `listSuiteRuns`（任务报告按 taskId 过滤；读取失败仅 stderr 告警，不阻断回填）。
+- **Sheet**：`执行结果` 17 列（用例编号/caseId/名称/结果/台账状态/功能/端/设备/耗时/traceId/失败域/失败原因/API 错误/证据路径/批次/运行时间）；displayId 从隐藏「执行器」sheet 的 caseId→展示编号映射，缺失 `—`；不改「测试用例」「执行器」「汇总」。
+- **跨端对比**：`跨端对比` sheet 按 case × 平台取 `suite_runs` 最新结果（Android/iOS 等列动态），并用同平台上一批次状态生成变化（新增/修复/回归/仍失败/仍通过）；附最近批次/时间；仅展示当前报告涉及的 caseId，历史不足时省略该 sheet。
+- **幂等/错误**：重复调用替换同名 sheet，不追加；tests.xlsx 缺失/不可读 → `testsUpdateError`，显式 `--update-tests` 时 exit 1；未指定 flag 零副作用。
+- **边界**：跨端历史只来自已登记 `suite_runs`（best-effort，内存/文件/PG 同源）；不合并历史到 `执行结果` 行、不写 `tests.json`/计划行；`--no-save` 仍可回填（回填是独立写）。
+- **测试**：`run-report` 扩展 1 例（17 列表头、displayId 映射、跨端矩阵/变化、幂等替换、缺失文件）、`suite-command` 扩展 1 例（CLI JSON `testsUpdated`/`historyRows`、跨端 sheet、exit 0/1）；全量 **2165 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.212 实施记录（P2：设计警告→用例 scope 映射）
+
+> 2026-10-26。接 §13.135 spec P2 收口：`DesignWarning` 增可选 `scope.screens/caseIds`，把有作用域的警告挂到命中的用例，不逐条复制全局警告。
+
+- **模型**：`DesignWarning.scope?: {screens?: string[]; caseIds?: string[]}`；`normalizeWarnings` 保留并清洗（去重、去空、非数组忽略），无有效 scope 仍是全局警告。
+- **带 scope 的来源**：acceptance `data/questions/section` 的 invalid/truncated（按屏幕名）、`variants` 的 invalid/duplicate/truncated（按 `screen`）、`variant-screen-unmatched`/`variant-clone-truncated`（按 variant screen）。
+- **挂载**：`attachDesignWarningsToCases` 按 `case.screens` 交集或 `scope.caseIds` 精确匹配，写入 `GeneratedTest.designWarnings`；只在落盘生成时执行，无 scope 的 warning 不挂。
+- **渲染**：`tests.json flows[].designWarnings`；`tests.xlsx` 备注/待确认列追加 `设计警告（code）：message`；`tests.md` 每例「设计警告」小节；全局 `warnings`/`designWarningsSummary` 面不变。
+- **边界**：只有已带 scope 的警告会挂；screenshot/vision 等暂无 scope 的仍只在全局警告面；scope 不做模糊匹配；`save:false` 不落盘；不改变 `suite check` 门禁。
+- **测试**：`normalizeWarnings` scope 清洗 1 例；acceptance 非法 data 的 Home scope 挂载 + Excel 备注/MD 可见（扩展既有 1 例）；全量 **2166 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.213 实施记录（ui-lint：字体族规则）
+
+> 2026-10-26。接 §13.208/§13.210 的字体维度：补字体族字面量，采用保守口径避免回退链噪声。
+
+- **规则**：读 `tokens.fontFamilies`；只检查主字面量——CSS `font-family` 第一族、RN/Flutter `fontFamily`、SwiftUI `.custom("…")`、UIKit `UIFont(name:)`、Android XML `android:fontFamily`；小写并折叠空白后比较。
+- **跳过**：`sans-serif`/`serif`/`monospace`/`system-ui`/`-apple-system` 等通用族、`@font/`/`?attr` 资源引用、`var()/theme()/attr()` 与 `$变量`；不从字体别名/PostScript 名推断。
+- **契约/allowlist**：契约缺字体族 token 时跳过并 warning；allowlist 支持 `rule:"font-family"` 字符串值（归一后比较）；CLI 摘要/错误按规则计数。
+- **边界**：字体别名/PostScript 名/回退链不解析（如 `SF Pro` vs `SFPro-Regular` 会误报，靠 allowlist）；只检查带引号/XML 属性的字面量；不检查字体文件；仍不接 `suite run` 门禁。
+- **测试**：`ui-lint` 新增 1 例（CSS/RN/SwiftUI/UIKit/Android 命中、通用族/资源引用/Variables 跳过、allowlist）；全量 **2167 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.214 实施记录（字重切片 4/5：baseline bbox + 同平台 opt-in 门禁）
+
+> 2026-10-26。接 `docs/superpowers/specs/2026-10-20-font-weight-detection-design.md`：切片 4 落地，切片 5 机制落地但默认关闭。
+
+- **切片 4（baseline bbox）**：`saveBaseline` 优先从 trace `run.json` 的 `steps[].texts` 读设备文本（逻辑点 × `scale` → 设备像素）；trace 无 `texts` 时用 `ui-contract` + `--screen`（缺省按步骤屏文本唯一匹配）做 design-bbox bootstrap（`frameWidth → 设备宽`缩放），写 `meta.json.texts[]` + `textSource`；`compareBaseline` 用同 bbox 裁 baseline/current，调 `measureTextWeight(localization:"baseline-bbox")`，输出 `textStyles`（textsTotal/checked/lighter/similar/heavier/highConfidenceHeavier/unverified/byReason/items）。
+- **切片 5（门禁机制）**：`textWeightGateFails(report,"text-weight")` 仅在 `status=ok` 且 `highConfidenceHeavier>0`（confidence ≥0.7）时失败；CLI `suite baseline compare --fail-on text-weight` 触发 exit 2。**默认不阻断**，真实样本未校准前不进入 `suite run --ui-diff` 门禁。
+- **suite run --ui-diff（report-only）**：`autoCheckUi` 读 `design_device_diff` 的 `detail.textStyles`，按屏累加进 `UiVerification.textStyles` / `UiSummary.textStyles`（textsTotal/checked/lighter/similar/heavier/highConfidenceHeavier/unverified/byReason）；不改 `ui.passed/failed`，批次清单/面板 JSON additive；面板批次/任务 UI 徽标显示中性的 `字重 heavier x/y` chip（不参与门禁）。
+- **降级**：baseline/current 任一非 PNG → `lossy-source`；bbox 越界/无文本 → `unverified`；无 `meta.texts` → `textStyles:null`（不伪造通过）。
+- **边界**：design-bbox bootstrap 依赖 `--screen` 或步骤屏文本唯一匹配（歧义不猜）；要求同设备/同步骤/同 bbox；不识别字体/内容变化（沿用切片 2 的 row/column/extent 守卫）；真实样本校准（同字重 N≥20、regular↔semibold↔bold 双向）仍未做。
+- **测试**：`baseline` 新增 2 例（trace texts → meta bbox、同图 similar、加粗 heavier、高置信计数、`text-weight` gate true / 非 text-weight false；trace 无 texts → design-bbox 唯一匹配、bbox 映射、加粗 heavier）；`ui-auto-check` 新增 1 例（detail.textStyles 聚合、状态不变）；全量 **2170 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.215 实施记录（字重离线校准 harness）
+
+> 2026-10-26。切片 4/5 的真实样本校准前置：不依赖设备，先用成对图片跑离线矩阵。
+
+- **入口**：`suite text-weight-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]`；manifest `{pairs:[{name?,design|baseline,device|current,expected?("lighter"|"similar"|"heavier"),designWeight?,textPixelHeight?,sourceFormat?,lossless?,localization?}]}`，图片路径相对 manifest。
+- **输出**：total/labeled/unlabeled/checked/unverified/`unverifiedByReason`；`confusion[expected][actual]`（actual 含 unverified）；`highConfidenceMismatches`（actual≠expected 且 confidence ≥0.7）、`highConfidenceFalseHeavier`；按 expected 的 delta mean/stddev/min/max；阈值建议（`min(heavier)` vs `max(non-heavier)`，可分离时给中点）。
+- **退出码**：`ok`（无高置信误报）→ 0；有误报/`--strict` 下 unverified 或未标注 → 1；manifest 读取失败/无 pairs → 2。默认报告落 `.artemis/design/reports/text-weight-calibration-<stamp>.json`，`--no-save` 关闭。
+- **边界**：离线、无设备/网络；不自动改 `measureTextWeight` 阈值；真实样本仍需人工按报告判定；同一 manifest 的图片栅格/字号须可比（不替用户换源）。
+- **测试**：新增 `text-calibrate` 2 例（混淆/未验证/delta/阈值、高置信 false-heavier 失败）+ `suite-command` 1 例（CLI JSON、strict exit 1、缺 manifest exit 2）；全量 **2173 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.216 实施记录（身份级 HTTP 命名令牌）
+
+> 2026-10-26。在 §13.113 静态令牌与 §13.196 进程角色之上补身份级最小实现；不引入 OAuth/OIDC/会话/用户表。
+
+- **配置**：`AOS_HTTP_USERS` JSON `[{name,token,role}]`；token ≥16 字符，role ∈ viewer/dispatcher/maintainer/admin；名字/令牌重复或字段非法整批拒绝（启动失败 exit 2，fail closed）。令牌只读进程 env、不落日志/PG。
+- **身份解析**：静态 `AOS_HTTP_TOKEN` → `{name:AOS_ACTOR|static, role:AOS_PANEL_ROLE 回退}`；用户令牌 → `{name, role}`；启用认证但无匹配 → 401；未启用 → anonymous（沿用进程角色）。
+- **授权**：HTTP 面板页面按请求身份渲染 `capabilities.role/scopes`；动作层用 `request.identity.role` 做既有 `panelRequiredRoleForPath` 闸门；`AOS_PANEL_ACTIONS=0` 仍全局关闭；面板缓存键加入 role 防跨角色命中。
+- **审计**：面板动作 `actor` 记用户名（静态令牌取 `AOS_ACTOR`/static）；取消/停止/建单/派发等动作沿用同一 actor；独立面板无身份时仍记 `panel`。
+- **边界**：命名令牌是共享密钥而非登录会话；用户 CRUD/吊销/轮换见文件生命周期（§13.217）；无每个用户的细粒度资源授权（仅四角色）；用户令牌不用于 runner 产物服务（仍用 `AOS_RUNNER_ARTIFACT_TOKEN`）。
+- **测试**：`auth` 2 例（解析/失败关闭/身份解析）、`http-server` 2 例（命名令牌角色/401/403、非法配置启动失败）、`panel-actions` 1 例（请求身份驱动角色与审计 actor）；全量 **2178 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.217 实施记录（HTTP 用户生命周期：文件存储 + CLI + 热加载）
+
+> 2026-10-26。补 §13.216 的运维闭环：用户不再只能内联在 env，落到权限受控的用户文件；`user` CLI 管理，HTTP 服务热加载，吊销/轮换无需重启。仍不引入 OAuth/OIDC/会话/PG 用户表。
+
+- **存储**：默认 `~/.aos/http-users.json`，`AOS_HTTP_USERS_FILE` 可覆盖；结构 `{version:1, users:[{name, role, tokenSha256, disabled?, createdAt?, updatedAt?}]}`。只存 SHA-256（不落明文/不落 PG），目录 `0700`、文件 `0600`，临时文件 + 原子 rename，按名字排序。非法 JSON/字段/重复名字/重复 hash 整份拒绝。
+- **CLI**：`user add <name> --role <role> [--token <t>] | list | revoke <name> | rotate <name>`，通用 `--file <path>`、`--json`；token 自动生成 32 字节 base64url（显式导入仍需 ≥16 字符），明文仅在 add/rotate 输出一次；`list` 不显示令牌或 hash；revoke 保留记录并置 `disabled`（幂等），rotate 不改变角色/吊销状态；退出码 0 成功 / 1 操作失败 / 2 用法错误。
+- **HTTP 热加载**：每请求按 `mtime+size` 检查文件，变更则重读；轮换/吊销即时生效。运行期非法更新保留上一次有效用户并 WARN（同一错误只告警一次），启动时非法则 `AuthConfigError` → exit 2。文件启动时不存在的服务保持无鉴权；之后文件出现且有用户则自动启用认证。
+- **认证闩锁**：进程一旦启用过认证（静态/inline/文件），运行期清空或删除用户文件也不会放开匿名访问（所有请求继续 401），需重启才回到无鉴权；仅剩 `disabled` 用户同样保持认证开启（fail closed）。
+- **身份/授权/审计**：文件用户与 inline 用户同路径解析（Bearer/Basic → sha256 → `timingSafeEqual`），沿用 §13.216 的请求角色、动作闸门与审计 actor；静态令牌与 inline `AOS_HTTP_USERS` 保持兼容并可并存。
+- **边界**：共享密钥而非登录会话；文件是本机/本进程视图（多机部署各管各的或共享挂载，无中心同步）；无 OAuth/OIDC/会话/密码策略/PG 用户表；无每用户资源级 ACL（仅四角色）；rotate 不自动解除吊销。
+- **测试**：`user-lifecycle` 6 例（hash/权限/CRUD/非法文件/热加载/identity）、`user-command` 4 例（add/list/revoke/rotate/JSON/退出码）、`http-server` 3 例（文件令牌热轮换与吊销、文件后出现动态启用、非法启动失败）；全量 **2191 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.218 实施记录（ui-lint 逐屏映射：screen-map → 文件/组件 → 逐屏 token）
+
+> 2026-10-26。接 UI interpretation retro P2（`docs/superpowers/specs/2026-10-20-ui-interpretation-retro.md`）与业务梳理「ui-lint 扩展」：先落**逐屏映射**前置；presentation/hero/图片位仍未实现，不冒充全量。
+
+- **映射来源**：`.artemis/design/screen-map.json`（`--screen-map <json>` 覆盖）；条目 `design.screen/component` → 契约屏幕（按 id/name/sourceFrameName 归一匹配），`code.file` 按项目相对路径精确匹配、唯一后缀兜底；`code.component` 按声明（class/struct/fun/interface/const 等）或文件名唯一匹配。仅 route、未匹配、路径不存在、后缀/组件歧义一律忽略并进 `mapping.warnings`。
+- **置信与收窄**：`manual`=1、`proposed`/缺省=0.8、启发式=0.5；只有 confidence ≥0.7 且契约屏 `status=extracted` 的显式映射进入 `scopedScreenIds`。`--per-screen` 时按文件映射屏幕的 token 并集检查（圆角始终含 0）；未映射/低置信/partial/该维度无 token → 回退全局或跳过该维度，不把缺 token 扩成全量误报。
+- **报告**：`report.mapping` 含 `screens.mapped/unmapped(+explicit)`、`files.scoped/explicit/heuristic/globalFallback`、逐条 `mappings(source/confidence/usedForScoping)` 与 warnings；finding 在逐屏收窄时增 `scope:"screen"` + `screens[]`。启发式候选（文件/类名匹配，confidence 0.5）仅报告，绝不参与 `--per-screen`。
+- **门禁**：`--require-mapping` 要求每个 `status=extracted` 屏至少有高置信显式映射，否则 `ok=false` / exit 1；默认不要求（存量项目先 `--changed` 或仅报告）。`--require-complete` 仍只管契约屏状态；两者独立。
+- **内存上限**：源码内容一次性读入供映射/扫描，新增 `maxTotalBytes`（默认 256 MB）；超出跳过并告警，`scanned.skipped` 计入。
+- **边界**：只解决逐屏 token 收窄；presentation/hero/图片位、代码 token→设计节点的反向映射未实现；screen-map 的 `route` 无法静态解析；同文件多屏取并集；启发式仅候选，不作权威；映射不改变 allowlist 口径。
+- **测试**：`ui-lint` 新增 5 例（逐屏收窄/未映射回退、`--require-mapping`、组件+启发式、partial 回退、CLI flags/JSON/exit）+ 既有 12 例；全量 **2196 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.219 实施记录（design_device_diff 现成 PNG 设计源，P6）
+
+> 2026-10-26。接 UI interpretation retro P6「廉价 PNG 适配器」：让 `.artemis/design/screens/*.png` 等现成截图可直接作为设计源，解决“有图但不能用”的接口缺口；不替代高倍 pen/Figma 渲染。
+
+- **入口**：`design:{source:"image",imagePath:"<相对项目根或绝对路径>.png"}`；`imagePath` 单独给出时也可推断（省略 `source`），与 `figmaUrl`/`penPath` 同时给出 → 明确报错。`dryRun` 只解析路径并回计划，不读盘/不校验格式。
+- **行为**：实际取源读取 PNG（非 PNG 显式报错，不静默降级）；`designNodes=[]`，报告 `unit.design={source:"image",path,format:"png"}`；新增 `image-source` 警告说明「无节点几何 → 差异按 pixel、区域核验用 tiles」；图层分类不再有 missing/extra/text/asset 等节点语义。
+- **保真**：现成图固定栅格，不做设计侧重渲染；设计宽度低于设备原生栅格时沿用 `design-upscaled` 警告（detail 阈值 0.1），reason 标 `image-source（固定栅格，不重渲染）`；`regions:"auto"` 因无节点源自动退化为 tiles。
+- **边界**：仅 PNG；无节点几何/文本节点契约匹配（`detail.textStyles` 走 text-regions 或为空）；低分辨率不能靠工具“放大变清晰”；只作廉价适配器，验收仍应以 Figma/pen 高倍渲染为准。
+- **测试**：`design-device-diff` 新增 3 例（PNG 源+像素分类/无节点警告、低分辨率 `design-upscaled`+tiles、dryRun/缺路径/JPEG/来源冲突）；全量 **2199 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.220 实施记录（ui-contract 指纹漂移检测，P7）
+
+> 2026-10-26。接 UI retro P7「token 版本化」：契约 `source.fingerprint` 绑定 flows + 逐屏 `.pen`，`ui-lint` 每次重算并告警，避免设计源已变但 token 未更新时静默漂移。
+
+- **指纹口径**：复用 `suite ui-contract` 的 `uiContractFingerprint(flowsPath, designRoot)`（flows 文件字节 + `pen/screens/*.pen` 文件名/内容排序哈希）；只读校验，不生成/不改写契约。
+- **状态**：`contract.fingerprintStatus = current | stale | unverifiable | missing`；`fingerprintNow` 为当前重算值（缺源/读失败为 null）；`contract.source` 暴露 flows/designRoot 相对路径。
+- **默认行为**：`stale` 仅告警（中文说明契约/当前指纹前 12 位），不改 `ok`/exit；`unverifiable`/`missing` 也告警但默认放行（存量契约/测试夹具常见）。
+- **门禁**：`--fail-on-stale-contract` 要求 `fingerprintStatus=current`，否则 `ok=false` / exit 1；CLI 失败原因单独打印。与 `--require-complete`/`--require-mapping` 独立。
+- **边界**：只能发现「flows/.pen 变了」；Figma 源或未拆屏 `.pen` 的契约不覆盖；契约缺 `source.flows/designRoot` 视为不可校验；不自动重新生成契约；存量契约/测试夹具缺源时开启该门禁会失败（显式 opt-in 预期）。
+- **测试**：`ui-lint` 新增 1 例（current → stale 告警/门禁 → 默认放行 → 缺 flows 不可校验）+ CLI 断言 `--fail-on-stale-contract` exit 1；全量 **2200 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.221 实施记录（suite UI 窄门禁：`--fail-on-ui`）
+
+> 2026-10-26。接 UI retro P3「测试循环门禁」的窄阻断：现有 `--ui-diff` 已产出逐例 `ui.status`，但默认只报告；新增 opt-in 门禁，只阻断确定性 `failed`，`unverified` 不冒充通过也不阻断。
+
+- **入口**：`suite run --ui-diff --fail-on-ui`、`suite run --task … --fail-on-ui`、`suite loop --ui-diff --fail-on-ui`；`SuiteRunOptions.failOnUi` 透传到共享批次执行。
+- **判定**：仅 `quarantined !== true` 且 `ui.status === "failed"` 计门禁；`ui.status=unverified`（JPEG/缺契约/缺屏/trace 不匹配等）不阻断；功能失败仍按原 exit 1，UI 门禁命中按 `--fail-on` 语义 exit 2（功能+UI 同时失败也 exit 2，原因分列）。
+- **来源保真前置**：`autoCheckUi` 已保证 `failed` 只可能来自 lossless PNG（JPEG/未知源降为 unverified），门禁不额外放宽。
+- **任务模式**：逐设备/逐份运行各自计算 UI gate 并写入运行登记 `exitCode`；任务终态记为 `partial`，整体 exit 2；隔离用例仍排除。
+- **审计**：批次清单 `options.failOnUi` 记录开关（旧清单无该字段）；文本输出新增 `UI 门禁: 通过/未通过` 与失败原因；loop 文本新增 UI 汇总行。
+- **边界**：只门禁 `failed`，不把 `unverified` 当失败；不上调像素噪声阈值（跨源基线 D12 未验证）；不做 presentation/hero 专项门禁；功能门禁与 UI 门禁仍分轴。
+- **测试**：新增 `suite-ui-gate` 2 例（默认不阻断、failed 阻断、unverified/隔离/quarantine 不阻断；功能失败 exit 1 vs UI gate exit 2）；全量 **2202 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.222 实施记录（UI 访问屏/契约屏覆盖账本）
+
+> 2026-10-26。接 UI retro P1/P3「契约屏覆盖率报告」：`--ui-diff` 已有逐例四态，但没有回答“哪些屏被真正比对、哪些没覆盖”；补覆盖账本，避免把未访问屏当成通过。
+
+- **逐例**：`UiVerification.coverage` 记录 `requested/matched/compared/skipped/unmatched` + `comparedScreens/skippedScreens/unmatchedScreens`；早退（缺契约/flows/trace/匹配）也带账本，全部计入 `unmatched`，不伪造 0。
+- **聚合**：`runGeneratedTests` 末尾调 `summarizeUiCoverage(results, contractScreens)` 产出 `SuiteRunReport.uiCoverage`（去重屏、按 id/name 归一）；契约屏从 `.artemis/design/ui-contract.json` 读取，`contractNotCompared` 列出未被任何用例成功比对的屏。无 coverage（未跑 `--ui-diff`）→ 省略字段，旧报告/清单兼容。
+- **展示/审计**：`suite run`/`loop` 文本输出 `UI 覆盖: 契约 N 屏 · 已比对 M · 契约未覆盖 K · 请求/匹配/跳过/未匹配`；批次清单 `summary.uiCoverage` 持久化（旧清单无该字段）。
+- **口径**：`matched`=按 `testCase.screens` 匹配到 flows/trace 的屏（受 `--ui-diff-max` 上限截断后）；`compared`=成功拿到 diff 的屏；`skipped`=匹配到但缺逐屏 `.pen`/diff 失败；`unmatched`=请求屏未匹配或超出单例上限。`contractNotCompared` 只表示“未被成功比对”，不推断原因（可能是未访问/缺 `.pen`/源不保真）。
+- **边界**：不自动导览未访问屏（无执行器能力）；不做契约屏自动补齐；契约屏按 id 匹配，id 为空才用 name；覆盖账本不参与 UI 门禁（`--fail-on-ui` 仍只看 `failed`）；`unverified` 不因覆盖缺口升级。
+- **测试**：`ui-auto-check` 既有 3 例补覆盖断言 + 聚合/契约缺口断言；全量 **2202 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.223 实施记录（面板 UI 覆盖 chip）
+
+> 2026-10-26。把 §13.222 的 `uiCoverage` 从 JSON/CLI 带到面板：总览最新批次、批次表、批次详情都能看到“已比对/契约/未覆盖”，不用翻清单。
+
+- **数据**：`PanelBatchSummary.uiCoverage?` / `PanelBatchDetail.uiCoverage` 从批次清单 `summary.uiCoverage` 读取；旧清单/不可读 → null，不显示。
+- **展示**：`uiBadge` 在 UI 状态/字重 chip 后追加 `UI 覆盖 X/Y · 未覆盖 Z`（仅 `contractScreens>0` 时）；`title` 列出未覆盖屏名（最多 10 个，超出省略）；总览最新批次、项目批次表、批次详情三处复用。
+- **口径**：X=`comparedScreens.length`、Y=`contractScreens`、Z=`contractNotCompared.length`；只展示 §13.222 的账本，不在面板重新计算/推断原因；不影响 UI 门禁。
+- **边界**：任务详情/设备运行行暂未展示覆盖（运行登记不持久化 coverage，只有批次清单有）；未覆盖名单仅 title，不展开逐屏表；旧清单兼容为空。
+- **测试**：扩展 `panel-web` 批次详情用例（JSON `uiCoverage` 透传 + HTML chip/未覆盖名）；全量 **2202 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.224 实施记录（suite 字重窄门禁：`--fail-on-ui-weight`）
+
+> 2026-10-26。接 UI retro P3.1 / 业务梳理「字重硬门禁」：机制落地但**默认关闭**，真实样本校准前不改变既有成功口径。
+
+- **入口**：`suite run --ui-diff --fail-on-ui-weight`（含 `--task`）、`suite loop --ui-diff --fail-on-ui-weight`；`SuiteRunOptions.failOnUiWeight` 透传共享批次执行。
+- **判定**：仅非隔离用例、`ui.textStyles.highConfidenceHeavier > 0`（confidence ≥0.7）→ exit 2；`lighter` 不门禁；`ui.status=unverified` 不掩盖独立字重证据（高置信 heavier 仍命中）；无 `textStyles`（未跑 UI diff/契约缺文本）不阻断。
+- **集成**：批次 exitCode、任务终态 `partial`/整体 exit 2、loop exit 2；批次清单 `options.failOnUiWeight` 审计；文本输出 `UI 字重门禁: 通过/未通过（高置信 heavier N 例）`。
+- **边界**：默认关闭，真实样本校准（同字重 N≥20、regular↔semibold↔bold）前不设为默认门禁；不改 `measureTextWeight` 阈值；不等同像素 UI 门禁（`--fail-on-ui`）；仅高置信（≥0.7），低置信/未验证不阻断。
+- **测试**：`suite-ui-gate` 新增 1 例（默认不阻断、开启后 highConfidenceHeavier=1 命中、0 放行、隔离排除、UI unverified 不掩盖）；全量 **2203 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.225 实施记录（用户生命周期补全：enable/role + 最后一个管理员保护）
+
+> 2026-10-26。`user` CLI 原本只有 add/list/revoke/rotate；补上重新启用、改角色与“不要把管理面锁死”的保护，仍复用文件存储与 HTTP 热加载。
+
+- **新增命令**：`user enable <name>` 清除 `disabled`（保留令牌，立即生效；重复 enable 幂等返回 0）；`user role <name> --role <role>` 修改角色（保留令牌/吊销状态；非法 role → exit 1，用户不存在 → exit 1）。
+- **最后管理员保护**：`revoke` / `role` 若目标是**启用中的 admin** 且 `activeAdminCount(users) === 1`，拒绝执行并 exit 1；`--allow-last-admin` 显式放行（break-glass）。已吊销 admin 不计入，降级非 admin、改回 admin、enable 不受限。
+- **口径**：只统计用户文件内的启用 admin；静态 `AOS_HTTP_TOKEN` / inline `AOS_HTTP_USERS` 中的管理员不可见，必要时用 `--allow-last-admin`。
+- **热加载**：写文件后 HTTP 目录按 mtime 生效；enable/role 与 revoke/rotate 同路径，仍无需重启。
+- **边界**：文件级单进程操作，无跨进程写锁；不提供 delete/rename；不解决 PG 用户表/OAuth/会话。
+- **测试**：`user-command` 新增 1 例（enable 恢复令牌、两个管理员下吊销/降级保护、`--allow-last-admin`、非法 role/不存在用户、list 角色回显）；全量 **2204 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.226 实施记录（排除项目扩展到切换器/搜索/usage）
+
+> 2026-10-26。实际运行发现：`AOS_PANEL_EXCLUDE_PROJECTS` 只过滤总览列表，项目切换器、搜索和 usage 看板仍能看到服务仓自身；补全所有列表可见面。
+
+- **共享口径**：抽出 `src/project-visibility.ts` 的 `projectExcluded`（绝对路径精确 / 名称大小写不敏感），panel 与 usage 共用；避免两套解析漂移。
+- **面板**：项目切换器、搜索页也过滤排除项；总览/对比原有行为不变；直接 `?project=<rootPath>` 仍可访问（列表可见性，不是 ACL）。
+- **usage**：`usage --web` 的项目列表/datalist/默认项目从可见集合选择；`usage --all` 同样过滤；显式 `?project=`/`--project` 仍在原始集合解析（可直达被隐藏项目）；Web 视图新增 `excludedProjects` 与页内提示。
+- **边界**：同一个 `AOS_PANEL_EXCLUDE_PROJECTS`（名字沿用，scope 扩展到统计列表）；不隐藏单项目视图/台账/运行；不做 glob；非法/相对路径按项目名处理。
+- **测试**：`usage-web` 新增 1 例（列表隐藏/显式项目仍可访问/页内提示/datalist 不含隐藏项）、`usage-command` 新增 1 例（`--all` 过滤）、`panel-web` 排除用例补项目切换器断言；全量 **2206 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.227 实施记录（失败证据 → 接入检查：API / 页面复用 / 重写）
+
+> 2026-10-26。分析近期 iOS 批次：失败大量集中在 `data-environment` / `behavior-or-design`（订单加载接口失败、商品未上架、Banner 无数据、设计有「關閉」实际无控件、起始屏未匹配），不是单纯应用缺陷。仅在 taskDesc 写“真实数据”不足以让接入方判断该补 API、复用页面还是重写；补结构化提醒。
+
+- **taskDesc**：`REAL_DATA_CLAUSE` 增加一句——无法满足数据/进入目标页时，先核对**可用 API**、**可复用页面/入口**；两者都没有时明确需要新增/重写的页面或接口并报告 blocked，禁止假数据/替代商品/替代页面。
+- **反馈聚合**：`GenerationFeedback.readiness`（`needed` + `checks[]`，每项 code/message/caseIds/traceIds）。按失败域与证据文本归并：
+  - `api`：`data-environment`/`api-error`、未处理 API 错误或接口/加载/商品/订单/上架/无结果等信号；
+  - `page-reuse` + `rewrite`：`behavior-or-design`/`design-inference` 或页面/入口/控件/不存在/无法进入等信号；
+  - `environment`：HID/idb/bundleId/WDA/设备/隧道等；
+  - `app-defect` / `case-defect` / `triage`：对应域或未分类。
+- **展示**：`suite feedback` 文本新增「接入检查（按失败证据）」；JSON 增加 `readiness`。`suite loop` 的 JSON/markdown/文本同样输出，并保留 case/trace 反查。
+- **展示扩展（2026-10-26 补）**：`suite run`（普通与 `--task`）在结果后输出同一「接入检查（按失败证据）」，`--json` 增加 `readiness`；面板批次详情新增同名区块（API／数据、页面复用、需要重写等，带 case/trace 关联），以**单卡三行 checklist** 呈现（一行动作 + 证据计数，详情折叠；390px 无整页横向溢出）。同时修正三处取证偏差：① 环境匹配收紧为明确设备/ADB/WDA 故障，`设备日志已采集` 等附注不再误判环境；② 失败项同时读取 `itemText` 与 `evidence`，避免只看到标签漏掉页面/接口证据；③ `run-report` 在 task 的 caseId 缺失时按 taskDesc 回填生成用例 id，readiness 才有可定位的 caseIds。
+- 分块设计阅读：见 §13.229。
+- **口径**：只读聚合，不自动判定 API/页面是否真实存在、不改写设计/tests、不改变退出码；文本启发式可能同时命中多类，按证据并列呈现，人工复核。
+- **测试**：`generation-feedback` 新增 1 例（行为/页面缺失 → page-reuse + rewrite，带 case/trace），既有数据失败用例补 `api` 断言；全量 **2207 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.228 实施记录（UI 语义一致性：分类树/覆盖率/视觉截断/动态资产）
+
+> 2026-10-26。原版 Figma 节点（375×2088，85 个文本节点）与 iOS trace 对比后，原计划“分类名截断”升级为更准确的判定：设计是 17 项两级分类，实现把后端 27 个叶子分类拍平；同时 trace 的无障碍文本是完整 `每日精選咖啡`，截图才显示 `每...咖啡`。据此补一层 additive 语义契约，不改存量项目行为。
+
+- **语义文件**：`.artemis/design/ui-semantics.json`（可 `--semantics` 覆盖）；`version:1`、`screens[].regions[]`、`taxonomy[]`（`category`/`group-header`/`virtual`）、`invariantTexts`、`displayNames`、`dynamicExamples`、`dynamicPatterns`、`expectedAssets`、`allowedRoles`、`allowDuplicates`、`expectedOccurrences`。`suite ui-semantics init` 从 `ui-contract.json` 生成 `draft:true` 空骨架；缺文件/空文件/未知字段不阻断存量。
+- **分类树**：`taxonomy[].aliases` 表达“运行时叶子 → 设计顶层”的多对一（如 `咖啡飲品` ← `每日精選咖啡`/`熱濃縮咖啡飲料`/`冰濃縮咖啡飲料`）；`group-header` 非交互；`virtual` 允许重复商品/自定义名称。平文本 `invariantTexts` 仍支持，两者二选一或互补，不重复计数。
+- **覆盖率**：`suite ui-parity` 输出 `counts.visible/matched/missing/truncated/unverified/offscreen`；恒等式 `invariant = matched + missing + truncated + unverified + offscreen`，且 `visible = matched + missing + truncated`。单视口只覆盖部分 invariant → `insufficient-coverage`，不得 `layout-compatible`；整文件缺失才 `insufficient-data`（exit 2）。
+- **两条 lane**：trace AX `texts[]` 是 **content-space** 全量内容树（可含屏外 y=6091）；adapter 按截图视口算 `visible/offscreen`，`space:"content"` 不做 role 几何。截图/`--visual-text` 是 **viewport-space** 视觉层，用于截断/资产；AX 完整文本不能证明未截断，只标 `unverified`（warning `visual-truncation-unverified`），需要 `source:"visual"` 才可判 `truncated-labels`。
+- **截断**：尾部 `…`/`...` + 前缀（≥3）；中缀按省略号拆首尾，首段前缀（≥1）+ 尾段后缀（≥2）；精确匹配优先；截断命中只记 `truncated`，抑制同文本 missing；finding severity error。合成旗舰用例仍保留；真实菜单案例的 verdict 是 `ia-mismatch`（alias 归一后 4 缺失；带 region bbox 的视口快照再看到 6 多余；纯 trace 无 bbox 时不臆造 unexpected），不是 `truncated-labels`。
+- **角色/重复**：`deviceBbox` 统一 viewport 像素；中心点严格包含 → 最小面积 → 最内层；跨区多现且在 `allowedRoles`/`allowDuplicates` 内不报错；全部在错区才 `role-mismatch`。
+- **动态资产**：`dynamicAssets` 只表示像素可变，仍需 `expectedAssets` 存在性/placeholder 检查；`design_device_diff` 的 `ui.ignoreDynamicRegions` 只忽略显式动态 region，`ui.expectedAssets=true` 时不忽略并提示用 `suite ui-parity` 检查；Hero 空白/商品图 fallback 不得被 `data-diff` 吞掉。
+- **CLI**：
+  - `suite ui-semantics init [--contract/--out/--force/--json]`：draft 骨架，已有文件无 `--force` exit 2；`.bak` 原子写。
+  - `suite ui-parity (--trace <id> --step <n> | --snapshot <json>) [--visual-text <json>] [--region <id>] [--screen/--contract/--semantics/--baseline] [--update-baseline] [--json]`：exit 0 `layout-compatible`/`data-diff`（且 unverified/offscreen 0）；1 `no-invariants`/`truncated-labels`/`ia-mismatch`/`insufficient-coverage`；2 `insufficient-data`/用法/路径/死屏/坏基线。
+  - `suite check [--semantics/--fail-on-dynamic/--dynamic-baseline/--update-dynamic-baseline]`：扫描 taskDesc/steps 命中已登记 `dynamicExamples`/`dynamicPatterns`；默认 warning，`--fail-on-dynamic` 对 fresh 命中 exit 2；基线只抑制已登记 `caseId|text`，新命中仍阻断。
+- **design_device_diff**：`alignment.designCrop`（design-source 像素）先校验画布内，再裁剪设计图/平移设计节点；`ignoreRegions` 按 cropped-design 传入；report 增 `alignment.designCrop`、`dynamicIgnoreRegions`、`dynamicRegions`。Figma 的 `Flow/Header`/`Flow/Remarks` 与状态栏是 chrome/annotation；工具不自动识别，调用方用 `designCrop` 排除。`ui.expectedAssets` 只拒绝整块忽略，presence/placeholder 由 `suite ui-parity` 的 `assets` 输入检查。
+- **边界**：Phase 1 不做 OCR/视觉角色推断（视觉文本由 `--visual-text`/人工 snapshot 提供）；不自动判断 API/页面是否存在；不自动修复分类截断；不自动生成 owner 例外；baseline 更新必须显式命令；缺语义文件不阻断存量。
+- **测试**：`ui-semantics` 20 例、`ui-semantics-init` 5 例、`ui-parity` 23 例、`ui-parity-command` 15 例、`ui-parity-baseline` 4 例、`ui-native-schema` 1 例、`diff-crop` 4 例、`design-device-diff` 扩 5 例、`test-preflight` 扩 3 例、`suite-command` 扩 2 例；全量 **2288 绿**，lint 0 error（2 条既有 warning）。
+- **评审修正**：MCP zod schema 透传 `designCrop`/`ui`；`no-invariants`/`insufficient-data` 不被 baseline 抑制；`draft:true` 强制 `no-invariants`；`expectedAssets` 无 `assets` 时记 missing-asset；role 交集/无 bbox/异常归属与 `viewport-mismatch` 修正，`expectedOccurrences` 生效；截断支持 alias 且不重复计入 unexpected；taxonomy unexpected 按 region bbox 收窄；数字/日期样例匹配不再强制货币词；`suite check` 对坏 semantics exit 2；trace step screen 可解析；`design_device_diff` 对 `expectedAssets` region 不整块忽略并提示用 `ui-parity` 检查 presence/placeholder（Phase 1 不内置资产检测）。
+
+### 13.229 实施记录（设计稿分块阅读：design_reading）
+
+> 2026-10-26。目标：页面多时按相邻几屏分块读取设计稿，先记录可证据化观察，再合并成交互链与 CR 主线假设；不新增用户命令，阅读是 `design_to_test` 的内部阶段。
+
+- **入口**：`design_to_test` 新增 `reading`（默认 `"auto"`，屏 ≥6 且视觉可用时触发；`false` 关闭）与 `readingMaxScreens`（默认 50）；不新增 MCP 工具/CLI。
+- **分块**：3 屏 + 1 屏 overlap；默认只发原图；多图被拒按丢尾降级 2→1 屏；`screensRead/screensTotal/droppedScreens/truncatedScreens` 显式会计，失败块不算成功。
+- **记录**：严格 JSON；每屏 `headerControls`（back/title/search/cart/other，空数组合法，无文字图标不得省略）、`persistentNav`、`contentGroups`、`floatingActions`、`annotations`；chrome 不进控件；`observed/inferred/unconfirmed` 三档；连接线起点不明 → question，不猜目标页。
+- **合并**：交互边端点校验（目标不在全局屏集 → unconfirmed + question）；同源目标冲突、overlap 同屏差异都生成 question；段内 questions 不丢；CR 主线为模板化假设（MVP 不额外调用文本模型），含推断边时显式标注；稠密图主线搜索有 5000 次访问预算。
+- **provenance**：视觉边一律 `vision-inferred`，不写 flows/tests、不改生成器/硬门禁；问题确认路径＝改 flows.json 显式边后重跑。
+- **人工答案**：`.artemis/design/reading/answers.json`（`{version,answers:[{id,match,answer,resolution?}]}`）在合并期生效，不触发模型调用；`match` 支持 `screenId/screenNameIncludes/elementIncludes/questionIncludes`（问题正文也参与元素匹配），命中后抑制对应问题并计入 `questionsAnswered`；`resolution` 可写 `toScreenId`（`"self"`＝当前屏/底部弹层）、`toLabel`、`action`、`dropInteraction`、`screenTitle`，被解析的边标 `observed` + `basis:"human-answer:<id>"`，不写回 flows/tests。示例见星巴克项目答案文件。画板顺序 knownEdge 标 `basis:"canvas-order"`，CR 报告显式提示其不代表真实控件跳转。
+- **画板标签/状态**：prompt v3 要求每屏记录手机外框上方的 `boardLabel`（如「行動預點-下滑」）与 `stateLabel`（如「下滑」），不混入 `title/headerControls`；flows 中 `screens[].states` 的唯一标签去重后作为 `knownStates` 元数据进入报告。`design_to_test.readingStates:true` 时把状态变体（如 `n6dGB`）作为独立屏纳入分块（`kind:"state"` + `parentScreenId`，报告标「状态变体」/「父屏」）；状态屏不进入 CR 主线，避免变体污染主流程。星巴克实测 23 主屏 + 20 状态 = 43 屏 / 21 块，0 失败。
+- **视觉守卫**：使用 `resolveVisionCapability`（声明 `AOS_LLM_VISION` → 缓存 → 启发式 → unknown）；`reading:true` + 明确无视觉 → 不发图；auto + unknown 跳过；forced + unknown 尝试并 warning。
+- **缓存/预算**：块级哈希 = 实际屏幕 ID + 图片 sha + 块内边 + 参数 + promptVersion + 解析后 model；`AOS_READING_CONCURRENCY` 默认 2（1–4）、单调用默认 180s（`AOS_READING_TIMEOUT_MS`）；预计块数 >20 warning。
+- **测试**：`design-reading` 40 例、`workflow-design-to-test` 新增 5 例、`native-workflow-tool` schema 正反例；全量 **2338 绿**，lint 0 error（2 条既有 warning）。
