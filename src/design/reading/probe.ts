@@ -14,7 +14,7 @@ import {
 } from "./interaction.js";
 
 export interface ScrollProbeDevice {
-  unit: "device-points" | "device-px";
+  unit: "device-points";
   size(): Promise<{ width: number; height: number } | null>;
   swipe(x1: number, y1: number, x2: number, y2: number, ms: number): Promise<void>;
   nodes(): Promise<IosUiNode[]>;

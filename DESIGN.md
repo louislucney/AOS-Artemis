@@ -2919,9 +2919,9 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-10-27。Phase 1b 把 inferred 候选写进 reading.json；Phase 2 补 observed 探测与缓存，仍不自动升断言。
 
-- **探测**：`src/design/reading/probe.ts`——`probeScrollCollapse` 分段上滑（步长由 maxScroll 派生）、结构信号判定（collapsed 文本消失 + takeover 标题出现）、二分逼近 fullEffect、回滚恢复；输出 `ObservedInteraction`（device unit：iOS points / Android px、firstChange/fullEffect、restored）。
+- **探测**：`src/design/reading/probe.ts`——`probeScrollCollapse` 分段上滑（步长由 maxScroll 派生）、结构信号判定（collapsed 文本消失 + takeover 标题出现）、二分逼近 fullEffect、回滚恢复；输出 `ObservedInteraction`（统一逻辑单位 device points：iOS points / Android dp；firstChange/fullEffect、restored）。
 - **缓存**：`.artemis/design/interactions.observed.json`；key `screen::device`；fingerprint 含 device/appVersion/designFingerprint；`observed` 断言要求 app 版本匹配，inferred 软缓存不升断言。
 - **入口**：内部库 `probe.ts` / `probe-command.ts`；**Phase 2 不新增独立用户命令**，产品入口仍为 `design_to_test`（后续把探测挂到内部观测阶段；设备需已停在目标屏）。
 - **断言**：`toScrollAssertion` 用 `origin/region` 生成结构不变量；探测只产出 observed，不直接写 tests。
 - **测试**：`design-reading-probe` 5 例（探测/恢复/断言区/缓存/命令匹配/Android 解析）；全量 **2386 绿**，lint 0 error（2 条既有 warning）。
-- **边界**：探测逻辑平台无关，设备适配器共享 `ScrollProbeDevice`；iOS 走 `Runtime.iosDevice`（device points），Android 走 adb `input swipe`/`uiautomator dump`（device px）；平台差异只是适配器/单位，不是能力边界；不负责导航到目标屏。
+- **边界**：探测逻辑平台无关，设备适配器共享 `ScrollProbeDevice`；iOS 走 `Runtime.iosDevice`（points），Android 走 adb `input swipe`/`uiautomator dump` 并在适配器内按 density 把 px 转 dp；平台差异只是设备 I/O 适配器，不是能力/单位边界；不负责导航到目标屏。

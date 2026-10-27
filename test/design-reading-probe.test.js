@@ -189,9 +189,9 @@ test("probe command: matches reading candidate, probes and caches", async () => 
 });
 
 
-test("probe android: parses uiautomator nodes and uses device pixels", async () => {
-  const xml = `<hierarchy><node text="到店自取" content-desc="" resource-id="tab" bounds="[0,44][200,64]" /><node text="" content-desc="App Bar" resource-id="bar" bounds="[0,0][375,44]" /></hierarchy>`;
-  const nodes = parseAndroidNodes(xml);
+test("probe android: parses uiautomator nodes and converts px to dp", async () => {
+  const xml = `<hierarchy><node text="到店自取" content-desc="" resource-id="tab" bounds="[0,88][400,128]" /><node text="" content-desc="App Bar" resource-id="bar" bounds="[0,0][750,88]" /></hierarchy>`;
+  const nodes = parseAndroidNodes(xml, 2);
   assert.equal(nodes.length, 2);
   assert.equal(nodes[0].label, "到店自取");
   assert.deepEqual(nodes[0].rect, { x: 0, y: 44, width: 200, height: 20 });
@@ -202,11 +202,12 @@ test("probe android: parses uiautomator nodes and uses device pixels", async () 
     pathExists: () => true,
     exec: async (_command, args) => {
       if (args.includes("cat")) return { code: 0, stdout: xml, stderr: "" };
+      if (args.includes("density")) return { code: 0, stdout: "Physical density: 320\n", stderr: "" };
       return { code: 0, stdout: "", stderr: "" };
     },
     execBuffer: async () => ({ code: 0, stdout: png, stderr: "" })
   });
-  assert.equal(device.unit, "device-px");
-  assert.deepEqual(await device.size(), { width: 1080, height: 2400 });
+  assert.equal(device.unit, "device-points");
+  assert.deepEqual(await device.size(), { width: 540, height: 1200 });
   assert.equal((await device.nodes()).length, 2);
 });
