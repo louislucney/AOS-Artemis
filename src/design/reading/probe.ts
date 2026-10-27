@@ -141,6 +141,12 @@ export async function probeScrollCollapse(
   const takeover = takeawayRefs(scrollCandidate);
   const takeoverText = scrollCandidate.titleTakeover?.bar.text ?? takeover[0]?.text ?? null;
   const initial = await capture("before");
+  const hasAxText = initial.some(
+    (node) => node.label.trim() !== "" || node.value.trim() !== ""
+  );
+  if (!hasAxText) {
+    return { observed: null, reason: "observation-no-ax-text", evidenceDir };
+  }
   if (!collapsedPresent(initial, scrollCandidate.collapsed, size.height, takeoverText)) {
     return { observed: null, reason: "collapsed-text-not-visible-before", evidenceDir };
   }

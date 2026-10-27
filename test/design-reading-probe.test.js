@@ -214,3 +214,35 @@ test("probe android: parses uiautomator nodes and converts px to dp", async () =
   assert.deepEqual(await device.size(), { width: 540, height: 1200 });
   assert.equal((await device.nodes()).length, 2);
 });
+
+
+test("probe: no accessibility text -> explicit degraded reason", async () => {
+  const device = {
+    unit: "logical",
+    nativeUnit: "pt",
+    async size() {
+      return { width: 375, height: 855 };
+    },
+    async swipe() {},
+    async nodes() {
+      return [
+        {
+          type: "Other",
+          label: "",
+          value: "",
+          id: "",
+          rect: { x: 0, y: 0, width: 375, height: 855 }
+        }
+      ];
+    }
+  };
+  const result = await probeScrollCollapse(device, candidate(), {
+    screenId: "s",
+    deviceSerial: "d",
+    maxScroll: 200,
+    step: 100,
+    waitMs: 0
+  });
+  assert.equal(result.observed, null);
+  assert.equal(result.reason, "observation-no-ax-text");
+});

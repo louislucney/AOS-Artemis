@@ -1234,3 +1234,4 @@ grayRaw 6 → grayKept 3
 - 内部库，**不新增独立用户命令**；产品入口仍为 `design_to_test`。缓存 `.artemis/design/interactions.observed.json`（screen+device+appVersion+designFingerprint）。
 - `toScrollAssertion` 用 origin/region 生成结构不变量；仍不自动写 tests。
 - 平台无关：iOS（points/idb/WDA）与 Android（adb/uiautomator，适配器内 px→dp）共用同一个探测与缓存；平台差异只是设备 I/O 适配器；需设备已停在目标屏。
+- **RN/Flutter 不单独分叉**：它们是跨端框架，运行时仍是 iOS/Android；只按设备 serial 选适配器。若 accessibility/semantics 未开启导致 AX 文本为空，返回 `observation-no-ax-text`，不按框架猜。
