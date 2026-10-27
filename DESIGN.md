@@ -2914,3 +2914,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **真实项目**：starbucks 100 帧（主屏/状态/内容容器）→ `scrollCandidates=2`（MOP `OFftq→pEfey` delta 360、takeover「到店自取」；另一条 `Myrgb→A5MwD` 待复核）、`stateCandidates=15`、`questions=20`；均在 POC 预算内。
 - **测试**：`design-reading-interaction` 7 例 + `design-reading-interaction-frames` 2 例（含 reading.json 落盘）；全量 **2381 绿**，lint 0 error（2 条既有 warning）。
 - **边界**：候选仍是 `inferred`；不进 `design_to_test` 门禁；Phase 2 真机探测后才允许 `observed → Assertion`。
+
+### 13.236 实施记录（设计交互推断 Phase 2：真机滚动探测）
+
+> 2026-10-27。Phase 1b 把 inferred 候选写进 reading.json；Phase 2 补 observed 探测与缓存，仍不自动升断言。
+
+- **探测**：`src/design/reading/probe.ts`——`probeScrollCollapse` 分段上滑（步长由 maxScroll 派生）、结构信号判定（collapsed 文本消失 + takeover 标题出现）、二分逼近 fullEffect、回滚恢复；输出 `ObservedInteraction`（device points、firstChange/fullEffect、restored）。
+- **缓存**：`.artemis/design/interactions.observed.json`；key `screen::device`；fingerprint 含 device/appVersion/designFingerprint；`observed` 断言要求 app 版本匹配，inferred 软缓存不升断言。
+- **入口**：`suite interaction-probe --screen <id|name> --device <serial> [--app-version] [--max-scroll] [--step] [--no-save] [--json]`；从 `reading.json` 找唯一 scroll 候选，设备需已停在目标屏（未到/候选不唯一 exit 2；无结构变化 exit 1）。
+- **断言**：`toScrollAssertion` 用 `origin/region` 生成结构不变量；探测只产出 observed，不直接写 tests。
+- **测试**：`design-reading-probe` 4 例（探测/恢复/断言区/缓存/命令匹配）；全量 **2385 绿**，lint 0 error（2 条既有 warning）。
+- **边界**：当前仅 iOS；真机/模拟器都走 `Runtime.iosDevice`；未实现 Android 探测；CLI 不负责导航到目标屏。

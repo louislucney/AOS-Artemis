@@ -1225,3 +1225,10 @@ grayRaw 6 → grayKept 3
 - `ReadingFile` 增 `interactionCandidates` / `pairingStats`；`reading.json` 已落盘，仍不升断言。
 - 真实 starbucks：100 帧 → scroll 2（MOP 360/takeover + `Myrgb→A5MwD` 待复核）、state 15、questions 20；首跑 343s（pen bounds），缓存后 1.4s。
 - 测试 2381 绿；lint 0 error。
+
+### 13.8 Phase 2：真机滚动探测
+
+- `probe.ts`：分段上滑 + 二分 fullEffect + 回滚恢复；输出 observed（device points/firstChange/fullEffect）。
+- `suite interaction-probe` 入口；缓存 `.artemis/design/interactions.observed.json`（screen+device+appVersion+designFingerprint）。
+- `toScrollAssertion` 用 origin/region 生成结构不变量；仍不自动写 tests。
+- 当前仅 iOS；需设备已停在目标屏。

@@ -710,3 +710,116 @@ export function pairContainers(
   stats.deduped = scrollDeduped.deduped + stateDeduped.deduped;
   return { candidates, questions, stats };
 }
+
+export interface ObservedInteraction {
+  kind: "scroll-collapse";
+  provenance: Extract<InteractionProvenance, { kind: "observed" }>;
+  screenId: string;
+  unit: "device-points";
+  thresholdSignal: "structural";
+  firstChangePoints: number;
+  fullEffectPoints: number;
+  sticky: InteractionNodeRef[];
+  collapsed: InteractionNodeRef[];
+  restored: boolean;
+  evidence: { before: string; after: string };
+}
+
+export interface ConfirmedInteraction {
+  kind: "scroll-collapse";
+  provenance: Extract<InteractionProvenance, { kind: "confirmed" }>;
+  screenId: string;
+  sticky: InteractionNodeRef[];
+  collapsed: InteractionNodeRef[];
+}
+
+export type DeviceQuery =
+  | {
+      kind: "absentText";
+      text: string;
+      region?: "header" | "content" | "footer";
+      role?: string;
+      ordinal?: number;
+    }
+  | {
+      kind: "presentText";
+      text: string;
+      region?: "header" | "content" | "footer";
+      role?: string;
+      ordinal?: number;
+    }
+  | { kind: "headerTitle"; text: string };
+
+export interface Assertion {
+  kind: "scroll-collapse";
+  source: "observed" | "confirmed";
+  afterScroll: DeviceQuery[];
+  afterRestore: DeviceQuery[];
+}
+
+export function toScrollAssertion(
+  interaction: ObservedInteraction | ConfirmedInteraction
+): Assertion {
+  const persistent = interaction.sticky.filter((node) => node.origin !== "takeover");
+  const takeover = interaction.sticky.filter((node) => node.origin === "takeover");
+  const collapsed = interaction.collapsed.filter((node) => node.text !== null);
+  return {
+    kind: "scroll-collapse",
+    source: interaction.provenance.kind,
+    afterScroll: [
+      ...collapsed.map((node) => ({
+        kind: "absentText" as const,
+        text: node.text!,
+        region: node.region ?? "content"
+      })),
+      ...persistent.flatMap((node) =>
+        node.text
+          ? [
+              {
+                kind: "presentText" as const,
+                text: node.text,
+                region: node.region ?? "content"
+              }
+            ]
+          : []
+      ),
+      ...takeover.flatMap((node) =>
+        node.text
+          ? [{ kind: "presentText" as const, text: node.text, region: "header" as const }]
+          : []
+      )
+    ],
+    afterRestore: [
+      ...persistent.flatMap((node) =>
+        node.text
+          ? [
+              {
+                kind: "presentText" as const,
+                text: node.text,
+                region: node.region ?? "content"
+              }
+            ]
+          : []
+      ),
+      ...collapsed.map((node) => ({
+        kind: "presentText" as const,
+        text: node.text!,
+        region: node.region ?? "content"
+      })),
+      ...takeover.flatMap((node) =>
+        node.text
+          ? [{ kind: "absentText" as const, text: node.text, region: "header" as const }]
+          : []
+      )
+    ]
+  };
+}
+
+export function interactionCandidatesFromReading(value: unknown): InteractionCandidate[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is InteractionCandidate => {
+    if (entry === null || typeof entry !== "object") return false;
+    const kind = (entry as { kind?: unknown }).kind;
+    return kind === "scroll-collapse" || kind === "state-change";
+  });
+}
