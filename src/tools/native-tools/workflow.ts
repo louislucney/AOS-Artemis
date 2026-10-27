@@ -101,7 +101,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
         .boolean()
         .optional()
         .describe(
-          "执行时逐屏对比设计（默认 true）：自动构建 ui-contract（pen 源会从源文档拆分逐屏 .pen）并核验访问屏；显式 false 关闭"
+          "执行时逐屏对比设计（默认 true）：自动构建 ui-contract（pen 源会从源文档拆分逐屏 .pen）并核验访问屏，同时输出 report-only 图片/文字资源对账（resources）；显式 false 关闭"
         ),
       async: z
         .boolean()

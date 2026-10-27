@@ -19,6 +19,27 @@ export interface UiTextContract {
   fontFamily: string | null;
   fontWeight: number | null;
   fontSize: number | null;
+  /** Design line height in design px; null when the source does not declare it. */
+  lineHeight?: number | null;
+  /** Design letter spacing in design px; null when the source does not declare it. */
+  letterSpacing?: number | null;
+  /** Source-declared max lines; null when unbounded/unknown. */
+  maxLines?: number | null;
+  textAlign?: string | null;
+  bbox: { x: number; y: number; width: number; height: number } | null;
+  bboxSpace: "design-px";
+  geometryStatus: UiGeometryStatus;
+}
+
+/** Design-side image node/ fill; `source` is the raw .pen URL/ref, `assetKey` is
+ * a basename hint (without query/extension) used only for report-only matching. */
+export interface UiImageContract {
+  id: string;
+  name: string;
+  source: string | null;
+  assetKey: string | null;
+  /** Raw source fit/mode (cover/contain/fill/tile/...); consumers normalize it. */
+  fit: string | null;
   bbox: { x: number; y: number; width: number; height: number } | null;
   bboxSpace: "design-px";
   geometryStatus: UiGeometryStatus;
@@ -41,6 +62,8 @@ export interface UiScreenContract {
   };
   components: Array<{ name: string; type: string }>;
   texts: UiTextContract[];
+  /** Design image nodes/image fills; old contracts may omit this field. */
+  images?: UiImageContract[];
   render: string | null;
   renderScale: number | null;
   /** Design frame width in design px; used to map text bbox to render pixels. */
@@ -111,10 +134,50 @@ export function normalizeFontWeight(value: unknown): number | null {
   return Number.isFinite(numericWeight) ? numericWeight : null;
 }
 
+function geometryStatusOf(
+  x: number | null,
+  y: number | null,
+  width: number | null,
+  height: number | null
+): UiGeometryStatus {
+  const fields = [x, y, width, height].filter((value) => value !== null).length;
+  return fields === 4 ? "extracted" : fields === 0 ? "unverifiable" : "partial";
+}
+
+function imageSourceOf(node: PenNode): { source: string | null; fit: string | null } {
+  const fill = node.fill;
+  if (fill !== null && typeof fill === "object" && !Array.isArray(fill)) {
+    const record = fill as Record<string, unknown>;
+    if (record.type === "image") {
+      return {
+        source:
+          typeof record.url === "string" ? record.url : typeof record.src === "string" ? record.src : null,
+        fit: typeof record.mode === "string" ? record.mode : typeof record.fit === "string" ? record.fit : null
+      };
+    }
+  }
+  if (node.type === "image") {
+    return {
+      source: typeof node.url === "string" ? node.url : typeof node.src === "string" ? node.src : null,
+      fit: typeof node.fit === "string" ? node.fit : typeof node.objectFit === "string" ? node.objectFit : null
+    };
+  }
+  return { source: null, fit: null };
+}
+
+function assetKeyFromSource(source: string | null): string | null {
+  if (source === null) return null;
+  const base = source.split(/[?#]/)[0]!.replace(/\\/g, "/").split("/").pop() ?? "";
+  if (base === "") return null;
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
 function inspectPen(file: string): {
   tokens: UiScreenContract["tokens"];
   components: Array<{ name: string; type: string }>;
   texts: UiTextContract[];
+  images: UiImageContract[];
   geometry: UiScreenContract["geometry"];
   frameWidth: number | null;
 } {
@@ -127,6 +190,7 @@ function inspectPen(file: string): {
   const spacing: number[] = [];
   const components: Array<{ name: string; type: string }> = [];
   const texts: UiTextContract[] = [];
+  const images: UiImageContract[] = [];
   let nodes = 0;
   let withGeometry = 0;
 
@@ -148,21 +212,38 @@ function inspectPen(file: string): {
     if (typeof node.name === "string" && typeof node.type === "string") {
       components.push({ name: node.name, type: node.type });
     }
+    const bbox =
+      x !== null && y !== null && width !== null && height !== null && width > 0 && height > 0
+        ? { x, y, width, height }
+        : null;
+    const geometryStatus = geometryStatusOf(x, y, width, height);
+    const image = imageSourceOf(node);
+    if (node.type === "image" || image.source !== null) {
+      images.push({
+        id: typeof node.id === "string" ? node.id : "",
+        name: typeof node.name === "string" ? node.name : "",
+        source: image.source,
+        assetKey: assetKeyFromSource(image.source),
+        fit: image.fit,
+        bbox,
+        bboxSpace: "design-px",
+        geometryStatus
+      });
+    }
     if (typeof node.content === "string" && node.content.trim() !== "") {
-      const geometryFields = [x, y, width, height].filter((value) => value !== null).length;
       texts.push({
         id: typeof node.id === "string" ? node.id : "",
         content: node.content,
         fontFamily: typeof node.fontFamily === "string" ? node.fontFamily : null,
         fontWeight: normalizeFontWeight(node.fontWeight),
         fontSize: numeric(node.fontSize),
-        bbox:
-          x !== null && y !== null && width !== null && height !== null && width > 0 && height > 0
-            ? { x, y, width, height }
-            : null,
+        lineHeight: numeric(node.lineHeight),
+        letterSpacing: numeric(node.letterSpacing),
+        maxLines: numeric(node.maxLines),
+        textAlign: typeof node.textAlign === "string" ? node.textAlign : null,
+        bbox,
         bboxSpace: "design-px",
-        geometryStatus:
-          geometryFields === 4 ? "extracted" : geometryFields === 0 ? "unverifiable" : "partial"
+        geometryStatus
       });
     }
   };
@@ -185,6 +266,7 @@ function inspectPen(file: string): {
     },
     components: components.slice(0, 80),
     texts,
+    images,
     geometry: {
       nodes,
       withGeometry,
@@ -421,6 +503,7 @@ export function buildUiContract(
       },
       components: inspected?.components ?? [],
       texts,
+      images: inspected?.images ?? [],
       render: render === null ? null : path.relative(runtime.project.rootDir, render),
       renderScale:
         render !== null && inspected?.frameWidth !== null && inspected?.frameWidth !== undefined
@@ -474,8 +557,8 @@ export function renderUiContractMarkdown(contract: UiContract): string {
     `> 设计源：\`${contract.source.designRoot}\` · 指纹：\`${contract.source.fingerprint}\``,
     `> 状态：extracted ${contract.summary.extracted} / partial ${contract.summary.partial} / unverifiable ${contract.summary.unverifiable} / no-baseline ${contract.summary["no-baseline"]}`,
     "",
-    "| 屏幕 | 状态 | 几何 | 文本 | 圆角 | 字号 | 字体 | 间距 |",
-    "|---|---|---|---|---|---|---|---|"
+    "| 屏幕 | 状态 | 几何 | 文本 | 图片 | 圆角 | 字号 | 字体 | 间距 |",
+    "|---|---|---|---|---|---|---|---|---|"
   ];
   for (const screen of contract.screens) {
     const textWeights = uniqueNumbers(
@@ -484,7 +567,7 @@ export function renderUiContractMarkdown(contract: UiContract): string {
         .filter((weight): weight is number => weight !== null)
     );
     lines.push(
-      `| ${screen.name} (\`${screen.id}\`) | ${screen.status} | ${screen.geometry.withGeometry}/${screen.geometry.nodes} | ${screen.texts.length} 条（${textWeights.join(", ") || "—"}） | ${screen.tokens.cornerRadius.join(", ") || "—"} | ${screen.tokens.fontSizes.join(", ") || "—"} | ${screen.tokens.fontFamilies.join(", ") || "—"} | ${screen.tokens.spacing.join(", ") || "—"} |`
+      `| ${screen.name} (\`${screen.id}\`) | ${screen.status} | ${screen.geometry.withGeometry}/${screen.geometry.nodes} | ${screen.texts.length} 条（${textWeights.join(", ") || "—"}） | ${(screen.images ?? []).length} 条 | ${screen.tokens.cornerRadius.join(", ") || "—"} | ${screen.tokens.fontSizes.join(", ") || "—"} | ${screen.tokens.fontFamilies.join(", ") || "—"} | ${screen.tokens.spacing.join(", ") || "—"} |`
     );
   }
   lines.push("", "## 逐屏说明", "");
@@ -496,7 +579,11 @@ export function renderUiContractMarkdown(contract: UiContract): string {
     lines.push(`- 颜色：${screen.tokens.colors.join(", ") || "（未提取）"}`);
     lines.push(`- 字体：${screen.tokens.fontFamilies.join(", ") || "（未提取）"} · 字号：${screen.tokens.fontSizes.join(", ") || "（未提取）"} · 字重：${screen.tokens.fontWeights.join(", ") || "（未提取）"}`);
     lines.push(
-      `- 文本节点：${screen.texts.length} 条（有几何 ${screen.texts.filter((text) => text.geometryStatus === "extracted").length}）`
+      `- 文本节点：${screen.texts.length} 条（有几何 ${screen.texts.filter((text) => text.geometryStatus === "extracted").length}；行高 ${screen.texts.filter((text) => text.lineHeight !== null && text.lineHeight !== undefined).length}）`
+    );
+    const images = screen.images ?? [];
+    lines.push(
+      `- 图片节点：${images.length} 条（有几何 ${images.filter((image) => image.geometryStatus === "extracted").length}；有来源 ${images.filter((image) => image.source !== null).length}）`
     );
     lines.push(`- 间距：${screen.tokens.spacing.join(", ") || "（未提取）"}`);
     if (screen.warnings.length > 0) {

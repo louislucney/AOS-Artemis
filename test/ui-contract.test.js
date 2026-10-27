@@ -60,7 +60,21 @@ function writeDesign(dir, { withPen }) {
                     fontSize: 16,
                     fontFamily: "SF Pro Text",
                     fontWeight: "600",
+                    lineHeight: 24,
+                    letterSpacing: 0.5,
+                    maxLines: 2,
+                    textAlign: "left",
                     content: "早安"
+                  },
+                  {
+                    type: "image",
+                    id: "hero",
+                    name: "Hero",
+                    x: 32,
+                    y: 64,
+                    width: 343,
+                    height: 120,
+                    fill: { type: "image", url: "./assets/hero.png", mode: "cover" }
                   }
                 ]
               }
@@ -81,8 +95,8 @@ test("ui contract: projects flows + per-screen pen tokens with four-state status
 
   const screen = built.contract.screens.find((entry) => entry.id === "s1");
   assert.equal(screen.status, "extracted");
-  assert.equal(screen.geometry.nodes, 3);
-  assert.equal(screen.geometry.withGeometry, 3);
+  assert.equal(screen.geometry.nodes, 4);
+  assert.equal(screen.geometry.withGeometry, 4);
   assert.ok(screen.tokens.cornerRadius.includes(10));
   assert.ok(screen.tokens.colors.includes("#ffffffff"));
   assert.ok(screen.tokens.fontSizes.includes(16));
@@ -93,6 +107,15 @@ test("ui contract: projects flows + per-screen pen tokens with four-state status
   assert.equal(screen.texts[0].fontSize, 16);
   assert.equal(screen.texts[0].geometryStatus, "extracted");
   assert.deepEqual(screen.texts[0].bbox, { x: 32, y: 40, width: 200, height: 24 });
+  assert.equal(screen.texts[0].lineHeight, 24);
+  assert.equal(screen.texts[0].letterSpacing, 0.5);
+  assert.equal(screen.texts[0].maxLines, 2);
+  assert.equal(screen.texts[0].textAlign, "left");
+  assert.equal(screen.images.length, 1);
+  assert.equal(screen.images[0].assetKey, "hero");
+  assert.equal(screen.images[0].fit, "cover");
+  assert.equal(screen.images[0].geometryStatus, "extracted");
+  assert.deepEqual(screen.images[0].bbox, { x: 32, y: 64, width: 343, height: 120 });
 
   const missing = built.contract.screens.find((entry) => entry.id === "s2");
   assert.equal(missing.status, "no-baseline");

@@ -1372,6 +1372,9 @@ test("run:true 默认构建 UI 契约并开启逐屏设计比对", async (t) => 
   assert.ok(fs.existsSync(path.join(dir, "design", "pen", "screens", "s1.pen")));
   assert.deepEqual(payload.run.ui, { passed: 2, failed: 0, unverified: 0, notApplicable: 0 });
   assert.equal(payload.run.uiCoverage.compared, 1);
+  assert.equal(payload.resources.mode, "report-only");
+  assert.equal(payload.resources.texts.total, 1);
+  assert.equal(payload.resources.texts.unverifiable, 1);
 });
 
 test("run:true uiDiff:false 显式关闭：不建契约、不传 uiDiff", async (t) => {
@@ -1395,4 +1398,5 @@ test("run:true uiDiff:false 显式关闭：不建契约、不传 uiDiff", async 
   assert.equal(payloadOf(result).ok, true);
   assert.equal(calls.execute[0].uiDiff, false);
   assert.equal(fs.existsSync(path.join(dir, "design", "ui-contract.json")), false);
+  assert.equal(payloadOf(result).resources, undefined);
 });

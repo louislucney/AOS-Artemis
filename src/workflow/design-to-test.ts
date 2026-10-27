@@ -28,7 +28,8 @@ import { preflightGeneratedTests } from "../figma/preflight.js";
 import { designFlowsPath, sharedDesignDir } from "../figma/design-source.js";
 import { executeSuiteBatch, type SuiteBatchResult } from "../figma/suite-batch.js";
 import type { SuiteRunOptions, SuiteRunReport } from "../figma/suite-runner.js";
-import { buildUiContract } from "../ui/contract.js";
+import { buildUiContract, type UiContract } from "../ui/contract.js";
+import { buildResourceCalibration, type ResourceCalibrationReport } from "../ui/resource-calibration.js";
 import {
   figmaGenerateTests,
   updateTestsApiReview,
@@ -634,11 +635,14 @@ export async function designToTest(
   const logLine = deps.log ?? logInfo;
   let runSummary: Record<string, unknown> | null = null;
   let runManifestPath: string | null = null;
+  let resourceReport: ResourceCalibrationReport | null = null;
   if (args.run === true) {
     let uiDiffEnabled = args.uiDiff !== false;
+    let builtContract: UiContract | null = null;
     if (uiDiffEnabled) {
       try {
         const built = buildUiContract(runtime);
+        builtContract = built.contract;
         if (built.contract.summary.extracted + built.contract.summary.partial === 0) {
           uiDiffEnabled = false;
           warnings = [
@@ -678,6 +682,21 @@ export async function designToTest(
           });
     }
     const device = pick.device;
+    if (builtContract !== null) {
+      try {
+        resourceReport = buildResourceCalibration(runtime, builtContract, {
+          device: { nativeUnit: platformOf(device) === "ios" ? "pt" : "dp" }
+        });
+      } catch (error) {
+        warnings = [
+          ...warnings,
+          {
+            code: "resource-calibration-failed",
+            message: `资源对账失败（${errorMessage(error)}）；不影响用例执行`
+          }
+        ];
+      }
+    }
 
     const cases = generatedCases ?? preflight?.cases ?? 0;
     const runEntry = recordStep({ step: "run", cases, source, device });
@@ -819,6 +838,7 @@ export async function designToTest(
     ...(apiReview !== null ? { apiReview } : {}),
     ...(apiNextAction !== null ? { apiReviewNextAction: apiNextAction } : {}),
     ...(runSummary !== null ? { run: runSummary } : {}),
+    ...(resourceReport !== null ? { resources: resourceReport } : {}),
     ...(reading !== null ? { reading: readingResponse(reading) } : {}),
     ...(nextAction !== null ? { nextAction } : {})
   });

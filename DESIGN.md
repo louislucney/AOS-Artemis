@@ -2938,3 +2938,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **边界**：当前按**单仓单应用**设计；单仓多应用、RN/Flutter 嵌入原生壳的棕色地、Flutter add-to-app 子目录仍需 `project.stack` 显式声明（检测不再猜测）。运行期平台仍由设备 serial 决定（iOS/Android），技术栈只决定读哪套代码。
 - **测试**：`stack` 新增 4 例（纯 Dart 不误判/覆盖/Flutter+RN 歧义/坏 package.json），`config` 新增 1 例（字符串/数组/非法值），`aos_status` 新增 1 例（detected/config 来源与 evidence）；全量 **2393 绿**，lint 0 error（2 条既有 warning）。
 - **只读 POC**：`.scratch/resource-calibration-poc/` 用 RN/Flutter fixture 输出 design↔code↔device 对账表（图片 logical/scale/fit、文字 lineHeight 换算、font-weight-substituted、text-scale、upscale）；只读、不写产品目录、不新增命令，输出与限制见该目录 README。
+
+### 13.238 实施记录（ui-contract 资源字段 + design_to_test 只读资源对账）
+
+> 2026-10-28。资源校准 POC 通过后，把设计侧的图片/文字度量纳入 `ui-contract`，并作为 `design_to_test` 的内部阶段输出 `resources`；只报告，不新增命令、不升硬门禁。
+
+- **契约扩展**：`UiTextContract` 增 `lineHeight/letterSpacing/maxLines/textAlign`（design-px / 源声明）；新增 `UiImageContract`（`source/assetKey/fit/bbox/geometryStatus`），`UiScreenContract.images` 兼容旧契约（缺省 `[]`）。`inspectPen` 同时识别 `type:"image"` 节点与 `fill:{type:"image",url,mode}`，文本度量按 `.pen` 字段原样投影；Markdown 增图片节点/行高统计。
+- **只读对账**：新增 `src/ui/resource-calibration.ts`——读 `ui-contract` + 项目源码，按 `detectProjectStacksDetailed` 选 RN/Flutter 扫描器；图片比较逻辑尺寸、fit、变体尺寸（`@2x/@3x` / `2.0x/3.0x`），设备 `pixelRatio` 仅显式提供时才判 `upscale`；文字比较 content/fontFamily/fontSize/lineHeight/letterSpacing/fontWeight/maxLines，Flutter 额外检查 `pubspec.yaml` 字重声明（缺失 → `font-weight-substituted` / `font-unbundled`），RN 标 `font-weight-unverified`；`fontScale` 只进 `deviceStatus`（`text-scale`），不污染设计↔代码结论。
+- **接线**：`design_to_test` 在 `run:true` 且默认 `uiDiff` 构建契约后调用；响应新增 `resources`（`mode:"report-only"`、逐资源 `status/issues/notes/codeRef`、图片/文字计数、`stacks` 证据、`warnings`）。`uiDiff:false` 不构建契约也不产出 resources；无栈/非 RN/Flutter/扫描解析不到一律 `unverifiable`/`unmapped`，不猜。
+- **边界**：扫描器是 fixture 级启发式（行级 TSX/Dart + 静态字符串/`style:` 引用），不替代 AST；动态文案、内联样式、复杂主题/组件映射暂标 `unmapped`/`unverifiable`；原生栈扫描未实现；设备 pixelRatio/fontScale 目前未从 trace 回填，报告默认 `not-evaluated`；不写盘、不改 contract、不影响用例门禁。
+- **测试**：新增 `resource-calibration` 3 例（RN 图片/文字/text-scale、Flutter 行高/字重、无栈降级）、`ui-contract` 图片/度量断言、`design_to_test` resources 存在/关闭断言；全量 **2396 绿**，lint 0 error（2 条既有 warning）。
