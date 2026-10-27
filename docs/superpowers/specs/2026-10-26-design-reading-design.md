@@ -438,6 +438,7 @@ MVP 不产出 crops（局部裁剪作为第二阶段）；`readingPaths` 不返�
 - chrome：不进入 `headerControls`；parser 对 `Flow/Header`/状态栏/备注出 `chrome-suspect` warning。
 - 变体：默认只读主屏；`readingStates:true` 时把 `states` 的唯一 frame（按 id 去重，不按 label 合并）作为独立屏纳入分块（`kind:"state"` + `parentScreenId`，报告标「状态变体」/「父屏」），状态屏不进入 CR 主线；另对独立 screen 名（如 `Login / Empty`）按状态词后缀启发式归并。无状态输入时 warning `reading-states-unavailable`。未开启时仍把唯一标签作为 `knownStates` 元数据展示。
 - 命名风格：状态拆分支持 `- / ｜ _ · （） []` 等多分隔符与中英日韩状态词；拆不出时保留完整 `boardLabel`，`stateLabel=null`；通用设计器名不作为标签。
+- 画板排布：从 `flows.screens[].bounds` 识别 vertical/horizontal/grid；grid 时 `canvas-order` 不进入 CR 主线并 warning `reading-grid-canvas-order`，报告展示「画板排布」。
 - 已有 `screens[].elements`：作为 `knownElements` 上下文，按块过滤，不要求重找；冲突保留两份 + question。
 - 主线：确定性候选 + 一次可选文本总结；输出 `edgeIds/statusSummary`，含推断边必须标注；只叫“假设”。画板顺序边标 `canvas-order`，报告显式提示不代表真实控件跳转。
 - 回答闭环：合并期读取 `.artemis/design/reading/answers.json`，抑制已回答问题并修正边/标题；不触发模型调用，不写回 flows/tests。

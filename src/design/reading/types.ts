@@ -1,5 +1,7 @@
 import type { FlowEdge, FlowElement, FlowWarning } from "../../figma/flows.js";
 
+export type CanvasLayout = "vertical" | "horizontal" | "grid" | "unknown";
+
 export type ReadingStatus = "observed" | "inferred" | "unconfirmed";
 
 export interface ReadingBBox {
@@ -210,6 +212,7 @@ export interface ReadingFile {
   spine: ReadingSpine | null;
   questions: ReadingQuestion[];
   answers?: ReadingAnswer[];
+  canvasLayout?: CanvasLayout;
   completeness: ReadingCompleteness;
   stats: ReadingStats;
   warnings: FlowWarning[];

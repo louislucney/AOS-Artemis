@@ -8,6 +8,7 @@ import {
 } from "./answers.js";
 import { isGenericLabel, type ReadingNamingStyle } from "./naming.js";
 import type {
+  CanvasLayout,
   ReadingAnswer,
   ReadingChunk,
   ReadingCompleteness,
@@ -323,14 +324,16 @@ function knownEdgesAsInteractions(edges: FlowEdge[]): ReadingInteraction[] {
 function buildSpine(
   screens: ReadingScreenObservation[],
   edges: ReadingInteraction[],
-  screenNames: Map<string, string>
+  screenNames: Map<string, string>,
+  canvasLayout: CanvasLayout
 ): ReadingSpine | null {
   const mainScreens = screens.filter((screen) => screen.kind !== "state");
   const activeScreens = mainScreens.length > 0 ? mainScreens : screens;
   if (activeScreens.length === 0) return null;
   const screenIds = new Set(activeScreens.map((screen) => screen.screenId));
+  const usableEdges = canvasLayout === "grid" ? edges.filter((edge) => edge.basis !== "canvas-order") : edges;
   const outgoing = new Map<string, ReadingInteraction[]>();
-  for (const edge of edges) {
+  for (const edge of usableEdges) {
     if (!screenIds.has(edge.fromScreenId)) continue;
     if (edge.toScreenId === null || !screenIds.has(edge.toScreenId)) continue;
     const list = outgoing.get(edge.fromScreenId) ?? [];
@@ -338,7 +341,9 @@ function buildSpine(
     outgoing.set(edge.fromScreenId, list);
   }
   const incoming = new Set(
-    edges.map((edge) => edge.toScreenId).filter((id): id is string => id !== null && screenIds.has(id))
+    usableEdges
+      .map((edge) => edge.toScreenId)
+      .filter((id): id is string => id !== null && screenIds.has(id))
   );
   const entries = activeScreens.map((screen) => screen.screenId).filter((id) => !incoming.has(id));
   const starts = entries.length > 0 ? entries : activeScreens.map((screen) => screen.screenId);
@@ -389,6 +394,10 @@ function buildSpine(
     entries.length > 0 ? "entry" : "fallback-all",
     "longest-path",
     ...(bounded ? ["bounded-search"] : []),
+    ...(canvasLayout === "grid" ? ["grid-no-canvas-order"] : []),
+    ...(canvasLayout === "horizontal" || canvasLayout === "vertical"
+      ? [`canvas-${canvasLayout}`]
+      : []),
     ...(bestEdges.length === 0 ? ["no-edges"] : [])
   ];
   return {
@@ -425,6 +434,7 @@ export function mergeReadingChunks(
     stats?: ReadingStats;
     answers?: ReadingAnswer[];
     namingStyle?: ReadingNamingStyle;
+    canvasLayout?: CanvasLayout;
   }
 ): ReadingFile {
   const warnings = chunks.flatMap((chunk) => chunk.warnings);
@@ -523,7 +533,14 @@ export function mergeReadingChunks(
     usedIds.add(id);
     return { ...edge, id };
   });
-  const spine = buildSpine(merged.screens, interactions, screenNames);
+  const canvasLayout = input.canvasLayout ?? "unknown";
+  const spine = buildSpine(merged.screens, interactions, screenNames, canvasLayout);
+  if (canvasLayout === "grid" && interactions.some((edge) => edge.basis === "canvas-order")) {
+    warnings.push({
+      code: "reading-grid-canvas-order",
+      message: "画板呈网格排布，已禁用画板顺序作为 CR 主线；需显式交互边/人工确认"
+    });
+  }
   const answeredKeys = new Set<string>();
   const unanswered: ReadingQuestion[] = [];
   for (const question of questions) {
@@ -615,6 +632,7 @@ export function mergeReadingChunks(
     spine,
     questions: keptQuestions,
     ...(answers.length > 0 ? { answers } : {}),
+    canvasLayout,
     completeness,
     stats,
     warnings

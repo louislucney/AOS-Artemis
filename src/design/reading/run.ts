@@ -16,6 +16,7 @@ import {
   type ReadingNamingStyle
 } from "./naming.js";
 import { mergeReadingChunks } from "./merge.js";
+import { detectCanvasLayout } from "./canvas.js";
 import { parseReadingReply } from "./parse.js";
 import { buildReadingMessages, READING_PROMPT_VERSION } from "./prompt.js";
 import { renderChunkMarkdown, renderReadingMarkdown } from "./render.js";
@@ -29,6 +30,7 @@ import type {
   DesignReadingResult,
   ReadingChunk,
   ReadingChunkPlan,
+  ReadingBBox,
   ReadingFile,
   ReadingScreenRef,
   ReadingStats
@@ -48,6 +50,7 @@ interface FlowDocScreen {
   name?: unknown;
   sourceFrameName?: unknown;
   page?: unknown;
+  bounds?: unknown;
   elements?: unknown;
   states?: unknown;
 }
@@ -128,8 +131,24 @@ interface RawScreenEntry {
   index: number;
   imagePath: string | null;
   sourceFrameName?: string;
+  bounds?: ReadingBBox;
   rawStates: unknown;
   elements: FlowElement[];
+}
+
+function asBounds(value: unknown): ReadingBBox | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { x?: unknown; y?: unknown; width?: unknown; height?: unknown };
+  const values = [record.x, record.y, record.width, record.height];
+  if (!values.every((entry) => typeof entry === "number" && Number.isFinite(entry))) {
+    return undefined;
+  }
+  return {
+    x: record.x as number,
+    y: record.y as number,
+    width: record.width as number,
+    height: record.height as number
+  };
 }
 
 function loadScreens(
@@ -138,7 +157,12 @@ function loadScreens(
   screensDir: string | undefined,
   includeStates: boolean,
   style: ReadingNamingStyle
-): { screens: ReadingScreenRef[]; loaded: LoadedScreen[]; edges: FlowEdge[] } {
+): {
+  screens: ReadingScreenRef[];
+  loaded: LoadedScreen[];
+  edges: FlowEdge[];
+  canvasLayout: ReturnType<typeof detectCanvasLayout>;
+} {
   const rawScreens = Array.isArray(doc.screens) ? (doc.screens as FlowDocScreen[]) : [];
   const screenshots = doc.screenshots as
     | { dir?: unknown; summary?: { dir?: unknown } }
@@ -150,12 +174,14 @@ function loadScreens(
     const id = asString(raw.id);
     if (id === null) return;
     const sourceFrameName = asString(raw.sourceFrameName) ?? undefined;
+    const bounds = asBounds(raw.bounds);
     entries.push({
       id,
       name: asString(raw.name) ?? id,
       index,
       imagePath: resolveImagePath(configDirAbs, flowsDir, screensDir, id),
       ...(sourceFrameName === undefined ? {} : { sourceFrameName }),
+      ...(bounds === undefined ? {} : { bounds }),
       rawStates: raw.states,
       elements: asFlowElements(raw.elements)
     });
@@ -272,7 +298,12 @@ function loadScreens(
       loaded.push({ ref: childRef, imagePath: child.imagePath, knownElements: child.elements });
     }
   }
-  return { screens, loaded, edges: asFlowEdges(doc.edges) };
+  return {
+    screens,
+    loaded,
+    edges: asFlowEdges(doc.edges),
+    canvasLayout: detectCanvasLayout(entries.map((entry) => ({ order: entry.index, bounds: entry.bounds })))
+  };
 }
 
 function imageDataFor(
@@ -642,7 +673,8 @@ export async function runDesignReading(input: {
       truncatedScreens: chunked.truncatedScreens,
       stats,
       answers: answersLoad.answers,
-      namingStyle: answersLoad.style
+      namingStyle: answersLoad.style,
+      canvasLayout: loaded.canvasLayout
     });
     warnings.push(...reading.warnings);
     if (reading.completeness.screensRead < reading.completeness.screensTotal) {

@@ -9,6 +9,7 @@ import {
   writeReadingChunk
 } from "../dist/design/reading/store.js";
 import { answerMatchesInteraction, answerMatchesQuestion, loadReadingAnswers } from "../dist/design/reading/answers.js";
+import { detectCanvasLayout } from "../dist/design/reading/canvas.js";
 import {
   canonicalizeMatch,
   isGenericLabel,
@@ -1278,4 +1279,88 @@ test("run: readingStates 无状态输入时给显式 warning", async () => {
     options: { concurrency: 1, includeStates: true }
   });
   assert.ok(result.warnings.some((warning) => warning.code === "reading-states-unavailable"));
+});
+
+
+test("canvas: 画板排布识别 vertical/horizontal/grid", () => {
+  const box = (x, y) => ({ x, y, width: 375, height: 812 });
+  assert.equal(
+    detectCanvasLayout([
+      { order: 0, bounds: box(0, 0) },
+      { order: 1, bounds: box(0, 900) },
+      { order: 2, bounds: box(0, 1800) }
+    ]),
+    "vertical"
+  );
+  assert.equal(
+    detectCanvasLayout([
+      { order: 0, bounds: box(0, 0) },
+      { order: 1, bounds: box(400, 0) },
+      { order: 2, bounds: box(800, 0) }
+    ]),
+    "horizontal"
+  );
+  assert.equal(
+    detectCanvasLayout([
+      { order: 0, bounds: box(0, 0) },
+      { order: 1, bounds: box(400, 0) },
+      { order: 2, bounds: box(0, 900) },
+      { order: 3, bounds: box(400, 900) }
+    ]),
+    "grid"
+  );
+  assert.equal(detectCanvasLayout([{ order: 0 }]), "unknown");
+});
+
+test("merge: grid 布局禁用 canvas-order 主线并告警", () => {
+  const screens = [
+    { id: "s1", name: "S1", order: 0, imagePath: null },
+    { id: "s2", name: "S2", order: 1, imagePath: null }
+  ];
+  const reading = mergeReadingChunks([chunkOf("chunk-001", ["s1", "s2"])], {
+    ...metadata(screens),
+    canvasLayout: "grid",
+    knownEdges: [
+      {
+        from: { id: "s1", name: "S1" },
+        to: { id: "s2", name: "S2" },
+        element: { id: "e", name: "推断跳转（按画板排布）", type: "T" },
+        textHints: [],
+        trigger: "ON_CLICK",
+        actionType: "NAVIGATE",
+        provenance: "inferred"
+      }
+    ]
+  });
+  assert.equal(reading.spine.screenIds.length, 1);
+  assert.ok(reading.spine.basis.includes("grid-no-canvas-order"));
+  assert.ok(reading.warnings.some((warning) => warning.code === "reading-grid-canvas-order"));
+});
+
+test("run: 从 flows bounds 识别网格排布", async () => {
+  const dir = makeTempDir("aos-reading-grid-bounds-");
+  const flowsPath = writeFlows(dir, 3);
+  const doc = flowDoc(3);
+  doc.screens[0].bounds = { x: 0, y: 0, width: 375, height: 812 };
+  doc.screens[1].bounds = { x: 400, y: 0, width: 375, height: 812 };
+  doc.screens[2].bounds = { x: 0, y: 900, width: 375, height: 812 };
+  fs.writeFileSync(flowsPath, JSON.stringify(doc));
+  const chat = async (messages) => {
+    const text = messages
+      .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join(" ");
+    const ids = ["s1", "s2", "s3"].filter((id) => text.includes(`id=${id}`));
+    return replyFor(ids);
+  };
+  const result = await runDesignReading({
+    runtime: { configDirAbs: dir },
+    flowsPath,
+    model: "m",
+    chat,
+    imageFor: () => PNG,
+    options: { concurrency: 1 }
+  });
+  assert.equal(result.reading.canvasLayout, "grid");
 });

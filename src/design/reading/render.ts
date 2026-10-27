@@ -57,6 +57,13 @@ export function renderReadingMarkdown(reading: ReadingFile): string {
   if (c.droppedScreens.length > 0) lines.push(`- dropped: ${c.droppedScreens.map((id) => code(id)).join("、")}`);
   if (c.unreadScreens.length > 0) lines.push(`- unread: ${c.unreadScreens.map((id) => code(id)).join("、")}`);
   if (c.truncatedScreens.length > 0) lines.push(`- truncated: ${c.truncatedScreens.map((id) => code(id)).join("、")}`);
+  if (reading.canvasLayout !== undefined) {
+    lines.push(
+      `- 画板排布: ${reading.canvasLayout}${
+        reading.canvasLayout === "grid" ? "（画板顺序不进入 CR 主线）" : ""
+      }`
+    );
+  }
   lines.push(`- 边: unresolved ${c.unresolvedEdges} · unconfirmed ${c.unconfirmedEdges} · overlap 冲突 ${c.overlapConflicts}`);
   lines.push(`- 覆盖: header ${c.headerCoverage}/${c.screensTotal} · bottomNav ${c.bottomNavCoverage}/${c.screensTotal} · 标注 ${c.annotationScreens}`);
   if (c.orphanScreens.length > 0) {
