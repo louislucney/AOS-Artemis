@@ -77,6 +77,7 @@ import {
   scanProjectEnv,
   type EnvScanResult
 } from "./projects/scan.js";
+import { detectProjectStacksDetailed, type StackDetectionReport } from "./projects/stack.js";
 import { usageEnabledFrom, usageEventSampleLimit, usagePolicyFrom } from "./usage/capture.js";
 import { errorMessage, isBuildStale, logWarn, sleep, writeFileAtomic } from "./util.js";
 
@@ -964,6 +965,13 @@ export class Runtime {
     const service = this.iosWdaService;
     this.iosWdaService = null;
     if (service !== null) await service.dispose();
+  }
+
+  /** 技术栈检测的唯一入口：显式 project.stack 优先，返回证据与告警。 */
+  stackDetections(): StackDetectionReport {
+    return detectProjectStacksDetailed(this.project.rootDir, {
+      stack: this.project.config.project?.stack
+    });
   }
 
   projectSummary(): ProjectRecord | null {

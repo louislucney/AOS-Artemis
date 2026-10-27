@@ -7,7 +7,6 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { isGenericLayerName } from "../figma/color.js";
 import { pngDimensions } from "../ios/vision.js";
 import {
-  detectProjectStacks,
   formatComponentFileName,
   primaryProfile,
   skippedStacksWarnings,
@@ -599,7 +598,7 @@ export async function screenMap(runtime: Runtime, args: ScreenMapArgs): Promise<
       });
     }
     if (args.action === "propose") {
-      const stacks = detectProjectStacks(runtime.project.rootDir);
+      const stacks = runtime.stackDetections().stacks;
       const profile = primaryProfile(stacks);
       const proposal = proposeScreenMapEntries(runtime.configDirAbs, profile);
       if (!proposal.buildBrief) {

@@ -69,6 +69,31 @@ test("project.name is trimmed; invalid type is rejected", () => {
   assert.throws(() => loadProject({ cwd: invalid, env: {} }), /project\.name/);
 });
 
+test("project.stack accepts string or array and rejects unknown stacks", () => {
+  const single = makeTempProject({
+    config: `{ "project": { "stack": "react-native" }, "llm": { "profiles": {} }, "artemis": { "repo": "../a" } }`
+  });
+  assert.deepEqual(loadProject({ cwd: single, env: {} }).config.project?.stack, ["react-native"]);
+
+  const multiple = makeTempProject({
+    config: `{ "project": { "stack": ["ios-native", "android-native"] }, "llm": { "profiles": {} }, "artemis": { "repo": "../a" } }`
+  });
+  assert.deepEqual(loadProject({ cwd: multiple, env: {} }).config.project?.stack, [
+    "ios-native",
+    "android-native"
+  ]);
+
+  const unknown = makeTempProject({
+    config: `{ "project": { "stack": "ionic" }, "llm": { "profiles": {} }, "artemis": { "repo": "../a" } }`
+  });
+  assert.throws(() => loadProject({ cwd: unknown, env: {} }), /unknown stack/);
+
+  const invalid = makeTempProject({
+    config: `{ "project": { "stack": 42 }, "llm": { "profiles": {} }, "artemis": { "repo": "../a" } }`
+  });
+  assert.throws(() => loadProject({ cwd: invalid, env: {} }), /project\.stack/);
+});
+
 test("missing config is optional: project resolves with null config", () => {
   const empty = makeTempDir("mobile-testing-mcp-empty-");
   const project = loadProject({ cwd: empty, env: { AOS_PROJECT_DIR: empty } });

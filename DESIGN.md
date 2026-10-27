@@ -2925,3 +2925,15 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **断言**：`toScrollAssertion` 用 `origin/region` 生成结构不变量；探测只产出 observed，不直接写 tests。
 - **测试**：`design-reading-probe` 5 例（探测/恢复/断言区/缓存/命令匹配/Android 解析）；全量 **2387 绿**，lint 0 error（2 条既有 warning）。
 - **边界**：探测逻辑平台无关，设备适配器共享 `ScrollProbeDevice`；iOS 走 `Runtime.iosDevice`（points），Android 走 adb `input swipe`/`uiautomator dump` 并在适配器内按 density 把 px 转 dp；平台差异只是设备 I/O 适配器，不是能力/单位边界。**RN/Flutter 不单独分叉**：它们仍跑在 iOS/Android 上，只按设备 serial 选适配器；若未开启 accessibility/semantics 导致 AX 文本为空，显式返回 `observation-no-ax-text`，不猜框架。不负责导航到目标屏。
+
+### 13.237 实施记录（技术栈检测证据、纯 Dart 守卫与显式覆盖）
+
+> 2026-10-28。设计→代码校准必须先确定“读哪套代码”。原有根目录 marker 启发式在单仓单应用够用，但缺证据链、显式覆盖与纯 Dart 守卫；先把检测从“能猜”收紧为“能解释”。
+
+- **检测规则（单仓单应用）**：`pubspec.yaml` 且声明 `flutter:`/`sdk: flutter` → Flutter（0.95）；根 `package.json` 的 `react-native`/`expo` 依赖 → RN（0.90）；无 Flutter/RN 时根 `settings.gradle(.kts)`/`app/build.gradle` → Android 原生（0.85）；无 Flutter/RN 时 `.xcodeproj/.xcworkspace`（≤2 层）→ iOS 原生（0.80）；非 Flutter/RN 的前端依赖 → Web（0.70）。RN/Flutter 的 `ios/`、`android/` 是同一应用的壳，不作为第二个应用。
+- **纯 Dart 守卫**：`pubspec.yaml` 存在但未声明 Flutter 时按纯 Dart 包处理并告警，不再仅凭文件存在误判 Flutter。
+- **显式覆盖**：`aos.config.jsonc` 新增 `project.stack`（字符串或数组，取值 `flutter|react-native|android-native|ios-native|web`）；优先级高于文件检测，非法值在配置加载时报错；`Runtime.stackDetections()` 为唯一入口，所有资产/token/字符串/扫描/差异工具统一走该入口。
+- **证据与歧义**：`StackDetection` 增 `evidence[{kind:marker|dependency|config,path,detail}]`、`source:detected|config`、`ambiguous`；`detectProjectStacksDetailed` 返回 `{stacks,source,warnings}`。`package.json` 解析失败、`pubspec.yaml` 不可读、Flutter+RN 并存均显式告警；后者标 `ambiguous` 并要求 `project.stack`，不静默取最高置信度。
+- **可见性**：`aos_status.stack` 保留检测数组，新增 `stackSource`/`stackWarnings`；`gaps.json` 的 `detectedStacks` 携带证据；`project_archive` 把检测告警并入 `degraded`。面板与 `aos_status` 的旧字段保持兼容。
+- **边界**：当前按**单仓单应用**设计；单仓多应用、RN/Flutter 嵌入原生壳的棕色地、Flutter add-to-app 子目录仍需 `project.stack` 显式声明（检测不再猜测）。运行期平台仍由设备 serial 决定（iOS/Android），技术栈只决定读哪套代码。
+- **测试**：`stack` 新增 4 例（纯 Dart 不误判/覆盖/Flutter+RN 歧义/坏 package.json），`config` 新增 1 例（字符串/数组/非法值），`aos_status` 新增 1 例（detected/config 来源与 evidence）；全量 **2393 绿**，lint 0 error（2 条既有 warning）。

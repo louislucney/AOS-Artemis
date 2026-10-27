@@ -8,7 +8,7 @@ import {
   restExtractDesignSystem,
   restFindAssets
 } from "../vendor/design-context-bridge/figma-rest/resolve.js";
-import { detectProjectStacks, formatAssetFilename, primaryProfile, skippedStacksWarnings, type StackProfile } from "../projects/stack.js";
+import { formatAssetFilename, primaryProfile, skippedStacksWarnings, type StackProfile } from "../projects/stack.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
 
@@ -330,7 +330,7 @@ export async function figmaGapAnalysis(
     };
 
     // Scanner rules follow the project's detected stack unless overridden.
-    const stacks = detectProjectStacks(runtime.project.rootDir);
+    const stacks = runtime.stackDetections().stacks;
     const profile = primaryProfile(stacks);
     const assetGlobs = args.assetGlobs?.length
       ? args.assetGlobs

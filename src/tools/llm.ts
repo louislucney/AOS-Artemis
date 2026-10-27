@@ -5,7 +5,6 @@ import { bridgeState } from "../figma/bridge.js";
 import { ENV_JIRA_API_TOKEN } from "../jira/config.js";
 import { childLogFilePath, logFilePath } from "../log.js";
 import { PROVIDER_PRESETS, presetSummary } from "../llm/providers.js";
-import { detectProjectStacks } from "../projects/stack.js";
 import { scanVisionHealth } from "../ios/vision-health.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { entryIssues } from "../llm/registry.js";
@@ -257,6 +256,7 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
   const figma = await runtime.figmaTokenInfo();
   const project = runtime.projectSummary();
   const host = await hostStatusView(runtime);
+  const stack = runtime.stackDetections();
 
   return jsonResult({
     ok: true,
@@ -356,7 +356,9 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
       file: logFilePath(),
       childFile: childLogFilePath()
     },
-    stack: detectProjectStacks(runtime.project.rootDir),
+    stack: stack.stacks,
+    stackSource: stack.source,
+    stackWarnings: stack.warnings,
     state: runtime.state.read()
   });
 }

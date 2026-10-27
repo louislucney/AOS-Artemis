@@ -6,7 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { extractDesignSystem } from "../vendor/design-context-bridge/figma-rest/analysis.js";
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
-import { detectProjectStacks, primaryProfile, skippedStacksWarnings } from "../projects/stack.js";
+import { primaryProfile, skippedStacksWarnings } from "../projects/stack.js";
 import {
   loadTokenOverrides,
   mergeColorTokens,
@@ -61,7 +61,7 @@ export async function figmaImportTokens(
     const overrides = loadTokenOverrides(runtime.configDirAbs);
     const merge = mergeColorTokens(designColors, existing, overrides);
 
-    const stacks = detectProjectStacks(runtime.project.rootDir);
+    const stacks = runtime.stackDetections().stacks;
     const profile = primaryProfile(stacks);
     const stackWrite = profile ? renderStackTokenFile(profile, merge.tokens) : null;
     const warnings: string[] = [];

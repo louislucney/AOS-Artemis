@@ -51,7 +51,7 @@ function makeMapProject({ buildBrief = true, flutter = true, componentDir } = {}
   const dir = makeTempProject({ config: baseConfig() });
   const designDir = path.join(dir, ".artemis", "design");
   fs.mkdirSync(designDir, { recursive: true });
-  if (flutter) fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\n");
+  if (flutter) fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n");
   if (buildBrief) {
     fs.writeFileSync(
       path.join(designDir, "build-brief.json"),

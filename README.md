@@ -533,7 +533,7 @@ pen.dev 写回/导出/agent（`pen_export`/`pen_import_assets`/`pen_apply_tokens
 生成的任务描述会自动带上定位线索（Figma 文本优先、图层名兜底）与页面断言（目标页文本/子元素）：例如
 `1) 点击「立即购买」（设计元素：CTA Button），验证进入「Checkout」（页面应出现「应付 ¥99」…）`。
 
-**平台规则自动区分**：服务会从项目文件检测技术栈（`pubspec.yaml`→Flutter、`react-native`/`expo` 依赖→RN、根级 gradle→原生 Android、`*.xcodeproj`→iOS、前端依赖→Web），并按对应档案选择：
+**平台规则自动区分**：服务会从项目文件检测技术栈（`pubspec.yaml` 且声明 Flutter→Flutter、`react-native`/`expo` 依赖→RN、根级 gradle→原生 Android、`*.xcodeproj`→iOS、前端依赖→Web），并按对应档案选择：
 - 资源/token 扫描目录（如 RN `src/assets/**`+`src/theme/**`、Flutter `assets/**`+`lib/theme/**`、原生 `res/drawable*`+`values/colors.xml`）
 - 测试定位约定（testID / ValueKey / resource-id / data-testid）
 - **文件命名**（缺口清单会按栈重命名建议文件名并给出目标目录）：
@@ -542,7 +542,7 @@ pen.dev 写回/导出/agent（`pen_export`/`pen_import_assets`/`pen_apply_tokens
   - 测试：`home-checkout.yaml`（RN/Maestro）、`home_checkout_test.dart`、`HomeCheckoutTest.kt`、`home-checkout.spec.ts`
 - 代码结构约定（供后续代码生成）
 
-检测结果可在 `aos_status.stack` 查看，`gaps.json` 会记录 `detectedStacks` 与实际采用的 `rules`；显式传 `assetGlobs/tokenFiles` 可覆盖。
+检测结果可在 `aos_status.stack` 查看（含 `source: detected|config`、`evidence.path/kind`、`confidence` 与 `stackWarnings`），`gaps.json` 会记录 `detectedStacks` 与实际采用的 `rules`。纯 Dart 包（`pubspec.yaml` 未声明 Flutter）不会误判为 Flutter；显式传 `assetGlobs/tokenFiles` 可覆盖扫描范围，`aos.config.jsonc` 的 `project.stack` 可覆盖技术栈本身（单仓多应用/棕色地场景必须显式声明）。
 
 ### CMS 开放服务（cms-open）
 
@@ -696,7 +696,7 @@ node dist/cli.js doctor
 
 **存储回流**：配置 `MOBILE_TESTING_DATABASE_URL` 后，服务启动会自动把当前项目 `.artemis/ledger/usage.jsonl`、`state.json` 与 `.artemis/design/{runs,case-sets}` 中的历史记录幂等补进中心 PG（成功后写 `.artemis/ledger/.pg-sync.json` 签名，未变化跳过；`AOS_LEDGER_AUTO_IMPORT=0` 关闭）。未配置 PG 时继续使用项目文件台账，不丢记录。
 
-**项目显示名**：`aos.config.jsonc` 可写 `"project": { "name": "mobile-testing" }`；缺省仍用目录 basename。台账、面板与 `aos_status.project.name` 使用该名称。
+**项目显示名**：`aos.config.jsonc` 可写 `"project": { "name": "mobile-testing" }`；缺省仍用目录 basename。台账、面板与 `aos_status.project.name` 使用该名称。同一处可写 `"stack": "react-native"`（或数组）显式覆盖技术栈检测，适用于单仓多应用/棕色地。
 
 ## PostgreSQL 数据模型（v1）
 

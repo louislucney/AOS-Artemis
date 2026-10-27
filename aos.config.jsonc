@@ -5,6 +5,8 @@
   // 详见 DESIGN.md §4。
 
   // 项目显示名（台账/面板）；缺省用目录名。
+  // 技术栈通常自动检测；单仓多应用/棕色地或检测失败时可显式覆盖：
+  // "stack": "react-native" 或 ["ios-native", "android-native"]（flutter | react-native | android-native | ios-native | web）。
   "project": {
     "name": "mobile-testing"
   },

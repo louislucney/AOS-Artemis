@@ -322,6 +322,36 @@ test("aos_status: reports project, store, child and setup state", async () => {
   assert.match(payload.artemis.python.hint, /uv sync/);
 });
 
+test("aos_status: exposes stack evidence and project.stack override", async () => {
+  const detectedDir = makeTempProject({ config: baseConfig() });
+  fs.writeFileSync(
+    path.join(detectedDir, "pubspec.yaml"),
+    "name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n"
+  );
+  const detected = await loadTestRuntime(detectedDir, { proxy: new StubProxy() });
+  const detectedStatus = parseToolResult(await aosStatus(detected.runtime));
+  assert.equal(detectedStatus.stack[0].id, "flutter");
+  assert.equal(detectedStatus.stackSource, "detected");
+  assert.deepEqual(detectedStatus.stack[0].evidence, [
+    { kind: "marker", path: "pubspec.yaml", detail: "flutter" }
+  ]);
+
+  const overrideDir = makeTempProject({
+    config: `{ "project": { "stack": "react-native" }, "llm": { "profiles": {} }, "artemis": { "repo": "../a" } }`
+  });
+  fs.writeFileSync(
+    path.join(overrideDir, "pubspec.yaml"),
+    "name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n"
+  );
+  const override = await loadTestRuntime(overrideDir, { proxy: new StubProxy() });
+  const overrideStatus = parseToolResult(await aosStatus(override.runtime));
+  assert.equal(overrideStatus.stack[0].id, "react-native");
+  assert.equal(overrideStatus.stackSource, "config");
+  assert.deepEqual(overrideStatus.stack[0].evidence, [
+    { kind: "config", path: "aos.config.jsonc", detail: "react-native" }
+  ]);
+});
+
 test("aos_tasks: syncs pending tasks against artemis and lists stats", async () => {
   const dir = makeTempProject({ config: baseConfig(), dotenv: "GEMINI_API_KEY=gm-abcdef123456\n" });
   const proxy = new StubProxy({ running: true, taskStatus: "completed" });

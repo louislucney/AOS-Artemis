@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { restExportImage } from "../vendor/design-context-bridge/figma-rest/resolve.js";
-import { formatAssetFilename, detectProjectStacks, primaryProfile, skippedStacksWarning, type StackProfile } from "../projects/stack.js";
+import { formatAssetFilename, primaryProfile, skippedStacksWarning, type StackProfile } from "../projects/stack.js";
 import { DEFAULT_ASSET_GLOBS, walkProjectFiles } from "./gaps.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { Runtime } from "../runtime.js";
@@ -386,7 +386,7 @@ export async function figmaImportAssets(
       throw new Error("缺少 Figma URL：gaps.json 未记录 sourceUrl，请显式传 url");
     }
 
-    const stacks = detectProjectStacks(runtime.project.rootDir);
+    const stacks = runtime.stackDetections().stacks;
     const profile = primaryProfile(stacks);
     const format = args.format ?? "svg";
     const densities = args.densities !== false;

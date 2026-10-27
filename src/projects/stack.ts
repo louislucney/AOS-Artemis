@@ -3,11 +3,34 @@ import path from "node:path";
 
 export type StackId = "flutter" | "react-native" | "android-native" | "ios-native" | "web";
 
+export interface StackEvidence {
+  kind: "marker" | "dependency" | "config";
+  /** 相对项目根的路径，或配置文件名。 */
+  path: string;
+  detail?: string;
+}
+
 export interface StackDetection {
   id: StackId;
   displayName: string;
   reason: string;
   confidence: number;
+  evidence: StackEvidence[];
+  /** config=显式覆盖；detected=文件/依赖推断。 */
+  source: "detected" | "config";
+  /** 多个互斥应用栈（如 Flutter + React Native）同时出现；需显式指定。 */
+  ambiguous?: boolean;
+}
+
+export interface DetectProjectStacksOptions {
+  /** `aos.config.jsonc` 的 project.stack；优先级最高。 */
+  stack?: StackId[];
+}
+
+export interface StackDetectionReport {
+  stacks: StackDetection[];
+  source: "detected" | "config";
+  warnings: string[];
 }
 
 export type CaseStyle = "kebab" | "snake" | "pascal" | "camel";
@@ -197,6 +220,8 @@ export const STACK_PROFILES: Record<StackId, StackProfile> = {
   }
 };
 
+export const STACK_IDS = Object.keys(STACK_PROFILES) as StackId[];
+
 /** Split any layer/file name into lowercase words (handles camelCase + separators). */
 export function words(name: string): string[] {
   return name
@@ -258,122 +283,241 @@ export function formatTestFileName(name: string, profile: StackProfile | null): 
 
 const WEB_DEPS = ["react", "vue", "next", "nuxt", "svelte", "@angular/core", "vite", "astro"];
 
-/** Detect the project's development stack(s) from well-known marker files.
- * Ordering is by confidence; wrapper projects (RN/Flutter inside android/) do
- * not trigger the native checks. */
-export function detectProjectStacks(rootDir: string): StackDetection[] {
-  const exists = (relative: string): boolean => fs.existsSync(path.join(rootDir, relative));
-  const readJson = (relative: string): Record<string, unknown> | null => {
+function dependencyNames(packageJson: Record<string, unknown> | null): Set<string> {
+  const names = new Set<string>();
+  if (packageJson === null) return names;
+  for (const field of ["dependencies", "devDependencies"]) {
+    const deps = packageJson[field];
+    if (deps === null || typeof deps !== "object" || Array.isArray(deps)) continue;
+    for (const name of Object.keys(deps)) names.add(name);
+  }
+  return names;
+}
+
+function dependencyVersion(
+  packageJson: Record<string, unknown> | null,
+  name: string
+): string | null {
+  if (packageJson === null) return null;
+  for (const field of ["dependencies", "devDependencies"]) {
+    const deps = packageJson[field];
+    if (deps === null || typeof deps !== "object" || Array.isArray(deps)) continue;
+    const value = (deps as Record<string, unknown>)[name];
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return null;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** 纯 Dart 包也有 pubspec.yaml；只有声明 Flutter 才算 Flutter 项目。 */
+function hasFlutterDeclaration(rootDir: string, warnings: string[]): boolean {
+  const file = path.join(rootDir, "pubspec.yaml");
+  if (!fs.existsSync(file)) return false;
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf-8");
+  } catch (error) {
+    warnings.push(`pubspec.yaml 存在但不可读：${errorText(error)}`);
+    return false;
+  }
+  if (/^\s*flutter\s*:/m.test(text) || /sdk\s*:\s*flutter\b/m.test(text)) return true;
+  warnings.push("pubspec.yaml 未声明 Flutter（按纯 Dart 包处理）");
+  return false;
+}
+
+function readPackageJson(rootDir: string, warnings: string[]): Record<string, unknown> | null {
+  const file = path.join(rootDir, "package.json");
+  if (!fs.existsSync(file)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch (error) {
+    warnings.push(`package.json 解析失败：${errorText(error)}`);
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    warnings.push("package.json 根节点不是对象");
+    return null;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** 返回相对项目根的 xcodeproj/xcworkspace 路径；与原检测口径一致（≤2 层）。 */
+function findXcodeProject(rootDir: string): string | null {
+  const ignored = new Set([
+    "node_modules",
+    "dist",
+    "build",
+    ".git",
+    ".gradle",
+    "Pods",
+    "DerivedData",
+    "vendor"
+  ]);
+  const projectEntry = (dir: string): string | null => {
     try {
-      return JSON.parse(fs.readFileSync(path.join(rootDir, relative), "utf-8")) as Record<
-        string,
-        unknown
-      >;
+      const entry = fs
+        .readdirSync(dir)
+        .find((name) => name.endsWith(".xcodeproj") || name.endsWith(".xcworkspace"));
+      return entry === undefined ? null : path.relative(rootDir, path.join(dir, entry));
     } catch {
       return null;
     }
   };
-  const hasXcodeProject = (): boolean => {
-    const ignored = new Set([
-      "node_modules",
-      "dist",
-      "build",
-      ".git",
-      ".gradle",
-      "Pods",
-      "DerivedData",
-      "vendor"
-    ]);
-    const hasProjectEntry = (dir: string): boolean => {
-      try {
-        return fs
-          .readdirSync(dir)
-          .some((entry) => entry.endsWith(".xcodeproj") || entry.endsWith(".xcworkspace"));
-      } catch {
-        return false;
-      }
-    };
-    const walk = (dir: string, depth: number): boolean => {
-      if (depth === 0) return false;
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return false;
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory() || ignored.has(entry.name)) continue;
-        const child = path.join(dir, entry.name);
-        if (hasProjectEntry(child)) return true;
-        if (walk(child, depth - 1)) return true;
-      }
-      return false;
-    };
-    if (hasProjectEntry(rootDir)) return true;
-    return walk(rootDir, 2);
+  const walk = (dir: string, depth: number): string | null => {
+    if (depth === 0) return null;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || ignored.has(entry.name)) continue;
+      const child = path.join(dir, entry.name);
+      const found = projectEntry(child);
+      if (found !== null) return found;
+      const nested = walk(child, depth - 1);
+      if (nested !== null) return nested;
+    }
+    return null;
   };
+  return projectEntry(rootDir) ?? walk(rootDir, 2);
+}
+
+function configDetection(id: StackId): StackDetection {
+  return {
+    id,
+    displayName: STACK_PROFILES[id].displayName,
+    reason: "aos.config.jsonc project.stack",
+    confidence: 1,
+    evidence: [{ kind: "config", path: "aos.config.jsonc", detail: id }],
+    source: "config"
+  };
+}
+
+/** 检测项目技术栈并附带证据；override（project.stack）优先于文件推断。
+ * 单仓单应用按根目录 marker/依赖判断；不做 monorepo/棕色地推断。 */
+export function detectProjectStacksDetailed(
+  rootDir: string,
+  options: DetectProjectStacksOptions = {}
+): StackDetectionReport {
+  const warnings: string[] = [];
+  const requested = options.stack ?? [];
+  const invalid = requested.filter((id) => !STACK_IDS.includes(id));
+  if (invalid.length > 0) {
+    throw new Error(`未知技术栈：${invalid.join(", ")}（可选：${STACK_IDS.join(", ")}）`);
+  }
+  if (requested.length > 0) {
+    return {
+      stacks: [...new Set(requested)].map((id) => configDetection(id)),
+      source: "config",
+      warnings
+    };
+  }
 
   const detections: StackDetection[] = [];
-
-  const isFlutter = exists("pubspec.yaml");
+  const isFlutter = hasFlutterDeclaration(rootDir, warnings);
   if (isFlutter) {
     detections.push({
       id: "flutter",
       displayName: STACK_PROFILES.flutter.displayName,
-      reason: "pubspec.yaml",
-      confidence: 0.95
+      reason: "pubspec.yaml (flutter)",
+      confidence: 0.95,
+      evidence: [{ kind: "marker", path: "pubspec.yaml", detail: "flutter" }],
+      source: "detected"
     });
   }
 
-  const packageJson = readJson("package.json");
-  const dependencyNames = packageJson
-    ? [
-        ...Object.keys((packageJson.dependencies as Record<string, unknown>) ?? {}),
-        ...Object.keys((packageJson.devDependencies as Record<string, unknown>) ?? {})
-      ]
-    : [];
-  const isExpo = dependencyNames.includes("expo");
-  const isReactNative = dependencyNames.includes("react-native") || isExpo;
+  const packageJson = readPackageJson(rootDir, warnings);
+  const dependencySet = dependencyNames(packageJson);
+  const rnVersion = dependencyVersion(packageJson, "react-native");
+  const expoVersion = dependencyVersion(packageJson, "expo");
+  const isExpo = expoVersion !== null;
+  const isReactNative = rnVersion !== null || isExpo;
   if (isReactNative) {
+    const evidence: StackEvidence[] = [];
+    if (rnVersion !== null) {
+      evidence.push({ kind: "dependency", path: "package.json", detail: `react-native@${rnVersion}` });
+    }
+    if (expoVersion !== null) {
+      evidence.push({ kind: "dependency", path: "package.json", detail: `expo@${expoVersion}` });
+    }
     detections.push({
       id: "react-native",
       displayName: STACK_PROFILES["react-native"].displayName,
       reason: isExpo ? "expo dependency" : "react-native dependency",
-      confidence: 0.9
+      confidence: 0.9,
+      evidence,
+      source: "detected"
     });
   }
 
   if (!isFlutter && !isReactNative) {
-    const isNativeAndroid =
-      exists("settings.gradle") || exists("settings.gradle.kts") || exists("app/build.gradle");
-    if (isNativeAndroid) {
+    const androidMarker = ["settings.gradle", "settings.gradle.kts", "app/build.gradle"].find(
+      (relative) => fs.existsSync(path.join(rootDir, relative))
+    );
+    if (androidMarker !== undefined) {
       detections.push({
         id: "android-native",
         displayName: STACK_PROFILES["android-native"].displayName,
         reason: "Gradle project (app/settings)",
-        confidence: 0.85
+        confidence: 0.85,
+        evidence: [{ kind: "marker", path: androidMarker }],
+        source: "detected"
       });
     }
-    if (hasXcodeProject()) {
+    const xcode = findXcodeProject(rootDir);
+    if (xcode !== null) {
       detections.push({
         id: "ios-native",
         displayName: STACK_PROFILES["ios-native"].displayName,
         reason: "xcodeproj/xcworkspace (≤2 层目录)",
-        confidence: 0.8
+        confidence: 0.8,
+        evidence: [{ kind: "marker", path: xcode }],
+        source: "detected"
       });
     }
   }
 
-  if (packageJson && !isReactNative && WEB_DEPS.some((dep) => dependencyNames.includes(dep))) {
-    detections.push({
-      id: "web",
-      displayName: STACK_PROFILES.web.displayName,
-      reason: "frontend dependency in package.json",
-      confidence: 0.7
-    });
+  if (packageJson !== null && !isFlutter && !isReactNative) {
+    const webDeps = WEB_DEPS.filter((dep) => dependencySet.has(dep));
+    if (webDeps.length > 0) {
+      detections.push({
+        id: "web",
+        displayName: STACK_PROFILES.web.displayName,
+        reason: "frontend dependency in package.json",
+        confidence: 0.7,
+        evidence: webDeps.map((dep) => ({
+          kind: "dependency",
+          path: "package.json",
+          detail: `${dep}@${dependencyVersion(packageJson, dep) ?? "unknown"}`
+        })),
+        source: "detected"
+      });
+    }
   }
 
-  return detections.sort((a, b) => b.confidence - a.confidence);
+  if (isFlutter && isReactNative) {
+    for (const detection of detections) detection.ambiguous = true;
+    warnings.push("检测到 Flutter 与 React Native 同时存在：单仓单应用下无法确定主栈，请用 project.stack 显式指定");
+  }
+
+  return {
+    stacks: detections.sort((a, b) => b.confidence - a.confidence),
+    source: "detected",
+    warnings
+  };
+}
+
+export function detectProjectStacks(
+  rootDir: string,
+  options: DetectProjectStacksOptions = {}
+): StackDetection[] {
+  return detectProjectStacksDetailed(rootDir, options).stacks;
 }
 
 export function primaryProfile(detections: StackDetection[]): StackProfile | null {

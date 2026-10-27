@@ -14,7 +14,7 @@ import {
   type ImportResultEntry
 } from "../figma/import.js";
 import { DEFAULT_ASSET_GLOBS, fallbackAssetName, isGenericLayerName, walkProjectFiles } from "../figma/gaps.js";
-import { detectProjectStacks, primaryProfile, skippedStacksWarning } from "../projects/stack.js";
+import { primaryProfile, skippedStacksWarning } from "../projects/stack.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import { detectPenFailure, penEnvFrom, runPenCli, runPenInteractive, type PenExecFn } from "./cli.js";
@@ -144,7 +144,7 @@ export async function penImportAssets(
       );
     }
 
-    const stacks = detectProjectStacks(runtime.project.rootDir);
+    const stacks = runtime.stackDetections().stacks;
     const profile = primaryProfile(stacks);
     const format = args.format ?? "png";
     const ext = FORMAT_EXTENSION[format] ?? "png";

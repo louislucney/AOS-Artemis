@@ -13,7 +13,6 @@ import {
 } from "../figma/brief.js";
 import { writeAssetFile } from "../figma/import.js";
 import {
-  detectProjectStacks,
   formatComponentFileName,
   primaryProfile,
   skippedStacksWarnings,
@@ -187,7 +186,7 @@ export async function penExportBrief(
     const relative = penRelativePath(runtime, target);
     const fileName = path.basename(target);
 
-    const stacks = detectProjectStacks(runtime.project.rootDir);
+    const stacks = runtime.stackDetections().stacks;
     const profile = primaryProfile(stacks);
     const packageName = profile?.id === "android-native" ? detectAndroidPackage(runtime.project.rootDir) : null;
 

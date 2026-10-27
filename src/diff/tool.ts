@@ -33,7 +33,7 @@ import { loadScreenMap, localizeRegion, proposeScreenMapEntries, type ProposeRes
 import type { UiContract, UiTextContract } from "../ui/contract.js";
 import { loadUiSemantics, semanticsForScreen } from "../ui/semantics.js";
 import { measureTextWeight, type TextWeightResult } from "../ui/text-weight.js";
-import { detectProjectStacks, primaryProfile } from "../projects/stack.js";
+import { primaryProfile } from "../projects/stack.js";
 
 export interface DesignSourceArgs {
   source?: "figma" | "pen" | "image";
@@ -797,7 +797,7 @@ export async function designDeviceDiff(
         }
         proposal = proposeScreenMapEntries(
           runtime.configDirAbs,
-          primaryProfile(detectProjectStacks(runtime.project.rootDir))
+          primaryProfile(runtime.stackDetections().stacks)
         );
       }
       region.localized = localizeRegion(region, node, screens, screenMap.entries, proposal);

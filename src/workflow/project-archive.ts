@@ -8,8 +8,8 @@ import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.j
 import { loadDesignFlowGraph, readFlowDocumentMeta } from "../figma/design-store.js";
 import { designFlowsPath } from "../figma/design-source.js";
 import { loadRunManifest, runManifestFileNames, type RunManifest } from "../figma/run-manifest.js";
+import { detectProjectStacksDetailed } from "../projects/stack.js";
 import { resolveProvenance } from "../provenance.js";
-import { detectProjectStacks } from "../projects/stack.js";
 import type { Runtime } from "../runtime.js";
 import { collectVerdictExits } from "../tasks/verdict-exits.js";
 import { errorMessage } from "../util.js";
@@ -77,6 +77,10 @@ export async function projectArchive(
 ): Promise<CallToolResult> {
   const degraded: string[] = [];
   const root = runtime.project.rootDir;
+  const stackReport = detectProjectStacksDetailed(root, {
+    stack: runtime.project.config?.project?.stack
+  });
+  degraded.push(...stackReport.warnings);
 
   if (runtime.store !== undefined && runtime.store.kind === "memory") {
     degraded.push("登记读自会话内存（未配置持久台账），用例库/裁决数据可能不完整");
@@ -210,7 +214,7 @@ export async function projectArchive(
     project: {
       name: path.basename(root),
       root,
-      stacks: detectProjectStacks(root).map((stack) => ({ id: stack.id, displayName: stack.displayName }))
+      stacks: stackReport.stacks.map((stack) => ({ id: stack.id, displayName: stack.displayName }))
     },
     design,
     caseSets,

@@ -4,7 +4,7 @@ import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Enforcement } from "../figma/import-tokens.js";
-import { detectProjectStacks, primaryProfile, skippedStacksWarnings } from "../projects/stack.js";
+import { primaryProfile, skippedStacksWarnings } from "../projects/stack.js";
 import {
   normalizeHexColor,
   parseCanonicalTokens,
@@ -310,7 +310,7 @@ export async function penImportTokens(
     );
     const merge = mergePenColorTokens(extraction.inputs, existing);
 
-    const stacks = detectProjectStacks(runtime.project.rootDir);
+    const stacks = runtime.stackDetections().stacks;
     const profile = primaryProfile(stacks);
     const stackWrite = profile ? renderStackTokenFile(profile, merge.tokens) : null;
     const warnings = [...extraction.warnings];

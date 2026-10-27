@@ -13,7 +13,6 @@ import {
 } from "../vendor/design-context-bridge/figma-rest/analysis.js";
 import { walk, type FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import {
-  detectProjectStacks,
   formatComponentFileName,
   primaryProfile,
   skippedStacksWarnings,
@@ -391,7 +390,7 @@ export async function figmaExportBrief(
     };
     const designSystem = extractDesignSystem(document) as BriefData["designSystem"];
 
-    const stacks = detectProjectStacks(runtime.project.rootDir);
+    const stacks = runtime.stackDetections().stacks;
     const profile = primaryProfile(stacks);
     const packageName = profile?.id === "android-native" ? detectAndroidPackage(runtime.project.rootDir) : null;
 

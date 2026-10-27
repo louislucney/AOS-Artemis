@@ -15,6 +15,7 @@ import type {
   ProjectConfig
 } from "./types.js";
 import { DEFAULT_CONFIG_DIR } from "./types.js";
+import { STACK_IDS, type StackId } from "../projects/stack.js";
 import { makeResolver, validateConfig, type ValidationResult, type ValueResolver } from "./validate.js";
 
 export const CONFIG_FILENAME = "aos.config.jsonc";
@@ -98,6 +99,29 @@ export function parseConfigFile(configPath: string): AosConfig {
   return normalizeConfig(data);
 }
 
+function parseProjectStack(raw: unknown): StackId[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const values = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : null;
+  if (values === null) {
+    throw new Error(`${CONFIG_FILENAME}: "project.stack" must be a string or an array of strings`);
+  }
+  const ids: StackId[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") {
+      throw new Error(`${CONFIG_FILENAME}: "project.stack" must be a string or an array of strings`);
+    }
+    const id = value.trim();
+    if (id === "") continue;
+    if (!STACK_IDS.includes(id as StackId)) {
+      throw new Error(
+        `${CONFIG_FILENAME}: "project.stack" contains unknown stack "${id}" (expected ${STACK_IDS.join(", ")})`
+      );
+    }
+    if (!ids.includes(id as StackId)) ids.push(id as StackId);
+  }
+  return ids.length > 0 ? ids : undefined;
+}
+
 export function normalizeConfig(data: unknown): AosConfig {
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
     throw new Error(`${CONFIG_FILENAME} must be a JSON object`);
@@ -145,7 +169,14 @@ export function normalizeConfig(data: unknown): AosConfig {
       throw new Error(`${CONFIG_FILENAME}: "project.name" must be a string`);
     }
     const name = typeof projectObj.name === "string" ? projectObj.name.trim() : "";
-    project = name === "" ? undefined : { name };
+    const stack = parseProjectStack(projectObj.stack);
+    project =
+      name === "" && stack === undefined
+        ? undefined
+        : {
+            ...(name === "" ? {} : { name }),
+            ...(stack === undefined ? {} : { stack })
+          };
   }
 
   const designRaw = obj.design;

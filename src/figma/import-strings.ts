@@ -5,7 +5,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
-import { STACK_PROFILES, detectProjectStacks, type StackProfile } from "../projects/stack.js";
+import { STACK_PROFILES, type StackProfile } from "../projects/stack.js";
 import {
   androidLocaleDir,
   collectFigmaTexts,
@@ -107,7 +107,7 @@ export async function runStringsImport(
       (key) => !mergedEntries.some((entry) => entry.key === key)
     );
 
-    const stacks = detectProjectStacks(runtime.project.rootDir);
+    const stacks = runtime.stackDetections().stacks;
     const implemented = stacks
       .filter((stack) => IMPLEMENTED_STRING_STACKS.has(stack.id))
       .map((stack) => STACK_PROFILES[stack.id]);

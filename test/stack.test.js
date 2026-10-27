@@ -7,6 +7,7 @@ import { makeTempDir } from "./helpers.js";
 
 import {
   detectProjectStacks,
+  detectProjectStacksDetailed,
   formatAssetFilename,
   formatComponentFileName,
   formatTestFileName,
@@ -20,20 +21,67 @@ function tmp() {
   return makeTempDir("aos-stack-");
 }
 
+const FLUTTER_PUBSPEC = "name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n";
+
 function write(root, relative, content = "") {
   const target = path.join(root, relative);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, content);
 }
 
-test("detects Flutter from pubspec.yaml", () => {
+test("detects Flutter from pubspec.yaml with a Flutter declaration", () => {
   const root = tmp();
-  write(root, "pubspec.yaml", "name: app\n");
+  write(root, "pubspec.yaml", FLUTTER_PUBSPEC);
   write(root, "lib/main.dart", "void main() {}");
 
   const stacks = detectProjectStacks(root);
   assert.equal(stacks[0].id, "flutter");
   assert.ok(primaryProfile(stacks).assetGlobs.includes("assets/**"));
+  assert.equal(stacks[0].source, "detected");
+  assert.deepEqual(stacks[0].evidence, [
+    { kind: "marker", path: "pubspec.yaml", detail: "flutter" }
+  ]);
+});
+
+test("pure Dart pubspec.yaml is not Flutter", () => {
+  const root = tmp();
+  write(root, "pubspec.yaml", "name: cli\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n");
+  assert.deepEqual(detectProjectStacks(root), []);
+});
+
+test("project.stack override wins over markers", () => {
+  const root = tmp();
+  write(root, "pubspec.yaml", FLUTTER_PUBSPEC);
+  const report = detectProjectStacksDetailed(root, { stack: ["react-native"] });
+  assert.equal(report.source, "config");
+  assert.equal(report.stacks.length, 1);
+  assert.equal(report.stacks[0].id, "react-native");
+  assert.equal(report.stacks[0].confidence, 1);
+  assert.deepEqual(report.stacks[0].evidence, [
+    { kind: "config", path: "aos.config.jsonc", detail: "react-native" }
+  ]);
+});
+
+test("Flutter + React Native is ambiguous and asks for project.stack", () => {
+  const root = tmp();
+  write(root, "pubspec.yaml", FLUTTER_PUBSPEC);
+  write(
+    root,
+    "package.json",
+    JSON.stringify({ dependencies: { "react-native": "0.78.0" } })
+  );
+  const report = detectProjectStacksDetailed(root);
+  assert.equal(report.stacks.length, 2);
+  assert.ok(report.stacks.every((stack) => stack.ambiguous === true));
+  assert.match(report.warnings.join("\n"), /project\.stack/);
+});
+
+test("invalid package.json is reported, not silently ignored", () => {
+  const root = tmp();
+  write(root, "package.json", "{not-json");
+  const report = detectProjectStacksDetailed(root);
+  assert.deepEqual(report.stacks, []);
+  assert.match(report.warnings.join("\n"), /package\.json 解析失败/);
 });
 
 test("detects React Native and does not misclassify its android/ folder", () => {
@@ -48,6 +96,9 @@ test("detects React Native and does not misclassify its android/ folder", () => 
 
   const stacks = detectProjectStacks(root);
   assert.equal(stacks[0].id, "react-native");
+  assert.deepEqual(stacks[0].evidence, [
+    { kind: "dependency", path: "package.json", detail: "react-native@0.78.0" }
+  ]);
   assert.ok(!stacks.some((stack) => stack.id === "android-native"), "RN wrapper is not native");
   assert.ok(!stacks.some((stack) => stack.id === "web"), "react dep alone must not trigger web");
 });

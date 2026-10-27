@@ -1,3 +1,5 @@
+import type { StackId } from "../projects/stack.js";
+
 export const PROVIDER_IDS = ["google", "openai", "custom", "anthropic", "openrouter", "xai"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
@@ -69,6 +71,8 @@ export interface DesignConfig {
  * renamed or the service repo is used as its own project. */
 export interface ProjectConfig {
   name?: string;
+  /** 显式技术栈覆盖（优先于根目录 marker/依赖检测）；单仓多应用/棕色地必须显式声明。 */
+  stack?: StackId[];
 }
 
 export interface ArtemisConfig {

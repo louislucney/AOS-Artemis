@@ -89,7 +89,7 @@ mobile-testing（AOS × ARTEMIS 合并）MCP 服务：Figma 设计上下文（�
 - **项目事件**：`project_events`（run/case/artifact/log/feedback.request）经 `POST/GET /events/<project>`、`aos_event_report/aos_events/aos_event_poll` 上报/查询/消费；面板运维页签「事件」（`?section=events`）只读查询类型/状态/消费态，payload 默认不回显（DESIGN §13.137–§13.139、§13.187）。
 - **依赖更新检测**：`artemis/.venv/.aos-deps.json` 的 lock 哈希 stamp 对比 `uv.lock`；过期时 serve / `doctor --install-deps` 自动更新（依赖包 `AOS_ARTEMIS_DEPS_URL` 优先，旧包回退在线 `uv sync`；`AOS_DEPS_NO_ONLINE=1` 禁在线）。仅代码更新无需操作（venv 只装依赖，代码从仓库读取）。
 - **pen CLI 托管**：解析链 `AOS_PEN_CLI_PATH` → 托管目录（`AOS_PEN_CLI_DIR`，默认 `~/.aos/pen-cli`）→ PATH；缺失时首次调用自动安装 `@pen.dev/cli[@AOS_PEN_VERSION]`（Node ≥ 22.19、需网络；`AOS_PEN_NO_INSTALL=1`/`AOS_DEPS_NO_ONLINE=1` 关闭；超时 `AOS_PEN_INSTALL_TIMEOUT_MS` 默认 600s；失败 5min 冷却 + 并发去重；`dryRun` 不触发）；项目 `.env` 白名单透传子进程（`PEN_CLI_KEY`/`PEN_AGENT_API_KEY`/`ANTHROPIC_*`/`AOS_PEN_*`，进程 env 优先、active LLM 凭证最后覆盖）；doctor 显示状态、`--install-deps` 预装（`src/pen/install.ts`、`src/pen/cli.ts`）。
-- **技术栈检测**：`src/projects/stack.ts`（Flutter / React Native / 原生 Android / iOS / Web）；gap 扫描规则、定位/代码/文件命名约定按栈选择，`aos_status.stack` 可见。
+- **技术栈检测**：`src/projects/stack.ts`（Flutter / React Native / 原生 Android / iOS / Web）；根目录 marker/依赖推断，`project.stack` 显式覆盖优先（单仓多应用/棕色地必须声明）；`pubspec.yaml` 未声明 Flutter 按纯 Dart 包处理；`aos_status.stack` 返回 `source/evidence/confidence/ambiguous` 与 `stackWarnings`。单仓单应用不把 RN/Flutter 的 `ios/`、`android/` 原生壳当成第二个应用。gap 扫描规则、定位/代码/文件命名约定按栈选择。
 
 ## 设计流水线（Figma → 测试/代码）
 

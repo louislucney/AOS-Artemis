@@ -66,7 +66,7 @@ test("figma_import_tokens: canonical + flutter token file, idempotent, alpha pre
     ]);
     const restore = stubFigma(doc, fileKey);
     const dir = makeTempProject({ config: baseConfig() });
-    fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\n");
+    fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n");
     const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
 
     try {
@@ -107,7 +107,7 @@ test("figma_import_tokens: dryRun writes nothing; enforcement=block on hardcoded
     const doc = figmaDocument([{ name: "CTA Button", rgba: { r: 0.1, g: 0.2, b: 0.3 } }]);
     const restore = stubFigma(doc, fileKey);
     const dir = makeTempProject({ config: baseConfig() });
-    fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\n");
+    fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n");
     const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
 
     try {
@@ -142,7 +142,7 @@ test("figma_import_tokens: unmanaged target file is not overwritten without over
     const doc = figmaDocument([{ name: "CTA Button", rgba: { r: 0.1, g: 0.2, b: 0.3 } }]);
     const restore = stubFigma(doc, fileKey);
     const dir = makeTempProject({ config: baseConfig() });
-    fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\n");
+    fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n");
     fs.mkdirSync(path.join(dir, "lib", "theme"), { recursive: true });
     fs.writeFileSync(path.join(dir, "lib", "theme", "aos_tokens.dart"), "// hand-written\n");
     const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });

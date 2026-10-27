@@ -85,7 +85,7 @@ function makeAndroidProject() {
 
 function makeFlutterProject() {
   const dir = makeTempProject({ config: baseConfig() });
-  fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\n");
+  fs.writeFileSync(path.join(dir, "pubspec.yaml"), "name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n");
   return dir;
 }
 

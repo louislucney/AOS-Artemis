@@ -684,7 +684,7 @@ async function softReadProject(
   const android = resolveAndroidAdbSocket(project.config, project.resolver);
   const pen = project.resolver.getValue("PEN_CLI_KEY");
 
-  const detectedStacks = detectProjectStacks(project.rootDir);
+  const detectedStacks = detectProjectStacks(project.rootDir, { stack: project.config.project?.stack });
   return {
     project,
     configDirAbs: configDirAbs(project.config, project.rootDir),
