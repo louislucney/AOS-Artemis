@@ -29,7 +29,12 @@ import { designFlowsPath, sharedDesignDir } from "../figma/design-source.js";
 import { executeSuiteBatch, type SuiteBatchResult } from "../figma/suite-batch.js";
 import type { SuiteRunOptions, SuiteRunReport } from "../figma/suite-runner.js";
 import { buildUiContract, type UiContract } from "../ui/contract.js";
-import { buildResourceCalibration, type ResourceCalibrationReport } from "../ui/resource-calibration.js";
+import {
+  buildResourceCalibration,
+  traceFontScaleFromRun,
+  tracePixelRatioFromRun,
+  type ResourceCalibrationReport
+} from "../ui/resource-calibration.js";
 import {
   figmaGenerateTests,
   updateTestsApiReview,
@@ -112,6 +117,23 @@ const GENERATE_SUGGESTIONS = [
 
 function jsonResult(payload: unknown, isError = false): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], isError };
+}
+
+function traceDeviceContext(
+  runtime: Runtime,
+  traceIds: string[]
+): { pixelRatio: number | null; fontScale: number | null } {
+  for (const traceId of traceIds) {
+    try {
+      const run = JSON.parse(fs.readFileSync(path.join(runtime.traceDir(traceId), "run.json"), "utf-8")) as unknown;
+      const pixelRatio = tracePixelRatioFromRun(run);
+      const fontScale = traceFontScaleFromRun(run);
+      if (pixelRatio !== null || fontScale !== null) return { pixelRatio, fontScale };
+    } catch {
+      /* trace missing/unreadable: keep null and report not-evaluated */
+    }
+  }
+  return { pixelRatio: null, fontScale: null };
 }
 
 function usageError(message: string): CallToolResult {
@@ -636,6 +658,23 @@ export async function designToTest(
   let runSummary: Record<string, unknown> | null = null;
   let runManifestPath: string | null = null;
   let resourceReport: ResourceCalibrationReport | null = null;
+  if (args.run !== true && args.uiDiff !== false) {
+    const contractPath = path.join(runtime.configDirAbs, "design", "ui-contract.json");
+    if (fs.existsSync(contractPath)) {
+      try {
+        const contract = JSON.parse(fs.readFileSync(contractPath, "utf-8")) as UiContract;
+        resourceReport = buildResourceCalibration(runtime, contract);
+      } catch (error) {
+        warnings = [
+          ...warnings,
+          {
+            code: "resource-calibration-failed",
+            message: `已有 UI 契约无法用于资源对账（${errorMessage(error)}）`
+          }
+        ];
+      }
+    }
+  }
   if (args.run === true) {
     let uiDiffEnabled = args.uiDiff !== false;
     let builtContract: UiContract | null = null;
@@ -753,6 +792,29 @@ export async function designToTest(
           : {}),
         ...warningFields(), ...readingField()
       });
+    }
+    if (builtContract !== null) {
+      try {
+        const traceDevice = traceDeviceContext(
+          runtime,
+          report.cases.map((entry) => entry.traceId).filter((traceId): traceId is string => traceId !== null)
+        );
+        resourceReport = buildResourceCalibration(runtime, builtContract, {
+          device: {
+            nativeUnit: platformOf(device) === "ios" ? "pt" : "dp",
+            ...(traceDevice.pixelRatio !== null ? { pixelRatio: traceDevice.pixelRatio } : {}),
+            ...(traceDevice.fontScale !== null ? { fontScale: traceDevice.fontScale } : {})
+          }
+        });
+      } catch (error) {
+        warnings = [
+          ...warnings,
+          {
+            code: "resource-calibration-failed",
+            message: `资源对账失败（${errorMessage(error)}）；不影响用例执行`
+          }
+        ];
+      }
     }
     const quarantinedFailures = report.cases.filter(
       (entry) => entry.quarantined === true && entry.status !== "passed"

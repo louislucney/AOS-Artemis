@@ -3,7 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { buildResourceCalibration } from "../dist/ui/resource-calibration.js";
+import {
+  buildResourceCalibration,
+  traceFontScaleFromRun,
+  tracePixelRatioFromRun
+} from "../dist/ui/resource-calibration.js";
 import { baseConfig, createImage, makeTempProject, toPng } from "./helpers.js";
 
 function write(root, relative, content) {
@@ -19,7 +23,7 @@ function writePng(root, relative, width, height) {
 }
 
 function runtimeFor(root) {
-  return { project: { rootDir: root, config: { project: {} } } };
+  return { configDirAbs: path.join(root, ".artemis"), project: { rootDir: root, config: { project: {} } } };
 }
 
 function designContract() {
@@ -126,6 +130,38 @@ function designContract() {
       }
     ]
   };
+}
+
+function nativeDesignContract() {
+  const contract = designContract();
+  contract.screens[0].texts = [
+    {
+      id: "title",
+      content: "行動預點",
+      fontFamily: null,
+      fontSize: 20,
+      fontWeight: 700,
+      lineHeight: null,
+      letterSpacing: null,
+      maxLines: null,
+      bbox: { x: 0, y: 0, width: 100, height: 28 },
+      bboxSpace: "design-px",
+      geometryStatus: "extracted"
+    }
+  ];
+  contract.screens[0].images = [
+    {
+      id: "hero",
+      name: "Hero",
+      source: "./hero.png",
+      assetKey: "hero",
+      fit: "cover",
+      bbox: { x: 0, y: 0, width: 343, height: 160 },
+      bboxSpace: "design-px",
+      geometryStatus: "extracted"
+    }
+  ];
+  return contract;
 }
 
 function writeRnFixture(root) {
@@ -271,6 +307,25 @@ test("resource calibration: RN image density/fit and text line-height/text-scale
   const root = makeTempProject({ config: baseConfig() });
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   writeRnFixture(root);
+  write(
+    root,
+    "src/screens/AAA.tsx",
+    `import { Text } from "react-native";
+import { typography } from "../theme/tokens";
+export function Other() {
+  return <Text style={typography.title} numberOfLines={1}>到店自取</Text>;
+}
+`
+  );
+  write(
+    root,
+    ".artemis/design/screen-map.json",
+    JSON.stringify({
+      version: 1,
+      entries: [{ design: { screen: "Home" }, code: { file: "src/screens/Home.tsx" } }],
+      elements: []
+    })
+  );
   const report = buildResourceCalibration(runtimeFor(root), designContract(), {
     device: { nativeUnit: "pt", pixelRatio: 3, fontScale: 1.3 }
   });
@@ -302,6 +357,21 @@ test("resource calibration: RN image density/fit and text line-height/text-scale
   const banner = report.items.find((item) => item.kind === "image" && item.designId === "banner");
   assert.equal(banner.status, "upscale");
   assert.ok(banner.notes.some((note) => note.includes("variants 1/2")));
+  const pickup = report.items.find((item) => item.kind === "text" && item.designId === "pickup");
+  assert.equal(pickup.status, "match");
+  assert.match(pickup.codeRef, /src\/screens\/Home\.tsx:\d+$/, pickup.codeRef);
+});
+
+test("tracePixelRatioFromRun: median of valid step scales; invalid -> null", () => {
+  assert.equal(tracePixelRatioFromRun({ steps: [{ scale: 3 }, { scale: 3 }, { scale: 2 }] }), 3);
+  assert.equal(tracePixelRatioFromRun({ steps: [{ scale: 2 }, { scale: 3 }] }), 2.5);
+  assert.equal(tracePixelRatioFromRun({ steps: [{ scale: 0 }, { scale: null }, {}] }), null);
+  assert.equal(tracePixelRatioFromRun({ steps: [] }), null);
+  assert.equal(tracePixelRatioFromRun(null), null);
+  assert.equal(traceFontScaleFromRun({ fontScale: 1.3 }), 1.3);
+  assert.equal(traceFontScaleFromRun({ device: { fontScale: 1.15 } }), 1.15);
+  assert.equal(traceFontScaleFromRun({}), null);
+  assert.equal(traceFontScaleFromRun({ fontScale: 0 }), null);
 });
 
 test("resource calibration: Flutter font-weight substitution and height multiplier", (t) => {
@@ -343,4 +413,53 @@ test("resource calibration: no stack is explicit unverifiable, not guessed", (t)
   assert.equal(report.texts.unverifiable, 3);
   assert.ok(report.warnings.some((warning) => warning.includes("未检测到技术栈")));
   assert.ok(report.items.every((item) => item.status === "unverifiable"));
+});
+
+test("resource calibration: Android XML native text/image best effort", (t) => {
+  const root = makeTempProject({ config: baseConfig() });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  write(root, "app/build.gradle", "// fixture\n");
+  write(
+    root,
+    "app/src/main/res/layout/home.xml",
+    `<LinearLayout>
+  <TextView android:text="行動預點" android:textSize="20sp" android:textStyle="bold"
+    android:fontFamily="sans-serif" android:lineSpacingExtra="8dp" android:maxLines="1" />
+  <ImageView android:src="@drawable/hero" android:layout_width="343dp"
+    android:layout_height="160dp" android:scaleType="centerCrop" />
+</LinearLayout>
+`
+  );
+  const report = buildResourceCalibration(runtimeFor(root), nativeDesignContract());
+  assert.equal(report.stacks[0].id, "android-native");
+  assert.equal(report.texts.match, 1);
+  assert.equal(report.images.match, 1);
+  const title = report.items.find((item) => item.kind === "text" && item.designId === "title");
+  assert.equal(title.status, "match");
+  assert.ok(title.notes.includes("native-font-weight-unverified"));
+});
+
+test("resource calibration: iOS SwiftUI native text/image best effort", (t) => {
+  const root = makeTempProject({ config: baseConfig() });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, "App.xcodeproj"), { recursive: true });
+  write(
+    root,
+    "App/HomeView.swift",
+    `import SwiftUI
+
+struct HomeView: View {
+  var body: some View {
+    VStack {
+      Text("行動預點").font(.system(size: 20, weight: .bold))
+      Image("hero").resizable().scaledToFill().frame(width: 343, height: 160)
+    }
+  }
+}
+`
+  );
+  const report = buildResourceCalibration(runtimeFor(root), nativeDesignContract());
+  assert.equal(report.stacks[0].id, "ios-native");
+  assert.equal(report.texts.match, 1);
+  assert.equal(report.images.match, 1);
 });

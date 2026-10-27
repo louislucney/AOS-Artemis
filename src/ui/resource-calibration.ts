@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { loadScreenMap } from "../diff/screen-map.js";
 import { pngDimensions } from "../design/screens.js";
 import {
   detectProjectStacksDetailed,
@@ -110,7 +111,7 @@ interface CodeText {
 }
 
 interface CodeScan {
-  stack: "react-native" | "flutter";
+  stack: "react-native" | "flutter" | "android-native" | "ios-native";
   images: CodeImage[];
   texts: CodeText[];
   styles: Map<string, CodeStyle>;
@@ -141,6 +142,46 @@ const SOURCE_EXTENSIONS = new Set([".dart", ".js", ".jsx", ".ts", ".tsx"]);
 
 function readText(file: string): string {
   return fs.readFileSync(file, "utf-8");
+}
+
+/** 从 trace run.json 的 step.scale 回填设备倍率；没有有效 scale 返回 null（不猜）。 */
+export function tracePixelRatioFromRun(run: unknown): number | null {
+  if (run === null || typeof run !== "object" || Array.isArray(run)) return null;
+  const steps = (run as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return null;
+  const scales = steps
+    .map((step) => {
+      if (step === null || typeof step !== "object" || Array.isArray(step)) return null;
+      const scale = (step as { scale?: unknown }).scale;
+      return typeof scale === "number" && Number.isFinite(scale) && scale > 0 ? scale : null;
+    })
+    .filter((scale): scale is number => scale !== null)
+    .sort((left, right) => left - right);
+  if (scales.length === 0) return null;
+  const middle = Math.floor(scales.length / 2);
+  const ratio = scales.length % 2 === 0 ? (scales[middle - 1]! + scales[middle]!) / 2 : scales[middle]!;
+  return round(ratio);
+}
+
+
+/** 读取 trace 若显式声明的 fontScale；当前 executor 未写该字段时返回 null。 */
+export function traceFontScaleFromRun(run: unknown): number | null {
+  if (run === null || typeof run !== "object" || Array.isArray(run)) return null;
+  const record = run as Record<string, unknown>;
+  const device = record.device;
+  const candidates = [
+    record.fontScale,
+    record.font_scale,
+    device !== null && typeof device === "object" && !Array.isArray(device)
+      ? (device as Record<string, unknown>).fontScale
+      : null
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0) {
+      return round(candidate);
+    }
+  }
+  return null;
 }
 
 function lineOf(source: string, index: number): number {
@@ -321,12 +362,18 @@ function scanRn(rootDir: string, maxFiles: number): CodeScan {
           file: relative,
           line: index + 1
         });
-        // Width/height live in the style block, not in the fontSize fields.
+        // Width/height live in the style block or inline style.
         if (styleRef !== null) {
           const block = new RegExp(`${styleRef}\\s*:\\s*\\{([^{}]*)\\}`).exec(source)?.[1];
           if (block !== undefined) {
             images[images.length - 1]!.width = numberAfter(block, "width");
             images[images.length - 1]!.height = numberAfter(block, "height");
+          }
+        } else {
+          const inline = /style=\{\{([^}]*)\}\}/.exec(line)?.[1];
+          if (inline !== undefined) {
+            images[images.length - 1]!.width = numberAfter(inline, "width");
+            images[images.length - 1]!.height = numberAfter(inline, "height");
           }
         }
       }
@@ -336,10 +383,12 @@ function scanRn(rootDir: string, maxFiles: number): CodeScan {
         const content = textMatch[2]!.trim();
         if (/[{}$]/.test(content)) continue;
         const styleRef = /style=\{\s*(?:styles|typography)\.(\w+)/.exec(attrs)?.[1] ?? null;
+        const inline = styleRef === null ? /style=\{\{([^}]*)\}\}/.exec(attrs)?.[1] : undefined;
+        const style = inline === undefined ? null : parseRnStyle(inline, relative, index + 1);
         texts.push({
           content,
           styleKey: styleRef,
-          style: styleRef === null ? null : styles.get(styleRef) ?? null,
+          style: styleRef === null ? style : styles.get(styleRef) ?? null,
           maxLines: /numberOfLines=\{(\d+)\}/.exec(attrs)?.[1]
             ? Number(/numberOfLines=\{(\d+)\}/.exec(attrs)![1])
             : null,
@@ -351,7 +400,7 @@ function scanRn(rootDir: string, maxFiles: number): CodeScan {
   }
 
   for (const text of texts) {
-    text.style = text.styleKey === null ? null : styles.get(text.styleKey) ?? null;
+    if (text.styleKey !== null) text.style = styles.get(text.styleKey) ?? null;
   }
 
   return {
@@ -420,12 +469,24 @@ function scanFlutter(rootDir: string, maxFiles: number): CodeScan {
           file: relative,
           line: index + 1
         });
+      } else {
+        const inlineText = /Text\(\s*['"]([^'"]+)['"]\s*,\s*style:\s*TextStyle\(([^)]*)\)\s*\)/.exec(line);
+        if (inlineText !== null) {
+          texts.push({
+            content: inlineText[1]!,
+            styleKey: null,
+            style: parseFlutterStyle(inlineText[2]!, relative, index + 1),
+            maxLines: null,
+            file: relative,
+            line: index + 1
+          });
+        }
       }
     }
   }
 
   for (const text of texts) {
-    text.style = text.styleKey === null ? null : styles.get(text.styleKey) ?? null;
+    if (text.styleKey !== null) text.style = styles.get(text.styleKey) ?? null;
   }
 
   return {
@@ -435,6 +496,302 @@ function scanFlutter(rootDir: string, maxFiles: number): CodeScan {
     styles,
     fontFamilies: fonts.families,
     fontAssets: fonts.assets,
+    filesScanned: walked.files.length,
+    truncated: walked.truncated
+  };
+}
+
+
+function attributeOf(attrs: string, name: string): string | null {
+  const match = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(attrs);
+  return match?.[1]?.trim() ?? null;
+}
+
+function dimensionValue(raw: string | null): number | null {
+  if (raw === null) return null;
+  const match = /^(-?\d+(?:\.\d+)?)(?:dp|dip|sp)?$/i.exec(raw);
+  return match === null ? null : Number(match[1]);
+}
+
+function androidFontWeight(raw: string | null): number | null {
+  if (raw === null) return null;
+  const value = raw.toLowerCase();
+  if (value.includes("bold")) return 700;
+  if (value.includes("medium")) return 500;
+  if (value.includes("normal")) return 400;
+  return null;
+}
+
+function androidFit(raw: string | null): string | null {
+  if (raw === null) return null;
+  if (raw === "centerCrop") return "cover";
+  if (raw === "fitCenter" || raw === "centerInside") return "contain";
+  if (raw === "fitXY") return "fill";
+  return null;
+}
+
+function composeWeight(raw: string | null): number | null {
+  if (raw === null) return null;
+  const map: Record<string, number> = {
+    Thin: 100,
+    ExtraLight: 200,
+    Light: 300,
+    Normal: 400,
+    Medium: 500,
+    SemiBold: 600,
+    Bold: 700,
+    ExtraBold: 800,
+    Black: 900
+  };
+  return map[raw] ?? null;
+}
+
+function composeFit(raw: string | null): string | null {
+  if (raw === null) return null;
+  if (raw === "Crop") return "cover";
+  if (raw === "Fit") return "contain";
+  if (raw === "FillBounds") return "fill";
+  return null;
+}
+
+function scanAndroidNative(rootDir: string, maxFiles: number): CodeScan {
+  const walked = walkSources(rootDir, new Set([".xml", ".kt", ".java"]), maxFiles);
+  const images: CodeImage[] = [];
+  const texts: CodeText[] = [];
+
+  for (const relative of walked.files) {
+    const absolute = path.join(rootDir, relative);
+    let source: string;
+    try {
+      source = readText(absolute);
+    } catch {
+      continue;
+    }
+    const tagRe = /<(TextView|ImageView)\b([^>]*)>/g;
+    let tagMatch;
+    while ((tagMatch = tagRe.exec(source)) !== null) {
+      const tag = tagMatch[1]!;
+      const attrs = tagMatch[2]!;
+      const line = lineOf(source, tagMatch.index);
+      if (tag === "TextView") {
+        const content = attributeOf(attrs, "android:text");
+        if (content === null || content.startsWith("@")) continue;
+        const fontSize = dimensionValue(attributeOf(attrs, "android:textSize"));
+        const extra = dimensionValue(attributeOf(attrs, "android:lineSpacingExtra"));
+        const letterRaw = attributeOf(attrs, "android:letterSpacing");
+        const maxLines = dimensionValue(attributeOf(attrs, "android:maxLines"));
+        texts.push({
+          content,
+          styleKey: null,
+          style: {
+            fontFamily: attributeOf(attrs, "android:fontFamily"),
+            fontSize,
+            lineHeight: fontSize !== null && extra !== null ? round(fontSize + extra) : null,
+            letterSpacing:
+              letterRaw === null || fontSize === null ? null : round(Number(letterRaw) * fontSize),
+            fontWeight: androidFontWeight(attributeOf(attrs, "android:textStyle")),
+            file: relative,
+            line
+          },
+          maxLines,
+          file: relative,
+          line
+        });
+      } else {
+        const src = attributeOf(attrs, "android:src");
+        const key = src === null ? null : normalizeKey(src.replace(/^@(?:drawable|mipmap)\//, ""));
+        if (key === null) continue;
+        images.push({
+          key,
+          assetPath: null,
+          width: dimensionValue(attributeOf(attrs, "android:layout_width")),
+          height: dimensionValue(attributeOf(attrs, "android:layout_height")),
+          fit: androidFit(attributeOf(attrs, "android:scaleType")),
+          file: relative,
+          line
+        });
+      }
+    }
+
+    for (const [index, line] of source.split("\n").entries()) {
+      const textMatch = /Text\(\s*"([^"]+)"/.exec(line);
+      if (textMatch !== null) {
+        const window = source.split("\n").slice(index, index + 6).join(" ");
+        const fontSize = /fontSize\s*=\s*(\d+(?:\.\d+)?)\.sp/.exec(window)?.[1];
+        const lineHeight = /lineHeight\s*=\s*(\d+(?:\.\d+)?)\.sp/.exec(window)?.[1];
+        const letterSpacing = /letterSpacing\s*=\s*(\d+(?:\.\d+)?)\.sp/.exec(window)?.[1];
+        texts.push({
+          content: textMatch[1]!,
+          styleKey: null,
+          style: {
+            fontFamily: null,
+            fontSize: fontSize === undefined ? null : Number(fontSize),
+            lineHeight: lineHeight === undefined ? null : Number(lineHeight),
+            letterSpacing: letterSpacing === undefined ? null : Number(letterSpacing),
+            fontWeight: composeWeight(/fontWeight\s*=\s*FontWeight\.(\w+)/.exec(window)?.[1] ?? null),
+            file: relative,
+            line: index + 1
+          },
+          maxLines: (() => {
+            const raw = /maxLines\s*=\s*(\d+)/.exec(window)?.[1];
+            return raw === undefined ? null : Number(raw);
+          })(),
+          file: relative,
+          line: index + 1
+        });
+      }
+      const imageMatch = /Image\(\s*painterResource\(R\.drawable\.(\w+)\)/.exec(line);
+      if (imageMatch !== null) {
+        const window = source.split("\n").slice(index, index + 6).join(" ");
+        const size = /Modifier\.size\((\d+(?:\.\d+)?)\.dp\)/.exec(window)?.[1];
+        images.push({
+          key: normalizeKey(imageMatch[1]!) ?? "",
+          assetPath: null,
+          width: size === undefined ? null : Number(size),
+          height: size === undefined ? null : Number(size),
+          fit: composeFit(/contentScale\s*=\s*ContentScale\.(\w+)/.exec(window)?.[1] ?? null),
+          file: relative,
+          line: index + 1
+        });
+      }
+    }
+  }
+
+  return {
+    stack: "android-native",
+    images,
+    texts,
+    styles: new Map(),
+    fontFamilies: new Map(),
+    fontAssets: [],
+    filesScanned: walked.files.length,
+    truncated: walked.truncated
+  };
+}
+
+function swiftWeight(raw: string | null): number | null {
+  if (raw === null) return null;
+  const map: Record<string, number> = {
+    ultraLight: 100,
+    thin: 200,
+    light: 300,
+    regular: 400,
+    medium: 500,
+    semibold: 600,
+    bold: 700,
+    heavy: 800,
+    black: 900
+  };
+  return map[raw] ?? null;
+}
+
+function swiftFit(raw: string | null): string | null {
+  if (raw === null) return null;
+  if (raw === "scaledToFill" || raw === "scaleAspectFill") return "cover";
+  if (raw === "scaledToFit" || raw === "scaleAspectFit") return "contain";
+  return null;
+}
+
+function scanIosNative(rootDir: string, maxFiles: number): CodeScan {
+  const walked = walkSources(rootDir, new Set([".swift", ".m", ".mm"]), maxFiles);
+  const images: CodeImage[] = [];
+  const texts: CodeText[] = [];
+
+  for (const relative of walked.files) {
+    const absolute = path.join(rootDir, relative);
+    let source: string;
+    try {
+      source = readText(absolute);
+    } catch {
+      continue;
+    }
+    const lines = source.split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      const swiftText = /Text\(\s*"([^"]+)"\s*\)/.exec(line);
+      if (swiftText !== null) {
+        const window = lines.slice(index, index + 8).join(" ");
+        const system = /\.font\(\.system\(size:\s*(\d+(?:\.\d+)?)(?:,\s*weight:\s*\.(\w+))?\)\)/.exec(window);
+        const custom = /\.font\(\.custom\("([^"]+)",\s*size:\s*(\d+(?:\.\d+)?)\)\)/.exec(window);
+        const kerning = /\.kerning\((-?\d+(?:\.\d+)?)\)/.exec(window);
+        texts.push({
+          content: swiftText[1]!,
+          styleKey: null,
+          style: {
+            fontFamily: custom?.[1] ?? null,
+            fontSize: custom !== null ? Number(custom[2]) : system !== null ? Number(system[1]) : null,
+            lineHeight: null,
+            letterSpacing: kerning === null ? null : Number(kerning[1]),
+            fontWeight: system !== null ? swiftWeight(system[2] ?? null) : null,
+            file: relative,
+            line: index + 1
+          },
+          maxLines: null,
+          file: relative,
+          line: index + 1
+        });
+      }
+      const swiftImage = /Image\(\s*"([^"]+)"\s*\)/.exec(line);
+      if (swiftImage !== null) {
+        const window = lines.slice(index, index + 8).join(" ");
+        const frame = /\.frame\(width:\s*(\d+(?:\.\d+)?),\s*height:\s*(\d+(?:\.\d+)?)\)/.exec(window);
+        images.push({
+          key: normalizeKey(swiftImage[1]!) ?? "",
+          assetPath: null,
+          width: frame === null ? null : Number(frame[1]),
+          height: frame === null ? null : Number(frame[2]),
+          fit: swiftFit(/\.(scaledToFill|scaledToFit)\(\)/.exec(window)?.[1] ?? null),
+          file: relative,
+          line: index + 1
+        });
+      }
+      const uiText = /(?:\.text|text)\s*=\s*"([^"]+)"/.exec(line);
+      if (uiText !== null) {
+        const window = lines.slice(Math.max(0, index - 3), index + 4).join(" ");
+        const font = /UIFont\.systemFont\(ofSize:\s*(\d+(?:\.\d+)?)(?:,\s*weight:\s*\.(\w+))?\)/.exec(window);
+        const custom = /UIFont\(name:\s*"([^"]+)",\s*size:\s*(\d+(?:\.\d+)?)\)/.exec(window);
+        const numberOfLines = /numberOfLines\s*=\s*(\d+)/.exec(window)?.[1];
+        texts.push({
+          content: uiText[1]!,
+          styleKey: null,
+          style: {
+            fontFamily: custom?.[1] ?? null,
+            fontSize: custom !== null ? Number(custom[2]) : font !== null ? Number(font[1]) : null,
+            lineHeight: null,
+            letterSpacing: null,
+            fontWeight: font !== null ? swiftWeight(font[2] ?? null) : null,
+            file: relative,
+            line: index + 1
+          },
+          maxLines: numberOfLines === undefined ? null : Number(numberOfLines),
+          file: relative,
+          line: index + 1
+        });
+      }
+      const uiImage = /UIImage\(named:\s*"([^"]+)"\)/.exec(line);
+      if (uiImage !== null) {
+        const window = lines.slice(Math.max(0, index - 3), index + 4).join(" ");
+        const frame = /width:\s*(\d+(?:\.\d+)?),\s*height:\s*(\d+(?:\.\d+)?)/.exec(window);
+        images.push({
+          key: normalizeKey(uiImage[1]!) ?? "",
+          assetPath: null,
+          width: frame === null ? null : Number(frame[1]),
+          height: frame === null ? null : Number(frame[2]),
+          fit: swiftFit(/contentMode\s*=\s*\.(scaleAspectFill|scaleAspectFit)/.exec(window)?.[1] ?? null),
+          file: relative,
+          line: index + 1
+        });
+      }
+    }
+  }
+
+  return {
+    stack: "ios-native",
+    images,
+    texts,
+    styles: new Map(),
+    fontFamilies: new Map(),
+    fontAssets: [],
     filesScanned: walked.files.length,
     truncated: walked.truncated
   };
@@ -496,7 +853,10 @@ function codeFitOf(raw: string | null): string | null {
   return raw;
 }
 
-function imageVariants(code: CodeImage, stack: "react-native" | "flutter"): Array<{ scale: number; file: string }> {
+function imageVariants(
+  code: CodeImage,
+  stack: CodeScan["stack"]
+): Array<{ scale: number; file: string }> {
   if (code.assetPath === null) return [];
   const dir = path.dirname(code.assetPath);
   const ext = path.extname(code.assetPath);
@@ -508,11 +868,14 @@ function imageVariants(code: CodeImage, stack: "react-native" | "flutter"): Arra
       { scale: 3, file: path.join(dir, `${name}@3x${ext}`) }
     ];
   }
-  return [
-    { scale: 1, file: code.assetPath },
-    { scale: 2, file: path.join(dir, "2.0x", `${name}${ext}`) },
-    { scale: 3, file: path.join(dir, "3.0x", `${name}${ext}`) }
-  ];
+  if (stack === "flutter") {
+    return [
+      { scale: 1, file: code.assetPath },
+      { scale: 2, file: path.join(dir, "2.0x", `${name}${ext}`) },
+      { scale: 3, file: path.join(dir, "3.0x", `${name}${ext}`) }
+    ];
+  }
+  return [{ scale: 1, file: code.assetPath }];
 }
 
 function calibrateImage(
@@ -707,6 +1070,8 @@ function calibrateText(
     }
   } else if (scan.stack === "react-native") {
     notes.push("rn-font-weight-unverified");
+  } else if (scan.stack === "android-native" || scan.stack === "ios-native") {
+    notes.push("native-font-weight-unverified");
   }
 
   if (options.device?.fontScale !== undefined && options.device.fontScale !== 1) {
@@ -730,6 +1095,26 @@ function calibrateText(
     base.status = "match";
   }
   return base;
+}
+
+function screenFileFilters(runtime: Runtime): Map<string, Set<string>> {
+  const configDir = (runtime as { configDirAbs?: string }).configDirAbs;
+  if (typeof configDir !== "string" || configDir === "") return new Map();
+  try {
+    const map = loadScreenMap(configDir);
+    const filters = new Map<string, Set<string>>();
+    for (const entry of map.entries) {
+      const screen = entry.design.screen?.trim() ?? "";
+      const file = entry.code.file?.trim() ?? "";
+      if (screen === "" || file === "") continue;
+      const files = filters.get(screen) ?? new Set<string>();
+      files.add(file.replace(/\\/g, "/"));
+      filters.set(screen, files);
+    }
+    return filters;
+  } catch {
+    return new Map();
+  }
 }
 
 function fallbackItems(
@@ -798,11 +1183,26 @@ export function buildResourceCalibration(
   let scan: CodeScan | null = null;
   if (primary === null) {
     warnings.push("未检测到技术栈：资源对账降级为 unverifiable");
-  } else if (primary.id === "react-native" || primary.id === "flutter") {
+  } else if (
+    primary.id === "react-native" ||
+    primary.id === "flutter" ||
+    primary.id === "android-native" ||
+    primary.id === "ios-native"
+  ) {
     try {
-      scan = primary.id === "react-native" ? scanRn(rootDir, maxFiles) : scanFlutter(rootDir, maxFiles);
+      scan =
+        primary.id === "react-native"
+          ? scanRn(rootDir, maxFiles)
+          : primary.id === "flutter"
+            ? scanFlutter(rootDir, maxFiles)
+            : primary.id === "android-native"
+              ? scanAndroidNative(rootDir, maxFiles)
+              : scanIosNative(rootDir, maxFiles);
       if (scan.filesScanned === 0) warnings.push(`${primary.id} 未扫描到源文件：资源对账降级为 unverifiable`);
       if (scan.truncated) warnings.push(`${primary.id} 源文件超过上限 ${maxFiles}，扫描已截断`);
+      if (scan.stack === "android-native" || scan.stack === "ios-native") {
+        warnings.push(`${scan.stack} 资源扫描是尽力而为：字体文件/行高/复杂布局可能 unverifiable`);
+      }
     } catch (error) {
       warnings.push(`资源代码扫描失败（${error instanceof Error ? error.message : String(error)}）：降级为 unverifiable`);
     }
@@ -810,6 +1210,7 @@ export function buildResourceCalibration(
     warnings.push(`技术栈 ${primary.id} 的资源扫描尚未实现：降级为 unverifiable`);
   }
 
+  const filters = screenFileFilters(runtime);
   const images = emptyCounts();
   const texts = emptyCounts();
   const items: ResourceCalibrationItem[] = [];
@@ -831,13 +1232,22 @@ export function buildResourceCalibration(
   } else {
     for (const screen of contract.screens) {
       if (truncated) break;
+      const filter = filters.get(screen.name) ?? filters.get(screen.id);
+      const screenScan: CodeScan =
+        filter === undefined || filter.size === 0
+          ? scan
+          : {
+              ...scan,
+              images: scan.images.filter((image) => filter.has(image.file)),
+              texts: scan.texts.filter((text) => filter.has(text.file))
+            };
       for (const image of screen.images ?? []) {
-        push(calibrateImage(screen, image, scan, options));
+        push(calibrateImage(screen, image, screenScan, options));
         if (truncated) break;
       }
       if (truncated) break;
       for (const text of screen.texts) {
-        push(calibrateText(screen, text, scan, options));
+        push(calibrateText(screen, text, screenScan, options));
         if (truncated) break;
       }
     }

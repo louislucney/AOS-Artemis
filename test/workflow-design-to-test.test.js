@@ -365,6 +365,78 @@ test("reuseExistingFlows 有 flows.json → 跳过提取（steps 标 reused）",
   assert.equal(payload.nextAction.args.reuseExistingFlows, true);
 });
 
+test("run:false + 已有 ui-contract → 只读 resources", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-resources-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const designDir = path.join(dir, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      screens: [{ id: "s1", name: "首页", childNames: [], textHints: [] }],
+      edges: [],
+      entryScreens: ["首页"],
+      unresolvedDestinations: []
+    })
+  );
+  fs.writeFileSync(
+    path.join(designDir, "ui-contract.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: "2026-10-28T00:00:00.000Z",
+      source: { flows: "flows.json", designRoot: "design", fingerprint: "f".repeat(64) },
+      summary: { extracted: 1, partial: 0, unverifiable: 0, "no-baseline": 0 },
+      warnings: [],
+      screens: [
+        {
+          id: "s1",
+          name: "首页",
+          sourceFrameName: null,
+          presentation: "screen",
+          status: "extracted",
+          geometry: { nodes: 1, withGeometry: 1, missingGeometry: 0 },
+          tokens: {
+            cornerRadius: [],
+            colors: [],
+            fontFamilies: [],
+            fontSizes: [],
+            fontWeights: [],
+            spacing: []
+          },
+          components: [],
+          texts: [
+            {
+              id: "t1",
+              content: "早安",
+              fontFamily: null,
+              fontWeight: null,
+              fontSize: null,
+              bbox: { x: 0, y: 0, width: 100, height: 20 },
+              bboxSpace: "design-px",
+              geometryStatus: "extracted"
+            }
+          ],
+          images: [],
+          render: null,
+          renderScale: null,
+          frameWidth: 375,
+          warnings: []
+        }
+      ]
+    })
+  );
+
+  const runtime = stubRuntime({ dir });
+  const { deps } = makeDeps();
+  const result = await designToTest(runtime, { reuseExistingFlows: true }, deps);
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.resources.mode, "report-only");
+  assert.equal(payload.resources.texts.total, 1);
+  assert.equal(payload.resources.texts.unverifiable, 1);
+});
+
 test("reuseExistingTests 有 tests.json → 跳过生成（steps 标 reused）", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-reuse-tests-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
