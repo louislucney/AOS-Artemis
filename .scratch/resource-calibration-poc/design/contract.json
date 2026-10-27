@@ -1,0 +1,60 @@
+{
+  "schema": "poc-design-contract-v1",
+  "frameWidth": 375,
+  "screen": { "id": "home", "name": "Home" },
+  "images": [
+    {
+      "id": "avatar",
+      "name": "Avatar",
+      "assetKey": "avatar",
+      "logical": { "width": 72, "height": 72 },
+      "fit": "cover"
+    },
+    {
+      "id": "hero",
+      "name": "Hero",
+      "assetKey": "hero",
+      "logical": { "width": 343, "height": 160 },
+      "fit": "cover"
+    },
+    {
+      "id": "banner",
+      "name": "Banner",
+      "assetKey": "banner",
+      "logical": { "width": 343, "height": 120 },
+      "fit": "cover"
+    }
+  ],
+  "texts": [
+    {
+      "id": "pickup",
+      "content": "到店自取",
+      "fontFamily": "PingFang TC",
+      "fontSize": 14,
+      "fontWeight": 600,
+      "lineHeight": 20,
+      "letterSpacing": 0,
+      "maxLines": 1
+    },
+    {
+      "id": "title",
+      "content": "行動預點",
+      "fontFamily": "PingFang TC",
+      "fontSize": 20,
+      "fontWeight": 700,
+      "lineHeight": 28,
+      "letterSpacing": 0,
+      "maxLines": 1
+    },
+    {
+      "id": "body",
+      "content": "選擇門市後開始點餐",
+      "fontFamily": "PingFang TC",
+      "fontSize": 14,
+      "fontWeight": 400,
+      "lineHeight": 20,
+      "letterSpacing": 0,
+      "maxLines": 2
+    }
+  ]
+}

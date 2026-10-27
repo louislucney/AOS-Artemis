@@ -2937,3 +2937,4 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **可见性**：`aos_status.stack` 保留检测数组，新增 `stackSource`/`stackWarnings`；`gaps.json` 的 `detectedStacks` 携带证据；`project_archive` 把检测告警并入 `degraded`。面板与 `aos_status` 的旧字段保持兼容。
 - **边界**：当前按**单仓单应用**设计；单仓多应用、RN/Flutter 嵌入原生壳的棕色地、Flutter add-to-app 子目录仍需 `project.stack` 显式声明（检测不再猜测）。运行期平台仍由设备 serial 决定（iOS/Android），技术栈只决定读哪套代码。
 - **测试**：`stack` 新增 4 例（纯 Dart 不误判/覆盖/Flutter+RN 歧义/坏 package.json），`config` 新增 1 例（字符串/数组/非法值），`aos_status` 新增 1 例（detected/config 来源与 evidence）；全量 **2393 绿**，lint 0 error（2 条既有 warning）。
+- **只读 POC**：`.scratch/resource-calibration-poc/` 用 RN/Flutter fixture 输出 design↔code↔device 对账表（图片 logical/scale/fit、文字 lineHeight 换算、font-weight-substituted、text-scale、upscale）；只读、不写产品目录、不新增命令，输出与限制见该目录 README。

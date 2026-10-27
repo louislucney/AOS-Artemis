@@ -1,0 +1,18 @@
+name: flutter_resource_fixture
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  assets:
+    - assets/images/avatar.png
+    - assets/images/hero.png
+    - assets/images/banner.png
+  fonts:
+    - family: PingFang TC
+      fonts:
+        - asset: assets/fonts/PingFangTC-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/PingFangTC-Semibold.ttf
+          weight: 600
