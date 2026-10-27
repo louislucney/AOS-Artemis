@@ -1287,3 +1287,112 @@ test("design_to_test: readingStates 透传 includeStates", async () => {
   assert.equal(readCalls[0].options.maxScreens, 60);
   assert.equal(readCalls[0].options.includeStates, true);
 });
+
+function writePenDesign(dir) {
+  const design = path.join(dir, "design");
+  fs.mkdirSync(design, { recursive: true });
+  fs.writeFileSync(
+    path.join(design, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      source: "pen:design.pen",
+      screens: [{ id: "s1", name: "首頁", sourceFrameName: "Screen 1" }],
+      edges: [],
+      entryScreens: ["s1"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "design.pen"),
+    JSON.stringify({
+      version: "2.20",
+      children: [
+        {
+          type: "frame",
+          id: "board",
+          name: "Board",
+          children: [
+            {
+              type: "frame",
+              id: "s1",
+              name: "Screen 1",
+              x: 10,
+              y: 20,
+              width: 375,
+              height: 812,
+              children: [
+                { type: "text", id: "t1", name: "Title", x: 16, y: 20, width: 100, height: 24, content: "早安" }
+              ]
+            }
+          ]
+        }
+      ]
+    }),
+    "utf-8"
+  );
+}
+
+test("run:true 默认构建 UI 契约并开启逐屏设计比对", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-ui-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  writePenDesign(dir);
+  const runtime = stubRuntime({ dir, dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps, calls } = makeDeps();
+  const report = deps.execute;
+  deps.execute = async (runtime_, options) => {
+    const result = await report(runtime_, options);
+    return {
+      ...result,
+      ui: { passed: 2, failed: 0, unverified: 0, notApplicable: 0 },
+      uiCoverage: {
+        requested: 2,
+        matched: 2,
+        compared: 1,
+        skipped: 0,
+        unmatched: 0,
+        comparedScreens: [{ id: "s1", name: "首頁" }],
+        skippedScreens: [],
+        unmatchedScreens: [],
+        contractScreens: 1,
+        uncoveredScreens: []
+      }
+    };
+  };
+
+  const result = await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, reuseExistingFlows: true, run: true, device: "emulator-5554" },
+    deps
+  );
+  const payload = payloadOf(result);
+  assert.equal(payload.ok, true);
+  assert.equal(calls.execute[0].uiDiff, true);
+  assert.ok(fs.existsSync(path.join(dir, "design", "ui-contract.json")));
+  assert.ok(fs.existsSync(path.join(dir, "design", "pen", "screens", "s1.pen")));
+  assert.deepEqual(payload.run.ui, { passed: 2, failed: 0, unverified: 0, notApplicable: 0 });
+  assert.equal(payload.run.uiCoverage.compared, 1);
+});
+
+test("run:true uiDiff:false 显式关闭：不建契约、不传 uiDiff", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-no-ui-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  writePenDesign(dir);
+  const runtime = stubRuntime({ dir, dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps, calls } = makeDeps();
+
+  const result = await designToTest(
+    runtime,
+    {
+      figmaUrl: FIGMA_URL,
+      reuseExistingFlows: true,
+      run: true,
+      uiDiff: false,
+      device: "emulator-5554"
+    },
+    deps
+  );
+  assert.equal(payloadOf(result).ok, true);
+  assert.equal(calls.execute[0].uiDiff, false);
+  assert.equal(fs.existsSync(path.join(dir, "design", "ui-contract.json")), false);
+});

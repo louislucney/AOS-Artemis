@@ -52,6 +52,7 @@ test("design_to_test: registered in the catalog and exposed with a minimal optio
       "reuseExistingTests",
       "device",
       "run",
+      "uiDiff",
       "async",
       "maxFlows",
       "maxDepth"
@@ -93,6 +94,7 @@ test("design_to_test: zod rejects illegal types, accepts documented shapes", asy
     for (const args of [
       { device: 123 },
       { run: "true" },
+      { uiDiff: "yes" },
       { reuseExistingFlows: "yes" },
       { vision: "sometimes" },
       { vision: 1 },
@@ -121,6 +123,8 @@ test("design_to_test: zod rejects illegal types, accepts documented shapes", asy
       { vision: true },
       { vision: false },
       { run: true },
+      { uiDiff: true },
+      { uiDiff: false },
       { reuseExistingFlows: false },
       { device: "emulator-5554" },
       { maxFlows: 300, maxDepth: 12 },

@@ -213,3 +213,26 @@ test("ui auto-check: screen without per-screen .pen stays unverified", async () 
     unmatchedScreens: []
   });
 });
+
+test("ui auto-check: 步骤截图已是 PNG 但缺 lossless 标记仍按无损比对", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  writeDesign(dir);
+  const { runtime } = await loadTestRuntime(dir);
+  writeTrace(runtime, "ios-t-png-flag");
+  const fake = fakeDiff({ blocker: 1 });
+  const ui = await autoCheckUi(
+    runtime,
+    { traceId: "ios-t-png-flag", screens: ["首頁"], deviceSerial: null, maxScreens: 3 },
+    {
+      designDeviceDiff: async () => {
+        const result = await fake();
+        const payload = JSON.parse(result.content[0].text);
+        payload.unit = { device: { sourceFormat: "png", lossless: false } };
+        return { ...result, content: [{ type: "text", text: JSON.stringify(payload) }] };
+      }
+    }
+  );
+  assert.equal(ui.status, "failed");
+  assert.equal(ui.reason, "auto-diff");
+  assert.equal(ui.lossless, true);
+});

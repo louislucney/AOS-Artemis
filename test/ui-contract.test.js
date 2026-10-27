@@ -152,3 +152,67 @@ test("ui contract: missing flows.json is an explicit error", async () => {
     /缺少 flows\.json/
   );
 });
+
+test("ui contract: pen 源缺逐屏 .pen 时从源文档自动拆分", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const design = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(design, { recursive: true });
+  fs.writeFileSync(
+    path.join(design, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      source: "pen:design.pen",
+      screens: [{ id: "s1", name: "首頁", sourceFrameName: "Screen 1" }],
+      edges: [],
+      entryScreens: ["s1"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "design.pen"),
+    JSON.stringify({
+      version: "2.20",
+      fileToken: "token-1",
+      children: [
+        {
+          type: "frame",
+          id: "board",
+          name: "Board",
+          children: [
+            {
+              type: "frame",
+              id: "s1",
+              name: "Screen 1",
+              x: 100,
+              y: 200,
+              width: 375,
+              height: 812,
+              children: [
+                {
+                  type: "frame",
+                  id: "card",
+                  name: "Card",
+                  x: 16,
+                  y: 20,
+                  width: 343,
+                  height: 120,
+                  cornerRadius: 10,
+                  fill: "#ffffffff"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }),
+    "utf-8"
+  );
+  const { runtime } = await loadTestRuntime(dir);
+  const built = buildUiContract(runtime);
+
+  assert.ok(fs.existsSync(path.join(design, "pen", "screens", "s1.pen")));
+  assert.notEqual(built.contract.screens[0].status, "no-baseline");
+  assert.equal(built.contract.screens[0].geometry.nodes, 2);
+  assert.equal(built.contract.screens[0].geometry.withGeometry, 2);
+});

@@ -526,3 +526,28 @@ test("design_device_diff: zoom/returnCrops/detail 参数覆盖生效", async () 
     }
   });
 });
+
+test("design_device_diff: step 源为 PNG 时视为无损（不降级、无 lossy-source）", async () => {
+  await withFigmaToken(async () => {
+    const { dir, figma } = makeDetailProject({ fileKey: "DetailStepPng1" });
+    const proxy = new StubProxy({ running: true });
+    const stepPng = path.join(dir, "step.png");
+    fs.writeFileSync(stepPng, toPng(createImage(390, 844)));
+    stubStepScreenshots(proxy, { ok: true, step_number: 2, after_screenshot: stepPng });
+    const { runtime } = await loadTestRuntime(dir, { proxy });
+    try {
+      const payload = parseToolResult(
+        await designDeviceDiff(runtime, {
+          design: { figmaUrl: "https://www.figma.com/design/DetailStepPng1/File?node-id=1-2" },
+          device: { mode: "step", traceId: "trace-step-png", stepNumber: 2 }
+        })
+      );
+      assert.equal(payload.ok, true, JSON.stringify(payload));
+      assert.deepEqual(payload.detail.deviceSource, { format: "png", lossless: true });
+      assert.equal(payload.detail.degraded, false);
+      assert.ok(!payload.warnings.some((warning) => warning.includes("lossy-source")));
+    } finally {
+      figma.restore();
+    }
+  });
+});

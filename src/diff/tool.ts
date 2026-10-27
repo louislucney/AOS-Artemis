@@ -937,6 +937,8 @@ export async function designDeviceDiff(
       if (stepDeviceLossy) {
         detailWarnings.push("lossy-source：步骤截图为有损格式（非 PNG），细节档降级（阈值 0.1）");
       }
+      /** 步骤截图来自轨迹原图：PNG 即无损，不受 `captured.lossless`（实时抓图语义）影响。 */
+      const effectiveLossless = stepRequest !== null ? !stepDeviceLossy : deviceLossless === true;
       const degraded = designDegraded || (stepRequest === null ? deviceLossless !== true : stepDeviceLossy);
       const detailDevice = detailDeviceBytes === deviceBytes ? deviceImage : decodeImage(detailDeviceBytes);
 
@@ -988,7 +990,7 @@ export async function designDeviceDiff(
                 designWeight: textNode.fontWeight ?? null,
                 textPixelHeight: Math.max(1, Math.round(textNode.height * geometry.ratio)),
                 sourceFormat: sourceFormatOf(detailDeviceBytes),
-                lossless: deviceLossless,
+                lossless: effectiveLossless,
                 localization: "design-bbox"
               });
         const slug = region.name ? diffSlug(region.name) : `r${region.idx}`;
@@ -1051,7 +1053,7 @@ export async function designDeviceDiff(
               device: detailDevice,
               geometry,
               sourceFormat: sourceFormatOf(detailDeviceBytes),
-              lossless: deviceLossless === true,
+              lossless: effectiveLossless,
               ...(traceTexts !== null ? { deviceTexts: traceTexts.texts, deviceScale: traceTexts.scale } : {})
             });
       if (croppedDesign !== null && contractMatch !== null) {
@@ -1081,7 +1083,7 @@ export async function designDeviceDiff(
         degraded,
         deviceSource: {
           format: sourceFormatOf(detailDeviceBytes),
-          lossless: deviceLossless === true
+          lossless: effectiveLossless
         },
         textStyles:
           contractTexts !== null

@@ -28,6 +28,7 @@ import { preflightGeneratedTests } from "../figma/preflight.js";
 import { designFlowsPath, sharedDesignDir } from "../figma/design-source.js";
 import { executeSuiteBatch, type SuiteBatchResult } from "../figma/suite-batch.js";
 import type { SuiteRunOptions, SuiteRunReport } from "../figma/suite-runner.js";
+import { buildUiContract } from "../ui/contract.js";
 import {
   figmaGenerateTests,
   updateTestsApiReview,
@@ -58,6 +59,8 @@ export interface DesignToTestArgs {
   screens?: boolean;
   device?: string;
   run?: boolean;
+  /** 执行时逐屏对比设计（默认 true）：构建 ui-contract 并把访问屏与设计基线做差异核验。 */
+  uiDiff?: boolean;
   /** "auto"（默认，屏 ≥6 且视觉可用时读）| true 强制 | false 关闭。 */
   reading?: "auto" | boolean;
   readingMaxScreens?: number;
@@ -632,6 +635,33 @@ export async function designToTest(
   let runSummary: Record<string, unknown> | null = null;
   let runManifestPath: string | null = null;
   if (args.run === true) {
+    let uiDiffEnabled = args.uiDiff !== false;
+    if (uiDiffEnabled) {
+      try {
+        const built = buildUiContract(runtime);
+        if (built.contract.summary.extracted + built.contract.summary.partial === 0) {
+          uiDiffEnabled = false;
+          warnings = [
+            ...warnings,
+            {
+              code: "ui-contract-unusable",
+              message:
+                "UI 契约没有可核验的屏（缺逐屏 .pen/几何）；本次不执行设计对比，结果不代表与设计一致"
+            }
+          ];
+        }
+      } catch (error) {
+        uiDiffEnabled = false;
+        warnings = [
+          ...warnings,
+          {
+            code: "ui-contract-unavailable",
+            message: `无法建立 UI 契约（${errorMessage(error)}）；本次不执行设计对比`
+          }
+        ];
+      }
+    }
+
     const pick = await pickDevice(deviceArg, async () =>
       deps.listDevices !== undefined ? await deps.listDevices(runtime) : await defaultListDevices(runtime)
     );
@@ -666,7 +696,8 @@ export async function designToTest(
             deviceSerial: device,
             apiErrors: true,
             failOnApiErrors: false,
-            stopOnFailure: false
+            stopOnFailure: false,
+            uiDiff: uiDiffEnabled
           },
           source: "design_to_test",
           trigger: "design_to_test",
@@ -707,6 +738,21 @@ export async function designToTest(
     const quarantinedFailures = report.cases.filter(
       (entry) => entry.quarantined === true && entry.status !== "passed"
     ).length;
+    const uiSummary = report.ui ?? {
+      passed: 0,
+      failed: 0,
+      unverified: report.executed,
+      notApplicable: 0
+    };
+    if (uiDiffEnabled && uiSummary.passed + uiSummary.failed === 0) {
+      warnings = [
+        ...warnings,
+        {
+          code: "ui-not-verified",
+          message: `本次未完成任何设计对比（未核验 ${uiSummary.unverified} 条）；结果不代表与设计一致`
+        }
+      ];
+    }
     runSummary = {
       device,
       source,
@@ -716,6 +762,8 @@ export async function designToTest(
       failed: report.failed,
       ok: report.ok,
       gate: report.failed - quarantinedFailures === 0 ? "passed" : "failed",
+      ui: uiSummary,
+      ...(report.uiCoverage !== undefined ? { uiCoverage: report.uiCoverage } : {}),
       traceIds: report.cases
         .map((entry) => entry.traceId)
         .filter((traceId): traceId is string => traceId !== null)

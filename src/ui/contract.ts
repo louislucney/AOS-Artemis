@@ -6,6 +6,7 @@ import { pngDimensions } from "../design/screens.js";
 import type { PenTextBound } from "../pen/bounds.js";
 import { loadPenDocument } from "../pen/paths.js";
 import type { PenNode } from "../pen/read.js";
+import { splitPenScreens } from "../pen/split.js";
 import type { Runtime } from "../runtime.js";
 import { writeFileAtomic } from "../util.js";
 
@@ -201,6 +202,19 @@ function penFileFor(designRoot: string, screenId: string): string | null {
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
+/** flows.json 的 `source`（`pen:<相对项目根或绝对路径>`）→ 源 .pen 绝对路径。 */
+function flowsPenSource(flowsPath: string, rootDir: string): string | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(flowsPath, "utf-8")) as { source?: unknown };
+    if (typeof raw.source !== "string" || !raw.source.startsWith("pen:")) return null;
+    const value = raw.source.slice("pen:".length).trim();
+    if (value === "") return null;
+    return path.isAbsolute(value) ? value : path.resolve(rootDir, value);
+  } catch {
+    return null;
+  }
+}
+
 function renderFor(designRoot: string, screenId: string): string | null {
   const candidates = [
     path.join(designRoot, "screens", "pen-untitled", `${screenId}.png`),
@@ -283,6 +297,31 @@ export function buildUiContract(
   if (screens.length === 0) throw new Error(`flows.json 没有 screens：${flowsPath}`);
 
   const warnings: string[] = [];
+  const missingPen = screens
+    .filter((screen) => penFileFor(designRoot, screen.id) === null)
+    .map((screen) => screen.id);
+  if (missingPen.length > 0) {
+    const sourceFile = flowsPenSource(flowsPath, runtime.project.rootDir);
+    if (sourceFile !== null && fs.existsSync(sourceFile)) {
+      try {
+        const split = splitPenScreens({
+          sourceFile,
+          screenIds: missingPen,
+          outDir: path.join(designRoot, "pen", "screens")
+        });
+        if (split.written.length > 0) {
+          warnings.push(`从源 .pen 拆分逐屏基线 ${split.written.length} 个`);
+        }
+        for (const entry of split.skipped) {
+          warnings.push(`逐屏 .pen 未生成（${entry.id}）：${entry.reason}`);
+        }
+      } catch (error) {
+        warnings.push(
+          `逐屏 .pen 拆分失败：${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  }
   const contracts: UiScreenContract[] = screens.map((screen) => {
     const penFile = penFileFor(designRoot, screen.id);
     const render = renderFor(designRoot, screen.id);

@@ -103,7 +103,9 @@ function sourceOf(payload: Record<string, unknown>): {
   const rawFormat = source?.format ?? source?.sourceFormat;
   const format =
     rawFormat === "png" || rawFormat === "jpeg" || rawFormat === "unknown" ? rawFormat : "unknown";
-  return { format, lossless: source?.lossless === true };
+  /** PNG 本身即无损；步骤截图未带 lossless 标记时不应据此降级为“不可核验”。 */
+  const lossless = format === "png" ? true : source?.lossless === true;
+  return { format, lossless };
 }
 
 function buildCoverage(input: {
