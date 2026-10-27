@@ -355,7 +355,7 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
   ```
 
   注意：**必须显式绑定目标项目**（`--project /srv/projects/<项目>`；缺省会落在服务仓库自身）——启动日志 `[runner] 启动：… project=…` 可核对；中心 PG 以**服务级环境**提供（systemd `Environment=`／launchd `EnvironmentVariables`，**不要**放进项目 `.env`）；单项目**勿双开同名 runner**；产物令牌 `AOS_RUNNER_ARTIFACT_TOKEN` 可选（未设＝内网无鉴权，暴露范围与风险见上文与 DESIGN §13.109/§13.113）。
-- **定时回归**：`node dist/cli.js suite schedule add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（runner 到点**自动建任务并执行**；引用按功能实时取最新用例集；**同名拒绝**；`list/show/enable/disable/remove` 管理，`--json` 可选）；`AOS_RUNNER_SCHEDULES=0` 关闭触发。注意：platforms 需与项目内至少一台 runner 的设备端匹配，否则任务会**逐窗口累积 pending**（在面板任务列表关注）。（**默认严格子集**下如此；开启 `AOS_RUNNER_PARTIAL_CLAIM=1` 后，**仅当无任一在线 runner 可全覆盖时**按交集端部分领取执行、缺端不补跑，见 DESIGN §13.116）面板项目页「定时回归」区块与任务页「来源」可见。见 DESIGN §13.110。
+- **定时回归**：`node dist/cli.js suite schedule add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（runner 到点**自动建任务并执行**；引用按功能实时取最新用例集；**同名拒绝**；`list/show/enable/disable/remove` 管理，`--json` 可选）；`AOS_RUNNER_SCHEDULES=0` 关闭触发。注意：platforms 需与项目内至少一台 runner 的设备端匹配，否则任务会**逐窗口累积 pending**（在面板任务列表关注）。（**默认严格子集**下如此；开启 `AOS_RUNNER_PARTIAL_CLAIM=1` 后，**仅当无任一在线 runner 可全覆盖时**按交集端部分领取执行、缺端不补跑，见 DESIGN §13.116）面板项目页「定时回归」区块与任务页「来源」可见；面板计划表单的「端」按项目检测栈过滤（iOS 项目只显示 ios，Flutter/RN 显示双端，Web 不显示移动端表单）。见 DESIGN §13.110。
 
 ### Jira 接入（读取 / 回写 / CLI）
 

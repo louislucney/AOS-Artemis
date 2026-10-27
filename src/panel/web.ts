@@ -1803,6 +1803,21 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: st
   ].join("\n");
 }
 
+export function schedulePlatforms(
+  stackIds: string[] | undefined
+): Array<"android" | "ios"> {
+  if (stackIds === undefined || stackIds.length === 0) return ["android", "ios"];
+  const ids = new Set(stackIds);
+  const platforms: Array<"android" | "ios"> = [];
+  if (ids.has("android-native") || ids.has("flutter") || ids.has("react-native")) {
+    platforms.push("android");
+  }
+  if (ids.has("ios-native") || ids.has("flutter") || ids.has("react-native")) {
+    platforms.push("ios");
+  }
+  return platforms;
+}
+
 function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: string | null): string {
   const capabilities = currentShell.capabilities;
   const actionsOff =
@@ -1834,19 +1849,28 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: s
     featureBoxes.length > 0
       ? `<fieldset class="c-fieldset"><legend>功能（可多选）</legend><div class="c-check-grid">${featureBoxes.join("")}</div></fieldset>`
       : `<label class="c-form-field">功能 key <input type="text" name="featureKeys" aria-label="功能 key（暂无可引用用例集，可手输）" size="28" placeholder="login,pay"></label> <span class="muted">暂无可引用用例集；多个用英文逗号分隔</span>`;
+  const platforms = schedulePlatforms(detail.project.stackIds);
+  const platformField =
+    platforms.length > 0
+      ? `<fieldset class="c-fieldset"><legend>端</legend><div class="c-check-grid">${platforms
+          .map(
+            (platform) =>
+              `<label><input type="checkbox" name="platform" value="${platform}" checked> ${platform}</label>`
+          )
+          .join("")}</div></fieldset>`
+      : `<p class="note">当前项目未检测到 Android/iOS 栈，无法创建移动端定时计划。</p>`;
   const form = actionsOff
     ? ""
-    : [
+    : platforms.length === 0
+      ? platformField
+      : [
         `<form id="schedule-form" class="c-form" data-project="${escapeHtml(rootPath)}">`,
         '<div class="c-form-row">',
         '<label class="c-form-field">名称 <input type="text" name="name" aria-label="计划名称" placeholder="例：每日回归" required></label>',
         '<label class="c-form-field">每 <input type="number" name="everyMinutes" aria-label="间隔分钟" value="60" min="1" step="1" style="width:5em"> 分钟</label>',
         "</div>",
         featureField,
-        '<fieldset class="c-fieldset"><legend>端</legend><div class="c-check-grid">',
-        '<label><input type="checkbox" name="platform" value="android" checked> android</label>',
-        '<label><input type="checkbox" name="platform" value="ios"> ios</label>',
-        "</div></fieldset>",
+        platformField,
         '<p class="c-form-actions"><button class="c-button c-button-primary" type="submit">创建计划</button> <span id="schedule-status" role="status" class="muted"></span></p>',
         "</form>"
       ].join("\n");

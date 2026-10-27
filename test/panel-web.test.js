@@ -11,6 +11,7 @@ import {
   handlePanelRequest,
   panelCacheTtlFrom,
   panelWebEnabled,
+  schedulePlatforms,
   trendPassRateSvg
 } from "../dist/panel/web.js";
 import { baseConfig, makeTempDir } from "./helpers.js";
@@ -2548,4 +2549,25 @@ test("panel web: 排除名单隐藏项目并显示提示（直接项目 URL 仍�
     excluded
   );
   assert.equal(direct.status, 200, "排除只影响列表，不阻断直接访问");
+});
+
+
+test("panel schedules: 端选项按项目栈过滤", () => {
+  assert.deepEqual(schedulePlatforms(["ios-native"]), ["ios"]);
+  assert.deepEqual(schedulePlatforms(["android-native"]), ["android"]);
+  assert.deepEqual(schedulePlatforms(["flutter"]), ["android", "ios"]);
+  assert.deepEqual(schedulePlatforms(["react-native"]), ["android", "ios"]);
+  assert.deepEqual(schedulePlatforms(["web"]), []);
+  assert.deepEqual(schedulePlatforms(undefined), ["android", "ios"]);
+});
+
+test("panel web: iOS 项目定时任务只显示 ios 端", async () => {
+  const { deps, projectDir } = await makeHarness();
+  fs.mkdirSync(path.join(projectDir, "Demo.xcodeproj"), { recursive: true });
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.match(html.body, /name="platform" value="ios" checked/);
+  assert.doesNotMatch(html.body, /name="platform" value="android"/);
 });

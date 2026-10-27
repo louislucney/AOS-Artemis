@@ -40,7 +40,7 @@ import {
 import { jiraConfigFrom, type ResolvedJiraConfig } from "../jira/config.js";
 import { entriesFromConfig, entryFromStore, entryIssues, withEnvKeyFallback } from "../llm/registry.js";
 import { scanProjectEnv, type EnvScanResult } from "../projects/scan.js";
-import { detectProjectStacks } from "../projects/stack.js";
+import { detectProjectStacks, type StackId } from "../projects/stack.js";
 import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
 import { crossPlatformDeltas } from "../tasks/run-compare.js";
 import {
@@ -119,6 +119,8 @@ export interface PanelProjectRow {
   lastSeenAt: string | null;
   diskReachable: boolean;
   stacks: string[];
+  /** 检测到的栈 id；用于端选项等面板交互。 */
+  stackIds?: StackId[];
   /** 执行轴灯（回归可执行）：磁盘/宿主依赖/三件套/存储/构建；不含可选集成。 */
   lamp: PanelLamp;
   lampReasons: string[];
@@ -605,6 +607,7 @@ interface SoftProjectRead {
   project: LoadedProject;
   configDirAbs: string;
   stacks: string[];
+  stackIds: StackId[];
   scan: EnvScanResult;
   storeEntries: ProjectLlmRecord[];
   configEntryCount: number;
@@ -681,10 +684,12 @@ async function softReadProject(
   const android = resolveAndroidAdbSocket(project.config, project.resolver);
   const pen = project.resolver.getValue("PEN_CLI_KEY");
 
+  const detectedStacks = detectProjectStacks(project.rootDir);
   return {
     project,
     configDirAbs: configDirAbs(project.config, project.rootDir),
-    stacks: detectProjectStacks(project.rootDir).map((stack) => stack.displayName),
+    stacks: detectedStacks.map((stack) => stack.displayName),
+    stackIds: detectedStacks.map((stack) => stack.id),
     scan,
     storeEntries,
     configEntryCount: configEntries.length,
@@ -838,6 +843,7 @@ async function buildProjectRow(
     lastSeenAt: input.record?.lastSeenAt ?? null,
     diskReachable: false,
     stacks: [],
+    stackIds: [],
     lamp: "gray",
     lampReasons: [],
     integration: { ready: 0, total: 3, missing: [] },
@@ -881,6 +887,7 @@ async function buildProjectRow(
       ...base,
       diskReachable: true,
       stacks: soft.stacks,
+      stackIds: soft.stackIds,
       lamp,
       lampReasons: reasons,
       integration: {
