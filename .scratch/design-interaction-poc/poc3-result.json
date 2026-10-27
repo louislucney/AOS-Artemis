@@ -1,0 +1,88 @@
+{
+  "generatedAt": "2026-10-27T15:07:35.227Z",
+  "render": {
+    "frames": 219,
+    "ok": true,
+    "missing": 0,
+    "ms": 13190
+  },
+  "viewport": {
+    "w": 375,
+    "h": 855
+  },
+  "classCounts": {
+    "overlay": 48,
+    "full-content": 108,
+    "viewport-state": 63
+  },
+  "stats": {
+    "pairs": 47742,
+    "textOverlap": 3348,
+    "crossFamily": 1766,
+    "scrollRaw": 148,
+    "scrollKept": 2,
+    "stateChange": 982,
+    "stateChangeUnique": 319,
+    "duplicate": 152,
+    "gray": 252,
+    "grayUnique": 126,
+    "blocked": 18720,
+    "deduped": 1
+  },
+  "scrollCandidates": [
+    {
+      "A": "OFftq",
+      "B": "pEfey",
+      "Acls": "full-content",
+      "Bcls": "viewport-state",
+      "matched": 55,
+      "mode": 360,
+      "support": 1,
+      "contentDiff": 0,
+      "ncc": 0.68274501013388,
+      "takeover": {
+        "bar": "到店自取",
+        "from": "到店自取",
+        "region": "header"
+      }
+    }
+  ],
+  "targets": {
+    "mop": {
+      "matched": 55,
+      "mode": 360,
+      "support": 1,
+      "contentDiff": 0,
+      "scroll": true
+    },
+    "search": {
+      "matched": 33,
+      "mode": 0,
+      "support": 0.9696969696969697,
+      "contentDiff": 0.2142857142857143,
+      "stateChange": true
+    },
+    "state1": {
+      "matched": 44,
+      "mode": 0,
+      "support": 0.9545454545454546,
+      "contentDiff": 0.13725490196078427,
+      "stateChange": true
+    },
+    "state2": {
+      "matched": 42,
+      "mode": 0,
+      "support": 0.9761904761904762,
+      "contentDiff": 0.125,
+      "stateChange": true
+    }
+  },
+  "takeover": {
+    "appBarTop": [
+      "行動預點-下滑",
+      "世貿一館門市",
+      "到店自取",
+      "15分鐘後 取餐"
+    ]
+  }
+}

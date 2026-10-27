@@ -1,4 +1,5 @@
 import type { FlowEdge, FlowElement, FlowWarning } from "../../figma/flows.js";
+import type { InteractionCandidate, InteractionPairingStats } from "./interaction.js";
 
 export type CanvasLayout = "vertical" | "horizontal" | "grid" | "unknown";
 
@@ -209,6 +210,9 @@ export interface ReadingFile {
   overlap: number;
   screens: ReadingScreenObservation[];
   interactions: ReadingInteraction[];
+  /** 设计交互候选（滚动折叠/状态变化）；Phase 1 只报告，不升硬断言。 */
+  interactionCandidates?: InteractionCandidate[];
+  pairingStats?: InteractionPairingStats;
   spine: ReadingSpine | null;
   questions: ReadingQuestion[];
   answers?: ReadingAnswer[];

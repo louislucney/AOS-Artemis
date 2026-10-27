@@ -1,0 +1,365 @@
+{
+  "generatedAt": "2026-10-27T15:02:27.158Z",
+  "render": {
+    "frames": 219,
+    "ok": true,
+    "missing": 0,
+    "ms": 10918
+  },
+  "viewport": {
+    "w": 375,
+    "h": 855
+  },
+  "classCounts": {
+    "overlay": 75,
+    "full-content": 95,
+    "viewport-state": 46,
+    "component": 3
+  },
+  "stats": {
+    "pairs": 47742,
+    "textOverlap": 1724,
+    "scrollRaw": 978,
+    "scrollKept": 28,
+    "stateChange": 260,
+    "duplicate": 78,
+    "gray": 112,
+    "blocked": 28298
+  },
+  "candidates": [
+    {
+      "A": "s1gOwt",
+      "B": "ZBvxJ",
+      "Acls": "full-content",
+      "Bcls": "viewport-state",
+      "matched": 55,
+      "mode": -168,
+      "support": 0.8727272727272727,
+      "contentDiff": 0.3125,
+      "ncc": 0.6873634619154191
+    },
+    {
+      "A": "RtLF4",
+      "B": "ZBvxJ",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 55,
+      "mode": -168,
+      "support": 0.8727272727272727,
+      "contentDiff": 0.3125,
+      "ncc": 0.6889251166603207
+    },
+    {
+      "A": "qhwvY",
+      "B": "ZBvxJ",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 55,
+      "mode": -168,
+      "support": 0.8727272727272727,
+      "contentDiff": 0.3125,
+      "ncc": 0.6827636750558519
+    },
+    {
+      "A": "ZBvxJ",
+      "B": "s1gOwt",
+      "Acls": "viewport-state",
+      "Bcls": "full-content",
+      "matched": 55,
+      "mode": 168,
+      "support": 0.8727272727272727,
+      "contentDiff": 0.3125,
+      "ncc": 0.6873634619154191
+    },
+    {
+      "A": "ZBvxJ",
+      "B": "RtLF4",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 55,
+      "mode": 168,
+      "support": 0.8727272727272727,
+      "contentDiff": 0.3125,
+      "ncc": 0.6889251166603207
+    },
+    {
+      "A": "ZBvxJ",
+      "B": "qhwvY",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 55,
+      "mode": 168,
+      "support": 0.8727272727272727,
+      "contentDiff": 0.3125,
+      "ncc": 0.6827636750558519
+    },
+    {
+      "A": "s1gOwt",
+      "B": "P6sn8",
+      "Acls": "full-content",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7514986932829234
+    },
+    {
+      "A": "s1gOwt",
+      "B": "DDoJ5",
+      "Acls": "full-content",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7504081888082598
+    },
+    {
+      "A": "s1gOwt",
+      "B": "b3QQb9",
+      "Acls": "full-content",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -107,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.884297520661157,
+      "ncc": 0.8127071678948097
+    },
+    {
+      "A": "RtLF4",
+      "B": "P6sn8",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7538020505426708
+    },
+    {
+      "A": "RtLF4",
+      "B": "DDoJ5",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.752715518691908
+    },
+    {
+      "A": "RtLF4",
+      "B": "b3QQb9",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -107,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.884297520661157,
+      "ncc": 0.814473726803753
+    },
+    {
+      "A": "qhwvY",
+      "B": "P6sn8",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7437431364847072
+    },
+    {
+      "A": "qhwvY",
+      "B": "DDoJ5",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7426358329867968
+    },
+    {
+      "A": "qhwvY",
+      "B": "b3QQb9",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -107,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.884297520661157,
+      "ncc": 0.8058663274974722
+    },
+    {
+      "A": "ZBvxJ",
+      "B": "P6sn8",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": 65,
+      "support": 0.8571428571428571,
+      "contentDiff": 0.8782608695652174,
+      "ncc": 0.7255874139711528
+    },
+    {
+      "A": "ZBvxJ",
+      "B": "DDoJ5",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": 65,
+      "support": 0.8571428571428571,
+      "contentDiff": 0.8782608695652174,
+      "ncc": 0.7243207003896176
+    },
+    {
+      "A": "P6sn8",
+      "B": "s1gOwt",
+      "Acls": "viewport-state",
+      "Bcls": "full-content",
+      "matched": 14,
+      "mode": 103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7514986932829234
+    },
+    {
+      "A": "P6sn8",
+      "B": "RtLF4",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": 103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7538020505426708
+    },
+    {
+      "A": "P6sn8",
+      "B": "qhwvY",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": 103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7437431364847072
+    },
+    {
+      "A": "P6sn8",
+      "B": "ZBvxJ",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -65,
+      "support": 0.8571428571428571,
+      "contentDiff": 0.8782608695652174,
+      "ncc": 0.7255874139711528
+    },
+    {
+      "A": "DDoJ5",
+      "B": "s1gOwt",
+      "Acls": "viewport-state",
+      "Bcls": "full-content",
+      "matched": 14,
+      "mode": 103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7504081888082598
+    },
+    {
+      "A": "DDoJ5",
+      "B": "RtLF4",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": 103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.752715518691908
+    },
+    {
+      "A": "DDoJ5",
+      "B": "qhwvY",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": 103,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.8852459016393442,
+      "ncc": 0.7426358329867968
+    },
+    {
+      "A": "DDoJ5",
+      "B": "ZBvxJ",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": -65,
+      "support": 0.8571428571428571,
+      "contentDiff": 0.8782608695652174,
+      "ncc": 0.7243207003896176
+    },
+    {
+      "A": "b3QQb9",
+      "B": "s1gOwt",
+      "Acls": "viewport-state",
+      "Bcls": "full-content",
+      "matched": 14,
+      "mode": 108,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.884297520661157,
+      "ncc": 0.810251466823132
+    },
+    {
+      "A": "b3QQb9",
+      "B": "RtLF4",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": 108,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.884297520661157,
+      "ncc": 0.81201292390871
+    },
+    {
+      "A": "b3QQb9",
+      "B": "qhwvY",
+      "Acls": "viewport-state",
+      "Bcls": "viewport-state",
+      "matched": 14,
+      "mode": 108,
+      "support": 0.9285714285714286,
+      "contentDiff": 0.884297520661157,
+      "ncc": 0.8034315423781919
+    }
+  ],
+  "targets": {
+    "mop": {
+      "matched": 55,
+      "mode": 360,
+      "support": 1,
+      "contentDiff": 0
+    },
+    "search": {
+      "matched": 33,
+      "mode": 0,
+      "support": 0.9696969696969697,
+      "contentDiff": 0.2142857142857143
+    },
+    "state1": {
+      "matched": 44,
+      "mode": 0,
+      "support": 0.9545454545454546,
+      "contentDiff": 0.13725490196078427
+    },
+    "state2": {
+      "matched": 42,
+      "mode": 0,
+      "support": 0.9761904761904762,
+      "contentDiff": 0.125
+    }
+  }
+}
