@@ -399,7 +399,7 @@ Usage:
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--case <caseId|semanticId|displayId>]... [--max <n>] [--stop-on-failure] [--device <serial>]
         [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
-        [--ui-diff] [--ui-diff-max <n>]（访问屏逐屏设计对比；默认关闭，单例最多 3 屏）
+        [--ui-diff] [--ui-diff-max <n>]（访问屏逐屏设计对比；默认关闭，单例默认最多 10 屏）
         [--fail-on-ui]（窄门禁：非隔离用例 ui.status=failed → exit 2；unverified 不阻断）
         [--fail-on-ui-weight]（窄门禁：非隔离用例高置信字重 heavier → exit 2；默认关闭，待样本校准）
         [--allow-pending-api]（API 说明 pending 时仍执行；默认 check/run 阻断）

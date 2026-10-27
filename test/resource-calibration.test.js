@@ -419,6 +419,8 @@ test("resource calibration: Android XML native text/image best effort", (t) => {
   const root = makeTempProject({ config: baseConfig() });
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   write(root, "app/build.gradle", "// fixture\n");
+  writePng(root, "app/src/main/res/drawable-xhdpi/hero.png", 686, 320);
+  writePng(root, "app/src/main/res/drawable-xxhdpi/hero.png", 1029, 480);
   write(
     root,
     "app/src/main/res/layout/home.xml",
@@ -430,10 +432,16 @@ test("resource calibration: Android XML native text/image best effort", (t) => {
 </LinearLayout>
 `
   );
-  const report = buildResourceCalibration(runtimeFor(root), nativeDesignContract());
+  const report = buildResourceCalibration(runtimeFor(root), nativeDesignContract(), {
+    device: { pixelRatio: 3 }
+  });
   assert.equal(report.stacks[0].id, "android-native");
   assert.equal(report.texts.match, 1);
   assert.equal(report.images.match, 1);
+  assert.ok(
+    report.items.find((item) => item.kind === "image").notes.some((note) => note.includes("variants 2/3")),
+    JSON.stringify(report.items)
+  );
   const title = report.items.find((item) => item.kind === "text" && item.designId === "title");
   assert.equal(title.status, "match");
   assert.ok(title.notes.includes("native-font-weight-unverified"));
@@ -443,6 +451,21 @@ test("resource calibration: iOS SwiftUI native text/image best effort", (t) => {
   const root = makeTempProject({ config: baseConfig() });
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, "App.xcodeproj"), { recursive: true });
+  write(
+    root,
+    "Assets.xcassets/hero.imageset/Contents.json",
+    JSON.stringify({
+      images: [
+        { filename: "hero.png", idiom: "universal", scale: "1x" },
+        { filename: "hero@2x.png", idiom: "universal", scale: "2x" },
+        { filename: "hero@3x.png", idiom: "universal", scale: "3x" }
+      ],
+      info: { author: "xcode", version: 1 }
+    })
+  );
+  writePng(root, "Assets.xcassets/hero.imageset/hero.png", 343, 160);
+  writePng(root, "Assets.xcassets/hero.imageset/hero@2x.png", 686, 320);
+  writePng(root, "Assets.xcassets/hero.imageset/hero@3x.png", 1029, 480);
   write(
     root,
     "App/HomeView.swift",
@@ -458,7 +481,9 @@ struct HomeView: View {
 }
 `
   );
-  const report = buildResourceCalibration(runtimeFor(root), nativeDesignContract());
+  const report = buildResourceCalibration(runtimeFor(root), nativeDesignContract(), {
+    device: { pixelRatio: 3 }
+  });
   assert.equal(report.stacks[0].id, "ios-native");
   assert.equal(report.texts.match, 1);
   assert.equal(report.images.match, 1);

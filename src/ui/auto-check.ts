@@ -193,7 +193,7 @@ export async function autoCheckUi(
   }
   const matches = matchScreens(requested, flows, steps).slice(
     0,
-    Math.max(1, Math.trunc(input.maxScreens ?? 3))
+    Math.max(1, Math.trunc(input.maxScreens ?? 10))
   );
   if (matches.length === 0) {
     return attachCoverage(unverifiedUi("no-screen-match"), noMatchCoverage());

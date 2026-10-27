@@ -2004,7 +2004,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > - `run-loop` 主决策与 `step-observe` 视觉感知对“空 content”**同一截图重试一次**；仍失败才 `text-degraded`。400/415/422 的 modality rejection 仍缓存 false 并停用附图。
 > - 回归：真实 trace 的 step 4 降级、step 5 恢复；单测覆盖 content parts、finish_reason/reasoning 提示、主决策重试成功/失败、视觉感知重试成功。
 >
-> **UI 自动比对（首版）**：`suite run --ui-diff` 对 `testCase.screens` 中能匹配到 `flows.json` 屏幕、且存在逐屏 `.pen` 与 trace 步骤的屏幕调用 `design_device_diff`（`--ui-diff-max` 默认 3）；blocker/major → `ui.failed`，无 blocker/major → `ui.passed`，JPEG/缺基线/未匹配屏保持 `ui-unverified`。功能门禁不变；跨源像素基线未验证前，结果作为 UI 门禁候选而非绝对结论。
+> **UI 自动比对（首版）**：`suite run --ui-diff` 对 `testCase.screens` 中能匹配到 `flows.json` 屏幕、且存在逐屏 `.pen` 与 trace 步骤的屏幕调用 `design_device_diff`（`--ui-diff-max` 默认 10）；blocker/major → `ui.failed`，无 blocker/major → `ui.passed`，JPEG/缺基线/未匹配屏保持 `ui-unverified`。功能门禁不变；跨源像素基线未验证前，结果作为 UI 门禁候选而非绝对结论。
 
 ### 13.149 实施记录（字重检测切片 1–2 + 区域 textStyle）
 

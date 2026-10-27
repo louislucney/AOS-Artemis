@@ -502,6 +502,42 @@ function scanFlutter(rootDir: string, maxFiles: number): CodeScan {
 }
 
 
+function findAndroidAsset(rootDir: string, key: string, maxFiles: number): string | null {
+  const walked = walkSources(rootDir, new Set([".png", ".webp", ".jpg", ".jpeg"]), maxFiles);
+  const normalized = normalizeKey(key);
+  if (normalized === null) return null;
+  const match = walked.files.find(
+    (file) =>
+      /(?:^|\/)res\/(?:drawable|mipmap)[^/]*\//.test(`/${file}`) &&
+      normalizeKey(path.basename(file)) === normalized
+  );
+  return match === undefined ? null : path.join(rootDir, match);
+}
+
+function findIosImageset(rootDir: string, key: string): string | null {
+  const target = `${key.toLowerCase()}.imageset`;
+  const pending: string[] = [""];
+  while (pending.length > 0) {
+    const relative = pending.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(path.join(rootDir, relative), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (IGNORED_DIRS.has(entry.name)) continue;
+        if (entry.name.toLowerCase() === target) {
+          return path.join(rootDir, relative, entry.name);
+        }
+        pending.push(relative === "" ? entry.name : `${relative}/${entry.name}`);
+      }
+    }
+  }
+  return null;
+}
+
 function attributeOf(attrs: string, name: string): string | null {
   const match = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(attrs);
   return match?.[1]?.trim() ?? null;
@@ -603,7 +639,7 @@ function scanAndroidNative(rootDir: string, maxFiles: number): CodeScan {
         if (key === null) continue;
         images.push({
           key,
-          assetPath: null,
+          assetPath: findAndroidAsset(rootDir, key, maxFiles),
           width: dimensionValue(attributeOf(attrs, "android:layout_width")),
           height: dimensionValue(attributeOf(attrs, "android:layout_height")),
           fit: androidFit(attributeOf(attrs, "android:scaleType")),
@@ -646,7 +682,7 @@ function scanAndroidNative(rootDir: string, maxFiles: number): CodeScan {
         const size = /Modifier\.size\((\d+(?:\.\d+)?)\.dp\)/.exec(window)?.[1];
         images.push({
           key: normalizeKey(imageMatch[1]!) ?? "",
-          assetPath: null,
+          assetPath: findAndroidAsset(rootDir, imageMatch[1]!, maxFiles),
           width: size === undefined ? null : Number(size),
           height: size === undefined ? null : Number(size),
           fit: composeFit(/contentScale\s*=\s*ContentScale\.(\w+)/.exec(window)?.[1] ?? null),
@@ -737,7 +773,7 @@ function scanIosNative(rootDir: string, maxFiles: number): CodeScan {
         const frame = /\.frame\(width:\s*(\d+(?:\.\d+)?),\s*height:\s*(\d+(?:\.\d+)?)\)/.exec(window);
         images.push({
           key: normalizeKey(swiftImage[1]!) ?? "",
-          assetPath: null,
+          assetPath: findIosImageset(rootDir, swiftImage[1]!),
           width: frame === null ? null : Number(frame[1]),
           height: frame === null ? null : Number(frame[2]),
           fit: swiftFit(/\.(scaledToFill|scaledToFit)\(\)/.exec(window)?.[1] ?? null),
@@ -774,7 +810,7 @@ function scanIosNative(rootDir: string, maxFiles: number): CodeScan {
         const frame = /width:\s*(\d+(?:\.\d+)?),\s*height:\s*(\d+(?:\.\d+)?)/.exec(window);
         images.push({
           key: normalizeKey(uiImage[1]!) ?? "",
-          assetPath: null,
+          assetPath: findIosImageset(rootDir, uiImage[1]!),
           width: frame === null ? null : Number(frame[1]),
           height: frame === null ? null : Number(frame[2]),
           fit: swiftFit(/contentMode\s*=\s*\.(scaleAspectFill|scaleAspectFit)/.exec(window)?.[1] ?? null),
@@ -874,6 +910,31 @@ function imageVariants(
       { scale: 2, file: path.join(dir, "2.0x", `${name}${ext}`) },
       { scale: 3, file: path.join(dir, "3.0x", `${name}${ext}`) }
     ];
+  }
+  if (stack === "android-native") {
+    const resDir = path.dirname(dir);
+    const file = path.basename(code.assetPath);
+    const buckets: Array<[number, string]> = [
+      [1, "drawable"],
+      [1, "drawable-mdpi"],
+      [1.5, "drawable-hdpi"],
+      [2, "drawable-xhdpi"],
+      [3, "drawable-xxhdpi"],
+      [4, "drawable-xxxhdpi"]
+    ];
+    return buckets.map(([scale, bucket]) => ({ scale, file: path.join(resDir, bucket, file) }));
+  }
+  if (stack === "ios-native") {
+    try {
+      const contents = JSON.parse(readText(path.join(code.assetPath, "Contents.json"))) as {
+        images?: Array<{ filename?: unknown; scale?: unknown }>;
+      };
+      return (contents.images ?? [])
+        .filter((entry): entry is { filename: string; scale: string } => typeof entry.filename === "string" && typeof entry.scale === "string")
+        .map((entry) => ({ scale: Number(entry.scale.replace(/x$/i, "")) || 1, file: path.join(code.assetPath!, entry.filename) }));
+    } catch {
+      return [];
+    }
   }
   return [{ scale: 1, file: code.assetPath }];
 }
