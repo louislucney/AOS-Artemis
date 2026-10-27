@@ -624,7 +624,7 @@ Expected: 全绿（build 0 error；test 全 pass；lint 0 error）。
 
 Run（本地 starbuckstw）：
 ```bash
-AOS_VISION_MAX_SCREENS=0 node dist/cli.js ...  # 或 scripts/aos-call.mjs 调 design_to_test
+AOS_VISION_MAX_SCREENS=0 node dist/cli.js ...  # 或 scripts/mobile-testing-call.mjs 调 design_to_test
 ```
 Expected: 23 主屏 + 30 变体全部有 target 记录；默认 50 时 3 个变体具名 `capped`；`unverifiable` 有计数；215 条探索边在 `maxFlows=300` 下全保留；一条龙响应含 design warnings。
 

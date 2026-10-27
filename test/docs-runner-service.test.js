@@ -15,7 +15,7 @@ test("docs: runner 常驻化示例绑定目标项目＋中心 PG 来源（可复
   assert.equal(readme.includes("EnvironmentFile=/srv/projects/<项目>/.env"), false, "不得以项目 .env 充当 PG 来源");
 
   // launchd：完整最小 plist 片段（Label/ProgramArguments --project/EnvironmentVariables）
-  assert.match(readme, /<key>Label<\/key><string>com\.aos\.runner<\/string>/, "launchd 须含 Label");
+  assert.match(readme, /<key>Label<\/key><string>com\.mobile-testing\.runner<\/string>/, "launchd 须含 Label");
   assert.match(readme, /<string>--project<\/string>\s*<string>\/srv\/projects\/<项目><\/string>/, "launchd ProgramArguments 须带 --project");
   assert.match(readme, /<key>EnvironmentVariables<\/key>/, "launchd 须含环境变量来源（中心 PG）");
 });

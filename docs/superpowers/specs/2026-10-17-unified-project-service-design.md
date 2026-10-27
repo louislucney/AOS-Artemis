@@ -7,7 +7,7 @@
 
 ### 1.1 痛点与纠偏（用户要求归纳）
 
-- 现状的错：五步流程的编排被做在 **MCP 之外的脚本层**（`scripts/design-to-test.mjs`、aos-call 编队）——工具 schema 被复制到脚本层，已发生两次真实漂移 bug（`penPath` vs `path`、`vision` 字符串 vs boolean）；用户还要记旗标/退出码，方向反了。
+- 现状的错：五步流程的编排被做在 **MCP 之外的脚本层**（`scripts/design-to-test.mjs`、旧 `aos-call` 脚本编队（现 `scripts/mobile-testing-call.mjs`））——工具 schema 被复制到脚本层，已发生两次真实漂移 bug（`penPath` vs `path`、`vision` 字符串 vs boolean）；用户还要记旗标/退出码，方向反了。
 - **用户要求**：MCP 本身提供便利、简单、易懂的服务——**人话入口、无脚本**；并且**要有数据支撑**，让**被测项目**与 **MCP 服务自身**都随使用演进完善。
 - 真实场景：项目接入后，活不只有 CR——**Jira bug 修复验证**与**回归测试**同样常见；**第一次接入可能是任意一类**，可先后或叠加。
 

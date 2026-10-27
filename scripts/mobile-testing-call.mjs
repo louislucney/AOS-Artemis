@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Generic mobile-testing MCP tool caller (temp helper).
- *   node scripts/aos-call.mjs <calls.json> [projectDir]
+ *   node scripts/mobile-testing-call.mjs <calls.json> [projectDir]
  * calls.json: [{ "name": "tool", "args": {...}, "out": "optional/file.json" }]
  */
 import fs from "node:fs";
@@ -16,17 +16,17 @@ const repoRoot = path.resolve(here, "..");
 
 const [, , callsFile, projectArg] = process.argv;
 if (!callsFile) {
-  console.error("usage: node scripts/aos-call.mjs <calls.json> [projectDir]");
+  console.error("usage: node scripts/mobile-testing-call.mjs <calls.json> [projectDir]");
   process.exit(3);
 }
-const projectDir = path.resolve(projectArg ?? "C:/LLM/artemis-demo");
+const projectDir = path.resolve(projectArg ?? process.cwd());
 const calls = JSON.parse(fs.readFileSync(callsFile, "utf-8"));
 const envTimeout = Number(process.env.AOS_CALL_TIMEOUT_MS ?? "");
 const requestTimeoutMs =
   Number.isFinite(envTimeout) && envTimeout > 0 ? Math.min(envTimeout, 2_147_483_647) : 600_000;
-console.error(`[aos-call] 项目=${projectDir} 请求超时=${requestTimeoutMs}ms`);
+console.error(`[mobile-testing-call] 项目=${projectDir} 请求超时=${requestTimeoutMs}ms`);
 
-const client = new Client({ name: "aos-call", version: "0.0.1" });
+const client = new Client({ name: "mobile-testing-call", version: "0.0.1" });
 await client.connect(
   new StdioClientTransport({
     command: process.execPath,

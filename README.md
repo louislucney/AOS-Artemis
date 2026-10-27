@@ -317,7 +317,7 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
 - 领取条件：**任务目标端 ⊆ 该 runner 的设备端集合**（缺端不领）；**双端任务需单机双端 runner**（两端分属两台机时请拆单端任务或手动执行）；面板对「pending 且无 runner 可覆盖」会给提示。默认严格子集；设 `AOS_RUNNER_PARTIAL_CLAIM=1` 后可**按端部分领取**——仅当**无任一在线 runner 可全覆盖**该任务时按交集端领取（完全覆盖仍优先，双端齐备在场时绝不部分抢占）；缺端**不自动补跑**、不新增状态字段，仅领取日志「部分端执行（缺 X——在线无全覆盖执行机）」＋执行侧既有缺端标注；**端覆盖审计反推口径**＝任务 `runIds` 关联的 `suite_runs.platform` 集合 vs 任务 `platforms`（统计下钻分母按实际已跑端）。
 - 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需；启动打印醒目告警）；**可选令牌 `AOS_RUNNER_ARTIFACT_TOKEN`**——设置后 `/artifact*` 强制认证（Bearer/Basic/`?t=`，`GET|HEAD /healthz` 豁免，见「鉴权」段），未设则维持「无鉴权」内网口径；暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
 - 崩溃/失联救济：runner 重启自动释放自己的未完成领取；**在线 runner 每轮自动回收超龄＋失联的领取**（`claimed_at` 超 `AOS_RUNNER_STALE_CLAIM_MS` 且领取机离线／归属悬空 → 回待执行，`attempts` 保留；毒丸任务在超上限的下一次领取处直接置 `failed` 不执行——「无在线 runner 则无人回收」为自洽性质）；机器报废等场景用 `suite task release`（默认要求该执行机离线）。无 runner 时手动路径不变：`suite run --task <id> --device <serial>`（claimed 不阻塞手动执行；若该任务正由 runner 持有设备租约则 exit 2）；手动执行在本机有主机身份时以独立身份 `manual:<taskId>` 获取 `--device` 的设备租约，执行中按 TTL/3 续租，结束/失败在 `finally` 停止续租并释放；被占用 exit 2。见 DESIGN §13.109/§13.116/§13.166。
-- **常驻化（项目机）**：前台跑适合调试；长期运行交给系统服务管理器（工作目录＝服务仓库，自动拉起；`MOBILE_TESTING_DATABASE_URL` 须在该机环境可得）。systemd 最小示例（`/etc/systemd/system/aos-runner.service`，改 `User` 后 `systemctl daemon-reload && systemctl enable --now aos-runner`）：
+- **常驻化（项目机）**：前台跑适合调试；长期运行交给系统服务管理器（工作目录＝服务仓库，自动拉起；`MOBILE_TESTING_DATABASE_URL` 须在该机环境可得）。systemd 最小示例（`/etc/systemd/system/mobile-testing-runner.service`，改 `User` 后 `systemctl daemon-reload && systemctl enable --now mobile-testing-runner`）：
 
   ```ini
   [Service]
@@ -328,10 +328,10 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
   User=aos
   ```
 
-  launchd 最小键（`~/Library/LaunchAgents/com.aos.runner.plist`；`ProgramArguments` 依序 node／服务 dist/cli.js／suite／runner／--name …）：
+  launchd 最小键（`~/Library/LaunchAgents/com.mobile-testing.runner.plist`；`ProgramArguments` 依序 node／服务 dist/cli.js／suite／runner／--name …）：
 
   ```xml
-  <key>Label</key><string>com.aos.runner</string>
+  <key>Label</key><string>com.mobile-testing.runner</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/node</string>
@@ -350,8 +350,8 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
     <string>postgres://aos:&lt;pw&gt;@&lt;pg-host&gt;:5432/mobile-testing</string>
   </dict>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/aos-runner.log</string>
-  <key>StandardErrorPath</key><string>/tmp/aos-runner.err.log</string>
+  <key>StandardOutPath</key><string>/tmp/mobile-testing-runner.log</string>
+  <key>StandardErrorPath</key><string>/tmp/mobile-testing-runner.err.log</string>
   ```
 
   注意：**必须显式绑定目标项目**（`--project /srv/projects/<项目>`；缺省会落在服务仓库自身）——启动日志 `[runner] 启动：… project=…` 可核对；中心 PG 以**服务级环境**提供（systemd `Environment=`／launchd `EnvironmentVariables`，**不要**放进项目 `.env`）；单项目**勿双开同名 runner**；产物令牌 `AOS_RUNNER_ARTIFACT_TOKEN` 可选（未设＝内网无鉴权，暴露范围与风险见上文与 DESIGN §13.109/§13.113）。
