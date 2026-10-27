@@ -715,7 +715,7 @@ export interface ObservedInteraction {
   kind: "scroll-collapse";
   provenance: Extract<InteractionProvenance, { kind: "observed" }>;
   screenId: string;
-  unit: "device-points";
+  unit: "device-points" | "device-px";
   thresholdSignal: "structural";
   firstChangePoints: number;
   fullEffectPoints: number;

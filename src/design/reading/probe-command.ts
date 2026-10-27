@@ -2,14 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { Runtime } from "../../runtime.js";
-import { classifyIosSerial } from "../../device/ios.js";
+import { resolveProbeDevice } from "./probe.js";
 import {
   interactionCandidatesFromReading,
   type InteractionCandidate
 } from "./interaction.js";
 import {
   assertionFromObserved,
-  iosProbeDevice,
   loadObservedCache,
   observedKey,
   probeScrollCollapse,
@@ -155,13 +154,7 @@ export async function runInteractionProbe(
     };
   }
   const candidate = matched[0]!;
-  if (classifyIosSerial(options.deviceSerial) === null) {
-    return {
-      exitCode: 2,
-      payload: { ok: false, error: "当前只支持 iOS 设备（模拟器/真机 UDID）" }
-    };
-  }
-  const device = deps.device ?? iosProbeDevice(runtime, options.deviceSerial);
+  const device = deps.device ?? resolveProbeDevice(runtime, options.deviceSerial);
   const designRoot = path.join(runtime.configDirAbs, "design");
   const result: ProbeResult = await probeScrollCollapse(device, candidate, {
     screenId: options.screen,

@@ -1228,7 +1228,7 @@ grayRaw 6 → grayKept 3
 
 ### 13.8 Phase 2：真机滚动探测
 
-- `probe.ts`：分段上滑 + 二分 fullEffect + 回滚恢复；输出 observed（device points/firstChange/fullEffect）。
-- `suite interaction-probe` 入口；缓存 `.artemis/design/interactions.observed.json`（screen+device+appVersion+designFingerprint）。
+- `probe.ts`：分段上滑 + 二分 fullEffect + 回滚恢复；输出 observed（iOS points / Android px、firstChange/fullEffect）。
+- 内部库，**不新增独立用户命令**；产品入口仍为 `design_to_test`。缓存 `.artemis/design/interactions.observed.json`（screen+device+appVersion+designFingerprint）。
 - `toScrollAssertion` 用 origin/region 生成结构不变量；仍不自动写 tests。
-- 当前仅 iOS；需设备已停在目标屏。
+- 平台无关：iOS（points/idb/WDA）与 Android（px/adb/uiautomator）共用同一个探测与缓存；平台差异只是适配器/单位；需设备已停在目标屏。

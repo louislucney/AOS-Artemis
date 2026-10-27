@@ -15,7 +15,6 @@ import { hostStrictFrom } from "./host/strict.js";
 import { isHostOnline, precheckTask } from "./console/dispatch.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
 import { classifyIosSerial } from "./device/ios.js";
-import { runInteractionProbe } from "./design/reading/probe-command.js";
 import { latestFeatureRefs, type ResolvedTaskRef } from "./tasks/feature-refs.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import {
@@ -356,49 +355,6 @@ type SuiteIo = {
   leaseTimers?: ManualLeaseTimers;
 };
 
-async function suiteInteractionProbe(
-  runtime: Awaited<ReturnType<typeof defaultBuildRuntime>>["runtime"],
-  flags: ParsedFlags,
-  io: { log: (line: string) => void; errorLog: (line: string) => void }
-): Promise<number> {
-  const screen = flags.get("screen");
-  const device = flags.get("device") ?? flags.get("serial");
-  if (screen === null || screen.trim() === "") {
-    io.errorLog("interaction-probe 需要 --screen <id|name>");
-    return 2;
-  }
-  if (device === null || device.trim() === "") {
-    io.errorLog("interaction-probe 需要 --device <serial>（或 --serial）");
-    return 2;
-  }
-  const outDir = flags.get("out-dir");
-  const result = await runInteractionProbe(runtime, {
-    screen,
-    deviceSerial: device,
-    ...(flags.get("app-version") === null ? {} : { appVersion: flags.get("app-version")! }),
-    ...(flags.get("design-fingerprint") === null
-      ? {}
-      : { designFingerprint: flags.get("design-fingerprint")! }),
-    ...(intOrNull(flags.get("max-scroll")) === null
-      ? {}
-      : { maxScroll: intOrNull(flags.get("max-scroll"))! }),
-    ...(intOrNull(flags.get("step")) === null ? {} : { step: intOrNull(flags.get("step"))! }),
-    ...(outDir === null ? {} : { outDir: path.resolve(runtime.project.rootDir, outDir) }),
-    ...(flags.bool("no-save") ? { noSave: true } : {})
-  });
-  if (flags.bool("json")) {
-    io.log(JSON.stringify(result.payload, null, 2));
-  } else if (result.exitCode === 0) {
-    const observed = result.payload.observed as { firstChangePoints: number; fullEffectPoints: number; restored: boolean };
-    io.log(
-      `observed: firstChange=${observed.firstChangePoints}pt fullEffect=${observed.fullEffectPoints}pt restored=${observed.restored}`
-    );
-  } else {
-    io.errorLog(String(result.payload.error ?? "interaction-probe 失败"));
-  }
-  return result.exitCode;
-}
-
 export function printSuiteUsage(log: (line: string) => void): void {
   log(`mobile-testing-mcp suite — 测试闭环（生成用例的确定性执行与取证）
 
@@ -432,8 +388,6 @@ Usage:
                                      定时回归：add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>（缺省＝首个 featureKey）]
   mobile-testing-mcp suite backfill [options]   从磁盘产物幂等重建登记（runs + case-sets；--dry-run 只读不写库）
   mobile-testing-mcp suite ui-contract [options] 从 flows.json + 逐屏 .pen 投影 UI 契约（token/几何/状态；--out <dir>；默认经 pen CLI 补 auto-layout 文本几何，--no-bounds 关闭）
-  mobile-testing-mcp suite interaction-probe --screen <id|name> --device <serial> [--app-version <v>] [--max-scroll <pt>] [--step <pt>] [--no-save] [--json]
-                                     真机滚动探测：只在已到达目标屏时运行；产出 observed + interactions.observed.json（不升断言）
   mobile-testing-mcp suite ui-semantics init [options] 从 ui-contract 生成 draft 语义骨架（逐屏 regions:[]；--contract/--out/--force/--json；owner 确认前 draft 不会假绿）
   mobile-testing-mcp suite ui-parity (--trace <traceId> --step <n> | --snapshot <json>) [--visual-text <json>] [--region <id>] [--screen <id|name>] [--contract/--semantics/--baseline] [--update-baseline] [--json]
                                      语义一致性：分类树/截断/IA/覆盖率/动态资产；单屏只给部分覆盖，unverified/offscreen > 0 不返回 layout-compatible（exit 0/1/2）
@@ -4255,7 +4209,6 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "schedule") return await suiteSchedule(built.runtime, flags, { log, errorLog });
     if (sub === "backfill") return await suiteBackfill(built.runtime, flags, { log, errorLog });
     if (sub === "ui-contract") return await suiteUiContract(built.runtime, flags, { log, errorLog });
-    if (sub === "interaction-probe") return await suiteInteractionProbe(built.runtime, flags, { log, errorLog });
     if (sub === "ui-semantics") return await suiteUiSemantics(built.runtime, flags, { log, errorLog });
     if (sub === "ui-parity") return await suiteUiParity(built.runtime, flags, { log, errorLog });
     if (sub === "ui-lint") return await suiteUiLint(built.runtime, flags, { log, errorLog });

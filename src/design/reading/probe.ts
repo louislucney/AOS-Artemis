@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { Runtime } from "../../runtime.js";
-import type { IosUiNode } from "../../device/ios.js";
+import { classifyIosSerial, type IosUiNode } from "../../device/ios.js";
+import { androidProbeDevice } from "./probe-android.js";
 import {
   normalizeForMatch,
   toScrollAssertion,
@@ -13,6 +14,7 @@ import {
 } from "./interaction.js";
 
 export interface ScrollProbeDevice {
+  unit: "device-points" | "device-px";
   size(): Promise<{ width: number; height: number } | null>;
   swipe(x1: number, y1: number, x2: number, y2: number, ms: number): Promise<void>;
   nodes(): Promise<IosUiNode[]>;
@@ -211,7 +213,7 @@ export async function probeScrollCollapse(
         ]
       },
       screenId: options.screenId,
-      unit: "device-points",
+      unit: device.unit,
       thresholdSignal: "structural",
       firstChangePoints: firstChange,
       fullEffectPoints: threshold,
@@ -231,7 +233,7 @@ export async function probeScrollCollapse(
         evidence: [`probe:firstChange=${threshold}pt`, `probe:max=${maxScroll}pt`]
       },
       screenId: options.screenId,
-      unit: "device-points",
+      unit: device.unit,
       thresholdSignal: "structural",
       firstChangePoints: threshold,
       fullEffectPoints: threshold,
@@ -245,8 +247,15 @@ export async function probeScrollCollapse(
   };
 }
 
+export function resolveProbeDevice(runtime: Runtime, serial: string): ScrollProbeDevice {
+  return classifyIosSerial(serial) === null
+    ? androidProbeDevice(serial)
+    : iosProbeDevice(runtime, serial);
+}
+
 export function iosProbeDevice(runtime: Runtime, serial: string): ScrollProbeDevice {
   return {
+    unit: "device-points",
     async size() {
       const device = await runtime.iosDevice(serial);
       return device === null ? null : await device.size();

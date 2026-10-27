@@ -13,6 +13,8 @@ import {
   assertionFromObserved
 } from "../dist/design/reading/probe.js";
 import { runInteractionProbe } from "../dist/design/reading/probe-command.js";
+import { androidProbeDevice, parseAndroidNodes } from "../dist/design/reading/probe-android.js";
+import { createImage, toPng } from "./helpers.js";
 
 function node(label, y, height = 20) {
   return {
@@ -27,6 +29,7 @@ function node(label, y, height = 20) {
 function fakeDevice() {
   let offset = 0;
   return {
+    unit: "device-points",
     async size() {
       return { width: 375, height: 855 };
     },
@@ -183,4 +186,27 @@ test("probe command: matches reading candidate, probes and caches", async () => 
   );
   const key = observedKey("after", "604E430A-5BE7-4FAD-99F5-11CF0539553B");
   assert.ok(cache[key]);
+});
+
+
+test("probe android: parses uiautomator nodes and uses device pixels", async () => {
+  const xml = `<hierarchy><node text="到店自取" content-desc="" resource-id="tab" bounds="[0,44][200,64]" /><node text="" content-desc="App Bar" resource-id="bar" bounds="[0,0][375,44]" /></hierarchy>`;
+  const nodes = parseAndroidNodes(xml);
+  assert.equal(nodes.length, 2);
+  assert.equal(nodes[0].label, "到店自取");
+  assert.deepEqual(nodes[0].rect, { x: 0, y: 44, width: 200, height: 20 });
+  assert.equal(nodes[1].label, "App Bar");
+  const png = toPng(createImage(1080, 2400));
+  const device = androidProbeDevice("emulator-5554", {
+    env: { AOS_ADB_PATH: "/fake/adb" },
+    pathExists: () => true,
+    exec: async (_command, args) => {
+      if (args.includes("cat")) return { code: 0, stdout: xml, stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    execBuffer: async () => ({ code: 0, stdout: png, stderr: "" })
+  });
+  assert.equal(device.unit, "device-px");
+  assert.deepEqual(await device.size(), { width: 1080, height: 2400 });
+  assert.equal((await device.nodes()).length, 2);
 });
