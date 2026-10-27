@@ -95,7 +95,8 @@ export function androidProbeDevice(
   };
 
   return {
-    unit: "device-points",
+    unit: "logical",
+    nativeUnit: "dp",
     async size() {
       if (logicalSize !== null) return logicalSize;
       if (lastPng === null) {

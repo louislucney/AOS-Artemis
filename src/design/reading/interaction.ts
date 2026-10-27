@@ -715,7 +715,9 @@ export interface ObservedInteraction {
   kind: "scroll-collapse";
   provenance: Extract<InteractionProvenance, { kind: "observed" }>;
   screenId: string;
-  unit: "device-points";
+  /** 产品层统一逻辑单位；具体是 iOS points 还是 Android dp 见 nativeUnit。 */
+  unit: "logical";
+  nativeUnit: "pt" | "dp";
   thresholdSignal: "structural";
   firstChangePoints: number;
   fullEffectPoints: number;

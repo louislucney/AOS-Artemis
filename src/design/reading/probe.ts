@@ -14,7 +14,8 @@ import {
 } from "./interaction.js";
 
 export interface ScrollProbeDevice {
-  unit: "device-points";
+  unit: "logical";
+  nativeUnit: "pt" | "dp";
   size(): Promise<{ width: number; height: number } | null>;
   swipe(x1: number, y1: number, x2: number, y2: number, ms: number): Promise<void>;
   nodes(): Promise<IosUiNode[]>;
@@ -214,6 +215,7 @@ export async function probeScrollCollapse(
       },
       screenId: options.screenId,
       unit: device.unit,
+      nativeUnit: device.nativeUnit,
       thresholdSignal: "structural",
       firstChangePoints: firstChange,
       fullEffectPoints: threshold,
@@ -234,6 +236,7 @@ export async function probeScrollCollapse(
       },
       screenId: options.screenId,
       unit: device.unit,
+      nativeUnit: device.nativeUnit,
       thresholdSignal: "structural",
       firstChangePoints: threshold,
       fullEffectPoints: threshold,
@@ -255,7 +258,8 @@ export function resolveProbeDevice(runtime: Runtime, serial: string): ScrollProb
 
 export function iosProbeDevice(runtime: Runtime, serial: string): ScrollProbeDevice {
   return {
-    unit: "device-points",
+    unit: "logical",
+    nativeUnit: "pt",
     async size() {
       const device = await runtime.iosDevice(serial);
       return device === null ? null : await device.size();

@@ -29,7 +29,8 @@ function node(label, y, height = 20) {
 function fakeDevice() {
   let offset = 0;
   return {
-    unit: "device-points",
+    unit: "logical",
+    nativeUnit: "pt",
     async size() {
       return { width: 375, height: 855 };
     },
@@ -129,7 +130,8 @@ test("probe: observed cache requires matching device/app/design fingerprint", ()
       kind: "scroll-collapse",
       provenance: { kind: "observed", evidence: [] },
       screenId: "s",
-      unit: "device-points",
+      unit: "logical",
+    nativeUnit: "pt",
       thresholdSignal: "structural",
       firstChangePoints: 100,
       fullEffectPoints: 100,
@@ -207,7 +209,8 @@ test("probe android: parses uiautomator nodes and converts px to dp", async () =
     },
     execBuffer: async () => ({ code: 0, stdout: png, stderr: "" })
   });
-  assert.equal(device.unit, "device-points");
+  assert.equal(device.unit, "logical");
+  assert.equal(device.nativeUnit, "dp");
   assert.deepEqual(await device.size(), { width: 540, height: 1200 });
   assert.equal((await device.nodes()).length, 2);
 });

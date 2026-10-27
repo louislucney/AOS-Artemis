@@ -2919,7 +2919,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-10-27。Phase 1b 把 inferred 候选写进 reading.json；Phase 2 补 observed 探测与缓存，仍不自动升断言。
 
-- **探测**：`src/design/reading/probe.ts`——`probeScrollCollapse` 分段上滑（步长由 maxScroll 派生）、结构信号判定（collapsed 文本消失 + takeover 标题出现）、二分逼近 fullEffect、回滚恢复；输出 `ObservedInteraction`（统一逻辑单位 device points：iOS points / Android dp；firstChange/fullEffect、restored）。
+- **探测**：`src/design/reading/probe.ts`——`probeScrollCollapse` 分段上滑（步长由 maxScroll 派生）、结构信号判定（collapsed 文本消失 + takeover 标题出现）、二分逼近 fullEffect、回滚恢复；输出 `ObservedInteraction`（`unit: "logical"`，`nativeUnit: "pt" | "dp"`；firstChange/fullEffect、restored）。
 - **缓存**：`.artemis/design/interactions.observed.json`；key `screen::device`；fingerprint 含 device/appVersion/designFingerprint；`observed` 断言要求 app 版本匹配，inferred 软缓存不升断言。
 - **入口**：内部库 `probe.ts` / `probe-command.ts`；**Phase 2 不新增独立用户命令**，产品入口仍为 `design_to_test`（后续把探测挂到内部观测阶段；设备需已停在目标屏）。
 - **断言**：`toScrollAssertion` 用 `origin/region` 生成结构不变量；探测只产出 observed，不直接写 tests。

@@ -31,7 +31,7 @@
 ### 0.3 v2 的核心变化
 
 1. **双轨配对**：结构锚（文本/几何/位移分布）为主，视觉 NCC 兜底；不再用单一全帧相似度决定一切。
-2. **单位钉死**：设计侧 `design-px @1x`，运行侧 `device points`；在边界换算一次，断言不携带精确 delta。
+2. **单位钉死**：设计侧 `design-px @1x`，运行侧统一**逻辑单位**（iOS `pt` / Android `dp`）；`adb`/`uiautomator` 的物理 px 只在适配器边界换算，断言不携带精确 delta。
 3. **delta 用位移众数**：MOP 的 84/84 文本节点位移为 360，360 是 scroll delta；404 是容器原点异常值。
 4. **confirmed 进类型**；`Assertion` 只保留 `scroll-collapse`，且只能由 `observed | confirmed` 构造。
 5. **sticky 拆两条规则**：双态位置不变 + takeover-bar 新出现。
@@ -272,16 +272,16 @@ NCC = 0.975
 type Unit =
   | {
       space: "design-px";
-      /** 设计坐标 → 设备 points 的换算系数；由 frame 宽度 / 设备屏宽 points 得出。 */
-      toDevicePoints: number;
+      /** 设计坐标 → 逻辑单位的换算系数；由 frame 宽度 / 设备逻辑宽得出。 */
+      toLogical: number;
     }
-  | { space: "device-points" };
+  | { space: "logical"; nativeUnit: "pt" | "dp" };
 ```
 
 约束：
 
 - 设计节点一律 `design-px @1x`。
-- 运行期探测一律 `device points`（iOS AX 单位）。
+- 运行期探测一律 `logical`：iOS 为 `pt`，Android 为 `dp`；`adb`/`uiautomator` 的物理 px 只在适配器内换算。
 - 只在边界换算一次；`InteractionCandidate` 内同时保留 `design` 与 `device` 两个值，禁止混用。
 - `Assertion` 不携带精确 delta/threshold；精确数字只进 `evidence`。
 
@@ -424,7 +424,8 @@ type ObservedInteraction = {
   kind: "scroll-collapse";
   provenance: Extract<Provenance, { kind: "observed" }>;
   screenId: string;
-  unit: "device-points";
+  unit: "logical";
+  nativeUnit: "pt" | "dp";
   thresholdSignal: "structural";
   firstChangePoints: number;
   fullEffectPoints: number;
@@ -786,7 +787,7 @@ const VisionLabel = z.object({
 - **粗扫 + 二分**：
   1. 粗扫步长从 `overflow` 派生（如 `min(400, max(100, overflow/4))`），不固定 0/400/800/1200；找到首个发生变化的区间 `[prev, firstChange]`；
   2. 在区间内二分 4–6 次，逼近首次变化偏移，精度目标 ≤16pt；
-  3. 记录 `firstChangePoints`、`fullEffectPoints`（device points）、方向、`probeMode: "coarse+binary"`；
+  3. 记录 `firstChangePoints`、`fullEffectPoints`（logical：iOS pt / Android dp）、方向、`probeMode: "coarse+binary"`；
   4. 回滚验证恢复（`restored`）。
 - **单调性保护**：header 折叠可能非单调（下滑隐藏/上滑显示）；若二分结果不稳定或变化点来回跳，回退线性 50/100px 扫描，并记 `probeMode: "linear-fallback"`。
 - 每段截屏 + AX/元素 bbox；检测：
@@ -811,7 +812,8 @@ const VisionLabel = z.object({
   "kind": "scroll-collapse",
   "provenance": { "kind": "observed", "evidence": ["probe:300pt"] },
   "screenId": "Z4OR6X",
-  "unit": "device-points",
+  "unit": "logical",
+  "nativeUnit": "pt",
   "thresholdSignal": "structural",
   "firstChangePoints": 120,
   "fullEffectPoints": 300,
@@ -829,7 +831,7 @@ const VisionLabel = z.object({
 - 人工确认（测试人员）→ `confirmed`，可生成断言；必须回写 flows/reading，避免问题每天重生。
 - **交叉校验（结构验证，不做数值硬比对）**：
   1. probe 记录 `firstChange`（首次结构变化）与 `fullEffect`（afterScroll 的 DeviceQuery 全部成立的最早偏移）；`threshold` 明确取**结构变化信号**，不取内容像素位移。
-  2. 在设计 `deltaMode` 换算到 device points 的偏移处，直接执行 `afterScroll` 的 DeviceQuery：
+  2. 在设计 `deltaMode` 换算到逻辑单位（iOS pt / Android dp）的偏移处，直接执行 `afterScroll` 的 DeviceQuery：
      - 全部成立 → 通过；
      - 不成立 → 降级 `unknown + question`，视为潜在误配。
   3. `fullEffect` 与设计 delta 的差异只作 info 记录，不单独触发降级；渐进折叠下二者天然不同。
@@ -1228,7 +1230,7 @@ grayRaw 6 → grayKept 3
 
 ### 13.8 Phase 2：真机滚动探测
 
-- `probe.ts`：分段上滑 + 二分 fullEffect + 回滚恢复；输出 observed（统一逻辑单位 device points：iOS points / Android dp；firstChange/fullEffect）。
+- `probe.ts`：分段上滑 + 二分 fullEffect + 回滚恢复；输出 observed（`unit: "logical"`，`nativeUnit: "pt" | "dp"`；firstChange/fullEffect）。
 - 内部库，**不新增独立用户命令**；产品入口仍为 `design_to_test`。缓存 `.artemis/design/interactions.observed.json`（screen+device+appVersion+designFingerprint）。
 - `toScrollAssertion` 用 origin/region 生成结构不变量；仍不自动写 tests。
 - 平台无关：iOS（points/idb/WDA）与 Android（adb/uiautomator，适配器内 px→dp）共用同一个探测与缓存；平台差异只是设备 I/O 适配器；需设备已停在目标屏。
