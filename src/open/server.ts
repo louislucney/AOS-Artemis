@@ -145,6 +145,52 @@ function parseLlm(value: unknown): OpenJobInput["llm"] {
   return { baseUrl: record.baseUrl, model: record.model, apiKey: record.apiKey };
 }
 
+function answersField(value: unknown): OpenJobInput["readingAnswers"] {
+  if (value === undefined || value === null || value === "") return undefined;
+  let raw: unknown;
+  try {
+    raw = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  } catch {
+    throw new HttpError(400, "invalid_request", "readingAnswers 不是合法 JSON");
+  }
+  if (!Array.isArray(raw)) {
+    throw new HttpError(400, "invalid_request", "readingAnswers 必须是数组");
+  }
+  if (raw.length === 0) return undefined;
+  if (raw.length > 100) {
+    throw new HttpError(400, "invalid_request", "readingAnswers 最多 100 条");
+  }
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new HttpError(400, "invalid_request", "readingAnswers 的每一项必须是对象");
+    }
+  }
+  return raw as NonNullable<OpenJobInput["readingAnswers"]>;
+}
+
+function readingFields(value: {
+  reading?: unknown;
+  readingStates?: unknown;
+  readingMaxScreens?: unknown;
+  readingAnswers?: unknown;
+}): Pick<OpenJobInput, "reading" | "readingStates" | "readingMaxScreens" | "readingAnswers"> {
+  const reading = booleanField(value.reading, "reading");
+  const readingStates = booleanField(value.readingStates, "readingStates");
+  const readingMaxScreens = numberField(value.readingMaxScreens, "readingMaxScreens");
+  const readingAnswers = answersField(value.readingAnswers);
+  if (readingMaxScreens !== undefined && readingMaxScreens > 200) {
+    throw new HttpError(400, "invalid_request", "readingMaxScreens 最大 200");
+  }
+  const enabled =
+    reading ?? (readingStates !== undefined || readingMaxScreens !== undefined || readingAnswers !== undefined);
+  return {
+    ...(reading === false ? { reading: false } : enabled ? { reading: true } : {}),
+    ...(readingStates === undefined ? {} : { readingStates }),
+    ...(readingMaxScreens === undefined ? {} : { readingMaxScreens }),
+    ...(readingAnswers === undefined ? {} : { readingAnswers })
+  };
+}
+
 function sourceOf(value: unknown): { type: "figma" | "pen"; url?: string; token?: string; nodeId?: string } {
   if (typeof value === "string") {
     if (value === "figma" || value === "pen") return { type: value };
@@ -553,7 +599,13 @@ export async function startCmsOpenServer(
               : { maxFlows: numberField(parsed.fields.get("maxFlows"), "maxFlows") }),
             ...(numberField(parsed.fields.get("maxDepth"), "maxDepth") === undefined
               ? {}
-              : { maxDepth: numberField(parsed.fields.get("maxDepth"), "maxDepth") })
+              : { maxDepth: numberField(parsed.fields.get("maxDepth"), "maxDepth") }),
+            ...readingFields({
+              reading: parsed.fields.get("reading"),
+              readingStates: parsed.fields.get("readingStates"),
+              readingMaxScreens: parsed.fields.get("readingMaxScreens"),
+              readingAnswers: parsed.fields.get("readingAnswers")
+            })
           };
         } else {
           let parsed: Record<string, unknown>;
@@ -577,7 +629,13 @@ export async function startCmsOpenServer(
               : { maxFlows: numberField(parsed.maxFlows, "maxFlows") }),
             ...(numberField(parsed.maxDepth, "maxDepth") === undefined
               ? {}
-              : { maxDepth: numberField(parsed.maxDepth, "maxDepth") })
+              : { maxDepth: numberField(parsed.maxDepth, "maxDepth") }),
+            ...readingFields({
+              reading: parsed.reading,
+              readingStates: parsed.readingStates,
+              readingMaxScreens: parsed.readingMaxScreens,
+              readingAnswers: parsed.readingAnswers
+            })
           };
         }
         const quota = assertJobQuota(request);

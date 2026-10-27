@@ -231,3 +231,173 @@ test("pipeline: empty case list fails with no_cases", async () => {
     await rm(workDir, { recursive: true, force: true });
   }
 });
+
+test("pipeline: optional reading writes report into zip and meta", async () => {
+  const workDir = await mkdtemp(join(tmpdir(), "aos-open-pipeline-"));
+  try {
+    let seen = null;
+    let seenAnswers = null;
+    const fakeRead = async (input) => {
+      seen = input;
+      const readingDir = join(input.runtime.configDirAbs, "design", "reading");
+      await mkdir(readingDir, { recursive: true });
+      try {
+        seenAnswers = JSON.parse(await readFile(join(readingDir, "answers.json"), "utf8"));
+      } catch {
+        seenAnswers = null;
+      }
+      const reading = {
+        completeness: {
+          screens: 2,
+          observedScreens: 2,
+          screensRead: 2,
+          screensTotal: 2,
+          failedScreens: 0,
+          droppedScreens: [],
+          unreadScreens: [],
+          truncatedScreens: [],
+          headerCoverage: 2,
+          bottomNavCoverage: 0,
+          annotationScreens: 0,
+          unresolvedEdges: 1,
+          unconfirmedEdges: 1,
+          questionsTotal: 3,
+          questionsOmitted: 2,
+          questionsAnswered: 1,
+          overlapConflicts: 0
+        },
+        spine: {
+          title: "登录页 → … → 首页",
+          summary: "主线候选：登录页 → 首页",
+          screenIds: ["1:1", "1:2"],
+          edgeIds: [],
+          statusSummary: { observed: 0, inferred: 1, unconfirmed: 0 },
+          status: "inferred",
+          basis: [],
+          confidence: 0.5
+        },
+        questions: [
+          {
+            id: "q1",
+            screenId: "1:1",
+            screenName: "登录页",
+            element: "登录",
+            question: "登录后是否进入首页？",
+            why: "静态稿无连接线"
+          }
+        ],
+        answers: []
+      };
+      await writeFile(join(readingDir, "reading.md"), "# 设计阅读\n\n- 登录页 → 首页\n", "utf8");
+      await writeFile(join(readingDir, "reading.json"), JSON.stringify(reading), "utf8");
+      return {
+        ok: true,
+        status: "read",
+        reason: null,
+        reading,
+        artifacts: {
+          json: join(readingDir, "reading.json"),
+          markdown: join(readingDir, "reading.md"),
+          chunksDir: join(readingDir, "chunks")
+        },
+        warnings: [{ code: "reading-test-warning", message: "阅读警告" }],
+        stats: {
+          chunksRequested: 1,
+          chunksProcessed: 1,
+          chunksReused: 0,
+          chunksFailed: 0,
+          calls: 1,
+          screens: 2,
+          screensRead: 2,
+          screensTotal: 2,
+          droppedScreens: [],
+          truncatedScreens: [],
+          observed: 0,
+          inferred: 1,
+          unconfirmed: 1
+        }
+      };
+    };
+    const result = await runOpenJob(
+      {
+        source: "figma",
+        figmaUrl: "https://www.figma.com/design/ABC123/demo",
+        figmaToken: "tok",
+        llm: { baseUrl: "https://api.example.com/v1", model: "m", apiKey: "k" },
+        reading: true,
+        readingStates: true,
+        readingMaxScreens: 10,
+        readingAnswers: [{ id: "a1", match: { screenId: "1:1" }, answer: "是" }]
+      },
+      workDir,
+      { ...deps(), readDesign: fakeRead }
+    );
+    assert.equal(seen.options.maxScreens, 10);
+    assert.equal(seen.options.includeStates, true);
+    assert.equal(seen.model, "m");
+    assert.equal(seenAnswers.answers[0].id, "a1");
+
+    const entries = zipEntries(await readFile(result.zipPath));
+    const names = entries.map((entry) => entry.name);
+    assert.ok(names.includes("design-reading.md"));
+    assert.ok(names.includes("design-reading.json"));
+    const design = entries.find((entry) => entry.name === "design.md").data.toString("utf-8");
+    assert.match(design, /## 设计阅读/);
+    assert.match(design, /登录页 → … → 首页/);
+    assert.match(design, /登录后是否进入首页/);
+    const meta = JSON.parse(entries.find((entry) => entry.name === "meta.json").data.toString("utf-8"));
+    assert.equal(meta.reading.status, "read");
+    assert.equal(meta.reading.screensRead, 2);
+    assert.equal(meta.reading.questionsTotal, 3);
+    assert.equal(meta.reading.questionsAnswered, 1);
+    assert.ok(result.warnings.includes("阅读警告"));
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("pipeline: reading is disabled by default", async () => {
+  const workDir = await mkdtemp(join(tmpdir(), "aos-open-pipeline-"));
+  try {
+    const result = await runOpenJob(
+      {
+        source: "figma",
+        figmaUrl: "https://www.figma.com/design/ABC123/demo",
+        figmaToken: "tok",
+        llm: { baseUrl: "https://api.example.com/v1", model: "m", apiKey: "k" }
+      },
+      workDir,
+      deps()
+    );
+    const entries = zipEntries(await readFile(result.zipPath));
+    assert.equal(entries.some((entry) => entry.name === "design-reading.md"), false);
+    const meta = JSON.parse(entries.find((entry) => entry.name === "meta.json").data.toString("utf-8"));
+    assert.equal(meta.reading.status, "disabled");
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("pipeline: reading requested without LLM skips with warning", async () => {
+  const workDir = await mkdtemp(join(tmpdir(), "aos-open-pipeline-"));
+  try {
+    const result = await runOpenJob(
+      {
+        source: "figma",
+        figmaUrl: "https://www.figma.com/design/ABC123/demo",
+        figmaToken: "tok",
+        llm: null,
+        reading: true
+      },
+      workDir,
+      deps()
+    );
+    const entries = zipEntries(await readFile(result.zipPath));
+    const meta = JSON.parse(entries.find((entry) => entry.name === "meta.json").data.toString("utf-8"));
+    assert.equal(meta.reading.status, "skipped");
+    assert.match(meta.reading.reason, /llm/i);
+    assert.ok(result.warnings.some((warning) => /阅读|reading/i.test(warning)));
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});

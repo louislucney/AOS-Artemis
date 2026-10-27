@@ -42,7 +42,17 @@ Base URL（调试环境）：`http://192.168.102.165:8780`
   },
   "maxFlows": 10,
   "maxDepth": 30,
-  "staticFallback": true
+  "staticFallback": true,
+  "reading": true,
+  "readingStates": false,
+  "readingMaxScreens": 30,
+  "readingAnswers": [
+    {
+      "id": "cms-list-dynamic",
+      "match": { "questionIncludes": "列表" },
+      "answer": "列表内容由 CMS 返回；空态/错误态是接口状态"
+    }
+  ]
 }
 ```
 
@@ -53,13 +63,17 @@ Base URL（调试环境）：`http://192.168.102.165:8780`
 | `source.url` | 字符串 | 是 | Figma `file` / `design` 链接 |
 | `source.token` | 字符串 | 否 | 本次请求的 Figma REST token；省略时回退服务进程的 `FIGMA_ACCESS_TOKEN` |
 | `source.nodeId` | 字符串 | 否 | 限定节点，如 `1:2`；URL 里的 `node-id=1-2` 会自动转成 `1:2` |
-| `llm` | 对象 | 否 | 三项必须同时非空：`baseUrl` / `model` / `apiKey`；用于注释解析、功能命名、视觉识别 |
+| `llm` | 对象 | 否 | 三项必须同时非空：`baseUrl` / `model` / `apiKey`；用于注释解析、功能命名、视觉识别、可选设计阅读 |
 | `llm.baseUrl` | 字符串 | 是（若传 llm） | OpenAI 兼容端点 |
 | `llm.model` | 字符串 | 是（若传 llm） | 模型名 |
 | `llm.apiKey` | 字符串 | 是（若传 llm） | key，只在请求生命周期内使用 |
 | `maxFlows` | 数字 | 否 | 最大用例条数，默认 10 |
 | `maxDepth` | 数字 | 否 | 路径最大深度，默认 30 |
 | `staticFallback` | 布尔 | 否 | 无原型交互时是否按箭头/注释/画布顺序合成，默认 `true` |
+| `reading` | 布尔 | 否 | 可选设计阅读；默认 `false`，需要视觉 LLM |
+| `readingStates` | 布尔 | 否 | 阅读时把 pen 状态变体作为独立屏，默认 `false` |
+| `readingMaxScreens` | 数字 | 否 | 阅读最多屏数，默认 30，最大 200 |
+| `readingAnswers` | 数组 | 否 | 本次请求的人工答案（≤100 条），写入阅读 answers 后参与合并 |
 
 ### Figma 处理顺序
 
@@ -84,7 +98,10 @@ curl -s http://192.168.102.165:8780/jobs \
   -F 'source={"type":"figma","url":"https://www.figma.com/design/<key>/<name>","token":"figd_xxx"}' \
   -F 'llm={"baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat","apiKey":"sk-xxx"}' \
   -F 'template=@company-template.xlsx' \
-  -F 'staticFallback=true'
+  -F 'staticFallback=true' \
+  -F 'reading=true' \
+  -F 'readingMaxScreens=30' \
+  -F 'readingAnswers=[{"id":"cms-list-dynamic","match":{"questionIncludes":"列表"},"answer":"列表内容由 CMS 返回"}]'
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -98,6 +115,9 @@ curl -s http://192.168.102.165:8780/jobs \
 | `template` | 文件 | 否 | `.xlsx` 用例模版 |
 | `maxFlows` / `maxDepth` | 文本 | 否 | 数字 |
 | `staticFallback` | 文本 | 否 | `true` / `false` |
+| `reading` / `readingStates` | 文本 | 否 | `true` / `false` |
+| `readingMaxScreens` | 文本 | 否 | 数字，默认 30，最大 200 |
+| `readingAnswers` | 文本 | 否 | JSON 数组字符串；≤100 条 |
 
 ---
 
@@ -117,9 +137,12 @@ curl -s http://192.168.102.165:8780/jobs \
 |---|---|---|---|
 | `source` | 文本 | 是 | `pen`，或 `{"type":"pen"}` |
 | `penFile` | 文件 | 是 | `.pen` 文件，≤50 MB；`@` 后是调用方本机路径 |
-| `llm` | 文本 | 否 | JSON 字符串；提供且模型支持视觉时做元素识别，否则 `vision-*` 降级警告 |
+| `llm` | 文本 | 否 | JSON 字符串；提供且模型支持视觉时做元素识别/可选设计阅读，否则 `vision-*` 降级警告 |
 | `template` | 文件 | 否 | `.xlsx` 模版 |
 | `maxFlows` / `maxDepth` | 文本 | 否 | 数字 |
+| `reading` / `readingStates` | 文本 | 否 | `true` / `false`；状态变体仅在 pen 有 `states` 时生效 |
+| `readingMaxScreens` | 文本 | 否 | 数字，默认 30，最大 200 |
+| `readingAnswers` | 文本 | 否 | JSON 数组字符串；≤100 条 |
 
 ## 依赖与行为
 
@@ -135,6 +158,29 @@ curl -s http://192.168.102.165:8780/jobs \
 
 ---
 
+## 设计阅读（可选，Figma/.pen 通用）
+
+默认关闭；传 `reading:true` 后，在生成用例前增加一轮分块设计阅读（与 `design_to_test` 同一实现）：
+
+- 需要**视觉 LLM**；未提供 `llm` 时跳过并写 warning，不影响 `cases.xlsx`
+- `readingStates:true` 把 pen 状态变体作为独立屏读；状态屏标「状态变体」/「父屏」，不进入 CR 主线
+- `readingMaxScreens` 默认 30（最大 200）；屏多/开状态变体时注意任务 10 分钟超时与视觉调用成本
+- `readingAnswers` 是**本次请求**的规则（CMS Open 不读项目 `.artemis`）；≤100 条，格式同 `answers.json` 的 `answers[]`
+- 阅读失败（视觉模型不支持图片/超时等）只写 warning，**不阻断**用例生成；任务仍可完成
+
+产物：
+
+```text
+design.md          # 原流程理解 + 「## 设计阅读」摘要与关键问题
+design-reading.md  # 完整阅读报告（屏/状态/交互/问题/CR 主线）
+design-reading.json# 机器可读阅读结果（含 completeness/questions/answers）
+meta.json          # 新增 reading: {status, screensRead/Total, questions..., artifacts}
+screens/...        # 截图
+cases.xlsx         # 测试用例
+```
+
+---
+
 # 三、状态与下载
 
 ```json
@@ -142,7 +188,7 @@ curl -s http://192.168.102.165:8780/jobs \
   "jobId": "<uuid>",
   "id": "<uuid>",
   "status": "queued | running | done | failed | cancelled",
-  "step": "queued | extracting | generating | packaging | done | failed | cancelled",
+  "step": "queued | extracting | reading | generating | packaging | done | failed | cancelled",
   "createdAt": "2026-10-22T02:00:00.000Z",
   "finishedAt": null,
   "error": null,
@@ -160,10 +206,12 @@ curl -s http://192.168.102.165:8780/jobs \
 ## zip 内容
 
 ```
-design.md      # 设计流程理解（含截图引用）
-cases.xlsx     # 测试用例
-screens/...    # 截图
-meta.json      # source/model/maxFlows/maxDepth/counts/warnings
+design.md           # 设计流程理解（含截图引用；开启阅读时附阅读摘要）
+design-reading.md   # 可选：完整设计阅读报告
+design-reading.json # 可选：机器可读阅读结果
+cases.xlsx          # 测试用例
+screens/...         # 截图
+meta.json           # source/model/maxFlows/maxDepth/counts/reading/warnings
 ```
 
 ---

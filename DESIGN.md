@@ -2847,3 +2847,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **视觉守卫**：使用 `resolveVisionCapability`（声明 `AOS_LLM_VISION` → 缓存 → 启发式 → unknown）；`reading:true` + 明确无视觉 → 不发图；auto + unknown 跳过；forced + unknown 尝试并 warning。
 - **缓存/预算**：块级哈希 = 实际屏幕 ID + 图片 sha + 块内边 + 参数 + promptVersion + 解析后 model；`AOS_READING_CONCURRENCY` 默认 2（1–4）、单调用默认 180s（`AOS_READING_TIMEOUT_MS`）；预计块数 >20 warning。
 - **测试**：`design-reading` 40 例、`workflow-design-to-test` 新增 5 例、`native-workflow-tool` schema 正反例；全量 **2338 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.230 实施记录（CMS Open：可选设计阅读阶段）
+
+> 2026-10-27。把 `design_to_test` 的分块阅读复用到 CMS Open，让静态 Figma/.pen 的 `design.md` 与 zip 也能带状态/结构/问题；不改变默认生成路径。
+
+- **入口**：`POST /jobs` 新增 `reading`（默认 `false`）、`readingStates`、`readingMaxScreens`（默认 30、最大 200）、`readingAnswers`（本次请求规则，≤100 条）；JSON 与 multipart 同名字段。只给 `readingStates`/`readingMaxScreens`/`readingAnswers` 时自动开启 `reading`；显式 `reading:false` 优先。
+- **顺序**：extract → `onStep("reading")` → 可选 `runDesignReading` → generate → packaging；阅读在生成前完成，不修改 flows/tests。未提供 `llm`、缺 `flows.json` 或阅读异常只写 warning，不阻断 `cases.xlsx`；任务仍可 done。
+- **人工答案**：`readingAnswers` 写入任务临时目录 `design/reading/answers.json`，复用 `answers.json` 合并期语义（抑制问题、`self` 页内/底部弹层、`dropInteraction`、`screenTitle`）；CMS Open 不读项目 `.artemis`，规则随请求生命周期结束。
+- **产物**：zip 增 `design-reading.md`/`design-reading.json`；`design.md` 追加「## 设计阅读」摘要（屏/块/问题/CR 主线/前 10 条问题）；`meta.json.reading` 记录 `status`、`screensRead/Total`、`chunksProcessed/Requested`、`questionsTotal/Answered`、`spineStatus/Title`、`artifacts`；未开启为 `{status:"disabled"}`，跳过为 `{status:"skipped",reason}`。
+- **状态/成本**：任务 `step` 增 `reading`；`readingStates` 仅对 pen `states` 有输入；大稿/状态变体受任务 10 分钟无进度超时与视觉配额约束，调用方用 `readingMaxScreens`/`reading` 控制。
+- **测试**：`open-pipeline` 新增 3 例（阅读产物/默认关闭/无 LLM 跳过），`open-server` 新增 2 例（JSON/multipart 解析、非法 answers 400）；全量 **2343 绿**，lint 0 error（2 条既有 warning）。

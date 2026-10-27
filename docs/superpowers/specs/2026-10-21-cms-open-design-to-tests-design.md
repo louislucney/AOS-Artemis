@@ -210,3 +210,11 @@ interface JobContext {
 - 复用：`figma/flows.ts`、`pen/flows.ts`、`test-gen.ts`、`test-xlsx.ts`。
 - 改造：提取/生成入口支持显式 `JobContext`（禁止 env 回落）；Web 文案 profile；表头映射；静态合成。
 - CLI：`src/cli.ts` 增 `cms-open`；README / DESIGN 增说明。
+
+## 10. 后续扩展：可选设计阅读（2026-10-27）
+
+- 请求字段：`reading`（默认 false）、`readingStates`、`readingMaxScreens`（默认 30、最大 200）、`readingAnswers`（本次请求规则，≤100 条）；只传后三者时自动开启阅读。
+- 顺序：flows 提取后、用例生成前调用 `runDesignReading`；阅读失败/无 LLM/缺 flows 只写 warning，不阻断生成。
+- 产物：zip 增 `design-reading.md/json`；`design.md` 追加「## 设计阅读」摘要；`meta.json.reading` 记录状态与计数；任务 `step` 增 `reading`。
+- 人工答案：写入任务临时目录 `design/reading/answers.json`，不读项目 `.artemis`；随任务生命周期结束。
+- 边界：`readingStates` 依赖 pen `states`；大稿受 10 分钟任务超时与视觉配额约束；默认关闭以保持 CMS 交付时延/SLA。

@@ -159,6 +159,10 @@ test("server: cors default rejects cross-origin and multipart is parsed", async 
       const form = new FormData();
       form.set("source", "pen");
       form.set("staticFallback", "false");
+      form.set("reading", "true");
+      form.set("readingStates", "true");
+      form.set("readingMaxScreens", "12");
+      form.set("readingAnswers", JSON.stringify([{ id: "a1", match: { screenId: "1:1" }, answer: "是" }]));
       form.set("llm", JSON.stringify({ baseUrl: "https://api.example.com/v1", model: "m", apiKey: "k" }));
       form.set("penFile", new Blob([Buffer.from("{}")], { type: "application/octet-stream" }), "design.pen");
       form.set("template", new Blob([Buffer.from("x")], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "t.xlsx");
@@ -173,6 +177,10 @@ test("server: cors default rejects cross-origin and multipart is parsed", async 
       await waitTerminal(base, jobId);
       assert.equal(captured.source, "pen");
       assert.equal(captured.staticFallback, false);
+      assert.equal(captured.reading, true);
+      assert.equal(captured.readingStates, true);
+      assert.equal(captured.readingMaxScreens, 12);
+      assert.equal(captured.readingAnswers[0].id, "a1");
       assert.match(captured.penFile, /design\.pen$/);
       assert.match(captured.templatePath, /\.xlsx$/);
     }
@@ -546,5 +554,55 @@ test("server: /metrics exposes queue gauges and respects auth", async () => {
     });
     assert.equal(authorized.status, 200);
     assert.match(await authorized.text(), /cms_open_ready 1/);
+  });
+});
+
+
+test("server: reading options parsed from JSON", async () => {
+  let captured = null;
+  await withServer(
+    {
+      runner: async (input, workDir) => {
+        captured = input;
+        return zipRunner(input, workDir);
+      }
+    },
+    async (base) => {
+      const created = await fetch(`${base}/jobs`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          source: { type: "figma", url: "https://www.figma.com/design/ABC/demo" },
+          llm: { baseUrl: "https://api.example.com/v1", model: "m", apiKey: "k" },
+          reading: true,
+          readingStates: true,
+          readingMaxScreens: 12,
+          readingAnswers: [{ id: "a1", match: { screenId: "1:1" }, answer: "是" }]
+        })
+      });
+      assert.equal(created.status, 202);
+      const { jobId } = await created.json();
+      await waitTerminal(base, jobId);
+      assert.equal(captured.reading, true);
+      assert.equal(captured.readingStates, true);
+      assert.equal(captured.readingMaxScreens, 12);
+      assert.equal(captured.readingAnswers[0].id, "a1");
+    }
+  );
+});
+
+test("server: invalid reading answers rejected", async () => {
+  await withServer({ runner: zipRunner }, async (base) => {
+    const response = await fetch(`${base}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source: { type: "figma", url: "https://www.figma.com/design/ABC/demo" },
+        readingAnswers: "not-json"
+      })
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.code, "invalid_request");
   });
 });

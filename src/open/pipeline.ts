@@ -12,6 +12,9 @@ import { rewriteCasesForWeb } from "../figma/web-wording.js";
 import { penExtractFlows } from "../pen/flows.js";
 import { ensurePenCli } from "../pen/install.js";
 import { penEnvFrom, penExec } from "../pen/cli.js";
+import { runDesignReading } from "../design/reading/run.js";
+import { readingPaths } from "../design/reading/store.js";
+import type { ReadingAnswer } from "../design/reading/types.js";
 import { buildZip, type ZipEntry } from "./zip.js";
 import { renderCmsWorkbook } from "./template-map.js";
 import { errorMessage } from "../util.js";
@@ -40,12 +43,21 @@ export interface OpenJobInput {
   maxDepth?: number;
   /** Figma 无原型交互时是否按箭头/注释/画布顺序合成（默认 true）。 */
   staticFallback?: boolean;
+  /** 可选：生成前做静态设计阅读（需要视觉 LLM）。默认 false。 */
+  reading?: boolean;
+  /** 阅读时把 pen 状态变体也作为独立屏（默认 false）。 */
+  readingStates?: boolean;
+  /** 阅读最多屏数（默认 30，最大 200）。 */
+  readingMaxScreens?: number;
+  /** 本次请求的人工答案，写入 reading/answers.json 后参与合并。 */
+  readingAnswers?: ReadingAnswer[];
 }
 
 export interface OpenPipelineDeps {
   extractFigma?: typeof figmaExtractFlows;
   extractPen?: typeof penExtractFlows;
   generate?: typeof figmaGenerateTests;
+  readDesign?: typeof runDesignReading;
   penReady?: () => Promise<{ ok: true } | { ok: false; hint: string }>;
   now?: () => Date;
   /** Cooperative cancel: checked at step boundaries. */
@@ -115,6 +127,64 @@ async function collectScreens(designDir: string): Promise<ZipEntry[]> {
   };
   await visit(root);
   return entries.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+type DesignReadingResult = Awaited<ReturnType<typeof runDesignReading>>;
+
+function readingSection(result: DesignReadingResult): string {
+  const reading = result.reading;
+  if (reading === null) return "";
+  const lines = ["## 设计阅读", ""];
+  lines.push(
+    `- 状态: ${result.status} · 屏 ${reading.completeness.screensRead}/${reading.completeness.screensTotal} · 块 ${result.stats.chunksProcessed}/${result.stats.chunksRequested}`
+  );
+  lines.push(
+    `- 问题: ${reading.questions.length} 条展示 / ${reading.completeness.questionsTotal} 条总计 · 已回答 ${reading.completeness.questionsAnswered}`
+  );
+  if (reading.spine !== null) {
+    lines.push(`- CR 主线: ${reading.spine.title}（${reading.spine.status}）`);
+    lines.push(`  ${reading.spine.summary}`);
+  }
+  lines.push("- 完整报告: `design-reading.md`", "");
+  if (reading.questions.length > 0) {
+    lines.push("### 关键问题", "");
+    for (const question of reading.questions.slice(0, 10)) {
+      lines.push(`- \`${question.screenId}\` ${question.question}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function readingMeta(
+  result: DesignReadingResult | null,
+  skipReason: string | null
+): Record<string, unknown> {
+  if (result === null) {
+    return skipReason === null
+      ? { status: "disabled" }
+      : { status: "skipped", reason: skipReason };
+  }
+  const reading = result.reading;
+  return {
+    status: result.status,
+    ...(result.reason === null ? {} : { reason: result.reason }),
+    ...(reading === null
+      ? {}
+      : {
+          screensRead: reading.completeness.screensRead,
+          screensTotal: reading.completeness.screensTotal,
+          chunksProcessed: result.stats.chunksProcessed,
+          chunksRequested: result.stats.chunksRequested,
+          questionsTotal: reading.completeness.questionsTotal,
+          questionsAnswered: reading.completeness.questionsAnswered,
+          spineStatus: reading.spine?.status ?? null,
+          spineTitle: reading.spine?.title ?? null
+        }),
+    ...(result.artifacts === null
+      ? {}
+      : { artifacts: { markdown: "design-reading.md", json: "design-reading.json" } })
+  };
 }
 
 async function defaultPenReady(): Promise<{ ok: true } | { ok: false; hint: string }> {
@@ -207,6 +277,48 @@ export async function runOpenJob(
     }
   }
 
+  let readingResult: DesignReadingResult | null = null;
+  let readingSkipReason: string | null = null;
+  if (input.reading === true) {
+    const llm = input.llm;
+    if (chat === null || llm === null) {
+      readingSkipReason = "未提供 LLM（设计阅读需要视觉模型）";
+      warnings.push(`阅读跳过：${readingSkipReason}`);
+    } else if (!fs.existsSync(flowsFile)) {
+      readingSkipReason = "flows.json 不存在，无法阅读";
+      warnings.push(`阅读跳过：${readingSkipReason}`);
+    } else {
+      deps.onStep?.("reading");
+      if ((input.readingAnswers?.length ?? 0) > 0) {
+        const root = readingPaths(runtime.configDirAbs).root;
+        await mkdir(root, { recursive: true });
+        await writeFile(
+          path.join(root, "answers.json"),
+          `${JSON.stringify({ version: 1, answers: input.readingAnswers }, null, 2)}\n`,
+          "utf8"
+        );
+      }
+      try {
+        readingResult = await (deps.readDesign ?? runDesignReading)({
+          runtime,
+          flowsPath: flowsFile,
+          options: {
+            maxScreens: Math.min(200, Math.max(1, input.readingMaxScreens ?? 30)),
+            includeStates: input.readingStates === true
+          },
+          model: llm.model,
+          chat,
+          env: process.env
+        });
+        warnings.push(...readingResult.warnings.map((warning) => warning.message));
+      } catch (error) {
+        readingSkipReason = errorMessage(error);
+        warnings.push(`阅读失败：${readingSkipReason}`);
+      }
+    }
+  }
+  const readingInfo = readingMeta(readingResult, readingSkipReason);
+
   const generate = deps.generate ?? figmaGenerateTests;
   if (deps.isCancelled?.()) throw new OpenJobError("cancelled", "任务已取消");
   deps.onStep?.("generating");
@@ -253,9 +365,28 @@ export async function runOpenJob(
   })();
 
   const designPath = path.join(designDir, "flow-map.md");
-  const designMd = fs.existsSync(designPath)
+  let designMd = fs.existsSync(designPath)
     ? await readFile(designPath, "utf-8")
     : `# ${designName} · 设计理解\n\n（未生成流程图）\n`;
+  const readingText = readingResult === null ? "" : readingSection(readingResult);
+  if (readingText !== "") {
+    designMd = `${designMd.trimEnd()}\n\n${readingText}\n`;
+  }
+  const readingEntries: ZipEntry[] = [];
+  if (readingResult !== null && readingResult.artifacts !== null) {
+    if (fs.existsSync(readingResult.artifacts.markdown)) {
+      readingEntries.push({
+        path: "design-reading.md",
+        data: await readFile(readingResult.artifacts.markdown)
+      });
+    }
+    if (fs.existsSync(readingResult.artifacts.json)) {
+      readingEntries.push({
+        path: "design-reading.json",
+        data: await readFile(readingResult.artifacts.json)
+      });
+    }
+  }
 
   const meta = {
     source: input.source,
@@ -265,11 +396,13 @@ export async function runOpenJob(
     maxFlows: input.maxFlows ?? 10,
     maxDepth: input.maxDepth ?? 30,
     counts: { screens: screenCount, cases: cases.length },
+    reading: readingInfo,
     warnings
   };
   const entries: ZipEntry[] = [
     { path: "design.md", data: Buffer.from(designMd, "utf-8") },
     { path: "cases.xlsx", data: xlsx },
+    ...readingEntries,
     ...(await collectScreens(designDir)),
     { path: "meta.json", data: Buffer.from(JSON.stringify(meta, null, 2), "utf-8") }
   ];
