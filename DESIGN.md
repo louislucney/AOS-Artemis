@@ -2521,8 +2521,8 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-10-23。业务方反馈：服务仓自身作为项目会话运行时，会把自己注册进中心台账，导致总览项目列表「自己监控自己」。
 
-- **入口**：`AOS_PANEL_EXCLUDE_PROJECTS` 逗号分隔项目名（大小写不敏感）或绝对根路径；非法/相对路径按项目名处理，不做 glob。
-- **范围**：`buildPanelOverview` 合并注册行与 workspace 行后过滤，`PanelOverview.excludedProjects` 暴露隐藏数；`buildPanelCompare` 复用总览行并透传该数；页面标注「已按 AOS_PANEL_EXCLUDE_PROJECTS 隐藏 N 个项目」；2026-10-26 扩展：面板项目切换器/搜索、usage 看板列表与 `usage --all` 同源过滤（见 §13.226）。
+- **入口**：服务仓库自身默认隐藏（`projectExcluded` 按服务仓库根目录判断，避免“自己监控自己”）；`AOS_PANEL_EXCLUDE_PROJECTS` 逗号分隔项目名（大小写不敏感）或绝对根路径可再隐藏其他项目；非法/相对路径按项目名处理，不做 glob。
+- **范围**：`buildPanelOverview` 合并注册行与 workspace 行后过滤，`PanelOverview.excludedProjects` 暴露隐藏数；`buildPanelCompare` 复用总览行并透传该数；页面标注「已隐藏 N 个项目（服务仓库默认隐藏，或由 AOS_PANEL_EXCLUDE_PROJECTS 指定）」；2026-10-26 扩展：面板项目切换器/搜索、usage 看板列表与 `usage --all` 同源过滤（见 §13.226）。
 - **不影响**：直接 `?project=<rootPath>`、项目详情、统计、任务、台账/运行；只是列表可见性。显式 usage `?project=`/`--project` 仍可访问被隐藏项目。
 - **测试**：`panel-overview` 增名称/路径隐藏与直接详情仍可访问；`panel-web` 增 JSON/HTML 提示与直接 URL；全量 2116 绿，lint 0 error（2 条既有 warning）。
 - **边界**：进程级 env，需重启面板；usage CLI/Web 不读取该变量（统计仍可按项目查询）。
@@ -2846,7 +2846,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **画板标签/状态**：prompt v4 要求每屏记录 `boardLabel`/`stateLabel`，标签**不假设只在手机外框上方**（也可能来自画板名/页面名/旁注）；`Frame/Screen/Group/Text + 数字` 等设计器默认名不算标签；分隔符支持 `- / ｜ _ · （） []` 等，拆不出状态时 `stateLabel=null` 但保留完整 `boardLabel`。flows 中 `screens[].states` 的标签去重后作为 `knownStates`；状态变体按 **frame id** 去重（不再按 label），`readingStates:true` 时作为独立屏纳入分块（`kind:"state"` + `parentScreenId`，报告标「状态变体」/「父屏」）；无状态输入时 warning `reading-states-unavailable`。状态屏不进入 CR 主线，避免变体污染主流程。星巴克实测 23 主屏 + 20 状态 = 43 屏 / 21 块，0 失败。
 - **视觉守卫**：使用 `resolveVisionCapability`（声明 `AOS_LLM_VISION` → 缓存 → 启发式 → unknown）；`reading:true` + 明确无视觉 → 不发图；auto + unknown 跳过；forced + unknown 尝试并 warning。
 - **缓存/预算**：块级哈希 = 实际屏幕 ID + 图片 sha + 块内边 + 参数 + promptVersion + 解析后 model；`AOS_READING_CONCURRENCY` 默认 2（1–4）、单调用默认 180s（`AOS_READING_TIMEOUT_MS`）；预计块数 >20 warning。
-- **测试**：`design-reading` 53 例、`workflow-design-to-test` 新增 5 例、`native-workflow-tool` schema 正反例；全量 **2356 绿**，lint 0 error（2 条既有 warning）。
+- **测试**：`design-reading` 53 例、`workflow-design-to-test` 新增 5 例、`native-workflow-tool` schema 正反例；全量 **2358 绿**，lint 0 error（2 条既有 warning）。
 
 ### 13.230 实施记录（CMS Open：可选设计阅读阶段）
 
@@ -2857,7 +2857,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **人工答案**：`readingAnswers` 写入任务临时目录 `design/reading/answers.json`，复用 `answers.json` 合并期语义（抑制问题、`self` 页内/底部弹层、`dropInteraction`、`screenTitle`）；CMS Open 不读项目 `.artemis`，规则随请求生命周期结束。
 - **产物**：zip 增 `design-reading.md`/`design-reading.json`；`design.md` 追加「## 设计阅读」摘要（屏/块/问题/CR 主线/前 10 条问题）；`meta.json.reading` 记录 `status`、`screensRead/Total`、`chunksProcessed/Requested`、`questionsTotal/Answered`、`spineStatus/Title`、`artifacts`；未开启为 `{status:"disabled"}`，跳过为 `{status:"skipped",reason}`。
 - **状态/成本**：任务 `step` 增 `reading`；`readingStates` 仅对 pen `states` 有输入；大稿/状态变体受任务 10 分钟无进度超时与视觉配额约束，调用方用 `readingMaxScreens`/`reading` 控制。
-- **测试**：`open-pipeline` 新增 3 例（阅读产物/默认关闭/无 LLM 跳过），`open-server` 新增 2 例（JSON/multipart 解析、非法 answers 400）；全量 **2356 绿**，lint 0 error（2 条既有 warning）。
+- **测试**：`open-pipeline` 新增 3 例（阅读产物/默认关闭/无 LLM 跳过），`open-server` 新增 2 例（JSON/multipart 解析、非法 answers 400）；全量 **2358 绿**，lint 0 error（2 条既有 warning）。
 
 ### 13.231 实施记录（设计稿命名/风格归一化）
 
@@ -2870,4 +2870,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **画板排布**：从 flows `bounds` 识别 `vertical/horizontal/grid`；`grid` 时不把 `canvas-order` 边放进 CR 主线（warning `reading-grid-canvas-order`），横/竖保留画板顺序但标 `canvas-horizontal|canvas-vertical`；报告新增「画板排布」，`design_to_test.reading.canvasLayout` 同步返回。
 - **boardLabel 清洗**：模型把画布说明/画框标签混在一起时，`sanitizeBoardLabel` 提取 `畫框標籤：...` 后缀、过滤含「畫布/區塊/標題」等描述性文本与通用名；清洗后仍不可用则回退 `ref.name → sourceFrameName`，全不可用为 `null`。
 - **边界**：Figma 原生 component variants 尚未由 extractor 展开；仅对「独立 screen 名 + 状态词后缀」做启发式归并。网格/横排画板的 CR 仍是 `canvas-order` 假设（报告显式标注）；状态词表/同义词可配但不是穷尽。
-- **测试**：新增 `naming` 分隔符/多语言/通用名/繁简同义词、状态 slash/括号/英文运行、Figma 式独立 variant 归并、画板 vertical/horizontal/grid 识别与 grid 主线禁用、通用 Frame fallback、answers style 配置、prompt v4、CMS `readingStyle` 断言；全量 **2356 绿**，lint 0 error（2 条既有 warning）。
+- **测试**：新增 `naming` 分隔符/多语言/通用名/繁简同义词、状态 slash/括号/英文运行、Figma 式独立 variant 归并、画板 vertical/horizontal/grid 识别与 grid 主线禁用、通用 Frame fallback、answers style 配置、prompt v4、CMS `readingStyle` 断言；全量 **2358 绿**，lint 0 error（2 条既有 warning）。
+
+
+### 13.232 实施记录（服务仓库项目默认隐藏）
+
+> 2026-10-27。面板反复出现 `mobile-testing` 自己：MCP 以服务仓库为项目注册后，总览把“自己监控自己”列出来；之前只能靠 `AOS_PANEL_EXCLUDE_PROJECTS`，重启/换环境又忘配。
+
+- **默认规则**：`src/project-visibility.ts` 增加 `serviceRepoRoot()`（按模块所在仓库根目录解析）；`projectExcluded` 对该根路径**始终返回 true**，无需环境变量。
+- **范围**：面板总览/多项目对比、项目切换器/搜索、usage 看板列表与 `usage --all` 同源隐藏；`excludedProjects` 计数可见；直接项目 URL/显式 `--project`/台账/运行不受影响。
+- **文案**：面板/usage 提示改为「服务仓库默认隐藏，或由 AOS_PANEL_EXCLUDE_PROJECTS 指定」；`AOS_PANEL_EXCLUDE_PROJECTS` 继续用于隐藏其他项目。
+- **测试**：新增 `project-visibility` 1 例（服务仓库默认隐藏/普通项目不受影响/环境名单仍生效）、`panel-overview` 1 例（服务仓库项目不进入列表）；全量 **2358 绿**，lint 0 error（2 条既有 warning）。

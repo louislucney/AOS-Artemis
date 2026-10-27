@@ -96,7 +96,7 @@ export interface UsageWebView {
   filters: UsageWebFiltersView;
   project: UsageWebProjectView | null;
   projects: UsageWebProjectView[];
-  /** 被 AOS_PANEL_EXCLUDE_PROJECTS 隐藏的项目数（列表/默认选择；显式项目仍可访问）。 */
+  /** 被服务仓库默认规则或 AOS_PANEL_EXCLUDE_PROJECTS 隐藏的项目数（列表/默认选择；显式项目仍可访问）。 */
   excludedProjects: number;
   tools: UsageWebToolRow[];
   summary: UsageSummary;
@@ -418,7 +418,7 @@ function renderBadges(view: UsageWebView): string {
   if (view.store.note) parts.push(`<p class="note">${escapeHtml(view.store.note)}</p>`);
   if (view.excludedProjects > 0) {
     parts.push(
-      `<p class="note">已按 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> 隐藏 ${view.excludedProjects} 个项目（直接项目 URL 仍可访问）。</p>`
+      `<p class="note">已隐藏 ${view.excludedProjects} 个项目（服务仓库默认隐藏，或由 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> 指定；直接项目 URL 仍可访问）。</p>`
     );
   }
   if (view.usage.note) parts.push(`<p class="note">${escapeHtml(view.usage.note)}</p>`);

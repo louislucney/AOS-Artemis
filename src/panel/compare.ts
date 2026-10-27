@@ -56,7 +56,7 @@ export interface PanelCompareView {
   store: { kind: "postgres" | "file" | "memory"; degraded: boolean };
   window: { runs: number };
   projects: PanelCompareProject[];
-  /** 被 AOS_PANEL_EXCLUDE_PROJECTS 隐藏的项目数。 */
+  /** 被服务仓库默认规则或 AOS_PANEL_EXCLUDE_PROJECTS 隐藏的项目数。 */
   excludedProjects: number;
   truncated: boolean;
   warnings: string[];

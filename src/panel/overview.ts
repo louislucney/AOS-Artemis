@@ -137,7 +137,7 @@ export interface PanelOverview {
   host: { serviceRepo: string; deps: DepsStatus["status"]; buildStale: boolean | null };
   workspaceRoot: string | null;
   projects: PanelProjectRow[];
-  /** 被 `AOS_PANEL_EXCLUDE_PROJECTS` 从总览/对比隐藏的项目数（直接项目 URL 仍可访问）。 */
+  /** 被服务仓库默认规则或 `AOS_PANEL_EXCLUDE_PROJECTS` 从总览/对比隐藏的项目数（直接项目 URL 仍可访问）。 */
   excludedProjects: number;
   /** 接入主机注册表（中心 PG 专属）；无台账时为空，面板显示“单机模式”。 */
   machines: PanelMachineRow[];

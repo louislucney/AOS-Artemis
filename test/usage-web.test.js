@@ -88,7 +88,7 @@ test("usage web: AOS_PANEL_EXCLUDE_PROJECTS hides projects but explicit URL stil
   assert.equal(explicit.projects.length, 1, "项目选择器仍只列可见项目");
 
   const html = await handleUsageRequest(new URL("http://localhost/usage"), deps(store, { env }));
-  assert.match(html.body, /已按 <code>AOS_PANEL_EXCLUDE_PROJECTS<\/code> 隐藏 1 个项目/);
+  assert.match(html.body, /已隐藏 1 个项目（服务仓库默认隐藏，或由 <code>AOS_PANEL_EXCLUDE_PROJECTS<\/code> 指定/);
   assert.doesNotMatch(html.body, /<option value="beta"><\/option>/, "隐藏项目不出现在 datalist");
 });
 

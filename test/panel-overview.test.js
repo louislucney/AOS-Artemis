@@ -19,6 +19,7 @@ import {
   buildPanelTaskDetail,
   PANEL_BATCH_EMPTY_CAUSES
 } from "../dist/panel/overview.js";
+import { serviceRepoRoot } from "../dist/project-visibility.js";
 import { baseConfig, makeTempDir, makeTempProject } from "./helpers.js";
 
 async function makePgStore() {
@@ -1274,4 +1275,21 @@ test("panel batch detail: 优先台账 apiReview，清单清理后仍可读", as
   assert.equal(fallback.apiReview.status, "provided");
   assert.equal(fallback.cases[0].caseId, "case-x");
   assert.match(fallback.warnings.join("\n"), /台账/);
+});
+
+
+test("panel overview: 服务仓库项目默认隐藏", async () => {
+  const store = new MemoryStore();
+  const repo = serviceRepoRoot();
+  const app = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: repo, name: "mobile-testing" });
+  await store.upsertProject({ rootPath: app, name: "app-visible" });
+  const view = await buildPanelOverview({
+    store,
+    serviceRepo: repo,
+    buildStale: false,
+    env: {}
+  });
+  assert.deepEqual(view.projects.map((row) => row.name), ["app-visible"]);
+  assert.equal(view.excludedProjects, 1);
 });

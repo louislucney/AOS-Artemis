@@ -281,7 +281,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 
 **页面按能力标记渲染**（critique 修复轮）：独立进程默认只读时页级横幅＋写 CTA 禁用并给原因（不再"点了才 404"）；导航携带项目上下文（从项目页跳转不再丢项目；无项目时项目级项禁用而非误指总览）；**派发为两段确认**（摘要→确认创建）且 refs 由服务端按 `source/ref/keyword` 重解析（不再信渲染期快照）；成功后有回执（任务 id＋审计互链）。样式为**单一 CSDC 源**（tokens＋compat 合并注入；无 legacy 覆盖、无 `color-scheme` 双色系）。
 
-**排除项目**（`AOS_PANEL_EXCLUDE_PROJECTS`）：逗号分隔的项目名或绝对根路径，命中项从总览/多项目对比列表、面板项目切换器/搜索、usage 看板列表与 `usage --all` 隐藏（数量在页内标注），但直接项目 URL/显式 `--project`、台账与运行不受影响；适合隐藏服务仓自身等项目。
+**排除项目**：服务仓库自身默认从总览/多项目对比、项目切换器/搜索、usage 列表与 `usage --all` 隐藏（`excludedProjects` 计数可见）；`AOS_PANEL_EXCLUDE_PROJECTS` 可再按逗号分隔的项目名或绝对根路径隐藏其他项目。直接项目 URL/显式 `--project`、台账与运行不受影响。
 
 **进程级角色**（`AOS_PANEL_ROLE`）：`viewer`（只读）/ `dispatcher`（任务/队列/导出）/ `maintainer`（+裁决/用例库/计划/导入/主机登记）/ `admin`（+Jira 建单），HTTP 模式默认 `admin`，`AOS_PANEL_ACTIONS=0` 强制 `viewer`；独立 `panel --web` 仍要求 `AOS_PANEL_ACTIONS=1` 且仅 loopback。服务端在 `/panel/api/*` 路由前按角色强制，越权返回 `403 role_forbidden`；页面顶栏显示角色，并按 scope 禁用派发/任务/裁决/建单/用例库/计划/导出入口。角色是进程级内网单租户模型，不是多用户身份认证。
 

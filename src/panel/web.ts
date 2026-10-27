@@ -1162,7 +1162,7 @@ try{
       })}</p>`,
       "</header>",
       view.excludedProjects > 0
-        ? `<p class="muted">已按 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> 隐藏 ${view.excludedProjects} 个项目；直接项目 URL 仍可访问。</p>`
+        ? `<p class="muted">已隐藏 ${view.excludedProjects} 个项目（服务仓库默认隐藏，或由 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> 指定）；直接项目 URL 仍可访问。</p>`
         : "",
       renderMachinesSection(view),
       view.projects.length === 0
