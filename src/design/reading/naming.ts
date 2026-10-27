@@ -281,6 +281,20 @@ export function splitStateLabel(
   return result;
 }
 
+export function sanitizeBoardLabel(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  let text = value.trim().replace(/\s+/g, " ");
+  if (text === "") return null;
+  const labeled =
+    /(?:畫框標籤|画框标签|畫板標籤|画板标签|board\s*label)\s*[:：]\s*(.+)$/i.exec(text);
+  if (labeled?.[1]) text = labeled[1].trim();
+  if (/[；;]/.test(text) || /[。\n]/.test(text)) return null;
+  if (/(畫框|画框|畫布|画布|區塊|区块|標題|标题)/.test(text)) return null;
+  text = text.replace(/^[「『"']+|[」』"']+$/g, "").trim();
+  if (text === "" || text.length > 48 || isGenericLabel(text)) return null;
+  return text;
+}
+
 export function stateLabelsOf(
   value: unknown,
   parentName: string,

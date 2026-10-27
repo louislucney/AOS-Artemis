@@ -2867,6 +2867,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **状态来源/去重**：`knownStates` 保留唯一展示标签；状态变体按 frame id 去重（不再按 label 合并）；`readingStates:true` 时，pen `states` 之外还会把独立 screen 名（如 `Login / Empty`）按状态词启发式归并到主屏；无状态输入时 warning `reading-states-unavailable`（Figma 原生 component variants 未被 extractor 展开时显式提示，不静默）。
 - **画板标签**：prompt v4 明确标签可能在外框上方/旁边/画板名/页面名/旁注；`Frame/Screen/Group/Text + 数字` 等通用名不作为 `boardLabel`；merge 用 `boardLabel → ref.name → sourceFrameName` 的非通用 fallback，全部通用则 `null`。
 - **answers 归一**：`NFKC` + 常见繁转简 + 去标点/空白 + 内置同义词（搜尋/search、門市/store、取餐/pickup、底部弹层/bottom sheet 等）；`answers.json.style` 可追加 `separators`/`stateKeywords`/`synonyms`；CMS `readingStyle` 透传到同一份 answers.json。
-- **画板排布**：从 flows `bounds` 识别 `vertical/horizontal/grid`；`grid` 时不把 `canvas-order` 边放进 CR 主线（warning `reading-grid-canvas-order`），横/竖保留画板顺序但标 `canvas-horizontal|canvas-vertical`；报告新增「画板排布」。
+- **画板排布**：从 flows `bounds` 识别 `vertical/horizontal/grid`；`grid` 时不把 `canvas-order` 边放进 CR 主线（warning `reading-grid-canvas-order`），横/竖保留画板顺序但标 `canvas-horizontal|canvas-vertical`；报告新增「画板排布」，`design_to_test.reading.canvasLayout` 同步返回。
+- **boardLabel 清洗**：模型把画布说明/画框标签混在一起时，`sanitizeBoardLabel` 提取 `畫框標籤：...` 后缀、过滤含「畫布/區塊/標題」等描述性文本与通用名；清洗后仍不可用则回退 `ref.name → sourceFrameName`，全不可用为 `null`。
 - **边界**：Figma 原生 component variants 尚未由 extractor 展开；仅对「独立 screen 名 + 状态词后缀」做启发式归并。网格/横排画板的 CR 仍是 `canvas-order` 假设（报告显式标注）；状态词表/同义词可配但不是穷尽。
 - **测试**：新增 `naming` 分隔符/多语言/通用名/繁简同义词、状态 slash/括号/英文运行、Figma 式独立 variant 归并、画板 vertical/horizontal/grid 识别与 grid 主线禁用、通用 Frame fallback、answers style 配置、prompt v4、CMS `readingStyle` 断言；全量 **2356 绿**，lint 0 error（2 条既有 warning）。

@@ -165,6 +165,9 @@ function readingResponse(result: DesignReadingResult): Record<string, unknown> {
     }`,
     spine: result.reading.spine,
     questions: result.reading.questions,
+    ...(result.reading.canvasLayout === undefined
+      ? {}
+      : { canvasLayout: result.reading.canvasLayout }),
     ...(result.reading.answers === undefined || result.reading.answers.length === 0
       ? {}
       : { answers: result.reading.answers }),

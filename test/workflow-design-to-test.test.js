@@ -1132,6 +1132,7 @@ function readingStub(overrides = {}) {
       completeness: { screensRead: 8, screensTotal: 8 },
       questions: [{ id: "q-1", screenId: "s1", screenName: "S1", element: "search", question: "搜索去哪？", why: "x" }],
       answers: [{ id: "a-1", match: { screenId: "s1" }, answer: "人工结论" }],
+      canvasLayout: "grid",
       spine: { title: "主线", summary: "x", screenIds: ["s1"], edgeIds: [], statusSummary: { observed: 0, inferred: 0, unconfirmed: 0 }, status: "inferred", basis: [], confidence: null }
     },
     artifacts: { json: "/tmp/reading.json", markdown: "/tmp/reading.md", chunksDir: "/tmp/chunks" },
@@ -1186,6 +1187,7 @@ test("design_to_test: 8 屏自动阅读，steps = extract/read/generate/check", 
   assert.equal(payload.steps[3].step, "check");
   assert.equal(payload.reading.questions[0].id, "q-1");
   assert.equal(payload.reading.answers[0].id, "a-1");
+  assert.equal(payload.reading.canvasLayout, "grid");
   assert.equal(payload.artifacts.readingJson, "/tmp/reading.json");
 });
 

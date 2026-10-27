@@ -6,7 +6,7 @@ import {
   answerMatchesQuestion,
   applyAnswerToScreen
 } from "./answers.js";
-import { isGenericLabel, type ReadingNamingStyle } from "./naming.js";
+import { sanitizeBoardLabel, type ReadingNamingStyle } from "./naming.js";
 import type {
   CanvasLayout,
   ReadingAnswer,
@@ -100,7 +100,8 @@ function fallbackBoardLabel(
 ): string | null {
   const candidates = [screen.boardLabel, ref?.name, ref?.sourceFrameName];
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && !isGenericLabel(candidate)) return candidate;
+    const label = sanitizeBoardLabel(candidate);
+    if (label !== null) return label;
   }
   return null;
 }
@@ -123,12 +124,7 @@ function mergeScreens(
       const ref = refOf.get(screen.screenId);
       if (prior === undefined) {
         const knownStates = statesOf.get(screen.screenId) ?? [];
-        const modelBoardLabel =
-          screen.boardLabel !== null &&
-          screen.boardLabel !== undefined &&
-          !isGenericLabel(screen.boardLabel)
-            ? screen.boardLabel
-            : null;
+        const modelBoardLabel = sanitizeBoardLabel(screen.boardLabel);
         const boardLabel =
           modelBoardLabel ?? (ref?.kind === "state" ? fallbackBoardLabel(screen, ref) : null);
         const resolved = {
@@ -154,11 +150,9 @@ function mergeScreens(
       }
       if (
         (prior.boardLabel === null || prior.boardLabel === undefined) &&
-        screen.boardLabel !== null &&
-        screen.boardLabel !== undefined &&
-        !isGenericLabel(screen.boardLabel)
+        sanitizeBoardLabel(screen.boardLabel) !== null
       ) {
-        prior.boardLabel = screen.boardLabel;
+        prior.boardLabel = sanitizeBoardLabel(screen.boardLabel);
       }
       if (
         (prior.stateLabel === null || prior.stateLabel === undefined) &&

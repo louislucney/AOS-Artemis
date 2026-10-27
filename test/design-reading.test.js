@@ -15,6 +15,7 @@ import {
   isGenericLabel,
   isStateKeyword,
   normalizeMatchText,
+  sanitizeBoardLabel,
   splitStateLabel,
   stateLabelsOf
 } from "../dist/design/reading/naming.js";
@@ -1098,6 +1099,12 @@ test("naming: 通用画板名不算有效 boardLabel", () => {
   assert.equal(isStateKeyword("Empty"), true);
   assert.equal(isStateKeyword("Error"), true);
   assert.equal(isStateKeyword("Help"), false);
+  assert.equal(sanitizeBoardLabel("Frame 2406"), null);
+  assert.equal(
+    sanitizeBoardLabel("取餐方法（畫布上方綠色區塊標題）；畫框標籤：行動預點-內用點餐"),
+    "行動預點-內用點餐"
+  );
+  assert.equal(sanitizeBoardLabel("行動預點"), "行動預點");
 });
 
 test("naming: 繁简/标点/同义词归一用于 answers 匹配", () => {
