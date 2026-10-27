@@ -236,3 +236,122 @@ test("ui auto-check: 步骤截图已是 PNG 但缺 lossless 标记仍按无损�
   assert.equal(ui.reason, "auto-diff");
   assert.equal(ui.lossless, true);
 });
+
+test("ui auto-check: 屏名只在 thought 中出现时仍匹配到正确步骤", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const design = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(path.join(design, "pen", "screens"), { recursive: true });
+  fs.writeFileSync(
+    path.join(design, "ui-contract.json"),
+    JSON.stringify({ schemaVersion: 1, screens: [] }),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    path.join(design, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      screens: [
+        {
+          id: "s1",
+          name: "選擇取餐時間",
+          suggestedRoute: "/",
+          childNames: [],
+          textHints: [{ text: "到店自取", textClass: "runtime-text" }]
+        }
+      ],
+      edges: [],
+      entryScreens: ["s1"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(path.join(design, "pen", "screens", "s1.pen"), "{}", "utf-8");
+  const { runtime } = await loadTestRuntime(dir);
+  const traceDir = runtime.traceDir("ios-t-thought");
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "run.json"),
+    JSON.stringify({
+      trace_id: "ios-t-thought",
+      status: "completed",
+      steps: [
+        { step: 1, screen: "到店自取 內用點餐", thought: "「選擇取餐時間」彈層已開啟" },
+        { step: 2, screen: "到店自取 店外取餐", thought: "切換到店外取餐分頁" }
+      ]
+    }),
+    "utf-8"
+  );
+  const seenSteps = [];
+  const ui = await autoCheckUi(
+    runtime,
+    { traceId: "ios-t-thought", screens: ["選擇取餐時間"], deviceSerial: null, maxScreens: 3 },
+    {
+      designDeviceDiff: async (_runtime, args) => {
+        seenSteps.push(args.device.stepNumber);
+        return fakeDiff({ minor: 1 })();
+      }
+    }
+  );
+  assert.deepEqual(seenSteps, [1]);
+  assert.equal(ui.status, "passed");
+});
+
+test("ui auto-check: 弹层/瞬时屏 post 差异大时回看 pre 取更优", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const design = path.join(dir, ".artemis", "design");
+  fs.mkdirSync(path.join(design, "pen", "screens"), { recursive: true });
+  fs.writeFileSync(path.join(design, "ui-contract.json"), "{}", "utf-8");
+  fs.writeFileSync(
+    path.join(design, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      screens: [
+        { id: "s1", name: "選擇取餐時間", suggestedRoute: "/", childNames: [], textHints: [] }
+      ],
+      edges: [],
+      entryScreens: ["s1"],
+      unresolvedDestinations: []
+    }),
+    "utf-8"
+  );
+  fs.writeFileSync(path.join(design, "pen", "screens", "s1.pen"), "{}", "utf-8");
+  const { runtime } = await loadTestRuntime(dir);
+  const traceDir = runtime.traceDir("ios-t-pre");
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "run.json"),
+    JSON.stringify({
+      trace_id: "ios-t-pre",
+      status: "completed",
+      steps: [{ step: 1, screen: "到店自取 內用點餐", thought: "「選擇取餐時間」彈層已開啟，點選即時" }]
+    }),
+    "utf-8"
+  );
+  const images = [];
+  const ui = await autoCheckUi(
+    runtime,
+    { traceId: "ios-t-pre", screens: ["選擇取餐時間"], deviceSerial: null, maxScreens: 3 },
+    {
+      designDeviceDiff: async (_runtime, args) => {
+        images.push(args.device.image);
+        const bySeverity = args.device.image === "post" ? { blocker: 1 } : { minor: 1 };
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ok: true,
+                summary: { regions: 1, bySeverity },
+                unit: { device: { sourceFormat: "png", lossless: true } },
+                saved: { dir: `/tmp/ui-report-${args.device.image}` }
+              })
+            }
+          ]
+        };
+      }
+    }
+  );
+  assert.deepEqual(images, ["post", "pre"]);
+  assert.equal(ui.status, "passed");
+  assert.deepEqual(ui.evidence, ["/tmp/ui-report-pre"]);
+});

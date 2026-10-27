@@ -21,6 +21,8 @@ import {
 interface TraceStep {
   step: number;
   screen: string;
+  /** 执行器当步说明；页内弹层/跳转常只出现在这里，用于屏匹配。 */
+  thought?: string;
 }
 
 interface ScreenMatch {
@@ -28,19 +30,25 @@ interface ScreenMatch {
   step: TraceStep;
   /** 原始请求串（testCase.screens），用于未匹配/覆盖率账本。 */
   requested: string;
+  /** 屏名只出现在 thought、不在观察文本中（弹层/瞬时页）：post 差异大时回看 pre。 */
+  transient: boolean;
 }
 
 function readTraceSteps(traceDir: string): TraceStep[] {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(traceDir, "run.json"), "utf-8")) as {
-      steps?: Array<{ step?: unknown; screen?: unknown }>;
+      steps?: Array<{ step?: unknown; screen?: unknown; thought?: unknown }>;
     };
     return (parsed.steps ?? [])
       .filter(
-        (step): step is { step: number; screen: string } =>
+        (step): step is { step: number; screen: string; thought?: string } =>
           typeof step?.step === "number" && typeof step?.screen === "string"
       )
-      .map((step) => ({ step: step.step, screen: step.screen }));
+      .map((step) => ({
+        step: step.step,
+        screen: step.screen,
+        ...(typeof step.thought === "string" ? { thought: step.thought } : {})
+      }));
   } catch {
     return [];
   }
@@ -65,16 +73,32 @@ function matchScreens(
         (entry) => normalize(entry.name).includes(wanted) || wanted.includes(normalize(entry.name))
       );
     if (!screen) continue;
-    let best: { step: TraceStep; score: number } | null = null;
+    let best: { step: TraceStep; score: number; transient: boolean } | null = null;
+    const screenName = normalize(screen.name);
     for (const step of steps) {
-      const haystack = normalize(step.screen);
-      let score = haystack.includes(normalize(screen.name)) ? 2 : 0;
+      const screenText = normalize(step.screen);
+      const thoughtText = normalize(step.thought ?? "");
+      const haystack = `${screenText} ${thoughtText}`;
+      let score = haystack.includes(screenName) ? 4 : 0;
       for (const hint of screen.textHints ?? []) {
         if (hint.text && haystack.includes(normalize(hint.text))) score += 1;
       }
-      if (score > 0 && (best === null || score >= best.score)) best = { step, score };
+      if (score > 0 && (best === null || score >= best.score)) {
+        best = {
+          step,
+          score,
+          transient: thoughtText.includes(screenName) && !screenText.includes(screenName)
+        };
+      }
     }
-    if (best !== null) matches.push({ screen, step: best.step, requested });
+    if (best !== null) {
+      matches.push({
+        screen,
+        step: best.step,
+        requested,
+        transient: best.transient
+      });
+    }
   }
   return matches;
 }
@@ -209,29 +233,49 @@ export async function autoCheckUi(
       continue;
     }
     try {
-      const result = await diff(runtime, {
-        design: { source: "pen", penPath },
-        device: {
-          mode: "step",
-          platform,
-          ...(input.deviceSerial ? { serial: input.deviceSerial } : {}),
-          traceId: input.traceId,
-          stepNumber: match.step.step,
-          image: "post"
-        },
-        regions: "auto",
-        zoom: 2,
-        returnCrops: 0
-      });
-      if (result.isError === true) {
+      const runDiff = async (
+        image: "post" | "pre"
+      ): Promise<{ payload: Record<string, unknown>; major: number; regions: number } | null> => {
+        const result = await diff(runtime, {
+          design: { source: "pen", penPath },
+          device: {
+            mode: "step",
+            platform,
+            ...(input.deviceSerial ? { serial: input.deviceSerial } : {}),
+            traceId: input.traceId,
+            stepNumber: match.step.step,
+            image
+          },
+          regions: "auto",
+          zoom: 2,
+          returnCrops: 0
+        });
+        if (result.isError === true) return null;
+        const payload = parseResult(result);
+        if (payload === null || payload.ok !== true) return null;
+        const summary = payload.summary as
+          | { regions?: unknown; bySeverity?: Record<string, unknown> }
+          | undefined;
+        const bySeverity = summary?.bySeverity ?? {};
+        const major = Number(bySeverity.blocker ?? 0) + Number(bySeverity.major ?? 0);
+        const regionCount = typeof summary?.regions === "number" ? summary.regions : 0;
+        return { payload, major, regions: regionCount };
+      };
+      let chosen = await runDiff("post");
+      if (chosen === null) {
         skippedScreens.push({ id: match.screen.id, name: match.screen.name });
         continue;
       }
-      const payload = parseResult(result);
-      if (payload === null || payload.ok !== true) {
-        skippedScreens.push({ id: match.screen.id, name: match.screen.name });
-        continue;
+      if (match.transient && chosen.major > 0) {
+        const pre = await runDiff("pre");
+        if (
+          pre !== null &&
+          (pre.major < chosen.major || (pre.major === chosen.major && pre.regions < chosen.regions))
+        ) {
+          chosen = pre;
+        }
       }
+      const payload = chosen.payload;
       const source = sourceOf(payload);
       sourceFormat = source.format;
       lossless = source.lossless;
@@ -240,14 +284,11 @@ export async function autoCheckUi(
       ).detail?.textStyles;
       const textStyle = normalizeUiTextStyles(textStyleValue);
       if (textStyle !== null) textStyles = addUiTextStyles(textStyles, textStyle);
-      const summary = payload.summary as { regions?: unknown; bySeverity?: Record<string, unknown> } | undefined;
-      const bySeverity = summary?.bySeverity ?? {};
-      const major = Number(bySeverity.blocker ?? 0) + Number(bySeverity.major ?? 0);
-      regions += typeof summary?.regions === "number" ? summary.regions : 0;
+      regions += chosen.regions;
       const saved = payload.saved as { dir?: unknown } | undefined;
       if (typeof saved?.dir === "string") evidence.push(saved.dir);
       comparedScreens.push({ id: match.screen.id, name: match.screen.name });
-      if (major > 0) failed += 1;
+      if (chosen.major > 0) failed += 1;
     } catch (error) {
       logWarn(`UI 自动比对失败（${match.screen.name} / ${input.traceId}）: ${errorMessage(error)}`);
       skippedScreens.push({ id: match.screen.id, name: match.screen.name });

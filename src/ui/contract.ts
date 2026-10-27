@@ -297,6 +297,37 @@ export function buildUiContract(
   if (screens.length === 0) throw new Error(`flows.json 没有 screens：${flowsPath}`);
 
   const warnings: string[] = [];
+  const renderWidths: number[] = [];
+  const renderWidthById = new Map<string, number>();
+  for (const screen of screens) {
+    const render = renderFor(designRoot, screen.id);
+    if (render === null) continue;
+    try {
+      const dims = pngDimensions(fs.readFileSync(render));
+      if (dims !== null) {
+        renderWidths.push(dims.width);
+        renderWidthById.set(screen.id, dims.width);
+      }
+    } catch {
+      /* 读不到渲染图：不参与拼图判定 */
+    }
+  }
+  const sortedWidths = [...renderWidths].sort((left, right) => left - right);
+  const medianWidth =
+    sortedWidths.length === 0
+      ? null
+      : sortedWidths.length % 2 === 0
+        ? (sortedWidths[sortedWidths.length / 2 - 1]! + sortedWidths[sortedWidths.length / 2]!) / 2
+        : sortedWidths[Math.floor(sortedWidths.length / 2)]!;
+  const compositeIds =
+    medianWidth === null
+      ? []
+      : screens
+          .filter((screen) => {
+            const width = renderWidthById.get(screen.id);
+            return width !== undefined && width > Math.max(600, medianWidth * 1.5);
+          })
+          .map((screen) => screen.id);
   const missingPen = screens
     .filter((screen) => penFileFor(designRoot, screen.id) === null)
     .map((screen) => screen.id);
@@ -307,7 +338,8 @@ export function buildUiContract(
         const split = splitPenScreens({
           sourceFile,
           screenIds: missingPen,
-          outDir: path.join(designRoot, "pen", "screens")
+          outDir: path.join(designRoot, "pen", "screens"),
+          compositeIds
         });
         if (split.written.length > 0) {
           warnings.push(`从源 .pen 拆分逐屏基线 ${split.written.length} 个`);

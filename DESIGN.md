@@ -2897,7 +2897,9 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > 2026-10-27。真机屏幕与设计图明显不符却“没有检测到”：`design_to_test` 的 `run` 阶段从未传 `uiDiff`，且项目没有 `ui-contract.json`/逐屏 `.pen`；即使手动开启，iOS 步骤截图（PNG）因未带 `lossless` 标记仍被判为有损源，自动核验恒为 `unverified`，永远不会给出 `failed`。
 
 - **逐屏基线**：新增 `src/pen/split.ts` `splitPenScreens`——从整份 `.pen` 按 flows screen id 拆出单屏文件（顶层只留该屏、原点归零，保留 version/fileToken/themes/variables），内容未变不重写；`buildUiContract` 发现缺逐屏 `.pen` 且 flows 来源为 `pen:<path>` 时自动拆分，拆分失败/屏缺失进 warnings，不静默。
+- **多屏画板**：拆分前用渲染 PNG 宽度中位数识别“整板拼图”（宽度 > max(600, 中位数×1.5)）；画板内优先选第一块手机宽屏（变体容器再下钻第一屏），避免把多状态并排图当单屏基线。 
 - **入口默认**：`design_to_test` 增 `uiDiff?: boolean`（默认 true）；`run:true` 时先构建 `ui-contract`（pen 源自动拆分），再以 `uiDiff` 执行；契约无 `extracted|partial` 屏或构建失败时关闭比对并给 `ui-contract-unusable`/`ui-contract-unavailable` warning；响应 `run.ui`/`run.uiCoverage` 回传，完成 0 条比对时给 `ui-not-verified`，不把“未核验”当通过。显式 `uiDiff:false` 完全跳过契约构建与比对。
 - **无损判定**：步骤截图来自轨迹原图，PNG 即无损；`design_device_diff` 的 `detail.deviceSource.lossless` 与字重核验改用 `effectiveLossless`（step 模式按 PNG 判定，实时抓图仍看 `captured.lossless`）。`autoCheckUi` 的 `sourceOf` 同样按 PNG 兜底，避免缺标记导致假 `unverified`。
-- **真机实证（starbucks-ios-taiwan）**：23 屏自动拆出 23 个逐屏 `.pen`，契约 21 partial / 2 unverifiable / 0 no-baseline；对既有失败轨迹 `ios-b04dde46…` 的 6 个设计屏自动比对，6/6 匹配、10 个差异区域，状态 `failed`（`選擇門市` position-size blocker、`選擇取餐時間` color blocker），不再降级为 `unverified`。
-- **测试**：`pen-split` 3 例（拆分/幂等/坏源不写半成品）、`ui-contract` 自动拆分 1 例、`workflow-design-to-test` 默认开/显式关 2 例、`diff-detail-tool` step PNG 无损 1 例、`ui-auto-check` PNG 缺标记仍比对 1 例；全量 **2368 绿**，lint 0 error（2 条既有 warning）。
+- **屏匹配**：trace 的 `thought` 参与匹配（页内弹层/跳转常只在 thought 里出现屏名）；屏名只在 thought、不在观察文本（transient）且 post 有 blocker/major 时回看同一步 `pre`，取差异更小者，避免“点选关闭弹层”的 post 截图被误判。
+- **真机实证（starbucks-ios-taiwan）**：23 屏自动拆出 23 个逐屏 `.pen`（`U2rRt`/`P3urv` 由整板拼图收窄到第一块手机屏），契约 21 partial / 2 unverifiable / 0 no-baseline；对既有失败轨迹 `ios-b04dde46…` 的 6 个设计屏自动比对，6/6 匹配、状态 `failed`（`選擇取餐時間` 弹层 `pre` 截图命中 color blocker；`選擇門市` 仅 minor/info），不再降级为 `unverified`。
+- **测试**：`pen-split` 5 例（拆分/幂等/坏源/整板选首屏/变体容器下钻）、`ui-contract` 自动拆分 1 例、`workflow-design-to-test` 默认开/显式关 2 例、`diff-detail-tool` step PNG 无损 1 例、`ui-auto-check` PNG 缺标记/thought 匹配/transient pre 3 例；全量 **2372 绿**，lint 0 error（2 条既有 warning）。
