@@ -327,7 +327,8 @@ test("pipeline: optional reading writes report into zip and meta", async () => {
         reading: true,
         readingStates: true,
         readingMaxScreens: 10,
-        readingAnswers: [{ id: "a1", match: { screenId: "1:1" }, answer: "是" }]
+        readingAnswers: [{ id: "a1", match: { screenId: "1:1" }, answer: "是" }],
+        readingStyle: { separators: ["~"] }
       },
       workDir,
       { ...deps(), readDesign: fakeRead }
@@ -336,6 +337,7 @@ test("pipeline: optional reading writes report into zip and meta", async () => {
     assert.equal(seen.options.includeStates, true);
     assert.equal(seen.model, "m");
     assert.equal(seenAnswers.answers[0].id, "a1");
+    assert.deepEqual(seenAnswers.style.separators, ["~"]);
 
     const entries = zipEntries(await readFile(result.zipPath));
     const names = entries.map((entry) => entry.name);

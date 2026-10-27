@@ -279,8 +279,8 @@ design_to_test(figmaUrl|penPath, reading:"auto")
 - `conflicts`
 - `questionsTotal` / `questionsOmitted`（报告只展示前 20 条；全量留在 chunks）
 - `questionsAnswered`（命中人工答案、已抑制的问题数）
-- 每屏 `boardLabel` / `stateLabel`（手机外框上方的画板/状态文字；不混入 App 标题）
-- 每屏 `knownStates`（flows 中已知的状态变体标签；仅元数据）
+- 每屏 `boardLabel` / `stateLabel`（画板/页面/状态标签，位置不限；Frame/Screen/Group N 等通用名不采用；不混入 App 标题）
+- 每屏 `knownStates`（flows 中已知的状态变体标签；仅元数据；状态屏按 frame id 去重）
 - 状态屏 `kind:"state"` + `parentScreenId`（`readingStates:true` 时进入分块；不进入 CR 主线）
 - `questions`（按标注线/关键入口优先，最多 20 条）
 - `coverage`：有 header 控件清单的屏数、有底部 tab 清单的屏数、有连接线记录的屏数。
@@ -358,7 +358,7 @@ MVP 不产出 crops（局部裁剪作为第二阶段）；`readingPaths` 不返�
 }
 ```
 
-人工答案放 `.artemis/design/reading/answers.json`：按 `screenId/screenNameIncludes/elementIncludes/questionIncludes` 匹配问题或交互，命中后抑制问题；`resolution.toScreenId` 支持真实屏 id 或 `"self"`（页内切换/底部弹层），`dropInteraction` 可删除错误推断边，`screenTitle` 可修正标题栏。答案在合并期生效，不触发模型调用，也不写回 flows/tests。
+人工答案放 `.artemis/design/reading/answers.json`：按 `screenId/screenNameIncludes/elementIncludes/questionIncludes` 匹配问题或交互，命中后抑制问题；匹配先做 NFKC、常见繁转简、去标点/空白，并按内置同义词（搜尋/search、門市/store、取餐/pickup、底部弹层/bottom sheet 等）归一。`style` 可追加 `separators`/`stateKeywords`/`synonyms`。`resolution.toScreenId` 支持真实屏 id 或 `"self"`（页内切换/底部弹层），`dropInteraction` 可删除错误推断边，`screenTitle` 可修正标题栏。答案在合并期生效，不触发模型调用，也不写回 flows/tests。
 
 普通用户只看 `steps`/`reading.summary`/`questions`；不需要记住额外命令。报告最多展示 20 条高优先级问题（标注线优先，其次 search/back/cart/tab/結帳/取餐等关键入口）；全量问题保留在 `chunks/*.json`，`completeness.questionsTotal/questionsOmitted` 给出计数。问题不是失败；没有问题也明确写 `questions: []`，不伪造“已确认”。
 
@@ -436,7 +436,8 @@ MVP 不产出 crops（局部裁剪作为第二阶段）；`readingPaths` 不返�
 - 预算：`readingMaxScreens` 默认 50；并发 2；单调用默认 180s（`AOS_READING_TIMEOUT_MS`）；预计块数 > 20 warning。
 - 状态：`observed` 只表示“可见事实/已有原型边”；视觉阅读产生的交互边一律映射 `vision-inferred`，不自动成为硬断言；只有原型边/人工确认才是 `explicit`/`human-confirmed`。
 - chrome：不进入 `headerControls`；parser 对 `Flow/Header`/状态栏/备注出 `chrome-suspect` warning。
-- 变体：默认只读主屏；`readingStates:true` 时把 pen `states` 的唯一标签作为独立屏纳入分块（`kind:"state"` + `parentScreenId`，报告标「状态变体」/「父屏」），状态屏不进入 CR 主线；未开启时仍把唯一状态标签作为 `knownStates` 元数据展示。
+- 变体：默认只读主屏；`readingStates:true` 时把 `states` 的唯一 frame（按 id 去重，不按 label 合并）作为独立屏纳入分块（`kind:"state"` + `parentScreenId`，报告标「状态变体」/「父屏」），状态屏不进入 CR 主线；另对独立 screen 名（如 `Login / Empty`）按状态词后缀启发式归并。无状态输入时 warning `reading-states-unavailable`。未开启时仍把唯一标签作为 `knownStates` 元数据展示。
+- 命名风格：状态拆分支持 `- / ｜ _ · （） []` 等多分隔符与中英日韩状态词；拆不出时保留完整 `boardLabel`，`stateLabel=null`；通用设计器名不作为标签。
 - 已有 `screens[].elements`：作为 `knownElements` 上下文，按块过滤，不要求重找；冲突保留两份 + question。
 - 主线：确定性候选 + 一次可选文本总结；输出 `edgeIds/statusSummary`，含推断边必须标注；只叫“假设”。画板顺序边标 `canvas-order`，报告显式提示不代表真实控件跳转。
 - 回答闭环：合并期读取 `.artemis/design/reading/answers.json`，抑制已回答问题并修正边/标题；不触发模型调用，不写回 flows/tests。

@@ -8,7 +8,15 @@ import {
   readingPaths,
   writeReadingChunk
 } from "../dist/design/reading/store.js";
-import { answerMatchesInteraction } from "../dist/design/reading/answers.js";
+import { answerMatchesInteraction, answerMatchesQuestion, loadReadingAnswers } from "../dist/design/reading/answers.js";
+import {
+  canonicalizeMatch,
+  isGenericLabel,
+  isStateKeyword,
+  normalizeMatchText,
+  splitStateLabel,
+  stateLabelsOf
+} from "../dist/design/reading/naming.js";
 import { chunkReadingScreens } from "../dist/design/reading/chunk.js";
 import { buildReadingMessages } from "../dist/design/reading/prompt.js";
 import { parseReadingReply } from "../dist/design/reading/parse.js";
@@ -1059,4 +1067,215 @@ test("run: includeStates 读取状态变体，标注 parent 且不进入 CR 主�
   assert.equal(result.reading.spine.screenIds.includes("st1"), false);
   assert.match(renderReadingMarkdown(result.reading), /状态变体/);
   assert.match(renderReadingMarkdown(result.reading), /父屏: `s1`/);
+});
+
+
+test("naming: 状态标签支持多分隔符/多语言，拆不出保留完整 label", () => {
+  assert.equal(splitStateLabel("行動預點 / 下滑", "行動預點").state, "下滑");
+  assert.equal(splitStateLabel("行動預點（空态）", "行動預點").state, "空态");
+  assert.equal(splitStateLabel("行動預點_Scrolled", "行動預點").state, "Scrolled");
+  assert.equal(splitStateLabel("Screen 1 – エラー", "Screen 1").state, "エラー");
+  assert.equal(splitStateLabel("Scrolled | Screen 1", "Screen 1").state, "Scrolled");
+  assert.equal(splitStateLabel("下滑", "Screen 1").state, "下滑");
+  assert.equal(splitStateLabel("Screen 1", "Screen 1").state, null);
+  assert.equal(splitStateLabel("Frame 2410", "Screen 1").state, null);
+  assert.equal(splitStateLabel("Screen 1 ~ Empty", "Screen 1", { separators: ["~"] }).state, "Empty");
+  assert.equal(isStateKeyword("CustomState", { stateKeywords: ["customstate"] }), true);
+  assert.equal(stateLabelsOf(
+    [{ label: "Screen 1 / Empty" }, { label: "Screen 1（空态）" }, { label: "Screen 1" }],
+    "Screen 1"
+  ).length, 2);
+});
+
+test("naming: 通用画板名不算有效 boardLabel", () => {
+  assert.equal(isGenericLabel("Frame 2406"), true);
+  assert.equal(isGenericLabel("Screen 1"), true);
+  assert.equal(isGenericLabel("Group 12"), true);
+  assert.equal(isGenericLabel("Text 3"), true);
+  assert.equal(isGenericLabel("Homepage"), false);
+  assert.equal(isGenericLabel("行動預點"), false);
+  assert.equal(isStateKeyword("Empty"), true);
+  assert.equal(isStateKeyword("Error"), true);
+  assert.equal(isStateKeyword("Help"), false);
+});
+
+test("naming: 繁简/标点/同义词归一用于 answers 匹配", () => {
+  assert.equal(normalizeMatchText("門市／取餐"), normalizeMatchText("门市取餐"));
+  assert.equal(
+    canonicalizeMatch("底部弹层"),
+    canonicalizeMatch("bottom sheet")
+  );
+  assert.equal(canonicalizeMatch("結帳"), canonicalizeMatch("checkout"));
+});
+
+
+test("answers: 繁简/同义词/标点归一命中", () => {
+  const base = {
+    id: "q1",
+    screenId: "s1",
+    screenName: "行動預點",
+    element: "門市",
+    question: "「門市」的目標頁面是什麼？",
+    why: "x"
+  };
+  assert.equal(
+    answerMatchesQuestion({ id: "a1", match: { elementIncludes: "门市" }, answer: "x" }, base),
+    true
+  );
+  assert.equal(
+    answerMatchesQuestion(
+      { id: "a2", match: { questionIncludes: "底部弹层" }, answer: "x" },
+      { ...base, element: null, question: "底部彈層要去哪裡？" }
+    ),
+    true
+  );
+});
+
+test("merge: 通用 Frame/Screen 名不作为 boardLabel", () => {
+  const screens = [
+    { id: "s1", name: "Homepage", order: 0, imagePath: null, sourceFrameName: "Frame 2406" },
+    { id: "s2", name: "Frame 2407", order: 1, imagePath: null, sourceFrameName: "Frame 2407" }
+  ];
+  const chunk = chunkOf("chunk-001", ["s1", "s2"], {
+    screens: [
+      observation("s1", { boardLabel: "Frame 2406" }),
+      observation("s2", { boardLabel: "Frame 2407" })
+    ]
+  });
+  const reading = mergeReadingChunks([chunk], metadata(screens));
+  assert.equal(reading.screens.find((screen) => screen.screenId === "s1").boardLabel, "Homepage");
+  assert.equal(reading.screens.find((screen) => screen.screenId === "s2").boardLabel, null);
+});
+
+test("run: 状态标签支持 slash/括号/英文并保留 ref 状态", async () => {
+  const dir = makeTempDir("aos-reading-style-states-");
+  const flowsPath = writeFlows(dir, 3);
+  const doc = flowDoc(3);
+  doc.screens[0].states = [
+    { id: "st1", label: "Screen 1 / 下滑", elements: [] },
+    { id: "st2", label: "Screen 1（空态）", elements: [] },
+    { id: "st3", label: "Screen 1_Scrolled", elements: [] }
+  ];
+  fs.writeFileSync(flowsPath, JSON.stringify(doc));
+  const chat = async (messages) => {
+    const text = messages
+      .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join(" ");
+    const ids = ["s1", "s2", "s3", "st1", "st2", "st3"].filter((id) => text.includes(`id=${id}`));
+    return replyFor(ids);
+  };
+  const result = await runDesignReading({
+    runtime: { configDirAbs: dir },
+    flowsPath,
+    model: "m",
+    chat,
+    imageFor: () => PNG,
+    options: { concurrency: 1, includeStates: true }
+  });
+  assert.equal(result.stats.screensTotal, 6);
+  assert.equal(result.reading.screens.find((screen) => screen.screenId === "st1").stateLabel, "下滑");
+  assert.equal(result.reading.screens.find((screen) => screen.screenId === "st2").stateLabel, "空态");
+  assert.equal(result.reading.screens.find((screen) => screen.screenId === "st3").stateLabel, "Scrolled");
+  assert.equal(result.reading.spine.screenIds.includes("st1"), false);
+});
+
+
+test("answers: answers.json style 可配置分隔符/状态词/同义词", () => {
+  const dir = makeTempDir("aos-reading-answers-style-");
+  fs.writeFileSync(
+    path.join(dir, "answers.json"),
+    JSON.stringify({
+      version: 1,
+      style: {
+        separators: ["~"],
+        stateKeywords: ["custom-state"],
+        synonyms: { custom: ["custom-alias"] }
+      },
+      answers: []
+    })
+  );
+  const loaded = loadReadingAnswers(dir);
+  assert.deepEqual(loaded.style.separators, ["~"]);
+  assert.deepEqual(loaded.style.stateKeywords, ["custom-state"]);
+  assert.deepEqual(loaded.style.synonyms, { custom: ["custom-alias"] });
+});
+
+
+test("prompt: 画板标签不假设位置，通用 Frame 名不采用", () => {
+  const messages = buildReadingMessages({
+    plan: planFor(["s1"]),
+    images: [{ screenId: "s1", dataUrl: "data:image/png;base64,AA==" }]
+  });
+  const text = messages
+    .map((message) =>
+      typeof message.content === "string"
+        ? message.content
+        : message.content
+            .map((part) => (part.type === "text" ? part.text : ""))
+            .join("")
+    )
+    .join("\n");
+  assert.match(text, /Frame/);
+  assert.match(text, /画板名|页面名|外框上方/);
+  assert.match(text, /分隔符|拆不出/);
+});
+
+test("run: Figma 式独立 variant 屏按状态归并，不当主屏", async () => {
+  const dir = makeTempDir("aos-reading-figma-variants-");
+  const flowsPath = writeFlows(dir, 3);
+  const doc = flowDoc(3);
+  doc.screens[1].name = "Screen 1 / Empty";
+  doc.screens[2].name = "Screen 1 / Error";
+  fs.writeFileSync(flowsPath, JSON.stringify(doc));
+  const chat = async (messages) => {
+    const text = messages
+      .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join(" ");
+    const ids = ["s1", "s2", "s3"].filter((id) => text.includes(`id=${id}`));
+    return replyFor(ids);
+  };
+  const result = await runDesignReading({
+    runtime: { configDirAbs: dir },
+    flowsPath,
+    model: "m",
+    chat,
+    imageFor: () => PNG,
+    options: { concurrency: 1, includeStates: true }
+  });
+  assert.equal(result.stats.screensTotal, 3);
+  assert.equal(result.reading.screens.find((screen) => screen.screenId === "s2").kind, "state");
+  assert.equal(result.reading.screens.find((screen) => screen.screenId === "s2").parentScreenId, "s1");
+  assert.equal(result.reading.screens.find((screen) => screen.screenId === "s2").stateLabel, "Empty");
+  assert.deepEqual(
+    result.reading.screens.find((screen) => screen.screenId === "s1").knownStates,
+    ["Screen 1 / Empty", "Screen 1 / Error"]
+  );
+  assert.equal(result.reading.spine.screenIds.includes("s2"), false);
+});
+
+test("run: readingStates 无状态输入时给显式 warning", async () => {
+  const dir = makeTempDir("aos-reading-no-states-");
+  const flowsPath = writeFlows(dir, 3);
+  const chat = async (messages) => {
+    const text = messages
+      .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join(" ");
+    const ids = ["s1", "s2", "s3"].filter((id) => text.includes(`id=${id}`));
+    return replyFor(ids);
+  };
+  const result = await runDesignReading({
+    runtime: { configDirAbs: dir },
+    flowsPath,
+    model: "m",
+    chat,
+    imageFor: () => PNG,
+    options: { concurrency: 1, includeStates: true }
+  });
+  assert.ok(result.warnings.some((warning) => warning.code === "reading-states-unavailable"));
 });

@@ -52,7 +52,12 @@ Base URL（调试环境）：`http://192.168.102.165:8780`
       "match": { "questionIncludes": "列表" },
       "answer": "列表内容由 CMS 返回；空态/错误态是接口状态"
     }
-  ]
+  ],
+  "readingStyle": {
+    "separators": ["~"],
+    "stateKeywords": ["custom-state"],
+    "synonyms": { "custom": ["custom-alias"] }
+  }
 }
 ```
 
@@ -74,6 +79,7 @@ Base URL（调试环境）：`http://192.168.102.165:8780`
 | `readingStates` | 布尔 | 否 | 阅读时把 pen 状态变体作为独立屏，默认 `false` |
 | `readingMaxScreens` | 数字 | 否 | 阅读最多屏数，默认 30，最大 200 |
 | `readingAnswers` | 数组 | 否 | 本次请求的人工答案（≤100 条），写入阅读 answers 后参与合并 |
+| `readingStyle` | 对象 | 否 | `separators`/`stateKeywords`/`synonyms`，用于不同设计师的命名/状态词/同义词归一 |
 
 ### Figma 处理顺序
 
@@ -118,6 +124,7 @@ curl -s http://192.168.102.165:8780/jobs \
 | `reading` / `readingStates` | 文本 | 否 | `true` / `false` |
 | `readingMaxScreens` | 文本 | 否 | 数字，默认 30，最大 200 |
 | `readingAnswers` | 文本 | 否 | JSON 数组字符串；≤100 条 |
+| `readingStyle` | 文本 | 否 | JSON 对象字符串；`separators`/`stateKeywords`/`synonyms` |
 
 ---
 
@@ -143,6 +150,7 @@ curl -s http://192.168.102.165:8780/jobs \
 | `reading` / `readingStates` | 文本 | 否 | `true` / `false`；状态变体仅在 pen 有 `states` 时生效 |
 | `readingMaxScreens` | 文本 | 否 | 数字，默认 30，最大 200 |
 | `readingAnswers` | 文本 | 否 | JSON 数组字符串；≤100 条 |
+| `readingStyle` | 文本 | 否 | JSON 对象字符串；`separators`/`stateKeywords`/`synonyms` |
 
 ## 依赖与行为
 
@@ -166,6 +174,7 @@ curl -s http://192.168.102.165:8780/jobs \
 - `readingStates:true` 把 pen 状态变体作为独立屏读；状态屏标「状态变体」/「父屏」，不进入 CR 主线
 - `readingMaxScreens` 默认 30（最大 200）；屏多/开状态变体时注意任务 10 分钟超时与视觉调用成本
 - `readingAnswers` 是**本次请求**的规则（CMS Open 不读项目 `.artemis`）；≤100 条，格式同 `answers.json` 的 `answers[]`
+- `readingStyle` 是本次请求的命名风格（`separators`/`stateKeywords`/`synonyms`），与 `readingAnswers` 一起写入任务临时 answers.json；不同设计师的分隔符/状态词/同义词可各自配置
 - 阅读失败（视觉模型不支持图片/超时等）只写 warning，**不阻断**用例生成；任务仍可完成
 
 产物：

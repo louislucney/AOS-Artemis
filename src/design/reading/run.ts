@@ -8,6 +8,13 @@ import type { FlowEdge, FlowElement, FlowWarning } from "../../figma/flows.js";
 import { isPngBuffer, screenFileName } from "../screens.js";
 import { chunkReadingScreens, type ReadingChunkOptions } from "./chunk.js";
 import { loadReadingAnswers } from "./answers.js";
+import {
+  isStateKeyword,
+  normalizeMatchText,
+  splitStateLabel,
+  stateLabelsOf,
+  type ReadingNamingStyle
+} from "./naming.js";
 import { mergeReadingChunks } from "./merge.js";
 import { parseReadingReply } from "./parse.js";
 import { buildReadingMessages, READING_PROMPT_VERSION } from "./prompt.js";
@@ -32,12 +39,15 @@ import { errorMessage, writeFileAtomic } from "../../util.js";
 interface FlowDocState {
   id?: unknown;
   label?: unknown;
+  frameName?: unknown;
   elements?: unknown;
 }
 
 interface FlowDocScreen {
   id?: unknown;
   name?: unknown;
+  sourceFrameName?: unknown;
+  page?: unknown;
   elements?: unknown;
   states?: unknown;
 }
@@ -58,24 +68,6 @@ interface LoadedScreen {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
-}
-
-function asStateLabels(value: unknown, screenName: string): string[] {
-  if (!Array.isArray(value)) return [];
-  const labels = value
-    .map((entry) =>
-      entry && typeof entry === "object"
-        ? asString((entry as { label?: unknown }).label)
-        : null
-    )
-    .filter((label): label is string => label !== null && label !== screenName);
-  return [...new Set(labels)];
-}
-
-function stateLabelOf(label: string, parentName: string): string {
-  const escaped = parentName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`^${escaped}\\s*[-－—–]\\s*(.+)$`).exec(label.trim());
-  return match === null ? label.trim() : match[1]!.trim();
 }
 
 function asFlowEdges(value: unknown): FlowEdge[] {
@@ -130,11 +122,22 @@ function resolveImagePath(
   return null;
 }
 
+interface RawScreenEntry {
+  id: string;
+  name: string;
+  index: number;
+  imagePath: string | null;
+  sourceFrameName?: string;
+  rawStates: unknown;
+  elements: FlowElement[];
+}
+
 function loadScreens(
   doc: FlowDoc,
   configDirAbs: string,
   screensDir: string | undefined,
-  includeStates: boolean
+  includeStates: boolean,
+  style: ReadingNamingStyle
 ): { screens: ReadingScreenRef[]; loaded: LoadedScreen[]; edges: FlowEdge[] } {
   const rawScreens = Array.isArray(doc.screens) ? (doc.screens as FlowDocScreen[]) : [];
   const screenshots = doc.screenshots as
@@ -142,43 +145,108 @@ function loadScreens(
     | undefined;
   const flowsDir =
     asString(screenshots?.dir) ?? asString(screenshots?.summary?.dir);
-  const screens: ReadingScreenRef[] = [];
-  const loaded: LoadedScreen[] = [];
+  const entries: RawScreenEntry[] = [];
   rawScreens.forEach((raw, index) => {
     const id = asString(raw.id);
     if (id === null) return;
-    const name = asString(raw.name) ?? id;
-    const imagePath = resolveImagePath(configDirAbs, flowsDir, screensDir, id);
-    const states = asStateLabels(raw.states, name);
-    const ref: ReadingScreenRef = {
+    const sourceFrameName = asString(raw.sourceFrameName) ?? undefined;
+    entries.push({
       id,
-      name,
-      order: index,
-      imagePath,
+      name: asString(raw.name) ?? id,
+      index,
+      imagePath: resolveImagePath(configDirAbs, flowsDir, screensDir, id),
+      ...(sourceFrameName === undefined ? {} : { sourceFrameName }),
+      rawStates: raw.states,
+      elements: asFlowElements(raw.elements)
+    });
+  });
+
+  // Figma 静态稿常把 variants 当成独立 screen（Login / Empty）；仅当后缀是已知状态词时
+  // 归并到主屏，避免把普通子页面误判成状态。
+  const variantOf = new Map<string, { parent: RawScreenEntry; state: string }>();
+  if (includeStates) {
+    const variantIds = new Set<string>();
+    for (const entry of entries) {
+      for (const other of entries) {
+        if (other.id === entry.id || other.name.length >= entry.name.length) continue;
+        const split = splitStateLabel(entry.name, other.name, style);
+        if (split.state !== null && isStateKeyword(split.state, style)) {
+          variantIds.add(entry.id);
+          break;
+        }
+      }
+    }
+    const parentCandidates = entries.filter((entry) => !variantIds.has(entry.id));
+    for (const entry of entries) {
+      let best: { parent: RawScreenEntry; state: string } | null = null;
+      for (const candidate of parentCandidates) {
+        if (candidate.id === entry.id) continue;
+        const split = splitStateLabel(entry.name, candidate.name, style);
+        if (split.state === null || !isStateKeyword(split.state, style)) continue;
+        if (best === null || candidate.name.length > best.parent.name.length) {
+          best = { parent: candidate, state: split.state };
+        }
+      }
+      if (best !== null) variantOf.set(entry.id, best);
+    }
+  }
+
+  const variantsByParent = new Map<string, RawScreenEntry[]>();
+  for (const entry of entries) {
+    const variant = variantOf.get(entry.id);
+    if (variant === undefined) continue;
+    const list = variantsByParent.get(variant.parent.id) ?? [];
+    list.push(entry);
+    variantsByParent.set(variant.parent.id, list);
+  }
+
+  const screens: ReadingScreenRef[] = [];
+  const loaded: LoadedScreen[] = [];
+  for (const entry of entries) {
+    if (variantOf.has(entry.id)) continue;
+    const children = variantsByParent.get(entry.id) ?? [];
+    const stateInputs = [
+      ...(Array.isArray(entry.rawStates) ? entry.rawStates : []),
+      ...children.map((child) => ({ label: child.name }))
+    ];
+    const states = stateLabelsOf(stateInputs, entry.name, style);
+    const ref: ReadingScreenRef = {
+      id: entry.id,
+      name: entry.name,
+      order: entry.index,
+      imagePath: entry.imagePath,
       kind: "screen",
+      ...(entry.sourceFrameName === undefined ? {} : { sourceFrameName: entry.sourceFrameName }),
       ...(states.length > 0 ? { states } : {})
     };
     screens.push(ref);
-    loaded.push({ ref, imagePath, knownElements: asFlowElements(raw.elements) });
-    if (!includeStates || !Array.isArray(raw.states)) return;
-    const seenStateLabels = new Set<string>();
-    (raw.states as unknown[]).forEach((entry, stateIndex) => {
-      if (!entry || typeof entry !== "object") return;
-      const state = entry as FlowDocState;
+    loaded.push({ ref, imagePath: entry.imagePath, knownElements: entry.elements });
+    if (!includeStates) continue;
+
+    const seenStateIds = new Set(children.map((child) => child.id));
+    let offset = 0;
+    const explicitStates = Array.isArray(entry.rawStates) ? entry.rawStates : [];
+    for (const rawState of explicitStates) {
+      if (!rawState || typeof rawState !== "object") continue;
+      const state = rawState as FlowDocState;
       const stateId = asString(state.id);
       const label = asString(state.label);
-      if (stateId === null || label === null) return;
-      if (label === name || seenStateLabels.has(label)) return;
-      seenStateLabels.add(label);
+      if (stateId === null || label === null || seenStateIds.has(stateId)) continue;
+      if (normalizeMatchText(label) === normalizeMatchText(entry.name)) continue;
+      seenStateIds.add(stateId);
+      offset += 1;
       const stateImagePath = resolveImagePath(configDirAbs, flowsDir, screensDir, stateId);
+      const stateFrameName = asString(state.frameName) ?? undefined;
+      const split = splitStateLabel(label, entry.name, style);
       const stateRef: ReadingScreenRef = {
         id: stateId,
         name: label,
-        order: index + (stateIndex + 1) / 1000,
+        order: entry.index + offset / 1000,
         imagePath: stateImagePath,
         kind: "state",
-        parentScreenId: id,
-        stateLabel: stateLabelOf(label, name)
+        parentScreenId: entry.id,
+        ...(stateFrameName === undefined ? {} : { sourceFrameName: stateFrameName }),
+        ...(split.state === null ? {} : { stateLabel: split.state })
       };
       screens.push(stateRef);
       loaded.push({
@@ -186,8 +254,24 @@ function loadScreens(
         imagePath: stateImagePath,
         knownElements: asFlowElements(state.elements)
       });
-    });
-  });
+    }
+    for (const child of children) {
+      offset += 1;
+      const split = splitStateLabel(child.name, entry.name, style);
+      const childRef: ReadingScreenRef = {
+        id: child.id,
+        name: child.name,
+        order: entry.index + offset / 1000,
+        imagePath: child.imagePath,
+        kind: "state",
+        parentScreenId: entry.id,
+        ...(child.sourceFrameName === undefined ? {} : { sourceFrameName: child.sourceFrameName }),
+        ...(split.state === null ? {} : { stateLabel: split.state })
+      };
+      screens.push(childRef);
+      loaded.push({ ref: childRef, imagePath: child.imagePath, knownElements: child.elements });
+    }
+  }
   return { screens, loaded, edges: asFlowEdges(doc.edges) };
 }
 
@@ -328,7 +412,8 @@ export async function runDesignReading(input: {
       doc,
       input.runtime.configDirAbs,
       input.screensDir,
-      input.options?.includeStates === true
+      input.options?.includeStates === true,
+      answersLoad.style
     );
     if (loaded.screens.length === 0) {
       return {
@@ -369,6 +454,17 @@ export async function runDesignReading(input: {
     let calls = 0;
     let reused = 0;
     const warnings: FlowWarning[] = [...answersLoad.warnings];
+    if (
+      input.options?.includeStates === true &&
+      !loaded.screens.some((screen) => screen.kind === "state")
+    ) {
+      warnings.push(
+        chunkWarning(
+          "reading-states-unavailable",
+          "readingStates:true 但 flows 中没有可用状态变体（pen states / 画板命名）；已仅读主屏"
+        )
+      );
+    }
     if (chunked.plans.length > 20) {
       warnings.push(
         chunkWarning(
@@ -545,7 +641,8 @@ export async function runDesignReading(input: {
       generatedAt: now().toISOString(),
       truncatedScreens: chunked.truncatedScreens,
       stats,
-      answers: answersLoad.answers
+      answers: answersLoad.answers,
+      namingStyle: answersLoad.style
     });
     warnings.push(...reading.warnings);
     if (reading.completeness.screensRead < reading.completeness.screensTotal) {

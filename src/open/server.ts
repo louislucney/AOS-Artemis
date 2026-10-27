@@ -168,26 +168,50 @@ function answersField(value: unknown): OpenJobInput["readingAnswers"] {
   return raw as NonNullable<OpenJobInput["readingAnswers"]>;
 }
 
+function styleField(value: unknown): OpenJobInput["readingStyle"] {
+  if (value === undefined || value === null || value === "") return undefined;
+  let raw: unknown;
+  try {
+    raw = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  } catch {
+    throw new HttpError(400, "invalid_request", "readingStyle 不是合法 JSON");
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new HttpError(400, "invalid_request", "readingStyle 必须是对象");
+  }
+  return raw as NonNullable<OpenJobInput["readingStyle"]>;
+}
+
 function readingFields(value: {
   reading?: unknown;
   readingStates?: unknown;
   readingMaxScreens?: unknown;
   readingAnswers?: unknown;
-}): Pick<OpenJobInput, "reading" | "readingStates" | "readingMaxScreens" | "readingAnswers"> {
+  readingStyle?: unknown;
+}): Pick<
+  OpenJobInput,
+  "reading" | "readingStates" | "readingMaxScreens" | "readingAnswers" | "readingStyle"
+> {
   const reading = booleanField(value.reading, "reading");
   const readingStates = booleanField(value.readingStates, "readingStates");
   const readingMaxScreens = numberField(value.readingMaxScreens, "readingMaxScreens");
   const readingAnswers = answersField(value.readingAnswers);
+  const readingStyle = styleField(value.readingStyle);
   if (readingMaxScreens !== undefined && readingMaxScreens > 200) {
     throw new HttpError(400, "invalid_request", "readingMaxScreens 最大 200");
   }
   const enabled =
-    reading ?? (readingStates !== undefined || readingMaxScreens !== undefined || readingAnswers !== undefined);
+    reading ??
+    (readingStates !== undefined ||
+      readingMaxScreens !== undefined ||
+      readingAnswers !== undefined ||
+      readingStyle !== undefined);
   return {
     ...(reading === false ? { reading: false } : enabled ? { reading: true } : {}),
     ...(readingStates === undefined ? {} : { readingStates }),
     ...(readingMaxScreens === undefined ? {} : { readingMaxScreens }),
-    ...(readingAnswers === undefined ? {} : { readingAnswers })
+    ...(readingAnswers === undefined ? {} : { readingAnswers }),
+    ...(readingStyle === undefined ? {} : { readingStyle })
   };
 }
 
@@ -604,7 +628,8 @@ export async function startCmsOpenServer(
               reading: parsed.fields.get("reading"),
               readingStates: parsed.fields.get("readingStates"),
               readingMaxScreens: parsed.fields.get("readingMaxScreens"),
-              readingAnswers: parsed.fields.get("readingAnswers")
+              readingAnswers: parsed.fields.get("readingAnswers"),
+              readingStyle: parsed.fields.get("readingStyle")
             })
           };
         } else {
@@ -634,7 +659,8 @@ export async function startCmsOpenServer(
               reading: parsed.reading,
               readingStates: parsed.readingStates,
               readingMaxScreens: parsed.readingMaxScreens,
-              readingAnswers: parsed.readingAnswers
+              readingAnswers: parsed.readingAnswers,
+              readingStyle: parsed.readingStyle
             })
           };
         }

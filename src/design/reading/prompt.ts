@@ -1,15 +1,15 @@
 import type { ChatMessage } from "../../llm/chat.js";
 import type { ReadingChunkPlan } from "./types.js";
 
-export const READING_PROMPT_VERSION = 3;
+export const READING_PROMPT_VERSION = 4;
 
 const SCHEMA = `{
   "screens": [
     {
       "screenId": "s1",
       "name": "屏幕名",
-      "boardLabel": "手机外框上方的画板/状态文字，如 行動預點-下滑；没有则 null",
-      "stateLabel": "从画板标签提取的状态，如 下滑；没有则 null",
+      "boardLabel": "画板/页面/状态标签（可能在手机外框上方/旁边、画板名、页面名、旁注）；Frame/Screen/Group/Text + 数字等设计器默认名不要填；没有则 null",
+      "stateLabel": "从标签提取的状态，如 下滑；支持 - / ｜ _ · （） [] 等分隔符；拆不出则 null",
       "observed": {
         "title": "可见标题或 null",
         "headerControls": [
@@ -100,7 +100,7 @@ ${knownElements}
 
 必须遵守：
 1. 每屏先做 header 控件清单：back / title / search / cart / menu-entry / tab / other。右上角圆形放大镜必须归为 search；无文字但可见的图标必须输出为 other（带 bbox），不得省略。
-2. 每屏记录手机外框上方的画板标签/状态到 boardLabel/stateLabel（如「行動預點-下滑」/「下滑」）；这是设计元数据，不是 App UI，不得放进 title/headerControls；没有则 null。
+2. 每屏记录画板/状态标签到 boardLabel/stateLabel；标签**不一定在手机外框上方**，也可能来自画板名、页面名或旁注。Frame/Screen/Group/Text + 数字等设计器默认名不算有效标签，填 null；分隔符不限于「-」，拆不出状态时 stateLabel=null，但保留 boardLabel 完整文字。这是设计元数据，不是 App UI，不得放进 title/headerControls；没有则 null。
 3. observed 只放可见事实（文字、控件、分组、标注线）；连接线单独放 annotations；不要把旁注文字当成目标页。
 4. 交互放 inferredInteractions：status=observed 仅当图上有明确线/明确原型边；inferred 需给 basis；unconfirmed 必须生成 question。目标不在本块屏幕集时 to=null + question，不要猜屏 id。
 5. Flow/Header、状态栏、备注等设计 chrome 不要放进 headerControls；如看到可疑 chrome，在问题/说明里指出。

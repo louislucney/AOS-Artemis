@@ -14,6 +14,7 @@ import { ensurePenCli } from "../pen/install.js";
 import { penEnvFrom, penExec } from "../pen/cli.js";
 import { runDesignReading } from "../design/reading/run.js";
 import { readingPaths } from "../design/reading/store.js";
+import type { ReadingNamingStyle } from "../design/reading/naming.js";
 import type { ReadingAnswer } from "../design/reading/types.js";
 import { buildZip, type ZipEntry } from "./zip.js";
 import { renderCmsWorkbook } from "./template-map.js";
@@ -51,6 +52,8 @@ export interface OpenJobInput {
   readingMaxScreens?: number;
   /** 本次请求的人工答案，写入 reading/answers.json 后参与合并。 */
   readingAnswers?: ReadingAnswer[];
+  /** 本次请求的命名/状态风格（分隔符、状态词、同义词）。 */
+  readingStyle?: ReadingNamingStyle;
 }
 
 export interface OpenPipelineDeps {
@@ -294,7 +297,15 @@ export async function runOpenJob(
         await mkdir(root, { recursive: true });
         await writeFile(
           path.join(root, "answers.json"),
-          `${JSON.stringify({ version: 1, answers: input.readingAnswers }, null, 2)}\n`,
+          `${JSON.stringify(
+            {
+              version: 1,
+              ...(input.readingStyle === undefined ? {} : { style: input.readingStyle }),
+              answers: input.readingAnswers
+            },
+            null,
+            2
+          )}\n`,
           "utf8"
         );
       }

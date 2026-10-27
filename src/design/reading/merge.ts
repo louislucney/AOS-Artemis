@@ -6,6 +6,7 @@ import {
   answerMatchesQuestion,
   applyAnswerToScreen
 } from "./answers.js";
+import { isGenericLabel, type ReadingNamingStyle } from "./naming.js";
 import type {
   ReadingAnswer,
   ReadingChunk,
@@ -20,8 +21,8 @@ import type {
   ReadingStatus
 } from "./types.js";
 
-const SEARCH_TEXT_RE = /搜尋|搜索|search/i;
-const KEY_QUESTION_RE = /搜尋|搜索|search|返回|back|購物袋|cart|tab|確認|結帳|支付|取餐|門市|首頁|訂單狀態/i;
+const SEARCH_TEXT_RE = /搜尋|搜索|search|検索|검색/i;
+const KEY_QUESTION_RE = /搜尋|搜索|search|検索|검색|返回|back|戻る|뒤로|購物袋|购物袋|购物车|cart|bag|カート|장바구니|tab|タブ|탭|確認|确认|結帳|结账|checkout|confirm|支払|결제|支付|取餐|pickup|受け取り|픽업|門市|门市|门店|store|店舗|매장|首頁|首页|home|ホーム|홈|訂單狀態|订单状态|order status|注文状況|주문 상태/i;
 const STATUS_RANK: Record<ReadingStatus, number> = {
   observed: 2,
   inferred: 1,
@@ -62,8 +63,8 @@ function questionKey(question: ReadingQuestion): string {
 
 function questionPriority(question: ReadingQuestion): number {
   const text = `${question.element ?? ""} ${question.question} ${question.why}`;
-  if (/annotation|标注|連接|连接|线起点|线不明/i.test(text)) return 0;
-  if (/搜尋|搜索|search|返回|back|購物袋|cart|結帳|支付|取餐|門市|tab/i.test(text)) return 1;
+  if (/annotation|标注|標註|註記|注記|連接|连接|线起点|線起點|コメント|주석/i.test(text)) return 0;
+  if (/搜尋|搜索|search|検索|검색|返回|back|戻る|뒤로|購物袋|购物袋|购物车|cart|bag|カート|장바구니|結帳|结账|checkout|支付|取餐|pickup|受け取り|픽업|門市|门市|门店|store|店舗|매장|tab|タブ|탭/i.test(text)) return 1;
   return 2;
 }
 
@@ -92,6 +93,17 @@ function questionFor(
   });
 }
 
+function fallbackBoardLabel(
+  screen: ReadingScreenObservation,
+  ref: ReadingScreenRef | undefined
+): string | null {
+  const candidates = [screen.boardLabel, ref?.name, ref?.sourceFrameName];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && !isGenericLabel(candidate)) return candidate;
+  }
+  return null;
+}
+
 function mergeScreens(
   chunks: ReadingChunk[],
   screens: ReadingScreenRef[],
@@ -110,16 +122,21 @@ function mergeScreens(
       const ref = refOf.get(screen.screenId);
       if (prior === undefined) {
         const knownStates = statesOf.get(screen.screenId) ?? [];
+        const modelBoardLabel =
+          screen.boardLabel !== null &&
+          screen.boardLabel !== undefined &&
+          !isGenericLabel(screen.boardLabel)
+            ? screen.boardLabel
+            : null;
+        const boardLabel =
+          modelBoardLabel ?? (ref?.kind === "state" ? fallbackBoardLabel(screen, ref) : null);
         const resolved = {
           ...screen,
           ...(nameOf.has(screen.screenId) ? { name: nameOf.get(screen.screenId)! } : {}),
           ...(ref === undefined
             ? {}
             : {
-                ...(ref.kind === "state" &&
-                (screen.boardLabel === null || screen.boardLabel === undefined)
-                  ? { boardLabel: ref.name }
-                  : {}),
+                boardLabel,
                 kind: ref.kind ?? screen.kind ?? "screen",
                 ...(ref.parentScreenId === undefined
                   ? {}
@@ -137,7 +154,8 @@ function mergeScreens(
       if (
         (prior.boardLabel === null || prior.boardLabel === undefined) &&
         screen.boardLabel !== null &&
-        screen.boardLabel !== undefined
+        screen.boardLabel !== undefined &&
+        !isGenericLabel(screen.boardLabel)
       ) {
         prior.boardLabel = screen.boardLabel;
       }
@@ -157,7 +175,7 @@ function mergeScreens(
       }
       if (ref !== undefined) {
         if (prior.boardLabel === null || prior.boardLabel === undefined) {
-          prior.boardLabel = ref.name;
+          prior.boardLabel = fallbackBoardLabel(prior, ref);
         }
         if (prior.kind === undefined) prior.kind = ref.kind ?? "screen";
         if (prior.parentScreenId === undefined && ref.parentScreenId !== undefined) {
@@ -188,7 +206,7 @@ function mergeScreens(
     const ref = refOf.get(screen.screenId);
     if (ref === undefined) continue;
     if (screen.boardLabel === null || screen.boardLabel === undefined) {
-      screen.boardLabel = ref.name;
+      screen.boardLabel = fallbackBoardLabel(screen, ref);
     }
     if (screen.kind === undefined) screen.kind = ref.kind ?? "screen";
     if (screen.parentScreenId === undefined && ref.parentScreenId !== undefined) {
@@ -406,6 +424,7 @@ export function mergeReadingChunks(
     truncatedScreens?: string[];
     stats?: ReadingStats;
     answers?: ReadingAnswer[];
+    namingStyle?: ReadingNamingStyle;
   }
 ): ReadingFile {
   const warnings = chunks.flatMap((chunk) => chunk.warnings);
@@ -444,7 +463,7 @@ export function mergeReadingChunks(
     const resolution = answer.resolution;
     if (resolution === undefined) continue;
     interactions = interactions.flatMap((edge) => {
-      if (!answerMatchesInteraction(answer, edge)) return [edge];
+      if (!answerMatchesInteraction(answer, edge, input.namingStyle)) return [edge];
       if (resolution.dropInteraction === true) return [];
       const toScreenId =
         resolution.toScreenId === "self"
@@ -464,7 +483,8 @@ export function mergeReadingChunks(
     });
   }
   // 搜索入口漏识别：旁注/分组出现“搜尋/搜索”，但 header 没有 search。
-  for (const screen of merged.screens) {    const mentionsSearch =
+  for (const screen of merged.screens) {
+    const mentionsSearch =
       screen.annotations.some((annotation) => SEARCH_TEXT_RE.test(annotation.text)) ||
       screen.contentGroups.some((group) => SEARCH_TEXT_RE.test(group.label));
     const hasSearch = screen.headerControls.some((control) => control.kind === "search");
@@ -507,7 +527,7 @@ export function mergeReadingChunks(
   const answeredKeys = new Set<string>();
   const unanswered: ReadingQuestion[] = [];
   for (const question of questions) {
-    if (answers.some((answer) => answerMatchesQuestion(answer, question))) {
+    if (answers.some((answer) => answerMatchesQuestion(answer, question, input.namingStyle))) {
       answeredKeys.add(questionKey(question));
     } else {
       unanswered.push(question);

@@ -133,6 +133,8 @@ export interface ReadingScreenRef {
   parentScreenId?: string;
   /** 状态变体从画板标签提取的状态（如「下滑」）。 */
   stateLabel?: string;
+  /** 设计器/画板原始 frame 名（可能是通用 Frame N，仅作 fallback）。 */
+  sourceFrameName?: string;
 }
 
 export interface ReadingChunkPlan {

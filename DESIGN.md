@@ -2842,19 +2842,31 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **记录**：严格 JSON；每屏 `headerControls`（back/title/search/cart/other，空数组合法，无文字图标不得省略）、`persistentNav`、`contentGroups`、`floatingActions`、`annotations`；chrome 不进控件；`observed/inferred/unconfirmed` 三档；连接线起点不明 → question，不猜目标页。
 - **合并**：交互边端点校验（目标不在全局屏集 → unconfirmed + question）；同源目标冲突、overlap 同屏差异都生成 question；段内 questions 不丢；CR 主线为模板化假设（MVP 不额外调用文本模型），含推断边时显式标注；稠密图主线搜索有 5000 次访问预算。
 - **provenance**：视觉边一律 `vision-inferred`，不写 flows/tests、不改生成器/硬门禁；问题确认路径＝改 flows.json 显式边后重跑。
-- **人工答案**：`.artemis/design/reading/answers.json`（`{version,answers:[{id,match,answer,resolution?}]}`）在合并期生效，不触发模型调用；`match` 支持 `screenId/screenNameIncludes/elementIncludes/questionIncludes`（问题正文也参与元素匹配），命中后抑制对应问题并计入 `questionsAnswered`；`resolution` 可写 `toScreenId`（`"self"`＝当前屏/底部弹层）、`toLabel`、`action`、`dropInteraction`、`screenTitle`，被解析的边标 `observed` + `basis:"human-answer:<id>"`，不写回 flows/tests。示例见星巴克项目答案文件。画板顺序 knownEdge 标 `basis:"canvas-order"`，CR 报告显式提示其不代表真实控件跳转。
-- **画板标签/状态**：prompt v3 要求每屏记录手机外框上方的 `boardLabel`（如「行動預點-下滑」）与 `stateLabel`（如「下滑」），不混入 `title/headerControls`；flows 中 `screens[].states` 的唯一标签去重后作为 `knownStates` 元数据进入报告。`design_to_test.readingStates:true` 时把状态变体（如 `n6dGB`）作为独立屏纳入分块（`kind:"state"` + `parentScreenId`，报告标「状态变体」/「父屏」）；状态屏不进入 CR 主线，避免变体污染主流程。星巴克实测 23 主屏 + 20 状态 = 43 屏 / 21 块，0 失败。
+- **人工答案**：`.artemis/design/reading/answers.json`（`{version,style?,answers:[{id,match,answer,resolution?}]}`）在合并期生效，不触发模型调用；`match` 支持 `screenId/screenNameIncludes/elementIncludes/questionIncludes`（问题正文也参与元素匹配），命中后抑制对应问题并计入 `questionsAnswered`；`resolution` 可写 `toScreenId`（`"self"`＝当前屏/底部弹层）、`toLabel`、`action`、`dropInteraction`、`screenTitle`，被解析的边标 `observed` + `basis:"human-answer:<id>"`，不写回 flows/tests。`match` 比较先做 NFKC、常见繁转简、去标点/空白，并按内置同义词归一（搜尋/搜索/search、門市/门市/store、取餐/pickup、底部弹层/bottom sheet 等）；`style` 可追加 `separators`/`stateKeywords`/`synonyms`。示例见星巴克项目答案文件。画板顺序 knownEdge 标 `basis:"canvas-order"`，CR 报告显式提示其不代表真实控件跳转。
+- **画板标签/状态**：prompt v4 要求每屏记录 `boardLabel`/`stateLabel`，标签**不假设只在手机外框上方**（也可能来自画板名/页面名/旁注）；`Frame/Screen/Group/Text + 数字` 等设计器默认名不算标签；分隔符支持 `- / ｜ _ · （） []` 等，拆不出状态时 `stateLabel=null` 但保留完整 `boardLabel`。flows 中 `screens[].states` 的标签去重后作为 `knownStates`；状态变体按 **frame id** 去重（不再按 label），`readingStates:true` 时作为独立屏纳入分块（`kind:"state"` + `parentScreenId`，报告标「状态变体」/「父屏」）；无状态输入时 warning `reading-states-unavailable`。状态屏不进入 CR 主线，避免变体污染主流程。星巴克实测 23 主屏 + 20 状态 = 43 屏 / 21 块，0 失败。
 - **视觉守卫**：使用 `resolveVisionCapability`（声明 `AOS_LLM_VISION` → 缓存 → 启发式 → unknown）；`reading:true` + 明确无视觉 → 不发图；auto + unknown 跳过；forced + unknown 尝试并 warning。
 - **缓存/预算**：块级哈希 = 实际屏幕 ID + 图片 sha + 块内边 + 参数 + promptVersion + 解析后 model；`AOS_READING_CONCURRENCY` 默认 2（1–4）、单调用默认 180s（`AOS_READING_TIMEOUT_MS`）；预计块数 >20 warning。
-- **测试**：`design-reading` 40 例、`workflow-design-to-test` 新增 5 例、`native-workflow-tool` schema 正反例；全量 **2338 绿**，lint 0 error（2 条既有 warning）。
+- **测试**：`design-reading` 50 例、`workflow-design-to-test` 新增 5 例、`native-workflow-tool` schema 正反例；全量 **2353 绿**，lint 0 error（2 条既有 warning）。
 
 ### 13.230 实施记录（CMS Open：可选设计阅读阶段）
 
 > 2026-10-27。把 `design_to_test` 的分块阅读复用到 CMS Open，让静态 Figma/.pen 的 `design.md` 与 zip 也能带状态/结构/问题；不改变默认生成路径。
 
-- **入口**：`POST /jobs` 新增 `reading`（默认 `false`）、`readingStates`、`readingMaxScreens`（默认 30、最大 200）、`readingAnswers`（本次请求规则，≤100 条）；JSON 与 multipart 同名字段。只给 `readingStates`/`readingMaxScreens`/`readingAnswers` 时自动开启 `reading`；显式 `reading:false` 优先。
+- **入口**：`POST /jobs` 新增 `reading`（默认 `false`）、`readingStates`、`readingMaxScreens`（默认 30、最大 200）、`readingAnswers`（本次请求规则，≤100 条）、`readingStyle`（分隔符/状态词/同义词）；JSON 与 multipart 同名字段。只给后几项时自动开启 `reading`；显式 `reading:false` 优先。
 - **顺序**：extract → `onStep("reading")` → 可选 `runDesignReading` → generate → packaging；阅读在生成前完成，不修改 flows/tests。未提供 `llm`、缺 `flows.json` 或阅读异常只写 warning，不阻断 `cases.xlsx`；任务仍可 done。
 - **人工答案**：`readingAnswers` 写入任务临时目录 `design/reading/answers.json`，复用 `answers.json` 合并期语义（抑制问题、`self` 页内/底部弹层、`dropInteraction`、`screenTitle`）；CMS Open 不读项目 `.artemis`，规则随请求生命周期结束。
 - **产物**：zip 增 `design-reading.md`/`design-reading.json`；`design.md` 追加「## 设计阅读」摘要（屏/块/问题/CR 主线/前 10 条问题）；`meta.json.reading` 记录 `status`、`screensRead/Total`、`chunksProcessed/Requested`、`questionsTotal/Answered`、`spineStatus/Title`、`artifacts`；未开启为 `{status:"disabled"}`，跳过为 `{status:"skipped",reason}`。
 - **状态/成本**：任务 `step` 增 `reading`；`readingStates` 仅对 pen `states` 有输入；大稿/状态变体受任务 10 分钟无进度超时与视觉配额约束，调用方用 `readingMaxScreens`/`reading` 控制。
-- **测试**：`open-pipeline` 新增 3 例（阅读产物/默认关闭/无 LLM 跳过），`open-server` 新增 2 例（JSON/multipart 解析、非法 answers 400）；全量 **2343 绿**，lint 0 error（2 条既有 warning）。
+- **测试**：`open-pipeline` 新增 3 例（阅读产物/默认关闭/无 LLM 跳过），`open-server` 新增 2 例（JSON/multipart 解析、非法 answers 400）；全量 **2353 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.231 实施记录（设计稿命名/风格归一化）
+
+> 2026-10-27。星巴克样本的 `行動預點-下滑` 能工作，不代表其他设计师的命名也能工作；补一层 style-agnostic 归一，不把单项目写法写死。
+
+- **状态标签拆分**：`splitStateLabel` 支持 `- – — － / ／ ｜ | _ · ・ : ： ( （ [ 【 → > »` 等分隔符，父屏在前/在后都识别；括号闭合自动剥离；拆不出状态时 `stateLabel=null`，保留完整 `boardLabel`，不丢状态屏。
+- **状态来源/去重**：`knownStates` 保留唯一展示标签；状态变体按 frame id 去重（不再按 label 合并）；`readingStates:true` 时，pen `states` 之外还会把独立 screen 名（如 `Login / Empty`）按状态词启发式归并到主屏；无状态输入时 warning `reading-states-unavailable`（Figma 原生 component variants 未被 extractor 展开时显式提示，不静默）。
+- **画板标签**：prompt v4 明确标签可能在外框上方/旁边/画板名/页面名/旁注；`Frame/Screen/Group/Text + 数字` 等通用名不作为 `boardLabel`；merge 用 `boardLabel → ref.name → sourceFrameName` 的非通用 fallback，全部通用则 `null`。
+- **answers 归一**：`NFKC` + 常见繁转简 + 去标点/空白 + 内置同义词（搜尋/search、門市/store、取餐/pickup、底部弹层/bottom sheet 等）；`answers.json.style` 可追加 `separators`/`stateKeywords`/`synonyms`；CMS `readingStyle` 透传到同一份 answers.json。
+- **多语言关键词**：search/back/cart/tab/confirm/checkout/pickup/store/home/order status 等优先级与 chrome 识别补英/日/韩词；仍为启发式，非完整 NLP。
+- **边界**：Figma 原生 component variants 尚未由 extractor 展开；仅对「独立 screen 名 + 状态词后缀」做启发式归并。网格/横排画板的 CR 仍是 `canvas-order` 假设（报告显式标注）；状态词表/同义词可配但不是穷尽。
+- **测试**：新增 `naming` 分隔符/多语言/通用名/繁简同义词、状态 slash/括号/英文运行、Figma 式独立 variant 归并、通用 Frame fallback、answers style 配置、prompt v4、CMS `readingStyle` 断言；全量 **2353 绿**，lint 0 error（2 条既有 warning）。

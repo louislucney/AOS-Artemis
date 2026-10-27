@@ -163,6 +163,7 @@ test("server: cors default rejects cross-origin and multipart is parsed", async 
       form.set("readingStates", "true");
       form.set("readingMaxScreens", "12");
       form.set("readingAnswers", JSON.stringify([{ id: "a1", match: { screenId: "1:1" }, answer: "是" }]));
+      form.set("readingStyle", JSON.stringify({ separators: ["~"] }));
       form.set("llm", JSON.stringify({ baseUrl: "https://api.example.com/v1", model: "m", apiKey: "k" }));
       form.set("penFile", new Blob([Buffer.from("{}")], { type: "application/octet-stream" }), "design.pen");
       form.set("template", new Blob([Buffer.from("x")], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "t.xlsx");
@@ -181,6 +182,7 @@ test("server: cors default rejects cross-origin and multipart is parsed", async 
       assert.equal(captured.readingStates, true);
       assert.equal(captured.readingMaxScreens, 12);
       assert.equal(captured.readingAnswers[0].id, "a1");
+      assert.deepEqual(captured.readingStyle.separators, ["~"]);
       assert.match(captured.penFile, /design\.pen$/);
       assert.match(captured.templatePath, /\.xlsx$/);
     }
@@ -484,6 +486,8 @@ test("server: daily job quota per client", async () => {
         });
       const first = await create();
       assert.equal(first.status, 202);
+      const firstJob = await first.json();
+      await waitTerminal(base, firstJob.jobId);
       const limited = await create();
       assert.equal(limited.status, 429);
       const body = await limited.json();
@@ -496,6 +500,8 @@ test("server: daily job quota per client", async () => {
       now += 24 * 3600_000;
       const nextDay = await create();
       assert.equal(nextDay.status, 202, "UTC 日切换后恢复");
+      const nextDayJob = await nextDay.json();
+      await waitTerminal(base, nextDayJob.jobId);
     }
   );
 });
@@ -577,7 +583,8 @@ test("server: reading options parsed from JSON", async () => {
           reading: true,
           readingStates: true,
           readingMaxScreens: 12,
-          readingAnswers: [{ id: "a1", match: { screenId: "1:1" }, answer: "是" }]
+          readingAnswers: [{ id: "a1", match: { screenId: "1:1" }, answer: "是" }],
+          readingStyle: { separators: ["~"] }
         })
       });
       assert.equal(created.status, 202);
@@ -587,6 +594,7 @@ test("server: reading options parsed from JSON", async () => {
       assert.equal(captured.readingStates, true);
       assert.equal(captured.readingMaxScreens, 12);
       assert.equal(captured.readingAnswers[0].id, "a1");
+      assert.deepEqual(captured.readingStyle.separators, ["~"]);
     }
   );
 });
@@ -598,7 +606,8 @@ test("server: invalid reading answers rejected", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         source: { type: "figma", url: "https://www.figma.com/design/ABC/demo" },
-        readingAnswers: "not-json"
+        readingAnswers: "not-json",
+        readingStyle: "not-object"
       })
     });
     assert.equal(response.status, 400);

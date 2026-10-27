@@ -16,8 +16,8 @@ import type {
 } from "./types.js";
 
 const STATUSES: ReadingStatus[] = ["observed", "inferred", "unconfirmed"];
-const CHROME_RE = /flow\/|(^|\/)(header|remarks?)$|状态栏|狀態欄|备注|備註/i;
-const KEY_CONTROL_RE = /搜尋|搜索|search|返回|back|購物袋|cart|tab|確認|結帳|支付|取餐|門市|首頁|訂單狀態/i;
+const CHROME_RE = /flow\/|(^|\/)(header|remarks?|notes?|annotations?|specs?|redlines?)$|状态栏|狀態欄|系统栏|系統欄|备注|備註|标注|標註|註記|注記|测量|測量|コメント|주석/i;
+const KEY_CONTROL_RE = /搜尋|搜索|search|検索|검색|返回|back|戻る|뒤로|購物袋|购物袋|购物车|cart|bag|カート|장바구니|tab|タブ|탭|確認|确认|結帳|结账|checkout|confirm|支払|결제|支付|取餐|pickup|受け取り|픽업|門市|门市|门店|store|店舗|매장|首頁|首页|home|ホーム|홈|訂單狀態|订单状态|order status|注文状況|주문 상태/i;
 
 function objectOf(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
