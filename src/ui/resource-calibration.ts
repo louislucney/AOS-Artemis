@@ -322,7 +322,7 @@ function parseFlutterFonts(projectDir: string): { families: Map<string, Set<numb
   return { families, assets };
 }
 
-function scanRn(rootDir: string, maxFiles: number): CodeScan {
+function scanRn(rootDir: string, maxFiles: number, catalog: Map<string, string>): CodeScan {
   const walked = walkSources(rootDir, SOURCE_EXTENSIONS, maxFiles);
   const styles = new Map<string, CodeStyle>();
   const images: CodeImage[] = [];
@@ -377,6 +377,24 @@ function scanRn(rootDir: string, maxFiles: number): CodeScan {
           }
         }
       }
+      const i18nText = /<Text\b([^>]*)>\{\s*(?:t|i18n\.t|\$t)\(\s*["']([^"']+)["']\s*\)\s*\}<\/Text>/.exec(line);
+      if (i18nText !== null) {
+        const attrs = i18nText[1]!;
+        const styleRef = /style=\{\s*(?:styles|typography)\.(\w+)/.exec(attrs)?.[1] ?? null;
+        const inline = styleRef === null ? /style=\{\{([^}]*)\}\}/.exec(attrs)?.[1] : undefined;
+        const style = inline === undefined ? null : parseRnStyle(inline, relative, index + 1);
+        texts.push({
+          content: catalog.get(i18nText[2]!) ?? i18nText[2]!,
+          styleKey: styleRef,
+          style: styleRef === null ? style : styles.get(styleRef) ?? null,
+          maxLines: /numberOfLines=\{(\d+)\}/.exec(attrs)?.[1]
+            ? Number(/numberOfLines=\{(\d+)\}/.exec(attrs)![1])
+            : null,
+          file: relative,
+          line: index + 1
+        });
+        continue;
+      }
       const textMatch = /<Text\b([^>]*)>([^<]+)<\/Text>/.exec(line);
       if (textMatch !== null) {
         const attrs = textMatch[1]!;
@@ -415,7 +433,7 @@ function scanRn(rootDir: string, maxFiles: number): CodeScan {
   };
 }
 
-function scanFlutter(rootDir: string, maxFiles: number): CodeScan {
+function scanFlutter(rootDir: string, maxFiles: number, catalog: Map<string, string>): CodeScan {
   const walked = walkSources(rootDir, new Set([".dart"]), maxFiles);
   const styles = new Map<string, CodeStyle>();
   const images: CodeImage[] = [];
@@ -470,16 +488,32 @@ function scanFlutter(rootDir: string, maxFiles: number): CodeScan {
           line: index + 1
         });
       } else {
-        const inlineText = /Text\(\s*['"]([^'"]+)['"]\s*,\s*style:\s*TextStyle\(([^)]*)\)\s*\)/.exec(line);
-        if (inlineText !== null) {
+        const i18nText =
+          /Text\(\s*(?:AppLocalizations\.of\(context\)!?\.|S\.of\(context\)!?\.)([A-Za-z_]\w*)\s*(?:,\s*style:\s*([A-Za-z_][\w.]*))?/.exec(
+            line
+          );
+        if (i18nText !== null) {
+          const styleKey = i18nText[2]?.split(".").pop() ?? null;
           texts.push({
-            content: inlineText[1]!,
-            styleKey: null,
-            style: parseFlutterStyle(inlineText[2]!, relative, index + 1),
+            content: catalog.get(i18nText[1]!) ?? i18nText[1]!,
+            styleKey,
+            style: styleKey === null ? null : styles.get(styleKey) ?? null,
             maxLines: null,
             file: relative,
             line: index + 1
           });
+        } else {
+          const inlineText = /Text\(\s*['"]([^'"]+)['"]\s*,\s*style:\s*TextStyle\(([^)]*)\)\s*\)/.exec(line);
+          if (inlineText !== null) {
+            texts.push({
+              content: inlineText[1]!,
+              styleKey: null,
+              style: parseFlutterStyle(inlineText[2]!, relative, index + 1),
+              maxLines: null,
+              file: relative,
+              line: index + 1
+            });
+          }
         }
       }
     }
@@ -590,7 +624,7 @@ function composeFit(raw: string | null): string | null {
   return null;
 }
 
-function scanAndroidNative(rootDir: string, maxFiles: number): CodeScan {
+function scanAndroidNative(rootDir: string, maxFiles: number, catalog: Map<string, string>): CodeScan {
   const walked = walkSources(rootDir, new Set([".xml", ".kt", ".java"]), maxFiles);
   const images: CodeImage[] = [];
   const texts: CodeText[] = [];
@@ -610,8 +644,14 @@ function scanAndroidNative(rootDir: string, maxFiles: number): CodeScan {
       const attrs = tagMatch[2]!;
       const line = lineOf(source, tagMatch.index);
       if (tag === "TextView") {
-        const content = attributeOf(attrs, "android:text");
-        if (content === null || content.startsWith("@")) continue;
+        const rawContent = attributeOf(attrs, "android:text");
+        if (rawContent === null) continue;
+        const content = rawContent.startsWith("@string/")
+          ? catalog.get(rawContent.slice("@string/".length)) ?? null
+          : rawContent.startsWith("@")
+            ? null
+            : rawContent;
+        if (content === null) continue;
         const fontSize = dimensionValue(attributeOf(attrs, "android:textSize"));
         const extra = dimensionValue(attributeOf(attrs, "android:lineSpacingExtra"));
         const letterRaw = attributeOf(attrs, "android:letterSpacing");
@@ -728,7 +768,7 @@ function swiftFit(raw: string | null): string | null {
   return null;
 }
 
-function scanIosNative(rootDir: string, maxFiles: number): CodeScan {
+function scanIosNative(rootDir: string, maxFiles: number, catalog: Map<string, string>): CodeScan {
   const walked = walkSources(rootDir, new Set([".swift", ".m", ".mm"]), maxFiles);
   const images: CodeImage[] = [];
   const texts: CodeText[] = [];
@@ -781,14 +821,15 @@ function scanIosNative(rootDir: string, maxFiles: number): CodeScan {
           line: index + 1
         });
       }
-      const uiText = /(?:\.text|text)\s*=\s*"([^"]+)"/.exec(line);
+      const uiLocalized = /(?:\.text|text)\s*=\s*NSLocalizedString\(\s*"([^"]+)"/.exec(line);
+      const uiText = uiLocalized ?? /(?:\.text|text)\s*=\s*"([^"]+)"/.exec(line);
       if (uiText !== null) {
         const window = lines.slice(Math.max(0, index - 3), index + 4).join(" ");
         const font = /UIFont\.systemFont\(ofSize:\s*(\d+(?:\.\d+)?)(?:,\s*weight:\s*\.(\w+))?\)/.exec(window);
         const custom = /UIFont\(name:\s*"([^"]+)",\s*size:\s*(\d+(?:\.\d+)?)\)/.exec(window);
         const numberOfLines = /numberOfLines\s*=\s*(\d+)/.exec(window)?.[1];
         texts.push({
-          content: uiText[1]!,
+          content: uiLocalized === null ? uiText[1]! : catalog.get(uiText[1]!) ?? uiText[1]!,
           styleKey: null,
           style: {
             fontFamily: custom?.[1] ?? null,
@@ -1178,6 +1219,25 @@ function screenFileFilters(runtime: Runtime): Map<string, Set<string>> {
   }
 }
 
+function loadStringCatalog(runtime: Runtime): Map<string, string> {
+  const configDir = (runtime as { configDirAbs?: string }).configDirAbs;
+  if (typeof configDir !== "string" || configDir === "") return new Map();
+  try {
+    const parsed = JSON.parse(readText(path.join(configDir, "design", "strings.json"))) as {
+      entries?: Array<{ key?: unknown; sourceText?: unknown }>;
+    };
+    const catalog = new Map<string, string>();
+    for (const entry of parsed.entries ?? []) {
+      if (typeof entry.key === "string" && typeof entry.sourceText === "string") {
+        catalog.set(entry.key, entry.sourceText);
+      }
+    }
+    return catalog;
+  } catch {
+    return new Map();
+  }
+}
+
 function fallbackItems(
   contract: UiContract,
   reason: string
@@ -1241,6 +1301,7 @@ export function buildResourceCalibration(
     warnings.push(`检测到多个技术栈（${detection.stacks.map((stack) => stack.id).join(", ")}）：资源对账按主栈 ${primary?.id ?? "?"} 扫描`);
   }
 
+  const catalog = loadStringCatalog(runtime);
   let scan: CodeScan | null = null;
   if (primary === null) {
     warnings.push("未检测到技术栈：资源对账降级为 unverifiable");
@@ -1253,12 +1314,12 @@ export function buildResourceCalibration(
     try {
       scan =
         primary.id === "react-native"
-          ? scanRn(rootDir, maxFiles)
+          ? scanRn(rootDir, maxFiles, catalog)
           : primary.id === "flutter"
-            ? scanFlutter(rootDir, maxFiles)
+            ? scanFlutter(rootDir, maxFiles, catalog)
             : primary.id === "android-native"
-              ? scanAndroidNative(rootDir, maxFiles)
-              : scanIosNative(rootDir, maxFiles);
+              ? scanAndroidNative(rootDir, maxFiles, catalog)
+              : scanIosNative(rootDir, maxFiles, catalog);
       if (scan.filesScanned === 0) warnings.push(`${primary.id} 未扫描到源文件：资源对账降级为 unverifiable`);
       if (scan.truncated) warnings.push(`${primary.id} 源文件超过上限 ${maxFiles}，扫描已截断`);
       if (scan.stack === "android-native" || scan.stack === "ios-native") {

@@ -488,3 +488,48 @@ struct HomeView: View {
   assert.equal(report.texts.match, 1);
   assert.equal(report.images.match, 1);
 });
+
+test("resource calibration: RN i18n key resolves through strings.json", (t) => {
+  const root = makeTempProject({ config: baseConfig() });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  write(
+    root,
+    "package.json",
+    JSON.stringify({ private: true, dependencies: { react: "19.0.0", "react-native": "0.78.0" } })
+  );
+  write(
+    root,
+    "src/theme/tokens.ts",
+    `export const typography = {
+  pickup: { fontFamily: "PingFang TC", fontSize: 14, lineHeight: 20, letterSpacing: 0, fontWeight: "600" }
+};
+`
+  );
+  write(
+    root,
+    "src/screens/I18n.tsx",
+    `import { Text } from "react-native";
+import { typography } from "../theme/tokens";
+export function I18n() {
+  return <Text style={typography.pickup} numberOfLines={1}>{t("home.pickup")}</Text>;
+}
+`
+  );
+  write(
+    root,
+    ".artemis/design/strings.json",
+    JSON.stringify({
+      version: 1,
+      sourceLocale: "zh",
+      entries: [{ key: "home.pickup", sourceText: "到店自取", lifecycle: "active" }]
+    })
+  );
+  const contract = designContract();
+  contract.screens[0].texts = contract.screens[0].texts.filter((text) => text.id === "pickup");
+  contract.screens[0].images = [];
+  const report = buildResourceCalibration(runtimeFor(root), contract);
+  assert.equal(report.texts.match, 1);
+  const pickup = report.items.find((item) => item.kind === "text");
+  assert.equal(pickup.status, "match");
+  assert.match(pickup.codeRef, /src\/screens\/I18n\.tsx/);
+});
