@@ -165,6 +165,7 @@ export interface PairContainersOptions {
   bands?: Partial<InteractionPairingBands>;
   maxStateCandidates?: number;
   maxQuestions?: number;
+  requireVisual?: boolean;
 }
 
 const GENERIC_TEXTS = new Set([
@@ -350,7 +351,8 @@ function levenshtein(left: string, right: string): number {
 export function inferScrollCollapse(
   before: InteractionFrame,
   after: InteractionFrame,
-  bands: InteractionPairingBands = DEFAULT_PAIRING_BANDS
+  bands: InteractionPairingBands = DEFAULT_PAIRING_BANDS,
+  context?: InteractionFrame
 ): {
   sticky: InteractionNodeRef[];
   collapsed: InteractionNodeRef[];
@@ -362,23 +364,25 @@ export function inferScrollCollapse(
   const takeoverSources = new Set<string>();
   let titleTakeover: { bar: InteractionNodeRef; from: InteractionNodeRef } | null = null;
 
-  for (const anchor of textAnchors(after)) {
-    if (anchor.box.y > 8) continue;
-    if (!/app\s*bar|header|nav/i.test(anchor.node.name)) continue;
-    let best: { anchor: TextAnchor; score: number } | null = null;
-    for (const candidate of beforeAnchors) {
-      const score = textSimilarity(anchor.node.text ?? "", candidate.node.text ?? "");
-      if (score >= bands.takeoverSimilarity && (best === null || score > best.score)) {
-        best = { anchor: candidate, score };
+  const takeoverFrames = [after, ...(context === undefined || context.id === after.id ? [] : [context])];
+  for (const takeoverFrame of takeoverFrames) {
+    for (const anchor of textAnchors(takeoverFrame)) {
+      if (anchor.box.y > 8) continue;
+      let best: { anchor: TextAnchor; score: number } | null = null;
+      for (const candidate of beforeAnchors) {
+        const score = textSimilarity(anchor.node.text ?? "", candidate.node.text ?? "");
+        if (score >= bands.takeoverSimilarity && (best === null || score > best.score)) {
+          best = { anchor: candidate, score };
+        }
       }
-    }
-    if (best !== null) {
-      takeoverSources.add(best.anchor.node.id);
-      if (titleTakeover === null && anchor.node.text !== null) {
-        titleTakeover = {
-          bar: nodeRef(anchor.node, anchor.box, after.viewport.height),
-          from: { ...nodeRef(best.anchor.node, best.anchor.box, before.viewport.height), origin: "takeover" }
-        };
+      if (best !== null) {
+        takeoverSources.add(best.anchor.node.id);
+        if (titleTakeover === null && anchor.node.text !== null) {
+          titleTakeover = {
+            bar: nodeRef(anchor.node, anchor.box, takeoverFrame.viewport.height),
+            from: { ...nodeRef(best.anchor.node, best.anchor.box, before.viewport.height), origin: "takeover" }
+          };
+        }
       }
     }
   }
@@ -629,11 +633,16 @@ export function pairContainers(
         stats.scrollRaw += 1;
         const visual = options.visual?.(before.id, after.id, compared.mode) ?? null;
         pairing.visualAtOffset = visual;
+        if (visual === null && options.requireVisual === true) {
+          stats.blocked += 1;
+          continue;
+        }
         if (visual !== null && visual < bands.visualNccScroll) {
           stats.blocked += 1;
           continue;
         }
-        const collapse = inferScrollCollapse(before, after, bands);
+        const context = after.parentId === null ? undefined : frames.get(after.parentId);
+        const collapse = inferScrollCollapse(before, after, bands, context);
         stats.scrollCandidates += 1;
         scroll.push({
           kind: "scroll-collapse",

@@ -17,6 +17,7 @@ import {
 } from "./naming.js";
 import { mergeReadingChunks } from "./merge.js";
 import { detectCanvasLayout } from "./canvas.js";
+import { buildInteractionReport } from "./frames.js";
 import { parseReadingReply } from "./parse.js";
 import { buildReadingMessages, READING_PROMPT_VERSION } from "./prompt.js";
 import { renderChunkMarkdown, renderReadingMarkdown } from "./render.js";
@@ -676,6 +677,29 @@ export async function runDesignReading(input: {
       namingStyle: answersLoad.style,
       canvasLayout: loaded.canvasLayout
     });
+    try {
+      const projectRoot =
+        (input.runtime as { project?: { rootDir?: string } }).project?.rootDir ??
+        path.dirname(input.flowsPath);
+      const interactionReport = await buildInteractionReport({
+        designRoot: path.dirname(input.flowsPath),
+        flowsPath: input.flowsPath,
+        projectRoot,
+        usePenBounds: true
+      });
+      if (interactionReport !== null) {
+        reading.interactionCandidates = interactionReport.candidates;
+        reading.pairingStats = interactionReport.stats;
+        reading.warnings.push(...interactionReport.warnings);
+      }
+    } catch (error) {
+      reading.warnings.push(
+        chunkWarning(
+          "interaction-inference-failed",
+          `交互推断失败：${error instanceof Error ? error.message : String(error)}`
+        )
+      );
+    }
     warnings.push(...reading.warnings);
     if (reading.completeness.screensRead < reading.completeness.screensTotal) {
       warnings.push(

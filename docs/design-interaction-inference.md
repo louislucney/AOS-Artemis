@@ -1218,3 +1218,10 @@ grayRaw 6 → grayKept 3
 - Gate：scroll ≤5（1）、state 清单 ≤20（11）、questions ≤20（3）、106→1 归因完成 → **通过**。
 
 保留意见：state 清单中仍有 NCC0 <0.5 的跨屏候选（如 `OuQxr → Z4OR6X`），Phase 1 必须标低置信、不直接升断言。
+
+### 13.7 Phase 1b：核心接入 reading
+
+- `src/design/reading/interaction.ts`：纯函数 + 类型；`src/design/reading/frames.ts`：从 flows/逐屏 `.pen` 组装 frame、渲染内容容器、缓存 pen 文本绝对 bounds。
+- `ReadingFile` 增 `interactionCandidates` / `pairingStats`；`reading.json` 已落盘，仍不升断言。
+- 真实 starbucks：100 帧 → scroll 2（MOP 360/takeover + `Myrgb→A5MwD` 待复核）、state 15、questions 20；首跑 343s（pen bounds），缓存后 1.4s。
+- 测试 2381 绿；lint 0 error。

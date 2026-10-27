@@ -2903,3 +2903,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **屏匹配**：trace 的 `thought` 参与匹配（页内弹层/跳转常只在 thought 里出现屏名）；屏名只在 thought、不在观察文本（transient）且 post 有 blocker/major 时回看同一步 `pre`，取差异更小者，避免“点选关闭弹层”的 post 截图被误判。
 - **真机实证（starbucks-ios-taiwan）**：23 屏自动拆出 23 个逐屏 `.pen`（`U2rRt`/`P3urv` 由整板拼图收窄到第一块手机屏），契约 21 partial / 2 unverifiable / 0 no-baseline；对既有失败轨迹 `ios-b04dde46…` 的 6 个设计屏自动比对，6/6 匹配、状态 `failed`（`選擇取餐時間` 弹层 `pre` 截图命中 color blocker；`選擇門市` 仅 minor/info），不再降级为 `unverified`。
 - **测试**：`pen-split` 5 例（拆分/幂等/坏源/整板选首屏/变体容器下钻）、`ui-contract` 自动拆分 1 例、`workflow-design-to-test` 默认开/显式关 2 例、`diff-detail-tool` step PNG 无损 1 例、`ui-auto-check` PNG 缺标记/thought 匹配/transient pre 3 例；全量 **2372 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.235 实施记录（设计交互推断 Phase 1：纯函数 + reading 集成）
+
+> 2026-10-27。POC gate 通过后把视口归一化/滚动折叠推断落成核心纯函数，并接入 design reading；仍只报告候选，不升硬断言。
+
+- **核心**：新增 `src/design/reading/interaction.ts`——`classifyFrame`（viewport-state/full-content/overlay/component）、`normalizeTextForSet`/`normalizeForMatch`、`pairContainers`（屏族、结构锚、状态/滚动候选、代表去重、预算）、`inferScrollCollapse`（sticky/collapsed/takeover）、`PairingStats`/`InteractionCandidate` 类型。
+- **数据装配**：新增 `src/design/reading/frames.ts`——从 flows 主屏/状态 + 逐屏 `.pen` 组装 `InteractionFrame`；状态 `.pen` 落 `design/pen/states/`，内容容器渲染落 `design/screens/interaction/`；文本绝对几何用 pen CLI `Get` 结果并缓存 `design/pen/text-bounds.json`（首跑 343s，缓存后 1.4s）。
+- **reading 集成**：`ReadingFile` 增可选 `interactionCandidates` / `pairingStats`；`runDesignReading` 写入 `reading.json`，失败仅 warning；不生成 `Assertion`。
+- **真实项目**：starbucks 100 帧（主屏/状态/内容容器）→ `scrollCandidates=2`（MOP `OFftq→pEfey` delta 360、takeover「到店自取」；另一条 `Myrgb→A5MwD` 待复核）、`stateCandidates=15`、`questions=20`；均在 POC 预算内。
+- **测试**：`design-reading-interaction` 7 例 + `design-reading-interaction-frames` 2 例（含 reading.json 落盘）；全量 **2381 绿**，lint 0 error（2 条既有 warning）。
+- **边界**：候选仍是 `inferred`；不进 `design_to_test` 门禁；Phase 2 真机探测后才允许 `observed → Assertion`。
