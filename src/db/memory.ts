@@ -1635,6 +1635,13 @@ export class MemoryStore implements ProjectStore {
     return true;
   }
 
+  async linkWebProjectProjectId(rootPath: string, projectId: string): Promise<boolean> {
+    const found = this.webProjects.find((entry) => entry.rootPath === rootPath);
+    if (!found) return false;
+    found.projectId = projectId;
+    return true;
+  }
+
   async createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord> {
     const projectId =
       input.projectId !== undefined
@@ -1767,6 +1774,29 @@ export class MemoryStore implements ProjectStore {
         continue;
       }
       // 追加顺序即写入顺序，同刻（>=）后写入覆盖前一条。
+      if (latest === null || record.writtenAt >= latest.writtenAt) latest = record;
+    }
+    return latest ? cloneExcelWriteback(latest) : null;
+  }
+
+  async lastExcelWritebackByCellKey(
+    rootPath: string,
+    assetId: string,
+    sheetName: string,
+    caseId: string,
+    columnKey: string
+  ): Promise<ExcelWritebackRecord | null> {
+    let latest: ExcelWritebackRecord | null = null;
+    for (const record of this.excelWritebacks) {
+      if (
+        record.rootPath !== rootPath ||
+        record.assetId !== assetId ||
+        record.sheetName !== sheetName ||
+        record.caseId !== caseId ||
+        record.columnKey !== columnKey
+      ) {
+        continue;
+      }
       if (latest === null || record.writtenAt >= latest.writtenAt) latest = record;
     }
     return latest ? cloneExcelWriteback(latest) : null;

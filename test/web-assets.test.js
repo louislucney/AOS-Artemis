@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { handlePanelActionRequest } from "../dist/panel/actions.js";
 import { parseMultipartUpload } from "../dist/panel/upload.js";
+import { createWebProject } from "../dist/web/project-service.js";
 import {
   listWebAssets,
   storeWebAsset,
@@ -493,6 +494,97 @@ test("FileStore: 重启后资产记录仍在", async (t) => {
   assert.equal((await store.getWebAsset(rootPath, asset.id)).storagePath, asset.storagePath);
   assert.deepEqual(await readFile(listed[0].storagePath), XLSX);
   await store.close();
+});
+
+test("storeWebAsset: 项目目录必须已存在（不代建目录）", async (t) => {
+  const workspace = await tempDir(t, "aos-assets-");
+  const rootPath = path.join(workspace, "missing");
+  const store = new MemoryStore();
+  await assert.rejects(
+    () => storeWebAsset({ store, rootPath, kind: "excel", filename: "cases.xlsx", buffer: XLSX }),
+    (error) => error instanceof WebAssetError && error.code === "project-root-missing"
+  );
+  await assert.rejects(() => access(rootPath), "不得在请求路径上凭空创建项目目录");
+  assert.deepEqual(await store.listWebAssets(rootPath), []);
+});
+
+test("storeWebAsset: projectId 从 upsertProject 解析（web.projectId 也已补链）", async (t) => {
+  const workspace = await tempDir(t, "aos-assets-");
+  const store = new MemoryStore();
+  const created = await createWebProject({
+    store,
+    workspaceRoot: workspace,
+    name: "linked-asset",
+    platforms: ["android"],
+    appPackage: "com.linked"
+  });
+  const project = await store.getProjectByPath(created.rootPath);
+  assert.ok(project);
+  assert.equal((await store.getWebProject(created.rootPath)).projectId, project.id);
+
+  const asset = await storeWebAsset({
+    store,
+    rootPath: created.rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: XLSX
+  });
+  assert.equal(asset.projectId, project.id);
+});
+
+test("API /panel/api/projects/assets: 归档项目拒绝上传（409）", async (t) => {
+  const workspace = await tempDir(t, "aos-assets-api-");
+  const rootPath = path.join(workspace, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await makeProject(store, rootPath);
+  await store.archiveWebProject(rootPath, "2026-10-28T00:00:00.000Z");
+  const deps = { store, env: {}, workspaceRoot: workspace };
+
+  const res = await handlePanelActionRequest(
+    uploadRequest(
+      multipartBody("----aosAssets", {
+        fields: { project: rootPath, kind: "excel" },
+        filename: "cases.xlsx"
+      })
+    ),
+    deps
+  );
+  assert.equal(res.status, 409, res.body);
+  const payload = JSON.parse(res.body);
+  assert.equal(payload.code, "project-archived");
+  assert.match(payload.error, /归档/);
+  assert.deepEqual(await store.listWebAssets(rootPath), []);
+  await assert.rejects(
+    () => access(path.join(rootPath, ".artemis", "web", "assets", "excel")),
+    "归档项目不得写入资产文件"
+  );
+});
+
+test("API /panel/api/projects/assets: 跨主机项目拒绝本机写盘（409）", async (t) => {
+  const workspace = await tempDir(t, "aos-assets-api-");
+  const rootPath = path.join(workspace, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "acme", hostId: "host-a" });
+  const deps = { store, env: {}, workspaceRoot: workspace, localHostId: "center" };
+
+  const res = await handlePanelActionRequest(
+    uploadRequest(
+      multipartBody("----aosAssets", {
+        fields: { project: rootPath, kind: "excel" },
+        filename: "cases.xlsx"
+      })
+    ),
+    deps
+  );
+  assert.equal(res.status, 409, res.body);
+  const payload = JSON.parse(res.body);
+  assert.equal(payload.code, "cross-host-write");
+  assert.match(payload.error, /host-a/);
+  assert.match(payload.error, /项目机/);
+  assert.deepEqual(await store.listWebAssets(rootPath), []);
+  await assert.rejects(() => access(path.join(rootPath, ".artemis", "web", "assets")));
 });
 
 test("PostgresStore (pg-mem): web_assets 往返、版本递增与 kind 过滤", async () => {

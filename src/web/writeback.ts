@@ -1,10 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
 import ExcelJS from "exceljs";
 
 import { errorMessage, writeFileAtomic } from "../util.js";
 import { normalizeExcelHeader } from "./excel-columns.js";
+import { findUnsupportedParts, lostParts, readXlsxParts } from "./xlsx-parts.js";
 
 /** 系统列固定 8 列，顺序即写回/表头追加顺序。 */
 export const SYSTEM_COLUMNS = [
@@ -58,6 +59,8 @@ export interface WritebackInput {
   lastSystemValue: (caseId: string, key: SystemColumnKey) => Promise<string | null>;
   /** 表头行号，默认 1（与 Excel 导入映射一致）。 */
   headerRow?: number;
+  /** 冷启动时是否沿用既有系统列：默认 false＝冻结（无 journal 的非空格视为人工/不可信）。 */
+  adoptExistingSystemColumns?: boolean;
   /** 原件路径（可选）：与工作副本同一路径时拒绝写回，运行期兜底不可变约定。 */
   originalPath?: string;
   /** 维度上限，默认 10000 行 × 200 列（按实际使用单元格计，见 `writebackWorkbook`）。 */
@@ -72,7 +75,10 @@ export type WritebackErrorCode =
   | "invalid-case-id-header"
   | "case-id-header-not-found"
   | "merged-header"
-  | "same-as-original";
+  | "same-as-original"
+  | "unsupported-parts"
+  | "parts-lost"
+  | "verify-failed";
 
 export class WritebackError extends Error {
   readonly code: WritebackErrorCode;
@@ -125,8 +131,7 @@ function isFormula(cell: ExcelJS.Cell): boolean {
 const MAX_WRITE_ROWS = 10000;
 const MAX_WRITE_COLUMNS = 200;
 
-async function loadWorkbook(filePath: string): Promise<ExcelJS.Workbook> {
-  const buffer = await readFile(filePath);
+async function loadWorkbookBuffer(buffer: Buffer): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
   try {
     await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
@@ -137,6 +142,35 @@ async function loadWorkbook(filePath: string): Promise<ExcelJS.Workbook> {
     );
   }
   return workbook;
+}
+
+const UNSUPPORTED_PARTS_HINT =
+  "exceljs 重写会丢失这些对象；请先移除图表/透视表/宏/切片器/ActiveX，或改用「单独结果文件」保存结果（原工作副本不会被改写）";
+
+async function verifyWrittenCells(
+  filePath: string,
+  sheetName: string,
+  expected: Array<{ address: string; value: string; key: string; caseId: string }>
+): Promise<void> {
+  const workbook = await loadWorkbookBuffer(await readFile(filePath));
+  const sheet = pickSheet(workbook, sheetName);
+  const mismatches: string[] = [];
+  for (const entry of expected) {
+    const actual = cellText(sheet.getCell(entry.address));
+    if (actual !== entry.value) {
+      mismatches.push(
+        `${entry.caseId}「${entry.key}」${entry.address} 期望「${entry.value}」实际「${actual}」`
+      );
+    }
+  }
+  if (mismatches.length > 0) {
+    throw new WritebackError(
+      "verify-failed",
+      `写回自检失败（${mismatches.length} 格值不一致，工作副本未替换）：${mismatches
+        .slice(0, 5)
+        .join("；")}`
+    );
+  }
 }
 
 function pickSheet(workbook: ExcelJS.Workbook, sheetName: string): ExcelJS.Worksheet {
@@ -185,7 +219,30 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
     );
   }
 
-  const workbook = await loadWorkbook(input.workbookPath);
+  const workbookBuffer = await readFile(input.workbookPath).catch((error: unknown) => {
+    throw new WritebackError(
+      "invalid-workbook",
+      `无法读取工作副本（${errorMessage(error)}）：${input.workbookPath}`
+    );
+  });
+  let partsBefore: string[];
+  try {
+    partsBefore = readXlsxParts(workbookBuffer);
+  } catch (error) {
+    throw new WritebackError(
+      "invalid-workbook",
+      `无法解析工作副本 OOXML 结构：${errorMessage(error)}`
+    );
+  }
+  const unsupported = findUnsupportedParts(partsBefore);
+  if (unsupported.length > 0) {
+    throw new WritebackError(
+      "unsupported-parts",
+      `工作副本包含不支持写回的对象：${unsupported.join("、")}。${UNSUPPORTED_PARTS_HINT}`
+    );
+  }
+
+  const workbook = await loadWorkbookBuffer(workbookBuffer);
   const sheet = pickSheet(workbook, input.sheetName);
 
   const rowCount = sheet.rowCount ?? 0;
@@ -347,10 +404,13 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
       const lastText = last === null || last === undefined || last.trim() === "" ? null : last.trim();
       if (lastText === null) {
         if (current !== "") {
-          if (!existingSystemKeys.has(system.key)) {
+          const adopt = input.adoptExistingSystemColumns === true && existingSystemKeys.has(system.key);
+          if (!adopt) {
             skipped += 1;
             warnings.push(
-              `第 ${rowNumber} 行 ${caseId}「${system.header}」已有非系统内容（${cell.address}），已跳过`
+              existingSystemKeys.has(system.key)
+                ? `第 ${rowNumber} 行 ${caseId}「${system.header}」无写回日志，按人工内容冻结（${cell.address}，原值「${current}」）；如需沿用旧系统列请显式 adoptExistingSystemColumns`
+                : `第 ${rowNumber} 行 ${caseId}「${system.header}」已有非系统内容（${cell.address}），已跳过`
             );
             continue;
           }
@@ -385,9 +445,33 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
     for (const write of writes) {
       write.cell.value = write.value;
     }
+    const target = path.resolve(input.workbookPath);
+    const tempPath = path.join(
+      path.dirname(target),
+      `.${path.basename(target)}.verify-${process.pid}-${Date.now()}.xlsx`
+    );
     try {
-      const buffer = await workbook.xlsx.writeBuffer();
-      writeFileAtomic(input.workbookPath, Buffer.from(buffer as ArrayBuffer));
+      const buffer = Buffer.from((await workbook.xlsx.writeBuffer()) as ArrayBuffer);
+      writeFileAtomic(tempPath, buffer);
+      const partsAfter = readXlsxParts(await readFile(tempPath));
+      const lost = lostParts(partsBefore, partsAfter);
+      if (lost.length > 0) {
+        throw new WritebackError(
+          "parts-lost",
+          `写回后检测到工作簿 part 丢失：${lost.join("、")}。${UNSUPPORTED_PARTS_HINT}`
+        );
+      }
+      await verifyWrittenCells(
+        tempPath,
+        sheet.name,
+        writes.map((write) => ({
+          address: write.cell.address,
+          value: write.value,
+          key: write.system.header,
+          caseId: write.caseId
+        }))
+      );
+      await rename(tempPath, target);
       for (const write of writes) {
         const cellRef = `${sheet.name}!${write.cell.address}`;
         written += 1;
@@ -402,6 +486,8 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
         });
       }
     } catch (error) {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+      if (error instanceof WritebackError) throw error;
       failed += writes.length;
       warnings.push(`工作副本保存失败：${errorMessage(error)}`);
     }

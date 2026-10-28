@@ -1081,6 +1081,21 @@ export class FileStore implements ProjectStore {
     return deleted;
   }
 
+  async linkWebProjectProjectId(rootPath: string, projectId: string): Promise<boolean> {
+    await this.ensureWebIndex();
+    const bucket = await this.bucket(rootPath);
+    const linked = await this.scopedMem(bucket, this.hostId).linkWebProjectProjectId(
+      rootPath,
+      projectId
+    );
+    if (linked) {
+      await this.persist(bucket, "linkWebProjectProjectId");
+      const current = this.webIndex.get(rootPath);
+      if (current) await this.appendWebIndex({ ...current, projectId });
+    }
+    return linked;
+  }
+
   async createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord> {
     const bucket = await this.bucket(input.rootPath);
     const record = await this.scopedMem(bucket, this.hostId).createWebAsset(input);
@@ -1137,6 +1152,23 @@ export class FileStore implements ProjectStore {
   ): Promise<ExcelWritebackRecord | null> {
     const bucket = await this.bucket(rootPath);
     return this.scopedMem(bucket, this.hostId).lastExcelWriteback(rootPath, assetId, cellRef);
+  }
+
+  async lastExcelWritebackByCellKey(
+    rootPath: string,
+    assetId: string,
+    sheetName: string,
+    caseId: string,
+    columnKey: string
+  ): Promise<ExcelWritebackRecord | null> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).lastExcelWritebackByCellKey(
+      rootPath,
+      assetId,
+      sheetName,
+      caseId,
+      columnKey
+    );
   }
 
   /** 文件台账按项目目录存放、天然属于本机，没有可迁移的跨主机行（中心 `host adopt-legacy` 仅对 PG 生效）。 */

@@ -26,6 +26,12 @@ async function setup(t, { hostId = null } = {}) {
     name: "acme",
     ...(hostId === null ? {} : { hostId })
   });
+  await store.createWebProject({
+    rootPath,
+    name: "acme",
+    normalizedName: "acme",
+    platforms: ["android"]
+  });
   const asset = await store.createWebAsset({
     rootPath,
     kind: "excel",
@@ -60,7 +66,7 @@ async function setup(t, { hostId = null } = {}) {
     workspaceRoot: workspace,
     buildStale: false
   };
-  return { deps, rootPath, asset, escapedAsset, mapping };
+  return { deps, rootPath, asset, escapedAsset, mapping, store };
 }
 
 function assetsUrl(rootPath, hostId = null) {
@@ -200,6 +206,29 @@ test("project page links to assets and preserves host", async (t) => {
     /href="\/panel\?project=[^"]+&amp;section=assets&amp;host=host-a"[^>]*>测试资产/,
     "项目页入口携带项目与主机"
   );
+});
+
+test("web assets page: archived project shows status and disables writes", async (t) => {
+  const { deps, rootPath, store } = await setup(t);
+  await store.archiveWebProject(rootPath, "2026-10-28T00:00:00.000Z");
+  const response = await handlePanelRequest(assetsUrl(rootPath), {
+    ...deps,
+    capabilities: { actions: true, usage: true, mode: "http", role: "maintainer" }
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.body, /已归档/);
+  assert.match(response.body, /id="asset-upload-submit"[^>]* disabled/);
+  assert.match(response.body, /id="mapping-save"[^>]* disabled/);
+  assert.ok(
+    !response.body.includes("/panel/api/projects/excel/mapping"),
+    "归档页不注入写脚本"
+  );
+
+  const json = await handlePanelRequest(
+    new URL(`http://x/panel.json?project=${encodeURIComponent(rootPath)}&section=assets`),
+    deps
+  );
+  assert.equal(JSON.parse(json.body).projectStatus, "archived");
 });
 
 test("web asset upload and mapping save clear the panel cache", async (t) => {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, mkdir } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { ProjectStore, WebAssetKind, WebAssetRecord } from "../db/types.js";
@@ -18,7 +18,8 @@ export type WebAssetErrorCode =
   | "unsupported-kind"
   | "invalid-extension"
   | "empty-file"
-  | "too-large";
+  | "too-large"
+  | "project-root-missing";
 
 export class WebAssetError extends Error {
   readonly code: WebAssetErrorCode;
@@ -83,13 +84,25 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
 
   const sha256 = createHash("sha256").update(input.buffer).digest("hex");
   const rootPath = path.resolve(input.rootPath);
+  // 只写已存在的托管项目目录：不代用户 mkdir，避免请求路径在服务端凭空长出新项目。
+  try {
+    const info = await stat(rootPath);
+    if (!info.isDirectory()) {
+      throw new WebAssetError("project-root-missing", `项目目录不是目录：${rootPath}`);
+    }
+  } catch (error) {
+    if (error instanceof WebAssetError) throw error;
+    throw new WebAssetError(
+      "project-root-missing",
+      `项目目录不存在（请先在项目机创建项目）：${rootPath}`
+    );
+  }
   const storageDir = path.join(rootPath, ".artemis", "web", "assets", input.kind);
   const storagePath = path.join(storageDir, `${sha256}${extension}`);
 
   // 顺序固定：先写内容寻址文件，再登记版本行。若 store 失败，文件保留不删：
   // 路径由 sha256 决定，后续重试或同内容上传会直接复用，只补一行版本；删除可能误删其他
   // 版本共用的内容。因此失败最多留下可回收的 CAS 文件，不会产生“有行无文件”。
-  await mkdir(rootPath, { recursive: true });
   if (!(await pathExists(storagePath))) {
     writeFileAtomic(storagePath, input.buffer);
   }
@@ -103,7 +116,8 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
     size: input.buffer.length,
     storagePath,
     uploadedBy: input.uploadedBy ?? null,
-    projectId: web?.projectId ?? null,
+    // 未知时省略，由 store 从 upsertProject 解析，避免把 NULL 钉死在资产行上。
+    ...(web?.projectId ? { projectId: web.projectId } : {}),
     metadata: {}
   });
 }

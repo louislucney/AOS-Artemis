@@ -11,7 +11,8 @@ import { loadProject } from "../dist/config/loader.js";
 import {
   createWebProject,
   normalizeProjectName,
-  projectSlug
+  projectSlug,
+  WebProjectCreateError
 } from "../dist/web/project-service.js";
 
 async function tempWorkspace() {
@@ -283,4 +284,46 @@ test("createWebProject: upsert 失败硬删除 web 行，同名可重试", async
   assert.equal(result.rootPath, expectedRoot);
   assert.equal((await store.listWebProjects()).length, 1);
   assert.equal((await store.getWebProject(expectedRoot)).name, "rollback");
+});
+
+test("createWebProject: 并发同名只允许一个胜者，败者不得删除胜者目录", async () => {
+  const workspaceRoot = await tempWorkspace();
+  const store = new MemoryStore();
+  const input = {
+    store,
+    workspaceRoot,
+    name: "Concurrent",
+    platforms: ["android"],
+    appPackage: "com.concurrent"
+  };
+  const results = await Promise.allSettled([
+    createWebProject(input),
+    createWebProject(input)
+  ]);
+  const fulfilled = results.filter((entry) => entry.status === "fulfilled");
+  const rejected = results.filter((entry) => entry.status === "rejected");
+  assert.equal(fulfilled.length, 1, "只允许一个创建成功");
+  assert.equal(rejected.length, 1);
+  assert.ok(rejected[0].reason instanceof WebProjectCreateError, "败者应是类型化创建错误");
+  assert.equal(rejected[0].reason.code, "directory-exists");
+
+  const rootPath = path.join(workspaceRoot, "Concurrent");
+  assert.equal(fs.existsSync(rootPath), true, "胜者目录必须保留");
+  assert.equal(fs.existsSync(path.join(rootPath, "aos.config.jsonc")), true);
+  assert.equal((await store.listWebProjects()).length, 1);
+  assert.equal((await store.getWebProject(rootPath)).name, "Concurrent");
+});
+
+test("createWebProject: 回填 web.projectId（web 行先建、project 行后建）", async () => {
+  const workspaceRoot = await tempWorkspace();
+  const store = new MemoryStore();
+  const result = await createWebProject({
+    store,
+    workspaceRoot,
+    name: "linked",
+    platforms: ["ios"],
+    appPackage: "com.linked"
+  });
+  assert.equal(result.web.projectId, result.project.id);
+  assert.equal((await store.getWebProject(result.rootPath)).projectId, result.project.id);
 });

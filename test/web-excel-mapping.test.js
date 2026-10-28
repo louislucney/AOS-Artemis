@@ -827,3 +827,69 @@ test("面板角色：预览与映射保存均要求 maintainer", () => {
   assert.equal(panelRequiredRoleForPath("/panel/api/projects/excel/preview"), "maintainer");
   assert.equal(panelRequiredRoleForPath("/panel/api/projects/excel/mapping"), "maintainer");
 });
+
+test("API：归档项目拒绝保存映射（409），预览仍只读可用", async (t) => {
+  const { workspace, rootPath, store } = await setupProject(t);
+  const asset = await addExcelAsset(store, rootPath, await xlsxBuffer([["用例编号", "步骤"]]));
+  const columnMap = { caseId: "用例编号", steps: "步骤" };
+  await store.archiveWebProject(rootPath, "2026-10-28T00:00:00.000Z");
+  const deps = { store, env: {}, workspaceRoot: workspace };
+
+  const saved = await postJson(deps, "/panel/api/projects/excel/mapping", {
+    project: rootPath,
+    assetId: asset.id,
+    sheetName: "用例",
+    columnMap
+  });
+  assert.equal(saved.status, 409, saved.body);
+  const payload = JSON.parse(saved.body);
+  assert.equal(payload.code, "project-archived");
+  assert.match(payload.error, /归档/);
+  assert.deepEqual(await store.listExcelMappings(rootPath, asset.id), []);
+
+  const preview = await postJson(deps, "/panel/api/projects/excel/preview", {
+    project: rootPath,
+    assetId: asset.id
+  });
+  assert.equal(preview.status, 200, preview.body);
+});
+
+test("API：跨主机项目拒绝预览/保存映射（409，不读本机路径）", async (t) => {
+  const workspace = await tempDir(t, "aos-excel-mapping-host-");
+  const rootPath = path.join(workspace, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "acme", hostId: "host-a" });
+  await store.createWebProject({
+    rootPath,
+    name: "acme",
+    normalizedName: "acme",
+    platforms: ["android"]
+  });
+  const asset = await addExcelAsset(store, rootPath, await xlsxBuffer([["用例编号", "步骤"]]));
+  const columnMap = { caseId: "用例编号", steps: "步骤" };
+  const deps = {
+    store,
+    env: {},
+    workspaceRoot: workspace,
+    localHostId: "center"
+  };
+
+  const preview = await postJson(deps, "/panel/api/projects/excel/preview", {
+    project: rootPath,
+    assetId: asset.id
+  });
+  assert.equal(preview.status, 409, preview.body);
+  assert.equal(JSON.parse(preview.body).code, "cross-host-write");
+  assert.match(JSON.parse(preview.body).error, /host-a/);
+
+  const saved = await postJson(deps, "/panel/api/projects/excel/mapping", {
+    project: rootPath,
+    assetId: asset.id,
+    sheetName: "用例",
+    columnMap
+  });
+  assert.equal(saved.status, 409, saved.body);
+  assert.equal(JSON.parse(saved.body).code, "cross-host-write");
+  assert.deepEqual(await store.listExcelMappings(rootPath, asset.id), []);
+});

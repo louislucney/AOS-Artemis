@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ import { PostgresStore } from "../dist/db/postgres.js";
 import { FileLockTimeoutError, withFileLock } from "../dist/web/lock.js";
 import { ensureWorkbookCopy, workbookCopyPath, WorkbookCopyError } from "../dist/web/workbook.js";
 import { SYSTEM_COLUMNS, WritebackError, writebackWorkbook } from "../dist/web/writeback.js";
+import { findUnsupportedParts, lostParts } from "../dist/web/xlsx-parts.js";
 
 const SYSTEM_HEADERS = [
   "建议｜脚本文件",
@@ -75,6 +76,62 @@ async function readSheet(filePath, sheetName = "用例") {
   return sheet;
 }
 
+/** 手搓最小 ZIP（store 模式、CRC 置 0）：只用于 parts 预检测试，不需要能被 exceljs 解析。 */
+function buildZip(entries) {
+  const names = Object.keys(entries);
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const name of names) {
+    const nameBuf = Buffer.from(name, "utf8");
+    const data = Buffer.isBuffer(entries[name])
+      ? entries[name]
+      : Buffer.from(entries[name], "utf8");
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt32LE(0, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, nameBuf, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt32LE(0, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBuf.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, nameBuf);
+
+    offset += local.length + nameBuf.length + data.length;
+  }
+  const centralBuf = Buffer.concat(centralParts);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(names.length, 8);
+  eocd.writeUInt16LE(names.length, 10);
+  eocd.writeUInt32LE(centralBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+  return Buffer.concat([...localParts, centralBuf, eocd]);
+}
+
 async function mutateWorkbook(filePath, mutate, sheetName = "用例") {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(filePath);
@@ -101,30 +158,22 @@ function rowOfCaseId(sheet, caseId, caseIdColumn, headerRow = 1) {
 }
 
 /**
- * 调用方视角的 journal 适配器：按「用例编号 + 列 key」解析出当前工作副本里的 cellRef，
- * 再读写 store 里的 journal（与后续 API 层同构）。
+ * 调用方视角的 journal 适配器：按「用例编号 + 列 key」读 store 的最新系统写入
+ * （单元格地址会随插入/删除行漂移，不能用 cellRef 判定归属）。`record` 写 journal。
  */
 function journalFor(
   store,
-  { rootPath, assetId, workbookPath, sheetName = "用例", caseIdHeader = "用例编号", headerRow = 1 }
+  { rootPath, assetId, sheetName = "用例" }
 ) {
-  const resolveCellRef = async (caseId, key) => {
-    const column = SYSTEM_COLUMNS.find((entry) => entry.key === key);
-    const sheet = await readSheet(workbookPath, sheetName);
-    const columnNumber = columnOfHeader(sheet, column.header, headerRow);
-    if (columnNumber === 0) return null;
-    const caseIdColumn = columnOfHeader(sheet, caseIdHeader, headerRow);
-    if (caseIdColumn === 0) return null;
-    const rowNumber = rowOfCaseId(sheet, caseId, caseIdColumn, headerRow);
-    if (rowNumber === null) return null;
-    return `${sheet.name}!${sheet.getCell(rowNumber, columnNumber).address}`;
-  };
-
   return {
     async last(caseId, key) {
-      const cellRef = await resolveCellRef(caseId, key);
-      if (cellRef === null) return null;
-      const record = await store.lastExcelWriteback(rootPath, assetId, cellRef);
+      const record = await store.lastExcelWritebackByCellKey(
+        rootPath,
+        assetId,
+        sheetName,
+        caseId,
+        key
+      );
       return record ? record.value : null;
     },
     async record(result, jobId = "job-1") {
@@ -816,6 +865,30 @@ test("MemoryStore journal：追加写、按 cellRef 取最后一条、项目/资
   assert.equal(await store.lastExcelWriteback(rootPath, "asset-1", "用例!F9"), null);
   assert.equal(await store.lastExcelWriteback(rootPath, "asset-2", "用例!F2"), null);
   assert.equal(await store.lastExcelWriteback("/w/other", "asset-1", "用例!F2"), null);
+
+  // 按 caseId+columnKey 取最新（行插入导致 cellRef 漂移时仍能定位归属）。
+  const moved = await store.recordExcelWriteback({
+    rootPath,
+    assetId: "asset-1",
+    sheetName: "用例",
+    caseId: "TC-1",
+    columnKey: "result",
+    cellRef: "用例!F9",
+    value: "SKIP",
+    writtenAt: "2026-10-28T12:00:00.000Z"
+  });
+  const byKey = await store.lastExcelWritebackByCellKey(rootPath, "asset-1", "用例", "TC-1", "result");
+  assert.equal(byKey.id, moved.id);
+  assert.equal(byKey.value, "SKIP");
+  assert.equal(byKey.cellRef, "用例!F9");
+  assert.equal(
+    await store.lastExcelWritebackByCellKey(rootPath, "asset-1", "另一表", "TC-1", "result"),
+    null
+  );
+  assert.equal(
+    await store.lastExcelWritebackByCellKey(rootPath, "asset-1", "用例", "TC-1", "device"),
+    null
+  );
 });
 
 test("FileStore journal：写入 state.json、重启后仍可取最新", async (t) => {
@@ -856,6 +929,13 @@ test("FileStore journal：写入 state.json、重启后仍可取最新", async (
   const latest = await reopened.lastExcelWriteback(rootPath, "asset-1", "用例!F2");
   assert.equal(latest.value, "PASS");
   assert.equal(await reopened.lastExcelWriteback(rootPath, "asset-2", "用例!F2"), null);
+  const byKey = await reopened.lastExcelWritebackByCellKey(rootPath, "asset-1", "用例", "TC-1", "result");
+  assert.equal(byKey.value, "PASS");
+  assert.equal(byKey.id, latest.id);
+  assert.equal(
+    await reopened.lastExcelWritebackByCellKey(rootPath, "asset-1", "用例", "TC-2", "result"),
+    null
+  );
   await reopened.close();
 });
 
@@ -907,10 +987,21 @@ test("PostgresStore (pg-mem): excel_writeback_journal 记录与最新值查询",
   assert.equal(await store.lastExcelWriteback("/w/acme", "asset-1", "用例!F9"), null);
   assert.equal(await store.lastExcelWriteback("/w/acme", "asset-2", "用例!F2"), null);
   assert.equal(await store.lastExcelWriteback("/w/other", "asset-1", "用例!F2"), null);
+  const byKey = await store.lastExcelWritebackByCellKey("/w/acme", "asset-1", "用例", "TC-1", "result");
+  assert.equal(byKey.value, "PASS");
+  assert.equal(byKey.jobId, "job-2");
+  assert.equal(
+    (await store.lastExcelWritebackByCellKey("/w/acme", "asset-1", "用例", "TC-2", "result")).value,
+    "ERROR"
+  );
+  assert.equal(
+    await store.lastExcelWritebackByCellKey("/w/acme", "asset-1", "另一表", "TC-1", "result"),
+    null
+  );
   await store.close();
 });
 
-test("ensureWorkbookCopy：损坏/截断副本从原件重建，原件损坏则拒绝且不生成副本", async (t) => {
+test("ensureWorkbookCopy：损坏副本改名为 .corrupt-<ts> 后重建，读错误不重建不删除", async (t) => {
   const workspace = await tempDir(t);
   const rootPath = path.join(workspace, "acme");
   const original = path.join(rootPath, "cases.xlsx");
@@ -928,6 +1019,12 @@ test("ensureWorkbookCopy：损坏/截断副本从原件重建，原件损坏则�
   assert.equal(await sha256(original), originalSha);
   assert.deepEqual(headerValues(await readSheet(copyPath)), ["用例编号", "步骤"]);
 
+  const kept = (await readdir(path.dirname(copyPath))).filter((name) =>
+    name.startsWith("asset-recover.xlsx.corrupt-")
+  );
+  assert.equal(kept.length, 1, "损坏副本应改名留档");
+  assert.equal(await readFile(path.join(path.dirname(copyPath), kept[0]), "utf8"), "truncated-not-a-zip");
+
   const badOriginal = path.join(rootPath, "bad.xlsx");
   await writeFile(badOriginal, "garbage", "utf8");
   const badCopy = path.join(rootPath, "bad-copy.xlsx");
@@ -940,37 +1037,72 @@ test("ensureWorkbookCopy：损坏/截断副本从原件重建，原件损坏则�
     }
   );
   await assert.rejects(() => access(badCopy));
+
+  // 读文件失败（EISDIR）不是损坏：不得重建、不得删除，抛 copy-unreadable。
+  const blockedCopy = path.join(rootPath, "blocked-copy.xlsx");
+  await mkdir(blockedCopy);
+  await assert.rejects(
+    () => ensureWorkbookCopy(original, blockedCopy),
+    (error) => {
+      assert.ok(error instanceof WorkbookCopyError, `expected WorkbookCopyError, got ${error}`);
+      assert.equal(error.code, "copy-unreadable");
+      return true;
+    }
+  );
+  assert.equal((await stat(blockedCopy)).isDirectory(), true, "读错误时应保留原路径内容");
 });
 
-test("冷启动：既有系统列无 journal 时按系统格刷新并告警，非系统列人工内容不动", async (t) => {
+test("冷启动：无 journal 的既有系统格默认冻结；显式 adoptExistingSystemColumns 才刷新", async (t) => {
   const workspace = await tempDir(t);
   const rootPath = path.join(workspace, "acme");
-  const copyPath = path.join(rootPath, ".artemis", "web", "workbook", "asset-cold.xlsx");
-  await writeWorkbook(copyPath, {
+  const store = new MemoryStore();
+
+  const frozenPath = path.join(rootPath, "cold-frozen.xlsx");
+  await writeWorkbook(frozenPath, {
     headers: ["用例编号", "用例名", "步骤", "执行｜结果"],
     rows: [["TC-1", "人工用例名", "1. 打开应用", "FAIL"]]
   });
-
-  const result = await writebackWorkbook({
-    workbookPath: copyPath,
+  const frozen = await writebackWorkbook({
+    workbookPath: frozenPath,
     originalPath: path.join(rootPath, "cases.xlsx"),
-    assetId: "asset-cold",
+    assetId: "asset-cold-frozen",
     sheetName: "用例",
     caseIdHeader: "用例编号",
     rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
     lastSystemValue: async () => null
   });
+  assert.equal(frozen.written, 0, "默认不覆盖无 journal 的既有系统格");
+  assert.equal(frozen.skipped, 1);
+  assert.equal(frozen.warnings.length, 1);
+  assert.match(frozen.warnings[0], /冻结/);
+  assert.match(frozen.warnings[0], /adoptExistingSystemColumns/);
+  let sheet = await readSheet(frozenPath);
+  assert.equal(cellText(sheet.getCell("D2").value), "FAIL");
+  assert.equal(cellText(sheet.getCell("B2").value), "人工用例名");
 
-  assert.equal(result.written, 1);
-  assert.equal(result.skipped, 0);
-  assert.equal(result.warnings.length, 1);
-  assert.match(result.warnings[0], /无写回日志/);
-  assert.match(result.warnings[0], /系统格/);
-
-  const sheet = await readSheet(copyPath);
+  const adoptPath = path.join(rootPath, "cold-adopt.xlsx");
+  await writeWorkbook(adoptPath, {
+    headers: ["用例编号", "用例名", "步骤", "执行｜结果"],
+    rows: [["TC-1", "人工用例名", "1. 打开应用", "FAIL"]]
+  });
+  const adopted = await writebackWorkbook({
+    workbookPath: adoptPath,
+    originalPath: path.join(rootPath, "cases.xlsx"),
+    assetId: "asset-cold-adopt",
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+    lastSystemValue: async () => null,
+    adoptExistingSystemColumns: true
+  });
+  assert.equal(adopted.written, 1);
+  assert.equal(adopted.skipped, 0);
+  assert.equal(adopted.warnings.length, 1);
+  assert.match(adopted.warnings[0], /无写回日志/);
+  assert.match(adopted.warnings[0], /系统格刷新/);
+  sheet = await readSheet(adoptPath);
   assert.equal(cellText(sheet.getCell("D2").value), "PASS");
   assert.equal(cellText(sheet.getCell("B2").value), "人工用例名");
-  assert.equal(cellText(sheet.getCell("C2").value), "1. 打开应用");
   assert.deepEqual(headerValues(sheet).slice(4, 11), [
     "建议｜脚本文件",
     "建议｜关键预期",
@@ -980,6 +1112,135 @@ test("冷启动：既有系统列无 journal 时按系统格刷新并告警，�
     "执行｜结束时间",
     "执行｜traceId"
   ]);
+  // store 仅用于保持与真实调用方同构（journal 为空）。
+  assert.equal((await store.listWebAssets("/w/none")).length, 0);
+});
+
+test("xlsx parts：写回前拒绝图表/透视/宏等无法往返的对象，原文件字节不变", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const cases = [
+    ["xl/charts/chart1.xml", "xl/charts/"],
+    ["xl/pivotTables/pivotTable1.xml", "xl/pivotTables/"],
+    ["xl/pivotCache/pivotCacheDefinition1.xml", "xl/pivotCache/"],
+    ["xl/vbaProject.bin", "xl/vbaProject.bin"]
+  ];
+  for (const [part, marker] of cases) {
+    const filePath = path.join(rootPath, `${marker.replace(/[^\w]+/g, "-")}cases.xlsx`);
+    const built = buildZip({
+      "[Content_Types].xml": "<Types/>",
+      "xl/workbook.xml": "<workbook/>",
+      "xl/worksheets/sheet1.xml": "<worksheet/>",
+      [part]: "<part/>"
+    });
+    await writeFile(filePath, built);
+    await assert.rejects(
+      () =>
+        writebackWorkbook({
+          workbookPath: filePath,
+          assetId: "asset-parts",
+          sheetName: "用例",
+          caseIdHeader: "用例编号",
+          rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+          lastSystemValue: async () => null
+        }),
+      (error) => {
+        assert.ok(error instanceof WritebackError, `expected WritebackError, got ${error}`);
+        assert.equal(error.code, "unsupported-parts", error.message);
+        assert.match(error.message, new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        assert.match(error.message, /单独结果文件/);
+        return true;
+      }
+    );
+    assert.deepEqual(await readFile(filePath), built, "拒绝时不得改写原文件");
+  }
+
+  const normal = path.join(rootPath, "normal.xlsx");
+  await writeWorkbook(normal, {
+    headers: BASE_HEADERS,
+    rows: [["TC-1", "登录成功", "1. 打开应用"]]
+  });
+  const result = await writebackWorkbook({
+    workbookPath: normal,
+    assetId: "asset-normal",
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    rows: [{ caseId: "TC-1", values: { result: "PASS", traceId: "trace-ok" } }],
+    lastSystemValue: async () => null
+  });
+  assert.equal(result.written, 2);
+  const sheet = await readSheet(normal);
+  assert.equal(cellText(sheet.getCell("F2").value), "PASS", "写回后自检通过且值已落盘");
+  assert.equal(cellText(sheet.getCell("K2").value), "trace-ok");
+});
+
+test("xlsx parts：识别不支持对象与写回后未知 part 丢失（drawings/图片放行）", () => {
+  assert.deepEqual(
+    findUnsupportedParts([
+      "[Content_Types].xml",
+      "xl/worksheets/sheet1.xml",
+      "xl/charts/chart1.xml",
+      "xl/pivotTables/pivotTable1.xml",
+      "xl/vbaProject.bin"
+    ]),
+    ["xl/charts/chart1.xml", "xl/pivotTables/pivotTable1.xml", "xl/vbaProject.bin"]
+  );
+  assert.deepEqual(findUnsupportedParts(["xl/drawings/drawing1.xml", "xl/media/image1.png"]), []);
+  assert.deepEqual(
+    lostParts(
+      ["xl/worksheets/sheet1.xml", "customXml/item1.xml", "xl/drawings/drawing1.xml"],
+      ["xl/worksheets/sheet1.xml"]
+    ),
+    ["customXml/item1.xml"],
+    "未知 part 丢失要报告；drawings 按 best-effort 放行"
+  );
+});
+
+test("journal 按 caseId+columnKey 判定归属：插入行后人工格仍冻结", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  const copyPath = path.join(rootPath, ".artemis", "web", "workbook", "asset-row-insert.xlsx");
+  await writeWorkbook(copyPath, {
+    headers: BASE_HEADERS,
+    rows: [
+      ["TC-1", "登录成功", "1. 打开应用"],
+      ["TC-2", "退出登录", "2. 点击退出"]
+    ]
+  });
+
+  const store = new MemoryStore();
+  const journal = journalFor(store, { rootPath, assetId: "asset-row-insert" });
+  const first = await writebackWorkbook({
+    workbookPath: copyPath,
+    assetId: "asset-row-insert",
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    rows: [{ caseId: "TC-1", values: { result: "FAIL" } }],
+    lastSystemValue: journal.last
+  });
+  assert.equal(first.written, 1);
+  await journal.record(first);
+
+  // TC-1 被下移到第 3 行（原 F2 → F3）；人为把系统值改成「人工」。
+  await mutateWorkbook(copyPath, (_workbook, sheet) => {
+    sheet.insertRow(2, []);
+    sheet.getCell("F3").value = "人工";
+  });
+  assert.equal(cellText((await readSheet(copyPath)).getCell("F3").value), "人工");
+
+  const second = await writebackWorkbook({
+    workbookPath: copyPath,
+    assetId: "asset-row-insert",
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+    lastSystemValue: journal.last
+  });
+  assert.equal(second.written, 0, "journal 按 caseId+columnKey 命中，人工格必须冻结");
+  assert.equal(second.skipped, 1);
+  assert.match(second.warnings[0], /人工/);
+  assert.equal(cellText((await readSheet(copyPath)).getCell("F3").value), "人工");
 });
 
 test("重复写回行：首个值生效、后续忽略并告警，物理格只写一次", async (t) => {

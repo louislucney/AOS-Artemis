@@ -1064,6 +1064,8 @@ export interface ProjectStore {
   archiveWebProject(rootPath: string, at: string): Promise<boolean>;
   /** 硬删除 Web 项目行（回滚/清理用；区别于 archive，删除后同名可重新创建）。 */
   deleteWebProject(rootPath: string): Promise<boolean>;
+  /** 创建流程补链：web 行先于 project 行建立时回填 `project_id`。 */
+  linkWebProjectProjectId(rootPath: string, projectId: string): Promise<boolean>;
   /** 登记 Web 资产；version＝同 rootPath+kind 最大 version+1（同内容也递增，文件由调用方复用）。 */
   createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord>;
   /** 新→旧（version DESC, id DESC）；`kind` 缺省为全部。 */
@@ -1085,6 +1087,17 @@ export interface ProjectStore {
     rootPath: string,
     assetId: string,
     cellRef: string
+  ): Promise<ExcelWritebackRecord | null>;
+  /**
+   * 取 `(rootPath, assetId, sheetName, caseId, columnKey)` 的最后一条系统写入。
+   * 单元格物理地址会随插入/删除行漂移，归属判断必须按可变的「用例编号 + 列」定位。
+   */
+  lastExcelWritebackByCellKey(
+    rootPath: string,
+    assetId: string,
+    sheetName: string,
+    caseId: string,
+    columnKey: string
   ): Promise<ExcelWritebackRecord | null>;
   ping(): Promise<boolean>;
   close(): Promise<void>;

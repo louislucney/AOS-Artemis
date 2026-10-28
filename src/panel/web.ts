@@ -189,6 +189,7 @@ type PanelView =
       rootPath: string;
       hostId: string | null;
       rootLabel: string;
+      projectStatus: "active" | "archived" | null;
       assets: WebAssetRecord[];
       mappings: ExcelMappingRecord[];
     }
@@ -498,11 +499,13 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     };
   }
   if (section === "assets") {
+    const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
     return {
       kind: "web-assets",
       rootPath: resolved.rootPath,
       hostId: resolved.hostId,
       rootLabel: resolved.name,
+      projectStatus: webProject?.status ?? null,
       assets: await listWebAssets(projectStore, resolved.rootPath, "excel"),
       mappings: await listExcelMappings(projectStore, resolved.rootPath)
     };
@@ -720,7 +723,13 @@ function toJsonView(view: PanelView): Record<string, unknown> {
     return { ok: true, view: "library", sets: view.sets, quarantine: view.quarantine, caseCandidates: view.caseCandidates };
   }
   if (view.kind === "web-assets") {
-    return { ok: true, view: "web-assets", assets: view.assets, mappings: view.mappings };
+    return {
+      ok: true,
+      view: "web-assets",
+      projectStatus: view.projectStatus,
+      assets: view.assets,
+      mappings: view.mappings
+    };
   }
   if (view.kind === "archive") return { ok: true, view: "archive", artifacts: view.artifacts, page: view.page };
   if (view.kind === "audit") return { ok: true, view: "audit", events: view.events };
@@ -3429,6 +3438,7 @@ function renderPanelHtml(
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
       hostId: view.hostId,
+      projectStatus: view.projectStatus,
       assets: view.assets,
       mappings: view.mappings,
       capabilities: deps.capabilities,

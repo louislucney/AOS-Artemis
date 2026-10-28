@@ -451,7 +451,9 @@ const SCHEMA = [
      written_at TEXT NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_lookup_idx
-     ON excel_writeback_journal(root_path, asset_id, cell_ref, written_at)`
+     ON excel_writeback_journal(root_path, asset_id, cell_ref, written_at)`,
+  `CREATE INDEX IF NOT EXISTS excel_writeback_journal_cell_key_idx
+     ON excel_writeback_journal(root_path, asset_id, sheet_name, case_id, column_key, written_at)`
 ];
 
 const MIGRATIONS = [
@@ -2840,6 +2842,14 @@ export class PostgresStore implements ProjectStore {
     return deleted.rows.length > 0;
   }
 
+  async linkWebProjectProjectId(rootPath: string, projectId: string): Promise<boolean> {
+    const updated = await this.pool.query(
+      "UPDATE web_projects SET project_id = $2 WHERE root_path = $1 RETURNING id",
+      [rootPath, projectId]
+    );
+    return updated.rows.length > 0;
+  }
+
   async createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord> {
     const projectId =
       input.projectId !== undefined
@@ -3025,6 +3035,24 @@ export class PostgresStore implements ProjectStore {
         ORDER BY written_at DESC, id DESC
         LIMIT 1`,
       [rootPath, assetId, cellRef]
+    );
+    return result.rows.length > 0 ? mapExcelWriteback(result.rows[0]!) : null;
+  }
+
+  async lastExcelWritebackByCellKey(
+    rootPath: string,
+    assetId: string,
+    sheetName: string,
+    caseId: string,
+    columnKey: string
+  ): Promise<ExcelWritebackRecord | null> {
+    const result = await this.pool.query(
+      `SELECT * FROM excel_writeback_journal
+        WHERE root_path = $1 AND asset_id = $2 AND sheet_name = $3
+          AND case_id = $4 AND column_key = $5
+        ORDER BY written_at DESC, id DESC
+        LIMIT 1`,
+      [rootPath, assetId, sheetName, caseId, columnKey]
     );
     return result.rows.length > 0 ? mapExcelWriteback(result.rows[0]!) : null;
   }

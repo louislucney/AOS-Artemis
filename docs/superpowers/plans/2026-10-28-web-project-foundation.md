@@ -521,3 +521,4 @@ git commit -m "docs: record web project foundation"
 - 所有 store 方法在 Memory/File/PG 三实现；PG 迁移有唯一约束；测试用 pg-mem。
 - 项目名唯一、目录创建失败回滚、Excel 重复行、合并/公式、并发写回、人工格冻结均有测试。
 - 交付物为 Plan 1 可独立运行：能建项目、上传/映射 Excel、生成工作副本并安全写回；不依赖脚本/计费模块。
+- 范围口径：Plan 1 交付「写回引擎 + E2E 验收」；生产环境的写回接线（任务结果 → 工作副本 → journal → 面板/下载）在 Plan 2/3 落地，本计划不接执行结果。

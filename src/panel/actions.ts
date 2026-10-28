@@ -15,10 +15,12 @@ import { importTestDocument } from "../workflow/excel-import.js";
 import { createRunCaseIssues, MAX_ISSUE_ITEMS, normalizeLabels, retryIssueEvidence } from "./issues.js";
 import { sameOriginAllowed } from "./http-guard.js";
 import {
+  assertProjectActive,
   createWebProject,
   normalizeProjectName,
   projectSlug,
-  WebProjectCreateError
+  WebProjectCreateError,
+  WebProjectStateError
 } from "../web/project-service.js";
 import { storeWebAsset, WebAssetError, WEB_ASSET_MAX_BYTES } from "../web/assets.js";
 import {
@@ -88,6 +90,34 @@ export function panelActionsEnabled(env: NodeJS.ProcessEnv): boolean {
 
 function json(status: number, payload: unknown): PanelWebResponse {
   return { status, contentType: JSON_CONTENT_TYPE, body: JSON.stringify(payload, null, 2) };
+}
+
+/** 失败审计的哨兵根：绝不使用请求里的项目路径（可能在 rollback 后重建目录/写进别的项目）。 */
+function auditSentinelRoot(deps: PanelWebDeps): string {
+  return deps.workspaceRoot ?? process.cwd();
+}
+
+/**
+ * 资产上传/预览/映射都在服务本机读写文件；跨主机项目必须回到项目机执行，
+ * 否则会在中心磁盘上写出一份与项目机无关的副本。
+ */
+function crossHostWriteResponse(
+  deps: PanelWebDeps,
+  resolved: { rootPath: string; hostId: string | null }
+): PanelWebResponse | null {
+  if (resolved.hostId === null) return null;
+  const localHostId = deps.localHostId ?? deps.store.localHostId ?? null;
+  if (resolved.hostId === localHostId) return null;
+  return json(409, {
+    ok: false,
+    code: "cross-host-write",
+    error: `项目属于主机 ${resolved.hostId}，当前服务本机身份为 ${localHostId ?? "未设置（AOS_HOST_ID）"}；资产上传/预览/列映射读写本机磁盘，请在项目机面板执行（或先切换到该项目机的 HTTP 服务）`
+  });
+}
+
+function webProjectStateResponse(error: unknown): PanelWebResponse | null {
+  if (!(error instanceof WebProjectStateError)) return null;
+  return json(error.status, { ok: false, error: error.message, code: error.code });
 }
 
 export async function handlePanelActionRequest(
@@ -250,10 +280,10 @@ export async function handlePanelActionRequest(
 
   try {
     if (request.url.pathname === "/panel/api/projects/excel/preview") {
-      return await previewExcelMappingAction(scopedDeps, resolved.rootPath, payload);
+      return await previewExcelMappingAction(scopedDeps, resolved, payload);
     }
     if (request.url.pathname === "/panel/api/projects/excel/mapping") {
-      return await saveExcelMappingAction(scopedDeps, resolved.rootPath, payload, actor);
+      return await saveExcelMappingAction(scopedDeps, resolved, payload, actor);
     }
     if (request.url.pathname === "/panel/api/tasks") {
       const response = await createTask(
@@ -448,7 +478,7 @@ async function createProjectAction(
     const conflict =
       error instanceof WebProjectCreateError &&
       (error.code === "duplicate-name" || error.code === "directory-exists");
-    await recordAuditSafe(deps.store, intendedRoot, {
+    await recordAuditSafe(deps.store, auditSentinelRoot(deps), {
       domain: "project",
       action: "project.create",
       result: "failed",
@@ -486,7 +516,7 @@ async function archiveProjectAction(
     throw error;
   }
   if (!resolved) {
-    await recordAuditSafe(deps.store, projectKey, {
+    await recordAuditSafe(deps.store, auditSentinelRoot(deps), {
       domain: "project",
       action: "project.archive",
       result: "failed",
@@ -571,6 +601,8 @@ async function uploadAssetAction(
     throw error;
   }
   if (!resolved) return json(404, { error: `未知项目 "${projectKey}"` });
+  const crossHost = crossHostWriteResponse(deps, resolved);
+  if (crossHost !== null) return crossHost;
 
   const scopedDeps: PanelWebDeps = {
     ...(resolved.hostId === null
@@ -580,6 +612,7 @@ async function uploadAssetAction(
   };
 
   try {
+    await assertProjectActive(scopedDeps.store, resolved.rootPath);
     const asset = await storeWebAsset({
       store: scopedDeps.store,
       rootPath: resolved.rootPath,
@@ -605,8 +638,27 @@ async function uploadAssetAction(
     deps.cache?.clear();
     return json(200, { ok: true, asset });
   } catch (error) {
+    const state = webProjectStateResponse(error);
+    if (state !== null) {
+      await recordAuditSafe(scopedDeps.store, resolved.rootPath, {
+        domain: "asset",
+        action: "asset.upload",
+        result: "failed",
+        actor,
+        summary: `上传 Web 资产失败：${upload.filename}：${errorMessage(error)}`,
+        refs: { kind, filename: upload.filename }
+      });
+      return state;
+    }
     const code = error instanceof WebAssetError ? error.code : null;
-    const status = code === null ? 500 : code === "too-large" ? 413 : 400;
+    const status =
+      code === null
+        ? 500
+        : code === "too-large"
+          ? 413
+          : code === "project-root-missing"
+            ? 409
+            : 400;
     await recordAuditSafe(scopedDeps.store, resolved.rootPath, {
       domain: "asset",
       action: "asset.upload",
@@ -638,6 +690,8 @@ function headerRowParam(value: unknown): number | undefined {
 }
 
 function excelMappingErrorResponse(error: unknown): PanelWebResponse | null {
+  const state = webProjectStateResponse(error);
+  if (state !== null) return state;
   if (error instanceof ExcelMappingError) {
     return json(400, { ok: false, error: error.message, code: error.code });
   }
@@ -649,9 +703,12 @@ function excelMappingErrorResponse(error: unknown): PanelWebResponse | null {
 
 async function previewExcelMappingAction(
   deps: PanelWebDeps,
-  rootPath: string,
+  resolved: { rootPath: string; hostId: string | null },
   payload: Record<string, unknown>
 ): Promise<PanelWebResponse> {
+  const crossHost = crossHostWriteResponse(deps, resolved);
+  if (crossHost !== null) return crossHost;
+  const rootPath = resolved.rootPath;
   const assetId = typeof payload.assetId === "string" ? payload.assetId.trim() : "";
   const sheetName = typeof payload.sheetName === "string" ? payload.sheetName.trim() : "";
   try {
@@ -676,10 +733,13 @@ async function previewExcelMappingAction(
 
 async function saveExcelMappingAction(
   deps: PanelWebDeps,
-  rootPath: string,
+  resolved: { rootPath: string; hostId: string | null },
   payload: Record<string, unknown>,
   actor: string
 ): Promise<PanelWebResponse> {
+  const crossHost = crossHostWriteResponse(deps, resolved);
+  if (crossHost !== null) return crossHost;
+  const rootPath = resolved.rootPath;
   const assetId = typeof payload.assetId === "string" ? payload.assetId.trim() : "";
   const sheetName = typeof payload.sheetName === "string" ? payload.sheetName.trim() : "";
   const refs = {
@@ -690,6 +750,7 @@ async function saveExcelMappingAction(
     if (assetId === "") {
       throw new ExcelMappingServiceError("missing-asset-id", "缺少 assetId（资产 id）");
     }
+    await assertProjectActive(deps.store, rootPath);
     const headerRow = headerRowParam(payload.headerRow);
     const mapping = await saveExcelMapping({
       store: deps.store,

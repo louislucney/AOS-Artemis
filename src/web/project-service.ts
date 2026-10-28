@@ -85,6 +85,41 @@ export interface CreateWebProjectResult {
   rootPath: string;
 }
 
+/** 写入前置条件失败（归档/非托管项目）：action 层映射为 409，不依赖错误文案。 */
+export type WebProjectStateErrorCode = "project-archived" | "not-a-web-project";
+
+export class WebProjectStateError extends Error {
+  readonly code: WebProjectStateErrorCode;
+  readonly status = 409;
+
+  constructor(code: WebProjectStateErrorCode, message: string) {
+    super(message);
+    this.name = "WebProjectStateError";
+    this.code = code;
+  }
+}
+
+/** 资产上传/映射保存等 Plan 1 写路径的统一闸门：只允许 active 的托管 Web 项目。 */
+export async function assertProjectActive(
+  store: ProjectStore,
+  rootPath: string
+): Promise<WebProjectRecord> {
+  const web = await store.getWebProject(rootPath);
+  if (!web) {
+    throw new WebProjectStateError(
+      "not-a-web-project",
+      `不是托管 Web 项目：${rootPath}（资产/映射写动作仅适用于网页创建的项目）`
+    );
+  }
+  if (web.status !== "active") {
+    throw new WebProjectStateError(
+      "project-archived",
+      `项目已归档（status=${web.status}）：${web.name}（${web.rootPath}）；归档项目禁止上传/保存映射，请只读查看或新建项目`
+    );
+  }
+  return web;
+}
+
 async function pathExists(target: string): Promise<boolean> {
   try {
     await access(target);
@@ -120,8 +155,18 @@ export async function createWebProject(
   }
 
   let web: WebProjectRecord | null = null;
+  let createdDir = false;
   try {
-    await mkdir(rootPath);
+    try {
+      await mkdir(rootPath);
+      createdDir = true;
+    } catch (error) {
+      // 并发创建：另一调用已抢先建目录；后续任何回滚都不得 rm 胜者的目录。
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new WebProjectCreateError("directory-exists", `项目目录已存在：${rootPath}`);
+      }
+      throw error;
+    }
     const webRoot = path.join(rootPath, ".artemis", "web");
     await mkdir(path.join(webRoot, "assets"), { recursive: true });
     await mkdir(path.join(webRoot, "workbook"));
@@ -148,6 +193,15 @@ export async function createWebProject(
       owner: input.owner ?? null
     });
     const project = await input.store.upsertProject({ rootPath, name });
+    if (web.projectId === null && project.id !== "") {
+      try {
+        if (await input.store.linkWebProjectProjectId(rootPath, project.id)) {
+          web = { ...web, projectId: project.id };
+        }
+      } catch {
+        /* best-effort：即使补链失败，资产/写回仍按 rootPath 解析 projectId（见 store 实现）。 */
+      }
+    }
     return { project, web, rootPath };
   } catch (error) {
     if (web !== null) {
@@ -157,10 +211,12 @@ export async function createWebProject(
         /* best-effort */
       }
     }
-    try {
-      await rm(rootPath, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
+    if (createdDir) {
+      try {
+        await rm(rootPath, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
     }
     throw error;
   }

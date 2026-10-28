@@ -155,6 +155,7 @@ export interface WebAssetsPageData {
   rootPath: string;
   rootLabel: string;
   hostId?: string | null;
+  projectStatus?: "active" | "archived" | null;
   assets: WebAssetRecord[];
   mappings: ExcelMappingRecord[];
   capabilities?: ConsoleCapabilities;
@@ -183,15 +184,18 @@ function mappingSummary(columnMap: Record<string, string>): string {
 export function renderWebAssetsPage(data: WebAssetsPageData): string {
   const role = data.capabilities?.role;
   const roleAllowed = role === undefined || role === "maintainer" || role === "admin";
-  const actionsOff = data.capabilities?.actions === false || !roleAllowed;
+  const archived = data.projectStatus === "archived";
+  const actionsOff = archived || data.capabilities?.actions === false || !roleAllowed;
   const disabledAttr = actionsOff ? " disabled" : "";
-  const actionsReason = actionsOff
-    ? `<p class="muted">${
-        roleAllowed
-          ? "写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。"
-          : `写动作需要 maintainer/admin（当前角色 ${escapeHtml(role ?? "未知")}）。`
-      }</p>`
-    : "";
+  const actionsReason = archived
+    ? `<p class="muted">项目已归档（archived）：禁止上传/保存映射；可继续只读查看资产与映射。需要修改请先新建项目或恢复项目状态。</p>`
+    : actionsOff
+      ? `<p class="muted">${
+          roleAllowed
+            ? "写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。"
+            : `写动作需要 maintainer/admin（当前角色 ${escapeHtml(role ?? "未知")}）。`
+        }</p>`
+      : "";
 
   const assetName = new Map<string, string>();
   for (const asset of data.assets) {
@@ -258,6 +262,9 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     storeHealth: data.storeHealth,
     body: [
       "<h1>测试资产</h1>",
+      archived
+        ? `<p>${cBadge({ label: "已归档", tone: "warning", title: "status=archived" })} 归档项目只读：上传与映射保存已禁用。</p>`
+        : "",
       `<p class="muted">Excel 原件按内容寻址保存；版本行只追加，解析结果由「用例库」侧引用。映射保存后按表头指纹复用。</p>`,
       cCard({
         title: "资产版本",

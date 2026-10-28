@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { handlePanelActionRequest } from "../dist/panel/actions.js";
 import { handlePanelRequest } from "../dist/panel/web.js";
@@ -77,7 +78,7 @@ test("web project api: 重名（大小写/NFKC）409 且不落成功审计", asy
   const projects = await store.listWebProjects();
   assert.equal(projects.length, 1, "重复创建不新增记录");
 
-  const audit = await store.listAudit(path.join(deps.workspaceRoot, "DUP"), {
+  const audit = await store.listAudit(deps.workspaceRoot, {
     domain: "project"
   });
   const failed = audit.find((event) => event.action === "project.create" && event.result === "failed");
@@ -152,7 +153,7 @@ test("web project api: 目标目录已存在 409（类型化错误，非文案�
   assert.match(JSON.parse(res.body).error, /目录已存在/);
   assert.equal((await store.listWebProjects()).length, 0);
 
-  const audit = await store.listAudit(path.join(deps.workspaceRoot, "taken"), {
+  const audit = await store.listAudit(deps.workspaceRoot, {
     domain: "project"
   });
   assert.equal(audit.length, 1);
@@ -260,6 +261,60 @@ test("web project api: archive 未知项目 404", async (t) => {
     deps
   );
   assert.equal(res.status, 404);
+});
+
+test("web project api: 创建失败审计写 workspace 哨兵（不在项目路径重建目录），同名可重试", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "aos-web-api-file-"));
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+  const store = await FileStore.create({ homeDir: path.join(workspaceRoot, "ledger-home") });
+  t.after(() => store.close());
+  const deps = { store, env: {}, workspaceRoot };
+
+  const originalUpsert = store.upsertProject.bind(store);
+  let failNext = true;
+  store.upsertProject = async (input) => {
+    if (failNext) {
+      failNext = false;
+      throw new Error("upsert boom");
+    }
+    return originalUpsert(input);
+  };
+
+  const body = { name: "ghost", platforms: ["android"], appPackage: "com.ghost" };
+  const first = await handlePanelActionRequest(action("/panel/api/projects", body, ADMIN), deps);
+  assert.equal(first.status, 500, first.body);
+  const slugPath = path.join(workspaceRoot, "ghost");
+  await assert.rejects(() => access(slugPath), "失败创建后不得留下项目目录");
+  assert.equal(await store.getWebProject(slugPath), null);
+
+  const audit = await store.listAudit(workspaceRoot, { domain: "project" });
+  const failed = audit.find((event) => event.action === "project.create" && event.result === "failed");
+  assert.ok(failed, "失败审计应落在 workspace 哨兵");
+  assert.match(failed.summary, /ghost/);
+  assert.match(failed.summary, /upsert boom/);
+
+  const retried = await handlePanelActionRequest(action("/panel/api/projects", body, ADMIN), deps);
+  assert.equal(retried.status, 200, retried.body);
+  assert.equal(await access(path.join(slugPath, "aos.config.jsonc")).then(() => true), true);
+});
+
+test("web project api: archive 未知项目 404 不创建请求路径目录", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "aos-web-api-file-"));
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+  const store = await FileStore.create({ homeDir: path.join(workspaceRoot, "ledger-home") });
+  t.after(() => store.close());
+  const deps = { store, env: {}, workspaceRoot };
+
+  const ghost = path.join(workspaceRoot, "ghost-request");
+  const res = await handlePanelActionRequest(
+    action("/panel/api/projects/archive", { project: ghost }, ADMIN),
+    deps
+  );
+  assert.equal(res.status, 404);
+  await assert.rejects(() => access(ghost), "未知项目审计不得创建请求派生目录");
+
+  const audit = await store.listAudit(workspaceRoot, { domain: "project" });
+  assert.ok(audit.some((event) => event.action === "project.archive" && event.result === "failed"));
 });
 
 test("web project api: 总览新增项目表单（admin 可见/提交；非 admin 隐藏；actions 关闭禁用）", async (t) => {

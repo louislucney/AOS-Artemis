@@ -94,29 +94,19 @@ async function sourceWorkbookBuffer() {
 }
 
 /**
- * 调用方视角的 journal 适配器：按当前工作副本解析 `(caseId, key) → cellRef`，
- * 再读 store 的最后一次系统写入。与中心 API/编排层同构，E2E 用它证明写回与 journal 一致。
+ * 调用方视角的 journal 适配器：按「用例编号 + 列 key」读 store 的最新系统写入
+ * （单元格物理地址会随插入/删除行漂移，不能按 cellRef 判定归属）。
  */
-function journalFor(
-  store,
-  { rootPath, assetId, caseIdHeader, workbookPath, sheetName = SHEET_NAME }
-) {
-  const resolveCellRef = async (caseId, key) => {
-    const sheet = await readSheet(workbookPath, sheetName);
-    const column = SYSTEM_COLUMNS.find((entry) => entry.key === key);
-    const columnNumber = columnOfHeader(sheet, column.header);
-    const caseIdColumn = columnOfHeader(sheet, caseIdHeader);
-    if (columnNumber === 0 || caseIdColumn === 0) return null;
-    const rowNumber = rowOfCaseId(sheet, caseId, caseIdColumn);
-    if (rowNumber === null) return null;
-    return `${sheet.name}!${sheet.getCell(rowNumber, columnNumber).address}`;
-  };
-
+function journalFor(store, { rootPath, assetId, sheetName = SHEET_NAME }) {
   return {
     async last(caseId, key) {
-      const cellRef = await resolveCellRef(caseId, key);
-      if (cellRef === null) return null;
-      const record = await store.lastExcelWriteback(rootPath, assetId, cellRef);
+      const record = await store.lastExcelWritebackByCellKey(
+        rootPath,
+        assetId,
+        sheetName,
+        caseId,
+        key
+      );
       return record ? record.value : null;
     },
     async record(result, jobId) {
@@ -166,6 +156,7 @@ test("web project e2e：建项目 → Excel CAS → 映射 → 工作副本 → 
   });
   assert.equal(asset.version, 1);
   assert.equal(asset.sha256, createHash("sha256").update(buffer).digest("hex"));
+  assert.equal(asset.projectId, project.id, "资产必须挂到 project 行（不能留 NULL）");
   assert.equal(await sha256File(asset.storagePath), asset.sha256);
   const originalSha = asset.sha256;
 
