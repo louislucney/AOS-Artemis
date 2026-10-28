@@ -14,6 +14,7 @@ import { runJiraCommand } from "./jira-command.js";
 import { printUserUsage, runUserCommand } from "./user-command.js";
 import { runServer } from "./server.js";
 import { printSuiteUsage, runSuiteCommand } from "./suite-command.js";
+import { printWebRunnerUsage, runWebRunnerCommand } from "./runner/web-agent.js";
 import { runUsageCommand } from "./usage-command.js";
 import { runPanelCommand } from "./panel-command.js";
 import { runCmsOpen } from "./open/command.js";
@@ -42,6 +43,8 @@ Usage:
                     中心主机登记（只连 PostgreSQL，需 MOBILE_TESTING_DATABASE_URL）：
                     list | show <id|hostname> | register <id> | adopt-legacy --local|--host <id> --path <rootPath>
                     (见 "mobile-testing-mcp host help"；缺省 dry-run，--apply 才写库)
+  mobile-testing-mcp web-runner [--name <n>] [--artifact-base-url <url>] [--once]
+                    host 级远端 Web 任务执行机（只连中心 PG，不要求项目目录；每台设备一个 worker）
   mobile-testing-mcp jira issue <create|comment|label|transition|link> [options]
                     Jira 工作流（与 MCP 工具共用客户端与凭证；见 "mobile-testing-mcp jira help"；
                     exit codes: 0 成功 / 1 请求或配置失败 / 2 用法错误）
@@ -85,6 +88,7 @@ void (async () => {
     if (command === "suite") printSuiteUsage((line) => console.log(line));
     else if (command === "host") printHostUsage((line) => console.log(line));
     else if (command === "user") printUserUsage((line) => console.log(line));
+    else if (command === "web-runner") printWebRunnerUsage((line) => console.log(line));
     else printUsage();
     return;
   }
@@ -148,6 +152,14 @@ void (async () => {
     }
     case "usage": {
       const code = await runUsageCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "web-runner": {
+      const code = await runWebRunnerCommand(rest, {
+        log: (line) => console.error(line),
+        errorLog: (line) => console.error(line)
+      });
       process.exit(code);
       break;
     }
