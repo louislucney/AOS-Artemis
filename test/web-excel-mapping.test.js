@@ -431,6 +431,94 @@ test("saveExcelMapping: 缺必填列/列不存在/未知字段/未知资产/非 
   );
 });
 
+test("saveExcelMapping: 归一后为空的表头（---/__/空单元格）不能满足必填字段", async (t) => {
+  const { rootPath, store } = await setupProject(t);
+  const emptyHeader = await addExcelAsset(
+    store,
+    rootPath,
+    await xlsxBuffer([["", "用例编号", "步骤"]]),
+    "empty-header.xlsx"
+  );
+
+  await assert.rejects(
+    () =>
+      saveExcelMapping({
+        store,
+        rootPath,
+        assetId: emptyHeader.id,
+        sheetName: "用例",
+        columnMap: { caseId: "用例编号", steps: "---" }
+      }),
+    isMappingError("column-not-found")
+  );
+  await assert.rejects(
+    () =>
+      saveExcelMapping({
+        store,
+        rootPath,
+        assetId: emptyHeader.id,
+        sheetName: "用例",
+        columnMap: { caseId: "用例编号", steps: "__" }
+      }),
+    isMappingError("column-not-found")
+  );
+  await assert.rejects(
+    () =>
+      saveExcelMapping({
+        store,
+        rootPath,
+        assetId: emptyHeader.id,
+        sheetName: "用例",
+        columnMap: { caseId: "用例编号", steps: "" }
+      }),
+    isMappingError("missing-required")
+  );
+  await assert.rejects(
+    () =>
+      saveExcelMapping({
+        store,
+        rootPath,
+        assetId: emptyHeader.id,
+        sheetName: "用例",
+        columnMap: { caseId: "---", steps: "步骤" }
+      }),
+    isMappingError("column-not-found")
+  );
+
+  const dashed = await addExcelAsset(
+    store,
+    rootPath,
+    await xlsxBuffer([["---", "用例编号", "步骤"]]),
+    "dashed.xlsx"
+  );
+  await assert.rejects(
+    () =>
+      saveExcelMapping({
+        store,
+        rootPath,
+        assetId: dashed.id,
+        sheetName: "用例",
+        columnMap: { caseId: "用例编号", steps: "---" }
+      }),
+    isMappingError("column-not-found"),
+    "空归一表头不能冒充有效列"
+  );
+
+  assert.deepEqual(await listExcelMappings(store, rootPath), [], "非法映射不落库");
+
+  const valid = await saveExcelMapping({
+    store,
+    rootPath,
+    assetId: emptyHeader.id,
+    sheetName: "用例",
+    columnMap: { caseId: "用例编号", steps: "步骤" },
+    createdBy: "alice"
+  });
+  assert.deepEqual(valid.columnMap, { caseId: "用例编号", steps: "步骤" });
+  assert.equal(valid.columnMap.steps.trim() !== "", true);
+  assert.deepEqual(await findExcelMapping(store, rootPath, emptyHeader.id, valid.headerFingerprint), valid);
+});
+
 test("FileStore: 映射在重启后仍在且 upsert 生效", async (t) => {
   const home = await tempDir(t, "aos-excel-map-file-");
   const rootPath = path.join(home, "acme");

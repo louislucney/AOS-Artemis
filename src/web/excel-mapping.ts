@@ -173,11 +173,24 @@ export function validateExcelColumnMap(headers: string[], raw: unknown): ExcelCo
     }
     const header = value.trim();
     if (header === "") continue;
-    const index = normalizedHeaders.indexOf(normalizeExcelHeader(header));
+    const wanted = normalizeExcelHeader(header);
+    if (wanted === "") {
+      throw new ExcelMappingError(
+        "column-not-found",
+        `映射的列名归一后为空："${header}"（${CANONICAL_FIELD_LABELS[field as CanonicalField]}）：请指定有效表头`
+      );
+    }
+    const index = normalizedHeaders.indexOf(wanted);
     if (index === -1) {
       throw new ExcelMappingError(
         "column-not-found",
         `映射的列不存在："${header}"（${CANONICAL_FIELD_LABELS[field as CanonicalField]}）`
+      );
+    }
+    if (headers[index]!.trim() === "") {
+      throw new ExcelMappingError(
+        "column-not-found",
+        `映射的列是空表头（第 ${index + 1} 列，${CANONICAL_FIELD_LABELS[field as CanonicalField]}）：请指定有效表头`
       );
     }
     const owner = used.get(index);
@@ -190,7 +203,10 @@ export function validateExcelColumnMap(headers: string[], raw: unknown): ExcelCo
     used.set(index, field as CanonicalField);
     columnMap[field as CanonicalField] = headers[index]!;
   }
-  const missing = REQUIRED_CANONICAL_FIELDS.filter((field) => columnMap[field] === undefined);
+  const missing = REQUIRED_CANONICAL_FIELDS.filter((field) => {
+    const header = columnMap[field];
+    return typeof header !== "string" || header.trim() === "";
+  });
   if (missing.length > 0) {
     throw new ExcelMappingError(
       "missing-required",
