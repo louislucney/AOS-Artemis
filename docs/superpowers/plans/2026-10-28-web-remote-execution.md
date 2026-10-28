@@ -87,7 +87,7 @@ git commit -m "feat: report device model and os version from runner inventory"
 - Produces:
   - `WebDeviceKind = "device" | "simulator" | "any"`
   - `WebDispatchRequirements { platform: "android" | "ios"; deviceKind: WebDeviceKind; deviceModel?: string[]; osVersion?: { min?: string; max?: string }; tools?: Array<"adb" | "idb" | "simctl" | "ideviceId" | "appium" | "maestro" | "devicectl"> }`
-  - `WebAssignmentRequest { assignment: "auto" | "manual"; targetHostId?: string | null; deviceSerial?: string | null; requirements: WebDispatchRequirements }`
+  - `WebAssignmentRequest { assignment: "auto" | "manual"; devicePinned?: boolean; targetHostId?: string | null; deviceSerial?: string | null; requirements: WebDispatchRequirements }`
   - `WebRunnerCandidate { id: string; hostId: string; hostname: string; platforms: string[]; devices: RunnerDevice[]; tools: RunnerTools; lastSeenAt: string }`
   - `selectWebAssignment(input: { runners: WebRunnerCandidate[]; leases: DeviceLeaseRecord[]; request: WebAssignmentRequest; nowMs: number; runnerTtlMs: number; rng?: () => number }): { ok: true; hostId: string; deviceSerial: string; score: number; reasons: string[] } | { ok: false; code: "no-runner" | "no-device" | "host-offline" | "device-busy" | "requirements-unmet"; message: string }`
 
@@ -194,6 +194,7 @@ git commit -m "feat: add host-level web runner registry"
   - `webAssetMaxBytes(kind): number`：excel 20MB、materials 50MB、package 500MB、scripts 20MB；`WEB_ASSET_MAX_BYTES` 保留为 excel 旧常量。
   - `storeWebAsset` 支持 `package`（`.apk`/`.ipa`）、`materials`（`.zip`/`.json`/`.csv`/`.txt`）、`scripts`（`.zip`）；扩展名大小写不敏感；文件名仍只取 basename。
   - package 上传不要求中心解析 AndroidManifest/Info.plist；`metadata` 先留空，包名/版本由项目 `appPackage` + runner 安装后回报（见 Task 8）。
+  - materials 上传可带 `metadata.secret=true`；secret 附件在中心加密/权限保护，下发时只进 job 级 0600 目录，不进 runner CAS。
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -226,6 +227,55 @@ git commit -m "feat: accept package materials and script bundle assets"
 
 ---
 
+### Task 3c: 重上传工作副本的系统列 journal 重播种
+
+**Files:**
+- Create: `src/web/workbook-reupload.ts`
+- Modify: `src/panel/actions.ts`（上传资产可选 `systemColumns`）
+- Test: `test/web-workbook-reupload.test.js`
+
+**Interfaces:**
+- Consumes: `parseExcel`/`readExcelHeaders`（Plan 1）、`lastExcelWritebackByCellKey`、`recordExcelWriteback`。
+- Produces:
+  - `detectSystemColumns(headers, caseIdHeader): string[]`：识别 `建议｜`/`执行｜` 列。
+  - `rebaseWorkbookJournal(input: { rootPath; previousAssetId; newAssetId; sheetName; workbookPath; systemHeaders; mode: "inherit" | "human" }): Promise<{ rebased: number; frozen: number; mismatched: string[] }>`
+    - `inherit`：逐格读取新工作副本值，与上一版本 journal 最后系统值比对；一致则向新 asset 写入 journal（重播种），不一致/无 journal 的格不写并计入 frozen。
+    - `human`：不写 journal，全部保留为人工格。
+    - 默认 `human`；上传 API 未传时按 human。
+  - `POST /panel/api/projects/assets` 支持可选 `systemColumns: "inherit"|"human"`；响应返回 `rebased/frozen/mismatched` 计数。
+
+- [ ] **Step 1: Write the failing tests**
+
+`test/web-workbook-reupload.test.js`：
+- 下载工作副本未改系统列 → `inherit` 后新 asset journal 有记录，重跑可刷新。
+- 手工改了某系统格 → `inherit` 时该格 frozen，其余一致格重播种。
+- 未传/`human` → 全部冻结，journal 不新增。
+- 旧 asset 无 journal → 全部 frozen，不伪造系统格。
+- 系统列识别只认表头带前缀，不误伤人工列。
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `npm run test:file -- test/web-workbook-reupload.test.js`
+Expected: FAIL，模块/动作不存在。
+
+- [ ] **Step 3: Implement detection + rebase**
+
+复用 Plan 1 的 journal key（`caseId` + `columnKey`/cellRef）与工作副本读取；只写 journal，不改单元格内容；原子/幂等（同 newAssetId 重复 rebase 不重复堆记录）。上传响应新增计数；UI 默认 human，选择 inherit 需显式。
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `npm run test:file -- test/web-workbook-reupload.test.js`
+Expected: PASS。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/web/workbook-reupload.ts src/panel/actions.ts test/web-workbook-reupload.test.js
+git commit -m "feat: rebase system cell journal when reuploading workbooks"
+```
+
+---
+
 ### Task 4: web job 队列与下发预占
 
 **Files:**
@@ -240,16 +290,16 @@ git commit -m "feat: accept package materials and script bundle assets"
 **Interfaces:**
 - Consumes: `selectWebAssignment` (Task 2), `acquireDeviceLeases`/`releaseDeviceLeases`, `createRegressionTask`, `claimWebJob`; Plan 1 `WebAssetRecord`/`WebProjectRecord`.
 - Produces:
-  - `WebJobSpec { kind: "web-test"; assignment: "auto" | "manual"; targetHostId: string | null; deviceSerial: string | null; requirements: WebDispatchRequirements; deviceLeaseId: string | null; excelAssetId: string; packageAssetId: string; materialsAssetId: string | null; scriptSetId: string | null; executionMode: "maestro" | "llm"; caseFilter: { modules: string[]; caseIds: string[] }; retry: number; allowStaleScript: boolean; allowPartialUnresolved: boolean; assetSnapshot: WebAssetSnapshot[]; reassignCount?: number }`
+  - `WebJobSpec { kind: "web-test"; assignment: "auto" | "manual"; devicePinned: boolean; targetHostId: string | null; deviceSerial: string | null; requirements: WebDispatchRequirements; deviceLeaseId: string | null; excelAssetId: string; packageAssetId: string; materialsAssetId: string | null; scriptSetId: string | null; executionMode: "maestro" | "llm"; caseFilter: { modules: string[]; caseIds: string[] }; retry: number; allowStaleScript: boolean; allowPartialUnresolved: boolean; assetSnapshot: WebAssetSnapshot[]; reassignCount?: number }`
   - `WebAssetSnapshot { kind: "excel" | "package" | "materials" | "scripts"; id: string; sha256: string; filename: string }`
   - `deviceLeaseId` 使用现有租约主键 `"<hostId>:<serial>"`（`device_leases` 无独立 id 列）；runner 以 `deviceSerial` + `targetHostId` 校验，不依赖独立租约 id。
   - `RegressionTaskRecord` 增加 `jobSpec: Record<string, unknown> | null`、`deviceSerial: string | null`、`deviceLeaseId: string | null`；`CreateRegressionTaskInput` 同名可选字段。
   - `claimWebJob(input: { runnerId: string; hostId: string; deviceSerial: string; instanceId: string }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null>` 全局原子领取：只命中 `status='pending'`、`job_spec IS NOT NULL`、`target_host_id=$hostId`、`device_serial=$serial` 的最旧任务；`FOR UPDATE SKIP LOCKED`（Memory/File 用单线程互斥）。
   - `listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>>`：全局只读 pending + job_spec 列表，供回池/面板使用。
-  - `createWebJob(input: { rootPath; assignment; targetHostId?; deviceSerial?; requirements; excelAssetId; packageAssetId; materialsAssetId?; scriptSetId?; executionMode; caseFilter; retry?; priority?; createdBy? }): Promise<{ task: RegressionTaskRecord; assignment: { hostId; deviceSerial; score } }>`
+  - `createWebJob(input: { rootPath; assignment; devicePinned?; targetHostId?; deviceSerial?; requirements; excelAssetId; packageAssetId; materialsAssetId?; scriptSetId?; executionMode; caseFilter; retry?; priority?; createdBy? }): Promise<{ task: RegressionTaskRecord; assignment: { hostId; deviceSerial; score } }>`
   - `releaseWebJob(input: { rootPath; taskId; reason: "cancelled" | "expired" | "reassign" }): Promise<boolean>`
   - `assignPendingWebJobs(input: { nowMs; runnerTtlMs: number }): Promise<number>`：给 `device_serial IS NULL` 的 pending web job 选设备并预占；auto 任务在全池重选，manual 任务只选目标 host 的设备；无候选保持 pending 并记录原因。
-  - `reassignExpiredWebJobs(input: { nowMs; leaseTtlMs: number }): Promise<number>`：清理预占过期/目标 runner 离线的 pending 任务；auto 任务释放 lease、清空 `targetHostId` + `deviceSerial`，回到全局池重新选机；manual 任务保留 `targetHostId`、清空 `deviceSerial`，只在该 host 上线后重选；记录 `reassignCount`/最近原因，超过上限升级告警但仍不静默改派。
+  - `reassignExpiredWebJobs(input: { nowMs; leaseTtlMs: number }): Promise<number>`：清理预占过期/目标 runner 离线的 pending 任务；auto 任务释放 lease、清空 `targetHostId` + `deviceSerial`，回到全局池重新选机；manual 且 `devicePinned=false` 保留 `targetHostId`、清空 `deviceSerial`，只在该 host 上线后重选；`devicePinned=true` 保留 host+serial 等待，不改派。`reassignCount` 上限 3，超限 `failed:无法稳定分配`/退避 pending 并告警。
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -261,6 +311,8 @@ git commit -m "feat: accept package materials and script bundle assets"
 - 自动任务预占 TTL 过期 + runner 离线 → `reassignExpiredWebJobs` 释放并重选；手动任务保持 pending 且返回告警原因。
 - 手动指定 host 离线时允许创建 pending（无 device/lease）；host 上线后 `assignPendingWebJobs` 选设备并预占，随后可 claim。
 - 无候选时 pending 原因可见；候选出现后 `assignPendingWebJobs` 完成绑定。
+- 组合校验：`ios × device × maestro` 直接 rejected；`ios × device × llm` 允许；Maestro 发现无 Android/iOS 模拟器 → 只能 draft。
+- 资产精确匹配：任务 Excel/package 与脚本集引用不一致 → 拒绝；历史版本与脚本集精确匹配 → 允许；`allowStaleScript` 才允许“旧脚本+新资产”。
 - 取消任务释放 lease。
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -348,11 +400,11 @@ git commit -m "feat: run web jobs with per-device workers"
 **Interfaces:**
 - Consumes: `WebAssetRecord`/`jobSpec.assetSnapshot`、`ExecFn`、现有 `writeFileAtomic`/`sha256` 工具。
 - Produces:
-  - `prepareWebJobWorkspace(input: { jobId; projectSlug; workRoot; cacheRoot; assets: Array<{ kind: "excel" | "package" | "materials" | "scripts"; sha256; filename; url }>; download: (url: string) => Promise<Buffer>; exec: ExecFn }): Promise<{ jobDir: string; files: Map<string, string>; flowsDir: string | null; warnings: string[] }>`
+  - `prepareWebJobWorkspace(input: { jobId; projectSlug; workRoot; cacheRoot; assets: Array<{ kind: "excel" | "package" | "materials" | "scripts"; sha256; filename; url; secret?: boolean }>; download: (url: string) => Promise<Buffer>; exec: ExecFn }): Promise<{ jobDir: string; files: Map<string, string>; flowsDir: string | null; warnings: string[] }>`
   - `verifySha256(buffer, expected): boolean`
   - `installWebPackage(input: { platform; deviceSerial; packagePath; exec; env; timeoutMs? }): Promise<{ ok: true; packageName: string | null; version: string | null } | { ok: false; reason: string }>`
   - HTTP：`GET /panel/api/jobs/:id/spec` 返回 jobSpec + 资产下载 URL；`GET /panel/api/jobs/:id/assets/:assetId` 流式下载，要求 runner token；路径必须落在项目 `.artemis/web/assets` 内。
-- 本地 CAS：`<cacheRoot>/assets/<sha256>`；命中先校验 sha256，命中后硬链接/复制到 job 目录；未命中下载并原子写入。校验失败删除临时文件并返回 typed error，不安装。
+- 本地 CAS：`<cacheRoot>/assets/<sha256>`；命中先校验 sha256，命中后硬链接/复制到 job 目录；未命中下载并原子写入。校验失败删除临时文件并返回 typed error，不安装。`secret:true` 的 materials **不写 CAS**：只写 `jobDir/secrets/`（0600），job 结束/失败删除；清理测试断言 secret 不进 cache。
 - `scripts` 资产是 zip；校验后解压到 `<jobDir>/flows/`（`unzip -o`，5s 超时；失败返回 `script-extract-failed`）。解压条目必须限制在 `flows/` 内，拒绝 `..`/绝对路径。Plan 2 后续把生成的 script set 打包成同一 zip 格式。
 - Excel 资产若下载，使用 CAS **原件**（不含 8 列写回）；仅落 `jobDir/attachments/` 供排查，runner 不解析、不作为 case set。工作副本只存在中心。
 
@@ -361,6 +413,7 @@ git commit -m "feat: run web jobs with per-device workers"
 `test/web-job-workspace.test.js`：
 - 首次下载写入 CAS 与 job 目录；第二次同 sha 命中缓存，download 只调用一次。
 - sha 不匹配 → 抛 `asset-sha-mismatch`，缓存不落地，job 目录无文件。
+- `secret:true` materials：只写 0600 job 目录、不进 CAS；job 结束/失败后文件删除。
 - APK 安装：fake exec 断言 `adb -s <serial> install -r <path>`；失败返回 reason。
 - iOS 模拟器：`xcrun simctl install <udid> <path>`。
 - 下载路径穿越/未知 asset → 404；非 runner token → 401。
@@ -440,14 +493,16 @@ git commit -m "feat: execute maestro web jobs and map per-case results"
 **Files:**
 - Create: `src/web/results.ts`
 - Modify: `src/panel/actions.ts` / `src/http-server.ts`
-- Modify: `src/web/writeback.ts`（仅在需要适配 job 结果时）
+- Modify: `src/web/writeback.ts`（两阶段 journal 适配）
+- Modify: `src/db/types.ts` / `src/db/memory.ts` / `src/db/file.ts` / `src/db/postgres.ts`（journal status）
 - Test: `test/web-result-ingest.test.js`
 
 **Interfaces:**
 - Consumes: `WebJobExecutionResult` (Task 7), Plan 1 `parseExcel`/`findExcelMapping`/`ensureWorkbookCopy`/`writebackWorkbook`/`recordExcelWriteback`/`lastExcelWritebackByCellKey`, `WebAssetRecord`.
 - Produces:
-  - `POST /panel/api/jobs/:id/results`：JSON body `{ execution: WebJobExecutionResult; device: { serial; model; osVersion }; package: { name; version; filename }; startedAt; finishedAt; evidence?: string[] }`；runner token 鉴权；幂等（同 jobId + 内容 sha 重复上传返回 200 不重复写）。
+  - `POST /panel/api/jobs/:id/results`：JSON body `{ execution: WebJobExecutionResult; device: { serial; model; osVersion }; package: { name; version; filename }; startedAt; finishedAt; evidence?: string[]; tokenUsage?: Array<{ caseId; traceId; model; promptTokens; completionTokens; cacheCreateTokens; cacheReadTokens }>; tokenArtifacts?: { dataEngineDb?: string; statusJson?: string } }`；runner token 鉴权；幂等（同 jobId + 内容 sha 重复上传返回 200 不重复写）。LLM 模式必须带 `tokenUsage` + 两个原始工件；缺失记 `token-unavailable`，不按 0 计费。
   - `ingestWebJobResult(input): Promise<{ taskStatus; gate; writtenCells; warnings }>`：持久化 `.artemis/web/results/<jobId>/result.json`；聚合 PASS/FAIL/SKIP/ERROR；调用写回引擎更新 Excel 工作副本；`writeback-failed` 不改变任务成功状态但记录原因。
+  - `writebackWorkbook`/`recordExcelWriteback` 支持两阶段 journal：`pending` → 写格 → `confirmed`；`recoverPendingWriteback(rootPath, assetId)` 在服务启动/写回前扫描 pending 并 confirm/重写。`allowClearedRefresh` 只对 confirmed 行生效。
   - 结果详情包含 device model/osVersion、package name/version/filename、started/finished、trace/evidence 路径。
 - 写回映射规则：用任务 `excelAssetId` 找 mapping；`caseIdHeader` 从 mapping 解析；`lastSystemValue` 用 `lastExcelWritebackByCellKey`；写 8 列（§5.2 顺序）；写回失败返回 `writeback-failed`。
 - **人工清空**：默认仍冻结（当前空 + journal 有值 → 不写）；新增显式 `allowClearedRefresh?: boolean`（任务/写回调用参数）。只有 `true` 时，空且 journal 有值的系统格才允许重新写入；默认 false 保持冻结语义。不要因为空值自动解冻。
@@ -460,7 +515,9 @@ git commit -m "feat: execute maestro web jobs and map per-case results"
 - 重复上传同结果 → 幂等，不重复写 journal。
 - runner token 缺失/错误 → 401；未知 job → 404；结果 body 非法 → 400。
 - writeback 失败（例如工作副本损坏）→ 结果仍保存，任务返回 `writeback-failed`，不报成功。
-- 人工清空系统格：默认冻结、不写；显式 `allowClearedRefresh:true` 时允许重写并刷新 journal。
+- 人工清空系统格：默认冻结、不写；显式 `allowClearedRefresh:true` 时允许重写并刷新 journal（仅 confirmed 行）。
+- 两阶段 journal：模拟写格后崩溃（pending 未 confirm）→ 恢复扫描按单元格值 confirm 或重写，不把该格误判人工格。
+- 远程 LLM 结果：带 `tokenUsage` + `dataEngineDb/statusJson` 工件 → 中心按回传工件计费；缺工件 → `token-unavailable`，不按 0 计费，不伪造本地路径。
 - 无 mapping/无 excelAssetId → 明确错误，不伪造写回。
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -591,7 +648,7 @@ git commit -m "test: cover remote web job dispatch and execution"
 
 ## Self-Review
 
-- **Spec coverage:** 覆盖 §1.2.25–29、§3.4、§4.7、§4.8、§7.1、§9、§12.1 的选机/预占/并行/回池/资产/执行/写回；Plan 2 的脚本生成、Plan 4 的计费明确不在本计划。
-- **Type consistency:** `RunnerDevice.model/osVersion`、`WebRunnerRecord`、`WebDispatchRequirements`、`RegressionTaskRecord.jobSpec/deviceSerial/deviceLeaseId`、`claimWebJob`、`executeWebJob` 在任务间一致。
-- **Review Focus tests:** 同设备并发、下发后离线、sha 校验、结果上传失败、能力缺失降级均有对应任务测试。
-- **已知边界:** `executionMode=llm` 只保留接口并显式报 `llm-execution-not-wired`；Plan 3 的 E2E 使用手工/上传 Maestro bundle。此边界必须在 DESIGN 和响应中可见，不能伪造 PASS。
+- **Spec coverage:** 覆盖 §1.2.25–29、§3.2.4/§3.4、§4.2/§4.2b/§4.7/§4.8、§5.2、§6.4、§7.1、§8.1、§9、§12.1 的选机/预占/并行/回池/资产/执行/写回；Plan 2 的脚本生成、Plan 4 的计费明确不在本计划；但 Task 8 保留远程 LLM token 工件的接口契约，避免后续接线时改结果形状。
+- **Type consistency:** `RunnerDevice.model/osVersion`、`WebRunnerRecord`、`WebDispatchRequirements`、`WebJobSpec.devicePinned/targetHostId/deviceSerial/deviceLeaseId`、`claimWebJob`、`executeWebJob`、`tokenUsage/tokenArtifacts` 在任务间一致。
+- **Review Focus tests:** 同设备并发、下发后离线、sha 校验、secret materials 不进 CAS、重上传 inherit/human、两阶段 journal、结果/Token 上传失败、能力缺失降级均有对应任务测试。
+- **已知边界:** `executionMode=llm` 的生产执行器仍留给 Plan 2；但 Plan 3 已定义远程 LLM 的 token 回传契约（`tokenUsage` + `data_engine.db`/`status.json`），不能等到计费阶段再发明。Plan 3 的 E2E 使用手工/上传 Maestro bundle；此边界必须在 DESIGN 和响应中可见，不能伪造 PASS。
