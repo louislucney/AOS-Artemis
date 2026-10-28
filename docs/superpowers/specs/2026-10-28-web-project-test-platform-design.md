@@ -51,6 +51,11 @@
 22. **iOS 混合**：Android 与 iOS 模拟器用 Maestro；iOS 真机用 Appium / 现有 AOS 执行器，不走 Maestro。
 23. **敏感信息不发给模型**：LLM 模式只看到占位符；账号/密码由执行器在设备动作前替换，模型、prompt、trace 不出现明文。
 24. LLM 凭证与计费范围：第一版先用平台统一 LLM 条目；逐项目 key / 客户自带 key 的计费归属后续新增（见 §8.5）。
+25. 下发时用户可指定执行机，也可再指定具体设备；都不指定时系统在下发时自动选 host + device。
+26. 自动选机：平台、iOS 模拟器/真机、执行方式所需工具是**硬要求**；设备型号、系统版本是**软偏好**，用于同池排序，不满足也可降级。
+27. 任务绑定到具体设备；下发时预占设备租约，同一设备同一时刻只执行一个任务；一台执行机按空闲设备数并行。
+28. 自动选中的设备掉线或超时未领取 → 释放回池重选；用户指定设备 → 保持 pending 并告警，不静默改派。
+29. 执行机心跳必须上报设备型号与系统版本；没有这两项时只能按平台/设备类型匹配，软偏好不可用。
 
 ### 1.3 非目标（第一版不做）
 
@@ -116,10 +121,11 @@
 
 ### 3.4 下发任务
 
-1. 「下发」选择项目、执行机、平台、Excel 版本、测试资料版本、安装包版本、执行方式（Maestro / LLM）、用例范围（全部/按模块/按编号）、重试次数、优先级。
-2. 任务进入现有 runner 队列；执行机领取后自动选空闲设备。
-3. 执行机安装包、运行脚本或 LLM 任务；结果回写。
-4. 面板显示任务状态、逐用例结果、设备/包/时间、证据；Excel 工作副本右侧空白列补充摘要。
+1. 「下发」选择项目、平台、Excel 版本、测试资料版本、安装包版本、执行方式（Maestro / LLM）、用例范围（全部/按模块/按编号）、重试次数、优先级。
+2. 执行机选择：自动（按硬要求过滤 + 型号/系统版本打分）或指定 host；指定 host 时可再指定具体设备（serial），也可让系统在该 host 上选。
+3. 系统在下发时完成 host + device 选择并预占设备租约；指定模式校验设备归属、硬要求与空闲；自动模式无候选时任务保持 pending 并给出原因。任务入中心队列，绑定 `targetHostId + deviceSerial`。
+4. 执行机按设备 worker 领取绑定给自己的任务；安装包、运行脚本或 LLM 任务；结果回写。
+5. 面板显示任务状态、逐用例结果、设备/包/时间、证据；Excel 工作副本右侧空白列补充摘要。
 
 ### 3.5 出账
 
@@ -140,7 +146,7 @@
 - `id`, `projectId`, `kind`（`excel` | `materials` | `package`）, `version`, `filename`, `originalSha256`, `originalStoragePath`, `size`, `uploadedBy`, `createdAt`, `metadata`（包名/版本/平台/Excel 映射摘要）。
 - **原件不可变**：上传原件进 CAS（`assets/<sha256>.xlsx`），供引用、重放、staleness、审计；新上传产生新版本。
 - **Excel 工作副本是派生物**：`workbook/<assetVersionId>.xlsx`，系统可写；其 sha 变化**不影响**原件 sha、脚本 staleness、assetSnapshot 或 CAS。脚本/任务/映射一律挂 `assetVersionId` + 原件 sha。
-- **runner 不需要 Excel**：执行所需的 case set、taskDesc、脚本、测试资料由中心派生；runner CAS 只缓存 package 与 materials 附件，不缓存 Excel 工作副本。
+- **runner 不以 Excel 为执行依据**：执行所需的 case set、taskDesc、脚本、测试资料由中心派生；runner CAS 只缓存 package 与 materials 附件，不缓存 Excel 工作副本。任务可携带 Excel 原件只读快照供排查，但执行与 staleness 一律以中心 case set/原件 sha 为准。
 - **写回 journal**：每次写回记录 `jobId, assetVersionId, caseId, columnKey, cellRef, value, writtenAt, actor`，用于区分“系统写的格”和“人工写的格”（见 §5.2）。
 
 ### 4.2b Excel 写回 Journal
@@ -180,12 +186,22 @@
 ```json
 {
   "kind": "web-test",
+  "assignment": "manual" | "auto",
+  "targetHostId": "...",
+  "deviceSerial": "...",
+  "requirements": {
+    "platform": "android" | "ios",
+    "deviceKind": "device" | "simulator" | "any",
+    "deviceModel": ["iPhone 15"],
+    "osVersion": { "min": "17.0", "max": null },
+    "tools": ["maestro"]
+  },
+  "deviceLeaseId": "...",
   "excelAssetId": "...",
   "materialsAssetId": "...",
   "packageAssetId": "...",
   "scriptSetId": "...",
   "executionMode": "maestro" | "llm",
-  "platform": "android" | "ios",
   "caseFilter": { "modules": [], "caseIds": [] },
   "retry": 1,
   "allowStaleScript": false,
@@ -199,7 +215,10 @@
 ```
 
 - 现有 `refs`/`platforms`/`priority`/`targetHostId` 继续使用；`refs` 指向由 Excel 生成的内部 case set，保证现有 runner/报表兼容。
-- `assetSnapshot` 在创建任务时冗余写入 sha256/filename/包名/版本，防止资产后续被归档/删除导致结果无法溯源。
+- `assignment=manual` 时 `targetHostId` 必填，`deviceSerial` 可空（空表示在该 host 上按硬要求/软偏好选设备）；`assignment=auto` 时两者由系统在下发时写入。
+- `requirements.platform`、`requirements.deviceKind`（非 `any` 时）、`requirements.tools` 是硬过滤；`deviceModel`/`osVersion` 是软偏好，仅用于同池排序。
+- `deviceLeaseId` 指向下发时创建的预占租约；现有 `device_leases` 主键是 `(host_id, serial)`，因此取 `"<hostId>:<serial>"`；runner 领取后转为执行租约，任务取消/超时/失联时释放。
+- `assetSnapshot` 在创建任务时冗余写入 sha256/filename/包名/版本，防止资产后续被归档/删除导致结果无法溯源。Excel 原件可作为只读快照随任务携带，但执行以中心派生的 case set/taskDesc 为准（见 §4.2）。
 - `allowPartialUnresolved` 默认 false；true 时跳过 `unresolved` 用例，Excel 写 `SKIP（脚本未就绪）`，任务状态为 `partial` 而非 PASS/FAIL。
 
 ### 4.8 任务结果 TestJobResult
@@ -305,6 +324,7 @@
 ### 7.1 任务与执行机
 
 - 复用现有 runner 队列、心跳、租约、取消、优先级；`job_spec.kind=web-test` 由 runner 分支处理。
+- 现有 `runners` 行是项目级（`project_id` 必填于写入路径）；远程 web 任务不要求执行机预存项目，新增 **host-level `web_runners`** 注册表（hostId/instanceId/设备/工具/最后心跳），复用同一心跳、租约、取消语义，不改旧项目 runner。web job 仍复用 `regression_tasks`（新增 `job_spec`/`device_serial`/`device_lease_id`），领取走中心全局 `claimWebJob`，不按项目 `rootPath`。
 - **远程分发**：中心保存项目与资产；任务 `job_spec` 带资产版本/脚本集与下载地址。执行机领取后：
   1. 在本地工作目录 `<runnerWorkDir>/<projectSlug>/<jobId>/` 下载 Excel、测试资料、安装包、脚本集；
   2. 校验 sha256/包名/版本；
@@ -313,11 +333,17 @@
 - 执行机只要求：已注册 runner、平台工具（adb / simctl / Appium / Maestro / JDK）、可访问中心下载/上传端点；不要求预存项目目录。
 - **资产 CAS 缓存**：runner 本地按 `sha256` 缓存安装包/资产（`<runnerCache>/assets/<sha256>`）；下载前先查缓存并校验，命中则硬链接/软链接到 job 工作目录，未命中才下载。同一 APK/IPA 被多个任务引用时不重复下载。
 - **清理**：job 工作目录按 LRU + 磁盘水位清理（默认磁盘使用率 ≥80% 触发，保留最近 N 个 job），只删已成功回传的结果目录，**保留资产 CAS 缓存**；资产缓存自身按总容量上限淘汰。清理策略可配置，操作写日志。
-- 用户选执行机，不选设备；runner 按 `job_spec.platform` 选空闲设备：
-  - 平台匹配；
-  - 未被租约占用；
-  - 最近最少使用优先；
-  - 无可用设备 → 任务保持 pending，面板显示原因（不报成功）。
+- **下发即选机**（`src/panel`/`src/runner`）：
+  - `assignment=manual`：用户指定 host；可选指定 serial。指定 serial 时必须属于该 host、满足硬要求、当前无有效租约；不指定 serial 时在该 host 上按硬要求过滤、按型号/系统版本打分选一台空闲设备。
+  - `assignment=auto`：在全部在线 runner 上先按硬要求过滤，再按软偏好打分选 host + device；同分时优先最近最少使用，最后随机。
+  - 硬要求：平台、`deviceKind`（非 `any` 时）、执行方式所需工具、设备在线且无租约；软偏好：设备型号、系统版本。
+  - 选中后立即写入 `job_spec.targetHostId/deviceSerial` 并创建**预占租约**；任务取消、超时未领取或机器失联时释放。
+  - 无候选 → 任务保持 `pending`，面板显示「等待满足要求的执行机/设备」；不报成功、不静默换机。
+- **执行机能力上报**：`RunnerDevice` 在 `serial/name/platform/kind/state` 之外增加 `model`、`osVersion`（Android `getprop ro.product.model`/`ro.build.version.release`；iOS 模拟器 `simctl list -j` 的 device/runtime；iOS 真机 `devicectl`/`ideviceinfo`）。心跳同时上报 `tools`；缺少型号/版本时软偏好不可用，只按硬要求匹配。
+- **设备级并行**：runner 为每台空闲设备维护一个 worker；一台机器可并行执行多个任务，数量不超过空闲设备数。领取与执行都以 `deviceSerial` 为粒度，`device_leases` 保证同一 serial 不会被两个任务同时占用。
+- **中心队列领取**：远程 web 任务不要求执行机预存项目目录。领取按 `targetHostId`（指定模式）或「满足硬要求且在线」的 runner 集合（自动模式）进行；任务绑定具体设备，领取时校验租约仍有效并转执行租约。
+- **掉线与超时**：自动选中的 host/device 在 `lease TTL` 内未领取 → 释放租约、回池重选；用户指定 → 保持 pending 并告警，不静默改派。执行中失联按现有 runner 失联/任务回收规则处理。
+- **资产下发**：任务携带 `assetSnapshot` 的 sha256、文件名、包名/版本与下载地址；执行机按 sha256 校验后使用本地 CAS 缓存。Excel 仅作只读快照（可选），执行以中心派生的 case set/taskDesc 为准。
 - 安装：
   - Android：`adb -s <serial> install -r <apk>`；校验包名/版本与资产一致。
   - iOS 模拟器：`xcrun simctl install <udid> <app>`；真机：`xcrun devicectl device install app`（或现有 Appium/WDA 安装路径）。
@@ -387,7 +413,7 @@
 - **项目**：新增项目、项目详情、归档；显示平台/包名/客户/账期。
 - **测试资产**：Excel 版本与映射、测试资料、安装包版本；上传/引用/下载。
 - **脚本**：脚本集列表、生成/重新发现、状态（draft/ready/stale）、下载。
-- **下发**：基于现有下发向导扩展，选择项目/执行机/资产版本/执行方式/用例范围。
+- **下发**：基于现有下发向导扩展，选择项目/资产版本/执行方式/用例范围；执行机可选「自动」或指定 host，指定 host 后可再选具体设备（也可让系统选）；型号/系统版本作为软偏好展示匹配分。
 - **结果**：任务列表、任务详情、逐用例/步骤/截图/日志/Excel 摘要。
 - **计费**（admin）：价格表、加成、汇率、账期、账单、对账调整。
 - 现有「用例库」「档案」「运维」「使用统计」保持；新页面可挂到现有导航或项目详情内。
@@ -398,7 +424,8 @@
 - `POST /panel/api/projects/:id/assets`（multipart：excel/materials/package）
 - `POST /panel/api/projects/:id/excel-mappings` / `GET`
 - `POST /panel/api/projects/:id/scripts/generate` / `POST .../discover`
-- `POST /panel/api/jobs`（创建测试任务，写 `job_spec`）/ `POST /panel/api/jobs/:id/cancel`
+- `GET /panel/api/hosts` / `GET /panel/api/hosts/:id/devices`（下发选机与选设备；含在线、工具、型号/系统版本、租约状态）
+- `POST /panel/api/jobs`（创建测试任务，写 `job_spec`；body 含 `assignment`、`targetHostId?`、`deviceSerial?`、`requirements`）/ `POST /panel/api/jobs/:id/cancel`
 - `GET /panel/api/jobs/:id`（结果/进度）
 - `GET/POST /panel/api/billing/price-book`、`/billing/periods`、`/billing/invoices`、`/billing/adjustments`
 - 全部走现有鉴权、角色 scope、`X-AOS-Console`、审计；上传大小/类型白名单。
@@ -431,7 +458,7 @@
 2. 能上传任意 Excel，完成列映射；缺用例编号/步骤/重复行的报告准确；能引用历史 Excel。
 3. 能上传 APK/IPA 与测试资料，解析包名/版本/build；敏感资料不落日志。
 4. 能生成 Maestro 草稿脚本，经真实设备发现后生成带 `id:` 的正式脚本；无法解析的元素进入建议列。
-5. 能下发任务到指定执行机；执行机自动选设备、安装包、执行脚本/LLM，并回传逐用例结果。
+5. 能下发任务到指定执行机，或自动选 host + device；可再指定具体设备；硬要求不满足时拒绝/保持 pending，软偏好只影响同池排序；同一设备不会被两个任务同时占用；自动选中掉线超时回池重选，用户指定则等待并告警。执行机安装包、执行脚本/LLM，并回传逐用例结果。
 6. 结果详情包含设备型号、系统版本、包名/版本/文件名、开始/结束时间、trace、步骤/截图/日志。
 7. Excel 工作副本以用例编号列为锚追加 8 列：只填空白格/未被人工改动的系统格；人工内容不被覆盖；重复生成不重复堆列；写回后原件 sha 不变、脚本不 stale。
 8. LLM token 费用按项目/任务/模型/用途记录；价格表/加成/汇率快照正确；任意账期可冻结出账；厂商账单对账调整可见。
@@ -442,6 +469,7 @@
 
 ### 12.1 测试与 fixture 清单
 
+- 选机/租约：硬要求过滤、型号/系统版本打分、auto 无候选 pending、manual 指定设备归属校验、同 serial 并发拒绝、预占超时释放、自动回池、手动等待告警、按设备并行、心跳型号/版本缺失降级。
 - 计费数学：cache create/read 分价、fx-stale、`pricing-pending` 补价重算、4→2 舍入只发生一次、缺价拒绝、账期边界、幂等唯一键。
 - Excel 写回：一次追加、只填空白、journal 刷新系统格、人工改后冻结、合并/公式跳过、幽灵列锚定、写回失败重试、往返 parts 自检。
 - Secret 红线：LLM 占位符替换、Maestro env 文件注入、产物 grep 0 命中、密码步截图排除。
