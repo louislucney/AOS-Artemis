@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
+
 import { MemoryStore } from "../dist/db/memory.js";
+import { handlePanelActionRequest } from "../dist/panel/actions.js";
 import { handlePanelRequest } from "../dist/panel/web.js";
 
 async function tempDir(t, prefix) {
@@ -66,6 +69,30 @@ function assetsUrl(rootPath, hostId = null) {
   return new URL(`http://x/panel?${params.toString()}`);
 }
 
+function inlineScripts(html) {
+  return [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+}
+
+async function xlsxBuffer(headers) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("用例");
+  sheet.addRow(headers);
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
+function multipartBody(boundary, { project, filename = "cases.xlsx", content }) {
+  return Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="project"\r\n\r\n${project}\r\n` +
+        `--${boundary}\r\nContent-Disposition: form-data; name="kind"\r\n\r\nexcel\r\n` +
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n`,
+      "utf8"
+    ),
+    content,
+    Buffer.from(`\r\n--${boundary}--\r\n`, "utf8")
+  ]);
+}
+
 test("web assets page: asset versions, upload form and mapping hooks", async (t) => {
   const { deps, rootPath, asset } = await setup(t);
   const response = await handlePanelRequest(assetsUrl(rootPath), deps);
@@ -90,6 +117,12 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /\/panel\/api\/projects\/excel\/preview/, "预览端点");
   assert.match(html, /\/panel\/api\/projects\/excel\/mapping/, "保存映射端点");
   assert.match(html, /id="mapping-save"/, "保存映射按钮");
+  assert.match(html, /id="asset-upload-submit"[^>]*data-busy-label="上传中…"/, "上传防重复提交");
+  assert.match(html, /id="mapping-preview-submit"[^>]*data-busy-label="预览中…"/, "预览防重复提交");
+  assert.match(html, /id="mapping-save"[^>]*data-busy-label="保存中…"/, "保存防重复提交");
+  assert.match(html, /id="asset-select"[^>]*data-preview-reset="1"/, "资产变更重置预览");
+  assert.match(html, /id="asset-header-row"[^>]*data-preview-reset="1"/, "表头行变更重置预览");
+  assert.match(html, /addEventListener\('change',resetPreview\)/, "预览重置 hook");
 
   assert.match(html, /<code>用例<\/code>/, "已有映射工作表");
   assert.match(html, /用例编号→用例编号/, "已有映射字段");
@@ -97,6 +130,12 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
 
   assert.match(html, /a&lt;b&gt;\.xlsx/, "文件名转义");
   assert.ok(!html.includes("a<b>.xlsx"), "原始文件名不直出");
+
+  const ownScripts = inlineScripts(html).filter((code) =>
+    code.includes("/panel/api/projects/assets")
+  );
+  assert.equal(ownScripts.length, 1, "资产页脚本存在");
+  assert.doesNotThrow(() => new Function(ownScripts[0]), "资产页内联脚本可解析");
 });
 
 test("web assets JSON view exposes assets and mappings", async (t) => {
@@ -161,4 +200,58 @@ test("project page links to assets and preserves host", async (t) => {
     /href="\/panel\?project=[^"]+&amp;section=assets&amp;host=host-a"[^>]*>测试资产/,
     "项目页入口携带项目与主机"
   );
+});
+
+test("web asset upload and mapping save clear the panel cache", async (t) => {
+  const { deps, rootPath } = await setup(t);
+  let cleared = 0;
+  const cache = {
+    get() {
+      return undefined;
+    },
+    set() {},
+    clear() {
+      cleared += 1;
+    }
+  };
+  const cacheDeps = { ...deps, cache };
+  const identity = { name: "alice", role: "maintainer", source: "user" };
+  const boundary = "----aosAssetsUi";
+  const rawBody = multipartBody(boundary, {
+    project: rootPath,
+    content: await xlsxBuffer(["用例编号", "步骤"])
+  });
+
+  const upload = await handlePanelActionRequest(
+    {
+      method: "POST",
+      url: new URL("http://localhost/panel/api/projects/assets"),
+      body: {},
+      rawBody,
+      contentType: `multipart/form-data; boundary=${boundary}`,
+      identity
+    },
+    cacheDeps
+  );
+  assert.equal(upload.status, 200);
+  assert.equal(cleared, 1, "上传成功清空面板缓存");
+  const assetId = JSON.parse(upload.body).asset.id;
+
+  const save = await handlePanelActionRequest(
+    {
+      method: "POST",
+      url: new URL("http://localhost/panel/api/projects/excel/mapping"),
+      body: {
+        project: rootPath,
+        assetId,
+        sheetName: "用例",
+        headerRow: 1,
+        columnMap: { caseId: "用例编号", steps: "步骤" }
+      },
+      identity
+    },
+    cacheDeps
+  );
+  assert.equal(save.status, 200);
+  assert.equal(cleared, 2, "保存映射成功清空面板缓存");
 });

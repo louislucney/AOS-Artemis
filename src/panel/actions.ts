@@ -602,6 +602,7 @@ async function uploadAssetAction(
         version: String(asset.version)
       }
     });
+    deps.cache?.clear();
     return json(200, { ok: true, asset });
   } catch (error) {
     const code = error instanceof WebAssetError ? error.code : null;
@@ -707,6 +708,7 @@ async function saveExcelMappingAction(
       summary: `保存 Excel 列映射：${mapping.sheetName}（指纹 ${mapping.headerFingerprint.slice(0, 12)}）`,
       refs: { ...refs, headerFingerprint: mapping.headerFingerprint }
     });
+    deps.cache?.clear();
     return json(200, { ok: true, mapping });
   } catch (error) {
     const response = excelMappingErrorResponse(error);

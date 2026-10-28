@@ -3099,5 +3099,6 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **路由**：`GET /panel?project=<root>[&host=<id>]&section=assets` 返回新 `PanelView` 分支 `web-assets`（资产 `listWebAssets(..., "excel")`、映射 `listExcelMappings(rootPath)`，均走项目 host 作用域的 store）；`/panel.json` 同源返回 `{ok,view:"web-assets",assets,mappings}`。项目页新增「测试资产」入口并保留 `host`。
 - **页面**（`src/console/pages.ts` `renderWebAssetsPage`）：资产版本表（文件名/版本/大小/sha256 前 12 位/上传时间）；上传表单（`file`，仅 `.xlsx`，multipart POST `/panel/api/projects/assets`，字段 `project`+`kind=excel`[+`host`]，头 `X-AOS-Console`）；列映射区（资产下拉 + 表头行默认 1 + 预览 → 渲染规范字段建议映射 → 保存）；已保存映射表（资产/工作表/已映射字段/指纹/保存人/时间）。所有用户文本经 `escapeHtml`；客户端渲染值经文本转义。
 - **权限口径**：写动作（上传/预览/保存）要求 `capabilities.actions !== false` 且角色为 maintainer/admin；viewer/dispatcher 或缺省关闭时控件 `disabled`、端点脚本不注入（服务端仍按 §13.250/§13.252 的 maintainer 闸门强制）。只读角色仍可查看版本与已保存映射。
+- **刷新与防错**：上传/保存成功后服务端 `cache.clear()`（避免 5s 面板缓存让 reload 读到旧页、诱使重复上传）；资产或表头行变更即清空预览并禁用保存；上传/预览/保存请求在途时按钮禁用（失败恢复、成功保持禁用并 reload）；预览响应绑定发起时的资产/表头行，期间变更则丢弃旧响应。
 - **边界**：不实现写回/结果列 UI、materials/package 上传、资产删除、脚本/任务页；预览保存的是建议映射原样（用户改列仍需后续 API/页面）。
 - **测试**：`test/web-assets-ui.test.js`（资产表/上传表单/预览保存端点/映射表/文件名转义；JSON 视图；viewer/dispatcher 与 actions=0 禁用且不暴露写脚本；项目页入口保留 host）；`test/console-pages.test.js` 保持全绿。
