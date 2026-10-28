@@ -16,6 +16,7 @@ import {
   cleanupWebJobWorkspace,
   installWebPackage,
   prepareWebJobWorkspace,
+  removeWebJobSecrets,
   verifySha256,
   WebJobWorkspaceError
 } from "../dist/runner/web-job-workspace.js";
@@ -123,6 +124,65 @@ test("prepareWebJobWorkspace: sha 不匹配抛 asset-sha-mismatch，缓存与 jo
   assert.equal(verifySha256(content, "f".repeat(64)), false);
 });
 
+test("prepareWebJobWorkspace: 中途失败删除已写 secret 与半成品 job 目录", async (t) => {
+  const root = await tempDir(t, "aos-web-job-ws-");
+  const workRoot = path.join(root, "work");
+  const cacheRoot = path.join(root, "cache");
+  const secret = Buffer.from("secret-first");
+  const secretSha = sha256(secret);
+  const good = Buffer.from("good-package");
+  const goodSha = sha256(good);
+  const downloads = [];
+
+  await assert.rejects(
+    prepareWebJobWorkspace({
+      jobId: "job-fail",
+      projectSlug: "acme",
+      workRoot,
+      cacheRoot,
+      assets: [
+        asset({
+          kind: "materials",
+          filename: "secret.txt",
+          sha256: secretSha,
+          url: "http://center/secret.txt",
+          secret: true
+        }),
+        asset({
+          kind: "package",
+          filename: "app.apk",
+          sha256: goodSha,
+          url: "http://center/app.apk"
+        }),
+        asset({
+          kind: "excel",
+          filename: "x.xlsx",
+          sha256: "f".repeat(64),
+          url: "http://center/x.xlsx"
+        })
+      ],
+      download: async (url) => {
+        downloads.push(url);
+        return url.endsWith("secret.txt") ? secret : good;
+      },
+      exec: fakeExec(() => ({ code: 0, stdout: "", stderr: "" })).exec
+    }),
+    (error) => {
+      assert.equal(error.code, "asset-sha-mismatch");
+      return true;
+    }
+  );
+  const jobDir = path.join(workRoot, "acme", "job-fail");
+  assert.equal(fs.existsSync(path.join(jobDir, "secrets")), false, "secret 必须随失败清理");
+  assert.equal(fs.existsSync(jobDir), false, "半成品 job 目录一并清理");
+  assert.deepEqual(
+    fs.readdirSync(path.join(cacheRoot, "assets")),
+    [goodSha],
+    "已校验缓存保留；secret 不进入缓存"
+  );
+  assert.equal(await removeWebJobSecrets(jobDir), true);
+});
+
 test("prepareWebJobWorkspace: 缓存内容损坏时重新下载并覆盖", async (t) => {
   const root = await tempDir(t, "aos-web-job-ws-");
   const workRoot = path.join(root, "work");
@@ -182,6 +242,8 @@ test("prepareWebJobWorkspace: secret materials 只写 0600 jobDir/secrets，不�
     ? fs.readdirSync(path.join(cacheRoot, "assets"))
     : [];
   assert.deepEqual(cacheEntries, []);
+  assert.equal(await removeWebJobSecrets(prepared.jobDir), true);
+  assert.equal(fs.existsSync(path.join(prepared.jobDir, "secrets")), false);
 
   const cleaned = await cleanupWebJobWorkspace({
     workRoot,
@@ -190,6 +252,24 @@ test("prepareWebJobWorkspace: secret materials 只写 0600 jobDir/secrets，不�
   assert.deepEqual(cleaned.removed.map((entry) => path.basename(entry)), ["job-secret"]);
   assert.equal(fs.existsSync(prepared.jobDir), false);
   assert.equal(fs.existsSync(secretPath), false);
+});
+
+test("cleanupWebJobWorkspace: 跳过符号链接目录，不删除 workRoot 外的内容", async (t) => {
+  const root = await tempDir(t, "aos-web-job-ws-");
+  const workRoot = path.join(root, "work");
+  const projectDir = path.join(workRoot, "acme");
+  const outside = path.join(root, "outside");
+  await mkdir(projectDir, { recursive: true });
+  await mkdir(outside, { recursive: true });
+  await writeFile(path.join(outside, "keep.txt"), "keep");
+  fs.symlinkSync(outside, path.join(projectDir, "job-link"));
+
+  const cleaned = await cleanupWebJobWorkspace({
+    workRoot,
+    completedJobIds: ["job-link"]
+  });
+  assert.deepEqual(cleaned.removed, []);
+  assert.equal(fs.existsSync(path.join(outside, "keep.txt")), true);
 });
 
 test("prepareWebJobWorkspace: excel 原件只落 attachments，不解析", async (t) => {
@@ -333,9 +413,34 @@ test("installWebPackage: iOS 模拟器走 simctl，真机走 devicectl", async (
     exec: fakeExec(() => ({ code: 0, stdout: "", stderr: "" })).exec
   });
   assert.deepEqual(unsupported, { ok: false, reason: "unsupported-platform" });
+
+  const badSerial = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }));
+  assert.deepEqual(
+    await installWebPackage({
+      platform: "android",
+      deviceSerial: "bad serial;rm -rf /",
+      packagePath: "/tmp/app.apk",
+      exec: badSerial.exec
+    }),
+    { ok: false, reason: "invalid-device-serial" }
+  );
+  assert.equal(badSerial.calls.length, 0);
+
+  const outside = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }));
+  assert.deepEqual(
+    await installWebPackage({
+      platform: "android",
+      deviceSerial: "emulator-5554",
+      packagePath: "/tmp/outside.apk",
+      jobDir: "/tmp/job-1",
+      exec: outside.exec
+    }),
+    { ok: false, reason: "invalid-package-path" }
+  );
+  assert.equal(outside.calls.length, 0);
 });
 
-async function makeJob(store, rootPath, jobSpec, status = "claimed") {
+async function makeJob(store, rootPath, jobSpec, status = "claimed", hostId = null) {
   await store.upsertProject({ rootPath, name: path.basename(rootPath) });
   await store.createWebProject({
     rootPath,
@@ -349,7 +454,8 @@ async function makeJob(store, rootPath, jobSpec, status = "claimed") {
     platforms: ["android"],
     baseline: "latest",
     jobSpec,
-    deviceSerial: "emulator-5554"
+    deviceSerial: "emulator-5554",
+    ...(hostId === null ? {} : { targetHostId: hostId })
   });
   if (status !== "pending") {
     await store.updateRegressionTask(rootPath, task.id, { status });
@@ -478,8 +584,11 @@ test("GET /panel/api/jobs/:id/spec 与 assets：runner token 鉴权、404 隔离
         }
       ]
     };
-    const task = await makeJob(store, rootPath, spec);
-    const auth = { authorization: `Bearer ${TOKEN}` };
+    const task = await makeJob(store, rootPath, spec, "claimed", "host-1");
+    const auth = {
+      authorization: `Bearer ${TOKEN}`,
+      "x-aos-host-id": "host-1"
+    };
 
     const unauthorized = await fetch(`${base}/panel/api/jobs/${task.id}/spec`);
     assert.equal(unauthorized.status, 401);
@@ -488,11 +597,27 @@ test("GET /panel/api/jobs/:id/spec 与 assets：runner token 鉴权、404 隔离
     });
     assert.equal(wrong.status, 401);
 
+    const missingHost = await fetch(`${base}/panel/api/jobs/${task.id}/spec`, {
+      headers: { authorization: `Bearer ${TOKEN}` }
+    });
+    assert.equal(missingHost.status, 403);
+    const wrongHost = await fetch(`${base}/panel/api/jobs/${task.id}/spec`, {
+      headers: { authorization: `Bearer ${TOKEN}`, "x-aos-host-id": "host-other" }
+    });
+    assert.equal(wrongHost.status, 403);
+    assert.equal(
+      (await fetch(`${base}/panel/api/jobs/${task.id}/assets/${packageAsset.id}`, {
+        headers: { authorization: `Bearer ${TOKEN}`, "x-aos-host-id": "host-other" }
+      })).status,
+      403
+    );
+
     const response = await fetch(`${base}/panel/api/jobs/${task.id}/spec`, { headers: auth });
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.ok, true);
     assert.equal(body.job.id, task.id);
+    assert.equal("rootPath" in body.job, false, "spec 响应不得泄漏项目路径");
     assert.equal(body.spec.packageAssetId, packageAsset.id);
     assert.deepEqual(
       body.assets.map((entry) => entry.id).sort(),
@@ -554,8 +679,11 @@ test("GET /panel/api/jobs/:id/assets/:assetId 拒绝 storagePath 逃逸与跨项
         { kind: "materials", id: other.id, sha256: other.sha256, filename: other.filename }
       ]
     };
-    const task = await makeJob(store, rootPath, spec);
-    const auth = { authorization: `Bearer ${TOKEN}` };
+    const task = await makeJob(store, rootPath, spec, "claimed", "host-1");
+    const auth = {
+      authorization: `Bearer ${TOKEN}`,
+      "x-aos-host-id": "host-1"
+    };
     assert.equal(
       (await fetch(`${base}/panel/api/jobs/${task.id}/assets/${escaped.id}`, { headers: auth })).status,
       404
@@ -591,6 +719,13 @@ test("GET /panel/api/jobs/*：AOS_RUNNER_JOB_TOKEN 未设置返回 503，不回�
       assert.equal(response.status, 503);
       const body = await response.json();
       assert.equal(body.code, "runner-token-unset");
+
+      process.env.AOS_RUNNER_JOB_TOKEN = "short";
+      const shortToken = await fetch(`${base}/panel/api/jobs/${task.id}/spec`, {
+        headers: { authorization: "Bearer short", "x-aos-host-id": "host-1" }
+      });
+      assert.equal(shortToken.status, 503);
+      assert.equal((await shortToken.json()).code, "runner-token-too-short");
     } finally {
       process.env.AOS_RUNNER_JOB_TOKEN = previous;
     }

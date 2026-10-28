@@ -222,6 +222,13 @@ function runnerJobAuthResponse(
       error: "中心未配置 AOS_RUNNER_JOB_TOKEN，拒绝 runner 下载（不会回退管理员令牌）"
     });
   }
+  if (expected.length < 16) {
+    return runnerJson(503, {
+      ok: false,
+      code: "runner-token-too-short",
+      error: "AOS_RUNNER_JOB_TOKEN 至少需要 16 个字符"
+    });
+  }
   if (!runnerTokenMatches(bearerToken(headers), expected)) {
     return runnerJson(401, { ok: false, code: "unauthorized", error: "缺少或无效的 runner token" });
   }
@@ -285,6 +292,17 @@ export async function handleRunnerJobRequest(
 
   const job = await input.store.getWebJobById(route.jobId);
   if (job === null) return runnerJson(404, { ok: false, error: `未知 job ${route.jobId}` });
+  const hostId = headerValue(input.headers, "x-aos-host-id");
+  const allowedHosts = [job.task.claimedHostId, job.task.targetHostId].filter(
+    (value): value is string => typeof value === "string" && value !== ""
+  );
+  if (hostId === "" || !allowedHosts.includes(hostId)) {
+    return runnerJson(403, {
+      ok: false,
+      code: "host-not-allowed",
+      error: `主机 ${hostId || "（缺失 X-AOS-Host-Id）"} 无权读取 job ${route.jobId}`
+    });
+  }
   const spec = parseWebJobSpec(job.task.jobSpec);
   if (spec === null) {
     return runnerJson(404, { ok: false, error: `job ${route.jobId} 没有可用的规格` });
@@ -311,8 +329,7 @@ export async function handleRunnerJobRequest(
         id: job.task.id,
         status: job.task.status,
         deviceSerial: job.task.deviceSerial,
-        claimedBy: job.task.claimedBy,
-        rootPath: job.rootPath
+        claimedBy: job.task.claimedBy
       },
       spec: job.task.jobSpec,
       assets

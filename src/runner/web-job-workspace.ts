@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, copyFile, link, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import type { ExecFn } from "../device/adb.js";
@@ -195,64 +195,73 @@ export async function prepareWebJobWorkspace(
   const files = new Map<string, string>();
   let flowsDir: string | null = null;
 
-  for (const asset of input.assets) {
-    const expected = String(asset.sha256 ?? "").toLowerCase();
-    if (!SHA256_RE.test(expected)) {
-      throw new WebJobWorkspaceError(
-        "invalid-asset-sha",
-        `资产 ${asset.filename} 的 sha256 非法：${String(asset.sha256)}`
-      );
-    }
-    const filename = safeFilename(asset.filename, `${asset.kind}-${expected}`);
+  try {
+    for (const asset of input.assets) {
+      const expected = String(asset.sha256 ?? "").toLowerCase();
+      if (!SHA256_RE.test(expected)) {
+        throw new WebJobWorkspaceError(
+          "invalid-asset-sha",
+          `资产 ${asset.filename} 的 sha256 非法：${String(asset.sha256)}`
+        );
+      }
+      const filename = safeFilename(asset.filename, `${asset.kind}-${expected}`);
 
-    if (asset.kind === "materials" && asset.secret === true) {
-      const destination = path.join(jobDir, "secrets", filename);
-      let buffer: Buffer;
-      try {
-        buffer = await input.download(asset.url);
-      } catch (error) {
-        throw new WebJobWorkspaceError(
-          "download-failed",
-          `资产 ${asset.filename} 下载失败：${errorMessage(error)}`
-        );
+      if (asset.kind === "materials" && asset.secret === true) {
+        const secretsDir = path.join(jobDir, "secrets");
+        const destination = path.join(secretsDir, filename);
+        let buffer: Buffer;
+        try {
+          buffer = await input.download(asset.url);
+        } catch (error) {
+          throw new WebJobWorkspaceError(
+            "download-failed",
+            `资产 ${asset.filename} 下载失败：${errorMessage(error)}`
+          );
+        }
+        if (!verifySha256(buffer, expected)) {
+          throw new WebJobWorkspaceError(
+            "asset-sha-mismatch",
+            `资产 ${asset.filename} sha256 不匹配（期望 ${expected}）`
+          );
+        }
+        await mkdir(secretsDir, { recursive: true, mode: 0o700 });
+        await chmod(secretsDir, 0o700);
+        writeFileAtomic(destination, buffer);
+        await chmod(destination, 0o600);
+        files.set(asset.kind, destination);
+        continue;
       }
-      if (!verifySha256(buffer, expected)) {
-        throw new WebJobWorkspaceError(
-          "asset-sha-mismatch",
-          `资产 ${asset.filename} sha256 不匹配（期望 ${expected}）`
-        );
+
+      const cachePath = await cacheEntry(input, asset, expected, warnings);
+      if (asset.kind === "excel") {
+        const destination = path.join(jobDir, "attachments", filename);
+        await linkOrCopy(cachePath, destination);
+        files.set("excel", destination);
+        continue;
       }
-      await mkdir(path.dirname(destination), { recursive: true });
-      writeFileAtomic(destination, buffer);
-      await chmod(destination, 0o600);
+      if (asset.kind === "scripts") {
+        const destination = path.join(jobDir, "assets", "scripts", filename);
+        await linkOrCopy(cachePath, destination);
+        files.set("scripts", destination);
+        const target = path.join(jobDir, "flows");
+        await extractScripts({
+          zipPath: destination,
+          flowsDir: target,
+          exec: input.exec,
+          ...(input.env === undefined ? {} : { env: input.env })
+        });
+        flowsDir = target;
+        continue;
+      }
+      const destination = path.join(jobDir, "assets", asset.kind, filename);
+      await linkOrCopy(cachePath, destination);
       files.set(asset.kind, destination);
-      continue;
     }
-
-    const cachePath = await cacheEntry(input, asset, expected, warnings);
-    if (asset.kind === "excel") {
-      const destination = path.join(jobDir, "attachments", filename);
-      await linkOrCopy(cachePath, destination);
-      files.set("excel", destination);
-      continue;
-    }
-    if (asset.kind === "scripts") {
-      const destination = path.join(jobDir, "assets", "scripts", filename);
-      await linkOrCopy(cachePath, destination);
-      files.set("scripts", destination);
-      const target = path.join(jobDir, "flows");
-      await extractScripts({
-        zipPath: destination,
-        flowsDir: target,
-        exec: input.exec,
-        ...(input.env === undefined ? {} : { env: input.env })
-      });
-      flowsDir = target;
-      continue;
-    }
-    const destination = path.join(jobDir, "assets", asset.kind, filename);
-    await linkOrCopy(cachePath, destination);
-    files.set(asset.kind, destination);
+  } catch (error) {
+    // 失败即失败：secret 与半成品 job 目录不得留在磁盘（缓存保留供重试）。
+    await removeWebJobSecrets(jobDir);
+    await rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
   }
 
   return { jobDir, files, flowsDir, warnings };
@@ -293,8 +302,8 @@ export async function cleanupWebJobWorkspace(
       if (!completed.has(entry)) continue;
       const jobDir = path.join(projectDir, entry);
       try {
-        const info = await stat(jobDir);
-        if (!info.isDirectory()) continue;
+        const info = await lstat(jobDir);
+        if (!info.isDirectory() || info.isSymbolicLink()) continue;
         await rm(jobDir, { recursive: true, force: true });
         removed.push(jobDir);
       } catch {
@@ -324,15 +333,35 @@ export interface InstallWebPackageInput {
   timeoutMs?: number;
   /** iOS 设备形态；缺省按 `.ipa` → 真机、其余 → 模拟器。 */
   deviceKind?: "device" | "simulator";
+  /** 提供时强制安装包位于该 job 目录内（防跨 job/任意路径安装）。 */
+  jobDir?: string;
 }
 
 export type InstallWebPackageResult =
   | { ok: true; packageName: string | null; version: string | null }
-  | { ok: false; reason: "unsupported-platform" | "exec-failed" | "install-failed" };
+  | {
+      ok: false;
+      reason:
+        | "unsupported-platform"
+        | "exec-failed"
+        | "install-failed"
+        | "invalid-device-serial"
+        | "invalid-package-path";
+    };
 
 export async function installWebPackage(
   input: InstallWebPackageInput
 ): Promise<InstallWebPackageResult> {
+  if (!/^[A-Za-z0-9._:-]+$/.test(input.deviceSerial)) {
+    return { ok: false, reason: "invalid-device-serial" };
+  }
+  if (input.jobDir !== undefined) {
+    const jobDir = path.resolve(input.jobDir);
+    const packagePath = path.resolve(input.packagePath);
+    if (packagePath !== jobDir && !packagePath.startsWith(jobDir + path.sep)) {
+      return { ok: false, reason: "invalid-package-path" };
+    }
+  }
   const options = {
     timeoutMs: input.timeoutMs ?? 120_000,
     ...(input.env === undefined ? {} : { env: input.env })
