@@ -892,7 +892,9 @@ test("panel detail: runners 聚合（在线按 TTL；含设备/工具；无 runn
     idb: false,
     simctl: false,
     ideviceId: false,
-    appium: false
+    appium: false,
+    maestro: false,
+    devicectl: false
   });
   assert.equal(online.runners[0].artifactBaseUrl, "http://mac-1:8770");
 

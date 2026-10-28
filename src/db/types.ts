@@ -457,6 +457,10 @@ export function capabilitiesSatisfyPlatforms(capabilities: string[], platforms: 
 export interface RunnerDevice {
   serial: string;
   name: string;
+  /** 机型/产品名（Android `ro.product.model`、iOS 模拟器名、真机 `ProductType`）；探测失败为 null。 */
+  model: string | null;
+  /** 系统版本（Android release、iOS `17.2`）；探测失败为 null。 */
+  osVersion: string | null;
   platform: "ios" | "android";
   kind: "device" | "emulator" | "simulator";
   state: string;
@@ -468,6 +472,8 @@ export interface RunnerTools {
   simctl: boolean;
   ideviceId: boolean;
   appium: boolean;
+  maestro: boolean;
+  devicectl: boolean;
 }
 
 export interface RunnerRecord {

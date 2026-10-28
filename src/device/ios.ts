@@ -245,6 +245,17 @@ export interface IosSimulator {
   name: string;
   state: string;
   isAvailable: boolean;
+  /** simctl runtime key（`com.apple.CoreSimulator.SimRuntime.iOS-17-2`）。 */
+  runtime?: string;
+  /** 由 runtime key 解析的系统版本（`17.2`）；无法解析为 null。 */
+  osVersion?: string | null;
+}
+
+/** simctl runtime key → iOS 版本（`...SimRuntime.iOS-17-2` → `17.2`）；非 iOS runtime → null。 */
+export function osVersionFromRuntime(runtime: string): string | null {
+  const match = /(?:^|\.)iOS-(\d+)(?:-(\d+))?$/.exec(runtime.trim());
+  if (!match) return null;
+  return match[2] === undefined ? match[1]! : `${match[1]}.${match[2]}`;
 }
 
 export function parseSimulators(stdout: string): IosSimulator[] | null {
@@ -257,7 +268,7 @@ export function parseSimulators(stdout: string): IosSimulator[] | null {
   const devices = (data as { devices?: unknown })?.devices;
   if (!devices || typeof devices !== "object") return null;
   const simulators: IosSimulator[] = [];
-  for (const list of Object.values(devices as Record<string, unknown>)) {
+  for (const [runtime, list] of Object.entries(devices as Record<string, unknown>)) {
     if (!Array.isArray(list)) continue;
     for (const device of list) {
       if (!device || typeof device !== "object") continue;
@@ -267,7 +278,9 @@ export function parseSimulators(stdout: string): IosSimulator[] | null {
         udid: entry.udid,
         name: typeof entry.name === "string" ? entry.name : "",
         state: typeof entry.state === "string" ? entry.state : "",
-        isAvailable: entry.isAvailable !== false
+        isAvailable: entry.isAvailable !== false,
+        runtime,
+        osVersion: osVersionFromRuntime(runtime)
       });
     }
   }

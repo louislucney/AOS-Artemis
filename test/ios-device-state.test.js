@@ -161,7 +161,14 @@ test("parseSimulators: 解析状态与可用性；坏 JSON 返回 null", () => {
     })
   );
   assert.equal(simulators.length, 2);
-  assert.deepEqual(simulators[0], { udid: "A", name: "iPhone", state: "Booted", isAvailable: true });
+  assert.deepEqual(simulators[0], {
+    udid: "A",
+    name: "iPhone",
+    state: "Booted",
+    isAvailable: true,
+    runtime: "runtime-a",
+    osVersion: null
+  });
   assert.equal(simulators[1].isAvailable, true);
   assert.equal(parseSimulators("nope"), null);
 });

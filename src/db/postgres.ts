@@ -3488,6 +3488,8 @@ function parseRunnerDevices(value: unknown): RunnerDevice[] {
     devices.push({
       serial: record.serial,
       name: typeof record.name === "string" ? record.name : "",
+      model: typeof record.model === "string" ? record.model : null,
+      osVersion: typeof record.osVersion === "string" ? record.osVersion : null,
       platform,
       kind,
       state: typeof record.state === "string" ? record.state : ""
@@ -3512,7 +3514,9 @@ function parseRunnerTools(value: unknown): RunnerTools {
     idb: record.idb === true,
     simctl: record.simctl === true,
     ideviceId: record.ideviceId === true,
-    appium: record.appium === true
+    appium: record.appium === true,
+    maestro: record.maestro === true,
+    devicectl: record.devicectl === true
   };
 }
 

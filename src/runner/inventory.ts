@@ -1,6 +1,6 @@
 import type { RunnerDevice, RunnerTools } from "../db/types.js";
 import { defaultExec, resolveAdbPath, type ExecFn } from "../device/adb.js";
-import { classifyIosSerial, listIosSimulators, resolveIdbPath } from "../device/ios.js";
+import { classifyIosSerial, listIosSimulators, resolveIdbPath, resolveXcrunPath } from "../device/ios.js";
 import { listAdbDevices } from "../device/logcat.js";
 
 /** 设备盘点（心跳上报；`AOS_RUNNER_DEVICES` 非空 → 覆盖全部来源，真机 UDID 可显式列入）。 */
@@ -41,7 +41,9 @@ export async function collectRunnerInventory(
       idb: false,
       simctl: false,
       ideviceId: false,
-      appium
+      appium,
+      maestro: false,
+      devicectl: false
     });
   }
 
@@ -50,14 +52,31 @@ export async function collectRunnerInventory(
     adb.path === null
       ? { ok: false, devices: [] as string[], error: "adb-not-found" }
       : await listAdbDevices(exec, adb.path, env);
-  const devices: RunnerDevice[] = adbResult.devices.map((serial) => ({
-    serial,
-    name: "",
-    platform: "android",
-    kind: serial.startsWith("emulator-") ? "emulator" : "device",
-    state: "device"
-  }));
-  const tools: RunnerTools = { adb: adbResult.ok, idb: false, simctl: false, ideviceId: false, appium };
+  const devices: RunnerDevice[] = [];
+  for (const serial of adbResult.devices) {
+    const meta =
+      adb.path === null
+        ? { model: null, osVersion: null }
+        : await probeAndroidDeviceMeta(exec, adb.path, serial, timeoutMs, env);
+    devices.push({
+      serial,
+      name: "",
+      model: meta.model,
+      osVersion: meta.osVersion,
+      platform: "android",
+      kind: serial.startsWith("emulator-") ? "emulator" : "device",
+      state: "device"
+    });
+  }
+  const tools: RunnerTools = {
+    adb: adbResult.ok,
+    idb: false,
+    simctl: false,
+    ideviceId: false,
+    appium,
+    maestro: await versionProbe(exec, "maestro", ["--version"], timeoutMs),
+    devicectl: false
+  };
 
   if (platform === "darwin") {
     const simulators = await listIosSimulators({ env, exec, platform, timeoutMs });
@@ -68,6 +87,8 @@ export async function collectRunnerInventory(
         devices.push({
           serial: simulator.udid,
           name: simulator.name,
+          model: simulator.name === "" ? null : simulator.name,
+          osVersion: simulator.osVersion ?? null,
           platform: "ios",
           kind: "simulator",
           state: simulator.state
@@ -78,10 +99,25 @@ export async function collectRunnerInventory(
     const idevice = await ideviceIdProbe(exec, timeoutMs);
     tools.ideviceId = idevice.ok;
     for (const serial of idevice.serials) {
-      devices.push({ serial, name: "", platform: "ios", kind: "device", state: "device" });
+      const meta = await probeIosDeviceMeta(exec, serial, timeoutMs);
+      devices.push({
+        serial,
+        name: "",
+        model: meta.model,
+        osVersion: meta.osVersion,
+        platform: "ios",
+        kind: "device",
+        state: "device"
+      });
     }
 
     tools.idb = await idbProbe(exec, env, timeoutMs);
+    tools.devicectl = await versionProbe(
+      exec,
+      resolveXcrunPath(env).path,
+      ["devicectl", "--version"],
+      timeoutMs
+    );
   }
 
   return finish(devices, tools);
@@ -91,15 +127,95 @@ function deviceFromSerial(serial: string): RunnerDevice | null {
   if (serial === "") return null;
   const iosKind = classifyIosSerial(serial);
   if (iosKind !== null) {
-    return { serial, name: "", platform: "ios", kind: iosKind, state: "configured" };
+    return {
+      serial,
+      name: "",
+      model: null,
+      osVersion: null,
+      platform: "ios",
+      kind: iosKind,
+      state: "configured"
+    };
   }
   return {
     serial,
     name: "",
+    model: null,
+    osVersion: null,
     platform: "android",
     kind: serial.startsWith("emulator-") ? "emulator" : "device",
     state: "configured"
   };
+}
+
+/** 单行文本（去空行）；空输出 → null。 */
+function firstLine(stdout: string): string | null {
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed !== "") return trimmed;
+  }
+  return null;
+}
+
+async function versionProbe(
+  exec: ExecFn,
+  command: string,
+  args: string[],
+  timeoutMs: number
+): Promise<boolean> {
+  try {
+    const result = await exec(command, args, { timeoutMs });
+    return !result.error && result.code === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function probeAndroidDeviceMeta(
+  exec: ExecFn,
+  adbPath: string,
+  serial: string,
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv
+): Promise<{ model: string | null; osVersion: string | null }> {
+  const read = async (prop: string): Promise<string | null> => {
+    try {
+      const result = await exec(adbPath, ["-s", serial, "shell", "getprop", prop], {
+        timeoutMs,
+        env
+      });
+      if (result.error || result.code !== 0) return null;
+      return firstLine(result.stdout);
+    } catch {
+      return null;
+    }
+  };
+  const [model, osVersion] = await Promise.all([
+    read("ro.product.model"),
+    read("ro.build.version.release")
+  ]);
+  return { model, osVersion };
+}
+
+async function probeIosDeviceMeta(
+  exec: ExecFn,
+  serial: string,
+  timeoutMs: number
+): Promise<{ model: string | null; osVersion: string | null }> {
+  const read = async (key: string): Promise<string | null> => {
+    try {
+      const result = await exec("ideviceinfo", ["-u", serial, "-k", key], { timeoutMs });
+      if (result.error || result.code !== 0) return null;
+      return firstLine(result.stdout);
+    } catch {
+      return null;
+    }
+  };
+  const [model, osVersion] = await Promise.all([
+    read("ProductType"),
+    read("ProductVersion")
+  ]);
+  return { model, osVersion };
 }
 
 async function ideviceIdProbe(

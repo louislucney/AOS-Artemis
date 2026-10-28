@@ -63,7 +63,15 @@ const STOP_POLL_MS = 3_000;
 const EMPTY_INVENTORY: RunnerInventory = {
   platforms: [],
   devices: [],
-  tools: { adb: false, idb: false, simctl: false, ideviceId: false, appium: false }
+  tools: {
+    adb: false,
+    idb: false,
+    simctl: false,
+    ideviceId: false,
+    appium: false,
+    maestro: false,
+    devicectl: false
+  }
 };
 
 /** runner 常驻循环（DESIGN §13.109）：心跳循环与主循环解耦（执行期间不失联）；

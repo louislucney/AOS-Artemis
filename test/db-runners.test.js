@@ -24,6 +24,8 @@ const DEVICES = [
   {
     serial: "emulator-5554",
     name: "",
+    model: null,
+    osVersion: null,
     platform: "android",
     kind: "emulator",
     state: "device"
@@ -31,13 +33,23 @@ const DEVICES = [
   {
     serial: "4E0A2C7A-1B2D-4F5E-8A9B-0C1D2E3F4A5B",
     name: "iPhone Louis",
+    model: null,
+    osVersion: null,
     platform: "ios",
     kind: "device",
     state: "Booted"
   }
 ];
 
-const TOOLS = { adb: true, idb: true, simctl: true, ideviceId: true, appium: false };
+const TOOLS = {
+  adb: true,
+  idb: true,
+  simctl: true,
+  ideviceId: true,
+  appium: false,
+  maestro: false,
+  devicectl: false
+};
 
 function runnerInput(overrides = {}) {
   return {
@@ -169,7 +181,9 @@ test("runners: devices.name 与 tools 往返一致；PG 侧旧格式行宽容解
     idb: false,
     simctl: false,
     ideviceId: false,
-    appium: false
+    appium: false,
+    maestro: false,
+    devicectl: false
   });
   assert.equal(legacy.artifactBaseUrl, null);
   assert.equal(legacy.version, null);
