@@ -1111,6 +1111,32 @@ function renderMachinesSection(view: PanelOverview): string {
   ].join("\n");
 }
 
+function renderCreateProjectCard(): string {
+  const capabilities = currentShell.capabilities;
+  if (capabilities?.role !== "admin") return "";
+  const actionsOff = capabilities.actions === false;
+  const disabledAttr = actionsOff ? " disabled" : "";
+  const reason = actionsOff
+    ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
+    : "";
+  const form = [
+    `<form id="create-project-form">`,
+    `<p><label>项目名称 <input type="text" name="name" placeholder="例如：星巴克咖啡" aria-label="项目名称"${disabledAttr}></label>`,
+    ` <span class="muted">平台</span>`,
+    ` <label><input type="checkbox" name="platform" value="android"${disabledAttr}> Android</label>`,
+    ` <label><input type="checkbox" name="platform" value="ios"${disabledAttr}> iOS</label>`,
+    ` <label>应用包名 <input type="text" name="appPackage" placeholder="com.example.app" aria-label="应用包名"${disabledAttr}></label>`,
+    ` <label>客户名称（可选） <input type="text" name="customerName" placeholder="客户" aria-label="客户名称（可选）"${disabledAttr}></label>`,
+    ` <button class="c-button c-button-primary" type="submit"${disabledAttr}>创建项目</button> <span id="create-project-status" role="status" class="muted"></span></p>`,
+    reason,
+    `</form>`
+  ].join("\n");
+  const script = actionsOff
+    ? ""
+    : `<script>(function(){var form=document.getElementById('create-project-form');var status=document.getElementById('create-project-status');if(form){form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var platforms=f.getAll('platform');if(!(f.get('name')||'').trim()){status.textContent='请填写项目名称';return;}if(platforms.length===0){status.textContent='请至少选择一个平台';return;}var customer=(f.get('customerName')||'').trim();var body={name:(f.get('name')||'').trim(),platforms:platforms,appPackage:(f.get('appPackage')||'').trim(),customerName:customer||undefined};fetch('/panel/api/projects',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok&&res.j.project){window.aosFlash&&aosFlash('项目已创建');location.href='/panel?project='+encodeURIComponent(res.j.project.rootPath);}else{status.textContent='创建失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){status.textContent='创建失败：'+err;});});}})();</script>`;
+  return cCard({ title: "新增项目", body: `${form}${script}` });
+}
+
 function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
   const store = view.store.degraded
     ? cBadge({ label: "存储：会话内存", tone: "warning" })
@@ -1165,6 +1191,7 @@ try{
         ? `<p class="muted">已隐藏 ${view.excludedProjects} 个项目（服务仓库默认隐藏，或由 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> 指定）；直接项目 URL 仍可访问。</p>`
         : "",
       renderMachinesSection(view),
+      renderCreateProjectCard(),
       view.projects.length === 0
         ? cEmpty({
             title: "还没有接入项目",

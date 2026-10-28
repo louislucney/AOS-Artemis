@@ -50,7 +50,8 @@ const AUDIT_DOMAINS: Record<string, string> = {
   schedule: "定时计划",
   runner: "执行机",
   crash: "崩溃取证",
-  reconcile: "对账"
+  reconcile: "对账",
+  project: "项目"
 };
 
 const AUDIT_ACTIONS: Record<string, string> = {

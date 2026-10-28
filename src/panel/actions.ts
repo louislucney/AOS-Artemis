@@ -14,6 +14,11 @@ import { errorMessage, log, writeFileAtomic } from "../util.js";
 import { importTestDocument } from "../workflow/excel-import.js";
 import { createRunCaseIssues, MAX_ISSUE_ITEMS, normalizeLabels, retryIssueEvidence } from "./issues.js";
 import { sameOriginAllowed } from "./http-guard.js";
+import {
+  createWebProject,
+  normalizeProjectName,
+  projectSlug
+} from "../web/project-service.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
 import {
   computeDispatchPreview,
@@ -192,6 +197,12 @@ export async function handlePanelActionRequest(
     if (response.status === 200) deps.cache?.clear();
     return response;
   }
+  if (request.url.pathname === "/panel/api/projects") {
+    return await createProjectAction(deps, payload, actor);
+  }
+  if (request.url.pathname === "/panel/api/projects/archive") {
+    return await archiveProjectAction(deps, payload, actor);
+  }
   const queryProject =
     request.url.pathname === "/panel/api/import" && request.rawBody !== undefined
       ? (request.url.searchParams.get("project") ?? "").trim()
@@ -337,6 +348,147 @@ export async function handlePanelActionRequest(
     });
     return json(500, { ok: false, error: "服务内部错误（已写入审计；可重试或查看日志）" });
   }
+}
+
+async function createProjectAction(
+  deps: PanelWebDeps,
+  payload: Record<string, unknown>,
+  actor: string
+): Promise<PanelWebResponse> {
+  const rawName = typeof payload.name === "string" ? payload.name.trim() : "";
+  if (rawName === "") return json(400, { error: "缺少 name（项目名称）" });
+  let name: string;
+  try {
+    name = normalizeProjectName(rawName).name;
+  } catch (error) {
+    return json(400, { error: errorMessage(error) });
+  }
+  if (!Array.isArray(payload.platforms) || payload.platforms.length === 0) {
+    return json(400, { error: "platforms 至少选择一个（android、ios）" });
+  }
+  if (
+    payload.platforms.some(
+      (platform) => typeof platform !== "string" || !PLATFORMS.has(platform)
+    )
+  ) {
+    return json(400, { error: "platforms 仅支持 ios/android" });
+  }
+  if (payload.appPackage !== undefined && typeof payload.appPackage !== "string") {
+    return json(400, { error: "appPackage 必须是字符串" });
+  }
+  if (payload.customerName !== undefined && typeof payload.customerName !== "string") {
+    return json(400, { error: "customerName 必须是字符串" });
+  }
+  const platforms = [...new Set(payload.platforms as string[])];
+  const appPackage =
+    typeof payload.appPackage === "string" && payload.appPackage.trim() !== ""
+      ? payload.appPackage.trim()
+      : null;
+  const customerName =
+    typeof payload.customerName === "string" && payload.customerName.trim() !== ""
+      ? payload.customerName.trim()
+      : null;
+  const workspaceRoot = deps.workspaceRoot ?? process.cwd();
+  const intendedRoot = path.join(workspaceRoot, projectSlug(name));
+
+  try {
+    const result = await createWebProject({
+      store: deps.store,
+      workspaceRoot,
+      name,
+      platforms,
+      appPackage,
+      customerName,
+      owner: actor
+    });
+    deps.cache?.clear();
+    const response = json(200, {
+      ok: true,
+      project: {
+        rootPath: result.rootPath,
+        name: result.web.name,
+        platforms: result.web.platforms,
+        appPackage: result.web.appPackage
+      }
+    });
+    await recordAuditSafe(deps.store, result.rootPath, {
+      domain: "project",
+      action: "project.create",
+      result: "ok",
+      actor,
+      summary: `创建 Web 项目：${result.web.name}（${result.rootPath}）`
+    });
+    return response;
+  } catch (error) {
+    const message = errorMessage(error);
+    const conflict = /已存在|目录已存在/.test(message);
+    await recordAuditSafe(deps.store, intendedRoot, {
+      domain: "project",
+      action: "project.create",
+      result: "failed",
+      actor,
+      summary: `创建 Web 项目失败：${name}（${intendedRoot}）：${message}`
+    });
+    return json(
+      conflict ? 409 : 500,
+      conflict ? { ok: false, error: message } : { ok: false, error: `创建项目失败：${message}` }
+    );
+  }
+}
+
+async function archiveProjectAction(
+  deps: PanelWebDeps,
+  payload: Record<string, unknown>,
+  actor: string
+): Promise<PanelWebResponse> {
+  const projectKey = typeof payload.project === "string" ? payload.project.trim() : "";
+  if (projectKey === "") return json(400, { error: "缺少 project" });
+  let resolved: { rootPath: string; name: string; hostId: string | null } | null;
+  try {
+    resolved = await resolveProjectKey(deps, projectKey);
+  } catch (error) {
+    if (error instanceof AmbiguousProjectError) {
+      return json(409, {
+        error: error.message,
+        candidates: error.candidates.map((candidate) => ({
+          hostId: candidate.hostId,
+          rootPath: candidate.rootPath,
+          name: candidate.name
+        }))
+      });
+    }
+    throw error;
+  }
+  if (!resolved) {
+    await recordAuditSafe(deps.store, projectKey, {
+      domain: "project",
+      action: "project.archive",
+      result: "failed",
+      actor,
+      summary: `归档 Web 项目失败：未知项目 "${projectKey}"`
+    });
+    return json(404, { error: `未知项目 "${projectKey}"` });
+  }
+  const archived = await deps.store.archiveWebProject(resolved.rootPath, new Date().toISOString());
+  if (!archived) {
+    await recordAuditSafe(deps.store, resolved.rootPath, {
+      domain: "project",
+      action: "project.archive",
+      result: "failed",
+      actor,
+      summary: `归档 Web 项目失败：未登记 Web 项目（${resolved.rootPath}）`
+    });
+    return json(404, { error: `未登记 Web 项目 "${projectKey}"` });
+  }
+  deps.cache?.clear();
+  await recordAuditSafe(deps.store, resolved.rootPath, {
+    domain: "project",
+    action: "project.archive",
+    result: "ok",
+    actor,
+    summary: `归档 Web 项目：${resolved.name}（${resolved.rootPath}）`
+  });
+  return json(200, { ok: true });
 }
 
 async function auditPanel(

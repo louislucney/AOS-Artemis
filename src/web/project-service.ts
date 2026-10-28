@@ -61,7 +61,7 @@ export interface CreateWebProjectInput {
   workspaceRoot: string;
   name: string;
   platforms: string[];
-  appPackage: string;
+  appPackage?: string | null;
   customerName?: string | null;
   owner?: string | null;
 }
