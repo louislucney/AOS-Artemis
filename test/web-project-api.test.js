@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -85,6 +85,78 @@ test("web project api: 重名（大小写/NFKC）409 且不落成功审计", asy
   assert.equal(failed.actor, "alice");
   assert.match(failed.summary, /dup/);
   assert.match(failed.summary, /已存在/);
+});
+
+test("web project api: appPackage 必填（缺失/null/空串 400）", async (t) => {
+  const { store, deps } = await setup(t);
+  const missing = await handlePanelActionRequest(
+    action("/panel/api/projects", { name: "no-pkg", platforms: ["android"] }, ADMIN),
+    deps
+  );
+  assert.equal(missing.status, 400);
+  assert.match(JSON.parse(missing.body).error, /appPackage/);
+
+  const nullPkg = await handlePanelActionRequest(
+    action("/panel/api/projects", { name: "null-pkg", platforms: ["android"], appPackage: null }, ADMIN),
+    deps
+  );
+  assert.equal(nullPkg.status, 400);
+
+  const blankPkg = await handlePanelActionRequest(
+    action("/panel/api/projects", { name: "blank-pkg", platforms: ["android"], appPackage: "   " }, ADMIN),
+    deps
+  );
+  assert.equal(blankPkg.status, 400);
+
+  assert.equal((await store.listWebProjects()).length, 0);
+});
+
+test("web project api: customerName 接受显式 null 与省略", async (t) => {
+  const { store, deps } = await setup(t);
+  const nullCustomer = await handlePanelActionRequest(
+    action(
+      "/panel/api/projects",
+      { name: "null-customer", platforms: ["ios"], appPackage: "com.n", customerName: null },
+      ADMIN
+    ),
+    deps
+  );
+  assert.equal(nullCustomer.status, 200, nullCustomer.body);
+  const rootPath = JSON.parse(nullCustomer.body).project.rootPath;
+  assert.equal((await store.getWebProject(rootPath)).customerName, null);
+
+  const omitted = await handlePanelActionRequest(
+    action(
+      "/panel/api/projects",
+      { name: "omit-customer", platforms: ["ios"], appPackage: "com.o" },
+      ADMIN
+    ),
+    deps
+  );
+  assert.equal(omitted.status, 200, omitted.body);
+  assert.equal((await store.getWebProject(JSON.parse(omitted.body).project.rootPath)).customerName, null);
+});
+
+test("web project api: 目标目录已存在 409（类型化错误，非文案匹配）", async (t) => {
+  const { store, deps } = await setup(t);
+  await mkdir(path.join(deps.workspaceRoot, "taken"), { recursive: true });
+  const res = await handlePanelActionRequest(
+    action(
+      "/panel/api/projects",
+      { name: "taken", platforms: ["ios"], appPackage: "com.t" },
+      ADMIN
+    ),
+    deps
+  );
+  assert.equal(res.status, 409, res.body);
+  assert.match(JSON.parse(res.body).error, /目录已存在/);
+  assert.equal((await store.listWebProjects()).length, 0);
+
+  const audit = await store.listAudit(path.join(deps.workspaceRoot, "taken"), {
+    domain: "project"
+  });
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0].result, "failed");
 });
 
 test("web project api: dispatcher 请求 403 role_forbidden", async (t) => {
@@ -208,6 +280,10 @@ test("web project api: 总览新增项目表单（admin 可见/提交；非 admi
   assert.match(admin.body, /X-AOS-Console/);
   assert.match(admin.body, /aosFlash/);
   assert.match(admin.body, /location\.href='\/panel\?project='/);
+  assert.match(admin.body, /aosBindCreateProjectForm/, "表单绑定函数应可重入");
+  assert.match(admin.body, /data-aos-bound/, "绑定时应有幂等守卫");
+  assert.match(admin.body, /window\.aosOnRefresh/, "自动刷新后应重新绑定表单");
+  assert.match(admin.body, /prevHook/, "应链式保留既有 aosOnRefresh");
 
   const viewer = await handlePanelRequest(new URL("http://x/panel"), {
     ...deps,

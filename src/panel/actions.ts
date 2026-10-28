@@ -17,7 +17,8 @@ import { sameOriginAllowed } from "./http-guard.js";
 import {
   createWebProject,
   normalizeProjectName,
-  projectSlug
+  projectSlug,
+  WebProjectCreateError
 } from "../web/project-service.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
 import {
@@ -373,17 +374,24 @@ async function createProjectAction(
   ) {
     return json(400, { error: "platforms 仅支持 ios/android" });
   }
-  if (payload.appPackage !== undefined && typeof payload.appPackage !== "string") {
+  if (payload.appPackage === undefined || payload.appPackage === null) {
+    return json(400, { error: "缺少 appPackage（应用包名）" });
+  }
+  if (typeof payload.appPackage !== "string") {
     return json(400, { error: "appPackage 必须是字符串" });
   }
-  if (payload.customerName !== undefined && typeof payload.customerName !== "string") {
-    return json(400, { error: "customerName 必须是字符串" });
+  if (payload.appPackage.trim() === "") {
+    return json(400, { error: "appPackage 不能为空" });
+  }
+  if (
+    payload.customerName !== undefined &&
+    payload.customerName !== null &&
+    typeof payload.customerName !== "string"
+  ) {
+    return json(400, { error: "customerName 必须是字符串或 null" });
   }
   const platforms = [...new Set(payload.platforms as string[])];
-  const appPackage =
-    typeof payload.appPackage === "string" && payload.appPackage.trim() !== ""
-      ? payload.appPackage.trim()
-      : null;
+  const appPackage = payload.appPackage.trim();
   const customerName =
     typeof payload.customerName === "string" && payload.customerName.trim() !== ""
       ? payload.customerName.trim()
@@ -421,7 +429,9 @@ async function createProjectAction(
     return response;
   } catch (error) {
     const message = errorMessage(error);
-    const conflict = /已存在|目录已存在/.test(message);
+    const conflict =
+      error instanceof WebProjectCreateError &&
+      (error.code === "duplicate-name" || error.code === "directory-exists");
     await recordAuditSafe(deps.store, intendedRoot, {
       domain: "project",
       action: "project.create",

@@ -61,9 +61,22 @@ export interface CreateWebProjectInput {
   workspaceRoot: string;
   name: string;
   platforms: string[];
-  appPackage?: string | null;
+  appPackage: string;
   customerName?: string | null;
   owner?: string | null;
+}
+
+/** 创建失败的稳定错误码：action 层据此返回 409，不依赖错误文案。 */
+export type WebProjectCreateErrorCode = "duplicate-name" | "directory-exists";
+
+export class WebProjectCreateError extends Error {
+  readonly code: WebProjectCreateErrorCode;
+
+  constructor(code: WebProjectCreateErrorCode, message: string) {
+    super(message);
+    this.name = "WebProjectCreateError";
+    this.code = code;
+  }
 }
 
 export interface CreateWebProjectResult {
@@ -93,14 +106,17 @@ export async function createWebProject(
     (entry) => entry.normalizedName === normalized
   );
   if (duplicate) {
-    throw new Error(`同名 Web 项目已存在：${name}（${duplicate.rootPath}）`);
+    throw new WebProjectCreateError(
+      "duplicate-name",
+      `同名 Web 项目已存在：${name}（${duplicate.rootPath}）`
+    );
   }
 
   await mkdir(input.workspaceRoot, { recursive: true });
 
   const rootPath = path.join(input.workspaceRoot, projectSlug(name));
   if (await pathExists(rootPath)) {
-    throw new Error(`项目目录已存在：${rootPath}`);
+    throw new WebProjectCreateError("directory-exists", `项目目录已存在：${rootPath}`);
   }
 
   let web: WebProjectRecord | null = null;
