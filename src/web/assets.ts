@@ -5,14 +5,45 @@ import path from "node:path";
 import type { ProjectStore, WebAssetKind, WebAssetRecord } from "../db/types.js";
 import { writeFileAtomic } from "../util.js";
 
+export type { WebAssetKind };
+
+/** excel/scripts 的旧上限；按类型取上限请用 `webAssetMaxBytes(kind)`。 */
 export const WEB_ASSET_MAX_BYTES = 20 * 1024 * 1024;
 
-/** 当前仅 Excel 原件可上传；materials/package 的解析与扩展名白名单在后续任务补齐。 */
-const EXTENSIONS_BY_KIND: Record<WebAssetKind, string[]> = {
-  excel: [".xlsx"],
-  materials: [],
-  package: []
+const MB = 1024 * 1024;
+
+const MAX_BYTES_BY_KIND: Record<WebAssetKind, number> = {
+  excel: 20 * MB,
+  materials: 50 * MB,
+  package: 500 * MB,
+  scripts: 20 * MB
 };
+
+const EXTENSIONS_BY_KIND: Record<WebAssetKind, readonly string[]> = {
+  excel: [".xlsx"],
+  materials: [".zip", ".json", ".csv", ".txt"],
+  package: [".apk", ".ipa"],
+  scripts: [".zip"]
+};
+
+export const WEB_ASSET_KINDS: readonly WebAssetKind[] = [
+  "excel",
+  "materials",
+  "package",
+  "scripts"
+];
+
+export function isWebAssetKind(value: string): value is WebAssetKind {
+  return (WEB_ASSET_KINDS as readonly string[]).includes(value);
+}
+
+export function webAssetMaxBytes(kind: WebAssetKind): number {
+  return MAX_BYTES_BY_KIND[kind];
+}
+
+export function webAssetExtensions(kind: WebAssetKind): readonly string[] {
+  return EXTENSIONS_BY_KIND[kind];
+}
 
 export type WebAssetErrorCode =
   | "unsupported-kind"
@@ -38,6 +69,8 @@ export interface StoreWebAssetInput {
   filename: string;
   buffer: Buffer;
   uploadedBy?: string | null;
+  /** 资产附带标记（如 materials 的 `secret=true`）；缺省写空对象。 */
+  metadata?: Record<string, unknown>;
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -55,10 +88,13 @@ function safeFilename(kind: WebAssetKind, rawFilename: string): { filename: stri
   if (filename === "" || filename === "." || filename === "..") {
     throw new WebAssetError("invalid-extension", "文件名无效");
   }
-  const allowed = EXTENSIONS_BY_KIND[kind] ?? [];
+  const allowed = isWebAssetKind(kind) ? EXTENSIONS_BY_KIND[kind] : [];
   const extension = path.extname(filename).toLowerCase();
   if (allowed.length === 0) {
-    throw new WebAssetError("unsupported-kind", `暂不支持 ${kind} 类型的资产上传（当前仅 excel）`);
+    throw new WebAssetError(
+      "unsupported-kind",
+      `未知 kind "${String(kind)}"（仅支持 ${WEB_ASSET_KINDS.join("、")}）`
+    );
   }
   if (!allowed.includes(extension)) {
     throw new WebAssetError(
@@ -75,10 +111,11 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
   if (input.buffer.length === 0) {
     throw new WebAssetError("empty-file", "上传文件为空");
   }
-  if (input.buffer.length > WEB_ASSET_MAX_BYTES) {
+  const maxBytes = webAssetMaxBytes(input.kind);
+  if (input.buffer.length > maxBytes) {
     throw new WebAssetError(
       "too-large",
-      `上传超过上限（${WEB_ASSET_MAX_BYTES} 字节）`
+      `${input.kind} 资产超过上限（${maxBytes} 字节）`
     );
   }
 
@@ -118,7 +155,7 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
     uploadedBy: input.uploadedBy ?? null,
     // 未知时省略，由 store 从 upsertProject 解析，避免把 NULL 钉死在资产行上。
     ...(web?.projectId ? { projectId: web.projectId } : {}),
-    metadata: {}
+    metadata: input.metadata ?? {}
   });
 }
 

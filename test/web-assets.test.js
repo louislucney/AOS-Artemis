@@ -282,13 +282,24 @@ test("API /panel/api/projects/assets: 拒绝错误扩展名/缺项目/未知项�
   const badKind = await handlePanelActionRequest(
     uploadRequest(
       multipartBody("----aosAssets", {
-        fields: { project: rootPath, kind: "package" }
+        fields: { project: rootPath, kind: "binary" }
       })
     ),
     deps
   );
   assert.equal(badKind.status, 400, badKind.body);
   assert.match(JSON.parse(badKind.body).error, /kind/);
+
+  const mismatchedKind = await handlePanelActionRequest(
+    uploadRequest(
+      multipartBody("----aosAssets", {
+        fields: { project: rootPath, kind: "package" }
+      })
+    ),
+    deps
+  );
+  assert.equal(mismatchedKind.status, 400, mismatchedKind.body, "kind 与扩展名不匹配");
+  assert.equal(JSON.parse(mismatchedKind.body).code, "invalid-extension");
 
   const missingKind = await handlePanelActionRequest(
     uploadRequest(multipartBody("----aosAssets", { fields: { project: rootPath } })),

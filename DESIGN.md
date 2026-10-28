@@ -3141,3 +3141,15 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **验收**：starbuckstw 现有 flows 投影为 `主屏 19 · 状态 18`，`n6dGB（行動預點-下滑，父屏 Z4OR6X）` 进入契约；随后 run 的 `uiCoverage.contractNotComparedStates` 会列出未比对状态，`ui-states-not-verified` 给出名称，不再只有一条 summary。
 - **测试**：`ui-contract`（状态 pen → presentation/parent/counts、重复 label 去重、状态 pen 改指纹）；`ui-auto-check`（contractStates 与未覆盖状态拆分）；`workflow-design-to-test`（有 states 默认 `includeStates:true`；显式 false 时 `states-not-read` 含 n6dGB）；`ui-contract.test` 现有主屏用例保持。
 - **边界/后续**：状态用例生成（下滑手势、展开/收起点击、弹窗触发）尚未自动生成，仍由人工/后续计划补；旧 flows 没有状态 PNG 时只告警，不伪造视觉阅读；原始 28 个 state 中同 label/父屏同名的 10 个按去重规则折叠为 18 个。
+
+### 13.258 新增（Web 资产类型：package / materials / scripts）
+
+> 2026-10-28。Plan 3 Task 3b：Web 任务需要携带安装包、测试材料与 Maestro 脚本包，资产类型从「仅 Excel」放开为四类。
+
+- **类型**（`src/db/types.ts`）：`WebAssetKind = "excel" | "materials" | "package" | "scripts"`；Memory/File/PG 三实现只按字符串存 `kind`，无需迁移。
+- **上限**（`src/web/assets.ts`）：新增 `webAssetMaxBytes(kind)`——excel 20MB、materials 50MB、package 500MB、scripts 20MB；`WEB_ASSET_MAX_BYTES` 保留为 excel/scripts 旧常量（20MB）。`WEB_ASSET_KINDS`/`isWebAssetKind`/`webAssetExtensions` 供调用方枚举。
+- **扩展名白名单**：package `.apk`/`.ipa`；materials `.zip`/`.json`/`.csv`/`.txt`；scripts 仅 `.zip`；excel 仅 `.xlsx`；大小写不敏感，文件名仍只取 `basename`（不放松路径校验）。`metadata?: Record<string, unknown>` 透传到资产行（缺省 `{}`）；`metadata.secret=true` 标记 secret materials。
+- **package 元数据**：上传不要求中心解析 AndroidManifest/Info.plist；包名/版本以项目 `appPackage` 为准、安装后由 runner 回报（Task 8）。
+- **API**（`src/panel/actions.ts`）：`POST /panel/api/projects/assets` 的 `kind` 接受四类（未知 kind → 400 `未知 kind "…"`）；multipart 先把 `kind` 当文本字段解析，故按全类型扩展名并集接收、上限取最大 kind＋64KB 头开销，再由 `storeWebAsset` 按 kind 精确校验（扩展名不匹配 400 `invalid-extension`、超限 413 `too-large`）；新增 `secret=true` 文本字段 → `metadata.secret`。审计 `asset.upload` 的 refs 仍含 kind。
+- **测试**：`test/web-asset-kinds.test.js`（各 kind 上限与边界、扩展名大小写/白名单、package 重复内容新版本复用 CAS、未知 kind 与 basename、secret metadata、API 四类上传与 typed 400/413）；`test/web-assets.test.js` 原「未知 kind」用例改用 `binary`，另加 kind/扩展名不匹配 400。
+- **边界**：不实现资产删除/保留期、包解析与安装（Task 8）、secret 加密存储与 job 级下发（后续任务）。

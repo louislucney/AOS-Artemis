@@ -22,7 +22,15 @@ import {
   WebProjectCreateError,
   WebProjectStateError
 } from "../web/project-service.js";
-import { storeWebAsset, WebAssetError, WEB_ASSET_MAX_BYTES } from "../web/assets.js";
+import {
+  isWebAssetKind,
+  storeWebAsset,
+  WebAssetError,
+  WEB_ASSET_KINDS,
+  webAssetExtensions,
+  webAssetMaxBytes,
+  type WebAssetKind
+} from "../web/assets.js";
 import {
   ExcelMappingServiceError,
   previewExcelAsset,
@@ -557,9 +565,13 @@ async function uploadAssetAction(
   }
   let upload: Awaited<ReturnType<typeof parseMultipartUpload>>;
   try {
+    // kind 是 multipart 文本字段，只能解析后才知道；先按全类型并集接收（上限取最大值＋
+    // multipart 头开销），再由 storeWebAsset 按 kind 精确校验扩展名与大小并返回 typed 错误。
     upload = await parseMultipartUpload(request.rawBody, request.contentType, {
-      maxBytes: WEB_ASSET_MAX_BYTES,
-      extensions: [".xlsx"]
+      maxBytes:
+        Math.max(...WEB_ASSET_KINDS.map((candidate) => webAssetMaxBytes(candidate))) +
+        64 * 1024,
+      extensions: WEB_ASSET_KINDS.flatMap((candidate) => [...webAssetExtensions(candidate)])
     });
   } catch (error) {
     if (error instanceof UploadError) return json(error.status, { error: error.message });
@@ -571,11 +583,18 @@ async function uploadAssetAction(
     (request.url.searchParams.get("project") ?? "").trim();
   if (projectKey === "") return json(400, { error: "缺少 project" });
 
-  const kind = (upload.fields.kind ?? "").trim().toLowerCase();
-  if (kind === "") return json(400, { error: "缺少 kind（仅支持 excel）" });
-  if (kind !== "excel") {
-    return json(400, { error: `kind 仅支持 excel（当前 ${kind}）` });
+  const kindRaw = (upload.fields.kind ?? "").trim().toLowerCase();
+  if (kindRaw === "") {
+    return json(400, { error: `缺少 kind（支持 ${WEB_ASSET_KINDS.join("/")}）` });
   }
+  if (!isWebAssetKind(kindRaw)) {
+    return json(400, {
+      error: `未知 kind "${kindRaw}"（仅支持 ${WEB_ASSET_KINDS.join("、")}）`
+    });
+  }
+  const kind: WebAssetKind = kindRaw;
+  const secretFlag = (upload.fields.secret ?? "").trim().toLowerCase();
+  const metadata: Record<string, unknown> = secretFlag === "true" ? { secret: true } : {};
 
   const hostParam =
     (upload.fields.host ?? "").trim() ||
@@ -616,10 +635,11 @@ async function uploadAssetAction(
     const asset = await storeWebAsset({
       store: scopedDeps.store,
       rootPath: resolved.rootPath,
-      kind: "excel",
+      kind,
       filename: upload.filename,
       buffer: upload.content,
-      uploadedBy: actor
+      uploadedBy: actor,
+      metadata
     });
     await recordAuditSafe(scopedDeps.store, resolved.rootPath, {
       domain: "asset",

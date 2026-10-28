@@ -24,7 +24,7 @@ export interface WebProjectRecord {
   createdAt: string;
 }
 
-export type WebAssetKind = "excel" | "materials" | "package";
+export type WebAssetKind = "excel" | "materials" | "package" | "scripts";
 
 /** 内容寻址的项目资产（原件不改；同内容复用文件，每次上传登记新的 version 行）。 */
 export interface WebAssetRecord {
