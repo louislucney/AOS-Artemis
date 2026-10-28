@@ -23,6 +23,7 @@ import type {
   CreateWebAssetInput,
   DeviceLeaseRecord,
   ExcelMappingRecord,
+  ExcelWritebackRecord,
   HostAddressInput,
   HostAddressRecord,
   HostRecord,
@@ -34,6 +35,7 @@ import type {
   ProjectEventInput,
   ProjectEventQuery,
   ProjectEventRecord,
+  RecordExcelWritebackInput,
   RecordProjectEventResult,
   PutModelCacheInput,
   RecordCaseSetInput,
@@ -1121,6 +1123,22 @@ export class FileStore implements ProjectStore {
     return this.scopedMem(bucket, this.hostId).listExcelMappings(rootPath, assetId);
   }
 
+  async recordExcelWriteback(input: RecordExcelWritebackInput): Promise<ExcelWritebackRecord> {
+    const bucket = await this.bucket(input.rootPath);
+    const record = await this.scopedMem(bucket, this.hostId).recordExcelWriteback(input);
+    await this.persist(bucket, "recordExcelWriteback");
+    return record;
+  }
+
+  async lastExcelWriteback(
+    rootPath: string,
+    assetId: string,
+    cellRef: string
+  ): Promise<ExcelWritebackRecord | null> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).lastExcelWriteback(rootPath, assetId, cellRef);
+  }
+
   /** 文件台账按项目目录存放、天然属于本机，没有可迁移的跨主机行（中心 `host adopt-legacy` 仅对 PG 生效）。 */
   async adoptProjectHost(): Promise<boolean> {
     return false;
@@ -1385,7 +1403,8 @@ export class FileStore implements ProjectStore {
         deviceLeases: this.hostMem.exportState().deviceLeases,
         webProjects: full.webProjects,
         webAssets: full.webAssets,
-        excelMappings: full.excelMappings
+        excelMappings: full.excelMappings,
+        excelWritebacks: full.excelWritebacks
       };
       await this.ensureDir(bucket);
       const payload = JSON.stringify({
@@ -1557,6 +1576,13 @@ function mergeStates(disk: Partial<MemoryStoreState>, local: MemoryStoreState): 
   }
   if (disk.excelMappings) {
     out.excelMappings = unionBy(disk.excelMappings, local.excelMappings, (mapping) => mapping.id);
+  }
+  if (disk.excelWritebacks) {
+    out.excelWritebacks = unionBy(
+      disk.excelWritebacks,
+      local.excelWritebacks,
+      (writeback) => writeback.id
+    );
   }
   return out;
 }

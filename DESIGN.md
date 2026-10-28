@@ -3075,3 +3075,18 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **复用口径**：建议映射（preview）与保存的指纹在用户接受建议时相同；用户改动可选字段集合后指纹随确认语义变化，是刻意行为（不复用不确定映射）。跨资产复用时以最新原件的预览指纹查 `findExcelMapping`。
 - **边界**：不实现 UI、工作副本、写回与 journal（Task 7/8）；映射只挂原件，不参与 CAS/原件 sha。
 - **测试**：`test/web-excel-mapping.test.js`（11 例：预览 headers/suggested/指纹与缺必填列、列换序稳定；指纹与 Task 5 同源、键序无关；Memory upsert/find/list、换序命中；必填/列不存在/未知字段/空表名/表不存在/未知资产/非 Excel/越界路径/文件缺失；归一后为空或空单元格的表头不能冒充必填列而合法映射仍可保存；FileStore 重启；pg-mem 往返与同键 upsert；API 预览成功+headerRow+缺列 200+404/400/403/跨项目隔离；API 保存+审计+同键 upsert+字段集合变化新行+400/403；角色 maintainer）。
+
+### 13.253 新增（Excel 工作副本 + 写回 Journal + 8 列写回引擎）
+
+> 2026-10-28。Task 7：在原件 CAS 之上提供可写工作副本与「8 列系统写回」安全层；原件永不改写，系统只碰空白格或未被人工改动的系统格。
+
+- **工作副本**（`src/web/workbook.ts`）：固定路径 `workbookCopyPath(root, assetId)` = `<projectRoot>/.artemis/web/workbook/<assetId>.xlsx`；`ensureWorkbookCopy(original, copy)` 仅在副本缺失时 `COPYFILE_EXCL` 复制（并发先到者胜），副本已存在不覆盖（保留人工/系统写入）；`original === copy` 抛 `WorkbookCopyError("same-path")`，原件缺失原样抛 `ENOENT`。原件 sha 不因复制/写回改变。
+- **Journal 存储**（`src/db/*`）：`excel_writeback_journal`（PG）与 Memory/File 台账 `excelWritebacks` 同构；字段 `id/projectId?/rootPath/assetId/sheetName/jobId?/caseId/columnKey/cellRef/value/actor?/writtenAt`，**只追加**（同格多次写保留多条）；普通索引 `(root_path, asset_id, cell_ref, written_at)`（非唯一）；`lastExcelWriteback(rootPath, assetId, cellRef)` 取 `written_at` 最新（同刻取后写入/`id DESC` 兜底）。`cellRef` 约定带工作表名（`用例!F2`），避免多表地址碰撞。File 台账按 `id` union 合并、随 `state.json` 持久化；PG 写入 `project_id` 按 `getProjectByPath` 解析（未登记为 NULL）。
+- **8 列**（`src/web/writeback.ts` 的 `SYSTEM_COLUMNS`）：`建议｜脚本文件`、`建议｜关键预期`、`执行｜结果`、`执行｜设备与系统`、`执行｜安装包`、`执行｜开始时间`、`执行｜结束时间`、`执行｜traceId`（顺序即追加顺序）。
+- **锚定**：`writebackWorkbook` 只在**表头行**（`headerRow` 缺省 1）从 `caseIdHeader` 命中列（`normalizeExcelHeader` 等价）向右扫描到最后非空表头；数据行里的游离列不参与锚定、不覆盖；锚点左侧一律不碰。已有系统列按表头归一复用（可处在非规范顺序），缺失列仅在最后非空表头右侧按 `SYSTEM_COLUMNS` 顺序追加——追加从不插入/移动既有列，避免破坏公式与人工数据。重复执行不重复堆列。游离数据若恰好落在追加列的数据行，按「非系统内容」跳过（只在其上方增表头，不改数据）。
+- **归属（K2）**：逐格读当前值 + `lastSystemValue(caseId, key)`：当前空且 journal 无值 → 写；当前（trim 后）等于 journal 最后值 → 允许刷新；当前非空但 journal 无值、或与 journal 不同 → 人工格，跳过并 warning；journal 有值但当前被清空 → 视为人工清空，冻结不回填。目标格为合并/公式 → 跳过并 warning；**锚点或系统列表头与合并区重叠 → 抛 `merged-header`**，不拆合并（追加列也检查）。缺 `caseId`（表头行找不到）、`caseIdHeader` 为空、工作表不存在、损坏工作簿、维度超限、表头行越界分别抛 `WritebackError`（`case-id-header-not-found` / `invalid-case-id-header` / `sheet-not-found` / `invalid-workbook` / `invalid-header-row`）。未知/重复用例编号、缺编号行只 warning 不写。
+- **写盘与结果**：`undefined/null/空串` 值不产生写入尝试；有任何可写格时才追加表头并 `xlsx.writeBuffer` → `writeFileAtomic` 覆盖工作副本（无写入则完全不改文件）。`WritebackResult` 计数口径：`written`/`failed` 按单元格（`skipped` 对未知/空用例编号行按行计一次，其余按格）。`warnings` 中文可读；`columns` 恒为 8 个表头；额外 `writtenCells[]`（`caseId/key/value/cellRef/address/rowNumber/columnNumber`）供调用方在保存成功后写 journal（先落盘再记账，失败不记账）。`lastSystemValue` 抛错按 `failed` 计并跳过该格。
+- **锁**（`src/web/lock.ts`）：`withFileLock(lockPath, fn, {timeoutMs=30000, pollMs=25})` 用 `fs.open(lockPath,"wx")` 独占创建，`EEXIST` 轮询至超时（`FileLockTimeoutError`），`finally` 关闭并删除锁文件（`fn` 抛错同样释放）。写回引擎本身不持锁，由 API/编排层用同一 `lockPath` 串行；跨进程/多实例的 PG advisory lock 留待后续。
+- **复用约定**：映射仍按原件解析（Task 6），`caseIdHeader` 必须由调用方按当前工作副本重新解析后传入（缺列即抛错，不信任历史表头文本）；`lastSystemValue` 由调用方按 `(caseId,key) → cellRef`（读当前副本表头/行号）查 journal。
+- **边界**：不实现 UI/API 接线、写回失败状态标记/重试、往返 parts 自检、PG advisory lock（Task 8/9 或后续）。
+- **测试**：`test/web-writeback.test.js`（12 例：副本复制/幂等/同路径拒绝/原件 sha；首写 8 列顺序与游离列保留；二次写刷新+人工冻结；人工清空不回填 vs 空+无 journal 可写；表头行锚定/游离表头列/锚点偏移与左侧不动；公式/合并目标跳过、合并表头抛错；`withFileLock` 互斥/超时/释放；并发写回不重复列且文件可重开；未知 caseId/空值/journal 失败/缺锚点/缺表/坏文件/headerRow；Memory-File-PG journal 追加与最新值）。

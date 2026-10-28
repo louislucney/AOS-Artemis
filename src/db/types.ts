@@ -75,6 +75,40 @@ export interface SaveExcelMappingInput {
   createdBy?: string | null;
 }
 
+/**
+ * Excel 写回日志（只追加）：每次系统写入单元格一条；读取时按 `(rootPath, assetId, cellRef)`
+ * 取最后一条，用于区分「系统格」（可刷新）与「人工格」（永不覆盖）。
+ */
+export interface ExcelWritebackRecord {
+  id: string;
+  projectId: string | null;
+  rootPath: string;
+  assetId: string;
+  sheetName: string;
+  jobId: string | null;
+  caseId: string;
+  columnKey: string;
+  /** 建议带工作表名（`用例!F2`）：同一资产多表时避免地址碰撞。 */
+  cellRef: string;
+  value: string;
+  actor: string | null;
+  writtenAt: string;
+}
+
+export interface RecordExcelWritebackInput {
+  rootPath: string;
+  assetId: string;
+  sheetName: string;
+  jobId?: string | null;
+  caseId: string;
+  columnKey: string;
+  cellRef: string;
+  value: string;
+  actor?: string | null;
+  /** 显式写入时间（测试/导入）；缺省＝当前时间。 */
+  writtenAt?: string;
+}
+
 /** 未绑定 host 的 store 按 root_path 查询命中多行（跨主机同路径）时的歧义错误。 */
 export class AmbiguousProjectError extends Error {
   readonly rootPath: string;
@@ -1044,6 +1078,14 @@ export interface ProjectStore {
   ): Promise<ExcelMappingRecord | null>;
   /** 新→旧（createdAt DESC, id DESC）；`assetId` 缺省＝该项目全部映射。 */
   listExcelMappings(rootPath: string, assetId?: string): Promise<ExcelMappingRecord[]>;
+  /** 追加一条写回日志（保留历史；同格多次写入留多条）。 */
+  recordExcelWriteback(input: RecordExcelWritebackInput): Promise<ExcelWritebackRecord>;
+  /** 取 `(rootPath, assetId, cellRef)` 的最后一条系统写入（`writtenAt` 最新，同刻取后写入）。 */
+  lastExcelWriteback(
+    rootPath: string,
+    assetId: string,
+    cellRef: string
+  ): Promise<ExcelWritebackRecord | null>;
   ping(): Promise<boolean>;
   close(): Promise<void>;
 }

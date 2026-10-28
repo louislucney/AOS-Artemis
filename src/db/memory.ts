@@ -30,6 +30,7 @@ import type {
   CreateWebAssetInput,
   DeviceLeaseRecord,
   ExcelMappingRecord,
+  ExcelWritebackRecord,
   HostAddressInput,
   HostAddressRecord,
   HostRecord,
@@ -44,6 +45,7 @@ import type {
   RecordProjectEventResult,
   PutModelCacheInput,
   RecordCaseSetInput,
+  RecordExcelWritebackInput,
   RecordSuiteRunInput,
   RecordTaskInput,
   RecordUsageEventInput,
@@ -87,6 +89,7 @@ export interface MemoryStoreState {
   webProjects: WebProjectRecord[];
   webAssets: WebAssetRecord[];
   excelMappings: ExcelMappingRecord[];
+  excelWritebacks: ExcelWritebackRecord[];
 }
 
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
@@ -113,6 +116,7 @@ export class MemoryStore implements ProjectStore {
   private webProjects: WebProjectRecord[] = [];
   private webAssets: WebAssetRecord[] = [];
   private excelMappings: ExcelMappingRecord[] = [];
+  private excelWritebacks: ExcelWritebackRecord[] = [];
 
   constructor(
     hostId: string | null = null,
@@ -151,6 +155,7 @@ export class MemoryStore implements ProjectStore {
     view.webProjects = this.webProjects;
     view.webAssets = this.webAssets;
     view.excelMappings = this.excelMappings;
+    view.excelWritebacks = this.excelWritebacks;
     return view;
   }
 
@@ -1728,6 +1733,45 @@ export class MemoryStore implements ProjectStore {
       .map(cloneExcelMapping);
   }
 
+  async recordExcelWriteback(input: RecordExcelWritebackInput): Promise<ExcelWritebackRecord> {
+    const record: ExcelWritebackRecord = {
+      id: randomUUID(),
+      projectId: this.getProjectRecord(input.rootPath)?.id ?? null,
+      rootPath: input.rootPath,
+      assetId: input.assetId,
+      sheetName: input.sheetName,
+      jobId: input.jobId ?? null,
+      caseId: input.caseId,
+      columnKey: input.columnKey,
+      cellRef: input.cellRef,
+      value: input.value,
+      actor: input.actor ?? null,
+      writtenAt: input.writtenAt ?? new Date().toISOString()
+    };
+    this.excelWritebacks.push(record);
+    return cloneExcelWriteback(record);
+  }
+
+  async lastExcelWriteback(
+    rootPath: string,
+    assetId: string,
+    cellRef: string
+  ): Promise<ExcelWritebackRecord | null> {
+    let latest: ExcelWritebackRecord | null = null;
+    for (const record of this.excelWritebacks) {
+      if (
+        record.rootPath !== rootPath ||
+        record.assetId !== assetId ||
+        record.cellRef !== cellRef
+      ) {
+        continue;
+      }
+      // 追加顺序即写入顺序，同刻（>=）后写入覆盖前一条。
+      if (latest === null || record.writtenAt >= latest.writtenAt) latest = record;
+    }
+    return latest ? cloneExcelWriteback(latest) : null;
+  }
+
   usageEventCount(): number {
     return this.usageEvents.length;
   }
@@ -1757,7 +1801,8 @@ export class MemoryStore implements ProjectStore {
       deviceLeases: this.deviceLeases.map((lease) => ({ ...lease })),
       webProjects: this.webProjects.map(cloneWebProject),
       webAssets: this.webAssets.map(cloneWebAsset),
-      excelMappings: this.excelMappings.map(cloneExcelMapping)
+      excelMappings: this.excelMappings.map(cloneExcelMapping),
+      excelWritebacks: this.excelWritebacks.map(cloneExcelWriteback)
     };
   }
 
@@ -1795,6 +1840,9 @@ export class MemoryStore implements ProjectStore {
     if (data.webProjects) this.webProjects = data.webProjects.map(cloneWebProject);
     if (data.webAssets) this.webAssets = data.webAssets.map(cloneWebAsset);
     if (data.excelMappings) this.excelMappings = data.excelMappings.map(cloneExcelMapping);
+    if (data.excelWritebacks) {
+      this.excelWritebacks = data.excelWritebacks.map(cloneExcelWriteback);
+    }
   }
 
   private pruneUsageEvents(projectId: string | null, policy: UsagePrunePolicy): void {
@@ -1943,6 +1991,10 @@ function cloneWebAsset(record: WebAssetRecord): WebAssetRecord {
 
 function cloneExcelMapping(record: ExcelMappingRecord): ExcelMappingRecord {
   return { ...record, columnMap: { ...record.columnMap } };
+}
+
+function cloneExcelWriteback(record: ExcelWritebackRecord): ExcelWritebackRecord {
+  return { ...record };
 }
 
 function cloneMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {

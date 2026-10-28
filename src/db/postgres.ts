@@ -65,6 +65,8 @@ import type {
   AuditQuery,
   CreateWebAssetInput,
   ExcelMappingRecord,
+  ExcelWritebackRecord,
+  RecordExcelWritebackInput,
   SaveExcelMappingInput,
   WebAssetKind,
   WebAssetRecord,
@@ -433,7 +435,23 @@ const SCHEMA = [
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS excel_mappings_root_asset_fp_idx
      ON excel_mappings(root_path, asset_id, header_fingerprint)`,
-  `CREATE INDEX IF NOT EXISTS excel_mappings_root_asset_idx ON excel_mappings(root_path, asset_id)`
+  `CREATE INDEX IF NOT EXISTS excel_mappings_root_asset_idx ON excel_mappings(root_path, asset_id)`,
+  `CREATE TABLE IF NOT EXISTS excel_writeback_journal (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     root_path TEXT NOT NULL,
+     asset_id TEXT NOT NULL,
+     sheet_name TEXT NOT NULL,
+     job_id TEXT,
+     case_id TEXT NOT NULL,
+     column_key TEXT NOT NULL,
+     cell_ref TEXT NOT NULL,
+     value TEXT NOT NULL,
+     actor TEXT,
+     written_at TEXT NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS excel_writeback_journal_lookup_idx
+     ON excel_writeback_journal(root_path, asset_id, cell_ref, written_at)`
 ];
 
 const MIGRATIONS = [
@@ -2970,6 +2988,47 @@ export class PostgresStore implements ProjectStore {
     return result.rows.map(mapExcelMapping);
   }
 
+  async recordExcelWriteback(input: RecordExcelWritebackInput): Promise<ExcelWritebackRecord> {
+    const projectId = (await this.getProjectByPath(input.rootPath))?.id ?? null;
+    const result = await this.pool.query(
+      `INSERT INTO excel_writeback_journal
+         (id, project_id, root_path, asset_id, sheet_name, job_id, case_id,
+          column_key, cell_ref, value, actor, written_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING *`,
+      [
+        randomUUID(),
+        projectId,
+        input.rootPath,
+        input.assetId,
+        input.sheetName,
+        input.jobId ?? null,
+        input.caseId,
+        input.columnKey,
+        input.cellRef,
+        input.value,
+        input.actor ?? null,
+        input.writtenAt ?? new Date().toISOString()
+      ]
+    );
+    return mapExcelWriteback(result.rows[0]!);
+  }
+
+  async lastExcelWriteback(
+    rootPath: string,
+    assetId: string,
+    cellRef: string
+  ): Promise<ExcelWritebackRecord | null> {
+    const result = await this.pool.query(
+      `SELECT * FROM excel_writeback_journal
+        WHERE root_path = $1 AND asset_id = $2 AND cell_ref = $3
+        ORDER BY written_at DESC, id DESC
+        LIMIT 1`,
+      [rootPath, assetId, cellRef]
+    );
+    return result.rows.length > 0 ? mapExcelWriteback(result.rows[0]!) : null;
+  }
+
   private async pruneUsageEvents(
     projectId: string | null,
     policy: UsagePrunePolicy
@@ -3493,6 +3552,23 @@ function mapExcelMapping(row: Record<string, unknown>): ExcelMappingRecord {
     columnMap,
     createdBy: nullableString(row.created_by),
     createdAt: String(row.created_at)
+  };
+}
+
+function mapExcelWriteback(row: Record<string, unknown>): ExcelWritebackRecord {
+  return {
+    id: String(row.id),
+    projectId: nullableString(row.project_id),
+    rootPath: String(row.root_path),
+    assetId: String(row.asset_id),
+    sheetName: String(row.sheet_name),
+    jobId: nullableString(row.job_id),
+    caseId: String(row.case_id),
+    columnKey: String(row.column_key),
+    cellRef: String(row.cell_ref),
+    value: String(row.value),
+    actor: nullableString(row.actor),
+    writtenAt: String(row.written_at)
   };
 }
 
