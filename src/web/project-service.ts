@@ -40,8 +40,11 @@ const PLATFORM_STACK: Record<string, string> = {
   ios: "ios-native"
 };
 
-/** 把平台映射为栈词汇并去重；未知平台显式报错（在创建目录前失败，避免半成品）。 */
+/** 把平台映射为栈词汇并去重；未知/空平台显式报错（在创建目录前失败，避免半成品）。 */
 function mapPlatformsToStack(platforms: string[]): string[] {
+  if (platforms.length === 0) {
+    throw new Error("至少选择一个平台（android、ios）");
+  }
   const stack: string[] = [];
   for (const platform of platforms) {
     const mapped = PLATFORM_STACK[platform];
@@ -79,7 +82,7 @@ async function pathExists(target: string): Promise<boolean> {
 }
 
 /** 创建托管 Web 项目：归一名称 → 查重 → 建目录 → 写 `aos.config.jsonc` → 注册 store。
- * 目录创建后的任一步失败，best-effort 移除目录；web 行已建但 project 未建时归档该行。 */
+ * 目录创建后的任一步失败，best-effort 移除目录；web 行已建但 project 未建时硬删除该行。 */
 export async function createWebProject(
   input: CreateWebProjectInput
 ): Promise<CreateWebProjectResult> {
@@ -133,7 +136,7 @@ export async function createWebProject(
   } catch (error) {
     if (web !== null) {
       try {
-        await input.store.archiveWebProject(rootPath, new Date().toISOString());
+        await input.store.deleteWebProject(rootPath);
       } catch {
         /* best-effort */
       }

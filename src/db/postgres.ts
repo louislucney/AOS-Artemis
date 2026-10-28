@@ -2779,6 +2779,14 @@ export class PostgresStore implements ProjectStore {
     return updated.rows.length > 0;
   }
 
+  async deleteWebProject(rootPath: string): Promise<boolean> {
+    const deleted = await this.pool.query(
+      "DELETE FROM web_projects WHERE root_path = $1 RETURNING id",
+      [rootPath]
+    );
+    return deleted.rows.length > 0;
+  }
+
   private async pruneUsageEvents(
     projectId: string | null,
     policy: UsagePrunePolicy

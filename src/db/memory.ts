@@ -1612,6 +1612,13 @@ export class MemoryStore implements ProjectStore {
     return true;
   }
 
+  async deleteWebProject(rootPath: string): Promise<boolean> {
+    const index = this.webProjects.findIndex((entry) => entry.rootPath === rootPath);
+    if (index < 0) return false;
+    this.webProjects.splice(index, 1);
+    return true;
+  }
+
   usageEventCount(): number {
     return this.usageEvents.length;
   }

@@ -191,6 +191,26 @@ test("createWebProject: 未知平台拒绝且不创建目录", async () => {
   );
 });
 
+test("createWebProject: 空平台拒绝且不创建目录", async () => {
+  const workspaceRoot = await tempWorkspace();
+  const store = new MemoryStore();
+  await assert.rejects(
+    createWebProject({
+      store,
+      workspaceRoot,
+      name: "no-platform",
+      platforms: [],
+      appPackage: "com.x"
+    }),
+    /至少选择一个平台/
+  );
+  assert.equal(
+    fs.existsSync(path.join(workspaceRoot, "no-platform")),
+    false,
+    "空平台不应创建项目目录"
+  );
+});
+
 test("createWebProject: 生成的 config 可被 loadProject 校验通过（stack 映射为 native 栈）", async () => {
   const workspaceRoot = await tempWorkspace();
   const store = new MemoryStore();
@@ -219,40 +239,24 @@ test("createWebProject: 生成的 config 可被 loadProject 校验通过（stack
   assert.deepEqual(web.platforms, ["android", "ios"]);
 });
 
-test("createWebProject: upsert 失败回滚目录并归档 web 记录", async () => {
+test("createWebProject: upsert 失败硬删除 web 行，同名可重试", async () => {
   const workspaceRoot = await tempWorkspace();
-  const archived = [];
-  const fakeStore = {
-    async listWebProjects() {
-      return [];
-    },
-    async createWebProject(input) {
-      return {
-        id: "web-1",
-        projectId: null,
-        rootPath: input.rootPath,
-        name: input.name,
-        normalizedName: input.normalizedName,
-        platforms: [...input.platforms],
-        appPackage: input.appPackage ?? null,
-        customerName: input.customerName ?? null,
-        owner: input.owner ?? null,
-        status: "active",
-        createdAt: new Date().toISOString()
-      };
-    },
-    async upsertProject() {
+  const store = new MemoryStore();
+
+  const originalUpsert = store.upsertProject.bind(store);
+  let failNext = true;
+  store.upsertProject = async (input) => {
+    if (failNext) {
+      failNext = false;
       throw new Error("upsert boom");
-    },
-    async archiveWebProject(rootPath) {
-      archived.push(rootPath);
-      return true;
     }
+    return originalUpsert(input);
   };
 
+  const expectedRoot = path.join(workspaceRoot, "rollback");
   await assert.rejects(
     createWebProject({
-      store: fakeStore,
+      store,
       workspaceRoot,
       name: "rollback",
       platforms: ["android"],
@@ -262,10 +266,21 @@ test("createWebProject: upsert 失败回滚目录并归档 web 记录", async ()
   );
 
   assert.equal(
-    fs.existsSync(path.join(workspaceRoot, "rollback")),
+    fs.existsSync(expectedRoot),
     false,
     "失败后项目目录应被移除"
   );
-  assert.equal(archived.length, 1, "已创建的 web 记录应被归档");
-  assert.equal(archived[0], path.join(workspaceRoot, "rollback"));
+  assert.equal(await store.getWebProject(expectedRoot), null, "失败后不应残留 web 行");
+  assert.equal((await store.listWebProjects()).length, 0, "失败后不应留下 tombstone");
+
+  const result = await createWebProject({
+    store,
+    workspaceRoot,
+    name: "rollback",
+    platforms: ["android"],
+    appPackage: "com.x"
+  });
+  assert.equal(result.rootPath, expectedRoot);
+  assert.equal((await store.listWebProjects()).length, 1);
+  assert.equal((await store.getWebProject(expectedRoot)).name, "rollback");
 });

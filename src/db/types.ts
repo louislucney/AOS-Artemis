@@ -977,6 +977,8 @@ export interface ProjectStore {
   getWebProject(rootPath: string): Promise<WebProjectRecord | null>;
   listWebProjects(): Promise<WebProjectRecord[]>;
   archiveWebProject(rootPath: string, at: string): Promise<boolean>;
+  /** 硬删除 Web 项目行（回滚/清理用；区别于 archive，删除后同名可重新创建）。 */
+  deleteWebProject(rootPath: string): Promise<boolean>;
   ping(): Promise<boolean>;
   close(): Promise<void>;
 }

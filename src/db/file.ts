@@ -1061,6 +1061,19 @@ export class FileStore implements ProjectStore {
     return archived;
   }
 
+  async deleteWebProject(rootPath: string): Promise<boolean> {
+    await this.ensureWebIndex();
+    if (!this.webIndex.has(rootPath)) return false;
+    const bucket = await this.bucket(rootPath);
+    const deleted = await this.scopedMem(bucket, this.hostId).deleteWebProject(rootPath);
+    if (deleted) {
+      await this.persist(bucket, "deleteWebProject");
+      this.webIndex.delete(rootPath);
+      await this.rewriteWebIndex();
+    }
+    return deleted;
+  }
+
   /** 文件台账按项目目录存放、天然属于本机，没有可迁移的跨主机行（中心 `host adopt-legacy` 仅对 PG 生效）。 */
   async adoptProjectHost(): Promise<boolean> {
     return false;
@@ -1122,6 +1135,18 @@ export class FileStore implements ProjectStore {
       log(`文件台账 Web 项目索引写入失败：${errorMessage(error)}`);
     }
     this.webIndex.set(record.rootPath, record);
+  }
+
+  /** 重写 home 级 Web 项目索引（删除条目时用，last-write-wins 索引无墓碑语义）。 */
+  private async rewriteWebIndex(): Promise<void> {
+    const lines = [...this.webIndex.values()].map((record) => JSON.stringify(record));
+    const content = lines.length > 0 ? `${lines.join("\n")}\n` : "";
+    try {
+      await writeFileAtomicAsync(this.webIndexPath, content);
+    } catch (error) {
+      this.noteWriteFailure(error);
+      log(`文件台账 Web 项目索引重写失败：${errorMessage(error)}`);
+    }
   }
 
   private async appendRegistry(entry: RegistryEntry): Promise<void> {

@@ -155,3 +155,49 @@ test("FileStore: 未注册项目的 web project 重启后仍可 list", async () 
   assert.equal(listed[0].rootPath, root);
   assert.deepEqual(listed[0].platforms, ["android"]);
 });
+
+test("MemoryStore: deleteWebProject 硬删除并可重建", async () => {
+  const store = new MemoryStore();
+  await store.createWebProject({ rootPath: "/w/a", name: "a", normalizedName: "a", platforms: ["android"] });
+  assert.equal(await store.deleteWebProject("/w/a"), true);
+  assert.equal(await store.getWebProject("/w/a"), null);
+  assert.equal(await store.deleteWebProject("/w/a"), false);
+  await store.createWebProject({ rootPath: "/w/a", name: "a", normalizedName: "a", platforms: ["android"] });
+  assert.equal((await store.listWebProjects()).length, 1);
+});
+
+test("PostgresStore (pg-mem): deleteWebProject 硬删除并可重建", async () => {
+  const store = await makePgStore();
+  await store.createWebProject({ rootPath: "/w/a", name: "a", normalizedName: "a", platforms: ["android"] });
+  assert.equal(await store.deleteWebProject("/w/a"), true);
+  assert.equal(await store.getWebProject("/w/a"), null);
+  assert.equal(await store.deleteWebProject("/w/a"), false);
+  await store.createWebProject({ rootPath: "/w/a", name: "a", normalizedName: "a", platforms: ["android"] });
+  assert.equal((await store.listWebProjects()).length, 1);
+});
+
+test("FileStore: deleteWebProject 从索引与桶状态移除，重启后不残留", async () => {
+  const home = await tempHome();
+  const rootA = join(home, "a");
+  const rootB = join(home, "b");
+  await mkdir(rootA, { recursive: true });
+  await mkdir(rootB, { recursive: true });
+
+  let store = await FileStore.create({ homeDir: home });
+  await store.upsertProject({ rootPath: rootA, name: "a" });
+  await store.upsertProject({ rootPath: rootB, name: "b" });
+  await store.createWebProject({ rootPath: rootA, name: "a", normalizedName: "a", platforms: ["android"] });
+  await store.createWebProject({ rootPath: rootB, name: "b", normalizedName: "b", platforms: ["ios"] });
+  assert.equal(await store.deleteWebProject(rootA), true);
+  assert.equal(await store.getWebProject(rootA), null);
+  assert.equal((await store.listWebProjects()).length, 1);
+  await store.close();
+
+  store = await FileStore.create({ homeDir: home });
+  const listed = await store.listWebProjects();
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].rootPath, rootB);
+  assert.equal(await store.getWebProject(rootA), null);
+  await store.createWebProject({ rootPath: rootA, name: "a", normalizedName: "a", platforms: ["android"] });
+  assert.equal((await store.listWebProjects()).length, 2);
+});
