@@ -214,11 +214,12 @@ export function deviceMeetsHardRequirements(input: {
       detail: `设备 ${device.serial} 平台为 ${device.platform}，要求 ${requirements.platform}`
     };
   }
-  if (requirements.deviceKind !== "any" && deviceBucket(device) !== requirements.deviceKind) {
+  const requiredKind = requirements.deviceKind ?? "any";
+  if (requiredKind !== "any" && deviceBucket(device) !== requiredKind) {
     return {
       ok: false,
       reason: "device-kind-mismatch",
-      detail: `设备 ${device.serial} 类型为 ${deviceBucket(device)}，要求 ${requirements.deviceKind}`
+      detail: `设备 ${device.serial} 类型为 ${deviceBucket(device)}，要求 ${requiredKind}`
     };
   }
   for (const tool of requirements.tools ?? []) {
@@ -327,6 +328,11 @@ function validateRequirements(requirements: WebDispatchRequirements): string | n
   if (requirements.deviceModel !== undefined && !Array.isArray(requirements.deviceModel)) {
     return "deviceModel 必须是数组";
   }
+  if (Array.isArray(requirements.deviceModel)) {
+    for (const model of requirements.deviceModel) {
+      if (typeof model !== "string") return `deviceModel 条目必须是字符串：${String(model)}`;
+    }
+  }
   const minRaw = requestedBound(requirements.osVersion?.min);
   const maxRaw = requestedBound(requirements.osVersion?.max);
   const min = minRaw === null ? null : parseOsVersion(minRaw);
@@ -404,6 +410,14 @@ export function selectWebAssignment(input: SelectWebAssignmentInput): WebAssignm
   let pool: WebRunnerCandidate[];
 
   if (request.assignment === "manual") {
+    const requestedSerial =
+      typeof request.deviceSerial === "string" ? request.deviceSerial.trim() : "";
+    if (request.devicePinned !== true && requestedSerial !== "") {
+      return failure(
+        "requirements-unmet",
+        "deviceSerial requires devicePinned:true（只钉 host 时请清空 deviceSerial）"
+      );
+    }
     const targetHostId = typeof request.targetHostId === "string" ? request.targetHostId.trim() : "";
     if (targetHostId === "") {
       return failure("requirements-unmet", "manual 下发必须指定 targetHostId");
@@ -420,17 +434,27 @@ export function selectWebAssignment(input: SelectWebAssignmentInput): WebAssignm
     }
 
     if (request.devicePinned === true) {
-      const serial = typeof request.deviceSerial === "string" ? request.deviceSerial.trim() : "";
-      if (serial === "") {
+      if (requestedSerial === "") {
         return failure("requirements-unmet", "钉住设备必须指定 deviceSerial");
       }
       const found = pool
-        .map((runner) => ({ runner, device: runner.devices.find((entry) => entry.serial === serial) }))
+        .map((runner) => ({ runner, device: runner.devices.find((entry) => entry.serial === requestedSerial) }))
         .find((entry) => entry.device !== undefined);
       if (found === undefined || found.device === undefined) {
+        const offlineHostHasSerial = hostRunners.some(
+          (runner) =>
+            !pool.includes(runner) &&
+            runner.devices.some((entry) => entry.serial === requestedSerial)
+        );
+        if (offlineHostHasSerial) {
+          return failure(
+            "host-offline",
+            `设备 ${requestedSerial} 所在的执行机离线（主机 ${targetHostId}）`
+          );
+        }
         return failure(
           "requirements-unmet",
-          `设备 ${serial} 不属于目标主机 ${targetHostId}`
+          `设备 ${requestedSerial} 不属于目标主机 ${targetHostId}`
         );
       }
       const hard = deviceMeetsHardRequirements({

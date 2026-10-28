@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { selectWebAssignment } from "../dist/web/dispatch.js";
+import { deviceMeetsHardRequirements, selectWebAssignment } from "../dist/web/dispatch.js";
 
 const NOW = Date.parse("2026-10-29T00:00:00.000Z");
 const TTL = 90_000;
@@ -467,7 +467,7 @@ test("auto：忽略 targetHostId/deviceSerial，在全池选最高分", () => {
   assert.equal(result.deviceSerial, "high");
 });
 
-test("manual 只钉 host（devicePinned=false）时忽略 deviceSerial，选最高分空闲设备", () => {
+test("manual 只钉 host（devicePinned=false）时传 deviceSerial 必须 fail closed", () => {
   const runner = makeRunner({
     hostId: "host-pick",
     devices: [
@@ -475,14 +475,54 @@ test("manual 只钉 host（devicePinned=false）时忽略 deviceSerial，选最�
       makeDevice({ serial: "best", model: "Pixel 7" })
     ]
   });
-  const result = manual([runner], {
+  const rejected = manual([runner], {
     targetHostId: "host-pick",
     devicePinned: false,
     deviceSerial: "requested",
     requirements: requirements({ platform: "android", deviceModel: ["Pixel 7"] })
   });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, "requirements-unmet");
+  assert.match(rejected.message, /devicePinned:true/);
+
+  const defaultFlags = manual([runner], {
+    targetHostId: "host-pick",
+    deviceSerial: "requested",
+    requirements: requirements({ platform: "android" })
+  });
+  assert.equal(defaultFlags.ok, false);
+  assert.equal(defaultFlags.code, "requirements-unmet");
+
+  const omitted = manual([runner], {
+    targetHostId: "host-pick",
+    requirements: requirements({ platform: "android", deviceModel: ["Pixel 7"] })
+  });
+  assert.equal(omitted.ok, true);
+  assert.equal(omitted.deviceSerial, "best");
+
+  const blank = manual([runner], {
+    targetHostId: "host-pick",
+    devicePinned: false,
+    deviceSerial: "   ",
+    requirements: requirements({ platform: "android", deviceModel: ["Pixel 7"] })
+  });
+  assert.equal(blank.ok, true);
+  assert.equal(blank.deviceSerial, "best");
+});
+
+test("auto 仍忽略 deviceSerial（即使 devicePinned=false）", () => {
+  const low = makeRunner({ hostId: "host-low", devices: [makeDevice({ serial: "low" })] });
+  const high = makeRunner({ hostId: "host-high", devices: [makeDevice({ serial: "high", model: "Pixel 7" })] });
+  const result = auto([low, high], {
+    targetHostId: "host-low",
+    deviceSerial: "low",
+    devicePinned: false,
+    requirements: requirements({ platform: "android", deviceModel: ["Pixel 7"] }),
+    rng: () => 0
+  });
   assert.equal(result.ok, true);
-  assert.equal(result.deviceSerial, "best");
+  assert.equal(result.hostId, "host-high");
+  assert.equal(result.deviceSerial, "high", "auto 忽略 targetHostId/deviceSerial，按全池最高分选择");
 });
 
 test("所有满足硬要求的设备都被占用返回 device-busy", () => {
@@ -523,4 +563,192 @@ test("reasons 解释选择结果（在线、空闲、打分来源）", () => {
   assert.match(text, /lease/);
   assert.match(text, /iPhone 15/);
   assert.match(text, /17\.2/);
+});
+
+test("请求校验：非法 osVersion 边界（非数字 / 非点分 / min>max）返回 requirements-unmet", () => {
+  for (const osVersion of [
+    { min: "abc" },
+    { max: "17.x" },
+    { min: "-1" },
+    { min: "18", max: "17" },
+    { min: "17.0", max: "17.0.0.1.2.x" }
+  ]) {
+    const result = auto([androidRunner], {
+      requirements: requirements({ platform: "android", osVersion })
+    });
+    assert.equal(result.ok, false, JSON.stringify(osVersion));
+    assert.equal(result.code, "requirements-unmet", JSON.stringify(osVersion));
+  }
+});
+
+test("请求校验：平台/设备类型/分配方式非法返回 requirements-unmet", () => {
+  const call = (request) =>
+    selectWebAssignment({
+      runners: [androidRunner],
+      leases: [],
+      request,
+      nowMs: NOW,
+      runnerTtlMs: TTL
+    });
+
+  assert.equal(call({ assignment: "auto", requirements: { platform: "windows", deviceKind: "any" } }).code, "requirements-unmet");
+  assert.equal(call({ assignment: "auto", requirements: { platform: "android", deviceKind: "real" } }).code, "requirements-unmet");
+  assert.equal(call({ assignment: "scheduled", requirements: requirements({ platform: "android" }) }).code, "requirements-unmet");
+});
+
+test("请求校验：tools/deviceModel 非数组或条目非字符串返回 requirements-unmet", () => {
+  for (const requirementsPatch of [
+    { tools: "maestro" },
+    { tools: [123] },
+    { tools: [null] },
+    { deviceModel: "iPhone 15" },
+    { deviceModel: [123] },
+    { deviceModel: [null] }
+  ]) {
+    const result = auto([androidRunner], {
+      requirements: requirements({ platform: "android", ...requirementsPatch })
+    });
+    assert.equal(result.ok, false, JSON.stringify(requirementsPatch));
+    assert.equal(result.code, "requirements-unmet", JSON.stringify(requirementsPatch));
+  }
+});
+
+test("rng 只在最高分并列时调用；分数不同不调用", () => {
+  const runner = makeRunner({
+    devices: [
+      makeDevice({ serial: "best", model: "Pixel 7" }),
+      makeDevice({ serial: "plain" })
+    ]
+  });
+  let calls = 0;
+  const result = auto([runner], {
+    requirements: requirements({ platform: "android", deviceModel: ["Pixel 7"] }),
+    rng: () => {
+      calls += 1;
+      return 0.999;
+    }
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.deviceSerial, "best");
+  assert.equal(calls, 0, "唯一最高分不应触发 rng");
+
+  let tieCalls = 0;
+  const tie = auto([makeRunner({ devices: [makeDevice({ serial: "a" }), makeDevice({ serial: "b" })] })], {
+    rng: () => {
+      tieCalls += 1;
+      return 0;
+    }
+  });
+  assert.equal(tie.ok, true);
+  assert.equal(tie.deviceSerial, "a");
+  assert.equal(tieCalls, 1);
+});
+
+test("跨 runner 重复 serial：按 host 独立，租约不串台", () => {
+  const hostA = makeRunner({ id: "runner-a", hostId: "host-a", devices: [makeDevice({ serial: "same" })] });
+  const hostB = makeRunner({ id: "runner-b", hostId: "host-b", devices: [makeDevice({ serial: "same" })] });
+
+  const stableFirst = auto([hostA, hostB]);
+  assert.equal(stableFirst.ok, true);
+  assert.equal(stableFirst.hostId, "host-a");
+
+  const leasedB = auto([hostA, hostB], {
+    leases: [makeLease({ hostId: "host-b", serial: "same" })]
+  });
+  assert.equal(leasedB.ok, true);
+  assert.equal(leasedB.hostId, "host-a", "host-b 的租约不应阻塞 host-a 的同名设备");
+
+  const bothLeased = auto([hostA, hostB], {
+    leases: [
+      makeLease({ hostId: "host-a", serial: "same" }),
+      makeLease({ hostId: "host-b", serial: "same" })
+    ]
+  });
+  assert.equal(bothLeased.ok, false);
+  assert.equal(bothLeased.code, "device-busy");
+
+  const pinned = manual([hostA, hostB], {
+    targetHostId: "host-b",
+    devicePinned: true,
+    deviceSerial: "same"
+  });
+  assert.equal(pinned.ok, true);
+  assert.equal(pinned.hostId, "host-b");
+});
+
+test("同一设备同时存在过期与有效租约：有效租约仍然阻塞（与顺序无关）", () => {
+  const expired = makeLease({
+    hostId: "host-android",
+    serial: "pixel",
+    expiresAt: new Date(NOW - 1_000).toISOString()
+  });
+  const active = makeLease({
+    hostId: "host-android",
+    serial: "pixel",
+    taskId: "task-active",
+    expiresAt: new Date(NOW + 60_000).toISOString()
+  });
+  for (const leases of [
+    [expired, active],
+    [active, expired]
+  ]) {
+    const result = manual([androidRunner], {
+      targetHostId: "host-android",
+      devicePinned: true,
+      deviceSerial: "pixel",
+      requirements: requirements({ platform: "android" }),
+      leases
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "device-busy");
+  }
+});
+
+test("设备状态 blocklist：offline/unauthorized/unavailable/shutdown 不参与选机", () => {
+  for (const state of ["offline", "unauthorized", "unavailable", "shutdown"]) {
+    const result = auto([makeRunner({ devices: [makeDevice({ serial: "blocked", state })] })]);
+    assert.equal(result.ok, false, state);
+    assert.equal(result.code, "no-device", state);
+  }
+  const configured = auto([
+    makeRunner({ devices: [makeDevice({ serial: "configured", state: "configured" })] })
+  ]);
+  assert.equal(configured.ok, true);
+  assert.equal(configured.deviceSerial, "configured");
+});
+
+test("deviceMeetsHardRequirements 直接调用时缺少 deviceKind 默认 any", () => {
+  const runner = makeRunner();
+  const device = makeDevice();
+  const result = deviceMeetsHardRequirements({
+    runner,
+    device,
+    requirements: { platform: "android" },
+    leases: [],
+    nowMs: NOW,
+    runnerTtlMs: TTL
+  });
+  assert.deepEqual(result, { ok: true });
+});
+
+test("钉住设备的执行机离线（同 host 在线兄弟没有该 serial）返回 host-offline", () => {
+  const online = makeRunner({
+    id: "runner-online",
+    hostId: "host-split",
+    devices: [makeDevice({ serial: "other" })]
+  });
+  const offline = makeRunner({
+    id: "runner-offline",
+    hostId: "host-split",
+    lastSeenAt: new Date(NOW - TTL - 1).toISOString(),
+    devices: [makeDevice({ serial: "wanted" })]
+  });
+  const result = manual([online, offline], {
+    targetHostId: "host-split",
+    devicePinned: true,
+    deviceSerial: "wanted",
+    requirements: requirements({ platform: "android" })
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "host-offline");
 });
