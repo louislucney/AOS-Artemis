@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
+import { loadProject } from "../dist/config/loader.js";
 import {
   createWebProject,
   normalizeProjectName,
@@ -79,7 +80,7 @@ test("createWebProject: 中文名创建成功（目录/配置/store 记录）", 
     await readFile(path.join(expectedRoot, "aos.config.jsonc"), "utf-8")
   );
   assert.equal(config.project.name, "星巴克咖啡");
-  assert.deepEqual(config.project.stack, ["android", "ios"]);
+  assert.deepEqual(config.project.stack, ["android-native", "ios-native"]);
   assert.deepEqual(config.llm, { profiles: {} });
   assert.deepEqual(config.artemis, {});
 
@@ -168,6 +169,54 @@ test("createWebProject: 目录已存在拒绝", async () => {
     }),
     /目录已存在/
   );
+});
+
+test("createWebProject: 未知平台拒绝且不创建目录", async () => {
+  const workspaceRoot = await tempWorkspace();
+  const store = new MemoryStore();
+  await assert.rejects(
+    createWebProject({
+      store,
+      workspaceRoot,
+      name: "bad-platform",
+      platforms: ["windows"],
+      appPackage: "com.x"
+    }),
+    /平台/
+  );
+  assert.equal(
+    fs.existsSync(path.join(workspaceRoot, "bad-platform")),
+    false,
+    "未知平台不应创建项目目录"
+  );
+});
+
+test("createWebProject: 生成的 config 可被 loadProject 校验通过（stack 映射为 native 栈）", async () => {
+  const workspaceRoot = await tempWorkspace();
+  const store = new MemoryStore();
+  const result = await createWebProject({
+    store,
+    workspaceRoot,
+    name: "双端项目",
+    platforms: ["android", "ios"],
+    appPackage: "com.dual"
+  });
+
+  const rawConfig = JSON.parse(
+    await readFile(path.join(result.rootPath, "aos.config.jsonc"), "utf-8")
+  );
+  assert.deepEqual(rawConfig.project.stack, ["android-native", "ios-native"]);
+
+  const loaded = loadProject({ cwd: result.rootPath, env: {} });
+  assert.equal(loaded.configPath, path.join(result.rootPath, "aos.config.jsonc"));
+  assert.deepEqual(loaded.config.project?.stack, ["android-native", "ios-native"]);
+  const stackErrors = loaded.validation.errors.filter((entry) =>
+    /stack|unknown/i.test(`${entry.code} ${entry.message}`)
+  );
+  assert.deepEqual(stackErrors, [], "配置不应报 stack 相关校验错误");
+
+  const web = await store.getWebProject(result.rootPath);
+  assert.deepEqual(web.platforms, ["android", "ios"]);
 });
 
 test("createWebProject: upsert 失败回滚目录并归档 web 记录", async () => {

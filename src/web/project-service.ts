@@ -34,6 +34,25 @@ export function projectSlug(name: string): string {
   return `project-${createHash("sha256").update(name).digest("hex").slice(0, 8)}`;
 }
 
+/** Web 平台词汇 → `project.stack` 的 native 栈词汇（config 校验只认后者）。 */
+const PLATFORM_STACK: Record<string, string> = {
+  android: "android-native",
+  ios: "ios-native"
+};
+
+/** 把平台映射为栈词汇并去重；未知平台显式报错（在创建目录前失败，避免半成品）。 */
+function mapPlatformsToStack(platforms: string[]): string[] {
+  const stack: string[] = [];
+  for (const platform of platforms) {
+    const mapped = PLATFORM_STACK[platform];
+    if (mapped === undefined) {
+      throw new Error(`不支持的平台：${platform}（仅支持 android、ios）`);
+    }
+    if (!stack.includes(mapped)) stack.push(mapped);
+  }
+  return stack;
+}
+
 export interface CreateWebProjectInput {
   store: ProjectStore;
   workspaceRoot: string;
@@ -65,6 +84,7 @@ export async function createWebProject(
   input: CreateWebProjectInput
 ): Promise<CreateWebProjectResult> {
   const { name, normalized } = normalizeProjectName(input.name);
+  const stack = mapPlatformsToStack(input.platforms);
 
   const duplicate = (await input.store.listWebProjects()).find(
     (entry) => entry.normalizedName === normalized
@@ -90,7 +110,7 @@ export async function createWebProject(
     await mkdir(path.join(webRoot, "results"));
 
     const config = {
-      project: { name, stack: [...input.platforms] },
+      project: { name, stack },
       llm: { profiles: {} },
       artemis: {}
     };
