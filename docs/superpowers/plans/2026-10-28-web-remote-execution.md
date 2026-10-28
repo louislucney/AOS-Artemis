@@ -240,7 +240,7 @@ git commit -m "feat: accept package materials and script bundle assets"
 **Interfaces:**
 - Consumes: `selectWebAssignment` (Task 2), `acquireDeviceLeases`/`releaseDeviceLeases`, `createRegressionTask`, `claimWebJob`; Plan 1 `WebAssetRecord`/`WebProjectRecord`.
 - Produces:
-  - `WebJobSpec { kind: "web-test"; assignment: "auto" | "manual"; targetHostId: string; deviceSerial: string | null; requirements: WebDispatchRequirements; deviceLeaseId: string | null; excelAssetId: string; packageAssetId: string; materialsAssetId: string | null; scriptSetId: string | null; executionMode: "maestro" | "llm"; caseFilter: { modules: string[]; caseIds: string[] }; retry: number; allowStaleScript: boolean; allowPartialUnresolved: boolean; assetSnapshot: WebAssetSnapshot[] }`
+  - `WebJobSpec { kind: "web-test"; assignment: "auto" | "manual"; targetHostId: string | null; deviceSerial: string | null; requirements: WebDispatchRequirements; deviceLeaseId: string | null; excelAssetId: string; packageAssetId: string; materialsAssetId: string | null; scriptSetId: string | null; executionMode: "maestro" | "llm"; caseFilter: { modules: string[]; caseIds: string[] }; retry: number; allowStaleScript: boolean; allowPartialUnresolved: boolean; assetSnapshot: WebAssetSnapshot[]; reassignCount?: number }`
   - `WebAssetSnapshot { kind: "excel" | "package" | "materials" | "scripts"; id: string; sha256: string; filename: string }`
   - `deviceLeaseId` 使用现有租约主键 `"<hostId>:<serial>"`（`device_leases` 无独立 id 列）；runner 以 `deviceSerial` + `targetHostId` 校验，不依赖独立租约 id。
   - `RegressionTaskRecord` 增加 `jobSpec: Record<string, unknown> | null`、`deviceSerial: string | null`、`deviceLeaseId: string | null`；`CreateRegressionTaskInput` 同名可选字段。
@@ -249,7 +249,7 @@ git commit -m "feat: accept package materials and script bundle assets"
   - `createWebJob(input: { rootPath; assignment; targetHostId?; deviceSerial?; requirements; excelAssetId; packageAssetId; materialsAssetId?; scriptSetId?; executionMode; caseFilter; retry?; priority?; createdBy? }): Promise<{ task: RegressionTaskRecord; assignment: { hostId; deviceSerial; score } }>`
   - `releaseWebJob(input: { rootPath; taskId; reason: "cancelled" | "expired" | "reassign" }): Promise<boolean>`
   - `assignPendingWebJobs(input: { nowMs; runnerTtlMs: number }): Promise<number>`：给 `device_serial IS NULL` 的 pending web job 选设备并预占；auto 任务在全池重选，manual 任务只选目标 host 的设备；无候选保持 pending 并记录原因。
-  - `reassignExpiredWebJobs(input: { nowMs; leaseTtlMs: number }): Promise<number>`：清理预占过期/目标 runner 离线的 pending 任务，释放 lease，清空 device，再调用 `assignPendingWebJobs`；自动任务重选，手动任务只告警不改派。
+  - `reassignExpiredWebJobs(input: { nowMs; leaseTtlMs: number }): Promise<number>`：清理预占过期/目标 runner 离线的 pending 任务；auto 任务释放 lease、清空 `targetHostId` + `deviceSerial`，回到全局池重新选机；manual 任务保留 `targetHostId`、清空 `deviceSerial`，只在该 host 上线后重选；记录 `reassignCount`/最近原因，超过上限升级告警但仍不静默改派。
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -306,6 +306,7 @@ git commit -m "feat: dispatch web jobs with device reservation and central claim
 - 两台设备 → 两个 worker 各 claim 一条绑定到自己的任务，并并行执行（用 deferred 控制交错）。
 - 同一 serial 的第二条任务不会被同 worker 同时领取。
 - 心跳更新 runner 行，并触发 pending 任务选设备/过期回池；`--once` 执行一轮后退出。
+- 执行前本地二次校验：设备已被占用/掉线 → 释放 claim/lease 并返回 `device-busy`/`device-unavailable`，中心回池或等待；不执行。
 - 执行异常 → `releaseRegressionTask(to:"pending")` 并释放 lease；不把任务留 running。
 - 优雅停止 → runner 行 lastSeen 置纪元。
 
@@ -318,7 +319,7 @@ Expected: FAIL，模块/CLI 不存在。
 
 `runWebRunner`：
 1. `collectRunnerInventory`；`upsertWebRunner`。
-2. 每个 device 启动一个 async worker：循环 `claimWebJob({hostId, deviceSerial})`；命中后 `beginExecution`，调用 `executeJob`，成功/失败都 `updateRegressionTask` 并 `releaseDeviceLeases`；空转 sleep。
+2. 每个 device 启动一个 async worker：循环 `claimWebJob({hostId, deviceSerial})`；命中后重新读取本地设备状态，设备不可用则释放 claim/lease 并记录 `device-busy`/`device-unavailable`；可用则 `beginExecution`，调用 `executeJob`，成功/失败都 `updateRegressionTask` 并 `releaseDeviceLeases`；空转 sleep。
 3. 心跳循环续 `upsertWebRunner` + `renewDeviceLeases`。
 4. `once` 模式等待当前 worker 一轮后返回。
 CLI 解析与 `suite runner` 一致，输出到 stderr。
@@ -353,6 +354,7 @@ git commit -m "feat: run web jobs with per-device workers"
   - HTTP：`GET /panel/api/jobs/:id/spec` 返回 jobSpec + 资产下载 URL；`GET /panel/api/jobs/:id/assets/:assetId` 流式下载，要求 runner token；路径必须落在项目 `.artemis/web/assets` 内。
 - 本地 CAS：`<cacheRoot>/assets/<sha256>`；命中先校验 sha256，命中后硬链接/复制到 job 目录；未命中下载并原子写入。校验失败删除临时文件并返回 typed error，不安装。
 - `scripts` 资产是 zip；校验后解压到 `<jobDir>/flows/`（`unzip -o`，5s 超时；失败返回 `script-extract-failed`）。解压条目必须限制在 `flows/` 内，拒绝 `..`/绝对路径。Plan 2 后续把生成的 script set 打包成同一 zip 格式。
+- Excel 资产若下载，使用 CAS **原件**（不含 8 列写回）；仅落 `jobDir/attachments/` 供排查，runner 不解析、不作为 case set。工作副本只存在中心。
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -448,6 +450,7 @@ git commit -m "feat: execute maestro web jobs and map per-case results"
   - `ingestWebJobResult(input): Promise<{ taskStatus; gate; writtenCells; warnings }>`：持久化 `.artemis/web/results/<jobId>/result.json`；聚合 PASS/FAIL/SKIP/ERROR；调用写回引擎更新 Excel 工作副本；`writeback-failed` 不改变任务成功状态但记录原因。
   - 结果详情包含 device model/osVersion、package name/version/filename、started/finished、trace/evidence 路径。
 - 写回映射规则：用任务 `excelAssetId` 找 mapping；`caseIdHeader` 从 mapping 解析；`lastSystemValue` 用 `lastExcelWritebackByCellKey`；写 8 列（§5.2 顺序）；写回失败返回 `writeback-failed`。
+- **人工清空**：默认仍冻结（当前空 + journal 有值 → 不写）；新增显式 `allowClearedRefresh?: boolean`（任务/写回调用参数）。只有 `true` 时，空且 journal 有值的系统格才允许重新写入；默认 false 保持冻结语义。不要因为空值自动解冻。
 - 任务终态：全部 PASS→`passed`；任一 FAIL/ERROR→`failed`；SKIP 不计通过但计数；空结果→`error`，不假成功。
 
 - [ ] **Step 1: Write the failing tests**
@@ -457,6 +460,7 @@ git commit -m "feat: execute maestro web jobs and map per-case results"
 - 重复上传同结果 → 幂等，不重复写 journal。
 - runner token 缺失/错误 → 401；未知 job → 404；结果 body 非法 → 400。
 - writeback 失败（例如工作副本损坏）→ 结果仍保存，任务返回 `writeback-failed`，不报成功。
+- 人工清空系统格：默认冻结、不写；显式 `allowClearedRefresh:true` 时允许重写并刷新 journal。
 - 无 mapping/无 excelAssetId → 明确错误，不伪造写回。
 
 - [ ] **Step 2: Run tests to verify they fail**

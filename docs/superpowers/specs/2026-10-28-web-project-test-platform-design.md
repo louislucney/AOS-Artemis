@@ -33,7 +33,7 @@
 4. 测试文件允许**任意 Excel**，通过列映射接入；也允许引用项目历史文件。
 5. 最小必填列：**用例编号 + 步骤**；其他列可缺失。
 6. 同一文件内用例编号重复：**保留第一条，拒绝后续重复行**，导入继续并报告行号。
-7. 脚本格式：**Maestro YAML**，同时覆盖 Android 与 iOS；执行机只需 APK/IPA，不需要项目源码或 Gradle/Xcode 构建。
+7. 脚本格式：**Maestro YAML**，覆盖 Android 与 iOS 模拟器；iOS 真机走 LLM/Appium（见 §1.2.22）。执行机只需 APK/IPA，不需要项目源码或 Gradle/Xcode 构建。
 8. 执行方式：**Maestro 脚本执行**与 **LLM 实时执行**两种，任务下发时选择。
 9. testID 由**系统在真实设备上自动发现**；接受“先跑草稿/发现执行，再生成正式脚本”的代价。
 10. 任务下发到**执行机（runner）**，不要求用户选择具体设备；执行机自动选择空闲且平台匹配的设备。
@@ -123,7 +123,7 @@
 
 1. 「下发」选择项目、平台、Excel 版本、测试资料版本、安装包版本、执行方式（Maestro / LLM）、用例范围（全部/按模块/按编号）、重试次数、优先级。
 2. 执行机选择：自动（按硬要求过滤 + 型号/系统版本打分）或指定 host；指定 host 时可再指定具体设备（serial），也可让系统在该 host 上选。
-3. 系统在下发时完成 host + device 选择并预占设备租约；指定模式校验设备归属、硬要求与空闲；自动模式无候选时任务保持 pending 并给出原因。任务入中心队列，绑定 `targetHostId + deviceSerial`。
+3. 系统在下发时完成 host + device 选择并预占设备租约；指定模式校验设备归属、硬要求与空闲；自动模式无候选时任务保持 pending 并给出原因。自动任务绑定 `targetHostId + deviceSerial`；租约过期/机器失联时清空两者并回到全局池重选。指定任务保留 `targetHostId`，只清空 `deviceSerial` 并在同一 host 上重选。
 4. 执行机按设备 worker 领取绑定给自己的任务；安装包、运行脚本或 LLM 任务；结果回写。
 5. 面板显示任务状态、逐用例结果、设备/包/时间、证据；Excel 工作副本右侧空白列补充摘要。
 
@@ -146,7 +146,7 @@
 - `id`, `projectId`, `kind`（`excel` | `materials` | `package`）, `version`, `filename`, `originalSha256`, `originalStoragePath`, `size`, `uploadedBy`, `createdAt`, `metadata`（包名/版本/平台/Excel 映射摘要）。
 - **原件不可变**：上传原件进 CAS（`assets/<sha256>.xlsx`），供引用、重放、staleness、审计；新上传产生新版本。
 - **Excel 工作副本是派生物**：`workbook/<assetVersionId>.xlsx`，系统可写；其 sha 变化**不影响**原件 sha、脚本 staleness、assetSnapshot 或 CAS。脚本/任务/映射一律挂 `assetVersionId` + 原件 sha。
-- **runner 不以 Excel 为执行依据**：执行所需的 case set、taskDesc、脚本、测试资料由中心派生；runner CAS 只缓存 package 与 materials 附件，不缓存 Excel 工作副本。任务可携带 Excel 原件只读快照供排查，但执行与 staleness 一律以中心 case set/原件 sha 为准。
+- **runner 不以 Excel 为执行依据**：执行所需的 case set、taskDesc、脚本、测试资料由中心派生；runner CAS 只缓存 package 与 materials 附件，不缓存 Excel 工作副本。任务可携带 Excel **原件**只读快照供排查（不含中心写回的 8 列），执行与 staleness 一律以中心 case set/原件 sha 为准；runner 不解析该快照。
 - **写回 journal**：每次写回记录 `jobId, assetVersionId, caseId, columnKey, cellRef, value, writtenAt, actor`，用于区分“系统写的格”和“人工写的格”（见 §5.2）。
 
 ### 4.2b Excel 写回 Journal
@@ -218,7 +218,7 @@
 - `assignment=manual` 时 `targetHostId` 必填，`deviceSerial` 可空（空表示在该 host 上按硬要求/软偏好选设备）；`assignment=auto` 时两者由系统在下发时写入。
 - `requirements.platform`、`requirements.deviceKind`（非 `any` 时）、`requirements.tools` 是硬过滤；`deviceModel`/`osVersion` 是软偏好，仅用于同池排序。
 - `deviceLeaseId` 指向下发时创建的预占租约；现有 `device_leases` 主键是 `(host_id, serial)`，因此取 `"<hostId>:<serial>"`；runner 领取后转为执行租约，任务取消/超时/失联时释放。
-- `assetSnapshot` 在创建任务时冗余写入 sha256/filename/包名/版本，防止资产后续被归档/删除导致结果无法溯源。Excel 原件可作为只读快照随任务携带，但执行以中心派生的 case set/taskDesc 为准（见 §4.2）。
+- `assetSnapshot` 在创建任务时冗余写入 sha256/filename/包名/版本，防止资产后续被归档/删除导致结果无法溯源。Excel 快照只能是 CAS 原件（不含 8 列写回），仅排查用；执行以中心派生的 case set/taskDesc 为准（见 §4.2）。
 - `allowPartialUnresolved` 默认 false；true 时跳过 `unresolved` 用例，Excel 写 `SKIP（脚本未就绪）`，任务状态为 `partial` 而非 PASS/FAIL。
 
 ### 4.8 任务结果 TestJobResult
@@ -235,8 +235,8 @@
 - `billing_periods`：`id`, `projectId`, `startDate`, `endDate`, `status`（open/closed）, `closedAt`, `closedBy`, `invoiceId`.
 - `invoices`：`id`, `projectId`, `periodId`, `number`, `currency`（CNY）, `subtotal`, `adjustments`, `total`, `status`（draft/issued/void）, `issuedAt`, `dueAt`, `notes`.
 - `invoice_lines`：项目/任务/模型/purpose 维度汇总、token、成本、加成、客户金额。
-- `billing_adjustments`：`invoiceId`/`periodId`, `vendor`, `vendorInvoiceAmount`, `vendorCurrency`, `fxRate`, `deltaCny`, `reason`, `createdBy`.
-- `vendor_invoices`（全局，不挂单一项目）：`id`, `vendor`, `periodStart`, `periodEnd`, `invoiceNumber`, `amount`, `currency`, `fxRate`, `fxAt`, `enteredBy`, `enteredAt`, `note`。一个厂商账单可覆盖多个项目，项目账单只做分摊展示与差异说明。
+- `billing_adjustments`：`invoiceId`/`periodId`, `projectId?`（null＝全局）, `vendor`, `vendorInvoiceAmount`, `vendorCurrency`, `fxRate`, `deltaCny`, `reason`, `createdBy`。
+- `vendor_invoices`（全局，不挂单一项目）：`id`, `vendor`, `periodStart`, `periodEnd`, `invoiceNumber`, `amount`, `currency`, `fxRate`, `fxAt`, `enteredBy`, `enteredAt`, `note`。一个厂商账单可覆盖多个项目；**第一版不做自动按比例分摊**：项目账单只保留计算金额，不摊入厂商差异；差额记全局 `billing_adjustments(projectId=null)` 展示。管理员若要把差额落到某项目，必须手工录入带 `projectId` 的调整项和原因，系统不按比例静默分配。
 
 ## 5. Excel 合同与写回
 
@@ -263,7 +263,7 @@
   - 当前值 === journal 最后一次系统写入值 → 系统格未被人工修改，允许刷新（重跑覆盖旧结果、重生成覆盖旧脚本路径）；
   - 当前值 !== journal 记录值，或非空且不在 journal → 人工格，**永不覆盖**，记审计事件；
   - 空且无 journal → 可写；
-  - 人工清空一个系统格 → 视为人工修改，冻结，不自动回填。
+  - 人工清空一个系统格 → 默认视为人工修改并冻结，不自动回填；提供显式「清除并允许回填」动作（journal 记 `manual-clear-refresh` 或任务参数 `allowClearedRefresh`），只有该动作才允许下一次系统写入。**不能**因为单元格为空就自动解冻，否则用户无法通过清空表达“冻结旧结果”。
 - **单一写者**：Excel 写回只在中心服务执行，远程 runner 不回写文件；中心按项目 + 工作副本加文件锁（单进程队列 + 跨进程锁；多实例用 PG advisory lock），串行合并，避免并发覆盖。
 - 写回幂等：先按表头标记查找系统列；存在则按 `caseId` + journal 规则更新，不存在才追加；重复执行/重复任务不会重复堆列。
 - **写回失败**：结果仍保存在详细结果/面板，工作副本标记 `writeback-failed`，提供重试与错误原因；不能把“Excel 没写成功”当成任务成功。
@@ -304,14 +304,16 @@
 - 找不到的元素进入 `unresolved`，在 Excel 建议列标记，不伪造选择器。
 - 发现执行需要设备、安装包、测试资料；没有设备时只能生成草稿脚本，状态 `draft`，不能下发脚本模式任务。
 - **超时与心跳**：发现执行有全局超时（默认 15 分钟，可配）与单步超时（默认 30 秒，可配）；执行期间写心跳与当前步号，设备租约按心跳续租；超时按失败结束，不无限占用设备。
-- **部分结果保留**：超时/中断时保存已完成步骤的 SelectorDictionary，状态 `partial-discovery`，在 Excel/面板标记“发现中断于第 N 步”；不清空已发现结果，重跑可从中断步继续（断点续传为可选增强）。
+- **部分结果保留**：超时/中断时保存已完成步骤的 SelectorDictionary，状态 `partial-discovery`，在 Excel/面板标记“发现中断于第 N 步”；不清空已发现结果。
+- **重试语义**：每次「重试/继续发现」创建**新的 `web-discovery` job**（新 jobId、新租约），继承上一任务的 `selectorDictId`/字典版本；旧 job 保持 `partial-discovery` 终态，不原地复活。新 job 可从中断步继续（断点续传为可选增强），面板展示父子 job 关系。
 
 ### 6.3 ready 与断言口径
 
 - `ready` 的定义是“每一步至少有一个可执行选择器”：`id:` 优先，`text:` 也接受；完全没有选择器才是 `unresolved`。不要求所有元素都有 testID，否则无 testID 的应用无法使用脚本模式。
 - Excel 原有「预期」存在时，生成硬断言；缺失时由系统补的 `建议｜关键预期` 默认是**建议/软断言**，只报告不决定 PASS/FAIL；管理员可在任务上显式开启“把建议当硬断言”。
 - 重试沿用现有 suite 约定：**首跑结果决定门禁**，重跑只用于 flaky 诊断，不把重跑转绿算作首跑通过。
-- 部分下发：任务 `partial` 表示“有未执行用例”，不计 PASS；面板与账单分别显示执行/跳过/未就绪计数；是否收费由任务实际执行的用例/调用决定，跳过用例不计执行 token。
+- 部分下发：任务 `partial` 表示“有未执行用例”，不计 PASS；面板与账单分别显示执行/跳过/未就绪计数。
+- **计费按阶段**：生成/发现阶段的 LLM 调用无论用例最终是否下发都计费（成本已发生）；执行阶段的 token 只按实际执行的用例计；跳过/未就绪用例不计**执行** token，但已发生的生成/发现 token 不回退。账单按 `purpose=generation`/`discovery`/`execution` 分列，避免把“未执行”误解为“未产生成本”。
 
 ### 6.4 版本与过期
 
@@ -342,8 +344,9 @@
 - **执行机能力上报**：`RunnerDevice` 在 `serial/name/platform/kind/state` 之外增加 `model`、`osVersion`（Android `getprop ro.product.model`/`ro.build.version.release`；iOS 模拟器 `simctl list -j` 的 device/runtime；iOS 真机 `devicectl`/`ideviceinfo`）。心跳同时上报 `tools`；缺少型号/版本时软偏好不可用，只按硬要求匹配。
 - **设备级并行**：runner 为每台空闲设备维护一个 worker；一台机器可并行执行多个任务，数量不超过空闲设备数。领取与执行都以 `deviceSerial` 为粒度，`device_leases` 保证同一 serial 不会被两个任务同时占用。
 - **中心队列领取**：远程 web 任务不要求执行机预存项目目录。领取按 `targetHostId`（指定模式）或「满足硬要求且在线」的 runner 集合（自动模式）进行；任务绑定具体设备，领取时校验租约仍有效并转执行租约。
-- **掉线与超时**：自动选中的 host/device 在 `lease TTL` 内未领取 → 释放租约、回池重选；用户指定 → 保持 pending 并告警，不静默改派。执行中失联按现有 runner 失联/任务回收规则处理。
-- **资产下发**：任务携带 `assetSnapshot` 的 sha256、文件名、包名/版本与下载地址；执行机按 sha256 校验后使用本地 CAS 缓存。Excel 仅作只读快照（可选），执行以中心派生的 case set/taskDesc 为准。
+- **掉线与超时（回池机制）**：自动任务在 `lease TTL` 内未领取或目标 host 离线 → 释放 lease、清空 `targetHostId` 与 `deviceSerial`、状态回到 `pending`，由中心重新执行自动选机；`assignment` 保持 `auto`，记录 `reassignCount/原因` 防止无限循环。用户指定任务 → 保留 `targetHostId`，清空 `deviceSerial`，在同一 host 上线后重选设备；保持 pending 并告警，不静默改派。执行中失联按现有 runner 失联/任务回收规则处理。
+- **领取二次校验**：runner 在 claim 成功后、执行前必须重新读取本地设备真实状态（`adb devices`/`simctl list`/Appium）；设备被占用、掉线或状态不符 → 不执行，向中心返回 `device-busy`/`device-unavailable`，释放 claim 与 lease，由中心按 auto/manual 规则回池或等待。心跳快照只用于选机，不能替代领取时的真实校验。
+- **资产下发**：任务携带 `assetSnapshot` 的 sha256、文件名、包名/版本与下载地址；执行机按 sha256 校验后使用本地 CAS 缓存。Excel 若下载只能是 **CAS 原件**（不含中心写回的 8 列），仅作排查快照；runner 不解析 Excel、不缓存工作副本，执行以中心派生的 case set/taskDesc 为准。
 - 安装：
   - Android：`adb -s <serial> install -r <apk>`；校验包名/版本与资产一致。
   - iOS 模拟器：`xcrun simctl install <udid> <app>`；真机：`xcrun devicectl device install app`（或现有 Appium/WDA 安装路径）。
@@ -370,6 +373,7 @@
 - Maestro 执行：不产生 LLM token；若后续接入 AI 分析，单独记 `purpose=analysis`。
 - **幂等**：每个事件带 `sourceEventId`（chat call id / `traceId:stepId` / jobId:purpose），DB 唯一键 `(projectId, sourceEventId, purpose)`，重读/重试使用 upsert；重复读取 data_engine.db 不重复计费。
 - 生成、发现、LLM 执行、Jira、分析、重试、修复等所有 LLM 调用都计入；`usageSource=provider` 才可计费，`estimate` 只诊断。
+- **阶段计费口径**：`generation`/`discovery` 调用无论用例最终是否下发都计费；`execution` 只计实际执行的用例；跳过/未就绪用例不产生 execution token，但已发生的 generation/discovery token 不回退。账单按 purpose 分列，不把“未执行”当成“零成本”。
 
 ### 8.2 价格与汇率
 
@@ -385,10 +389,10 @@
 - 每个项目由管理员设置任意 `startDate`/`endDate`；同一项目账期不得重叠。
 - 账期关闭后冻结用量；迟到事件进入下一账期调整项，不回改已出账单。
 - 账单行按项目/任务/模型/用途汇总；显示 token、成本、加成、客户金额。
-- 管理员录入厂商账单金额与差异原因，系统生成 `billing_adjustments`；客户账单总额以计算金额 + 显式调整为准。
+- 管理员录入厂商账单金额与差异原因，系统生成 `billing_adjustments`；客户账单总额以计算金额 + 显式调整为准。厂商账单默认只做全局差异展示，不自动分摊到项目；项目级差异必须由管理员手工录入并写原因。
 - 第一版由管理员在页面上**手动触发账期关闭**（可在 endDate 前/后），系统可提示但不对未确认账期自动出账。
 - 账期关闭前必须处理所有 `token-unavailable` / 估算标记：要么补录真实 token，要么显式记 0 并写明原因；否则不能关闭。估算 token 不计费，只作诊断。
-- **关账 Checklist（硬门禁）**：关闭按钮列出阻塞项并要求逐项处理——未读取 token 的任务、`fx-stale` 汇率、未录入的厂商账单、未确认的价格表版本、仍在运行/未回传的任务、未处理的 `unresolved` 计费事件。全部处理后才可关账；管理员可显式“忽略并记 0”，必须填写原因并写审计。
+- **关账 Checklist（硬门禁）**：关闭按钮列出阻塞项并要求逐项处理——未读取 token 的任务、`fx-stale` 汇率、未录入的厂商账单、未确认的价格表版本、仍在运行/未回传的任务、未处理的 `pricing-pending`（缺价）计费事件。全部处理后才可关账；管理员可显式“忽略并记 0”，必须填写原因并写审计。
 - 账单号规则固定：`INV-<projectSlug>-<YYYYMMDD>-<seq>`，项目+账期内唯一；红冲生成新号并引用原账单。
 - 关账时若 `purpose=other` 占比超过阈值（默认 10%），Checklist 提示管理员确认，避免未知用途悄悄进账单。
 - 第一版不自动对接厂商账单 API；不做客户自助门户；账单支持页面查看与导出（CSV/XLSX）。
@@ -535,6 +539,19 @@
 - L6 归档不变量：禁新增任务/上传/生成；可关账/只读/导出。
 - L7 文档修正：§8.5/§8.4 顺序、预期来源、LLM 模式脚本列、ISO 时间、purpose=other 提示。
 - L8 回传主路径：中心 HTTP 上传为主，失败重试并保留本地结果；PG 只存索引/摘要。fx TTL 60s；invoice number 规则固定。
+
+**第三轮评审（实施前一致性检查）**
+
+| 反馈 | 判断 | 处理 |
+|---|---|---|
+| 自动选机绑定 targetHostId 后无法“回池重选” | 成立 | auto 任务租约过期/失联时清空 `targetHostId + deviceSerial` 回全局池；manual 保留 host 只清 device；记录 reassignCount/原因。见 §3.4、§7.1。 |
+| 部分下发的生成/发现 token 漏计 | 成立 | 按阶段计费：generation/discovery 无论是否下发都计费；execution 只计实际执行用例；SKIP 不产生 execution token。见 §6.3、§8.1。 |
+| 人工清空系统格被永久冻结 | 部分成立（产品取舍） | 默认仍冻结（保留“清空=冻结”能力）；新增显式 `allowClearedRefresh`，只有显式动作才允许回填。见 §5.2。 |
+| vendor_invoices 多项目分摊数学 | 成立 | 第一版不自动分摊；差额记全局 `billing_adjustments(projectId=null)`；项目级差异必须手工录入。见 §4.9、§8.3。 |
+| 发现执行 retry 语义 | 成立 | 每次重试新建 `web-discovery` job（新 jobId/租约），继承 selectorDict 版本；旧 job 保持 partial-discovery。见 §6.2。 |
+| 心跳与领取之间设备被占用 | 成立 | runner 领取后二次校验本地设备；device-busy/unavailable 释放 claim/lease 并回池/等待。见 §7.1。 |
+| Excel 快照是原件还是工作副本 | 成立（澄清） | runner 只能下载 CAS 原件（不含 8 列），仅排查、不解析；工作副本只在中心。见 §4.2、§4.7。 |
+| §1.2.7 “Maestro 覆盖 iOS”歧义 / §8.3 unresolved 计费术语 | 成立（措辞） | 改为“Android 与 iOS 模拟器”；计费清单改为 `pricing-pending`。 |
 
 ## 15. 留给 builder 的实现选择
 
