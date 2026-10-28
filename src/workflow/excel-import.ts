@@ -9,7 +9,7 @@ import { humanStepsHashFromParts, renderTestsWorkbook } from "../figma/test-xlsx
 import type { GeneratedTest } from "../figma/test-gen.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
-import { COLUMN_ALIASES, normalizeExcelHeader } from "../web/excel-columns.js";
+import { LEGACY_COLUMN_ALIASES } from "../web/excel-columns.js";
 import { readCaseSheet, type CaseSheet } from "./excel.js";
 
 export interface ImportColumns {
@@ -56,13 +56,13 @@ const FIELDS: Field[] = [
 ];
 
 const COLUMN_ALIASES_BY_FIELD: Record<Field, readonly string[]> = {
-  name: COLUMN_ALIASES.name,
-  steps: COLUMN_ALIASES.steps,
-  expected: COLUMN_ALIASES.expected,
-  preconditions: COLUMN_ALIASES.preconditions,
-  module: COLUMN_ALIASES.module,
-  displayId: COLUMN_ALIASES.caseId,
-  testData: COLUMN_ALIASES.testData
+  name: LEGACY_COLUMN_ALIASES.name,
+  steps: LEGACY_COLUMN_ALIASES.steps,
+  expected: LEGACY_COLUMN_ALIASES.expected,
+  preconditions: LEGACY_COLUMN_ALIASES.preconditions,
+  module: LEGACY_COLUMN_ALIASES.module,
+  displayId: LEGACY_COLUMN_ALIASES.caseId,
+  testData: LEGACY_COLUMN_ALIASES.testData
 };
 
 interface ImportedCase {
@@ -81,12 +81,14 @@ interface ImportedCase {
   openQuestions?: string[];
 }
 
+function normalizeHeader(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, "");
+}
+
 function columnIndexes(sheet: CaseSheet, overrides: ImportColumns): Record<Field, number | null> {
-  const normalized = sheet.headers.map(normalizeExcelHeader);
+  const normalized = sheet.headers.map(normalizeHeader);
   const resolve = (aliases: readonly string[]): number | null => {
-    const found = normalized.findIndex((header) =>
-      aliases.some((alias) => header === normalizeExcelHeader(alias))
-    );
+    const found = normalized.findIndex((header) => aliases.some((alias) => header === normalizeHeader(alias)));
     return found === -1 ? null : found;
   };
   const indexes = {} as Record<Field, number | null>;

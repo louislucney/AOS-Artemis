@@ -109,15 +109,17 @@ interface ReadCell {
 }
 
 function readCell(cell: ExcelJS.Cell): ReadCell {
-  const value = cell.value;
-  if (isRecord(value) && (typeof value.formula === "string" || typeof value.sharedFormula === "string")) {
-    const cached = value.result;
+  const formulaType = cell.formulaType;
+  if (formulaType === ExcelJS.FormulaType.Master || formulaType === ExcelJS.FormulaType.Shared) {
+    // 注意：不能读 cell.value —— exceljs 的 FormulaValue 复制模型时丢弃 falsy result，
+    // 缓存值 0/false/"" 会被误判为「无缓存」。cell.result 保留原始缓存值。
+    const cached = cell.result;
     return {
       text: plainText(cached as ExcelJS.CellValue),
       formulaWithoutCache: cached === undefined || cached === null
     };
   }
-  return { text: plainText(value), formulaWithoutCache: false };
+  return { text: plainText(cell.value), formulaWithoutCache: false };
 }
 
 function optionalText(value: string | undefined): string | null {
@@ -286,10 +288,10 @@ export async function parseExcel(buffer: Buffer, input: ParseExcelInput): Promis
     const formulaIssues: string[] = [];
     for (const [field, index] of resolved) {
       const cell = readCell(row.getCell(index + 1));
-      if (cell.formulaWithoutCache) {
+      if (cell.formulaWithoutCache && REQUIRED_CANONICAL_FIELDS.includes(field)) {
         formulaIssues.push(`公式单元格无缓存值（${CANONICAL_FIELD_LABELS[field]}）`);
       }
-      values.set(field, cell.text);
+      values.set(field, cell.formulaWithoutCache ? "" : cell.text);
     }
     if (formulaIssues.length > 0) {
       rejected.push({ row: rowNumber, reason: formulaIssues.join("；") });

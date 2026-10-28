@@ -31,7 +31,7 @@ export const CANONICAL_FIELD_LABELS: Record<CanonicalField, string> = {
   testId: "测试编号"
 };
 
-/** 表头别名（与 `src/workflow/excel-import.ts` 共用）：同一字段的任意一种写法都能识别。 */
+/** 表头别名（web 解析器用，含扩展写法）：同一字段的任意一种写法都能识别。 */
 export const COLUMN_ALIASES: Record<CanonicalField, readonly string[]> = {
   caseId: ["用例编号", "展示编号", "用例id", "用例编码", "caseid", "displayid", "编号"],
   name: ["用例名", "用例名称", "测试用例名称", "标题", "case", "casename", "name", "title"],
@@ -42,6 +42,22 @@ export const COLUMN_ALIASES: Record<CanonicalField, readonly string[]> = {
   priority: ["优先级", "优先", "priority", "prio"],
   testData: ["测试数据", "testdata", "data"],
   testId: ["测试编号", "测试id", "测试用例id", "用例设计id", "testid"]
+};
+
+/**
+ * 旧 Excel 导入器的别名子集（不含 web 侧扩展别名）：列解析为「表头顺序 first-match」，
+ * 扩展别名若进入导入器，会在扩展列排在旧列之前时抢走匹配，改变既有导入行为。
+ */
+export const LEGACY_COLUMN_ALIASES: Record<CanonicalField, readonly string[]> = {
+  caseId: ["用例编号", "展示编号", "displayid", "caseid", "编号"],
+  name: ["用例名", "用例名称", "标题", "case", "casename", "name", "title"],
+  steps: ["步骤", "操作步骤", "测试步骤", "steps", "step", "操作"],
+  expected: ["预期", "预期结果", "期望结果", "期望", "expected", "expectation", "result"],
+  preconditions: ["前置", "前置条件", "前置假设", "preconditions", "precondition"],
+  module: ["模块", "功能", "功能模块", "所属模块", "module", "feature"],
+  priority: [],
+  testData: ["测试数据", "testdata", "data"],
+  testId: []
 };
 
 /** 表头归一：NFKC + 去首尾空白 + 小写 + 去空白/下划线/连字符（`用例 编号`、`case_id` 等价）。 */

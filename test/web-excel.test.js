@@ -243,19 +243,24 @@ test("parseExcel: 空 caseId / 空 steps 进 rejected，全空行跳过", async 
   assert.match(parsed.rejected[1].reason, /步骤/);
 });
 
-test("parseExcel: 公式单元格使用缓存值，无缓存值拒绝该行", async () => {
+test("parseExcel: 公式使用缓存值（含 0/false），可选列无缓存为 null，必填列无缓存拒绝", async () => {
   const buffer = await xlsxBuffer([
     {
       name: "公式",
       rows: [
         ["用例编号", "步骤", "预期"],
-        ["占位", "占位", "占位"]
+        ["占位", "占位", ""],
+        ["占位", "点击", "占位"],
+        ["C4", "点击", "占位"],
+        ["C5", "占位", "占位"],
+        ["C6", "点击", ""]
       ],
       mutate(worksheet) {
         worksheet.getCell("A2").value = { formula: "1000+1", result: 1001 };
-        worksheet.addRow(["C2", "点击", ""]);
-        worksheet.getCell("B3").value = { formula: "A1" };
-        worksheet.addRow(["C4", "点击", ""]);
+        worksheet.getCell("A3").value = { formula: "0", result: 0 };
+        worksheet.getCell("C3").value = { formula: "1=2", result: false };
+        worksheet.getCell("C4").value = { formula: "A1" };
+        worksheet.getCell("B5").value = { formula: "A1" };
       }
     }
   ]);
@@ -263,16 +268,25 @@ test("parseExcel: 公式单元格使用缓存值，无缓存值拒绝该行", as
     mapping: { caseId: "用例编号", steps: "步骤", expected: "预期" }
   });
   assert.deepEqual(
-    parsed.cases.map((entry) => [entry.caseId, entry.rowNumber]),
+    parsed.cases.map((entry) => [entry.caseId, entry.steps[0], entry.expected, entry.rowNumber]),
     [
-      ["1001", 2],
-      ["C4", 4]
+      ["1001", "占位", null, 2],
+      ["0", "点击", "false", 3],
+      ["C4", "点击", null, 4],
+      ["C6", "点击", null, 6]
     ]
   );
   assert.equal(parsed.rejected.length, 1);
-  assert.equal(parsed.rejected[0].row, 3);
+  assert.equal(parsed.rejected[0].row, 5);
   assert.match(parsed.rejected[0].reason, /公式/);
   assert.match(parsed.rejected[0].reason, /步骤/);
+});
+
+test("suggestExcelMapping: web 解析器识别扩展别名（用例ID/测试过程）", () => {
+  assert.deepEqual(suggestExcelMapping(["用例ID", "测试过程"]), {
+    caseId: "用例ID",
+    steps: "测试过程"
+  });
 });
 
 test("parseExcel: 映射列含合并单元格拒绝，未映射列合并不影响", async () => {

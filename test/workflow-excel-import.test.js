@@ -211,3 +211,35 @@ test("importTestDocument: 登记失败回滚本地归档，重试可重新导入
   assert.equal(retry.status, "imported");
   assert.equal((await store.listCaseSets(runtime.project.rootDir, 10)).length, 1);
 });
+
+test("importTestDocument: 扩展别名不改变旧导入器的 first-match 优先级", async () => {
+  const { dir, runtime } = await project();
+  const file = await writeSheet(path.join(dir, "precedence.xlsx"), [
+    ["用例ID", "用例编号", "用例名", "测试过程", "步骤", "预期"],
+    ["EXT-1", "C-1", "登录", "错误过程", "点击登录", "进入首页"]
+  ]);
+  const result = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const document = JSON.parse(fs.readFileSync(result.sets[0].jsonPath, "utf8"));
+  const flow = document.flows[0];
+  assert.equal(flow.displayId, "C-1", "displayId 仍绑定旧别名列「用例编号」，不被前置「用例ID」抢走");
+  assert.ok(flow.taskDesc.includes("点击登录"), flow.taskDesc);
+  assert.ok(!flow.taskDesc.includes("错误过程"), flow.taskDesc);
+  assert.ok(flow.steps[0].includes("点击登录"), JSON.stringify(flow.steps));
+});
+
+test("importTestDocument: displayId/testData 旧别名锁定（展示编号/测试数据）", async () => {
+  const { dir, runtime } = await project();
+  const file = await writeSheet(path.join(dir, "legacy-aliases.xlsx"), [
+    ["用例名", "步骤", "展示编号", "测试数据"],
+    ["登录", "点击登录", "D-9", "账号: demo\n密码: 123456"]
+  ]);
+  const result = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const document = JSON.parse(fs.readFileSync(result.sets[0].jsonPath, "utf8"));
+  const flow = document.flows[0];
+  assert.equal(flow.displayId, "D-9");
+  assert.deepEqual(flow.testData, ["账号: demo", "密码: 123456"]);
+  assert.ok(flow.taskDesc.includes("【测试数据】"), flow.taskDesc);
+  assert.ok(flow.taskDesc.includes("账号: demo"), flow.taskDesc);
+});
