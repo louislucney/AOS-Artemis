@@ -37,6 +37,13 @@ import {
   saveExcelMapping
 } from "../web/excel-mapping.js";
 import { ExcelMappingError } from "../web/excel.js";
+import {
+  DEFAULT_SYSTEM_COLUMN_MODE,
+  parseSystemColumnMode,
+  rebaseWorkbookJournal,
+  type RebaseWorkbookJournalResult,
+  type SystemColumnMode
+} from "../web/workbook-reupload.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
 import {
   computeDispatchPreview,
@@ -602,6 +609,27 @@ async function uploadAssetAction(
   }
   const metadata: Record<string, unknown> = secretFlag === "true" ? { secret: true } : {};
 
+  // 下载工作副本后重上传：默认 human（8 个系统格全部按人工冻结），inherit 需显式声明；
+  // 只对 excel 有意义，其他 kind 携带该字段按 typed 400 拒绝（不静默忽略）。
+  const systemColumnsRaw = (upload.fields.systemColumns ?? "").trim();
+  let systemColumnsMode: SystemColumnMode = DEFAULT_SYSTEM_COLUMN_MODE;
+  if (systemColumnsRaw !== "") {
+    if (kind !== "excel") {
+      return json(400, {
+        error: `systemColumns 仅适用于 excel 资产（当前 kind=${kind}）`,
+        code: "invalid-system-columns"
+      });
+    }
+    const parsed = parseSystemColumnMode(systemColumnsRaw);
+    if (parsed === null) {
+      return json(400, {
+        error: `未知 systemColumns "${systemColumnsRaw}"（仅支持 inherit、human）`,
+        code: "invalid-system-columns"
+      });
+    }
+    systemColumnsMode = parsed;
+  }
+
   const hostParam =
     (upload.fields.host ?? "").trim() ||
     (request.url.searchParams.get("host") ?? "").trim();
@@ -638,6 +666,11 @@ async function uploadAssetAction(
 
   try {
     await assertProjectActive(scopedDeps.store, resolved.rootPath);
+    // 必须在登记新版本前取「上一版本」，否则拿到的是自己。
+    const previousExcelAsset =
+      kind === "excel"
+        ? ((await scopedDeps.store.listWebAssets(resolved.rootPath, "excel"))[0] ?? null)
+        : null;
     const asset = await storeWebAsset({
       store: scopedDeps.store,
       rootPath: resolved.rootPath,
@@ -647,22 +680,61 @@ async function uploadAssetAction(
       uploadedBy: actor,
       metadata
     });
+    let systemColumns: RebaseWorkbookJournalResult | null = null;
+    if (kind === "excel") {
+      try {
+        systemColumns = await rebaseWorkbookJournal({
+          store: scopedDeps.store,
+          rootPath: resolved.rootPath,
+          previousAssetId: previousExcelAsset?.id ?? null,
+          newAssetId: asset.id,
+          workbookPath: asset.storagePath,
+          mode: systemColumnsMode,
+          actor
+        });
+      } catch (error) {
+        // 重播种失败不阻断上传：资产已落盘，journal 留空＝全部按人工格冻结。
+        systemColumns = {
+          mode: systemColumnsMode,
+          rebased: 0,
+          frozen: 0,
+          mismatched: [],
+          systemHeaders: [],
+          warnings: [`系统格 journal 重播种失败：${errorMessage(error)}`]
+        };
+      }
+    }
     await recordAuditSafe(scopedDeps.store, resolved.rootPath, {
       domain: "asset",
       action: "asset.upload",
       result: "ok",
       actor,
-      summary: `上传 Web 资产：${asset.kind} v${asset.version} ${asset.filename}（sha256 ${asset.sha256.slice(0, 12)}）`,
+      summary: `上传 Web 资产：${asset.kind} v${asset.version} ${asset.filename}（sha256 ${asset.sha256.slice(0, 12)}）${
+        systemColumns === null
+          ? ""
+          : `；系统列 ${systemColumns.mode}：重播种 ${systemColumns.rebased}、冻结 ${systemColumns.frozen}`
+      }`,
       refs: {
         assetId: asset.id,
         kind: asset.kind,
         filename: asset.filename,
         sha256: asset.sha256,
-        version: String(asset.version)
+        version: String(asset.version),
+        ...(systemColumns === null
+          ? {}
+          : {
+              systemColumns: systemColumns.mode,
+              rebased: String(systemColumns.rebased),
+              frozen: String(systemColumns.frozen)
+            })
       }
     });
     deps.cache?.clear();
-    return json(200, { ok: true, asset });
+    return json(200, {
+      ok: true,
+      asset,
+      ...(systemColumns === null ? {} : { systemColumns })
+    });
   } catch (error) {
     const state = webProjectStateResponse(error);
     if (state !== null) {

@@ -117,7 +117,8 @@ function plainText(value: ExcelJS.CellValue | undefined): string {
   return "";
 }
 
-function cellText(cell: ExcelJS.Cell): string {
+/** 单元格文本（公式取缓存结果）；与写回/journal 同口径，重上传重播种复用。 */
+export function cellText(cell: ExcelJS.Cell): string {
   if (cell.type === ExcelJS.ValueType.Formula) {
     return plainText(cell.result as ExcelJS.CellValue | undefined);
   }

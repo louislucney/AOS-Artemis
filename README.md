@@ -272,7 +272,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 |---|---|
 | `dispatch` **下发向导** | 四步（来源→参数→预览回显→确认）；**先选主机、再选该主机上的项目**（换主机丢弃项目并取该主机最近活跃项目，换项目即按新作用域重载预览）；支持用例库选用例集/关键词；预览显示条数、runner 候选与告警；**两段确认**派发（refs 服务端重解析）；优先级默认 `P0` **只读**，`AOS_PANEL_PRIORITY=1` 时开放 0–100 编辑（防误操作插队；仅约束面板 UI，API 可直接传 `priority`）；领取顺序为 `priority DESC, created_at ASC` |
 | `library` **用例库** | 用例集列表（来源/条数/功能）＋**行内「下发该用例集」**＋**Excel 上传导入**（multipart，≤20MB）＋隔离（quarantine：**加入/移除表单，owner 签字**） |
-| `assets` **测试资产** | Excel 原件版本表（文件名/版本/大小/sha 短摘要/上传时间）＋上传（multipart `POST /panel/api/projects/assets`，`kind=excel`）＋列映射预览（选资产/表头行 → 建议映射）与保存（`/panel/api/projects/excel/preview|mapping`）＋已保存映射表；写动作需 maintainer/admin |
+| `assets` **测试资产** | Excel 原件版本表（文件名/版本/大小/sha 短摘要/上传时间）＋上传（multipart `POST /panel/api/projects/assets`，`kind=excel`；可选 `systemColumns=inherit` 在重上传时按上一版本 journal 重播种系统格，缺省 `human` 全部冻结）＋列映射预览（选资产/表头行 → 建议映射）与保存（`/panel/api/projects/excel/preview|mapping`）＋已保存映射表；写动作需 maintainer/admin |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
 | `events` **项目事件** | 执行事件流（run/case/artifact/log/feedback.request），类型/状态/消费筛选＋快捷「未消费/反馈请求」；消费态与 `aos_event_poll` 同源；`payload=1`/勾选「显示 payload」查看内容（最多 50 条），默认不回显 |

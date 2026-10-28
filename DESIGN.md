@@ -3156,3 +3156,18 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **UI 现状**：控制台资产页（`?section=assets`）仍只列出 Excel 版本/上传入口；package/materials/scripts 目前只能经 API 上传，页面暴露见 Task 9/10。
 - **测试**：`test/web-asset-kinds.test.js`（各 kind 上限与边界、扩展名大小写/白名单、package 重复内容新版本复用 CAS、未知 kind 与 basename/反斜杠、secret metadata 与非法 secret、API 四类上传与 typed 400/413）；`test/http-server.test.js` 21MB package 走真实 HTTP → 200；`test/web-assets.test.js` 原「未知 kind」用例改用 `binary`，另加 kind/扩展名不匹配 400。
 - **边界**：不实现资产删除/保留期、包解析与安装（Task 8）、secret 加密存储与 job 级下发（后续任务）、大文件流式传输。
+
+### 13.259 新增（重上传工作副本：系统列 journal 显式 inherit / human）
+
+> 2026-10-28。Plan 3 Task 3c：Plan 1 的 journal 归属把「非空且无 journal 的系统格」视为人工冻结；用户下载工作副本、编辑用例后再上传时，旧版本的 8 个系统列会永久变成「人工格」。本任务让重上传显式声明系统列归属，而不是静默冻结或静默信任。
+
+- **模块**（`src/web/workbook-reupload.ts`）：`detectSystemColumns(headers, caseIdHeader)` 按 `建议｜`/`执行｜` 前缀识别用例编号列右侧的系统列候选（`执行｜备注` 等非 8 列固定表头只算候选、不重播种）；`resolveCaseIdHeader(headers, preferred)` 先认显式/已保存映射的表头写法，再退回 `COLUMN_ALIASES.caseId` 别名表；`parseSystemColumnMode`/`DEFAULT_SYSTEM_COLUMN_MODE="human"`；`rebaseWorkbookJournal({store, rootPath, previousAssetId, newAssetId, sheetName?, workbookPath, systemHeaders?, mode?, caseIdHeader?, headerRow?, actor?, writtenAt?})`。
+- **inherit 判定**：逐格读取新工作副本（`cellText` 与写回同口径，公式取缓存值；合并格跳过），只处理**非空**系统格；与 `lastExcelWritebackByCellKey(rootPath, previousAssetId, sheetName, caseId, columnKey)` 比对——一致才为新 asset 追加一条 journal 行（`cellRef` 用新格地址，`columnKey` 用固定 8 列 key）；上一版本无 journal/值为空 → frozen；值不同 → frozen 并记入 `mismatched`（`用例编号「表头」`）。**只写 journal，绝不改单元格内容**。
+- **human（缺省）**：不写 journal，所有非空系统格计 frozen；上传 API 未传 `systemColumns` 即此模式。
+- **幂等**：同一 `newAssetId` 重复 rebase 先查新 asset 的最新 journal——同值只计 `rebased` 不重复追加；不同值（rebase 后已真实写回过）保持冻结不覆盖。
+- **计数口径**：`rebased` 按格（本次写入或已存在同值行）、`frozen` 按非空系统格（含 `mismatched`，不含空格外的人工格）、`mismatched` 只列与上一版本 journal 有值且不同者（最多 100 条，超出告警）；响应还带 `mode/systemHeaders/warnings`。
+- **API**（`src/panel/actions.ts`）：`POST /panel/api/projects/assets` 新增可选文本字段 `systemColumns: "inherit"|"human"`；非 excel 携带该字段或值非法 → 400 `invalid-system-columns`。上传前先取「上一版本」`listWebAssets(rootPath,"excel")[0]`（登记新行后拿到的是自己）；无上一版本时只返回 frozen/mismatched，**不伪造 journal**。重播种在 `storeWebAsset` 之后执行，异常不阻断上传（资产已落盘，journal 留空＝全部冻结）；响应 `{ok, asset, systemColumns:{mode,rebased,frozen,mismatched,systemHeaders,warnings}}`（非 excel 不带该字段）；审计 `asset.upload` 的 summary/refs 追加 mode/rebased/frozen。
+- **不可变/安全**：读取的是 CAS 原件 `asset.storagePath`（只读），不碰工作副本；不改变 Plan 1「原件永不改写」约定。
+- **UI 现状**：控制台资产页上传表单仍是 human 缺省、未暴露切换（页面见 Task 9/10）；inherit 目前经 API 显式传字段。
+- **测试**（`test/web-workbook-reupload.test.js`）：原样重上传 → inherit 重播种后可被写回刷新；手改一格 → 该格 frozen 且入 mismatched、其余重播种；缺省/human 全冻结且 journal 不增；旧 asset 无 journal 全冻结不伪造；重复 rebase 幂等；前缀识别不误伤人工列 + 锚点左侧排除；已保存映射的自定义用例编号表头；API typed 400 与无 journal 时仍 200 如实计数。
+- **边界**：不自动判断人工改动（只能比对上一版本 journal）；不支持跨 sheet 迁移（`sheetName` 需一致，别名表只认表头）；后续 Task 8 的 pending/confirmed journal 落地时，rebase 只写确认态行。
