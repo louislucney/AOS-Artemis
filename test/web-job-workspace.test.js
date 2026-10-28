@@ -476,6 +476,7 @@ test("installWebPackage: iOS .ipa 解压 Payload/*.app 后安装（模拟器/真
   await fs.promises.writeFile(packagePath, "fake-ipa");
 
   const one = fakeExec((command, args) => {
+    if (!args.includes("-d")) return { code: 0, stdout: "", stderr: "" };
     const dir = args[args.indexOf("-d") + 1];
     fs.mkdirSync(path.join(dir, "Payload", "Test.app"), { recursive: true });
     return { code: 0, stdout: "", stderr: "" };
@@ -496,6 +497,7 @@ test("installWebPackage: iOS .ipa 解压 Payload/*.app 后安装（模拟器/真
   assert.deepEqual(simCall.args, ["simctl", "install", "SIM-UDID", appPath]);
 
   const device = fakeExec((command, args) => {
+    if (!args.includes("-d")) return { code: 0, stdout: "", stderr: "" };
     const dir = args[args.indexOf("-d") + 1];
     fs.mkdirSync(path.join(dir, "Payload", "Test.app"), { recursive: true });
     return { code: 0, stdout: "", stderr: "" };
