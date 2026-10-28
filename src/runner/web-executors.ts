@@ -43,6 +43,8 @@ const MAX_WALK_DEPTH = 8;
 const MAX_SCREENSHOTS_PER_CASE = 5;
 const FAILURE_REASON_MAX = 2_000;
 const DETAIL_TAIL_MAX = 400;
+const DETAIL_MAX = 4_000;
+const CASE_NAME_MAX = 200;
 const DEVICE_SERIAL_RE = /^[A-Za-z0-9._:-]+$/;
 const IMAGE_RE = /\.(png|jpe?g|webp)$/i;
 
@@ -58,6 +60,10 @@ function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
+function clip(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max)}…`;
+}
+
 function resultAt(
   startedAtMs: number,
   status: WebJobExecutionResult["status"],
@@ -69,7 +75,7 @@ function resultAt(
     cases,
     startedAt: iso(startedAtMs),
     finishedAt: iso(Date.now()),
-    detail
+    detail: detail === null ? null : clip(detail, DETAIL_MAX)
   };
 }
 
@@ -116,6 +122,20 @@ async function walkFiles(dir: string): Promise<string[]> {
   };
   await visit(dir, 0);
   return files;
+}
+
+/** 用例只认 flowsDir 顶层 yaml；`subflows/` 等子目录是 Maestro 子流程，不作为用例。 */
+async function listTopLevelFlows(dir: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isFile() && /\.(yaml|yml)$/i.test(entry.name))
+    .map((entry) => path.join(dir, entry.name))
+    .sort((left, right) => left.localeCompare(right));
 }
 
 function decodeCharacterEntities(text: string): string {
@@ -295,9 +315,7 @@ export async function executeWebJob(
     return resultAt(startedAtMs, "error", [], "flows-outside-job");
   }
 
-  const flowFiles = (await walkFiles(flowsDir)).filter((file) =>
-    /\.(yaml|yml)$/i.test(path.basename(file))
-  );
+  const flowFiles = await listTopLevelFlows(flowsDir);
   if (flowFiles.length === 0) {
     return resultAt(startedAtMs, "error", [], "no-flow-files");
   }
@@ -364,7 +382,10 @@ export async function executeWebJob(
   if (junitContent === null) {
     const stderr = tail(execResult.stderr || execResult.stdout);
     const exit = execResult.code === null ? "null" : String(execResult.code);
-    const reason = execResult.error === "timeout" ? "maestro-timeout" : `maestro-no-junit: exit=${exit}`;
+    const reason =
+      execResult.error === "timeout"
+        ? "maestro-timeout"
+        : `maestro-no-junit: exit=${exit}${execResult.error === undefined ? "" : `: ${execResult.error}`}`;
     return resultAt(startedAtMs, "error", [], stderr === "" ? reason : `${reason}: ${stderr}`);
   }
   if (junitContent.trim() === "") {
@@ -387,11 +408,14 @@ export async function executeWebJob(
 
   rawCases.forEach((raw, index) => {
     const matched = matchesStem(raw, stems);
-    const name = raw.name || raw.classname || matched || `testcase-${index + 1}`;
+    const name = clip(
+      raw.name || raw.classname || matched || `testcase-${index + 1}`,
+      CASE_NAME_MAX
+    );
     if (matched === null) {
       warnings.push(`unmatched-testcase:${name}`);
       cases.push({
-        caseId: `unmatched:${name.slice(0, 120)}#${index + 1}`,
+        caseId: `unmatched:${clip(name, 120)}#${index + 1}`,
         name,
         status: "ERROR",
         durationMs: raw.durationMs,
@@ -453,16 +477,15 @@ export async function executeWebJob(
     for (const entry of cases) entry.logPath = logPath;
   }
 
-  if (execResult.error !== undefined || (execResult.code !== null && execResult.code !== 0)) {
-    const exit = execResult.code === null ? "null" : String(execResult.code);
-    warnings.push(
-      execResult.error === undefined ? `maestro-exit:${exit}` : `maestro-exit:${exit}:${execResult.error}`
-    );
+  const execFailed =
+    execResult.error !== undefined || execResult.code === null || execResult.code !== 0;
+  if (execFailed) {
+    warnings.push(`maestro-exit:${execResult.error ?? (execResult.code === null ? "null" : String(execResult.code))}`);
   }
 
   return resultAt(
     startedAtMs,
-    aggregate(cases),
+    execFailed ? "error" : aggregate(cases),
     cases,
     warnings.length === 0 ? null : warnings.join("; ")
   );

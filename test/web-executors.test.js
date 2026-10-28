@@ -224,7 +224,7 @@ test("executeWebJob: 超时且无 JUnit → error 保留 timeout", async (t) => 
   assert.match(result.detail, /timeout/);
 });
 
-test("executeWebJob: 非零退出但 JUnit 合法 → 按用例状态判定", async (t) => {
+test("executeWebJob: 非零退出但 JUnit 合法 → error，用例保留可见", async (t) => {
   const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml", "flow-b.yaml"]);
   const { exec } = execWithJunit(
     junit([
@@ -243,10 +243,101 @@ test("executeWebJob: 非零退出但 JUnit 合法 → 按用例状态判定", as
     env: {}
   });
 
-  assert.equal(result.status, "failed");
+  assert.equal(result.status, "error");
   assert.equal(result.cases.length, 2);
+  assert.equal(result.cases.find((entry) => entry.caseId === "flow-a").status, "PASS");
   assert.equal(result.cases.find((entry) => entry.caseId === "flow-b").status, "ERROR");
   assert.match(result.detail, /maestro-exit:1/);
+});
+
+test("executeWebJob: 非零退出但 JUnit 全 PASS → error，不因用例全绿而假通过", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml", "flow-b.yaml"]);
+  const { exec } = execWithJunit(
+    junit([
+      xmlCase({ name: "flow-a", selfClosing: true }),
+      xmlCase({ name: "flow-b", selfClosing: true })
+    ]),
+    { code: 2, stdout: "", stderr: "runner aborted after last case" }
+  );
+
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+
+  assert.equal(result.status, "error");
+  assert.deepEqual(result.cases.map((entry) => entry.status), ["PASS", "PASS"]);
+  assert.match(result.detail, /maestro-exit:2/);
+});
+
+test("executeWebJob: 超时但 JUnit 全 PASS → error，保留 timeout 与用例", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  const { exec } = execWithJunit(
+    junit([xmlCase({ name: "flow-a", selfClosing: true })]),
+    { code: null, stdout: "", stderr: "", error: "timeout" }
+  );
+
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+
+  assert.equal(result.status, "error");
+  assert.equal(result.cases.length, 1);
+  assert.equal(result.cases[0].status, "PASS");
+  assert.match(result.detail, /maestro-exit:timeout/);
+});
+
+test("executeWebJob: 无 JUnit 时保留 exec 错误（spawn 失败）", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  const { exec } = fakeExec(async () => ({
+    code: null,
+    stdout: "",
+    stderr: "",
+    error: "spawn maestro ENOENT"
+  }));
+
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+
+  assert.equal(result.status, "error");
+  assert.match(result.detail, /maestro-no-junit/);
+  assert.match(result.detail, /spawn maestro ENOENT/);
+});
+
+test("executeWebJob: 子目录 subflows 不算用例，只有顶层 yaml 参与映射", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  const subflowsDir = path.join(flowsDir, "subflows");
+  await mkdir(subflowsDir, { recursive: true });
+  await writeFile(path.join(subflowsDir, "helper.yaml"), "appId: acme.app\n---\n- tapOn: Next\n");
+  const { exec } = execWithJunit(junit([xmlCase({ name: "flow-a", selfClosing: true })]));
+
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+
+  assert.equal(result.status, "passed");
+  assert.deepEqual(result.cases.map((entry) => entry.caseId), ["flow-a"]);
+  assert.equal(result.detail, null);
 });
 
 test("executeWebJob: 无 scriptSetId / 无 yaml / flowsDir 越界 → error 且不执行命令", async (t) => {
