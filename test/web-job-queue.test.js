@@ -11,6 +11,7 @@ import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import {
+  assertWebJobCombination,
   canRunMaestroDiscovery,
   WebJobDispatchError
 } from "../dist/web/job-spec.js";
@@ -209,7 +210,7 @@ test("自动下发：iOS 只选 iPhone，写入 jobSpec/deviceSerial 并生成�
     await online(store, "host-pixel", [android("pixel-7", "Pixel 7")]);
 
     const result = await createWebJob(
-      jobInput(store, rootPath, assets, { requirements: { platform: "ios", deviceKind: "any" } })
+      jobInput(store, rootPath, assets, { requirements: { platform: "ios", deviceKind: "simulator" } })
     );
 
     assert.deepEqual(result.assignment && {
@@ -272,7 +273,7 @@ test("manual 指定 host+device：校验归属、租约占用 409、成功后写
           devicePinned: true,
           targetHostId: "host-iphone",
           deviceSerial: "sim-15",
-          requirements: { platform: "ios", deviceKind: "any" }
+          requirements: { platform: "ios", deviceKind: "simulator" }
         })
       ),
       (error) =>
@@ -288,7 +289,7 @@ test("manual 指定 host+device：校验归属、租约占用 409、成功后写
         devicePinned: true,
         targetHostId: "host-iphone",
         deviceSerial: "sim-15",
-        requirements: { platform: "ios", deviceKind: "any" }
+        requirements: { platform: "ios", deviceKind: "simulator" }
       })
     );
     assert.equal(ok.assignment.hostId, "host-iphone");
@@ -634,7 +635,26 @@ test("auto 无候选保持 pending 且原因可见；候选出现后 assign 绑�
   }
 });
 
-test("组合校验：ios×device×maestro 拒绝，ios×device×llm 允许；无发现设备只能 draft", async () => {
+test("组合校验：iOS Maestro 仅允许 simulator；ios×device/any×maestro 拒绝，ios×device×llm 允许", async () => {
+  const combination = (deviceKind, executionMode) => ({
+    assignment: "auto",
+    requirements: { platform: "ios", deviceKind },
+    executionMode
+  });
+  for (const deviceKind of ["any", "device"]) {
+    assert.throws(
+      () => assertWebJobCombination(combination(deviceKind, "maestro")),
+      (error) =>
+        error instanceof WebJobDispatchError &&
+        error.code === "ios-maestro-requires-simulator" &&
+        error.status === 400
+    );
+  }
+  const simulator = assertWebJobCombination(combination("simulator", "maestro"));
+  assert.equal(simulator.requirements.deviceKind, "simulator");
+  const llmReal = assertWebJobCombination(combination("device", "llm"));
+  assert.equal(llmReal.executionMode, "llm");
+
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "combo");
     const assets = await makeAssets(store, rootPath);
@@ -647,7 +667,17 @@ test("组合校验：ios×device×maestro 拒绝，ios×device×llm 允许；无
         })
       ),
       (error) =>
-        error instanceof WebJobDispatchError && error.code === "ios-real-device-requires-llm"
+        error instanceof WebJobDispatchError && error.code === "ios-maestro-requires-simulator"
+    );
+    await assert.rejects(
+      createWebJob(
+        jobInput(store, rootPath, assets, {
+          requirements: { platform: "ios", deviceKind: "any" },
+          executionMode: "maestro"
+        })
+      ),
+      (error) =>
+        error instanceof WebJobDispatchError && error.code === "ios-maestro-requires-simulator"
     );
 
     const llm = await createWebJob(

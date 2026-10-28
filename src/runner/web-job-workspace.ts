@@ -355,8 +355,48 @@ export type InstallWebPackageResult =
         | "exec-failed"
         | "install-failed"
         | "invalid-device-serial"
-        | "invalid-package-path";
+        | "invalid-package-path"
+        | "ipa-extract-failed"
+        | "invalid-ios-package";
     };
+
+/**
+ * `.ipa` 是 zip：simctl/devicectl 只认 `.app`，先解压到 `<jobDir>/install`，
+ * 要求 `Payload/` 下恰好一个 `.app`（缺失/多个都拒绝，不猜）。
+ */
+async function extractIosApp(
+  input: InstallWebPackageInput,
+  options: { timeoutMs: number; env?: NodeJS.ProcessEnv }
+): Promise<
+  | { ok: true; appPath: string }
+  | { ok: false; reason: "ipa-extract-failed" | "invalid-ios-package" | "invalid-package-path" }
+> {
+  if (input.jobDir === undefined) return { ok: false, reason: "invalid-ios-package" };
+  const jobDir = path.resolve(input.jobDir);
+  const packagePath = path.resolve(input.packagePath);
+  if (packagePath !== jobDir && !packagePath.startsWith(jobDir + path.sep)) {
+    return { ok: false, reason: "invalid-package-path" };
+  }
+  const extractDir = path.join(jobDir, "install");
+  await rm(extractDir, { recursive: true, force: true });
+  await mkdir(extractDir, { recursive: true });
+  const extracted = await input.exec("unzip", ["-o", packagePath, "-d", extractDir], options);
+  if (extracted.code === null || extracted.code === undefined || extracted.code !== 0) {
+    return { ok: false, reason: "ipa-extract-failed" };
+  }
+  const payloadDir = path.join(extractDir, "Payload");
+  let entries;
+  try {
+    entries = await readdir(payloadDir, { withFileTypes: true });
+  } catch {
+    return { ok: false, reason: "invalid-ios-package" };
+  }
+  const apps = entries.filter(
+    (entry) => entry.isDirectory() && entry.name.toLowerCase().endsWith(".app")
+  );
+  if (apps.length !== 1) return { ok: false, reason: "invalid-ios-package" };
+  return { ok: true, appPath: path.join(payloadDir, apps[0]!.name) };
+}
 
 export async function installWebPackage(
   input: InstallWebPackageInput
@@ -381,8 +421,14 @@ export async function installWebPackage(
     command = "adb";
     args = ["-s", input.deviceSerial, "install", "-r", input.packagePath];
   } else if (input.platform === "ios") {
-    const kind =
-      input.deviceKind ?? (path.extname(input.packagePath).toLowerCase() === ".ipa" ? "device" : "simulator");
+    const extension = path.extname(input.packagePath).toLowerCase();
+    const kind = input.deviceKind ?? (extension === ".ipa" ? "device" : "simulator");
+    let installPath = input.packagePath;
+    if (extension === ".ipa") {
+      const app = await extractIosApp(input, options);
+      if (!app.ok) return { ok: false, reason: app.reason };
+      installPath = app.appPath;
+    }
     if (kind === "device") {
       command = "xcrun";
       args = [
@@ -392,11 +438,11 @@ export async function installWebPackage(
         "app",
         "--device",
         input.deviceSerial,
-        input.packagePath
+        installPath
       ];
     } else {
       command = "xcrun";
-      args = ["simctl", "install", input.deviceSerial, input.packagePath];
+      args = ["simctl", "install", input.deviceSerial, installPath];
     }
   } else {
     return { ok: false, reason: "unsupported-platform" };

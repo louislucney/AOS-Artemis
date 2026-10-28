@@ -420,7 +420,7 @@ test("installWebPackage: iOS 模拟器走 simctl，真机走 devicectl", async (
   const realResult = await installWebPackage({
     platform: "ios",
     deviceSerial: "REAL-UDID",
-    packagePath: "/tmp/App.ipa",
+    packagePath: "/tmp/App.app",
     deviceKind: "device",
     exec: real.exec
   });
@@ -432,7 +432,7 @@ test("installWebPackage: iOS 模拟器走 simctl，真机走 devicectl", async (
     "app",
     "--device",
     "REAL-UDID",
-    "/tmp/App.ipa"
+    "/tmp/App.app"
   ]);
 
   const unsupported = await installWebPackage({
@@ -467,6 +467,115 @@ test("installWebPackage: iOS 模拟器走 simctl，真机走 devicectl", async (
     { ok: false, reason: "invalid-package-path" }
   );
   assert.equal(outside.calls.length, 0);
+});
+
+test("installWebPackage: iOS .ipa 解压 Payload/*.app 后安装（模拟器/真机），缺失/多个/解压失败拒绝", async (t) => {
+  const jobDir = await tempDir(t, "aos-web-ipa-");
+  const packagePath = path.join(jobDir, "assets", "package", "Test.ipa");
+  await fs.promises.mkdir(path.dirname(packagePath), { recursive: true });
+  await fs.promises.writeFile(packagePath, "fake-ipa");
+
+  const one = fakeExec((command, args) => {
+    const dir = args[args.indexOf("-d") + 1];
+    fs.mkdirSync(path.join(dir, "Payload", "Test.app"), { recursive: true });
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const appPath = path.join(jobDir, "install", "Payload", "Test.app");
+  const sim = await installWebPackage({
+    platform: "ios",
+    deviceSerial: "SIM-UDID",
+    packagePath,
+    deviceKind: "simulator",
+    jobDir,
+    exec: one.exec
+  });
+  assert.equal(sim.ok, true);
+  const unzip = one.calls.find((call) => call.command === "unzip");
+  assert.deepEqual(unzip.args, ["-o", packagePath, "-d", path.join(jobDir, "install")]);
+  const simCall = one.calls.find((call) => call.command === "xcrun");
+  assert.deepEqual(simCall.args, ["simctl", "install", "SIM-UDID", appPath]);
+
+  const device = fakeExec((command, args) => {
+    const dir = args[args.indexOf("-d") + 1];
+    fs.mkdirSync(path.join(dir, "Payload", "Test.app"), { recursive: true });
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const real = await installWebPackage({
+    platform: "ios",
+    deviceSerial: "REAL-UDID",
+    packagePath,
+    deviceKind: "device",
+    jobDir,
+    exec: device.exec
+  });
+  assert.equal(real.ok, true);
+  const deviceCall = device.calls.find((call) => call.command === "xcrun");
+  assert.deepEqual(deviceCall.args, [
+    "devicectl",
+    "device",
+    "install",
+    "app",
+    "--device",
+    "REAL-UDID",
+    appPath
+  ]);
+
+  const empty = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }));
+  assert.deepEqual(
+    await installWebPackage({
+      platform: "ios",
+      deviceSerial: "SIM-UDID",
+      packagePath,
+      deviceKind: "simulator",
+      jobDir,
+      exec: empty.exec
+    }),
+    { ok: false, reason: "invalid-ios-package" }
+  );
+
+  const multiple = fakeExec((command, args) => {
+    const dir = args[args.indexOf("-d") + 1];
+    fs.mkdirSync(path.join(dir, "Payload", "A.app"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "Payload", "B.app"), { recursive: true });
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  assert.deepEqual(
+    await installWebPackage({
+      platform: "ios",
+      deviceSerial: "SIM-UDID",
+      packagePath,
+      deviceKind: "simulator",
+      jobDir,
+      exec: multiple.exec
+    }),
+    { ok: false, reason: "invalid-ios-package" }
+  );
+
+  const failing = fakeExec(() => ({ code: 1, stdout: "", stderr: "bad zip" }));
+  assert.deepEqual(
+    await installWebPackage({
+      platform: "ios",
+      deviceSerial: "SIM-UDID",
+      packagePath,
+      deviceKind: "simulator",
+      jobDir,
+      exec: failing.exec
+    }),
+    { ok: false, reason: "ipa-extract-failed" }
+  );
+
+  const noJobDir = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }));
+  assert.deepEqual(
+    await installWebPackage({
+      platform: "ios",
+      deviceSerial: "SIM-UDID",
+      packagePath,
+      deviceKind: "simulator",
+      exec: noJobDir.exec
+    }),
+    { ok: false, reason: "invalid-ios-package" }
+  );
+  assert.equal(noJobDir.calls.length, 0);
 });
 
 async function makeJob(store, rootPath, jobSpec, status = "claimed", hostId = null) {

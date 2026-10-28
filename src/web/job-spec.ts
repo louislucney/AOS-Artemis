@@ -60,6 +60,7 @@ export type WebJobDispatchErrorCode =
   | "manual-requires-host"
   | "device-serial-requires-pin"
   | "ios-real-device-requires-llm"
+  | "ios-maestro-requires-simulator"
   | "unknown-execution-mode"
   | "project-not-found"
   | "project-archived"
@@ -76,6 +77,7 @@ const ERROR_STATUS: Record<WebJobDispatchErrorCode, number> = {
   "manual-requires-host": 400,
   "device-serial-requires-pin": 400,
   "ios-real-device-requires-llm": 400,
+  "ios-maestro-requires-simulator": 400,
   "unknown-execution-mode": 400,
   "project-not-found": 404,
   "project-archived": 409,
@@ -153,8 +155,8 @@ export interface WebJobCombination {
 }
 
 /**
- * 组合硬校验：`ios × device × maestro` 拒绝（iOS 真机只走 LLM/Appium）；
- * manual 必须带 host，钉设备必须显式 `devicePinned:true`；auto 忽略定向字段。
+ * 组合硬校验：iOS + Maestro 只允许 `deviceKind:"simulator"`（`any`/`device` 一律拒绝，
+ * 真机只走 LLM/Appium）；manual 必须带 host，钉设备必须显式 `devicePinned:true`；auto 忽略定向字段。
  */
 export function assertWebJobCombination(input: WebJobCombinationInput): WebJobCombination {
   if (input.assignment !== "auto" && input.assignment !== "manual") {
@@ -179,10 +181,10 @@ export function assertWebJobCombination(input: WebJobCombinationInput): WebJobCo
     throw new WebJobDispatchError("invalid-requirements", `不支持的设备类型：${String(kind)}`);
   }
   const normalizedRequirements: WebDispatchRequirements = { ...requirements, deviceKind: kind };
-  if (requirements.platform === "ios" && kind === "device" && mode === "maestro") {
+  if (requirements.platform === "ios" && mode === "maestro" && kind !== "simulator") {
     throw new WebJobDispatchError(
-      "ios-real-device-requires-llm",
-      "iOS 真机不支持 Maestro 执行（请改用 executionMode=llm）"
+      "ios-maestro-requires-simulator",
+      `iOS Maestro 仅支持模拟器（deviceKind:"simulator"，当前 ${kind}）；iOS 真机请改用 executionMode=llm（Plan 2，尚未接线）`
     );
   }
 

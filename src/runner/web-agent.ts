@@ -622,7 +622,7 @@ host 级远端 Web 任务执行机（只连中心 PG，不要求项目目录；�
   --name <n>              执行机名称（缺省 hostname）
   --artifact-base-url <u> 产物基址（回传给中心，可选）
   --panel-base-url <u>    中心基址（缺省 AOS_PANEL_BASE_URL；执行 job 必需）
-  --once                  只跑一轮（心跳/选机 + 每设备一次领取）后退出
+  --once                  只跑一轮（心跳/选机 + 每设备一次领取并执行一次尝试）后退出
   环境变量：MOBILE_TESTING_DATABASE_URL（必需）、AOS_PANEL_BASE_URL、AOS_RUNNER_JOB_TOKEN（≥16）、
             AOS_HOST_ID、AOS_RUNNER_TTL_MS、AOS_DEVICE_LEASE_MS、AOS_RUNNER_HEARTBEAT_MS、
             AOS_RUNNER_POLL_MS、AOS_RUNNER_WORK_DIR、AOS_RUNNER_CACHE_DIR`);
