@@ -56,6 +56,7 @@ import type {
   UpsertHostInput,
   UpsertLlmInput,
   UpsertRunnerInput,
+  UpsertWebRunnerInput,
   LegacyLedgerImportResult,
   UsageEventQuery,
   UsageEventRecord,
@@ -70,7 +71,8 @@ import type {
   SaveExcelMappingInput,
   WebAssetKind,
   WebAssetRecord,
-  WebProjectRecord
+  WebProjectRecord,
+  WebRunnerRecord
 } from "./types.js";
 import {
   AmbiguousProjectError,
@@ -80,7 +82,8 @@ import {
   normalizeRegressionTask,
   RUNNER_ACTIVE_DEFAULT_MS,
   RunnerAlreadyActiveError,
-  STOPPED_RUNNER_SEEN_AT
+  STOPPED_RUNNER_SEEN_AT,
+  WebRunnerAlreadyActiveError
 } from "./types.js";
 import { buildAuditEvent, normalizeAuditLimit } from "./audit-event.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
@@ -302,6 +305,21 @@ const SCHEMA = [
      last_seen_at TEXT NOT NULL,
      created_at TEXT NOT NULL
     )`,
+  `CREATE TABLE IF NOT EXISTS web_runners (
+     id TEXT PRIMARY KEY,
+     host_id TEXT NOT NULL,
+     name TEXT NOT NULL,
+     hostname TEXT NOT NULL,
+     platforms TEXT NOT NULL,
+     devices TEXT NOT NULL,
+     tools TEXT NOT NULL DEFAULT '{}',
+     artifact_base_url TEXT,
+     version TEXT,
+     instance_id TEXT NOT NULL,
+     last_seen_at TEXT NOT NULL,
+     created_at TEXT NOT NULL
+    )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS web_runners_host_idx ON web_runners(host_id)`,
   `CREATE TABLE IF NOT EXISTS schedules (
      id TEXT PRIMARY KEY,
      project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
@@ -511,7 +529,11 @@ const MIGRATIONS = [
 const MIGRATION_LOCK_ID = 89121476;
 
 /** 迁移后置校验：这些索引缺失意味着 DDL best-effort 失败，启动必须失败而不是带病运行。 */
-const REQUIRED_INDEXES = ["projects_host_path_idx", "runners_project_host_idx"] as const;
+const REQUIRED_INDEXES = [
+  "projects_host_path_idx",
+  "runners_project_host_idx",
+  "web_runners_host_idx"
+] as const;
 
 export const MIGRATION_INCOMPLETE_CODE = "AOS_MIGRATION_INCOMPLETE";
 
@@ -1800,6 +1822,107 @@ export class PostgresStore implements ProjectStore {
         input.at ?? STOPPED_RUNNER_SEEN_AT,
         input.instanceId
       ]
+    );
+    return Number(result.rowCount ?? 0) > 0;
+  }
+
+  async upsertWebRunner(input: UpsertWebRunnerInput): Promise<WebRunnerRecord> {
+    const now = input.lastSeenAt ?? new Date().toISOString();
+    const activeWithinMs = input.activeWithinMs ?? RUNNER_ACTIVE_DEFAULT_MS;
+    try {
+      const inserted = await this.pool.query(
+        `INSERT INTO web_runners
+           (id, host_id, name, hostname, platforms, devices, tools, artifact_base_url, version,
+            instance_id, last_seen_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         RETURNING *`,
+        [
+          randomUUID(),
+          input.hostId,
+          input.name,
+          input.hostname,
+          JSON.stringify(input.platforms),
+          JSON.stringify(input.devices),
+          JSON.stringify(input.tools),
+          input.artifactBaseUrl,
+          input.version,
+          input.instanceId,
+          now,
+          now
+        ]
+      );
+      return mapWebRunner(inserted.rows[0]!);
+    } catch (error) {
+      if ((error as { code?: string }).code !== "23505") throw error;
+      const existing = await this.pool.query("SELECT * FROM web_runners WHERE host_id = $1", [
+        input.hostId
+      ]);
+      const row = existing.rows[0] as Record<string, unknown> | undefined;
+      if (!row) throw error;
+      const existingInstanceId = nullableString(row.instance_id);
+      if (
+        existingInstanceId !== input.instanceId &&
+        activeWithinMs > 0 &&
+        isRunnerActive(String(row.last_seen_at), Date.now(), activeWithinMs)
+      ) {
+        throw new WebRunnerAlreadyActiveError({
+          hostId: input.hostId,
+          existingInstanceId,
+          incomingInstanceId: input.instanceId
+        });
+      }
+      const updated = await this.pool.query(
+        `UPDATE web_runners
+            SET name = $3, hostname = $4, platforms = $5, devices = $6, tools = $7,
+                artifact_base_url = $8, version = $9, instance_id = $10, last_seen_at = $11
+          WHERE host_id = $1 AND instance_id = $2
+          RETURNING *`,
+        [
+          input.hostId,
+          existingInstanceId,
+          input.name,
+          input.hostname,
+          JSON.stringify(input.platforms),
+          JSON.stringify(input.devices),
+          JSON.stringify(input.tools),
+          input.artifactBaseUrl,
+          input.version,
+          input.instanceId,
+          now
+        ]
+      );
+      if (updated.rows.length === 0) {
+        throw new WebRunnerAlreadyActiveError({
+          hostId: input.hostId,
+          existingInstanceId,
+          incomingInstanceId: input.instanceId
+        });
+      }
+      return mapWebRunner(updated.rows[0]!);
+    }
+  }
+
+  async listWebRunners(): Promise<WebRunnerRecord[]> {
+    const result = await this.pool.query(
+      "SELECT * FROM web_runners ORDER BY last_seen_at DESC"
+    );
+    return result.rows.map((row) => mapWebRunner(row));
+  }
+
+  async getWebRunner(hostId: string): Promise<WebRunnerRecord | null> {
+    const result = await this.pool.query("SELECT * FROM web_runners WHERE host_id = $1", [hostId]);
+    return result.rows[0] ? mapWebRunner(result.rows[0]) : null;
+  }
+
+  async markWebRunnerStopped(input: {
+    hostId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE web_runners SET last_seen_at = $3
+        WHERE host_id = $1 AND instance_id = $2`,
+      [input.hostId, input.instanceId, input.at ?? STOPPED_RUNNER_SEEN_AT]
     );
     return Number(result.rowCount ?? 0) > 0;
   }
@@ -3460,6 +3583,23 @@ function mapRunner(row: Record<string, unknown>): RunnerRecord {
     version: nullableString(row.version),
     hostId: nullableString(row.host_id),
     instanceId: nullableString(row.instance_id),
+    lastSeenAt: String(row.last_seen_at),
+    createdAt: String(row.created_at)
+  };
+}
+
+function mapWebRunner(row: Record<string, unknown>): WebRunnerRecord {
+  return {
+    id: String(row.id),
+    hostId: String(row.host_id),
+    name: String(row.name),
+    hostname: String(row.hostname),
+    platforms: parseStringArray(row.platforms),
+    devices: parseRunnerDevices(row.devices),
+    tools: parseRunnerTools(row.tools),
+    artifactBaseUrl: nullableString(row.artifact_base_url),
+    version: nullableString(row.version),
+    instanceId: String(row.instance_id),
     lastSeenAt: String(row.last_seen_at),
     createdAt: String(row.created_at)
   };

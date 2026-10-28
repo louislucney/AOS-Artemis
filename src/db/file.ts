@@ -55,12 +55,14 @@ import type {
   UpsertHostInput,
   UpsertLlmInput,
   UpsertRunnerInput,
+  UpsertWebRunnerInput,
   UsageEventQuery,
   UsageEventRecord,
   UsagePrunePolicy,
   WebAssetKind,
   WebAssetRecord,
-  WebProjectRecord
+  WebProjectRecord,
+  WebRunnerRecord
 } from "./types.js";
 
 export interface FileStoreOptions {
@@ -131,6 +133,9 @@ export class FileStore implements ProjectStore {
   private readonly webIndexPath: string;
   private webIndex = new Map<string, WebProjectRecord>();
   private webIndexLoaded = false;
+  private readonly hostStatePath: string;
+  private hostStateSeenMtimeMs: number | null = null;
+  private hostStateLoaded = false;
 
   private constructor(homeDir: string, env: NodeJS.ProcessEnv, hostId: string | null = null) {
     this.homeDir = homeDir;
@@ -139,6 +144,7 @@ export class FileStore implements ProjectStore {
     this.hostId = hostId;
     this.hostMem = new MemoryStore(null, env);
     this.webIndexPath = path.join(homeDir, "web-projects.jsonl");
+    this.hostStatePath = path.join(homeDir, "host-state.json");
   }
 
   static async create(options: FileStoreOptions = {}): Promise<FileStore> {
@@ -166,6 +172,8 @@ export class FileStore implements ProjectStore {
     view.hostMem = this.hostMem;
     view.webIndex = this.webIndex;
     view.webIndexLoaded = this.webIndexLoaded;
+    view.hostStateSeenMtimeMs = this.hostStateSeenMtimeMs;
+    view.hostStateLoaded = this.hostStateLoaded;
     return view;
   }
 
@@ -564,6 +572,34 @@ export class FileStore implements ProjectStore {
     const bucket = await this.bucket(input.rootPath);
     const stopped = await this.scopedMem(bucket, this.hostId).markRunnerStopped(input);
     if (stopped) await this.persist(bucket, "markRunnerStopped");
+    return stopped;
+  }
+
+  async upsertWebRunner(input: UpsertWebRunnerInput): Promise<WebRunnerRecord> {
+    await this.loadHostState();
+    const record = await this.hostMem.upsertWebRunner(input);
+    await this.persistHostStateFile("upsertWebRunner");
+    return record;
+  }
+
+  async listWebRunners(): Promise<WebRunnerRecord[]> {
+    await this.loadHostState();
+    return this.hostMem.listWebRunners();
+  }
+
+  async getWebRunner(hostId: string): Promise<WebRunnerRecord | null> {
+    await this.loadHostState();
+    return this.hostMem.getWebRunner(hostId);
+  }
+
+  async markWebRunnerStopped(input: {
+    hostId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<boolean> {
+    await this.loadHostState();
+    const stopped = await this.hostMem.markWebRunnerStopped(input);
+    if (stopped) await this.persistHostStateFile("markWebRunnerStopped");
     return stopped;
   }
 
@@ -1206,6 +1242,43 @@ export class FileStore implements ProjectStore {
   }
 
   /** 加载 home 级 Web 项目索引（last-write-wins 按 rootPath）。 */
+  /** host 级 web runner 注册表：独立文件（不依赖项目目录），跨重启保留；磁盘行胜出。 */
+  private async loadHostState(): Promise<void> {
+    const seen = await mtimeMs(this.hostStatePath);
+    if (this.hostStateLoaded && seen === this.hostStateSeenMtimeMs) return;
+    this.hostStateLoaded = true;
+    this.hostStateSeenMtimeMs = seen;
+    const raw = await readIfExists(this.hostStatePath);
+    if (raw === null) return;
+    try {
+      const parsed = JSON.parse(raw) as { state?: Partial<MemoryStoreState> };
+      const disk = parsed?.state?.webRunners;
+      if (!Array.isArray(disk)) return;
+      const byHost = new Map<string, WebRunnerRecord>();
+      for (const record of this.hostMem.exportState().webRunners) byHost.set(record.hostId, record);
+      for (const record of disk) byHost.set(record.hostId, record);
+      this.hostMem.importState({ webRunners: [...byHost.values()] });
+    } catch (error) {
+      log(`文件台账 host-state.json 解析失败（忽略）：${errorMessage(error)}`);
+    }
+  }
+
+  private async persistHostStateFile(op: string): Promise<void> {
+    try {
+      const payload = JSON.stringify({
+        v: 1,
+        updatedAt: new Date().toISOString(),
+        state: { webRunners: this.hostMem.exportState().webRunners }
+      });
+      await writeFileAtomic(this.hostStatePath, payload);
+      this.hostStateSeenMtimeMs = await mtimeMs(this.hostStatePath);
+      this.hostStateLoaded = true;
+    } catch (error) {
+      this.noteWriteFailure(error);
+      log(`文件台账 host-state 写入失败（${op}）：${errorMessage(error)}`);
+    }
+  }
+
   private async ensureWebIndex(): Promise<void> {
     if (this.webIndexLoaded) return;
     const raw = await readIfExists(this.webIndexPath);

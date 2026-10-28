@@ -9,7 +9,8 @@ import {
   normalizeRegressionTask,
   RUNNER_ACTIVE_DEFAULT_MS,
   RunnerAlreadyActiveError,
-  STOPPED_RUNNER_SEEN_AT
+  STOPPED_RUNNER_SEEN_AT,
+  WebRunnerAlreadyActiveError
 } from "./types.js";
 import { buildUsageEvent, normalizeUsageLimit, retentionCutoffIso } from "./usage-event.js";
 import { hostSessionRetentionDaysFrom } from "../host/online.js";
@@ -62,12 +63,14 @@ import type {
   UpsertHostInput,
   UpsertLlmInput,
   UpsertRunnerInput,
+  UpsertWebRunnerInput,
   UsageEventQuery,
   UsageEventRecord,
   UsagePrunePolicy,
   WebAssetKind,
   WebAssetRecord,
-  WebProjectRecord
+  WebProjectRecord,
+  WebRunnerRecord
 } from "./types.js";
 
 export interface MemoryStoreState {
@@ -80,6 +83,7 @@ export interface MemoryStoreState {
   regressionTasks: RegressionTaskRecord[];
   suiteRuns: SuiteRunRecord[];
   runners: RunnerRecord[];
+  webRunners: WebRunnerRecord[];
   schedules: ScheduleRecord[];
   auditEvents: AuditEventRecord[];
   hosts: HostRecord[];
@@ -108,6 +112,7 @@ export class MemoryStore implements ProjectStore {
   private regressionTasks: RegressionTaskRecord[] = [];
   private suiteRuns: SuiteRunRecord[] = [];
   private runners: RunnerRecord[] = [];
+  private webRunners: WebRunnerRecord[] = [];
   private schedules: ScheduleRecord[] = [];
   private hosts: HostRecord[] = [];
   private hostAddresses: HostAddressRecord[] = [];
@@ -147,6 +152,7 @@ export class MemoryStore implements ProjectStore {
     view.regressionTasks = this.regressionTasks;
     view.suiteRuns = this.suiteRuns;
     view.runners = this.runners;
+    view.webRunners = this.webRunners;
     view.schedules = this.schedules;
     view.hosts = this.hosts;
     view.hostAddresses = this.hostAddresses;
@@ -1043,6 +1049,77 @@ export class MemoryStore implements ProjectStore {
     return true;
   }
 
+  async upsertWebRunner(input: UpsertWebRunnerInput): Promise<WebRunnerRecord> {
+    const now = input.lastSeenAt ?? new Date().toISOString();
+    const activeWithinMs = input.activeWithinMs ?? RUNNER_ACTIVE_DEFAULT_MS;
+    const existing = this.webRunners.find((entry) => entry.hostId === input.hostId);
+    if (!existing) {
+      const record: WebRunnerRecord = {
+        id: randomUUID(),
+        hostId: input.hostId,
+        name: input.name,
+        hostname: input.hostname,
+        platforms: [...input.platforms],
+        devices: input.devices.map((device) => ({ ...device })),
+        tools: { ...input.tools },
+        artifactBaseUrl: input.artifactBaseUrl,
+        version: input.version,
+        instanceId: input.instanceId,
+        lastSeenAt: now,
+        createdAt: now
+      };
+      this.webRunners.push(record);
+      return cloneWebRunner(record);
+    }
+
+    if (
+      existing.instanceId !== input.instanceId &&
+      activeWithinMs > 0 &&
+      isRunnerActive(existing.lastSeenAt, Date.now(), activeWithinMs)
+    ) {
+      throw new WebRunnerAlreadyActiveError({
+        hostId: input.hostId,
+        existingInstanceId: existing.instanceId,
+        incomingInstanceId: input.instanceId
+      });
+    }
+
+    existing.name = input.name;
+    existing.hostname = input.hostname;
+    existing.platforms = [...input.platforms];
+    existing.devices = input.devices.map((device) => ({ ...device }));
+    existing.tools = { ...input.tools };
+    existing.artifactBaseUrl = input.artifactBaseUrl;
+    existing.version = input.version;
+    existing.instanceId = input.instanceId;
+    existing.lastSeenAt = now;
+    return cloneWebRunner(existing);
+  }
+
+  async listWebRunners(): Promise<WebRunnerRecord[]> {
+    return [...this.webRunners]
+      .sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0))
+      .map(cloneWebRunner);
+  }
+
+  async getWebRunner(hostId: string): Promise<WebRunnerRecord | null> {
+    const found = this.webRunners.find((entry) => entry.hostId === hostId);
+    return found ? cloneWebRunner(found) : null;
+  }
+
+  async markWebRunnerStopped(input: {
+    hostId: string;
+    instanceId: string;
+    at?: string;
+  }): Promise<boolean> {
+    const runner = this.webRunners.find(
+      (entry) => entry.hostId === input.hostId && entry.instanceId === input.instanceId
+    );
+    if (!runner) return false;
+    runner.lastSeenAt = input.at ?? STOPPED_RUNNER_SEEN_AT;
+    return true;
+  }
+
   async upsertHost(input: UpsertHostInput): Promise<HostRecord> {
     const now = new Date().toISOString();
     const existing = this.hosts.find((host) => host.id === input.id);
@@ -1823,6 +1900,7 @@ export class MemoryStore implements ProjectStore {
       regressionTasks: this.regressionTasks.map(cloneRegressionTask),
       suiteRuns: this.suiteRuns.map(cloneSuiteRun),
       runners: this.runners.map(cloneRunner),
+      webRunners: this.webRunners.map(cloneWebRunner),
       schedules: this.schedules.map(cloneSchedule),
       auditEvents: this.auditEvents.map(cloneAuditEvent),
       hosts: this.hosts.map(cloneHost),
@@ -1861,6 +1939,7 @@ export class MemoryStore implements ProjectStore {
     if (data.regressionTasks) this.regressionTasks = data.regressionTasks.map(cloneRegressionTask);
     if (data.suiteRuns) this.suiteRuns = data.suiteRuns.map(cloneSuiteRun);
     if (data.runners) this.runners = data.runners.map(cloneRunner);
+    if (data.webRunners) this.webRunners = data.webRunners.map(cloneWebRunner);
     if (data.schedules) this.schedules = data.schedules.map(cloneSchedule);
     if (data.auditEvents) this.auditEvents = data.auditEvents.map(cloneAuditEvent);
     if (data.hosts) this.hosts = data.hosts.map(cloneHost);
@@ -1984,6 +2063,15 @@ function cloneRunner(record: RunnerRecord): RunnerRecord {
     tools: { ...record.tools },
     hostId: record.hostId ?? null,
     instanceId: record.instanceId ?? null
+  };
+}
+
+function cloneWebRunner(record: WebRunnerRecord): WebRunnerRecord {
+  return {
+    ...record,
+    platforms: [...record.platforms],
+    devices: record.devices.map((device) => ({ ...device })),
+    tools: { ...record.tools }
   };
 }
 

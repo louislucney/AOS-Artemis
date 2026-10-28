@@ -513,6 +513,28 @@ export const RUNNER_ACTIVE_DEFAULT_MS = 90_000;
 /** 优雅停机的 runner 行时间戳：置为纪元，确保下一个实例立即判定为陈旧并接管。 */
 export const STOPPED_RUNNER_SEEN_AT = "1970-01-01T00:00:00.000Z";
 
+export interface WebRunnerRecord {
+  id: string;
+  hostId: string;
+  name: string;
+  hostname: string;
+  platforms: string[];
+  devices: RunnerDevice[];
+  tools: RunnerTools;
+  artifactBaseUrl: string | null;
+  version: string | null;
+  instanceId: string;
+  lastSeenAt: string;
+  createdAt: string;
+}
+
+export interface UpsertWebRunnerInput
+  extends Omit<WebRunnerRecord, "id" | "createdAt" | "lastSeenAt"> {
+  lastSeenAt?: string;
+  /** 双启保护的活跃窗口（默认 `RUNNER_ACTIVE_DEFAULT_MS`；`0`＝关闭，立即允许接管）。 */
+  activeWithinMs?: number;
+}
+
 export interface DeviceLeaseRecord {
   hostId: string;
   serial: string;
@@ -581,6 +603,24 @@ export class RunnerAlreadyActiveError extends Error {
     this.hostId = input.hostId;
     this.existingInstanceId = input.existingInstanceId;
     this.incomingInstanceId = input.incomingInstanceId;
+  }
+}
+
+/** web runner 双启保护：同 host 已有活跃实例时拒绝新实例接管（无项目维度）。 */
+export class WebRunnerAlreadyActiveError extends RunnerAlreadyActiveError {
+  constructor(input: {
+    hostId: string;
+    existingInstanceId: string | null;
+    incomingInstanceId: string;
+  }) {
+    super({
+      projectId: "",
+      hostId: input.hostId,
+      existingInstanceId: input.existingInstanceId,
+      incomingInstanceId: input.incomingInstanceId
+    });
+    this.name = "WebRunnerAlreadyActiveError";
+    this.message = `web runner 已在该主机活跃（host=${input.hostId}，已有实例 ${input.existingInstanceId ?? "<null>"}，拒绝 ${input.incomingInstanceId} 接管）`;
   }
 }
 
@@ -972,6 +1012,14 @@ export interface ProjectStore {
     instanceId: string;
     at?: string;
   }): Promise<boolean>;
+  /** host 级 web runner 注册表（无项目维度，一行一 host；同 host 心跳覆盖）。 */
+  upsertWebRunner(input: UpsertWebRunnerInput): Promise<WebRunnerRecord>;
+  /** 新→旧（lastSeenAt DESC）。 */
+  listWebRunners(): Promise<WebRunnerRecord[]>;
+  /** 按 host id 精确取；未命中 → null。 */
+  getWebRunner(hostId: string): Promise<WebRunnerRecord | null>;
+  /** 优雅停机：把该 host 本实例的行标记为陈旧（幂等；host+instance 不匹配 → false）。 */
+  markWebRunnerStopped(input: { hostId: string; instanceId: string; at?: string }): Promise<boolean>;
   upsertHost(input: UpsertHostInput): Promise<HostRecord>;
   getHost(id: string): Promise<HostRecord | null>;
   listHosts(): Promise<HostRecord[]>;
