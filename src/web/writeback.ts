@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 import ExcelJS from "exceljs";
 
@@ -57,6 +58,11 @@ export interface WritebackInput {
   lastSystemValue: (caseId: string, key: SystemColumnKey) => Promise<string | null>;
   /** 表头行号，默认 1（与 Excel 导入映射一致）。 */
   headerRow?: number;
+  /** 原件路径（可选）：与工作副本同一路径时拒绝写回，运行期兜底不可变约定。 */
+  originalPath?: string;
+  /** 维度上限，默认 10000 行 × 200 列（按实际使用单元格计，见 `writebackWorkbook`）。 */
+  maxRows?: number;
+  maxColumns?: number;
 }
 
 export type WritebackErrorCode =
@@ -65,7 +71,8 @@ export type WritebackErrorCode =
   | "invalid-header-row"
   | "invalid-case-id-header"
   | "case-id-header-not-found"
-  | "merged-header";
+  | "merged-header"
+  | "same-as-original";
 
 export class WritebackError extends Error {
   readonly code: WritebackErrorCode;
@@ -162,9 +169,22 @@ function assertHeaderNotMerged(
 
 /**
  * 8 列写回引擎：原件只读，调用方传入已复制的工作副本；系统列按表头复用、缺失则追加，
- * 只写空白格或未被人工改动的系统格（以 journal 判定归属）。
+ * 只写空白格或未被人工改动的系统格（以 journal 判定归属；无 journal 的既有系统列按系统格刷新并告警）。
+ *
+ * 维度上限按**实际使用**计：行用 `actualRowCount`（样式-only 远行不计），列用表头/使用列宽；
+ * 可用 `maxRows`/`maxColumns` 覆盖。注意 exceljs 往返会丢弃图表/透视/宏等不支持对象（见 DESIGN §13.253）。
  */
 export async function writebackWorkbook(input: WritebackInput): Promise<WritebackResult> {
+  if (
+    input.originalPath !== undefined &&
+    path.resolve(input.originalPath) === path.resolve(input.workbookPath)
+  ) {
+    throw new WritebackError(
+      "same-as-original",
+      `拒绝写回原件：workbookPath 与 originalPath 相同（${path.resolve(input.workbookPath)}）`
+    );
+  }
+
   const workbook = await loadWorkbook(input.workbookPath);
   const sheet = pickSheet(workbook, input.sheetName);
 
@@ -178,10 +198,13 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
   }
 
   const columnCount = Math.max(sheet.columnCount ?? 0, sheet.getRow(headerRow).cellCount ?? 0);
-  if (rowCount > MAX_WRITE_ROWS || columnCount > MAX_WRITE_COLUMNS) {
+  const usedRowCount = sheet.actualRowCount ?? rowCount;
+  const maxRows = input.maxRows ?? MAX_WRITE_ROWS;
+  const maxColumns = input.maxColumns ?? MAX_WRITE_COLUMNS;
+  if (usedRowCount > maxRows || columnCount > maxColumns) {
     throw new WritebackError(
       "invalid-workbook",
-      `工作表维度异常（${rowCount} 行 × ${columnCount} 列，上限 ${MAX_WRITE_ROWS} 行 × ${MAX_WRITE_COLUMNS} 列）：请拆表后重试`
+      `工作表维度异常（${usedRowCount} 行 × ${columnCount} 列，上限 ${maxRows} 行 × ${maxColumns} 列）：请拆表后重试`
     );
   }
   const wantedCaseId = normalizeExcelHeader(input.caseIdHeader);
@@ -210,11 +233,13 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
   }
 
   const columns = new Map<SystemColumnKey, number>();
+  const existingSystemKeys = new Set<SystemColumnKey>();
   for (const system of SYSTEM_COLUMNS) {
     const wanted = normalizeExcelHeader(system.header);
     for (let column = anchorColumn; column <= lastHeaderColumn; column += 1) {
       if (normalizeExcelHeader(cellText(sheet.getCell(headerRow, column))) === wanted) {
         columns.set(system.key, column);
+        existingSystemKeys.add(system.key);
         break;
       }
     }
@@ -235,25 +260,26 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
 
   const warnings: string[] = [];
   const rowByCaseId = new Map<string, number>();
-  for (let rowNumber = headerRow + 1; rowNumber <= rowCount; rowNumber += 1) {
-    const idCell = sheet.getCell(rowNumber, anchorColumn);
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber <= headerRow) return;
+    const idCell = row.getCell(anchorColumn);
     if (idCell.isMerged) {
       warnings.push(`第 ${rowNumber} 行用例编号是合并单元格（${idCell.address}），已跳过`);
-      continue;
+      return;
     }
     if (isFormula(idCell)) {
       warnings.push(`第 ${rowNumber} 行用例编号是公式单元格（${idCell.address}），已跳过`);
-      continue;
+      return;
     }
     const caseId = cellText(idCell);
-    if (caseId === "") continue;
+    if (caseId === "") return;
     const existing = rowByCaseId.get(caseId);
     if (existing !== undefined) {
       warnings.push(`用例编号重复：${caseId}（保留第 ${existing} 行，第 ${rowNumber} 行忽略）`);
-      continue;
+      return;
     }
     rowByCaseId.set(caseId, rowNumber);
-  }
+  });
 
   const writes: Array<{
     caseId: string;
@@ -264,6 +290,7 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
   }> = [];
   let skipped = 0;
   let failed = 0;
+  const seenInputCaseIds = new Set<string>();
 
   for (const row of input.rows) {
     const caseId = (row.caseId ?? "").trim();
@@ -272,6 +299,12 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
       warnings.push("写回行缺少用例编号，已跳过");
       continue;
     }
+    if (seenInputCaseIds.has(caseId)) {
+      skipped += 1;
+      warnings.push(`写回行重复：${caseId}（保留首条值，后续行忽略）`);
+      continue;
+    }
+    seenInputCaseIds.add(caseId);
     const rowNumber = rowByCaseId.get(caseId);
     if (rowNumber === undefined) {
       skipped += 1;
@@ -314,11 +347,16 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
       const lastText = last === null || last === undefined || last.trim() === "" ? null : last.trim();
       if (lastText === null) {
         if (current !== "") {
-          skipped += 1;
+          if (!existingSystemKeys.has(system.key)) {
+            skipped += 1;
+            warnings.push(
+              `第 ${rowNumber} 行 ${caseId}「${system.header}」已有非系统内容（${cell.address}），已跳过`
+            );
+            continue;
+          }
           warnings.push(
-            `第 ${rowNumber} 行 ${caseId}「${system.header}」已有非系统内容（${cell.address}），已跳过`
+            `第 ${rowNumber} 行 ${caseId}「${system.header}」无写回日志，按系统格刷新（原值「${current}」）`
           );
-          continue;
         }
       } else if (current === "") {
         skipped += 1;

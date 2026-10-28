@@ -668,9 +668,10 @@ test("未知用例编号/空值不写、不改文件；缺锚点/缺表/坏文�
     lastSystemValue: journal.last
   });
   assert.equal(result.written, 0);
-  assert.equal(result.skipped, 1);
+  assert.equal(result.skipped, 2);
   assert.equal(result.failed, 0);
   assert.match(result.warnings[0], /TC-404/);
+  assert.match(result.warnings[1], /重复/);
   assert.equal(await sha256(copyPath), shaBefore);
 
   const journalFailure = await writebackWorkbook({
@@ -907,4 +908,224 @@ test("PostgresStore (pg-mem): excel_writeback_journal 记录与最新值查询",
   assert.equal(await store.lastExcelWriteback("/w/acme", "asset-2", "用例!F2"), null);
   assert.equal(await store.lastExcelWriteback("/w/other", "asset-1", "用例!F2"), null);
   await store.close();
+});
+
+test("ensureWorkbookCopy：损坏/截断副本从原件重建，原件损坏则拒绝且不生成副本", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  const original = path.join(rootPath, "cases.xlsx");
+  await writeWorkbook(original, {
+    headers: ["用例编号", "步骤"],
+    rows: [["TC-1", "1. 打开应用"]]
+  });
+  const originalSha = await sha256(original);
+
+  const copyPath = workbookCopyPath(rootPath, "asset-recover");
+  await mkdir(path.dirname(copyPath), { recursive: true });
+  await writeFile(copyPath, "truncated-not-a-zip", "utf8");
+  await ensureWorkbookCopy(original, copyPath);
+  assert.equal(await sha256(copyPath), originalSha);
+  assert.equal(await sha256(original), originalSha);
+  assert.deepEqual(headerValues(await readSheet(copyPath)), ["用例编号", "步骤"]);
+
+  const badOriginal = path.join(rootPath, "bad.xlsx");
+  await writeFile(badOriginal, "garbage", "utf8");
+  const badCopy = path.join(rootPath, "bad-copy.xlsx");
+  await assert.rejects(
+    () => ensureWorkbookCopy(badOriginal, badCopy),
+    (error) => {
+      assert.ok(error instanceof WorkbookCopyError, `expected WorkbookCopyError, got ${error}`);
+      assert.equal(error.code, "invalid-original");
+      return true;
+    }
+  );
+  await assert.rejects(() => access(badCopy));
+});
+
+test("冷启动：既有系统列无 journal 时按系统格刷新并告警，非系统列人工内容不动", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  const copyPath = path.join(rootPath, ".artemis", "web", "workbook", "asset-cold.xlsx");
+  await writeWorkbook(copyPath, {
+    headers: ["用例编号", "用例名", "步骤", "执行｜结果"],
+    rows: [["TC-1", "人工用例名", "1. 打开应用", "FAIL"]]
+  });
+
+  const result = await writebackWorkbook({
+    workbookPath: copyPath,
+    originalPath: path.join(rootPath, "cases.xlsx"),
+    assetId: "asset-cold",
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+    lastSystemValue: async () => null
+  });
+
+  assert.equal(result.written, 1);
+  assert.equal(result.skipped, 0);
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /无写回日志/);
+  assert.match(result.warnings[0], /系统格/);
+
+  const sheet = await readSheet(copyPath);
+  assert.equal(cellText(sheet.getCell("D2").value), "PASS");
+  assert.equal(cellText(sheet.getCell("B2").value), "人工用例名");
+  assert.equal(cellText(sheet.getCell("C2").value), "1. 打开应用");
+  assert.deepEqual(headerValues(sheet).slice(4, 11), [
+    "建议｜脚本文件",
+    "建议｜关键预期",
+    "执行｜设备与系统",
+    "执行｜安装包",
+    "执行｜开始时间",
+    "执行｜结束时间",
+    "执行｜traceId"
+  ]);
+});
+
+test("重复写回行：首个值生效、后续忽略并告警，物理格只写一次", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  const copyPath = path.join(rootPath, ".artemis", "web", "workbook", "asset-dup.xlsx");
+  await writeWorkbook(copyPath, {
+    headers: BASE_HEADERS,
+    rows: [["TC-1", "登录成功", "1. 打开应用"]]
+  });
+
+  const store = new MemoryStore();
+  const journal = journalFor(store, { rootPath, assetId: "asset-dup", workbookPath: copyPath });
+  const result = await writebackWorkbook({
+    workbookPath: copyPath,
+    assetId: "asset-dup",
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    rows: [
+      { caseId: "TC-1", values: { result: "FAIL" } },
+      { caseId: " TC-1 ", values: { result: "PASS" } }
+    ],
+    lastSystemValue: journal.last
+  });
+
+  assert.equal(result.written, 1);
+  assert.equal(result.skipped, 1);
+  assert.equal(result.writtenCells.length, 1);
+  assert.equal(result.writtenCells[0].value, "FAIL");
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /重复/);
+
+  let sheet = await readSheet(copyPath);
+  assert.equal(cellText(sheet.getCell("F2").value), "FAIL");
+
+  await journal.record(result);
+  assert.equal(await journal.last("TC-1", "result"), "FAIL");
+  assert.equal((await store.lastExcelWriteback(rootPath, "asset-dup", "用例!F2")).value, "FAIL");
+
+  const second = await writebackWorkbook({
+    workbookPath: copyPath,
+    assetId: "asset-dup",
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+    lastSystemValue: journal.last
+  });
+  assert.equal(second.written, 1);
+  sheet = await readSheet(copyPath);
+  assert.equal(cellText(sheet.getCell("F2").value), "PASS");
+});
+
+test("writebackWorkbook：originalPath 与工作副本同路径时拒绝，不写原件", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  const original = path.join(rootPath, "cases.xlsx");
+  await writeWorkbook(original, {
+    headers: BASE_HEADERS,
+    rows: [["TC-1", "登录成功", "1. 打开应用"]]
+  });
+  const shaBefore = await sha256(original);
+
+  await assert.rejects(
+    () =>
+      writebackWorkbook({
+        workbookPath: original,
+        originalPath: original,
+        assetId: "asset-1",
+        sheetName: "用例",
+        caseIdHeader: "用例编号",
+        rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+        lastSystemValue: async () => null
+      }),
+    isWritebackError("same-as-original")
+  );
+  assert.equal(await sha256(original), shaBefore);
+  assert.deepEqual(headerValues(await readSheet(original)), BASE_HEADERS);
+
+  const copyPath = workbookCopyPath(rootPath, "asset-guard");
+  await ensureWorkbookCopy(original, copyPath);
+  const copyResult = await writebackWorkbook({
+    workbookPath: copyPath,
+    originalPath: original,
+    assetId: "asset-guard",
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+    lastSystemValue: async () => null
+  });
+  assert.equal(copyResult.written, 1);
+  assert.equal(await sha256(original), shaBefore);
+});
+
+test("维度上限按实际使用单元格：样式-only 远行不拒绝，maxRows/maxColumns 可覆盖", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  const copyPath = path.join(rootPath, ".artemis", "web", "workbook", "asset-dims.xlsx");
+  await writeWorkbook(copyPath, {
+    headers: BASE_HEADERS,
+    rows: [["TC-1", "登录成功", "1. 打开应用"]]
+  });
+  await mutateWorkbook(copyPath, (_workbook, sheet) => {
+    sheet.getCell("IZ10001").fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFFF0000" }
+    };
+  });
+
+  await assert.rejects(
+    () =>
+      writebackWorkbook({
+        workbookPath: copyPath,
+        assetId: "asset-dims",
+        sheetName: "用例",
+        caseIdHeader: "用例编号",
+        rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+        lastSystemValue: async () => null,
+        maxRows: 1
+      }),
+    isWritebackError("invalid-workbook")
+  );
+  await assert.rejects(
+    () =>
+      writebackWorkbook({
+        workbookPath: copyPath,
+        assetId: "asset-dims",
+        sheetName: "用例",
+        caseIdHeader: "用例编号",
+        rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+        lastSystemValue: async () => null,
+        maxColumns: 2
+      }),
+    isWritebackError("invalid-workbook")
+  );
+
+  const result = await writebackWorkbook({
+    workbookPath: copyPath,
+    assetId: "asset-dims",
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    rows: [{ caseId: "TC-1", values: { result: "PASS" } }],
+    lastSystemValue: async () => null
+  });
+  assert.equal(result.written, 1);
+  const sheet = await readSheet(copyPath);
+  assert.deepEqual(headerValues(sheet).slice(3, 11), SYSTEM_HEADERS);
+  assert.equal(cellText(sheet.getCell("F2").value), "PASS");
 });
