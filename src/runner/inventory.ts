@@ -2,6 +2,7 @@ import type { RunnerDevice, RunnerTools } from "../db/types.js";
 import { defaultExec, resolveAdbPath, type ExecFn } from "../device/adb.js";
 import { classifyIosSerial, listIosSimulators, resolveIdbPath, resolveXcrunPath } from "../device/ios.js";
 import { listAdbDevices } from "../device/logcat.js";
+import { resolveMaestroPath } from "../device/maestro.js";
 
 /** 设备盘点（心跳上报；`AOS_RUNNER_DEVICES` 非空 → 覆盖全部来源，真机 UDID 可显式列入）。 */
 export interface RunnerInventory {
@@ -48,33 +49,39 @@ export async function collectRunnerInventory(
   }
 
   const adb = resolveAdbPath(env, platform);
+  const adbPath = adb.path;
   const adbResult =
-    adb.path === null
+    adbPath === null
       ? { ok: false, devices: [] as string[], error: "adb-not-found" }
-      : await listAdbDevices(exec, adb.path, env);
-  const devices: RunnerDevice[] = [];
-  for (const serial of adbResult.devices) {
-    const meta =
-      adb.path === null
-        ? { model: null, osVersion: null }
-        : await probeAndroidDeviceMeta(exec, adb.path, serial, timeoutMs, env);
-    devices.push({
-      serial,
-      name: "",
-      model: meta.model,
-      osVersion: meta.osVersion,
-      platform: "android",
-      kind: serial.startsWith("emulator-") ? "emulator" : "device",
-      state: "device"
-    });
-  }
+      : await listAdbDevices(exec, adbPath, env);
+  const devices: RunnerDevice[] = await Promise.all(
+    adbResult.devices.map(async (serial) => {
+      const meta =
+        adbPath === null
+          ? { model: null, osVersion: null }
+          : await probeAndroidDeviceMeta(exec, adbPath, serial, timeoutMs, env);
+      return {
+        serial,
+        name: "",
+        model: meta.model,
+        osVersion: meta.osVersion,
+        platform: "android" as const,
+        kind: serial.startsWith("emulator-") ? ("emulator" as const) : ("device" as const),
+        state: "device"
+      };
+    })
+  );
+  const maestro = resolveMaestroPath(env);
   const tools: RunnerTools = {
     adb: adbResult.ok,
     idb: false,
     simctl: false,
     ideviceId: false,
     appium,
-    maestro: await versionProbe(exec, "maestro", ["--version"], timeoutMs),
+    maestro:
+      maestro.path === null
+        ? false
+        : await versionProbe(exec, maestro.path, ["--version"], timeoutMs, env),
     devicectl: false
   };
 
@@ -98,18 +105,21 @@ export async function collectRunnerInventory(
 
     const idevice = await ideviceIdProbe(exec, timeoutMs);
     tools.ideviceId = idevice.ok;
-    for (const serial of idevice.serials) {
-      const meta = await probeIosDeviceMeta(exec, serial, timeoutMs);
-      devices.push({
-        serial,
-        name: "",
-        model: meta.model,
-        osVersion: meta.osVersion,
-        platform: "ios",
-        kind: "device",
-        state: "device"
-      });
-    }
+    const iosDevices = await Promise.all(
+      idevice.serials.map(async (serial) => {
+        const meta = await probeIosDeviceMeta(exec, serial, timeoutMs);
+        return {
+          serial,
+          name: "",
+          model: meta.model,
+          osVersion: meta.osVersion,
+          platform: "ios" as const,
+          kind: "device" as const,
+          state: "device"
+        };
+      })
+    );
+    devices.push(...iosDevices);
 
     tools.idb = await idbProbe(exec, env, timeoutMs);
     tools.devicectl = await versionProbe(
@@ -161,10 +171,14 @@ async function versionProbe(
   exec: ExecFn,
   command: string,
   args: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  env?: NodeJS.ProcessEnv
 ): Promise<boolean> {
   try {
-    const result = await exec(command, args, { timeoutMs });
+    const result = await exec(command, args, {
+      timeoutMs,
+      ...(env === undefined ? {} : { env })
+    });
     return !result.error && result.code === 0;
   } catch {
     return false;
