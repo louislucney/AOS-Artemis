@@ -1502,6 +1502,23 @@ export class PostgresStore implements ProjectStore {
     return { task, rootPath };
   }
 
+  async getWebJobById(
+    taskId: string
+  ): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
+    const result = await this.pool.query(
+      `SELECT t.*, p.root_path AS project_root_path
+         FROM regression_tasks t
+         LEFT JOIN projects p ON p.id = t.project_id
+        WHERE t.id = $1`,
+      [taskId]
+    );
+    if (result.rows.length === 0) return null;
+    return {
+      task: mapRegressionTask(result.rows[0]!),
+      rootPath: nullableString(result.rows[0]!.project_root_path) ?? ""
+    };
+  }
+
   async listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
     const result = await this.pool.query(
       `SELECT t.*, p.root_path AS project_root_path

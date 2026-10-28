@@ -492,6 +492,17 @@ export class FileStore implements ProjectStore {
     });
   }
 
+  async getWebJobById(
+    taskId: string
+  ): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
+    for (const rootPath of this.registry.keys()) {
+      const bucket = await this.bucket(rootPath);
+      const task = await this.scopedMem(bucket, this.hostId).getRegressionTask(rootPath, taskId);
+      if (task !== null) return { task, rootPath };
+    }
+    return null;
+  }
+
   async listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
     const out: Array<{ task: RegressionTaskRecord; rootPath: string }> = [];
     for (const rootPath of this.registry.keys()) {

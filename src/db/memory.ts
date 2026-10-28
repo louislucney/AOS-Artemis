@@ -787,6 +787,16 @@ export class MemoryStore implements ProjectStore {
     return { task: cloneRegressionTask(task), rootPath };
   }
 
+  async getWebJobById(
+    taskId: string
+  ): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
+    const task = this.regressionTasks.find((entry) => entry.id === taskId);
+    if (task === undefined) return null;
+    const rootPath = this.projectRootPath(task.projectId);
+    if (rootPath === null) return null;
+    return { task: cloneRegressionTask(task), rootPath };
+  }
+
   async listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
     const out: Array<{ task: RegressionTaskRecord; rootPath: string }> = [];
     for (const task of this.regressionTasks) {

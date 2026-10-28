@@ -23,6 +23,7 @@ import {
   type PanelWebDeps
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
+import { handleRunnerJobRequest, matchRunnerJobPath } from "./panel/actions.js";
 import { panelRoleFrom, panelRoleScopes } from "./panel/roles.js";
 import {
   MAX_PANEL_ASSET_UPLOAD_BYTES,
@@ -295,6 +296,45 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
     void (async () => {
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
+
+        if (matchRunnerJobPath(url.pathname) !== null) {
+          const runnerResponse = await handleRunnerJobRequest({
+            method: req.method ?? "GET",
+            url,
+            headers: req.headers,
+            store,
+            env: process.env
+          });
+          res.writeHead(runnerResponse.status, {
+            "Content-Type": runnerResponse.contentType,
+            ...(runnerResponse.extraHeaders ?? {})
+          });
+          if (runnerResponse.streamPath !== undefined) {
+            if (req.method === "HEAD") {
+              res.end();
+              return;
+            }
+            await new Promise<void>((resolve) => {
+              const stream = fs.createReadStream(runnerResponse.streamPath!);
+              let settled = false;
+              const done = (): void => {
+                if (settled) return;
+                settled = true;
+                resolve();
+              };
+              stream.on("error", () => {
+                if (!res.writableEnded) res.destroy();
+                done();
+              });
+              res.on("close", done);
+              stream.on("end", done);
+              stream.pipe(res);
+            });
+            return;
+          }
+          res.end(req.method === "HEAD" ? undefined : runnerResponse.body);
+          return;
+        }
 
         const userSnapshot = userDirectory.snapshot();
         const userFileProblem = userSnapshot.errors[0] ?? null;

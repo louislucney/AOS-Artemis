@@ -1,11 +1,11 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { AuthIdentity } from "../auth.js";
 import { AmbiguousProjectError } from "../db/types.js";
-import type { CaseVerdict, HostRecord } from "../db/types.js";
+import type { CaseVerdict, HostRecord, ProjectStore } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
 import { resolveHostReference } from "../center/store.js";
 import { LEGACY_HOST_REASON } from "../host/legacy.js";
@@ -45,6 +45,7 @@ import {
   type SystemColumnMode
 } from "../web/workbook-reupload.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
+import { parseWebJobSpec } from "../web/job-spec.js";
 import {
   computeDispatchPreview,
   dispatchFormSignature,
@@ -133,6 +134,213 @@ function crossHostWriteResponse(
 function webProjectStateResponse(error: unknown): PanelWebResponse | null {
   if (!(error instanceof WebProjectStateError)) return null;
   return json(error.status, { ok: false, error: error.message, code: error.code });
+}
+
+const RUNNER_JOB_PATH_RE = /^\/panel\/api\/jobs\/([^/]+)\/(?:spec|assets\/([^/]+))\/?$/;
+
+export interface RunnerJobPath {
+  jobId: string;
+  assetId: string | null;
+}
+
+/** runner 专用 job 路由（spec / 资产字节流）；其余 `/panel/api/jobs/*` 不在此匹配。 */
+export function matchRunnerJobPath(pathname: string): RunnerJobPath | null {
+  const match = RUNNER_JOB_PATH_RE.exec(pathname);
+  if (!match) return null;
+  const jobId = match[1]!;
+  if (jobId === "." || jobId === ".." || jobId.includes("\\")) return null;
+  return { jobId, assetId: match[2] ?? null };
+}
+
+export interface RunnerJobRequestInput {
+  method: string;
+  url: URL;
+  headers: Record<string, string | string[] | undefined>;
+  store: ProjectStore;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface RunnerJobResponse {
+  status: number;
+  contentType: string;
+  body?: string | Buffer;
+  /** 直接落盘流（资产下载）；与 body 互斥。 */
+  streamPath?: string;
+  streamSize?: number;
+  extraHeaders?: Record<string, string>;
+}
+
+const RUNNER_JOB_JSON_TYPE = "application/json; charset=utf-8";
+
+function runnerJson(
+  status: number,
+  payload: unknown,
+  extraHeaders: Record<string, string> = {}
+): RunnerJobResponse {
+  return {
+    status,
+    contentType: RUNNER_JOB_JSON_TYPE,
+    body: JSON.stringify(payload),
+    extraHeaders
+  };
+}
+
+function headerValue(
+  headers: Record<string, string | string[] | undefined>,
+  name: string
+): string {
+  const raw = headers[name];
+  const value = Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
+  return value.trim();
+}
+
+function tokenDigest(value: string): Buffer {
+  return createHash("sha256").update(value).digest();
+}
+
+/** 常数时间比较（长度固定为 32 字节哈希摘要）。 */
+function runnerTokenMatches(provided: string, expected: string): boolean {
+  if (provided === "" || expected === "") return false;
+  return timingSafeEqual(tokenDigest(provided), tokenDigest(expected));
+}
+
+function bearerToken(headers: Record<string, string | string[] | undefined>): string {
+  const authorization = headerValue(headers, "authorization");
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  return match?.[1]?.trim() ?? "";
+}
+
+function runnerJobAuthResponse(
+  headers: Record<string, string | string[] | undefined>,
+  env: NodeJS.ProcessEnv
+): RunnerJobResponse | null {
+  const expected = (env.AOS_RUNNER_JOB_TOKEN ?? "").trim();
+  if (expected === "") {
+    return runnerJson(503, {
+      ok: false,
+      code: "runner-token-unset",
+      error: "中心未配置 AOS_RUNNER_JOB_TOKEN，拒绝 runner 下载（不会回退管理员令牌）"
+    });
+  }
+  if (!runnerTokenMatches(bearerToken(headers), expected)) {
+    return runnerJson(401, { ok: false, code: "unauthorized", error: "缺少或无效的 runner token" });
+  }
+  return null;
+}
+
+const ASSET_CONTENT_TYPES: Record<string, string> = {
+  ".apk": "application/vnd.android.package-archive",
+  ".ipa": "application/octet-stream",
+  ".app": "application/octet-stream",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".zip": "application/zip",
+  ".json": "application/json; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8"
+};
+
+function assetContentType(filename: string): string {
+  return ASSET_CONTENT_TYPES[path.extname(filename).toLowerCase()] ?? "application/octet-stream";
+}
+
+/** 资产必须真实落在项目 `<root>/.artemis/web/assets` 内（realpath + 前缀校验）。 */
+async function resolveAssetFile(
+  rootPath: string,
+  storagePath: string
+): Promise<{ filePath: string; size: number } | null> {
+  const assetsRoot = path.join(path.resolve(rootPath), ".artemis", "web", "assets");
+  let realRoot: string;
+  let realFile: string;
+  try {
+    realRoot = await realpath(assetsRoot);
+    realFile = await realpath(path.resolve(storagePath));
+  } catch {
+    return null;
+  }
+  if (realFile !== realRoot && !realFile.startsWith(realRoot + path.sep)) return null;
+  try {
+    const info = await stat(realFile);
+    if (!info.isFile()) return null;
+    return { filePath: realFile, size: info.size };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * runner 面向的 job 规格与资产下载（`GET /panel/api/jobs/:id/spec`、
+ * `GET /panel/api/jobs/:id/assets/:assetId`）。仅 `AOS_RUNNER_JOB_TOKEN` 放行；
+ * 未配置即 503，绝不使用管理员用户令牌。
+ */
+export async function handleRunnerJobRequest(
+  input: RunnerJobRequestInput
+): Promise<RunnerJobResponse> {
+  const route = matchRunnerJobPath(input.url.pathname);
+  if (route === null) return runnerJson(404, { ok: false, error: "not found" });
+  if (input.method !== "GET") {
+    return runnerJson(405, { ok: false, error: "method not allowed (GET)" });
+  }
+  const authFailure = runnerJobAuthResponse(input.headers, input.env ?? process.env);
+  if (authFailure !== null) return authFailure;
+
+  const job = await input.store.getWebJobById(route.jobId);
+  if (job === null) return runnerJson(404, { ok: false, error: `未知 job ${route.jobId}` });
+  const spec = parseWebJobSpec(job.task.jobSpec);
+  if (spec === null) {
+    return runnerJson(404, { ok: false, error: `job ${route.jobId} 没有可用的规格` });
+  }
+
+  if (route.assetId === null) {
+    const assets = [];
+    for (const snapshot of spec.assetSnapshot) {
+      const record = await input.store.getWebAsset(job.rootPath, snapshot.id);
+      assets.push({
+        id: snapshot.id,
+        kind: snapshot.kind,
+        sha256: snapshot.sha256,
+        filename: snapshot.filename,
+        secret: record?.metadata?.secret === true,
+        downloadUrl: `/panel/api/jobs/${encodeURIComponent(route.jobId)}/assets/${encodeURIComponent(
+          snapshot.id
+        )}`
+      });
+    }
+    return runnerJson(200, {
+      ok: true,
+      job: {
+        id: job.task.id,
+        status: job.task.status,
+        deviceSerial: job.task.deviceSerial,
+        claimedBy: job.task.claimedBy,
+        rootPath: job.rootPath
+      },
+      spec: job.task.jobSpec,
+      assets
+    });
+  }
+
+  const snapshot = spec.assetSnapshot.find((entry) => entry.id === route.assetId);
+  if (snapshot === undefined) {
+    return runnerJson(404, { ok: false, error: `资产 ${route.assetId} 不属于 job ${route.jobId}` });
+  }
+  const record = await input.store.getWebAsset(job.rootPath, route.assetId);
+  if (record === null || record.kind !== snapshot.kind) {
+    return runnerJson(404, { ok: false, error: `资产 ${route.assetId} 不在项目内` });
+  }
+  const resolved = await resolveAssetFile(job.rootPath, record.storagePath);
+  if (resolved === null) {
+    return runnerJson(404, { ok: false, error: `资产 ${route.assetId} 文件不可用` });
+  }
+  return {
+    status: 200,
+    contentType: assetContentType(record.filename),
+    streamPath: resolved.filePath,
+    streamSize: resolved.size,
+    extraHeaders: {
+      "Content-Length": String(resolved.size),
+      "X-Aos-Sha256": record.sha256
+    }
+  };
 }
 
 export async function handlePanelActionRequest(
