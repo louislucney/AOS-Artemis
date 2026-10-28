@@ -46,6 +46,8 @@ export interface WebJobSpec {
   allowPartialUnresolved: boolean;
   assetSnapshot: WebAssetSnapshot[];
   reassignCount?: number;
+  /** 钉设备等待轮次（只用于显式告警，不计入 `reassignCount`，不会触发 unstable-assignment）。 */
+  pinnedWaitCount?: number;
   /** 最近一次选机/回池失败原因（pending 任务可见；成功绑定后清空）。 */
   assignmentError?: WebJobAssignmentError | null;
 }
@@ -62,6 +64,7 @@ export type WebJobDispatchErrorCode =
   | "asset-not-found"
   | "asset-kind-mismatch"
   | "script-set-mismatch"
+  | "script-set-unverified"
   | "device-not-on-host"
   | "device-busy";
 
@@ -77,6 +80,7 @@ const ERROR_STATUS: Record<WebJobDispatchErrorCode, number> = {
   "asset-not-found": 404,
   "asset-kind-mismatch": 400,
   "script-set-mismatch": 409,
+  "script-set-unverified": 409,
   "device-not-on-host": 409,
   "device-busy": 409
 };
@@ -225,20 +229,27 @@ export interface ScriptSetMatchInput {
 }
 
 /**
- * 脚本集与任务资产精确匹配：脚本 metadata 里声明了 `sourceExcelAssetId`/`packageAssetId`
- * 时才要求相等；未声明（Plan 2 后续补齐）放行。`allowStaleScript` 显式跳过校验。
+ * 脚本集与任务资产精确匹配：脚本 metadata 的 `sourceExcelAssetId`/`packageAssetId`
+ * 至少声明一个绑定；声明了几个就要求几个相等。两者都缺失视为「无法核验」拒绝
+ * （Plan 2 会写入绑定）。`allowStaleScript` 显式跳过校验。
  */
 export function assertScriptSetMatch(input: ScriptSetMatchInput): void {
   if (input.allowStaleScript === true) return;
   const metadata = input.script.metadata ?? {};
   const expectedExcel = nonEmpty(metadata.sourceExcelAssetId);
+  const expectedPackage = nonEmpty(metadata.packageAssetId);
+  if (expectedExcel === null && expectedPackage === null) {
+    throw new WebJobDispatchError(
+      "script-set-unverified",
+      `脚本集 ${input.script.id} 未声明 sourceExcelAssetId/packageAssetId，无法核验与任务资产的匹配（需重新发现或 allowStaleScript）`
+    );
+  }
   if (expectedExcel !== null && expectedExcel !== input.excelAssetId) {
     throw new WebJobDispatchError(
       "script-set-mismatch",
       `脚本集 ${input.script.id} 基于 Excel ${expectedExcel}，与任务 Excel ${input.excelAssetId} 不一致（需重新发现或 allowStaleScript）`
     );
   }
-  const expectedPackage = nonEmpty(metadata.packageAssetId);
   if (expectedPackage !== null && expectedPackage !== input.packageAssetId) {
     throw new WebJobDispatchError(
       "script-set-mismatch",
@@ -320,6 +331,10 @@ export function parseWebJobSpec(value: Record<string, unknown> | null): WebJobSp
     reassignCount:
       typeof value.reassignCount === "number" && value.reassignCount >= 0
         ? Math.trunc(value.reassignCount)
+        : 0,
+    pinnedWaitCount:
+      typeof value.pinnedWaitCount === "number" && value.pinnedWaitCount >= 0
+        ? Math.trunc(value.pinnedWaitCount)
         : 0,
     assignmentError
   };

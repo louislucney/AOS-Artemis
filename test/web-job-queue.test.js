@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { newDb } from "pg-mem";
 
+import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import {
@@ -79,6 +83,53 @@ async function makeStores() {
   const pg = new PostgresStore(pool);
   await pg.init();
   return [new MemoryStore(), pg];
+}
+
+async function makeFileStore() {
+  const home = await mkdtemp(join(tmpdir(), "aos-web-job-file-"));
+  const store = await FileStore.create({ homeDir: home });
+  return { store, home };
+}
+
+/** 包装 store：在 acquireDeviceLeases 前记录一次 claim（模拟 I1 的租约前窗口）。 */
+function delayedLeaseStore(store, claimInput) {
+  const seen = { duringWindow: "unset" };
+  const proxy = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "acquireDeviceLeases") {
+        return async (input) => {
+          seen.duringWindow = await target.claimWebJob(claimInput);
+          return target.acquireDeviceLeases(input);
+        };
+      }
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  return { store: proxy, seen };
+}
+
+/** 两个 assigner 同时到达 acquireDeviceLeases 的屏障。 */
+function barrierStore(store) {
+  let arrivals = 0;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  return new Proxy(store, {
+    get(target, prop) {
+      if (prop === "acquireDeviceLeases") {
+        return async (input) => {
+          arrivals += 1;
+          if (arrivals >= 2) release();
+          await gate;
+          return target.acquireDeviceLeases(input);
+        };
+      }
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
 }
 
 async function makeProject(store, label) {
@@ -393,7 +444,7 @@ test("自动任务预占过期 + runner 离线：释放租约并回到全局池�
   }
 });
 
-test("manual 钉设备过期离线：保留 host+serial 等待并记录告警；改派超限判 failed", async () => {
+test("manual 钉设备过期离线：等待不改派；4 轮后仍 pending，reassignCount 不变且无 unstable", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "reassign-pinned");
     const assets = await makeAssets(store, rootPath);
@@ -409,6 +460,42 @@ test("manual 钉设备过期离线：保留 host+serial 等待并记录告警；
     );
 
     await offline(store, "host-a", [android("a-device", "Pixel 7")]);
+    let task = created.task;
+    for (let tick = 1; tick <= 4; tick += 1) {
+      const processed = await reassignExpiredWebJobs({
+        store,
+        nowMs: NOW + 60_000 + tick * 30_000,
+        leaseTtlMs: 10_000,
+        runnerTtlMs: TTL
+      });
+      assert.equal(processed, 1);
+      task = await store.getRegressionTask(rootPath, created.task.id);
+      assert.equal(task.status, "pending");
+      assert.equal(task.targetHostId, "host-a");
+      assert.equal(task.deviceSerial, "a-device");
+      assert.equal(task.deviceLeaseId, null);
+      assert.equal(task.jobSpec.reassignCount, 0);
+      assert.equal(task.jobSpec.pinnedWaitCount, tick);
+      assert.notEqual(task.jobSpec.assignmentError.code, "unstable-assignment");
+      assert.match(task.jobSpec.assignmentError.message, /钉住/);
+      assert.equal((await store.listDeviceLeases()).length, 0);
+    }
+  }
+});
+
+test("未钉设备改派超过 3 次判 failed：无法稳定分配", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "reassign-cap");
+    const assets = await makeAssets(store, rootPath);
+    await online(store, "host-a", [android("a-device", "Pixel 7")]);
+    const created = await createWebJob(
+      jobInput(store, rootPath, assets, { reservationTtlMs: 10_000 })
+    );
+    await store.updateRegressionTask(rootPath, created.task.id, {
+      jobSpec: { ...created.task.jobSpec, reassignCount: 3 }
+    });
+    await offline(store, "host-a", [android("a-device", "Pixel 7")]);
+
     const processed = await reassignExpiredWebJobs({
       store,
       nowMs: NOW + 60_000,
@@ -416,32 +503,10 @@ test("manual 钉设备过期离线：保留 host+serial 等待并记录告警；
       runnerTtlMs: TTL
     });
     assert.equal(processed, 1);
-
-    let task = await store.getRegressionTask(rootPath, created.task.id);
-    assert.equal(task.status, "pending");
-    assert.equal(task.targetHostId, "host-a");
-    assert.equal(task.deviceSerial, "a-device");
-    assert.equal(task.deviceLeaseId, null);
-    assert.equal(task.jobSpec.assignmentError.code, "host-offline");
-    assert.match(task.jobSpec.assignmentError.message, /钉住/);
-    assert.equal((await store.listDeviceLeases()).length, 0);
-
-    await store.updateRegressionTask(rootPath, created.task.id, {
-      jobSpec: {
-        ...task.jobSpec,
-        reassignCount: 3,
-        assignmentError: null
-      }
-    });
-    const again = await reassignExpiredWebJobs({
-      store,
-      nowMs: NOW + 120_000,
-      leaseTtlMs: 10_000,
-      runnerTtlMs: TTL
-    });
-    assert.equal(again, 1);
-    task = await store.getRegressionTask(rootPath, created.task.id);
+    const task = await store.getRegressionTask(rootPath, created.task.id);
     assert.equal(task.status, "failed");
+    assert.equal(task.jobSpec.reassignCount, 4);
+    assert.equal(task.jobSpec.assignmentError.code, "unstable-assignment");
     assert.match(task.jobSpec.assignmentError.message, /无法稳定分配/);
   }
 });
@@ -631,6 +696,182 @@ test("脚本集资产精确匹配：不一致拒绝；历史版本精确匹配�
       createWebJob(jobInput(store, rootPath, assets, { scriptSetId: v1.id })),
       (error) => error instanceof WebJobDispatchError && error.code === "asset-kind-mismatch"
     );
+  }
+});
+
+test("钉设备等待：无租约 claim 返回 null；host 上线 assign 预占后可 claim，auto 不能抢同一设备", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "pinned-lease");
+    const assets = await makeAssets(store, rootPath);
+    const created = await createWebJob(
+      jobInput(store, rootPath, assets, {
+        assignment: "manual",
+        devicePinned: true,
+        targetHostId: "host-a",
+        deviceSerial: "a-device",
+        requirements: { platform: "android", deviceKind: "any" }
+      })
+    );
+    assert.equal(created.task.status, "pending");
+    assert.equal(created.task.deviceSerial, "a-device");
+    assert.equal((await store.listDeviceLeases()).length, 0);
+
+    const claimInput = {
+      runnerId: "runner-a",
+      hostId: "host-a",
+      deviceSerial: "a-device",
+      instanceId: "inst-a"
+    };
+    assert.equal(await store.claimWebJob(claimInput), null);
+
+    await online(store, "host-a", [android("a-device", "Pixel 7")]);
+    assert.equal(await store.claimWebJob(claimInput), null, "host 在线但还没有租约时仍不可领");
+
+    const bound = await assignPendingWebJobs({ store, nowMs: NOW + 1_000, runnerTtlMs: TTL });
+    assert.equal(bound, 1);
+    assert.equal((await store.listDeviceLeases()).length, 1);
+
+    const auto = await createWebJob(
+      jobInput(store, rootPath, assets, { requirements: { platform: "android", deviceKind: "any" } })
+    );
+    assert.equal(auto.assignment, null, "auto 任务不能抢已被预占的同一设备");
+    assert.equal(auto.task.deviceSerial, null);
+
+    const claimed = await store.claimWebJob(claimInput);
+    assert.equal(claimed.task.id, created.task.id);
+  }
+});
+
+test("createWebJob 安全顺序：租约写入前任务不可领取（延迟租约窗口）", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "lease-window");
+    const assets = await makeAssets(store, rootPath);
+    await online(store, "host-pixel", [android("pixel-7", "Pixel 7")]);
+    const { store: proxied, seen } = delayedLeaseStore(store, {
+      runnerId: "runner-a",
+      hostId: "host-pixel",
+      deviceSerial: "pixel-7",
+      instanceId: "inst-a"
+    });
+
+    const created = await createWebJob(jobInput(proxied, rootPath, assets));
+    assert.equal(seen.duringWindow, null, "租约写入前 claim 必须返回 null");
+    assert.equal(created.task.deviceSerial, "pixel-7");
+    assert.equal(created.task.deviceLeaseId, "host-pixel:pixel-7");
+
+    const claimed = await store.claimWebJob({
+      runnerId: "runner-a",
+      hostId: "host-pixel",
+      deviceSerial: "pixel-7",
+      instanceId: "inst-a"
+    });
+    assert.equal(claimed.task.id, created.task.id);
+  }
+});
+
+test("两个 assigner 并发只能绑定一个设备（deviceSerial 空 CAS）", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "assign-race");
+    const assets = await makeAssets(store, rootPath);
+    const created = await createWebJob(jobInput(store, rootPath, assets));
+    assert.equal(created.assignment, null);
+
+    await online(store, "host-a", [
+      android("d-1", "Pixel 7"),
+      android("d-2", "Pixel 7")
+    ]);
+    const proxied = barrierStore(store);
+    const [first, second] = await Promise.all([
+      assignPendingWebJobs({
+        store: proxied,
+        nowMs: NOW + 1_000,
+        runnerTtlMs: TTL,
+        rng: () => 0
+      }),
+      assignPendingWebJobs({
+        store: proxied,
+        nowMs: NOW + 1_000,
+        runnerTtlMs: TTL,
+        rng: () => 0.999
+      })
+    ]);
+    assert.equal(first + second, 1);
+
+    const task = await store.getRegressionTask(rootPath, created.task.id);
+    assert.ok(task.deviceSerial === "d-1" || task.deviceSerial === "d-2");
+    const leases = await store.listDeviceLeases();
+    assert.equal(leases.length, 1);
+    assert.equal(leases[0].serial, task.deviceSerial);
+    assert.equal(leases[0].taskId, task.id);
+  }
+});
+
+test("FileStore.claimWebJob：跨 bucket 查找、host 队列暂停阻断", async () => {
+  const { store, home } = await makeFileStore();
+  try {
+    const rootA = await makeProject(store, "file-a");
+    const assetsA = await makeAssets(store, rootA);
+    const rootB = await makeProject(store, "file-b");
+    const assetsB = await makeAssets(store, rootB);
+    await online(store, "host-a", [android("a-device", "Pixel 7")]);
+    await online(store, "host-b", [android("b-device", "Pixel 7")]);
+    const jobA = await createWebJob(jobInput(store, rootA, assetsA));
+    const jobB = await createWebJob(jobInput(store, rootB, assetsB));
+
+    const claimedB = await store.claimWebJob({
+      runnerId: "runner-b",
+      hostId: "host-b",
+      deviceSerial: "b-device",
+      instanceId: "inst-b"
+    });
+    assert.equal(claimedB.task.id, jobB.task.id);
+    assert.equal(claimedB.rootPath, rootB);
+
+    await store.upsertHost({ id: "host-a", hostname: "host-a.local" });
+    await store.setHostQueuePaused({ hostId: "host-a", paused: true, by: "test" });
+    assert.equal(
+      await store.claimWebJob({
+        runnerId: "runner-a",
+        hostId: "host-a",
+        deviceSerial: "a-device",
+        instanceId: "inst-a"
+      }),
+      null
+    );
+
+    await store.setHostQueuePaused({ hostId: "host-a", paused: false, by: "test" });
+    const claimedA = await store.claimWebJob({
+      runnerId: "runner-a",
+      hostId: "host-a",
+      deviceSerial: "a-device",
+      instanceId: "inst-a"
+    });
+    assert.equal(claimedA.task.id, jobA.task.id);
+    assert.equal(claimedA.rootPath, rootA);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("脚本集未声明 sourceExcelAssetId/packageAssetId → script-set-unverified；allowStaleScript 放行", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "script-unverified");
+    const assets = await makeAssets(store, rootPath);
+    const bareScript = await addAsset(store, rootPath, "scripts", "bare.zip");
+
+    await assert.rejects(
+      createWebJob(jobInput(store, rootPath, assets, { scriptSetId: bareScript.id })),
+      (error) =>
+        error instanceof WebJobDispatchError &&
+        error.code === "script-set-unverified" &&
+        error.status === 409
+    );
+
+    const allowed = await createWebJob(
+      jobInput(store, rootPath, assets, { scriptSetId: bareScript.id, allowStaleScript: true })
+    );
+    assert.equal(allowed.task.jobSpec.scriptSetId, bareScript.id);
+    assert.equal(allowed.task.jobSpec.allowStaleScript, true);
   }
 });
 

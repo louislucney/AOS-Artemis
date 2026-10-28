@@ -926,6 +926,11 @@ export interface ProjectStore {
       jobSpec?: Record<string, unknown> | null;
       deviceSerial?: string | null;
       deviceLeaseId?: string | null;
+      claimedHostId?: string | null;
+      claimedInstanceId?: string | null;
+      startedAt?: string | null;
+      /** CAS 守卫：仅当 `device_serial IS NULL` 时写入（自动选机防重复绑定）。 */
+      expectDeviceSerialEmpty?: boolean;
       /** CAS 守卫：仅当当前状态在此列表内才写入（空数组＝永不命中）；不满足返回 false。 */
       expectStatuses?: RegressionTaskStatus[];
     }
@@ -1097,7 +1102,7 @@ export interface ProjectStore {
   /** 仅续租本任务持有的 serial，返回续租条数。 */
   renewDeviceLeases(input: RenewDeviceLeasesInput): Promise<number>;
   /** 释放本任务在该 host 的全部租约，返回释放条数。 */
-  releaseDeviceLeases(input: { hostId: string; taskId: string }): Promise<number>;
+  releaseDeviceLeases(input: { hostId: string; taskId: string; serials?: string[] }): Promise<number>;
   /** 读取设备租约（只读，面板机队视图）；缺省按 store 主机作用域。 */
   listDeviceLeases(input?: { hostId?: string }): Promise<DeviceLeaseRecord[]>;
   recordUsageEvent(

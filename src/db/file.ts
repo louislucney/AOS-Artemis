@@ -322,6 +322,10 @@ export class FileStore implements ProjectStore {
       jobSpec?: Record<string, unknown> | null;
       deviceSerial?: string | null;
       deviceLeaseId?: string | null;
+      claimedHostId?: string | null;
+      claimedInstanceId?: string | null;
+      startedAt?: string | null;
+      expectDeviceSerialEmpty?: boolean;
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
@@ -441,15 +445,49 @@ export class FileStore implements ProjectStore {
     instanceId: string;
   }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
     return this.runWebClaimExclusive(async () => {
+      const host = await this.hostMem.getHost(input.hostId);
+      if (host?.queuePaused === true) return null;
+      const nowMs = Date.now();
+      const leases = await this.hostMem.listDeviceLeases({ hostId: input.hostId });
+      const candidates: Array<{ rootPath: string; task: RegressionTaskRecord }> = [];
       for (const rootPath of this.registry.keys()) {
         const bucket = await this.bucket(rootPath);
-        const task = await this.scopedMem(bucket, this.hostId).claimWebJob(input);
-        if (task !== null) {
-          await this.persist(bucket, "claimWebJob");
-          return task;
+        const pending = await this.scopedMem(bucket, this.hostId).listPendingWebJobs();
+        for (const entry of pending) {
+          if (entry.task.targetHostId !== input.hostId) continue;
+          if (entry.task.deviceSerial !== input.deviceSerial) continue;
+          const lease = leases.find(
+            (row) =>
+              row.serial === input.deviceSerial &&
+              row.taskId === entry.task.id &&
+              Date.parse(row.expiresAt) > nowMs
+          );
+          if (lease === undefined) continue;
+          candidates.push({ rootPath, task: entry.task });
         }
       }
-      return null;
+      const best = candidates.sort(
+        (a, b) =>
+          b.task.priority - a.task.priority ||
+          (a.task.createdAt < b.task.createdAt ? -1 : a.task.createdAt > b.task.createdAt ? 1 : 0)
+      )[0];
+      if (best === undefined) return null;
+      const bucket = await this.bucket(best.rootPath);
+      const mem = this.scopedMem(bucket, this.hostId);
+      const claimedAt = new Date(nowMs).toISOString();
+      const updated = await mem.updateRegressionTask(best.rootPath, best.task.id, {
+        status: "claimed",
+        claimedBy: input.runnerId,
+        claimedAt,
+        claimedHostId: input.hostId,
+        claimedInstanceId: input.instanceId,
+        expectStatuses: ["pending"]
+      });
+      if (!updated) return null;
+      const task = await mem.getRegressionTask(best.rootPath, best.task.id);
+      if (task === null) return null;
+      await this.persist(bucket, "claimWebJob");
+      return { task, rootPath: best.rootPath };
     });
   }
 
@@ -766,7 +804,11 @@ export class FileStore implements ProjectStore {
     return renewed;
   }
 
-  async releaseDeviceLeases(input: { hostId: string; taskId: string }): Promise<number> {
+  async releaseDeviceLeases(input: {
+    hostId: string;
+    taskId: string;
+    serials?: string[];
+  }): Promise<number> {
     await this.syncHostFromDisk();
     const released = await this.hostMem.releaseDeviceLeases(input);
     if (released > 0) await this.persistHostState("releaseDeviceLeases");

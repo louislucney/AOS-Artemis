@@ -461,6 +461,10 @@ export class MemoryStore implements ProjectStore {
       jobSpec?: Record<string, unknown> | null;
       deviceSerial?: string | null;
       deviceLeaseId?: string | null;
+      claimedHostId?: string | null;
+      claimedInstanceId?: string | null;
+      startedAt?: string | null;
+      expectDeviceSerialEmpty?: boolean;
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
@@ -476,6 +480,7 @@ export class MemoryStore implements ProjectStore {
     ) {
       return false;
     }
+    if (patch.expectDeviceSerialEmpty === true && task.deviceSerial !== null) return false;
     if (patch.status !== undefined) task.status = patch.status;
     if (patch.runIds !== undefined) task.runIds = [...patch.runIds];
     if (patch.claimedBy !== undefined) task.claimedBy = patch.claimedBy;
@@ -485,6 +490,9 @@ export class MemoryStore implements ProjectStore {
     if (patch.jobSpec !== undefined) task.jobSpec = cloneJobSpec(patch.jobSpec);
     if (patch.deviceSerial !== undefined) task.deviceSerial = patch.deviceSerial;
     if (patch.deviceLeaseId !== undefined) task.deviceLeaseId = patch.deviceLeaseId;
+    if (patch.claimedHostId !== undefined) task.claimedHostId = patch.claimedHostId;
+    if (patch.claimedInstanceId !== undefined) task.claimedInstanceId = patch.claimedInstanceId;
+    if (patch.startedAt !== undefined) task.startedAt = patch.startedAt;
     return true;
   }
 
@@ -757,6 +765,15 @@ export class MemoryStore implements ProjectStore {
       );
     const task = candidates[0];
     if (task === undefined) return null;
+    const nowMs = Date.now();
+    const lease = this.deviceLeases.find(
+      (entry) =>
+        entry.hostId === input.hostId &&
+        entry.serial === input.deviceSerial &&
+        entry.taskId === task.id &&
+        Date.parse(entry.expiresAt) > nowMs
+    );
+    if (lease === undefined) return null;
     const rootPath = this.projectRootPath(task.projectId);
     if (rootPath === null) return null;
     task.status = "claimed";
@@ -1498,12 +1515,22 @@ export class MemoryStore implements ProjectStore {
     return renewed;
   }
 
-  async releaseDeviceLeases(input: { hostId: string; taskId: string }): Promise<number> {
+  async releaseDeviceLeases(input: {
+    hostId: string;
+    taskId: string;
+    serials?: string[];
+  }): Promise<number> {
+    const serials = input.serials === undefined ? null : new Set(input.serials);
     const before = this.deviceLeases.length;
     replaceInPlace(
       this.deviceLeases,
       this.deviceLeases.filter(
-        (lease) => !(lease.hostId === input.hostId && lease.taskId === input.taskId)
+        (lease) =>
+          !(
+            lease.hostId === input.hostId &&
+            lease.taskId === input.taskId &&
+            (serials === null || serials.has(lease.serial))
+          )
       )
     );
     return before - this.deviceLeases.length;

@@ -1156,6 +1156,10 @@ export class PostgresStore implements ProjectStore {
       jobSpec?: Record<string, unknown> | null;
       deviceSerial?: string | null;
       deviceLeaseId?: string | null;
+      claimedHostId?: string | null;
+      claimedInstanceId?: string | null;
+      startedAt?: string | null;
+      expectDeviceSerialEmpty?: boolean;
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
@@ -1179,7 +1183,11 @@ export class PostgresStore implements ProjectStore {
     }
     if (patch.deviceSerial !== undefined) add("device_serial", patch.deviceSerial);
     if (patch.deviceLeaseId !== undefined) add("device_lease_id", patch.deviceLeaseId);
+    if (patch.claimedHostId !== undefined) add("claimed_host_id", patch.claimedHostId);
+    if (patch.claimedInstanceId !== undefined) add("claimed_instance_id", patch.claimedInstanceId);
+    if (patch.startedAt !== undefined) add("started_at", patch.startedAt);
     const guards: string[] = [];
+    if (patch.expectDeviceSerialEmpty === true) guards.push("device_serial IS NULL");
     if (patch.expectStatuses !== undefined) {
       const placeholders = patch.expectStatuses.map((status) => {
         values.push(status);
@@ -1452,12 +1460,16 @@ export class PostgresStore implements ProjectStore {
       return this.withTransaction(async (run) => {
         const lockClause = skipLocked ? "FOR UPDATE SKIP LOCKED" : "FOR UPDATE";
         const picked = await run(
-          `SELECT id FROM regression_tasks
-            WHERE status = 'pending' AND job_spec IS NOT NULL
-              AND target_host_id = $1 AND device_serial = $2
-            ORDER BY priority DESC, created_at ASC
+          `SELECT rt.id FROM regression_tasks rt
+            WHERE rt.status = 'pending' AND rt.job_spec IS NOT NULL
+              AND rt.target_host_id = $1 AND rt.device_serial = $2
+              AND rt.id IN (
+                SELECT l.task_id FROM device_leases l
+                 WHERE l.host_id = $1 AND l.serial = $2 AND l.expires_at > $3
+              )
+            ORDER BY rt.priority DESC, rt.created_at ASC
             LIMIT 1 ${lockClause}`,
-          [input.hostId, input.deviceSerial]
+          [input.hostId, input.deviceSerial, claimedAt]
         );
         if (picked.rows.length === 0) return null;
         const updated = await run(
@@ -2419,10 +2431,25 @@ export class PostgresStore implements ProjectStore {
     return renewed.rows.length;
   }
 
-  async releaseDeviceLeases(input: { hostId: string; taskId: string }): Promise<number> {
+  async releaseDeviceLeases(input: {
+    hostId: string;
+    taskId: string;
+    serials?: string[];
+  }): Promise<number> {
+    const serials = input.serials === undefined ? null : [...new Set(input.serials)];
+    if (serials !== null && serials.length === 0) return 0;
+    const values: unknown[] = [input.hostId, input.taskId];
+    let clause = "host_id = $1 AND task_id = $2";
+    if (serials !== null) {
+      const placeholders = serials.map((serial) => {
+        values.push(serial);
+        return `$${values.length}`;
+      });
+      clause += ` AND serial IN (${placeholders.join(", ")})`;
+    }
     const released = await this.pool.query(
-      `DELETE FROM device_leases WHERE host_id = $1 AND task_id = $2 RETURNING serial`,
-      [input.hostId, input.taskId]
+      `DELETE FROM device_leases WHERE ${clause} RETURNING serial`,
+      values
     );
     return released.rows.length;
   }

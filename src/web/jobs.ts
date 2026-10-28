@@ -307,7 +307,7 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
   });
 
   if (!selection.ok) {
-    if (selection.code === "device-busy") {
+    if (selection.code === "device-busy" && spec.assignment === "manual" && spec.devicePinned) {
       throw new WebJobDispatchError("device-busy", selection.message);
     }
     if (
@@ -325,12 +325,14 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
     return { task, assignment: null, pendingReason: selection.message };
   }
 
+  const leaseId = webJobLeaseId(selection.hostId, selection.deviceSerial);
   const boundSpec: WebJobSpec = {
     ...spec,
     targetHostId: selection.hostId,
     deviceSerial: selection.deviceSerial,
-    deviceLeaseId: webJobLeaseId(selection.hostId, selection.deviceSerial)
+    deviceLeaseId: leaseId
   };
+  // 安全顺序：先建任务（顶层 serial/lease 为空，claim 不可命中）→ 取租约 → CAS 绑定。
   const task = await input.store.createRegressionTask({
     rootPath: input.rootPath,
     refs: [],
@@ -340,9 +342,35 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
     targetHostId: selection.hostId,
     priority: input.priority,
     jobSpec: specRecord(boundSpec),
-    deviceSerial: selection.deviceSerial,
-    deviceLeaseId: boundSpec.deviceLeaseId
+    deviceSerial: null,
+    deviceLeaseId: null
   });
+
+  const cleanup = async (message: string): Promise<void> => {
+    await input.store.releaseDeviceLeases({
+      hostId: selection.hostId,
+      taskId: task.id,
+      serials: [selection.deviceSerial]
+    });
+    await input.store.cancelRegressionTask({
+      rootPath: input.rootPath,
+      taskId: task.id,
+      source: "panel",
+      actor: input.createdBy ?? "web-job",
+      actorHostId: null,
+      note: message
+    });
+    await input.store.updateRegressionTask(input.rootPath, task.id, {
+      deviceSerial: null,
+      deviceLeaseId: null,
+      jobSpec: specRecord({
+        ...boundSpec,
+        deviceLeaseId: null,
+        assignmentError: assignmentError("device-busy", message, nowMs)
+      }),
+      expectStatuses: ["cancelled"]
+    });
+  };
 
   const leased = await input.store.acquireDeviceLeases({
     hostId: selection.hostId,
@@ -353,22 +381,43 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
     at: new Date(nowMs).toISOString()
   });
   if (!leased.ok) {
-    await input.store.cancelRegressionTask({
-      rootPath: input.rootPath,
-      taskId: task.id,
-      source: "panel",
-      actor: input.createdBy ?? "web-job",
-      actorHostId: null,
-      note: `设备预占冲突：${leased.busy.join(",")}`
-    });
-    throw new WebJobDispatchError(
-      "device-busy",
-      `设备 ${selection.deviceSerial} 已被其他任务占用（${leased.busy.join(",")}）`
-    );
+    const message = `设备 ${selection.deviceSerial} 已被其他任务占用（${leased.busy.join(",")}）`;
+    await cleanup(message);
+    throw new WebJobDispatchError("device-busy", message);
   }
 
+  const bound = await input.store.updateRegressionTask(input.rootPath, task.id, {
+    deviceSerial: selection.deviceSerial,
+    deviceLeaseId: leaseId,
+    jobSpec: specRecord(boundSpec),
+    expectStatuses: ["pending"],
+    expectDeviceSerialEmpty: true
+  });
+  if (!bound) {
+    const current = await input.store.getRegressionTask(input.rootPath, task.id);
+    if (
+      current !== null &&
+      current.deviceSerial === selection.deviceSerial &&
+      current.deviceLeaseId === leaseId
+    ) {
+      return {
+        task: current,
+        assignment: {
+          hostId: selection.hostId,
+          deviceSerial: selection.deviceSerial,
+          score: selection.score
+        },
+        pendingReason: null
+      };
+    }
+    const message = `设备 ${selection.deviceSerial} 绑定失败（任务已被并发取消/改派）`;
+    await cleanup(message);
+    throw new WebJobDispatchError("device-busy", message);
+  }
+
+  const stored = (await input.store.getRegressionTask(input.rootPath, task.id)) ?? task;
   return {
-    task,
+    task: stored,
     assignment: {
       hostId: selection.hostId,
       deviceSerial: selection.deviceSerial,
@@ -384,7 +433,8 @@ async function bindPendingTask(
   spec: WebJobSpec,
   nowMs: number,
   runnerTtlMs: number,
-  reservationTtlMs: number
+  reservationTtlMs: number,
+  writeError = true
 ): Promise<boolean> {
   const selection = await selectForSpec({
     store: input.store,
@@ -397,7 +447,7 @@ async function bindPendingTask(
   });
   if (!selection.ok) {
     const message = selection.message;
-    if (spec.assignmentError?.message !== message) {
+    if (writeError && spec.assignmentError?.message !== message) {
       await input.store.updateRegressionTask(entry.rootPath, entry.task.id, {
         jobSpec: specRecord({
           ...spec,
@@ -445,36 +495,60 @@ async function bindPendingTask(
       deviceLeaseId: leaseId,
       assignmentError: null
     }),
-    expectStatuses: ["pending"]
+    expectStatuses: ["pending"],
+    ...(entry.task.deviceSerial === null ? { expectDeviceSerialEmpty: true } : {})
   });
   if (!updated) {
     await input.store.releaseDeviceLeases({
       hostId: selection.hostId,
-      taskId: entry.task.id
+      taskId: entry.task.id,
+      serials: [selection.deviceSerial]
     });
     return false;
   }
   return true;
 }
 
-/** 给已 pending 且未绑定设备的 web 任务选机并预占；返回本次成功绑定的条数。 */
+/** 给 pending web 任务选机并预占；包含「已钉 serial 但无有效租约」的等待任务。返回成功绑定条数。 */
 export async function assignPendingWebJobs(input: AssignPendingWebJobsInput): Promise<number> {
   const env = input.env ?? process.env;
   const reservationTtlMs = input.reservationTtlMs ?? deviceLeaseTtlMs(env);
   const pending = await input.store.listPendingWebJobs();
   let bound = 0;
   for (const entry of pending) {
-    if (entry.task.deviceSerial !== null) continue;
     const spec = parseWebJobSpec(entry.task.jobSpec);
     if (spec === null) continue;
     if ((spec.reassignCount ?? 0) > WEB_JOB_REASSIGN_LIMIT) continue;
+
+    if (entry.task.deviceSerial !== null) {
+      const leases = await input.store.listDeviceLeases();
+      const live = leases.some(
+        (lease) =>
+          lease.taskId === entry.task.id &&
+          lease.hostId === entry.task.targetHostId &&
+          lease.serial === entry.task.deviceSerial &&
+          Date.parse(lease.expiresAt) > input.nowMs
+      );
+      if (live) continue;
+    }
+
+    const desired: WebJobSpec =
+      entry.task.deviceSerial === null
+        ? spec
+        : {
+            ...spec,
+            targetHostId: entry.task.targetHostId ?? spec.targetHostId,
+            deviceSerial: entry.task.deviceSerial,
+            devicePinned: spec.assignment === "manual" ? true : spec.devicePinned
+          };
     const ok = await bindPendingTask(
       input,
       entry,
-      spec,
+      desired,
       input.nowMs,
       input.runnerTtlMs,
-      reservationTtlMs
+      reservationTtlMs,
+      entry.task.deviceSerial === null
     );
     if (ok) bound += 1;
   }
@@ -517,7 +591,59 @@ export async function reassignExpiredWebJobs(
 
       processed += 1;
       const reason = leaseExpired ? "设备预占租约已过期" : `执行机 ${hostId} 离线`;
-      await input.store.releaseDeviceLeases({ hostId, taskId: entry.task.id });
+      await input.store.releaseDeviceLeases({
+        hostId,
+        taskId: entry.task.id,
+        serials: [entry.task.deviceSerial]
+      });
+
+      if (spec.assignment === "manual" && spec.devicePinned) {
+        // 钉设备只等待，不计入 reassignCount（C1）：单独 pinnedWaitCount + 明确告警。
+        const pinnedWaitCount = (spec.pinnedWaitCount ?? 0) + 1;
+        const baseSpec: WebJobSpec = {
+          ...spec,
+          deviceLeaseId: null,
+          pinnedWaitCount,
+          assignmentError: null
+        };
+        await input.store.updateRegressionTask(entry.rootPath, entry.task.id, {
+          deviceLeaseId: null,
+          jobSpec: specRecord(baseSpec),
+          expectStatuses: ["pending"]
+        });
+        if (online) {
+          // 绑定失败会由 bindPendingTask 写入真实原因（device-busy 等），不覆盖成 host-offline。
+          await bindPendingTask(
+            {
+              store: input.store,
+              env,
+              nowMs: input.nowMs,
+              runnerTtlMs,
+              reservationTtlMs,
+              rng: input.rng
+            },
+            entry,
+            baseSpec,
+            input.nowMs,
+            runnerTtlMs,
+            reservationTtlMs
+          );
+          continue;
+        }
+        await input.store.updateRegressionTask(entry.rootPath, entry.task.id, {
+          jobSpec: specRecord({
+            ...baseSpec,
+            assignmentError: assignmentError(
+              "host-offline",
+              `${reason}；设备已钉住，等待 host/设备恢复（第 ${pinnedWaitCount} 次检查，不计改派）`,
+              input.nowMs
+            )
+          }),
+          expectStatuses: ["pending"]
+        });
+        continue;
+      }
+
       const reassignCount = (spec.reassignCount ?? 0) + 1;
 
       if (reassignCount > WEB_JOB_REASSIGN_LIMIT) {
@@ -531,42 +657,6 @@ export async function reassignExpiredWebJobs(
             assignmentError: assignmentError(
               "unstable-assignment",
               `无法稳定分配：${reason}（已改派 ${WEB_JOB_REASSIGN_LIMIT} 次，任务终止）`,
-              input.nowMs
-            )
-          }),
-          expectStatuses: ["pending"]
-        });
-        continue;
-      }
-
-      if (spec.assignment === "manual" && spec.devicePinned) {
-        if (online) {
-          const ok = await bindPendingTask(
-            {
-              store: input.store,
-              env,
-              nowMs: input.nowMs,
-              runnerTtlMs,
-              reservationTtlMs,
-              rng: input.rng
-            },
-            entry,
-            { ...spec, reassignCount },
-            input.nowMs,
-            runnerTtlMs,
-            reservationTtlMs
-          );
-          if (ok) continue;
-        }
-        await input.store.updateRegressionTask(entry.rootPath, entry.task.id, {
-          deviceLeaseId: null,
-          jobSpec: specRecord({
-            ...spec,
-            deviceLeaseId: null,
-            reassignCount,
-            assignmentError: assignmentError(
-              "host-offline",
-              `${reason}；设备已钉住，等待 host/设备恢复后领取`,
               input.nowMs
             )
           }),
@@ -635,6 +725,9 @@ export async function releaseWebJob(input: ReleaseWebJobInput): Promise<boolean>
     status: "pending",
     claimedBy: null,
     claimedAt: null,
+    claimedHostId: null,
+    claimedInstanceId: null,
+    startedAt: null,
     lastProgressAt: null,
     deviceLeaseId: null,
     expectStatuses: ["pending", "claimed", "running"],
