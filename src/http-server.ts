@@ -28,6 +28,7 @@ import { panelRoleFrom, panelRoleScopes } from "./panel/roles.js";
 import {
   MAX_PANEL_ASSET_UPLOAD_BYTES,
   MAX_PANEL_BODY_BYTES,
+  MAX_PANEL_RESULT_BODY_BYTES,
   MAX_PANEL_UPLOAD_BYTES
 } from "./panel/limits.js";
 import { resolveHostIdentity } from "./host/identity.js";
@@ -305,7 +306,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             const headerType = req.headers["content-type"];
             runnerContentType = Array.isArray(headerType) ? headerType[0] : headerType;
             try {
-              runnerRawBody = await readRawBody(req, MAX_PANEL_BODY_BYTES);
+              runnerRawBody = await readRawBody(req, MAX_PANEL_RESULT_BODY_BYTES);
             } catch (error) {
               if (error instanceof BodyTooLargeError) throw error;
               res.writeHead(400, { "Content-Type": "application/json" });

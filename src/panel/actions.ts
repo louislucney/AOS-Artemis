@@ -228,7 +228,7 @@ function runnerJobAuthResponse(
     return runnerJson(503, {
       ok: false,
       code: "runner-token-unset",
-      error: "中心未配置 AOS_RUNNER_JOB_TOKEN，拒绝 runner 下载（不会回退管理员令牌）"
+      error: "中心未配置 AOS_RUNNER_JOB_TOKEN，拒绝 runner 请求（不会回退管理员令牌）"
     });
   }
   if (expected.length < 16) {
@@ -319,9 +319,9 @@ export async function handleRunnerJobRequest(
   if (route.kind === "results") {
     const contentType = (input.contentType ?? headerValue(input.headers, "content-type")).toLowerCase();
     if (contentType !== "" && !contentType.includes("application/json")) {
-      return runnerJson(400, {
+      return runnerJson(415, {
         ok: false,
-        code: "invalid-content-type",
+        code: "unsupported-media-type",
         error: "结果上传需要 Content-Type: application/json"
       });
     }
@@ -354,7 +354,24 @@ export async function handleRunnerJobRequest(
         payload,
         actor: hostId
       });
-      return runnerJson(200, { ok: true, ...summary });
+      return runnerJson(200, {
+        ok: true,
+        jobId: summary.jobId,
+        resultSha256: summary.resultSha256,
+        taskStatus: summary.taskStatus,
+        dbStatus: summary.dbStatus,
+        gate: summary.gate,
+        writtenCells: summary.writtenCells.map((cell) => ({
+          caseId: cell.caseId,
+          key: cell.key,
+          value: cell.value
+        })),
+        warnings: summary.warnings.map((warning) =>
+          warning.split(job.rootPath).join("<project>")
+        ),
+        writebackStatus: summary.writebackStatus,
+        idempotent: summary.idempotent
+      });
     } catch (error) {
       if (error instanceof WebResultError) {
         return runnerJson(error.status, {

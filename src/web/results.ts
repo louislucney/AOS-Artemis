@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -54,6 +54,19 @@ export interface WebResultTokenTotals {
   cacheReadTokens: number;
 }
 
+/** runner 内联上传的原始工件（base64）；不接受中心本机路径。 */
+export interface WebResultArtifactUpload {
+  filename: string;
+  base64: string;
+}
+
+/** 解码后的工件（只用于暂存；幂等键用 filename+sha256，不重复序列化字节）。 */
+export interface NormalizedWebResultArtifact {
+  filename: string;
+  buffer: Buffer;
+  sha256: string;
+}
+
 export interface WebResultDevice {
   serial: string;
   model: string;
@@ -91,16 +104,30 @@ export interface NormalizedWebJobResultPayload {
   finishedAt: string;
   evidence: string[];
   tokenUsage: WebResultTokenUsage[];
-  tokenArtifacts: { dataEngineDb?: string; statusJson?: string };
+  tokenArtifacts: {
+    dataEngineDb?: NormalizedWebResultArtifact;
+    statusJson?: NormalizedWebResultArtifact;
+  };
+  /** runner 上报的 execution.status（未上报则 undefined）；与用例聚合不同会告警。 */
+  reportedStatus?: WebResultGate["result"];
   allowClearedRefresh: boolean;
 }
+
+/**
+ * 结果契约里的任务状态：`error` 只用于结果文档/HTTP 摘要；DB 没有 error 枚举，
+ * 落库统一为 `failed`（`dbStatus` 如实记录数据库状态）。
+ */
+export type WebResultTaskStatus = RegressionTaskStatus | "error";
 
 export interface WebJobResultDocument {
   schemaVersion: 1;
   jobId: string;
   resultSha256: string;
   receivedAt: string;
-  taskStatus: RegressionTaskStatus;
+  /** 结果契约状态（可能为 error）。 */
+  taskStatus: WebResultTaskStatus;
+  /** 实际落库的任务状态（error → failed；迟到首次上传保持原状态）。 */
+  dbStatus: RegressionTaskStatus;
   gate: WebResultGate;
   execution: WebResultExecution;
   device: WebResultDevice;
@@ -133,7 +160,10 @@ export interface IngestWebJobResultInput {
 export interface WebJobIngestSummary {
   jobId: string;
   resultSha256: string;
-  taskStatus: RegressionTaskStatus;
+  /** 结果契约状态（空结果/上报 error → `error`）。 */
+  taskStatus: WebResultTaskStatus;
+  /** 实际落库状态（`error` → `failed`；迟到首次上传保持任务原状态）。 */
+  dbStatus: RegressionTaskStatus;
   gate: WebResultGate;
   writtenCells: WritebackCellWrite[];
   warnings: string[];
@@ -160,6 +190,9 @@ const ERROR_STATUS: Record<WebResultErrorCode, number> = {
   "excel-mapping-missing": 409
 };
 
+/** 迟到首次结果允许落库（不改任务状态）的终态。 */
+const LATE_RESULT_STATUSES = new Set<RegressionTaskStatus>(["completed", "failed", "partial"]);
+
 /** 结果上传的稳定错误码（action 层按 `status` 回 HTTP，不依赖文案）。 */
 export class WebResultError extends Error {
   readonly code: WebResultErrorCode;
@@ -174,9 +207,12 @@ export class WebResultError extends Error {
 }
 
 const CASE_STATUSES = new Set<WebResultCaseStatus>(["PASS", "FAIL", "SKIP", "ERROR"]);
+const RESULT_STATUSES = new Set<WebResultGate["result"]>(["passed", "failed", "partial", "error"]);
 const MAX_EVIDENCE = 500;
 const MAX_STRING = 2000;
-const ARTIFACT_MAX_BYTES = 256 * 1024 * 1024;
+/** 单个 token 工件解码后上限（body 总上限见 `MAX_PANEL_RESULT_BODY_BYTES`）。 */
+export const ARTIFACT_MAX_BYTES = 8 * 1024 * 1024;
+const MAX_ARTIFACT_NAME = 100;
 
 export function webJobResultsDir(rootPath: string, jobId: string): string {
   return path.join(path.resolve(rootPath), ".artemis", "web", "results", jobId);
@@ -310,18 +346,67 @@ function parseTokenUsage(raw: unknown): WebResultTokenUsage[] {
   });
 }
 
-function parseTokenArtifacts(
-  raw: unknown
-): { dataEngineDb?: string; statusJson?: string } {
+function parseArtifact(
+  raw: unknown,
+  field: string
+): NormalizedWebResultArtifact | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isRecord(raw)) {
+    throw new WebResultError(
+      "invalid-result",
+      `${field} 必须是 {filename, base64} 对象（不接受中心本机路径）`
+    );
+  }
+  if (typeof raw.base64 !== "string") {
+    throw new WebResultError(
+      "invalid-result",
+      `${field}.base64 缺失：请内联上传工件内容（不接受路径）`
+    );
+  }
+  const filename = text(raw.filename, `${field}.filename`);
+  if (filename.length > 255) {
+    throw new WebResultError("invalid-result", `${field}.filename 超过 255 字符`);
+  }
+  const encoded = raw.base64.trim().replace(/=+$/, "");
+  if (encoded === "" || encoded.length % 4 === 1 || !/^[A-Za-z0-9+/]+$/.test(encoded)) {
+    throw new WebResultError("invalid-result", `${field}.base64 不是合法 base64`);
+  }
+  const buffer = Buffer.from(encoded, "base64");
+  if (buffer.length === 0) {
+    throw new WebResultError("invalid-result", `${field} 解码后为空`);
+  }
+  if (buffer.toString("base64").replace(/=+$/, "") !== encoded) {
+    throw new WebResultError("invalid-result", `${field}.base64 不是规范 base64`);
+  }
+  if (buffer.length > ARTIFACT_MAX_BYTES) {
+    throw new WebResultError(
+      "invalid-result",
+      `${field} 解码后超过上限 ${ARTIFACT_MAX_BYTES} 字节`
+    );
+  }
+  return {
+    filename,
+    buffer,
+    sha256: createHash("sha256").update(buffer).digest("hex")
+  };
+}
+
+function parseTokenArtifacts(raw: unknown): {
+  dataEngineDb?: NormalizedWebResultArtifact;
+  statusJson?: NormalizedWebResultArtifact;
+} {
   if (raw === undefined || raw === null) return {};
   if (!isRecord(raw)) {
     throw new WebResultError("invalid-result", "tokenArtifacts 必须是对象");
   }
-  const artifacts: { dataEngineDb?: string; statusJson?: string } = {};
-  const db = optionalText(raw.dataEngineDb, "tokenArtifacts.dataEngineDb");
-  if (db !== "") artifacts.dataEngineDb = db;
-  const status = optionalText(raw.statusJson, "tokenArtifacts.statusJson");
-  if (status !== "") artifacts.statusJson = status;
+  const artifacts: {
+    dataEngineDb?: NormalizedWebResultArtifact;
+    statusJson?: NormalizedWebResultArtifact;
+  } = {};
+  const db = parseArtifact(raw.dataEngineDb, "tokenArtifacts.dataEngineDb");
+  if (db !== undefined) artifacts.dataEngineDb = db;
+  const status = parseArtifact(raw.statusJson, "tokenArtifacts.statusJson");
+  if (status !== undefined) artifacts.statusJson = status;
   return artifacts;
 }
 
@@ -373,13 +458,38 @@ export function aggregateResultGate(cases: WebResultCase[]): WebResultGate {
 
 /**
  * 任务终态：全 PASS → completed；任一 FAIL/ERROR → failed；含 SKIP → partial；
- * 空结果 → gate/execution `error`，任务落 `failed`（DB 状态没有 error，绝不写成成功）。
+ * 空结果/runner 上报 error → 契约状态 `error`（DB 无 error，落库 `failed`，绝不写成成功）。
  */
-export function taskStatusFromGate(gate: WebResultGate): RegressionTaskStatus {
+export function taskStatusFromGate(gate: WebResultGate): WebResultTaskStatus {
   if (gate.result === "passed") return "completed";
   if (gate.result === "failed") return "failed";
   if (gate.result === "partial") return "partial";
-  return "failed";
+  return "error";
+}
+
+export function persistedTaskStatus(status: WebResultTaskStatus): RegressionTaskStatus {
+  return status === "error" ? "failed" : status;
+}
+
+/**
+ * runner 上报的 execution.status 优先于用例聚合：`error` 永远保留（exec 超时/非零退出时
+ * JUnit 可能仍全 PASS）；`failed` 或任一 FAIL/ERROR → failed；其余按用例计算。
+ */
+export function resolveResultStatus(
+  reported: WebResultGate["result"] | undefined,
+  computed: WebResultGate["result"]
+): WebResultGate["result"] {
+  if (reported === "error") return "error";
+  if (reported === "failed" || computed === "failed") return "failed";
+  return computed;
+}
+
+function canonicalArtifact(
+  artifact: NormalizedWebResultArtifact | undefined
+): { filename: string; sha256: string } | undefined {
+  return artifact === undefined
+    ? undefined
+    : { filename: artifact.filename, sha256: artifact.sha256 };
 }
 
 function canonicalPayload(payload: NormalizedWebJobResultPayload): string {
@@ -397,7 +507,10 @@ function canonicalPayload(payload: NormalizedWebJobResultPayload): string {
     finishedAt: payload.finishedAt,
     evidence: payload.evidence,
     tokenUsage: payload.tokenUsage,
-    tokenArtifacts: payload.tokenArtifacts,
+    tokenArtifacts: {
+      dataEngineDb: canonicalArtifact(payload.tokenArtifacts.dataEngineDb),
+      statusJson: canonicalArtifact(payload.tokenArtifacts.statusJson)
+    },
     allowClearedRefresh: payload.allowClearedRefresh
   };
   return stableStringify(value);
@@ -436,7 +549,25 @@ export function normalizeWebJobResultPayload(raw: unknown): NormalizedWebJobResu
     throw new WebResultError("invalid-result", "execution.cases 必须是数组");
   }
   const cases = rawExecution.cases.map((entry, index) => parseCase(entry, index));
-  const gate = aggregateResultGate(cases);
+  const computed = aggregateResultGate(cases);
+  let reportedStatus: WebResultGate["result"] | undefined;
+  if (rawExecution.status !== undefined && rawExecution.status !== null) {
+    if (typeof rawExecution.status !== "string") {
+      throw new WebResultError("invalid-result", "execution.status 必须是字符串");
+    }
+    const normalized = rawExecution.status.trim().toLowerCase();
+    if (!RESULT_STATUSES.has(normalized as WebResultGate["result"])) {
+      throw new WebResultError(
+        "invalid-result",
+        `execution.status 非法：${rawExecution.status}（passed/failed/partial/error）`
+      );
+    }
+    reportedStatus = normalized as WebResultGate["result"];
+  }
+  const gate: WebResultGate = {
+    ...computed,
+    result: resolveResultStatus(reportedStatus, computed.result)
+  };
 
   const startedAt = iso(
     raw.startedAt ?? rawExecution.startedAt,
@@ -488,6 +619,7 @@ export function normalizeWebJobResultPayload(raw: unknown): NormalizedWebJobResu
     evidence: stringList(raw.evidence, "evidence"),
     tokenUsage,
     tokenArtifacts,
+    ...(reportedStatus === undefined ? {} : { reportedStatus }),
     allowClearedRefresh
   };
 }
@@ -557,51 +689,68 @@ function writebackRows(
       traceByCase.set(usage.caseId, usage.traceId);
     }
   }
+  // 任务级 error / 上报 failed 但用例全 PASS 时不写逐例 PASS，避免 Excel 假绿。
+  const computed = aggregateResultGate(payload.execution.cases);
+  const suppressPerCaseResult =
+    payload.execution.status === "error" ||
+    (payload.execution.status === "failed" && computed.result !== "failed");
   return payload.execution.cases.map((entry) => {
     const traceId = entry.traceId ?? traceByCase.get(entry.caseId);
     const values: Partial<Record<SystemColumnKey, string>> = {
-      result: entry.status,
       device,
       package: pkg,
       startedAt: payload.startedAt,
       finishedAt: payload.finishedAt
     };
+    if (!suppressPerCaseResult || entry.status !== "PASS") values.result = entry.status;
     if (traceId !== undefined && traceId !== "") values.traceId = traceId;
     return { caseId: entry.caseId, values };
   });
 }
 
+/** 只保留安全 basename：拒绝目录分隔/隐藏文件/控制字符，限制长度。 */
+export function safeArtifactFilename(filename: string, fallback: string): string {
+  const base = path
+    .basename(filename)
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .replace(/^\.+/, "")
+    .trim();
+  const clipped = base.slice(0, MAX_ARTIFACT_NAME);
+  if (clipped === "" || clipped === "." || clipped === "..") return fallback;
+  return clipped;
+}
+
 async function stageTokenArtifacts(
   resultDir: string,
-  artifacts: { dataEngineDb?: string; statusJson?: string }
+  artifacts: {
+    dataEngineDb?: NormalizedWebResultArtifact;
+    statusJson?: NormalizedWebResultArtifact;
+  }
 ): Promise<{
   paths: { dataEngineDb?: string; statusJson?: string } | null;
   problems: string[];
 }> {
   const problems: string[] = [];
   const staged: { dataEngineDb?: string; statusJson?: string } = {};
-  const entries: Array<[keyof typeof staged, string | undefined, string]> = [
+  const entries: Array<
+    [keyof typeof staged, NormalizedWebResultArtifact | undefined, string]
+  > = [
     ["dataEngineDb", artifacts.dataEngineDb, "data-engine.db"],
     ["statusJson", artifacts.statusJson, "status.json"]
   ];
-  for (const [key, source, filename] of entries) {
-    if (source === undefined || source.trim() === "") continue;
+  const used = new Set<string>();
+  for (const [key, artifact, fallback] of entries) {
+    if (artifact === undefined) continue;
+    const targetDir = path.join(resultDir, "artifacts");
+    let filename = safeArtifactFilename(artifact.filename, fallback);
+    if (used.has(filename)) filename = `${key}-${filename}`;
+    used.add(filename);
     try {
-      const info = await stat(source);
-      if (!info.isFile()) {
-        problems.push(`${key} 不是普通文件：${source}`);
-        continue;
-      }
-      if (info.size > ARTIFACT_MAX_BYTES) {
-        problems.push(`${key} 超过上限 ${ARTIFACT_MAX_BYTES} 字节：${source}`);
-        continue;
-      }
-      const targetDir = path.join(resultDir, "artifacts");
       await mkdir(targetDir, { recursive: true });
-      await copyFile(source, path.join(targetDir, filename));
+      writeFileAtomic(path.join(targetDir, filename), artifact.buffer);
       staged[key] = `artifacts/${filename}`;
     } catch (error) {
-      problems.push(`${key} 工件不可读（${source}）：${errorMessage(error)}`);
+      problems.push(`${key} 工件写入失败（${filename}）：${errorMessage(error)}`);
     }
   }
   if (staged.dataEngineDb === undefined && staged.statusJson === undefined) {
@@ -649,6 +798,7 @@ function summaryFromDocument(
     jobId: document.jobId,
     resultSha256: document.resultSha256,
     taskStatus: document.taskStatus,
+    dbStatus: document.dbStatus ?? persistedTaskStatus(document.taskStatus),
     gate: document.gate,
     writtenCells: document.writtenCells ?? [],
     warnings: document.warnings ?? [],
@@ -670,12 +820,56 @@ async function persistDocument(
  * 任务终态 CAS。写回失败不回滚结果，也不改变聚合出来的任务状态（`writeback-failed` 单独上报）。
  * 幂等键＝归一化结果的 sha256：同 job 同内容重复上传返回既有摘要，不再写 journal。
  */
-export async function ingestWebJobResult(
-  input: IngestWebJobResultInput
+function resultLockPath(rootPath: string, jobId: string): string {
+  return path.join(path.resolve(rootPath), ".artemis", "web", "results", `${jobId}.lock`);
+}
+
+/**
+ * 任务终态写入：只在仍为 running 时 CAS；连续失败但状态仍是 running（极端 store 竞态）时
+ * 再读后无守卫落终态，避免结果已保存却把任务永久留在 running。
+ */
+async function settleRunningTask(
+  store: ProjectStore,
+  rootPath: string,
+  taskId: string,
+  status: RegressionTaskStatus,
+  spec: WebJobSpec,
+  at: string
+): Promise<"updated" | "not-running"> {
+  const patch = {
+    status,
+    lastProgressAt: at,
+    deviceLeaseId: null,
+    jobSpec: { ...spec, deviceLeaseId: null } as Record<string, unknown>,
+    expectStatuses: ["running" as const]
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = await store.getRegressionTask(rootPath, taskId);
+    if (fresh === null || fresh.status !== "running") return "not-running";
+    if (await store.updateRegressionTask(rootPath, taskId, patch)) return "updated";
+  }
+  const fresh = await store.getRegressionTask(rootPath, taskId);
+  if (fresh !== null && fresh.status === "running") {
+    const updated = await store.updateRegressionTask(rootPath, taskId, {
+      status,
+      lastProgressAt: at,
+      deviceLeaseId: null,
+      jobSpec: { ...spec, deviceLeaseId: null } as Record<string, unknown>
+    });
+    return updated ? "updated" : "not-running";
+  }
+  return "not-running";
+}
+
+async function ingestUnderJobLock(
+  input: IngestWebJobResultInput,
+  payload: NormalizedWebJobResultPayload,
+  jobId: string
 ): Promise<WebJobIngestSummary> {
-  const job = await input.store.getWebJobById(input.jobId);
+  const store = input.store;
+  const job = await store.getWebJobById(jobId);
   if (job === null) {
-    throw new WebResultError("job-not-found", `未知 job ${input.jobId}`);
+    throw new WebResultError("job-not-found", `未知 job ${jobId}`);
   }
   const { task, rootPath } = job;
   const spec = parseWebJobSpec(task.jobSpec);
@@ -683,16 +877,29 @@ export async function ingestWebJobResult(
     throw new WebResultError("invalid-job-spec", `job ${task.id} 没有可用的任务规格`);
   }
 
-  const payload = normalizeWebJobResultPayload(input.payload);
-  if (input.allowClearedRefresh === true) payload.allowClearedRefresh = true;
   const resultSha256 = resultSha(payload);
   const resultPath = resultPathForJob(rootPath, task.id);
+  const at = new Date(input.nowMs ?? Date.now()).toISOString();
 
+  // 锁内重读：并发的同内容上传在第二个请求里命中幂等分支。
   const existing = await readResultDocument(resultPath);
   if (existing !== null && existing.resultSha256 === resultSha256) {
+    if (task.status === "running") {
+      await settleRunningTask(
+        store,
+        rootPath,
+        task.id,
+        persistedTaskStatus(existing.taskStatus),
+        spec,
+        at
+      );
+    }
     return summaryFromDocument(existing, resultPath, true);
   }
-  if (task.status !== "running") {
+
+  const lateFirstResult =
+    existing === null && LATE_RESULT_STATUSES.has(task.status);
+  if (task.status !== "running" && !lateFirstResult) {
     throw new WebResultError(
       "task-not-running",
       existing === null
@@ -701,11 +908,23 @@ export async function ingestWebJobResult(
     );
   }
 
-  const target = await resolveWritebackTarget(input.store, rootPath, spec);
+  const target = await resolveWritebackTarget(store, rootPath, spec);
 
-  const gate = aggregateResultGate(payload.execution.cases);
+  const counts = aggregateResultGate(payload.execution.cases);
+  const gate: WebResultGate = { ...counts, result: payload.execution.status };
   const taskStatus = taskStatusFromGate(gate);
+  const dbStatus = persistedTaskStatus(taskStatus);
   const warnings: string[] = [];
+  if (payload.reportedStatus !== undefined && payload.reportedStatus !== counts.result) {
+    warnings.push(
+      `status-mismatch: runner 上报 ${payload.reportedStatus}，按用例聚合为 ${counts.result}；采用 ${gate.result} 作为结果状态`
+    );
+  }
+  if (lateFirstResult) {
+    warnings.push(
+      `status-mismatch: 任务已是 ${task.status}，按迟到的首次结果记录（${taskStatus}）；不改变任务状态`
+    );
+  }
 
   const resultDir = path.dirname(resultPath);
   await mkdir(resultDir, { recursive: true });
@@ -717,7 +936,7 @@ export async function ingestWebJobResult(
     if (payload.tokenUsage.length === 0) missing.push("tokenUsage");
     if (payload.tokenArtifacts.dataEngineDb === undefined) missing.push("dataEngineDb");
     if (payload.tokenArtifacts.statusJson === undefined) missing.push("statusJson");
-    if (missing.length === 0 && tokenArtifacts === null) missing.push("原始工件不可读");
+    if (missing.length === 0 && tokenArtifacts === null) missing.push("原始工件写入失败");
     if (missing.length > 0) {
       warnings.push(
         `token-unavailable: 远程 LLM 结果缺少 ${[...new Set(missing)].join("、")}；不按 0 计费、不伪造本地路径`
@@ -739,7 +958,7 @@ export async function ingestWebJobResult(
   try {
     workbookResult = await withFileLock(lockPath, async () => {
       const recovery = await recoverPendingWriteback({
-        store: input.store,
+        store,
         rootPath,
         assetId: target.asset.id,
         workbookPath: target.workbookPath
@@ -755,7 +974,7 @@ export async function ingestWebJobResult(
         originalPath: target.originalPath,
         allowClearedRefresh: payload.allowClearedRefresh,
         lastSystemValue: async (caseId, key) => {
-          const record = await input.store.lastExcelWritebackByCellKey(
+          const record = await store.lastExcelWritebackByCellKey(
             rootPath,
             target.asset.id,
             target.sheetName,
@@ -766,7 +985,7 @@ export async function ingestWebJobResult(
         },
         journal: {
           begin: async (cell) => {
-            const record = await input.store.recordExcelWriteback({
+            const record = await store.recordExcelWriteback({
               rootPath,
               assetId: target.asset.id,
               sheetName: target.sheetName,
@@ -785,7 +1004,7 @@ export async function ingestWebJobResult(
             if (id === undefined) {
               throw new Error(`找不到 pending 写回日志：${cell.cellRef}`);
             }
-            const confirmed = await input.store.confirmExcelWriteback(rootPath, id);
+            const confirmed = await store.confirmExcelWriteback(rootPath, id);
             if (!confirmed) {
               throw new Error(`pending 写回日志确认未命中：${cell.cellRef}`);
             }
@@ -811,8 +1030,9 @@ export async function ingestWebJobResult(
     schemaVersion: 1,
     jobId: task.id,
     resultSha256,
-    receivedAt: new Date(input.nowMs ?? Date.now()).toISOString(),
+    receivedAt: at,
     taskStatus,
+    dbStatus: lateFirstResult ? task.status : dbStatus,
     gate,
     execution: payload.execution,
     device: payload.device,
@@ -831,46 +1051,47 @@ export async function ingestWebJobResult(
   };
   await persistDocument(resultPath, document);
 
-  const updated = await input.store.updateRegressionTask(rootPath, task.id, {
-    status: taskStatus,
-    lastProgressAt: new Date(input.nowMs ?? Date.now()).toISOString(),
-    deviceLeaseId: null,
-    jobSpec: { ...spec, deviceLeaseId: null } as Record<string, unknown>,
-    expectStatuses: ["running"]
-  });
-  if (!updated) {
-    throw new WebResultError(
-      "task-not-running",
-      `job ${task.id} 结果已保存，但任务状态在写入期间已不是 running；不覆盖终态（result-already-recorded）`
-    );
+  if (!lateFirstResult) {
+    const outcome = await settleRunningTask(store, rootPath, task.id, dbStatus, spec, at);
+    if (outcome === "not-running") {
+      const fresh = await store.getRegressionTask(rootPath, task.id);
+      if (fresh === null || fresh.status !== dbStatus) {
+        throw new WebResultError(
+          "task-not-running",
+          `job ${task.id} 结果已保存，但任务状态在写入期间已不是 running；不覆盖终态（result-already-recorded）`
+        );
+      }
+    }
   }
 
-  await recordAuditSafe(input.store, rootPath, {
+  await recordAuditSafe(store, rootPath, {
     domain: "web",
     action: "web.job.result",
     result: writebackStatus === "written" ? "ok" : "failed",
     summary:
       writebackStatus === "written"
-        ? `Web job ${task.id} 结果入库：${taskStatus}，写回 ${document.writtenCells.length} 格`
-        : `Web job ${task.id} 结果入库：${taskStatus}，Excel 写回失败（${writebackError ?? "unknown"}）`,
+        ? `Web job ${task.id} 结果入库：${taskStatus}（DB ${document.dbStatus}），写回 ${document.writtenCells.length} 格`
+        : `Web job ${task.id} 结果入库：${taskStatus}（DB ${document.dbStatus}），Excel 写回失败（${writebackError ?? "unknown"}）`,
     refs: {
       jobId: task.id,
       taskStatus,
+      dbStatus: document.dbStatus,
       writebackStatus,
-      ...(target.asset.id === "" ? {} : { excelAssetId: target.asset.id })
+      excelAssetId: target.asset.id
     },
     actor: input.actor ?? null,
     channel: "runner"
   });
 
   log(
-    `Web job ${task.id} 结果入库：${taskStatus}（写回 ${writebackStatus}，${document.writtenCells.length} 格）`
+    `Web job ${task.id} 结果入库：${taskStatus}（DB ${document.dbStatus}，写回 ${writebackStatus}，${document.writtenCells.length} 格）`
   );
 
   return {
     jobId: task.id,
     resultSha256,
     taskStatus,
+    dbStatus: document.dbStatus,
     gate,
     writtenCells: document.writtenCells,
     warnings,
@@ -878,6 +1099,25 @@ export async function ingestWebJobResult(
     idempotent: false,
     resultPath
   };
+}
+
+/**
+ * 结果入库：校验 → 聚合 → 持久化 `result.json` → 写回 Excel 工作副本（两阶段 journal）→
+ * 任务终态 CAS。写回失败不回滚结果，也不改变聚合出来的任务状态（`writeback-failed` 单独上报）。
+ * 幂等键＝归一化结果的 sha256：同 job 同内容重复上传返回既有摘要，不再写 journal。
+ * 整个流程持有 per-job 文件锁（`.artemis/web/results/<jobId>.lock`），并发上传只写一次。
+ */
+export async function ingestWebJobResult(
+  input: IngestWebJobResultInput
+): Promise<WebJobIngestSummary> {
+  const initial = await input.store.getWebJobById(input.jobId);
+  if (initial === null) {
+    throw new WebResultError("job-not-found", `未知 job ${input.jobId}`);
+  }
+  const payload = normalizeWebJobResultPayload(input.payload);
+  if (input.allowClearedRefresh === true) payload.allowClearedRefresh = true;
+  const lockPath = resultLockPath(initial.rootPath, initial.task.id);
+  return withFileLock(lockPath, () => ingestUnderJobLock(input, payload, initial.task.id));
 }
 
 /** 结果文档里的任务记录只读摘要（面板/后续任务详情用；不触网、不写盘）。 */

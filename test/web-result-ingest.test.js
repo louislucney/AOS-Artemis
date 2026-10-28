@@ -300,10 +300,11 @@ test("ingest：空结果聚合为 error，任务落 failed（绝不假成功）"
     errors: 0,
     skipped: 0
   });
-  assert.equal(summary.taskStatus, "failed");
+  assert.equal(summary.taskStatus, "error");
+  assert.equal(summary.dbStatus, "failed");
   assert.deepEqual(summary.writtenCells, []);
   const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
-  assert.equal(task.status, "failed");
+  assert.equal(task.status, "failed", "DB 无 error 枚举，空结果落 failed 而不是成功");
 });
 
 test("ingest：重复上传同内容幂等，不再写 journal / 不再改写工作副本", async (t) => {
@@ -422,7 +423,7 @@ test("HTTP POST /panel/api/jobs/:id/results：runner token、未知 job、非法
     );
     assert.equal(
       (await fetch(url, { method: "POST", headers: { ...jsonHeaders, "content-type": "text/plain" }, body })).status,
-      400
+      415
     );
     assert.equal(
       (await fetch(url, { method: "POST", headers: jsonHeaders, body: "{not-json" })).status,
@@ -626,10 +627,6 @@ test("两阶段 journal：pending 按单元格值 confirm，不一致则删除�
 
 test("远程 LLM 结果：tokenUsage + 原始工件落到结果目录；缺工件记 token-unavailable 不伪造", async (t) => {
   const ctx = await setupProject(t, { executionMode: "llm" });
-  const dbPath = path.join(ctx.workspace, "data_engine.db");
-  const statusPath = path.join(ctx.workspace, "status.json");
-  await writeFile(dbPath, "sqlite-bytes");
-  await writeFile(statusPath, '{"ok":true}');
   const tokenUsage = [
     {
       caseId: "TC-1",
@@ -655,7 +652,16 @@ test("远程 LLM 结果：tokenUsage + 原始工件落到结果目录；缺工�
     jobId: ctx.task.id,
     payload: passingPayload({
       tokenUsage,
-      tokenArtifacts: { dataEngineDb: dbPath, statusJson: statusPath }
+      tokenArtifacts: {
+        dataEngineDb: {
+          filename: "data-engine.db",
+          base64: Buffer.from("sqlite-bytes").toString("base64")
+        },
+        statusJson: {
+          filename: "status.json",
+          base64: Buffer.from('{"ok":true}').toString("base64")
+        }
+      }
     })
   });
   assert.equal(summary.taskStatus, "completed");
@@ -809,4 +815,321 @@ test("journal status：Memory/File/PG 的 pending 列表、confirmed 归属与 c
     assert.equal(legacy.status, "confirmed", `${name}：缺省 confirmed`);
   }
   await pg.close();
+});
+
+test("C1：保留 runner 上报状态（error 不因用例全 PASS 变 completed；Excel 不写 PASS）", async (t) => {
+  const ctx = await setupProject(t);
+  const allPass = [
+    { caseId: "TC-1", name: "登录", status: "PASS", durationMs: 1, traceId: "trace-1" },
+    { caseId: "TC-2", name: "退出", status: "PASS", durationMs: 1, traceId: "trace-2" }
+  ];
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: passingPayload({
+      execution: {
+        status: "error",
+        cases: allPass,
+        startedAt: STARTED,
+        finishedAt: FINISHED,
+        detail: "maestro-exit:1"
+      }
+    })
+  });
+  assert.equal(summary.taskStatus, "error");
+  assert.equal(summary.dbStatus, "failed");
+  assert.equal(summary.gate.result, "error");
+  assert.equal(summary.gate.passed, 2);
+  assert.ok(summary.warnings.some((warning) => warning.includes("status-mismatch")));
+  assert.ok(!summary.writtenCells.some((cell) => cell.key === "result"));
+  const sheet = await loadSheet(ctx.copyPath);
+  assert.notEqual(cellText(sheet.getCell("F2")), "PASS");
+  assert.equal(cellText(sheet.getCell("G2")), "Pixel 7 / 14");
+  const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
+  assert.equal(task.status, "failed");
+
+  const failedJob = await newRunningJob(ctx);
+  const failed = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: failedJob.id,
+    payload: passingPayload({
+      execution: {
+        status: "failed",
+        cases: allPass,
+        startedAt: STARTED,
+        finishedAt: FINISHED,
+        detail: "maestro-exit:2"
+      }
+    })
+  });
+  assert.equal(failed.taskStatus, "failed");
+  assert.equal(failed.dbStatus, "failed");
+  assert.ok(!failed.writtenCells.some((cell) => cell.key === "result"));
+  assert.ok(failed.warnings.some((warning) => warning.includes("status-mismatch")));
+});
+
+test("I1：per-job 锁让并发同内容上传只写一次，崩溃后重复上传补写终态", async (t) => {
+  const ctx = await setupProject(t);
+  const payload = passingPayload();
+  const [first, second] = await Promise.all([
+    ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload }),
+    ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload })
+  ]);
+  assert.equal(first.jobId, second.jobId);
+  assert.equal([first.idempotent, second.idempotent].filter(Boolean).length, 1);
+  assert.equal(ctx.store.excelWritebacks.length, 6, "只允许一次写回 journal");
+  assert.equal(
+    (await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id)).status,
+    "completed"
+  );
+
+  // 模拟“result.json 已写、CAS 未写”的崩溃：任务回到 running，同内容重传必须补终态。
+  await ctx.store.updateRegressionTask(ctx.rootPath, ctx.task.id, { status: "running" });
+  const recovered = await ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload });
+  assert.equal(recovered.idempotent, true);
+  assert.equal(
+    (await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id)).status,
+    "completed",
+    "幂等重传必须把 running 任务补成终态"
+  );
+  assert.equal(ctx.store.excelWritebacks.length, 6, "幂等重传不得重复写 journal");
+});
+
+test("I2：tokenArtifacts 只接受内联 base64；拒绝路径、超限工件与不安全文件名", async (t) => {
+  const ctx = await setupProject(t, { executionMode: "llm" });
+  const tokenUsage = [
+    {
+      caseId: "TC-1",
+      traceId: "trace-1",
+      model: "m",
+      promptTokens: 1,
+      completionTokens: 1
+    }
+  ];
+  await assert.rejects(
+    () =>
+      ingestWebJobResult({
+        store: ctx.store,
+        jobId: ctx.task.id,
+        payload: passingPayload({
+          tokenUsage,
+          tokenArtifacts: { dataEngineDb: "/etc/passwd", statusJson: "/tmp/status.json" }
+        })
+      }),
+    (error) => error instanceof WebResultError && error.code === "invalid-result"
+  );
+  await assert.rejects(
+    () =>
+      ingestWebJobResult({
+        store: ctx.store,
+        jobId: ctx.task.id,
+        payload: passingPayload({
+          tokenUsage,
+          tokenArtifacts: {
+            dataEngineDb: { filename: "big.db", base64: Buffer.alloc(8 * 1024 * 1024 + 1).toString("base64") },
+            statusJson: { filename: "s.json", base64: Buffer.from("{}").toString("base64") }
+          }
+        })
+      }),
+    (error) => error instanceof WebResultError && error.code === "invalid-result"
+  );
+  await assert.rejects(
+    () =>
+      ingestWebJobResult({
+        store: ctx.store,
+        jobId: ctx.task.id,
+        payload: passingPayload({
+          tokenUsage,
+          tokenArtifacts: {
+            dataEngineDb: { filename: "x.db", base64: "not base64 !!!" },
+            statusJson: { filename: "s.json", base64: Buffer.from("{}").toString("base64") }
+          }
+        })
+      }),
+    (error) => error instanceof WebResultError && error.code === "invalid-result"
+  );
+
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: passingPayload({
+      tokenUsage,
+      tokenArtifacts: {
+        dataEngineDb: {
+          filename: "../../evil db.db",
+          base64: Buffer.from("db-bytes").toString("base64")
+        },
+        statusJson: { filename: "/abs/status.json", base64: Buffer.from("{}").toString("base64") }
+      }
+    })
+  });
+  assert.equal(summary.writebackStatus, "written");
+  const resultPath = resultPathForJob(ctx.rootPath, ctx.task.id);
+  const saved = JSON.parse(await readFile(resultPath, "utf8"));
+  assert.equal(saved.tokenArtifacts.dataEngineDb, "artifacts/evil_db.db");
+  assert.equal(saved.tokenArtifacts.statusJson, "artifacts/status.json");
+  assert.ok(!JSON.stringify(saved).includes(ctx.rootPath), "结果文档不得回显中心绝对路径");
+  assert.equal(await readFile(path.join(path.dirname(resultPath), "artifacts", "evil_db.db"), "utf8"), "db-bytes");
+});
+
+test("I4：任务已终态且无结果时允许迟到首次上传（不改任务状态）；有结果/取消仍 409", async (t) => {
+  const ctx = await setupProject(t, { status: "completed" });
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: passingPayload()
+  });
+  assert.equal(summary.taskStatus, "completed");
+  assert.equal(summary.dbStatus, "completed");
+  assert.ok(summary.warnings.some((warning) => warning.includes("迟到的首次结果")));
+  const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
+  assert.equal(task.status, "completed", "迟到上传不得改写任务终态");
+  assert.equal((await stat(resultPathForJob(ctx.rootPath, ctx.task.id))).isFile(), true);
+
+  const different = await assert.rejects(
+    () =>
+      ingestWebJobResult({
+        store: ctx.store,
+        jobId: ctx.task.id,
+        payload: resultPayload()
+      }),
+    (error) => {
+      assert.ok(error instanceof WebResultError);
+      assert.equal(error.status, 409);
+      return true;
+    }
+  );
+  assert.equal(different, undefined);
+
+  const cancelled = await setupProject(t, { status: "cancelled" });
+  await assert.rejects(
+    () =>
+      ingestWebJobResult({
+        store: cancelled.store,
+        jobId: cancelled.task.id,
+        payload: passingPayload()
+      }),
+    (error) => error instanceof WebResultError && error.status === 409
+  );
+  assert.equal(await cancelled.store.listPendingExcelWriteback(cancelled.rootPath, cancelled.asset.id).then((rows) => rows.length), 0);
+});
+
+test("HTTP：结果上传大小上限（>256KB 200 / >16MB 413）、415、错误主机 403、短 token 503", async (t) => {
+  const previous = new Map();
+  for (const [key, value] of Object.entries({
+    AOS_RUNNER_JOB_TOKEN: TOKEN,
+    AOS_HTTP_TOKEN: undefined,
+    AOS_HTTP_USERS: undefined,
+    AOS_HTTP_ALLOW_INSECURE: undefined
+  })) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  const workspace = await tempDir(t, "aos-web-result-http-limits-");
+  const rootPath = path.join(workspace, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "acme" });
+  const buffer = await readFile(await writeWorkbook(path.join(rootPath, "cases.xlsx")));
+  const asset = await storeWebAsset({ store, rootPath, kind: "excel", filename: "cases.xlsx", buffer });
+  await store.saveExcelMapping({
+    rootPath,
+    assetId: asset.id,
+    sheetName: "用例",
+    headerFingerprint: "fp-limits",
+    columnMap: { caseId: "用例编号", steps: "步骤" }
+  });
+  const makeJob = async (status = "running") => {
+    const task = await store.createRegressionTask({
+      rootPath,
+      refs: [],
+      platforms: ["android"],
+      baseline: "latest",
+      targetHostId: HOST,
+      jobSpec: jobSpec({ excelAssetId: asset.id }),
+      deviceSerial: "emulator-5554"
+    });
+    await store.updateRegressionTask(rootPath, task.id, { status });
+    return task;
+  };
+  const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace, store });
+  try {
+    const base = `http://127.0.0.1:${handle.port}`;
+    const auth = { authorization: `Bearer ${TOKEN}`, "x-aos-host-id": HOST };
+    const jsonHeaders = { ...auth, "content-type": "application/json" };
+
+    const wrongHostJob = await makeJob();
+    assert.equal(
+      (
+        await fetch(`${base}/panel/api/jobs/${wrongHostJob.id}/results`, {
+          method: "POST",
+          headers: { ...jsonHeaders, "x-aos-host-id": "host-other" },
+          body: JSON.stringify(resultPayload())
+        })
+      ).status,
+      403
+    );
+
+    const shortTokenJob = await makeJob();
+    process.env.AOS_RUNNER_JOB_TOKEN = "short";
+    try {
+      const shortResponse = await fetch(`${base}/panel/api/jobs/${shortTokenJob.id}/results`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify(resultPayload())
+      });
+      assert.equal(shortResponse.status, 503);
+      assert.equal((await shortResponse.json()).code, "runner-token-too-short");
+    } finally {
+      process.env.AOS_RUNNER_JOB_TOKEN = TOKEN;
+    }
+
+    const pathArtifactJob = await makeJob();
+    const pathBody = JSON.stringify(
+      resultPayload({
+        tokenArtifacts: { dataEngineDb: "/etc/passwd", statusJson: "/tmp/x.json" }
+      })
+    );
+    const pathResponse = await fetch(`${base}/panel/api/jobs/${pathArtifactJob.id}/results`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: pathBody
+    });
+    assert.equal(pathResponse.status, 400, "绝对路径工件必须拒绝");
+    assert.equal((await pathResponse.json()).code, "invalid-result");
+
+    const largeJob = await makeJob();
+    const largeEvidence = Array.from({ length: 400 }, (_, index) => `${index}-${"x".repeat(800)}`);
+    const largeBody = JSON.stringify(resultPayload({ evidence: largeEvidence }));
+    assert.ok(largeBody.length > 256 * 1024, `body 需要 >256KB，实际 ${largeBody.length}`);
+    const largeResponse = await fetch(`${base}/panel/api/jobs/${largeJob.id}/results`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: largeBody
+    });
+    assert.equal(largeResponse.status, 200);
+    const largeSummary = await largeResponse.json();
+    assert.equal(largeSummary.taskStatus, "failed");
+    assert.ok(!("resultPath" in largeSummary));
+    for (const cell of largeSummary.writtenCells) {
+      assert.deepEqual(Object.keys(cell).sort(), ["caseId", "key", "value"]);
+    }
+    assert.ok(!largeBody.includes(rootPath));
+
+    const hugeJob = await makeJob();
+    const hugeBody = JSON.stringify(resultPayload({ evidence: ["y".repeat(17 * 1024 * 1024)] }));
+    const hugeResponse = await fetch(`${base}/panel/api/jobs/${hugeJob.id}/results`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: hugeBody
+    });
+    assert.equal(hugeResponse.status, 413);
+  } finally {
+    await handle.close();
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
