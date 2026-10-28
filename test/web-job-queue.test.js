@@ -328,7 +328,8 @@ test("claimWebJob 只命中对应 host/serial；重复与并发领取只有一�
         runnerId: "runner-a",
         hostId: "host-other",
         deviceSerial: "pixel-7",
-        instanceId: "inst-a"
+        instanceId: "inst-a",
+        nowMs: NOW
       }),
       null
     );
@@ -337,7 +338,8 @@ test("claimWebJob 只命中对应 host/serial；重复与并发领取只有一�
         runnerId: "runner-a",
         hostId: "host-pixel",
         deviceSerial: "pixel-8",
-        instanceId: "inst-a"
+        instanceId: "inst-a",
+        nowMs: NOW
       }),
       null
     );
@@ -347,13 +349,15 @@ test("claimWebJob 只命中对应 host/serial；重复与并发领取只有一�
         runnerId: "runner-a",
         hostId: "host-pixel",
         deviceSerial: "pixel-7",
-        instanceId: "inst-a"
+        instanceId: "inst-a",
+        nowMs: NOW
       }),
       store.claimWebJob({
         runnerId: "runner-b",
         hostId: "host-pixel",
         deviceSerial: "pixel-7",
-        instanceId: "inst-b"
+        instanceId: "inst-b",
+        nowMs: NOW
       })
     ]);
     const winners = [first, second].filter((entry) => entry !== null);
@@ -366,7 +370,8 @@ test("claimWebJob 只命中对应 host/serial；重复与并发领取只有一�
         runnerId: "runner-c",
         hostId: "host-pixel",
         deviceSerial: "pixel-7",
-        instanceId: "inst-c"
+        instanceId: "inst-c",
+        nowMs: NOW
       }),
       null
     );
@@ -397,7 +402,8 @@ test("host 队列暂停阻断 claimWebJob；恢复后可领", async () => {
         runnerId: "runner-a",
         hostId: "host-pixel",
         deviceSerial: "pixel-7",
-        instanceId: "inst-a"
+        instanceId: "inst-a",
+        nowMs: NOW
       }),
       null
     );
@@ -407,7 +413,8 @@ test("host 队列暂停阻断 claimWebJob；恢复后可领", async () => {
       runnerId: "runner-a",
       hostId: "host-pixel",
       deviceSerial: "pixel-7",
-      instanceId: "inst-a"
+      instanceId: "inst-a",
+      nowMs: NOW
     });
     assert.equal(claimed.task.id, created.task.id);
   }
@@ -562,7 +569,8 @@ test("manual 未钉设备过期：保留 host、清空 serial；恢复在线后 
         runnerId: "runner-a",
         hostId: "host-a",
         deviceSerial: "a-device",
-        instanceId: "inst-a"
+        instanceId: "inst-a",
+        nowMs: NOW
       })
     );
   }
@@ -598,7 +606,8 @@ test("manual host 离线创建 pending；host 上线后 assign 绑定并可 clai
       runnerId: "runner-x",
       hostId: "host-x",
       deviceSerial: "x-device",
-      instanceId: "inst-x"
+      instanceId: "inst-x",
+      nowMs: NOW
     });
     assert.equal(claimed.task.id, created.task.id);
   }
@@ -763,7 +772,8 @@ test("createWebJob 安全顺序：租约写入前任务不可领取（延迟租�
       runnerId: "runner-a",
       hostId: "host-pixel",
       deviceSerial: "pixel-7",
-      instanceId: "inst-a"
+      instanceId: "inst-a",
+      nowMs: NOW
     });
     assert.equal(claimed.task.id, created.task.id);
   }
@@ -822,7 +832,8 @@ test("FileStore.claimWebJob：跨 bucket 查找、host 队列暂停阻断", asyn
       runnerId: "runner-b",
       hostId: "host-b",
       deviceSerial: "b-device",
-      instanceId: "inst-b"
+      instanceId: "inst-b",
+      nowMs: NOW
     });
     assert.equal(claimedB.task.id, jobB.task.id);
     assert.equal(claimedB.rootPath, rootB);
@@ -834,7 +845,8 @@ test("FileStore.claimWebJob：跨 bucket 查找、host 队列暂停阻断", asyn
         runnerId: "runner-a",
         hostId: "host-a",
         deviceSerial: "a-device",
-        instanceId: "inst-a"
+        instanceId: "inst-a",
+        nowMs: NOW
       }),
       null
     );
@@ -844,7 +856,8 @@ test("FileStore.claimWebJob：跨 bucket 查找、host 队列暂停阻断", asyn
       runnerId: "runner-a",
       hostId: "host-a",
       deviceSerial: "a-device",
-      instanceId: "inst-a"
+      instanceId: "inst-a",
+      nowMs: NOW
     });
     assert.equal(claimedA.task.id, jobA.task.id);
     assert.equal(claimedA.rootPath, rootA);
@@ -872,6 +885,108 @@ test("脚本集未声明 sourceExcelAssetId/packageAssetId → script-set-unveri
     );
     assert.equal(allowed.task.jobSpec.scriptSetId, bareScript.id);
     assert.equal(allowed.task.jobSpec.allowStaleScript, true);
+  }
+});
+
+test("claimWebJob 用显式 nowMs 判定租约过期（与墙钟无关）", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "claim-clock");
+    const assets = await makeAssets(store, rootPath);
+    await online(store, "host-pixel", [android("pixel-7", "Pixel 7")]);
+    const created = await createWebJob(jobInput(store, rootPath, assets));
+    const input = {
+      runnerId: "runner-a",
+      hostId: "host-pixel",
+      deviceSerial: "pixel-7",
+      instanceId: "inst-a"
+    };
+
+    assert.equal(
+      await store.claimWebJob({ ...input, nowMs: NOW + 120_000 }),
+      null,
+      "租约在 NOW+60s 到期；NOW+120s 领取必须失败"
+    );
+    const claimed = await store.claimWebJob({ ...input, nowMs: NOW + 1_000 });
+    assert.equal(claimed.task.id, created.task.id);
+    assert.equal(claimed.task.claimedAt, new Date(NOW + 1_000).toISOString());
+  }
+});
+
+test("无租约的高优先级等待任务不会挡住租约持有者（先按租约过滤再排序）", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "claim-filter");
+    const older = await store.createRegressionTask({
+      rootPath,
+      refs: [],
+      platforms: ["android"],
+      baseline: "latest",
+      targetHostId: "host-a",
+      deviceSerial: "a-device",
+      priority: 10,
+      jobSpec: { kind: "web-test", assignment: "manual" }
+    });
+    const newer = await store.createRegressionTask({
+      rootPath,
+      refs: [],
+      platforms: ["android"],
+      baseline: "latest",
+      targetHostId: "host-a",
+      deviceSerial: "a-device",
+      priority: 1,
+      jobSpec: { kind: "web-test", assignment: "manual" }
+    });
+    await store.acquireDeviceLeases({
+      hostId: "host-a",
+      taskId: newer.id,
+      serials: ["a-device"],
+      ttlMs: 60_000,
+      at: new Date(NOW).toISOString()
+    });
+
+    const claimed = await store.claimWebJob({
+      runnerId: "runner-a",
+      hostId: "host-a",
+      deviceSerial: "a-device",
+      instanceId: "inst-a",
+      nowMs: NOW
+    });
+    assert.equal(claimed.task.id, newer.id);
+    assert.equal((await store.getRegressionTask(rootPath, older.id)).status, "pending");
+  }
+});
+
+test("创建租约窗口内 assign/listPending 跳过 binding 任务", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "binding-window");
+    const assets = await makeAssets(store, rootPath);
+    await online(store, "host-pixel", [android("pixel-7", "Pixel 7")]);
+    const seen = { assignBound: -1, pending: -1 };
+    const proxy = new Proxy(store, {
+      get(target, prop) {
+        if (prop === "acquireDeviceLeases") {
+          return async (input) => {
+            seen.pending = (await target.listPendingWebJobs()).length;
+            seen.assignBound = await assignPendingWebJobs({
+              store: target,
+              nowMs: NOW,
+              runnerTtlMs: TTL
+            });
+            return target.acquireDeviceLeases(input);
+          };
+        }
+        const value = target[prop];
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    });
+
+    const created = await createWebJob(jobInput(proxy, rootPath, assets));
+    assert.equal(seen.pending, 0, "binding 任务不进 listPendingWebJobs");
+    assert.equal(seen.assignBound, 0, "并发 assign 不得绑定创建中的任务");
+    assert.equal(created.task.deviceSerial, "pixel-7");
+    assert.notEqual(created.task.jobSpec.binding, true);
+    const pendingAfter = await store.listPendingWebJobs();
+    assert.equal(pendingAfter.length, 1, "绑定完成后回到 pending 列表");
+    assert.notEqual(pendingAfter[0].task.jobSpec.binding, true);
   }
 });
 

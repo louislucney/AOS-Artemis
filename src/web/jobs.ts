@@ -332,6 +332,8 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
     deviceSerial: selection.deviceSerial,
     deviceLeaseId: leaseId
   };
+  // N3：创建窗口内的 pending 任务带 binding 标记，assign/reassign 必须跳过。
+  const bindingSpec: WebJobSpec = { ...boundSpec, binding: true };
   // 安全顺序：先建任务（顶层 serial/lease 为空，claim 不可命中）→ 取租约 → CAS 绑定。
   const task = await input.store.createRegressionTask({
     rootPath: input.rootPath,
@@ -341,7 +343,7 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
     createdBy: input.createdBy ?? null,
     targetHostId: selection.hostId,
     priority: input.priority,
-    jobSpec: specRecord(boundSpec),
+    jobSpec: specRecord(bindingSpec),
     deviceSerial: null,
     deviceLeaseId: null
   });
@@ -518,6 +520,7 @@ export async function assignPendingWebJobs(input: AssignPendingWebJobsInput): Pr
   for (const entry of pending) {
     const spec = parseWebJobSpec(entry.task.jobSpec);
     if (spec === null) continue;
+    if (spec.binding === true) continue;
     if ((spec.reassignCount ?? 0) > WEB_JOB_REASSIGN_LIMIT) continue;
 
     if (entry.task.deviceSerial !== null) {
@@ -575,6 +578,7 @@ export async function reassignExpiredWebJobs(
     if (entry.task.deviceSerial !== null) {
       const spec = parseWebJobSpec(entry.task.jobSpec);
       if (spec === null) continue;
+      if (spec.binding === true) continue;
       const hostId = entry.task.targetHostId;
       if (hostId === null) continue;
       const lease = leases.find(

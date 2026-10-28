@@ -1450,12 +1450,13 @@ export class PostgresStore implements ProjectStore {
     hostId: string;
     deviceSerial: string;
     instanceId: string;
+    nowMs?: number;
   }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
     const host = await this.pool.query("SELECT queue_paused FROM hosts WHERE id = $1", [
       input.hostId
     ]);
     if (host.rows.length > 0 && Boolean(host.rows[0]!.queue_paused)) return null;
-    const claimedAt = new Date().toISOString();
+    const claimedAt = new Date(input.nowMs ?? Date.now()).toISOString();
     const runClaim = async (skipLocked: boolean): Promise<RegressionTaskRecord | null> => {
       return this.withTransaction(async (run) => {
         const lockClause = skipLocked ? "FOR UPDATE SKIP LOCKED" : "FOR UPDATE";
@@ -1509,10 +1510,12 @@ export class PostgresStore implements ProjectStore {
         WHERE t.status = 'pending' AND t.job_spec IS NOT NULL
         ORDER BY t.created_at ASC`
     );
-    return result.rows.map((row) => ({
-      task: mapRegressionTask(row),
-      rootPath: nullableString(row.project_root_path) ?? ""
-    }));
+    return result.rows
+      .map((row) => ({
+        task: mapRegressionTask(row),
+        rootPath: nullableString(row.project_root_path) ?? ""
+      }))
+      .filter((entry) => entry.task.jobSpec?.binding !== true);
   }
 
   private async projectRootPath(projectId: string): Promise<string> {

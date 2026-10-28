@@ -747,16 +747,28 @@ export class MemoryStore implements ProjectStore {
     hostId: string;
     deviceSerial: string;
     instanceId: string;
+    nowMs?: number;
   }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
     const host = this.hosts.find((entry) => entry.id === input.hostId);
     if (host?.queuePaused === true) return null;
+    const nowMs = input.nowMs ?? Date.now();
+    // N2：先按「有本任务的有效租约」过滤，再排序；无租约的等待任务不能挡住后面的租约持有者。
+    const hasLiveLease = (taskId: string): boolean =>
+      this.deviceLeases.some(
+        (entry) =>
+          entry.hostId === input.hostId &&
+          entry.serial === input.deviceSerial &&
+          entry.taskId === taskId &&
+          Date.parse(entry.expiresAt) > nowMs
+      );
     const candidates = this.regressionTasks
       .filter(
         (task) =>
           task.status === "pending" &&
           task.jobSpec !== null &&
           task.targetHostId === input.hostId &&
-          task.deviceSerial === input.deviceSerial
+          task.deviceSerial === input.deviceSerial &&
+          hasLiveLease(task.id)
       )
       .sort(
         (a, b) =>
@@ -765,20 +777,11 @@ export class MemoryStore implements ProjectStore {
       );
     const task = candidates[0];
     if (task === undefined) return null;
-    const nowMs = Date.now();
-    const lease = this.deviceLeases.find(
-      (entry) =>
-        entry.hostId === input.hostId &&
-        entry.serial === input.deviceSerial &&
-        entry.taskId === task.id &&
-        Date.parse(entry.expiresAt) > nowMs
-    );
-    if (lease === undefined) return null;
     const rootPath = this.projectRootPath(task.projectId);
     if (rootPath === null) return null;
     task.status = "claimed";
     task.claimedBy = input.runnerId;
-    task.claimedAt = new Date().toISOString();
+    task.claimedAt = new Date(nowMs).toISOString();
     task.claimedHostId = input.hostId;
     task.claimedInstanceId = input.instanceId;
     return { task: cloneRegressionTask(task), rootPath };
@@ -788,6 +791,7 @@ export class MemoryStore implements ProjectStore {
     const out: Array<{ task: RegressionTaskRecord; rootPath: string }> = [];
     for (const task of this.regressionTasks) {
       if (task.status !== "pending" || task.jobSpec === null) continue;
+      if (task.jobSpec.binding === true) continue;
       const rootPath = this.projectRootPath(task.projectId);
       if (rootPath === null) continue;
       out.push({ task: cloneRegressionTask(task), rootPath });

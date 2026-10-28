@@ -443,11 +443,12 @@ export class FileStore implements ProjectStore {
     hostId: string;
     deviceSerial: string;
     instanceId: string;
+    nowMs?: number;
   }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
     return this.runWebClaimExclusive(async () => {
       const host = await this.hostMem.getHost(input.hostId);
       if (host?.queuePaused === true) return null;
-      const nowMs = Date.now();
+      const nowMs = input.nowMs ?? Date.now();
       const leases = await this.hostMem.listDeviceLeases({ hostId: input.hostId });
       const candidates: Array<{ rootPath: string; task: RegressionTaskRecord }> = [];
       for (const rootPath of this.registry.keys()) {

@@ -46,6 +46,8 @@ export interface WebJobSpec {
   allowPartialUnresolved: boolean;
   assetSnapshot: WebAssetSnapshot[];
   reassignCount?: number;
+  /** 创建事务内的临时标记：lease/绑定尚未完成，assign/reassign 必须跳过。 */
+  binding?: boolean;
   /** 钉设备等待轮次（只用于显式告警，不计入 `reassignCount`，不会触发 unstable-assignment）。 */
   pinnedWaitCount?: number;
   /** 最近一次选机/回池失败原因（pending 任务可见；成功绑定后清空）。 */
@@ -332,6 +334,7 @@ export function parseWebJobSpec(value: Record<string, unknown> | null): WebJobSp
       typeof value.reassignCount === "number" && value.reassignCount >= 0
         ? Math.trunc(value.reassignCount)
         : 0,
+    binding: value.binding === true,
     pinnedWaitCount:
       typeof value.pinnedWaitCount === "number" && value.pinnedWaitCount >= 0
         ? Math.trunc(value.pinnedWaitCount)

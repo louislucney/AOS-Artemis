@@ -973,12 +973,14 @@ export interface ProjectStore {
     offlineBefore: string;
     claimedBefore: string;
   }): Promise<number>;
-  /** 全局原子领取 Web 任务：只命中 pending + job_spec 非空 + target_host_id/device_serial 精确匹配。 */
+  /** 全局原子领取 Web 任务：只命中 pending + job_spec 非空 + target_host_id/device_serial 精确匹配，
+   * 且该任务在 device_leases 有未过期租约。`nowMs` 用于租约过期判定（缺省 Date.now）。 */
   claimWebJob(input: {
     runnerId: string;
     hostId: string;
     deviceSerial: string;
     instanceId: string;
+    nowMs?: number;
   }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null>;
   /** 全局只读 pending web job 列表（回池/面板用），带项目根路径。 */
   listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>>;
