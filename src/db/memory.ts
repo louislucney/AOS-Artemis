@@ -59,7 +59,8 @@ import type {
   UpsertRunnerInput,
   UsageEventQuery,
   UsageEventRecord,
-  UsagePrunePolicy
+  UsagePrunePolicy,
+  WebProjectRecord
 } from "./types.js";
 
 export interface MemoryStoreState {
@@ -78,6 +79,7 @@ export interface MemoryStoreState {
   hostAddresses: HostAddressRecord[];
   hostSessions: HostSessionRecord[];
   deviceLeases: DeviceLeaseRecord[];
+  webProjects: WebProjectRecord[];
 }
 
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
@@ -101,6 +103,7 @@ export class MemoryStore implements ProjectStore {
   private hostAddresses: HostAddressRecord[] = [];
   private hostSessions: HostSessionRecord[] = [];
   private deviceLeases: DeviceLeaseRecord[] = [];
+  private webProjects: WebProjectRecord[] = [];
 
   constructor(
     hostId: string | null = null,
@@ -136,6 +139,7 @@ export class MemoryStore implements ProjectStore {
     view.hostAddresses = this.hostAddresses;
     view.hostSessions = this.hostSessions;
     view.deviceLeases = this.deviceLeases;
+    view.webProjects = this.webProjects;
     return view;
   }
 
@@ -1553,6 +1557,58 @@ export class MemoryStore implements ProjectStore {
     return true;
   }
 
+  async createWebProject(input: {
+    rootPath: string;
+    name: string;
+    normalizedName: string;
+    platforms: string[];
+    appPackage?: string | null;
+    customerName?: string | null;
+    owner?: string | null;
+    projectId?: string | null;
+  }): Promise<WebProjectRecord> {
+    const project = this.getProjectRecord(input.rootPath);
+    const existing = this.webProjects.find(
+      (entry) => entry.normalizedName === input.normalizedName
+    );
+    if (existing) {
+      throw new Error(`同名 Web 项目已存在：${input.normalizedName}`);
+    }
+    const record: WebProjectRecord = {
+      id: randomUUID(),
+      projectId: project?.id ?? null,
+      rootPath: input.rootPath,
+      name: input.name,
+      normalizedName: input.normalizedName,
+      platforms: [...input.platforms],
+      appPackage: input.appPackage ?? null,
+      customerName: input.customerName ?? null,
+      owner: input.owner ?? null,
+      status: "active",
+      createdAt: new Date().toISOString()
+    };
+    this.webProjects.push(record);
+    return cloneWebProject(record);
+  }
+
+  async getWebProject(rootPath: string): Promise<WebProjectRecord | null> {
+    const found = this.webProjects.find((entry) => entry.rootPath === rootPath);
+    return found ? cloneWebProject(found) : null;
+  }
+
+  async listWebProjects(): Promise<WebProjectRecord[]> {
+    return [...this.webProjects]
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+      .map(cloneWebProject);
+  }
+
+  async archiveWebProject(rootPath: string, _at: string): Promise<boolean> {
+    const found = this.webProjects.find((entry) => entry.rootPath === rootPath);
+    if (!found) return false;
+    found.status = "archived";
+    return true;
+  }
+
   usageEventCount(): number {
     return this.usageEvents.length;
   }
@@ -1579,7 +1635,8 @@ export class MemoryStore implements ProjectStore {
       hosts: this.hosts.map(cloneHost),
       hostAddresses: this.hostAddresses.map(cloneHostAddress),
       hostSessions: this.hostSessions.map(cloneHostSession),
-      deviceLeases: this.deviceLeases.map((lease) => ({ ...lease }))
+      deviceLeases: this.deviceLeases.map((lease) => ({ ...lease })),
+      webProjects: this.webProjects.map(cloneWebProject)
     };
   }
 
@@ -1614,6 +1671,7 @@ export class MemoryStore implements ProjectStore {
     if (data.hostAddresses) this.hostAddresses = data.hostAddresses.map(cloneHostAddress);
     if (data.hostSessions) this.hostSessions = data.hostSessions.map(cloneHostSession);
     if (data.deviceLeases) this.deviceLeases = data.deviceLeases.map((lease) => ({ ...lease }));
+    if (data.webProjects) this.webProjects = data.webProjects.map(cloneWebProject);
   }
 
   private pruneUsageEvents(projectId: string | null, policy: UsagePrunePolicy): void {
@@ -1750,6 +1808,10 @@ function cloneHostAddress(record: HostAddressRecord): HostAddressRecord {
 
 function cloneHostSession(record: HostSessionRecord): HostSessionRecord {
   return { ...record };
+}
+
+function cloneWebProject(record: WebProjectRecord): WebProjectRecord {
+  return { ...record, platforms: [...record.platforms] };
 }
 
 function maxIso(...values: Array<string | null | undefined>): string {

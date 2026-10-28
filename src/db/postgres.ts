@@ -62,7 +62,8 @@ import type {
   UsagePrunePolicy,
   AuditEventInput,
   AuditEventRecord,
-  AuditQuery
+  AuditQuery,
+  WebProjectRecord
 } from "./types.js";
 import {
   AmbiguousProjectError,
@@ -384,6 +385,19 @@ const SCHEMA = [
      renew_at TEXT NOT NULL,
      expires_at TEXT NOT NULL,
      PRIMARY KEY (host_id, serial)
+   )`,
+  `CREATE TABLE IF NOT EXISTS web_projects (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     root_path TEXT NOT NULL UNIQUE,
+     name TEXT NOT NULL,
+     normalized_name TEXT NOT NULL UNIQUE,
+     platforms TEXT NOT NULL DEFAULT '[]',
+     app_package TEXT,
+     customer_name TEXT,
+     owner TEXT,
+     status TEXT NOT NULL DEFAULT 'active',
+     created_at TEXT NOT NULL
    )`
 ];
 
@@ -2690,6 +2704,78 @@ export class PostgresStore implements ProjectStore {
     return Number(result.rowCount ?? 0) > 0;
   }
 
+  async createWebProject(input: {
+    rootPath: string;
+    name: string;
+    normalizedName: string;
+    platforms: string[];
+    appPackage?: string | null;
+    customerName?: string | null;
+    owner?: string | null;
+    projectId?: string | null;
+  }): Promise<WebProjectRecord> {
+    const project = await this.getProjectByPath(input.rootPath);
+    const existing = await this.pool.query(
+      "SELECT id FROM web_projects WHERE normalized_name = $1",
+      [input.normalizedName]
+    );
+    if (existing.rows.length > 0) {
+      throw new Error(`同名 Web 项目已存在：${input.normalizedName}`);
+    }
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    try {
+      await this.pool.query(
+        `INSERT INTO web_projects
+           (id, project_id, root_path, name, normalized_name, platforms, app_package,
+            customer_name, owner, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10)`,
+        [
+          id,
+          project?.id ?? null,
+          input.rootPath,
+          input.name,
+          input.normalizedName,
+          JSON.stringify(input.platforms),
+          input.appPackage ?? null,
+          input.customerName ?? null,
+          input.owner ?? null,
+          createdAt
+        ]
+      );
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") {
+        throw new Error(`Web 项目已存在：${input.normalizedName}`);
+      }
+      throw error;
+    }
+    const inserted = await this.pool.query("SELECT * FROM web_projects WHERE id = $1", [id]);
+    return mapWebProject(inserted.rows[0]!);
+  }
+
+  async getWebProject(rootPath: string): Promise<WebProjectRecord | null> {
+    const result = await this.pool.query(
+      "SELECT * FROM web_projects WHERE root_path = $1",
+      [rootPath]
+    );
+    return result.rows.length > 0 ? mapWebProject(result.rows[0]!) : null;
+  }
+
+  async listWebProjects(): Promise<WebProjectRecord[]> {
+    const result = await this.pool.query(
+      "SELECT * FROM web_projects ORDER BY created_at DESC, id DESC"
+    );
+    return result.rows.map(mapWebProject);
+  }
+
+  async archiveWebProject(rootPath: string, _at: string): Promise<boolean> {
+    const updated = await this.pool.query(
+      "UPDATE web_projects SET status = 'archived' WHERE root_path = $1 RETURNING id",
+      [rootPath]
+    );
+    return updated.rows.length > 0;
+  }
+
   private async pruneUsageEvents(
     projectId: string | null,
     policy: UsagePrunePolicy
@@ -3163,6 +3249,22 @@ function mapSchedule(row: Record<string, unknown>): ScheduleRecord {
     lastNote: nullableString(row.last_note),
     createdAt: String(row.created_at),
     createdBy: nullableString(row.created_by)
+  };
+}
+
+function mapWebProject(row: Record<string, unknown>): WebProjectRecord {
+  return {
+    id: String(row.id),
+    projectId: nullableString(row.project_id),
+    rootPath: String(row.root_path),
+    name: String(row.name),
+    normalizedName: String(row.normalized_name),
+    platforms: parseStringArray(row.platforms),
+    appPackage: nullableString(row.app_package),
+    customerName: nullableString(row.customer_name),
+    owner: nullableString(row.owner),
+    status: row.status === "archived" ? "archived" : "active",
+    createdAt: String(row.created_at)
   };
 }
 

@@ -52,7 +52,8 @@ import type {
   UpsertRunnerInput,
   UsageEventQuery,
   UsageEventRecord,
-  UsagePrunePolicy
+  UsagePrunePolicy,
+  WebProjectRecord
 } from "./types.js";
 
 export interface FileStoreOptions {
@@ -1006,6 +1007,44 @@ export class FileStore implements ProjectStore {
       }));
   }
 
+  async createWebProject(input: {
+    rootPath: string;
+    name: string;
+    normalizedName: string;
+    platforms: string[];
+    appPackage?: string | null;
+    customerName?: string | null;
+    owner?: string | null;
+    projectId?: string | null;
+  }): Promise<WebProjectRecord> {
+    const bucket = await this.bucket(input.rootPath);
+    const record = await this.scopedMem(bucket, this.hostId).createWebProject(input);
+    await this.persist(bucket, "createWebProject");
+    return record;
+  }
+
+  async getWebProject(rootPath: string): Promise<WebProjectRecord | null> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).getWebProject(rootPath);
+  }
+
+  async listWebProjects(): Promise<WebProjectRecord[]> {
+    const roots = new Set<string>([...this.registry.keys(), ...this.buckets.keys()]);
+    const out: WebProjectRecord[] = [];
+    for (const rootPath of roots) {
+      const bucket = await this.bucket(rootPath);
+      out.push(...(await bucket.mem.listWebProjects()));
+    }
+    return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  }
+
+  async archiveWebProject(rootPath: string, at: string): Promise<boolean> {
+    const bucket = await this.bucket(rootPath);
+    const archived = await this.scopedMem(bucket, this.hostId).archiveWebProject(rootPath, at);
+    if (archived) await this.persist(bucket, "archiveWebProject");
+    return archived;
+  }
+
   /** 文件台账按项目目录存放、天然属于本机，没有可迁移的跨主机行（中心 `host adopt-legacy` 仅对 PG 生效）。 */
   async adoptProjectHost(): Promise<boolean> {
     return false;
@@ -1226,7 +1265,8 @@ export class FileStore implements ProjectStore {
         hosts: this.hostMem.exportState().hosts,
         hostAddresses: this.hostMem.exportState().hostAddresses,
         hostSessions: this.hostMem.exportState().hostSessions,
-        deviceLeases: this.hostMem.exportState().deviceLeases
+        deviceLeases: this.hostMem.exportState().deviceLeases,
+        webProjects: full.webProjects
       };
       await this.ensureDir(bucket);
       const payload = JSON.stringify({
@@ -1390,6 +1430,9 @@ function mergeStates(disk: Partial<MemoryStoreState>, local: MemoryStoreState): 
   if (disk.suiteRuns) out.suiteRuns = unionBy(disk.suiteRuns, local.suiteRuns, (run) => run.id);
   if (disk.runners) out.runners = unionBy(disk.runners, local.runners, (runner) => runner.id);
   if (disk.schedules) out.schedules = unionBy(disk.schedules, local.schedules, (schedule) => schedule.id);
+  if (disk.webProjects) {
+    out.webProjects = unionBy(disk.webProjects, local.webProjects, (wp) => wp.id);
+  }
   return out;
 }
 

@@ -8,6 +8,22 @@ export interface ProjectRecord {
   lastSeenAt: string;
 }
 
+export type WebProjectStatus = "active" | "archived";
+
+export interface WebProjectRecord {
+  id: string;
+  projectId: string | null;
+  rootPath: string;
+  name: string;
+  normalizedName: string;
+  platforms: string[];
+  appPackage: string | null;
+  customerName: string | null;
+  owner: string | null;
+  status: WebProjectStatus;
+  createdAt: string;
+}
+
 /** 未绑定 host 的 store 按 root_path 查询命中多行（跨主机同路径）时的歧义错误。 */
 export class AmbiguousProjectError extends Error {
   readonly rootPath: string;
@@ -947,6 +963,20 @@ export interface ProjectStore {
   listProjects(): Promise<ProjectRecord[]>;
   /** 把 legacy（host_id 为空）项目行认领到 hostId；目标 host 已有同路径行时不重复创建（返回 false）。 */
   adoptProjectHost(input: { projectId: string; hostId: string }): Promise<boolean>;
+  /** `normalizedName` 已由调用方归一（Task 2）；store 仅按它强制唯一。 */
+  createWebProject(input: {
+    rootPath: string;
+    name: string;
+    normalizedName: string;
+    platforms: string[];
+    appPackage?: string | null;
+    customerName?: string | null;
+    owner?: string | null;
+    projectId?: string | null;
+  }): Promise<WebProjectRecord>;
+  getWebProject(rootPath: string): Promise<WebProjectRecord | null>;
+  listWebProjects(): Promise<WebProjectRecord[]>;
+  archiveWebProject(rootPath: string, at: string): Promise<boolean>;
   ping(): Promise<boolean>;
   close(): Promise<void>;
 }
