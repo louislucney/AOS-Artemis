@@ -63,12 +63,35 @@ function cellText(value) {
   return "";
 }
 
-async function workbookBuffer({ headers = HEADERS, rows = ROWS, sheetName = "用例" } = {}) {
+async function workbookBuffer({
+  headers = HEADERS,
+  rows = ROWS,
+  sheetName = "用例",
+  extraSheets = []
+} = {}) {
   const workbook = new ExcelJS.Workbook();
+  for (const extra of extraSheets) {
+    const sheet = workbook.addWorksheet(extra.name);
+    for (const row of extra.rows) sheet.addRow(row);
+  }
   const sheet = workbook.addWorksheet(sheetName);
   sheet.addRow(headers);
   for (const row of rows) sheet.addRow(row);
   return Buffer.from((await workbook.xlsx.writeBuffer()));
+}
+
+async function saveMapping(
+  store,
+  { rootPath, assetId, sheetName = "用例", caseId = "用例编号", steps = "步骤" }
+) {
+  return store.saveExcelMapping({
+    rootPath,
+    assetId,
+    sheetName,
+    headerFingerprint: `fp-${assetId}`,
+    columnMap: { caseId, steps },
+    createdBy: "alice"
+  });
 }
 
 async function seedJournal(store, { rootPath, assetId, sheetName = "用例" }) {
@@ -140,6 +163,7 @@ test("inherit：下载后原样重上传，未改系统格重播种到新 asset�
     buffer
   });
   await seedJournal(store, { rootPath, assetId: previous.id });
+  await saveMapping(store, { rootPath, assetId: previous.id });
   const reuploaded = await storeWebAsset({
     store,
     rootPath,
@@ -197,6 +221,7 @@ test("inherit：手改某系统格 → 该格 frozen（记入 mismatched），�
     buffer: await workbookBuffer()
   });
   await seedJournal(store, { rootPath, assetId: previous.id });
+  await saveMapping(store, { rootPath, assetId: previous.id });
 
   const editedRows = ROWS.map((row, index) =>
     index === 0 ? [row[0], row[1], row[2], row[3], "人工结论", row[5]] : row
@@ -276,6 +301,7 @@ test("旧 asset 无 journal：全部 frozen，不伪造系统格", async (t) => 
     filename: "cases.xlsx",
     buffer: await workbookBuffer()
   });
+  await saveMapping(store, { rootPath, assetId: previous.id });
   const reuploaded = await storeWebAsset({
     store,
     rootPath,
@@ -295,6 +321,7 @@ test("旧 asset 无 journal：全部 frozen，不伪造系统格", async (t) => 
   assert.equal(result.rebased, 0);
   assert.equal(result.frozen, 6);
   assert.deepEqual(result.mismatched, []);
+  assert.deepEqual(result.warnings, []);
   assert.equal(journalCount(store), 0, "无 journal 不得伪造");
 });
 
@@ -312,6 +339,7 @@ test("inherit 幂等：同 newAssetId 重复 rebase 不重复堆 journal", async
     buffer: await workbookBuffer()
   });
   await seedJournal(store, { rootPath, assetId: previous.id });
+  await saveMapping(store, { rootPath, assetId: previous.id });
   const reuploaded = await storeWebAsset({
     store,
     rootPath,
@@ -452,6 +480,7 @@ test("API 上传：systemColumns 仅 excel、typed 400，inherit 返回计数并
   assert.equal(firstBody.systemColumns.mode, "human", "未传默认 human");
   assert.equal(firstBody.systemColumns.rebased, 0);
   await seedJournal(store, { rootPath, assetId: firstBody.asset.id });
+  await saveMapping(store, { rootPath, assetId: firstBody.asset.id });
 
   const second = await handlePanelActionRequest(
     await upload(await workbookBuffer(), {
@@ -502,6 +531,8 @@ test("API 上传：inherit 遇无 journal 旧版本仍成功，全部冻结并�
     deps
   );
   assert.equal(first.status, 200, first.body);
+  const firstBody = JSON.parse(first.body);
+  await saveMapping(store, { rootPath, assetId: firstBody.asset.id });
 
   const second = await handlePanelActionRequest(
     await upload(await workbookBuffer(), {
@@ -515,5 +546,159 @@ test("API 上传：inherit 遇无 journal 旧版本仍成功，全部冻结并�
   assert.equal(body.systemColumns.rebased, 0);
   assert.equal(body.systemColumns.frozen, 6);
   assert.deepEqual(body.systemColumns.mismatched, []);
+  assert.deepEqual(body.systemColumns.warnings, []);
   assert.equal((await store.listWebAssets(rootPath, "excel")).length, 2);
+});
+
+test("inherit：多表工作簿按上一版本映射的工作表重播种（不读第一张表）", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  const store = new MemoryStore();
+  await makeProject(store, rootPath);
+
+  const buffer = await workbookBuffer({
+    extraSheets: [
+      {
+        name: "说明",
+        rows: [
+          ["执行｜结果", "执行｜traceId"],
+          ["不是用例表", "decoy-trace"]
+        ]
+      }
+    ]
+  });
+  const previous = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer
+  });
+  await seedJournal(store, { rootPath, assetId: previous.id });
+  await saveMapping(store, { rootPath, assetId: previous.id, sheetName: "用例" });
+
+  const reuploaded = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer
+  });
+  const result = await rebaseWorkbookJournal({
+    store,
+    rootPath,
+    previousAssetId: previous.id,
+    newAssetId: reuploaded.id,
+    workbookPath: reuploaded.storagePath,
+    mode: "inherit"
+  });
+  assert.equal(result.rebased, 6);
+  assert.equal(result.frozen, 0);
+  assert.deepEqual(result.warnings, []);
+  assert.equal(await lastValue(store, rootPath, reuploaded.id, "TC-1", "result"), "FAIL");
+  const records = await store.lastExcelWritebackByCellKey(
+    rootPath,
+    reuploaded.id,
+    "说明",
+    "不是用例表",
+    "result"
+  );
+  assert.equal(records, null, "不得从其他工作表读系统格");
+});
+
+test("inherit：上一版本没有保存映射 → 告警并全部冻结（不静默 0/0）", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  const store = new MemoryStore();
+  await makeProject(store, rootPath);
+
+  const previous = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: await workbookBuffer()
+  });
+  await seedJournal(store, { rootPath, assetId: previous.id });
+  const before = journalCount(store);
+  const reuploaded = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: await workbookBuffer()
+  });
+
+  const result = await rebaseWorkbookJournal({
+    store,
+    rootPath,
+    previousAssetId: previous.id,
+    newAssetId: reuploaded.id,
+    workbookPath: reuploaded.storagePath,
+    mode: "inherit"
+  });
+  assert.equal(result.rebased, 0);
+  assert.equal(result.frozen, 6, "仍如实统计冻结格，不返回 0/0");
+  assert.ok(
+    result.warnings.some((warning) => /列映射/.test(warning)),
+    `缺少映射必须告警：${result.warnings.join("；")}`
+  );
+  assert.equal(journalCount(store), before, "无映射不得重播种");
+});
+
+test("inherit：单格 journal 写入失败只冻结该格，计数与告警如实反映部分重播种", async (t) => {
+  const workspace = await tempDir(t);
+  const rootPath = path.join(workspace, "acme");
+  const store = new MemoryStore();
+  await makeProject(store, rootPath);
+
+  const previous = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: await workbookBuffer()
+  });
+  await seedJournal(store, { rootPath, assetId: previous.id });
+  await saveMapping(store, { rootPath, assetId: previous.id });
+  const seeded = journalCount(store);
+  const reuploaded = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: await workbookBuffer()
+  });
+
+  let writes = 0;
+  const failing = new Proxy(store, {
+    get(target, property) {
+      if (property === "recordExcelWriteback") {
+        return async (input) => {
+          if (writes >= 2) throw new Error("journal down");
+          writes += 1;
+          return target.recordExcelWriteback(input);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+
+  const result = await rebaseWorkbookJournal({
+    store: failing,
+    rootPath,
+    previousAssetId: previous.id,
+    newAssetId: reuploaded.id,
+    workbookPath: reuploaded.storagePath,
+    mode: "inherit"
+  });
+  assert.equal(result.rebased, 2, "已落地的 journal 行必须计入 rebased");
+  assert.equal(result.frozen, 4);
+  assert.equal(journalCount(store), seeded + 2);
+  assert.ok(
+    result.warnings.some((warning) => /重播种失败/.test(warning)),
+    `单格失败必须告警：${result.warnings.join("；")}`
+  );
+  assert.equal(result.warnings.length, 4);
 });

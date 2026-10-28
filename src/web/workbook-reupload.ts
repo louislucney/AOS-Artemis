@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import ExcelJS from "exceljs";
 
-import type { ProjectStore } from "../db/types.js";
+import type { ExcelMappingRecord, ProjectStore } from "../db/types.js";
 import { errorMessage } from "../util.js";
 import { COLUMN_ALIASES, normalizeExcelHeader } from "./excel-columns.js";
 import { readExcelHeaders } from "./excel.js";
@@ -109,16 +109,14 @@ function emptyResult(
   return { mode, rebased: 0, frozen: 0, mismatched: [], systemHeaders, warnings };
 }
 
-async function preferredCaseIdHeader(input: RebaseWorkbookJournalInput): Promise<string | null> {
-  const explicit = (input.caseIdHeader ?? "").trim();
-  if (explicit !== "") return explicit;
+/** 上一版本资产的最新列映射（工作表名 + 用例编号表头都以它为准）。 */
+async function savedMapping(
+  input: RebaseWorkbookJournalInput
+): Promise<ExcelMappingRecord | null> {
   if (input.previousAssetId === null) return null;
   const mappings = await input.store.listExcelMappings(input.rootPath, input.previousAssetId);
-  for (const mapping of mappings) {
-    const header = typeof mapping.columnMap.caseId === "string" ? mapping.columnMap.caseId : "";
-    if (header.trim() !== "") return header.trim();
-  }
-  return null;
+  const mapping = mappings.find((candidate) => candidate.sheetName.trim() !== "");
+  return mapping ?? null;
 }
 
 /**
@@ -140,11 +138,21 @@ export async function rebaseWorkbookJournal(
     return emptyResult(mode, warnings);
   }
 
+  // 工作表名与用例编号表头必须成对取自上一版本保存的映射：多表工作簿默认读第一张表会
+  // 静默错表（甚至读成空）。显式参数是唯一不需要映射的入口。
+  const mapping = await savedMapping(input);
+  const explicitCaseId = (input.caseIdHeader ?? "").trim();
+  const mappedSheet = mapping?.sheetName.trim() ?? "";
+  const targetSheet =
+    input.sheetName ?? (mappedSheet === "" ? undefined : mappedSheet);
+  const preferredCaseId =
+    explicitCaseId !== "" ? explicitCaseId : (mapping?.columnMap.caseId ?? null);
+
   let headers: string[];
   let sheetName: string;
   try {
     const loaded = await readExcelHeaders(buffer, {
-      ...(input.sheetName === undefined ? {} : { sheetName: input.sheetName }),
+      ...(targetSheet === undefined ? {} : { sheetName: targetSheet }),
       ...(input.headerRow === undefined ? {} : { headerRow: input.headerRow })
     });
     headers = loaded.headers;
@@ -154,7 +162,15 @@ export async function rebaseWorkbookJournal(
     return emptyResult(mode, warnings);
   }
 
-  const caseIdHeader = resolveCaseIdHeader(headers, await preferredCaseIdHeader(input));
+  const inheritWithoutMapping =
+    mode === "inherit" && mapping === null && explicitCaseId === "" && targetSheet === undefined;
+  if (inheritWithoutMapping) {
+    warnings.push(
+      "上一版本没有保存列映射：无法确认工作表与用例编号列，系统格全部按人工内容冻结（请先保存列映射后重试 inherit）"
+    );
+  }
+
+  const caseIdHeader = resolveCaseIdHeader(headers, preferredCaseId);
   if (caseIdHeader === null) {
     warnings.push("找不到用例编号列：无法重播种系统格 journal（全部按人工内容冻结）");
     return emptyResult(mode, warnings, []);
@@ -179,6 +195,9 @@ export async function rebaseWorkbookJournal(
     }
   }
   if (located.size === 0) {
+    if (mode === "inherit") {
+      warnings.push("未识别到 8 个固定系统列：没有可重播种的系统格（全部按人工内容冻结）");
+    }
     return emptyResult(mode, warnings, detected);
   }
 
@@ -216,6 +235,7 @@ export async function rebaseWorkbookJournal(
   let frozen = 0;
   const mismatched: string[] = [];
   let mismatchedTruncated = false;
+  const inheritEnabled = mode === "inherit" && !inheritWithoutMapping;
 
   for (const row of rows) {
     for (const [key, column] of located) {
@@ -224,64 +244,72 @@ export async function rebaseWorkbookJournal(
       const value = cellText(cell).trim();
       if (value === "") continue;
 
-      if (mode === "human") {
+      if (!inheritEnabled) {
         frozen += 1;
         continue;
       }
 
-      const previous =
-        input.previousAssetId === null
-          ? null
-          : await input.store.lastExcelWritebackByCellKey(
-              rootPath,
-              input.previousAssetId,
-              sheetName,
-              row.caseId,
-              key
-            );
-      const previousValue = previous === null ? "" : previous.value.trim();
-      if (previousValue === "") {
-        frozen += 1;
-        continue;
-      }
-      if (previousValue !== value) {
-        frozen += 1;
-        if (mismatched.length < MAX_MISMATCHED_REPORTED) {
-          mismatched.push(`${row.caseId}「${column.header}」`);
-        } else {
-          mismatchedTruncated = true;
-        }
-        continue;
-      }
-
-      const seeded = await input.store.lastExcelWritebackByCellKey(
-        rootPath,
-        input.newAssetId,
-        sheetName,
-        row.caseId,
-        key
-      );
-      if (seeded !== null) {
-        if (seeded.value.trim() === value) {
-          rebased += 1;
-        } else {
+      // 单格失败只冻结该格：已落地的 journal 行必须体现在计数/审计里（不能外层清零）。
+      try {
+        const previous =
+          input.previousAssetId === null
+            ? null
+            : await input.store.lastExcelWritebackByCellKey(
+                rootPath,
+                input.previousAssetId,
+                sheetName,
+                row.caseId,
+                key
+              );
+        const previousValue = previous === null ? "" : previous.value.trim();
+        if (previousValue === "") {
           frozen += 1;
+          continue;
         }
-        continue;
-      }
+        if (previousValue !== value) {
+          frozen += 1;
+          if (mismatched.length < MAX_MISMATCHED_REPORTED) {
+            mismatched.push(`${row.caseId}「${column.header}」`);
+          } else {
+            mismatchedTruncated = true;
+          }
+          continue;
+        }
 
-      await input.store.recordExcelWriteback({
-        rootPath,
-        assetId: input.newAssetId,
-        sheetName,
-        caseId: row.caseId,
-        columnKey: key,
-        cellRef: `${sheetName}!${cell.address}`,
-        value,
-        actor: input.actor ?? null,
-        ...(input.writtenAt === undefined ? {} : { writtenAt: input.writtenAt })
-      });
-      rebased += 1;
+        const seeded = await input.store.lastExcelWritebackByCellKey(
+          rootPath,
+          input.newAssetId,
+          sheetName,
+          row.caseId,
+          key
+        );
+        if (seeded !== null) {
+          if (seeded.value.trim() === value) {
+            rebased += 1;
+          } else {
+            frozen += 1;
+          }
+          continue;
+        }
+
+        await input.store.recordExcelWriteback({
+          rootPath,
+          assetId: input.newAssetId,
+          sheetName,
+          caseId: row.caseId,
+          columnKey: key,
+          cellRef: `${sheetName}!${cell.address}`,
+          value,
+          actor: input.actor ?? null,
+          ...(input.writtenAt === undefined ? {} : { writtenAt: input.writtenAt })
+        });
+        rebased += 1;
+      } catch (error) {
+        frozen += 1;
+        warnings.push(
+          `重播种失败：${row.caseId}「${column.header}」（${errorMessage(error)}），按人工内容冻结`
+        );
+      }
     }
   }
 
