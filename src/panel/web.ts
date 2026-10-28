@@ -951,16 +951,22 @@ function uiBadge(
       ? `<span class="chip" title="字重仅提示，不参与 UI 门禁">字重 heavier ${text.heavier}/${text.checked}${text.unverified > 0 ? ` · 未验证 ${text.unverified}` : ""}</span>`
       : "";
   const coverageChip =
-    coverage !== undefined && coverage !== null && coverage.contractScreens > 0
+    coverage !== undefined &&
+    coverage !== null &&
+    (coverage.contractScreens > 0 || (coverage.contractStates ?? 0) > 0)
       ? (() => {
+          const states = coverage.contractStates ?? 0;
           const missing = coverage.contractNotCompared
             .slice(0, 10)
             .map((screen) => screen.name || screen.id)
             .join("、");
-          const title = `UI 覆盖：已比对 ${coverage.comparedScreens.length} / 契约 ${coverage.contractScreens}；未覆盖 ${coverage.contractNotCompared.length}${
+          const scope = `契约 ${coverage.contractScreens} 屏${states > 0 ? ` + ${states} 状态` : ""}`;
+          const title = `UI 覆盖：已比对 ${coverage.comparedScreens.length} / ${scope}；未覆盖 ${coverage.contractNotCompared.length}${
             missing === "" ? "" : `（${missing}${coverage.contractNotCompared.length > 10 ? "…" : ""}）`
           }`;
           return `<span class="chip" title="${escapeHtml(title)}">UI 覆盖 ${coverage.comparedScreens.length}/${coverage.contractScreens}${
+            states > 0 ? `+${states}` : ""
+          }${
             coverage.contractNotCompared.length > 0
               ? ` · 未覆盖 ${coverage.contractNotCompared.length}`
               : ""

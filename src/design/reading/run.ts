@@ -486,6 +486,18 @@ export async function runDesignReading(input: {
     let calls = 0;
     let reused = 0;
     const warnings: FlowWarning[] = [...answersLoad.warnings];
+    const statesWithoutImages = loaded.screens.filter(
+      (screen) => screen.kind === "state" && screen.imagePath === null
+    );
+    if (statesWithoutImages.length > 0) {
+      warnings.push(
+        chunkWarning(
+          "reading-state-image-missing",
+          `${statesWithoutImages.length} 个状态变体缺少截图，无法完成视觉阅读`,
+          statesWithoutImages.slice(0, 12).map((screen) => `${screen.name} (${screen.id})`)
+        )
+      );
+    }
     if (
       input.options?.includeStates === true &&
       !loaded.screens.some((screen) => screen.kind === "state")

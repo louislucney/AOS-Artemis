@@ -84,7 +84,9 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
       readingStates: z
         .boolean()
         .optional()
-        .describe("是否把 pen 状态变体（如「行動預點-下滑」）也作为独立屏阅读，默认 false"),
+        .describe(
+          "是否把 pen 状态变体（如「行動預點-下滑」）也作为独立屏阅读；缺省在 flows.json 有 states 时开启，显式 false 关闭并返回 states-not-read 警告"
+        ),
       allowPendingApi: z
         .boolean()
         .optional()

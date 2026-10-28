@@ -6,7 +6,7 @@ import test from "node:test";
 import { buildUiContract } from "../dist/ui/contract.js";
 import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
 
-function writeDesign(dir, { withPen }) {
+function writeDesign(dir, { withPen, withStatePen = false }) {
   const design = path.join(dir, ".artemis", "design");
   fs.mkdirSync(path.join(design, "pen", "screens"), { recursive: true });
   fs.writeFileSync(
@@ -14,7 +14,19 @@ function writeDesign(dir, { withPen }) {
     JSON.stringify({
       schemaVersion: 3,
       screens: [
-        { id: "s1", name: "首頁", sourceFrameName: "Screen 1" },
+        {
+          id: "s1",
+          name: "首頁",
+          sourceFrameName: "Screen 1",
+          ...(withStatePen
+            ? {
+                states: [
+                  { id: "st1", label: "首頁-下滑", frameName: "Screen 1 Scrolled" },
+                  { id: "st1-dup", label: "首頁／下滑", frameName: "Screen 1 Scrolled (dup)" }
+                ]
+              }
+            : {})
+        },
         { id: "s2", name: "彈窗", sourceFrameName: "Popup" }
       ],
       edges: [],
@@ -85,6 +97,42 @@ function writeDesign(dir, { withPen }) {
       "utf-8"
     );
   }
+  if (withStatePen) {
+    fs.mkdirSync(path.join(design, "pen", "states"), { recursive: true });
+    fs.writeFileSync(
+      path.join(design, "pen", "states", "st1.pen"),
+      JSON.stringify({
+        version: "2.20",
+        children: [
+          {
+            type: "frame",
+            id: "st1",
+            name: "Screen 1 Scrolled",
+            x: 0,
+            y: 0,
+            width: 375,
+            height: 812,
+            children: [
+              {
+                type: "text",
+                id: "state-title",
+                name: "Title",
+                x: 16,
+                y: 20,
+                width: 200,
+                height: 24,
+                fontSize: 18,
+                fontFamily: "SF Pro Text",
+                fontWeight: "700",
+                content: "已折叠"
+              }
+            ]
+          }
+        ]
+      }),
+      "utf-8"
+    );
+  }
 }
 
 test("ui contract: projects flows + per-screen pen tokens with four-state status", async () => {
@@ -123,6 +171,35 @@ test("ui contract: projects flows + per-screen pen tokens with four-state status
   assert.equal(built.contract.source.fingerprint.length, 64);
   assert.ok(fs.existsSync(built.jsonPath));
   assert.match(fs.readFileSync(built.markdownPath, "utf-8"), /首頁/);
+});
+
+test("ui contract: flows states become state contracts with parent + state pen", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  writeDesign(dir, { withPen: true, withStatePen: true });
+  const design = path.join(dir, ".artemis", "design");
+  const { runtime } = await loadTestRuntime(dir);
+  const built = buildUiContract(runtime, { designRoot: design });
+
+  const state = built.contract.screens.find((entry) => entry.id === "st1");
+  assert.ok(state, "状态变体进入契约");
+  assert.equal(state.presentation, "state");
+  assert.equal(state.parentScreenId, "s1");
+  assert.equal(state.name, "首頁-下滑");
+  assert.equal(state.sourceFrameName, "Screen 1 Scrolled");
+  assert.equal(state.status, "extracted");
+  assert.ok(state.tokens.fontSizes.includes(18));
+  assert.equal(
+    built.contract.screens.filter((entry) => entry.name === "首頁-下滑").length,
+    1,
+    "重复状态标签只保留第一条"
+  );
+  assert.deepEqual(built.contract.counts, { screens: 2, states: 1 });
+  assert.match(fs.readFileSync(built.markdownPath, "utf-8"), /首頁-下滑/);
+
+  const before = built.contract.source.fingerprint;
+  fs.appendFileSync(path.join(design, "pen", "states", "st1.pen"), " ");
+  const after = buildUiContract(runtime, { designRoot: design });
+  assert.notEqual(after.contract.source.fingerprint, before, "状态 .pen 变化会推进契约指纹");
 });
 
 test("ui contract: boundsProvider resolves auto-layout text geometry", async () => {

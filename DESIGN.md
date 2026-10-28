@@ -3128,3 +3128,16 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **归档与跨主机写路径闸门**（`src/web/project-service.ts` + `src/panel/actions.ts`）：`assertProjectActive(store, rootPath)` 拒绝非托管/非 active 项目（`WebProjectStateError` → 409，`project-archived`/`not-a-web-project`），接在资产上传与映射保存；资产页与 `/panel.json` 显示 `projectStatus`，归档时禁用上传/保存并说明只读。跨主机（`resolved.hostId` 非空且不等于 `deps.localHostId ?? store.localHostId`）的上传/预览/映射统一 409 `cross-host-write`，提示回项目机执行；`storeWebAsset` 不再 `mkdir` 项目根，根不存在抛 `WebAssetError("project-root-missing")`（409）。
 - **projectId 传播**：`storeWebAsset` 不再显式写 `projectId: web?.projectId ?? null`，未知时省略字段由 store 从 `upsertProject` 解析；`createWebProject` 在 `upsertProject` 后经新 store 方法 `linkWebProjectProjectId` 回填 `web.projectId`（Memory/File/PG）。E2E/资产测试断言 `asset.projectId === project.id`。
 - **测试**：`web-writeback`（图表/透视/宏拒绝且字节不变、lostParts、正常写回自检、冷启动双分支、插入行 journal 归属、损坏副本改名留档、EISDIR 不重建、三 store 按业务键查询）；`web-project-service`（并发创建、projectId 补链）；`web-project-api`（失败审计哨兵 + 同名重试、archive 未知不建目录）；`web-assets`（不代建根、归档 409、跨主机 409、projectId）；`web-excel-mapping`（归档保存 409/预览可读、跨主机预览/保存 409）；`web-assets-ui`（归档状态与禁用）；E2E 改用业务键适配器并断言资产 projectId。
+
+### 13.257 新增（design_to_test 状态变体覆盖：states 阅读 / ui-contract / uiCoverage）
+
+> 2026-10-28。修复 starbuckstw 反馈：`design_to_test` 静默跳过 flows.json 的 `screens[].states[]`，`ui-contract` 只投影主屏，`uiCoverage` 也不区分状态，导致「行動預點-下滑」（`n6dGB`）这类滚动/吸顶/弹窗态既不读、也不进对照清单。现在状态变体必须显式可见，不能再静默漏掉。
+
+- **默认阅读状态**（`src/workflow/design-to-test.ts`）：`readingStates` 缺省改为「flows.json 存在 states 时开启」；显式 `readingStates:false` 时返回 `states-not-read` 警告（含状态数与前 12 个 `label (id，父屏 …)`），阅读未执行/未完成时同样告警。`readingStates:true` 仍原样透传 `includeStates`。工具 schema 描述同步。
+- **状态截图缺失可见**（`src/design/reading/run.ts`）：`includeStates:true` 时若状态变体没有截图，返回 `reading-state-image-missing`（含状态 id/名称），不再只报「块无可用截图」；旧项目需重跑设计提取以生成状态 PNG。
+- **ui-contract 投影状态**（`src/ui/contract.ts`）：`readFlows()` 读取 `screens[].states[]`，按归一化 label 去重并跳过与父屏同名项；契约项新增 `presentation:"screen"|"state"` 与 `parentScreenId`，`counts:{screens,states}` 记录范围；`penFileFor()` 查找 `pen/states/<id>.pen`，`renderFor()` 兼容状态渲染图，契约指纹纳入 `pen/states/*.pen`，markdown 显示主屏/状态数量与父屏。`suite ui-contract` 文本/JSON 输出同步。
+- **uiCoverage 区分 screen/state**（`src/ui/verification.ts`、`src/figma/suite-runner.ts`）：`UiScreenRef` 增加 `presentation`/`parentScreenId`；汇总新增 `contractStates`、`contractNotComparedScreens`、`contractNotComparedStates`，`contractScreens` 仍表示主屏数；面板 chip 与 `suite run` 文本在存在状态时显示 `契约 N 屏 + M 状态`。
+- **run 结束显式列出未核验状态**（`src/workflow/design-to-test.ts`）：`uiDiff` 开启且契约含状态时，按实际 `comparedScreens` 计算未比对状态，返回 `ui-states-not-verified`（含数量与前 12 个名称/id）；原 `ui-not-verified` 保留。
+- **验收**：starbuckstw 现有 flows 投影为 `主屏 19 · 状态 18`，`n6dGB（行動預點-下滑，父屏 Z4OR6X）` 进入契约；随后 run 的 `uiCoverage.contractNotComparedStates` 会列出未比对状态，`ui-states-not-verified` 给出名称，不再只有一条 summary。
+- **测试**：`ui-contract`（状态 pen → presentation/parent/counts、重复 label 去重、状态 pen 改指纹）；`ui-auto-check`（contractStates 与未覆盖状态拆分）；`workflow-design-to-test`（有 states 默认 `includeStates:true`；显式 false 时 `states-not-read` 含 n6dGB）；`ui-contract.test` 现有主屏用例保持。
+- **边界/后续**：状态用例生成（下滑手势、展开/收起点击、弹窗触发）尚未自动生成，仍由人工/后续计划补；旧 flows 没有状态 PNG 时只告警，不伪造视觉阅读；原始 28 个 state 中同 label/父屏同名的 10 个按去重规则折叠为 18 个。

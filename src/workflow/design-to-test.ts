@@ -70,7 +70,7 @@ export interface DesignToTestArgs {
   /** "auto"（默认，屏 ≥6 且视觉可用时读）| true 强制 | false 关闭。 */
   reading?: "auto" | boolean;
   readingMaxScreens?: number;
-  /** 是否把 pen 状态变体也纳入阅读（默认 false）。 */
+  /** 是否把 pen 状态变体也纳入阅读；缺省在 flows.json 有 states 时开启。 */
   readingStates?: boolean;
   /** API 说明 pending 时仍允许执行（默认阻断）。 */
   allowPendingApi?: boolean;
@@ -201,6 +201,55 @@ function readingResponse(result: DesignReadingResult): Record<string, unknown> {
     stats: result.stats,
     artifacts: result.artifacts
   };
+}
+
+interface FlowStateRef {
+  id: string;
+  label: string;
+  parent: string;
+}
+
+function readFlowStates(flowsPath: string): FlowStateRef[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(flowsPath, "utf-8")) as {
+      screens?: Array<{
+        id?: unknown;
+        name?: unknown;
+        states?: Array<{ id?: unknown; label?: unknown; frameName?: unknown }>;
+      }>;
+    };
+    const out: FlowStateRef[] = [];
+    for (const screen of Array.isArray(parsed.screens) ? parsed.screens : []) {
+      if (!screen || typeof screen !== "object") continue;
+      const parent =
+        typeof screen.name === "string"
+          ? screen.name
+          : typeof screen.id === "string"
+            ? screen.id
+            : "unknown";
+      for (const state of Array.isArray(screen.states) ? screen.states : []) {
+        if (!state || typeof state !== "object") continue;
+        const id = typeof state.id === "string" ? state.id.trim() : "";
+        const label =
+          typeof state.label === "string"
+            ? state.label.trim()
+            : typeof state.frameName === "string"
+              ? state.frameName.trim()
+              : "";
+        if (id === "") continue;
+        out.push({ id, label: label === "" ? id : label, parent });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function stateRefDetails(states: FlowStateRef[], limit = 12): string[] {
+  return states
+    .slice(0, limit)
+    .map((state) => `${state.label} (${state.id}，父屏 ${state.parent})`);
 }
 
 function skippedReading(reason: string, code: string): DesignReadingResult {
@@ -393,6 +442,8 @@ export async function designToTest(
     });
   }
 
+  const flowStates = readFlowStates(flowsPath);
+  const includeStates = args.readingStates ?? flowStates.length > 0;
   const readingMode = args.reading ?? "auto";
   if (readingMode !== false && (readingMode === true || (screenCount ?? 0) >= 6)) {
     let chat = deps.readingChat;
@@ -451,8 +502,8 @@ export async function designToTest(
           ...(args.readingMaxScreens !== undefined
             ? { maxScreens: args.readingMaxScreens }
             : {}),
-          ...(args.readingStates !== undefined
-            ? { includeStates: args.readingStates }
+          ...(args.readingStates !== undefined || flowStates.length > 0
+            ? { includeStates }
             : {})
         };
         reading = await (deps.readDesign ?? runDesignReading)({
@@ -488,6 +539,28 @@ export async function designToTest(
         };
         warningsAvailable = true;
       }
+    }
+  }
+
+  if (flowStates.length > 0) {
+    const readingRan = reading !== null && reading.reading !== null;
+    if (!includeStates || !readingRan) {
+      const reason = !includeStates
+        ? "readingStates:false 未读"
+        : reading === null
+          ? "本次未执行设计阅读"
+          : "本次设计阅读未完成";
+      const warning: DesignWarning = {
+        code: "states-not-read",
+        message: `flows.json 含 ${flowStates.length} 个状态变体，${reason}；ui-contract / UI 覆盖账本仍会列出这些状态，不能视为已覆盖`,
+        details: stateRefDetails(flowStates)
+      };
+      warnings = [...warnings, warning];
+      warningsBySource = {
+        ...warningsBySource,
+        reading: (warningsBySource.reading ?? 0) + 1
+      };
+      warningsAvailable = true;
     }
   }
 
@@ -833,6 +906,27 @@ export async function designToTest(
           message: `本次未完成任何设计对比（未核验 ${uiSummary.unverified} 条）；结果不代表与设计一致`
         }
       ];
+    }
+    if (uiDiffEnabled && builtContract !== null) {
+      const comparedIds = new Set(
+        (report.uiCoverage?.comparedScreens ?? []).map((screen) => screen.id)
+      );
+      const stateContracts = builtContract.screens.filter(
+        (screen) => screen.presentation === "state"
+      );
+      const unverifiedStates = stateContracts.filter((screen) => !comparedIds.has(screen.id));
+      if (unverifiedStates.length > 0) {
+        warnings = [
+          ...warnings,
+          {
+            code: "ui-states-not-verified",
+            message: `${unverifiedStates.length} 个设计状态变体未完成对比（共 ${stateContracts.length} 个）；状态差异不代表已核验`,
+            details: unverifiedStates
+              .slice(0, 12)
+              .map((screen) => `${screen.name} (${screen.id})`)
+          }
+        ];
+      }
     }
     runSummary = {
       device,

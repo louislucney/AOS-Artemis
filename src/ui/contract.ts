@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { normalizeMatchText } from "../design/reading/naming.js";
 import { pngDimensions } from "../design/screens.js";
 import type { PenTextBound } from "../pen/bounds.js";
 import { loadPenDocument } from "../pen/paths.js";
@@ -49,7 +50,10 @@ export interface UiScreenContract {
   id: string;
   name: string;
   sourceFrameName: string | null;
-  presentation: "screen" | "unknown";
+  /** `state` 是 flows.json `screens[].states[]` 的设计变体（下滑/展开/弹窗等）。 */
+  presentation: "screen" | "state" | "unknown";
+  /** 仅 state：所属主屏 id。 */
+  parentScreenId?: string;
   status: UiContractStatus;
   geometry: { nodes: number; withGeometry: number; missingGeometry: number };
   tokens: {
@@ -75,7 +79,10 @@ export interface UiContract {
   schemaVersion: 1;
   generatedAt: string;
   source: { flows: string; designRoot: string; fingerprint: string };
+  /** 主屏 + 状态变体；按 `presentation` 区分。 */
   screens: UiScreenContract[];
+  /** 主屏/状态数量；旧契约可能没有该字段。 */
+  counts?: { screens: number; states: number };
   summary: Record<UiContractStatus, number>;
   warnings: string[];
 }
@@ -279,6 +286,7 @@ function inspectPen(file: string): {
 function penFileFor(designRoot: string, screenId: string): string | null {
   const candidates = [
     path.join(designRoot, "pen", "screens", `${screenId}.pen`),
+    path.join(designRoot, "pen", "states", `${screenId}.pen`),
     path.join(designRoot, "pen", `${screenId}.pen`)
   ];
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
@@ -300,7 +308,8 @@ function flowsPenSource(flowsPath: string, rootDir: string): string | null {
 function renderFor(designRoot: string, screenId: string): string | null {
   const candidates = [
     path.join(designRoot, "screens", "pen-untitled", `${screenId}.png`),
-    path.join(designRoot, "pen", "screens", `${screenId}.png`)
+    path.join(designRoot, "pen", "screens", `${screenId}.png`),
+    path.join(designRoot, "pen", "states", `${screenId}.png`)
   ];
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
@@ -316,16 +325,19 @@ function fingerprintOf(flowsPath: string, designRoot: string): string {
   const hash = createHash("sha256");
   const flows = fs.readFileSync(flowsPath);
   hash.update(flows);
-  const screensDir = path.join(designRoot, "pen", "screens");
-  let names: string[] = [];
-  try {
-    names = fs.readdirSync(screensDir).filter((name) => name.endsWith(".pen")).sort();
-  } catch {
-    /* no split pen files */
-  }
-  for (const name of names) {
-    hash.update(name);
-    hash.update(fs.readFileSync(path.join(screensDir, name)));
+  for (const sub of ["screens", "states"] as const) {
+    const dir = path.join(designRoot, "pen", sub);
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(dir).filter((name) => name.endsWith(".pen")).sort();
+    } catch {
+      /* no split pen files */
+    }
+    for (const name of names) {
+      // 保持旧契约（仅主屏）的指纹不变；状态文件以 `states/` 前缀纳入。
+      hash.update(sub === "screens" ? name : `states/${name}`);
+      hash.update(fs.readFileSync(path.join(dir, name)));
+    }
   }
   return hash.digest("hex");
 }
@@ -335,21 +347,70 @@ export function uiContractFingerprint(flowsPath: string, designRoot: string): st
   return fingerprintOf(flowsPath, designRoot);
 }
 
-function readFlows(flowsPath: string): Array<{ id: string; name: string; sourceFrameName?: string }> {
+interface FlowScreenRef {
+  id: string;
+  name: string;
+  sourceFrameName?: string;
+  presentation: "screen" | "state";
+  parentScreenId?: string;
+}
+
+function readFlows(flowsPath: string): FlowScreenRef[] {
   const parsed = JSON.parse(fs.readFileSync(flowsPath, "utf-8")) as {
-    screens?: Array<{ id?: unknown; name?: unknown; sourceFrameName?: unknown }>;
+    screens?: Array<{
+      id?: unknown;
+      name?: unknown;
+      sourceFrameName?: unknown;
+      states?: Array<{ id?: unknown; label?: unknown; frameName?: unknown }>;
+    }>;
   };
   const screens = Array.isArray(parsed.screens) ? parsed.screens : [];
-  return screens
-    .filter(
-      (screen): screen is { id: string; name: string; sourceFrameName?: string } =>
-        typeof screen?.id === "string" && screen.id.length > 0 && typeof screen?.name === "string"
-    )
-    .map((screen) => ({
+  const refs: FlowScreenRef[] = [];
+  const seenIds = new Set<string>();
+  for (const screen of screens) {
+    if (
+      typeof screen?.id !== "string" ||
+      screen.id.length === 0 ||
+      typeof screen?.name !== "string"
+    ) {
+      continue;
+    }
+    const main: FlowScreenRef = {
       id: screen.id,
       name: screen.name,
-      ...(typeof screen.sourceFrameName === "string" ? { sourceFrameName: screen.sourceFrameName } : {})
-    }));
+      presentation: "screen",
+      ...(typeof screen.sourceFrameName === "string"
+        ? { sourceFrameName: screen.sourceFrameName }
+        : {})
+    };
+    refs.push(main);
+    seenIds.add(main.id);
+    const seenLabels = new Set([normalizeMatchText(screen.name)]);
+    for (const state of Array.isArray(screen.states) ? screen.states : []) {
+      if (!state || typeof state !== "object") continue;
+      const id = typeof state.id === "string" ? state.id.trim() : "";
+      const label =
+        typeof state.label === "string"
+          ? state.label.trim()
+          : typeof state.frameName === "string"
+            ? state.frameName.trim()
+            : "";
+      const name = label !== "" ? label : id;
+      if (id === "" || name === "" || seenIds.has(id)) continue;
+      const key = normalizeMatchText(name);
+      if (key === "" || seenLabels.has(key)) continue;
+      seenLabels.add(key);
+      seenIds.add(id);
+      refs.push({
+        id,
+        name,
+        presentation: "state",
+        parentScreenId: main.id,
+        ...(typeof state.frameName === "string" ? { sourceFrameName: state.frameName } : {})
+      });
+    }
+  }
+  return refs;
 }
 
 export interface BuildUiContractOptions {
@@ -490,7 +551,8 @@ export function buildUiContract(
       id: screen.id,
       name: screen.name,
       sourceFrameName: screen.sourceFrameName ?? null,
-      presentation: "screen",
+      presentation: screen.presentation,
+      ...(screen.parentScreenId === undefined ? {} : { parentScreenId: screen.parentScreenId }),
       status,
       geometry: inspected?.geometry ?? { nodes: 0, withGeometry: 0, missingGeometry: 0 },
       tokens: inspected?.tokens ?? {
@@ -536,6 +598,10 @@ export function buildUiContract(
       fingerprint: fingerprintOf(flowsPath, designRoot)
     },
     screens: contracts,
+    counts: {
+      screens: contracts.filter((entry) => entry.presentation !== "state").length,
+      states: contracts.filter((entry) => entry.presentation === "state").length
+    },
     summary,
     warnings
   };
@@ -555,9 +621,10 @@ export function renderUiContractMarkdown(contract: UiContract): string {
     "",
     `> 生成时间：${contract.generatedAt}`,
     `> 设计源：\`${contract.source.designRoot}\` · 指纹：\`${contract.source.fingerprint}\``,
+    `> 范围：主屏 ${contract.counts?.screens ?? contract.screens.length} · 状态变体 ${contract.counts?.states ?? 0}`,
     `> 状态：extracted ${contract.summary.extracted} / partial ${contract.summary.partial} / unverifiable ${contract.summary.unverifiable} / no-baseline ${contract.summary["no-baseline"]}`,
     "",
-    "| 屏幕 | 状态 | 几何 | 文本 | 图片 | 圆角 | 字号 | 字体 | 间距 |",
+    "| 屏幕/状态 | 状态 | 几何 | 文本 | 图片 | 圆角 | 字号 | 字体 | 间距 |",
     "|---|---|---|---|---|---|---|---|---|"
   ];
   for (const screen of contract.screens) {
@@ -573,7 +640,11 @@ export function renderUiContractMarkdown(contract: UiContract): string {
   lines.push("", "## 逐屏说明", "");
   for (const screen of contract.screens) {
     lines.push(`### ${screen.name} (\`${screen.id}\`)`, "");
-    lines.push(`- 状态：**${screen.status}**；presentation：**${screen.presentation}**`);
+    lines.push(
+      `- 状态：**${screen.status}**；presentation：**${screen.presentation}**${
+        screen.parentScreenId === undefined ? "" : `；父屏：\`${screen.parentScreenId}\``
+      }`
+    );
     if (screen.render) lines.push(`- 渲染图：\`${screen.render}\``);
     lines.push(`- 圆角：${screen.tokens.cornerRadius.join(", ") || "（未提取）"}`);
     lines.push(`- 颜色：${screen.tokens.colors.join(", ") || "（未提取）"}`);

@@ -37,6 +37,9 @@ export interface UiVerification {
 export interface UiScreenRef {
   id: string;
   name: string;
+  /** 契约侧区分主屏与设计状态变体；运行时匹配缺省按主屏处理。 */
+  presentation?: "screen" | "state";
+  parentScreenId?: string;
 }
 
 export interface UiCoverage {
@@ -62,9 +65,14 @@ export interface UiCoverageSummary {
   comparedScreens: UiScreenRef[];
   skippedScreens: UiScreenRef[];
   unmatchedScreens: string[];
-  /** 契约屏总数与未被任何用例成功比对的契约屏。 */
+  /** 契约主屏总数与未被任何用例成功比对的契约屏。 */
   contractScreens: number;
+  /** 契约状态变体总数（下滑/展开/弹窗等）；旧汇总可能没有该字段。 */
+  contractStates?: number;
   contractNotCompared: UiScreenRef[];
+  /** 按 presentation 拆分的未覆盖清单；旧汇总可能没有这些字段。 */
+  contractNotComparedScreens?: UiScreenRef[];
+  contractNotComparedStates?: UiScreenRef[];
 }
 
 export interface UiSummary {
@@ -197,6 +205,8 @@ export function summarizeUiCoverage(
   const contractNotCompared = uniqueScreens(
     contractScreens.filter((screen) => !comparedKeys.has(screenKey(screen)))
   );
+  const contractMains = contractScreens.filter((screen) => screen.presentation !== "state");
+  const contractStates = contractScreens.filter((screen) => screen.presentation === "state");
   return {
     cases: covered.length,
     requested,
@@ -207,7 +217,14 @@ export function summarizeUiCoverage(
     comparedScreens: uniqueCompared,
     skippedScreens: uniqueScreens(skippedScreens),
     unmatchedScreens: [...new Set(unmatchedScreens)].sort((left, right) => left.localeCompare(right)),
-    contractScreens: contractScreens.length,
-    contractNotCompared
+    contractScreens: contractMains.length,
+    contractStates: contractStates.length,
+    contractNotCompared,
+    contractNotComparedScreens: contractNotCompared.filter(
+      (screen) => screen.presentation !== "state"
+    ),
+    contractNotComparedStates: contractNotCompared.filter(
+      (screen) => screen.presentation === "state"
+    )
   };
 }

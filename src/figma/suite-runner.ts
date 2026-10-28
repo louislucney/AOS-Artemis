@@ -429,16 +429,35 @@ function uiContractScreens(runtime: Runtime): UiScreenRef[] {
   try {
     const parsed = JSON.parse(
       fs.readFileSync(path.join(designDir(runtime.configDirAbs), "ui-contract.json"), "utf-8")
-    ) as { screens?: Array<{ id?: unknown; name?: unknown }> };
+    ) as {
+      screens?: Array<{
+        id?: unknown;
+        name?: unknown;
+        presentation?: unknown;
+        parentScreenId?: unknown;
+      }>;
+    };
     if (!Array.isArray(parsed.screens)) return [];
     return parsed.screens
       .filter(
-        (screen): screen is { id: string; name: string } =>
+        (screen): screen is {
+          id: string;
+          name: string;
+          presentation?: unknown;
+          parentScreenId?: unknown;
+        } =>
           typeof screen?.id === "string" &&
           screen.id !== "" &&
           typeof screen?.name === "string"
       )
-      .map((screen) => ({ id: screen.id, name: screen.name }));
+      .map((screen) => ({
+        id: screen.id,
+        name: screen.name,
+        presentation: screen.presentation === "state" ? "state" : "screen",
+        ...(typeof screen.parentScreenId === "string"
+          ? { parentScreenId: screen.parentScreenId }
+          : {})
+      }));
   } catch {
     return [];
   }

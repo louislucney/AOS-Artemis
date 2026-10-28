@@ -104,13 +104,48 @@ test("ui auto-check: matched visited screen with PNG source passes", async () =>
     skippedScreens: [],
     unmatchedScreens: [],
     contractScreens: 2,
-    contractNotCompared: [{ id: "s2", name: "其他" }]
+    contractStates: 0,
+    contractNotCompared: [{ id: "s2", name: "其他" }],
+    contractNotComparedScreens: [{ id: "s2", name: "其他" }],
+    contractNotComparedStates: []
   });
   assert.equal(
     summarizeUiCoverage([{ ui: { status: "unverified" } }]),
     null,
     "未跑 UI diff 时不伪造覆盖率"
   );
+});
+
+test("ui coverage: states counted separately from main screens", () => {
+  const ui = {
+    status: "unverified",
+    coverage: {
+      requested: 1,
+      matched: 1,
+      compared: 1,
+      skipped: 0,
+      unmatched: 0,
+      comparedScreens: [{ id: "s1", name: "首頁" }],
+      skippedScreens: [],
+      unmatchedScreens: []
+    }
+  };
+  const coverage = summarizeUiCoverage(
+    [{ ui }],
+    [
+      { id: "s1", name: "首頁", presentation: "screen" },
+      { id: "st1", name: "首頁-下滑", presentation: "state", parentScreenId: "s1" }
+    ]
+  );
+  assert.equal(coverage.contractScreens, 1);
+  assert.equal(coverage.contractStates, 1);
+  assert.deepEqual(coverage.contractNotCompared, [
+    { id: "st1", name: "首頁-下滑", presentation: "state", parentScreenId: "s1" }
+  ]);
+  assert.deepEqual(coverage.contractNotComparedScreens, []);
+  assert.deepEqual(coverage.contractNotComparedStates, [
+    { id: "st1", name: "首頁-下滑", presentation: "state", parentScreenId: "s1" }
+  ]);
 });
 
 test("ui auto-check: text weight styles are report-only aggregate", async () => {

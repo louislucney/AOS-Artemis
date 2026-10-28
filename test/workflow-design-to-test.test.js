@@ -1360,6 +1360,61 @@ test("design_to_test: readingStates 透传 includeStates", async () => {
   assert.equal(readCalls[0].options.includeStates, true);
 });
 
+test("design_to_test: flows 有 states 时默认读状态；显式 false 告警并列出状态", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-states-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const designDir = path.join(dir, "design");
+  fs.mkdirSync(designDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(designDir, "flows.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      screens: [
+        {
+          id: "s1",
+          name: "行動預點",
+          states: [{ id: "n6dGB", label: "行動預點-下滑", frameName: "Frame 2410" }]
+        },
+        { id: "s2", name: "首頁" }
+      ],
+      edges: [],
+      entryScreens: ["s1"],
+      unresolvedDestinations: []
+    })
+  );
+  const runtime = stubRuntime({ dir });
+  const readCalls = [];
+  const { deps } = makeDeps({
+    readDesign: async (input) => {
+      readCalls.push(input);
+      return readingStub();
+    },
+    readingChat: async () => "",
+    readingModel: "test-reading"
+  });
+
+  const auto = await designToTest(runtime, { reuseExistingFlows: true, reading: true }, deps);
+  const autoPayload = payloadOf(auto);
+  assert.equal(readCalls[0].options.includeStates, true);
+  assert.equal(
+    autoPayload.warnings.some((warning) => warning.code === "states-not-read"),
+    false
+  );
+
+  readCalls.length = 0;
+  const off = await designToTest(
+    runtime,
+    { reuseExistingFlows: true, reading: true, readingStates: false },
+    deps
+  );
+  const offPayload = payloadOf(off);
+  assert.equal(readCalls[0].options.includeStates, false);
+  const warning = offPayload.warnings.find((entry) => entry.code === "states-not-read");
+  assert.ok(warning, "显式关闭 states 时必须告警");
+  assert.match(warning.message, /1 个状态变体/);
+  assert.ok(warning.details.some((detail) => detail.includes("n6dGB")));
+});
+
 function writePenDesign(dir) {
   const design = path.join(dir, "design");
   fs.mkdirSync(design, { recursive: true });
@@ -1447,6 +1502,100 @@ test("run:true 默认构建 UI 契约并开启逐屏设计比对", async (t) => 
   assert.equal(payload.resources.mode, "report-only");
   assert.equal(payload.resources.texts.total, 1);
   assert.equal(payload.resources.texts.unverifiable, 1);
+});
+
+test("run:true 未比对状态变体 → ui-states-not-verified 列出名称", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-design-to-test-ui-states-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  writePenDesign(dir);
+  const flowsPath = path.join(dir, "design", "flows.json");
+  const flows = JSON.parse(fs.readFileSync(flowsPath, "utf-8"));
+  flows.screens[0].states = [
+    { id: "st1", label: "首頁-下滑", frameName: "Frame 2410" }
+  ];
+  fs.writeFileSync(flowsPath, JSON.stringify(flows));
+  fs.mkdirSync(path.join(dir, "design", "pen", "states"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "design", "pen", "states", "st1.pen"),
+    JSON.stringify({
+      version: "2.20",
+      children: [
+        {
+          type: "frame",
+          id: "st1",
+          name: "Frame 2410",
+          x: 0,
+          y: 0,
+          width: 375,
+          height: 812,
+          children: [
+            {
+              type: "text",
+              id: "t1",
+              name: "Title",
+              x: 16,
+              y: 20,
+              width: 100,
+              height: 24,
+              content: "已折叠"
+            }
+          ]
+        }
+      ]
+    })
+  );
+  const runtime = stubRuntime({ dir, dotenv: { FIGMA_ACCESS_TOKEN: "figd_test" } });
+  const { deps } = makeDeps();
+  const execute = deps.execute;
+  deps.execute = async (runtime_, options) => {
+    const result = await execute(runtime_, options);
+    return {
+      ...result,
+      ui: { passed: 0, failed: 0, unverified: 2, notApplicable: 0 },
+      uiCoverage: {
+        requested: 2,
+        matched: 0,
+        compared: 0,
+        skipped: 0,
+        unmatched: 2,
+        comparedScreens: [],
+        skippedScreens: [],
+        unmatchedScreens: ["首頁", "首頁-下滑"],
+        contractScreens: 1,
+        contractStates: 1,
+        contractNotCompared: [
+          { id: "s1", name: "首頁", presentation: "screen" },
+          {
+            id: "st1",
+            name: "首頁-下滑",
+            presentation: "state",
+            parentScreenId: "s1"
+          }
+        ],
+        contractNotComparedScreens: [{ id: "s1", name: "首頁", presentation: "screen" }],
+        contractNotComparedStates: [
+          {
+            id: "st1",
+            name: "首頁-下滑",
+            presentation: "state",
+            parentScreenId: "s1"
+          }
+        ]
+      }
+    };
+  };
+
+  const result = await designToTest(
+    runtime,
+    { figmaUrl: FIGMA_URL, reuseExistingFlows: true, run: true, device: "emulator-5554" },
+    deps
+  );
+  const payload = payloadOf(result);
+  assert.equal(payload.run.uiCoverage.contractStates, 1);
+  const warning = payload.warnings.find((entry) => entry.code === "ui-states-not-verified");
+  assert.ok(warning, "未比对状态必须显式告警");
+  assert.match(warning.message, /1 个设计状态变体/);
+  assert.ok(warning.details.some((detail) => detail.includes("首頁-下滑")));
 });
 
 test("run:true uiDiff:false 显式关闭：不建契约、不传 uiDiff", async (t) => {

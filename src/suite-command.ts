@@ -1087,7 +1087,9 @@ async function suiteRun(
               .map((screen) => screen.name || screen.id)
               .join("、")}${missing.length > 8 ? "…" : ""}）`;
       io.log(
-        `UI 覆盖: 契约 ${coverage.contractScreens} 屏 · 已比对 ${coverage.comparedScreens.length} 屏` +
+        `UI 覆盖: 契约 ${coverage.contractScreens} 屏${
+          (coverage.contractStates ?? 0) > 0 ? ` + ${coverage.contractStates} 状态` : ""
+        } · 已比对 ${coverage.comparedScreens.length} 屏` +
           missingText +
           ` · 请求 ${coverage.requested}/匹配 ${coverage.matched}/跳过 ${coverage.skipped}/未匹配 ${coverage.unmatched}`
       );
@@ -1633,7 +1635,9 @@ async function suiteLoop(
     if (report?.uiCoverage) {
       const coverage = report.uiCoverage;
       io.log(
-        `UI 覆盖: 契约 ${coverage.contractScreens} 屏 · 已比对 ${coverage.comparedScreens.length} · 契约未覆盖 ${coverage.contractNotCompared.length} · 请求 ${coverage.requested}/匹配 ${coverage.matched}/跳过 ${coverage.skipped}/未匹配 ${coverage.unmatched}`
+        `UI 覆盖: 契约 ${coverage.contractScreens} 屏${
+          (coverage.contractStates ?? 0) > 0 ? ` + ${coverage.contractStates} 状态` : ""
+        } · 已比对 ${coverage.comparedScreens.length} · 契约未覆盖 ${coverage.contractNotCompared.length} · 请求 ${coverage.requested}/匹配 ${coverage.matched}/跳过 ${coverage.skipped}/未匹配 ${coverage.unmatched}`
       );
     }
     if (report && flags.bool("fail-on-ui-weight")) {
@@ -3477,12 +3481,17 @@ async function suiteUiContract(
           {
             ok: true,
             summary: built.contract.summary,
+            counts: built.contract.counts,
             fingerprint: built.contract.source.fingerprint,
             jsonPath: built.jsonPath,
             markdownPath: built.markdownPath,
             screens: built.contract.screens.map((screen) => ({
               id: screen.id,
               name: screen.name,
+              presentation: screen.presentation,
+              ...(screen.parentScreenId === undefined
+                ? {}
+                : { parentScreenId: screen.parentScreenId }),
               status: screen.status
             }))
           },
@@ -3493,7 +3502,7 @@ async function suiteUiContract(
       return 0;
     }
     io.log(
-      `UI 契约: 屏 ${built.contract.screens.length} · extracted ${built.contract.summary.extracted} / partial ${built.contract.summary.partial} / unverifiable ${built.contract.summary.unverifiable} / no-baseline ${built.contract.summary["no-baseline"]}`
+      `UI 契约: 主屏 ${built.contract.counts?.screens ?? built.contract.screens.length} · 状态变体 ${built.contract.counts?.states ?? 0} · extracted ${built.contract.summary.extracted} / partial ${built.contract.summary.partial} / unverifiable ${built.contract.summary.unverifiable} / no-baseline ${built.contract.summary["no-baseline"]}`
     );
     io.log(`产物: ${built.jsonPath} · ${built.markdownPath}`);
     for (const warning of built.contract.warnings) io.log(`警告: ${warning}`);
