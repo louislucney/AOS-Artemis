@@ -63,6 +63,9 @@ import type {
   AuditEventInput,
   AuditEventRecord,
   AuditQuery,
+  CreateWebAssetInput,
+  WebAssetKind,
+  WebAssetRecord,
   WebProjectRecord
 } from "./types.js";
 import {
@@ -398,7 +401,23 @@ const SCHEMA = [
      owner TEXT,
      status TEXT NOT NULL DEFAULT 'active',
      created_at TEXT NOT NULL
-   )`
+   )`,
+  `CREATE TABLE IF NOT EXISTS web_assets (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     root_path TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     version INTEGER NOT NULL,
+     filename TEXT NOT NULL,
+     sha256 TEXT NOT NULL,
+     size INTEGER NOT NULL,
+     storage_path TEXT NOT NULL,
+     uploaded_by TEXT,
+     created_at TEXT NOT NULL,
+     metadata TEXT NOT NULL DEFAULT '{}'
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS web_assets_root_kind_version_idx ON web_assets(root_path, kind, version)`,
+  `CREATE INDEX IF NOT EXISTS web_assets_root_kind_sha_idx ON web_assets(root_path, kind, sha256)`
 ];
 
 const MIGRATIONS = [
@@ -2787,6 +2806,74 @@ export class PostgresStore implements ProjectStore {
     return deleted.rows.length > 0;
   }
 
+  async createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord> {
+    const projectId =
+      input.projectId !== undefined
+        ? input.projectId
+        : ((await this.getProjectByPath(input.rootPath))?.id ?? null);
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    // version 由 `MAX+1` 分配；(root_path, kind, version) 唯一索引兜底并发；冲突时重试。
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.withTransaction(async (run) => {
+          const next = await run(
+            `SELECT COALESCE(MAX(version), 0) + 1 AS next
+               FROM web_assets WHERE root_path = $1 AND kind = $2`,
+            [input.rootPath, input.kind]
+          );
+          const version = Number(next.rows[0]?.next ?? 1);
+          await run(
+            `INSERT INTO web_assets
+               (id, project_id, root_path, kind, version, filename, sha256, size,
+                storage_path, uploaded_by, created_at, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            [
+              id,
+              projectId,
+              input.rootPath,
+              input.kind,
+              version,
+              input.filename,
+              input.sha256,
+              input.size,
+              input.storagePath,
+              input.uploadedBy ?? null,
+              createdAt,
+              JSON.stringify(input.metadata ?? {})
+            ]
+          );
+          const inserted = await run("SELECT * FROM web_assets WHERE id = $1", [id]);
+          return mapWebAsset(inserted.rows[0]!);
+        });
+      } catch (error) {
+        if ((error as { code?: string }).code !== "23505" || attempt >= 2) throw error;
+      }
+    }
+  }
+
+  async listWebAssets(rootPath: string, kind?: WebAssetKind): Promise<WebAssetRecord[]> {
+    const result =
+      kind === undefined
+        ? await this.pool.query(
+            "SELECT * FROM web_assets WHERE root_path = $1 ORDER BY version DESC, id DESC",
+            [rootPath]
+          )
+        : await this.pool.query(
+            "SELECT * FROM web_assets WHERE root_path = $1 AND kind = $2 ORDER BY version DESC, id DESC",
+            [rootPath, kind]
+          );
+    return result.rows.map(mapWebAsset);
+  }
+
+  async getWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null> {
+    const result = await this.pool.query(
+      "SELECT * FROM web_assets WHERE root_path = $1 AND id = $2",
+      [rootPath, id]
+    );
+    return result.rows.length > 0 ? mapWebAsset(result.rows[0]!) : null;
+  }
+
   private async pruneUsageEvents(
     projectId: string | null,
     policy: UsagePrunePolicy
@@ -3276,6 +3363,23 @@ function mapWebProject(row: Record<string, unknown>): WebProjectRecord {
     owner: nullableString(row.owner),
     status: row.status === "archived" ? "archived" : "active",
     createdAt: String(row.created_at)
+  };
+}
+
+function mapWebAsset(row: Record<string, unknown>): WebAssetRecord {
+  return {
+    id: String(row.id),
+    projectId: nullableString(row.project_id),
+    rootPath: String(row.root_path),
+    kind: String(row.kind) as WebAssetKind,
+    version: Number(row.version),
+    filename: String(row.filename),
+    sha256: String(row.sha256),
+    size: Number(row.size),
+    storagePath: String(row.storage_path),
+    uploadedBy: nullableString(row.uploaded_by),
+    createdAt: String(row.created_at),
+    metadata: parseJsonObject(row.metadata)
   };
 }
 

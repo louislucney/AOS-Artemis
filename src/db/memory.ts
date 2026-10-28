@@ -27,6 +27,7 @@ import type {
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
+  CreateWebAssetInput,
   DeviceLeaseRecord,
   HostAddressInput,
   HostAddressRecord,
@@ -60,6 +61,8 @@ import type {
   UsageEventQuery,
   UsageEventRecord,
   UsagePrunePolicy,
+  WebAssetKind,
+  WebAssetRecord,
   WebProjectRecord
 } from "./types.js";
 
@@ -80,6 +83,7 @@ export interface MemoryStoreState {
   hostSessions: HostSessionRecord[];
   deviceLeases: DeviceLeaseRecord[];
   webProjects: WebProjectRecord[];
+  webAssets: WebAssetRecord[];
 }
 
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
@@ -104,6 +108,7 @@ export class MemoryStore implements ProjectStore {
   private hostSessions: HostSessionRecord[] = [];
   private deviceLeases: DeviceLeaseRecord[] = [];
   private webProjects: WebProjectRecord[] = [];
+  private webAssets: WebAssetRecord[] = [];
 
   constructor(
     hostId: string | null = null,
@@ -140,6 +145,7 @@ export class MemoryStore implements ProjectStore {
     view.hostSessions = this.hostSessions;
     view.deviceLeases = this.deviceLeases;
     view.webProjects = this.webProjects;
+    view.webAssets = this.webAssets;
     return view;
   }
 
@@ -1619,6 +1625,49 @@ export class MemoryStore implements ProjectStore {
     return true;
   }
 
+  async createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord> {
+    const projectId =
+      input.projectId !== undefined
+        ? input.projectId
+        : (this.getProjectRecord(input.rootPath)?.id ?? null);
+    const version =
+      this.webAssets
+        .filter((asset) => asset.rootPath === input.rootPath && asset.kind === input.kind)
+        .reduce((max, asset) => Math.max(max, asset.version), 0) + 1;
+    const record: WebAssetRecord = {
+      id: randomUUID(),
+      projectId,
+      rootPath: input.rootPath,
+      kind: input.kind,
+      version,
+      filename: input.filename,
+      sha256: input.sha256,
+      size: input.size,
+      storagePath: input.storagePath,
+      uploadedBy: input.uploadedBy ?? null,
+      createdAt: new Date().toISOString(),
+      metadata: input.metadata ? cloneMetadata(input.metadata) : {}
+    };
+    this.webAssets.push(record);
+    return cloneWebAsset(record);
+  }
+
+  async listWebAssets(rootPath: string, kind?: WebAssetKind): Promise<WebAssetRecord[]> {
+    return this.webAssets
+      .filter(
+        (asset) => asset.rootPath === rootPath && (kind === undefined || asset.kind === kind)
+      )
+      .sort((left, right) => right.version - left.version || right.id.localeCompare(left.id))
+      .map(cloneWebAsset);
+  }
+
+  async getWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null> {
+    const found = this.webAssets.find(
+      (asset) => asset.rootPath === rootPath && asset.id === id
+    );
+    return found ? cloneWebAsset(found) : null;
+  }
+
   usageEventCount(): number {
     return this.usageEvents.length;
   }
@@ -1646,7 +1695,8 @@ export class MemoryStore implements ProjectStore {
       hostAddresses: this.hostAddresses.map(cloneHostAddress),
       hostSessions: this.hostSessions.map(cloneHostSession),
       deviceLeases: this.deviceLeases.map((lease) => ({ ...lease })),
-      webProjects: this.webProjects.map(cloneWebProject)
+      webProjects: this.webProjects.map(cloneWebProject),
+      webAssets: this.webAssets.map(cloneWebAsset)
     };
   }
 
@@ -1682,6 +1732,7 @@ export class MemoryStore implements ProjectStore {
     if (data.hostSessions) this.hostSessions = data.hostSessions.map(cloneHostSession);
     if (data.deviceLeases) this.deviceLeases = data.deviceLeases.map((lease) => ({ ...lease }));
     if (data.webProjects) this.webProjects = data.webProjects.map(cloneWebProject);
+    if (data.webAssets) this.webAssets = data.webAssets.map(cloneWebAsset);
   }
 
   private pruneUsageEvents(projectId: string | null, policy: UsagePrunePolicy): void {
@@ -1822,6 +1873,15 @@ function cloneHostSession(record: HostSessionRecord): HostSessionRecord {
 
 function cloneWebProject(record: WebProjectRecord): WebProjectRecord {
   return { ...record, platforms: [...record.platforms] };
+}
+
+function cloneWebAsset(record: WebAssetRecord): WebAssetRecord {
+  return { ...record, metadata: cloneMetadata(record.metadata) };
+}
+
+function cloneMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (metadata === undefined) return {};
+  return JSON.parse(JSON.stringify(metadata)) as Record<string, unknown>;
 }
 
 function maxIso(...values: Array<string | null | undefined>): string {

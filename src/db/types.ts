@@ -24,6 +24,36 @@ export interface WebProjectRecord {
   createdAt: string;
 }
 
+export type WebAssetKind = "excel" | "materials" | "package";
+
+/** 内容寻址的项目资产（原件不改；同内容复用文件，每次上传登记新的 version 行）。 */
+export interface WebAssetRecord {
+  id: string;
+  projectId: string | null;
+  rootPath: string;
+  kind: WebAssetKind;
+  version: number;
+  filename: string;
+  sha256: string;
+  size: number;
+  storagePath: string;
+  uploadedBy: string | null;
+  createdAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface CreateWebAssetInput {
+  rootPath: string;
+  kind: WebAssetKind;
+  filename: string;
+  sha256: string;
+  size: number;
+  storagePath: string;
+  uploadedBy?: string | null;
+  projectId?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
 /** 未绑定 host 的 store 按 root_path 查询命中多行（跨主机同路径）时的歧义错误。 */
 export class AmbiguousProjectError extends Error {
   readonly rootPath: string;
@@ -979,6 +1009,11 @@ export interface ProjectStore {
   archiveWebProject(rootPath: string, at: string): Promise<boolean>;
   /** 硬删除 Web 项目行（回滚/清理用；区别于 archive，删除后同名可重新创建）。 */
   deleteWebProject(rootPath: string): Promise<boolean>;
+  /** 登记 Web 资产；version＝同 rootPath+kind 最大 version+1（同内容也递增，文件由调用方复用）。 */
+  createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord>;
+  /** 新→旧（version DESC, id DESC）；`kind` 缺省为全部。 */
+  listWebAssets(rootPath: string, kind?: WebAssetKind): Promise<WebAssetRecord[]>;
+  getWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null>;
   ping(): Promise<boolean>;
   close(): Promise<void>;
 }

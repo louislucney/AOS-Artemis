@@ -68,6 +68,7 @@ export function panelRequiredRoleForPath(pathname: string): PanelRole | null {
     pathname === "/panel/api/schedules" ||
     pathname === "/panel/api/quarantine" ||
     pathname === "/panel/api/import" ||
+    pathname === "/panel/api/projects/assets" ||
     pathname === "/panel/api/hosts/register"
   ) {
     return "maintainer";

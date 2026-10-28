@@ -20,6 +20,7 @@ import {
   projectSlug,
   WebProjectCreateError
 } from "../web/project-service.js";
+import { storeWebAsset, WebAssetError } from "../web/assets.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
 import {
   computeDispatchPreview,
@@ -135,6 +136,9 @@ export async function handlePanelActionRequest(
     } else {
       payload = request.body as Record<string, unknown>;
     }
+  }
+  if (request.url.pathname === "/panel/api/projects/assets") {
+    return await uploadAssetAction(deps, request, actor);
   }
   if (request.url.pathname === "/panel/api/hosts/register") {
     const response = await registerHost(deps, payload);
@@ -499,6 +503,107 @@ async function archiveProjectAction(
     summary: `归档 Web 项目：${resolved.name}（${resolved.rootPath}）`
   });
   return json(200, { ok: true });
+}
+
+async function uploadAssetAction(
+  deps: PanelWebDeps,
+  request: PanelActionRequest,
+  actor: string
+): Promise<PanelWebResponse> {
+  if (request.rawBody === undefined) {
+    return json(400, { error: "资产上传需要 multipart/form-data（字段 project、kind、file）" });
+  }
+  let upload: Awaited<ReturnType<typeof parseMultipartUpload>>;
+  try {
+    upload = await parseMultipartUpload(request.rawBody, request.contentType);
+  } catch (error) {
+    if (error instanceof UploadError) return json(error.status, { error: error.message });
+    throw error;
+  }
+
+  const projectKey =
+    (upload.fields.project ?? "").trim() ||
+    (request.url.searchParams.get("project") ?? "").trim();
+  if (projectKey === "") return json(400, { error: "缺少 project" });
+
+  const kind = ((upload.fields.kind ?? "").trim() || "excel").toLowerCase();
+  if (kind !== "excel") {
+    return json(400, { error: `kind 仅支持 excel（当前 ${kind}）` });
+  }
+
+  const hostParam =
+    (upload.fields.host ?? "").trim() ||
+    (request.url.searchParams.get("host") ?? "").trim();
+  let resolved: { rootPath: string; name: string; hostId: string | null } | null;
+  try {
+    resolved = await resolveProjectKey(
+      deps,
+      projectKey,
+      hostParam === "" ? undefined : hostParam
+    );
+  } catch (error) {
+    if (error instanceof AmbiguousProjectError) {
+      return json(409, {
+        error: error.message,
+        candidates: error.candidates.map((candidate) => ({
+          hostId: candidate.hostId,
+          rootPath: candidate.rootPath,
+          name: candidate.name
+        }))
+      });
+    }
+    throw error;
+  }
+  if (!resolved) return json(404, { error: `未知项目 "${projectKey}"` });
+
+  const scopedDeps: PanelWebDeps = {
+    ...(resolved.hostId === null
+      ? deps
+      : { ...deps, store: deps.storeForHost?.(resolved.hostId) ?? deps.store }),
+    actor: deps.actor ?? actor
+  };
+
+  try {
+    const asset = await storeWebAsset({
+      store: scopedDeps.store,
+      rootPath: resolved.rootPath,
+      kind: "excel",
+      filename: upload.filename,
+      buffer: upload.content,
+      uploadedBy: actor
+    });
+    await recordAuditSafe(scopedDeps.store, resolved.rootPath, {
+      domain: "asset",
+      action: "asset.upload",
+      result: "ok",
+      actor,
+      summary: `上传 Web 资产：${asset.kind} v${asset.version} ${asset.filename}（sha256 ${asset.sha256.slice(0, 12)}）`,
+      refs: {
+        assetId: asset.id,
+        kind: asset.kind,
+        filename: asset.filename,
+        sha256: asset.sha256,
+        version: String(asset.version)
+      }
+    });
+    return json(200, { ok: true, asset });
+  } catch (error) {
+    const code = error instanceof WebAssetError ? error.code : null;
+    const status = code === null ? 500 : code === "too-large" ? 413 : 400;
+    await recordAuditSafe(scopedDeps.store, resolved.rootPath, {
+      domain: "asset",
+      action: "asset.upload",
+      result: "failed",
+      actor,
+      summary: `上传 Web 资产失败：${upload.filename}：${errorMessage(error)}`,
+      refs: { kind, filename: upload.filename }
+    });
+    if (code === null) {
+      log(`Web 资产上传失败: ${errorMessage(error)}`);
+      return json(500, { ok: false, error: "资产写入失败（已写入审计；可重试或查看日志）" });
+    }
+    return json(status, { ok: false, error: errorMessage(error), code });
+  }
 }
 
 async function auditPanel(

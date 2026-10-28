@@ -20,6 +20,7 @@ import type {
   CaseSetRecord,
   CreateRegressionTaskInput,
   CreateScheduleInput,
+  CreateWebAssetInput,
   DeviceLeaseRecord,
   HostAddressInput,
   HostAddressRecord,
@@ -53,6 +54,8 @@ import type {
   UsageEventQuery,
   UsageEventRecord,
   UsagePrunePolicy,
+  WebAssetKind,
+  WebAssetRecord,
   WebProjectRecord
 } from "./types.js";
 
@@ -1074,6 +1077,23 @@ export class FileStore implements ProjectStore {
     return deleted;
   }
 
+  async createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord> {
+    const bucket = await this.bucket(input.rootPath);
+    const record = await this.scopedMem(bucket, this.hostId).createWebAsset(input);
+    await this.persist(bucket, "createWebAsset");
+    return record;
+  }
+
+  async listWebAssets(rootPath: string, kind?: WebAssetKind): Promise<WebAssetRecord[]> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).listWebAssets(rootPath, kind);
+  }
+
+  async getWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).getWebAsset(rootPath, id);
+  }
+
   /** 文件台账按项目目录存放、天然属于本机，没有可迁移的跨主机行（中心 `host adopt-legacy` 仅对 PG 生效）。 */
   async adoptProjectHost(): Promise<boolean> {
     return false;
@@ -1336,7 +1356,8 @@ export class FileStore implements ProjectStore {
         hostAddresses: this.hostMem.exportState().hostAddresses,
         hostSessions: this.hostMem.exportState().hostSessions,
         deviceLeases: this.hostMem.exportState().deviceLeases,
-        webProjects: full.webProjects
+        webProjects: full.webProjects,
+        webAssets: full.webAssets
       };
       await this.ensureDir(bucket);
       const payload = JSON.stringify({
@@ -1502,6 +1523,9 @@ function mergeStates(disk: Partial<MemoryStoreState>, local: MemoryStoreState): 
   if (disk.schedules) out.schedules = unionBy(disk.schedules, local.schedules, (schedule) => schedule.id);
   if (disk.webProjects) {
     out.webProjects = unionBy(disk.webProjects, local.webProjects, (wp) => wp.id);
+  }
+  if (disk.webAssets) {
+    out.webAssets = unionBy(disk.webAssets, local.webAssets, (asset) => asset.id);
   }
   return out;
 }

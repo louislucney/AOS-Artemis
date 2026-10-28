@@ -3041,3 +3041,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **变更**：项目页状态行由「运行 / 存储 / 接入」三轴收敛为只显示「运行：<灯><说明>」；存储与接入信息仍保留在运维页、环境自查明细和项目表/接入检查中，不丢失能力。
 - **测试**：`panel-web` 断言只保留运行状态、不再出现存储轴与接入就绪数。
 - **补充**：项目路径/最后活跃行不再显示（路径与磁盘状态仍在总览、运维与接入检查中可见）。
+
+### 13.250 新增（Web 项目资产存储 + Excel 上传/CAS）
+
+> 2026-10-28。Task 4：为托管 Web 项目提供版本化资产（当前仅 Excel；类型预留 materials/package），原件按内容寻址只读保存，不解析/不改写。
+
+- **存储**：`web_assets`（PG）与 Memory/File 台账 `webAssets` 同构；字段 `id/projectId/rootPath/kind/version/filename/sha256/size/storagePath/uploadedBy/createdAt/metadata`。`version`＝同 `rootPath+kind` 最大版本+1；列表按 `version DESC, id DESC`；`(root_path, kind, version)` 唯一索引兜底并发（冲突重试至多 3 次）。`(root_path, kind, sha256)` 建普通索引用于内容查找——同内容重复上传仍新增版本行（保留上传历史），文件本身复用。
+- **文件路径**：`<projectRoot>/.artemis/web/assets/<kind>/<sha256>.<ext>`；写入前校验扩展名（excel 仅 `.xlsx`，大小写不敏感）、非空、≤20MB；`writeFileAtomic` 原子落盘，目标已存在则复用；文件名只取 `basename`，存储路径不含用户文件名（无目录穿越）。
+- **服务**：`src/web/assets.ts` 的 `storeWebAsset`（sha256 → 落盘 → `store.createWebAsset`，`projectId` 取 `getWebProject(rootPath)?.projectId`，`uploadedBy` 记操作人）与 `listWebAssets`；错误以 `WebAssetError.code` 区分 `unsupported-kind|invalid-extension|empty-file|too-large`。
+- **API**：`POST /panel/api/projects/assets`（multipart，字段 `project`、`kind`（仅 `excel`）、`file`；`host` 可选），require maintainer；项目经 `resolveProjectKey` 解析（未知 404、歧义 409），响应 `{ok, asset}` 仅摘要不含文件字节；审计 `domain: asset`、`action: asset.upload`（ok/failed，refs 含 assetId/kind/filename/sha256/version）。`parseMultipartUpload` 增加文本字段收集（旧调用兼容）。
+- **边界**：不实现 Excel 解析/列映射/回写、materials/package 上传与资产删除/保留期；版本行不可变；工作副本与 journal 见后续任务。
+- **测试**：`test/web-assets.test.js`（CAS 路径/重复内容版本递增/扩展名/空文件/20MB/basename；API 成功+审计+400/404/413/403；FileStore 重启；pg-mem `web_assets` 往返与 kind 独立版本）；全量测试见完工验证。
