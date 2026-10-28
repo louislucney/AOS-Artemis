@@ -49,6 +49,45 @@ async function createAsset(store, rootPath, kind, filename, sha, metadata = {}) 
   });
 }
 
+async function writeResultDoc(rootPath, jobId, overrides = {}) {
+  const document = {
+    schemaVersion: 1,
+    jobId,
+    resultSha256: "f".repeat(64),
+    receivedAt: "2026-10-29T00:10:00.000Z",
+    taskStatus: "completed",
+    dbStatus: "completed",
+    gate: { result: "passed", total: 1, passed: 1, failed: 0, errors: 0, skipped: 0 },
+    execution: {
+      status: "passed",
+      cases: [
+        { caseId: "TC-100", name: "完成态用例", status: "PASS", durationMs: 100, traceId: "trace-9" }
+      ],
+      startedAt: "2026-10-29T00:05:00.000Z",
+      finishedAt: "2026-10-29T00:08:00.000Z",
+      detail: null
+    },
+    device: { serial: "emulator-5554", model: "Pixel 7", osVersion: "14" },
+    package: { name: "com.acme.app", version: "1.2.3", filename: "app-release.apk" },
+    startedAt: "2026-10-29T00:05:00.000Z",
+    finishedAt: "2026-10-29T00:08:00.000Z",
+    evidence: [],
+    tokenUsage: null,
+    tokenTotals: null,
+    tokenArtifacts: null,
+    allowClearedRefresh: false,
+    writebackStatus: "written",
+    writebackError: null,
+    writtenCells: [],
+    warnings: [],
+    ...overrides
+  };
+  const dir = path.join(rootPath, ".artemis", "web", "results", jobId);
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "result.json"), `${JSON.stringify(document, null, 2)}\n`);
+  return document;
+}
+
 async function setup(t, options = {}) {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "aos-web-dispatch-ui-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
@@ -603,6 +642,60 @@ test("host scope travels with dispatch and preview for a shared rootPath", async
   assert.equal(page.status, 200);
   assert.match(page.body, /if\(host\)out\.host=host/, "POST body 携带 host");
   assert.match(page.body, /if\(host\)params\.set\("host",host\)/, "预览查询携带 host");
+});
+
+test("terminal task with released lease keeps device identity (released, not unbound)", async (t) => {
+  const { deps, store, rootPath, excel, pkg } = await setup(t);
+  const created = JSON.parse((await postJob(deps, autoBody(rootPath, { excel, pkg }))).body);
+  const jobId = created.job.id;
+  await store.releaseDeviceLeases({ hostId: "host-a", taskId: jobId });
+  await store.updateRegressionTask(rootPath, jobId, {
+    status: "completed",
+    deviceLeaseId: null
+  });
+  const task = await store.getRegressionTask(rootPath, jobId);
+  assert.equal(task.status, "completed");
+  assert.equal(task.deviceSerial, "emulator-5554", "终态保留设备序列号");
+  assert.equal(task.deviceLeaseId, null, "租约已释放");
+  assert.equal((await store.listDeviceLeases()).length, 0);
+  await writeResultDoc(rootPath, jobId);
+
+  const page = await handlePanelRequest(jobsUrl(rootPath), {
+    ...deps,
+    capabilities: capabilities("dispatcher")
+  });
+  assert.equal(page.status, 200);
+  assert.match(page.body, /已释放 host\/device/);
+  assert.match(page.body, /<code>host-a<\/code>/);
+  assert.match(page.body, /<code>emulator-5554<\/code>/);
+  assert.match(page.body, /Pixel 7/);
+  assert.ok(!page.body.includes("未绑定设备（已完成）"), "终态不当作未绑定");
+  assert.ok(!page.body.includes("已绑定 host/device"), "已释放不是仍占用");
+
+  const detail = await handlePanelRequest(jobDetailUrl(rootPath, jobId), {
+    ...deps,
+    capabilities: capabilities("dispatcher")
+  });
+  assert.equal(detail.status, 200);
+  assert.match(detail.body, /已释放 host\/device/);
+  assert.match(detail.body, /Pixel 7/);
+  assert.match(detail.body, /14/);
+  assert.match(detail.body, /来源：结果上报/);
+  assert.match(detail.body, /结果 1\/1/);
+});
+
+test("running task without binding stays explicitly unbound (not released/bound)", async (t) => {
+  const { deps, store, rootPath, excel, pkg } = await setup(t, { runners: false });
+  const created = JSON.parse((await postJob(deps, autoBody(rootPath, { excel, pkg }))).body);
+  await store.updateRegressionTask(rootPath, created.job.id, { status: "running" });
+  const page = await handlePanelRequest(jobsUrl(rootPath), {
+    ...deps,
+    capabilities: capabilities("dispatcher")
+  });
+  assert.equal(page.status, 200);
+  assert.match(page.body, /未绑定设备（执行中）/);
+  assert.ok(!page.body.includes("已释放 host/device"));
+  assert.ok(!page.body.includes("已绑定 host/device"));
 });
 
 test("job detail: unknown job is 404 and project page links to jobs", async (t) => {

@@ -378,8 +378,18 @@ function jobsHref(
   return `/panel?${params.toString()}`;
 }
 
+const TERMINAL_WEB_JOB_STATUSES = new Set<string>([
+  "completed",
+  "failed",
+  "partial",
+  "cancelled",
+  "stopped",
+  "error"
+]);
+
 function jobBinding(task: RegressionTaskRecord, spec: WebJobSpec | null): {
   bound: boolean;
+  released: boolean;
   pinned: boolean;
   hostId: string | null;
   serial: string | null;
@@ -388,10 +398,14 @@ function jobBinding(task: RegressionTaskRecord, spec: WebJobSpec | null): {
 } {
   const hostId = task.claimedHostId ?? task.targetHostId ?? spec?.targetHostId ?? null;
   const serial = task.deviceSerial ?? spec?.deviceSerial ?? null;
-  // 绑定以租约完成为准：钉住设备但尚未预占到租约的任务仍属等待，不能显示「已绑定」。
-  const leaseId = task.deviceLeaseId ?? spec?.deviceLeaseId ?? null;
+  // 活动租约只看任务行（spec.deviceLeaseId 是创建时快照，终态回写不会更新它）。
+  const leaseId = task.deviceLeaseId;
+  const terminal = TERMINAL_WEB_JOB_STATUSES.has(task.status);
+  // 终态任务释放租约但保留设备序列号（历史绑定）：显示「已释放」而不是「未绑定」。
+  const released = terminal && serial !== null;
   return {
-    bound: leaseId !== null,
+    bound: !terminal && leaseId !== null,
+    released,
     pinned: serial !== null && spec?.devicePinned === true,
     hostId,
     serial,
@@ -404,6 +418,14 @@ function jobBindingCell(entry: WebJobListEntry): string {
   const binding = jobBinding(entry.task, entry.spec);
   if (binding.bound) {
     return `已绑定 host/device <code>${escapeHtml(binding.hostId ?? "—")}</code> · <code>${escapeHtml(
+      binding.serial ?? "—"
+    )}</code>`;
+  }
+  if (binding.released) {
+    return `${cBadge({
+      label: "已释放 host/device",
+      tone: "neutral"
+    })} <code>${escapeHtml(binding.hostId ?? "—")}</code> · <code>${escapeHtml(
       binding.serial ?? "—"
     )}</code>`;
   }
@@ -427,12 +449,16 @@ function jobBindingCell(entry: WebJobListEntry): string {
 
 function jobDeviceCell(entry: WebJobListEntry, runners: WebRunnerRecord[]): string {
   const binding = jobBinding(entry.task, entry.spec);
-  if (!binding.bound) return "—";
+  const resultDevice = entry.result?.device;
+  // 终态任务租约已释放但设备仍有效：型号/系统优先取结果上报，其次按 host+serial 查执行机心跳。
+  const serial = binding.serial ?? resultDevice?.serial ?? null;
+  if (serial === null) return "—";
   const runner = runners.find((record) => record.hostId === binding.hostId);
-  const device = runner?.devices.find((record) => record.serial === binding.serial);
-  const model = device?.model ?? entry.result?.device.model ?? "未知型号";
-  const os = device?.osVersion ?? entry.result?.device.osVersion ?? "—";
-  return `${escapeHtml(model)} · ${escapeHtml(os)}`;
+  const device = runner?.devices.find((record) => record.serial === serial);
+  const model = resultDevice?.model ?? device?.model ?? null;
+  const os = resultDevice?.osVersion ?? device?.osVersion ?? null;
+  if (model === null && os === null) return `<code>${escapeHtml(serial)}</code>`;
+  return `${escapeHtml(model ?? "未知型号")} · ${escapeHtml(os ?? "—")}`;
 }
 
 function assetOptions(assets: WebAssetRecord[], kind: WebAssetRecord["kind"], emptyLabel: string): string {
