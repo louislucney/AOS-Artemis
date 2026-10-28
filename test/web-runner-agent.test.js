@@ -534,7 +534,12 @@ test("web runner: 非 once 可控停止 → markWebRunnerStopped 置 lastSeen �
 
 test("web runner CLI: 没有中心 PG → exit 2 且提示 MOBILE_TESTING_DATABASE_URL", async () => {
   const sink = io();
-  const code = await runWebRunnerCommand(["--name", "cli", "--once"], sink.io, { env: {} });
+  const code = await runWebRunnerCommand(["--name", "cli", "--once"], sink.io, {
+    env: {
+      AOS_PANEL_BASE_URL: "http://center.local:8765",
+      AOS_RUNNER_JOB_TOKEN: "runner-job-token-0123456789abcdef"
+    }
+  });
   assert.equal(code, 2);
   assert.ok(sink.errors.some((line) => line.includes("MOBILE_TESTING_DATABASE_URL")), sink.errors.join("\n"));
 });

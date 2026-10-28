@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import path from "node:path";
 
 import { CENTER_DATABASE_ENV, openCenterStore } from "../center/store.js";
 import type {
@@ -16,6 +17,7 @@ import { parseWebJobSpec } from "../web/job-spec.js";
 import { assignPendingWebJobs, reassignExpiredWebJobs } from "../web/jobs.js";
 import { collectRunnerInventory, type RunnerInventory } from "./inventory.js";
 import { runnerTtlFrom } from "./status.js";
+import { createDefaultWebJobExecutor } from "./web-job-runner.js";
 
 export interface WebRunnerIO {
   log: (line: string) => void;
@@ -619,9 +621,11 @@ export function printWebRunnerUsage(log: (line: string) => void): void {
 host 级远端 Web 任务执行机（只连中心 PG，不要求项目目录；每台设备一个 worker）：
   --name <n>              执行机名称（缺省 hostname）
   --artifact-base-url <u> 产物基址（回传给中心，可选）
+  --panel-base-url <u>    中心基址（缺省 AOS_PANEL_BASE_URL；执行 job 必需）
   --once                  只跑一轮（心跳/选机 + 每设备一次领取）后退出
-  环境变量：MOBILE_TESTING_DATABASE_URL（必需）、AOS_HOST_ID、AOS_RUNNER_TTL_MS、
-            AOS_DEVICE_LEASE_MS、AOS_RUNNER_HEARTBEAT_MS、AOS_RUNNER_POLL_MS`);
+  环境变量：MOBILE_TESTING_DATABASE_URL（必需）、AOS_PANEL_BASE_URL、AOS_RUNNER_JOB_TOKEN（≥16）、
+            AOS_HOST_ID、AOS_RUNNER_TTL_MS、AOS_DEVICE_LEASE_MS、AOS_RUNNER_HEARTBEAT_MS、
+            AOS_RUNNER_POLL_MS、AOS_RUNNER_WORK_DIR、AOS_RUNNER_CACHE_DIR`);
 }
 
 interface ParsedFlags {
@@ -676,6 +680,24 @@ export async function runWebRunnerCommand(
   const env = deps.env ?? process.env;
   const name = flags.get("name")?.trim() || os.hostname();
   const artifactBaseUrl = flags.get("artifact-base-url")?.trim() || null;
+  const panelBaseUrl =
+    flags.get("panel-base-url")?.trim() || (env.AOS_PANEL_BASE_URL ?? "").trim();
+  const runnerToken = (env.AOS_RUNNER_JOB_TOKEN ?? "").trim();
+
+  if (deps.executeJob === undefined) {
+    if (panelBaseUrl === "") {
+      io.errorLog(
+        "web-runner 需要中心基址：--panel-base-url <url> 或 AOS_PANEL_BASE_URL（spec/资产/结果接口）"
+      );
+      return 2;
+    }
+    if (runnerToken.length < 16) {
+      io.errorLog(
+        "web-runner 需要 AOS_RUNNER_JOB_TOKEN（≥16 字符）访问中心 spec/资产/结果接口；不会回退管理员令牌"
+      );
+      return 2;
+    }
+  }
 
   let store = deps.store ?? null;
   let opened = false;
@@ -698,6 +720,27 @@ export async function runWebRunnerCommand(
     return 2;
   }
 
+  let executeJob = deps.executeJob;
+  if (executeJob === undefined) {
+    const identity = await resolveHostIdentity({
+      env,
+      ...(deps.exec === undefined ? {} : { exec: deps.exec })
+    });
+    const workRoot =
+      (env.AOS_RUNNER_WORK_DIR ?? "").trim() || path.join(os.homedir(), ".aos", "web-runner");
+    const cacheRoot = (env.AOS_RUNNER_CACHE_DIR ?? "").trim() || path.join(workRoot, "cache");
+    executeJob = createDefaultWebJobExecutor({
+      hostId: identity.id,
+      panelBaseUrl,
+      runnerToken,
+      workRoot,
+      cacheRoot,
+      ...(deps.exec === undefined ? {} : { exec: deps.exec }),
+      env
+    });
+    io.log(`[web-runner] 中心接口 ${panelBaseUrl}；工作目录 ${workRoot}`);
+  }
+
   let stopRequested = false;
   const onSignal = (): void => {
     stopRequested = true;
@@ -717,7 +760,7 @@ export async function runWebRunnerCommand(
       io,
       {
         ...(deps.collectInventory === undefined ? {} : { collectInventory: deps.collectInventory }),
-        ...(deps.executeJob === undefined ? {} : { executeJob: deps.executeJob }),
+        executeJob,
         ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
         ...(deps.now === undefined ? {} : { now: deps.now }),
         shouldStop: () => stopRequested || deps.shouldStop?.() === true

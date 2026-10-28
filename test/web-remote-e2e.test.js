@@ -27,6 +27,7 @@ import { createWebProject } from "../dist/web/project-service.js";
 import { ingestWebJobResult, readWebJobResult } from "../dist/web/results.js";
 import { cellText } from "../dist/web/writeback.js";
 import { workbookCopyPath } from "../dist/web/workbook.js";
+import { zipBuffer } from "./fixtures/web-zip.mjs";
 
 const NOW = Date.parse("2026-10-29T00:00:00.000Z");
 const RUNNER_TTL_MS = 90_000;
@@ -40,98 +41,34 @@ const FLOW_ENTRIES = [
   ["flows/TC-2.yaml", "appId: com.acme.web\n---\n- launchApp\n- tapOn: 退出\n"]
 ];
 
-/** Task 5 的 runner 终态枚举 ↔ Task 8 的结果契约（`passed` ↔ `completed`）。 */
+/** 上传层原样使用执行器状态；runner 终态只在 Task 5 兜底写库时使用（error→failed）。 */
+const RESULT_STATUS_FROM_EXECUTOR = {
+  passed: "passed",
+  partial: "partial",
+  failed: "failed",
+  error: "error"
+};
 const RUNNER_STATUS_FROM_EXECUTOR = {
   passed: "completed",
   partial: "partial",
   failed: "failed",
   error: "failed"
 };
-const RESULT_STATUS_FROM_RUNNER = {
-  completed: "passed",
-  partial: "partial",
-  failed: "failed"
-};
 
 function toResultStatus(executorStatus) {
-  const runnerStatus = RUNNER_STATUS_FROM_EXECUTOR[executorStatus];
-  assert.ok(runnerStatus, `未知执行器状态：${executorStatus}`);
-  const resultStatus = RESULT_STATUS_FROM_RUNNER[runnerStatus];
-  assert.ok(resultStatus, `未知 runner 终态：${runnerStatus}`);
-  return resultStatus;
+  const status = RESULT_STATUS_FROM_EXECUTOR[executorStatus];
+  assert.ok(status, `未知执行器状态：${executorStatus}`);
+  return status;
+}
+
+function toRunnerStatus(executorStatus) {
+  const status = RUNNER_STATUS_FROM_EXECUTOR[executorStatus];
+  assert.ok(status, `未知执行器状态：${executorStatus}`);
+  return status;
 }
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
-}
-
-function crc32(buffer) {
-  let crc = 0xffffffff;
-  for (const byte of buffer) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) {
-      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-/** 极简 ZIP（store 方式 + 中央目录 + EOCD），不引入依赖。 */
-function zipBuffer(entries) {
-  const locals = [];
-  const centrals = [];
-  let offset = 0;
-  for (const [name, content] of entries) {
-    const data = Buffer.from(content);
-    const nameBytes = Buffer.from(name);
-    const crc = crc32(data);
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(0, 6);
-    local.writeUInt16LE(0, 8);
-    local.writeUInt16LE(0, 10);
-    local.writeUInt16LE(0x21, 12);
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18);
-    local.writeUInt32LE(data.length, 22);
-    local.writeUInt16LE(nameBytes.length, 26);
-    local.writeUInt16LE(0, 28);
-    locals.push(local, nameBytes, data);
-
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(20, 4);
-    central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(0, 8);
-    central.writeUInt16LE(0, 10);
-    central.writeUInt16LE(0, 12);
-    central.writeUInt16LE(0x21, 14);
-    central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(data.length, 20);
-    central.writeUInt32LE(data.length, 24);
-    central.writeUInt16LE(nameBytes.length, 28);
-    central.writeUInt16LE(0, 30);
-    central.writeUInt16LE(0, 32);
-    central.writeUInt16LE(0, 34);
-    central.writeUInt16LE(0, 36);
-    central.writeUInt32LE(0, 38);
-    central.writeUInt32LE(offset, 42);
-    centrals.push(central, nameBytes);
-
-    offset += local.length + nameBytes.length + data.length;
-  }
-  const centralSize = centrals.reduce((total, part) => total + part.length, 0);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(0, 4);
-  eocd.writeUInt16LE(0, 6);
-  eocd.writeUInt16LE(entries.length, 8);
-  eocd.writeUInt16LE(entries.length, 10);
-  eocd.writeUInt32LE(centralSize, 12);
-  eocd.writeUInt32LE(offset, 16);
-  eocd.writeUInt16LE(0, 20);
-  return Buffer.concat([...locals, ...centrals, eocd]);
 }
 
 function iso(ms) {
@@ -222,9 +159,11 @@ function fakeExec({ junitCases }) {
       };
     }
     if (command === "maestro") {
-      const output = args[args.indexOf("--output") + 1];
-      await mkdir(path.dirname(output), { recursive: true });
-      await writeFile(output, jUnitXml(junitCases));
+      if (junitCases !== null) {
+        const output = args[args.indexOf("--output") + 1];
+        await mkdir(path.dirname(output), { recursive: true });
+        await writeFile(output, jUnitXml(junitCases));
+      }
       return { code: 0, stdout: "flows ok", stderr: "" };
     }
     return { code: 127, stdout: "", stderr: `unsupported command: ${command}` };
@@ -349,7 +288,8 @@ test("远程 Web 任务端到端：下发选机 → 领取 → 下载/安装/Mae
   const { store, rootPath } = ctx;
 
   assert.equal(toResultStatus("passed"), "passed");
-  assert.equal(toResultStatus("error"), "failed");
+  assert.equal(toResultStatus("error"), "error");
+  assert.equal(toRunnerStatus("error"), "failed");
 
   // 两台执行机：host-a 初始离线，host-b 在线（auto 只能选 host-b）。
   await store.upsertWebRunner(
@@ -627,6 +567,73 @@ test("远程 Web 任务端到端：下发选机 → 领取 → 下载/安装/Mae
   assert.equal(finished.deviceLeaseId, null, "结果入库清空租约 id");
 
   await store.releaseDeviceLeases({ hostId: "host-b", taskId: job1.task.id });
+  assert.equal((await store.listDeviceLeases()).length, 0);
+
+  // 执行器 error（无 JUnit）→ 上传 error → taskStatus error / dbStatus failed（不降级）。
+  const jobError = await createWebJob(
+    dispatchInput(ctx, {
+      assignment: "manual",
+      devicePinned: true,
+      targetHostId: "host-b",
+      deviceSerial: "emulator-5556",
+      nowMs: NOW + 3_000
+    })
+  );
+  assert.ok(jobError.assignment);
+  const claimedError = await store.claimWebJob({
+    runnerId: "runner-b",
+    hostId: "host-b",
+    deviceSerial: "emulator-5556",
+    instanceId: "inst-host-b",
+    nowMs: NOW + 3_500
+  });
+  assert.ok(claimedError);
+  await store.updateRegressionTask(rootPath, jobError.task.id, {
+    status: "running",
+    startedAt: iso(NOW + 4_000)
+  });
+  const errorSpec = parseWebJobSpec(claimedError.task.jobSpec);
+  assert.ok(errorSpec);
+  const errorExec = fakeExec({ junitCases: null });
+  const errored = await executeWebJob({
+    jobSpec: errorSpec,
+    jobDir: prepared.jobDir,
+    flowsDir: prepared.flowsDir,
+    device: { serial: "emulator-5556", platform: "android", kind: "device" },
+    exec: errorExec.exec,
+    env: {},
+    timeoutMs: 60_000
+  });
+  assert.equal(errored.status, "error");
+  assert.deepEqual(errored.cases, []);
+  assert.match(errored.detail, /maestro-no-junit/);
+
+  const errorSummary = await ingestWebJobResult({
+    store,
+    jobId: jobError.task.id,
+    payload: {
+      execution: {
+        status: toResultStatus(errored.status),
+        cases: [],
+        startedAt: errored.startedAt,
+        finishedAt: errored.finishedAt,
+        detail: errored.detail
+      },
+      device: { serial: "emulator-5556", model: "Pixel 8", osVersion: "15" },
+      package: { name: PACKAGE_NAME, version: PACKAGE_VERSION, filename: "acme.apk" },
+      startedAt: errored.startedAt,
+      finishedAt: errored.finishedAt
+    },
+    actor: "host-b"
+  });
+  assert.equal(errorSummary.taskStatus, "error");
+  assert.equal(errorSummary.dbStatus, "failed");
+  assert.equal(errorSummary.gate.result, "error");
+  assert.equal(errorSummary.writtenCells.length, 0);
+  const errorDoc = await readWebJobResult(rootPath, jobError.task.id);
+  assert.equal(errorDoc.taskStatus, "error");
+  assert.equal((await store.getRegressionTask(rootPath, jobError.task.id)).status, "failed");
+  await store.releaseDeviceLeases({ hostId: "host-b", taskId: jobError.task.id });
   assert.equal((await store.listDeviceLeases()).length, 0);
 
   // 等待任务在设备空闲后补绑。

@@ -364,17 +364,16 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
 网页测试任务（Excel 用例 + 安装包 + Maestro 脚本 zip）由 **host 级** `web-runner` 领取执行：不要求项目目录，只连中心 PG；与 `suite runner` 不同，`web-runner` 按**设备**并行（同一设备同一时刻一个任务，靠设备租约）。
 
 ```bash
-node dist/cli.js web-runner --name <n> [--artifact-base-url <url>] [--once]
+node dist/cli.js web-runner --name <n> [--panel-base-url <url>] [--artifact-base-url <url>] [--once]
 # 需要中心 PG（MOBILE_TESTING_DATABASE_URL，与 suite 其余命令同口径）；--once 只跑一轮
-#（心跳/选机 + 每设备一次领取）
+# 需要中心基址（--panel-base-url 或 AOS_PANEL_BASE_URL）与 AOS_RUNNER_JOB_TOKEN（≥16）
 ```
 
-- **能力与选机**：adb 设备 + iOS 模拟器/真机；`maestro` 必须可用（`AOS_MAESTRO_PATH` 可覆盖解析）。中心按平台/设备形态/工具/型号/系统版本选机并**预占租约**（TTL＝`AOS_DEVICE_LEASE_MS`，默认 90s）；执行前 runner 二次盘点，设备消失/不可用/被他人租约占住就跳过并释放领取与租约。
-- **中心访问令牌**：spec / 资产下载 / 结果上传只认 `AOS_RUNNER_JOB_TOKEN`（≥16 字符，中心与 runner 配同一值；未配置/过短 503，缺失或错误 401），且请求必须带 `X-AOS-Host-Id`＝该 job 的领取/目标主机（否则 403）。该 token 不放行其它路径，也不回退管理员令牌。
-- **环境变量**：`AOS_RUNNER_TTL_MS`（执行机在线判定，90000）、`AOS_DEVICE_LEASE_MS`（预占/续租，90000）、`AOS_RUNNER_HEARTBEAT_MS`（心跳，30000）、`AOS_RUNNER_POLL_MS`（空闲轮询，5000）、`AOS_WEB_JOB_TIMEOUT_MS`（Maestro 执行超时，900000）、`AOS_HOST_ID`（主机身份）。
+- **能力与选机**：adb 设备 + **iOS 模拟器**；`maestro` 必须可用（`AOS_MAESTRO_PATH` 可覆盖解析）。**iOS 真机只支持 `executionMode=llm`（Plan 2，目前不可执行）**——Maestro 任务在下发阶段即被 `ios-real-device-requires-llm` 拒绝。中心按平台/设备形态/工具/型号/系统版本选机并**预占租约**（TTL＝`AOS_DEVICE_LEASE_MS`，默认 90s）；执行前 runner 二次盘点，设备消失/不可用/被他人租约占住就跳过并释放领取与租约。
+- **中心访问令牌**：spec / 资产下载 / 结果上传只认 `AOS_RUNNER_JOB_TOKEN`（≥16 字符，中心与 runner 配同一值；未配置/过短 503，缺失或错误 401），且请求必须带 `X-AOS-Host-Id`＝该 job 的领取/目标主机（否则 403）。该 token 不放行其它路径，也不回退管理员令牌。缺中心基址/令牌时 `web-runner` 启动即 exit 2。
+- **环境变量**：`AOS_PANEL_BASE_URL`（中心基址，或 `--panel-base-url`）、`AOS_RUNNER_JOB_TOKEN`、`AOS_RUNNER_WORK_DIR`（默认 `~/.aos/web-runner`）、`AOS_RUNNER_CACHE_DIR`（默认 `<workRoot>/cache`）、`AOS_RUNNER_TTL_MS`（执行机在线判定，90000）、`AOS_DEVICE_LEASE_MS`（预占/续租，90000）、`AOS_RUNNER_HEARTBEAT_MS`（心跳，30000）、`AOS_RUNNER_POLL_MS`（空闲轮询，5000）、`AOS_WEB_JOB_TIMEOUT_MS`（Maestro 执行超时，900000）、`AOS_HOST_ID`（主机身份）。
 - **工作目录与资产**：job 目录＝`<workRoot>/<project>/<jobId>`；资产按 sha256 进本机 CAS（同内容复用），`secret:true` 的 materials 只落 `secrets/`（0600，不进 CAS）；Excel 只作附件；脚本 zip 解压到 `job/flows`，顶层 `<caseId>.yaml` 即一个用例（`subflows/` 不算用例）。
-- **结果**：结果为逐用例 `PASS/FAIL/SKIP/ERROR`，中心聚合后写 `result.json` 并回写 Excel 工作副本（`执行｜结果/设备与系统/安装包/开始时间/结束时间/traceId`），**原件 sha256 不变**；空结果/超时/非 0 退出绝不假 PASS。`executionMode=llm` 目前返回 `llm-execution-not-wired`——**LLM 执行与计费不在当前版本**（Plan 2/4）。
-- **当前接线边界（勿误预期）**：CLI `web-runner` 已完成注册/心跳/按设备领取/续租/回池；**「下载 → 安装 → Maestro → 结果上传」的执行器组合尚未接进 CLI 默认执行器**（`web-executor-not-wired`，任务会回池）。各段服务（`prepareWebJobWorkspace`/`installWebPackage`/`executeWebJob`/`ingestWebJobResult`）已具备并由 `test/web-remote-e2e.test.js` 端到端验证；接线还需中心基址/令牌、CAS 目录与上传 POST 的 runner 侧配置。
+- **执行链路**：内置执行器依次完成「拉 spec → 下载资产（sha256 校验）→ 安装 → Maestro → 上传结果」；任一步（含结果上传）失败都会抛错，任务由 runner 释放回池重试，**不会本地写成功**。结果为逐用例 `PASS/FAIL/SKIP/ERROR`，中心聚合后写 `result.json` 并回写 Excel 工作副本（`执行｜结果/设备与系统/安装包/开始时间/结束时间/traceId`），**原件 sha256 不变**；空结果/超时/非 0 退出绝不假 PASS（上传 `execution.status:"error"` → 中心 `taskStatus:"error"`/`dbStatus:"failed"`）。`executionMode=llm` 目前返回 `llm-execution-not-wired`——**LLM 执行与计费不在当前版本**（Plan 2/4）。
 
 ### Jira 接入（读取 / 回写 / CLI）
 
