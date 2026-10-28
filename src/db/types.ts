@@ -54,6 +54,27 @@ export interface CreateWebAssetInput {
   metadata?: Record<string, unknown>;
 }
 
+/** Excel 列映射（原件级）：`columnMap` 是规范字段 → 表头文本；同键以最新保存为准。 */
+export interface ExcelMappingRecord {
+  id: string;
+  rootPath: string;
+  assetId: string;
+  sheetName: string;
+  headerFingerprint: string;
+  columnMap: Record<string, string>;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+export interface SaveExcelMappingInput {
+  rootPath: string;
+  assetId: string;
+  sheetName: string;
+  headerFingerprint: string;
+  columnMap: Record<string, string>;
+  createdBy?: string | null;
+}
+
 /** 未绑定 host 的 store 按 root_path 查询命中多行（跨主机同路径）时的歧义错误。 */
 export class AmbiguousProjectError extends Error {
   readonly rootPath: string;
@@ -1014,6 +1035,15 @@ export interface ProjectStore {
   /** 新→旧（version DESC, id DESC）；`kind` 缺省为全部。 */
   listWebAssets(rootPath: string, kind?: WebAssetKind): Promise<WebAssetRecord[]>;
   getWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null>;
+  /** 按 `(rootPath, assetId, headerFingerprint)` 幂等 upsert：同键覆盖 columnMap，保留 id/createdAt。 */
+  saveExcelMapping(input: SaveExcelMappingInput): Promise<ExcelMappingRecord>;
+  findExcelMapping(
+    rootPath: string,
+    assetId: string,
+    headerFingerprint: string
+  ): Promise<ExcelMappingRecord | null>;
+  /** 新→旧（createdAt DESC, id DESC）；`assetId` 缺省＝该项目全部映射。 */
+  listExcelMappings(rootPath: string, assetId?: string): Promise<ExcelMappingRecord[]>;
   ping(): Promise<boolean>;
   close(): Promise<void>;
 }

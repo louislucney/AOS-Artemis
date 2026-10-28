@@ -64,6 +64,8 @@ import type {
   AuditEventRecord,
   AuditQuery,
   CreateWebAssetInput,
+  ExcelMappingRecord,
+  SaveExcelMappingInput,
   WebAssetKind,
   WebAssetRecord,
   WebProjectRecord
@@ -417,7 +419,21 @@ const SCHEMA = [
      metadata TEXT NOT NULL DEFAULT '{}'
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS web_assets_root_kind_version_idx ON web_assets(root_path, kind, version)`,
-  `CREATE INDEX IF NOT EXISTS web_assets_root_kind_sha_idx ON web_assets(root_path, kind, sha256)`
+  `CREATE INDEX IF NOT EXISTS web_assets_root_kind_sha_idx ON web_assets(root_path, kind, sha256)`,
+  `CREATE TABLE IF NOT EXISTS excel_mappings (
+     id TEXT PRIMARY KEY,
+     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+     root_path TEXT NOT NULL,
+     asset_id TEXT NOT NULL,
+     sheet_name TEXT NOT NULL,
+     header_fingerprint TEXT NOT NULL,
+     column_map TEXT NOT NULL DEFAULT '{}',
+     created_by TEXT,
+     created_at TEXT NOT NULL
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS excel_mappings_root_asset_fp_idx
+     ON excel_mappings(root_path, asset_id, header_fingerprint)`,
+  `CREATE INDEX IF NOT EXISTS excel_mappings_root_asset_idx ON excel_mappings(root_path, asset_id)`
 ];
 
 const MIGRATIONS = [
@@ -2874,6 +2890,86 @@ export class PostgresStore implements ProjectStore {
     return result.rows.length > 0 ? mapWebAsset(result.rows[0]!) : null;
   }
 
+  async saveExcelMapping(input: SaveExcelMappingInput): Promise<ExcelMappingRecord> {
+    const projectId = (await this.getProjectByPath(input.rootPath))?.id ?? null;
+    const columnMap = JSON.stringify(input.columnMap);
+    const update = () =>
+      this.pool.query(
+        `UPDATE excel_mappings
+            SET project_id = $1, sheet_name = $2, column_map = $3, created_by = $4
+          WHERE root_path = $5 AND asset_id = $6 AND header_fingerprint = $7
+          RETURNING *`,
+        [
+          projectId,
+          input.sheetName,
+          columnMap,
+          input.createdBy ?? null,
+          input.rootPath,
+          input.assetId,
+          input.headerFingerprint
+        ]
+      );
+    const updated = await update();
+    if (updated.rows.length > 0) return mapExcelMapping(updated.rows[0]!);
+
+    const id = randomUUID();
+    try {
+      const inserted = await this.pool.query(
+        `INSERT INTO excel_mappings
+           (id, project_id, root_path, asset_id, sheet_name, header_fingerprint,
+            column_map, created_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING *`,
+        [
+          id,
+          projectId,
+          input.rootPath,
+          input.assetId,
+          input.sheetName,
+          input.headerFingerprint,
+          columnMap,
+          input.createdBy ?? null,
+          new Date().toISOString()
+        ]
+      );
+      return mapExcelMapping(inserted.rows[0]!);
+    } catch (error) {
+      if ((error as { code?: string }).code !== "23505") throw error;
+      const retried = await update();
+      if (retried.rows.length === 0) throw error;
+      return mapExcelMapping(retried.rows[0]!);
+    }
+  }
+
+  async findExcelMapping(
+    rootPath: string,
+    assetId: string,
+    headerFingerprint: string
+  ): Promise<ExcelMappingRecord | null> {
+    const result = await this.pool.query(
+      `SELECT * FROM excel_mappings
+        WHERE root_path = $1 AND asset_id = $2 AND header_fingerprint = $3`,
+      [rootPath, assetId, headerFingerprint]
+    );
+    return result.rows.length > 0 ? mapExcelMapping(result.rows[0]!) : null;
+  }
+
+  async listExcelMappings(rootPath: string, assetId?: string): Promise<ExcelMappingRecord[]> {
+    const result =
+      assetId === undefined
+        ? await this.pool.query(
+            "SELECT * FROM excel_mappings WHERE root_path = $1 ORDER BY created_at DESC, id DESC",
+            [rootPath]
+          )
+        : await this.pool.query(
+            `SELECT * FROM excel_mappings
+              WHERE root_path = $1 AND asset_id = $2
+              ORDER BY created_at DESC, id DESC`,
+            [rootPath, assetId]
+          );
+    return result.rows.map(mapExcelMapping);
+  }
+
   private async pruneUsageEvents(
     projectId: string | null,
     policy: UsagePrunePolicy
@@ -3380,6 +3476,23 @@ function mapWebAsset(row: Record<string, unknown>): WebAssetRecord {
     uploadedBy: nullableString(row.uploaded_by),
     createdAt: String(row.created_at),
     metadata: parseJsonObject(row.metadata)
+  };
+}
+
+function mapExcelMapping(row: Record<string, unknown>): ExcelMappingRecord {
+  const columnMap: Record<string, string> = {};
+  for (const [field, header] of Object.entries(parseJsonObject(row.column_map))) {
+    if (typeof header === "string") columnMap[field] = header;
+  }
+  return {
+    id: String(row.id),
+    rootPath: String(row.root_path),
+    assetId: String(row.asset_id),
+    sheetName: String(row.sheet_name),
+    headerFingerprint: String(row.header_fingerprint),
+    columnMap,
+    createdBy: nullableString(row.created_by),
+    createdAt: String(row.created_at)
   };
 }
 

@@ -3063,3 +3063,15 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **导入器复用**：`src/workflow/excel-import.ts` 改为引用 `LEGACY_COLUMN_ALIASES`（旧别名子集；字段映射：`displayId ← caseId`）并保留原表头归一（trim/小写/去空白），删除本地别名表；因此扩展别名（如 `用例ID`/`测试过程`）不会抢走旧列的 first-match，导入行为、错误文案与拆分/幂等逻辑不变。
 - **边界**：不实现映射持久化、预览 API、UI、Excel 回写（Task 6/7）。
 - **测试**：`test/web-excel.test.js`（14 例：规范字段与别名建议、扩展别名、列换序/无关列不变、语义指纹稳定/缺列变化/换表名变化、解析字段与行号、数字 caseId、重复/空必填 rejected、公式缓存值与 `0`/`false`/可选无缓存/必填无缓存、合并列拒绝与未映射合并不影响、缺必需列/列不存在/重复映射、工作表与表头行选择、表头单独读取、损坏工作簿）；`test/workflow-excel-import.test.js`（含旧别名优先级与 `displayId`/`testData` 锁定）与全量测试保持全绿。
+
+### 13.252 新增（Excel 列映射持久化 + 预览/保存 API）
+
+> 2026-10-28。Task 6：把用户确认的列映射按原件版本持久化，并提供预览（建议映射/指纹）与保存 API；原件仍是只读 CAS，映射不写回文件。
+
+- **存储**：`excel_mappings`（PG）与 Memory/File 台账 `excelMappings` 同构；字段 `id/projectId?/rootPath/assetId/sheetName/headerFingerprint/columnMap/createdBy/createdAt`。`columnMap` 是「规范字段 → 工作表真实表头文本」；`(root_path, asset_id, header_fingerprint)` 唯一索引，保存时按该键 **upsert（最新覆盖）**：同键保留原 `id`/`createdAt`，更新 `sheetName`/`columnMap`/`createdBy`；列表按 `createdAt DESC, id DESC`，可按 `assetId` 过滤。PG 写入先 UPDATE 再 INSERT，23505（并发抢先）回退 UPDATE；映射行不级联资产删除（当前无删除入口）。
+- **指纹**（`src/web/excel-mapping.ts` 的 `mappingFingerprint(sheetName, columnMap)`）：`sha256({sheet, fields: <已映射规范字段>.sort()})`，**不含列顺序与表头文本**；确认映射的字段集合变化（增/减可选列、漏填 `steps`）才换指纹。对 `suggestExcelMapping(headers)` 的结果与 Task 5 `semanticFingerprint(sheetName, headers)` 完全一致；列换序后预览/保存得到同一指纹，可直接查回既有映射。
+- **服务**：`previewExcelAsset` 读资产原件 → `readExcelHeaders`（缺必填列也返回表头）→ `{sheetName, headers, suggested, fingerprint, rejectedPreview: []}`；`saveExcelMapping` 重新读表头、校验映射、算指纹后 upsert；`findExcelMapping` / `listExcelMappings` 为薄封装。资产校验：必须属于该项目（`getWebAsset(rootPath, assetId)`）、`kind=excel`、`storagePath` 解析后位于 `<root>/.artemis` 内；越界路径拒绝读盘（400），文件缺失 404。映射校验：键必须是 `CANONICAL_FIELDS`、值必须是非空字符串、表头按 `normalizeExcelHeader` 后必须存在、同一列不得映射给两个字段，且必须含 `caseId`/`steps`；未知键/非字符串 → `invalid-column-map`，其余复用 Task 5 的 `ExcelMappingError`（`missing-required`/`column-not-found`/`duplicate-column`/`invalid-workbook`/`sheet-not-found`/`invalid-header-row`/…），API 统一 400 + `code`。
+- **API**（均 require maintainer，项目经 `resolveProjectKey` 解析）：`POST /panel/api/projects/excel/preview` body `{project, assetId, sheetName?, headerRow?}` → `{ok, sheetName, headers, suggested, fingerprint, rejectedPreview}`；缺必填列仍 200（UI 据此让用户补映射），工作簿/表头行无效 400，未知资产 404，非 Excel/越界 400。`POST /panel/api/projects/excel/mapping` body `{project, assetId, sheetName, headerRow?, columnMap}` → `{ok, mapping}`；校验失败 400，未知资产 404；审计 `domain: excel`、`action: excel.mapping.save`（ok/failed，refs `assetId`/`sheetName`/`headerFingerprint`）。预览不写审计（高频只读）。
+- **复用口径**：建议映射（preview）与保存的指纹在用户接受建议时相同；用户改动可选字段集合后指纹随确认语义变化，是刻意行为（不复用不确定映射）。跨资产复用时以最新原件的预览指纹查 `findExcelMapping`。
+- **边界**：不实现 UI、工作副本、写回与 journal（Task 7/8）；映射只挂原件，不参与 CAS/原件 sha。
+- **测试**：`test/web-excel-mapping.test.js`（10 例：预览 headers/suggested/指纹与缺必填列、列换序稳定；指纹与 Task 5 同源、键序无关；Memory upsert/find/list、换序命中；必填/列不存在/未知字段/空表名/表不存在/未知资产/非 Excel/越界路径/文件缺失；FileStore 重启；pg-mem 往返与同键 upsert；API 预览成功+headerRow+缺列 200+404/400/403/跨项目隔离；API 保存+审计+同键 upsert+字段集合变化新行+400/403；角色 maintainer）。

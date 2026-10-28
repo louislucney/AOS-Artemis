@@ -21,6 +21,12 @@ import {
   WebProjectCreateError
 } from "../web/project-service.js";
 import { storeWebAsset, WebAssetError, WEB_ASSET_MAX_BYTES } from "../web/assets.js";
+import {
+  ExcelMappingServiceError,
+  previewExcelAsset,
+  saveExcelMapping
+} from "../web/excel-mapping.js";
+import { ExcelMappingError } from "../web/excel.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
 import {
   computeDispatchPreview,
@@ -243,6 +249,12 @@ export async function handlePanelActionRequest(
   };
 
   try {
+    if (request.url.pathname === "/panel/api/projects/excel/preview") {
+      return await previewExcelMappingAction(scopedDeps, resolved.rootPath, payload);
+    }
+    if (request.url.pathname === "/panel/api/projects/excel/mapping") {
+      return await saveExcelMappingAction(scopedDeps, resolved.rootPath, payload, actor);
+    }
     if (request.url.pathname === "/panel/api/tasks") {
       const response = await createTask(
         scopedDeps,
@@ -607,6 +619,107 @@ async function uploadAssetAction(
       return json(500, { ok: false, error: "资产写入失败（已写入审计；可重试或查看日志）" });
     }
     return json(status, { ok: false, error: errorMessage(error), code });
+  }
+}
+
+function headerRowParam(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value.trim())
+        : Number.NaN;
+  if (!Number.isInteger(numeric) || numeric < 1) {
+    throw new ExcelMappingError("invalid-header-row", `表头行无效：${String(value)}`);
+  }
+  return numeric;
+}
+
+function excelMappingErrorResponse(error: unknown): PanelWebResponse | null {
+  if (error instanceof ExcelMappingError) {
+    return json(400, { ok: false, error: error.message, code: error.code });
+  }
+  if (error instanceof ExcelMappingServiceError) {
+    return json(error.status, { ok: false, error: error.message, code: error.code });
+  }
+  return null;
+}
+
+async function previewExcelMappingAction(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>
+): Promise<PanelWebResponse> {
+  const assetId = typeof payload.assetId === "string" ? payload.assetId.trim() : "";
+  const sheetName = typeof payload.sheetName === "string" ? payload.sheetName.trim() : "";
+  try {
+    if (assetId === "") {
+      throw new ExcelMappingServiceError("missing-asset-id", "缺少 assetId（资产 id）");
+    }
+    const headerRow = headerRowParam(payload.headerRow);
+    const preview = await previewExcelAsset({
+      store: deps.store,
+      rootPath,
+      assetId,
+      ...(sheetName === "" ? {} : { sheetName }),
+      ...(headerRow === undefined ? {} : { headerRow })
+    });
+    return json(200, { ok: true, ...preview });
+  } catch (error) {
+    const response = excelMappingErrorResponse(error);
+    if (response) return response;
+    throw error;
+  }
+}
+
+async function saveExcelMappingAction(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>,
+  actor: string
+): Promise<PanelWebResponse> {
+  const assetId = typeof payload.assetId === "string" ? payload.assetId.trim() : "";
+  const sheetName = typeof payload.sheetName === "string" ? payload.sheetName.trim() : "";
+  const refs = {
+    assetId,
+    ...(sheetName === "" ? {} : { sheetName })
+  };
+  try {
+    if (assetId === "") {
+      throw new ExcelMappingServiceError("missing-asset-id", "缺少 assetId（资产 id）");
+    }
+    const headerRow = headerRowParam(payload.headerRow);
+    const mapping = await saveExcelMapping({
+      store: deps.store,
+      rootPath,
+      assetId,
+      sheetName,
+      ...(headerRow === undefined ? {} : { headerRow }),
+      columnMap: payload.columnMap,
+      createdBy: actor
+    });
+    await recordAuditSafe(deps.store, rootPath, {
+      domain: "excel",
+      action: "excel.mapping.save",
+      result: "ok",
+      actor,
+      summary: `保存 Excel 列映射：${mapping.sheetName}（指纹 ${mapping.headerFingerprint.slice(0, 12)}）`,
+      refs: { ...refs, headerFingerprint: mapping.headerFingerprint }
+    });
+    return json(200, { ok: true, mapping });
+  } catch (error) {
+    const response = excelMappingErrorResponse(error);
+    if (!response) throw error;
+    await recordAuditSafe(deps.store, rootPath, {
+      domain: "excel",
+      action: "excel.mapping.save",
+      result: "failed",
+      actor,
+      summary: `保存 Excel 列映射失败：${errorMessage(error)}`,
+      refs
+    });
+    return response;
   }
 }
 

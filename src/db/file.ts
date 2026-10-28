@@ -22,6 +22,7 @@ import type {
   CreateScheduleInput,
   CreateWebAssetInput,
   DeviceLeaseRecord,
+  ExcelMappingRecord,
   HostAddressInput,
   HostAddressRecord,
   HostRecord,
@@ -44,6 +45,7 @@ import type {
   RenewDeviceLeasesInput,
   RunnerRecord,
   ScheduleRecord,
+  SaveExcelMappingInput,
   SetCaseIssueKeyInput,
   SuiteRunRecord,
   TaskStatRecord,
@@ -1094,6 +1096,31 @@ export class FileStore implements ProjectStore {
     return this.scopedMem(bucket, this.hostId).getWebAsset(rootPath, id);
   }
 
+  async saveExcelMapping(input: SaveExcelMappingInput): Promise<ExcelMappingRecord> {
+    const bucket = await this.bucket(input.rootPath);
+    const record = await this.scopedMem(bucket, this.hostId).saveExcelMapping(input);
+    await this.persist(bucket, "saveExcelMapping");
+    return record;
+  }
+
+  async findExcelMapping(
+    rootPath: string,
+    assetId: string,
+    headerFingerprint: string
+  ): Promise<ExcelMappingRecord | null> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).findExcelMapping(
+      rootPath,
+      assetId,
+      headerFingerprint
+    );
+  }
+
+  async listExcelMappings(rootPath: string, assetId?: string): Promise<ExcelMappingRecord[]> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).listExcelMappings(rootPath, assetId);
+  }
+
   /** 文件台账按项目目录存放、天然属于本机，没有可迁移的跨主机行（中心 `host adopt-legacy` 仅对 PG 生效）。 */
   async adoptProjectHost(): Promise<boolean> {
     return false;
@@ -1357,7 +1384,8 @@ export class FileStore implements ProjectStore {
         hostSessions: this.hostMem.exportState().hostSessions,
         deviceLeases: this.hostMem.exportState().deviceLeases,
         webProjects: full.webProjects,
-        webAssets: full.webAssets
+        webAssets: full.webAssets,
+        excelMappings: full.excelMappings
       };
       await this.ensureDir(bucket);
       const payload = JSON.stringify({
@@ -1526,6 +1554,9 @@ function mergeStates(disk: Partial<MemoryStoreState>, local: MemoryStoreState): 
   }
   if (disk.webAssets) {
     out.webAssets = unionBy(disk.webAssets, local.webAssets, (asset) => asset.id);
+  }
+  if (disk.excelMappings) {
+    out.excelMappings = unionBy(disk.excelMappings, local.excelMappings, (mapping) => mapping.id);
   }
   return out;
 }

@@ -29,6 +29,7 @@ import type {
   CreateScheduleInput,
   CreateWebAssetInput,
   DeviceLeaseRecord,
+  ExcelMappingRecord,
   HostAddressInput,
   HostAddressRecord,
   HostRecord,
@@ -51,6 +52,7 @@ import type {
   RenewDeviceLeasesInput,
   RunnerRecord,
   ScheduleRecord,
+  SaveExcelMappingInput,
   SetCaseIssueKeyInput,
   SuiteRunRecord,
   TaskStatRecord,
@@ -84,6 +86,7 @@ export interface MemoryStoreState {
   deviceLeases: DeviceLeaseRecord[];
   webProjects: WebProjectRecord[];
   webAssets: WebAssetRecord[];
+  excelMappings: ExcelMappingRecord[];
 }
 
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
@@ -109,6 +112,7 @@ export class MemoryStore implements ProjectStore {
   private deviceLeases: DeviceLeaseRecord[] = [];
   private webProjects: WebProjectRecord[] = [];
   private webAssets: WebAssetRecord[] = [];
+  private excelMappings: ExcelMappingRecord[] = [];
 
   constructor(
     hostId: string | null = null,
@@ -146,6 +150,7 @@ export class MemoryStore implements ProjectStore {
     view.deviceLeases = this.deviceLeases;
     view.webProjects = this.webProjects;
     view.webAssets = this.webAssets;
+    view.excelMappings = this.excelMappings;
     return view;
   }
 
@@ -1668,6 +1673,61 @@ export class MemoryStore implements ProjectStore {
     return found ? cloneWebAsset(found) : null;
   }
 
+  async saveExcelMapping(input: SaveExcelMappingInput): Promise<ExcelMappingRecord> {
+    const existing = this.excelMappings.find(
+      (mapping) =>
+        mapping.rootPath === input.rootPath &&
+        mapping.assetId === input.assetId &&
+        mapping.headerFingerprint === input.headerFingerprint
+    );
+    if (existing) {
+      existing.sheetName = input.sheetName;
+      existing.columnMap = { ...input.columnMap };
+      existing.createdBy = input.createdBy ?? null;
+      return cloneExcelMapping(existing);
+    }
+    const record: ExcelMappingRecord = {
+      id: randomUUID(),
+      rootPath: input.rootPath,
+      assetId: input.assetId,
+      sheetName: input.sheetName,
+      headerFingerprint: input.headerFingerprint,
+      columnMap: { ...input.columnMap },
+      createdBy: input.createdBy ?? null,
+      createdAt: new Date().toISOString()
+    };
+    this.excelMappings.push(record);
+    return cloneExcelMapping(record);
+  }
+
+  async findExcelMapping(
+    rootPath: string,
+    assetId: string,
+    headerFingerprint: string
+  ): Promise<ExcelMappingRecord | null> {
+    const found = this.excelMappings.find(
+      (mapping) =>
+        mapping.rootPath === rootPath &&
+        mapping.assetId === assetId &&
+        mapping.headerFingerprint === headerFingerprint
+    );
+    return found ? cloneExcelMapping(found) : null;
+  }
+
+  async listExcelMappings(rootPath: string, assetId?: string): Promise<ExcelMappingRecord[]> {
+    return this.excelMappings
+      .filter(
+        (mapping) =>
+          mapping.rootPath === rootPath &&
+          (assetId === undefined || mapping.assetId === assetId)
+      )
+      .sort(
+        (left, right) =>
+          right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)
+      )
+      .map(cloneExcelMapping);
+  }
+
   usageEventCount(): number {
     return this.usageEvents.length;
   }
@@ -1696,7 +1756,8 @@ export class MemoryStore implements ProjectStore {
       hostSessions: this.hostSessions.map(cloneHostSession),
       deviceLeases: this.deviceLeases.map((lease) => ({ ...lease })),
       webProjects: this.webProjects.map(cloneWebProject),
-      webAssets: this.webAssets.map(cloneWebAsset)
+      webAssets: this.webAssets.map(cloneWebAsset),
+      excelMappings: this.excelMappings.map(cloneExcelMapping)
     };
   }
 
@@ -1733,6 +1794,7 @@ export class MemoryStore implements ProjectStore {
     if (data.deviceLeases) this.deviceLeases = data.deviceLeases.map((lease) => ({ ...lease }));
     if (data.webProjects) this.webProjects = data.webProjects.map(cloneWebProject);
     if (data.webAssets) this.webAssets = data.webAssets.map(cloneWebAsset);
+    if (data.excelMappings) this.excelMappings = data.excelMappings.map(cloneExcelMapping);
   }
 
   private pruneUsageEvents(projectId: string | null, policy: UsagePrunePolicy): void {
@@ -1877,6 +1939,10 @@ function cloneWebProject(record: WebProjectRecord): WebProjectRecord {
 
 function cloneWebAsset(record: WebAssetRecord): WebAssetRecord {
   return { ...record, metadata: cloneMetadata(record.metadata) };
+}
+
+function cloneExcelMapping(record: ExcelMappingRecord): ExcelMappingRecord {
+  return { ...record, columnMap: { ...record.columnMap } };
 }
 
 function cloneMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {
