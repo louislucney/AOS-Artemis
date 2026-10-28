@@ -3147,9 +3147,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > 2026-10-28。Plan 3 Task 3b：Web 任务需要携带安装包、测试材料与 Maestro 脚本包，资产类型从「仅 Excel」放开为四类。
 
 - **类型**（`src/db/types.ts`）：`WebAssetKind = "excel" | "materials" | "package" | "scripts"`；Memory/File/PG 三实现只按字符串存 `kind`，无需迁移。
-- **上限**（`src/web/assets.ts`）：新增 `webAssetMaxBytes(kind)`——excel 20MB、materials 50MB、package 500MB、scripts 20MB；`WEB_ASSET_MAX_BYTES` 保留为 excel/scripts 旧常量（20MB）。`WEB_ASSET_KINDS`/`isWebAssetKind`/`webAssetExtensions` 供调用方枚举。
-- **扩展名白名单**：package `.apk`/`.ipa`；materials `.zip`/`.json`/`.csv`/`.txt`；scripts 仅 `.zip`；excel 仅 `.xlsx`；大小写不敏感，文件名仍只取 `basename`（不放松路径校验）。`metadata?: Record<string, unknown>` 透传到资产行（缺省 `{}`）；`metadata.secret=true` 标记 secret materials。
+- **上限**（`src/web/assets.ts`）：新增 `webAssetMaxBytes(kind)`——excel 20MB、materials 50MB、package **200MB**、scripts 20MB；`WEB_ASSET_MAX_BYTES` 保留为 excel/scripts 旧常量（20MB），per-kind 表直接用该常量。`WEB_ASSET_KINDS`/`isWebAssetKind`/`webAssetExtensions` 供调用方枚举。
+- **传输上限**（`src/panel/limits.ts`）：`MAX_PANEL_ASSET_UPLOAD_BYTES = 210MB`（含 multipart 头开销）只用于 `POST /panel/api/projects/assets`（HTTP 服务 `src/http-server.ts` 与独立 `panel --web` 的 `src/panel-command.ts` 同步）；其余面板动作/未知路径仍用 `MAX_PANEL_IMPORT_BYTES`（≈20MB）。否则 21MB 安装包会在传输层被 413，永远到不了 `storeWebAsset`。
+- **内存边界（已知限制）**：multipart 目前整包缓冲，峰值约为请求体的 3 倍（rawBody + FormData/File + 内容寻址写入的 Buffer），故 200MB 包峰值可达 ~600MB；200MB 是首版可接受边界，**流式写 CAS 为后续任务**，在此之前不宜再抬高 package 上限。
+- **扩展名白名单**：package `.apk`/`.ipa`；materials `.zip`/`.json`/`.csv`/`.txt`；scripts 仅 `.zip`；excel 仅 `.xlsx`；大小写不敏感，文件名仍只取 `basename`；含 `\`（Windows 路径分隔符）直接拒绝 `invalid-filename`，不做静默截断。`metadata?: Record<string, unknown>` 透传到资产行（缺省 `{}`）；`metadata.secret=true` 标记 secret materials，且仅 `kind=materials` 允许（其他 kind 传 `secret=true` → 400 `invalid-metadata`）。
 - **package 元数据**：上传不要求中心解析 AndroidManifest/Info.plist；包名/版本以项目 `appPackage` 为准、安装后由 runner 回报（Task 8）。
 - **API**（`src/panel/actions.ts`）：`POST /panel/api/projects/assets` 的 `kind` 接受四类（未知 kind → 400 `未知 kind "…"`）；multipart 先把 `kind` 当文本字段解析，故按全类型扩展名并集接收、上限取最大 kind＋64KB 头开销，再由 `storeWebAsset` 按 kind 精确校验（扩展名不匹配 400 `invalid-extension`、超限 413 `too-large`）；新增 `secret=true` 文本字段 → `metadata.secret`。审计 `asset.upload` 的 refs 仍含 kind。
-- **测试**：`test/web-asset-kinds.test.js`（各 kind 上限与边界、扩展名大小写/白名单、package 重复内容新版本复用 CAS、未知 kind 与 basename、secret metadata、API 四类上传与 typed 400/413）；`test/web-assets.test.js` 原「未知 kind」用例改用 `binary`，另加 kind/扩展名不匹配 400。
-- **边界**：不实现资产删除/保留期、包解析与安装（Task 8）、secret 加密存储与 job 级下发（后续任务）。
+- **UI 现状**：控制台资产页（`?section=assets`）仍只列出 Excel 版本/上传入口；package/materials/scripts 目前只能经 API 上传，页面暴露见 Task 9/10。
+- **测试**：`test/web-asset-kinds.test.js`（各 kind 上限与边界、扩展名大小写/白名单、package 重复内容新版本复用 CAS、未知 kind 与 basename/反斜杠、secret metadata 与非法 secret、API 四类上传与 typed 400/413）；`test/http-server.test.js` 21MB package 走真实 HTTP → 200；`test/web-assets.test.js` 原「未知 kind」用例改用 `binary`，另加 kind/扩展名不匹配 400。
+- **边界**：不实现资产删除/保留期、包解析与安装（Task 8）、secret 加密存储与 job 级下发（后续任务）、大文件流式传输。

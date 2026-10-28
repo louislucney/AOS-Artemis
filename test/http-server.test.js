@@ -391,6 +391,49 @@ test("http server: multipart 资产上传（字段 project/kind）→ 200、落�
   }
 });
 
+test("http server: 21MB package 资产上传 → 200（资产专用传输上限）", async () => {
+  const workspace = makeWorkspace();
+  const projectDir = path.join(workspace, "demo");
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: projectDir, name: "demo", hostId: "test-host" });
+  await store.createWebProject({
+    rootPath: projectDir,
+    name: "demo",
+    normalizedName: "demo",
+    platforms: ["android"]
+  });
+  const handle = await createAosHttpServer({
+    port: 0,
+    host: "127.0.0.1",
+    workspaceRoot: workspace,
+    store
+  });
+  try {
+    const size = 21 * 1024 * 1024;
+    const form = new FormData();
+    form.set("project", projectDir);
+    form.set("kind", "package");
+    form.set("file", new Blob([Buffer.alloc(size)]), "app.apk");
+    const res = await fetch(`http://127.0.0.1:${handle.port}/panel/api/projects/assets`, {
+      method: "POST",
+      headers: { "X-AOS-Console": "1" },
+      body: form
+    });
+    const body = await res.text();
+    assert.equal(res.status, 200, body);
+    const payload = JSON.parse(body);
+    assert.equal(payload.asset.kind, "package");
+    assert.equal(payload.asset.size, size);
+    assert.equal(payload.asset.filename, "app.apk");
+
+    const assets = await store.listWebAssets(projectDir, "package");
+    assert.equal(assets.length, 1);
+    assert.equal(fs.statSync(assets[0].storagePath).size, size, "21MB 内容已落 CAS");
+  } finally {
+    await handle.close();
+  }
+});
+
 test("http server: 任务视图路由（未知 task → 404）", async () => {
   const workspace = makeWorkspace();
   const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });

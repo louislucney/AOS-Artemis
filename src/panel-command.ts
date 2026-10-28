@@ -10,6 +10,7 @@ import { panelRoleFrom, panelRoleScopes, type PanelRole } from "./panel/roles.js
 import { handleArtifactRequest } from "./panel/artifact-route.js";
 import { loopbackHostAllowed } from "./panel/http-guard.js";
 import {
+  MAX_PANEL_ASSET_UPLOAD_BYTES,
   MAX_PANEL_BODY_BYTES,
   MAX_PANEL_IMPORT_BYTES,
   PanelBodyTooLargeError
@@ -327,7 +328,12 @@ async function runPanelWeb(options: {
             contentTypeValue.toLowerCase().includes("multipart/form-data");
           if (isMultipart) {
             try {
-              rawBody = await readStandaloneRawBody(req);
+              rawBody = await readStandaloneRawBody(
+                req,
+                url.pathname === "/panel/api/projects/assets"
+                  ? MAX_PANEL_ASSET_UPLOAD_BYTES
+                  : MAX_PANEL_IMPORT_BYTES
+              );
             } catch (error) {
               const oversized = error instanceof PanelBodyTooLargeError;
               res.writeHead(oversized ? 413 : 400, { "Content-Type": JSON_CONTENT_TYPE });

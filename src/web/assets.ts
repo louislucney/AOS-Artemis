@@ -13,10 +13,10 @@ export const WEB_ASSET_MAX_BYTES = 20 * 1024 * 1024;
 const MB = 1024 * 1024;
 
 const MAX_BYTES_BY_KIND: Record<WebAssetKind, number> = {
-  excel: 20 * MB,
+  excel: WEB_ASSET_MAX_BYTES,
   materials: 50 * MB,
-  package: 500 * MB,
-  scripts: 20 * MB
+  package: 200 * MB,
+  scripts: WEB_ASSET_MAX_BYTES
 };
 
 const EXTENSIONS_BY_KIND: Record<WebAssetKind, readonly string[]> = {
@@ -48,6 +48,7 @@ export function webAssetExtensions(kind: WebAssetKind): readonly string[] {
 export type WebAssetErrorCode =
   | "unsupported-kind"
   | "invalid-extension"
+  | "invalid-filename"
   | "empty-file"
   | "too-large"
   | "project-root-missing";
@@ -82,9 +83,13 @@ async function pathExists(target: string): Promise<boolean> {
   }
 }
 
-/** 安全文件名：只取 basename；空名拒绝。扩展名由 kind 白名单决定（大小写不敏感）。 */
+/** 安全文件名：只取 basename；空名/含 Windows 路径分隔符拒绝。扩展名由 kind 白名单决定（大小写不敏感）。 */
 function safeFilename(kind: WebAssetKind, rawFilename: string): { filename: string; extension: string } {
-  const filename = path.basename(rawFilename.trim());
+  const trimmed = rawFilename.trim();
+  if (trimmed.includes("\\")) {
+    throw new WebAssetError("invalid-filename", "文件名不得包含路径分隔符");
+  }
+  const filename = path.basename(trimmed);
   if (filename === "" || filename === "." || filename === "..") {
     throw new WebAssetError("invalid-extension", "文件名无效");
   }

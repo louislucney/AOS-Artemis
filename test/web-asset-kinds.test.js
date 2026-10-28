@@ -54,10 +54,10 @@ function uploadRequest(body, { boundary = "----aosKinds" } = {}) {
   };
 }
 
-test("webAssetMaxBytes: 各类型上限（excel/scripts 20MB、materials 50MB、package 500MB）", () => {
+test("webAssetMaxBytes: 各类型上限（excel/scripts 20MB、materials 50MB、package 200MB）", () => {
   assert.equal(webAssetMaxBytes("excel"), 20 * MB);
   assert.equal(webAssetMaxBytes("materials"), 50 * MB);
-  assert.equal(webAssetMaxBytes("package"), 500 * MB);
+  assert.equal(webAssetMaxBytes("package"), 200 * MB);
   assert.equal(webAssetMaxBytes("scripts"), 20 * MB);
   assert.equal(WEB_ASSET_MAX_BYTES, 20 * MB, "旧常量保留为 excel 上限");
 });
@@ -270,6 +270,19 @@ test("storeWebAsset: 未知 kind / 目录穿越文件名（只取 basename，不
     path.join(rootPath, ".artemis", "web", "assets", "package")
   );
   assert.equal(traversal.storagePath.includes(".."), false);
+
+  await assert.rejects(
+    () =>
+      storeWebAsset({
+        store,
+        rootPath,
+        kind: "package",
+        filename: "..\\evil.apk",
+        buffer: APK
+      }),
+    (error) => error instanceof WebAssetError && error.code === "invalid-filename",
+    "Windows 路径分隔符拒绝，不做静默 basename"
+  );
 });
 
 test("storeWebAsset: metadata 透传（materials secret 标记）且缺省为空对象", async (t) => {
@@ -411,6 +424,32 @@ test("API /panel/api/projects/assets: extension 与 kind 不匹配/超大/未知
     deps
   );
   assert.equal(tooLarge.status, 413, tooLarge.body);
+
+  const secretOnPackage = await handlePanelActionRequest(
+    uploadRequest(
+      multipartBody("----aosKinds", {
+        fields: { project: rootPath, kind: "package", secret: "true" },
+        filename: "app.apk",
+        content: APK
+      })
+    ),
+    deps
+  );
+  assert.equal(secretOnPackage.status, 400, secretOnPackage.body);
+  assert.equal(JSON.parse(secretOnPackage.body).code, "invalid-metadata");
+
+  const backslash = await handlePanelActionRequest(
+    uploadRequest(
+      multipartBody("----aosKinds", {
+        fields: { project: rootPath, kind: "package" },
+        filename: "..\\app.apk",
+        content: APK
+      })
+    ),
+    deps
+  );
+  assert.equal(backslash.status, 400, backslash.body);
+  assert.equal(JSON.parse(backslash.body).code, "invalid-filename");
 
   assert.deepEqual(await store.listWebAssets(rootPath), []);
 });

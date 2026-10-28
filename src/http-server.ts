@@ -24,7 +24,11 @@ import {
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
 import { panelRoleFrom, panelRoleScopes } from "./panel/roles.js";
-import { MAX_PANEL_BODY_BYTES, MAX_PANEL_UPLOAD_BYTES } from "./panel/limits.js";
+import {
+  MAX_PANEL_ASSET_UPLOAD_BYTES,
+  MAX_PANEL_BODY_BYTES,
+  MAX_PANEL_UPLOAD_BYTES
+} from "./panel/limits.js";
 import { resolveHostIdentity } from "./host/identity.js";
 import { handleArtifactRequest } from "./panel/artifact-route.js";
 import {
@@ -386,7 +390,13 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             contentTypeValue.toLowerCase().includes("multipart/form-data");
           if (req.method === "POST" && isMultipart) {
             try {
-              rawBody = await readRawBody(req, MAX_PANEL_BODY_BYTES + MAX_PANEL_UPLOAD_BYTES);
+              // 资产上传（安装包/材料/脚本包）单独放宽；其余面板动作保持约 20MB。
+              rawBody = await readRawBody(
+                req,
+                url.pathname === "/panel/api/projects/assets"
+                  ? MAX_PANEL_ASSET_UPLOAD_BYTES
+                  : MAX_PANEL_BODY_BYTES + MAX_PANEL_UPLOAD_BYTES
+              );
             } catch (error) {
               if (error instanceof BodyTooLargeError) throw error;
               res.writeHead(400, { "Content-Type": "application/json" });

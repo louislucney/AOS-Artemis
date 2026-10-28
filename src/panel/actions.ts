@@ -594,6 +594,12 @@ async function uploadAssetAction(
   }
   const kind: WebAssetKind = kindRaw;
   const secretFlag = (upload.fields.secret ?? "").trim().toLowerCase();
+  if (secretFlag === "true" && kind !== "materials") {
+    return json(400, {
+      error: "secret=true 仅适用于 materials 资产",
+      code: "invalid-metadata"
+    });
+  }
   const metadata: Record<string, unknown> = secretFlag === "true" ? { secret: true } : {};
 
   const hostParam =
