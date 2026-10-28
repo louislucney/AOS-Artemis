@@ -90,6 +90,11 @@ export function webRunnerChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out;
 }
 
+function positiveInt(raw: string | undefined): number | undefined {
+  const parsed = Number((raw ?? "").trim());
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : undefined;
+}
+
 function trimBase(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
 }
@@ -183,6 +188,8 @@ export function createDefaultWebJobExecutor(
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as typeof fetch);
   const exec: ExecFn = options.exec ?? defaultExec;
   const childEnv = webRunnerChildEnv(env);
+  const envTimeoutMs = positiveInt(env.AOS_WEB_JOB_TIMEOUT_MS);
+  const executeTimeoutMs = options.timeoutMs ?? envTimeoutMs;
 
   return async (input) => {
     const jobId = input.task.id;
@@ -271,7 +278,7 @@ export function createDefaultWebJobExecutor(
         },
         exec,
         env: childEnv,
-        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs })
+        ...(executeTimeoutMs === undefined ? {} : { timeoutMs: executeTimeoutMs })
       });
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
 

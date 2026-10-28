@@ -1064,6 +1064,15 @@ test("项目 suite runner 不领取 web 任务；releaseStaleClaims 不回收 we
       hostId: null
     });
     assert.equal(projectClaim, null, "claimRegressionTask 必须排除 job_spec 行");
+    const sameHostClaim = await store.claimRegressionTask({
+      rootPath,
+      runnerId: "project-suite-runner",
+      platforms: ["android"],
+      capabilities: ["android"],
+      hostId: "host-pixel",
+      instanceId: "project-instance"
+    });
+    assert.equal(sameHostClaim, null, "同 host 的项目 runner 也不得领取 web job");
     const untouched = await store.getRegressionTask(rootPath, created.task.id);
     assert.equal(untouched.status, "pending");
 

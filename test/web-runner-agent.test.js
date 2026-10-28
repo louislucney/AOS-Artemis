@@ -1010,3 +1010,59 @@ test("web runner: jobSpec.retry 参与次数上限（retry=1 → 最多 2 次尝
   assert.equal(stored.status, "failed");
   assert.equal(stored.jobSpec.assignmentError.code, "max-attempts");
 });
+
+test("web runner: 达上限时任务已被取消 → ackCancellation，不覆盖 stopping", async () => {
+  const { store, rootPath, project } = await makeStore();
+  const pixel = android("pixel-1");
+  const task = await boundTask(store, rootPath, project, pixel);
+  const claimed = await store.claimWebJob({
+    runnerId: "seed",
+    hostId: HOST,
+    deviceSerial: "pixel-1",
+    instanceId: "seed-instance",
+    nowMs: NOW
+  });
+  assert.ok(claimed);
+  await store.beginExecution({
+    rootPath,
+    taskId: task.id,
+    runnerId: "seed",
+    instanceId: "seed-instance",
+    at: new Date(NOW).toISOString()
+  });
+  await store.releaseRegressionTask({ rootPath, runnerId: "seed", taskId: task.id, to: "pending" });
+
+  const proxy = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "updateRegressionTask") {
+        return async (root, id, patch) => {
+          if (
+            id === task.id &&
+            patch.status === "failed" &&
+            patch.expectStatuses?.includes("claimed")
+          ) {
+            await target.updateRegressionTask(root, id, { status: "stopping" });
+            return false;
+          }
+          return target.updateRegressionTask(root, id, patch);
+        };
+      }
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  const sink = io();
+  const code = await runWebRunner(
+    baseOptions(proxy, { once: true, env: { ...env(), AOS_RUNNER_MAX_ATTEMPTS: "1" } }),
+    sink.io,
+    {
+      collectInventory: async () => inventory([pixel]),
+      executeJob: async () => ({ status: "completed" }),
+      now: () => NOW + 1_000,
+      sleep: async () => {}
+    }
+  );
+  assert.equal(code, 0);
+  assert.equal((await store.getRegressionTask(rootPath, task.id)).status, "cancelled");
+  assert.ok(sink.logs.some((line) => line.includes("ackCancellation")), sink.logs.join("\n"));
+});

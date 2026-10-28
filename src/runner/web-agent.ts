@@ -403,7 +403,7 @@ export async function runWebRunner(
       );
       const at = new Date(now()).toISOString();
       const spec = parseWebJobSpec(task.jobSpec);
-      await store
+      const updated = await store
         .updateRegressionTask(rootPath, task.id, {
           status: "failed",
           deviceLeaseId: null,
@@ -424,7 +424,15 @@ export async function runWebRunner(
         })
         .catch((error) => {
           io.errorLog(`[web-runner] 任务 ${task.id} 超上限写终态失败：${errorMessage(error)}`);
+          return false;
         });
+      if (!updated) {
+        const after = await store.getRegressionTask(rootPath, task.id).catch(() => null);
+        if (after?.status === "stopping") {
+          await store.ackCancellation({ rootPath, taskId: task.id }).catch(() => null);
+          io.log(`[web-runner] 任务 ${task.id} 超上限时已被取消：已 ackCancellation`);
+        }
+      }
       await store
         .releaseDeviceLeases({ hostId, taskId: task.id, serials: [device.serial] })
         .catch((error) => {

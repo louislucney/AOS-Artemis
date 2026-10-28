@@ -216,6 +216,7 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
       PATH: "/usr/bin",
       AOS_MAESTRO_PATH: "/opt/maestro",
       AOS_RUNNER_JOB_TOKEN: TOKEN,
+      AOS_WEB_JOB_TIMEOUT_MS: "1234",
       MOBILE_TESTING_DATABASE_URL: "postgres://center",
       DEEPSEEK_API_KEY: "sk-secret",
       SOME_PASSWORD: "pw"
@@ -242,6 +243,8 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
   assert.deepEqual(adbCall.args.slice(0, 4), ["-s", "emulator-5554", "install", "-r"]);
   const maestroCall = fake.calls.find((call) => call.command === "maestro");
   assert.deepEqual(maestroCall.args.slice(0, 4), ["test", "--udid", "emulator-5554", "--format"]);
+  assert.equal(maestroCall.options.timeoutMs, 1234, "超时取未脱敏 env 的 AOS_WEB_JOB_TIMEOUT_MS");
+  assert.equal(maestroCall.options.env.AOS_WEB_JOB_TIMEOUT_MS, undefined);
   assert.equal(
     fs.existsSync(path.join(workRoot, "acme", "job-1")),
     false,
@@ -250,6 +253,7 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
   const childEnv = fake.calls[0].options.env;
   assert.equal(childEnv.PATH, "/usr/bin");
   assert.equal(childEnv.AOS_MAESTRO_PATH, "/opt/maestro");
+  assert.equal(childEnv.AOS_WEB_JOB_TIMEOUT_MS, undefined);
   assert.equal(childEnv.AOS_RUNNER_JOB_TOKEN, undefined);
   assert.equal(childEnv.MOBILE_TESTING_DATABASE_URL, undefined);
   assert.equal(childEnv.DEEPSEEK_API_KEY, undefined);
