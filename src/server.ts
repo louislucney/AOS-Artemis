@@ -120,7 +120,7 @@ export function createServerForRuntime(
     {
       capabilities: { tools: {} },
       instructions:
-        "AOS × ARTEMIS is a unified MCP service for mobile testing. It supports Android devices/emulators and iOS devices/simulators, Figma/.pen design-to-test generation, regression suites, Jira verification, and project-scoped records under .artemis/. " +
+        "mobile-testing is a unified MCP service for mobile testing. It supports Android devices/emulators and iOS devices/simulators, Figma/.pen design-to-test generation, regression suites, Jira verification, and project-scoped records under .artemis/. " +
         "For end-to-end requests prefer the workflow tools: design_to_test (design → test cases → optional run), run_regression (Excel/scope → cases → run), verify_jira_issue (Jira ticket → mapped cases → run → comment), and project_archive (read-only project summary). " +
         "Use aos_status to check project setup, storage, active LLM, and device readiness. Use mobile_run_task to launch device automation, mobile_manage_task to poll/stop/inject, mobile_get_device_state for live screenshots or UI hierarchy, and mobile_inspect_trace for step-level evidence. device_serial may be an Android serial or an iOS simulator/real-device UDID. " +
         "When a tool errors, no device is found, or the user reports the service is not working, call mobile_diagnose before retrying. If multiple devices are connected or the target is ambiguous, ask the user which device_serial to use; never guess. " +
@@ -173,7 +173,7 @@ export function createServerForRuntime(
 
     if (native) {
       if (!runtime) {
-        return errorResult(`AOS 项目初始化失败：${initError ?? "未知错误"}\nRun: mobile-testing-mcp doctor`);
+        return errorResult(`项目初始化失败：${initError ?? "未知错误"}\nRun: mobile-testing-mcp doctor`);
       }
       const parsed = native.schema.safeParse(args ?? {});
       if (!parsed.success) {
@@ -197,7 +197,7 @@ export function createServerForRuntime(
     }
 
     if (!runtime) {
-      return errorResult(`AOS 项目初始化失败：${initError ?? "未知错误"}\nRun: mobile-testing-mcp doctor`);
+      return errorResult(`项目初始化失败：${initError ?? "未知错误"}\nRun: mobile-testing-mcp doctor`);
     }
 
     // setup_required gate: mobile_run_task needs a project LLM; other mobile tools pass.

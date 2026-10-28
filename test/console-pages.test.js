@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdir, utimes, writeFile } from "node:fs/promises";
+import { mkdir, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { buildRunManifest, saveRunManifest } from "../dist/figma/run-manifest.js";
 import test from "node:test";
 
+import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { handlePanelRequest } from "../dist/panel/web.js";
-import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
+import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject } from "./helpers.js";
 
 async function setup() {
   const dir = makeTempProject({ config: baseConfig() });
@@ -20,7 +21,15 @@ async function setup() {
     source: "figma:x",
     basename: "登录回归",
     features: [
-      { key: "login", name: "登录", caseCount: 2, screens: [], jsonPath: "/x/a.json", mdPath: "/x/a.md", xlsxPath: "/x/a.xlsx" }
+      {
+        key: "login",
+        name: "登录",
+        caseCount: 2,
+        screens: [],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: join(dir, ".artemis", "design", "case-sets", "a.xlsx")
+      }
     ]
   });
   await store.recordAudit(rootPath, {
@@ -114,6 +123,10 @@ test("console pages: 用例库（份列表＋隔离徽章＋失败用例候选�
   assert.match(html.body, /c-table-wrap/, "表格横向滚动容器（窄屏不整页溢出）");
   assert.match(html.body, /<span title="figma:x">Figma 生成（x）<\/span>/, "来源中文化（title 原文）");
   assert.match(html.body, /下发该用例集/, "用例集行内动作");
+  assert.match(html.body, /Excel 文件/, "Excel 列");
+  assert.match(html.body, /设计来源/, "设计源列（区别于 Excel 产物）");
+  assert.match(html.body, />a\.xlsx<\/a>/, "Excel 文件名可点");
+  assert.match(html.body, /\/panel\/artifact\?project=/, "Excel 走只读产物服务");
   assert.match(html.body, /section=dispatch&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");
   assert.match(html.body, /id="import-form"/, "Excel 上传表单");
   assert.match(html.body, /panel\/api\/import/);
@@ -131,6 +144,31 @@ test("console pages: 用例库（份列表＋隔离徽章＋失败用例候选�
   assert.equal(json.view, "library");
   assert.equal(json.sets.length, 1);
   assert.equal(json.caseCandidates.length, 1, "候选随 JSON 暴露");
+});
+
+test("console pages: 文件台账本机 host 下切换器选中当前项目", async () => {
+  const root = makeTempProject({ config: baseConfig() });
+  const home = makeTempDir("aos-panel-switch-");
+  try {
+    const store = await FileStore.create({ homeDir: home });
+    await store.scopeHost("h-a").upsertProject({ rootPath: root, name: "p" });
+    const deps = {
+      store,
+      env: {},
+      localHostId: "h-a",
+      storeForHost: (hostId) => store.scopeHost(hostId)
+    };
+    const html = await handlePanelRequest(url(root, "library"), deps);
+    assert.equal(html.status, 200);
+    assert.match(
+      String(html.body),
+      /<option value="[^"]*" selected>p<\/option>/,
+      "当前项目在切换器中预选，不停在「切换项目…」"
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
 });
 
 test("console pages: 档案（索引＋kind 筛选）", async () => {

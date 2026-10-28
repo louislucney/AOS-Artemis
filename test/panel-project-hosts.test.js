@@ -111,6 +111,29 @@ test("无 host 且同路径跨主机 → 409 候选列表（不取其一）", as
   );
 });
 
+test("本机身份存在时：legacy NULL 行与本机行共存 → 自动选本机行，不报 409", async () => {
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: ROOT_PATH, name: "app" });
+  await store.scopeHost("h-a").upsertProject({ rootPath: ROOT_PATH, name: "app" });
+  const deps = {
+    store,
+    env: {},
+    workspaceRoot: null,
+    localHostId: "h-a",
+    storeForHost: (hostId) => store.scopeHost(hostId)
+  };
+
+  const resolved = await resolveProjectKey(deps, ROOT_PATH);
+  assert.equal(resolved.hostId, "h-a");
+  assert.equal(resolved.rootPath, ROOT_PATH);
+
+  const res = await handlePanelRequest(
+    new URL(`http://x/panel.json?project=${encodeURIComponent(ROOT_PATH)}`),
+    deps
+  );
+  assert.notEqual(res.status, 409);
+});
+
 test("动作层带 host 命中远端项目（裁决写回 h-b 不串 h-a）", async () => {
   const { store, deps } = makeDeps();
   const hA = store.scopeHost("h-a");

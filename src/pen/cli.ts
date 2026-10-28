@@ -230,7 +230,7 @@ export function detectPenFailure(result: PenExecResult, log: string): string | n
     return "pen agent 不支持该模型/agent（CLI 可选 claude/codex/gemini；pen.dev 订阅或其他厂商需在 pen.dev 应用内连接）";
   }
   if (/authentication_failed|Please run \/login|Not logged in/i.test(log)) {
-    return "pen agent 凭证缺失或无效：需 PEN_AGENT_API_KEY（AOS 自动注入 active LLM key）或 ANTHROPIC_API_KEY，或 pen codex-login";
+    return "pen agent 凭证缺失或无效：需 PEN_AGENT_API_KEY（mobile-testing 自动注入 active LLM key）或 ANTHROPIC_API_KEY，或 pen codex-login";
   }
   if (/Agent failed/i.test(log)) {
     return "pen agent 执行失败（见日志尾部）";

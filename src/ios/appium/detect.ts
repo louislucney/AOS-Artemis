@@ -50,7 +50,7 @@ export async function detectAppium(options: AppiumDetectorOptions = {}): Promise
     );
   }
   guidance.push(
-    `iOS 18+ 真机需先建立并保持 Remote XPC 隧道：${APPIUM_TUNNEL_HINT}（独立常驻进程；主机重启、设备重连/新增设备或进程退出后需重跑；AOS 只给指引，不代为 sudo 启动）。`
+    `iOS 18+ 真机需先建立并保持 Remote XPC 隧道：${APPIUM_TUNNEL_HINT}（独立常驻进程；主机重启、设备重连/新增设备或进程退出后需重跑；mobile-testing 只给指引，不代为 sudo 启动）。`
   );
 
   return {

@@ -1104,6 +1104,7 @@ export class FileStore implements ProjectStore {
           log(`文件台账 state.json 解析失败（忽略）：${errorMessage(error)}`);
         }
       }
+      await this.normalizeProjectRows(bucket);
       const usage = await readJsonl<UsageEventRecord>(bucket.usagePath);
       bucket.mem.importState({ usageEvents: usage });
       const audit = await readJsonl<AuditEventRecord>(bucket.auditPath);
@@ -1128,6 +1129,16 @@ export class FileStore implements ProjectStore {
     await mkdir(bucket.dir, { recursive: true });
   }
 
+  /** 文件台账单机语义：同一 rootPath 的历史无主机行与已绑定行并存时保留已绑定行。
+   * 旧版本先写 NULL 行、绑定主机后再写一行；读路径在无 host 时会判歧义，加载/合并后自动收敛。 */
+  private async normalizeProjectRows(bucket: ProjectBucket): Promise<void> {
+    const normalized = dedupeLegacyProjectRows(bucket.mem.exportState().projects);
+    if (normalized.removed === 0) return;
+    bucket.mem.importState({ projects: normalized.projects });
+    await this.persist(bucket, "normalizeProjects");
+    log(`文件台账项目行去重（${bucket.rootPath}）：移除 ${normalized.removed} 条无主机历史行`);
+  }
+
   private async syncFromDisk(bucket: ProjectBucket): Promise<void> {
     const stateMtime = await mtimeMs(bucket.statePath);
     if (stateMtime !== null && bucket.seenStateMtimeMs !== null && stateMtime !== bucket.seenStateMtimeMs) {
@@ -1139,6 +1150,7 @@ export class FileStore implements ProjectStore {
             const merged = mergeStates(parsed.state, bucket.mem.exportState());
             bucket.mem.importState(merged);
             this.hydrateHostState(parsed.state);
+            await this.normalizeProjectRows(bucket);
           }
         } catch (error) {
           log(`文件台账合并读取失败（忽略）：${errorMessage(error)}`);
@@ -1330,6 +1342,39 @@ function mergeDeviceLeases(
     }
   }
   return [...merged.values()];
+}
+
+function dedupeLegacyProjectRows(projects: ProjectRecord[]): {
+  projects: ProjectRecord[];
+  removed: number;
+} {
+  const groups = new Map<string, ProjectRecord[]>();
+  for (const project of projects) {
+    const rows = groups.get(project.rootPath);
+    if (rows) rows.push(project);
+    else groups.set(project.rootPath, [project]);
+  }
+  const kept: ProjectRecord[] = [];
+  let removed = 0;
+  for (const rows of groups.values()) {
+    const legacy = rows.filter((row) => (row.hostId ?? null) === null);
+    const bound = rows.filter((row) => (row.hostId ?? null) !== null);
+    if (legacy.length === 0) {
+      kept.push(...rows);
+      continue;
+    }
+    if (bound.length > 0) {
+      kept.push(...bound);
+      removed += legacy.length;
+      continue;
+    }
+    const latest = legacy.reduce((left, right) =>
+      String(right.lastSeenAt) > String(left.lastSeenAt) ? right : left
+    );
+    kept.push(latest);
+    removed += legacy.length - 1;
+  }
+  return { projects: kept, removed };
 }
 
 function mergeStates(disk: Partial<MemoryStoreState>, local: MemoryStoreState): Partial<MemoryStoreState> {

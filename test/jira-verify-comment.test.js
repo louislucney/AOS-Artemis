@@ -35,7 +35,7 @@ test("buildVerifyComment: FAIL 逐行文案（构成/批次/失败行含与不�
   assert.equal(
     text,
     [
-      "【AOS 自动验证】AOS-1 登录失败",
+      "【mobile-testing 自动验证】AOS-1 登录失败",
       "- 结论: FAIL（强断言失败 1 条）",
       "- 构成: 强 2 · 弱 1 · 探索 0（共 3 条）",
       "- 来源: 导入自 qa.xlsx@abcd1234",
@@ -47,7 +47,7 @@ test("buildVerifyComment: FAIL 逐行文案（构成/批次/失败行含与不�
       "映射用例: c1, c2"
     ].join("\n")
   );
-  assert.equal(adfToText(adf).includes("【AOS 自动验证】AOS-1 登录失败"), true);
+  assert.equal(adfToText(adf).includes("【mobile-testing 自动验证】AOS-1 登录失败"), true);
   assert.equal(adfToText(adf).includes("映射用例: c1, c2"), true);
 });
 
@@ -58,7 +58,7 @@ test("buildVerifyComment: PASS 全强 → 无弱披露行、无映射行", () =>
   assert.equal(
     text,
     [
-      "【AOS 自动验证】AOS-1 登录失败",
+      "【mobile-testing 自动验证】AOS-1 登录失败",
       "- 结论: PASS",
       "- 构成: 强 2 · 弱 0 · 探索 0（共 2 条）",
       "- 来源: 导入自 qa.xlsx@abcd1234",

@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
+import { taskDescForTarget } from "../dist/figma/case-runner.js";
 import { buildRunReport } from "../dist/figma/run-report.js";
 import { runGeneratedTests } from "../dist/figma/suite-runner.js";
 import { baseConfig, loadTestRuntime, makeTempProject, SuiteProxy } from "./helpers.js";
@@ -51,6 +52,30 @@ async function setup({ cases = [caseEntry(1)], statuses = {}, runError = null, r
     });
   return { dir, runtime, store, proxy, resetCalls, run };
 }
+
+test("suite runner: Android 提交前剔除 iOS 脚本断言块，iOS 保留", async () => {
+  const taskDesc =
+    'run case\n脚本断言（供 iOS 执行器自动核对，执行时无需处理）：【AOS-EXPECT】{"steps":[]}';
+  const statuses = { "trace-1": { status: "completed" } };
+
+  const android = await setup({ cases: [caseEntry(1, { taskDesc })], statuses });
+  await android.run({ deviceSerial: "emulator-5554" });
+  const androidCall = android.proxy.calls.find((call) => call.name === "mobile_run_task");
+  assert.ok(androidCall);
+  assert.ok(!String(androidCall.args.task_desc).includes("【AOS-EXPECT】"), "Android 无 iOS 断言块");
+  assert.ok(!String(androidCall.args.task_desc).includes("iOS 执行器"), "Android 无 iOS 专属提示");
+  assert.match(String(androidCall.args.task_desc), /run case/);
+
+  assert.ok(
+    taskDescForTarget(taskDesc, "12345678-1234-1234-1234-123456789012").includes("【AOS-EXPECT】"),
+    "iOS 模拟器保留脚本断言"
+  );
+  assert.ok(
+    taskDescForTarget(taskDesc, "00008110-001A2C3E0E91801E").includes("【AOS-EXPECT】"),
+    "iOS 真机保留脚本断言"
+  );
+  assert.ok(!taskDescForTarget(taskDesc, null).includes("【AOS-EXPECT】"), "无设备缺省按 Android 剔除");
+});
 
 test("suite runner: runs all cases, resets per case and writes the ledger", async () => {
   const { dir, store, resetCalls, run } = await setup({

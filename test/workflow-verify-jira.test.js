@@ -267,7 +267,7 @@ test("verify_jira_issue: 详细单映射命中 → 执行（caseIds 透传）＋
   );
   assert.equal(jira.calls.createComment.length, 1);
   const commentText = adfToText(jira.calls.createComment[0].body);
-  assert.equal(commentText.includes("【AOS 自动验证】AOS-1 登录失败"), true);
+  assert.equal(commentText.includes("【mobile-testing 自动验证】AOS-1 登录失败"), true);
   assert.equal(commentText.includes("映射用例: c1"), true);
   assert.deepEqual(jira.calls.property, [
     { key: "AOS-1", id: "200", prop: "aos-verify", value: { issueKey: "AOS-1" } }
@@ -494,7 +494,7 @@ test("verify_jira_issue: dryRun → 零写回调用＋结论预览", async () =>
   assert.equal(calls.execute.length, 1);
   assert.equal(payload.writeback.outcome, "dryRun");
   assert.deepEqual(payload.writeback.evidencePlanned, ["t1"]);
-  assert.equal(payload.writeback.conclusionText.includes("【AOS 自动验证】AOS-1 登录失败"), true);
+  assert.equal(payload.writeback.conclusionText.includes("【mobile-testing 自动验证】AOS-1 登录失败"), true);
   assert.equal(jira.calls.createComment.length, 0);
   assert.equal(jira.calls.updateComment.length, 0);
   assert.equal(jira.calls.property.length, 0);

@@ -15,7 +15,7 @@ import {
   type EntryLike,
   type ResolvedPython
 } from "./artemis/assembly.js";
-import { mirrorDeviceScreenshots } from "./artemis/artifacts.js";
+import { mirrorDeviceScreenshots, pruneEmptyStepDirs } from "./artemis/artifacts.js";
 import { ArtemisProxy, type ArtemisProxyLike } from "./artemis/proxy.js";
 import { type TaskStatus } from "./artemis/task-result.js";
 import { maybeIosInspectTrace } from "./ios/inspect.js";
@@ -258,6 +258,11 @@ export class Runtime {
       proxy: this.proxy,
       safeStore: (fn, fallback) => this.safeStore(fn, fallback),
       onTerminalTask: (task, status) => {
+        try {
+          pruneEmptyStepDirs(path.join(this.tracesDir(), task.traceId));
+        } catch (error) {
+          logWarn(`空步骤目录清理失败（trace=${task.traceId}）: ${errorMessage(error)}`);
+        }
         void this.scanTraceByPlatform({ ...task, status }, task.traceId, false).catch((error) => {
           logWarn(`崩溃取证失败（trace=${task.traceId}）: ${errorMessage(error)}`);
         });

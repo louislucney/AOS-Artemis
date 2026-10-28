@@ -617,7 +617,7 @@ export async function screenMap(runtime: Runtime, args: ScreenMapArgs): Promise<
         warnings: skippedStacksWarnings(stacks, profile),
         candidates: proposal.candidates,
         unmatched: proposal.unmatched,
-        hint: "候选为粗粒度推导（屏幕名→路由/文件命名、AOS scaffold 组件）；请复核后用 screen_map(action:\"save\", entries:[…]) 落盘。"
+        hint: "候选为粗粒度推导（屏幕名→路由/文件命名、mobile-testing scaffold 组件）；请复核后用 screen_map(action:\"save\", entries:[…]) 落盘。"
       });
     }
 

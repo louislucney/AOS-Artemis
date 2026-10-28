@@ -356,7 +356,9 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
         }
 
         if (req.method === "GET" && url.pathname === "/panel/artifact") {
-          const response = await handleArtifactRequest(url, panelDeps);
+          const response = await handleArtifactRequest(url, panelDeps, {
+            accept: req.headers.accept ?? null
+          });
           res.writeHead(response.status, { "Content-Type": response.contentType });
           res.end(response.body);
           return;

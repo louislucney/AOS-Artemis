@@ -21,7 +21,11 @@ import { USAGE_DISABLED_NOTE, usageEnabledFrom, usageEventSampleLimit } from "./
 import { escapeHtml } from "../util.js";
 import { projectExcluded } from "../project-visibility.js";
 import { storeKindShortLabel } from "../db/labels.js";
-import { renderConsoleShell, USAGE_STANDALONE_NAV } from "../console/shell.js";
+import {
+  DEFAULT_CONSOLE_NAV,
+  renderConsoleShell,
+  USAGE_STANDALONE_NAV
+} from "../console/shell.js";
 
 export interface UsageWebDeps {
   store: ProjectStore;
@@ -189,17 +193,18 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
       throw new UsageWebNotFoundError(`未知主机 "${hostId}"`);
     }
   }
+  // 文件台账的 listProjects 行恒为 NULL host（单机语义）；显式 host 只对 PG/内存多主机有意义。
+  const hostScoped = hostId !== null && deps.store.kind !== "file";
   // 列表/默认项目只看可见项目；显式 project 仍在原始集合内解析（直接 URL 可访问被隐藏项目）。
-  const projects =
-    hostId === null ? visibleProjects : visibleProjects.filter((project) => project.hostId === hostId);
+  const projects = hostScoped
+    ? visibleProjects.filter((project) => project.hostId === hostId)
+    : visibleProjects;
   const projectKey = trimmed(params.get("project"));
   const candidates =
     projectKey === null
       ? []
       : resolveProjectCandidates(
-          hostId === null
-            ? rawProjects
-            : rawProjects.filter((project) => project.hostId === hostId),
+          hostScoped ? rawProjects.filter((project) => project.hostId === hostId) : rawProjects,
           projectKey
         );
   if (projectKey !== null && candidates.length === 0) {
@@ -650,13 +655,32 @@ export function renderUsageHtml(view: UsageWebView): string {
     view.panelUrl === null
       ? '<p class="muted">独立统计进程（控制台总览：<code>panel --web</code>）。</p>'
       : `<p><a href="${escapeHtml(view.panelUrl)}">← 回到控制台</a></p>`;
+  const embedded = view.panelUrl !== null;
+  const projectSwitcher = !embedded
+    ? undefined
+    : {
+        options: view.projects.slice(0, 20).map((project) => {
+          const params = new URLSearchParams({ project: project.name });
+          if (project.hostId) params.set("host", project.hostId);
+          return {
+            label: project.name,
+            href: `/usage?${params.toString()}`,
+            current:
+              view.project?.rootPath === project.rootPath &&
+              (view.project?.hostId ?? null) === (project.hostId ?? null)
+          };
+        })
+      };
   return renderConsoleShell({
     title: `使用统计 · ${projectLabel}`,
     active: "usage",
-    nav: USAGE_STANDALONE_NAV,
+    nav: embedded ? DEFAULT_CONSOLE_NAV : USAGE_STANDALONE_NAV,
+    project: embedded ? (view.project?.rootPath ?? null) : null,
+    projectHostId: embedded ? (view.project?.hostId ?? null) : null,
+    ...(projectSwitcher === undefined ? {} : { projectSwitcher }),
     meta: escapeHtml(projectLabel),
-    brandHref: "/usage",
-    hideSearch: true,
+    brandHref: embedded ? (view.panelUrl ?? "/panel") : "/usage",
+    hideSearch: !embedded,
     storeHealth: {
       label: `记录底座：${storeKindShortLabel(view.store.kind)}`,
       lastWriteAt: null,
@@ -666,8 +690,8 @@ export function renderUsageHtml(view: UsageWebView): string {
     ...(view.filters.refresh === null ? {} : { autoRefreshSeconds: view.filters.refresh }),
     body: [
       "<header>",
-      "<h1>使用统计</h1>",
       backLine,
+      "<h1>使用统计</h1>",
       renderSwitcher(view),
       renderBadges(view),
       "</header>",

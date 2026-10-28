@@ -2956,3 +2956,88 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **变更**：`autoCheckUi` 的 `maxScreens` 缺省从 3 改为 10；`--ui-diff-max` 显式值仍优先；`suite run` 帮助与 README/DESIGN 同步为“单例默认最多 10 屏”。
 - **边界**：这是默认覆盖提升，不是“全量比对”；超出上限仍记 `unmatched`/`contractNotCompared`，不伪造覆盖。性能成本按屏线性增加，长批次可显式调小。
 - **测试**：既有 `ui-auto-check` 用例均显式传 `maxScreens: 3`，口径不变；全量 **2401 绿**。
+
+### 13.240 调整（控制台侧栏去重：移除「工作区」分组与「总览」入口）
+
+> 2026-10-28。用户反馈侧栏顶部的「工作区」分组标题与「总览」入口重复，需要删除。
+
+- **导航**：`DEFAULT_CONSOLE_NAV` 移除 `overview`（侧栏不再渲染「总览」）；品牌徽标链接仍指向 `/panel`，总览页与 `active="overview"` 的当前态逻辑保留（不再有对应一级项）。移除 `g o` 跳转键与帮助面板中的「总览」行。侧栏 `<aside>` 不再输出 `c-nav-group-title`「工作区」分组标题。
+- **数据侧（非代码）**：文件台账 `registry.jsonl` 会累积测试临时项目（`/private/var/folders/.../T/aos-audit-*` 下的 `proj-*`），导致总览出现大量同名重复行并挤占项目切换器。清理时按 `rootPath` 去重、剔除临时路径；同时把外部项目（如 `starbuckstw`）登记进本机台账，使其出现在总览/切换器。
+- **测试隔离**：`test/audit-legacy-tests.test.js` 派生子进程时显式设置临时 `AOS_LEDGER_DIR`，避免审计测试把临时项目写进服务仓库台账。
+- **自动收敛（不靠人工提醒）**：`FileStore` 加载/合并 `state.json` 后按 `rootPath` 归并项目行——同一路径的历史 NULL-host 行与已绑定行并存时保留已绑定行并写回快照（`normalizeProjects`）；只有多个已绑定行（真正的跨主机同路径）才保留歧义。面板解析项目时优先使用进程本机主机身份（`deps.localHostId`）作用域，因此 legacy 行不会再触发 409。
+- **测试**：`console-shell` 断言侧栏无分组标题、无总览项、无 `g o` 跳转；`db-project-hosts` 断言 legacy NULL 行自动收敛；`panel-project-hosts` 断言本机身份下自动选本机行；全量测试见完工验证。
+
+### 13.241 调整（用户可见品牌统一：AOS → mobile-testing）
+
+> 2026-10-28。用户指出 iOS 执行器描述仍写「AOS」，与「用户可见品牌统一 mobile-testing」的约定不一致。
+
+- **改名范围**：用户可见文案统一为 mobile-testing——MCP server instructions、`aos_status` 工具描述、iOS 执行器状态（`mobile_manage_task` 回显）、Appium 隧道指引、pen 凭证提示、flows schema 升级提示、Jira 证据/结论评论标题、控制台搜索示例、CLI 帮助首行、`.env` 模板标题；README/接入指南/iOS 适配方案中的「AOS 执行器/后端/只给指引」同步。
+- **保留（兼容契约，不随品牌改）**：`AOS_*` 环境变量、`aos.config.jsonc`、`.artemis/`、工具名 `aos_status`、Jira 幂等 marker `AOS-TRACE:`/`AOS-VERIFY:`、taskDesc 协议标记 `【AOS-EXPECT】`、Jira 项目 key 示例（`AOS-123`）。
+- **测试**：Jira 标题与初始化错误文案断言同步；全量测试见完工验证。
+
+### 13.242 调整（同进程 `/usage` 并入控制台外壳）
+
+> 2026-10-28。用户反馈使用统计页 UI 未对齐：侧栏只有「使用统计」、顶栏缺项目切换/搜索、返回链接位于标题下方，与 `/panel` 各页不一致。
+
+- **同进程（`panelUrl` 非空）**：`/usage` 复用完整 `DEFAULT_CONSOLE_NAV`、传入当前项目 `rootPath` 与 `hostId`、渲染项目切换器（最多 20 个，链接回 `/usage?project=…`）、保留全局搜索、品牌链接回 `/panel`；返回链接移到 `<h1>` 之前，与项目/任务页顺序一致。
+- **独立进程（`usage --web`）**：行为不变——仅「使用统计」导航、无全局搜索、品牌指向 `/usage`、不渲染回链。
+- **测试**：`usage-web` 同进程分支断言完整导航、项目链接携带 project、切换器与搜索存在；独立分支保持无搜索断言；全量测试见完工验证。
+
+### 13.243 修复（`/usage` 带本机 host 的项目链接误报未知项目）
+
+> 2026-10-28。控制台「使用统计」导航按 `project=<rootPath>&host=<hostId>` 链接；文件台账 `listProjects()` 行恒为 `hostId: null`（单机语义），`/usage` 按 host 过滤后得到空集合，返回 `未知项目 "<rootPath>"`。
+
+- **修复**：`buildView` 仅对 PG/内存多主机做 host 过滤（`store.kind !== "file"`）；文件台账显式 host 不参与项目过滤，直接按 path/name 在原始集合解析。单机多主机语义不变（文件台账本就无跨主机行）。
+- **测试**：`usage-web` 新增 FileStore 用例（host-bound 行 + `?host=` + `?project=<rootPath>` → 200 且回显项目名）；全量测试见完工验证。
+
+### 13.244 调整（JSON 产物浏览器查看器）
+
+> 2026-10-28。用户打开 `/panel/artifact?...&path=.../api-errors.json` 时浏览器直接显示原始 JSON，不利于阅读。
+
+- **行为**：`/panel/artifact` 对 `.json` 文件按 `Accept` 内容协商——浏览器（含 `text/html`）返回只读查看器（文件元信息、2 空格缩进、键/字符串/数字/布尔/null 语法高亮、返回项目、复制 JSON、原始 JSON 入口）；非浏览器/API 客户端仍返回 `application/json` 原始字节。`?raw=1` 可强制原始内容。
+- **长文本**：查看器正文 `white-space:pre-wrap` + `overflow-wrap:anywhere`，长字符串（如 `task_desc`）自动换行、整页纵向滚动，不再横向裁切或用内层 72vh 滚动截断；复制按钮取 `pre.textContent`，复制的是完整格式化 JSON。
+- **日志/文本**：`.log` / `.txt` / `.csv` / `.xml` 在浏览器 Accept 下同样进入查看器（等宽、自动换行、整页滚动、`复制日志`/`原始日志`），ERROR/FATAL/Exception/Traceback/Panic 与 WARN/WARNING 行高亮；ANSI 颜色码剥离；超过 5000 行只展示前 5000 行并提示。
+- **目录索引**：同一查看器外壳渲染目录——目录在前、文件在后，显示类型/子项数/大小/修改时间；空目录默认折叠并提示「已折叠 N 个空目录（执行中断或未写入产物）」，可用 `?showEmpty=1` 展开；空目录自身显示「此目录为空」而非白页。执行中断留下的 `steps/<uuid>/` 空壳因此不再铺满页面。
+- **边界**：非法 JSON 按纯文本展示并显式告警；>512 KB 不展开高亮，按纯文本展示并提示；查看器仅渲染 `.artemis` 范围内白名单文件（与既有路径/扩展名校验一致），所有内容 HTML 转义。
+- **测试**：`panel-artifact-route` +6（HTML JSON 查看器、非浏览器原始 JSON 与 `?raw=1`、非法 JSON 告警、日志查看器与 ERROR/WARN 高亮、非浏览器日志保持 text/plain、空目录折叠与空态）；全量测试见完工验证。
+
+### 13.245 修复（trace `steps/<uuid>/` 空目录的来源与清理）
+
+> 2026-10-28。用户打开 `.artemis/traces/<trace>/steps` 看到 140 个 UUID 空目录，点进去白页，询问「既然是空白的为什么会产生」。
+
+- **来源（ARTEMIS 上游）**：`artemis/artemis/data_engine/engine.py#allocate_step_id` 在每一步开始前预分配 `steps/<uuid>/` 并立即 `mkdir`；截图/动作产物只在后续 `update_step_action` 收到 post screenshot 时写入。取消、超时、无视觉截图或该步未产生产物时，目录保留为空壳。这是上游预分配语义，不是 AOS 生成的测试数据。
+- **AOS 清理**：任务进入终态后（`Runtime.onTerminalTask`）调用 `pruneEmptyStepDirs(traceDir)`，仅删除 `steps/` 下无任何文件的子目录，保留有产物的目录；失败静默，不影响任务结果。不修改 `artemis` 子模块。
+- **展示**：目录索引默认折叠空目录并提示数量，`?showEmpty=1` 展开；空目录页显示「此目录为空」，不再白页。
+- **测试**：`artifacts` 新增 `pruneEmptyStepDirs` 用例（空目录删除、含 `post.jpg` 保留、缺失目录返回 0）；`panel-artifact-route` 覆盖折叠与空态。
+
+### 13.246 调整（用例库以 Excel 为主产物展示）
+
+> 2026-10-28。用户反馈用例库「来源」显示 `flows.json`，看起来像测试资产仍是 JSON，而不是一直强调的 Excel。
+
+- **展示**：用例库表新增「Excel 文件」列，链接到该用例集实际 `.xlsx`（经 `/panel/artifact` 只读服务打开/下载）；「来源」改名「设计来源」（flows.json 是生成输入，不是测试产物）；最新一份加「最新」徽章。副标题改为「每份可打开 Excel（tests.xlsx）」。
+- **口径**：`flows.json` 仅设计输入；实际用例三件套为 `tests.json` / `tests.md` / `tests.xlsx`，历史用例集在 `.artemis/design/case-sets/<stamp>_<feature>.{json,md,xlsx}`。多份历史记录是不同时间的生成版本，不是同一文件重复；Excel 文件名与登记时间可区分。
+- **测试**：`console-pages` 断言 Excel 列、设计来源列、xlsx 链接走产物服务。
+
+### 13.247 修复（项目切换器不显示当前项目）
+
+> 2026-10-28。用户选中项目后顶栏切换器仍显示「切换项目…」。
+
+- **原因**：`loadProjectSwitcher` 以 `(rootPath, hostId)` 精确匹配当前项；文件台账 `listProjects()` 行恒为 `hostId: null`，而页面解析（本机 host 作用域）返回 `hostId=<本机>`，精确匹配失败 → 无 `selected`。
+- **修复**：先按 `(rootPath, hostId)` 精确匹配；未命中时回退到同路径的 NULL-host 行（文件台账单机语义），只标记一个 current；切换器因此显示当前项目名。
+- **测试**：`console-pages` 新增 FileStore + `localHostId` 用例，断言 `<option selected>` 为当前项目。
+
+### 13.248 调整（项目页显示技术栈徽章与缓存说明人话化）
+
+> 2026-10-28。用户询问「生成时间 刚刚 · 缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）」含义，并指出项目端类型不清。
+
+- **技术栈徽章**：项目页 `<h1>` 追加 `row.stacks` 徽章（如 `Android (Kotlin/Java)` / `iOS (Swift)`），避免同名或跨端项目混淆；数据仍来自 `src/projects/stack.ts` 检测（`project.stack` 可显式覆盖）。
+- **缓存说明**：页面提示由固定技术文案改为 `页面缓存 N 秒内数据可能滞后`（N 由 `AOS_PANEL_CACHE_MS` 换算；0 显示「页面缓存已关闭」），不再把环境变量名暴露给最终用户。含义：面板进程内缓存 `/panel` 响应，TTL 内重复打开可能看到略旧数据，刷新/等待 TTL 后更新。
+- **测试**：既有 `panel-web` 缓存 TTL 行为不变；项目页新增徽章不改变接口。
+
+### 13.249 调整（项目页状态行只保留运行轴）
+
+> 2026-10-28。用户反馈项目页「存储：文件台账（.artemis/ledger） · 接入：1/3 就绪（缺 Figma、Jira；不影响执行）」不需要展示。
+
+- **变更**：项目页状态行由「运行 / 存储 / 接入」三轴收敛为只显示「运行：<灯><说明>」；存储与接入信息仍保留在运维页、环境自查明细和项目表/接入检查中，不丢失能力。
+- **测试**：`panel-web` 断言只保留运行状态、不再出现存储轴与接入就绪数。
+- **补充**：项目路径/最后活跃行不再显示（路径与磁盘状态仍在总览、运维与接入检查中可见）。

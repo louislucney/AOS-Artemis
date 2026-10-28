@@ -27,6 +27,20 @@ import type { SuiteCaseResult, SuiteResetFn } from "./suite-runner.js";
 
 export type ApiCatalog = ReturnType<typeof loadApiErrorCatalog> | null;
 
+/** iOS 执行器的确定性断言块只对 AOS iOS 执行器有意义；Android/ARTEMIS 提交前剔除，避免噪声。 */
+export function stripIosExpectation(taskDesc: string): string {
+  return taskDesc
+    .split("\n")
+    .filter((line) => !line.includes("【AOS-EXPECT】"))
+    .join("\n");
+}
+
+/** AOS iOS 执行器（模拟器/真机）保留确定性断言块；Android/ARTEMIS 提交前剔除。 */
+export function taskDescForTarget(taskDesc: string, deviceSerial: string | null): string {
+  const iosTarget = deviceSerial !== null && classifyIosSerial(deviceSerial) !== null;
+  return iosTarget ? taskDesc : stripIosExpectation(taskDesc);
+}
+
 function isTerminal(status: string | null | undefined): boolean {
   return (
     typeof status === "string" &&
@@ -97,7 +111,8 @@ export async function executeCase(
     }
   }
 
-  const submitArgs: Record<string, unknown> = { task_desc: testCase.taskDesc };
+  const taskDesc = taskDescForTarget(testCase.taskDesc, context.deviceSerial);
+  const submitArgs: Record<string, unknown> = { task_desc: taskDesc };
   if (context.model) submitArgs.model = context.model;
   if (context.deviceSerial) submitArgs.device_serial = context.deviceSerial;
   if (context.lockedAppPackage) submitArgs.locked_app_package = context.lockedAppPackage;
@@ -111,7 +126,7 @@ export async function executeCase(
       traceId: null,
       model: context.model,
       status: "failed",
-      taskDesc: testCase.taskDesc,
+      taskDesc,
       caseId: testCase.id,
       lockedAppPackage: context.lockedAppPackage
     });
@@ -152,7 +167,7 @@ export async function executeCase(
       traceId: null,
       model: context.model,
       status: "failed",
-      taskDesc: testCase.taskDesc,
+      taskDesc,
       caseId: testCase.id,
       lockedAppPackage: context.lockedAppPackage
     });
@@ -186,7 +201,7 @@ export async function executeCase(
     await runtime.recordTaskSubmission({
       traceId,
       model: context.model,
-      taskDesc: testCase.taskDesc,
+      taskDesc,
       caseId: testCase.id,
       lockedAppPackage: context.lockedAppPackage
     });

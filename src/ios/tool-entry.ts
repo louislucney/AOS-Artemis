@@ -216,7 +216,7 @@ export async function maybeIosRunTask(
   };
   registerIosTask(traceId, record);
   persistRun(record);
-  writeStatus(record, "iOS 任务已启动（AOS 执行器）");
+  writeStatus(record, "iOS 任务已启动（mobile-testing 执行器）");
   void runtime.recordTaskResult({
     isError: false,
     traceId,
@@ -234,7 +234,7 @@ export async function maybeIosRunTask(
     warnings: iosWarnings(args, entry.model),
     ...(record.vision ? { vision: record.vision } : {}),
     message:
-      `iOS 任务已由 AOS 执行器接手（task='${taskDesc}'）。\n` +
+      `iOS 任务已由 mobile-testing 执行器接手（task='${taskDesc}'）。\n` +
       `Trace ID: ${traceId}\n` +
       "注意：iOS 任务没有主动唤醒通知，请用 mobile_manage_task(action=\"status\") 轮询。",
     run_dir: runDir,

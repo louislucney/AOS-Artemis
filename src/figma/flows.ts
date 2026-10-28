@@ -514,7 +514,7 @@ export function normalizeFlowGraph(raw: unknown): FlowGraph {
     versionSource.schemaVersion > FLOWS_SCHEMA_VERSION
   ) {
     throw new Error(
-      `flows.json schemaVersion ${versionSource.schemaVersion} 高于本版本支持范围 ${FLOWS_SCHEMA_VERSION}：请升级 AOS 后重试`
+      `flows.json schemaVersion ${versionSource.schemaVersion} 高于本版本支持范围 ${FLOWS_SCHEMA_VERSION}：请升级 mobile-testing 后重试`
     );
   }
   const source = (raw ?? {}) as {

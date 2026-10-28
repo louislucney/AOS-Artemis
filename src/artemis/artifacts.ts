@@ -8,6 +8,32 @@ import { errorMessage } from "../util.js";
 import { liveScreenshotsDir } from "./assembly.js";
 
 const IMAGE_EXT = /\.(png|jpe?g|webp)$/i;
+
+/** ARTEMIS 在 allocate_step_id 时预建 steps/<uuid>/；取消/无截图的任务会留下空壳。
+ * 终态后只删除空目录，不触碰任何文件；失败静默（产物读取方仍可用）。 */
+export function pruneEmptyStepDirs(traceDir: string): number {
+  const stepsDir = path.join(traceDir, "steps");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(stepsDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(stepsDir, entry.name);
+    try {
+      if (fs.readdirSync(dir).length === 0) {
+        fs.rmdirSync(dir);
+        removed += 1;
+      }
+    } catch {
+      /* 并发写入/权限问题：保留 */
+    }
+  }
+  return removed;
+}
 const PATH_CANDIDATE = /(file:\/\/[^\s"'`]+|[A-Za-z]:[\\/][^\s"'`]+|\/[^\s"'`]+)/g;
 
 /** Absolute local image paths referenced by a tool result. Inline image blocks

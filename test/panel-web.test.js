@@ -310,7 +310,9 @@ test("panel web: 新建任务统一走顶部「下一步」卡（无重复空栏
   assert.match(html.body, /<input type="checkbox" name="featureKeys" value="f-1"[^>]*> 登录流程（2 例）/, "复选含功能名与条数");
   assert.match(html.body, /querySelectorAll\('input\[type="checkbox"\]\[name="featureKeys"\]'\)/, "提交收集多选值");
   assert.doesNotMatch(html.body, /id="onboarding"/, "有引用份时不显示入门卡");
-  assert.match(html.body, /运行：[\s\S]{0,260}?存储：[\s\S]{0,120}?接入：/, "项目页三轴并列（运行／存储／接入）");
+  assert.match(html.body, /运行：/, "项目页只保留运行状态");
+  assert.doesNotMatch(html.body, /存储：文件台账/, "项目页不再显示存储轴");
+  assert.doesNotMatch(html.body, /接入：\d+\/\d+ 就绪/, "项目页不再显示接入就绪数");
   assert.doesNotMatch(html.body, /项目状态：/, "H1 不再夹灯状态（状态进徽章行）");
   assert.match(html.body, /<details class="c-details">/, "环境自查与明细折叠");
   assert.match(html.body, /<summary>环境自查与明细/);

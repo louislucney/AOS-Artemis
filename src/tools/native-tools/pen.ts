@@ -141,7 +141,7 @@ export const PEN_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "pen_agent",
     description:
-      "pen agent 生成/修改设计（headless CLI）：自然语言 prompt → .pen（默认原位更新：临时文件→结构校验→原子替换，失败不动原文件；out 可新建/另存，dryRun 只返回命令）。凭证自动复用 AOS active LLM 条目：注入 PEN_AGENT_API_KEY=该 key（不落日志），DeepSeek 自动映射 ANTHROPIC_BASE_URL（https://api.deepseek.com→/anthropic，实测可用）；项目 .env 的 PEN_* / ANTHROPIC_* 会透传（active LLM 派生值优先）；pen CLI 缺失时自动安装（同 pen_export）。可选 exportPath 顺带出图。",
+      "pen agent 生成/修改设计（headless CLI）：自然语言 prompt → .pen（默认原位更新：临时文件→结构校验→原子替换，失败不动原文件；out 可新建/另存，dryRun 只返回命令）。凭证自动复用 active LLM 条目：注入 PEN_AGENT_API_KEY=该 key（不落日志），DeepSeek 自动映射 ANTHROPIC_BASE_URL（https://api.deepseek.com→/anthropic，实测可用）；项目 .env 的 PEN_* / ANTHROPIC_* 会透传（active LLM 派生值优先）；pen CLI 缺失时自动安装（同 pen_export）。可选 exportPath 顺带出图。",
     schema: z.object({
       path: z.string().optional().describe("输入 .pen（相对项目根或绝对路径）；缺省自动选择最新文件；省略且无 out 则报错"),
       out: z.string().optional().describe("输出 .pen（相对项目根）；提供 path 时省略则原位更新"),

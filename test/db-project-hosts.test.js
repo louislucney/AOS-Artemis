@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -74,6 +74,31 @@ test("FileStore: scopeHost 两行往返且重启保留", async () => {
     const b2 = reopened.scopeHost("h-b");
     assert.equal((await a2.getProjectByPath(root)).id, ra.id);
     assert.equal((await b2.getProjectByPath(root)).id, rb.id);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("FileStore: 历史 NULL 行与单个已绑定行共存 → 加载时自动收敛为已绑定行", async () => {
+  const home = await tempHome();
+  const root = await tempProject();
+  try {
+    const store = await FileStore.create({ homeDir: home });
+    await store.upsertProject({ rootPath: root, name: "app" });
+    await store.scopeHost("h-a").upsertProject({ rootPath: root, name: "app" });
+    const statePath = join(root, ".artemis", "ledger", "state.json");
+    const legacy = JSON.parse(await readFile(statePath, "utf8"));
+    for (const row of legacy.state.projects) {
+      if (row.hostId === null) delete row.hostId;
+    }
+    await writeFile(statePath, JSON.stringify(legacy));
+
+    const reopened = await FileStore.create({ homeDir: home });
+    const project = await reopened.getProjectByPath(root);
+    assert.equal(project.hostId, "h-a");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    assert.equal(state.state.projects.length, 1, "重复的无主机行已从快照移除");
   } finally {
     await rm(home, { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });

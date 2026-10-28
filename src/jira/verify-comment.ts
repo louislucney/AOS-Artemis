@@ -47,7 +47,7 @@ export function buildVerifyComment(input: VerifyCommentInput): { text: string; a
           ? "无法判定（无强断言；弱断言仅记录路径，不代表验证通过）"
           : `无法判定（弱断言失败 ${weakFailed} 条；弱断言仅记录路径，不代表验证通过）`;
 
-  const lines: string[] = [`【AOS 自动验证】${input.issue.key} ${input.issue.summary}`];
+  const lines: string[] = [`【mobile-testing 自动验证】${input.issue.key} ${input.issue.summary}`];
   lines.push(`- 结论: ${conclusionText}`);
   lines.push(`- 构成: 强 ${strong} · 弱 ${weak} · 探索 ${explore}（共 ${total} 条）`);
   lines.push(`- 来源: ${input.source}`);

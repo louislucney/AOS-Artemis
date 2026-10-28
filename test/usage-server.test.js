@@ -249,7 +249,7 @@ test("usage server: init-failed runtime still answers with an error and records 
   try {
     const result = await client.callTool({ name: "llm_list", arguments: {} });
     assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /AOS 项目初始化失败/);
+    assert.match(result.content[0].text, /项目初始化失败/);
   } finally {
     await client.close();
     await server.close();

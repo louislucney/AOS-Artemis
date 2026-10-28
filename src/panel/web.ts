@@ -317,7 +317,7 @@ export async function resolveProjectKey(
 
   const explicitHost =
     typeof hostId === "string" && hostId.trim() !== "" ? hostId.trim() : null;
-  const localHost = explicitHost ?? deps.store.localHostId;
+  const localHost = explicitHost ?? deps.localHostId ?? deps.store.localHostId;
 
   // 主机作用域解析优先（显式 host，或本机 host）。
   if (localHost !== null) {
@@ -2597,25 +2597,15 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
     [
       "<header>",
       '<p><a href="/panel">← 多项目总览</a></p>',
-      `<h1>${escapeHtml(row.name)}</h1>`,
+      `<h1>${escapeHtml(row.name)}${
+        row.stacks.length > 0
+          ? ` ${row.stacks.map((stack) => cBadge({ label: stack, tone: "neutral" })).join(" ")}`
+          : ""
+      }</h1>`,
       (() => {
         const axis = runnableAxis(detail);
-        const health = currentShell.storeHealth;
-        const persist =
-          health === undefined
-            ? "—"
-            : health.writeIssue === null || health.label.includes("会话内存")
-              ? escapeHtml(health.label)
-              : `${escapeHtml(health.label)}（${escapeHtml(health.writeIssue)}）`;
-        return `<p>运行：${lampSpan(axis.lamp)}${escapeHtml(axis.note)} · 存储：${persist} · 接入：${row.integration.ready}/${row.integration.total} 就绪${
-          row.integration.missing.length > 0
-            ? `（缺 ${row.integration.missing.map((item) => escapeHtml(item)).join("、")}；不影响执行）`
-            : ""
-        }</p>`;
+        return `<p>运行：${lampSpan(axis.lamp)}${escapeHtml(axis.note)}</p>`;
       })(),
-      `<p class="muted"><code>${escapeHtml(row.rootPath)}</code> · 最后活跃 ${relativeTime(row.lastSeenAt)} · ${
-        row.diskReachable ? "磁盘可达" : "磁盘不可达"
-      }</p>`,
       reasons,
       warnings,
       `<p class="muted">生成时间 ${relativeTime(detail.generatedAt)} · ${escapeHtml(cacheNote)}</p>`,
@@ -3278,7 +3268,8 @@ async function loadProjectSwitcher(
   );
   const hosts = await deps.store.listHosts().catch(() => []);
   const hostById = new Map(hosts.map((host) => [host.id, host]));
-  const options = projects.slice(0, 20).map((project) => {
+  const visible = projects.slice(0, 20);
+  const options: Array<{ label: string; href: string; current?: boolean }> = visible.map((project) => {
     const host = project.hostId === null ? null : (hostById.get(project.hostId) ?? null);
     const hostLabel =
       project.hostId === null
@@ -3290,12 +3281,23 @@ async function loadProjectSwitcher(
             : project.hostId.slice(0, 8);
     return {
       label: hostLabel === "" ? project.name : `${project.name} · ${hostLabel}`,
-      href: projectHref(project.rootPath, project.hostId),
-      ...(current !== null && project.rootPath === current && project.hostId === currentHostId
-        ? { current: true }
-        : {})
+      href: projectHref(project.rootPath, project.hostId)
     };
   });
+  // 文件台账 listProjects 行恒为 NULL host；当前页解析出的 hostId 可能来自本机作用域视图。
+  // 先按 (rootPath, hostId) 精确匹配，再回退到同路径的 NULL-host 行，避免切换器停在「切换项目…」。
+  let currentIndex =
+    current === null
+      ? -1
+      : visible.findIndex(
+          (project) => project.rootPath === current && project.hostId === currentHostId
+        );
+  if (currentIndex < 0 && current !== null) {
+    currentIndex = visible.findIndex(
+      (project) => project.rootPath === current && project.hostId === null
+    );
+  }
+  if (currentIndex >= 0) options[currentIndex]!.current = true;
   const labelCounts = new Map<string, number>();
   for (const option of options) labelCounts.set(option.label, (labelCounts.get(option.label) ?? 0) + 1);
   for (const [index, option] of options.entries()) {
@@ -3333,7 +3335,11 @@ function renderPanelHtml(
       return Boolean(env.JIRA_BASE_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN);
     })()
   };
-  const cacheNote = "缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）";
+  const cacheTtlMs = panelCacheTtlFrom(deps.env ?? process.env);
+  const cacheNote =
+    cacheTtlMs <= 0
+      ? "页面缓存已关闭"
+      : `页面缓存 ${Math.max(1, Math.round(cacheTtlMs / 1000))} 秒内数据可能滞后`;
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);
   if (view.kind === "compare") return renderComparePage(view.compare, cacheNote);
   if (view.kind === "dispatch") {

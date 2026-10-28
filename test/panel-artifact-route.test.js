@@ -16,6 +16,17 @@ async function setup() {
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   await writeFile(join(dir, "raw.bin"), Buffer.from([0x00, 0x01, 0x02]));
+  await writeFile(
+    join(dir, "api-errors.json"),
+    JSON.stringify({ traceId: "t-1", errors: [{ code: "E1" }], ok: true, count: 1, nil: null }),
+    "utf8"
+  );
+  await writeFile(join(dir, "broken.json"), "{not json", "utf8");
+  await writeFile(
+    join(dir, "stderr.log"),
+    "INFO start\nWARN slow response\nERROR failed to tap\nat handler.js:1\n",
+    "utf8"
+  );
   await writeFile(join(root, "aos.config.jsonc"), "{}", "utf8");
   return { root, deps };
 }
@@ -33,6 +44,111 @@ test("artifact route: .artemis 内白名单文件可读（正确 content-type）
     assert.equal(response.status, 200);
     assert.equal(response.contentType, "image/png");
     assert.ok(Buffer.isBuffer(response.body));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: JSON 在浏览器 Accept 下渲染语法高亮查看器", async () => {
+  const { root, deps } = await setup();
+  try {
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/design/diffs/api-errors.json"),
+      deps,
+      { accept: "text/html,application/xhtml+xml" }
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.contentType, /text\/html/);
+    const html = String(response.body);
+    assert.match(html, /<h1>api-errors.json<\/h1>/);
+    assert.match(html, /class="j-key"/, "键高亮");
+    assert.match(html, /class="j-str"/, "字符串高亮");
+    assert.match(html, /class="j-num"/, "数字高亮");
+    assert.match(html, /class="j-lit"/, "布尔/null 高亮");
+    assert.match(html, /原始 JSON/, "原始文件入口");
+    assert.match(html, /复制 JSON/, "复制全文入口");
+    assert.match(html, /white-space:pre-wrap/, "长字符串自动换行，不横向裁切");
+    assert.match(html, /← 返回项目/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: JSON 对非浏览器请求保持原始 application/json", async () => {
+  const { root, deps } = await setup();
+  try {
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/design/diffs/api-errors.json"),
+      deps
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.contentType, /application\/json/);
+    assert.ok(okRaw(response.body));
+    const forced = await handleArtifactRequest(
+      new URL(`${url(root, ".artemis/design/diffs/api-errors.json")}&raw=1`),
+      deps,
+      { accept: "text/html" }
+    );
+    assert.match(forced.contentType, /application\/json/, "?raw=1 强制原始 JSON");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: 非法 JSON 以纯文本查看器展示并显式告警", async () => {
+  const { root, deps } = await setup();
+  try {
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/design/diffs/broken.json"),
+      deps,
+      { accept: "text/html" }
+    );
+    assert.equal(response.status, 200);
+    const html = String(response.body);
+    assert.match(html, /不是合法 JSON/);
+    assert.match(html, /not json/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function okRaw(body) {
+  const parsed = JSON.parse(String(body));
+  return parsed.traceId === "t-1" && parsed.ok === true;
+}
+
+test("artifact route: 日志在浏览器 Accept 下渲染查看器并高亮 ERROR/WARN", async () => {
+  const { root, deps } = await setup();
+  try {
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/design/diffs/stderr.log"),
+      deps,
+      { accept: "text/html,application/xhtml+xml" }
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.contentType, /text\/html/);
+    const html = String(response.body);
+    assert.match(html, /<h1>stderr.log<\/h1>/);
+    assert.match(html, /复制日志/);
+    assert.match(html, /原始日志/);
+    assert.match(html, /log-error/);
+    assert.match(html, /log-warn/);
+    assert.match(html, /white-space:pre-wrap/, "长行自动换行");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: 日志对非浏览器请求保持 text/plain", async () => {
+  const { root, deps } = await setup();
+  try {
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/design/diffs/stderr.log"),
+      deps
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.contentType, /text\/plain/);
+    assert.match(String(response.body), /ERROR failed to tap/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -77,6 +193,36 @@ test("artifact route: 目录返回浅索引（可下钻、可回上级、名称�
     const artemisRoot = await handleArtifactRequest(url(root, ".artemis"), deps);
     assert.equal(artemisRoot.status, 200);
     assert.ok(!String(artemisRoot.body).includes("← 上级"), ".artemis 根无上级");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: 空目录默认折叠，点击空目录显示空态", async () => {
+  const { root, deps } = await setup();
+  try {
+    const traceDir = join(root, ".artemis", "traces", "empty-demo");
+    await mkdir(join(traceDir, "steps", "step-empty"), { recursive: true });
+    await writeFile(join(traceDir, "status.json"), "{}", "utf8");
+
+    const index = await handleArtifactRequest(url(root, ".artemis/traces/empty-demo/steps"), deps);
+    const html = String(index.body);
+    assert.match(html, /已折叠 1 个空目录/);
+    assert.match(html, /显示空目录/);
+    assert.doesNotMatch(html, /step-empty\//, "默认不展开空目录");
+
+    const shown = await handleArtifactRequest(
+      new URL(`${url(root, ".artemis/traces/empty-demo/steps")}&showEmpty=1`),
+      deps
+    );
+    assert.match(String(shown.body), /step-empty\//);
+    assert.match(String(shown.body), /空目录/);
+
+    const empty = await handleArtifactRequest(
+      url(root, ".artemis/traces/empty-demo/steps/step-empty"),
+      deps
+    );
+    assert.match(String(empty.body), /此目录为空/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

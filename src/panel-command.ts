@@ -292,7 +292,9 @@ async function runPanelWeb(options: {
           return;
         }
         if (req.method === "GET" && url.pathname === "/panel/artifact") {
-          const response = await handleArtifactRequest(url, deps);
+          const response = await handleArtifactRequest(url, deps, {
+            accept: req.headers.accept ?? null
+          });
           res.writeHead(response.status, { "Content-Type": response.contentType });
           res.end(response.body);
           return;

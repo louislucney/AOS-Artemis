@@ -52,14 +52,27 @@ export function renderLibraryPage(data: LibraryPageData): string {
   const actionsReason = actionsOff
     ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
     : "";
-  const rows = data.sets.map((set) => [
-    `<code>${escapeHtml(set.basename)}</code>`,
-    sourceHtml(set.source),
-    relativeTime(set.createdAt),
-    String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
-    set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
-    `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}${hostQuery}`)}">下发该用例集</a>`
-  ]);
+  const rows = data.sets.map((set, index) => {
+    const excel = set.features
+      .map((feature) => {
+        const rel = path.relative(data.rootPath, feature.xlsxPath);
+        const inside = rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+        const label = escapeHtml(path.basename(feature.xlsxPath));
+        if (!inside) return label;
+        const href = `/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(rel)}${hostQuery}`;
+        return `<a href="${escapeHtml(href)}" title="打开/下载 Excel">${label}</a>`;
+      })
+      .join("<br>");
+    return [
+      `<code>${escapeHtml(set.basename)}</code>${index === 0 ? ` ${cBadge({ label: "最新", tone: "success" })}` : ""}`,
+      excel || "—",
+      sourceHtml(set.source),
+      relativeTime(set.createdAt),
+      String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
+      set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
+      `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}${hostQuery}`)}">下发该用例集</a>`
+    ];
+  });
   const quarantine = data.quarantine;
   const quarantineEntries =
     quarantine.active.length > 0
@@ -114,9 +127,9 @@ export function renderLibraryPage(data: LibraryPageData): string {
       "<h1>用例库</h1>",
       cCard({
         title: "用例集",
-        subtitle: `共 ${data.sets.length} 份用例集 · 来源与条数为登记口径`,
+        subtitle: `共 ${data.sets.length} 份用例集 · 每份可打开 Excel（tests.xlsx）`,
         body: cTable({
-          columns: ["用例集", "来源", "登记时间", "用例数", "功能", "动作"],
+          columns: ["用例集", "Excel 文件", "设计来源", "登记时间", "用例数", "功能", "动作"],
           rows,
           caption: "用例集列表",
           empty: "暂无用例集（下方导入或先生成）"
@@ -582,7 +595,7 @@ export function renderSearchPage(data: SearchPageData): string {
     searchQuery: data.q,
     body:
       data.q === ""
-        ? [empty, cEmpty({ title: "输入关键词开始搜索", body: "按名称/路径搜项目，按用例集名/来源/功能搜用例集，按任务 id 搜任务；顶栏搜索框或 `/` 键直达。", action: '<span class="muted">示例：登录 / AOS / regression</span>' })].join("\n")
+        ? [empty, cEmpty({ title: "输入关键词开始搜索", body: "按名称/路径搜项目，按用例集名/来源/功能搜用例集，按任务 id 搜任务；顶栏搜索框或 `/` 键直达。", action: '<span class="muted">示例：登录 / starbuckstw / regression</span>' })].join("\n")
         : [
             empty,
             `<p class="muted">关键词「${q}」· 项目 ${data.projects.length} · 用例集 ${data.caseSets.length} · 任务 ${data.tasks.length}${data.truncated ? "（结果已截断）" : ""}</p>`,

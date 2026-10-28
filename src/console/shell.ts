@@ -106,7 +106,6 @@ const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
 ]);
 
 export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
-  { key: "overview", label: "总览", href: "/panel" },
   { key: "project", label: "项目", href: "/panel" },
   { key: "review", label: "结果", href: "/panel" },
   { key: "dispatch", label: "下发", href: "/panel?section=dispatch" },
@@ -233,7 +232,6 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     navTargets.audit = `${base}&section=audit`;
   }
   const shortcutKeys: Array<[string, ConsoleNavKey, string]> = [
-    ["o", "overview", "总览"],
     ["j", "project", "项目"],
     ["t", "tasks", "任务"],
     ["v", "review", "失败分析"],
@@ -251,7 +249,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     .filter(([, key]) => navTargets[key] !== undefined)
     .map(([letter, , label]) => `<li><span class="c-kbd">g ${letter}</span> ${escapeHtml(label)}</li>`)
     .join("");
-  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({j:"project",t:"tasks",v:"review",y:"stats",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage",o:"overview"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}})();</script>`;
+  const shortcutsScript = `<script>(function(){var targets=${JSON.stringify(navTargets).replace(/</g, "\\u003c")};var g=false;var seqTimer=null;function editable(el){if(!el)return false;var t=el.tagName;return t==="INPUT"||t==="TEXTAREA"||t==="SELECT"||el.isContentEditable;}document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.key==="Escape"){document.body.classList.remove("c-shortcuts-open");return;}if(e.key==="?"&&!editable(e.target)){e.preventDefault();document.body.classList.toggle("c-shortcuts-open");return;}if(e.key==="/"&&!editable(e.target)){var box=document.querySelector('input[name="q"],input[name="keyword"],input[name="domain"],input[name="tool"],select[name="tool"]');if(box){e.preventDefault();box.focus();if(box.select)box.select();}return;}if(e.key==="g"&&!editable(e.target)){g=true;clearTimeout(seqTimer);seqTimer=setTimeout(function(){g=false;},1200);return;}if(g&&!editable(e.target)){var href=targets[({j:"project",t:"tasks",v:"review",y:"stats",d:"dispatch",l:"library",f:"archive",r:"runners",s:"schedules",p:"ops",a:"audit",u:"usage"})[e.key]];g=false;if(href){e.preventDefault();location.href=href;}}},true);if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches){var m=document.querySelector('meta[http-equiv=refresh]');if(m)m.parentNode.removeChild(m);}})();</script>`;
   const brandHref = input.brandHref ?? "/panel";
   const searchForm =
     input.hideSearch === true
@@ -320,7 +318,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     "</header>",
     actionsBanner,
     '<div class="c-layout">',
-    `<aside class="c-aside"><div class="c-nav-group-title">工作区</div><nav aria-label="控制台导航">${navHtml}${navHint}</nav></aside>`,
+    `<aside class="c-aside"><nav aria-label="控制台导航">${navHtml}${navHint}</nav></aside>`,
     `<main class="c-main" id="console-main">${liveNote}${shortcutsPanel}${input.body}</main>`,
     "</div>",
     `<footer class="c-footer">${PRODUCT_NAME} · 本地服务 · 按 <span class="c-kbd">?</span> 查看快捷键</footer>`,

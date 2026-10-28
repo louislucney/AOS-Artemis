@@ -42,10 +42,10 @@ test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动�
 
 test("console shell: 默认 nav 覆盖控制台版块", () => {
   const keys = DEFAULT_CONSOLE_NAV.map((item) => item.key);
-  for (const expected of ["overview", "project", "review", "dispatch", "library", "archive", "ops", "usage"]) {
+  for (const expected of ["project", "review", "dispatch", "library", "archive", "ops", "usage"]) {
     assert.ok(keys.includes(expected), expected);
   }
-  for (const removed of ["tasks", "runners", "schedules", "stats", "audit"]) {
+  for (const removed of ["overview", "tasks", "runners", "schedules", "stats", "audit"]) {
     assert.ok(!keys.includes(removed), `${removed} 已并入同级版块，不再占一级导航`);
   }
 });
@@ -116,7 +116,8 @@ test("console shell: 快捷键（? 帮助 / g 跳转 / reduced-motion 豁免刷�
   assert.match(html, /name="q"[^>]*aria-label="全局搜索/, "搜索框可访问名");
   assert.match(html, /name="section" value="search"/, "搜索提交到结果页");
   assert.match(html, /按 <span class="c-kbd">\?<\/span> 查看快捷键/);
-  assert.match(html, /g o<\/span> 总览|g t<\/span> 任务/, "跳转键表");
+  assert.match(html, /g t<\/span> 任务/, "跳转键表");
+  assert.ok(!html.includes("g o</span>"), "总览跳转键已移除");
   assert.match(html, /术语/, "帮助面板含术语表");
   assert.match(html, /用例集<\/strong>：一次生成或导入登记的一个用例版本/, "用例集就地定义");
   assert.match(html, /记录底座<\/strong>/, "记录底座术语");
@@ -148,7 +149,7 @@ test("console shell: 顶栏不再显示存储/最近写入（信息只在运维�
 test("console shell: CSDC 官方徽标、全宽布局与组件母版", () => {
   const html = renderConsoleShell({ title: "总览", active: "overview", body: "" });
   assert.match(html, /data:image\/svg\+xml;base64,/, "顶栏使用 CSDC 官方徽标（内联 data URI）");
-  assert.match(html, /class="c-nav-group-title">工作区</, "侧栏分组标题");
+  assert.ok(!html.includes('<div class="c-nav-group-title">'), "侧栏分组标题已移除");
   assert.ok(
     html.includes(".c-layout{display:flex;align-items:flex-start;width:100%;max-width:none;margin:0}"),
     "布局全宽，不再 1320 居中"
@@ -212,7 +213,8 @@ test("console shell: 项目上下文与能力标记（导航禁用/横幅）", (
     "无项目上下文：项目级导航隐藏而非渲染死项"
   );
   assert.ok(!bare.includes("section=dispatch"), "项目级项不渲染");
-  assert.ok(bare.includes('href="/panel"'), "总览项保留");
+  assert.ok(bare.includes('class="c-brand"><a href="/panel"'), "品牌链接仍可回到总览");
+  assert.ok(!bare.includes('c-nav-item" href="/panel"'), "侧栏不再渲染总览项");
   assert.match(bare, /进入任一项目后显示项目级版块/, "隐藏原因就地说明");
   assert.ok(!bare.includes('tabindex="0"'), "无不可聚焦残留");
   assert.ok(!bare.includes("aos-last-project"), "无项目上下文不写上次项目");

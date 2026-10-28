@@ -418,10 +418,10 @@ interface UiNode {
 | P2 slice 1（AOS 侧 iOS 截图源） | ✅ `src/device/ios.ts`（idb→simctl）+ `design_device_diff`/`compare_design_and_device` 的 `platform:"ios"`（DESIGN §13.41；14 例测试） |
 | P2 slice 2（观察路由） | ✅ `mobile_get_device_state`：UDID 判据自动路由 AOS iOS 后端（screenshot → `live_screenshots/*.png`；hierarchy → idb 简化列表；`src/tools/ios-state.ts`，DESIGN §13.42；10 例测试） |
 | P2 slice 3（动作层） | ✅ `src/device/ios-actions.ts`：`makeIosDevice`（tap/swipe/inputText/launch/terminate/openUrl/nodes/size/screenshot/handleAlerts；idb→simctl 回退），DESIGN §13.43；11 例测试 + 模拟器冒烟（无 MCP 暴露，待 P2 runner 消费） |
-| P2 slice 4（`mobile_run_task` 路由 + 最小执行器） | ✅ `mobile_run_task`（UDID 判据）→ AOS 执行器（层级观察 + active LLM 单动作 JSON 循环 + shots/run.json/status.json）；`mobile_manage_task` status/stop/inject；`src/llm/chat.ts`、`src/ios/task-runner.ts`，DESIGN §13.44；10 例测试 + 真 DeepSeek/模拟器端到端验收 |
+| P2 slice 4（`mobile_run_task` 路由 + 最小执行器） | ✅ `mobile_run_task`（UDID 判据）→ mobile-testing 执行器（层级观察 + active LLM 单动作 JSON 循环 + shots/run.json/status.json）；`mobile_manage_task` status/stop/inject；`src/llm/chat.ts`、`src/ios/task-runner.ts`，DESIGN §13.44；10 例测试 + 真 DeepSeek/模拟器端到端验收 |
 | P2 slice 5（视觉 fallback） | ✅ `src/ios/vision.ts`：视觉目标解析（`AOS_IOS_VISION_LLM`/`AOS_IOS_VISION_MODEL`/active 多模态启发）+ 按需附图（层级质量差或 `AOS_IOS_VISION_ALWAYS=1`）+ 失败降级记录（`vision_degraded`/`perception`），DESIGN §13.45；P2 验收项“纯文本 LLM 触发视觉 fallback 且有 trace”达成 |
 | P2 slice 6（trace 检查器 + 路由下沉） | ✅ `mobile_inspect_trace` 四动作（view_summary/view_step_details/view_step_screenshots/search）按 iOS trace 路由；路由下沉到 Runtime 代理层使 `design_device_diff(mode:"step")` 可对 iOS 失败步骤自动锚定并对比（DESIGN §13.46；6 例测试） |
-| P2 slice 7（suite 用例闭环） | ✅ `suite run --device <UDID>` 由 AOS 执行器跑用例：iOS 复位（`resetIosApp`，idb terminate+launch）、`--app` 自动启动、日志显式降级 `ios-log-unsupported`、失败经 test_summary 走既有分域（DESIGN §13.47；7 例测试 + 真机 CLI 验收两次 PASS） |
+| P2 slice 7（suite 用例闭环） | ✅ `suite run --device <UDID>` 由 mobile-testing 执行器跑用例：iOS 复位（`resetIosApp`，idb terminate+launch）、`--app` 自动启动、日志显式降级 `ios-log-unsupported`、失败经 test_summary 走既有分域（DESIGN §13.47；7 例测试 + 真机 CLI 验收两次 PASS） |
 | P3 slice 8（崩溃取证 + evidence） | ✅ `src/crash/ios.ts` 采集宿主机 DiagnosticReports `.ips`（窗口+签名+索引去重），`aos_crashes` kind=`ios`，`suite evidence` 失败项/锚点/崩溃引用对 iOS 可用（DESIGN §13.48；4 例测试） |
 | P3 slice 9（真机 UDID 识别） | ◐ `classifyIosSerial`（模拟器 UUID / 真机 8-16 / 40-hex）贯通 state/runner/reset/suite；真机跳过 simctl 校验走 idb best-effort——**无 iPhone 未实测**，签名/配对（P3 前置）待做（DESIGN §13.49） |
 | Android 回归门禁 | ⏸ 待设备在线 |

@@ -3,7 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { collectLocalImagePaths, mirrorDeviceScreenshots } from "../dist/artemis/artifacts.js";
+import {
+  collectLocalImagePaths,
+  mirrorDeviceScreenshots,
+  pruneEmptyStepDirs
+} from "../dist/artemis/artifacts.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject, StubProxy } from "./helpers.js";
 
 function makeSourceScreenshot(name = "live_screenshot_emulator-5554.jpg") {
@@ -68,6 +72,24 @@ test("runtime: other mobile tools are not mirrored", async () => {
 
   await runtime.proxy.callTool("mobile_diagnose", {});
   assert.ok(!fs.existsSync(path.join(dir, ".artemis", "traces", "live_screenshots")));
+});
+
+test("pruneEmptyStepDirs: 只删除 steps 下空目录，保留有产物的目录", () => {
+  const trace = makeTempDir("aos-trace-steps-");
+  const steps = path.join(trace, "steps");
+  fs.mkdirSync(path.join(steps, "empty-a"), { recursive: true });
+  fs.mkdirSync(path.join(steps, "empty-b"), { recursive: true });
+  fs.mkdirSync(path.join(steps, "keep"), { recursive: true });
+  fs.writeFileSync(path.join(steps, "keep", "post.jpg"), "x");
+  try {
+    assert.equal(pruneEmptyStepDirs(trace), 2);
+    assert.ok(!fs.existsSync(path.join(steps, "empty-a")));
+    assert.ok(!fs.existsSync(path.join(steps, "empty-b")));
+    assert.ok(fs.existsSync(path.join(steps, "keep", "post.jpg")));
+    assert.equal(pruneEmptyStepDirs(path.join(trace, "missing")), 0);
+  } finally {
+    fs.rmSync(trace, { recursive: true, force: true });
+  }
 });
 
 test("mirrorDeviceScreenshots: missing source files and copy failures never throw", () => {

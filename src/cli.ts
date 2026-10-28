@@ -19,7 +19,7 @@ import { runPanelCommand } from "./panel-command.js";
 import { runCmsOpen } from "./open/command.js";
 
 function printUsage(): void {
-  console.log(`mobile-testing-mcp — AOS × ARTEMIS unified MCP service
+  console.log(`mobile-testing-mcp — unified MCP service for mobile testing
 
 Usage:
   mobile-testing-mcp serve     Run the MCP server (stdio by default)

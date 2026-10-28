@@ -55,7 +55,11 @@ function makeProject(parent, name, kind) {
 function runAudit(args) {
   return spawnSync(process.execPath, [SCRIPT, ...args], {
     encoding: "utf-8",
-    env: { ...process.env, AOS_HOST_ID: "test-host" }
+    env: {
+      ...process.env,
+      AOS_HOST_ID: "test-host",
+      AOS_LEDGER_DIR: path.join(makeTempDir("aos-audit-ledger-"), "ledger")
+    }
   });
 }
 

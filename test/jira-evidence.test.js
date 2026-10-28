@@ -78,7 +78,7 @@ test("buildEvidenceComment: 平台/设备/失败清单/崩溃/附件/降级 gold
     deviceSerial: DEVICE_UDID,
     failureDomain: "app-defect"
   });
-  assert.match(draft.text, /【AOS 失败证据】trace trace-1/);
+  assert.match(draft.text, /【mobile-testing 失败证据】trace trace-1/);
   assert.match(draft.text, /平台: ios · 设备: 00008101/);
   assert.match(draft.text, /失败域: app-defect/);
   assert.match(draft.text, /校验金额 · 类型=check · 证据=expected 42 got 41/);

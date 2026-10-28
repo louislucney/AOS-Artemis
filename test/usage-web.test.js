@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { newDb } from "pg-mem";
 
+import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { handleUsageRequest } from "../dist/usage/web.js";
@@ -133,6 +137,18 @@ test("usage web: HTML 四段、页面内存储标注与项目切换器", async (
   );
   assert.match(htmlWithPanel.body, /<a href="\/panel">← 回到控制台<\/a>/, "同进程时给回链");
   assert.doesNotMatch(htmlWithPanel.body, /独立统计进程（控制台总览/, "有回链不重复说明");
+  assert.match(htmlWithPanel.body, /role="search"/, "同进程统计页保留控制台搜索");
+  assert.match(htmlWithPanel.body, /aria-label="切换项目"/, "同进程统计页保留项目切换器");
+  assert.match(
+    htmlWithPanel.body,
+    /aria-current="page"[^>]*>使用统计</,
+    "同进程统计页侧栏为完整控制台导航"
+  );
+  assert.match(
+    htmlWithPanel.body,
+    /href="\/panel\?project=%2Fw%2Falpha">项目</,
+    "侧栏项目项携带当前项目"
+  );
   assert.ok(body.includes("aos_status"));
   assert.ok(!body.includes("aos_usage"));
   assert.ok(body.includes("未知条目 &lt;str&gt;"));
@@ -500,6 +516,28 @@ test("usage web: ?host 作用域读事件，分页/筛选链接保留 host（下
     deps(store)
   );
   assert.equal(ambiguous.status, 409, "未带 host 的同路径仍 409");
+});
+
+test("usage web: 文件台账行恒为 NULL host，带本机 host 的项目链接仍可解析", async () => {
+  const home = await mkdtemp(join(tmpdir(), "aos-usage-file-"));
+  const root = await mkdtemp(join(tmpdir(), "aos-usage-root-"));
+  try {
+    const store = await FileStore.create({ homeDir: home });
+    await store.upsertProject({ rootPath: root, name: "app", hostId: "h-local" });
+
+    const res = await handleUsageRequest(
+      new URL(
+        `http://localhost/usage?project=${encodeURIComponent(root)}&host=h-local`
+      ),
+      { store, env: {}, panelUrl: "/panel" }
+    );
+    assert.equal(res.status, 200);
+    assert.match(res.body, /app/, "项目名回显");
+    assert.doesNotMatch(res.body, /未知项目/);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("usage web: PostgreSQL 未知 host → 404（不静默显示零项目）", async () => {

@@ -33,7 +33,7 @@ export const AOS_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "aos_status",
     description:
-      "AOS MCP 运行状态：项目注册信息、存储（PostgreSQL/文件台账/会话内存）、active LLM、artemis 子进程（pid/重启数/stderr 尾部）、Figma 桥/就绪性、Jira 配置（masked）、setup 状态。",
+      "mobile-testing MCP 运行状态：项目注册信息、存储（PostgreSQL/文件台账/会话内存）、active LLM、artemis 子进程（pid/重启数/stderr 尾部）、Figma 桥/就绪性、Jira 配置（masked）、setup 状态。",
     schema: z.object({}),
     handler: (runtime) => aosStatus(runtime)
   },

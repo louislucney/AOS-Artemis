@@ -43,7 +43,7 @@ export function buildEvidenceComment(
   bundle: EvidenceBundle,
   facts: EvidenceCommentFacts
 ): EvidenceCommentDraft {
-  const title = `【AOS 失败证据】trace ${bundle.traceId}`;
+  const title = `【mobile-testing 失败证据】trace ${bundle.traceId}`;
   const meta = [
     `平台: ${facts.platform}${facts.deviceSerial ? ` · 设备: ${facts.deviceSerial}` : ""}`,
     `状态: ${bundle.status ?? "unknown"}${bundle.error ? `（${bundle.error}）` : ""}`,
