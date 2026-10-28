@@ -3109,8 +3109,8 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 - **链路**：`createWebProject`（托管目录 + 最小 `aos.config.jsonc` + `web_projects`/`projects` 行）→ `storeWebAsset`（Excel 原件 CAS）→ `previewExcelAsset`/`saveExcelMapping`（语义指纹 + `excel_mappings`）→ `ensureWorkbookCopy`（工作副本）→ `writebackWorkbook`（8 列）→ `recordExcelWriteback`/`lastExcelWriteback`（`excel_writeback_journal`）。
 - **store 表**：`web_projects`、`web_assets`、`excel_mappings`、`excel_writeback_journal`；Memory/File/PG 三实现同构，PG 唯一约束与迁移见 §13.250–§13.253。
-- **不变量**：原件 `/.artemis/web/assets/excel/<sha256>.xlsx` 只读、永不改写；工作副本 `/.artemis/web/workbook/<assetId>.xlsx` 是派生物；原件 sha 不因复制或写回变化；映射挂原件、不读也不改工作副本。写回以映射的 `caseId` 表头（`testcase_id` 锚定）只在表头行向右复用/追加 8 列，只写空白格或 journal 证明未被人工改动的系统格；人工格与人工清空永不回填；重复输入 `caseId` 首条生效且告警。
-- **单一写者**：写回只在中心服务执行，调用方用同一 `withFileLock` 锁串行；runner 不回写 Excel。跨进程/PG advisory lock 留待后续计划。
+- **不变量**：原件 `/.artemis/web/assets/excel/<sha256>.xlsx` 只读、永不改写；工作副本 `/.artemis/web/workbook/<assetId>.xlsx` 是派生物；原件 sha 不因复制或写回变化；映射挂原件、不读也不改工作副本。写回以映射的 `caseId` 表头（业务侧 `testcase_id`）只在表头行向右复用/追加 8 列。归属按 §13.253：当前值等于 journal 最后系统值可刷新；空且无 journal 可写；人工清空冻结；有 journal 但当前值不同为人工格冻结。冷启动时既有系统表头但无 journal 的非空格按系统格刷新并告警；非系统列的人工单元格永不触碰。重复输入 `caseId` 首条生效且告警。
+- **单一写者**：写回只在中心服务执行，runner 不回写 Excel；本计划只提供引擎（`src/web/writeback.ts`）与锁工具（`src/web/lock.ts`），由后续 API/编排层使用同一锁串行；写回执行器与接线尚未实现。跨进程/PG advisory lock 留待后续计划。
 - **文件**：`src/web/{project-service,assets,excel,excel-columns,excel-mapping,workbook,writeback,lock}.ts`、`src/db/*`、`src/panel/actions.ts`、`src/console/pages.ts`；验收测试 `test/web-project-e2e.test.js`。
-- **验收（E2E，MemoryStore + 临时 workspace）**：建项目 → 上传 Excel → 预览/保存映射（指纹可查回）→ 按映射解析用例 → 建工作副本 → 写回 4 格 → journal 记录 → 二次写回刷新系统格且人工改过的格冻结 → 重复输入 `caseId` 只写首条；全程原件 sha 不变、首次副本与原件字节一致、重复写回不堆列、原件仍只有原始表头。
+- **验收（E2E，MemoryStore + 临时 workspace）**：建项目 → 上传 Excel → 预览/保存映射（指纹可查回）→ 按映射解析用例 → 建工作副本 → 首行写满 8 个系统列（F1–M1 表头与 F2–M2 值逐格断言）+ 第二行结果 → journal 记录 → 二次写回刷新系统格且人工改过的格冻结 → 重复输入 `caseId` 只写首条；全程原件 sha 不变、首次副本与原件字节一致、重复写回不堆列、原件仍只有原始表头。
 - **后续计划**：Plan 2 Script/Discovery（Maestro 草稿、testID 发现、脚本集 staleness）、Plan 3 Remote Runner/Execution、Plan 4 Billing。本次不含 materials/package 上传、写回失败状态与重试、往返 parts（图表/宏/图片）自检、PG advisory lock、`web.projectId` 初始为 null 的补链（Task 2 已登记的 deferred）。

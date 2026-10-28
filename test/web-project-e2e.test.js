@@ -22,6 +22,18 @@ import { SYSTEM_COLUMNS, writebackWorkbook } from "../dist/web/writeback.js";
 const SHEET_NAME = "用例";
 const BASE_HEADERS = ["模块", "展示编号", "用例名", "操作步骤", "预期结果"];
 const SYSTEM_HEADERS = SYSTEM_COLUMNS.map((column) => column.header);
+const SYSTEM_CELL_REFS = ["F2", "G2", "H2", "I2", "J2", "K2", "L2", "M2"];
+const FIRST_ROW_VALUES = {
+  scriptFile: "scripts/login.yaml",
+  expectedHint: "inferred: 进入首页",
+  result: "FAIL",
+  device: "Pixel 8 / Android 15",
+  package: "app.apk · com.starbucks.tw · 1.0",
+  startedAt: "2026-10-28T13:00:12+08:00",
+  finishedAt: "2026-10-28T13:01:42+08:00",
+  traceId: "trace-1"
+};
+const FIRST_ROW_EXPECTED = SYSTEM_COLUMNS.map((column) => FIRST_ROW_VALUES[column.key]);
 
 function cellText(value) {
   if (value === null || value === undefined) return "";
@@ -218,32 +230,47 @@ test("web project e2e：建项目 → Excel CAS → 映射 → 工作副本 → 
     sheetName: SHEET_NAME,
     caseIdHeader,
     rows: [
-      {
-        caseId: "TC-1",
-        values: { result: "FAIL", device: "Pixel 8 / Android 15", traceId: "trace-1" }
-      },
+      { caseId: "TC-1", values: FIRST_ROW_VALUES },
       { caseId: "TC-2", values: { result: "PASS" } }
     ],
     lastSystemValue: journal.last
   });
-  assert.equal(first.written, 4);
+  assert.equal(first.written, 9);
   assert.equal(first.skipped, 0);
   assert.equal(first.failed, 0);
   assert.deepEqual(first.warnings, []);
   assert.deepEqual(first.columns, SYSTEM_HEADERS);
   assert.deepEqual(
     first.writtenCells.map((cell) => `${cell.key}=${cell.cellRef}`),
-    ["result=用例!H2", "device=用例!I2", "traceId=用例!M2", "result=用例!H3"]
+    [
+      "scriptFile=用例!F2",
+      "expectedHint=用例!G2",
+      "result=用例!H2",
+      "device=用例!I2",
+      "package=用例!J2",
+      "startedAt=用例!K2",
+      "finishedAt=用例!L2",
+      "traceId=用例!M2",
+      "result=用例!H3"
+    ]
   );
   await journal.record(first, "job-1");
 
   let sheet = await readSheet(workbookPath);
-  assert.deepEqual(headerValues(sheet).slice(5, 13), SYSTEM_HEADERS);
+  assert.deepEqual(
+    ["F1", "G1", "H1", "I1", "J1", "K1", "L1", "M1"].map((ref) =>
+      cellText(sheet.getCell(ref).value)
+    ),
+    SYSTEM_HEADERS,
+    "8 个系统列应按固定顺序追加在 F1..M1"
+  );
+  assert.deepEqual(
+    SYSTEM_CELL_REFS.map((ref) => cellText(sheet.getCell(ref).value)),
+    FIRST_ROW_EXPECTED,
+    "首行 8 个系统格应写入对应 key 的值"
+  );
   assert.equal(cellText(sheet.getCell("A2").value), "登录");
   assert.equal(cellText(sheet.getCell("B2").value), "TC-1");
-  assert.equal(cellText(sheet.getCell("H2").value), "FAIL");
-  assert.equal(cellText(sheet.getCell("I2").value), "Pixel 8 / Android 15");
-  assert.equal(cellText(sheet.getCell("M2").value), "trace-1");
   assert.equal(cellText(sheet.getCell("H3").value), "PASS");
   assert.equal(await sha256File(asset.storagePath), originalSha, "写回不得改变原件 sha");
 
@@ -254,8 +281,11 @@ test("web project e2e：建项目 → Excel CAS → 映射 → 工作副本 → 
   assert.equal(firstJournal.columnKey, "result");
   assert.equal(firstJournal.sheetName, SHEET_NAME);
   assert.equal(firstJournal.actor, "alice");
-  assert.equal((await store.lastExcelWriteback(rootPath, asset.id, "用例!I2")).value, "Pixel 8 / Android 15");
-  assert.equal((await store.lastExcelWriteback(rootPath, asset.id, "用例!M2")).value, "trace-1");
+  for (const [index, ref] of SYSTEM_CELL_REFS.entries()) {
+    const cellRef = `用例!${ref}`;
+    const record = await store.lastExcelWriteback(rootPath, asset.id, cellRef);
+    assert.equal(record.value, FIRST_ROW_EXPECTED[index], cellRef);
+  }
   assert.equal((await store.lastExcelWriteback(rootPath, asset.id, "用例!H3")).value, "PASS");
 
   await ensureWorkbookCopy(asset.storagePath, workbookPath);
