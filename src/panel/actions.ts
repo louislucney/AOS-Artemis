@@ -632,7 +632,16 @@ export async function handlePanelActionRequest(
     if (request.url.pathname === "/panel/api/jobs") {
       const response = await createWebJobAction(scopedDeps, resolved.rootPath, payload, actor);
       if (response.status === 200) scopedDeps.cache?.clear();
-      await auditPanel(scopedDeps, resolved.rootPath, "action.jobs", response);
+      const refs: Record<string, string | undefined> = {};
+      try {
+        const raw =
+          typeof response.body === "string" ? response.body : response.body.toString("utf8");
+        const created = JSON.parse(raw) as { job?: { id?: unknown } };
+        if (typeof created.job?.id === "string") refs.taskId = created.job.id;
+      } catch {
+        /* 非 JSON：仅记动作结果 */
+      }
+      await auditPanel(scopedDeps, resolved.rootPath, "action.jobs", response, refs);
       return response;
     }
     if (request.url.pathname === "/panel/api/verdicts") {

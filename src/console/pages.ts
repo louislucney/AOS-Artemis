@@ -380,6 +380,7 @@ function jobsHref(
 
 function jobBinding(task: RegressionTaskRecord, spec: WebJobSpec | null): {
   bound: boolean;
+  pinned: boolean;
   hostId: string | null;
   serial: string | null;
   pending: boolean;
@@ -387,11 +388,14 @@ function jobBinding(task: RegressionTaskRecord, spec: WebJobSpec | null): {
 } {
   const hostId = task.claimedHostId ?? task.targetHostId ?? spec?.targetHostId ?? null;
   const serial = task.deviceSerial ?? spec?.deviceSerial ?? null;
+  // 绑定以租约完成为准：钉住设备但尚未预占到租约的任务仍属等待，不能显示「已绑定」。
+  const leaseId = task.deviceLeaseId ?? spec?.deviceLeaseId ?? null;
   return {
-    bound: serial !== null,
+    bound: leaseId !== null,
+    pinned: serial !== null && spec?.devicePinned === true,
     hostId,
     serial,
-    pending: task.status === "pending" && serial === null && !spec?.binding,
+    pending: task.status === "pending" && leaseId === null && !spec?.binding,
     reason: spec?.assignmentError?.message ?? null
   };
 }
@@ -403,12 +407,22 @@ function jobBindingCell(entry: WebJobListEntry): string {
       binding.serial ?? "—"
     )}</code>`;
   }
+  const reason =
+    binding.reason === null ? "" : ` <span class="muted">（${escapeHtml(binding.reason)}）</span>`;
+  if (binding.pinned && binding.pending) {
+    return `${cBadge({
+      label: "钉住 host/设备，等待执行机",
+      tone: "warning"
+    })} <code>${escapeHtml(binding.hostId ?? "—")}</code> · <code>${escapeHtml(
+      binding.serial ?? "—"
+    )}</code>${reason}`;
+  }
   if (binding.pending) {
-    const reason =
-      binding.reason === null ? "" : ` <span class="muted">（${escapeHtml(binding.reason)}）</span>`;
     return `${cBadge({ label: "等待满足要求的执行机", tone: "warning" })}${reason}`;
   }
-  return '<span class="muted">未绑定设备（已结束）</span>';
+  return `<span class="muted">未绑定设备（${escapeHtml(
+    webJobStatusLabel(entry.task.status)
+  )}）</span>`;
 }
 
 function jobDeviceCell(entry: WebJobListEntry, runners: WebRunnerRecord[]): string {
@@ -624,7 +638,7 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
 
   const script = actionsOff
     ? ""
-    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function byId(id){return document.getElementById(id);}function value(id){var node=byId(id);return node&&typeof node.value==="string"?node.value.trim():"";}function list(id){var raw=value(id);return raw===""?[]:raw.split(",").map(function(part){return part.trim();}).filter(function(part){return part!=="";});}var form=byId("web-job-form");var status=byId("web-job-status");var busy=byId("web-job-submit");function setBusy(on){if(!busy)return;if(on){if(!busy.dataset.idleLabel)busy.dataset.idleLabel=busy.textContent;busy.disabled=true;busy.textContent=busy.dataset.busyLabel||"下发中…";}else{busy.disabled=false;busy.textContent=busy.dataset.idleLabel||"下发测试";}}function request(url,options){return fetch(url,options).then(function(r){return r.json().then(function(body){return {ok:r.ok,status:r.status,body:body};});});}function payload(){var assignment=value("web-job-assignment")==="manual"?"manual":"auto";var out={project:root,assignment:assignment,executionMode:value("web-job-mode")||"maestro",excelAssetId:value("web-job-excel"),packageAssetId:value("web-job-package"),requirements:{platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"},caseFilter:{modules:list("web-job-case-modules"),caseIds:list("web-job-case-ids")}};var materials=value("web-job-materials");if(materials!=="")out.materialsAssetId=materials;var scripts=value("web-job-scripts");if(scripts!=="")out.scriptSetId=scripts;var models=list("web-job-model");if(models.length>0)out.requirements.deviceModel=models;var min=value("web-job-os-min");var max=value("web-job-os-max");if(min!==""||max!==""){out.requirements.osVersion={};if(min!=="")out.requirements.osVersion.min=min;if(max!=="")out.requirements.osVersion.max=max;}if(assignment==="manual"){out.targetHostId=value("web-job-host");var serial=value("web-job-device");if(serial!=="")out.deviceSerial=serial;}var retry=value("web-job-retry");if(retry!=="")out.retry=Number(retry);var priority=value("web-job-priority");if(priority!=="")out.priority=Number(priority);return out;}function preview(){var target=byId("web-job-preview-result");if(!target)return;var params=new URLSearchParams({project:root,assignment:value("web-job-assignment")==="manual"?"manual":"auto",platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"});var models=value("web-job-model");if(models!=="")params.set("deviceModel",models);var min=value("web-job-os-min");if(min!=="")params.set("osMin",min);var max=value("web-job-os-max");if(max!=="")params.set("osMax",max);if(value("web-job-assignment")==="manual"){var targetHost=value("web-job-host");if(targetHost!=="")params.set("targetHostId",targetHost);var serial=value("web-job-device");if(serial!=="")params.set("deviceSerial",serial);}target.textContent="预览中…";request("/panel/api/jobs/preview?"+params.toString(),{headers:{"X-AOS-Console":"1"}}).then(function(res){if(res.ok&&res.body&&res.body.selection){var pick=res.body.selection;target.textContent="可选："+pick.hostId+" / "+pick.deviceSerial+"（分数 "+pick.score+"）";}else{target.textContent="无可用执行机："+((res.body&&res.body.message)||res.status);}}).catch(function(err){target.textContent="预览失败："+err;});}var previewBtn=byId("web-job-preview-submit");if(previewBtn)previewBtn.addEventListener("click",preview);["web-job-assignment","web-job-host","web-job-device","web-job-platform","web-job-kind","web-job-model","web-job-os-min","web-job-os-max"].forEach(function(id){var node=byId(id);if(node)node.addEventListener("change",preview);});if(form){form.addEventListener("submit",function(event){event.preventDefault();setBusy(true);request("/panel/api/jobs",{method:"POST",headers:{"Content-Type":"application/json","X-AOS-Console":"1"},body:JSON.stringify(payload())}).then(function(res){if(res.ok&&res.body&&res.body.ok){window.aosFlash&&window.aosFlash("已下发："+(res.body.status==="bound"?"已绑定 "+res.body.assignment.hostId+" / "+res.body.assignment.deviceSerial:"等待满足要求的执行机"));location.href="/panel?project="+encodeURIComponent(root)+"&section=jobs"+(host?"&host="+encodeURIComponent(host):"")+"&job="+encodeURIComponent(res.body.job.id);return;}setBusy(false);if(status)status.textContent="下发失败："+((res.body&&res.body.error)||res.status);}).catch(function(err){setBusy(false);if(status)status.textContent="下发失败："+err;});});}})();</script>`;
+    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function byId(id){return document.getElementById(id);}function value(id){var node=byId(id);return node&&typeof node.value==="string"?node.value.trim():"";}function list(id){var raw=value(id);return raw===""?[]:raw.split(",").map(function(part){return part.trim();}).filter(function(part){return part!=="";});}var form=byId("web-job-form");var status=byId("web-job-status");var busy=byId("web-job-submit");function setBusy(on){if(!busy)return;if(on){if(!busy.dataset.idleLabel)busy.dataset.idleLabel=busy.textContent;busy.disabled=true;busy.textContent=busy.dataset.busyLabel||"下发中…";}else{busy.disabled=false;busy.textContent=busy.dataset.idleLabel||"下发测试";}}function request(url,options){return fetch(url,options).then(function(r){return r.json().then(function(body){return {ok:r.ok,status:r.status,body:body};});});}function payload(){var assignment=value("web-job-assignment")==="manual"?"manual":"auto";var out={project:root,assignment:assignment,executionMode:value("web-job-mode")||"maestro",excelAssetId:value("web-job-excel"),packageAssetId:value("web-job-package"),requirements:{platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"},caseFilter:{modules:list("web-job-case-modules"),caseIds:list("web-job-case-ids")}};if(host)out.host=host;var materials=value("web-job-materials");if(materials!=="")out.materialsAssetId=materials;var scripts=value("web-job-scripts");if(scripts!=="")out.scriptSetId=scripts;var models=list("web-job-model");if(models.length>0)out.requirements.deviceModel=models;var min=value("web-job-os-min");var max=value("web-job-os-max");if(min!==""||max!==""){out.requirements.osVersion={};if(min!=="")out.requirements.osVersion.min=min;if(max!=="")out.requirements.osVersion.max=max;}if(assignment==="manual"){out.targetHostId=value("web-job-host");var serial=value("web-job-device");if(serial!=="")out.deviceSerial=serial;}var retry=value("web-job-retry");if(retry!=="")out.retry=Number(retry);var priority=value("web-job-priority");if(priority!=="")out.priority=Number(priority);return out;}function preview(){var target=byId("web-job-preview-result");if(!target)return;var params=new URLSearchParams({project:root,assignment:value("web-job-assignment")==="manual"?"manual":"auto",platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"});if(host)params.set("host",host);var models=value("web-job-model");if(models!=="")params.set("deviceModel",models);var min=value("web-job-os-min");if(min!=="")params.set("osMin",min);var max=value("web-job-os-max");if(max!=="")params.set("osMax",max);if(value("web-job-assignment")==="manual"){var targetHost=value("web-job-host");if(targetHost!=="")params.set("targetHostId",targetHost);var serial=value("web-job-device");if(serial!=="")params.set("deviceSerial",serial);}target.textContent="预览中…";request("/panel/api/jobs/preview?"+params.toString(),{headers:{"X-AOS-Console":"1"}}).then(function(res){if(res.ok&&res.body&&res.body.selection){var pick=res.body.selection;target.textContent="可选："+pick.hostId+" / "+pick.deviceSerial+"（分数 "+pick.score+"）";}else{target.textContent="无可用执行机："+((res.body&&res.body.message)||res.status);}}).catch(function(err){target.textContent="预览失败："+err;});}var previewBtn=byId("web-job-preview-submit");if(previewBtn)previewBtn.addEventListener("click",preview);["web-job-assignment","web-job-host","web-job-device","web-job-platform","web-job-kind","web-job-model","web-job-os-min","web-job-os-max"].forEach(function(id){var node=byId(id);if(node)node.addEventListener("change",preview);});if(form){form.addEventListener("submit",function(event){event.preventDefault();setBusy(true);request("/panel/api/jobs",{method:"POST",headers:{"Content-Type":"application/json","X-AOS-Console":"1"},body:JSON.stringify(payload())}).then(function(res){if(res.ok&&res.body&&res.body.ok){window.aosFlash&&window.aosFlash("已下发："+((res.body&&res.body.message)||res.body.status));location.href="/panel?project="+encodeURIComponent(root)+"&section=jobs"+(host?"&host="+encodeURIComponent(host):"")+"&job="+encodeURIComponent(res.body.job.id);return;}setBusy(false);if(status)status.textContent="下发失败："+((res.body&&res.body.error)||res.status);}).catch(function(err){setBusy(false);if(status)status.textContent="下发失败："+err;});});}})();</script>`;
 
   return renderConsoleShell({
     title: "下发测试",
@@ -709,10 +723,18 @@ export function renderWebJobPage(data: WebJobPageData): string {
               writebackError === null ? "" : escapeHtml(writebackError)
             }`
           : cBadge({ label: "待写回", tone: "warning" });
+  const provenance =
+    data.device.source === "result"
+      ? "结果上报"
+      : data.device.source === "inventory"
+        ? "执行机心跳"
+        : "未知";
   const deviceText =
     data.device.model === null && data.device.osVersion === null
-      ? `<span class="muted">未知（执行机未上报）</span>`
-      : `${escapeHtml(data.device.model ?? "未知型号")} · ${escapeHtml(data.device.osVersion ?? "未知系统")}`;
+      ? `<span class="muted">未知（执行机未上报 · 来源：${provenance}）</span>`
+      : `${escapeHtml(data.device.model ?? "未知型号")} · ${escapeHtml(
+          data.device.osVersion ?? "未知系统"
+        )} <span class="muted">（来源：${provenance}）</span>`;
   const resultPackage = result?.package;
   const packageText =
     resultPackage !== undefined && resultPackage !== null

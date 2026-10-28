@@ -272,6 +272,9 @@ test("POST /panel/api/jobs auto binds host+device and the page shows it", async 
   assert.equal(payload.job.status, "pending");
   assert.equal(payload.job.deviceSerial, "emulator-5554");
   assert.equal(cleared, 1, "成功下发清空面板缓存");
+  const audit = await store.listAudit(rootPath, { domain: "panel", limit: 5 });
+  const jobAudit = audit.find((event) => event.action === "action.jobs");
+  assert.equal(jobAudit?.refs.taskId, payload.job.id, "审计行关联任务 id");
 
   const leases = await store.listDeviceLeases();
   assert.equal(leases.length, 1);
@@ -480,6 +483,7 @@ test("job detail shows device, package, cases, evidence links and writeback stat
   assert.match(html, /\/panel\/artifact\?project=/);
   assert.match(html, /已写回/);
   assert.match(html, /结果 1\/2/);
+  assert.match(html, /来源：结果上报/);
 
   const missing = JSON.parse(
     (await postJob(deps, autoBody(rootPath, { excel, pkg }))).body
@@ -490,7 +494,115 @@ test("job detail shows device, package, cases, evidence links and writeback stat
   });
   assert.equal(empty.status, 200);
   assert.match(empty.body, /尚无结果/);
+  assert.match(empty.body, /来源：执行机心跳/);
   assert.ok(!empty.body.includes("com.acme.app"), "不虚构包信息");
+});
+
+test("pinned pending job shows waiting, not bound (no lease yet)", async (t) => {
+  const { deps, store, rootPath, excel, pkg } = await setup(t, { runners: false });
+  const response = await postJob(deps, {
+    ...autoBody(rootPath, { excel, pkg }),
+    assignment: "manual",
+    targetHostId: "host-a",
+    deviceSerial: "emulator-5554"
+  });
+  assert.equal(response.status, 200);
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.status, "pending");
+  assert.equal(payload.job.status, "pending");
+  assert.equal(payload.job.deviceSerial, "emulator-5554", "钉住的设备留在任务意图里");
+  assert.equal(payload.job.deviceLeaseId, null, "没有租约");
+  assert.equal((await store.listDeviceLeases()).length, 0);
+
+  const page = await handlePanelRequest(jobsUrl(rootPath), {
+    ...deps,
+    capabilities: capabilities("dispatcher")
+  });
+  assert.equal(page.status, 200);
+  assert.match(page.body, /钉住 host\/设备，等待执行机/);
+  assert.match(page.body, /emulator-5554/);
+  assert.match(page.body, /未注册 Web 执行机/, "assignmentError 原因可见");
+  assert.ok(!page.body.includes("已绑定 host/device"), "钉住不等于已绑定");
+
+  const detail = await handlePanelRequest(jobDetailUrl(rootPath, payload.job.id), {
+    ...deps,
+    capabilities: capabilities("dispatcher")
+  });
+  assert.equal(detail.status, 200);
+  assert.match(detail.body, /钉住 host\/设备，等待执行机/);
+  assert.ok(!detail.body.includes("已绑定 host/device"), "详情也不当作已绑定");
+});
+
+test("host scope travels with dispatch and preview for a shared rootPath", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "aos-web-dispatch-hosts-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const rootPath = path.join(workspace, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  const scopedA = store.scopeHost("host-a");
+  const scopedB = store.scopeHost("host-b");
+  await scopedA.upsertProject({ rootPath, name: "acme" });
+  await scopedB.upsertProject({ rootPath, name: "acme" });
+  await scopedA.createWebProject({
+    rootPath,
+    name: "acme",
+    normalizedName: "acme",
+    platforms: ["android"]
+  });
+  const excel = await createAsset(scopedA, rootPath, "excel", "回归用例.xlsx", "a");
+  const pkg = await createAsset(scopedA, rootPath, "package", "app-release.apk", "b");
+  await scopedA.upsertWebRunner({
+    hostId: "host-a",
+    name: "runner-a",
+    hostname: "host-a.local",
+    platforms: ["android"],
+    devices: [androidDevice("emulator-5554", "Pixel 7", "14")],
+    tools: tools({ adb: true, maestro: true }),
+    artifactBaseUrl: null,
+    version: "0.1.0",
+    instanceId: "inst-a",
+    lastSeenAt: SEEN
+  });
+  const deps = {
+    store,
+    env: {},
+    workspaceRoot: workspace,
+    buildStale: false,
+    now: () => NOW,
+    storeForHost: (hostId) => store.scopeHost(hostId)
+  };
+
+  const body = autoBody(rootPath, { excel, pkg });
+  const identity = { name: "eve", role: "viewer", source: "user" };
+  const previewAmbiguous = await handlePanelActionRequest(
+    { method: "GET", url: previewUrl(rootPath), body: undefined, identity },
+    deps
+  );
+  assert.equal(previewAmbiguous.status, 409);
+  assert.match(previewAmbiguous.body, /跨主机重复/);
+
+  const previewScoped = await handlePanelActionRequest(
+    { method: "GET", url: previewUrl(rootPath, { host: "host-a" }), body: undefined, identity },
+    deps
+  );
+  assert.equal(previewScoped.status, 200);
+  assert.equal(JSON.parse(previewScoped.body).selection.deviceSerial, "emulator-5554");
+
+  const ambiguous = await postJob(deps, body);
+  assert.equal(ambiguous.status, 409, "无 host 时同路径跨主机必须歧义");
+  assert.match(ambiguous.body, /跨主机重复/);
+
+  const scoped = await postJob(deps, { ...body, host: "host-a" });
+  assert.equal(scoped.status, 200);
+  assert.equal(JSON.parse(scoped.body).assignment.hostId, "host-a");
+
+  const page = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(rootPath)}&section=jobs&host=host-a`),
+    { ...deps, capabilities: capabilities("dispatcher") }
+  );
+  assert.equal(page.status, 200);
+  assert.match(page.body, /if\(host\)out\.host=host/, "POST body 携带 host");
+  assert.match(page.body, /if\(host\)params\.set\("host",host\)/, "预览查询携带 host");
 });
 
 test("job detail: unknown job is 404 and project page links to jobs", async (t) => {
