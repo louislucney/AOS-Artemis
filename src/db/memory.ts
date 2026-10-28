@@ -1936,10 +1936,47 @@ export class MemoryStore implements ProjectStore {
       cellRef: input.cellRef,
       value: input.value,
       actor: input.actor ?? null,
-      writtenAt: input.writtenAt ?? new Date().toISOString()
+      writtenAt: input.writtenAt ?? new Date().toISOString(),
+      status: input.status ?? "confirmed"
     };
     this.excelWritebacks.push(record);
     return cloneExcelWriteback(record);
+  }
+
+  async listPendingExcelWriteback(
+    rootPath: string,
+    assetId: string
+  ): Promise<ExcelWritebackRecord[]> {
+    return this.excelWritebacks
+      .filter(
+        (record) =>
+          record.rootPath === rootPath &&
+          record.assetId === assetId &&
+          record.status === "pending"
+      )
+      .sort(
+        (left, right) =>
+          right.writtenAt.localeCompare(left.writtenAt) || right.id.localeCompare(left.id)
+      )
+      .map(cloneExcelWriteback);
+  }
+
+  async confirmExcelWriteback(rootPath: string, id: string): Promise<boolean> {
+    const record = this.excelWritebacks.find(
+      (entry) => entry.id === id && entry.rootPath === rootPath && entry.status === "pending"
+    );
+    if (record === undefined) return false;
+    record.status = "confirmed";
+    return true;
+  }
+
+  async deleteExcelWriteback(rootPath: string, id: string): Promise<boolean> {
+    const index = this.excelWritebacks.findIndex(
+      (entry) => entry.id === id && entry.rootPath === rootPath && entry.status === "pending"
+    );
+    if (index === -1) return false;
+    this.excelWritebacks.splice(index, 1);
+    return true;
   }
 
   async lastExcelWriteback(
@@ -1952,7 +1989,8 @@ export class MemoryStore implements ProjectStore {
       if (
         record.rootPath !== rootPath ||
         record.assetId !== assetId ||
-        record.cellRef !== cellRef
+        record.cellRef !== cellRef ||
+        record.status !== "confirmed"
       ) {
         continue;
       }
@@ -1976,7 +2014,8 @@ export class MemoryStore implements ProjectStore {
         record.assetId !== assetId ||
         record.sheetName !== sheetName ||
         record.caseId !== caseId ||
-        record.columnKey !== columnKey
+        record.columnKey !== columnKey ||
+        record.status !== "confirmed"
       ) {
         continue;
       }
@@ -2227,7 +2266,7 @@ function cloneExcelMapping(record: ExcelMappingRecord): ExcelMappingRecord {
 }
 
 function cloneExcelWriteback(record: ExcelWritebackRecord): ExcelWritebackRecord {
-  return { ...record };
+  return { ...record, status: record.status === "pending" ? "pending" : "confirmed" };
 }
 
 function cloneMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {

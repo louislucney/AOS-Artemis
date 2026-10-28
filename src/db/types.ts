@@ -76,8 +76,14 @@ export interface SaveExcelMappingInput {
 }
 
 /**
+ * 两阶段写回日志状态：`pending`＝已声明要写该格（写盘前），`confirmed`＝已确认落盘。
+ * 只有 confirmed 行参与「系统格归属」判定；pending 行由 `recoverPendingWriteback` 在写回前收尾。
+ */
+export type ExcelWritebackStatus = "pending" | "confirmed";
+
+/**
  * Excel 写回日志（只追加）：每次系统写入单元格一条；读取时按 `(rootPath, assetId, cellRef)`
- * 取最后一条，用于区分「系统格」（可刷新）与「人工格」（永不覆盖）。
+ * 取最后一条 confirmed 行，用于区分「系统格」（可刷新）与「人工格」（永不覆盖）。
  */
 export interface ExcelWritebackRecord {
   id: string;
@@ -93,6 +99,7 @@ export interface ExcelWritebackRecord {
   value: string;
   actor: string | null;
   writtenAt: string;
+  status: ExcelWritebackStatus;
 }
 
 export interface RecordExcelWritebackInput {
@@ -107,6 +114,8 @@ export interface RecordExcelWritebackInput {
   actor?: string | null;
   /** 显式写入时间（测试/导入）；缺省＝当前时间。 */
   writtenAt?: string;
+  /** 缺省 `confirmed`（旧调用语义）；两阶段写回传 `pending` 后再 confirm。 */
+  status?: ExcelWritebackStatus;
 }
 
 /** 未绑定 host 的 store 按 root_path 查询命中多行（跨主机同路径）时的歧义错误。 */
@@ -1168,16 +1177,25 @@ export interface ProjectStore {
   ): Promise<ExcelMappingRecord | null>;
   /** 新→旧（createdAt DESC, id DESC）；`assetId` 缺省＝该项目全部映射。 */
   listExcelMappings(rootPath: string, assetId?: string): Promise<ExcelMappingRecord[]>;
-  /** 追加一条写回日志（保留历史；同格多次写入留多条）。 */
+  /** 追加一条写回日志（保留历史；同格多次写入留多条）。缺省状态 `confirmed`。 */
   recordExcelWriteback(input: RecordExcelWritebackInput): Promise<ExcelWritebackRecord>;
-  /** 取 `(rootPath, assetId, cellRef)` 的最后一条系统写入（`writtenAt` 最新，同刻取后写入）。 */
+  /** 某资产下所有 `pending` 行（写回前恢复用）；新→旧。 */
+  listPendingExcelWriteback(
+    rootPath: string,
+    assetId: string
+  ): Promise<ExcelWritebackRecord[]>;
+  /** `pending` → `confirmed`；行不存在/不属于该 rootPath/已确认 → false。 */
+  confirmExcelWriteback(rootPath: string, id: string): Promise<boolean>;
+  /** 删除一条 `pending` 行（恢复时确认不了的系统声明）；非 pending/不存在 → false。 */
+  deleteExcelWriteback(rootPath: string, id: string): Promise<boolean>;
+  /** 取 `(rootPath, assetId, cellRef)` 的最后一条 confirmed 系统写入（`writtenAt` 最新，同刻取后写入）。 */
   lastExcelWriteback(
     rootPath: string,
     assetId: string,
     cellRef: string
   ): Promise<ExcelWritebackRecord | null>;
   /**
-   * 取 `(rootPath, assetId, sheetName, caseId, columnKey)` 的最后一条系统写入。
+   * 取 `(rootPath, assetId, sheetName, caseId, columnKey)` 的最后一条 confirmed 系统写入。
    * 单元格物理地址会随插入/删除行漂移，归属判断必须按可变的「用例编号 + 列」定位。
    */
   lastExcelWritebackByCellKey(

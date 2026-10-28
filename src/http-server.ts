@@ -297,13 +297,30 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
 
-        if (matchRunnerJobPath(url.pathname) !== null) {
+        const runnerRoute = matchRunnerJobPath(url.pathname);
+        if (runnerRoute !== null) {
+          let runnerRawBody: Buffer | undefined;
+          let runnerContentType: string | undefined;
+          if (runnerRoute.kind === "results" && req.method === "POST") {
+            const headerType = req.headers["content-type"];
+            runnerContentType = Array.isArray(headerType) ? headerType[0] : headerType;
+            try {
+              runnerRawBody = await readRawBody(req, MAX_PANEL_BODY_BYTES);
+            } catch (error) {
+              if (error instanceof BodyTooLargeError) throw error;
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end('{"error":"invalid request body"}');
+              return;
+            }
+          }
           const runnerResponse = await handleRunnerJobRequest({
             method: req.method ?? "GET",
             url,
             headers: req.headers,
             store,
-            env: process.env
+            env: process.env,
+            ...(runnerRawBody === undefined ? {} : { rawBody: runnerRawBody }),
+            ...(runnerContentType === undefined ? {} : { contentType: runnerContentType })
           });
           res.writeHead(runnerResponse.status, {
             "Content-Type": runnerResponse.contentType,

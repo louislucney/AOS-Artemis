@@ -1281,6 +1281,28 @@ export class FileStore implements ProjectStore {
     return record;
   }
 
+  async listPendingExcelWriteback(
+    rootPath: string,
+    assetId: string
+  ): Promise<ExcelWritebackRecord[]> {
+    const bucket = await this.bucket(rootPath);
+    return this.scopedMem(bucket, this.hostId).listPendingExcelWriteback(rootPath, assetId);
+  }
+
+  async confirmExcelWriteback(rootPath: string, id: string): Promise<boolean> {
+    const bucket = await this.bucket(rootPath);
+    const confirmed = await this.scopedMem(bucket, this.hostId).confirmExcelWriteback(rootPath, id);
+    if (confirmed) await this.persist(bucket, "confirmExcelWriteback");
+    return confirmed;
+  }
+
+  async deleteExcelWriteback(rootPath: string, id: string): Promise<boolean> {
+    const bucket = await this.bucket(rootPath);
+    const deleted = await this.scopedMem(bucket, this.hostId).deleteExcelWriteback(rootPath, id);
+    if (deleted) await this.persist(bucket, "deleteExcelWriteback");
+    return deleted;
+  }
+
   async lastExcelWriteback(
     rootPath: string,
     assetId: string,

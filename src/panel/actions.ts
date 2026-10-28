@@ -46,6 +46,7 @@ import {
 } from "../web/workbook-reupload.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
 import { parseWebJobSpec } from "../web/job-spec.js";
+import { ingestWebJobResult, WebResultError } from "../web/results.js";
 import {
   computeDispatchPreview,
   dispatchFormSignature,
@@ -136,20 +137,23 @@ function webProjectStateResponse(error: unknown): PanelWebResponse | null {
   return json(error.status, { ok: false, error: error.message, code: error.code });
 }
 
-const RUNNER_JOB_PATH_RE = /^\/panel\/api\/jobs\/([^/]+)\/(?:spec|assets\/([^/]+))\/?$/;
+const RUNNER_JOB_PATH_RE = /^\/panel\/api\/jobs\/([^/]+)\/(?:(spec|results)|assets\/([^/]+))\/?$/;
 
 export interface RunnerJobPath {
   jobId: string;
   assetId: string | null;
+  /** `results` 只接受 POST；`spec`/`asset` 保持 GET。 */
+  kind: "spec" | "results" | "asset";
 }
 
-/** runner 专用 job 路由（spec / 资产字节流）；其余 `/panel/api/jobs/*` 不在此匹配。 */
+/** runner 专用 job 路由（spec / 结果上传 / 资产字节流）；其余 `/panel/api/jobs/*` 不在此匹配。 */
 export function matchRunnerJobPath(pathname: string): RunnerJobPath | null {
   const match = RUNNER_JOB_PATH_RE.exec(pathname);
   if (!match) return null;
   const jobId = match[1]!;
   if (jobId === "." || jobId === ".." || jobId.includes("\\")) return null;
-  return { jobId, assetId: match[2] ?? null };
+  const kind = match[2] === "results" ? "results" : match[3] !== undefined ? "asset" : "spec";
+  return { jobId, assetId: match[3] ?? null, kind };
 }
 
 export interface RunnerJobRequestInput {
@@ -158,6 +162,11 @@ export interface RunnerJobRequestInput {
   headers: Record<string, string | string[] | undefined>;
   store: ProjectStore;
   env?: NodeJS.ProcessEnv;
+  /** 已解析 JSON body（直接调用方可传；HTTP 路径用 `rawBody`）。 */
+  body?: unknown;
+  /** 未解析的请求体（HTTP）：鉴权通过后才解析，避免未认证请求先触发 body 校验分支。 */
+  rawBody?: Buffer;
+  contentType?: string;
 }
 
 export interface RunnerJobResponse {
@@ -284,7 +293,11 @@ export async function handleRunnerJobRequest(
 ): Promise<RunnerJobResponse> {
   const route = matchRunnerJobPath(input.url.pathname);
   if (route === null) return runnerJson(404, { ok: false, error: "not found" });
-  if (input.method !== "GET") {
+  if (route.kind === "results") {
+    if (input.method !== "POST") {
+      return runnerJson(405, { ok: false, error: "method not allowed (POST)" });
+    }
+  } else if (input.method !== "GET") {
     return runnerJson(405, { ok: false, error: "method not allowed (GET)" });
   }
   const authFailure = runnerJobAuthResponse(input.headers, input.env ?? process.env);
@@ -300,8 +313,58 @@ export async function handleRunnerJobRequest(
     return runnerJson(403, {
       ok: false,
       code: "host-not-allowed",
-      error: `主机 ${hostId || "（缺失 X-AOS-Host-Id）"} 无权读取 job ${route.jobId}`
+      error: `主机 ${hostId || "（缺失 X-AOS-Host-Id）"} 无权访问 job ${route.jobId}`
     });
+  }
+  if (route.kind === "results") {
+    const contentType = (input.contentType ?? headerValue(input.headers, "content-type")).toLowerCase();
+    if (contentType !== "" && !contentType.includes("application/json")) {
+      return runnerJson(400, {
+        ok: false,
+        code: "invalid-content-type",
+        error: "结果上传需要 Content-Type: application/json"
+      });
+    }
+    let payload: unknown;
+    if (input.body !== undefined) {
+      payload = input.body;
+    } else if (input.rawBody !== undefined) {
+      const text = input.rawBody.toString("utf8").trim();
+      if (text === "") {
+        return runnerJson(400, {
+          ok: false,
+          code: "invalid-result",
+          error: "结果 body 为空"
+        });
+      }
+      try {
+        payload = JSON.parse(text);
+      } catch (error) {
+        return runnerJson(400, {
+          ok: false,
+          code: "invalid-result",
+          error: `结果 body 不是合法 JSON：${errorMessage(error)}`
+        });
+      }
+    }
+    try {
+      const summary = await ingestWebJobResult({
+        store: input.store,
+        jobId: route.jobId,
+        payload,
+        actor: hostId
+      });
+      return runnerJson(200, { ok: true, ...summary });
+    } catch (error) {
+      if (error instanceof WebResultError) {
+        return runnerJson(error.status, {
+          ok: false,
+          code: error.code === "task-not-running" ? "result-already-recorded" : error.code,
+          error: error.message
+        });
+      }
+      throw error;
+    }
   }
   const spec = parseWebJobSpec(job.task.jobSpec);
   if (spec === null) {

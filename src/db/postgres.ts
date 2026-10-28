@@ -469,12 +469,15 @@ const SCHEMA = [
      cell_ref TEXT NOT NULL,
      value TEXT NOT NULL,
      actor TEXT,
-     written_at TEXT NOT NULL
+     written_at TEXT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'confirmed'
    )`,
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_lookup_idx
      ON excel_writeback_journal(root_path, asset_id, cell_ref, written_at)`,
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_cell_key_idx
-     ON excel_writeback_journal(root_path, asset_id, sheet_name, case_id, column_key, written_at)`
+     ON excel_writeback_journal(root_path, asset_id, sheet_name, case_id, column_key, written_at)`,
+  `CREATE INDEX IF NOT EXISTS excel_writeback_journal_pending_idx
+     ON excel_writeback_journal(root_path, asset_id, status, written_at)`
 ];
 
 const MIGRATIONS = [
@@ -529,6 +532,9 @@ const MIGRATIONS = [
   `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_host_idx ON runners(project_id, host_id)`,
   `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
   `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS session_id TEXT`,
+  `ALTER TABLE excel_writeback_journal ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'confirmed'`,
+  `CREATE INDEX IF NOT EXISTS excel_writeback_journal_pending_idx
+     ON excel_writeback_journal(root_path, asset_id, status, written_at)`,
   `CREATE INDEX IF NOT EXISTS regression_tasks_web_claim_idx
      ON regression_tasks(status, target_host_id, device_serial)`
 ];
@@ -3275,8 +3281,8 @@ export class PostgresStore implements ProjectStore {
     const result = await this.pool.query(
       `INSERT INTO excel_writeback_journal
          (id, project_id, root_path, asset_id, sheet_name, job_id, case_id,
-          column_key, cell_ref, value, actor, written_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          column_key, cell_ref, value, actor, written_at, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
       [
         randomUUID(),
@@ -3290,10 +3296,42 @@ export class PostgresStore implements ProjectStore {
         input.cellRef,
         input.value,
         input.actor ?? null,
-        input.writtenAt ?? new Date().toISOString()
+        input.writtenAt ?? new Date().toISOString(),
+        input.status ?? "confirmed"
       ]
     );
     return mapExcelWriteback(result.rows[0]!);
+  }
+
+  async listPendingExcelWriteback(
+    rootPath: string,
+    assetId: string
+  ): Promise<ExcelWritebackRecord[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM excel_writeback_journal
+        WHERE root_path = $1 AND asset_id = $2 AND status = 'pending'
+        ORDER BY written_at DESC, id DESC`,
+      [rootPath, assetId]
+    );
+    return result.rows.map(mapExcelWriteback);
+  }
+
+  async confirmExcelWriteback(rootPath: string, id: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE excel_writeback_journal SET status = 'confirmed'
+        WHERE id = $1 AND root_path = $2 AND status = 'pending'`,
+      [id, rootPath]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async deleteExcelWriteback(rootPath: string, id: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `DELETE FROM excel_writeback_journal
+        WHERE id = $1 AND root_path = $2 AND status = 'pending'`,
+      [id, rootPath]
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async lastExcelWriteback(
@@ -3303,7 +3341,7 @@ export class PostgresStore implements ProjectStore {
   ): Promise<ExcelWritebackRecord | null> {
     const result = await this.pool.query(
       `SELECT * FROM excel_writeback_journal
-        WHERE root_path = $1 AND asset_id = $2 AND cell_ref = $3
+        WHERE root_path = $1 AND asset_id = $2 AND cell_ref = $3 AND status = 'confirmed'
         ORDER BY written_at DESC, id DESC
         LIMIT 1`,
       [rootPath, assetId, cellRef]
@@ -3321,7 +3359,7 @@ export class PostgresStore implements ProjectStore {
     const result = await this.pool.query(
       `SELECT * FROM excel_writeback_journal
         WHERE root_path = $1 AND asset_id = $2 AND sheet_name = $3
-          AND case_id = $4 AND column_key = $5
+          AND case_id = $4 AND column_key = $5 AND status = 'confirmed'
         ORDER BY written_at DESC, id DESC
         LIMIT 1`,
       [rootPath, assetId, sheetName, caseId, columnKey]
@@ -3913,7 +3951,8 @@ function mapExcelWriteback(row: Record<string, unknown>): ExcelWritebackRecord {
     cellRef: String(row.cell_ref),
     value: String(row.value),
     actor: nullableString(row.actor),
-    writtenAt: String(row.written_at)
+    writtenAt: String(row.written_at),
+    status: row.status === "pending" ? "pending" : "confirmed"
   };
 }
 

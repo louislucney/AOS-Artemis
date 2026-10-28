@@ -3222,3 +3222,19 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **证据路径**：截图/日志只取 `jobDir/maestro/` 下真实存在的普通文件（递归有界、跳过符号链接）；截图按相对路径包含 caseId 归属（每例 ≤5 张），`maestro.log`（或首个 `.log`）存在时作为各例 `logPath`；不存在则留空，不发明路径。路径校验是词法 `resolve` 前缀（非 realpath），`jobDir` 由 Task 6 受控创建，不接受用户任意目录；符号链接逃逸边界在此说明，需要强保证时由工作目录层 realpath 化。
 - **测试**（`test/web-executors.test.js`，18 例）：三态映射与 failed 聚合、命令参数/默认与自定义超时/env；非零退出无 JUnit → error 保留 stderr、超时 → error、spawn 错误保留；非零/超时但 JUnit 全 PASS → error 且用例保留；无 scriptSetId/无顶层 yaml/越界 flowsDir 不执行；llm 未接线；截图/日志限定 jobDir 且跳过符号链接；`subflows/` 不计用例；未匹配 testcase 合成 ERROR；重复 caseId/flow 标记；partial/passed/零用例；DTD/畸形/超 2MB 拒绝；非法 serial 不执行。
 - **边界**：结果上传、写回与 token 计费归 Task 8；`executionMode=llm` 仅保留接口；不实现 Maestro 发现/脚本生成与多设备并行；不解析 `.maestro` 配置与子流程语义；超时进程组杀（I2）与 realpath 强校验为后续项。
+
+### 13.263 新增（Web job 结果入库：聚合、Excel 写回与两阶段 journal）
+
+> 2026-10-29。Plan 3 Task 8：runner 执行结束后上传 `WebJobExecutionResult` + 设备/包/证据/LLM token 信息；中心持久化结果、聚合任务终态、复用 Plan 1 写回引擎更新 Excel。
+
+- **入口**（`src/web/results.ts` `ingestWebJobResult` / `POST /panel/api/jobs/:id/results`）：body `{execution, device{serial,model,osVersion}, package{name,version,filename}, startedAt, finishedAt, evidence?, tokenUsage?, tokenArtifacts?{dataEngineDb,statusJson}, allowClearedRefresh?}`。runner 路由复用 `AOS_RUNNER_JOB_TOKEN`（≥16，未配置 503、缺失/错误 401）+ `X-AOS-Host-Id`（必须等于 job 的 `claimedHostId`/`targetHostId`，否则 403）；仅 POST，其他方法 405；`Content-Type` 非 JSON 或 body 非法/非对象 → 400。
+- **幂等**：归一化 payload（稳定键序）的 sha256 即幂等键；`result.json` 已有同 sha → 200 返回既有摘要（`idempotent:true`），不再写 journal/工作副本。已有不同结果且任务非 `running` → 409 `result-already-recorded`（不覆盖）；任务非 `running`（含 pending/终态）一律 409。
+- **持久化**：`.artemis/web/results/<jobId>/result.json`（任务终态、gate 计数、device/package、起止、evidence、逐用例、token、写回状态/警告/已写格）；token 原始工件复制到 `.../artifacts/data-engine.db|status.json`，只记录结果目录内相对路径。结果详情不依赖设备/网络。
+- **聚合**：空结果 → gate `error`；任一 `FAIL/ERROR` → `failed`；其余含 `SKIP` → `partial`；全 `PASS` → `passed`。任务状态：`passed→completed`、`partial→partial`、`failed/error→failed`（DB 无 `error` 状态，空结果绝不写成成功）；SKIP 只计数。
+- **写回**：用 job `excelAssetId` 取 excel 资产 + 最新列映射（`listExcelMappings`，`caseId` 表头必须存在）；缺资产/缺映射 → typed 409（`excel-asset-missing`/`excel-mapping-missing`），不创建结果目录、不写 journal、不伪造写回。复用 `withFileLock` + `ensureWorkbookCopy` + `writebackWorkbook`（原件 CAS 只读、工作副本 `.artemis/web/workbook/<assetId>.xlsx`、parts 校验）；每用例写 `执行｜结果/设备与系统/安装包/开始时间/结束时间/traceId`（trace 取用例或 tokenUsage）。写回异常/`failed>0` → `writeback-failed`：结果照常保存、任务状态保持聚合值，并写 `web.job.result` 审计与响应 warnings。
+- **两阶段 journal**：`excel_writeback_journal.status`（`pending`/`confirmed`，旧行/旧调用默认 `confirmed`）；写格前 `recordExcelWriteback(status:pending)`，工作副本替换后 `confirmExcelWriteback`，写入前落盘失败 → `journal-failed` 中止。`lastExcelWriteback*` 只看 confirmed；`listPendingExcelWriteback(rootPath, assetId)` 供恢复。`recoverPendingWriteback({store,rootPath,assetId,workbookPath?})`：pending 格值 === 记录值 → confirm；不一致 → 删除 pending 声明（下次写回按系统格重新判定，不把该格误锁成人工格；工作副本不可读则保留全部 pending）。每次写回前都先恢复。
+- **人工清空**：默认仍冻结（当前空 + confirmed journal 有值 → 跳过并告警）；仅显式 `allowClearedRefresh:true`（body 字段或 ingest 参数）允许重新写入，未确认的 pending 行不授予该权限。
+- **LLM token**：`executionMode=llm` 要求非空 `tokenUsage` + 两个原始工件且可读；缺失/不可读 → `token-unavailable` warning（不按 0 计费、不伪造本地路径），结果仍保存。存在时持久化 `tokenUsage` 与四项合计（`tokenTotals`）；计费表留 Plan 4。
+- **错误码**：`invalid-result`(400)、`job-not-found`(404)、`task-not-running`(409，HTTP 码 `result-already-recorded`)、`invalid-job-spec`(409)、`excel-asset-missing`/`excel-mapping-missing`(409)。
+- **测试**（`test/web-result-ingest.test.js`，10 例）：PASS/FAIL/SKIP 聚合 + 6 类列写入 + 原件 sha 不变；空结果 → gate error / 任务 failed；同内容幂等不写 journal；HTTP token/host/404/非法 body/405/幂等/非 running 409；写回失败结果仍保存且状态不变；人工清空默认冻结 vs 显式解冻（confirmed）；pending 恢复 confirm/删除且不误判人工；LLM 工件与 `token-unavailable`；无 mapping/无 excelAssetId 不伪造写回；Memory/File/PG journal 状态语义一致。全量 **2684 绿**。
+- **边界**：不实现 runner 侧自动 POST（调用契约由 Task 8 暴露、Task 9/后续接线）；不引入 token 计费表；Plan 1 既有写回语义与文案保持（新增 `allowClearedRefresh`/journal 为 opt-in 扩展）。

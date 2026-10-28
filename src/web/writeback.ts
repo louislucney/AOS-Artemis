@@ -3,8 +3,10 @@ import path from "node:path";
 
 import ExcelJS from "exceljs";
 
+import type { ProjectStore } from "../db/types.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import { normalizeExcelHeader } from "./excel-columns.js";
+import { workbookCopyPath } from "./workbook.js";
 import { findUnsupportedParts, lostParts, readXlsxParts } from "./xlsx-parts.js";
 
 /** 系统列固定 8 列，顺序即写回/表头追加顺序。 */
@@ -61,11 +63,27 @@ export interface WritebackInput {
   headerRow?: number;
   /** 冷启动时是否沿用既有系统列：默认 false＝冻结（无 journal 的非空格视为人工/不可信）。 */
   adoptExistingSystemColumns?: boolean;
+  /**
+   * 人工清空格是否允许系统重新写入：默认 false＝冻结（当前空 + journal 有值 → 不写）。
+   * 只有显式 `true` 才解冻；journal 归属判定只看 confirmed 行。
+   */
+  allowClearedRefresh?: boolean;
   /** 原件路径（可选）：与工作副本同一路径时拒绝写回，运行期兜底不可变约定。 */
   originalPath?: string;
   /** 维度上限，默认 10000 行 × 200 列（按实际使用单元格计，见 `writebackWorkbook`）。 */
   maxRows?: number;
   maxColumns?: number;
+  /**
+   * 两阶段 journal 回调：写格前 `begin`（调用方落 pending 行），工作副本替换后 `confirm`。
+   * 缺省＝旧行为（调用方自行按 `writtenCells` 逐格记账）。
+   */
+  journal?: WritebackJournalHooks;
+}
+
+/** 两阶段写回日志钩子；回调失败会中止写回（不产生“写了格但没声明”的窗口）。 */
+export interface WritebackJournalHooks {
+  begin(cell: WritebackCellWrite): Promise<void>;
+  confirm(cell: WritebackCellWrite): Promise<void>;
 }
 
 export type WritebackErrorCode =
@@ -78,6 +96,7 @@ export type WritebackErrorCode =
   | "same-as-original"
   | "unsupported-parts"
   | "parts-lost"
+  | "journal-failed"
   | "verify-failed";
 
 export class WritebackError extends Error {
@@ -420,11 +439,16 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
           );
         }
       } else if (current === "") {
-        skipped += 1;
+        if (input.allowClearedRefresh !== true) {
+          skipped += 1;
+          warnings.push(
+            `第 ${rowNumber} 行 ${caseId}「${system.header}」已被人工清空（${cell.address}），已跳过；如需系统重新写入请显式 allowClearedRefresh`
+          );
+          continue;
+        }
         warnings.push(
-          `第 ${rowNumber} 行 ${caseId}「${system.header}」已被人工清空（${cell.address}），已跳过`
+          `第 ${rowNumber} 行 ${caseId}「${system.header}」已在人工清空后按 allowClearedRefresh 重新写入（${cell.address}）`
         );
-        continue;
       } else if (current !== lastText) {
         skipped += 1;
         warnings.push(
@@ -440,18 +464,39 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
   let written = 0;
   const writtenCells: WritebackCellWrite[] = [];
   if (writes.length > 0) {
-    for (const entry of appended) {
-      sheet.getCell(headerRow, entry.column).value = entry.header;
-    }
-    for (const write of writes) {
-      write.cell.value = write.value;
-    }
+    const plannedCells: WritebackCellWrite[] = writes.map((write) => ({
+      caseId: write.caseId,
+      key: write.system.key,
+      value: write.value,
+      cellRef: `${sheet.name}!${write.cell.address}`,
+      address: write.cell.address,
+      rowNumber: write.rowNumber,
+      columnNumber: columns.get(write.system.key)!
+    }));
     const target = path.resolve(input.workbookPath);
     const tempPath = path.join(
       path.dirname(target),
       `.${path.basename(target)}.verify-${process.pid}-${Date.now()}.xlsx`
     );
     try {
+      if (input.journal !== undefined) {
+        for (const cell of plannedCells) {
+          try {
+            await input.journal.begin(cell);
+          } catch (error) {
+            throw new WritebackError(
+              "journal-failed",
+              `写回日志 pending 行写入失败（${cell.cellRef}）：${errorMessage(error)}`
+            );
+          }
+        }
+      }
+      for (const entry of appended) {
+        sheet.getCell(headerRow, entry.column).value = entry.header;
+      }
+      for (const write of writes) {
+        write.cell.value = write.value;
+      }
       const buffer = Buffer.from((await workbook.xlsx.writeBuffer()) as ArrayBuffer);
       writeFileAtomic(tempPath, buffer);
       const partsAfter = readXlsxParts(await readFile(tempPath));
@@ -473,18 +518,19 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
         }))
       );
       await rename(tempPath, target);
-      for (const write of writes) {
-        const cellRef = `${sheet.name}!${write.cell.address}`;
+      for (const cell of plannedCells) {
         written += 1;
-        writtenCells.push({
-          caseId: write.caseId,
-          key: write.system.key,
-          value: write.value,
-          cellRef,
-          address: write.cell.address,
-          rowNumber: write.rowNumber,
-          columnNumber: columns.get(write.system.key)!
-        });
+        writtenCells.push(cell);
+      }
+      if (input.journal !== undefined) {
+        for (const cell of plannedCells) {
+          try {
+            await input.journal.confirm(cell);
+          } catch (error) {
+            // 单元格已经落盘；留在 pending 由 recoverPendingWriteback 下次按单元格值确认。
+            warnings.push(`写回日志确认失败（${cell.cellRef}，留待恢复）：${errorMessage(error)}`);
+          }
+        }
       }
     } catch (error) {
       await rm(tempPath, { force: true }).catch(() => undefined);
@@ -502,4 +548,107 @@ export async function writebackWorkbook(input: WritebackInput): Promise<Writebac
     warnings,
     writtenCells
   };
+}
+
+/** 恢复扫描所需的最小 store 面（便于服务/测试注入）。 */
+export type WritebackJournalStore = Pick<
+  ProjectStore,
+  "listPendingExcelWriteback" | "confirmExcelWriteback" | "deleteExcelWriteback"
+>;
+
+export interface RecoverPendingWritebackInput {
+  store: WritebackJournalStore;
+  rootPath: string;
+  assetId: string;
+  /** 缺省 `.artemis/web/workbook/<assetId>.xlsx`。 */
+  workbookPath?: string;
+}
+
+export interface RecoverPendingWritebackResult {
+  confirmed: number;
+  deleted: number;
+  /** 工作副本不可读/单元格无法判定而保留的 pending 行（不销毁证据）。 */
+  kept: number;
+  warnings: string[];
+}
+
+/**
+ * 两阶段 journal 恢复：扫描某资产的 `pending` 行——单元格值等于记录值 → confirm（写盘已完成，
+ * 只是没来得及确认）；否则删除该 pending 行，让下一次写回重新判定归属（pending 从未被当作
+ * 人工格，因此删掉不会把系统格误冻结，也不会覆盖用户后来的人工修改）。
+ * 工作副本不可读时保留全部 pending（不猜测），留待下次写回前再恢复。
+ */
+export async function recoverPendingWriteback(
+  input: RecoverPendingWritebackInput
+): Promise<RecoverPendingWritebackResult> {
+  const pending = await input.store.listPendingExcelWriteback(input.rootPath, input.assetId);
+  const result: RecoverPendingWritebackResult = {
+    confirmed: 0,
+    deleted: 0,
+    kept: 0,
+    warnings: []
+  };
+  if (pending.length === 0) return result;
+
+  const workbookPath =
+    input.workbookPath ?? workbookCopyPath(input.rootPath, input.assetId);
+  let workbook: ExcelJS.Workbook;
+  try {
+    workbook = await loadWorkbookBuffer(await readFile(workbookPath));
+  } catch (error) {
+    result.kept = pending.length;
+    result.warnings.push(
+      `待确认写回日志未恢复（工作副本不可读：${workbookPath}）：${errorMessage(error)}`
+    );
+    return result;
+  }
+
+  for (const record of pending) {
+    const separator = record.cellRef.lastIndexOf("!");
+    const sheetName = separator > 0 ? record.cellRef.slice(0, separator) : "";
+    const address = separator > 0 ? record.cellRef.slice(separator + 1) : "";
+    const sheet =
+      sheetName === ""
+        ? undefined
+        : workbook.worksheets.find((candidate) => candidate.name.trim() === sheetName.trim());
+    if (sheet === undefined || address === "") {
+      result.kept += 1;
+      result.warnings.push(`待确认写回日志无法定位单元格：${record.cellRef}（已保留）`);
+      continue;
+    }
+
+    let actual: string;
+    try {
+      actual = cellText(sheet.getCell(address));
+    } catch (error) {
+      result.kept += 1;
+      result.warnings.push(
+        `待确认写回日志单元格不可读：${record.cellRef}（${errorMessage(error)}，已保留）`
+      );
+      continue;
+    }
+
+    if (actual === record.value) {
+      const confirmed = await input.store.confirmExcelWriteback(input.rootPath, record.id);
+      if (confirmed) {
+        result.confirmed += 1;
+      } else {
+        result.kept += 1;
+        result.warnings.push(`待确认写回日志确认失败（${record.cellRef}，已保留）`);
+      }
+      continue;
+    }
+
+    const removed = await input.store.deleteExcelWriteback(input.rootPath, record.id);
+    if (removed) {
+      result.deleted += 1;
+      result.warnings.push(
+        `待确认写回日志与单元格值不一致，已丢弃声明（${record.cellRef}：记录「${record.value}」，当前「${actual}」）；下次写回按系统格重新判定`
+      );
+    } else {
+      result.kept += 1;
+      result.warnings.push(`待确认写回日志删除失败（${record.cellRef}，已保留）`);
+    }
+  }
+  return result;
 }
