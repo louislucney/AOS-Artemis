@@ -162,10 +162,19 @@ async function extractScripts(input: {
       `脚本包包含越界条目（拒绝解压）：${unsafe}`
     );
   }
+  // Plan 2 脚本包把用例放在顶层 `flows/` 目录；解压到 flowsDir 的父目录，
+  // 否则会得到 `flows/flows/<caseId>.yaml`，执行器只认顶层文件 → 0 用例。
+  const fileEntries = entries.filter((entry) => !entry.endsWith("/"));
+  const hasFlowsFolder =
+    fileEntries.length > 0 && fileEntries.every((entry) => entry.startsWith("flows/"));
+  const destination =
+    hasFlowsFolder && path.basename(input.flowsDir) === "flows"
+      ? path.dirname(input.flowsDir)
+      : input.flowsDir;
   await mkdir(input.flowsDir, { recursive: true });
   const extracted = await input.exec(
     "unzip",
-    ["-o", input.zipPath, "-d", input.flowsDir],
+    ["-o", input.zipPath, "-d", destination],
     options
   );
   if (extracted.code !== 0) {

@@ -272,6 +272,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 |---|---|
 | `dispatch` **下发向导** | 四步（来源→参数→预览回显→确认）；**先选主机、再选该主机上的项目**（换主机丢弃项目并取该主机最近活跃项目，换项目即按新作用域重载预览）；支持用例库选用例集/关键词；预览显示条数、runner 候选与告警；**两段确认**派发（refs 服务端重解析）；优先级默认 `P0` **只读**，`AOS_PANEL_PRIORITY=1` 时开放 0–100 编辑（防误操作插队；仅约束面板 UI，API 可直接传 `priority`）；领取顺序为 `priority DESC, created_at ASC` |
 | `library` **用例库** | 用例集列表（来源/条数/功能）＋**行内「下发该用例集」**＋**Excel 上传导入**（multipart，≤20MB）＋隔离（quarantine：**加入/移除表单，owner 签字**） |
+| `jobs` **网页测试下发** | 托管 Web 项目的下发表单（执行方式/平台/设备形态/Excel·package·materials·scripts 资产/用例范围/自动或手动＋钉设备/型号与系统软偏好/重试/优先级）＋任务列表（状态、`已绑定`/`钉住等待`/`已释放`、设备模型与 OS、结果门禁）＋任务详情（逐用例、证据、Excel 写回状态与警告）；`POST /panel/api/jobs` 需 dispatcher+，`GET /panel/api/jobs/preview` 只读；动作只建任务/预占，**执行需另配 `web-runner`** |
 | `assets` **测试资产** | Excel 原件版本表（文件名/版本/大小/sha 短摘要/上传时间）＋上传（multipart `POST /panel/api/projects/assets`，`kind=excel`；可选 `systemColumns=inherit` 在重上传时按上一版本 journal 重播种系统格，缺省 `human` 全部冻结）＋列映射预览（选资产/表头行 → 建议映射）与保存（`/panel/api/projects/excel/preview|mapping`）＋已保存映射表；写动作需 maintainer/admin |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
@@ -357,6 +358,23 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
 
   注意：**必须显式绑定目标项目**（`--project /srv/projects/<项目>`；缺省会落在服务仓库自身）——启动日志 `[runner] 启动：… project=…` 可核对；中心 PG 以**服务级环境**提供（systemd `Environment=`／launchd `EnvironmentVariables`，**不要**放进项目 `.env`）；单项目**勿双开同名 runner**；产物令牌 `AOS_RUNNER_ARTIFACT_TOKEN` 可选（未设＝内网无鉴权，暴露范围与风险见上文与 DESIGN §13.109/§13.113）。
 - **定时回归**：`node dist/cli.js suite schedule add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（runner 到点**自动建任务并执行**；引用按功能实时取最新用例集；**同名拒绝**；`list/show/enable/disable/remove` 管理，`--json` 可选）；`AOS_RUNNER_SCHEDULES=0` 关闭触发。注意：platforms 需与项目内至少一台 runner 的设备端匹配，否则任务会**逐窗口累积 pending**（在面板任务列表关注）。（**默认严格子集**下如此；开启 `AOS_RUNNER_PARTIAL_CLAIM=1` 后，**仅当无任一在线 runner 可全覆盖时**按交集端部分领取执行、缺端不补跑，见 DESIGN §13.116）面板项目页「定时回归」区块与任务页「来源」可见；面板计划表单的「端」按项目检测栈过滤（iOS 项目只显示 ios，Flutter/RN 显示双端，Web 不显示移动端表单）。见 DESIGN §13.110。
+
+### 远端 Web 测试执行机（web-runner）
+
+网页测试任务（Excel 用例 + 安装包 + Maestro 脚本 zip）由 **host 级** `web-runner` 领取执行：不要求项目目录，只连中心 PG；与 `suite runner` 不同，`web-runner` 按**设备**并行（同一设备同一时刻一个任务，靠设备租约）。
+
+```bash
+node dist/cli.js web-runner --name <n> [--artifact-base-url <url>] [--once]
+# 需要中心 PG（MOBILE_TESTING_DATABASE_URL，与 suite 其余命令同口径）；--once 只跑一轮
+#（心跳/选机 + 每设备一次领取）
+```
+
+- **能力与选机**：adb 设备 + iOS 模拟器/真机；`maestro` 必须可用（`AOS_MAESTRO_PATH` 可覆盖解析）。中心按平台/设备形态/工具/型号/系统版本选机并**预占租约**（TTL＝`AOS_DEVICE_LEASE_MS`，默认 90s）；执行前 runner 二次盘点，设备消失/不可用/被他人租约占住就跳过并释放领取与租约。
+- **中心访问令牌**：spec / 资产下载 / 结果上传只认 `AOS_RUNNER_JOB_TOKEN`（≥16 字符，中心与 runner 配同一值；未配置/过短 503，缺失或错误 401），且请求必须带 `X-AOS-Host-Id`＝该 job 的领取/目标主机（否则 403）。该 token 不放行其它路径，也不回退管理员令牌。
+- **环境变量**：`AOS_RUNNER_TTL_MS`（执行机在线判定，90000）、`AOS_DEVICE_LEASE_MS`（预占/续租，90000）、`AOS_RUNNER_HEARTBEAT_MS`（心跳，30000）、`AOS_RUNNER_POLL_MS`（空闲轮询，5000）、`AOS_WEB_JOB_TIMEOUT_MS`（Maestro 执行超时，900000）、`AOS_HOST_ID`（主机身份）。
+- **工作目录与资产**：job 目录＝`<workRoot>/<project>/<jobId>`；资产按 sha256 进本机 CAS（同内容复用），`secret:true` 的 materials 只落 `secrets/`（0600，不进 CAS）；Excel 只作附件；脚本 zip 解压到 `job/flows`，顶层 `<caseId>.yaml` 即一个用例（`subflows/` 不算用例）。
+- **结果**：结果为逐用例 `PASS/FAIL/SKIP/ERROR`，中心聚合后写 `result.json` 并回写 Excel 工作副本（`执行｜结果/设备与系统/安装包/开始时间/结束时间/traceId`），**原件 sha256 不变**；空结果/超时/非 0 退出绝不假 PASS。`executionMode=llm` 目前返回 `llm-execution-not-wired`——**LLM 执行与计费不在当前版本**（Plan 2/4）。
+- **当前接线边界（勿误预期）**：CLI `web-runner` 已完成注册/心跳/按设备领取/续租/回池；**「下载 → 安装 → Maestro → 结果上传」的执行器组合尚未接进 CLI 默认执行器**（`web-executor-not-wired`，任务会回池）。各段服务（`prepareWebJobWorkspace`/`installWebPackage`/`executeWebJob`/`ingestWebJobResult`）已具备并由 `test/web-remote-e2e.test.js` 端到端验证；接线还需中心基址/令牌、CAS 目录与上传 POST 的 runner 侧配置。
 
 ### Jira 接入（读取 / 回写 / CLI）
 

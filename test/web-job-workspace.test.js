@@ -291,7 +291,7 @@ test("prepareWebJobWorkspace: excel 原件只落 attachments，不解析", async
   assert.equal(prepared.flowsDir, null);
 });
 
-test("prepareWebJobWorkspace: scripts zip 先扫描条目再解压到 flows（5s 超时）", async (t) => {
+test("prepareWebJobWorkspace: scripts zip 先扫描条目再解压到 flows（顶层 flows/ 目录展平，5s 超时）", async (t) => {
   const root = await tempDir(t, "aos-web-job-ws-");
   const zip = Buffer.from("fake-zip");
   const digest = sha256(zip);
@@ -316,11 +316,40 @@ test("prepareWebJobWorkspace: scripts zip 先扫描条目再解压到 flows（5s
   });
   assert.ok(prepared.flowsDir);
   assert.equal(prepared.flowsDir, path.join(prepared.jobDir, "flows"));
-  assert.match(await readFile(path.join(prepared.flowsDir, "flows", "login.yaml"), "utf-8"), /appId/);
+  assert.match(await readFile(path.join(prepared.flowsDir, "login.yaml"), "utf-8"), /appId/);
+  assert.equal(fs.existsSync(path.join(prepared.flowsDir, "flows")), false);
   const extract = calls.find((call) => call.args[0] === "-o");
   assert.ok(extract);
   assert.equal(extract.command, "unzip");
   assert.equal(extract.options.timeoutMs, 5000);
+  assert.equal(extract.args[extract.args.indexOf("-d") + 1], prepared.jobDir);
+});
+
+test("prepareWebJobWorkspace: scripts 条目无 flows/ 前缀时仍解压进 flowsDir", async (t) => {
+  const root = await tempDir(t, "aos-web-job-ws-");
+  const zip = Buffer.from("fake-zip");
+  const digest = sha256(zip);
+  const { exec, calls } = fakeExec((command, args) => {
+    if (args[0] === "-Z1") return { code: 0, stdout: "login.yaml\n", stderr: "" };
+    const dir = args[args.indexOf("-d") + 1];
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "login.yaml"), "appId: demo\n");
+    return { code: 0, stdout: "", stderr: "" };
+  });
+
+  const prepared = await prepareWebJobWorkspace({
+    jobId: "job-bare",
+    projectSlug: "acme",
+    workRoot: path.join(root, "work"),
+    cacheRoot: path.join(root, "cache"),
+    assets: [asset({ kind: "scripts", filename: "scripts.zip", sha256: digest })],
+    download: async () => zip,
+    exec
+  });
+  assert.ok(prepared.flowsDir);
+  assert.match(await readFile(path.join(prepared.flowsDir, "login.yaml"), "utf-8"), /appId/);
+  const extract = calls.find((call) => call.args[0] === "-o");
+  assert.equal(extract.args[extract.args.indexOf("-d") + 1], prepared.flowsDir);
 });
 
 test("prepareWebJobWorkspace: scripts 条目越界（.. / 绝对路径）拒绝解压", async (t) => {
