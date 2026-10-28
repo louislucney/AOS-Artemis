@@ -503,6 +503,17 @@ export class FileStore implements ProjectStore {
     return null;
   }
 
+  async listActiveWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
+    const out: Array<{ task: RegressionTaskRecord; rootPath: string }> = [];
+    for (const rootPath of this.registry.keys()) {
+      const bucket = await this.bucket(rootPath);
+      out.push(...(await this.scopedMem(bucket, this.hostId).listActiveWebJobs()));
+    }
+    return out.sort((a, b) =>
+      a.task.createdAt < b.task.createdAt ? -1 : a.task.createdAt > b.task.createdAt ? 1 : 0
+    );
+  }
+
   async listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
     const out: Array<{ task: RegressionTaskRecord; rootPath: string }> = [];
     for (const rootPath of this.registry.keys()) {

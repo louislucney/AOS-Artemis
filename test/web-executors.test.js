@@ -627,3 +627,40 @@ test("executeWebJob: 非法设备 serial 不执行命令", async (t) => {
   assert.match(result.detail, /invalid-device-serial/);
   assert.equal(calls.length, 0);
 });
+
+test("executeWebJob: caseIds 只跑指定 flow；modules 暂不支持 → typed error", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["TC-1.yaml", "TC-2.yaml"]);
+  const { exec } = execWithJunit(junit([xmlCase({ name: "TC-1" })]));
+  const filtered = await executeWebJob({
+    jobSpec: jobSpec({ caseFilter: { modules: [], caseIds: ["TC-1"] } }),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+  assert.equal(filtered.status, "passed");
+  assert.deepEqual(filtered.cases.map((entry) => entry.caseId), ["TC-1"]);
+
+  const noMatch = await executeWebJob({
+    jobSpec: jobSpec({ caseFilter: { modules: [], caseIds: ["TC-404"] } }),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec: fakeExec(async () => ({ code: 0, stdout: "", stderr: "" })).exec,
+    env: {}
+  });
+  assert.equal(noMatch.status, "error");
+  assert.equal(noMatch.detail, "case-filter-no-match");
+
+  const modules = await executeWebJob({
+    jobSpec: jobSpec({ caseFilter: { modules: ["登录"], caseIds: [] } }),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec: fakeExec(async () => ({ code: 0, stdout: "", stderr: "" })).exec,
+    env: {}
+  });
+  assert.equal(modules.status, "error");
+  assert.equal(modules.detail, "case-filter-modules-unsupported");
+});

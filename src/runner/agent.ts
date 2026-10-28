@@ -368,6 +368,25 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
           continue;
         }
 
+        if (task.jobSpec !== null) {
+          await store
+            .releaseRegressionTask({
+              rootPath,
+              runnerId: me.id,
+              taskId: task.id,
+              to: "pending"
+            })
+            .catch((error) => {
+              io.errorLog(`[runner] 释放误领 Web 任务失败：${errorMessage(error)}`);
+            });
+          io.errorLog(
+            `[runner] 领取到 Web 任务 ${task.id}（job_spec 非空），已释放；项目 runner 不执行 Web job`
+          );
+          if (once) return 0;
+          await sleep(pollMs);
+          continue;
+        }
+
         if (task.attempts >= maxAttempts) {
           try {
             const released = await store.releaseRegressionTask({

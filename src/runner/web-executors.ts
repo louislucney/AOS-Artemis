@@ -315,9 +315,23 @@ export async function executeWebJob(
     return resultAt(startedAtMs, "error", [], "flows-outside-job");
   }
 
-  const flowFiles = await listTopLevelFlows(flowsDir);
-  if (flowFiles.length === 0) {
+  const caseFilter = input.jobSpec.caseFilter;
+  if (caseFilter.modules.length > 0) {
+    return resultAt(startedAtMs, "error", [], "case-filter-modules-unsupported");
+  }
+  const allFlowFiles = await listTopLevelFlows(flowsDir);
+  if (allFlowFiles.length === 0) {
     return resultAt(startedAtMs, "error", [], "no-flow-files");
+  }
+  const wantedCaseIds = new Set(
+    caseFilter.caseIds.map((caseId) => caseId.trim()).filter((caseId) => caseId !== "")
+  );
+  const flowFiles =
+    wantedCaseIds.size === 0
+      ? allFlowFiles
+      : allFlowFiles.filter((file) => wantedCaseIds.has(path.basename(file, path.extname(file))));
+  if (flowFiles.length === 0) {
+    return resultAt(startedAtMs, "error", [], "case-filter-no-match");
   }
 
   const flowByStem = new Map<string, string>();

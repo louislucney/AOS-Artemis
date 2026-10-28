@@ -9,15 +9,16 @@ import type {
   RunnerDevice,
   WebRunnerRecord
 } from "../db/types.js";
-import { deviceLeaseTtlMs } from "../db/types.js";
+import { deviceLeaseTtlMs, WebRunnerAlreadyActiveError } from "../db/types.js";
 import type { ExecFn } from "../device/adb.js";
 import { resolveHostIdentity } from "../host/identity.js";
 import { AOS_MCP_VERSION, errorMessage } from "../util.js";
 import { parseWebJobSpec } from "../web/job-spec.js";
-import { assignPendingWebJobs, reassignExpiredWebJobs } from "../web/jobs.js";
+import { assignPendingWebJobs, reassignExpiredWebJobs, recoverStaleWebJobs } from "../web/jobs.js";
 import { collectRunnerInventory, type RunnerInventory } from "./inventory.js";
 import { runnerTtlFrom } from "./status.js";
 import { createDefaultWebJobExecutor } from "./web-job-runner.js";
+import { cleanupWebJobWorkspace } from "./web-job-workspace.js";
 
 export interface WebRunnerIO {
   log: (line: string) => void;
@@ -116,6 +117,7 @@ export async function runWebRunner(
     )
   );
   const pollMs = intFromEnv(env.AOS_RUNNER_POLL_MS, POLL_DEFAULT_MS);
+  const staleClaimMs = nonNegativeIntFromEnv(env.AOS_RUNNER_STALE_CLAIM_MS, 900_000);
   const leaseTtlMs = deviceLeaseTtlMs(env);
   const runnerTtlMs = runnerTtlFrom(env);
   const instanceId = randomUUID();
@@ -178,6 +180,21 @@ export async function runWebRunner(
       lastSeenAt: at,
       activeWithinMs: runnerTtlMs
     });
+    try {
+      // 让面板可见主机并让队列暂停（hosts.queue_paused）作用于 web 选机/回池。
+      await store.upsertHost({
+        id: hostId,
+        hostname: identity.hostname,
+        username: identity.username,
+        osPlatform: identity.osPlatform,
+        osVersion: identity.osVersion,
+        arch: identity.arch,
+        kind: identity.kind,
+        runnerSeenAt: at
+      });
+    } catch (error) {
+      io.errorLog(`[web-runner] 主机登记失败（忽略）：${errorMessage(error)}`);
+    }
     for (const job of active.values()) {
       try {
         await store.updateRegressionTask(job.rootPath, job.taskId, { lastProgressAt: at });
@@ -207,6 +224,20 @@ export async function runWebRunner(
           );
         }
       }
+    }
+    try {
+      const recovered = await recoverStaleWebJobs({
+        store,
+        env,
+        nowMs: atMs,
+        staleMs: staleClaimMs,
+        runnerTtlMs,
+        hostId,
+        instanceId
+      });
+      if (recovered > 0) io.log(`[web-runner] 回收失联 Web 领取：${recovered} 条`);
+    } catch (error) {
+      io.errorLog(`[web-runner] 回收失联 Web 领取失败（忽略）：${errorMessage(error)}`);
     }
     try {
       const reassigned = await reassignExpiredWebJobs({
@@ -360,6 +391,52 @@ export async function runWebRunner(
     }
     if (claimed === null) return "idle";
     const { task, rootPath } = claimed;
+
+    const capSpec = parseWebJobSpec(task.jobSpec);
+    const maxAttempts =
+      capSpec !== null && capSpec.retry > 0
+        ? capSpec.retry + 1
+        : intFromEnv(env.AOS_RUNNER_MAX_ATTEMPTS, 3);
+    if (task.attempts >= maxAttempts) {
+      io.log(
+        `[web-runner] 任务 ${task.id} 已尝试 ${task.attempts} 次，超上限 ${maxAttempts}，标记 failed（不再回池）`
+      );
+      const at = new Date(now()).toISOString();
+      const spec = parseWebJobSpec(task.jobSpec);
+      await store
+        .updateRegressionTask(rootPath, task.id, {
+          status: "failed",
+          deviceLeaseId: null,
+          ...(spec === null
+            ? {}
+            : {
+                jobSpec: {
+                  ...spec,
+                  deviceLeaseId: null,
+                  assignmentError: {
+                    code: "max-attempts",
+                    message: `执行失败已达上限（${maxAttempts} 次），任务终止`,
+                    at
+                  }
+                } as Record<string, unknown>
+              }),
+          expectStatuses: ["claimed"]
+        })
+        .catch((error) => {
+          io.errorLog(`[web-runner] 任务 ${task.id} 超上限写终态失败：${errorMessage(error)}`);
+        });
+      await store
+        .releaseDeviceLeases({ hostId, taskId: task.id, serials: [device.serial] })
+        .catch((error) => {
+          io.errorLog(`[web-runner] 任务 ${task.id} 释放租约失败：${errorMessage(error)}`);
+        });
+      await cleanupWebJobWorkspace({
+        workRoot:
+          (env.AOS_RUNNER_WORK_DIR ?? "").trim() || path.join(os.homedir(), ".aos", "web-runner"),
+        completedJobIds: [task.id]
+      }).catch(() => undefined);
+      return "executed";
+    }
 
     let fresh: RunnerInventory | null = null;
     try {
@@ -546,15 +623,20 @@ export async function runWebRunner(
         inventory = fresh;
         try {
           await heartbeat(fresh);
+          syncWorkers(fresh);
         } catch (error) {
-          fatalHeartbeat = error;
+          if (error instanceof WebRunnerAlreadyActiveError) {
+            fatalHeartbeat = error;
+            io.errorLog(
+              `[web-runner] 心跳登记被拒（另一实例已接管），停止 runner：${errorMessage(error)}`
+            );
+            stopped = true;
+            break;
+          }
           io.errorLog(
-            `[web-runner] 心跳登记失败，停止 runner（请检查是否已被其他实例接管）：${errorMessage(error)}`
+            `[web-runner] 心跳登记临时失败，保留上次状态并稍后重试：${errorMessage(error)}`
           );
-          stopped = true;
-          break;
         }
-        syncWorkers(fresh);
       }
     })();
   }
@@ -589,6 +671,13 @@ export async function runWebRunner(
   }
   if (fatalHeartbeat !== null) code = 2;
   return code;
+}
+
+function nonNegativeIntFromEnv(raw: string | undefined, fallback: number): number {
+  const text = (raw ?? "").trim();
+  if (text === "") return fallback;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : fallback;
 }
 
 function intFromEnv(raw: string | undefined, fallback: number): number {

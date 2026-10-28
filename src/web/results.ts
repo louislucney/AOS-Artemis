@@ -407,6 +407,13 @@ function parseTokenArtifacts(raw: unknown): {
   if (db !== undefined) artifacts.dataEngineDb = db;
   const status = parseArtifact(raw.statusJson, "tokenArtifacts.statusJson");
   if (status !== undefined) artifacts.statusJson = status;
+  const totalBytes = (db?.buffer.length ?? 0) + (status?.buffer.length ?? 0);
+  if (totalBytes > ARTIFACT_MAX_BYTES * 2) {
+    throw new WebResultError(
+      "invalid-result",
+      `tokenArtifacts 合计 ${totalBytes} 字节，超过上限 ${ARTIFACT_MAX_BYTES * 2}`
+    );
+  }
   return artifacts;
 }
 
@@ -602,7 +609,8 @@ export function normalizeWebJobResultPayload(raw: unknown): NormalizedWebJobResu
   const detailRaw = optionalText(rawExecution.detail, "execution.detail");
   const tokenUsage = parseTokenUsage(raw.tokenUsage);
   const tokenArtifacts = parseTokenArtifacts(raw.tokenArtifacts);
-  const allowClearedRefresh = raw.allowClearedRefresh === true;
+  // runner 上传 body 不得解冻人工清空：只认内部调用参数（面板动作走显式路径）。
+  const allowClearedRefresh = false;
 
   return {
     execution: {

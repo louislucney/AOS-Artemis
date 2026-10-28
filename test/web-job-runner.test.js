@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { runWebRunnerCommand } from "../dist/runner/web-agent.js";
-import { createDefaultWebJobExecutor } from "../dist/runner/web-job-runner.js";
+import { createDefaultWebJobExecutor, webRunnerChildEnv } from "../dist/runner/web-job-runner.js";
 import { zipBuffer } from "./fixtures/web-zip.mjs";
 
 const TOKEN = "runner-job-token-0123456789abcdef";
@@ -189,14 +189,14 @@ async function setup(t) {
   return { workRoot, assets };
 }
 
-function executorFor({ fetchImpl, exec, workRoot, hostId, timeoutMs }) {
+function executorFor({ fetchImpl, exec, workRoot, hostId, timeoutMs, env }) {
   return createDefaultWebJobExecutor({
     ...(hostId === undefined ? {} : { hostId }),
     panelBaseUrl: BASE,
     runnerToken: TOKEN,
     workRoot,
     exec,
-    env: {},
+    env: env ?? {},
     fetchImpl,
     ...(timeoutMs === undefined ? {} : { timeoutMs })
   });
@@ -211,7 +211,15 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
     fetchImpl: center.fetchImpl,
     exec: fake.exec,
     workRoot,
-    hostId: "host-a"
+    hostId: "host-a",
+    env: {
+      PATH: "/usr/bin",
+      AOS_MAESTRO_PATH: "/opt/maestro",
+      AOS_RUNNER_JOB_TOKEN: TOKEN,
+      MOBILE_TESTING_DATABASE_URL: "postgres://center",
+      DEEPSEEK_API_KEY: "sk-secret",
+      SOME_PASSWORD: "pw"
+    }
   });
 
   const result = await execute({
@@ -234,7 +242,18 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
   assert.deepEqual(adbCall.args.slice(0, 4), ["-s", "emulator-5554", "install", "-r"]);
   const maestroCall = fake.calls.find((call) => call.command === "maestro");
   assert.deepEqual(maestroCall.args.slice(0, 4), ["test", "--udid", "emulator-5554", "--format"]);
-  assert.ok(fs.existsSync(path.join(workRoot, "acme", "job-1", "flows", "TC-1.yaml")));
+  assert.equal(
+    fs.existsSync(path.join(workRoot, "acme", "job-1")),
+    false,
+    "上传成功后清理 job 目录（缓存保留）"
+  );
+  const childEnv = fake.calls[0].options.env;
+  assert.equal(childEnv.PATH, "/usr/bin");
+  assert.equal(childEnv.AOS_MAESTRO_PATH, "/opt/maestro");
+  assert.equal(childEnv.AOS_RUNNER_JOB_TOKEN, undefined);
+  assert.equal(childEnv.MOBILE_TESTING_DATABASE_URL, undefined);
+  assert.equal(childEnv.DEEPSEEK_API_KEY, undefined);
+  assert.equal(childEnv.SOME_PASSWORD, undefined);
 
   assert.equal(uploads.length, 1);
   const payload = uploads[0];
@@ -330,4 +349,29 @@ test("web-runner 启动：缺中心基址/AOS_RUNNER_JOB_TOKEN 明确 exit 2", a
   );
   assert.equal(codeToken, 2);
   assert.match(missingToken.join("\n"), /AOS_RUNNER_JOB_TOKEN/);
+});
+
+test("webRunnerChildEnv: 只保留工具/PATH 白名单，剔除令牌/DB/KEY", () => {
+  const child = webRunnerChildEnv({
+    PATH: "/usr/bin",
+    HOME: "/home/runner",
+    AOS_MAESTRO_PATH: "/opt/maestro",
+    MAESTRO_CLI_NO_ANALYTICS: "1",
+    ANDROID_HOME: "/sdk",
+    LC_ALL: "zh_CN.UTF-8",
+    AOS_RUNNER_JOB_TOKEN: "secret",
+    MOBILE_TESTING_DATABASE_URL: "postgres://center",
+    OPENAI_API_KEY: "sk",
+    GITHUB_TOKEN: "gh",
+    DB_PASSWORD: "pw",
+    UNRELATED: "x"
+  });
+  assert.deepEqual(child, {
+    PATH: "/usr/bin",
+    HOME: "/home/runner",
+    AOS_MAESTRO_PATH: "/opt/maestro",
+    MAESTRO_CLI_NO_ANALYTICS: "1",
+    ANDROID_HOME: "/sdk",
+    LC_ALL: "zh_CN.UTF-8"
+  });
 });

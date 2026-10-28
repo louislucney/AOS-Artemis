@@ -1315,6 +1315,7 @@ export class PostgresStore implements ProjectStore {
     const candidates = await this.pool.query(
       `SELECT id, platforms FROM regression_tasks
         WHERE project_id = $1 AND status = 'pending'
+          AND job_spec IS NULL
           AND (target_host_id IS NULL OR target_host_id = $2)
         ORDER BY priority DESC, created_at ASC`,
       [project.id, hostId]
@@ -1439,6 +1440,7 @@ export class PostgresStore implements ProjectStore {
           SET status = 'pending', claimed_by = NULL, claimed_at = NULL,
               claimed_host_id = NULL, claimed_instance_id = NULL, started_at = NULL
         WHERE project_id = $1
+          AND job_spec IS NULL
           AND status IN ('claimed', 'running')
           AND claimed_at IS NOT NULL AND claimed_at <= $2
           AND (claimed_by IS NULL OR claimed_by NOT IN (
@@ -1506,6 +1508,19 @@ export class PostgresStore implements ProjectStore {
     if (task === null) return null;
     const rootPath = task.projectId === null ? "" : await this.projectRootPath(task.projectId);
     return { task, rootPath };
+  }
+
+  async listActiveWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
+    const result = await this.pool.query(
+      `SELECT t.*, p.root_path FROM regression_tasks t
+         JOIN projects p ON p.id = t.project_id
+        WHERE t.job_spec IS NOT NULL AND t.status IN ('claimed', 'running')
+        ORDER BY t.created_at ASC`
+    );
+    return result.rows.map((row) => ({
+      task: mapRegressionTask(row),
+      rootPath: String(row.root_path)
+    }));
   }
 
   async getWebJobById(

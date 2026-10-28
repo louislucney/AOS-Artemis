@@ -19,6 +19,7 @@ import {
   assignPendingWebJobs,
   createWebJob,
   reassignExpiredWebJobs,
+  recoverStaleWebJobs,
   releaseWebJob
 } from "../dist/web/jobs.js";
 
@@ -1044,5 +1045,136 @@ test("取消 web 任务释放设备租约并保留历史", async () => {
       await releaseWebJob({ store, rootPath, taskId: "missing", reason: "cancelled" }),
       false
     );
+  }
+});
+
+test("项目 suite runner 不领取 web 任务；releaseStaleClaims 不回收 web job（C1）", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "isolation");
+    const assets = await makeAssets(store, rootPath);
+    await online(store, "host-pixel", [android("pixel-7", "Pixel 7")]);
+    const created = await createWebJob(jobInput(store, rootPath, assets));
+    assert.equal(created.task.status, "pending");
+
+    const projectClaim = await store.claimRegressionTask({
+      rootPath,
+      runnerId: "project-suite-runner",
+      platforms: ["android"],
+      capabilities: ["android"],
+      hostId: null
+    });
+    assert.equal(projectClaim, null, "claimRegressionTask 必须排除 job_spec 行");
+    const untouched = await store.getRegressionTask(rootPath, created.task.id);
+    assert.equal(untouched.status, "pending");
+
+    const webClaim = await store.claimWebJob({
+      runnerId: "web-runner",
+      hostId: "host-pixel",
+      deviceSerial: "pixel-7",
+      instanceId: "inst-pixel",
+      nowMs: NOW + 1_000
+    });
+    assert.equal(webClaim?.task.id, created.task.id, "web 领取仍可用");
+
+    const stale = await store.releaseStaleClaims({
+      rootPath,
+      offlineBefore: new Date(NOW + 10 * 60_000).toISOString(),
+      claimedBefore: new Date(NOW + 10 * 60_000).toISOString()
+    });
+    assert.equal(stale, 0, "项目 runner 的失联回收不得回收 web job");
+    assert.equal((await store.getRegressionTask(rootPath, created.task.id)).status, "claimed");
+  }
+});
+
+test("失联回收：实例被接管/进度超时 → pending 并释放租约；自身实例跳过（I2）", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "recover");
+    const assets = await makeAssets(store, rootPath);
+    await online(store, "host-pixel", [android("pixel-7", "Pixel 7")]);
+    const created = await createWebJob(jobInput(store, rootPath, assets));
+    const claimed = await store.claimWebJob({
+      runnerId: "web-runner",
+      hostId: "host-pixel",
+      deviceSerial: "pixel-7",
+      instanceId: "inst-old",
+      nowMs: NOW + 1_000
+    });
+    assert.ok(claimed);
+
+    const skipped = await recoverStaleWebJobs({
+      store,
+      nowMs: NOW + 2_000,
+      staleMs: 0,
+      runnerTtlMs: TTL,
+      hostId: "host-pixel",
+      instanceId: "inst-old"
+    });
+    assert.equal(skipped, 0, "本进程实例不回收");
+
+    const recovered = await recoverStaleWebJobs({
+      store,
+      nowMs: NOW + 2_000,
+      staleMs: 0,
+      runnerTtlMs: TTL
+    });
+    assert.equal(recovered, 1);
+    const task = await store.getRegressionTask(rootPath, created.task.id);
+    assert.equal(task.status, "pending");
+    assert.equal(task.claimedBy, null);
+    assert.equal(task.claimedHostId, null);
+    assert.equal(task.claimedInstanceId, null);
+    assert.equal(task.startedAt, null);
+    assert.equal(task.deviceLeaseId, null);
+    assert.equal(task.jobSpec.assignmentError.code, "stale-claim");
+    assert.equal((await store.listDeviceLeases()).length, 0);
+  }
+});
+
+test("队列暂停：assign/reassign 跳过暂停 host，且不计 reassignCount（I3）", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "paused");
+    const assets = await makeAssets(store, rootPath);
+    const waiting = await createWebJob(jobInput(store, rootPath, assets));
+    assert.equal(waiting.assignment, null, "无执行机时先建等待任务");
+
+    await online(store, "host-pixel", [android("pixel-7", "Pixel 7")]);
+    await store.upsertHost({ id: "host-pixel", hostname: "pixel.local" });
+    await store.setHostQueuePaused({ hostId: "host-pixel", paused: true, by: "tester" });
+
+    const assigned = await assignPendingWebJobs({
+      store,
+      nowMs: NOW + 60_000,
+      runnerTtlMs: TTL,
+      reservationTtlMs: LEASE_TTL
+    });
+    assert.equal(assigned, 0, "暂停 host 不参与补绑");
+    assert.equal((await store.getRegressionTask(rootPath, waiting.task.id)).status, "pending");
+
+    await store.setHostQueuePaused({ hostId: "host-pixel", paused: false, by: "tester" });
+    assert.equal(
+      await assignPendingWebJobs({
+        store,
+        nowMs: NOW + 60_000,
+        runnerTtlMs: TTL,
+        reservationTtlMs: LEASE_TTL
+      }),
+      1
+    );
+    const bound = await store.getRegressionTask(rootPath, waiting.task.id);
+    assert.equal(bound.deviceSerial, "pixel-7");
+    const before = bound.jobSpec.reassignCount ?? 0;
+
+    await store.setHostQueuePaused({ hostId: "host-pixel", paused: true, by: "tester" });
+    const processed = await reassignExpiredWebJobs({
+      store,
+      nowMs: NOW + 10 * 60_000,
+      leaseTtlMs: LEASE_TTL,
+      runnerTtlMs: TTL
+    });
+    assert.equal(processed, 0, "暂停 host 的绑定不回池");
+    const after = await store.getRegressionTask(rootPath, waiting.task.id);
+    assert.equal(after.status, "pending");
+    assert.equal(after.deviceSerial, "pixel-7");
+    assert.equal(after.jobSpec.reassignCount ?? 0, before, "暂停不增加 reassignCount");
   }
 });

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, stat } from "node:fs/promises";
+import { access, chmod, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { ProjectStore, WebAssetKind, WebAssetRecord } from "../db/types.js";
@@ -147,6 +147,11 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
   // 版本共用的内容。因此失败最多留下可回收的 CAS 文件，不会产生“有行无文件”。
   if (!(await pathExists(storagePath))) {
     writeFileAtomic(storagePath, input.buffer);
+  }
+  if (input.kind === "materials" && input.metadata?.secret === true) {
+    // secret materials 落盘即最小权限：目录 0700、文件 0600（禁止其它用户读取）。
+    await chmod(storageDir, 0o700);
+    await chmod(storagePath, 0o600);
   }
 
   const web = await input.store.getWebProject(rootPath);

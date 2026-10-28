@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -312,6 +312,12 @@ test("storeWebAsset: metadata 透传（materials secret 标记）且缺省为空
   assert.deepEqual(secret.metadata, { secret: true });
   const stored = await store.getWebAsset(rootPath, secret.id);
   assert.deepEqual(stored.metadata, { secret: true });
+  assert.equal((await stat(secret.storagePath)).mode & 0o777, 0o600, "secret 文件 0600");
+  assert.equal(
+    (await stat(path.dirname(secret.storagePath))).mode & 0o777,
+    0o700,
+    "secret 目录 0700"
+  );
 });
 
 test("API /panel/api/projects/assets: 接受 package/scripts/materials 与 secret=true", async (t) => {

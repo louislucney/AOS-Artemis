@@ -596,6 +596,7 @@ export class MemoryStore implements ProjectStore {
         (task) =>
           task.projectId === project.id &&
           task.status === "pending" &&
+          task.jobSpec === null &&
           (task.targetHostId === null || task.targetHostId === hostId)
       )
       .sort(
@@ -728,6 +729,7 @@ export class MemoryStore implements ProjectStore {
     let released = 0;
     for (const task of this.regressionTasks) {
       if (task.projectId !== project.id) continue;
+      if (task.jobSpec !== null) continue;
       if (task.status !== "claimed" && task.status !== "running") continue;
       if (task.claimedAt === null || task.claimedAt > input.claimedBefore) continue;
       if (task.claimedBy !== null && onlineRunnerIds.has(task.claimedBy)) continue;
@@ -795,6 +797,18 @@ export class MemoryStore implements ProjectStore {
     const rootPath = this.projectRootPath(task.projectId);
     if (rootPath === null) return null;
     return { task: cloneRegressionTask(task), rootPath };
+  }
+
+  async listActiveWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
+    const out: Array<{ task: RegressionTaskRecord; rootPath: string }> = [];
+    for (const task of this.regressionTasks) {
+      if (task.jobSpec === null) continue;
+      if (task.status !== "claimed" && task.status !== "running") continue;
+      const rootPath = this.projectRootPath(task.projectId);
+      if (rootPath === null) continue;
+      out.push({ task: cloneRegressionTask(task), rootPath });
+    }
+    return out;
   }
 
   async listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {

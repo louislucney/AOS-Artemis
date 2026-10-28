@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import { mkdir, mkdtemp } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { newDb } from "pg-mem";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
+import { WebRunnerAlreadyActiveError } from "../dist/db/types.js";
 import { runWebRunner, runWebRunnerCommand, isWebDeviceUsable } from "../dist/runner/web-agent.js";
 
 const HOST = "web-host-1";
@@ -804,7 +809,7 @@ test("web runner: 执行中租约续期丢失 → shouldAbort、回池且不写�
   );
 });
 
-test("web runner: 心跳登记失败 → 停止 runner 并返回 2", async () => {
+test("web runner: 心跳登记被其他实例接管（DoubleStart）→ 停止 runner 并返回 2", async () => {
   const { store } = await makeStore();
   let upserts = 0;
   const proxy = new Proxy(store, {
@@ -812,7 +817,13 @@ test("web runner: 心跳登记失败 → 停止 runner 并返回 2", async () =>
       if (prop === "upsertWebRunner") {
         return async (input) => {
           upserts += 1;
-          if (upserts >= 2) throw new Error("db-down");
+          if (upserts >= 2) {
+            throw new WebRunnerAlreadyActiveError({
+              hostId: HOST,
+              existingInstanceId: "other-instance",
+              incomingInstanceId: String(input.instanceId)
+            });
+          }
           return target.upsertWebRunner(input);
         };
       }
@@ -834,7 +845,168 @@ test("web runner: 心跳登记失败 → 停止 runner 并返回 2", async () =>
   );
   assert.equal(code, 2);
   assert.ok(
-    sink.errors.some((line) => line.includes("心跳") && line.includes("db-down")),
+    sink.errors.some((line) => line.includes("心跳") && line.includes("另一实例")),
     sink.errors.join("\n")
   );
+});
+
+test("web runner: 心跳临时失败不杀 runner/不中断执行，仅 DoubleStart 致命（I6）", async () => {
+  const { store, rootPath, project } = await makeStore();
+  const pixel = android("pixel-1");
+  const task = await boundTask(store, rootPath, project, pixel);
+  let upserts = 0;
+  const proxy = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "upsertWebRunner") {
+        return async (input) => {
+          upserts += 1;
+          if (upserts === 2) throw new Error("db-transient");
+          return target.upsertWebRunner(input);
+        };
+      }
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  let stop = false;
+  const timer = setTimeout(() => {
+    stop = true;
+  }, 120);
+  try {
+    const sink = io();
+    const code = await runWebRunner(
+      baseOptions(proxy, { once: false, heartbeatMs: 10, env: fastEnv() }),
+      sink.io,
+      {
+        collectInventory: async () => inventory([pixel]),
+        executeJob: async () => ({ status: "completed" }),
+        now: () => Date.now(),
+        sleep: realSleep,
+        shouldStop: () => stop
+      }
+    );
+    assert.equal(code, 0, "临时心跳失败不应 exit 2");
+    assert.ok(
+      sink.errors.some((line) => line.includes("临时失败")),
+      sink.errors.join("\n")
+    );
+    const stored = await store.getRegressionTask(rootPath, task.id);
+    assert.equal(stored.status, "completed");
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+test("web runner: 心跳登记 hosts 行，队列暂停对 web 领取可见（I3）", async () => {
+  const { store } = await makeStore();
+  const pixel = android("pixel-1");
+  const sink = io();
+  const code = await runWebRunner(
+    baseOptions(store, { once: true }),
+    sink.io,
+    {
+      collectInventory: async () => inventory([pixel]),
+      executeJob: async () => ({ status: "completed" }),
+      now: () => NOW,
+      sleep: async () => {}
+    }
+  );
+  assert.equal(code, 0);
+  const host = await store.getHost(HOST);
+  assert.ok(host, "web runner 心跳必须登记 hosts 行");
+  assert.equal(host.queuePaused, false);
+});
+
+test("web runner: 执行失败达上限 → failed 不再回池，并清理工作目录（C2/I7）", async () => {
+  const { store, rootPath, project } = await makeStore();
+  const pixel = android("pixel-1");
+  const task = await boundTask(store, rootPath, project, pixel);
+  const workRoot = await mkdtemp(path.join(os.tmpdir(), "aos-web-runner-cap-"));
+  let calls = 0;
+  const executeJob = async () => {
+    calls += 1;
+    throw new Error("install-failed: install-failed");
+  };
+  const options = baseOptions(store, {
+    once: true,
+    env: { ...env(), AOS_RUNNER_MAX_ATTEMPTS: "1", AOS_RUNNER_WORK_DIR: workRoot }
+  });
+
+  assert.equal(
+    await runWebRunner(options, io().io, {
+      collectInventory: async () => inventory([pixel]),
+      executeJob,
+      now: () => NOW,
+      sleep: async () => {}
+    }),
+    0
+  );
+  assert.equal((await store.getRegressionTask(rootPath, task.id)).status, "pending");
+  assert.equal(calls, 1);
+
+  const jobDir = path.join(workRoot, path.basename(rootPath), task.id);
+  await mkdir(jobDir, { recursive: true });
+  assert.equal(
+    await runWebRunner(options, io().io, {
+      collectInventory: async () => inventory([pixel]),
+      executeJob,
+      now: () => NOW + 1_000,
+      sleep: async () => {}
+    }),
+    0
+  );
+  assert.equal(calls, 1, "达到上限后不再调用执行器");
+  const stored = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(stored.status, "failed");
+  assert.equal(stored.jobSpec.assignmentError.code, "max-attempts");
+  assert.equal(stored.deviceLeaseId, null);
+  assert.equal((await store.listDeviceLeases({ hostId: HOST })).length, 0);
+  assert.equal(fs.existsSync(jobDir), false, "永久失败后清理工作目录");
+  fs.rmSync(workRoot, { recursive: true, force: true });
+});
+
+test("web runner: jobSpec.retry 参与次数上限（retry=1 → 最多 2 次尝试）（I1）", async () => {
+  const { store, rootPath, project } = await makeStore();
+  const pixel = android("pixel-1");
+  const task = await boundTask(store, rootPath, project, pixel, { retry: 1 });
+  // 预置 attempts=2（retry=1 → 上限 2 次尝试）。
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const claimed = await store.claimWebJob({
+      runnerId: "seed",
+      hostId: HOST,
+      deviceSerial: "pixel-1",
+      instanceId: "seed-instance",
+      nowMs: NOW
+    });
+    assert.ok(claimed);
+    await store.beginExecution({
+      rootPath,
+      taskId: task.id,
+      runnerId: "seed",
+      instanceId: "seed-instance",
+      at: new Date(NOW).toISOString()
+    });
+    await store.releaseRegressionTask({ rootPath, runnerId: "seed", taskId: task.id, to: "pending" });
+  }
+
+  let calls = 0;
+  const sink = io();
+  const code = await runWebRunner(
+    baseOptions(store, { once: true, env: { ...env(), AOS_RUNNER_MAX_ATTEMPTS: "9" } }),
+    sink.io,
+    {
+      collectInventory: async () => inventory([pixel]),
+      executeJob: async () => {
+        calls += 1;
+        return { status: "completed" };
+      },
+      now: () => NOW + 1_000,
+      sleep: async () => {}
+    }
+  );
+  assert.equal(code, 0);
+  assert.equal(calls, 0, "attempts=2 已达 retry=1 上限（2 次）");
+  const stored = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(stored.status, "failed");
+  assert.equal(stored.jobSpec.assignmentError.code, "max-attempts");
 });

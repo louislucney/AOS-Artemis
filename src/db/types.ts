@@ -993,6 +993,8 @@ export interface ProjectStore {
   }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null>;
   /** 全局只读 pending web job 列表（回池/面板用），带项目根路径。 */
   listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>>;
+  /** 全局只读 claimed/running web job 列表（失联领取回收用），带项目根路径。 */
+  listActiveWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>>;
   /** 全局按任务 id 取 web job（含已领取/执行中；runner 下载规格用），带项目根路径；未知 → null。 */
   getWebJobById(taskId: string): Promise<{ task: RegressionTaskRecord; rootPath: string } | null>;
   createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord>;

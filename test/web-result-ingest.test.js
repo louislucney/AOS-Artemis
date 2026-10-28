@@ -17,6 +17,7 @@ import { createAosHttpServer } from "../dist/http-server.js";
 import { storeWebAsset } from "../dist/web/assets.js";
 import {
   ingestWebJobResult,
+  normalizeWebJobResultPayload,
   resultPathForJob,
   WebResultError
 } from "../dist/web/results.js";
@@ -1132,4 +1133,45 @@ test("HTTP：结果上传大小上限（>256KB 200 / >16MB 413）、415、错误
       else process.env[key] = value;
     }
   }
+});
+
+test("ingest：runner 上传 body 的 allowClearedRefresh 不能解冻人工清空（I5）", async (t) => {
+  const ctx = await setupProject(t);
+  await ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload: passingPayload() });
+  await mutateWorkbook(ctx.copyPath, (_workbook, sheet) => {
+    sheet.getCell("F2").value = null;
+  });
+
+  const task = await newRunningJob(ctx);
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: task.id,
+    payload: { ...passingPayload(), allowClearedRefresh: true }
+  });
+  assert.equal(summary.writebackStatus, "written");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("F2")), "", "body 字段不得解冻");
+  const doc = JSON.parse(await readFile(resultPathForJob(ctx.rootPath, task.id), "utf8"));
+  assert.equal(doc.allowClearedRefresh, false);
+  assert.ok(summary.warnings.some((warning) => warning.includes("人工清空")));
+});
+
+test("normalize：token 工件合计超过 16MB（2×8MB 上限）拒绝", () => {
+  const payload = {
+    execution: { status: "error", cases: [], startedAt: STARTED, finishedAt: FINISHED, detail: null },
+    device: { serial: "emulator-5554" },
+    package: { filename: "app.apk" },
+    startedAt: STARTED,
+    finishedAt: FINISHED,
+    tokenArtifacts: {
+      dataEngineDb: {
+        filename: "data_engine.db",
+        base64: Buffer.alloc(8 * 1024 * 1024).toString("base64")
+      },
+      statusJson: {
+        filename: "status.json",
+        base64: Buffer.alloc(8 * 1024 * 1024 + 1).toString("base64")
+      }
+    }
+  };
+  assert.throws(() => normalizeWebJobResultPayload(payload), /合计|上限/);
 });

@@ -5,6 +5,7 @@ import { errorMessage } from "../util.js";
 import { parseWebJobSpec } from "../web/job-spec.js";
 import { executeWebJob, type WebJobExecutionResult } from "./web-executors.js";
 import {
+  cleanupWebJobWorkspace,
   installWebPackage,
   prepareWebJobWorkspace,
   removeWebJobSecrets,
@@ -52,6 +53,41 @@ interface RunnerSpecAsset {
   filename: string;
   downloadUrl: string;
   secret: boolean;
+}
+
+const CHILD_ENV_ALLOW = new Set([
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "JAVA_HOME",
+  "ANDROID_HOME",
+  "ANDROID_SDK_ROOT",
+  "ADB_SERVER_SOCKET",
+  "AOS_MAESTRO_PATH",
+  "AOS_ADB_PATH",
+  "AOS_IDEVICESYSLOG_PATH",
+  "AOS_RUNNER_WORK_DIR",
+  "AOS_RUNNER_CACHE_DIR"
+]);
+const CHILD_ENV_DENY = /(TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|DATABASE_URL|_KEY$)/i;
+
+/** 子进程环境最小集：白名单 + 工具前缀；剔除 runner 令牌、DB URL 与任意 TOKEN/KEY 类变量。 */
+export function webRunnerChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (CHILD_ENV_DENY.test(key)) continue;
+    const allowed =
+      CHILD_ENV_ALLOW.has(key) ||
+      key.startsWith("LC_") ||
+      key.startsWith("ANDROID_") ||
+      key.startsWith("MAESTRO_");
+    if (!allowed) continue;
+    out[key] = value;
+  }
+  return out;
 }
 
 function trimBase(raw: string): string {
@@ -146,6 +182,7 @@ export function createDefaultWebJobExecutor(
   const cacheRoot = path.resolve(options.cacheRoot ?? path.join(workRoot, "cache"));
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as typeof fetch);
   const exec: ExecFn = options.exec ?? defaultExec;
+  const childEnv = webRunnerChildEnv(env);
 
   return async (input) => {
     const jobId = input.task.id;
@@ -199,7 +236,7 @@ export function createDefaultWebJobExecutor(
       })),
       download,
       exec,
-      env
+      env: childEnv
     });
 
     try {
@@ -218,7 +255,7 @@ export function createDefaultWebJobExecutor(
         jobDir: prepared.jobDir,
         deviceKind: input.device.kind === "simulator" ? "simulator" : "device",
         exec,
-        env
+        env: childEnv
       });
       if (!install.ok) throw new Error(`web-job-install-failed:${install.reason}`);
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
@@ -233,7 +270,7 @@ export function createDefaultWebJobExecutor(
           kind: input.device.kind
         },
         exec,
-        env,
+        env: childEnv,
         ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs })
       });
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
@@ -272,6 +309,7 @@ export function createDefaultWebJobExecutor(
             .catch(() => "")}`.trim()
         );
       }
+      await cleanupWebJobWorkspace({ workRoot, completedJobIds: [jobId] }).catch(() => undefined);
       return {
         status: RUNNER_STATUS_FROM_EXECUTOR[executed.status],
         ...(executed.detail === null ? {} : { detail: executed.detail })

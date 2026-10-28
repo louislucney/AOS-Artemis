@@ -161,14 +161,19 @@ async function selectForSpec(
     nowMs: number;
     runnerTtlMs: number;
     rng?: () => number;
+    /** 队列暂停的 host：不参与新的选机/绑定。 */
+    excludeHostIds?: Set<string>;
   }
 ): Promise<Selection> {
   const [runners, leases] = await Promise.all([
     input.store.listWebRunners(),
     input.store.listDeviceLeases()
   ]);
+  const candidates = runnerCandidates(runners).filter(
+    (runner) => !(input.excludeHostIds?.has(runner.hostId) ?? false)
+  );
   const result: WebAssignmentResult = selectWebAssignment({
-    runners: runnerCandidates(runners),
+    runners: candidates,
     leases,
     request: {
       assignment: input.spec.assignment,
@@ -436,7 +441,8 @@ async function bindPendingTask(
   nowMs: number,
   runnerTtlMs: number,
   reservationTtlMs: number,
-  writeError = true
+  writeError = true,
+  excludeHostIds?: Set<string>
 ): Promise<boolean> {
   const selection = await selectForSpec({
     store: input.store,
@@ -445,7 +451,8 @@ async function bindPendingTask(
     taskId: entry.task.id,
     nowMs,
     runnerTtlMs,
-    rng: input.rng
+    rng: input.rng,
+    ...(excludeHostIds === undefined ? {} : { excludeHostIds })
   });
   if (!selection.ok) {
     const message = selection.message;
@@ -515,6 +522,7 @@ async function bindPendingTask(
 export async function assignPendingWebJobs(input: AssignPendingWebJobsInput): Promise<number> {
   const env = input.env ?? process.env;
   const reservationTtlMs = input.reservationTtlMs ?? deviceLeaseTtlMs(env);
+  const pausedHostIds = await pausedWebHostIds(input.store);
   const pending = await input.store.listPendingWebJobs();
   let bound = 0;
   for (const entry of pending) {
@@ -551,7 +559,8 @@ export async function assignPendingWebJobs(input: AssignPendingWebJobsInput): Pr
       input.nowMs,
       input.runnerTtlMs,
       reservationTtlMs,
-      entry.task.deviceSerial === null
+      entry.task.deviceSerial === null,
+      pausedHostIds
     );
     if (ok) bound += 1;
   }
@@ -568,10 +577,11 @@ export async function reassignExpiredWebJobs(
   const env = input.env ?? process.env;
   const runnerTtlMs = input.runnerTtlMs ?? runnerTtlFrom(env);
   const reservationTtlMs = input.reservationTtlMs ?? input.leaseTtlMs;
-  const [pending, leases, runners] = await Promise.all([
+  const [pending, leases, runners, pausedHostIds] = await Promise.all([
     input.store.listPendingWebJobs(),
     input.store.listDeviceLeases(),
-    input.store.listWebRunners()
+    input.store.listWebRunners(),
+    pausedWebHostIds(input.store)
   ]);
   let processed = 0;
   for (const entry of pending) {
@@ -581,6 +591,8 @@ export async function reassignExpiredWebJobs(
       if (spec.binding === true) continue;
       const hostId = entry.task.targetHostId;
       if (hostId === null) continue;
+      // 队列暂停：保留绑定/等待，不改派、不计 reassignCount。
+      if (pausedHostIds.has(hostId)) continue;
       const lease = leases.find(
         (row) =>
           row.hostId === hostId &&
@@ -630,7 +642,9 @@ export async function reassignExpiredWebJobs(
             baseSpec,
             input.nowMs,
             runnerTtlMs,
-            reservationTtlMs
+            reservationTtlMs,
+            true,
+            pausedHostIds
           );
           continue;
         }
@@ -703,6 +717,98 @@ export async function reassignExpiredWebJobs(
   }
 
   return processed;
+}
+
+
+async function pausedWebHostIds(store: ProjectStore): Promise<Set<string>> {
+  try {
+    const hosts = await store.listHosts();
+    return new Set(hosts.filter((host) => host.queuePaused === true).map((host) => host.id));
+  } catch {
+    return new Set();
+  }
+}
+
+export interface RecoverStaleWebJobsInput extends WebJobContext {
+  nowMs: number;
+  /** 进度/领取时间超过该窗口视为失联（0＝关闭时间判定，仅按实例存活判断）。 */
+  staleMs: number;
+  runnerTtlMs: number;
+  /** 自身 host/实例：不回收本进程正在执行的任务。 */
+  hostId?: string;
+  instanceId?: string;
+}
+
+/**
+ * 回收失联/过期的 web 领取：claimed/running 且（没有在线同实例 runner 或进度超窗）→ pending，
+ * 清 claimed/started 字段并释放设备租约；下轮 assign 重新选机。
+ */
+export async function recoverStaleWebJobs(input: RecoverStaleWebJobsInput): Promise<number> {
+  const [active, runners] = await Promise.all([
+    input.store.listActiveWebJobs(),
+    input.store.listWebRunners()
+  ]);
+  let recovered = 0;
+  for (const entry of active) {
+    const task = entry.task;
+    if (
+      input.hostId !== undefined &&
+      input.instanceId !== undefined &&
+      task.claimedHostId === input.hostId &&
+      task.claimedInstanceId === input.instanceId
+    ) {
+      continue;
+    }
+    const hostId = task.claimedHostId ?? task.targetHostId;
+    const runner = hostId === null ? undefined : runners.find((row) => row.hostId === hostId);
+    const live =
+      runner !== undefined &&
+      runner.instanceId === task.claimedInstanceId &&
+      isRunnerOnline(runner.lastSeenAt, input.nowMs, input.runnerTtlMs);
+    const stamp = task.lastProgressAt ?? task.startedAt ?? task.claimedAt;
+    const parsed = stamp === null ? Number.NaN : Date.parse(stamp);
+    const staleByTime =
+      input.staleMs <= 0
+        ? false
+        : !Number.isFinite(parsed) || input.nowMs - parsed > input.staleMs;
+    if (live && !staleByTime) continue;
+
+    if (hostId !== null && task.deviceSerial !== null) {
+      await input.store.releaseDeviceLeases({
+        hostId,
+        taskId: task.id,
+        serials: [task.deviceSerial]
+      });
+    }
+    const spec = parseWebJobSpec(task.jobSpec);
+    const reason = live ? "任务进度超时未更新" : "领取实例已失联/被接管";
+    const updated = await input.store.updateRegressionTask(entry.rootPath, task.id, {
+      status: "pending",
+      claimedBy: null,
+      claimedAt: null,
+      claimedHostId: null,
+      claimedInstanceId: null,
+      startedAt: null,
+      lastProgressAt: null,
+      deviceLeaseId: null,
+      ...(spec === null
+        ? {}
+        : {
+            jobSpec: {
+              ...spec,
+              deviceLeaseId: null,
+              assignmentError: {
+                code: "stale-claim",
+                message: `${reason}；已回池等待重新领取`,
+                at: new Date(input.nowMs).toISOString()
+              }
+            } as Record<string, unknown>
+          }),
+      expectStatuses: ["claimed", "running"]
+    });
+    if (updated) recovered += 1;
+  }
+  return recovered;
 }
 
 /** 释放设备租约并撤销/回池任务（不删除历史行）。 */
