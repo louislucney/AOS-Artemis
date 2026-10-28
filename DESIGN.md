@@ -3102,3 +3102,15 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **刷新与防错**：上传/保存成功后服务端 `cache.clear()`（避免 5s 面板缓存让 reload 读到旧页、诱使重复上传）；资产或表头行变更即清空预览并禁用保存；上传/预览/保存请求在途时按钮禁用（失败恢复、成功保持禁用并 reload）；预览响应绑定发起时的资产/表头行，期间变更则丢弃旧响应。
 - **边界**：不实现写回/结果列 UI、materials/package 上传、资产删除、脚本/任务页；预览保存的是建议映射原样（用户改列仍需后续 API/页面）。
 - **测试**：`test/web-assets-ui.test.js`（资产表/上传表单/预览保存端点/映射表/文件名转义；JSON 视图；viewer/dispatcher 与 actions=0 禁用且不暴露写脚本；项目页入口保留 host）；`test/console-pages.test.js` 保持全绿。
+
+### 13.255 实施记录（Web 项目基础 Plan 1 端到端验收）
+
+> 2026-10-28。Task 9：把 Task 1–8 的项目、Excel 资产、列映射、工作副本与写回串成一条可运行链路，锁定 Plan 1 的交付不变量；后续 Plan 2–4（脚本/发现、远程执行、计费）不在本次范围。
+
+- **链路**：`createWebProject`（托管目录 + 最小 `aos.config.jsonc` + `web_projects`/`projects` 行）→ `storeWebAsset`（Excel 原件 CAS）→ `previewExcelAsset`/`saveExcelMapping`（语义指纹 + `excel_mappings`）→ `ensureWorkbookCopy`（工作副本）→ `writebackWorkbook`（8 列）→ `recordExcelWriteback`/`lastExcelWriteback`（`excel_writeback_journal`）。
+- **store 表**：`web_projects`、`web_assets`、`excel_mappings`、`excel_writeback_journal`；Memory/File/PG 三实现同构，PG 唯一约束与迁移见 §13.250–§13.253。
+- **不变量**：原件 `/.artemis/web/assets/excel/<sha256>.xlsx` 只读、永不改写；工作副本 `/.artemis/web/workbook/<assetId>.xlsx` 是派生物；原件 sha 不因复制或写回变化；映射挂原件、不读也不改工作副本。写回以映射的 `caseId` 表头（`testcase_id` 锚定）只在表头行向右复用/追加 8 列，只写空白格或 journal 证明未被人工改动的系统格；人工格与人工清空永不回填；重复输入 `caseId` 首条生效且告警。
+- **单一写者**：写回只在中心服务执行，调用方用同一 `withFileLock` 锁串行；runner 不回写 Excel。跨进程/PG advisory lock 留待后续计划。
+- **文件**：`src/web/{project-service,assets,excel,excel-columns,excel-mapping,workbook,writeback,lock}.ts`、`src/db/*`、`src/panel/actions.ts`、`src/console/pages.ts`；验收测试 `test/web-project-e2e.test.js`。
+- **验收（E2E，MemoryStore + 临时 workspace）**：建项目 → 上传 Excel → 预览/保存映射（指纹可查回）→ 按映射解析用例 → 建工作副本 → 写回 4 格 → journal 记录 → 二次写回刷新系统格且人工改过的格冻结 → 重复输入 `caseId` 只写首条；全程原件 sha 不变、首次副本与原件字节一致、重复写回不堆列、原件仍只有原始表头。
+- **后续计划**：Plan 2 Script/Discovery（Maestro 草稿、testID 发现、脚本集 staleness）、Plan 3 Remote Runner/Execution、Plan 4 Billing。本次不含 materials/package 上传、写回失败状态与重试、往返 parts（图表/宏/图片）自检、PG advisory lock、`web.projectId` 初始为 null 的补链（Task 2 已登记的 deferred）。
