@@ -2714,7 +2714,10 @@ export class PostgresStore implements ProjectStore {
     owner?: string | null;
     projectId?: string | null;
   }): Promise<WebProjectRecord> {
-    const project = await this.getProjectByPath(input.rootPath);
+    const projectId =
+      input.projectId !== undefined
+        ? input.projectId
+        : ((await this.getProjectByPath(input.rootPath))?.id ?? null);
     const existing = await this.pool.query(
       "SELECT id FROM web_projects WHERE normalized_name = $1",
       [input.normalizedName]
@@ -2732,7 +2735,7 @@ export class PostgresStore implements ProjectStore {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10)`,
         [
           id,
-          project?.id ?? null,
+          projectId,
           input.rootPath,
           input.name,
           input.normalizedName,

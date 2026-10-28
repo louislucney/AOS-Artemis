@@ -1567,7 +1567,10 @@ export class MemoryStore implements ProjectStore {
     owner?: string | null;
     projectId?: string | null;
   }): Promise<WebProjectRecord> {
-    const project = this.getProjectRecord(input.rootPath);
+    const projectId =
+      input.projectId !== undefined
+        ? input.projectId
+        : (this.getProjectRecord(input.rootPath)?.id ?? null);
     const existing = this.webProjects.find(
       (entry) => entry.normalizedName === input.normalizedName
     );
@@ -1576,7 +1579,7 @@ export class MemoryStore implements ProjectStore {
     }
     const record: WebProjectRecord = {
       id: randomUUID(),
-      projectId: project?.id ?? null,
+      projectId,
       rootPath: input.rootPath,
       name: input.name,
       normalizedName: input.normalizedName,

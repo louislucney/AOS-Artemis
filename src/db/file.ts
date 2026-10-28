@@ -121,6 +121,9 @@ export class FileStore implements ProjectStore {
   private hostId: string | null;
   private failedWrites = 0;
   private lastWriteError: string | null = null;
+  private readonly webIndexPath: string;
+  private webIndex = new Map<string, WebProjectRecord>();
+  private webIndexLoaded = false;
 
   private constructor(homeDir: string, env: NodeJS.ProcessEnv, hostId: string | null = null) {
     this.homeDir = homeDir;
@@ -128,6 +131,7 @@ export class FileStore implements ProjectStore {
     this.eventsFsync = (env.AOS_EVENTS_FSYNC ?? "").trim() === "1";
     this.hostId = hostId;
     this.hostMem = new MemoryStore(null, env);
+    this.webIndexPath = path.join(homeDir, "web-projects.jsonl");
   }
 
   static async create(options: FileStoreOptions = {}): Promise<FileStore> {
@@ -153,6 +157,8 @@ export class FileStore implements ProjectStore {
     view.buckets = this.buckets;
     view.registry = this.registry;
     view.hostMem = this.hostMem;
+    view.webIndex = this.webIndex;
+    view.webIndexLoaded = this.webIndexLoaded;
     return view;
   }
 
@@ -1017,9 +1023,17 @@ export class FileStore implements ProjectStore {
     owner?: string | null;
     projectId?: string | null;
   }): Promise<WebProjectRecord> {
+    await this.ensureWebIndex();
+    const dup = [...this.webIndex.values()].find(
+      (entry) => entry.normalizedName === input.normalizedName
+    );
+    if (dup) {
+      throw new Error(`同名 Web 项目已存在：${input.normalizedName}`);
+    }
     const bucket = await this.bucket(input.rootPath);
     const record = await this.scopedMem(bucket, this.hostId).createWebProject(input);
     await this.persist(bucket, "createWebProject");
+    await this.appendWebIndex(record);
     return record;
   }
 
@@ -1029,19 +1043,21 @@ export class FileStore implements ProjectStore {
   }
 
   async listWebProjects(): Promise<WebProjectRecord[]> {
-    const roots = new Set<string>([...this.registry.keys(), ...this.buckets.keys()]);
-    const out: WebProjectRecord[] = [];
-    for (const rootPath of roots) {
-      const bucket = await this.bucket(rootPath);
-      out.push(...(await bucket.mem.listWebProjects()));
-    }
-    return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    await this.ensureWebIndex();
+    return [...this.webIndex.values()]
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+      .map((record) => ({ ...record, platforms: [...record.platforms] }));
   }
 
   async archiveWebProject(rootPath: string, at: string): Promise<boolean> {
+    await this.ensureWebIndex();
     const bucket = await this.bucket(rootPath);
     const archived = await this.scopedMem(bucket, this.hostId).archiveWebProject(rootPath, at);
-    if (archived) await this.persist(bucket, "archiveWebProject");
+    if (archived) {
+      await this.persist(bucket, "archiveWebProject");
+      const current = this.webIndex.get(rootPath);
+      if (current) await this.appendWebIndex({ ...current, status: "archived" });
+    }
     return archived;
   }
 
@@ -1077,6 +1093,35 @@ export class FileStore implements ProjectStore {
       if (!existing || entry.updatedAt >= existing.updatedAt) this.registry.set(entry.rootPath, entry);
     }
     await this.trimJournalIfLarge(registryPath);
+  }
+
+  /** 加载 home 级 Web 项目索引（last-write-wins 按 rootPath）。 */
+  private async ensureWebIndex(): Promise<void> {
+    if (this.webIndexLoaded) return;
+    const raw = await readIfExists(this.webIndexPath);
+    if (raw !== null) {
+      for (const line of raw.split(/\r?\n/)) {
+        if (line.trim() === "") continue;
+        try {
+          const record = JSON.parse(line) as WebProjectRecord;
+          if (typeof record.rootPath !== "string" || typeof record.id !== "string") continue;
+          this.webIndex.set(record.rootPath, record);
+        } catch {
+          /* skip corrupt line */
+        }
+      }
+    }
+    this.webIndexLoaded = true;
+  }
+
+  private async appendWebIndex(record: WebProjectRecord): Promise<void> {
+    try {
+      await appendFile(this.webIndexPath, `${JSON.stringify(record)}\n`, "utf8");
+    } catch (error) {
+      this.noteWriteFailure(error);
+      log(`文件台账 Web 项目索引写入失败：${errorMessage(error)}`);
+    }
+    this.webIndex.set(record.rootPath, record);
   }
 
   private async appendRegistry(entry: RegistryEntry): Promise<void> {

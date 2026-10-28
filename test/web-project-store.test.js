@@ -91,3 +91,67 @@ test("FileStore: 重启后仍可读 + 归档持久 + listWebProjects", async () 
   assert.equal(listed.length, 1);
   assert.equal(listed[0].status, "archived");
 });
+
+test("createWebProject: 显式 projectId（含 null）被采纳，缺省才回退 lookup", async () => {
+  const mem = new MemoryStore();
+  await mem.upsertProject({ rootPath: "/w/reg", name: "reg" });
+  const regId = (await mem.getProjectByPath("/w/reg")).id;
+
+  const explicit = await mem.createWebProject({
+    rootPath: "/w/unreg", name: "a", normalizedName: "a", platforms: [], projectId: regId
+  });
+  assert.equal(explicit.projectId, regId);
+
+  const forcedNull = await mem.createWebProject({
+    rootPath: "/w/reg", name: "b", normalizedName: "b", platforms: [], projectId: null
+  });
+  assert.equal(forcedNull.projectId, null);
+
+  const omitted = await mem.createWebProject({
+    rootPath: "/w/reg", name: "c", normalizedName: "c", platforms: []
+  });
+  assert.equal(omitted.projectId, regId);
+
+  const pg = await makePgStore();
+  await pg.upsertProject({ rootPath: "/w/reg", name: "reg" });
+  const pgRegId = (await pg.getProjectByPath("/w/reg")).id;
+  const pgExplicit = await pg.createWebProject({
+    rootPath: "/w/unreg", name: "d", normalizedName: "d", platforms: [], projectId: pgRegId
+  });
+  assert.equal(pgExplicit.projectId, pgRegId);
+  const pgNull = await pg.createWebProject({
+    rootPath: "/w/unreg2", name: "e", normalizedName: "e", platforms: [], projectId: null
+  });
+  assert.equal(pgNull.projectId, null);
+});
+
+test("FileStore: 跨项目桶同名 normalizedName 全局拒绝", async () => {
+  const home = await tempHome();
+  const rootA = join(home, "a");
+  const rootB = join(home, "b");
+  await mkdir(rootA, { recursive: true });
+  await mkdir(rootB, { recursive: true });
+
+  const store = await FileStore.create({ homeDir: home });
+  await store.createWebProject({ rootPath: rootA, name: "星巴克", normalizedName: "星巴克", platforms: [] });
+  await assert.rejects(
+    store.createWebProject({ rootPath: rootB, name: "星巴克", normalizedName: "星巴克", platforms: [] }),
+    /UNIQUE|已存在|duplicate/i
+  );
+});
+
+test("FileStore: 未注册项目的 web project 重启后仍可 list", async () => {
+  const home = await tempHome();
+  const root = join(home, "unreg");
+  await mkdir(root, { recursive: true });
+
+  let store = await FileStore.create({ homeDir: home });
+  await store.createWebProject({ rootPath: root, name: "u", normalizedName: "u", platforms: ["android"] });
+  await store.close();
+
+  store = await FileStore.create({ homeDir: home });
+  const listed = await store.listWebProjects();
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].rootPath, root);
+  assert.deepEqual(listed[0].platforms, ["android"]);
+});
