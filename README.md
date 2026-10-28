@@ -260,7 +260,7 @@ node dist/cli.js export --what results|process|data [--format json|csv] \
 
 ### 多项目总览面板（overview-panel）
 
-HTTP 模式挂总览面板：`GET /panel`（服务端渲染 HTML）与 `GET /panel.json`（同源 JSON，`view: overview|project|batch|task|review|stats|compare`）。三层视图：**L1 项目总览**（接入健康灯 + 最新批次摘要）、**L2 项目详情**（集成信息 + **深探信息** + 批次列表与**批次趋势** + **回归引用**（新建回归测试：勾选用例集 → 创建任务）+ **回归任务**列表 + **执行机（runner）**区块（机队摘要：在线/设备容量/任务队列/设备租约）+ **定时回归（schedule）**区块 + **磁盘资产**（崩溃签名/对账/设备基线热点/保留期摘要）+ 独立运行 + 设计资产）、**L3 批次详情**（结果概览：门禁/失败域/UI 核验/置信度/用例/证据链；用例表含 UI 列，旧清单显示 —）；L1/L2 每 15s 轮询刷新（运行中任务页 10s；页面隐藏或表单聚焦时暂停，可手动暂停/继续）；回归视图：**任务页**（`?task=<id>`：状态/领取方（在线/失联）/来源/设备运行（含 UI 列）/对比/跨端差异/活跃态自动刷新/产物链接）、**归因队列**（`?view=review`：失败用例初判+证据+批量裁决，写库后 reload 可见；含「打开证据」链接）、**统计下钻**（`?view=stats`：功能通过率/趋势、最不稳用例、跨端差异、调用量与耗时（生成/执行，近 7 天）、改进出口三清单）。
+HTTP 模式挂总览面板：`GET /panel`（服务端渲染 HTML）与 `GET /panel.json`（同源 JSON，`view: overview|project|batch|task|review|stats|compare|library|web-assets`）。三层视图：**L1 项目总览**（接入健康灯 + 最新批次摘要）、**L2 项目详情**（集成信息 + **深探信息** + 批次列表与**批次趋势** + **回归引用**（新建回归测试：勾选用例集 → 创建任务）+ **回归任务**列表 + **执行机（runner）**区块（机队摘要：在线/设备容量/任务队列/设备租约）+ **定时回归（schedule）**区块 + **磁盘资产**（崩溃签名/对账/设备基线热点/保留期摘要）+ 独立运行 + 设计资产）、**L3 批次详情**（结果概览：门禁/失败域/UI 核验/置信度/用例/证据链；用例表含 UI 列，旧清单显示 —）；L1/L2 每 15s 轮询刷新（运行中任务页 10s；页面隐藏或表单聚焦时暂停，可手动暂停/继续）；回归视图：**任务页**（`?task=<id>`：状态/领取方（在线/失联）/来源/设备运行（含 UI 列）/对比/跨端差异/活跃态自动刷新/产物链接）、**归因队列**（`?view=review`：失败用例初判+证据+批量裁决，写库后 reload 可见；含「打开证据」链接）、**统计下钻**（`?view=stats`：功能通过率/趋势、最不稳用例、跨端差异、调用量与耗时（生成/执行，近 7 天）、改进出口三清单）。
 
 ```bash
 node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板（动作层：AOS_PANEL_ACTIONS=1 ＋ loopback）
@@ -272,6 +272,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 |---|---|
 | `dispatch` **下发向导** | 四步（来源→参数→预览回显→确认）；**先选主机、再选该主机上的项目**（换主机丢弃项目并取该主机最近活跃项目，换项目即按新作用域重载预览）；支持用例库选用例集/关键词；预览显示条数、runner 候选与告警；**两段确认**派发（refs 服务端重解析）；优先级默认 `P0` **只读**，`AOS_PANEL_PRIORITY=1` 时开放 0–100 编辑（防误操作插队；仅约束面板 UI，API 可直接传 `priority`）；领取顺序为 `priority DESC, created_at ASC` |
 | `library` **用例库** | 用例集列表（来源/条数/功能）＋**行内「下发该用例集」**＋**Excel 上传导入**（multipart，≤20MB）＋隔离（quarantine：**加入/移除表单，owner 签字**） |
+| `assets` **测试资产** | Excel 原件版本表（文件名/版本/大小/sha 短摘要/上传时间）＋上传（multipart `POST /panel/api/projects/assets`，`kind=excel`）＋列映射预览（选资产/表头行 → 建议映射）与保存（`/panel/api/projects/excel/preview|mapping`）＋已保存映射表；写动作需 maintainer/admin |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
 | `events` **项目事件** | 执行事件流（run/case/artifact/log/feedback.request），类型/状态/消费筛选＋快捷「未消费/反馈请求」；消费态与 `aos_event_poll` 同源；`payload=1`/勾选「显示 payload」查看内容（最多 50 条），默认不回显 |

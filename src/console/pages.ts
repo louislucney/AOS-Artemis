@@ -2,8 +2,15 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ArtifactRecord } from "../artifacts/index.js";
-import type { AuditEventRecord, CaseSetRecord, ProjectEventRecord } from "../db/types.js";
+import type {
+  AuditEventRecord,
+  CaseSetRecord,
+  ExcelMappingRecord,
+  ProjectEventRecord,
+  WebAssetRecord
+} from "../db/types.js";
 import { parseQuarantine } from "../figma/quarantine.js";
+import { formatBytes } from "../figma/retention.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cCard, cEmpty, cTable } from "./components.js";
 import { relativeTime } from "./time.js";
@@ -16,6 +23,7 @@ import {
   AUDIT_DOMAIN_KEYS
 } from "./vocab.js";
 import { renderConsoleShell, renderGroupTabs, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
+import { CANONICAL_FIELD_LABELS, CANONICAL_FIELDS } from "../web/excel-columns.js";
 
 export interface LibraryPageData {
   rootPath: string;
@@ -138,6 +146,145 @@ export function renderLibraryPage(data: LibraryPageData): string {
       }),
       cCard({ title: "导入 Excel（用例文档）", body: importBody }),
       cCard({ title: "隔离（quarantine）", body: quarantineBody }),
+      script
+    ].join("\n")
+  });
+}
+
+export interface WebAssetsPageData {
+  rootPath: string;
+  rootLabel: string;
+  hostId?: string | null;
+  assets: WebAssetRecord[];
+  mappings: ExcelMappingRecord[];
+  capabilities?: ConsoleCapabilities;
+  storeHealth?: ConsoleShellInput["storeHealth"];
+}
+
+function excelFieldLabel(field: string): string {
+  return (CANONICAL_FIELD_LABELS as Record<string, string>)[field] ?? field;
+}
+
+function mappingSummary(columnMap: Record<string, string>): string {
+  const entries = Object.entries(columnMap).filter(
+    ([, header]) => typeof header === "string" && header.trim() !== ""
+  );
+  if (entries.length === 0) return '<span class="muted">—</span>';
+  return entries
+    .map(
+      ([field, header]) =>
+        `${escapeHtml(excelFieldLabel(field))}→${escapeHtml(header)}`
+    )
+    .join("<br>");
+}
+
+/** 测试资产（Excel 原件版本 + 列映射）：上传/预览/保存均走面板动作 API；
+ * 写动作按 capabilities.actions 与角色（maintainer/admin）收口，UI 只做可达性提示。 */
+export function renderWebAssetsPage(data: WebAssetsPageData): string {
+  const role = data.capabilities?.role;
+  const roleAllowed = role === undefined || role === "maintainer" || role === "admin";
+  const actionsOff = data.capabilities?.actions === false || !roleAllowed;
+  const disabledAttr = actionsOff ? " disabled" : "";
+  const actionsReason = actionsOff
+    ? `<p class="muted">${
+        roleAllowed
+          ? "写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。"
+          : `写动作需要 maintainer/admin（当前角色 ${escapeHtml(role ?? "未知")}）。`
+      }</p>`
+    : "";
+
+  const assetName = new Map<string, string>();
+  for (const asset of data.assets) {
+    assetName.set(asset.id, `${asset.filename} v${asset.version}`);
+  }
+  const assetRows = data.assets.map((asset) => [
+    `<code>${escapeHtml(asset.filename)}</code>`,
+    `<code>v${asset.version}</code>`,
+    formatBytes(asset.size),
+    `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
+    relativeTime(asset.createdAt)
+  ]);
+  const assetOptions = data.assets
+    .map(
+      (asset) =>
+        `<option value="${escapeHtml(asset.id)}">v${asset.version} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
+    )
+    .join("");
+  const mappingRows = data.mappings.map((mapping) => [
+    `<code>${escapeHtml(
+      (assetName.get(mapping.assetId) ?? mapping.assetId).slice(0, 60)
+    )}</code>`,
+    `<code>${escapeHtml(mapping.sheetName)}</code>`,
+    mappingSummary(mapping.columnMap),
+    `<code>${escapeHtml(mapping.headerFingerprint.slice(0, 12))}</code>`,
+    mapping.createdBy === null ? '<span class="muted">—</span>' : escapeHtml(mapping.createdBy),
+    relativeTime(mapping.createdAt)
+  ]);
+
+  const uploadBody = [
+    `<form id="asset-upload-form" data-project="${escapeHtml(data.rootPath)}"><p><input id="asset-file" type="file" name="file" accept=".xlsx" aria-label="Excel 文件"${disabledAttr}> ` +
+      `<button id="asset-upload-submit" class="c-button" type="submit"${disabledAttr}>上传 Excel</button> <span id="asset-upload-status" role="status" class="muted"></span></p>` +
+      `<p class="muted">≤20MB、仅 .xlsx；上传后登记新版本（同内容复用文件）。</p></form>`,
+    actionsReason
+  ].join("\n");
+
+  const mappingBody = [
+    `<form id="mapping-preview-form" data-project="${escapeHtml(data.rootPath)}"><p><label>资产 <select id="asset-select" name="assetId" aria-label="Excel 资产"${disabledAttr}>` +
+      (assetOptions === ""
+        ? '<option value="">暂无可映射资产</option>'
+        : assetOptions) +
+      `</select></label> <label>表头行 <input id="asset-header-row" type="number" min="1" step="1" name="headerRow" value="1" aria-label="表头行"${disabledAttr}></label> ` +
+      `<button id="mapping-preview-submit" class="c-button" type="submit"${disabledAttr}>预览映射</button> ` +
+      `<button id="mapping-save" class="c-button c-button-primary" type="button"${disabledAttr}>保存映射</button> ` +
+      `<span id="mapping-status" role="status" class="muted"></span></p></form>`,
+    `<div id="mapping-preview"><p class="muted">选择资产并预览表头后，可确认建议映射并保存。</p></div>`,
+    actionsReason
+  ].join("\n");
+
+  const fieldsJson = JSON.stringify(
+    CANONICAL_FIELDS.map((field) => ({ field, label: CANONICAL_FIELD_LABELS[field] }))
+  ).replace(/</g, "\\u003c");
+  const script = actionsOff
+    ? ""
+    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};var fields=${fieldsJson};function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}function jsonPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var preview=null;var saveBtn=document.getElementById('mapping-save');if(saveBtn)saveBtn.disabled=true;var uForm=document.getElementById('asset-upload-form');var uStatus=document.getElementById('asset-upload-status');if(uForm){uForm.addEventListener('submit',function(e){e.preventDefault();var input=document.getElementById('asset-file');var file=input&&input.files?input.files[0]:null;if(!file){if(uStatus)uStatus.textContent='请选择 .xlsx 文件';return;}if(!/\\.xlsx$/i.test(file.name)){if(uStatus)uStatus.textContent='仅支持 .xlsx 文件';return;}var fd=new FormData();fd.append('project',root);fd.append('kind','excel');if(host)fd.append('host',host);fd.append('file',file);if(uStatus)uStatus.textContent='上传中…';fetch('/panel/api/projects/assets',{method:'POST',headers:{'X-AOS-Console':'1'},body:fd}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已上传 '+res.j.asset.filename+'（v'+res.j.asset.version+'） · 已写入审计');location.reload();}else if(uStatus){uStatus.textContent='上传失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){if(uStatus)uStatus.textContent='上传失败：'+err;});});}var pForm=document.getElementById('mapping-preview-form');var sel=document.getElementById('asset-select');var pStatus=document.getElementById('mapping-status');var previewBox=document.getElementById('mapping-preview');if(pForm){pForm.addEventListener('submit',function(e){e.preventDefault();if(!sel||!sel.value){if(pStatus)pStatus.textContent='请选择资产';return;}var rowInput=document.getElementById('asset-header-row');var headerRow=parseInt(rowInput&&rowInput.value?rowInput.value:'1',10);if(!headerRow||headerRow<1)headerRow=1;preview=null;if(saveBtn)saveBtn.disabled=true;if(pStatus)pStatus.textContent='读取中…';jsonPost('/panel/api/projects/excel/preview',{project:root,host:host,assetId:sel.value,headerRow:headerRow}).then(function(res){if(!res.ok||!res.j||!res.j.ok){if(pStatus)pStatus.textContent='预览失败：'+((res.j&&res.j.error)||('HTTP '+res.status));return;}var j=res.j;var suggested=j.suggested||{};preview={assetId:sel.value,sheetName:j.sheetName,headerRow:headerRow,columnMap:suggested};var rows=fields.map(function(f){var header=suggested[f.field]||'';return '<tr><td>'+esc(f.label)+'</td><td>'+(header?'<code>'+esc(header)+'</code>':'<span class="muted">—</span>')+'</td></tr>';});if(previewBox)previewBox.innerHTML='<div class="c-table-wrap"><table class="c-table"><caption>映射预览</caption><thead><tr><th scope="col">规范字段</th><th scope="col">建议表头</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div><p class="muted">工作表 '+esc(j.sheetName)+' · 表头行 '+headerRow+' · 指纹 <code>'+esc(String(j.fingerprint||'').slice(0,12))+'</code></p>';if(pStatus)pStatus.textContent='预览完成，可保存';if(saveBtn)saveBtn.disabled=false;}).catch(function(err){if(pStatus)pStatus.textContent='预览失败：'+err;});});}if(saveBtn){saveBtn.addEventListener('click',function(){if(!preview){if(pStatus)pStatus.textContent='请先预览映射';return;}if(pStatus)pStatus.textContent='保存中…';jsonPost('/panel/api/projects/excel/mapping',{project:root,host:host,assetId:preview.assetId,sheetName:preview.sheetName,headerRow:preview.headerRow,columnMap:preview.columnMap}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已保存列映射 · 已写入审计');location.reload();}else if(pStatus){pStatus.textContent='保存失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){if(pStatus)pStatus.textContent='保存失败：'+err;});});}})();</script>`;
+
+  return renderConsoleShell({
+    title: "测试资产",
+    active: "library",
+    meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
+    projectHostId: data.hostId ?? null,
+    capabilities: data.capabilities,
+    storeHealth: data.storeHealth,
+    body: [
+      "<h1>测试资产</h1>",
+      `<p class="muted">Excel 原件按内容寻址保存；版本行只追加，解析结果由「用例库」侧引用。映射保存后按表头指纹复用。</p>`,
+      cCard({
+        title: "资产版本",
+        subtitle: `共 ${data.assets.length} 个 Excel 版本`,
+        body: cTable({
+          columns: ["文件名", "版本", "大小", "sha256", "上传时间"],
+          rows: assetRows,
+          caption: "Excel 资产版本",
+          empty: "暂无 Excel 资产（下方上传）"
+        })
+      }),
+      cCard({ title: "上传 Excel", body: uploadBody }),
+      cCard({
+        title: "列映射",
+        subtitle: "预览表头并保存规范字段映射（同指纹复用，不重复登记）",
+        body: mappingBody
+      }),
+      cCard({
+        title: "已保存映射",
+        subtitle: `共 ${data.mappings.length} 条`,
+        body: cTable({
+          columns: ["资产", "工作表", "已映射字段", "指纹", "保存人", "保存时间"],
+          rows: mappingRows,
+          caption: "Excel 列映射",
+          empty: "暂无已保存映射（预览后保存生成）"
+        })
+      }),
       script
     ].join("\n")
   });

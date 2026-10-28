@@ -25,11 +25,12 @@ import {
   renderLibraryPage,
   renderOpsPage,
   renderSearchPage,
+  renderWebAssetsPage,
   type LibraryPageData,
   type SearchPageData
 } from "../console/pages.js";
 import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
-import type { AuditEventRecord, CaseSetRecord, ProjectEventRecord } from "../db/types.js";
+import type { AuditEventRecord, CaseSetRecord, ExcelMappingRecord, ProjectEventRecord, WebAssetRecord } from "../db/types.js";
 import { cBadge, cCard, cEmpty, cStat, cTable } from "../console/components.js";
 import { relativeTime, relativeTimeText } from "../console/time.js";
 import {
@@ -41,6 +42,8 @@ import {
   verdictLabel
 } from "../console/vocab.js";
 import { storeKindLabel } from "../db/labels.js";
+import { listWebAssets } from "../web/assets.js";
+import { listExcelMappings } from "../web/excel-mapping.js";
 import type { WarningSummary } from "../design/warnings.js";
 import {
   buildPanelBatchDetail,
@@ -180,6 +183,14 @@ type PanelView =
       sets: CaseSetRecord[];
       quarantine: LibraryPageData["quarantine"];
       caseCandidates: LibraryPageData["caseCandidates"];
+    }
+  | {
+      kind: "web-assets";
+      rootPath: string;
+      hostId: string | null;
+      rootLabel: string;
+      assets: WebAssetRecord[];
+      mappings: ExcelMappingRecord[];
     }
   | {
       kind: "archive";
@@ -486,6 +497,16 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       query
     };
   }
+  if (section === "assets") {
+    return {
+      kind: "web-assets",
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rootLabel: resolved.name,
+      assets: await listWebAssets(projectStore, resolved.rootPath, "excel"),
+      mappings: await listExcelMappings(projectStore, resolved.rootPath)
+    };
+  }
   if (section === "library") {
     const recentRuns = await projectStore
       .listSuiteRuns(resolved.rootPath, { limit: 5 })
@@ -697,6 +718,9 @@ function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "dispatch") return { ok: true, view: "dispatch", previewId: view.previewId, ...view.preview };
   if (view.kind === "library") {
     return { ok: true, view: "library", sets: view.sets, quarantine: view.quarantine, caseCandidates: view.caseCandidates };
+  }
+  if (view.kind === "web-assets") {
+    return { ok: true, view: "web-assets", assets: view.assets, mappings: view.mappings };
   }
   if (view.kind === "archive") return { ok: true, view: "archive", artifacts: view.artifacts, page: view.page };
   if (view.kind === "audit") return { ok: true, view: "audit", events: view.events };
@@ -2637,6 +2661,9 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
       warnings,
       `<p class="muted">生成时间 ${relativeTime(detail.generatedAt)} · ${escapeHtml(cacheNote)}</p>`,
       '<p class="muted">页内：<a href="#tasks">任务</a> · <a href="#runners">执行机</a> · <a href="#schedules">计划</a></p>',
+      `<p class="muted">测试资产：<a href="${escapeHtml(
+        `/panel?project=${encodeURIComponent(view.rootPath)}&section=assets${hostSuffix(view.hostId)}`
+      )}">测试资产</a>（Excel 原件版本与列映射）</p>`,
       "</header>",
       "<main>",
       ...(emptyProject ? [renderOnboarding(view.rootPath, view.hostId)] : []),
@@ -3141,6 +3168,7 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
     case "dispatch":
       return "dispatch";
     case "library":
+    case "web-assets":
       return "library";
     case "archive":
       return "archive";
@@ -3392,6 +3420,17 @@ function renderPanelHtml(
       sets: view.sets,
       quarantine: view.quarantine,
       caseCandidates: view.caseCandidates,
+      capabilities: deps.capabilities,
+      storeHealth: currentShell.storeHealth
+    });
+  }
+  if (view.kind === "web-assets") {
+    return renderWebAssetsPage({
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      hostId: view.hostId,
+      assets: view.assets,
+      mappings: view.mappings,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });

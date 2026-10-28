@@ -3091,3 +3091,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **复用约定**：映射仍按原件解析（Task 6），`caseIdHeader` 必须由调用方按当前工作副本重新解析后传入（缺列即抛错，不信任历史表头文本）；`lastSystemValue` 由调用方按 `(caseId,key) → cellRef`（读当前副本表头/行号）查 journal。
 - **边界**：不实现 UI/API 接线、写回失败状态标记/重试、往返 parts 自检、PG advisory lock（Task 8/9 或后续）。
 - **测试**：`test/web-writeback.test.js`（17 例：副本复制/幂等/同路径拒绝/原件 sha/损坏副本重建与原件损坏拒绝；首写 8 列顺序与游离列保留；二次写刷新+人工冻结；人工清空不回填 vs 空+无 journal 可写；表头行锚定/游离表头列/锚点偏移与左侧不动；公式/合并目标跳过、合并表头抛错；`withFileLock` 互斥/超时/释放；并发写回不重复列且文件可重开；未知 caseId/空值/journal 失败/缺锚点/缺表/坏文件/headerRow；冷启动既有系统列无 journal 可刷新且非系统列人工内容不动；输入重复 caseId 首条生效、单次物理写与 journal 一致；`originalPath` 同路径拒绝且原件 sha 不变；样式-only 远行不触发维度上限、`maxRows`/`maxColumns` 可覆盖；Memory-File-PG journal 追加与最新值）。
+
+### 13.254 新增（Web 测试资产页：Excel 版本 / 上传 / 列映射预览与保存）
+
+> 2026-10-28。Task 8：把 Task 4–7 的资产与映射能力接到面板，提供可操作页面；不做写回执行 UI、结果列与脚本页。
+
+- **路由**：`GET /panel?project=<root>[&host=<id>]&section=assets` 返回新 `PanelView` 分支 `web-assets`（资产 `listWebAssets(..., "excel")`、映射 `listExcelMappings(rootPath)`，均走项目 host 作用域的 store）；`/panel.json` 同源返回 `{ok,view:"web-assets",assets,mappings}`。项目页新增「测试资产」入口并保留 `host`。
+- **页面**（`src/console/pages.ts` `renderWebAssetsPage`）：资产版本表（文件名/版本/大小/sha256 前 12 位/上传时间）；上传表单（`file`，仅 `.xlsx`，multipart POST `/panel/api/projects/assets`，字段 `project`+`kind=excel`[+`host`]，头 `X-AOS-Console`）；列映射区（资产下拉 + 表头行默认 1 + 预览 → 渲染规范字段建议映射 → 保存）；已保存映射表（资产/工作表/已映射字段/指纹/保存人/时间）。所有用户文本经 `escapeHtml`；客户端渲染值经文本转义。
+- **权限口径**：写动作（上传/预览/保存）要求 `capabilities.actions !== false` 且角色为 maintainer/admin；viewer/dispatcher 或缺省关闭时控件 `disabled`、端点脚本不注入（服务端仍按 §13.250/§13.252 的 maintainer 闸门强制）。只读角色仍可查看版本与已保存映射。
+- **边界**：不实现写回/结果列 UI、materials/package 上传、资产删除、脚本/任务页；预览保存的是建议映射原样（用户改列仍需后续 API/页面）。
+- **测试**：`test/web-assets-ui.test.js`（资产表/上传表单/预览保存端点/映射表/文件名转义；JSON 视图；viewer/dispatcher 与 actions=0 禁用且不暴露写脚本；项目页入口保留 host）；`test/console-pages.test.js` 保持全绿。
