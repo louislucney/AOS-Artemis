@@ -6,7 +6,7 @@ import { newDb } from "pg-mem";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
-import { runWebRunner, runWebRunnerCommand } from "../dist/runner/web-agent.js";
+import { runWebRunner, runWebRunnerCommand, isWebDeviceUsable } from "../dist/runner/web-agent.js";
 
 const HOST = "web-host-1";
 const NOW = Date.parse("2026-10-29T00:00:00.000Z");
@@ -99,7 +99,7 @@ async function makeStore() {
   return { store, rootPath, project };
 }
 
-async function boundTask(store, rootPath, project, device, overrides = {}) {
+async function boundTask(store, rootPath, project, device, overrides = {}, atMs = NOW) {
   const task = await store.createRegressionTask({
     rootPath,
     refs: [],
@@ -122,7 +122,7 @@ async function boundTask(store, rootPath, project, device, overrides = {}) {
     projectId: project.id,
     serials: [device.serial],
     ttlMs: LEASE_TTL,
-    at: new Date(NOW).toISOString()
+    at: new Date(atMs).toISOString()
   });
   assert.equal(leased.ok, true, "任务设备预占成功");
   return task;
@@ -143,6 +143,14 @@ function baseOptions(store, overrides = {}) {
     heartbeatMs: 60_000,
     ...overrides
   };
+}
+
+function fastEnv() {
+  return { ...env(), AOS_RUNNER_POLL_MS: "10" };
+}
+
+function realSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5)));
 }
 
 function deferred() {
@@ -558,4 +566,270 @@ test("web runner CLI: --once 走中心 PG 执行一轮", async () => {
   const stored = await store.getRegressionTask(rootPath, task.id);
   assert.equal(stored.status, "completed");
   assert.ok(sink.logs.length > 0, "日志走 io");
+});
+
+test("web runner: 执行中被取消 → ackCancellation，不用 completed 覆盖", async () => {
+  const { store, rootPath, project } = await makeStore();
+  const pixel = android("pixel-1");
+  const task = await boundTask(store, rootPath, project, pixel);
+  const sink = io();
+  const code = await runWebRunner(
+    baseOptions(store, { once: true }),
+    sink.io,
+    {
+      collectInventory: async () => inventory([pixel]),
+      executeJob: async () => {
+        await store.cancelRegressionTask({
+          rootPath,
+          taskId: task.id,
+          source: "panel",
+          actor: "tester",
+          actorHostId: null,
+          note: "stop"
+        });
+        return { status: "completed" };
+      },
+      now: () => NOW,
+      sleep: async () => {}
+    }
+  );
+  assert.equal(code, 0);
+  const stored = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(stored.status, "cancelled", "取消优先，不写 completed");
+  assert.equal(stored.cancelSource, "panel");
+  assert.deepEqual(stored.runIds, []);
+  assert.ok(
+    sink.logs.some((line) => line.includes("ackCancellation")),
+    sink.logs.join("\n")
+  );
+});
+
+test("web runner: 终态写入前已取消 → 保留 cancelled，不写结果", async () => {
+  const { store, rootPath, project } = await makeStore();
+  const pixel = android("pixel-1");
+  const task = await boundTask(store, rootPath, project, pixel);
+  const sink = io();
+  const code = await runWebRunner(
+    baseOptions(store, { once: true }),
+    sink.io,
+    {
+      collectInventory: async () => inventory([pixel]),
+      executeJob: async () => {
+        await store.cancelRegressionTask({
+          rootPath,
+          taskId: task.id,
+          source: "panel",
+          actor: "tester",
+          actorHostId: null,
+          note: "stop-now"
+        });
+        await store.ackCancellation({ rootPath, taskId: task.id });
+        return { status: "completed" };
+      },
+      now: () => NOW,
+      sleep: async () => {}
+    }
+  );
+  assert.equal(code, 0);
+  const stored = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(stored.status, "cancelled");
+  assert.deepEqual(stored.runIds, []);
+  assert.ok(
+    sink.logs.some((line) => line.includes("终态未写入") || line.includes("保留原状态")),
+    sink.logs.join("\n")
+  );
+});
+
+test("web runner: isWebDeviceUsable 状态矩阵（configured Android 可用）", () => {
+  assert.equal(isWebDeviceUsable(android("a1", "device")), true);
+  assert.equal(isWebDeviceUsable(android("a1", "configured")), true, "AOS_RUNNER_DEVICES 登记设备可用");
+  assert.equal(isWebDeviceUsable(android("a1", "offline")), false);
+  assert.equal(isWebDeviceUsable(android("a1", "unauthorized")), false);
+  assert.equal(isWebDeviceUsable(simulator("s1", "Booted")), true);
+  assert.equal(isWebDeviceUsable(simulator("s1", "configured")), true);
+  assert.equal(isWebDeviceUsable(simulator("s1", "Shutdown")), false);
+  assert.equal(isWebDeviceUsable({ ...simulator("r1", "device"), kind: "device" }), true);
+  assert.equal(isWebDeviceUsable({ ...simulator("r2", "connected"), kind: "device" }), true);
+  assert.equal(isWebDeviceUsable({ ...simulator("r3", "configured"), kind: "device" }), true);
+  assert.equal(isWebDeviceUsable({ ...simulator("r4", "offline"), kind: "device" }), false);
+});
+
+test("web runner: 心跳发现新设备 → 启动 worker 并领取其任务", async () => {
+  const { store, rootPath, project } = await makeStore();
+  const pixel = android("pixel-2");
+  const task = await boundTask(store, rootPath, project, pixel, {}, Date.now());
+  let devices = [];
+  let stop = false;
+  let executed = 0;
+  const sink = io();
+  const running = runWebRunner(
+    baseOptions(store, { once: false, heartbeatMs: 20, env: fastEnv() }),
+    sink.io,
+    {
+      collectInventory: async () => inventory(devices),
+      executeJob: async () => {
+        executed += 1;
+        return { status: "completed" };
+      },
+      now: () => Date.now(),
+      sleep: realSleep,
+      shouldStop: () => stop
+    }
+  );
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    devices = [pixel];
+    await waitFor(() => executed === 1, "新设备 worker 领取执行");
+    stop = true;
+    const code = await running;
+    assert.equal(code, 0);
+    assert.equal((await store.getRegressionTask(rootPath, task.id)).status, "completed");
+    const runner = await store.getWebRunner(HOST);
+    assert.deepEqual(runner.devices.map((device) => device.serial), ["pixel-2"], "心跳广播新设备");
+    assert.ok(sink.logs.some((line) => line.includes("启动 worker")), sink.logs.join("\n"));
+  } finally {
+    stop = true;
+    await running.catch(() => 0);
+  }
+});
+
+test("web runner: 设备消失 → 停止 worker 且不再广播", async () => {
+  const { store, rootPath, project } = await makeStore();
+  const pixel = android("pixel-1");
+  let devices = [pixel];
+  let stop = false;
+  let claims = 0;
+  const claim = store.claimWebJob.bind(store);
+  const proxy = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "claimWebJob") {
+        return async (input) => {
+          claims += 1;
+          return claim(input);
+        };
+      }
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  const sink = io();
+  const running = runWebRunner(
+    baseOptions(proxy, { once: false, heartbeatMs: 20, env: fastEnv() }),
+    sink.io,
+    {
+      collectInventory: async () => inventory(devices),
+      executeJob: async () => ({ status: "completed" }),
+      now: () => Date.now(),
+      sleep: realSleep,
+      shouldStop: () => stop
+    }
+  );
+  try {
+    await waitFor(() => claims >= 1, "worker 空转领取一次");
+    devices = [];
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let advertised = null;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      advertised = await store.getWebRunner(HOST);
+      if (advertised !== null && advertised.devices.length === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.deepEqual(advertised.devices, [], "心跳不再广播已消失设备");
+    const late = await boundTask(store, rootPath, project, pixel, {}, Date.now());
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const after = claims;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(claims, after, "worker 已停止，不再领取");
+    assert.equal((await store.getRegressionTask(rootPath, late.id)).status, "pending");
+    stop = true;
+    const code = await running;
+    assert.equal(code, 0);
+    assert.ok(sink.logs.some((line) => line.includes("已移除")), sink.logs.join("\n"));
+  } finally {
+    stop = true;
+    await running.catch(() => 0);
+  }
+});
+
+test("web runner: 执行中租约续期丢失 → shouldAbort、回池且不写成功结果", async () => {
+  const { store, rootPath, project } = await makeStore();
+  const pixel = android("pixel-1");
+  const task = await boundTask(store, rootPath, project, pixel, {}, Date.now());
+  let stop = false;
+  let abortedSeen = false;
+  const proxy = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "renewDeviceLeases") {
+        return async () => 0;
+      }
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  const sink = io();
+  const code = await runWebRunner(
+    baseOptions(proxy, { once: false, heartbeatMs: 20, env: fastEnv() }),
+    sink.io,
+    {
+      collectInventory: async () => inventory([pixel]),
+      executeJob: async ({ shouldAbort }) => {
+        const deadline = Date.now() + 2_000;
+        while (!(shouldAbort?.() === true) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        abortedSeen = shouldAbort?.() === true;
+        stop = true;
+        return { status: "completed" };
+      },
+      now: () => Date.now(),
+      sleep: realSleep,
+      shouldStop: () => stop
+    }
+  );
+  assert.equal(code, 0);
+  assert.equal(abortedSeen, true, "执行器收到中止信号");
+  const stored = await store.getRegressionTask(rootPath, task.id);
+  assert.equal(stored.status, "pending", "租约丢失不写 completed");
+  assert.deepEqual(stored.runIds, []);
+  assert.equal(stored.claimedBy, null);
+  assert.equal((await store.listDeviceLeases({ hostId: HOST })).length, 0);
+  assert.ok(
+    sink.errors.some((line) => line.includes("租约")),
+    sink.errors.join("\n")
+  );
+});
+
+test("web runner: 心跳登记失败 → 停止 runner 并返回 2", async () => {
+  const { store } = await makeStore();
+  let upserts = 0;
+  const proxy = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "upsertWebRunner") {
+        return async (input) => {
+          upserts += 1;
+          if (upserts >= 2) throw new Error("db-down");
+          return target.upsertWebRunner(input);
+        };
+      }
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  const sink = io();
+  const code = await runWebRunner(
+    baseOptions(proxy, { once: false, heartbeatMs: 10, env: fastEnv() }),
+    sink.io,
+    {
+      collectInventory: async () => inventory([]),
+      executeJob: async () => ({ status: "completed" }),
+      now: () => Date.now(),
+      sleep: realSleep,
+      shouldStop: () => false
+    }
+  );
+  assert.equal(code, 2);
+  assert.ok(
+    sink.errors.some((line) => line.includes("心跳") && line.includes("db-down")),
+    sink.errors.join("\n")
+  );
 });

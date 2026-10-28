@@ -12,6 +12,7 @@ import { deviceLeaseTtlMs } from "../db/types.js";
 import type { ExecFn } from "../device/adb.js";
 import { resolveHostIdentity } from "../host/identity.js";
 import { AOS_MCP_VERSION, errorMessage } from "../util.js";
+import { parseWebJobSpec } from "../web/job-spec.js";
 import { assignPendingWebJobs, reassignExpiredWebJobs } from "../web/jobs.js";
 import { collectRunnerInventory, type RunnerInventory } from "./inventory.js";
 import { runnerTtlFrom } from "./status.js";
@@ -25,6 +26,8 @@ export interface WebJobExecutorInput {
   task: RegressionTaskRecord;
   rootPath: string;
   device: RunnerDevice;
+  /** 租约丢失/设备移除/停止时置 true；执行器应尽快中止。 */
+  shouldAbort?: () => boolean;
 }
 
 export interface WebJobExecutorResult {
@@ -63,11 +66,12 @@ const DEFAULT_EXECUTOR: WebJobExecutor = async () => {
   throw new Error("web-executor-not-wired");
 };
 
-const USABLE_ANDROID_STATES = new Set(["device"]);
+/** `AOS_RUNNER_DEVICES` 覆盖项与未启动设备用 `configured` 表示「已登记、未探测」。 */
+const USABLE_ANDROID_STATES = new Set(["device", "configured"]);
 const USABLE_SIMULATOR_STATES = new Set(["Booted", "configured"]);
 const USABLE_IOS_DEVICE_STATES = new Set(["device", "connected", "configured"]);
 
-/** 执行前本地二次校验：Android 必须 `device`；模拟器 `Booted`/`configured`；真机 `device`/`connected`。 */
+/** 执行前本地二次校验：Android `device`/`configured`；模拟器 `Booted`/`configured`；真机 `device`/`connected`/`configured`。 */
 export function isWebDeviceUsable(device: RunnerDevice): boolean {
   if (device.platform === "android") return USABLE_ANDROID_STATES.has(device.state);
   if (device.kind === "simulator") return USABLE_SIMULATOR_STATES.has(device.state);
@@ -78,12 +82,20 @@ interface ActiveJob {
   taskId: string;
   rootPath: string;
   serial: string;
+  /** 租约丢失/设备移除/停止：执行器应中止，终态不得写入。 */
+  aborted: boolean;
+}
+
+interface WorkerHandle {
+  device: RunnerDevice;
+  stop: () => void;
 }
 
 /**
  * host 级 web runner（DESIGN §13.x）：每台设备一个 worker，串行领取该 serial 的 job；
- * 心跳循环负责登记 `web_runners`、续租设备与 best-effort 选机/回池。
- * 执行器由 Task 6/7 注入；缺省抛 `web-executor-not-wired`（异常路径回池，不留 running）。
+ * 心跳循环每轮重新盘点设备（新设备起 worker、消失的设备停 worker），登记 `web_runners`、
+ * 续租设备与 best-effort 选机/回池。执行器由 Task 6/7 注入；缺省抛
+ * `web-executor-not-wired`（异常路径回池，不留 running）。
  */
 export async function runWebRunner(
   options: WebRunnerOptions,
@@ -118,6 +130,7 @@ export async function runWebRunner(
   const executeJob = deps.executeJob ?? DEFAULT_EXECUTOR;
 
   let stopped = false;
+  let fatalHeartbeat: unknown = null;
   const shouldStop = (): boolean => stopped || deps.shouldStop?.() === true;
   const sleepInterruptible = async (ms: number): Promise<void> => {
     let waited = 0;
@@ -143,18 +156,20 @@ export async function runWebRunner(
   }
 
   const active = new Map<string, ActiveJob>();
+  const workers = new Map<string, WorkerHandle>();
+  const workerPromises = new Set<Promise<void>>();
   let runner: WebRunnerRecord;
 
-  const heartbeat = async (): Promise<WebRunnerRecord> => {
+  const heartbeat = async (current: RunnerInventory): Promise<WebRunnerRecord> => {
     const atMs = now();
     const at = new Date(atMs).toISOString();
     const record = await store.upsertWebRunner({
       hostId,
       name,
       hostname: identity.hostname,
-      platforms: inventory.platforms,
-      devices: inventory.devices,
-      tools: inventory.tools,
+      platforms: current.platforms,
+      devices: current.devices,
+      tools: current.tools,
       artifactBaseUrl: options.artifactBaseUrl ?? null,
       version: AOS_MCP_VERSION,
       instanceId,
@@ -163,6 +178,11 @@ export async function runWebRunner(
     });
     for (const job of active.values()) {
       try {
+        await store.updateRegressionTask(job.rootPath, job.taskId, { lastProgressAt: at });
+      } catch (error) {
+        io.errorLog(`[web-runner] 任务 ${job.taskId} 进度写入失败：${errorMessage(error)}`);
+      }
+      try {
         const renewed = await store.renewDeviceLeases({
           hostId,
           taskId: job.taskId,
@@ -170,14 +190,20 @@ export async function runWebRunner(
           at
         });
         if (renewed === 0) {
-          io.errorLog(
-            `[web-runner] 任务 ${job.taskId} 设备 ${job.serial} 租约续期未命中（可能已过期）`
-          );
+          if (!job.aborted) {
+            job.aborted = true;
+            io.errorLog(
+              `[web-runner] 任务 ${job.taskId} 设备 ${job.serial} 租约丢失：中止执行并回池（不写结果）`
+            );
+          }
         }
       } catch (error) {
-        io.errorLog(
-          `[web-runner] 任务 ${job.taskId} 设备租约续期失败：${errorMessage(error)}`
-        );
+        if (!job.aborted) {
+          job.aborted = true;
+          io.errorLog(
+            `[web-runner] 任务 ${job.taskId} 设备租约续期失败：中止执行并回池（不写结果）——${errorMessage(error)}`
+          );
+        }
       }
     }
     try {
@@ -208,7 +234,7 @@ export async function runWebRunner(
   };
 
   try {
-    runner = await heartbeat();
+    runner = await heartbeat(inventory);
   } catch (error) {
     io.errorLog(`[web-runner] 首轮心跳失败：${errorMessage(error)}`);
     return 2;
@@ -217,21 +243,6 @@ export async function runWebRunner(
   io.log(
     `[web-runner] 启动：name=${name} host=${hostId}（设备 ${inventory.devices.map((device) => device.serial).join(",") || "无"}）`
   );
-
-  let heartbeatTask: Promise<void> = Promise.resolve();
-  if (!once) {
-    heartbeatTask = (async (): Promise<void> => {
-      while (!shouldStop()) {
-        await sleepInterruptible(heartbeatMs);
-        if (shouldStop()) break;
-        try {
-          await heartbeat();
-        } catch (error) {
-          io.errorLog(`[web-runner] 心跳失败：${errorMessage(error)}`);
-        }
-      }
-    })();
-  }
 
   const releaseLocal = async (
     taskId: string,
@@ -264,6 +275,70 @@ export async function runWebRunner(
   ): Promise<void> => {
     io.log(`[web-runner] 设备 ${serial} 任务 ${task.id} 暂不执行：${code}（${detail}）`);
     await releaseLocal(task.id, rootPath, serial);
+  };
+
+  /** 终态写入：写前重读 + `expectStatuses:["running"]`；stopping 只 ack 不覆盖，终态直接跳过。 */
+  const writeTerminal = async (
+    task: RegressionTaskRecord,
+    rootPath: string,
+    status: WebJobExecutorResult["status"],
+    detail?: string
+  ): Promise<"written" | "cancelled" | "skipped"> => {
+    let fresh: RegressionTaskRecord | null;
+    try {
+      fresh = await store.getRegressionTask(rootPath, task.id);
+    } catch (error) {
+      io.errorLog(`[web-runner] 任务 ${task.id} 终态写入前读取失败：${errorMessage(error)}`);
+      return "skipped";
+    }
+    if (fresh === null) {
+      io.log(`[web-runner] 任务 ${task.id} 终态未写入：任务已不存在`);
+      return "skipped";
+    }
+    if (fresh.status === "stopping") {
+      try {
+        await store.ackCancellation({ rootPath, taskId: task.id });
+      } catch (error) {
+        io.errorLog(`[web-runner] 任务 ${task.id} 取消确认失败：${errorMessage(error)}`);
+      }
+      io.log(`[web-runner] 任务 ${task.id} 执行期间被取消：已 ackCancellation，不写结果`);
+      return "cancelled";
+    }
+    if (fresh.status !== "running") {
+      io.log(
+        `[web-runner] 任务 ${task.id} 终态未写入：当前状态 ${fresh.status}（已终态/取消），保留原状态`
+      );
+      return "skipped";
+    }
+    const spec = parseWebJobSpec(fresh.jobSpec);
+    let updated = false;
+    try {
+      updated = await store.updateRegressionTask(rootPath, task.id, {
+        status,
+        lastProgressAt: new Date(now()).toISOString(),
+        deviceLeaseId: null,
+        ...(spec === null
+          ? {}
+          : { jobSpec: { ...spec, deviceLeaseId: null } as Record<string, unknown> }),
+        expectStatuses: ["running"]
+      });
+    } catch (error) {
+      io.errorLog(`[web-runner] 任务 ${task.id} 终态写入失败：${errorMessage(error)}`);
+      return "skipped";
+    }
+    if (!updated) {
+      io.log(`[web-runner] 任务 ${task.id} 终态写入未生效（updated=false，可能并发取消/接管）`);
+      const after = await store.getRegressionTask(rootPath, task.id).catch(() => null);
+      if (after?.status === "stopping") {
+        await store.ackCancellation({ rootPath, taskId: task.id }).catch(() => null);
+        io.log(`[web-runner] 任务 ${task.id} 写入失败后确认取消（stopping → cancelled）`);
+      }
+      return "skipped";
+    }
+    io.log(
+      `[web-runner] 任务 ${task.id} 执行结束：${status}${detail ? `（${detail}）` : ""}`
+    );
+    return "written";
   };
 
   const claimAndRun = async (device: RunnerDevice): Promise<"executed" | "idle" | "skipped"> => {
@@ -358,29 +433,40 @@ export async function runWebRunner(
     }
 
     io.log(`[web-runner] 领取任务 ${task.id}（设备 ${device.serial} · 项目 ${rootPath}）`);
-    active.set(device.serial, { taskId: task.id, rootPath, serial: device.serial });
+    const job: ActiveJob = {
+      taskId: task.id,
+      rootPath,
+      serial: device.serial,
+      aborted: false
+    };
+    active.set(device.serial, job);
     try {
-      const result = await executeJob({ task: running, rootPath, device: local });
+      const result = await executeJob({
+        task: running,
+        rootPath,
+        device: local,
+        shouldAbort: () => job.aborted || shouldStop()
+      });
+      if (job.aborted) {
+        io.log(
+          `[web-runner] 任务 ${task.id} 执行中止（租约丢失/设备移除/停止）：不写结果，回池等待`
+        );
+        await releaseLocal(task.id, rootPath, device.serial);
+        return "executed";
+      }
       const status = result?.status;
       if (status !== "completed" && status !== "partial" && status !== "failed") {
         throw new Error(`web-executor-invalid-status: ${String(status)}`);
       }
-      try {
-        const updated = await store.updateRegressionTask(rootPath, task.id, {
-          status,
-          lastProgressAt: new Date(now()).toISOString()
-        });
-        if (!updated) {
-          io.errorLog(`[web-runner] 任务 ${task.id} 结果写入未命中（可能已被取消/接管）`);
-        }
-      } catch (error) {
-        io.errorLog(`[web-runner] 任务 ${task.id} 结果写入失败：${errorMessage(error)}`);
-      }
-      io.log(
-        `[web-runner] 任务 ${task.id} 执行结束：${status}${result.detail ? `（${result.detail}）` : ""}`
-      );
+      await writeTerminal(task, rootPath, status, result.detail);
     } catch (error) {
-      io.errorLog(`[web-runner] 任务 ${task.id} 执行异常：${errorMessage(error)}`);
+      if (job.aborted) {
+        io.log(
+          `[web-runner] 任务 ${task.id} 执行中止（租约丢失/设备移除/停止）：${errorMessage(error)}`
+        );
+      } else {
+        io.errorLog(`[web-runner] 任务 ${task.id} 执行异常：${errorMessage(error)}`);
+      }
       await releaseLocal(task.id, rootPath, device.serial);
     } finally {
       active.delete(device.serial);
@@ -393,30 +479,102 @@ export async function runWebRunner(
     return "executed";
   };
 
-  const workerLoop = async (device: RunnerDevice): Promise<void> => {
-    while (!shouldStop()) {
-      let outcome: "executed" | "idle" | "skipped";
-      try {
-        outcome = await claimAndRun(device);
-      } catch (error) {
-        io.errorLog(`[web-runner] 设备 ${device.serial} worker 异常：${errorMessage(error)}`);
-        outcome = "skipped";
+  const startWorker = (device: RunnerDevice): WorkerHandle => {
+    let stopRequested = false;
+    const stop = (): void => {
+      stopRequested = true;
+      const job = active.get(device.serial);
+      if (job !== undefined) job.aborted = true;
+    };
+    const promise = (async (): Promise<void> => {
+      while (!shouldStop() && !stopRequested) {
+        let outcome: "executed" | "idle" | "skipped";
+        try {
+          outcome = await claimAndRun(device);
+        } catch (error) {
+          io.errorLog(`[web-runner] 设备 ${device.serial} worker 异常：${errorMessage(error)}`);
+          outcome = "skipped";
+        }
+        if (once) return;
+        if (shouldStop() || stopRequested) return;
+        if (outcome !== "executed") await sleepInterruptible(pollMs);
       }
-      if (once) return;
-      if (shouldStop()) return;
-      if (outcome !== "executed") await sleepInterruptible(pollMs);
+    })();
+    workerPromises.add(promise);
+    void promise.then(
+      () => workerPromises.delete(promise),
+      () => workerPromises.delete(promise)
+    );
+    return { device, stop };
+  };
+
+  const syncWorkers = (current: RunnerInventory): void => {
+    const wanted = new Map(current.devices.map((device) => [device.serial, device]));
+    for (const [serial, handle] of [...workers]) {
+      if (wanted.has(serial)) continue;
+      handle.stop();
+      workers.delete(serial);
+      io.log(`[web-runner] 设备 ${serial} 已移除：停止 worker`);
+    }
+    for (const device of wanted.values()) {
+      if (workers.has(device.serial)) continue;
+      workers.set(device.serial, startWorker(device));
+      io.log(`[web-runner] 设备 ${device.serial} 可用：启动 worker`);
     }
   };
 
+  const allWorkerPromises = (): Promise<void> =>
+    Promise.allSettled([...workerPromises]).then(() => undefined);
+
+  syncWorkers(inventory);
+
+  let heartbeatTask: Promise<void> = Promise.resolve();
+  if (!once) {
+    heartbeatTask = (async (): Promise<void> => {
+      while (!shouldStop()) {
+        await sleepInterruptible(heartbeatMs);
+        if (shouldStop()) break;
+        let fresh: RunnerInventory;
+        try {
+          fresh = await collectInventory();
+        } catch (error) {
+          io.errorLog(`[web-runner] 心跳设备盘点失败（保留上次清单）：${errorMessage(error)}`);
+          fresh = inventory;
+        }
+        inventory = fresh;
+        try {
+          await heartbeat(fresh);
+        } catch (error) {
+          fatalHeartbeat = error;
+          io.errorLog(
+            `[web-runner] 心跳登记失败，停止 runner（请检查是否已被其他实例接管）：${errorMessage(error)}`
+          );
+          stopped = true;
+          break;
+        }
+        syncWorkers(fresh);
+      }
+    })();
+  }
+
   let code = 0;
   try {
-    await Promise.all(inventory.devices.map((device) => workerLoop(device)));
+    if (once) {
+      await Promise.all([...workerPromises]);
+    } else {
+      await heartbeatTask;
+      stopped = true;
+      for (const handle of workers.values()) handle.stop();
+      await settleWithin(allWorkerPromises(), 2_000);
+    }
   } catch (error) {
     io.errorLog(`[web-runner] worker 失败：${errorMessage(error)}`);
     code = 2;
   } finally {
     stopped = true;
     await settleWithin(heartbeatTask, 2_000);
+    for (const handle of workers.values()) handle.stop();
+    await settleWithin(allWorkerPromises(), 2_000);
     for (const job of [...active.values()]) {
       await releaseLocal(job.taskId, job.rootPath, job.serial);
     }
@@ -427,6 +585,7 @@ export async function runWebRunner(
       io.errorLog(`[web-runner] 标记停止失败：${errorMessage(error)}`);
     }
   }
+  if (fatalHeartbeat !== null) code = 2;
   return code;
 }
 
