@@ -20,7 +20,7 @@ import {
   projectSlug,
   WebProjectCreateError
 } from "../web/project-service.js";
-import { storeWebAsset, WebAssetError } from "../web/assets.js";
+import { storeWebAsset, WebAssetError, WEB_ASSET_MAX_BYTES } from "../web/assets.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
 import {
   computeDispatchPreview,
@@ -515,7 +515,10 @@ async function uploadAssetAction(
   }
   let upload: Awaited<ReturnType<typeof parseMultipartUpload>>;
   try {
-    upload = await parseMultipartUpload(request.rawBody, request.contentType);
+    upload = await parseMultipartUpload(request.rawBody, request.contentType, {
+      maxBytes: WEB_ASSET_MAX_BYTES,
+      extensions: [".xlsx"]
+    });
   } catch (error) {
     if (error instanceof UploadError) return json(error.status, { error: error.message });
     throw error;
@@ -526,7 +529,8 @@ async function uploadAssetAction(
     (request.url.searchParams.get("project") ?? "").trim();
   if (projectKey === "") return json(400, { error: "缺少 project" });
 
-  const kind = ((upload.fields.kind ?? "").trim() || "excel").toLowerCase();
+  const kind = (upload.fields.kind ?? "").trim().toLowerCase();
+  if (kind === "") return json(400, { error: "缺少 kind（仅支持 excel）" });
   if (kind !== "excel") {
     return json(400, { error: `kind 仅支持 excel（当前 ${kind}）` });
   }

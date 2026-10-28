@@ -339,6 +339,58 @@ test("http server: 面板 multipart 导入（rawBody + project 查询参数）�
   }
 });
 
+test("http server: multipart 资产上传（字段 project/kind）→ 200、落文件并登记资产", async () => {
+  const workspace = makeWorkspace();
+  const projectDir = path.join(workspace, "demo");
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: projectDir, name: "demo", hostId: "test-host" });
+  await store.createWebProject({
+    rootPath: projectDir,
+    name: "demo",
+    normalizedName: "demo",
+    platforms: ["android"]
+  });
+  const handle = await createAosHttpServer({
+    port: 0,
+    host: "127.0.0.1",
+    workspaceRoot: workspace,
+    store
+  });
+  try {
+    const form = new FormData();
+    form.set("project", projectDir);
+    form.set("kind", "excel");
+    form.set(
+      "file",
+      new Blob([Buffer.from("real-http-asset")], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      }),
+      "cases.xlsx"
+    );
+    const res = await fetch(`http://127.0.0.1:${handle.port}/panel/api/projects/assets`, {
+      method: "POST",
+      headers: { "X-AOS-Console": "1" },
+      body: form
+    });
+    const body = await res.text();
+    assert.equal(res.status, 200, body);
+    const payload = JSON.parse(body);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.asset.kind, "excel");
+    assert.equal(payload.asset.filename, "cases.xlsx");
+
+    const assets = await store.listWebAssets(projectDir, "excel");
+    assert.equal(assets.length, 1, "真实 HTTP 传输后资产已登记");
+    assert.equal(assets[0].sha256, payload.asset.sha256);
+    assert.deepEqual(fs.readFileSync(assets[0].storagePath), Buffer.from("real-http-asset"));
+    const audit = await store.listAudit(projectDir, { domain: "asset" });
+    assert.equal(audit[0].action, "asset.upload");
+    assert.equal(audit[0].result, "ok");
+  } finally {
+    await handle.close();
+  }
+});
+
 test("http server: 任务视图路由（未知 task → 404）", async () => {
   const workspace = makeWorkspace();
   const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });

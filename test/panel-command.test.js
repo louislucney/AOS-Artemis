@@ -138,6 +138,67 @@ test("panel --web: multipart 导入转发 rawBody/contentType → 200 且登记�
   });
 });
 
+test("panel --web: multipart 资产上传（project/kind 字段）→ 200 且登记资产", async () => {
+  const workspace = makeTempDir("aos-panel-assets-");
+  const projectDir = path.join(workspace, "demo");
+  fs.mkdirSync(projectDir, { recursive: true });
+  const store = new MemoryStore();
+  await store.upsertProject({
+    rootPath: projectDir,
+    name: "demo",
+    hostId: "panel-asset-host"
+  });
+  await store.createWebProject({
+    rootPath: projectDir,
+    name: "demo",
+    normalizedName: "demo",
+    platforms: ["android"]
+  });
+
+  await runCli(["--web", "--port", "0", "--workspace", workspace], {
+    store,
+    env: {
+      ...process.env,
+      AOS_PANEL_ACTIONS: "1",
+      AOS_HOST_ID: "panel-asset-host",
+      AOS_LEDGER_AUTO_IMPORT: "0",
+      AOS_USAGE: "0"
+    },
+    waitForShutdown: async (handle) => {
+      const form = new FormData();
+      form.set("project", projectDir);
+      form.set("kind", "excel");
+      form.set(
+        "file",
+        new Blob([Buffer.from("panel-command-asset")], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }),
+        "cases.xlsx"
+      );
+      const res = await fetch(
+        `http://127.0.0.1:${handle.port}/panel/api/projects/assets`,
+        {
+          method: "POST",
+          headers: { "X-AOS-Console": "1" },
+          body: form
+        }
+      );
+      const body = await res.text();
+      assert.equal(res.status, 200, body);
+      const payload = JSON.parse(body);
+      assert.equal(payload.ok, true);
+      assert.equal(payload.asset.filename, "cases.xlsx");
+
+      const assets = await store.listWebAssets(projectDir, "excel");
+      assert.equal(assets.length, 1, "资产已登记");
+      assert.equal(
+        fs.readFileSync(assets[0].storagePath, "utf8"),
+        "panel-command-asset"
+      );
+    }
+  });
+});
+
 test("panel --web: 跨主机导入 → 400（不建运行时、不登记、不写本地文件）", async () => {
   const workspace = makeTempDir("aos-panel-import-remote-");
   const projectDir = path.join(workspace, "remote-demo");

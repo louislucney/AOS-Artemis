@@ -321,12 +321,11 @@ async function runPanelWeb(options: {
           let requestContentType: string | undefined;
           const headerType = req.headers["content-type"];
           const contentTypeValue = Array.isArray(headerType) ? headerType[0] : headerType;
-          const isMultipartImport =
+          const isMultipart =
             req.method === "POST" &&
-            url.pathname === "/panel/api/import" &&
             typeof contentTypeValue === "string" &&
             contentTypeValue.toLowerCase().includes("multipart/form-data");
-          if (isMultipartImport) {
+          if (isMultipart) {
             try {
               rawBody = await readStandaloneRawBody(req);
             } catch (error) {

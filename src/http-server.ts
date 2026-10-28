@@ -384,7 +384,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           const isMultipart =
             typeof contentTypeValue === "string" &&
             contentTypeValue.toLowerCase().includes("multipart/form-data");
-          if (req.method === "POST" && url.pathname === "/panel/api/import" && isMultipart) {
+          if (req.method === "POST" && isMultipart) {
             try {
               rawBody = await readRawBody(req, MAX_PANEL_BODY_BYTES + MAX_PANEL_UPLOAD_BYTES);
             } catch (error) {

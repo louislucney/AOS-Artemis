@@ -11,13 +11,25 @@ export class UploadError extends Error {
   }
 }
 
-/** 单文件 multipart 解析（Node 内置 Response.formData）：仅 .xlsx、限长、文件名只取 basename。
- * 额外收集文本字段（project/kind 等），供资产上传等动作复用。 */
+export interface ParseMultipartUploadOptions {
+  /** 单文件上限（默认 `UPLOAD_MAX_BYTES`）。 */
+  maxBytes?: number;
+  /** 允许的扩展名后缀（大小写不敏感；默认 `[".xlsx"]`）。 */
+  extensions?: readonly string[];
+  /** 上传未提供文件名时的兜底名（默认按第一个扩展名生成）。 */
+  defaultFilename?: string;
+}
+
+/** 单文件 multipart 解析（Node 内置 Response.formData）：扩展名白名单、限长、文件名只取 basename。
+ * 额外收集文本字段（project/kind 等），供资产上传等动作复用。第三参数兼容旧的数字 `maxBytes`。 */
 export async function parseMultipartUpload(
   body: Buffer,
   contentType: string | undefined,
-  maxBytes = UPLOAD_MAX_BYTES
+  options: number | ParseMultipartUploadOptions = {}
 ): Promise<{ filename: string; content: Buffer; fields: Record<string, string> }> {
+  const maxBytes = typeof options === "number" ? options : (options.maxBytes ?? UPLOAD_MAX_BYTES);
+  const extensions =
+    typeof options === "number" ? [".xlsx"] : (options.extensions ?? [".xlsx"]);
   if (!contentType || !contentType.toLowerCase().startsWith("multipart/form-data")) {
     throw new UploadError(400, "仅支持 multipart/form-data 上传");
   }
@@ -45,7 +57,18 @@ export async function parseMultipartUpload(
   const content = Buffer.from(await uploaded.arrayBuffer());
   if (content.length === 0) throw new UploadError(400, "上传文件为空");
   if (content.length > maxBytes) throw new UploadError(413, `上传超过上限（${maxBytes} 字节）`);
-  const filename = path.basename(uploaded.name || "upload.xlsx");
-  if (!filename.toLowerCase().endsWith(".xlsx")) throw new UploadError(400, "仅支持 .xlsx 文件");
+  const fallbackName =
+    (typeof options === "object" && options.defaultFilename) ||
+    `upload${extensions[0] ?? ""}`;
+  const filename = path.basename(uploaded.name || fallbackName);
+  const normalizedFilename = filename.toLowerCase();
+  if (!extensions.some((extension) => normalizedFilename.endsWith(extension.toLowerCase()))) {
+    throw new UploadError(
+      400,
+      extensions.length === 0
+        ? "不支持的文件类型"
+        : `仅支持 ${extensions.join("、")} 文件`
+    );
+  }
   return { filename, content, fields };
 }

@@ -10,6 +10,7 @@ import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { handlePanelActionRequest } from "../dist/panel/actions.js";
+import { parseMultipartUpload } from "../dist/panel/upload.js";
 import {
   listWebAssets,
   storeWebAsset,
@@ -288,6 +289,13 @@ test("API /panel/api/projects/assets: 拒绝错误扩展名/缺项目/未知项�
   assert.equal(badKind.status, 400, badKind.body);
   assert.match(JSON.parse(badKind.body).error, /kind/);
 
+  const missingKind = await handlePanelActionRequest(
+    uploadRequest(multipartBody("----aosAssets", { fields: { project: rootPath } })),
+    deps
+  );
+  assert.equal(missingKind.status, 400, missingKind.body);
+  assert.match(JSON.parse(missingKind.body).error, /kind/);
+
   const noFile = await handlePanelActionRequest(
     uploadRequest(
       Buffer.from(
@@ -302,6 +310,127 @@ test("API /panel/api/projects/assets: 拒绝错误扩展名/缺项目/未知项�
   assert.equal(noFile.status, 400, noFile.body);
 
   assert.deepEqual(await store.listWebAssets(rootPath), []);
+});
+
+test("API /panel/api/projects/assets: 跨主机路径歧义 409（不猜项目）", async (t) => {
+  const workspace = await tempDir(t, "aos-assets-api-");
+  const rootPath = path.join(workspace, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "acme", hostId: "host-a" });
+  await store.upsertProject({ rootPath, name: "acme", hostId: "host-b" });
+  const deps = { store, env: {}, workspaceRoot: workspace };
+
+  const res = await handlePanelActionRequest(
+    uploadRequest(
+      multipartBody("----aosAssets", { fields: { project: rootPath, kind: "excel" } })
+    ),
+    deps
+  );
+  assert.equal(res.status, 409, res.body);
+  const payload = JSON.parse(res.body);
+  assert.equal(payload.candidates.length, 2);
+  assert.deepEqual(
+    payload.candidates.map((candidate) => candidate.hostId).sort(),
+    ["host-a", "host-b"]
+  );
+  assert.deepEqual(await store.listWebAssets(rootPath), []);
+});
+
+test("API /panel/api/projects/assets: store 失败写 failed 审计，CAS 文件保留且重试复用不产生孤儿行", async (t) => {
+  const workspace = await tempDir(t, "aos-assets-api-");
+  const rootPath = path.join(workspace, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await makeProject(store, rootPath);
+  const deps = { store, env: {}, workspaceRoot: workspace };
+
+  const realCreate = store.createWebAsset.bind(store);
+  let failures = 1;
+  store.createWebAsset = async (input) => {
+    if (failures > 0) {
+      failures -= 1;
+      throw new Error("模拟台账写入失败");
+    }
+    return realCreate(input);
+  };
+
+  const body = multipartBody("----aosAssets", {
+    fields: { project: rootPath, kind: "excel" },
+    filename: "cases.xlsx"
+  });
+  const failed = await handlePanelActionRequest(uploadRequest(body), deps);
+  assert.equal(failed.status, 500, failed.body);
+
+  const storagePath = path.join(
+    rootPath,
+    ".artemis",
+    "web",
+    "assets",
+    "excel",
+    `${sha256(XLSX)}.xlsx`
+  );
+  assert.deepEqual(await readFile(storagePath), XLSX, "文件先落盘且失败时不删除共享 CAS 文件");
+  assert.equal((await store.listWebAssets(rootPath)).length, 0, "失败不登记行");
+
+  const failedAudit = (await store.listAudit(rootPath, { domain: "asset" })).find(
+    (event) => event.result === "failed"
+  );
+  assert.ok(failedAudit, "store 失败应写 failed 审计");
+  assert.equal(failedAudit.action, "asset.upload");
+  assert.match(failedAudit.summary, /模拟台账写入失败/);
+
+  const retried = await handlePanelActionRequest(uploadRequest(body), deps);
+  assert.equal(retried.status, 200, retried.body);
+  const listed = await store.listWebAssets(rootPath, "excel");
+  assert.equal(listed.length, 1, "重试只补一行，复用已有 CAS 文件");
+  assert.equal(listed[0].storagePath, storagePath);
+  const audit = await store.listAudit(rootPath, { domain: "asset" });
+  assert.deepEqual(
+    audit.map((event) => event.result).sort(),
+    ["failed", "ok"]
+  );
+});
+
+test("parseMultipartUpload: 扩展名/上限可配置（默认仍为 .xlsx + 20MB）", async () => {
+  const boundary = "----aosAssets";
+  const csv = multipartBody(boundary, {
+    fields: { project: "/w/acme" },
+    filename: "cases.csv",
+    content: Buffer.from("a,b\n1,2\n")
+  });
+  const parsed = await parseMultipartUpload(csv, `multipart/form-data; boundary=${boundary}`, {
+    extensions: [".csv"],
+    maxBytes: 1024
+  });
+  assert.equal(parsed.filename, "cases.csv");
+  assert.equal(parsed.fields.project, "/w/acme");
+  assert.equal(parsed.content.toString("utf8"), "a,b\n1,2\n");
+
+  await assert.rejects(
+    () =>
+      parseMultipartUpload(csv, `multipart/form-data; boundary=${boundary}`, {
+        extensions: [".xlsx"]
+      }),
+    (error) => error.status === 400
+  );
+  await assert.rejects(
+    () =>
+      parseMultipartUpload(csv, `multipart/form-data; boundary=${boundary}`, {
+        extensions: [".csv"],
+        maxBytes: 2
+      }),
+    (error) => error.status === 413
+  );
+  await assert.rejects(
+    () =>
+      parseMultipartUpload(
+        multipartBody(boundary, { filename: "cases.csv", content: "X" }),
+        `multipart/form-data; boundary=${boundary}`
+      ),
+    (error) => error.status === 400,
+    "默认白名单不含 .csv"
+  );
 });
 
 test("API /panel/api/projects/assets: >20MB 结构化拒绝；dispatcher 403", async (t) => {

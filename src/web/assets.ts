@@ -86,6 +86,9 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
   const storageDir = path.join(rootPath, ".artemis", "web", "assets", input.kind);
   const storagePath = path.join(storageDir, `${sha256}${extension}`);
 
+  // 顺序固定：先写内容寻址文件，再登记版本行。若 store 失败，文件保留不删：
+  // 路径由 sha256 决定，后续重试或同内容上传会直接复用，只补一行版本；删除可能误删其他
+  // 版本共用的内容。因此失败最多留下可回收的 CAS 文件，不会产生“有行无文件”。
   await mkdir(rootPath, { recursive: true });
   if (!(await pathExists(storagePath))) {
     writeFileAtomic(storagePath, input.buffer);
