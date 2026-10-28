@@ -609,7 +609,7 @@ export function normalizeWebJobResultPayload(raw: unknown): NormalizedWebJobResu
   const detailRaw = optionalText(rawExecution.detail, "execution.detail");
   const tokenUsage = parseTokenUsage(raw.tokenUsage);
   const tokenArtifacts = parseTokenArtifacts(raw.tokenArtifacts);
-  // runner 上传 body 不得解冻人工清空：只认内部调用参数（面板动作走显式路径）。
+  // runner 上传 body 不得解冻人工清空：只认内部调用参数；当前没有面板解冻入口。
   const allowClearedRefresh = false;
 
   return {
