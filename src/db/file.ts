@@ -136,6 +136,7 @@ export class FileStore implements ProjectStore {
   private readonly hostStatePath: string;
   private hostStateSeenMtimeMs: number | null = null;
   private hostStateLoaded = false;
+  private claimLock: { tail: Promise<void> } = { tail: Promise.resolve() };
 
   private constructor(homeDir: string, env: NodeJS.ProcessEnv, hostId: string | null = null) {
     this.homeDir = homeDir;
@@ -174,6 +175,7 @@ export class FileStore implements ProjectStore {
     view.webIndexLoaded = this.webIndexLoaded;
     view.hostStateSeenMtimeMs = this.hostStateSeenMtimeMs;
     view.hostStateLoaded = this.hostStateLoaded;
+    view.claimLock = this.claimLock;
     return view;
   }
 
@@ -316,6 +318,10 @@ export class FileStore implements ProjectStore {
       claimedBy?: string | null;
       claimedAt?: string | null;
       lastProgressAt?: string | null;
+      targetHostId?: string | null;
+      jobSpec?: Record<string, unknown> | null;
+      deviceSerial?: string | null;
+      deviceLeaseId?: string | null;
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
@@ -426,6 +432,46 @@ export class FileStore implements ProjectStore {
     const released = await this.scopedMem(bucket, this.hostId).releaseStaleClaims(input);
     if (released > 0) await this.persist(bucket, "releaseStaleClaims");
     return released;
+  }
+
+  async claimWebJob(input: {
+    runnerId: string;
+    hostId: string;
+    deviceSerial: string;
+    instanceId: string;
+  }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
+    return this.runWebClaimExclusive(async () => {
+      for (const rootPath of this.registry.keys()) {
+        const bucket = await this.bucket(rootPath);
+        const task = await this.scopedMem(bucket, this.hostId).claimWebJob(input);
+        if (task !== null) {
+          await this.persist(bucket, "claimWebJob");
+          return task;
+        }
+      }
+      return null;
+    });
+  }
+
+  async listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
+    const out: Array<{ task: RegressionTaskRecord; rootPath: string }> = [];
+    for (const rootPath of this.registry.keys()) {
+      const bucket = await this.bucket(rootPath);
+      out.push(...(await this.scopedMem(bucket, this.hostId).listPendingWebJobs()));
+    }
+    return out.sort((a, b) =>
+      a.task.createdAt < b.task.createdAt ? -1 : a.task.createdAt > b.task.createdAt ? 1 : 0
+    );
+  }
+
+  /** 单进程内串行化全局领取（File 多 bucket 扫描期间不让其它 claim 插入）。 */
+  private runWebClaimExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.claimLock.tail.then(fn, fn);
+    this.claimLock.tail = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
   }
 
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {

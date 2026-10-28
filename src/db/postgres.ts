@@ -238,7 +238,10 @@ const SCHEMA = [
      cancelled_host_id TEXT,
      cancelled_at TEXT,
      cancel_note TEXT,
-     cancel_requested_at TEXT
+     cancel_requested_at TEXT,
+     job_spec TEXT,
+     device_serial TEXT,
+     device_lease_id TEXT
     )`,
   `CREATE TABLE IF NOT EXISTS suite_runs (
      id TEXT PRIMARY KEY,
@@ -499,6 +502,9 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancelled_at TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancel_note TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancel_requested_at TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS job_spec TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_serial TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_lease_id TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_host_id TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS channel TEXT`,
@@ -522,7 +528,9 @@ const MIGRATIONS = [
              OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id)))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_host_idx ON runners(project_id, host_id)`,
   `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
-  `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS session_id TEXT`
+  `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS session_id TEXT`,
+  `CREATE INDEX IF NOT EXISTS regression_tasks_web_claim_idx
+     ON regression_tasks(status, target_host_id, device_serial)`
 ];
 
 /** 迁移 advisory lock 的固定键（避免并发首启各自跑 DDL）。 */
@@ -1037,8 +1045,8 @@ export class PostgresStore implements ProjectStore {
     await this.pool.query(
       `INSERT INTO regression_tasks
          (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids,
-          target_host_id, created_host_id, priority)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          target_host_id, created_host_id, priority, job_spec, device_serial, device_lease_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         id,
         project?.id ?? null,
@@ -1051,7 +1059,10 @@ export class PostgresStore implements ProjectStore {
         "[]",
         input.targetHostId ?? null,
         input.createdHostId ?? null,
-        typeof input.priority === "number" ? input.priority : 0
+        typeof input.priority === "number" ? input.priority : 0,
+        input.jobSpec === undefined || input.jobSpec === null ? null : JSON.stringify(input.jobSpec),
+        input.deviceSerial ?? null,
+        input.deviceLeaseId ?? null
       ]
     );
     return {
@@ -1079,7 +1090,10 @@ export class PostgresStore implements ProjectStore {
       cancelledHostId: null,
       cancelledAt: null,
       cancelNote: null,
-      cancelRequestedAt: null
+      cancelRequestedAt: null,
+      jobSpec: input.jobSpec ?? null,
+      deviceSerial: input.deviceSerial ?? null,
+      deviceLeaseId: input.deviceLeaseId ?? null
     };
   }
 
@@ -1138,6 +1152,10 @@ export class PostgresStore implements ProjectStore {
       claimedBy?: string | null;
       claimedAt?: string | null;
       lastProgressAt?: string | null;
+      targetHostId?: string | null;
+      jobSpec?: Record<string, unknown> | null;
+      deviceSerial?: string | null;
+      deviceLeaseId?: string | null;
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
@@ -1155,6 +1173,12 @@ export class PostgresStore implements ProjectStore {
     if (patch.claimedBy !== undefined) add("claimed_by", patch.claimedBy);
     if (patch.claimedAt !== undefined) add("claimed_at", patch.claimedAt);
     if (patch.lastProgressAt !== undefined) add("last_progress_at", patch.lastProgressAt);
+    if (patch.targetHostId !== undefined) add("target_host_id", patch.targetHostId);
+    if (patch.jobSpec !== undefined) {
+      add("job_spec", patch.jobSpec === null ? null : JSON.stringify(patch.jobSpec));
+    }
+    if (patch.deviceSerial !== undefined) add("device_serial", patch.deviceSerial);
+    if (patch.deviceLeaseId !== undefined) add("device_lease_id", patch.deviceLeaseId);
     const guards: string[] = [];
     if (patch.expectStatuses !== undefined) {
       const placeholders = patch.expectStatuses.map((status) => {
@@ -1409,6 +1433,81 @@ export class PostgresStore implements ProjectStore {
       [project.id, input.claimedBefore, input.offlineBefore]
     );
     return released.rows.length;
+  }
+
+  private skipLockedUnsupported = false;
+
+  async claimWebJob(input: {
+    runnerId: string;
+    hostId: string;
+    deviceSerial: string;
+    instanceId: string;
+  }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
+    const host = await this.pool.query("SELECT queue_paused FROM hosts WHERE id = $1", [
+      input.hostId
+    ]);
+    if (host.rows.length > 0 && Boolean(host.rows[0]!.queue_paused)) return null;
+    const claimedAt = new Date().toISOString();
+    const runClaim = async (skipLocked: boolean): Promise<RegressionTaskRecord | null> => {
+      return this.withTransaction(async (run) => {
+        const lockClause = skipLocked ? "FOR UPDATE SKIP LOCKED" : "FOR UPDATE";
+        const picked = await run(
+          `SELECT id FROM regression_tasks
+            WHERE status = 'pending' AND job_spec IS NOT NULL
+              AND target_host_id = $1 AND device_serial = $2
+            ORDER BY priority DESC, created_at ASC
+            LIMIT 1 ${lockClause}`,
+          [input.hostId, input.deviceSerial]
+        );
+        if (picked.rows.length === 0) return null;
+        const updated = await run(
+          `UPDATE regression_tasks
+              SET status = 'claimed', claimed_by = $2, claimed_at = $3,
+                  claimed_host_id = $1, claimed_instance_id = $4
+            WHERE id = $5 AND status = 'pending'
+          RETURNING *`,
+          [input.hostId, input.runnerId, claimedAt, input.instanceId, String(picked.rows[0]!.id)]
+        );
+        return updated.rows.length === 0 ? null : mapRegressionTask(updated.rows[0]!);
+      });
+    };
+
+    let task: RegressionTaskRecord | null = null;
+    if (!this.skipLockedUnsupported) {
+      try {
+        task = await runClaim(true);
+      } catch (error) {
+        if (!isSkipLockedUnsupported(error)) throw error;
+        this.skipLockedUnsupported = true;
+        task = await runClaim(false);
+      }
+    } else {
+      task = await runClaim(false);
+    }
+    if (task === null) return null;
+    const rootPath = task.projectId === null ? "" : await this.projectRootPath(task.projectId);
+    return { task, rootPath };
+  }
+
+  async listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
+    const result = await this.pool.query(
+      `SELECT t.*, p.root_path AS project_root_path
+         FROM regression_tasks t
+         LEFT JOIN projects p ON p.id = t.project_id
+        WHERE t.status = 'pending' AND t.job_spec IS NOT NULL
+        ORDER BY t.created_at ASC`
+    );
+    return result.rows.map((row) => ({
+      task: mapRegressionTask(row),
+      rootPath: nullableString(row.project_root_path) ?? ""
+    }));
+  }
+
+  private async projectRootPath(projectId: string): Promise<string> {
+    const result = await this.pool.query("SELECT root_path FROM projects WHERE id = $1", [
+      projectId
+    ]);
+    return result.rows.length === 0 ? "" : String(result.rows[0]!.root_path);
   }
 
   async recordSuiteRun(input: RecordSuiteRunInput): Promise<SuiteRunRecord> {
@@ -2563,8 +2662,8 @@ export class PostgresStore implements ProjectStore {
         `INSERT INTO regression_tasks
            (id, project_id, created_at, created_by, refs, platforms, baseline, status, claimed_by, claimed_at,
             run_ids, attempts, cancel_source, cancelled_by, cancelled_host_id, cancelled_at, cancel_note,
-            cancel_requested_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            cancel_requested_at, job_spec, device_serial, device_lease_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
          ON CONFLICT (id) DO NOTHING
          RETURNING id`,
         [
@@ -2585,7 +2684,10 @@ export class PostgresStore implements ProjectStore {
           entry.cancelledHostId,
           entry.cancelledAt,
           entry.cancelNote,
-          entry.cancelRequestedAt
+          entry.cancelRequestedAt,
+          entry.jobSpec === null || entry.jobSpec === undefined ? null : JSON.stringify(entry.jobSpec),
+          entry.deviceSerial ?? null,
+          entry.deviceLeaseId ?? null
         ]
       );
       regressionTasks.inserted += Number(inserted.rowCount ?? 0);
@@ -3493,8 +3595,32 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     cancelledHostId: nullableString(row.cancelled_host_id),
     cancelledAt: nullableString(row.cancelled_at),
     cancelNote: nullableString(row.cancel_note),
-    cancelRequestedAt: nullableString(row.cancel_requested_at)
+    cancelRequestedAt: nullableString(row.cancel_requested_at),
+    jobSpec: parseJobSpec(row.job_spec),
+    deviceSerial: nullableString(row.device_serial),
+    deviceLeaseId: nullableString(row.device_lease_id)
   });
+}
+
+function parseJobSpec(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isSkipLockedUnsupported(error: unknown): boolean {
+  const message = (error as { message?: unknown } | null)?.message;
+  if (typeof message !== "string") return false;
+  if (/skip locked/i.test(message)) {
+    return /not supported|syntax|query planner|failed to parse/i.test(message);
+  }
+  return false;
 }
 
 function mapSuiteRunCase(row: Record<string, unknown>): SuiteRunCaseRecord {

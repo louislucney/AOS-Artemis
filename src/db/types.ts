@@ -426,6 +426,12 @@ export interface RegressionTaskRecord {
   cancelledAt: string | null;
   cancelNote: string | null;
   cancelRequestedAt: string | null;
+  /** Web 任务规格（JSON）；普通回归任务为 null。 */
+  jobSpec: Record<string, unknown> | null;
+  /** Web 任务预占/绑定的设备（`claimWebJob` 只命中非空行）。 */
+  deviceSerial: string | null;
+  /** 预占租约主键 `<hostId>:<serial>`（`device_leases` 无独立 id 列）。 */
+  deviceLeaseId: string | null;
 }
 
 /** 旧 `stopped` 行对外统一读作 `cancelled`（`cancelSource=panel` 仅作历史来源标注）。 */
@@ -439,7 +445,10 @@ export function normalizeRegressionTask(record: RegressionTaskRecord): Regressio
     cancelledHostId: record.cancelledHostId ?? null,
     cancelledAt: record.cancelledAt ?? null,
     cancelNote: record.cancelNote ?? (legacy ? "legacy stopped" : null),
-    cancelRequestedAt: record.cancelRequestedAt ?? null
+    cancelRequestedAt: record.cancelRequestedAt ?? null,
+    jobSpec: record.jobSpec ?? null,
+    deviceSerial: record.deviceSerial ?? null,
+    deviceLeaseId: record.deviceLeaseId ?? null
   };
 }
 
@@ -830,6 +839,9 @@ export interface CreateRegressionTaskInput {
   targetHostId?: string | null;
   priority?: number;
   createdHostId?: string | null;
+  jobSpec?: Record<string, unknown> | null;
+  deviceSerial?: string | null;
+  deviceLeaseId?: string | null;
 }
 
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */
@@ -910,6 +922,10 @@ export interface ProjectStore {
       claimedBy?: string | null;
       claimedAt?: string | null;
       lastProgressAt?: string | null;
+      targetHostId?: string | null;
+      jobSpec?: Record<string, unknown> | null;
+      deviceSerial?: string | null;
+      deviceLeaseId?: string | null;
       /** CAS 守卫：仅当当前状态在此列表内才写入（空数组＝永不命中）；不满足返回 false。 */
       expectStatuses?: RegressionTaskStatus[];
     }
@@ -952,6 +968,15 @@ export interface ProjectStore {
     offlineBefore: string;
     claimedBefore: string;
   }): Promise<number>;
+  /** 全局原子领取 Web 任务：只命中 pending + job_spec 非空 + target_host_id/device_serial 精确匹配。 */
+  claimWebJob(input: {
+    runnerId: string;
+    hostId: string;
+    deviceSerial: string;
+    instanceId: string;
+  }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null>;
+  /** 全局只读 pending web job 列表（回池/面板用），带项目根路径。 */
+  listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>>;
   createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord>;
   /** 返回 createdAt 新→旧；`limit` 缺省＝全量（firing 用；面板/CLI 显式传分页值）。 */
   listSchedules(rootPath: string, limit?: number): Promise<ScheduleRecord[]>;

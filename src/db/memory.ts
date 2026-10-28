@@ -398,7 +398,10 @@ export class MemoryStore implements ProjectStore {
       cancelledHostId: null,
       cancelledAt: null,
       cancelNote: null,
-      cancelRequestedAt: null
+      cancelRequestedAt: null,
+      jobSpec: input.jobSpec ?? null,
+      deviceSerial: input.deviceSerial ?? null,
+      deviceLeaseId: input.deviceLeaseId ?? null
     };
     this.regressionTasks.push(record);
     return cloneRegressionTask(record);
@@ -454,6 +457,10 @@ export class MemoryStore implements ProjectStore {
       claimedBy?: string | null;
       claimedAt?: string | null;
       lastProgressAt?: string | null;
+      targetHostId?: string | null;
+      jobSpec?: Record<string, unknown> | null;
+      deviceSerial?: string | null;
+      deviceLeaseId?: string | null;
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean> {
@@ -474,6 +481,10 @@ export class MemoryStore implements ProjectStore {
     if (patch.claimedBy !== undefined) task.claimedBy = patch.claimedBy;
     if (patch.claimedAt !== undefined) task.claimedAt = patch.claimedAt;
     if (patch.lastProgressAt !== undefined) task.lastProgressAt = patch.lastProgressAt;
+    if (patch.targetHostId !== undefined) task.targetHostId = patch.targetHostId;
+    if (patch.jobSpec !== undefined) task.jobSpec = cloneJobSpec(patch.jobSpec);
+    if (patch.deviceSerial !== undefined) task.deviceSerial = patch.deviceSerial;
+    if (patch.deviceLeaseId !== undefined) task.deviceLeaseId = patch.deviceLeaseId;
     return true;
   }
 
@@ -721,6 +732,60 @@ export class MemoryStore implements ProjectStore {
       released += 1;
     }
     return released;
+  }
+
+  async claimWebJob(input: {
+    runnerId: string;
+    hostId: string;
+    deviceSerial: string;
+    instanceId: string;
+  }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
+    const host = this.hosts.find((entry) => entry.id === input.hostId);
+    if (host?.queuePaused === true) return null;
+    const candidates = this.regressionTasks
+      .filter(
+        (task) =>
+          task.status === "pending" &&
+          task.jobSpec !== null &&
+          task.targetHostId === input.hostId &&
+          task.deviceSerial === input.deviceSerial
+      )
+      .sort(
+        (a, b) =>
+          b.priority - a.priority ||
+          (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0)
+      );
+    const task = candidates[0];
+    if (task === undefined) return null;
+    const rootPath = this.projectRootPath(task.projectId);
+    if (rootPath === null) return null;
+    task.status = "claimed";
+    task.claimedBy = input.runnerId;
+    task.claimedAt = new Date().toISOString();
+    task.claimedHostId = input.hostId;
+    task.claimedInstanceId = input.instanceId;
+    return { task: cloneRegressionTask(task), rootPath };
+  }
+
+  async listPendingWebJobs(): Promise<Array<{ task: RegressionTaskRecord; rootPath: string }>> {
+    const out: Array<{ task: RegressionTaskRecord; rootPath: string }> = [];
+    for (const task of this.regressionTasks) {
+      if (task.status !== "pending" || task.jobSpec === null) continue;
+      const rootPath = this.projectRootPath(task.projectId);
+      if (rootPath === null) continue;
+      out.push({ task: cloneRegressionTask(task), rootPath });
+    }
+    return out.sort((a, b) =>
+      a.task.createdAt < b.task.createdAt ? -1 : a.task.createdAt > b.task.createdAt ? 1 : 0
+    );
+  }
+
+  private projectRootPath(projectId: string | null): string | null {
+    if (projectId === null) return null;
+    for (const project of this.projects.values()) {
+      if (project.id === projectId) return project.rootPath;
+    }
+    return null;
   }
 
   async createSchedule(input: CreateScheduleInput): Promise<ScheduleRecord> {
@@ -2042,8 +2107,17 @@ function cloneRegressionTask(task: RegressionTaskRecord): RegressionTaskRecord {
     claimedInstanceId: normalized.claimedInstanceId ?? null,
     priority: typeof normalized.priority === "number" ? normalized.priority : 0,
     lastProgressAt: normalized.lastProgressAt ?? null,
-    startedAt: normalized.startedAt ?? null
+    startedAt: normalized.startedAt ?? null,
+    jobSpec: cloneJobSpec(normalized.jobSpec),
+    deviceSerial: normalized.deviceSerial ?? null,
+    deviceLeaseId: normalized.deviceLeaseId ?? null
   };
+}
+
+function cloneJobSpec(
+  spec: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null {
+  return spec === null || spec === undefined ? null : JSON.parse(JSON.stringify(spec));
 }
 
 function cloneSuiteRun(run: SuiteRunRecord): SuiteRunRecord {
