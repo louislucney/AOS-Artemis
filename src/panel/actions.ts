@@ -45,7 +45,16 @@ import {
   type SystemColumnMode
 } from "../web/workbook-reupload.js";
 import { parseMultipartUpload, UploadError } from "./upload.js";
-import { parseWebJobSpec } from "../web/job-spec.js";
+import { parseWebJobSpec, WebJobDispatchError, normalizeCaseFilter, type WebJobExecutionMode } from "../web/job-spec.js";
+import { createWebJob } from "../web/jobs.js";
+import {
+  compareOsVersions,
+  parseOsVersion,
+  selectWebAssignment,
+  type WebDispatchRequirements,
+  type WebToolName
+} from "../web/dispatch.js";
+import { runnerTtlFrom } from "../runner/status.js";
 import { ingestWebJobResult, WebResultError } from "../web/results.js";
 import {
   computeDispatchPreview,
@@ -463,6 +472,9 @@ export async function handlePanelActionRequest(
   }
   const isExportDownload =
     request.method === "GET" && request.url.pathname === "/panel/api/export";
+  if (request.url.pathname === "/panel/api/jobs/preview") {
+    return await previewWebJobAction(deps, request);
+  }
   if (request.method !== "POST" && !isExportDownload) {
     return json(405, { error: "method not allowed (POST)" });
   }
@@ -615,6 +627,12 @@ export async function handlePanelActionRequest(
       );
       if (response.status === 200) scopedDeps.cache?.clear();
       await auditPanel(scopedDeps, resolved.rootPath, "action.tasks", response);
+      return response;
+    }
+    if (request.url.pathname === "/panel/api/jobs") {
+      const response = await createWebJobAction(scopedDeps, resolved.rootPath, payload, actor);
+      if (response.status === 200) scopedDeps.cache?.clear();
+      await auditPanel(scopedDeps, resolved.rootPath, "action.jobs", response);
       return response;
     }
     if (request.url.pathname === "/panel/api/verdicts") {
@@ -1502,6 +1520,356 @@ async function createTask(
     priority
   });
   return json(200, { ok: true, task, ...(warnings.length > 0 ? { warnings } : {}) });
+}
+
+function panelTextField(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function panelStringList(raw: unknown): string[] {
+  const out: string[] = [];
+  const push = (entry: unknown): void => {
+    if (typeof entry !== "string") return;
+    const trimmed = entry.trim();
+    if (trimmed !== "" && !out.includes(trimmed)) out.push(trimmed);
+  };
+  if (Array.isArray(raw)) {
+    for (const entry of raw) push(entry);
+    return out;
+  }
+  if (typeof raw === "string") {
+    for (const entry of raw.split(",")) push(entry);
+  }
+  return out;
+}
+
+type PanelWebJobAssignment = {
+  assignment: "auto" | "manual";
+  devicePinned: boolean;
+  targetHostId: string | null;
+  deviceSerial: string | null;
+};
+
+type PanelWebJobParse<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; code?: string };
+
+function parseWebJobAssignmentFields(
+  payload: Record<string, unknown>
+): PanelWebJobParse<PanelWebJobAssignment> {
+  const raw = panelTextField(payload, "assignment");
+  if (raw !== "" && raw !== "auto" && raw !== "manual") {
+    return {
+      ok: false,
+      code: "invalid-assignment",
+      error: `assignment 仅支持 auto/manual（当前 ${raw}）`
+    };
+  }
+  if (raw !== "manual") {
+    return {
+      ok: true,
+      value: { assignment: "auto", devicePinned: false, targetHostId: null, deviceSerial: null }
+    };
+  }
+  const targetHostId = panelTextField(payload, "targetHostId");
+  if (targetHostId === "") {
+    return {
+      ok: false,
+      code: "manual-requires-host",
+      error: "manual 下发必须指定 targetHostId（执行机主机）"
+    };
+  }
+  const serial = panelTextField(payload, "deviceSerial");
+  return {
+    ok: true,
+    value: {
+      assignment: "manual",
+      devicePinned: serial !== "",
+      targetHostId,
+      deviceSerial: serial === "" ? null : serial
+    }
+  };
+}
+
+function parseWebJobRequirements(
+  payload: Record<string, unknown>
+): PanelWebJobParse<WebDispatchRequirements> {
+  const raw = payload.requirements;
+  const record =
+    raw !== null && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : null;
+  const platform = record === null ? payload.platform : record.platform;
+  if (platform !== "android" && platform !== "ios") {
+    return { ok: false, error: `requirements.platform 仅支持 android/ios（当前 ${String(platform)}）` };
+  }
+  const kindRaw = (record === null ? payload.deviceKind : record.deviceKind) ?? "any";
+  const deviceKind =
+    kindRaw === "device" || kindRaw === "simulator"
+      ? kindRaw
+      : kindRaw === "any" || kindRaw === ""
+        ? "any"
+        : null;
+  if (deviceKind === null) {
+    return { ok: false, error: "requirements.deviceKind 仅支持 device/simulator/any" };
+  }
+  const deviceModel = panelStringList(record === null ? payload.deviceModel : record.deviceModel);
+  const osRaw = record === null ? null : record.osVersion;
+  const osRecord =
+    osRaw !== null && typeof osRaw === "object" && !Array.isArray(osRaw)
+      ? (osRaw as Record<string, unknown>)
+      : null;
+  const minRaw = osRecord?.min ?? (record === null ? payload.osMin : record.osMin);
+  const maxRaw = osRecord?.max ?? (record === null ? payload.osMax : record.osMax);
+  const min = typeof minRaw === "string" ? minRaw.trim() : "";
+  const max = typeof maxRaw === "string" ? maxRaw.trim() : "";
+  const parsedMin = min === "" ? null : parseOsVersion(min);
+  const parsedMax = max === "" ? null : parseOsVersion(max);
+  if (min !== "" && parsedMin === null) {
+    return { ok: false, error: `requirements.osVersion.min 非法：${min}` };
+  }
+  if (max !== "" && parsedMax === null) {
+    return { ok: false, error: `requirements.osVersion.max 非法：${max}` };
+  }
+  if (parsedMin !== null && parsedMax !== null && compareOsVersions(parsedMin, parsedMax) > 0) {
+    return {
+      ok: false,
+      error: `requirements.osVersion 下界 ${min} 大于上界 ${max}`
+    };
+  }
+  const tools = panelStringList(record === null ? payload.tools : record.tools);
+  return {
+    ok: true,
+    value: {
+      platform,
+      deviceKind,
+      ...(deviceModel.length === 0 ? {} : { deviceModel }),
+      ...(min === "" && max === ""
+        ? {}
+        : { osVersion: { ...(min === "" ? {} : { min }), ...(max === "" ? {} : { max }) } }),
+      ...(tools.length === 0 ? {} : { tools: tools as WebToolName[] })
+    }
+  };
+}
+
+interface PanelWebJobCreateInput extends PanelWebJobAssignment {
+  requirements: WebDispatchRequirements;
+  executionMode: WebJobExecutionMode;
+  caseFilter: { modules: string[]; caseIds: string[] };
+  excelAssetId: string;
+  packageAssetId: string;
+  materialsAssetId: string | null;
+  scriptSetId: string | null;
+  retry: number;
+  priority: number;
+}
+
+function parseWebJobCreateForm(
+  payload: Record<string, unknown>
+): PanelWebJobParse<PanelWebJobCreateInput> {
+  const assignment = parseWebJobAssignmentFields(payload);
+  if (assignment.ok === false) return assignment;
+  const requirements = parseWebJobRequirements(payload);
+  if (requirements.ok === false) return requirements;
+
+  const modeRaw = panelTextField(payload, "executionMode");
+  const executionMode = modeRaw === "" ? "maestro" : modeRaw;
+  if (executionMode !== "maestro" && executionMode !== "llm") {
+    return { ok: false, error: `executionMode 仅支持 maestro/llm（当前 ${modeRaw}）` };
+  }
+  const excelAssetId = panelTextField(payload, "excelAssetId");
+  if (excelAssetId === "") return { ok: false, error: "缺少 excelAssetId（Excel 用例资产）" };
+  const packageAssetId = panelTextField(payload, "packageAssetId");
+  if (packageAssetId === "") return { ok: false, error: "缺少 packageAssetId（安装包资产）" };
+
+  const caseFilter = normalizeCaseFilter(
+    payload.caseFilter ?? {
+      modules: panelStringList(payload.caseModules),
+      caseIds: panelStringList(payload.caseIds)
+    }
+  );
+  const rawRetry = payload.retry;
+  let retry = 0;
+  if (rawRetry !== undefined && rawRetry !== null && rawRetry !== "") {
+    const numeric =
+      typeof rawRetry === "number"
+        ? rawRetry
+        : typeof rawRetry === "string"
+          ? Number(rawRetry.trim())
+          : Number.NaN;
+    if (!Number.isInteger(numeric) || numeric < 0) {
+      return { ok: false, error: "retry 须为 ≥0 的整数" };
+    }
+    retry = numeric;
+  }
+  const priority = taskPriority(payload.priority);
+  if (priority === null) {
+    return { ok: false, error: "优先级须为 0–100 的整数（priority）" };
+  }
+  const materialsAssetId = panelTextField(payload, "materialsAssetId");
+  const scriptSetId = panelTextField(payload, "scriptSetId");
+  return {
+    ok: true,
+    value: {
+      ...assignment.value,
+      requirements: requirements.value,
+      executionMode,
+      caseFilter,
+      excelAssetId,
+      packageAssetId,
+      materialsAssetId: materialsAssetId === "" ? null : materialsAssetId,
+      scriptSetId: scriptSetId === "" ? null : scriptSetId,
+      retry,
+      priority
+    }
+  };
+}
+
+async function createWebJobAction(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>,
+  actor: string
+): Promise<PanelWebResponse> {
+  const parsed = parseWebJobCreateForm(payload);
+  if (parsed.ok === false) {
+    return json(400, {
+      ok: false,
+      ...(parsed.code === undefined ? {} : { code: parsed.code }),
+      error: parsed.error
+    });
+  }
+  const input = parsed.value;
+  try {
+    const outcome = await createWebJob({
+      store: deps.store,
+      env: deps.env ?? process.env,
+      rootPath,
+      assignment: input.assignment,
+      devicePinned: input.devicePinned,
+      targetHostId: input.targetHostId,
+      deviceSerial: input.deviceSerial,
+      requirements: input.requirements,
+      excelAssetId: input.excelAssetId,
+      packageAssetId: input.packageAssetId,
+      materialsAssetId: input.materialsAssetId,
+      scriptSetId: input.scriptSetId,
+      executionMode: input.executionMode,
+      caseFilter: input.caseFilter,
+      retry: input.retry,
+      priority: input.priority,
+      createdBy: actor,
+      nowMs: deps.now?.() ?? Date.now()
+    });
+    const binding = outcome.assignment;
+    return json(200, {
+      ok: true,
+      job: outcome.task,
+      assignment: binding,
+      pendingReason: outcome.pendingReason,
+      status: binding === null ? "pending" : "bound",
+      message:
+        binding === null
+          ? "等待满足要求的执行机"
+          : `已绑定 ${binding.hostId} / ${binding.deviceSerial}`
+    });
+  } catch (error) {
+    if (error instanceof WebJobDispatchError) {
+      return json(error.status, { ok: false, code: error.code, error: error.message });
+    }
+    throw error;
+  }
+}
+
+/** 只读选机预览：与下发同源（`selectWebAssignment`），不建任务、不占租约、不回传任何 runner 令牌。 */
+async function previewWebJobAction(
+  deps: PanelWebDeps,
+  request: PanelActionRequest
+): Promise<PanelWebResponse> {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return json(405, { ok: false, error: "method not allowed (GET)" });
+  }
+  const params = request.url.searchParams;
+  const flat: Record<string, unknown> = {};
+  for (const key of [
+    "project",
+    "host",
+    "assignment",
+    "targetHostId",
+    "deviceSerial",
+    "platform",
+    "deviceKind",
+    "osMin",
+    "osMax"
+  ]) {
+    const value = params.get(key);
+    if (value !== null) flat[key] = value;
+  }
+  for (const key of ["deviceModel", "tools"]) {
+    const values = params.getAll(key);
+    if (values.length === 1) flat[key] = values[0];
+    else if (values.length > 1) flat[key] = values;
+  }
+  const projectKey = typeof flat.project === "string" ? flat.project.trim() : "";
+  if (projectKey === "") return json(400, { ok: false, error: "缺少 project" });
+  const hostParam = typeof flat.host === "string" ? flat.host.trim() : "";
+  let resolved: { rootPath: string; name: string; hostId: string | null } | null;
+  try {
+    resolved = await resolveProjectKey(deps, projectKey, hostParam === "" ? undefined : hostParam);
+  } catch (error) {
+    if (error instanceof AmbiguousProjectError) {
+      return json(409, { ok: false, error: error.message });
+    }
+    throw error;
+  }
+  if (resolved === null) return json(404, { ok: false, error: `未知项目 "${projectKey}"` });
+  const assignment = parseWebJobAssignmentFields(flat);
+  if (assignment.ok === false) return json(400, { ok: false, error: assignment.error });
+  const requirements = parseWebJobRequirements(flat);
+  if (requirements.ok === false) return json(400, { ok: false, error: requirements.error });
+  const store =
+    resolved.hostId === null
+      ? deps.store
+      : (deps.storeForHost?.(resolved.hostId) ?? deps.store);
+  const [runners, leases] = await Promise.all([
+    store.listWebRunners().catch(() => []),
+    store.listDeviceLeases().catch(() => [])
+  ]);
+  const selection = selectWebAssignment({
+    runners: runners.map((runner) => ({
+      id: runner.id,
+      hostId: runner.hostId,
+      hostname: runner.hostname,
+      platforms: runner.platforms,
+      devices: runner.devices,
+      tools: runner.tools,
+      lastSeenAt: runner.lastSeenAt
+    })),
+    leases,
+    request: { ...assignment.value, requirements: requirements.value },
+    nowMs: deps.now?.() ?? Date.now(),
+    runnerTtlMs: runnerTtlFrom(deps.env ?? process.env)
+  });
+  if (!selection.ok) {
+    return json(200, {
+      ok: true,
+      project: resolved.rootPath,
+      selection: null,
+      code: selection.code,
+      message: selection.message
+    });
+  }
+  return json(200, {
+    ok: true,
+    project: resolved.rootPath,
+    selection: {
+      hostId: selection.hostId,
+      deviceSerial: selection.deviceSerial,
+      score: selection.score,
+      reasons: selection.reasons
+    }
+  });
 }
 
 async function saveVerdicts(

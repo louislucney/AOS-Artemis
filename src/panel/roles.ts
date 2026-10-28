@@ -58,6 +58,7 @@ export function panelRequiredRoleForPath(pathname: string): PanelRole | null {
     pathname === "/panel/api/tasks/stop" ||
     pathname === "/panel/api/tasks/release" ||
     pathname === "/panel/api/tasks/rerun" ||
+    pathname === "/panel/api/jobs" ||
     pathname === "/panel/api/queue/pause" ||
     pathname === "/panel/api/queue/resume"
   ) {

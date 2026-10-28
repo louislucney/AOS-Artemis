@@ -5,12 +5,18 @@ import type { ArtifactRecord } from "../artifacts/index.js";
 import type {
   AuditEventRecord,
   CaseSetRecord,
+  DeviceLeaseRecord,
   ExcelMappingRecord,
   ProjectEventRecord,
-  WebAssetRecord
+  RegressionTaskRecord,
+  WebAssetRecord,
+  WebRunnerRecord
 } from "../db/types.js";
+import type { WebJobSpec } from "../web/job-spec.js";
+import type { WebJobResultDocument } from "../web/results.js";
 import { parseQuarantine } from "../figma/quarantine.js";
 import { formatBytes } from "../figma/retention.js";
+import { isRunnerOnline } from "../runner/status.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cCard, cEmpty, cTable } from "./components.js";
 import { relativeTime } from "./time.js";
@@ -297,6 +303,518 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   });
 }
 
+export interface WebJobListEntry {
+  task: RegressionTaskRecord;
+  spec: WebJobSpec | null;
+  result: WebJobResultDocument | null;
+}
+
+export interface WebJobsPageData {
+  /** 空串＝未选择项目（渲染项目选择器）。 */
+  rootPath: string;
+  rootLabel: string;
+  hostId?: string | null;
+  projectStatus?: "active" | "archived" | null;
+  jobs: WebJobListEntry[];
+  assets: WebAssetRecord[];
+  runners: WebRunnerRecord[];
+  leases: DeviceLeaseRecord[];
+  nowMs: number;
+  runnerTtlMs: number;
+  projectChoices: Array<{ name: string; rootPath: string; hostId: string | null }>;
+  capabilities?: ConsoleCapabilities;
+  storeHealth?: ConsoleShellInput["storeHealth"];
+}
+
+export interface WebJobPageData {
+  rootPath: string;
+  rootLabel: string;
+  hostId?: string | null;
+  task: RegressionTaskRecord;
+  spec: WebJobSpec | null;
+  result: WebJobResultDocument | null;
+  device: {
+    serial: string | null;
+    model: string | null;
+    osVersion: string | null;
+    source: "result" | "inventory" | "unknown";
+  };
+  capabilities?: ConsoleCapabilities;
+  storeHealth?: ConsoleShellInput["storeHealth"];
+}
+
+const WEB_JOB_STATUS_LABELS: Record<string, string> = {
+  pending: "待执行",
+  claimed: "已领取",
+  running: "执行中",
+  stopping: "停止中",
+  stopped: "已停止",
+  cancelled: "已取消",
+  completed: "已完成",
+  partial: "部分失败",
+  failed: "失败"
+};
+
+function webJobStatusLabel(status: string): string {
+  return WEB_JOB_STATUS_LABELS[status] ?? status;
+}
+
+function webJobStatusTone(status: string): "neutral" | "accent" | "success" | "warning" | "error" {
+  if (status === "completed") return "success";
+  if (status === "failed") return "error";
+  if (status === "claimed" || status === "running") return "accent";
+  if (status === "pending" || status === "partial" || status === "stopping") return "warning";
+  return "neutral";
+}
+
+function jobsHref(
+  rootPath: string,
+  hostId: string | null,
+  extra: Record<string, string> = {}
+): string {
+  const params = new URLSearchParams({ project: rootPath, section: "jobs" });
+  if (hostId !== null) params.set("host", hostId);
+  for (const [key, value] of Object.entries(extra)) params.set(key, value);
+  return `/panel?${params.toString()}`;
+}
+
+function jobBinding(task: RegressionTaskRecord, spec: WebJobSpec | null): {
+  bound: boolean;
+  hostId: string | null;
+  serial: string | null;
+  pending: boolean;
+  reason: string | null;
+} {
+  const hostId = task.claimedHostId ?? task.targetHostId ?? spec?.targetHostId ?? null;
+  const serial = task.deviceSerial ?? spec?.deviceSerial ?? null;
+  return {
+    bound: serial !== null,
+    hostId,
+    serial,
+    pending: task.status === "pending" && serial === null && !spec?.binding,
+    reason: spec?.assignmentError?.message ?? null
+  };
+}
+
+function jobBindingCell(entry: WebJobListEntry): string {
+  const binding = jobBinding(entry.task, entry.spec);
+  if (binding.bound) {
+    return `已绑定 host/device <code>${escapeHtml(binding.hostId ?? "—")}</code> · <code>${escapeHtml(
+      binding.serial ?? "—"
+    )}</code>`;
+  }
+  if (binding.pending) {
+    const reason =
+      binding.reason === null ? "" : ` <span class="muted">（${escapeHtml(binding.reason)}）</span>`;
+    return `${cBadge({ label: "等待满足要求的执行机", tone: "warning" })}${reason}`;
+  }
+  return '<span class="muted">未绑定设备（已结束）</span>';
+}
+
+function jobDeviceCell(entry: WebJobListEntry, runners: WebRunnerRecord[]): string {
+  const binding = jobBinding(entry.task, entry.spec);
+  if (!binding.bound) return "—";
+  const runner = runners.find((record) => record.hostId === binding.hostId);
+  const device = runner?.devices.find((record) => record.serial === binding.serial);
+  const model = device?.model ?? entry.result?.device.model ?? "未知型号";
+  const os = device?.osVersion ?? entry.result?.device.osVersion ?? "—";
+  return `${escapeHtml(model)} · ${escapeHtml(os)}`;
+}
+
+function assetOptions(assets: WebAssetRecord[], kind: WebAssetRecord["kind"], emptyLabel: string): string {
+  const entries = assets.filter((asset) => asset.kind === kind);
+  if (entries.length === 0) return `<option value="">${escapeHtml(emptyLabel)}</option>`;
+  return entries
+    .map(
+      (asset) =>
+        `<option value="${escapeHtml(asset.id)}">v${asset.version} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
+    )
+    .join("");
+}
+
+function runnerDeviceOptions(
+  runners: WebRunnerRecord[],
+  leases: DeviceLeaseRecord[],
+  nowMs: number,
+  runnerTtlMs: number
+): string {
+  const options: string[] = ['<option value="">不指定设备（由执行机或自动选机决定）</option>'];
+  for (const runner of runners) {
+    const online = isRunnerOnline(runner.lastSeenAt, nowMs, runnerTtlMs);
+    for (const device of runner.devices) {
+      const busy = leases.some(
+        (lease) =>
+          lease.hostId === runner.hostId &&
+          lease.serial === device.serial &&
+          Number.isFinite(Date.parse(lease.expiresAt)) &&
+          Date.parse(lease.expiresAt) > nowMs
+      );
+      const state = busy ? "占用" : online ? "在线" : "离线";
+      const label = `${runner.hostId} · ${device.serial} · ${device.model ?? "未知型号"} · ${
+        device.osVersion ?? "未知系统"
+      } · ${state} · ${device.state}`;
+      options.push(
+        `<option value="${escapeHtml(device.serial)}" data-host="${escapeHtml(runner.hostId)}">${escapeHtml(label)}</option>`
+      );
+    }
+  }
+  return options.join("");
+}
+
+/** 下发测试（web job）：项目级列表 + 表单；无项目时只给项目选择器。 */
+export function renderWebJobsPage(data: WebJobsPageData): string {
+  const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
+  const role = data.capabilities?.role;
+  const roleAllowed =
+    role === undefined || role === "dispatcher" || role === "maintainer" || role === "admin";
+  const archived = data.projectStatus === "archived";
+  const actionsOff = archived || data.capabilities?.actions === false || !roleAllowed;
+  const disabledAttr = actionsOff ? " disabled" : "";
+  const actionsReason = archived
+    ? '<p class="muted">项目已归档（archived）：禁止下发；可继续查看历史任务。</p>'
+    : actionsOff
+      ? `<p class="muted">写动作需要 dispatcher 及以上角色（当前角色 ${escapeHtml(
+          role ?? "未知"
+        )}）；viewer 只读。</p>`
+      : "";
+
+  if (data.rootPath === "") {
+    const choices = data.projectChoices;
+    return renderConsoleShell({
+      title: "下发测试",
+      active: "dispatch",
+      body: [
+        "<h1>下发测试</h1>",
+        cEmpty({
+          title: "选择项目",
+          body:
+            choices.length === 0
+              ? "还没有可选项目：先在运维页创建/接入项目后回到这里下发。"
+              : "下发测试按项目隔离（Excel/安装包/执行机配置都属于项目）：先选择一个项目。",
+          action:
+            choices.length === 0
+              ? '<a class="c-button" href="/panel">← 多项目总览</a>'
+              : cTable({
+                  columns: ["项目", "路径", "主机"],
+                  rows: choices.map((choice) => [
+                    `<a href="${escapeHtml(jobsHref(choice.rootPath, choice.hostId))}"><code>${escapeHtml(
+                      choice.name
+                    )}</code></a>`,
+                    `<code>${escapeHtml(choice.rootPath)}</code>`,
+                    choice.hostId === null ? "—" : `<code>${escapeHtml(choice.hostId)}</code>`
+                  ]),
+                  caption: "可选项目",
+                  empty: "暂无可下发项目"
+                })
+        })
+      ].join("\n")
+    });
+  }
+
+  const rows = data.jobs.map((entry) => {
+    const detailHref = jobsHref(data.rootPath, data.hostId ?? null, { job: entry.task.id });
+    const gate = entry.result?.gate;
+    const resultCell =
+      gate === undefined
+        ? '<span class="muted">尚无结果</span>'
+        : cBadge({
+            label: `${gate.passed}/${gate.total} 通过`,
+            tone: gate.result === "passed" ? "success" : gate.result === "partial" ? "warning" : "error"
+          });
+    const binding = jobBinding(entry.task, entry.spec);
+    const host = binding.hostId ?? "—";
+    return [
+      `<a href="${escapeHtml(detailHref)}"><code>${escapeHtml(entry.task.id)}</code></a>`,
+      cBadge({
+        label: webJobStatusLabel(entry.task.status),
+        tone: webJobStatusTone(entry.task.status),
+        title: entry.task.status
+      }),
+      jobBindingCell(entry),
+      jobDeviceCell(entry, data.runners),
+      entry.spec === null
+        ? '<span class="muted">规格损坏</span>'
+        : escapeHtml(entry.spec.executionMode === "llm" ? "LLM" : "Maestro"),
+      entry.spec === null
+        ? "—"
+        : escapeHtml(
+            entry.spec.assetSnapshot.find((asset) => asset.kind === "package")?.filename ??
+              entry.spec.packageAssetId
+          ),
+      `<span title="${escapeHtml(entry.task.createdAt)}">${relativeTime(entry.task.createdAt)}</span>`,
+      resultCell,
+      `<span class="muted">${escapeHtml(host)}</span>`
+    ];
+  });
+
+  const hostOptions = data.runners
+    .map(
+      (runner) =>
+        `<option value="${escapeHtml(runner.hostId)}">${escapeHtml(runner.hostId)} · ${escapeHtml(
+          runner.hostname
+        )}（${runner.devices.length} 台设备 · ${
+          isRunnerOnline(runner.lastSeenAt, data.nowMs, data.runnerTtlMs) ? "在线" : "离线"
+        }）</option>`
+    )
+    .join("");
+  const form = [
+    `<form id="web-job-form" data-project="${escapeHtml(data.rootPath)}">`,
+    `<fieldset${disabledAttr}>`,
+    "<legend>下发参数</legend>",
+    `<p><label>执行方式 <select id="web-job-mode" name="executionMode" aria-label="执行方式"${disabledAttr}>`,
+    '<option value="maestro">Maestro 脚本</option>',
+    '<option value="llm">LLM 执行（预留）</option>',
+    "</select></label> ",
+    `<label>平台 <select id="web-job-platform" name="platform" aria-label="平台"${disabledAttr}>`,
+    '<option value="android">Android</option>',
+    '<option value="ios">iOS</option>',
+    "</select></label> ",
+    `<label>设备类型 <select id="web-job-kind" name="deviceKind" aria-label="设备类型"${disabledAttr}>`,
+    '<option value="any">不限</option>',
+    '<option value="device">真机</option>',
+    '<option value="simulator">模拟器</option>',
+    "</select></label></p>",
+    `<p><label>Excel 用例 <select id="web-job-excel" name="excelAssetId" aria-label="Excel 用例资产"${disabledAttr}>${assetOptions(
+      data.assets,
+      "excel",
+      "暂无 Excel 资产（先到测试资产上传）"
+    )}</select></label> ` +
+      `<label>安装包 <select id="web-job-package" name="packageAssetId" aria-label="安装包资产"${disabledAttr}>${assetOptions(
+        data.assets,
+        "package",
+        "暂无安装包资产"
+      )}</select></label></p>`,
+    `<p><label>测试资料 <select id="web-job-materials" name="materialsAssetId" aria-label="测试资料资产"${disabledAttr}><option value="">不指定</option>${assetOptions(
+      data.assets,
+      "materials",
+      "不指定"
+    )}</select></label> ` +
+      `<label>脚本集 <select id="web-job-scripts" name="scriptSetId" aria-label="脚本集资产"${disabledAttr}><option value="">不指定</option>${assetOptions(
+        data.assets,
+        "scripts",
+        "不指定"
+      )}</select></label></p>`,
+    `<p><label>用例范围（模块，逗号分隔） <input id="web-job-case-modules" name="caseModules" aria-label="用例范围（模块）" placeholder="登录、支付"${disabledAttr}></label> ` +
+      `<label>用例 ID（逗号分隔） <input id="web-job-case-ids" name="caseIds" aria-label="用例范围（用例 ID）" placeholder="TC-001,TC-002"${disabledAttr}></label></p>`,
+    `<p><label>执行机 <select id="web-job-assignment" name="assignment" aria-label="执行机分配方式"${disabledAttr}>`,
+    '<option value="auto">自动（任意在线执行机）</option>',
+    '<option value="manual">指定执行机</option>',
+    "</select></label> ",
+    `<label>指定主机 <select id="web-job-host" name="targetHostId" aria-label="指定主机"${disabledAttr}><option value="">自动选择</option>${hostOptions}</select></label></p>`,
+    `<p><label>指定设备（可选） <select id="web-job-device" name="deviceSerial" aria-label="指定设备"${disabledAttr}>${runnerDeviceOptions(
+      data.runners,
+      data.leases,
+      data.nowMs,
+      data.runnerTtlMs
+    )}</select></label></p>`,
+    `<p><label>型号偏好 <input id="web-job-model" name="deviceModel" aria-label="型号偏好（逗号分隔）" placeholder="Pixel 7,Galaxy S23"${disabledAttr}></label> ` +
+      `<label>系统版本下限 <input id="web-job-os-min" name="osMin" aria-label="系统版本下限" placeholder="14"${disabledAttr}></label> ` +
+      `<label>系统版本上限 <input id="web-job-os-max" name="osMax" aria-label="系统版本上限" placeholder="15"${disabledAttr}></label></p>`,
+    `<p><label>重试次数 <input id="web-job-retry" name="retry" type="number" min="0" step="1" value="0" aria-label="重试次数"${disabledAttr}></label> ` +
+      `<label>优先级 <input id="web-job-priority" name="priority" type="number" min="0" max="100" step="1" value="0" aria-label="优先级"${disabledAttr}></label></p>`,
+    `<p><button id="web-job-submit" class="c-button c-button-primary" type="submit" data-busy-label="下发中…"${disabledAttr}>下发测试</button> ` +
+      `<button id="web-job-preview-submit" class="c-button" type="button"${disabledAttr}>预览选机</button> ` +
+      `<span id="web-job-status" role="status" class="muted"></span></p>`,
+    "</fieldset>",
+    `<p class="muted">同一台设备同一时刻只允许一个任务（预占租约）；自动选机失败会进入「等待满足要求的执行机」，不是成功。</p>`,
+    `<div id="web-job-preview-result" class="muted" role="status">尚未预览：可先「预览选机」查看候选主机/设备与打分。</div>`,
+    "</form>",
+    actionsReason
+  ].join("\n");
+
+  const script = actionsOff
+    ? ""
+    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function byId(id){return document.getElementById(id);}function value(id){var node=byId(id);return node&&typeof node.value==="string"?node.value.trim():"";}function list(id){var raw=value(id);return raw===""?[]:raw.split(",").map(function(part){return part.trim();}).filter(function(part){return part!=="";});}var form=byId("web-job-form");var status=byId("web-job-status");var busy=byId("web-job-submit");function setBusy(on){if(!busy)return;if(on){if(!busy.dataset.idleLabel)busy.dataset.idleLabel=busy.textContent;busy.disabled=true;busy.textContent=busy.dataset.busyLabel||"下发中…";}else{busy.disabled=false;busy.textContent=busy.dataset.idleLabel||"下发测试";}}function request(url,options){return fetch(url,options).then(function(r){return r.json().then(function(body){return {ok:r.ok,status:r.status,body:body};});});}function payload(){var assignment=value("web-job-assignment")==="manual"?"manual":"auto";var out={project:root,assignment:assignment,executionMode:value("web-job-mode")||"maestro",excelAssetId:value("web-job-excel"),packageAssetId:value("web-job-package"),requirements:{platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"},caseFilter:{modules:list("web-job-case-modules"),caseIds:list("web-job-case-ids")}};var materials=value("web-job-materials");if(materials!=="")out.materialsAssetId=materials;var scripts=value("web-job-scripts");if(scripts!=="")out.scriptSetId=scripts;var models=list("web-job-model");if(models.length>0)out.requirements.deviceModel=models;var min=value("web-job-os-min");var max=value("web-job-os-max");if(min!==""||max!==""){out.requirements.osVersion={};if(min!=="")out.requirements.osVersion.min=min;if(max!=="")out.requirements.osVersion.max=max;}if(assignment==="manual"){out.targetHostId=value("web-job-host");var serial=value("web-job-device");if(serial!=="")out.deviceSerial=serial;}var retry=value("web-job-retry");if(retry!=="")out.retry=Number(retry);var priority=value("web-job-priority");if(priority!=="")out.priority=Number(priority);return out;}function preview(){var target=byId("web-job-preview-result");if(!target)return;var params=new URLSearchParams({project:root,assignment:value("web-job-assignment")==="manual"?"manual":"auto",platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"});var models=value("web-job-model");if(models!=="")params.set("deviceModel",models);var min=value("web-job-os-min");if(min!=="")params.set("osMin",min);var max=value("web-job-os-max");if(max!=="")params.set("osMax",max);if(value("web-job-assignment")==="manual"){var targetHost=value("web-job-host");if(targetHost!=="")params.set("targetHostId",targetHost);var serial=value("web-job-device");if(serial!=="")params.set("deviceSerial",serial);}target.textContent="预览中…";request("/panel/api/jobs/preview?"+params.toString(),{headers:{"X-AOS-Console":"1"}}).then(function(res){if(res.ok&&res.body&&res.body.selection){var pick=res.body.selection;target.textContent="可选："+pick.hostId+" / "+pick.deviceSerial+"（分数 "+pick.score+"）";}else{target.textContent="无可用执行机："+((res.body&&res.body.message)||res.status);}}).catch(function(err){target.textContent="预览失败："+err;});}var previewBtn=byId("web-job-preview-submit");if(previewBtn)previewBtn.addEventListener("click",preview);["web-job-assignment","web-job-host","web-job-device","web-job-platform","web-job-kind","web-job-model","web-job-os-min","web-job-os-max"].forEach(function(id){var node=byId(id);if(node)node.addEventListener("change",preview);});if(form){form.addEventListener("submit",function(event){event.preventDefault();setBusy(true);request("/panel/api/jobs",{method:"POST",headers:{"Content-Type":"application/json","X-AOS-Console":"1"},body:JSON.stringify(payload())}).then(function(res){if(res.ok&&res.body&&res.body.ok){window.aosFlash&&window.aosFlash("已下发："+(res.body.status==="bound"?"已绑定 "+res.body.assignment.hostId+" / "+res.body.assignment.deviceSerial:"等待满足要求的执行机"));location.href="/panel?project="+encodeURIComponent(root)+"&section=jobs"+(host?"&host="+encodeURIComponent(host):"")+"&job="+encodeURIComponent(res.body.job.id);return;}setBusy(false);if(status)status.textContent="下发失败："+((res.body&&res.body.error)||res.status);}).catch(function(err){setBusy(false);if(status)status.textContent="下发失败："+err;});});}})();</script>`;
+
+  return renderConsoleShell({
+    title: "下发测试",
+    active: "dispatch",
+    meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
+    projectHostId: data.hostId ?? null,
+    capabilities: data.capabilities,
+    storeHealth: data.storeHealth,
+    body: [
+      "<h1>下发测试</h1>",
+      archived ? `<p>${cBadge({ label: "已归档", tone: "warning" })} 归档项目只读。</p>` : "",
+      `<p class="muted">Web 任务下发到远端执行机的具体设备：按硬要求过滤、按型号/系统版本打分；<a href="${escapeHtml(
+        `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets${hostQuery}`
+      )}">测试资产</a> 管理 Excel/安装包/资料/脚本版本。</p>`,
+      cCard({ title: "下发参数", subtitle: "执行机可自动选机或手动指定；设备与主机必须匹配", body: form }),
+      cCard({
+        title: "任务列表",
+        subtitle: `共 ${data.jobs.length} 条（新→旧；仅列 Web 任务）`,
+        body: cTable({
+          columns: ["任务", "状态", "执行机与设备", "设备型号/系统", "执行方式", "安装包", "创建", "结果", "主机"],
+          rows,
+          caption: "Web 任务列表",
+          empty: "尚无 Web 任务（上方下发）"
+        })
+      }),
+      script
+    ].join("\n")
+  });
+}
+
+/** 单条 Web 任务详情：只展示已持久化的事实（result.json 不存在时明确「尚无结果」）。 */
+export function renderWebJobPage(data: WebJobPageData): string {
+  const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
+  const result = data.result;
+  const gate = result?.gate;
+  const cases = Array.isArray(result?.execution?.cases) ? result.execution.cases : [];
+  const caseRows = cases.map((entry) => [
+    `<code>${escapeHtml(entry.caseId)}</code>`,
+    escapeHtml(entry.name),
+    cBadge({
+      label: entry.status,
+      tone: entry.status === "PASS" ? "success" : entry.status === "SKIP" ? "warning" : "error"
+    }),
+    entry.durationMs === undefined ? "—" : `${entry.durationMs} ms`,
+    entry.failureReason === undefined
+      ? entry.failureStep === undefined
+        ? "—"
+        : escapeHtml(entry.failureStep)
+      : `${escapeHtml(entry.failureStep ?? "")}${
+          entry.failureStep === undefined ? "" : "："
+        }${escapeHtml(entry.failureReason)}`,
+    entry.traceId === undefined ? "—" : `<code>${escapeHtml(entry.traceId)}</code>`
+  ]);
+  const evidence = Array.isArray(result?.evidence) ? result.evidence : [];
+  const evidenceHtml =
+    evidence.length === 0
+      ? '<span class="muted">—</span>'
+      : `<ul>${evidence
+          .map((entry) => {
+            const label = escapeHtml(entry);
+            if (/^[a-z]+:\/\//i.test(entry)) return `<li><code>${label}</code></li>`;
+            const href = `/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(
+              entry
+            )}${hostQuery}`;
+            return `<li><a href="${escapeHtml(href)}"><code>${label}</code></a></li>`;
+          })
+          .join("")}</ul>`;
+  const writebackError =
+    typeof result?.writebackError === "string" ? result.writebackError : null;
+  const writeback =
+    result === null
+      ? '<span class="muted">尚无结果（未写回）</span>'
+      : result.writebackStatus === "written"
+        ? `${cBadge({ label: "已写回", tone: "success" })} ${
+            writebackError === null
+              ? `<span class="muted">${escapeHtml(String(result.writtenCells?.length ?? 0))} 个单元格</span>`
+              : escapeHtml(writebackError)
+          }`
+        : result.writebackStatus === "writeback-failed"
+          ? `${cBadge({ label: "写回失败", tone: "error" })} ${
+              writebackError === null ? "" : escapeHtml(writebackError)
+            }`
+          : cBadge({ label: "待写回", tone: "warning" });
+  const deviceText =
+    data.device.model === null && data.device.osVersion === null
+      ? `<span class="muted">未知（执行机未上报）</span>`
+      : `${escapeHtml(data.device.model ?? "未知型号")} · ${escapeHtml(data.device.osVersion ?? "未知系统")}`;
+  const resultPackage = result?.package;
+  const packageText =
+    resultPackage !== undefined && resultPackage !== null
+      ? `${escapeHtml(String(resultPackage.name ?? "—"))} ${escapeHtml(
+          String(resultPackage.version ?? "")
+        )} · <code>${escapeHtml(String(resultPackage.filename ?? "—"))}</code>`
+      : data.spec === null
+        ? '<span class="muted">—</span>'
+        : (() => {
+            const snapshot = data.spec.assetSnapshot.find((asset) => asset.kind === "package");
+            return `<code>${escapeHtml(snapshot?.filename ?? data.spec.packageAssetId)}</code>`;
+          })();
+  const startedAt = data.task.startedAt ?? result?.startedAt ?? null;
+  const finishedAt = result?.finishedAt ?? null;
+  const warningList = Array.isArray(result?.warnings) ? result.warnings : [];
+  const warnings =
+    warningList.length === 0
+      ? ""
+      : `<ul>${warningList.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`;
+
+  return renderConsoleShell({
+    title: "下发任务详情",
+    active: "dispatch",
+    meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
+    projectHostId: data.hostId ?? null,
+    capabilities: data.capabilities,
+    storeHealth: data.storeHealth,
+    body: [
+      "<h1>下发任务详情</h1>",
+      `<p><a href="${escapeHtml(
+        jobsHref(data.rootPath, data.hostId ?? null)
+      )}">← 返回下发列表</a> · 任务 <code>${escapeHtml(data.task.id)}</code> · <a href="/panel?project=${encodeURIComponent(
+        data.rootPath
+      )}&amp;task=${encodeURIComponent(data.task.id)}${hostQuery}">打开回归任务</a></p>`,
+      cCard({
+        title: "概况",
+        body: cTable({
+          columns: ["状态", "执行机与设备", "设备型号/系统", "安装包", "开始", "结束", "结果门禁", "写回"],
+          rows: [
+            [
+              `${cBadge({
+                label: webJobStatusLabel(data.task.status),
+                tone: webJobStatusTone(data.task.status),
+                title: data.task.status
+              })}${
+                gate === undefined
+                  ? ""
+                  : ` ${cBadge({
+                      label: `结果 ${gate.passed}/${gate.total}`,
+                      tone: gate.result === "passed" ? "success" : gate.result === "partial" ? "warning" : "error"
+                    })}`
+              }`,
+              jobBindingCell({ task: data.task, spec: data.spec, result }),
+              `${deviceText}${
+                data.device.serial === null ? "" : ` · <code>${escapeHtml(data.device.serial)}</code>`
+              }`,
+              packageText,
+              startedAt === null
+                ? '<span class="muted">—</span>'
+                : `<span title="${escapeHtml(startedAt)}">${relativeTime(startedAt)}</span>`,
+              finishedAt === null
+                ? '<span class="muted">—</span>'
+                : `<span title="${escapeHtml(finishedAt)}">${relativeTime(finishedAt)}</span>`,
+              gate === undefined
+                ? '<span class="muted">尚无结果</span>'
+                : `${escapeHtml(gate.result)}（通过 ${gate.passed} / 失败 ${gate.failed} / 错误 ${gate.errors} / 跳过 ${gate.skipped}）`,
+              writeback
+            ]
+          ],
+          caption: "任务概况",
+          empty: "—"
+        })
+      }),
+      cCard({
+        title: "逐用例结果",
+        subtitle:
+          result === null
+            ? "尚无结果（等执行机上传 result.json）"
+            : `结果接收于 ${result.receivedAt} · 共 ${cases.length} 条`,
+        body:
+          result === null
+            ? '<p id="job-result-empty" class="muted">尚无结果：执行机上传前不展示逐用例结果，也不虚构设备/包信息。</p>'
+            : cTable({
+                columns: ["用例", "名称", "结果", "耗时", "失败信息", "trace"],
+                rows: caseRows,
+                caption: "逐用例结果",
+                empty: "结果中没有用例"
+              })
+      }),
+      cCard({
+        title: "证据与写回",
+        body: [
+          `<p><strong>证据</strong>：${evidenceHtml}</p>`,
+          `<p><strong>写回</strong>：${writeback}</p>`,
+          warnings === "" ? "" : `<p><strong>告警</strong>：</p>${warnings}`
+        ].join("\n")
+      })
+    ].join("\n")
+  });
+}
+
 function sinceLocalValue(value: string | undefined): string {
   if (value === undefined || value === "") return "";
   const ms = Date.parse(value);
@@ -466,6 +984,9 @@ export function renderAuditPage(data: AuditPageData): string {
     if (event.result !== "failed") return '<span class="muted">—</span>';
     if (event.action === "action.tasks") {
       return `<a href="/panel?${base}&amp;section=dispatch">重新打开下发预览</a>`;
+    }
+    if (event.action === "action.jobs") {
+      return `<a href="/panel?${base}&amp;section=jobs">重新打开下发表单</a>`;
     }
     if (event.action === "action.issues") {
       return `<a href="/panel?${base}&amp;view=stats#issues">去建单</a>`;
