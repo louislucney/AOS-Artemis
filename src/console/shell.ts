@@ -11,6 +11,7 @@ export type ConsoleNavKey =
   | "review"
   | "stats"
   | "dispatch"
+  | "devices"
   | "library"
   | "archive"
   | "runners"
@@ -109,6 +110,7 @@ export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "project", label: "项目", href: "/panel" },
   { key: "review", label: "结果", href: "/panel" },
   { key: "dispatch", label: "下发", href: "/panel?section=dispatch" },
+  { key: "devices", label: "设备", href: "/panel?section=devices" },
   { key: "library", label: "用例库", href: "/panel?section=library" },
   { key: "archive", label: "档案", href: "/panel?section=archive" },
   { key: "ops", label: "运维", href: "/panel?section=ops" },
