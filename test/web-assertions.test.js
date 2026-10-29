@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -173,6 +173,46 @@ test("classify: 否定词按谓词判定——「未登录时显示」不误判�
   const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
   assert.deepEqual(byStep.get(1), [{ type: "visible", text: "去登录" }]);
   assert.deepEqual(byStep.get(2), [{ type: "notVisible", text: "提交" }]);
+});
+
+test("classify: 长设计说明里的引号片段不升硬断言；有展示动词的长句仍可 visible", () => {
+  const designProse =
+    "页面整体布局、间距、配色、字体、图标与交互细节都需要严格遵循“设计稿”，并且在全部机型与系统版本上保持完全一致，不得有任何视觉偏差";
+  const blocked = classifyExpectedResult({
+    expected: `1. ${designProse}`,
+    steps: ["查看页面"],
+    caseId: "TC_LONG_QUOTE"
+  });
+  assert.equal(blocked.confidence, "low");
+  assert.equal(blocked.steps[0].assert[0].type, "manual");
+  assert.equal(
+    blocked.steps[0].assert.some((entry) => entry.type === "visible"),
+    false,
+    "长句引号不得冒充可见断言"
+  );
+
+  const withVerb =
+    "在页面顶部的固定导航栏中应当清晰显示“提交订单”按钮，并且在向下滚动浏览全部商品列表的过程中始终保持可见状态且不被其他浮层遮挡";
+  const visible = classifyExpectedResult({
+    expected: `1. ${withVerb}`,
+    steps: ["查看页面"],
+    caseId: "TC_LONG_QUOTE_VERB"
+  });
+  assert.deepEqual(visible.steps[0].assert, [{ type: "visible", text: "提交订单" }]);
+  assert.equal(visible.confidence, "high");
+});
+
+test("classify: 超出 input.steps 范围的编号进 ambiguous，不发明步骤", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 显示“A”", "3. 显示“B”"].join("\n"),
+    steps: ["打开首页", "点击登录"],
+    caseId: "TC_RANGE"
+  });
+  assert.deepEqual(result.steps, [{ step: 1, assert: [{ type: "visible", text: "A" }] }]);
+  assert.equal(result.ambiguous.length, 1);
+  assert.match(result.ambiguous[0].reason, /超出范围/);
+  assert.match(result.ambiguous[0].sourceText, /^3\./);
+  assert.equal(result.confidence, "medium");
 });
 
 test("classify: 后台/刷新/GPS/排序 → manual；否定引号仍 → notVisible", () => {
@@ -454,6 +494,97 @@ test("readAssertionColumn: 缺少隐藏列时即使下一列表头是合并区�
       assertions: new Map()
     }),
     (error) => error instanceof AssertionColumnError && error.code === "merged-header"
+  );
+});
+
+test("writeAssertionColumn: 追加位已有零散人工内容 → 跳过该行并告警，不覆盖", async (t) => {
+  const { filePath } = await makeWorkbook(t, {
+    rows: [
+      ["用例编号", "用例名", "", "步骤"],
+      ["C1", "登录", "", "打开首页", ""],
+      ["C2", "退出", "", "打开首页", "人工备注：保留我"],
+      ["C3", "列表", "", "打开列表", ""]
+    ]
+  });
+  const result = await writeAssertionColumn({
+    workbookPath: filePath,
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    assertions: new Map([
+      ["C1", doc("C1")],
+      ["C2", doc("C2")],
+      ["C3", doc("C3")]
+    ])
+  });
+
+  assert.equal(result.column, 5);
+  assert.equal(result.written, 2);
+  assert.match(result.warnings.join("\n"), /C2.*已有内容.*不覆盖人工数据/);
+
+  const { sheet } = await loadSheet(filePath);
+  assert.equal(sheet.getCell(3, 5).value, "人工备注：保留我", "人工内容不得被覆盖");
+  assert.deepEqual(JSON.parse(sheet.getCell(2, 5).value), doc("C1"));
+  assert.deepEqual(JSON.parse(sheet.getCell(4, 5).value), doc("C3"));
+  assert.equal(sheet.getCell(1, 5).value, ASSERTION_COLUMN_HEADER);
+  assert.equal(sheet.getColumn(5).hidden, true);
+});
+
+test("writeAssertionColumn: 空 Map 不改写/不隐藏工作副本（字节不变）", async (t) => {
+  const { filePath } = await makeWorkbook(t);
+  const before = await readFile(filePath);
+  const result = await writeAssertionColumn({
+    workbookPath: filePath,
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    assertions: new Map()
+  });
+  const after = await readFile(filePath);
+
+  assert.deepEqual(result, { column: 5, written: 0, warnings: [] });
+  assert.ok(before.equals(after), "工作副本字节应保持不变");
+  const { sheet } = await loadSheet(filePath);
+  assert.equal(sheet.getCell(1, 5).value ?? null, null);
+  assert.equal(sheet.getColumn(5).hidden, false);
+});
+
+test("write/readAssertionColumn: 可选 headerRow 支持标题行在上的工作簿", async (t) => {
+  const { filePath } = await makeWorkbook(t, {
+    rows: [
+      ["Web 用例说明", "", "", ""],
+      ["用例编号", "步骤", "预期", ""],
+      ["C1", "打开首页", "显示“首页”", ""]
+    ]
+  });
+  const result = await writeAssertionColumn({
+    workbookPath: filePath,
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    headerRow: 2,
+    assertions: new Map([["C1", doc("C1")]])
+  });
+  assert.equal(result.column, 4);
+  assert.equal(result.written, 1);
+
+  const { sheet } = await loadSheet(filePath);
+  assert.equal(sheet.getCell(2, 4).value, ASSERTION_COLUMN_HEADER);
+  assert.equal(sheet.getCell(1, 4).value ?? null, "", "标题行不被写");
+  const read = await readAssertionColumn({
+    workbookPath: filePath,
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    headerRow: 2
+  });
+  assert.deepEqual(read.get("C1"), doc("C1"));
+
+  await assert.rejects(
+    writeAssertionColumn({
+      workbookPath: filePath,
+      sheetName: "用例",
+      caseIdHeader: "用例编号",
+      headerRow: 0,
+      assertions: new Map()
+    }),
+    (error) => error instanceof AssertionColumnError && error.code === "invalid-header-row"
   );
 });
 

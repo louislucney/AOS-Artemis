@@ -54,9 +54,11 @@ const COUNT_RE =
   /(最多可|最多为|最多|至多|上限为|上限|不超过)\s*(?:为|是|有|可)?\s*(\d{1,6}|[一二两三四五六七八九十百]{1,4})/;
 
 const CALC_HINT = /÷|向下取整|除以|乘以|×|=/;
+const DISPLAY_VERB = /显示|展示|出现|跳转至|提示|呈现/;
 const CLAUSE_SPLIT = /[，,。；;\n]/;
 
 const SHORT_MAX = 30;
+const QUOTE_GATE_MAX = 60;
 
 function extractQuotes(text: string): QuoteHit[] {
   const hits: QuoteHit[] = [];
@@ -80,13 +82,12 @@ function maskQuotes(text: string, hits: QuoteHit[]): string {
   return masked + text.slice(cursor);
 }
 
-function negativeQuotes(text: string, hits: QuoteHit[]): boolean[] {
+function quoteClauses(text: string, hits: QuoteHit[]): string[] {
   const masked = maskQuotes(text, hits);
   const clauses = masked.split(CLAUSE_SPLIT);
   return hits.map((_, index) => {
     const token = `\u0000${index}\u0000`;
-    const clause = clauses.find((candidate) => candidate.includes(token)) ?? masked;
-    return NEGATIVE.test(clause);
+    return clauses.find((candidate) => candidate.includes(token)) ?? masked;
   });
 }
 
@@ -323,7 +324,18 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
     const numbered = sourceText.match(NUMBER_PREFIX);
     if (numbered) {
       const step = Number(numbered[1]);
-      if (Number.isInteger(step) && step >= 1) currentStep = step;
+      if (Number.isInteger(step) && step >= 1) {
+        if (step > input.steps.length) {
+          currentStep = null;
+          doc.ambiguous.push({
+            step: null,
+            reason: `步骤编号超出范围：${step}（共 ${input.steps.length} 步）`,
+            sourceText
+          });
+          continue;
+        }
+        currentStep = step;
+      }
     }
 
     if (CONTEXT_PREFIX.test(sourceText)) continue;
@@ -381,6 +393,18 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
       continue;
     }
 
+    const clauses = quotes.length > 0 ? quoteClauses(text, quotes) : [];
+    const longLine = [...text].length > QUOTE_GATE_MAX;
+    const blockedByGate = quotes.some((_, index) => {
+      const clause = clauses[index]!;
+      if (NEGATIVE.test(clause)) return false;
+      return longLine && !DISPLAY_VERB.test(clause);
+    });
+    if (blockedByGate) {
+      resolve(step, "长句无法确认引号文本是界面可见断言", sourceText);
+      continue;
+    }
+
     if (step === null) {
       doc.ambiguous.push({ step: null, reason: "缺少步骤编号，无法定位步骤", sourceText });
       continue;
@@ -391,11 +415,10 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
       pushAssertion(list, assertion);
       hardCount += 1;
     }
-    const negatives = negativeQuotes(text, quotes);
     for (const [index, quote] of quotes.entries()) {
       pushAssertion(
         list,
-        negatives[index]!
+        NEGATIVE.test(clauses[index]!)
           ? { type: "notVisible", text: quote.text }
           : { type: "visible", text: quote.text }
       );
