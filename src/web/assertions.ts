@@ -86,6 +86,7 @@ const DISPLAY_VERBS = [
 ];
 const DISPLAY_VERB = new RegExp(DISPLAY_VERBS.join("|"));
 const DISPLAY_VERB_ALL = new RegExp(DISPLAY_VERBS.join("|"), "g");
+const CONCRETE_DISPLAY_VERB = /显示|顯示|展示|出现|出現|呈现|呈現|弹出|彈出|提示/;
 const FIELD_VERB_ALL = /显示|顯示|展示|包含|包括/g;
 const LABEL_REJECT = /(?:並|并且|且|可|需|以及|并|則|则|才|再)/;
 const LABEL_PROSE = /(?:載入中|加载中|^請稍候|^请稍候)/;
@@ -93,8 +94,6 @@ const LABEL_STATE =
   /已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|過期|过期|停用|失效|售罄|售完|領取|领取|開啟|开启|關閉|关闭|綁定|绑定|驗證|验证|發送|发送|寄出|退回)|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中|關閉|关闭|開啟|开启)$/;
 const DISPLAY_STATE =
   /已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|過期|过期|停用|失效|售罄|售完|領取|领取|開啟|开启|關閉|关闭|綁定|绑定|驗證|验证|發送|发送|寄出|退回)|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|删除|新增|中|關閉|关闭|開啟|开启)$/;
-const TEXT_PROSE =
-  /表示|完成後|完成后|返回|待|已(?:成功|完成|更新|提交|刪除|刪除|新增|取消|付款|出貨)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|新增|中)$/;
 const LABEL_SHAPE = /^[A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._/&()#+-]*$/;
 const ACTION_START =
   /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作|勾選|勾选|提交|展開|展开|收起|切換|切换|參閱|参阅|如圖|如图|見圖|见图|如下|詳情|详情|請稍候|请稍候)/;
@@ -105,7 +104,7 @@ const CALC_STRONG_HINT = /÷|向下取整|四捨五入|四舍五入|向上取整
 const VAGUE =
   /^(?:功能正常|內容完整|内容完整|正確顯示|正确显示|數據正確|数据正确|資料正確|资料正确|正確|正确|正常)$/;
 const NEGATIVE_LABEL_HEAD =
-  /(?:沒有|沒|未|不)[^，,。；;\n]{0,6}(?:顯示|显示|出現|出现|呈現|呈现|彈出|弹出|加載|加载|返回|生效|完成|成功|支持|找到|存在)\s*$/;
+  /(?:沒有|沒|未|不)[^，,。；;\n]{0,6}(?:顯示|显示|展示|出現|出现|呈現|呈现|彈出|弹出|加載|加载|返回|生效|完成|成功|支持|支援|包含|提示|找到|存在)\s*$/;
 
 const CURRENCY_RE = /-?(?:[A-Z]{1,3}\s*)?[$¥€£]\s*-?\d[\d,]*(?:\.\d+)?/g;
 const UNIT_RE = /\d[\d,]*(?:\.\d+)?\s*(?:points?|pts?|S\s*Points?|%|秒|分鐘|分钟|積分|积分)/gi;
@@ -406,6 +405,30 @@ function extractFieldList(clause: string): FieldList | null {
   return { labels };
 }
 
+function negativeLabelValue(text: string): { label: string } | { manual: true } | null {
+  const match = text.match(
+    /(?:未|不|沒有|沒|未有)(?:包含|支援|支持|展示|提示|成功|完成)(?:了)?\s*(.*)$/
+  );
+  if (!match) return null;
+  const label = (match[1] ?? "")
+    .replace(/^[\s：:，,]+/, "")
+    .replace(/[\s。；;]+$/g, "")
+    .trim();
+  if (label === "") return null;
+  if (
+    VAGUE.test(label) ||
+    LABEL_STATE.test(label) ||
+    LABEL_PROSE.test(label) ||
+    LABEL_REJECT.test(label) ||
+    /^[)）(（]/.test(label) ||
+    !/[A-Za-z0-9\u4e00-\u9fff]/.test(label) ||
+    [...label].length > 30
+  ) {
+    return { manual: true };
+  }
+  return { label };
+}
+
 function displayLabel(masked: string): { label: string; negative: boolean } | null {
   const matches = [...masked.matchAll(DISPLAY_VERB_ALL)];
   const last = matches.at(-1);
@@ -589,6 +612,7 @@ function classifyClause(
 
   const assertions = quoteAssertions(clause, quotes);
   const hasDisplay = DISPLAY_VERB.test(masked);
+  const hasConcreteDisplay = CONCRETE_DISPLAY_VERB.test(masked);
   const hasCorrespond = /(?:對應|对应)/.test(masked);
   if (hasDisplay || (hasCorrespond && (statementHasDisplay || startsWithValue(masked)))) {
     for (const value of extractValueTokens(masked)) {
@@ -602,7 +626,7 @@ function classifyClause(
     return { assertions, soft: false, manual: null, unresolved: false };
   }
 
-  if (hasDisplay) {
+  if (hasConcreteDisplay) {
     const display = displayLabel(masked);
     if (display !== null) {
       return {
@@ -619,57 +643,44 @@ function classifyClause(
     }
   }
 
-  if (!hasDisplay) {
+  if (!hasConcreteDisplay) {
+    const negativeLabel = negativeLabelValue(masked);
+    if (negativeLabel !== null) {
+      if ("manual" in negativeLabel) {
+        return {
+          assertions: [],
+          soft: false,
+          manual: "否定语义无法判断",
+          unresolved: false
+        };
+      }
+      return {
+        assertions: [{ type: "notVisible", text: negativeLabel.label }],
+        soft: false,
+        manual: null,
+        unresolved: false
+      };
+    }
+    if (masked.startsWith("不可以")) {
+      const target = masked
+        .replace(/^不可以/, "")
+        .replace(/^[\s：:，,]+/, "")
+        .trim();
+      if (target !== "") {
+        return {
+          assertions: [{ type: "notVisible", text: target }],
+          soft: false,
+          manual: null,
+          unresolved: false
+        };
+      }
+    }
     const segment = shortSegment(clause);
     if (
       segment !== null &&
       (allowActionText || !ACTION_START.test(segment)) &&
       (!multiClause || !NAV_START.test(segment))
     ) {
-      const colon = segment.match(/^([^：:]{1,20})[：:]/);
-      const label = colon?.[1]?.trim() ?? "";
-      if (
-        label !== "" &&
-        !VAGUE.test(label) &&
-        !DISPLAY_STATE.test(label) &&
-        !LABEL_PROSE.test(label) &&
-        !LABEL_REJECT.test(label) &&
-        !NAV_START.test(label)
-      ) {
-        return {
-          assertions: [{ type: "visible", text: label }],
-          soft: false,
-          manual: null,
-          unresolved: false
-        };
-      }
-      if (segment.startsWith("不可以")) {
-        const target = segment.replace(/^不可以/, "").trim();
-        if (target !== "") {
-          return {
-            assertions: [{ type: "notVisible", text: target }],
-            soft: false,
-            manual: null,
-            unresolved: false
-          };
-        }
-      }
-      if (
-        !negative &&
-        !/[0-9$¥€£]/.test(segment) &&
-        !DISPLAY_STATE.test(segment) &&
-        !TEXT_PROSE.test(segment) &&
-        !LABEL_PROSE.test(segment) &&
-        !LABEL_REJECT.test(segment) &&
-        !NAV_START.test(segment)
-      ) {
-        return {
-          assertions: [{ type: "visible", text: segment }],
-          soft: false,
-          manual: null,
-          unresolved: false
-        };
-      }
       return {
         assertions: [{ type: "text", text: segment }],
         soft: true,

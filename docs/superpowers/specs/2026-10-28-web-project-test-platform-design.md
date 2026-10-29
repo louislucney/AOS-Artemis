@@ -297,10 +297,10 @@
 - **平台结果列**：在 8 列摘要之前固定追加 `AOS Result` / `IOS Result`（原件已有同名列则原位复用）；只写当前 job 平台的一列，另一列保持原样。状态为 `PASS / FAIL / SKIP / ERROR / UNVERIFIED`。
 - **隐藏断言列**：可见列最后追加隐藏列 `__aos_assertions`，每行一个 JSON：`{version, source, confidence, steps:[{step,assert[]}], manual[], ambiguous[]}`。断言只由人工 Expected Result + Steps 归一化生成，**不覆盖**人工单元格、不写原件；Expected Result 变更后随新版本重新生成。CSV 结果副本没有隐藏列，断言只存在于 XLSX 工作副本。
 - **判定语义（PASS 的必要条件）**：
-  - `PASS`：flow/JUnit 通过 **且** 该用例的断言文档存在可执行断言 **且** 无 `manual`/`ambiguous` **且** 脚本包含至少一条硬断言。仅脚本成功、无预期断言 → 不是 `PASS`。
+  - `PASS`：flow/JUnit 通过 **且** 该用例的断言文档存在可执行断言 **且** 无 `manual`/`ambiguous` **且** `confidence:"high"` **且** 脚本包含至少一条硬断言。仅脚本成功、无预期断言、或只有软 `text`（`soft-assertion-only`）→ 不是 `PASS`（`UNVERIFIED`）。
   - `FAIL`：flow 或断言失败；`ERROR`：设备/安装/Maestro/上传等执行错误。
-  - `SKIP`：用例未执行、未选中或脚本未就绪；Excel 中存在但结果缺失的用例必须写 `执行｜结果 = SKIP（未执行）`，不得保留上一轮 PASS。
-  - `UNVERIFIED`：Expected Result 为空、只有人工/歧义项、断言不可自动执行，或 runner 未上报断言证据；不冒充 PASS，也不计通过。
+  - `SKIP`：用例未执行、未选中或脚本未就绪；Excel 中**所有源用例**（不再只限 `caseFilter` 范围）若结果缺失必须写 `执行｜结果 = SKIP（未执行）`，不得保留上一轮 PASS；因此带过滤的任务也会因未选用例补 SKIP 而成为 `partial`。
+  - `UNVERIFIED`：Expected Result 为空、只有人工/歧义项、断言不可自动执行、只有软 `text`（`soft-assertion-only`），或 runner 未上报断言证据；不冒充 PASS，也不计通过。
 - **聚合**：`UNVERIFIED` 不计通过；任务含 `UNVERIFIED`/`SKIP` 时为 `partial`，不得为 `completed`。`gate.passed` 只统计真正的 `PASS`。
 - **平台结果列与 8 列的关系**：8 列保留完整摘要（含原因、设备、时间、trace）；平台结果列是快速对照值。两处都由中心写回，runner 永不改 Excel。
 
@@ -330,8 +330,8 @@
 
 - `ready` 的定义是“每一步至少有一个可执行选择器”：`id:` 优先，`text:` 也接受；完全没有选择器才是 `unresolved`。不要求所有元素都有 testID，否则无 testID 的应用无法使用脚本模式。
 - Excel 原有「预期」存在时，生成硬断言；缺失时由系统补的 `建议｜关键预期` 默认是**建议/软断言**，只报告不决定 PASS/FAIL；管理员可在任务上显式开启“把建议当硬断言”。
-- **断言证据**：runner 逐用例上报 flow 中硬断言条数（`assertionCount`）；中心要求 `PASS` 同时满足「flow 通过 + 断言文档有可执行断言且无 manual/ambiguous + assertionCount > 0」。任一不满足写 `UNVERIFIED`，不因脚本退出码 0 就判 PASS。未上报断言证据的旧 runner 同样降级为 `UNVERIFIED`。
-- **未执行用例**：Excel 中属于本次任务范围、但 runner 未返回结果的用例，中心补写 `SKIP（未执行）`；不得沿用旧 PASS。
+- **断言证据**：runner 逐用例上报 flow 中硬断言条数（`assertionCount`）；中心要求 `PASS` 同时满足「flow 通过 + 断言文档有可执行断言且无 manual/ambiguous + `confidence:"high"` + assertionCount > 0」。任一不满足写 `UNVERIFIED`，不因脚本退出码 0 就判 PASS。未上报断言证据的旧 runner 同样降级为 `UNVERIFIED`。
+- **未执行用例**：Excel 中**所有源用例**（不限于 `caseFilter` 选中范围）、runner 未返回结果的用例，中心补写 `SKIP（未执行）`；不得沿用旧 PASS。过滤任务也会因未选用例补 SKIP 而成为 `partial`。
 - 重试沿用现有 suite 约定：**首跑结果决定门禁**，重跑只用于 flaky 诊断，不把重跑转绿算作首跑通过。
 - 部分下发：任务 `partial` 表示“有未执行用例”，不计 PASS；面板与账单分别显示执行/跳过/未就绪计数。
 - **计费按阶段**：生成/发现阶段的 LLM 调用无论用例最终是否下发都计费（成本已发生）；执行阶段的 token 只按实际执行的用例计；跳过/未就绪用例不计**执行** token，但已发生的生成/发现 token 不回退。账单按 `purpose=generation`/`discovery`/`execution` 分列，避免把“未执行”误解为“未产生成本”。

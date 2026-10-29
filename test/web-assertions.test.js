@@ -283,7 +283,7 @@ test("classify: 单行无编号预期绑定最后一步；多行无编号仍 amb
     {
       step: 1,
       assert: [
-        { type: "visible", text: "已进入首页" },
+        { type: "text", text: "已进入首页" },
         { type: "visible", text: "成功" }
       ]
     }
@@ -598,7 +598,7 @@ test("classify: 真实样例回归（非 manual）", () => {
       steps: ["打开"],
       check: (byStep) => {
         assert.deepEqual(byStep.get(1), [
-          { type: "visible", text: "MOP首頁" },
+          { type: "text", text: "MOP首頁" },
           { type: "visible", text: "MOP intro" }
         ]);
       }
@@ -608,7 +608,7 @@ test("classify: 真实样例回归（非 manual）", () => {
       steps: ["打开"],
       check: (byStep) => {
         assert.deepEqual(byStep.get(1), [
-          { type: "visible", text: "MOP首頁" },
+          { type: "text", text: "直接跳轉到MOP首頁" },
           { type: "notVisible", text: "MOP intro" }
         ]);
       }
@@ -794,7 +794,7 @@ test("classify: 逗号无条件拆分；动作子句不造 text，非动作短�
       step: 1,
       assert: [
         { type: "text", text: "彈窗關閉" },
-        { type: "visible", text: "停留在MOP首頁" }
+        { type: "text", text: "停留在MOP首頁" }
       ]
     }
   ]);
@@ -806,7 +806,7 @@ test("classify: 逗号无条件拆分；动作子句不造 text，非动作短�
     caseId: "TC_COMMA_SUBITEM"
   });
   assert.deepEqual(subItem.steps, [
-    { step: 1, assert: [{ type: "visible", text: "選擇門市" }] }
+    { step: 1, assert: [{ type: "text", text: "選擇門市" }] }
   ]);
 
   const actionClause = classifyExpectedResult({
@@ -1142,6 +1142,85 @@ test("classify: 展示状态/散文标签不升 visible", () => {
     assert.equal(byStep.get(step)[0].type, "manual");
   }
   assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 无展示动词的导航/状态短句保持 soft text，不升 visible", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 已進入首頁",
+      "2. 停留在MOP首頁",
+      "3. 成功進入首頁",
+      "4. 進入商品詳情頁",
+      "5. 商品加入購物車",
+      "6. 登入帳號",
+      "7. 填寫手機號",
+      "8. 上傳身份證",
+      "9. 頁面自動跳轉至首頁"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e", "f", "g", "h", "i"],
+    caseId: "TC_NO_DISPLAY_SOFT"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应出现 visible`
+    );
+    assert.equal(byStep.get(step).some((assertion) => assertion.type === "text"), true);
+  }
+  assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 冒号否定标签不产正向 visible", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 不支援：支付寶", "2. 未包含：運費", "3. 未展示：X"].join("\n"),
+    steps: ["a", "b", "c"],
+    caseId: "TC_COLON_NEG"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "notVisible", text: "支付寶" }]);
+  assert.deepEqual(byStep.get(2), [{ type: "notVisible", text: "運費" }]);
+  assert.deepEqual(byStep.get(3), [{ type: "notVisible", text: "X" }]);
+  for (const step of [1, 2, 3]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false
+    );
+  }
+});
+
+test("classify: 未展示/未提示/未包含 无引号标签 → notVisible；不需要仍正向", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 頁面未展示優惠券",
+      "2. 彈窗未提示錯誤",
+      "3. 未提示錯誤",
+      "4. 未包含運費",
+      "5. 列表未包含運費",
+      "6. 顯示“首頁”且不需要登入"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e", "f"],
+    caseId: "TC_UNQUOTED_NEG"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "notVisible", text: "優惠券" }]);
+  assert.deepEqual(byStep.get(2), [{ type: "notVisible", text: "錯誤" }]);
+  assert.deepEqual(byStep.get(3), [{ type: "notVisible", text: "錯誤" }]);
+  assert.deepEqual(byStep.get(4), [{ type: "notVisible", text: "運費" }]);
+  assert.deepEqual(byStep.get(5), [{ type: "notVisible", text: "運費" }]);
+  assert.deepEqual(byStep.get(6), [{ type: "visible", text: "首頁" }]);
+});
+
+test("classify: 不可以：刪除 → notVisible 刪除", () => {
+  const result = classifyExpectedResult({
+    expected: "1. 不可以：刪除",
+    steps: ["a"],
+    caseId: "TC_CANNOT_COLON"
+  });
+  assert.deepEqual(result.steps, [
+    { step: 1, assert: [{ type: "notVisible", text: "刪除" }] }
+  ]);
 });
 
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
