@@ -241,16 +241,16 @@ test("ingest：PASS/FAIL/SKIP 聚合 failed，写回 8 列中的结果/时间/�
   assert.deepEqual(summary.warnings, []);
 
   const sheet = await loadSheet(ctx.copyPath);
-  assert.equal(cellText(sheet.getCell("F2")), "PASS");
-  assert.equal(cellText(sheet.getCell("F3")), "FAIL");
-  assert.equal(cellText(sheet.getCell("F4")), "SKIP");
-  assert.equal(cellText(sheet.getCell("G2")), "Pixel 7 / 14");
-  assert.equal(cellText(sheet.getCell("H2")), "com.acme.app 1.2.3 app.apk");
-  assert.equal(cellText(sheet.getCell("I2")), STARTED);
-  assert.equal(cellText(sheet.getCell("J2")), FINISHED);
-  assert.equal(cellText(sheet.getCell("K2")), "trace-1");
-  assert.equal(cellText(sheet.getCell("D1")), "建议｜脚本文件");
-  assert.equal(cellText(sheet.getCell("K1")), "执行｜traceId");
+  assert.equal(cellText(sheet.getCell("H2")), "PASS");
+  assert.equal(cellText(sheet.getCell("H3")), "FAIL");
+  assert.equal(cellText(sheet.getCell("H4")), "SKIP");
+  assert.equal(cellText(sheet.getCell("I2")), "Pixel 7 / 14");
+  assert.equal(cellText(sheet.getCell("J2")), "com.acme.app 1.2.3 app.apk");
+  assert.equal(cellText(sheet.getCell("K2")), STARTED);
+  assert.equal(cellText(sheet.getCell("L2")), FINISHED);
+  assert.equal(cellText(sheet.getCell("M2")), "trace-1");
+  assert.equal(cellText(sheet.getCell("F1")), "建议｜脚本文件");
+  assert.equal(cellText(sheet.getCell("M1")), "执行｜traceId");
 
   assert.equal(await sha256File(ctx.original), ctx.originalSha, "原件 sha256 必须不变");
 
@@ -495,12 +495,12 @@ test("ingest：写回失败仍保存结果，返回 writeback-failed 且不改�
 test("ingest：人工清空系统格默认冻结，显式 allowClearedRefresh 才重写（confirmed 行）", async (t) => {
   const ctx = await setupProject(t);
   await ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload: passingPayload() });
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("F2")), "PASS");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "PASS");
 
   await mutateWorkbook(ctx.copyPath, (_workbook, sheet) => {
-    sheet.getCell("F2").value = null;
+    sheet.getCell("H2").value = null;
   });
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("F2")), "");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "");
 
   const second = await newRunningJob(ctx);
   const frozen = await ingestWebJobResult({
@@ -518,7 +518,7 @@ test("ingest：人工清空系统格默认冻结，显式 allowClearedRefresh �
     [],
     "被人工清空的结果格默认冻结"
   );
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("F2")), "");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "");
 
   const third = await newRunningJob(ctx);
   const refreshed = await ingestWebJobResult({
@@ -528,7 +528,7 @@ test("ingest：人工清空系统格默认冻结，显式 allowClearedRefresh �
     allowClearedRefresh: true
   });
   assert.equal(refreshed.writtenCells.length, 6);
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("F2")), "PASS");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "PASS");
   const last = await ctx.store.lastExcelWritebackByCellKey(
     ctx.rootPath,
     ctx.asset.id,
@@ -545,7 +545,7 @@ test("两阶段 journal：pending 按单元格值 confirm，不一致则删除�
   const ctx = await setupProject(t);
   await ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload: passingPayload() });
   const sheet = await loadSheet(ctx.copyPath);
-  assert.equal(cellText(sheet.getCell("F2")), "PASS");
+  assert.equal(cellText(sheet.getCell("H2")), "PASS");
   const confirmedBefore = await ctx.store.lastExcelWritebackByCellKey(
     ctx.rootPath,
     ctx.asset.id,
@@ -561,7 +561,7 @@ test("两阶段 journal：pending 按单元格值 confirm，不一致则删除�
     jobId: ctx.task.id,
     caseId: "TC-1",
     columnKey: "result",
-    cellRef: "用例!F2",
+    cellRef: "用例!H2",
     value: "PASS",
     status: "pending"
   });
@@ -572,7 +572,7 @@ test("两阶段 journal：pending 按单元格值 confirm，不一致则删除�
     jobId: ctx.task.id,
     caseId: "TC-1",
     columnKey: "device",
-    cellRef: "用例!G2",
+    cellRef: "用例!I2",
     value: "STALE / 0",
     status: "pending"
   });
@@ -623,7 +623,7 @@ test("两阶段 journal：pending 按单元格值 confirm，不一致则删除�
   });
   const resultCells = summary.writtenCells.filter((cell) => cell.key === "result");
   assert.equal(resultCells.length, 1);
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("F2")), "PASS");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "PASS");
 });
 
 test("远程 LLM 结果：tokenUsage + 原始工件落到结果目录；缺工件记 token-unavailable 不伪造", async (t) => {
@@ -767,7 +767,7 @@ test("journal status：Memory/File/PG 的 pending 列表、confirmed 归属与 c
       sheetName: "用例",
       caseId: "TC-1",
       columnKey: "result",
-      cellRef: "用例!F2",
+      cellRef: "用例!H2",
       value: "PASS",
       status: "pending"
     });
@@ -796,7 +796,7 @@ test("journal status：Memory/File/PG 的 pending 列表、confirmed 归属与 c
       sheetName: "用例",
       caseId: "TC-1",
       columnKey: "device",
-      cellRef: "用例!G2",
+      cellRef: "用例!I2",
       value: "STALE",
       status: "pending"
     });
@@ -844,8 +844,8 @@ test("C1：保留 runner 上报状态（error 不因用例全 PASS 变 completed
   assert.ok(summary.warnings.some((warning) => warning.includes("status-mismatch")));
   assert.ok(!summary.writtenCells.some((cell) => cell.key === "result"));
   const sheet = await loadSheet(ctx.copyPath);
-  assert.notEqual(cellText(sheet.getCell("F2")), "PASS");
-  assert.equal(cellText(sheet.getCell("G2")), "Pixel 7 / 14");
+  assert.notEqual(cellText(sheet.getCell("H2")), "PASS");
+  assert.equal(cellText(sheet.getCell("I2")), "Pixel 7 / 14");
   const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
   assert.equal(task.status, "failed");
 
@@ -1139,7 +1139,7 @@ test("ingest：runner 上传 body 的 allowClearedRefresh 不能解冻人工清�
   const ctx = await setupProject(t);
   await ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload: passingPayload() });
   await mutateWorkbook(ctx.copyPath, (_workbook, sheet) => {
-    sheet.getCell("F2").value = null;
+    sheet.getCell("H2").value = null;
   });
 
   const task = await newRunningJob(ctx);
@@ -1149,7 +1149,7 @@ test("ingest：runner 上传 body 的 allowClearedRefresh 不能解冻人工清�
     payload: { ...passingPayload(), allowClearedRefresh: true }
   });
   assert.equal(summary.writebackStatus, "written");
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("F2")), "", "body 字段不得解冻");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "", "body 字段不得解冻");
   const doc = JSON.parse(await readFile(resultPathForJob(ctx.rootPath, task.id), "utf8"));
   assert.equal(doc.allowClearedRefresh, false);
   assert.ok(summary.warnings.some((warning) => warning.includes("人工清空")));

@@ -11,8 +11,13 @@ import type {
 } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
 import { errorMessage, log, writeFileAtomic } from "../util.js";
+import { writeAssertionColumn } from "./assertion-column.js";
+import { classifyExpectedResult, type AssertionDoc } from "./assertions.js";
+import { decodeCsv, exportWorkbookCsv, type CsvEncoding, type CsvLineEnding } from "./csv.js";
+import { parseExcel, type ParsedExcelCase } from "./excel.js";
 import { parseWebJobSpec, type WebJobSpec } from "./job-spec.js";
 import { withFileLock } from "./lock.js";
+import { writePlatformResults, type PlatformResultRow } from "./platform-result.js";
 import { ensureWorkbookCopy, workbookCopyPath } from "./workbook.js";
 import {
   recoverPendingWriteback,
@@ -142,6 +147,12 @@ export interface WebJobResultDocument {
   writebackStatus: "pending" | "written" | "writeback-failed";
   writebackError: string | null;
   writtenCells: WritebackCellWrite[];
+  /** CSV 源导出的结果 CSV（绝对路径）；xlsx 源/导出失败为 null。 */
+  resultCsvPath: string | null;
+  /** 隐藏断言列写入格数。 */
+  assertionCells: number;
+  /** 平台结果列摘要（空结果/写失败为 null）。 */
+  platformResult: { column: number; header: string; appended: boolean } | null;
   warnings: string[];
 }
 
@@ -171,6 +182,12 @@ export interface WebJobIngestSummary {
   /** true＝同内容重复上传，未再次写回/journal。 */
   idempotent: boolean;
   resultPath: string;
+  /** CSV 源导出的结果 CSV（绝对路径）；xlsx 源/导出失败为 null。 */
+  resultCsvPath: string | null;
+  /** 隐藏断言列写入格数（0＝未写/无可用原件）。 */
+  assertionCells: number;
+  /** 平台结果列摘要（未写时为 null）。 */
+  platformResult: { column: number; header: string; appended: boolean } | null;
 }
 
 export type WebResultErrorCode =
@@ -220,6 +237,11 @@ export function webJobResultsDir(rootPath: string, jobId: string): string {
 
 export function resultPathForJob(rootPath: string, jobId: string): string {
   return path.join(webJobResultsDir(rootPath, jobId), "result.json");
+}
+
+/** CSV 源的结果 CSV 固定路径（派生文件，可覆盖）：`.artemis/web/workbook/<assetId>.result.csv`。 */
+export function webResultCsvPath(rootPath: string, assetId: string): string {
+  return path.join(path.resolve(rootPath), ".artemis", "web", "workbook", `${assetId}.result.csv`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -716,6 +738,56 @@ function writebackRows(
   });
 }
 
+interface SourceWorkbookSummary {
+  cases: ParsedExcelCase[];
+  headers: string[];
+  /** 仅 CSV 源：检测到的编码（决定结果 CSV 输出编码）。 */
+  encoding?: CsvEncoding;
+  bom: boolean;
+  lineEnding: CsvLineEnding;
+}
+
+/**
+ * 只读解析原始测试文档（原件 CAS 字节）：用例/步骤/预期用于断言分类，表头用于平台列归属判定，
+ * 编码/行尾用于结果 CSV 保真。原件的映射仍是 job 资产上已确认的那份。
+ */
+async function analyzeSourceWorkbook(target: WritebackTarget): Promise<SourceWorkbookSummary> {
+  const buffer = await readFile(target.originalPath);
+  const isCsv = target.asset.metadata.format === "csv";
+  const parsed = await parseExcel(buffer, {
+    sheetName: target.sheetName,
+    mapping: target.mapping.columnMap,
+    ...(isCsv ? { format: "csv" as const } : {})
+  });
+  if (!isCsv) {
+    return { cases: parsed.cases, headers: parsed.headers, bom: false, lineEnding: "\n" };
+  }
+  const decoded = decodeCsv(buffer);
+  return {
+    cases: parsed.cases,
+    headers: parsed.headers,
+    encoding: decoded.encoding,
+    bom: decoded.bom,
+    lineEnding: decoded.text.includes("\r\n") ? "\r\n" : "\n"
+  };
+}
+
+/**
+ * 平台结果行沿用 8 列摘要的假绿守卫：任务级 error / 强制 failed 而用例全 PASS 时不写逐例 PASS。
+ */
+function platformResultRows(payload: NormalizedWebJobResultPayload): PlatformResultRow[] {
+  const computed = aggregateResultGate(payload.execution.cases);
+  const suppressPerCaseResult =
+    payload.execution.status === "error" ||
+    (payload.execution.status === "failed" && computed.result !== "failed");
+  const rows: PlatformResultRow[] = [];
+  for (const entry of payload.execution.cases) {
+    if (suppressPerCaseResult && entry.status === "PASS") continue;
+    rows.push({ caseId: entry.caseId, status: entry.status });
+  }
+  return rows;
+}
+
 /** 只保留安全 basename：拒绝目录分隔/隐藏文件/控制字符，限制长度。 */
 export function safeArtifactFilename(filename: string, fallback: string): string {
   const base = path
@@ -812,7 +884,10 @@ function summaryFromDocument(
     warnings: document.warnings ?? [],
     writebackStatus: document.writebackStatus === "writeback-failed" ? "writeback-failed" : "written",
     idempotent,
-    resultPath
+    resultPath,
+    resultCsvPath: document.resultCsvPath ?? null,
+    assertionCells: document.assertionCells ?? 0,
+    platformResult: document.platformResult ?? null
   };
 }
 
@@ -953,8 +1028,20 @@ async function ingestUnderJobLock(
   }
   const tokenTotals = payload.tokenUsage.length > 0 ? sumTokenUsage(payload.tokenUsage) : null;
 
+  let source: SourceWorkbookSummary | null = null;
+  try {
+    source = await analyzeSourceWorkbook(target);
+  } catch (error) {
+    warnings.push(
+      `source-unreadable: 无法解析原始测试文档，跳过预期断言（${errorMessage(error)}）`
+    );
+  }
+
   let workbookResult: WritebackResult | null = null;
   let writebackError: string | null = null;
+  let platformResult: WebJobIngestSummary["platformResult"] = null;
+  let assertionCells = 0;
+  let resultCsvPath: string | null = null;
   const pendingIds = new Map<string, string>();
   const lockPath = path.join(
     path.resolve(rootPath),
@@ -973,7 +1060,31 @@ async function ingestUnderJobLock(
       });
       warnings.push(...recovery.warnings);
       await ensureWorkbookCopy(target.originalPath, target.workbookPath);
-      return await writebackWorkbook({
+
+      // 平台结果列先写：追加位置在 8 列摘要之前（可见列顺序 = 原件 + AOS/IOS + 8 列）。
+      const platformRows = platformResultRows(payload);
+      if (source !== null) {
+        try {
+          const written = await writePlatformResults({
+            workbookPath: target.workbookPath,
+            sheetName: target.sheetName,
+            caseIdHeader: target.caseIdHeader,
+            platform: spec.requirements.platform,
+            rows: platformRows,
+            ...(source === null ? {} : { sourceHeaders: source.headers })
+          });
+          platformResult = {
+            column: written.column,
+            header: written.header,
+            appended: written.appended
+          };
+          warnings.push(...written.warnings.map((warning) => `platform-result: ${warning}`));
+        } catch (error) {
+          warnings.push(`platform-result-failed: ${errorMessage(error)}`);
+        }
+      }
+
+      const result = await writebackWorkbook({
         workbookPath: target.workbookPath,
         assetId: target.asset.id,
         sheetName: target.sheetName,
@@ -1019,6 +1130,56 @@ async function ingestUnderJobLock(
           }
         }
       });
+
+      // 隐藏断言列最后追加：可见列顺序保持「原件 + 平台结果 + 8 列」，隐藏列在末尾。
+      if (source !== null) {
+        try {
+          const assertions = new Map<string, AssertionDoc>();
+          for (const entry of source.cases) {
+            assertions.set(
+              entry.caseId,
+              classifyExpectedResult({
+                expected: entry.expected,
+                steps: entry.steps,
+                caseId: entry.caseId
+              })
+            );
+          }
+          const written = await writeAssertionColumn({
+            workbookPath: target.workbookPath,
+            sheetName: target.sheetName,
+            caseIdHeader: target.caseIdHeader,
+            assertions
+          });
+          assertionCells = written.written;
+          warnings.push(...written.warnings.map((warning) => `assertion-column: ${warning}`));
+        } catch (error) {
+          warnings.push(`assertion-column-failed: ${errorMessage(error)}`);
+        }
+      }
+
+      // 结果 CSV 只对 CSV 源导出，编码/行尾/BOM 沿用原件检测结论；隐藏列由导出器跳过。
+      if (source !== null && source.encoding !== undefined) {
+        try {
+          const exported = await exportWorkbookCsv(
+            target.workbookPath,
+            webResultCsvPath(rootPath, target.asset.id),
+            {
+              encoding: source.encoding,
+              lineEnding: source.lineEnding,
+              bom: source.bom,
+              sheetName: target.sheetName,
+              overwrite: true,
+              originalPath: target.originalPath
+            }
+          );
+          resultCsvPath = exported.outPath;
+        } catch (error) {
+          warnings.push(`result-csv-failed: ${errorMessage(error)}`);
+        }
+      }
+
+      return result;
     });
   } catch (error) {
     writebackError = errorMessage(error);
@@ -1055,6 +1216,9 @@ async function ingestUnderJobLock(
     writebackStatus,
     writebackError,
     writtenCells: workbookResult?.writtenCells ?? [],
+    resultCsvPath,
+    assertionCells,
+    platformResult,
     warnings
   };
   await persistDocument(resultPath, document);
@@ -1105,7 +1269,10 @@ async function ingestUnderJobLock(
     warnings,
     writebackStatus,
     idempotent: false,
-    resultPath
+    resultPath,
+    resultCsvPath,
+    assertionCells,
+    platformResult
   };
 }
 
@@ -1143,6 +1310,7 @@ export function webJobResultSummary(
     finishedAt: document.finishedAt,
     evidence: document.evidence,
     writebackStatus: document.writebackStatus,
+    resultCsvPath: document.resultCsvPath ?? null,
     warnings: document.warnings
   };
 }

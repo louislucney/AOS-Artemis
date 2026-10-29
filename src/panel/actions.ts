@@ -379,6 +379,10 @@ export async function handleRunnerJobRequest(
           warning.split(job.rootPath).join("<project>")
         ),
         writebackStatus: summary.writebackStatus,
+        resultCsvPath:
+          summary.resultCsvPath === null
+            ? null
+            : summary.resultCsvPath.split(job.rootPath).join("<project>"),
         idempotent: summary.idempotent
       });
     } catch (error) {

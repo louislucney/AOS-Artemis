@@ -148,6 +148,36 @@ function isFormula(cell: ExcelJS.Cell): boolean {
   return cell.type === ExcelJS.ValueType.Formula;
 }
 
+/** 按归一化表头定位列（1-based）；找不到返回 0。平台结果列/断言列共用同一表头口径。 */
+export function findHeaderColumn(
+  sheet: ExcelJS.Worksheet,
+  headerRow: number,
+  header: string,
+  fromColumn = 1,
+  toColumn = Math.max(sheet.columnCount ?? 0, sheet.getRow(headerRow).cellCount ?? 0)
+): number {
+  const wanted = normalizeExcelHeader(header);
+  if (wanted === "") return 0;
+  for (let column = fromColumn; column <= toColumn; column += 1) {
+    if (normalizeExcelHeader(cellText(sheet.getCell(headerRow, column))) === wanted) return column;
+  }
+  return 0;
+}
+
+/** 最后一个非空表头列（从 anchorColumn 向右）；整段为空时返回 anchorColumn。 */
+export function lastNonEmptyHeaderColumn(
+  sheet: ExcelJS.Worksheet,
+  headerRow: number,
+  anchorColumn: number,
+  columnCount = Math.max(sheet.columnCount ?? 0, sheet.getRow(headerRow).cellCount ?? 0)
+): number {
+  let last = anchorColumn;
+  for (let column = anchorColumn; column <= columnCount; column += 1) {
+    if (cellText(sheet.getCell(headerRow, column)) !== "") last = column;
+  }
+  return last;
+}
+
 const MAX_WRITE_ROWS = 10000;
 const MAX_WRITE_COLUMNS = 200;
 

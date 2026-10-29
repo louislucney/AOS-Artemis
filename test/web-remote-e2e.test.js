@@ -536,22 +536,22 @@ test("远程 Web 任务端到端：下发选机 → 领取 → 下载/安装/Mae
   const copyPath = workbookCopyPath(rootPath, ctx.excel.id);
   const sheet = await loadSheet(copyPath);
   for (const [column, header] of [
-    ["F", "执行｜结果"],
-    ["G", "执行｜设备与系统"],
-    ["H", "执行｜安装包"],
-    ["I", "执行｜开始时间"],
-    ["J", "执行｜结束时间"],
-    ["K", "执行｜traceId"]
+    ["H", "执行｜结果"],
+    ["I", "执行｜设备与系统"],
+    ["J", "执行｜安装包"],
+    ["K", "执行｜开始时间"],
+    ["L", "执行｜结束时间"],
+    ["M", "执行｜traceId"]
   ]) {
     assert.equal(cellText(sheet.getCell(`${column}1`)), header);
   }
-  assert.equal(cellText(sheet.getCell("F2")), "PASS");
-  assert.equal(cellText(sheet.getCell("F3")), "FAIL");
-  assert.equal(cellText(sheet.getCell("G2")), "Pixel 8 / 15");
-  assert.equal(cellText(sheet.getCell("H2")), `${PACKAGE_NAME} ${PACKAGE_VERSION} acme.apk`);
-  assert.equal(cellText(sheet.getCell("I2")), executed.startedAt);
-  assert.equal(cellText(sheet.getCell("J2")), executed.finishedAt);
-  assert.equal(cellText(sheet.getCell("K2")), "trace-TC-1");
+  assert.equal(cellText(sheet.getCell("H2")), "PASS");
+  assert.equal(cellText(sheet.getCell("H3")), "FAIL");
+  assert.equal(cellText(sheet.getCell("I2")), "Pixel 8 / 15");
+  assert.equal(cellText(sheet.getCell("J2")), `${PACKAGE_NAME} ${PACKAGE_VERSION} acme.apk`);
+  assert.equal(cellText(sheet.getCell("K2")), executed.startedAt);
+  assert.equal(cellText(sheet.getCell("L2")), executed.finishedAt);
+  assert.equal(cellText(sheet.getCell("M2")), "trace-TC-1");
   assert.equal(sha256(await readFile(ctx.excel.storagePath)), ctx.originalSha, "原件 sha256 必须不变");
 
   const resultDoc = await readWebJobResult(rootPath, job1.task.id);
