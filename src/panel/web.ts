@@ -206,7 +206,10 @@ type PanelView =
       hostId: string | null;
       rootLabel: string;
       projectStatus: "active" | "archived" | null;
+      appPackage: string | null;
       assets: WebAssetRecord[];
+      packages: WebAssetRecord[];
+      scripts: WebAssetRecord[];
       mappings: ExcelMappingRecord[];
     }
   | {
@@ -671,14 +674,23 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   }
   if (section === "assets") {
     const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
+    const [excelAssets, packages, scripts, mappings] = await Promise.all([
+      listWebAssets(projectStore, resolved.rootPath, "excel"),
+      listWebAssets(projectStore, resolved.rootPath, "package"),
+      listWebAssets(projectStore, resolved.rootPath, "scripts"),
+      listExcelMappings(projectStore, resolved.rootPath)
+    ]);
     return {
       kind: "web-assets",
       rootPath: resolved.rootPath,
       hostId: resolved.hostId,
       rootLabel: resolved.name,
       projectStatus: webProject?.status ?? null,
-      assets: await listWebAssets(projectStore, resolved.rootPath, "excel"),
-      mappings: await listExcelMappings(projectStore, resolved.rootPath)
+      appPackage: webProject?.appPackage ?? null,
+      assets: excelAssets,
+      packages,
+      scripts,
+      mappings
     };
   }
   if (section === "jobs") {
@@ -983,7 +995,10 @@ function toJsonView(view: PanelView): Record<string, unknown> {
       ok: true,
       view: "web-assets",
       projectStatus: view.projectStatus,
+      appPackage: view.appPackage,
       assets: view.assets,
+      packages: view.packages,
+      scripts: view.scripts,
       mappings: view.mappings
     };
   }
@@ -3745,7 +3760,10 @@ function renderPanelHtml(
       rootLabel: view.rootLabel,
       hostId: view.hostId,
       projectStatus: view.projectStatus,
+      appPackage: view.appPackage,
       assets: view.assets,
+      packages: view.packages,
+      scripts: view.scripts,
       mappings: view.mappings,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth

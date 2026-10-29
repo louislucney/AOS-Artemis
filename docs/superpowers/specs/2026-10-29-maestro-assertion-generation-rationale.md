@@ -1,7 +1,7 @@
 # Plan 2 前因后果：从 Excel 预期到可执行 Maestro 断言
 
 > 日期：2026-10-29
-> 状态：**已评审；Phase 0/1 完成，Phase 2 脚本集资产已实现（未接 job/CLI/面板）**
+> 状态：**已评审；Phase 0/1/2/3 完成（纯生成器、脚本集资产、CLI/面板入口），Phase 4/5 未做**
 > 范围：Web 项目（Excel/CSV 用例源 + Maestro 脚本执行）；不包含 iOS 真机 LLM 执行、发现执行、计费
 > 关联：`docs/superpowers/specs/2026-10-28-web-project-test-platform-design.md` §5.3、§6；`DESIGN.md` §13.266–§13.268、§13.276
 
@@ -469,7 +469,7 @@ tags:
 
 ### 6.9 生成入口
 
-建议先做同步入口，不做新 job kind：
+建议先做同步入口，不做新 job kind（Phase 3 已按此实现）：
 
 - `POST /panel/api/projects/:id/scripts/generate`（maintainer+，body: `excelAssetId`, `packageAssetId`, `platform`, `dryRun?`, `allowPartialUnresolved?`）；
 - `GET /panel/api/projects/:id/scripts/:scriptSetId/flow/:caseId`：只读预览/下载单个 YAML；不返回 secret，按项目成员权限控制；
@@ -611,7 +611,7 @@ tags:
 
 ### Q4. `appId` 从哪里来？
 
-- **建议：Web 项目增加按平台的必填 `appId`**（Android package / iOS bundle id），生成时校验与安装包一致（能解析时）。
+- **建议：Web 项目增加按平台的必填 `appId`**（Android package / iOS bundle id），生成时校验与安装包一致（能解析时）。Phase 3 先用项目已有 `appPackage` 作为缺省，双端项目需显式传 `--app-id`/面板值；后续再补按平台配置。
 - Android/iOS 分别校验，不要用一条 `com.xxx.yyy` 正则；双端分别生成脚本集，manifest 带 `platform`。
 - 备选：上传安装包时解析 metadata；需要 `aapt`/`plutil` 等工具，跨平台一致性差。
 
@@ -652,7 +652,7 @@ tags:
 | 0 | dry-run 测量 | 已完成原型：CSV 18/26、XLSX 29/40（assume-prepared，未计前置）；strict 见 §4.5 |
 | 1 | `src/web/script-gen.ts` 纯生成器 + 单元测试 | 已完成：步骤分类/动作/断言 → flow YAML；`test/web-script-gen.test.js` 19 例 |
 | 2 | 脚本集资产落盘 + metadata + 幂等 | 已完成：`src/web/zip.ts` + `src/web/script-set.ts`；manifest/metadata/幂等/平台匹配 |
-| 3 | 面板/CLI 生成入口 + dry-run 展示 | 用户可操作；unresolved 可见 |
+| 3 | 面板/CLI 生成入口 + dry-run 展示 | 已完成：`web scripts generate` + assets 页表单/脚本集表；dry-run/manifest/审计 |
 | 4 | 下发预检 + 部分下发语义 | 无脚本不再等到 runner 报错；SKIP/partial 正确 |
 | 5 | 真机小样本验收 | PASS/FAIL/UNVERIFIED 与基线对比；假阳性抽查 |
 | 6 | （后续）发现执行 / testID 字典 | 用 `id:` 替代 `text:`，降低歧义 |
@@ -683,5 +683,6 @@ tags:
 - 预检：前端禁用按钮 + 服务端 400 双保险；预检校验脚本集与 Excel/包/平台三者兼容。
 - Phase 0：用两份真实文件做了原型测量；初版规则只有 CSV 2/26、XLSX 10/40 可解析，增强为“动作/验证/导航/不支持”分类后达到 CSV 18/26、XLSX 29/40（均未计前置条件）。计入前置后：strict 为 CSV 0/26、XLSX 14/40；assume-prepared 才回到 18/26、29/40。结论：2A 的步骤分类和前置条件模式同样关键；验证步骤可作为断言落点，不生成动作；默认 strict，assume-prepared 必须显式。
 - Phase 1：`src/web/script-gen.ts` 纯生成器 + `test/web-script-gen.test.js` 19 例已完成；实现后复测 strict CSV 0/26、XLSX 16/40，assume-prepared CSV 15/26（14 有硬断言）、XLSX 31/40（22 有硬断言）。
-- Phase 2：`src/web/zip.ts`（确定性 zip）+ `src/web/script-set.ts`（manifest/metadata/幂等写入）已完成；`assertScriptSetMatch` 增加 platform 校验；仍不接 job/CLI/面板。
-- 下一步：Phase 3，面板/CLI 生成入口 + dry-run 展示；随后 Phase 4 下发预检。
+- Phase 2：`src/web/zip.ts`（确定性 zip）+ `src/web/script-set.ts`（manifest/metadata/幂等写入）已完成；`assertScriptSetMatch` 增加 platform 校验。
+- Phase 3：`src/web/script-generation.ts` 服务 + `web scripts generate` CLI + assets 页“生成 Maestro 脚本”表单/`POST /panel/api/projects/scripts/generate` 已完成；appId 缺省用项目 `appPackage`，双端显式传；仍不做下发预检/设备执行。
+- 下一步：Phase 4，下发预检 + 部分下发语义；随后 Phase 5 真机小样本验收。
