@@ -273,6 +273,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 | `dispatch` **下发向导** | 四步（来源→参数→预览回显→确认）；**先选主机、再选该主机上的项目**（换主机丢弃项目并取该主机最近活跃项目，换项目即按新作用域重载预览）；支持用例库选用例集/关键词；预览显示条数、runner 候选与告警；**两段确认**派发（refs 服务端重解析）；优先级默认 `P0` **只读**，`AOS_PANEL_PRIORITY=1` 时开放 0–100 编辑（防误操作插队；仅约束面板 UI，API 可直接传 `priority`）；领取顺序为 `priority DESC, created_at ASC` |
 | `library` **用例库** | 用例集列表（来源/条数/功能）＋**行内「下发该用例集」**＋**Excel 上传导入**（multipart，≤20MB）＋隔离（quarantine：**加入/移除表单，owner 签字**） |
 | `jobs` **网页测试下发** | 托管 Web 项目的下发表单（执行方式/平台/设备形态/Excel·package·materials·scripts 资产/用例范围/自动或手动＋钉设备/型号与系统软偏好/重试/优先级）＋任务列表（状态、`已绑定`/`钉住等待`/`已释放`、设备模型与 OS、结果门禁）＋任务详情（逐用例、证据、Excel 写回状态与警告）；`POST /panel/api/jobs` 需 dispatcher+，`GET /panel/api/jobs/preview` 只读；动作只建任务/预占，**执行需另配 `web-runner`** |
+| `devices` **设备台账** | 全局只读设备列表：执行机在线/离线、平台、模拟器/真机、型号/系统版本、`空闲`/`占用`/`离线`、当前 job 与租约到期、最后心跳、工具；按 `state=idle|busy|offline`、`platform=android|ios` 过滤；空闲＝在线且无有效租约/执行中 job；页面只读、不展示 token/secret |
 | `assets` **测试资产** | Excel/CSV 原件版本表（文件名/版本/大小/sha 短摘要/上传时间；`kind=excel` 接受 `.xlsx/.csv`，CSV 自动记录 `format/encoding` 元数据，执行时转成规范 XLSX 工作副本）＋上传（multipart `POST /panel/api/projects/assets`，`kind=excel`；可选 `systemColumns=inherit` 在重上传时按上一版本 journal 重播种系统格，缺省 `human` 全部冻结）＋列映射预览（选资产/表头行 → 建议映射）与保存（`/panel/api/projects/excel/preview|mapping`）＋已保存映射表；写动作需 maintainer/admin |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
