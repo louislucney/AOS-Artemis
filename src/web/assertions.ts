@@ -88,7 +88,9 @@ const DISPLAY_VERB = new RegExp(DISPLAY_VERBS.join("|"));
 const DISPLAY_VERB_ALL = new RegExp(DISPLAY_VERBS.join("|"), "g");
 const FIELD_VERB_ALL = /显示|顯示|展示|包含|包括/g;
 const LABEL_REJECT = /(?:並|并且|且|可|需|以及|并|則|则|才|再)/;
-const LABEL_SHAPE = /^[A-Za-z][A-Za-z0-9 ._/&()#+-]*$/;
+const LABEL_PROSE = /(?:^[請请]|載入|载入|稍候|稍等|中$)/;
+const LABEL_SHAPE = /^[A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._/&()#+-]*$/;
+const ACTION_START = /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作)/;
 const ANNOTATION_BRACKETS = new Set(["待確認", "待确认", "设计稿", "設計稿", "備註", "备注"]);
 const CALC_HINT = /÷|向下取整|四捨五入|四舍五入|向上取整|除以|乘以|×|=/;
 const CALC_STRONG_HINT = /÷|向下取整|四捨五入|四舍五入|向上取整|除以|乘以|×/;
@@ -148,6 +150,25 @@ function splitOutsideQuotes(text: string, separators: string): string[] {
   }
   parts.push(text.slice(start));
   return parts.map((part) => part.trim()).filter((part) => part !== "");
+}
+
+function splitFieldParts(text: string, allowComma: boolean): string[] {
+  const hits = extractQuotes(text);
+  const parts: string[] = [];
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (hits.some((hit) => index >= hit.start && index < hit.end)) continue;
+    const char = text[index]!;
+    const separator = char === "、" || (allowComma && (char === "," || char === "，"));
+    if (!separator) continue;
+    if (char === "," && /\d/.test(text[index - 1] ?? "") && /\d/.test(text[index + 1] ?? "")) {
+      continue;
+    }
+    parts.push(text.slice(start, index).trim());
+    start = index + 1;
+  }
+  parts.push(text.slice(start).trim());
+  return parts;
 }
 
 function chineseNumber(raw: string): number | null {
@@ -345,6 +366,7 @@ function extractFieldList(clause: string): FieldList | null {
   const matches = [...masked.matchAll(FIELD_VERB_ALL)];
   const last = matches.at(-1);
   if (last === undefined || last.index === undefined) return null;
+  const allowComma = last[0] === "包含" || last[0] === "包括";
   const start = last.index + last[0].length;
   let rest = clause.slice(start).trim();
   rest = rest
@@ -353,16 +375,18 @@ function extractFieldList(clause: string): FieldList | null {
     .trim()
     .replace(/等(?:字段|欄位)?$/g, "")
     .trim();
-  if (!rest.includes("、")) return null;
-  const parts = rest.split("、");
-  if (parts.some((part) => part.trim() === "")) return null;
+  if (!rest.includes("、") && !(allowComma && /[,，]/.test(rest))) return null;
+  const parts = splitFieldParts(rest, allowComma);
+  if (parts.some((part) => part === "")) return null;
   const labels: string[] = [];
   for (const part of parts) {
-    const raw = part.trim().replace(/^[\s：:]+/, "");
+    const raw = part.replace(/^[\s：:]+/, "");
     if (raw === "") return null;
+    if (/^[)）(（]/.test(raw) || !/[A-Za-z0-9\u4e00-\u9fff]/.test(raw)) return null;
     if (/[。；;，,：:！!?？]$/.test(raw)) return null;
     if (VAGUE.test(raw)) continue;
-    if ([...raw].length > 20) return null;
+    if (LABEL_PROSE.test(raw)) return null;
+    if (raw.replace(/\s+/g, "").length > 24) return null;
     if (LABEL_REJECT.test(raw)) return null;
     if (!LABEL_SHAPE.test(raw)) return null;
     if (/[“”"'‘’「」『』【】]/.test(raw)) return null;
@@ -384,6 +408,7 @@ function displayLabel(masked: string): { label: string; negative: boolean } | nu
   if ([...label].length > 2) label = label.replace(/^(?:在|於|于)/, "").trim();
   label = label.replace(/等$/, "").trim();
   if (label === "" || VAGUE.test(label)) return null;
+  if (/^[)）(（]/.test(label) || !/[A-Za-z0-9\u4e00-\u9fff]/.test(label)) return null;
   if ([...label].length > 30) return null;
   if (label.includes("\u0000") || label.includes("、")) return null;
   if (/[：:\d]|[$¥€£]/.test(label)) return null;
@@ -443,11 +468,11 @@ function shortSegment(text: string): string | null {
     )
     .trim();
   if (stripped === "" || VAGUE.test(stripped)) return null;
-  if ([...stripped].length > 20) return null;
+  if (!/[A-Za-z0-9\u4e00-\u9fff]/.test(stripped)) return null;
+  if ([...stripped].length > 30) return null;
   if (/[?？]/.test(stripped)) return null;
   if (/\d{4}\s*[-/年]\s*\d{1,2}|\d{1,2}\s*[-/:]\s*\d{1,2}/.test(stripped)) return null;
   if (/第\s*\d+\s*步/.test(stripped)) return null;
-  if (/[，,、；;]/.test(stripped) && [...stripped].length > 12) return null;
   return stripped;
 }
 
@@ -498,7 +523,11 @@ function startsWithValue(text: string): boolean {
   );
 }
 
-function classifyClause(clause: string, statementHasDisplay: boolean): ClauseOutcome {
+function classifyClause(
+  clause: string,
+  statementHasDisplay: boolean,
+  allowActionText: boolean
+): ClauseOutcome {
   const quotes = extractQuotes(clause);
   const masked = maskQuotes(clause, quotes);
   const negative = NEGATIVE.test(masked);
@@ -567,9 +596,9 @@ function classifyClause(clause: string, statementHasDisplay: boolean): ClauseOut
     }
   }
 
-  if (!statementHasDisplay) {
+  if (!hasDisplay) {
     const segment = shortSegment(clause);
-    if (segment !== null) {
+    if (segment !== null && (allowActionText || !ACTION_START.test(segment))) {
       return {
         assertions: [{ type: "text", text: segment }],
         soft: true,
@@ -644,6 +673,11 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
       if (CONTEXT_PREFIX.test(sourceText)) continue;
 
       const withoutNumber = numbered ? sourceText.replace(NUMBER_PREFIX, "") : sourceText;
+      const allowActionText =
+        !numbered &&
+        (ROMAN_PREFIX.test(withoutNumber) ||
+          LETTER_PREFIX.test(withoutNumber) ||
+          BULLET_PREFIX.test(withoutNumber));
       const withoutPrefix = numbered
         ? withoutNumber
         : withoutNumber
@@ -667,7 +701,9 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
 
       const statementMasked = maskQuotes(text, extractQuotes(text));
       const statementHasDisplay = DISPLAY_VERB.test(statementMasked);
-      const clauses = statementHasDisplay ? splitOutsideQuotes(text, "，,") : [text];
+      const containsFieldList =
+        /(?:包含|包括)/.test(statementMasked) && /[、,，]/.test(statementMasked);
+      const clauses = containsFieldList ? [text] : splitOutsideQuotes(text, "，,");
       const longStatement = [...text].length > QUOTE_GATE_MAX;
       let gateBlocked = false;
       for (const clause of clauses) {
@@ -685,7 +721,9 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
         continue;
       }
 
-      const outcomes = clauses.map((clause) => classifyClause(clause, statementHasDisplay));
+      const outcomes = clauses.map((clause) =>
+        classifyClause(clause, statementHasDisplay, allowActionText)
+      );
       const manualOutcome = outcomes.find((outcome) => outcome.manual !== null);
       if (manualOutcome) {
         resolve(step, manualOutcome.manual!, sourceText);

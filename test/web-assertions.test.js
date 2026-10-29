@@ -271,7 +271,7 @@ test("classify: 单行无编号预期绑定最后一步；多行无编号仍 amb
   assert.match(multi.ambiguous[0].reason, /缺少步骤编号/);
 
   const followed = classifyExpectedResult({
-    expected: ["1. 打开首页", "显示“成功”"].join("\n"),
+    expected: ["1. 已进入首页", "显示“成功”"].join("\n"),
     steps: ["打开首页"],
     caseId: "TC_FOLLOW"
   });
@@ -279,7 +279,7 @@ test("classify: 单行无编号预期绑定最后一步；多行无编号仍 amb
     {
       step: 1,
       assert: [
-        { type: "text", text: "打开首页" },
+        { type: "text", text: "已进入首页" },
         { type: "visible", text: "成功" }
       ]
     }
@@ -729,7 +729,7 @@ test("classify: calc/count 与引号共存时保留 visible", () => {
   ]);
 });
 
-test("classify: 逗号拆分仅在展示语句内，且不为动作子句造 text", () => {
+test("classify: 逗号无条件拆分；动作子句不造 text，非动作短句可 text", () => {
   const withDisplay = classifyExpectedResult({
     expected: "1. 點擊後成功，顯示“A”",
     steps: ["a"],
@@ -746,8 +746,48 @@ test("classify: 逗号拆分仅在展示语句内，且不为动作子句造 tex
     caseId: "TC_COMMA_ACTION"
   });
   assert.deepEqual(actionOnly.steps, [
-    { step: 1, assert: [{ type: "text", text: "點擊後成功" }] }
+    { step: 1, assert: [{ type: "manual", reason: "无法确定可验证文本" }] }
   ]);
+  assert.equal(
+    actionOnly.steps[0].assert.some((item) => item.type === "text"),
+    false
+  );
+
+  const nonAction = classifyExpectedResult({
+    expected: "1. 彈窗關閉，停留在MOP首頁",
+    steps: ["a"],
+    caseId: "TC_COMMA_TEXT"
+  });
+  assert.deepEqual(nonAction.steps, [
+    {
+      step: 1,
+      assert: [
+        { type: "text", text: "彈窗關閉" },
+        { type: "text", text: "停留在MOP首頁" }
+      ]
+    }
+  ]);
+  assert.deepEqual(nonAction.manual, []);
+
+  const subItem = classifyExpectedResult({
+    expected: "i.選擇門市",
+    steps: ["a"],
+    caseId: "TC_COMMA_SUBITEM"
+  });
+  assert.deepEqual(subItem.steps, [
+    { step: 1, assert: [{ type: "text", text: "選擇門市" }] }
+  ]);
+
+  const actionClause = classifyExpectedResult({
+    expected: "1. 選擇門市：不自動帶入門市",
+    steps: ["a"],
+    caseId: "TC_COMMA_ACTION_CLAUSE"
+  });
+  assert.equal(
+    actionClause.steps[0].assert.some((item) => item.type === "text"),
+    false
+  );
+  assert.equal(actionClause.steps[0].assert[0].type, "manual");
 });
 
 test("classify: 标注性【】不升 visible", () => {
@@ -765,6 +805,97 @@ test("classify: 标注性【】不升 visible", () => {
     );
   }
   assert.deepEqual(byStep.get(3), [{ type: "visible", text: "我的最愛" }]);
+});
+
+test("classify: 中英混合字段列表与「包含」逗号列表", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 页面显示Total Amount、Location、Shop、Used S Dollar及积分、Used S Coupon名称和数量、Minimum Spending",
+      "2. 页面显示Total Amount、S Coupon折扣、S Dollar折扣、最终应付金额",
+      "3. 记录包含Used Date and Time, Member ID, Total amount deducted, S Coupon Name & volume, S Dollar Discount Amount, Ref Code",
+      "4. 记录包含Payment Date and Time, Member ID, Total Amount, S Coupon Name & volume, S Dollar Discount Amount, Ref Code"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d"],
+    caseId: "TC_MIXED_FIELDS"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [
+    { type: "visible", text: "Total Amount" },
+    { type: "visible", text: "Location" },
+    { type: "visible", text: "Shop" },
+    { type: "visible", text: "Used S Dollar及积分" },
+    { type: "visible", text: "Used S Coupon名称和数量" },
+    { type: "visible", text: "Minimum Spending" }
+  ]);
+  assert.deepEqual(byStep.get(2), [
+    { type: "visible", text: "Total Amount" },
+    { type: "visible", text: "S Coupon折扣" },
+    { type: "visible", text: "S Dollar折扣" },
+    { type: "visible", text: "最终应付金额" }
+  ]);
+  assert.deepEqual(byStep.get(3), [
+    { type: "visible", text: "Used Date and Time" },
+    { type: "visible", text: "Member ID" },
+    { type: "visible", text: "Total amount deducted" },
+    { type: "visible", text: "S Coupon Name & volume" },
+    { type: "visible", text: "S Dollar Discount Amount" },
+    { type: "visible", text: "Ref Code" }
+  ]);
+  assert.deepEqual(byStep.get(4), [
+    { type: "visible", text: "Payment Date and Time" },
+    { type: "visible", text: "Member ID" },
+    { type: "visible", text: "Total Amount" },
+    { type: "visible", text: "S Coupon Name & volume" },
+    { type: "visible", text: "S Dollar Discount Amount" },
+    { type: "visible", text: "Ref Code" }
+  ]);
+  assert.deepEqual(result.manual, []);
+});
+
+test("classify: 模糊/正常类子句不升 visible", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 圖片展示正常",
+      "2. Banner正确显示",
+      "3. 正確顯示",
+      "4. 正常",
+      "5. 圖片展示正常，且可以滑動切換"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_VAGUE_CLAUSE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4, 5]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应出现 visible`
+    );
+  }
+  assert.equal(byStep.get(5).some((assertion) => assertion.type === "manual"), false);
+});
+
+test("classify: 标点/右括号标签不升 visible", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. (若有同品項客製化完全相同，合併以數量顯示)",
+      "2. 顯示)",
+      "3. 顯示（",
+      "4. 顯示Location、)、Shop Name"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d"],
+    caseId: "TC_PUNCT_LABEL"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(
+      byStep.get(step).some(
+        (assertion) => assertion.type === "visible" && /^[)）(（]+$/.test(assertion.text)
+      ),
+      false,
+      `step ${step} 不应出现标点 visible`
+    );
+  }
 });
 
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
