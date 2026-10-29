@@ -119,7 +119,9 @@ export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsRe
       reasons.push({ caseId, status: "UNVERIFIED", reason: "source-unreadable" });
     }
     const warnings = [
-      "verdict-source-unreadable: 原件不可解析，无法生成断言；PASS 一律降级为 UNVERIFIED"
+      `verdict-source-unreadable: 原件不可解析，无法生成断言；${
+        suppressPerCaseResult ? "任务级抑制，逐例 PASS 不写回" : "PASS 一律降级为 UNVERIFIED"
+      }`
     ];
     if (downgraded.length > 0) {
       warnings.unshift(
