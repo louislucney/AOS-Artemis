@@ -33,6 +33,7 @@ import { loadScreenMap, localizeRegion, proposeScreenMapEntries, type ProposeRes
 import type { UiContract, UiTextContract } from "../ui/contract.js";
 import { loadUiSemantics, semanticsForScreen } from "../ui/semantics.js";
 import { measureTextWeight, type TextWeightResult } from "../ui/text-weight.js";
+import { estimateTextSize, type TextSizeEstimate } from "../ui/text-size.js";
 import { primaryProfile } from "../projects/stack.js";
 
 export interface DesignSourceArgs {
@@ -52,6 +53,7 @@ interface DetailRegionReport {
   name?: string;
   localSummary: DetailLocalSummary;
   textStyle?: TextWeightResult;
+  textSize?: TextSizeEstimate;
   crops?: { pair: string };
 }
 
@@ -993,6 +995,10 @@ export async function designDeviceDiff(
                 lossless: effectiveLossless,
                 localization: "design-bbox"
               });
+        const textSize =
+          textNode === undefined
+            ? undefined
+            : estimateTextSize(pair.device, { lossless: effectiveLossless });
         const slug = region.name ? diffSlug(region.name) : `r${region.idx}`;
         details.push({
           idx: region.idx,
@@ -1001,6 +1007,7 @@ export async function designDeviceDiff(
           ...(region.name ? { name: region.name } : {}),
           localSummary,
           ...(textStyle ? { textStyle } : {}),
+          ...(textSize ? { textSize } : {}),
           ...(saving ? { crops: { pair: `regions/${String(region.idx).padStart(2, "0")}-${slug}.png` } } : {})
         });
       }

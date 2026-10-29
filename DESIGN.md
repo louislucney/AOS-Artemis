@@ -3321,3 +3321,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **接入点**：`figma_gap_analysis` 的 JSON 响应追加 `verificationChecklist`（`source` 指向 figma-to-code-skill 的 verify.md、`items`、`note`）。`save` 落盘 `gaps.json` 同样包含。
 - **边界**：清单是流程提示，不是自动检查；不因为它存在就降低 `ui-parity`/`design_device_diff` 的门禁，也不把未确认项当 PASS。真正自动化的对比度/触控目标检查需要运行时控件几何与颜色对，当前未实现。
 - **测试**：`test/figma-flows.test.js` 增加 `buildVerificationChecklist` 用例（mobile 含 `tap-target`、web 不含、所有项 manual、未知栈按 mobile 处理、source 指向 figma-to-code-skill）。
+
+### 13.270 新增（design_device_diff：区域字号/行高像素估计，report-only）
+
+> 2026-10-29。借鉴 imugi `design-extractor` 的“文本行高中位数 × 0.7”思路，在区域核验结果里增加 report-only 的字号估计；不改变 diff 分类、severity 或门禁。
+
+- **实现**（`src/ui/text-size.ts`）：`estimateTextSize(RgbaImage,{lossless,maxLineHeight?})`。逐行统计与背景亮度差 >42 的像素，按连续行分组（允许 ≤4px 行内间隙，行高 6..120px），取有效行高中位数 ×0.7 作为字号估计；背景取边框像素亮度众数（按 8 级量化），避免文字贴边拉偏均值。输出 `{estimatedFontSizePx,estimatedLineHeightPx,lineCount,confidence,method:"line-height-median",reportOnly:true}`。
+- **置信度**：无损来源且 ≥2 行 → `medium`；单行/有损来源 → `low`（有损带 `reason:"lossy-source"`）。无文本行/图片过小 → 空估计 + reason。
+- **接入**：`design_device_diff` 的 `regionDetails[]` 在命中设计文本节点时追加 `textSize`（`src/diff/tool.ts`），与既有 `textStyle`（字重）并列。仅证据/人工复核使用，**不参与 PASS/FAIL、不改变 cluster severity**。
+- **边界**：像素估计受字体、字距、抗锯齿、缩放影响；多行/混合字号时中位数只代表典型行；不替代 `ui-contract` 的 `fontSize`/`lineHeight`，也不用于断言生成。
+- **测试**：`test/text-size.test.js` 5 例（双行中位数、单行 low、有损 low、无行/过小、深色背景）；`test/design-device-diff.test.js` 既有文案区域断言仍通过（`textSize` 为可选字段）。
