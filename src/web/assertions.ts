@@ -566,6 +566,32 @@ function startsWithValue(text: string): boolean {
   );
 }
 
+function structuredFieldValue(text: string): string | null {
+  const field = text.match(/^(標題|标题|內容|内容|按鈕|按钮)\s*[:：]\s*(.*)$/);
+  if (field !== null) return (field[2] ?? "").trim();
+  const button = text.match(/^(?:按鈕|按钮)\s*(?:\[|［)\s*(.*?)\s*(?:\]|］)\s*$/);
+  if (button !== null) return (button[1] ?? "").trim();
+  return null;
+}
+
+function isConcreteLabel(text: string): boolean {
+  const length = [...text].length;
+  if (length < 2 || length > 30) return false;
+  if (!/^[\u4e00-\u9fffA-Za-z0-9 /._#+()（）-]+$/.test(text)) return false;
+  const stack: string[] = [];
+  for (const char of text) {
+    if (char === "(" || char === "（") stack.push(char);
+    else if (char === ")") {
+      if (stack.pop() !== "(") return false;
+    } else if (char === "）") {
+      if (stack.pop() !== "（") return false;
+    }
+  }
+  if (stack.length > 0) return false;
+  const wordCheck = text.replace(/^(?:\([^()]*\)|（[^（）]*）)/, "");
+  return !/進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|可|需|並|并|且|及|或|與|与|將|将|會|会|能|要|請|请|的|了|是|在|有|為|为|若|如果|當|当|加入|选中|選中|超支|導出|导出|功能|狀態|状态|正確|正确|異常|异常|資料|数据|數據|以下|如下|全部|所有|自動|自动|登入|登錄|登录|填寫|填写|上傳|上传/.test(wordCheck);
+}
+
 function classifyClause(
   clause: string,
   statementHasDisplay: boolean,
@@ -690,6 +716,14 @@ function classifyClause(
       (allowActionText || !ACTION_START.test(segment)) &&
       (!multiClause || !NAV_START.test(segment))
     ) {
+      if (isConcreteLabel(segment)) {
+        return {
+          assertions: [{ type: "visible", text: segment }],
+          soft: false,
+          manual: null,
+          unresolved: false
+        };
+      }
       return {
         assertions: [{ type: "text", text: segment }],
         soft: true,
@@ -778,7 +812,7 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
       const text = withoutPrefix.trim();
       if (text === "") continue;
       if (CONTEXT_PREFIX.test(text)) continue;
-      if (/[:：]$/.test(text)) continue;
+      if (/[:：]$/.test(text) && structuredFieldValue(text) === null) continue;
 
       let step = currentStep;
       if (step === null && singleLine && input.steps.length > 0) {
@@ -787,6 +821,26 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
       }
       if (step === null) {
         doc.ambiguous.push({ step: null, reason: "缺少步骤编号，无法定位步骤", sourceText });
+        continue;
+      }
+
+      const structuredValue = structuredFieldValue(text);
+      if (structuredValue !== null) {
+        if (structuredValue === "") {
+          resolve(step, "结构化字段为空", sourceText);
+          continue;
+        }
+        if ([...structuredValue].length > 200) {
+          resolve(step, "结构化字段过长", sourceText);
+          continue;
+        }
+        if (MANUAL.test(structuredValue)) {
+          resolve(step, manualReason(structuredValue), sourceText);
+          continue;
+        }
+        const list = byStep.get(step) ?? [];
+        if (pushAssertion(list, { type: "visible", text: structuredValue })) hardCount += 1;
+        byStep.set(step, list);
         continue;
       }
 

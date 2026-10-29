@@ -610,7 +610,7 @@ test("classify: 真实样例回归（非 manual）", () => {
       steps: ["打开"],
       check: (byStep) => {
         assert.deepEqual(byStep.get(1), [
-          { type: "text", text: "MOP首頁" },
+          { type: "visible", text: "MOP首頁" },
           { type: "visible", text: "MOP intro" }
         ]);
       }
@@ -1265,6 +1265,125 @@ test("classify: 不需要是正向描述，不产 notVisible", () => {
     caseId: "TC_NOT_NEEDED"
   });
   assert.ok(!result.steps.flatMap((entry) => entry.assert).some((entry) => entry.type === "notVisible"));
+});
+
+test("classify: 結構化 UI 字段（標題/內容/按鈕）硬 visible", () => {
+  const legal =
+    "因應法規,僅可提供內用杯,歡迎租借循環杯!/自帶環保杯顧客,請至櫃檯排隊並提供取餐編號,退還自帶杯優惠";
+  const result = classifyExpectedResult({
+    expected: [
+      "1.彈出提醒彈窗",
+      "i.標題：内用請入座，再點餐",
+      `ii.内容：${legal}`,
+      "iii.按鈕：我知道了",
+      "按鈕 [瀏覽歷史訂單]",
+      "按鈕[X]"
+    ].join("\n"),
+    steps: ["a"],
+    caseId: "TC_STRUCTURED"
+  });
+  assert.deepEqual(result.steps, [
+    {
+      step: 1,
+      assert: [
+        { type: "visible", text: "提醒" },
+        { type: "visible", text: "内用請入座，再點餐" },
+        { type: "visible", text: legal },
+        { type: "visible", text: "我知道了" },
+        { type: "visible", text: "瀏覽歷史訂單" },
+        { type: "visible", text: "X" }
+      ]
+    }
+  ]);
+  assert.equal(result.confidence, "high");
+});
+
+test("classify: 結構化 UI 字段空值/超长落 manual", () => {
+  const long = "長".repeat(201);
+  const result = classifyExpectedResult({
+    expected: ["1. 標題：", `2. 內容：${long}`, "3. 按鈕[]"].join("\n"),
+    steps: ["a", "b", "c"],
+    caseId: "TC_STRUCTURED_BAD"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3]) {
+    assert.equal(byStep.get(step)[0].type, "manual");
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false
+    );
+  }
+  assert.match(result.manual[0].reason, /为空/);
+  assert.match(result.manual[1].reason, /过长/);
+});
+
+test("classify: 具体 UI 标签升级硬 visible", () => {
+  const labels = [
+    "MOP首頁",
+    "MOP 首頁",
+    "取餐點",
+    "單品頁",
+    "圖片",
+    "地圖",
+    "訂單日期/時間",
+    "訂單編號",
+    "縂金額",
+    "貨品信息",
+    "訂單總金額",
+    "二維條碼",
+    "發票號碼/兌獎",
+    "發票形式(載具/統編號碼)",
+    "單品名稱/飲料Size/售價/數量/單品小計金額",
+    "(若有)循環杯租借"
+  ];
+  const expected = labels.map((label, index) => `${index + 1}. ${label}`).join("\n");
+  const result = classifyExpectedResult({
+    expected,
+    steps: labels.map((_, index) => `s${index}`),
+    caseId: "TC_CONCRETE_LABELS"
+  });
+  assert.deepEqual(
+    result.steps,
+    labels.map((label, index) => ({
+      step: index + 1,
+      assert: [{ type: "visible", text: label }]
+    }))
+  );
+  assert.equal(result.confidence, "high");
+});
+
+test("classify: 动作/导航/状态短句不升级具体标签", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 彈窗關閉",
+      "2. 停留在MOP首頁",
+      "3. 返回到MOP首頁",
+      "4. 直接跳轉到MOP首頁",
+      "5. 登入帳號",
+      "6. 成功進入首頁",
+      "7. 功能正常",
+      "8. 可滑動查看",
+      "9. 頁面入口正常跳轉",
+      "10. 篩選功能正常",
+      "11. 開關可正常切換狀態",
+      "12. 交易未進入確認頁",
+      "13. 若S Dollar超支",
+      "14. 直接加入購物車(連同客製化)",
+      "15. 填寫手機號",
+      "16. 上傳身份證"
+    ].join("\n"),
+    steps: Array.from({ length: 16 }, (_, index) => `s${index}`),
+    caseId: "TC_CONCRETE_SOFT"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= 16; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.notEqual(result.confidence, "high");
 });
 
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
