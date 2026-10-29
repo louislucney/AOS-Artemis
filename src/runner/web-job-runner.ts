@@ -158,6 +158,7 @@ function executedPayload(
         status: entry.status,
         durationMs: entry.durationMs,
         ...(entry.assertionCount === undefined ? {} : { assertionCount: entry.assertionCount }),
+        ...(entry.assertions === undefined ? {} : { assertions: entry.assertions }),
         ...(entry.failureStep === undefined ? {} : { failureStep: entry.failureStep }),
         ...(entry.failureReason === undefined ? {} : { failureReason: entry.failureReason })
       })),

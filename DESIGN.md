@@ -3379,3 +3379,16 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **增量报告**（`compareFlowScreens`）：按 `screen.id` 对比旧 flows.json，输出 `sync:{new,changed,unchanged,baseline,missing}`；旧产物无 `nodeHash` 归 `baseline`，旧屏不在新图归 `missing`（只报告，不删除）。`figma_extract_flows` 在 `save!==false` 时读取上一次 flows.json 并写入本次 payload；首次提取无 `sync`。
 - **边界**：只做报告，不自动更新/删除旧用例、不自动重生成 tests、不重置结果；设计变更后的测试 stale/重生成仍由 `suite check`/`figma_generate_tests` 决定。`nodeHash` 不含绝对画布坐标，但包含屏幕名与节点 id。
 - **测试**：`test/figma-flows.test.js` 断言 nodeHash 稳定/内容变化；`test/figma-static-fallback.test.js` 端到端二次提取报告 unchanged/changed/missing。
+
+### 13.276 新增（Web 断言覆盖：soft text 由 flow 断言证明）
+
+> 2026-10-29。Plan 2 前的桥：runner 上报顶层 flow 的 visible/notVisible 断言文本，中心用它们覆盖 soft text 预期；只有全部覆盖才允许 medium 文档 PASS。
+
+- **runner**（`src/runner/web-executors.ts`）：`parseFlowAssertions` 逐行提取 `assertVisible`/`assertNotVisible` 的文本（对象写法只认 `text:`；跳过 `${var}`、>200 字、空值；≤100 条）；`WebJobExecutionCase.assertions` 随结果上传，`web-job-runner` 透传。`assertionCount` 仍保留。
+- **中心**（`src/web/results.ts`/`verdicts.ts`）：payload 可选 `assertions`（类型/长度校验）；`assertionGate(doc,count,flowAssertions)` 在 `confidence!=="high"` 时：
+  - 无 flow assertions → `soft-assertion-only`（旧行为）；
+  - 有但任一 soft `text` 未被 `assertVisible` 文本包含/被包含 → `soft-assertion-uncovered`；
+  - 全部覆盖且无 manual/ambiguous、`assertionCount>0` → PASS。
+  - `high` 文档仍走原硬断言路径；不因覆盖放宽 manual/ambiguous。
+- **边界**：只覆盖 `text`（visible/notVisible/id/变量/calc/count 不参与文本覆盖）；只扫顶层 flow、不展开 subflows；包含匹配是归一化后的双向 substring，可能偏宽，后续可收紧到精确/分段。
+- **测试**：`test/web-verdicts.test.js`（覆盖→PASS、未覆盖→soft-assertion-uncovered、无 flow assertions 仍 soft-assertion-only）；`test/web-executors.test.js` 断言 assertions 提取。

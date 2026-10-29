@@ -18,6 +18,13 @@ export interface WebJobExecutionCase {
   logPath?: string;
   /** 顶层 flow 中硬断言命令条数（中心判定 PASS 的证据）。 */
   assertionCount?: number;
+  /** 顶层 flow 中可提取文本的 visible/notVisible 断言（用于覆盖 soft text 预期）。 */
+  assertions?: FlowAssertion[];
+}
+
+export interface FlowAssertion {
+  type: "visible" | "notVisible";
+  text: string;
 }
 
 export interface WebJobExecutionResult {
@@ -141,10 +148,31 @@ async function listTopLevelFlows(dir: string): Promise<string[]> {
 }
 
 const HARD_ASSERTION_LINE = /^\s*-\s*assert(?:Visible|NotVisible|True|Condition)\b/gm;
+const ASSERTION_TEXT_LINE = /^\s*-\s*(assertVisible|assertNotVisible)\s*:\s*(.+?)\s*$/gm;
 
 /** 只扫顶层 flow 文件本身：Maestro 子流程（subflows/）不展开、不计数。 */
 function countHardAssertions(content: string): number {
   return content.match(HARD_ASSERTION_LINE)?.length ?? 0;
+}
+
+/** 提取 assertVisible/assertNotVisible 的文本；对象写法只认 `text:`，id/变量不参与覆盖。 */
+export function parseFlowAssertions(content: string): FlowAssertion[] {
+  const out: FlowAssertion[] = [];
+  for (const match of content.matchAll(ASSERTION_TEXT_LINE)) {
+    let raw = (match[2] ?? "").trim();
+    if (raw === "" || out.length >= 100) continue;
+    if (raw.startsWith("{")) {
+      const text = /\btext\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/.exec(raw);
+      raw = (text?.[1] ?? text?.[2] ?? text?.[3] ?? "").trim();
+    }
+    raw = raw.replace(/^["']|["']$/g, "").trim();
+    if (raw === "" || raw.includes("${") || [...raw].length > 200) continue;
+    out.push({
+      type: match[1] === "assertNotVisible" ? "notVisible" : "visible",
+      text: raw
+    });
+  }
+  return out;
 }
 
 function decodeCharacterEntities(text: string): string {
@@ -361,11 +389,15 @@ export async function executeWebJob(
     (left, right) => right.length - left.length || left.localeCompare(right)
   );
   const assertionCounts = new Map<string, number>();
+  const flowAssertions = new Map<string, FlowAssertion[]>();
   for (const [stem, file] of flowByStem) {
     try {
-      assertionCounts.set(stem, countHardAssertions(await readFile(file, "utf-8")));
+      const content = await readFile(file, "utf-8");
+      assertionCounts.set(stem, countHardAssertions(content));
+      flowAssertions.set(stem, parseFlowAssertions(content));
     } catch {
       assertionCounts.set(stem, 0);
+      flowAssertions.set(stem, []);
     }
   }
 
@@ -473,6 +505,10 @@ export async function executeWebJob(
       durationMs: raw.durationMs,
       assertionCount: assertionCounts.get(matched) ?? 0
     };
+    const extractedAssertions = flowAssertions.get(matched);
+    if (extractedAssertions !== undefined && extractedAssertions.length > 0) {
+      entry.assertions = extractedAssertions;
+    }
     if (raw.failureReason !== undefined) entry.failureReason = raw.failureReason;
     cases.push(entry);
   });

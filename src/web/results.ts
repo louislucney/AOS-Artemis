@@ -50,6 +50,8 @@ export interface WebResultCase {
   synthetic?: boolean;
   /** 面板人工标记；不覆盖 runner 的 status，只让门禁/Excel 使用该状态。 */
   manualStatus?: WebResultManualOverride;
+  /** runner 从顶层 flow 提取的 visible/notVisible 断言文本（soft text 覆盖证据）。 */
+  assertions?: Array<{ type: "visible" | "notVisible"; text: string }>;
 }
 
 export type WebResultManualStatus = "NOT_IMPL" | "BLOCKED";
@@ -402,6 +404,29 @@ function parseCase(raw: unknown, index: number): WebResultCase {
   }
   const logPath = optionalText(raw.logPath, `execution.cases[${index}].logPath`);
   if (logPath !== "") parsed.logPath = logPath;
+  if (raw.assertions !== undefined) {
+    if (!Array.isArray(raw.assertions) || raw.assertions.length > 100) {
+      throw new WebResultError(
+        "invalid-result",
+        `execution.cases[${index}].assertions 必须是最多 100 条的数组`
+      );
+    }
+    const assertions: Array<{ type: "visible" | "notVisible"; text: string }> = [];
+    for (const [assertionIndex, entry] of raw.assertions.entries()) {
+      if (!isRecord(entry) || (entry.type !== "visible" && entry.type !== "notVisible")) {
+        throw new WebResultError(
+          "invalid-result",
+          `execution.cases[${index}].assertions[${assertionIndex}] 类型必须是 visible/notVisible`
+        );
+      }
+      const textValue = text(entry.text, `execution.cases[${index}].assertions[${assertionIndex}].text`);
+      if (textValue.length > 200) {
+        throw new WebResultError("invalid-result", `execution.cases[${index}].assertions 文本超过 200 字符`);
+      }
+      assertions.push({ type: entry.type, text: textValue });
+    }
+    parsed.assertions = assertions;
+  }
   return parsed;
 }
 
