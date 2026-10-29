@@ -120,6 +120,17 @@ test("verdicts：仅软 text 断言 → UNVERIFIED soft-assertion-only", () => {
     status: "UNVERIFIED",
     reason: "soft-assertion-only"
   });
+
+  const mixed = classifyExpectedResult({
+    expected: "1. 显示“首页”，停留在首页",
+    steps: ["打开应用"],
+    caseId: "TC-MIXED"
+  });
+  assert.equal(mixed.confidence, "medium");
+  assert.deepEqual(assertionGate(mixed, 1), {
+    status: "UNVERIFIED",
+    reason: "soft-assertion-only"
+  });
 });
 
 test("verdicts：PASS 但原件没有该用例 → UNVERIFIED case-not-in-source", () => {

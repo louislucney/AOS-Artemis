@@ -845,7 +845,7 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
     .map(([step, assert]) => ({ step, assert }));
 
   doc.confidence =
-    hardCount > 0 && doc.manual.length === 0 && doc.ambiguous.length === 0
+    hardCount > 0 && softCount === 0 && doc.manual.length === 0 && doc.ambiguous.length === 0
       ? "high"
       : hardCount > 0 || softCount > 0
         ? "medium"

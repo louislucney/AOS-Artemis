@@ -244,6 +244,18 @@ test("classify: 后台/刷新/GPS/排序 → manual；否定引号仍 → notVis
   assert.deepEqual(result.ambiguous, []);
 });
 
+test("classify: 高确定性 + soft text 混合 → medium（不能算全部可验证）", () => {
+  const result = classifyExpectedResult({
+    expected: "1. 显示“首页”，停留在首页",
+    steps: ["打开应用"],
+    caseId: "TC_MIXED_SOFT"
+  });
+  const assertions = result.steps.flatMap((entry) => entry.assert);
+  assert.ok(assertions.some((entry) => entry.type === "visible"));
+  assert.ok(assertions.some((entry) => entry.type === "text"));
+  assert.equal(result.confidence, "medium");
+});
+
 test("classify: 空预期 → 无断言、manual 记「无预期」、low", () => {
   for (const expected of [null, "", "   \n\t "]) {
     const result = classifyExpectedResult({ expected, steps: ["打开首页"], caseId: "TC_EMPTY" });
