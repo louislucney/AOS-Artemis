@@ -247,7 +247,8 @@
 
 ### 5.1 解析
 
-- 只收 `.xlsx`；第一版只读用户选定的一个 sheet；合并单元格、公式、宏、图表区域显式拒绝或标记不可映射。
+- 收 `.xlsx` 与 `.csv`（CSV 检测 UTF-8/BOM/GB18030，按 RFC4180 解析引号/逗号/单元格内换行）；原件进 CAS 后**永不改写**，派生 XLSX 工作副本供写回，CSV 源另生成结果 CSV 副本。
+- 第一版只读用户选定的一个 sheet（CSV 固定 `csv` 表）；合并单元格、公式、宏、图表区域显式拒绝或标记不可映射。
 - 表头行默认第一行；允许用户指定表头行。
 - 映射字段（canonical）：
   - 必填：`caseId`（用例编号）, `steps`（步骤）
@@ -281,7 +282,7 @@
 |---|---|
 | `建议｜脚本文件` | 脚本相对路径 + 用例函数名；LLM 模式为 `n/a（LLM 执行）`，iOS 真机为 `n/a（iOS 真机走 LLM）` |
 | `建议｜关键预期` | 原 `expected` 列为空时才写；来源为 steps（以及项目 `acceptance.json` 若存在；Excel 无验收列）的 LLM 摘要，标 `inferred`；不臆造设计文档内容 |
-| `执行｜结果` | PASS / FAIL / SKIP / ERROR |
+| `执行｜结果` | PASS / FAIL / SKIP / ERROR / UNVERIFIED；未执行用例写 `SKIP（未执行）` |
 | `执行｜设备与系统` | serial + 型号 + 系统版本 |
 | `执行｜安装包` | 文件名 + 包名/Bundle ID + 版本名 + build/versionCode |
 | `执行｜开始时间` | ISO 8601 带时区偏移（如 `2026-10-28T13:00:12+08:00`） |
@@ -290,6 +291,18 @@
 
 - 列定位：按表头标记查找已有系统列；没有则按 §5.2 的 testcase_id 锚定追加。重复生成复用列，不重复堆叠。
 - 新 Excel 版本上传后，系统按 `caseId` 重新定位并写空白格；旧版本结果仍保留在详细结果与面板中。
+
+### 5.3 平台结果列、隐藏断言与判定
+
+- **平台结果列**：在 8 列摘要之前固定追加 `AOS Result` / `IOS Result`（原件已有同名列则原位复用）；只写当前 job 平台的一列，另一列保持原样。状态为 `PASS / FAIL / SKIP / ERROR / UNVERIFIED`。
+- **隐藏断言列**：可见列最后追加隐藏列 `__aos_assertions`，每行一个 JSON：`{version, source, confidence, steps:[{step,assert[]}], manual[], ambiguous[]}`。断言只由人工 Expected Result + Steps 归一化生成，**不覆盖**人工单元格、不写原件；Expected Result 变更后随新版本重新生成。CSV 结果副本没有隐藏列，断言只存在于 XLSX 工作副本。
+- **判定语义（PASS 的必要条件）**：
+  - `PASS`：flow/JUnit 通过 **且** 该用例的断言文档存在可执行断言 **且** 无 `manual`/`ambiguous` **且** 脚本包含至少一条硬断言。仅脚本成功、无预期断言 → 不是 `PASS`。
+  - `FAIL`：flow 或断言失败；`ERROR`：设备/安装/Maestro/上传等执行错误。
+  - `SKIP`：用例未执行、未选中或脚本未就绪；Excel 中存在但结果缺失的用例必须写 `执行｜结果 = SKIP（未执行）`，不得保留上一轮 PASS。
+  - `UNVERIFIED`：Expected Result 为空、只有人工/歧义项、断言不可自动执行，或 runner 未上报断言证据；不冒充 PASS，也不计通过。
+- **聚合**：`UNVERIFIED` 不计通过；任务含 `UNVERIFIED`/`SKIP` 时为 `partial`，不得为 `completed`。`gate.passed` 只统计真正的 `PASS`。
+- **平台结果列与 8 列的关系**：8 列保留完整摘要（含原因、设备、时间、trace）；平台结果列是快速对照值。两处都由中心写回，runner 永不改 Excel。
 
 ## 6. 脚本生成（Maestro）
 
@@ -317,6 +330,8 @@
 
 - `ready` 的定义是“每一步至少有一个可执行选择器”：`id:` 优先，`text:` 也接受；完全没有选择器才是 `unresolved`。不要求所有元素都有 testID，否则无 testID 的应用无法使用脚本模式。
 - Excel 原有「预期」存在时，生成硬断言；缺失时由系统补的 `建议｜关键预期` 默认是**建议/软断言**，只报告不决定 PASS/FAIL；管理员可在任务上显式开启“把建议当硬断言”。
+- **断言证据**：runner 逐用例上报 flow 中硬断言条数（`assertionCount`）；中心要求 `PASS` 同时满足「flow 通过 + 断言文档有可执行断言且无 manual/ambiguous + assertionCount > 0」。任一不满足写 `UNVERIFIED`，不因脚本退出码 0 就判 PASS。未上报断言证据的旧 runner 同样降级为 `UNVERIFIED`。
+- **未执行用例**：Excel 中属于本次任务范围、但 runner 未返回结果的用例，中心补写 `SKIP（未执行）`；不得沿用旧 PASS。
 - 重试沿用现有 suite 约定：**首跑结果决定门禁**，重跑只用于 flaky 诊断，不把重跑转绿算作首跑通过。
 - 部分下发：任务 `partial` 表示“有未执行用例”，不计 PASS；面板与账单分别显示执行/跳过/未就绪计数。
 - **计费按阶段**：生成/发现阶段的 LLM 调用无论用例最终是否下发都计费（成本已发生）；执行阶段的 token 只按实际执行的用例计；跳过/未就绪用例不计**执行** token，但已发生的生成/发现 token 不回退。账单按 `purpose=generation`/`discovery`/`execution` 分列，避免把“未执行”误解为“未产生成本”。
