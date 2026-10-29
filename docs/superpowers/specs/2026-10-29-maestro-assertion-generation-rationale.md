@@ -1,7 +1,7 @@
 # Plan 2 前因后果：从 Excel 预期到可执行 Maestro 断言
 
 > 日期：2026-10-29
-> 状态：**已评审；Phase 0/1/2/3 完成（纯生成器、脚本集资产、CLI/面板入口），Phase 4/5 未做**
+> 状态：**已评审；Phase 0/1/2/3/4 完成（生成器、脚本集、CLI/面板、下发预检），Phase 5 未做**
 > 范围：Web 项目（Excel/CSV 用例源 + Maestro 脚本执行）；不包含 iOS 真机 LLM 执行、发现执行、计费
 > 关联：`docs/superpowers/specs/2026-10-28-web-project-test-platform-design.md` §5.3、§6；`DESIGN.md` §13.266–§13.268、§13.276
 
@@ -653,7 +653,7 @@ tags:
 | 1 | `src/web/script-gen.ts` 纯生成器 + 单元测试 | 已完成：步骤分类/动作/断言 → flow YAML；`test/web-script-gen.test.js` 19 例 |
 | 2 | 脚本集资产落盘 + metadata + 幂等 | 已完成：`src/web/zip.ts` + `src/web/script-set.ts`；manifest/metadata/幂等/平台匹配 |
 | 3 | 面板/CLI 生成入口 + dry-run 展示 | 已完成：`web scripts generate` + assets 页表单/脚本集表；dry-run/manifest/审计 |
-| 4 | 下发预检 + 部分下发语义 | 无脚本不再等到 runner 报错；SKIP/partial 正确 |
+| 4 | 下发预检 + 部分下发语义 | 已完成：无脚本 400 `script-set-missing`；unresolved 409 `script-set-incomplete`，显式 `allowPartialUnresolved` 放行；面板勾选/前端提示 |
 | 5 | 真机小样本验收 | PASS/FAIL/UNVERIFIED 与基线对比；假阳性抽查 |
 | 6 | （后续）发现执行 / testID 字典 | 用 `id:` 替代 `text:`，降低歧义 |
 | 7 | （后续）2B LLM 处理 unresolved | 受控、可审计、仍走白名单 |
@@ -685,4 +685,5 @@ tags:
 - Phase 1：`src/web/script-gen.ts` 纯生成器 + `test/web-script-gen.test.js` 19 例已完成；实现后复测 strict CSV 0/26、XLSX 16/40，assume-prepared CSV 15/26（14 有硬断言）、XLSX 31/40（22 有硬断言）。
 - Phase 2：`src/web/zip.ts`（确定性 zip）+ `src/web/script-set.ts`（manifest/metadata/幂等写入）已完成；`assertScriptSetMatch` 增加 platform 校验。
 - Phase 3：`src/web/script-generation.ts` 服务 + `web scripts generate` CLI + assets 页“生成 Maestro 脚本”表单/`POST /panel/api/projects/scripts/generate` 已完成；appId 缺省用项目 `appPackage`，双端显式传；仍不做下发预检/设备执行。
-- 下一步：Phase 4，下发预检 + 部分下发语义；随后 Phase 5 真机小样本验收。
+- Phase 4：`createWebJob` 预检完成——Maestro 无脚本 → 400 `script-set-missing`；脚本 metadata `unresolved>0` 未显式允许 → 409 `script-set-incomplete`；面板增加 `allowStaleScript`/`allowPartialUnresolved` 勾选与前端无脚本提示。
+- 下一步：Phase 5 真机小样本验收（生成脚本 → 执行 → PASS/FAIL/UNVERIFIED 与基线对比；假阳性抽查）。

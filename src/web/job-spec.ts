@@ -68,6 +68,8 @@ export type WebJobDispatchErrorCode =
   | "asset-kind-mismatch"
   | "script-set-mismatch"
   | "script-set-unverified"
+  | "script-set-missing"
+  | "script-set-incomplete"
   | "device-not-on-host"
   | "device-busy";
 
@@ -85,6 +87,8 @@ const ERROR_STATUS: Record<WebJobDispatchErrorCode, number> = {
   "asset-kind-mismatch": 400,
   "script-set-mismatch": 409,
   "script-set-unverified": 409,
+  "script-set-missing": 400,
+  "script-set-incomplete": 409,
   "device-not-on-host": 409,
   "device-busy": 409
 };

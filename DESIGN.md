@@ -3430,3 +3430,16 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **appId 来源**：项目已有 `appPackage` 作为缺省；双端项目应显式传 `--app-id`/面板值（Android package 与 iOS bundle id 不同）。
 - **测试**：`test/web-script-generation.test.js` 7 例（dry-run/写入幂等/项目平台资产 appId 错误/strict vs assume/CLI JSON/CLI 复用/参数错误）；`test/panel-script-gen.test.js` 3 例（dry-run/写入/viewer 403+非法平台）；`test/web-assets-ui.test.js` 增加生成表单、脚本集表、JSON 字段断言；`test/panel-actions.test.js` 增加角色映射。
 - **边界**：不自动保存列映射、不写 Excel 建议列、不做下发预检（Phase 4）、不做设备执行/LLM；脚本集仍不可变，人工脚本不覆盖。
+
+### 13.280 新增（Web 下发预检：无脚本/未就绪脚本拒绝）
+
+> 2026-10-29。Plan 2A Phase 4：把“无脚本直到 runner 才报错”改成下发前拒绝；unresolved 默认阻止，显式允许才部分下发。
+
+- **错误码**（`src/web/job-spec.ts`）：`script-set-missing`（400，Maestro 执行但未选 scripts 资产）；`script-set-incomplete`（409，scripts 资产 metadata `unresolved>0` 且未显式允许部分下发）。
+- **预检**（`src/web/jobs.ts` `createWebJob`）：加载脚本并完成 Excel/包/平台精确匹配后：
+  - `executionMode=maestro` 且 `script===null` → `script-set-missing`；
+  - `script.metadata.unresolved` 为数字且 >0 且 `allowPartialUnresolved!==true` → `script-set-incomplete`；
+  - 通过后才建任务/预占。`executionMode=llm` 不受脚本预检影响（仍 `llm-execution-not-wired`）。
+- **面板**：下发表单提交前检查 `executionMode==="maestro"` 且无 `scriptSetId`，前端提示“Maestro 执行需要脚本集”并阻止提交；表单新增 `allowStaleScript` / `allowPartialUnresolved` 勾选并透传到 `createWebJob`；服务端仍为权威。
+- **测试**：`test/web-job-queue.test.js` 增加无脚本 400、unresolved 409、`allowPartialUnresolved:true` 放行；`test/web-dispatch-ui.test.js` 更新下发 fixture 带脚本并断言前端提示。
+- **边界**：不读取脚本 zip 内的 per-case manifest（只看 metadata 的 unresolved 计数）；不替代 Phase 5 真机执行/结果校验。部分下发时未执行用例由结果入库补 `SKIP（未执行）`（§13.268 同口径）。

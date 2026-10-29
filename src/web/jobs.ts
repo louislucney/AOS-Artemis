@@ -272,6 +272,22 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
       allowStaleScript: input.allowStaleScript
     });
   }
+  if (combination.executionMode === "maestro" && script === null) {
+    throw new WebJobDispatchError(
+      "script-set-missing",
+      "Maestro 执行需要 scripts 资产；请先在测试资产页生成脚本或上传脚本集"
+    );
+  }
+  if (script !== null) {
+    const unresolved =
+      typeof script.metadata?.unresolved === "number" ? script.metadata.unresolved : 0;
+    if (unresolved > 0 && input.allowPartialUnresolved !== true) {
+      throw new WebJobDispatchError(
+        "script-set-incomplete",
+        `脚本集 ${script.id} 有 ${unresolved} 个 unresolved 用例；默认不下发，请重新生成/修正 Excel，或显式允许部分下发`
+      );
+    }
+  }
 
   const snapshot: WebAssetSnapshot[] = buildAssetSnapshot(
     [excel!, pkg!, materials, script].filter((asset): asset is WebAssetRecord => asset !== null)

@@ -1851,6 +1851,8 @@ interface PanelWebJobCreateInput extends PanelWebJobAssignment {
   scriptSetId: string | null;
   retry: number;
   priority: number;
+  allowStaleScript: boolean;
+  allowPartialUnresolved: boolean;
 }
 
 function parseWebJobCreateForm(
@@ -1897,6 +1899,10 @@ function parseWebJobCreateForm(
   }
   const materialsAssetId = panelTextField(payload, "materialsAssetId");
   const scriptSetId = panelTextField(payload, "scriptSetId");
+  const allowStaleScript =
+    payload.allowStaleScript === true || payload.allowStaleScript === "true";
+  const allowPartialUnresolved =
+    payload.allowPartialUnresolved === true || payload.allowPartialUnresolved === "true";
   return {
     ok: true,
     value: {
@@ -1909,7 +1915,9 @@ function parseWebJobCreateForm(
       materialsAssetId: materialsAssetId === "" ? null : materialsAssetId,
       scriptSetId: scriptSetId === "" ? null : scriptSetId,
       retry,
-      priority
+      priority,
+      allowStaleScript,
+      allowPartialUnresolved
     }
   };
 }
@@ -1947,6 +1955,8 @@ async function createWebJobAction(
       caseFilter: input.caseFilter,
       retry: input.retry,
       priority: input.priority,
+      allowStaleScript: input.allowStaleScript,
+      allowPartialUnresolved: input.allowPartialUnresolved,
       createdBy: actor,
       nowMs: deps.now?.() ?? Date.now()
     });
