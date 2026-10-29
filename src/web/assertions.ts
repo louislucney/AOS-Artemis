@@ -58,7 +58,7 @@ const CONTEXT_PREFIX =
   /^(?:--|——|备注\s*[:：]?|備註\s*[:：]?|【备注】|【備註】|注\s*[:：]|note\b\s*[:：]?)\s*/i;
 
 const NEGATIVE =
-  /不(?!同|仅|僅|但|过|過|断|斷|少|久|符|变|變|停|只|需|用|須|须|會|会|要|再)|沒(?:有)?|没(?:有)?|未有|未(?:顯示|显示|展示|出現|出现|加載|加载|返回|生效|完成|成功|存在|找到|彈出|弹出|支持|支援|包含|提示|進入|进入|能|見|见)|无(?:按钮|庫存|库存|优惠|優惠|结果|結果)|無(?:按鈕|庫存|库存|優惠|优惠|結果|结果)|消失|隱藏|隐藏|不可見|不可见|不能|\b(?:not|no|never|hidden|absent)\b|\b\w+n't\b|\bdisappear(?:s|ed|ing)?\b/i;
+  /不(?!同|仅|僅|但|过|過|断|斷|少|久|符|变|變|停|只|需|用|須|须|會|会|要|再)|沒(?:有)?|没(?:有)?|未有|未(?:顯示|显示|展示|出現|出现|加載|加载|返回|生效|完成|成功|存在|找到|彈出|弹出|支持|支援|包含|提示|進入|进入|停留|能|見|见)|无(?:按钮|庫存|库存|优惠|優惠|结果|結果)|無(?:按鈕|庫存|库存|優惠|优惠|結果|结果)|消失|隱藏|隐藏|不可見|不可见|不能|\b(?:not|no|never|hidden|absent)\b|\b\w+n't\b|\bdisappear(?:s|ed|ing)?\b/i;
 
 const MANUAL =
   /后台|後台|排序|最近|上次|GPS|刷新|配置|积分余额|積分餘額|至少|(?<![不未沒没])存在|資料|数据|數據|\bbackend\b|\bserver(?:-side)?\b|\bsort(?:ed|s|ing)?\b|\border(?:s|ed)?\b|\blast\b|\blatest\b|\brefresh(?:ed|es|ing)?\b|\bconfig(?:uration|ure)?\b|\bbalance\b|\bat least\b|\bexists?\b|\bdata\b/i;
@@ -99,9 +99,9 @@ const STATUS_WORD =
 const ENGLISH_PREDICATE =
   /\b(?:is|are|was|were|be|been|failed|success|successful|loading|correct|correctly|wrong|error|pending|completed|cancelled|canceled|sold\s*out|out\s*of\s*stock|unavailable|disabled|expired|pass|fail)\b/i;
 const LABEL_ACTION =
-  /進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|可|需|並|并|且|將|将|能|要|^請(?:稍候|至|先|您|於|在|按|選|輸|確|聯|參|見)|^请(?:稍候|至|先|您|于|在|按|选|输|确|联|参|见)|若|如果|當|当|加入|选中|選中|超支|導出|导出|功能|正確|正确|異常|异常|及格|合格|通過|通过|資料|数据|數據|以下|如下|全部|所有|自動|自动|登入|登錄|登录|填寫|填写|^上傳(?!時間|时间|日期|編號|编号|次數|次数|狀態|状态|按鈕|按钮|內容|内容|資訊|资讯|信息|資料|资料|數據|数据|列表|頁|页|名稱|名称|金額|金额|數量|数量)|^上传(?!时间|日期|编号|次数|状态|按钮|内容|资讯|信息|资料|数据|列表|页|名称|金额|数量)|載入|载入|有(?:現貨|现货|庫存|库存|商品)|在(?:購物車|购物车|首頁|首页|頁面|页面)|為(?:\d|[A-Za-z]|[\u4e00-\u9fff]{1,4}元)|了$|檢查|检查|核對|核对|查看|檢視|检视|瀏覽|浏览|導向|导向|前往|清除|修改|移動|移动|複製|复制|選取|选取|再次|等待|測試|测试|回到|刪除|删除/;
+  /進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|可|需|並|并|且|將|将|能|要|^請(?:稍候|至|先|您|於|在|按|選|輸|確|聯|參|見)|^请(?:稍候|至|先|您|于|在|按|选|输|确|联|参|见)|若|如果|當|当|加入|选中|選中|超支|導出|导出|功能|正確|正确|異常|异常|及格|合格|通過|通过|資料|数据|數據|以下|如下|全部|所有|自動|自动|登入|登錄|登录|填寫|填写|^上傳(?!時間|时间|日期|編號|编号|次數|次数|狀態|状态|按鈕|按钮|內容|内容|資訊|资讯|信息|資料|资料|數據|数据|列表|頁|页|名稱|名称|金額|金额|數量|数量)|^上传(?!时间|日期|编号|次数|状态|按钮|内容|资讯|信息|资料|数据|列表|页|名称|金额|数量)|載入|载入|有(?:現貨|现货|庫存|库存|商品)|在(?:購物車|购物车|首頁|首页|頁面|页面)|為(?:\d|[A-Za-z]|[\u4e00-\u9fff]{1,4}元)|了$|檢查|检查|核對|核对|查看|檢視|检视|瀏覽|浏览|導向|导向|前往|清除|修改|移動|移动|複製|复制|選取|选取|再次|等待|測試|测试|回到|到達|到达|直達|直达|刪除|删除/;
 const FIELD_ACTION =
-  /進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|加入|選中|选中|超支|導出|导出|功能|正確|正确|異常|异常|及格|合格|通過|通过|檢查|检查|核對|核对|查看|檢視|检视|瀏覽|浏览|導向|导向|前往|清除|修改|移動|移动|複製|复制|選取|选取|再次|等待|測試|测试|回到|刪除|删除/;
+  /進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|加入|選中|选中|超支|導出|导出|功能|正確|正确|異常|异常|及格|合格|通過|通过|檢查|检查|核對|核对|查看|檢視|检视|瀏覽|浏览|導向|导向|前往|清除|修改|移動|移动|複製|复制|選取|选取|再次|等待|測試|测试|回到|到達|到达|直達|直达|刪除|删除/;
 const STATUS_PHRASE =
   /已[^，,。；;]{0,8}(?:成功|完成|提交|更新|刪除|删除|新增|取消|付款|出貨|出货|退款|取貨|送達|簽收|結帳|配送|審核|排隊|叫號|開通|核銷|成立|生效|用完)/;
 const NOUN_SUFFIX =
@@ -580,6 +580,41 @@ function startsWithValue(text: string): boolean {
   );
 }
 
+function navigationTarget(text: string): { target: string; negative: boolean } | null {
+  const match = text.match(
+    /(?:跳轉到|跳转到|跳轉至|跳转至|進入|进入|返回|回到|停留在|前往|導向|导向|到達|到达|直達|直达)(?:到|至)?\s*([^，,。；;：:！!?？]{2,30})$/
+  );
+  if (match === null || match.index === undefined) return null;
+  if (/[，,、；;。]/.test(text.slice(0, match.index))) return null;
+  const target = (match[1] ?? "")
+    .replace(/^[到至]\s*/, "")
+    .replace(/[\s。；;，,：:！!?？]+$/g, "")
+    .trim();
+  if ([...target].length < 2 || [...target].length > 30) return null;
+  if (!/(?:首頁|首页|頁面|页面|頁|页|門市|门店|詳情頁|详情页)$/.test(target)) return null;
+  if (["頁面", "页面", "門市", "门店"].includes(target)) return null;
+  const negative = /(?:未|沒有|沒|不(?!需|用|須|须|會|会|要|再))(?:再|會|会|要)?(?:跳轉|跳转|進入|进入|返回|回到|停留在|前往|導向|导向|到達|到达|直達|直达)/.test(
+    text
+  );
+  return { target, negative };
+}
+
+function closureTarget(text: string): string | null {
+  const match = text.match(/^(.{2,40}?)(?:關閉|关闭|消失|隱藏|隐藏|不見|不见)(?:了)?$/);
+  if (match === null) return null;
+  let subject = (match[1] ?? "")
+    .replace(/[\s。；;，,：:！!?？]+$/g, "")
+    .trim();
+  subject = subject.split(/[後后]/).at(-1)?.trim() ?? "";
+  subject = subject.replace(/(?:已經|已经|已|都|就|正在|正)$/g, "").trim();
+  if (subject === "") return null;
+  if (/(?:未|沒有|沒|不會|不)$/.test(subject)) return null;
+  if (NEGATIVE.test(subject)) return null;
+  if (["頁面", "页面", "門市", "门店"].includes(subject)) return null;
+  if ([...subject].length < 2 || [...subject].length > 30) return null;
+  return subject;
+}
+
 function structuredFieldValue(text: string): string | null {
   const field = text.match(/^(標題|标题|內容|内容|按鈕|按钮)\s*[:：]\s*(.*)$/);
   if (field !== null) return (field[2] ?? "").trim();
@@ -683,6 +718,26 @@ function classifyClause(
   }
   if (assertions.length > 0) {
     return { assertions, soft: false, manual: null, unresolved: false };
+  }
+
+  const nav = navigationTarget(masked);
+  if (nav !== null) {
+    return {
+      assertions: [{ type: nav.negative || negative ? "notVisible" : "visible", text: nav.target }],
+      soft: false,
+      manual: null,
+      unresolved: false
+    };
+  }
+
+  const closure = closureTarget(masked);
+  if (closure !== null) {
+    return {
+      assertions: [{ type: "notVisible", text: closure }],
+      soft: false,
+      manual: null,
+      unresolved: false
+    };
   }
 
   if (hasConcreteDisplay) {
