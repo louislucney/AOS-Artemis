@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -12,6 +12,7 @@ import { MemoryStore } from "../dist/db/memory.js";
 import { storeWebAsset } from "../dist/web/assets.js";
 import { readAssertionColumn } from "../dist/web/assertion-column.js";
 import { decodeCsv, encodeCsv, parseCsv } from "../dist/web/csv.js";
+import { writePlatformResults } from "../dist/web/platform-result.js";
 import { ingestWebJobResult, resultPathForJob, webResultCsvPath } from "../dist/web/results.js";
 import { cellText, SYSTEM_COLUMNS, writebackWorkbook } from "../dist/web/writeback.js";
 import { ensureWorkbookCopy, workbookCopyPath } from "../dist/web/workbook.js";
@@ -516,7 +517,54 @@ test("CSV 源 8 列写回存在失败单元格：不导出结果 CSV，并显式
   assert.equal(await fileSha(ctx.original), ctx.originalSha);
 });
 
-test("平台结果列沿用假绿守卫：任务 error 且用例全 PASS 时不写 PASS", async (t) => {
+test("平台列追加跳过游离人工数据：右移到干净列，二次写入复用且不覆盖", async (t) => {
+  const workspace = await tempDir(t);
+  const workbookPath = path.join(workspace, "cases.xlsx");
+  await writeFile(
+    workbookPath,
+    await xlsxBuffer(
+      ["用例编号", "用例名"],
+      [["TC-1", "登录", "人工备注：不要覆盖"]]
+    )
+  );
+  const input = {
+    workbookPath,
+    sheetName: "用例",
+    caseIdHeader: "用例编号",
+    platform: "android",
+    rows: [{ caseId: "TC-1", status: "PASS" }],
+    sourceHeaders: ["用例编号", "用例名"]
+  };
+
+  const first = await writePlatformResults(input);
+  assert.equal(first.column, 4, "C 列有游离数据 → AOS 放到 D");
+  assert.equal(first.appended, true);
+  assert.equal(first.layout, "fixed");
+  assert.ok(
+    first.warnings.some((warning) =>
+      warning.includes("platform-columns-shifted: 第 3 列有游离人工数据，平台列追加到 4")
+    ),
+    first.warnings.join("；")
+  );
+  let sheet = await loadSheet(workbookPath, "用例");
+  assert.equal(cellText(sheet.getCell("D1")), "AOS Result");
+  assert.equal(cellText(sheet.getCell("E1")), "IOS Result");
+  assert.equal(cellText(sheet.getCell("C2")), "人工备注：不要覆盖");
+  assert.equal(cellText(sheet.getCell("D2")), "PASS");
+
+  const second = await writePlatformResults({
+    ...input,
+    rows: [{ caseId: "TC-1", status: "FAIL" }]
+  });
+  assert.equal(second.column, 4, "二次写入复用 D/E");
+  assert.equal(second.appended, false);
+  assert.ok(!second.warnings.some((warning) => warning.includes("platform-columns-shifted")));
+  sheet = await loadSheet(workbookPath, "用例");
+  assert.equal(cellText(sheet.getCell("C2")), "人工备注：不要覆盖", "游离人工数据永久保留");
+  assert.equal(cellText(sheet.getCell("D2")), "FAIL");
+});
+
+test("平台结果列沿用假绿守卫：任务 error 且用例全 PASS 时写 ERROR 而非 PASS", async (t) => {
   const ctx = await setup(t, {
     headers: ["用例编号", "用例名", "步骤", "期望结果"],
     mapping: { expected: "期望结果" },
@@ -547,12 +595,17 @@ test("平台结果列沿用假绿守卫：任务 error 且用例全 PASS 时不�
   assert.equal(summary.taskStatus, "error");
   assert.ok(summary.platformResult);
   assert.equal(summary.platformResult.header, "AOS Result");
-  assert.ok(!summary.writtenCells.some((cell) => cell.key === "result"));
+  assert.ok(
+    summary.writtenCells
+      .filter((cell) => cell.key === "result")
+      .every((cell) => cell.value === "ERROR"),
+    "任务级 error 写 ERROR，不留下 PASS"
+  );
   const sheet = await loadSheet(ctx.copyPath, "用例");
   const aos = columnByHeader(sheet, "AOS Result");
   const result = columnByHeader(sheet, "执行｜结果");
-  assert.equal(cellText(sheet.getCell(2, aos)), "", "任务级 error 不得写平台 PASS");
-  assert.equal(cellText(sheet.getCell(2, result)), "", "8 列结果同口径不写 PASS");
+  assert.equal(cellText(sheet.getCell(2, aos)), "ERROR", "任务级 error 不得写平台 PASS");
+  assert.equal(cellText(sheet.getCell(2, result)), "ERROR", "8 列结果同口径不写 PASS");
 });
 
 test("CSV 源每个 job 生成独立结果 CSV（不覆盖上一轮）", async (t) => {

@@ -131,6 +131,19 @@ function isFormula(cell: ExcelJS.Cell): boolean {
   return cell.type === ExcelJS.ValueType.Formula;
 }
 
+/** 追加列前检查表头下方是否有游离人工数据（不覆盖，右移到干净列）。 */
+function hasDataBelowHeader(
+  sheet: ExcelJS.Worksheet,
+  headerRow: number,
+  columnNumber: number
+): boolean {
+  const rowCount = sheet.rowCount ?? 0;
+  for (let row = headerRow + 1; row <= rowCount; row += 1) {
+    if (cellText(sheet.getCell(row, columnNumber)) !== "") return true;
+  }
+  return false;
+}
+
 function assertHeaderNotMerged(
   sheet: ExcelJS.Worksheet,
   headerRow: number,
@@ -254,13 +267,21 @@ export async function writePlatformResults(
   }
 
   const lastHeaderColumn = lastNonEmptyHeaderColumn(sheet, headerRow, anchorColumn, columnCount);
+  const warnings: string[] = [];
   const appendedHeaders: Array<{ column: number; header: string }> = [];
   let nextColumn = lastHeaderColumn + 1;
   for (const platformColumn of PLATFORM_RESULT_COLUMNS) {
     if (present.has(platformColumn.platform)) continue;
-    present.set(platformColumn.platform, nextColumn);
-    appendedHeaders.push({ column: nextColumn, header: platformColumn.header });
-    nextColumn += 1;
+    let column = nextColumn;
+    while (column < 16_384 && hasDataBelowHeader(sheet, headerRow, column)) {
+      warnings.push(
+        `platform-columns-shifted: 第 ${column} 列有游离人工数据，平台列追加到 ${column + 1}`
+      );
+      column += 1;
+    }
+    present.set(platformColumn.platform, column);
+    appendedHeaders.push({ column, header: platformColumn.header });
+    nextColumn = column + 1;
   }
 
   assertHeaderNotMerged(sheet, headerRow, anchorColumn, input.caseIdHeader);
@@ -287,7 +308,6 @@ export async function writePlatformResults(
     sourceHeaders === null ? true : sourceHeaders.has(normalizeExcelHeader(jobHeader));
 
   const rowByCaseId = new Map<string, number>();
-  const warnings: string[] = [];
   if (appendedHeaders.length > 0 && layout === "legacy") {
     warnings.push(
       "platform-columns-after-system: 工作副本已有 8 列摘要（旧布局，或原件自带摘要列），平台结果列只能追加在其后；可见列顺序＝原件 + 8 列 + AOS/IOS，新建工作副本固定为原件 + AOS/IOS + 8 列"

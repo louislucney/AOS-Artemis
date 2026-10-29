@@ -630,7 +630,8 @@ test("远程 Web 任务端到端：下发选机 → 领取 → 下载/安装/Mae
   assert.equal(errorSummary.taskStatus, "error");
   assert.equal(errorSummary.dbStatus, "failed");
   assert.equal(errorSummary.gate.result, "error");
-  assert.equal(errorSummary.writtenCells.length, 0);
+  assert.equal(errorSummary.writtenCells.length, 2, "缺失用例写 synthetic ERROR");
+  assert.ok(errorSummary.writtenCells.every((cell) => cell.value === "ERROR"));
   const errorDoc = await readWebJobResult(rootPath, jobError.task.id);
   assert.equal(errorDoc.taskStatus, "error");
   assert.equal((await store.getRegressionTask(rootPath, jobError.task.id)).status, "failed");

@@ -107,25 +107,36 @@ function downgrade(entry: WebResultCase, reason: string): WebResultCase {
  */
 export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsResult {
   const { payloadCases, sourceCases, assertions, caseFilter, suppressPerCaseResult } = input;
+
+  /** 任务级错误不采纳逐例 PASS，写 ERROR（避免 Excel 残留旧 PASS）。 */
+  const suppressed = (entry: WebResultCase): WebResultCase => ({
+    ...entry,
+    status: "ERROR",
+    failureReason: "任务级错误，未采纳逐例 PASS"
+  });
+
   if (sourceCases === null) {
     // fail-closed：没有原件就无法证明预期，PASS 不得直通；缺失范围同样未知，不补 SKIP。
     const cases: WebResultCase[] = [];
     const reasons: DeriveVerdictsResult["reasons"] = [];
     const downgraded: string[] = [];
     for (const entry of payloadCases) {
-      if (entry.status !== "PASS" || suppressPerCaseResult) {
+      if (entry.status !== "PASS") {
         cases.push(entry);
         continue;
       }
       const caseId = entry.caseId.trim();
+      if (suppressPerCaseResult) {
+        cases.push(suppressed(entry));
+        reasons.push({ caseId, status: "ERROR", reason: "task-level-error" });
+        continue;
+      }
       cases.push(downgrade(entry, "source-unreadable"));
       downgraded.push(`${caseId}:source-unreadable`);
       reasons.push({ caseId, status: "UNVERIFIED", reason: "source-unreadable" });
     }
     const warnings = [
-      `verdict-source-unreadable: 原件不可解析，无法生成断言；${
-        suppressPerCaseResult ? "任务级抑制，逐例 PASS 不写回" : "PASS 一律降级为 UNVERIFIED"
-      }`
+      "verdict-source-unreadable: 原件不可解析，无法生成断言；PASS 一律不采用"
     ];
     if (downgraded.length > 0) {
       warnings.unshift(
@@ -143,7 +154,7 @@ export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsRe
 
   const selected = selectSourceCases(sourceCases, caseFilter);
   const sourceById = new Map<string, ParsedExcelCase>();
-  for (const entry of selected) {
+  for (const entry of sourceCases) {
     const caseId = entry.caseId.trim();
     if (caseId === "" || sourceById.has(caseId)) continue;
     sourceById.set(caseId, entry);
@@ -155,11 +166,16 @@ export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsRe
   const downgraded: string[] = [];
 
   for (const entry of payloadCases) {
-    if (entry.status !== "PASS" || suppressPerCaseResult) {
+    if (entry.status !== "PASS") {
       cases.push(entry);
       continue;
     }
     const caseId = entry.caseId.trim();
+    if (suppressPerCaseResult) {
+      cases.push(suppressed(entry));
+      reasons.push({ caseId, status: "ERROR", reason: "task-level-error" });
+      continue;
+    }
     const source = sourceById.get(caseId);
     if (source === undefined) {
       cases.push(downgrade(entry, "case-not-in-source"));
@@ -177,8 +193,10 @@ export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsRe
     reasons.push({ caseId, status: "UNVERIFIED", reason: gate.reason });
   }
 
+  // 缺失用例覆盖**全部原件用例**（不只是 caseFilter 选中范围）：过滤只影响执行范围，
+  // 未选中/未执行的用例同样要写 SKIP，避免旧 PASS 残留。
   const missing: ParsedExcelCase[] = [];
-  for (const entry of selected) {
+  for (const entry of sourceCases) {
     const caseId = entry.caseId.trim();
     if (caseId === "" || payloadIds.has(caseId)) continue;
     payloadIds.add(caseId);
@@ -191,33 +209,52 @@ export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsRe
       `verdict-unverified: ${downgraded.length} 个 PASS 降级为 UNVERIFIED（${summarize(downgraded)}）`
     );
   }
+  const hasFilter =
+    caseFilter.modules.some((module) => module.trim() !== "") ||
+    caseFilter.caseIds.some((caseId) => caseId.trim() !== "");
+  const outOfScope = sourceCases.length - selected.length;
+  if (hasFilter && outOfScope > 0) {
+    warnings.push(
+      `verdict-partial-scope: 过滤条件仅选中 ${selected.length}/${sourceCases.length} 个用例，其余 ${outOfScope} 个写 SKIP（未执行）`
+    );
+  }
 
   let missingCount = 0;
   if (missing.length > 0) {
-    if (suppressPerCaseResult) {
-      warnings.push(
-        "verdict-missing-result-skipped: 任务级错误，不补写未执行用例"
-      );
-    } else {
-      for (const entry of missing) {
-        const caseId = entry.caseId.trim();
+    for (const entry of missing) {
+      const caseId = entry.caseId.trim();
+      if (suppressPerCaseResult) {
         cases.push({
           caseId,
           name: entry.name,
-          status: "SKIP",
+          status: "ERROR",
           durationMs: 0,
-          failureReason: "未执行",
+          failureReason: "任务级错误，未执行",
           synthetic: true
         });
-        reasons.push({ caseId, status: "SKIP", reason: "未执行" });
+        reasons.push({ caseId, status: "ERROR", reason: "task-level-error" });
+        continue;
       }
-      missingCount = missing.length;
-      warnings.push(
-        `verdict-missing-result: ${missingCount} 个用例未执行，写 SKIP（未执行）（${summarize(
-          missing.map((entry) => entry.caseId.trim())
-        )}）`
-      );
+      cases.push({
+        caseId,
+        name: entry.name,
+        status: "SKIP",
+        durationMs: 0,
+        failureReason: "未执行",
+        synthetic: true
+      });
+      reasons.push({ caseId, status: "SKIP", reason: "未执行" });
     }
+    missingCount = missing.length;
+    warnings.push(
+      suppressPerCaseResult
+        ? `verdict-missing-result: ${missingCount} 个用例未执行，写 ERROR（任务级错误）（${summarize(
+            missing.map((entry) => entry.caseId.trim())
+          )}）`
+        : `verdict-missing-result: ${missingCount} 个用例未执行，写 SKIP（未执行）（${summarize(
+            missing.map((entry) => entry.caseId.trim())
+          )}）`
+    );
   }
 
   return {

@@ -558,7 +558,9 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
       gate === undefined
         ? '<span class="muted">尚无结果</span>'
         : cBadge({
-            label: `${gate.passed}/${gate.total} 通过`,
+            label: `${gate.passed}/${gate.total} 通过${
+              (gate.unverified ?? 0) > 0 ? ` / 未验证 ${gate.unverified}` : ""
+            }`,
             tone: gate.result === "passed" ? "success" : gate.result === "partial" ? "warning" : "error"
           });
     const binding = jobBinding(entry.task, entry.spec);

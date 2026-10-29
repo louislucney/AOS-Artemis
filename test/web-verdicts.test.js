@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { classifyExpectedResult } from "../dist/web/assertions.js";
-import { aggregateResultGate } from "../dist/web/results.js";
+import { aggregateResultGate, resolveResultStatus } from "../dist/web/results.js";
 import { assertionGate, deriveCaseVerdicts, selectSourceCases } from "../dist/web/verdicts.js";
 
 const HIGH_EXPECTED = "1. 页面显示“登录成功”";
@@ -172,7 +172,7 @@ test("verdicts：范围内缺失用例补 synthetic SKIP（未执行），追加
   assert.ok(result.reasons.some((entry) => entry.caseId === "TC-2" && entry.reason === "未执行"));
 });
 
-test("verdicts：caseIds/modules 过滤缺失范围；空过滤＝全部；两侧去空白", () => {
+test("verdicts：过滤只影响选中范围与告警，缺失仍覆盖全部原件用例", () => {
   const source = [
     sourceCase("TC-1", { module: "登录" }),
     sourceCase("TC-2", { module: "设置" })
@@ -182,17 +182,32 @@ test("verdicts：caseIds/modules 过滤缺失范围；空过滤＝全部；两�
     assertions: assertionsFor(source),
     caseFilter: { modules: [], caseIds: [" TC-2 "] }
   });
-  assert.deepEqual(byCase.cases.map((entry) => entry.caseId), ["TC-2"]);
+  assert.deepEqual(
+    byCase.cases.map((entry) => [entry.caseId, entry.status]),
+    [
+      ["TC-1", "SKIP"],
+      ["TC-2", "SKIP"]
+    ],
+    "未选中的 TC-1 也要写 SKIP"
+  );
+  assert.ok(
+    byCase.warnings.some((warning) =>
+      warning.includes("verdict-partial-scope: 过滤条件仅选中 1/2 个用例，其余 1 个写 SKIP")
+    ),
+    byCase.warnings.join("；")
+  );
 
   const byModule = derive({
     sourceCases: source,
     assertions: assertionsFor(source),
     caseFilter: { modules: [" 登录 "], caseIds: [] }
   });
-  assert.deepEqual(byModule.cases.map((entry) => entry.caseId), ["TC-1"]);
+  assert.deepEqual(byModule.cases.map((entry) => entry.caseId), ["TC-1", "TC-2"]);
+  assert.ok(byModule.warnings.some((warning) => warning.includes("verdict-partial-scope")));
 
   const all = derive({ sourceCases: source, assertions: assertionsFor(source) });
   assert.deepEqual(all.cases.map((entry) => entry.caseId), ["TC-1", "TC-2"]);
+  assert.ok(!all.warnings.some((warning) => warning.includes("verdict-partial-scope")));
 
   assert.deepEqual(
     selectSourceCases(source, { modules: [], caseIds: [] }).map((entry) => entry.caseId),
@@ -200,7 +215,7 @@ test("verdicts：caseIds/modules 过滤缺失范围；空过滤＝全部；两�
   );
 });
 
-test("verdicts：任务级抑制下 PASS 保持 PASS 且不补写缺失 SKIP", () => {
+test("verdicts：任务级抑制下 PASS 与缺失用例都写 ERROR（不留 PASS）", () => {
   const source = [sourceCase("TC-1"), sourceCase("TC-2")];
   const result = derive({
     payloadCases: [passCase("TC-1")],
@@ -208,11 +223,17 @@ test("verdicts：任务级抑制下 PASS 保持 PASS 且不补写缺失 SKIP", (
     assertions: assertionsFor(source),
     suppressPerCaseResult: true
   });
-  assert.equal(result.cases.length, 1);
-  assert.equal(result.cases[0].status, "PASS");
+  assert.deepEqual(
+    result.cases.map((entry) => [entry.caseId, entry.status, entry.failureReason]),
+    [
+      ["TC-1", "ERROR", "任务级错误，未采纳逐例 PASS"],
+      ["TC-2", "ERROR", "任务级错误，未执行"]
+    ]
+  );
+  assert.equal(result.cases[1].synthetic, true);
   assert.equal(result.unverified, 0);
-  assert.equal(result.missing, 0);
-  assert.ok(result.warnings.some((warning) => warning.includes("verdict-missing-result-skipped")));
+  assert.equal(result.missing, 1);
+  assert.ok(result.warnings.some((warning) => warning.includes("verdict-missing-result")));
 });
 
 test("verdicts：原件不可解析时 PASS fail-closed 降级 UNVERIFIED，不补 SKIP", () => {
@@ -237,13 +258,14 @@ test("verdicts：原件不可解析时 PASS fail-closed 降级 UNVERIFIED，不�
   assert.ok(result.warnings.some((warning) => warning.includes("verdict-source-unreadable")));
 });
 
-test("verdicts：原件不可解析且任务级抑制时 PASS 不降级", () => {
+test("verdicts：原件不可解析且任务级抑制时 PASS 同样写 ERROR", () => {
   const result = derive({
     payloadCases: [passCase("TC-1")],
     sourceCases: null,
     suppressPerCaseResult: true
   });
-  assert.equal(result.cases[0].status, "PASS");
+  assert.equal(result.cases[0].status, "ERROR");
+  assert.equal(result.cases[0].failureReason, "任务级错误，未采纳逐例 PASS");
   assert.equal(result.unverified, 0);
   assert.ok(result.warnings.some((warning) => warning.includes("verdict-source-unreadable")));
 });
@@ -301,4 +323,12 @@ test("verdicts：UNVERIFIED 使 gate 为 partial，passed 不计入", () => {
   assert.equal(skipped.result, "partial");
   assert.equal(skipped.unverified, undefined);
   assert.equal(aggregateResultGate([{ caseId: "TC-1", name: "a", status: "PASS" }]).result, "passed");
+});
+
+test("resolveResultStatus：上报 partial 优先于聚合 passed（取较坏状态）", () => {
+  assert.equal(resolveResultStatus("partial", "passed"), "partial");
+  assert.equal(resolveResultStatus("passed", "partial"), "partial");
+  assert.equal(resolveResultStatus("partial", "failed"), "failed");
+  assert.equal(resolveResultStatus("error", "passed"), "error");
+  assert.equal(resolveResultStatus("passed", "passed"), "passed");
 });

@@ -299,15 +299,16 @@ test("ingest：空结果聚合为 error，任务落 failed（绝不假成功）"
   assert.equal(summary.gate.result, "error");
   assert.deepEqual(summary.gate, {
     result: "error",
-    total: 0,
+    total: 3,
     passed: 0,
     failed: 0,
-    errors: 0,
+    errors: 3,
     skipped: 0
   });
   assert.equal(summary.taskStatus, "error");
   assert.equal(summary.dbStatus, "failed");
-  assert.deepEqual(summary.writtenCells, []);
+  assert.equal(summary.writtenCells.length, 3, "缺失用例写成 synthetic ERROR");
+  assert.ok(summary.writtenCells.every((cell) => cell.key === "result" && cell.value === "ERROR"));
   const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
   assert.equal(task.status, "failed", "DB 无 error 枚举，空结果落 failed 而不是成功");
 });
@@ -842,11 +843,14 @@ test("C1：保留 runner 上报状态（error 不因用例全 PASS 变 completed
   assert.equal(summary.taskStatus, "error");
   assert.equal(summary.dbStatus, "failed");
   assert.equal(summary.gate.result, "error");
-  assert.equal(summary.gate.passed, 2);
+  assert.equal(summary.gate.passed, 0);
+  assert.equal(summary.gate.errors, 3, "payload PASS 与缺失用例都写 ERROR");
   assert.ok(summary.warnings.some((warning) => warning.includes("status-mismatch")));
-  assert.ok(!summary.writtenCells.some((cell) => cell.key === "result"));
+  const resultCells = summary.writtenCells.filter((cell) => cell.key === "result");
+  assert.equal(resultCells.length, 3);
+  assert.ok(resultCells.every((cell) => cell.value === "ERROR"));
   const sheet = await loadSheet(ctx.copyPath);
-  assert.notEqual(cellText(sheet.getCell("I2")), "PASS");
+  assert.equal(cellText(sheet.getCell("I2")), "ERROR", "任务级 error 不得留下 PASS");
   assert.equal(cellText(sheet.getCell("J2")), "Pixel 7 / 14");
   const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
   assert.equal(task.status, "failed");
@@ -867,8 +871,9 @@ test("C1：保留 runner 上报状态（error 不因用例全 PASS 变 completed
   });
   assert.equal(failed.taskStatus, "failed");
   assert.equal(failed.dbStatus, "failed");
-  assert.ok(!failed.writtenCells.some((cell) => cell.key === "result"));
-  assert.ok(failed.warnings.some((warning) => warning.includes("status-mismatch")));
+  assert.equal(failed.gate.errors, 3);
+  assert.equal(failed.writtenCells.filter((cell) => cell.key === "result").length, 3);
+  assert.ok(failed.writtenCells.filter((cell) => cell.key === "result").every((cell) => cell.value === "ERROR"));
 });
 
 test("I1：per-job 锁让并发同内容上传只写一次，崩溃后重复上传补写终态", async (t) => {

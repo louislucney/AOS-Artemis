@@ -486,6 +486,33 @@ test("classify: 向下取整/四捨五入/向上取整 从表达式剥离", () =
   assert.deepEqual(byStep.get(5), [{ type: "calc", expression: "165 / 2", expected: 83 }]);
 });
 
+test("classify: 85.5 不是步骤 85（小数不误判编号）", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 打开成绩页", "85.5 分及格"].join("\n"),
+    steps: ["打开成绩页"],
+    caseId: "C1"
+  });
+  assert.ok(!result.steps.some((entry) => entry.step === 85), "不得生成 step 85");
+  assert.ok(!result.ambiguous.some((entry) => entry.reason.includes("85")));
+  assert.ok(
+    result.steps[0].assert.some(
+      (assertion) => assertion.type === "text" && assertion.text === "85.5 分及格"
+    ),
+    JSON.stringify(result.steps)
+  );
+});
+
+test("classify: 最多可显示/顯示 0 个 → count 0", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 最多可显示0个", "2. 最多可顯示0個"].join("\n"),
+    steps: ["打开列表", "切换列表"],
+    caseId: "C1"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "count", max: 0 }]);
+  assert.deepEqual(byStep.get(2), [{ type: "count", max: 0 }]);
+});
+
 test("classify: 最多可放/儲存 + 繁体数字", () => {
   const result = classifyExpectedResult({
     expected: [

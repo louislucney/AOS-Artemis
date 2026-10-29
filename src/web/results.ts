@@ -259,16 +259,14 @@ export function resultPathForJob(rootPath: string, jobId: string): string {
   return path.join(webJobResultsDir(rootPath, jobId), "result.json");
 }
 
-/** CSV 源的结果 CSV 固定路径（派生文件，可覆盖）：`.artemis/web/workbook/<assetId>.result.csv`。 */
 /** 结果 CSV 每 job 一份（派生物）：`<projectRoot>/.artemis/web/workbook/<assetId>.result-<jobId>.csv`。 */
-export function webResultCsvPath(rootPath: string, assetId: string, jobId?: string): string {
-  const suffix = jobId === undefined || jobId.trim() === "" ? "" : `.${jobId.trim()}`;
+export function webResultCsvPath(rootPath: string, assetId: string, jobId: string): string {
   return path.join(
     path.resolve(rootPath),
     ".artemis",
     "web",
     "workbook",
-    `${assetId}.result${suffix}.csv`
+    `${assetId}.result.${jobId.trim()}.csv`
   );
 }
 
@@ -545,7 +543,7 @@ export function persistedTaskStatus(status: WebResultTaskStatus): RegressionTask
 
 /**
  * runner 上报的 execution.status 优先于用例聚合：`error` 永远保留（exec 超时/非零退出时
- * JUnit 可能仍全 PASS）；`failed` 或任一 FAIL/ERROR → failed；其余按用例计算。
+ * JUnit 可能仍全 PASS）；任一侧 `failed` → failed，任一侧 `partial` → partial（取较坏状态）。
  */
 export function resolveResultStatus(
   reported: WebResultGate["result"] | undefined,
@@ -553,6 +551,7 @@ export function resolveResultStatus(
 ): WebResultGate["result"] {
   if (reported === "error") return "error";
   if (reported === "failed" || computed === "failed") return "failed";
+  if (reported === "partial" || computed === "partial") return "partial";
   return computed;
 }
 
@@ -770,7 +769,10 @@ function writebackRows(
   }
   return cases.map((entry) => {
     if (entry.synthetic === true) {
-      return { caseId: entry.caseId, values: { result: "SKIP（未执行）" } };
+      return {
+        caseId: entry.caseId,
+        values: { result: entry.status === "ERROR" ? "ERROR" : "SKIP（未执行）" }
+      };
     }
     const traceId = entry.traceId ?? traceByCase.get(entry.caseId);
     const values: Partial<Record<SystemColumnKey, string>> = {
@@ -838,7 +840,11 @@ function platformResultRows(
   const rows: PlatformResultRow[] = [];
   for (const entry of cases) {
     if (suppressPerCaseResult && entry.status === "PASS") continue;
-    rows.push({ caseId: entry.caseId, status: entry.synthetic === true ? "SKIP" : entry.status });
+    rows.push({
+      caseId: entry.caseId,
+      status:
+        entry.synthetic === true ? (entry.status === "ERROR" ? "ERROR" : "SKIP") : entry.status
+    });
   }
   return rows;
 }

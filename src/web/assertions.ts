@@ -50,7 +50,7 @@ interface ClauseOutcome {
   unresolved: boolean;
 }
 
-const NUMBER_PREFIX = /^(\d{1,4})\s*[.、)）．]\s*/;
+const NUMBER_PREFIX = /^(\d{1,4})\s*(?:[、)）]|[.．](?!\d))\s*/;
 const ROMAN_PREFIX = /^(?:i{1,3}|iv|vi{0,3}|v|ix|x)[.、)）]\s*/i;
 const LETTER_PREFIX = /^[a-z][.、)）]\s*/i;
 const BULLET_PREFIX = /^(?:[•·▪◦*]|[-–—]\s+)\s*/;
@@ -64,7 +64,7 @@ const MANUAL =
   /后台|後台|排序|最近|上次|GPS|刷新|配置|积分余额|積分餘額|至少|(?<![不未沒没])存在|資料|数据|數據|\bbackend\b|\bserver(?:-side)?\b|\bsort(?:ed|s|ing)?\b|\border(?:s|ed)?\b|\blast\b|\blatest\b|\brefresh(?:ed|es|ing)?\b|\bconfig(?:uration|ure)?\b|\bbalance\b|\bat least\b|\bexists?\b|\bdata\b/i;
 
 const COUNT_RE =
-  /(最多可|最多為|最多为|最多|至多|上限為|上限为|上限|不超過|不超过)\s*(?:為|为|是|有|可|放|放入|儲存|储存|存入|存)?\s*(\d{1,6}|[零〇一二两兩三四五六七八九十百]{1,4})/;
+  /(最多可|最多為|最多为|最多|至多|上限為|上限为|上限|不超過|不超过)\s*(?:為|为|是|有|可|放|放入|儲存|储存|存入|存|显示|顯示)?\s*(\d{1,6}|[零〇一二两兩三四五六七八九十百]{1,4})/;
 
 const DISPLAY_VERBS = [
   "显示",

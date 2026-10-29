@@ -571,6 +571,13 @@ test("job detail renders UNVERIFIED warning badge and unverified gate count", as
   assert.match(response.body, /<span class="c-badge c-badge-warning">UNVERIFIED<\/span>/);
   assert.match(response.body, /未验证 1/);
   assert.match(response.body, /runner 未上报断言证据/);
+
+  const list = await handlePanelRequest(jobsUrl(rootPath), {
+    ...deps,
+    capabilities: capabilities("dispatcher")
+  });
+  assert.equal(list.status, 200);
+  assert.match(list.body, /1\/2 通过 \/ 未验证 1/);
 });
 
 test("pinned pending job shows waiting, not bound (no lease yet)", async (t) => {
