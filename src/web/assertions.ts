@@ -94,6 +94,10 @@ const LABEL_STATE =
   /已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|過期|过期|停用|失效|售罄|售完|領取|领取|開啟|开启|關閉|关闭|綁定|绑定|驗證|验证|發送|发送|寄出|退回)|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中|關閉|关闭|開啟|开启)$/;
 const DISPLAY_STATE =
   /已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|過期|过期|停用|失效|售罄|售完|領取|领取|開啟|开启|關閉|关闭|綁定|绑定|驗證|验证|發送|发送|寄出|退回)|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|删除|新增|中|關閉|关闭|開啟|开启)$/;
+const STATUS_WORD =
+  /無庫存|库存不足|庫存不足|已達上限|已达上限|缺貨|缺货|售罄|停用|失效|過期|过期|不足|上限|^(?:無|没|沒)/;
+const ENGLISH_PREDICATE =
+  /\b(?:is|are|was|were|be|been|failed|success|successful|loading|correct|correctly|wrong|error|pending|completed|cancelled|canceled)\b/i;
 const LABEL_SHAPE = /^[A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._/&()#+-]*$/;
 const ACTION_START =
   /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作|勾選|勾选|提交|展開|展开|收起|切換|切换|參閱|参阅|如圖|如图|見圖|见图|如下|詳情|详情|請稍候|请稍候)/;
@@ -450,7 +454,7 @@ function displayLabel(masked: string): { label: string; negative: boolean } | nu
   if ([...label].length > 2) label = label.replace(/^(?:在|於|于)/, "").trim();
   label = label.replace(/等$/, "").trim();
   if (label === "" || VAGUE.test(label)) return null;
-  if (DISPLAY_STATE.test(label) || LABEL_PROSE.test(label) || LABEL_REJECT.test(label)) return null;
+  if (NEGATIVE.test(label) || DISPLAY_STATE.test(label) || LABEL_PROSE.test(label) || LABEL_REJECT.test(label)) return null;
   if (/^[)）(（]/.test(label) || !/[A-Za-z0-9\u4e00-\u9fff]/.test(label)) return null;
   if ([...label].length > 30) return null;
   if (label.includes("\u0000") || label.includes("、")) return null;
@@ -575,11 +579,17 @@ function structuredFieldValue(text: string): string | null {
 }
 
 function isConcreteLabel(text: string): boolean {
-  const length = [...text].length;
+  const base = text.replace(/^(?:\(若有\)|（若有）)/, "").trim();
+  const length = [...base].length;
   if (length < 2 || length > 30) return false;
-  if (!/^[\u4e00-\u9fffA-Za-z0-9 /._#+()（）-]+$/.test(text)) return false;
+  if (NEGATIVE.test(base)) return false;
+  if (VAGUE.test(base) || LABEL_STATE.test(base) || LABEL_PROSE.test(base) || DISPLAY_STATE.test(base)) {
+    return false;
+  }
+  if (STATUS_WORD.test(base) || ENGLISH_PREDICATE.test(base)) return false;
+  if (!/^[\u4e00-\u9fffA-Za-z0-9 /._#+()（）-]+$/.test(base)) return false;
   const stack: string[] = [];
-  for (const char of text) {
+  for (const char of base) {
     if (char === "(" || char === "（") stack.push(char);
     else if (char === ")") {
       if (stack.pop() !== "(") return false;
@@ -588,8 +598,7 @@ function isConcreteLabel(text: string): boolean {
     }
   }
   if (stack.length > 0) return false;
-  const wordCheck = text.replace(/^(?:\([^()]*\)|（[^（）]*）)/, "");
-  return !/進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|可|需|並|并|且|及|或|與|与|將|将|會|会|能|要|請|请|的|了|是|在|有|為|为|若|如果|當|当|加入|选中|選中|超支|導出|导出|功能|狀態|状态|正確|正确|異常|异常|資料|数据|數據|以下|如下|全部|所有|自動|自动|登入|登錄|登录|填寫|填写|上傳|上传/.test(wordCheck);
+  return !/進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|可|需|並|并|且|及|或|與|与|將|将|會|会|能|要|請|请|的|了|是|在|有|為|为|若|如果|當|当|加入|选中|選中|超支|導出|导出|功能|狀態|状态|正確|正确|異常|异常|資料|数据|數據|以下|如下|全部|所有|自動|自动|登入|登錄|登录|填寫|填写|上傳|上传/.test(base);
 }
 
 function classifyClause(
@@ -716,7 +725,7 @@ function classifyClause(
       (allowActionText || !ACTION_START.test(segment)) &&
       (!multiClause || !NAV_START.test(segment))
     ) {
-      if (isConcreteLabel(segment)) {
+      if (!negative && isConcreteLabel(segment)) {
         return {
           assertions: [{ type: "visible", text: segment }],
           soft: false,
@@ -836,6 +845,14 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
         }
         if (MANUAL.test(structuredValue)) {
           resolve(step, manualReason(structuredValue), sourceText);
+          continue;
+        }
+        const valueNegative =
+          NEGATIVE.test(structuredValue) &&
+          ([...structuredValue].length <= 30 ||
+            /^(?:不|沒|没|未|無|无|消失|隱藏|隐藏)/.test(structuredValue.trim()));
+        if (valueNegative || VAGUE.test(structuredValue)) {
+          resolve(step, "否定/模糊字段无法作为硬断言", sourceText);
           continue;
         }
         const list = byStep.get(step) ?? [];

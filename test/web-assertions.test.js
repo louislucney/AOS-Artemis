@@ -1386,6 +1386,93 @@ test("classify: 动作/导航/状态短句不升级具体标签", () => {
   assert.notEqual(result.confidence, "high");
 });
 
+test("classify: 否定行为短语不升级具体标签", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 彈窗消失",
+      "2. 錯誤訊息消失",
+      "3. 按鈕隱藏",
+      "4. 提示消失",
+      "5. 沒按鈕",
+      "6. 沒取餐點",
+      "7. 無按鈕",
+      "8. 隱藏",
+      "9. 消失"
+    ].join("\n"),
+    steps: Array.from({ length: 9 }, (_, index) => `s${index}`),
+    caseId: "TC_NEG_CONCRETE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= 9; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 状态/英文谓词不升级具体标签", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 已出貨",
+      "2. 已取消",
+      "3. 待付款",
+      "4. 待確認",
+      "5. 載入中",
+      "6. 處理中",
+      "7. 無庫存",
+      "8. 庫存不足",
+      "9. 已達上限",
+      "10. (若有)無庫存",
+      "11. Price is correct",
+      "12. Load failed",
+      "13. Display correctly"
+    ].join("\n"),
+    steps: Array.from({ length: 13 }, (_, index) => `s${index}`),
+    caseId: "TC_STATUS_CONCRETE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= 13; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 结构化字段否定/模糊/泛前缀/非简体", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 按鈕：不顯示",
+      "2. 內容：後台配置的文案",
+      "3. 彈窗標題：X",
+      "4. 說明：X",
+      "5. 按钮[X]",
+      "6. 标题：X",
+      "7. （A1"
+    ].join("\n"),
+    steps: Array.from({ length: 7 }, (_, index) => `s${index}`),
+    caseId: "TC_STRUCTURED_GUARD"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.equal(byStep.get(1)[0].type, "manual");
+  assert.equal(byStep.get(2)[0].type, "manual");
+  for (const step of [3, 4, 7]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.deepEqual(byStep.get(5), [{ type: "visible", text: "X" }]);
+  assert.deepEqual(byStep.get(6), [{ type: "visible", text: "X" }]);
+  assert.notEqual(result.confidence, "high");
+});
+
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
   const { filePath } = await makeWorkbook(t);
   const before = await loadSheet(filePath);
