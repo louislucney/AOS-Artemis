@@ -243,6 +243,15 @@ test("verdicts：assertionGate 直接覆盖文档缺失/人工歧义/证据缺�
     caseId: "TC-1"
   });
   assert.equal(assertionGate(ambiguous, 1).reason, "manual-or-ambiguous");
+
+  const emptySteps = classifyExpectedResult({
+    expected: "页面显示“登录成功”",
+    steps: [],
+    caseId: "TC-1"
+  });
+  assert.equal(emptySteps.steps.length, 0);
+  assert.equal(emptySteps.ambiguous.length, 1);
+  assert.equal(assertionGate(emptySteps, 1).reason, "manual-or-ambiguous");
 });
 
 test("verdicts：UNVERIFIED 使 gate 为 partial，passed 不计入", () => {

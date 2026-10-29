@@ -336,9 +336,11 @@ test("classify: 繁体显示/否定/人工关键词", () => {
       "2. 未顯示“A”，未出現“B”，隱藏“C”，不可見“D”，不能“E”",
       "3. 後台資料排序",
       "4. 積分餘額需刷新",
-      "5. 未加載“F”，未返回“G”，未生效“H”，未完成“I”，未成功“J”，未存在“K”，未找到“L”，未彈出“M”，未支持“N”"
+      "5. 未加載“F”，未返回“G”，未生效“H”，未完成“I”，未成功“J”，未存在“K”，未找到“L”，未彈出“M”，未支持“N”",
+      "6. 未有顯示MOP intro彈窗",
+      "7. 沒有成功顯示MOP intro彈窗"
     ].join("\n"),
-    steps: ["a", "b", "c", "d", "e"],
+    steps: ["a", "b", "c", "d", "e", "f", "g"],
     caseId: "TC_TRAD"
   });
   const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
@@ -366,6 +368,8 @@ test("classify: 繁体显示/否定/人工关键词", () => {
     { type: "notVisible", text: "M" },
     { type: "notVisible", text: "N" }
   ]);
+  assert.deepEqual(byStep.get(6), [{ type: "notVisible", text: "MOP intro" }]);
+  assert.deepEqual(byStep.get(7), [{ type: "notVisible", text: "MOP intro" }]);
 });
 
 test("classify: ’愛心‘ / 【...】 / ‘...’ 引号对均输出 visible", () => {
@@ -387,7 +391,7 @@ test("classify: 顯示/包含 + 、 字段列表逐标签 visible，跳过模糊
       "1. 展开后显示Location、Shop Name、Reference Code等字段",
       "2. 顯示Total Amount、Location、Shop、Used S Dollar、Used S Coupon、Minimum Spending",
       "3. 顯示Member ID、Total Amount、Ref Code",
-      "4. 顯示Location、數據正確、Shop Name",
+      "4. 顯示Location、功能正常、Shop Name",
       "5. 包含Location、Shop Name"
     ].join("\n"),
     steps: ["a", "b", "c", "d", "e"],
@@ -430,7 +434,7 @@ test("classify: 显示子句金额/积分/数字 visible，日期不输出", () 
       "2. 显示HK$500，对应-$10和-$20",
       "3. 输入框显示15",
       "4. 显示日期2026-10-29",
-      "5. 显示2026-10-29，金额为$85",
+      "5. 显示2026-10-29，对应$85",
       "6. 第2步显示15",
       "7. 不存在“已删除”"
     ].join("\n"),
@@ -484,9 +488,11 @@ test("classify: 最多可放/儲存 + 繁体数字", () => {
       "1. 最多可放8則",
       "2. 最多可儲存5個",
       "3. 最多可放八則",
-      "4. 最多可放 十 則"
+      "4. 最多可放 十 則",
+      "5. 最多可放入3個",
+      "6. 最多可存入4個"
     ].join("\n"),
-    steps: ["a", "b", "c", "d"],
+    steps: ["a", "b", "c", "d", "e", "f"],
     caseId: "TC_COUNT_TRAD"
   });
   const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
@@ -494,6 +500,8 @@ test("classify: 最多可放/儲存 + 繁体数字", () => {
   assert.deepEqual(byStep.get(2), [{ type: "count", max: 5 }]);
   assert.deepEqual(byStep.get(3), [{ type: "count", max: 8 }]);
   assert.deepEqual(byStep.get(4), [{ type: "count", max: 10 }]);
+  assert.deepEqual(byStep.get(5), [{ type: "count", max: 3 }]);
+  assert.deepEqual(byStep.get(6), [{ type: "count", max: 4 }]);
 });
 
 test("classify: text 去尾标点/引导语，模糊句不产 text", () => {
@@ -609,6 +617,154 @@ test("classify: 真实样例回归（非 manual）", () => {
     );
     item.check(new Map(result.steps.map((entry) => [entry.step, entry.assert])));
   }
+});
+
+test("classify: 简体「没有」否定", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 没有显示“删除”按钮", "2. 没有“删除”按钮"].join("\n"),
+    steps: ["a", "b"],
+    caseId: "TC_NEG_SIMPLE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "notVisible", text: "删除" }]);
+  assert.deepEqual(byStep.get(2), [{ type: "notVisible", text: "删除" }]);
+});
+
+test("classify: 字段列表不得吞掉 MANUAL 关键词", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 顯示後台配置的價格、名稱",
+      "2. 顯示名稱、數量並後台有資料",
+      "3. 顯示後台數據、報表",
+      "4. 顯示Location、數據正確、Shop Name"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d"],
+    caseId: "TC_FIELD_MANUAL"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(byStep.get(step)[0].type, "manual", `step ${step} 应保持 manual`);
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应出现 visible`
+    );
+  }
+  assert.equal(result.manual.length, 4);
+});
+
+test("classify: 、列表逐标签校验，句子/过长/连接词/尾标点不升 visible", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 頁面顯示載入中、請稍候",
+      "2. 显示商品、价格（后台配置）",
+      "3. 顯示名稱、數量、總計並可匯出",
+      "4. 顯示ThisIsAnExtremelyLongFieldNameThatExceedsTheCap、Location",
+      "5. 顯示Location、Shop Name、"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_FIELD_INVALID"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4, 5]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应出现 visible`
+    );
+    assert.equal(byStep.get(step)[0].type, "manual");
+  }
+  assert.equal(result.manual.length, 5);
+});
+
+test("classify: 数值断言遵循否定极性；裸 為/是 不出数值", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 未顯示 $85 餘額",
+      "2. 不顯示 15",
+      "3. 沒有顯示 3 個項目",
+      "4. 未有顯示 4 個",
+      "5. 沒有成功顯示 5",
+      "6. 顯示85%",
+      "7. 顯示10 秒",
+      "8. 金額為$85",
+      "9. $85 對應 170 points"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e", "f", "g", "h", "i"],
+    caseId: "TC_VALUE_POLARITY"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "notVisible", text: "$85" }]);
+  assert.deepEqual(byStep.get(2), [{ type: "notVisible", text: "15" }]);
+  assert.deepEqual(byStep.get(3), [{ type: "notVisible", text: "3" }]);
+  assert.deepEqual(byStep.get(4), [{ type: "notVisible", text: "4" }]);
+  assert.deepEqual(byStep.get(5), [{ type: "notVisible", text: "5" }]);
+  assert.deepEqual(byStep.get(6), [{ type: "visible", text: "85%" }]);
+  assert.deepEqual(byStep.get(7), [{ type: "visible", text: "10 秒" }]);
+  assert.equal(
+    byStep.get(8).some((assertion) => assertion.type === "visible"),
+    false,
+    "裸 為 不产数值 visible"
+  );
+  assert.deepEqual(byStep.get(9), [
+    { type: "visible", text: "$85" },
+    { type: "visible", text: "170 points" }
+  ]);
+});
+
+test("classify: calc/count 与引号共存时保留 visible", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 顯示“$82”（165 ÷ 2 向下取整）", "2. 顯示“5個”最多可5個"].join("\n"),
+    steps: ["a", "b"],
+    caseId: "TC_CALC_QUOTE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [
+    { type: "calc", expression: "165 / 2", expected: 82 },
+    { type: "visible", text: "$82" }
+  ]);
+  assert.deepEqual(byStep.get(2), [
+    { type: "count", max: 5 },
+    { type: "visible", text: "5個" }
+  ]);
+});
+
+test("classify: 逗号拆分仅在展示语句内，且不为动作子句造 text", () => {
+  const withDisplay = classifyExpectedResult({
+    expected: "1. 點擊後成功，顯示“A”",
+    steps: ["a"],
+    caseId: "TC_COMMA_DISPLAY"
+  });
+  assert.deepEqual(withDisplay.steps, [
+    { step: 1, assert: [{ type: "visible", text: "A" }] }
+  ]);
+  assert.deepEqual(withDisplay.manual, []);
+
+  const actionOnly = classifyExpectedResult({
+    expected: "1. 點擊後成功",
+    steps: ["a"],
+    caseId: "TC_COMMA_ACTION"
+  });
+  assert.deepEqual(actionOnly.steps, [
+    { step: 1, assert: [{ type: "text", text: "點擊後成功" }] }
+  ]);
+});
+
+test("classify: 标注性【】不升 visible", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 顯示【設計稿】與【待確認】", "2. 頁面顯示【備註】", "3. 顯示【我的最愛】"].join("\n"),
+    steps: ["a", "b", "c"],
+    caseId: "TC_BRACKET_ANNOTATION"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 标注位不应 visible`
+    );
+  }
+  assert.deepEqual(byStep.get(3), [{ type: "visible", text: "我的最愛" }]);
 });
 
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
