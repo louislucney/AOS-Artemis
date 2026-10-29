@@ -59,6 +59,12 @@ export interface DiffRegion {
   suspected?: "system-area";
   /** 实际内容相对设计的位移（设计坐标像素）；仅 report，不参与 severity。 */
   shift?: RegionShift;
+  /** 设计节点填充色（仅当可解析到节点填充时）。 */
+  designColor?: string;
+  /** 设备区域均值色（与 designColor 同口径）。 */
+  deviceColor?: string;
+  /** RGB 欧氏距离（0..441）。 */
+  colorDelta?: number;
   localized?: {
     status: "mapped" | "unmapped" | "no-candidates";
     mapEntry?: ScreenMapEntry;
@@ -338,6 +344,14 @@ function hexToRgb(value: string | undefined): { rgb: [number, number, number]; a
   };
 }
 
+function rgbToHex(rgb: [number, number, number]): string {
+  return `#${rgb.map((value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function colorDelta(a: [number, number, number], b: [number, number, number]): number {
+  return Math.round(Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) * 10) / 10;
+}
+
 function colorMatches(a: [number, number, number], b: [number, number, number], tolerance: number): boolean {
   return (
     Math.abs(a[0] - b[0]) <= tolerance && Math.abs(a[1] - b[1]) <= tolerance && Math.abs(a[2] - b[2]) <= tolerance
@@ -381,7 +395,13 @@ function classifyRegion(
   nodes: WorkingNode[],
   comparison: RgbaImage,
   options: { proximity: number; tolerance: number }
-): { category: DiffCategory; designNode?: { id: string; name: string } } {
+): {
+  category: DiffCategory;
+  designNode?: { id: string; name: string };
+  designColor?: string;
+  deviceColor?: string;
+  colorDelta?: number;
+} {
   let dominant: WorkingNode | null = null;
   let bestArea = 0;
   let bestNodeArea = Number.POSITIVE_INFINITY;
@@ -417,7 +437,15 @@ function classifyRegion(
         const parentFill = hexToRgb(dominant.parentFill);
         if (parentFill && parentFill.alpha >= 250) {
           const mean = meanColor(comparison, dominant.wx, dominant.wy, dominant.wx + dominant.ww, dominant.wy + dominant.wh);
-          if (colorMatches(mean, parentFill.rgb, options.tolerance)) return { category: "missing", designNode: reference };
+          const evidence = {
+            designColor: rgbToHex(parentFill.rgb),
+            deviceColor: rgbToHex(mean),
+            colorDelta: colorDelta(mean, parentFill.rgb)
+          };
+          if (colorMatches(mean, parentFill.rgb, options.tolerance)) {
+            return { category: "missing", designNode: reference, ...evidence };
+          }
+          return { category: "color", designNode: reference, ...evidence };
         }
         return { category: "color", designNode: reference };
       }
@@ -621,6 +649,9 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
         pixelDiffRatio: Math.min(1, component.count / (width * height)),
         ...(shift !== null && (shift.dx !== 0 || shift.dy !== 0) ? { shift } : {}),
         ...(classified.designNode ? { designNode: classified.designNode } : {}),
+        ...(classified.designColor ? { designColor: classified.designColor } : {}),
+        ...(classified.deviceColor ? { deviceColor: classified.deviceColor } : {}),
+        ...(classified.colorDelta !== undefined ? { colorDelta: classified.colorDelta } : {}),
         ...(suspected ? { suspected } : {})
       } satisfies DiffRegion;
     });

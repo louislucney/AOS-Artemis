@@ -3341,3 +3341,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **接入**：`design_device_diff` 顶层 `regions[].shift` 与可选 `globalShifts`；仍保留 `category`/`severity`/`pixelDiffRatio` 原口径。`globalShifts` 只是证据，不自动升级 severity、不改变 PASS/FAIL。
 - **边界**：位移搜索有 ±range 上限，超出范围的整块移动会被判为 ≥2 个独立差异；大面积区域（>240×240）不估算位移；平滑/重复纹理可能被边界保护丢弃。单位是设计坐标像素，不是设备 pt；需要 pt 时按现有 `alignment.scale`/`geometry.ratio` 换算。
 - **测试**：`test/diff-shift.test.js` 5 例（水平/垂直 10px、相同/小于阈值、同向聚合 ≥3、<3 不聚合）；`test/design-device-diff.test.js` 既有区域断言不变。
+
+### 13.272 新增（design_device_diff：颜色差异的设计/实际色值证据）
+
+> 2026-10-29。借鉴 smarteye-case `server/compare.js` 的 `designColor/actualColor`，把颜色差异从“只有 category”升级为可执行的色值证据；仍不改变 severity/门禁。
+
+- **证据**：`classifyRegion` 在设计节点可解析 `parentFill` 且节点覆盖率足够时，采样设备区域均值色；区域输出 `designColor`（父填充 hex）、`deviceColor`（设备均值 hex）、`colorDelta`（RGB 欧氏距离，0..441，保留 1 位小数）。颜色匹配（`colorTolerance`）时归 `missing`，否则归 `color`；两者都带颜色证据。
+- **接入**：`design_device_diff` 的 `regions[]` 直接输出这三个可选字段；原有 `bbox/category/severity/pixelDiffRatio/designNode` 不变。
+- **边界**：设备色是区域均值，不是逐像素主色；渐变/图片/阴影区域只作参考。`designColor` 只取单一 `parentFill`，不解析渐变/多填充。色值不参与 PASS/FAIL，也不自动升级 severity。
+- **测试**：`test/diff-color.test.js` 3 例（红/绿差异输出 `#ff0000`/`#00ff00` 与 delta>300、同色无差异、无 parentFill 不输出证据）；`test/diff-benchmark.test.js` schema 快照改为允许 `shift/designColor/deviceColor/colorDelta/globalShifts` 可选字段。
