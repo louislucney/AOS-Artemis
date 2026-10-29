@@ -173,6 +173,7 @@ function autoBody(rootPath, assets, overrides = {}) {
     excelAssetId: assets.excel.id,
     packageAssetId: assets.pkg.id,
     executionMode: "maestro",
+    scriptSetId: assets.script?.id ?? null,
     ...overrides
   };
 }
@@ -198,7 +199,7 @@ function inlineScripts(html) {
 }
 
 test("jobs page: dispatch form with host, device and soft preferences", async (t) => {
-  const { deps, rootPath, excel, pkg } = await setup(t);
+  const { deps, rootPath, excel, pkg, script } = await setup(t);
   const response = await handlePanelRequest(jobsUrl(rootPath), {
     ...deps,
     capabilities: capabilities("dispatcher")
@@ -243,6 +244,7 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
 
   const ownScripts = inlineScripts(html).filter((code) => code.includes("/panel/api/jobs"));
   assert.equal(ownScripts.length, 1, "下发表单脚本存在");
+  assert.match(ownScripts[0], /Maestro 执行需要脚本集/, "无脚本时前端阻止提交");
   assert.doesNotThrow(() => new Function(ownScripts[0]), "下发表单脚本可解析");
 });
 
@@ -331,10 +333,10 @@ test("POST /panel/api/jobs auto binds host+device and the page shows it", async 
 });
 
 test("POST /panel/api/jobs manual: pinned device must belong to the target host", async (t) => {
-  const { deps, store, rootPath, excel, pkg } = await setup(t);
+  const { deps, store, rootPath, excel, pkg, script } = await setup(t);
   const before = await store.listRegressionTasks(rootPath);
   const conflict = await postJob(deps, {
-    ...autoBody(rootPath, { excel, pkg }),
+    ...autoBody(rootPath, { excel, pkg, script }),
     assignment: "manual",
     targetHostId: "host-b",
     deviceSerial: "emulator-5554"
@@ -347,7 +349,7 @@ test("POST /panel/api/jobs manual: pinned device must belong to the target host"
   assert.equal((await store.listDeviceLeases()).length, 0, "冲突不占租约");
 
   const ok = await postJob(deps, {
-    ...autoBody(rootPath, { excel, pkg }),
+    ...autoBody(rootPath, { excel, pkg, script }),
     assignment: "manual",
     targetHostId: "host-a",
     deviceSerial: "emulator-5554"
@@ -358,7 +360,7 @@ test("POST /panel/api/jobs manual: pinned device must belong to the target host"
   assert.equal(okBody.assignment.deviceSerial, "emulator-5554");
 
   const hostConflict = await postJob(deps, {
-    ...autoBody(rootPath, { excel, pkg }),
+    ...autoBody(rootPath, { excel, pkg, script }),
     assignment: "manual"
   });
   assert.equal(hostConflict.status, 400);
@@ -399,8 +401,8 @@ test("GET /panel/api/jobs/preview is read-only and never leaks runner secrets", 
 });
 
 test("POST auto with no eligible runner stays pending with an explicit waiting state", async (t) => {
-  const { deps, store, rootPath, excel, pkg } = await setup(t, { runners: false });
-  const response = await postJob(deps, autoBody(rootPath, { excel, pkg }));
+  const { deps, store, rootPath, excel, pkg, script } = await setup(t, { runners: false });
+  const response = await postJob(deps, autoBody(rootPath, { excel, pkg, script }));
   assert.equal(response.status, 200);
   const payload = JSON.parse(response.body);
   assert.equal(payload.ok, true);
@@ -437,10 +439,32 @@ test("POST /panel/api/jobs role gate: viewer 403, dispatcher/maintainer/admin al
   }
 });
 
-test("job detail shows device, package, cases, evidence links and writeback status", async (t) => {
+test("POST jobs: unresolved script 默认 409，显式 allowPartialUnresolved 放行", async (t) => {
   const { deps, store, rootPath, excel, pkg } = await setup(t);
+  const incomplete = await createAsset(store, rootPath, "scripts", "incomplete.zip", "e", {
+    sourceExcelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    platform: "android",
+    unresolved: 1
+  });
+  const body = {
+    ...autoBody(rootPath, { excel, pkg }),
+    scriptSetId: incomplete.id
+  };
+  const rejected = await postJob(deps, body);
+  assert.equal(rejected.status, 409);
+  assert.equal(JSON.parse(rejected.body).code, "script-set-incomplete");
+
+  const allowed = await postJob(deps, { ...body, allowPartialUnresolved: true });
+  assert.equal(allowed.status, 200);
+  const job = JSON.parse(allowed.body).job;
+  assert.equal(job.jobSpec.allowPartialUnresolved, true);
+});
+
+test("job detail shows device, package, cases, evidence links and writeback status", async (t) => {
+  const { deps, store, rootPath, excel, pkg, script } = await setup(t);
   const created = JSON.parse(
-    (await postJob(deps, autoBody(rootPath, { excel, pkg }))).body
+    (await postJob(deps, autoBody(rootPath, { excel, pkg, script }))).body
   );
   const jobId = created.job.id;
   const resultDir = path.join(rootPath, ".artemis", "web", "results", jobId);
@@ -535,7 +559,7 @@ test("job detail shows device, package, cases, evidence links and writeback stat
   assert.match(html, /来源：结果上报/);
 
   const missing = JSON.parse(
-    (await postJob(deps, autoBody(rootPath, { excel, pkg }))).body
+    (await postJob(deps, autoBody(rootPath, { excel, pkg, script }))).body
   );
   const empty = await handlePanelRequest(jobDetailUrl(rootPath, missing.job.id), {
     ...deps,
@@ -548,8 +572,8 @@ test("job detail shows device, package, cases, evidence links and writeback stat
 });
 
 test("job detail renders UNVERIFIED warning badge and unverified gate count", async (t) => {
-  const { deps, rootPath, excel, pkg } = await setup(t);
-  const created = JSON.parse((await postJob(deps, autoBody(rootPath, { excel, pkg }))).body);
+  const { deps, rootPath, excel, pkg, script } = await setup(t);
+  const created = JSON.parse((await postJob(deps, autoBody(rootPath, { excel, pkg, script }))).body);
   const jobId = created.job.id;
   await writeResultDoc(rootPath, jobId, {
     taskStatus: "partial",
@@ -591,9 +615,9 @@ test("job detail renders UNVERIFIED warning badge and unverified gate count", as
 });
 
 test("pinned pending job shows waiting, not bound (no lease yet)", async (t) => {
-  const { deps, store, rootPath, excel, pkg } = await setup(t, { runners: false });
+  const { deps, store, rootPath, excel, pkg, script } = await setup(t, { runners: false });
   const response = await postJob(deps, {
-    ...autoBody(rootPath, { excel, pkg }),
+    ...autoBody(rootPath, { excel, pkg, script }),
     assignment: "manual",
     targetHostId: "host-a",
     deviceSerial: "emulator-5554"
@@ -643,6 +667,10 @@ test("host scope travels with dispatch and preview for a shared rootPath", async
   });
   const excel = await createAsset(scopedA, rootPath, "excel", "回归用例.xlsx", "a");
   const pkg = await createAsset(scopedA, rootPath, "package", "app-release.apk", "b");
+  const script = await createAsset(scopedA, rootPath, "scripts", "flows.zip", "d", {
+    sourceExcelAssetId: excel.id,
+    packageAssetId: pkg.id
+  });
   await scopedA.upsertWebRunner({
     hostId: "host-a",
     name: "runner-a",
@@ -664,7 +692,7 @@ test("host scope travels with dispatch and preview for a shared rootPath", async
     storeForHost: (hostId) => store.scopeHost(hostId)
   };
 
-  const body = autoBody(rootPath, { excel, pkg });
+  const body = autoBody(rootPath, { excel, pkg, script });
   const identity = { name: "eve", role: "viewer", source: "user" };
   const previewAmbiguous = await handlePanelActionRequest(
     { method: "GET", url: previewUrl(rootPath), body: undefined, identity },
@@ -698,8 +726,8 @@ test("host scope travels with dispatch and preview for a shared rootPath", async
 });
 
 test("terminal task with released lease keeps device identity (released, not unbound)", async (t) => {
-  const { deps, store, rootPath, excel, pkg } = await setup(t);
-  const created = JSON.parse((await postJob(deps, autoBody(rootPath, { excel, pkg }))).body);
+  const { deps, store, rootPath, excel, pkg, script } = await setup(t);
+  const created = JSON.parse((await postJob(deps, autoBody(rootPath, { excel, pkg, script }))).body);
   const jobId = created.job.id;
   await store.releaseDeviceLeases({ hostId: "host-a", taskId: jobId });
   await store.updateRegressionTask(rootPath, jobId, {
@@ -738,8 +766,8 @@ test("terminal task with released lease keeps device identity (released, not unb
 });
 
 test("running task without binding stays explicitly unbound (not released/bound)", async (t) => {
-  const { deps, store, rootPath, excel, pkg } = await setup(t, { runners: false });
-  const created = JSON.parse((await postJob(deps, autoBody(rootPath, { excel, pkg }))).body);
+  const { deps, store, rootPath, excel, pkg, script } = await setup(t, { runners: false });
+  const created = JSON.parse((await postJob(deps, autoBody(rootPath, { excel, pkg, script }))).body);
   await store.updateRegressionTask(rootPath, created.job.id, { status: "running" });
   const page = await handlePanelRequest(jobsUrl(rootPath), {
     ...deps,

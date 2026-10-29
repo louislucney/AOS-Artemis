@@ -940,6 +940,44 @@ test("脚本集 platform 与任务平台不一致 → script-set-mismatch", asyn
   }
 });
 
+test("Maestro 无脚本 → script-set-missing；unresolved 未显式允许 → script-set-incomplete", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "script-preflight");
+    const assets = await makeAssets(store, rootPath);
+
+    await assert.rejects(
+      createWebJob(jobInput(store, rootPath, assets, { scriptSetId: null })),
+      (error) =>
+        error instanceof WebJobDispatchError &&
+        error.code === "script-set-missing" &&
+        error.status === 400
+    );
+
+    const incomplete = await addAsset(store, rootPath, "scripts", "incomplete.zip", {
+      sourceExcelAssetId: assets.excel.id,
+      packageAssetId: assets.pkg.id,
+      platform: "android",
+      unresolved: 1
+    });
+    await assert.rejects(
+      createWebJob(jobInput(store, rootPath, assets, { scriptSetId: incomplete.id })),
+      (error) =>
+        error instanceof WebJobDispatchError &&
+        error.code === "script-set-incomplete" &&
+        error.status === 409
+    );
+
+    const allowed = await createWebJob(
+      jobInput(store, rootPath, assets, {
+        scriptSetId: incomplete.id,
+        allowPartialUnresolved: true
+      })
+    );
+    assert.equal(allowed.task.status, "pending");
+    assert.equal(allowed.task.jobSpec.allowPartialUnresolved, true);
+  }
+});
+
 test("claimWebJob 用显式 nowMs 判定租约过期（与墙钟无关）", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "claim-clock");
