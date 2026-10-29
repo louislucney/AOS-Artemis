@@ -1139,6 +1139,7 @@ export async function designDeviceDiff(
       warnings,
       ...(anchorInfo ? { anchor: anchorInfo } : {}),
       regions: diffResult.regions,
+      ...(diffResult.globalShifts ? { globalShifts: diffResult.globalShifts } : {}),
       summary: diffResult.summary
     };
     const report = {

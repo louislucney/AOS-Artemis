@@ -3331,3 +3331,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **接入**：`design_device_diff` 的 `regionDetails[]` 在命中设计文本节点时追加 `textSize`（`src/diff/tool.ts`），与既有 `textStyle`（字重）并列。仅证据/人工复核使用，**不参与 PASS/FAIL、不改变 cluster severity**。
 - **边界**：像素估计受字体、字距、抗锯齿、缩放影响；多行/混合字号时中位数只代表典型行；不替代 `ui-contract` 的 `fontSize`/`lineHeight`，也不用于断言生成。
 - **测试**：`test/text-size.test.js` 5 例（双行中位数、单行 low、有损 low、无行/过小、深色背景）；`test/design-device-diff.test.js` 既有文案区域断言仍通过（`textSize` 为可选字段）。
+
+### 13.271 新增（design_device_diff：区域位移与整块偏移，report-only）
+
+> 2026-10-29。借鉴 smarteye-case `server/compare.js` 的 `bestShift`/整块垂直偏移思路，为差异区域增加位移诊断；只报告，不改变分类、severity 或门禁。
+
+- **区域位移**（`src/diff/shift.ts`）：对每个面积 ≤240×240 的差异区域，在设计工作图/设备工作图上用亮度 SAD 搜索 ±range（默认 32 工作 px，随设计降采样因子缩放）；先搜 dy 再搜 dx，撞到边界视为重复纹理误匹配（gain=0）；`gain ≥0.55` 且位移 ≥`4×factor` 才输出。结果换算回设计坐标像素：`regions[].shift = {dx,dy,gain}`，正数表示实际内容相对设计向右/下偏移。
+- **整块偏移**：`groupRegionShifts` 把同轴、幅度相差 ≤2px 的区域聚类；≥3 个区域才输出 `globalShifts: [{axis:"x"|"y",delta,regionCount,bbox}]`（中位 delta + 并集 bbox），避免把独立控件的小位移误报成整页问题。
+- **接入**：`design_device_diff` 顶层 `regions[].shift` 与可选 `globalShifts`；仍保留 `category`/`severity`/`pixelDiffRatio` 原口径。`globalShifts` 只是证据，不自动升级 severity、不改变 PASS/FAIL。
+- **边界**：位移搜索有 ±range 上限，超出范围的整块移动会被判为 ≥2 个独立差异；大面积区域（>240×240）不估算位移；平滑/重复纹理可能被边界保护丢弃。单位是设计坐标像素，不是设备 pt；需要 pt 时按现有 `alignment.scale`/`geometry.ratio` 换算。
+- **测试**：`test/diff-shift.test.js` 5 例（水平/垂直 10px、相同/小于阈值、同向聚合 ≥3、<3 不聚合）；`test/design-device-diff.test.js` 既有区域断言不变。
