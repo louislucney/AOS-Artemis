@@ -1199,6 +1199,41 @@ test("classify: 展示状态/英文谓词/中段無 不升 visible", () => {
   assert.deepEqual(noSugar.steps, [{ step: 1, assert: [{ type: "visible", text: "無糖" }] }]);
 });
 
+test("classify: 有/在/為/了的谓词短句不升 visible；OK/Done/Ready 仍 visible", () => {
+  const blocked = [
+    "有現貨",
+    "此商品有現貨",
+    "有庫存",
+    "商品在購物車",
+    "在首頁",
+    "購物車有商品",
+    "價格為100元",
+    "總金額為500元",
+    "訂單編號為A123",
+    "商品到貨了"
+  ];
+  const result = classifyExpectedResult({
+    expected: blocked.map((value, index) => `${index + 1}. ${value}`).join("\n"),
+    steps: blocked.map((_, index) => `s${index}`),
+    caseId: "TC_PREDICATE_STATUS"
+  });
+  for (const [step, assertions] of result.steps.map((entry) => [entry.step, entry.assert])) {
+    assert.equal(
+      assertions.some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  for (const [index, label] of ["OK", "Done", "Ready"].entries()) {
+    const one = classifyExpectedResult({
+      expected: `1. 顯示${label}`,
+      steps: ["a"],
+      caseId: `TC_BUTTON_${index}`
+    });
+    assert.deepEqual(one.steps, [{ step: 1, assert: [{ type: "visible", text: label }] }]);
+  }
+});
+
 test("classify: 名词字段单行也 visible（會員名稱/有效期限/所在門市/上傳時間/已用購物金）", () => {
   const labels = ["會員名稱", "有效期限", "所在門市", "上傳時間", "已用購物金", "已用點數"];
   const result = classifyExpectedResult({
