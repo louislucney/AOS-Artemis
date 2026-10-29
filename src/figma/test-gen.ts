@@ -166,6 +166,12 @@ export interface GeneratedTest {
   };
   /** 待确认项（人工 acceptance questions）。 */
   openQuestions?: string[];
+  /** 人类验收检查点；视觉来自设计文本提示，功能来自步骤目标屏，接口来自 API 说明（可空）。 */
+  checkpoints?: {
+    visual: string[];
+    functional: string[];
+    interface: string[];
+  };
   /** 作用域命中本用例的设计警告（P2）。 */
   designWarnings?: DesignWarning[];
   /** 变体标记（P1）。 */
@@ -1181,6 +1187,13 @@ export function generateTestCases(
       humanPrelude,
       expectations,
       preflight,
+      checkpoints: {
+        visual: [...new Set([...preflight.hints, ...expectations.flatMap((entry) => entry.hints)])].slice(0, 12),
+        functional: expectations
+          .flatMap((entry, index) => (entry.screen === null ? [] : [`步骤 ${index + 1} → ${entry.screen}`]))
+          .slice(0, 12),
+        interface: []
+      },
       section,
       testData,
       openQuestions
@@ -1256,6 +1269,16 @@ export function renderMarkdown(
     const testData = testDataLines(testCase);
     if (testData.length > 0) {
       lines.push("测试数据：", ...testData.map((line) => `  ${line}`), "");
+    }
+    if (testCase.checkpoints !== undefined) {
+      const cp = testCase.checkpoints;
+      lines.push(
+        "- 检查点：",
+        `  - 视觉：${cp.visual.length > 0 ? cp.visual.join("、") : "未提供"}`,
+        `  - 功能：${cp.functional.length > 0 ? cp.functional.join("；") : "未提供"}`,
+        `  - 接口：${cp.interface.length > 0 ? cp.interface.join("；") : options.apiReview?.status === "provided" ? "见 API 说明" : "未提供"}`,
+        ""
+      );
     }
     const humanPrelude = testCase.humanPrelude ?? testCase.prelude ?? [];
     if (humanPrelude.length > 0) {

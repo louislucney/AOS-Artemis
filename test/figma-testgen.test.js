@@ -145,6 +145,13 @@ test("generateTestCases: artemis task descriptions with locators and assertions"
     "应用已安装且可正常启动",
     "开始前应用停留在「Home」页"
   ]);
+  assert.ok(testCase.checkpoints);
+  assert.ok(testCase.checkpoints.visual.length > 0);
+  assert.ok(
+    testCase.checkpoints.functional.some((line) => line.includes("Checkout")),
+    JSON.stringify(testCase.checkpoints.functional)
+  );
+  assert.deepEqual(testCase.checkpoints.interface, []);
   assert.match(
     testCase.taskDesc,
     /前置假设：应用已安装且可正常启动；开始前应用停留在「Home」页。/
