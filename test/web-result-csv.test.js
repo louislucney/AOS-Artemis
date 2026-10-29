@@ -468,6 +468,39 @@ test("CSV 源映射缺 steps（parseExcel 失败）：8 列写回成功仍导出
   assert.ok(!rows[0].includes("__aos_assertions"));
 });
 
+test("CSV 源 8 列写回存在失败单元格：不导出结果 CSV，并显式告警", async (t) => {
+  const ctx = await setup(t, {
+    format: "csv",
+    encoding: "utf-8",
+    lineEnding: "\r\n",
+    headers: ["用例编号", "用例名", "步骤", "期望结果"],
+    mapping: { expected: "期望结果" },
+    rows: [["C1", "登录", "1. 打开登录页", "1. 页面显示“登录成功”"]]
+  });
+  ctx.store.lastExcelWritebackByCellKey = async () => {
+    throw new Error("journal-unavailable");
+  };
+
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: payload([{ caseId: "C1", status: "PASS" }])
+  });
+
+  assert.equal(summary.writebackStatus, "writeback-failed");
+  assert.equal(summary.resultCsvPath, null, "存在失败单元格时不得导出结果 CSV");
+  assert.ok(
+    summary.warnings.some((warning) => warning.includes("result-csv-skipped")),
+    summary.warnings.join("；")
+  );
+  assert.equal(
+    fs.existsSync(webResultCsvPath(ctx.rootPath, ctx.asset.id)),
+    false,
+    "不得留下未完成的结果 CSV"
+  );
+  assert.equal(await fileSha(ctx.original), ctx.originalSha);
+});
+
 test("平台结果列沿用假绿守卫：任务 error 且用例全 PASS 时不写 PASS", async (t) => {
   const ctx = await setup(t, {
     headers: ["用例编号", "用例名", "步骤", "期望结果"],

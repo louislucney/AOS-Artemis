@@ -290,7 +290,7 @@ export async function writePlatformResults(
   const warnings: string[] = [];
   if (appendedHeaders.length > 0 && layout === "legacy") {
     warnings.push(
-      "platform-columns-after-system: 工作副本已有 8 列摘要（旧布局），平台结果列只能追加在其后；可见列顺序＝原件 + 8 列 + AOS/IOS，新建工作副本固定为原件 + AOS/IOS + 8 列"
+      "platform-columns-after-system: 工作副本已有 8 列摘要（旧布局，或原件自带摘要列），平台结果列只能追加在其后；可见列顺序＝原件 + 8 列 + AOS/IOS，新建工作副本固定为原件 + AOS/IOS + 8 列"
     );
   }
   sheet.eachRow((row, rowNumber) => {

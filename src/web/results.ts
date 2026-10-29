@@ -1188,8 +1188,13 @@ async function ingestUnderJobLock(
       }
 
       // 结果 CSV 只对 CSV 源导出，编码/行尾/BOM 直接来自原件检测（与用例解析解耦）；
-      // 只要 8 列写回成功就导出，映射/解析失败不影响；隐藏列由导出器跳过。
-      if (csvInfo !== null) {
+      // 8 列写回无失败单元格才导出，映射/解析失败不影响；隐藏列由导出器跳过。
+      if (csvInfo !== null && result.failed > 0) {
+        warnings.push(
+          `result-csv-skipped: 8 列写回存在 ${result.failed} 个失败单元格，未导出结果 CSV`
+        );
+      }
+      if (csvInfo !== null && result.failed === 0) {
         try {
           const exported = await exportWorkbookCsv(
             target.workbookPath,
