@@ -1344,7 +1344,16 @@ async function ingestUnderJobLock(
   await persistDocument(resultPath, document);
 
   if (lateFirstResult && effectiveDbStatus !== task.status) {
-    await store.updateRegressionTask(rootPath, task.id, { status: effectiveDbStatus });
+    const updated = await store.updateRegressionTask(rootPath, task.id, {
+      status: effectiveDbStatus,
+      expectStatuses: [task.status]
+    });
+    if (!updated) {
+      throw new WebResultError(
+        "task-not-running",
+        `job ${task.id} 迟到结果已保存，但任务状态在写入期间已变化；不覆盖终态`
+      );
+    }
   }
 
   if (!lateFirstResult) {

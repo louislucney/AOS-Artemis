@@ -980,7 +980,7 @@ test("I2：tokenArtifacts 只接受内联 base64；拒绝路径、超限工件�
   assert.equal(await readFile(path.join(path.dirname(resultPath), "artifacts", "evil_db.db"), "utf8"), "db-bytes");
 });
 
-test("I4：任务已终态且无结果时允许迟到首次上传（不改任务状态）；有结果/取消仍 409", async (t) => {
+test("I4：任务已终态且无结果时允许迟到首次上传（只允许改差）；有结果/取消仍 409", async (t) => {
   const ctx = await setupProject(t, { status: "completed" });
   const summary = await ingestWebJobResult({
     store: ctx.store,
@@ -991,7 +991,7 @@ test("I4：任务已终态且无结果时允许迟到首次上传（不改任务
   assert.equal(summary.dbStatus, "completed");
   assert.ok(summary.warnings.some((warning) => warning.includes("迟到的首次结果")));
   const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
-  assert.equal(task.status, "completed", "迟到上传不得改写任务终态");
+  assert.equal(task.status, "completed", "同派生状态的迟到上传不改写任务终态");
   assert.equal((await stat(resultPathForJob(ctx.rootPath, ctx.task.id))).isFile(), true);
 
   const different = await assert.rejects(
@@ -1039,6 +1039,20 @@ test("I4b：迟到首次结果不得把更差门禁改回 completed", async (t) 
   );
   const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
   assert.equal(task.status, "partial", "迟到结果只能把 completed 改差，不能保留假绿");
+
+  const failedCtx = await setupProject(t, { status: "failed" });
+  const better = await ingestWebJobResult({
+    store: failedCtx.store,
+    jobId: failedCtx.task.id,
+    payload: passingPayload()
+  });
+  assert.equal(better.taskStatus, "completed");
+  assert.equal(better.dbStatus, "failed", "更差的既有终态不得被迟到结果改回 completed");
+  assert.ok(
+    better.warnings.some((warning) => warning.includes("保留更差的既有终态")),
+    better.warnings.join("；")
+  );
+  assert.equal((await failedCtx.store.getRegressionTask(failedCtx.rootPath, failedCtx.task.id)).status, "failed");
 });
 
 test("HTTP：结果上传大小上限（>256KB 200 / >16MB 413）、415、错误主机 403、短 token 503", async (t) => {
