@@ -33,9 +33,11 @@ import {
   renderLibraryPage,
   renderOpsPage,
   renderSearchPage,
+  renderDevicesPage,
   renderWebAssetsPage,
   renderWebJobPage,
   renderWebJobsPage,
+  type DeviceListEntry,
   type LibraryPageData,
   type SearchPageData,
   type WebJobListEntry
@@ -57,7 +59,7 @@ import { listWebAssets } from "../web/assets.js";
 import { listExcelMappings } from "../web/excel-mapping.js";
 import { parseWebJobSpec, type WebJobSpec } from "../web/job-spec.js";
 import { readWebJobResult, type WebJobResultDocument } from "../web/results.js";
-import { runnerTtlFrom } from "../runner/status.js";
+import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import type { WarningSummary } from "../design/warnings.js";
 import {
   buildPanelBatchDetail,
@@ -235,6 +237,14 @@ type PanelView =
         osVersion: string | null;
         source: "result" | "inventory" | "unknown";
       };
+    }
+  | {
+      kind: "devices";
+      devices: DeviceListEntry[];
+      counts: { total: number; idle: number; busy: number; offline: number };
+      filter: string;
+      platform: string;
+      nowMs: number;
     }
   | {
       kind: "archive";
@@ -440,6 +450,97 @@ function resolveWorkspaceKey(
   return null;
 }
 
+async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
+  const nowMs = deps.now?.() ?? Date.now();
+  const runnerTtlMs = runnerTtlFrom(deps.env ?? process.env);
+  const [runners, leases, active, pending] = await Promise.all([
+    deps.store.listWebRunners().catch(() => []),
+    deps.store.listDeviceLeases().catch(() => []),
+    deps.store.listActiveWebJobs().catch(() => []),
+    deps.store.listPendingWebJobs().catch(() => [])
+  ]);
+  const liveLeases = leases.filter((lease) => {
+    const expires = Date.parse(lease.expiresAt);
+    return Number.isFinite(expires) && expires > nowMs;
+  });
+  const jobByKey = new Map<
+    string,
+    { task: RegressionTaskRecord; rootPath: string; status: "claimed" | "running" | "pending" }
+  >();
+  for (const entry of pending) {
+    const hostId = entry.task.targetHostId;
+    const serial = entry.task.deviceSerial;
+    if (hostId !== null && serial !== null) {
+      jobByKey.set(`${hostId}\u0000${serial}`, { ...entry, status: "pending" });
+    }
+  }
+  for (const entry of active) {
+    const hostId = entry.task.claimedHostId ?? entry.task.targetHostId;
+    const serial = entry.task.deviceSerial;
+    if (hostId !== null && serial !== null) {
+      jobByKey.set(`${hostId}\u0000${serial}`, {
+        ...entry,
+        status: entry.task.status === "running" ? "running" : "claimed"
+      });
+    }
+  }
+  const devices: DeviceListEntry[] = [];
+  for (const runner of runners) {
+    const online = isRunnerOnline(runner.lastSeenAt, nowMs, runnerTtlMs);
+    for (const device of runner.devices) {
+      const lease = liveLeases.find(
+        (entry) => entry.hostId === runner.hostId && entry.serial === device.serial
+      );
+      const job = jobByKey.get(`${runner.hostId}\u0000${device.serial}`);
+      const busy = online && (lease !== undefined || (job !== undefined && job.status !== "pending"));
+      const state: DeviceListEntry["state"] = !online ? "offline" : busy ? "busy" : "idle";
+      devices.push({
+        hostId: runner.hostId,
+        hostname: runner.hostname,
+        hostOnline: online,
+        lastSeenAt: runner.lastSeenAt,
+        platforms: runner.platforms,
+        tools: runner.tools,
+        serial: device.serial,
+        platform: device.platform,
+        kind: device.kind,
+        model: device.model ?? null,
+        osVersion: device.osVersion ?? null,
+        state,
+        idle: state === "idle",
+        leaseTaskId: lease?.taskId ?? null,
+        leaseExpiresAt: lease?.expiresAt ?? null,
+        jobTaskId: job?.task.id ?? null,
+        jobStatus: job?.status ?? null,
+        jobRootPath: job?.rootPath ?? null,
+        jobProjectName: job?.rootPath ? path.basename(job.rootPath) : null
+      });
+    }
+  }
+  const platform = (url.searchParams.get("platform") ?? "all").trim();
+  const filter = (url.searchParams.get("state") ?? "all").trim();
+  const visible = devices.filter(
+    (device) =>
+      (platform !== "android" && platform !== "ios" ? true : device.platform === platform) &&
+      (filter === "idle" || filter === "busy" || filter === "offline"
+        ? device.state === filter
+        : true)
+  );
+  return {
+    kind: "devices",
+    devices: visible,
+    counts: {
+      total: devices.length,
+      idle: devices.filter((device) => device.state === "idle").length,
+      busy: devices.filter((device) => device.state === "busy").length,
+      offline: devices.filter((device) => device.state === "offline").length
+    },
+    filter,
+    platform,
+    nowMs
+  };
+}
+
 async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   let projectKey = trimmed(url.searchParams.get("project"));
   const hostParam = trimmed(url.searchParams.get("host"));
@@ -449,6 +550,9 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       kind: "search",
       data: await buildSearch(deps, trimmed(url.searchParams.get("q")) ?? "")
     };
+  }
+  if (sectionParam === "devices") {
+    return await buildDeviceListView(url, deps);
   }
 
   if (projectKey === null && sectionParam === "dispatch" && hostParam !== null) {
@@ -860,6 +964,16 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
 function toJsonView(view: PanelView): Record<string, unknown> {
   if (view.kind === "overview") return { ...view.overview, view: "overview" };
   if (view.kind === "compare") return { ...view.compare, view: "compare" };
+  if (view.kind === "devices") {
+    return {
+      ok: true,
+      view: "devices",
+      counts: view.counts,
+      filter: view.filter,
+      platform: view.platform,
+      devices: view.devices
+    };
+  }
   if (view.kind === "dispatch") return { ok: true, view: "dispatch", previewId: view.previewId, ...view.preview };
   if (view.kind === "library") {
     return { ok: true, view: "library", sets: view.sets, quarantine: view.quarantine, caseCandidates: view.caseCandidates };
@@ -3350,6 +3464,8 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
     case "web-jobs":
     case "web-job":
       return "dispatch";
+    case "devices":
+      return "devices";
     case "library":
     case "web-assets":
       return "library";
@@ -3395,11 +3511,11 @@ async function loadStoreHealth(
     deps.store as { writeErrors?: () => { count: number; lastError: string | null } }
   ).writeErrors?.();
   const project =
-    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
       ? null
       : view.rootPath;
   const projectHostId =
-    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
       ? null
       : view.hostId;
   let lastWriteAt: string | null = null;
@@ -3493,11 +3609,11 @@ async function loadProjectSwitcher(
   view: PanelView
 ): Promise<NonNullable<ConsoleShellInput["projectSwitcher"]>> {
   const current =
-    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
       ? null
       : view.rootPath;
   const currentHostId =
-    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
       ? null
       : view.hostId;
   const excludeRaw = (deps.env ?? process.env).AOS_PANEL_EXCLUDE_PROJECTS;
@@ -3555,9 +3671,14 @@ function renderPanelHtml(
   setConsoleShellDefaults({ storeHealth, projectSwitcher, capabilities: deps.capabilities });
   currentShell = {
     active: activeForView(view),
-    project: view.kind === "overview" || view.kind === "compare" || view.kind === "search" ? null : view.rootPath,
+    project:
+      view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
+        ? null
+        : view.rootPath,
     projectHostId:
-      view.kind === "overview" || view.kind === "compare" || view.kind === "search" ? null : view.hostId,
+      view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
+        ? null
+        : view.hostId,
     capabilities: deps.capabilities,
     jiraDefaults: {
       projectKey: deps.env?.JIRA_ISSUE_PROJECT?.trim() || undefined,
@@ -3580,6 +3701,17 @@ function renderPanelHtml(
       : `页面缓存 ${Math.max(1, Math.round(cacheTtlMs / 1000))} 秒内数据可能滞后`;
   if (view.kind === "overview") return renderOverviewPage(view.overview, cacheNote);
   if (view.kind === "compare") return renderComparePage(view.compare, cacheNote);
+  if (view.kind === "devices") {
+    return renderDevicesPage({
+      devices: view.devices,
+      counts: view.counts,
+      filter: view.filter,
+      platform: view.platform,
+      nowMs: view.nowMs,
+      capabilities: deps.capabilities,
+      storeHealth: currentShell.storeHealth
+    });
+  }
   if (view.kind === "dispatch") {
     return renderDispatchPage({
       rootPath: view.rootPath,

@@ -9,6 +9,7 @@ import type {
   ExcelMappingRecord,
   ProjectEventRecord,
   RegressionTaskRecord,
+  RunnerTools,
   WebAssetRecord,
   WebRunnerRecord
 } from "../db/types.js";
@@ -18,7 +19,7 @@ import { parseQuarantine } from "../figma/quarantine.js";
 import { formatBytes } from "../figma/retention.js";
 import { isRunnerOnline } from "../runner/status.js";
 import { escapeHtml } from "../util.js";
-import { cBadge, cCard, cEmpty, cTable } from "./components.js";
+import { cBadge, cCard, cEmpty, cStat, cTable } from "./components.js";
 import { relativeTime } from "./time.js";
 import {
   artifactKindLabel,
@@ -309,6 +310,38 @@ export interface WebJobListEntry {
   result: WebJobResultDocument | null;
 }
 
+export interface DeviceListEntry {
+  hostId: string;
+  hostname: string;
+  hostOnline: boolean;
+  lastSeenAt: string;
+  platforms: string[];
+  tools: RunnerTools;
+  serial: string;
+  platform: "ios" | "android";
+  kind: "device" | "simulator" | "emulator";
+  model: string | null;
+  osVersion: string | null;
+  state: "idle" | "busy" | "offline";
+  idle: boolean;
+  leaseTaskId: string | null;
+  leaseExpiresAt: string | null;
+  jobTaskId: string | null;
+  jobStatus: "claimed" | "running" | "pending" | null;
+  jobRootPath: string | null;
+  jobProjectName: string | null;
+}
+
+export interface DevicesPageData {
+  devices: DeviceListEntry[];
+  counts: { total: number; idle: number; busy: number; offline: number };
+  filter: string;
+  platform: string;
+  nowMs: number;
+  capabilities?: ConsoleCapabilities;
+  storeHealth?: ConsoleShellInput["storeHealth"];
+}
+
 export interface WebJobsPageData {
   /** 空串＝未选择项目（渲染项目选择器）。 */
   rootPath: string;
@@ -502,6 +535,91 @@ function runnerDeviceOptions(
 }
 
 /** 下发测试（web job）：项目级列表 + 表单；无项目时只给项目选择器。 */
+function devicesHref(platform: string, state: string): string {
+  const params = new URLSearchParams({ section: "devices" });
+  if (platform !== "all") params.set("platform", platform);
+  if (state !== "all") params.set("state", state);
+  return `/panel?${params.toString()}`;
+}
+
+export function renderDevicesPage(data: DevicesPageData): string {
+  const filterLink = (label: string, state: string, platform = data.platform): string => {
+    const active = data.filter === state && data.platform === platform;
+    return `<a class="c-button${active ? " c-button-primary" : ""}" href="${escapeHtml(
+      devicesHref(platform, state)
+    )}">${escapeHtml(label)}</a>`;
+  };
+  const platformLink = (label: string, platform: string): string => {
+    const active = data.platform === platform;
+    return `<a class="c-button${active ? " c-button-primary" : ""}" href="${escapeHtml(
+      devicesHref(platform, data.filter)
+    )}">${escapeHtml(label)}</a>`;
+  };
+  const rows = data.devices.map((device) => {
+    const stateBadge =
+      device.state === "idle"
+        ? cBadge({ label: "空闲", tone: "success" })
+        : device.state === "busy"
+          ? cBadge({ label: "占用", tone: "warning" })
+          : cBadge({ label: "离线", tone: "error" });
+    const host = `${device.hostOnline ? cBadge({ label: "在线", tone: "success" }) : cBadge({ label: "离线", tone: "error" })} <code>${escapeHtml(device.hostId)}</code><br><span class="muted">${escapeHtml(device.hostname)}</span>`;
+    const tools = Object.entries(device.tools)
+      .filter(([, ok]) => ok === true)
+      .map(([name]) => `<span class="chip">${escapeHtml(name)}</span>`)
+      .join(" ");
+    const deviceLabel = `${escapeHtml(device.platform)} · ${escapeHtml(device.kind)}<br><code>${escapeHtml(device.serial)}</code>`;
+    const model = [device.model, device.osVersion].filter((value) => value !== null).map(String).join(" · ") || "—";
+    const job =
+      device.jobTaskId === null
+        ? '<span class="muted">—</span>'
+        : device.jobRootPath === null
+          ? `<code>${escapeHtml(device.jobTaskId)}</code><br><span class="muted">${escapeHtml(device.jobStatus ?? "")}</span>`
+          : `<a href="/panel?project=${encodeURIComponent(device.jobRootPath)}&amp;section=jobs&amp;job=${encodeURIComponent(device.jobTaskId)}"><code>${escapeHtml(device.jobTaskId)}</code></a><br><span class="muted">${escapeHtml(device.jobProjectName ?? "")} · ${escapeHtml(device.jobStatus ?? "")}</span>`;
+    const lease =
+      device.leaseTaskId === null
+        ? '<span class="muted">—</span>'
+        : `${escapeHtml(relativeTime(device.leaseExpiresAt ?? ""))} <span class="muted">到期</span>`;
+    return [
+      host,
+      deviceLabel,
+      escapeHtml(model),
+      stateBadge,
+      job,
+      lease,
+      escapeHtml(relativeTime(device.lastSeenAt)),
+      tools || '<span class="muted">—</span>'
+    ];
+  });
+  const body = [
+    "<h1>设备</h1>",
+    `<div class="c-stat-grid">${[
+      cStat({ label: "设备", value: String(data.counts.total), hint: "已注册" }),
+      cStat({ label: "空闲", value: String(data.counts.idle), hint: "可立即领取" }),
+      cStat({ label: "占用", value: String(data.counts.busy), hint: "租约或任务执行中" }),
+      cStat({ label: "离线", value: String(data.counts.offline), hint: "执行机心跳超时" })
+    ].join("")}</div>`,
+    `<p class="muted">空闲＝执行机在线、设备无有效租约、无进行中的 Web job。页面加载时快照，刷新查看最新状态。</p>`,
+    `<p>${filterLink("全部", "all")} ${filterLink("空闲", "idle")} ${filterLink("占用", "busy")} ${filterLink("离线", "offline")}</p>`,
+    `<p>${platformLink("全部平台", "all")} ${platformLink("Android", "android")} ${platformLink("iOS", "ios")}</p>`,
+    cTable({
+      columns: ["执行机", "设备", "型号/系统", "状态", "当前任务", "租约", "最后心跳", "工具"],
+      rows,
+      caption: `设备列表（${data.devices.length}）`,
+      empty:
+        data.counts.total === 0
+          ? "还没有执行机注册。在目标机器运行 node dist/cli.js web-runner --name <名称>，配置中心 PG、AOS_PANEL_BASE_URL 与 AOS_RUNNER_JOB_TOKEN 后自动出现。"
+          : "当前筛选下没有设备。"
+    })
+  ].join("\n");
+  return renderConsoleShell({
+    title: "设备",
+    active: "devices",
+    body,
+    capabilities: data.capabilities,
+    storeHealth: data.storeHealth
+  });
+}
+
 export function renderWebJobsPage(data: WebJobsPageData): string {
   const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
   const role = data.capabilities?.role;
