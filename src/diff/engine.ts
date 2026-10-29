@@ -4,6 +4,8 @@ import type { ScreenMapEntry } from "./screen-map.js";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
 
+import { estimateRegionShift, groupRegionShifts, type GlobalShift, type RegionShift } from "./shift.js";
+
 export interface RgbaImage {
   width: number;
   height: number;
@@ -55,6 +57,8 @@ export interface DiffRegion {
   pixelDiffRatio: number;
   designNode?: { id: string; name: string };
   suspected?: "system-area";
+  /** 实际内容相对设计的位移（设计坐标像素）；仅 report，不参与 severity。 */
+  shift?: RegionShift;
   localized?: {
     status: "mapped" | "unmapped" | "no-candidates";
     mapEntry?: ScreenMapEntry;
@@ -93,6 +97,8 @@ export interface DiffResult {
   alignment: DiffAlignment;
   ignoredRegions: Bbox[];
   regions: DiffRegion[];
+  /** ≥3 个区域同向、幅度接近的整块偏移；仅 report。 */
+  globalShifts?: GlobalShift[];
   summary: DiffSummary;
   thresholds: DiffThresholds;
 }
@@ -588,6 +594,21 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
       const severity = suspected
         ? "info"
         : worseSeverity(severityForRatio(ratio), CATEGORY_FLOOR[classified.category] ?? "info");
+      const rawShift =
+        workingBox.width <= 240 && workingBox.height <= 240
+          ? estimateRegionShift(designPart, devicePart, workingBox, {
+              range: Math.max(8, Math.round(32 * factor)),
+              minShift: Math.max(2, Math.round(4 * factor))
+            })
+          : null;
+      const shift =
+        rawShift === null
+          ? null
+          : {
+              dx: Math.round(rawShift.dx / factor),
+              dy: Math.round(rawShift.dy / factor),
+              gain: Math.round(rawShift.gain * 1000) / 1000
+            };
       return {
         bbox: {
           x: Math.max(0, Math.round(component.minX / factor)),
@@ -598,6 +619,7 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
         category: classified.category,
         severity,
         pixelDiffRatio: Math.min(1, component.count / (width * height)),
+        ...(shift !== null && (shift.dx !== 0 || shift.dy !== 0) ? { shift } : {}),
         ...(classified.designNode ? { designNode: classified.designNode } : {}),
         ...(suspected ? { suspected } : {})
       } satisfies DiffRegion;
@@ -619,6 +641,7 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
     bySeverity[region.severity] = (bySeverity[region.severity] ?? 0) + 1;
     byCategory[region.category] = (byCategory[region.category] ?? 0) + 1;
   }
+  const globalShifts = groupRegionShifts(workingRegions);
 
   return {
     alignment: {
@@ -630,6 +653,7 @@ export function diffScreens(design: RgbaImage, device: RgbaImage, options: DiffO
     },
     ignoredRegions,
     regions: workingRegions,
+    ...(globalShifts.length > 0 ? { globalShifts } : {}),
     summary: { regions: workingRegions.length, bySeverity, byCategory },
     thresholds: {
       pixelThreshold,
