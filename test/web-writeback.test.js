@@ -1195,6 +1195,14 @@ test("xlsx parts：识别不支持对象与写回后未知 part 丢失（drawing
     ["customXml/item1.xml"],
     "未知 part 丢失要报告；drawings 按 best-effort 放行"
   );
+  assert.deepEqual(
+    lostParts(
+      ["xl/worksheets/sheet1.xml", "xl/printerSettings/printerSettings1.bin"],
+      ["xl/worksheets/sheet1.xml"]
+    ),
+    [],
+    "打印设置丢失只影响版式，不阻断写回"
+  );
 });
 
 test("journal 按 caseId+columnKey 判定归属：插入行后人工格仍冻结", async (t) => {

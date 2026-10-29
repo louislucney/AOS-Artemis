@@ -92,7 +92,8 @@ export function findUnsupportedParts(entries: readonly string[]): string[] {
 
 /**
  * exceljs 重写工作簿时允许被改写/替换/移除的 part；drawings/images/comments 按
- * best-effort 放行（可能丢失，但不阻断）。其余 part 在写回后消失即视为静默丢失。
+ * best-effort 放行（可能丢失，但不阻断），打印设置同理（仅影响打印版式）。其余 part
+ * 在写回后消失即视为静默丢失。
  */
 const REWRITABLE_PART_PATTERNS: RegExp[] = [
   /^\[content_types\]\.xml$/i,
@@ -108,6 +109,8 @@ const REWRITABLE_PART_PATTERNS: RegExp[] = [
   /^xl\/media\//i,
   /^xl\/comments[^/]*\.xml$/i,
   /^xl\/threadedcomments\//i,
+  // exceljs 不保留打印设置（页边距/打印区域等）；仅影响打印版式，不属于测试数据。
+  /^xl\/printerSettings\//i,
   /^docprops\//i
 ];
 
