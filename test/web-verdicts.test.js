@@ -133,6 +133,46 @@ test("verdicts：仅软 text 断言 → UNVERIFIED soft-assertion-only", () => {
   });
 });
 
+test("verdicts：soft text 被 flow 断言覆盖 → PASS；未覆盖 → UNVERIFIED", () => {
+  const expected = "1. 需先手動取消愛心";
+  const source = [sourceCase("TC-1", { expected, steps: ["點擊關閉"] })];
+  const covered = derive({
+    payloadCases: [
+      passCase("TC-1", {
+        assertionCount: 1,
+        assertions: [{ type: "visible", text: "手動取消愛心" }]
+      })
+    ],
+    sourceCases: source,
+    assertions: assertionsFor(source)
+  });
+  assert.equal(covered.cases[0].status, "PASS");
+  assert.equal(covered.unverified, 0);
+
+  const uncovered = derive({
+    payloadCases: [
+      passCase("TC-1", {
+        assertionCount: 1,
+        assertions: [{ type: "visible", text: "其他文案" }]
+      })
+    ],
+    sourceCases: source,
+    assertions: assertionsFor(source)
+  });
+  assert.equal(uncovered.cases[0].status, "UNVERIFIED");
+  assert.equal(uncovered.reasons[0].reason, "soft-assertion-uncovered");
+
+  const soft = docFor("TC-SOFT", expected, ["點擊關閉"]);
+  assert.deepEqual(assertionGate(soft, 1, [{ type: "visible", text: "手動取消愛心" }]), {
+    status: "PASS",
+    reason: "ok"
+  });
+  assert.deepEqual(assertionGate(soft, 1, [{ type: "visible", text: "其他文案" }]), {
+    status: "UNVERIFIED",
+    reason: "soft-assertion-uncovered"
+  });
+});
+
 test("verdicts：PASS 但原件没有该用例 → UNVERIFIED case-not-in-source", () => {
   const source = [sourceCase("TC-1")];
   const result = derive({

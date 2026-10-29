@@ -48,13 +48,39 @@ function hasExecutableAssertion(doc: AssertionDoc): boolean {
   return doc.steps.some((step) => step.assert.some((assertion) => assertion.type !== "manual"));
 }
 
+type FlowAssertion = { type: "visible" | "notVisible"; text: string };
+
+function normalizedAssertionText(value: string): string {
+  return value.replace(/\s+/g, "").toLowerCase();
+}
+
+function flowCovers(text: string, flowAssertions: FlowAssertion[]): boolean {
+  const wanted = normalizedAssertionText(text);
+  if (wanted.length < 2) return false;
+  return flowAssertions.some((assertion) => {
+    if (assertion.type !== "visible") return false;
+    const actual = normalizedAssertionText(assertion.text);
+    return actual.length >= 2 && (actual.includes(wanted) || wanted.includes(actual));
+  });
+}
+
+/** 只有 soft text 的文档：每条 text 都能被 flow 的 assertVisible 文本覆盖才放行。 */
+function softTextsCovered(doc: AssertionDoc, flowAssertions: FlowAssertion[]): boolean {
+  const texts = doc.steps.flatMap((step) =>
+    step.assert.filter((assertion) => assertion.type === "text").map((assertion) => assertion.text)
+  );
+  return texts.length > 0 && texts.every((text) => flowCovers(text, flowAssertions));
+}
+
 /**
- * PASS 的断言门禁：断言文档可执行、无人工/歧义、runner 上报的硬断言数 > 0。
+ * PASS 的断言门禁：断言文档可执行、无人工/歧义、runner 上报的硬断言数 > 0；
+ * medium 文档只有全部 soft text 被 flow 断言文本覆盖时才放行。
  * 空预期（只有 `无预期` 注释、没有步骤）按“无可执行断言”处理，而不是“人工/歧义”。
  */
 export function assertionGate(
   doc: AssertionDoc | undefined,
-  assertionCount: number | undefined
+  assertionCount: number | undefined,
+  flowAssertions: FlowAssertion[] = []
 ): { status: "PASS" | "UNVERIFIED"; reason: string } {
   if (doc === undefined) return { status: "UNVERIFIED", reason: "assertion-doc-missing" };
   if (!hasExecutableAssertion(doc)) {
@@ -67,7 +93,12 @@ export function assertionGate(
     return { status: "UNVERIFIED", reason: "manual-or-ambiguous" };
   }
   if (doc.confidence !== "high") {
-    return { status: "UNVERIFIED", reason: "soft-assertion-only" };
+    if (flowAssertions.length === 0) {
+      return { status: "UNVERIFIED", reason: "soft-assertion-only" };
+    }
+    if (!softTextsCovered(doc, flowAssertions)) {
+      return { status: "UNVERIFIED", reason: "soft-assertion-uncovered" };
+    }
   }
   if (assertionCount === undefined || assertionCount <= 0) {
     return { status: "UNVERIFIED", reason: "assertion-proof-missing" };
@@ -183,7 +214,7 @@ export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsRe
       reasons.push({ caseId, status: "UNVERIFIED", reason: "case-not-in-source" });
       continue;
     }
-    const gate = assertionGate(assertions?.get(caseId), entry.assertionCount);
+    const gate = assertionGate(assertions?.get(caseId), entry.assertionCount, entry.assertions);
     if (gate.status === "PASS") {
       cases.push(entry);
       continue;

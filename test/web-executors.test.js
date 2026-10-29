@@ -158,7 +158,12 @@ test("executeWebJob: 按顶层 flow 统计硬断言条数并上报 assertionCoun
   });
   const byId = new Map(result.cases.map((entry) => [entry.caseId, entry]));
   assert.equal(byId.get("flow-a").assertionCount, 3);
+  assert.deepEqual(byId.get("flow-a").assertions, [
+    { type: "visible", text: "登录" },
+    { type: "notVisible", text: "错误" }
+  ]);
   assert.equal(byId.get("flow-b").assertionCount, 0);
+  assert.equal(byId.get("flow-b").assertions, undefined);
 });
 
 test("executeWebJob: maestro 命令参数、默认 15 分钟超时与 env 透传", async (t) => {
