@@ -152,7 +152,12 @@ export interface WebJobResultDocument {
   /** 隐藏断言列写入格数。 */
   assertionCells: number;
   /** 平台结果列摘要（空结果/写失败为 null）。 */
-  platformResult: { column: number; header: string; appended: boolean } | null;
+  platformResult: {
+    column: number;
+    header: string;
+    appended: boolean;
+    layout: "fixed" | "legacy";
+  } | null;
   warnings: string[];
 }
 
@@ -187,7 +192,12 @@ export interface WebJobIngestSummary {
   /** 隐藏断言列写入格数（0＝未写/无可用原件）。 */
   assertionCells: number;
   /** 平台结果列摘要（未写时为 null）。 */
-  platformResult: { column: number; header: string; appended: boolean } | null;
+  platformResult: {
+    column: number;
+    header: string;
+    appended: boolean;
+    layout: "fixed" | "legacy";
+  } | null;
 }
 
 export type WebResultErrorCode =
@@ -741,31 +751,38 @@ function writebackRows(
 interface SourceWorkbookSummary {
   cases: ParsedExcelCase[];
   headers: string[];
-  /** 仅 CSV 源：检测到的编码（决定结果 CSV 输出编码）。 */
-  encoding?: CsvEncoding;
+}
+
+/** CSV 原件的输出保真参数：编码/BOM/行尾，直接由原字节检测，不依赖用例映射是否可解析。 */
+interface SourceCsvInfo {
+  encoding: CsvEncoding;
   bom: boolean;
   lineEnding: CsvLineEnding;
 }
 
 /**
- * 只读解析原始测试文档（原件 CAS 字节）：用例/步骤/预期用于断言分类，表头用于平台列归属判定，
- * 编码/行尾用于结果 CSV 保真。原件的映射仍是 job 资产上已确认的那份。
+ * 只读解析原始测试文档（原件 CAS 字节）：用例/步骤/预期用于断言分类，表头用于平台列归属判定。
+ * 原件的映射仍是 job 资产上已确认的那份。
  */
 async function analyzeSourceWorkbook(target: WritebackTarget): Promise<SourceWorkbookSummary> {
   const buffer = await readFile(target.originalPath);
-  const isCsv = target.asset.metadata.format === "csv";
   const parsed = await parseExcel(buffer, {
     sheetName: target.sheetName,
     mapping: target.mapping.columnMap,
-    ...(isCsv ? { format: "csv" as const } : {})
+    ...(target.asset.metadata.format === "csv" ? { format: "csv" as const } : {})
   });
-  if (!isCsv) {
-    return { cases: parsed.cases, headers: parsed.headers, bom: false, lineEnding: "\n" };
-  }
+  return { cases: parsed.cases, headers: parsed.headers };
+}
+
+/**
+ * CSV 结果导出的编码/行尾检测与用例解析解耦：即使映射缺列导致 `parseExcel` 失败，
+ * 只要 8 列写回成功，仍能按原件编码导出结果 CSV。
+ */
+async function detectResultCsvSource(target: WritebackTarget): Promise<SourceCsvInfo | null> {
+  if (target.asset.metadata.format !== "csv") return null;
+  const buffer = await readFile(target.originalPath);
   const decoded = decodeCsv(buffer);
   return {
-    cases: parsed.cases,
-    headers: parsed.headers,
     encoding: decoded.encoding,
     bom: decoded.bom,
     lineEnding: decoded.text.includes("\r\n") ? "\r\n" : "\n"
@@ -1028,13 +1045,23 @@ async function ingestUnderJobLock(
   }
   const tokenTotals = payload.tokenUsage.length > 0 ? sumTokenUsage(payload.tokenUsage) : null;
 
+  let csvInfo: SourceCsvInfo | null = null;
+  try {
+    csvInfo = await detectResultCsvSource(target);
+  } catch (error) {
+    warnings.push(
+      `result-csv-unavailable: 无法读取/识别 CSV 原件编码，跳过结果 CSV 导出（${errorMessage(error)}）`
+    );
+  }
   let source: SourceWorkbookSummary | null = null;
   try {
     source = await analyzeSourceWorkbook(target);
   } catch (error) {
     warnings.push(
-      `source-unreadable: 无法解析原始测试文档，跳过预期断言（${errorMessage(error)}）`
+      `source-unreadable: 无法解析原始测试文档，跳过平台结果列与预期断言（${errorMessage(error)}）`
     );
+    warnings.push("platform-result-skipped: 原件不可解析，未写平台结果列");
+    warnings.push("assertion-column-skipped: 原件不可解析，未写隐藏断言列");
   }
 
   let workbookResult: WritebackResult | null = null;
@@ -1071,12 +1098,14 @@ async function ingestUnderJobLock(
             caseIdHeader: target.caseIdHeader,
             platform: spec.requirements.platform,
             rows: platformRows,
+            originalPath: target.originalPath,
             ...(source === null ? {} : { sourceHeaders: source.headers })
           });
           platformResult = {
             column: written.column,
             header: written.header,
-            appended: written.appended
+            appended: written.appended,
+            layout: written.layout
           };
           warnings.push(...written.warnings.map((warning) => `platform-result: ${warning}`));
         } catch (error) {
@@ -1158,16 +1187,17 @@ async function ingestUnderJobLock(
         }
       }
 
-      // 结果 CSV 只对 CSV 源导出，编码/行尾/BOM 沿用原件检测结论；隐藏列由导出器跳过。
-      if (source !== null && source.encoding !== undefined) {
+      // 结果 CSV 只对 CSV 源导出，编码/行尾/BOM 直接来自原件检测（与用例解析解耦）；
+      // 只要 8 列写回成功就导出，映射/解析失败不影响；隐藏列由导出器跳过。
+      if (csvInfo !== null) {
         try {
           const exported = await exportWorkbookCsv(
             target.workbookPath,
             webResultCsvPath(rootPath, target.asset.id),
             {
-              encoding: source.encoding,
-              lineEnding: source.lineEnding,
-              bom: source.bom,
+              encoding: csvInfo.encoding,
+              lineEnding: csvInfo.lineEnding,
+              bom: csvInfo.bom,
               sheetName: target.sheetName,
               overwrite: true,
               originalPath: target.originalPath

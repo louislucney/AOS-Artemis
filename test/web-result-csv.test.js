@@ -13,8 +13,8 @@ import { storeWebAsset } from "../dist/web/assets.js";
 import { readAssertionColumn } from "../dist/web/assertion-column.js";
 import { decodeCsv, encodeCsv, parseCsv } from "../dist/web/csv.js";
 import { ingestWebJobResult, resultPathForJob, webResultCsvPath } from "../dist/web/results.js";
-import { cellText, SYSTEM_COLUMNS } from "../dist/web/writeback.js";
-import { workbookCopyPath } from "../dist/web/workbook.js";
+import { cellText, SYSTEM_COLUMNS, writebackWorkbook } from "../dist/web/writeback.js";
+import { ensureWorkbookCopy, workbookCopyPath } from "../dist/web/workbook.js";
 
 const HOST = "host-1";
 const STARTED = "2026-10-29T01:00:00.000Z";
@@ -96,7 +96,9 @@ async function setup(t, options) {
   const asset = await storeWebAsset({ store, rootPath, kind: "excel", filename, buffer });
   assert.equal(asset.metadata.format, options.format === "csv" ? "csv" : undefined);
 
-  const columnMap = { caseId: "用例编号", name: "用例名", steps: "步骤", ...options.mapping };
+  const columnMap = options.omitStepsMapping
+    ? { caseId: "用例编号" }
+    : { caseId: "用例编号", name: "用例名", steps: "步骤", ...options.mapping };
   await store.saveExcelMapping({
     rootPath,
     assetId: asset.id,
@@ -192,6 +194,13 @@ test("xlsx 源已有 AOS/IOS 列：写 AOS、保留 IOS，8 列 + 隐藏断言�
 
   assert.equal(summary.writebackStatus, "written");
   assert.equal(summary.resultCsvPath, null, "xlsx 源不导出结果 CSV");
+  assert.equal(summary.assertionCells, 3);
+  assert.deepEqual(summary.platformResult, {
+    column: 5,
+    header: "AOS Result",
+    appended: false,
+    layout: "fixed"
+  });
   assert.equal(await fileSha(ctx.original), ctx.originalSha, "原件 sha256 必须不变");
 
   const sheet = await loadSheet(ctx.copyPath, "用例");
@@ -252,6 +261,13 @@ test("xlsx 源没有平台列：追加 AOS/IOS 再追加 8 列，隐藏断言在
     payload: payload([{ caseId: "TC-1", status: "PASS" }])
   });
   assert.equal(summary.writebackStatus, "written");
+  assert.equal(summary.assertionCells, 1);
+  assert.deepEqual(summary.platformResult, {
+    column: 5,
+    header: "AOS Result",
+    appended: true,
+    layout: "fixed"
+  });
 
   const sheet = await loadSheet(ctx.copyPath, "用例");
   assert.deepEqual(headerRowValues(sheet, [1, 2, 3, 4]), ["用例编号", "用例名", "步骤", "期望结果"]);
@@ -365,4 +381,128 @@ test("CSV 源（GB18030）：结果 CSV 保持 GB18030 + CRLF，原字节不变"
 
   const sheet = await loadSheet(ctx.copyPath, "csv");
   assert.ok(columnByHeader(sheet, "__aos_assertions") > 0);
+});
+
+test("旧工作副本已有 8 列：平台列追加在后并显式告警 layout legacy（不插列）", async (t) => {
+  const ctx = await setup(t, {
+    headers: ["用例编号", "用例名", "步骤", "期望结果"],
+    mapping: { expected: "期望结果" },
+    rows: [["TC-1", "登录", "1. 打开登录页", "1. 页面显示“登录成功”"]]
+  });
+  await ensureWorkbookCopy(ctx.original, ctx.copyPath);
+  const legacy = await writebackWorkbook({
+    workbookPath: ctx.copyPath,
+    originalPath: ctx.original,
+    assetId: ctx.asset.id,
+    sheetName: ctx.sheetName,
+    caseIdHeader: "用例编号",
+    rows: [{ caseId: "TC-1", values: { scriptFile: "legacy.js" } }],
+    lastSystemValue: async () => null
+  });
+  assert.equal(legacy.written, 1);
+
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: payload([{ caseId: "TC-1", status: "PASS" }])
+  });
+
+  assert.equal(summary.writebackStatus, "written");
+  assert.ok(
+    summary.warnings.some((warning) => warning.includes("platform-columns-after-system")),
+    summary.warnings.join("；")
+  );
+  assert.deepEqual(summary.platformResult, {
+    column: 13,
+    header: "AOS Result",
+    appended: true,
+    layout: "legacy"
+  });
+  assert.equal(summary.assertionCells, 1);
+  const sheet = await loadSheet(ctx.copyPath, "用例");
+  assert.deepEqual(headerRowValues(sheet, [5, 6, 7, 8, 9, 10, 11, 12]), SYSTEM_HEADERS);
+  assert.equal(cellText(sheet.getCell(1, 13)), "AOS Result");
+  assert.equal(cellText(sheet.getCell(1, 14)), "IOS Result");
+  assert.equal(cellText(sheet.getCell(1, 15)), "__aos_assertions");
+  assert.equal(cellText(sheet.getCell(2, 13)), "PASS");
+  assert.equal(await fileSha(ctx.original), ctx.originalSha);
+});
+
+test("CSV 源映射缺 steps（parseExcel 失败）：8 列写回成功仍导出结果 CSV", async (t) => {
+  const ctx = await setup(t, {
+    format: "csv",
+    encoding: "utf-8",
+    lineEnding: "\r\n",
+    headers: ["用例编号", "用例名", "步骤", "期望结果"],
+    rows: [["C1", "登录", "1. 打开登录页", "1. 页面显示“登录成功”"]],
+    omitStepsMapping: true
+  });
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: payload([{ caseId: "C1", status: "PASS" }])
+  });
+
+  assert.equal(summary.writebackStatus, "written");
+  assert.equal(summary.platformResult, null, "原件不可解析时不写平台列");
+  assert.equal(summary.assertionCells, 0, "原件不可解析时不写隐藏断言");
+  assert.equal(summary.resultCsvPath, webResultCsvPath(ctx.rootPath, ctx.asset.id));
+  for (const marker of [
+    "source-unreadable",
+    "platform-result-skipped",
+    "assertion-column-skipped"
+  ]) {
+    assert.ok(
+      summary.warnings.some((warning) => warning.includes(marker)),
+      `${marker}: ${summary.warnings.join("；")}`
+    );
+  }
+  assert.equal(await fileSha(ctx.original), ctx.originalSha);
+
+  const resultBytes = await readFile(summary.resultCsvPath);
+  assert.equal(decodeCsv(resultBytes).encoding, "utf-8");
+  const rows = parseCsv(decodeCsv(resultBytes).text);
+  assert.deepEqual(rows[0], ["用例编号", "用例名", "步骤", "期望结果", ...SYSTEM_HEADERS]);
+  assert.equal(rows[1][rows[0].indexOf("执行｜结果")], "PASS");
+  assert.ok(!rows[0].includes("AOS Result"), "解析失败时不伪造平台列");
+  assert.ok(!rows[0].includes("__aos_assertions"));
+});
+
+test("平台结果列沿用假绿守卫：任务 error 且用例全 PASS 时不写 PASS", async (t) => {
+  const ctx = await setup(t, {
+    headers: ["用例编号", "用例名", "步骤", "期望结果"],
+    mapping: { expected: "期望结果" },
+    rows: [["TC-1", "登录", "1. 打开登录页", "1. 页面显示“登录成功”"]]
+  });
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: payload([], {
+      execution: {
+        status: "error",
+        cases: [
+          {
+            caseId: "TC-1",
+            name: "登录",
+            status: "PASS",
+            durationMs: 1000,
+            traceId: "trace-TC-1"
+          }
+        ],
+        startedAt: STARTED,
+        finishedAt: FINISHED,
+        detail: "maestro-exit:1"
+      }
+    })
+  });
+
+  assert.equal(summary.taskStatus, "error");
+  assert.ok(summary.platformResult);
+  assert.equal(summary.platformResult.header, "AOS Result");
+  assert.ok(!summary.writtenCells.some((cell) => cell.key === "result"));
+  const sheet = await loadSheet(ctx.copyPath, "用例");
+  const aos = columnByHeader(sheet, "AOS Result");
+  const result = columnByHeader(sheet, "执行｜结果");
+  assert.equal(cellText(sheet.getCell(2, aos)), "", "任务级 error 不得写平台 PASS");
+  assert.equal(cellText(sheet.getCell(2, result)), "", "8 列结果同口径不写 PASS");
 });

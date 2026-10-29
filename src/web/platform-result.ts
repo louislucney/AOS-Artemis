@@ -5,7 +5,12 @@ import ExcelJS from "exceljs";
 
 import { errorMessage, writeFileAtomic } from "../util.js";
 import { normalizeExcelHeader } from "./excel-columns.js";
-import { cellText, findHeaderColumn, lastNonEmptyHeaderColumn } from "./writeback.js";
+import {
+  cellText,
+  findHeaderColumn,
+  lastNonEmptyHeaderColumn,
+  SYSTEM_COLUMNS
+} from "./writeback.js";
 import { findUnsupportedParts, lostParts, readXlsxParts } from "./xlsx-parts.js";
 
 export type PlatformResultStatus = "PASS" | "FAIL" | "SKIP" | "ERROR";
@@ -30,7 +35,8 @@ export type PlatformResultErrorCode =
   | "merged-header"
   | "unsupported-parts"
   | "parts-lost"
-  | "write-failed";
+  | "write-failed"
+  | "same-as-original";
 
 export class PlatformResultError extends Error {
   readonly code: PlatformResultErrorCode;
@@ -60,6 +66,8 @@ export interface WritePlatformResultsInput {
    * 缺省表示来源未知，任何已存在的平台列都按人工内容保护。
    */
   sourceHeaders?: string[];
+  /** 原件路径（可选）：与工作副本同一路径时拒绝写回，运行期兜底不可变约定。 */
+  originalPath?: string;
 }
 
 export interface WritePlatformResultsResult {
@@ -68,6 +76,11 @@ export interface WritePlatformResultsResult {
   header: string;
   /** 本 job 平台列是否由本次追加（不是原件/工作副本既有列）。 */
   appended: boolean;
+  /**
+   * `fixed`＝平台列在 8 列摘要之前（新工作副本）；`legacy`＝既有 8 列在前、平台列追加在后
+   * （旧工作副本，不插列以免破坏 journal cellRef）。
+   */
+  layout: "fixed" | "legacy";
   warnings: string[];
 }
 
@@ -179,6 +192,12 @@ export async function writePlatformResults(
     PLATFORM_RESULT_COLUMNS.find((column) => column.platform === input.platform)?.header ??
     PLATFORM_RESULT_COLUMNS[0].header;
   const target = path.resolve(input.workbookPath);
+  if (input.originalPath !== undefined && path.resolve(input.originalPath) === target) {
+    throw new PlatformResultError(
+      "same-as-original",
+      `拒绝写回原件：workbookPath 与 originalPath 相同（${target}）`
+    );
+  }
   const workbookBuffer = await readFile(target).catch((error: unknown) => {
     throw new PlatformResultError(
       "invalid-workbook",
@@ -249,6 +268,15 @@ export async function writePlatformResults(
     assertHeaderNotMerged(sheet, headerRow, entry.column, entry.header);
   }
 
+  const systemColumns = SYSTEM_COLUMNS.map((system) =>
+    findHeaderColumn(sheet, headerRow, system.header, 1, columnCount)
+  ).filter((column) => column > 0);
+  const platformColumns = [...present.values()];
+  const layout: WritePlatformResultsResult["layout"] =
+    systemColumns.length > 0 && Math.max(...platformColumns) > Math.min(...systemColumns)
+      ? "legacy"
+      : "fixed";
+
   const sourceHeaders =
     input.sourceHeaders === undefined
       ? null
@@ -260,6 +288,11 @@ export async function writePlatformResults(
 
   const rowByCaseId = new Map<string, number>();
   const warnings: string[] = [];
+  if (appendedHeaders.length > 0 && layout === "legacy") {
+    warnings.push(
+      "platform-columns-after-system: 工作副本已有 8 列摘要（旧布局），平台结果列只能追加在其后；可见列顺序＝原件 + 8 列 + AOS/IOS，新建工作副本固定为原件 + AOS/IOS + 8 列"
+    );
+  }
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber <= headerRow) return;
     const idCell = row.getCell(anchorColumn);
@@ -371,6 +404,7 @@ export async function writePlatformResults(
     column: jobColumn,
     header: jobHeader,
     appended: appendedHeaders.some((entry) => entry.header === jobHeader),
+    layout,
     warnings
   };
 }
