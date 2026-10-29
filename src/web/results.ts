@@ -48,6 +48,17 @@ export interface WebResultCase {
   assertionCount?: number;
   /** 中心补写的“未执行”用例（只写 Excel `SKIP（未执行）`）。 */
   synthetic?: boolean;
+  /** 面板人工标记；不覆盖 runner 的 status，只让门禁/Excel 使用该状态。 */
+  manualStatus?: WebResultManualOverride;
+}
+
+export type WebResultManualStatus = "NOT_IMPL" | "BLOCKED";
+
+export interface WebResultManualOverride {
+  status: WebResultManualStatus;
+  reason: string;
+  at: string;
+  actor: string | null;
 }
 
 export interface WebResultTokenUsage {
@@ -101,6 +112,10 @@ export interface WebResultGate {
   skipped: number;
   /** 中心降级的 UNVERIFIED 数；为 0 时省略（保持既有摘要兼容）。 */
   unverified?: number;
+  /** 面板人工标记为未实现的数量；为 0 时省略。 */
+  notImplemented?: number;
+  /** 面板人工标记为阻塞的数量；为 0 时省略。 */
+  blocked?: number;
 }
 
 export interface WebResultExecution {
@@ -143,7 +158,11 @@ export interface WebJobResultDocument {
   taskStatus: WebResultTaskStatus;
   /** 实际落库的任务状态（error → failed；迟到首次上传保持原状态）。 */
   dbStatus: RegressionTaskStatus;
+  /** 首次入库时的落库终态；人工状态重算的不可变下界（旧文档缺省时回退 dbStatus）。 */
+  baseDbStatus?: RegressionTaskStatus;
   gate: WebResultGate;
+  /** runner 上报/首次派生的结果状态；人工状态重算时作为“不能更好”的下界。 */
+  reportedStatus?: WebResultGate["result"];
   execution: WebResultExecution;
   device: WebResultDevice;
   package: WebResultPackage;
@@ -503,14 +522,24 @@ function sumTokenUsage(entries: WebResultTokenUsage[]): WebResultTokenTotals {
   return totals;
 }
 
-/** 任务终态聚合：空结果 ≠ 成功；SKIP/UNVERIFIED 只计数，不计通过。 */
+/** 任务终态聚合：空结果 ≠ 成功；SKIP/UNVERIFIED/NOT_IMPL/BLOCKED 只计数，不计通过。 */
 export function aggregateResultGate(cases: WebResultCase[]): WebResultGate {
   let passed = 0;
   let failed = 0;
   let errors = 0;
   let skipped = 0;
   let unverified = 0;
+  let notImplemented = 0;
+  let blocked = 0;
   for (const entry of cases) {
+    if (entry.manualStatus?.status === "NOT_IMPL") {
+      notImplemented += 1;
+      continue;
+    }
+    if (entry.manualStatus?.status === "BLOCKED") {
+      blocked += 1;
+      continue;
+    }
     if (entry.status === "PASS") passed += 1;
     else if (entry.status === "FAIL") failed += 1;
     else if (entry.status === "ERROR") errors += 1;
@@ -522,7 +551,7 @@ export function aggregateResultGate(cases: WebResultCase[]): WebResultGate {
       ? "error"
       : failed + errors > 0
         ? "failed"
-        : skipped + unverified > 0
+        : skipped + unverified + notImplemented + blocked > 0
           ? "partial"
           : "passed";
   return {
@@ -532,7 +561,9 @@ export function aggregateResultGate(cases: WebResultCase[]): WebResultGate {
     failed,
     errors,
     skipped,
-    ...(unverified > 0 ? { unverified } : {})
+    ...(unverified > 0 ? { unverified } : {}),
+    ...(notImplemented > 0 ? { notImplemented } : {}),
+    ...(blocked > 0 ? { blocked } : {})
   };
 }
 
@@ -791,7 +822,8 @@ function writebackRows(
       startedAt: payload.startedAt,
       finishedAt: payload.finishedAt
     };
-    if (entry.status === "UNVERIFIED") values.result = "UNVERIFIED";
+    if (entry.manualStatus !== undefined) values.result = entry.manualStatus.status;
+    else if (entry.status === "UNVERIFIED") values.result = "UNVERIFIED";
     else if (!suppressPerCaseResult || entry.status !== "PASS") values.result = entry.status;
     if (traceId !== undefined && traceId !== "") values.traceId = traceId;
     return { caseId: entry.caseId, values };
@@ -849,6 +881,10 @@ function platformResultRows(
 ): PlatformResultRow[] {
   const rows: PlatformResultRow[] = [];
   for (const entry of cases) {
+    if (entry.manualStatus !== undefined) {
+      rows.push({ caseId: entry.caseId, status: entry.manualStatus.status });
+      continue;
+    }
     if (suppressPerCaseResult && entry.status === "PASS") continue;
     rows.push({
       caseId: entry.caseId,
@@ -1318,7 +1354,9 @@ async function ingestUnderJobLock(
     receivedAt: at,
     taskStatus,
     dbStatus: effectiveDbStatus,
+    baseDbStatus: effectiveDbStatus,
     gate,
+    reportedStatus: payload.reportedStatus ?? payload.execution.status,
     execution: {
       ...payload.execution,
       status: gate.result,
@@ -1426,6 +1464,258 @@ export async function ingestWebJobResult(
   if (input.allowClearedRefresh === true) payload.allowClearedRefresh = true;
   const lockPath = resultLockPath(initial.rootPath, initial.task.id);
   return withFileLock(lockPath, () => ingestUnderJobLock(input, payload, initial.task.id));
+}
+
+/** 面板人工状态：只覆盖该用例的门禁/Excel 结果，不修改 runner 上报的原始 status。 */
+export interface ApplyWebJobManualStatusInput {
+  store: ProjectStore;
+  rootPath: string;
+  jobId: string;
+  caseId: string;
+  status: WebResultManualStatus | null;
+  reason?: string;
+  actor?: string | null;
+  nowMs?: number;
+}
+
+export interface ApplyWebJobManualStatusResult {
+  document: WebJobResultDocument;
+  changed: boolean;
+  warnings: string[];
+}
+
+/**
+ * 设置/清除单例人工状态（NOT_IMPL/BLOCKED）。
+ * - result.json 的 case.manualStatus 是覆盖层；execution.cases[].status 保留 runner 原值。
+ * - gate/taskStatus 按覆盖层重算；任务行只在终态（completed/partial/failed）时同步。
+ * - Excel 平台列 + 该行 `执行｜结果` 用新状态重写；CSV 源同步导出结果 CSV。
+ */
+export async function applyWebJobManualStatus(
+  input: ApplyWebJobManualStatusInput
+): Promise<ApplyWebJobManualStatusResult> {
+  if (
+    input.jobId.trim() === "" ||
+    input.caseId.trim() === "" ||
+    /[\\/]|\.\./.test(input.jobId) ||
+    /[\\/]|\.\./.test(input.caseId)
+  ) {
+    throw new WebResultError("invalid-result", "jobId/caseId 含非法路径字符");
+  }
+  const rootPath = path.resolve(input.rootPath);
+  const job = await input.store.getWebJobById(input.jobId);
+  if (job === null || path.resolve(job.rootPath) !== rootPath || job.task.id !== input.jobId) {
+    throw new WebResultError("job-not-found", `未知 job ${input.jobId}`);
+  }
+  const resultPath = resultPathForJob(rootPath, input.jobId);
+  return withFileLock(resultLockPath(rootPath, input.jobId), async () => {
+    const document = await readResultDocument(resultPath);
+    if (document === null) {
+      throw new WebResultError(
+        "job-not-found",
+        `job ${input.jobId} 还没有结果，不能标记人工状态`
+      );
+    }
+    if (document.jobId !== input.jobId || !Array.isArray(document.execution?.cases)) {
+      throw new WebResultError("invalid-result", `job ${input.jobId} 的结果文档不合法`);
+    }
+    const cases = document.execution.cases;
+    const index = cases.findIndex((entry) => entry.caseId === input.caseId);
+    if (index < 0) {
+      throw new WebResultError(
+        "invalid-result",
+        `job ${input.jobId} 的结果中没有用例 ${input.caseId}`
+      );
+    }
+    const at = new Date(input.nowMs ?? Date.now()).toISOString();
+    const reason = (input.reason ?? "").trim();
+    const previous = cases[index]!.manualStatus;
+    const nextCase = { ...cases[index]! };
+    if (input.status === null) delete nextCase.manualStatus;
+    else {
+      nextCase.manualStatus = {
+        status: input.status,
+        reason,
+        at,
+        actor: input.actor ?? null
+      };
+    }
+    cases[index] = nextCase;
+    const changed = JSON.stringify(previous) !== JSON.stringify(nextCase.manualStatus);
+
+    const aggregate = aggregateResultGate(cases);
+    const rank: Record<WebResultGate["result"], number> = {
+      passed: 0,
+      partial: 1,
+      failed: 2,
+      error: 3
+    };
+    const baseDbStatus = document.baseDbStatus ?? document.dbStatus;
+    const persistedResult: WebResultGate["result"] =
+      baseDbStatus === "failed" ? "failed" : baseDbStatus === "partial" ? "partial" : "passed";
+    const reported = document.reportedStatus ?? "passed";
+    const baseStatus = rank[persistedResult] > rank[reported] ? persistedResult : reported;
+    const gate: WebResultGate = {
+      ...aggregate,
+      result: resolveResultStatus(baseStatus, aggregate.result)
+    };
+    const taskStatus = taskStatusFromGate(gate);
+    const dbStatus = persistedTaskStatus(taskStatus);
+    document.gate = gate;
+    document.taskStatus = taskStatus;
+    document.dbStatus = dbStatus;
+    document.execution = { ...document.execution, status: gate.result, cases };
+    const warnings = (document.warnings ?? []).filter(
+      (warning) => !warning.startsWith("manual-status:")
+    );
+    warnings.push(
+      `manual-status: ${input.caseId} ${input.status ?? "cleared"}${reason === "" ? "" : `（${reason}）`}`
+    );
+
+    const task = job.task;
+    if (
+      (task.status === "completed" || task.status === "partial" || task.status === "failed") &&
+      task.status !== dbStatus
+    ) {
+      const updated = await input.store.updateRegressionTask(rootPath, input.jobId, {
+        status: dbStatus,
+        expectStatuses: [task.status]
+      });
+      if (!updated) warnings.push("manual-status-task-failed: 任务状态在写入期间已变化，未覆盖");
+    }
+
+    const originalAggregate = aggregateResultGate(
+      cases.map((entry) => ({ ...entry, manualStatus: undefined }))
+    );
+    const suppressPerCaseResult =
+      document.reportedStatus === "error" ||
+      (document.reportedStatus === "failed" && originalAggregate.result !== "failed");
+    let platformResult = document.platformResult;
+    let resultCsvPath = document.resultCsvPath;
+    let writtenCells = document.writtenCells;
+    let writebackStatus = document.writebackStatus;
+    let writebackError = document.writebackError;
+    const spec = task === null ? null : parseWebJobSpec(task.jobSpec);
+    if (spec === null) {
+      warnings.push("manual-status-writeback-skipped: job spec 不可解析，未写回 Excel");
+    } else {
+      try {
+        const target = await resolveWritebackTarget(input.store, rootPath, spec);
+        await ensureWorkbookCopy(target.originalPath, target.workbookPath);
+        let sourceHeaders: string[] | undefined;
+        try {
+          sourceHeaders = (await analyzeSourceWorkbook(target)).headers;
+        } catch {
+          /* 原件不可解析时按未知归属冻结既有平台列 */
+        }
+        const platform = await writePlatformResults({
+          workbookPath: target.workbookPath,
+          sheetName: target.sheetName,
+          caseIdHeader: target.caseIdHeader,
+          platform: spec.requirements.platform,
+          rows: platformResultRows(
+            cases.filter((entry) => entry.caseId === input.caseId),
+            suppressPerCaseResult
+          ),
+          originalPath: target.originalPath,
+          ...(sourceHeaders === undefined ? {} : { sourceHeaders })
+        });
+        platformResult = {
+          column: platform.column,
+          header: platform.header,
+          appended: platform.appended,
+          layout: platform.layout
+        };
+        warnings.push(...platform.warnings.map((warning) => `platform-result: ${warning}`));
+
+        const pendingIds = new Map<string, string>();
+        const effective = nextCase.manualStatus?.status ?? nextCase.status;
+        const result = await writebackWorkbook({
+          workbookPath: target.workbookPath,
+          assetId: target.asset.id,
+          sheetName: target.sheetName,
+          caseIdHeader: target.caseIdHeader,
+          rows:
+            suppressPerCaseResult && effective === "PASS"
+              ? []
+              : [{ caseId: input.caseId, values: { result: effective } }],
+          originalPath: target.originalPath,
+          allowClearedRefresh: false,
+          lastSystemValue: async (caseId, key) => {
+            const record = await input.store.lastExcelWritebackByCellKey(
+              rootPath,
+              target.asset.id,
+              target.sheetName,
+              caseId,
+              key
+            );
+            return record?.value ?? null;
+          },
+          journal: {
+            begin: async (cell) => {
+              const record = await input.store.recordExcelWriteback({
+                rootPath,
+                assetId: target.asset.id,
+                sheetName: target.sheetName,
+                jobId: input.jobId,
+                caseId: cell.caseId,
+                columnKey: cell.key,
+                cellRef: cell.cellRef,
+                value: cell.value,
+                actor: input.actor ?? null,
+                status: "pending"
+              });
+              pendingIds.set(cell.cellRef, record.id);
+            },
+            confirm: async (cell) => {
+              const id = pendingIds.get(cell.cellRef);
+              if (id === undefined) throw new Error(`找不到 pending 写回日志：${cell.cellRef}`);
+              const confirmed = await input.store.confirmExcelWriteback(rootPath, id);
+              if (!confirmed) throw new Error(`pending 写回日志确认未命中：${cell.cellRef}`);
+            }
+          }
+        });
+        const mergedCells = new Map<string, WritebackCellWrite>();
+        for (const cell of document.writtenCells ?? []) mergedCells.set(cell.cellRef, cell);
+        for (const cell of result.writtenCells) mergedCells.set(cell.cellRef, cell);
+        writtenCells = [...mergedCells.values()];
+        warnings.push(...result.warnings);
+        if (result.failed > 0) {
+          throw new Error(`写回失败 ${result.failed} 格`);
+        }
+        const csvInfo = await detectResultCsvSource(target);
+        if (csvInfo !== null) {
+          const exported = await exportWorkbookCsv(
+            target.workbookPath,
+            webResultCsvPath(rootPath, target.asset.id, input.jobId),
+            {
+              encoding: csvInfo.encoding,
+              lineEnding: csvInfo.lineEnding,
+              bom: csvInfo.bom,
+              sheetName: target.sheetName,
+              overwrite: true,
+              originalPath: target.originalPath
+            }
+          );
+          resultCsvPath = exported.outPath;
+        }
+        writebackStatus = "written";
+        writebackError = null;
+      } catch (error) {
+        writebackStatus = "writeback-failed";
+        writebackError = errorMessage(error);
+        warnings.push(`manual-status-writeback-failed: ${writebackError}`);
+      }
+    }
+
+    document.platformResult = platformResult;
+    document.resultCsvPath = resultCsvPath;
+    document.writtenCells = writtenCells;
+    document.writebackStatus = writebackStatus;
+    document.writebackError = writebackError;
+    document.warnings = warnings;
+    await persistDocument(resultPath, document);
+    return { document, changed, warnings };
+  });
 }
 
 /** 结果文档里的任务记录只读摘要（面板/后续任务详情用；不触网、不写盘）。 */

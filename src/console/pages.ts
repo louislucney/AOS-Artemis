@@ -817,33 +817,63 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
 }
 
 /** 单条 Web 任务详情：只展示已持久化的事实（result.json 不存在时明确「尚无结果」）。 */
+/** 单例人工状态选择器；保存动作由页面底部脚本统一绑定。 */
+function manualStatusCell(
+  entry: WebJobResultDocument["execution"]["cases"][number]
+): string {
+  const current = entry.manualStatus?.status ?? "";
+  const options = [
+    ["", "自动"],
+    ["NOT_IMPL", "未实现"],
+    ["BLOCKED", "阻塞"]
+  ]
+    .map(
+      ([value, label]) =>
+        `<option value="${value}"${value === current ? " selected" : ""}>${label}</option>`
+    )
+    .join("");
+  return `<select data-manual-status="${escapeHtml(entry.caseId)}" aria-label="人工状态">${options}</select>`;
+}
+
 export function renderWebJobPage(data: WebJobPageData): string {
   const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
   const result = data.result;
   const gate = result?.gate;
   const cases = Array.isArray(result?.execution?.cases) ? result.execution.cases : [];
-  const caseRows = cases.map((entry) => [
-    `<code>${escapeHtml(entry.caseId)}</code>`,
-    escapeHtml(entry.name),
-    cBadge({
-      label: entry.status,
-      tone:
-        entry.status === "PASS"
-          ? "success"
-          : entry.status === "SKIP" || entry.status === "UNVERIFIED"
-            ? "warning"
-            : "error"
-    }),
-    entry.durationMs === undefined ? "—" : `${entry.durationMs} ms`,
-    entry.failureReason === undefined
-      ? entry.failureStep === undefined
-        ? "—"
-        : escapeHtml(entry.failureStep)
-      : `${escapeHtml(entry.failureStep ?? "")}${
-          entry.failureStep === undefined ? "" : "："
-        }${escapeHtml(entry.failureReason)}`,
-    entry.traceId === undefined ? "—" : `<code>${escapeHtml(entry.traceId)}</code>`
-  ]);
+  const canManualStatus =
+    data.capabilities?.actions !== false && data.capabilities?.scopes?.verdicts !== false;
+  const caseRows = cases.map((entry) => {
+    const effective = entry.manualStatus?.status ?? entry.status;
+    const effectiveLabel =
+      effective === "NOT_IMPL" ? "未实现" : effective === "BLOCKED" ? "阻塞" : effective;
+    const row = [
+      `<code>${escapeHtml(entry.caseId)}</code>`,
+      escapeHtml(entry.name),
+      cBadge({
+        label: effectiveLabel,
+        tone:
+          effective === "PASS"
+            ? "success"
+            : effective === "SKIP" || effective === "UNVERIFIED"
+              ? "warning"
+              : effective === "NOT_IMPL" || effective === "BLOCKED"
+                ? "warning"
+                : "error",
+        title: entry.manualStatus?.reason === undefined ? undefined : entry.manualStatus.reason
+      }),
+      entry.durationMs === undefined ? "—" : `${entry.durationMs} ms`,
+      entry.failureReason === undefined
+        ? entry.failureStep === undefined
+          ? "—"
+          : escapeHtml(entry.failureStep)
+        : `${escapeHtml(entry.failureStep ?? "")}${
+            entry.failureStep === undefined ? "" : "："
+          }${escapeHtml(entry.failureReason)}`,
+      entry.traceId === undefined ? "—" : `<code>${escapeHtml(entry.traceId)}</code>`
+    ];
+    if (canManualStatus) row.push(manualStatusCell(entry));
+    return row;
+  });
   const evidence = Array.isArray(result?.evidence) ? result.evidence : [];
   const evidenceHtml =
     evidence.length === 0
@@ -954,6 +984,8 @@ export function renderWebJobPage(data: WebJobPageData): string {
                 ? '<span class="muted">尚无结果</span>'
                 : `${escapeHtml(gate.result)}（通过 ${gate.passed} / 失败 ${gate.failed} / 错误 ${gate.errors} / 跳过 ${gate.skipped}${
                     (gate.unverified ?? 0) > 0 ? ` / 未验证 ${gate.unverified}` : ""
+                  }${(gate.notImplemented ?? 0) > 0 ? ` / 未实现 ${gate.notImplemented}` : ""}${
+                    (gate.blocked ?? 0) > 0 ? ` / 阻塞 ${gate.blocked}` : ""
                   }）`,
               writeback
             ]
@@ -972,7 +1004,9 @@ export function renderWebJobPage(data: WebJobPageData): string {
           result === null
             ? '<p id="job-result-empty" class="muted">尚无结果：执行机上传前不展示逐用例结果，也不虚构设备/包信息。</p>'
             : cTable({
-                columns: ["用例", "名称", "结果", "耗时", "失败信息", "trace"],
+                columns: canManualStatus
+                  ? ["用例", "名称", "结果", "耗时", "失败信息", "trace", "人工状态"]
+                  : ["用例", "名称", "结果", "耗时", "失败信息", "trace"],
                 rows: caseRows,
                 caption: "逐用例结果",
                 empty: "结果中没有用例"
@@ -985,7 +1019,8 @@ export function renderWebJobPage(data: WebJobPageData): string {
           `<p><strong>写回</strong>：${writeback}</p>`,
           warnings === "" ? "" : `<p><strong>告警</strong>：</p>${warnings}`
         ].join("\n")
-      })
+      }),
+      `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};var job=${JSON.stringify(data.task.id).replace(/</g, "\\u003c")};document.querySelectorAll("select[data-manual-status]").forEach(function(node){node.addEventListener("change",function(){var status=node.value;var reason=status===""?"":(window.prompt("原因（可选）","")||"");var body={project:root,status:status,reason:reason};if(host)body.host=host;fetch("/panel/api/jobs/"+encodeURIComponent(job)+"/cases/"+encodeURIComponent(node.getAttribute("data-manual-status"))+"/status",{method:"POST",headers:{"Content-Type":"application/json","X-AOS-Console":"1"},body:JSON.stringify(body)}).then(function(response){return response.json().then(function(payload){if(!response.ok)throw new Error((payload&&payload.error)||response.status);location.reload();});}).catch(function(error){window.alert("人工状态保存失败："+error);node.value=node.getAttribute("data-current")||"";});});node.setAttribute("data-current",node.value);});})();</script>`
     ].join("\n")
   });
 }

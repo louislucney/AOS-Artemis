@@ -474,7 +474,13 @@ test("job detail shows device, package, cases, evidence links and writeback stat
               failureStep: "点击登录",
               failureReason: "提示文案不一致",
               traceId: "trace-2",
-              screenshotPaths: ["screens/TC-002.png"]
+              screenshotPaths: ["screens/TC-002.png"],
+              manualStatus: {
+                status: "BLOCKED",
+                reason: "等待后端环境",
+                at: "2026-10-29T00:09:00.000Z",
+                actor: "tester"
+              }
             }
           ],
           startedAt: "2026-10-29T00:05:00.000Z",
@@ -518,6 +524,10 @@ test("job detail shows device, package, cases, evidence links and writeback stat
   assert.match(html, /TC-001/);
   assert.match(html, /TC-002/);
   assert.match(html, /提示文案不一致/);
+  assert.match(html, /人工状态/);
+  assert.match(html, /<select data-manual-status="TC-002"/);
+  assert.match(html, /阻塞/);
+  assert.match(html, /等待后端环境/);
   assert.match(html, /trace-1/);
   assert.match(html, /\/panel\/artifact\?project=/);
   assert.match(html, /已写回/);

@@ -128,6 +128,10 @@ test("panel actions: 开关关闭 404 / 非 POST 405 / body 非对象 400", asyn
   const nullBody = await handlePanelActionRequest(request({ body: null }), deps);
   assert.equal(nullBody.status, 400);
 
+  assert.equal(
+    panelRequiredRoleForPath("/panel/api/jobs/job-1/cases/TC-1/status"),
+    "maintainer"
+  );
   assert.equal(panelActionsEnabled({}), true);
   assert.equal(panelActionsEnabled({ AOS_PANEL_ACTIONS: "0" }), false);
 });

@@ -13,7 +13,7 @@ import {
 } from "./writeback.js";
 import { findUnsupportedParts, lostParts, readXlsxParts } from "./xlsx-parts.js";
 
-export type PlatformResultStatus = "PASS" | "FAIL" | "SKIP" | "ERROR" | "UNVERIFIED";
+export type PlatformResultStatus = "PASS" | "FAIL" | "SKIP" | "ERROR" | "UNVERIFIED" | "NOT_IMPL" | "BLOCKED";
 
 export type PlatformResultPlatform = "android" | "ios";
 
@@ -26,7 +26,15 @@ export const PLATFORM_RESULT_COLUMNS = [
   { platform: "ios", header: "IOS Result" }
 ] as const satisfies ReadonlyArray<{ platform: PlatformResultPlatform; header: string }>;
 
-const PLATFORM_RESULT_STATUS_VALUES = new Set(["PASS", "FAIL", "SKIP", "ERROR", "UNVERIFIED"]);
+const PLATFORM_RESULT_STATUS_VALUES = new Set([
+  "PASS",
+  "FAIL",
+  "SKIP",
+  "ERROR",
+  "UNVERIFIED",
+  "NOT_IMPL",
+  "BLOCKED"
+]);
 
 function isPlatformResultStatus(value: string): boolean {
   return PLATFORM_RESULT_STATUS_VALUES.has(value.trim().toUpperCase());
