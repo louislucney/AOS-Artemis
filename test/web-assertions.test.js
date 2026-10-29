@@ -1818,7 +1818,7 @@ test("classify: 导航目标 hard visible / 否定导航 notVisible", () => {
     ["進入商品詳情頁", "商品詳情頁"],
     ["前往選擇門市", "選擇門市"],
     ["回到首頁", "首頁"],
-    ["到達門市", "門市"],
+    ["到達MOP門市", "MOP門市"],
     ["直達首頁", "首頁"]
   ];
   const negative = [
@@ -1860,9 +1860,19 @@ test("classify: 关闭/消失/隐藏 结尾 hard notVisible；非结尾不匹配
       "3. 錯誤訊息消失",
       "4. 按鈕隱藏",
       "5. 提示消失",
-      "6. 點擊後關閉彈窗"
+      "6. 點擊後關閉彈窗",
+      "7. 取消後彈窗關閉",
+      "8. 彈窗已關閉",
+      "9. 錯誤訊息已消失",
+      "10. 彈窗關閉了",
+      "11. 彈窗沒有消失",
+      "12. 按鈕未隱藏",
+      "13. 彈窗不會消失",
+      "14. 保留彈窗不關閉",
+      "15. 到達門市",
+      "16. 返回頁面"
     ].join("\n"),
-    steps: ["a", "b", "c", "d", "e", "f"],
+    steps: Array.from({ length: 16 }, (_, index) => `s${index}`),
     caseId: "TC_CLOSURE_NEG"
   });
   const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
@@ -1871,15 +1881,35 @@ test("classify: 关闭/消失/隐藏 结尾 hard notVisible；非结尾不匹配
   assert.deepEqual(byStep.get(3), [{ type: "notVisible", text: "錯誤訊息" }]);
   assert.deepEqual(byStep.get(4), [{ type: "notVisible", text: "按鈕" }]);
   assert.deepEqual(byStep.get(5), [{ type: "notVisible", text: "提示" }]);
-  assert.equal(
-    byStep.get(6).some((assertion) => assertion.type === "notVisible"),
-    false,
-    "非结尾关闭不匹配"
-  );
+  assert.deepEqual(byStep.get(7), [{ type: "notVisible", text: "彈窗" }]);
+  assert.deepEqual(byStep.get(8), [{ type: "notVisible", text: "彈窗" }]);
+  assert.deepEqual(byStep.get(9), [{ type: "notVisible", text: "錯誤訊息" }]);
+  assert.deepEqual(byStep.get(10), [{ type: "notVisible", text: "彈窗" }]);
+  for (const step of [6, 11, 12, 13, 14]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "notVisible"),
+      false,
+      `step ${step} 不应 notVisible`
+    );
+  }
+  for (const step of [15, 16]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
   assert.equal(
     byStep.get(6).some((assertion) => assertion.type === "visible"),
     false
   );
+  const clean = classifyExpectedResult({
+    expected: "1. 彈窗已經消失",
+    steps: ["a"],
+    caseId: "TC_CLOSURE_HIGH"
+  });
+  assert.equal(clean.confidence, "high");
+  assert.deepEqual(clean.steps, [{ step: 1, assert: [{ type: "notVisible", text: "彈窗" }] }]);
 });
 
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
