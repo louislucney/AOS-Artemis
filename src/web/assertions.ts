@@ -405,28 +405,37 @@ function extractFieldList(clause: string): FieldList | null {
   return { labels };
 }
 
-function negativeLabelValue(text: string): { label: string } | { manual: true } | null {
+function negativeLabelValue(text: string): { labels: string[] } | { manual: true } | null {
+  if (/(?:未|不|沒有|沒|未有)(?:成功|完成)/.test(text)) return { manual: true };
   const match = text.match(
-    /(?:未|不|沒有|沒|未有)(?:包含|支援|支持|展示|提示|成功|完成)(?:了)?\s*(.*)$/
+    /(?:未|不|沒有|沒|未有)(?:包含|支援|支持|展示|提示)(?:了)?\s*(.*)$/
   );
   if (!match) return null;
-  const label = (match[1] ?? "")
+  const raw = (match[1] ?? "")
     .replace(/^[\s：:，,]+/, "")
     .replace(/[\s。；;]+$/g, "")
     .trim();
-  if (label === "") return null;
-  if (
-    VAGUE.test(label) ||
-    LABEL_STATE.test(label) ||
-    LABEL_PROSE.test(label) ||
-    LABEL_REJECT.test(label) ||
-    /^[)）(（]/.test(label) ||
-    !/[A-Za-z0-9\u4e00-\u9fff]/.test(label) ||
-    [...label].length > 30
-  ) {
-    return { manual: true };
+  if (raw === "") return null;
+  const parts = raw.split("、").map((part) => part.trim()).filter((part) => part !== "");
+  const labels: string[] = [];
+  for (const part of parts) {
+    const label = part.replace(/^的/, "").trim();
+    if (label === "") return { manual: true };
+    if (
+      VAGUE.test(label) ||
+      LABEL_STATE.test(label) ||
+      LABEL_PROSE.test(label) ||
+      LABEL_REJECT.test(label) ||
+      /^[)）(（]/.test(label) ||
+      !/[A-Za-z0-9\u4e00-\u9fff]/.test(label) ||
+      [...label].length > 30
+    ) {
+      return { manual: true };
+    }
+    labels.push(label);
   }
-  return { label };
+  if (labels.length === 0) return { manual: true };
+  return { labels };
 }
 
 function displayLabel(masked: string): { label: string; negative: boolean } | null {
@@ -655,7 +664,7 @@ function classifyClause(
         };
       }
       return {
-        assertions: [{ type: "notVisible", text: negativeLabel.label }],
+        assertions: negativeLabel.labels.map((label) => ({ type: "notVisible", text: label })),
         soft: false,
         manual: null,
         unresolved: false

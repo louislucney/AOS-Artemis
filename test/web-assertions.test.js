@@ -1223,6 +1223,38 @@ test("classify: 不可以：刪除 → notVisible 刪除", () => {
   ]);
 });
 
+test("classify: 未成功/未完成动作降 manual，不产出 notVisible", () => {
+  for (const expected of ["1. 未成功登入", "1. 未完成付款", "1. 不成功登入"]) {
+    const result = classifyExpectedResult({ expected, steps: ["a"], caseId: "TC_FAILED_ACTION" });
+    const assertions = result.steps.flatMap((entry) => entry.assert);
+    assert.ok(!assertions.some((entry) => entry.type === "notVisible"), expected);
+    assert.equal(result.confidence, "low", expected);
+  }
+});
+
+test("classify: 不支援/未包含 多标签逐个 notVisible，去除前导的", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 不支援支付寶、微信", "2. 不支援的支付方式"].join("\n"),
+    steps: ["a", "b"],
+    caseId: "TC_NEG_LIST"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [
+    { type: "notVisible", text: "支付寶" },
+    { type: "notVisible", text: "微信" }
+  ]);
+  assert.deepEqual(byStep.get(2), [{ type: "notVisible", text: "支付方式" }]);
+});
+
+test("classify: 不需要是正向描述，不产 notVisible", () => {
+  const result = classifyExpectedResult({
+    expected: "1. 不需要登入",
+    steps: ["a"],
+    caseId: "TC_NOT_NEEDED"
+  });
+  assert.ok(!result.steps.flatMap((entry) => entry.assert).some((entry) => entry.type === "notVisible"));
+});
+
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
   const { filePath } = await makeWorkbook(t);
   const before = await loadSheet(filePath);
