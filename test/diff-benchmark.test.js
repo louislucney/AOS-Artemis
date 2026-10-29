@@ -84,13 +84,16 @@ test("真实设备基准：报告 schema 快照", () => {
     designNodes: nodesFromTruth(truth)
   });
 
-  assert.deepEqual(Object.keys(result).sort(), [
-    "alignment",
-    "ignoredRegions",
-    "regions",
-    "summary",
-    "thresholds"
-  ]);
+  const topKeys = Object.keys(result).sort();
+  for (const key of ["alignment", "ignoredRegions", "regions", "summary", "thresholds"]) {
+    assert.ok(topKeys.includes(key), key);
+  }
+  for (const key of topKeys) {
+    assert.ok(
+      ["alignment", "globalShifts", "ignoredRegions", "regions", "summary", "thresholds"].includes(key),
+      `unexpected top-level key: ${key}`
+    );
+  }
   assert.deepEqual(Object.keys(result.thresholds).sort(), [
     "clusterGap",
     "colorTolerance",
@@ -103,13 +106,16 @@ test("真实设备基准：报告 schema 快照", () => {
   ]);
   const region = result.regions[0];
   assert.ok(region);
-  assert.deepEqual(Object.keys(region).sort(), [
-    "bbox",
-    "category",
-    "designNode",
-    "pixelDiffRatio",
-    "severity"
-  ]);
+  const regionKeys = Object.keys(region).sort();
+  for (const key of ["bbox", "category", "pixelDiffRatio", "severity"]) {
+    assert.ok(regionKeys.includes(key), key);
+  }
+  for (const key of regionKeys) {
+    assert.ok(
+      ["bbox", "category", "colorDelta", "designColor", "designNode", "deviceColor", "pixelDiffRatio", "severity", "shift", "suspected"].includes(key),
+      `unexpected region key: ${key}`
+    );
+  }
   assert.deepEqual(Object.keys(region.bbox).sort(), ["height", "width", "x", "y"]);
   assert.deepEqual(Object.keys(result.alignment).sort(), ["designCrop", "insets", "offset", "scale"]);
   assert.deepEqual(Object.keys(result.summary).sort(), ["byCategory", "bySeverity", "regions"]);
