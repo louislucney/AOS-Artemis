@@ -246,7 +246,7 @@ test("classify: 后台/刷新/GPS/排序 → manual；否定引号仍 → notVis
 
 test("classify: 高确定性 + soft text 混合 → medium（不能算全部可验证）", () => {
   const result = classifyExpectedResult({
-    expected: "1. 显示“首页”，停留在首页",
+    expected: "1. 显示“首页”，内容如下",
     steps: ["打开应用"],
     caseId: "TC_MIXED_SOFT"
   });
@@ -610,7 +610,7 @@ test("classify: 真实样例回归（非 manual）", () => {
       steps: ["打开"],
       check: (byStep) => {
         assert.deepEqual(byStep.get(1), [
-          { type: "text", text: "MOP首頁" },
+          { type: "visible", text: "MOP首頁" },
           { type: "visible", text: "MOP intro" }
         ]);
       }
@@ -1093,9 +1093,181 @@ test("classify: 模糊标签剔除后保留合法字段", () => {
   assert.deepEqual(result.manual, []);
 });
 
-test("classify: 已用/最後更新/批量刪除 字段仍 visible", () => {
+test("classify: 指令/动作短语不升 concrete", () => {
+  const clauses = [
+    "檢查發票資訊",
+    "核對訂單金額",
+    "查看訂單詳情",
+    "再次確認",
+    "清除篩選",
+    "修改數量",
+    "刪除商品",
+    "移動物件",
+    "選取日期",
+    "導向首頁",
+    "等待店員確認"
+  ];
   const result = classifyExpectedResult({
-    expected: ["1. 顯示已用S Dollar、已用S Coupon", "2. 顯示最後更新、批量刪除"].join("\n"),
+    expected: clauses.map((value, index) => `${index + 1}. ${value}`).join("\n"),
+    steps: clauses.map((_, index) => `s${index}`),
+    caseId: "TC_IMPERATIVE"
+  });
+  for (const [step, assertions] of result.steps.map((entry) => [entry.step, entry.assert])) {
+    assert.equal(
+      assertions.some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+});
+
+test("classify: 结构化字段的英文谓词/已状态降 manual", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 內容：Load failed",
+      "2. 標題：Price is correct",
+      "3. 按鈕：Loading",
+      "4. 標題：已成功提交訂單完成付款",
+      "5. 按鈕：我知道了"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_STRUCT_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.deepEqual(byStep.get(5), [{ type: "visible", text: "我知道了" }]);
+});
+
+test("classify: 字段列表含 會員/上傳時間/有效期限/所在門市 仍 visible", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 顯示訂單編號、會員名稱、金額",
+      "2. 顯示會員載具、發票號碼、金額",
+      "3. 顯示商品名稱、數量、上傳時間",
+      "4. 顯示商品名稱、有效期限、數量",
+      "5. 顯示所在門市、金額、數量"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_FIELD_NOUNS"
+  });
+  for (const step of [1, 2, 3, 4, 5]) {
+    const assertions = result.steps.find((entry) => entry.step === step).assert;
+    assert.equal(assertions.length, 3, `step ${step}`);
+    assert.ok(assertions.every((assertion) => assertion.type === "visible"), `step ${step}`);
+  }
+});
+
+test("classify: 展示状态/英文谓词/中段無 不升 visible", () => {
+  const blocked = [
+    "顯示已成功提交訂單完成付款",
+    "顯示Load failed",
+    "顯示Price is correct",
+    "顯示正在載入",
+    "商品無現貨",
+    "優惠券無效",
+    "帳號無權限",
+    "按鈕無法使用",
+    "Sold out",
+    "Out of stock",
+    "Unavailable",
+    "Disabled",
+    "Expired"
+  ];
+  const result = classifyExpectedResult({
+    expected: blocked.map((value, index) => `${index + 1}. ${value}`).join("\n"),
+    steps: blocked.map((_, index) => `s${index}`),
+    caseId: "TC_DISPLAY_STATUS"
+  });
+  for (const [step, assertions] of result.steps.map((entry) => [entry.step, entry.assert])) {
+    assert.equal(
+      assertions.some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  const noSugar = classifyExpectedResult({
+    expected: "1. 無糖",
+    steps: ["a"],
+    caseId: "TC_NO_SUGAR"
+  });
+  assert.deepEqual(noSugar.steps, [{ step: 1, assert: [{ type: "visible", text: "無糖" }] }]);
+});
+
+test("classify: 有/在/為/了的谓词短句不升 visible；OK/Done/Ready 仍 visible", () => {
+  const blocked = [
+    "有現貨",
+    "此商品有現貨",
+    "有庫存",
+    "商品在購物車",
+    "在首頁",
+    "購物車有商品",
+    "價格為100元",
+    "總金額為500元",
+    "訂單編號為A123",
+    "商品到貨了"
+  ];
+  const result = classifyExpectedResult({
+    expected: blocked.map((value, index) => `${index + 1}. ${value}`).join("\n"),
+    steps: blocked.map((_, index) => `s${index}`),
+    caseId: "TC_PREDICATE_STATUS"
+  });
+  for (const [step, assertions] of result.steps.map((entry) => [entry.step, entry.assert])) {
+    assert.equal(
+      assertions.some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  for (const [index, label] of ["OK", "Done", "Ready"].entries()) {
+    const one = classifyExpectedResult({
+      expected: `1. 顯示${label}`,
+      steps: ["a"],
+      caseId: `TC_BUTTON_${index}`
+    });
+    assert.deepEqual(one.steps, [{ step: 1, assert: [{ type: "visible", text: label }] }]);
+  }
+});
+
+test("classify: 名词字段单行也 visible（會員名稱/有效期限/所在門市/上傳時間/已用購物金）", () => {
+  const labels = ["會員名稱", "有效期限", "所在門市", "上傳時間", "已用購物金", "已用點數"];
+  const result = classifyExpectedResult({
+    expected: labels.map((value, index) => `${index + 1}. ${value}`).join("\n"),
+    steps: labels.map((_, index) => `s${index}`),
+    caseId: "TC_NOUN_SUFFIX"
+  });
+  for (const [index, label] of labels.entries()) {
+    const assertions = result.steps.find((entry) => entry.step === index + 1).assert;
+    assert.deepEqual(assertions, [{ type: "visible", text: label }]);
+  }
+});
+
+test("classify: 字段列表中的名词含动作字仍 visible", () => {
+  const result = classifyExpectedResult({
+    expected: "1. 顯示會員名稱、修改時間、金額",
+    steps: ["a"],
+    caseId: "TC_FIELD_NOUN_ACTION"
+  });
+  assert.deepEqual(result.steps, [
+    {
+      step: 1,
+      assert: [
+        { type: "visible", text: "會員名稱" },
+        { type: "visible", text: "修改時間" },
+        { type: "visible", text: "金額" }
+      ]
+    }
+  ]);
+});
+
+test("classify: 已用/最後更新 字段仍 visible；批量刪除 是动作", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 顯示已用S Dollar、已用S Coupon", "2. 顯示最後更新、金額、批量刪除"].join("\n"),
     steps: ["a", "b"],
     caseId: "TC_STATE_NOUN"
   });
@@ -1106,7 +1278,7 @@ test("classify: 已用/最後更新/批量刪除 字段仍 visible", () => {
   ]);
   assert.deepEqual(byStep.get(2), [
     { type: "visible", text: "最後更新" },
-    { type: "visible", text: "批量刪除" }
+    { type: "visible", text: "金額" }
   ]);
 });
 
@@ -1265,6 +1437,354 @@ test("classify: 不需要是正向描述，不产 notVisible", () => {
     caseId: "TC_NOT_NEEDED"
   });
   assert.ok(!result.steps.flatMap((entry) => entry.assert).some((entry) => entry.type === "notVisible"));
+});
+
+test("classify: 結構化 UI 字段（標題/內容/按鈕）硬 visible", () => {
+  const legal =
+    "因應法規,僅可提供內用杯,歡迎租借循環杯!/自帶環保杯顧客,請至櫃檯排隊並提供取餐編號,退還自帶杯優惠";
+  const result = classifyExpectedResult({
+    expected: [
+      "1.彈出提醒彈窗",
+      "i.標題：内用請入座，再點餐",
+      `ii.内容：${legal}`,
+      "iii.按鈕：我知道了",
+      "按鈕 [瀏覽歷史訂單]",
+      "按鈕[X]"
+    ].join("\n"),
+    steps: ["a"],
+    caseId: "TC_STRUCTURED"
+  });
+  assert.deepEqual(result.steps, [
+    {
+      step: 1,
+      assert: [
+        { type: "visible", text: "提醒" },
+        { type: "visible", text: "内用請入座，再點餐" },
+        { type: "visible", text: legal },
+        { type: "visible", text: "我知道了" },
+        { type: "visible", text: "瀏覽歷史訂單" },
+        { type: "visible", text: "X" }
+      ]
+    }
+  ]);
+  assert.equal(result.confidence, "high");
+});
+
+test("classify: 結構化 UI 字段空值/超长落 manual", () => {
+  const long = "長".repeat(201);
+  const result = classifyExpectedResult({
+    expected: ["1. 標題：", `2. 內容：${long}`, "3. 按鈕[]"].join("\n"),
+    steps: ["a", "b", "c"],
+    caseId: "TC_STRUCTURED_BAD"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3]) {
+    assert.equal(byStep.get(step)[0].type, "manual");
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false
+    );
+  }
+  assert.match(result.manual[0].reason, /为空/);
+  assert.match(result.manual[1].reason, /过长/);
+});
+
+test("classify: 具体 UI 标签升级硬 visible", () => {
+  const labels = [
+    "MOP首頁",
+    "MOP 首頁",
+    "取餐點",
+    "單品頁",
+    "圖片",
+    "地圖",
+    "訂單日期/時間",
+    "訂單編號",
+    "縂金額",
+    "貨品信息",
+    "訂單總金額",
+    "二維條碼",
+    "發票號碼/兌獎",
+    "發票形式(載具/統編號碼)",
+    "單品名稱/飲料Size/售價/數量/單品小計金額",
+    "(若有)循環杯租借"
+  ];
+  const expected = labels.map((label, index) => `${index + 1}. ${label}`).join("\n");
+  const result = classifyExpectedResult({
+    expected,
+    steps: labels.map((_, index) => `s${index}`),
+    caseId: "TC_CONCRETE_LABELS"
+  });
+  assert.deepEqual(
+    result.steps,
+    labels.map((label, index) => ({
+      step: index + 1,
+      assert: [{ type: "visible", text: label }]
+    }))
+  );
+  assert.equal(result.confidence, "high");
+});
+
+test("classify: 动作/导航/状态短句不升级具体标签", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 彈窗關閉",
+      "2. 停留在MOP首頁",
+      "3. 返回到MOP首頁",
+      "4. 直接跳轉到MOP首頁",
+      "5. 登入帳號",
+      "6. 成功進入首頁",
+      "7. 功能正常",
+      "8. 可滑動查看",
+      "9. 頁面入口正常跳轉",
+      "10. 篩選功能正常",
+      "11. 開關可正常切換狀態",
+      "12. 交易未進入確認頁",
+      "13. 若S Dollar超支",
+      "14. 直接加入購物車(連同客製化)",
+      "15. 填寫手機號",
+      "16. 上傳身份證"
+    ].join("\n"),
+    steps: Array.from({ length: 16 }, (_, index) => `s${index}`),
+    caseId: "TC_CONCRETE_SOFT"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= 16; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 否定行为短语不升级具体标签", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 彈窗消失",
+      "2. 錯誤訊息消失",
+      "3. 按鈕隱藏",
+      "4. 提示消失",
+      "5. 沒按鈕",
+      "6. 沒取餐點",
+      "7. 無按鈕",
+      "8. 隱藏",
+      "9. 消失"
+    ].join("\n"),
+    steps: Array.from({ length: 9 }, (_, index) => `s${index}`),
+    caseId: "TC_NEG_CONCRETE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= 9; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 状态/英文谓词不升级具体标签", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 已出貨",
+      "2. 已取消",
+      "3. 待付款",
+      "4. 待確認",
+      "5. 載入中",
+      "6. 處理中",
+      "7. 無庫存",
+      "8. 庫存不足",
+      "9. 已達上限",
+      "10. (若有)無庫存",
+      "11. Price is correct",
+      "12. Load failed",
+      "13. Display correctly"
+    ].join("\n"),
+    steps: Array.from({ length: 13 }, (_, index) => `s${index}`),
+    caseId: "TC_STATUS_CONCRETE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= 13; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 结构化字段否定/模糊/泛前缀/非简体", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 按鈕：不顯示",
+      "2. 內容：後台配置的文案",
+      "3. 彈窗標題：X",
+      "4. 說明：X",
+      "5. 按钮[X]",
+      "6. 标题：X",
+      "7. （A1"
+    ].join("\n"),
+    steps: Array.from({ length: 7 }, (_, index) => `s${index}`),
+    caseId: "TC_STRUCTURED_GUARD"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.equal(byStep.get(1)[0].type, "manual");
+  assert.equal(byStep.get(2)[0].type, "manual");
+  for (const step of [3, 4, 7]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.deepEqual(byStep.get(5), [{ type: "visible", text: "X" }]);
+  assert.deepEqual(byStep.get(6), [{ type: "visible", text: "X" }]);
+  assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 简体 无 特定否定不升 concrete；無障礙保留", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 无按钮", "2. 无库存", "3. 无优惠", "4. 无结果", "5. 無障礙"].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_WU_NEG"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.deepEqual(byStep.get(5), [{ type: "visible", text: "無障礙" }]);
+});
+
+test("classify: 無 prefix 状态拒绝；無障礙/無線網路/無限次使用保留", () => {
+  const negatives = ["無權限", "無效卡號", "無網路連線", "無此優惠", "無紀錄", "無回應", "無貨"];
+  const positives = ["無障礙", "無線網路", "無限次使用"];
+  const expected = [...negatives, ...positives]
+    .map((value, index) => `${index + 1}. ${value}`)
+    .join("\n");
+  const result = classifyExpectedResult({
+    expected,
+    steps: [...negatives, ...positives].map((_, index) => `s${index}`),
+    caseId: "TC_WU_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= negatives.length; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  for (let step = negatives.length + 1; step <= negatives.length + positives.length; step += 1) {
+    assert.ok(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      `step ${step} 应为 visible`
+    );
+  }
+});
+
+test("classify: 已+状态复合词拒绝；售完商品/暫停服務通知保留", () => {
+  const states = ["已領取優惠券", "已寄出商品", "已發送通知", "已退回款項", "已驗證帳號", "已綁定卡片"];
+  const positives = ["售完商品", "暫停服務通知"];
+  const expected = [...states, ...positives]
+    .map((value, index) => `${index + 1}. ${value}`)
+    .join("\n");
+  const result = classifyExpectedResult({
+    expected,
+    steps: [...states, ...positives].map((_, index) => `s${index}`),
+    caseId: "TC_YI_COMPOUND"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= states.length; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  for (let step = states.length + 1; step <= states.length + positives.length; step += 1) {
+    assert.ok(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      `step ${step} 应为 visible`
+    );
+  }
+});
+
+test("classify: 规则化 已+状态拒绝；已用S... 保留", () => {
+  const states = [
+    "已退款",
+    "已取貨",
+    "已送達",
+    "已簽收",
+    "已結帳",
+    "已配送",
+    "已審核",
+    "已排隊",
+    "已叫號",
+    "已開通",
+    "已核銷",
+    "已成立",
+    "已生效",
+    "已用完",
+    "售完",
+    "暫停服務",
+    "暫停"
+  ];
+  const expected = [
+    ...states.map((state, index) => `${index + 1}. ${state}`),
+    `${states.length + 1}. 已用S Dollar`,
+    `${states.length + 2}. 已用S Coupon`
+  ].join("\n");
+  const result = classifyExpectedResult({
+    expected,
+    steps: Array.from({ length: states.length + 2 }, (_, index) => `s${index}`),
+    caseId: "TC_YI_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= states.length; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.deepEqual(byStep.get(states.length + 1), [
+    { type: "visible", text: "已用S Dollar" }
+  ]);
+  assert.deepEqual(byStep.get(states.length + 2), [
+    { type: "visible", text: "已用S Coupon" }
+  ]);
+});
+
+test("classify: 结构化字段状态/否定/模糊落 manual", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 按鈕：不顯示",
+      "2. 按鈕：載入中",
+      "3. 內容：售完",
+      "4. 標題：已退款",
+      "5. 按鈕：我知道了",
+      "6. 標題：內用請入座"
+    ].join("\n"),
+    steps: Array.from({ length: 6 }, (_, index) => `s${index}`),
+    caseId: "TC_STRUCTURED_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(byStep.get(step)[0].type, "manual");
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false
+    );
+  }
+  assert.deepEqual(byStep.get(5), [{ type: "visible", text: "我知道了" }]);
+  assert.deepEqual(byStep.get(6), [{ type: "visible", text: "內用請入座" }]);
 });
 
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
