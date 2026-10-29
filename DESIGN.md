@@ -3390,5 +3390,5 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
   - 有但任一 soft `text` 未被 `assertVisible` 文本包含/被包含 → `soft-assertion-uncovered`；
   - 全部覆盖且无 manual/ambiguous、`assertionCount>0` → PASS。
   - `high` 文档仍走原硬断言路径；不因覆盖放宽 manual/ambiguous。
-- **边界**：只覆盖 `text`（visible/notVisible/id/变量/calc/count 不参与文本覆盖）；只扫顶层 flow、不展开 subflows；包含匹配是归一化后的双向 substring，可能偏宽，后续可收紧到精确/分段。
-- **测试**：`test/web-verdicts.test.js`（覆盖→PASS、未覆盖→soft-assertion-uncovered、无 flow assertions 仍 soft-assertion-only）；`test/web-executors.test.js` 断言 assertions 提取。
+- **边界**：只覆盖 `text`（visible/notVisible/id/变量/calc/count 不参与文本覆盖）；扫描顶层 flow + `runFlow` 引用的子流程（深度 ≤4、路径必须在 flowsDir、循环/越界保护）；其他形式（YAML 锚点/变量化路径）不展开；包含匹配是归一化后的双向 substring，可能偏宽，后续可收紧到精确/分段。
+- **测试**：`test/web-verdicts.test.js`（覆盖→PASS、未覆盖→soft-assertion-uncovered、无 flow assertions 仍 soft-assertion-only）；`test/web-executors.test.js` 断言 assertions 提取、runFlow 子流程计入、越界/循环不放大。

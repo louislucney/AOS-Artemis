@@ -150,7 +150,7 @@ async function listTopLevelFlows(dir: string): Promise<string[]> {
 const HARD_ASSERTION_LINE = /^\s*-\s*assert(?:Visible|NotVisible|True|Condition)\b/gm;
 const ASSERTION_TEXT_LINE = /^\s*-\s*(assertVisible|assertNotVisible)\s*:\s*(.+?)\s*$/gm;
 
-/** 只扫顶层 flow 文件本身：Maestro 子流程（subflows/）不展开、不计数。 */
+/** 统计 flow 内容里的硬断言命令条数（含后续 runFlow 引用的子流程）。 */
 function countHardAssertions(content: string): number {
   return content.match(HARD_ASSERTION_LINE)?.length ?? 0;
 }
@@ -173,6 +173,57 @@ export function parseFlowAssertions(content: string): FlowAssertion[] {
     });
   }
   return out;
+}
+
+const RUN_FLOW_LINE = /^\s*-\s*runFlow\s*:\s*(.+?)\s*$/gm;
+const MAX_RUN_FLOW_DEPTH = 4;
+
+function runFlowPath(raw: string): string | null {
+  let value = raw.trim();
+  if (value === "" || value.includes("${")) return null;
+  if (value.startsWith("{")) {
+    const file = /\b(?:file|path)\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/.exec(value);
+    value = (file?.[1] ?? file?.[2] ?? file?.[3] ?? "").trim();
+  }
+  value = value.replace(/^["']|["']$/g, "").trim();
+  return value === "" ? null : value;
+}
+
+/** 顶层 flow + 被 runFlow 引用的子流程（有界深度/路径越界/循环保护）。 */
+async function collectFlowAssertions(
+  file: string,
+  flowsDir: string,
+  seen: Set<string>,
+  depth: number
+): Promise<{ count: number; assertions: FlowAssertion[] }> {
+  const resolved = path.resolve(file);
+  if (depth > MAX_RUN_FLOW_DEPTH || seen.has(resolved) || !isInside(flowsDir, resolved)) {
+    return { count: 0, assertions: [] };
+  }
+  seen.add(resolved);
+  let content: string;
+  try {
+    content = await readFile(resolved, "utf-8");
+  } catch {
+    return { count: 0, assertions: [] };
+  }
+  let count = countHardAssertions(content);
+  const assertions = parseFlowAssertions(content);
+  for (const match of content.matchAll(RUN_FLOW_LINE)) {
+    const relative = runFlowPath(match[1] ?? "");
+    if (relative === null) continue;
+    const next = path.resolve(path.dirname(resolved), relative);
+    if (!/\.(?:ya?ml)$/i.test(next) || !isInside(flowsDir, next)) continue;
+    const child = await collectFlowAssertions(next, flowsDir, seen, depth + 1);
+    count += child.count;
+    for (const assertion of child.assertions) {
+      if (assertions.length >= 100) break;
+      if (!assertions.some((entry) => entry.type === assertion.type && entry.text === assertion.text)) {
+        assertions.push(assertion);
+      }
+    }
+  }
+  return { count, assertions };
 }
 
 function decodeCharacterEntities(text: string): string {
@@ -391,14 +442,9 @@ export async function executeWebJob(
   const assertionCounts = new Map<string, number>();
   const flowAssertions = new Map<string, FlowAssertion[]>();
   for (const [stem, file] of flowByStem) {
-    try {
-      const content = await readFile(file, "utf-8");
-      assertionCounts.set(stem, countHardAssertions(content));
-      flowAssertions.set(stem, parseFlowAssertions(content));
-    } catch {
-      assertionCounts.set(stem, 0);
-      flowAssertions.set(stem, []);
-    }
+    const collected = await collectFlowAssertions(file, flowsDir, new Set(), 0);
+    assertionCounts.set(stem, collected.count);
+    flowAssertions.set(stem, collected.assertions);
   }
 
   const junitPath = path.join(jobDir, "junit.xml");
