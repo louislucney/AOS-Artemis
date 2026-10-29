@@ -28,6 +28,7 @@ const REASON_TEXT: Record<string, string> = {
   "assertion-doc-missing": "缺少断言文档",
   "no-executable-assertion": "没有可执行的断言",
   "manual-or-ambiguous": "断言含人工或歧义项",
+  "soft-assertion-only": "仅有软断言，缺少高置信可执行断言",
   "assertion-proof-missing": "runner 未上报断言证据",
   "source-unreadable": "原件不可解析，无法生成断言"
 };
@@ -64,6 +65,9 @@ export function assertionGate(
   }
   if (doc.manual.length > 0 || doc.ambiguous.length > 0 || hasInlineManual(doc)) {
     return { status: "UNVERIFIED", reason: "manual-or-ambiguous" };
+  }
+  if (doc.confidence !== "high") {
+    return { status: "UNVERIFIED", reason: "soft-assertion-only" };
   }
   if (assertionCount === undefined || assertionCount <= 0) {
     return { status: "UNVERIFIED", reason: "assertion-proof-missing" };

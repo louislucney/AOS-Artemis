@@ -97,6 +97,31 @@ test("verdicts：PASS + 高置信文档但 assertionCount 为 0/缺失 → UNVER
   }
 });
 
+test("verdicts：仅软 text 断言 → UNVERIFIED soft-assertion-only", () => {
+  const source = [
+    sourceCase("TC-1", { expected: "1. 彈窗關閉", steps: ["點擊關閉"] })
+  ];
+  const result = derive({
+    payloadCases: [passCase("TC-1", { assertionCount: 1 })],
+    sourceCases: source,
+    assertions: assertionsFor(source)
+  });
+  assert.equal(result.cases[0].status, "UNVERIFIED");
+  assert.equal(result.reasons[0].reason, "soft-assertion-only");
+  assert.match(result.cases[0].failureReason, /^未验证：.*软断言/);
+
+  const soft = classifyExpectedResult({
+    expected: "1. 彈窗關閉",
+    steps: ["點擊關閉"],
+    caseId: "TC-SOFT"
+  });
+  assert.equal(soft.confidence, "medium");
+  assert.deepEqual(assertionGate(soft, 1), {
+    status: "UNVERIFIED",
+    reason: "soft-assertion-only"
+  });
+});
+
 test("verdicts：PASS 但原件没有该用例 → UNVERIFIED case-not-in-source", () => {
   const source = [sourceCase("TC-1")];
   const result = derive({

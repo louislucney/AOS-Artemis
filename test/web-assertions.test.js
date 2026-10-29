@@ -164,14 +164,18 @@ test("classify: 裸 N ÷ M → calc 且按计算式补齐 expected；向下取�
   ]);
 });
 
-test("classify: 否定词按谓词判定——「未登录时显示」不误判，未显示才是否定", () => {
+test("classify: 未X 未匹配 fail-closed；未显示才是否定", () => {
   const result = classifyExpectedResult({
     expected: ["1. 未登录时显示“去登录”", "2. 页面未显示“提交”"].join("\n"),
     steps: ["a", "b"],
     caseId: "TC_NEG"
   });
   const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
-  assert.deepEqual(byStep.get(1), [{ type: "visible", text: "去登录" }]);
+  assert.deepEqual(byStep.get(1), [{ type: "manual", reason: "否定语义无法判断" }]);
+  assert.equal(
+    byStep.get(1).some((assertion) => assertion.type === "visible"),
+    false
+  );
   assert.deepEqual(byStep.get(2), [{ type: "notVisible", text: "提交" }]);
 });
 
@@ -279,7 +283,7 @@ test("classify: 单行无编号预期绑定最后一步；多行无编号仍 amb
     {
       step: 1,
       assert: [
-        { type: "text", text: "已进入首页" },
+        { type: "visible", text: "已进入首页" },
         { type: "visible", text: "成功" }
       ]
     }
@@ -763,7 +767,7 @@ test("classify: 逗号无条件拆分；动作子句不造 text，非动作短�
       step: 1,
       assert: [
         { type: "text", text: "彈窗關閉" },
-        { type: "text", text: "停留在MOP首頁" }
+        { type: "visible", text: "停留在MOP首頁" }
       ]
     }
   ]);
@@ -775,7 +779,7 @@ test("classify: 逗号无条件拆分；动作子句不造 text，非动作短�
     caseId: "TC_COMMA_SUBITEM"
   });
   assert.deepEqual(subItem.steps, [
-    { step: 1, assert: [{ type: "text", text: "選擇門市" }] }
+    { step: 1, assert: [{ type: "visible", text: "選擇門市" }] }
   ]);
 
   const actionClause = classifyExpectedResult({
@@ -1075,6 +1079,41 @@ test("classify: 已過期/已停用/已失效 等状态列不成硬断言", () =
   });
   const assertions = result.steps.flatMap((entry) => entry.assert);
   assert.ok(!assertions.some((entry) => entry.type === "visible"), JSON.stringify(assertions));
+  assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 未展示/未提示 否定；不需要不被误判", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 未展示“優惠券”", "2. 未提示“錯誤”", "3. 顯示“首頁”且不需要登入"].join("\n"),
+    steps: ["a", "b", "c"],
+    caseId: "TC_NEG_WHITELIST"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "notVisible", text: "優惠券" }]);
+  assert.deepEqual(byStep.get(2), [{ type: "notVisible", text: "錯誤" }]);
+  assert.deepEqual(byStep.get(3), [{ type: "visible", text: "首頁" }]);
+});
+
+test("classify: 展示状态/散文标签不升 visible", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 顯示登錄成功",
+      "2. 顯示已成功提交",
+      "3. 顯示列表載入失敗",
+      "4. 顯示訂單狀態同步完成"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d"],
+    caseId: "TC_DISPLAY_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应出现 visible`
+    );
+    assert.equal(byStep.get(step)[0].type, "manual");
+  }
   assert.notEqual(result.confidence, "high");
 });
 

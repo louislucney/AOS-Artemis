@@ -58,7 +58,7 @@ const CONTEXT_PREFIX =
   /^(?:--|——|备注\s*[:：]?|備註\s*[:：]?|【备注】|【備註】|注\s*[:：]|note\b\s*[:：]?)\s*/i;
 
 const NEGATIVE =
-  /不(?!同|仅|僅|但|过|過|断|斷|少|久|符|变|變|停|只)|沒(?:有)?|没(?:有)?|未有|未(?:顯示|显示|出現|出现|加載|加载|返回|生效|完成|成功|存在|找到|彈出|弹出|支持|見|见)|消失|隱藏|隐藏|不可見|不可见|不能|\b(?:not|no|never|hidden|absent)\b|\b\w+n't\b|\bdisappear(?:s|ed|ing)?\b/i;
+  /不(?!同|仅|僅|但|过|過|断|斷|少|久|符|变|變|停|只|需|用|須|须|會|会|要|再)|沒(?:有)?|没(?:有)?|未有|未(?:顯示|显示|展示|出現|出现|加載|加载|返回|生效|完成|成功|存在|找到|彈出|弹出|支持|支援|包含|提示|進入|进入|能|見|见)|消失|隱藏|隐藏|不可見|不可见|不能|\b(?:not|no|never|hidden|absent)\b|\b\w+n't\b|\bdisappear(?:s|ed|ing)?\b/i;
 
 const MANUAL =
   /后台|後台|排序|最近|上次|GPS|刷新|配置|积分余额|積分餘額|至少|(?<![不未沒没])存在|資料|数据|數據|\bbackend\b|\bserver(?:-side)?\b|\bsort(?:ed|s|ing)?\b|\border(?:s|ed)?\b|\blast\b|\blatest\b|\brefresh(?:ed|es|ing)?\b|\bconfig(?:uration|ure)?\b|\bbalance\b|\bat least\b|\bexists?\b|\bdata\b/i;
@@ -90,7 +90,11 @@ const FIELD_VERB_ALL = /显示|顯示|展示|包含|包括/g;
 const LABEL_REJECT = /(?:並|并且|且|可|需|以及|并|則|则|才|再)/;
 const LABEL_PROSE = /(?:載入中|加载中|^請稍候|^请稍候)/;
 const LABEL_STATE =
-  /已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|過期|过期|停用|失效|售罄|售完|領取|领取|開啟|开启|關閉|关闭|綁定|绑定|驗證|验证|發送|发送|寄出|退回)|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中)$/;
+  /已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|過期|过期|停用|失效|售罄|售完|領取|领取|開啟|开启|關閉|关闭|綁定|绑定|驗證|验证|發送|发送|寄出|退回)|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中|關閉|关闭|開啟|开启)$/;
+const DISPLAY_STATE =
+  /已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|過期|过期|停用|失效|售罄|售完|領取|领取|開啟|开启|關閉|关闭|綁定|绑定|驗證|验证|發送|发送|寄出|退回)|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|删除|新增|中|關閉|关闭|開啟|开启)$/;
+const TEXT_PROSE =
+  /表示|完成後|完成后|返回|待|已(?:成功|完成|更新|提交|刪除|刪除|新增|取消|付款|出貨)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|新增|中)$/;
 const LABEL_SHAPE = /^[A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._/&()#+-]*$/;
 const ACTION_START =
   /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作|勾選|勾选|提交|展開|展开|收起|切換|切换|參閱|参阅|如圖|如图|見圖|见图|如下|詳情|详情|請稍候|请稍候)/;
@@ -414,6 +418,7 @@ function displayLabel(masked: string): { label: string; negative: boolean } | nu
   if ([...label].length > 2) label = label.replace(/^(?:在|於|于)/, "").trim();
   label = label.replace(/等$/, "").trim();
   if (label === "" || VAGUE.test(label)) return null;
+  if (DISPLAY_STATE.test(label) || LABEL_PROSE.test(label) || LABEL_REJECT.test(label)) return null;
   if (/^[)）(（]/.test(label) || !/[A-Za-z0-9\u4e00-\u9fff]/.test(label)) return null;
   if ([...label].length > 30) return null;
   if (label.includes("\u0000") || label.includes("、")) return null;
@@ -541,6 +546,17 @@ function classifyClause(
   if (MANUAL.test(masked)) {
     return { assertions: [], soft: false, manual: manualReason(masked), unresolved: false };
   }
+  if (
+    !negative &&
+    (/未/.test(masked) || /不(?:顯示|显示|出現|出现|支援|支持|包含|提示)/.test(masked))
+  ) {
+    return {
+      assertions: [],
+      soft: false,
+      manual: "否定语义无法判断",
+      unresolved: false
+    };
+  }
 
   const field = extractFieldList(clause);
   if (field !== null) {
@@ -610,6 +626,50 @@ function classifyClause(
       (allowActionText || !ACTION_START.test(segment)) &&
       (!multiClause || !NAV_START.test(segment))
     ) {
+      const colon = segment.match(/^([^：:]{1,20})[：:]/);
+      const label = colon?.[1]?.trim() ?? "";
+      if (
+        label !== "" &&
+        !VAGUE.test(label) &&
+        !DISPLAY_STATE.test(label) &&
+        !LABEL_PROSE.test(label) &&
+        !LABEL_REJECT.test(label) &&
+        !NAV_START.test(label)
+      ) {
+        return {
+          assertions: [{ type: "visible", text: label }],
+          soft: false,
+          manual: null,
+          unresolved: false
+        };
+      }
+      if (segment.startsWith("不可以")) {
+        const target = segment.replace(/^不可以/, "").trim();
+        if (target !== "") {
+          return {
+            assertions: [{ type: "notVisible", text: target }],
+            soft: false,
+            manual: null,
+            unresolved: false
+          };
+        }
+      }
+      if (
+        !negative &&
+        !/[0-9$¥€£]/.test(segment) &&
+        !DISPLAY_STATE.test(segment) &&
+        !TEXT_PROSE.test(segment) &&
+        !LABEL_PROSE.test(segment) &&
+        !LABEL_REJECT.test(segment) &&
+        !NAV_START.test(segment)
+      ) {
+        return {
+          assertions: [{ type: "visible", text: segment }],
+          soft: false,
+          manual: null,
+          unresolved: false
+        };
+      }
       return {
         assertions: [{ type: "text", text: segment }],
         soft: true,
@@ -765,7 +825,7 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
     .map(([step, assert]) => ({ step, assert }));
 
   doc.confidence =
-    hardCount > 0 && doc.manual.length === 0 && doc.ambiguous.length === 0 && softCount === 0
+    hardCount > 0 && doc.manual.length === 0 && doc.ambiguous.length === 0
       ? "high"
       : hardCount > 0 || softCount > 0
         ? "medium"
