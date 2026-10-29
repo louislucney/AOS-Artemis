@@ -760,7 +760,8 @@ test("钉设备等待：无租约 claim 返回 null；host 上线 assign 预占�
       runnerId: "runner-a",
       hostId: "host-a",
       deviceSerial: "a-device",
-      instanceId: "inst-a"
+      instanceId: "inst-a",
+      nowMs: NOW + 1_000
     };
     assert.equal(await store.claimWebJob(claimInput), null);
 
