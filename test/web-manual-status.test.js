@@ -266,6 +266,53 @@ test("人工状态不能把任务级 error 恢复成 completed", async (t) => {
   assert.equal((await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id)).status, "failed");
 });
 
+test("人工状态不能把迟到结果后的 failed 任务升级", async (t) => {
+  const ctx = await setup(t);
+  await ctx.store.updateRegressionTask(ctx.rootPath, ctx.task.id, { status: "failed" });
+  await ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload: payload() });
+  const applied = await applyWebJobManualStatus({
+    store: ctx.store,
+    rootPath: ctx.rootPath,
+    jobId: ctx.task.id,
+    caseId: "C1",
+    status: "NOT_IMPL",
+    actor: "tester"
+  });
+  assert.equal(applied.document.reportedStatus, "passed");
+  assert.equal(applied.document.gate.result, "failed", "既有 failed 终态不能被人工状态改好");
+  const cleared = await applyWebJobManualStatus({
+    store: ctx.store,
+    rootPath: ctx.rootPath,
+    jobId: ctx.task.id,
+    caseId: "C1",
+    status: null,
+    actor: "tester"
+  });
+  assert.equal(cleared.document.gate.result, "failed");
+  assert.equal((await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id)).status, "failed");
+});
+
+test("人工状态：jobId/caseId 路径字符拒绝", async (t) => {
+  const ctx = await setup(t);
+  for (const [jobId, caseId] of [
+    ["../escape", "C1"],
+    ["job-1", "../C1"],
+    ["job/1", "C1"]
+  ]) {
+    await assert.rejects(
+      () =>
+        applyWebJobManualStatus({
+          store: ctx.store,
+          rootPath: ctx.rootPath,
+          jobId,
+          caseId,
+          status: "NOT_IMPL"
+        }),
+      (error) => error.status === 400
+    );
+  }
+});
+
 test("人工状态：没有结果/未知用例明确报错", async (t) => {
   const ctx = await setup(t);
   await assert.rejects(

@@ -818,7 +818,11 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
 
 /** 单条 Web 任务详情：只展示已持久化的事实（result.json 不存在时明确「尚无结果」）。 */
 /** 单例人工状态选择器；保存动作由页面底部脚本统一绑定。 */
-function manualStatusCell(entry: WebJobResultDocument["execution"]["cases"][number]): string {
+function manualStatusCell(
+  entry: WebJobResultDocument["execution"]["cases"][number],
+  editable: boolean
+): string {
+  if (!editable) return '<span class="muted">—</span>';
   const current = entry.manualStatus?.status ?? "";
   const options = [
     ["", "自动"],
@@ -838,6 +842,8 @@ export function renderWebJobPage(data: WebJobPageData): string {
   const result = data.result;
   const gate = result?.gate;
   const cases = Array.isArray(result?.execution?.cases) ? result.execution.cases : [];
+  const canManualStatus =
+    data.capabilities?.actions !== false && data.capabilities?.scopes?.verdicts !== false;
   const caseRows = cases.map((entry) => {
     const effective = entry.manualStatus?.status ?? entry.status;
     const effectiveLabel =
@@ -866,7 +872,7 @@ export function renderWebJobPage(data: WebJobPageData): string {
             entry.failureStep === undefined ? "" : "："
           }${escapeHtml(entry.failureReason)}`,
       entry.traceId === undefined ? "—" : `<code>${escapeHtml(entry.traceId)}</code>`,
-      manualStatusCell(entry)
+      manualStatusCell(entry, canManualStatus)
     ];
   });
   const evidence = Array.isArray(result?.evidence) ? result.evidence : [];
@@ -999,7 +1005,9 @@ export function renderWebJobPage(data: WebJobPageData): string {
           result === null
             ? '<p id="job-result-empty" class="muted">尚无结果：执行机上传前不展示逐用例结果，也不虚构设备/包信息。</p>'
             : cTable({
-                columns: ["用例", "名称", "结果", "耗时", "失败信息", "trace", "人工状态"],
+                columns: canManualStatus
+                  ? ["用例", "名称", "结果", "耗时", "失败信息", "trace", "人工状态"]
+                  : ["用例", "名称", "结果", "耗时", "失败信息", "trace"],
                 rows: caseRows,
                 caption: "逐用例结果",
                 empty: "结果中没有用例"

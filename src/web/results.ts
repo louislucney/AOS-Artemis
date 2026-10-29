@@ -158,6 +158,8 @@ export interface WebJobResultDocument {
   taskStatus: WebResultTaskStatus;
   /** 实际落库的任务状态（error → failed；迟到首次上传保持原状态）。 */
   dbStatus: RegressionTaskStatus;
+  /** 首次入库时的落库终态；人工状态重算的不可变下界（旧文档缺省时回退 dbStatus）。 */
+  baseDbStatus?: RegressionTaskStatus;
   gate: WebResultGate;
   /** runner 上报/首次派生的结果状态；人工状态重算时作为“不能更好”的下界。 */
   reportedStatus?: WebResultGate["result"];
@@ -1352,6 +1354,7 @@ async function ingestUnderJobLock(
     receivedAt: at,
     taskStatus,
     dbStatus: effectiveDbStatus,
+    baseDbStatus: effectiveDbStatus,
     gate,
     reportedStatus: payload.reportedStatus ?? payload.execution.status,
     execution: {
@@ -1490,7 +1493,19 @@ export interface ApplyWebJobManualStatusResult {
 export async function applyWebJobManualStatus(
   input: ApplyWebJobManualStatusInput
 ): Promise<ApplyWebJobManualStatusResult> {
+  if (
+    input.jobId.trim() === "" ||
+    input.caseId.trim() === "" ||
+    /[\\/]|\.\./.test(input.jobId) ||
+    /[\\/]|\.\./.test(input.caseId)
+  ) {
+    throw new WebResultError("invalid-result", "jobId/caseId 含非法路径字符");
+  }
   const rootPath = path.resolve(input.rootPath);
+  const job = await input.store.getWebJobById(input.jobId);
+  if (job === null || path.resolve(job.rootPath) !== rootPath || job.task.id !== input.jobId) {
+    throw new WebResultError("job-not-found", `未知 job ${input.jobId}`);
+  }
   const resultPath = resultPathForJob(rootPath, input.jobId);
   return withFileLock(resultLockPath(rootPath, input.jobId), async () => {
     const document = await readResultDocument(resultPath);
@@ -1499,6 +1514,9 @@ export async function applyWebJobManualStatus(
         "job-not-found",
         `job ${input.jobId} 还没有结果，不能标记人工状态`
       );
+    }
+    if (document.jobId !== input.jobId || !Array.isArray(document.execution?.cases)) {
+      throw new WebResultError("invalid-result", `job ${input.jobId} 的结果文档不合法`);
     }
     const cases = document.execution.cases;
     const index = cases.findIndex((entry) => entry.caseId === input.caseId);
@@ -1525,9 +1543,17 @@ export async function applyWebJobManualStatus(
     const changed = JSON.stringify(previous) !== JSON.stringify(nextCase.manualStatus);
 
     const aggregate = aggregateResultGate(cases);
-    const baseStatus =
-      document.reportedStatus ??
-      (document.taskStatus === "error" ? "error" : document.taskStatus === "failed" ? "failed" : "passed");
+    const rank: Record<WebResultGate["result"], number> = {
+      passed: 0,
+      partial: 1,
+      failed: 2,
+      error: 3
+    };
+    const baseDbStatus = document.baseDbStatus ?? document.dbStatus;
+    const persistedResult: WebResultGate["result"] =
+      baseDbStatus === "failed" ? "failed" : baseDbStatus === "partial" ? "partial" : "passed";
+    const reported = document.reportedStatus ?? "passed";
+    const baseStatus = rank[persistedResult] > rank[reported] ? persistedResult : reported;
     const gate: WebResultGate = {
       ...aggregate,
       result: resolveResultStatus(baseStatus, aggregate.result)
@@ -1538,14 +1564,15 @@ export async function applyWebJobManualStatus(
     document.taskStatus = taskStatus;
     document.dbStatus = dbStatus;
     document.execution = { ...document.execution, status: gate.result, cases };
-    const warnings = [...(document.warnings ?? [])];
+    const warnings = (document.warnings ?? []).filter(
+      (warning) => !warning.startsWith("manual-status:")
+    );
     warnings.push(
       `manual-status: ${input.caseId} ${input.status ?? "cleared"}${reason === "" ? "" : `（${reason}）`}`
     );
 
-    const task = await input.store.getRegressionTask(rootPath, input.jobId);
+    const task = job.task;
     if (
-      task !== null &&
       (task.status === "completed" || task.status === "partial" || task.status === "failed") &&
       task.status !== dbStatus
     ) {
@@ -1579,7 +1606,7 @@ export async function applyWebJobManualStatus(
           sheetName: target.sheetName,
           caseIdHeader: target.caseIdHeader,
           platform: spec.requirements.platform,
-          rows: platformResultRows(cases, false),
+          rows: platformResultRows(cases.filter((entry) => entry.caseId === input.caseId), false),
           originalPath: target.originalPath,
           ...(sourceHeaders === undefined ? {} : { sourceHeaders })
         });
@@ -1635,7 +1662,10 @@ export async function applyWebJobManualStatus(
             }
           }
         });
-        writtenCells = result.writtenCells;
+        const mergedCells = new Map<string, WritebackCellWrite>();
+        for (const cell of document.writtenCells ?? []) mergedCells.set(cell.cellRef, cell);
+        for (const cell of result.writtenCells) mergedCells.set(cell.cellRef, cell);
+        writtenCells = [...mergedCells.values()];
         warnings.push(...result.warnings);
         if (result.failed > 0) {
           throw new Error(`写回失败 ${result.failed} 格`);
@@ -1672,16 +1702,6 @@ export async function applyWebJobManualStatus(
     document.writebackError = writebackError;
     document.warnings = warnings;
     await persistDocument(resultPath, document);
-
-    await recordAuditSafe(input.store, rootPath, {
-      domain: "panel",
-      action: "action.jobs.case-status",
-      result: "ok",
-      actor: input.actor ?? null,
-      summary: `Web job ${input.jobId} 用例 ${input.caseId} 人工状态：${input.status ?? "清除"}${reason === "" ? "" : `（${reason}）`}`,
-      refs: { taskId: input.jobId, caseId: input.caseId },
-      channel: "panel"
-    });
     return { document, changed, warnings };
   });
 }
