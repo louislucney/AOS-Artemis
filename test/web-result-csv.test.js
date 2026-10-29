@@ -431,7 +431,7 @@ test("旧工作副本已有 8 列：平台列追加在后并显式告警 layout 
   assert.equal(await fileSha(ctx.original), ctx.originalSha);
 });
 
-test("CSV 源映射缺 steps（parseExcel 失败）：8 列写回成功仍导出结果 CSV", async (t) => {
+test("CSV 源映射缺 steps（parseExcel 失败）：PASS fail-closed 为 UNVERIFIED，仍导出结果 CSV", async (t) => {
   const ctx = await setup(t, {
     format: "csv",
     encoding: "utf-8",
@@ -447,13 +447,25 @@ test("CSV 源映射缺 steps（parseExcel 失败）：8 列写回成功仍导出
   });
 
   assert.equal(summary.writebackStatus, "written");
+  assert.equal(summary.taskStatus, "partial", "原件不可解析时 PASS 不得直通");
+  assert.deepEqual(summary.gate, {
+    result: "partial",
+    total: 1,
+    passed: 0,
+    failed: 0,
+    errors: 0,
+    skipped: 0,
+    unverified: 1
+  });
   assert.equal(summary.platformResult, null, "原件不可解析时不写平台列");
   assert.equal(summary.assertionCells, 0, "原件不可解析时不写隐藏断言");
   assert.equal(summary.resultCsvPath, webResultCsvPath(ctx.rootPath, ctx.asset.id));
   for (const marker of [
     "source-unreadable",
     "platform-result-skipped",
-    "assertion-column-skipped"
+    "assertion-column-skipped",
+    "verdict-source-unreadable",
+    "verdict-unverified"
   ]) {
     assert.ok(
       summary.warnings.some((warning) => warning.includes(marker)),
@@ -466,7 +478,7 @@ test("CSV 源映射缺 steps（parseExcel 失败）：8 列写回成功仍导出
   assert.equal(decodeCsv(resultBytes).encoding, "utf-8");
   const rows = parseCsv(decodeCsv(resultBytes).text);
   assert.deepEqual(rows[0], ["用例编号", "用例名", "步骤", "期望结果", ...SYSTEM_HEADERS]);
-  assert.equal(rows[1][rows[0].indexOf("执行｜结果")], "PASS");
+  assert.equal(rows[1][rows[0].indexOf("执行｜结果")], "UNVERIFIED");
   assert.ok(!rows[0].includes("AOS Result"), "解析失败时不伪造平台列");
   assert.ok(!rows[0].includes("__aos_assertions"));
 });

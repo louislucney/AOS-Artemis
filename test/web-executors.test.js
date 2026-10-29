@@ -350,7 +350,10 @@ test("executeWebJob: 子目录 subflows 不算用例，只有顶层 yaml 参与�
   const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
   const subflowsDir = path.join(flowsDir, "subflows");
   await mkdir(subflowsDir, { recursive: true });
-  await writeFile(path.join(subflowsDir, "helper.yaml"), "appId: acme.app\n---\n- tapOn: Next\n");
+  await writeFile(
+    path.join(subflowsDir, "helper.yaml"),
+    "appId: acme.app\n---\n- tapOn: Next\n- assertVisible: 子流程断言\n"
+  );
   const { exec } = execWithJunit(junit([xmlCase({ name: "flow-a", selfClosing: true })]));
 
   const result = await executeWebJob({
@@ -364,6 +367,7 @@ test("executeWebJob: 子目录 subflows 不算用例，只有顶层 yaml 参与�
 
   assert.equal(result.status, "passed");
   assert.deepEqual(result.cases.map((entry) => entry.caseId), ["flow-a"]);
+  assert.equal(result.cases[0].assertionCount, 0, "subflows 的断言不计入顶层用例");
   assert.equal(result.detail, null);
 });
 

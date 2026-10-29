@@ -28,7 +28,8 @@ const REASON_TEXT: Record<string, string> = {
   "assertion-doc-missing": "缺少断言文档",
   "no-executable-assertion": "没有可执行的断言",
   "manual-or-ambiguous": "断言含人工或歧义项",
-  "assertion-proof-missing": "runner 未上报断言证据"
+  "assertion-proof-missing": "runner 未上报断言证据",
+  "source-unreadable": "原件不可解析，无法生成断言"
 };
 
 const MAX_LISTED = 10;
@@ -103,12 +104,34 @@ function downgrade(entry: WebResultCase, reason: string): WebResultCase {
 export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsResult {
   const { payloadCases, sourceCases, assertions, caseFilter, suppressPerCaseResult } = input;
   if (sourceCases === null) {
+    // fail-closed：没有原件就无法证明预期，PASS 不得直通；缺失范围同样未知，不补 SKIP。
+    const cases: WebResultCase[] = [];
+    const reasons: DeriveVerdictsResult["reasons"] = [];
+    const downgraded: string[] = [];
+    for (const entry of payloadCases) {
+      if (entry.status !== "PASS" || suppressPerCaseResult) {
+        cases.push(entry);
+        continue;
+      }
+      const caseId = entry.caseId.trim();
+      cases.push(downgrade(entry, "source-unreadable"));
+      downgraded.push(`${caseId}:source-unreadable`);
+      reasons.push({ caseId, status: "UNVERIFIED", reason: "source-unreadable" });
+    }
+    const warnings = [
+      "verdict-source-unreadable: 原件不可解析，无法生成断言；PASS 一律降级为 UNVERIFIED"
+    ];
+    if (downgraded.length > 0) {
+      warnings.unshift(
+        `verdict-unverified: ${downgraded.length} 个 PASS 降级为 UNVERIFIED（${summarize(downgraded)}）`
+      );
+    }
     return {
-      cases: payloadCases,
-      warnings: ["verdict-gate-skipped: 原件不可解析，未启用断言门禁"],
-      unverified: 0,
+      cases,
+      warnings,
+      unverified: downgraded.length,
       missing: 0,
-      reasons: []
+      reasons
     };
   }
 

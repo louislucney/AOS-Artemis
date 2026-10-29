@@ -521,7 +521,7 @@ export function aggregateResultGate(cases: WebResultCase[]): WebResultGate {
 }
 
 /**
- * 任务终态：全 PASS → completed；任一 FAIL/ERROR → failed；含 SKIP → partial；
+ * 任务终态：全 PASS → completed；任一 FAIL/ERROR → failed；含 SKIP/UNVERIFIED → partial；
  * 空结果/runner 上报 error → 契约状态 `error`（DB 无 error，落库 `failed`，绝不写成成功）。
  */
 export function taskStatusFromGate(gate: WebResultGate): WebResultTaskStatus {

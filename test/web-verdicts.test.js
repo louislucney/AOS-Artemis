@@ -190,14 +190,37 @@ test("verdicts：任务级抑制下 PASS 保持 PASS 且不补写缺失 SKIP", (
   assert.ok(result.warnings.some((warning) => warning.includes("verdict-missing-result-skipped")));
 });
 
-test("verdicts：原件不可解析时跳过断言门禁并显式告警", () => {
-  const payload = [passCase("TC-1")];
-  const result = derive({ payloadCases: payload, sourceCases: null });
-  assert.deepEqual(result.cases, payload);
-  assert.equal(result.unverified, 0);
+test("verdicts：原件不可解析时 PASS fail-closed 降级 UNVERIFIED，不补 SKIP", () => {
+  const result = derive({
+    payloadCases: [
+      passCase("TC-1"),
+      { caseId: "TC-2", name: "TC-2", status: "FAIL", durationMs: 1 }
+    ],
+    sourceCases: null
+  });
+  assert.deepEqual(
+    result.cases.map((entry) => [entry.caseId, entry.status, entry.failureReason]),
+    [
+      ["TC-1", "UNVERIFIED", "未验证：原件不可解析，无法生成断言"],
+      ["TC-2", "FAIL", undefined]
+    ]
+  );
+  assert.equal(result.unverified, 1);
   assert.equal(result.missing, 0);
-  assert.equal(result.warnings.length, 1);
-  assert.match(result.warnings[0], /verdict-gate-skipped/);
+  assert.equal(result.reasons[0].reason, "source-unreadable");
+  assert.ok(result.warnings.some((warning) => warning.includes("verdict-unverified")));
+  assert.ok(result.warnings.some((warning) => warning.includes("verdict-source-unreadable")));
+});
+
+test("verdicts：原件不可解析且任务级抑制时 PASS 不降级", () => {
+  const result = derive({
+    payloadCases: [passCase("TC-1")],
+    sourceCases: null,
+    suppressPerCaseResult: true
+  });
+  assert.equal(result.cases[0].status, "PASS");
+  assert.equal(result.unverified, 0);
+  assert.ok(result.warnings.some((warning) => warning.includes("verdict-source-unreadable")));
 });
 
 test("verdicts：assertionGate 直接覆盖文档缺失/人工歧义/证据缺失", () => {

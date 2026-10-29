@@ -537,6 +537,42 @@ test("job detail shows device, package, cases, evidence links and writeback stat
   assert.ok(!empty.body.includes("com.acme.app"), "不虚构包信息");
 });
 
+test("job detail renders UNVERIFIED warning badge and unverified gate count", async (t) => {
+  const { deps, rootPath, excel, pkg } = await setup(t);
+  const created = JSON.parse((await postJob(deps, autoBody(rootPath, { excel, pkg }))).body);
+  const jobId = created.job.id;
+  await writeResultDoc(rootPath, jobId, {
+    taskStatus: "partial",
+    dbStatus: "partial",
+    gate: { result: "partial", total: 2, passed: 1, failed: 0, errors: 0, skipped: 0, unverified: 1 },
+    execution: {
+      status: "partial",
+      cases: [
+        { caseId: "TC-001", name: "已断言", status: "PASS", durationMs: 100, traceId: "trace-1" },
+        {
+          caseId: "TC-002",
+          name: "无断言证据",
+          status: "UNVERIFIED",
+          durationMs: 100,
+          failureReason: "未验证：runner 未上报断言证据"
+        }
+      ],
+      startedAt: "2026-10-29T00:05:00.000Z",
+      finishedAt: "2026-10-29T00:08:00.000Z",
+      detail: null
+    }
+  });
+
+  const response = await handlePanelRequest(jobDetailUrl(rootPath, jobId), {
+    ...deps,
+    capabilities: capabilities("dispatcher")
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.body, /<span class="c-badge c-badge-warning">UNVERIFIED<\/span>/);
+  assert.match(response.body, /未验证 1/);
+  assert.match(response.body, /runner 未上报断言证据/);
+});
+
 test("pinned pending job shows waiting, not bound (no lease yet)", async (t) => {
   const { deps, store, rootPath, excel, pkg } = await setup(t, { runners: false });
   const response = await postJob(deps, {
