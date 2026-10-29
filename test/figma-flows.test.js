@@ -14,8 +14,53 @@ import {
   normalizeAssetName,
   walkProjectFiles
 } from "../dist/figma/gaps.js";
-import { buildFlowGraph, flowGraphWarnings, normalizeFlowGraph, routeFor } from "../dist/figma/flows.js";
+import {
+  buildFlowGraph,
+  compareFlowScreens,
+  flowGraphWarnings,
+  normalizeFlowGraph,
+  routeFor
+} from "../dist/figma/flows.js";
 import { STACK_PROFILES } from "../dist/projects/stack.js";
+
+test("flow nodeHash: 节点内容变化改哈希，同内容稳定", () => {
+  const first = buildFlowGraph(syntheticFlowDocument());
+  const second = buildFlowGraph(syntheticFlowDocument());
+  assert.equal(first.screens[0].nodeHash?.length, 40);
+  assert.equal(first.screens[0].nodeHash, second.screens[0].nodeHash);
+
+  const changedDoc = syntheticFlowDocument();
+  const home = changedDoc.children[0].children.find((node) => node.id === "10:1");
+  const welcome = home.children.find((node) => node.id === "10:5");
+  welcome.characters = "Welcome";
+  const changed = buildFlowGraph(changedDoc);
+  assert.notEqual(
+    changed.screens.find((screen) => screen.id === "10:1").nodeHash,
+    first.screens.find((screen) => screen.id === "10:1").nodeHash
+  );
+});
+
+test("compareFlowScreens: new/changed/unchanged/baseline/missing", () => {
+  const previous = [
+    { id: "a", nodeHash: "h1" },
+    { id: "b", nodeHash: "h1" },
+    { id: "c" },
+    { id: "e", nodeHash: "h5" }
+  ];
+  const current = [
+    { id: "a", nodeHash: "h1" },
+    { id: "b", nodeHash: "h2" },
+    { id: "c", nodeHash: "h3" },
+    { id: "d", nodeHash: "h4" }
+  ];
+  assert.deepEqual(compareFlowScreens(previous, current), {
+    new: ["d"],
+    changed: ["b"],
+    unchanged: ["a"],
+    baseline: ["c"],
+    missing: ["e"]
+  });
+});
 
 test("flow graph: consecutive interactions produce screens, edges and entry screens", () => {
   const graph = buildFlowGraph(syntheticFlowDocument());

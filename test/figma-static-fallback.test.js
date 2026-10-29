@@ -148,6 +148,41 @@ test("figma extract: static fallback synthesizes inferred edges by default", asy
   }
 });
 
+test("figma extract: 二次提取报告 new/changed/unchanged/missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "aos-static-sync-"));
+  const key = `FBS${process.pid}${Date.now()}`;
+  try {
+    const first = await extract(root, key, {});
+    assert.equal(first.sync, undefined);
+    assert.equal(first.screens[0].nodeHash.length, 40);
+
+    const same = await extract(root, key, {});
+    assert.deepEqual(same.sync, {
+      new: [],
+      changed: [],
+      unchanged: ["1:1", "1:2"],
+      baseline: [],
+      missing: []
+    });
+
+    const changedFile = structuredClone(FILE);
+    const home = changedFile.document.children[0].children.find((node) => node.id === "1:2");
+    home.children[0].characters = "新首页";
+    const changed = await extract(root, key, {}, changedFile);
+    assert.deepEqual(changed.sync.changed, ["1:2"]);
+    assert.deepEqual(changed.sync.unchanged, ["1:1"]);
+
+    const missingFile = structuredClone(FILE);
+    missingFile.document.children[0].children = missingFile.document.children[0].children.filter(
+      (node) => node.id !== "1:2"
+    );
+    const missing = await extract(root, key, {}, missingFile);
+    assert.deepEqual(missing.sync.missing, ["1:2"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("figma extract: staticFallback:false keeps the legacy no-interactions behavior", async () => {
   const root = await mkdtemp(join(tmpdir(), "aos-static-fallback-"));
   try {

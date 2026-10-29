@@ -7,6 +7,7 @@ import {
   type FlowWarning
 } from "../figma/flows.js";
 import type { FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
+import { nodeContentHash } from "./node-hash.js";
 import { walk } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 
 type Bounds = { x: number; y: number; width: number; height: number };
@@ -374,6 +375,7 @@ export async function synthesizeStaticFlows(
   const screens: FlowScreen[] = frames.map((frame) => ({
     id: frame.id,
     name: frame.name,
+    nodeHash: nodeContentHash(frame.node),
     suggestedRoute: slug(frame.name),
     ...(frame.page ? { page: frame.page } : {}),
     childNames: childNodes(frame.node)
