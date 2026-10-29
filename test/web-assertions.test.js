@@ -1093,9 +1093,79 @@ test("classify: 模糊标签剔除后保留合法字段", () => {
   assert.deepEqual(result.manual, []);
 });
 
-test("classify: 已用/最後更新/批量刪除 字段仍 visible", () => {
+test("classify: 指令/动作短语不升 concrete", () => {
+  const clauses = [
+    "檢查發票資訊",
+    "核對訂單金額",
+    "查看訂單詳情",
+    "再次確認",
+    "清除篩選",
+    "修改數量",
+    "刪除商品",
+    "移動物件",
+    "選取日期",
+    "導向首頁",
+    "等待店員確認"
+  ];
   const result = classifyExpectedResult({
-    expected: ["1. 顯示已用S Dollar、已用S Coupon", "2. 顯示最後更新、批量刪除"].join("\n"),
+    expected: clauses.map((value, index) => `${index + 1}. ${value}`).join("\n"),
+    steps: clauses.map((_, index) => `s${index}`),
+    caseId: "TC_IMPERATIVE"
+  });
+  for (const [step, assertions] of result.steps.map((entry) => [entry.step, entry.assert])) {
+    assert.equal(
+      assertions.some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+});
+
+test("classify: 结构化字段的英文谓词/已状态降 manual", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 內容：Load failed",
+      "2. 標題：Price is correct",
+      "3. 按鈕：Loading",
+      "4. 標題：已成功提交訂單完成付款",
+      "5. 按鈕：我知道了"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_STRUCT_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.deepEqual(byStep.get(5), [{ type: "visible", text: "我知道了" }]);
+});
+
+test("classify: 字段列表含 會員/上傳時間/有效期限/所在門市 仍 visible", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 顯示訂單編號、會員名稱、金額",
+      "2. 顯示會員載具、發票號碼、金額",
+      "3. 顯示商品名稱、數量、上傳時間",
+      "4. 顯示商品名稱、有效期限、數量",
+      "5. 顯示所在門市、金額、數量"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_FIELD_NOUNS"
+  });
+  for (const step of [1, 2, 3, 4, 5]) {
+    const assertions = result.steps.find((entry) => entry.step === step).assert;
+    assert.equal(assertions.length, 3, `step ${step}`);
+    assert.ok(assertions.every((assertion) => assertion.type === "visible"), `step ${step}`);
+  }
+});
+
+test("classify: 已用/最後更新 字段仍 visible；批量刪除 是动作", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 顯示已用S Dollar、已用S Coupon", "2. 顯示最後更新、金額、批量刪除"].join("\n"),
     steps: ["a", "b"],
     caseId: "TC_STATE_NOUN"
   });
@@ -1106,7 +1176,7 @@ test("classify: 已用/最後更新/批量刪除 字段仍 visible", () => {
   ]);
   assert.deepEqual(byStep.get(2), [
     { type: "visible", text: "最後更新" },
-    { type: "visible", text: "批量刪除" }
+    { type: "visible", text: "金額" }
   ]);
 });
 

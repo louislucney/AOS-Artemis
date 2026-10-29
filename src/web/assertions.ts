@@ -91,20 +91,22 @@ const FIELD_VERB_ALL = /显示|顯示|展示|包含|包括/g;
 const LABEL_REJECT = /(?:並|并且|且|可|需|以及|并|則|则|才|再)/;
 const LABEL_PROSE = /(?:載入中|加载中|^請稍候|^请稍候)/;
 const LABEL_STATE =
-  /^已[\u4e00-\u9fff]{1,7}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中|關閉|关闭|開啟|开启)$|(?:售完|暫停服務|暫停)$/;
+  /^已[\u4e00-\u9fff]{1,7}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中|關閉|关闭|開啟|开启)$|(?:售完|暫停服務|暫停營業|結束營業|暫停)$/;
 const DISPLAY_STATE =
-  /^已[\u4e00-\u9fff]{1,7}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|删除|新增|中|關閉|关闭|開啟|开启)$|(?:售完|暫停服務|暫停)$/;
+  /^已[\u4e00-\u9fff]{1,7}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|删除|新增|中|關閉|关闭|開啟|开启)$|(?:售完|暫停服務|暫停營業|結束營業|暫停)$/;
 const STATUS_WORD =
-  /^(?:無(?!障礙|線|限)|无(?!障碍|线|限))|無庫存|無库存|無按鈕|無按钮|無優惠|無优惠|無結果|無结果|库存不足|庫存不足|已達上限|已达上限|缺貨|缺货|售罄|(?:售完|暫停服務|暫停)$|停用|失效|過期|过期|不足|上限|^已[\u4e00-\u9fff]{1,7}$/;
+  /^(?:無(?!障礙|線|限)|无(?!障碍|线|限))|無庫存|無库存|無按鈕|無按钮|無優惠|無优惠|無結果|無结果|库存不足|庫存不足|已達上限|已达上限|缺貨|缺货|售罄|(?:售完|暫停服務|暫停營業|結束營業|暫停)$|停用|失效|過期|过期|不足|上限|^已[\u4e00-\u9fff]{1,7}$/;
 const ENGLISH_PREDICATE =
   /\b(?:is|are|was|were|be|been|failed|success|successful|loading|correct|correctly|wrong|error|pending|completed|cancelled|canceled)\b/i;
 const LABEL_ACTION =
-  /進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|可|需|並|并|且|將|将|會|会|能|要|^請(?:稍候|至|先|您|於|在|按|選|輸|確|聯|參|見)|^请(?:稍候|至|先|您|于|在|按|选|输|确|联|参|见)|的|了|是|在|有|為|为|若|如果|當|当|加入|选中|選中|超支|導出|导出|功能|正確|正确|異常|异常|及格|合格|通過|通过|資料|数据|數據|以下|如下|全部|所有|自動|自动|登入|登錄|登录|填寫|填写|上傳|上传/;
+  /進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|可|需|並|并|且|將|将|會|会|能|要|^請(?:稍候|至|先|您|於|在|按|選|輸|確|聯|參|見)|^请(?:稍候|至|先|您|于|在|按|选|输|确|联|参|见)|的|了|是|在|有|為|为|若|如果|當|当|加入|选中|選中|超支|導出|导出|功能|正確|正确|異常|异常|及格|合格|通過|通过|資料|数据|數據|以下|如下|全部|所有|自動|自动|登入|登錄|登录|填寫|填写|上傳|上传|檢查|检查|核對|核对|查看|檢視|检视|瀏覽|浏览|導向|导向|前往|清除|修改|移動|移动|複製|复制|選取|选取|再次|等待|測試|测试|回到|刪除|删除/;
+const FIELD_ACTION =
+  /進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|加入|選中|选中|超支|導出|导出|功能|正確|正确|異常|异常|及格|合格|通過|通过|檢查|检查|核對|核对|查看|檢視|检视|瀏覽|浏览|導向|导向|前往|清除|修改|移動|移动|複製|复制|選取|选取|再次|等待|測試|测试|回到|刪除|删除/;
 const STATUS_PHRASE =
   /已[^，,。；;]{0,8}(?:成功|完成|提交|更新|刪除|删除|新增|取消|付款|出貨|出货|退款|取貨|送達|簽收|結帳|配送|審核|排隊|叫號|開通|核銷|成立|生效|用完)/;
 const LABEL_SHAPE = /^[A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._/&()#+-]*$/;
 const ACTION_START =
-  /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作|勾選|勾选|提交|展開|展开|收起|切換|切换|參閱|参阅|如圖|如图|見圖|见图|如下|詳情|详情|請稍候|请稍候)/;
+  /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作|勾選|勾选|提交|展開|展开|收起|切換|切换|參閱|参阅|如圖|如图|見圖|见图|如下|詳情|详情|請稍候|请稍候|檢查|检查|核對|核对|查看|檢視|检视|瀏覽|浏览|導向|导向|前往|清除|修改|移動|移动|複製|复制|選取|选取|再次|等待|測試|测试|刪除|删除)/;
 const NAV_START = /^(?:返回|確認|确认)/;
 const ANNOTATION_BRACKETS = new Set(["待確認", "待确认", "设计稿", "設計稿", "備註", "备注"]);
 const CALC_HINT = /÷|向下取整|四捨五入|四舍五入|向上取整|除以|乘以|×|=/;
@@ -401,7 +403,8 @@ function extractFieldList(clause: string): FieldList | null {
     if (/^[)）(（]/.test(raw) || !/[A-Za-z0-9\u4e00-\u9fff]/.test(raw)) return null;
     if (/[。；;，,：:！!?？]$/.test(raw)) return null;
     if (VAGUE.test(raw)) continue;
-    if (LABEL_STATE.test(raw) || STATUS_PHRASE.test(raw) || STATUS_WORD.test(raw) || LABEL_ACTION.test(raw)) return null;
+    if (LABEL_STATE.test(raw) || STATUS_PHRASE.test(raw) || STATUS_WORD.test(raw)) return null;
+    if (FIELD_ACTION.test(raw)) continue;
     if (LABEL_PROSE.test(raw)) return null;
     if (raw.replace(/\s+/g, "").length > 24) return null;
     if (LABEL_REJECT.test(raw)) return null;
@@ -865,7 +868,9 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
           VAGUE.test(structuredValue) ||
           LABEL_STATE.test(structuredValue) ||
           LABEL_PROSE.test(structuredValue) ||
-          STATUS_WORD.test(structuredValue)
+          STATUS_WORD.test(structuredValue) ||
+          STATUS_PHRASE.test(structuredValue) ||
+          ENGLISH_PREDICATE.test(structuredValue)
         ) {
           resolve(step, "否定/状态/模糊字段无法作为硬断言", sourceText);
           continue;
