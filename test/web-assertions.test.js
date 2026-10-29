@@ -246,7 +246,7 @@ test("classify: 后台/刷新/GPS/排序 → manual；否定引号仍 → notVis
 
 test("classify: 高确定性 + soft text 混合 → medium（不能算全部可验证）", () => {
   const result = classifyExpectedResult({
-    expected: "1. 显示“首页”，停留在首页",
+    expected: "1. 显示“首页”，内容如下",
     steps: ["打开应用"],
     caseId: "TC_MIXED_SOFT"
   });
@@ -1161,6 +1161,73 @@ test("classify: 字段列表含 會員/上傳時間/有效期限/所在門市 �
     assert.equal(assertions.length, 3, `step ${step}`);
     assert.ok(assertions.every((assertion) => assertion.type === "visible"), `step ${step}`);
   }
+});
+
+test("classify: 展示状态/英文谓词/中段無 不升 visible", () => {
+  const blocked = [
+    "顯示已成功提交訂單完成付款",
+    "顯示Load failed",
+    "顯示Price is correct",
+    "顯示正在載入",
+    "商品無現貨",
+    "優惠券無效",
+    "帳號無權限",
+    "按鈕無法使用",
+    "Sold out",
+    "Out of stock",
+    "Unavailable",
+    "Disabled",
+    "Expired"
+  ];
+  const result = classifyExpectedResult({
+    expected: blocked.map((value, index) => `${index + 1}. ${value}`).join("\n"),
+    steps: blocked.map((_, index) => `s${index}`),
+    caseId: "TC_DISPLAY_STATUS"
+  });
+  for (const [step, assertions] of result.steps.map((entry) => [entry.step, entry.assert])) {
+    assert.equal(
+      assertions.some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  const noSugar = classifyExpectedResult({
+    expected: "1. 無糖",
+    steps: ["a"],
+    caseId: "TC_NO_SUGAR"
+  });
+  assert.deepEqual(noSugar.steps, [{ step: 1, assert: [{ type: "visible", text: "無糖" }] }]);
+});
+
+test("classify: 名词字段单行也 visible（會員名稱/有效期限/所在門市/上傳時間/已用購物金）", () => {
+  const labels = ["會員名稱", "有效期限", "所在門市", "上傳時間", "已用購物金", "已用點數"];
+  const result = classifyExpectedResult({
+    expected: labels.map((value, index) => `${index + 1}. ${value}`).join("\n"),
+    steps: labels.map((_, index) => `s${index}`),
+    caseId: "TC_NOUN_SUFFIX"
+  });
+  for (const [index, label] of labels.entries()) {
+    const assertions = result.steps.find((entry) => entry.step === index + 1).assert;
+    assert.deepEqual(assertions, [{ type: "visible", text: label }]);
+  }
+});
+
+test("classify: 字段列表中的名词含动作字仍 visible", () => {
+  const result = classifyExpectedResult({
+    expected: "1. 顯示會員名稱、修改時間、金額",
+    steps: ["a"],
+    caseId: "TC_FIELD_NOUN_ACTION"
+  });
+  assert.deepEqual(result.steps, [
+    {
+      step: 1,
+      assert: [
+        { type: "visible", text: "會員名稱" },
+        { type: "visible", text: "修改時間" },
+        { type: "visible", text: "金額" }
+      ]
+    }
+  ]);
 });
 
 test("classify: 已用/最後更新 字段仍 visible；批量刪除 是动作", () => {
