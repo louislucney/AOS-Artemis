@@ -351,13 +351,17 @@ test("executeWebJob: 无 JUnit 时保留 exec 错误（spawn 失败）", async (
   assert.match(result.detail, /spawn maestro ENOENT/);
 });
 
-test("executeWebJob: 子目录 subflows 不算用例，只有顶层 yaml 参与映射", async (t) => {
+test("executeWebJob: 子目录 subflows 不算用例，但 runFlow 引用的断言计入顶层用例", async (t) => {
   const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
   const subflowsDir = path.join(flowsDir, "subflows");
   await mkdir(subflowsDir, { recursive: true });
   await writeFile(
     path.join(subflowsDir, "helper.yaml"),
     "appId: acme.app\n---\n- tapOn: Next\n- assertVisible: 子流程断言\n"
+  );
+  await writeFile(
+    path.join(flowsDir, "flow-a.yaml"),
+    "appId: acme.app\n---\n- launchApp\n- runFlow: subflows/helper.yaml\n"
   );
   const { exec } = execWithJunit(junit([xmlCase({ name: "flow-a", selfClosing: true })]));
 
@@ -372,8 +376,35 @@ test("executeWebJob: 子目录 subflows 不算用例，只有顶层 yaml 参与�
 
   assert.equal(result.status, "passed");
   assert.deepEqual(result.cases.map((entry) => entry.caseId), ["flow-a"]);
-  assert.equal(result.cases[0].assertionCount, 0, "subflows 的断言不计入顶层用例");
+  assert.equal(result.cases[0].assertionCount, 1, "runFlow 子流程的断言计入顶层用例");
+  assert.deepEqual(result.cases[0].assertions, [{ type: "visible", text: "子流程断言" }]);
   assert.equal(result.detail, null);
+});
+
+test("executeWebJob: runFlow 越界与循环引用不放大断言", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  const subflowsDir = path.join(flowsDir, "subflows");
+  await mkdir(subflowsDir, { recursive: true });
+  await writeFile(
+    path.join(subflowsDir, "helper.yaml"),
+    "appId: acme.app\n---\n- assertVisible: 子流程断言\n- runFlow: ../flow-a.yaml\n"
+  );
+  await writeFile(
+    path.join(flowsDir, "flow-a.yaml"),
+    "appId: acme.app\n---\n- launchApp\n- runFlow: subflows/helper.yaml\n- runFlow: ../outside.yaml\n"
+  );
+  await writeFile(path.join(jobDir, "outside.yaml"), "appId: acme.app\n---\n- assertVisible: 越界断言\n");
+  const { exec } = execWithJunit(junit([xmlCase({ name: "flow-a", selfClosing: true })]));
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+  assert.equal(result.cases[0].assertionCount, 1);
+  assert.deepEqual(result.cases[0].assertions, [{ type: "visible", text: "子流程断言" }]);
 });
 
 test("executeWebJob: 无 scriptSetId / 无 yaml / flowsDir 越界 → error 且不执行命令", async (t) => {
