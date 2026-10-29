@@ -264,6 +264,9 @@ test("人工状态不能把任务级 error 恢复成 completed", async (t) => {
   });
   assert.equal(cleared.document.gate.result, "error", "清除人工状态也不能升级任务级 error");
   assert.equal((await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id)).status, "failed");
+  const sheet = await loadSheet(ctx.copyPath);
+  assert.equal(cellText(sheet.getCell(2, columnByHeader(sheet, "AOS Result"))), "ERROR");
+  assert.equal(cellText(sheet.getCell(2, columnByHeader(sheet, "执行｜结果"))), "ERROR");
 });
 
 test("人工状态不能把迟到结果后的 failed 任务升级", async (t) => {

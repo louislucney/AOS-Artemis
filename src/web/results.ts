@@ -1583,6 +1583,12 @@ export async function applyWebJobManualStatus(
       if (!updated) warnings.push("manual-status-task-failed: 任务状态在写入期间已变化，未覆盖");
     }
 
+    const originalAggregate = aggregateResultGate(
+      cases.map((entry) => ({ ...entry, manualStatus: undefined }))
+    );
+    const suppressPerCaseResult =
+      document.reportedStatus === "error" ||
+      (document.reportedStatus === "failed" && originalAggregate.result !== "failed");
     let platformResult = document.platformResult;
     let resultCsvPath = document.resultCsvPath;
     let writtenCells = document.writtenCells;
@@ -1606,7 +1612,10 @@ export async function applyWebJobManualStatus(
           sheetName: target.sheetName,
           caseIdHeader: target.caseIdHeader,
           platform: spec.requirements.platform,
-          rows: platformResultRows(cases.filter((entry) => entry.caseId === input.caseId), false),
+          rows: platformResultRows(
+            cases.filter((entry) => entry.caseId === input.caseId),
+            suppressPerCaseResult
+          ),
           originalPath: target.originalPath,
           ...(sourceHeaders === undefined ? {} : { sourceHeaders })
         });
@@ -1625,7 +1634,10 @@ export async function applyWebJobManualStatus(
           assetId: target.asset.id,
           sheetName: target.sheetName,
           caseIdHeader: target.caseIdHeader,
-          rows: [{ caseId: input.caseId, values: { result: effective } }],
+          rows:
+            suppressPerCaseResult && effective === "PASS"
+              ? []
+              : [{ caseId: input.caseId, values: { result: effective } }],
           originalPath: target.originalPath,
           allowClearedRefresh: false,
           lastSystemValue: async (caseId, key) => {

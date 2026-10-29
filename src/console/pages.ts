@@ -819,10 +819,8 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
 /** 单条 Web 任务详情：只展示已持久化的事实（result.json 不存在时明确「尚无结果」）。 */
 /** 单例人工状态选择器；保存动作由页面底部脚本统一绑定。 */
 function manualStatusCell(
-  entry: WebJobResultDocument["execution"]["cases"][number],
-  editable: boolean
+  entry: WebJobResultDocument["execution"]["cases"][number]
 ): string {
-  if (!editable) return '<span class="muted">—</span>';
   const current = entry.manualStatus?.status ?? "";
   const options = [
     ["", "自动"],
@@ -848,7 +846,7 @@ export function renderWebJobPage(data: WebJobPageData): string {
     const effective = entry.manualStatus?.status ?? entry.status;
     const effectiveLabel =
       effective === "NOT_IMPL" ? "未实现" : effective === "BLOCKED" ? "阻塞" : effective;
-    return [
+    const row = [
       `<code>${escapeHtml(entry.caseId)}</code>`,
       escapeHtml(entry.name),
       cBadge({
@@ -871,9 +869,10 @@ export function renderWebJobPage(data: WebJobPageData): string {
         : `${escapeHtml(entry.failureStep ?? "")}${
             entry.failureStep === undefined ? "" : "："
           }${escapeHtml(entry.failureReason)}`,
-      entry.traceId === undefined ? "—" : `<code>${escapeHtml(entry.traceId)}</code>`,
-      manualStatusCell(entry, canManualStatus)
+      entry.traceId === undefined ? "—" : `<code>${escapeHtml(entry.traceId)}</code>`
     ];
+    if (canManualStatus) row.push(manualStatusCell(entry));
+    return row;
   });
   const evidence = Array.isArray(result?.evidence) ? result.evidence : [];
   const evidenceHtml =
