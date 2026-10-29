@@ -3403,6 +3403,18 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **转义**：选择器文本先 `escapeRegExp`，再用 YAML 单引号标量；`inputText` 只做 YAML 标量、不做 regex 转义；`assertNotVisible` 的语义是“没有整段文本等于 X 的元素”，不是“页面任何位置不包含 X”。
 - **前置条件**：默认 `preconditionMode:"strict"`，非空 → `precondition-unparsed`；显式 `"assume-prepared"` 时视为环境已准备，`clearState:false` + `stopApp:false` 并记 `precondition-assumed`；不生成登录/积分/后台/优惠券 setup。
 - **appId**：按平台校验（Android 至少两段、字母开头、可下划线；iOS 允许连字符、至少一个点）；双端分别生成脚本集，manifest 带 `platform`。
-- **边界**：未接入 job/CLI/面板，未写脚本集资产，未做 testID 发现/LLM；`input-field-missing`、`navigation-unparsed`、`scan-unsupported`、`symbol-label`、`conditional-unsupported` 等保持 unresolved，不猜。
+- **边界**：Phase 1 未接入 job/CLI/面板；Phase 2 已加脚本集资产写入（见 §13.278）。未做 testID 发现/LLM；`input-field-missing`、`navigation-unparsed`、`scan-unsupported`、`symbol-label`、`conditional-unsupported` 等保持 unresolved，不猜。
 - **Phase 0/1 实测**（真实样本，assume-prepared）：CSV 15/26 可生成（14 有硬断言）、XLSX 31/40（22 有硬断言）；strict 下 CSV 0/26（前置条件全阻塞）、XLSX 16/40。详见 rationale §4.5。
 - **测试**：`test/web-script-gen.test.js` 19 例：基本流程、验证步骤、输入字段、soft/manual、扫描/条件、前置模式、appId、regex/YAML 转义、代词回指、导航推断、符号按钮、滚动、notVisible、越界、集合统计。
+
+### 13.278 新增（Web 脚本集资产：确定性 zip、manifest 与幂等写入）
+
+> 2026-10-29。Plan 2A Phase 2：把生成器输出落成可下发的 `scripts` 资产；仍不接 job/CLI/面板。范围见 rationale §6.3/§6.8。
+
+- **确定性 ZIP**（`src/web/zip.ts`）：`buildZip(entries)` 仅 store 方式（无压缩）、固定 DOS 时间戳、按路径 codepoint 排序、UTF-8 名称、CRC32；拒绝绝对路径/`..`/空段/重复路径。相同输入字节完全一致，保证幂等 sha。
+- **组合**（`src/web/script-set.ts`）：`buildScriptSetBundle({appId,platform,sourceExcelAssetId,packageAssetId,cases,preconditionMode?...})` → `{manifest,files,zip,sha256,ready,unresolved}`。manifest 含 `schemaVersion/generator/generatorVersion/platform/appId/sourceExcelAssetId/packageAssetId/preconditionMode/inferNavigationTap/includeSoftText/assertionDocHash/counts/cases[]`；ready 用例写 `flows/<safeCaseId>.yaml`，unresolved 只进 manifest（`flow:null`）；caseId 清洗为 `[A-Za-z0-9._-]`，重名追加 `-2`。
+- **哈希**：`assertionDocHash` 对 `caseId/steps/expected/preconditions` 按 caseId codepoint 排序后 SHA-256；zip sha 用于幂等与资产寻址。
+- **写入**（`storeScriptSet`）：未同时绑定 Excel/包 → `invalid-bundle`；无 ready 用例 → `script-set-unusable`；先按 `sha256 + metadata` 查同项目 `scripts` 资产，命中返回 `{created:false}`；否则 `storeWebAsset` 写 metadata `origin:"generated"`、`generatedBy:"aos"`、`sourceExcelAssetId/packageAssetId/platform/generatorVersion/assertionDocHash/preconditionMode/appId/ready/unresolved`，返回 `{created:true}`。同内容不同绑定/平台会新建版本，但 CAS 文件复用。
+- **下发匹配**（`src/web/job-spec.ts`）：`assertScriptSetMatch` 增加 `platform` 校验；metadata 声明 platform 且与 job `requirements.platform` 不一致 → `script-set-mismatch`；`allowStaleScript` 仍显式跳过全部校验。
+- **边界**：不解析 Excel、不生成入口、不写 Excel 建议列；脚本集仍不可变，人工脚本不覆盖。`suite task`/面板接入见 Phase 3/4。
+- **测试**：`test/web-script-set.test.js` 9 例（manifest/flow、确定性、哈希变化、文件名清洗、zip 有效性与路径安全、写入/幂等、新绑定新版本、无 ready/缺绑定拒绝）；`test/web-job-queue.test.js` 增加 platform 不匹配拒绝。

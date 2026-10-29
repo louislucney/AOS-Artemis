@@ -920,6 +920,26 @@ test("脚本集未声明 sourceExcelAssetId/packageAssetId → script-set-unveri
   }
 });
 
+test("脚本集 platform 与任务平台不一致 → script-set-mismatch", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "script-platform");
+    const assets = await makeAssets(store, rootPath);
+    const iosScript = await addAsset(store, rootPath, "scripts", "ios.zip", {
+      sourceExcelAssetId: assets.excel.id,
+      packageAssetId: assets.pkg.id,
+      platform: "ios"
+    });
+
+    await assert.rejects(
+      createWebJob(jobInput(store, rootPath, assets, { scriptSetId: iosScript.id })),
+      (error) =>
+        error instanceof WebJobDispatchError &&
+        error.code === "script-set-mismatch" &&
+        /平台/.test(error.message)
+    );
+  }
+});
+
 test("claimWebJob 用显式 nowMs 判定租约过期（与墙钟无关）", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "claim-clock");
