@@ -4,7 +4,7 @@ import path from "node:path";
 
 import type { ProjectStore, WebAssetKind, WebAssetRecord } from "../db/types.js";
 import { writeFileAtomic } from "../util.js";
-import { decodeCsv } from "./csv.js";
+import { CsvError, decodeCsv } from "./csv.js";
 
 export type { WebAssetKind };
 
@@ -52,6 +52,7 @@ export type WebAssetErrorCode =
   | "invalid-filename"
   | "empty-file"
   | "too-large"
+  | "unsupported-encoding"
   | "project-root-missing";
 
 export class WebAssetError extends Error {
@@ -130,7 +131,14 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
   if (input.kind === "excel" && extension === ".csv") {
     // CSV 原件保持原字节只读；编码检测结论写进元数据，后续生成工作副本时可直接复用。
     metadata.format = "csv";
-    metadata.encoding = decodeCsv(input.buffer).encoding;
+    try {
+      metadata.encoding = decodeCsv(input.buffer).encoding;
+    } catch (error) {
+      if (error instanceof CsvError && error.code === "unsupported-encoding") {
+        throw new WebAssetError("unsupported-encoding", `CSV 编码不受支持：${error.message}`);
+      }
+      throw error;
+    }
   }
   const rootPath = path.resolve(input.rootPath);
   // 只写已存在的托管项目目录：不代用户 mkdir，避免请求路径在服务端凭空长出新项目。

@@ -5,9 +5,14 @@ import ExcelJS from "exceljs";
 
 import { logWarn } from "../log.js";
 import { errorMessage } from "../util.js";
-import { csvToXlsxBuffer, looksLikeCsv, type CsvEncoding } from "./csv.js";
+import { csvToXlsxBuffer, CsvError, looksLikeCsv, type CsvEncoding } from "./csv.js";
 
-export type WorkbookCopyErrorCode = "same-path" | "invalid-original" | "copy-unreadable";
+export type WorkbookCopyErrorCode =
+  | "same-path"
+  | "invalid-original"
+  | "unsupported-encoding"
+  | "too-large"
+  | "copy-unreadable";
 
 export class WorkbookCopyError extends Error {
   readonly code: WorkbookCopyErrorCode;
@@ -94,8 +99,14 @@ async function readOriginal(originalPath: string): Promise<OriginalWorkbook> {
       const converted = await csvToXlsxBuffer(buffer);
       return { format: "csv", encoding: converted.encoding, data: converted.buffer };
     } catch (error) {
+      const code: WorkbookCopyErrorCode =
+        error instanceof CsvError && error.code === "unsupported-encoding"
+          ? "unsupported-encoding"
+          : error instanceof CsvError && error.code === "too-large"
+            ? "too-large"
+            : "invalid-original";
       throw new WorkbookCopyError(
-        "invalid-original",
+        code,
         `CSV 原件无法读取：${originalPath}（${errorMessage(error)}）`
       );
     }

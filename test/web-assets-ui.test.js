@@ -113,7 +113,7 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /<time datetime="[^"]+"/, "上传时间");
 
   assert.match(html, /id="asset-upload-form"/, "上传表单");
-  assert.match(html, /type="file"[^>]*accept="\.xlsx"/, "仅 .xlsx");
+  assert.match(html, /type="file"[^>]*accept="\.xlsx,\.csv"/, "允许 .xlsx/.csv");
   assert.match(html, /id="asset-file"/, "文件控件");
   assert.match(html, /\/panel\/api\/projects\/assets/, "multipart 上传端点");
 
@@ -141,6 +141,7 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
     code.includes("/panel/api/projects/assets")
   );
   assert.equal(ownScripts.length, 1, "资产页脚本存在");
+  assert.match(ownScripts[0], /仅支持 \.xlsx\/\.csv 文件/, "客户端校验 CSV 扩展名");
   assert.doesNotThrow(() => new Function(ownScripts[0]), "资产页内联脚本可解析");
 });
 

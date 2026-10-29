@@ -243,6 +243,30 @@ test("API /panel/api/projects/assets: 上传成功后 list 可见并写 asset.up
   assert.equal(audit[0].refs.sha256, sha256(XLSX));
 });
 
+test("API /panel/api/projects/assets: 上传 CSV 成功并记录 format/encoding", async (t) => {
+  const workspace = await tempDir(t, "aos-assets-api-");
+  const rootPath = path.join(workspace, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await makeProject(store, rootPath, "acme");
+  const deps = { store, env: {}, workspaceRoot: workspace };
+  const csv = Buffer.from("用例编号,步骤\n001,点击\n", "utf8");
+
+  const body = multipartBody("----aosAssets", {
+    fields: { project: rootPath, kind: "excel" },
+    filename: "cases.csv",
+    content: csv
+  });
+  const res = await handlePanelActionRequest(uploadRequest(body), deps);
+  assert.equal(res.status, 200, res.body);
+  const payload = JSON.parse(res.body);
+  assert.equal(payload.asset.kind, "excel");
+  assert.equal(payload.asset.filename, "cases.csv");
+  assert.equal(path.extname(payload.asset.storagePath), ".csv");
+  assert.deepEqual(payload.asset.metadata, { format: "csv", encoding: "utf-8" });
+  assert.deepEqual(await readFile(payload.asset.storagePath), csv, "原件按原字节保存");
+});
+
 test("API /panel/api/projects/assets: 拒绝错误扩展名/缺项目/未知项目/未知 kind/无文件", async (t) => {
   const workspace = await tempDir(t, "aos-assets-api-");
   const rootPath = path.join(workspace, "acme");

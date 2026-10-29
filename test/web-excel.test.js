@@ -483,3 +483,22 @@ test("parseExcel: 显式 format=xlsx 时 CSV 内容按损坏工作簿拒绝", as
     isMappingError("invalid-workbook")
   );
 });
+
+test("parseExcel: 显式 CSV 遇到 UTF-16 BOM 拒绝 unsupported-encoding", async () => {
+  const utf16 = Buffer.concat([
+    Buffer.from([0xff, 0xfe]),
+    Buffer.from("用例编号,步骤\n", "utf16le")
+  ]);
+  await assert.rejects(
+    parseExcel(utf16, {
+      format: "csv",
+      mapping: { caseId: "用例编号", steps: "步骤" }
+    }),
+    (error) => {
+      assert.ok(error instanceof ExcelMappingError);
+      assert.equal(error.code, "unsupported-encoding");
+      assert.match(error.message, /UTF-16/);
+      return true;
+    }
+  );
+});

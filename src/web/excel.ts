@@ -1,6 +1,13 @@
 import ExcelJS from "exceljs";
 
-import { csvToXlsxBuffer, CsvError, looksLikeCsv, type CsvEncoding } from "./csv.js";
+import {
+  csvToXlsxBuffer,
+  CsvError,
+  looksLikeCsv,
+  SHEET_MAX_COLUMNS,
+  SHEET_MAX_ROWS,
+  type CsvEncoding
+} from "./csv.js";
 import {
   CANONICAL_FIELDS,
   CANONICAL_FIELD_LABELS,
@@ -62,6 +69,7 @@ export interface ParseExcelInput {
 
 export type ExcelMappingErrorCode =
   | "invalid-workbook"
+  | "unsupported-encoding"
   | "sheet-not-found"
   | "invalid-header-row"
   | "missing-header"
@@ -79,9 +87,6 @@ export class ExcelMappingError extends Error {
     this.code = code;
   }
 }
-
-const MAX_ROWS = 10000;
-const MAX_COLUMNS = 200;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
@@ -238,21 +243,28 @@ async function loadSheet(
       await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
     }
   } catch (error) {
+    if (error instanceof CsvError) {
+      if (error.code === "unsupported-encoding") {
+        throw new ExcelMappingError("unsupported-encoding", error.message);
+      }
+      throw new ExcelMappingError(
+        "invalid-workbook",
+        error.code === "too-large" ? error.message : `无法读取 CSV：${error.message}`
+      );
+    }
     const detail = error instanceof Error ? error.message : String(error);
     throw new ExcelMappingError(
       "invalid-workbook",
-      format === "csv"
-        ? `无法读取 CSV：${error instanceof CsvError ? error.message : detail}`
-        : `无法读取工作簿（文件损坏或不是有效的 .xlsx）：${detail}`
+      `无法读取工作簿（文件损坏或不是有效的 .xlsx）：${detail}`
     );
   }
   const sheet = pickSheet(workbook, options.sheetName);
   const rowCount = sheet.rowCount ?? 0;
   const columnCount = sheet.columnCount ?? 0;
-  if (rowCount > MAX_ROWS || columnCount > MAX_COLUMNS) {
+  if (rowCount > SHEET_MAX_ROWS || columnCount > SHEET_MAX_COLUMNS) {
     throw new ExcelMappingError(
       "invalid-workbook",
-      `工作表维度异常（${rowCount} 行 × ${columnCount} 列，上限 ${MAX_ROWS} 行 × ${MAX_COLUMNS} 列）：请拆表后重试`
+      `工作表维度异常（${rowCount} 行 × ${columnCount} 列，上限 ${SHEET_MAX_ROWS} 行 × ${SHEET_MAX_COLUMNS} 列）：请拆表后重试`
     );
   }
   const headerRow = options.headerRow ?? 1;

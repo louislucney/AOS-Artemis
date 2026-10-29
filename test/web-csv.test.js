@@ -16,7 +16,9 @@ import {
   decodeCsv,
   encodeCsv,
   exportWorkbookCsv,
-  parseCsv
+  parseCsv,
+  SHEET_MAX_COLUMNS,
+  SHEET_MAX_ROWS
 } from "../dist/web/csv.js";
 import { ensureWorkbookCopy, WorkbookCopyError } from "../dist/web/workbook.js";
 import { createWebProject } from "../dist/web/project-service.js";
@@ -94,6 +96,70 @@ test("decodeCsv: 无 BOM UTF-8 / UTF-8 BOM / GB18030 自动识别且保留结论
   assert.deepEqual(decodeCsv(Buffer.alloc(0)), { text: "", encoding: "utf-8", bom: false });
 });
 
+test("decodeCsv: UTF-16 BOM / NUL 字节显式拒绝 unsupported-encoding", () => {
+  const utf16le = Buffer.concat([
+    Buffer.from([0xff, 0xfe]),
+    Buffer.from("用例编号,步骤\nC1,点击\n", "utf16le")
+  ]);
+  assert.throws(() => decodeCsv(utf16le), isCsvError("unsupported-encoding"));
+  const utf16be = Buffer.concat([
+    Buffer.from([0xfe, 0xff]),
+    Buffer.from("a,b", "utf16le").swap16()
+  ]);
+  assert.throws(() => decodeCsv(utf16be), isCsvError("unsupported-encoding"));
+  assert.throws(
+    () => decodeCsv(Buffer.from([0x61, 0x2c, 0x62, 0x0a, 0x00, 0x63])),
+    isCsvError("unsupported-encoding")
+  );
+});
+
+test("parseCsv: 维度上限在解析中快速失败（不物化百万行）", () => {
+  const tooManyRows = "a,b\n".repeat(SHEET_MAX_ROWS + 1);
+  assert.throws(
+    () => parseCsv(tooManyRows, { maxRows: SHEET_MAX_ROWS, maxColumns: SHEET_MAX_COLUMNS }),
+    (error) => {
+      assert.ok(error instanceof CsvError);
+      assert.equal(error.code, "too-large");
+      assert.match(error.message, /工作表维度异常/);
+      return true;
+    }
+  );
+  const tooWide = `${Array.from({ length: SHEET_MAX_COLUMNS + 1 }, () => "x").join(",")}\n`;
+  assert.throws(
+    () => parseCsv(tooWide, { maxRows: SHEET_MAX_ROWS, maxColumns: SHEET_MAX_COLUMNS }),
+    (error) => error instanceof CsvError && error.code === "too-large"
+  );
+});
+
+test("csvToXlsxBuffer: 超维度在 ExcelJS 构造前失败，ensureWorkbookCopy 同样拒绝", async (t) => {
+  const tooManyRows = Buffer.from("a,b\n".repeat(SHEET_MAX_ROWS + 1), "utf8");
+  await assert.rejects(
+    csvToXlsxBuffer(tooManyRows),
+    (error) => error instanceof CsvError && error.code === "too-large"
+  );
+
+  const dir = await tempDir(t, "aos-csv-copy-");
+  const original = path.join(dir, "huge.csv");
+  const target = path.join(dir, "a.xlsx");
+  await writeFile(original, tooManyRows);
+  await assert.rejects(
+    ensureWorkbookCopy(original, target),
+    (error) => error instanceof WorkbookCopyError && error.code === "too-large"
+  );
+  await assert.rejects(readFile(target), (error) => error.code === "ENOENT", "不产生半成品副本");
+});
+
+test("csvToXlsxBuffer: UTF-16 原件不转码", async () => {
+  const utf16 = Buffer.concat([
+    Buffer.from([0xff, 0xfe]),
+    Buffer.from("用例编号,步骤\n", "utf16le")
+  ]);
+  await assert.rejects(
+    csvToXlsxBuffer(utf16),
+    (error) => error instanceof CsvError && error.code === "unsupported-encoding"
+  );
+});
+
 test("parseCsv: RFC4180（引号、转义引号、逗号、CRLF/LF、内嵌换行）不截断", () => {
   const text =
     '用例编号,步骤,预期\r\n' +
@@ -150,8 +216,34 @@ test("encodeCsv: RFC4180 引用 + 指定编码/行尾/BOM", () => {
   assert.deepEqual([...withBom.subarray(0, 3)], [...UTF8_BOM]);
 });
 
-test("encodeCsv: GB18030 无法表示的字符显式失败", () => {
-  assert.throws(() => encodeCsv([["\uFFFF"]], { encoding: "gb18030" }), isExportError("unencodable"));
+test("encodeCsv: GB18030 BMP 四字节区可编码（U+00A0/U+3400），孤立代理项显式失败", () => {
+  const rows = [
+    ["用例编号", "步骤"],
+    ["C1", "\u00a0\u3400 测试"]
+  ];
+  const encoded = encodeCsv(rows, { encoding: "gb18030" });
+  const decoded = decodeCsv(encoded);
+  assert.equal(decoded.encoding, "gb18030");
+  assert.deepEqual(parseCsv(decoded.text), rows);
+  assert.throws(() => encodeCsv([["\ud800"]], { encoding: "gb18030" }), isExportError("unencodable"));
+});
+
+test("encodeCsv/exportWorkbookCsv: GB18030 + BOM 显式 invalid-option", async (t) => {
+  assert.throws(
+    () => encodeCsv([["a"]], { encoding: "gb18030", bom: true }),
+    isExportError("invalid-option")
+  );
+  const dir = await tempDir(t, "aos-csv-export-");
+  const source = path.join(dir, "workbook.xlsx");
+  await writeFile(source, await xlsxBuffer([["用例编号"], ["C1"]]));
+  await assert.rejects(
+    () =>
+      exportWorkbookCsv(source, path.join(dir, "out.csv"), {
+        encoding: "gb18030",
+        bom: true
+      }),
+    isExportError("invalid-option")
+  );
 });
 
 test("csvToXlsxBuffer: 生成名为 csv 的工作表，块/空值原样保留", async () => {
@@ -273,6 +365,20 @@ test("storeWebAsset: excel 接受 .csv 且记录 format/encoding 元数据", asy
       }),
     (error) => error instanceof WebAssetError && error.code === "invalid-extension"
   );
+  await assert.rejects(
+    () =>
+      storeWebAsset({
+        store,
+        rootPath,
+        kind: "excel",
+        filename: "utf16.csv",
+        buffer: Buffer.concat([
+          Buffer.from([0xff, 0xfe]),
+          Buffer.from("用例编号,步骤\n", "utf16le")
+        ])
+      }),
+    (error) => error instanceof WebAssetError && error.code === "unsupported-encoding"
+  );
 });
 
 test("exportWorkbookCsv: 新文件导出，跳过隐藏列，RFC4180 引用，源文件不变", async (t) => {
@@ -318,6 +424,32 @@ test("exportWorkbookCsv: 新文件导出，跳过隐藏列，RFC4180 引用，�
   await exportWorkbookCsv(source, out, { overwrite: true });
 });
 
+test("exportWorkbookCsv: 空行之后的数据不被丢弃（按 rowCount 而非 actualRowCount）", async (t) => {
+  const dir = await tempDir(t, "aos-csv-export-");
+  const source = path.join(dir, "workbook.xlsx");
+  const out = path.join(dir, "result.csv");
+  // 第 3 行完全不存在（不是空字符串行）：actualRowCount=3、rowCount=4，
+  // 旧实现会停在 3 丢掉第 4 行。
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("用例");
+  sheet.addRow(["用例编号", "步骤"]);
+  sheet.addRow(["C1", "第一步"]);
+  sheet.getRow(4).getCell(1).value = "C4";
+  sheet.getRow(4).getCell(2).value = "第四步";
+  assert.equal(sheet.actualRowCount, 3);
+  assert.equal(sheet.rowCount, 4);
+  await writeFile(source, Buffer.from(await workbook.xlsx.writeBuffer()));
+
+  const result = await exportWorkbookCsv(source, out);
+  assert.equal(result.rows, 4);
+  assert.deepEqual(parseCsv(await readFile(out, "utf8")), [
+    ["用例编号", "步骤"],
+    ["C1", "第一步"],
+    ["", ""],
+    ["C4", "第四步"]
+  ]);
+});
+
 test("exportWorkbookCsv: 指定 GB18030 与 CRLF 时按请求输出", async (t) => {
   const dir = await tempDir(t, "aos-csv-export-");
   const source = path.join(dir, "workbook.xlsx");
@@ -326,7 +458,7 @@ test("exportWorkbookCsv: 指定 GB18030 与 CRLF 时按请求输出", async (t) 
     source,
     await xlsxBuffer([
       ["用例编号", "步骤"],
-      ["C1", "点击登录"]
+      ["C1", "点击登录\u00a0\u3400"]
     ])
   );
 
@@ -339,13 +471,30 @@ test("exportWorkbookCsv: 指定 GB18030 与 CRLF 时按请求输出", async (t) 
   const raw = await readFile(out);
   const decoded = decodeCsv(raw);
   assert.equal(decoded.encoding, "gb18030");
-  assert.equal(decoded.text, "用例编号,步骤\r\nC1,点击登录\r\n");
+  assert.equal(decoded.text, "用例编号,步骤\r\nC1,点击登录\u00a0\u3400\r\n");
   assert.equal(decoded.text.replaceAll("\r\n", "").includes("\n"), false);
   assert.deepEqual(parseCsv(decoded.text), [
     ["用例编号", "步骤"],
-    ["C1", "点击登录"]
+    ["C1", "点击登录\u00a0\u3400"]
   ]);
   assert.equal(raw.subarray(0, 3).equals(UTF8_BOM), false, "GB18030 不写 UTF-8 BOM");
+});
+
+test("exportWorkbookCsv: 输出路径是目录时给出明确提示", async (t) => {
+  const dir = await tempDir(t, "aos-csv-export-");
+  const source = path.join(dir, "workbook.xlsx");
+  const outDir = path.join(dir, "out");
+  await writeFile(source, await xlsxBuffer([["用例编号"], ["C1"]]));
+  await mkdir(outDir);
+  await assert.rejects(
+    () => exportWorkbookCsv(source, outDir),
+    (error) => {
+      assert.ok(error instanceof CsvExportError);
+      assert.equal(error.code, "output-exists");
+      assert.match(error.message, /目录/);
+      return true;
+    }
+  );
 });
 
 test("exportWorkbookCsv: 拒绝把结果写到原件路径", async (t) => {
