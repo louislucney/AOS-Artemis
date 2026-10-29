@@ -91,13 +91,17 @@ const FIELD_VERB_ALL = /显示|顯示|展示|包含|包括/g;
 const LABEL_REJECT = /(?:並|并且|且|可|需|以及|并|則|则|才|再)/;
 const LABEL_PROSE = /(?:載入中|加载中|^請稍候|^请稍候)/;
 const LABEL_STATE =
-  /^已[\u4e00-\u9fff]{1,3}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中|關閉|关闭|開啟|开启)$|售完|暫停服務|暫停/;
+  /^已[\u4e00-\u9fff]{1,7}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中|關閉|关闭|開啟|开启)$|(?:售完|暫停服務|暫停)$/;
 const DISPLAY_STATE =
-  /^已[\u4e00-\u9fff]{1,3}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|删除|新增|中|關閉|关闭|開啟|开启)$|售完|暫停服務|暫停/;
+  /^已[\u4e00-\u9fff]{1,7}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|删除|新增|中|關閉|关闭|開啟|开启)$|(?:售完|暫停服務|暫停)$/;
 const STATUS_WORD =
-  /無庫存|無库存|無按鈕|無按钮|無優惠|無优惠|無結果|無结果|库存不足|庫存不足|已達上限|已达上限|缺貨|缺货|售罄|售完|停用|失效|過期|过期|不足|上限|暫停服務|暫停|已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|退款|取貨|送達|簽收|結帳|配送|審核|排隊|叫號|開通|核銷|成立|生效|用完)/;
+  /^(?:無(?!障礙|線|限)|无(?!障碍|线|限))|無庫存|無库存|無按鈕|無按钮|無優惠|無优惠|無結果|無结果|库存不足|庫存不足|已達上限|已达上限|缺貨|缺货|售罄|(?:售完|暫停服務|暫停)$|停用|失效|過期|过期|不足|上限|^已[\u4e00-\u9fff]{1,7}$/;
 const ENGLISH_PREDICATE =
   /\b(?:is|are|was|were|be|been|failed|success|successful|loading|correct|correctly|wrong|error|pending|completed|cancelled|canceled)\b/i;
+const LABEL_ACTION =
+  /進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|可|需|並|并|且|將|将|會|会|能|要|^請(?:稍候|至|先|您|於|在|按|選|輸|確|聯|參|見)|^请(?:稍候|至|先|您|于|在|按|选|输|确|联|参|见)|的|了|是|在|有|為|为|若|如果|當|当|加入|选中|選中|超支|導出|导出|功能|正確|正确|異常|异常|及格|合格|通過|通过|資料|数据|數據|以下|如下|全部|所有|自動|自动|登入|登錄|登录|填寫|填写|上傳|上传/;
+const STATUS_PHRASE =
+  /已[^，,。；;]{0,8}(?:成功|完成|提交|更新|刪除|删除|新增|取消|付款|出貨|出货|退款|取貨|送達|簽收|結帳|配送|審核|排隊|叫號|開通|核銷|成立|生效|用完)/;
 const LABEL_SHAPE = /^[A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._/&()#+-]*$/;
 const ACTION_START =
   /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作|勾選|勾选|提交|展開|展开|收起|切換|切换|參閱|参阅|如圖|如图|見圖|见图|如下|詳情|详情|請稍候|请稍候)/;
@@ -397,7 +401,7 @@ function extractFieldList(clause: string): FieldList | null {
     if (/^[)）(（]/.test(raw) || !/[A-Za-z0-9\u4e00-\u9fff]/.test(raw)) return null;
     if (/[。；;，,：:！!?？]$/.test(raw)) return null;
     if (VAGUE.test(raw)) continue;
-    if (LABEL_STATE.test(raw) || STATUS_WORD.test(raw)) return null;
+    if (LABEL_STATE.test(raw) || STATUS_PHRASE.test(raw) || STATUS_WORD.test(raw) || LABEL_ACTION.test(raw)) return null;
     if (LABEL_PROSE.test(raw)) return null;
     if (raw.replace(/\s+/g, "").length > 24) return null;
     if (LABEL_REJECT.test(raw)) return null;
@@ -583,7 +587,12 @@ function isConcreteLabel(text: string): boolean {
   const length = [...base].length;
   if (length < 2 || length > 30) return false;
   if (NEGATIVE.test(base)) return false;
-  if (VAGUE.test(base) || LABEL_STATE.test(base) || LABEL_PROSE.test(base) || DISPLAY_STATE.test(base)) {
+  if (
+    VAGUE.test(base) ||
+    LABEL_STATE.test(base) ||
+    LABEL_PROSE.test(base) ||
+    STATUS_PHRASE.test(base)
+  ) {
     return false;
   }
   if (STATUS_WORD.test(base) || ENGLISH_PREDICATE.test(base)) return false;
@@ -598,7 +607,7 @@ function isConcreteLabel(text: string): boolean {
     }
   }
   if (stack.length > 0) return false;
-  return !/進入|进入|跳轉|跳转|返回|停留|關閉|关闭|開啟|开启|點擊|点击|選擇|选择|輸入|输入|滑動|滑动|成功|完成|正常|清空|加載|加载|刷新|重新|生成|支持|支援|可|需|並|并|且|及|或|與|与|將|将|會|会|能|要|請|请|的|了|是|在|有|為|为|若|如果|當|当|加入|选中|選中|超支|導出|导出|功能|狀態|状态|正確|正确|異常|异常|資料|数据|數據|以下|如下|全部|所有|自動|自动|登入|登錄|登录|填寫|填写|上傳|上传/.test(base);
+  return !LABEL_ACTION.test(base);
 }
 
 function classifyClause(

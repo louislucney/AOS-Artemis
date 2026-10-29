@@ -1490,6 +1490,60 @@ test("classify: 简体 无 特定否定不升 concrete；無障礙保留", () =>
   assert.deepEqual(byStep.get(5), [{ type: "visible", text: "無障礙" }]);
 });
 
+test("classify: 無 prefix 状态拒绝；無障礙/無線網路/無限次使用保留", () => {
+  const negatives = ["無權限", "無效卡號", "無網路連線", "無此優惠", "無紀錄", "無回應", "無貨"];
+  const positives = ["無障礙", "無線網路", "無限次使用"];
+  const expected = [...negatives, ...positives]
+    .map((value, index) => `${index + 1}. ${value}`)
+    .join("\n");
+  const result = classifyExpectedResult({
+    expected,
+    steps: [...negatives, ...positives].map((_, index) => `s${index}`),
+    caseId: "TC_WU_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= negatives.length; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  for (let step = negatives.length + 1; step <= negatives.length + positives.length; step += 1) {
+    assert.ok(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      `step ${step} 应为 visible`
+    );
+  }
+});
+
+test("classify: 已+状态复合词拒绝；售完商品/暫停服務通知保留", () => {
+  const states = ["已領取優惠券", "已寄出商品", "已發送通知", "已退回款項", "已驗證帳號", "已綁定卡片"];
+  const positives = ["售完商品", "暫停服務通知"];
+  const expected = [...states, ...positives]
+    .map((value, index) => `${index + 1}. ${value}`)
+    .join("\n");
+  const result = classifyExpectedResult({
+    expected,
+    steps: [...states, ...positives].map((_, index) => `s${index}`),
+    caseId: "TC_YI_COMPOUND"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= states.length; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  for (let step = states.length + 1; step <= states.length + positives.length; step += 1) {
+    assert.ok(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      `step ${step} 应为 visible`
+    );
+  }
+});
+
 test("classify: 规则化 已+状态拒绝；已用S... 保留", () => {
   const states = [
     "已退款",
