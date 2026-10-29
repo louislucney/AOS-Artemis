@@ -1067,6 +1067,17 @@ test("classify: 已用/最後更新/批量刪除 字段仍 visible", () => {
   ]);
 });
 
+test("classify: 已過期/已停用/已失效 等状态列不成硬断言", () => {
+  const result = classifyExpectedResult({
+    expected: "1. 顯示訂單已過期、優惠已失效、商品已售罄、帳號已停用",
+    steps: ["a"],
+    caseId: "TC_STATE_PROSE"
+  });
+  const assertions = result.steps.flatMap((entry) => entry.assert);
+  assert.ok(!assertions.some((entry) => entry.type === "visible"), JSON.stringify(assertions));
+  assert.notEqual(result.confidence, "high");
+});
+
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
   const { filePath } = await makeWorkbook(t);
   const before = await loadSheet(filePath);
