@@ -250,16 +250,25 @@ test("classify: 空预期 → 无断言、manual 记「无预期」、low", () =
   }
 });
 
-test("classify: 无编号且无当前步骤 → ambiguous，不默认 step 1；有当前步骤则跟随", () => {
-  const orphan = classifyExpectedResult({
+test("classify: 单行无编号预期绑定最后一步；多行无编号仍 ambiguous", () => {
+  const single = classifyExpectedResult({
     expected: "显示“成功”",
+    steps: ["打开首页", "点击确认"],
+    caseId: "TC_SINGLE"
+  });
+  assert.deepEqual(single.steps, [
+    { step: 2, assert: [{ type: "visible", text: "成功" }] }
+  ]);
+  assert.deepEqual(single.ambiguous, []);
+
+  const multi = classifyExpectedResult({
+    expected: ["显示“成功”", "显示“失败”"].join("\n"),
     steps: ["点击确认"],
     caseId: "TC_ORPHAN"
   });
-  assert.deepEqual(orphan.steps, []);
-  assert.deepEqual(orphan.ambiguous, [
-    { step: null, reason: "缺少步骤编号，无法定位步骤", sourceText: "显示“成功”" }
-  ]);
+  assert.deepEqual(multi.steps, []);
+  assert.equal(multi.ambiguous.length, 2);
+  assert.match(multi.ambiguous[0].reason, /缺少步骤编号/);
 
   const followed = classifyExpectedResult({
     expected: ["1. 打开首页", "显示“成功”"].join("\n"),
@@ -289,13 +298,13 @@ test("classify: 长句不发明文本 → manual（有步骤）/ ambiguous（无
   assert.match(bound.manual[0].reason, /长句/);
 
   const orphan = classifyExpectedResult({
-    expected: longLine,
+    expected: [longLine, longLine].join("\n"),
     steps: ["查看页面"],
     caseId: "TC_LONG_ORPHAN"
   });
   assert.deepEqual(orphan.steps, []);
   assert.equal(orphan.ambiguous[0].step, null);
-  assert.match(orphan.ambiguous[0].reason, /长句/);
+  assert.match(orphan.ambiguous[0].reason, /缺少步骤编号/);
   assert.equal(orphan.confidence, "low");
 });
 
@@ -318,6 +327,288 @@ test("classify: 繁体/英文与不可解析计算式", () => {
   assert.deepEqual(byStep.get(4), [{ type: "calc", expression: "160 / 2", expected: 80 }]);
   assert.equal(byStep.get(5)[0].type, "manual");
   assert.equal(result.manual[0].step, 5);
+});
+
+test("classify: 繁体显示/否定/人工关键词", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 頁面顯示“首頁”，出現“提示”",
+      "2. 未顯示“A”，未出現“B”，隱藏“C”，不可見“D”，不能“E”",
+      "3. 後台資料排序",
+      "4. 積分餘額需刷新",
+      "5. 未加載“F”，未返回“G”，未生效“H”，未完成“I”，未成功“J”，未存在“K”，未找到“L”，未彈出“M”，未支持“N”"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_TRAD"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [
+    { type: "visible", text: "首頁" },
+    { type: "visible", text: "提示" }
+  ]);
+  assert.deepEqual(byStep.get(2), [
+    { type: "notVisible", text: "A" },
+    { type: "notVisible", text: "B" },
+    { type: "notVisible", text: "C" },
+    { type: "notVisible", text: "D" },
+    { type: "notVisible", text: "E" }
+  ]);
+  assert.equal(byStep.get(3)[0].type, "manual");
+  assert.equal(byStep.get(4)[0].type, "manual");
+  assert.deepEqual(byStep.get(5), [
+    { type: "notVisible", text: "F" },
+    { type: "notVisible", text: "G" },
+    { type: "notVisible", text: "H" },
+    { type: "notVisible", text: "I" },
+    { type: "notVisible", text: "J" },
+    { type: "notVisible", text: "K" },
+    { type: "notVisible", text: "L" },
+    { type: "notVisible", text: "M" },
+    { type: "notVisible", text: "N" }
+  ]);
+});
+
+test("classify: ’愛心‘ / 【...】 / ‘...’ 引号对均输出 visible", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. ’愛心‘icon變紅色", "2. 點擊【選擇門市】tab", "3. ‘首頁’按鈕"].join("\n"),
+    steps: ["a", "b", "c"],
+    caseId: "TC_QUOTES"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "visible", text: "愛心" }]);
+  assert.deepEqual(byStep.get(2), [{ type: "visible", text: "選擇門市" }]);
+  assert.deepEqual(byStep.get(3), [{ type: "visible", text: "首頁" }]);
+  assert.equal(result.confidence, "high");
+});
+
+test("classify: 顯示/包含 + 、 字段列表逐标签 visible，跳过模糊标签", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 展开后显示Location、Shop Name、Reference Code等字段",
+      "2. 顯示Total Amount、Location、Shop、Used S Dollar、Used S Coupon、Minimum Spending",
+      "3. 顯示Member ID、Total Amount、Ref Code",
+      "4. 顯示Location、數據正確、Shop Name",
+      "5. 包含Location、Shop Name"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_FIELDS"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [
+    { type: "visible", text: "Location" },
+    { type: "visible", text: "Shop Name" },
+    { type: "visible", text: "Reference Code" }
+  ]);
+  assert.deepEqual(byStep.get(2), [
+    { type: "visible", text: "Total Amount" },
+    { type: "visible", text: "Location" },
+    { type: "visible", text: "Shop" },
+    { type: "visible", text: "Used S Dollar" },
+    { type: "visible", text: "Used S Coupon" },
+    { type: "visible", text: "Minimum Spending" }
+  ]);
+  assert.deepEqual(byStep.get(3), [
+    { type: "visible", text: "Member ID" },
+    { type: "visible", text: "Total Amount" },
+    { type: "visible", text: "Ref Code" }
+  ]);
+  assert.deepEqual(byStep.get(4), [
+    { type: "visible", text: "Location" },
+    { type: "visible", text: "Shop Name" }
+  ]);
+  assert.deepEqual(byStep.get(5), [
+    { type: "visible", text: "Location" },
+    { type: "visible", text: "Shop Name" }
+  ]);
+  assert.deepEqual(result.manual, []);
+});
+
+test("classify: 显示子句金额/积分/数字 visible，日期不输出", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 显示积分170 points，对应S Dollar $85",
+      "2. 显示HK$500，对应-$10和-$20",
+      "3. 输入框显示15",
+      "4. 显示日期2026-10-29",
+      "5. 显示2026-10-29，金额为$85",
+      "6. 第2步显示15",
+      "7. 不存在“已删除”"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e", "f", "g"],
+    caseId: "TC_VALUES"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [
+    { type: "visible", text: "170 points" },
+    { type: "visible", text: "$85" }
+  ]);
+  assert.deepEqual(byStep.get(2), [
+    { type: "visible", text: "HK$500" },
+    { type: "visible", text: "-$10" },
+    { type: "visible", text: "-$20" }
+  ]);
+  assert.deepEqual(byStep.get(3), [{ type: "visible", text: "15" }]);
+  assert.equal(byStep.get(4)[0].type, "manual");
+  assert.equal(
+    byStep.get(4).some((entry) => entry.type === "visible" && entry.text.includes("2026")),
+    false
+  );
+  assert.deepEqual(byStep.get(5), [{ type: "visible", text: "$85" }]);
+  assert.deepEqual(byStep.get(6), [{ type: "visible", text: "15" }]);
+  assert.deepEqual(byStep.get(7), [{ type: "notVisible", text: "已删除" }]);
+});
+
+test("classify: 向下取整/四捨五入/向上取整 从表达式剥离", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 组件显示金额为$82（165 ÷ 2 向下取整）",
+      "2. 165 ÷ 2 四捨五入",
+      "3. 165 ÷ 2 向上取整",
+      "4. 165 ÷ 2 向下取整",
+      "5. 165 ÷ 2 四舍五入"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_ROUND"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "calc", expression: "165 / 2", expected: 82 }]);
+  assert.deepEqual(byStep.get(2), [{ type: "calc", expression: "165 / 2", expected: 83 }]);
+  assert.deepEqual(byStep.get(3), [{ type: "calc", expression: "165 / 2", expected: 83 }]);
+  assert.deepEqual(byStep.get(4), [{ type: "calc", expression: "165 / 2", expected: 82 }]);
+  assert.deepEqual(byStep.get(5), [{ type: "calc", expression: "165 / 2", expected: 83 }]);
+});
+
+test("classify: 最多可放/儲存 + 繁体数字", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 最多可放8則",
+      "2. 最多可儲存5個",
+      "3. 最多可放八則",
+      "4. 最多可放 十 則"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d"],
+    caseId: "TC_COUNT_TRAD"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "count", max: 8 }]);
+  assert.deepEqual(byStep.get(2), [{ type: "count", max: 5 }]);
+  assert.deepEqual(byStep.get(3), [{ type: "count", max: 8 }]);
+  assert.deepEqual(byStep.get(4), [{ type: "count", max: 10 }]);
+});
+
+test("classify: text 去尾标点/引导语，模糊句不产 text", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 需先手動取消愛心；", "2. 功能正常", "3. 正確顯示"].join("\n"),
+    steps: ["a", "b", "c"],
+    caseId: "TC_TEXT"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "text", text: "需先手動取消愛心" }]);
+  assert.equal(byStep.get(2)[0].type, "manual");
+  assert.equal(byStep.get(3)[0].type, "manual");
+  assert.equal(
+    result.steps.some((entry) => entry.assert.some((item) => item.type === "text" && /功能正常|正確顯示/.test(item.text))),
+    false
+  );
+});
+
+test("classify: 真实样例回归（非 manual）", () => {
+  const cases = [
+    {
+      expected: "1. 组件显示金额为$82（165 ÷ 2 向下取整）；2. 点击后成功跳转至“Points Record”页面",
+      steps: ["打开积分页", "点击入口"],
+      check: (byStep) => {
+        assert.deepEqual(byStep.get(1), [{ type: "calc", expression: "165 / 2", expected: 82 }]);
+        assert.deepEqual(byStep.get(2), [{ type: "visible", text: "Points Record" }]);
+      }
+    },
+    {
+      expected: "1. 显示积分170 points，对应S Dollar $85；2. 点击图标弹出“About S Dollar”说明弹窗，内容完整",
+      steps: ["打开积分页", "点击图标"],
+      check: (byStep) => {
+        assert.deepEqual(byStep.get(1), [
+          { type: "visible", text: "170 points" },
+          { type: "visible", text: "$85" }
+        ]);
+        assert.deepEqual(byStep.get(2), [{ type: "visible", text: "About S Dollar" }]);
+      }
+    },
+    {
+      expected: "2. 展开后显示Location、Shop Name、Reference Code等字段",
+      steps: ["打开页面", "展开"],
+      check: (byStep) => {
+        assert.deepEqual(byStep.get(2), [
+          { type: "visible", text: "Location" },
+          { type: "visible", text: "Shop Name" },
+          { type: "visible", text: "Reference Code" }
+        ]);
+      }
+    },
+    {
+      expected: "输入框显示“15”，下方提示“Equivalent to 30 S Points”",
+      steps: ["打开页面", "输入", "查看提示"],
+      check: (byStep) => {
+        assert.deepEqual(byStep.get(3), [
+          { type: "visible", text: "15" },
+          { type: "visible", text: "Equivalent to 30 S Points" }
+        ]);
+      }
+    },
+    {
+      expected: "1.跳轉到MOP首頁，且彈出MOP intro彈窗",
+      steps: ["打开"],
+      check: (byStep) => {
+        assert.deepEqual(byStep.get(1), [
+          { type: "visible", text: "MOP首頁" },
+          { type: "visible", text: "MOP intro" }
+        ]);
+      }
+    },
+    {
+      expected: "1.直接跳轉到MOP首頁，沒有出現MOP intro彈窗",
+      steps: ["打开"],
+      check: (byStep) => {
+        assert.deepEqual(byStep.get(1), [
+          { type: "visible", text: "MOP首頁" },
+          { type: "notVisible", text: "MOP intro" }
+        ]);
+      }
+    },
+    {
+      expected: "2.顯示提示語：我的最愛最多可儲存5個，需先手動取消愛心，才能再新增",
+      steps: ["打开", "查看"],
+      check: (byStep) => {
+        assert.equal(byStep.get(2)[0].type, "count");
+        assert.equal(byStep.get(2)[0].max, 5);
+        assert.equal(byStep.get(2).some((item) => item.type === "manual"), false);
+      }
+    },
+    {
+      expected: "4.’愛心‘icon變紅色，對應門市會展示在【我的最愛】tab",
+      steps: ["a", "b", "c", "d"],
+      check: (byStep) => {
+        assert.deepEqual(byStep.get(4), [
+          { type: "visible", text: "愛心" },
+          { type: "visible", text: "我的最愛" }
+        ]);
+      }
+    }
+  ];
+
+  for (const [index, item] of cases.entries()) {
+    const result = classifyExpectedResult({
+      expected: item.expected,
+      steps: item.steps,
+      caseId: `REAL_${index}`
+    });
+    assert.deepEqual(result.manual, [], `样例 ${index} 不应落 manual：${item.expected}`);
+    assert.equal(
+      result.steps.some((entry) => entry.assert.some((assertion) => assertion.type === "manual")),
+      false,
+      `样例 ${index} 不应含内联 manual`
+    );
+    item.check(new Map(result.steps.map((entry) => [entry.step, entry.assert])));
+  }
 });
 
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {

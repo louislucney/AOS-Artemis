@@ -238,7 +238,7 @@ test("verdicts：assertionGate 直接覆盖文档缺失/人工歧义/证据缺�
   assert.equal(assertionGate(manual, 1).reason, "manual-or-ambiguous");
 
   const ambiguous = classifyExpectedResult({
-    expected: "页面显示“登录成功”",
+    expected: ["页面显示“登录成功”", "页面显示“登录成功”"].join("\n"),
     steps: ["打开登录页"],
     caseId: "TC-1"
   });
