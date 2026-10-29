@@ -3312,3 +3312,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **面板**：逐例 `UNVERIFIED` 用 warning 徽标；任务详情门禁文本在 `unverified>0` 时追加「未验证 N」。`SKIP（未执行）` 只出现在 Excel，结果文档状态仍是 SKIP。
 - **限制**：只扫顶层 flow 文本、不解析 YAML/不展开 Maestro 子流程与 `runFlow`，也不验证断言是否真正执行（以 Maestro 退出码/JUnit 为准）；Plan 2 的 LLM/真机执行尚未接入断言证据，旧 runner 未上报 `assertionCount` 时统一降级 UNVERIFIED（不静默放行）。
 - **测试**：新增 `test/web-verdicts.test.js`（15 例：通过、manual、空预期、证据缺失、源缺失、非 PASS 保持、synthetic SKIP、过滤、任务级抑制、源不可解析、任务级抑制且源不可解析、assertionGate 边界、soft-assertion-only、UNVERIFIED 聚合 partial）；`test/web-result-ingest.test.js` 增加 4 例（缺失用例 SKIP→partial 且平台/8 列/隐藏断言同批落盘、缺 assertionCount→UNVERIFIED、空预期→UNVERIFIED、assertionCount 校验），既有 fixture 补 `期望结果` 列/映射、PASS 用例 `assertionCount`、列字母与 journal 计数随列位移；`test/web-result-csv.test.js` PASS 载荷补断言证据；`test/web-executors.test.js` 新增顶层 flow 硬断言计数（3/0）；`test/web-remote-e2e.test.js` 端到端上传带 assertionCount 并按新列位校验。
+
+### 13.269 新增（设计验收清单：figma-to-code-skill 检查项接入 gap analysis）
+
+> 2026-10-29。只做提示，不做自动判定：`figma_gap_analysis` 响应新增 `verificationChecklist`，把 figma-to-code-skill `references/verify.md` 的验收项带给生成用例/人工验收的 agent；不读运行时、不改变 gap 结果、不增加门禁。
+
+- **清单**（`src/figma/gaps.ts` 的 `buildVerificationChecklist(profile)`）：`automated:false`，每项 `status:"manual"`。固定项：对比度（WCAG AA 4.5:1）、`empty/loading/error/disabled/pressed` 状态、可见焦点/辅助功能焦点顺序、设计声明的断点/横竖屏、颜色/字号/圆角/间距断言必须引用 `tokens.json`/`ui-contract`（不从截图推断）、未修复差异必须报告。移动端（Flutter/RN/Android/iOS，或未检测到栈）额外加 `tap-target ≥44×44pt`；Web 不加。
+- **接入点**：`figma_gap_analysis` 的 JSON 响应追加 `verificationChecklist`（`source` 指向 figma-to-code-skill 的 verify.md、`items`、`note`）。`save` 落盘 `gaps.json` 同样包含。
+- **边界**：清单是流程提示，不是自动检查；不因为它存在就降低 `ui-parity`/`design_device_diff` 的门禁，也不把未确认项当 PASS。真正自动化的对比度/触控目标检查需要运行时控件几何与颜色对，当前未实现。
+- **测试**：`test/figma-flows.test.js` 增加 `buildVerificationChecklist` 用例（mobile 含 `tap-target`、web 不含、所有项 manual、未知栈按 mobile 处理、source 指向 figma-to-code-skill）。

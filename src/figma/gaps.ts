@@ -161,6 +161,82 @@ export interface GapResult {
   projectAssetCount: number;
 }
 
+export interface VerificationChecklistItem {
+  id: string;
+  label: string;
+  appliesTo: "all" | "mobile" | "web";
+  status: "manual";
+}
+
+export interface VerificationChecklist {
+  /** 来源：figma-to-code-skill 的 verify.md；本清单只提示人工/生成用例确认，不自动判分。 */
+  source: string;
+  automated: false;
+  items: VerificationChecklistItem[];
+  note: string;
+}
+
+/**
+ * 设计验收清单（来自 figma-to-code-skill/references/verify.md 的检查项）。
+ * 只作为生成用例/人工验收的提示，不读取运行时、不做自动判定。
+ */
+export function buildVerificationChecklist(profile: StackProfile | null): VerificationChecklist {
+  const mobile = profile === null || profile.id !== "web";
+  const items: VerificationChecklistItem[] = [
+    {
+      id: "contrast",
+      label: "文字/背景对比度达到 WCAG AA（正文 4.5:1）",
+      appliesTo: "all",
+      status: "manual"
+    },
+    {
+      id: "states",
+      label: "覆盖 empty/loading/error/disabled/pressed 状态",
+      appliesTo: "all",
+      status: "manual"
+    },
+    {
+      id: "focus",
+      label: "可见焦点与辅助功能焦点顺序",
+      appliesTo: "all",
+      status: "manual"
+    },
+    {
+      id: "responsive",
+      label: "设计声明的断点/横竖屏",
+      appliesTo: "all",
+      status: "manual"
+    },
+    {
+      id: "token-provenance",
+      label: "颜色/字号/圆角/间距断言引用 tokens.json 或 ui-contract，不从截图推断",
+      appliesTo: "all",
+      status: "manual"
+    },
+    {
+      id: "deltas",
+      label: "未修复的设计差异要报告，不静默省略",
+      appliesTo: "all",
+      status: "manual"
+    }
+  ];
+  if (mobile) {
+    items.unshift({
+      id: "tap-target",
+      label: "触控目标 ≥44×44pt",
+      appliesTo: "mobile",
+      status: "manual"
+    });
+  }
+  return {
+    source:
+      "https://github.com/kanwhile/figma-to-code-skill/blob/main/skills/figma-to-code/references/verify.md",
+    automated: false,
+    items,
+    note: "这些项需要运行时/人工证据，gap analysis 不自动判定；生成用例或验收时逐项确认。"
+  };
+}
+
 function expandHex(hex: string): string {
   const body = hex.replace("#", "");
   if (body.length === 3) {
@@ -384,7 +460,8 @@ export async function figmaGapAnalysis(
       missingAssets: applyAssetNaming(gap.missingAssets, profile),
       existingAssets: gap.existingAssets,
       missingColors: gap.missingColors,
-      colorsChecked: gap.colorsChecked
+      colorsChecked: gap.colorsChecked,
+      verificationChecklist: buildVerificationChecklist(profile)
     };
 
     if (args.save !== false) {
