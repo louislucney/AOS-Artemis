@@ -1,9 +1,11 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import { walk, type FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
+import { nodeContentHash } from "./node-hash.js";
 import { errorMessage, escapeHtml, writeFileAtomic } from "../util.js";
 import type { DesignRuntimeLike } from "./design-runtime.js";
 import {
@@ -113,6 +115,8 @@ export interface FlowScreen {
   id: string;
   name: string;
   suggestedRoute: string;
+  /** Figma 子树内容指纹（相对画板坐标、排序键、SHA1）；pen 通道不产出。 */
+  nodeHash?: string;
   /** 所属 Figma 页面名（可选增量字段；pen 通道不产出）。 */
   page?: string;
   /** Direct child layer names — used as visible-element hints for assertions. */
@@ -245,6 +249,48 @@ export function routeFor(name: string): string {
 /** Figma REST uses CANVAS for pages; pen/older fixtures use PAGE. */
 function isPageNode(node: FigmaNode): boolean {
   return node.type === "PAGE" || node.type === "CANVAS";
+}
+
+export interface FlowSyncReport {
+  new: string[];
+  changed: string[];
+  unchanged: string[];
+  /** 旧产物没有 nodeHash，无法判断，需要首次建立基线。 */
+  baseline: string[];
+  missing: string[];
+}
+
+/** 按 screen.id 对比新旧屏幕指纹；missing 只报告，不删除旧用例。 */
+export function compareFlowScreens(previous: FlowScreen[], current: FlowScreen[]): FlowSyncReport {
+  const previousById = new Map<string, FlowScreen>();
+  for (const screen of previous) {
+    const id = screen.id.trim();
+    if (id !== "" && !previousById.has(id)) previousById.set(id, screen);
+  }
+  const currentById = new Map<string, FlowScreen>();
+  for (const screen of current) {
+    const id = screen.id.trim();
+    if (id !== "" && !currentById.has(id)) currentById.set(id, screen);
+  }
+  const report: FlowSyncReport = { new: [], changed: [], unchanged: [], baseline: [], missing: [] };
+  for (const [id, screen] of currentById) {
+    const old = previousById.get(id);
+    if (old === undefined) {
+      report.new.push(id);
+      continue;
+    }
+    if (old.nodeHash === undefined || screen.nodeHash === undefined) {
+      report.baseline.push(id);
+    } else if (old.nodeHash !== screen.nodeHash) {
+      report.changed.push(id);
+    } else {
+      report.unchanged.push(id);
+    }
+  }
+  for (const id of previousById.keys()) {
+    if (!currentById.has(id)) report.missing.push(id);
+  }
+  return report;
 }
 
 export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {}): FlowGraph {
@@ -416,6 +462,7 @@ export function buildFlowGraph(root: FigmaNode, options: { nodeId?: string } = {
     return {
       id: screen.id,
       name: screen.name,
+      nodeHash: nodeContentHash(screen),
       suggestedRoute: routeFor(screen.name),
       ...(page ? { page } : {}),
       childNames: (screen.children ?? []).slice(0, 10).map((child) => child.name),
@@ -535,6 +582,9 @@ export function normalizeFlowGraph(raw: unknown): FlowGraph {
     return {
       id: typeof screen.id === "string" ? screen.id : "",
       name,
+      ...(typeof screen.nodeHash === "string" && screen.nodeHash.trim() !== ""
+        ? { nodeHash: screen.nodeHash.trim() }
+        : {}),
       suggestedRoute:
         typeof screen.suggestedRoute === "string" ? screen.suggestedRoute : routeFor(name),
       ...(() => {
@@ -855,6 +905,19 @@ export async function figmaExtractFlows(
       ...staticWarnings,
       ...(screens?.warnings ?? [])
     ];
+    const designDirAbs = path.join(runtime.configDirAbs, "design");
+    const jsonPath = path.join(designDirAbs, "flows.json");
+    let sync: FlowSyncReport | null = null;
+    if (args.save !== false) {
+      try {
+        const previous = JSON.parse(readFileSync(jsonPath, "utf8")) as { screens?: unknown };
+        if (Array.isArray(previous.screens)) {
+          sync = compareFlowScreens(previous.screens as FlowScreen[], graph.screens);
+        }
+      } catch {
+        /* 首次提取或旧文件不可读：不报告增量 */
+      }
+    }
     const fileVersion = typeof file.version === "string" ? file.version : null;
     const lastModified = typeof file.lastModified === "string" ? file.lastModified : null;
     const payload: Record<string, unknown> = {
@@ -874,12 +937,11 @@ export async function figmaExtractFlows(
       },
       warnings,
       ...(screens ? { screenshots: screens.summary } : {}),
+      ...(sync !== null ? { sync } : {}),
       ...graph
     };
 
     if (args.save !== false) {
-      const designDirAbs = path.join(runtime.configDirAbs, "design");
-      const jsonPath = path.join(designDirAbs, "flows.json");
       writeFileAtomic(jsonPath, JSON.stringify(payload, null, 2) + "\n");
       const imageRefs = new Map<string, string>();
       for (const [screenId, filePath] of screens?.imagePaths ?? []) {

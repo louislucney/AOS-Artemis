@@ -3370,3 +3370,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **展示**：`tests.md` 每个用例在测试数据后追加“检查点：视觉/功能/接口”；接口在 `apiReview.status=provided` 时显示“见 API 说明”，否则“未提供”。`tests.json` 原样落盘；Excel 主表/隐藏执行器 sheet 不变。
 - **边界**：检查点是人工验收提示，不是断言、不计 PASS/FAIL；视觉 hints 仍来自设计文本，不新增颜色/字号/间距推断；接口为空不阻塞生成。
 - **测试**：`test/figma-testgen.test.js` 断言 `checkpoints.visual` 非空、`functional` 含 `Checkout`、`interface` 为空；既有 tests.md/xlsx 断言不变。
+
+### 13.275 新增（Figma 屏幕内容指纹与增量报告）
+
+> 2026-10-29。借鉴 smarteye-case 的 `nodeHash`/增量同步，给 Figma flows 增加每屏内容指纹，并在二次提取时报告 new/changed/unchanged/baseline/missing；不自动删除旧用例、不自动重生成测试。
+
+- **指纹**（`src/figma/node-hash.ts`）：对屏幕子树做 SHA1；bbox 相对画板原点（画布上移动不改哈希）、对象键排序、数字保留 2 位、跳过 `absoluteRenderBounds`；节点内容/层级/名称/子层变化会改哈希。`FlowScreen.nodeHash?` 写入 flows.json；pen 通道不产出。
+- **增量报告**（`compareFlowScreens`）：按 `screen.id` 对比旧 flows.json，输出 `sync:{new,changed,unchanged,baseline,missing}`；旧产物无 `nodeHash` 归 `baseline`，旧屏不在新图归 `missing`（只报告，不删除）。`figma_extract_flows` 在 `save!==false` 时读取上一次 flows.json 并写入本次 payload；首次提取无 `sync`。
+- **边界**：只做报告，不自动更新/删除旧用例、不自动重生成 tests、不重置结果；设计变更后的测试 stale/重生成仍由 `suite check`/`figma_generate_tests` 决定。`nodeHash` 不含绝对画布坐标，但包含屏幕名与节点 id。
+- **测试**：`test/figma-flows.test.js` 断言 nodeHash 稳定/内容变化；`test/figma-static-fallback.test.js` 端到端二次提取报告 unchanged/changed/missing。
