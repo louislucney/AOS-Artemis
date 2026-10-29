@@ -88,9 +88,12 @@ const DISPLAY_VERB = new RegExp(DISPLAY_VERBS.join("|"));
 const DISPLAY_VERB_ALL = new RegExp(DISPLAY_VERBS.join("|"), "g");
 const FIELD_VERB_ALL = /显示|顯示|展示|包含|包括/g;
 const LABEL_REJECT = /(?:並|并且|且|可|需|以及|并|則|则|才|再)/;
-const LABEL_PROSE = /(?:^[請请]|載入|载入|稍候|稍等|中$)/;
+const LABEL_PROSE = /(?:載入中|加载中|^請稍候|^请稍候)/;
+const LABEL_STATE = /已|^(?:表示|完成後|返回)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|新增)$/;
 const LABEL_SHAPE = /^[A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._/&()#+-]*$/;
-const ACTION_START = /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作)/;
+const ACTION_START =
+  /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作|勾選|勾选|提交|展開|展开|收起|切換|切换|參閱|参阅|如圖|如图|見圖|见图|如下|詳情|详情|請稍候|请稍候)/;
+const NAV_START = /^(?:返回|確認|确认)/;
 const ANNOTATION_BRACKETS = new Set(["待確認", "待确认", "设计稿", "設計稿", "備註", "备注"]);
 const CALC_HINT = /÷|向下取整|四捨五入|四舍五入|向上取整|除以|乘以|×|=/;
 const CALC_STRONG_HINT = /÷|向下取整|四捨五入|四舍五入|向上取整|除以|乘以|×/;
@@ -382,8 +385,10 @@ function extractFieldList(clause: string): FieldList | null {
   for (const part of parts) {
     const raw = part.replace(/^[\s：:]+/, "");
     if (raw === "") return null;
+    if (/^[)）(（]$/.test(raw)) continue;
     if (/^[)）(（]/.test(raw) || !/[A-Za-z0-9\u4e00-\u9fff]/.test(raw)) return null;
     if (/[。；;，,：:！!?？]$/.test(raw)) return null;
+    if (LABEL_STATE.test(raw)) return null;
     if (VAGUE.test(raw)) continue;
     if (LABEL_PROSE.test(raw)) return null;
     if (raw.replace(/\s+/g, "").length > 24) return null;
@@ -526,7 +531,8 @@ function startsWithValue(text: string): boolean {
 function classifyClause(
   clause: string,
   statementHasDisplay: boolean,
-  allowActionText: boolean
+  allowActionText: boolean,
+  multiClause: boolean
 ): ClauseOutcome {
   const quotes = extractQuotes(clause);
   const masked = maskQuotes(clause, quotes);
@@ -598,7 +604,11 @@ function classifyClause(
 
   if (!hasDisplay) {
     const segment = shortSegment(clause);
-    if (segment !== null && (allowActionText || !ACTION_START.test(segment))) {
+    if (
+      segment !== null &&
+      (allowActionText || !ACTION_START.test(segment)) &&
+      (!multiClause || !NAV_START.test(segment))
+    ) {
       return {
         assertions: [{ type: "text", text: segment }],
         soft: true,
@@ -721,8 +731,9 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
         continue;
       }
 
+      const multiClause = clauses.length > 1;
       const outcomes = clauses.map((clause) =>
-        classifyClause(clause, statementHasDisplay, allowActionText)
+        classifyClause(clause, statementHasDisplay, allowActionText, multiClause)
       );
       const manualOutcome = outcomes.find((outcome) => outcome.manual !== null);
       if (manualOutcome) {

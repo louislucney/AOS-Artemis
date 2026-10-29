@@ -391,7 +391,7 @@ test("classify: 顯示/包含 + 、 字段列表逐标签 visible，跳过模糊
       "1. 展开后显示Location、Shop Name、Reference Code等字段",
       "2. 顯示Total Amount、Location、Shop、Used S Dollar、Used S Coupon、Minimum Spending",
       "3. 顯示Member ID、Total Amount、Ref Code",
-      "4. 顯示Location、功能正常、Shop Name",
+      "4. 顯示Location、內容完整、Shop Name",
       "5. 包含Location、Shop Name"
     ].join("\n"),
     steps: ["a", "b", "c", "d", "e"],
@@ -896,6 +896,116 @@ test("classify: 标点/右括号标签不升 visible", () => {
       `step ${step} 不应出现标点 visible`
     );
   }
+});
+
+test("classify: 中文字段状态/散文标签不升 visible", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 顯示首頁正常、列表正常",
+      "2. 顯示訂單已成功提交、庫存已更新",
+      "3. 顯示新增成功、刪除成功",
+      "4. 包含A, B, 表示已成功",
+      "5. 包含OrderNo, Amount, 完成後返回首頁"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_LABEL_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4, 5]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应出现 state/prose visible`
+    );
+  }
+});
+
+test("classify: 中文字段 更新時間/請求編號/載入時間 仍 visible", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 顯示更新時間、請求編號、載入時間", "2. 包含請求編號、回應狀態"].join("\n"),
+    steps: ["a", "b"],
+    caseId: "TC_LABEL_LEGIT"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [
+    { type: "visible", text: "更新時間" },
+    { type: "visible", text: "請求編號" },
+    { type: "visible", text: "載入時間" }
+  ]);
+  assert.deepEqual(byStep.get(2), [
+    { type: "visible", text: "請求編號" },
+    { type: "visible", text: "回應狀態" }
+  ]);
+});
+
+test("classify: 动作/指引子句不产 soft text；独立导航结果保留 text", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 點擊後成功，返回首頁",
+      "2. 確認訂單，如圖所示",
+      "3. 勾選商品",
+      "4. 展開詳情",
+      "5. 如圖所示",
+      "6. 請稍候",
+      "7. 詳情請參閱說明"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e", "f", "g"],
+    caseId: "TC_ACTION_TEXT"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4, 5, 6, 7]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "text"),
+      false,
+      `step ${step} 不应产 text`
+    );
+    assert.equal(byStep.get(step)[0].type, "manual");
+  }
+
+  const standalone = classifyExpectedResult({
+    expected: ["1. 返回MOP首頁", "2. 確認後優惠券被清空"].join("\n"),
+    steps: ["a", "b"],
+    caseId: "TC_NAV_STANDALONE"
+  });
+  const standaloneByStep = new Map(
+    standalone.steps.map((entry) => [entry.step, entry.assert])
+  );
+  assert.deepEqual(standaloneByStep.get(1), [{ type: "text", text: "返回MOP首頁" }]);
+  assert.deepEqual(standaloneByStep.get(2), [
+    { type: "text", text: "確認後優惠券被清空" }
+  ]);
+});
+
+test("classify: 、列表里的纯标点标签跳过而非整列失败", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 顯示Location、)、Shop Name",
+      "2. 包含Location、（、Shop Name",
+      "3. 顯示Location、(、Shop Name"
+    ].join("\n"),
+    steps: ["a", "b", "c"],
+    caseId: "TC_PUNCT_SKIP"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3]) {
+    assert.deepEqual(byStep.get(step), [
+      { type: "visible", text: "Location" },
+      { type: "visible", text: "Shop Name" }
+    ]);
+  }
+});
+
+test("classify: 包含逗号列表仍先过 MANUAL 扫描", () => {
+  const result = classifyExpectedResult({
+    expected: "1. 記錄包含Used Date, 后台配置, Ref Code",
+    steps: ["a"],
+    caseId: "TC_COMMA_MANUAL"
+  });
+  assert.equal(result.steps[0].assert[0].type, "manual");
+  assert.equal(
+    result.steps[0].assert.some((assertion) => assertion.type === "visible"),
+    false
+  );
 });
 
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
