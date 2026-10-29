@@ -1473,6 +1473,94 @@ test("classify: 结构化字段否定/模糊/泛前缀/非简体", () => {
   assert.notEqual(result.confidence, "high");
 });
 
+test("classify: 简体 无 特定否定不升 concrete；無障礙保留", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 无按钮", "2. 无库存", "3. 无优惠", "4. 无结果", "5. 無障礙"].join("\n"),
+    steps: ["a", "b", "c", "d", "e"],
+    caseId: "TC_WU_NEG"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.deepEqual(byStep.get(5), [{ type: "visible", text: "無障礙" }]);
+});
+
+test("classify: 规则化 已+状态拒绝；已用S... 保留", () => {
+  const states = [
+    "已退款",
+    "已取貨",
+    "已送達",
+    "已簽收",
+    "已結帳",
+    "已配送",
+    "已審核",
+    "已排隊",
+    "已叫號",
+    "已開通",
+    "已核銷",
+    "已成立",
+    "已生效",
+    "已用完",
+    "售完",
+    "暫停服務",
+    "暫停"
+  ];
+  const expected = [
+    ...states.map((state, index) => `${index + 1}. ${state}`),
+    `${states.length + 1}. 已用S Dollar`,
+    `${states.length + 2}. 已用S Coupon`
+  ].join("\n");
+  const result = classifyExpectedResult({
+    expected,
+    steps: Array.from({ length: states.length + 2 }, (_, index) => `s${index}`),
+    caseId: "TC_YI_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (let step = 1; step <= states.length; step += 1) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应 visible`
+    );
+  }
+  assert.deepEqual(byStep.get(states.length + 1), [
+    { type: "visible", text: "已用S Dollar" }
+  ]);
+  assert.deepEqual(byStep.get(states.length + 2), [
+    { type: "visible", text: "已用S Coupon" }
+  ]);
+});
+
+test("classify: 结构化字段状态/否定/模糊落 manual", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 按鈕：不顯示",
+      "2. 按鈕：載入中",
+      "3. 內容：售完",
+      "4. 標題：已退款",
+      "5. 按鈕：我知道了",
+      "6. 標題：內用請入座"
+    ].join("\n"),
+    steps: Array.from({ length: 6 }, (_, index) => `s${index}`),
+    caseId: "TC_STRUCTURED_STATE"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(byStep.get(step)[0].type, "manual");
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false
+    );
+  }
+  assert.deepEqual(byStep.get(5), [{ type: "visible", text: "我知道了" }]);
+  assert.deepEqual(byStep.get(6), [{ type: "visible", text: "內用請入座" }]);
+});
+
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
   const { filePath } = await makeWorkbook(t);
   const before = await loadSheet(filePath);

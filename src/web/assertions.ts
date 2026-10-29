@@ -58,7 +58,7 @@ const CONTEXT_PREFIX =
   /^(?:--|——|备注\s*[:：]?|備註\s*[:：]?|【备注】|【備註】|注\s*[:：]|note\b\s*[:：]?)\s*/i;
 
 const NEGATIVE =
-  /不(?!同|仅|僅|但|过|過|断|斷|少|久|符|变|變|停|只|需|用|須|须|會|会|要|再)|沒(?:有)?|没(?:有)?|未有|未(?:顯示|显示|展示|出現|出现|加載|加载|返回|生效|完成|成功|存在|找到|彈出|弹出|支持|支援|包含|提示|進入|进入|能|見|见)|消失|隱藏|隐藏|不可見|不可见|不能|\b(?:not|no|never|hidden|absent)\b|\b\w+n't\b|\bdisappear(?:s|ed|ing)?\b/i;
+  /不(?!同|仅|僅|但|过|過|断|斷|少|久|符|变|變|停|只|需|用|須|须|會|会|要|再)|沒(?:有)?|没(?:有)?|未有|未(?:顯示|显示|展示|出現|出现|加載|加载|返回|生效|完成|成功|存在|找到|彈出|弹出|支持|支援|包含|提示|進入|进入|能|見|见)|无(?:按钮|庫存|库存|优惠|優惠|结果|結果)|無(?:按鈕|庫存|库存|優惠|优惠|結果|结果)|消失|隱藏|隐藏|不可見|不可见|不能|\b(?:not|no|never|hidden|absent)\b|\b\w+n't\b|\bdisappear(?:s|ed|ing)?\b/i;
 
 const MANUAL =
   /后台|後台|排序|最近|上次|GPS|刷新|配置|积分余额|積分餘額|至少|(?<![不未沒没])存在|資料|数据|數據|\bbackend\b|\bserver(?:-side)?\b|\bsort(?:ed|s|ing)?\b|\border(?:s|ed)?\b|\blast\b|\blatest\b|\brefresh(?:ed|es|ing)?\b|\bconfig(?:uration|ure)?\b|\bbalance\b|\bat least\b|\bexists?\b|\bdata\b/i;
@@ -91,11 +91,11 @@ const FIELD_VERB_ALL = /显示|顯示|展示|包含|包括/g;
 const LABEL_REJECT = /(?:並|并且|且|可|需|以及|并|則|则|才|再)/;
 const LABEL_PROSE = /(?:載入中|加载中|^請稍候|^请稍候)/;
 const LABEL_STATE =
-  /已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|過期|过期|停用|失效|售罄|售完|領取|领取|開啟|开启|關閉|关闭|綁定|绑定|驗證|验证|發送|发送|寄出|退回)|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中|關閉|关闭|開啟|开启)$/;
+  /^已[\u4e00-\u9fff]{1,3}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中|關閉|关闭|開啟|开启)$|售完|暫停服務|暫停/;
 const DISPLAY_STATE =
-  /已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|過期|过期|停用|失效|售罄|售完|領取|领取|開啟|开启|關閉|关闭|綁定|绑定|驗證|验证|發送|发送|寄出|退回)|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|删除|新增|中|關閉|关闭|開啟|开启)$/;
+  /^已[\u4e00-\u9fff]{1,3}$|^(?:表示|完成後|完成后|返回|待)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|删除|新增|中|關閉|关闭|開啟|开启)$|售完|暫停服務|暫停/;
 const STATUS_WORD =
-  /無庫存|库存不足|庫存不足|已達上限|已达上限|缺貨|缺货|售罄|停用|失效|過期|过期|不足|上限|^(?:無|没|沒)/;
+  /無庫存|無库存|無按鈕|無按钮|無優惠|無优惠|無結果|無结果|库存不足|庫存不足|已達上限|已达上限|缺貨|缺货|售罄|售完|停用|失效|過期|过期|不足|上限|暫停服務|暫停|已(?:成功|完成|更新|提交|刪除|删除|新增|取消|付款|出貨|出货|退款|取貨|送達|簽收|結帳|配送|審核|排隊|叫號|開通|核銷|成立|生效|用完)/;
 const ENGLISH_PREDICATE =
   /\b(?:is|are|was|were|be|been|failed|success|successful|loading|correct|correctly|wrong|error|pending|completed|cancelled|canceled)\b/i;
 const LABEL_SHAPE = /^[A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._/&()#+-]*$/;
@@ -397,7 +397,7 @@ function extractFieldList(clause: string): FieldList | null {
     if (/^[)）(（]/.test(raw) || !/[A-Za-z0-9\u4e00-\u9fff]/.test(raw)) return null;
     if (/[。；;，,：:！!?？]$/.test(raw)) return null;
     if (VAGUE.test(raw)) continue;
-    if (LABEL_STATE.test(raw)) return null;
+    if (LABEL_STATE.test(raw) || STATUS_WORD.test(raw)) return null;
     if (LABEL_PROSE.test(raw)) return null;
     if (raw.replace(/\s+/g, "").length > 24) return null;
     if (LABEL_REJECT.test(raw)) return null;
@@ -851,8 +851,14 @@ export function classifyExpectedResult(input: ClassifyInput): AssertionDoc {
           NEGATIVE.test(structuredValue) &&
           ([...structuredValue].length <= 30 ||
             /^(?:不|沒|没|未|無|无|消失|隱藏|隐藏)/.test(structuredValue.trim()));
-        if (valueNegative || VAGUE.test(structuredValue)) {
-          resolve(step, "否定/模糊字段无法作为硬断言", sourceText);
+        if (
+          valueNegative ||
+          VAGUE.test(structuredValue) ||
+          LABEL_STATE.test(structuredValue) ||
+          LABEL_PROSE.test(structuredValue) ||
+          STATUS_WORD.test(structuredValue)
+        ) {
+          resolve(step, "否定/状态/模糊字段无法作为硬断言", sourceText);
           continue;
         }
         const list = byStep.get(step) ?? [];
