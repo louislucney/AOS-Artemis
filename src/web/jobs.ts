@@ -268,6 +268,7 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
       script,
       excelAssetId: excel!.id,
       packageAssetId: pkg!.id,
+      platform: combination.requirements.platform,
       allowStaleScript: input.allowStaleScript
     });
   }

@@ -229,6 +229,7 @@ export interface ScriptSetMatchInput {
   script: WebAssetRecord;
   excelAssetId: string;
   packageAssetId: string;
+  platform?: string;
   allowStaleScript?: boolean;
 }
 
@@ -242,6 +243,7 @@ export function assertScriptSetMatch(input: ScriptSetMatchInput): void {
   const metadata = input.script.metadata ?? {};
   const expectedExcel = nonEmpty(metadata.sourceExcelAssetId);
   const expectedPackage = nonEmpty(metadata.packageAssetId);
+  const expectedPlatform = nonEmpty(metadata.platform);
   if (expectedExcel === null && expectedPackage === null) {
     throw new WebJobDispatchError(
       "script-set-unverified",
@@ -258,6 +260,16 @@ export function assertScriptSetMatch(input: ScriptSetMatchInput): void {
     throw new WebJobDispatchError(
       "script-set-mismatch",
       `脚本集 ${input.script.id} 基于安装包 ${expectedPackage}，与任务安装包 ${input.packageAssetId} 不一致（需重新发现或 allowStaleScript）`
+    );
+  }
+  if (
+    expectedPlatform !== null &&
+    input.platform !== undefined &&
+    expectedPlatform !== input.platform
+  ) {
+    throw new WebJobDispatchError(
+      "script-set-mismatch",
+      `脚本集 ${input.script.id} 基于平台 ${expectedPlatform}，与任务平台 ${input.platform} 不一致（需重新发现或 allowStaleScript）`
     );
   }
 }
