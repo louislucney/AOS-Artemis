@@ -3392,3 +3392,17 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
   - `high` 文档仍走原硬断言路径；不因覆盖放宽 manual/ambiguous。
 - **边界**：只覆盖 `text`（visible/notVisible/id/变量/calc/count 不参与文本覆盖）；扫描顶层 flow + `runFlow` 引用的子流程（深度 ≤4、路径必须在 flowsDir、循环/越界保护）；其他形式（YAML 锚点/变量化路径）不展开；包含匹配是归一化后的双向 substring，可能偏宽，后续可收紧到精确/分段。
 - **测试**：`test/web-verdicts.test.js`（覆盖→PASS、未覆盖→soft-assertion-uncovered、无 flow assertions 仍 soft-assertion-only）；`test/web-executors.test.js` 断言 assertions 提取、runFlow 子流程计入、越界/循环不放大。
+
+### 13.277 新增（Web 脚本生成器：步骤分类与断言落点）
+
+> 2026-10-29。Plan 2A Phase 1：纯函数生成器把 Excel 步骤/断言文档变成 Maestro flow YAML；不接设备、不接 LLM、不写盘。范围与边界见 `docs/superpowers/specs/2026-10-29-maestro-assertion-generation-rationale.md`。
+
+- **模块**（`src/web/script-gen.ts`）：`generateFlow(input, options)` 与 `generateScriptSet(input)`；无 IO，输入 `caseId/steps/expected/preconditions`，输出 `status/yaml/assertions/assertionTexts/unresolved/warnings`。
+- **步骤分类**：动作（点击/选择/输入/滚动/返回/等待）、验证（查看/检查/确认/观察/找到/是否；不生成动作，只作为断言落点）、导航（`进入“X”` 默认 `navigation-unparsed`，显式 `inferNavigationTap` 才生成 tap）、代词回指（`点击该组件` 使用上一个具体标签）、不支持（扫描/条件/筛选/符号按钮）。
+- **断言**：`visible`/`notVisible` 生成 `assertVisible`/`assertNotVisible`；`text` 默认跳过并记 `assertion-soft-text-skipped`；`manual`/`ambiguous`/`count`/`calc` 不生成硬断言，只记 warning。断言按 `AssertionDoc.steps[].step` 插到对应步骤动作之后；越界显式 `assertion-step-out-of-range`。
+- **转义**：选择器文本先 `escapeRegExp`，再用 YAML 单引号标量；`inputText` 只做 YAML 标量、不做 regex 转义；`assertNotVisible` 的语义是“没有整段文本等于 X 的元素”，不是“页面任何位置不包含 X”。
+- **前置条件**：默认 `preconditionMode:"strict"`，非空 → `precondition-unparsed`；显式 `"assume-prepared"` 时视为环境已准备，`clearState:false` + `stopApp:false` 并记 `precondition-assumed`；不生成登录/积分/后台/优惠券 setup。
+- **appId**：按平台校验（Android 至少两段、字母开头、可下划线；iOS 允许连字符、至少一个点）；双端分别生成脚本集，manifest 带 `platform`。
+- **边界**：未接入 job/CLI/面板，未写脚本集资产，未做 testID 发现/LLM；`input-field-missing`、`navigation-unparsed`、`scan-unsupported`、`symbol-label`、`conditional-unsupported` 等保持 unresolved，不猜。
+- **Phase 0/1 实测**（真实样本，assume-prepared）：CSV 15/26 可生成（14 有硬断言）、XLSX 31/40（22 有硬断言）；strict 下 CSV 0/26（前置条件全阻塞）、XLSX 16/40。详见 rationale §4.5。
+- **测试**：`test/web-script-gen.test.js` 19 例：基本流程、验证步骤、输入字段、soft/manual、扫描/条件、前置模式、appId、regex/YAML 转义、代词回指、导航推断、符号按钮、滚动、notVisible、越界、集合统计。
