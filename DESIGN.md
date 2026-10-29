@@ -3350,3 +3350,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **接入**：`design_device_diff` 的 `regions[]` 直接输出这三个可选字段；原有 `bbox/category/severity/pixelDiffRatio/designNode` 不变。
 - **边界**：设备色是区域均值，不是逐像素主色；渐变/图片/阴影区域只作参考。`designColor` 只取单一 `parentFill`，不解析渐变/多填充。色值不参与 PASS/FAIL，也不自动升级 severity。
 - **测试**：`test/diff-color.test.js` 3 例（红/绿差异输出 `#ff0000`/`#00ff00` 与 delta>300、同色无差异、无 parentFill 不输出证据）；`test/diff-benchmark.test.js` schema 快照改为允许 `shift/designColor/deviceColor/colorDelta/globalShifts` 可选字段。
+
+### 13.273 新增（Web 结果人工状态：未实现/阻塞）
+
+> 2026-10-29。借鉴 smarteye-case 的状态分类，允许 maintainer 在 Web job 详情逐例标记 `未实现`/`阻塞`；只覆盖门禁与 Excel 结果，不修改 runner 上报的原始 status。
+
+- **API**：`POST /panel/api/jobs/<jobId>/cases/<caseId>/status`（maintainer+，`X-AOS-Console` 同源校验）；body `{project,host?,status:"NOT_IMPL"|"BLOCKED"|"",reason?}`（也接受中文 `未实现`/`阻塞`/空）。无 result.json → 404；用例不在结果 → 400；成功后写 result.json、Excel、审计 `action.jobs.case-status`。
+- **result.json**：`execution.cases[]` 增加 `manualStatus?: {status,reason,at,actor}`；原 `status` 保留 runner/中心派生值。门禁按覆盖层重算：`NOT_IMPL`/`BLOCKED` 单独计数（`gate.notImplemented`/`gate.blocked`，为 0 时省略），不计 `passed`，结果为 `partial`；重算以 `result.json.reportedStatus`（首次入库的 runner 上报/派生状态）为下界，`error`/`failed` 不会被人工状态升级成 completed。任务行在 completed/partial/failed 终态时同步为派生状态（清除后可按结果恢复 completed，但任务级 error 仍保持 failed）。
+- **Excel**：平台列写 `NOT_IMPL`/`BLOCKED`；8 列 `执行｜结果` 同步；仍然只写系统格/journal 保护人工格；CSV 源同步重导结果 CSV。写回失败只记 `manual-status-writeback-failed`，不丢 result.json 状态。
+- **面板**：Web job 详情逐例增加“人工状态”选择器（自动/未实现/阻塞），结果徽标优先显示人工状态，门禁文本追加“未实现 N / 阻塞 N”；reason 进徽标 title。
+- **边界**：人工状态不改变 `execution.cases[].status`，不伪造 runner 结果；不计 PASS；审计记录 actor/reason。清除人工状态后重新按原始 status 聚合。
+- **测试**：`test/web-manual-status.test.js` 4 例（NOT_IMPL 写 result/Excel、任务 partial、清除恢复 PASS；BLOCKED 计数与写回；任务级 error 不可被人工状态升级；无结果/未知用例报错）；`test/web-dispatch-ui.test.js` 断言选择器与阻塞徽标；`test/panel-actions.test.js` 断言路径角色为 maintainer。

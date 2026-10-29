@@ -55,7 +55,7 @@ import {
   type WebToolName
 } from "../web/dispatch.js";
 import { runnerTtlFrom } from "../runner/status.js";
-import { ingestWebJobResult, WebResultError } from "../web/results.js";
+import { applyWebJobManualStatus, ingestWebJobResult, WebResultError } from "../web/results.js";
 import {
   computeDispatchPreview,
   dispatchFormSignature,
@@ -632,6 +632,58 @@ export async function handlePanelActionRequest(
       if (response.status === 200) scopedDeps.cache?.clear();
       await auditPanel(scopedDeps, resolved.rootPath, "action.tasks", response);
       return response;
+    }
+    const manualStatusMatch = /^\/panel\/api\/jobs\/([^/]+)\/cases\/([^/]+)\/status$/.exec(
+      request.url.pathname
+    );
+    if (manualStatusMatch !== null) {
+      const jobId = decodeURIComponent(manualStatusMatch[1]!);
+      const caseId = decodeURIComponent(manualStatusMatch[2]!);
+      const rawStatus = payload.status;
+      const status =
+        rawStatus === "" || rawStatus === null || rawStatus === undefined
+          ? null
+          : rawStatus === "NOT_IMPL" || rawStatus === "未实现"
+            ? "NOT_IMPL"
+            : rawStatus === "BLOCKED" || rawStatus === "阻塞"
+              ? "BLOCKED"
+              : undefined;
+      if (status === undefined) {
+        return json(400, { error: "status 必须是 NOT_IMPL / BLOCKED / 空" });
+      }
+      const reason = typeof payload.reason === "string" ? payload.reason.trim() : "";
+      try {
+        const result = await applyWebJobManualStatus({
+          store: scopedDeps.store,
+          rootPath: resolved.rootPath,
+          jobId,
+          caseId,
+          status,
+          reason,
+          actor
+        });
+        const response = json(200, {
+          ok: true,
+          jobId,
+          caseId,
+          status,
+          gate: result.document.gate,
+          taskStatus: result.document.taskStatus,
+          writebackStatus: result.document.writebackStatus,
+          warnings: result.warnings
+        });
+        await auditPanel(scopedDeps, resolved.rootPath, "action.jobs.case-status", response, {
+          taskId: jobId,
+          caseId
+        });
+        if (response.status === 200) scopedDeps.cache?.clear();
+        return response;
+      } catch (error) {
+        if (error instanceof WebResultError) {
+          return json(error.status, { error: error.message, code: error.code });
+        }
+        throw error;
+      }
     }
     if (request.url.pathname === "/panel/api/jobs") {
       const response = await createWebJobAction(scopedDeps, resolved.rootPath, payload, actor);
