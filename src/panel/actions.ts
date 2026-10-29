@@ -38,6 +38,11 @@ import {
 } from "../web/excel-mapping.js";
 import { ExcelMappingError } from "../web/excel.js";
 import {
+  generateScriptSetForProject,
+  ScriptGenerationError
+} from "../web/script-generation.js";
+import { ScriptSetStoreError } from "../web/script-set.js";
+import {
   DEFAULT_SYSTEM_COLUMN_MODE,
   parseSystemColumnMode,
   rebaseWorkbookJournal,
@@ -511,6 +516,23 @@ export async function handlePanelActionRequest(
   }
   if (request.url.pathname === "/panel/api/projects/assets") {
     return await uploadAssetAction(deps, request, actor);
+  }
+  if (request.url.pathname === "/panel/api/projects/scripts/generate") {
+    const projectKey = typeof payload.project === "string" ? payload.project.trim() : "";
+    const hostParam =
+      typeof payload.host === "string" && payload.host.trim() !== "" ? payload.host.trim() : undefined;
+    let resolved: { rootPath: string; hostId: string | null };
+    try {
+      const found = await resolveProjectKey(deps, projectKey, hostParam);
+      if (found === null) return json(404, { error: "未知项目" });
+      resolved = found;
+    } catch (error) {
+      if (error instanceof AmbiguousProjectError) {
+        return json(409, { error: error.message, candidates: error.candidates });
+      }
+      throw error;
+    }
+    return await generateScriptSetAction(deps, resolved, payload, actor);
   }
   if (request.url.pathname === "/panel/api/hosts/register") {
     const response = await registerHost(deps, payload);
@@ -1272,8 +1294,109 @@ async function saveExcelMappingAction(
   }
 }
 
-async function auditPanel(
+function scriptGenerationErrorResponse(error: unknown): PanelWebResponse | null {
+  if (error instanceof ScriptSetStoreError) {
+    return json(error.code === "script-set-unusable" ? 409 : 400, {
+      ok: false,
+      error: error.message,
+      code: error.code
+    });
+  }
+  if (error instanceof ScriptGenerationError) {
+    const status =
+      error.code === "project-not-found" || error.code === "asset-not-found"
+        ? 404
+        : error.code === "project-archived"
+          ? 409
+          : 400;
+    return json(status, { ok: false, error: error.message, code: error.code });
+  }
+  return null;
+}
+
+async function generateScriptSetAction(
   deps: PanelWebDeps,
+  resolved: { rootPath: string; hostId: string | null },
+  payload: Record<string, unknown>,
+  actor: string
+): Promise<PanelWebResponse> {
+  const crossHost = crossHostWriteResponse(deps, resolved);
+  if (crossHost !== null) return crossHost;
+  const rootPath = resolved.rootPath;
+  const excelAssetId = typeof payload.excelAssetId === "string" ? payload.excelAssetId.trim() : "";
+  const packageAssetId =
+    typeof payload.packageAssetId === "string" ? payload.packageAssetId.trim() : "";
+  const platform = payload.platform;
+  const appId = typeof payload.appId === "string" ? payload.appId.trim() : "";
+  const rawMode = payload.preconditionMode;
+  const preconditionMode =
+    rawMode === undefined || rawMode === null || rawMode === "strict"
+      ? "strict"
+      : rawMode === "assume-prepared"
+        ? "assume-prepared"
+        : null;
+  const dryRun = payload.dryRun === true || payload.dryRun === "true";
+  const refs = {
+    excelAssetId,
+    packageAssetId,
+    ...(typeof platform === "string" ? { platform } : {})
+  };
+  if (excelAssetId === "" || packageAssetId === "") {
+    return json(400, { ok: false, error: "缺少 excelAssetId 或 packageAssetId" });
+  }
+  if (platform !== "android" && platform !== "ios") {
+    return json(400, { ok: false, error: "platform 只能是 android 或 ios" });
+  }
+  if (preconditionMode === null) {
+    return json(400, { ok: false, error: "preconditionMode 只能是 strict 或 assume-prepared" });
+  }
+  try {
+    await assertProjectActive(deps.store, rootPath);
+    const result = await generateScriptSetForProject({
+      store: deps.store,
+      rootPath,
+      excelAssetId,
+      packageAssetId,
+      platform,
+      appId: appId === "" ? null : appId,
+      preconditionMode,
+      dryRun,
+      uploadedBy: actor
+    });
+    await recordAuditSafe(deps.store, rootPath, {
+      domain: "web",
+      action: "web.scripts.generate",
+      result: "ok",
+      actor,
+      summary: `生成 Web 脚本集${dryRun ? "（dry-run）" : result.created ? "" : "（复用）"}：ready ${result.ready} / unresolved ${result.unresolved}`,
+      refs
+    });
+    deps.cache?.clear();
+    return json(200, {
+      ok: true,
+      dryRun: result.dryRun,
+      ready: result.ready,
+      unresolved: result.unresolved,
+      created: result.created,
+      asset: result.asset,
+      manifest: result.manifest
+    });
+  } catch (error) {
+    const response = scriptGenerationErrorResponse(error);
+    if (response === null) throw error;
+    await recordAuditSafe(deps.store, rootPath, {
+      domain: "web",
+      action: "web.scripts.generate",
+      result: "failed",
+      actor,
+      summary: `生成 Web 脚本集失败：${errorMessage(error)}`,
+      refs
+    });
+    return response;
+  }
+}
+
+async function auditPanel(  deps: PanelWebDeps,
   rootPath: string,
   action: string,
   response: PanelWebResponse,

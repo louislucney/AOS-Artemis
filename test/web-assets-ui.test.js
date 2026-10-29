@@ -52,6 +52,26 @@ async function setup(t, { hostId = null } = {}) {
     uploadedBy: "alice",
     metadata: {}
   });
+  const pkg = await store.createWebAsset({
+    rootPath,
+    kind: "package",
+    filename: "app.apk",
+    sha256: "d".repeat(64),
+    size: 1024,
+    storagePath: path.join(rootPath, ".artemis", "web", "assets", "package", `${"d".repeat(64)}.apk`),
+    uploadedBy: "alice",
+    metadata: {}
+  });
+  const generated = await store.createWebAsset({
+    rootPath,
+    kind: "scripts",
+    filename: "aos-scripts-android-abc.zip",
+    sha256: "e".repeat(64),
+    size: 512,
+    storagePath: path.join(rootPath, ".artemis", "web", "assets", "scripts", `${"e".repeat(64)}.zip`),
+    uploadedBy: "aos",
+    metadata: { origin: "generated", platform: "android", ready: 3, unresolved: 1 }
+  });
   const mapping = await store.saveExcelMapping({
     rootPath,
     assetId: asset.id,
@@ -66,7 +86,7 @@ async function setup(t, { hostId = null } = {}) {
     workspaceRoot: workspace,
     buildStale: false
   };
-  return { deps, rootPath, asset, escapedAsset, mapping, store };
+  return { deps, rootPath, asset, escapedAsset, pkg, generated, mapping, store };
 }
 
 function assetsUrl(rootPath, hostId = null) {
@@ -100,7 +120,7 @@ function multipartBody(boundary, { project, filename = "cases.xlsx", content }) 
 }
 
 test("web assets page: asset versions, upload form and mapping hooks", async (t) => {
-  const { deps, rootPath, asset } = await setup(t);
+  const { deps, rootPath, asset, pkg } = await setup(t);
   const response = await handlePanelRequest(assetsUrl(rootPath), deps);
   assert.equal(response.status, 200);
   const html = response.body;
@@ -116,6 +136,12 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /type="file"[^>]*accept="\.xlsx,\.csv"/, "允许 .xlsx/.csv");
   assert.match(html, /id="asset-file"/, "文件控件");
   assert.match(html, /\/panel\/api\/projects\/assets/, "multipart 上传端点");
+  assert.match(html, /生成 Maestro 脚本/, "脚本生成卡片");
+  assert.match(html, /id="script-gen-form"/, "脚本生成表单");
+  assert.match(html, /\/panel\/api\/projects\/scripts\/generate/, "脚本生成端点");
+  assert.match(html, new RegExp(`<option value="${pkg.id}"`), "安装包选项");
+  assert.match(html, /aos-scripts-android-abc\.zip/, "脚本集列表");
+
 
   assert.match(html, /id="asset-select"/, "资产选择");
   assert.match(html, new RegExp(`<option value="${asset.id}"`), "资产选项");
@@ -156,6 +182,10 @@ test("web assets JSON view exposes assets and mappings", async (t) => {
   assert.equal(payload.assets.length, 2);
   assert.ok(payload.assets.some((entry) => entry.id === asset.id), "含主资产");
   assert.equal(payload.mappings.length, 1);
+  assert.equal(payload.packages.length, 1);
+  assert.equal(payload.scripts.length, 1);
+  assert.equal(payload.appPackage, null);
+
   assert.equal(payload.mappings[0].id, mapping.id);
 });
 

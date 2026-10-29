@@ -3418,3 +3418,15 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **下发匹配**（`src/web/job-spec.ts`）：`assertScriptSetMatch` 增加 `platform` 校验；metadata 声明 platform 且与 job `requirements.platform` 不一致 → `script-set-mismatch`；`allowStaleScript` 仍显式跳过全部校验。
 - **边界**：不解析 Excel、不生成入口、不写 Excel 建议列；脚本集仍不可变，人工脚本不覆盖。`suite task`/面板接入见 Phase 3/4。
 - **测试**：`test/web-script-set.test.js` 9 例（manifest/flow、确定性、哈希变化、文件名清洗、zip 有效性与路径安全、写入/幂等、新绑定新版本、无 ready/缺绑定拒绝）；`test/web-job-queue.test.js` 增加 platform 不匹配拒绝。
+
+### 13.279 新增（Web 脚本生成入口：CLI 与面板）
+
+> 2026-10-29。Plan 2A Phase 3：把 Excel/CSV + 安装包资产接成用户可操作的“生成脚本”入口；仍不做下发预检与设备执行。
+
+- **服务**（`src/web/script-generation.ts`）：`generateScriptSetForProject({store,rootPath,excelAssetId,packageAssetId,platform,appId?,preconditionMode?,dryRun?})`。校验托管 Web 项目 active、平台已声明、资产 kind 匹配、Excel 路径在 `.artemis/web/assets` 内；读表头 → `semanticFingerprint` → 已保存映射（缺省 `suggestExcelMapping`）→ `parseExcel`；`appId` 取 `--app-id`/面板值，缺省项目 `appPackage`；`dryRun` 只返回 manifest，否则 `storeScriptSet` 写 `scripts` 资产。错误码 `project-not-found/archived`、`platform-not-supported`、`asset-not-found/kind-mismatch/path-invalid`、`excel-unreadable`、`no-cases`、`app-id-missing/invalid`。
+- **CLI**（`src/web-command.ts` + `cli.ts`）：`web scripts generate --project <dir> --excel <assetId> --package <assetId> --platform <android|ios> [--app-id <id>] [--strict|--assume-prepared] [--dry-run] [--json]`；文本输出逐例 ready/unresolved 原因，JSON 输出 manifest + asset 摘要；exit 0 成功 / 1 无 ready 用例或脚本集不可用 / 2 参数/项目/资产/解析错误。
+- **面板**（`/panel/api/projects/scripts/generate`，maintainer+；`src/console/pages.ts` assets 页）：“测试资产”页增加 Excel/安装包/平台/appId/前置模式/dry-run 表单与脚本集资产表；动作走同源校验、跨主机保护、审计 `web.scripts.generate`；JSON 视图 `web-assets` 增加 `packages/scripts/appPackage`。
+- **前置模式**：默认 `strict`（前置条件非空 → `precondition-unparsed`）；`assume-prepared` 显式选择，生成 `clearState:false` + `stopApp:false` 并记 `precondition-assumed`；CLI 用 `--strict`/`--assume-prepared`，面板用下拉。
+- **appId 来源**：项目已有 `appPackage` 作为缺省；双端项目应显式传 `--app-id`/面板值（Android package 与 iOS bundle id 不同）。
+- **测试**：`test/web-script-generation.test.js` 7 例（dry-run/写入幂等/项目平台资产 appId 错误/strict vs assume/CLI JSON/CLI 复用/参数错误）；`test/panel-script-gen.test.js` 3 例（dry-run/写入/viewer 403+非法平台）；`test/web-assets-ui.test.js` 增加生成表单、脚本集表、JSON 字段断言；`test/panel-actions.test.js` 增加角色映射。
+- **边界**：不自动保存列映射、不写 Excel 建议列、不做下发预检（Phase 4）、不做设备执行/LLM；脚本集仍不可变，人工脚本不覆盖。

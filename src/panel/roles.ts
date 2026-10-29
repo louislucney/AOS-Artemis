@@ -64,7 +64,7 @@ export function panelRequiredRoleForPath(pathname: string): PanelRole | null {
   ) {
     return "dispatcher";
   }
-  if (pathname === "/panel/api/verdicts" || pathname === "/panel/api/schedules" || pathname === "/panel/api/quarantine" || pathname === "/panel/api/import" || pathname === "/panel/api/projects/assets" || pathname === "/panel/api/projects/excel/preview" || pathname === "/panel/api/projects/excel/mapping" || pathname === "/panel/api/hosts/register") {
+  if (pathname === "/panel/api/verdicts" || pathname === "/panel/api/schedules" || pathname === "/panel/api/quarantine" || pathname === "/panel/api/import" || pathname === "/panel/api/projects/assets" || pathname === "/panel/api/projects/scripts/generate" || pathname === "/panel/api/projects/excel/preview" || pathname === "/panel/api/projects/excel/mapping" || pathname === "/panel/api/hosts/register") {
     return "maintainer";
   }
   if (pathname.startsWith("/panel/api/jobs/") && pathname.endsWith("/status")) {

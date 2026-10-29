@@ -1206,6 +1206,7 @@ test("panel roles: 默认/显式角色与动作范围", () => {
   assert.equal(panelRoleFrom({ AOS_PANEL_ROLE: "nope" }), "viewer", "非法值 fail closed");
   assert.equal(panelRequiredRoleForPath("/panel/api/tasks"), "dispatcher");
   assert.equal(panelRequiredRoleForPath("/panel/api/verdicts"), "maintainer");
+  assert.equal(panelRequiredRoleForPath("/panel/api/projects/scripts/generate"), "maintainer");
   assert.equal(panelRequiredRoleForPath("/panel/api/issues"), "admin");
   assert.equal(panelRequiredRoleForPath("/panel/api/unknown"), null);
   assert.deepEqual(panelRoleScopes("viewer"), {

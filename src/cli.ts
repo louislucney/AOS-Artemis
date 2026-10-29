@@ -18,6 +18,7 @@ import { printWebRunnerUsage, runWebRunnerCommand } from "./runner/web-agent.js"
 import { runUsageCommand } from "./usage-command.js";
 import { runPanelCommand } from "./panel-command.js";
 import { runCmsOpen } from "./open/command.js";
+import { printWebUsage, runWebCommand } from "./web-command.js";
 
 function printUsage(): void {
   console.log(`mobile-testing-mcp — unified MCP service for mobile testing
@@ -45,6 +46,10 @@ Usage:
                     (见 "mobile-testing-mcp host help"；缺省 dry-run，--apply 才写库)
   mobile-testing-mcp web-runner [--name <n>] [--artifact-base-url <url>] [--once]
                     host 级远端 Web 任务执行机（只连中心 PG，不要求项目目录；每台设备一个 worker）
+  mobile-testing-mcp web scripts generate --project <dir> --excel <assetId> --package <assetId>
+                    --platform <android|ios> [--app-id <id>] [--strict|--assume-prepared]
+                    [--dry-run] [--json]
+                    从 Excel/CSV 资产生成 Maestro 脚本集；--dry-run 只出 manifest 不写资产
   mobile-testing-mcp jira issue <create|comment|label|transition|link> [options]
                     Jira 工作流（与 MCP 工具共用客户端与凭证；见 "mobile-testing-mcp jira help"；
                     exit codes: 0 成功 / 1 请求或配置失败 / 2 用法错误）
@@ -89,6 +94,7 @@ void (async () => {
     else if (command === "host") printHostUsage((line) => console.log(line));
     else if (command === "user") printUserUsage((line) => console.log(line));
     else if (command === "web-runner") printWebRunnerUsage((line) => console.log(line));
+    else if (command === "web") printWebUsage((line) => console.log(line));
     else printUsage();
     return;
   }
@@ -160,6 +166,11 @@ void (async () => {
         log: (line) => console.error(line),
         errorLog: (line) => console.error(line)
       });
+      process.exit(code);
+      break;
+    }
+    case "web": {
+      const code = await runWebCommand(rest);
       process.exit(code);
       break;
     }

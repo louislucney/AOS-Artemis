@@ -343,6 +343,10 @@ function yamlScalar(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+export function isValidAppId(appId: string, platform: ScriptPlatform): boolean {
+  return validateAppId(appId.trim(), platform);
+}
+
 function validateAppId(appId: string, platform: ScriptPlatform): boolean {
   return (platform === "android" ? ANDROID_APP_ID : IOS_APP_ID).test(appId);
 }
