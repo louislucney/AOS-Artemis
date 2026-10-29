@@ -260,8 +260,16 @@ export function resultPathForJob(rootPath: string, jobId: string): string {
 }
 
 /** CSV 源的结果 CSV 固定路径（派生文件，可覆盖）：`.artemis/web/workbook/<assetId>.result.csv`。 */
-export function webResultCsvPath(rootPath: string, assetId: string): string {
-  return path.join(path.resolve(rootPath), ".artemis", "web", "workbook", `${assetId}.result.csv`);
+/** 结果 CSV 每 job 一份（派生物）：`<projectRoot>/.artemis/web/workbook/<assetId>.result-<jobId>.csv`。 */
+export function webResultCsvPath(rootPath: string, assetId: string, jobId?: string): string {
+  const suffix = jobId === undefined || jobId.trim() === "" ? "" : `.${jobId.trim()}`;
+  return path.join(
+    path.resolve(rootPath),
+    ".artemis",
+    "web",
+    "workbook",
+    `${assetId}.result${suffix}.csv`
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1250,7 +1258,7 @@ async function ingestUnderJobLock(
         try {
           const exported = await exportWorkbookCsv(
             target.workbookPath,
-            webResultCsvPath(rootPath, target.asset.id),
+            webResultCsvPath(rootPath, target.asset.id, task.id),
             {
               encoding: csvInfo.encoding,
               lineEnding: csvInfo.lineEnding,

@@ -308,7 +308,7 @@ test("CSV 源（UTF-8）：导出同编码 CRLF 结果 CSV，AOS + 8 列，隐�
   });
 
   assert.equal(summary.writebackStatus, "written");
-  assert.equal(summary.resultCsvPath, webResultCsvPath(ctx.rootPath, ctx.asset.id));
+  assert.equal(summary.resultCsvPath, webResultCsvPath(ctx.rootPath, ctx.asset.id, ctx.task.id));
   assert.equal(await fileSha(ctx.original), ctx.originalSha, "原 CSV 字节必须不变");
   assert.equal(
     (await readFile(summary.resultCsvPath)).equals(await readFile(ctx.original)),
@@ -371,7 +371,7 @@ test("CSV 源（GB18030）：结果 CSV 保持 GB18030 + CRLF，原字节不变"
     payload: payload([{ caseId: "C1", status: "PASS" }])
   });
 
-  assert.equal(summary.resultCsvPath, webResultCsvPath(ctx.rootPath, ctx.asset.id));
+  assert.equal(summary.resultCsvPath, webResultCsvPath(ctx.rootPath, ctx.asset.id, ctx.task.id));
   assert.equal(await fileSha(ctx.original), ctx.originalSha);
 
   const resultBytes = await readFile(summary.resultCsvPath);
@@ -459,7 +459,7 @@ test("CSV 源映射缺 steps（parseExcel 失败）：PASS fail-closed 为 UNVER
   });
   assert.equal(summary.platformResult, null, "原件不可解析时不写平台列");
   assert.equal(summary.assertionCells, 0, "原件不可解析时不写隐藏断言");
-  assert.equal(summary.resultCsvPath, webResultCsvPath(ctx.rootPath, ctx.asset.id));
+  assert.equal(summary.resultCsvPath, webResultCsvPath(ctx.rootPath, ctx.asset.id, ctx.task.id));
   for (const marker of [
     "source-unreadable",
     "platform-result-skipped",
@@ -509,7 +509,7 @@ test("CSV 源 8 列写回存在失败单元格：不导出结果 CSV，并显式
     summary.warnings.join("；")
   );
   assert.equal(
-    fs.existsSync(webResultCsvPath(ctx.rootPath, ctx.asset.id)),
+    fs.existsSync(webResultCsvPath(ctx.rootPath, ctx.asset.id, ctx.task.id)),
     false,
     "不得留下未完成的结果 CSV"
   );
@@ -553,4 +553,46 @@ test("平台结果列沿用假绿守卫：任务 error 且用例全 PASS 时不�
   const result = columnByHeader(sheet, "执行｜结果");
   assert.equal(cellText(sheet.getCell(2, aos)), "", "任务级 error 不得写平台 PASS");
   assert.equal(cellText(sheet.getCell(2, result)), "", "8 列结果同口径不写 PASS");
+});
+
+test("CSV 源每个 job 生成独立结果 CSV（不覆盖上一轮）", async (t) => {
+  const ctx = await setup(t, {
+    format: "csv",
+    encoding: "utf-8",
+    lineEnding: "\n",
+    headers: ["用例编号", "用例名", "步骤", "期望结果"],
+    mapping: { expected: "期望结果" },
+    rows: [["C1", "登录", "1. 打开登录页", "1. 页面显示“登录成功”"]]
+  });
+  const first = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: payload([{ caseId: "C1", status: "PASS" }])
+  });
+  const secondTask = await ctx.store.createRegressionTask({
+    rootPath: ctx.rootPath,
+    refs: [],
+    platforms: ["android"],
+    baseline: "latest",
+    targetHostId: "host-1",
+    jobSpec: jobSpec(ctx.asset.id),
+    deviceSerial: "emulator-5554",
+    deviceLeaseId: "host-1:emulator-5554"
+  });
+  await ctx.store.updateRegressionTask(ctx.rootPath, secondTask.id, { status: "running" });
+  const second = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: secondTask.id,
+    payload: payload([{ caseId: "C1", status: "PASS" }])
+  });
+
+  assert.equal(first.resultCsvPath, webResultCsvPath(ctx.rootPath, ctx.asset.id, ctx.task.id));
+  assert.equal(
+    second.resultCsvPath,
+    webResultCsvPath(ctx.rootPath, ctx.asset.id, secondTask.id)
+  );
+  assert.notEqual(first.resultCsvPath, second.resultCsvPath);
+  assert.equal(fs.existsSync(first.resultCsvPath), true);
+  assert.equal(fs.existsSync(second.resultCsvPath), true);
+  assert.equal(await fileSha(ctx.original), ctx.originalSha);
 });
