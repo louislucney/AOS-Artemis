@@ -9,6 +9,7 @@ import { pagedFlowDocument, syntheticFlowDocument } from "./fixtures/figma-flow-
 import {
   analyzeGapData,
   applyAssetNaming,
+  buildVerificationChecklist,
   globToRegExp,
   normalizeAssetName,
   walkProjectFiles
@@ -173,6 +174,23 @@ test("analyzeGapData: iOS colorset 与 Swift Color(...) 均计入已有颜色", 
   });
   assert.equal(result.colorsChecked, true);
   assert.deepEqual(result.missingColors, ["#0000FF"]);
+});
+
+test("buildVerificationChecklist: mobile 含 tap-target，web 不含；所有项均为 manual", () => {
+  const mobile = buildVerificationChecklist(STACK_PROFILES["android-native"]);
+  assert.equal(mobile.automated, false);
+  assert.ok(mobile.items.some((item) => item.id === "tap-target"));
+  for (const item of mobile.items) assert.equal(item.status, "manual");
+
+  const web = buildVerificationChecklist(STACK_PROFILES.web);
+  assert.equal(web.items.some((item) => item.id === "tap-target"), false);
+  for (const id of ["contrast", "states", "focus", "responsive", "token-provenance", "deltas"]) {
+    assert.ok(web.items.some((item) => item.id === id), id);
+  }
+
+  const unknown = buildVerificationChecklist(null);
+  assert.ok(unknown.items.some((item) => item.id === "tap-target"));
+  assert.match(unknown.source, /figma-to-code-skill/);
 });
 
 test("applyAssetNaming: retargets missing-asset filenames to the detected stack", () => {
