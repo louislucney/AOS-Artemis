@@ -230,6 +230,16 @@ const ERROR_STATUS: Record<WebResultErrorCode, number> = {
 /** 迟到首次结果允许落库（不改任务状态）的终态。 */
 const LATE_RESULT_STATUSES = new Set<RegressionTaskStatus>(["completed", "failed", "partial"]);
 
+/** 迟到结果只能把任务改得更差，不能把已失败/部分完成改回 completed。 */
+function worseTerminalStatus(
+  current: RegressionTaskStatus,
+  derived: RegressionTaskStatus
+): RegressionTaskStatus {
+  const rank = (status: RegressionTaskStatus): number =>
+    status === "failed" ? 3 : status === "partial" ? 2 : status === "completed" ? 1 : 0;
+  return rank(current) >= rank(derived) ? current : derived;
+}
+
 /** 结果上传的稳定错误码（action 层按 `status` 回 HTTP，不依赖文案）。 */
 export class WebResultError extends Error {
   readonly code: WebResultErrorCode;
@@ -1102,6 +1112,9 @@ async function ingestUnderJobLock(
   };
   const taskStatus = taskStatusFromGate(gate);
   const dbStatus = persistedTaskStatus(taskStatus);
+  const effectiveDbStatus = lateFirstResult
+    ? worseTerminalStatus(task.status, dbStatus)
+    : dbStatus;
   if (payload.reportedStatus !== undefined && payload.reportedStatus !== counts.result) {
     warnings.push(
       `status-mismatch: runner 上报 ${payload.reportedStatus}，按用例聚合为 ${counts.result}；采用 ${gate.result} 作为结果状态`
@@ -1109,7 +1122,9 @@ async function ingestUnderJobLock(
   }
   if (lateFirstResult) {
     warnings.push(
-      `status-mismatch: 任务已是 ${task.status}，按迟到的首次结果记录（${taskStatus}）；不改变任务状态`
+      effectiveDbStatus === task.status
+        ? `status-mismatch: 任务已是 ${task.status}，按迟到的首次结果记录（${taskStatus}）；保留更差的既有终态 ${effectiveDbStatus}`
+        : `late-result-status: 任务已是 ${task.status}，结果门禁为 ${taskStatus}；按更差状态回写 ${effectiveDbStatus}（不保留 completed）`
     );
   }
 
@@ -1302,7 +1317,7 @@ async function ingestUnderJobLock(
     resultSha256,
     receivedAt: at,
     taskStatus,
-    dbStatus: lateFirstResult ? task.status : dbStatus,
+    dbStatus: effectiveDbStatus,
     gate,
     execution: {
       ...payload.execution,
@@ -1327,6 +1342,10 @@ async function ingestUnderJobLock(
     warnings
   };
   await persistDocument(resultPath, document);
+
+  if (lateFirstResult && effectiveDbStatus !== task.status) {
+    await store.updateRegressionTask(rootPath, task.id, { status: effectiveDbStatus });
+  }
 
   if (!lateFirstResult) {
     const outcome = await settleRunningTask(store, rootPath, task.id, dbStatus, spec, at);

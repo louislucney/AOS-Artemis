@@ -26,6 +26,12 @@ export const PLATFORM_RESULT_COLUMNS = [
   { platform: "ios", header: "IOS Result" }
 ] as const satisfies ReadonlyArray<{ platform: PlatformResultPlatform; header: string }>;
 
+const PLATFORM_RESULT_STATUS_VALUES = new Set(["PASS", "FAIL", "SKIP", "ERROR", "UNVERIFIED"]);
+
+function isPlatformResultStatus(value: string): boolean {
+  return PLATFORM_RESULT_STATUS_VALUES.has(value.trim().toUpperCase());
+}
+
 export type PlatformResultErrorCode =
   | "invalid-workbook"
   | "sheet-not-found"
@@ -364,9 +370,11 @@ export async function writePlatformResults(
     }
     const current = cellText(cell);
     if (current === row.status) continue;
-    if (reusedInSource && current !== "") {
+    // 原件已有平台结果列时，状态值（PASS/FAIL/…）按系统结果刷新（否则上一轮 PASS 永久冻结）；
+    // 自由文本（人工备注）仍冻结，避免覆盖人工内容。
+    if (reusedInSource && current !== "" && !isPlatformResultStatus(current)) {
       warnings.push(
-        `第 ${rowNumber} 行 ${caseId}「${jobHeader}」含人工内容（${cell.address}，原值「${current}」），已冻结；平台结果列只写空单元格`
+        `第 ${rowNumber} 行 ${caseId}「${jobHeader}」含人工内容（${cell.address}，原值「${current}」），已冻结；平台结果列只刷新状态值或空单元格`
       );
       continue;
     }

@@ -1022,6 +1022,25 @@ test("I4：任务已终态且无结果时允许迟到首次上传（不改任务
   assert.equal(await cancelled.store.listPendingExcelWriteback(cancelled.rootPath, cancelled.asset.id).then((rows) => rows.length), 0);
 });
 
+test("I4b：迟到首次结果不得把更差门禁改回 completed", async (t) => {
+  const ctx = await setupProject(t, { status: "completed" });
+  const latePayload = passingPayload();
+  delete latePayload.execution.cases[0].assertionCount;
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: latePayload
+  });
+  assert.equal(summary.taskStatus, "partial", "缺断言证据不得判 completed");
+  assert.equal(summary.dbStatus, "partial");
+  assert.ok(
+    summary.warnings.some((warning) => warning.includes("late-result-status")),
+    summary.warnings.join("；")
+  );
+  const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
+  assert.equal(task.status, "partial", "迟到结果只能把 completed 改差，不能保留假绿");
+});
+
 test("HTTP：结果上传大小上限（>256KB 200 / >16MB 413）、415、错误主机 403、短 token 503", async (t) => {
   const previous = new Map();
   for (const [key, value] of Object.entries({

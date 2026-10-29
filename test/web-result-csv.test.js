@@ -253,6 +253,71 @@ test("xlsx 源已有 AOS/IOS 列：写 AOS、保留 IOS，8 列 + 隐藏断言�
   assert.equal(saved.resultCsvPath, null);
 });
 
+test("平台结果列：原件已有空 AOS 列时按状态刷新，自由文本冻结", async (t) => {
+  const ctx = await setup(t, {
+    headers: ["用例编号", "用例名", "步骤", "期望结果", "AOS Result"],
+    mapping: { expected: "期望结果" },
+    rows: [["TC-1", "登录", "1. 打开登录页", "1. 页面显示“登录成功”", ""]]
+  });
+  const first = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: payload([{ caseId: "TC-1", status: "PASS" }])
+  });
+  assert.equal(first.platformResult?.column, 5);
+  let sheet = await loadSheet(ctx.copyPath, "用例");
+  assert.equal(cellText(sheet.getCell("E2")), "PASS");
+
+  const secondTask = await ctx.store.createRegressionTask({
+    rootPath: ctx.rootPath,
+    refs: [],
+    platforms: ["android"],
+    baseline: "latest",
+    targetHostId: "host-1",
+    jobSpec: jobSpec(ctx.asset.id),
+    deviceSerial: "emulator-5554",
+    deviceLeaseId: "host-1:emulator-5554"
+  });
+  await ctx.store.updateRegressionTask(ctx.rootPath, secondTask.id, { status: "running" });
+  const second = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: secondTask.id,
+    payload: payload([{ caseId: "TC-1", status: "FAIL" }])
+  });
+  assert.ok(
+    !second.warnings.some((warning) => warning.includes("含人工内容")),
+    "系统上一轮状态不得被误判人工"
+  );
+  sheet = await loadSheet(ctx.copyPath, "用例");
+  assert.equal(cellText(sheet.getCell("E2")), "FAIL", "新一轮状态覆盖旧状态");
+
+  sheet.getCell("E2").value = "人工备注";
+  await sheet.workbook.xlsx.writeFile(ctx.copyPath);
+  const thirdTask = await ctx.store.createRegressionTask({
+    rootPath: ctx.rootPath,
+    refs: [],
+    platforms: ["android"],
+    baseline: "latest",
+    targetHostId: "host-1",
+    jobSpec: jobSpec(ctx.asset.id),
+    deviceSerial: "emulator-5554",
+    deviceLeaseId: "host-1:emulator-5554"
+  });
+  await ctx.store.updateRegressionTask(ctx.rootPath, thirdTask.id, { status: "running" });
+  const third = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: thirdTask.id,
+    payload: payload([{ caseId: "TC-1", status: "PASS" }])
+  });
+  assert.ok(
+    third.warnings.some((warning) => warning.includes("含人工内容")),
+    third.warnings.join("；")
+  );
+  sheet = await loadSheet(ctx.copyPath, "用例");
+  assert.equal(cellText(sheet.getCell("E2")), "人工备注");
+  assert.equal(await fileSha(ctx.original), ctx.originalSha);
+});
+
 test("xlsx 源没有平台列：追加 AOS/IOS 再追加 8 列，隐藏断言在最后", async (t) => {
   const ctx = await setup(t, {
     headers: ["用例编号", "用例名", "步骤", "期望结果"],
