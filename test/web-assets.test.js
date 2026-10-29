@@ -152,7 +152,7 @@ test("storeWebAsset: 重复内容复用同一文件但 version 递增（每次�
   assert.notEqual(third.storagePath, first.storagePath);
 });
 
-test("storeWebAsset: 非 .xlsx / 空文件 / 超 20MB 抛 WebAssetError", async (t) => {
+test("storeWebAsset: 非 .xlsx/.csv / 空文件 / 超 20MB 抛 WebAssetError", async (t) => {
   const workspace = await tempDir(t, "aos-assets-");
   const rootPath = path.join(workspace, "acme");
   await mkdir(rootPath, { recursive: true });
@@ -160,7 +160,7 @@ test("storeWebAsset: 非 .xlsx / 空文件 / 超 20MB 抛 WebAssetError", async 
   await makeProject(store, rootPath);
 
   await assert.rejects(
-    () => storeWebAsset({ store, rootPath, kind: "excel", filename: "cases.csv", buffer: XLSX }),
+    () => storeWebAsset({ store, rootPath, kind: "excel", filename: "cases.txt", buffer: XLSX }),
     (error) => error instanceof WebAssetError && error.code === "invalid-extension"
   );
   await assert.rejects(
@@ -255,7 +255,7 @@ test("API /panel/api/projects/assets: 拒绝错误扩展名/缺项目/未知项�
     uploadRequest(
       multipartBody("----aosAssets", {
         fields: { project: rootPath, kind: "excel" },
-        filename: "cases.csv"
+        filename: "cases.xls"
       })
     ),
     deps

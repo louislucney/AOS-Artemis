@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type { ProjectStore, WebAssetKind, WebAssetRecord } from "../db/types.js";
 import { writeFileAtomic } from "../util.js";
+import { decodeCsv } from "./csv.js";
 
 export type { WebAssetKind };
 
@@ -20,7 +21,7 @@ const MAX_BYTES_BY_KIND: Record<WebAssetKind, number> = {
 };
 
 const EXTENSIONS_BY_KIND: Record<WebAssetKind, readonly string[]> = {
-  excel: [".xlsx"],
+  excel: [".xlsx", ".csv"],
   materials: [".zip", ".json", ".csv", ".txt"],
   package: [".apk", ".ipa"],
   scripts: [".zip"]
@@ -125,6 +126,12 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
   }
 
   const sha256 = createHash("sha256").update(input.buffer).digest("hex");
+  const metadata: Record<string, unknown> = { ...(input.metadata ?? {}) };
+  if (input.kind === "excel" && extension === ".csv") {
+    // CSV 原件保持原字节只读；编码检测结论写进元数据，后续生成工作副本时可直接复用。
+    metadata.format = "csv";
+    metadata.encoding = decodeCsv(input.buffer).encoding;
+  }
   const rootPath = path.resolve(input.rootPath);
   // 只写已存在的托管项目目录：不代用户 mkdir，避免请求路径在服务端凭空长出新项目。
   try {
@@ -165,7 +172,7 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
     uploadedBy: input.uploadedBy ?? null,
     // 未知时省略，由 store 从 upsertProject 解析，避免把 NULL 钉死在资产行上。
     ...(web?.projectId ? { projectId: web.projectId } : {}),
-    metadata: input.metadata ?? {}
+    metadata
   });
 }
 

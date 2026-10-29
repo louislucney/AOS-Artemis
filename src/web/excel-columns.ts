@@ -31,10 +31,13 @@ export const CANONICAL_FIELD_LABELS: Record<CanonicalField, string> = {
   testId: "测试编号"
 };
 
-/** 表头别名（web 解析器用，含扩展写法）：同一字段的任意一种写法都能识别。 */
+/**
+ * 表头别名（web 解析器用，含扩展写法）：同一字段的任意一种写法都能识别。
+ * 注意：`实际结果` 是执行结果列，不是导入字段，故意不进别名表。
+ */
 export const COLUMN_ALIASES: Record<CanonicalField, readonly string[]> = {
-  caseId: ["用例编号", "展示编号", "用例id", "用例编码", "caseid", "displayid", "编号"],
-  name: ["用例名", "用例名称", "测试用例名称", "标题", "case", "casename", "name", "title"],
+  caseId: ["用例编号", "用例ID", "展示编号", "用例id", "用例编码", "caseid", "displayid", "编号"],
+  name: ["用例名", "用例名称", "测试用例名称", "测试点", "标题", "case", "casename", "name", "title"],
   steps: ["步骤", "操作步骤", "测试步骤", "测试过程", "steps", "step", "操作"],
   expected: ["预期", "预期结果", "期望结果", "期望", "expected", "expectation", "result"],
   preconditions: ["前置", "前置条件", "前置假设", "preconditions", "precondition"],

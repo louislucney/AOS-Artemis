@@ -1,11 +1,11 @@
-import { constants } from "node:fs";
-import { access, copyFile, mkdir, readFile, rename } from "node:fs/promises";
+import { access, mkdir, open, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 
 import ExcelJS from "exceljs";
 
 import { logWarn } from "../log.js";
 import { errorMessage } from "../util.js";
+import { csvToXlsxBuffer, looksLikeCsv, type CsvEncoding } from "./csv.js";
 
 export type WorkbookCopyErrorCode = "same-path" | "invalid-original" | "copy-unreadable";
 
@@ -19,6 +19,14 @@ export class WorkbookCopyError extends Error {
   }
 }
 
+export interface WorkbookCopyInfo {
+  /** 生成副本时原件的格式；沿用已有有效副本时恒为 xlsx。 */
+  format: "xlsx" | "csv";
+  encoding?: CsvEncoding;
+  /** 本次是否新建了副本（false＝沿用已有有效副本）。 */
+  created: boolean;
+}
+
 /** 工作副本固定路径：`<projectRoot>/.artemis/web/workbook/<assetId>.xlsx`（派生物，可覆盖改写）。 */
 export function workbookCopyPath(projectRoot: string, assetId: string): string {
   return path.join(path.resolve(projectRoot), ".artemis", "web", "workbook", `${assetId}.xlsx`);
@@ -28,6 +36,12 @@ type WorkbookInspection =
   | { ok: true }
   | { ok: false; reason: "read"; error: unknown }
   | { ok: false; reason: "parse"; error: unknown };
+
+async function inspectBuffer(buffer: Buffer): Promise<void> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+  if (workbook.worksheets.length === 0) throw new Error("工作簿没有工作表");
+}
 
 /**
  * 区分「读文件失败」（EACCES/EMFILE/EIO/EISDIR，可能是瞬时或权限问题）与
@@ -41,26 +55,61 @@ async function inspectWorkbook(filePath: string): Promise<WorkbookInspection> {
     return { ok: false, reason: "read", error };
   }
   try {
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
-    if (workbook.worksheets.length === 0) {
-      return { ok: false, reason: "parse", error: new Error("工作簿没有工作表") };
-    }
+    await inspectBuffer(buffer);
     return { ok: true };
   } catch (error) {
     return { ok: false, reason: "parse", error };
   }
 }
 
-async function assertReadableOriginal(originalPath: string): Promise<void> {
-  const inspection = await inspectWorkbook(originalPath);
-  if (inspection.ok) return;
-  const reason =
-    inspection.reason === "read" ? "文件不可读" : "文件损坏或不是有效的 .xlsx";
-  throw new WorkbookCopyError(
-    "invalid-original",
-    `Excel 原件无法读取（${reason}）：${originalPath}（${errorMessage(inspection.error)}）`
-  );
+interface OriginalWorkbook {
+  format: "xlsx" | "csv";
+  encoding?: CsvEncoding;
+  /** 可直接写入工作副本的 xlsx 字节（CSV 原件已转码）。 */
+  data: Buffer;
+}
+
+function isZipMagic(buffer: Buffer): boolean {
+  return buffer.length >= 2 && buffer[0] === 0x50 && buffer[1] === 0x4b;
+}
+
+/**
+ * 原件只读读取：`.csv` 扩展名或「内容像 CSV 且不是 zip」时转成 xlsx 字节；
+ * 其余按 xlsx 校验，损坏则 `invalid-original`。绝不把 CSV 原文当作 xlsx 复制。
+ */
+async function readOriginal(originalPath: string): Promise<OriginalWorkbook> {
+  let buffer: Buffer;
+  try {
+    buffer = await readFile(originalPath);
+  } catch (error) {
+    throw new WorkbookCopyError(
+      "invalid-original",
+      `Excel 原件无法读取（文件不可读）：${originalPath}（${errorMessage(error)}）`
+    );
+  }
+
+  const csvByExtension = path.extname(originalPath).toLowerCase() === ".csv";
+  if (!isZipMagic(buffer) && (csvByExtension || looksLikeCsv(buffer))) {
+    try {
+      const converted = await csvToXlsxBuffer(buffer);
+      return { format: "csv", encoding: converted.encoding, data: converted.buffer };
+    } catch (error) {
+      throw new WorkbookCopyError(
+        "invalid-original",
+        `CSV 原件无法读取：${originalPath}（${errorMessage(error)}）`
+      );
+    }
+  }
+
+  try {
+    await inspectBuffer(buffer);
+  } catch (error) {
+    throw new WorkbookCopyError(
+      "invalid-original",
+      `Excel 原件无法读取（文件损坏或不是有效的 .xlsx）：${originalPath}（${errorMessage(error)}）`
+    );
+  }
+  return { format: "xlsx", data: buffer };
 }
 
 /** 重建前把损坏副本改名留档，避免直接删除用户可能还需要取证的坏文件。 */
@@ -80,15 +129,16 @@ async function quarantineCorruptCopy(target: string): Promise<string> {
 }
 
 /**
- * 确保工作副本存在且可读：原件只读，仅在副本缺失或损坏时复制；副本有效时原样保留
- * （含人工/系统写入）。副本解析失败时先改名为 `<copy>.corrupt-<ts>` 再从原件重建；
+ * 确保工作副本存在且可读：原件只读，仅在副本缺失或损坏时生成；副本有效时原样保留
+ * （含人工/系统写入）。CSV 原件在这里转成规范 xlsx（工作表 `csv`），不是按字节复制。
+ * 副本解析失败时先改名为 `<copy>.corrupt-<ts>` 再从原件重建；
  * 副本读文件失败（权限/句柄/IO）不重建、不删除，直接抛 `copy-unreadable`。
  * 原件本身不可读则 `invalid-original` 拒绝，不产生"看起来可写"的坏副本。
  */
 export async function ensureWorkbookCopy(
   originalPath: string,
   workbookPath: string
-): Promise<void> {
+): Promise<WorkbookCopyInfo> {
   const original = path.resolve(originalPath);
   const target = path.resolve(workbookPath);
   if (original === target) {
@@ -100,11 +150,11 @@ export async function ensureWorkbookCopy(
     await access(target);
     exists = true;
   } catch {
-    /* 副本不存在，走复制 */
+    /* 副本不存在，走生成 */
   }
   if (exists) {
     const inspection = await inspectWorkbook(target);
-    if (inspection.ok) return;
+    if (inspection.ok) return { format: "xlsx", created: false };
     if (inspection.reason === "read") {
       throw new WorkbookCopyError(
         "copy-unreadable",
@@ -115,19 +165,29 @@ export async function ensureWorkbookCopy(
     logWarn(`工作副本不可读，已改名留档并从原件重建：${target} → ${quarantined}`);
   }
 
-  await assertReadableOriginal(original);
+  const source = await readOriginal(original);
   await mkdir(path.dirname(target), { recursive: true });
   try {
-    await copyFile(original, target, constants.COPYFILE_EXCL);
+    const handle = await open(target, "wx");
+    try {
+      await handle.writeFile(source.data);
+    } finally {
+      await handle.close();
+    }
   } catch (error) {
-    // 并发创建：另一写者已先复制；重新校验它可用，坏文件则把错误暴露给调用方。
+    // 并发创建：另一写者已先写；重新校验它可用，坏文件则把错误暴露给调用方。
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       const inspection = await inspectWorkbook(target);
-      if (inspection.ok) return;
+      if (inspection.ok) return { format: "xlsx", created: false };
       throw new Error(
         `并发生成的工作副本不可读：${target}（${errorMessage(inspection.error)}）`
       );
     }
     throw error;
   }
+  return {
+    format: source.format,
+    created: true,
+    ...(source.encoding === undefined ? {} : { encoding: source.encoding })
+  };
 }

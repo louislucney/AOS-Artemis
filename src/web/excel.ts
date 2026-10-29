@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 
+import { csvToXlsxBuffer, CsvError, looksLikeCsv, type CsvEncoding } from "./csv.js";
 import {
   CANONICAL_FIELDS,
   CANONICAL_FIELD_LABELS,
@@ -39,17 +40,24 @@ export interface ParsedExcelRejection {
   reason: string;
 }
 
+export type WorkbookFormat = "xlsx" | "csv";
+
 export interface ParsedExcel {
   sheetName: string;
   headers: string[];
   cases: ParsedExcelCase[];
   rejected: ParsedExcelRejection[];
+  /** CSV 输入时才有：来源格式与检测到的编码。 */
+  format?: "csv";
+  encoding?: CsvEncoding;
 }
 
 export interface ParseExcelInput {
   sheetName?: string;
   headerRow?: number;
   mapping: ExcelColumnMap;
+  /** 缺省按内容嗅探：zip 头当 xlsx，否则首行含逗号当 CSV。 */
+  format?: WorkbookFormat;
 }
 
 export type ExcelMappingErrorCode =
@@ -211,19 +219,31 @@ interface LoadedSheet {
   columnCount: number;
   headerRow: number;
   headers: string[];
+  csv?: { format: "csv"; encoding: CsvEncoding };
 }
 
 async function loadSheet(
   buffer: Buffer,
-  options: { sheetName?: string; headerRow?: number }
+  options: { sheetName?: string; headerRow?: number; format?: WorkbookFormat }
 ): Promise<LoadedSheet> {
   const workbook = new ExcelJS.Workbook();
+  const format = options.format ?? (looksLikeCsv(buffer) ? "csv" : "xlsx");
+  let csv: LoadedSheet["csv"];
   try {
-    await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+    if (format === "csv") {
+      const converted = await csvToXlsxBuffer(buffer);
+      csv = { format: "csv", encoding: converted.encoding };
+      await workbook.xlsx.load(converted.buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+    } else {
+      await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+    }
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
     throw new ExcelMappingError(
       "invalid-workbook",
-      `无法读取工作簿（文件损坏或不是有效的 .xlsx）：${error instanceof Error ? error.message : String(error)}`
+      format === "csv"
+        ? `无法读取 CSV：${error instanceof CsvError ? error.message : detail}`
+        : `无法读取工作簿（文件损坏或不是有效的 .xlsx）：${detail}`
     );
   }
   const sheet = pickSheet(workbook, options.sheetName);
@@ -249,21 +269,27 @@ async function loadSheet(
   if (headers.every((header) => header === "")) {
     throw new ExcelMappingError("missing-header", `工作表缺少表头（第 ${headerRow} 行为空）`);
   }
-  return { sheet, rowCount, columnCount, headerRow, headers };
+  return { sheet, rowCount, columnCount, headerRow, headers, ...(csv === undefined ? {} : { csv }) };
 }
 
 export interface ExcelHeaders {
   sheetName: string;
   headers: string[];
+  format?: "csv";
+  encoding?: CsvEncoding;
 }
 
 /** 只读表头（预览用）：即使缺少必填列也能拿到 headers/sheetName，供列映射建议。 */
 export async function readExcelHeaders(
   buffer: Buffer,
-  options: { sheetName?: string; headerRow?: number } = {}
+  options: { sheetName?: string; headerRow?: number; format?: WorkbookFormat } = {}
 ): Promise<ExcelHeaders> {
   const loaded = await loadSheet(buffer, options);
-  return { sheetName: loaded.sheet.name, headers: loaded.headers };
+  return {
+    sheetName: loaded.sheet.name,
+    headers: loaded.headers,
+    ...(loaded.csv ?? {})
+  };
 }
 
 /**
@@ -271,10 +297,12 @@ export async function readExcelHeaders(
  * 必填 `caseId`/`steps` 缺失即显式失败；公式用缓存值、无缓存则拒绝该行；合并单元格拒绝整个工作表。
  */
 export async function parseExcel(buffer: Buffer, input: ParseExcelInput): Promise<ParsedExcel> {
-  const { sheet, rowCount, headerRow, headers } = await loadSheet(buffer, {
+  const loaded = await loadSheet(buffer, {
     sheetName: input.sheetName,
-    headerRow: input.headerRow
+    headerRow: input.headerRow,
+    ...(input.format === undefined ? {} : { format: input.format })
   });
+  const { sheet, rowCount, headerRow, headers } = loaded;
 
   const resolved = resolveColumns(headers, input.mapping);
   assertNoMergedCells(sheet, resolved, headerRow, rowCount);
@@ -330,5 +358,11 @@ export async function parseExcel(buffer: Buffer, input: ParseExcelInput): Promis
     });
   }
 
-  return { sheetName: sheet.name, headers, cases, rejected };
+  return {
+    sheetName: sheet.name,
+    headers,
+    cases,
+    rejected,
+    ...(loaded.csv ?? {})
+  };
 }

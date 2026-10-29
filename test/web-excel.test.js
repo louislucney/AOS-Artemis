@@ -409,3 +409,77 @@ test("parseExcel: 选择工作表与表头行", async () => {
     isMappingError("invalid-workbook")
   );
 });
+
+test("suggestExcelMapping: 新增别名（用例ID/测试点/期望结果/测试步骤/前置条件/测试数据）", () => {
+  assert.deepEqual(
+    suggestExcelMapping([
+      "用例ID",
+      "测试点",
+      "测试步骤",
+      "期望结果",
+      "前置条件",
+      "测试数据"
+    ]),
+    {
+      caseId: "用例ID",
+      name: "测试点",
+      steps: "测试步骤",
+      expected: "期望结果",
+      preconditions: "前置条件",
+      testData: "测试数据"
+    }
+  );
+  assert.equal(
+    suggestExcelMapping(["用例编号", "步骤", "实际结果"])["expected"],
+    undefined,
+    "实际结果 是执行结果列，不参与导入映射"
+  );
+});
+
+const CSV_TEXT = "用例编号,测试点,测试步骤,期望结果,前置条件,测试数据\n001,登录成功,\"打开首页\n点击登录\",进入首页,已安装,账号 demo\n";
+
+test("readExcelHeaders/parseExcel: 直接接受 CSV 缓冲（工作表名 csv）", async () => {
+  const buffer = Buffer.from(CSV_TEXT, "utf8");
+  const headers = await readExcelHeaders(buffer);
+  assert.deepEqual(headers, {
+    sheetName: "csv",
+    headers: ["用例编号", "测试点", "测试步骤", "期望结果", "前置条件", "测试数据"],
+    format: "csv",
+    encoding: "utf-8"
+  });
+
+  const parsed = await parseExcel(buffer, { mapping: suggestExcelMapping(headers.headers) });
+  assert.equal(parsed.sheetName, "csv");
+  assert.equal(parsed.format, "csv");
+  assert.equal(parsed.encoding, "utf-8");
+  assert.deepEqual(parsed.rejected, []);
+  assert.equal(parsed.cases.length, 1);
+  assert.equal(parsed.cases[0].caseId, "001");
+  assert.equal(parsed.cases[0].name, "登录成功");
+  assert.deepEqual(parsed.cases[0].steps, ["打开首页", "点击登录"]);
+  assert.equal(parsed.cases[0].expected, "进入首页");
+  assert.deepEqual(parsed.cases[0].preconditions, ["已安装"]);
+  assert.equal(parsed.cases[0].testData, "账号 demo");
+  assert.equal(parsed.cases[0].rowNumber, 2);
+
+  await assert.rejects(
+    parseExcel(buffer, { sheetName: "Sheet1", mapping: suggestExcelMapping(headers.headers) }),
+    isMappingError("sheet-not-found")
+  );
+});
+
+test("parseExcel: 显式 format=xlsx 时 CSV 内容按损坏工作簿拒绝", async () => {
+  await assert.rejects(
+    parseExcel(Buffer.from(CSV_TEXT, "utf8"), {
+      format: "xlsx",
+      mapping: { caseId: "用例编号", steps: "测试步骤" }
+    }),
+    isMappingError("invalid-workbook")
+  );
+  await assert.rejects(
+    parseExcel(Buffer.from("not an xlsx"), {
+      mapping: { caseId: "用例编号", steps: "测试步骤" }
+    }),
+    isMappingError("invalid-workbook")
+  );
+});
