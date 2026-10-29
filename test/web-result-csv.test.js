@@ -139,7 +139,10 @@ function payload(cases, overrides = {}) {
         ...entry,
         name: entry.name ?? "",
         durationMs: 1000,
-        traceId: `trace-${entry.caseId}`
+        traceId: `trace-${entry.caseId}`,
+        ...(entry.status === "PASS" && !("assertionCount" in entry)
+          ? { assertionCount: 1 }
+          : {})
       })),
       startedAt: STARTED,
       finishedAt: FINISHED,

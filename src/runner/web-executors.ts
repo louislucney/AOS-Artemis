@@ -16,6 +16,8 @@ export interface WebJobExecutionCase {
   failureReason?: string;
   screenshotPaths?: string[];
   logPath?: string;
+  /** 顶层 flow 中硬断言命令条数（中心判定 PASS 的证据）。 */
+  assertionCount?: number;
 }
 
 export interface WebJobExecutionResult {
@@ -136,6 +138,13 @@ async function listTopLevelFlows(dir: string): Promise<string[]> {
     .filter((entry) => entry.isFile() && /\.(yaml|yml)$/i.test(entry.name))
     .map((entry) => path.join(dir, entry.name))
     .sort((left, right) => left.localeCompare(right));
+}
+
+const HARD_ASSERTION_LINE = /^\s*-\s*assert(?:Visible|NotVisible|True|Condition)\b/gm;
+
+/** 只扫顶层 flow 文件本身：Maestro 子流程（subflows/）不展开、不计数。 */
+function countHardAssertions(content: string): number {
+  return content.match(HARD_ASSERTION_LINE)?.length ?? 0;
 }
 
 function decodeCharacterEntities(text: string): string {
@@ -351,6 +360,14 @@ export async function executeWebJob(
   const stems = [...flowByStem.keys()].sort(
     (left, right) => right.length - left.length || left.localeCompare(right)
   );
+  const assertionCounts = new Map<string, number>();
+  for (const [stem, file] of flowByStem) {
+    try {
+      assertionCounts.set(stem, countHardAssertions(await readFile(file, "utf-8")));
+    } catch {
+      assertionCounts.set(stem, 0);
+    }
+  }
 
   const junitPath = path.join(jobDir, "junit.xml");
   const debugDir = path.join(jobDir, "maestro");
@@ -453,7 +470,8 @@ export async function executeWebJob(
       caseId: matched,
       name,
       status: raw.status,
-      durationMs: raw.durationMs
+      durationMs: raw.durationMs,
+      assertionCount: assertionCounts.get(matched) ?? 0
     };
     if (raw.failureReason !== undefined) entry.failureReason = raw.failureReason;
     cases.push(entry);

@@ -43,11 +43,11 @@ async function tempDir(t, prefix = "aos-web-result-") {
   return dir;
 }
 
-async function writeWorkbook(filePath, rows = [["TC-1", "登录", "1. 打开"], ["TC-2", "退出", "2. 退出"], ["TC-3", "设置", "3. 设置"]]) {
+async function writeWorkbook(filePath, rows = [["TC-1", "登录", "1. 打开", "1. 页面显示“登录”"], ["TC-2", "退出", "1. 退出", "1. 页面显示“退出”"], ["TC-3", "设置", "1. 设置", "1. 页面显示“设置”"]]) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("用例");
-  sheet.addRow(["用例编号", "用例名", "步骤"]);
+  sheet.addRow(["用例编号", "用例名", "步骤", "期望结果"]);
   for (const row of rows) sheet.addRow(row);
   await workbook.xlsx.writeFile(filePath);
   return filePath;
@@ -105,7 +105,7 @@ async function setupProject(t, options = {}) {
   const { store, workspace, rootPath } = await makeStore();
   if (t) t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const original = path.join(rootPath, "cases.xlsx");
-  await writeWorkbook(original);
+  await writeWorkbook(original, options.rows);
   const buffer = await readFile(original);
   const asset = await storeWebAsset({
     store,
@@ -120,7 +120,7 @@ async function setupProject(t, options = {}) {
       assetId: asset.id,
       sheetName: "用例",
       headerFingerprint: "fp-1",
-      columnMap: { caseId: "用例编号", steps: "步骤" },
+      columnMap: { caseId: "用例编号", steps: "步骤", expected: "期望结果" },
       createdBy: "tester"
     });
   }
@@ -174,7 +174,7 @@ function resultPayload(overrides = {}) {
     execution: {
       status: "failed",
       cases: [
-        { caseId: "TC-1", name: "登录", status: "PASS", durationMs: 1200, traceId: "trace-1" },
+        { caseId: "TC-1", name: "登录", status: "PASS", durationMs: 1200, traceId: "trace-1", assertionCount: 1 },
         {
           caseId: "TC-2",
           name: "退出",
@@ -202,7 +202,11 @@ function passingPayload(overrides = {}) {
   return {
     execution: {
       status: "passed",
-      cases: [{ caseId: "TC-1", name: "登录", status: "PASS", durationMs: 900, traceId: "trace-1" }],
+      cases: [
+        { caseId: "TC-1", name: "登录", status: "PASS", durationMs: 900, traceId: "trace-1", assertionCount: 1 },
+        { caseId: "TC-2", name: "退出", status: "PASS", durationMs: 900, traceId: "trace-2", assertionCount: 1 },
+        { caseId: "TC-3", name: "设置", status: "PASS", durationMs: 900, traceId: "trace-3", assertionCount: 1 }
+      ],
       startedAt: STARTED,
       finishedAt: FINISHED,
       detail: null
@@ -241,16 +245,16 @@ test("ingest：PASS/FAIL/SKIP 聚合 failed，写回 8 列中的结果/时间/�
   assert.deepEqual(summary.warnings, []);
 
   const sheet = await loadSheet(ctx.copyPath);
-  assert.equal(cellText(sheet.getCell("H2")), "PASS");
-  assert.equal(cellText(sheet.getCell("H3")), "FAIL");
-  assert.equal(cellText(sheet.getCell("H4")), "SKIP");
-  assert.equal(cellText(sheet.getCell("I2")), "Pixel 7 / 14");
-  assert.equal(cellText(sheet.getCell("J2")), "com.acme.app 1.2.3 app.apk");
-  assert.equal(cellText(sheet.getCell("K2")), STARTED);
-  assert.equal(cellText(sheet.getCell("L2")), FINISHED);
-  assert.equal(cellText(sheet.getCell("M2")), "trace-1");
-  assert.equal(cellText(sheet.getCell("F1")), "建议｜脚本文件");
-  assert.equal(cellText(sheet.getCell("M1")), "执行｜traceId");
+  assert.equal(cellText(sheet.getCell("I2")), "PASS");
+  assert.equal(cellText(sheet.getCell("I3")), "FAIL");
+  assert.equal(cellText(sheet.getCell("I4")), "SKIP");
+  assert.equal(cellText(sheet.getCell("J2")), "Pixel 7 / 14");
+  assert.equal(cellText(sheet.getCell("K2")), "com.acme.app 1.2.3 app.apk");
+  assert.equal(cellText(sheet.getCell("L2")), STARTED);
+  assert.equal(cellText(sheet.getCell("M2")), FINISHED);
+  assert.equal(cellText(sheet.getCell("N2")), "trace-1");
+  assert.equal(cellText(sheet.getCell("G1")), "建议｜脚本文件");
+  assert.equal(cellText(sheet.getCell("N1")), "执行｜traceId");
 
   assert.equal(await sha256File(ctx.original), ctx.originalSha, "原件 sha256 必须不变");
 
@@ -371,7 +375,7 @@ test("HTTP POST /panel/api/jobs/:id/results：runner token、未知 job、非法
     assetId: asset.id,
     sheetName: "用例",
     headerFingerprint: "fp-http",
-    columnMap: { caseId: "用例编号", steps: "步骤" }
+    columnMap: { caseId: "用例编号", steps: "步骤", expected: "期望结果" }
   });
   const makeJob = async (status) => {
     const task = await store.createRegressionTask({
@@ -495,12 +499,12 @@ test("ingest：写回失败仍保存结果，返回 writeback-failed 且不改�
 test("ingest：人工清空系统格默认冻结，显式 allowClearedRefresh 才重写（confirmed 行）", async (t) => {
   const ctx = await setupProject(t);
   await ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload: passingPayload() });
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "PASS");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("I2")), "PASS");
 
   await mutateWorkbook(ctx.copyPath, (_workbook, sheet) => {
-    sheet.getCell("H2").value = null;
+    sheet.getCell("I2").value = null;
   });
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("I2")), "");
 
   const second = await newRunningJob(ctx);
   const frozen = await ingestWebJobResult({
@@ -513,12 +517,10 @@ test("ingest：人工清空系统格默认冻结，显式 allowClearedRefresh �
     frozen.warnings.some((warning) => warning.includes("人工清空")),
     frozen.warnings.join("；")
   );
-  assert.deepEqual(
-    frozen.writtenCells.filter((cell) => cell.key === "result"),
-    [],
-    "被人工清空的结果格默认冻结"
-  );
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "");
+  const frozenResults = frozen.writtenCells.filter((cell) => cell.key === "result");
+  assert.equal(frozenResults.length, 2, "同一批其余用例仍写结果");
+  assert.ok(!frozenResults.some((cell) => cell.caseId === "TC-1"), "被人工清空的结果格默认冻结");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("I2")), "");
 
   const third = await newRunningJob(ctx);
   const refreshed = await ingestWebJobResult({
@@ -527,8 +529,8 @@ test("ingest：人工清空系统格默认冻结，显式 allowClearedRefresh �
     payload: passingPayload(),
     allowClearedRefresh: true
   });
-  assert.equal(refreshed.writtenCells.length, 6);
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "PASS");
+  assert.equal(refreshed.writtenCells.length, 18);
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("I2")), "PASS");
   const last = await ctx.store.lastExcelWritebackByCellKey(
     ctx.rootPath,
     ctx.asset.id,
@@ -545,7 +547,7 @@ test("两阶段 journal：pending 按单元格值 confirm，不一致则删除�
   const ctx = await setupProject(t);
   await ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload: passingPayload() });
   const sheet = await loadSheet(ctx.copyPath);
-  assert.equal(cellText(sheet.getCell("H2")), "PASS");
+  assert.equal(cellText(sheet.getCell("I2")), "PASS");
   const confirmedBefore = await ctx.store.lastExcelWritebackByCellKey(
     ctx.rootPath,
     ctx.asset.id,
@@ -561,7 +563,7 @@ test("两阶段 journal：pending 按单元格值 confirm，不一致则删除�
     jobId: ctx.task.id,
     caseId: "TC-1",
     columnKey: "result",
-    cellRef: "用例!H2",
+    cellRef: "用例!I2",
     value: "PASS",
     status: "pending"
   });
@@ -572,7 +574,7 @@ test("两阶段 journal：pending 按单元格值 confirm，不一致则删除�
     jobId: ctx.task.id,
     caseId: "TC-1",
     columnKey: "device",
-    cellRef: "用例!I2",
+    cellRef: "用例!J2",
     value: "STALE / 0",
     status: "pending"
   });
@@ -622,8 +624,8 @@ test("两阶段 journal：pending 按单元格值 confirm，不一致则删除�
     payload: passingPayload()
   });
   const resultCells = summary.writtenCells.filter((cell) => cell.key === "result");
-  assert.equal(resultCells.length, 1);
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "PASS");
+  assert.equal(resultCells.length, 3);
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("I2")), "PASS");
 });
 
 test("远程 LLM 结果：tokenUsage + 原始工件落到结果目录；缺工件记 token-unavailable 不伪造", async (t) => {
@@ -844,8 +846,8 @@ test("C1：保留 runner 上报状态（error 不因用例全 PASS 变 completed
   assert.ok(summary.warnings.some((warning) => warning.includes("status-mismatch")));
   assert.ok(!summary.writtenCells.some((cell) => cell.key === "result"));
   const sheet = await loadSheet(ctx.copyPath);
-  assert.notEqual(cellText(sheet.getCell("H2")), "PASS");
-  assert.equal(cellText(sheet.getCell("I2")), "Pixel 7 / 14");
+  assert.notEqual(cellText(sheet.getCell("I2")), "PASS");
+  assert.equal(cellText(sheet.getCell("J2")), "Pixel 7 / 14");
   const task = await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id);
   assert.equal(task.status, "failed");
 
@@ -878,7 +880,7 @@ test("I1：per-job 锁让并发同内容上传只写一次，崩溃后重复上�
   ]);
   assert.equal(first.jobId, second.jobId);
   assert.equal([first.idempotent, second.idempotent].filter(Boolean).length, 1);
-  assert.equal(ctx.store.excelWritebacks.length, 6, "只允许一次写回 journal");
+  assert.equal(ctx.store.excelWritebacks.length, 18, "只允许一次写回 journal");
   assert.equal(
     (await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id)).status,
     "completed"
@@ -893,7 +895,7 @@ test("I1：per-job 锁让并发同内容上传只写一次，崩溃后重复上�
     "completed",
     "幂等重传必须把 running 任务补成终态"
   );
-  assert.equal(ctx.store.excelWritebacks.length, 6, "幂等重传不得重复写 journal");
+  assert.equal(ctx.store.excelWritebacks.length, 18, "幂等重传不得重复写 journal");
 });
 
 test("I2：tokenArtifacts 只接受内联 base64；拒绝路径、超限工件与不安全文件名", async (t) => {
@@ -1039,7 +1041,7 @@ test("HTTP：结果上传大小上限（>256KB 200 / >16MB 413）、415、错误
     assetId: asset.id,
     sheetName: "用例",
     headerFingerprint: "fp-limits",
-    columnMap: { caseId: "用例编号", steps: "步骤" }
+    columnMap: { caseId: "用例编号", steps: "步骤", expected: "期望结果" }
   });
   const makeJob = async (status = "running") => {
     const task = await store.createRegressionTask({
@@ -1139,7 +1141,7 @@ test("ingest：runner 上传 body 的 allowClearedRefresh 不能解冻人工清�
   const ctx = await setupProject(t);
   await ingestWebJobResult({ store: ctx.store, jobId: ctx.task.id, payload: passingPayload() });
   await mutateWorkbook(ctx.copyPath, (_workbook, sheet) => {
-    sheet.getCell("H2").value = null;
+    sheet.getCell("I2").value = null;
   });
 
   const task = await newRunningJob(ctx);
@@ -1149,10 +1151,175 @@ test("ingest：runner 上传 body 的 allowClearedRefresh 不能解冻人工清�
     payload: { ...passingPayload(), allowClearedRefresh: true }
   });
   assert.equal(summary.writebackStatus, "written");
-  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("H2")), "", "body 字段不得解冻");
+  assert.equal(cellText((await loadSheet(ctx.copyPath)).getCell("I2")), "", "body 字段不得解冻");
   const doc = JSON.parse(await readFile(resultPathForJob(ctx.rootPath, task.id), "utf8"));
   assert.equal(doc.allowClearedRefresh, false);
   assert.ok(summary.warnings.some((warning) => warning.includes("人工清空")));
+});
+
+test("断言门禁：缺失用例补 SKIP（未执行）→ partial，平台/8 列/断言列同批落盘", async (t) => {
+  const ctx = await setupProject(t);
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: passingPayload({
+      execution: {
+        status: "passed",
+        cases: [
+          { caseId: "TC-1", name: "登录", status: "PASS", durationMs: 900, assertionCount: 1 }
+        ],
+        startedAt: STARTED,
+        finishedAt: FINISHED,
+        detail: null
+      }
+    })
+  });
+
+  assert.equal(summary.taskStatus, "partial", "缺失用例不得 completed");
+  assert.deepEqual(summary.gate, {
+    result: "partial",
+    total: 3,
+    passed: 1,
+    failed: 0,
+    errors: 0,
+    skipped: 2
+  });
+  assert.ok(
+    summary.warnings.some((warning) => warning.includes("verdict-missing-result")),
+    summary.warnings.join("；")
+  );
+  assert.equal(summary.assertionCells, 3);
+
+  const sheet = await loadSheet(ctx.copyPath);
+  assert.equal(cellText(sheet.getCell("E2")), "PASS");
+  assert.equal(cellText(sheet.getCell("E3")), "SKIP");
+  assert.equal(cellText(sheet.getCell("E4")), "SKIP");
+  assert.equal(cellText(sheet.getCell("I2")), "PASS");
+  assert.equal(cellText(sheet.getCell("I3")), "SKIP（未执行）");
+  assert.equal(cellText(sheet.getCell("I4")), "SKIP（未执行）");
+  assert.equal(cellText(sheet.getCell("J3")), "", "未执行用例不写设备");
+  assert.equal(cellText(sheet.getCell("N3")), "", "未执行用例不写 trace");
+  assert.equal(cellText(sheet.getCell("O1")), "__aos_assertions");
+
+  const saved = JSON.parse(await readFile(resultPathForJob(ctx.rootPath, ctx.task.id), "utf8"));
+  assert.equal(saved.gate.result, "partial");
+  assert.deepEqual(
+    saved.execution.cases.map((entry) => [entry.caseId, entry.status, entry.synthetic === true]),
+    [
+      ["TC-1", "PASS", false],
+      ["TC-2", "SKIP", true],
+      ["TC-3", "SKIP", true]
+    ]
+  );
+  assert.equal(saved.execution.cases[0].assertionCount, 1);
+  assert.equal(saved.execution.status, "partial");
+  assert.equal(await sha256File(ctx.original), ctx.originalSha, "原件 sha256 必须不变");
+});
+
+test("断言门禁：PASS 缺 assertionCount → UNVERIFIED，任务 partial、Excel 不得 PASS", async (t) => {
+  const ctx = await setupProject(t);
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: passingPayload({
+      execution: {
+        status: "passed",
+        cases: [
+          { caseId: "TC-1", name: "登录", status: "PASS", durationMs: 900 },
+          { caseId: "TC-2", name: "退出", status: "PASS", durationMs: 900, assertionCount: 1 },
+          { caseId: "TC-3", name: "设置", status: "PASS", durationMs: 900, assertionCount: 1 }
+        ],
+        startedAt: STARTED,
+        finishedAt: FINISHED,
+        detail: null
+      }
+    })
+  });
+
+  assert.equal(summary.taskStatus, "partial");
+  assert.deepEqual(summary.gate, {
+    result: "partial",
+    total: 3,
+    passed: 2,
+    failed: 0,
+    errors: 0,
+    skipped: 0,
+    unverified: 1
+  });
+  assert.ok(
+    summary.warnings.some((warning) => warning.includes("verdict-unverified")),
+    summary.warnings.join("；")
+  );
+
+  const sheet = await loadSheet(ctx.copyPath);
+  assert.equal(cellText(sheet.getCell("E2")), "UNVERIFIED");
+  assert.equal(cellText(sheet.getCell("E3")), "PASS");
+  assert.equal(cellText(sheet.getCell("I2")), "UNVERIFIED");
+  assert.equal(cellText(sheet.getCell("I3")), "PASS");
+  assert.match(cellText(sheet.getCell("A2")), /TC-1/);
+  assert.equal(await sha256File(ctx.original), ctx.originalSha);
+  assert.equal((await ctx.store.getRegressionTask(ctx.rootPath, ctx.task.id)).status, "partial");
+});
+
+test("断言门禁：空预期 PASS → UNVERIFIED（no-executable-assertion）", async (t) => {
+  const ctx = await setupProject(t, { rows: [["TC-1", "登录", "1. 打开", ""]] });
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: passingPayload({
+      execution: {
+        status: "passed",
+        cases: [
+          { caseId: "TC-1", name: "登录", status: "PASS", durationMs: 900, assertionCount: 1 }
+        ],
+        startedAt: STARTED,
+        finishedAt: FINISHED,
+        detail: null
+      }
+    })
+  });
+  assert.equal(summary.taskStatus, "partial");
+  assert.deepEqual(summary.gate, {
+    result: "partial",
+    total: 1,
+    passed: 0,
+    failed: 0,
+    errors: 0,
+    skipped: 0,
+    unverified: 1
+  });
+  assert.ok(summary.warnings.some((warning) => warning.includes("verdict-unverified")));
+  const sheet = await loadSheet(ctx.copyPath);
+  assert.equal(cellText(sheet.getCell("I2")), "UNVERIFIED");
+});
+
+test("normalize：assertionCount 必须是非负整数", () => {
+  const base = {
+    execution: {
+      status: "passed",
+      cases: [{ caseId: "TC-1", status: "PASS", assertionCount: 1 }],
+      startedAt: STARTED,
+      finishedAt: FINISHED
+    },
+    device: { serial: "emulator-5554" },
+    package: { filename: "app.apk" },
+    startedAt: STARTED,
+    finishedAt: FINISHED
+  };
+  assert.equal(normalizeWebJobResultPayload(base).execution.cases[0].assertionCount, 1);
+  for (const assertionCount of [-1, 1.5, "2", true]) {
+    assert.throws(
+      () =>
+        normalizeWebJobResultPayload({
+          ...base,
+          execution: {
+            ...base.execution,
+            cases: [{ caseId: "TC-1", status: "PASS", assertionCount }]
+          }
+        }),
+      (error) => error instanceof WebResultError && error.code === "invalid-result"
+    );
+  }
 });
 
 test("normalize：token 工件合计超过 16MB（2×8MB 上限）拒绝", () => {

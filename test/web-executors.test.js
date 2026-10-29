@@ -69,7 +69,7 @@ async function workspace(t, flowNames, options = {}) {
   for (const name of flowNames) {
     const target = path.join(flowsDir, name);
     await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, "appId: acme.app\n---\n- launchApp\n");
+    await writeFile(target, options.contents?.[name] ?? "appId: acme.app\n---\n- launchApp\n");
   }
   return { root, jobDir, flowsDir };
 }
@@ -132,6 +132,33 @@ test("executeWebJob: JUnit 三用例映射 PASS/FAIL/SKIP，任一失败任务 f
   assert.ok(new Date(result.finishedAt) >= new Date(result.startedAt));
   assert.equal(result.detail, null);
   assert.equal(calls.length, 1);
+});
+
+test("executeWebJob: 按顶层 flow 统计硬断言条数并上报 assertionCount", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml", "flow-b.yaml"], {
+    contents: {
+      "flow-a.yaml":
+        "appId: acme.app\n---\n- launchApp\n- assertVisible: 登录\n- assertNotVisible: 错误\n- assertTrue: ${true}\n",
+      "flow-b.yaml": "appId: acme.app\n---\n- launchApp\n- tapOn: 退出\n"
+    }
+  });
+  const { exec } = execWithJunit(
+    junit([
+      xmlCase({ name: "flow-a", classname: "flows", time: "1" }),
+      xmlCase({ name: "flow-b", classname: "flows", time: "1" })
+    ])
+  );
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+  const byId = new Map(result.cases.map((entry) => [entry.caseId, entry]));
+  assert.equal(byId.get("flow-a").assertionCount, 3);
+  assert.equal(byId.get("flow-b").assertionCount, 0);
 });
 
 test("executeWebJob: maestro 命令参数、默认 15 分钟超时与 env 透传", async (t) => {

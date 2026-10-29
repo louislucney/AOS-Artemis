@@ -175,9 +175,9 @@ async function writeWorkbook(filePath) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("用例");
-  sheet.addRow(["用例编号", "用例名", "步骤"]);
-  sheet.addRow(["TC-1", "登录", "1. 打开登录页"]);
-  sheet.addRow(["TC-2", "退出", "1. 点击退出"]);
+  sheet.addRow(["用例编号", "用例名", "步骤", "期望结果"]);
+  sheet.addRow(["TC-1", "登录", "1. 打开登录页", "1. 页面显示“登录”"]);
+  sheet.addRow(["TC-2", "退出", "1. 点击退出", "1. 页面显示“退出”"]);
   await workbook.xlsx.writeFile(filePath);
   return filePath;
 }
@@ -216,7 +216,7 @@ async function prepareProject(t) {
     rootPath,
     assetId: excel.id,
     sheetName: "用例",
-    columnMap: { caseId: "用例编号", steps: "步骤" },
+    columnMap: { caseId: "用例编号", steps: "步骤", expected: "期望结果" },
     createdBy: "e2e"
   });
 
@@ -465,10 +465,10 @@ test("远程 Web 任务端到端：下发选机 → 领取 → 下载/安装/Mae
   });
   assert.equal(executed.status, "failed");
   assert.deepEqual(
-    executed.cases.map((entry) => [entry.caseId, entry.status]),
+    executed.cases.map((entry) => [entry.caseId, entry.status, entry.assertionCount]),
     [
-      ["TC-1", "PASS"],
-      ["TC-2", "FAIL"]
+      ["TC-1", "PASS", 1],
+      ["TC-2", "FAIL", 0]
     ]
   );
   const maestroCall = fake.calls.find((call) => call.command === "maestro");
@@ -492,6 +492,7 @@ test("远程 Web 任务端到端：下发选机 → 领取 → 下载/安装/Mae
         status: entry.status,
         durationMs: entry.durationMs,
         traceId: `trace-${entry.caseId}`,
+        ...(entry.assertionCount === undefined ? {} : { assertionCount: entry.assertionCount }),
         ...(entry.failureReason === undefined ? {} : { failureReason: entry.failureReason })
       })),
       startedAt: executed.startedAt,
@@ -536,22 +537,22 @@ test("远程 Web 任务端到端：下发选机 → 领取 → 下载/安装/Mae
   const copyPath = workbookCopyPath(rootPath, ctx.excel.id);
   const sheet = await loadSheet(copyPath);
   for (const [column, header] of [
-    ["H", "执行｜结果"],
-    ["I", "执行｜设备与系统"],
-    ["J", "执行｜安装包"],
-    ["K", "执行｜开始时间"],
-    ["L", "执行｜结束时间"],
-    ["M", "执行｜traceId"]
+    ["I", "执行｜结果"],
+    ["J", "执行｜设备与系统"],
+    ["K", "执行｜安装包"],
+    ["L", "执行｜开始时间"],
+    ["M", "执行｜结束时间"],
+    ["N", "执行｜traceId"]
   ]) {
     assert.equal(cellText(sheet.getCell(`${column}1`)), header);
   }
-  assert.equal(cellText(sheet.getCell("H2")), "PASS");
-  assert.equal(cellText(sheet.getCell("H3")), "FAIL");
-  assert.equal(cellText(sheet.getCell("I2")), "Pixel 8 / 15");
-  assert.equal(cellText(sheet.getCell("J2")), `${PACKAGE_NAME} ${PACKAGE_VERSION} acme.apk`);
-  assert.equal(cellText(sheet.getCell("K2")), executed.startedAt);
-  assert.equal(cellText(sheet.getCell("L2")), executed.finishedAt);
-  assert.equal(cellText(sheet.getCell("M2")), "trace-TC-1");
+  assert.equal(cellText(sheet.getCell("I2")), "PASS");
+  assert.equal(cellText(sheet.getCell("I3")), "FAIL");
+  assert.equal(cellText(sheet.getCell("J2")), "Pixel 8 / 15");
+  assert.equal(cellText(sheet.getCell("K2")), `${PACKAGE_NAME} ${PACKAGE_VERSION} acme.apk`);
+  assert.equal(cellText(sheet.getCell("L2")), executed.startedAt);
+  assert.equal(cellText(sheet.getCell("M2")), executed.finishedAt);
+  assert.equal(cellText(sheet.getCell("N2")), "trace-TC-1");
   assert.equal(sha256(await readFile(ctx.excel.storagePath)), ctx.originalSha, "原件 sha256 必须不变");
 
   const resultDoc = await readWebJobResult(rootPath, job1.task.id);

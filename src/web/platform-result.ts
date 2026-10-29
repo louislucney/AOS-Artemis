@@ -13,7 +13,7 @@ import {
 } from "./writeback.js";
 import { findUnsupportedParts, lostParts, readXlsxParts } from "./xlsx-parts.js";
 
-export type PlatformResultStatus = "PASS" | "FAIL" | "SKIP" | "ERROR";
+export type PlatformResultStatus = "PASS" | "FAIL" | "SKIP" | "ERROR" | "UNVERIFIED";
 
 export type PlatformResultPlatform = "android" | "ios";
 

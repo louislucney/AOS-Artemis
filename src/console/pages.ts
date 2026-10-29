@@ -707,7 +707,12 @@ export function renderWebJobPage(data: WebJobPageData): string {
     escapeHtml(entry.name),
     cBadge({
       label: entry.status,
-      tone: entry.status === "PASS" ? "success" : entry.status === "SKIP" ? "warning" : "error"
+      tone:
+        entry.status === "PASS"
+          ? "success"
+          : entry.status === "SKIP" || entry.status === "UNVERIFIED"
+            ? "warning"
+            : "error"
     }),
     entry.durationMs === undefined ? "—" : `${entry.durationMs} ms`,
     entry.failureReason === undefined
@@ -827,7 +832,9 @@ export function renderWebJobPage(data: WebJobPageData): string {
                 : `<span title="${escapeHtml(finishedAt)}">${relativeTime(finishedAt)}</span>`,
               gate === undefined
                 ? '<span class="muted">尚无结果</span>'
-                : `${escapeHtml(gate.result)}（通过 ${gate.passed} / 失败 ${gate.failed} / 错误 ${gate.errors} / 跳过 ${gate.skipped}）`,
+                : `${escapeHtml(gate.result)}（通过 ${gate.passed} / 失败 ${gate.failed} / 错误 ${gate.errors} / 跳过 ${gate.skipped}${
+                    (gate.unverified ?? 0) > 0 ? ` / 未验证 ${gate.unverified}` : ""
+                  }）`,
               writeback
             ]
           ],

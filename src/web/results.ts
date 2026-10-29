@@ -18,6 +18,7 @@ import { parseExcel, type ParsedExcelCase } from "./excel.js";
 import { parseWebJobSpec, type WebJobSpec } from "./job-spec.js";
 import { withFileLock } from "./lock.js";
 import { writePlatformResults, type PlatformResultRow } from "./platform-result.js";
+import { deriveCaseVerdicts } from "./verdicts.js";
 import { ensureWorkbookCopy, workbookCopyPath } from "./workbook.js";
 import {
   recoverPendingWriteback,
@@ -30,16 +31,23 @@ import {
 
 export type WebResultCaseStatus = "PASS" | "FAIL" | "SKIP" | "ERROR";
 
+/** runner 上报词汇只有四种；`UNVERIFIED` 由中心派生，runner 不得直接上报。 */
+export type WebResultVerdictStatus = WebResultCaseStatus | "UNVERIFIED";
+
 export interface WebResultCase {
   caseId: string;
   name: string;
-  status: WebResultCaseStatus;
+  status: WebResultVerdictStatus;
   durationMs?: number;
   failureStep?: string;
   failureReason?: string;
   traceId?: string;
   screenshotPaths?: string[];
   logPath?: string;
+  /** runner 上报的 flow 硬断言条数（中心据此判断 PASS 是否有断言证据）。 */
+  assertionCount?: number;
+  /** 中心补写的“未执行”用例（只写 Excel `SKIP（未执行）`）。 */
+  synthetic?: boolean;
 }
 
 export interface WebResultTokenUsage {
@@ -91,6 +99,8 @@ export interface WebResultGate {
   failed: number;
   errors: number;
   skipped: number;
+  /** 中心降级的 UNVERIFIED 数；为 0 时省略（保持既有摘要兼容）。 */
+  unverified?: number;
 }
 
 export interface WebResultExecution {
@@ -330,6 +340,18 @@ function parseCase(raw: unknown, index: number): WebResultCase {
   };
   const duration = numberField(raw.durationMs, `execution.cases[${index}].durationMs`);
   if (duration !== undefined) parsed.durationMs = duration;
+  if (raw.assertionCount !== undefined && raw.assertionCount !== null) {
+    const field = `execution.cases[${index}].assertionCount`;
+    if (
+      typeof raw.assertionCount !== "number" ||
+      !Number.isFinite(raw.assertionCount) ||
+      !Number.isInteger(raw.assertionCount) ||
+      raw.assertionCount < 0
+    ) {
+      throw new WebResultError("invalid-result", `结果字段 ${field} 必须是非负整数`);
+    }
+    parsed.assertionCount = raw.assertionCount;
+  }
   const failureStep = optionalText(raw.failureStep, `execution.cases[${index}].failureStep`);
   if (failureStep !== "") parsed.failureStep = clip(failureStep);
   const failureReason = optionalText(raw.failureReason, `execution.cases[${index}].failureReason`);
@@ -465,16 +487,18 @@ function sumTokenUsage(entries: WebResultTokenUsage[]): WebResultTokenTotals {
   return totals;
 }
 
-/** 任务终态聚合：空结果 ≠ 成功；SKIP 只计数。 */
+/** 任务终态聚合：空结果 ≠ 成功；SKIP/UNVERIFIED 只计数，不计通过。 */
 export function aggregateResultGate(cases: WebResultCase[]): WebResultGate {
   let passed = 0;
   let failed = 0;
   let errors = 0;
   let skipped = 0;
+  let unverified = 0;
   for (const entry of cases) {
     if (entry.status === "PASS") passed += 1;
     else if (entry.status === "FAIL") failed += 1;
     else if (entry.status === "ERROR") errors += 1;
+    else if (entry.status === "UNVERIFIED") unverified += 1;
     else skipped += 1;
   }
   const result: WebResultGate["result"] =
@@ -482,7 +506,7 @@ export function aggregateResultGate(cases: WebResultCase[]): WebResultGate {
       ? "error"
       : failed + errors > 0
         ? "failed"
-        : skipped > 0
+        : skipped + unverified > 0
           ? "partial"
           : "passed";
   return {
@@ -491,7 +515,8 @@ export function aggregateResultGate(cases: WebResultCase[]): WebResultGate {
     passed,
     failed,
     errors,
-    skipped
+    skipped,
+    ...(unverified > 0 ? { unverified } : {})
   };
 }
 
@@ -714,8 +739,14 @@ async function resolveWritebackTarget(
   };
 }
 
+/**
+ * 逐例 8 列写回：中心补写的未执行用例只写 `SKIP（未执行）`，不带设备/包/时间/trace；
+ * UNVERIFIED 写派生状态并保留可用的设备/时间/trace。
+ */
 function writebackRows(
-  payload: NormalizedWebJobResultPayload
+  cases: WebResultCase[],
+  payload: NormalizedWebJobResultPayload,
+  suppressPerCaseResult: boolean
 ): WritebackRow[] {
   const device =
     [payload.device.model, payload.device.osVersion].filter((part) => part !== "").join(" / ") ||
@@ -729,12 +760,10 @@ function writebackRows(
       traceByCase.set(usage.caseId, usage.traceId);
     }
   }
-  // 任务级 error / 上报 failed 但用例全 PASS 时不写逐例 PASS，避免 Excel 假绿。
-  const computed = aggregateResultGate(payload.execution.cases);
-  const suppressPerCaseResult =
-    payload.execution.status === "error" ||
-    (payload.execution.status === "failed" && computed.result !== "failed");
-  return payload.execution.cases.map((entry) => {
+  return cases.map((entry) => {
+    if (entry.synthetic === true) {
+      return { caseId: entry.caseId, values: { result: "SKIP（未执行）" } };
+    }
     const traceId = entry.traceId ?? traceByCase.get(entry.caseId);
     const values: Partial<Record<SystemColumnKey, string>> = {
       device,
@@ -742,7 +771,8 @@ function writebackRows(
       startedAt: payload.startedAt,
       finishedAt: payload.finishedAt
     };
-    if (!suppressPerCaseResult || entry.status !== "PASS") values.result = entry.status;
+    if (entry.status === "UNVERIFIED") values.result = "UNVERIFIED";
+    else if (!suppressPerCaseResult || entry.status !== "PASS") values.result = entry.status;
     if (traceId !== undefined && traceId !== "") values.traceId = traceId;
     return { caseId: entry.caseId, values };
   });
@@ -791,16 +821,16 @@ async function detectResultCsvSource(target: WritebackTarget): Promise<SourceCsv
 
 /**
  * 平台结果行沿用 8 列摘要的假绿守卫：任务级 error / 强制 failed 而用例全 PASS 时不写逐例 PASS。
+ * 未执行用例在平台列写 `SKIP`（Excel 摘要列才是 `SKIP（未执行）`）。
  */
-function platformResultRows(payload: NormalizedWebJobResultPayload): PlatformResultRow[] {
-  const computed = aggregateResultGate(payload.execution.cases);
-  const suppressPerCaseResult =
-    payload.execution.status === "error" ||
-    (payload.execution.status === "failed" && computed.result !== "failed");
+function platformResultRows(
+  cases: WebResultCase[],
+  suppressPerCaseResult: boolean
+): PlatformResultRow[] {
   const rows: PlatformResultRow[] = [];
-  for (const entry of payload.execution.cases) {
+  for (const entry of cases) {
     if (suppressPerCaseResult && entry.status === "PASS") continue;
-    rows.push({ caseId: entry.caseId, status: entry.status });
+    rows.push({ caseId: entry.caseId, status: entry.synthetic === true ? "SKIP" : entry.status });
   }
   return rows;
 }
@@ -1010,11 +1040,54 @@ async function ingestUnderJobLock(
 
   const target = await resolveWritebackTarget(store, rootPath, spec);
 
-  const counts = aggregateResultGate(payload.execution.cases);
-  const gate: WebResultGate = { ...counts, result: payload.execution.status };
+  const warnings: string[] = [];
+  // 原件解析与断言分类先于结果判定：PASS 需要“原件 + 人工预期”作为证据。
+  let source: SourceWorkbookSummary | null = null;
+  try {
+    source = await analyzeSourceWorkbook(target);
+  } catch (error) {
+    warnings.push(
+      `source-unreadable: 无法解析原始测试文档，跳过平台结果列与预期断言（${errorMessage(error)}）`
+    );
+    warnings.push("platform-result-skipped: 原件不可解析，未写平台结果列");
+    warnings.push("assertion-column-skipped: 原件不可解析，未写隐藏断言列");
+  }
+  const assertions = new Map<string, AssertionDoc>();
+  if (source !== null) {
+    for (const entry of source.cases) {
+      assertions.set(
+        entry.caseId.trim(),
+        classifyExpectedResult({
+          expected: entry.expected,
+          steps: entry.steps,
+          caseId: entry.caseId
+        })
+      );
+    }
+  }
+
+  // 任务级 error / 上报 failed 且用例全 PASS 时不写逐例 PASS，避免 Excel 假绿。
+  const runnerCounts = aggregateResultGate(payload.execution.cases);
+  const suppressPerCaseResult =
+    payload.execution.status === "error" ||
+    (payload.execution.status === "failed" && runnerCounts.result !== "failed");
+  const derived = deriveCaseVerdicts({
+    payloadCases: payload.execution.cases,
+    sourceCases: source?.cases ?? null,
+    assertions: source === null ? null : assertions,
+    caseFilter: spec.caseFilter,
+    suppressPerCaseResult
+  });
+  const finalCases = derived.cases;
+  warnings.push(...derived.warnings);
+
+  const counts = aggregateResultGate(finalCases);
+  const gate: WebResultGate = {
+    ...counts,
+    result: resolveResultStatus(payload.reportedStatus, counts.result)
+  };
   const taskStatus = taskStatusFromGate(gate);
   const dbStatus = persistedTaskStatus(taskStatus);
-  const warnings: string[] = [];
   if (payload.reportedStatus !== undefined && payload.reportedStatus !== counts.result) {
     warnings.push(
       `status-mismatch: runner 上报 ${payload.reportedStatus}，按用例聚合为 ${counts.result}；采用 ${gate.result} 作为结果状态`
@@ -1053,16 +1126,6 @@ async function ingestUnderJobLock(
       `result-csv-unavailable: 无法读取/识别 CSV 原件编码，跳过结果 CSV 导出（${errorMessage(error)}）`
     );
   }
-  let source: SourceWorkbookSummary | null = null;
-  try {
-    source = await analyzeSourceWorkbook(target);
-  } catch (error) {
-    warnings.push(
-      `source-unreadable: 无法解析原始测试文档，跳过平台结果列与预期断言（${errorMessage(error)}）`
-    );
-    warnings.push("platform-result-skipped: 原件不可解析，未写平台结果列");
-    warnings.push("assertion-column-skipped: 原件不可解析，未写隐藏断言列");
-  }
 
   let workbookResult: WritebackResult | null = null;
   let writebackError: string | null = null;
@@ -1089,7 +1152,7 @@ async function ingestUnderJobLock(
       await ensureWorkbookCopy(target.originalPath, target.workbookPath);
 
       // 平台结果列先写：追加位置在 8 列摘要之前（可见列顺序 = 原件 + AOS/IOS + 8 列）。
-      const platformRows = platformResultRows(payload);
+      const platformRows = platformResultRows(finalCases, suppressPerCaseResult);
       if (source !== null) {
         try {
           const written = await writePlatformResults({
@@ -1118,7 +1181,7 @@ async function ingestUnderJobLock(
         assetId: target.asset.id,
         sheetName: target.sheetName,
         caseIdHeader: target.caseIdHeader,
-        rows: writebackRows(payload),
+        rows: writebackRows(finalCases, payload, suppressPerCaseResult),
         originalPath: target.originalPath,
         allowClearedRefresh: payload.allowClearedRefresh,
         lastSystemValue: async (caseId, key) => {
@@ -1163,17 +1226,6 @@ async function ingestUnderJobLock(
       // 隐藏断言列最后追加：可见列顺序保持「原件 + 平台结果 + 8 列」，隐藏列在末尾。
       if (source !== null) {
         try {
-          const assertions = new Map<string, AssertionDoc>();
-          for (const entry of source.cases) {
-            assertions.set(
-              entry.caseId,
-              classifyExpectedResult({
-                expected: entry.expected,
-                steps: entry.steps,
-                caseId: entry.caseId
-              })
-            );
-          }
           const written = await writeAssertionColumn({
             workbookPath: target.workbookPath,
             sheetName: target.sheetName,
@@ -1238,7 +1290,11 @@ async function ingestUnderJobLock(
     taskStatus,
     dbStatus: lateFirstResult ? task.status : dbStatus,
     gate,
-    execution: payload.execution,
+    execution: {
+      ...payload.execution,
+      status: gate.result,
+      cases: finalCases
+    },
     device: payload.device,
     package: payload.package,
     startedAt: payload.startedAt,
