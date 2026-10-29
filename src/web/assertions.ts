@@ -58,7 +58,7 @@ const CONTEXT_PREFIX =
   /^(?:--|——|备注\s*[:：]?|備註\s*[:：]?|【备注】|【備註】|注\s*[:：]|note\b\s*[:：]?)\s*/i;
 
 const NEGATIVE =
-  /不(?!同|仅|僅|但|过|過|断|斷|少|久|符|变|變|停|只|需|用|須|须|會|会|要|再)|沒(?:有)?|没(?:有)?|未有|未(?:顯示|显示|展示|出現|出现|加載|加载|返回|生效|完成|成功|存在|找到|彈出|弹出|支持|支援|包含|提示|進入|进入|能|見|见)|无(?:按钮|庫存|库存|优惠|優惠|结果|結果)|無(?:按鈕|庫存|库存|優惠|优惠|結果|结果)|消失|隱藏|隐藏|不可見|不可见|不能|\b(?:not|no|never|hidden|absent)\b|\b\w+n't\b|\bdisappear(?:s|ed|ing)?\b/i;
+  /不(?!同|仅|僅|但|过|過|断|斷|少|久|符|变|變|停|只|需|用|須|须|會|会|要|再)|沒(?:有)?|没(?:有)?|未有|未(?:顯示|显示|展示|出現|出现|加載|加载|返回|生效|完成|成功|存在|找到|彈出|弹出|支持|支援|包含|提示|進入|进入|停留|能|見|见)|无(?:按钮|庫存|库存|优惠|優惠|结果|結果)|無(?:按鈕|庫存|库存|優惠|优惠|結果|结果)|消失|隱藏|隐藏|不可見|不可见|不能|\b(?:not|no|never|hidden|absent)\b|\b\w+n't\b|\bdisappear(?:s|ed|ing)?\b/i;
 
 const MANUAL =
   /后台|後台|排序|最近|上次|GPS|刷新|配置|积分余额|積分餘額|至少|(?<![不未沒没])存在|資料|数据|數據|\bbackend\b|\bserver(?:-side)?\b|\bsort(?:ed|s|ing)?\b|\border(?:s|ed)?\b|\blast\b|\blatest\b|\brefresh(?:ed|es|ing)?\b|\bconfig(?:uration|ure)?\b|\bbalance\b|\bat least\b|\bexists?\b|\bdata\b/i;
@@ -580,6 +580,34 @@ function startsWithValue(text: string): boolean {
   );
 }
 
+function navigationTarget(text: string): { target: string; negative: boolean } | null {
+  const match = text.match(
+    /(?:跳轉到|跳转到|跳轉至|跳转至|進入|进入|返回|回到|停留在|前往|導向|导向|到達|到达|直達|直达)(?:到|至)?\s*([^，,。；;：:！!?？]{2,30})$/
+  );
+  if (match === null || match.index === undefined) return null;
+  if (/[，,、；;。]/.test(text.slice(0, match.index))) return null;
+  const target = (match[1] ?? "")
+    .replace(/^[到至]\s*/, "")
+    .replace(/[\s。；;，,：:！!?？]+$/g, "")
+    .trim();
+  if ([...target].length < 2 || [...target].length > 30) return null;
+  if (!/(?:首頁|首页|頁面|页面|頁|页|門市|门店|詳情頁|详情页)$/.test(target)) return null;
+  const negative = /(?:未|沒有|沒|不(?!需|用|須|须|會|会|要|再))(?:再|會|会|要)?(?:跳轉|跳转|進入|进入|返回|回到|停留在|前往|導向|导向|到達|到达|直達|直达)/.test(
+    text
+  );
+  return { target, negative };
+}
+
+function closureTarget(text: string): string | null {
+  const match = text.match(/^(.{2,30}?)(?:關閉|关闭|消失|隱藏|隐藏|不見|不见)$/);
+  if (match === null) return null;
+  const subject = (match[1] ?? "")
+    .replace(/[\s。；;，,：:！!?？]+$/g, "")
+    .trim();
+  if ([...subject].length < 2 || [...subject].length > 30) return null;
+  return subject;
+}
+
 function structuredFieldValue(text: string): string | null {
   const field = text.match(/^(標題|标题|內容|内容|按鈕|按钮)\s*[:：]\s*(.*)$/);
   if (field !== null) return (field[2] ?? "").trim();
@@ -683,6 +711,26 @@ function classifyClause(
   }
   if (assertions.length > 0) {
     return { assertions, soft: false, manual: null, unresolved: false };
+  }
+
+  const nav = navigationTarget(masked);
+  if (nav !== null) {
+    return {
+      assertions: [{ type: nav.negative || negative ? "notVisible" : "visible", text: nav.target }],
+      soft: false,
+      manual: null,
+      unresolved: false
+    };
+  }
+
+  const closure = closureTarget(masked);
+  if (closure !== null) {
+    return {
+      assertions: [{ type: "notVisible", text: closure }],
+      soft: false,
+      manual: null,
+      unresolved: false
+    };
   }
 
   if (hasConcreteDisplay) {

@@ -99,7 +99,7 @@ test("verdicts：PASS + 高置信文档但 assertionCount 为 0/缺失 → UNVER
 
 test("verdicts：仅软 text 断言 → UNVERIFIED soft-assertion-only", () => {
   const source = [
-    sourceCase("TC-1", { expected: "1. 彈窗關閉", steps: ["點擊關閉"] })
+    sourceCase("TC-1", { expected: "1. 需先手動取消愛心", steps: ["點擊關閉"] })
   ];
   const result = derive({
     payloadCases: [passCase("TC-1", { assertionCount: 1 })],
@@ -111,7 +111,7 @@ test("verdicts：仅软 text 断言 → UNVERIFIED soft-assertion-only", () => {
   assert.match(result.cases[0].failureReason, /^未验证：.*软断言/);
 
   const soft = classifyExpectedResult({
-    expected: "1. 彈窗關閉",
+    expected: "1. 需先手動取消愛心",
     steps: ["點擊關閉"],
     caseId: "TC-SOFT"
   });
@@ -122,7 +122,7 @@ test("verdicts：仅软 text 断言 → UNVERIFIED soft-assertion-only", () => {
   });
 
   const mixed = classifyExpectedResult({
-    expected: "1. 显示“首页”，停留在首页",
+    expected: "1. 显示“首页”，需先手動取消愛心",
     steps: ["打开应用"],
     caseId: "TC-MIXED"
   });

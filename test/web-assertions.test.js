@@ -295,7 +295,7 @@ test("classify: 单行无编号预期绑定最后一步；多行无编号仍 amb
     {
       step: 1,
       assert: [
-        { type: "text", text: "已进入首页" },
+        { type: "visible", text: "首页" },
         { type: "visible", text: "成功" }
       ]
     }
@@ -620,7 +620,7 @@ test("classify: 真实样例回归（非 manual）", () => {
       steps: ["打开"],
       check: (byStep) => {
         assert.deepEqual(byStep.get(1), [
-          { type: "text", text: "直接跳轉到MOP首頁" },
+          { type: "visible", text: "MOP首頁" },
           { type: "notVisible", text: "MOP intro" }
         ]);
       }
@@ -805,8 +805,8 @@ test("classify: 逗号无条件拆分；动作子句不造 text，非动作短�
     {
       step: 1,
       assert: [
-        { type: "text", text: "彈窗關閉" },
-        { type: "text", text: "停留在MOP首頁" }
+        { type: "notVisible", text: "彈窗" },
+        { type: "visible", text: "MOP首頁" }
       ]
     }
   ]);
@@ -996,7 +996,8 @@ test("classify: 动作/指引子句不产 soft text；独立导航结果保留 t
     caseId: "TC_ACTION_TEXT"
   });
   const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
-  for (const step of [1, 2, 3, 4, 5, 6, 7]) {
+  assert.deepEqual(byStep.get(1), [{ type: "visible", text: "首頁" }]);
+  for (const step of [2, 3, 4, 5, 6, 7]) {
     assert.equal(
       byStep.get(step).some((assertion) => assertion.type === "text"),
       false,
@@ -1013,7 +1014,7 @@ test("classify: 动作/指引子句不产 soft text；独立导航结果保留 t
   const standaloneByStep = new Map(
     standalone.steps.map((entry) => [entry.step, entry.assert])
   );
-  assert.deepEqual(standaloneByStep.get(1), [{ type: "text", text: "返回MOP首頁" }]);
+  assert.deepEqual(standaloneByStep.get(1), [{ type: "visible", text: "MOP首頁" }]);
   assert.deepEqual(standaloneByStep.get(2), [
     { type: "text", text: "確認後優惠券被清空" }
   ]);
@@ -1104,7 +1105,6 @@ test("classify: 指令/动作短语不升 concrete", () => {
     "刪除商品",
     "移動物件",
     "選取日期",
-    "導向首頁",
     "等待店員確認"
   ];
   const result = classifyExpectedResult({
@@ -1345,7 +1345,16 @@ test("classify: 无展示动词的导航/状态短句保持 soft text，不升 v
     caseId: "TC_NO_DISPLAY_SOFT"
   });
   const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
-  for (const step of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+  for (const [step, target] of [
+    [1, "首頁"],
+    [2, "MOP首頁"],
+    [3, "首頁"],
+    [4, "商品詳情頁"],
+    [9, "首頁"]
+  ]) {
+    assert.deepEqual(byStep.get(step), [{ type: "visible", text: target }]);
+  }
+  for (const step of [5, 6, 7, 8]) {
     assert.equal(
       byStep.get(step).some((assertion) => assertion.type === "visible"),
       false,
@@ -1548,7 +1557,17 @@ test("classify: 动作/导航/状态短句不升级具体标签", () => {
     caseId: "TC_CONCRETE_SOFT"
   });
   const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
-  for (let step = 1; step <= 16; step += 1) {
+  assert.deepEqual(byStep.get(1), [{ type: "notVisible", text: "彈窗" }]);
+  for (const [step, target] of [
+    [2, "MOP首頁"],
+    [3, "MOP首頁"],
+    [4, "MOP首頁"],
+    [6, "首頁"]
+  ]) {
+    assert.deepEqual(byStep.get(step), [{ type: "visible", text: target }]);
+  }
+  assert.deepEqual(byStep.get(12), [{ type: "notVisible", text: "確認頁" }]);
+  for (const step of [5, 7, 8, 9, 10, 11, 13, 14, 15, 16]) {
     assert.equal(
       byStep.get(step).some((assertion) => assertion.type === "visible"),
       false,
@@ -1785,6 +1804,82 @@ test("classify: 结构化字段状态/否定/模糊落 manual", () => {
   }
   assert.deepEqual(byStep.get(5), [{ type: "visible", text: "我知道了" }]);
   assert.deepEqual(byStep.get(6), [{ type: "visible", text: "內用請入座" }]);
+});
+
+test("classify: 导航目标 hard visible / 否定导航 notVisible", () => {
+  const positives = [
+    ["已進入首頁", "首頁"],
+    ["停留在MOP首頁", "MOP首頁"],
+    ["返回到MOP首頁", "MOP首頁"],
+    ["返回MOP首頁", "MOP首頁"],
+    ["直接跳轉到MOP首頁", "MOP首頁"],
+    ["頁面自動跳轉至首頁", "首頁"],
+    ["成功進入首頁", "首頁"],
+    ["進入商品詳情頁", "商品詳情頁"],
+    ["前往選擇門市", "選擇門市"],
+    ["回到首頁", "首頁"],
+    ["到達門市", "門市"],
+    ["直達首頁", "首頁"]
+  ];
+  const negative = [
+    ["未進入確認頁", "確認頁"],
+    ["沒有進入首頁", "首頁"],
+    ["未停留在首頁", "首頁"]
+  ];
+  const actions = ["登入帳號", "填寫手機號", "上傳身份證", "商品加入購物車"];
+  const all = [...positives, ...negative, ...actions.map((text) => [text, null])];
+  const result = classifyExpectedResult({
+    expected: all.map(([text], index) => `${index + 1}. ${text}`).join("\n"),
+    steps: all.map((_, index) => `s${index}`),
+    caseId: "TC_NAV_TARGET"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  positives.forEach(([, target], index) => {
+    assert.deepEqual(byStep.get(index + 1), [{ type: "visible", text: target }]);
+  });
+  negative.forEach(([, target], index) => {
+    assert.deepEqual(byStep.get(positives.length + index + 1), [
+      { type: "notVisible", text: target }
+    ]);
+  });
+  for (let index = 0; index < actions.length; index += 1) {
+    const step = positives.length + negative.length + index + 1;
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `action ${actions[index]} 不应 visible`
+    );
+  }
+});
+
+test("classify: 关闭/消失/隐藏 结尾 hard notVisible；非结尾不匹配", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 彈窗關閉",
+      "2. 彈窗消失",
+      "3. 錯誤訊息消失",
+      "4. 按鈕隱藏",
+      "5. 提示消失",
+      "6. 點擊後關閉彈窗"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d", "e", "f"],
+    caseId: "TC_CLOSURE_NEG"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [{ type: "notVisible", text: "彈窗" }]);
+  assert.deepEqual(byStep.get(2), [{ type: "notVisible", text: "彈窗" }]);
+  assert.deepEqual(byStep.get(3), [{ type: "notVisible", text: "錯誤訊息" }]);
+  assert.deepEqual(byStep.get(4), [{ type: "notVisible", text: "按鈕" }]);
+  assert.deepEqual(byStep.get(5), [{ type: "notVisible", text: "提示" }]);
+  assert.equal(
+    byStep.get(6).some((assertion) => assertion.type === "notVisible"),
+    false,
+    "非结尾关闭不匹配"
+  );
+  assert.equal(
+    byStep.get(6).some((assertion) => assertion.type === "visible"),
+    false
+  );
 });
 
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
