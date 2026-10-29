@@ -3443,3 +3443,11 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **面板**：下发表单提交前检查 `executionMode==="maestro"` 且无 `scriptSetId`，前端提示“Maestro 执行需要脚本集”并阻止提交；表单新增 `allowStaleScript` / `allowPartialUnresolved` 勾选并透传到 `createWebJob`；服务端仍为权威。
 - **测试**：`test/web-job-queue.test.js` 增加无脚本 400、unresolved 409、`allowPartialUnresolved:true` 放行；`test/web-dispatch-ui.test.js` 更新下发 fixture 带脚本并断言前端提示。
 - **边界**：不读取脚本 zip 内的 per-case manifest（只看 metadata 的 unresolved 计数）；不替代 Phase 5 真机执行/结果校验。部分下发时未执行用例由结果入库补 `SKIP（未执行）`（§13.268 同口径）。
+
+### 13.281 新增（Web 生成脚本的 runner 集成验证）
+
+> 2026-10-29。Plan 2A Phase 5 的自动化前置：不连真机，验证生成 flow 能被 `executeWebJob` 接受、JUnit 映射正确、生成断言被 runner 统计。
+
+- **测试**（`test/web-script-runner.test.js`）：`buildScriptSetBundle` 生成 `flows/TC-1.yaml` → 写入 job `flows/` → fake Maestro 写 JUnit → `executeWebJob` 返回 `passed`，`caseId=TC-1`、`assertionCount=1`、`assertions=[{type:"visible",text:"成功"}]`。
+- **边界**：fake exec 不安装/不启动真实 app，不证明选择器/设备行为；真机小样本仍需连接 Android/iOS 模拟器与可安装包，按 rationale §11 Phase 5 执行。
+- **当前状态**：本机 `adb devices` 无连接设备，Phase 5 真机验收 blocked；自动化集成已通过（2936 tests）。
