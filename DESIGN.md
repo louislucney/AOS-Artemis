@@ -3361,3 +3361,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **面板**：Web job 详情逐例增加“人工状态”选择器（自动/未实现/阻塞），结果徽标优先显示人工状态，门禁文本追加“未实现 N / 阻塞 N”；reason 进徽标 title。
 - **边界**：人工状态不改变 `execution.cases[].status`，不伪造 runner 结果；不计 PASS；审计记录 actor/reason。清除人工状态后重新按原始 status 聚合。
 - **测试**：`test/web-manual-status.test.js` 6 例（NOT_IMPL 写 result/Excel、任务 partial、清除恢复 PASS；BLOCKED 计数与写回；任务级 error 不可被人工状态升级；迟到 failed 不可升级；jobId/caseId 路径字符拒绝；无结果/未知用例报错）；`test/web-dispatch-ui.test.js` 断言选择器与阻塞徽标；`test/panel-actions.test.js` 断言路径角色为 maintainer。
+
+### 13.274 新增（生成用例检查点：视觉/功能/接口）
+
+> 2026-10-29。借鉴 smarteye-case 的 `checkpoints` 结构，在 `tests.json`/`tests.md` 增加人类验收用的三段检查点；不改 Excel 主表 12 列、不改执行器 taskDesc、不参与门禁。
+
+- **字段**（`GeneratedTest.checkpoints?`）：`{visual:string[],functional:string[],interface:string[]}`。视觉 = preflight hints + 各步 destination hints 去重（≤12）；功能 = 每步 `步骤 N → 目标屏`（≤12）；接口默认空，由 API 说明/pending 流程后续补充（当前不解析业务语义）。
+- **展示**：`tests.md` 每个用例在测试数据后追加“检查点：视觉/功能/接口”；接口在 `apiReview.status=provided` 时显示“见 API 说明”，否则“未提供”。`tests.json` 原样落盘；Excel 主表/隐藏执行器 sheet 不变。
+- **边界**：检查点是人工验收提示，不是断言、不计 PASS/FAIL；视觉 hints 仍来自设计文本，不新增颜色/字号/间距推断；接口为空不阻塞生成。
+- **测试**：`test/figma-testgen.test.js` 断言 `checkpoints.visual` 非空、`functional` 含 `Checkout`、`interface` 为空；既有 tests.md/xlsx 断言不变。
