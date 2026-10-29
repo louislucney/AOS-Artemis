@@ -1008,6 +1008,65 @@ test("classify: 包含逗号列表仍先过 MANUAL 扫描", () => {
   );
 });
 
+test("classify: 中/待状态标签不产 hard visible", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 顯示處理中、等待中",
+      "2. 顯示進行中、暫停中",
+      "3. 顯示提交中、搜尋中",
+      "4. 顯示待付款、配送中"
+    ].join("\n"),
+    steps: ["a", "b", "c", "d"],
+    caseId: "TC_STATE_PROGRESS"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2, 3, 4]) {
+    assert.equal(
+      byStep.get(step).some((assertion) => assertion.type === "visible"),
+      false,
+      `step ${step} 不应出现 visible`
+    );
+    assert.equal(byStep.get(step)[0].type, "manual");
+  }
+  assert.notEqual(result.confidence, "high");
+});
+
+test("classify: 模糊标签剔除后保留合法字段", () => {
+  const result = classifyExpectedResult({
+    expected: [
+      "1. 顯示Location、功能正常、Shop Name",
+      "2. 顯示Location、內容完整、Shop Name"
+    ].join("\n"),
+    steps: ["a", "b"],
+    caseId: "TC_VAGUE_DROP"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  for (const step of [1, 2]) {
+    assert.deepEqual(byStep.get(step), [
+      { type: "visible", text: "Location" },
+      { type: "visible", text: "Shop Name" }
+    ]);
+  }
+  assert.deepEqual(result.manual, []);
+});
+
+test("classify: 已用/最後更新/批量刪除 字段仍 visible", () => {
+  const result = classifyExpectedResult({
+    expected: ["1. 顯示已用S Dollar、已用S Coupon", "2. 顯示最後更新、批量刪除"].join("\n"),
+    steps: ["a", "b"],
+    caseId: "TC_STATE_NOUN"
+  });
+  const byStep = new Map(result.steps.map((entry) => [entry.step, entry.assert]));
+  assert.deepEqual(byStep.get(1), [
+    { type: "visible", text: "已用S Dollar" },
+    { type: "visible", text: "已用S Coupon" }
+  ]);
+  assert.deepEqual(byStep.get(2), [
+    { type: "visible", text: "最後更新" },
+    { type: "visible", text: "批量刪除" }
+  ]);
+});
+
 test("writeAssertionColumn: 追加隐藏列、只写已匹配行、原有单元格不变", async (t) => {
   const { filePath } = await makeWorkbook(t);
   const before = await loadSheet(filePath);

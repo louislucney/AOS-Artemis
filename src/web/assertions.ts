@@ -89,7 +89,8 @@ const DISPLAY_VERB_ALL = new RegExp(DISPLAY_VERBS.join("|"), "g");
 const FIELD_VERB_ALL = /显示|顯示|展示|包含|包括/g;
 const LABEL_REJECT = /(?:並|并且|且|可|需|以及|并|則|则|才|再)/;
 const LABEL_PROSE = /(?:載入中|加载中|^請稍候|^请稍候)/;
-const LABEL_STATE = /已|^(?:表示|完成後|返回)|(?:正常|正確|正确|成功|失敗|失败|完成|更新|提交|刪除|新增)$/;
+const LABEL_STATE =
+  /已(?:成功|完成|更新|提交|刪除|新增|取消|付款|出貨)|^(?:表示|完成後|返回|待)|(?:正常|正確|正确|成功|失敗|失败|中)$/;
 const LABEL_SHAPE = /^[A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._/&()#+-]*$/;
 const ACTION_START =
   /^(?:點擊|点击|點選|点选|輸入|输入|選擇|选择|滑動|滑动|長按|长按|開啟|打开|操作|勾選|勾选|提交|展開|展开|收起|切換|切换|參閱|参阅|如圖|如图|見圖|见图|如下|詳情|详情|請稍候|请稍候)/;
@@ -388,8 +389,8 @@ function extractFieldList(clause: string): FieldList | null {
     if (/^[)）(（]$/.test(raw)) continue;
     if (/^[)）(（]/.test(raw) || !/[A-Za-z0-9\u4e00-\u9fff]/.test(raw)) return null;
     if (/[。；;，,：:！!?？]$/.test(raw)) return null;
-    if (LABEL_STATE.test(raw)) return null;
     if (VAGUE.test(raw)) continue;
+    if (LABEL_STATE.test(raw)) return null;
     if (LABEL_PROSE.test(raw)) return null;
     if (raw.replace(/\s+/g, "").length > 24) return null;
     if (LABEL_REJECT.test(raw)) return null;
