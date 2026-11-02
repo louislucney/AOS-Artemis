@@ -24,7 +24,8 @@
     "test:only": "node --test test/*.test.js",
     "test:file": "npm run build && node --test",
     "test:name": "npm run build && sh -c 'node --test --test-name-pattern \"$1\" test/*.test.js' --",
-    "test:coverage": "npm run build && node --test --experimental-test-coverage test/*.test.js"
+    "test:coverage": "npm run build && node --test --experimental-test-coverage test/*.test.js",
+    "bundle:runner": "node scripts/build-runner-bundle.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

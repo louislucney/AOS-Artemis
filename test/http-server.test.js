@@ -943,7 +943,9 @@ test("http server: AOS_HTTP_ALLOW_INSECURE=1 放行非 loopback（有醒目 WARN
     cap.restore();
   }
   assert.ok(
-    cap.chunks.some((c) => c.includes("WARN") && c.includes("AOS_HTTP_TOKEN")),
+    cap.chunks.some(
+      (c) => c.includes("WARN") && /MOBILE_TESTING_HTTP_TOKEN|AOS_HTTP_TOKEN/.test(c)
+    ),
     "放行时应输出醒目 WARN"
   );
 });
@@ -991,4 +993,31 @@ test("cli: serve --http 非 loopback 无 token → stderr 指引 + exit 2", () =
   );
   assert.equal(result.status, 2, `stderr: ${result.stderr}`);
   assert.match(result.stderr, /AOS_HTTP_TOKEN/);
+});
+
+test("http server: 按平台提供 runner 安装包下载", async () => {
+  const workspace = makeTempDir("aos-http-bundle-ws-");
+  const bundleDir = makeTempDir("aos-http-bundle-");
+  const filename = "mobile-testing-runner-0.1.0-win32-x64.zip";
+  fs.writeFileSync(path.join(bundleDir, filename), "fake-runner-bundle");
+  fs.writeFileSync(
+    path.join(bundleDir, "manifest.json"),
+    JSON.stringify([
+      { platform: "win32", arch: "x64", filename, size: 18, sha256: "test" }
+    ])
+  );
+  await withEnv("AOS_RUNNER_BUNDLE_DIR", bundleDir, async () => {
+    const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${handle.port}/panel/runner-bundle?platform=win32&arch=x64`
+      );
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type"), "application/zip");
+      assert.match(response.headers.get("content-disposition") ?? "", /mobile-testing-runner-0\.1\.0-win32-x64\.zip/);
+      assert.equal(Buffer.from(await response.arrayBuffer()).toString("utf8"), "fake-runner-bundle");
+    } finally {
+      await handle.close();
+    }
+  });
 });

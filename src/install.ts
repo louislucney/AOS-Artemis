@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { httpTokenFrom } from "./env-tokens.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyEdits, modify, parse as parseJsonc, type ParseError } from "jsonc-parser";
@@ -147,7 +148,7 @@ function buildServerEntry(options: {
   const projectName = path.basename(options.projectDir);
   if (options.mode === "http") {
     const base = options.url.replace(/\/+$/, "");
-    const token = (process.env.AOS_HTTP_TOKEN ?? "").trim();
+    const token = httpTokenFrom(process.env);
     return {
       kind: "http",
       url: `${base}/mcp/${encodeURIComponent(projectName)}`,
@@ -385,7 +386,7 @@ export function runInstall(argv: string[], defaults: InstallOptions = {}): numbe
   if (entry.kind === "http") {
     log(`      url = ${JSON.stringify(entry.url)}`);
     if (entry.headers) {
-      log(`      # 需鉴权时补 Authorization 头，如: Authorization: Bearer <AOS_HTTP_TOKEN>`);
+      log(`      # 需鉴权时补 Authorization 头，如: Authorization: Bearer <MOBILE_TESTING_HTTP_TOKEN>`);
     }
   } else {
     log(`      command = ${JSON.stringify(entry.command)}`);

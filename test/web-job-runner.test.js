@@ -189,9 +189,10 @@ async function setup(t) {
   return { workRoot, assets };
 }
 
-function executorFor({ fetchImpl, exec, workRoot, hostId, timeoutMs, env }) {
+function executorFor({ fetchImpl, exec, workRoot, hostId, instanceId, timeoutMs, env }) {
   return createDefaultWebJobExecutor({
     ...(hostId === undefined ? {} : { hostId }),
+    ...(instanceId === undefined ? {} : { instanceId }),
     panelBaseUrl: BASE,
     runnerToken: TOKEN,
     workRoot,
@@ -212,6 +213,7 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
     exec: fake.exec,
     workRoot,
     hostId: "host-a",
+    instanceId: "inst-a",
     env: {
       PATH: "/usr/bin",
       AOS_MAESTRO_PATH: "/opt/maestro",
@@ -234,6 +236,7 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
   assert.equal(specCall.url, `${BASE}/panel/api/jobs/job-1/spec`);
   assert.equal(specCall.headers.authorization, `Bearer ${TOKEN}`);
   assert.equal(specCall.headers["x-aos-host-id"], "host-a");
+  assert.equal(specCall.headers["x-mobile-testing-instance-id"], "inst-a");
 
   const downloadCalls = center.calls.filter((call) => call.url.includes("/assets/"));
   assert.equal(downloadCalls.length, 3);
@@ -279,6 +282,7 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
   assert.equal(uploadCall.method, "POST");
   assert.equal(uploadCall.headers.authorization, `Bearer ${TOKEN}`);
   assert.equal(uploadCall.headers["x-aos-host-id"], "host-a");
+  assert.equal(uploadCall.headers["x-mobile-testing-instance-id"], "inst-a");
   assert.equal(uploadCall.headers["content-type"], "application/json");
 });
 
@@ -335,7 +339,7 @@ test("默认执行器：spec 401 抛错（不回退/不本地假成功）", asyn
   );
 });
 
-test("web-runner 启动：缺中心基址/AOS_RUNNER_JOB_TOKEN 明确 exit 2", async () => {
+test("web-runner 启动：缺中心基址/RUNNER_JOB_TOKEN 明确 exit 2", async () => {
   const missingBase = [];
   const codeBase = await runWebRunnerCommand(
     ["--once"],
@@ -352,7 +356,10 @@ test("web-runner 启动：缺中心基址/AOS_RUNNER_JOB_TOKEN 明确 exit 2", a
     { env: {} }
   );
   assert.equal(codeToken, 2);
-  assert.match(missingToken.join("\n"), /AOS_RUNNER_JOB_TOKEN/);
+  assert.match(
+    missingToken.join("\n"),
+    /MOBILE_TESTING_RUNNER_JOB_TOKEN|AOS_RUNNER_JOB_TOKEN/
+  );
 });
 
 test("webRunnerChildEnv: 只保留工具/PATH 白名单，剔除令牌/DB/KEY", () => {

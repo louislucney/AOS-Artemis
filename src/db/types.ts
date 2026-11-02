@@ -582,6 +582,8 @@ export interface RenewDeviceLeasesInput {
   serials: string[];
   ttlMs?: number;
   at?: string;
+  /** 控制面模式：每个 serial 的显式租约令牌（直连 PG 路径忽略）。 */
+  leaseTokens?: Record<string, string>;
 }
 
 /** 设备租约默认 TTL（`AOS_DEVICE_LEASE_MS`，续租周期 30s）。 */
@@ -886,6 +888,15 @@ export interface ProjectStore {
   listCaseSets(rootPath: string, limit?: number): Promise<CaseSetRecord[]>;
   createRegressionTask(input: CreateRegressionTaskInput): Promise<RegressionTaskRecord>;
   getRegressionTask(rootPath: string, id: string): Promise<RegressionTaskRecord | null>;
+  /** 控制面优化的任务包：任务 + 项目 + 任务引用的 case set（普通 store 可不实现）。 */
+  getTaskBundle?(
+    rootPath: string,
+    id: string
+  ): Promise<{
+    task: RegressionTaskRecord;
+    project: ProjectRecord | null;
+    caseSets: CaseSetRecord[];
+  } | null>;
   listRegressionTasks(rootPath: string, limit?: number): Promise<RegressionTaskRecord[]>;
   /** 只取 `stopping`（可选 deadline：`cancel_requested_at <= deadline OR IS NULL`）；
    * `limit` 缺省 1000。后台清扫专用，避免全表读取。 */
@@ -1117,7 +1128,13 @@ export interface ProjectStore {
   /** 仅续租本任务持有的 serial，返回续租条数。 */
   renewDeviceLeases(input: RenewDeviceLeasesInput): Promise<number>;
   /** 释放本任务在该 host 的全部租约，返回释放条数。 */
-  releaseDeviceLeases(input: { hostId: string; taskId: string; serials?: string[] }): Promise<number>;
+  releaseDeviceLeases(input: {
+    hostId: string;
+    taskId: string;
+    serials?: string[];
+    /** 控制面模式：每个 serial 的显式租约令牌（直连 PG 路径忽略）。 */
+    leaseTokens?: Record<string, string>;
+  }): Promise<number>;
   /** 读取设备租约（只读，面板机队视图）；缺省按 store 主机作用域。 */
   listDeviceLeases(input?: { hostId?: string }): Promise<DeviceLeaseRecord[]>;
   recordUsageEvent(

@@ -1,22 +1,20 @@
 import { randomUUID } from "node:crypto";
+import { runnerJobTokenFrom } from "../env-tokens.js";
 import os from "node:os";
 import path from "node:path";
 
 import { CENTER_DATABASE_ENV, openCenterStore } from "../center/store.js";
-import type {
-  ProjectStore,
-  RegressionTaskRecord,
-  RunnerDevice,
-  WebRunnerRecord
-} from "../db/types.js";
+import type { ProjectStore, RunnerDevice } from "../db/types.js";
 import { deviceLeaseTtlMs, WebRunnerAlreadyActiveError } from "../db/types.js";
 import type { ExecFn } from "../device/adb.js";
 import { resolveHostIdentity } from "../host/identity.js";
 import { AOS_MCP_VERSION, errorMessage } from "../util.js";
-import { parseWebJobSpec } from "../web/job-spec.js";
-import { assignPendingWebJobs, reassignExpiredWebJobs, recoverStaleWebJobs } from "../web/jobs.js";
+import type { WebJobTask, WebClaimResponse, WebHeartbeatResponse } from "./control/contract.js";
+import { createHttpWebRunnerControl } from "./control/client.js";
+import { createRunnerFetch, runnerDataTimeoutMs, runnerHttpTimeoutMs } from "./control/tls-fetch.js";
+import { createStoreWebRunnerControl } from "./control/service.js";
+import type { WebRunnerControl } from "./control/web-control.js";
 import { collectRunnerInventory, type RunnerInventory } from "./inventory.js";
-import { runnerTtlFrom } from "./status.js";
 import { createDefaultWebJobExecutor } from "./web-job-runner.js";
 import { cleanupWebJobWorkspace } from "./web-job-workspace.js";
 
@@ -26,7 +24,10 @@ export interface WebRunnerIO {
 }
 
 export interface WebJobExecutorInput {
-  task: RegressionTaskRecord;
+  task: WebJobTask;
+  /** 中心项目根路径不在执行机上；这里只给工作目录分段。 */
+  projectSlug?: string;
+  /** 兼容旧执行器：控制面模式下与 projectSlug 同值，不再代表真实路径。 */
   rootPath: string;
   device: RunnerDevice;
   /** 租约丢失/设备移除/停止时置 true；执行器应尽快中止。 */
@@ -43,7 +44,10 @@ export type WebJobExecutor = (
 ) => Promise<WebJobExecutorResult>;
 
 export interface WebRunnerOptions {
-  centralStore: ProjectStore;
+  /** 直连 PG 兼容路径；与 `control` 二选一。 */
+  centralStore?: ProjectStore;
+  /** HTTP 控制面（或测试注入）；提供时不需要 centralStore。 */
+  control?: WebRunnerControl;
   name: string;
   artifactBaseUrl?: string | null;
   heartbeatMs?: number;
@@ -83,8 +87,8 @@ export function isWebDeviceUsable(device: RunnerDevice): boolean {
 
 interface ActiveJob {
   taskId: string;
-  rootPath: string;
   serial: string;
+  leaseToken: string;
   /** 租约丢失/设备移除/停止：执行器应中止，终态不得写入。 */
   aborted: boolean;
 }
@@ -106,7 +110,6 @@ export async function runWebRunner(
   deps: WebRunnerDeps = {}
 ): Promise<number> {
   const env = options.env ?? process.env;
-  const store = options.centralStore;
   const once = options.once === true;
   const name = options.name.trim() || os.hostname();
   const heartbeatMs = Math.max(
@@ -117,10 +120,6 @@ export async function runWebRunner(
     )
   );
   const pollMs = intFromEnv(env.AOS_RUNNER_POLL_MS, POLL_DEFAULT_MS);
-  const staleClaimMs = nonNegativeIntFromEnv(env.AOS_RUNNER_STALE_CLAIM_MS, 900_000);
-  const leaseTtlMs = deviceLeaseTtlMs(env);
-  const runnerTtlMs = runnerTtlFrom(env);
-  const instanceId = randomUUID();
   const now = deps.now ?? ((): number => Date.now());
   const sleep =
     deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -149,7 +148,22 @@ export async function runWebRunner(
     env,
     ...(options.exec === undefined ? {} : { exec: options.exec })
   });
-  const hostId = identity.id;
+  const control =
+    options.control ??
+    (options.centralStore === undefined
+      ? null
+      : createStoreWebRunnerControl({
+          store: options.centralStore,
+          hostId: identity.id,
+          instanceId: randomUUID(),
+          env,
+          now
+        }));
+  if (control === null) {
+    io.errorLog("[web-runner] 缺少控制面：请配置 AOS_RUNNER_CONTROL_URL 或中心 PG");
+    return 2;
+  }
+  const hostId = control.hostId;
 
   let inventory: RunnerInventory;
   try {
@@ -162,290 +176,130 @@ export async function runWebRunner(
   const active = new Map<string, ActiveJob>();
   const workers = new Map<string, WorkerHandle>();
   const workerPromises = new Set<Promise<void>>();
-  let runner: WebRunnerRecord;
-
-  const heartbeat = async (current: RunnerInventory): Promise<WebRunnerRecord> => {
-    const atMs = now();
-    const at = new Date(atMs).toISOString();
-    const record = await store.upsertWebRunner({
-      hostId,
-      name,
-      hostname: identity.hostname,
-      platforms: current.platforms,
-      devices: current.devices,
-      tools: current.tools,
-      artifactBaseUrl: options.artifactBaseUrl ?? null,
-      version: AOS_MCP_VERSION,
-      instanceId,
-      lastSeenAt: at,
-      activeWithinMs: runnerTtlMs
-    });
-    try {
-      // 让面板可见主机并让队列暂停（hosts.queue_paused）作用于 web 选机/回池。
-      await store.upsertHost({
-        id: hostId,
+  const heartbeat = async (current: RunnerInventory): Promise<WebHeartbeatResponse> => {
+    const response = await control.heartbeat({
+      host: {
         hostname: identity.hostname,
         username: identity.username,
         osPlatform: identity.osPlatform,
         osVersion: identity.osVersion,
         arch: identity.arch,
-        kind: identity.kind,
-        runnerSeenAt: at
-      });
-    } catch (error) {
-      io.errorLog(`[web-runner] 主机登记失败（忽略）：${errorMessage(error)}`);
+        kind: identity.kind
+      },
+      name,
+      version: AOS_MCP_VERSION,
+      artifactBaseUrl: options.artifactBaseUrl ?? null,
+      inventory: current,
+      active: [...active.values()].map((job) => ({ taskId: job.taskId, serial: job.serial }))
+    });
+    for (const taskId of response.cancelTaskIds) {
+      const job = [...active.values()].find((entry) => entry.taskId === taskId);
+      if (job === undefined || job.aborted) continue;
+      job.aborted = true;
+      io.log(`[web-runner] 任务 ${taskId} 收到取消请求：中止执行并确认取消`);
     }
-    for (const job of active.values()) {
-      try {
-        await store.updateRegressionTask(job.rootPath, job.taskId, { lastProgressAt: at });
-      } catch (error) {
-        io.errorLog(`[web-runner] 任务 ${job.taskId} 进度写入失败：${errorMessage(error)}`);
-      }
-      try {
-        const renewed = await store.renewDeviceLeases({
-          hostId,
-          taskId: job.taskId,
-          serials: [job.serial],
-          at
-        });
-        if (renewed === 0) {
-          if (!job.aborted) {
-            job.aborted = true;
-            io.errorLog(
-              `[web-runner] 任务 ${job.taskId} 设备 ${job.serial} 租约丢失：中止执行并回池（不写结果）`
-            );
-          }
-        }
-      } catch (error) {
-        if (!job.aborted) {
-          job.aborted = true;
-          io.errorLog(
-            `[web-runner] 任务 ${job.taskId} 设备租约续期失败：中止执行并回池（不写结果）——${errorMessage(error)}`
-          );
-        }
-      }
+    for (const taskId of response.leaseLostTaskIds) {
+      const job = [...active.values()].find((entry) => entry.taskId === taskId);
+      if (job === undefined || job.aborted) continue;
+      job.aborted = true;
+      io.errorLog(`[web-runner] 任务 ${taskId} 设备 ${job.serial} 租约丢失：中止执行并回池`);
     }
-    try {
-      const recovered = await recoverStaleWebJobs({
-        store,
-        env,
-        nowMs: atMs,
-        staleMs: staleClaimMs,
-        runnerTtlMs,
-        hostId,
-        instanceId
-      });
-      if (recovered > 0) io.log(`[web-runner] 回收失联 Web 领取：${recovered} 条`);
-    } catch (error) {
-      io.errorLog(`[web-runner] 回收失联 Web 领取失败（忽略）：${errorMessage(error)}`);
-    }
-    try {
-      const reassigned = await reassignExpiredWebJobs({
-        store,
-        env,
-        nowMs: atMs,
-        leaseTtlMs,
-        runnerTtlMs
-      });
-      if (reassigned > 0) io.log(`[web-runner] 过期预占回池：${reassigned} 条`);
-    } catch (error) {
-      io.errorLog(`[web-runner] 过期预占回池失败（忽略）：${errorMessage(error)}`);
-    }
-    try {
-      const assigned = await assignPendingWebJobs({
-        store,
-        env,
-        nowMs: atMs,
-        runnerTtlMs,
-        reservationTtlMs: leaseTtlMs
-      });
-      if (assigned > 0) io.log(`[web-runner] pending 任务选机绑定：${assigned} 条`);
-    } catch (error) {
-      io.errorLog(`[web-runner] pending 任务选机失败（忽略）：${errorMessage(error)}`);
-    }
-    return record;
+    if (response.recovered > 0) io.log(`[web-runner] 回收失联 Web 领取：${response.recovered} 条`);
+    if (response.reassigned > 0) io.log(`[web-runner] 过期预占回池：${response.reassigned} 条`);
+    if (response.assigned > 0) io.log(`[web-runner] pending 任务选机绑定：${response.assigned} 条`);
+    return response;
   };
 
   try {
-    runner = await heartbeat(inventory);
+    await heartbeat(inventory);
   } catch (error) {
     io.errorLog(`[web-runner] 首轮心跳失败：${errorMessage(error)}`);
     return 2;
   }
-  const runnerId = runner.id;
   io.log(
     `[web-runner] 启动：name=${name} host=${hostId}（设备 ${inventory.devices.map((device) => device.serial).join(",") || "无"}）`
   );
 
   const releaseLocal = async (
     taskId: string,
-    rootPath: string,
-    serial: string
+    serial: string,
+    leaseToken: string
   ): Promise<void> => {
     try {
-      await store.releaseRegressionTask({
-        rootPath,
-        runnerId,
-        taskId,
-        to: "pending"
-      });
+      await control.release(taskId, "pending");
     } catch (error) {
       io.errorLog(`[web-runner] 任务 ${taskId} 回池失败：${errorMessage(error)}`);
     }
     try {
-      await store.releaseDeviceLeases({ hostId, taskId, serials: [serial] });
+      await control.releaseLease(taskId, serial, leaseToken);
     } catch (error) {
       io.errorLog(`[web-runner] 任务 ${taskId} 释放设备租约失败：${errorMessage(error)}`);
     }
   };
 
   const skipClaim = async (
-    task: RegressionTaskRecord,
-    rootPath: string,
+    taskId: string,
     serial: string,
+    leaseToken: string,
     code: string,
     detail: string
   ): Promise<void> => {
-    io.log(`[web-runner] 设备 ${serial} 任务 ${task.id} 暂不执行：${code}（${detail}）`);
-    await releaseLocal(task.id, rootPath, serial);
+    io.log(`[web-runner] 设备 ${serial} 任务 ${taskId} 暂不执行：${code}（${detail}）`);
+    await releaseLocal(taskId, serial, leaseToken);
   };
 
-  /** 终态写入：写前重读 + `expectStatuses:["running"]`；stopping 只 ack 不覆盖，终态直接跳过。 */
+  /** 终态由服务端做 CAS/取消裁决；执行机只上报结果。 */
   const writeTerminal = async (
-    task: RegressionTaskRecord,
-    rootPath: string,
+    taskId: string,
     status: WebJobExecutorResult["status"],
     detail?: string
   ): Promise<"written" | "cancelled" | "skipped"> => {
-    let fresh: RegressionTaskRecord | null;
     try {
-      fresh = await store.getRegressionTask(rootPath, task.id);
-    } catch (error) {
-      io.errorLog(`[web-runner] 任务 ${task.id} 终态写入前读取失败：${errorMessage(error)}`);
-      return "skipped";
-    }
-    if (fresh === null) {
-      io.log(`[web-runner] 任务 ${task.id} 终态未写入：任务已不存在`);
-      return "skipped";
-    }
-    if (fresh.status === "stopping") {
-      try {
-        await store.ackCancellation({ rootPath, taskId: task.id });
-      } catch (error) {
-        io.errorLog(`[web-runner] 任务 ${task.id} 取消确认失败：${errorMessage(error)}`);
+      const outcome = await control.terminal(taskId, status, detail);
+      if (outcome === "cancelled") {
+        io.log(`[web-runner] 任务 ${taskId} 执行期间被取消：已 ackCancellation，不写结果`);
+      } else if (outcome === "skipped") {
+        io.log(`[web-runner] 任务 ${taskId} 终态未写入：已取消/已终态/被接管，保留原状态`);
+      } else {
+        io.log(`[web-runner] 任务 ${taskId} 执行结束：${status}${detail ? `（${detail}）` : ""}`);
       }
-      io.log(`[web-runner] 任务 ${task.id} 执行期间被取消：已 ackCancellation，不写结果`);
-      return "cancelled";
-    }
-    if (fresh.status !== "running") {
-      io.log(
-        `[web-runner] 任务 ${task.id} 终态未写入：当前状态 ${fresh.status}（已终态/取消），保留原状态`
-      );
-      return "skipped";
-    }
-    const spec = parseWebJobSpec(fresh.jobSpec);
-    let updated = false;
-    try {
-      updated = await store.updateRegressionTask(rootPath, task.id, {
-        status,
-        lastProgressAt: new Date(now()).toISOString(),
-        deviceLeaseId: null,
-        ...(spec === null
-          ? {}
-          : { jobSpec: { ...spec, deviceLeaseId: null } as Record<string, unknown> }),
-        expectStatuses: ["running"]
-      });
+      return outcome;
     } catch (error) {
-      io.errorLog(`[web-runner] 任务 ${task.id} 终态写入失败：${errorMessage(error)}`);
+      io.errorLog(`[web-runner] 任务 ${taskId} 终态写入失败：${errorMessage(error)}`);
       return "skipped";
     }
-    if (!updated) {
-      io.log(`[web-runner] 任务 ${task.id} 终态写入未生效（updated=false，可能并发取消/接管）`);
-      const after = await store.getRegressionTask(rootPath, task.id).catch(() => null);
-      if (after?.status === "stopping") {
-        await store.ackCancellation({ rootPath, taskId: task.id }).catch(() => null);
-        io.log(`[web-runner] 任务 ${task.id} 写入失败后确认取消（stopping → cancelled）`);
-      }
-      return "skipped";
-    }
-    io.log(
-      `[web-runner] 任务 ${task.id} 执行结束：${status}${detail ? `（${detail}）` : ""}`
-    );
-    return "written";
   };
 
+  const workRoot =
+    (env.AOS_RUNNER_WORK_DIR ?? "").trim() || path.join(os.homedir(), ".aos", "web-runner");
+
   const claimAndRun = async (device: RunnerDevice): Promise<"executed" | "idle" | "skipped"> => {
-    const nowMs = now();
-    let claimed: { task: RegressionTaskRecord; rootPath: string } | null;
+    let claimed: WebClaimResponse;
     try {
-      claimed = await store.claimWebJob({
-        runnerId,
-        hostId,
-        deviceSerial: device.serial,
-        instanceId,
-        nowMs
-      });
+      claimed = await control.claim(device.serial);
     } catch (error) {
       io.errorLog(`[web-runner] 设备 ${device.serial} 领取失败：${errorMessage(error)}`);
       return "skipped";
     }
-    if (claimed === null) return "idle";
-    const { task, rootPath } = claimed;
-
-    const capSpec = parseWebJobSpec(task.jobSpec);
-    const maxAttempts =
-      capSpec !== null && capSpec.retry > 0
-        ? capSpec.retry + 1
-        : intFromEnv(env.AOS_RUNNER_MAX_ATTEMPTS, 3);
-    if (task.attempts >= maxAttempts) {
+    if (claimed.kind === "idle" || claimed.kind === "paused") return "idle";
+    if (claimed.kind === "busy") {
+      io.log(`[web-runner] 设备 ${device.serial} 暂不执行：${claimed.reason}`);
+      return "skipped";
+    }
+    if (claimed.kind === "exhausted") {
       io.log(
-        `[web-runner] 任务 ${task.id} 已尝试 ${task.attempts} 次，超上限 ${maxAttempts}，标记 failed（不再回池）`
+        `[web-runner] 任务 ${claimed.taskId} 已达重试上限，服务端已置 failed${
+          claimed.cancelled ? "；ackCancellation" : ""
+        }`
       );
-      const at = new Date(now()).toISOString();
-      const spec = parseWebJobSpec(task.jobSpec);
-      const updated = await store
-        .updateRegressionTask(rootPath, task.id, {
-          status: "failed",
-          deviceLeaseId: null,
-          ...(spec === null
-            ? {}
-            : {
-                jobSpec: {
-                  ...spec,
-                  deviceLeaseId: null,
-                  assignmentError: {
-                    code: "max-attempts",
-                    message: `执行失败已达上限（${maxAttempts} 次），任务终止`,
-                    at
-                  }
-                } as Record<string, unknown>
-              }),
-          expectStatuses: ["claimed"]
-        })
-        .catch((error) => {
-          io.errorLog(`[web-runner] 任务 ${task.id} 超上限写终态失败：${errorMessage(error)}`);
-          return false;
-        });
-      if (!updated) {
-        const after = await store.getRegressionTask(rootPath, task.id).catch(() => null);
-        if (after?.status === "stopping") {
-          await store.ackCancellation({ rootPath, taskId: task.id }).catch(() => null);
-          io.log(`[web-runner] 任务 ${task.id} 超上限时已被取消：已 ackCancellation`);
-        }
-      }
-      await store
-        .releaseDeviceLeases({ hostId, taskId: task.id, serials: [device.serial] })
-        .catch((error) => {
-          io.errorLog(`[web-runner] 任务 ${task.id} 释放租约失败：${errorMessage(error)}`);
-        });
       await cleanupWebJobWorkspace({
-        workRoot:
-          (env.AOS_RUNNER_WORK_DIR ?? "").trim() || path.join(os.homedir(), ".aos", "web-runner"),
-        completedJobIds: [task.id]
+        workRoot,
+        completedJobIds: [claimed.taskId]
       }).catch(() => undefined);
       return "executed";
     }
 
+    const { task, projectSlug, leaseToken } = claimed;
     let fresh: RunnerInventory | null = null;
     try {
       fresh = await collectInventory();
@@ -456,109 +310,66 @@ export async function runWebRunner(
     const local = fresh?.devices.find((entry) => entry.serial === device.serial) ?? null;
     if (local === null || !isWebDeviceUsable(local)) {
       await skipClaim(
-        task,
-        rootPath,
+        task.id,
         device.serial,
+        leaseToken,
         "device-unavailable",
         local === null ? "设备已不在本地清单" : `设备状态 ${local.state} 不可用`
       );
       return "skipped";
     }
 
-    let leases;
+    let began: Awaited<ReturnType<WebRunnerControl["begin"]>>;
     try {
-      leases = await store.listDeviceLeases({ hostId });
-    } catch (error) {
-      io.errorLog(`[web-runner] 设备租约读取失败：${errorMessage(error)}`);
-      await skipClaim(task, rootPath, device.serial, "lease-unreadable", errorMessage(error));
-      return "skipped";
-    }
-    const mine = leases.find(
-      (lease) =>
-        lease.serial === device.serial &&
-        lease.taskId === task.id &&
-        Date.parse(lease.expiresAt) > nowMs
-    );
-    if (mine === undefined) {
-      await skipClaim(task, rootPath, device.serial, "lease-lost", "本任务预占租约已过期或丢失");
-      return "skipped";
-    }
-    const foreign = leases.find(
-      (lease) =>
-        lease.serial === device.serial &&
-        lease.taskId !== task.id &&
-        Date.parse(lease.expiresAt) > nowMs
-    );
-    if (foreign !== undefined) {
-      await skipClaim(
-        task,
-        rootPath,
-        device.serial,
-        "device-busy",
-        `设备被任务 ${foreign.taskId} 占用`
-      );
-      return "skipped";
-    }
-
-    let running: RegressionTaskRecord | null;
-    try {
-      running = await store.beginExecution({
-        rootPath,
-        taskId: task.id,
-        runnerId,
-        instanceId,
-        at: new Date(nowMs).toISOString()
-      });
+      began = await control.begin(task.id);
     } catch (error) {
       io.errorLog(`[web-runner] 任务 ${task.id} 开始执行失败：${errorMessage(error)}`);
-      running = null;
+      await releaseLocal(task.id, device.serial, leaseToken);
+      return "skipped";
     }
-    if (running === null) {
-      io.log(`[web-runner] 任务 ${task.id} 领取后状态已变化（取消/接管），释放并跳过`);
-      await releaseLocal(task.id, rootPath, device.serial);
+    if (!began.started) {
+      io.log(`[web-runner] 任务 ${task.id} 领取后状态已变化（${began.reason}），释放并跳过`);
+      await releaseLocal(task.id, device.serial, leaseToken);
       return "skipped";
     }
 
-    io.log(`[web-runner] 领取任务 ${task.id}（设备 ${device.serial} · 项目 ${rootPath}）`);
+    io.log(`[web-runner] 领取任务 ${task.id}（设备 ${device.serial} · 项目 ${projectSlug}）`);
     const job: ActiveJob = {
       taskId: task.id,
-      rootPath,
       serial: device.serial,
+      leaseToken,
       aborted: false
     };
     active.set(device.serial, job);
     try {
       const result = await executeJob({
-        task: running,
-        rootPath,
+        task,
+        projectSlug,
+        rootPath: projectSlug,
         device: local,
         shouldAbort: () => job.aborted || shouldStop()
       });
       if (job.aborted) {
-        io.log(
-          `[web-runner] 任务 ${task.id} 执行中止（租约丢失/设备移除/停止）：不写结果，回池等待`
-        );
-        await releaseLocal(task.id, rootPath, device.serial);
+        io.log(`[web-runner] 任务 ${task.id} 执行中止（租约丢失/设备移除/停止/取消）：不写结果，回池等待`);
+        await releaseLocal(task.id, device.serial, leaseToken);
         return "executed";
       }
       const status = result?.status;
       if (status !== "completed" && status !== "partial" && status !== "failed") {
         throw new Error(`web-executor-invalid-status: ${String(status)}`);
       }
-      await writeTerminal(task, rootPath, status, result.detail);
+      await writeTerminal(task.id, status, result.detail);
     } catch (error) {
       if (job.aborted) {
-        io.log(
-          `[web-runner] 任务 ${task.id} 执行中止（租约丢失/设备移除/停止）：${errorMessage(error)}`
-        );
+        io.log(`[web-runner] 任务 ${task.id} 执行中止：${errorMessage(error)}`);
       } else {
         io.errorLog(`[web-runner] 任务 ${task.id} 执行异常：${errorMessage(error)}`);
       }
-      await releaseLocal(task.id, rootPath, device.serial);
+      await releaseLocal(task.id, device.serial, leaseToken);
     } finally {
       active.delete(device.serial);
       try {
-        await store.releaseDeviceLeases({ hostId, taskId: task.id, serials: [device.serial] });
+        await control.releaseLease(task.id, device.serial, leaseToken);
       } catch (error) {
         io.errorLog(`[web-runner] 任务 ${task.id} 释放设备租约失败：${errorMessage(error)}`);
       }
@@ -668,24 +479,17 @@ export async function runWebRunner(
     for (const handle of workers.values()) handle.stop();
     await settleWithin(allWorkerPromises(), 2_000);
     for (const job of [...active.values()]) {
-      await releaseLocal(job.taskId, job.rootPath, job.serial);
+      await releaseLocal(job.taskId, job.serial, job.leaseToken);
     }
     active.clear();
     try {
-      await store.markWebRunnerStopped({ hostId, instanceId });
+      await control.stop();
     } catch (error) {
       io.errorLog(`[web-runner] 标记停止失败：${errorMessage(error)}`);
     }
   }
   if (fatalHeartbeat !== null) code = 2;
   return code;
-}
-
-function nonNegativeIntFromEnv(raw: string | undefined, fallback: number): number {
-  const text = (raw ?? "").trim();
-  if (text === "") return fallback;
-  const parsed = Number(text);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : fallback;
 }
 
 function intFromEnv(raw: string | undefined, fallback: number): number {
@@ -707,22 +511,26 @@ export type WebRunnerCommandIo = WebRunnerIO;
 
 export interface WebRunnerCommandDeps extends WebRunnerDeps {
   env?: NodeJS.ProcessEnv;
-  /** 注入的中心存储（测试）；缺省按 `MOBILE_TESTING_DATABASE_URL` 打开 PG 并负责关闭。 */
+  /** 直连 PG 的兼容注入（测试）；缺省按 `MOBILE_TESTING_DATABASE_URL` 打开 PG 并负责关闭。 */
   store?: ProjectStore;
+  /** HTTP 控制面注入（测试/嵌入）；提供时不需要 store。 */
+  control?: WebRunnerControl;
   exec?: ExecFn;
 }
 
 export function printWebRunnerUsage(log: (line: string) => void): void {
   log(`mobile-testing-mcp web-runner [options]
 
-host 级远端 Web 任务执行机（只连中心 PG，不要求项目目录；每台设备一个 worker）：
+host 级远端 Web 任务执行机（不要求项目目录；每台设备一个 worker）：
   --name <n>              执行机名称（缺省 hostname）
   --artifact-base-url <u> 产物基址（回传给中心，可选）
-  --panel-base-url <u>    中心基址（缺省 AOS_PANEL_BASE_URL；执行 job 必需）
+  --panel-base-url <u>    中心基址（缺省 AOS_PANEL_BASE_URL；可回退控制面）
+  --control-url <u>       控制面基址（缺省 AOS_RUNNER_CONTROL_URL；设置后不连中心 PG）
   --once                  只跑一轮（心跳/选机 + 每设备一次领取并执行一次尝试）后退出
-  环境变量：MOBILE_TESTING_DATABASE_URL（必需）、AOS_PANEL_BASE_URL、AOS_RUNNER_JOB_TOKEN（≥16）、
+  环境变量：AOS_RUNNER_CONTROL_URL（推荐）、AOS_PANEL_BASE_URL、MOBILE_TESTING_RUNNER_JOB_TOKEN（≥16）、
             AOS_HOST_ID、AOS_RUNNER_TTL_MS、AOS_DEVICE_LEASE_MS、AOS_RUNNER_HEARTBEAT_MS、
-            AOS_RUNNER_POLL_MS、AOS_RUNNER_WORK_DIR、AOS_RUNNER_CACHE_DIR`);
+            AOS_RUNNER_POLL_MS、AOS_RUNNER_WORK_DIR、AOS_RUNNER_CACHE_DIR；
+            未配置控制面时回退中心 PG：MOBILE_TESTING_DATABASE_URL（必需）`);
 }
 
 interface ParsedFlags {
@@ -763,7 +571,7 @@ function parseFlags(argv: string[]): ParsedFlags {
   };
 }
 
-/** CLI 入口：只连中心 PG；缺连接串/非 PG 明确 exit 2。 */
+/** CLI 入口：配置 `AOS_RUNNER_CONTROL_URL` 时只连中心 HTTP；否则走中心 PG 兼容路径。 */
 export async function runWebRunnerCommand(
   argv: string[],
   io: WebRunnerCommandIo,
@@ -777,11 +585,19 @@ export async function runWebRunnerCommand(
   const env = deps.env ?? process.env;
   const name = flags.get("name")?.trim() || os.hostname();
   const artifactBaseUrl = flags.get("artifact-base-url")?.trim() || null;
+  const controlUrl =
+    flags.get("control-url")?.trim() || (env.AOS_RUNNER_CONTROL_URL ?? "").trim();
   const panelBaseUrl =
-    flags.get("panel-base-url")?.trim() || (env.AOS_PANEL_BASE_URL ?? "").trim();
-  const runnerToken = (env.AOS_RUNNER_JOB_TOKEN ?? "").trim();
+    flags.get("panel-base-url")?.trim() ||
+    (env.AOS_PANEL_BASE_URL ?? "").trim() ||
+    controlUrl;
+  const runnerToken = runnerJobTokenFrom(env);
+  const needsHttpControl =
+    deps.control === undefined && deps.store === undefined && controlUrl !== "";
+  const needsExecutor = deps.executeJob === undefined;
+  const needsIdentity = needsHttpControl || needsExecutor;
 
-  if (deps.executeJob === undefined) {
+  if (needsExecutor || needsHttpControl) {
     if (panelBaseUrl === "") {
       io.errorLog(
         "web-runner 需要中心基址：--panel-base-url <url> 或 AOS_PANEL_BASE_URL（spec/资产/结果接口）"
@@ -790,48 +606,80 @@ export async function runWebRunnerCommand(
     }
     if (runnerToken.length < 16) {
       io.errorLog(
-        "web-runner 需要 AOS_RUNNER_JOB_TOKEN（≥16 字符）访问中心 spec/资产/结果接口；不会回退管理员令牌"
+        "web-runner 需要 MOBILE_TESTING_RUNNER_JOB_TOKEN（≥16 字符）访问中心控制面/spec/资产/结果接口；不会回退管理员令牌"
       );
       return 2;
     }
   }
 
+  const identity = needsIdentity
+    ? await resolveHostIdentity({
+        env,
+        ...(deps.exec === undefined ? {} : { exec: deps.exec })
+      })
+    : null;
+
+  let control = deps.control;
   let store = deps.store ?? null;
   let opened = false;
-  if (store === null) {
-    try {
-      store = await openCenterStore(env);
-      opened = true;
-    } catch (error) {
-      io.errorLog(
-        `${errorMessage(error)}（web-runner 只支持中心 PG；请设置 ${CENTER_DATABASE_ENV}）`
-      );
-      return 2;
+  if (control === undefined) {
+    if (controlUrl !== "") {
+      if (identity === null) {
+        io.errorLog("web-runner 无法解析主机身份，不能建立控制面会话");
+        return 2;
+      }
+      const runnerFetch = createRunnerFetch(env);
+      control = createHttpWebRunnerControl({
+        baseUrl: panelBaseUrl,
+        token: runnerToken,
+        hostId: identity.id,
+        instanceId: randomUUID(),
+        timeoutMs: runnerHttpTimeoutMs(env),
+        ...(runnerFetch === undefined ? {} : { fetchImpl: runnerFetch })
+      });
+      io.log(`[web-runner] 控制面 ${panelBaseUrl}（host=${identity.id}）`);
+    } else {
+      if (store === null) {
+        try {
+          store = await openCenterStore(env);
+          opened = true;
+        } catch (error) {
+          io.errorLog(
+            `${errorMessage(error)}（web-runner 需要 AOS_RUNNER_CONTROL_URL 或中心 PG；请设置 ${CENTER_DATABASE_ENV}）`
+          );
+          return 2;
+        }
+      }
+      if (store.kind !== "postgres") {
+        io.errorLog(
+          "web-runner 需要中心 PG（文件台账不支持多机）；请配置 MOBILE_TESTING_DATABASE_URL"
+        );
+        if (opened) await store.close().catch(() => undefined);
+        return 2;
+      }
     }
-  }
-  if (store.kind !== "postgres") {
-    io.errorLog(
-      "web-runner 需要中心 PG（文件台账不支持多机）；请配置 MOBILE_TESTING_DATABASE_URL"
-    );
-    if (opened) await store.close().catch(() => undefined);
-    return 2;
   }
 
   let executeJob = deps.executeJob;
   if (executeJob === undefined) {
-    const identity = await resolveHostIdentity({
-      env,
-      ...(deps.exec === undefined ? {} : { exec: deps.exec })
-    });
+    if (identity === null) {
+      io.errorLog("web-runner 无法解析主机身份，不能创建执行器");
+      if (opened && store !== null) await store.close().catch(() => undefined);
+      return 2;
+    }
     const workRoot =
       (env.AOS_RUNNER_WORK_DIR ?? "").trim() || path.join(os.homedir(), ".aos", "web-runner");
     const cacheRoot = (env.AOS_RUNNER_CACHE_DIR ?? "").trim() || path.join(workRoot, "cache");
+    const executorFetch = createRunnerFetch(env);
     executeJob = createDefaultWebJobExecutor({
       hostId: identity.id,
       panelBaseUrl,
       runnerToken,
       workRoot,
       cacheRoot,
+      ...(control === undefined ? {} : { instanceId: control.instanceId }),
+      requestTimeoutMs: runnerDataTimeoutMs(env),
+      ...(executorFetch === undefined ? {} : { fetchImpl: executorFetch }),
       ...(deps.exec === undefined ? {} : { exec: deps.exec }),
       env
     });
@@ -847,7 +695,8 @@ export async function runWebRunnerCommand(
   try {
     return await runWebRunner(
       {
-        centralStore: store,
+        ...(control === undefined ? {} : { control }),
+        ...(control === undefined && store !== null ? { centralStore: store } : {}),
         name,
         artifactBaseUrl,
         once: flags.bool("once"),
@@ -866,7 +715,7 @@ export async function runWebRunnerCommand(
   } finally {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
-    if (opened) {
+    if (opened && store !== null) {
       await store.close().catch(() => undefined);
     }
   }

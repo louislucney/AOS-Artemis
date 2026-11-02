@@ -35,3 +35,9 @@ dist-deps/
 # OS / editor
 .DS_Store
 *.log
+
+# Local runtime secrets (never commit)
+.local/
+
+# Server-hosted runner bundle
+dist-runner/

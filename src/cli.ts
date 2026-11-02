@@ -44,8 +44,9 @@ Usage:
                     中心主机登记（只连 PostgreSQL，需 MOBILE_TESTING_DATABASE_URL）：
                     list | show <id|hostname> | register <id> | adopt-legacy --local|--host <id> --path <rootPath>
                     (见 "mobile-testing-mcp host help"；缺省 dry-run，--apply 才写库)
-  mobile-testing-mcp web-runner [--name <n>] [--artifact-base-url <url>] [--once]
-                    host 级远端 Web 任务执行机（只连中心 PG，不要求项目目录；每台设备一个 worker）
+  mobile-testing-mcp web-runner [--name <n>] [--control-url <url>] [--artifact-base-url <url>] [--once]
+                    host 级远端 Web 任务执行机（中心 HTTP 控制面或 PG 兼容；不要求项目目录；
+                    每台设备一个 worker）
   mobile-testing-mcp web scripts generate --project <dir> --excel <assetId> --package <assetId>
                     --platform <android|ios> [--app-id <id>] [--strict|--assume-prepared]
                     [--dry-run] [--json]

@@ -613,13 +613,13 @@ export function renderDevicesPage(data: DevicesPageData): string {
     const active = data.filter === state && data.platform === platform;
     return `<a class="c-button${active ? " c-button-primary" : ""}" href="${escapeHtml(
       devicesHref(platform, state)
-    )}">${escapeHtml(label)}</a>`;
+    )}"${active ? ' aria-current="page"' : ""}>${escapeHtml(label)}</a>`;
   };
   const platformLink = (label: string, platform: string): string => {
     const active = data.platform === platform;
     return `<a class="c-button${active ? " c-button-primary" : ""}" href="${escapeHtml(
       devicesHref(platform, data.filter)
-    )}">${escapeHtml(label)}</a>`;
+    )}"${active ? ' aria-current="page"' : ""}>${escapeHtml(label)}</a>`;
   };
   const rows = data.devices.map((device) => {
     const stateBadge =
@@ -656,27 +656,95 @@ export function renderDevicesPage(data: DevicesPageData): string {
       tools || '<span class="muted">—</span>'
     ];
   });
-  const body = [
-    "<h1>设备</h1>",
-    `<div class="c-stat-grid">${[
+  const total = data.counts.total;
+  const filterBar = `<div class="c-filterbar" aria-label="设备筛选">
+    <div class="c-filter-group"><span class="c-filter-label">状态</span>${[
+      filterLink("全部", "all"),
+      filterLink("空闲", "idle"),
+      filterLink("占用", "busy"),
+      filterLink("离线", "offline")
+    ].join("")}</div>
+    <div class="c-filter-group"><span class="c-filter-label">平台</span>${[
+      platformLink("全部平台", "all"),
+      platformLink("Android", "android"),
+      platformLink("iOS", "ios")
+    ].join("")}</div>
+    <span class="c-filter-count">${data.devices.length} / ${total} 台</span>
+  </div>`;
+  const emptyState =
+    total === 0
+      ? `<section class="c-empty c-device-empty">
+          <h2>还没有执行机注册</h2>
+          <p>目标机器运行 <code>web-runner</code>，配置中心控制面地址与 <code>MOBILE_TESTING_RUNNER_JOB_TOKEN</code> 后自动出现；执行机不需要直连 PostgreSQL。</p>
+          <div class="c-empty-action">
+            <a class="c-button c-button-primary" href="#runner-download">下载执行机安装包</a>
+            <a class="c-button" href="/panel?section=runners">查看接入说明</a>
+          </div>
+        </section>`
+      : cTable({
+          columns: ["执行机", "设备", "型号/系统", "状态", "当前任务", "租约", "最后心跳", "工具"],
+          rows,
+          caption: `设备列表（${data.devices.length}）`,
+          emptyHtml:
+            '<span class="muted">当前筛选下没有设备。</span> <a href="/panel?section=devices">清除筛选</a>'
+        });
+  const aside = `<aside class="c-device-aside" aria-label="设备接入说明">
+    <section class="c-card" id="runner-download">
+      <h2 class="c-card-title">接入执行机</h2>
+      <p class="c-card-subtitle">让一台机器出现在设备列表，只需要一次心跳。</p>
+      <div class="c-download-grid" aria-label="执行机安装包下载">
+        <a class="c-button c-button-primary" href="/panel/runner-bundle?platform=win32&amp;arch=x64" download>Windows x64</a>
+        <a class="c-button" href="/panel/runner-bundle?platform=darwin&amp;arch=arm64" download>macOS Apple Silicon</a>
+        <a class="c-button" href="/panel/runner-bundle?platform=linux&amp;arch=x64" download>Linux x64</a>
+      </div>
+      <p class="c-card-subtitle c-card-subtitle-tight">每个包都含 dist + node_modules；Node、adb、Maestro 仍需在本机安装。</p>
+      <ol class="c-setup-list">
+        <li>安装 Node.js、adb 与 Maestro</li>
+        <li>配置主机身份、中心地址与 runner token</li>
+        <li>运行 web-runner，设备自动上报</li>
+      </ol>
+      <pre class="c-command"><code>export AOS_HOST_ID=win-mini-01
+export AOS_RUNNER_CONTROL_URL=\
+  http://&lt;center&gt;:8765
+export MOBILE_TESTING_RUNNER_JOB_TOKEN=\
+  &lt;runner-token&gt;
+
+node dist/cli.js web-runner \
+  --name win-mini-01</code></pre>
+    </section>
+    <section class="c-card">
+      <h2 class="c-card-title">状态口径</h2>
+      <dl class="c-status-legend">
+        <div><dt>空闲</dt><dd>执行机在线、无有效租约、无进行中的 Web job</dd></div>
+        <div><dt>占用</dt><dd>存在未过期租约，或任务正在执行</dd></div>
+        <div><dt>离线</dt><dd>执行机心跳超过 TTL 未更新</dd></div>
+      </dl>
+      <p class="c-card-subtitle c-card-subtitle-tight">页面加载时快照；刷新查看最新状态。</p>
+    </section>
+  </aside>`;
+  const body = `
+    <div class="c-page-head">
+      <div>
+        <h1>设备</h1>
+        <p class="c-page-lede">按执行机、状态与平台查看设备容量；空闲设备可立即领取 Web 任务。</p>
+      </div>
+      <div class="c-page-actions">
+        <a class="c-button" href="${escapeHtml(devicesHref(data.platform, data.filter))}">刷新</a>
+      </div>
+    </div>
+    <div class="c-stat-grid">${[
       cStat({ label: "设备", value: String(data.counts.total), hint: "已注册" }),
       cStat({ label: "空闲", value: String(data.counts.idle), hint: "可立即领取" }),
       cStat({ label: "占用", value: String(data.counts.busy), hint: "租约或任务执行中" }),
       cStat({ label: "离线", value: String(data.counts.offline), hint: "执行机心跳超时" })
-    ].join("")}</div>`,
-    `<p class="muted">空闲＝执行机在线、设备无有效租约、无进行中的 Web job。页面加载时快照，刷新查看最新状态。</p>`,
-    `<p>${filterLink("全部", "all")} ${filterLink("空闲", "idle")} ${filterLink("占用", "busy")} ${filterLink("离线", "offline")}</p>`,
-    `<p>${platformLink("全部平台", "all")} ${platformLink("Android", "android")} ${platformLink("iOS", "ios")}</p>`,
-    cTable({
-      columns: ["执行机", "设备", "型号/系统", "状态", "当前任务", "租约", "最后心跳", "工具"],
-      rows,
-      caption: `设备列表（${data.devices.length}）`,
-      empty:
-        data.counts.total === 0
-          ? "还没有执行机注册。在目标机器运行 node dist/cli.js web-runner --name <名称>，配置中心 PG、AOS_PANEL_BASE_URL 与 AOS_RUNNER_JOB_TOKEN 后自动出现。"
-          : "当前筛选下没有设备。"
-    })
-  ].join("\n");
+    ].join("")}</div>
+    <div class="c-device-layout">
+      <div class="c-device-main">
+        ${filterBar}
+        ${emptyState}
+      </div>
+      ${aside}
+    </div>`;
   return renderConsoleShell({
     title: "设备",
     active: "devices",

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { runnerDataTimeoutMs } from "./control/tls-fetch.js";
 
 import { defaultExec, type ExecFn } from "../device/adb.js";
 import { errorMessage } from "../util.js";
@@ -27,6 +28,10 @@ export interface DefaultWebJobExecutorOptions {
   exec?: ExecFn;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
+  /** 控制面需要的结果上传实例 fencing；缺省不发送。 */
+  instanceId?: string;
+  /** 单次 HTTP 请求超时；缺省 AOS_RUNNER_HTTP_TIMEOUT_MS/15s。 */
+  requestTimeoutMs?: number;
   /** Maestro 执行超时（透传 `executeWebJob`）。 */
   timeoutMs?: number;
 }
@@ -99,10 +104,15 @@ function trimBase(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
 }
 
-function authHeaders(hostId: string, token: string): Record<string, string> {
+function authHeaders(
+  hostId: string,
+  token: string,
+  instanceId?: string
+): Record<string, string> {
   return {
     authorization: `Bearer ${token}`,
-    "x-aos-host-id": hostId
+    "x-aos-host-id": hostId,
+    ...(instanceId === undefined || instanceId === "" ? {} : { "x-mobile-testing-instance-id": instanceId })
   };
 }
 
@@ -188,6 +198,7 @@ export function createDefaultWebJobExecutor(
   const workRoot = path.resolve(options.workRoot);
   const cacheRoot = path.resolve(options.cacheRoot ?? path.join(workRoot, "cache"));
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as typeof fetch);
+  const requestTimeoutMs = options.requestTimeoutMs ?? runnerDataTimeoutMs(env);
   const exec: ExecFn = options.exec ?? defaultExec;
   const childEnv = webRunnerChildEnv(env);
   const envTimeoutMs = positiveInt(env.AOS_WEB_JOB_TIMEOUT_MS);
@@ -197,13 +208,17 @@ export function createDefaultWebJobExecutor(
     const jobId = input.task.id;
     const hostId = (options.hostId ?? input.task.claimedHostId ?? input.task.targetHostId ?? "").trim();
     if (hostId === "") throw new Error("web-job-host-missing");
-    const headers = authHeaders(hostId, token);
+    const headers = authHeaders(hostId, token, options.instanceId);
 
     let specResponse: Awaited<ReturnType<typeof fetch>>;
     try {
       specResponse = await fetchImpl(
         `${base}/panel/api/jobs/${encodeURIComponent(jobId)}/spec`,
-        { method: "GET", headers }
+        {
+          method: "GET",
+          headers,
+          signal: AbortSignal.timeout(Math.floor(requestTimeoutMs))
+        }
       );
     } catch (error) {
       throw new Error(`web-job-spec-request-failed: ${errorMessage(error)}`);
@@ -224,7 +239,11 @@ export function createDefaultWebJobExecutor(
 
     const download = async (url: string): Promise<Buffer> => {
       const target = new URL(url, `${base}/`).toString();
-      const response = await fetchImpl(target, { method: "GET", headers });
+      const response = await fetchImpl(target, {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(Math.floor(requestTimeoutMs))
+      });
       if (!response.ok) {
         throw new Error(`web-job-asset-download-failed: ${response.status}`);
       }
@@ -233,7 +252,7 @@ export function createDefaultWebJobExecutor(
 
     const prepared = await prepareWebJobWorkspace({
       jobId,
-      projectSlug: safeSlug(input.rootPath),
+      projectSlug: safeSlug(input.projectSlug ?? input.rootPath),
       workRoot,
       cacheRoot,
       assets: assets.map((asset) => ({
@@ -305,7 +324,8 @@ export function createDefaultWebJobExecutor(
           {
             method: "POST",
             headers: { ...headers, "content-type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(Math.floor(requestTimeoutMs))
           }
         );
       } catch (error) {

@@ -431,6 +431,26 @@ test("HTTP POST /panel/api/jobs/:id/results：runner token、未知 job、非法
       (await fetch(url, { method: "POST", headers: { ...jsonHeaders, "content-type": "text/plain" }, body })).status,
       415
     );
+
+    const fencedJob = await makeJob("running");
+    await store.updateRegressionTask(rootPath, fencedJob.id, { claimedInstanceId: "inst-a" });
+    const fencedUrl = `${base}/panel/api/jobs/${fencedJob.id}/results`;
+    assert.equal(
+      (await fetch(fencedUrl, { method: "POST", headers: jsonHeaders, body })).status,
+      409,
+      "已绑定实例的 job 缺少 X-Mobile-Testing-Instance-Id → 409"
+    );
+    assert.equal(
+      (
+        await fetch(fencedUrl, {
+          method: "POST",
+          headers: { ...jsonHeaders, "x-mobile-testing-instance-id": "inst-b" },
+          body
+        })
+      ).status,
+      409,
+      "其他实例不得上传结果"
+    );
     assert.equal(
       (await fetch(url, { method: "POST", headers: jsonHeaders, body: "{not-json" })).status,
       400

@@ -108,7 +108,7 @@ MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/mobile-
 若本机没有 PostgreSQL：`brew install postgresql@17 && brew services start postgresql@17`（默认 5432；被占用时可在 `/opt/homebrew/var/postgresql@17/postgresql.conf` 改 `port`）。
 切换实例只需替换 `MOBILE_TESTING_DATABASE_URL`（表结构首次连接自动创建）。
 
-> **缺省即持久**：未配置 `MOBILE_TESTING_DATABASE_URL` 时，台账落**项目文件台账**（`.artemis/ledger/`：state.json/usage.jsonl/audit.jsonl/journal.jsonl，随项目保留、重启不丢）；PostgreSQL 用于集中跨进程/跨项目查询。runner 与定时回归仍需中心 PG（文件台账不支持多进程）；仅文件台账目录不可写才退回会话内存（doctor/aos_status 会如实标注）。
+> **缺省即持久**：未配置 `MOBILE_TESTING_DATABASE_URL` 时，台账落**项目文件台账**（`.artemis/ledger/`：state.json/usage.jsonl/audit.jsonl/journal.jsonl，随项目保留、重启不丢）；PostgreSQL 用于集中跨进程/跨项目查询。项目机 runner 与定时回归默认仍需中心 PG（文件台账不支持多进程）；项目机/web-runner 配 `AOS_RUNNER_CONTROL_URL` 后走中心 HTTP 控制面；仅文件台账目录不可写才退回会话内存（doctor/aos_status 会如实标注）。
 
 ## HTTP 模式（远程/多项目）
 
@@ -116,7 +116,7 @@ MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/mobile-
 # 服务端（主机运行；workspace 下每个子目录是一个项目）
 node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 # 端点: POST http://<host>:8765/mcp/<project>    健康检查: GET /healthz
-# 事件入口: POST/GET http://<host>:8765/events/<project>（同样受 AOS_HTTP_TOKEN 保护）
+# 事件入口: POST/GET http://<host>:8765/events/<project>（同样受 MOBILE_TESTING_HTTP_TOKEN 保护）
 
 # 客户端配置（或 mobile-testing-mcp install --mode http --url http://host:8765）
 ```
@@ -135,12 +135,14 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 中心 Mac 跑 PostgreSQL、面板与中心 CLI；项目目录留在各自 Mac/PC，由该机的**本地 MCP**（stdio 或 HTTP）与 **`suite runner`** 执行。项目身份＝`(主机, 路径)`，同一路径在两台机器上是两个独立项目；任务可定向下发到「某台机器上的某个项目」。
 
+接一台空闲机器的完整步骤（角色选择、项目机 / Web 执行机、常驻化、验收清单与排障）见 [docs/空闲机器接入托管平台.md](docs/空闲机器接入托管平台.md)。
+
 ```bash
 # 中心：主机登记与查看（只连 PostgreSQL，不写本机 .artemis）
 node dist/cli.js host list [--json]
 node dist/cli.js host show <id|hostname> [--json]
 node dist/cli.js host register <id|hostname> --label <名> --owner <人> \
-        [--expected-os mac|pc|linux] [--expected-hostname <名>]
+        [--expected-os darwin|win32|linux] [--expected-hostname <名>]
 
 # 中心：定向创建回归任务（必须给目标机上的项目根路径）
 node dist/cli.js suite task create --host <id|hostname> --project <rootPath> \
@@ -162,7 +164,7 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 1. **升级中心 PG**：任一进程启动即跑 `MIGRATIONS`（advisory lock 串行化）；首次升级选低峰窗口。
 2. **每台项目机在启动新版 MCP/runner（或本地 `suite` 命令）之前**：`host adopt-legacy --local --dry-run` 核对，再 `--apply` 认领 legacy NULL-host 项目。**不要**在中心做一次性认领；新版进程启动后再认领会因同路径新行已存在而被跳过。
 3. 按需 `host register` 写期望画像（只提示漂移，不拒绝任务）。
-4. 启动项目机本地 MCP 与 `suite runner`（runner/定时回归需中心 PG）；`AOS_HOST_ID` 集群内唯一。
+4. 启动项目机本地 MCP 与 `suite runner`（默认需中心 PG；配置 `AOS_RUNNER_CONTROL_URL` 后不直连 PG）；`AOS_HOST_ID` 集群内唯一。
 5. 面板核对双在线状态与项目归属后，再开放定向下发。
 
 **主机与在线口径**：`IDE 在线`＝MCP 客户端会话（`host_sessions`/`client_seen_at`，`AOS_CLIENT_TTL_MS` 内）；`执行机在线`＝runner 心跳（`runners.last_seen_at`，`AOS_RUNNER_TTL_MS`）；登记画像（`expectedOs`/`expectedHostname`）与实际不符只显示漂移。下发预检只看执行层与 OS/工具/设备能力，主机离线仍可入队等待。已结束的接入会话由 30s 清扫器按 `AOS_CLIENT_SESSION_RETENTION_DAYS`（默认 7 天，按 `max(last_seen_at, ended_at)`）清理，项目机只清本机会话、中心清全台账，进行中会话不删；`AOS_HOST_ADDR_HISTORY=0` 时地址只留每来源最新值（同时间戳多网卡按地址升序）。
@@ -173,7 +175,7 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `AOS_HOST_ID` | 无 | 显式主机 id（优先于文件）；集群内每机唯一 |
+| `AOS_HOST_ID` | 无 | 自定义主机身份（优先于文件）；集群内每机唯一；与 `--name` 显示名不同 |
 | `AOS_HOST_DIR` | `~/.aos` | `host-id` 文件目录；不可写时退化为派生 ID（不可迁移） |
 | `AOS_HOST_ENV_REFRESH_MS` | 600000 | runner 主机环境快照刷新周期 |
 | `AOS_CLIENT_TTL_MS` | 120000 | IDE 会话在线判定窗口 |
@@ -186,7 +188,9 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 | `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板开放优先级编辑 |
 | `AOS_HOST_STRICT` | 0 | `=1`/`=true` 时严格主机模式：**本版本**的领取与本地手动执行/取消在无主机身份时拒绝。旧 runner 二进制仍按自己的 SQL 连 PG，需停用/升级，不会被此开关拦截（见 DESIGN §13.165/§13.166） |
 
-**已知限制**：文件台账为单主机视图（`host`/`queue`/runner/定时回归需中心 PG）；中心清扫 `allHosts=true` 可能先于离线 runner 终结取消；旧 runner 行 `host_id NULL` 需升级重启后补齐（`AOS_HOST_STRICT` 只约束本版本的 claim/本地命令，旧 runner 需停用/升级，不会被开关拦截）；队列暂停是整机粒度；P4 跨主机逻辑项目分组与 HTTP 客户端记录未实现。完整清单见 DESIGN §13.165。
+**已知限制**：文件台账为单主机视图（`host`/`queue`/默认项目机 runner/定时回归需中心 PG；项目机/web-runner 可走控制面）；中心清扫 `allHosts=true` 可能先于离线 runner 终结取消；旧 runner 行 `host_id NULL` 需升级重启后补齐（`AOS_HOST_STRICT` 只约束本版本的 claim/本地命令，旧 runner 需停用/升级，不会被开关拦截）；队列暂停是整机粒度；P4 跨主机逻辑项目分组与 HTTP 客户端记录未实现。完整清单见 DESIGN §13.165。
+
+**新机器接入步骤**：项目机（`suite runner`）与 Web 执行机（`web-runner`）的完整接入流程见 [docs/空闲机器接入托管平台.md](docs/空闲机器接入托管平台.md)；Windows + Android 快速接入见 [docs/windows-runner-quickstart.md](docs/windows-runner-quickstart.md)。
 
 ## 鉴权（静态令牌 / 命名用户，P3d，§13.113 / §13.216 / §13.217）
 
@@ -194,7 +198,7 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 
 | 变量 | 作用面 | 说明 |
 |------|--------|------|
-| `AOS_HTTP_TOKEN` | `serve --http` 全部路由 | 设置后**先鉴权后路由**：除 `GET\|HEAD /` 与 `GET\|HEAD /healthz` 外，未认证一律 401（含禁用路由与未知路径）；静态管理员令牌 |
+| `MOBILE_TESTING_HTTP_TOKEN` | `serve --http` 全部路由 | 设置后**先鉴权后路由**：除 `GET\|HEAD /` 与 `GET\|HEAD /healthz` 外，未认证一律 401（含禁用路由与未知路径）；静态管理员令牌 |
 | `AOS_HTTP_USERS` | `serve --http` 全部路由 | JSON `[{name,token,role}]` 命名用户令牌（token ≥16 字符；role=`viewer\|dispatcher\|maintainer\|admin`）；按用户角色授权并写入审计 actor；可与静态令牌并存 |
 | `AOS_HTTP_USERS_FILE` | `serve --http` + `user` CLI | 用户文件路径（默认 `~/.aos/http-users.json`）；文件只存 `tokenSha256`，权限 `0600`；运行期按 mtime 热加载 |
 | `AOS_RUNNER_ARTIFACT_TOKEN` | runner 产物服务 `/artifact*` | 设置后 `/artifact/*`（GET/HEAD）强制认证；`GET\|HEAD /healthz` 豁免；令牌不随心跳广播、面板链接保持纯 URL |
@@ -203,12 +207,12 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 令牌来源只有**进程 env** 与**用户文件**（不读项目 `.env`；HTTP 令牌本身无 CLI flag，用户文件路径可由 `user --file`/`AOS_HTTP_USERS_FILE` 指定），日志与 `install` 输出只回 masked 预览。三种等价凭据形式：
 
 ```bash
-curl -H "Authorization: Bearer $AOS_HTTP_TOKEN"  http://host:8765/panel.json   # 1) Bearer（脚本/MCP 客户端）
-curl -u "any:$AOS_HTTP_TOKEN"                     http://host:8765/panel.json   # 2) Basic（用户名任意/空，密码＝令牌）
+curl -H "Authorization: Bearer $MOBILE_TESTING_HTTP_TOKEN"  http://host:8765/panel.json   # 1) Bearer（脚本/MCP 客户端）
+curl -u "any:$MOBILE_TESTING_HTTP_TOKEN"                     http://host:8765/panel.json   # 2) Basic（用户名任意/空，密码＝令牌）
 curl "http://host:8770/artifact/...?t=$TOKEN"                                   # 3) ?t= —— 仅产物服务（书签/直链）
 ```
 
-- **命名用户（身份级）**：`AOS_HTTP_USERS` JSON 数组，每项 `{name, token, role}`；token 至少 16 字符，名字/令牌重复或 role 非法会启动失败（fail closed）。用户令牌按角色执行 `AOS_PANEL_ROLE` 同款动作闸门，面板页面按请求身份渲染角色，审计 `actor` 记录用户名；静态 `AOS_HTTP_TOKEN` 仍可用，角色取 `AOS_PANEL_ROLE`（缺省 admin），审计名取 `AOS_ACTOR`/`static`。令牌不写日志、不落 PG；OAuth/OIDC/会话仍未实现。
+- **命名用户（身份级）**：`AOS_HTTP_USERS` JSON 数组，每项 `{name, token, role}`；token 至少 16 字符，名字/令牌重复或 role 非法会启动失败（fail closed）。用户令牌按角色执行 `AOS_PANEL_ROLE` 同款动作闸门，面板页面按请求身份渲染角色，审计 `actor` 记录用户名；静态 `MOBILE_TESTING_HTTP_TOKEN` 仍可用，角色取 `AOS_PANEL_ROLE`（缺省 admin），审计名取 `AOS_ACTOR`/`static`。令牌不写日志、不落 PG；OAuth/OIDC/会话仍未实现。
 - **用户生命周期（文件存储，§13.217/§13.225）**：`user add|list|revoke|enable|role|rotate` 管理 `~/.aos/http-users.json`（`AOS_HTTP_USERS_FILE` 可覆盖）；文件仅存令牌 SHA-256（`0600`），明文令牌仅在 add/rotate 时显示一次。HTTP 服务按文件 mtime 热加载：轮换/吊销/启用/改角色即时生效、无需重启；令牌一旦启用过认证，运行期清空/删除文件也不会放开匿名访问（需重启才回到无鉴权）。非法文件更新保留上一次有效用户并 WARN（启动时非法则 `exit 2`）。`revoke`/`role` 默认拒绝把最后一个启用中的管理员降级/吊销（`--allow-last-admin` break-glass）。
   ```bash
   node dist/cli.js user add alice --role admin          # 输出一次性明文令牌
@@ -219,7 +223,7 @@ curl "http://host:8770/artifact/...?t=$TOKEN"                                   
   node dist/cli.js user role alice --role maintainer    # 改角色，令牌不变
   ```
 - **serve 安全默认**：绑定**非 loopback**（`0.0.0.0`/`::`/LAN 地址）且未设令牌/用户且未显式放行 → 启动失败并给指引（`exit 2`）；`AOS_HTTP_ALLOW_INSECURE=1` 可放行（仅限可信网络）。loopback 绑定不受此限。401 带 `WWW-Authenticate: Basic realm="mobile-testing-mcp"`（`HEAD` 抑制 body）。
-- **install 注入（幂等）**：`AOS_HTTP_TOKEN` 在 `install --mode http` 的操作者进程 env 中时，生成的客户端条目自动带 `headers.Authorization: Bearer <token>`（token 缺失则不带并提示手配）。**令牌变更后配置视为「已存在但不同」→ 必须 `--force` 重装**才会更新。
+- **install 注入（幂等）**：`MOBILE_TESTING_HTTP_TOKEN` 在 `install --mode http` 的操作者进程 env 中时，生成的客户端条目自动带 `headers.Authorization: Bearer <token>`（token 缺失则不带并提示手配）。**令牌变更后配置视为「已存在但不同」→ 必须 `--force` 重装**才会更新。
 - **浏览器流指引**：令牌启用时，首次打开 `/panel*`（GET）会触发 `WWW-Authenticate` Basic 弹窗；认证按 origin 缓存后，同源 `/panel/api/*` 的 `fetch` 会自动携带凭据（各环境/浏览器或有差异）。**建议先打开一次页面再点动作按钮**。
 - **`?t=` 取舍**：查询参数方式便于书签/直链，但令牌会进入 URL、浏览器历史与访问日志——仅在可信环境使用，或改用 Bearer/Basic。HTTP 服务**不提供**查询参数通道（仅产物服务）。产物服务**目录浏览建议用 Bearer/Basic**；经 `?t=` 认证打开的目录索引会为链接**续带 `?t=`**（**仅当该值自身校验通过**；Bearer/Basic 路径不带），`?t=` 仍以**单文件直链**/书签场景为主（见 DESIGN §13.115）。
 
@@ -255,7 +259,7 @@ node dist/cli.js export --what results|process|data [--format json|csv] \
 
 三口径：**results**（测试结果：批次/裁决/单号）、**process**（测试过程：审计事件/回归任务/计划/执行机）、**data**（测试用的数据：用例集/任务统计/产物索引）；缺省打印到 stdout，`--out` 写文件；exit 0/2。
 
-- Web 看板：`usage --web` 提供 `GET /usage`（HTML）与 `GET /usage.json`（同源 JSON）；HTTP 模式下跟随服务器绑定自动挂载同一路由（纳入 `AOS_HTTP_TOKEN` 闸门；见「鉴权」段），`AOS_USAGE_WEB=0` 关闭页面。v1 纯只读、无处置标记；独立 `usage --web` CLI 看板为 loopback 只读、暂不带鉴权（另立小票）。
+- Web 看板：`usage --web` 提供 `GET /usage`（HTML）与 `GET /usage.json`（同源 JSON）；HTTP 模式下跟随服务器绑定自动挂载同一路由（纳入 `MOBILE_TESTING_HTTP_TOKEN` 闸门；见「鉴权」段），`AOS_USAGE_WEB=0` 关闭页面。v1 纯只读、无处置标记；独立 `usage --web` CLI 看板为 loopback 只读、暂不带鉴权（另立小票）。
 - 环境变量（进程/客户端 env，不读项目 `.env`）：`AOS_USAGE=0` 关闭采集（历史数据仍可查询与展示）、`AOS_USAGE_RETENTION_DAYS`（保留天数，默认 90，0 不清理）、`AOS_USAGE_MAX_EVENTS`（每项目事件上限，默认 50000，超出丢最旧）、`AOS_USAGE_WEB=0`（关闭 `/usage` 与 `/usage.json` 路由）。
 
 ### 多项目总览面板（overview-panel）
@@ -294,7 +298,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 
   **功能对齐（跨项目，§13.114）**：对比页**第二区块**「功能对齐（跨项目）」把同源功能并排对照，回答「同一功能在多个项目里的通过率/flaky/待办各如何」。**匹配规则**＝**同设计源身份 ＋ 归一化功能名**，仅**组内 ≥2 个项目**展示；源身份归一化——`figma:<fileKey>`（取 `figma:` 后首个 token，**不 lower**）｜`pen:<相对路径>`（posix＋小写）｜绝对/相对文件路径（**相对该项目根** posix＋小写，跨项目同布局即可对齐；越界/不可相对化则原样小写）；功能名归一化＝NFC·trim·折叠空白·小写（CJK 不变，**不剥词形**）。**误报口径**：对齐是**并列对照、非统计合并**（**不产出跨项目聚合通过率/总分/排名**，每行数据均标注来源项目）；同名不同源不成组、不做自动别名；**已声明边界**——同一 Figma 文件的「工具 url 形式 vs 管道路径形式」**不互相匹配**（v1 纯文本归一化）。**窗口**＝**用例集血统运行最近 20 批**（与项目级区块同窗）；名称取 **case set 冻结名**（set 缺该 key 时回退运行功能名）；`unmatched`＝**仅出现在 1 个项目中的功能组数**（`featureKey` 为空或无 case-set 映射的运行**不参与**计数）；组表头显示**原始 source**（路径式会显示生成项目的路径）。对齐区块**全部展示、不截断**（区别于项目级区块前 50 行封顶）。
 
-- **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用用例集创建回归任务，可选 `priority` 0–100，缺省 0、非法 400；body ≤256KB，超限 413；重复提交会创建多个任务，无幂等去重）、`POST /panel/api/tasks/cancel`（取消任务：`{project,host,taskId,note?}`；pending→cancelled，claimed/running→stopping→执行机确认 cancelled；写取消来源/操作人/宿主/备注与审计）、`POST /panel/api/tasks/stop|release|rerun`（停止/释放/重派，均带 host 作用域与审计）、`POST /panel/api/queue/pause|resume`（整机队列闸门：`{host,note?}`，host 级路由、不要求 project；hostname 唯一匹配，歧义 400、未知 404、缺 host 400；阻断 runner 自动领取，不影响已领取任务）、`POST /panel/api/hosts/register`（登记 label/owner/expectedOs/expectedHostname）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）、`POST /panel/api/issues`（应用缺陷**一键建 Jira 单**：`{project, items:[{runId,caseId}]}`≤20 条，逐条建单＋证据评论/附件＋回写单号；`dryRun` 预览不触网；仅对存在且非 passed、无裁决或裁决为 app-defect、未建单的用例生效，已有单号返回 existing 幂等）。**可选令牌保护**——HTTP 模式下受 `AOS_HTTP_TOKEN` 闸门（先鉴权后路由；`serve` 非 loopback 未设令牌则启动失败的安全默认，见「鉴权」段）；**未设令牌时**任何能访问端口者可写任务、裁决与**建立真实 Jira 单（外部副作用）**，故仅在受控内网部署；独立 CLI 看板保持只读；`AOS_PANEL_WEB=0` 不影响动作层（两开关相互独立）。
+- **动作层**（仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭）：`POST /panel/api/tasks`（引用用例集创建回归任务，可选 `priority` 0–100，缺省 0、非法 400；body ≤256KB，超限 413；重复提交会创建多个任务，无幂等去重）、`POST /panel/api/tasks/cancel`（取消任务：`{project,host,taskId,note?}`；pending→cancelled，claimed/running→stopping→执行机确认 cancelled；写取消来源/操作人/宿主/备注与审计）、`POST /panel/api/tasks/stop|release|rerun`（停止/释放/重派，均带 host 作用域与审计）、`POST /panel/api/queue/pause|resume`（整机队列闸门：`{host,note?}`，host 级路由、不要求 project；hostname 唯一匹配，歧义 400、未知 404、缺 host 400；阻断 runner 自动领取，不影响已领取任务）、`POST /panel/api/hosts/register`（登记 label/owner/expectedOs/expectedHostname）、`POST /panel/api/verdicts`（失败用例批量裁决：case-defect / execution-deviation / app-defect / uncertain）、`POST /panel/api/issues`（应用缺陷**一键建 Jira 单**：`{project, items:[{runId,caseId}]}`≤20 条，逐条建单＋证据评论/附件＋回写单号；`dryRun` 预览不触网；仅对存在且非 passed、无裁决或裁决为 app-defect、未建单的用例生效，已有单号返回 existing 幂等）。**可选令牌保护**——HTTP 模式下受 `MOBILE_TESTING_HTTP_TOKEN` 闸门（先鉴权后路由；`serve` 非 loopback 未设令牌则启动失败的安全默认，见「鉴权」段）；**未设令牌时**任何能访问端口者可写任务、裁决与**建立真实 Jira 单（外部副作用）**，故仅在受控内网部署；独立 CLI 看板保持只读；`AOS_PANEL_WEB=0` 不影响动作层（两开关相互独立）。
 - **改进出口（统计下钻，§13.111）**：统计视图按最新裁决呈现三个出口——**案例问题**（case-defect，指引修订期望/重新生成）、**执行偏差环境清单**（execution-deviation，按设备/端分组：次数/涉及功能/最近/备注摘要）、**应用缺陷**（app-defect，勾选 → 一键建单）。**一键建单为外部副作用**：建单走项目 Jira 凭证与 `jira_evidence_post` 同源证据逻辑（失败 best-effort 不回滚）；缺省值可写项目 `.env` 的 `JIRA_ISSUE_PROJECT`（必填缺省）/`JIRA_ISSUE_TYPE`（默认 `Bug`）/`JIRA_ISSUE_LABELS`（逗号分隔），表单输入优先；已建单条目显示单号纯文本（面板无 Jira 站点来源、不出链接）。**并发双开为已接受限制**（同条目并发可能各建一张；顺序重复点击幂等）。
 - 数据源：批次清单 `.artemis/design/runs/`（`suite run`/`loop` 自动落盘，权威）+ PG 台账（含 `regression_tasks`/`suite_runs`/`suite_run_cases`，裁决写回 `suite_run_cases.verdict*`）+ 项目软读（无子进程/无网络）；磁盘不可达的项目降级为"仅台账"；缺件/清理/高版本清单一律如实占位，不猜测。
 - **深探**（HTTP 模式）：项目页懒建 Runtime 后取纯读子集（active Profile/存储/artemis 子进程/桥/日志/构建状态；**不拉起子进程、不触网**）；URL 加 `?ios=1` 显式执行 **iOS 环境检测**（调用本地 appium CLI，结果缓存 60s）；独立 CLI 进程无深探层。
@@ -309,17 +313,19 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 node dist/cli.js suite runner [--name <n>] [--poll-ms n] [--heartbeat-ms n]
         [--artifact-port n（0 关闭；默认 AOS_RUNNER_ARTIFACT_PORT 或 8770）]
         [--artifact-host h（默认 AOS_RUNNER_ARTIFACT_HOST 或 0.0.0.0）] [--once]
-# 需要中心 PG（MOBILE_TESTING_DATABASE_URL，与 suite 其余命令同口径）；--once 单轮冒烟
+# 默认需要中心 PG；配置 AOS_RUNNER_CONTROL_URL + MOBILE_TESTING_RUNNER_JOB_TOKEN 后走中心 HTTP（不直连 PG）
+# --once 单轮冒烟
 node dist/cli.js suite task release <taskId> [--force]   # 管理侧救济：claimed/running → 待执行
 node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending → cancelled；执行中 → stopping（执行机确认后 cancelled）
 ```
 
 - 设备盘点：adb devices（emulator-* 归 emulator）＋模拟器（darwin，仅 Booted 可用）＋真机 `idevice_id -l`（best-effort）；**真机 UDID 请用 `AOS_RUNNER_DEVICES="udid1,udid2"` 显式列入**（设了即覆盖全部来源）。
-- 命名与登记：`--name <n>`＝心跳/登记名（缺省 hostname）；runner 执行的任务设备运行 `suite_runs.runner` 记录该名（显式透传，不影响手动运行归因）。优雅退出（SIGINT/TERM、`--once` 结束）会把本实例行标记为陈旧，**立即重启可直接接管**（崩溃仍按 TTL 接管）。环境变量：`AOS_RUNNER_POLL_MS`（5000）、`AOS_RUNNER_HEARTBEAT_MS`（30000）、`AOS_RUNNER_TTL_MS`（在线判定，90000）、`AOS_RUNNER_MAX_ATTEMPTS`（失败重试上限，默认 3）、`AOS_RUNNER_STALE_CLAIM_MS`（失联领取自动回收阈值，默认 900000＝15min，`0` 关闭）、`AOS_TASK_MAX_RUNTIME_MS`（单任务执行上限（协作式中止），默认 0 关闭；超时按取消 `source=runner` 终结、不释放不重试）、`AOS_CANCEL_GRACE_MS`（离线取消宽限，默认 90000）、`AOS_RUNNER_PARTIAL_CLAIM`（`=1` 开启按端部分领取，默认关）、`AOS_RUNNER_ARTIFACT_PORT/HOST`、`AOS_RUNNER_ADVERTISE_URL`（LAN 无 DNS 时用 IP 覆盖基址）。
+- **控制面模式**：`AOS_RUNNER_CONTROL_URL=http://<中心>:8765` + `MOBILE_TESTING_RUNNER_JOB_TOKEN`（≥16）后，suite runner 使用本地 FileStore + `/panel/api/runners/suite/*` 资源 API，任务/case set/run/租约/runner 注册/定时回归/审计走 HTTP；`suite run --task` 优先用 `GET /tasks/:id/bundle`（任务 + 项目 + 引用 case set），不打开中心 PG；suite 租约续租/释放也带 HMAC `leaseTokens`。
+- 命名与登记：`--name <n>`＝心跳/登记名（缺省 hostname）；runner 执行的任务设备运行 `suite_runs.runner` 记录该名（显式透传，不影响手动运行归因）。优雅退出（SIGINT/TERM、`--once` 结束）会把本实例行标记为陈旧，**立即重启可直接接管**（崩溃仍按 TTL 接管）。环境变量：`AOS_RUNNER_POLL_MS`（5000）、`AOS_RUNNER_HEARTBEAT_MS`（30000）、`AOS_RUNNER_TTL_MS`（在线判定，90000）、`AOS_RUNNER_MAX_ATTEMPTS`（失败重试上限，默认 3）、`MOBILE_TESTING_RUNNER_STALE_CLAIM_MS`（失联领取自动回收阈值，默认 900000＝15min，`0` 关闭；旧名 `AOS_RUNNER_STALE_CLAIM_MS` 兼容）、`AOS_TASK_MAX_RUNTIME_MS`（单任务执行上限（协作式中止），默认 0 关闭；超时按取消 `source=runner` 终结、不释放不重试）、`AOS_CANCEL_GRACE_MS`（离线取消宽限，默认 90000）、`AOS_RUNNER_PARTIAL_CLAIM`（`=1` 开启按端部分领取，默认关）、`AOS_RUNNER_ARTIFACT_PORT/HOST`、`AOS_RUNNER_ADVERTISE_URL`（LAN 无 DNS 时用 IP 覆盖基址）。
 - 失败重试：任务未达终态（如引用用例集失效、执行前置失败）自动释放重试；**连续失败达上限置 `failed`**（不再自动重试、不阻塞后续任务；修复引用后请新建任务）。`suite task release` 对 `claimed_by` 为空的数据异常态需配 `--force`。
 - 领取条件：**任务目标端 ⊆ 该 runner 的设备端集合**（缺端不领）；**双端任务需单机双端 runner**（两端分属两台机时请拆单端任务或手动执行）；面板对「pending 且无 runner 可覆盖」会给提示。默认严格子集；设 `AOS_RUNNER_PARTIAL_CLAIM=1` 后可**按端部分领取**——仅当**无任一在线 runner 可全覆盖**该任务时按交集端领取（完全覆盖仍优先，双端齐备在场时绝不部分抢占）；缺端**不自动补跑**、不新增状态字段，仅领取日志「部分端执行（缺 X——在线无全覆盖执行机）」＋执行侧既有缺端标注；**端覆盖审计反推口径**＝任务 `runIds` 关联的 `suite_runs.platform` 集合 vs 任务 `platforms`（统计下钻分母按实际已跑端）。
 - 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需；启动打印醒目告警）；**可选令牌 `AOS_RUNNER_ARTIFACT_TOKEN`**——设置后 `/artifact*` 强制认证（Bearer/Basic/`?t=`，`GET|HEAD /healthz` 豁免，见「鉴权」段），未设则维持「无鉴权」内网口径；暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
-- 崩溃/失联救济：runner 重启自动释放自己的未完成领取；**在线 runner 每轮自动回收超龄＋失联的领取**（`claimed_at` 超 `AOS_RUNNER_STALE_CLAIM_MS` 且领取机离线／归属悬空 → 回待执行，`attempts` 保留；毒丸任务在超上限的下一次领取处直接置 `failed` 不执行——「无在线 runner 则无人回收」为自洽性质）；机器报废等场景用 `suite task release`（默认要求该执行机离线）。无 runner 时手动路径不变：`suite run --task <id> --device <serial>`（claimed 不阻塞手动执行；若该任务正由 runner 持有设备租约则 exit 2）；手动执行在本机有主机身份时以独立身份 `manual:<taskId>` 获取 `--device` 的设备租约，执行中按 TTL/3 续租，结束/失败在 `finally` 停止续租并释放；被占用 exit 2。见 DESIGN §13.109/§13.116/§13.166。
+- 崩溃/失联救济：runner 重启自动释放自己的未完成领取；**在线 runner 每轮自动回收超龄＋失联的领取**（`claimed_at` 超 `MOBILE_TESTING_RUNNER_STALE_CLAIM_MS` 且领取机离线／归属悬空 → 回待执行，`attempts` 保留；毒丸任务在超上限的下一次领取处直接置 `failed` 不执行——「无在线 runner 则无人回收」为自洽性质）；机器报废等场景用 `suite task release`（默认要求该执行机离线）。无 runner 时手动路径不变：`suite run --task <id> --device <serial>`（claimed 不阻塞手动执行；若该任务正由 runner 持有设备租约则 exit 2）；手动执行在本机有主机身份时以独立身份 `manual:<taskId>` 获取 `--device` 的设备租约，执行中按 TTL/3 续租，结束/失败在 `finally` 停止续租并释放；被占用 exit 2。见 DESIGN §13.109/§13.116/§13.166。
 - **常驻化（项目机）**：前台跑适合调试；长期运行交给系统服务管理器（工作目录＝服务仓库，自动拉起；`MOBILE_TESTING_DATABASE_URL` 须在该机环境可得）。systemd 最小示例（`/etc/systemd/system/mobile-testing-runner.service`，改 `User` 后 `systemctl daemon-reload && systemctl enable --now mobile-testing-runner`）：
 
   ```ini
@@ -357,25 +363,46 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
   <key>StandardErrorPath</key><string>/tmp/mobile-testing-runner.err.log</string>
   ```
 
-  注意：**必须显式绑定目标项目**（`--project /srv/projects/<项目>`；缺省会落在服务仓库自身）——启动日志 `[runner] 启动：… project=…` 可核对；中心 PG 以**服务级环境**提供（systemd `Environment=`／launchd `EnvironmentVariables`，**不要**放进项目 `.env`）；单项目**勿双开同名 runner**；产物令牌 `AOS_RUNNER_ARTIFACT_TOKEN` 可选（未设＝内网无鉴权，暴露范围与风险见上文与 DESIGN §13.109/§13.113）。
+  注意：**必须显式绑定目标项目**（`--project /srv/projects/<项目>`；缺省会落在服务仓库自身）——启动日志 `[runner] 启动：… project=…` 可核对；默认中心 PG 以**服务级环境**提供（systemd `Environment=`／launchd `EnvironmentVariables`，**不要**放进项目 `.env`）；配置 `AOS_RUNNER_CONTROL_URL` + `MOBILE_TESTING_RUNNER_JOB_TOKEN` 时改用中心 HTTP 控制面（本地 FileStore + suite 资源 API，不需要 PG）。单项目**勿双开同名 runner**；产物令牌 `AOS_RUNNER_ARTIFACT_TOKEN` 可选（未设＝内网无鉴权，暴露范围与风险见上文与 DESIGN §13.109/§13.113）。
 - **定时回归**：`node dist/cli.js suite schedule add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（runner 到点**自动建任务并执行**；引用按功能实时取最新用例集；**同名拒绝**；`list/show/enable/disable/remove` 管理，`--json` 可选）；`AOS_RUNNER_SCHEDULES=0` 关闭触发。注意：platforms 需与项目内至少一台 runner 的设备端匹配，否则任务会**逐窗口累积 pending**（在面板任务列表关注）。（**默认严格子集**下如此；开启 `AOS_RUNNER_PARTIAL_CLAIM=1` 后，**仅当无任一在线 runner 可全覆盖时**按交集端部分领取执行、缺端不补跑，见 DESIGN §13.116）面板项目页「定时回归」区块与任务页「来源」可见；面板计划表单的「端」按项目检测栈过滤（iOS 项目只显示 ios，Flutter/RN 显示双端，Web 不显示移动端表单）。见 DESIGN §13.110。
 
 ### 远端 Web 测试执行机（web-runner）
 
-网页测试任务（Excel 用例 + 安装包 + Maestro 脚本 zip）由 **host 级** `web-runner` 领取执行：不要求项目目录，只连中心 PG；与 `suite runner` 不同，`web-runner` 按**设备**并行（同一设备同一时刻一个任务，靠设备租约）。
+**服务端安装包**：中心构建 `npm run bundle:runner` 后生成三个平台包：
+
+```text
+dist-runner/mobile-testing-runner-<version>-win32-x64.zip
+dist-runner/mobile-testing-runner-<version>-darwin-arm64.tar.gz
+dist-runner/mobile-testing-runner-<version>-linux-x64.tar.gz
+```
+
+面板「设备 → 接入执行机」按平台下载，也可直接：
+
+```text
+GET /panel/runner-bundle?platform=win32&arch=x64
+GET /panel/runner-bundle?platform=darwin&arch=arm64
+GET /panel/runner-bundle?platform=linux&arch=x64
+```
+
+需面板鉴权。每个包都含 `dist` + `node_modules` + `runner.cmd`/`runner.sh` + `RUNNER.md`；Windows 解压后直接运行 `runner.cmd`，无需再 npm install。Node.js、adb、Maestro 仍需本机安装。自定义目录用 `AOS_RUNNER_BUNDLE_DIR`。构建产物在 `dist-runner/`（gitignore）。
+
+网页测试任务（Excel 用例 + 安装包 + Maestro 脚本 zip）由 **host 级** `web-runner` 领取执行：不要求项目目录；与 `suite runner` 不同，`web-runner` 按**设备**并行（同一设备同一时刻一个任务，靠设备租约）。配置 `AOS_RUNNER_CONTROL_URL`（或 `--control-url`）后走中心 HTTP **runner 控制面**（`/panel/api/runners/*`，ADR-0012），执行机不需要也不应持有中心 PG 连接串；未配置控制面时保留直连中心 PG 的兼容路径。
 
 ```bash
-node dist/cli.js web-runner --name <n> [--panel-base-url <url>] [--artifact-base-url <url>] [--once]
-# 需要中心 PG（MOBILE_TESTING_DATABASE_URL，与 suite 其余命令同口径）；--once 只跑一轮
-# 需要中心基址（--panel-base-url 或 AOS_PANEL_BASE_URL）与 AOS_RUNNER_JOB_TOKEN（≥16）
+node dist/cli.js web-runner --name <n> [--control-url <url>] [--panel-base-url <url>] [--artifact-base-url <url>] [--once]
+# 推荐：AOS_RUNNER_CONTROL_URL=http://<中心>:8765（或 --control-url），设置后不需要 MOBILE_TESTING_DATABASE_URL
+# 回退：未设置控制面时仍可用中心 PG（MOBILE_TESTING_DATABASE_URL）
+# 两种模式都需要中心基址与 MOBILE_TESTING_RUNNER_JOB_TOKEN（≥16）；--once 只跑一轮
 ```
 
 - **能力与选机**：adb 设备 + **iOS 模拟器**；`maestro` 必须可用（`AOS_MAESTRO_PATH` 可覆盖解析）。**iOS Maestro 只允许模拟器**（`deviceKind:"simulator"`；`any`/真机在下发阶段被 `ios-maestro-requires-simulator` 拒绝）。**iOS 真机只支持 `executionMode=llm`（Plan 2，目前不可执行）**。中心按平台/设备形态/工具/型号/系统版本选机并**预占租约**（TTL＝`AOS_DEVICE_LEASE_MS`，默认 90s）；执行前 runner 二次盘点，设备消失/不可用/被他人租约占住就跳过并释放领取与租约。
-- **中心访问令牌**：spec / 资产下载 / 结果上传只认 `AOS_RUNNER_JOB_TOKEN`（≥16 字符，中心与 runner 配同一值；未配置/过短 503，缺失或错误 401），且请求必须带 `X-AOS-Host-Id`＝该 job 的领取/目标主机（否则 403）。该 token 不放行其它路径，也不回退管理员令牌。缺中心基址/令牌时 `web-runner` 启动即 exit 2。
-- **环境变量**：`AOS_PANEL_BASE_URL`（中心基址，或 `--panel-base-url`）、`AOS_RUNNER_JOB_TOKEN`、`AOS_RUNNER_WORK_DIR`（默认 `~/.aos/web-runner`）、`AOS_RUNNER_CACHE_DIR`（默认 `<workRoot>/cache`）、`AOS_RUNNER_TTL_MS`（执行机在线判定，90000）、`AOS_DEVICE_LEASE_MS`（预占/续租，90000）、`AOS_RUNNER_HEARTBEAT_MS`（心跳，30000）、`AOS_RUNNER_POLL_MS`（空闲轮询，5000）、`AOS_WEB_JOB_TIMEOUT_MS`（Maestro 执行超时，900000）、`AOS_HOST_ID`（主机身份）。
+- **设备租约令牌**：web claim 返回 `leaseToken`（HMAC，绑定 host/task/serial）；续租/释放必须回传，服务端常数时间比较。它与控制面鉴权 token 分离，避免仅凭 taskId/serial 释放租约。
+- **token 文件写入**：`node scripts/write-runner-tokens.mjs --file ~/.aos/runner-tokens.json < tokens.json` 会校验 hostId/token（≥16）、以 0600 临时文件 + rename 原子替换；非法输入 exit 2 且不覆盖原文件。
+- **中心访问令牌**：控制面（心跳/领取/租约/任务生命周期）与 spec / 资产下载 / 结果上传优先认每主机 token（中心 `AOS_RUNNER_HOST_TOKENS=[{hostId,token}]` 或 `AOS_RUNNER_HOST_TOKENS_FILE` 文件（权限 0600、mtime 热加载、优先于 env；建议临时文件+rename 原子替换）；`X-AOS-Host-Id` 必须匹配 token 所属主机，否则 403；token ≥16），未配置时回退全局 `MOBILE_TESTING_RUNNER_JOB_TOKEN`（≥16 字符，中心与 runner 配同一值；未配置/过短 503，缺失或错误 401），且请求必须带 `X-AOS-Host-Id`（控制面以 token + host 绑定；job 数据面要求它等于该 job 的领取/目标主机，否则 403）。该 token 不放行其它路径，也不回退管理员令牌。缺中心基址/令牌时 `web-runner` 启动即 exit 2。
+- **环境变量**：`AOS_RUNNER_CONTROL_URL`（中心 HTTP 控制面，或 `--control-url`；web-runner/suite runner 设置后不连 PG）、`AOS_PANEL_BASE_URL`（中心基址，缺省回退控制面）、`MOBILE_TESTING_RUNNER_JOB_TOKEN`（或中心配置每主机 `AOS_RUNNER_HOST_TOKENS` 后用该主机 token）、`AOS_RUNNER_TLS_CA`/`AOS_RUNNER_TLS_CERT`/`AOS_RUNNER_TLS_KEY`（中心 HTTPS/mTLS）、`AOS_RUNNER_WORK_DIR`（默认 `~/.aos/web-runner`）、`AOS_RUNNER_CACHE_DIR`（默认 `<workRoot>/cache`）、`AOS_RUNNER_HTTP_TIMEOUT_MS`（控制面单次请求超时 15000；数据面 spec/资产/结果默认 300000；新名优先）、`AOS_RUNNER_INSTANCE_ID`（runner 自动分配，勿手工复用）、`AOS_RUNNER_TTL_MS`（执行机在线判定，90000）、`AOS_DEVICE_LEASE_MS`（预占/续租，90000）、`AOS_RUNNER_HEARTBEAT_MS`（心跳，30000）、`AOS_RUNNER_POLL_MS`（空闲轮询，5000）、`AOS_WEB_JOB_TIMEOUT_MS`（Maestro 执行超时，900000）、`AOS_HOST_ID`（主机身份）。
 - **工作目录与资产**：job 目录＝`<workRoot>/<project>/<jobId>`；资产按 sha256 进本机 CAS（同内容复用），`secret:true` 的 materials 只落 `secrets/`（0600，不进 CAS）；Excel 只作附件；脚本 zip 解压到 `job/flows`，顶层 `<caseId>.yaml` 即一个用例（`subflows/` 不算用例）；iOS `.ipa` 会先解压出 `Payload/*.app`（缺失/多个直接失败），再用 simctl/devicectl 安装 `.app`。
 - **执行链路**：内置执行器依次完成「拉 spec → 下载资产（sha256 校验）→ 安装 → Maestro → 上传结果」；任一步（含结果上传）失败都会抛错，任务由 runner 释放回池重试（次数上限见下），**不会本地写成功**；上传成功后清理 job 目录（CAS 缓存保留），子进程只拿 PATH/工具白名单 env（不传 runner 令牌/DB URL/KEY）；Maestro 超时从主进程的 `AOS_WEB_JOB_TIMEOUT_MS` 读取后显式传入子进程（变量本身不进入子环境）。
-- **次数/过滤/回收**：`jobSpec.retry>0` 时上限＝retry+1，否则 `AOS_RUNNER_MAX_ATTEMPTS`（默认 3）；达上限写 `failed`（`assignmentError.code=max-attempts`）不再回池。`caseFilter.caseIds` 按 flow stem 过滤（`modules` 暂不支持）；失联领取按 `AOS_RUNNER_STALE_CLAIM_MS`（默认 15min）回收；队列暂停 host 不参与选机/回池。结果为逐用例 `PASS/FAIL/SKIP/ERROR`，中心聚合后写 `result.json` 并回写 Excel 工作副本（`执行｜结果/设备与系统/安装包/开始时间/结束时间/traceId`），**原件 sha256 不变**；空结果/超时/非 0 退出绝不假 PASS（上传 `execution.status:"error"` → 中心 `taskStatus:"error"`/`dbStatus:"failed"`）。`executionMode=llm` 目前返回 `llm-execution-not-wired`——**LLM 执行与计费不在当前版本**（Plan 2/4）。
+- **次数/过滤/回收**：`jobSpec.retry>0` 时上限＝retry+1，否则 `AOS_RUNNER_MAX_ATTEMPTS`（默认 3）；达上限写 `failed`（`assignmentError.code=max-attempts`）不再回池。`caseFilter.caseIds` 按 flow stem 过滤（`modules` 暂不支持）；失联领取按 `MOBILE_TESTING_RUNNER_STALE_CLAIM_MS`（默认 15min）回收；队列暂停 host 不参与选机/回池。结果为逐用例 `PASS/FAIL/SKIP/ERROR`，中心聚合后写 `result.json` 并回写 Excel 工作副本（`执行｜结果/设备与系统/安装包/开始时间/结束时间/traceId`），**原件 sha256 不变**；空结果/超时/非 0 退出绝不假 PASS（上传 `execution.status:"error"` → 中心 `taskStatus:"error"`/`dbStatus:"failed"`）。`executionMode=llm` 目前返回 `llm-execution-not-wired`——**LLM 执行与计费不在当前版本**（Plan 2/4）。
 - **脚本生成**：`node dist/cli.js web scripts generate --project <dir> --excel <assetId> --package <assetId> --platform <android|ios> [--app-id <id>] [--strict|--assume-prepared] [--dry-run] [--json]`。从项目 Excel/CSV 资产（用已保存列映射，缺省建议映射）生成 Maestro flow + `manifest.json`，写成不可变 `scripts` 资产（metadata 绑定 Excel/包/平台/生成器版本/断言哈希；同输入幂等复用）。`appId` 缺省用项目 `appPackage`；`--dry-run` 只出 manifest 不写资产；`strict`（默认）下前置条件非空即 unresolved，`assume-prepared` 保留前台/登录态并标注假设。面板「测试资产」页同一表单调用 `POST /panel/api/projects/scripts/generate`（maintainer+）。下发前预检：Maestro 无脚本 → 400 `script-set-missing`；脚本 `unresolved>0` 未勾选“允许部分下发” → 409 `script-set-incomplete`；`allowStaleScript` 也需显式勾选。详见 DESIGN §13.277–§13.280。
 - **Excel/CSV 判定与写回**：`.xlsx` 与 `.csv` 都可作为用例源（CSV 原件只读，自动生成 XLSX 工作副本与结果 CSV；GB18030/UTF-8、引号/单元格内换行保真）。工作副本在原件列后写 `AOS Result` / `IOS Result`（只写本平台一列）、8 列摘要，并在末尾写隐藏列 `__aos_assertions`（人工 Expected Result 归一化后的断言 JSON）。**PASS 需要 flow 通过 + 断言文档有可执行断言且无 manual/ambiguous + runner 上报 `assertionCount>0`**；否则写 `UNVERIFIED`，任务为 `partial`，不会 `completed`。Excel 中属于本次范围但结果缺失的用例写 `SKIP（未执行）`，不保留上一轮 PASS。详见 DESIGN §13.266–§13.268。
 

@@ -114,6 +114,9 @@ test("devices page: lists idle, busy and offline devices", async (t) => {
   const { store, task, workspace } = await setup(t);
   const html = await page(store, workspace);
   assert.match(html, /<h1>设备<\/h1>/);
+  assert.match(html, /c-device-layout/);
+  assert.match(html, /c-filterbar/);
+  assert.match(html, /接入执行机/);
   assert.match(html, /href="\/panel\?section=devices"/);
   assert.match(html, /emulator-5554/);
   assert.match(html, /emulator-5556/);
@@ -176,4 +179,16 @@ test("devices page: json exposes counts and device state without secrets", async
   assert.equal(body.counts.offline, 1);
   assert.equal(body.devices.find((entry) => entry.serial === "emulator-5556").jobTaskId.length > 0, true);
   assert.equal(JSON.stringify(body).includes("AOS_RUNNER_JOB_TOKEN"), false);
+});
+
+
+test("devices page: 空状态使用宽布局与新版 runner token 名称", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "aos-web-devices-empty-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const store = new MemoryStore();
+  const html = await page(store, workspace);
+  assert.match(html, /c-device-empty/);
+  assert.match(html, /还没有执行机注册/);
+  assert.match(html, /MOBILE_TESTING_RUNNER_JOB_TOKEN/);
+  assert.doesNotMatch(html, /AOS_RUNNER_JOB_TOKEN/);
 });

@@ -797,7 +797,7 @@ test("回收：主循环每轮调用 releaseStaleClaims（now-TTL / now-900000�
   assert.equal(claimCalls[0].allowPartial, false);
 });
 
-test("回收：AOS_RUNNER_STALE_CLAIM_MS 正数透传（含 TTL 覆盖，勿回退默认）", async () => {
+test("回收：MOBILE_TESTING_RUNNER_STALE_CLAIM_MS 正数透传（含 TTL 覆盖，勿回退默认）", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;
   const calls = [];
@@ -807,7 +807,7 @@ test("回收：AOS_RUNNER_STALE_CLAIM_MS 正数透传（含 TTL 覆盖，勿回�
   };
   const { options } = makeOptions(runtime, inv, {
     now: () => RECLAIM_NOW,
-    env: { AOS_RUNNER_STALE_CLAIM_MS: "5000", AOS_RUNNER_TTL_MS: "30000" }
+    env: { MOBILE_TESTING_RUNNER_STALE_CLAIM_MS: "5000", AOS_RUNNER_TTL_MS: "30000" }
   });
   const code = await runRunnerAgent(options);
   assert.equal(code, 0);
@@ -1049,7 +1049,7 @@ test("执行失败释放返回 false → errorLog（守卫释放未生效）＋ 
   );
 });
 
-test("回收：非法 AOS_RUNNER_STALE_CLAIM_MS → 回退 900000（非关闭）", async () => {
+test("回收：非法旧名 AOS_RUNNER_STALE_CLAIM_MS → 兼容回退 900000（非关闭）", async () => {
   const { runtime, store, inventory: inv } = await setupFixture();
   const rootPath = runtime.project.rootDir;
   const calls = [];

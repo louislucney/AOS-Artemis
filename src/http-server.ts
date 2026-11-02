@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
+import { createSecureServer as createHttp2SecureServer, type Http2SecureServer } from "node:http2";
+import { type Server as HttpsServer } from "node:https";
 import path from "node:path";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -13,6 +15,7 @@ import {
 } from "./auth.js";
 import { defaultUsersFile, HttpUserDirectory } from "./auth/users.js";
 import { CLI_NAME } from "./brand.js";
+import { httpTokenFrom } from "./env-tokens.js";
 import { loadProject, defaultArtemisRepo, emptyConfig } from "./config/loader.js";
 import { resolveDepsSource } from "./artemis/bootstrap.js";
 import { startBridge } from "./figma/bridge.js";
@@ -24,6 +27,12 @@ import {
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
 import { handleRunnerJobRequest, matchRunnerJobPath } from "./panel/actions.js";
+import { matchRunnerControlPath } from "./runner/control/contract.js";
+import {
+  handleRunnerControlRequest,
+  runnerControlBodyLimit
+} from "./runner/control/http.js";
+import { handleSuiteControlRequest } from "./runner/control/suite-http.js";
 import { panelRoleFrom, panelRoleScopes } from "./panel/roles.js";
 import {
   MAX_PANEL_ASSET_UPLOAD_BYTES,
@@ -55,16 +64,33 @@ import { sweepStaleTasks, SWEEP_INTERVAL_MS } from "./tasks/sweeper.js";
 import { handleUsageRequest } from "./usage/web.js";
 import { AOS_MCP_VERSION, errorMessage, isBuildStale, log, maskSecret } from "./util.js";
 
+export interface HttpTlsOptions {
+  cert: string | Buffer;
+  key: string | Buffer;
+  ca?: string | Buffer;
+  crl?: string | Buffer;
+  /** 要求客户端证书（mTLS）。 */
+  requestClientCert?: boolean;
+  /** 文件路径：存在时按 reloadMs 热加载证书/CA/CRL。 */
+  certPath?: string;
+  keyPath?: string;
+  caPath?: string;
+  crlPath?: string;
+  reloadMs?: number;
+}
+
 export interface HttpServerOptions {
   host?: string;
   port?: number;
   workspaceRoot?: string;
   /** 测试/嵌入：复用外部 store（缺省由 RuntimeHost.prepare 自建）。 */
   store?: ProjectStore;
+  /** 测试/嵌入：显式 TLS 配置；缺省从 AOS_HTTP_TLS_* 解析。 */
+  tls?: HttpTlsOptions;
 }
 
 export interface AosHttpHandle {
-  httpServer: HttpServer;
+  httpServer: HttpServer | HttpsServer | Http2SecureServer;
   port: number;
   workspaceRoot: string;
   close(): Promise<void>;
@@ -158,10 +184,49 @@ function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unkn
   });
 }
 
+function resolveHttpTls(env: NodeJS.ProcessEnv): HttpTlsOptions | undefined {
+  const certPath = (env.AOS_HTTP_TLS_CERT ?? "").trim();
+  const keyPath = (env.AOS_HTTP_TLS_KEY ?? "").trim();
+  if (certPath === "" && keyPath === "") return undefined;
+  if (certPath === "" || keyPath === "") {
+    throw new Error("AOS_HTTP_TLS_CERT 与 AOS_HTTP_TLS_KEY 必须同时配置");
+  }
+  const caPath = (env.AOS_HTTP_TLS_CA ?? "").trim();
+  const crlPath = (env.AOS_HTTP_TLS_CRL ?? "").trim();
+  const requestClientCert = /^(1|true|yes)$/i.test((env.AOS_HTTP_MTLS ?? "").trim());
+  if (requestClientCert && caPath === "") {
+    throw new Error("AOS_HTTP_MTLS=1 需要同时配置 AOS_HTTP_TLS_CA");
+  }
+  const reloadText = (env.AOS_HTTP_TLS_RELOAD_MS ?? "").trim();
+  const reloadRaw = reloadText === "" ? Number.NaN : Number(reloadText);
+  const readTls = (label: string, file: string): Buffer => {
+    try {
+      return fs.readFileSync(file);
+    } catch (error) {
+      throw new Error(
+        `读取 ${label} 失败（${file}）：${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  };
+  return {
+    cert: readTls("AOS_HTTP_TLS_CERT", certPath),
+    key: readTls("AOS_HTTP_TLS_KEY", keyPath),
+    ...(caPath === "" ? {} : { ca: readTls("AOS_HTTP_TLS_CA", caPath) }),
+    ...(crlPath === "" ? {} : { crl: readTls("AOS_HTTP_TLS_CRL", crlPath) }),
+    requestClientCert,
+    certPath,
+    keyPath,
+    ...(caPath === "" ? {} : { caPath }),
+    ...(crlPath === "" ? {} : { crlPath }),
+    ...(Number.isFinite(reloadRaw) && reloadRaw >= 0 ? { reloadMs: Math.floor(reloadRaw) } : {})
+  };
+}
+
 /** Stateless streamable-HTTP MCP endpoint: POST /mcp/<project>.
  * Each project maps to ${workspaceRoot}/<project> with its own runtime
  * (store association, artemis child process, LLM entries). */
 export async function createAosHttpServer(options: HttpServerOptions = {}): Promise<AosHttpHandle> {
+  const tls = options.tls ?? resolveHttpTls(process.env);
   const host = options.host ?? process.env.AOS_HTTP_HOST ?? "127.0.0.1";
   const port = options.port ?? Number(process.env.AOS_HTTP_PORT ?? 8765);
   const requestedWorkspace = path.resolve(
@@ -173,7 +238,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   } catch {
     workspaceRoot = requestedWorkspace;
   }
-  const token = (process.env.AOS_HTTP_TOKEN ?? "").trim();
+  const token = httpTokenFrom(process.env);
   const authUsers = parseAuthUsers(process.env.AOS_HTTP_USERS);
   if (authUsers.errors.length > 0) {
     throw new AuthConfigError(`AOS_HTTP_USERS 配置非法：${authUsers.errors.join("；")}`);
@@ -190,14 +255,14 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
 
   if (!isLoopbackHost(host) && !authEnabled && !allowInsecure) {
     throw new InsecureBindRefusedError(
-      `拒绝在非 loopback 主机（${host}）上无鉴权启动 HTTP 服务：请设置 AOS_HTTP_TOKEN` +
+      `拒绝在非 loopback 主机（${host}）上无鉴权启动 HTTP 服务：请设置 MOBILE_TESTING_HTTP_TOKEN（兼容 AOS_HTTP_TOKEN）` +
         `（静态令牌）或 AOS_HTTP_USERS（命名令牌），或显式 AOS_HTTP_ALLOW_INSECURE=1` +
         `（仅限可信网络，不安全）。`
     );
   }
   if (allowInsecure && !isLoopbackHost(host) && !authEnabled) {
     log(
-      `WARN：非 loopback 主机（${host}）且未设置 AOS_HTTP_TOKEN/AOS_HTTP_USERS，已按 AOS_HTTP_ALLOW_INSECURE=1` +
+      `WARN：非 loopback 主机（${host}）且未设置 MOBILE_TESTING_HTTP_TOKEN/AOS_HTTP_USERS，已按 AOS_HTTP_ALLOW_INSECURE=1` +
         ` 放行（无鉴权，仅限可信网络）。`,
       "warn"
     );
@@ -293,10 +358,70 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   // 认证闩锁：一旦启用（启动时或运行期文件出现），清空用户/删除文件也不再放开匿名访问。
   let authRequired = authEnabled;
 
-  const httpServer = createServer((req, res) => {
+  const handleRequest = (req: IncomingMessage, res: import("node:http").ServerResponse): void => {
     void (async () => {
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
+
+        if (url.pathname.startsWith("/panel/api/runners/suite/")) {
+          let suiteBody: unknown;
+          if (req.method === "POST" || req.method === "PATCH") {
+            try {
+              suiteBody = await readBody(req, runnerControlBodyLimit());
+            } catch (error) {
+              if (error instanceof BodyTooLargeError) {
+                res.writeHead(413, { "Content-Type": "application/json" });
+                res.end('{"ok":false,"code":"body-too-large","error":"request body too large"}');
+                return;
+              }
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end('{"ok":false,"code":"invalid-body","error":"invalid request body"}');
+              return;
+            }
+          }
+          const suiteResponse = await handleSuiteControlRequest({
+            method: req.method ?? "GET",
+            url,
+            headers: req.headers,
+            store,
+            env: process.env,
+            ...(suiteBody === undefined ? {} : { body: suiteBody })
+          });
+          res.writeHead(suiteResponse.status, { "Content-Type": suiteResponse.contentType });
+          res.end(req.method === "HEAD" ? undefined : suiteResponse.body);
+          return;
+        }
+
+        if (matchRunnerControlPath(url.pathname) !== null) {
+          let controlBody: unknown;
+          if (req.method === "POST") {
+            try {
+              controlBody = await readBody(req, runnerControlBodyLimit());
+            } catch (error) {
+              if (error instanceof BodyTooLargeError) {
+                res.writeHead(413, { "Content-Type": "application/json" });
+                res.end('{"ok":false,"code":"body-too-large","error":"request body too large"}');
+                return;
+              }
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end('{"ok":false,"code":"invalid-body","error":"invalid request body"}');
+              return;
+            }
+          }
+          const controlResponse = await handleRunnerControlRequest({
+            method: req.method ?? "GET",
+            url,
+            headers: req.headers,
+            store,
+            env: process.env,
+            ...(controlBody === undefined ? {} : { body: controlBody })
+          });
+          res.writeHead(controlResponse.status, {
+            "Content-Type": controlResponse.contentType
+          });
+          res.end(req.method === "HEAD" ? undefined : controlResponse.body);
+          return;
+        }
 
         const runnerRoute = matchRunnerJobPath(url.pathname);
         if (runnerRoute !== null) {
@@ -417,6 +542,105 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           return;
         }
 
+        if (
+          (req.method === "GET" || req.method === "HEAD") &&
+          url.pathname === "/panel/runner-bundle"
+        ) {
+          const bundleDir = path.resolve(
+            (process.env.AOS_RUNNER_BUNDLE_DIR ?? "").trim() ||
+              path.join(process.cwd(), "dist-runner")
+          );
+          type BundleEntry = {
+            platform: string;
+            arch: string;
+            filename: string;
+            size: number;
+            sha256: string;
+          };
+          let entries: BundleEntry[] = [];
+          try {
+            const parsed = JSON.parse(
+              fs.readFileSync(path.join(bundleDir, "manifest.json"), "utf8")
+            ) as unknown;
+            if (Array.isArray(parsed)) {
+              entries = parsed.filter(
+                (entry): entry is BundleEntry =>
+                  typeof entry === "object" &&
+                  entry !== null &&
+                  typeof (entry as BundleEntry).platform === "string" &&
+                  typeof (entry as BundleEntry).arch === "string" &&
+                  typeof (entry as BundleEntry).filename === "string" &&
+                  path.basename((entry as BundleEntry).filename) === (entry as BundleEntry).filename
+              );
+            }
+          } catch {
+            entries = [];
+          }
+          if (entries.length === 0) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                ok: false,
+                error: "runner bundle 尚未构建：请先运行 npm run bundle:runner"
+              })
+            );
+            return;
+          }
+          const platform = (url.searchParams.get("platform") ?? "").trim();
+          const arch = (url.searchParams.get("arch") ?? "").trim();
+          const selected =
+            platform !== "" && arch !== ""
+              ? entries.find((entry) => entry.platform === platform && entry.arch === arch)
+              : entries.length === 1
+                ? entries[0]
+                : undefined;
+          if (selected === undefined) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                ok: false,
+                error: "请指定 platform 与 arch",
+                available: entries.map(({ platform: p, arch: a, filename, size, sha256 }) => ({
+                  platform: p,
+                  arch: a,
+                  filename,
+                  size,
+                  sha256,
+                  url: `/panel/runner-bundle?platform=${encodeURIComponent(p)}&arch=${encodeURIComponent(a)}`
+                }))
+              })
+            );
+            return;
+          }
+          const file = path.join(bundleDir, selected.filename);
+          const stat = fs.statSync(file);
+          const contentType = selected.filename.endsWith(".zip")
+            ? "application/zip"
+            : "application/gzip";
+          res.writeHead(200, {
+            "Content-Type": contentType,
+            "Content-Length": String(stat.size),
+            "Content-Disposition": `attachment; filename="${selected.filename}"`,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff"
+          });
+          if (req.method === "HEAD") {
+            res.end();
+            return;
+          }
+          await new Promise<void>((resolve) => {
+            const stream = fs.createReadStream(file);
+            stream.on("error", () => {
+              if (!res.writableEnded) res.destroy();
+              resolve();
+            });
+            res.on("close", resolve);
+            stream.on("end", resolve);
+            stream.pipe(res);
+          });
+          return;
+        }
+
         if (req.method === "GET" && url.pathname === "/panel/artifact") {
           const response = await handleArtifactRequest(url, panelDeps, {
             accept: req.headers.accept ?? null
@@ -432,7 +656,10 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             url.pathname === "/panel/api/hosts")
         ) {
           const panelResponse = await handlePanelRequest(url, panelDepsFor(requestIdentity));
-          res.writeHead(panelResponse.status, { "Content-Type": panelResponse.contentType });
+          res.writeHead(panelResponse.status, {
+            "Content-Type": panelResponse.contentType,
+            ...(url.pathname === "/panel" ? { "Cache-Control": "no-store" } : {})
+          });
           res.end(panelResponse.body);
           return;
         }
@@ -710,7 +937,46 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
         }
       }
     })();
-  });
+  };
+
+  const secureOptions = tls === undefined
+    ? undefined
+    : {
+        cert: tls.cert,
+        key: tls.key,
+        ...(tls.ca === undefined ? {} : { ca: tls.ca }),
+        ...(tls.crl === undefined ? {} : { crl: tls.crl }),
+        requestCert: tls.requestClientCert === true,
+        rejectUnauthorized: tls.requestClientCert === true,
+        allowHTTP1: true
+      };
+  const httpServer = tls === undefined
+    ? createServer(handleRequest)
+    : createHttp2SecureServer(secureOptions!, handleRequest as never);
+
+  let tlsReloadTimer: NodeJS.Timeout | null = null;
+  if (
+    tls !== undefined &&
+    tls.certPath !== undefined &&
+    tls.keyPath !== undefined &&
+    tls.reloadMs !== 0
+  ) {
+    const reload = (): void => {
+      try {
+        const next = {
+          cert: fs.readFileSync(tls.certPath!),
+          key: fs.readFileSync(tls.keyPath!),
+          ...(tls.caPath === undefined ? {} : { ca: fs.readFileSync(tls.caPath) }),
+          ...(tls.crlPath === undefined ? {} : { crl: fs.readFileSync(tls.crlPath) })
+        };
+        (httpServer as HttpsServer).setSecureContext(next);
+      } catch (error) {
+        log(`TLS 证书热加载失败（保留旧证书）：${errorMessage(error)}`);
+      }
+    };
+    tlsReloadTimer = setInterval(reload, tls.reloadMs ?? 30_000);
+    tlsReloadTimer.unref();
+  }
 
   await new Promise<void>((resolve, reject) => {
     httpServer.once("error", (error) => reject(error));
@@ -718,7 +984,9 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   });
   const address = httpServer.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
-  log(`${CLI_NAME} HTTP 已启动: http://${host}:${actualPort}/mcp/<project>（workspace: ${workspaceRoot}）`);
+  log(
+    `${CLI_NAME} HTTP 已启动: ${tls === undefined ? "http" : "https"}://${host}:${actualPort}/mcp/<project>（workspace: ${workspaceRoot}${tls?.requestClientCert === true ? "，mTLS" : ""}${tls === undefined ? "" : "，HTTP/2"}）`
+  );
 
   const runCancellationSweep = (): void => {
     void sweepStaleTasks({ store, allHosts: true })
@@ -732,6 +1000,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   sweepTimer.unref?.();
 
   const close = async (): Promise<void> => {
+    if (tlsReloadTimer !== null) clearInterval(tlsReloadTimer);
     clearInterval(sweepTimer);
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     runtimes.clear();

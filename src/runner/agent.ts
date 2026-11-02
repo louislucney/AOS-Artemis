@@ -96,7 +96,9 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
       };
     });
   const runnerTtlMs = runnerTtlFrom(env);
-  const staleClaimMs = staleClaimMsFromEnv(env.AOS_RUNNER_STALE_CLAIM_MS);
+  const staleClaimMs = staleClaimMsFromEnv(
+    env.MOBILE_TESTING_RUNNER_STALE_CLAIM_MS ?? env.AOS_RUNNER_STALE_CLAIM_MS
+  );
   const partialClaim = env.AOS_RUNNER_PARTIAL_CLAIM === "1";
   const envRefreshMs = intFromEnv(env.AOS_HOST_ENV_REFRESH_MS, 600_000);
   const schedulesEnabled =

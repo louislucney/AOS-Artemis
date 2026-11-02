@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -59,6 +59,7 @@ import {
   type WebDispatchRequirements,
   type WebToolName
 } from "../web/dispatch.js";
+import { authenticateRunner } from "../runner/control/auth.js";
 import { runnerTtlFrom } from "../runner/status.js";
 import { applyWebJobManualStatus, ingestWebJobResult, WebResultError } from "../web/results.js";
 import {
@@ -217,43 +218,13 @@ function headerValue(
   return value.trim();
 }
 
-function tokenDigest(value: string): Buffer {
-  return createHash("sha256").update(value).digest();
-}
-
-/** 常数时间比较（长度固定为 32 字节哈希摘要）。 */
-function runnerTokenMatches(provided: string, expected: string): boolean {
-  if (provided === "" || expected === "") return false;
-  return timingSafeEqual(tokenDigest(provided), tokenDigest(expected));
-}
-
-function bearerToken(headers: Record<string, string | string[] | undefined>): string {
-  const authorization = headerValue(headers, "authorization");
-  const match = /^Bearer\s+(.+)$/i.exec(authorization);
-  return match?.[1]?.trim() ?? "";
-}
-
 function runnerJobAuthResponse(
   headers: Record<string, string | string[] | undefined>,
   env: NodeJS.ProcessEnv
 ): RunnerJobResponse | null {
-  const expected = (env.AOS_RUNNER_JOB_TOKEN ?? "").trim();
-  if (expected === "") {
-    return runnerJson(503, {
-      ok: false,
-      code: "runner-token-unset",
-      error: "中心未配置 AOS_RUNNER_JOB_TOKEN，拒绝 runner 请求（不会回退管理员令牌）"
-    });
-  }
-  if (expected.length < 16) {
-    return runnerJson(503, {
-      ok: false,
-      code: "runner-token-too-short",
-      error: "AOS_RUNNER_JOB_TOKEN 至少需要 16 个字符"
-    });
-  }
-  if (!runnerTokenMatches(bearerToken(headers), expected)) {
-    return runnerJson(401, { ok: false, code: "unauthorized", error: "缺少或无效的 runner token" });
+  const auth = authenticateRunner(headers, env);
+  if (!auth.ok) {
+    return runnerJson(auth.status, { ok: false, code: auth.code, error: auth.error });
   }
   return null;
 }
@@ -331,6 +302,20 @@ export async function handleRunnerJobRequest(
     });
   }
   if (route.kind === "results") {
+    const claimedInstanceId = job.task.claimedInstanceId ?? "";
+    const instanceId =
+      headerValue(input.headers, "x-mobile-testing-instance-id") ||
+      headerValue(input.headers, "x-aos-instance-id");
+    if (claimedInstanceId !== "" && instanceId !== claimedInstanceId) {
+      return runnerJson(409, {
+        ok: false,
+        code: "instance-mismatch",
+        error:
+          instanceId === ""
+            ? `job ${route.jobId} 已绑定执行实例 ${claimedInstanceId}，结果上传缺少 X-Mobile-Testing-Instance-Id`
+            : `执行实例 ${instanceId} 不是 job ${route.jobId} 的当前实例 ${claimedInstanceId}`
+      });
+    }
     const contentType = (input.contentType ?? headerValue(input.headers, "content-type")).toLowerCase();
     if (contentType !== "" && !contentType.includes("application/json")) {
       return runnerJson(415, {

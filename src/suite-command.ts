@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,7 +10,11 @@ import {
   loadApiErrorCatalog,
   matchApiErrors
 } from "./artemis/api-errors.js";
-import { defaultBuildRuntime, type CliRuntimeBundle } from "./cli-runtime.js";
+import {
+  buildRemoteSuiteRuntime,
+  defaultBuildRuntime,
+  type CliRuntimeBundle
+} from "./cli-runtime.js";
 import { isMigrationIncompleteError } from "./db/index.js";
 import { hostStrictFrom } from "./host/strict.js";
 import { isHostOnline, precheckTask } from "./console/dispatch.js";
@@ -483,7 +488,11 @@ async function suiteRunTask(
     io.errorLog("--task 与 --tests 不能同用（task 引用用例集存档，--tests 指定单一用例文件）");
     return 2;
   }
-  const task = await runtime.store.getRegressionTask(runtime.project.rootDir, taskId);
+  const bundle =
+    typeof runtime.store.getTaskBundle === "function"
+      ? await runtime.store.getTaskBundle(runtime.project.rootDir, taskId).catch(() => null)
+      : null;
+  const task = bundle?.task ?? (await runtime.store.getRegressionTask(runtime.project.rootDir, taskId));
   if (!task) {
     io.errorLog(`未找到回归任务 ${taskId}`);
     return 2;
@@ -529,7 +538,7 @@ async function suiteRunTask(
     say("注意: --fail-on-uncovered 在 task 模式忽略（子集天然不完整）");
   }
 
-  const sets = await runtime.store.listCaseSets(runtime.project.rootDir);
+  const sets = bundle?.caseSets ?? (await runtime.store.listCaseSets(runtime.project.rootDir));
   const setById = new Map(sets.map((set) => [set.id, set]));
   const resolvedRefs: ResolvedTaskRef[] = [];
   for (const ref of task.refs) {
@@ -3319,8 +3328,11 @@ async function suiteRunnerCommand(
   buildRuntime: (projectDir: string | null) => Promise<CliRuntimeBundle>
 ): Promise<number> {
   const env = io.env ?? process.env;
-  if (runtime.store.kind !== "postgres") {
-    io.errorLog("runner 需要中心 PG（文件台账不支持多进程）；请配置 MOBILE_TESTING_DATABASE_URL");
+  const controlUrl = (env.AOS_RUNNER_CONTROL_URL ?? "").trim();
+  if (runtime.store.kind !== "postgres" && controlUrl === "") {
+    io.errorLog(
+      "runner 需要中心 PG（文件台账不支持多进程）；请配置 MOBILE_TESTING_DATABASE_URL 或 AOS_RUNNER_CONTROL_URL"
+    );
     return 2;
   }
   const pollRaw = flags.get("poll-ms");
@@ -3385,6 +3397,7 @@ async function suiteRunnerCommand(
     return await runRunnerAgent({
       projectDir: flags.get("project"),
       name,
+      instanceId: (env.AOS_RUNNER_INSTANCE_ID ?? "").trim() || undefined,
       pollMs: resolvedPollMs,
       heartbeatMs: resolvedHeartbeatMs,
       once: flags.bool("once"),
@@ -3396,7 +3409,10 @@ async function suiteRunnerCommand(
         seam.executeSuite ??
         ((argv, options) =>
           runSuiteCommand(argv, {
-            buildRuntime,
+            buildRuntime:
+              controlUrl === ""
+                ? buildRuntime
+                : async () => ({ runtime, dispose: async (): Promise<void> => {} }),
             log: io.log,
             errorLog: io.errorLog,
             env,
@@ -4140,7 +4156,22 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return 2;
   }
 
-  const buildRuntime = deps.buildRuntime ?? defaultBuildRuntime;
+  const baseEnv = deps.env ?? process.env;
+  const runtimeEnv =
+    sub === "runner"
+      ? {
+          ...baseEnv,
+          AOS_RUNNER_INSTANCE_ID:
+            (baseEnv.AOS_RUNNER_INSTANCE_ID ?? "").trim() || randomUUID()
+        }
+      : baseEnv;
+  const controlUrl = (runtimeEnv.AOS_RUNNER_CONTROL_URL ?? "").trim();
+  const buildRuntime =
+    deps.buildRuntime ??
+    (controlUrl === ""
+      ? defaultBuildRuntime
+      : (projectDir: string | null) =>
+          buildRemoteSuiteRuntime(projectDir, runtimeEnv));
   if (sub === "queue" && flags.has("host")) {
     const hostReference = flags.get("host");
     if (hostReference === null || hostReference.trim() === "") {
@@ -4229,7 +4260,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
       return await suiteRunnerCommand(
         built.runtime,
         flags,
-        { log, errorLog, env: deps.env ?? process.env },
+        { log, errorLog, env: runtimeEnv },
         deps,
         buildRuntime
       );

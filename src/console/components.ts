@@ -52,6 +52,8 @@ export interface CTableInput {
   /** 自动转义通道：数据字段默认走这里（rowsText 优先于 rows）。 */
   rowsText?: string[][];
   empty?: string;
+  /** 空行允许富文本（如清除筛选链接）；未提供时按 empty 转义。 */
+  emptyHtml?: string;
   caption?: string;
   /** 固定列宽（百分比/px）；提供时启用 table-layout:fixed，避免宽屏列被内容摊薄。 */
   columnWidths?: string[];
@@ -71,7 +73,7 @@ export function cTable(input: CTableInput): string {
   const fixed = widths === "" ? "" : " c-table--fixed";
   const body =
     rows.length === 0
-      ? `<tr><td class="c-empty-cell" colspan="${input.columns.length}">${escapeHtml(input.empty ?? "暂无数据")}</td></tr>`
+      ? `<tr><td class="c-empty-cell" colspan="${input.columns.length}">${input.emptyHtml ?? escapeHtml(input.empty ?? "暂无数据")}</td></tr>`
       : rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
   return `<div class="c-table-wrap"><table class="c-table${fixed}">${caption}${widths}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
