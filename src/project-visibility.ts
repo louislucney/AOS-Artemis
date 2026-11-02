@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +20,54 @@ export function projectExcluded(
     .map((token) => token.trim())
     .filter((token) => token !== "");
   if (tokens.length === 0) return false;
+  return tokens.some((token) => {
+    const value = token.replace(/\\/g, "/");
+    if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) {
+      return path.resolve(value) === root;
+    }
+    return value.toLowerCase() === entry.name.toLowerCase();
+  });
+}
+
+export type ProjectDiscoveryMode = "marker" | "registered" | "auto";
+
+/** 工作区自动发现策略：默认 marker（只收真实项目标记），registered 关闭目录扫描，auto 保持旧行为。 */
+export function projectDiscoveryMode(raw: string | undefined): ProjectDiscoveryMode {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (value === "registered") return "registered";
+  if (value === "auto") return "auto";
+  return "marker";
+}
+
+/** 真实项目标记：显式配置、项目台账或设计产物；空 `.artemis/` 不算。 */
+export function hasProjectMarker(rootPath: string): boolean {
+  const root = path.resolve(rootPath);
+  for (const rel of [
+    "aos.config.jsonc",
+    ".artemis/ledger/state.json",
+    ".artemis/design/tests.json",
+    ".artemis/design/flows.json"
+  ]) {
+    try {
+      if (fs.existsSync(path.join(root, rel))) return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** 显式项目白名单：逗号分隔的项目名（大小写不敏感）或绝对路径。 */
+export function projectAllowed(
+  entry: { name: string; rootPath: string },
+  raw: string | undefined
+): boolean {
+  const tokens = (raw ?? "")
+    .split(",")
+    .map((token) => token.trim())
+    .filter((token) => token !== "");
+  if (tokens.length === 0) return true;
+  const root = path.resolve(entry.rootPath);
   return tokens.some((token) => {
     const value = token.replace(/\\/g, "/");
     if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) {

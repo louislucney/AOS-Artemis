@@ -27,7 +27,12 @@ import {
   integrationReadinessFromFailures,
   type IntegrationReadiness
 } from "../figma/integration-readiness.js";
-import { projectExcluded } from "../project-visibility.js";
+import {
+  hasProjectMarker,
+  projectAllowed,
+  projectDiscoveryMode,
+  projectExcluded
+} from "../project-visibility.js";
 import type { UiCoverageSummary, UiSummary, UiVerification } from "../ui/verification.js";
 import {
   loadLatestRunManifest,
@@ -940,16 +945,29 @@ function integrationView(soft: SoftProjectRead, record: ProjectRecord | null, ho
   };
 }
 
-function listWorkspaceDirs(workspaceRoot: string): Array<{ name: string; rootPath: string }> {
+function listWorkspaceDirs(
+  workspaceRoot: string,
+  env: NodeJS.ProcessEnv
+): Array<{ name: string; rootPath: string }> {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(workspaceRoot, { withFileTypes: true });
   } catch {
     return [];
   }
+  const mode = projectDiscoveryMode(env.AOS_PANEL_PROJECT_DISCOVERY);
+  if (mode === "registered") return [];
+  const allowedRaw = env.AOS_PANEL_PROJECTS;
+  const allowConfigured = (allowedRaw ?? "").trim() !== "";
   return entries
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-    .map((entry) => ({ name: entry.name, rootPath: path.join(workspaceRoot, entry.name) }));
+    .map((entry) => ({ name: entry.name, rootPath: path.join(workspaceRoot, entry.name) }))
+    .filter(
+      (entry) =>
+        mode === "auto" ||
+        hasProjectMarker(entry.rootPath) ||
+        (allowConfigured && projectAllowed(entry, allowedRaw))
+    );
 }
 
 function machineTools(env: Record<string, unknown>): PanelMachineRow["tools"] {
@@ -1132,16 +1150,20 @@ export async function buildPanelOverview(deps: PanelDeps): Promise<PanelOverview
     registeredRoots.add(record.rootPath);
   }
   if (deps.workspaceRoot) {
-    for (const entry of listWorkspaceDirs(deps.workspaceRoot)) {
+    for (const entry of listWorkspaceDirs(deps.workspaceRoot, deps.env ?? process.env)) {
       if (!registeredRoots.has(entry.rootPath)) {
         merged.set(`\u0000${entry.rootPath}`, { record: null, name: entry.name, rootPath: entry.rootPath });
       }
     }
   }
 
-  const excludeRaw = (deps.env ?? process.env).AOS_PANEL_EXCLUDE_PROJECTS;
+  const env = deps.env ?? process.env;
+  const excludeRaw = env.AOS_PANEL_EXCLUDE_PROJECTS;
+  const allowRaw = env.AOS_PANEL_PROJECTS;
   const allEntries = [...merged.values()];
-  const visibleEntries = allEntries.filter((entry) => !panelProjectExcluded(entry, excludeRaw));
+  const visibleEntries = allEntries.filter(
+    (entry) => !panelProjectExcluded(entry, excludeRaw) && projectAllowed(entry, allowRaw)
+  );
   const excludedProjects = allEntries.length - visibleEntries.length;
   const ordered = [...visibleEntries].sort((left, right) => {
     const leftSeen = left.record?.lastSeenAt ?? "";

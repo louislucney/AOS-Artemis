@@ -182,7 +182,8 @@ test("panel overview: 工作区目录并入项目集合（未注册行）", asyn
   const repo = makeReadyRepo();
   const workspace = makeTempDir("aos-panel-ws-");
   const sub = path.join(workspace, "ws-app");
-  fs.mkdirSync(sub, { recursive: true });
+  fs.mkdirSync(path.join(sub, ".artemis", "ledger"), { recursive: true });
+  fs.writeFileSync(path.join(sub, ".artemis", "ledger", "state.json"), "{}\n");
 
   const view = await buildPanelOverview({
     store,
@@ -1294,4 +1295,56 @@ test("panel overview: 服务仓库项目默认隐藏", async () => {
   });
   assert.deepEqual(view.projects.map((row) => row.name), ["app-visible"]);
   assert.equal(view.excludedProjects, 1);
+});
+
+
+test("panel overview: 工作区默认只发现带项目标记的目录", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const workspace = makeTempDir("aos-panel-discovery-");
+  const real = path.join(workspace, "real-app");
+  const fake = path.join(workspace, "src");
+  const dist = path.join(workspace, "dist");
+  fs.mkdirSync(path.join(real, ".artemis", "ledger"), { recursive: true });
+  fs.writeFileSync(path.join(real, ".artemis", "ledger", "state.json"), "{}\n");
+  fs.mkdirSync(fake, { recursive: true });
+  fs.mkdirSync(dist, { recursive: true });
+
+  const view = await buildPanelOverview({
+    store,
+    serviceRepo: repo,
+    buildStale: false,
+    env: {},
+    workspaceRoot: workspace
+  });
+  assert.ok(view.projects.some((project) => project.rootPath === real));
+  assert.ok(!view.projects.some((project) => project.rootPath === fake));
+  assert.ok(!view.projects.some((project) => project.rootPath === dist));
+
+  const auto = await buildPanelOverview({
+    store,
+    serviceRepo: repo,
+    buildStale: false,
+    env: { AOS_PANEL_PROJECT_DISCOVERY: "auto" },
+    workspaceRoot: workspace
+  });
+  assert.ok(auto.projects.some((project) => project.rootPath === fake), "auto 保持旧行为");
+
+  const registered = await buildPanelOverview({
+    store,
+    serviceRepo: repo,
+    buildStale: false,
+    env: { AOS_PANEL_PROJECT_DISCOVERY: "registered" },
+    workspaceRoot: workspace
+  });
+  assert.equal(registered.projects.length, 0, "registered 不扫描工作区目录");
+
+  const allow = await buildPanelOverview({
+    store,
+    serviceRepo: repo,
+    buildStale: false,
+    env: { AOS_PANEL_PROJECTS: "src" },
+    workspaceRoot: workspace
+  });
+  assert.deepEqual(allow.projects.map((project) => project.name), ["src"], "显式白名单可覆盖标记检查");
 });

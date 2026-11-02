@@ -290,6 +290,8 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 
 **排除项目**：服务仓库自身默认从总览/多项目对比、项目切换器/搜索、usage 列表与 `usage --all` 隐藏（`excludedProjects` 计数可见）；`AOS_PANEL_EXCLUDE_PROJECTS` 可再按逗号分隔的项目名或绝对根路径隐藏其他项目。直接项目 URL/显式 `--project`、台账与运行不受影响。
 
+**工作区项目发现**：默认 `AOS_PANEL_PROJECT_DISCOVERY=marker`，只自动收带真实标记的目录（`aos.config.jsonc`、`.artemis/ledger/state.json`、`.artemis/design/tests.json` 或 `flows.json`）；`src`/`dist`/`node_modules` 等无标记目录不会进入总览。`registered` 只显示台账已登记项目；`auto` 恢复旧的“所有非点目录”行为。`AOS_PANEL_PROJECTS` 可作显式白名单（项目名或绝对路径，优先级高于标记检查）。
+
 **进程级角色**（`AOS_PANEL_ROLE`）：`viewer`（只读）/ `dispatcher`（任务/队列/导出）/ `maintainer`（+裁决/用例库/计划/导入/主机登记）/ `admin`（+Jira 建单），HTTP 模式默认 `admin`，`AOS_PANEL_ACTIONS=0` 强制 `viewer`；独立 `panel --web` 仍要求 `AOS_PANEL_ACTIONS=1` 且仅 loopback。服务端在 `/panel/api/*` 路由前按角色强制，越权返回 `403 role_forbidden`；页面顶栏显示角色，并按 scope 禁用派发/任务/裁决/建单/用例库/计划/导出入口。角色是进程级内网单租户模型，不是多用户身份认证。
 
 **快捷键**：`?` 开关帮助面板、`/` 聚焦筛选框、`g` 后按 `o/t/d/l/f/r/s/p/a/u` 跳转（总览/任务/下发/用例库/档案/运行机/计划/运维/审计/统计；无项目上下文时对应项不生效）。系统 `prefers-reduced-motion: reduce` 时会自动移除整页刷新。计划/隔离/导入均有控制台表单（web.ts 计划区块与用例库页；能力关闭时禁用并给原因）。

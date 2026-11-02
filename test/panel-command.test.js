@@ -290,7 +290,8 @@ test("panel --web: multipart 超限 → 413（共享上限）", async () => {
 test("panel --web: serves /panel on an ephemeral port and closes cleanly", async () => {
   const store = new MemoryStore();
   const dir = makeTempDir("aos-panel-cli-");
-  fs.mkdirSync(path.join(dir, "ws-app"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "ws-app", ".artemis", "ledger"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "ws-app", ".artemis", "ledger", "state.json"), "{}\n");
   let handle = null;
   const { code, logs, errors } = await runCli(["--web", "--port", "0", "--workspace", dir], {
     store,

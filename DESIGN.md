@@ -3499,3 +3499,19 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **测试**：`test/web-result-ingest.test.js` 增加已绑定 instance 缺头/错头 409；`test/web-job-runner.test.js` 断言 spec/结果均带 `x-mobile-testing-instance-id`；`test/runner-control-http.test.js` 增加控制面超时中止用例。
 - **suite 侧**（`src/runner/control/suite-client.ts`、`suite-http.ts`、`suite-service.ts`、`src/suite-command.ts`）：suite runner 在启动时生成 `AOS_RUNNER_INSTANCE_ID`，注入远程 Runtime 与 runner 子命令；suite 客户端所有写请求带 `x-mobile-testing-instance-id`。`SuiteControlService` 对 `updateTask` / `beginTask` / 带 `regressionTaskId` 的 `recordRun` 校验任务 `claimedInstanceId`，不匹配 409 `instance-mismatch`。读请求仍允许同 host 查看。`AOS_RUNNER_INSTANCE_ID` 只由 runner 内部分配，手工 CLI 不设置。
 - **遗留**：`releaseTask` / `finalizeCancellation` / `ackCancellation` 的实例校验依赖 store 自身；`suite run` 的手工路径没有实例头；网络分区超过 stale 窗口时仍可能留下旧 run 记录，但任务终态与结果写入受 CAS/fencing 保护。
+
+
+### 13.286 新增（工作区项目发现：标记、白名单与 registered 模式）
+
+> 2026-11-02。避免把 `src`/`dist`/`test` 等普通目录或测试临时目录当成项目进入总览。
+
+- **问题**：`buildPanelOverview` 原先对 `--workspace` 下每个非点目录都建行；服务仓库/代码目录、空 `.artemis` 目录、测试临时项目都可能被当成项目。
+- **发现模式**（`src/project-visibility.ts` + `src/panel/overview.ts`）：`AOS_PANEL_PROJECT_DISCOVERY`：
+  - `marker`（默认）：只收带标记的目录：`aos.config.jsonc`、`.artemis/ledger/state.json`、`.artemis/design/tests.json`、`.artemis/design/flows.json`；空 `.artemis/` 不算。
+  - `registered`：完全不扫描工作区目录，只显示台账/DB 已登记项目。
+  - `auto`：恢复旧行为（所有非点目录）。
+- **白名单**：`AOS_PANEL_PROJECTS`（项目名或绝对路径，逗号分隔）优先于标记检查，用于显式纳入无标记目录；同时收窄已登记项目的可见列表。
+- **排除**：既有 `AOS_PANEL_EXCLUDE_PROJECTS`、服务仓库默认隐藏不变；直接项目 URL/显式 `--project` 仍可访问，台账与 runner 不受影响。
+- **UI**：空态提示“带 aos.config.jsonc / .artemis 台账的项目”；`excludedProjects` 计数含白名单/排除隐藏项。
+- **测试**：`test/panel-overview.test.js` 新增默认 marker、auto、registered、白名单四态；既有工作区测试补 `.artemis/ledger/state.json` 标记。
+- **边界**：发现只影响面板/对比/切换器/搜索；已登记但磁盘不存在的项目仍按注册表显示（灰灯），便于排障。

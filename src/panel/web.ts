@@ -15,6 +15,7 @@ import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
 import { escapeHtml } from "../util.js";
+import { projectAllowed } from "../project-visibility.js";
 import { renderConsoleShell, renderGroupTabs, setConsoleShellDefaults, type ConsoleCapabilities, type ConsoleNavKey, type ConsoleShellInput } from "../console/shell.js";
 import { INTEGRATION_ACTIONS, INTEGRATION_LABELS } from "../figma/integration-readiness.js";
 import {
@@ -1519,14 +1520,14 @@ try{
       })}</p>`,
       "</header>",
       view.excludedProjects > 0
-        ? `<p class="muted">已隐藏 ${view.excludedProjects} 个项目（服务仓库默认隐藏，或由 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> 指定）；直接项目 URL 仍可访问。</p>`
+        ? `<p class="muted">已隐藏 ${view.excludedProjects} 个项目（服务仓库默认隐藏，或由 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> / <code>AOS_PANEL_PROJECTS</code> 指定）；直接项目 URL 仍可访问。</p>`
         : "",
       renderMachinesSection(view),
       renderCreateProjectCard(),
       view.projects.length === 0
         ? cEmpty({
             title: "还没有接入项目",
-            body: "在 MCP 客户端配置 AOS_PROJECT_DIR 指向项目目录，或把项目放入本次工作区后刷新；接入步骤见项目根 README。",
+            body: "在 MCP 客户端配置 AOS_PROJECT_DIR 指向项目目录，或把带 aos.config.jsonc / .artemis 台账的项目放入工作区后刷新；未标记目录默认不进入列表。",
             action: '<code>node dist/cli.js install</code>（生成客户端挂载配置）'
           })
         : [
@@ -3563,8 +3564,9 @@ async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPag
   if (query === "") return data;
   const needle = query.toLowerCase();
   const excludeRaw = (deps.env ?? process.env).AOS_PANEL_EXCLUDE_PROJECTS;
+  const allowRaw = (deps.env ?? process.env).AOS_PANEL_PROJECTS;
   const projects = (await deps.store.listProjects().catch(() => [])).filter(
-    (project) => !panelProjectExcluded(project, excludeRaw)
+    (project) => !panelProjectExcluded(project, excludeRaw) && projectAllowed(project, allowRaw)
   );
   const capped = projects.slice(0, 50);
   data.truncated = projects.length > capped.length;
@@ -3632,8 +3634,9 @@ async function loadProjectSwitcher(
       ? null
       : view.hostId;
   const excludeRaw = (deps.env ?? process.env).AOS_PANEL_EXCLUDE_PROJECTS;
+  const allowRaw = (deps.env ?? process.env).AOS_PANEL_PROJECTS;
   const projects = (await deps.store.listProjects().catch(() => [])).filter(
-    (project) => !panelProjectExcluded(project, excludeRaw)
+    (project) => !panelProjectExcluded(project, excludeRaw) && projectAllowed(project, allowRaw)
   );
   const hosts = await deps.store.listHosts().catch(() => []);
   const hostById = new Map(hosts.map((host) => [host.id, host]));
