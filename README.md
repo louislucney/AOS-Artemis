@@ -386,7 +386,9 @@ GET /panel/runner-bundle?platform=darwin&arch=arm64
 GET /panel/runner-bundle?platform=linux&arch=x64
 ```
 
-需面板鉴权。每个包都含 `dist` + `node_modules` + `runner.cmd`/`runner.sh` + `RUNNER.md`；Windows 解压后直接运行 `runner.cmd`，无需再 npm install。Node.js、adb、Maestro 仍需本机安装。自定义目录用 `AOS_RUNNER_BUNDLE_DIR`。构建产物在 `dist-runner/`（gitignore）。
+需面板鉴权。每个包都含 `dist` + `node_modules` + `runner.cmd`/`runner.sh` + `RUNNER.md`；Windows 解压后直接运行 `runner.cmd`，无需再 npm install。
+
+依赖工具也由中心托管（面板「设备 → 接入执行机 → 下载 Mac/Windows 依赖工具」，或 `GET /panel/runner-toolchain`）：Node.js、Android platform-tools/adb、Temurin JDK、Maestro，按 `darwin-arm64`/`win32-x64` 分组，均带 SHA-256。先运行 `npm run toolchain:fetch` 下载到 `dist-toolchain/`（gitignore），再用 `AOS_RUNNER_TOOLCHAIN_DIR` 指定目录。macOS 的 iOS 模拟器仍需 Xcode，不能由中心镜像。自定义目录用 `AOS_RUNNER_BUNDLE_DIR`。构建产物在 `dist-runner/`（gitignore）。
 
 网页测试任务（Excel 用例 + 安装包 + Maestro 脚本 zip）由 **host 级** `web-runner` 领取执行：不要求项目目录；与 `suite runner` 不同，`web-runner` 按**设备**并行（同一设备同一时刻一个任务，靠设备租约）。配置 `AOS_RUNNER_CONTROL_URL`（或 `--control-url`）后走中心 HTTP **runner 控制面**（`/panel/api/runners/*`，ADR-0012），执行机不需要也不应持有中心 PG 连接串；未配置控制面时保留直连中心 PG 的兼容路径。
 

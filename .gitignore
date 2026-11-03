@@ -41,3 +41,6 @@ dist-deps/
 
 # Server-hosted runner bundle
 dist-runner/
+
+# Downloaded runner toolchain
+dist-toolchain/

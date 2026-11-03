@@ -42,6 +42,7 @@ import {
 } from "./panel/limits.js";
 import { resolveHostIdentity } from "./host/identity.js";
 import { handleArtifactRequest } from "./panel/artifact-route.js";
+import { handleRunnerToolchainRequest } from "./panel/toolchain-route.js";
 import {
   isValidProjectName,
   ProjectConfigError,
@@ -638,6 +639,44 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             stream.on("end", resolve);
             stream.pipe(res);
           });
+          return;
+        }
+
+        if (
+          (req.method === "GET" || req.method === "HEAD") &&
+          url.pathname === "/panel/runner-toolchain"
+        ) {
+          const toolchainDir = path.resolve(
+            (process.env.AOS_RUNNER_TOOLCHAIN_DIR ?? "").trim() ||
+              path.join(process.cwd(), "dist-toolchain")
+          );
+          const toolchain = await handleRunnerToolchainRequest(
+            url,
+            toolchainDir,
+            req.headers.accept ?? null
+          );
+          res.writeHead(toolchain.status, {
+            "Content-Type": toolchain.contentType,
+            ...(toolchain.extraHeaders ?? {})
+          });
+          if (req.method === "HEAD") {
+            res.end();
+            return;
+          }
+          if (toolchain.streamPath !== undefined) {
+            await new Promise<void>((resolve) => {
+              const stream = fs.createReadStream(toolchain.streamPath!);
+              stream.on("error", () => {
+                if (!res.writableEnded) res.destroy();
+                resolve();
+              });
+              res.on("close", resolve);
+              stream.on("end", resolve);
+              stream.pipe(res);
+            });
+            return;
+          }
+          res.end(toolchain.body);
           return;
         }
 

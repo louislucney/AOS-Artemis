@@ -46,6 +46,29 @@ Expand-Archive mobile-testing-runner-0.1.0-win32-x64.zip -DestinationPath .
 cd mobile-testing-runner-0.1.0-win32-x64
 ```
 
+## 3.1 下载依赖工具
+
+面板打开：
+
+```text
+设备 → 接入执行机 → 下载 Mac/Windows 依赖工具
+```
+
+或在 Windows 下载：
+
+```powershell
+$base = "http://<center-ip>:8765"
+$token = "<面板 MOBILE_TESTING_HTTP_TOKEN>"
+
+# 示例：Node.js、adb、JDK、Maestro 的 Windows 包
+curl.exe -L -H "Authorization: Bearer $token" -o node.zip "$base/panel/runner-toolchain?file=node-v22.22.2-win-x64.zip"
+curl.exe -L -H "Authorization: Bearer $token" -o platform-tools.zip "$base/panel/runner-toolchain?file=platform-tools-latest-windows.zip"
+curl.exe -L -H "Authorization: Bearer $token" -o jdk.zip "$base/panel/runner-toolchain?file=OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip"
+curl.exe -L -H "Authorization: Bearer $token" -o maestro.zip "$base/panel/runner-toolchain?file=maestro-2.12.1.zip"
+```
+
+解压后把 Node、platform-tools、JDK 的 `bin` 和 `maestro/bin` 加入 PATH。中心页面会列出实际文件名和 SHA-256。
+
 ## 4. 配置 runner token
 
 `MOBILE_TESTING_RUNNER_JOB_TOKEN` 是执行机专用令牌，不是面板 token，也不是数据库连接串。

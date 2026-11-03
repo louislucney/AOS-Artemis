@@ -3515,3 +3515,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **UI**：空态提示“带 aos.config.jsonc / .artemis 台账的项目”；`excludedProjects` 计数含白名单/排除隐藏项。
 - **测试**：`test/panel-overview.test.js` 新增默认 marker、auto、registered、白名单四态；既有工作区测试补 `.artemis/ledger/state.json` 标记。
 - **边界**：发现只影响面板/对比/切换器/搜索；已登记但磁盘不存在的项目仍按注册表显示（灰灯），便于排障。
+
+
+### 13.287 新增（执行机依赖工具镜像：Node/adb/JDK/Maestro）
+
+> 2026-11-03。中心不仅托管 runner 代码包，也托管执行机所需官方安装包，避免每台机器分别从外网下载。
+
+- **脚本**（`scripts/fetch-runner-toolchain.mjs`）：`npm run toolchain:fetch` 下载 Node.js 22.22.2（darwin-arm64 `.tar.gz` / win32-x64 `.zip`）、Android platform-tools（darwin/windows）、Temurin JDK 21.0.13+9（darwin-aarch64/windows-x64）、Maestro CLI 2.12.1（共享 zip）；固定 SHA-256，platform-tools 下载后计算；产物在 `dist-toolchain/files`，生成 manifest；`--platform` 可只取一端。
+- **服务端**（`src/panel/toolchain-route.ts` + `src/http-server.ts`）：`GET /panel/runner-toolchain` 需面板鉴权；Accept HTML 返回按平台分组的下载页，JSON 返回 manifest；`?file=<filename>` 流式下载，文件名必须在 manifest 中，`Content-Disposition`/`Content-Length`；`AOS_RUNNER_TOOLCHAIN_DIR` 可改目录。
+- **UI**：设备页「接入执行机」增加「下载 Mac/Windows 依赖工具」链接；原有 runner 包继续提供 `dist+node_modules`，不含工具链。
+- **边界**：Maestro 是 JVM CLI，Windows 原生 CLI 支持取决于 Maestro；若不支持，页提示使用 WSL/Linux 工具链。macOS iOS 模拟器仍需 Xcode，不镜像（Apple 许可/体积）；`dist-toolchain/` 与下载物不入 git。
+- **测试**：`test/runner-toolchain.test.js` 覆盖 JSON/HTML/文件下载/未知文件/未构建；设备页测试断言依赖页链接。
