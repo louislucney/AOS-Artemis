@@ -711,10 +711,10 @@ node dist/cli.js web-runner --name win-mini-01</code></pre>
         <a class="c-button" href="/panel/runner-bundle?platform=darwin&amp;arch=arm64" download>macOS Apple Silicon</a>
         <a class="c-button" href="/panel/runner-bundle?platform=linux&amp;arch=x64" download>Linux x64</a>
       </div>
-      <p class="c-card-subtitle c-card-subtitle-tight">每个包都含 dist + node_modules；Node、adb、JDK、Maestro 可从下方依赖页下载。</p>
+      <p class="c-card-subtitle c-card-subtitle-tight">Windows/macOS 包已内置 Node、adb、JDK、Maestro；Linux 包为 app-only。也可以从下方依赖页单独下载工具。</p>
       <a class="c-button" href="/panel/runner-toolchain">下载 Mac/Windows 依赖工具</a>
       <ol class="c-setup-list">
-        <li>安装 Node.js、adb 与 Maestro</li>
+        <li>Windows/macOS 下载完整包；Linux 另装 Node.js、adb、JDK、Maestro</li>
         <li>配置主机身份、中心地址与 runner token</li>
         <li>运行 web-runner，设备自动上报</li>
       </ol>

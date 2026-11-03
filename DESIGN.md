@@ -3526,3 +3526,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **UI**：设备页「接入执行机」增加「下载 Mac/Windows 依赖工具」链接；原有 runner 包继续提供 `dist+node_modules`，不含工具链。
 - **边界**：Maestro 是 JVM CLI，Windows 原生 CLI 支持取决于 Maestro；若不支持，页提示使用 WSL/Linux 工具链。macOS iOS 模拟器仍需 Xcode，不镜像（Apple 许可/体积）；`dist-toolchain/` 与下载物不入 git。
 - **测试**：`test/runner-toolchain.test.js` 覆盖 JSON/HTML/文件下载/未知文件/未构建；设备页测试断言依赖页链接。
+
+
+### 13.288 新增（执行机完整离线包：runner + 平台工具）
+
+> 2026-11-03。修正“只提供 runner 代码包”的误解：Windows/macOS 包内置 Node.js/adb/JDK/Maestro，解压即用。
+
+- **构建**（`scripts/build-runner-bundle.mjs`）：先 `npm run toolchain:fetch`，再把 `dist-toolchain` 各平台工具解压进 `tools/`：`node/`、`platform-tools/`、`jdk/`、`maestro/`；生成 `runner.cmd`（Windows，设置 PATH 并调用内置 `node.exe`）和 `runner.sh`（macOS，设置 PATH/JAVA_HOME 并调用内置 node）。
+- **平台**：`win32-x64.zip`、`darwin-arm64.tar.gz` 为 full（`includesTools:true`）；`linux-x64.tar.gz` 为 app-only（无工具链下载）。`--platform=darwin-arm64` 可只重建一端，并合并 manifest，避免重打 600MB 的另一端。
+- **边界**：macOS iOS 模拟器仍需 Xcode；Windows Maestro 使用包内 `maestro.bat` + JDK；工具版本由 toolchain manifest 固定。完整包约 600MB，下载仍受面板鉴权；`dist-runner/` 与 `dist-toolchain/` 均不入 git。
+- **测试**：`test/runner-toolchain.test.js` 覆盖工具下载页；包内容通过 `tar -tzf`/`unzip -l` 抽查 `tools/node`、`platform-tools`、`jdk`、`maestro` 与 runner wrapper。

@@ -46,9 +46,10 @@ Expand-Archive mobile-testing-runner-0.1.0-win32-x64.zip -DestinationPath .
 cd mobile-testing-runner-0.1.0-win32-x64
 ```
 
-## 3.1 下载依赖工具
+## 3.1 依赖工具
 
-面板打开：
+Windows 完整 runner 包已内置 Node.js、adb、JDK、Maestro，正常情况下不需要单独下载。只有使用 Linux app-only 包或需要单独工具时才打开：
+
 
 ```text
 设备 → 接入执行机 → 下载 Mac/Windows 依赖工具
