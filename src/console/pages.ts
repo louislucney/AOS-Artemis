@@ -678,7 +678,7 @@ export function renderDevicesPage(data: DevicesPageData): string {
           <p>目标机器运行 <code>web-runner</code>，配置中心控制面地址与 <code>MOBILE_TESTING_RUNNER_JOB_TOKEN</code> 后自动出现；执行机不需要直连 PostgreSQL。</p>
           <div class="c-empty-action">
             <a class="c-button c-button-primary" href="#runner-download">下载执行机安装包</a>
-            <a class="c-button" href="/panel?section=runners">查看接入说明</a>
+            <a class="c-button" href="#runner-guide">查看接入说明</a>
           </div>
         </section>`
       : cTable({
@@ -688,7 +688,7 @@ export function renderDevicesPage(data: DevicesPageData): string {
           emptyHtml:
             '<span class="muted">当前筛选下没有设备。</span> <a href="/panel?section=devices">清除筛选</a>'
         });
-  const aside = `<aside class="c-device-aside" aria-label="设备接入说明">
+  const aside = `<aside class="c-device-aside" id="runner-guide" aria-label="设备接入说明">
     <section class="c-card" id="runner-download">
       <h2 class="c-card-title">接入执行机</h2>
       <p class="c-card-subtitle">让一台机器出现在设备列表，只需要一次心跳。</p>
