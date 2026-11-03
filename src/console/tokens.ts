@@ -156,6 +156,15 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-status-legend dt{font-weight:var(--font-weight-semibold);color:var(--color-text-primary);font-size:var(--font-size-callout)}
 .c-status-legend dd{margin:0;color:var(--color-text-secondary);font-size:var(--font-size-callout);line-height:1.5}
 .c-card-subtitle-tight{margin:0;font-size:var(--font-size-caption)}
+.c-device-help{display:block;width:100%;max-width:640px;margin:12px auto 0;text-align:left}
+.c-device-help>summary{cursor:pointer;display:inline-flex;align-items:center;justify-content:center;list-style:none}
+.c-device-help>summary::-webkit-details-marker{display:none}
+.c-device-help>summary::before{content:"?";display:inline-grid;place-items:center;width:18px;height:18px;margin-right:7px;border:1px solid currentColor;border-radius:50%;font-size:12px;font-weight:600}
+.c-device-help[open]>summary::before{content:"−"}
+.c-device-help-body{margin-top:10px;padding:16px 18px;background:var(--color-surface-light);border:1px solid var(--color-border-subtle);border-radius:var(--radius-md)}
+.c-device-help-body ol{margin:0 0 12px;padding-left:20px;color:var(--color-text-secondary);font-size:var(--font-size-callout);line-height:1.6}
+.c-device-help-body li+li{margin-top:5px}
+.c-device-help-body .c-command{margin:0}
 .c-device-main .c-table td{padding-top:18px;padding-bottom:18px}
 .c-device-main .c-empty-cell{padding:64px 24px;font-size:var(--font-size-body)}
 @media (max-width:1280px){

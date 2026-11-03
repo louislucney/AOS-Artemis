@@ -678,7 +678,21 @@ export function renderDevicesPage(data: DevicesPageData): string {
           <p>目标机器运行 <code>web-runner</code>，配置中心控制面地址与 <code>MOBILE_TESTING_RUNNER_JOB_TOKEN</code> 后自动出现；执行机不需要直连 PostgreSQL。</p>
           <div class="c-empty-action">
             <a class="c-button c-button-primary" href="#runner-download">下载执行机安装包</a>
-            <a class="c-button" href="#runner-guide">查看接入说明</a>
+            <details class="c-device-help">
+              <summary class="c-button">查看接入说明</summary>
+              <div class="c-device-help-body">
+                <ol>
+                  <li>在目标机下载 <a href="/panel/runner-toolchain">依赖工具</a>（Node.js、adb、JDK、Maestro）并加入 PATH。</li>
+                  <li>下载对应平台的 <a href="#runner-download">runner 安装包</a>并解压。</li>
+                  <li>设置 <code>AOS_HOST_ID</code>、<code>AOS_RUNNER_CONTROL_URL</code>、<code>MOBILE_TESTING_RUNNER_JOB_TOKEN</code>。</li>
+                  <li>运行 <code>runner.cmd</code>（Windows）或 <code>./runner.sh</code>（macOS/Linux）。</li>
+                </ol>
+                <pre class="c-command"><code>export AOS_HOST_ID=win-mini-01
+export AOS_RUNNER_CONTROL_URL=http://&lt;center&gt;:8765
+export MOBILE_TESTING_RUNNER_JOB_TOKEN=&lt;runner-token&gt;
+node dist/cli.js web-runner --name win-mini-01</code></pre>
+              </div>
+            </details>
           </div>
         </section>`
       : cTable({

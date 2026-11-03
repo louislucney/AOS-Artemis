@@ -190,7 +190,8 @@ test("devices page: 空状态使用宽布局与新版 runner token 名称", asyn
   const html = await page(store, workspace);
   assert.match(html, /c-device-empty/);
   assert.match(html, /还没有执行机注册/);
-  assert.match(html, /href="#runner-guide"/);
+  assert.match(html, /<details class="c-device-help">/);
+  assert.match(html, /<summary class="c-button">查看接入说明<\/summary>/);
   assert.doesNotMatch(html, /href="\/panel\?section=runners">查看接入说明/);
   assert.match(html, /MOBILE_TESTING_RUNNER_JOB_TOKEN/);
   assert.doesNotMatch(html, /AOS_RUNNER_JOB_TOKEN/);
