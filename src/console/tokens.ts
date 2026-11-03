@@ -157,7 +157,7 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-status-legend dd{margin:0;color:var(--color-text-secondary);font-size:var(--font-size-callout);line-height:1.5}
 .c-card-subtitle-tight{margin:0;font-size:var(--font-size-caption)}
 .c-device-help{display:block;width:100%;max-width:640px;margin:12px auto 0;text-align:left}
-.c-device-help>summary{cursor:pointer;display:inline-flex;align-items:center;justify-content:center;list-style:none}
+.c-device-help>summary{cursor:pointer;display:flex;width:max-content;margin:0 auto;align-items:center;justify-content:center;list-style:none}
 .c-device-help>summary::-webkit-details-marker{display:none}
 .c-device-help>summary::before{content:"?";display:inline-grid;place-items:center;width:18px;height:18px;margin-right:7px;border:1px solid currentColor;border-radius:50%;font-size:12px;font-weight:600}
 .c-device-help[open]>summary::before{content:"−"}
