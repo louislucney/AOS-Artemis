@@ -143,7 +143,7 @@ function crossHostWriteResponse(
   return json(409, {
     ok: false,
     code: "cross-host-write",
-    error: `项目属于主机 ${resolved.hostId}，当前服务本机身份为 ${localHostId ?? "未设置（AOS_HOST_ID）"}；资产上传/预览/列映射读写本机磁盘，请在项目机面板执行（或先切换到该项目机的 HTTP 服务）`
+    error: `项目属于主机 ${resolved.hostId}，当前服务本机身份为 ${localHostId ?? "未设置（MOBILE_TESTING_HOST_ID）"}；资产上传/预览/列映射读写本机磁盘，请在项目机面板执行（或先切换到该项目机的 HTTP 服务）`
   });
 }
 

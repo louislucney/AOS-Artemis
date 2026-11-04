@@ -11,10 +11,10 @@
 
 ## 2. 命名
 
-`AOS_HOST_ID` 是**你自己命名的主机身份**，集群内必须唯一；`--name` 只是面板显示名。
+`MOBILE_TESTING_HOST_ID` 是**你自己命名的主机身份**，集群内必须唯一；`--name` 只是面板显示名。
 
 ```powershell
-$env:AOS_HOST_ID="win-mini-01"
+$env:MOBILE_TESTING_HOST_ID="win-mini-01"
 ```
 
 不要复制其他机器的 host id。
@@ -84,8 +84,8 @@ grep '^MOBILE_TESTING_RUNNER_JOB_TOKEN=' .local/center.env | cut -d= -f2-
 在 Windows 设置：
 
 ```powershell
-$env:AOS_HOST_ID="win-mini-01"
-$env:AOS_RUNNER_CONTROL_URL="http://<center-ip>:8765"
+$env:MOBILE_TESTING_HOST_ID="win-mini-01"
+$env:MOBILE_TESTING_RUNNER_CONTROL_URL="http://<center-ip>:8765"
 $env:AOS_PANEL_BASE_URL="http://<center-ip>:8765"
 $env:MOBILE_TESTING_RUNNER_JOB_TOKEN="<实际令牌，不带尖括号>"
 ```
@@ -109,7 +109,7 @@ adb devices
 | 现象 | 原因 |
 |---|---|
 | 401 | runner token 错误、缺失，或用了面板 token |
-| 403 host mismatch | 中心配置了每主机 token，`AOS_HOST_ID` 与 token 所属主机不一致 |
+| 403 host mismatch | 中心配置了每主机 token，`MOBILE_TESTING_HOST_ID` 与 token 所属主机不一致 |
 | 设备列表为空 | adb 没看到设备，或 Maestro 不在 PATH |
 | 面板 401 | 浏览器登录需要面板 token，用户名任意、密码为 `MOBILE_TESTING_HTTP_TOKEN` |
 

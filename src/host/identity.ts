@@ -38,7 +38,7 @@ export function hostKindOf(platform: NodeJS.Platform): HostKind {
   return "other";
 }
 
-/** 身份解析顺序：`AOS_HOST_ID` → `AOS_HOST_DIR`/`host-id` 文件 → 派生 ID（目录不可写时，稳定但不可迁移）。 */
+/** 身份解析顺序：`MOBILE_TESTING_HOST_ID`（旧名 `AOS_HOST_ID` 兼容）→ `AOS_HOST_DIR`/`host-id` 文件 → 派生 ID（目录不可写时，稳定但不可迁移）。 */
 export async function resolveHostIdentity(
   options: ResolveHostIdentityOptions = {}
 ): Promise<HostIdentity> {
@@ -60,7 +60,7 @@ export async function resolveHostIdentity(
     kind: hostKindOf(platform)
   };
 
-  const explicit = (env.AOS_HOST_ID ?? "").trim();
+  const explicit = (env.MOBILE_TESTING_HOST_ID ?? env.AOS_HOST_ID ?? "").trim();
   if (explicit !== "") {
     return { id: explicit, ...base, identitySource: "env" };
   }

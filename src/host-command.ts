@@ -392,7 +392,7 @@ async function adoptLegacyProject(
 }
 
 async function localHostId(env: NodeJS.ProcessEnv): Promise<string> {
-  const explicit = (env.AOS_HOST_ID ?? "").trim();
+  const explicit = (env.MOBILE_TESTING_HOST_ID ?? env.AOS_HOST_ID ?? "").trim();
   if (explicit !== "") return explicit;
   const identity = await resolveHostIdentity({ env });
   return identity.id;

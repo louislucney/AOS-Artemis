@@ -684,11 +684,11 @@ export function renderDevicesPage(data: DevicesPageData): string {
                 <ol>
                   <li>在目标机下载 <a href="/panel/runner-toolchain">依赖工具</a>（Node.js、adb、JDK、Maestro）并加入 PATH。</li>
                   <li>下载对应平台的 <a href="#runner-download">runner 安装包</a>并解压。</li>
-                  <li>设置 <code>AOS_HOST_ID</code>、<code>AOS_RUNNER_CONTROL_URL</code>、<code>MOBILE_TESTING_RUNNER_JOB_TOKEN</code>。</li>
+                  <li>设置 <code>MOBILE_TESTING_HOST_ID</code>、<code>MOBILE_TESTING_RUNNER_CONTROL_URL</code>、<code>MOBILE_TESTING_RUNNER_JOB_TOKEN</code>。</li>
                   <li>运行 <code>runner.cmd</code>（Windows）或 <code>./runner.sh</code>（macOS/Linux）。</li>
                 </ol>
-                <pre class="c-command"><code>export AOS_HOST_ID=win-mini-01
-export AOS_RUNNER_CONTROL_URL=http://&lt;center&gt;:8765
+                <pre class="c-command"><code>export MOBILE_TESTING_HOST_ID=win-mini-01
+export MOBILE_TESTING_RUNNER_CONTROL_URL=http://&lt;center&gt;:8765
 export MOBILE_TESTING_RUNNER_JOB_TOKEN=&lt;runner-token&gt;
 node dist/cli.js web-runner --name win-mini-01</code></pre>
               </div>
@@ -718,8 +718,8 @@ node dist/cli.js web-runner --name win-mini-01</code></pre>
         <li>配置主机身份、中心地址与 runner token</li>
         <li>运行 web-runner，设备自动上报</li>
       </ol>
-      <pre class="c-command"><code>export AOS_HOST_ID=win-mini-01
-export AOS_RUNNER_CONTROL_URL=\
+      <pre class="c-command"><code>export MOBILE_TESTING_HOST_ID=win-mini-01
+export MOBILE_TESTING_RUNNER_CONTROL_URL=\
   http://&lt;center&gt;:8765
 export MOBILE_TESTING_RUNNER_JOB_TOKEN=\
   &lt;runner-token&gt;

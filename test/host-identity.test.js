@@ -10,6 +10,24 @@ async function tempDir() {
   return fs.mkdtemp(path.join(os.tmpdir(), "aos-host-"));
 }
 
+test("MOBILE_TESTING_HOST_ID 优先于旧名且不落盘", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aos-host-id-new-"));
+  try {
+    const id = await resolveHostIdentity({
+      env: {
+        MOBILE_TESTING_HOST_ID: "host-new",
+        AOS_HOST_ID: "host-old",
+        AOS_HOST_DIR: dir
+      },
+      platform: "darwin"
+    });
+    assert.equal(id.id, "host-new");
+    await assert.rejects(fs.access(path.join(dir, "host-id")));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("AOS_HOST_ID 优先且不落盘", async () => {
   const dir = await tempDir();
   const id = await resolveHostIdentity({

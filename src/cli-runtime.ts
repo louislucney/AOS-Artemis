@@ -45,8 +45,14 @@ export async function buildRemoteSuiteRuntime(
   projectDir: string | null,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<CliRuntimeBundle> {
-  const controlUrl = (env.AOS_RUNNER_CONTROL_URL ?? "").trim();
-  if (controlUrl === "") throw new Error("AOS_RUNNER_CONTROL_URL 未配置");
+  const controlUrl = (
+    env.MOBILE_TESTING_RUNNER_CONTROL_URL ??
+    env.AOS_RUNNER_CONTROL_URL ??
+    ""
+  ).trim();
+  if (controlUrl === "") {
+    throw new Error("MOBILE_TESTING_RUNNER_CONTROL_URL 未配置（旧名 AOS_RUNNER_CONTROL_URL 兼容）");
+  }
   const token = runnerJobTokenFrom(env);
   if (token.length < 16) {
     throw new Error("MOBILE_TESTING_RUNNER_JOB_TOKEN 至少需要 16 个字符");

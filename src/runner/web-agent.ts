@@ -160,7 +160,9 @@ export async function runWebRunner(
           now
         }));
   if (control === null) {
-    io.errorLog("[web-runner] 缺少控制面：请配置 AOS_RUNNER_CONTROL_URL 或中心 PG");
+    io.errorLog(
+      "[web-runner] 缺少控制面：请配置 MOBILE_TESTING_RUNNER_CONTROL_URL（旧名 AOS_RUNNER_CONTROL_URL 兼容）或中心 PG"
+    );
     return 2;
   }
   const hostId = control.hostId;
@@ -525,10 +527,11 @@ host 级远端 Web 任务执行机（不要求项目目录；每台设备一个 
   --name <n>              执行机名称（缺省 hostname）
   --artifact-base-url <u> 产物基址（回传给中心，可选）
   --panel-base-url <u>    中心基址（缺省 AOS_PANEL_BASE_URL；可回退控制面）
-  --control-url <u>       控制面基址（缺省 AOS_RUNNER_CONTROL_URL；设置后不连中心 PG）
+  --control-url <u>       控制面基址（缺省 MOBILE_TESTING_RUNNER_CONTROL_URL；设置后不连中心 PG）
   --once                  只跑一轮（心跳/选机 + 每设备一次领取并执行一次尝试）后退出
-  环境变量：AOS_RUNNER_CONTROL_URL（推荐）、AOS_PANEL_BASE_URL、MOBILE_TESTING_RUNNER_JOB_TOKEN（≥16）、
-            AOS_HOST_ID、AOS_RUNNER_TTL_MS、AOS_DEVICE_LEASE_MS、AOS_RUNNER_HEARTBEAT_MS、
+  环境变量：MOBILE_TESTING_RUNNER_CONTROL_URL（推荐，旧名 AOS_RUNNER_CONTROL_URL 兼容）、
+            AOS_PANEL_BASE_URL、MOBILE_TESTING_RUNNER_JOB_TOKEN（≥16）、
+            MOBILE_TESTING_HOST_ID（旧名 AOS_HOST_ID 兼容）、AOS_RUNNER_TTL_MS、AOS_DEVICE_LEASE_MS、AOS_RUNNER_HEARTBEAT_MS、
             AOS_RUNNER_POLL_MS、AOS_RUNNER_WORK_DIR、AOS_RUNNER_CACHE_DIR；
             未配置控制面时回退中心 PG：MOBILE_TESTING_DATABASE_URL（必需）`);
 }
@@ -571,7 +574,7 @@ function parseFlags(argv: string[]): ParsedFlags {
   };
 }
 
-/** CLI 入口：配置 `AOS_RUNNER_CONTROL_URL` 时只连中心 HTTP；否则走中心 PG 兼容路径。 */
+/** CLI 入口：配置 `MOBILE_TESTING_RUNNER_CONTROL_URL` 时只连中心 HTTP；否则走中心 PG 兼容路径。 */
 export async function runWebRunnerCommand(
   argv: string[],
   io: WebRunnerCommandIo,
@@ -586,7 +589,8 @@ export async function runWebRunnerCommand(
   const name = flags.get("name")?.trim() || os.hostname();
   const artifactBaseUrl = flags.get("artifact-base-url")?.trim() || null;
   const controlUrl =
-    flags.get("control-url")?.trim() || (env.AOS_RUNNER_CONTROL_URL ?? "").trim();
+    flags.get("control-url")?.trim() ||
+    (env.MOBILE_TESTING_RUNNER_CONTROL_URL ?? env.AOS_RUNNER_CONTROL_URL ?? "").trim();
   const panelBaseUrl =
     flags.get("panel-base-url")?.trim() ||
     (env.AOS_PANEL_BASE_URL ?? "").trim() ||
@@ -600,7 +604,7 @@ export async function runWebRunnerCommand(
   if (needsExecutor || needsHttpControl) {
     if (panelBaseUrl === "") {
       io.errorLog(
-        "web-runner 需要中心基址：请设置 AOS_RUNNER_CONTROL_URL（推荐）或 AOS_PANEL_BASE_URL，或传 --control-url/--panel-base-url（spec/资产/结果接口）"
+        "web-runner 需要中心基址：请设置 MOBILE_TESTING_RUNNER_CONTROL_URL（旧名 AOS_RUNNER_CONTROL_URL 兼容）或 AOS_PANEL_BASE_URL，或传 --control-url/--panel-base-url（spec/资产/结果接口）"
       );
       return 2;
     }
@@ -645,7 +649,7 @@ export async function runWebRunnerCommand(
           opened = true;
         } catch (error) {
           io.errorLog(
-            `${errorMessage(error)}（web-runner 需要 AOS_RUNNER_CONTROL_URL 或中心 PG；请设置 ${CENTER_DATABASE_ENV}）`
+            `${errorMessage(error)}（web-runner 需要 MOBILE_TESTING_RUNNER_CONTROL_URL（旧名 AOS_RUNNER_CONTROL_URL 兼容）或中心 PG；请设置 ${CENTER_DATABASE_ENV}）`
           );
           return 2;
         }

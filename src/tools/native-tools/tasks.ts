@@ -51,7 +51,7 @@ export const TASK_NATIVE_TOOLS: NativeToolDefinition[] = [
           {
             ok: false,
             error:
-              "AOS_HOST_STRICT=1：本机主机身份未知，拒绝取消回归任务（先确认 AOS_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
+              "AOS_HOST_STRICT=1：本机主机身份未知，拒绝取消回归任务（先确认 MOBILE_TESTING_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
           },
           true
         );

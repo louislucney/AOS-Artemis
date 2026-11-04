@@ -500,7 +500,7 @@ async function suiteRunTask(
   const localHostId = runtime.hostIdentity?.id ?? null;
   if (hostStrictFrom(io.env ?? process.env) && localHostId === null) {
     io.errorLog(
-      "AOS_HOST_STRICT=1：本机主机身份未知，拒绝执行回归任务（先确认 AOS_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
+      "AOS_HOST_STRICT=1：本机主机身份未知，拒绝执行回归任务（先确认 MOBILE_TESTING_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
     );
     return 2;
   }
@@ -2970,7 +2970,7 @@ async function suiteTaskCancel(
   const localHostId = runtime.hostIdentity?.id ?? null;
   if (hostStrictFrom(env) && localHostId === null) {
     io.errorLog(
-      "AOS_HOST_STRICT=1：本机主机身份未知，拒绝取消回归任务（先确认 AOS_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
+      "AOS_HOST_STRICT=1：本机主机身份未知，拒绝取消回归任务（先确认 MOBILE_TESTING_HOST_ID/AOS_HOST_DIR 能解析出主机身份）"
     );
     return 2;
   }
@@ -3328,10 +3328,14 @@ async function suiteRunnerCommand(
   buildRuntime: (projectDir: string | null) => Promise<CliRuntimeBundle>
 ): Promise<number> {
   const env = io.env ?? process.env;
-  const controlUrl = (env.AOS_RUNNER_CONTROL_URL ?? "").trim();
+  const controlUrl = (
+    env.MOBILE_TESTING_RUNNER_CONTROL_URL ??
+    env.AOS_RUNNER_CONTROL_URL ??
+    ""
+  ).trim();
   if (runtime.store.kind !== "postgres" && controlUrl === "") {
     io.errorLog(
-      "runner 需要中心 PG（文件台账不支持多进程）；请配置 MOBILE_TESTING_DATABASE_URL 或 AOS_RUNNER_CONTROL_URL"
+      "runner 需要中心 PG（文件台账不支持多进程）；请配置 MOBILE_TESTING_DATABASE_URL 或 MOBILE_TESTING_RUNNER_CONTROL_URL（旧名 AOS_RUNNER_CONTROL_URL 兼容）"
     );
     return 2;
   }
@@ -4165,7 +4169,11 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
             (baseEnv.AOS_RUNNER_INSTANCE_ID ?? "").trim() || randomUUID()
         }
       : baseEnv;
-  const controlUrl = (runtimeEnv.AOS_RUNNER_CONTROL_URL ?? "").trim();
+  const controlUrl = (
+    runtimeEnv.MOBILE_TESTING_RUNNER_CONTROL_URL ??
+    runtimeEnv.AOS_RUNNER_CONTROL_URL ??
+    ""
+  ).trim();
   const buildRuntime =
     deps.buildRuntime ??
     (controlUrl === ""
