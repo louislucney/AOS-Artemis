@@ -600,7 +600,7 @@ export async function runWebRunnerCommand(
   if (needsExecutor || needsHttpControl) {
     if (panelBaseUrl === "") {
       io.errorLog(
-        "web-runner 需要中心基址：--panel-base-url <url> 或 AOS_PANEL_BASE_URL（spec/资产/结果接口）"
+        "web-runner 需要中心基址：请设置 AOS_RUNNER_CONTROL_URL（推荐）或 AOS_PANEL_BASE_URL，或传 --control-url/--panel-base-url（spec/资产/结果接口）"
       );
       return 2;
     }
