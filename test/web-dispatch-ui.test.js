@@ -218,6 +218,14 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
   assert.match(html, /id="web-job-host"[^>]*name="targetHostId"/);
   assert.match(html, /<option value="host-a"/);
   assert.match(html, /host-a\.local/);
+  const materialsSelect =
+    /<select id="web-job-materials"[\s\S]*?<\/select>/.exec(html)?.[0] ?? "";
+  assert.match(materialsSelect, /账号\.json/, "测试资料资产出现在下拉");
+  assert.equal(
+    (materialsSelect.match(/>不指定<\/option>/g) ?? []).length,
+    1,
+    "测试资料只有一个占位"
+  );
   assert.match(html, /id="web-job-device"[^>]*name="deviceSerial"/);
   assert.match(html, /<option value="emulator-5554"/);
   assert.match(html, /Pixel 7/);

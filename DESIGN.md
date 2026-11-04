@@ -3635,3 +3635,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **套件来源空态**：目标主机未登记项目时，来源卡片不再只渲染空下拉；用例集选择禁用，显示「该主机未登记项目，套件回归没有可用用例集」，顶部 callout 直接给出去网页测试的 CTA（保留 host）。用例集仍从**目标主机作用域 store**读取，不把其他主机/项目的数据串过来。
 - **审计结论**：套件链路（`computeDispatchPreview`、面板 `createTask`、`suite-service`）的「未登记项目」是套件 runner 需要项目目录/用例集的前提；网页测试是 host 级执行，不要求项目登记。已验证 `section=jobs/assets/library` + `host=win-mini-01` + ESSO-GU 均 200，`/panel/api/jobs/preview` 返回该主机的设备。`usage --host` 的项目过滤只影响查询，不阻断执行。顶部项目切换器仍按项目自身 host 导航（全局导航，不携带当前执行 host）。
 - **测试**：`test/web-dispatch-ui.test.js` 新增「无项目 jobs 页保留 host」；`test/panel-dispatch-project-priority.test.js` 覆盖空态 CTA 保留 host、来源空态原因/禁用/网页测试出口；全量 3014 绿，lint 0 error。
+
+### 13.298 新增（测试资产：materials 上传与绑定 UI）
+
+> 2026-11-04。用户反馈网页测试「测试资料」下拉只有「不指定」，不知道去哪里补充。
+
+- **测试资产页**：上传类型增加「测试资料（materials）」，支持 `.zip/.json/.csv/.txt`；`secret` 复选框仅对 materials 生效。上传后新增「测试资料资产」表（文件名/版本/大小/secret/sha256/时间）。
+- **网页测试表单**：`测试资料` 下拉读取 materials 资产；修复空资产时出现两个「不指定」占位的问题（`assetOptionsWithPlaceholder` 统一只输出一个占位 + 资产项）。
+- **API**：复用既有 `POST /panel/api/projects/assets`（`kind=materials`、可选 `secret=true`）；`storeWebAsset` 对 secret materials 落 0700/0600，runner 下载到 `jobDir/secrets/`，不进 CAS。
+- **边界**：本次只做上传/版本/绑定 UI；把 materials 键值注入 Maestro `-e` 的格式与 secret 安全通道仍待接线（不能把 secret 放命令行）。`materialsAssetId` 已进入 job spec 并由 runner 下载。
+- **测试**：`web-assets-ui` 覆盖 materials 类型/secret/资产表/客户端扩展名；`web-dispatch-ui` 覆盖 materials 下拉只有一个占位；全量 3014 绿，lint 0 error。

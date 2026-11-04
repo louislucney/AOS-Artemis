@@ -174,8 +174,9 @@ export interface WebAssetsPageData {
   assets: WebAssetRecord[];
   packages?: WebAssetRecord[];
   scripts?: WebAssetRecord[];
-  /** 由 `?kind=package#asset-upload` 预选上传类型（安装包引导链接）。 */
-  uploadKind?: "excel" | "package";
+  materials?: WebAssetRecord[];
+  /** 由 `?kind=package#asset-upload` / `?kind=materials#asset-upload` 预选上传类型。 */
+  uploadKind?: "excel" | "package" | "materials";
   mappings: ExcelMappingRecord[];
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
@@ -236,6 +237,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     .join("");
   const packages = data.packages ?? [];
   const scripts = data.scripts ?? [];
+  const materials = data.materials ?? [];
   const packageOptions = packages
     .map(
       (asset) =>
@@ -267,6 +269,17 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       relativeTime(asset.createdAt)
     ];
   });
+  const materialRows = materials.map((asset) => {
+    const secret = asset.metadata?.secret === true;
+    return [
+      `<code>${escapeHtml(asset.filename)}</code>`,
+      `<code>v${asset.version}</code>`,
+      formatBytes(asset.size),
+      secret ? cBadge({ label: "secret", tone: "warning" }) : '<span class="muted">—</span>',
+      `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
+      relativeTime(asset.createdAt)
+    ];
+  });
   const mappingRows = data.mappings.map((mapping) => [
     `<code>${escapeHtml(
       (assetName.get(mapping.assetId) ?? mapping.assetId).slice(0, 60)
@@ -278,18 +291,24 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     relativeTime(mapping.createdAt)
   ]);
 
-  const uploadKind = data.uploadKind === "package" ? "package" : "excel";
+  const uploadKind =
+    data.uploadKind === "package"
+      ? "package"
+      : data.uploadKind === "materials"
+        ? "materials"
+        : "excel";
   const uploadBody = [
     `<form id="asset-upload-form" class="c-form" data-project="${escapeHtml(data.rootPath)}">`,
-    `<p><label>类型 <select id="asset-kind" aria-label="资产类型"${disabledAttr}><option value="excel"${uploadKind === "excel" ? " selected" : ""}>Excel 用例</option><option value="package"${uploadKind === "package" ? " selected" : ""}>安装包（APK/IPA）</option></select></label> <span class="muted">Excel 支持 .xlsx/.csv；安装包支持 .apk/.ipa。</span></p>`,
-    `<div id="asset-drop" class="c-dropzone" tabindex="0" role="button" aria-label="拖放 Excel、CSV 或安装包文件，或点击选择">`,
-    `<input id="asset-file" class="c-dropzone-input" type="file" name="file" accept=".xlsx,.csv,.apk,.ipa" aria-label="Excel、CSV 或安装包文件"${disabledAttr}>`,
-    `<span class="c-dropzone-title">拖入 Excel / CSV / APK / IPA 文件</span>`,
-    `<span class="c-dropzone-hint">或点击选择文件；安装包支持 .apk/.ipa</span>`,
+    `<p><label>类型 <select id="asset-kind" aria-label="资产类型"${disabledAttr}><option value="excel"${uploadKind === "excel" ? " selected" : ""}>Excel 用例</option><option value="package"${uploadKind === "package" ? " selected" : ""}>安装包（APK/IPA）</option><option value="materials"${uploadKind === "materials" ? " selected" : ""}>测试资料（materials）</option></select></label> <span class="muted">Excel 支持 .xlsx/.csv；安装包支持 .apk/.ipa；测试资料支持 .zip/.json/.csv/.txt。</span></p>`,
+    `<div id="asset-drop" class="c-dropzone" tabindex="0" role="button" aria-label="拖放 Excel、CSV、安装包或测试资料文件，或点击选择">`,
+    `<input id="asset-file" class="c-dropzone-input" type="file" name="file" accept=".xlsx,.csv,.apk,.ipa,.zip,.json,.txt" aria-label="Excel、CSV、安装包或测试资料文件"${disabledAttr}>`,
+    `<span class="c-dropzone-title">拖入 Excel / CSV / APK / IPA / 测试资料</span>`,
+    `<span class="c-dropzone-hint">或点击选择文件；安装包 .apk/.ipa；测试资料 .zip/.json/.csv/.txt</span>`,
     `<span id="asset-file-name" class="c-dropzone-file">未选择文件</span>`,
     `</div>`,
+    `<p id="asset-secret-row" class="c-form-check"${uploadKind === "materials" ? "" : " hidden"}><label><input id="asset-secret" type="checkbox"${disabledAttr}> 资料含密钥/账号（secret；执行机临时 0600，不入缓存）</label></p>`,
     `<p class="c-dropzone-actions"><button id="asset-upload-submit" class="c-button" type="submit" data-busy-label="上传中…"${disabledAttr}>上传资产</button> <span id="asset-upload-status" role="status" class="muted"></span></p>`,
-    `<p class="muted">Excel ≤20MB、.xlsx/.csv；安装包 .apk/.ipa；上传后登记新版本（同内容复用文件，CSV 自动识别 UTF-8/GB18030）。</p>`,
+    `<p class="muted">Excel ≤20MB、.xlsx/.csv；安装包 .apk/.ipa；测试资料 .zip/.json/.csv/.txt（secret 仅 materials）；上传后登记新版本（同内容复用文件，CSV 自动识别 UTF-8/GB18030）。</p>`,
     `</form>`,
     actionsReason
   ].join("\n");
@@ -333,7 +352,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   ).replace(/</g, "\\u003c");
   const script = actionsOff
     ? ""
-    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};var fields=${fieldsJson};function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}function setBusy(btn,busy){if(!btn)return;if(busy){if(!btn.dataset.idleLabel)btn.dataset.idleLabel=btn.textContent;btn.disabled=true;if(btn.dataset.busyLabel)btn.textContent=btn.dataset.busyLabel;}else{btn.disabled=false;if(btn.dataset.idleLabel)btn.textContent=btn.dataset.idleLabel;}}function jsonPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var preview=null;var saveBtn=document.getElementById('mapping-save');if(saveBtn)saveBtn.disabled=true;var uForm=document.getElementById('asset-upload-form');var uStatus=document.getElementById('asset-upload-status');var uploadBtn=document.getElementById('asset-upload-submit');var input=document.getElementById('asset-file');var uDrop=document.getElementById('asset-drop');var uFileName=document.getElementById('asset-file-name');function uKind(){var kindSel=document.getElementById('asset-kind');return kindSel&&kindSel.value==='package'?'package':'excel';}function uKindOf(file){var lower=file?String(file.name||'').toLowerCase():'';if(lower.endsWith('.apk')||lower.endsWith('.ipa'))return 'package';if(lower.endsWith('.xlsx')||lower.endsWith('.csv'))return 'excel';return uKind();}function uSyncKind(file){var kind=uKindOf(file);var kindSel=document.getElementById('asset-kind');if(kindSel&&(kind==='package'||kind==='excel'))kindSel.value=kind;return kind;}function uExtOk(name,kind){var lower=String(name||'').toLowerCase();return kind==='package'?(lower.endsWith('.apk')||lower.endsWith('.ipa')):(lower.endsWith('.xlsx')||lower.endsWith('.csv'));}function uUpdateName(){if(!uFileName)return;var f=input&&input.files?input.files[0]:null;uFileName.textContent=f?f.name:'未选择文件';if(f)uSyncKind(f);}if(uForm){uForm.addEventListener('submit',function(e){e.preventDefault();if(uploadBtn&&uploadBtn.disabled)return;var file=input&&input.files?input.files[0]:null;var kind=uSyncKind(file);if(!file){if(uStatus)uStatus.textContent='请选择文件';return;}if(!uExtOk(file.name,kind)){if(uStatus)uStatus.textContent=kind==='package'?'安装包仅支持 .apk/.ipa':'Excel 仅支持 .xlsx/.csv';return;}var fd=new FormData();fd.append('project',root);fd.append('kind',kind);if(host)fd.append('host',host);fd.append('file',file);if(uStatus)uStatus.textContent='上传中…';setBusy(uploadBtn,true);fetch('/panel/api/projects/assets',{method:'POST',headers:{'X-AOS-Console':'1'},body:fd}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已上传 '+res.j.asset.filename+'（v'+res.j.asset.version+'） · 已写入审计');setBusy(uploadBtn,false);var url=new URL(location.href);url.hash='';url.searchParams.set('_uploaded',String(Date.now()));location.href=url.toString();}else{setBusy(uploadBtn,false);if(uStatus)uStatus.textContent='上传失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){setBusy(uploadBtn,false);if(uStatus)uStatus.textContent='上传失败：'+err;});});}if(uDrop&&input){uDrop.addEventListener('click',function(){input.click();});uDrop.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();input.click();}});['dragenter','dragover'].forEach(function(name){uDrop.addEventListener(name,function(e){e.preventDefault();uDrop.classList.add('is-dragover');});});['dragleave','drop'].forEach(function(name){uDrop.addEventListener(name,function(e){e.preventDefault();uDrop.classList.remove('is-dragover');});});uDrop.addEventListener('drop',function(e){var files=e.dataTransfer&&e.dataTransfer.files;if(!files||files.length===0)return;var file=files[0];var kind=uSyncKind(file);if(!uExtOk(file.name,kind)){if(uStatus)uStatus.textContent=kind==='package'?'安装包仅支持 .apk/.ipa':'Excel 仅支持 .xlsx/.csv';return;}try{input.files=files;}catch(err){var dt=new DataTransfer();dt.items.add(file);input.files=dt.files;}uUpdateName();if(uStatus)uStatus.textContent='已选择文件，点击「上传资产」';});input.addEventListener('click',function(e){e.stopPropagation();});input.addEventListener('change',uUpdateName);uUpdateName();}var pForm=document.getElementById('mapping-preview-form');var sel=document.getElementById('asset-select');var pStatus=document.getElementById('mapping-status');var previewBox=document.getElementById('mapping-preview');var previewBtn=document.getElementById('mapping-preview-submit');var rowInput=document.getElementById('asset-header-row');function resetPreview(){preview=null;if(saveBtn)saveBtn.disabled=true;if(previewBox)previewBox.innerHTML='<p class="muted">选择资产并预览表头后，可确认建议映射并保存。</p>';if(pStatus)pStatus.textContent='';}if(sel)sel.addEventListener('change',resetPreview);if(rowInput){rowInput.addEventListener('change',resetPreview);rowInput.addEventListener('input',resetPreview);}if(pForm){pForm.addEventListener('submit',function(e){e.preventDefault();if(previewBtn&&previewBtn.disabled)return;if(!sel||!sel.value){if(pStatus)pStatus.textContent='请选择资产';return;}var headerRow=parseInt(rowInput&&rowInput.value?rowInput.value:'1',10);if(!headerRow||headerRow<1)headerRow=1;var requestedAsset=sel.value;var requestedHeaderRow=headerRow;preview=null;if(saveBtn)saveBtn.disabled=true;if(pStatus)pStatus.textContent='读取中…';setBusy(previewBtn,true);jsonPost('/panel/api/projects/excel/preview',{project:root,host:host,assetId:requestedAsset,headerRow:requestedHeaderRow}).then(function(res){if(sel.value!==requestedAsset||parseInt(rowInput&&rowInput.value?rowInput.value:'1',10)!==requestedHeaderRow){setBusy(previewBtn,false);return;}if(!res.ok||!res.j||!res.j.ok){setBusy(previewBtn,false);if(pStatus)pStatus.textContent='预览失败：'+((res.j&&res.j.error)||('HTTP '+res.status));return;}var j=res.j;var suggested=j.suggested||{};preview={assetId:requestedAsset,sheetName:j.sheetName,headerRow:requestedHeaderRow,columnMap:suggested};var rows=fields.map(function(f){var header=suggested[f.field]||'';return '<tr><td>'+esc(f.label)+'</td><td>'+(header?'<code>'+esc(header)+'</code>':'<span class="muted">—</span>')+'</td></tr>';});if(previewBox)previewBox.innerHTML='<div class="c-table-wrap"><table class="c-table"><caption>映射预览</caption><thead><tr><th scope="col">规范字段</th><th scope="col">建议表头</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div><p class="muted">工作表 '+esc(j.sheetName)+' · 表头行 '+requestedHeaderRow+' · 指纹 <code>'+esc(String(j.fingerprint||'').slice(0,12))+'</code></p>';if(pStatus)pStatus.textContent='预览完成，可保存';setBusy(previewBtn,false);if(saveBtn)saveBtn.disabled=false;}).catch(function(err){setBusy(previewBtn,false);if(pStatus)pStatus.textContent='预览失败：'+err;});});}if(saveBtn){saveBtn.addEventListener('click',function(){if(!preview){if(pStatus)pStatus.textContent='请先预览映射';return;}if(pStatus)pStatus.textContent='保存中…';setBusy(saveBtn,true);jsonPost('/panel/api/projects/excel/mapping',{project:root,host:host,assetId:preview.assetId,sheetName:preview.sheetName,headerRow:preview.headerRow,columnMap:preview.columnMap}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已保存列映射 · 已写入审计');location.reload();}else{setBusy(saveBtn,false);if(pStatus)pStatus.textContent='保存失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){setBusy(saveBtn,false);if(pStatus)pStatus.textContent='保存失败：'+err;});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-import-excel]'):null;if(!b)return;var id=b.getAttribute('data-import-excel');if(!id)return;b.disabled=true;jsonPost('/panel/api/import',{project:root,host:host,assetId:id}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已导入用例库 · 可到用例库下发');location.reload();}else{b.disabled=false;if(uStatus)uStatus.textContent='导入用例库失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){b.disabled=false;if(uStatus)uStatus.textContent='导入用例库失败：'+err;});});})();</script>`;
+    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};var fields=${fieldsJson};function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}function setBusy(btn,busy){if(!btn)return;if(busy){if(!btn.dataset.idleLabel)btn.dataset.idleLabel=btn.textContent;btn.disabled=true;if(btn.dataset.busyLabel)btn.textContent=btn.dataset.busyLabel;}else{btn.disabled=false;if(btn.dataset.idleLabel)btn.textContent=btn.dataset.idleLabel;}}function jsonPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var preview=null;var saveBtn=document.getElementById('mapping-save');if(saveBtn)saveBtn.disabled=true;var uForm=document.getElementById('asset-upload-form');var uStatus=document.getElementById('asset-upload-status');var uploadBtn=document.getElementById('asset-upload-submit');var input=document.getElementById('asset-file');var uDrop=document.getElementById('asset-drop');var uFileName=document.getElementById('asset-file-name');function uKind(){var kindSel=document.getElementById('asset-kind');var v=kindSel?kindSel.value:'';return v==='package'||v==='materials'?v:'excel';}function uKindOf(file){var lower=file?String(file.name||'').toLowerCase():'';if(lower.endsWith('.apk')||lower.endsWith('.ipa'))return 'package';if(lower.endsWith('.xlsx'))return 'excel';if(lower.endsWith('.zip')||lower.endsWith('.json')||lower.endsWith('.txt'))return 'materials';if(lower.endsWith('.csv')){var current=uKind();return current==='materials'?'materials':'excel';}return uKind();}function uSyncKind(file){var kind=uKindOf(file);var kindSel=document.getElementById('asset-kind');if(kindSel&&(kind==='package'||kind==='excel'||kind==='materials'))kindSel.value=kind;var secretRow=document.getElementById('asset-secret-row');if(secretRow)secretRow.hidden=kind!=='materials';return kind;}function uExtOk(name,kind){var lower=String(name||'').toLowerCase();if(kind==='package')return lower.endsWith('.apk')||lower.endsWith('.ipa');if(kind==='materials')return lower.endsWith('.zip')||lower.endsWith('.json')||lower.endsWith('.csv')||lower.endsWith('.txt');return lower.endsWith('.xlsx')||lower.endsWith('.csv');}var uKindSelect=document.getElementById('asset-kind');if(uKindSelect){uKindSelect.addEventListener('change',function(){var secretRow=document.getElementById('asset-secret-row');if(secretRow)secretRow.hidden=uKindSelect.value!=='materials';});}function uUpdateName(){if(!uFileName)return;var f=input&&input.files?input.files[0]:null;uFileName.textContent=f?f.name:'未选择文件';if(f)uSyncKind(f);}if(uForm){uForm.addEventListener('submit',function(e){e.preventDefault();if(uploadBtn&&uploadBtn.disabled)return;var file=input&&input.files?input.files[0]:null;var kind=uSyncKind(file);if(!file){if(uStatus)uStatus.textContent='请选择文件';return;}if(!uExtOk(file.name,kind)){if(uStatus)uStatus.textContent=kind==='package'?'安装包仅支持 .apk/.ipa':kind==='materials'?'测试资料仅支持 .zip/.json/.csv/.txt':'Excel 仅支持 .xlsx/.csv';return;}var fd=new FormData();fd.append('project',root);fd.append('kind',kind);if(host)fd.append('host',host);var secret=document.getElementById('asset-secret');if(kind==='materials'&&secret&&secret.checked)fd.append('secret','true');fd.append('file',file);if(uStatus)uStatus.textContent='上传中…';setBusy(uploadBtn,true);fetch('/panel/api/projects/assets',{method:'POST',headers:{'X-AOS-Console':'1'},body:fd}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已上传 '+res.j.asset.filename+'（v'+res.j.asset.version+'） · 已写入审计');setBusy(uploadBtn,false);var url=new URL(location.href);url.hash='';url.searchParams.set('_uploaded',String(Date.now()));location.href=url.toString();}else{setBusy(uploadBtn,false);if(uStatus)uStatus.textContent='上传失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){setBusy(uploadBtn,false);if(uStatus)uStatus.textContent='上传失败：'+err;});});}if(uDrop&&input){uDrop.addEventListener('click',function(){input.click();});uDrop.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();input.click();}});['dragenter','dragover'].forEach(function(name){uDrop.addEventListener(name,function(e){e.preventDefault();uDrop.classList.add('is-dragover');});});['dragleave','drop'].forEach(function(name){uDrop.addEventListener(name,function(e){e.preventDefault();uDrop.classList.remove('is-dragover');});});uDrop.addEventListener('drop',function(e){var files=e.dataTransfer&&e.dataTransfer.files;if(!files||files.length===0)return;var file=files[0];var kind=uSyncKind(file);if(!uExtOk(file.name,kind)){if(uStatus)uStatus.textContent=kind==='package'?'安装包仅支持 .apk/.ipa':kind==='materials'?'测试资料仅支持 .zip/.json/.csv/.txt':'Excel 仅支持 .xlsx/.csv';return;}try{input.files=files;}catch(err){var dt=new DataTransfer();dt.items.add(file);input.files=dt.files;}uUpdateName();if(uStatus)uStatus.textContent='已选择文件，点击「上传资产」';});input.addEventListener('click',function(e){e.stopPropagation();});input.addEventListener('change',uUpdateName);uUpdateName();}var pForm=document.getElementById('mapping-preview-form');var sel=document.getElementById('asset-select');var pStatus=document.getElementById('mapping-status');var previewBox=document.getElementById('mapping-preview');var previewBtn=document.getElementById('mapping-preview-submit');var rowInput=document.getElementById('asset-header-row');function resetPreview(){preview=null;if(saveBtn)saveBtn.disabled=true;if(previewBox)previewBox.innerHTML='<p class="muted">选择资产并预览表头后，可确认建议映射并保存。</p>';if(pStatus)pStatus.textContent='';}if(sel)sel.addEventListener('change',resetPreview);if(rowInput){rowInput.addEventListener('change',resetPreview);rowInput.addEventListener('input',resetPreview);}if(pForm){pForm.addEventListener('submit',function(e){e.preventDefault();if(previewBtn&&previewBtn.disabled)return;if(!sel||!sel.value){if(pStatus)pStatus.textContent='请选择资产';return;}var headerRow=parseInt(rowInput&&rowInput.value?rowInput.value:'1',10);if(!headerRow||headerRow<1)headerRow=1;var requestedAsset=sel.value;var requestedHeaderRow=headerRow;preview=null;if(saveBtn)saveBtn.disabled=true;if(pStatus)pStatus.textContent='读取中…';setBusy(previewBtn,true);jsonPost('/panel/api/projects/excel/preview',{project:root,host:host,assetId:requestedAsset,headerRow:requestedHeaderRow}).then(function(res){if(sel.value!==requestedAsset||parseInt(rowInput&&rowInput.value?rowInput.value:'1',10)!==requestedHeaderRow){setBusy(previewBtn,false);return;}if(!res.ok||!res.j||!res.j.ok){setBusy(previewBtn,false);if(pStatus)pStatus.textContent='预览失败：'+((res.j&&res.j.error)||('HTTP '+res.status));return;}var j=res.j;var suggested=j.suggested||{};preview={assetId:requestedAsset,sheetName:j.sheetName,headerRow:requestedHeaderRow,columnMap:suggested};var rows=fields.map(function(f){var header=suggested[f.field]||'';return '<tr><td>'+esc(f.label)+'</td><td>'+(header?'<code>'+esc(header)+'</code>':'<span class="muted">—</span>')+'</td></tr>';});if(previewBox)previewBox.innerHTML='<div class="c-table-wrap"><table class="c-table"><caption>映射预览</caption><thead><tr><th scope="col">规范字段</th><th scope="col">建议表头</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div><p class="muted">工作表 '+esc(j.sheetName)+' · 表头行 '+requestedHeaderRow+' · 指纹 <code>'+esc(String(j.fingerprint||'').slice(0,12))+'</code></p>';if(pStatus)pStatus.textContent='预览完成，可保存';setBusy(previewBtn,false);if(saveBtn)saveBtn.disabled=false;}).catch(function(err){setBusy(previewBtn,false);if(pStatus)pStatus.textContent='预览失败：'+err;});});}if(saveBtn){saveBtn.addEventListener('click',function(){if(!preview){if(pStatus)pStatus.textContent='请先预览映射';return;}if(pStatus)pStatus.textContent='保存中…';setBusy(saveBtn,true);jsonPost('/panel/api/projects/excel/mapping',{project:root,host:host,assetId:preview.assetId,sheetName:preview.sheetName,headerRow:preview.headerRow,columnMap:preview.columnMap}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已保存列映射 · 已写入审计');location.reload();}else{setBusy(saveBtn,false);if(pStatus)pStatus.textContent='保存失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){setBusy(saveBtn,false);if(pStatus)pStatus.textContent='保存失败：'+err;});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-import-excel]'):null;if(!b)return;var id=b.getAttribute('data-import-excel');if(!id)return;b.disabled=true;jsonPost('/panel/api/import',{project:root,host:host,assetId:id}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已导入用例库 · 可到用例库下发');location.reload();}else{b.disabled=false;if(uStatus)uStatus.textContent='导入用例库失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){b.disabled=false;if(uStatus)uStatus.textContent='导入用例库失败：'+err;});});})();</script>`;
 
   const scriptGenScript = actionsOff
     ? ""
@@ -372,6 +391,16 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
           rows: packageRows,
           caption: "安装包资产版本",
           empty: "暂无安装包资产（上方上传）"
+        })
+      })}</div>`,
+      `<div id="materials-assets">${cCard({
+        title: "测试资料资产",
+        subtitle: `共 ${materials.length} 个资料版本`,
+        body: cTable({
+          columns: ["文件名", "版本", "大小", "secret", "sha256", "上传时间"],
+          rows: materialRows,
+          caption: "测试资料资产版本",
+          empty: "暂无测试资料（上方上传）"
         })
       })}</div>`,
       cCard({
@@ -609,6 +638,23 @@ function assetOptions(assets: WebAssetRecord[], kind: WebAssetRecord["kind"], em
         `<option value="${escapeHtml(asset.id)}">v${asset.version} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
     )
     .join("");
+}
+
+function assetOptionsWithPlaceholder(
+  assets: WebAssetRecord[],
+  kind: WebAssetRecord["kind"],
+  placeholder: string
+): string {
+  const entries = assets.filter((asset) => asset.kind === kind);
+  return (
+    `<option value="">${escapeHtml(placeholder)}</option>` +
+    entries
+      .map(
+        (asset) =>
+          `<option value="${escapeHtml(asset.id)}">v${asset.version} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
+      )
+      .join("")
+  );
 }
 
 function runnerDeviceOptions(
@@ -942,12 +988,12 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
       )}</select></label></p>`,
     excelHint,
     packageHint,
-    `<p><label>测试资料 <select id="web-job-materials" name="materialsAssetId" aria-label="测试资料资产"${disabledAttr}><option value="">不指定</option>${assetOptions(
+    `<p><label>测试资料 <select id="web-job-materials" name="materialsAssetId" aria-label="测试资料资产"${disabledAttr}>${assetOptionsWithPlaceholder(
       data.assets,
       "materials",
       "不指定"
     )}</select></label> ` +
-      `<label>脚本集 <select id="web-job-scripts" name="scriptSetId" aria-label="脚本集资产"${disabledAttr}><option value="">不指定</option>${assetOptions(
+      `<label>脚本集 <select id="web-job-scripts" name="scriptSetId" aria-label="脚本集资产"${disabledAttr}>${assetOptionsWithPlaceholder(
         data.assets,
         "scripts",
         "不指定"

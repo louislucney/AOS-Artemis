@@ -72,6 +72,23 @@ async function setup(t, { hostId = null } = {}) {
     uploadedBy: "aos",
     metadata: { origin: "generated", platform: "android", ready: 3, partial: 2, unresolved: 1 }
   });
+  const materials = await store.createWebAsset({
+    rootPath,
+    kind: "materials",
+    filename: "accounts.json",
+    sha256: "f".repeat(64),
+    size: 256,
+    storagePath: path.join(
+      rootPath,
+      ".artemis",
+      "web",
+      "assets",
+      "materials",
+      `${"f".repeat(64)}.json`
+    ),
+    uploadedBy: "alice",
+    metadata: { secret: true }
+  });
   const mapping = await store.saveExcelMapping({
     rootPath,
     assetId: asset.id,
@@ -86,7 +103,7 @@ async function setup(t, { hostId = null } = {}) {
     workspaceRoot: workspace,
     buildStale: false
   };
-  return { deps, rootPath, asset, escapedAsset, pkg, generated, mapping, store };
+  return { deps, rootPath, asset, escapedAsset, pkg, generated, materials, mapping, store };
 }
 
 function assetsUrl(rootPath, hostId = null) {
@@ -141,11 +158,19 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /id="asset-upload"/, "上传锚点");
   assert.match(html, /id="asset-kind"[^>]*aria-label="资产类型"/, "资产类型选择");
   assert.match(html, /<option value="package">安装包（APK\/IPA）<\/option>/, "安装包类型");
-  assert.match(html, /type="file"[^>]*accept="\.xlsx,\.csv,\.apk,\.ipa"/, "允许 Excel/CSV/APK/IPA");
+  assert.match(html, /<option value="materials">测试资料（materials）<\/option>/, "测试资料类型");
+  assert.match(
+    html,
+    /type="file"[^>]*accept="\.xlsx,\.csv,\.apk,\.ipa,\.zip,\.json,\.txt"/,
+    "允许 Excel/CSV/APK/IPA/测试资料"
+  );
   assert.match(html, /id="asset-file"/, "文件控件");
   assert.match(html, /id="asset-drop"[^>]*class="c-dropzone"/, "拖放区");
-  assert.match(html, /拖入 Excel \/ CSV \/ APK \/ IPA 文件/, "拖放提示");
+  assert.match(html, /拖入 Excel \/ CSV \/ APK \/ IPA \/ 测试资料/, "拖放提示");
+  assert.match(html, /id="asset-secret"/, "secret 标记");
   assert.match(html, /安装包资产/, "安装包资产卡片");
+  assert.match(html, /测试资料资产/, "测试资料资产卡片");
+  assert.match(html, /accounts\.json/, "测试资料文件名");
   assert.match(html, /app\.apk/, "安装包文件名");
   assert.match(html, /\/panel\/api\/projects\/assets/, "multipart 上传端点");
   assert.match(html, /生成 Maestro 脚本/, "脚本生成卡片");
@@ -190,6 +215,8 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.equal(ownScripts.length, 1, "资产页脚本存在");
   assert.match(ownScripts[0], /Excel 仅支持 \.xlsx\/\.csv/, "客户端校验 Excel 扩展名");
   assert.match(ownScripts[0], /安装包仅支持 \.apk\/\.ipa/, "客户端校验安装包扩展名");
+  assert.match(ownScripts[0], /测试资料仅支持 \.zip\/\.json\/\.csv\/\.txt/, "客户端校验测试资料扩展名");
+  assert.match(ownScripts[0], /fd\.append\('secret','true'\)/, "secret 随 materials 上传");
   assert.match(ownScripts[0], /dragenter/, "拖放 hover 态");
   assert.doesNotMatch(ownScripts[0], /requestSubmit/, "拖放只选文件，不自动上传");
   assert.match(ownScripts[0], /已选择文件，点击「上传资产」/, "拖放后提示点击上传");
