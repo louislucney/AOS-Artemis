@@ -71,7 +71,7 @@
 - ARTEMIS 的坐标契约是**物理像素**；Appium XCUITest 的 tap/rect 是**逻辑点**。
 - 没有真实设备时，所有验收必须能在 fake Appium / fake RPC 上完成。
 - 本设计假设 iOS Appium 可返回 page source、screenshot、activeAppInfo；若某个 WDA 版本不支持，按 capability 降级并显式写 warning。
-- ARTEMIS OCR 使用 Google Vision（`OCR_API_KEY`/`VISION_API_KEY` 或 ARTEMIS config `ocr`）；没有 key 时只能走 AX，`ios-ocr-degraded` 必须可见，Phase 2 的跨端 L1 验收不成立。
+- OCR 采用可插拔 provider；Android 与 iOS 必须使用同一个 provider，否则 L1 文本不可比。Google Vision 只是其中一个选项，不强制。
 - iOS web LLM 的 UDID 互斥必须跨进程：Node executor、device service、`mobile_get_device_state` 不能同时开同一台设备的 WDA session。
 
 ## 4. 总体架构
@@ -283,22 +283,64 @@ node dist/cli.js ios-device-service --port 15100 --appium-url http://127.0.0.1:1
 
 ## 7. 观察、OCR 与 L1 一致性
 
-### 7.1 文本通道
+### 7.1 文本通道与 OCR provider
 
 iOS 有两个文本来源：
 
 1. **Accessibility 文本**：`label` / `value` / `identifier`。
-2. **截图 OCR**：ARTEMIS `perform_ocr`（Google Vision）对 iOS 截图识别。
+2. **截图 OCR**：同一个 OCR provider 对 iOS/Android 截图识别。
+
+OCR 不绑定 Google Vision，设计为 provider 抽象：
+
+```ts
+interface OcrProvider {
+  name: string;
+  available(): Promise<boolean>;
+  recognize(png: Buffer, opts?: { lang?: string }): Promise<Array<{
+    text: string;
+    position: Array<{ x: number; y: number }>;
+  }>>;
+}
+```
+
+可选 provider：
+
+| provider | 类型 | 优点 | 代价/约束 |
+|---|---|---|---|
+| `google-vision` | 云 API | 现有 ARTEMIS 已支持；中英识别稳定 | 需要 key、按量计费、图片出网 |
+| `azure-vision` | 云 API | 企业合规选项多；中文支持好 | 需要 endpoint/key、出网 |
+| `baidu-ocr` / `tencent-ocr` / `aliyun-ocr` | 云 API | 国内网络与中文场景友好 | 需要厂商 key/签名；出网 |
+| `rapidocr` | 本地 ONNX | 无外部 key、跨平台、中文/英文、CPU 可跑 | 需要安装模型依赖；准确率需用 UI 截图校准 |
+| `paddleocr` | 本地 Python | 中文强、可离线 | 依赖重、模型体积大、启动慢 |
+| `apple-vision` | 本地 macOS | 无外部 key、系统级中文识别 | 只能跑在 macOS；要求中心或 runner 是 macOS；跨端一致性需 Android 也走同一 provider |
+
+默认策略 `AOS_OCR_PROVIDER=auto`：
+
+1. 显式配置的 provider；
+2. 有 Google Vision key → `google-vision`；
+3. 有 Azure/Baidu/Tencent/Aliyun key → 对应 provider；
+4. 安装了 `rapidocr` → `rapidocr`；
+5. 都没有 → AX-only，写 `ios-ocr-degraded` / `ocr-unavailable`，不宣称 L1 等价。
+
+配置建议：
+
+- `AOS_OCR_PROVIDER=auto|google-vision|azure-vision|baidu-ocr|tencent-ocr|aliyun-ocr|rapidocr|paddleocr|apple-vision|off`
+- `OCR_API_KEY` / `VISION_API_KEY`（沿用 ARTEMIS 约定）
+- `AOS_OCR_ENDPOINT`、`AOS_OCR_API_KEY`（云厂商）
+- `AOS_OCR_LANG=zh-Hans,en`
+- `AOS_OCR_TIMEOUT_MS`（默认 15s）
+- `doctor` / `aos_status` 显示 provider、available、最近错误。
 
 对齐 Android 的做法：
 
 - 观察时把 AX 文本写入 `ui_elements` 的 `text`/`content-desc`。
-- 对截图执行与 Android 相同的 `perform_ocr`。
+- 对截图执行**同一 provider**的 OCR；provider 输出归一化为 `{text, position}`，`fuse_ocr_with_xml` 无需改动。
 - 用 `fuse_ocr_with_xml` 把 OCR 结果与归一化 XML 融合；iOS 的 `hierarchyXml` 已是 Android 兼容结构。
 - L1 从融合后的文本通道取标签，而不是单独从 AX 取。
 - OCR 失败/未配置：降级为 AX，并在 trace/状态中写 `ios-ocr-degraded` warning；不能静默假装 OCR 成功。
+- **禁止 Android 用 Google Vision、iOS 用 Apple Vision** 这类混用；provider 必须项目级统一，否则跨端 L1 不可比。
 
-这样“Android 能看到的文字，iOS 也能看到”成为同一套 OCR + 同一套融合逻辑，而不是两套文本源。
+建议：先用 `auto`，有现成 Google Vision key 就复用；没有 key 时用 `rapidocr` 做离线基线。Phase 2 用一组真实 UI 截图比较 `google-vision` 与 `rapidocr` 的中文/数字/小字号命中率，再定长期默认。
 
 ### 7.2 证据与 trace
 
@@ -401,15 +443,20 @@ interface DeviceCapabilities {
 
 ## 11. 实施计划
 
-### Phase 0：Spike（2–3 天）
+### Phase 0：Spike（2–3 天，throwaway）
 
-- 用 fake Appium 返回固定 source/screenshot。
-- 实现最小 `screen`/`tap`/`swipe`/`inputText` RPC 与 `IosRemoteDriver`。
-- 让 ARTEMIS 现有 `mobile_run_task` 跑通一条“打开应用 → 点击 → done”。
+用户已确认“先探索，功能稳定后再开展”。Spike 只验证架构可行性，不进入生产代码，不承诺测试覆盖。
+
+- 用 fake Appium 返回固定 source/screenshot（一个登录页 + 一个成功页）。
+- fake OpenAI-compatible LLM 返回脚本化动作，避免真实 token 成本。
+- 实现最小 `screen`/`tap`/`swipe`/`inputText` RPC 与 `IosRemoteDriver` + controller shim。
+- 让 ARTEMIS 现有 `mobile_run_task` 跑通一条“打开应用 → 输入 → 点击 → done”。
 - 验证：
-  - ARTEMIS agent core 不需要改 planner/operator。
-  - 坐标 scale、截图、hierarchy 能被现有 checker 读取。
-- 产出：可行性结论 + 需要 patch 的 ARTEMIS 文件清单。
+  - ARTEMIS agent core 不需要改 planner/operator；
+  - 坐标 scale、截图、hierarchy 能被现有 checker 读取；
+  - 每步 RPC 开销可接受（本地 loopback）。
+- 产出：可行性报告（go/no-go）、需要 patch 的 ARTEMIS 文件清单、性能数据、未预期阻塞。
+- **决策门**：Spike 报告通过后才进入 Phase 1；不通过则停止或改为 Python 直连 Appium 的备选方案。
 
 ### Phase 1：MVP（1–2 周）
 
@@ -495,19 +542,25 @@ interface DeviceCapabilities {
 - 切换条件（默认门禁，可由负责人调整）：
   - fake 跨端 golden tests 全绿；
   - 真实设备 5 条 golden case（登录、列表滚动、弹窗、表单校验、空/网络错误）各跑 3 次，结论一致率 ≥ 90%；
-  - L1 文本覆盖：iOS OCR+AX 能覆盖 Android 同一预期锚点的比例 ≥ 95%；
+  - L1 文本覆盖：同一 OCR provider 下，iOS OCR+AX 能覆盖 Android 同一预期锚点的比例 ≥ 95%；
   - 无 secret 泄漏（prompt/trace/run/status/日志 grep 0）；
   - 观察 P95 ≤ 2.5s/步（不含 OCR），OCR P95 ≤ 3s/帧；
   - `unsupported-on-ios` 不出现假成功。
 - 回滚：切回 `node`，无需数据迁移；iOS ARTEMIS 的 trace 保留但不再读取。
 - 观测指标：任务成功率、L1 命中率、OCR 降级率、unsupported tool 次数、每步延迟、token/用例、session 冲突率；golden set 与阈值由测试负责人固定后再进入 Phase 4。
 
-## 15. 待确认问题（需要人决定）
+## 15. 已确认与剩余问题
 
-1. **OCR key 与成本**：是否提供 Google Vision `OCR_API_KEY`/`VISION_API_KEY` 给中心 ARTEMIS？没有 key 时 iOS 只能 AX，Phase 2 的 L1 等价验收不成立；如果不用 Google Vision，是否接受引入 Apple Vision（要求中心/runner macOS）或本地 OCR 的额外工作？
-2. **真实设备验收资源**：至少一台 iOS 18+ 真机 + macOS runner + WDA 隧道，谁提供、何时可用？
-3. **data_engine.db 的 P1 强制程度**：Phase 2 就作为 iOS LLM 必需工件，还是先 status.json 过渡、P2 再强制？（默认：Phase 2 目标，Phase 1 不阻断。）
-4. **golden set 负责人**：5 条 golden case 的最终内容与阈值由谁签字？（默认：测试负责人；文档已给出建议集合。）
+已确认：
+- **真实设备资源可随时提供**（至少一台 iOS 18+ 真机 + macOS runner + WDA 隧道），Phase 3 可在 Spike/Phase 1 后安排。
+- **OCR 不强制 Google Vision**；采用 provider 抽象，项目级统一 provider。Phase 2 先比较 Google Vision 与本地 RapidOCR，再定长期默认。
+- **先探索、后开展**：Phase 0 Spike 通过决策门后才进入正式实现；Spike 为 throwaway，不污染生产代码。
+- `data_engine.db`：Phase 2 目标，Phase 1 不阻断。
+- golden set：默认由测试负责人签字；文档已给出建议集合。
+
+剩余问题（不阻塞 Spike）：
+1. **长期 OCR provider**：在有 Google Vision key 的情况下，是继续用云 API，还是优先本地 RapidOCR 以去掉外部依赖和按量成本？
+2. **golden set 内容确认**：登录、列表滚动、弹窗、表单校验、空/网络错误这 5 条是否覆盖你们的核心业务？需要替换哪条？
 
 已在本设计内定：
 - 设备服务第一版中心 loopback，后续可下沉 runner。
@@ -521,6 +574,7 @@ interface DeviceCapabilities {
 
 - JSON-RPC vs 简单 REST：默认 JSON-RPC 2.0，错误码统一。
 - screenshot 默认 base64；file 模式只用于显式优化，必须 0600 + 会话结束删除。
+- OCR provider 默认 `auto`：有云 key 用云，无 key 用 `rapidocr`；长期默认由 Phase 2 样本校准决定。
 - driver 放独立 Python 包还是 ARTEMIS patch：优先独立包 + 小 factory patch。
 - OCR 是否缓存：按 screenshot sha256 缓存，默认开启。
 - 观测缓存：同一步内 `screen` 结果可复用，跨动作不缓存。
