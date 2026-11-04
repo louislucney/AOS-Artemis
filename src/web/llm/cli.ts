@@ -39,6 +39,11 @@ export async function runLlmWorkerCli(
     runtimes.set(rootPath, bundle);
     return bundle;
   };
+  interface PreparedLlmJob {
+    runtime: CliRuntimeBundle;
+    secrets: Awaited<ReturnType<typeof loadWebSecrets>>;
+    appPackage: string | null;
+  }
   const input: RunLlmWorkerOnceInput = {
     store,
     runnerId: `center-llm-${process.pid}`,
@@ -47,19 +52,25 @@ export async function runLlmWorkerCli(
     ...(options.maxJobs === undefined ? {} : { maxJobs: options.maxJobs }),
     ...(options.caseTimeoutMs === undefined ? {} : { caseTimeoutMs: options.caseTimeoutMs }),
     ...(options.jobMaxMs === undefined ? {} : { jobMaxMs: options.jobMaxMs }),
+    prepareJob: async (job): Promise<PreparedLlmJob> => {
+      const [runtime, secrets, web] = await Promise.all([
+        runtimeFor(job.rootPath),
+        loadWebSecrets({ store, rootPath: job.rootPath }),
+        store.getWebProject(job.rootPath)
+      ]);
+      return { runtime, secrets, appPackage: web?.appPackage ?? null };
+    },
     loadCases: async (job) =>
       loadLlmCases({ store, rootPath: job.rootPath, job }),
-    executeCase: async ({ job, testCase, signal }) => {
-      const runtime = await runtimeFor(job.rootPath);
-      const secrets = await loadWebSecrets({ store, rootPath: job.rootPath });
-      const web = await store.getWebProject(job.rootPath);
+    executeCase: async ({ job, testCase, prepared, signal }) => {
+      const context = prepared as PreparedLlmJob;
       return executeAndroidLlmCase({
-        proxy: runtime.runtime.proxy,
-        traceDir: (traceId) => runtime.runtime.traceDir(traceId),
+        proxy: context.runtime.runtime.proxy,
+        traceDir: (traceId) => context.runtime.runtime.traceDir(traceId),
         testCase,
         deviceSerial: job.deviceSerial,
-        appPackage: web?.appPackage ?? null,
-        secrets,
+        appPackage: context.appPackage,
+        secrets: context.secrets,
         signal
       });
     },

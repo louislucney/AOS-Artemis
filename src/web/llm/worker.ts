@@ -44,10 +44,13 @@ export interface RunLlmWorkerOnceInput {
   caseTimeoutMs?: number;
   jobMaxMs?: number;
   signal?: AbortSignal;
+  /** 每 job 只执行一次：加载 runtime/secrets/安装包等。 */
+  prepareJob?: (job: LlmWorkerJob) => Promise<unknown>;
   loadCases: (job: LlmWorkerJob) => Promise<LlmWorkerCase[]>;
   executeCase: (input: {
     job: LlmWorkerJob;
     testCase: LlmWorkerCase;
+    prepared: unknown;
     timeoutMs: number;
     signal: AbortSignal;
   }) => Promise<LlmWorkerCaseResult>;
@@ -55,6 +58,7 @@ export interface RunLlmWorkerOnceInput {
   ingest?: (input: {
     job: LlmWorkerJob;
     results: LlmWorkerCaseResult[];
+    prepared: unknown;
   }) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -147,6 +151,7 @@ async function executeClaimedJob(
     startedAt: new Date(startedAtMs).toISOString(),
     lastProgressAt: new Date(startedAtMs).toISOString()
   });
+  const prepared = await input.prepareJob?.(job);
   const cases = filterCases(await input.loadCases(job), job.spec);
   const results: LlmWorkerCaseResult[] = [];
   for (const testCase of cases) {
@@ -169,6 +174,7 @@ async function executeClaimedJob(
         input.executeCase({
           job,
           testCase,
+          prepared,
           timeoutMs: caseTimeoutMs,
           signal: controller.signal
         }),
@@ -196,7 +202,7 @@ async function executeClaimedJob(
   }
   const status = finalStatus(results);
   if (input.ingest !== undefined) {
-    await input.ingest({ job, results });
+    await input.ingest({ job, results, prepared });
   }
   await input.store.releaseDeviceLeases({
     hostId: job.task.targetHostId ?? "",

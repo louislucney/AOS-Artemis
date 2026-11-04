@@ -117,11 +117,16 @@ async function setup() {
 test("runLlmWorkerOnce: 只领 llm、按用例执行、回写状态并释放租约", async () => {
   const { store, rootPath, created } = await setup();
   const ingested = [];
+  let prepared = 0;
   const result = await runLlmWorkerOnce({
     store,
     runnerId: "center-llm",
     instanceId: "center-inst",
     nowMs: NOW + 1_000,
+    prepareJob: async () => {
+      prepared += 1;
+      return { prepared: true };
+    },
     loadCases: async () => [
       { caseId: "TC-1", name: "登录", module: "登录", taskDesc: "登录成功" },
       { caseId: "TC-2", name: "登录二", module: "登录", taskDesc: "登录成功" }
@@ -138,6 +143,7 @@ test("runLlmWorkerOnce: 只领 llm、按用例执行、回写状态并释放租�
   assert.equal(result.claimed, 1);
   assert.deepEqual(result.jobs[0].results.map((entry) => entry.caseId), ["TC-1", "TC-2"]);
   assert.equal(result.jobs[0].status, "partial");
+  assert.equal(prepared, 1, "每 job 只 prepare 一次");
   assert.equal(ingested.length, 1);
   const stored = await store.getRegressionTask(rootPath, created.task.id);
   assert.equal(stored.status, "partial");
