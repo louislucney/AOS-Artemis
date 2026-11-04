@@ -10,6 +10,7 @@ import JSZip from "jszip";
 import { MemoryStore } from "../dist/db/memory.js";
 import { storeWebAsset } from "../dist/web/assets.js";
 import { createWebProject } from "../dist/web/project-service.js";
+import { loadLlmCases } from "../dist/web/llm/cases.js";
 import {
   generateScriptSetForProject,
   ScriptGenerationError
@@ -92,6 +93,20 @@ test("script-generation: 项目未配置 appPackage 时从 APK 推断", async (t
     dryRun: true
   });
   assert.equal(result.appId, "com.example.inferred");
+});
+
+test("loadLlmCases: Excel → taskDesc（含真实数据约束/模块）", async (t) => {
+  const { store, rootPath, excel } = await setup(t);
+  const cases = await loadLlmCases({
+    store,
+    rootPath,
+    job: { spec: { excelAssetId: excel.id } }
+  });
+  assert.equal(cases.length, 1);
+  assert.equal(cases[0].caseId, "TC-1");
+  assert.match(cases[0].taskDesc, /【真实数据】/);
+  assert.match(cases[0].taskDesc, /步骤：1\. 启动 App/);
+  assert.equal(cases[0].module, null);
 });
 
 test("script-generation: LLM normalizer 输出受控动作并记录 manifest", async (t) => {

@@ -79,6 +79,41 @@ test("executeAndroidLlmCase: failed summary → FAIL；无 summary → UNVERIFIE
   assert.equal(bare.status, "UNVERIFIED");
 });
 
+test("executeAndroidLlmCase: taskDesc 进模型前脱敏；未绑定账号拒绝执行", async (t) => {
+  const dir = await traceDir(t);
+  const calls = [];
+  const proxy = {
+    async callTool(name, args) {
+      calls.push({ name, args });
+      if (name === "mobile_run_task") return result({ trace_id: "trace-5" });
+      return result({ status: "completed", test_summary: { passed: 1, failed: 0 } });
+    }
+  };
+  const redacted = await executeAndroidLlmCase({
+    proxy,
+    traceDir: () => dir,
+    testCase: { caseId: "TC-5", taskDesc: "用 user@example.com 登录" },
+    deviceSerial: "pixel-1",
+    secrets: [{ alias: "account", value: "user@example.com", kind: "account" }]
+  });
+  assert.equal(redacted.status, "PASS");
+  assert.match(calls[0].args.task_desc, /<secret:account>/);
+  assert.doesNotMatch(calls[0].args.task_desc, /user@example\.com/);
+
+  const blocked = await executeAndroidLlmCase({
+    proxy: {
+      async callTool() {
+        throw new Error("must not call model");
+      }
+    },
+    traceDir: () => dir,
+    testCase: { caseId: "TC-6", taskDesc: "用 user@example.com 登录" },
+    deviceSerial: "pixel-1"
+  });
+  assert.equal(blocked.status, "ERROR");
+  assert.match(blocked.failureReason, /llm-secret-unbound/);
+});
+
 test("executeAndroidLlmCase: 取消会 stop ARTEMIS 并返回 SKIP", async (t) => {
   const dir = await traceDir(t);
   const controller = new AbortController();

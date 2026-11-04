@@ -8,6 +8,8 @@ export interface LlmWorkerCase {
   name?: string;
   module?: string | null;
   taskDesc: string;
+  /** Excel 预期列原文；用于 L1 文本检查。 */
+  expected?: string | null;
 }
 
 export interface LlmWorkerCaseResult {

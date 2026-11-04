@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
+
 import { MemoryStore } from "../dist/db/memory.js";
+import { storeWebAsset } from "../dist/web/assets.js";
 import { createWebJob } from "../dist/web/jobs.js";
+import { parseWebJobSpec } from "../dist/web/job-spec.js";
+import { ingestLlmResults } from "../dist/web/llm/ingest.js";
 import { runLlmWorkerOnce } from "../dist/web/llm/worker.js";
+import { readWebJobResult } from "../dist/web/results.js";
 
 const NOW = Date.parse("2026-11-04T10:00:00.000Z");
 
@@ -45,21 +52,31 @@ async function setup() {
     appPackage: "com.example.app",
     projectId: project.id
   });
-  const excel = await store.createWebAsset({
+  await mkdir(rootPath, { recursive: true });
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例编号", "用例名称", "步骤", "期望结果"]);
+  sheet.addRow(["TC-1", "登录", "1. 启动 App", "登录成功"]);
+  const excel = await storeWebAsset({
+    store,
     rootPath,
     kind: "excel",
     filename: "cases.xlsx",
-    sha256: "a".repeat(64),
-    size: 1,
-    storagePath: `${rootPath}/cases.xlsx`
+    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
   });
-  const pkg = await store.createWebAsset({
+  await store.saveExcelMapping({
+    rootPath,
+    assetId: excel.id,
+    sheetName: "Sheet1",
+    headerFingerprint: "fp-1",
+    columnMap: { caseId: "用例编号", name: "用例名称", steps: "步骤", expected: "期望结果" }
+  });
+  const pkg = await storeWebAsset({
+    store,
     rootPath,
     kind: "package",
     filename: "app.apk",
-    sha256: "b".repeat(64),
-    size: 1,
-    storagePath: `${rootPath}/app.apk`
+    buffer: Buffer.from("fake-apk")
   });
   await store.upsertWebRunner({
     hostId: "host-a",
@@ -125,6 +142,37 @@ test("runLlmWorkerOnce: 只领 llm、按用例执行、回写状态并释放租�
   const stored = await store.getRegressionTask(rootPath, created.task.id);
   assert.equal(stored.status, "partial");
   assert.equal(stored.deviceLeaseId, null);
+});
+
+test("ingestLlmResults: center-only UNVERIFIED 落库并聚合 partial", async () => {
+  const { store, rootPath, created } = await setup();
+  const spec = parseWebJobSpec(created.task.jobSpec);
+  assert.ok(spec);
+  await store.updateRegressionTask(rootPath, created.task.id, {
+    status: "running",
+    startedAt: new Date().toISOString()
+  });
+  await ingestLlmResults({
+    store,
+    job: { task: created.task, rootPath, spec, deviceSerial: "pixel-1" },
+    results: [
+      {
+        caseId: "TC-1",
+        status: "UNVERIFIED",
+        durationMs: 1,
+        failureReason: "no-l1",
+        verification: {
+          deterministic: { passed: 0, failed: 0, skipped: 0 },
+          reference: "missing",
+          verifier: "not-run"
+        }
+      }
+    ]
+  });
+  const stored = await store.getRegressionTask(rootPath, created.task.id);
+  assert.equal(stored.status, "partial");
+  const document = await readWebJobResult(rootPath, created.task.id);
+  assert.equal(document.execution.cases[0].status, "UNVERIFIED");
 });
 
 test("runLlmWorkerOnce: 任务预算耗尽 → SKIP/budget-exceeded", async () => {

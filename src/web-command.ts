@@ -2,6 +2,7 @@ import { loadProject } from "./config/loader.js";
 import { createProjectStore, type CreateStoreResult } from "./db/index.js";
 import type { ProjectStore } from "./db/types.js";
 import { generateScriptSetForProject, ScriptGenerationError } from "./web/script-generation.js";
+import { runLlmWorkerCli } from "./web/llm/cli.js";
 import { ScriptSetStoreError } from "./web/script-set.js";
 import type { PreconditionMode, ScriptPlatform } from "./web/script-gen.js";
 
@@ -72,6 +73,9 @@ Usage:
   mobile-testing-mcp web scripts generate --project <dir> --excel <assetId> --package <assetId>
       --platform <android|ios> [--app-id <package|bundleId>]
       [--strict|--assume-prepared|--precondition-mode auto] [--best-effort] [--dry-run] [--json]
+  mobile-testing-mcp web llm-worker [--once] [--poll-ms <n>] [--max-jobs <n>]
+      [--case-timeout-ms <n>] [--job-max-ms <n>]
+      中心 LLM 执行器（P0 Android；需要中心 PG/控制面与 runner 设备网关）
 
 说明:
   --project <dir>       项目根目录（缺省按 AOS_PROJECT_DIR / cwd）
@@ -140,6 +144,22 @@ export async function runWebCommand(argv: string[], deps: WebCliDeps = {}): Prom
   if (argv.includes("-h") || argv.includes("--help")) {
     printWebUsage(log);
     return 0;
+  }
+  if (flags.positional[0] === "llm-worker") {
+    const once = flags.bool("once");
+    const pollMs = Number.parseInt(flags.get("poll-ms") ?? "", 10);
+    const maxJobs = Number.parseInt(flags.get("max-jobs") ?? "", 10);
+    const caseTimeoutMs = Number.parseInt(flags.get("case-timeout-ms") ?? "", 10);
+    const jobMaxMs = Number.parseInt(flags.get("job-max-ms") ?? "", 10);
+    return await runLlmWorkerCli({
+      once,
+      ...(Number.isFinite(pollMs) && pollMs > 0 ? { pollMs } : {}),
+      ...(Number.isFinite(maxJobs) && maxJobs > 0 ? { maxJobs } : {}),
+      ...(Number.isFinite(caseTimeoutMs) && caseTimeoutMs > 0 ? { caseTimeoutMs } : {}),
+      ...(Number.isFinite(jobMaxMs) && jobMaxMs > 0 ? { jobMaxMs } : {}),
+      log,
+      errorLog
+    });
   }
   if (flags.positional[0] !== "scripts" || flags.positional[1] !== "generate") {
     errorLog(`未知 web 子命令 "${flags.positional.join(" ") || "(空)"}"`);

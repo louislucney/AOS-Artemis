@@ -1434,6 +1434,27 @@ test("判定：脚本集 metadata 标记 manual，旧 runner 漏报也降级 UNV
   assert.equal(cellText(sheet.getCell("I2")), "UNVERIFIED");
 });
 
+test("normalize：centerOrigin 允许 UNVERIFIED，runner 路径拒绝", () => {
+  const payload = {
+    execution: {
+      status: "partial",
+      cases: [{ caseId: "TC-1", status: "UNVERIFIED", failureReason: "no-l1" }],
+      startedAt: STARTED,
+      finishedAt: FINISHED
+    },
+    device: { serial: "emulator-5554" },
+    package: { filename: "app.apk" },
+    startedAt: STARTED,
+    finishedAt: FINISHED
+  };
+  assert.throws(
+    () => normalizeWebJobResultPayload(payload),
+    (error) => error instanceof WebResultError && error.code === "invalid-result"
+  );
+  const normalized = normalizeWebJobResultPayload(payload, { allowUnverified: true });
+  assert.equal(normalized.execution.cases[0].status, "UNVERIFIED");
+});
+
 test("normalize：assertionCount 必须是非负整数", () => {
   const base = {
     execution: {

@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { readAndroidTokenUsage, readAndroidTraceObservations } from "../../artemis/android-trace.js";
+import { redactText, type SecretEntry } from "./secrets.js";
+import { checkExpectedTexts, type ExpectedTextCheck } from "./verify.js";
 import type { LlmWorkerCase, LlmWorkerCaseResult } from "./worker.js";
 
 export interface LlmToolCallResult {
@@ -22,6 +24,8 @@ export interface ExecuteAndroidLlmCaseInput {
   /** 缺省 Pro：需要 test_summary/checker 作为证据。 */
   model?: "Flash" | "Pro";
   appPackage?: string | null;
+  /** 已加载的项目 secret；taskDesc 进模型前先脱敏。 */
+  secrets?: SecretEntry[];
   pollMs?: number;
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
@@ -87,8 +91,18 @@ export async function executeAndroidLlmCase(
   const pollMs = input.pollMs ?? 2_000;
   const startedAt = input.now?.() ?? Date.now();
   const model = input.model ?? "Pro";
+  const redacted = redactText(input.testCase.taskDesc, input.secrets ?? []);
+  if (redacted.unbound.length > 0) {
+    return {
+      caseId: input.testCase.caseId,
+      ...(input.testCase.name === undefined ? {} : { name: input.testCase.name }),
+      status: "ERROR",
+      durationMs: 0,
+      failureReason: `llm-secret-unbound:${redacted.unbound.length}`
+    };
+  }
   const started = await input.proxy.callTool("mobile_run_task", {
-    task_desc: input.testCase.taskDesc,
+    task_desc: redacted.text,
     device_serial: input.deviceSerial,
     model,
     ...(model === "Pro" ? { verification_level: "final" } : {}),
@@ -152,22 +166,38 @@ export async function executeAndroidLlmCase(
     !Array.isArray(last.test_summary)
       ? (last.test_summary as Record<string, unknown>)
       : null;
-  let caseStatus: "PASS" | "FAIL" | "UNVERIFIED" = "UNVERIFIED";
-  let failureReason: string | undefined;
-  if (status === "completed") {
-    caseStatus = summaryStatus(summary);
-    if (caseStatus === "FAIL") failureReason = "artemis-test-summary-failed";
-    if (caseStatus === "UNVERIFIED") failureReason = "artemis-test-summary-incomplete";
-  } else if (status === "failed") {
-    caseStatus = "FAIL";
-    failureReason = "artemis-task-failed";
-  } else {
-    caseStatus = "FAIL";
-    failureReason = "artemis-task-cancelled";
-  }
-
   const statusJsonPath = path.join(traceDir, "status.json");
   const dataEngineDbPath = path.join(traceDir, "data_engine.db");
+  const observations = await readAndroidTraceObservations(dataEngineDbPath, traceId);
+  const l1: ExpectedTextCheck = checkExpectedTexts(
+    input.testCase.expected,
+    observations?.labels ?? []
+  );
+  let caseStatus: "PASS" | "FAIL" | "UNVERIFIED" = "UNVERIFIED";
+  let failureReason: string | undefined;
+  if (status === "failed" || status === "cancelled") {
+    caseStatus = "FAIL";
+    failureReason = status === "failed" ? "artemis-task-failed" : "artemis-task-cancelled";
+  } else if (status === "completed") {
+    const summaryVerdict = summaryStatus(summary);
+    if (summaryVerdict === "FAIL") {
+      caseStatus = "FAIL";
+      failureReason = "artemis-test-summary-failed";
+    } else if (summaryVerdict === "PASS") {
+      caseStatus = "PASS";
+    } else if (l1.anchored && l1.failed > 0) {
+      caseStatus = "FAIL";
+      failureReason = `l1-missing:${l1.missing.slice(0, 3).join("|")}`;
+    } else if (l1.anchored && l1.passed > 0) {
+      caseStatus = "PASS";
+    } else {
+      caseStatus = "UNVERIFIED";
+      failureReason = summary === null ? "artemis-test-summary-missing" : "no-deterministic-evidence";
+    }
+  } else {
+    caseStatus = "FAIL";
+    failureReason = "artemis-task-not-completed";
+  }
   const tokenRows = await readAndroidTokenUsage(dataEngineDbPath, traceId);
   const tokenUsage =
     tokenRows === null
@@ -180,13 +210,12 @@ export async function executeAndroidLlmCase(
             attempt: 1,
             phase: "execute",
             requestId: traceId,
-            inputTokens: tokenRows.reduce((sum, row) => sum + row.inputTokens, 0),
-            outputTokens: tokenRows.reduce((sum, row) => sum + row.outputTokens, 0),
+            promptTokens: tokenRows.reduce((sum, row) => sum + row.inputTokens, 0),
+            completionTokens: tokenRows.reduce((sum, row) => sum + row.outputTokens, 0),
             cacheCreateTokens: tokenRows.reduce((sum, row) => sum + row.cacheCreateTokens, 0),
             cacheReadTokens: tokenRows.reduce((sum, row) => sum + row.cacheReadTokens, 0)
           }
         ];
-  const observations = await readAndroidTraceObservations(dataEngineDbPath, traceId);
   return {
     caseId: input.testCase.caseId,
     ...(input.testCase.name === undefined ? {} : { name: input.testCase.name }),
@@ -201,12 +230,15 @@ export async function executeAndroidLlmCase(
       ...(existsSync(dataEngineDbPath) ? { dataEngineDbPath } : {})
     },
     verification: {
-      deterministic: {
-        passed: numberField(summary, "passed"),
-        failed: numberField(summary, "failed"),
-        skipped:
-          numberField(summary, "inconclusive") + numberField(summary, "unchecked")
-      },
+      deterministic:
+        summary === null
+          ? { passed: l1.passed, failed: l1.failed, skipped: 0 }
+          : {
+              passed: numberField(summary, "passed"),
+              failed: numberField(summary, "failed"),
+              skipped:
+                numberField(summary, "inconclusive") + numberField(summary, "unchecked")
+            },
       reference: "missing",
       verifier: "not-run"
     }
