@@ -239,6 +239,7 @@ async function createPendingTask(
     targetHostId: spec.targetHostId,
     priority: input.priority,
     jobSpec: specRecord(spec),
+    executionMode: spec.executionMode,
     deviceSerial: spec.deviceSerial,
     deviceLeaseId: null
   });
@@ -588,6 +589,7 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
     targetHostId: selection.hostId,
     priority: input.priority,
     jobSpec: specRecord(bindingSpec),
+    executionMode: spec.executionMode,
     deviceSerial: null,
     deviceLeaseId: null
   });

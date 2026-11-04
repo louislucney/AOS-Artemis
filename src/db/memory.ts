@@ -402,6 +402,7 @@ export class MemoryStore implements ProjectStore {
       cancelNote: null,
       cancelRequestedAt: null,
       jobSpec: input.jobSpec ?? null,
+      executionMode: input.executionMode === "llm" ? "llm" : "maestro",
       deviceSerial: input.deviceSerial ?? null,
       deviceLeaseId: input.deviceLeaseId ?? null
     };
@@ -751,11 +752,13 @@ export class MemoryStore implements ProjectStore {
     hostId: string;
     deviceSerial: string;
     instanceId: string;
+    executionMode?: "maestro" | "llm";
     nowMs?: number;
   }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
     const host = this.hosts.find((entry) => entry.id === input.hostId);
     if (host?.queuePaused === true) return null;
     const nowMs = input.nowMs ?? Date.now();
+    const executionMode = input.executionMode ?? "maestro";
     // N2：先按「有本任务的有效租约」过滤，再排序；无租约的等待任务不能挡住后面的租约持有者。
     const hasLiveLease = (taskId: string): boolean =>
       this.deviceLeases.some(
@@ -770,6 +773,7 @@ export class MemoryStore implements ProjectStore {
         (task) =>
           task.status === "pending" &&
           task.jobSpec !== null &&
+          task.executionMode === executionMode &&
           task.targetHostId === input.hostId &&
           task.deviceSerial === input.deviceSerial &&
           hasLiveLease(task.id)

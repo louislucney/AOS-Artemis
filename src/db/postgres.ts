@@ -240,6 +240,7 @@ const SCHEMA = [
      cancel_note TEXT,
      cancel_requested_at TEXT,
      job_spec TEXT,
+     execution_mode TEXT NOT NULL DEFAULT 'maestro',
      device_serial TEXT,
      device_lease_id TEXT
     )`,
@@ -507,6 +508,9 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancel_note TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancel_requested_at TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS job_spec TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'maestro'`,
+  `CREATE INDEX IF NOT EXISTS regression_tasks_execution_mode_idx
+     ON regression_tasks(status, execution_mode, target_host_id, device_serial)`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_serial TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_lease_id TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor TEXT`,
@@ -1054,8 +1058,8 @@ export class PostgresStore implements ProjectStore {
     await this.pool.query(
       `INSERT INTO regression_tasks
          (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids,
-          target_host_id, created_host_id, priority, job_spec, device_serial, device_lease_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+          target_host_id, created_host_id, priority, job_spec, execution_mode, device_serial, device_lease_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
         id,
         project?.id ?? null,
@@ -1070,6 +1074,7 @@ export class PostgresStore implements ProjectStore {
         input.createdHostId ?? null,
         typeof input.priority === "number" ? input.priority : 0,
         input.jobSpec === undefined || input.jobSpec === null ? null : JSON.stringify(input.jobSpec),
+        input.executionMode === "llm" ? "llm" : "maestro",
         input.deviceSerial ?? null,
         input.deviceLeaseId ?? null
       ]
@@ -1101,6 +1106,7 @@ export class PostgresStore implements ProjectStore {
       cancelNote: null,
       cancelRequestedAt: null,
       jobSpec: input.jobSpec ?? null,
+      executionMode: input.executionMode === "llm" ? "llm" : "maestro",
       deviceSerial: input.deviceSerial ?? null,
       deviceLeaseId: input.deviceLeaseId ?? null
     };
@@ -1461,12 +1467,14 @@ export class PostgresStore implements ProjectStore {
     hostId: string;
     deviceSerial: string;
     instanceId: string;
+    executionMode?: "maestro" | "llm";
     nowMs?: number;
   }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null> {
     const host = await this.pool.query("SELECT queue_paused FROM hosts WHERE id = $1", [
       input.hostId
     ]);
     if (host.rows.length > 0 && Boolean(host.rows[0]!.queue_paused)) return null;
+    const executionMode = input.executionMode ?? "maestro";
     const claimedAt = new Date(input.nowMs ?? Date.now()).toISOString();
     const runClaim = async (skipLocked: boolean): Promise<RegressionTaskRecord | null> => {
       return this.withTransaction(async (run) => {
@@ -1475,13 +1483,14 @@ export class PostgresStore implements ProjectStore {
           `SELECT rt.id FROM regression_tasks rt
             WHERE rt.status = 'pending' AND rt.job_spec IS NOT NULL
               AND rt.target_host_id = $1 AND rt.device_serial = $2
+              AND rt.execution_mode = $4
               AND rt.id IN (
                 SELECT l.task_id FROM device_leases l
                  WHERE l.host_id = $1 AND l.serial = $2 AND l.expires_at > $3
               )
             ORDER BY rt.priority DESC, rt.created_at ASC
             LIMIT 1 ${lockClause}`,
-          [input.hostId, input.deviceSerial, claimedAt]
+          [input.hostId, input.deviceSerial, claimedAt, executionMode]
         );
         if (picked.rows.length === 0) return null;
         const updated = await run(
@@ -3723,6 +3732,7 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     cancelNote: nullableString(row.cancel_note),
     cancelRequestedAt: nullableString(row.cancel_requested_at),
     jobSpec: parseJobSpec(row.job_spec),
+    executionMode: row.execution_mode === "llm" ? "llm" : "maestro",
     deviceSerial: nullableString(row.device_serial),
     deviceLeaseId: nullableString(row.device_lease_id)
   });

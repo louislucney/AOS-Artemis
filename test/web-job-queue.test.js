@@ -1167,6 +1167,64 @@ test("createWebJob: 自动生成失败 → script-generation-failed，不建任�
   assert.equal((await store.listRegressionTasks(rootPath)).length, 0, "失败不建任务");
 });
 
+test("claimWebJob: maestro/llm 领取互斥", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "claim-mode");
+    const assets = await makeAssets(store, rootPath);
+    await online(store, "host-a", [android("a-device", "Pixel A"), android("b-device", "Pixel B")]);
+    const maestro = await createWebJob(
+      jobInput(store, rootPath, assets, {
+        assignment: "manual",
+        devicePinned: true,
+        targetHostId: "host-a",
+        deviceSerial: "a-device"
+      })
+    );
+    const llm = await createWebJob(
+      jobInput(store, rootPath, assets, {
+        assignment: "manual",
+        devicePinned: true,
+        targetHostId: "host-a",
+        deviceSerial: "b-device",
+        executionMode: "llm",
+        scriptSetId: null
+      })
+    );
+    assert.equal(llm.task.executionMode, "llm");
+    const base = { runnerId: "r", hostId: "host-a", instanceId: "i", nowMs: NOW + 1_000 };
+    const maestroClaim = await store.claimWebJob({
+      ...base,
+      deviceSerial: "a-device",
+      executionMode: "maestro"
+    });
+    assert.equal(maestroClaim?.task.id, maestro.task.id);
+    assert.equal(
+      await store.claimWebJob({
+        ...base,
+        deviceSerial: "b-device",
+        executionMode: "maestro"
+      }),
+      null,
+      "maestro runner 不能领 llm"
+    );
+    const llmClaim = await store.claimWebJob({
+      ...base,
+      deviceSerial: "b-device",
+      executionMode: "llm"
+    });
+    assert.equal(llmClaim?.task.id, llm.task.id);
+    assert.equal(
+      await store.claimWebJob({
+        ...base,
+        deviceSerial: "a-device",
+        executionMode: "llm"
+      }),
+      null,
+      "llm worker 不能领已领取的 maestro"
+    );
+  }
+});
+
 test("claimWebJob 用显式 nowMs 判定租约过期（与墙钟无关）", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "claim-clock");

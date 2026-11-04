@@ -439,6 +439,8 @@ export interface RegressionTaskRecord {
   cancelRequestedAt: string | null;
   /** Web 任务规格（JSON）；普通回归任务为 null。 */
   jobSpec: Record<string, unknown> | null;
+  /** 执行面：maestro 由 web-runner 领取，llm 由中心 LLM worker 领取。 */
+  executionMode: "maestro" | "llm";
   /** Web 任务预占/绑定的设备（`claimWebJob` 只命中非空行）。 */
   deviceSerial: string | null;
   /** 预占租约主键 `<hostId>:<serial>`（`device_leases` 无独立 id 列）。 */
@@ -458,6 +460,7 @@ export function normalizeRegressionTask(record: RegressionTaskRecord): Regressio
     cancelNote: record.cancelNote ?? (legacy ? "legacy stopped" : null),
     cancelRequestedAt: record.cancelRequestedAt ?? null,
     jobSpec: record.jobSpec ?? null,
+    executionMode: record.executionMode === "llm" ? "llm" : "maestro",
     deviceSerial: record.deviceSerial ?? null,
     deviceLeaseId: record.deviceLeaseId ?? null
   };
@@ -853,6 +856,7 @@ export interface CreateRegressionTaskInput {
   priority?: number;
   createdHostId?: string | null;
   jobSpec?: Record<string, unknown> | null;
+  executionMode?: "maestro" | "llm";
   deviceSerial?: string | null;
   deviceLeaseId?: string | null;
 }
@@ -1002,6 +1006,7 @@ export interface ProjectStore {
     hostId: string;
     deviceSerial: string;
     instanceId: string;
+    executionMode?: "maestro" | "llm";
     nowMs?: number;
   }): Promise<{ task: RegressionTaskRecord; rootPath: string } | null>;
   /** 全局只读 pending web job 列表（回池/面板用），带项目根路径。 */

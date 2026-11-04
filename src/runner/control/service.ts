@@ -267,6 +267,7 @@ export class WebRunnerControlService {
       hostId: this.hostId,
       deviceSerial,
       instanceId: this.instanceId,
+      executionMode: "maestro",
       nowMs: this.now()
     });
     if (claimed === null) return { kind: "idle" };
