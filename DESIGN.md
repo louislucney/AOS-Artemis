@@ -3664,3 +3664,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **通用 Markdown**：其他 `.md` 走轻量渲染（标题/引用/列表/代码围栏）；原始 HTML 转义，不生成 `javascript:` 链接。
 - **展示层**：现有 case-set md 无需重新导入；同一文件即按新阅读器展示。原始 Markdown 仍可一键查看/复制。
 - **测试**：`panel-artifact-route` 新增 Markdown 阅读器、结构化用例卡、XSS 转义；全量 3016 绿，lint 0 error。
+
+### 13.301 调整（档案产物索引按用例集分组）
+
+> 2026-11-04。用户反馈产物索引把同一用例集的 md/json/xlsx/source 拆成多行，路径重复、时间列拥挤，不像索引。
+
+- **分组**：`case-set` 按文件 stem 分组（去 `.md/.json/.xlsx/.source.xlsx`），一行显示名称 + `MD / XLSX / JSON / 源 Excel` 格式 chips；其他 kind 保持单行（目录/报告/差异/崩溃/轨迹）。
+- **列**：`类型 / 名称 / 位置 / 更新时间 / 大小`；位置对用例集只显示目录 `.artemis/design/case-sets`，完整路径放在 chip `title`；更新时间只渲染一次；大小显示 `N 文件 · 总大小`。
+- **计数**：卡片 subtitle 与分页显示 `本页 X 组 · Y 个文件`，不再把 13 个文件说成 13 项。
+- **测试**：`console-pages` 新增用例集 md/json/xlsx 分组断言；全量 3017 绿，lint 0 error。

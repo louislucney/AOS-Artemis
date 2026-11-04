@@ -1297,23 +1297,105 @@ export function renderArchivePage(data: ArchivePageData): string {
   const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
   const artifactUrl = (record: ArtifactRecord): string =>
     `/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(record.path)}${hostQuery}`;
-  const rows = data.artifacts.map((record) => {
-    const isDir = record.meta?.type === "dir";
-    const isImage = !isDir && /\.(png|jpe?g|webp|gif)$/i.test(record.title);
-    const thumb = isImage
-      ? `<img class="c-thumb" src="${escapeHtml(artifactUrl(record))}" alt="" loading="lazy">`
-      : "";
-    const location = isDir
-      ? `<code>${escapeHtml(record.path)}</code>`
-      : `<a href="${escapeHtml(artifactUrl(record))}" target="_blank" rel="noreferrer"><code>${escapeHtml(record.path)}</code></a>`;
-    return [
-      cBadge({ label: artifactKindLabel(record.kind), tone: "neutral", title: record.kind }),
-      `${thumb}<code>${escapeHtml(record.title)}</code>`,
-      location,
-      relativeTime(record.at),
-      isDir ? "目录" : `${record.size} B`
-    ];
-  });
+  const caseSetBase = (title: string): string =>
+    title.replace(/\.source\.xlsx$/i, "").replace(/\.(md|xlsx|json|csv)$/i, "");
+  const formatRank = (title: string): number => {
+    if (/\.md$/i.test(title)) return 0;
+    if (/\.xlsx$/i.test(title) && !/\.source\.xlsx$/i.test(title)) return 1;
+    if (/\.json$/i.test(title)) return 2;
+    if (/\.source\.xlsx$/i.test(title)) return 3;
+    return 4;
+  };
+  const formatLabel = (title: string): string => {
+    if (/\.source\.xlsx$/i.test(title)) return "源 Excel";
+    const ext = path.extname(title).slice(1).toUpperCase();
+    return ext === "" ? "文件" : ext;
+  };
+  interface ArtifactGroup {
+    kind: ArtifactRecord["kind"];
+    name: string;
+    records: ArtifactRecord[];
+    at: string;
+    size: number;
+    isDir: boolean;
+  }
+  const groups = new Map<string, ArtifactGroup>();
+  for (const record of data.artifacts) {
+    const caseSet = record.kind === "case-set" && record.meta?.type !== "dir";
+    const key = caseSet
+      ? `case-set:${caseSetBase(record.title)}`
+      : `${record.kind}:${record.path}`;
+    const existing = groups.get(key);
+    if (existing === undefined) {
+      groups.set(key, {
+        kind: record.kind,
+        name: caseSet ? caseSetBase(record.title) : record.title,
+        records: [record],
+        at: record.at,
+        size: record.size,
+        isDir: record.meta?.type === "dir"
+      });
+    } else {
+      existing.records.push(record);
+      if (record.at > existing.at) existing.at = record.at;
+      existing.size += record.size;
+      if (record.meta?.type === "dir") existing.isDir = true;
+    }
+  }
+  const rows = [...groups.values()]
+    .sort((left, right) => right.at.localeCompare(left.at) || left.name.localeCompare(right.name))
+    .map((group) => {
+      const primary =
+        group.records.find((record) => /\.md$/i.test(record.title)) ?? group.records[0]!;
+      const isDir = group.isDir;
+      const isImage = !isDir && /\.(png|jpe?g|webp|gif)$/i.test(primary.title);
+      const thumb = isImage
+        ? `<img class="c-thumb" src="${escapeHtml(artifactUrl(primary))}" alt="" loading="lazy">`
+        : "";
+      const caseSet = group.kind === "case-set" && !isDir;
+      const name = caseSet
+        ? [
+            `<div class="c-artifact-name">${escapeHtml(group.name)}</div>`,
+            `<div class="c-file-chips">${[...group.records]
+              .sort((left, right) => formatRank(left.title) - formatRank(right.title))
+              .map(
+                (record) =>
+                  `<a class="c-file-chip${
+                    /\.source\.xlsx$/i.test(record.title) ? " c-file-chip-source" : ""
+                  }" href="${escapeHtml(artifactUrl(record))}" title="${escapeHtml(
+                    record.path
+                  )}">${escapeHtml(formatLabel(record.title))}</a>`
+              )
+              .join("")}</div>`
+          ].join("")
+        : `${thumb}${
+            isDir
+              ? `<code>${escapeHtml(group.name)}</code>`
+              : `<a href="${escapeHtml(artifactUrl(primary))}" target="_blank" rel="noreferrer"><code>${escapeHtml(
+                  group.name
+                )}</code></a>`
+          }`;
+      const location = caseSet
+        ? `<code class="c-path">${escapeHtml(path.dirname(primary.path))}</code>`
+        : isDir
+          ? `<code class="c-path">${escapeHtml(primary.path)}</code>`
+          : `<a href="${escapeHtml(artifactUrl(primary))}" target="_blank" rel="noreferrer"><code class="c-path">${escapeHtml(
+              primary.path
+            )}</code></a>`;
+      const size =
+        isDir
+          ? "目录"
+          : caseSet
+            ? `${group.records.length} 文件 · ${formatBytes(group.size)}`
+            : formatBytes(group.size);
+      return [
+        cBadge({ label: artifactKindLabel(group.kind), tone: "neutral", title: group.kind }),
+        name,
+        location,
+        relativeTime(group.at),
+        size
+      ];
+    });
   const q = (name: string): string => escapeHtml(data.query[name] ?? "");
   const archiveLink = (patch: Record<string, string | null>): string => {
     const params = new URLSearchParams({ project: data.rootPath, section: "archive" });
@@ -1342,7 +1424,7 @@ export function renderArchivePage(data: ArchivePageData): string {
       : `<a class="c-button" href="${prevHref}">上一页</a>`
   } <span class="muted">第 ${
     Math.floor(data.page.offset / data.page.pageSize) + 1
-  } 页 · 本页 ${data.artifacts.length} 项</span> ${
+  } 页 · 本页 ${groups.size} 组 · ${data.artifacts.length} 个文件</span> ${
     nextHref === null
       ? '<span class="muted">下一页</span>'
       : `<a class="c-button" href="${nextHref}">下一页</a>`
@@ -1386,10 +1468,10 @@ export function renderArchivePage(data: ArchivePageData): string {
         title: "产物索引",
         subtitle: `第 ${
           Math.floor(data.page.offset / data.page.pageSize) + 1
-        } 页 · 本页 ${data.artifacts.length} 项 · 每页 ${data.page.pageSize} 项 · 与保留期同源（六类浅扫：批次/用例集/报告/差异/崩溃/轨迹）`,
+        } 页 · 本页 ${groups.size} 组 · ${data.artifacts.length} 个文件 · 每页 ${data.page.pageSize} 项 · 与保留期同源（六类浅扫：批次/用例集/报告/差异/崩溃/轨迹）`,
         body: [
           cTable({
-            columns: ["类型", "名称", "路径", "时间", "大小"],
+            columns: ["类型", "名称", "位置", "更新时间", "大小"],
             rows,
             caption: "产物索引",
             empty: "暂无产物（产物落盘后自动出现）"

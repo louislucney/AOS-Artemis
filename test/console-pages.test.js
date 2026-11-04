@@ -190,6 +190,27 @@ test("console pages: 档案（索引＋kind 筛选）", async () => {
   assert.ok(!filtered.body.includes("20261018_a.json"), "kind 筛选生效");
 });
 
+test("console pages: 档案按用例集分组，md/json/xlsx 只占一行", async () => {
+  const { deps, rootPath } = await setup();
+  const caseSets = join(rootPath, ".artemis", "design", "case-sets");
+  await mkdir(caseSets, { recursive: true });
+  for (const ext of ["md", "json", "xlsx"]) {
+    await writeFile(join(caseSets, `20261104_102300_My-SMILES.${ext}`), "{}");
+  }
+  const response = await handlePanelRequest(
+    url(rootPath, "archive", { kind: "case-set" }),
+    deps
+  );
+  assert.equal(response.status, 200);
+  const html = response.body;
+  assert.match(html, /<div class="c-artifact-name">20261104_102300_My-SMILES<\/div>/);
+  assert.equal((html.match(/class="c-artifact-name"/g) ?? []).length, 1, "同一用例集只一行");
+  assert.match(html, /class="c-file-chip[^"]*"[^>]*>MD<\/a>/);
+  assert.match(html, /class="c-file-chip[^"]*"[^>]*>JSON<\/a>/);
+  assert.match(html, /class="c-file-chip[^"]*"[^>]*>XLSX<\/a>/);
+  assert.match(html, /3 文件/);
+});
+
 test("console pages: 档案分页（offset/上一页）与图片缩略图", async () => {
   const { deps, rootPath } = await setup();
   const diffsDir = join(rootPath, ".artemis", "design", "diffs");
