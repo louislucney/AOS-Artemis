@@ -165,7 +165,16 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-device-help-body ol{margin:0 0 12px;padding-left:20px;color:var(--color-text-secondary);font-size:var(--font-size-callout);line-height:1.6}
 .c-device-help-body li+li{margin-top:5px}
 .c-device-help-body .c-command{margin:0}
+.c-device-main .c-table{min-width:1100px}
 .c-device-main .c-table td{padding-top:18px;padding-bottom:18px}
+.c-device-main time{white-space:nowrap}
+.c-device-host{display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap}
+.c-device-host code{display:inline-block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.c-device-hostname{margin-top:4px;color:var(--color-text-secondary);font-size:var(--font-size-caption);overflow-wrap:anywhere}
+.c-device-kind{white-space:nowrap}
+.c-device-serial{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.c-device-tools{display:flex;flex-wrap:wrap;gap:4px}
+.c-device-tools .chip{white-space:nowrap;margin:0}
 .c-device-main .c-empty-cell{padding:64px 24px;font-size:var(--font-size-body)}
 @media (max-width:1280px){
   .c-device-layout{grid-template-columns:1fr}
@@ -192,7 +201,7 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 }
 
 /* ── 徽章 / 横幅 / 统计贴片 ─────────────────────────────────────── */
-.c-badge{display:inline-block;border:1px solid var(--color-border);border-radius:var(--radius-pill);
+.c-badge{display:inline-block;white-space:nowrap;border:1px solid var(--color-border);border-radius:var(--radius-pill);
   padding:2px 10px;font-size:var(--font-size-caption);font-weight:var(--font-weight-medium);color:var(--color-text-secondary);
   background:var(--color-surface-white)}
 .c-badge-accent{border-color:var(--color-accent);background:var(--color-accent);color:var(--color-text-primary)}

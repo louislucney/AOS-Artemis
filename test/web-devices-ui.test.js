@@ -127,6 +127,8 @@ test("devices page: lists idle, busy and offline devices", async (t) => {
   assert.match(html, /空闲/);
   assert.match(html, /占用/);
   assert.match(html, /离线/);
+  assert.match(html, /<time datetime=/);
+  assert.doesNotMatch(html, /&lt;time/);
   assert.match(html, new RegExp(task.id));
   assert.doesNotMatch(html, /AOS_RUNNER_JOB_TOKEN=/);
 });

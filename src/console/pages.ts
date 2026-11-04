@@ -628,12 +628,13 @@ export function renderDevicesPage(data: DevicesPageData): string {
         : device.state === "busy"
           ? cBadge({ label: "占用", tone: "warning" })
           : cBadge({ label: "离线", tone: "error" });
-    const host = `${device.hostOnline ? cBadge({ label: "在线", tone: "success" }) : cBadge({ label: "离线", tone: "error" })} <code>${escapeHtml(device.hostId)}</code><br><span class="muted">${escapeHtml(device.hostname)}</span>`;
-    const tools = Object.entries(device.tools)
+    const host = `<div class="c-device-host">${device.hostOnline ? cBadge({ label: "在线", tone: "success" }) : cBadge({ label: "离线", tone: "error" })}<code title="${escapeHtml(device.hostId)}">${escapeHtml(device.hostId)}</code></div><div class="c-device-hostname" title="${escapeHtml(device.hostname)}">${escapeHtml(device.hostname)}</div>`;
+    const toolNames = Object.entries(device.tools)
       .filter(([, ok]) => ok === true)
       .map(([name]) => `<span class="chip">${escapeHtml(name)}</span>`)
-      .join(" ");
-    const deviceLabel = `${escapeHtml(device.platform)} · ${escapeHtml(device.kind)}<br><code>${escapeHtml(device.serial)}</code>`;
+      .join("");
+    const tools = toolNames === "" ? '<span class="muted">—</span>' : `<div class="c-device-tools">${toolNames}</div>`;
+    const deviceLabel = `<div class="c-device-kind">${escapeHtml(device.platform)} · ${escapeHtml(device.kind)}</div><code class="c-device-serial" title="${escapeHtml(device.serial)}">${escapeHtml(device.serial)}</code>`;
     const model = [device.model, device.osVersion].filter((value) => value !== null).map(String).join(" · ") || "—";
     const job =
       device.jobTaskId === null
@@ -644,7 +645,7 @@ export function renderDevicesPage(data: DevicesPageData): string {
     const lease =
       device.leaseTaskId === null
         ? '<span class="muted">—</span>'
-        : `${escapeHtml(relativeTime(device.leaseExpiresAt ?? ""))} <span class="muted">到期</span>`;
+        : `${relativeTime(device.leaseExpiresAt ?? "")} <span class="muted">到期</span>`;
     return [
       host,
       deviceLabel,
@@ -652,7 +653,7 @@ export function renderDevicesPage(data: DevicesPageData): string {
       stateBadge,
       job,
       lease,
-      escapeHtml(relativeTime(device.lastSeenAt)),
+      relativeTime(device.lastSeenAt),
       tools || '<span class="muted">—</span>'
     ];
   });
