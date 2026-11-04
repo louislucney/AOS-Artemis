@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { WebRunnerAlreadyActiveError } from "../dist/db/types.js";
-import { WebRunnerControlService } from "../dist/runner/control/service.js";
+import { RunnerControlError, WebRunnerControlService } from "../dist/runner/control/service.js";
 
 const HOST = "web-control-host";
 const NOW = Date.parse("2026-11-02T00:00:00.000Z");
@@ -165,6 +165,33 @@ test("runner control service: 心跳被另一实例接管 → WebRunnerAlreadyAc
   await first.heartbeat(heartbeatInput());
   const second = service(proxy, "instance-b");
   await assert.rejects(() => second.heartbeat(heartbeatInput()), WebRunnerAlreadyActiveError);
+});
+
+test("runner control service: 网关端口冲突拒绝心跳", async () => {
+  const { store } = await makeStore();
+  const first = service(store, "instance-a");
+  const gateway = {
+    adbServer: "127.0.0.1:15037",
+    appiumUrl: null,
+    tunnelPort: 15037,
+    ready: true,
+    reportedAt: iso(NOW)
+  };
+  await first.heartbeat(heartbeatInput({ gateway }));
+  const second = new WebRunnerControlService({
+    store,
+    hostId: "web-control-host-b",
+    instanceId: "instance-b",
+    env: { AOS_RUNNER_TTL_MS: "90000" },
+    now: () => NOW
+  });
+  await assert.rejects(
+    () => second.heartbeat(heartbeatInput({ gateway })),
+    (error) =>
+      error instanceof RunnerControlError &&
+      error.code === "gateway-port-conflict" &&
+      error.status === 409
+  );
 });
 
 test("runner control service: stopping → heartbeat 返回取消 → terminal 确认 cancelled", async () => {

@@ -536,6 +536,17 @@ export const RUNNER_ACTIVE_DEFAULT_MS = 90_000;
 /** 优雅停机的 runner 行时间戳：置为纪元，确保下一个实例立即判定为陈旧并接管。 */
 export const STOPPED_RUNNER_SEEN_AT = "1970-01-01T00:00:00.000Z";
 
+export interface DeviceGatewayRecord {
+  /** 中心侧 SSH 反向隧道暴露的 adb server（`127.0.0.1:<port>`）。 */
+  adbServer: string | null;
+  /** 中心侧 Appium HTTP 端点（P0 iOS 未启用）。 */
+  appiumUrl: string | null;
+  /** 中心侧分配/配置的隧道端口；P0 单实例。 */
+  tunnelPort: number | null;
+  ready: boolean;
+  reportedAt: string;
+}
+
 export interface WebRunnerRecord {
   id: string;
   hostId: string;
@@ -547,12 +558,15 @@ export interface WebRunnerRecord {
   artifactBaseUrl: string | null;
   version: string | null;
   instanceId: string;
+  /** 设备网关能力；未配置/隧道断开为 null 或 ready=false。 */
+  gateway: DeviceGatewayRecord | null;
   lastSeenAt: string;
   createdAt: string;
 }
 
 export interface UpsertWebRunnerInput
-  extends Omit<WebRunnerRecord, "id" | "createdAt" | "lastSeenAt"> {
+  extends Omit<WebRunnerRecord, "id" | "createdAt" | "lastSeenAt" | "gateway"> {
+  gateway?: DeviceGatewayRecord | null;
   lastSeenAt?: string;
   /** 双启保护的活跃窗口（默认 `RUNNER_ACTIVE_DEFAULT_MS`；`0`＝关闭，立即允许接管）。 */
   activeWithinMs?: number;

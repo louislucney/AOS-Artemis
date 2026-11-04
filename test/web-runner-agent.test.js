@@ -85,7 +85,7 @@ function spec(overrides = {}) {
     packageAssetId: "pkg-1",
     materialsAssetId: null,
     scriptSetId: null,
-    executionMode: "llm",
+    executionMode: "maestro",
     caseFilter: { modules: [], caseIds: [] },
     retry: 0,
     allowStaleScript: false,

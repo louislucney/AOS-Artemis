@@ -1167,11 +1167,64 @@ test("createWebJob: 自动生成失败 → script-generation-failed，不建任�
   assert.equal((await store.listRegressionTasks(rootPath)).length, 0, "失败不建任务");
 });
 
+test("createWebJob: LLM 需要 ready 的设备网关", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "llm-gateway");
+    const assets = await makeAssets(store, rootPath);
+    const devices = [android("pixel-7", "Pixel 7")];
+    await online(store, "host-a", devices);
+    await assert.rejects(
+      createWebJob(
+        jobInput(store, rootPath, assets, {
+          executionMode: "llm",
+          scriptSetId: null,
+          assignment: "manual",
+          devicePinned: true,
+          targetHostId: "host-a",
+          deviceSerial: "pixel-7"
+        })
+      ),
+      (error) =>
+        error instanceof WebJobDispatchError &&
+        error.code === "llm-gateway-unavailable" &&
+        error.status === 409
+    );
+
+    await store.upsertWebRunner({
+      ...runner("host-a", devices),
+      gateway: {
+        adbServer: "127.0.0.1:15037",
+        appiumUrl: null,
+        tunnelPort: 15037,
+        ready: true,
+        reportedAt: new Date(NOW).toISOString()
+      },
+      lastSeenAt: new Date(NOW - 1_000).toISOString()
+    });
+    const created = await createWebJob(
+      jobInput(store, rootPath, assets, { executionMode: "llm", scriptSetId: null })
+    );
+    assert.ok(created.assignment, "ready gateway 可被 LLM 任务选中");
+    assert.equal(created.task.executionMode, "llm");
+  }
+});
+
 test("claimWebJob: maestro/llm 领取互斥", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "claim-mode");
     const assets = await makeAssets(store, rootPath);
     await online(store, "host-a", [android("a-device", "Pixel A"), android("b-device", "Pixel B")]);
+    await store.upsertWebRunner({
+      ...runner("host-a", [android("a-device", "Pixel A"), android("b-device", "Pixel B")]),
+      gateway: {
+        adbServer: "127.0.0.1:15037",
+        appiumUrl: null,
+        tunnelPort: 15037,
+        ready: true,
+        reportedAt: new Date(NOW).toISOString()
+      },
+      lastSeenAt: new Date(NOW - 1_000).toISOString()
+    });
     const maestro = await createWebJob(
       jobInput(store, rootPath, assets, {
         assignment: "manual",

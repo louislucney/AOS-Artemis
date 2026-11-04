@@ -1180,6 +1180,10 @@ export class MemoryStore implements ProjectStore {
         tools: { ...input.tools },
         artifactBaseUrl: input.artifactBaseUrl,
         version: input.version,
+        gateway:
+          input.gateway === undefined || input.gateway === null
+            ? null
+            : { ...input.gateway },
         instanceId: input.instanceId,
         lastSeenAt: now,
         createdAt: now
@@ -1207,6 +1211,8 @@ export class MemoryStore implements ProjectStore {
     existing.tools = { ...input.tools };
     existing.artifactBaseUrl = input.artifactBaseUrl;
     existing.version = input.version;
+    existing.gateway =
+      input.gateway === undefined || input.gateway === null ? null : { ...input.gateway };
     existing.instanceId = input.instanceId;
     existing.lastSeenAt = now;
     return cloneWebRunner(existing);
@@ -2261,7 +2267,8 @@ function cloneWebRunner(record: WebRunnerRecord): WebRunnerRecord {
     ...record,
     platforms: [...record.platforms],
     devices: record.devices.map((device) => ({ ...device })),
-    tools: { ...record.tools }
+    tools: { ...record.tools },
+    gateway: record.gateway === null ? null : { ...record.gateway }
   };
 }
 

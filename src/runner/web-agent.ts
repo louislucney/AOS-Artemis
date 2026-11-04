@@ -14,6 +14,7 @@ import { createHttpWebRunnerControl } from "./control/client.js";
 import { createRunnerFetch, runnerDataTimeoutMs, runnerHttpTimeoutMs } from "./control/tls-fetch.js";
 import { createStoreWebRunnerControl } from "./control/service.js";
 import type { WebRunnerControl } from "./control/web-control.js";
+import { startDeviceGateway, type DeviceGateway } from "./gateway.js";
 import { collectRunnerInventory, type RunnerInventory } from "./inventory.js";
 import { createDefaultWebJobExecutor } from "./web-job-runner.js";
 import { cleanupWebJobWorkspace } from "./web-job-workspace.js";
@@ -175,6 +176,21 @@ export async function runWebRunner(
     return 2;
   }
 
+  let gateway: DeviceGateway | null = null;
+  if ((env.AOS_GATEWAY_SSH_TARGET ?? "").trim() !== "") {
+    try {
+      gateway = await startDeviceGateway({ env });
+      if (gateway !== null) {
+        const current = gateway.snapshot();
+        io.log(
+          `[web-runner] 设备网关已启动：${current.adbServer ?? "—"}（隧道端口 ${current.tunnelPort ?? "—"}）`
+        );
+      }
+    } catch (error) {
+      io.errorLog(`[web-runner] 设备网关启动失败：${errorMessage(error)}`);
+    }
+  }
+
   const active = new Map<string, ActiveJob>();
   const workers = new Map<string, WorkerHandle>();
   const workerPromises = new Set<Promise<void>>();
@@ -191,6 +207,7 @@ export async function runWebRunner(
       name,
       version: AOS_MCP_VERSION,
       artifactBaseUrl: options.artifactBaseUrl ?? null,
+      ...(gateway === null ? {} : { gateway: gateway.snapshot() }),
       inventory: current,
       active: [...active.values()].map((job) => ({ taskId: job.taskId, serial: job.serial }))
     });
@@ -484,6 +501,11 @@ export async function runWebRunner(
       await releaseLocal(job.taskId, job.serial, job.leaseToken);
     }
     active.clear();
+    if (gateway !== null) {
+      await gateway.stop().catch((error) => {
+        io.errorLog(`[web-runner] 关闭设备网关失败：${errorMessage(error)}`);
+      });
+    }
     try {
       await control.stop();
     } catch (error) {

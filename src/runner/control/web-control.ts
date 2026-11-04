@@ -1,3 +1,4 @@
+import type { DeviceGatewayRecord } from "../../db/types.js";
 import type { RunnerInventory } from "../inventory.js";
 import type {
   LeaseReleaseResponse,
@@ -23,6 +24,7 @@ export interface WebRunnerHeartbeatInput {
   name: string;
   version: string;
   artifactBaseUrl: string | null;
+  gateway?: DeviceGatewayRecord | null;
   inventory: RunnerInventory;
   active: Array<{ taskId: string; serial: string }>;
 }

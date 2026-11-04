@@ -100,6 +100,22 @@ test("upsertWebRunner: 新 host 落一行，字段完整往返（memory + pg-mem
   }
 });
 
+test("upsertWebRunner: gateway 字段往返并可清空（memory + pg-mem）", async () => {
+  const gateway = {
+    adbServer: "127.0.0.1:15037",
+    appiumUrl: null,
+    tunnelPort: 15037,
+    ready: true,
+    reportedAt: "2026-11-04T10:00:00.000Z"
+  };
+  for (const store of await Promise.all(activeRunStores())) {
+    const first = await store.upsertWebRunner(webRunnerInput({ gateway }));
+    assert.deepEqual(first.gateway, gateway);
+    const second = await store.upsertWebRunner(webRunnerInput({ gateway: null }));
+    assert.equal(second.gateway, null);
+  }
+});
+
 test("upsertWebRunner: 同 host 心跳更新 devices/tools/lastSeenAt，不新增行（memory + pg-mem）", async () => {
   for (const store of await Promise.all(activeRunStores())) {
     const first = await store.upsertWebRunner(

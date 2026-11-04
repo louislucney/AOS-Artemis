@@ -24,7 +24,8 @@ export type RunnerControlErrorCode =
   | "claim-lost"
   | "session-lost"
   | "instance-mismatch"
-  | "invalid-state";
+  | "invalid-state"
+  | "gateway-port-conflict";
 
 export class RunnerControlError extends Error {
   readonly code: RunnerControlErrorCode;
@@ -142,6 +143,22 @@ export class WebRunnerControlService {
   async heartbeat(input: WebRunnerHeartbeatInput): Promise<WebHeartbeatResponse> {
     const atMs = this.now();
     const at = iso(atMs);
+    const gateway = input.gateway ?? null;
+    if (gateway?.ready === true && gateway.adbServer !== null) {
+      const others = await this.store.listWebRunners().catch(() => []);
+      const conflict = others.find(
+        (entry) =>
+          entry.hostId !== this.hostId &&
+          entry.gateway?.ready === true &&
+          entry.gateway.adbServer === gateway.adbServer
+      );
+      if (conflict !== undefined) {
+        throw new RunnerControlError(
+          "gateway-port-conflict",
+          `网关端口 ${gateway.adbServer} 已被主机 ${conflict.hostId} 占用；请调整 AOS_GATEWAY_ADB_PORT`
+        );
+      }
+    }
     const runner = await this.store.upsertWebRunner({
       hostId: this.hostId,
       name: input.name,
@@ -151,6 +168,7 @@ export class WebRunnerControlService {
       tools: input.inventory.tools,
       artifactBaseUrl: input.artifactBaseUrl,
       version: input.version,
+      ...(input.gateway === undefined ? {} : { gateway: input.gateway }),
       instanceId: this.instanceId,
       lastSeenAt: at,
       activeWithinMs: runnerTtlFrom(this.env)

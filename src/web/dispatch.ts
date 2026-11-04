@@ -1,4 +1,9 @@
-import type { DeviceLeaseRecord, RunnerDevice, RunnerTools } from "../db/types.js";
+import type {
+  DeviceGatewayRecord,
+  DeviceLeaseRecord,
+  RunnerDevice,
+  RunnerTools
+} from "../db/types.js";
 import { isRunnerOnline } from "../runner/status.js";
 
 export type WebDeviceKind = "device" | "simulator" | "any";
@@ -35,6 +40,7 @@ export interface WebRunnerCandidate {
   platforms: string[];
   devices: RunnerDevice[];
   tools: RunnerTools;
+  gateway?: DeviceGatewayRecord | null;
   lastSeenAt: string;
 }
 
@@ -59,6 +65,8 @@ export interface SelectWebAssignmentInput {
   rng?: () => number;
   /** 重新选机时排除本任务自己的预占租约（避免把自己判成占用）。 */
   taskId?: string | null;
+  /** LLM 任务要求 host 有 ready 的设备网关。 */
+  executionMode?: "maestro" | "llm";
 }
 
 export interface DeviceScore {
@@ -403,9 +411,15 @@ export function selectWebAssignment(input: SelectWebAssignmentInput): WebAssignm
   }
 
   const taskId = input.taskId ?? null;
-  const onlineRunners = runners.filter((runner) =>
-    isRunnerOnline(runner.lastSeenAt, nowMs, runnerTtlMs)
-  );
+  const gatewayRequired = input.executionMode === "llm";
+  const onlineRunners = runners.filter((runner) => {
+    if (!isRunnerOnline(runner.lastSeenAt, nowMs, runnerTtlMs)) return false;
+    if (!gatewayRequired) return true;
+    if (runner.gateway?.ready !== true) return false;
+    return requirements.platform === "ios"
+      ? runner.gateway.appiumUrl !== null
+      : runner.gateway.adbServer !== null;
+  });
 
   let pool: WebRunnerCandidate[];
 

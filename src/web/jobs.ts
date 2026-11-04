@@ -133,6 +133,7 @@ function runnerCandidates(runners: WebRunnerRecord[]): WebRunnerCandidate[] {
     platforms: runner.platforms,
     devices: runner.devices,
     tools: runner.tools,
+    gateway: runner.gateway,
     lastSeenAt: runner.lastSeenAt
   }));
 }
@@ -207,6 +208,7 @@ async function selectForSpec(
     nowMs: input.nowMs,
     runnerTtlMs: input.runnerTtlMs,
     taskId: input.taskId,
+    executionMode: input.spec.executionMode,
     ...(input.rng === undefined ? {} : { rng: input.rng })
   });
   return result;
@@ -360,6 +362,19 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
   const project = await input.store.getProjectByPath(input.rootPath);
   if (project === null) {
     throw new WebJobDispatchError("project-not-found", `项目未注册：${input.rootPath}`);
+  }
+  if (
+    combination.executionMode === "llm" &&
+    combination.assignment === "manual" &&
+    combination.targetHostId !== null
+  ) {
+    const runner = await input.store.getWebRunner(combination.targetHostId).catch(() => null);
+    if (runner?.gateway?.ready !== true) {
+      throw new WebJobDispatchError(
+        "llm-gateway-unavailable",
+        `目标主机 ${combination.targetHostId} 没有 ready 的设备网关（LLM 需要中心可连的 adb server/Appium）`
+      );
+    }
   }
 
   const excel = await loadAsset(input.store, input.rootPath, "excel", input.excelAssetId);

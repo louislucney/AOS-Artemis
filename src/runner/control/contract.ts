@@ -43,6 +43,16 @@ export const WebHeartbeatRequestSchema = z.object({
   name: z.string().min(1),
   version: z.string(),
   artifactBaseUrl: z.string().nullable(),
+  gateway: z
+    .object({
+      adbServer: z.string().nullable(),
+      appiumUrl: z.string().nullable(),
+      tunnelPort: z.number().int().nullable(),
+      ready: z.boolean(),
+      reportedAt: z.string()
+    })
+    .nullable()
+    .optional(),
   instanceId: z.string().min(1),
   inventory: RunnerInventorySchema,
   active: z.array(

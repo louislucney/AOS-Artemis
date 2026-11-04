@@ -99,10 +99,18 @@ export class HttpWebRunnerControl implements WebRunnerControl {
         signal: AbortSignal.timeout(this.timeoutMs)
       });
     } catch (error) {
+      const cause =
+        error instanceof Error && error.cause instanceof Error
+          ? `${error.cause.name}: ${error.cause.message}`
+          : error instanceof Error && typeof error.cause === "object" && error.cause !== null
+            ? JSON.stringify(error.cause)
+            : "";
       throw new RunnerControlHttpError(
         0,
         "network-error",
-        `控制面请求失败：${error instanceof Error ? error.message : String(error)}`
+        `控制面请求失败：${error instanceof Error ? error.message : String(error)}${
+          cause === "" ? "" : `（${cause}）`
+        }`
       );
     }
     const text = await response.text();
@@ -148,6 +156,7 @@ export class HttpWebRunnerControl implements WebRunnerControl {
       name: input.name,
       version: input.version,
       artifactBaseUrl: input.artifactBaseUrl,
+      ...(input.gateway === undefined ? {} : { gateway: input.gateway }),
       instanceId: this.instanceId,
       inventory: input.inventory,
       active: input.active

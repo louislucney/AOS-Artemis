@@ -41,6 +41,7 @@ import type {
   RecordTaskInput,
   RecordUsageEventInput,
   RegressionTaskRecord,
+  DeviceGatewayRecord,
   RegressionTaskRef,
   RegressionTaskStatus,
   RenewDeviceLeasesInput,
@@ -319,6 +320,7 @@ const SCHEMA = [
      tools TEXT NOT NULL DEFAULT '{}',
      artifact_base_url TEXT,
      version TEXT,
+     gateway TEXT,
      instance_id TEXT NOT NULL,
      last_seen_at TEXT NOT NULL,
      created_at TEXT NOT NULL
@@ -528,6 +530,7 @@ const MIGRATIONS = [
   `ALTER TABLE project_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
   `ALTER TABLE runners ADD COLUMN IF NOT EXISTS host_id TEXT`,
   `ALTER TABLE runners ADD COLUMN IF NOT EXISTS instance_id TEXT`,
+  `ALTER TABLE web_runners ADD COLUMN IF NOT EXISTS gateway TEXT`,
   `DELETE FROM runners WHERE id IN (
      SELECT r1.id FROM runners r1
      JOIN runners r2 ON r1.project_id = r2.project_id AND r1.host_id = r2.host_id
@@ -1997,8 +2000,8 @@ export class PostgresStore implements ProjectStore {
       const inserted = await this.pool.query(
         `INSERT INTO web_runners
            (id, host_id, name, hostname, platforms, devices, tools, artifact_base_url, version,
-            instance_id, last_seen_at, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            gateway, instance_id, last_seen_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING *`,
         [
           randomUUID(),
@@ -2010,6 +2013,9 @@ export class PostgresStore implements ProjectStore {
           JSON.stringify(input.tools),
           input.artifactBaseUrl,
           input.version,
+          input.gateway === null || input.gateway === undefined
+            ? null
+            : JSON.stringify(input.gateway),
           input.instanceId,
           now,
           now
@@ -2038,7 +2044,8 @@ export class PostgresStore implements ProjectStore {
       const updated = await this.pool.query(
         `UPDATE web_runners
             SET name = $3, hostname = $4, platforms = $5, devices = $6, tools = $7,
-                artifact_base_url = $8, version = $9, instance_id = $10, last_seen_at = $11
+                artifact_base_url = $8, version = $9, gateway = $10, instance_id = $11,
+                last_seen_at = $12
           WHERE host_id = $1 AND instance_id = $2
           RETURNING *`,
         [
@@ -2051,6 +2058,9 @@ export class PostgresStore implements ProjectStore {
           JSON.stringify(input.tools),
           input.artifactBaseUrl,
           input.version,
+          input.gateway === null || input.gateway === undefined
+            ? null
+            : JSON.stringify(input.gateway),
           input.instanceId,
           now
         ]
@@ -3861,9 +3871,32 @@ function mapWebRunner(row: Record<string, unknown>): WebRunnerRecord {
     tools: parseRunnerTools(row.tools),
     artifactBaseUrl: nullableString(row.artifact_base_url),
     version: nullableString(row.version),
+    gateway: parseDeviceGateway(row.gateway),
     instanceId: String(row.instance_id),
     lastSeenAt: String(row.last_seen_at),
     createdAt: String(row.created_at)
+  };
+}
+
+function parseDeviceGateway(value: unknown): DeviceGatewayRecord | null {
+  let data: unknown;
+  try {
+    data = typeof value === "string" ? JSON.parse(value) : value;
+  } catch {
+    return null;
+  }
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return null;
+  const record = data as Record<string, unknown>;
+  const tunnelPort =
+    typeof record.tunnelPort === "number" && Number.isInteger(record.tunnelPort)
+      ? record.tunnelPort
+      : null;
+  return {
+    adbServer: typeof record.adbServer === "string" ? record.adbServer : null,
+    appiumUrl: typeof record.appiumUrl === "string" ? record.appiumUrl : null,
+    tunnelPort,
+    ready: record.ready === true,
+    reportedAt: typeof record.reportedAt === "string" ? record.reportedAt : ""
   };
 }
 
