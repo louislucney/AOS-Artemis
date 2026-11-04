@@ -74,6 +74,8 @@ export interface StoreWebAssetInput {
   uploadedBy?: string | null;
   /** 资产附带标记（如 materials 的 `secret=true`）；缺省写空对象。 */
   metadata?: Record<string, unknown>;
+  /** 生成物幂等键（脚本集 sha256）；普通上传不传。 */
+  dedupeKey?: string | null;
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -180,7 +182,8 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
     uploadedBy: input.uploadedBy ?? null,
     // 未知时省略，由 store 从 upsertProject 解析，避免把 NULL 钉死在资产行上。
     ...(web?.projectId ? { projectId: web.projectId } : {}),
-    metadata
+    metadata,
+    ...(input.dedupeKey === undefined ? {} : { dedupeKey: input.dedupeKey })
   });
 }
 

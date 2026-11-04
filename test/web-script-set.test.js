@@ -97,6 +97,9 @@ test("script-set: 相同输入生成相同 zip/sha，manifest 可解析", () => 
   assert.equal(parsed.inferNavigationTap, false);
   assert.equal(parsed.includeSoftText, false);
   assert.equal(parsed.assertionDocHash, first.manifest.assertionDocHash);
+  for (const key of ["createdAt", "generatedAt", "timestamp", "nonce"]) {
+    assert.equal(key in parsed, false, `manifest 不得含 ${key}（否则 sha 幂等失效）`);
+  }
 });
 
 test("script-set: manifest 携带 Excel 模块", () => {

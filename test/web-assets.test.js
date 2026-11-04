@@ -665,3 +665,50 @@ test("PostgresStore (pg-mem): web_assets 往返、版本递增与 kind 过滤", 
   assert.equal((await store.getWebAsset(rootPath, second.id)).filename, "b.xlsx");
   assert.equal(await store.getWebAsset(rootPath, "missing"), null);
 });
+
+test("PostgresStore (pg-mem): dedupeKey 幂等，不同 key 仍递增版本", async () => {
+  const store = await makePgStore();
+  const rootPath = "/w/dedupe";
+  const dedupeKey = "a".repeat(64);
+  const input = {
+    rootPath,
+    kind: "scripts",
+    filename: "aos-scripts-android-aaaaaaaaaaaa.zip",
+    sha256: dedupeKey,
+    size: 128,
+    storagePath: "/w/dedupe/.artemis/web/assets/scripts/a.zip",
+    dedupeKey
+  };
+  const first = await store.createWebAsset(input);
+  const second = await store.createWebAsset({ ...input, filename: "retry.zip" });
+  assert.equal(second.id, first.id, "同 dedupeKey 返回已有资产");
+  assert.equal(second.version, first.version);
+  assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 1);
+
+  const other = await store.createWebAsset({
+    ...input,
+    filename: "other.zip",
+    dedupeKey: "b".repeat(64)
+  });
+  assert.notEqual(other.id, first.id);
+  assert.equal(other.version, 2, "不同 dedupeKey 正常递增");
+});
+
+test("MemoryStore: dedupeKey 幂等", async () => {
+  const store = new MemoryStore();
+  const rootPath = "/w/dedupe-memory";
+  const dedupeKey = "c".repeat(64);
+  const input = {
+    rootPath,
+    kind: "scripts",
+    filename: "a.zip",
+    sha256: dedupeKey,
+    size: 128,
+    storagePath: "/w/dedupe-memory/.artemis/web/assets/scripts/a.zip",
+    dedupeKey
+  };
+  const first = await store.createWebAsset(input);
+  const second = await store.createWebAsset({ ...input, filename: "retry.zip" });
+  assert.equal(second.id, first.id);
+  assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 1);
+});

@@ -52,6 +52,8 @@ export interface CreateWebAssetInput {
   uploadedBy?: string | null;
   projectId?: string | null;
   metadata?: Record<string, unknown>;
+  /** 生成物幂等键（如脚本集 sha256）；缺省为普通上传，允许重复版本。 */
+  dedupeKey?: string | null;
 }
 
 /** Excel 列映射（原件级）：`columnMap` 是规范字段 → 表头文本；同键以最新保存为准。 */

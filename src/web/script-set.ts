@@ -301,7 +301,8 @@ export async function storeScriptSet(input: StoreScriptSetInput): Promise<StoreS
     filename: `aos-scripts-${input.bundle.manifest.platform}-${input.bundle.sha256.slice(0, 12)}.zip`,
     buffer: input.bundle.zip,
     metadata,
-    uploadedBy: input.uploadedBy ?? null
+    uploadedBy: input.uploadedBy ?? null,
+    dedupeKey: input.bundle.sha256
   });
   return { asset, created: true };
 }

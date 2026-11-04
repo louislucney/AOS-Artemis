@@ -120,6 +120,7 @@ export class MemoryStore implements ProjectStore {
   private deviceLeases: DeviceLeaseRecord[] = [];
   private webProjects: WebProjectRecord[] = [];
   private webAssets: WebAssetRecord[] = [];
+  private webAssetDedupe = new Map<string, string>();
   private excelMappings: ExcelMappingRecord[] = [];
   private excelWritebacks: ExcelWritebackRecord[] = [];
 
@@ -160,6 +161,7 @@ export class MemoryStore implements ProjectStore {
     view.deviceLeases = this.deviceLeases;
     view.webProjects = this.webProjects;
     view.webAssets = this.webAssets;
+    view.webAssetDedupe = this.webAssetDedupe;
     view.excelMappings = this.excelMappings;
     view.excelWritebacks = this.excelWritebacks;
     return view;
@@ -1840,6 +1842,21 @@ export class MemoryStore implements ProjectStore {
   }
 
   async createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord> {
+    const dedupeKey =
+      typeof input.dedupeKey === "string" && input.dedupeKey.trim() !== ""
+        ? input.dedupeKey.trim()
+        : null;
+    const dedupeMapKey =
+      dedupeKey === null
+        ? null
+        : `${this.hostId ?? ""}\u0000${input.rootPath}\u0000${input.kind}\u0000${dedupeKey}`;
+    if (dedupeMapKey !== null) {
+      const existingId = this.webAssetDedupe.get(dedupeMapKey);
+      if (existingId !== undefined) {
+        const existing = this.webAssets.find((asset) => asset.id === existingId);
+        if (existing !== undefined) return cloneWebAsset(existing);
+      }
+    }
     const projectId =
       input.projectId !== undefined
         ? input.projectId
@@ -1863,6 +1880,7 @@ export class MemoryStore implements ProjectStore {
       metadata: input.metadata ? cloneMetadata(input.metadata) : {}
     };
     this.webAssets.push(record);
+    if (dedupeMapKey !== null) this.webAssetDedupe.set(dedupeMapKey, record.id);
     return cloneWebAsset(record);
   }
 
