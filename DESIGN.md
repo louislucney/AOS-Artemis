@@ -3719,9 +3719,11 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-11-04。`executionMode=llm` 仍是占位（runner 返回 `llm-execution-not-wired`）；完整方案见 `docs/superpowers/specs/2026-11-04-llm-execution-design.md`。
 
-- **建议路线**：P0 中心本机/直连设备（复用 ARTEMIS + `mobile_run_task`）→ P1 `deviceHosts` 远程 adb/Appium、中心执行、runner 只做设备宿主/租约；runner 内置 ARTEMIS 或动作 RPC 仅作备选。
-- **边界**：LLM key 只在中心/项目 `.env`，不下发 runner；`data_engine.db`/`status.json` 必须随结果回传；token 缺失写 `token-unavailable`，不写 0；PASS 需要 ARTEMIS checker/notes + 截图的硬证据，模型自述不算。
-- **状态**：设计待评估，代码未实现；P0 验收含逐例状态、token 汇总、Excel 写回、取消/超时/失联。
+- **路线（2026-11-04 决策：必须远程）**：中心 LLM 执行 + 远程设备网关；runner 只做设备宿主/租约/健康检查，中心主动不连 runner，runner 用 SSH 反向隧道（WSS 可选）连中心。runner 内置 ARTEMIS 或动作 RPC 仅作备选。
+- **Key/数据边界**：LLM key 只在中心；Excel/taskDesc 可发 LLM，但账号/密码/token/邮箱/手机号等在进 LLM 前脱敏，执行时用 `<secret:alias>` 占位符注入；未绑定账号在严格模式直接拒绝。
+- **证据**：L1 确定性检查（期望文本/selector/无错误弹窗）为硬证据；L2 可选 reference pack（设计稿/截图）；L3 独立 verifier 只能降级不能升级。无 L1/L2 → `UNVERIFIED`，不判 PASS。
+- **计费**：`data_engine.db`/`status.json` 必须回传；token 缺失写 `token-unavailable`，不写 0；首跑/重试/verifier 的所有 token 都计入，按 attempt/phase 拆分。
+- **状态**：设计 v2 待 review，代码未实现；P0 远程 Android、P0b 远程 iOS。
 - **默认值表（唯一事实源）**：
 
 | 配置 | 默认 | 显式值/说明 |
