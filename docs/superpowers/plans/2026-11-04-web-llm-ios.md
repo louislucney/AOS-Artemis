@@ -30,6 +30,12 @@
 
 ---
 
+### Task 0: 半天前置验证（先于实现）
+
+- [ ] **Appium 端口，不是 WDA 8100**：在目标 runner 上确认 Appium server 监听 `4723`（或配置端口）；中心只通过 SSH `-R` 转发 **Appium HTTP 端口**。WDA 由 Appium 经 USB/usbmuxd 管理，不属于本计划的转发对象；不要把 `tidevice relay 8100` 作为 P0b 前置。
+- [ ] **bounds 样本**：用真实 iPhone 抓登录页/个人页 `run.json` 的 `steps[].texts`，统计有 `x/y/width/height` 的文本节点比例；代码侧已知 `src/ios/prompt-history.ts` 会把 `IosUiNode.rect` 渲染为 `Bounds`，但仍需设备样本确认覆盖率。
+- [ ] 样本结论写入计划/评审记录，再进入 Task 1。
+
 ### Task 1: iOS gateway Appium 反向隧道
 
 **Files:**
@@ -39,10 +45,12 @@
 - Test: `test/web-runner-gateway.test.js`、`test/web-runner-store.test.js`
 
 **Interfaces:**
-- Env：`AOS_GATEWAY_APPIUM_PORT`（默认 15038）、`AOS_GATEWAY_LOCAL_APPIUM_PORT`（默认 4723）、`AOS_GATEWAY_APPIUM_URL`（可选覆盖）。
+- Env：`AOS_GATEWAY_APPIUM_PORT`（中心侧默认 15038）、`AOS_GATEWAY_LOCAL_APPIUM_PORT`（runner 侧 Appium HTTP，默认 **4723**）、`AOS_GATEWAY_APPIUM_URL`（可选覆盖）。
+- 前置：Appium server 已在 runner 启动；WDA/USB 由 Appium 管理，不直接转发 8100。
 - `DeviceGatewayRecord.appiumUrl: string | null`（中心 loopback `http://127.0.0.1:<port>`）。
 
-- [ ] Test: 配置 target 后 ssh 参数含两条 `-R`（adb + appium）；`snapshot().appiumUrl` 正确。
+- [ ] Test: 配置 target 后 ssh 参数含两条 `-R`（adb + appium 4723）；`snapshot().appiumUrl` 正确。
+- [ ] Test: Appium 未启动/端口不可达 → `appiumUrl:null`，任务 `ios-appium-unavailable`，不猜测。
 - [ ] Test: 未配置 `AOS_GATEWAY_APPIUM_PORT` 时 `appiumUrl:null`；端口冲突仍 409。
 - [ ] 实现第二路隧道/退出置 `ready:false`（任一隧道断都 false）；关闭时 kill 两个子进程。
 - [ ] 跑测试通过，提交 `feat: add iOS appium gateway tunnel`。
@@ -59,9 +67,10 @@
 **Interfaces:**
 - `executeLlmCase(input: {platform; proxy; traceDir; testCase; deviceSerial; appPackage; appPath; secrets; signal})`
 - iOS adapter：`proxy.callTool("mobile_run_task", {task_desc, device_serial, locked_app_package, app_path})` → `mobile_manage_task` 轮询 → `runtime.traceDir(traceId)`；读 `status.json`/`run.json`。
+- **已核实契约**：`src/ios/tool-entry.ts` 返回 `{trace_id,status:"running",device_serial,...}`；`statusPayloadOf` 含 `test_summary`/`result`/`recent_steps`/`run_dir`；`run.json` 由 `trace-persist` 写入。
 - iOS 结果：`test_summary`/`result` → PASS/FAIL/UNVERIFIED；`run.json.steps` → evidenceSteps；无 token → `undefined`。
 
-- [ ] Test: fake iOS proxy 返回 running→completed + test_summary；结果 PASS/FAIL/UNVERIFIED 三态。
+- [ ] Test: fake iOS proxy 返回 `running→completed` + `test_summary`，字段形状与 `statusPayloadOf` 一致；结果 PASS/FAIL/UNVERIFIED 三态。
 - [ ] Test: iOS `app_path` 传 http URL；模拟器返回 `app_path_unsupported` 时映射 ERROR（远程模拟器不做）。
 - [ ] Test: iOS 取消 → stop；结果 SKIP/cancelled。
 - [ ] 实现 `ios-case.ts`/分派；保留 Android `data_engine.db` 读取。
@@ -96,9 +105,9 @@
 - `redactIosNodes(nodes, secrets)`：按 `texts` 的 bbox 遮罩；无 bbox 严格模式丢弃截图。
 - `resolveIosInput(text, secrets)`；`redactIosRun(record, secrets)`。
 
-- [ ] Test: UI 树/节点文本脱敏；截图 bbox 遮罩；无 bbox → 严格模式丢弃。
+- [ ] Test: UI 树/节点文本脱敏；截图 bbox 遮罩；无 bbox → 严格模式丢弃；**混合节点**（部分有 bbox/部分无）→ 严格模式丢弃整图并告警，非严格模式保留截图 + warning。
 - [ ] Test: input 动作占位符替换；status/run JSON 落盘无 secret。
-- [ ] 实现；复用 `secrets.ts` 的 `SecretEntry/redactText`（不要复制正则）。
+- [ ] 实现；复用 `secrets.ts` 的 `SecretEntry/redactText`（不要复制正则）；`IosUiNode.rect` 已是现成 bbox 来源（`prompt-history.ts` 已渲染 Bounds）。
 - [ ] 跑测试通过，提交 `feat: redact iOS LLM observations and traces`。
 
 ### Task 5: iOS 安装与 artifact 契约
@@ -127,10 +136,10 @@
 - Test: `test/ios-token-usage.test.js`
 
 **Interfaces:**
-- `ChatUsage {promptTokens, completionTokens, cacheCreateTokens, cacheReadTokens}`；`ChatFn` 可选 `onUsage`，保持旧调用兼容。
+- `ChatUsage {promptTokens, completionTokens, cacheCreateTokens, cacheReadTokens}`；**不修改 `ChatFn` 类型**，在 `ChatOptions` 增加可选 `onUsage?: (usage: ChatUsage) => void`；`makeChatFn` 解析 `usage` 后调用；所有现有调用方零修改。
 - `run.json`/status 带 per-step usage；`ingestLlmResults` 映射 `tokenUsage`。
 
-- [ ] Test: fake chat 返回 usage → status/run 记录；缺 usage → `token-unavailable`。
+- [ ] Test: fake chat 返回 usage → status/run 记录；缺 usage → `token-unavailable`；现有 `makeChatFn` 调用方（figma/pen/ios/panel）不因新可选参数变化。
 - [ ] 实现；不改 Android 的 token 读取。
 - [ ] 跑测试通过，提交 `feat: capture iOS LLM token usage`。
 
