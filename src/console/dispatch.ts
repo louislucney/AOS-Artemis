@@ -5,7 +5,7 @@ import { clientTtlFrom, isClientOnline } from "../host/online.js";
 import { LEGACY_HOST_REASON } from "../host/legacy.js";
 import { projectAllowed, projectExcluded } from "../project-visibility.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
-import { escapeHtml } from "../util.js";
+import { errorMessage, escapeHtml } from "../util.js";
 import { cBadge, cBanner, cCard, cStat, cTable } from "./components.js";
 import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
 
@@ -57,6 +57,12 @@ export interface DispatchPreview {
   priority: number;
   /** 目标主机能力/项目不满足：前端禁用确认（离线只告警，不置位）。 */
   hostBlocked: boolean;
+  /** 用例集来源实际读的是哪一层 store；`error` 非空时来源区必须显式示因。 */
+  sourceStore: {
+    tier: "target" | "owner" | "global";
+    hostId: string | null;
+    error: string | null;
+  };
   warnings: string[];
 }
 
@@ -184,6 +190,25 @@ export function hostScopedStore(
   }
 }
 
+/** 严格解析主机作用域：注入 null / scopeHost 抛错 → 明确失败，不静默回退全局。 */
+function strictHostStore(
+  deps: Pick<DispatchDeps, "store" | "storeForHost">,
+  hostId: string
+): { store: ProjectStore | null; error: string | null } {
+  if (deps.storeForHost !== undefined) {
+    const injected = deps.storeForHost(hostId);
+    if (injected === null) {
+      return { store: null, error: `无法解析主机 ${hostId} 的存储视图` };
+    }
+    if (injected !== undefined) return { store: injected, error: null };
+  }
+  try {
+    return { store: deps.store.scopeHost(hostId), error: null };
+  } catch (error) {
+    return { store: null, error: errorMessage(error) };
+  }
+}
+
 async function hostQueueDepth(store: ProjectStore, hostId: string): Promise<number> {
   let scoped: ProjectStore;
   try {
@@ -245,10 +270,12 @@ export async function computeDispatchPreview(
     warnings.push(`未知主机「${hostParam}」：请重新选择（可能已下线或未登记）`);
   }
   const targetStore = hostScopedStore(deps, targetHost?.id ?? null);
+  let targetProjectFound = false;
   let hostBlocked = hostParam !== "" && targetHost === null;
   if (targetHost !== null) {
     if (rootPath !== "") {
       const targetProject = await targetStore.getProjectByPath(rootPath).catch(() => null);
+      targetProjectFound = targetProject !== null;
       if (targetProject === null) {
         warnings.push(
           `主机「${targetHost.id}」未登记项目「${rootPath}」：套件回归需要项目目录；请先在目标机接入项目（网页测试不需要登记）`
@@ -324,7 +351,59 @@ export async function computeDispatchPreview(
     }
   }
 
-  const sets = await targetStore.listCaseSets(rootPath);
+  let sourceStore: ProjectStore | null = targetStore;
+  let sourceTier: "target" | "owner" | "global" =
+    targetHost === null ? "global" : "target";
+  let sourceHostId: string | null = targetHost?.id ?? null;
+  let sourceError: string | null = null;
+  if (rootPath !== "" && targetHost !== null && !targetProjectFound) {
+    const owner = await deps.store.getProjectByPath(rootPath).catch(() => null);
+    if (owner?.hostId) {
+      const resolved = strictHostStore(deps, owner.hostId);
+      sourceStore = resolved.store;
+      sourceTier = "owner";
+      sourceHostId = owner.hostId;
+      if (resolved.store === null) {
+        sourceError = "source-store-unavailable";
+        warnings.push(
+          `来源读取失败（owner host=${owner.hostId}）：${resolved.error ?? "无法解析存储视图"}`
+        );
+      } else {
+        const ownerProject = await resolved.store
+          .getProjectByPath(rootPath)
+          .catch(() => null);
+        if (ownerProject === null) {
+          sourceError = "owner-project-missing";
+          warnings.push(
+            `来源读取失败（owner host=${owner.hostId}）：该项目不在该主机的存储中`
+          );
+        }
+      }
+    } else {
+      sourceTier = "global";
+      sourceHostId = null;
+      sourceStore = deps.store;
+    }
+  }
+  let sets: Awaited<ReturnType<ProjectStore["listCaseSets"]>> = [];
+  if (sourceStore !== null) {
+    try {
+      sets = await sourceStore.listCaseSets(rootPath);
+    } catch (error) {
+      sourceError = "source-read-failed";
+      warnings.push(
+        `来源读取失败（${sourceTier}${sourceHostId === null ? "" : ` host=${sourceHostId}`}）：${errorMessage(error)}`
+      );
+    }
+  }
+  if (
+    rootPath !== "" &&
+    sourceError === null &&
+    sets.length === 0 &&
+    sourceStore !== null
+  ) {
+    warnings.push("该项目还没有用例集：先在用例库导入 Excel");
+  }
   const setOptions: DispatchRefDetail[] = sets.map((set) => ({
     id: set.id,
     label: set.basename,
@@ -399,6 +478,7 @@ export async function computeDispatchPreview(
     projects,
     priority,
     hostBlocked,
+    sourceStore: { tier: sourceTier, hostId: sourceHostId, error: sourceError },
     warnings
   };
 }
