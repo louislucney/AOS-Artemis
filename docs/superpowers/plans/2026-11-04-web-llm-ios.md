@@ -47,7 +47,7 @@
 - Test: `test/web-runner-gateway.test.js`、`test/web-runner-store.test.js`
 
 **Interfaces:**
-- Env：`AOS_GATEWAY_APPIUM_PORT`（中心侧默认 15038）、`AOS_GATEWAY_LOCAL_APPIUM_PORT`（runner 侧 Appium HTTP，默认 **4723**）、`AOS_GATEWAY_APPIUM_URL`（可选覆盖）。
+- Env：`AOS_GATEWAY_APPIUM_PORT`（中心侧默认 15038）、`AOS_GATEWAY_LOCAL_APPIUM_PORT`（runner 侧 Appium HTTP，默认 **4723**）、`AOS_GATEWAY_APPIUM_URL`（外部已可达的完整 URL；设置后不建 Appium 隧道）。
 - 前置：Appium server 已在 runner 启动；WDA/USB 由 Appium 管理，不直接转发 8100。
 - `DeviceGatewayRecord.appiumUrl: string | null`（中心 loopback `http://127.0.0.1:<port>`）。
 

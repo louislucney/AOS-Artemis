@@ -3734,7 +3734,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
   - `loadLlmCases`：Excel/CSV → taskDesc；`ingestLlmResults`：center-only UNVERIFIED、Excel 写回；
   - Node 侧 secret inventory/脱敏/占位符注入；未绑定账号 fail-closed。
 - **iOS P0b（2026-11-04，代码完成/真机待验）**：
-  - **Appium 网关**：runner 建第二条 `ssh -R`；`AOS_GATEWAY_APPIUM_PORT`（中心侧，默认 15038）、`AOS_GATEWAY_LOCAL_APPIUM_PORT`（runner 侧 Appium HTTP，默认 4723）、`AOS_GATEWAY_APPIUM_URL`（runner 侧覆盖）。建隧道前探测 `GET /status`，不可达则不转发并写 `appiumUrl:null`（中心任务 `ios-appium-unavailable`）；WDA 8100 由 Appium 经 USB 管理，不直接转发。
+  - **Appium 网关**：runner 建第二条 `ssh -R`；`AOS_GATEWAY_APPIUM_PORT`（中心侧，默认 15038）、`AOS_GATEWAY_LOCAL_APPIUM_PORT`（runner 侧 Appium HTTP，默认 4723）、`AOS_GATEWAY_APPIUM_URL`（外部已可达的完整 URL，设置后不建隧道）。未设置覆盖时，建隧道前探测 `GET /status`，不可达则不转发并写 `appiumUrl:null`（中心任务 `ios-appium-unavailable`）；WDA 8100 由 Appium 经 USB 管理，不直接转发。
   - **按 host 隔离**：worker 按 `targetHostId` 读 `web_runners.gateway.appiumUrl`，构建 Runtime 时覆盖 `AOS_APPIUM_URL`（不污染进程 env），缓存键含 URL；不同 host 不复用会话。
   - **执行与结果**：`executeIosLlmCase` 走 `mobile_run_task`/`mobile_manage_task`，读 `status.json`/`run.json`；远程 iOS 模拟器直接 `ERROR ios-remote-simulator-unsupported`；iOS 只要求 `status.json`，不因缺 `data_engine.db` 报 `token-unavailable`。
   - **Node 侧脱敏**：`src/ios/redaction.ts` 覆盖 taskDesc、观察节点、截图、输入占位符、run/status 落盘；截图按敏感节点 bbox 涂黑，敏感节点缺 bbox 时默认丢弃截图（`AOS_IOS_REDACTION_STRICT=0` 时保留中心侧证据但**不发给模型**）；`<secret:alias>` 只在实际输入动作前还原。

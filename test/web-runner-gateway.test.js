@@ -63,16 +63,16 @@ test("startDeviceGateway: Appium 不可达 → 不建第二路、appiumUrl:null"
   await gateway.stop();
 });
 
-test("startDeviceGateway: AOS_GATEWAY_APPIUM_URL 覆盖时仍先探测", async () => {
-  const probed = [];
+test("startDeviceGateway: AOS_GATEWAY_APPIUM_URL 是外部路由，不再探测/建隧道", async () => {
+  let probed = false;
   const commands = [];
   const gateway = await startDeviceGateway({
     env: {
       AOS_GATEWAY_SSH_TARGET: "center.example",
       AOS_GATEWAY_APPIUM_URL: "http://10.0.0.5:4725"
     },
-    probeAppium: async (url) => {
-      probed.push(url);
+    probeAppium: async () => {
+      probed = true;
       return true;
     },
     spawnChild: (cmd, args) => {
@@ -81,7 +81,7 @@ test("startDeviceGateway: AOS_GATEWAY_APPIUM_URL 覆盖时仍先探测", async (
     }
   });
   assert.ok(gateway);
-  assert.deepEqual(probed, ["http://10.0.0.5:4725"]);
+  assert.equal(probed, false);
   assert.equal(commands.length, 1);
   assert.equal(gateway.snapshot().appiumUrl, "http://10.0.0.5:4725");
   await gateway.stop();

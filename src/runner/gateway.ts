@@ -60,11 +60,12 @@ export async function startDeviceGateway(
     ((command: string, args: string[]): GatewayChild =>
       spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] }) as unknown as GatewayChild);
   const reportedAt = new Date(input.now?.() ?? Date.now()).toISOString();
-  const appiumCandidate =
-    appiumOverride !== "" ? appiumOverride : `http://127.0.0.1:${localAppiumPort}`;
+  const appiumLocalUrl = `http://127.0.0.1:${localAppiumPort}`;
   const appiumReachable =
-    appiumConfigured &&
-    (await (input.probeAppium ?? defaultProbeAppium)(appiumCandidate).catch(() => false));
+    appiumOverride !== ""
+      ? true
+      : appiumConfigured &&
+        (await (input.probeAppium ?? defaultProbeAppium)(appiumLocalUrl).catch(() => false));
   let ready = true;
   let stopped = false;
   const children: GatewayChild[] = [];
