@@ -681,7 +681,7 @@ export function renderDevicesPage(data: DevicesPageData): string {
         ? '<span class="muted">—</span>'
         : device.jobRootPath === null
           ? `<code>${escapeHtml(device.jobTaskId)}</code><br><span class="muted">${escapeHtml(device.jobStatus ?? "")}</span>`
-          : `<a href="/panel?project=${encodeURIComponent(device.jobRootPath)}&amp;section=jobs&amp;job=${encodeURIComponent(device.jobTaskId)}"><code>${escapeHtml(device.jobTaskId)}</code></a><br><span class="muted">${escapeHtml(device.jobProjectName ?? "")} · ${escapeHtml(device.jobStatus ?? "")}</span>`;
+          : `<a href="/panel?project=${encodeURIComponent(device.jobRootPath)}&amp;section=jobs&amp;job=${encodeURIComponent(device.jobTaskId)}&amp;host=${encodeURIComponent(device.hostId)}"><code>${escapeHtml(device.jobTaskId)}</code></a><br><span class="muted">${escapeHtml(device.jobProjectName ?? "")} · ${escapeHtml(device.jobStatus ?? "")}</span>`;
     const lease =
       device.leaseTaskId === null
         ? '<span class="muted">—</span>'
@@ -845,7 +845,7 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
               : cTable({
                   columns: ["项目", "路径", "主机"],
                   rows: choices.map((choice) => [
-                    `<a href="${escapeHtml(jobsHref(choice.rootPath, choice.hostId))}"><code>${escapeHtml(
+                    `<a href="${escapeHtml(jobsHref(choice.rootPath, data.hostId ?? choice.hostId))}"><code>${escapeHtml(
                       choice.name
                     )}</code></a>`,
                     `<code>${escapeHtml(choice.rootPath)}</code>`,

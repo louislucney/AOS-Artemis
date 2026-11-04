@@ -403,6 +403,8 @@ export async function computeDispatchPreview(
 
 export function renderDispatchPage(view: DispatchView): string {
   const preview = view.preview;
+  const dispatchHostQuery =
+    preview.selectedHostId === null ? "" : `&host=${encodeURIComponent(preview.selectedHostId)}`;
   const legacyHostless = view.legacyHostless === true && preview.hosts.length > 0;
   const legacyNoteHtml = legacyHostless
     ? `<p class="note">${escapeHtml(LEGACY_HOST_REASON).replace(
@@ -494,7 +496,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const projectSelect = [
     `<p><label>项目 <select name="project" aria-label="项目">${projectOptionsHtml}</select></label> <span class="muted">先选主机，再选该主机上的项目。</span></p>`,
     noProjects
-      ? `<p class="muted">该主机尚未登记项目：请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>；如果是给手机下发网页测试，请用 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=jobs">网页测试</a>，不要用套件下发。</p>`
+      ? `<p class="muted">该主机尚未登记项目：请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>；如果是给手机下发网页测试，请用 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=jobs${dispatchHostQuery.replace(/&/g, "&amp;")}">网页测试</a>，不要用套件下发。</p>`
       : ""
   ]
     .filter((part) => part !== "")
@@ -506,8 +508,6 @@ export function renderDispatchPage(view: DispatchView): string {
       ? `<p><label>优先级 <input type="number" name="priority" aria-label="优先级" min="0" max="100" step="1" value="${preview.priority}"></label> <span class="muted">0 为默认；数值越大越先领取（0–100）。</span></p>`
       : `<p>优先级 <span class="c-badge" title="优先级（越大越先领取）">P${preview.priority}</span> <span class="muted">只读（防误操作插队）：设置 <code>AOS_PANEL_PRIORITY=1</code> 后可编辑。</span></p>`;
 
-  const dispatchHostQuery =
-    preview.selectedHostId === null ? "" : `&host=${encodeURIComponent(preview.selectedHostId)}`;
   const webJobsHref =
     view.rootPath === ""
       ? `/panel?section=jobs${dispatchHostQuery}`

@@ -208,6 +208,8 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
   const html = response.body;
 
   assert.match(html, /下发测试/);
+  assert.match(html, /class="c-flow-switch"/, "网页测试/套件回归分流");
+  assert.match(html, /套件回归/, "可切回套件下发");
   assert.match(html, /id="web-job-form"/);
   assert.match(html, /id="web-job-assignment"[^>]*name="assignment"/);
   assert.match(html, /<option value="auto"/);
@@ -258,6 +260,17 @@ test("jobs page without project: project picker instead of a broken form", async
   assert.match(response.body, /选择项目/);
   assert.match(response.body, /section=jobs/);
   assert.ok(!response.body.includes('id="web-job-form"'), "无项目不渲染下发写表单");
+});
+
+test("jobs page without project keeps host in project links", async (t) => {
+  const { deps, rootPath } = await setup(t);
+  const response = await handlePanelRequest(
+    new URL("http://x/panel?section=jobs&host=host-a"),
+    { ...deps, capabilities: capabilities("dispatcher") }
+  );
+  assert.equal(response.status, 200);
+  const href = `/panel?project=${encodeURIComponent(rootPath)}&amp;section=jobs&amp;host=host-a`;
+  assert.ok(response.body.includes(href), "选择项目时保留主机");
 });
 
 test("jobs page: viewer is read-only, dispatcher and above get write controls", async (t) => {

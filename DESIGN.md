@@ -3624,3 +3624,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **目标主机未登记项目**：显式 host + 项目路径经 `resolveProjectKey` 工作区兜底解析；`computeDispatchPreview` 保留 `<option ... selected>项目（当前项目）</option>` 并显示「该主机尚未登记项目」，确认禁用；不再静默清空，也不把项目串到其他主机。
 - **边界**：套件下发仍要求项目在目标主机登记；网页测试走 `section=jobs`，执行机不需要项目目录。
 - **测试**：`test/panel-dispatch-project-priority.test.js` 覆盖 host nav 保留 project、目标主机未登记时保留当前项目+禁用确认；全量 3013 绿，lint 0 error。
+
+### 13.297 修复（网页测试/主机选择保留与同类审计）
+
+> 2026-11-04。用户指出 `win-mini-01` 不需要登记 ESSO-GU；审计 host/project 选择丢失与“项目登记”假设。
+
+- **网页测试项目选择**：`section=jobs&host=X` 且未选项目时，`buildView` 保留 `hostParam`；项目选择链接用 `data.hostId ?? choice.hostId`，选项目后不再丢主机。
+- **套件空态 CTA**：无项目主机的「网页测试」链接带当前 host（`dispatchHostQuery`），不再跳到无 host 的 jobs 页。
+- **设备页任务链接**：设备上运行中的 web job 详情链接带 `host=<设备所属主机>`。
+- **审计结论**：套件链路（`computeDispatchPreview`、面板 `createTask`、`suite-service`）的「未登记项目」是套件 runner 需要项目目录/用例集的前提；网页测试是 host 级执行，不要求项目登记。已验证 `section=jobs/assets/library` + `host=win-mini-01` + ESSO-GU 均 200，`/panel/api/jobs/preview` 返回该主机的设备。`usage --host` 的项目过滤只影响查询，不阻断执行。顶部项目切换器仍按项目自身 host 导航（全局导航，不携带当前执行 host）。
+- **测试**：`test/web-dispatch-ui.test.js` 新增「无项目 jobs 页保留 host」；`test/panel-dispatch-project-priority.test.js` 新增空态 CTA 保留 host；全量 3014 绿，lint 0 error。

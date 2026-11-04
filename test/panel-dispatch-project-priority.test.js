@@ -328,6 +328,7 @@ test("仅按主机进入且该主机无项目：空态而非 404", async () => {
   assert.match(html, /该主机尚未登记项目/);
   assert.match(html, /<select name="project" aria-label="项目">/);
   assert.match(html, /id="dispatch-submit"[^>]*disabled/);
+  assert.match(html, /section=jobs&amp;host=h-empty/, "网页测试链接保留主机");
 });
 
 test("legacy NULL-host 项目不挂到任何主机的项目下拉", async () => {

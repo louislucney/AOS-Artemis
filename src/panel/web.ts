@@ -600,7 +600,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return {
       kind: "web-jobs",
       rootPath: "",
-      hostId: null,
+      hostId: hostParam,
       rootLabel: "未选择项目",
       projectStatus: null,
       jobs: [],
