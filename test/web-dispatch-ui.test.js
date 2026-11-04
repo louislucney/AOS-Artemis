@@ -4,9 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
+
 import { MemoryStore } from "../dist/db/memory.js";
 import { handlePanelActionRequest } from "../dist/panel/actions.js";
 import { handlePanelRequest } from "../dist/panel/web.js";
+import { storeWebAsset } from "../dist/web/assets.js";
 
 const NOW = Date.parse("2026-10-29T00:00:00.000Z");
 const SEEN = new Date(NOW - 5_000).toISOString();
@@ -100,6 +103,7 @@ async function setup(t, options = {}) {
     name: "acme",
     normalizedName: "acme",
     platforms: ["android", "ios"],
+    appPackage: "com.acme.app",
     projectId: project.id
   });
   const excel = await createAsset(store, rootPath, "excel", "回归用例.xlsx", "a");
@@ -484,6 +488,40 @@ test("POST jobs: unresolved script 默认放行，显式 allowPartialUnresolved=
   const rejected = await postJob(deps, { ...body, allowPartialUnresolved: false });
   assert.equal(rejected.status, 409);
   assert.equal(JSON.parse(rejected.body).code, "script-set-incomplete");
+});
+
+test("POST jobs: 过期脚本重建后返回 from/to 并写 trigger=rebuild 审计", async (t) => {
+  const { deps, store, rootPath, pkg, script } = await setup(t);
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例编号", "用例名称", "操作步骤", "预期结果", "所属模块"]);
+  sheet.addRow(["TC-9", "登录", "1. 启动 App", '页面显示"成功"', "登录"]);
+  const realExcel = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "real.xlsx",
+    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
+  });
+
+  const response = await postJob(
+    deps,
+    autoBody(rootPath, { excel: realExcel, pkg, script }, { scriptSetId: script.id })
+  );
+  assert.equal(response.status, 200, response.body);
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.rebuiltScriptSet.from, script.id);
+  assert.equal(payload.rebuiltScriptSet.to, payload.script.id);
+  assert.match(payload.warnings.join(" "), /script-set-rebuilt/);
+  assert.match(payload.message, /脚本集已按当前资产重建/);
+
+  const audit = (await store.listAudit(rootPath)).find(
+    (entry) => entry.action === "web.scripts.generate"
+  );
+  assert.ok(audit, "重建写审计");
+  assert.match(audit.summary, /trigger=rebuild/);
+  assert.equal(audit.refs.from, script.id);
+  assert.equal(audit.refs.assetId, payload.script.id);
 });
 
 test("job detail shows device, package, cases, evidence links and writeback status", async (t) => {
