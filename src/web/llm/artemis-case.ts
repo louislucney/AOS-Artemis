@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { readAndroidTokenUsage, readAndroidTraceObservations } from "../../artemis/android-trace.js";
 import { redactText, type SecretEntry } from "./secrets.js";
-import { checkExpectedTexts, type ExpectedTextCheck } from "./verify.js";
+import { checkExpectedTexts, summaryStatus, type ExpectedTextCheck } from "./verify.js";
 import type { LlmWorkerCase, LlmWorkerCaseResult } from "./worker.js";
 
 export interface LlmToolCallResult {
@@ -66,19 +66,6 @@ function parseToolJson(result: LlmToolCallResult): Record<string, unknown> | nul
 function numberField(record: Record<string, unknown> | null, key: string): number {
   const value = record?.[key];
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
-}
-
-function summaryStatus(
-  summary: Record<string, unknown> | null
-): "PASS" | "FAIL" | "UNVERIFIED" {
-  if (summary === null) return "UNVERIFIED";
-  const passed = numberField(summary, "passed");
-  const failed = numberField(summary, "failed");
-  const inconclusive = numberField(summary, "inconclusive");
-  const unchecked = numberField(summary, "unchecked");
-  if (failed > 0) return "FAIL";
-  if (passed > 0 && inconclusive === 0 && unchecked === 0) return "PASS";
-  return "UNVERIFIED";
 }
 
 /**
@@ -197,10 +184,13 @@ export async function executeAndroidLlmCase(
   const statusJsonPath = path.join(traceDir, "status.json");
   const dataEngineDbPath = path.join(traceDir, "data_engine.db");
   const observations = await readAndroidTraceObservations(dataEngineDbPath, traceId);
-  const l1: ExpectedTextCheck = checkExpectedTexts(
-    redactText(input.testCase.expected ?? "", secrets).text,
-    observations?.labels ?? []
-  );
+  const l1: ExpectedTextCheck =
+    observations === null
+      ? { anchored: false, passed: 0, failed: 0, texts: [], missing: [] }
+      : checkExpectedTexts(
+          redactText(input.testCase.expected ?? "", secrets).text,
+          observations.labels
+        );
   let caseStatus: "PASS" | "FAIL" | "UNVERIFIED" = "UNVERIFIED";
   let failureReason: string | undefined;
   if (status === "failed" || status === "cancelled") {
@@ -220,7 +210,12 @@ export async function executeAndroidLlmCase(
       caseStatus = "PASS";
     } else {
       caseStatus = "UNVERIFIED";
-      failureReason = summary === null ? "artemis-test-summary-missing" : "no-deterministic-evidence";
+      failureReason =
+        summary === null
+          ? observations === null
+            ? "artemis-evidence-missing"
+            : "artemis-test-summary-missing"
+          : "no-deterministic-evidence";
     }
   } else {
     caseStatus = "FAIL";

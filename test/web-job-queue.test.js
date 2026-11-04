@@ -687,6 +687,15 @@ test("组合校验：iOS Maestro 仅允许 simulator；ios×device/any×maestro 
   assert.equal(simulator.requirements.deviceKind, "simulator");
   const llmReal = assertWebJobCombination(combination("device", "llm"));
   assert.equal(llmReal.executionMode, "llm");
+  assert.throws(
+    () => assertWebJobCombination(combination("simulator", "llm")),
+    (error) =>
+      error instanceof WebJobDispatchError &&
+      error.code === "ios-llm-requires-device" &&
+      error.status === 400
+  );
+  const llmAny = assertWebJobCombination(combination("any", "llm"));
+  assert.equal(llmAny.requirements.deviceKind, "any");
 
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "combo");

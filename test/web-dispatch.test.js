@@ -63,26 +63,28 @@ function requirements(overrides = {}) {
 }
 
 function auto(runners, extra = {}) {
-  const { leases, rng, requirements: req, ...rest } = extra;
+  const { leases, rng, requirements: req, executionMode, ...rest } = extra;
   return selectWebAssignment({
     runners,
     leases: leases ?? [],
     request: { assignment: "auto", requirements: req ?? requirements(), ...rest },
     nowMs: NOW,
     runnerTtlMs: TTL,
-    ...(rng ? { rng } : {})
+    ...(rng ? { rng } : {}),
+    ...(executionMode ? { executionMode } : {})
   });
 }
 
 function manual(runners, extra = {}) {
-  const { leases, rng, requirements: req, ...rest } = extra;
+  const { leases, rng, requirements: req, executionMode, ...rest } = extra;
   return selectWebAssignment({
     runners,
     leases: leases ?? [],
     request: { assignment: "manual", requirements: req ?? requirements(), ...rest },
     nowMs: NOW,
     runnerTtlMs: TTL,
-    ...(rng ? { rng } : {})
+    ...(rng ? { rng } : {}),
+    ...(executionMode ? { executionMode } : {})
   });
 }
 
@@ -751,4 +753,59 @@ test("钉住设备的执行机离线（同 host 在线兄弟没有该 serial）�
   });
   assert.equal(result.ok, false);
   assert.equal(result.code, "host-offline");
+});
+
+test("iOS LLM：deviceKind any 只选真机，不把模拟器当远程目标", () => {
+  const simulatorRunner = makeRunner({
+    platforms: ["ios"],
+    devices: [
+      makeDevice({
+        serial: "sim-15",
+        platform: "ios",
+        kind: "simulator",
+        model: "iPhone 15",
+        osVersion: "17.2"
+      })
+    ],
+    tools: makeTools({ simctl: true }),
+    gateway: {
+      adbServer: null,
+      appiumUrl: "http://127.0.0.1:15038",
+      tunnelPort: null,
+      ready: true,
+      reportedAt: new Date(NOW).toISOString()
+    }
+  });
+  const rejected = auto([simulatorRunner], {
+    executionMode: "llm",
+    requirements: requirements({ platform: "ios", deviceKind: "any" })
+  });
+  assert.equal(rejected.ok, false);
+
+  const deviceRunner = makeRunner({
+    platforms: ["ios"],
+    devices: [
+      makeDevice({
+        serial: "00008110-001A",
+        platform: "ios",
+        kind: "device",
+        model: "iPhone 15 Pro",
+        osVersion: "18.1"
+      })
+    ],
+    tools: makeTools({ appium: true }),
+    gateway: {
+      adbServer: null,
+      appiumUrl: "http://127.0.0.1:15038",
+      tunnelPort: null,
+      ready: true,
+      reportedAt: new Date(NOW).toISOString()
+    }
+  });
+  const accepted = auto([deviceRunner], {
+    executionMode: "llm",
+    requirements: requirements({ platform: "ios", deviceKind: "any" })
+  });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.deviceSerial, "00008110-001A");
 });

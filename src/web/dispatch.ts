@@ -403,7 +403,12 @@ export function selectWebAssignment(input: SelectWebAssignmentInput): WebAssignm
   if (invalid !== null) return failure("requirements-unmet", invalid);
   const effectiveRequirements: WebDispatchRequirements = {
     ...requirements,
-    deviceKind: requirements.deviceKind ?? "any"
+    deviceKind:
+      requirements.platform === "ios" &&
+      input.executionMode === "llm" &&
+      (requirements.deviceKind ?? "any") === "any"
+        ? "device"
+        : requirements.deviceKind ?? "any"
   };
 
   if (request.assignment !== "auto" && request.assignment !== "manual") {

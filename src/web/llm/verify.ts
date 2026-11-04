@@ -1,3 +1,31 @@
+export interface SummaryCounts {
+  passed: number;
+  failed: number;
+  inconclusive: number;
+  unchecked: number;
+}
+
+function countOf(summary: Record<string, unknown>, key: string): number {
+  const value = summary[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+/** 平台无关的 `test_summary` 判定：有失败 → FAIL；全通过且无未决 → PASS；否则不判 PASS。 */
+export function summaryStatus(
+  summary: Record<string, unknown> | null
+): "PASS" | "FAIL" | "UNVERIFIED" {
+  if (summary === null) return "UNVERIFIED";
+  const counts: SummaryCounts = {
+    passed: countOf(summary, "passed"),
+    failed: countOf(summary, "failed"),
+    inconclusive: countOf(summary, "inconclusive"),
+    unchecked: countOf(summary, "unchecked")
+  };
+  if (counts.failed > 0) return "FAIL";
+  if (counts.passed > 0 && counts.inconclusive === 0 && counts.unchecked === 0) return "PASS";
+  return "UNVERIFIED";
+}
+
 export interface ExpectedTextCheck {
   anchored: boolean;
   passed: number;

@@ -63,6 +63,7 @@ export type WebJobDispatchErrorCode =
   | "device-serial-requires-pin"
   | "ios-real-device-requires-llm"
   | "ios-maestro-requires-simulator"
+  | "ios-llm-requires-device"
   | "unknown-execution-mode"
   | "project-not-found"
   | "project-archived"
@@ -87,6 +88,7 @@ const ERROR_STATUS: Record<WebJobDispatchErrorCode, number> = {
   "device-serial-requires-pin": 400,
   "ios-real-device-requires-llm": 400,
   "ios-maestro-requires-simulator": 400,
+  "ios-llm-requires-device": 400,
   "unknown-execution-mode": 400,
   "project-not-found": 404,
   "project-archived": 409,
@@ -200,7 +202,13 @@ export function assertWebJobCombination(input: WebJobCombinationInput): WebJobCo
   if (requirements.platform === "ios" && mode === "maestro" && kind !== "simulator") {
     throw new WebJobDispatchError(
       "ios-maestro-requires-simulator",
-      `iOS Maestro 仅支持模拟器（deviceKind:"simulator"，当前 ${kind}）；iOS 真机请改用 executionMode=llm（Plan 2，尚未接线）`
+      `iOS Maestro 仅支持模拟器（deviceKind:"simulator"，当前 ${kind}）；iOS 真机请改用 executionMode=llm`
+    );
+  }
+  if (requirements.platform === "ios" && mode === "llm" && kind === "simulator") {
+    throw new WebJobDispatchError(
+      "ios-llm-requires-device",
+      "远程 iOS LLM 只支持真机（deviceKind:\"device\"）；iOS 模拟器仍只用于本机 Maestro/调试"
     );
   }
 

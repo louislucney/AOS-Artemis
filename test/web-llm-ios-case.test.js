@@ -46,6 +46,9 @@ test("executeIosLlmCase: test_summary/L1 → PASS", async (t) => {
   assert.equal(out.traceId, "ios-trace");
   assert.equal(out.artifacts.statusJsonPath, path.join(dir, "status.json"));
   assert.equal(out.verification.reference, "missing");
+  assert.deepEqual(out.evidenceSteps, [
+    { stepNumber: 1, action: null, preLabels: ["登录成功"], postLabels: [] }
+  ]);
 });
 
 test("executeIosLlmCase: failed summary → FAIL；无 summary 但有 L1 → PASS", async (t) => {
@@ -222,6 +225,50 @@ test("executeIosLlmCase：expected 先脱敏再做 L1（占位符对占位符）
     redactionActive: true
   });
   assert.equal(out.status, "PASS");
+});
+
+test("executeIosLlmCase：run.json 缺失时不因 L1 误判 FAIL", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "aos-ios-no-run-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, "status.json"), "{}");
+  const out = await executeIosLlmCase({
+    proxy: {
+      async callTool(name) {
+        if (name === "mobile_run_task") return result({ trace_id: "ios-no-run" });
+        return result({ status: "completed" });
+      }
+    },
+    traceDir: () => dir,
+    testCase: {
+      caseId: "TC-IOS-NO-RUN",
+      taskDesc: "登录",
+      expected: "页面显示“登录成功”"
+    },
+    deviceSerial: "00008110-001A"
+  });
+  assert.equal(out.status, "UNVERIFIED");
+  assert.equal(out.failureReason, "ios-evidence-missing");
+  assert.deepEqual(out.verification.deterministic, { passed: 0, failed: 0, skipped: 0 });
+});
+
+test("executeIosLlmCase：summary 有未决项时不判 PASS（与 Android 同口径）", async (t) => {
+  const dir = await trace(t);
+  const out = await executeIosLlmCase({
+    proxy: {
+      async callTool(name) {
+        if (name === "mobile_run_task") return result({ trace_id: "ios-unchecked" });
+        return result({
+          status: "completed",
+          test_summary: { passed: 1, failed: 0, inconclusive: 0, unchecked: 1 }
+        });
+      }
+    },
+    traceDir: () => dir,
+    testCase: { caseId: "TC-IOS-UNCHECKED", taskDesc: "未决" },
+    deviceSerial: "00008110-001A"
+  });
+  assert.equal(out.status, "UNVERIFIED");
+  assert.equal(out.failureReason, "no-deterministic-evidence");
 });
 
 test("executeIosLlmCase：透传 token_usage（含重试/验证累计）", async (t) => {

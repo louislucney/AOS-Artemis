@@ -3736,8 +3736,9 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **iOS P0b（2026-11-04，代码完成/真机待验）**：
   - **Appium 网关**：runner 建第二条 `ssh -R`；`AOS_GATEWAY_APPIUM_PORT`（中心侧，默认 15038）、`AOS_GATEWAY_LOCAL_APPIUM_PORT`（runner 侧 Appium HTTP，默认 4723）、`AOS_GATEWAY_APPIUM_URL`（外部已可达的完整 URL，设置后不建隧道）。未设置覆盖时，建隧道前探测 `GET /status`，不可达则不转发并写 `appiumUrl:null`（中心任务 `ios-appium-unavailable`）；WDA 8100 由 Appium 经 USB 管理，不直接转发。
   - **按 host 隔离**：worker 按 `targetHostId` 读 `web_runners.gateway.appiumUrl`，构建 Runtime 时覆盖 `AOS_APPIUM_URL`（不污染进程 env），缓存键含 URL；不同 host 不复用会话。
-  - **执行与结果**：`executeIosLlmCase` 走 `mobile_run_task`/`mobile_manage_task`，读 `status.json`/`run.json`；远程 iOS 模拟器直接 `ERROR ios-remote-simulator-unsupported`；iOS 只要求 `status.json`，不因缺 `data_engine.db` 报 `token-unavailable`。
-  - **Node 侧脱敏**：`src/ios/redaction.ts` 覆盖 taskDesc、观察节点、截图、输入占位符、run/status 落盘；截图按敏感节点 bbox 涂黑，敏感节点缺 bbox 时默认丢弃截图（`AOS_IOS_REDACTION_STRICT=0` 时保留中心侧证据但**不发给模型**）；`<secret:alias>` 只在实际输入动作前还原。
+  - **执行与结果**：`executeIosLlmCase` 走 `mobile_run_task`/`mobile_manage_task`，读 `status.json`/`run.json`；远程 iOS 模拟器直接 `ERROR ios-remote-simulator-unsupported`；iOS 只要求 `status.json`，不因缺 `data_engine.db` 报 `token-unavailable`。下发阶段显式 `deviceKind:"simulator"` 直接 400 `ios-llm-requires-device`；`any` 在选机时归一为真机，不把模拟器当远程目标。
+  - **判定一致性**：Android/iOS 共用 `summaryStatus`（有 failed → FAIL；passed>0 且 inconclusive/unchecked 均为 0 → PASS；否则不判 PASS）与 L1 文本锚点；证据不可读（Android `data_engine.db`/schema、iOS `run.json` 缺失）时不按 L1 失败，落 `UNVERIFIED`（`artemis-evidence-missing`/`ios-evidence-missing`）。
+  - **Node 侧脱敏**：`src/ios/redaction.ts` 覆盖 taskDesc、观察节点、截图、输入占位符、run/status 落盘；截图按敏感节点 bbox 涂黑，敏感节点缺 bbox 时默认丢弃截图（`AOS_IOS_REDACTION_STRICT=0` 时保留中心侧证据但**不发给模型**）；`<secret:alias>` 只在实际输入动作前还原。Android ARTEMIS hook 同步改为：**任一**敏感节点缺 bounds 即整图 fallback（`AOS_LLM_REDACT_IMAGE_FALLBACK=drop|blur|none`），不再保留部分遮罩的截图。
   - **安装边界**：远程 iOS 只接受 `.ipa` 的 HTTP(S) URL（资产 `metadata.url`）或已安装应用 `locked_app_package`；中心本地路径一律拒绝（`iosAppUrl`）；无 bundle id 且无 URL 时任务 `ERROR ios-app-package-required`。
   - **计费**：`ChatOptions.onUsage` 不改变 `ChatFn` 签名；run loop 累计主模型/视觉/验证调用到 `token_usage`，iOS 适配层映射为带 `caseId/traceId/model/attempt/phase` 的 `tokenUsage` 行。
   - **真机待验**：Appium 4723 可达性、iOS UI 树 bounds 覆盖率、`.ipa` 下载 URL、登录/个人页截图脱敏、取消/超时与 Excel 写回。

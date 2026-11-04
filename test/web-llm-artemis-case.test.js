@@ -81,6 +81,30 @@ test("executeAndroidLlmCase: failed summary → FAIL；无 summary → UNVERIFIE
   assert.equal(bare.status, "UNVERIFIED");
 });
 
+test("executeAndroidLlmCase：证据缺失时不因 L1 误判 FAIL", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "aos-llm-no-db-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, "status.json"), "{}");
+  const out = await executeAndroidLlmCase({
+    proxy: {
+      async callTool(name) {
+        if (name === "mobile_run_task") return result({ trace_id: "trace-no-db" });
+        return result({ status: "completed" });
+      }
+    },
+    traceDir: () => dir,
+    testCase: {
+      caseId: "TC-NO-DB",
+      taskDesc: "登录",
+      expected: "页面显示“登录成功”"
+    },
+    deviceSerial: "pixel-1"
+  });
+  assert.equal(out.status, "UNVERIFIED");
+  assert.equal(out.failureReason, "artemis-evidence-missing");
+  assert.deepEqual(out.verification.deterministic, { passed: 0, failed: 0, skipped: 0 });
+});
+
 test("executeAndroidLlmCase: taskDesc 进模型前脱敏；未绑定账号拒绝执行", async (t) => {
   const dir = await traceDir(t);
   const calls = [];

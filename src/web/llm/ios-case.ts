@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { checkExpectedTexts } from "./verify.js";
+import { checkExpectedTexts, summaryStatus } from "./verify.js";
 import { redactText, type SecretEntry } from "./secrets.js";
 import type { LlmWorkerCase, LlmWorkerCaseResult } from "./worker.js";
 
@@ -101,28 +101,53 @@ function readTokenUsage(
   });
 }
 
-function readRunLabels(runPath: string): string[] {
+interface IosEvidenceStep {
+  stepNumber: number;
+  action: string | null;
+  preLabels: string[];
+  postLabels: string[];
+}
+
+function readRunEvidence(runPath: string): {
+  available: boolean;
+  labels: string[];
+  steps: IosEvidenceStep[];
+} {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(runPath, "utf8"));
-    if (parsed === null || typeof parsed !== "object") return [];
-    const steps = (parsed as { steps?: unknown }).steps;
-    if (!Array.isArray(steps)) return [];
-    const labels: string[] = [];
-    for (const step of steps) {
-      if (step === null || typeof step !== "object") continue;
-      const texts = (step as { texts?: unknown }).texts;
-      if (!Array.isArray(texts)) continue;
-      for (const item of texts) {
-        if (item !== null && typeof item === "object") {
-          const text = (item as { text?: unknown }).text;
-          if (typeof text === "string" && text.trim() !== "") labels.push(text.trim());
-        }
+    parsed = JSON.parse(readFileSync(runPath, "utf8"));
+  } catch {
+    return { available: false, labels: [], steps: [] };
+  }
+  if (parsed === null || typeof parsed !== "object") {
+    return { available: false, labels: [], steps: [] };
+  }
+  const steps = (parsed as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return { available: false, labels: [], steps: [] };
+  const labels: string[] = [];
+  const evidence: IosEvidenceStep[] = [];
+  for (const [index, step] of steps.entries()) {
+    if (step === null || typeof step !== "object") continue;
+    const record = step as Record<string, unknown>;
+    const texts = record.texts;
+    if (!Array.isArray(texts)) continue;
+    const preLabels: string[] = [];
+    for (const item of texts) {
+      if (item !== null && typeof item === "object") {
+        const text = (item as { text?: unknown }).text;
+        if (typeof text === "string" && text.trim() !== "") preLabels.push(text.trim());
       }
     }
-    return [...new Set(labels)];
-  } catch {
-    return [];
+    for (const text of preLabels) if (!labels.includes(text)) labels.push(text);
+    evidence.push({
+      stepNumber:
+        typeof record.step === "number" && Number.isFinite(record.step) ? record.step : index + 1,
+      action: typeof record.action === "string" ? record.action : null,
+      preLabels,
+      postLabels: []
+    });
   }
+  return { available: true, labels, steps: evidence };
 }
 
 /** 远程 iOS 真机：中心通过 AOS iOS 执行器（Appium/WDA）执行 taskDesc。 */
@@ -231,8 +256,11 @@ export async function executeIosLlmCase(
   const traceDir = input.traceDir(traceId);
   const statusJsonPath = path.join(traceDir, "status.json");
   const runPath = path.join(traceDir, "run.json");
-  const labels = readRunLabels(runPath);
-  const l1 = checkExpectedTexts(redactText(input.testCase.expected ?? "", secrets).text, labels);
+  const evidence = readRunEvidence(runPath);
+  const labels = evidence.labels;
+  const l1 = evidence.available
+    ? checkExpectedTexts(redactText(input.testCase.expected ?? "", secrets).text, labels)
+    : { anchored: false, passed: 0, failed: 0, texts: [], missing: [] };
   const summary =
     last?.test_summary !== null &&
     typeof last?.test_summary === "object" &&
@@ -246,12 +274,11 @@ export async function executeIosLlmCase(
     caseStatus = "FAIL";
     failureReason = status === "failed" ? "ios-task-failed" : "ios-task-cancelled";
   } else if (summary !== null) {
-    const failed = numberField(summary, "failed");
-    const passed = numberField(summary, "passed");
-    if (failed > 0) {
+    const summaryVerdict = summaryStatus(summary);
+    if (summaryVerdict === "FAIL") {
       caseStatus = "FAIL";
       failureReason = "ios-test-summary-failed";
-    } else if (passed > 0) {
+    } else if (summaryVerdict === "PASS") {
       caseStatus = "PASS";
     } else if (l1.anchored && l1.failed > 0) {
       caseStatus = "FAIL";
@@ -269,7 +296,7 @@ export async function executeIosLlmCase(
     caseStatus = "PASS";
   } else {
     caseStatus = "UNVERIFIED";
-    failureReason = "ios-test-summary-missing";
+    failureReason = evidence.available ? "ios-test-summary-missing" : "ios-evidence-missing";
   }
 
   return {
@@ -285,7 +312,7 @@ export async function executeIosLlmCase(
       traceId,
       typeof last?.model === "string" ? last.model : null
     ),
-    evidenceSteps: labels,
+    evidenceSteps: evidence.steps,
     artifacts: {
       ...(existsSync(statusJsonPath) ? { statusJsonPath } : {})
     },
