@@ -191,6 +191,68 @@ test("script-gen: 导航默认 unresolved，显式 inferNavigationTap 才生成 
   assert.match(inferred.yaml, /- tapOn: '报告'/);
 });
 
+test("script-gen: 英文 go to / tap / input", () => {
+  const result = gen(
+    {
+      steps: [
+        "1. Go to Register page",
+        '2. Tap the "OK" button',
+        "3. Input invalid referral code (A random code)",
+        '4. Tap the "submit" button'
+      ],
+      expected: '2. Display pop-up message box\n3. Display "Referral code does not exist"'
+    },
+    { inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.match(result.yaml, /- tapOn: 'Register'/);
+  assert.match(result.yaml, /- tapOn: 'OK'/);
+  assert.match(result.yaml, /- tapOn: 'referral code'\n- inputText: 'AOSINVALID0001'/);
+  assert.ok(result.warnings.includes("input-value-generated"));
+});
+
+test("script-gen: 英文 next to 生成 rightOf", () => {
+  const result = gen(
+    {
+      steps: ["1. Go to Register page", '2. Tap the information button next to "Referral Code"'],
+      expected: '2. Display "Referral Code"'
+    },
+    { inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.match(result.yaml, /- tapOn:\n    rightOf: 'Referral Code'/);
+  assert.ok(result.warnings.includes("relation-inferred:rightOf"));
+});
+
+test("script-gen: 英文 e.g. 输入值取箭头后的示例", () => {
+  const result = gen(
+    {
+      steps: [
+        "1. Go to Register page",
+        "2. Input incorrect referral code (A code with wrong upper & lower case e.g A23b8C --> a23B8c)"
+      ],
+      expected: '2. Display "Referral code does not exist"'
+    },
+    { inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.match(result.yaml, /- tapOn: 'referral code'\n- inputText: 'a23B8c'/);
+  assert.ok(result.warnings.includes("input-value-example"));
+});
+
+test("script-gen: 英文 check 是 verify，不生成 tap", () => {
+  const result = gen(
+    {
+      steps: ["1. Go to My rewards", "2. Check the coupons in My rewards"],
+      expected: '2. Display "Referral coupon" and "Free coupon"'
+    },
+    { inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.doesNotMatch(result.yaml, /tapOn: 'coupons'/);
+  assert.match(result.yaml, /assertVisible: 'Referral coupon'/);
+});
+
 test("script-gen: 繁体常见动作词", () => {
   for (const step of ["點一下“登入”", "輕觸“登入”", "選取“登入”"]) {
     const result = gen({ steps: ["1. 啟動 App", `2. ${step}`], expected: "頁面顯示“首頁”" });
