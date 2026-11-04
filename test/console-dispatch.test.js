@@ -241,3 +241,93 @@ test("renderDispatchPage: 角色 scope 关闭派发时禁用提交", async () =>
   assert.match(html, /disabled title="写动作未启用"/);
   assert.ok(!html.includes('id="dispatch-submit"'), "scope 关闭不渲染可点提交");
 });
+
+test("computeDispatchPreview: 目标主机未登记项目时仍从 owner store 读 case set", async () => {
+  const store = new MemoryStore();
+  const rootPath = "/w/owner-project";
+  await store.upsertHost({ id: "host-a", hostname: "host-a" });
+  await store.upsertHost({ id: "host-b", hostname: "host-b" });
+  const owner = store.scopeHost("host-a");
+  await owner.upsertProject({ rootPath, name: "owner", hostId: "host-a" });
+  await owner.recordCaseSet({
+    rootPath,
+    source: "pen:owner.pen",
+    basename: "owner 回归",
+    features: [
+      {
+        key: "login",
+        name: "登录",
+        caseCount: 2,
+        screens: [],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+
+  const preview = await computeDispatchPreview(
+    {
+      store,
+      env: {},
+      storeForHost: (hostId) => store.scopeHost(hostId)
+    },
+    rootPath,
+    new URLSearchParams({ host: "host-b" })
+  );
+
+  assert.equal(preview.hostBlocked, true, "目标主机不能执行套件");
+  assert.match(preview.warnings.join(" "), /未登记项目/);
+  assert.equal(preview.setOptions.length, 1, "来源仍可见");
+  assert.equal(preview.setOptions[0].label, "owner 回归");
+  assert.deepEqual(preview.sourceStore, {
+    tier: "owner",
+    hostId: "host-a",
+    error: null
+  });
+
+  const html = renderDispatchPage({
+    rootPath,
+    rootLabel: "owner",
+    preview,
+    query: {}
+  });
+  assert.match(html, /owner 回归/, "来源渲染可见");
+  assert.doesNotMatch(html, /<select name="ref"[^>]*disabled/, "来源下拉不因目标主机未登记而禁用");
+  assert.match(html, /来源仍可查看/, "说明该主机不能执行但来源可见");
+});
+
+test("computeDispatchPreview: owner 来源读取失败显式示因，不伪装成空", async () => {
+  const store = new MemoryStore();
+  const rootPath = "/w/owner-failure";
+  await store.upsertHost({ id: "host-a", hostname: "host-a" });
+  await store.upsertHost({ id: "host-b", hostname: "host-b" });
+  const owner = store.scopeHost("host-a");
+  await owner.upsertProject({ rootPath, name: "owner", hostId: "host-a" });
+  const failing = new Proxy(owner, {
+    get(target, property, receiver) {
+      if (property === "listCaseSets") {
+        return async () => {
+          throw new Error("store down");
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+
+  const preview = await computeDispatchPreview(
+    {
+      store,
+      env: {},
+      storeForHost: (hostId) => (hostId === "host-a" ? failing : store.scopeHost(hostId))
+    },
+    rootPath,
+    new URLSearchParams({ host: "host-b" })
+  );
+
+  assert.deepEqual(preview.setOptions, []);
+  assert.match(preview.warnings.join(" "), /来源读取失败/);
+  assert.equal(preview.sourceStore.tier, "owner");
+  assert.equal(preview.sourceStore.error, "source-read-failed");
+});

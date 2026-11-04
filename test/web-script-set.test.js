@@ -8,6 +8,7 @@ import test from "node:test";
 import { MemoryStore } from "../dist/db/memory.js";
 import { storeWebAsset } from "../dist/web/assets.js";
 import { createWebProject } from "../dist/web/project-service.js";
+import { ScriptGenerationTimeoutError } from "../dist/web/script-gen.js";
 import {
   buildScriptSetBundle,
   SCRIPT_SET_GENERATOR,
@@ -97,6 +98,29 @@ test("script-set: 相同输入生成相同 zip/sha，manifest 可解析", () => 
   assert.equal(parsed.inferNavigationTap, false);
   assert.equal(parsed.includeSoftText, false);
   assert.equal(parsed.assertionDocHash, first.manifest.assertionDocHash);
+  for (const key of ["createdAt", "generatedAt", "timestamp", "nonce"]) {
+    assert.equal(key in parsed, false, `manifest 不得含 ${key}（否则 sha 幂等失效）`);
+  }
+});
+
+test("script-set: 超过 deadline 抛 ScriptGenerationTimeoutError", () => {
+  assert.throws(
+    () => bundle({ deadlineMs: Date.now() - 1 }),
+    (error) => error instanceof ScriptGenerationTimeoutError
+  );
+});
+
+test("script-set: manifest 携带 Excel 模块", () => {
+  const result = bundle({
+    cases: [
+      { ...CASES[0], module: "登录" },
+      { ...CASES[1], module: null }
+    ]
+  });
+  const first = result.manifest.cases.find((entry) => entry.caseId === "TC-1");
+  const second = result.manifest.cases.find((entry) => entry.caseId === "TC-2");
+  assert.equal(first.module, "登录");
+  assert.equal(second.module, null);
 });
 
 test("script-set: assertionDocHash 随预期变化", () => {
@@ -188,6 +212,24 @@ test("script-set: 写入 assets、metadata 与幂等复用", async (t) => {
   assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 1);
 });
 
+test("script-set: 全不可用时错误带逐例 caseId", async (t) => {
+  const { store, rootPath } = await workspace(t);
+  const excel = await asset(store, rootPath, "excel", "cases.xlsx", "excel");
+  const pkg = await asset(store, rootPath, "package", "app.apk", "pkg");
+  await assert.rejects(
+    storeScriptSet({
+      store,
+      rootPath,
+      bundle: bundle({
+        sourceExcelAssetId: excel.id,
+        packageAssetId: pkg.id,
+        cases: [CASES[1]]
+      })
+    }),
+    /TC-2/
+  );
+});
+
 test("script-set: 新 Excel 绑定生成新版本，不复用旧资产", async (t) => {
   const { store, rootPath } = await workspace(t);
   const excel = await asset(store, rootPath, "excel", "cases.xlsx", "excel");
@@ -219,7 +261,10 @@ test("script-set: 无 ready 用例或缺少绑定拒绝写入", async (t) => {
   });
   await assert.rejects(
     storeScriptSet({ store, rootPath, bundle: unusable }),
-    (error) => error.code === "script-set-unusable"
+    (error) =>
+      error.code === "script-set-unusable" &&
+      /主要原因/.test(error.message) &&
+      /仅预览/.test(error.message)
   );
 
   const invalid = bundle({ sourceExcelAssetId: "" });
@@ -227,4 +272,53 @@ test("script-set: 无 ready 用例或缺少绑定拒绝写入", async (t) => {
     storeScriptSet({ store, rootPath, bundle: invalid }),
     (error) => error.code === "invalid-bundle"
   );
+});
+
+test("script-set: 旧 bundle 缺 runnable 时回退 ready", async (t) => {
+  const { store, rootPath } = await workspace(t);
+  const excel = await asset(store, rootPath, "excel", "cases.xlsx", "excel");
+  const pkg = await asset(store, rootPath, "package", "app.apk", "pkg");
+  const current = bundle({ sourceExcelAssetId: excel.id, packageAssetId: pkg.id });
+  const legacy = { ...current };
+  delete legacy.runnable;
+  delete legacy.partial;
+  legacy.manifest = {
+    ...legacy.manifest,
+    counts: { cases: 2, ready: 1, unresolved: 1 }
+  };
+  const stored = await storeScriptSet({ store, rootPath, bundle: legacy });
+  assert.equal(stored.created, true);
+});
+
+test("script-set: 部分可执行脚本集允许写入", async (t) => {
+  const { store, rootPath } = await workspace(t);
+  const excel = await asset(store, rootPath, "excel", "cases.xlsx", "excel");
+  const pkg = await asset(store, rootPath, "package", "app.apk", "pkg");
+  const partial = buildScriptSetBundle({
+    appId: "com.example.app",
+    platform: "android",
+    sourceExcelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    bestEffort: true,
+    cases: [
+      {
+        caseId: "TC-1",
+        steps: ["1. 启动 App", "2. Fill in other required fields"],
+        expected: null,
+        preconditions: []
+      }
+    ]
+  });
+  assert.equal(partial.ready, 0);
+  assert.equal(partial.partial, 1);
+  assert.equal(partial.runnable, 1);
+  assert.equal(partial.manifest.counts.partial, 1);
+  assert.equal(partial.manifest.counts.runnable, 1);
+  assert.equal(partial.manifest.cases[0].manualSteps.length, 1);
+
+  const stored = await storeScriptSet({ store, rootPath, bundle: partial });
+  assert.equal(stored.created, true);
+  assert.equal(stored.asset.metadata.ready, 0);
+  assert.equal(stored.asset.metadata.partial, 1);
+  assert.equal(stored.asset.metadata.runnable, 1);
 });

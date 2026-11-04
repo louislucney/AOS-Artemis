@@ -2047,6 +2047,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-10-21。**项目切换**：主机下拉新增 `change` 导航 `/panel?host=<new>&section=dispatch`（显式丢弃 `project`）；`buildView` 在 `section=dispatch` 且只有 `host` 时取该主机 `lastSeenAt` 最新的已登记项目渲染下发页，无项目则直接渲染空态（「该主机尚未登记项目」＋确认禁用），不再 404。**legacy 隔离**：下发预览的项目列表改为仅 `project.hostId === targetHost.id` 精确匹配，删除对 scoped store `localHostId` 的 `hostId === null` 回退——legacy NULL-host 行本就不可定向下发（12a 返回 409），不再出现在任何主机的项目下拉；文件台账单机仍走「无主机台账 → 当前项目」回退（文件台账 `listProjects` 行恒为 NULL：一旦登记主机将不再列出项目，故文件台账仅推荐单机使用）。**优先级排序**：`claimRegressionTask` 候选序改为 `priority DESC, created_at ASC`（PG 候选查询；Memory/File 同序 sort），全匹配与部分领取共用同一候选序，P10 新任务先于 P0 旧任务。**配套**：重跑继承源任务 `priority`；只读面板模式（`capabilities.actions=false`）任务详情仍显示 P 徽章；项目选项同名时追加路径尾（`name（tail）`）消歧。**口径**：`AOS_PANEL_PRIORITY` 只控制面板是否可编辑（默认只读防误操作），API/CLI 调用方可直接传 `priority`；领取排序已接线。
 > **测试**：`test/panel-dispatch-project-priority.test.js` 扩到 10 例（主机切换导航丢弃 project/缺 project 取最近项目、仅主机空态非 404、legacy NULL 不挂任何主机、rerun 继承优先级）；`test/task-targeting.test.js` +1（priority DESC 优先于 FIFO，Memory+PG 双实现）；全量 **1901 绿**，lint 0 error（2 条既有 warning）。
+> 2026-11-04 §13.296 调整：host 切换改为**保留显式 project**；目标主机未登记时保留当前项目并提示，不再静默清空。
 
 ### 13.156 评审修复（面板跨主机链接/动作与项目表去重，Task 12c）
 
@@ -3434,6 +3435,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 ### 13.280 新增（Web 下发预检：无脚本/未就绪脚本拒绝）
 
 > 2026-10-29。Plan 2A Phase 4：把“无脚本直到 runner 才报错”改成下发前拒绝；unresolved 默认阻止，显式允许才部分下发。
+> **2026-11-04 已被 §13.302 取代**：无脚本改为下发时惰性生成；unresolved 默认允许并写 SKIP；过期脚本自动重建。本节保留为历史记录。
 
 - **错误码**（`src/web/job-spec.ts`）：`script-set-missing`（400，Maestro 执行但未选 scripts 资产）；`script-set-incomplete`（409，scripts 资产 metadata `unresolved>0` 且未显式允许部分下发）。
 - **预检**（`src/web/jobs.ts` `createWebJob`）：加载脚本并完成 Excel/包/平台精确匹配后：
@@ -3536,3 +3538,164 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **平台**：`win32-x64.zip`、`darwin-arm64.tar.gz` 为 full（`includesTools:true`）；`linux-x64.tar.gz` 为 app-only（无工具链下载）。`--platform=darwin-arm64` 可只重建一端，并合并 manifest，避免重打 600MB 的另一端。
 - **边界**：macOS iOS 模拟器仍需 Xcode；Windows Maestro 使用包内 `maestro.bat` + JDK；工具版本由 toolchain manifest 固定。完整包约 600MB，下载仍受面板鉴权；`dist-runner/` 与 `dist-toolchain/` 均不入 git。
 - **测试**：`test/runner-toolchain.test.js` 覆盖工具下载页；包内容通过 `tar -tzf`/`unzip -l` 抽查 `tools/node`、`platform-tools`、`jdk`、`maestro` 与 runner wrapper。
+
+### 13.289 修复（顶栏「切换项目…」占位项无法回首页）
+
+> 2026-11-04。用户反馈：顶栏项目切换器选中「切换项目…」后页面没有更新；该占位项应回到首页。
+
+- **原因**：切换器 `<select>` 的占位项 `value=""`，`onchange` 为 `if(this.value)location.href=this.value`，空值分支直接跳过，因此选择占位项不会导航（仍停在当前项目页）。
+- **修复**：`renderConsoleShell` 在 `<select>` 上写入 `data-home`（取 `brandHref`，面板为 `/panel`，独立统计进程为 `/usage`）；`onchange` 改为 `location.href=this.value||this.dataset.home`。选择具体项目仍打开该项目首页，选择占位项回对应控制台首页。
+- **测试**：`test/console-shell.test.js` 断言 `data-home` 与新的 `onchange`，并覆盖独立统计进程回 `/usage`。
+
+### 13.290 修复（面板页面陈旧：轮询不刷新顶栏、reload 命中进程内缓存）
+
+> 2026-11-04。用户反馈下发项目/已上传 Excel/顶栏项目偶发「丢失」，复核为**页面没有刷新**（陈旧 UI），不是数据丢失或主机切换语义问题。
+
+- **根因**：① `livePollScript` 只替换 `#console-main`，顶栏 `.c-switcher` 与 `.c-topbar-meta` 保持首屏；项目/资产变化后主区已更新、顶栏仍显示「切换项目…」。② 轮询 `fetch(location.href)` 未带 no-store，浏览器可能复用缓存。③ 独立 `panel --web` 的 `/panel`、`/panel.json`/`/panel/api/hosts` 未发 `Cache-Control: no-store`；HTTP 模式只给 `/panel` 发了。④ 手动 reload 仍可能命中 5s 进程内缓存（写动作会 clear，runner 心跳等外部变化不会）。⑤ bfcache 返回旧页。
+- **修复**：轮询同时替换顶栏切换器（焦点保护）与 top meta，fetch 带 `cache:"no-store"` + `X-AOS-No-Cache:1`；两个服务端对 `/panel`、`/panel.json`、`/panel/api/hosts` 统一 `Cache-Control: no-store`；`handlePanelRequest` 支持 `noCache`（识别 `X-AOS-No-Cache` / `Cache-Control: no-cache|max-age=0` / `Pragma: no-cache`）绕过进程内缓存；shell 注入 `pageshow`（`e.persisted` → reload）。
+- **撤回**：本轮早前为上述症状加的「下发切换主机保留 project」与「切换器注入当前项目」兜底已撤回，恢复 §13.155 的主机切换语义；真实根因是顶栏未刷新，不是主机切换丢项目。
+- 2026-11-04 §13.296 重新引入「切换主机保留显式 project」，并补目标主机未登记项目的保留+提示，避免静默清空。
+- **测试**：`console-shell` 断言轮询 header/顶栏替换/pageshow；`panel-web` 断言 `noCache` 绕过 TTL；`panel-command` 断言 `/panel`、`/panel.json` 带 no-store。
+
+### 13.291 修复（面板表单对齐与控件规格统一）
+
+> 2026-11-04。用户反馈控制台「不对齐问题有点多」，截图集中在定时任务表单；同类问题在网页测试、测试资产、新增项目与隔离表单也存在。
+
+- **控件规格**：`src/console/tokens.ts` 为 `.c-main` 内文本/数字/日期/搜索输入、`select`、`textarea` 统一字体、36px 最小高度、内边距、边框、圆角、焦点环与禁用态；复选框/单选框统一 16px + `accent-color`；文件选择按钮改成 CSDC 胶囊按钮样式，与「上传」按钮同高。
+- **表单布局**：`.c-form` 改为无 max-width 的 18px 间距网格；`.c-form-row` 两列（主字段 `1fr` + 间隔字段 `auto`）；`.c-form-field` 标签与控件同行且不换行；`.c-form>p` 的旧式行表单自动变为标签在上、控件等宽、`auto-fit` 换行的栅格；`.c-check-grid` 改为 `repeat(auto-fit,minmax(10rem,1fr))` 等宽列；`.c-form+.c-empty/.c-table-wrap` 补 18px 间距；≤768px 降为单列。
+- **页面**：定时任务（名称/间隔/功能/端/空态）；网页测试（移除与外层卡片标题重复的 `fieldset/legend`，表单接 `.c-form`）；测试资产（上传/生成脚本/列映射三表单接 `.c-form`）；新增项目与隔离表单接 `.c-form`，复选框标签用 `.c-form-check` 保持同行。
+- **验证**：Edge headless 1600px 与 390px（CDP 设备指标）截图检查；`impeccable detect --scope layout` 0 项；全量 **2971 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.292 修复（下发端多选 / runner 在线 TTL / iOS 门禁 / 预览回执绑定）
+
+> 2026-11-04。Matt Pocock 两轴复核后，先修明确的功能 bug（不动「单一向导 vs 网页测试」的 IA 决策）。
+
+- **端多选**：`dispatchPlatforms` 用 `URLSearchParams.getAll("platforms")` + 逗号拆分 + 去重排序；`dispatchFormSignature` 与 `computeDispatchPreview` 同源。此前两处都用 `get("platforms")`，GET 表单重复参数只读第一个，勾选 iOS 后预览会丢端，两端无法一起确认。
+- **runner 在线**：`runnerCandidates` 改用 `isRunnerOnline(..., runnerTtlFrom(env))`（默认 90s），删除硬编码 `5 * 60_000`；避免确认摘要把早已失联的执行机显示成在线。
+- **iOS 门禁**：`precheckTask` 改为 `osPlatform === "darwin"`，不再用 `kind === "mac"` 兜底（D3：iOS 仅 darwin）。
+- **预览回执**：`dispatchPreviewId` 哈希加入 `selectedHostId` 与项目 `rootPath`；页面与 `POST /panel/api/tasks` 的 `checkDispatchPreviewFreshness` 同式复算，换主机/项目即 409，不能复用旧回执。
+- **测试**：`test/console-dispatch.test.js` 新增重复 platforms 两端、runner 120s 失联/TTL 可配、iOS 非 darwin 拒绝、previewId 随 host/项目变化；相关页面/动作测试更新为带 `rootPath` 复算。全量见完工验证。
+
+### 13.293 调整（套件回归/网页测试分流；仅主机入口显式选项目）
+
+> 2026-11-04。Matt Pocock Spec 复核后处理两项遗留：下发向导 IA 与「只给 host 自动猜项目」。
+
+- **流程决策**：保留两条执行管线（套件回归 `section=dispatch`；网页测试 `section=jobs` + 测试资产），不把 Web job 合并进套件向导——执行方式、资产（Excel/安装包/脚本）与选机合同不同，合并会混淆语义。以显式分流代替隐式共用一个「下发」入口：
+  - 导航「下发」改名 **「套件回归」**；网页测试导航改名 **「网页测试（安装包）」**；
+  - 套件页顶部常驻 `c-flow-switch`（套件回归当前 / 网页测试链接，带 project+host）与 **安装包 callout**（「要下发安装包（APK/IPA）？」→ 去网页测试上传/选择）；确认区也有同样链接；
+  - 网页测试页顶部反向 switch 回套件回归；
+  - 套件页「来源」区常驻 Excel 指引：套件 Excel 走 **用例库导入**（`section=library#library-import`，导入后作为用例集再下发），网页测试 Excel 走 **网页测试**，不再把 web 资产误认为套件用例集。
+  - **安装包上传**：`测试资产` 上传表单增加类型（Excel / 安装包），支持 `.xlsx/.csv/.apk/.ipa`；上传卡移到页面最上方并带 `#asset-upload` 锚点；新增「安装包资产」版本表；网页测试页安装包下拉为空时给「去测试资产上传 .apk/.ipa」按钮（带 `kind=package#asset-upload`，打开即预选安装包并滚到上传卡），上传后即可在网页测试选择并下发。上传区复用 `c-dropzone`：支持点击、键盘 Enter/Space 与**拖放文件**；drop 只校验类型并填充文件名/提示「已选择文件，点击『上传资产』」，**不自动提交**（避免一次拖放就产生资产版本）。
+  - **Excel 双向通用**：用例库 `importTestDocument` 成功后把源 Excel 副本登记为 Web 测试资产（`kind:excel`，按 sha256 去重；登记失败只追加 warning，不阻断导入）；测试资产 Excel 行新增「导入用例库」按钮，`POST /panel/api/import {project,assetId}` 直接以该资产的 `storagePath` 导入，并以上传资产原始 `filename` 作为 sourceId/basename（重复导入同一资产按 existingSets skip，不产生重复用例集）；同 sha 的自动登记会跳过。同一份 Excel 因此不再需要分别上传两次；已有历史导入的源副本可通过测试资产一次性上传补齐。
+  - 原 shape brief 的「①来源 Excel 导入」由上述用例库导入入口承接；若要真正的单向导内嵌上传，另立任务（不在本次）。
+- **仅主机入口**：`buildView` 删除「取该主机 `lastSeenAt` 最新项目」的自动回填，改为渲染「未选择项目」下发页并列出该主机全部项目（`computeDispatchPreview` 对空 rootPath 跳过「未登记项目」告警，追加「请先选择项目」提示）；项目下拉保留 `（选择项目）`，未选项目时确认禁用。对齐 spec §12.1「只给 host 时列出项目让用户选，不猜」，覆盖 DESIGN §13.155 的自动回填。
+- **FileStore 主机作用域项目列表**：`scopeHost(hostId).listProjects()` 改为逐 bucket 读取该 host 的项目（此前直接返回全局 registry 且 `hostId` 恒 NULL，导致文件台账下主机项目下拉为空）；未作用域 `listProjects()` 保持 NULL-host 兼容。MemoryStore 的 `listProjects()` 保持全量（取消清扫 `allHosts` 依赖中心视图），下发/队列深度调用方按 `hostId` 过滤。`hostQueueDepth` 改用作用域项目列表并过滤 host。
+- **测试**：`panel-dispatch-project-priority` 的「缺 project 选最近项目」改为「列出全部项目、无 selected、确认禁用」；`console-dispatch` 断言 flow switch、Excel 导入指引；`web-dispatch-ui` 断言反向 switch。
+
+### 13.294 调整（HTTP/1 keep-alive 65s，Windows runner fetch failed）
+
+> 2026-11-04。Windows runner 5s 轮询与 Node HTTP 默认 `server.keepAliveTimeout=5s` 在边界竞争，偶发 `fetch failed`。
+
+- **实现**：非 TLS HTTP 服务创建后设置 `keepAliveTimeout=65_000`、`headersTimeout=66_000`（`src/http-server.ts`）；TLS/HTTP2 分支保持默认（HTTP/2 无同款 keep-alive 竞争）。
+- **测试**：`test/http-server.test.js` 用 `http.get('/healthz')` 断言响应 `Keep-Alive: timeout=65`。
+- **边界**：只影响 HTTP/1 连接生命周期，不改请求/响应语义；Windows runner 仍应按 `AOS_RUNNER_POLL_MS` 轮询。
+
+### 13.295 新增（Web 手工 Excel：简繁英解析、尽力生成与 LLM 规范化）
+
+> 2026-11-04。用户反馈英文手工 Excel 在网页测试生成 0 ready/409；根因不是上传，而是生成器 all-or-nothing：任一步骤未识别即整条用例 unresolved，且 `splitLines` 把 `(A random code)` 这类续行当独立步骤。
+
+- **续行合并**（`src/web/excel.ts` `splitStepLines`）：仅当块内存在编号/项目符号行时才把无编号行合并到上一步；无编号块保持原有逐行行为；首个编号行之前的说明/标题行丢弃，不当作步骤（避免步骤号与断言错位）。`preconditions` 仍用 `splitLines`。
+- **语言覆盖**（`src/web/step-parse.ts`）：简/繁/英统一动作词表——`点击/點擊/點一下/輕觸/按下/選取`、`输入/輸入/填寫/鍵入`、`查看/檢查/驗證/核對/檢視/瀏覽`、`进入/進入/前往/轉到`、英文 `go to/tap/input/verify/check/scroll/back/wait`。标签保留原文，不翻译。
+- **相对定位**：`ParsedSelector{text,relation?}` 支持 `rightOf/leftOf/below/above`；`next to/beside` 先推断 `rightOf` 并记 `relation-inferred:rightOf`；`right of/left of/below/above/under` 映射对应关系。生成 YAML 用 `tapOn:\n    rightOf: 'X'`。
+- **手工英文输入**：`Tap the "OK" button` → `tapOn "OK"`；`Input invalid referral code (A random code)` → 字段 `referral code` + 确定性 `AOSINVALID0001`（`input-value-generated`）；`e.g A23b8C --> a23B8c` → 值 `a23B8c`（`input-value-example`）；`check/verify` 只作为断言落点，不生成点击。
+- **尽力生成**（`ScriptGenOptions.bestEffort`）：未识别步骤不再让整条用例失败，而是写 `# aos:manual step=N reason=CODE` + `# aos:manual-text ...` + `takeScreenshot: aos-<caseId>-step-N`，继续执行其余步骤。`assertion-step-out-of-range`/`assertion-text-invalid` 在 bestEffort 下同样转 manual 标记+截图（`partial`），不静默跳过断言后让其余断言把用例判绿。strict 行为不变。
+- **计数与写入**：`ready`＝完整可执行；`partial`＝有 manual 的可执行；`unresolved`＝无 flow；`runnable=ready+partial`。`storeScriptSet` 用 `runnable===0` 拒绝（旧 bundle 回退 `ready`），0 完整但有 partial 时允许写入。manifest 增加 `bestEffort`、`counts.partial/runnable`、`cases[].partial/manualSteps`、`normalizer/llmCases/normalizerWarnings`。
+- **不假绿**：runner 从顶层 flow（含 `runFlow` 子流程）解析 `# aos:manual`，上报 `manualSteps`；`deriveCaseVerdicts` 对 `status=PASS` 且 `manualSteps.length>0` 的用例降级 `UNVERIFIED`（reason `manual-step`），写回 Excel `UNVERIFIED`；PASS 口径不变。脚本集 metadata 同时写 `manualCases`，中心 ingest 读取它作为**旧 runner 漏报 manualSteps** 的兜底：脚本集标记 partial 的用例即使 payload 没有 manualSteps 也降级。
+- **受控 LLM 规范化**（`src/web/step-normalizer.ts`）：active LLM 可用时把每个手工用例转成受控 JSON `{steps:[{step,actions,confidence,note}]}`；只允许 `launch/tap/input/verify/scroll/back/wait/manual`；`target.text` 必须在原文（步骤/用例名/预期/前置）或系统标签白名单中，模型发明的标签直接拒绝并回退规则；动作类型必须匹配步骤动词（tap/input/launch 步骤不能只剩 verify/launch）；input 值必须出现在原文，或为 `A random code` 场景生成的 `AOSINVALID0001`；`next to`→`rightOf`、`right of/left of/below/above/under` 映射；`Complete TC_XX`→`manual depends-on:TC_XX`；模型不直接写 YAML。失败/超时/非法 JSON → 回退规则并记 `llm-normalize-failed:<caseId>`。
+- **前置条件 auto**：面板/CLI `preconditionMode:"auto"` 在 `bestEffort=true` 时解析为 `assume-prepared`（`clearState:false/stopApp:false`，记 `precondition-assumed`），否则 `strict`；manifest 记录解析后的模式，不记录 `auto`。
+- **入口**：面板「测试资产 → 生成 Maestro 脚本」默认勾选「尽力生成」、前置条件 `auto`、AI 解析 `auto`；请求字段 `bestEffort/useLlm/preconditionMode:"auto"`，响应 `ready/partial/runnable/unresolved/normalizer/llmCases/llmModel/normalizerWarnings`，结果表增加「手工步骤」，脚本集资产表增加 `partial` 列。CLI `web scripts generate` 支持 `--best-effort`、`--precondition-mode auto`，`--best-effort` 与面板一致启用 `inferNavigationTap`，exit 0 以 `runnable>0` 为准。
+- **边界**：本段不实现设备上的 LLM 观察执行器/发现；manual 步骤仍需人工或后续 agent；LLM 规范化只处理文本，不读取设备截图；计费/token 明细仍按后续计划。
+- **测试**：`web-script-gen`（续行/繁体/英文/相对定位/bestEffort/断言越界/不安全断言）、`web-script-set`（partial/runnable/旧 bundle 回退）、`web-step-normalizer`（受控 JSON/幻觉标签/动作类型/输入值/回退）、`web-script-generation`（normalizer/auto/CLI 导航推断）、`web-executors`/`web-job-runner`（manual 上报/子流程/payload）、`web-result-ingest`/`web-verdicts`（PASS→UNVERIFIED/脚本集 metadata 兜底）、`panel-script-gen`/`web-assets-ui`（面板字段/partial 列）；全量 3013 绿，lint 0 error。
+
+### 13.296 修复（套件下发切换主机保留显式项目）
+
+> 2026-11-04。用户反馈在「套件回归 → ⓪ 主机与项目」切换目标主机时，已选项目被清空；根因是 `dispatch-host-nav` 显式丢弃 `project`（§13.155/§13.290 语义）。
+
+- **host nav**：切换主机时同时带上当前 `project`（仅当项目选择器有值）；仅 `host` 入口仍不自动猜项目，缺 project 时列出该主机项目并提示选择。
+- **目标主机未登记项目**：显式 host + 项目路径经 `resolveProjectKey` 工作区兜底解析；`computeDispatchPreview` 保留 `<option ... selected>项目（当前项目）</option>` 并显示「该主机尚未登记项目」，确认禁用；不再静默清空，也不把项目串到其他主机。
+- **边界**：套件下发仍要求项目在目标主机登记；网页测试走 `section=jobs`，执行机不需要项目目录。
+- **测试**：`test/panel-dispatch-project-priority.test.js` 覆盖 host nav 保留 project、目标主机未登记时保留当前项目+禁用确认；全量 3013 绿，lint 0 error。
+
+### 13.297 修复（网页测试/主机选择保留与同类审计）
+
+> 2026-11-04。用户指出 `win-mini-01` 不需要登记 ESSO-GU；审计 host/project 选择丢失与“项目登记”假设。
+
+- **网页测试项目选择**：`section=jobs&host=X` 且未选项目时，`buildView` 保留 `hostParam`；项目选择链接用 `data.hostId ?? choice.hostId`，选项目后不再丢主机。
+- **套件空态 CTA**：无项目主机的「网页测试」链接带当前 host（`dispatchHostQuery`），不再跳到无 host 的 jobs 页。
+- **设备页任务链接**：设备上运行中的 web job 详情链接带 `host=<设备所属主机>`。
+- **套件来源空态**：目标主机未登记项目时，来源卡片不再只渲染空下拉；用例集选择禁用，显示「该主机未登记项目，套件回归没有可用用例集」，顶部 callout 直接给出去网页测试的 CTA（保留 host）。用例集仍从**目标主机作用域 store**读取，不把其他主机/项目的数据串过来。
+- **审计结论**：套件链路（`computeDispatchPreview`、面板 `createTask`、`suite-service`）的「未登记项目」是套件 runner 需要项目目录/用例集的前提；网页测试是 host 级执行，不要求项目登记。已验证 `section=jobs/assets/library` + `host=win-mini-01` + ESSO-GU 均 200，`/panel/api/jobs/preview` 返回该主机的设备。`usage --host` 的项目过滤只影响查询，不阻断执行。顶部项目切换器仍按项目自身 host 导航（全局导航，不携带当前执行 host）。
+- **测试**：`test/web-dispatch-ui.test.js` 新增「无项目 jobs 页保留 host」；`test/panel-dispatch-project-priority.test.js` 覆盖空态 CTA 保留 host、来源空态原因/禁用/网页测试出口；全量 3014 绿，lint 0 error。
+
+### 13.298 新增（测试资产：materials 上传与绑定 UI）
+
+> 2026-11-04。用户反馈网页测试「测试资料」下拉只有「不指定」，不知道去哪里补充。
+
+- **测试资产页**：上传类型增加「测试资料（materials）」，支持 `.zip/.json/.csv/.txt`；`secret` 复选框仅对 materials 生效。上传后新增「测试资料资产」表（文件名/版本/大小/secret/sha256/时间）。
+- **网页测试表单**：`测试资料` 下拉读取 materials 资产；修复空资产时出现两个「不指定」占位的问题（`assetOptionsWithPlaceholder` 统一只输出一个占位 + 资产项）。
+- **API**：复用既有 `POST /panel/api/projects/assets`（`kind=materials`、可选 `secret=true`）；`storeWebAsset` 对 secret materials 落 0700/0600，runner 下载到 `jobDir/secrets/`，不进 CAS。
+- **边界**：本次只做上传/版本/绑定 UI；把 materials 键值注入 Maestro `-e` 的格式与 secret 安全通道仍待接线（不能把 secret 放命令行）。`materialsAssetId` 已进入 job spec 并由 runner 下载。
+- **测试**：`web-assets-ui` 覆盖 materials 类型/secret/资产表/客户端扩展名；`web-dispatch-ui` 覆盖 materials 下拉只有一个占位；全量 3014 绿，lint 0 error。
+
+### 13.299 调整（导入用例集 markdown 不重复真实数据条款）
+
+> 2026-11-04。用户反馈 case-set `.md` 每个 `mobile_run_task` 块都重复完整【真实数据】条款，像提醒刷屏。
+
+- `renderImportedMarkdown`：人类可读 md 顶部只提示一次执行约束；代码块中的 taskDesc 去掉 `REAL_DATA_CLAUSE` 整行。
+- `tests.json` / xlsx 隐藏执行器 sheet 的 taskDesc 仍保留完整条款，`suite check` 的【真实数据】硬门禁不变。
+- 已有项目 case-set md 已按同一规则回填（仅展示层，不改 JSON/taskDesc）。
+- **测试**：`workflow-excel-import` 断言 md 只出现一次 marker、code fence 不含完整条款、JSON taskDesc 仍含 marker；全量 3014 绿，lint 0 error。
+
+### 13.300 新增（产物 Markdown 阅读器：用例卡片/步骤/预期/折叠执行器指令）
+
+> 2026-11-04。用户反馈 case-set `.md` 以原始 Markdown 打开，像代码页、不美观；要求“有秩序”。
+
+- **阅读器**：`.md` 产物在浏览器 `Accept: text/html` 下渲染阅读器；`?raw=1` 或非浏览器请求仍返回原始 `text/markdown`。
+- **结构化用例**：识别 `# 导入测试用例集` 结构——顶部来源/导入时间/执行约束（黄色 meta），每个用例一张卡：编号 badge、标题、模块 pill、前置、编号步骤、预期结果 callout；`mobile_run_task` 折叠为「执行器指令 / agent 读取」。
+- **通用 Markdown**：其他 `.md` 走轻量渲染（标题/引用/列表/代码围栏）；原始 HTML 转义，不生成 `javascript:` 链接。
+- **展示层**：现有 case-set md 无需重新导入；同一文件即按新阅读器展示。原始 Markdown 仍可一键查看/复制。
+- **测试**：`panel-artifact-route` 新增 Markdown 阅读器、结构化用例卡、XSS 转义；全量 3016 绿，lint 0 error。
+
+### 13.301 调整（档案产物索引按用例集分组）
+
+> 2026-11-04。用户反馈产物索引把同一用例集的 md/json/xlsx/source 拆成多行，路径重复、时间列拥挤，不像索引。
+
+- **分组**：`case-set` 按文件 stem 分组（去 `.md/.json/.xlsx/.source.xlsx`），一行显示名称 + `MD / XLSX / JSON / 源 Excel` 格式 chips；其他 kind 保持单行（目录/报告/差异/崩溃/轨迹）。
+- **列**：`类型 / 名称 / 位置 / 更新时间 / 大小`；位置对用例集只显示目录 `.artemis/design/case-sets`，完整路径放在 chip `title`；更新时间只渲染一次；大小显示 `N 文件 · 总大小`。
+- **计数**：卡片 subtitle 与分页显示 `本页 X 组 · Y 个文件`，不再把 13 个文件说成 13 项。
+- **测试**：`console-pages` 新增用例集 md/json/xlsx 分组断言；全量 3017 绿，lint 0 error。
+
+### 13.302 新增（数据源 P0：默认部分下发、来源解耦、脚本集惰性生成/重建、过滤生效）
+
+> 2026-11-04。外部评审「小修后通过（无 K）」后修订并实施 P0（R1/R2/R3/R4/R11）；完整方案见 `docs/superpowers/specs/2026-11-04-data-source-restrictions-design.md` v2。旧平台 spec（2026-10-28）的 `allowPartialUnresolved` 默认值已被本节取代。
+
+- **状态**：P0 已实现；全量 3037 测试绿、lint 0 error。R5/R6/R7/R10 与 L2/L6 仍待排期。
+- **数据源归项目，执行归主机**：套件回归的来源读取不再依赖目标主机是否登记项目；目标主机未登记时仍禁止执行，但来源可见并显式示因（`DispatchPreview.sourceStore{tier,hostId,error}`，读取失败不回落空下拉）。目标主机登记项目时永远读目标 store，保持预览/执行一致。
+- **脚本集惰性生成**：Web 测试不选脚本集也可下发；`createWebJob` 在 maestro 且无脚本时按当前 Excel/包以 rules-only + bestEffort + precondition auto + inferNavigationTap 生成；`runnable=0` 才拒绝。生成失败映射 400 `script-generation-failed`，墙钟超时 400 `script-generation-timeout`（下发路径 `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` 默认 30000，0 关闭；手工生成默认不设墙钟，env 显式设置才生效），未预期异常仍 500 并留审计。
+- **幂等**：`web_assets.dedupe_key` 可空列 + `(root_path,kind,dedupe_key)` 唯一索引；生成的脚本集写 sha256，普通上传保持 NULL（不改变“重复上传=新版本”语义）。`storeScriptSet` 在文件锁内查/插，Postgres 命中 23505 时读回已有行；不新增 PG advisory lock。生成 manifest 无时间戳/随机字段，同输入 sha 稳定（测试守卫）。
+- **过期重建**：显式脚本集与当前 Excel/包/平台不匹配（含未声明绑定）时，默认自动重建并替换；响应带 `rebuiltScriptSet{from,to}`、warning `script-set-rebuilt`，审计 `web.scripts.generate` 的 `trigger=rebuild`；重建失败 409 `script-set-rebuild-failed`。`allowStaleScript:true` 保留旧脚本并 warning `stale-script`。
+- **过滤生效**：脚本 manifest 的每个 case 带 `module` 与 `flow`；runner 从 `flowsDir` 父目录读 manifest，按 `caseIds`（原始 caseId，支持中文/空格）与 `modules` 过滤，并把选中的 flow 文件路径传给 Maestro（不再只过滤结果映射）；旧 manifest 回退 stem 匹配，无 manifest 的模块过滤仍显式 `case-filter-modules-unsupported`。
+- **评审后修复**：旧 PG schema 先 `ALTER TABLE ... ADD COLUMN` 再建 dedupe 唯一索引（避免 SCHEMA 先跑导致升级失败）；runner 解压 `manifest.json`＋`flows/` 到 jobDir 同级（否则嵌套 `flows/flows` 导致 `no-flow-files`）；目标主机未登记但 owner 有用例集时来源下拉保持可用；`storeScriptSet` 加跨进程文件锁；全不可用错误带逐例 caseId；面板手工生成超时映射 400 `script-generation-timeout`；中文/空格 caseId 的截图按 flow stem 映射；显式脚本 `runnable=0` 拒绝；`executionMode=llm` 不触发脚本重建。未就绪用例实际写 `SKIP（未执行）`。
+- **默认值表（唯一事实源）**：
+
+| 配置 | 默认 | 显式值/说明 |
+|---|---|---|
+| `allowPartialUnresolved` | `true` | `false` → `unresolved>0` 仍 409；省略按 true（行为变更） |
+| 惰性生成 `bestEffort` | `true` | 脚本页可关闭 |
+| 惰性生成 `preconditionMode` | `auto` | `bestEffort=true` 时解析为 `assume-prepared` |
+| 惰性生成 normalizer | `rules` | 不调 LLM；脚本页可选 LLM |
+| `allowStaleScript` | `false` | 不匹配先自动重建；`true` → 旧脚本 + `stale-script` warning |
+| `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` | `30000` | 请求内生成墙钟预算；超时 400 `script-generation-timeout` |
+
+- **过滤必须生效**：脚本集 manifest 携带 `module` 与 `caseId→flow`；runner 按 manifest 过滤模块/用例 ID，不再对模块直接报 `case-filter-modules-unsupported`；旧 manifest 回退 stem 匹配。
+- **保留不动**：PASS 硬断言、manual/未验证 → UNVERIFIED、资产 sha、secret materials 0600/不进 CAS、iOS Maestro 上游仅模拟器。

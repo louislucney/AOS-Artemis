@@ -40,6 +40,9 @@ import {
   generateScriptSetForProject,
   ScriptGenerationError
 } from "../web/script-generation.js";
+import { ScriptGenerationTimeoutError } from "../web/script-gen.js";
+import { makeChatFn } from "../llm/chat.js";
+import { createLlmStepNormalizer, type StepNormalizer } from "../web/step-normalizer.js";
 import { ScriptSetStoreError } from "../web/script-set.js";
 import {
   DEFAULT_SYSTEM_COLUMN_MODE,
@@ -1279,6 +1282,13 @@ async function saveExcelMappingAction(
 }
 
 function scriptGenerationErrorResponse(error: unknown): PanelWebResponse | null {
+  if (error instanceof ScriptGenerationTimeoutError) {
+    return json(400, {
+      ok: false,
+      error: error.message,
+      code: "script-generation-timeout"
+    });
+  }
   if (error instanceof ScriptSetStoreError) {
     return json(error.code === "script-set-unusable" ? 409 : 400, {
       ok: false,
@@ -1318,7 +1328,19 @@ async function generateScriptSetAction(
       ? "strict"
       : rawMode === "assume-prepared"
         ? "assume-prepared"
-        : null;
+        : rawMode === "auto"
+          ? "auto"
+          : null;
+  const rawLlm = payload.useLlm;
+  const useLlm =
+    rawLlm === undefined || rawLlm === null || rawLlm === "auto"
+      ? "auto"
+      : rawLlm === "off"
+        ? "off"
+        : rawLlm === "require"
+          ? "require"
+          : null;
+  const bestEffort = payload.bestEffort === true || payload.bestEffort === "true";
   const dryRun = payload.dryRun === true || payload.dryRun === "true";
   const refs = {
     excelAssetId,
@@ -1332,10 +1354,46 @@ async function generateScriptSetAction(
     return json(400, { ok: false, error: "platform 只能是 android 或 ios" });
   }
   if (preconditionMode === null) {
-    return json(400, { ok: false, error: "preconditionMode 只能是 strict 或 assume-prepared" });
+    return json(400, {
+      ok: false,
+      error: "preconditionMode 只能是 strict、assume-prepared 或 auto"
+    });
   }
+  if (useLlm === null) {
+    return json(400, { ok: false, error: "useLlm 只能是 auto、off 或 require" });
+  }
+  const resolveStepNormalizer = async (): Promise<{
+    normalizer: StepNormalizer | null;
+    model: string | null;
+  }> => {
+    if (useLlm === "off") return { normalizer: null, model: null };
+    const runtime = deps.runtimeFor ? await deps.runtimeFor(rootPath) : null;
+    const entry = runtime === null ? null : await runtime.activeEntry();
+    const baseUrl = entry?.baseUrl ?? "";
+    const apiKey = entry?.apiKey ?? "";
+    if (entry === null || baseUrl === "" || apiKey === "" || entry.model.trim() === "") {
+      if (useLlm === "require") {
+        throw new ScriptGenerationError(
+          "llm-not-configured",
+          "未配置可用 LLM；可切到规则解析（useLlm=off）或先配置项目 LLM"
+        );
+      }
+      return { normalizer: null, model: null };
+    }
+    return {
+      normalizer: createLlmStepNormalizer({
+        chat: makeChatFn(
+          { baseUrl, apiKey, model: entry.model },
+          { temperature: 0 }
+        ),
+        model: entry.model
+      }),
+      model: entry.model
+    };
+  };
   try {
     await assertProjectActive(deps.store, rootPath);
+    const llm = await resolveStepNormalizer();
     const result = await generateScriptSetForProject({
       store: deps.store,
       rootPath,
@@ -1344,6 +1402,9 @@ async function generateScriptSetAction(
       platform,
       appId: appId === "" ? null : appId,
       preconditionMode,
+      bestEffort,
+      ...(llm.normalizer === null ? {} : { normalizer: llm.normalizer }),
+      inferNavigationTap: bestEffort,
       dryRun,
       uploadedBy: actor
     });
@@ -1352,7 +1413,7 @@ async function generateScriptSetAction(
       action: "web.scripts.generate",
       result: "ok",
       actor,
-      summary: `生成 Web 脚本集${dryRun ? "（dry-run）" : result.created ? "" : "（复用）"}：ready ${result.ready} / unresolved ${result.unresolved}`,
+      summary: `生成 Web 脚本集${dryRun ? "（dry-run）" : result.created ? "" : "（复用）"}：可执行 ${result.runnable}（完整 ${result.ready} / 部分 ${result.partial}）/ 未就绪 ${result.unresolved} · ${result.normalizer}${llm.model === null ? "" : `(${llm.model})`}`,
       refs
     });
     deps.cache?.clear();
@@ -1360,7 +1421,13 @@ async function generateScriptSetAction(
       ok: true,
       dryRun: result.dryRun,
       ready: result.ready,
+      partial: result.partial,
+      runnable: result.runnable,
       unresolved: result.unresolved,
+      normalizer: result.normalizer,
+      llmCases: result.llmCases,
+      llmModel: llm.model,
+      normalizerWarnings: result.normalizerWarnings,
       created: result.created,
       asset: result.asset,
       manifest: result.manifest
@@ -1524,7 +1591,7 @@ async function checkDispatchPreviewFreshness(
     rootPath,
     params
   );
-  const expected = dispatchPreviewId(preview, dispatchFormSignature(params));
+  const expected = dispatchPreviewId(preview, dispatchFormSignature(params), rootPath);
   if (expected !== previewId) {
     return json(409, {
       ok: false,
@@ -1885,8 +1952,9 @@ function parseWebJobCreateForm(
   const scriptSetId = panelTextField(payload, "scriptSetId");
   const allowStaleScript =
     payload.allowStaleScript === true || payload.allowStaleScript === "true";
-  const allowPartialUnresolved =
-    payload.allowPartialUnresolved === true || payload.allowPartialUnresolved === "true";
+  const allowPartialUnresolved = !(
+    payload.allowPartialUnresolved === false || payload.allowPartialUnresolved === "false"
+  );
   return {
     ok: true,
     value: {
@@ -1945,18 +2013,80 @@ async function createWebJobAction(
       nowMs: deps.now?.() ?? Date.now()
     });
     const binding = outcome.assignment;
+    if (
+      outcome.script !== null &&
+      (outcome.script.autoGenerated || outcome.script.rebuiltFrom !== null)
+    ) {
+      const trigger = outcome.script.rebuiltFrom !== null ? "rebuild" : "dispatch";
+      await recordAuditSafe(deps.store, rootPath, {
+        domain: "web",
+        action: "web.scripts.generate",
+        result: "ok",
+        actor,
+        summary: `下发时生成 Web 脚本集（trigger=${trigger}）：可执行 ${outcome.script.runnable}（完整 ${outcome.script.ready} / 部分 ${outcome.script.partial}）/ 未就绪 ${outcome.script.unresolved}`,
+        refs: {
+          assetId: outcome.script.id,
+          ...(outcome.script.rebuiltFrom === null
+            ? {}
+            : { from: outcome.script.rebuiltFrom })
+        }
+      });
+    }
+    const scriptWarning =
+      outcome.script !== null && outcome.script.unresolved > 0
+        ? `；${outcome.script.unresolved} 条未就绪将 SKIP`
+        : "";
     return json(200, {
       ok: true,
       job: outcome.task,
       assignment: binding,
       pendingReason: outcome.pendingReason,
       status: binding === null ? "pending" : "bound",
+      script: outcome.script,
+      autoGeneratedScript: outcome.script?.autoGenerated === true,
+      ...(outcome.script !== null && outcome.script.rebuiltFrom !== null
+        ? {
+            rebuiltScriptSet: {
+              from: outcome.script.rebuiltFrom,
+              to: outcome.script.id
+            }
+          }
+        : {}),
+      warnings: outcome.warnings,
       message:
-        binding === null
+        (binding === null
           ? "等待满足要求的执行机"
-          : `已绑定 ${binding.hostId} / ${binding.deviceSerial}`
+          : `已绑定 ${binding.hostId} / ${binding.deviceSerial}`) +
+        (outcome.script?.autoGenerated === true
+          ? "；已自动生成脚本集"
+          : outcome.script?.rebuiltFrom !== null && outcome.script !== null
+            ? "；脚本集已按当前资产重建"
+            : "") +
+        scriptWarning
     });
   } catch (error) {
+    const generationFailure =
+      error instanceof WebJobDispatchError &&
+      (error.code === "script-generation-failed" ||
+        error.code === "script-generation-timeout" ||
+        error.code === "script-set-rebuild-failed");
+    if (generationFailure) {
+      await recordAuditSafe(deps.store, rootPath, {
+        domain: "web",
+        action: "web.scripts.generate",
+        result: "failed",
+        actor,
+        summary: `下发时生成 Web 脚本集失败：${errorMessage(error)}`
+      });
+    } else if (!(error instanceof WebJobDispatchError)) {
+      await recordAuditSafe(deps.store, rootPath, {
+        domain: "web",
+        action: "action.jobs",
+        result: "failed",
+        actor,
+        summary: `下发任务异常：${errorMessage(error)}`
+      });
+    }
     if (error instanceof WebJobDispatchError) {
       return json(error.status, { ok: false, code: error.code, error: error.message });
     }
@@ -2520,7 +2650,15 @@ async function runImport(
   let tmpDir: string | null = null;
   try {
     let excelPath: string;
-    if (request.rawBody !== undefined) {
+    let sourceName: string | undefined;
+    const assetId = typeof payload.assetId === "string" ? payload.assetId.trim() : "";
+    if (assetId !== "") {
+      const assets = await deps.store.listWebAssets(rootPath, "excel").catch(() => []);
+      const asset = assets.find((entry) => entry.id === assetId);
+      if (!asset) return json(404, { error: "Excel 资产不存在" });
+      excelPath = asset.storagePath;
+      sourceName = asset.filename;
+    } else if (request.rawBody !== undefined) {
       const upload = await parseMultipartUpload(request.rawBody, request.contentType);
       tmpDir = await mkdtemp(path.join(tmpdir(), "aos-import-"));
       tmpPath = path.join(tmpDir, `${safeUploadBase(upload.filename)}_${uploadTimestamp()}.xlsx`);
@@ -2528,7 +2666,7 @@ async function runImport(
       excelPath = tmpPath;
     } else {
       const pathValue = typeof payload.path === "string" ? payload.path.trim() : "";
-      if (pathValue === "") return json(400, { error: "缺少 path 或上传文件" });
+      if (pathValue === "") return json(400, { error: "缺少 path、assetId 或上传文件" });
       if (!pathValue.toLowerCase().endsWith(".xlsx")) return json(400, { error: "仅支持 .xlsx" });
       excelPath = pathValue;
     }
@@ -2538,7 +2676,10 @@ async function runImport(
         error: "导入需要运行时解析（项目运行时不可用；可改用 CLI：suite task create --excel <file>）"
       });
     }
-    const result = await importTestDocument(runtime, { excelPath });
+    const result = await importTestDocument(runtime, {
+      excelPath,
+      ...(sourceName === undefined ? {} : { sourceName })
+    });
     if (!result.ok) return json(400, { ok: false, error: result.error ?? "导入失败" });
     return json(200, {
       ok: true,

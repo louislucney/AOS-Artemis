@@ -159,6 +159,53 @@ test("parseExcel: 规范化字段/多行步骤/行号/空值", async () => {
   assert.equal(second.rowNumber, 3);
 });
 
+test("web-excel: 续行合并到上一步，不单独成为步骤", async () => {
+  const headers = ["用例编号", "步骤", "预期"];
+  const buffer = await xlsxBuffer([
+    {
+      name: "S",
+      rows: [
+        headers,
+        [
+          "TC-1",
+          "1. Go to Register page\n2. Input invalid referral code\n(A random code)\n3. Tap submit",
+          "3. Display error"
+        ]
+      ]
+    }
+  ]);
+  const parsed = await parseExcel(buffer, { mapping: suggestExcelMapping(headers) });
+  assert.deepEqual(parsed.cases[0].steps, [
+    "1. Go to Register page",
+    "2. Input invalid referral code (A random code)",
+    "3. Tap submit"
+  ]);
+});
+
+test("web-excel: 首个编号步骤前的说明行不作为步骤", async () => {
+  const headers = ["用例编号", "步骤", "预期"];
+  const buffer = await xlsxBuffer([
+    {
+      name: "S",
+      rows: [headers, ["TC-1", "Login page\nSteps:\n1. Tap X\n2. Tap Y", "2. Done"]]
+    }
+  ]);
+  const parsed = await parseExcel(buffer, { mapping: suggestExcelMapping(headers) });
+  assert.deepEqual(parsed.cases[0].steps, ["1. Tap X", "2. Tap Y"]);
+});
+
+test("parseExcel: 无编号步骤仍按行拆分", async () => {
+  const headers = ["用例编号", "步骤", "预期"];
+  const buffer = await xlsxBuffer([
+    {
+      name: "S",
+      rows: [headers, ["TC-1", "打开首页\n点击登录", "显示首页"]]
+    }
+  ]);
+  const parsed = await parseExcel(buffer, { mapping: suggestExcelMapping(headers) });
+  assert.deepEqual(parsed.cases[0].steps, ["打开首页", "点击登录"]);
+});
+
 test("parseExcel: 数字 caseId 转字符串，列顺序变化结果一致", async () => {
   const a = await xlsxBuffer([
     {

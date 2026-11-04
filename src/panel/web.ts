@@ -211,6 +211,8 @@ type PanelView =
       assets: WebAssetRecord[];
       packages: WebAssetRecord[];
       scripts: WebAssetRecord[];
+      materials: WebAssetRecord[];
+      uploadKind?: "excel" | "package" | "materials";
       mappings: ExcelMappingRecord[];
     }
   | {
@@ -600,7 +602,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return {
       kind: "web-jobs",
       rootPath: "",
-      hostId: null,
+      hostId: hostParam,
       rootLabel: "未选择项目",
       projectStatus: null,
       jobs: [],
@@ -675,12 +677,16 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   }
   if (section === "assets") {
     const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
-    const [excelAssets, packages, scripts, mappings] = await Promise.all([
+    const [excelAssets, packages, scripts, materials, mappings] = await Promise.all([
       listWebAssets(projectStore, resolved.rootPath, "excel"),
       listWebAssets(projectStore, resolved.rootPath, "package"),
       listWebAssets(projectStore, resolved.rootPath, "scripts"),
+      listWebAssets(projectStore, resolved.rootPath, "materials"),
       listExcelMappings(projectStore, resolved.rootPath)
     ]);
+    const uploadKindRaw = trimmed(url.searchParams.get("kind"));
+    const uploadKind =
+      uploadKindRaw === "package" || uploadKindRaw === "materials" ? uploadKindRaw : "excel";
     return {
       kind: "web-assets",
       rootPath: resolved.rootPath,
@@ -691,6 +697,8 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       assets: excelAssets,
       packages,
       scripts,
+      materials,
+      uploadKind,
       mappings
     };
   }
@@ -1000,6 +1008,8 @@ function toJsonView(view: PanelView): Record<string, unknown> {
       assets: view.assets,
       packages: view.packages,
       scripts: view.scripts,
+      materials: view.materials,
+      uploadKind: view.uploadKind,
       mappings: view.mappings
     };
   }
@@ -3767,6 +3777,8 @@ function renderPanelHtml(
       assets: view.assets,
       packages: view.packages,
       scripts: view.scripts,
+      materials: view.materials,
+      uploadKind: view.uploadKind,
       mappings: view.mappings,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth

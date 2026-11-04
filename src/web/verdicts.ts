@@ -13,6 +13,8 @@ export interface DeriveVerdictsInput {
    * 任务级 error / 强制 failed 且用例全 PASS：逐例结果不写回，也不补写未执行用例。
    */
   suppressPerCaseResult: boolean;
+  /** 脚本集 metadata 标记的 manual/partial 用例（旧 runner 漏报 manualSteps 时的中心兜底）。 */
+  manualCaseIds?: Set<string>;
 }
 
 export interface DeriveVerdictsResult {
@@ -30,6 +32,7 @@ const REASON_TEXT: Record<string, string> = {
   "manual-or-ambiguous": "断言含人工或歧义项",
   "soft-assertion-only": "仅有软断言，缺少高置信可执行断言",
   "assertion-proof-missing": "runner 未上报断言证据",
+  "manual-step": "包含未映射/手工步骤",
   "source-unreadable": "原件不可解析，无法生成断言"
 };
 
@@ -212,6 +215,12 @@ export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsRe
       cases.push(downgrade(entry, "case-not-in-source"));
       downgraded.push(`${caseId}:case-not-in-source`);
       reasons.push({ caseId, status: "UNVERIFIED", reason: "case-not-in-source" });
+      continue;
+    }
+    if ((entry.manualSteps?.length ?? 0) > 0 || (input.manualCaseIds?.has(caseId) ?? false)) {
+      cases.push(downgrade(entry, "manual-step"));
+      downgraded.push(`${caseId}:manual-step`);
+      reasons.push({ caseId, status: "UNVERIFIED", reason: "manual-step" });
       continue;
     }
     const gate = assertionGate(assertions?.get(caseId), entry.assertionCount, entry.assertions);

@@ -191,6 +191,88 @@ test("script-gen: 导航默认 unresolved，显式 inferNavigationTap 才生成 
   assert.match(inferred.yaml, /- tapOn: '报告'/);
 });
 
+test("script-gen: 英文 go to / tap / input", () => {
+  const result = gen(
+    {
+      steps: [
+        "1. Go to Register page",
+        '2. Tap the "OK" button',
+        "3. Input invalid referral code (A random code)",
+        '4. Tap the "submit" button'
+      ],
+      expected: '2. Display pop-up message box\n3. Display "Referral code does not exist"'
+    },
+    { inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.match(result.yaml, /- tapOn: 'Register'/);
+  assert.match(result.yaml, /- tapOn: 'OK'/);
+  assert.match(result.yaml, /- tapOn: 'referral code'\n- inputText: 'AOSINVALID0001'/);
+  assert.ok(result.warnings.includes("input-value-generated"));
+});
+
+test("script-gen: 英文 next to 生成 rightOf", () => {
+  const result = gen(
+    {
+      steps: ["1. Go to Register page", '2. Tap the information button next to "Referral Code"'],
+      expected: '2. Display "Referral Code"'
+    },
+    { inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.match(result.yaml, /- tapOn:\n    rightOf: 'Referral Code'/);
+  assert.ok(result.warnings.includes("relation-inferred:rightOf"));
+});
+
+test("script-gen: 英文 e.g. 输入值取箭头后的示例", () => {
+  const result = gen(
+    {
+      steps: [
+        "1. Go to Register page",
+        "2. Input incorrect referral code (A code with wrong upper & lower case e.g A23b8C --> a23B8c)"
+      ],
+      expected: '2. Display "Referral code does not exist"'
+    },
+    { inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.match(result.yaml, /- tapOn: 'referral code'\n- inputText: 'a23B8c'/);
+  assert.ok(result.warnings.includes("input-value-example"));
+});
+
+test("script-gen: 英文 check 是 verify，不生成 tap", () => {
+  const result = gen(
+    {
+      steps: ["1. Go to My rewards", "2. Check the coupons in My rewards"],
+      expected: '2. Display "Referral coupon" and "Free coupon"'
+    },
+    { inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.doesNotMatch(result.yaml, /tapOn: 'coupons'/);
+  assert.match(result.yaml, /assertVisible: 'Referral coupon'/);
+});
+
+test("script-gen: 繁体常见动作词", () => {
+  for (const step of ["點一下“登入”", "輕觸“登入”", "選取“登入”"]) {
+    const result = gen({ steps: ["1. 啟動 App", `2. ${step}`], expected: "頁面顯示“首頁”" });
+    assert.equal(result.status, "ready", step);
+    assert.match(result.yaml, /- tapOn: '登入'/);
+  }
+  const filled = gen({
+    steps: ["1. 啟動 App", "2. 在“帳號”填寫 test@example.com"],
+    expected: "頁面顯示“首頁”"
+  });
+  assert.equal(filled.status, "ready");
+  assert.match(filled.yaml, /- tapOn: '帳號'\n- inputText: 'test@example\.com'/);
+  const nav = gen(
+    { steps: ["1. 啟動 App", "2. 前往“設定”頁面"], expected: "頁面顯示“設定”" },
+    { inferNavigationTap: true }
+  );
+  assert.equal(nav.status, "ready");
+  assert.match(nav.yaml, /- tapOn: '設定'/);
+});
+
 test("script-gen: 单字选择动词与筛选项目标", () => {
   const selected = gen({
     steps: ["1. 启动 App", "2. 選 到店自取"],
@@ -267,6 +349,92 @@ test("script-gen: 断言步骤越界显式 unresolved", () => {
   );
   assert.equal(result.status, "unresolved");
   assert.ok(codes(result).includes("assertion-step-out-of-range"));
+});
+
+test("script-gen: bestEffort 未映射步骤不阻断整条用例", () => {
+  const result = gen(
+    {
+      steps: ["1. Go to Register page", "2. Fill in other required fields"],
+      expected: "页面显示“成功”"
+    },
+    { bestEffort: true, inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.partial, true);
+  assert.equal(result.manualSteps.length, 1);
+  assert.equal(result.manualSteps[0].step, 2);
+  assert.match(result.yaml, /# aos:manual step=2/);
+  assert.match(result.yaml, /- takeScreenshot: 'aos-TC-1-step-2'/);
+});
+
+test("script-gen: bestEffort 全部未映射仍生成可运行 launch+screenshot flow", () => {
+  const result = gen(
+    { steps: ["1. Do the needful"], expected: null },
+    { bestEffort: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.partial, true);
+  assert.match(result.yaml, /- launchApp:/);
+  assert.match(result.yaml, /# aos:manual step=1/);
+});
+
+test("script-gen: unresolved 用例即使有 manual 也不标 partial", () => {
+  const result = gen(
+    { steps: ["1. Do the needful"], expected: null, preconditions: ["用户已登录"] },
+    { bestEffort: true }
+  );
+  assert.equal(result.status, "unresolved");
+  assert.equal(result.partial, false);
+});
+
+test("script-gen: bestEffort 不安全工作断言转 manual，避免假绿", () => {
+  const result = generateFlow(
+    {
+      caseId: "TC-UNSAFE",
+      steps: ["1. 启动 App", "2. 点击“关闭”"],
+      expected: null,
+      preconditions: [],
+      assertionDoc: {
+        version: 1,
+        source: "excel.expected",
+        confidence: "high",
+        steps: [{ step: 2, assert: [{ type: "visible", text: "${token}" }] }],
+        manual: [],
+        ambiguous: []
+      }
+    },
+    { appId: APP_ID, platform: "android", bestEffort: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.partial, true);
+  assert.ok(
+    result.manualSteps.some((entry) => entry.code === "assertion-text-invalid"),
+    JSON.stringify(result.manualSteps)
+  );
+});
+
+test("script-gen: bestEffort 断言越界只警告不阻断", () => {
+  const result = generateFlow(
+    {
+      caseId: "TC-OOR",
+      steps: ["1. 启动 App", "2. 点击“关闭”"],
+      expected: null,
+      preconditions: [],
+      assertionDoc: {
+        version: 1,
+        source: "excel.expected",
+        confidence: "high",
+        steps: [{ step: 4, assert: [{ type: "visible", text: "X" }] }],
+        manual: [],
+        ambiguous: []
+      }
+    },
+    { appId: APP_ID, platform: "android", bestEffort: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.partial, true);
+  assert.ok(result.manualSteps.some((entry) => entry.code === "assertion-step-out-of-range"));
+  assert.ok(result.warnings.includes("assertion-step-out-of-range:4"));
 });
 
 test("script-gen: generateScriptSet 统计 ready/unresolved", () => {

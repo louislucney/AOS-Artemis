@@ -439,7 +439,8 @@ const SCHEMA = [
      storage_path TEXT NOT NULL,
      uploaded_by TEXT,
      created_at TEXT NOT NULL,
-     metadata TEXT NOT NULL DEFAULT '{}'
+     metadata TEXT NOT NULL DEFAULT '{}',
+     dedupe_key TEXT
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS web_assets_root_kind_version_idx ON web_assets(root_path, kind, version)`,
   `CREATE INDEX IF NOT EXISTS web_assets_root_kind_sha_idx ON web_assets(root_path, kind, sha256)`,
@@ -532,6 +533,8 @@ const MIGRATIONS = [
   `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_host_idx ON runners(project_id, host_id)`,
   `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
   `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS session_id TEXT`,
+  `ALTER TABLE web_assets ADD COLUMN IF NOT EXISTS dedupe_key TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS web_assets_root_kind_dedupe_idx ON web_assets(root_path, kind, dedupe_key)`,
   `ALTER TABLE excel_writeback_journal ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'confirmed'`,
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_pending_idx
      ON excel_writeback_journal(root_path, asset_id, status, written_at)`,
@@ -3150,7 +3153,26 @@ export class PostgresStore implements ProjectStore {
         : ((await this.getProjectByPath(input.rootPath))?.id ?? null);
     const id = randomUUID();
     const createdAt = new Date().toISOString();
+    const dedupeKey =
+      typeof input.dedupeKey === "string" && input.dedupeKey.trim() !== ""
+        ? input.dedupeKey.trim()
+        : null;
+    const readDedupe = async (): Promise<WebAssetRecord | null> => {
+      if (dedupeKey === null) return null;
+      const existing = await this.pool.query(
+        `SELECT * FROM web_assets
+          WHERE root_path = $1 AND kind = $2 AND dedupe_key = $3
+          LIMIT 1`,
+        [input.rootPath, input.kind, dedupeKey]
+      );
+      return existing.rows[0] === undefined ? null : mapWebAsset(existing.rows[0]);
+    };
+    if (dedupeKey !== null) {
+      const existing = await readDedupe();
+      if (existing !== null) return existing;
+    }
     // version 由 `MAX+1` 分配；(root_path, kind, version) 唯一索引兜底并发；冲突时重试。
+    // 生成物另有 (root_path, kind, dedupe_key) 唯一索引：命中即读回已有行，不堆重复版本。
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await this.withTransaction(async (run) => {
@@ -3163,8 +3185,8 @@ export class PostgresStore implements ProjectStore {
           await run(
             `INSERT INTO web_assets
                (id, project_id, root_path, kind, version, filename, sha256, size,
-                storage_path, uploaded_by, created_at, metadata)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                storage_path, uploaded_by, created_at, metadata, dedupe_key)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
             [
               id,
               projectId,
@@ -3177,14 +3199,18 @@ export class PostgresStore implements ProjectStore {
               input.storagePath,
               input.uploadedBy ?? null,
               createdAt,
-              JSON.stringify(input.metadata ?? {})
+              JSON.stringify(input.metadata ?? {}),
+              dedupeKey
             ]
           );
           const inserted = await run("SELECT * FROM web_assets WHERE id = $1", [id]);
           return mapWebAsset(inserted.rows[0]!);
         });
       } catch (error) {
-        if ((error as { code?: string }).code !== "23505" || attempt >= 2) throw error;
+        if ((error as { code?: string }).code !== "23505") throw error;
+        const existing = await readDedupe();
+        if (existing !== null) return existing;
+        if (attempt >= 2) throw error;
       }
     }
   }

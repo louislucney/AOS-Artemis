@@ -20,6 +20,8 @@ export interface WebJobExecutionCase {
   assertionCount?: number;
   /** 顶层 flow 中可提取文本的 visible/notVisible 断言（用于覆盖 soft text 预期）。 */
   assertions?: FlowAssertion[];
+  /** 顶层 flow 中 `# aos:manual` 标记的未映射步骤。 */
+  manualSteps?: Array<{ step: number; reason: string }>;
 }
 
 export interface FlowAssertion {
@@ -147,6 +149,55 @@ async function listTopLevelFlows(dir: string): Promise<string[]> {
     .sort((left, right) => left.localeCompare(right));
 }
 
+interface ManifestCase {
+  caseId: string;
+  module: string | null;
+  flowPath: string | null;
+}
+
+/** Plan 2 manifest 与 flows/ 同级；缺失/损坏时回退旧行为（按文件名 stem 匹配）。 */
+async function readScriptManifest(flowsDir: string): Promise<ManifestCase[] | null> {
+  const manifestPath = path.join(path.dirname(flowsDir), "manifest.json");
+  let raw: string;
+  try {
+    const info = await lstat(manifestPath);
+    if (!info.isFile() || info.size > 16 * 1024 * 1024) return null;
+    raw = await readFile(manifestPath, "utf-8");
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object") return null;
+  const cases = (parsed as { cases?: unknown }).cases;
+  if (!Array.isArray(cases)) return null;
+  const root = path.dirname(flowsDir);
+  const out: ManifestCase[] = [];
+  let hasModuleField = false;
+  for (const entry of cases) {
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if ("module" in record) hasModuleField = true;
+    const caseId = typeof record.caseId === "string" ? record.caseId.trim() : "";
+    if (caseId === "") continue;
+    const module =
+      typeof record.module === "string" && record.module.trim() !== ""
+        ? record.module.trim()
+        : null;
+    const flowRaw = typeof record.flow === "string" ? record.flow.trim() : "";
+    const resolved = flowRaw === "" ? null : path.resolve(root, flowRaw);
+    const flowPath =
+      resolved !== null && isInside(flowsDir, resolved) ? resolved : null;
+    out.push({ caseId, module, flowPath });
+  }
+  // 旧 manifest（R11 之前）没有 module 字段：整体回退旧行为，模块过滤显式报不支持。
+  return out.length === 0 || !hasModuleField ? null : out;
+}
+
 const HARD_ASSERTION_LINE = /^\s*-\s*assert(?:Visible|NotVisible|True|Condition)\b/gm;
 const ASSERTION_TEXT_LINE = /^\s*-\s*(assertVisible|assertNotVisible)\s*:\s*(.+?)\s*$/gm;
 
@@ -175,6 +226,18 @@ export function parseFlowAssertions(content: string): FlowAssertion[] {
   return out;
 }
 
+const MANUAL_LINE = /^\s*#\s*aos:manual\s+step=(\d+)\s+reason=([^\n]*)$/gm;
+
+export function parseFlowManualSteps(content: string): Array<{ step: number; reason: string }> {
+  const out: Array<{ step: number; reason: string }> = [];
+  for (const match of content.matchAll(MANUAL_LINE)) {
+    const step = Number(match[1]);
+    if (!Number.isInteger(step) || step < 1 || out.length >= 200) continue;
+    out.push({ step, reason: (match[2] ?? "").trim().slice(0, 200) });
+  }
+  return out;
+}
+
 const RUN_FLOW_LINE = /^\s*-\s*runFlow\s*:\s*(.+?)\s*$/gm;
 const MAX_RUN_FLOW_DEPTH = 4;
 
@@ -195,20 +258,25 @@ async function collectFlowAssertions(
   flowsDir: string,
   seen: Set<string>,
   depth: number
-): Promise<{ count: number; assertions: FlowAssertion[] }> {
+): Promise<{
+  count: number;
+  assertions: FlowAssertion[];
+  manualSteps: Array<{ step: number; reason: string }>;
+}> {
   const resolved = path.resolve(file);
   if (depth > MAX_RUN_FLOW_DEPTH || seen.has(resolved) || !isInside(flowsDir, resolved)) {
-    return { count: 0, assertions: [] };
+    return { count: 0, assertions: [], manualSteps: [] };
   }
   seen.add(resolved);
   let content: string;
   try {
     content = await readFile(resolved, "utf-8");
   } catch {
-    return { count: 0, assertions: [] };
+    return { count: 0, assertions: [], manualSteps: [] };
   }
   let count = countHardAssertions(content);
   const assertions = parseFlowAssertions(content);
+  const manualSteps = parseFlowManualSteps(content);
   for (const match of content.matchAll(RUN_FLOW_LINE)) {
     const relative = runFlowPath(match[1] ?? "");
     if (relative === null) continue;
@@ -222,8 +290,14 @@ async function collectFlowAssertions(
         assertions.push(assertion);
       }
     }
+    for (const manual of child.manualSteps) {
+      if (manualSteps.length >= 200) break;
+      if (!manualSteps.some((entry) => entry.step === manual.step && entry.reason === manual.reason)) {
+        manualSteps.push(manual);
+      }
+    }
   }
-  return { count, assertions };
+  return { count, assertions, manualSteps };
 }
 
 function decodeCharacterEntities(text: string): string {
@@ -361,18 +435,21 @@ function aggregate(cases: WebJobExecutionCase[]): WebJobExecutionResult["status"
 function gatherScreenshots(
   files: string[],
   root: string,
-  cases: WebJobExecutionCase[]
+  cases: WebJobExecutionCase[],
+  stemByCaseId: Map<string, string> = new Map()
 ): void {
   const assigned = new Set<string>();
   for (const entry of cases) {
-    const needle = entry.caseId.toLowerCase();
+    const needles = [entry.caseId, stemByCaseId.get(entry.caseId)]
+      .filter((value): value is string => typeof value === "string" && value !== "")
+      .map((value) => value.toLowerCase());
     const matches: string[] = [];
     for (const file of files) {
       if (matches.length >= MAX_SCREENSHOTS_PER_CASE) break;
       if (assigned.has(file)) continue;
       if (!IMAGE_RE.test(file)) continue;
       const relative = path.relative(root, file).toLowerCase();
-      if (!relative.includes(needle)) continue;
+      if (!needles.some((needle) => relative.includes(needle))) continue;
       assigned.add(file);
       matches.push(file);
     }
@@ -404,23 +481,51 @@ export async function executeWebJob(
   }
 
   const caseFilter = input.jobSpec.caseFilter;
-  if (caseFilter.modules.length > 0) {
-    return resultAt(startedAtMs, "error", [], "case-filter-modules-unsupported");
-  }
   const allFlowFiles = await listTopLevelFlows(flowsDir);
   if (allFlowFiles.length === 0) {
     return resultAt(startedAtMs, "error", [], "no-flow-files");
   }
+  const manifestCases = await readScriptManifest(flowsDir);
   const wantedCaseIds = new Set(
     caseFilter.caseIds.map((caseId) => caseId.trim()).filter((caseId) => caseId !== "")
   );
-  const flowFiles =
-    wantedCaseIds.size === 0
-      ? allFlowFiles
-      : allFlowFiles.filter((file) => wantedCaseIds.has(path.basename(file, path.extname(file))));
+  const wantedModules = new Set(
+    caseFilter.modules.map((module) => module.trim()).filter((module) => module !== "")
+  );
+  const hasFilters = wantedCaseIds.size > 0 || wantedModules.size > 0;
+  let flowFiles: string[];
+  if (manifestCases !== null) {
+    const wantedFlows = new Set<string>();
+    for (const entry of manifestCases) {
+      if (wantedCaseIds.size > 0 && !wantedCaseIds.has(entry.caseId)) continue;
+      if (
+        wantedModules.size > 0 &&
+        (entry.module === null || !wantedModules.has(entry.module))
+      ) {
+        continue;
+      }
+      if (entry.flowPath !== null) wantedFlows.add(entry.flowPath);
+    }
+    flowFiles = hasFilters
+      ? allFlowFiles.filter((file) => wantedFlows.has(path.resolve(file)))
+      : allFlowFiles;
+  } else {
+    if (wantedModules.size > 0) {
+      return resultAt(startedAtMs, "error", [], "case-filter-modules-unsupported");
+    }
+    flowFiles =
+      wantedCaseIds.size === 0
+        ? allFlowFiles
+        : allFlowFiles.filter((file) =>
+            wantedCaseIds.has(path.basename(file, path.extname(file)))
+          );
+  }
   if (flowFiles.length === 0) {
     return resultAt(startedAtMs, "error", [], "case-filter-no-match");
   }
+  const execTargets = hasFilters
+    ? flowFiles.map((file) => path.resolve(file))
+    : [`${flowsDir}${path.sep}`];
 
   const flowByStem = new Map<string, string>();
   const duplicateFlows: string[] = [];
@@ -436,15 +541,27 @@ export async function executeWebJob(
   if (flowByStem.size === 0) {
     return resultAt(startedAtMs, "error", [], "no-flow-files");
   }
+  const manifestByFlow = new Map<string, ManifestCase>();
+  for (const entry of manifestCases ?? []) {
+    if (entry.flowPath !== null) manifestByFlow.set(entry.flowPath, entry);
+  }
+  const caseIdByStem = new Map<string, string>();
+  for (const [stem, file] of flowByStem) {
+    const entry = manifestByFlow.get(path.resolve(file));
+    if (entry !== undefined) caseIdByStem.set(stem, entry.caseId);
+  }
+  const publicCaseId = (stem: string): string => caseIdByStem.get(stem) ?? stem;
   const stems = [...flowByStem.keys()].sort(
     (left, right) => right.length - left.length || left.localeCompare(right)
   );
   const assertionCounts = new Map<string, number>();
   const flowAssertions = new Map<string, FlowAssertion[]>();
+  const flowManualSteps = new Map<string, Array<{ step: number; reason: string }>>();
   for (const [stem, file] of flowByStem) {
     const collected = await collectFlowAssertions(file, flowsDir, new Set(), 0);
     assertionCounts.set(stem, collected.count);
     flowAssertions.set(stem, collected.assertions);
+    flowManualSteps.set(stem, collected.manualSteps);
   }
 
   const junitPath = path.join(jobDir, "junit.xml");
@@ -468,7 +585,7 @@ export async function executeWebJob(
         junitPath,
         "--debug-output",
         debugDir,
-        `${flowsDir}${path.sep}`
+        ...execTargets
       ],
       { timeoutMs, env: input.env }
     );
@@ -514,6 +631,7 @@ export async function executeWebJob(
   const cases: WebJobExecutionCase[] = [];
   const warnings: string[] = [];
   const usedStems = new Set<string>();
+  const stemByCaseId = new Map<string, string>();
 
   rawCases.forEach((raw, index) => {
     const matched = matchesStem(raw, stems);
@@ -535,7 +653,7 @@ export async function executeWebJob(
     if (usedStems.has(matched)) {
       warnings.push(`duplicate-testcase:${matched}`);
       cases.push({
-        caseId: `duplicate:${matched}#${index + 1}`,
+        caseId: `duplicate:${publicCaseId(matched)}#${index + 1}`,
         name,
         status: "ERROR",
         durationMs: raw.durationMs,
@@ -544,8 +662,10 @@ export async function executeWebJob(
       return;
     }
     usedStems.add(matched);
+    const outputCaseId = publicCaseId(matched);
+    stemByCaseId.set(outputCaseId, matched);
     const entry: WebJobExecutionCase = {
-      caseId: matched,
+      caseId: outputCaseId,
       name,
       status: raw.status,
       durationMs: raw.durationMs,
@@ -555,6 +675,10 @@ export async function executeWebJob(
     if (extractedAssertions !== undefined && extractedAssertions.length > 0) {
       entry.assertions = extractedAssertions;
     }
+    const extractedManualSteps = flowManualSteps.get(matched);
+    if (extractedManualSteps !== undefined && extractedManualSteps.length > 0) {
+      entry.manualSteps = extractedManualSteps;
+    }
     if (raw.failureReason !== undefined) entry.failureReason = raw.failureReason;
     cases.push(entry);
   });
@@ -562,7 +686,7 @@ export async function executeWebJob(
   for (const stem of duplicateFlows) {
     warnings.push(`duplicate-flow:${stem}`);
     cases.push({
-      caseId: `duplicate:${stem}#flow`,
+      caseId: `duplicate:${publicCaseId(stem)}#flow`,
       name: stem,
       status: "ERROR",
       durationMs: 0,
@@ -574,7 +698,7 @@ export async function executeWebJob(
     if (usedStems.has(stem)) continue;
     warnings.push(`flow-not-in-junit:${stem}`);
     cases.push({
-      caseId: stem,
+      caseId: publicCaseId(stem),
       name: stem,
       status: "ERROR",
       durationMs: 0,
@@ -583,7 +707,7 @@ export async function executeWebJob(
   }
 
   const debugFiles = await walkFiles(debugDir);
-  gatherScreenshots(debugFiles, jobDir, cases);
+  gatherScreenshots(debugFiles, jobDir, cases, stemByCaseId);
   const logPath =
     debugFiles.find((file) => /maestro\.log$/i.test(file)) ??
     debugFiles.find((file) => /\.log$/i.test(file));

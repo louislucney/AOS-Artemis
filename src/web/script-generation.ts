@@ -5,6 +5,7 @@ import type { ProjectStore, WebAssetRecord } from "../db/types.js";
 import { errorMessage } from "../util.js";
 import { findExcelMapping } from "./excel-mapping.js";
 import {
+  ExcelMappingError,
   parseExcel,
   readExcelHeaders,
   semanticFingerprint,
@@ -17,7 +18,13 @@ import {
   type ScriptSetBundle,
   type ScriptSetManifest
 } from "./script-set.js";
-import { isValidAppId, type PreconditionMode, type ScriptPlatform } from "./script-gen.js";
+import {
+  ScriptGenerationTimeoutError,
+  isValidAppId,
+  type PreconditionMode,
+  type ScriptPlatform
+} from "./script-gen.js";
+import type { NormalizeCaseInput, NormalizedStep, StepNormalizer } from "./step-normalizer.js";
 
 export type ScriptGenerationErrorCode =
   | "project-not-found"
@@ -29,7 +36,8 @@ export type ScriptGenerationErrorCode =
   | "excel-unreadable"
   | "no-cases"
   | "app-id-missing"
-  | "app-id-invalid";
+  | "app-id-invalid"
+  | "llm-not-configured";
 
 export class ScriptGenerationError extends Error {
   readonly code: ScriptGenerationErrorCode;
@@ -49,9 +57,15 @@ export interface GenerateScriptSetInput {
   platform: ScriptPlatform;
   /** 缺省用 Web 项目的 appPackage。 */
   appId?: string | null;
-  preconditionMode?: PreconditionMode;
+  preconditionMode?: PreconditionMode | "auto";
   inferNavigationTap?: boolean;
   includeSoftText?: boolean;
+  /** Manual-document mode: unmapped steps become screenshots/manual markers. */
+  bestEffort?: boolean;
+  /** Optional LLM normalizer; failures fall back to rule parsing per case. */
+  normalizer?: StepNormalizer;
+  /** 墙钟预算（ms）；缺省读 AOS_WEB_SCRIPT_GEN_TIMEOUT_MS，未设置则 0（不设墙钟）。 */
+  timeoutMs?: number;
   dryRun?: boolean;
   uploadedBy?: string | null;
 }
@@ -62,7 +76,12 @@ export interface GenerateScriptSetResult {
   platform: ScriptPlatform;
   manifest: ScriptSetManifest;
   ready: number;
+  partial: number;
   unresolved: number;
+  runnable: number;
+  normalizer: "llm" | "rules";
+  llmCases: number;
+  normalizerWarnings: string[];
   asset: WebAssetRecord | null;
   created: boolean;
   bundle: ScriptSetBundle;
@@ -97,6 +116,60 @@ async function loadAsset(
     );
   }
   return asset;
+}
+
+const NORMALIZE_CONCURRENCY = 4;
+export const DEFAULT_SCRIPT_GEN_TIMEOUT_MS = 30_000;
+
+function resolveGenerationTimeoutMs(explicit: number | undefined): number {
+  if (explicit !== undefined && Number.isFinite(explicit) && explicit >= 0) {
+    return Math.floor(explicit);
+  }
+  const raw = Number.parseInt(process.env.AOS_WEB_SCRIPT_GEN_TIMEOUT_MS ?? "", 10);
+  if (Number.isFinite(raw) && raw >= 0) return raw;
+  // 手工生成（尤其 LLM 规范化）默认不设墙钟；下发路径由 createWebJob 显式传 30s。
+  return 0;
+}
+
+async function normalizeCases(
+  normalizer: StepNormalizer | undefined,
+  cases: Array<Pick<NormalizeCaseInput, "caseId" | "name" | "steps" | "expected" | "preconditions">>,
+  platform: ScriptPlatform,
+  appId: string
+): Promise<{ normalized: Map<string, NormalizedStep[]>; warnings: string[] }> {
+  const normalized = new Map<string, NormalizedStep[]>();
+  if (normalizer === undefined) return { normalized, warnings: [] };
+  const queue = [...cases];
+  const warnings: string[] = [];
+  const workers = Array.from(
+    { length: Math.min(NORMALIZE_CONCURRENCY, queue.length) },
+    async () => {
+      for (;;) {
+        const entry = queue.shift();
+        if (entry === undefined) return;
+        try {
+          const steps = await normalizer.normalize({
+            caseId: entry.caseId,
+            name: entry.name,
+            steps: entry.steps,
+            expected: entry.expected,
+            preconditions: entry.preconditions,
+            platform,
+            appId
+          });
+          if (steps === null) {
+            warnings.push(`llm-normalize-failed:${entry.caseId}`);
+            continue;
+          }
+          normalized.set(entry.caseId, steps);
+        } catch {
+          warnings.push(`llm-normalize-failed:${entry.caseId}`);
+        }
+      }
+    }
+  );
+  await Promise.all(workers);
+  return { normalized, warnings };
 }
 
 export async function generateScriptSetForProject(
@@ -148,9 +221,13 @@ export async function generateScriptSetForProject(
       ...(format === undefined ? {} : { format })
     });
     if (parsed.cases.length === 0) {
+      const rejected = parsed.rejected
+        .slice(0, 5)
+        .map((entry) => `第 ${entry.row} 行 ${entry.reason}`)
+        .join("；");
       throw new ScriptGenerationError(
         "no-cases",
-        `Excel 没有可用用例（拒绝 ${parsed.rejected.length} 行）`
+        `Excel 没有可用用例（拒绝 ${parsed.rejected.length} 行${rejected === "" ? "" : `：${rejected}`}）`
       );
     }
 
@@ -168,17 +245,38 @@ export async function generateScriptSetForProject(
       );
     }
 
-    const bundle = buildScriptSetBundle({
-      appId,
-      platform: input.platform,
-      sourceExcelAssetId: excel.id,
-      packageAssetId: pkg.id,
-      cases: parsed.cases.map((entry) => ({
+    const normalized = await normalizeCases(
+      input.normalizer,
+      parsed.cases.map((entry) => ({
         caseId: entry.caseId,
+        name: entry.name,
         steps: entry.steps,
         expected: entry.expected,
         preconditions: entry.preconditions
       })),
+      input.platform,
+      appId
+    );
+    const timeoutMs = resolveGenerationTimeoutMs(input.timeoutMs);
+    const deadlineMs =
+      timeoutMs === 0 ? undefined : Date.now() + timeoutMs;
+    const bundle = buildScriptSetBundle({
+      appId,
+      platform: input.platform,
+      ...(deadlineMs === undefined ? {} : { deadlineMs }),
+      sourceExcelAssetId: excel.id,
+      packageAssetId: pkg.id,
+      cases: parsed.cases.map((entry) => {
+        const normalizedSteps = normalized.normalized.get(entry.caseId);
+        return {
+          caseId: entry.caseId,
+          module: entry.module,
+          steps: entry.steps,
+          expected: entry.expected,
+          preconditions: entry.preconditions,
+          ...(normalizedSteps === undefined ? {} : { normalizedSteps })
+        };
+      }),
       ...(input.preconditionMode === undefined
         ? {}
         : { preconditionMode: input.preconditionMode }),
@@ -187,7 +285,11 @@ export async function generateScriptSetForProject(
         : { inferNavigationTap: input.inferNavigationTap }),
       ...(input.includeSoftText === undefined
         ? {}
-        : { includeSoftText: input.includeSoftText })
+        : { includeSoftText: input.includeSoftText }),
+      ...(input.bestEffort === undefined ? {} : { bestEffort: input.bestEffort }),
+      normalizer: input.normalizer === undefined ? "rules" : "llm",
+      llmCases: normalized.normalized.size,
+      normalizerWarnings: normalized.warnings
     });
 
     if (input.dryRun === true) {
@@ -197,7 +299,12 @@ export async function generateScriptSetForProject(
         platform: input.platform,
         manifest: bundle.manifest,
         ready: bundle.ready,
+        partial: bundle.partial,
         unresolved: bundle.unresolved,
+        runnable: bundle.runnable,
+        normalizer: input.normalizer === undefined ? "rules" : "llm",
+        llmCases: normalized.normalized.size,
+        normalizerWarnings: normalized.warnings,
         asset: null,
         created: false,
         bundle
@@ -216,18 +323,30 @@ export async function generateScriptSetForProject(
       platform: input.platform,
       manifest: bundle.manifest,
       ready: bundle.ready,
+      partial: bundle.partial,
       unresolved: bundle.unresolved,
+      runnable: bundle.runnable,
+      normalizer: input.normalizer === undefined ? "rules" : "llm",
+      llmCases: normalized.normalized.size,
+      normalizerWarnings: normalized.warnings,
       asset: stored.asset,
       created: stored.created,
       bundle
     };
   } catch (error) {
-    if (error instanceof ScriptGenerationError || error instanceof ScriptSetStoreError) {
+    if (
+      error instanceof ScriptGenerationError ||
+      error instanceof ScriptSetStoreError ||
+      error instanceof ScriptGenerationTimeoutError
+    ) {
       throw error;
     }
-    throw new ScriptGenerationError(
-      "excel-unreadable",
-      `解析 Excel 失败：${errorMessage(error)}`
-    );
+    if (error instanceof ExcelMappingError) {
+      throw new ScriptGenerationError(
+        "excel-unreadable",
+        `解析 Excel 失败：${errorMessage(error)}`
+      );
+    }
+    throw error;
   }
 }

@@ -246,7 +246,7 @@ test("选中主机无项目：提示该主机尚未登记项目并禁用提交",
   assert.match(html, /id="dispatch-submit"[^>]*disabled/);
 });
 
-test("主机切换导航丢弃 project；缺 project 时选该主机最近项目", async () => {
+test("主机切换导航保留 project；缺 project 时列出项目不猜", async () => {
   const { store, dir } = await makeHarness();
   const macRoot = path.join(dir, "mac-app");
   const winOld = path.join(dir, "win-old");
@@ -277,14 +277,36 @@ test("主机切换导航丢弃 project；缺 project 时选该主机最近项目
   );
   assert.equal(res.status, 200);
   const html = String(res.body);
-  assert.ok(html.includes(`<option value="${winNew}" selected>win-new</option>`));
-  assert.ok(!html.includes(`value="${macRoot}"`));
+  assert.ok(html.includes(`<option value="${winNew}">win-new</option>`));
+  assert.ok(html.includes(`<option value="${winOld}">win-old</option>`), "列出该主机全部项目");
+  assert.ok(!html.includes(`<option value="${winNew}" selected>`), "不自动猜最近项目");
+  assert.match(html, /<option value="" selected>（选择项目）<\/option>/, "项目保持未选");
+  assert.match(html, /请先选择项目/, "给出选项目提示");
+  assert.match(html, /id="dispatch-submit"[^>]*disabled/, "未选项目禁用确认");
+  assert.ok(!html.includes(`value="${macRoot}"`), "不串其他主机项目");
 
   const hostNav = html.slice(html.indexOf('id="dispatch-host-nav"'));
   const hostChunk = hostNav.slice(0, hostNav.indexOf("</script>"));
   assert.match(hostChunk, /params\.set\('section','dispatch'\)/);
   assert.match(hostChunk, /params\.set\('host',select\.value\)/);
-  assert.ok(!hostChunk.includes("project"), "切换主机时丢弃 project");
+  assert.match(hostChunk, /params\.set\('project',project\.value\)/, "切换主机时保留显式 project");
+
+  const switched = await handlePanelRequest(
+    new URL(
+      `http://x/panel?section=dispatch&host=h-win&project=${encodeURIComponent(macRoot)}`
+    ),
+    makeDeps(store, { workspaceRoot: dir })
+  );
+  assert.equal(switched.status, 200);
+  const switchedHtml = String(switched.body);
+  assert.ok(
+    switchedHtml.includes(`<option value="${macRoot}" selected>mac-app（当前项目）</option>`),
+    "保留显式项目，不静默清空"
+  );
+  assert.match(switchedHtml, /主机「h-win」未登记项目/);
+  assert.match(switchedHtml, /id="dispatch-submit"[^>]*disabled/);
+  assert.ok(switchedHtml.includes(`<option value="${winNew}">win-new</option>`));
+  assert.ok(switchedHtml.includes(`<option value="${winOld}">win-old</option>`));
 });
 
 test("仅按主机进入且该主机无项目：空态而非 404", async () => {
@@ -304,8 +326,13 @@ test("仅按主机进入且该主机无项目：空态而非 404", async () => {
   assert.equal(res.status, 200);
   const html = String(res.body);
   assert.match(html, /该主机尚未登记项目/);
+  assert.match(html, /不需要登记项目/, "说明网页测试不需要项目登记");
+  assert.match(html, /套件回归没有可用用例集/, "来源空态解释原因");
+  assert.match(html, /去网页测试/, "来源空态给出网页测试出口");
+  assert.match(html, /<select name="ref"[^>]*disabled/, "无项目时禁用用例集选择");
   assert.match(html, /<select name="project" aria-label="项目">/);
   assert.match(html, /id="dispatch-submit"[^>]*disabled/);
+  assert.match(html, /section=jobs&amp;host=h-empty/, "网页测试链接保留主机");
 });
 
 test("legacy NULL-host 项目不挂到任何主机的项目下拉", async () => {

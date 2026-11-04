@@ -52,6 +52,8 @@ export interface WebResultCase {
   manualStatus?: WebResultManualOverride;
   /** runner 从顶层 flow 提取的 visible/notVisible 断言文本（soft text 覆盖证据）。 */
   assertions?: Array<{ type: "visible" | "notVisible"; text: string }>;
+  /** runner 从顶层 flow 提取的 `# aos:manual` 未映射步骤；带 manual 的 PASS 必须降级 UNVERIFIED。 */
+  manualSteps?: Array<{ step: number; reason: string }>;
 }
 
 export type WebResultManualStatus = "NOT_IMPL" | "BLOCKED";
@@ -426,6 +428,36 @@ function parseCase(raw: unknown, index: number): WebResultCase {
       assertions.push({ type: entry.type, text: textValue });
     }
     parsed.assertions = assertions;
+  }
+  if (raw.manualSteps !== undefined) {
+    if (!Array.isArray(raw.manualSteps) || raw.manualSteps.length > 200) {
+      throw new WebResultError(
+        "invalid-result",
+        `execution.cases[${index}].manualSteps 必须是最多 200 条的数组`
+      );
+    }
+    const manualSteps: Array<{ step: number; reason: string }> = [];
+    for (const [manualIndex, entry] of raw.manualSteps.entries()) {
+      if (!isRecord(entry)) {
+        throw new WebResultError(
+          "invalid-result",
+          `execution.cases[${index}].manualSteps[${manualIndex}] 不是对象`
+        );
+      }
+      const step = entry.step;
+      if (typeof step !== "number" || !Number.isInteger(step) || step < 1) {
+        throw new WebResultError(
+          "invalid-result",
+          `execution.cases[${index}].manualSteps[${manualIndex}].step 必须是正整数`
+        );
+      }
+      const reason = optionalText(
+        entry.reason,
+        `execution.cases[${index}].manualSteps[${manualIndex}].reason`
+      );
+      manualSteps.push({ step, reason: reason.slice(0, 200) });
+    }
+    parsed.manualSteps = manualSteps;
   }
   return parsed;
 }
@@ -1156,12 +1188,14 @@ async function ingestUnderJobLock(
   const suppressPerCaseResult =
     payload.execution.status === "error" ||
     (payload.execution.status === "failed" && runnerCounts.result !== "failed");
+  const manualCaseIds = await loadScriptManualCaseIds(input.store, rootPath, spec.scriptSetId);
   const derived = deriveCaseVerdicts({
     payloadCases: payload.execution.cases,
     sourceCases: source?.cases ?? null,
     assertions: source === null ? null : assertions,
     caseFilter: spec.caseFilter,
-    suppressPerCaseResult
+    suppressPerCaseResult,
+    ...(manualCaseIds === null ? {} : { manualCaseIds })
   });
   const finalCases = derived.cases;
   warnings.push(...derived.warnings);
@@ -1478,6 +1512,29 @@ async function ingestUnderJobLock(
  * 幂等键＝归一化结果的 sha256：同 job 同内容重复上传返回既有摘要，不再写 journal。
  * 整个流程持有 per-job 文件锁（`.artemis/web/results/<jobId>.lock`），并发上传只写一次。
  */
+async function loadScriptManualCaseIds(
+  store: ProjectStore,
+  rootPath: string,
+  scriptSetId: string | null
+): Promise<Set<string> | null> {
+  if (scriptSetId === null || scriptSetId.trim() === "") return null;
+  let asset: WebAssetRecord | null;
+  try {
+    asset = await store.getWebAsset(rootPath, scriptSetId);
+  } catch {
+    return null;
+  }
+  const manualCases = asset?.metadata?.manualCases;
+  if (!Array.isArray(manualCases)) return null;
+  const ids = new Set<string>();
+  for (const entry of manualCases) {
+    if (!isRecord(entry)) continue;
+    const caseId = typeof entry.caseId === "string" ? entry.caseId.trim() : "";
+    if (caseId !== "") ids.add(caseId);
+  }
+  return ids.size > 0 ? ids : null;
+}
+
 export async function ingestWebJobResult(
   input: IngestWebJobResultInput
 ): Promise<WebJobIngestSummary> {

@@ -59,6 +59,24 @@ test("verdicts：PASS + 高置信断言文档 + assertionCount>0 → PASS", () =
   assert.deepEqual(result.warnings, []);
 });
 
+test("verdicts：PASS + manualSteps → UNVERIFIED manual-step", () => {
+  const source = [sourceCase("TC-1")];
+  const result = derive({
+    payloadCases: [
+      passCase("TC-1", {
+        assertionCount: 1,
+        manualSteps: [{ step: 2, reason: "step-unparsed" }]
+      })
+    ],
+    sourceCases: source,
+    assertions: assertionsFor(source)
+  });
+  assert.equal(result.cases[0].status, "UNVERIFIED");
+  assert.equal(result.reasons[0].reason, "manual-step");
+  assert.match(result.cases[0].failureReason, /未映射/);
+  assert.equal(result.unverified, 1);
+});
+
 test("verdicts：PASS + 仅人工断言 → UNVERIFIED manual-or-ambiguous", () => {
   const source = [sourceCase("TC-1", { expected: "1. 后台排序结果正确" })];
   const result = derive({

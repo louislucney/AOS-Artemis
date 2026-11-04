@@ -75,6 +75,63 @@ test("script-generation: dry-run 只出 manifest，不写 scripts 资产", async
   assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 0);
 });
 
+test("script-generation: LLM normalizer 输出受控动作并记录 manifest", async (t) => {
+  const { store, rootPath, excel, pkg } = await setup(t);
+  const normalizer = {
+    async normalize() {
+      return [
+        { step: 1, actions: [{ type: "launch" }], confidence: "high" },
+        {
+          step: 2,
+          actions: [{ type: "tap", target: { text: "登录", relation: "rightOf" } }],
+          confidence: "high"
+        }
+      ];
+    }
+  };
+  const result = await generateScriptSetForProject({
+    store,
+    rootPath,
+    excelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    platform: "android",
+    normalizer,
+    dryRun: true
+  });
+  assert.equal(result.normalizer, "llm");
+  assert.equal(result.llmCases, 1);
+  assert.equal(result.manifest.normalizer, "llm");
+  assert.equal(result.manifest.llmCases, 1);
+  const flow = result.bundle.files.find((entry) => entry.path.endsWith(".yaml"));
+  assert.ok(flow);
+  assert.match(flow.content, /- tapOn:\n    rightOf: '登录'/);
+});
+
+test("script-generation: normalizer 失败回退规则并记 warning", async (t) => {
+  const { store, rootPath, excel, pkg } = await setup(t);
+  const normalizer = {
+    async normalize() {
+      throw new Error("boom");
+    }
+  };
+  const result = await generateScriptSetForProject({
+    store,
+    rootPath,
+    excelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    platform: "android",
+    normalizer,
+    dryRun: true
+  });
+  assert.equal(result.normalizer, "llm");
+  assert.equal(result.llmCases, 0);
+  assert.ok(result.normalizerWarnings.includes("llm-normalize-failed:TC-1"));
+  assert.equal(result.ready, 1);
+  const flow = result.bundle.files.find((entry) => entry.path.endsWith(".yaml"));
+  assert.ok(flow);
+  assert.match(flow.content, /- tapOn: '登录'/);
+});
+
 test("script-generation: 写入 scripts 资产并幂等复用", async (t) => {
   const { store, rootPath, excel, pkg } = await setup(t);
   const first = await generateScriptSetForProject({
@@ -173,6 +230,45 @@ test("script-generation: strict 前置条件未就绪时 0 ready", async (t) => 
   assert.equal(assumed.ready, 1);
 });
 
+test("script-generation: auto 前置条件在 bestEffort 下 assume-prepared", async (t) => {
+  const { store, rootPath, excel, pkg } = await setup(t, {
+    cases: [["TC-1", "1. 启动 App\n2. 点击“登录”", "页面显示“成功”", "CMS: active"]]
+  });
+  const result = await generateScriptSetForProject({
+    store,
+    rootPath,
+    excelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    platform: "android",
+    preconditionMode: "auto",
+    bestEffort: true,
+    dryRun: true
+  });
+  assert.equal(result.manifest.preconditionMode, "assume-prepared");
+  const flow = result.bundle.files.find((entry) => entry.path.endsWith(".yaml"));
+  assert.ok(flow);
+  assert.match(flow.content, /clearState: false/);
+  assert.match(flow.content, /stopApp: false/);
+});
+
+test("script-generation: auto 且非 bestEffort 仍 strict", async (t) => {
+  const { store, rootPath, excel, pkg } = await setup(t, {
+    cases: [["TC-1", "1. 启动 App\n2. 点击“登录”", "页面显示“成功”", "CMS: active"]]
+  });
+  const result = await generateScriptSetForProject({
+    store,
+    rootPath,
+    excelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    platform: "android",
+    preconditionMode: "auto",
+    dryRun: true
+  });
+  assert.equal(result.manifest.preconditionMode, "strict");
+  assert.equal(result.ready, 0);
+  assert.equal(result.unresolved, 1);
+});
+
 test("web CLI: dry-run JSON 输出 manifest 与计数", async (t) => {
   const { store, rootPath, excel, pkg } = await setup(t);
   const lines = [];
@@ -201,6 +297,52 @@ test("web CLI: dry-run JSON 输出 manifest 与计数", async (t) => {
   assert.equal(output.ready, 1);
   assert.equal(output.asset, null);
   assert.equal(output.manifest.appId, "com.example.app");
+});
+
+test("web CLI: --best-effort + --precondition-mode auto", async (t) => {
+  const { store, rootPath, excel, pkg } = await setup(t, {
+    cases: [
+      [
+        "TC-1",
+        "1. Go to Register page\n2. Fill in other required fields",
+        "页面显示“成功”",
+        "CMS: active"
+      ]
+    ]
+  });
+  const lines = [];
+  const errors = [];
+  const code = await runWebCommand(
+    [
+      "scripts",
+      "generate",
+      "--project",
+      rootPath,
+      "--excel",
+      excel.id,
+      "--package",
+      pkg.id,
+      "--platform",
+      "android",
+      "--best-effort",
+      "--precondition-mode",
+      "auto",
+      "--dry-run",
+      "--json"
+    ],
+    { store, log: (line) => lines.push(line), errorLog: (line) => errors.push(line) }
+  );
+  assert.equal(code, 0, errors.join("\n"));
+  const output = JSON.parse(lines.join("\n"));
+  assert.equal(output.runnable, 1);
+  assert.equal(output.partial, 1);
+  assert.equal(output.manifest.preconditionMode, "assume-prepared");
+  assert.equal(output.manifest.bestEffort, true);
+  assert.deepEqual(
+    output.manifest.cases[0].manualSteps.map((entry) => entry.step),
+    [2],
+    "CLI best-effort 与面板一致，导航步骤应推断点击"
+  );
 });
 
 test("web CLI: 写入资产并支持第二次复用", async (t) => {

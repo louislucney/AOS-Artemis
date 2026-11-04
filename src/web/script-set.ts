@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import type { ProjectStore, WebAssetRecord } from "../db/types.js";
 import { storeWebAsset } from "./assets.js";
+import { withFileLock } from "./lock.js";
 import {
   generateScriptSet,
   type PreconditionMode,
@@ -18,6 +20,7 @@ export const SCRIPT_SET_GENERATOR_VERSION = 1;
 
 export interface ScriptSetCaseSummary {
   caseId: string;
+  module: string | null;
   status: ScriptGenResult["status"];
   flow: string | null;
   assertions: number;
@@ -25,6 +28,8 @@ export interface ScriptSetCaseSummary {
   confidence: ScriptGenResult["confidence"];
   unresolved: ScriptGenUnresolved[];
   warnings: string[];
+  partial: boolean;
+  manualSteps: ScriptGenResult["manualSteps"];
 }
 
 export interface ScriptSetManifest {
@@ -38,11 +43,17 @@ export interface ScriptSetManifest {
   preconditionMode: PreconditionMode;
   inferNavigationTap: boolean;
   includeSoftText: boolean;
+  bestEffort: boolean;
+  normalizer?: "llm" | "rules";
+  llmCases?: number;
+  normalizerWarnings?: string[];
   assertionDocHash: string;
   counts: {
     cases: number;
     ready: number;
+    partial: number;
     unresolved: number;
+    runnable: number;
   };
   cases: ScriptSetCaseSummary[];
 }
@@ -53,10 +64,16 @@ export interface ScriptSetBundleInput {
   sourceExcelAssetId: string;
   packageAssetId: string;
   cases: ScriptGenCaseInput[];
-  preconditionMode?: PreconditionMode;
+  preconditionMode?: PreconditionMode | "auto";
   inferNavigationTap?: boolean;
   includeSoftText?: boolean;
+  bestEffort?: boolean;
+  normalizer?: "llm" | "rules";
+  llmCases?: number;
+  normalizerWarnings?: string[];
   generatorVersion?: number;
+  /** 墙钟预算（epoch ms），透传给 generateScriptSet。 */
+  deadlineMs?: number;
 }
 
 export interface ScriptSetBundle {
@@ -65,7 +82,9 @@ export interface ScriptSetBundle {
   zip: Buffer;
   sha256: string;
   ready: number;
+  partial: number;
   unresolved: number;
+  runnable: number;
 }
 
 export type ScriptSetStoreErrorCode = "invalid-bundle" | "script-set-unusable";
@@ -135,9 +154,20 @@ function metadataFor(bundle: ScriptSetBundle): Record<string, unknown> {
     preconditionMode: bundle.manifest.preconditionMode,
     inferNavigationTap: bundle.manifest.inferNavigationTap,
     includeSoftText: bundle.manifest.includeSoftText,
+    bestEffort: bundle.manifest.bestEffort,
+    normalizer: bundle.manifest.normalizer ?? "rules",
+    llmCases: bundle.manifest.llmCases ?? 0,
+    manualCases: bundle.manifest.cases
+      .filter((entry) => entry.manualSteps.length > 0)
+      .map((entry) => ({
+        caseId: entry.caseId,
+        steps: entry.manualSteps.map((manual) => manual.step)
+      })),
     appId: bundle.manifest.appId,
     ready: bundle.ready,
-    unresolved: bundle.unresolved
+    partial: bundle.partial,
+    unresolved: bundle.unresolved,
+    runnable: bundle.runnable
   };
 }
 
@@ -148,33 +178,44 @@ function sameMetadata(left: Record<string, unknown>, right: Record<string, unkno
 
 export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBundle {
   const generatorVersion = input.generatorVersion ?? SCRIPT_SET_GENERATOR_VERSION;
+  const preconditionMode: PreconditionMode =
+    input.preconditionMode === "auto"
+      ? input.bestEffort === true
+        ? "assume-prepared"
+        : "strict"
+      : input.preconditionMode ?? "strict";
   const generated = generateScriptSet({
     appId: input.appId,
     platform: input.platform,
     cases: input.cases,
     options: {
-      preconditionMode: input.preconditionMode,
+      preconditionMode,
       inferNavigationTap: input.inferNavigationTap,
-      includeSoftText: input.includeSoftText
+      includeSoftText: input.includeSoftText,
+      bestEffort: input.bestEffort,
+      ...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs })
     }
   });
   const used = new Set<string>();
   const files: Array<{ path: string; content: string }> = [];
   const cases: ScriptSetCaseSummary[] = [];
-  for (const entry of generated.cases) {
+  for (const [index, entry] of generated.cases.entries()) {
     const flow = entry.status === "ready" ? allocateFlowPath(entry.caseId, used) : null;
     if (flow !== null && entry.yaml !== null) {
       files.push({ path: flow, content: entry.yaml });
     }
     cases.push({
       caseId: entry.caseId,
+      module: input.cases[index]?.module ?? null,
       status: entry.status,
       flow,
       assertions: entry.assertions,
       assertionTexts: entry.assertionTexts,
       confidence: entry.confidence,
       unresolved: entry.unresolved,
-      warnings: entry.warnings
+      warnings: entry.warnings,
+      partial: entry.partial,
+      manualSteps: entry.manualSteps
     });
   }
   const manifest: ScriptSetManifest = {
@@ -185,14 +226,22 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
     appId: input.appId,
     sourceExcelAssetId: input.sourceExcelAssetId,
     packageAssetId: input.packageAssetId,
-    preconditionMode: input.preconditionMode ?? "strict",
+    preconditionMode,
     inferNavigationTap: input.inferNavigationTap === true,
     includeSoftText: input.includeSoftText === true,
+    bestEffort: input.bestEffort === true,
+    ...(input.normalizer === undefined ? {} : { normalizer: input.normalizer }),
+    ...(input.llmCases === undefined ? {} : { llmCases: input.llmCases }),
+    ...(input.normalizerWarnings === undefined
+      ? {}
+      : { normalizerWarnings: input.normalizerWarnings }),
     assertionDocHash: assertionDocHash(input.cases),
     counts: {
       cases: generated.cases.length,
       ready: generated.ready,
-      unresolved: generated.unresolved
+      partial: generated.partial,
+      unresolved: generated.unresolved,
+      runnable: generated.runnable
     },
     cases
   };
@@ -208,11 +257,20 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
     zip,
     sha256: createHash("sha256").update(zip).digest("hex"),
     ready: generated.ready,
-    unresolved: generated.unresolved
+    partial: generated.partial,
+    unresolved: generated.unresolved,
+    runnable: generated.runnable
   };
 }
 
 export async function storeScriptSet(input: StoreScriptSetInput): Promise<StoreScriptSetResult> {
+  const lockPath = path.join(input.rootPath, ".artemis", "web", "script-sets.lock");
+  return withFileLock(lockPath, () => storeScriptSetLocked(input));
+}
+
+async function storeScriptSetLocked(
+  input: StoreScriptSetInput
+): Promise<StoreScriptSetResult> {
   const sourceExcelAssetId = input.bundle.manifest.sourceExcelAssetId.trim();
   const packageAssetId = input.bundle.manifest.packageAssetId.trim();
   if (sourceExcelAssetId === "" || packageAssetId === "") {
@@ -221,10 +279,35 @@ export async function storeScriptSet(input: StoreScriptSetInput): Promise<StoreS
       "脚本集必须同时绑定 sourceExcelAssetId 与 packageAssetId"
     );
   }
-  if (input.bundle.ready === 0) {
+  const runnable = input.bundle.runnable ?? input.bundle.ready;
+  if (runnable === 0) {
+    const reasons = new Map<string, number>();
+    for (const entry of input.bundle.manifest.cases) {
+      for (const unresolved of entry.unresolved) {
+        reasons.set(unresolved.code, (reasons.get(unresolved.code) ?? 0) + 1);
+      }
+    }
+    const summary = [...reasons.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 6)
+      .map(([code, count]) => `${code}×${count}`)
+      .join("、");
+    const details = input.bundle.manifest.cases
+      .filter((entry) => entry.unresolved.length > 0)
+      .slice(0, 20)
+      .map(
+        (entry) =>
+          `${entry.caseId}:${entry.unresolved
+            .slice(0, 3)
+            .map((unresolved) => unresolved.code)
+            .join("/")}`
+      )
+      .join("；");
     throw new ScriptSetStoreError(
       "script-set-unusable",
-      `没有 ready 用例（unresolved=${input.bundle.unresolved}），拒绝写脚本集`
+      `没有可执行用例（ready=${input.bundle.ready} / partial=${input.bundle.partial ?? 0} / unresolved=${input.bundle.unresolved}${
+        summary === "" ? "" : `；主要原因：${summary}`
+      }${details === "" ? "" : `；逐例：${details}`}），拒绝写脚本集。可勾选「仅预览」查看逐条原因；如需保留未映射步骤，可启用「尽力生成」`
     );
   }
   const metadata = metadataFor(input.bundle);
@@ -241,7 +324,8 @@ export async function storeScriptSet(input: StoreScriptSetInput): Promise<StoreS
     filename: `aos-scripts-${input.bundle.manifest.platform}-${input.bundle.sha256.slice(0, 12)}.zip`,
     buffer: input.bundle.zip,
     metadata,
-    uploadedBy: input.uploadedBy ?? null
+    uploadedBy: input.uploadedBy ?? null,
+    dedupeKey: input.bundle.sha256
   });
   return { asset, created: true };
 }

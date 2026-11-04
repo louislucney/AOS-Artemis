@@ -2,6 +2,7 @@
 
 > 日期：2026-10-29
 > 状态：**已评审；Phase 0/1/2/3/4 完成；Phase 5 自动化集成通过，真机验收待连接设备/可安装包**
+> 2026-11-04 更新：**2B Phase 1 已落地**（受控 LLM 步骤规范化 + bestEffort 尽力生成 + runner `manualSteps` / 中心 `UNVERIFIED` 降级）；设备上的 LLM 观察执行器/testID 发现仍未实现。详见 `DESIGN.md` §13.295。
 > 范围：Web 项目（Excel/CSV 用例源 + Maestro 脚本执行）；不包含 iOS 真机 LLM 执行、发现执行、计费
 > 关联：`docs/superpowers/specs/2026-10-28-web-project-test-platform-design.md` §5.3、§6；`DESIGN.md` §13.266–§13.268、§13.276
 
@@ -623,8 +624,9 @@ tags:
 
 ### Q6. LLM 现在做吗？
 
-- **建议：不做。** 2A 先把确定性链路跑通，拿到 unresolved 原因分布；2B 只对规则解析不了的步骤调用 LLM，并且输出仍走同一套白名单/校验。
-- 理由：当前没有 token 计费表、没有 LLM 执行证据、没有非确定性结果的可审计方案；先做 LLM 会把风险和成本前置。
+- **2A 结论：不做。** 2A 先把确定性链路跑通，拿到 unresolved 原因分布；2B 只对规则解析不了的步骤调用 LLM，并且输出仍走同一套白名单/校验。
+- **2026-11-04 更新：2B Phase 1 已落地。** LLM 只做“步骤 → 受控 JSON AST”的规范化，不直接写 YAML；标签必须在原文或系统标签白名单中，发明标签直接拒绝并回退规则；失败/超时记 `llm-normalize-failed:<caseId>`。同时引入 `bestEffort`：未识别步骤写 manual 标记+截图、继续执行其余步骤，strict 行为不变。设备上的 LLM 观察执行器/testID 发现仍后置。
+- 理由（2A 时）：当时没有 token 计费表、没有 LLM 执行证据、没有非确定性结果的可审计方案；先做 LLM 会把风险和成本前置。Phase 1 用“受控 AST + 原文校验 + 回退规则 + manifest 审计（`normalizer/llmCases/normalizerWarnings`）”控制这些风险；token 计费仍后置。
 
 ### Q7. 断言文档要不要持久化？
 
@@ -644,6 +646,7 @@ tags:
 - 提供显式 `assume-prepared`：前置条件视为环境已准备，`clearState:false`，记 `precondition-assumed` warning；必须在 job/script set/结果可见。
 - 不把前置条件自动转成登录/数据 setup；那是 2B/测试环境职责。
 - 真实文件 strict 覆盖率很低（CSV 0/26、XLSX 14/40），assume-prepared 才到 18/26、29/40；产品需要明确默认值和提示。
+- **2026-11-04 更新：** 面板/CLI 增加 `preconditionMode:"auto"`：`bestEffort=true` 时解析为 `assume-prepared`（保留前台/登录态，记 `precondition-assumed`），否则 `strict`；manifest 记录解析后的模式，不记录 `auto`。strict 仍是显式可选项与安全默认。
 
 ## 11. 若批准，实施顺序
 
@@ -656,7 +659,7 @@ tags:
 | 4 | 下发预检 + 部分下发语义 | 已完成：无脚本 400 `script-set-missing`；unresolved 409 `script-set-incomplete`，显式 `allowPartialUnresolved` 放行；面板勾选/前端提示 |
 | 5 | 真机小样本验收 | 自动化集成已通过（生成 flow → fake Maestro/JUnit → assertionCount）；真机 blocked（本机无连接设备/可安装包） |
 | 6 | （后续）发现执行 / testID 字典 | 用 `id:` 替代 `text:`，降低歧义 |
-| 7 | （后续）2B LLM 处理 unresolved | 受控、可审计、仍走白名单 |
+| 7 | 2B Phase 1：LLM 处理 unresolved | **已完成 2026-11-04**：受控 JSON AST + 原文校验 + 回退规则；`bestEffort` manual 标记/截图；设备观察执行器/testID 发现仍后置 |
 
 ## 12. 这份方案不解决什么
 
@@ -666,7 +669,8 @@ tags:
 - testID 自动发现：2A 不做，文本定位仍有歧义风险；
 - iOS 真机 LLM 执行：仍 `llm-execution-not-wired`；
 - 接口/API 测试：不属于 UI flow 断言；
-- token 计费：2A 不调用 LLM，不产生生成 token 成本。
+- token 计费：2A 不调用 LLM，不产生生成 token 成本；2B Phase 1 的 LLM 规范化调用尚未接计费表，只在 manifest 记录 `normalizer/llmCases/normalizerWarnings` 供审计，计费仍后置。
+- 设备上的 LLM 观察执行：仍 `llm-execution-not-wired`；2B Phase 1 只做文本规范化，不读取设备截图/层级。
 
 ---
 

@@ -257,6 +257,12 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-switcher{margin-left:16px}
 .c-switcher select{padding:6px 10px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-surface-white);color:var(--color-text-primary);font-size:12px;max-width:220px}
 .c-thumb{height:24px;width:auto;border-radius:4px;vertical-align:middle;margin-right:6px}
+.c-artifact-name{font-weight:var(--font-weight-semibold);color:var(--color-text-primary);overflow-wrap:anywhere}
+.c-file-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.c-file-chip{display:inline-flex;align-items:center;border:1px solid var(--color-border);border-radius:var(--radius-pill);padding:2px 9px;font-size:11px;line-height:1.6;color:var(--color-text-secondary);background:var(--color-surface-white);text-decoration:none}
+.c-file-chip:hover{border-color:var(--color-accent-border);background:var(--color-accent-hover);color:var(--color-text-primary);text-decoration:none}
+.c-file-chip-source{border-style:dashed}
+.c-path{color:var(--color-text-secondary);font-size:12px;overflow-wrap:anywhere}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 details.c-details{margin:16px 0;border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:10px 14px;background:var(--color-surface-white)}
 details.c-details>summary{cursor:pointer;font-size:14px;font-weight:var(--font-weight-medium);padding:4px 0}

@@ -208,7 +208,7 @@
   "caseFilter": { "modules": [], "caseIds": [] },
   "retry": 1,
   "allowStaleScript": false,
-  "allowPartialUnresolved": false,
+  "allowPartialUnresolved": true,
   "assetSnapshot": [
     { "kind": "excel", "id": "...", "sha256": "...", "filename": "..." },
     { "kind": "package", "id": "...", "sha256": "...", "filename": "..." },
@@ -222,7 +222,7 @@
 - `requirements.platform`、`requirements.deviceKind`（非 `any` 时）、`requirements.tools` 是硬过滤；`deviceModel`/`osVersion` 是软偏好，仅用于同池排序。
 - `deviceLeaseId` 指向下发时创建的预占租约；现有 `device_leases` 主键是 `(host_id, serial)`，因此取 `"<hostId>:<serial>"`；runner 领取后转为执行租约，任务取消/超时/失联时释放。
 - `assetSnapshot` 在创建任务时冗余写入 sha256/filename/包名/版本，防止资产后续被归档/删除导致结果无法溯源。Excel 快照只能是 CAS 原件（不含 8 列写回），仅排查用；执行以中心派生的 case set/taskDesc 为准（见 §4.2）。
-- `allowPartialUnresolved` 默认 false；true 时跳过 `unresolved` 用例，Excel 写 `SKIP（脚本未就绪）`，任务状态为 `partial` 而非 PASS/FAIL。
+- `allowPartialUnresolved` 默认 true（**2026-11-04 修订，superseded 原默认 false**；默认值以 `DESIGN.md` §13.302 为准）；true 时跳过 `unresolved` 用例，Excel 写 `SKIP（脚本未就绪）`，任务状态为 `partial` 而非 PASS/FAIL；显式 false 仍严格 409。
 - `scriptSetId` 在 `executionMode=llm` 或 `web-discovery` 时可为 null；Maestro 模式必须非空。
 - `job_spec.kind=web-discovery` 的最小形状：`{ kind:"web-discovery", assignment, devicePinned, targetHostId, deviceSerial, requirements, excelAssetId, packageAssetId, baseSelectorDictId?, resumeFromStep? }`；它不产出 TestJobResult，只产出 SelectorDictionary/`partial-discovery`；重试新建 job 并继承 `baseSelectorDictId`。
 
@@ -532,7 +532,7 @@
 | TestJob 只存资产 ID，删除后无法溯源 | 成立 | `job_spec.assetSnapshot[]` + 结果冗余 sha256/filename/包名/版本。 |
 | headerFingerprint 对列顺序/错别字过敏 | 成立 | 改为语义指纹（必填列 + 别名/模糊匹配 + sheet），允许确认复用。 |
 | purpose 缺 retry/healing | 成立 | 枚举增加 `retry`/`healing`；首跑与重试成本分开。 |
-| unresolved 用例卡死整个 Job | 成立 | 显式 `allowPartialUnresolved`，跳过写 `SKIP（脚本未就绪）`，任务 `partial`。 |
+| unresolved 用例卡死整个 Job | 成立 | 默认允许 `allowPartialUnresolved=true`（2026-11-04 修订；见 `DESIGN.md` §13.302），跳过写 `SKIP（脚本未就绪）`，任务 `partial`；显式 false 仍严格。 |
 | runner 长期堆积结果/资产 | 成立 | job 目录 LRU + 磁盘水位清理；保留资产 CAS，删除前确认已回传。 |
 | 关账误操作/未处理异常 | 成立 | UI 关账 Checklist 硬门禁 + 强制忽略需原因与审计。 |
 | 模块顺序：Project/Asset/Excel → Script/Runner → Billing | 合理 | 作为实施计划的默认切分顺序。 |

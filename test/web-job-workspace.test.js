@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
@@ -11,7 +12,9 @@ import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { createAosHttpServer } from "../dist/http-server.js";
+import { executeWebJob } from "../dist/runner/web-executors.js";
 import { storeWebAsset } from "../dist/web/assets.js";
+import { buildScriptSetBundle } from "../dist/web/script-set.js";
 import {
   cleanupWebJobWorkspace,
   installWebPackage,
@@ -323,6 +326,120 @@ test("prepareWebJobWorkspace: scripts zip 先扫描条目再解压到 flows（�
   assert.equal(extract.command, "unzip");
   assert.equal(extract.options.timeoutMs, 5000);
   assert.equal(extract.args[extract.args.indexOf("-d") + 1], prepared.jobDir);
+});
+
+test("prepareWebJobWorkspace: manifest.json + flows/ 解压到 jobDir 根，manifest 与 flows 同级", async (t) => {
+  const root = await tempDir(t, "aos-web-job-ws-");
+  const zip = Buffer.from("fake-zip");
+  const digest = sha256(zip);
+  const { exec } = fakeExec((command, args) => {
+    if (args[0] === "-Z1") {
+      return { code: 0, stdout: "manifest.json\nflows/login.yaml\n", stderr: "" };
+    }
+    const dir = args[args.indexOf("-d") + 1];
+    fs.mkdirSync(path.join(dir, "flows"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "manifest.json"), '{"cases":[]}\n');
+    fs.writeFileSync(path.join(dir, "flows", "login.yaml"), "appId: demo\n");
+    return { code: 0, stdout: "", stderr: "" };
+  });
+
+  const prepared = await prepareWebJobWorkspace({
+    jobId: "job-scripts-manifest",
+    projectSlug: "acme",
+    workRoot: path.join(root, "work"),
+    cacheRoot: path.join(root, "cache"),
+    assets: [asset({ kind: "scripts", filename: "scripts.zip", sha256: digest })],
+    download: async () => zip,
+    exec
+  });
+  assert.ok(prepared.flowsDir);
+  assert.equal(prepared.flowsDir, path.join(prepared.jobDir, "flows"));
+  assert.equal(fs.existsSync(path.join(prepared.jobDir, "manifest.json")), true);
+  assert.equal(fs.existsSync(path.join(prepared.flowsDir, "login.yaml")), true);
+  assert.equal(fs.existsSync(path.join(prepared.flowsDir, "manifest.json")), false);
+  assert.equal(fs.existsSync(path.join(prepared.flowsDir, "flows")), false);
+});
+
+test("prepareWebJobWorkspace + executeWebJob: 真实脚本包 manifest+flows 可直接执行", async (t) => {
+  const root = await tempDir(t, "aos-web-job-ws-");
+  const bundle = buildScriptSetBundle({
+    appId: "com.demo.app",
+    platform: "android",
+    sourceExcelAssetId: "excel-1",
+    packageAssetId: "pkg-1",
+    cases: [
+      {
+        caseId: "TC-1",
+        steps: ["1. 启动 App", '2. 点击"登录"'],
+        expected: '页面显示"成功"',
+        preconditions: []
+      }
+    ],
+    bestEffort: true
+  });
+  const digest = sha256(bundle.zip);
+  const realExec = async (command, args, options = {}) => {
+    const result = spawnSync(command, args, {
+      encoding: "utf8",
+      timeout: options.timeoutMs
+    });
+    return {
+      code: result.status,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? ""
+    };
+  };
+  const prepared = await prepareWebJobWorkspace({
+    jobId: "job-real-scripts",
+    projectSlug: "acme",
+    workRoot: path.join(root, "work"),
+    cacheRoot: path.join(root, "cache"),
+    assets: [
+      asset({ kind: "scripts", filename: "scripts.zip", sha256: digest })
+    ],
+    download: async () => bundle.zip,
+    exec: realExec
+  });
+  assert.ok(prepared.flowsDir);
+  assert.equal(fs.existsSync(path.join(prepared.jobDir, "manifest.json")), true);
+  assert.equal(fs.existsSync(path.join(prepared.flowsDir, "TC-1.yaml")), true);
+
+  const result = await executeWebJob({
+    jobSpec: {
+      kind: "web-test",
+      assignment: "auto",
+      devicePinned: false,
+      targetHostId: null,
+      deviceSerial: null,
+      requirements: { platform: "android", deviceKind: "any" },
+      deviceLeaseId: null,
+      excelAssetId: "excel-1",
+      packageAssetId: "pkg-1",
+      materialsAssetId: null,
+      scriptSetId: "scripts-1",
+      executionMode: "maestro",
+      caseFilter: { modules: [], caseIds: [] },
+      retry: 0,
+      allowStaleScript: false,
+      allowPartialUnresolved: true,
+      assetSnapshot: []
+    },
+    jobDir: prepared.jobDir,
+    flowsDir: prepared.flowsDir,
+    device: { serial: "emulator-5554", platform: "android", kind: "device" },
+    exec: async (command, args) => {
+      const index = args.indexOf("--output");
+      await mkdir(path.dirname(args[index + 1]), { recursive: true });
+      await writeFile(
+        args[index + 1],
+        `<?xml version="1.0"?><testsuites><testsuite name="maestro" tests="1"><testcase name="TC-1" classname="flows" time="1"/></testsuite></testsuites>`
+      );
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    env: {}
+  });
+  assert.equal(result.status, "passed");
+  assert.deepEqual(result.cases.map((entry) => entry.caseId), ["TC-1"]);
 });
 
 test("prepareWebJobWorkspace: scripts 条目无 flows/ 前缀时仍解压进 flowsDir", async (t) => {

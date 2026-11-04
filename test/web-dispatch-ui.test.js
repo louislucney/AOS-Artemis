@@ -4,9 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
+
 import { MemoryStore } from "../dist/db/memory.js";
 import { handlePanelActionRequest } from "../dist/panel/actions.js";
 import { handlePanelRequest } from "../dist/panel/web.js";
+import { storeWebAsset } from "../dist/web/assets.js";
 
 const NOW = Date.parse("2026-10-29T00:00:00.000Z");
 const SEEN = new Date(NOW - 5_000).toISOString();
@@ -100,6 +103,7 @@ async function setup(t, options = {}) {
     name: "acme",
     normalizedName: "acme",
     platforms: ["android", "ios"],
+    appPackage: "com.acme.app",
     projectId: project.id
   });
   const excel = await createAsset(store, rootPath, "excel", "回归用例.xlsx", "a");
@@ -208,6 +212,8 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
   const html = response.body;
 
   assert.match(html, /下发测试/);
+  assert.match(html, /class="c-flow-switch"/, "网页测试/套件回归分流");
+  assert.match(html, /套件回归/, "可切回套件下发");
   assert.match(html, /id="web-job-form"/);
   assert.match(html, /id="web-job-assignment"[^>]*name="assignment"/);
   assert.match(html, /<option value="auto"/);
@@ -216,6 +222,14 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
   assert.match(html, /id="web-job-host"[^>]*name="targetHostId"/);
   assert.match(html, /<option value="host-a"/);
   assert.match(html, /host-a\.local/);
+  const materialsSelect =
+    /<select id="web-job-materials"[\s\S]*?<\/select>/.exec(html)?.[0] ?? "";
+  assert.match(materialsSelect, /账号\.json/, "测试资料资产出现在下拉");
+  assert.equal(
+    (materialsSelect.match(/>不指定<\/option>/g) ?? []).length,
+    1,
+    "测试资料只有一个占位"
+  );
   assert.match(html, /id="web-job-device"[^>]*name="deviceSerial"/);
   assert.match(html, /<option value="emulator-5554"/);
   assert.match(html, /Pixel 7/);
@@ -242,9 +256,13 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
   assert.match(html, /id="web-job-submit"[^>]*data-busy-label="下发中…"/);
   assert.match(html, /\/panel\/api\/jobs\/preview/);
 
+  assert.match(html, /id="web-job-allow-partial"[^>]*checked/, "部分下发默认勾选");
+  assert.match(html, /未就绪用例写 SKIP/, "默认行为有文案说明");
+  assert.match(html, /不指定时下发自动生成/, "脚本集可留空");
   const ownScripts = inlineScripts(html).filter((code) => code.includes("/panel/api/jobs"));
   assert.equal(ownScripts.length, 1, "下发表单脚本存在");
-  assert.match(ownScripts[0], /Maestro 执行需要脚本集/, "无脚本时前端阻止提交");
+  assert.match(ownScripts[0], /allowPartialUnresolved\s*=/, "表单始终提交布尔值");
+  assert.doesNotMatch(ownScripts[0], /Maestro 执行需要脚本集/, "不再前端拦截空脚本集");
   assert.doesNotThrow(() => new Function(ownScripts[0]), "下发表单脚本可解析");
 });
 
@@ -258,6 +276,17 @@ test("jobs page without project: project picker instead of a broken form", async
   assert.match(response.body, /选择项目/);
   assert.match(response.body, /section=jobs/);
   assert.ok(!response.body.includes('id="web-job-form"'), "无项目不渲染下发写表单");
+});
+
+test("jobs page without project keeps host in project links", async (t) => {
+  const { deps, rootPath } = await setup(t);
+  const response = await handlePanelRequest(
+    new URL("http://x/panel?section=jobs&host=host-a"),
+    { ...deps, capabilities: capabilities("dispatcher") }
+  );
+  assert.equal(response.status, 200);
+  const href = `/panel?project=${encodeURIComponent(rootPath)}&amp;section=jobs&amp;host=host-a`;
+  assert.ok(response.body.includes(href), "选择项目时保留主机");
 });
 
 test("jobs page: viewer is read-only, dispatcher and above get write controls", async (t) => {
@@ -439,7 +468,7 @@ test("POST /panel/api/jobs role gate: viewer 403, dispatcher/maintainer/admin al
   }
 });
 
-test("POST jobs: unresolved script 默认 409，显式 allowPartialUnresolved 放行", async (t) => {
+test("POST jobs: unresolved script 默认放行，显式 allowPartialUnresolved=false 严格", async (t) => {
   const { deps, store, rootPath, excel, pkg } = await setup(t);
   const incomplete = await createAsset(store, rootPath, "scripts", "incomplete.zip", "e", {
     sourceExcelAssetId: excel.id,
@@ -451,14 +480,48 @@ test("POST jobs: unresolved script 默认 409，显式 allowPartialUnresolved �
     ...autoBody(rootPath, { excel, pkg }),
     scriptSetId: incomplete.id
   };
-  const rejected = await postJob(deps, body);
-  assert.equal(rejected.status, 409);
-  assert.equal(JSON.parse(rejected.body).code, "script-set-incomplete");
-
-  const allowed = await postJob(deps, { ...body, allowPartialUnresolved: true });
+  const allowed = await postJob(deps, body);
   assert.equal(allowed.status, 200);
   const job = JSON.parse(allowed.body).job;
-  assert.equal(job.jobSpec.allowPartialUnresolved, true);
+  assert.equal(job.jobSpec.allowPartialUnresolved, true, "省略字段默认允许");
+
+  const rejected = await postJob(deps, { ...body, allowPartialUnresolved: false });
+  assert.equal(rejected.status, 409);
+  assert.equal(JSON.parse(rejected.body).code, "script-set-incomplete");
+});
+
+test("POST jobs: 过期脚本重建后返回 from/to 并写 trigger=rebuild 审计", async (t) => {
+  const { deps, store, rootPath, pkg, script } = await setup(t);
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例编号", "用例名称", "操作步骤", "预期结果", "所属模块"]);
+  sheet.addRow(["TC-9", "登录", "1. 启动 App", '页面显示"成功"', "登录"]);
+  const realExcel = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "real.xlsx",
+    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
+  });
+
+  const response = await postJob(
+    deps,
+    autoBody(rootPath, { excel: realExcel, pkg, script }, { scriptSetId: script.id })
+  );
+  assert.equal(response.status, 200, response.body);
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.rebuiltScriptSet.from, script.id);
+  assert.equal(payload.rebuiltScriptSet.to, payload.script.id);
+  assert.match(payload.warnings.join(" "), /script-set-rebuilt/);
+  assert.match(payload.message, /脚本集已按当前资产重建/);
+
+  const audit = (await store.listAudit(rootPath)).find(
+    (entry) => entry.action === "web.scripts.generate"
+  );
+  assert.ok(audit, "重建写审计");
+  assert.match(audit.summary, /trigger=rebuild/);
+  assert.equal(audit.refs.from, script.id);
+  assert.equal(audit.refs.assetId, payload.script.id);
 });
 
 test("job detail shows device, package, cases, evidence links and writeback status", async (t) => {

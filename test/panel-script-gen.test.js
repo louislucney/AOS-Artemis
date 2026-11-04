@@ -11,15 +11,17 @@ import { handlePanelActionRequest } from "../dist/panel/actions.js";
 import { storeWebAsset } from "../dist/web/assets.js";
 import { createWebProject } from "../dist/web/project-service.js";
 
-async function workbookBuffer() {
+async function workbookBuffer(
+  rows = [["TC-1", "1. 启动 App\n2. 点击“登录”", "页面显示“成功”", ""]]
+) {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("用例");
   sheet.addRow(["用例编号", "步骤", "期望结果", "前置条件"]);
-  sheet.addRow(["TC-1", "1. 启动 App\n2. 点击“登录”", "页面显示“成功”", ""]);
+  for (const row of rows) sheet.addRow(row);
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-async function setup(t) {
+async function setup(t, options = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "aos-panel-script-gen-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = new MemoryStore();
@@ -35,7 +37,7 @@ async function setup(t) {
     rootPath,
     kind: "excel",
     filename: "cases.xlsx",
-    buffer: await workbookBuffer()
+    buffer: await workbookBuffer(options.rows)
   });
   const pkg = await storeWebAsset({
     store,
@@ -78,6 +80,66 @@ test("panel script gen: dry-run 返回 manifest，不写资产", async (t) => {
   assert.equal(payload.asset, null);
   assert.equal(payload.manifest.sourceExcelAssetId, excel.id);
   assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 0);
+});
+
+test("panel script gen: bestEffort + auto 前置条件 + 规则回退", async (t) => {
+  const { store, rootPath, excel, pkg, deps } = await setup(t, {
+    rows: [
+      [
+        "TC-1",
+        "1. Go to Register page\n2. Fill in other required fields",
+        "页面显示“成功”",
+        "CMS: active"
+      ]
+    ]
+  });
+  const response = await handlePanelActionRequest(
+    request({
+      project: rootPath,
+      excelAssetId: excel.id,
+      packageAssetId: pkg.id,
+      platform: "android",
+      preconditionMode: "auto",
+      bestEffort: true,
+      useLlm: "off",
+      dryRun: true
+    }),
+    deps
+  );
+  assert.equal(response.status, 200, String(response.body));
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.runnable, 1);
+  assert.equal(payload.partial, 1);
+  assert.equal(payload.ready, 0);
+  assert.equal(payload.normalizer, "rules");
+  assert.equal(payload.manifest.preconditionMode, "assume-prepared");
+  assert.equal(payload.manifest.bestEffort, true);
+  assert.equal(payload.manifest.cases[0].manualSteps[0].step, 2);
+  assert.ok(
+    ["step-unparsed", "input-value-invalid"].includes(
+      payload.manifest.cases[0].manualSteps[0].code
+    )
+  );
+  assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 0);
+});
+
+test("panel script gen: useLlm=require 无 LLM → 400", async (t) => {
+  const { rootPath, excel, pkg, deps } = await setup(t);
+  const response = await handlePanelActionRequest(
+    request({
+      project: rootPath,
+      excelAssetId: excel.id,
+      packageAssetId: pkg.id,
+      platform: "android",
+      useLlm: "require",
+      dryRun: true
+    }),
+    deps
+  );
+  assert.equal(response.status, 400);
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.code, "llm-not-configured");
 });
 
 test("panel script gen: 写入 scripts 资产并返回版本", async (t) => {
