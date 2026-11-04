@@ -18,6 +18,7 @@ import {
   type ScriptSetManifest
 } from "./script-set.js";
 import { isValidAppId, type PreconditionMode, type ScriptPlatform } from "./script-gen.js";
+import type { NormalizeCaseInput, NormalizedStep, StepNormalizer } from "./step-normalizer.js";
 
 export type ScriptGenerationErrorCode =
   | "project-not-found"
@@ -52,6 +53,10 @@ export interface GenerateScriptSetInput {
   preconditionMode?: PreconditionMode;
   inferNavigationTap?: boolean;
   includeSoftText?: boolean;
+  /** Manual-document mode: unmapped steps become screenshots/manual markers. */
+  bestEffort?: boolean;
+  /** Optional LLM normalizer; failures fall back to rule parsing per case. */
+  normalizer?: StepNormalizer;
   dryRun?: boolean;
   uploadedBy?: string | null;
 }
@@ -62,7 +67,12 @@ export interface GenerateScriptSetResult {
   platform: ScriptPlatform;
   manifest: ScriptSetManifest;
   ready: number;
+  partial: number;
   unresolved: number;
+  runnable: number;
+  normalizer: "llm" | "rules";
+  llmCases: number;
+  normalizerWarnings: string[];
   asset: WebAssetRecord | null;
   created: boolean;
   bundle: ScriptSetBundle;
@@ -97,6 +107,49 @@ async function loadAsset(
     );
   }
   return asset;
+}
+
+const NORMALIZE_CONCURRENCY = 4;
+
+async function normalizeCases(
+  normalizer: StepNormalizer | undefined,
+  cases: Array<Pick<NormalizeCaseInput, "caseId" | "name" | "steps" | "expected" | "preconditions">>,
+  platform: ScriptPlatform,
+  appId: string
+): Promise<{ normalized: Map<string, NormalizedStep[]>; warnings: string[] }> {
+  const normalized = new Map<string, NormalizedStep[]>();
+  if (normalizer === undefined) return { normalized, warnings: [] };
+  const queue = [...cases];
+  const warnings: string[] = [];
+  const workers = Array.from(
+    { length: Math.min(NORMALIZE_CONCURRENCY, queue.length) },
+    async () => {
+      for (;;) {
+        const entry = queue.shift();
+        if (entry === undefined) return;
+        try {
+          const steps = await normalizer.normalize({
+            caseId: entry.caseId,
+            name: entry.name,
+            steps: entry.steps,
+            expected: entry.expected,
+            preconditions: entry.preconditions,
+            platform,
+            appId
+          });
+          if (steps === null) {
+            warnings.push(`llm-normalize-failed:${entry.caseId}`);
+            continue;
+          }
+          normalized.set(entry.caseId, steps);
+        } catch {
+          warnings.push(`llm-normalize-failed:${entry.caseId}`);
+        }
+      }
+    }
+  );
+  await Promise.all(workers);
+  return { normalized, warnings };
 }
 
 export async function generateScriptSetForProject(
@@ -168,17 +221,33 @@ export async function generateScriptSetForProject(
       );
     }
 
+    const normalized = await normalizeCases(
+      input.normalizer,
+      parsed.cases.map((entry) => ({
+        caseId: entry.caseId,
+        name: entry.name,
+        steps: entry.steps,
+        expected: entry.expected,
+        preconditions: entry.preconditions
+      })),
+      input.platform,
+      appId
+    );
     const bundle = buildScriptSetBundle({
       appId,
       platform: input.platform,
       sourceExcelAssetId: excel.id,
       packageAssetId: pkg.id,
-      cases: parsed.cases.map((entry) => ({
-        caseId: entry.caseId,
-        steps: entry.steps,
-        expected: entry.expected,
-        preconditions: entry.preconditions
-      })),
+      cases: parsed.cases.map((entry) => {
+        const normalizedSteps = normalized.normalized.get(entry.caseId);
+        return {
+          caseId: entry.caseId,
+          steps: entry.steps,
+          expected: entry.expected,
+          preconditions: entry.preconditions,
+          ...(normalizedSteps === undefined ? {} : { normalizedSteps })
+        };
+      }),
       ...(input.preconditionMode === undefined
         ? {}
         : { preconditionMode: input.preconditionMode }),
@@ -187,7 +256,11 @@ export async function generateScriptSetForProject(
         : { inferNavigationTap: input.inferNavigationTap }),
       ...(input.includeSoftText === undefined
         ? {}
-        : { includeSoftText: input.includeSoftText })
+        : { includeSoftText: input.includeSoftText }),
+      ...(input.bestEffort === undefined ? {} : { bestEffort: input.bestEffort }),
+      normalizer: input.normalizer === undefined ? "rules" : "llm",
+      llmCases: normalized.normalized.size,
+      normalizerWarnings: normalized.warnings
     });
 
     if (input.dryRun === true) {
@@ -197,7 +270,12 @@ export async function generateScriptSetForProject(
         platform: input.platform,
         manifest: bundle.manifest,
         ready: bundle.ready,
+        partial: bundle.partial,
         unresolved: bundle.unresolved,
+        runnable: bundle.runnable,
+        normalizer: input.normalizer === undefined ? "rules" : "llm",
+        llmCases: normalized.normalized.size,
+        normalizerWarnings: normalized.warnings,
         asset: null,
         created: false,
         bundle
@@ -216,7 +294,12 @@ export async function generateScriptSetForProject(
       platform: input.platform,
       manifest: bundle.manifest,
       ready: bundle.ready,
+      partial: bundle.partial,
       unresolved: bundle.unresolved,
+      runnable: bundle.runnable,
+      normalizer: input.normalizer === undefined ? "rules" : "llm",
+      llmCases: normalized.normalized.size,
+      normalizerWarnings: normalized.warnings,
       asset: stored.asset,
       created: stored.created,
       bundle

@@ -1,5 +1,6 @@
 import { classifyExpectedResult, type Assertion, type AssertionDoc } from "./assertions.js";
 import { isConcreteLabel, parseStep } from "./step-parse.js";
+import type { NormalizedStep } from "./step-normalizer.js";
 import type {
   ParsedSelector,
   ParsedStep,
@@ -30,6 +31,8 @@ export interface ScriptGenCaseInput {
   preconditions?: string[];
   /** Precomputed assertion document (same classifier); omit to classify here. */
   assertionDoc?: AssertionDoc;
+  /** Optional LLM-normalized actions; per-step fallback to raw parsing when absent. */
+  normalizedSteps?: NormalizedStep[];
 }
 
 export interface ScriptGenOptions {
@@ -114,6 +117,47 @@ function manualScreenshotName(caseId: string, step: number): string {
 
 function manualCommentText(raw: string): string {
   return raw.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
+}
+
+function compileNormalizedStep(step: NormalizedStep): ParsedStep[] {
+  const out: ParsedStep[] = [];
+  for (const action of step.actions) {
+    switch (action.type) {
+      case "launch":
+        out.push({ kind: "launch" });
+        break;
+      case "tap":
+        out.push({ kind: "tap", selector: action.target });
+        break;
+      case "input":
+        out.push({ kind: "input", field: action.target, value: action.value });
+        break;
+      case "verify":
+        out.push({
+          kind: "verify",
+          ...(action.target === undefined ? {} : { target: action.target })
+        });
+        break;
+      case "scroll":
+        out.push({
+          kind: "scroll",
+          ...(action.direction === undefined ? {} : { direction: action.direction })
+        });
+        break;
+      case "back":
+        out.push({ kind: "back" });
+        break;
+      case "wait":
+        out.push({ kind: "wait" });
+        break;
+      case "manual":
+        out.push({ kind: "unsupported", code: "step-unparsed", detail: action.reason });
+        break;
+    }
+  }
+  return out.length === 0
+    ? [{ kind: "unsupported", code: "step-unparsed", detail: "llm-empty-actions" }]
+    : out;
 }
 
 export function isValidAppId(appId: string, platform: ScriptPlatform): boolean {
@@ -235,55 +279,65 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
 
   for (const [index, rawStep] of input.steps.entries()) {
     const stepNumber = index + 1;
-    const parsed: ParsedStep = parseStep(rawStep, {
-      ...(options.inferNavigationTap === undefined
-        ? {}
-        : { inferNavigationTap: options.inferNavigationTap }),
-      getLastLabel: () => lastLabel,
-      setLastLabel: (value) => {
-        lastLabel = value;
-      },
-      pushWarning: (warning) => warnings.push(warning)
-    });
-    if (parsed.kind === "unsupported") {
-      if (bestEffort) {
-        manualSteps.push({ step: stepNumber, code: parsed.code, detail: parsed.detail });
-        warnings.push(`step-manual:${stepNumber}:${parsed.code}`);
-        commands.push(`# aos:manual step=${stepNumber} reason=${parsed.code}`);
-        commands.push(`# aos:manual-text ${manualCommentText(rawStep)}`);
-        commands.push(`- takeScreenshot: ${yamlScalar(manualScreenshotName(caseId, stepNumber))}`);
+    const normalized = input.normalizedSteps?.find((entry) => entry.step === stepNumber);
+    const parsedSteps: ParsedStep[] =
+      normalized === undefined
+        ? [
+            parseStep(rawStep, {
+              ...(options.inferNavigationTap === undefined
+                ? {}
+                : { inferNavigationTap: options.inferNavigationTap }),
+              getLastLabel: () => lastLabel,
+              setLastLabel: (value) => {
+                lastLabel = value;
+              },
+              pushWarning: (warning) => warnings.push(warning)
+            })
+          ]
+        : compileNormalizedStep(normalized);
+    for (const parsed of parsedSteps) {
+      if (parsed.kind === "unsupported") {
+        if (bestEffort) {
+          manualSteps.push({ step: stepNumber, code: parsed.code, detail: parsed.detail });
+          warnings.push(`step-manual:${stepNumber}:${parsed.code}`);
+          commands.push(`# aos:manual step=${stepNumber} reason=${parsed.code}`);
+          commands.push(`# aos:manual-text ${manualCommentText(rawStep)}`);
+          commands.push(`- takeScreenshot: ${yamlScalar(manualScreenshotName(caseId, stepNumber))}`);
+          continue;
+        }
+        unresolved.push({ code: parsed.code, step: stepNumber, detail: parsed.detail });
         continue;
       }
-      unresolved.push({ code: parsed.code, step: stepNumber, detail: parsed.detail });
-      continue;
-    }
-    switch (parsed.kind) {
-      case "launch":
-        break;
-      case "tap":
-        commands.push(...selectorLines(parsed.selector));
-        break;
-      case "input":
-        commands.push(...selectorLines(parsed.field));
-        commands.push(`- inputText: ${yamlScalar(parsed.value)}`);
-        break;
-      case "scroll":
-        commands.push(parsed.direction === "UP" ? "- swipe:\n    direction: UP" : "- scroll");
-        break;
-      case "scrollTo":
-        commands.push("- scrollUntilVisible:");
-        commands.push("    element:");
-        commands.push(...selectorMapLines(parsed.selector, "      "));
-        commands.push(`    direction: ${parsed.direction}`);
-        break;
-      case "back":
-        commands.push("- back");
-        break;
-      case "wait":
-        commands.push("- waitForAnimationToEnd");
-        break;
-      case "verify":
-        break;
+      switch (parsed.kind) {
+        case "launch":
+          break;
+        case "tap":
+          commands.push(...selectorLines(parsed.selector));
+          lastLabel = parsed.selector.text;
+          break;
+        case "input":
+          commands.push(...selectorLines(parsed.field));
+          commands.push(`- inputText: ${yamlScalar(parsed.value)}`);
+          lastLabel = parsed.field.text;
+          break;
+        case "scroll":
+          commands.push(parsed.direction === "UP" ? "- swipe:\n    direction: UP" : "- scroll");
+          break;
+        case "scrollTo":
+          commands.push("- scrollUntilVisible:");
+          commands.push("    element:");
+          commands.push(...selectorMapLines(parsed.selector, "      "));
+          commands.push(`    direction: ${parsed.direction}`);
+          break;
+        case "back":
+          commands.push("- back");
+          break;
+        case "wait":
+          commands.push("- waitForAnimationToEnd");
+          break;
+        case "verify":
+          break;
+      }
     }
 
     for (const entry of grouped.get(stepNumber) ?? []) {

@@ -41,6 +41,9 @@ export interface ScriptSetManifest {
   inferNavigationTap: boolean;
   includeSoftText: boolean;
   bestEffort: boolean;
+  normalizer?: "llm" | "rules";
+  llmCases?: number;
+  normalizerWarnings?: string[];
   assertionDocHash: string;
   counts: {
     cases: number;
@@ -62,6 +65,9 @@ export interface ScriptSetBundleInput {
   inferNavigationTap?: boolean;
   includeSoftText?: boolean;
   bestEffort?: boolean;
+  normalizer?: "llm" | "rules";
+  llmCases?: number;
+  normalizerWarnings?: string[];
   generatorVersion?: number;
 }
 
@@ -144,6 +150,8 @@ function metadataFor(bundle: ScriptSetBundle): Record<string, unknown> {
     inferNavigationTap: bundle.manifest.inferNavigationTap,
     includeSoftText: bundle.manifest.includeSoftText,
     bestEffort: bundle.manifest.bestEffort,
+    normalizer: bundle.manifest.normalizer ?? "rules",
+    llmCases: bundle.manifest.llmCases ?? 0,
     appId: bundle.manifest.appId,
     ready: bundle.ready,
     partial: bundle.partial,
@@ -203,6 +211,11 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
     inferNavigationTap: input.inferNavigationTap === true,
     includeSoftText: input.includeSoftText === true,
     bestEffort: input.bestEffort === true,
+    ...(input.normalizer === undefined ? {} : { normalizer: input.normalizer }),
+    ...(input.llmCases === undefined ? {} : { llmCases: input.llmCases }),
+    ...(input.normalizerWarnings === undefined
+      ? {}
+      : { normalizerWarnings: input.normalizerWarnings }),
     assertionDocHash: assertionDocHash(input.cases),
     counts: {
       cases: generated.cases.length,

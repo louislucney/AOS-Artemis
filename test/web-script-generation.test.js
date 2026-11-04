@@ -75,6 +75,63 @@ test("script-generation: dry-run 只出 manifest，不写 scripts 资产", async
   assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 0);
 });
 
+test("script-generation: LLM normalizer 输出受控动作并记录 manifest", async (t) => {
+  const { store, rootPath, excel, pkg } = await setup(t);
+  const normalizer = {
+    async normalize() {
+      return [
+        { step: 1, actions: [{ type: "launch" }], confidence: "high" },
+        {
+          step: 2,
+          actions: [{ type: "tap", target: { text: "登录", relation: "rightOf" } }],
+          confidence: "high"
+        }
+      ];
+    }
+  };
+  const result = await generateScriptSetForProject({
+    store,
+    rootPath,
+    excelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    platform: "android",
+    normalizer,
+    dryRun: true
+  });
+  assert.equal(result.normalizer, "llm");
+  assert.equal(result.llmCases, 1);
+  assert.equal(result.manifest.normalizer, "llm");
+  assert.equal(result.manifest.llmCases, 1);
+  const flow = result.bundle.files.find((entry) => entry.path.endsWith(".yaml"));
+  assert.ok(flow);
+  assert.match(flow.content, /- tapOn:\n    rightOf: '登录'/);
+});
+
+test("script-generation: normalizer 失败回退规则并记 warning", async (t) => {
+  const { store, rootPath, excel, pkg } = await setup(t);
+  const normalizer = {
+    async normalize() {
+      throw new Error("boom");
+    }
+  };
+  const result = await generateScriptSetForProject({
+    store,
+    rootPath,
+    excelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    platform: "android",
+    normalizer,
+    dryRun: true
+  });
+  assert.equal(result.normalizer, "llm");
+  assert.equal(result.llmCases, 0);
+  assert.ok(result.normalizerWarnings.includes("llm-normalize-failed:TC-1"));
+  assert.equal(result.ready, 1);
+  const flow = result.bundle.files.find((entry) => entry.path.endsWith(".yaml"));
+  assert.ok(flow);
+  assert.match(flow.content, /- tapOn: '登录'/);
+});
+
 test("script-generation: 写入 scripts 资产并幂等复用", async (t) => {
   const { store, rootPath, excel, pkg } = await setup(t);
   const first = await generateScriptSetForProject({
