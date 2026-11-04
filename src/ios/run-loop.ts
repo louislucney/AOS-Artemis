@@ -36,7 +36,13 @@ import { captureStepShot, finish, persistRun } from "./trace-persist.js";
 import type { IosTaskRecord, IosTaskStep, VerifierTarget } from "./types.js";
 import { resolveVerifier, resolveVerifyMode, runVerification } from "./verifier.js";
 import { classifyModalityRejection } from "../llm/vision-capability.js";
-import { entryVisionCapability, resolveVisionMode, type IosVisionMode, type VisionTarget } from "./vision.js";
+import {
+  entryVisionCapability,
+  pngDimensions,
+  resolveVisionMode,
+  type IosVisionMode,
+  type VisionTarget
+} from "./vision.js";
 
 const DEFAULT_MAX_STEPS = 30;
 const MAX_WAIT_MS = 10_000;
@@ -536,11 +542,13 @@ export async function runLoop(
             doneRedactedNodes = null;
           }
         }
+        const doneDims = capturedPost ? pngDimensions(capturedPost.bytes) : null;
         const donePost = redactIosShot({
           runDir: record.runDir,
           shot: capturedPost,
           nodes: doneNodes ?? [],
-          config: redaction
+          config: redaction,
+          scale: doneDims && size && size.width > 0 ? doneDims.width / size.width : 1
         });
         const doneHits =
           doneRedactedNodes && scriptExpectations
@@ -607,11 +615,13 @@ export async function runLoop(
       }
       if (settleMs > 0) await sleep(settleMs);
       const capturedPost = await captureStepShot(device, record, step, "post");
+      const postDims = capturedPost ? pngDimensions(capturedPost.bytes) : null;
       const post = redactIosShot({
         runDir: record.runDir,
         shot: capturedPost,
         nodes: sourceNodes,
-        config: redaction
+        config: redaction,
+        scale: postDims && size && size.width > 0 ? postDims.width / size.width : 1
       });
       record.steps.push(
         toStepRecord({

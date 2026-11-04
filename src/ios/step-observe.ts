@@ -93,6 +93,8 @@ export async function observeStep(options: ObserveStepOptions): Promise<StepObse
   }
   const sourceNodes = nodes;
   let shot = await captureStepShot(device, record, step, "pre");
+  const rawDims = shot ? pngDimensions(shot.bytes) : null;
+  const rawScale = rawDims && size && size.width > 0 ? rawDims.width / size.width : 1;
   let promptShot = shot;
   if (options.redaction && options.redaction.secrets.length > 0) {
     const originalNodes = nodes;
@@ -101,7 +103,8 @@ export async function observeStep(options: ObserveStepOptions): Promise<StepObse
       runDir: record.runDir,
       shot,
       nodes: originalNodes,
-      config: options.redaction
+      config: options.redaction,
+      scale: rawScale
     });
     shot = redactedShot.shot;
     promptShot =

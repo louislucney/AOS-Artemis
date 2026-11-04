@@ -95,7 +95,8 @@ export function redactIosNodes(
 export function maskIosScreenshot(
   pngBytes: Buffer,
   nodes: IosUiNode[],
-  secrets: SecretEntry[]
+  secrets: SecretEntry[],
+  scale = 1
 ): IosScreenshotMaskResult {
   let sensitive = false;
   let missingBounds = false;
@@ -114,10 +115,11 @@ export function maskIosScreenshot(
   }
   for (const node of nodes) {
     if (!isSensitiveNode(node, secrets)) continue;
-    const x1 = Math.max(0, Math.floor(node.rect.x));
-    const y1 = Math.max(0, Math.floor(node.rect.y));
-    const x2 = Math.min(image.width, Math.ceil(node.rect.x + node.rect.width));
-    const y2 = Math.min(image.height, Math.ceil(node.rect.y + node.rect.height));
+    const factor = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const x1 = Math.max(0, Math.floor(node.rect.x * factor));
+    const y1 = Math.max(0, Math.floor(node.rect.y * factor));
+    const x2 = Math.min(image.width, Math.ceil((node.rect.x + node.rect.width) * factor));
+    const y2 = Math.min(image.height, Math.ceil((node.rect.y + node.rect.height) * factor));
     for (let y = y1; y < y2; y += 1) {
       for (let x = x1; x < x2; x += 1) {
         const index = (image.width * y + x) << 2;
@@ -144,12 +146,19 @@ export function redactIosShot(input: {
   shot: { rel: string; bytes: Buffer } | null;
   nodes: IosUiNode[];
   config: IosRedactionConfig | null;
+  /** 截图像素 / 逻辑点（iOS 3x 屏必须传，否则遮罩错位）。 */
+  scale?: number;
 }): RedactedShot {
   if (input.shot === null) return { shot: null, promptBytes: null, warning: null };
   if (input.config === null || input.config.secrets.length === 0) {
     return { shot: input.shot, promptBytes: input.shot.bytes, warning: null };
   }
-  const masked = maskIosScreenshot(input.shot.bytes, input.nodes, input.config.secrets);
+  const masked = maskIosScreenshot(
+    input.shot.bytes,
+    input.nodes,
+    input.config.secrets,
+    input.scale
+  );
   if (masked.bytes !== null) {
     if (masked.sensitive) {
       writeFileSync(path.join(input.runDir, input.shot.rel), masked.bytes);

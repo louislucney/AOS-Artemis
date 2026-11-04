@@ -193,7 +193,7 @@ test("Web LLM 脱敏：prompt/截图/run.json 不含 secret，输入时还原占
   const proxy = new StubProxy({ running: true });
   const { runtime } = await loadTestRuntime(dir, { proxy, iosWebLlmRedaction: true });
   const device = fakeDevice();
-  device.screenshot = async () => Buffer.from(toPng(createImage(100, 100)));
+  device.screenshot = async () => Buffer.from(toPng(createImage(402, 874)));
   device.nodes = async () => [
     { type: "Application", label: "", value: "", id: "", rect: { x: 0, y: 0, width: 402, height: 874 } },
     {

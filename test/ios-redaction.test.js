@@ -68,6 +68,22 @@ test("maskIosScreenshot：敏感节点 bbox 涂黑，其余像素保留", () => 
   assert.deepEqual(pixelAt(masked.bytes, 4, 0, 0), [255, 255, 255, 255]);
 });
 
+test("maskIosScreenshot：按截图/逻辑点 scale 换算（3x 屏）", () => {
+  const nodes = [
+    {
+      type: "StaticText",
+      label: "hunter2",
+      value: "",
+      id: "",
+      rect: { x: 1, y: 1, width: 1, height: 1 }
+    }
+  ];
+  const masked = maskIosScreenshot(makePng(8, 8), nodes, secrets, 3);
+  assert.ok(masked.bytes);
+  assert.deepEqual(pixelAt(masked.bytes, 8, 3, 3), [0, 0, 0, 255]);
+  assert.deepEqual(pixelAt(masked.bytes, 8, 1, 1), [255, 255, 255, 255]);
+});
+
 test("maskIosScreenshot：敏感节点无 bbox → null（不得发原图）", () => {
   const nodes = [
     {

@@ -5,11 +5,7 @@ import { entryIssues, type LlmEntry } from "../llm/registry.js";
 import { logWarn } from "../log.js";
 import { errorMessage } from "../util.js";
 import { PROMPT_MAX_ELEMENTS, formatScreenForPrompt } from "./prompt-history.js";
-import {
-  maskIosScreenshot,
-  redactIosNodes,
-  type IosRedactionConfig
-} from "./redaction.js";
+import { redactIosNodes, type IosRedactionConfig } from "./redaction.js";
 import type { IosScriptAdherence, IosScriptPreflight } from "./script-plan.js";
 import type {
   IosTaskRecord,
@@ -161,14 +157,10 @@ export async function runVerification(
       stale
     };
   }
-  const originalNodes = nodes;
   if (redaction !== null && redaction.secrets.length > 0) {
     nodes = redactIosNodes(nodes, redaction.secrets).nodes;
   }
-  const safeScreenshot =
-    screenshot !== null && redaction !== null && redaction.secrets.length > 0
-      ? maskIosScreenshot(screenshot, originalNodes, redaction.secrets).bytes
-      : screenshot;
+  // 截图由调用方先遮罩（按截图/逻辑点 scale）；验证器不再二次处理。
   const screen = formatScreenForPrompt(nodes, PROMPT_MAX_ELEMENTS, null);
   const prompt = buildVerificationPrompt(
     record.taskDesc,
@@ -184,12 +176,12 @@ export async function runVerification(
     {
       role: "user",
       content:
-        verifier.vision && safeScreenshot
+        verifier.vision && screenshot
           ? [
               { type: "text", text: prompt },
               {
                 type: "image_url",
-                image_url: { url: `data:image/png;base64,${safeScreenshot.toString("base64")}` }
+                image_url: { url: `data:image/png;base64,${screenshot.toString("base64")}` }
               }
             ]
           : prompt
