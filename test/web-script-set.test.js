@@ -232,6 +232,22 @@ test("script-set: 无 ready 用例或缺少绑定拒绝写入", async (t) => {
   );
 });
 
+test("script-set: 旧 bundle 缺 runnable 时回退 ready", async (t) => {
+  const { store, rootPath } = await workspace(t);
+  const excel = await asset(store, rootPath, "excel", "cases.xlsx", "excel");
+  const pkg = await asset(store, rootPath, "package", "app.apk", "pkg");
+  const current = bundle({ sourceExcelAssetId: excel.id, packageAssetId: pkg.id });
+  const legacy = { ...current };
+  delete legacy.runnable;
+  delete legacy.partial;
+  legacy.manifest = {
+    ...legacy.manifest,
+    counts: { cases: 2, ready: 1, unresolved: 1 }
+  };
+  const stored = await storeScriptSet({ store, rootPath, bundle: legacy });
+  assert.equal(stored.created, true);
+});
+
 test("script-set: 部分可执行脚本集允许写入", async (t) => {
   const { store, rootPath } = await workspace(t);
   const excel = await asset(store, rootPath, "excel", "cases.xlsx", "excel");

@@ -70,7 +70,7 @@ async function setup(t, { hostId = null } = {}) {
     size: 512,
     storagePath: path.join(rootPath, ".artemis", "web", "assets", "scripts", `${"e".repeat(64)}.zip`),
     uploadedBy: "aos",
-    metadata: { origin: "generated", platform: "android", ready: 3, unresolved: 1 }
+    metadata: { origin: "generated", platform: "android", ready: 3, partial: 2, unresolved: 1 }
   });
   const mapping = await store.saveExcelMapping({
     rootPath,
@@ -160,6 +160,8 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /\/panel\/api\/projects\/scripts\/generate/, "脚本生成端点");
   assert.match(html, new RegExp(`<option value="${pkg.id}"`), "安装包选项");
   assert.match(html, /aos-scripts-android-abc\.zip/, "脚本集列表");
+  assert.match(html, /<th scope="col">partial<\/th>/, "脚本集列表显示 partial");
+  assert.match(html, /<td><code>2<\/code><\/td>/, "脚本集 partial 计数");
 
 
   assert.match(html, /id="asset-select"/, "资产选择");

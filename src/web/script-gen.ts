@@ -250,15 +250,22 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
   }
 
   const grouped = new Map<number, Array<{ assertion: Assertion; step: number }>>();
+  const skippedAssertions: Array<{
+    step: number;
+    code: "assertion-step-out-of-range";
+    detail: string;
+  }> = [];
   for (const step of doc.steps) {
     if (step.step < 1 || step.step > input.steps.length) {
+      const detail = `断言步骤 ${step.step} 超出 ${input.steps.length} 个动作`;
       if (bestEffort) {
         warnings.push(`assertion-step-out-of-range:${step.step}`);
+        skippedAssertions.push({ step: step.step, code: "assertion-step-out-of-range", detail });
       } else {
         unresolved.push({
           code: "assertion-step-out-of-range",
           step: step.step,
-          detail: `断言步骤 ${step.step} 超出 ${input.steps.length} 个动作`
+          detail
         });
       }
       continue;
@@ -276,6 +283,15 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
   const commands: string[] = [];
   const assertionTexts: ScriptAssertionRef[] = [];
   let assertions = 0;
+  for (const skipped of skippedAssertions) {
+    manualSteps.push({ step: skipped.step, code: skipped.code, detail: skipped.detail });
+    warnings.push(`step-manual:${skipped.step}:${skipped.code}`);
+    commands.push(`# aos:manual step=${skipped.step} reason=${skipped.code}`);
+    commands.push(`# aos:manual-text ${manualCommentText(skipped.detail)}`);
+    commands.push(
+      `- takeScreenshot: ${yamlScalar(`${manualScreenshotName(caseId, skipped.step)}-assert`)}`
+    );
+  }
 
   for (const [index, rawStep] of input.steps.entries()) {
     const stepNumber = index + 1;
@@ -367,7 +383,14 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
       const original = assertionText(entry.assertion) ?? "";
       if (!isSafeAssertionText(original)) {
         if (bestEffort) {
+          manualSteps.push({ step: stepNumber, code: "assertion-text-invalid", detail: truncate(original) });
           warnings.push(`assertion-text-invalid:${stepNumber}`);
+          warnings.push(`step-manual:${stepNumber}:assertion-text-invalid`);
+          commands.push(`# aos:manual step=${stepNumber} reason=assertion-text-invalid`);
+          commands.push(`# aos:manual-text assertion ${manualCommentText(original)}`);
+          commands.push(
+            `- takeScreenshot: ${yamlScalar(`${manualScreenshotName(caseId, stepNumber)}-assert`)}`
+          );
         } else {
           unresolved.push({ code: "assertion-text-invalid", step: stepNumber, detail: truncate(original) });
         }
@@ -388,7 +411,7 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
   if (assertions === 0) warnings.push("unverified-expected");
 
   const status = unresolved.length === 0 ? "ready" : "unresolved";
-  const partial = manualSteps.length > 0;
+  const partial = status === "ready" && manualSteps.length > 0;
   if (status === "unresolved") {
     return {
       caseId,

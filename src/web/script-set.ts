@@ -152,6 +152,12 @@ function metadataFor(bundle: ScriptSetBundle): Record<string, unknown> {
     bestEffort: bundle.manifest.bestEffort,
     normalizer: bundle.manifest.normalizer ?? "rules",
     llmCases: bundle.manifest.llmCases ?? 0,
+    manualCases: bundle.manifest.cases
+      .filter((entry) => entry.manualSteps.length > 0)
+      .map((entry) => ({
+        caseId: entry.caseId,
+        steps: entry.manualSteps.map((manual) => manual.step)
+      })),
     appId: bundle.manifest.appId,
     ready: bundle.ready,
     partial: bundle.partial,

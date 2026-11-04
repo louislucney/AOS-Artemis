@@ -161,7 +161,8 @@ async function newRunningJob(ctx, overrides = {}) {
     targetHostId: HOST,
     jobSpec: jobSpec({
       excelAssetId: ctx.asset.id,
-      executionMode: overrides.executionMode ?? "maestro"
+      executionMode: overrides.executionMode ?? "maestro",
+      ...(overrides.scriptSetId === undefined ? {} : { scriptSetId: overrides.scriptSetId })
     }),
     deviceSerial: "emulator-5554"
   });
@@ -1369,6 +1370,51 @@ test("判定：PASS + manualSteps → UNVERIFIED（manual-step），不假绿", 
             durationMs: 900,
             assertionCount: 1,
             manualSteps: [{ step: 2, reason: "step-unparsed" }]
+          }
+        ],
+        startedAt: STARTED,
+        finishedAt: FINISHED,
+        detail: null
+      }
+    })
+  });
+
+  assert.equal(summary.taskStatus, "partial");
+  assert.equal(summary.gate.unverified, 1);
+  assert.ok(
+    summary.warnings.some((warning) => warning.includes("manual-step")),
+    summary.warnings.join("；")
+  );
+  const sheet = await loadSheet(ctx.copyPath);
+  assert.equal(cellText(sheet.getCell("I2")), "UNVERIFIED");
+});
+
+test("判定：脚本集 metadata 标记 manual，旧 runner 漏报也降级 UNVERIFIED", async (t) => {
+  const ctx = await setupProject(t, {
+    rows: [["TC-1", "登录", "1. 打开", "1. 页面显示“登录”"]]
+  });
+  const scripts = await storeWebAsset({
+    store: ctx.store,
+    rootPath: ctx.rootPath,
+    kind: "scripts",
+    filename: "scripts.zip",
+    buffer: Buffer.from("zip"),
+    metadata: { manualCases: [{ caseId: "TC-1", steps: [2] }] }
+  });
+  const job = await newRunningJob(ctx, { scriptSetId: scripts.id });
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: job.id,
+    payload: passingPayload({
+      execution: {
+        status: "passed",
+        cases: [
+          {
+            caseId: "TC-1",
+            name: "登录",
+            status: "PASS",
+            durationMs: 900,
+            assertionCount: 1
           }
         ],
         startedAt: STARTED,

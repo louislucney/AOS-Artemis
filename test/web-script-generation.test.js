@@ -338,6 +338,11 @@ test("web CLI: --best-effort + --precondition-mode auto", async (t) => {
   assert.equal(output.partial, 1);
   assert.equal(output.manifest.preconditionMode, "assume-prepared");
   assert.equal(output.manifest.bestEffort, true);
+  assert.deepEqual(
+    output.manifest.cases[0].manualSteps.map((entry) => entry.step),
+    [2],
+    "CLI best-effort 与面板一致，导航步骤应推断点击"
+  );
 });
 
 test("web CLI: 写入资产并支持第二次复用", async (t) => {

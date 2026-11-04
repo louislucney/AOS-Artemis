@@ -182,6 +182,18 @@ test("web-excel: 续行合并到上一步，不单独成为步骤", async () => 
   ]);
 });
 
+test("web-excel: 首个编号步骤前的说明行不作为步骤", async () => {
+  const headers = ["用例编号", "步骤", "预期"];
+  const buffer = await xlsxBuffer([
+    {
+      name: "S",
+      rows: [headers, ["TC-1", "Login page\nSteps:\n1. Tap X\n2. Tap Y", "2. Done"]]
+    }
+  ]);
+  const parsed = await parseExcel(buffer, { mapping: suggestExcelMapping(headers) });
+  assert.deepEqual(parsed.cases[0].steps, ["1. Tap X", "2. Tap Y"]);
+});
+
 test("parseExcel: 无编号步骤仍按行拆分", async () => {
   const headers = ["用例编号", "步骤", "预期"];
   const buffer = await xlsxBuffer([

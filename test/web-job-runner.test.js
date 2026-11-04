@@ -13,7 +13,10 @@ import { zipBuffer } from "./fixtures/web-zip.mjs";
 const TOKEN = "runner-job-token-0123456789abcdef";
 const BASE = "http://center.local:8765";
 const FLOW_ENTRIES = [
-  ["flows/TC-1.yaml", "appId: com.acme.web\n---\n- launchApp\n- assertVisible: 登录\n"],
+  [
+    "flows/TC-1.yaml",
+    "appId: com.acme.web\n---\n- launchApp\n- assertVisible: 登录\n# aos:manual step=2 reason=step-unparsed\n- takeScreenshot: aos-TC-1-step-2\n"
+  ],
   ["flows/TC-2.yaml", "appId: com.acme.web\n---\n- launchApp\n"]
 ];
 
@@ -272,6 +275,9 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
       ["TC-2", "PASS", 0]
     ]
   );
+  assert.deepEqual(payload.execution.cases[0].manualSteps, [
+    { step: 2, reason: "step-unparsed" }
+  ]);
   assert.deepEqual(payload.device, { serial: "emulator-5554", model: "Pixel 8", osVersion: "15" });
   assert.deepEqual(payload.package, {
     name: "com.acme.web",

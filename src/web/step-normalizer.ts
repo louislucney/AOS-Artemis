@@ -36,6 +36,13 @@ export interface StepNormalizer {
   normalize(input: NormalizeCaseInput, signal?: AbortSignal): Promise<NormalizedStep[] | null>;
 }
 
+const TAP_HINT =
+  /(?:\b(?:tap|click|press|select|choose|hit|touch)\b|点击|點擊|點一下|點選|輕觸|輕按|按下|按一下|點按|選取|选取)/i;
+const INPUT_HINT =
+  /(?:\b(?:input|enter|type|fill(?:\s+in)?|set)\b|输入|輸入|填寫|填写|鍵入|键入)/i;
+const LAUNCH_HINT =
+  /^\s*(?:(?:launch|start|open)\s+(?:the\s+)?app|启动|啟動|打开|打開)/i;
+
 const RELATIONS = new Set(["rightOf", "leftOf", "below", "above"]);
 const SYSTEM_LABELS = new Set([
   "ok",
@@ -114,7 +121,11 @@ function validateSelector(raw: unknown, source: string): NormalizedSelector | nu
   };
 }
 
-function validateActions(raw: unknown, source: string): NormalizedAction[] | null {
+function validateActions(
+  raw: unknown,
+  source: string,
+  stepText: string
+): NormalizedAction[] | null {
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > 20) return null;
   const out: NormalizedAction[] = [];
   for (const entry of raw) {
@@ -141,6 +152,11 @@ function validateActions(raw: unknown, source: string): NormalizedAction[] | nul
         ) {
           return null;
         }
+        const normalizedValue = value.replace(/\s+/g, " ").toLowerCase();
+        const sourceHasValue = source.includes(normalizedValue);
+        const generatedRandom =
+          normalizedValue === "aosinvalid0001" && /\b(?:random|any)\b/i.test(stepText);
+        if (!sourceHasValue && !generatedRandom) return null;
         out.push({ type: "input", target, value });
         break;
       }
@@ -175,6 +191,19 @@ function validateActions(raw: unknown, source: string): NormalizedAction[] | nul
         return null;
     }
   }
+  const hasManual = out.some((action) => action.type === "manual");
+  if (TAP_HINT.test(stepText) && !hasManual && !out.some((action) => action.type === "tap")) {
+    return null;
+  }
+  if (INPUT_HINT.test(stepText) && !hasManual && !out.some((action) => action.type === "input")) {
+    return null;
+  }
+  if (LAUNCH_HINT.test(stepText) && !hasManual && !out.some((action) => action.type === "launch")) {
+    return null;
+  }
+  if (!LAUNCH_HINT.test(stepText) && out.some((action) => action.type === "launch")) {
+    return null;
+  }
   return out;
 }
 
@@ -204,7 +233,7 @@ export function validateNormalizedSteps(
       return null;
     }
     seen.add(step);
-    const actions = validateActions(entry.actions, source);
+    const actions = validateActions(entry.actions, source, input.steps[step - 1] ?? "");
     if (actions === null) return null;
     const confidence = entry.confidence;
     if (confidence !== undefined && confidence !== "high" && confidence !== "medium" && confidence !== "low") {

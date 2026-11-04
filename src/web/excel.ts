@@ -153,9 +153,10 @@ const STEP_LINE = /^\s*(?:\d{1,4}\s*(?:[.)、）]|．(?!\d))|[-•*]\s+)\s*/;
 export function splitStepLines(value: string): string[] {
   const lines = splitLines(value);
   if (lines.length === 0) return [];
-  if (!lines.some((line) => STEP_LINE.test(line))) return lines;
+  const firstMarked = lines.findIndex((line) => STEP_LINE.test(line));
+  if (firstMarked === -1) return lines;
   const out: string[] = [];
-  for (const line of lines) {
+  for (const line of lines.slice(firstMarked)) {
     if (out.length === 0 || STEP_LINE.test(line)) out.push(line);
     else out[out.length - 1] = `${out[out.length - 1]} ${line}`;
   }

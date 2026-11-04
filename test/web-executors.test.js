@@ -189,6 +189,31 @@ test("executeWebJob: 上报 flow 内 manual 标记", async (t) => {
   ]);
 });
 
+test("executeWebJob: runFlow 子流程的 manual 标记也上报", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"], {
+    contents: {
+      "flow-a.yaml": "appId: acme.app\n---\n- launchApp\n- runFlow: subflows/common.yaml\n"
+    }
+  });
+  await mkdir(path.join(flowsDir, "subflows"), { recursive: true });
+  await writeFile(
+    path.join(flowsDir, "subflows", "common.yaml"),
+    "appId: acme.app\n---\n# aos:manual step=3 reason=step-unparsed\n- takeScreenshot: 'aos-subflow-step-3'\n"
+  );
+  const { exec } = execWithJunit(
+    junit([xmlCase({ name: "flow-a", classname: "flows", time: "1" })])
+  );
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+  assert.deepEqual(result.cases[0].manualSteps, [{ step: 3, reason: "step-unparsed" }]);
+});
+
 test("executeWebJob: maestro 命令参数、默认 15 分钟超时与 env 透传", async (t) => {
   const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
   const { exec, calls } = execWithJunit(junit([xmlCase({ name: "flow-a", selfClosing: true })]));

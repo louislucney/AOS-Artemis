@@ -92,6 +92,43 @@ test("step-normalizer: 跨用例依赖转 manual，不在 step 范围内拒绝",
   );
 });
 
+test("step-normalizer: 动作类型必须匹配步骤动词", async () => {
+  for (const actions of [
+    [{ type: "verify" }],
+    [{ type: "launch" }]
+  ]) {
+    const normalizer = createLlmStepNormalizer({
+      model: "fake",
+      chat: async () => JSON.stringify({ steps: [{ step: 1, actions, confidence: "high" }] })
+    });
+    assert.equal(await normalizer.normalize(INPUT), null, JSON.stringify(actions));
+  }
+});
+
+test("step-normalizer: 输入值必须来自原文", async () => {
+  const input = {
+    ...INPUT,
+    steps: ["1. Input referral code"],
+    expected: '1. Display "Referral Code"'
+  };
+  const normalizer = createLlmStepNormalizer({
+    model: "fake",
+    chat: async () =>
+      JSON.stringify({
+        steps: [
+          {
+            step: 1,
+            actions: [
+              { type: "input", target: { text: "Referral Code" }, value: "REAL-CUSTOMER-123" }
+            ],
+            confidence: "high"
+          }
+        ]
+      })
+  });
+  assert.equal(await normalizer.normalize(input), null);
+});
+
 test("step-normalizer: 保留繁体/英文原文标签，不因大小写或空白拒绝", () => {
   const input = {
     ...INPUT,

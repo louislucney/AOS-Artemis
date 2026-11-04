@@ -254,6 +254,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     const platform = typeof metadata.platform === "string" ? metadata.platform : "—";
     const origin = metadata.origin === "generated" ? "生成" : "人工";
     const ready = typeof metadata.ready === "number" ? String(metadata.ready) : "—";
+    const partial = typeof metadata.partial === "number" ? String(metadata.partial) : "—";
     const unresolved = typeof metadata.unresolved === "number" ? String(metadata.unresolved) : "—";
     return [
       `<code>${escapeHtml(asset.filename)}</code>`,
@@ -261,6 +262,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       `<code>${escapeHtml(platform)}</code>`,
       escapeHtml(origin),
       `<code>${escapeHtml(ready)}</code>`,
+      `<code>${escapeHtml(partial)}</code>`,
       `<code>${escapeHtml(unresolved)}</code>`,
       relativeTime(asset.createdAt)
     ];
@@ -381,7 +383,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
         title: "脚本集资产",
         subtitle: `共 ${scripts.length} 个 scripts 版本`,
         body: cTable({
-          columns: ["文件名", "版本", "平台", "来源", "ready", "unresolved", "生成时间"],
+          columns: ["文件名", "版本", "平台", "来源", "ready", "partial", "unresolved", "生成时间"],
           rows: scriptRows,
           caption: "生成的脚本集",
           empty: "暂无脚本集（上方生成）"

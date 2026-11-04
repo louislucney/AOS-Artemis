@@ -378,6 +378,41 @@ test("script-gen: bestEffort 全部未映射仍生成可运行 launch+screenshot
   assert.match(result.yaml, /# aos:manual step=1/);
 });
 
+test("script-gen: unresolved 用例即使有 manual 也不标 partial", () => {
+  const result = gen(
+    { steps: ["1. Do the needful"], expected: null, preconditions: ["用户已登录"] },
+    { bestEffort: true }
+  );
+  assert.equal(result.status, "unresolved");
+  assert.equal(result.partial, false);
+});
+
+test("script-gen: bestEffort 不安全工作断言转 manual，避免假绿", () => {
+  const result = generateFlow(
+    {
+      caseId: "TC-UNSAFE",
+      steps: ["1. 启动 App", "2. 点击“关闭”"],
+      expected: null,
+      preconditions: [],
+      assertionDoc: {
+        version: 1,
+        source: "excel.expected",
+        confidence: "high",
+        steps: [{ step: 2, assert: [{ type: "visible", text: "${token}" }] }],
+        manual: [],
+        ambiguous: []
+      }
+    },
+    { appId: APP_ID, platform: "android", bestEffort: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.partial, true);
+  assert.ok(
+    result.manualSteps.some((entry) => entry.code === "assertion-text-invalid"),
+    JSON.stringify(result.manualSteps)
+  );
+});
+
 test("script-gen: bestEffort 断言越界只警告不阻断", () => {
   const result = generateFlow(
     {
@@ -397,6 +432,8 @@ test("script-gen: bestEffort 断言越界只警告不阻断", () => {
     { appId: APP_ID, platform: "android", bestEffort: true }
   );
   assert.equal(result.status, "ready");
+  assert.equal(result.partial, true);
+  assert.ok(result.manualSteps.some((entry) => entry.code === "assertion-step-out-of-range"));
   assert.ok(result.warnings.includes("assertion-step-out-of-range:4"));
 });
 

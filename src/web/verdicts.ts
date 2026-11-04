@@ -13,6 +13,8 @@ export interface DeriveVerdictsInput {
    * 任务级 error / 强制 failed 且用例全 PASS：逐例结果不写回，也不补写未执行用例。
    */
   suppressPerCaseResult: boolean;
+  /** 脚本集 metadata 标记的 manual/partial 用例（旧 runner 漏报 manualSteps 时的中心兜底）。 */
+  manualCaseIds?: Set<string>;
 }
 
 export interface DeriveVerdictsResult {
@@ -215,7 +217,7 @@ export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsRe
       reasons.push({ caseId, status: "UNVERIFIED", reason: "case-not-in-source" });
       continue;
     }
-    if ((entry.manualSteps?.length ?? 0) > 0) {
+    if ((entry.manualSteps?.length ?? 0) > 0 || (input.manualCaseIds?.has(caseId) ?? false)) {
       cases.push(downgrade(entry, "manual-step"));
       downgraded.push(`${caseId}:manual-step`);
       reasons.push({ caseId, status: "UNVERIFIED", reason: "manual-step" });

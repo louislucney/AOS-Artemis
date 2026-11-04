@@ -181,6 +181,7 @@ export async function runWebCommand(argv: string[], deps: WebCliDeps = {}): Prom
         appId: flags.get("app-id"),
         preconditionMode,
         bestEffort,
+        inferNavigationTap: bestEffort,
         dryRun: flags.bool("dry-run"),
         uploadedBy: "cli"
       });
@@ -200,6 +201,7 @@ export async function runWebCommand(argv: string[], deps: WebCliDeps = {}): Prom
       appId: flags.get("app-id"),
       preconditionMode,
       bestEffort,
+      inferNavigationTap: bestEffort,
       dryRun: flags.bool("dry-run"),
       uploadedBy: "cli"
     });
