@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -2485,6 +2484,19 @@ async function runExport(
 
 let importInFlight = false;
 
+function uploadTimestamp(now = new Date()): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(
+    now.getHours()
+  )}${pad(now.getMinutes())}`;
+}
+
+function safeUploadBase(filename: string): string {
+  const parsed = path.parse(filename).name.trim();
+  const cleaned = parsed.replace(/[/\\:*?"<>|]+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned === "" ? "upload" : cleaned;
+}
+
 async function runImport(
   deps: PanelWebDeps,
   rootPath: string,
@@ -2505,12 +2517,13 @@ async function runImport(
   }
   importInFlight = true;
   let tmpPath: string | null = null;
+  let tmpDir: string | null = null;
   try {
     let excelPath: string;
     if (request.rawBody !== undefined) {
       const upload = await parseMultipartUpload(request.rawBody, request.contentType);
-      const hash = createHash("sha256").update(upload.content).digest("hex").slice(0, 12);
-      tmpPath = path.join(tmpdir(), `aos-upload-${hash}.xlsx`);
+      tmpDir = await mkdtemp(path.join(tmpdir(), "aos-import-"));
+      tmpPath = path.join(tmpDir, `${safeUploadBase(upload.filename)}_${uploadTimestamp()}.xlsx`);
       await writeFile(tmpPath, upload.content);
       excelPath = tmpPath;
     } else {
@@ -2540,6 +2553,13 @@ async function runImport(
     if (tmpPath !== null) {
       try {
         await rm(tmpPath, { force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+    if (tmpDir !== null) {
+      try {
+        await rm(tmpDir, { recursive: true, force: true });
       } catch {
         /* best effort */
       }

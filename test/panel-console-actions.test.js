@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+import ExcelJS from "exceljs";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { computeDispatchPreview, dispatchFormSignature, dispatchPreviewId } from "../dist/console/dispatch.js";
@@ -15,7 +16,7 @@ async function setup() {
   const store = new MemoryStore();
   const { runtime } = await loadTestRuntime(dir, { store });
   await runtime.store.upsertProject({ rootPath: runtime.project.rootDir, name: "p" });
-  return { deps: { store, env: {} }, rootPath: runtime.project.rootDir, store };
+  return { deps: { store, env: {} }, rootPath: runtime.project.rootDir, store, runtime };
 }
 
 function request(pathname, body, overrides = {}) {
@@ -426,7 +427,7 @@ test("console actions: 下发预览合同（previewId 复算；改端/范围变�
   assert.equal(legacy.status, 200, "无 previewId（CLI/legacy）向后兼容");
 });
 
-test("console actions: 导入单飞（409）＋上传临时文件必清理", async () => {
+test("console actions: 导入单飞（409）＋上传请求返回运行时指引", async () => {
   const { deps, rootPath } = await setup();
   const boundary = "----aos";
   const content = "XLSX";
@@ -460,7 +461,36 @@ test("console actions: 导入单飞（409）＋上传临时文件必清理", asy
   const done = await first;
   assert.equal(done.status, 400, "无运行时指引");
 
-  const expected = `aos-upload-${createHash("sha256").update(Buffer.from(content)).digest("hex").slice(0, 12)}.xlsx`;
-  const leftovers = (await readdir(tmpdir())).filter((name) => name.startsWith("aos-upload-"));
-  assert.ok(!leftovers.includes(expected), "上传临时文件已清理");
+});
+
+
+test("console actions: 上传导入保留原文件名并追加年月日时分", async () => {
+  const { deps, rootPath, store, runtime } = await setup();
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["TC", "Modules", "Test Case", "Test Step", "Expected Result"]);
+  sheet.addRow(["TC-1", "Login", "Login by password", "Submit credentials", "Home shown"]);
+  const content = Buffer.from(await workbook.xlsx.writeBuffer());
+  const boundary = "----aos-name";
+  const body = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="login-cases.xlsx"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+    "utf8"
+  );
+  const rawBody = Buffer.concat([
+    body,
+    content,
+    Buffer.from(`\r\n--${boundary}--\r\n`, "utf8")
+  ]);
+  const response = await handlePanelActionRequest(
+    request(
+      "/panel/api/import",
+      { project: rootPath },
+      { rawBody, contentType: `multipart/form-data; boundary=${boundary}` }
+    ),
+    { ...deps, runtimeFor: async () => runtime }
+  );
+  assert.equal(response.status, 200, response.body);
+  const sets = await store.listCaseSets(rootPath);
+  assert.equal(sets.length, 1);
+  assert.match(sets[0].basename, /^login-cases_\d{12}$/);
 });
