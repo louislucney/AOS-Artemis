@@ -1116,6 +1116,31 @@ test("createWebJob: 过期脚本按当前 Excel 自动重建", async () => {
   }
 });
 
+test("createWebJob: 非预期的存储异常不伪装成 400", async () => {
+  const store = new MemoryStore();
+  const rootPath = await makeProject(store, "lazy-store-error");
+  const assets = await makeRealAssets(store, rootPath);
+  const failing = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === "createWebAsset") {
+        return async () => {
+          throw new Error("database down");
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  await assert.rejects(
+    createWebJob(
+      jobInput(failing, rootPath, assets, { scriptSetId: null })
+    ),
+    (error) =>
+      !(error instanceof WebJobDispatchError) &&
+      /database down/.test(error instanceof Error ? error.message : "")
+  );
+});
+
 test("createWebJob: 自动生成失败 → script-generation-failed，不建任务", async () => {
   const store = new MemoryStore();
   const rootPath = await makeProject(store, "lazy-bad-excel");

@@ -331,10 +331,7 @@ async function generateScriptForJob(input: {
     if (error instanceof ScriptGenerationError || error instanceof ScriptSetStoreError) {
       throw new WebJobDispatchError("script-generation-failed", error.message);
     }
-    throw new WebJobDispatchError(
-      "script-generation-failed",
-      `生成脚本集失败：${errorMessage(error)}`
-    );
+    throw error;
   }
 }
 

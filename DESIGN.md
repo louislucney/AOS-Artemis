@@ -3679,7 +3679,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-11-04。外部评审「小修后通过（无 K）」后修订并实施 P0（R1/R2/R3/R4/R11）；完整方案见 `docs/superpowers/specs/2026-11-04-data-source-restrictions-design.md` v2。旧平台 spec（2026-10-28）的 `allowPartialUnresolved` 默认值已被本节取代。
 
-- **状态**：P0 已实现；全量 3036 测试绿、lint 0 error。R5/R6/R7/R10 与 L2/L6 仍待排期。
+- **状态**：P0 已实现；全量 3037 测试绿、lint 0 error。R5/R6/R7/R10 与 L2/L6 仍待排期。
 - **数据源归项目，执行归主机**：套件回归的来源读取不再依赖目标主机是否登记项目；目标主机未登记时仍禁止执行，但来源可见并显式示因（`DispatchPreview.sourceStore{tier,hostId,error}`，读取失败不回落空下拉）。目标主机登记项目时永远读目标 store，保持预览/执行一致。
 - **脚本集惰性生成**：Web 测试不选脚本集也可下发；`createWebJob` 在 maestro 且无脚本时按当前 Excel/包以 rules-only + bestEffort + precondition auto + inferNavigationTap 生成；`runnable=0` 才拒绝。生成失败映射 400 `script-generation-failed`，墙钟超时 400 `script-generation-timeout`（`AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` 默认 30000，0 关闭），未预期异常仍 500 并留审计。
 - **幂等**：`web_assets.dedupe_key` 可空列 + `(root_path,kind,dedupe_key)` 唯一索引；生成的脚本集写 sha256，普通上传保持 NULL（不改变“重复上传=新版本”语义）。`storeScriptSet` 在文件锁内查/插，Postgres 命中 23505 时读回已有行；不新增 PG advisory lock。生成 manifest 无时间戳/随机字段，同输入 sha 稳定（测试守卫）。
