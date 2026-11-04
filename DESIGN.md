@@ -3686,6 +3686,15 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **过期重建**：显式脚本集与当前 Excel/包/平台不匹配（含未声明绑定）时，默认自动重建并替换；响应带 `rebuiltScriptSet{from,to}`、warning `script-set-rebuilt`，审计 `web.scripts.generate` 的 `trigger=rebuild`；重建失败 409 `script-set-rebuild-failed`。`allowStaleScript:true` 保留旧脚本并 warning `stale-script`。
 - **过滤生效**：脚本 manifest 的每个 case 带 `module` 与 `flow`；runner 从 `flowsDir` 父目录读 manifest，按 `caseIds`（原始 caseId，支持中文/空格）与 `modules` 过滤，并把选中的 flow 文件路径传给 Maestro（不再只过滤结果映射）；旧 manifest 回退 stem 匹配，无 manifest 的模块过滤仍显式 `case-filter-modules-unsupported`。
 - **评审后修复**：旧 PG schema 先 `ALTER TABLE ... ADD COLUMN` 再建 dedupe 唯一索引（避免 SCHEMA 先跑导致升级失败）；runner 解压 `manifest.json`＋`flows/` 到 jobDir 同级（否则嵌套 `flows/flows` 导致 `no-flow-files`）；目标主机未登记但 owner 有用例集时来源下拉保持可用；`storeScriptSet` 加跨进程文件锁；全不可用错误带逐例 caseId；面板手工生成超时映射 400 `script-generation-timeout`；中文/空格 caseId 的截图按 flow stem 映射；显式脚本 `runnable=0` 拒绝；`executionMode=llm` 不触发脚本重建。未就绪用例实际写 `SKIP（未执行）`。
+
+### 13.303 新增（Web 下发过滤预览：匹配数 / 未就绪数）
+
+> 2026-11-04。接 §13.302 R7/L5：过滤条件填了不匹配值时，不再等到结果页才发现。
+
+- **端点**：`GET /panel/api/jobs/script-preview?project=&excelAssetId=&packageAssetId=&platform=&caseModules=&caseIds=`（只读，viewer 也可用）。内部 `generateScriptSetForProject({dryRun:true,bestEffort:true,preconditionMode:"auto",inferNavigationTap:true})`，rules-only、不写 scripts 资产、不调 LLM。
+- **返回**：`matched`（过滤后用例数）、`filteredOut`（总用例−匹配）、`ready`/`partial`/`unresolved`/`runnable`、`unresolvedByCode`、`warnings`。`caseModules`/`caseIds` 支持逗号分隔与重复参数；两者同时给时取交集。
+- **面板**：用例范围下方「检查匹配」按钮；显示“匹配 N 条：可执行 X（完整 Y / 部分 Z）/ 未就绪 U（将 SKIP）”，0 条时提示检查模块/用例 ID；不选 Excel/安装包时提示先选择。
+- **测试**：`web-dispatch-ui` 覆盖匹配/过滤数、未知模块 0 条、dry-run 不写资产、坏 Excel → 400 `excel-unreadable`、表单按钮/端点存在；全量 3038 绿。
 - **默认值表（唯一事实源）**：
 
 | 配置 | 默认 | 显式值/说明 |

@@ -259,6 +259,8 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
   assert.match(html, /id="web-job-allow-partial"[^>]*checked/, "部分下发默认勾选");
   assert.match(html, /未就绪用例写 SKIP/, "默认行为有文案说明");
   assert.match(html, /不指定时下发自动生成/, "脚本集可留空");
+  assert.match(html, /id="web-job-check"/, "过滤匹配预览按钮");
+  assert.match(html, /\/panel\/api\/jobs\/script-preview/, "脚本预览端点");
   const ownScripts = inlineScripts(html).filter((code) => code.includes("/panel/api/jobs"));
   assert.equal(ownScripts.length, 1, "下发表单脚本存在");
   assert.match(ownScripts[0], /allowPartialUnresolved\s*=/, "表单始终提交布尔值");
@@ -522,6 +524,80 @@ test("POST jobs: 过期脚本重建后返回 from/to 并写 trigger=rebuild 审�
   assert.match(audit.summary, /trigger=rebuild/);
   assert.equal(audit.refs.from, script.id);
   assert.equal(audit.refs.assetId, payload.script.id);
+});
+
+test("GET jobs/script-preview: 返回匹配/未就绪计数且不写脚本资产", async (t) => {
+  const { deps, store, rootPath, pkg } = await setup(t);
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例编号", "用例名称", "操作步骤", "预期结果", "所属模块"]);
+  sheet.addRow(["TC-1", "登录", "1. 启动 App", '页面显示"成功"', "登录"]);
+  sheet.addRow(["TC-2", "支付", "1. 启动 App", '页面显示"成功"', "支付"]);
+  const excel = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "preview.xlsx",
+    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
+  });
+  const url = new URL("http://localhost/panel/api/jobs/script-preview");
+  url.searchParams.set("project", rootPath);
+  url.searchParams.set("excelAssetId", excel.id);
+  url.searchParams.set("packageAssetId", pkg.id);
+  url.searchParams.set("platform", "android");
+  url.searchParams.set("caseModules", "登录");
+  const response = await handlePanelActionRequest(
+    {
+      method: "GET",
+      url,
+      identity: { name: "alice", role: "dispatcher", source: "user" }
+    },
+    deps
+  );
+  assert.equal(response.status, 200, response.body);
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.matched, 1);
+  assert.equal(payload.filteredOut, 1);
+  assert.ok(payload.ready >= 1);
+  const generated = (await store.listWebAssets(rootPath, "scripts")).filter(
+    (asset) => asset.metadata?.origin === "generated"
+  );
+  assert.equal(generated.length, 0, "dry-run 不写脚本资产");
+
+  url.searchParams.set("caseModules", "不存在");
+  const none = JSON.parse(
+    (
+      await handlePanelActionRequest(
+        {
+          method: "GET",
+          url,
+          identity: { name: "alice", role: "dispatcher", source: "user" }
+        },
+        deps
+      )
+    ).body
+  );
+  assert.equal(none.matched, 0);
+  assert.equal(none.filteredOut, 2);
+
+  const broken = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "broken.xlsx",
+    buffer: Buffer.from([0, 1, 2, 3])
+  });
+  url.searchParams.set("excelAssetId", broken.id);
+  const bad = await handlePanelActionRequest(
+    {
+      method: "GET",
+      url,
+      identity: { name: "alice", role: "dispatcher", source: "user" }
+    },
+    deps
+  );
+  assert.equal(bad.status, 400);
+  assert.equal(JSON.parse(bad.body).code, "excel-unreadable");
 });
 
 test("job detail shows device, package, cases, evidence links and writeback status", async (t) => {

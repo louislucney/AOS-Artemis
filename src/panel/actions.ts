@@ -471,6 +471,9 @@ export async function handlePanelActionRequest(
   if (request.url.pathname === "/panel/api/jobs/preview") {
     return await previewWebJobAction(deps, request);
   }
+  if (request.url.pathname === "/panel/api/jobs/script-preview") {
+    return await previewWebScriptAction(deps, request);
+  }
   if (request.method !== "POST" && !isExportDownload) {
     return json(405, { error: "method not allowed (POST)" });
   }
@@ -2182,6 +2185,120 @@ async function previewWebJobAction(
       reasons: selection.reasons
     }
   });
+}
+
+/** 只读过滤预览：dry-run 生成（不写资产），返回匹配数与未就绪计数。 */
+async function previewWebScriptAction(
+  deps: PanelWebDeps,
+  request: PanelActionRequest
+): Promise<PanelWebResponse> {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return json(405, { ok: false, error: "method not allowed (GET)" });
+  }
+  const params = request.url.searchParams;
+  const projectKey = (params.get("project") ?? "").trim();
+  if (projectKey === "") return json(400, { ok: false, error: "缺少 project" });
+  const hostParam = (params.get("host") ?? "").trim();
+  let resolved: Awaited<ReturnType<typeof resolveProjectKey>>;
+  try {
+    resolved = await resolveProjectKey(
+      deps,
+      projectKey,
+      hostParam === "" ? undefined : hostParam
+    );
+  } catch (error) {
+    if (error instanceof AmbiguousProjectError) {
+      return json(409, { ok: false, error: error.message });
+    }
+    throw error;
+  }
+  if (resolved === null) {
+    return json(404, { ok: false, error: `未知项目 "${projectKey}"` });
+  }
+  const excelAssetId = (params.get("excelAssetId") ?? "").trim();
+  const packageAssetId = (params.get("packageAssetId") ?? "").trim();
+  if (excelAssetId === "" || packageAssetId === "") {
+    return json(400, { ok: false, error: "缺少 excelAssetId/packageAssetId" });
+  }
+  const platformRaw = (params.get("platform") ?? "").trim();
+  if (platformRaw !== "" && platformRaw !== "android" && platformRaw !== "ios") {
+    return json(400, { ok: false, error: "platform 须为 android/ios" });
+  }
+  const platform = platformRaw === "ios" ? "ios" : "android";
+  const readList = (name: string): string[] =>
+    panelStringList(
+      params
+        .getAll(name)
+        .flatMap((value) => value.split(","))
+        .map((value) => value.trim())
+        .filter((value) => value !== "")
+    );
+  const caseFilter = normalizeCaseFilter({
+    modules: readList("caseModules"),
+    caseIds: readList("caseIds")
+  });
+  const store =
+    resolved.hostId === null
+      ? deps.store
+      : (deps.storeForHost?.(resolved.hostId) ?? deps.store);
+  const webProject = await store.getWebProject(resolved.rootPath);
+  if (webProject === null) {
+    return json(404, { ok: false, error: "不是托管 Web 项目" });
+  }
+  if (webProject.status !== "active") {
+    return json(409, { ok: false, error: `项目已归档（status=${webProject.status}）` });
+  }
+  try {
+    const result = await generateScriptSetForProject({
+      store,
+      rootPath: resolved.rootPath,
+      excelAssetId,
+      packageAssetId,
+      platform,
+      appId: webProject.appPackage ?? null,
+      preconditionMode: "auto",
+      bestEffort: true,
+      inferNavigationTap: true,
+      dryRun: true
+    });
+    const modules = new Set(caseFilter.modules);
+    const caseIds = new Set(caseFilter.caseIds);
+    const matchedCases = result.manifest.cases.filter(
+      (entry) =>
+        (modules.size === 0 || (entry.module !== null && modules.has(entry.module))) &&
+        (caseIds.size === 0 || caseIds.has(entry.caseId))
+    );
+    const ready = matchedCases.filter(
+      (entry) => entry.status === "ready" && !entry.partial
+    ).length;
+    const partial = matchedCases.filter(
+      (entry) => entry.status === "ready" && entry.partial
+    ).length;
+    const unresolved = matchedCases.filter((entry) => entry.status === "unresolved").length;
+    const unresolvedByCode: Record<string, number> = {};
+    for (const entry of matchedCases) {
+      for (const item of entry.unresolved) {
+        unresolvedByCode[item.code] = (unresolvedByCode[item.code] ?? 0) + 1;
+      }
+    }
+    return json(200, {
+      ok: true,
+      dryRun: true,
+      matched: matchedCases.length,
+      filteredOut: result.manifest.cases.length - matchedCases.length,
+      ready,
+      partial,
+      unresolved,
+      runnable: ready + partial,
+      unresolvedByCode,
+      normalizer: result.normalizer,
+      warnings: result.normalizerWarnings
+    });
+  } catch (error) {
+    const response = scriptGenerationErrorResponse(error);
+    if (response !== null) return response;
+    throw error;
+  }
 }
 
 async function saveVerdicts(
