@@ -250,7 +250,9 @@ export async function computeDispatchPreview(
     if (rootPath !== "") {
       const targetProject = await targetStore.getProjectByPath(rootPath).catch(() => null);
       if (targetProject === null) {
-        warnings.push(`主机「${targetHost.id}」未登记项目「${rootPath}」：请先在目标机接入项目`);
+        warnings.push(
+          `主机「${targetHost.id}」未登记项目「${rootPath}」：套件回归需要项目目录；请先在目标机接入项目（网页测试不需要登记）`
+        );
         hostBlocked = true;
       }
     }
@@ -496,7 +498,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const projectSelect = [
     `<p><label>项目 <select name="project" aria-label="项目">${projectOptionsHtml}</select></label> <span class="muted">先选主机，再选该主机上的项目。</span></p>`,
     noProjects
-      ? `<p class="muted">该主机尚未登记项目：请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>；如果是给手机下发网页测试，请用 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=jobs${dispatchHostQuery.replace(/&/g, "&amp;")}">网页测试</a>，不要用套件下发。</p>`
+      ? `<p class="muted">该主机尚未登记项目：套件回归需要项目目录，请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>；如果是给手机下发网页测试，<strong>不需要登记项目</strong>，直接用 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=jobs${dispatchHostQuery.replace(/&/g, "&amp;")}">网页测试</a>。</p>`
       : ""
   ]
     .filter((part) => part !== "")
@@ -512,13 +514,20 @@ export function renderDispatchPage(view: DispatchView): string {
     view.rootPath === ""
       ? `/panel?section=jobs${dispatchHostQuery}`
       : `/panel?project=${encodeURIComponent(view.rootPath)}&section=jobs${dispatchHostQuery}`;
+  const hostProjectCallout = noProjects
+    ? `<div class="c-flow-callout"><div><strong>该主机未登记项目，套件回归没有可用用例集。</strong><p>Excel/APK 网页测试不需要在该主机登记项目，直接去网页测试即可；如果要在该主机跑套件回归，请先在该主机接入项目。</p></div><a class="c-button c-button-primary" href="${escapeHtml(webJobsHref)}">去网页测试 →</a></div>`
+    : "";
+  const sourceEmpty = noProjects
+    ? `<p class="muted">该主机未登记项目，套件回归没有可用用例集。网页测试不需要登记项目：<a href="${escapeHtml(webJobsHref)}">去网页测试</a>；或先在该主机接入项目。</p>`
+    : "";
   const sourceBody = [
     '<fieldset class="c-fieldset"><legend>来源</legend>',
     `<label class="dispatch-option"><input type="radio" name="source" value="case-set"${mode === "case-set" ? " checked" : ""}> 用例库选用例集</label>`,
     `<label class="dispatch-option"><input type="radio" name="source" value="keyword"${mode === "keyword" ? " checked" : ""}> 功能关键词</label>`,
     "</fieldset>",
-    `<div id="dispatch-field-ref"><p><label>用例集 <select name="ref" aria-label="用例集"><option value="">（选择用例集）</option>${setOptions}</select></label></p></div>`,
+    `<div id="dispatch-field-ref"><p><label>用例集 <select name="ref" aria-label="用例集"${noProjects ? " disabled" : ""}><option value="">（选择用例集）</option>${setOptions}</select></label></p></div>`,
     `<div id="dispatch-field-keyword"><p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label></p></div>`,
+    sourceEmpty,
     view.rootPath === ""
       ? `<p class="muted">先选择项目；Excel 用例导入在用例库，网页测试资产在「网页测试」。</p>`
       : `<p class="muted">Excel 用例还没进用例库？<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=library#library-import">去用例库导入 Excel</a>；网页测试的 Excel/安装包/脚本资产请走 <a href="${escapeHtml(webJobsHref)}">网页测试</a>，不要用套件下发。</p>`
@@ -673,7 +682,7 @@ go.addEventListener('click',function(){
     : [
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（用例集明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
         noProjects
-          ? `<p class="note">该主机尚未登记项目：请先在该主机接入项目并刷新本页；设备连接状态见 <a href="/panel?section=devices">设备页</a>。</p>`
+          ? `<p class="note">该主机尚未登记项目：套件回归需要项目目录；请先在该主机接入项目并刷新本页（网页测试不需要登记）。设备连接状态见 <a href="/panel?section=devices">设备页</a>。</p>`
           : projectMissing
             ? `<p class="note">请先选择该主机上的项目，再刷新预览。</p>`
             : needsHostPick && !legacyHostless
@@ -707,7 +716,7 @@ go.addEventListener('click',function(){
     body: [
       "<h1>套件回归</h1>",
       flowSwitch,
-      installCallout,
+      hostProjectCallout === "" ? installCallout : hostProjectCallout,
       `<p class="muted"><code>${escapeHtml(view.rootPath === "" ? "未选择项目" : view.rootPath)}</code> · 套件回归：来源 → 参数 → 预览回显 → 确认派发；网页测试走独立流程。</p>`,
       `<form id="dispatch-form" method="get" action="/panel">`,
       `<input type="hidden" name="section" value="dispatch">`,

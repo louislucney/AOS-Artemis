@@ -326,6 +326,10 @@ test("仅按主机进入且该主机无项目：空态而非 404", async () => {
   assert.equal(res.status, 200);
   const html = String(res.body);
   assert.match(html, /该主机尚未登记项目/);
+  assert.match(html, /不需要登记项目/, "说明网页测试不需要项目登记");
+  assert.match(html, /套件回归没有可用用例集/, "来源空态解释原因");
+  assert.match(html, /去网页测试/, "来源空态给出网页测试出口");
+  assert.match(html, /<select name="ref"[^>]*disabled/, "无项目时禁用用例集选择");
   assert.match(html, /<select name="project" aria-label="项目">/);
   assert.match(html, /id="dispatch-submit"[^>]*disabled/);
   assert.match(html, /section=jobs&amp;host=h-empty/, "网页测试链接保留主机");

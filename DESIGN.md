@@ -3632,5 +3632,6 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **网页测试项目选择**：`section=jobs&host=X` 且未选项目时，`buildView` 保留 `hostParam`；项目选择链接用 `data.hostId ?? choice.hostId`，选项目后不再丢主机。
 - **套件空态 CTA**：无项目主机的「网页测试」链接带当前 host（`dispatchHostQuery`），不再跳到无 host 的 jobs 页。
 - **设备页任务链接**：设备上运行中的 web job 详情链接带 `host=<设备所属主机>`。
+- **套件来源空态**：目标主机未登记项目时，来源卡片不再只渲染空下拉；用例集选择禁用，显示「该主机未登记项目，套件回归没有可用用例集」，顶部 callout 直接给出去网页测试的 CTA（保留 host）。用例集仍从**目标主机作用域 store**读取，不把其他主机/项目的数据串过来。
 - **审计结论**：套件链路（`computeDispatchPreview`、面板 `createTask`、`suite-service`）的「未登记项目」是套件 runner 需要项目目录/用例集的前提；网页测试是 host 级执行，不要求项目登记。已验证 `section=jobs/assets/library` + `host=win-mini-01` + ESSO-GU 均 200，`/panel/api/jobs/preview` 返回该主机的设备。`usage --host` 的项目过滤只影响查询，不阻断执行。顶部项目切换器仍按项目自身 host 导航（全局导航，不携带当前执行 host）。
-- **测试**：`test/web-dispatch-ui.test.js` 新增「无项目 jobs 页保留 host」；`test/panel-dispatch-project-priority.test.js` 新增空态 CTA 保留 host；全量 3014 绿，lint 0 error。
+- **测试**：`test/web-dispatch-ui.test.js` 新增「无项目 jobs 页保留 host」；`test/panel-dispatch-project-priority.test.js` 覆盖空态 CTA 保留 host、来源空态原因/禁用/网页测试出口；全量 3014 绿，lint 0 error。
