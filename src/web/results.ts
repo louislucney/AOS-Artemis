@@ -1246,7 +1246,9 @@ async function ingestUnderJobLock(
   if (spec.executionMode === "llm") {
     const missing: string[] = [];
     if (payload.tokenUsage.length === 0) missing.push("tokenUsage");
-    if (payload.tokenArtifacts.dataEngineDb === undefined) missing.push("dataEngineDb");
+    if (spec.requirements.platform !== "ios" && payload.tokenArtifacts.dataEngineDb === undefined) {
+      missing.push("dataEngineDb");
+    }
     if (payload.tokenArtifacts.statusJson === undefined) missing.push("statusJson");
     if (missing.length === 0 && tokenArtifacts === null) missing.push("原始工件写入失败");
     if (missing.length > 0) {

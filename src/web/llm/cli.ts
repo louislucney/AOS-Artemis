@@ -7,6 +7,7 @@ import { resolveHostIdentity } from "../../host/identity.js";
 import { errorMessage } from "../../util.js";
 import { recordLlmWorkerHeartbeat } from "./heartbeat.js";
 import { executeAndroidLlmCase } from "./artemis-case.js";
+import { executeIosLlmCase } from "./ios-case.js";
 import { ingestLlmResults } from "./ingest.js";
 import { loadLlmCases } from "./cases.js";
 import { loadWebSecrets, writeWebSecretFile } from "./secrets.js";
@@ -107,7 +108,9 @@ export async function runLlmWorkerCli(
       else delete process.env.AOS_LLM_HOOKS_ACTIVE;
       await writeWebSecretFile({ rootPath: job.rootPath, secrets });
       const appPath =
-        pkg?.kind === "package" && pkg.filename.toLowerCase().endsWith(".apk")
+        pkg?.kind === "package" &&
+        (pkg.filename.toLowerCase().endsWith(".apk") ||
+          pkg.filename.toLowerCase().endsWith(".ipa"))
           ? pkg.storagePath
           : null;
       return { runtime, secrets, appPackage: web?.appPackage ?? null, appPath };
@@ -116,6 +119,26 @@ export async function runLlmWorkerCli(
       loadLlmCases({ store, rootPath: job.rootPath, job }),
     executeCase: async ({ job, testCase, prepared, signal }) => {
       const context = prepared as PreparedLlmJob;
+      if (job.spec.requirements.platform === "ios") {
+        if (job.spec.requirements.deviceKind === "simulator") {
+          return {
+            caseId: testCase.caseId,
+            ...(testCase.name === undefined ? {} : { name: testCase.name }),
+            status: "ERROR",
+            durationMs: 0,
+            failureReason: "ios-remote-simulator-unsupported"
+          };
+        }
+        return executeIosLlmCase({
+          proxy: context.runtime.runtime.proxy,
+          traceDir: (traceId) => context.runtime.runtime.traceDir(traceId),
+          testCase,
+          deviceSerial: job.deviceSerial,
+          appPackage: context.appPackage,
+          appPath: context.appPath,
+          signal
+        });
+      }
       return executeAndroidLlmCase({
         proxy: context.runtime.runtime.proxy,
         traceDir: (traceId) => context.runtime.runtime.traceDir(traceId),
