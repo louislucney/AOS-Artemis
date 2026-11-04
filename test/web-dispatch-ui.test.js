@@ -262,6 +262,7 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
   assert.match(html, /id="web-job-check"/, "过滤匹配预览按钮");
   assert.match(html, /id="web-job-gateway-hint"/, "LLM gateway 状态");
   assert.match(html, /id="web-job-allow-unverified"/, "无预期列确认");
+  assert.match(html, /id="web-job-reference"/, "L2 参考图绑定");
   assert.match(html, /设备网关 ready/, "gateway 计数文案");
   assert.match(html, /\/panel\/api\/jobs\/script-preview/, "脚本预览端点");
   const ownScripts = inlineScripts(html).filter((code) => code.includes("/panel/api/jobs"));

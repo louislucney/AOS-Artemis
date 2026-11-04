@@ -38,6 +38,8 @@ export interface WebJobSpec {
   excelAssetId: string;
   packageAssetId: string;
   materialsAssetId: string | null;
+  /** 可选 L2 reference 图片资产（job 级；P1 逐例绑定再扩展）。 */
+  referenceAssetId: string | null;
   scriptSetId: string | null;
   executionMode: WebJobExecutionMode;
   caseFilter: WebJobCaseFilter;
@@ -351,6 +353,7 @@ export function parseWebJobSpec(value: Record<string, unknown> | null): WebJobSp
     excelAssetId: value.excelAssetId,
     packageAssetId: value.packageAssetId,
     materialsAssetId: nonEmpty(value.materialsAssetId),
+    referenceAssetId: nonEmpty(value.referenceAssetId),
     scriptSetId: nonEmpty(value.scriptSetId),
     executionMode: value.executionMode,
     caseFilter: normalizeCaseFilter(value.caseFilter),
@@ -372,5 +375,11 @@ export function parseWebJobSpec(value: Record<string, unknown> | null): WebJobSp
 }
 
 function isAssetKind(value: string): value is WebAssetKind {
-  return value === "excel" || value === "package" || value === "materials" || value === "scripts";
+  return (
+    value === "excel" ||
+    value === "package" ||
+    value === "materials" ||
+    value === "reference" ||
+    value === "scripts"
+  );
 }

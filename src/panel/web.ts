@@ -178,6 +178,22 @@ export function panelCacheTtlFrom(env: NodeJS.ProcessEnv): number {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : PANEL_CACHE_TTL_DEFAULT_MS;
 }
 
+/** 浏览器 reload/自动轮询显式要求新数据时绕过进程内短缓存（写动作已 clear，外部变化没有）。 */
+export function panelRequestNoCache(
+  headers: Record<string, string | string[] | undefined>
+): boolean {
+  const header = (name: string): string => {
+    const value = headers[name];
+    return (Array.isArray(value) ? value[0] ?? "" : value ?? "").trim().toLowerCase();
+  };
+  return (
+    header("x-aos-no-cache") === "1" ||
+    header("cache-control").includes("no-cache") ||
+    header("cache-control").includes("max-age=0") ||
+    header("pragma").includes("no-cache")
+  );
+}
+
 type PanelView =
   | { kind: "overview"; overview: PanelOverview }
   | { kind: "compare"; compare: PanelCompareView }
@@ -212,7 +228,7 @@ type PanelView =
       packages: WebAssetRecord[];
       scripts: WebAssetRecord[];
       materials: WebAssetRecord[];
-      uploadKind?: "excel" | "package" | "materials";
+      uploadKind?: "excel" | "package" | "materials" | "reference";
       mappings: ExcelMappingRecord[];
     }
   | {
@@ -548,7 +564,7 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
 }
 
 async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
-  let projectKey = trimmed(url.searchParams.get("project"));
+  const projectKey = trimmed(url.searchParams.get("project"));
   const hostParam = trimmed(url.searchParams.get("host"));
   const sectionParam = trimmed(url.searchParams.get("section"));
   if (sectionParam === "search") {
@@ -562,37 +578,29 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   }
 
   if (projectKey === null && sectionParam === "dispatch" && hostParam !== null) {
-    const projects = (await deps.store.listProjects().catch(() => []))
-      .filter((project) => project.hostId === hostParam)
-      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
-    const picked = projects[0];
-    if (picked !== undefined) {
-      projectKey = picked.rootPath;
-    } else {
-      const query: Record<string, string> = {};
-      for (const [key, value] of url.searchParams) query[key] = value;
-      const preview = await computeDispatchPreview(
-        {
-          store: deps.store,
-          env: deps.env ?? process.env,
-          ...(deps.storeForHost ? { storeForHost: deps.storeForHost } : {})
-        },
-        "",
-        url.searchParams
-      );
-      const formSignature = dispatchFormSignature(url.searchParams);
-      return {
-        kind: "dispatch",
-        rootPath: "",
-        hostId: hostParam,
-        legacyHostless: false,
-        rootLabel: "未选择项目",
-        preview,
-        previewId: dispatchPreviewId(preview, formSignature),
-        formSignature,
-        query
-      };
-    }
+    const query: Record<string, string> = {};
+    for (const [key, value] of url.searchParams) query[key] = value;
+    const preview = await computeDispatchPreview(
+      {
+        store: deps.store,
+        env: deps.env ?? process.env,
+        ...(deps.storeForHost ? { storeForHost: deps.storeForHost } : {})
+      },
+      "",
+      url.searchParams
+    );
+    const formSignature = dispatchFormSignature(url.searchParams);
+    return {
+      kind: "dispatch",
+      rootPath: "",
+      hostId: hostParam,
+      legacyHostless: false,
+      rootLabel: "未选择项目",
+      preview,
+      previewId: dispatchPreviewId(preview, formSignature, ""),
+      formSignature,
+      query
+    };
   }
 
   if (sectionParam === "jobs" && projectKey === null) {
@@ -670,7 +678,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       legacyHostless: legacyRecord !== null && legacyRecord.hostId === null,
       rootLabel: resolved.name,
       preview,
-      previewId: dispatchPreviewId(preview, formSignature),
+      previewId: dispatchPreviewId(preview, formSignature, resolved.rootPath),
       formSignature,
       query
     };
@@ -686,7 +694,9 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     ]);
     const uploadKindRaw = trimmed(url.searchParams.get("kind"));
     const uploadKind =
-      uploadKindRaw === "package" || uploadKindRaw === "materials" ? uploadKindRaw : "excel";
+      uploadKindRaw === "package" || uploadKindRaw === "materials" || uploadKindRaw === "reference"
+        ? uploadKindRaw
+        : "excel";
     return {
       kind: "web-assets",
       rootPath: resolved.rootPath,
@@ -1137,7 +1147,11 @@ export async function handlePanelHostsRequest(deps: PanelWebDeps): Promise<Panel
   };
 }
 
-export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<PanelWebResponse> {
+export async function handlePanelRequest(
+  url: URL,
+  deps: PanelWebDeps,
+  options?: { noCache?: boolean }
+): Promise<PanelWebResponse> {
   const env = deps.env ?? process.env;
   if (!panelWebEnabled(env)) {
     return url.pathname === "/panel/api/hosts" ? notFound("not found", true) : notFound();
@@ -1147,7 +1161,7 @@ export async function handlePanelRequest(url: URL, deps: PanelWebDeps): Promise<
 
   // 角色影响能力/按钮可见性：缓存必须按角色隔离，避免 viewer 命中 admin 页面。
   const cacheKey = `${url.pathname}${url.search}|role=${deps.capabilities?.role ?? ""}`;
-  const cached = deps.cache?.get(cacheKey);
+  const cached = options?.noCache === true ? undefined : deps.cache?.get(cacheKey);
   if (cached) return cached;
 
   let view: PanelView;
@@ -1462,11 +1476,11 @@ function renderCreateProjectCard(): string {
     ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
     : "";
   const form = [
-    `<form id="create-project-form">`,
+    `<form id="create-project-form" class="c-form">`,
     `<p><label>项目名称 <input type="text" name="name" placeholder="例如：星巴克咖啡" aria-label="项目名称"${disabledAttr}></label>`,
     ` <span class="muted">平台</span>`,
-    ` <label><input type="checkbox" name="platform" value="android"${disabledAttr}> Android</label>`,
-    ` <label><input type="checkbox" name="platform" value="ios"${disabledAttr}> iOS</label>`,
+    ` <label class="c-form-check"><input type="checkbox" name="platform" value="android"${disabledAttr}> Android</label>`,
+    ` <label class="c-form-check"><input type="checkbox" name="platform" value="ios"${disabledAttr}> iOS</label>`,
     ` <label>应用包名 <input type="text" name="appPackage" placeholder="com.example.app" aria-label="应用包名"${disabledAttr}></label>`,
     ` <label>客户名称（可选） <input type="text" name="customerName" placeholder="客户" aria-label="客户名称（可选）"${disabledAttr}></label>`,
     ` <button class="c-button c-button-primary" type="submit"${disabledAttr}>创建项目</button> <span id="create-project-status" role="status" class="muted"></span></p>`,

@@ -129,6 +129,35 @@ test("storeWebAsset: scripts 仅接受 .zip（.yaml 被拒）", async (t) => {
   assert.equal((await listWebAssets(store, rootPath, "scripts")).length, 1);
 });
 
+test("storeWebAsset: reference 接受图片并拒绝其它扩展名", async (t) => {
+  const root = await tempDir(t, "aos-reference-");
+  const rootPath = path.join(root, "acme");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await makeProject(store, rootPath);
+  const asset = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "reference",
+    filename: "login.png",
+    buffer: Buffer.from("png-bytes")
+  });
+  assert.equal(asset.kind, "reference");
+  assert.match(asset.storagePath, /\.artemis[/\\]web[/\\]assets[/\\]reference[/\\]/);
+  assert.equal((await listWebAssets(store, rootPath, "reference")).length, 1);
+  await assert.rejects(
+    () =>
+      storeWebAsset({
+        store,
+        rootPath,
+        kind: "reference",
+        filename: "login.xlsx",
+        buffer: Buffer.from("x")
+      }),
+    (error) => error instanceof WebAssetError && error.code === "invalid-extension"
+  );
+});
+
 test("storeWebAsset: materials 接受 .zip/.json/.csv/.txt", async (t) => {
   const workspace = await tempDir(t, "aos-kinds-");
   const rootPath = path.join(workspace, "acme");

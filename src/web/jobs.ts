@@ -44,6 +44,7 @@ export interface CreateWebJobInput extends WebJobContext {
   excelAssetId: string;
   packageAssetId: string;
   materialsAssetId?: string | null;
+  referenceAssetId?: string | null;
   scriptSetId?: string | null;
   executionMode: WebJobExecutionMode;
   caseFilter: { modules: string[]; caseIds: string[] };
@@ -158,6 +159,7 @@ function assetLabel(kind: string): string {
   if (kind === "excel") return "Excel";
   if (kind === "package") return "安装包";
   if (kind === "materials") return "测试资料";
+  if (kind === "reference") return "参考图";
   return "脚本集";
 }
 
@@ -391,6 +393,14 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
       ? input.materialsAssetId.trim()
       : null
   );
+  const reference = await loadAsset(
+    input.store,
+    input.rootPath,
+    "reference",
+    typeof input.referenceAssetId === "string" && input.referenceAssetId.trim() !== ""
+      ? input.referenceAssetId.trim()
+      : null
+  );
   const scriptId =
     typeof input.scriptSetId === "string" && input.scriptSetId.trim() !== ""
       ? input.scriptSetId.trim()
@@ -555,7 +565,9 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
         };
 
   const snapshot: WebAssetSnapshot[] = buildAssetSnapshot(
-    [excel!, pkg!, materials, script].filter((asset): asset is WebAssetRecord => asset !== null)
+    [excel!, pkg!, materials, reference, script].filter(
+      (asset): asset is WebAssetRecord => asset !== null
+    )
   );
   const retry = typeof input.retry === "number" && input.retry >= 0 ? Math.trunc(input.retry) : 0;
   const spec: WebJobSpec = {
@@ -569,6 +581,7 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
     excelAssetId: excel!.id,
     packageAssetId: pkg!.id,
     materialsAssetId: materials?.id ?? null,
+    referenceAssetId: reference?.id ?? null,
     scriptSetId: script?.id ?? null,
     executionMode: combination.executionMode,
     caseFilter: normalizeCaseFilter(input.caseFilter),

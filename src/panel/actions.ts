@@ -1902,6 +1902,7 @@ interface PanelWebJobCreateInput extends PanelWebJobAssignment {
   excelAssetId: string;
   packageAssetId: string;
   materialsAssetId: string | null;
+  referenceAssetId: string | null;
   scriptSetId: string | null;
   retry: number;
   priority: number;
@@ -1953,6 +1954,7 @@ function parseWebJobCreateForm(
     return { ok: false, error: "优先级须为 0–100 的整数（priority）" };
   }
   const materialsAssetId = panelTextField(payload, "materialsAssetId");
+  const referenceAssetId = panelTextField(payload, "referenceAssetId");
   const scriptSetId = panelTextField(payload, "scriptSetId");
   const allowStaleScript =
     payload.allowStaleScript === true || payload.allowStaleScript === "true";
@@ -1971,6 +1973,7 @@ function parseWebJobCreateForm(
       excelAssetId,
       packageAssetId,
       materialsAssetId: materialsAssetId === "" ? null : materialsAssetId,
+      referenceAssetId: referenceAssetId === "" ? null : referenceAssetId,
       scriptSetId: scriptSetId === "" ? null : scriptSetId,
       retry,
       priority,
@@ -2009,6 +2012,7 @@ async function createWebJobAction(
       excelAssetId: input.excelAssetId,
       packageAssetId: input.packageAssetId,
       materialsAssetId: input.materialsAssetId,
+      referenceAssetId: input.referenceAssetId,
       scriptSetId: input.scriptSetId,
       executionMode: input.executionMode,
       caseFilter: input.caseFilter,

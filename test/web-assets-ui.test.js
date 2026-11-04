@@ -161,8 +161,8 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /<option value="materials">测试资料（materials）<\/option>/, "测试资料类型");
   assert.match(
     html,
-    /type="file"[^>]*accept="\.xlsx,\.csv,\.apk,\.ipa,\.zip,\.json,\.txt"/,
-    "允许 Excel/CSV/APK/IPA/测试资料"
+    /type="file"[^>]*accept="\.xlsx,\.csv,\.apk,\.ipa,\.zip,\.json,\.txt,\.png,\.jpg,\.jpeg,\.webp"/,
+    "允许 Excel/CSV/APK/IPA/测试资料/参考图"
   );
   assert.match(html, /id="asset-file"/, "文件控件");
   assert.match(html, /id="asset-drop"[^>]*class="c-dropzone"/, "拖放区");

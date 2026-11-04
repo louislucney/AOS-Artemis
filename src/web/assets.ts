@@ -17,6 +17,7 @@ const MAX_BYTES_BY_KIND: Record<WebAssetKind, number> = {
   excel: WEB_ASSET_MAX_BYTES,
   materials: 50 * MB,
   package: 200 * MB,
+  reference: 20 * MB,
   scripts: WEB_ASSET_MAX_BYTES
 };
 
@@ -24,6 +25,7 @@ const EXTENSIONS_BY_KIND: Record<WebAssetKind, readonly string[]> = {
   excel: [".xlsx", ".csv"],
   materials: [".zip", ".json", ".csv", ".txt"],
   package: [".apk", ".ipa"],
+  reference: [".png", ".jpg", ".jpeg", ".webp"],
   scripts: [".zip"]
 };
 
@@ -31,6 +33,7 @@ export const WEB_ASSET_KINDS: readonly WebAssetKind[] = [
   "excel",
   "materials",
   "package",
+  "reference",
   "scripts"
 ];
 

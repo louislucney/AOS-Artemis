@@ -1167,6 +1167,23 @@ test("createWebJob: 自动生成失败 → script-generation-failed，不建任�
   assert.equal((await store.listRegressionTasks(rootPath)).length, 0, "失败不建任务");
 });
 
+test("createWebJob: L2 参考图资产写入 jobSpec 与快照", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "reference-asset");
+    const assets = await makeAssets(store, rootPath);
+    const reference = await addAsset(store, rootPath, "reference", "login.png");
+    const created = await createWebJob(
+      jobInput(store, rootPath, assets, { referenceAssetId: reference.id })
+    );
+    assert.equal(created.task.jobSpec.referenceAssetId, reference.id);
+    assert.ok(
+      created.task.jobSpec.assetSnapshot.some(
+        (entry) => entry.kind === "reference" && entry.id === reference.id
+      )
+    );
+  }
+});
+
 test("createWebJob: LLM 无预期列默认拒绝，显式 allowUnverified 放行", async () => {
   const store = new MemoryStore();
   const rootPath = await makeProject(store, "llm-no-expectation");
