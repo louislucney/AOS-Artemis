@@ -162,6 +162,17 @@ test("mobile_run_task：Android 透传响应补空 warnings（双端同构）", 
   assert.deepEqual(payload.warnings, []);
 });
 
+test("runtime: iOS Appium URL 可按 host 覆盖", async () => {
+  const dir = makeTempProject({
+    config: baseConfig(),
+    dotenv: "AOS_APPIUM_URL=http://dotenv:4723"
+  });
+  const { runtime } = await loadTestRuntime(dir, {
+    iosAppiumUrl: "http://127.0.0.1:15038"
+  });
+  assert.equal(runtime.iosEnvironment().AOS_APPIUM_URL, "http://127.0.0.1:15038");
+});
+
 test("runtime: iOS 签名配置合并项目 .env（进程 env 覆盖）", async () => {
   const dir = makeTempProject({
     config: baseConfig(),

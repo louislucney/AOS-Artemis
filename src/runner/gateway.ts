@@ -37,6 +37,11 @@ export async function startDeviceGateway(
   const ssh = (input.env.AOS_GATEWAY_SSH_PATH ?? "").trim() || "ssh";
   const adbPort = portFrom(input.env.AOS_GATEWAY_ADB_PORT, 15037);
   const localAdbPort = portFrom(input.env.AOS_GATEWAY_LOCAL_ADB_PORT, 5037);
+  const appiumOverride = (input.env.AOS_GATEWAY_APPIUM_URL ?? "").trim();
+  const appiumConfigured =
+    appiumOverride !== "" || (input.env.AOS_GATEWAY_APPIUM_PORT ?? "").trim() !== "";
+  const appiumPort = portFrom(input.env.AOS_GATEWAY_APPIUM_PORT, 15038);
+  const localAppiumPort = portFrom(input.env.AOS_GATEWAY_LOCAL_APPIUM_PORT, 4723);
   const spawnChild =
     input.spawnChild ??
     ((command: string, args: string[]): GatewayChild =>
@@ -44,31 +49,45 @@ export async function startDeviceGateway(
   const reportedAt = new Date(input.now?.() ?? Date.now()).toISOString();
   let ready = true;
   let stopped = false;
-  const child = spawnChild(ssh, [
-    "-N",
-    "-o",
-    "ExitOnForwardFailure=yes",
-    "-o",
-    "ServerAliveInterval=15",
-    "-o",
-    "ServerAliveCountMax=3",
-    "-R",
-    `${adbPort}:127.0.0.1:${localAdbPort}`,
-    target
-  ]);
-  child.on("error", () => {
-    ready = false;
-  });
-  child.on("exit", (code, signal) => {
-    ready = false;
-    input.onExit?.(
-      typeof code === "number" ? code : null,
-      typeof signal === "string" ? signal : null
-    );
-  });
+  const children: GatewayChild[] = [];
+  const forward = (centerPort: number, localPort: number): void => {
+    const child = spawnChild(ssh, [
+      "-N",
+      "-o",
+      "ExitOnForwardFailure=yes",
+      "-o",
+      "ServerAliveInterval=15",
+      "-o",
+      "ServerAliveCountMax=3",
+      "-R",
+      `${centerPort}:127.0.0.1:${localPort}`,
+      target
+    ]);
+    children.push(child);
+    child.on("error", () => {
+      ready = false;
+    });
+    child.on("exit", (code, signal) => {
+      ready = false;
+      input.onExit?.(
+        typeof code === "number" ? code : null,
+        typeof signal === "string" ? signal : null
+      );
+    });
+  };
+  forward(adbPort, localAdbPort);
+  if (appiumConfigured && appiumOverride === "") {
+    forward(appiumPort, localAppiumPort);
+  }
+  const appiumUrl =
+    appiumOverride !== ""
+      ? appiumOverride
+      : appiumConfigured
+        ? `http://127.0.0.1:${appiumPort}`
+        : null;
   const snapshot = (): DeviceGatewayRecord => ({
     adbServer: `127.0.0.1:${adbPort}`,
-    appiumUrl: null,
+    appiumUrl,
     tunnelPort: adbPort,
     ready,
     reportedAt
@@ -78,7 +97,7 @@ export async function startDeviceGateway(
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
-      child.kill("SIGTERM");
+      for (const child of children) child.kill("SIGTERM");
       ready = false;
     }
   };

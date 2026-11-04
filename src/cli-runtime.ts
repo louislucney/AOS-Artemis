@@ -14,13 +14,22 @@ export interface CliRuntimeBundle {
 }
 
 /** CLI 子命令共用的 Runtime 构建（--project 优先，缺省按 cwd/env 定位）。 */
-export async function defaultBuildRuntime(projectDir: string | null): Promise<CliRuntimeBundle> {
+export async function defaultBuildRuntime(
+  projectDir: string | null,
+  options: { iosAppiumUrl?: string | null } = {}
+): Promise<CliRuntimeBundle> {
   const env = projectDir
     ? { ...process.env, AOS_PROJECT_DIR: projectDir, AOS_CONFIG: "" }
     : process.env;
   const project = loadProject({ env });
   const { store, reason } = await createProjectStore();
-  const runtime = new Runtime(project, { store, storeNote: reason });
+  const runtime = new Runtime(project, {
+    store,
+    storeNote: reason,
+    ...(options.iosAppiumUrl === undefined || options.iosAppiumUrl === null
+      ? {}
+      : { iosAppiumUrl: options.iosAppiumUrl })
+  });
   await runtime.initialize();
   return {
     runtime,

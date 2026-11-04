@@ -61,11 +61,15 @@ export async function runLlmWorkerCli(
   const onSignal = (): void => controller.abort();
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
-  const runtimeFor = async (rootPath: string): Promise<CliRuntimeBundle> => {
-    const existing = runtimes.get(rootPath);
+  const runtimeFor = async (
+    rootPath: string,
+    iosAppiumUrl: string | null = null
+  ): Promise<CliRuntimeBundle> => {
+    const key = `${rootPath}\u0000${iosAppiumUrl ?? ""}`;
+    const existing = runtimes.get(key);
     if (existing !== undefined) return existing;
-    const bundle = await defaultBuildRuntime(rootPath);
-    runtimes.set(rootPath, bundle);
+    const bundle = await defaultBuildRuntime(rootPath, { iosAppiumUrl });
+    runtimes.set(key, bundle);
     return bundle;
   };
   interface PreparedLlmJob {
@@ -73,6 +77,7 @@ export async function runLlmWorkerCli(
     secrets: Awaited<ReturnType<typeof loadWebSecrets>>;
     appPackage: string | null;
     appPath: string | null;
+    iosAppiumUrl: string | null;
   }
   const input: RunLlmWorkerOnceInput = {
     store,
@@ -83,8 +88,14 @@ export async function runLlmWorkerCli(
     ...(options.caseTimeoutMs === undefined ? {} : { caseTimeoutMs: options.caseTimeoutMs }),
     ...(options.jobMaxMs === undefined ? {} : { jobMaxMs: options.jobMaxMs }),
     prepareJob: async (job): Promise<PreparedLlmJob> => {
-      const [runtime, secrets, web, pkg] = await Promise.all([
-        runtimeFor(job.rootPath),
+      const targetHostId = job.task.targetHostId;
+      const runner =
+        job.spec.requirements.platform === "ios" && targetHostId !== null
+          ? await store.getWebRunner(targetHostId).catch(() => null)
+          : null;
+      const iosAppiumUrl = runner?.gateway?.appiumUrl ?? null;
+      const runtime = await runtimeFor(job.rootPath, iosAppiumUrl);
+      const [secrets, web, pkg] = await Promise.all([
         loadWebSecrets({ store, rootPath: job.rootPath }),
         store.getWebProject(job.rootPath),
         store.getWebAsset(job.rootPath, job.spec.packageAssetId)
@@ -113,7 +124,13 @@ export async function runLlmWorkerCli(
           pkg.filename.toLowerCase().endsWith(".ipa"))
           ? pkg.storagePath
           : null;
-      return { runtime, secrets, appPackage: web?.appPackage ?? null, appPath };
+      return {
+        runtime,
+        secrets,
+        appPackage: web?.appPackage ?? null,
+        appPath,
+        iosAppiumUrl
+      };
     },
     loadCases: async (job) =>
       loadLlmCases({ store, rootPath: job.rootPath, job }),
@@ -127,6 +144,15 @@ export async function runLlmWorkerCli(
             status: "ERROR",
             durationMs: 0,
             failureReason: "ios-remote-simulator-unsupported"
+          };
+        }
+        if (context.iosAppiumUrl === null) {
+          return {
+            caseId: testCase.caseId,
+            ...(testCase.name === undefined ? {} : { name: testCase.name }),
+            status: "ERROR",
+            durationMs: 0,
+            failureReason: "ios-appium-unavailable"
           };
         }
         return executeIosLlmCase({

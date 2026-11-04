@@ -93,6 +93,8 @@ export interface RuntimeOptions {
   appiumDetector?: () => Promise<AppiumDetection>;
   buildModuleUrl?: string;
   hostIdentity?: HostIdentity;
+  /** 远程 iOS 网关：覆盖 AOS_APPIUM_URL（按 host 隔离，不污染进程 env）。 */
+  iosAppiumUrl?: string | null;
   /** 接入心跳定时器（测试注入；缺省全局 setInterval/clearInterval）。 */
   setInterval?: (callback: () => void, ms: number) => NodeJS.Timeout;
   clearInterval?: (handle: NodeJS.Timeout) => void;
@@ -149,6 +151,7 @@ export class Runtime {
   private readonly timerSetInterval: (callback: () => void, ms: number) => NodeJS.Timeout;
   private readonly timerClearInterval: (handle: NodeJS.Timeout) => void;
   private iosEnv: NodeJS.ProcessEnv;
+  private readonly iosAppiumUrlOption: string | null;
   private scanResult: EnvScanResult;
   private projectRecord: ProjectRecord | null = null;
   private activeCache: { name: string; entry: LlmEntry } | null = null;
@@ -207,6 +210,8 @@ export class Runtime {
     this.hostIdentityOption = options.hostIdentity ?? null;
     // iOS 签名/Appium 配置：config（deviceHosts 高级层）打底、项目 .env、进程 env（客户端配置）覆盖。
     this.iosEnv = { ...deviceHostEnvFromConfig(project.config), ...project.dotenvValues, ...this._baseEnv };
+    this.iosAppiumUrlOption = options.iosAppiumUrl ?? null;
+    if (this.iosAppiumUrlOption) this.iosEnv.AOS_APPIUM_URL = this.iosAppiumUrlOption;
     this.iosCrashCollector = options.iosCrashCollector ?? null;
     this.iosCrashRetry = {
       attempts: Math.max(1, options.iosCrashRetry?.attempts ?? 3),
@@ -553,6 +558,7 @@ export class Runtime {
     this.project.resolver = makeResolver(this.project.dotenvValues, this._baseEnv);
     this.scanResult = scanProjectEnv(this.project.resolver);
     this.iosEnv = { ...deviceHostEnvFromConfig(this.project.config), ...this.project.dotenvValues, ...this._baseEnv };
+    if (this.iosAppiumUrlOption) this.iosEnv.AOS_APPIUM_URL = this.iosAppiumUrlOption;
     this.modelCatalog.updateEnv({ ...this.project.dotenvValues, ...this._baseEnv });
   }
 

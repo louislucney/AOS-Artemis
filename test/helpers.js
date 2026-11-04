@@ -383,6 +383,7 @@ export async function loadTestRuntime(
     modelFetcher,
     buildModuleUrl,
     hostIdentity = TEST_HOST_IDENTITY,
+    iosAppiumUrl,
     appiumDetector = async () => ({
       appium: { found: false, path: null, version: null },
       xcuitest: { installed: false, version: null },
@@ -401,6 +402,7 @@ export async function loadTestRuntime(
     modelFetcher,
     buildModuleUrl,
     hostIdentity,
+    ...(iosAppiumUrl === undefined ? {} : { iosAppiumUrl }),
     appiumDetector
   });
   await runtime.initialize();
