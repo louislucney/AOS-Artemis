@@ -191,6 +191,26 @@ test("script-gen: 导航默认 unresolved，显式 inferNavigationTap 才生成 
   assert.match(inferred.yaml, /- tapOn: '报告'/);
 });
 
+test("script-gen: 繁体常见动作词", () => {
+  for (const step of ["點一下“登入”", "輕觸“登入”", "選取“登入”"]) {
+    const result = gen({ steps: ["1. 啟動 App", `2. ${step}`], expected: "頁面顯示“首頁”" });
+    assert.equal(result.status, "ready", step);
+    assert.match(result.yaml, /- tapOn: '登入'/);
+  }
+  const filled = gen({
+    steps: ["1. 啟動 App", "2. 在“帳號”填寫 test@example.com"],
+    expected: "頁面顯示“首頁”"
+  });
+  assert.equal(filled.status, "ready");
+  assert.match(filled.yaml, /- tapOn: '帳號'\n- inputText: 'test@example\.com'/);
+  const nav = gen(
+    { steps: ["1. 啟動 App", "2. 前往“設定”頁面"], expected: "頁面顯示“設定”" },
+    { inferNavigationTap: true }
+  );
+  assert.equal(nav.status, "ready");
+  assert.match(nav.yaml, /- tapOn: '設定'/);
+});
+
 test("script-gen: 单字选择动词与筛选项目标", () => {
   const selected = gen({
     steps: ["1. 启动 App", "2. 選 到店自取"],

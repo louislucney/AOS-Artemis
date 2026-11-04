@@ -148,6 +148,20 @@ function splitLines(value: string): string[] {
     .filter((line) => line !== "");
 }
 
+const STEP_LINE = /^\s*(?:\d{1,4}\s*(?:[.)、）]|．(?!\d))|[-•*]\s+)\s*/;
+
+export function splitStepLines(value: string): string[] {
+  const lines = splitLines(value);
+  if (lines.length === 0) return [];
+  if (!lines.some((line) => STEP_LINE.test(line))) return lines;
+  const out: string[] = [];
+  for (const line of lines) {
+    if (out.length === 0 || STEP_LINE.test(line)) out.push(line);
+    else out[out.length - 1] = `${out[out.length - 1]} ${line}`;
+  }
+  return out;
+}
+
 function pickSheet(workbook: ExcelJS.Workbook, sheetName: string | undefined): ExcelJS.Worksheet {
   if (sheetName === undefined) {
     const first = workbook.worksheets[0];
@@ -359,7 +373,7 @@ export async function parseExcel(buffer: Buffer, input: ParseExcelInput): Promis
     cases.push({
       caseId,
       name: values.get("name") ?? "",
-      steps: splitLines(rawSteps),
+      steps: splitStepLines(rawSteps),
       expected: optionalText(values.get("expected")),
       preconditions: splitLines(values.get("preconditions") ?? ""),
       module: optionalText(values.get("module")),

@@ -91,11 +91,11 @@ type ParsedStep =
 const ANDROID_APP_ID = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 const IOS_APP_ID = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
 const TRIVIAL_PRECONDITION = /^(?:无|無|none|n\/a|-|—|nil)$/i;
-const NUMBER_PREFIX = /^\s*\d{1,4}\s*(?:[、)）]|[.．](?!\d))\s*/;
-const TAP_VERB = /(点击|點擊|点选|點選|选择|選擇|取消|切换|切換|勾选|勾選)/;
+const NUMBER_PREFIX = /^\s*(?:\d{1,4}\s*(?:[、)）]|[.．](?!\d))|[-•*]\s+)\s*/;
+const TAP_VERB = /(点击|點擊|点选|點選|选择|選擇|取消|切换|切換|勾选|勾選|點一下|点一下|輕觸|轻触|輕按|轻按|按下|按一下|點按|点按|選取|选取)/;
 const TAP_SINGLE_VERB = /^(選|选)\s+(.+)$/;
-const INPUT_VERB = /(输入|輸入)/;
-const VERIFY_VERB = /^(查看|檢查|检查|觀察|观察|確認|确认|驗證|验证|找到|是否|查看是否|檢查是否|检查是否)/;
+const INPUT_VERB = /(输入|輸入|填寫|填写|鍵入|键入)/;
+const VERIFY_VERB = /^(查看|檢查|检查|觀察|观察|確認|确认|驗證|验证|找到|是否|查看是否|檢查是否|检查是否|核對|核对|檢視|检视|瀏覽|浏览)/;
 const GENERIC_LABEL = /^(?:该|該|此|这个|這個|那个|那個|上述|对应|對應|其|其中|一个|一個|任意|下方|上方|这|那)$/;
 const GENERIC_TARGET = /^(?:组件|組件|按钮|按鈕|项|項|图标|圖標|篩選項|筛选项|選項|选项)$/;
 const QUOTE_PAIRS: ReadonlyArray<readonly [string, string]> = [
@@ -199,7 +199,14 @@ function isInputValue(value: string): boolean {
 
 function parseInput(text: string, inputClause: string): ParsedStep {
   const matches = quotedMatches(inputClause);
-  const verbIndex = Math.max(inputClause.lastIndexOf("输入"), inputClause.lastIndexOf("輸入"));
+  const verbIndex = Math.max(
+    inputClause.lastIndexOf("输入"),
+    inputClause.lastIndexOf("輸入"),
+    inputClause.lastIndexOf("填寫"),
+    inputClause.lastIndexOf("填写"),
+    inputClause.lastIndexOf("鍵入"),
+    inputClause.lastIndexOf("键入")
+  );
   const startsWithAt = /^在/.test(inputClause);
   if (matches.length >= 2) {
     const first = matches[0]!;
@@ -272,7 +279,7 @@ function parseStep(raw: string, options: ScriptGenOptions, getLastLabel: () => s
     if (quoted !== undefined && isConcreteLabel(quoted)) setLastLabel(quoted);
     return { kind: "verify" };
   }
-  if (/^(进入|進入)/.test(text)) {
+  if (/^(进入|進入|前往|轉到|转到)/.test(text)) {
     const quoted = extractQuoted(text)[0];
     if (options.inferNavigationTap === true && quoted !== undefined && isConcreteLabel(quoted)) {
       setLastLabel(quoted);
@@ -298,7 +305,7 @@ function parseStep(raw: string, options: ScriptGenOptions, getLastLabel: () => s
   const tapClause = clauses.find((clause) => TAP_VERB.test(clause));
   if (tapClause !== undefined) {
     const quoted = extractQuoted(tapClause)[0];
-    let label = quoted ?? normalizeTapLabel(tapClause.replace(/^.*?(?:点击|點擊|点选|點選|选择|選擇|選|取消|切换|切換|勾选|勾選)/, "").trim());
+    let label = quoted ?? normalizeTapLabel(tapClause.replace(/^.*?(?:点击|點擊|点选|點選|选择|選擇|選|取消|切换|切換|勾选|勾選|點一下|点一下|輕觸|轻触|輕按|轻按|按下|按一下|點按|点按|選取|选取)/, "").trim());
     if (GENERIC_TARGET.test(label)) {
       const previous = getLastLabel();
       if (previous !== null) label = previous;
