@@ -284,7 +284,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 | `events` **项目事件** | 执行事件流（run/case/artifact/log/feedback.request），类型/状态/消费筛选＋快捷「未消费/反馈请求」；消费态与 `aos_event_poll` 同源；`payload=1`/勾选「显示 payload」查看内容（最多 50 条），默认不回显 |
 | `ops` **运维与数据** | 存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
 
-写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel 导入支持 multipart 上传（`.xlsx`≤20MB，单飞）：面板表单提交到 `/panel/api/import?project=<项目根路径>[&host=<主机 id>]`，HTTP 模式与独立 `panel --web` 均经该项目运行时解析并登记为最新用例集。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层；导入按项目根懒建并复用本进程 store 的 Runtime（失败不缓存、退出时释放），并同时启用依赖运行时的「一键建单/证据重试」动作。**跨主机保护**：`?host=` 指向非本机主机时导入返回 400（“跨主机导入请在该项目机上执行，或使用 HTTP 模式”），不会在面板机建项目行或写用例文件。
+写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel/CSV 导入支持 multipart 上传（`.xlsx/.csv`≤20MB，单飞；CSV 支持 UTF-8/GB18030、引号与单元格内换行，源副本保存为 `.source.csv`）：面板表单提交到 `/panel/api/import?project=<项目根路径>[&host=<主机 id>]`，HTTP 模式与独立 `panel --web` 均经该项目运行时解析并登记为最新用例集。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层；导入按项目根懒建并复用本进程 store 的 Runtime（失败不缓存、退出时释放），并同时启用依赖运行时的「一键建单/证据重试」动作。**跨主机保护**：`?host=` 指向非本机主机时导入返回 400（“跨主机导入请在该项目机上执行，或使用 HTTP 模式”），不会在面板机建项目行或写用例文件。
 
 **页面按能力标记渲染**（critique 修复轮）：独立进程默认只读时页级横幅＋写 CTA 禁用并给原因（不再"点了才 404"）；导航携带项目上下文（从项目页跳转不再丢项目；无项目时项目级项禁用而非误指总览）；**派发为两段确认**（摘要→确认创建）且 refs 由服务端按 `source/ref/keyword` 重解析（不再信渲染期快照）；成功后有回执（任务 id＋审计互链）。样式为**单一 CSDC 源**（tokens＋compat 合并注入；无 legacy 覆盖、无 `color-scheme` 双色系）。
 
@@ -542,7 +542,7 @@ node dist/cli.js suite text-weight-calibrate --manifest <json> [--out <dir>] [--
 - `host`：中心主机登记（同样只连 PG）——`list`/`show <id|hostname>`（id 精确优先，hostname 大小写不敏感、重名报错列 id，不猜）、`register <id|hostname>` 写 label/owner/expectedOs/expectedHostname（登记人 `cli`）、`adopt-legacy` 把 legacy（未绑定主机）项目认领到主机：`--local` 仅认领本机存在路径（`MOBILE_TESTING_HOST_ID` 或本机身份），`--host <id|hostname> --path <rootPath>` 显式认领（未登记主机 exit 2；确认「先迁移、后接入」时加 `--allow-unknown-host`，歧义 hostname 不提供逃逸）；缺省 dry-run，`--apply` 才写库并记审计（`domain=host/action=adopt-legacy`）；`--json` 只输出 `id/hostId/rootPath/name/lastSeenAt`，不回显 token。见 DESIGN §13.152。
 - `queue`：主机队列闸门——`status` 显示当前主机 `paused/by/at` 与待执行任务数（不写库、不自动登记主机）；`pause`/`resume` 写 `hosts.queue_paused` 并记审计（`action.queue.pause|resume`，本地 `channel=cli`；可选 `--note <text>` 写入审计 refs）。暂停只阻断 runner 自动领取，手动 `suite run --task` 与已领取任务不受影响。`--host <id|hostname>` 为中心模式（hostname 唯一匹配、只连 PG、不建本机 Runtime；未知主机 exit 2）。本地首次 pause/resume 时按本机身份补登记主机。见 DESIGN §13.162。
 
-- **Excel 入料最小样例**（`run_regression excelPath` 导入；另存为 `.xlsx`、勿合并单元格、首行表头）：
+- **Excel/CSV 入料最小样例**（`run_regression excelPath` 导入；`.xlsx` 勿合并单元格；CSV 用 UTF-8/GB18030；首行表头）：
 
   | 用例名 | 步骤 | 预期 | 前置 | 模块 |
   |---|---|---|---|---|

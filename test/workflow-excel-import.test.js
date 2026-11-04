@@ -95,6 +95,29 @@ test("importTestDocument: 单模块 → 三件套 + 源副本 + 登记（真实�
   assert.equal((await store.listCaseSets(runtime.project.rootDir, 10)).length, 1);
 });
 
+test("importTestDocument: CSV 源文件 → 三件套 + CSV 源副本", async () => {
+  const { dir, runtime, store } = await project();
+  const file = path.join(dir, "cases.csv");
+  fs.writeFileSync(
+    file,
+    '用例名,步骤,预期,模块\n登录,"输入账号,点击登录",进入首页,账户\n'
+  );
+  const result = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.status, "imported");
+  assert.equal(result.sets.length, 1);
+  assert.equal(result.sourceId, `imported:cases.csv@${sha8(file)}`);
+  assert.ok(result.sourceCopy.endsWith(".source.csv"));
+  assert.ok(fs.existsSync(result.sets[0].xlsxPath), "CSV 导入仍生成 xlsx 三件套");
+  assert.equal(result.sets[0].caseCount, 1);
+  const assets = await store.listWebAssets(runtime.project.rootDir, "excel");
+  assert.equal(assets.length, 1);
+  assert.equal(assets[0].filename, "cases.csv");
+  assert.equal(assets[0].metadata.format, "csv");
+  const second = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(second.status, "skipped");
+});
+
 test("importTestDocument: 按模块拆集（一个登记记录，多 features）", async () => {
   const { dir, runtime, store } = await project();
   const file = await writeSheet(path.join(dir, "multi.xlsx"), [

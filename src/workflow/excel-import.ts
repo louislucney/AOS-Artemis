@@ -150,7 +150,12 @@ function cleanupFiles(files: string[]): void {
 
 function findSourceCopy(dir: string, baseName: string): string {
   try {
-    const hit = fs.readdirSync(dir).find((name) => name.endsWith(`_${baseName}.source.xlsx`));
+    const hit = fs
+      .readdirSync(dir)
+      .find(
+        (name) =>
+          name.endsWith(`_${baseName}.source.xlsx`) || name.endsWith(`_${baseName}.source.csv`)
+      );
     return hit ? path.join(dir, hit) : "";
   } catch {
     return "";
@@ -441,9 +446,10 @@ export async function importTestDocument(
   }
 
   const stamp = importedAt.slice(0, 19).replace(/[-:]/g, "");
+  const sourceExtension = path.extname(excelPath).toLowerCase() === ".csv" ? ".csv" : ".xlsx";
   const sourceCopy = path.join(
     casesDir,
-    `${stamp}_${baseName.replace(/[/\\:*?"<>|\s]+/g, "-")}.source.xlsx`
+    `${stamp}_${baseName.replace(/[/\\:*?"<>|\s]+/g, "-")}.source${sourceExtension}`
   );
   try {
     if (!fs.existsSync(sourceCopy)) {

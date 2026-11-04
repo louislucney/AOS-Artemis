@@ -3,6 +3,15 @@ import path from "node:path";
 
 import ExcelJS from "exceljs";
 
+import {
+  CSV_SHEET_NAME,
+  CsvError,
+  decodeCsv,
+  parseCsv,
+  SHEET_MAX_COLUMNS,
+  SHEET_MAX_ROWS
+} from "../web/csv.js";
+
 export interface ExecutorRow {
   caseId: string;
   displayId: string;
@@ -46,10 +55,44 @@ function cellText(value: ExcelJS.CellValue): string {
   return String(value).trim();
 }
 
-/** 读取测试用例表（首个工作表）。结构不可靠时显式失败，绝不静默错读。 */
+async function readCsvCaseSheet(filePath: string): Promise<CaseSheet> {
+  let text: string;
+  try {
+    text = decodeCsv(await fs.readFile(filePath)).text;
+  } catch (error) {
+    throw new Error(`无法读取 CSV（${CSV_SHEET_NAME}）：${error instanceof CsvError ? error.message : String(error)}`);
+  }
+  let grid: string[][];
+  try {
+    grid = parseCsv(text, {
+      maxRows: SHEET_MAX_ROWS,
+      maxColumns: SHEET_MAX_COLUMNS
+    });
+  } catch (error) {
+    throw new Error(
+      `无法导入 CSV：${error instanceof CsvError ? error.message : String(error)}`
+    );
+  }
+  const headerRow = grid[0] ?? [];
+  const headers = headerRow.map((cell) => cell.trim());
+  if (headers.every((header) => header === "")) {
+    throw new Error("CSV 缺少表头（第一行为空）：请在第一行填写列名（如：用例名、步骤、预期）");
+  }
+  const rows = grid
+    .slice(1)
+    .map((cells) => headers.map((_, index) => (cells[index] ?? "").trim()));
+  while (rows.length > 0 && rows[rows.length - 1]!.every((cell) => cell === "")) {
+    rows.pop();
+  }
+  return { headers, rows, executor: new Map() };
+}
+
+/** 读取测试用例表（首个工作表 / CSV）。结构不可靠时显式失败，绝不静默错读。 */
 export async function readCaseSheet(filePath: string): Promise<CaseSheet> {
-  if (path.extname(filePath).toLowerCase() !== ".xlsx") {
-    throw new Error(`无法导入：仅支持 .xlsx 工作簿（请另存为 Excel 2007+ 格式后重试）：${filePath}`);
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".csv") return readCsvCaseSheet(filePath);
+  if (extension !== ".xlsx") {
+    throw new Error(`无法导入：仅支持 .xlsx 或 .csv（请另存为 Excel 2007+ 格式后重试）：${filePath}`);
   }
   const buffer = await fs.readFile(filePath);
   const workbook = new ExcelJS.Workbook();

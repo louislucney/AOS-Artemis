@@ -3705,6 +3705,15 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **IPA**：读取 `Payload/*.app/Info.plist`；XML plist 正则取 `CFBundleIdentifier`；二进制 plist 在 macOS 经 `plutil -convert xml1` 转 XML，其他平台 best-effort 失败返回 null。
 - **边界**：只推断，不改项目配置/资产；推断结果经平台 appId 正则校验，非法/失败不采用；manifest/plist 单文件上限 5MB；不引入 `aapt2`/Android SDK 依赖。
 - **测试**：`package-inspect` 覆盖 AXML、文本 APK、IPA、坏 zip；`web-script-generation` 覆盖项目未配置 appPackage 时从 APK 推断。全量 3042 绿。
+
+### 13.305 新增（用例库导入支持 CSV）
+
+> 2026-11-04。接 §13.302 R5：用例库不再只收 `.xlsx`。
+
+- **读取**：`readCaseSheet` 按扩展名分派；`.csv` 用 `src/web/csv.ts` 的 `decodeCsv`（UTF-8/GB18030 + BOM）与 `parseCsv`（引号/单元格内换行/逗号），上限沿用 10000 行 × 200 列；首行表头，空行尾部裁剪。
+- **归档**：CSV 导入仍生成 `tests.json/md/xlsx` 三件套；源副本按源扩展名保存为 `.source.csv`，跳过导入时按 `.source.xlsx`/`.source.csv` 查找；CSV 同时登记为 Web 测试资产（metadata `format:"csv"`）。
+- **边界**：不把 CSV 当 xlsx 解析；不做合并单元格/多 sheet（CSV 无此概念）；导出仍为 xlsx。
+- **测试**：`workflow-excel-import` 覆盖 CSV → 三件套 + `.source.csv` + Web 资产 + 重复导入 skipped。全量 3043 绿。
 - **默认值表（唯一事实源）**：
 
 | 配置 | 默认 | 显式值/说明 |
