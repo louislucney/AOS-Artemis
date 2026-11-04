@@ -134,6 +134,7 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-device-layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start;min-width:0;max-width:100%}
 .c-device-main{min-width:0;max-width:100%}
 .c-device-aside{display:grid;gap:16px;min-width:0;max-width:100%;scroll-margin-top:90px}
+#new-project{scroll-margin-top:90px}
 .c-device-aside .c-card{margin:0;padding:20px 22px}
 .c-device-aside .c-card-title{font-size:16px;margin:0 0 8px}
 .c-filterbar{display:flex;align-items:center;gap:12px 22px;flex-wrap:wrap;padding:12px 16px;margin:0 0 14px;min-width:0;

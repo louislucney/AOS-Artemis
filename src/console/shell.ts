@@ -6,6 +6,7 @@ import { escapeHtml } from "../util.js";
 
 export type ConsoleNavKey =
   | "overview"
+  | "new-project"
   | "project"
   | "tasks"
   | "review"
@@ -107,6 +108,7 @@ const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
 ]);
 
 export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
+  { key: "new-project", label: "新增项目", href: "/panel?new=1#new-project" },
   { key: "project", label: "项目", href: "/panel" },
   { key: "review", label: "结果", href: "/panel" },
   { key: "dispatch", label: "下发", href: "/panel?section=dispatch" },
@@ -178,6 +180,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   const navParts: string[] = [];
   let hiddenScoped = 0;
   for (const item of nav) {
+    if (item.key === "new-project" && capabilities.role !== "admin") continue;
     const current = item.key === input.active ? ' aria-current="page"' : "";
     const badge = item.badge ? `<span class="c-nav-badge">${escapeHtml(item.badge)}</span>` : "";
     const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project, input.projectHostId ?? null);

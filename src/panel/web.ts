@@ -1466,7 +1466,7 @@ function renderCreateProjectCard(): string {
   const script = actionsOff
     ? ""
     : `<script>(function(){function aosBindCreateProjectForm(){var form=document.getElementById('create-project-form');if(!form||form.getAttribute('data-aos-bound')==='1')return;form.setAttribute('data-aos-bound','1');var status=document.getElementById('create-project-status');form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var platforms=f.getAll('platform');if(!(f.get('name')||'').trim()){status.textContent='请填写项目名称';return;}if(platforms.length===0){status.textContent='请至少选择一个平台';return;}if(!(f.get('appPackage')||'').trim()){status.textContent='请填写应用包名';return;}var customer=(f.get('customerName')||'').trim();var body={name:(f.get('name')||'').trim(),platforms:platforms,appPackage:(f.get('appPackage')||'').trim(),customerName:customer||null};fetch('/panel/api/projects',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok&&res.j.project){window.aosFlash&&aosFlash('项目已创建');location.href='/panel?project='+encodeURIComponent(res.j.project.rootPath);}else{status.textContent='创建失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){status.textContent='创建失败：'+err;});});}window.aosBindCreateProjectForm=aosBindCreateProjectForm;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindCreateProjectForm();if(typeof prevHook==='function')prevHook();};aosBindCreateProjectForm();})();</script>`;
-  return cCard({ title: "新增项目", body: `${form}${script}` });
+  return `<div id="new-project">${cCard({ title: "新增项目", body: `${form}${script}` })}</div>`;
 }
 
 function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
@@ -1486,7 +1486,7 @@ function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
 try{
   var last=localStorage.getItem("aos-last-project");
   if(last){for(var i=0;i<projects.length;i++){if(projects[i].rootPath===last){var box=document.getElementById("aos-resume");if(box){box.textContent="继续上次：";var a=document.createElement("a");a.className="c-button c-button-primary";a.href=projects[i].url;a.textContent=projects[i].name+" →";box.appendChild(a);box.hidden=false;}break;}}}
-  if(projects.length===1&&!sessionStorage.getItem("aos-auto-entered")){sessionStorage.setItem("aos-auto-entered","1");location.replace(projects[0].url);}
+  if(projects.length===1&&!sessionStorage.getItem("aos-auto-entered")&&location.search.indexOf("new=1")<0){sessionStorage.setItem("aos-auto-entered","1");location.replace(projects[0].url);}
 }catch(e){}
 })();</script>`;
   const rows = view.projects.map((row) => {
