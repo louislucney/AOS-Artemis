@@ -3695,6 +3695,16 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **返回**：`matched`（过滤后用例数）、`filteredOut`（总用例−匹配）、`ready`/`partial`/`unresolved`/`runnable`、`unresolvedByCode`、`warnings`。`caseModules`/`caseIds` 支持逗号分隔与重复参数；两者同时给时取交集。
 - **面板**：用例范围下方「检查匹配」按钮；显示“匹配 N 条：可执行 X（完整 Y / 部分 Z）/ 未就绪 U（将 SKIP）”，0 条时提示检查模块/用例 ID；不选 Excel/安装包时提示先选择。
 - **测试**：`web-dispatch-ui` 覆盖匹配/过滤数、未知模块 0 条、dry-run 不写资产、坏 Excel → 400 `excel-unreadable`、表单按钮/端点存在；全量 3038 绿。
+
+### 13.304 新增（APK/IPA 推断 appId）
+
+> 2026-11-04。接 §13.302 R6：项目未配置 `appPackage` 且未传 `--app-id` 时，best-effort 从安装包推断。
+
+- **入口**：`generateScriptSetForProject` 的 appId 解析顺序 `显式 appId → 项目 appPackage → 安装包推断`；推断失败仍抛 `app-id-missing`（提示可手填/配置/上传可解析包）。
+- **APK**：用 `jszip` 读取 `AndroidManifest.xml`；文本 XML 直接取 `<manifest package>`；二进制 AXML 解析 string pool + start element 的 `package` 属性（无 `aapt2` 依赖）。
+- **IPA**：读取 `Payload/*.app/Info.plist`；XML plist 正则取 `CFBundleIdentifier`；二进制 plist 在 macOS 经 `plutil -convert xml1` 转 XML，其他平台 best-effort 失败返回 null。
+- **边界**：只推断，不改项目配置/资产；推断结果经平台 appId 正则校验，非法/失败不采用；manifest/plist 单文件上限 5MB；不引入 `aapt2`/Android SDK 依赖。
+- **测试**：`package-inspect` 覆盖 AXML、文本 APK、IPA、坏 zip；`web-script-generation` 覆盖项目未配置 appPackage 时从 APK 推断。全量 3042 绿。
 - **默认值表（唯一事实源）**：
 
 | 配置 | 默认 | 显式值/说明 |

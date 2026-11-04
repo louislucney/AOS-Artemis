@@ -1,0 +1,204 @@
+import { spawnSync } from "node:child_process";
+
+import JSZip from "jszip";
+
+import { isValidAppId } from "./script-gen.js";
+
+const RES_STRING_POOL_TYPE = 0x0001;
+const RES_XML_START_ELEMENT_TYPE = 0x0102;
+const UTF8_FLAG = 0x100;
+const NO_ENTRY = 0xffffffff;
+const TYPE_STRING = 0x03;
+const MAX_MANIFEST_BYTES = 5 * 1024 * 1024;
+
+function u16(buffer: Buffer, offset: number): number {
+  return buffer.readUInt16LE(offset);
+}
+
+function u32(buffer: Buffer, offset: number): number {
+  return buffer.readUInt32LE(offset);
+}
+
+function readUtf8Length(buffer: Buffer, offset: number): { length: number; next: number } {
+  const first = buffer[offset] ?? 0;
+  if ((first & 0x80) === 0) return { length: first, next: offset + 1 };
+  return {
+    length: ((first & 0x7f) << 8) | (buffer[offset + 1] ?? 0),
+    next: offset + 2
+  };
+}
+
+function readUtf16Length(buffer: Buffer, offset: number): { length: number; next: number } {
+  const first = u16(buffer, offset);
+  if ((first & 0x8000) === 0) return { length: first, next: offset + 2 };
+  return {
+    length: ((first & 0x7fff) << 16) | u16(buffer, offset + 2),
+    next: offset + 4
+  };
+}
+
+function readStringPool(buffer: Buffer, offset: number): string[] {
+  const headerSize = u16(buffer, offset + 2);
+  const size = u32(buffer, offset + 4);
+  const count = u32(buffer, offset + 8);
+  const flags = u32(buffer, offset + 16);
+  const stringsStart = u32(buffer, offset + 20);
+  const tableStart = offset + headerSize;
+  const dataStart = offset + stringsStart;
+  const end = Math.min(buffer.length, offset + size);
+  if (count > 1_000_000 || tableStart + count * 4 > end || dataStart > end) return [];
+  const out: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const relative = u32(buffer, tableStart + index * 4);
+    let cursor = dataStart + relative;
+    if (cursor >= end) {
+      out.push("");
+      continue;
+    }
+    if ((flags & UTF8_FLAG) !== 0) {
+      const utf16 = readUtf8Length(buffer, cursor);
+      cursor = utf16.next;
+      const utf8 = readUtf8Length(buffer, cursor);
+      cursor = utf8.next;
+      const finish = Math.min(end, cursor + utf8.length);
+      out.push(buffer.subarray(cursor, finish).toString("utf8"));
+    } else {
+      const length = readUtf16Length(buffer, cursor);
+      cursor = length.next;
+      const finish = Math.min(end, cursor + length.length * 2);
+      out.push(buffer.subarray(cursor, finish).toString("utf16le"));
+    }
+  }
+  return out;
+}
+
+/**
+ * 解析 Android 二进制 XML（AXML）里 `<manifest package="...">` 的 package。
+ * 只读 string pool + 第一个 start element；遇到结构异常返回 null，不猜。
+ */
+export function parseBinaryManifestPackage(buffer: Buffer): string | null {
+  if (buffer.length < 8 || u16(buffer, 0) !== 0x0003) return null;
+  let strings: string[] = [];
+  let offset = u16(buffer, 2);
+  while (offset + 8 <= buffer.length) {
+    const type = u16(buffer, offset);
+    const size = u32(buffer, offset + 4);
+    if (size < 8 || offset + size > buffer.length) return null;
+    if (type === RES_STRING_POOL_TYPE) {
+      strings = readStringPool(buffer, offset);
+    } else if (type === RES_XML_START_ELEMENT_TYPE) {
+      if (strings.length === 0 || offset + 16 + 20 > buffer.length) return null;
+      const nameIndex = u32(buffer, offset + 20);
+      const name = strings[nameIndex];
+      if (name !== "manifest") {
+        offset += size;
+        continue;
+      }
+      const attributeStart = u16(buffer, offset + 24);
+      const attributeSize = u16(buffer, offset + 26);
+      const attributeCount = u16(buffer, offset + 28);
+      if (attributeSize < 20 || attributeCount > 1000) return null;
+      const base = offset + 16 + attributeStart;
+      for (let index = 0; index < attributeCount; index += 1) {
+        const attr = base + index * attributeSize;
+        if (attr + 20 > buffer.length) return null;
+        const attrName = strings[u32(buffer, attr + 4)];
+        if (attrName !== "package") continue;
+        const rawValue = u32(buffer, attr + 8);
+        if (rawValue !== NO_ENTRY && strings[rawValue] !== undefined) {
+          return strings[rawValue] ?? null;
+        }
+        const dataType = buffer[attr + 15];
+        const data = u32(buffer, attr + 16);
+        if (dataType === TYPE_STRING && strings[data] !== undefined) {
+          return strings[data] ?? null;
+        }
+        return null;
+      }
+      return null;
+    }
+    offset += size;
+  }
+  return null;
+}
+
+function parseTextManifestPackage(text: string): string | null {
+  const match = /<manifest\b[^>]*\bpackage\s*=\s*["']([^"']+)["']/i.exec(text);
+  return match?.[1]?.trim() ?? null;
+}
+
+function parsePlistBundleId(text: string): string | null {
+  const match =
+    /<key>\s*CFBundleIdentifier\s*<\/key>\s*<string>\s*([^<]+?)\s*<\/string>/i.exec(text);
+  return match?.[1]?.trim() ?? null;
+}
+
+function plistToXml(buffer: Buffer): string | null {
+  if (buffer.subarray(0, 6).toString("ascii") !== "bplist") return null;
+  const result = spawnSync("plutil", ["-convert", "xml1", "-o", "-", "-"], {
+    input: buffer,
+    encoding: "utf8",
+    timeout: 5000,
+    maxBuffer: 10 * 1024 * 1024
+  });
+  if (result.status !== 0 || typeof result.stdout !== "string") return null;
+  return result.stdout;
+}
+
+function validate(appId: string | null, platform: "android" | "ios"): string | null {
+  const trimmed = appId?.trim() ?? "";
+  if (trimmed === "" || !isValidAppId(trimmed, platform)) return null;
+  return trimmed;
+}
+
+/**
+ * 从 APK/IPA 资产推断 appId（best-effort）：
+ * - APK：AndroidManifest.xml（文本 XML 或二进制 AXML）的 package；
+ * - IPA：Payload/*.app/Info.plist 的 CFBundleIdentifier（XML 或 macOS plutil 可读的二进制）。
+ * 推断失败返回 null，由调用方保留手填/项目配置。
+ */
+export async function inferAppIdFromPackage(
+  buffer: Buffer,
+  _filename: string
+): Promise<string | null> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    return null;
+  }
+  const manifest = zip.file("AndroidManifest.xml");
+  if (manifest !== null) {
+    let data: Buffer;
+    try {
+      data = await manifest.async("nodebuffer");
+    } catch {
+      return null;
+    }
+    if (data.length === 0 || data.length > MAX_MANIFEST_BYTES) return null;
+    const head = data.subarray(0, 64).toString("utf8").trimStart();
+    const packageName = head.startsWith("<")
+      ? parseTextManifestPackage(data.toString("utf8"))
+      : parseBinaryManifestPackage(data);
+    return validate(packageName, "android");
+  }
+  const plistEntry = Object.keys(zip.files).find((name) =>
+    /^Payload\/[^/]+\.app\/Info\.plist$/.test(name)
+  );
+  if (plistEntry === undefined) return null;
+  const file = zip.file(plistEntry);
+  if (file === null) return null;
+  let plist: Buffer;
+  try {
+    plist = await file.async("nodebuffer");
+  } catch {
+    return null;
+  }
+  if (plist.length === 0 || plist.length > MAX_MANIFEST_BYTES) return null;
+  const xml =
+    plist.subarray(0, 8).toString("ascii").startsWith("bplist")
+      ? plistToXml(plist)
+      : plist.toString("utf8");
+  if (xml === null) return null;
+  return validate(parsePlistBundleId(xml), "ios");
+}

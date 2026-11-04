@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ProjectStore, WebAssetRecord } from "../db/types.js";
 import { errorMessage } from "../util.js";
 import { findExcelMapping } from "./excel-mapping.js";
+import { inferAppIdFromPackage } from "./package-inspect.js";
 import {
   ExcelMappingError,
   parseExcel,
@@ -231,11 +232,23 @@ export async function generateScriptSetForProject(
       );
     }
 
-    const appId = (input.appId ?? "").trim() || (webProject.appPackage ?? "").trim();
+    let appId = (input.appId ?? "").trim() || (webProject.appPackage ?? "").trim();
+    if (appId === "") {
+      try {
+        assertInsideAssets(input.rootPath, pkg.storagePath);
+        const inferred = await inferAppIdFromPackage(
+          await readFile(pkg.storagePath),
+          pkg.filename
+        );
+        if (inferred !== null) appId = inferred;
+      } catch {
+        /* best-effort：推断失败保留手填/项目配置路径 */
+      }
+    }
     if (appId === "") {
       throw new ScriptGenerationError(
         "app-id-missing",
-        "缺少 appId：请传 --app-id 或在项目里填写应用包名"
+        "缺少 appId：请传 --app-id、在项目里填写应用包名，或上传可解析的 APK/IPA"
       );
     }
     if (!isValidAppId(appId, input.platform)) {

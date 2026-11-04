@@ -1,6 +1,6 @@
 # 数据源限制评估与移除设计（v2）
 
-> 2026-11-04 · 状态：**P0 + R7 已实现（R1/R2/R3/R4/R7/R11；全量 3038 测试绿）**；R5/R6/R10 与 L2/L6 待排期
+> 2026-11-04 · 状态：**P0 + R6/R7 已实现（R1/R2/R3/R4/R6/R7/R11；全量 3042 测试绿）**；R5/R10 与 L2/L6 待排期
 > 关联：`DESIGN.md` §13.155/§13.290/§13.293（主机与项目）、§13.295–§13.301（Web 手工 Excel/产物阅读器）、§13.302（默认值与数据源解耦决定）、`docs/superpowers/specs/2026-10-28-web-project-test-platform-design.md` §4.7/§6/§7。
 > v1 评审：2026-11-04「小修后通过（无 K）」；处置与反驳见 §10。
 
@@ -55,7 +55,7 @@ Web 资产本身是项目级的，但当前**下发前必须已有脚本集**；
 | R3 | 套件来源按目标主机 store 读取 | 目标主机无项目 → 来源空 | 数据/执行耦合 | **解耦**：来源读项目 owner store；执行前提仍保留 |
 | R4 | 脚本集必须精确匹配 Excel/包/平台 | 换版本 → 409 | 安全约束，可自动化 | **自动重建**（P0）；显式旧脚本仍保留 |
 | R5 | 用例库只收 `.xlsx` | CSV 无法导入 | 实现约束 | 后续支持 CSV（P2） |
-| R6 | appId 必须手填/项目配置 | 缺 appId 生成失败 | 可用性 | 后续从 APK/IPA 推断（P2，best-effort） |
+| R6 | appId 必须手填/项目配置 | 缺 appId 生成失败 | 可用性 | **已实现**：APK/IPA best-effort 推断（失败保留手填） |
 | R7 | 过滤值不匹配时静默空来源 | 模块/ID 无预览 | UX/实现 | **已实现**：`GET /panel/api/jobs/script-preview` + 表单「检查匹配」 |
 | R8 | iOS Maestro 只允许模拟器 | iOS 真机 Maestro 被拒 | **上游工具限制** | **保留**；上游支持真机后再复评 |
 | R9 | PASS 必须有断言证据；secret 不进缓存 | 判定与安全门禁 | 正确性/安全 | **保留**，不可放宽 |
@@ -225,7 +225,7 @@ resolveSourceStore(rootPath, targetHost):
 | 项 | 内容 | 价值 | 风险/成本 |
 |---|---|---|---|
 | R5 CSV 用例库 | `importTestDocument` 接受 `.csv`，用现有 CSV 解析 + 映射 | 去掉 `.xlsx` 单格式限制 | 源副本/三件套格式要扩展 |
-| R6 APK/IPA appId | APK 用 `aapt2 dump badging`（有则用）或二进制 manifest 解析；IPA 读 `Info.plist`；失败保留手填 | 少一个手填字段 | 中心需工具/解析器；解析结果必须可编辑、不可信时不静默采用 |
+| R6 APK/IPA appId | **已实现**：`jszip` + AXML 解析 APK manifest；IPA 读 Info.plist（二进制 plist 走 macOS plutil）；失败保留手填。见 `DESIGN.md` §13.304 | 少一个手填字段 | 只推断不改配置；非法/失败不采用 |
 | R10 LLM 执行 | 真正接线 `executionMode=llm` | 自然语言用例不依赖 Maestro 脚本 | 运行时 agent、成本/审计；**必须同时把 `data_engine.db`/`status.json` 纳入结果回传**，否则远程任务落 `token-unavailable`，计费闭环断裂 |
 | L2 生成模式可见 | 脚本列表/详情显示 `规则生成` / `AI 辅助（N/M 例）`；metadata 已有 `normalizer`/`llmCases`，无需改库 | 用户理解为何自动生成集 unresolved 更多 | 低 |
 | L6 版本落后提示 | 目标主机登记了项目但 case set 版本落后 owner 时提示（不自动合并） | 跨主机一致性 | 低，P2 |

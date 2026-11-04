@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import { storeWebAsset } from "../dist/web/assets.js";
@@ -32,7 +33,7 @@ async function setup(t, options = {}) {
     workspaceRoot: dir,
     name: options.name ?? "acme",
     platforms: options.platforms ?? ["android"],
-    appPackage: options.appPackage ?? "com.example.app"
+    appPackage: options.appPackage === undefined ? "com.example.app" : options.appPackage
   });
   const excel = await storeWebAsset({
     store,
@@ -50,7 +51,7 @@ async function setup(t, options = {}) {
     rootPath,
     kind: "package",
     filename: "app.apk",
-    buffer: Buffer.from("fake-apk")
+    buffer: options.packageBuffer ?? Buffer.from("fake-apk")
   });
   return { dir, store, rootPath, excel, pkg };
 }
@@ -73,6 +74,24 @@ test("script-generation: dry-run 只出 manifest，不写 scripts 资产", async
   assert.equal(result.manifest.packageAssetId, pkg.id);
   assert.equal(result.manifest.appId, "com.example.app");
   assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 0);
+});
+
+test("script-generation: 项目未配置 appPackage 时从 APK 推断", async (t) => {
+  const apk = new JSZip();
+  apk.file("AndroidManifest.xml", '<manifest package="com.example.inferred"/>');
+  const { store, rootPath, excel, pkg } = await setup(t, {
+    appPackage: null,
+    packageBuffer: await apk.generateAsync({ type: "nodebuffer" })
+  });
+  const result = await generateScriptSetForProject({
+    store,
+    rootPath,
+    excelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    platform: "android",
+    dryRun: true
+  });
+  assert.equal(result.appId, "com.example.inferred");
 });
 
 test("script-generation: LLM normalizer 输出受控动作并记录 manifest", async (t) => {
