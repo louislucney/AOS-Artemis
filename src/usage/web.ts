@@ -16,8 +16,9 @@ import {
   type UsageSignals,
   type UsageSummary
 } from "./aggregate.js";
-import { cBadge, cStat } from "../console/components.js";
+import { cBadge, cStat, cTable } from "../console/components.js";
 import { USAGE_DISABLED_NOTE, usageEnabledFrom, usageEventSampleLimit } from "./capture.js";
+import { collectTokenUsage, type TokenUsageView } from "./tokens.js";
 import { escapeHtml } from "../util.js";
 import { projectExcluded } from "../project-visibility.js";
 import { storeKindShortLabel } from "../db/labels.js";
@@ -35,6 +36,8 @@ export interface UsageWebDeps {
   now?: number;
   /** 呈现于同一进程的 /panel 路由时传入（如 "/panel"）；独立统计进程缺省 → 不渲染回链。 */
   panelUrl?: string | null;
+  /** HTML 浏览器请求；歧义路径用候选页而不是 JSON 409。 */
+  accept?: string | null;
 }
 
 export interface UsageWebResponse {
@@ -105,6 +108,7 @@ export interface UsageWebView {
   tools: UsageWebToolRow[];
   summary: UsageSummary;
   signals: UsageSignals;
+  token: TokenUsageView;
   events: {
     total: number;
     count: number;
@@ -233,6 +237,11 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
   const offsetRaw = intParam(params, "offset");
   const offset = offsetRaw !== null && offsetRaw > 0 ? offsetRaw : 0;
   const since = days === null ? null : new Date(now - days * 86_400_000).toISOString();
+  const token = await collectTokenUsage({
+    store: deps.store,
+    projects: project === null ? projects : [project],
+    since
+  });
 
   const query: UsageEventQuery = { limit: usageEventSampleLimit(deps.env ?? process.env) };
   if (tool !== null) query.tool = tool;
@@ -303,6 +312,7 @@ async function buildView(url: URL, deps: UsageWebDeps): Promise<UsageWebView> {
     tools,
     summary,
     signals,
+    token,
     events: { total: summary.total, count: items.length, limit, offset, items: items.map(eventView) }
   };
 }
@@ -330,6 +340,13 @@ export async function handleUsageRequest(
       };
     }
     if (error instanceof AmbiguousProjectError) {
+      if (url.pathname === "/usage" && (deps.accept ?? "").includes("text/html")) {
+        return {
+          status: 200,
+          contentType: HTML_CONTENT_TYPE,
+          body: renderAmbiguousUsage(error.candidates, deps.panelUrl ?? null)
+        };
+      }
       return {
         status: 409,
         contentType: JSON_CONTENT_TYPE,
@@ -356,6 +373,37 @@ export async function handleUsageRequest(
 }
 
 export { escapeHtml };
+
+
+function renderAmbiguousUsage(
+  candidates: readonly ProjectRecord[],
+  panelUrl: string | null
+): string {
+  const rows = candidates.map((candidate) => {
+    const params = new URLSearchParams({ project: candidate.rootPath });
+    if (candidate.hostId !== null) params.set("host", candidate.hostId);
+    return [
+      escapeHtml(candidate.hostId ?? "未绑定主机"),
+      escapeHtml(candidate.name),
+      `<code>${escapeHtml(candidate.rootPath)}</code>`,
+      `<a class="c-button c-button-primary" href="/usage?${params.toString()}">查看该主机统计</a>`
+    ];
+  });
+  return renderConsoleShell({
+    title: "Token 消耗 · 选择主机",
+    active: "usage",
+    nav: panelUrl === null ? USAGE_STANDALONE_NAV : DEFAULT_CONSOLE_NAV,
+    body: [
+      "<h1>Token 消耗 · 选择项目主机</h1>",
+      '<p class="muted">同一个项目路径在多个主机上都有登记；选择主机后才能得到唯一的 token / 调用统计。</p>',
+      cTable({
+        columns: ["主机", "项目", "项目路径", "操作"],
+        rows,
+        caption: "同名项目候选"
+      })
+    ].join("\n")
+  });
+}
 
 function formatPercent(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;
@@ -430,6 +478,44 @@ function renderBadges(view: UsageWebView): string {
   return parts.join("");
 }
 
+
+function formatTokens(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+function renderTokenUsage(view: UsageWebView): string {
+  const token = view.token;
+  const hasData = token.jobs > 0;
+  const cards = [
+    cStat({ label: "总 Token", value: hasData ? formatTokens(token.totalTokens) : "—", hint: hasData ? `${token.jobs} 个任务` : "暂无数据" }),
+    cStat({ label: "输入", value: hasData ? formatTokens(token.promptTokens) : "—" }),
+    cStat({ label: "输出", value: hasData ? formatTokens(token.completionTokens) : "—" }),
+    cStat({ label: "缓存", value: hasData ? formatTokens(token.cacheCreateTokens + token.cacheReadTokens) : "—", hint: hasData ? "写入 + 读取" : "" })
+  ].join("");
+  const rows = token.records.map((entry) => [
+    relativeTime(entry.at),
+    escapeHtml(entry.project),
+    escapeHtml(entry.model),
+    formatTokens(entry.promptTokens),
+    formatTokens(entry.completionTokens),
+    formatTokens(entry.cacheCreateTokens + entry.cacheReadTokens),
+    formatTokens(entry.totalTokens)
+  ]);
+  const table =
+    rows.length === 0
+      ? `<p class="muted">${escapeHtml(token.note ?? "暂无 token 消耗记录。")}</p>`
+      : `<div class="c-table-wrap"><table class="c-table"><caption>最近 token 记录（${rows.length}）</caption><thead><tr><th scope="col">时间</th><th scope="col">项目</th><th scope="col">模型</th><th scope="col">输入</th><th scope="col">输出</th><th scope="col">缓存</th><th scope="col">合计</th></tr></thead><tbody>${rows
+          .map((row) => `<tr>${row.map((value) => `<td>${value}</td>`).join("")}</tr>`)
+          .join("")}</tbody></table></div>`;
+  const models =
+    token.byModel.length === 0
+      ? ""
+      : `<p class="muted">模型：${token.byModel
+          .map((entry) => `<code>${escapeHtml(entry.key)}</code> ${formatTokens(entry.totalTokens)}`)
+          .join(" · ")}</p>`;
+  return `<section id="token-usage"><h2>Token 消耗</h2><div class="c-stats-row">${cards}</div><p class="muted">来自 Web LLM 任务结果的 tokenUsage；没有上报 token 的旧任务不计入。</p>${models}${table}</section>`;
+}
+
 function renderOverview(view: UsageWebView): string {
   const families =
     view.summary.byFamily
@@ -437,7 +523,7 @@ function renderOverview(view: UsageWebView): string {
       .join("") || '<span class="muted">暂无</span>';
   return [
     '<section id="overview">',
-    "<h2>概览</h2>",
+    "<h2>工具调用概览</h2>",
     '<div class="c-stats-row">',
     cStat({ label: "事件总数", value: String(view.summary.total) }),
     cStat({
@@ -649,6 +735,22 @@ function renderEvents(view: UsageWebView): string {
   ].join("\n");
 }
 
+const USAGE_PAGE_STYLE = `<style>
+#usage-page .switcher,#usage-page .filters{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;margin:14px 0}
+#usage-page .switcher label,#usage-page .filters label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--color-text-secondary)}
+#usage-page .switcher input,#usage-page .filters input,#usage-page .filters select{height:34px;padding:0 10px;border:1px solid var(--color-border);border-radius:var(--radius-xs);background:var(--color-surface-white);color:var(--color-text-primary);font:inherit;font-size:13px}
+#usage-page .switcher input{min-width:240px}
+#usage-page .switcher button,#usage-page .filters button{height:34px;padding:0 14px;border:1px solid var(--color-accent);border-radius:var(--radius-pill);background:var(--color-accent);color:var(--color-text-primary);font:inherit;font-weight:600;cursor:pointer}
+#usage-page .filters a.reset{align-self:center;font-size:12px}
+#usage-page .badges{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+#usage-page .note{font-size:12px;color:var(--color-text-secondary);margin:4px 0}
+#usage-page .pager{display:flex;gap:12px;align-items:center;margin-top:10px;font-size:12px}
+#usage-page .ok{color:var(--color-success);font-weight:600}
+#usage-page .err{color:var(--color-error);font-weight:600}
+#usage-page .empty{color:var(--color-text-secondary);padding:18px 0}
+#usage-page .zero-call{opacity:.65}
+</style>`;
+
 export function renderUsageHtml(view: UsageWebView): string {
   const projectLabel = view.project?.name ?? "未注册项目";
   const backLine =
@@ -672,7 +774,7 @@ export function renderUsageHtml(view: UsageWebView): string {
         })
       };
   return renderConsoleShell({
-    title: `使用统计 · ${projectLabel}`,
+    title: `Token 消耗 · ${projectLabel}`,
     active: "usage",
     nav: embedded ? DEFAULT_CONSOLE_NAV : USAGE_STANDALONE_NAV,
     project: embedded ? (view.project?.rootPath ?? null) : null,
@@ -688,17 +790,21 @@ export function renderUsageHtml(view: UsageWebView): string {
       opsHref: null
     },
     ...(view.filters.refresh === null ? {} : { autoRefreshSeconds: view.filters.refresh }),
+    headExtra: USAGE_PAGE_STYLE,
     body: [
+      '<div id="usage-page">',
       "<header>",
       backLine,
-      "<h1>使用统计</h1>",
+      "<h1>Token 消耗</h1>",
       renderSwitcher(view),
       renderBadges(view),
       "</header>",
+      renderTokenUsage(view),
       renderOverview(view),
       renderTools(view),
       renderSignals(view),
-      renderEvents(view)
+      renderEvents(view),
+      "</div>"
     ].join("\n")
   });
 }

@@ -442,6 +442,14 @@ test("usage web: 同 rootPath 两主机按 host 作用域读事件（不再 Ambi
 
   const fallback = await getJson(store, "/usage.json");
   assert.equal(fallback.summary.total, 1, "缺省项目取最新注册的一行且不抛歧义");
+  const ambiguousHtml = await handleUsageRequest(
+    new URL("http://localhost/usage?project=%2Fw%2Fshared"),
+    deps(store, { accept: "text/html" })
+  );
+  assert.equal(ambiguousHtml.status, 200, "浏览器请求渲染候选页而非 JSON");
+  assert.match(ambiguousHtml.body, /选择项目主机/);
+  assert.match(ambiguousHtml.body, /查看该主机统计/);
+
   const ambiguousPath = await handleUsageRequest(
     new URL("http://localhost/usage?project=%2Fw%2Fshared"),
     deps(store)

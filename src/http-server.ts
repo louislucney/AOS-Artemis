@@ -536,7 +536,8 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             catalog: inProcessToolCatalog(),
             storageNote: reason,
             env: process.env,
-            panelUrl: "/panel"
+            panelUrl: "/panel",
+            accept: req.headers.accept ?? null
           });
           res.writeHead(usageResponse.status, { "Content-Type": usageResponse.contentType });
           res.end(usageResponse.body);
