@@ -376,7 +376,8 @@ async function runUsageWeb(options: {
             catalog,
             storageNote: storage.note,
             env,
-            now: nowMs
+            now: nowMs,
+            accept: req.headers.accept ?? null
           });
           res.writeHead(response.status, { "Content-Type": response.contentType });
           res.end(response.body);
