@@ -17,7 +17,12 @@ import {
   type ScriptSetBundle,
   type ScriptSetManifest
 } from "./script-set.js";
-import { isValidAppId, type PreconditionMode, type ScriptPlatform } from "./script-gen.js";
+import {
+  ScriptGenerationTimeoutError,
+  isValidAppId,
+  type PreconditionMode,
+  type ScriptPlatform
+} from "./script-gen.js";
 import type { NormalizeCaseInput, NormalizedStep, StepNormalizer } from "./step-normalizer.js";
 
 export type ScriptGenerationErrorCode =
@@ -58,6 +63,8 @@ export interface GenerateScriptSetInput {
   bestEffort?: boolean;
   /** Optional LLM normalizer; failures fall back to rule parsing per case. */
   normalizer?: StepNormalizer;
+  /** 墙钟预算（ms）；缺省读 AOS_WEB_SCRIPT_GEN_TIMEOUT_MS（30000，0 关闭）。 */
+  timeoutMs?: number;
   dryRun?: boolean;
   uploadedBy?: string | null;
 }
@@ -111,6 +118,16 @@ async function loadAsset(
 }
 
 const NORMALIZE_CONCURRENCY = 4;
+export const DEFAULT_SCRIPT_GEN_TIMEOUT_MS = 30_000;
+
+function resolveGenerationTimeoutMs(explicit: number | undefined): number {
+  if (explicit !== undefined && Number.isFinite(explicit) && explicit >= 0) {
+    return Math.floor(explicit);
+  }
+  const raw = Number.parseInt(process.env.AOS_WEB_SCRIPT_GEN_TIMEOUT_MS ?? "", 10);
+  if (Number.isFinite(raw) && raw >= 0) return raw;
+  return DEFAULT_SCRIPT_GEN_TIMEOUT_MS;
+}
 
 async function normalizeCases(
   normalizer: StepNormalizer | undefined,
@@ -234,9 +251,13 @@ export async function generateScriptSetForProject(
       input.platform,
       appId
     );
+    const timeoutMs = resolveGenerationTimeoutMs(input.timeoutMs);
+    const deadlineMs =
+      timeoutMs === 0 ? undefined : Date.now() + timeoutMs;
     const bundle = buildScriptSetBundle({
       appId,
       platform: input.platform,
+      ...(deadlineMs === undefined ? {} : { deadlineMs }),
       sourceExcelAssetId: excel.id,
       packageAssetId: pkg.id,
       cases: parsed.cases.map((entry) => {
@@ -307,7 +328,11 @@ export async function generateScriptSetForProject(
       bundle
     };
   } catch (error) {
-    if (error instanceof ScriptGenerationError || error instanceof ScriptSetStoreError) {
+    if (
+      error instanceof ScriptGenerationError ||
+      error instanceof ScriptSetStoreError ||
+      error instanceof ScriptGenerationTimeoutError
+    ) {
       throw error;
     }
     throw new ScriptGenerationError(

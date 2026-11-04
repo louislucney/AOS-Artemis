@@ -70,6 +70,8 @@ export interface ScriptSetBundleInput {
   llmCases?: number;
   normalizerWarnings?: string[];
   generatorVersion?: number;
+  /** 墙钟预算（epoch ms），透传给 generateScriptSet。 */
+  deadlineMs?: number;
 }
 
 export interface ScriptSetBundle {
@@ -188,7 +190,8 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
       preconditionMode,
       inferNavigationTap: input.inferNavigationTap,
       includeSoftText: input.includeSoftText,
-      bestEffort: input.bestEffort
+      bestEffort: input.bestEffort,
+      ...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs })
     }
   });
   const used = new Set<string>();

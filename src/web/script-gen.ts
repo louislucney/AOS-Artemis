@@ -40,6 +40,8 @@ export interface ScriptGenCaseInput {
 export interface ScriptGenOptions {
   appId: string;
   platform: ScriptPlatform;
+  /** 墙钟预算（epoch ms）；逐例检查，超时抛 ScriptGenerationTimeoutError。 */
+  deadlineMs?: number;
   preconditionMode?: PreconditionMode;
   /** Reserved for the next phase; default false keeps soft text report-only. */
   includeSoftText?: boolean;
@@ -81,6 +83,13 @@ export interface GenerateScriptSetResult {
   partial: number;
   unresolved: number;
   runnable: number;
+}
+
+export class ScriptGenerationTimeoutError extends Error {
+  constructor(deadlineMs: number) {
+    super(`脚本生成超过墙钟预算（deadline=${new Date(deadlineMs).toISOString()}）`);
+    this.name = "ScriptGenerationTimeoutError";
+  }
 }
 
 const ANDROID_APP_ID = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
@@ -455,13 +464,19 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
 }
 
 export function generateScriptSet(input: GenerateScriptSetInput): GenerateScriptSetResult {
-  const cases = input.cases.map((entry) =>
-    generateFlow(entry, {
-      ...input.options,
-      appId: input.appId,
-      platform: input.platform
-    })
-  );
+  const options = {
+    ...input.options,
+    appId: input.appId,
+    platform: input.platform
+  };
+  const deadlineMs = options.deadlineMs;
+  const cases: ScriptGenResult[] = [];
+  for (const entry of input.cases) {
+    if (deadlineMs !== undefined && Date.now() > deadlineMs) {
+      throw new ScriptGenerationTimeoutError(deadlineMs);
+    }
+    cases.push(generateFlow(entry, options));
+  }
   const ready = cases.filter((entry) => entry.status === "ready" && !entry.partial).length;
   const partial = cases.filter((entry) => entry.status === "ready" && entry.partial).length;
   return {

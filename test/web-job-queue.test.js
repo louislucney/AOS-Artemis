@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
 import { newDb } from "pg-mem";
 
 import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { PostgresStore } from "../dist/db/postgres.js";
+import { storeWebAsset } from "../dist/web/assets.js";
 import {
   assertWebJobCombination,
   canRunMaestroDiscovery,
@@ -143,6 +145,7 @@ async function makeProject(store, label) {
     name,
     normalizedName: name,
     platforms: ["android", "ios"],
+    appPackage: "com.example.app",
     projectId: project.id
   });
   return rootPath;
@@ -164,6 +167,35 @@ async function addAsset(store, rootPath, kind, filename, metadata = {}) {
   });
 }
 
+async function makeRealAssets(store, rootPath) {
+  await mkdir(rootPath, { recursive: true });
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例编号", "用例名称", "操作步骤", "预期结果", "所属模块"]);
+  sheet.addRow([
+    "TC-1",
+    "登录",
+    '1. 启动 App\n2. 点击"登录"',
+    '页面显示"成功"',
+    "登录"
+  ]);
+  const excel = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
+  });
+  const pkg = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "package",
+    filename: "app.apk",
+    buffer: Buffer.from("fake-apk")
+  });
+  return { excel, pkg };
+}
+
 async function makeAssets(store, rootPath) {
   const excel = await addAsset(store, rootPath, "excel", "cases.xlsx");
   const pkg = await addAsset(store, rootPath, "package", "app.apk");
@@ -182,7 +214,7 @@ function jobInput(store, rootPath, assets, overrides = {}) {
     requirements: { platform: "android", deviceKind: "any" },
     excelAssetId: assets.excel.id,
     packageAssetId: assets.pkg.id,
-    scriptSetId: assets.script.id,
+    scriptSetId: assets.script?.id ?? null,
     executionMode: "maestro",
     caseFilter: { modules: ["登录"], caseIds: [] },
     nowMs: NOW,
@@ -696,7 +728,7 @@ test("组合校验：iOS Maestro 仅允许 simulator；ios×device/any×maestro 
   assert.equal(canRunMaestroDiscovery([android("a", "Pixel 7")]), true);
 });
 
-test("脚本集资产精确匹配：不一致拒绝；历史版本精确匹配允许；allowStaleScript 放行", async () => {
+test("脚本集资产匹配：过期自动重建（失败 409）；历史版本允许；allowStaleScript 放行", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "script-match");
     const v1 = await addAsset(store, rootPath, "excel", "cases-v1.xlsx");
@@ -710,7 +742,10 @@ test("脚本集资产精确匹配：不一致拒绝；历史版本精确匹配�
 
     await assert.rejects(
       createWebJob(jobInput(store, rootPath, assets, { excelAssetId: v2.id, scriptSetId: script.id })),
-      (error) => error instanceof WebJobDispatchError && error.code === "script-set-mismatch"
+      (error) =>
+        error instanceof WebJobDispatchError &&
+        error.code === "script-set-rebuild-failed" &&
+        error.status === 409
     );
 
     const historical = await createWebJob(
@@ -898,7 +933,7 @@ test("FileStore.claimWebJob：跨 bucket 查找、host 队列暂停阻断", asyn
   }
 });
 
-test("脚本集未声明 sourceExcelAssetId/packageAssetId → script-set-unverified；allowStaleScript 放行", async () => {
+test("脚本集未声明绑定 → 自动重建（失败 409）；allowStaleScript 放行", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "script-unverified");
     const assets = await makeAssets(store, rootPath);
@@ -908,7 +943,7 @@ test("脚本集未声明 sourceExcelAssetId/packageAssetId → script-set-unveri
       createWebJob(jobInput(store, rootPath, assets, { scriptSetId: bareScript.id })),
       (error) =>
         error instanceof WebJobDispatchError &&
-        error.code === "script-set-unverified" &&
+        error.code === "script-set-rebuild-failed" &&
         error.status === 409
     );
 
@@ -920,7 +955,7 @@ test("脚本集未声明 sourceExcelAssetId/packageAssetId → script-set-unveri
   }
 });
 
-test("脚本集 platform 与任务平台不一致 → script-set-mismatch", async () => {
+test("脚本集 platform 与任务平台不一致 → 自动重建（fake 资产失败 409）", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "script-platform");
     const assets = await makeAssets(store, rootPath);
@@ -934,13 +969,13 @@ test("脚本集 platform 与任务平台不一致 → script-set-mismatch", asyn
       createWebJob(jobInput(store, rootPath, assets, { scriptSetId: iosScript.id })),
       (error) =>
         error instanceof WebJobDispatchError &&
-        error.code === "script-set-mismatch" &&
-        /平台/.test(error.message)
+        error.code === "script-set-rebuild-failed" &&
+        error.status === 409
     );
   }
 });
 
-test("Maestro 无脚本 → script-set-missing；unresolved 默认允许、显式 false 严格", async () => {
+test("Maestro 无脚本 → 自动生成；素材不可读 → script-generation-failed；unresolved 默认允许、显式 false 严格", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "script-preflight");
     const assets = await makeAssets(store, rootPath);
@@ -949,7 +984,7 @@ test("Maestro 无脚本 → script-set-missing；unresolved 默认允许、显�
       createWebJob(jobInput(store, rootPath, assets, { scriptSetId: null })),
       (error) =>
         error instanceof WebJobDispatchError &&
-        error.code === "script-set-missing" &&
+        error.code === "script-generation-failed" &&
         error.status === 400
     );
 
@@ -978,6 +1013,52 @@ test("Maestro 无脚本 → script-set-missing；unresolved 默认允许、显�
         error.status === 409
     );
   }
+});
+
+test("createWebJob: maestro 未选脚本集 → 规则生成并幂等复用", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "lazy-script");
+    const assets = await makeRealAssets(store, rootPath);
+    const input = jobInput(store, rootPath, assets, { scriptSetId: null });
+
+    const first = await createWebJob(input);
+    assert.ok(first.task.jobSpec.scriptSetId, "自动生成后写入脚本集");
+    assert.equal(first.script?.autoGenerated, true);
+    assert.equal(first.script?.created, true);
+    assert.ok((first.script?.runnable ?? 0) >= 1, "规则解析至少有一条可执行");
+
+    const second = await createWebJob(input);
+    assert.equal(second.task.jobSpec.scriptSetId, first.task.jobSpec.scriptSetId);
+    assert.equal(second.script?.autoGenerated, true);
+    assert.equal(second.script?.created, false, "同输入复用已有资产");
+    assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 1);
+  }
+});
+
+test("createWebJob: 自动生成失败 → script-generation-failed，不建任务", async () => {
+  const store = new MemoryStore();
+  const rootPath = await makeProject(store, "lazy-bad-excel");
+  const assets = await makeRealAssets(store, rootPath);
+  const broken = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "broken.xlsx",
+    buffer: Buffer.from([0, 1, 2, 3])
+  });
+  await assert.rejects(
+    createWebJob(
+      jobInput(store, rootPath, assets, {
+        scriptSetId: null,
+        excelAssetId: broken.id
+      })
+    ),
+    (error) =>
+      error instanceof WebJobDispatchError &&
+      error.code === "script-generation-failed" &&
+      error.status === 400
+  );
+  assert.equal((await store.listRegressionTasks(rootPath)).length, 0, "失败不建任务");
 });
 
 test("claimWebJob 用显式 nowMs 判定租约过期（与墙钟无关）", async () => {

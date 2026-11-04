@@ -70,6 +70,9 @@ export type WebJobDispatchErrorCode =
   | "script-set-unverified"
   | "script-set-missing"
   | "script-set-incomplete"
+  | "script-generation-failed"
+  | "script-generation-timeout"
+  | "script-set-rebuild-failed"
   | "device-not-on-host"
   | "device-busy";
 
@@ -89,6 +92,9 @@ const ERROR_STATUS: Record<WebJobDispatchErrorCode, number> = {
   "script-set-unverified": 409,
   "script-set-missing": 400,
   "script-set-incomplete": 409,
+  "script-generation-failed": 400,
+  "script-generation-timeout": 400,
+  "script-set-rebuild-failed": 409,
   "device-not-on-host": 409,
   "device-busy": 409
 };

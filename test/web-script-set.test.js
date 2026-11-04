@@ -8,6 +8,7 @@ import test from "node:test";
 import { MemoryStore } from "../dist/db/memory.js";
 import { storeWebAsset } from "../dist/web/assets.js";
 import { createWebProject } from "../dist/web/project-service.js";
+import { ScriptGenerationTimeoutError } from "../dist/web/script-gen.js";
 import {
   buildScriptSetBundle,
   SCRIPT_SET_GENERATOR,
@@ -100,6 +101,13 @@ test("script-set: 相同输入生成相同 zip/sha，manifest 可解析", () => 
   for (const key of ["createdAt", "generatedAt", "timestamp", "nonce"]) {
     assert.equal(key in parsed, false, `manifest 不得含 ${key}（否则 sha 幂等失效）`);
   }
+});
+
+test("script-set: 超过 deadline 抛 ScriptGenerationTimeoutError", () => {
+  assert.throws(
+    () => bundle({ deadlineMs: Date.now() - 1 }),
+    (error) => error instanceof ScriptGenerationTimeoutError
+  );
 });
 
 test("script-set: manifest 携带 Excel 模块", () => {

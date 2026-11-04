@@ -254,9 +254,11 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
 
   assert.match(html, /id="web-job-allow-partial"[^>]*checked/, "部分下发默认勾选");
   assert.match(html, /未就绪用例写 SKIP/, "默认行为有文案说明");
+  assert.match(html, /不指定时下发自动生成/, "脚本集可留空");
   const ownScripts = inlineScripts(html).filter((code) => code.includes("/panel/api/jobs"));
   assert.equal(ownScripts.length, 1, "下发表单脚本存在");
   assert.match(ownScripts[0], /allowPartialUnresolved\s*=/, "表单始终提交布尔值");
+  assert.doesNotMatch(ownScripts[0], /Maestro 执行需要脚本集/, "不再前端拦截空脚本集");
   assert.doesNotThrow(() => new Function(ownScripts[0]), "下发表单脚本可解析");
 });
 
