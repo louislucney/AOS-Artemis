@@ -1907,6 +1907,7 @@ interface PanelWebJobCreateInput extends PanelWebJobAssignment {
   priority: number;
   allowStaleScript: boolean;
   allowPartialUnresolved: boolean;
+  allowUnverified: boolean;
 }
 
 function parseWebJobCreateForm(
@@ -1958,6 +1959,8 @@ function parseWebJobCreateForm(
   const allowPartialUnresolved = !(
     payload.allowPartialUnresolved === false || payload.allowPartialUnresolved === "false"
   );
+  const allowUnverified =
+    payload.allowUnverified === true || payload.allowUnverified === "true";
   return {
     ok: true,
     value: {
@@ -1972,7 +1975,8 @@ function parseWebJobCreateForm(
       retry,
       priority,
       allowStaleScript,
-      allowPartialUnresolved
+      allowPartialUnresolved,
+      allowUnverified
     }
   };
 }
@@ -2012,6 +2016,7 @@ async function createWebJobAction(
       priority: input.priority,
       allowStaleScript: input.allowStaleScript,
       allowPartialUnresolved: input.allowPartialUnresolved,
+      allowUnverified: input.allowUnverified,
       createdBy: actor,
       nowMs: deps.now?.() ?? Date.now()
     });

@@ -74,6 +74,7 @@ export type WebJobDispatchErrorCode =
   | "script-generation-timeout"
   | "script-set-rebuild-failed"
   | "llm-gateway-unavailable"
+  | "llm-no-expectation"
   | "device-not-on-host"
   | "device-busy";
 
@@ -97,6 +98,7 @@ const ERROR_STATUS: Record<WebJobDispatchErrorCode, number> = {
   "script-generation-timeout": 400,
   "script-set-rebuild-failed": 409,
   "llm-gateway-unavailable": 409,
+  "llm-no-expectation": 400,
   "device-not-on-host": 409,
   "device-busy": 409
 };

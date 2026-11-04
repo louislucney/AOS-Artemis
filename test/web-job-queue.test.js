@@ -1167,6 +1167,55 @@ test("createWebJob: 自动生成失败 → script-generation-failed，不建任�
   assert.equal((await store.listRegressionTasks(rootPath)).length, 0, "失败不建任务");
 });
 
+test("createWebJob: LLM 无预期列默认拒绝，显式 allowUnverified 放行", async () => {
+  const store = new MemoryStore();
+  const rootPath = await makeProject(store, "llm-no-expectation");
+  await mkdir(rootPath, { recursive: true });
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例编号", "步骤"]);
+  sheet.addRow(["TC-1", "1. 启动 App"]);
+  const excel = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "no-expected.xlsx",
+    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
+  });
+  const pkg = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "package",
+    filename: "app.apk",
+    buffer: Buffer.from("fake-apk")
+  });
+  const devices = [android("pixel-7", "Pixel 7")];
+  await store.upsertWebRunner({
+    ...runner("host-a", devices),
+    gateway: {
+      adbServer: "127.0.0.1:15037",
+      appiumUrl: null,
+      tunnelPort: 15037,
+      ready: true,
+      reportedAt: new Date(NOW).toISOString()
+    },
+    lastSeenAt: new Date(NOW - 1_000).toISOString()
+  });
+  const input = jobInput(store, rootPath, { excel, pkg, script: null }, {
+    executionMode: "llm",
+    scriptSetId: null
+  });
+  await assert.rejects(
+    createWebJob(input),
+    (error) =>
+      error instanceof WebJobDispatchError &&
+      error.code === "llm-no-expectation" &&
+      error.status === 400
+  );
+  const allowed = await createWebJob({ ...input, allowUnverified: true });
+  assert.ok(allowed.warnings.includes("llm-no-expectation"));
+});
+
 test("createWebJob: LLM 需要 ready 的设备网关", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "llm-gateway");
