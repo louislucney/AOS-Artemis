@@ -63,7 +63,8 @@ export async function buildRemoteSuiteRuntime(
   const project = loadProject({ env: resolvedEnv });
   const identity = await resolveHostIdentity({ env: resolvedEnv });
   const panelBaseUrl =
-    (env.AOS_PANEL_BASE_URL ?? "").trim() || controlUrl;
+    (env.MOBILE_TESTING_PANEL_BASE_URL ?? env.AOS_PANEL_BASE_URL ?? "").trim() ||
+    controlUrl;
   let local;
   try {
     local = await FileStore.create({ env: resolvedEnv });

@@ -526,11 +526,11 @@ export function printWebRunnerUsage(log: (line: string) => void): void {
 host 级远端 Web 任务执行机（不要求项目目录；每台设备一个 worker）：
   --name <n>              执行机名称（缺省 hostname）
   --artifact-base-url <u> 产物基址（回传给中心，可选）
-  --panel-base-url <u>    中心基址（缺省 AOS_PANEL_BASE_URL；可回退控制面）
+  --panel-base-url <u>    中心基址（缺省 MOBILE_TESTING_PANEL_BASE_URL；可回退控制面）
   --control-url <u>       控制面基址（缺省 MOBILE_TESTING_RUNNER_CONTROL_URL；设置后不连中心 PG）
   --once                  只跑一轮（心跳/选机 + 每设备一次领取并执行一次尝试）后退出
   环境变量：MOBILE_TESTING_RUNNER_CONTROL_URL（推荐，旧名 AOS_RUNNER_CONTROL_URL 兼容）、
-            AOS_PANEL_BASE_URL、MOBILE_TESTING_RUNNER_JOB_TOKEN（≥16）、
+            MOBILE_TESTING_PANEL_BASE_URL（旧名 AOS_PANEL_BASE_URL 兼容）、MOBILE_TESTING_RUNNER_JOB_TOKEN（≥16）、
             MOBILE_TESTING_HOST_ID（旧名 AOS_HOST_ID 兼容）、AOS_RUNNER_TTL_MS、AOS_DEVICE_LEASE_MS、AOS_RUNNER_HEARTBEAT_MS、
             AOS_RUNNER_POLL_MS、AOS_RUNNER_WORK_DIR、AOS_RUNNER_CACHE_DIR；
             未配置控制面时回退中心 PG：MOBILE_TESTING_DATABASE_URL（必需）`);
@@ -593,7 +593,7 @@ export async function runWebRunnerCommand(
     (env.MOBILE_TESTING_RUNNER_CONTROL_URL ?? env.AOS_RUNNER_CONTROL_URL ?? "").trim();
   const panelBaseUrl =
     flags.get("panel-base-url")?.trim() ||
-    (env.AOS_PANEL_BASE_URL ?? "").trim() ||
+    (env.MOBILE_TESTING_PANEL_BASE_URL ?? env.AOS_PANEL_BASE_URL ?? "").trim() ||
     controlUrl;
   const runnerToken = runnerJobTokenFrom(env);
   const needsHttpControl =
@@ -604,7 +604,7 @@ export async function runWebRunnerCommand(
   if (needsExecutor || needsHttpControl) {
     if (panelBaseUrl === "") {
       io.errorLog(
-        "web-runner 需要中心基址：请设置 MOBILE_TESTING_RUNNER_CONTROL_URL（旧名 AOS_RUNNER_CONTROL_URL 兼容）或 AOS_PANEL_BASE_URL，或传 --control-url/--panel-base-url（spec/资产/结果接口）"
+        "web-runner 需要中心基址：请设置 MOBILE_TESTING_RUNNER_CONTROL_URL（旧名 AOS_RUNNER_CONTROL_URL 兼容）或 MOBILE_TESTING_PANEL_BASE_URL，或传 --control-url/--panel-base-url（spec/资产/结果接口）"
       );
       return 2;
     }

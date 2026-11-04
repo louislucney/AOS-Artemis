@@ -347,7 +347,7 @@ test("web-runner 启动：缺中心基址/RUNNER_JOB_TOKEN 明确 exit 2", async
     { env: {} }
   );
   assert.equal(codeBase, 2);
-  assert.match(missingBase.join("\n"), /AOS_PANEL_BASE_URL|--panel-base-url/);
+  assert.match(missingBase.join("\n"), /MOBILE_TESTING_PANEL_BASE_URL|--panel-base-url/);
 
   const missingToken = [];
   const codeToken = await runWebRunnerCommand(

@@ -122,8 +122,8 @@ for (const target of targets) {
   }
 
   const windowsRunner = withTools
-    ? '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nset "PATH=%~dp0tools\\node;%~dp0tools\\platform-tools;%~dp0tools\\jdk\\bin;%~dp0tools\\maestro\\bin;%PATH%"\r\nif not defined MOBILE_TESTING_RUNNER_CONTROL_URL if defined AOS_RUNNER_CONTROL_URL set "MOBILE_TESTING_RUNNER_CONTROL_URL=%AOS_RUNNER_CONTROL_URL%"\r\nif not defined AOS_PANEL_BASE_URL if defined MOBILE_TESTING_RUNNER_CONTROL_URL set "AOS_PANEL_BASE_URL=%MOBILE_TESTING_RUNNER_CONTROL_URL%"\r\n"%~dp0tools\\node\\node.exe" dist\\cli.js web-runner %*\r\n'
-    : '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nif not defined MOBILE_TESTING_RUNNER_CONTROL_URL if defined AOS_RUNNER_CONTROL_URL set "MOBILE_TESTING_RUNNER_CONTROL_URL=%AOS_RUNNER_CONTROL_URL%"\r\nif not defined AOS_PANEL_BASE_URL if defined MOBILE_TESTING_RUNNER_CONTROL_URL set "AOS_PANEL_BASE_URL=%MOBILE_TESTING_RUNNER_CONTROL_URL%"\r\nnode dist\\cli.js web-runner %*\r\n';
+    ? '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nset "PATH=%~dp0tools\\node;%~dp0tools\\platform-tools;%~dp0tools\\jdk\\bin;%~dp0tools\\maestro\\bin;%PATH%"\r\nif not defined MOBILE_TESTING_RUNNER_CONTROL_URL if defined AOS_RUNNER_CONTROL_URL set "MOBILE_TESTING_RUNNER_CONTROL_URL=%AOS_RUNNER_CONTROL_URL%"\r\nif not defined MOBILE_TESTING_PANEL_BASE_URL if defined MOBILE_TESTING_RUNNER_CONTROL_URL set "MOBILE_TESTING_PANEL_BASE_URL=%MOBILE_TESTING_RUNNER_CONTROL_URL%"\r\n"%~dp0tools\\node\\node.exe" dist\\cli.js web-runner %*\r\n'
+    : '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nif not defined MOBILE_TESTING_RUNNER_CONTROL_URL if defined AOS_RUNNER_CONTROL_URL set "MOBILE_TESTING_RUNNER_CONTROL_URL=%AOS_RUNNER_CONTROL_URL%"\r\nif not defined MOBILE_TESTING_PANEL_BASE_URL if defined MOBILE_TESTING_RUNNER_CONTROL_URL set "MOBILE_TESTING_PANEL_BASE_URL=%MOBILE_TESTING_RUNNER_CONTROL_URL%"\r\nnode dist\\cli.js web-runner %*\r\n';
   fs.writeFileSync(path.join(staging, "runner.cmd"), windowsRunner, "utf8");
 
   const unixRunner = withTools
@@ -159,7 +159,7 @@ exec node dist/cli.js web-runner "$@"
 2. 设置环境变量：
    - \`MOBILE_TESTING_HOST_ID=win-mini-01\`
    - \`MOBILE_TESTING_RUNNER_CONTROL_URL=http://<中心IP>:8765\`
-   - \`AOS_PANEL_BASE_URL=http://<中心IP>:8765\`
+   - \`MOBILE_TESTING_PANEL_BASE_URL=http://<中心IP>:8765\`
    - \`MOBILE_TESTING_RUNNER_JOB_TOKEN=<runner-token>\`
 3. 启动：\`.\\runner.cmd --name win-mini-01\`
 4. 打开中心「设备」页，确认机器出现。`
@@ -170,7 +170,7 @@ exec node dist/cli.js web-runner "$@"
 2. 设置环境变量：
    - \`MOBILE_TESTING_HOST_ID=mac-mini-01\`
    - \`MOBILE_TESTING_RUNNER_CONTROL_URL=http://<中心IP>:8765\`
-   - \`AOS_PANEL_BASE_URL=http://<中心IP>:8765\`
+   - \`MOBILE_TESTING_PANEL_BASE_URL=http://<中心IP>:8765\`
    - \`MOBILE_TESTING_RUNNER_JOB_TOKEN=<runner-token>\`
 3. 启动：\`./runner.sh --name mac-mini-01\`
 4. 打开中心「设备」页，确认机器出现。`
@@ -180,7 +180,7 @@ exec node dist/cli.js web-runner "$@"
 2. 设置环境变量：
    - \`MOBILE_TESTING_HOST_ID=linux-runner-01\`
    - \`MOBILE_TESTING_RUNNER_CONTROL_URL=http://<中心IP>:8765\`
-   - \`AOS_PANEL_BASE_URL=http://<中心IP>:8765\`
+   - \`MOBILE_TESTING_PANEL_BASE_URL=http://<中心IP>:8765\`
    - \`MOBILE_TESTING_RUNNER_JOB_TOKEN=<runner-token>\`
 3. 启动：\`./runner.sh --name linux-runner-01\`
 4. 打开中心「设备」页，确认机器出现。`;

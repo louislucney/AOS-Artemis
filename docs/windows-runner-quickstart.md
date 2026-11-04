@@ -86,7 +86,7 @@ grep '^MOBILE_TESTING_RUNNER_JOB_TOKEN=' .local/center.env | cut -d= -f2-
 ```powershell
 $env:MOBILE_TESTING_HOST_ID="win-mini-01"
 $env:MOBILE_TESTING_RUNNER_CONTROL_URL="http://<center-ip>:8765"
-$env:AOS_PANEL_BASE_URL="http://<center-ip>:8765"
+$env:MOBILE_TESTING_PANEL_BASE_URL="http://<center-ip>:8765"
 $env:MOBILE_TESTING_RUNNER_JOB_TOKEN="<实际令牌，不带尖括号>"
 ```
 

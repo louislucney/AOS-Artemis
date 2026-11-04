@@ -267,7 +267,7 @@ test("suite control: buildRemoteSuiteRuntime 使用本地文件台账 + HTTP 数
         AOS_HOST_ID: HOST,
         AOS_RUNNER_JOB_TOKEN: TOKEN,
         AOS_RUNNER_CONTROL_URL: baseUrl,
-        AOS_PANEL_BASE_URL: baseUrl,
+        MOBILE_TESTING_PANEL_BASE_URL: baseUrl,
         AOS_PROJECT_DIR: projectDir,
         AOS_CONFIG: ""
       };
@@ -348,7 +348,7 @@ test("suite control: suite runner 仅凭 AOS_RUNNER_CONTROL_URL 领取并执行�
             AOS_HOST_ID: HOST,
             AOS_RUNNER_JOB_TOKEN: TOKEN,
             AOS_RUNNER_CONTROL_URL: baseUrl,
-            AOS_PANEL_BASE_URL: baseUrl
+            MOBILE_TESTING_PANEL_BASE_URL: baseUrl
           },
           runner: {
             executeSuite: async (argv) => {
@@ -404,7 +404,7 @@ test("suite control: buildRemoteSuiteRuntime 首次接入会登记 host/project�
         AOS_HOST_ID: HOST,
         AOS_RUNNER_JOB_TOKEN: TOKEN,
         AOS_RUNNER_CONTROL_URL: baseUrl,
-        AOS_PANEL_BASE_URL: baseUrl,
+        MOBILE_TESTING_PANEL_BASE_URL: baseUrl,
         AOS_PROJECT_DIR: projectDir,
         AOS_CONFIG: ""
       };
