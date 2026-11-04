@@ -115,6 +115,7 @@ pen.dev（原 pencil.dev）接入（P1）：离线工具 `pen_inspect` 解析 `.
 - `DESIGN.md` — 架构、评审记录、里程碑、PG 数据模型、安全与风险；改运行时/工具/存储/传输前必读。
 - `README.md` — 使用方式、本地 PG、客户端安装；回答"怎么跑/怎么装"时读。
 - `docs/接入指南.md` — 运行逻辑（进程/项目识别/LLM/子进程/任务/流水线/CLI 闭环）与其他项目的接入、挂载、排障；回答"整体怎么运转/别的项目怎么接"时读。
+- `docs/superpowers/specs/2026-11-05-ios-artemis-runtime-design.md` — iOS ARTEMIS 同级执行器设计（设备 RPC/OCR provider/capability/恢复条件）；当前开发暂停，Phase 0 结论见 `spikes/ios-artemis/REPORT.md`。
 - `src/vendor/design-context-bridge/NOTICE` — 内嵌上游代码的修改清单；动 vendor 前读。
 - `.env.example`、`aos.config.jsonc` — 配置契约示例（密钥只写变量名）。
 

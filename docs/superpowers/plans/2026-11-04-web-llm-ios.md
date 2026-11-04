@@ -12,6 +12,8 @@
 
 **Status（2026-11-04）：** Task 1–6 的离线实现与 fake 测试已完成，全量测试通过；Task 0 真机端口/bounds 样本与 Task 7 真机验收待设备接入。
 
+**后续（2026-11-05）：** 为消除 Android/iOS 测试行为漂移，另出 `docs/superpowers/specs/2026-11-05-ios-artemis-runtime-design.md`（ARTEMIS 同级执行器）与 Phase 0 Spike 报告 `spikes/ios-artemis/REPORT.md`。该方向当前**暂停开发**，等 P0b/Android 真机稳定后再启动平台接缝 patch。
+
 ## Global Constraints
 
 - P0b 只支持**远程 iOS 真机**；iOS 模拟器仍只支持本机 Maestro/本地调试，不做“远程模拟器”。

@@ -3743,6 +3743,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
   - **计费**：`ChatOptions.onUsage` 不改变 `ChatFn` 签名；run loop 累计主模型/视觉/验证调用到 `token_usage`，iOS 适配层映射为带 `caseId/traceId/model/attempt/phase` 的 `tokenUsage` 行。
   - **真机待验**：Appium 4723 可达性、iOS UI 树 bounds 覆盖率、`.ipa` 下载 URL、登录/个人页截图脱敏、取消/超时与 Excel 写回。
 - **未完成**：ARTEMIS 进程内 H1–H4 hooks 的真实设备联调、面板无预期列确认、gateway `/install`（P0 Android 已用 ARTEMIS `app_path` 安装替代，iOS 走 HTTP URL/预装，runner 端点留 P1）、真实设备联调。
+- **iOS ARTEMIS 同级执行器（设计/探索完成，开发暂停）**：为解决 Android（ARTEMIS agent core）与 iOS（P0b 单循环）的测试行为漂移，已完成设计 `docs/superpowers/specs/2026-11-05-ios-artemis-runtime-design.md` 与 Phase 0 Spike（`spikes/ios-artemis/REPORT.md`）。结论：设备驱动/控制器接缝可行，但 ARTEMIS `DevicePlatform`/`Agent.init`/MCP controller 仍是 Android-only，正式实现需先做平台接缝 patch。当前暂停，恢复条件见设计文档 §17。
 - **安全闸（当前）**：`executeAndroidLlmCase` 在 secret 非空且 `AOS_LLM_HOOKS_ACTIVE!=1` 时返回 `ERROR llm-secret-hook-unavailable`，带账号用例在 hooks 接通前 fail-closed。
 - **Hooks 版本守卫**：ARTEMIS patch 暴露 `AOS_HOOK_API_VERSION=1`；`npm run artemis:patch` 与 worker 启动都校验该标记，submodule 更新后缺 hook/版本不符直接失败，不裸跑。
 - **Worker 心跳**：P0 写 `hosts.env.llmWorker`（instanceId/lastSeenAt/pid），TTL `AOS_LLM_WORKER_TTL_MS` 默认 90s；`createWebJob` 无在线 worker 时返回 `llm-worker-offline` warning，面板提示等待。

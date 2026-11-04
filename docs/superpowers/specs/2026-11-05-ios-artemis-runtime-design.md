@@ -1,6 +1,6 @@
 # iOS ARTEMIS 同级执行器设计（AOS iOS Agent Runtime）
 
-> 2026-11-05 · 状态：设计稿（待评审）  
+> 2026-11-05 · 状态：**设计完成 + Phase 0 Spike 完成；开发暂停**（等待 Android/P0b 真机稳定）  
 > 关联：`DESIGN.md` §13.306（Web LLM 执行接线）、`docs/superpowers/specs/2026-11-04-llm-execution-design.md`（R10 v3）、`docs/superpowers/plans/2026-11-04-web-llm-ios.md`（P0b）、`artemis/artemis/drivers/base.py`、`src/ios/`。
 
 ## 0. 决策摘要
@@ -601,3 +601,39 @@ Spike 已完成，报告：`spikes/ios-artemis/REPORT.md`。
 ---
 
 **一句话总结**：iOS 不再维护第二套 agent；把 iOS 做成 ARTEMIS 的 `BaseDeviceDriver` 后端，用 Node 设备服务复用现有 Appium/WDA 能力，用同一套 OCR/checker/trace 产出证据。这样 Android 和 iOS 的差异只剩设备原语和显式 capability，而不是测试行为。
+
+## 17. 当前状态与恢复条件（2026-11-05）
+
+**状态：暂停开发。**
+
+已完成：
+
+- 架构设计、接口、能力矩阵、OCR provider、部署/测试/回滚方案；
+- Phase 0 throwaway Spike（`spikes/ios-artemis/REPORT.md`）：
+  - `IosRemoteDriver` + `UnifiedMobileControllerBase` 登录流程通过；
+  - 像素→逻辑点 scale 换算通过；
+  - 发现 `Agent.init`/`DevicePlatform` 仍是 Android-only。
+
+暂停原因：
+
+- 当前优先级是 Android 远程 LLM 与 iOS P0b 的真机稳定；
+- iOS ARTEMIS 平台的下一步需要改动 ARTEMIS 的 `DevicePlatform`/`Agent.init`/controller 工厂，属于正式实现前置，不在“探索”阶段继续。
+
+恢复条件（全部满足后再启动 Phase 1）：
+
+1. Android 远程 LLM P0 真机端到端通过；
+2. iOS P0b 真机验收通过（Appium 隧道、bounds 样本、`.ipa`/预装、登录页脱敏、Excel 写回）；
+3. 确认长期 OCR provider（云 API 或本地 RapidOCR）与成本；
+4. 重新评审 Phase 1 的 ARTEMIS 平台接缝 patch 范围；
+5. 真实设备与 macOS runner 档期确认（已确认可随时提供，仍需排期）。
+
+暂停期间不做：
+
+- 不修改 ARTEMIS submodule 的 `DevicePlatform`/`Agent.init`；
+- 不新增 Node device service 生产代码；
+- 不添加 `AOS_IOS_AGENT_RUNTIME` 路由开关；
+- 不改变现有 iOS P0b 与 Android 行为。
+
+恢复时的第一步：
+
+> 只做 **ARTEMIS 平台接缝 patch spike**：`DevicePlatform.IOS`、`Agent.init` 平台分支、`_get_controller` iOS 分支、iOS controller 覆盖，然后用 fake LLM + fake RPC 跑通 `Agent.run_task`。通过后再进入正式 Node device service。
