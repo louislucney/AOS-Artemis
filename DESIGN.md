@@ -3673,3 +3673,24 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **列**：`类型 / 名称 / 位置 / 更新时间 / 大小`；位置对用例集只显示目录 `.artemis/design/case-sets`，完整路径放在 chip `title`；更新时间只渲染一次；大小显示 `N 文件 · 总大小`。
 - **计数**：卡片 subtitle 与分页显示 `本页 X 组 · Y 个文件`，不再把 13 个文件说成 13 项。
 - **测试**：`console-pages` 新增用例集 md/json/xlsx 分组断言；全量 3017 绿，lint 0 error。
+
+### 13.302 设计（未实现）：数据源限制移除与默认值单一事实源
+
+> 2026-11-04。外部评审「小修后通过（无 K）」后修订；本轮只落文档，代码未实现。完整方案见 `docs/superpowers/specs/2026-11-04-data-source-restrictions-design.md` v2。
+
+- **状态**：设计已评审，待实现；实现后在本节补实现记录与测试数。旧平台 spec（2026-10-28）的 `allowPartialUnresolved` 默认值已被本节取代。
+- **数据源归项目，执行归主机**：套件回归的来源读取不再依赖目标主机是否登记项目；目标主机未登记时仍禁止执行，但来源可见并显式示因（含 `sourceStore.error`，不回落空下拉）。
+- **脚本集惰性生成**：Web 测试不选脚本集也可下发；服务端按当前 Excel/包以 rules-only + bestEffort 生成；`runnable=0` 才拒绝。幂等由 `web_assets.dedupe_key` 唯一索引（生成脚本集 = sha256，普通上传 NULL）＋ 文件锁保证，不新增 PG advisory lock。
+- **默认值表（唯一事实源）**：
+
+| 配置 | 默认 | 显式值/说明 |
+|---|---|---|
+| `allowPartialUnresolved` | `true` | `false` → `unresolved>0` 仍 409；省略按 true（行为变更） |
+| 惰性生成 `bestEffort` | `true` | 脚本页可关闭 |
+| 惰性生成 `preconditionMode` | `auto` | `bestEffort=true` 时解析为 `assume-prepared` |
+| 惰性生成 normalizer | `rules` | 不调 LLM；脚本页可选 LLM |
+| `allowStaleScript` | `false` | 不匹配先自动重建；`true` → 旧脚本 + `stale-script` warning |
+| `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` | `30000` | 请求内生成墙钟预算；超时 400 `script-generation-timeout` |
+
+- **过滤必须生效**：脚本集 manifest 携带 `module` 与 `caseId→flow`；runner 按 manifest 过滤模块/用例 ID，不再对模块直接报 `case-filter-modules-unsupported`；旧 manifest 回退 stem 匹配。
+- **保留不动**：PASS 硬断言、manual/未验证 → UNVERIFIED、资产 sha、secret materials 0600/不进 CAS、iOS Maestro 上游仅模拟器。

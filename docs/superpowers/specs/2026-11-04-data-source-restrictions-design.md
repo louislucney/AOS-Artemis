@@ -1,7 +1,8 @@
-# 数据源限制评估与移除设计
+# 数据源限制评估与移除设计（v2）
 
-> 2026-11-04 · 状态：**待评估（未实现）**
-> 关联：`DESIGN.md` §13.155/§13.290/§13.293（主机与项目）、§13.295–§13.300（Web 手工 Excel/用例阅读器）、`docs/superpowers/specs/2026-10-28-web-project-test-platform-design.md` §6/§7。
+> 2026-11-04 · 状态：**待评估（v2 已吸收外部评审意见，未实现）**
+> 关联：`DESIGN.md` §13.155/§13.290/§13.293（主机与项目）、§13.295–§13.301（Web 手工 Excel/产物阅读器）、§13.302（默认值与数据源解耦决定）、`docs/superpowers/specs/2026-10-28-web-project-test-platform-design.md` §4.7/§6/§7。
+> v1 评审：2026-11-04「小修后通过（无 K）」；处置与反驳见 §10。
 
 ## 1. 问题
 
@@ -11,8 +12,9 @@
 - Web 测试没有预先选择脚本集，表单直接拦截“Maestro 执行需要脚本集”；
 - 换 Excel/安装包版本后，旧脚本集被精确匹配拒绝；
 - 有未就绪用例时，任务默认不下发；
+- 表单填了模块过滤，任务到执行机才报 `case-filter-modules-unsupported`（评审未覆盖，见 §5.5）；
 - 用例库只接 `.xlsx`，CSV 不能进；
-- 表单的模块/用例 ID 过滤填了不匹配的值，页面只显示空来源，不告诉用户“匹配 0 条”。
+- 表单填了不匹配的模块/用例 ID，页面只显示空来源，不告诉用户“匹配 0 条”。
 
 这些限制里，**有的只是当前实现的耦合，不是产品目标**。本设计把“数据源”和“执行目标”分开评估，移除实现层限制，保留正确性与安全底线。
 
@@ -26,12 +28,12 @@
      → 创建 regression task → 该主机 runner 领取
 ```
 
-当前 `computeDispatchPreview` 的 `targetStore` 同时承担两件事：
+当前 `computeDispatchPreview` 的 `targetStore`（`src/console/dispatch.ts:247`）同时承担两件事：
 
 1. 判断目标主机是否登记了该项目（执行前提）；
 2. 读取该项目的 case set（数据源）。
 
-目标主机没登记项目时，`listCaseSets` 为空，来源下拉变成“（选择用例集）”，用户看不到数据；但数据其实属于项目，不在主机。
+`PostgresStore.listCaseSets` 先按作用域 `getProjectByPath` 找项目（`src/db/postgres.ts:1023`）；目标主机没登记项目时返回空数组，来源下拉变成“（选择用例集）”。数据其实属于项目，不在主机。
 
 ### 2.2 Web 测试
 
@@ -49,14 +51,15 @@ Web 资产本身是项目级的，但当前**下发前必须已有脚本集**；
 | # | 限制 | 现状 | 性质 | 结论 |
 |---|---|---|---|---|
 | R1 | Web 测试必须先有脚本集 | 无 `scriptSetId` → `script-set-missing` 400；面板前端也拦截 | 实现约束 | **移除**：下发时惰性生成 |
-| R2 | `unresolved>0` 默认拒绝 | `script-set-incomplete` 409 | 安全约束，可放宽 | **默认允许**：未就绪写 SKIP，任务 partial |
+| R2 | `unresolved>0` 默认拒绝 | `script-set-incomplete` 409；旧 spec 默认 false | 安全约束，可放宽 | **默认允许**：未就绪写 SKIP，任务 partial |
 | R3 | 套件来源按目标主机 store 读取 | 目标主机无项目 → 来源空 | 数据/执行耦合 | **解耦**：来源读项目 owner store；执行前提仍保留 |
-| R4 | 脚本集必须精确匹配 Excel/包/平台 | 换版本 → 409 | 安全约束，可自动化 | **自动重建**（P1）；显式旧脚本仍保留 |
+| R4 | 脚本集必须精确匹配 Excel/包/平台 | 换版本 → 409 | 安全约束，可自动化 | **自动重建**（P0）；显式旧脚本仍保留 |
 | R5 | 用例库只收 `.xlsx` | CSV 无法导入 | 实现约束 | 后续支持 CSV（P2） |
-| R6 | appId 必须手填/项目配置 | 缺 appId 生成失败 | 可用性 | 后续从 APK 推断（P2） |
-| R7 | 过滤值不匹配时静默空来源 | 模块/ID 精确匹配，无预览 | UX/实现 | 表单显示匹配数/0 条提示（P2） |
-| R8 | iOS Maestro 只允许模拟器 | iOS 真机 Maestro 被拒 | 真实工具限制 | **保留**；真机走 LLM/Appium（未接线） |
+| R6 | appId 必须手填/项目配置 | 缺 appId 生成失败 | 可用性 | 后续从 APK/IPA 推断（P2，best-effort） |
+| R7 | 过滤值不匹配时静默空来源 | 模块/ID 无预览 | UX/实现 | 表单显示匹配数/0 条提示（P1） |
+| R8 | iOS Maestro 只允许模拟器 | iOS 真机 Maestro 被拒 | **上游工具限制** | **保留**；上游支持真机后再复评 |
 | R9 | PASS 必须有断言证据；secret 不进缓存 | 判定与安全门禁 | 正确性/安全 | **保留**，不可放宽 |
+| **R11** | **模块过滤必然报错；非 ASCII 用例 ID 过滤不匹配** | `case-filter-modules-unsupported`；runner 按文件名 stem 比原始 caseId | **实现缺陷（K）** | **P0 修复**：manifest 携带 module/caseId→flow 映射 |
 
 ## 4. 设计原则
 
@@ -65,6 +68,7 @@ Web 资产本身是项目级的，但当前**下发前必须已有脚本集**；
 3. **失败开放但结果诚实**：未就绪/未验证用例可以不下发或 SKIP，但绝不伪造 PASS；任务可为 partial。
 4. **安全限制不动的部分**：断言证据、资产 sha、secret 不进 CAS、iOS 工具能力。
 5. **可审计的自动动作**：自动生成/自动重建都要写审计与结果 warning，用户能看到“系统做了什么”。
+6. **默认值只留一个事实源**：所有下发相关默认值集中在 `DESIGN.md` §13.302 的表；旧 spec 标注 superseded。
 
 ## 5. P0/P1 移除方案
 
@@ -80,7 +84,7 @@ Web 资产本身是项目级的，但当前**下发前必须已有脚本集**；
      - `preconditionMode: "auto"`
      - `inferNavigationTap: true`
      - `appId` 取 Web 项目 `appPackage`
-     - 默认**只用规则**，不调用 LLM（避免下发延迟和 token 成本；需要 AI 时仍走「生成脚本」页）
+     - **只用规则**，不调用 LLM（避免下发延迟、token 成本与不确定 sha）
    - 生成成功且有 `runnable>0` → 用新脚本集资产继续创建 job。
    - `runnable=0` → 400 `script-generation-failed`，返回逐例原因（不再只说“需要脚本集”）。
 2. 生成结果写入：
@@ -91,55 +95,87 @@ Web 资产本身是项目级的，但当前**下发前必须已有脚本集**；
    - 删除前端 `if(executionMode==="maestro"&&!scriptSetId)` 拦截；
    - 「脚本集」保留“不指定”，旁边提示“未指定时下发自动生成（规则解析）”；
    - 成功后 flash 带自动生成脚本集文件名/版本。
-4. 幂等：
-   - 同 Excel/包/平台 + 同生成参数 → 复用已有 scripts 资产（现有 sha 幂等）；
+4. 幂等（见 5.1.1）：
+   - 同 Excel/包/平台 + 同生成参数 → 复用已有 scripts 资产；
    - 避免每次下发堆积重复脚本集。
 
-**不改变**：
-- 生成物仍然是不可变 scripts 资产；
-- `assertScriptSetMatch` 仍校验来源绑定；
-- 生成失败不创建任务，不伪造 ready。
+#### 5.1.1 幂等必须是库级约束（评审 M1）
+
+现状是 check-then-create：`storeScriptSet` 先 `listWebAssets(...).find(sha256+metadata)`，再 `storeWebAsset`（`src/web/script-set.ts:290`）。`web_assets` 只有 `(root_path, kind, version)` 唯一索引（`src/db/postgres.ts:444`），sha 索引非唯一；并发会各插一行同 sha 资产。评审判断成立。
+
+**修法（与评审建议的差异）**：不采用 per-project PG advisory lock。仓库现有 web 锁是 `withFileLock`（`src/web/results.ts:1268/1548`）；PG advisory 只在迁移里用过，且 pg-mem 不支持，无法进现有测试矩阵。真正的正确性不变量应由唯一约束承担：
+
+1. `web_assets` 新增可空列 `dedupe_key TEXT`；
+2. 唯一索引 `(root_path, kind, dedupe_key)`（NULL 不冲突，保留“重复上传同一文件=新版本一行”的现有语义）；
+3. 生成的脚本集写入 `dedupe_key = sha256`；普通上传保持 NULL；
+4. `storeScriptSet` 在 `withFileLock(<root>/.artemis/web/script-sets.lock)` 内“查 sha → 生成/落库”；插入命中 dedupe 唯一冲突（23505）时按 `dedupe_key` 读回已有行，返回 `created:false`；
+5. 迁移先回填：`kind='scripts' AND metadata->>'origin'='generated'`，每个 `(root_path, sha256)` 只给最新 version 回填 `dedupe_key`，旧重复行留 NULL（不删用户数据），再建唯一索引；
+6. file/memory store 实现同等的 in-memory dedupe；文件锁覆盖同机跨进程，PG 唯一索引覆盖多实例。
+
+**确定性 sha**：当前 manifest 不含时间戳/随机数（`src/web/script-set.ts:211`），同一输入 sha 稳定。补两条防回归：
+
+- 单测：同输入 `buildScriptSetBundle` 两次 → `sha256` 相等；
+- 守卫：manifest 顶层键禁止 `createdAt`/`generatedAt`/`timestamp`/`nonce`（新增即测试失败）。
+
+LLM 路径的 `normalizerWarnings` 可能因限流文本变化导致 sha 变化；惰性下发固定 rules-only，不受影响；脚本页 LLM 生成允许新资产。
+
+#### 5.1.2 请求内生成预算（评审 M4）
+
+- 输入已有硬上限：`SHEET_MAX_ROWS=10000`、`SHEET_MAX_COLUMNS=200`（`src/web/csv.ts:11`、`src/web/excel.ts:279`），不是无界。
+- 新增 `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS`（默认 30000）：`generateScriptSet` 接受 deadline，按用例循环检查；超时抛 `ScriptGenerationError("script-generation-timeout")`，POST /jobs 映射 400 并提示走「生成脚本」页预生成。
+- **不采纳“生成器异常统一 400”**：已知生成错误（无用例/appId 缺失/超时/不可用）→ 400 带 code；未预期异常仍 500 + 审计堆栈，避免把程序 bug 伪装成用户输入错误。
+- 评审提到的 `CHECKUP_BANDS` 不存在；`PAIRING_BANDS` 是 `src/design/reading/interaction.ts` 的模块内默认值，不是集中常量模块。本项按仓库现状用模块内常量 + 环境变量覆盖，不新造集中模块。
 
 ### 5.2 R2：默认允许部分下发
 
 **目标**：`unresolved>0` 不再默认阻断；未就绪用例写 SKIP，任务 partial。
 
+**默认值（唯一事实源：`DESIGN.md` §13.302）**：
+
+| 配置 | 新默认 | 显式值 |
+|---|---|---|
+| `allowPartialUnresolved` | `true` | `false` → 严格 409 |
+| 惰性生成 `bestEffort` | `true` | 脚本页可关 |
+| 惰性生成 `preconditionMode` | `auto`（bestEffort → assume-prepared） | 脚本页可指定 |
+| 惰性生成 normalizer | `rules`（不调 LLM） | 脚本页可选 LLM |
+| `allowStaleScript` | `false`（不匹配先自动重建） | `true` → 用旧脚本并 warning |
+
 **行为**：
 
-1. 面板「允许部分下发」默认勾选；表单文案改为“未就绪用例写 SKIP（不计 PASS）”。
-2. `parseWebJobCreateForm`：
-   - 未显式传 `allowPartialUnresolved` → 默认 `true`；
-   - 显式 `false` 仍可保持严格（API 兼容）。
-3. `createWebJob`：
-   - `unresolved>0` 且允许 → 继续创建；
-   - job spec 记录 `allowPartialUnresolved:true`；
-   - 结果里未就绪用例为 `SKIP（脚本未就绪）`，任务 `partial`。
-4. **不改变**：
-   - `runnable=0` 仍拒绝（没有任何可执行用例）；
-   - PASS 仍需硬断言；
-   - unresolved 不计通过。
+1. 面板「允许部分下发」默认勾选；表单**始终提交布尔值**（未勾选发 `false`，不能靠省略字段表达严格）。
+2. `parseWebJobCreateForm`：省略字段 → `true`；显式 `false`/`"false"` → `false`。
+3. `createWebJob`：`unresolved>0` 且允许 → 继续；job spec 记录 `allowPartialUnresolved:true`；未就绪用例结果 `SKIP（脚本未就绪）`，任务 `partial`。
+4. 不改变：`runnable=0` 仍拒绝（没有任何可执行用例）；PASS 仍需硬断言；unresolved 不计通过。
+
+**规范同步（评审 M2）**：2026-10-28 平台 spec 的 `allowPartialUnresolved:false` 标注 superseded，指向 `DESIGN.md` §13.302。省略字段的既有调用方行为从 409 变为创建 partial 任务，这是**行为变更**，不是“API 兼容”；文档与验收都按行为变更写。
+
+**提交前知情（评审 L4）**：表单在选定 Excel/包后显示“可执行 N / 部分 N / 未就绪 N（将 SKIP）”；数据来自 §5.6 的服务端预览，不在结果页才告知。
 
 ### 5.3 R3：套件来源与目标主机解耦
 
 **目标**：目标主机没登记项目时，来源列表仍来自项目，不再空。
 
-**行为**：
+**来源解析（三档，带失败态；评审 M3）**：
 
-1. `computeDispatchPreview` 增加 `sourceStore`：
-   - 目标主机有该项目 → 用目标主机 store（保持现有语义）；
-   - 目标主机没有该项目 → 按 `rootPath` 找到项目 owner `hostId`，用 owner 的 scopeHost 读 case sets；
-   - owner 也没有（legacy NULL-host）→ 用全局 `deps.store`。
-2. `hostBlocked` 仍按目标主机是否登记项目计算：
-   - 来源可见；
-   - 目标主机未登记时仍显示「套件回归需要项目目录，该主机不能执行」，确认禁用；
-   - 用户可换回 owner 主机执行，或切到网页测试。
-3. 不改变：
-   - `createTask` / `suite-service` 仍要求目标主机有项目（runner 需要项目目录/用例集）；
-   - 不会把任务发给没有项目的主机。
+```
+resolveSourceStore(rootPath, targetHost):
+  1. targetHost 有该项目 → {store: targetStore, tier: "target"}
+  2. 否则用未作用域 store 查 owner.hostId：
+     - 有 hostId → {store: hostScopedStore(owner.hostId), tier: "owner"}
+     - 作用域构造失败 / 注入 store 为 null / 读取抛错
+         → {store: null, tier: "owner", error: "source-store-unavailable"}
+  3. owner 无 hostId（legacy NULL-host）→ {store: 全局 store, tier: "global"}
+```
+
+- 解析失败**不回退到空下拉**：预览返回 `sourceStore:{tier,hostId,error}`，来源区显示「来源读取失败：<原因>」，并写 warning；`setOptions=[]` 但用户知道是读取失败，不是没数据。
+- store 正常但返回空：warning「该项目还没有用例集：先导入 Excel」，与读取失败区分。
+- 调试日志记录实际服务的 tier 与 hostId。
+- **保持预览/执行一致**：只有“目标主机不能执行”时才切 owner store；目标主机登记了项目时永远读目标 store。`hostBlocked` 仍按目标主机是否登记项目计算；确认按钮禁用原因不变。
+- 评审说的“owner host 离线”对中心 PG 不是主要失败面（`scopeHost` 只是视图，不探测主机在线）；真正会失败的是注入的 per-host store 或底层读取异常。失败态仍要显式，但归因写“来源读取失败”，不写“主机离线”。
 
 **效果**：`win-mini-01` 没登记 ESSO-GU 时，来源仍显示 ESSO-GU 的 case set；页面不再像“数据丢失”，只是明确“这台主机不能执行套件”。
 
-### 5.4 R4：过期脚本自动重建（P1）
+### 5.4 R4：过期脚本自动重建
 
 **目标**：Excel/包版本变化后，不再被旧脚本集的精确匹配 409 卡死。
 
@@ -147,52 +183,101 @@ Web 资产本身是项目级的，但当前**下发前必须已有脚本集**；
 
 1. 用户显式选了 `scriptSetId`，但 `assertScriptSetMatch` 失败：
    - `allowStaleScript=true` → 用旧脚本，warning `stale-script`（现有行为）；
-   - 否则 → 自动按当前 Excel/包/平台生成新脚本集并替换；warning `script-set-rebuilt`。
-2. 自动重建失败 → 409，返回原因；不静默用旧脚本。
-3. 面板可显示“脚本集已按当前资产重建”，并保留「允许旧脚本」显式入口。
+   - 否则 → 按当前 Excel/包/平台自动生成新脚本集并替换（复用 §5.1.1 的同一生成入口与幂等约束）；warning `script-set-rebuilt`。
+2. 自动重建失败 → 409 `script-set-rebuild-failed`，返回原因；不静默用旧脚本。
+3. **审计与透明（评审 L3）**：
+   - 审计 `web.scripts.generate` 带 `trigger=rebuild`、`from`/`to` 资产 id；
+   - 响应带 `rebuiltScriptSet:{from,to}`；
+   - 重建集 `unresolved>0` 时同时返回 `script-set-rebuilt` 与 `script-set-unresolved:<n>`，并带任务级 `partial` 语义说明——不能让用户只看到其中一个。
+4. 面板显示“脚本集已按当前资产重建（v旧 → v新）”，保留「允许旧脚本」显式入口。
+
+### 5.5 R11：模块/用例 ID 过滤必须真的生效（本轮新增 K）
+
+**现状是硬错误**：Web 下发表单提供「用例范围（模块）」输入（`src/console/pages.ts:1001`），但 runner 在执行入口直接返回 `case-filter-modules-unsupported`（`src/runner/web-executors.ts:432`）；只要填了模块，整个任务 error。用例 ID 过滤也不可靠：flow 文件名会被 `allocateFlowPath` 清洗（非 `[A-Za-z0-9._-]` → `_`），runner 却拿原始 `caseId` 与文件名 stem 比较，中文/空格/斜杠 ID 会得到 `case-filter-no-match`。
+
+**修法（P0，与 R1 同批）**：
+
+1. `ScriptGenCaseInput` / `ScriptSetCaseSummary` / manifest cases 增加 `module: string | null`（Excel 解析已有该字段，`src/web/excel.ts:38`；当前被丢弃）。
+2. runner 从 `flowsDir` 父目录读 `manifest.json`，建立 `caseId → flow`、`caseId → module` 映射；`caseIds` 按 manifest 精确过滤，`modules` 按 manifest 过滤。
+3. manifest 缺失（旧脚本集）→ 回退现有 stem 匹配；模块过滤仍显式报 `case-filter-modules-unsupported`，不再静默跑全量。
+4. 过滤后 0 条 → `case-filter-no-match`，任务 error 带原因；面板下发前用 §5.6 预览提前显示“匹配 0 条”。
+5. 测试：模块过滤只跑子集；中文/空格 caseId 过滤命中；未知模块/ID → 0 条；旧 manifest 回退行为不变。
+
+### 5.6 R7 + L5：过滤预览（P1，服务端解析）
+
+匹配数不能只靠前端：Web 的模块/ID 来自 Excel，必须解析后才能知道。做法：
+
+- 新增 `POST /panel/api/jobs/script-preview`（或扩展 `/panel/api/jobs/preview`）：入参 Excel/包/平台/`caseFilter`/`bestEffort`，内部 `generateScriptSetForProject({dryRun:true,bestEffort:true,normalizer:undefined})`，返回 `{ready,partial,unresolved,runnable,matched,filteredOut,unresolvedByCode}`；
+- 表单「检查脚本 / 匹配数」按钮触发（或 500ms 防抖），显示“模块 X 匹配 0 条”“未就绪 N 将 SKIP”；
+- 套件回归的 case-set 模块/keyword 过滤特征已在 `setOptions.data-features`，可直接前端计数，无需解析；
+- 不把 dry-run 结果落资产；确认下发时仍走一次正式生成/复用。
 
 ## 6. 保留的限制（不放宽）
 
 - **PASS 证据**：PASS 必须有可执行断言 + runner assertionCount；manual/未验证 → UNVERIFIED。
 - **资产完整性**：下载按 sha256 校验；脚本集来源绑定必须可核验；不能把 A 项目的脚本发给 B 项目。
 - **secret**：materials secret 只落 0600 job 目录，不进 CAS；不放命令行参数。
-- **平台工具限制**：iOS Maestro 仅模拟器；真机需 LLM/Appium（未接线）。
 - **套件执行前提**：目标主机必须登记项目；来源解耦不改变 runner 执行条件。
+- **R8 的准确口径（评审 L1 的反驳）**：Maestro 官方 iOS 文档只承诺 Xcode Simulator（<https://docs.maestro.dev/get-started/supported-platform/ios>）；真机支持来自第三方补丁/云厂商，不是上游能力。当前写“上游 Maestro 不支持 iOS 真机；第三方补丁/云服务不在本项目范围”，比“永远不能”准确，也保留“上游合并后复评”的入口。评审说“Maestro 有支持，只是签名/WDA 成本”与官方文档不符。
 
 ## 7. 后续评估（不在本次 P0/P1）
 
 | 项 | 内容 | 价值 | 风险/成本 |
 |---|---|---|---|
 | R5 CSV 用例库 | `importTestDocument` 接受 `.csv`，用现有 CSV 解析 + 映射 | 去掉 `.xlsx` 单格式限制 | 源副本/三件套格式要扩展 |
-| R6 APK appId | 从 APK manifest 读 package，缺省填入 | 少一个手填字段 | 中心需要解析工具或轻量解析 |
-| R7 过滤预览 | 表单显示“匹配 N 条”；0 条时提示 | 避免“数据源坏了”的误判 | 需要前后端匹配同源 |
-| R10 LLM 执行 | 真正接线 `executionMode=llm` | 自然语言用例不依赖 Maestro 脚本 | 运行时 agent、成本/审计，大工程 |
+| R6 APK/IPA appId | APK 用 `aapt2 dump badging`（有则用）或二进制 manifest 解析；IPA 读 `Info.plist`；失败保留手填 | 少一个手填字段 | 中心需工具/解析器；解析结果必须可编辑、不可信时不静默采用 |
+| R10 LLM 执行 | 真正接线 `executionMode=llm` | 自然语言用例不依赖 Maestro 脚本 | 运行时 agent、成本/审计；**必须同时把 `data_engine.db`/`status.json` 纳入结果回传**，否则远程任务落 `token-unavailable`，计费闭环断裂 |
+| L2 生成模式可见 | 脚本列表/详情显示 `规则生成` / `AI 辅助（N/M 例）`；metadata 已有 `normalizer`/`llmCases`，无需改库 | 用户理解为何自动生成集 unresolved 更多 | 低 |
+| L6 版本落后提示 | 目标主机登记了项目但 case set 版本落后 owner 时提示（不自动合并） | 跨主机一致性 | 低，P2 |
 
 ## 8. 兼容与迁移
 
 - 现有 Excel/package/scripts 资产与脚本集不变；R1 只在下发缺脚本时新增生成。
-- R2 改变面板默认行为：显式 strict 的 API 调用仍可传 `allowPartialUnresolved:false`。
-- R3 只改读取来源，不改任务表/runner 领取条件。
+- R2 是**行为变更**：省略 `allowPartialUnresolved` 的既有 API 调用从 409 变为创建 partial 任务；显式 `false` 保留严格路径。旧 spec 标注 superseded，默认值以 `DESIGN.md` §13.302 为准。
+- R3 只改读取来源，不改任务表/runner 领取条件；目标主机未登记项目时仍不能执行套件。
+- R4 自动重建写审计与 job warning；`allowStaleScript` 仍是显式正道。
+- R11 需要脚本集 manifest 增加 `module`；旧脚本集无该字段时按旧行为回退，不影响已生成资产。
 - 自动生成/重建写入审计与 job warning；面板可见。
-- 旧报告/结果字段不变；`autoGeneratedScript`/`script-set-rebuilt` 是新增可选字段。
+- 旧报告/结果字段不变；`autoGeneratedScript`/`rebuiltScriptSet`/`sourceStore` 是新增可选字段。
 
-## 9. 验收标准
+## 9. 验收标准（含测试夹具，评审 M5）
 
 1. **R1**：ESSO-GU 手工 Excel + APK，不选脚本集直接下发 → 自动生成脚本集并创建任务；20 条 runnable 时不阻断。
-2. **R2**：构造 1 条 unresolved 用例 → 任务创建成功，结果该用例 `SKIP（脚本未就绪）`，任务 `partial`，其他用例照常判定。
-3. **R3**：`win-mini-01`（未登记 ESSO-GU）+ ESSO-GU → 来源仍列出 case set；确认按钮禁用并显示主机未登记原因；切回 owner 主机可正常下发。
-4. **R4**：换 Excel 版本后用旧脚本集 → 自动生成新脚本集并下发；显式 `allowStaleScript` 时仍可用旧脚本并记 warning。
-5. **安全回归**：无断言证据的 PASS 仍 UNVERIFIED；secret materials 仍 0600/CAS 排除；iOS 真机 Maestro 仍拒绝。
-6. 全量 `npm run build && npm test && npm run lint` 绿。
+2. **R1 幂等**：同输入连续两次自动下发 → 第二次 `created:false`、资产 id 不变、`scripts` 资产数不增；并发两请求（fake store 模拟 23505）→ 仍只有一个 dedupe_key 行；同输入 `buildScriptSetBundle` 两次 sha 相等。
+3. **R1 超时**：假生成器超过 `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` → 400 `script-generation-timeout`，不建任务；未预期异常 → 500 且审计有堆栈。
+4. **R2**：默认（省略字段）1 条 unresolved → 任务创建成功，该用例 `SKIP（脚本未就绪）`，任务 `partial`；显式 `false` → 409；`runnable=0` → 400。
+5. **R3**：`win-mini-01`（未登记 ESSO-GU）+ ESSO-GU → 来源仍列出 case set；确认按钮禁用并显示主机未登记原因；owner store 读取抛错 → 显示「来源读取失败」而不是空下拉；目标主机登记项目时仍读目标 store（预览/执行一致）。
+6. **R4**：换 Excel 版本后用旧脚本集 → 自动生成新脚本集并下发；响应含 `from/to`；审计 `trigger=rebuild`；显式 `allowStaleScript` 时仍可用旧脚本并记 `stale-script`。
+7. **R11**：模块过滤只跑匹配子集；中文/空格 caseId 过滤命中；0 条 → `case-filter-no-match`；旧 manifest 回退。
+8. **安全回归**：无断言证据的 PASS 仍 UNVERIFIED；secret materials 仍 0600/CAS 排除；iOS 真机 Maestro 仍拒绝。
+9. **测试环境**：pg-mem/fake store，不触网、不连真实 PG/设备；新增常量集中在模块内并有默认值测试。
+10. 全量 `npm run build && npm test && npm run lint` 绿；实现后补 `DESIGN.md` §13.302 状态与实现记录。
 
-## 10. 开放问题（请评估）
+## 10. 评审意见处置
 
-1. R1 自动生成默认**只用规则**，还是 active LLM 可用时也调用 LLM？规则快、无 token；LLM 覆盖高但下发变慢。
-2. R2 默认允许部分下发是否接受？还是只在“尽力生成”脚本集上默认允许，手工脚本集仍严格？
-3. R3 来源解耦后，目标主机未登记项目时：只展示来源+禁用确认（本设计），还是允许套件任务排队等待该主机接入项目？
-4. R4 旧脚本自动重建是否要二次确认？还是直接重建+warning？
-5. R5/R6/R7/R10 的优先级，是否放在下一批？
+| 项 | 结论 | 依据/修法 |
+|---|---|---|
+| M1 幂等 check-then-create | **接受，机制调整** | 确认 `src/web/script-set.ts:290` 是查后插；但改用 `dedupe_key` 唯一索引 + file lock，不用 PG advisory（仓库无 web 先例，pg-mem 不支持）。见 §5.1.1 |
+| M2 默认值冲突 | **接受** | 旧 spec 默认 false 与 v2 冲突；默认值收口到 `DESIGN.md` §13.302，旧 spec 标 superseded；承认是行为变更，不是“API 兼容”。见 §5.2/§8 |
+| M3 来源解析失败态 | **接受，理由修正** | 增加 `sourceStore.error` 与失败示因；但“owner host 离线”对中心 PG 不是主要失败面，实际是注入 store/读取异常。见 §5.3 |
+| M4 请求内生成无预算 | **接受，事实修正** | 输入已有 10000×200 上限；加 deadline；不采纳“异常统一 400”；`CHECKUP_BANDS` 不存在，不新造集中常量模块。见 §5.1.2 |
+| M5 fixture/记录缺席 | **接受** | §9 补齐幂等/超时/R2 三态/R3 失败态/R4 重建/R11/安全回归。 |
+| L1 R8 归因措辞 | **不接受（事实错误）** | Maestro 官方只支持 Simulator；第三方补丁/云服务不是上游能力。措辞改为“上游暂不支持，合并后复评”。见 §6 |
+| L2 生成模式可见 | **接受** | metadata 已有 `normalizer`/`llmCases`，面板直接展示。见 §7 |
+| L3 重建审计/组合透明 | **接受** | `trigger=rebuild`、`rebuiltScriptSet{from,to}`、双 warning。见 §5.4 |
+| L4 提交前未就绪计数 | **接受** | 复用 §5.6 dry-run 预览，表单显示 N 条将 SKIP。 |
+| L5 R7 平凡部分可提前 | **部分接受** | 匹配数必须服务端解析 Excel（不是纯展示层）；且评审漏了模块过滤硬错误（R11）。见 §5.5/§5.6 |
+| L6 版本落后提示 | **接受（P2）** | 只提示不合并。见 §7 |
+| 评审“无 K” | **不接受** | R11 是 K：表单支持的模块过滤在执行机必然报错，中文 caseId 过滤失配。见 §5.5 |
+
+## 11. 开放问题与决定
+
+1. **R1 默认只用规则——采纳。** 除延迟/token 外，LLM 输出不确定会破坏 sha 幂等与复用，且限流/key 故障会注入本应可靠的 POST /jobs。需要 AI 走脚本页。
+2. **R2 统一默认放开，不按脚本集出处区分——采纳。** “是否带 SKIP 下发”与“脚本怎么来的”正交；严格保留为显式 opt-out，并配 L4 知情。
+3. **不做“排队等主机接入”——采纳。** 主机登记是人工动作＝无界等待；runner 领取语义不认识“等注册”。将来要做也做成显式预约＋TTL。
+4. **直接重建＋warning——采纳，条件是 L3 落实**：from→to 进响应与审计、`runnable>0` 门、`allowStaleScript` 保留、重建集带未就绪计数。
+5. **顺序 R7（含 L5）→ R6 → R5 → R10——采纳。** R7 最便宜且消掉高频困惑；R6 消掉一类生成失败；R5 动导入/映射/源副本三件套；R10 大工程且必须捆绑结果回传补全。R11 插在 R1 同批（P0，硬错误）。
 
 ---
 
-**一句话**：把“数据源”从“目标主机”里解耦，把“脚本集”从“下发前置”改成“下发时派生”，把“未就绪”从“硬拒绝”改成“SKIP + partial”；PASS 证据和 secret 安全不动。
+**一句话**：把“数据源”从“目标主机”里解耦，把“脚本集”从“下发前置”改成“下发时派生”，把“未就绪”从“硬拒绝”改成“SKIP + partial”，把“过滤”从“界面摆设”改成“manifest 驱动”；PASS 证据和 secret 安全不动。
