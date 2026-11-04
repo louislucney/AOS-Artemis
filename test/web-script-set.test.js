@@ -219,7 +219,10 @@ test("script-set: 无 ready 用例或缺少绑定拒绝写入", async (t) => {
   });
   await assert.rejects(
     storeScriptSet({ store, rootPath, bundle: unusable }),
-    (error) => error.code === "script-set-unusable"
+    (error) =>
+      error.code === "script-set-unusable" &&
+      /主要原因/.test(error.message) &&
+      /仅预览/.test(error.message)
   );
 
   const invalid = bundle({ sourceExcelAssetId: "" });
@@ -227,4 +230,37 @@ test("script-set: 无 ready 用例或缺少绑定拒绝写入", async (t) => {
     storeScriptSet({ store, rootPath, bundle: invalid }),
     (error) => error.code === "invalid-bundle"
   );
+});
+
+test("script-set: 部分可执行脚本集允许写入", async (t) => {
+  const { store, rootPath } = await workspace(t);
+  const excel = await asset(store, rootPath, "excel", "cases.xlsx", "excel");
+  const pkg = await asset(store, rootPath, "package", "app.apk", "pkg");
+  const partial = buildScriptSetBundle({
+    appId: "com.example.app",
+    platform: "android",
+    sourceExcelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    bestEffort: true,
+    cases: [
+      {
+        caseId: "TC-1",
+        steps: ["1. 启动 App", "2. Fill in other required fields"],
+        expected: null,
+        preconditions: []
+      }
+    ]
+  });
+  assert.equal(partial.ready, 0);
+  assert.equal(partial.partial, 1);
+  assert.equal(partial.runnable, 1);
+  assert.equal(partial.manifest.counts.partial, 1);
+  assert.equal(partial.manifest.counts.runnable, 1);
+  assert.equal(partial.manifest.cases[0].manualSteps.length, 1);
+
+  const stored = await storeScriptSet({ store, rootPath, bundle: partial });
+  assert.equal(stored.created, true);
+  assert.equal(stored.asset.metadata.ready, 0);
+  assert.equal(stored.asset.metadata.partial, 1);
+  assert.equal(stored.asset.metadata.runnable, 1);
 });

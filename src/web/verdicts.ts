@@ -30,6 +30,7 @@ const REASON_TEXT: Record<string, string> = {
   "manual-or-ambiguous": "断言含人工或歧义项",
   "soft-assertion-only": "仅有软断言，缺少高置信可执行断言",
   "assertion-proof-missing": "runner 未上报断言证据",
+  "manual-step": "包含未映射/手工步骤",
   "source-unreadable": "原件不可解析，无法生成断言"
 };
 
@@ -212,6 +213,12 @@ export function deriveCaseVerdicts(input: DeriveVerdictsInput): DeriveVerdictsRe
       cases.push(downgrade(entry, "case-not-in-source"));
       downgraded.push(`${caseId}:case-not-in-source`);
       reasons.push({ caseId, status: "UNVERIFIED", reason: "case-not-in-source" });
+      continue;
+    }
+    if ((entry.manualSteps?.length ?? 0) > 0) {
+      cases.push(downgrade(entry, "manual-step"));
+      downgraded.push(`${caseId}:manual-step`);
+      reasons.push({ caseId, status: "UNVERIFIED", reason: "manual-step" });
       continue;
     }
     const gate = assertionGate(assertions?.get(caseId), entry.assertionCount, entry.assertions);

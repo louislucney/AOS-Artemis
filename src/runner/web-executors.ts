@@ -20,6 +20,8 @@ export interface WebJobExecutionCase {
   assertionCount?: number;
   /** 顶层 flow 中可提取文本的 visible/notVisible 断言（用于覆盖 soft text 预期）。 */
   assertions?: FlowAssertion[];
+  /** 顶层 flow 中 `# aos:manual` 标记的未映射步骤。 */
+  manualSteps?: Array<{ step: number; reason: string }>;
 }
 
 export interface FlowAssertion {
@@ -175,6 +177,18 @@ export function parseFlowAssertions(content: string): FlowAssertion[] {
   return out;
 }
 
+const MANUAL_LINE = /^\s*#\s*aos:manual\s+step=(\d+)\s+reason=([^\n]*)$/gm;
+
+export function parseFlowManualSteps(content: string): Array<{ step: number; reason: string }> {
+  const out: Array<{ step: number; reason: string }> = [];
+  for (const match of content.matchAll(MANUAL_LINE)) {
+    const step = Number(match[1]);
+    if (!Number.isInteger(step) || step < 1 || out.length >= 200) continue;
+    out.push({ step, reason: (match[2] ?? "").trim().slice(0, 200) });
+  }
+  return out;
+}
+
 const RUN_FLOW_LINE = /^\s*-\s*runFlow\s*:\s*(.+?)\s*$/gm;
 const MAX_RUN_FLOW_DEPTH = 4;
 
@@ -195,20 +209,25 @@ async function collectFlowAssertions(
   flowsDir: string,
   seen: Set<string>,
   depth: number
-): Promise<{ count: number; assertions: FlowAssertion[] }> {
+): Promise<{
+  count: number;
+  assertions: FlowAssertion[];
+  manualSteps: Array<{ step: number; reason: string }>;
+}> {
   const resolved = path.resolve(file);
   if (depth > MAX_RUN_FLOW_DEPTH || seen.has(resolved) || !isInside(flowsDir, resolved)) {
-    return { count: 0, assertions: [] };
+    return { count: 0, assertions: [], manualSteps: [] };
   }
   seen.add(resolved);
   let content: string;
   try {
     content = await readFile(resolved, "utf-8");
   } catch {
-    return { count: 0, assertions: [] };
+    return { count: 0, assertions: [], manualSteps: [] };
   }
   let count = countHardAssertions(content);
   const assertions = parseFlowAssertions(content);
+  const manualSteps = parseFlowManualSteps(content);
   for (const match of content.matchAll(RUN_FLOW_LINE)) {
     const relative = runFlowPath(match[1] ?? "");
     if (relative === null) continue;
@@ -222,8 +241,14 @@ async function collectFlowAssertions(
         assertions.push(assertion);
       }
     }
+    for (const manual of child.manualSteps) {
+      if (manualSteps.length >= 200) break;
+      if (!manualSteps.some((entry) => entry.step === manual.step && entry.reason === manual.reason)) {
+        manualSteps.push(manual);
+      }
+    }
   }
-  return { count, assertions };
+  return { count, assertions, manualSteps };
 }
 
 function decodeCharacterEntities(text: string): string {
@@ -441,10 +466,12 @@ export async function executeWebJob(
   );
   const assertionCounts = new Map<string, number>();
   const flowAssertions = new Map<string, FlowAssertion[]>();
+  const flowManualSteps = new Map<string, Array<{ step: number; reason: string }>>();
   for (const [stem, file] of flowByStem) {
     const collected = await collectFlowAssertions(file, flowsDir, new Set(), 0);
     assertionCounts.set(stem, collected.count);
     flowAssertions.set(stem, collected.assertions);
+    flowManualSteps.set(stem, collected.manualSteps);
   }
 
   const junitPath = path.join(jobDir, "junit.xml");
@@ -554,6 +581,10 @@ export async function executeWebJob(
     const extractedAssertions = flowAssertions.get(matched);
     if (extractedAssertions !== undefined && extractedAssertions.length > 0) {
       entry.assertions = extractedAssertions;
+    }
+    const extractedManualSteps = flowManualSteps.get(matched);
+    if (extractedManualSteps !== undefined && extractedManualSteps.length > 0) {
+      entry.manualSteps = extractedManualSteps;
     }
     if (raw.failureReason !== undefined) entry.failureReason = raw.failureReason;
     cases.push(entry);

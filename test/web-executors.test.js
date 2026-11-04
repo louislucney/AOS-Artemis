@@ -166,6 +166,29 @@ test("executeWebJob: 按顶层 flow 统计硬断言条数并上报 assertionCoun
   assert.equal(byId.get("flow-b").assertions, undefined);
 });
 
+test("executeWebJob: 上报 flow 内 manual 标记", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"], {
+    contents: {
+      "flow-a.yaml":
+        "appId: acme.app\n---\n- launchApp\n# aos:manual step=2 reason=step-unparsed:Fill in other fields\n- takeScreenshot: 'aos-flow-a-step-2'\n"
+    }
+  });
+  const { exec } = execWithJunit(
+    junit([xmlCase({ name: "flow-a", classname: "flows", time: "1" })])
+  );
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+  assert.deepEqual(result.cases[0].manualSteps, [
+    { step: 2, reason: "step-unparsed:Fill in other fields" }
+  ]);
+});
+
 test("executeWebJob: maestro 命令参数、默认 15 分钟超时与 env 透传", async (t) => {
   const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
   const { exec, calls } = execWithJunit(junit([xmlCase({ name: "flow-a", selfClosing: true })]));

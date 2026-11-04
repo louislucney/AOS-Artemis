@@ -40,6 +40,14 @@ export interface ScriptGenOptions {
   includeSoftText?: boolean;
   /** Default false: `进入“X”` stays unresolved unless explicitly enabled. */
   inferNavigationTap?: boolean;
+  /** Manual-document mode: unmapped steps become screenshots/manual markers instead of blocking the case. */
+  bestEffort?: boolean;
+}
+
+export interface ScriptGenManualStep {
+  step: number;
+  code: ScriptGenUnresolvedCode;
+  detail: string;
 }
 
 export interface ScriptGenResult {
@@ -51,6 +59,8 @@ export interface ScriptGenResult {
   confidence: AssertionDoc["confidence"];
   unresolved: ScriptGenUnresolved[];
   warnings: string[];
+  manualSteps: ScriptGenManualStep[];
+  partial: boolean;
 }
 
 export interface GenerateScriptSetInput {
@@ -63,7 +73,9 @@ export interface GenerateScriptSetInput {
 export interface GenerateScriptSetResult {
   cases: ScriptGenResult[];
   ready: number;
+  partial: number;
   unresolved: number;
+  runnable: number;
 }
 
 const ANDROID_APP_ID = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
@@ -93,6 +105,15 @@ function selectorMapLines(selector: ParsedSelector, indent: string): string[] {
   const text = yamlScalar(escapeRegExp(selector.text));
   if (selector.relation === undefined) return [`${indent}text: ${text}`];
   return [`${indent}${selector.relation}: ${text}`];
+}
+
+function manualScreenshotName(caseId: string, step: number): string {
+  const safe = caseId.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80);
+  return `aos-${safe === "" ? "case" : safe}-step-${step}`;
+}
+
+function manualCommentText(raw: string): string {
+  return raw.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
 }
 
 export function isValidAppId(appId: string, platform: ScriptPlatform): boolean {
@@ -139,8 +160,10 @@ function caseWarnings(doc: AssertionDoc): string[] {
 
 export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOptions): ScriptGenResult {
   const caseId = input.caseId.trim();
+  const bestEffort = options.bestEffort === true;
   const unresolved: ScriptGenUnresolved[] = [];
   const warnings: string[] = [];
+  const manualSteps: ScriptGenManualStep[] = [];
   const doc =
     input.assertionDoc ??
     classifyExpectedResult({
@@ -185,11 +208,15 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
   const grouped = new Map<number, Array<{ assertion: Assertion; step: number }>>();
   for (const step of doc.steps) {
     if (step.step < 1 || step.step > input.steps.length) {
-      unresolved.push({
-        code: "assertion-step-out-of-range",
-        step: step.step,
-        detail: `断言步骤 ${step.step} 超出 ${input.steps.length} 个动作`
-      });
+      if (bestEffort) {
+        warnings.push(`assertion-step-out-of-range:${step.step}`);
+      } else {
+        unresolved.push({
+          code: "assertion-step-out-of-range",
+          step: step.step,
+          detail: `断言步骤 ${step.step} 超出 ${input.steps.length} 个动作`
+        });
+      }
       continue;
     }
     for (const assertion of step.assert) {
@@ -219,6 +246,14 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
       pushWarning: (warning) => warnings.push(warning)
     });
     if (parsed.kind === "unsupported") {
+      if (bestEffort) {
+        manualSteps.push({ step: stepNumber, code: parsed.code, detail: parsed.detail });
+        warnings.push(`step-manual:${stepNumber}:${parsed.code}`);
+        commands.push(`# aos:manual step=${stepNumber} reason=${parsed.code}`);
+        commands.push(`# aos:manual-text ${manualCommentText(rawStep)}`);
+        commands.push(`- takeScreenshot: ${yamlScalar(manualScreenshotName(caseId, stepNumber))}`);
+        continue;
+      }
       unresolved.push({ code: parsed.code, step: stepNumber, detail: parsed.detail });
       continue;
     }
@@ -277,7 +312,11 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
       }
       const original = assertionText(entry.assertion) ?? "";
       if (!isSafeAssertionText(original)) {
-        unresolved.push({ code: "assertion-text-invalid", step: stepNumber, detail: truncate(original) });
+        if (bestEffort) {
+          warnings.push(`assertion-text-invalid:${stepNumber}`);
+        } else {
+          unresolved.push({ code: "assertion-text-invalid", step: stepNumber, detail: truncate(original) });
+        }
         continue;
       }
       commands.push(`# aos:assertion step=${stepNumber} source=excel.expected type=${mapped.type}`);
@@ -295,6 +334,7 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
   if (assertions === 0) warnings.push("unverified-expected");
 
   const status = unresolved.length === 0 ? "ready" : "unresolved";
+  const partial = manualSteps.length > 0;
   if (status === "unresolved") {
     return {
       caseId,
@@ -304,7 +344,9 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
       assertionTexts,
       confidence: doc.confidence,
       unresolved,
-      warnings
+      warnings,
+      manualSteps,
+      partial
     };
   }
 
@@ -327,7 +369,9 @@ export function generateFlow(input: ScriptGenCaseInput, options: ScriptGenOption
     assertionTexts,
     confidence: doc.confidence,
     unresolved,
-    warnings
+    warnings,
+    manualSteps,
+    partial
   };
 }
 
@@ -339,9 +383,13 @@ export function generateScriptSet(input: GenerateScriptSetInput): GenerateScript
       platform: input.platform
     })
   );
+  const ready = cases.filter((entry) => entry.status === "ready" && !entry.partial).length;
+  const partial = cases.filter((entry) => entry.status === "ready" && entry.partial).length;
   return {
     cases,
-    ready: cases.filter((entry) => entry.status === "ready").length,
-    unresolved: cases.filter((entry) => entry.status === "unresolved").length
+    ready,
+    partial,
+    unresolved: cases.filter((entry) => entry.status === "unresolved").length,
+    runnable: ready + partial
   };
 }

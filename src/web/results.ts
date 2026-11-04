@@ -52,6 +52,8 @@ export interface WebResultCase {
   manualStatus?: WebResultManualOverride;
   /** runner 从顶层 flow 提取的 visible/notVisible 断言文本（soft text 覆盖证据）。 */
   assertions?: Array<{ type: "visible" | "notVisible"; text: string }>;
+  /** runner 从顶层 flow 提取的 `# aos:manual` 未映射步骤；带 manual 的 PASS 必须降级 UNVERIFIED。 */
+  manualSteps?: Array<{ step: number; reason: string }>;
 }
 
 export type WebResultManualStatus = "NOT_IMPL" | "BLOCKED";
@@ -426,6 +428,36 @@ function parseCase(raw: unknown, index: number): WebResultCase {
       assertions.push({ type: entry.type, text: textValue });
     }
     parsed.assertions = assertions;
+  }
+  if (raw.manualSteps !== undefined) {
+    if (!Array.isArray(raw.manualSteps) || raw.manualSteps.length > 200) {
+      throw new WebResultError(
+        "invalid-result",
+        `execution.cases[${index}].manualSteps 必须是最多 200 条的数组`
+      );
+    }
+    const manualSteps: Array<{ step: number; reason: string }> = [];
+    for (const [manualIndex, entry] of raw.manualSteps.entries()) {
+      if (!isRecord(entry)) {
+        throw new WebResultError(
+          "invalid-result",
+          `execution.cases[${index}].manualSteps[${manualIndex}] 不是对象`
+        );
+      }
+      const step = entry.step;
+      if (typeof step !== "number" || !Number.isInteger(step) || step < 1) {
+        throw new WebResultError(
+          "invalid-result",
+          `execution.cases[${index}].manualSteps[${manualIndex}].step 必须是正整数`
+        );
+      }
+      const reason = optionalText(
+        entry.reason,
+        `execution.cases[${index}].manualSteps[${manualIndex}].reason`
+      );
+      manualSteps.push({ step, reason: reason.slice(0, 200) });
+    }
+    parsed.manualSteps = manualSteps;
   }
   return parsed;
 }

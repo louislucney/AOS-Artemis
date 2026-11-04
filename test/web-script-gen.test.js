@@ -351,6 +351,55 @@ test("script-gen: 断言步骤越界显式 unresolved", () => {
   assert.ok(codes(result).includes("assertion-step-out-of-range"));
 });
 
+test("script-gen: bestEffort 未映射步骤不阻断整条用例", () => {
+  const result = gen(
+    {
+      steps: ["1. Go to Register page", "2. Fill in other required fields"],
+      expected: "页面显示“成功”"
+    },
+    { bestEffort: true, inferNavigationTap: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.partial, true);
+  assert.equal(result.manualSteps.length, 1);
+  assert.equal(result.manualSteps[0].step, 2);
+  assert.match(result.yaml, /# aos:manual step=2/);
+  assert.match(result.yaml, /- takeScreenshot: 'aos-TC-1-step-2'/);
+});
+
+test("script-gen: bestEffort 全部未映射仍生成可运行 launch+screenshot flow", () => {
+  const result = gen(
+    { steps: ["1. Do the needful"], expected: null },
+    { bestEffort: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.partial, true);
+  assert.match(result.yaml, /- launchApp:/);
+  assert.match(result.yaml, /# aos:manual step=1/);
+});
+
+test("script-gen: bestEffort 断言越界只警告不阻断", () => {
+  const result = generateFlow(
+    {
+      caseId: "TC-OOR",
+      steps: ["1. 启动 App", "2. 点击“关闭”"],
+      expected: null,
+      preconditions: [],
+      assertionDoc: {
+        version: 1,
+        source: "excel.expected",
+        confidence: "high",
+        steps: [{ step: 4, assert: [{ type: "visible", text: "X" }] }],
+        manual: [],
+        ambiguous: []
+      }
+    },
+    { appId: APP_ID, platform: "android", bestEffort: true }
+  );
+  assert.equal(result.status, "ready");
+  assert.ok(result.warnings.includes("assertion-step-out-of-range:4"));
+});
+
 test("script-gen: generateScriptSet 统计 ready/unresolved", () => {
   const result = generateScriptSet({
     appId: APP_ID,

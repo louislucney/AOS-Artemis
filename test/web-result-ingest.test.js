@@ -1351,6 +1351,43 @@ test("断言门禁：空预期 PASS → UNVERIFIED（no-executable-assertion）"
   assert.equal(cellText(sheet.getCell("I2")), "UNVERIFIED");
 });
 
+test("判定：PASS + manualSteps → UNVERIFIED（manual-step），不假绿", async (t) => {
+  const ctx = await setupProject(t, {
+    rows: [["TC-1", "登录", "1. 打开", "1. 页面显示“登录”"]]
+  });
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: passingPayload({
+      execution: {
+        status: "passed",
+        cases: [
+          {
+            caseId: "TC-1",
+            name: "登录",
+            status: "PASS",
+            durationMs: 900,
+            assertionCount: 1,
+            manualSteps: [{ step: 2, reason: "step-unparsed" }]
+          }
+        ],
+        startedAt: STARTED,
+        finishedAt: FINISHED,
+        detail: null
+      }
+    })
+  });
+
+  assert.equal(summary.taskStatus, "partial");
+  assert.equal(summary.gate.unverified, 1);
+  assert.ok(
+    summary.warnings.some((warning) => warning.includes("manual-step")),
+    summary.warnings.join("；")
+  );
+  const sheet = await loadSheet(ctx.copyPath);
+  assert.equal(cellText(sheet.getCell("I2")), "UNVERIFIED");
+});
+
 test("normalize：assertionCount 必须是非负整数", () => {
   const base = {
     execution: {

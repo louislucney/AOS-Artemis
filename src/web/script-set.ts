@@ -25,6 +25,8 @@ export interface ScriptSetCaseSummary {
   confidence: ScriptGenResult["confidence"];
   unresolved: ScriptGenUnresolved[];
   warnings: string[];
+  partial: boolean;
+  manualSteps: ScriptGenResult["manualSteps"];
 }
 
 export interface ScriptSetManifest {
@@ -38,11 +40,14 @@ export interface ScriptSetManifest {
   preconditionMode: PreconditionMode;
   inferNavigationTap: boolean;
   includeSoftText: boolean;
+  bestEffort: boolean;
   assertionDocHash: string;
   counts: {
     cases: number;
     ready: number;
+    partial: number;
     unresolved: number;
+    runnable: number;
   };
   cases: ScriptSetCaseSummary[];
 }
@@ -56,6 +61,7 @@ export interface ScriptSetBundleInput {
   preconditionMode?: PreconditionMode;
   inferNavigationTap?: boolean;
   includeSoftText?: boolean;
+  bestEffort?: boolean;
   generatorVersion?: number;
 }
 
@@ -65,7 +71,9 @@ export interface ScriptSetBundle {
   zip: Buffer;
   sha256: string;
   ready: number;
+  partial: number;
   unresolved: number;
+  runnable: number;
 }
 
 export type ScriptSetStoreErrorCode = "invalid-bundle" | "script-set-unusable";
@@ -135,9 +143,12 @@ function metadataFor(bundle: ScriptSetBundle): Record<string, unknown> {
     preconditionMode: bundle.manifest.preconditionMode,
     inferNavigationTap: bundle.manifest.inferNavigationTap,
     includeSoftText: bundle.manifest.includeSoftText,
+    bestEffort: bundle.manifest.bestEffort,
     appId: bundle.manifest.appId,
     ready: bundle.ready,
-    unresolved: bundle.unresolved
+    partial: bundle.partial,
+    unresolved: bundle.unresolved,
+    runnable: bundle.runnable
   };
 }
 
@@ -155,7 +166,8 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
     options: {
       preconditionMode: input.preconditionMode,
       inferNavigationTap: input.inferNavigationTap,
-      includeSoftText: input.includeSoftText
+      includeSoftText: input.includeSoftText,
+      bestEffort: input.bestEffort
     }
   });
   const used = new Set<string>();
@@ -174,7 +186,9 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
       assertionTexts: entry.assertionTexts,
       confidence: entry.confidence,
       unresolved: entry.unresolved,
-      warnings: entry.warnings
+      warnings: entry.warnings,
+      partial: entry.partial,
+      manualSteps: entry.manualSteps
     });
   }
   const manifest: ScriptSetManifest = {
@@ -188,11 +202,14 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
     preconditionMode: input.preconditionMode ?? "strict",
     inferNavigationTap: input.inferNavigationTap === true,
     includeSoftText: input.includeSoftText === true,
+    bestEffort: input.bestEffort === true,
     assertionDocHash: assertionDocHash(input.cases),
     counts: {
       cases: generated.cases.length,
       ready: generated.ready,
-      unresolved: generated.unresolved
+      partial: generated.partial,
+      unresolved: generated.unresolved,
+      runnable: generated.runnable
     },
     cases
   };
@@ -208,7 +225,9 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
     zip,
     sha256: createHash("sha256").update(zip).digest("hex"),
     ready: generated.ready,
-    unresolved: generated.unresolved
+    partial: generated.partial,
+    unresolved: generated.unresolved,
+    runnable: generated.runnable
   };
 }
 
@@ -221,10 +240,24 @@ export async function storeScriptSet(input: StoreScriptSetInput): Promise<StoreS
       "脚本集必须同时绑定 sourceExcelAssetId 与 packageAssetId"
     );
   }
-  if (input.bundle.ready === 0) {
+  const runnable = input.bundle.runnable ?? input.bundle.ready;
+  if (runnable === 0) {
+    const reasons = new Map<string, number>();
+    for (const entry of input.bundle.manifest.cases) {
+      for (const unresolved of entry.unresolved) {
+        reasons.set(unresolved.code, (reasons.get(unresolved.code) ?? 0) + 1);
+      }
+    }
+    const summary = [...reasons.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 6)
+      .map(([code, count]) => `${code}×${count}`)
+      .join("、");
     throw new ScriptSetStoreError(
       "script-set-unusable",
-      `没有 ready 用例（unresolved=${input.bundle.unresolved}），拒绝写脚本集`
+      `没有可执行用例（ready=${input.bundle.ready} / partial=${input.bundle.partial ?? 0} / unresolved=${input.bundle.unresolved}${
+        summary === "" ? "" : `；主要原因：${summary}`
+      }），拒绝写脚本集。可勾选「仅预览」查看逐条原因；如需保留未映射步骤，可启用「尽力生成」`
     );
   }
   const metadata = metadataFor(input.bundle);
