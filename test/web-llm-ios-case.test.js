@@ -196,6 +196,34 @@ test("executeIosLlmCase：taskDesc 先脱敏再发给执行器", async (t) => {
   assert.equal(runTask.args.task_desc, "用 <secret:PASSWORD> 登录");
 });
 
+test("executeIosLlmCase：expected 先脱敏再做 L1（占位符对占位符）", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "aos-ios-llm-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(
+    path.join(dir, "run.json"),
+    JSON.stringify({ steps: [{ texts: [{ text: "<secret:PASSWORD>" }] }] })
+  );
+  await writeFile(path.join(dir, "status.json"), "{}");
+  const out = await executeIosLlmCase({
+    proxy: {
+      async callTool(name) {
+        if (name === "mobile_run_task") return result({ trace_id: "ios-l1-secret" });
+        return result({ status: "completed" });
+      }
+    },
+    traceDir: () => dir,
+    testCase: {
+      caseId: "TC-IOS-L1-SECRET",
+      taskDesc: "登录",
+      expected: "页面显示“hunter2”"
+    },
+    deviceSerial: "00008110-001A",
+    secrets: [{ alias: "PASSWORD", value: "hunter2", kind: "password" }],
+    redactionActive: true
+  });
+  assert.equal(out.status, "PASS");
+});
+
 test("executeIosLlmCase：透传 token_usage（含重试/验证累计）", async (t) => {
   const dir = await trace(t);
   const out = await executeIosLlmCase({

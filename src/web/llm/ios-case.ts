@@ -232,7 +232,7 @@ export async function executeIosLlmCase(
   const statusJsonPath = path.join(traceDir, "status.json");
   const runPath = path.join(traceDir, "run.json");
   const labels = readRunLabels(runPath);
-  const l1 = checkExpectedTexts(input.testCase.expected, labels);
+  const l1 = checkExpectedTexts(redactText(input.testCase.expected ?? "", secrets).text, labels);
   const summary =
     last?.test_summary !== null &&
     typeof last?.test_summary === "object" &&

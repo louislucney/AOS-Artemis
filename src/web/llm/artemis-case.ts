@@ -198,7 +198,7 @@ export async function executeAndroidLlmCase(
   const dataEngineDbPath = path.join(traceDir, "data_engine.db");
   const observations = await readAndroidTraceObservations(dataEngineDbPath, traceId);
   const l1: ExpectedTextCheck = checkExpectedTexts(
-    input.testCase.expected,
+    redactText(input.testCase.expected ?? "", secrets).text,
     observations?.labels ?? []
   );
   let caseStatus: "PASS" | "FAIL" | "UNVERIFIED" = "UNVERIFIED";
