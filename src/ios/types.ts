@@ -50,6 +50,11 @@ export interface IosVisionDropped {
   overflow: number;
 }
 
+export interface IosTokenUsage extends ChatUsage {
+  phase?: "execute" | "vision" | "verify";
+  attempt?: number;
+}
+
 export interface IosTaskRecord {
   traceId: string;
   status: "running" | "completed" | "failed" | "cancelled";
@@ -79,7 +84,7 @@ export interface IosTaskRecord {
   /** Web LLM 脱敏 secret；仅内存，不直接落盘（落盘前经 redactIosValue）。 */
   redactionSecrets?: SecretEntry[] | null;
   /** 主模型/视觉/验证调用累计 token 用量（含重试）。 */
-  tokenUsage?: ChatUsage[];
+  tokenUsage?: IosTokenUsage[];
 }
 
 export interface VerifierTarget {

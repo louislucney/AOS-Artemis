@@ -200,8 +200,9 @@ test("runLlmWorkerOnce: 任务预算耗尽 → SKIP/budget-exceeded", async () =
   assert.equal(result.jobs[0].results[0].failureReason, "budget-exceeded");
 });
 
-test("runLlmWorkerOnce: 用例超时 → ERROR/case-timeout", async () => {
+test("runLlmWorkerOnce: 用例超时 → ERROR/case-timeout 并中止 signal", async () => {
   const { store } = await setup();
+  let signal = null;
   const result = await runLlmWorkerOnce({
     store,
     runnerId: "center-llm",
@@ -211,10 +212,14 @@ test("runLlmWorkerOnce: 用例超时 → ERROR/case-timeout", async () => {
     loadCases: async () => [
       { caseId: "TC-1", module: "登录", taskDesc: "登录成功" }
     ],
-    executeCase: async () => new Promise(() => undefined)
+    executeCase: async (input) => {
+      signal = input.signal;
+      return new Promise(() => undefined);
+    }
   });
   assert.equal(result.jobs[0].results[0].status, "ERROR");
   assert.equal(result.jobs[0].results[0].failureReason, "case-timeout");
+  assert.equal(signal.aborted, true);
 });
 
 

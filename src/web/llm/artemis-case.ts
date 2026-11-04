@@ -230,20 +230,18 @@ export async function executeAndroidLlmCase(
   const tokenUsage =
     tokenRows === null
       ? undefined
-      : [
-          {
-            caseId: input.testCase.caseId,
-            traceId,
-            model,
-            attempt: 1,
-            phase: "execute",
-            requestId: traceId,
-            promptTokens: tokenRows.reduce((sum, row) => sum + row.inputTokens, 0),
-            completionTokens: tokenRows.reduce((sum, row) => sum + row.outputTokens, 0),
-            cacheCreateTokens: tokenRows.reduce((sum, row) => sum + row.cacheCreateTokens, 0),
-            cacheReadTokens: tokenRows.reduce((sum, row) => sum + row.cacheReadTokens, 0)
-          }
-        ];
+      : tokenRows.map((row) => ({
+          caseId: input.testCase.caseId,
+          traceId,
+          model,
+          attempt: 1,
+          phase: "execute",
+          requestId: `${traceId}:step-${row.stepNumber}`,
+          promptTokens: row.inputTokens,
+          completionTokens: row.outputTokens,
+          cacheCreateTokens: row.cacheCreateTokens,
+          cacheReadTokens: row.cacheReadTokens
+        }));
   return {
     caseId: input.testCase.caseId,
     ...(input.testCase.name === undefined ? {} : { name: input.testCase.name }),

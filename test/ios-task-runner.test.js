@@ -304,12 +304,67 @@ test("token usage：主模型调用累计到 record 与 status.json", async () =
       return current && current.status !== "running" ? current : null;
     });
     assert.deepEqual(record.tokenUsage, [
-      { promptTokens: 7, completionTokens: 3, cacheCreateTokens: 0, cacheReadTokens: 2 }
+      {
+        promptTokens: 7,
+        completionTokens: 3,
+        cacheCreateTokens: 0,
+        cacheReadTokens: 2,
+        phase: "execute",
+        attempt: 1
+      }
     ]);
     const status = JSON.parse(fs.readFileSync(path.join(record.runDir, "status.json"), "utf-8"));
     assert.deepEqual(status.token_usage, record.tokenUsage);
     const run = JSON.parse(fs.readFileSync(path.join(record.runDir, "run.json"), "utf-8"));
     assert.deepEqual(run.token_usage, record.tokenUsage);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("token 预算：超过 AOS_WEB_LLM_MAX_TOKENS_PER_CASE → failed/budget-exceeded", async () => {
+  const { runtime } = await makeRuntime();
+  const device = fakeDevice();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({ thought: "点一下", action: "tap", x: 140, y: 220 })
+            }
+          }
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 1 }
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  try {
+    const started = payloadOf(
+      await maybeIosRunTask(
+        runtime,
+        { task_desc: "预算", device_serial: UDID },
+        {
+          entry: ENTRY,
+          device,
+          env: {
+            AOS_IOS_VERIFY: "off",
+            AOS_WEB_LLM_MAX_TOKENS_PER_CASE: "5"
+          },
+          listSimulators: bootedSims(),
+          stepDelayMs: 0,
+          settleMs: 0
+        }
+      )
+    );
+    const record = await waitFor(() => {
+      const current = getIosTask(started.trace_id);
+      return current && current.status !== "running" ? current : null;
+    });
+    assert.equal(record.status, "failed");
+    assert.match(record.error, /budget-exceeded/);
+    assert.equal(device.calls.length, 0, "超预算后不再执行下一步动作");
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -179,13 +179,16 @@ async function executeClaimedJob(
           signal: controller.signal
         }),
         caseTimeoutMs,
-        () => ({
-          caseId: testCase.caseId,
-          ...(testCase.name === undefined ? {} : { name: testCase.name }),
-          status: "ERROR" as const,
-          durationMs: Date.now() - caseStarted,
-          failureReason: "case-timeout"
-        })
+        () => {
+          controller.abort();
+          return {
+            caseId: testCase.caseId,
+            ...(testCase.name === undefined ? {} : { name: testCase.name }),
+            status: "ERROR" as const,
+            durationMs: Date.now() - caseStarted,
+            failureReason: "case-timeout"
+          };
+        }
       );
       results.push(result);
     } catch (error) {

@@ -3725,7 +3725,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **证据**：L1 确定性检查在**原始未脱敏证据**上评估（不过模型）；L2 可选 reference pack；L3 独立 verifier 只看脱敏证据、只能降级不能升级。无 L1/L2 → `UNVERIFIED`，不判 PASS；散文无锚点不产 L1。
 - **UNVERIFIED 契约**：现有 `WebResultVerdictStatus`/Excel/聚合已支持；缺的是中心 LLM Worker 直连 ingest 入口。**不把 UNVERIFIED 加进 runner 上报枚举**，HTTP runner 仍只收 PASS/FAIL/SKIP/ERROR。
 - **计费**：`data_engine.db`/`status.json` 必须回传；token 缺失写 `token-unavailable`，不写 0；首跑/重试/verifier 的所有 token 都计入，按 attempt/phase 拆分；计费事件幂等键含 requestId/attempt。
-- **预算**：任务上限按用例数×单例超时×(1+重试) 派生，默认 8h 上限；per-case 步数/token 超限 `budget-exceeded`。
+- **预算**：任务上限按用例数×单例超时×(1+重试) 派生，默认 8h 上限；per-case 步数/token 超限 `budget-exceeded`。iOS Web LLM 支持 `AOS_WEB_LLM_MAX_STEPS`（覆盖 iOS 默认 30 步）与 `AOS_WEB_LLM_MAX_TOKENS_PER_CASE`（主模型/视觉/验证累计，超过即 `failed`，已发生 token 仍计费）；用例超时会 abort 执行 signal，不再继续轮询。
 - **已实现（P0 Node 骨架）**：
   - `regression_tasks.execution_mode` 列 + `claimWebJob(executionMode)` 双端硬过滤；
   - `web_runners.gateway` + runner SSH `-R` 网关（`AOS_GATEWAY_*`）、端口冲突 409；

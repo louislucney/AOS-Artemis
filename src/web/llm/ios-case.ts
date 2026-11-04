@@ -82,14 +82,16 @@ function readTokenUsage(
     const usage = entry as Record<string, unknown>;
     const number = (key: string): number =>
       typeof usage[key] === "number" && Number.isFinite(usage[key]) ? usage[key] : 0;
+    const attempt = number("attempt") || index + 1;
+    const phase = typeof usage.phase === "string" ? usage.phase : "execute";
     return [
       {
         caseId,
         traceId,
         ...(model === null ? {} : { model }),
-        attempt: index + 1,
-        phase: "execute",
-        requestId: `${traceId}:${index + 1}`,
+        attempt,
+        phase,
+        requestId: `${traceId}:${phase}:${attempt}`,
         promptTokens: number("promptTokens"),
         completionTokens: number("completionTokens"),
         cacheCreateTokens: number("cacheCreateTokens"),

@@ -206,8 +206,22 @@ test("executeIosLlmCase：透传 token_usage（含重试/验证累计）", async
           status: "completed",
           test_summary: { passed: 1, failed: 0 },
           token_usage: [
-            { promptTokens: 10, completionTokens: 2, cacheCreateTokens: 0, cacheReadTokens: 0 },
-            { promptTokens: 4, completionTokens: 1, cacheCreateTokens: 0, cacheReadTokens: 2 }
+            {
+              promptTokens: 10,
+              completionTokens: 2,
+              cacheCreateTokens: 0,
+              cacheReadTokens: 0,
+              phase: "execute",
+              attempt: 1
+            },
+            {
+              promptTokens: 4,
+              completionTokens: 1,
+              cacheCreateTokens: 0,
+              cacheReadTokens: 2,
+              phase: "verify",
+              attempt: 1
+            }
           ]
         });
       }
@@ -219,6 +233,8 @@ test("executeIosLlmCase：透传 token_usage（含重试/验证累计）", async
   assert.equal(out.status, "PASS");
   assert.equal(out.tokenUsage.length, 2);
   assert.equal(out.tokenUsage[1].cacheReadTokens, 2);
+  assert.equal(out.tokenUsage[1].phase, "verify");
+  assert.equal(out.tokenUsage[1].requestId, "ios-usage:verify:1");
 });
 
 test("executeIosLlmCase: 取消 → stop + SKIP", async (t) => {

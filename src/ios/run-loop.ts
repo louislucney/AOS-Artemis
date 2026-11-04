@@ -86,6 +86,18 @@ function resolveMaxSteps(env: NodeJS.ProcessEnv, override?: number): number {
   return Math.max(1, Math.min(200, raw));
 }
 
+function resolveTokenBudget(env: NodeJS.ProcessEnv): number | null {
+  const raw = Number.parseInt(env.AOS_WEB_LLM_MAX_TOKENS_PER_CASE ?? "", 10);
+  return Number.isInteger(raw) && raw > 0 ? raw : null;
+}
+
+function tokensUsed(record: IosTaskRecord): number {
+  return (record.tokenUsage ?? []).reduce(
+    (sum, usage) => sum + usage.promptTokens + usage.completionTokens,
+    0
+  );
+}
+
 function resolveSettleMs(env: NodeJS.ProcessEnv, override?: number): number {
   if (override !== undefined) return Math.max(0, Math.min(MAX_SETTLE_MS, Math.floor(override)));
   const raw = Number.parseInt(env.AOS_IOS_SETTLE_MS ?? "", 10);
@@ -243,18 +255,25 @@ export async function runLoop(
     finish(record, "failed", `无法解析 iOS 设备（${errorMessage(error)}）：${record.udid}`);
     return;
   }
-  const collectUsage = (usage: ChatUsage): void => {
-    record.tokenUsage = [...(record.tokenUsage ?? []), usage];
-  };
+  const usageCounts = new Map<string, number>();
+  const collectUsage =
+    (phase: "execute" | "vision" | "verify") =>
+    (usage: ChatUsage): void => {
+      const attempt = (usageCounts.get(phase) ?? 0) + 1;
+      usageCounts.set(phase, attempt);
+      record.tokenUsage = [...(record.tokenUsage ?? []), { ...usage, phase, attempt }];
+    };
   const chat =
     deps.chat ??
     makeChatFn(
       { baseUrl: entry.baseUrl ?? "", apiKey: entry.apiKey ?? "", model: entry.model },
-      { onUsage: collectUsage }
+      { onUsage: collectUsage("execute") }
     );
   const visionChat =
     deps.visionChat ??
-    (visionTarget ? makeChatFn(visionTarget.chat, { onUsage: collectUsage }) : null);
+    (visionTarget
+      ? makeChatFn(visionTarget.chat, { onUsage: collectUsage("vision") })
+      : null);
   const mode: IosVisionMode = resolveVisionMode(env);
   const visionCapability = entryVisionCapability(runtime, env, entry);
   let mainVision =
@@ -265,7 +284,14 @@ export async function runLoop(
         ? false
         : visionChat === null);
   let visionVerdictLearned = visionCapability.resolution.capable !== "unknown";
-  const maxSteps = resolveMaxSteps(env, deps.maxSteps);
+  const webMaxSteps = runtime.iosWebLlmRedaction()
+    ? Number.parseInt(env.AOS_WEB_LLM_MAX_STEPS ?? "", 10)
+    : Number.NaN;
+  const maxSteps = resolveMaxSteps(
+    env,
+    deps.maxSteps ?? (Number.isInteger(webMaxSteps) && webMaxSteps > 0 ? webMaxSteps : undefined)
+  );
+  const tokenBudget = resolveTokenBudget(env);
   const stepDelayMs = deps.stepDelayMs ?? 300;
   const settleMs = resolveSettleMs(env, deps.settleMs);
   const historySteps = resolveHistorySteps(env);
@@ -284,7 +310,7 @@ export async function runLoop(
         env,
         entries,
         { chat, model: entry.model, vision: mainVision },
-        collectUsage
+        collectUsage("verify")
       );
     }
   }
@@ -371,6 +397,10 @@ export async function runLoop(
     for (let step = 1; step <= maxSteps; step += 1) {
       if (record.stopRequested) {
         await finalize("cancelled", "任务已被停止");
+        return;
+      }
+      if (tokenBudget !== null && tokensUsed(record) > tokenBudget) {
+        await finalize("failed", `budget-exceeded（token 上限 ${tokenBudget}）`);
         return;
       }
       let observation: StepObservation;
@@ -485,6 +515,10 @@ export async function runLoop(
           await finalize("failed", `LLM 调用失败: ${errorMessage(error)}`);
           return;
         }
+      }
+      if (tokenBudget !== null && tokensUsed(record) > tokenBudget) {
+        await finalize("failed", `budget-exceeded（token 上限 ${tokenBudget}）`);
+        return;
       }
       messages.push({ role: "assistant", content });
 
