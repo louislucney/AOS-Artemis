@@ -36,12 +36,12 @@ export const CANONICAL_FIELD_LABELS: Record<CanonicalField, string> = {
  * 注意：`实际结果` 是执行结果列，不是导入字段，故意不进别名表。
  */
 export const COLUMN_ALIASES: Record<CanonicalField, readonly string[]> = {
-  caseId: ["用例编号", "用例ID", "展示编号", "用例id", "用例编码", "caseid", "displayid", "编号"],
-  name: ["用例名", "用例名称", "测试用例名称", "测试点", "标题", "case", "casename", "name", "title"],
-  steps: ["步骤", "操作步骤", "测试步骤", "测试过程", "steps", "step", "操作"],
-  expected: ["预期", "预期结果", "期望结果", "期望", "expected", "expectation", "result"],
+  caseId: ["用例编号", "用例ID", "展示编号", "用例id", "用例编码", "caseid", "displayid", "tc", "编号"],
+  name: ["用例名", "用例名称", "测试用例名称", "测试点", "标题", "testcase", "testcases", "case", "casename", "name", "title"],
+  steps: ["步骤", "操作步骤", "测试步骤", "测试过程", "teststep", "teststeps", "steps", "step", "操作"],
+  expected: ["预期", "预期结果", "期望结果", "期望", "expectedresult", "expected", "expectation", "result"],
   preconditions: ["前置", "前置条件", "前置假设", "preconditions", "precondition"],
-  module: ["模块", "功能", "功能模块", "所属模块", "module", "feature"],
+  module: ["模块", "功能", "功能模块", "所属模块", "modules", "module", "feature"],
   priority: ["优先级", "优先", "priority", "prio"],
   testData: ["测试数据", "testdata", "data"],
   testId: ["测试编号", "测试id", "测试用例id", "用例设计id", "testid"]
@@ -52,12 +52,12 @@ export const COLUMN_ALIASES: Record<CanonicalField, readonly string[]> = {
  * 扩展别名若进入导入器，会在扩展列排在旧列之前时抢走匹配，改变既有导入行为。
  */
 export const LEGACY_COLUMN_ALIASES: Record<CanonicalField, readonly string[]> = {
-  caseId: ["用例编号", "展示编号", "displayid", "caseid", "编号"],
-  name: ["用例名", "用例名称", "标题", "case", "casename", "name", "title"],
-  steps: ["步骤", "操作步骤", "测试步骤", "steps", "step", "操作"],
-  expected: ["预期", "预期结果", "期望结果", "期望", "expected", "expectation", "result"],
+  caseId: ["用例编号", "展示编号", "displayid", "caseid", "tc", "编号"],
+  name: ["用例名", "用例名称", "标题", "testcase", "testcases", "case", "casename", "name", "title"],
+  steps: ["步骤", "操作步骤", "测试步骤", "teststep", "teststeps", "steps", "step", "操作"],
+  expected: ["预期", "预期结果", "期望结果", "期望", "expectedresult", "expected", "expectation", "result"],
   preconditions: ["前置", "前置条件", "前置假设", "preconditions", "precondition"],
-  module: ["模块", "功能", "功能模块", "所属模块", "module", "feature"],
+  module: ["模块", "功能", "功能模块", "所属模块", "modules", "module", "feature"],
   priority: [],
   testData: ["测试数据", "testdata", "data"],
   testId: []

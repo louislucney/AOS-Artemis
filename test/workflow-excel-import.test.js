@@ -139,6 +139,21 @@ test("importTestDocument: 缺必填列 → ok:false（列出当前表头）", as
   assert.ok(result.error.includes("编号、说明"));
 });
 
+test("importTestDocument: 识别 Test Case / Test Step 等英文表头", async () => {
+  const { dir, runtime } = await project();
+  const file = await writeSheet(path.join(dir, "english.xlsx"), [
+    ["TC", "Modules", "Section", "Test Case", "Precondition", "Test Data", "Test Step", "Expected Result", "Result"],
+    ["TC-1", "Login", "Auth", "Login with password", "App installed", "user/pass", "Open login and submit", "Home shown", "PASS"]
+  ]);
+  const result = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.status, "imported");
+  assert.equal(result.sets[0].caseCount, 1);
+  const document = JSON.parse(fs.readFileSync(result.sets[0].jsonPath, "utf8"));
+  assert.equal(document.flows[0].name, "Login with password");
+  assert.match(document.flows[0].steps[0], /Open login and submit/);
+});
+
 test("importTestDocument: 无预期 → explore 步骤（弱断言豁免）", async () => {
   const { dir, runtime } = await project();
   const file = await writeSheet(path.join(dir, "explore.xlsx"), [
