@@ -19,6 +19,11 @@ async function exists(file) {
 
 const hookFile = path.join(artemis, "artemis", "security", "install.py");
 if (await exists(hookFile)) {
+  const content = await readFile(hookFile, "utf8");
+  if (!content.includes("AOS_HOOK_API_VERSION = 1")) {
+    console.error(`artemis hooks present but API version mismatch: ${hookFile}`);
+    process.exit(1);
+  }
   console.log(`artemis hooks already present: ${path.relative(root, hookFile)}`);
   process.exit(0);
 }
@@ -48,5 +53,10 @@ for (const name of patches) {
     process.exit(1);
   }
   const marker = await readFile(patchPath, "utf8");
+  const installed = await readFile(hookFile, "utf8");
+  if (!installed.includes("AOS_HOOK_API_VERSION = 1")) {
+    console.error(`hook API version missing after ${name}`);
+    process.exit(1);
+  }
   console.log(`applied ${name} (${marker.split("\n")[0]})`);
 }

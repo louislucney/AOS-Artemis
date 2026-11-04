@@ -1,9 +1,11 @@
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { createProjectStore } from "../../db/index.js";
 import { defaultBuildRuntime, type CliRuntimeBundle } from "../../cli-runtime.js";
+import { resolveHostIdentity } from "../../host/identity.js";
 import { errorMessage } from "../../util.js";
+import { recordLlmWorkerHeartbeat } from "./heartbeat.js";
 import { executeAndroidLlmCase } from "./artemis-case.js";
 import { ingestLlmResults } from "./ingest.js";
 import { loadLlmCases } from "./cases.js";
@@ -36,6 +38,23 @@ export async function runLlmWorkerCli(
     process.env.AOS_LLM_HOOKS_STRICT = process.env.AOS_LLM_HOOKS_STRICT ?? "1";
   }
   const { store } = await createProjectStore();
+  const instanceId = `center-llm-${process.pid}-${Date.now()}`;
+  const identity = await resolveHostIdentity({ env: process.env }).catch(() => null);
+  const workerHostId = identity?.id ?? store.localHostId ?? "center-llm";
+  const heartbeat = async (): Promise<void> => {
+    await recordLlmWorkerHeartbeat({
+      store,
+      hostId: workerHostId,
+      instanceId
+    }).catch((error) => {
+      errorLog(`[web-llm-worker] 心跳写入失败：${errorMessage(error)}`);
+    });
+  };
+  await heartbeat();
+  const heartbeatTimer = setInterval(() => {
+    void heartbeat();
+  }, 30_000);
+  heartbeatTimer.unref();
   const runtimes = new Map<string, CliRuntimeBundle>();
   const controller = new AbortController();
   const onSignal = (): void => controller.abort();
@@ -56,7 +75,7 @@ export async function runLlmWorkerCli(
   const input: RunLlmWorkerOnceInput = {
     store,
     runnerId: `center-llm-${process.pid}`,
-    instanceId: `center-llm-${process.pid}-${Date.now()}`,
+    instanceId,
     signal: controller.signal,
     ...(options.maxJobs === undefined ? {} : { maxJobs: options.maxJobs }),
     ...(options.caseTimeoutMs === undefined ? {} : { caseTimeoutMs: options.caseTimeoutMs }),
@@ -77,7 +96,12 @@ export async function runLlmWorkerCli(
         () => true,
         () => false
       );
-      if (hooksPresent) process.env.AOS_LLM_HOOKS_ACTIVE = "1";
+      let hooksCompatible = false;
+      if (hooksPresent) {
+        const content = await readFile(hookFile, "utf8").catch(() => "");
+        hooksCompatible = content.includes("AOS_HOOK_API_VERSION = 1");
+      }
+      if (hooksCompatible) process.env.AOS_LLM_HOOKS_ACTIVE = "1";
       else delete process.env.AOS_LLM_HOOKS_ACTIVE;
       await writeWebSecretFile({ rootPath: job.rootPath, secrets });
       return { runtime, secrets, appPackage: web?.appPackage ?? null };
@@ -120,6 +144,7 @@ export async function runLlmWorkerCli(
     errorLog(`[web-llm-worker] 失败：${errorMessage(error)}`);
     return 2;
   } finally {
+    clearInterval(heartbeatTimer);
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
     for (const bundle of runtimes.values()) {

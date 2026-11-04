@@ -2039,6 +2039,9 @@ async function createWebJobAction(
       outcome.script !== null && outcome.script.unresolved > 0
         ? `；${outcome.script.unresolved} 条未就绪将 SKIP`
         : "";
+    const workerOffline = outcome.warnings.includes("llm-worker-offline")
+      ? "；中心 LLM Worker 未在线（任务会等待）"
+      : "";
     return json(200, {
       ok: true,
       job: outcome.task,
@@ -2065,7 +2068,8 @@ async function createWebJobAction(
           : outcome.script?.rebuiltFrom !== null && outcome.script !== null
             ? "；脚本集已按当前资产重建"
             : "") +
-        scriptWarning
+        scriptWarning +
+        workerOffline
     });
   } catch (error) {
     const generationFailure =

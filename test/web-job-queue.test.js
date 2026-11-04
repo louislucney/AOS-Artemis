@@ -1070,7 +1070,7 @@ test("createWebJob: llm 模式不因脚本过期而重建", async () => {
     );
     assert.equal(result.task.jobSpec.scriptSetId, script.id);
     assert.equal(result.script?.rebuiltFrom, null);
-    assert.equal(result.warnings.length, 0);
+    assert.deepEqual(result.warnings, ["llm-worker-offline"]);
   }
 });
 
@@ -1206,6 +1206,7 @@ test("createWebJob: LLM 需要 ready 的设备网关", async () => {
     );
     assert.ok(created.assignment, "ready gateway 可被 LLM 任务选中");
     assert.equal(created.task.executionMode, "llm");
+    assert.ok(created.warnings.includes("llm-worker-offline"), "无 worker 心跳时提示离线");
   }
 });
 
