@@ -119,6 +119,65 @@ function normalizedTapOf(raw: unknown): { relX: number; relY: number } | null {
   return { relX: x / 1000, relY: y / 1000 };
 }
 
+export interface AndroidTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreateTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  stepNumber: number;
+}
+
+function tokenNumber(record: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  }
+  return 0;
+}
+
+/** 从 `steps.extra_metadata.token_usage` 读取逐步 token；schema 不匹配/无数据 → null。 */
+export async function readAndroidTokenUsage(
+  dbPath: string,
+  traceId: string
+): Promise<AndroidTokenUsage[] | null> {
+  if (!fs.existsSync(dbPath)) return null;
+  const db = await openReadOnlyDb(dbPath);
+  if (!db) return null;
+  try {
+    const rows = db
+      .prepare(
+        "SELECT step_number, extra_metadata FROM steps WHERE session_id = ? ORDER BY step_number"
+      )
+      .all(traceId) as Array<Record<string, unknown>>;
+    const out: AndroidTokenUsage[] = [];
+    for (const row of rows) {
+      const metadata = jsonOf(row.extra_metadata);
+      if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) continue;
+      const usage = (metadata as Record<string, unknown>).token_usage;
+      if (usage === null || typeof usage !== "object" || Array.isArray(usage)) continue;
+      const record = usage as Record<string, unknown>;
+      out.push({
+        stepNumber:
+          typeof row.step_number === "number" ? row.step_number : out.length + 1,
+        inputTokens: tokenNumber(record, ["input_tokens", "prompt_token_count"]),
+        outputTokens: tokenNumber(record, ["output_tokens", "candidates_token_count"]),
+        cacheCreateTokens: tokenNumber(record, [
+          "cache_create_tokens",
+          "cache_creation_input_tokens"
+        ]),
+        cacheReadTokens: tokenNumber(record, ["cache_read_tokens", "cached_content_token_count"]),
+        totalTokens: tokenNumber(record, ["total_tokens"])
+      });
+    }
+    return out.length === 0 ? null : out;
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
 export async function readAndroidTraceObservations(
   dbPath: string,
   traceId: string

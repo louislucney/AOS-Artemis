@@ -20,6 +20,10 @@ export interface LlmWorkerCaseResult {
   tokenUsage?: unknown[];
   evidenceSteps?: unknown[];
   verification?: unknown;
+  artifacts?: {
+    statusJsonPath?: string;
+    dataEngineDbPath?: string;
+  };
 }
 
 export interface LlmWorkerJob {
