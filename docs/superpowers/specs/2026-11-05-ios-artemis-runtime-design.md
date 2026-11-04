@@ -458,13 +458,31 @@ interface DeviceCapabilities {
 - 产出：可行性报告（go/no-go）、需要 patch 的 ARTEMIS 文件清单、性能数据、未预期阻塞。
 - **决策门**：Spike 报告通过后才进入 Phase 1；不通过则停止或改为 Python 直连 Appium 的备选方案。
 
+### Phase 0 结果（2026-11-05）
+
+Spike 已完成，报告：`spikes/ios-artemis/REPORT.md`。
+
+- **通过**：`IosRemoteDriver` + `UnifiedMobileControllerBase` 完成登录流程；像素→逻辑点 scale 换算、元素查找、输入、点击、`openUrl`、`back` 拒绝均符合预期。
+- **阻塞**：`Agent.init` 仍是 Android-only：
+  - `DevicePlatform` 没有 `IOS`；
+  - `Agent.init` 强制 `DevicePlatform.ANDROID`；
+  - `_init_internal` 检查 `adb` + 初始化 ADB clients；
+  - `_get_controller` 默认 `adb.device_list()`。
+- **结论**：planner/operator 不改，但 `DevicePlatform` / `Agent.init` / context / factory / MCP controller 需要一小层 iOS 平台分支。
+
 ### Phase 1：MVP（1–2 周）
 
-- Node Device Service：`initialize`/`info`/`screen`/`tap`/`longPress`/`swipe`/`inputText`/`pressKey`/`launchApp`/`terminateApp`/`currentApp`/`alerts`。
-- `IosRemoteDriver` + `IosMobileController` + factory/context 分支。
-- AOS routing flag + ARTEMIS env 注入。
-- status.json/run.json 落盘；AOS 结果适配层能读。
-- fake Appium + fake RPC 单测。
+先做 **ARTEMIS 平台接缝 patch spike**，再做 Node Device Service：
+
+1. `third_party/mobile_use` 增加 `DevicePlatform.IOS`；
+2. `Agent.init` 按 platform 分支，iOS 跳过 `which("adb")` / ADB clients，注入 `IosRemoteDriver` 或 controller；
+3. `_get_controller` 支持 iOS UDID + RPC URL；
+4. `IosMobileController` 覆盖 `open_url`/`erase_text`/`go_back`；
+5. 用 fake LLM + fake RPC 跑通 `Agent.run_task` 最小任务；
+6. 通过后再建正式 Node Device Service（`initialize`/`info`/`screen`/`tap`/`longPress`/`swipe`/`inputText`/`pressKey`/`launchApp`/`terminateApp`/`currentApp`/`alerts`）；
+7. AOS routing flag + ARTEMIS env 注入；
+8. status.json/run.json 落盘；AOS 结果适配层能读；
+9. fake Appium + fake RPC 单测。
 
 ### Phase 2：证据与行为对齐（2–3 周）
 
@@ -526,6 +544,7 @@ interface DeviceCapabilities {
 | 风险 | 影响 | 缓解 |
 |---|---|---|
 | ARTEMIS 内部大量 Android 假设 | 工具静默 no-op | capability 表 + 工具过滤 + typed error；先跑工具清单审计 |
+| `Agent.init`/`DevicePlatform` Android-only | iOS 无法启动 agent | Phase 1 先做平台接缝 patch spike；不先建完整设备服务 |
 | WDA source 慢/大 | 每步延迟高 | 裁剪、缓存、超时、只取可见节点；必要时走截图视觉 |
 | 坐标 scale 错 | 点击偏、遮罩错 | RPC 边界明确像素/点；单测覆盖 2x/3x/横屏 |
 | OCR 成本/准确率 | L1 不稳 | 只在关键帧 OCR；AX 优先；融合去重；失败显式降级 |
