@@ -201,6 +201,8 @@ export interface IngestWebJobResultInput {
   payload: unknown;
   /** 显式解冻人工清空的系统格（缺省 false；payload 顶层同名字段亦可）。 */
   allowClearedRefresh?: boolean;
+  /** 中心 LLM worker 直连 ingest：允许用例状态 UNVERIFIED；HTTP runner 路径不得设置。 */
+  centerOrigin?: boolean;
   /** 审计操作人/主机（runner 路由传 host id）。 */
   actor?: string | null;
   nowMs?: number;
@@ -361,12 +363,20 @@ function stringList(value: unknown, field: string, max = MAX_EVIDENCE): string[]
   }).filter((entry) => entry !== "");
 }
 
-function parseCase(raw: unknown, index: number): WebResultCase {
+function parseCase(
+  raw: unknown,
+  index: number,
+  options: { allowUnverified?: boolean } = {}
+): WebResultCase {
   if (!isRecord(raw)) {
     throw new WebResultError("invalid-result", `execution.cases[${index}] 不是对象`);
   }
   const statusRaw = typeof raw.status === "string" ? raw.status.trim().toUpperCase() : "";
-  if (!CASE_STATUSES.has(statusRaw as WebResultCaseStatus)) {
+  const allowed =
+    options.allowUnverified === true
+      ? new Set<string>([...CASE_STATUSES, "UNVERIFIED"])
+      : CASE_STATUSES;
+  if (!allowed.has(statusRaw)) {
     throw new WebResultError(
       "invalid-result",
       `execution.cases[${index}].status 非法：${String(raw.status)}（PASS/FAIL/SKIP/ERROR）`
@@ -375,7 +385,7 @@ function parseCase(raw: unknown, index: number): WebResultCase {
   const parsed: WebResultCase = {
     caseId: text(raw.caseId, `execution.cases[${index}].caseId`),
     name: optionalText(raw.name, `execution.cases[${index}].name`),
-    status: statusRaw as WebResultCaseStatus
+    status: statusRaw as WebResultVerdictStatus
   };
   const duration = numberField(raw.durationMs, `execution.cases[${index}].durationMs`);
   if (duration !== undefined) parsed.durationMs = duration;
@@ -706,7 +716,10 @@ function resultSha(payload: NormalizedWebJobResultPayload): string {
 }
 
 /** 校验 + 归一化调用方（runner）上报的结果；任何结构问题 → `invalid-result`。 */
-export function normalizeWebJobResultPayload(raw: unknown): NormalizedWebJobResultPayload {
+export function normalizeWebJobResultPayload(
+  raw: unknown,
+  options: { allowUnverified?: boolean } = {}
+): NormalizedWebJobResultPayload {
   if (!isRecord(raw)) {
     throw new WebResultError("invalid-result", "结果 body 必须是 JSON 对象");
   }
@@ -717,7 +730,9 @@ export function normalizeWebJobResultPayload(raw: unknown): NormalizedWebJobResu
   if (!Array.isArray(rawExecution.cases)) {
     throw new WebResultError("invalid-result", "execution.cases 必须是数组");
   }
-  const cases = rawExecution.cases.map((entry, index) => parseCase(entry, index));
+  const cases = rawExecution.cases.map((entry, index) =>
+    parseCase(entry, index, options)
+  );
   const computed = aggregateResultGate(cases);
   let reportedStatus: WebResultGate["result"] | undefined;
   if (rawExecution.status !== undefined && rawExecution.status !== null) {
@@ -1542,7 +1557,9 @@ export async function ingestWebJobResult(
   if (initial === null) {
     throw new WebResultError("job-not-found", `未知 job ${input.jobId}`);
   }
-  const payload = normalizeWebJobResultPayload(input.payload);
+  const payload = normalizeWebJobResultPayload(input.payload, {
+    allowUnverified: input.centerOrigin === true
+  });
   if (input.allowClearedRefresh === true) payload.allowClearedRefresh = true;
   const lockPath = resultLockPath(initial.rootPath, initial.task.id);
   return withFileLock(lockPath, () => ingestUnderJobLock(input, payload, initial.task.id));
