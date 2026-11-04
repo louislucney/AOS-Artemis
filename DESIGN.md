@@ -3734,6 +3734,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
   - `loadLlmCases`：Excel/CSV → taskDesc；`ingestLlmResults`：center-only UNVERIFIED、Excel 写回；
   - Node 侧 secret inventory/脱敏/占位符注入；未绑定账号 fail-closed。
 - **未完成**：ARTEMIS 进程内 H1–H4 hooks（观察/截图/动作/trace 脱敏与注入）、gateway `/install`、面板 LLM/gateway 状态、worker 心跳 `llm-worker-offline`、真实设备联调。
+- **Hooks 选定（2026-11-04 二评）**：**B 为主 + A 为辅 + C 为准入**。B 按 AGENTS patch artemis（观察层 hierarchy+screenshot 按 bounds 遮罩、storage/trace 清洗、动作注入）；A 只兜底 B 未覆盖的直接 LLM 创建路径（`ModelFactory.create_model`/`get_google_llm`，含 chunking/summarizer），带签名守卫；C 拒绝高风险用例 + 测试账号 allowlist，但不当作安全保证。B 铺开前先用真实设备验证 hierarchy bounds 缺失率。
 - **状态**：实现中；P0 远程 Android、P0b 远程 iOS。实施计划：`docs/superpowers/plans/2026-11-04-web-llm-execution.md`。
 - **默认值表（唯一事实源）**：
 

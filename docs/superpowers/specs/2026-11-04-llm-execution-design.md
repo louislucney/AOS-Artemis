@@ -33,6 +33,7 @@
 | 评审项 | 结论 | 落点 |
 |---|---|---|
 | K1 脱敏/注入画在 Worker 层 | **接受** | 新增 ARTEMIS hook 清单与 fail-closed；Worker 只做 taskDesc 入口脱敏，观察/动作/落盘在 ARTEMIS hook 内完成（§4.4） |
+| K1 补充：A 覆盖 blind spot | **接受** | 仅包 `RobustChatModelWrapper` 漏 `memory/chunking.py`；A 兜底需 patch `ModelFactory.create_model`/`get_google_llm`，不能只 patch `_get_llm`（§4.4） |
 | K2 UNVERIFIED 没有契约 | **接受，修法调整** | 已有 `WebResultVerdictStatus`/Excel/聚合支持；缺的是**中心 LLM Worker 直连 ingest 的入口**。不把 UNVERIFIED 加进 runner 上报枚举，改为 center-only 解析（§6.2） |
 | M1 隧道 loopback/部署耦合 | **接受** | P0 单实例、隧道与 worker 同宿主；端口漂移/重连/在途失败语义（§3.2） |
 | M2 进程粒度 | **接受** | 每用例一个 ARTEMIS 子进程；clearState/preconditions/归因（§3.4） |
@@ -142,7 +143,13 @@
 
 ### 4.4 ARTEMIS 改造/挂载清单
 
-不直接改上游 submodule 的首选：在 `scripts/artemis-llm-hooks/` 提供 Python hook 包，通过 `PYTHONPATH`/`sitecustomize` 注入；hook 失败即 fail-closed。若某 hook 点不存在，才按 AGENTS 规则给 `artemis` 打 `PATCH (aos-mcp)` 并更新 NOTICE。
+**实现策略（2026-11-04 二评选定）：B 为主 + A 为辅 + C 为准入。**
+
+- **B（主）**：按 AGENTS 规则 patch `artemis` submodule，带 `PATCH (aos-mcp)` + NOTICE，在观察/动作/storage/trace 层集中脱敏与注入。理由：只有观察层同时持有 UI hierarchy + screenshot；`drivers/android/hierarchy.py` 已解析 `[l,t][r,b]` bounds，具备按节点遮罩的原生数据来源。
+- **A（辅）**：`scripts/artemis-llm-hooks/` 通过 `sitecustomize` 兜底 **B 未覆盖的直接 LLM 创建路径**（`ModelFactory.create_model`/`get_google_llm`，包括 `memory/chunking.py`、`agents/flash/summarizer.py`）；必须加版本/签名守卫，hook 失败 fail-closed。仅包 `RobustChatModelWrapper` 不够，已核实 chunking 绕过 wrapper。
+- **C（准入）**：拒绝需要账号/高风险用例 + 测试账号 allowlist；它是源头减量，不是安全保证（登录后首页仍可能显示账号）。
+- **Bounds 前置验证**：全面铺开 B 前，用真实设备抓 login/个人页 snapshot，统计敏感文本节点 bounds 缺失率；缺失率高时，图片路径回退到 A 的“丢弃/全图模糊”，并记录降级原因。
+- **冲突约束**：B 是权威脱敏层；A 只补漏，不重复处理 B 已覆盖的路径；C 不替代 B/A。
 
 | # | Hook 点 | 责任 | 验收 |
 |---|---|---|---|
