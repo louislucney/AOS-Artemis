@@ -91,7 +91,8 @@ export async function executeAndroidLlmCase(
   const pollMs = input.pollMs ?? 2_000;
   const startedAt = input.now?.() ?? Date.now();
   const model = input.model ?? "Pro";
-  const redacted = redactText(input.testCase.taskDesc, input.secrets ?? []);
+  const secrets = input.secrets ?? [];
+  const redacted = redactText(input.testCase.taskDesc, secrets);
   if (redacted.unbound.length > 0) {
     return {
       caseId: input.testCase.caseId,
@@ -99,6 +100,16 @@ export async function executeAndroidLlmCase(
       status: "ERROR",
       durationMs: 0,
       failureReason: `llm-secret-unbound:${redacted.unbound.length}`
+    };
+  }
+  // P0 安全闸：ARTEMIS 进程内 hooks 尚未接通时，带 secret 的用例 fail-closed。
+  if (secrets.length > 0 && process.env.AOS_LLM_HOOKS_ACTIVE !== "1") {
+    return {
+      caseId: input.testCase.caseId,
+      ...(input.testCase.name === undefined ? {} : { name: input.testCase.name }),
+      status: "ERROR",
+      durationMs: 0,
+      failureReason: "llm-secret-hook-unavailable"
     };
   }
   const started = await input.proxy.callTool("mobile_run_task", {

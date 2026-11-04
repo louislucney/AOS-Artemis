@@ -89,16 +89,37 @@ test("executeAndroidLlmCase: taskDesc 进模型前脱敏；未绑定账号拒绝
       return result({ status: "completed", test_summary: { passed: 1, failed: 0 } });
     }
   };
-  const redacted = await executeAndroidLlmCase({
-    proxy,
+  const previous = process.env.AOS_LLM_HOOKS_ACTIVE;
+  process.env.AOS_LLM_HOOKS_ACTIVE = "1";
+  try {
+    const redacted = await executeAndroidLlmCase({
+      proxy,
+      traceDir: () => dir,
+      testCase: { caseId: "TC-5", taskDesc: "用 user@example.com 登录" },
+      deviceSerial: "pixel-1",
+      secrets: [{ alias: "account", value: "user@example.com", kind: "account" }]
+    });
+    assert.equal(redacted.status, "PASS");
+    assert.match(calls[0].args.task_desc, /<secret:account>/);
+    assert.doesNotMatch(calls[0].args.task_desc, /user@example\.com/);
+  } finally {
+    if (previous === undefined) delete process.env.AOS_LLM_HOOKS_ACTIVE;
+    else process.env.AOS_LLM_HOOKS_ACTIVE = previous;
+  }
+
+  const hookMissing = await executeAndroidLlmCase({
+    proxy: {
+      async callTool() {
+        throw new Error("must not call model");
+      }
+    },
     traceDir: () => dir,
-    testCase: { caseId: "TC-5", taskDesc: "用 user@example.com 登录" },
+    testCase: { caseId: "TC-5b", taskDesc: "用账号登录" },
     deviceSerial: "pixel-1",
     secrets: [{ alias: "account", value: "user@example.com", kind: "account" }]
   });
-  assert.equal(redacted.status, "PASS");
-  assert.match(calls[0].args.task_desc, /<secret:account>/);
-  assert.doesNotMatch(calls[0].args.task_desc, /user@example\.com/);
+  assert.equal(hookMissing.status, "ERROR");
+  assert.equal(hookMissing.failureReason, "llm-secret-hook-unavailable");
 
   const blocked = await executeAndroidLlmCase({
     proxy: {
