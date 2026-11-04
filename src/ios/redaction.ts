@@ -40,10 +40,13 @@ export function loadIosSecrets(rootPath: string): SecretEntry[] {
   }
 }
 
-export function iosRedactionConfig(rootPath: string): IosRedactionConfig | null {
+export function iosRedactionConfig(
+  rootPath: string,
+  env: NodeJS.ProcessEnv = process.env
+): IosRedactionConfig | null {
   const secrets = loadIosSecrets(rootPath);
   if (secrets.length === 0) return null;
-  const strict = !/^(0|false|no)$/i.test((process.env.AOS_IOS_REDACTION_STRICT ?? "").trim());
+  const strict = !/^(0|false|no)$/i.test((env.AOS_IOS_REDACTION_STRICT ?? "").trim());
   return { secrets, strict };
 }
 

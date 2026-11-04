@@ -240,7 +240,7 @@ export async function runLoop(
 ): Promise<void> {
   const env = deps.env ?? runtime.iosEnvironment();
   const redaction = runtime.iosWebLlmRedaction()
-    ? iosRedactionConfig(runtime.project.rootDir)
+    ? iosRedactionConfig(runtime.project.rootDir, env)
     : null;
   record.redactionSecrets = redaction?.secrets ?? null;
   let device: IosDevice;

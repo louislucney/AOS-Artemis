@@ -8,6 +8,7 @@ import test from "node:test";
 import { PNG } from "pngjs";
 
 import {
+  iosRedactionConfig,
   loadIosSecrets,
   maskIosScreenshot,
   redactIosNodes,
@@ -163,6 +164,18 @@ test("redactIosShot：可遮罩时覆盖证据文件", async (t) => {
   assert.ok(out.shot);
   assert.ok(out.promptBytes);
   assert.deepEqual(pixelAt(await readFile(file), 4, 0, 0), [0, 0, 0, 255]);
+});
+
+test("iosRedactionConfig：默认 strict，项目 env 可关闭", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "aos-ios-secrets-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(path.join(dir, ".artemis", "web"), { recursive: true });
+  await writeFile(
+    path.join(dir, ".artemis", "web", "llm-secrets.json"),
+    JSON.stringify({ PASSWORD: "hunter2" })
+  );
+  assert.equal(iosRedactionConfig(dir, {})?.strict, true);
+  assert.equal(iosRedactionConfig(dir, { AOS_IOS_REDACTION_STRICT: "0" })?.strict, false);
 });
 
 test("loadIosSecrets：读取 worker 写入的 alias→value 映射", async (t) => {

@@ -1,12 +1,12 @@
 # Web LLM 执行接线设计（R10）v3
 
-> 2026-11-04 · 状态：**实现中（P0 Node 骨架已落地；ARTEMIS hooks/install/panel 未完成）**
+> 2026-11-05 · 状态：**P0 远程 Android 与 P0b 远程 iOS 代码已接线，全量测试通过；真机验收、gateway install/HA 未完成**
 > 关联：`DESIGN.md` §13.302（数据源 P0）、§13.304（APK/IPA appId）、§13.305（CSV 导入）、`src/web/results.ts`（结果/计费契约）、`src/artemis/`（ARTEMIS 子进程）、`docs/superpowers/specs/2026-10-28-web-project-test-platform-design.md` §4.7/§4.8。
 > v2 评审处置见 §2.2；本轮把“脱敏/注入在哪一层生效”“UNVERIFIED 如何进契约”“Android 隧道到底转什么”三处机制钉死。
 
 ## 1. 目标
 
-`executionMode=llm` 现在只是占位：`createWebJob` 允许创建，runner 执行入口直接返回 `llm-execution-not-wired`（`src/runner/web-executors.ts:465`）。R10 要让手工 Excel/CSV 的 `taskDesc` 直接交给 LLM 执行器，不依赖 Maestro flow，并且：
+`executionMode=llm` 的 runner 直跑入口仍返回 `llm-execution-not-wired`（`src/runner/web-executors.ts:465`）；LLM job 由中心 `web llm-worker` 领取并在中心执行。R10 要让手工 Excel/CSV 的 `taskDesc` 直接交给 LLM 执行器，不依赖 Maestro flow，并且：
 
 1. **必须支持远程执行机**；
 2. LLM key 只在中心，远程 runner 不持有；
@@ -159,6 +159,7 @@
 | H4 | trace/DB 写入（`status.json`/`data_engine.db`/notes） | 落盘前脱敏；原始证据另存受控目录 | 对 `status.json`/DB 文本表 grep 0 命中 |
 | H5 | LLM 边界 usage/step 记录 | per-case token/阶段/requestId | 重试/verifier token 可归因 |
 
+- **iOS（P0b）**：远程 iOS 真机不走 ARTEMIS Python hooks；同一契约在 Node `src/ios/redaction.ts` 实现（taskDesc/节点/截图 bbox/输入占位符/run/status），截图按截图/逻辑点 scale 换算，敏感节点缺 bbox 默认丢弃截图（`AOS_IOS_REDACTION_STRICT=0` 保留中心证据但不发模型）。有 secret 但 Node 脱敏未启用 → `ios-redaction-unavailable`。
 - **fail-closed**：H1–H4 任一不可用 → 需要 secret 的用例直接 `llm-secret-hook-unavailable`，不降级为把密码发给模型。
 - **P0 验收**：已知 secret 字符串对全部文本工件 grep 0 命中；截图注入区遮罩检查；命令日志 grep 0 命中。
 
