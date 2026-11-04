@@ -1,6 +1,6 @@
 # 数据源 P0 移除实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 按已评审的 v2 设计落地 P0：默认允许部分下发、来源与目标主机解耦、脚本集惰性生成/过期重建、模块与用例 ID 过滤真正生效。
 
@@ -40,13 +40,13 @@
 **Interfaces:**
 - Produces: `allowPartialUnresolved` 省略/undefined → `true`；显式 `false`/`"false"` → `false`。
 
-- [ ] 写失败测试：`createWebJob` 对 `unresolved=1` 的脚本集，省略字段 → 成功且 `jobSpec.allowPartialUnresolved===true`；显式 `false` → `script-set-incomplete` 409。
-- [ ] 写失败测试：`parseWebJobCreateForm` 省略 → true，`false`/`"false"` → false；面板 HTML 复选框带 `checked`，内联脚本始终发送该字段。
-- [ ] 跑测试确认失败。
-- [ ] 改 `jobs.ts`：`const allowPartial = input.allowPartialUnresolved !== false;`，spec 写 `allowPartial`；只有 `allowPartial === false && unresolved>0` 才抛 409。
-- [ ] 改 `actions.ts`：解析为 `!(raw === false || raw === "false")`。
-- [ ] 改 `pages.ts`：`<input id="web-job-allow-partial" type="checkbox" checked ...>`；脚本 `out.allowPartialUnresolved = byId(...).checked`；文案“未就绪用例写 SKIP（不计 PASS）”。
-- [ ] 跑测试通过，提交 `feat: default to partial web job dispatch`。
+- [x] 写失败测试：`createWebJob` 对 `unresolved=1` 的脚本集，省略字段 → 成功且 `jobSpec.allowPartialUnresolved===true`；显式 `false` → `script-set-incomplete` 409。
+- [x] 写失败测试：`parseWebJobCreateForm` 省略 → true，`false`/`"false"` → false；面板 HTML 复选框带 `checked`，内联脚本始终发送该字段。
+- [x] 跑测试确认失败。
+- [x] 改 `jobs.ts`：`const allowPartial = input.allowPartialUnresolved !== false;`，spec 写 `allowPartial`；只有 `allowPartial === false && unresolved>0` 才抛 409。
+- [x] 改 `actions.ts`：解析为 `!(raw === false || raw === "false")`。
+- [x] 改 `pages.ts`：`<input id="web-job-allow-partial" type="checkbox" checked ...>`；脚本 `out.allowPartialUnresolved = byId(...).checked`；文案“未就绪用例写 SKIP（不计 PASS）”。
+- [x] 跑测试通过，提交 `feat: default to partial web job dispatch`。
 
 ### Task 2: 模块/用例 ID 过滤真正生效（R11）
 
@@ -61,13 +61,13 @@
 - Produces: `ScriptSetCaseSummary.module: string | null`；manifest case 形如 `{caseId, module, flow, ...}`。
 - Produces: runner 过滤后 `maestro test` 参数传选中 flow 文件路径（有过滤时），无过滤时保持传目录。
 
-- [ ] 写失败测试：`buildScriptSetBundle` 收到 `cases:[{caseId:"TC-1",module:"登录",...}]`，manifest 对应 case `module==="登录"`。
-- [ ] 写失败测试：runner 工作区写 `manifest.json`（jobDir 下），`caseFilter.modules:["登录"]` 时只执行 flow-a；`caseIds:["中文 用例"]` 能匹配 manifest caseId；未知模块 → `case-filter-no-match`；无 manifest + 模块过滤 → `case-filter-modules-unsupported`。
-- [ ] 跑测试确认失败。
-- [ ] 改 `script-gen.ts` 类型与 `script-set.ts` summary（按 `input.cases[index].module` 取值）。
-- [ ] 改 `script-generation.ts` 传 `module: entry.module`。
-- [ ] 改 `web-executors.ts`：新增 `readScriptManifest(flowsDir)`；构建 `caseId→{flow,module}`；过滤 `flowFiles`；有过滤时 exec 参数用 `flowFiles` 而不是目录；JUnit 结果 `caseId` 用 manifest caseId，断言/手工步骤仍按 stem 查。
-- [ ] 跑测试通过，提交 `fix: apply web case filters from script manifest`。
+- [x] 写失败测试：`buildScriptSetBundle` 收到 `cases:[{caseId:"TC-1",module:"登录",...}]`，manifest 对应 case `module==="登录"`。
+- [x] 写失败测试：runner 工作区写 `manifest.json`（jobDir 下），`caseFilter.modules:["登录"]` 时只执行 flow-a；`caseIds:["中文 用例"]` 能匹配 manifest caseId；未知模块 → `case-filter-no-match`；无 manifest + 模块过滤 → `case-filter-modules-unsupported`。
+- [x] 跑测试确认失败。
+- [x] 改 `script-gen.ts` 类型与 `script-set.ts` summary（按 `input.cases[index].module` 取值）。
+- [x] 改 `script-generation.ts` 传 `module: entry.module`。
+- [x] 改 `web-executors.ts`：新增 `readScriptManifest(flowsDir)`；构建 `caseId→{flow,module}`；过滤 `flowFiles`；有过滤时 exec 参数用 `flowFiles` 而不是目录；JUnit 结果 `caseId` 用 manifest caseId，断言/手工步骤仍按 stem 查。
+- [x] 跑测试通过，提交 `fix: apply web case filters from script manifest`。
 
 ### Task 3: 套件来源与目标主机解耦（R3）
 
@@ -80,12 +80,12 @@
 - Produces: `DispatchPreview.sourceStore: { tier: "target"|"owner"|"global"; hostId: string|null; error: string|null }`。
 - Produces: `resolveSourceStore` 不静默回落：owner 作用域不可用 → `sourceStore.error="source-store-unavailable"`，`setOptions=[]` 且有 warning。
 
-- [ ] 写失败测试：项目登记在 host-a、case set 也在 host-a；目标 host-b 未登记项目 → `setOptions` 仍含 case set，`hostBlocked===true`，`sourceStore.tier==="owner"`。
-- [ ] 写失败测试：owner store 的 `getProjectByPath`/`listCaseSets` 抛错 → warning 含“来源读取失败”，`sourceStore.error` 非空，不是静默空。
-- [ ] 跑测试确认失败。
-- [ ] 改 `dispatch.ts`：抽出 `resolveSourceStore`；target 有项目用 target；否则未作用域查 owner.hostId → owner store；owner 无 hostId → 全局；读取异常 catch 后写 warning；`listCaseSets` 改用 source store；返回 `sourceStore`。
-- [ ] 保持 `hostBlocked` 逻辑不变；只在 rootPath 非空时解析 owner。
-- [ ] 跑测试通过，提交 `feat: decouple dispatch source from target host`。
+- [x] 写失败测试：项目登记在 host-a、case set 也在 host-a；目标 host-b 未登记项目 → `setOptions` 仍含 case set，`hostBlocked===true`，`sourceStore.tier==="owner"`。
+- [x] 写失败测试：owner store 的 `getProjectByPath`/`listCaseSets` 抛错 → warning 含“来源读取失败”，`sourceStore.error` 非空，不是静默空。
+- [x] 跑测试确认失败。
+- [x] 改 `dispatch.ts`：抽出 `resolveSourceStore`；target 有项目用 target；否则未作用域查 owner.hostId → owner store；owner 无 hostId → 全局；读取异常 catch 后写 warning；`listCaseSets` 改用 source store；返回 `sourceStore`。
+- [x] 保持 `hostBlocked` 逻辑不变；只在 rootPath 非空时解析 owner。
+- [x] 跑测试通过，提交 `feat: decouple dispatch source from target host`。
 
 ### Task 4: 生成脚本集幂等（M1）
 
@@ -101,13 +101,13 @@
 - Consumes: `storeWebAsset({..., dedupeKey: bundle.sha256})`
 - Produces: 同一 `(rootPath, kind, dedupeKey)` 只保留一行；`createWebAsset` 冲突返回已有记录。
 
-- [ ] 写失败测试：pg-mem 下 `createWebAsset` 同 `dedupeKey` 两次 → 同 id、同 version、列表 1 行；不同 dedupeKey → version 递增。
-- [ ] 写失败测试：`storeScriptSet` 连续两次同 bundle → `created:false`、同 asset id；manifest 无时间戳字段（守卫测试）。
-- [ ] 跑测试确认失败。
-- [ ] 加列/索引：建表语句与迁移都加 `dedupe_key TEXT`、`CREATE UNIQUE INDEX ... (root_path, kind, dedupe_key)`；不加入 REQUIRED_INDEXES。
-- [ ] 改 `PostgresStore.createWebAsset`：有 dedupeKey 先查；插入写列；23505 时查 dedupe 行返回，否则按现有 version 重试。
-- [ ] 改 `MemoryStore.createWebAsset`：`webAssetDedupe` map，命中返回已有；`scopeHost` 共享。
-- [ ] 跑测试通过，提交 `feat: make generated script sets idempotent`。
+- [x] 写失败测试：pg-mem 下 `createWebAsset` 同 `dedupeKey` 两次 → 同 id、同 version、列表 1 行；不同 dedupeKey → version 递增。
+- [x] 写失败测试：`storeScriptSet` 连续两次同 bundle → `created:false`、同 asset id；manifest 无时间戳字段（守卫测试）。
+- [x] 跑测试确认失败。
+- [x] 加列/索引：建表语句与迁移都加 `dedupe_key TEXT`、`CREATE UNIQUE INDEX ... (root_path, kind, dedupe_key)`；不加入 REQUIRED_INDEXES。
+- [x] 改 `PostgresStore.createWebAsset`：有 dedupeKey 先查；插入写列；23505 时查 dedupe 行返回，否则按现有 version 重试。
+- [x] 改 `MemoryStore.createWebAsset`：`webAssetDedupe` map，命中返回已有；`scopeHost` 共享。
+- [x] 跑测试通过，提交 `feat: make generated script sets idempotent`。
 
 ### Task 5: 下发时惰性生成（R1）
 
@@ -125,16 +125,16 @@
 - Produces: `CreateWebJobResult.script: { id; autoGenerated; rebuiltFrom; ready; partial; unresolved; runnable } | null` 与 `warnings: string[]`。
 - Produces: 错误码 `script-generation-failed` 400、`script-generation-timeout` 400、`script-set-rebuild-failed` 409。
 
-- [ ] 写失败测试：真实 xlsx + 假包，`scriptSetId:null`/maestro → 自动生成 scripts 资产、任务 `jobSpec.scriptSetId` 非空、`result.script.autoGenerated===true`。
-- [ ] 写失败测试：Excel 损坏 → `script-generation-failed` 400，不建任务。
-- [ ] 写失败测试：假生成器超过 `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` → `script-generation-timeout` 400。
-- [ ] 写失败测试：前台 HTML 不再含“Maestro 执行需要脚本集”，含“不指定时自动生成”。
-- [ ] 跑测试确认失败。
-- [ ] 加 deadline：`generateScriptSet` 每例检查 `Date.now() > deadlineMs` 抛 `ScriptGenerationTimeoutError`；`generateScriptSetForProject` 接收 `timeoutMs`（默认 env `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` 30000）并传 deadline。
-- [ ] 改 `createWebJob`：`let script`；`executionMode=maestro && script===null` 时调用生成（bestEffort true、precondition auto、inferNavigationTap true、rules-only、appId=webProject.appPackage）；成功加载 `result.asset`；失败映射错误码；返回 `script`/`warnings`。
-- [ ] 改 `actions.ts`：响应加 `autoGeneratedScript`/`script`/`warnings`；成功生成时写审计 `web.scripts.generate`，summary 带 `trigger=dispatch`。
-- [ ] 改 `pages.ts`：删除 `if(out.executionMode==="maestro"&&!out.scriptSetId){...}`；脚本集旁提示；flash 带自动生成信息。
-- [ ] 跑测试通过，提交 `feat: generate web scripts on dispatch`。
+- [x] 写失败测试：真实 xlsx + 假包，`scriptSetId:null`/maestro → 自动生成 scripts 资产、任务 `jobSpec.scriptSetId` 非空、`result.script.autoGenerated===true`。
+- [x] 写失败测试：Excel 损坏 → `script-generation-failed` 400，不建任务。
+- [x] 写失败测试：假生成器超过 `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` → `script-generation-timeout` 400。
+- [x] 写失败测试：前台 HTML 不再含“Maestro 执行需要脚本集”，含“不指定时自动生成”。
+- [x] 跑测试确认失败。
+- [x] 加 deadline：`generateScriptSet` 每例检查 `Date.now() > deadlineMs` 抛 `ScriptGenerationTimeoutError`；`generateScriptSetForProject` 接收 `timeoutMs`（默认 env `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` 30000）并传 deadline。
+- [x] 改 `createWebJob`：`let script`；`executionMode=maestro && script===null` 时调用生成（bestEffort true、precondition auto、inferNavigationTap true、rules-only、appId=webProject.appPackage）；成功加载 `result.asset`；失败映射错误码；返回 `script`/`warnings`。
+- [x] 改 `actions.ts`：响应加 `autoGeneratedScript`/`script`/`warnings`；成功生成时写审计 `web.scripts.generate`，summary 带 `trigger=dispatch`。
+- [x] 改 `pages.ts`：删除 `if(out.executionMode==="maestro"&&!out.scriptSetId){...}`；脚本集旁提示；flash 带自动生成信息。
+- [x] 跑测试通过，提交 `feat: generate web scripts on dispatch`。
 
 ### Task 6: 过期脚本自动重建（R4）
 
@@ -148,13 +148,13 @@
 - Consumes: Task 5 的生成入口与 deadline；Task 4 的幂等。
 - Produces: `CreateWebJobResult.script.rebuiltFrom: string | null`；`warnings` 含 `stale-script` 或 `script-set-rebuilt`。
 
-- [ ] 写失败测试：脚本集绑定 v1 Excel，任务用 v2 → 自动生成绑定 v2 的新脚本集，`jobSpec.scriptSetId !== 旧 id`，`script.rebuiltFrom===旧 id`，审计 `trigger=rebuild`。
-- [ ] 写失败测试：显式 `allowStaleScript:true` → 仍用旧 id，warning `stale-script`。
-- [ ] 写失败测试：重建失败（假 Excel）→ 409 `script-set-rebuild-failed`。
-- [ ] 跑测试确认失败。
-- [ ] 改 `createWebJob`：`try assertScriptSetMatch`；捕获 `script-set-mismatch`/`script-set-unverified`；`allowStaleScript` 为 true 保留旧；否则调用 Task 5 生成并替换；失败抛 `script-set-rebuild-failed`。
-- [ ] 改 action 响应与审计 `web.scripts.generate`（trigger=rebuild、from/to）。
-- [ ] 跑测试通过，提交 `feat: rebuild stale web scripts on dispatch`。
+- [x] 写失败测试：脚本集绑定 v1 Excel，任务用 v2 → 自动生成绑定 v2 的新脚本集，`jobSpec.scriptSetId !== 旧 id`，`script.rebuiltFrom===旧 id`，审计 `trigger=rebuild`。
+- [x] 写失败测试：显式 `allowStaleScript:true` → 仍用旧 id，warning `stale-script`。
+- [x] 写失败测试：重建失败（假 Excel）→ 409 `script-set-rebuild-failed`。
+- [x] 跑测试确认失败。
+- [x] 改 `createWebJob`：`try assertScriptSetMatch`；捕获 `script-set-mismatch`/`script-set-unverified`；`allowStaleScript` 为 true 保留旧；否则调用 Task 5 生成并替换；失败抛 `script-set-rebuild-failed`。
+- [x] 改 action 响应与审计 `web.scripts.generate`（trigger=rebuild、from/to）。
+- [x] 跑测试通过，提交 `feat: rebuild stale web scripts on dispatch`。
 
 ### Task 7: 文档与全量验证
 
@@ -163,7 +163,7 @@
 - Modify: `README.md`（如命令/默认值有变化）
 - Test: 全量
 
-- [ ] 更新 `DESIGN.md` §13.302 状态、错误码、默认值；补实现记录与测试数。
-- [ ] 如 README 提到脚本集必选/unresolved 默认拒绝，改为新行为。
-- [ ] 跑 `npm run build && npm test && npm run lint`，记录结果。
-- [ ] 提交 `docs: record data source p0 implementation`。
+- [x] 更新 `DESIGN.md` §13.302 状态、错误码、默认值；补实现记录与测试数。
+- [x] 如 README 提到脚本集必选/unresolved 默认拒绝，改为新行为。
+- [x] 跑 `npm run build && npm test && npm run lint`，记录结果。
+- [x] 提交 `docs: record data source p0 implementation`。
