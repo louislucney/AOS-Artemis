@@ -3726,7 +3726,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **UNVERIFIED 契约**：现有 `WebResultVerdictStatus`/Excel/聚合已支持；缺的是中心 LLM Worker 直连 ingest 入口。**不把 UNVERIFIED 加进 runner 上报枚举**，HTTP runner 仍只收 PASS/FAIL/SKIP/ERROR。
 - **计费**：`data_engine.db`/`status.json` 必须回传；token 缺失写 `token-unavailable`，不写 0；首跑/重试/verifier 的所有 token 都计入，按 attempt/phase 拆分；计费事件幂等键含 requestId/attempt。
 - **预算**：任务上限按用例数×单例超时×(1+重试) 派生，默认 8h 上限；per-case 步数/token 超限 `budget-exceeded`。
-- **状态**：设计 v3 待 review，代码未实现；P0 远程 Android、P0b 远程 iOS。
+- **状态**：设计 v3 待 review，代码未实现；P0 远程 Android、P0b 远程 iOS。实施计划：`docs/superpowers/plans/2026-11-04-web-llm-execution.md`。
 - **默认值表（唯一事实源）**：
 
 | 配置 | 默认 | 显式值/说明 |
