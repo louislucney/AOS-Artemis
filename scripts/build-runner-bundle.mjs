@@ -122,8 +122,8 @@ for (const target of targets) {
   }
 
   const windowsRunner = withTools
-    ? '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nset "PATH=%~dp0tools\\node;%~dp0tools\\platform-tools;%~dp0tools\\jdk\\bin;%~dp0tools\\maestro\\bin;%PATH%"\r\nif not defined MOBILE_TESTING_RUNNER_CONTROL_URL if defined AOS_RUNNER_CONTROL_URL set "MOBILE_TESTING_RUNNER_CONTROL_URL=%AOS_RUNNER_CONTROL_URL%"\r\nif not defined MOBILE_TESTING_PANEL_BASE_URL if defined MOBILE_TESTING_RUNNER_CONTROL_URL set "MOBILE_TESTING_PANEL_BASE_URL=%MOBILE_TESTING_RUNNER_CONTROL_URL%"\r\n"%~dp0tools\\node\\node.exe" dist\\cli.js web-runner %*\r\n'
-    : '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nif not defined MOBILE_TESTING_RUNNER_CONTROL_URL if defined AOS_RUNNER_CONTROL_URL set "MOBILE_TESTING_RUNNER_CONTROL_URL=%AOS_RUNNER_CONTROL_URL%"\r\nif not defined MOBILE_TESTING_PANEL_BASE_URL if defined MOBILE_TESTING_RUNNER_CONTROL_URL set "MOBILE_TESTING_PANEL_BASE_URL=%MOBILE_TESTING_RUNNER_CONTROL_URL%"\r\nnode dist\\cli.js web-runner %*\r\n';
+    ? '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nif not exist "%~dp0node_modules\jsonc-parser\package.json" (\r\n  echo [错误] 安装包不完整：缺少 node_modules。请重新完整解压 zip，不要只复制 dist。\r\n  exit /b 2\r\n)\r\nset "PATH=%~dp0tools\\node;%~dp0tools\\platform-tools;%~dp0tools\\jdk\\bin;%~dp0tools\\maestro\\bin;%PATH%"\r\nif not defined MOBILE_TESTING_RUNNER_CONTROL_URL if defined AOS_RUNNER_CONTROL_URL set "MOBILE_TESTING_RUNNER_CONTROL_URL=%AOS_RUNNER_CONTROL_URL%"\r\nif not defined MOBILE_TESTING_PANEL_BASE_URL if defined MOBILE_TESTING_RUNNER_CONTROL_URL set "MOBILE_TESTING_PANEL_BASE_URL=%MOBILE_TESTING_RUNNER_CONTROL_URL%"\r\n"%~dp0tools\\node\\node.exe" dist\\cli.js web-runner %*\r\n'
+    : '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nif not exist "%~dp0node_modules\jsonc-parser\package.json" (\r\n  echo [错误] 安装包不完整：缺少 node_modules。请重新完整解压 zip，不要只复制 dist。\r\n  exit /b 2\r\n)\r\nif not defined MOBILE_TESTING_RUNNER_CONTROL_URL if defined AOS_RUNNER_CONTROL_URL set "MOBILE_TESTING_RUNNER_CONTROL_URL=%AOS_RUNNER_CONTROL_URL%"\r\nif not defined MOBILE_TESTING_PANEL_BASE_URL if defined MOBILE_TESTING_RUNNER_CONTROL_URL set "MOBILE_TESTING_PANEL_BASE_URL=%MOBILE_TESTING_RUNNER_CONTROL_URL%"\r\nnode dist\\cli.js web-runner %*\r\n';
   fs.writeFileSync(path.join(staging, "runner.cmd"), windowsRunner, "utf8");
 
   const unixRunner = withTools
@@ -133,12 +133,20 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 export PATH="$ROOT/tools/node/bin:$ROOT/tools/platform-tools:$ROOT/tools/jdk/bin:$ROOT/tools/jdk/Contents/Home/bin:$ROOT/tools/maestro/bin:$PATH"
 if [ -z "\${MOBILE_TESTING_RUNNER_CONTROL_URL:-}" ] && [ -n "\${AOS_RUNNER_CONTROL_URL:-}" ]; then export MOBILE_TESTING_RUNNER_CONTROL_URL="$AOS_RUNNER_CONTROL_URL"; fi
 if [ -z "\${AOS_PANEL_BASE_URL:-}" ] && [ -n "\${MOBILE_TESTING_RUNNER_CONTROL_URL:-}" ]; then export AOS_PANEL_BASE_URL="$MOBILE_TESTING_RUNNER_CONTROL_URL"; fi
+if [ ! -f "$ROOT/node_modules/jsonc-parser/package.json" ]; then
+  echo "[错误] 安装包不完整：缺少 node_modules。请重新完整解压。" >&2
+  exit 2
+fi
 if [ -d "$ROOT/tools/jdk/Contents/Home" ]; then export JAVA_HOME="$ROOT/tools/jdk/Contents/Home"; fi
 exec "$ROOT/tools/node/bin/node" dist/cli.js web-runner "$@"
 `
     : `#!/usr/bin/env sh
 set -eu
 cd "$(dirname "$0")"
+if [ ! -f "node_modules/jsonc-parser/package.json" ]; then
+  echo "[错误] 安装包不完整：缺少 node_modules。请重新完整解压。" >&2
+  exit 2
+fi
 if [ -z "\${MOBILE_TESTING_RUNNER_CONTROL_URL:-}" ] && [ -n "\${AOS_RUNNER_CONTROL_URL:-}" ]; then export MOBILE_TESTING_RUNNER_CONTROL_URL="$AOS_RUNNER_CONTROL_URL"; fi
 if [ -z "\${AOS_PANEL_BASE_URL:-}" ] && [ -n "\${MOBILE_TESTING_RUNNER_CONTROL_URL:-}" ]; then export AOS_PANEL_BASE_URL="$MOBILE_TESTING_RUNNER_CONTROL_URL"; fi
 exec node dist/cli.js web-runner "$@"
@@ -192,6 +200,7 @@ ${installedNote}
 
 ${platformGuide}
 
+> 解压完整包，不要只复制 \`dist\`；缺少 \`node_modules\` 时 runner 会提示安装包不完整。
 > 注意：\`MOBILE_TESTING_RUNNER_JOB_TOKEN\` 是执行机令牌，不是面板登录 token。
 `,
     "utf8"
