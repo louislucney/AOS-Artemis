@@ -3681,7 +3681,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 - **状态**：P0 已实现；全量 3037 测试绿、lint 0 error。R5/R6/R7/R10 与 L2/L6 仍待排期。
 - **数据源归项目，执行归主机**：套件回归的来源读取不再依赖目标主机是否登记项目；目标主机未登记时仍禁止执行，但来源可见并显式示因（`DispatchPreview.sourceStore{tier,hostId,error}`，读取失败不回落空下拉）。目标主机登记项目时永远读目标 store，保持预览/执行一致。
-- **脚本集惰性生成**：Web 测试不选脚本集也可下发；`createWebJob` 在 maestro 且无脚本时按当前 Excel/包以 rules-only + bestEffort + precondition auto + inferNavigationTap 生成；`runnable=0` 才拒绝。生成失败映射 400 `script-generation-failed`，墙钟超时 400 `script-generation-timeout`（`AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` 默认 30000，0 关闭），未预期异常仍 500 并留审计。
+- **脚本集惰性生成**：Web 测试不选脚本集也可下发；`createWebJob` 在 maestro 且无脚本时按当前 Excel/包以 rules-only + bestEffort + precondition auto + inferNavigationTap 生成；`runnable=0` 才拒绝。生成失败映射 400 `script-generation-failed`，墙钟超时 400 `script-generation-timeout`（下发路径 `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` 默认 30000，0 关闭；手工生成默认不设墙钟，env 显式设置才生效），未预期异常仍 500 并留审计。
 - **幂等**：`web_assets.dedupe_key` 可空列 + `(root_path,kind,dedupe_key)` 唯一索引；生成的脚本集写 sha256，普通上传保持 NULL（不改变“重复上传=新版本”语义）。`storeScriptSet` 在文件锁内查/插，Postgres 命中 23505 时读回已有行；不新增 PG advisory lock。生成 manifest 无时间戳/随机字段，同输入 sha 稳定（测试守卫）。
 - **过期重建**：显式脚本集与当前 Excel/包/平台不匹配（含未声明绑定）时，默认自动重建并替换；响应带 `rebuiltScriptSet{from,to}`、warning `script-set-rebuilt`，审计 `web.scripts.generate` 的 `trigger=rebuild`；重建失败 409 `script-set-rebuild-failed`。`allowStaleScript:true` 保留旧脚本并 warning `stale-script`。
 - **过滤生效**：脚本 manifest 的每个 case 带 `module` 与 `flow`；runner 从 `flowsDir` 父目录读 manifest，按 `caseIds`（原始 caseId，支持中文/空格）与 `modules` 过滤，并把选中的 flow 文件路径传给 Maestro（不再只过滤结果映射）；旧 manifest 回退 stem 匹配，无 manifest 的模块过滤仍显式 `case-filter-modules-unsupported`。

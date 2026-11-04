@@ -64,7 +64,7 @@ export interface GenerateScriptSetInput {
   bestEffort?: boolean;
   /** Optional LLM normalizer; failures fall back to rule parsing per case. */
   normalizer?: StepNormalizer;
-  /** 墙钟预算（ms）；缺省读 AOS_WEB_SCRIPT_GEN_TIMEOUT_MS（30000，0 关闭）。 */
+  /** 墙钟预算（ms）；缺省读 AOS_WEB_SCRIPT_GEN_TIMEOUT_MS，未设置则 0（不设墙钟）。 */
   timeoutMs?: number;
   dryRun?: boolean;
   uploadedBy?: string | null;
@@ -127,7 +127,8 @@ function resolveGenerationTimeoutMs(explicit: number | undefined): number {
   }
   const raw = Number.parseInt(process.env.AOS_WEB_SCRIPT_GEN_TIMEOUT_MS ?? "", 10);
   if (Number.isFinite(raw) && raw >= 0) return raw;
-  return DEFAULT_SCRIPT_GEN_TIMEOUT_MS;
+  // 手工生成（尤其 LLM 规范化）默认不设墙钟；下发路径由 createWebJob 显式传 30s。
+  return 0;
 }
 
 async function normalizeCases(
