@@ -386,7 +386,7 @@ GET /panel/runner-bundle?platform=darwin&arch=arm64
 GET /panel/runner-bundle?platform=linux&arch=x64
 ```
 
-需面板鉴权。Windows/macOS 包含 `dist` + `node_modules` + `tools/`（Node、platform-tools、JDK、Maestro）+ `runner.cmd`/`runner.sh` + `RUNNER.md`，解压后直接运行，无需 npm install，也无需另装工具；Linux 包为 app-only。
+需面板鉴权。Windows/macOS 包含 `dist` + `node_modules` + `tools/`（Node、platform-tools、JDK、Maestro）+ `runner.cmd`/`runner.sh` + `README.md`，解压后直接运行，无需 npm install，也无需另装工具；Linux 包为 app-only。
 
 依赖工具同时可单独下载（面板「设备 → 接入执行机 → 下载 Mac/Windows 依赖工具」，或 `GET /panel/runner-toolchain`）：Node.js、Android platform-tools/adb、Temurin JDK、Maestro，按 `darwin-arm64`/`win32-x64` 分组，均带 SHA-256。工具包在 `dist-toolchain/`（gitignore），`AOS_RUNNER_TOOLCHAIN_DIR` 可改目录。macOS 的 iOS 模拟器仍需 Xcode，不能由中心镜像。自定义目录用 `AOS_RUNNER_BUNDLE_DIR`。构建产物在 `dist-runner/`（gitignore）。
 

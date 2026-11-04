@@ -90,7 +90,7 @@ for (const target of targets) {
   const toolsDir = path.join(staging, "tools");
   fs.mkdirSync(staging, { recursive: true });
   copy(path.join(root, "dist"), path.join(staging, "dist"));
-  for (const file of ["package.json", "package-lock.json", "README.md", "LICENSE"]) {
+  for (const file of ["package.json", "package-lock.json", "LICENSE"]) {
     if (fs.existsSync(path.join(root, file))) {
       copy(path.join(root, file), path.join(staging, file));
     }
@@ -144,42 +144,48 @@ exec node dist/cli.js web-runner "$@"
     mode: 0o755
   });
 
-  const toolchainSection = withTools
-    ? `## 内置工具
+  const installedNote = withTools
+    ? "本包已内置 Node.js、adb、JDK、Maestro。"
+    : "本包是 app-only，需要系统已安装 Node.js、adb、JDK、Maestro。";
+  const platformGuide =
+    target.platform === "win32"
+      ? `## Windows
 
-本包已包含并自动加入 PATH：
+1. 解压本包。
+2. 设置环境变量：
+   - \`AOS_HOST_ID=win-mini-01\`
+   - \`AOS_RUNNER_CONTROL_URL=http://<中心IP>:8765\`
+   - \`MOBILE_TESTING_RUNNER_JOB_TOKEN=<runner-token>\`
+3. 启动：\`.\\runner.cmd --name win-mini-01\`
+4. 打开中心「设备」页，确认机器出现。`
+      : target.platform === "darwin"
+        ? `## macOS
 
-${installed.map((entry) => `- ${entry.name}（\`tools/${entry.path}\`）`).join("\n")}
+1. 解压本包。
+2. 设置环境变量：
+   - \`AOS_HOST_ID=mac-mini-01\`
+   - \`AOS_RUNNER_CONTROL_URL=http://<中心IP>:8765\`
+   - \`MOBILE_TESTING_RUNNER_JOB_TOKEN=<runner-token>\`
+3. 启动：\`./runner.sh --name mac-mini-01\`
+4. 打开中心「设备」页，确认机器出现。`
+        : `## Linux
 
-无需单独安装 Node.js、adb、JDK 或 Maestro；macOS iOS 模拟器仍需 Xcode。
-`
-    : `## 工具
-
-本包是 app-only，系统需自行提供 Node.js、adb、JDK、Maestro。
-`;
+1. 解压本包。
+2. 设置环境变量：
+   - \`AOS_HOST_ID=linux-runner-01\`
+   - \`AOS_RUNNER_CONTROL_URL=http://<中心IP>:8765\`
+   - \`MOBILE_TESTING_RUNNER_JOB_TOKEN=<runner-token>\`
+3. 启动：\`./runner.sh --name linux-runner-01\`
+4. 打开中心「设备」页，确认机器出现。`;
   fs.writeFileSync(
-    path.join(staging, "RUNNER.md"),
-    `# mobile-testing web-runner bundle (${platformKey})
+    path.join(staging, "README.md"),
+    `# mobile-testing 执行机接入
 
-${toolchainSection}
+${installedNote}
 
-## Windows
+${platformGuide}
 
-\`\`\`powershell
-$env:AOS_HOST_ID="win-mini-01"
-$env:AOS_RUNNER_CONTROL_URL="http://<center>:8765"
-$env:MOBILE_TESTING_RUNNER_JOB_TOKEN="<runner-token>"
-.\\runner.cmd --name win-mini-01
-\`\`\`
-
-## macOS / Linux
-
-\`\`\`bash
-export AOS_HOST_ID=mac-mini-01
-export AOS_RUNNER_CONTROL_URL=http://<center>:8765
-export MOBILE_TESTING_RUNNER_JOB_TOKEN=<runner-token>
-./runner.sh --name mac-mini-01
-\`\`\`
+> 注意：\`MOBILE_TESTING_RUNNER_JOB_TOKEN\` 是执行机令牌，不是面板登录 token。
 `,
     "utf8"
   );

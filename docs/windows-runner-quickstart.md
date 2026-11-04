@@ -37,7 +37,7 @@ curl.exe -L `
   "http://<center-ip>:8765/panel/runner-bundle?platform=win32&arch=x64"
 ```
 
-包内含 `dist/`、`node_modules/`、`runner.cmd`、`RUNNER.md`，不需要再 npm install。
+包内含 `dist/`、`node_modules/`、`runner.cmd`、`README.md`，不需要再 npm install。
 
 解压：
 
