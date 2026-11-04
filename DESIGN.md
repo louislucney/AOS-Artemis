@@ -3715,9 +3715,9 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **边界**：不把 CSV 当 xlsx 解析；不做合并单元格/多 sheet（CSV 无此概念）；导出仍为 xlsx。
 - **测试**：`workflow-excel-import` 覆盖 CSV → 三件套 + `.source.csv` + Web 资产 + 重复导入 skipped。全量 3043 绿。
 
-### 13.306 设计（未实现）：Web LLM 执行接线（R10）
+### 13.306 实现中（P0 Node 骨架）：Web LLM 执行接线（R10）
 
-> 2026-11-04。`executionMode=llm` 仍是占位（runner 返回 `llm-execution-not-wired`）；完整方案见 `docs/superpowers/specs/2026-11-04-llm-execution-design.md`。
+> 2026-11-04。P0 Node 骨架已落地（领取隔离/设备网关/worker/ARTEMIS 适配/Excel 用例/center-only UNVERIFIED/Node 脱敏/L1/CLI）；ARTEMIS 侧 hooks、gateway 安装控制面与面板接线仍未完成，`executionMode=llm` 暂不应在生产开启。完整方案见 `docs/superpowers/specs/2026-11-04-llm-execution-design.md`。
 
 - **路线（2026-11-04 决策：必须远程）**：中心 LLM 执行 + 远程设备网关；runner 只做设备宿主/租约/健康检查/安装，中心主动不连 runner，runner 用 SSH 反向隧道（WSS 可选）连中心。P0 单实例、隧道与 worker 同宿主；runner 内置 ARTEMIS 或动作 RPC 仅作备选。
 - **Key/数据边界**：LLM key 只在中心；Excel/taskDesc 可发 LLM，但账号/密码/token/邮箱/手机号等在进 LLM 前脱敏，执行时用 `<secret:alias>` 占位符注入；未绑定账号在严格模式直接拒绝。**强制点在 ARTEMIS hook（观察/动作/trace/usage）+ 中心入口，不在 Worker 外层假装完成；hook 不可用则 fail-closed。**
@@ -3726,7 +3726,15 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **UNVERIFIED 契约**：现有 `WebResultVerdictStatus`/Excel/聚合已支持；缺的是中心 LLM Worker 直连 ingest 入口。**不把 UNVERIFIED 加进 runner 上报枚举**，HTTP runner 仍只收 PASS/FAIL/SKIP/ERROR。
 - **计费**：`data_engine.db`/`status.json` 必须回传；token 缺失写 `token-unavailable`，不写 0；首跑/重试/verifier 的所有 token 都计入，按 attempt/phase 拆分；计费事件幂等键含 requestId/attempt。
 - **预算**：任务上限按用例数×单例超时×(1+重试) 派生，默认 8h 上限；per-case 步数/token 超限 `budget-exceeded`。
-- **状态**：设计 v3 待 review，代码未实现；P0 远程 Android、P0b 远程 iOS。实施计划：`docs/superpowers/plans/2026-11-04-web-llm-execution.md`。
+- **已实现（P0 Node 骨架）**：
+  - `regression_tasks.execution_mode` 列 + `claimWebJob(executionMode)` 双端硬过滤；
+  - `web_runners.gateway` + runner SSH `-R` 网关（`AOS_GATEWAY_*`）、端口冲突 409；
+  - `web llm-worker`：领取/逐例执行/预算/超时/取消/租约释放；
+  - `executeAndroidLlmCase`：`mobile_run_task`→`mobile_manage_task`→trace/status/`data_engine.db`，token 读取，ARTEMIS `test_summary` + 预期文本 L1；
+  - `loadLlmCases`：Excel/CSV → taskDesc；`ingestLlmResults`：center-only UNVERIFIED、Excel 写回；
+  - Node 侧 secret inventory/脱敏/占位符注入；未绑定账号 fail-closed。
+- **未完成**：ARTEMIS 进程内 H1–H4 hooks（观察/截图/动作/trace 脱敏与注入）、gateway `/install`、面板 LLM/gateway 状态、worker 心跳 `llm-worker-offline`、真实设备联调。
+- **状态**：实现中；P0 远程 Android、P0b 远程 iOS。实施计划：`docs/superpowers/plans/2026-11-04-web-llm-execution.md`。
 - **默认值表（唯一事实源）**：
 
 | 配置 | 默认 | 显式值/说明 |

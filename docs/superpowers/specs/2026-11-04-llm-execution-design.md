@@ -1,6 +1,6 @@
 # Web LLM 执行接线设计（R10）v3
 
-> 2026-11-04 · 状态：**设计 v3（已吸收 2026-11-04 评审；待 review，不实现）**
+> 2026-11-04 · 状态：**实现中（P0 Node 骨架已落地；ARTEMIS hooks/install/panel 未完成）**
 > 关联：`DESIGN.md` §13.302（数据源 P0）、§13.304（APK/IPA appId）、§13.305（CSV 导入）、`src/web/results.ts`（结果/计费契约）、`src/artemis/`（ARTEMIS 子进程）、`docs/superpowers/specs/2026-10-28-web-project-test-platform-design.md` §4.7/§4.8。
 > v2 评审处置见 §2.2；本轮把“脱敏/注入在哪一层生效”“UNVERIFIED 如何进契约”“Android 隧道到底转什么”三处机制钉死。
 
