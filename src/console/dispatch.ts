@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { HostRecord, ProjectStore } from "../db/types.js";
 import { clientTtlFrom, isClientOnline } from "../host/online.js";
 import { LEGACY_HOST_REASON } from "../host/legacy.js";
+import { projectAllowed, projectExcluded } from "../project-visibility.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cBanner, cCard, cStat, cTable } from "./components.js";
@@ -77,31 +78,41 @@ export interface DispatchView {
   priorityEditable?: boolean;
 }
 
+function dispatchPlatforms(params: URLSearchParams): ("ios" | "android")[] {
+  const raw = params.getAll("platforms");
+  const values = (raw.length === 0 ? ["android"] : raw)
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter((value): value is "ios" | "android" => value === "ios" || value === "android");
+  return [...new Set(values)].sort();
+}
+
 /** 表单字段签名（与预览同源；客户端复算同式）。 */
 export function dispatchFormSignature(params: URLSearchParams): string {
   const mode = (params.get("source") ?? "case-set").trim() === "keyword" ? "keyword" : "case-set";
   const refOrKeyword =
     mode === "keyword" ? (params.get("keyword") ?? "").trim() : (params.get("ref") ?? "").trim();
-  const platforms = (params.get("platforms") ?? "android")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value === "ios" || value === "android")
-    .sort()
-    .join(",");
+  const platforms = dispatchPlatforms(params).join(",");
   const baseline = (params.get("baseline") ?? "latest").trim() === "none" ? "none" : "latest";
   return [mode, refOrKeyword, platforms, baseline].join("|");
 }
 
-/** 预览 ID＝表单签名＋服务端解析结果（用例集集合/用例数）短哈希；服务端复算不一致即视为过期。 */
-export function dispatchPreviewId(preview: DispatchPreview, formSignature: string): string {
+/** 预览 ID＝表单签名＋目标主机/项目＋服务端解析结果（用例集集合/用例数）短哈希；服务端复算不一致即视为过期。 */
+export function dispatchPreviewId(
+  preview: DispatchPreview,
+  formSignature: string,
+  rootPath = ""
+): string {
   const resolved = preview.refs.slice().sort().join(",");
   return createHash("sha256")
-    .update(`${formSignature}#${resolved}#${preview.source.caseCount}`)
+    .update(
+      `${formSignature}#${preview.selectedHostId ?? ""}#${rootPath}#${resolved}#${preview.source.caseCount}`
+    )
     .digest("hex")
     .slice(0, 16);
 }
 
-const ONLINE_WINDOW_MS = 5 * 60_000;
+
 
 export interface HostPrecheckInput {
   id: string;
@@ -127,10 +138,9 @@ export function precheckTask(
     reasons.push("该主机尚无执行机上报，任务会排队等待");
   };
   if (platforms.includes("ios")) {
-    const macLike = host.osPlatform === "darwin" || host.kind === "mac";
     const iosCapable = [...capabilities].some((capability) => capability.startsWith("ios-"));
-    if (!macLike) {
-      reasons.push("iOS 需要 macOS 或 iOS 能力");
+    if (host.osPlatform !== "darwin") {
+      reasons.push("iOS 需要 macOS（darwin）主机");
       ok = false;
     } else if (!hasCapabilities) {
       warnNoRunner();
@@ -174,18 +184,18 @@ export function hostScopedStore(
   }
 }
 
-async function hostQueueDepth(
-  store: ProjectStore,
-  hostId: string,
-  projects: Awaited<ReturnType<ProjectStore["listProjects"]>>
-): Promise<number> {
-  const owned = projects.filter((project) => project.hostId === hostId);
-  if (owned.length === 0) return 0;
+async function hostQueueDepth(store: ProjectStore, hostId: string): Promise<number> {
   let scoped: ProjectStore;
   try {
     scoped = store.scopeHost(hostId);
   } catch {
     scoped = store;
+  }
+  let owned: Awaited<ReturnType<ProjectStore["listProjects"]>>;
+  try {
+    owned = (await scoped.listProjects()).filter((project) => project.hostId === hostId);
+  } catch {
+    return 0;
   }
   let depth = 0;
   for (const project of owned) {
@@ -205,13 +215,11 @@ export async function computeDispatchPreview(
   params: URLSearchParams
 ): Promise<DispatchPreview> {
   const now = deps.now?.() ?? Date.now();
+  const runnerTtlMs = runnerTtlFrom(deps.env);
   const modeRaw = (params.get("source") ?? "case-set").trim();
   const mode: DispatchPreview["source"]["mode"] =
     modeRaw === "keyword" || modeRaw === "excel" ? modeRaw : "case-set";
-  const platforms = (params.get("platforms") ?? "android")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value): value is "ios" | "android" => value === "ios" || value === "android");
+  const platforms = dispatchPlatforms(params);
 
   const warnings: string[] = [];
   const priorityRaw = (params.get("priority") ?? "").trim();
@@ -239,10 +247,12 @@ export async function computeDispatchPreview(
   const targetStore = hostScopedStore(deps, targetHost?.id ?? null);
   let hostBlocked = hostParam !== "" && targetHost === null;
   if (targetHost !== null) {
-    const targetProject = await targetStore.getProjectByPath(rootPath).catch(() => null);
-    if (targetProject === null) {
-      warnings.push(`主机「${targetHost.id}」未登记项目「${rootPath}」：请先在目标机接入项目`);
-      hostBlocked = true;
+    if (rootPath !== "") {
+      const targetProject = await targetStore.getProjectByPath(rootPath).catch(() => null);
+      if (targetProject === null) {
+        warnings.push(`主机「${targetHost.id}」未登记项目「${rootPath}」：请先在目标机接入项目`);
+        hostBlocked = true;
+      }
     }
     const precheck = precheckTask(
       {
@@ -263,6 +273,11 @@ export async function computeDispatchPreview(
     try {
       projects = (await targetStore.listProjects())
         .filter((project) => project.hostId === targetHost.id)
+        .filter(
+          (project) =>
+            !projectExcluded(project, deps.env.AOS_PANEL_EXCLUDE_PROJECTS) &&
+            projectAllowed(project, deps.env.AOS_PANEL_PROJECTS)
+        )
         .map((project) => ({
           hostId: targetHost.id,
           rootPath: project.rootPath,
@@ -272,6 +287,9 @@ export async function computeDispatchPreview(
       projects = [];
     }
     if (projects.length === 0) hostBlocked = true;
+    if (rootPath === "" && projects.length > 0) {
+      warnings.push("请先选择项目：只给主机时列出该主机上的项目，不自动猜项目");
+    }
   } else {
     const current = await targetStore.getProjectByPath(rootPath).catch(() => null);
     const fallbackName = rootPath.split(/[\\/]/).filter((part) => part !== "").pop() ?? rootPath;
@@ -284,12 +302,6 @@ export async function computeDispatchPreview(
     ];
   }
 
-  let allProjects: Awaited<ReturnType<ProjectStore["listProjects"]>> = [];
-  try {
-    allProjects = await deps.store.listProjects();
-  } catch {
-    allProjects = [];
-  }
   const hosts: DispatchHost[] = [];
   for (const host of hostRecords) {
     hosts.push({
@@ -299,7 +311,7 @@ export async function computeDispatchPreview(
       kind: host.kind,
       online: isHostOnline(host, now, deps.env),
       capabilities: [...host.capabilities],
-      queueDepth: await hostQueueDepth(deps.store, host.id, allProjects)
+      queueDepth: await hostQueueDepth(deps.store, host.id)
     });
   }
   if (targetHost !== null) {
@@ -368,7 +380,7 @@ export async function computeDispatchPreview(
   const runnerCandidates = runners.map((runner) => ({
     id: runner.id,
     host: runner.hostname,
-    online: now - Date.parse(runner.lastSeenAt) < ONLINE_WINDOW_MS
+    online: isRunnerOnline(runner.lastSeenAt, now, runnerTtlMs)
   }));
 
   return {
@@ -472,7 +484,8 @@ export function renderDispatchPage(view: DispatchView): string {
       .join("");
   })();
   const currentListed = preview.projects.some((project) => project.rootPath === view.rootPath);
-  const currentLabel = view.rootPath === "" ? "未选择项目" : `${view.rootLabel}（当前项目）`;
+  const projectMissing = view.rootPath === "";
+  const currentLabel = projectMissing ? "（选择项目）" : `${view.rootLabel}（当前项目）`;
   const currentOption = currentListed
     ? ""
     : `<option value="${escapeHtml(view.rootPath)}" selected>${escapeHtml(currentLabel)}</option>`;
@@ -493,13 +506,22 @@ export function renderDispatchPage(view: DispatchView): string {
       ? `<p><label>优先级 <input type="number" name="priority" aria-label="优先级" min="0" max="100" step="1" value="${preview.priority}"></label> <span class="muted">0 为默认；数值越大越先领取（0–100）。</span></p>`
       : `<p>优先级 <span class="c-badge" title="优先级（越大越先领取）">P${preview.priority}</span> <span class="muted">只读（防误操作插队）：设置 <code>AOS_PANEL_PRIORITY=1</code> 后可编辑。</span></p>`;
 
+  const dispatchHostQuery =
+    preview.selectedHostId === null ? "" : `&host=${encodeURIComponent(preview.selectedHostId)}`;
+  const webJobsHref =
+    view.rootPath === ""
+      ? `/panel?section=jobs${dispatchHostQuery}`
+      : `/panel?project=${encodeURIComponent(view.rootPath)}&section=jobs${dispatchHostQuery}`;
   const sourceBody = [
     '<fieldset class="c-fieldset"><legend>来源</legend>',
     `<label class="dispatch-option"><input type="radio" name="source" value="case-set"${mode === "case-set" ? " checked" : ""}> 用例库选用例集</label>`,
     `<label class="dispatch-option"><input type="radio" name="source" value="keyword"${mode === "keyword" ? " checked" : ""}> 功能关键词</label>`,
     "</fieldset>",
     `<div id="dispatch-field-ref"><p><label>用例集 <select name="ref" aria-label="用例集"><option value="">（选择用例集）</option>${setOptions}</select></label></p></div>`,
-    `<div id="dispatch-field-keyword"><p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label> <span class="muted">Excel 导入经 CLI/API（multipart 上传）。</span></p></div>`
+    `<div id="dispatch-field-keyword"><p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label></p></div>`,
+    view.rootPath === ""
+      ? `<p class="muted">先选择项目；Excel 用例导入在用例库，网页测试资产在「网页测试」。</p>`
+      : `<p class="muted">Excel 用例还没进用例库？<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=library#library-import">去用例库导入 Excel</a>；网页测试的 Excel/安装包/脚本资产请走 <a href="${escapeHtml(webJobsHref)}">网页测试</a>，不要用套件下发。</p>`
   ].join("\n");
 
   const paramsBody = [
@@ -635,25 +657,31 @@ go.addEventListener('click',function(){
   const actionsOff =
     view.capabilities?.actions === false || view.capabilities?.scopes?.dispatch === false;
   const needsHostPick = preview.hosts.length > 0 && preview.selectedHostId === null;
-  const submitBlocked = legacyHostless || preview.hostBlocked || needsHostPick || noProjects;
+  const submitBlocked =
+    legacyHostless || preview.hostBlocked || needsHostPick || noProjects || projectMissing;
   const blockedReason = legacyHostless
     ? LEGACY_HOST_REASON
     : noProjects
       ? "该主机尚未登记项目"
-      : needsHostPick
-        ? "请先选择目标主机"
-        : "目标主机无法满足所选平台";
+      : projectMissing
+        ? "请先选择项目"
+        : needsHostPick
+          ? "请先选择目标主机"
+          : "目标主机无法满足所选平台";
   const confirmBody = actionsOff
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（用例集明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
         noProjects
           ? `<p class="note">该主机尚未登记项目：请先在该主机接入项目并刷新本页；设备连接状态见 <a href="/panel?section=devices">设备页</a>。</p>`
-          : needsHostPick && !legacyHostless
-            ? `<p class="note">请先选择目标主机：已登记主机时不再隐式回退本机。</p>`
-            : preview.hostBlocked
-              ? `<p class="note">目标主机无法满足所选平台：请调整目标端或更换主机，刷新预览后再试。</p>`
-              : "",
+          : projectMissing
+            ? `<p class="note">请先选择该主机上的项目，再刷新预览。</p>`
+            : needsHostPick && !legacyHostless
+              ? `<p class="note">请先选择目标主机：已登记主机时不再隐式回退本机。</p>`
+              : preview.hostBlocked
+                ? `<p class="note">目标主机无法满足所选平台：请调整目标端或更换主机，刷新预览后再试。</p>`
+                : "",
+        `<p class="note">需要下发 APK/IPA 或 Excel 用例？<a href="${escapeHtml(webJobsHref)}">去网页测试（安装包/Excel）→</a></p>`,
         `<p id="dispatch-status" role="status" class="muted"></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
         `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, hostId: preview.selectedHostId, hostLabel:
@@ -663,11 +691,13 @@ go.addEventListener('click',function(){
         dispatchConfirmScript,
       ].filter((part) => part !== "").join("\n");
 
-  const hostNavScript = `<script id="dispatch-host-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="host"]');if(!select)return;select.addEventListener('change',function(){var params=new URLSearchParams();params.set('section','dispatch');if(select.value)params.set('host',select.value);location.href='/panel?'+params.toString();});})();</script>`;
+  const flowSwitch = `<nav class="c-flow-switch" aria-label="下发类型"><span class="c-flow-option is-active" aria-current="page">套件回归</span><a class="c-flow-option" href="${escapeHtml(webJobsHref)}">网页测试（Excel/安装包/脚本）</a></nav>`;
+  const installCallout = `<div class="c-flow-callout"><div><strong>要下发安装包（APK/IPA）？</strong><p>套件回归要求设备已预装 App；安装包、Excel 用例与 Maestro 脚本请用「网页测试」。</p></div><a class="c-button c-button-primary" href="${escapeHtml(webJobsHref)}">去网页测试上传/选择安装包 →</a></div>`;
+  const hostNavScript = `<script id="dispatch-host-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="host"]');if(!select)return;select.addEventListener('change',function(){var project=form.querySelector('select[name="project"]');var params=new URLSearchParams();params.set('section','dispatch');if(select.value)params.set('host',select.value);if(project&&project.value)params.set('project',project.value);location.href='/panel?'+params.toString();});})();</script>`;
   const projectNavScript = `<script id="dispatch-project-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams();params.set('project',select.value);params.set('section','dispatch');if(host&&host.value)params.set('host',host.value);location.href='/panel?'+params.toString();});})();</script>`;
 
   return renderConsoleShell({
-    title: "下发回归",
+    title: "套件回归",
     active: "dispatch",
     meta: `项目 <code>${escapeHtml(view.rootLabel)}</code>`,
     project: view.rootPath,
@@ -675,8 +705,10 @@ go.addEventListener('click',function(){
     capabilities: view.capabilities,
     storeHealth: view.storeHealth,
     body: [
-      "<h1>下发回归</h1>",
-      `<p class="muted"><code>${escapeHtml(view.rootPath === "" ? "未选择项目" : view.rootPath)}</code> · 四步：来源 → 参数 → 预览回显 → 确认派发</p>`,
+      "<h1>套件回归</h1>",
+      flowSwitch,
+      installCallout,
+      `<p class="muted"><code>${escapeHtml(view.rootPath === "" ? "未选择项目" : view.rootPath)}</code> · 套件回归：来源 → 参数 → 预览回显 → 确认派发；网页测试走独立流程。</p>`,
       `<form id="dispatch-form" method="get" action="/panel">`,
       `<input type="hidden" name="section" value="dispatch">`,
       cCard({ title: "⓪ 主机与项目", body: hostCardBody }),

@@ -2047,6 +2047,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-10-21。**项目切换**：主机下拉新增 `change` 导航 `/panel?host=<new>&section=dispatch`（显式丢弃 `project`）；`buildView` 在 `section=dispatch` 且只有 `host` 时取该主机 `lastSeenAt` 最新的已登记项目渲染下发页，无项目则直接渲染空态（「该主机尚未登记项目」＋确认禁用），不再 404。**legacy 隔离**：下发预览的项目列表改为仅 `project.hostId === targetHost.id` 精确匹配，删除对 scoped store `localHostId` 的 `hostId === null` 回退——legacy NULL-host 行本就不可定向下发（12a 返回 409），不再出现在任何主机的项目下拉；文件台账单机仍走「无主机台账 → 当前项目」回退（文件台账 `listProjects` 行恒为 NULL：一旦登记主机将不再列出项目，故文件台账仅推荐单机使用）。**优先级排序**：`claimRegressionTask` 候选序改为 `priority DESC, created_at ASC`（PG 候选查询；Memory/File 同序 sort），全匹配与部分领取共用同一候选序，P10 新任务先于 P0 旧任务。**配套**：重跑继承源任务 `priority`；只读面板模式（`capabilities.actions=false`）任务详情仍显示 P 徽章；项目选项同名时追加路径尾（`name（tail）`）消歧。**口径**：`AOS_PANEL_PRIORITY` 只控制面板是否可编辑（默认只读防误操作），API/CLI 调用方可直接传 `priority`；领取排序已接线。
 > **测试**：`test/panel-dispatch-project-priority.test.js` 扩到 10 例（主机切换导航丢弃 project/缺 project 取最近项目、仅主机空态非 404、legacy NULL 不挂任何主机、rerun 继承优先级）；`test/task-targeting.test.js` +1（priority DESC 优先于 FIFO，Memory+PG 双实现）；全量 **1901 绿**，lint 0 error（2 条既有 warning）。
+> 2026-11-04 §13.296 调整：host 切换改为**保留显式 project**；目标主机未登记时保留当前项目并提示，不再静默清空。
 
 ### 13.156 评审修复（面板跨主机链接/动作与项目表去重，Task 12c）
 
@@ -3552,6 +3553,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **根因**：① `livePollScript` 只替换 `#console-main`，顶栏 `.c-switcher` 与 `.c-topbar-meta` 保持首屏；项目/资产变化后主区已更新、顶栏仍显示「切换项目…」。② 轮询 `fetch(location.href)` 未带 no-store，浏览器可能复用缓存。③ 独立 `panel --web` 的 `/panel`、`/panel.json`/`/panel/api/hosts` 未发 `Cache-Control: no-store`；HTTP 模式只给 `/panel` 发了。④ 手动 reload 仍可能命中 5s 进程内缓存（写动作会 clear，runner 心跳等外部变化不会）。⑤ bfcache 返回旧页。
 - **修复**：轮询同时替换顶栏切换器（焦点保护）与 top meta，fetch 带 `cache:"no-store"` + `X-AOS-No-Cache:1`；两个服务端对 `/panel`、`/panel.json`、`/panel/api/hosts` 统一 `Cache-Control: no-store`；`handlePanelRequest` 支持 `noCache`（识别 `X-AOS-No-Cache` / `Cache-Control: no-cache|max-age=0` / `Pragma: no-cache`）绕过进程内缓存；shell 注入 `pageshow`（`e.persisted` → reload）。
 - **撤回**：本轮早前为上述症状加的「下发切换主机保留 project」与「切换器注入当前项目」兜底已撤回，恢复 §13.155 的主机切换语义；真实根因是顶栏未刷新，不是主机切换丢项目。
+- 2026-11-04 §13.296 重新引入「切换主机保留显式 project」，并补目标主机未登记项目的保留+提示，避免静默清空。
 - **测试**：`console-shell` 断言轮询 header/顶栏替换/pageshow；`panel-web` 断言 `noCache` 绕过 TTL；`panel-command` 断言 `/panel`、`/panel.json` 带 no-store。
 
 ### 13.291 修复（面板表单对齐与控件规格统一）
@@ -3613,3 +3615,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **入口**：面板「测试资产 → 生成 Maestro 脚本」默认勾选「尽力生成」、前置条件 `auto`、AI 解析 `auto`；请求字段 `bestEffort/useLlm/preconditionMode:"auto"`，响应 `ready/partial/runnable/unresolved/normalizer/llmCases/llmModel/normalizerWarnings`，结果表增加「手工步骤」，脚本集资产表增加 `partial` 列。CLI `web scripts generate` 支持 `--best-effort`、`--precondition-mode auto`，`--best-effort` 与面板一致启用 `inferNavigationTap`，exit 0 以 `runnable>0` 为准。
 - **边界**：本段不实现设备上的 LLM 观察执行器/发现；manual 步骤仍需人工或后续 agent；LLM 规范化只处理文本，不读取设备截图；计费/token 明细仍按后续计划。
 - **测试**：`web-script-gen`（续行/繁体/英文/相对定位/bestEffort/断言越界/不安全断言）、`web-script-set`（partial/runnable/旧 bundle 回退）、`web-step-normalizer`（受控 JSON/幻觉标签/动作类型/输入值/回退）、`web-script-generation`（normalizer/auto/CLI 导航推断）、`web-executors`/`web-job-runner`（manual 上报/子流程/payload）、`web-result-ingest`/`web-verdicts`（PASS→UNVERIFIED/脚本集 metadata 兜底）、`panel-script-gen`/`web-assets-ui`（面板字段/partial 列）；全量 3013 绿，lint 0 error。
+
+### 13.296 修复（套件下发切换主机保留显式项目）
+
+> 2026-11-04。用户反馈在「套件回归 → ⓪ 主机与项目」切换目标主机时，已选项目被清空；根因是 `dispatch-host-nav` 显式丢弃 `project`（§13.155/§13.290 语义）。
+
+- **host nav**：切换主机时同时带上当前 `project`（仅当项目选择器有值）；仅 `host` 入口仍不自动猜项目，缺 project 时列出该主机项目并提示选择。
+- **目标主机未登记项目**：显式 host + 项目路径经 `resolveProjectKey` 工作区兜底解析；`computeDispatchPreview` 保留 `<option ... selected>项目（当前项目）</option>` 并显示「该主机尚未登记项目」，确认禁用；不再静默清空，也不把项目串到其他主机。
+- **边界**：套件下发仍要求项目在目标主机登记；网页测试走 `section=jobs`，执行机不需要项目目录。
+- **测试**：`test/panel-dispatch-project-priority.test.js` 覆盖 host nav 保留 project、目标主机未登记时保留当前项目+禁用确认；全量 3013 绿，lint 0 error。
