@@ -35,7 +35,7 @@
 ### Task 0: 半天前置验证（先于实现）
 
 - [ ] **Appium 端口，不是 WDA 8100**：在目标 runner 上确认 Appium server 监听 `4723`（或配置端口）；中心只通过 SSH `-R` 转发 **Appium HTTP 端口**。WDA 由 Appium 经 USB/usbmuxd 管理，不属于本计划的转发对象；不要把 `tidevice relay 8100` 作为 P0b 前置。
-- [ ] **bounds 样本**：用真实 iPhone 抓登录页/个人页 `run.json` 的 `steps[].texts`，统计有 `x/y/width/height` 的文本节点比例；代码侧已知 `src/ios/prompt-history.ts` 会把 `IosUiNode.rect` 渲染为 `Bounds`，但仍需设备样本确认覆盖率。
+- [ ] **bounds 样本**：用真实 iPhone 抓登录页/个人页 `run.json` 的 `steps[].texts`，统计有 `x/y/width/height` 的文本节点比例；代码侧已知 `src/ios/prompt-history.ts` 会把 `IosUiNode.rect` 渲染为 `Bounds`，但仍需设备样本确认覆盖率。离线统计：`node scripts/ios-bounds-report.mjs [--json] <trace 目录…>`（缺省扫描 `.artemis/traces`）。
 - [ ] 样本结论写入计划/评审记录，再进入 Task 1（真机样本待做；代码已完成 Task 1–7 的可离线部分）。
 
 ### Task 1: iOS gateway Appium 反向隧道
