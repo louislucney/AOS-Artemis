@@ -59,6 +59,14 @@ test("importTestDocument: 单模块 → 三件套 + 源副本 + 登记（真实�
   assert.equal(document.meta.source, first.sourceId);
   assert.match(document.flows[0].id, new RegExp(`^imp-${sha8(file)}-2$`));
   assert.ok(document.flows[0].taskDesc.includes("【真实数据】"));
+  const markdown = fs.readFileSync(set.mdPath, "utf8");
+  assert.equal(
+    (markdown.match(/【真实数据】/g) ?? []).length,
+    1,
+    "人类可读 md 只在顶部提示一次真实数据约束"
+  );
+  assert.ok(!markdown.includes("数据必须经被测应用的真实请求链路准备"), "md code fence 不重复完整条款");
+  assert.match(markdown, /执行请用 tests\.json 的 taskDesc/);
   assert.ok(document.flows[0].steps[0].includes("应出现「进入首页」"));
   assert.equal(document.flows[0].expectations[0].kind, "assert");
 

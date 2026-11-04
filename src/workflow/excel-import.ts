@@ -109,12 +109,21 @@ function slug(value: string): string {
   return cleaned === "" ? "set" : cleaned;
 }
 
+function visibleTaskDesc(taskDesc: string): string {
+  return taskDesc
+    .split("\n")
+    .filter((line) => line.trim() !== REAL_DATA_CLAUSE)
+    .join("\n")
+    .trim();
+}
+
 function renderImportedMarkdown(cases: ImportedCase[], meta: { source: string; importedAt: string }): string {
   const lines = [
     "# 导入测试用例集",
     "",
     `> 来源: ${meta.source}`,
     `> 导入时间: ${meta.importedAt}`,
+    "> 执行约束：所有用例的 taskDesc 已自动附带【真实数据】条款（数据须经被测应用真实请求链路准备，禁止伪造/写死页面或数据）；此处为人类可读视图，执行请用 tests.json 的 taskDesc。",
     ""
   ];
   cases.forEach((testCase, index) => {
@@ -124,7 +133,7 @@ function renderImportedMarkdown(cases: ImportedCase[], meta: { source: string; i
     }
     lines.push(`- 模块：${testCase.screens[0] ?? ""}`, "");
     for (const step of testCase.steps) lines.push(`- ${step}`);
-    lines.push("", "```mobile_run_task", testCase.taskDesc, "```", "");
+    lines.push("", "```mobile_run_task", visibleTaskDesc(testCase.taskDesc), "```", "");
   });
   return lines.join("\n");
 }

@@ -3645,3 +3645,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **API**：复用既有 `POST /panel/api/projects/assets`（`kind=materials`、可选 `secret=true`）；`storeWebAsset` 对 secret materials 落 0700/0600，runner 下载到 `jobDir/secrets/`，不进 CAS。
 - **边界**：本次只做上传/版本/绑定 UI；把 materials 键值注入 Maestro `-e` 的格式与 secret 安全通道仍待接线（不能把 secret 放命令行）。`materialsAssetId` 已进入 job spec 并由 runner 下载。
 - **测试**：`web-assets-ui` 覆盖 materials 类型/secret/资产表/客户端扩展名；`web-dispatch-ui` 覆盖 materials 下拉只有一个占位；全量 3014 绿，lint 0 error。
+
+### 13.299 调整（导入用例集 markdown 不重复真实数据条款）
+
+> 2026-11-04。用户反馈 case-set `.md` 每个 `mobile_run_task` 块都重复完整【真实数据】条款，像提醒刷屏。
+
+- `renderImportedMarkdown`：人类可读 md 顶部只提示一次执行约束；代码块中的 taskDesc 去掉 `REAL_DATA_CLAUSE` 整行。
+- `tests.json` / xlsx 隐藏执行器 sheet 的 taskDesc 仍保留完整条款，`suite check` 的【真实数据】硬门禁不变。
+- 已有项目 case-set md 已按同一规则回填（仅展示层，不改 JSON/taskDesc）。
+- **测试**：`workflow-excel-import` 断言 md 只出现一次 marker、code fence 不含完整条款、JSON taskDesc 仍含 marker；全量 3014 绿，lint 0 error。
