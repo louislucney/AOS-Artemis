@@ -129,6 +129,9 @@ test("console pages: 用例库（份列表＋隔离徽章＋失败用例候选�
   assert.match(html.body, /\/panel\/artifact\?project=/, "Excel 走只读产物服务");
   assert.match(html.body, /section=dispatch&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");
   assert.match(html.body, /id="import-form"/, "Excel 上传表单");
+  assert.match(html.body, /id="import-drop" class="c-dropzone"/, "Excel 拖放区");
+  assert.match(html.body, /id="import-file"/, "拖放区文件输入");
+  assert.match(html.body, /is-dragover/, "拖放高亮脚本");
   assert.match(html.body, /panel\/api\/import/);
   assert.match(html.body, /id="quarantine-form"/, "隔离表单");
   assert.match(html.body, /aria-label="签字人（owner）"/);

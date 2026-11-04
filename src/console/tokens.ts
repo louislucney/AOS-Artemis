@@ -201,6 +201,17 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
   .c-page-lede{font-size:var(--font-size-callout)}
 }
 
+
+/* ── Excel 拖放导入 ───────────────────────────────────────────── */
+.c-dropzone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:26px 20px;border:1.5px dashed var(--color-border);border-radius:var(--radius-md);background:var(--color-surface-light);cursor:pointer;text-align:center;transition:border-color .15s ease,background .15s ease}
+.c-dropzone:hover,.c-dropzone:focus-visible,.c-dropzone.is-dragover{border-color:var(--color-accent);background:var(--color-accent-subtle);outline:none}
+.c-dropzone-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.c-dropzone-title{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);color:var(--color-text-primary)}
+.c-dropzone-hint{font-size:var(--font-size-caption);color:var(--color-text-secondary)}
+.c-dropzone-file{margin-top:3px;font-size:var(--font-size-callout);color:var(--color-text-secondary);max-width:100%;overflow-wrap:anywhere}
+.c-dropzone-file:not(:empty){color:var(--color-text-primary)}
+.c-dropzone-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+
 /* ── 徽章 / 横幅 / 统计贴片 ─────────────────────────────────────── */
 .c-badge{display:inline-block;white-space:nowrap;border:1px solid var(--color-border);border-radius:var(--radius-pill);
   padding:2px 10px;font-size:var(--font-size-caption);font-weight:var(--font-weight-medium);color:var(--color-text-secondary);
