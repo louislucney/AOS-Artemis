@@ -481,7 +481,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const projectSelect = [
     `<p><label>项目 <select name="project" aria-label="项目">${projectOptionsHtml}</select></label> <span class="muted">先选主机，再选该主机上的项目。</span></p>`,
     noProjects
-      ? `<p class="muted">该主机尚未登记项目：请先在目标机接入项目，再刷新本页。</p>`
+      ? `<p class="muted">该主机尚未登记项目：请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>；如果是给手机下发网页测试，请用 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=jobs">网页测试</a>，不要用套件下发。</p>`
       : ""
   ]
     .filter((part) => part !== "")
@@ -648,7 +648,7 @@ go.addEventListener('click',function(){
     : [
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（用例集明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
         noProjects
-          ? `<p class="note">该主机尚未登记项目：请先在目标机接入项目并刷新本页。</p>`
+          ? `<p class="note">该主机尚未登记项目：请先在该主机接入项目并刷新本页；设备连接状态见 <a href="/panel?section=devices">设备页</a>。</p>`
           : needsHostPick && !legacyHostless
             ? `<p class="note">请先选择目标主机：已登记主机时不再隐式回退本机。</p>`
             : preview.hostBlocked

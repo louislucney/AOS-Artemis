@@ -947,7 +947,7 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
 
   return renderConsoleShell({
     title: "下发测试",
-    active: "dispatch",
+    active: "jobs",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
     projectHostId: data.hostId ?? null,
@@ -1097,7 +1097,7 @@ export function renderWebJobPage(data: WebJobPageData): string {
 
   return renderConsoleShell({
     title: "下发任务详情",
-    active: "dispatch",
+    active: "jobs",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
     projectHostId: data.hostId ?? null,
