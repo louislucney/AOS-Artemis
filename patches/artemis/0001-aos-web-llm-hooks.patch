@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..f53e3e0
 --- /dev/null
 +++ b/AOS-PATCHES.md
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,25 @@
 +# AOS patches
 +
 +This file records downstream patches applied to the ARTEMIS submodule by the
@@ -14,6 +14,8 @@ index 0000000..f53e3e0
 +
 +- `artemis/security/redaction.py` — project-scoped secret inventory,
 +  text redaction, screenshot masking by UI bounds, placeholder resolution.
+++  Missing bounds on any sensitive node invalidates the whole screenshot
+++  (drop/blur/none per `AOS_LLM_REDACT_IMAGE_FALLBACK`).
 +- `artemis/security/install.py` — runtime hooks for:
 +  - `RobustChatModelWrapper._complete_attempt` (LLM message text redaction)
 +  - `get_google_llm` direct-call wrapper
@@ -532,19 +534,22 @@ index 0000000..2cc7a7e
 +    draw = ImageDraw.Draw(image)
 +    changed = False
 +    sensitive_seen = False
++    missing_bounds = False
 +    for element in elements:
 +        if not _sensitive(_element_text(element)):
 +            continue
 +        sensitive_seen = True
 +        bounds = _bounds_of(element)
 +        if bounds is None:
++            missing_bounds = True
 +            continue
 +        left, top, right, bottom = bounds
 +        if right <= left or bottom <= top:
++            missing_bounds = True
 +            continue
 +        draw.rectangle([left, top, right, bottom], fill=(0, 0, 0))
 +        changed = True
-+    if not changed:
++    if missing_bounds or not changed:
 +        if not sensitive_seen:
 +            return screenshot_bytes
 +        fallback = _image_fallback()
