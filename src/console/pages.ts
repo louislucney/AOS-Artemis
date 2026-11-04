@@ -961,11 +961,14 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
     data.assets.some((asset) => asset.kind === "package")
       ? ""
       : `<p class="muted">还没有安装包资产：<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=assets&amp;kind=package${hostQuery.replace(/&/g, "&amp;")}#asset-upload">去测试资产上传 .apk/.ipa</a> 上传后回到本页刷新。</p>`;
+  const gatewayReady = data.runners.filter(
+    (runner) => runner.gateway?.ready === true && runner.gateway.adbServer !== null
+  ).length;
   const form = [
     `<form id="web-job-form" class="c-form" role="group" aria-label="下发参数" data-project="${escapeHtml(data.rootPath)}">`,
     `<p><label>执行方式 <select id="web-job-mode" name="executionMode" aria-label="执行方式"${disabledAttr}>`,
     '<option value="maestro">Maestro 脚本</option>',
-    '<option value="llm">LLM 执行（预留）</option>',
+    '<option value="llm">LLM 执行（中心 worker）</option>',
     "</select></label> ",
     `<label>平台 <select id="web-job-platform" name="platform" aria-label="平台"${disabledAttr}>`,
     '<option value="android">Android</option>',
@@ -976,6 +979,11 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
     '<option value="device">真机</option>',
     '<option value="simulator">模拟器</option>',
     "</select></label></p>",
+    `<p class="muted" id="web-job-gateway-hint">LLM 由中心 web llm-worker 执行；设备网关 ready <strong>${gatewayReady}</strong>/${data.runners.length}${
+      gatewayReady === 0
+        ? "（无 ready 网关：LLM 任务会等待或拒绝；请先启动 runner 的 AOS_GATEWAY_SSH_TARGET）"
+        : ""
+    }</p>`,
     `<p><label>Excel 用例 <select id="web-job-excel" name="excelAssetId" aria-label="Excel 用例资产"${disabledAttr}>${assetOptions(
       data.assets,
       "excel",

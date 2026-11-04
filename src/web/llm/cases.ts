@@ -50,7 +50,7 @@ function taskDescOf(input: {
 export async function loadLlmCases(input: {
   store: ProjectStore;
   rootPath: string;
-  job: { spec: WebJobSpec };
+  job: { spec: Pick<WebJobSpec, "excelAssetId"> };
 }): Promise<LlmWorkerCase[]> {
   const excel = await input.store.getWebAsset(input.rootPath, input.job.spec.excelAssetId);
   if (excel === null || excel.kind !== "excel") {

@@ -71,6 +71,7 @@ export async function runLlmWorkerCli(
     runtime: CliRuntimeBundle;
     secrets: Awaited<ReturnType<typeof loadWebSecrets>>;
     appPackage: string | null;
+    appPath: string | null;
   }
   const input: RunLlmWorkerOnceInput = {
     store,
@@ -81,10 +82,11 @@ export async function runLlmWorkerCli(
     ...(options.caseTimeoutMs === undefined ? {} : { caseTimeoutMs: options.caseTimeoutMs }),
     ...(options.jobMaxMs === undefined ? {} : { jobMaxMs: options.jobMaxMs }),
     prepareJob: async (job): Promise<PreparedLlmJob> => {
-      const [runtime, secrets, web] = await Promise.all([
+      const [runtime, secrets, web, pkg] = await Promise.all([
         runtimeFor(job.rootPath),
         loadWebSecrets({ store, rootPath: job.rootPath }),
-        store.getWebProject(job.rootPath)
+        store.getWebProject(job.rootPath),
+        store.getWebAsset(job.rootPath, job.spec.packageAssetId)
       ]);
       const hookFile = path.join(
         runtime.runtime.project.config.artemis.repo,
@@ -104,7 +106,11 @@ export async function runLlmWorkerCli(
       if (hooksCompatible) process.env.AOS_LLM_HOOKS_ACTIVE = "1";
       else delete process.env.AOS_LLM_HOOKS_ACTIVE;
       await writeWebSecretFile({ rootPath: job.rootPath, secrets });
-      return { runtime, secrets, appPackage: web?.appPackage ?? null };
+      const appPath =
+        pkg?.kind === "package" && pkg.filename.toLowerCase().endsWith(".apk")
+          ? pkg.storagePath
+          : null;
+      return { runtime, secrets, appPackage: web?.appPackage ?? null, appPath };
     },
     loadCases: async (job) =>
       loadLlmCases({ store, rootPath: job.rootPath, job }),
@@ -116,6 +122,7 @@ export async function runLlmWorkerCli(
         testCase,
         deviceSerial: job.deviceSerial,
         appPackage: context.appPackage,
+        appPath: context.appPath,
         secrets: context.secrets,
         signal
       });

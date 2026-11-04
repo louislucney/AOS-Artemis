@@ -36,6 +36,7 @@ test("executeAndroidLlmCase: completed + test_summary → PASS", async (t) => {
     traceDir: () => dir,
     testCase: { caseId: "TC-1", taskDesc: "登录成功" },
     deviceSerial: "pixel-1",
+    appPath: "/tmp/app.apk",
     now: () => 1_000
   });
   assert.equal(out.status, "PASS");
@@ -43,6 +44,7 @@ test("executeAndroidLlmCase: completed + test_summary → PASS", async (t) => {
   assert.deepEqual(out.verification.deterministic, { passed: 2, failed: 0, skipped: 0 });
   assert.equal(calls[0].name, "mobile_run_task");
   assert.equal(calls[0].args.device_serial, "pixel-1");
+  assert.equal(calls[0].args.app_path, "/tmp/app.apk");
 });
 
 test("executeAndroidLlmCase: failed summary → FAIL；无 summary → UNVERIFIED", async (t) => {

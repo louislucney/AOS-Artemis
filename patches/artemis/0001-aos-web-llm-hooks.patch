@@ -324,10 +324,10 @@ index 0000000..75ba29d
 +    _patch_trace()
 diff --git a/artemis/security/redaction.py b/artemis/security/redaction.py
 new file mode 100644
-index 0000000..a200d3c
+index 0000000..2cc7a7e
 --- /dev/null
 +++ b/artemis/security/redaction.py
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,274 @@
 +# Copyright 2026 Google LLC
 +#
 +# Licensed under the Apache License, Version 2.0 (the "License");
@@ -507,6 +507,18 @@ index 0000000..a200d3c
 +    return [redact_structure(element) for element in elements]
 +
 +
++def _image_fallback() -> str:
++    raw = (os.environ.get("AOS_LLM_REDACT_IMAGE_FALLBACK") or "drop").strip().lower()
++    return raw if raw in ("drop", "blur", "none") else "drop"
++
++
++def _black_png() -> bytes:
++    image = Image.new("RGB", (1, 1), (0, 0, 0))
++    buffer = io.BytesIO()
++    image.save(buffer, format="PNG")
++    return buffer.getvalue()
++
++
 +def mask_screenshot(
 +    screenshot_bytes: bytes,
 +    elements: list[dict[str, Any]],
@@ -519,9 +531,11 @@ index 0000000..a200d3c
 +        return screenshot_bytes
 +    draw = ImageDraw.Draw(image)
 +    changed = False
++    sensitive_seen = False
 +    for element in elements:
 +        if not _sensitive(_element_text(element)):
 +            continue
++        sensitive_seen = True
 +        bounds = _bounds_of(element)
 +        if bounds is None:
 +            continue
@@ -531,7 +545,20 @@ index 0000000..a200d3c
 +        draw.rectangle([left, top, right, bottom], fill=(0, 0, 0))
 +        changed = True
 +    if not changed:
-+        return screenshot_bytes
++        if not sensitive_seen:
++            return screenshot_bytes
++        fallback = _image_fallback()
++        if fallback == "none":
++            return screenshot_bytes
++        if fallback == "blur":
++            try:
++                from PIL import ImageFilter
++
++                image = image.filter(ImageFilter.GaussianBlur(radius=12))
++            except Exception:
++                return _black_png()
++        else:
++            return _black_png()
 +    buffer = io.BytesIO()
 +    image.save(buffer, format="PNG")
 +    return buffer.getvalue()
@@ -593,10 +620,10 @@ index e21ee80..a12059b 100644
  if __name__ == "__main__":
 diff --git a/tests/unit/security/test_redaction.py b/tests/unit/security/test_redaction.py
 new file mode 100644
-index 0000000..59076a8
+index 0000000..12003b3
 --- /dev/null
 +++ b/tests/unit/security/test_redaction.py
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,79 @@
 +# Copyright 2026 Google LLC
 +#
 +# Licensed under the Apache License, Version 2.0 (the "License");
@@ -645,6 +672,22 @@ index 0000000..59076a8
 +    assert "user@example.com" not in redact_text(text)
 +    assert "p@ssw0rd" not in redact_text(text)
 +    assert resolve_text("<secret:account>") == "user@example.com"
++
++
++def test_mask_screenshot_without_bounds_fails_closed(monkeypatch, tmp_path):
++    monkeypatch.setenv("AOS_LLM_HOOKS", "1")
++    monkeypatch.setenv("AOS_LLM_SECRET_FILE", str(_secret_file(tmp_path)))
++    image = Image.new("RGB", (100, 100), "white")
++    buffer = io.BytesIO()
++    image.save(buffer, format="PNG")
++    original = buffer.getvalue()
++    masked = mask_screenshot(original, [{"text": "user@example.com"}])
++    result = Image.open(io.BytesIO(masked)).convert("RGB")
++    assert result.size == (1, 1)
++    assert result.getpixel((0, 0)) == (0, 0, 0)
++
++    monkeypatch.setenv("AOS_LLM_REDACT_IMAGE_FALLBACK", "none")
++    assert mask_screenshot(original, [{"text": "user@example.com"}]) == original
 +
 +
 +def test_mask_screenshot_by_bounds(monkeypatch, tmp_path):

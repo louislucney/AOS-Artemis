@@ -2042,6 +2042,9 @@ async function createWebJobAction(
     const workerOffline = outcome.warnings.includes("llm-worker-offline")
       ? "；中心 LLM Worker 未在线（任务会等待）"
       : "";
+    const noExpectation = outcome.warnings.includes("llm-no-expectation")
+      ? "；Excel 没有预期列，LLM 结果将全部 UNVERIFIED"
+      : "";
     return json(200, {
       ok: true,
       job: outcome.task,
@@ -2069,7 +2072,8 @@ async function createWebJobAction(
             ? "；脚本集已按当前资产重建"
             : "") +
         scriptWarning +
-        workerOffline
+        workerOffline +
+        noExpectation
     });
   } catch (error) {
     const generationFailure =

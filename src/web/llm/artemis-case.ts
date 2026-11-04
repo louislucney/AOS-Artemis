@@ -24,6 +24,8 @@ export interface ExecuteAndroidLlmCaseInput {
   /** 缺省 Pro：需要 test_summary/checker 作为证据。 */
   model?: "Flash" | "Pro";
   appPackage?: string | null;
+  /** 中心本地 APK 路径；ARTEMIS 在任务开始前安装到目标设备。 */
+  appPath?: string | null;
   /** 已加载的项目 secret；taskDesc 进模型前先脱敏。 */
   secrets?: SecretEntry[];
   pollMs?: number;
@@ -131,7 +133,10 @@ export async function executeAndroidLlmCase(
     ...(model === "Pro" ? { verification_level: "final" } : {}),
     ...(input.appPackage === null || input.appPackage === undefined
       ? {}
-      : { locked_app_package: input.appPackage })
+      : { locked_app_package: input.appPackage }),
+    ...(input.appPath === null || input.appPath === undefined
+      ? {}
+      : { app_path: input.appPath })
   });
   const startedJson = parseToolJson(started);
   const traceId =
