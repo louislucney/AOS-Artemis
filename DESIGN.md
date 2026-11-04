@@ -3654,3 +3654,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - `tests.json` / xlsx 隐藏执行器 sheet 的 taskDesc 仍保留完整条款，`suite check` 的【真实数据】硬门禁不变。
 - 已有项目 case-set md 已按同一规则回填（仅展示层，不改 JSON/taskDesc）。
 - **测试**：`workflow-excel-import` 断言 md 只出现一次 marker、code fence 不含完整条款、JSON taskDesc 仍含 marker；全量 3014 绿，lint 0 error。
+
+### 13.300 新增（产物 Markdown 阅读器：用例卡片/步骤/预期/折叠执行器指令）
+
+> 2026-11-04。用户反馈 case-set `.md` 以原始 Markdown 打开，像代码页、不美观；要求“有秩序”。
+
+- **阅读器**：`.md` 产物在浏览器 `Accept: text/html` 下渲染阅读器；`?raw=1` 或非浏览器请求仍返回原始 `text/markdown`。
+- **结构化用例**：识别 `# 导入测试用例集` 结构——顶部来源/导入时间/执行约束（黄色 meta），每个用例一张卡：编号 badge、标题、模块 pill、前置、编号步骤、预期结果 callout；`mobile_run_task` 折叠为「执行器指令 / agent 读取」。
+- **通用 Markdown**：其他 `.md` 走轻量渲染（标题/引用/列表/代码围栏）；原始 HTML 转义，不生成 `javascript:` 链接。
+- **展示层**：现有 case-set md 无需重新导入；同一文件即按新阅读器展示。原始 Markdown 仍可一键查看/复制。
+- **测试**：`panel-artifact-route` 新增 Markdown 阅读器、结构化用例卡、XSS 转义；全量 3016 绿，lint 0 error。

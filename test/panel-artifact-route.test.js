@@ -27,6 +27,36 @@ async function setup() {
     "INFO start\nWARN slow response\nERROR failed to tap\nat handler.js:1\n",
     "utf8"
   );
+  const caseSets = join(root, ".artemis", "design", "case-sets");
+  await mkdir(caseSets, { recursive: true });
+  await writeFile(
+    join(caseSets, "cases.md"),
+    [
+      "# 导入测试用例集",
+      "",
+      "> 来源: imported:cases.xlsx",
+      "> 导入时间: 2026-11-04T00:00:00.000Z",
+      "> 执行约束：所有用例的 taskDesc 已自动附带【真实数据】条款；此处为人类可读视图。",
+      "",
+      "## 1. Check the UI",
+      "",
+      "- 模块：My SMILES",
+      "- 执行「1.Go to My SMILES page",
+      "2.Verify UI layout」，应出现「2.Modify Unique code」",
+      "",
+      "```mobile_run_task",
+      "用例：Check the UI",
+      "步骤：1.Go to My SMILES page",
+      "```",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    join(caseSets, "unsafe.md"),
+    "# Unsafe\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n",
+    "utf8"
+  );
   await writeFile(join(root, "aos.config.jsonc"), "{}", "utf8");
   return { root, deps };
 }
@@ -90,6 +120,60 @@ test("artifact route: JSON 对非浏览器请求保持原始 application/json", 
       { accept: "text/html" }
     );
     assert.match(forced.contentType, /application\/json/, "?raw=1 强制原始 JSON");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: Markdown 在浏览器 Accept 下渲染阅读器", async () => {
+  const { root, deps } = await setup();
+  try {
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/design/case-sets/cases.md"),
+      deps,
+      { accept: "text/html" }
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.contentType, /text\/html/);
+    const html = String(response.body);
+    assert.match(html, /class="md-doc"/);
+    assert.match(html, /<h1 class="md-title">导入测试用例集<\/h1>/);
+    assert.match(html, /class="md-meta"/);
+    assert.match(html, /class="cs-case"/);
+    assert.match(html, /class="cs-num">1</);
+    assert.match(html, /class="cs-title">Check the UI</);
+    assert.match(html, /class="cs-step">Go to My SMILES page<\/li>/);
+    assert.match(html, /class="cs-step">Verify UI layout<\/li>/);
+    assert.match(html, /class="cs-expected"/);
+    assert.match(html, /<details class="md-run">/);
+    assert.ok(!html.includes("```mobile_run_task"), "不显示原始 fence");
+    assert.match(html, /原始 Markdown/);
+    assert.match(html, /复制 Markdown/);
+
+    const raw = await handleArtifactRequest(
+      url(root, ".artemis/design/case-sets/cases.md"),
+      deps
+    );
+    assert.match(raw.contentType, /text\/markdown/);
+    assert.match(String(raw.body), /# 导入测试用例集/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: Markdown 原始 HTML 被转义", async () => {
+  const { root, deps } = await setup();
+  try {
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/design/case-sets/unsafe.md"),
+      deps,
+      { accept: "text/html" }
+    );
+    assert.equal(response.status, 200);
+    const html = String(response.body);
+    assert.ok(!html.includes("<script>alert(1)</script>"), "不执行原始脚本");
+    assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+    assert.ok(!html.includes('href="javascript:'), "不生成 javascript: 链接");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
