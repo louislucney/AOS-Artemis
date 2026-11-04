@@ -7,7 +7,7 @@ import { resolveHostIdentity } from "../../host/identity.js";
 import { errorMessage } from "../../util.js";
 import { recordLlmWorkerHeartbeat } from "./heartbeat.js";
 import { executeAndroidLlmCase } from "./artemis-case.js";
-import { executeIosLlmCase } from "./ios-case.js";
+import { executeIosLlmCase, iosAppUrl } from "./ios-case.js";
 import { ingestLlmResults } from "./ingest.js";
 import { loadLlmCases } from "./cases.js";
 import { loadWebSecrets, writeWebSecretFile } from "./secrets.js";
@@ -68,7 +68,10 @@ export async function runLlmWorkerCli(
     const key = `${rootPath}\u0000${iosAppiumUrl ?? ""}`;
     const existing = runtimes.get(key);
     if (existing !== undefined) return existing;
-    const bundle = await defaultBuildRuntime(rootPath, { iosAppiumUrl });
+    const bundle = await defaultBuildRuntime(rootPath, {
+      iosAppiumUrl,
+      iosWebLlmRedaction: true
+    });
     runtimes.set(key, bundle);
     return bundle;
   };
@@ -118,12 +121,23 @@ export async function runLlmWorkerCli(
       if (hooksCompatible) process.env.AOS_LLM_HOOKS_ACTIVE = "1";
       else delete process.env.AOS_LLM_HOOKS_ACTIVE;
       await writeWebSecretFile({ rootPath: job.rootPath, secrets });
-      const appPath =
+      const packageFile =
         pkg?.kind === "package" &&
         (pkg.filename.toLowerCase().endsWith(".apk") ||
           pkg.filename.toLowerCase().endsWith(".ipa"))
-          ? pkg.storagePath
+          ? pkg
           : null;
+      const platform = job.spec.requirements.platform;
+      const appPath =
+        packageFile === null
+          ? null
+          : platform === "ios"
+            ? iosAppUrl(
+                typeof packageFile.metadata?.url === "string"
+                  ? packageFile.metadata.url
+                  : null
+              )
+            : packageFile.storagePath;
       return {
         runtime,
         secrets,
@@ -137,6 +151,15 @@ export async function runLlmWorkerCli(
     executeCase: async ({ job, testCase, prepared, signal }) => {
       const context = prepared as PreparedLlmJob;
       if (job.spec.requirements.platform === "ios") {
+        if (context.appPackage === null && context.appPath === null) {
+          return {
+            caseId: testCase.caseId,
+            ...(testCase.name === undefined ? {} : { name: testCase.name }),
+            status: "ERROR",
+            durationMs: 0,
+            failureReason: "ios-app-package-required"
+          };
+        }
         if (job.spec.requirements.deviceKind === "simulator") {
           return {
             caseId: testCase.caseId,
@@ -162,6 +185,8 @@ export async function runLlmWorkerCli(
           deviceSerial: job.deviceSerial,
           appPackage: context.appPackage,
           appPath: context.appPath,
+          secrets: context.secrets,
+          redactionActive: true,
           signal
         });
       }

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { checkExpectedTexts } from "./verify.js";
+import { redactText, type SecretEntry } from "./secrets.js";
 import type { LlmWorkerCase, LlmWorkerCaseResult } from "./worker.js";
 
 export interface IosLlmToolCallResult {
@@ -14,6 +15,12 @@ export interface IosLlmToolProxy {
   callTool(name: string, args: Record<string, unknown>): Promise<IosLlmToolCallResult>;
 }
 
+/** 远程 Appium 只能接收 HTTP(S) URL；中心本地路径一律拒绝。 */
+export function iosAppUrl(raw: string | null | undefined): string | null {
+  const value = (raw ?? "").trim();
+  return /^https?:\/\//i.test(value) ? value : null;
+}
+
 export interface ExecuteIosLlmCaseInput {
   proxy: IosLlmToolProxy;
   traceDir: (traceId: string) => string;
@@ -21,6 +28,10 @@ export interface ExecuteIosLlmCaseInput {
   deviceSerial: string;
   appPackage?: string | null;
   appPath?: string | null;
+  /** 项目 secret；taskDesc 进模型前脱敏，未绑定账号直接拒绝。 */
+  secrets?: SecretEntry[];
+  /** runtime 已启用 Node 侧观察/截图脱敏；有 secret 但未启用时 fail-closed。 */
+  redactionActive?: boolean;
   pollMs?: number;
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
@@ -59,6 +70,35 @@ function numberField(record: Record<string, unknown> | null, key: string): numbe
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
+function readTokenUsage(
+  value: unknown,
+  caseId: string,
+  traceId: string,
+  model: string | null
+): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry, index) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const usage = entry as Record<string, unknown>;
+    const number = (key: string): number =>
+      typeof usage[key] === "number" && Number.isFinite(usage[key]) ? usage[key] : 0;
+    return [
+      {
+        caseId,
+        traceId,
+        ...(model === null ? {} : { model }),
+        attempt: index + 1,
+        phase: "execute",
+        requestId: `${traceId}:${index + 1}`,
+        promptTokens: number("promptTokens"),
+        completionTokens: number("completionTokens"),
+        cacheCreateTokens: number("cacheCreateTokens"),
+        cacheReadTokens: number("cacheReadTokens")
+      }
+    ];
+  });
+}
+
 function readRunLabels(runPath: string): string[] {
   try {
     const parsed: unknown = JSON.parse(readFileSync(runPath, "utf8"));
@@ -95,6 +135,35 @@ export async function executeIosLlmCase(
       failureReason: "empty-case-id"
     };
   }
+  const secrets = input.secrets ?? [];
+  const redacted = redactText(input.testCase.taskDesc, secrets);
+  if (redacted.unbound.length > 0) {
+    return {
+      caseId: input.testCase.caseId,
+      ...(input.testCase.name === undefined ? {} : { name: input.testCase.name }),
+      status: "ERROR",
+      durationMs: 0,
+      failureReason: `llm-secret-unbound:${redacted.unbound.length}`
+    };
+  }
+  if (input.appPath !== null && input.appPath !== undefined && iosAppUrl(input.appPath) === null) {
+    return {
+      caseId: input.testCase.caseId,
+      ...(input.testCase.name === undefined ? {} : { name: input.testCase.name }),
+      status: "ERROR",
+      durationMs: 0,
+      failureReason: "ios-app-path-not-remote"
+    };
+  }
+  if (secrets.length > 0 && input.redactionActive !== true) {
+    return {
+      caseId: input.testCase.caseId,
+      ...(input.testCase.name === undefined ? {} : { name: input.testCase.name }),
+      status: "ERROR",
+      durationMs: 0,
+      failureReason: "ios-redaction-unavailable"
+    };
+  }
   const startedAt = input.now?.() ?? Date.now();
   const sleep =
     input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -103,7 +172,7 @@ export async function executeIosLlmCase(
   let last: Record<string, unknown> | null = null;
   try {
     const started = await input.proxy.callTool("mobile_run_task", {
-      task_desc: input.testCase.taskDesc,
+      task_desc: redacted.text,
       device_serial: input.deviceSerial,
       ...(input.appPackage === null || input.appPackage === undefined
         ? {}
@@ -208,6 +277,12 @@ export async function executeIosLlmCase(
     durationMs: (input.now?.() ?? Date.now()) - startedAt,
     ...(failureReason === undefined ? {} : { failureReason }),
     traceId,
+    tokenUsage: readTokenUsage(
+      last?.token_usage,
+      input.testCase.caseId,
+      traceId,
+      typeof last?.model === "string" ? last.model : null
+    ),
     evidenceSteps: labels,
     artifacts: {
       ...(existsSync(statusJsonPath) ? { statusJsonPath } : {})

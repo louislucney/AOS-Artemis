@@ -1,10 +1,15 @@
 import type { IosDevice } from "../device/ios-actions.js";
 import type { IosUiNode } from "../device/ios.js";
-import { makeChatFn, type ChatMessage } from "../llm/chat.js";
+import { makeChatFn, type ChatMessage, type ChatUsage } from "../llm/chat.js";
 import { entryIssues, type LlmEntry } from "../llm/registry.js";
 import { logWarn } from "../log.js";
 import { errorMessage } from "../util.js";
 import { PROMPT_MAX_ELEMENTS, formatScreenForPrompt } from "./prompt-history.js";
+import {
+  maskIosScreenshot,
+  redactIosNodes,
+  type IosRedactionConfig
+} from "./redaction.js";
 import type { IosScriptAdherence, IosScriptPreflight } from "./script-plan.js";
 import type {
   IosTaskRecord,
@@ -22,14 +27,18 @@ export function resolveVerifyMode(env: NodeJS.ProcessEnv): "final" | "off" {
 export function resolveVerifier(
   env: NodeJS.ProcessEnv,
   entries: LlmEntry[],
-  main: VerifierTarget
+  main: VerifierTarget,
+  onUsage?: (usage: ChatUsage) => void
 ): VerifierTarget {
   const entryName = env.AOS_IOS_VERIFY_LLM?.trim();
   if (!entryName) return main;
   const entry = entries.find((item) => item.name === entryName);
   if (entry && entryIssues(entry).length === 0 && entry.apiKey && entry.baseUrl) {
     return {
-      chat: makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model }),
+      chat: makeChatFn(
+        { baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model },
+        onUsage === undefined ? {} : { onUsage }
+      ),
       model: entry.model,
       vision: looksVisionCapable(entry.model)
     };
@@ -133,7 +142,8 @@ export async function runVerification(
   screenshot: Buffer | null,
   scriptUnresolved: IosScriptAdherence["unresolved"] = [],
   scriptDeferredCount = 0,
-  preflightUnmatched: IosScriptPreflight | null = null
+  preflightUnmatched: IosScriptPreflight | null = null,
+  redaction: IosRedactionConfig | null = null
 ): Promise<IosVerification> {
   let nodes = fallbackNodes;
   let stale = false;
@@ -151,6 +161,14 @@ export async function runVerification(
       stale
     };
   }
+  const originalNodes = nodes;
+  if (redaction !== null && redaction.secrets.length > 0) {
+    nodes = redactIosNodes(nodes, redaction.secrets).nodes;
+  }
+  const safeScreenshot =
+    screenshot !== null && redaction !== null && redaction.secrets.length > 0
+      ? maskIosScreenshot(screenshot, originalNodes, redaction.secrets).bytes
+      : screenshot;
   const screen = formatScreenForPrompt(nodes, PROMPT_MAX_ELEMENTS, null);
   const prompt = buildVerificationPrompt(
     record.taskDesc,
@@ -166,12 +184,12 @@ export async function runVerification(
     {
       role: "user",
       content:
-        verifier.vision && screenshot
+        verifier.vision && safeScreenshot
           ? [
               { type: "text", text: prompt },
               {
                 type: "image_url",
-                image_url: { url: `data:image/png;base64,${screenshot.toString("base64")}` }
+                image_url: { url: `data:image/png;base64,${safeScreenshot.toString("base64")}` }
               }
             ]
           : prompt

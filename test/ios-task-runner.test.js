@@ -11,6 +11,8 @@ import {
 } from "../dist/ios/task-runner.js";
 import { parseScriptPlan } from "../dist/ios/script-plan.js";
 import { maybeIosInspectTrace } from "../dist/ios/inspect.js";
+import { PNG } from "pngjs";
+
 import { ChatError } from "../dist/llm/chat.js";
 import {
   baseConfig,
@@ -179,6 +181,138 @@ test("locked_app_package：循环前自动启动应用", async () => {
   });
   assert.equal(record.status, "completed");
   assert.deepEqual(device.calls[0], ["launch", "com.apple.Preferences"]);
+});
+
+test("Web LLM 脱敏：prompt/截图/run.json 不含 secret，输入时还原占位符", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  fs.mkdirSync(path.join(dir, ".artemis", "web"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, ".artemis", "web", "llm-secrets.json"),
+    JSON.stringify({ PASSWORD: "hunter2" })
+  );
+  const proxy = new StubProxy({ running: true });
+  const { runtime } = await loadTestRuntime(dir, { proxy, iosWebLlmRedaction: true });
+  const device = fakeDevice();
+  device.screenshot = async () => Buffer.from(toPng(createImage(100, 100)));
+  device.nodes = async () => [
+    { type: "Application", label: "", value: "", id: "", rect: { x: 0, y: 0, width: 402, height: 874 } },
+    {
+      type: "StaticText",
+      label: "hunter2",
+      value: "",
+      id: "",
+      rect: { x: 10, y: 20, width: 40, height: 20 }
+    }
+  ];
+  const { chat, messages } = scriptedChat([
+    JSON.stringify({
+      thought: "输入密码",
+      action: "text",
+      text: "<secret:PASSWORD>",
+      x: 30,
+      y: 30
+    }),
+    JSON.stringify({ thought: "完成", action: "done", success: true, summary: "ok" })
+  ]);
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "用 <secret:PASSWORD> 登录", device_serial: UDID },
+      {
+        entry: ENTRY,
+        device,
+        chat,
+        mainVision: true,
+        visionTarget: {
+          chat: { baseUrl: "https://v.example.com/v1", apiKey: "vk", model: "fake-vision" },
+          model: "fake-vision",
+          source: "env"
+        },
+        listSimulators: bootedSims(),
+        stepDelayMs: 0,
+        settleMs: 0
+      }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  assert.equal(record.status, "completed");
+  assert.deepEqual(device.calls.find((call) => call[0] === "text"), [
+    "text",
+    "hunter2",
+    { x: 30, y: 30 }
+  ]);
+
+  const first = messages[0][1];
+  const textPart = first.content.find((part) => part.type === "text").text;
+  assert.match(textPart, /<secret:PASSWORD>/);
+  assert.doesNotMatch(JSON.stringify(messages), /hunter2/);
+  const imagePart = first.content.find((part) => part.type === "image_url");
+  const png = Buffer.from(imagePart.image_url.url.split(",")[1], "base64");
+  const decoded = PNG.sync.read(png);
+  const index = (decoded.width * 20 + 10) << 2;
+  assert.deepEqual([...decoded.data.subarray(index, index + 4)], [0, 0, 0, 255]);
+
+  assert.deepEqual(record.steps[0].texts, [
+    { text: "<secret:PASSWORD>", x: 10, y: 20, width: 40, height: 20 }
+  ]);
+  assert.doesNotMatch(fs.readFileSync(path.join(record.runDir, "run.json"), "utf-8"), /hunter2/);
+});
+
+test("token usage：主模型调用累计到 record 与 status.json", async () => {
+  const { runtime } = await makeRuntime();
+  const device = fakeDevice();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                thought: "完成",
+                action: "done",
+                success: true,
+                summary: "ok"
+              })
+            }
+          }
+        ],
+        usage: { prompt_tokens: 7, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 2 } }
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  try {
+    const started = payloadOf(
+      await maybeIosRunTask(
+        runtime,
+        { task_desc: "用量", device_serial: UDID },
+        {
+          entry: ENTRY,
+          device,
+          env: { AOS_IOS_VERIFY: "off" },
+          listSimulators: bootedSims(),
+          stepDelayMs: 0,
+          settleMs: 0
+        }
+      )
+    );
+    const record = await waitFor(() => {
+      const current = getIosTask(started.trace_id);
+      return current && current.status !== "running" ? current : null;
+    });
+    assert.deepEqual(record.tokenUsage, [
+      { promptTokens: 7, completionTokens: 3, cacheCreateTokens: 0, cacheReadTokens: 2 }
+    ]);
+    const status = JSON.parse(fs.readFileSync(path.join(record.runDir, "status.json"), "utf-8"));
+    assert.deepEqual(status.token_usage, record.tokenUsage);
+    const run = JSON.parse(fs.readFileSync(path.join(record.runDir, "run.json"), "utf-8"));
+    assert.deepEqual(run.token_usage, record.tokenUsage);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("模拟器未启动 → failed 响应且不注册任务", async () => {

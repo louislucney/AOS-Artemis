@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { IosDevice } from "../device/ios-actions.js";
 import { logWarn } from "../log.js";
+import { redactIosValue } from "./redaction.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { IosScriptAdherence, IosScriptPreflight } from "./script-plan.js";
 import type { IosTaskRecord, IosVerification } from "./types.js";
@@ -17,7 +18,7 @@ function processStartedAtIso(record: IosTaskRecord): string {
 
 export function persistRun(record: IosTaskRecord): void {
   try {
-    writeJson(path.join(record.runDir, "run.json"), {
+    const payload = {
       schema_version: 1,
       trace_id: record.traceId,
       platform: "ios",
@@ -30,6 +31,7 @@ export function persistRun(record: IosTaskRecord): void {
       started_at: new Date(record.startedAtMs).toISOString(),
       finished_at: record.finishedAtMs ? new Date(record.finishedAtMs).toISOString() : null,
       steps: record.steps,
+      token_usage: record.tokenUsage ?? [],
       result: record.result,
       error: record.error,
       vision: record.vision,
@@ -40,7 +42,11 @@ export function persistRun(record: IosTaskRecord): void {
       ...(record.visionDropped ? { vision_dropped: record.visionDropped } : {}),
       ...(record.scriptAdherence ? { script_adherence: record.scriptAdherence } : {}),
       ...(record.preflight ? { preflight: record.preflight } : {})
-    });
+    };
+    writeJson(
+      path.join(record.runDir, "run.json"),
+      redactIosValue(payload, record.redactionSecrets ?? [])
+    );
   } catch (error) {
     logWarn(`iOS 任务 run.json 写入失败（${record.traceId}）: ${errorMessage(error)}`);
   }
@@ -171,7 +177,7 @@ export function testSummaryFor(record: IosTaskRecord): Record<string, unknown> |
 export function writeStatus(record: IosTaskRecord, message: string): void {
   const testSummary = testSummaryFor(record);
   try {
-    writeJson(path.join(record.runDir, "status.json"), {
+    const payload = {
       trace_id: record.traceId,
       status: record.status,
       platform: "ios",
@@ -183,9 +189,14 @@ export function writeStatus(record: IosTaskRecord, message: string): void {
       message,
       ...(record.error ? { error: record.error } : {}),
       ...(testSummary ? { test_summary: testSummary } : {}),
+      token_usage: record.tokenUsage ?? [],
       start_time: record.startedAtMs / 1000,
       end_time: record.finishedAtMs ? record.finishedAtMs / 1000 : null
-    });
+    };
+    writeJson(
+      path.join(record.runDir, "status.json"),
+      redactIosValue(payload, record.redactionSecrets ?? [])
+    );
   } catch (error) {
     logWarn(`iOS 任务 status.json 写入失败（${record.traceId}）: ${errorMessage(error)}`);
   }
@@ -196,14 +207,18 @@ export function finish(
   status: IosTaskRecord["status"],
   summary: string
 ): void {
+  const secrets = record.redactionSecrets ?? [];
+  const safeSummary = redactIosValue(summary, secrets);
   record.status = status;
   record.finishedAtMs = Date.now();
-  if (status === "completed") record.result = { success: true, summary };
-  if (status === "failed") record.result = { success: false, summary };
-  if (status === "cancelled") record.result = { success: false, summary };
-  if (status === "failed") record.error = record.error ?? summary;
+  if (status === "completed") record.result = { success: true, summary: safeSummary };
+  if (status === "failed") record.result = { success: false, summary: safeSummary };
+  if (status === "cancelled") record.result = { success: false, summary: safeSummary };
+  if (status === "failed") {
+    record.error = redactIosValue(record.error ?? safeSummary, secrets);
+  }
   persistRun(record);
-  writeStatus(record, summary);
+  writeStatus(record, safeSummary);
 }
 
 export async function captureStepShot(

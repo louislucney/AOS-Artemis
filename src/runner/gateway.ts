@@ -13,6 +13,19 @@ export interface StartDeviceGatewayInput {
   now?: () => number;
   spawnChild?: (command: string, args: string[]) => GatewayChild;
   onExit?: (code: number | null, signal: string | null) => void;
+  /** 隧道建立前探测 runner 本机 Appium；默认 GET /status（1.5s）。 */
+  probeAppium?: (url: string) => Promise<boolean>;
+}
+
+async function defaultProbeAppium(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${url.replace(/\/+$/, "")}/status`, {
+      signal: AbortSignal.timeout(1_500)
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 export interface DeviceGateway {
@@ -47,6 +60,11 @@ export async function startDeviceGateway(
     ((command: string, args: string[]): GatewayChild =>
       spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] }) as unknown as GatewayChild);
   const reportedAt = new Date(input.now?.() ?? Date.now()).toISOString();
+  const appiumCandidate =
+    appiumOverride !== "" ? appiumOverride : `http://127.0.0.1:${localAppiumPort}`;
+  const appiumReachable =
+    appiumConfigured &&
+    (await (input.probeAppium ?? defaultProbeAppium)(appiumCandidate).catch(() => false));
   let ready = true;
   let stopped = false;
   const children: GatewayChild[] = [];
@@ -76,15 +94,14 @@ export async function startDeviceGateway(
     });
   };
   forward(adbPort, localAdbPort);
-  if (appiumConfigured && appiumOverride === "") {
+  if (appiumReachable && appiumOverride === "") {
     forward(appiumPort, localAppiumPort);
   }
-  const appiumUrl =
-    appiumOverride !== ""
+  const appiumUrl = appiumReachable
+    ? appiumOverride !== ""
       ? appiumOverride
-      : appiumConfigured
-        ? `http://127.0.0.1:${appiumPort}`
-        : null;
+      : `http://127.0.0.1:${appiumPort}`
+    : null;
   const snapshot = (): DeviceGatewayRecord => ({
     adbServer: `127.0.0.1:${adbPort}`,
     appiumUrl,

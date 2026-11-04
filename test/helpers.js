@@ -384,6 +384,7 @@ export async function loadTestRuntime(
     buildModuleUrl,
     hostIdentity = TEST_HOST_IDENTITY,
     iosAppiumUrl,
+    iosWebLlmRedaction,
     appiumDetector = async () => ({
       appium: { found: false, path: null, version: null },
       xcuitest: { installed: false, version: null },
@@ -403,6 +404,7 @@ export async function loadTestRuntime(
     buildModuleUrl,
     hostIdentity,
     ...(iosAppiumUrl === undefined ? {} : { iosAppiumUrl }),
+    ...(iosWebLlmRedaction === undefined ? {} : { iosWebLlmRedaction }),
     appiumDetector
   });
   await runtime.initialize();

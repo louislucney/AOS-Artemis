@@ -1,4 +1,5 @@
-import type { ChatFn } from "../llm/chat.js";
+import type { ChatFn, ChatUsage } from "../llm/chat.js";
+import type { SecretEntry } from "../web/llm/secrets.js";
 import type { IosScriptAdherence, IosScriptPreflight } from "./script-plan.js";
 import type { VisionTarget } from "./vision.js";
 
@@ -75,6 +76,10 @@ export interface IosTaskRecord {
   visionDropped: IosVisionDropped | null;
   scriptAdherence: IosScriptAdherence | null;
   preflight: IosScriptPreflight | null;
+  /** Web LLM 脱敏 secret；仅内存，不直接落盘（落盘前经 redactIosValue）。 */
+  redactionSecrets?: SecretEntry[] | null;
+  /** 主模型/视觉/验证调用累计 token 用量（含重试）。 */
+  tokenUsage?: ChatUsage[];
 }
 
 export interface VerifierTarget {

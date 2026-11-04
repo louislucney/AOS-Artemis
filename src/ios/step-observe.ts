@@ -4,6 +4,7 @@ import { describeChatError, isMissingContentError, type ChatFn } from "../llm/ch
 import { logWarn } from "../log.js";
 import { errorMessage } from "../util.js";
 import { croppedScreenshotHash, screenSignature } from "./noop.js";
+import { redactIosNodes, redactIosShot, type IosRedactionConfig } from "./redaction.js";
 import { buildPerceptionPrompt, fuseVisionElements, parseVisionElements } from "./perception.js";
 import { screenTextSummary, updatePreflight } from "./prompt-history.js";
 import { matchScriptExpectations, type IosScriptExpectation } from "./script-plan.js";
@@ -22,9 +23,14 @@ export interface ObservationCursor {
 }
 
 export interface StepObservation {
+  /** 脱敏后供模型/证据使用的节点。 */
   nodes: IosUiNode[];
+  /** 原始节点（仅用于 post 截图遮罩，不发给模型）。 */
+  sourceNodes: IosUiNode[];
   size: { width: number; height: number } | null;
   shot: { rel: string; bytes: Buffer } | null;
+  /** 脱敏后允许发给模型的图片；`shot` 保留中心侧证据。 */
+  promptShot: { rel: string; bytes: Buffer } | null;
   shotDims: { width: number; height: number } | null;
   scale: number | null;
   screen: string;
@@ -43,6 +49,8 @@ export interface ObserveStepOptions {
   scriptSatisfied: Set<number>;
   cursor: ObservationCursor;
   vision: { mode: IosVisionMode; mainVision: boolean; visionChat: ChatFn | null };
+  /** Web LLM 用例的 Node 侧脱敏；普通交互任务为 null。 */
+  redaction?: IosRedactionConfig | null;
 }
 
 function visibleElementCount(nodes: IosUiNode[]): number {
@@ -83,18 +91,38 @@ export async function observeStep(options: ObserveStepOptions): Promise<StepObse
   } catch {
     size = null;
   }
-  const shot = await captureStepShot(device, record, step, "pre");
+  const sourceNodes = nodes;
+  let shot = await captureStepShot(device, record, step, "pre");
+  let promptShot = shot;
+  if (options.redaction && options.redaction.secrets.length > 0) {
+    const originalNodes = nodes;
+    nodes = redactIosNodes(nodes, options.redaction.secrets).nodes;
+    const redactedShot = redactIosShot({
+      runDir: record.runDir,
+      shot,
+      nodes: originalNodes,
+      config: options.redaction
+    });
+    shot = redactedShot.shot;
+    promptShot =
+      redactedShot.promptBytes === null
+        ? null
+        : { rel: redactedShot.shot?.rel ?? "", bytes: redactedShot.promptBytes };
+    if (redactedShot.warning !== null) {
+      record.visionDegraded = record.visionDegraded ?? redactedShot.warning;
+    }
+  }
   const screen = screenTextSummary(nodes);
   updatePreflight(record, screen, step);
   const scriptHits =
     scriptExpectations !== null
       ? matchScriptExpectations(scriptExpectations, scriptSatisfied, screen)
       : [];
-  const shotDims = shot ? pngDimensions(shot.bytes) : null;
+  const shotDims = promptShot ? pngDimensions(promptShot.bytes) : null;
   const scale = shotDims && size && size.width > 0 ? shotDims.width / size.width : null;
 
   const signature = screenSignature(nodes, size?.height ?? null);
-  const shotHash = shot ? croppedScreenshotHash(shot.bytes) : null;
+  const shotHash = promptShot ? croppedScreenshotHash(promptShot.bytes) : null;
   const comparable = step > 1 && cursor.previousAction !== "wait";
   let noop = false;
   if (comparable && cursor.lastSignature !== null && signature === cursor.lastSignature) {
@@ -112,23 +140,23 @@ export async function observeStep(options: ObserveStepOptions): Promise<StepObse
   cursor.lastSignature = signature;
   cursor.lastShotHash = shotHash;
 
-  const wantsImage = vision.mode !== "off" && vision.mainVision && shot !== null;
+  const wantsImage = vision.mode !== "off" && vision.mainVision && promptShot !== null;
   const wantsPerception =
     vision.mode !== "off" &&
     !vision.mainVision &&
     vision.visionChat !== null &&
-    shot !== null &&
+    promptShot !== null &&
     (vision.mode === "auto" || visibleElementCount(nodes) < MIN_TEXT_ELEMENTS);
   let visionLines: string[] = [];
   let visionContext: string | null = null;
   let perception: IosTaskStep["perception"] = "text";
-  if (wantsImage && shot) {
+  if (wantsImage && promptShot) {
     visionContext = shotDims
       ? `本轮附有截图：${shotDims.width}x${shotDims.height} px${
           size ? `（逻辑 ${size.width}x${size.height} pt${scale ? `，scale≈${scale.toFixed(2)}` : ""}）` : ""
         }；坐标以元素 Center 为准，若从截图估计请先除以 scale。`
       : "本轮附有截图；坐标以元素 Center 为准。";
-  } else if (wantsPerception && shot) {
+  } else if (wantsPerception && promptShot) {
     if (shotDims === null || scale === null || !size) {
       record.visionDegraded = record.visionDegraded ?? "视觉感知跳过：截图尺寸或逻辑尺寸未知。";
       perception = "text-degraded";
@@ -141,7 +169,7 @@ export async function observeStep(options: ObserveStepOptions): Promise<StepObse
               { type: "text", text: buildPerceptionPrompt(shotDims.width, shotDims.height) },
               {
                 type: "image_url",
-                image_url: { url: `data:image/png;base64,${shot.bytes.toString("base64")}` }
+                image_url: { url: `data:image/png;base64,${promptShot.bytes.toString("base64")}` }
               }
             ]
           }
@@ -187,8 +215,10 @@ export async function observeStep(options: ObserveStepOptions): Promise<StepObse
 
   return {
     nodes,
+    sourceNodes,
     size,
     shot,
+    promptShot,
     shotDims,
     scale,
     screen,

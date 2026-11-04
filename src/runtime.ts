@@ -95,6 +95,8 @@ export interface RuntimeOptions {
   hostIdentity?: HostIdentity;
   /** 远程 iOS 网关：覆盖 AOS_APPIUM_URL（按 host 隔离，不污染进程 env）。 */
   iosAppiumUrl?: string | null;
+  /** Web LLM 用例：iOS 观察/截图/输入在 Node 侧脱敏（P0b）。 */
+  iosWebLlmRedaction?: boolean;
   /** 接入心跳定时器（测试注入；缺省全局 setInterval/clearInterval）。 */
   setInterval?: (callback: () => void, ms: number) => NodeJS.Timeout;
   clearInterval?: (handle: NodeJS.Timeout) => void;
@@ -152,6 +154,7 @@ export class Runtime {
   private readonly timerClearInterval: (handle: NodeJS.Timeout) => void;
   private iosEnv: NodeJS.ProcessEnv;
   private readonly iosAppiumUrlOption: string | null;
+  private readonly iosWebLlmRedactionOption: boolean;
   private scanResult: EnvScanResult;
   private projectRecord: ProjectRecord | null = null;
   private activeCache: { name: string; entry: LlmEntry } | null = null;
@@ -212,6 +215,7 @@ export class Runtime {
     this.iosEnv = { ...deviceHostEnvFromConfig(project.config), ...project.dotenvValues, ...this._baseEnv };
     this.iosAppiumUrlOption = options.iosAppiumUrl ?? null;
     if (this.iosAppiumUrlOption) this.iosEnv.AOS_APPIUM_URL = this.iosAppiumUrlOption;
+    this.iosWebLlmRedactionOption = options.iosWebLlmRedaction === true;
     this.iosCrashCollector = options.iosCrashCollector ?? null;
     this.iosCrashRetry = {
       attempts: Math.max(1, options.iosCrashRetry?.attempts ?? 3),
@@ -954,6 +958,11 @@ export class Runtime {
    * 执行器开关（视觉/验证/日志/步数等）经此读取，不再是进程 env 独有。 */
   iosEnvironment(): NodeJS.ProcessEnv {
     return this.iosEnv;
+  }
+
+  /** Web LLM 远程 iOS：Node 侧脱敏开关（secret map 由 worker 写入项目 `.artemis/web/`）。 */
+  iosWebLlmRedaction(): boolean {
+    return this.iosWebLlmRedactionOption;
   }
 
   private iosWdaService: IosWdaService | null = null;

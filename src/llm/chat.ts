@@ -15,10 +15,19 @@ export interface ChatTarget {
   model: string;
 }
 
+export interface ChatUsage {
+  promptTokens: number;
+  completionTokens: number;
+  cacheCreateTokens: number;
+  cacheReadTokens: number;
+}
+
 export interface ChatOptions {
   fetchFn?: typeof fetch;
   timeoutMs?: number;
   temperature?: number;
+  /** 可选 token 计量回调；不改变 `ChatFn` 签名，现有调用方零修改。 */
+  onUsage?: (usage: ChatUsage) => void;
 }
 
 export type ChatFn = (messages: ChatMessage[], signal?: AbortSignal) => Promise<string>;
@@ -49,6 +58,15 @@ interface ChatCompletionPayload {
     finish_reason?: unknown;
   }>;
   error?: { message?: unknown };
+  usage?: {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+    prompt_tokens_details?: { cached_tokens?: unknown };
+    cache_creation_input_tokens?: unknown;
+    cache_read_input_tokens?: unknown;
+    prompt_cache_hit_tokens?: unknown;
+    prompt_cache_miss_tokens?: unknown;
+  };
 }
 
 /** OpenAI-compatible providers differ on content shape: string, or an array
@@ -90,6 +108,23 @@ export function describeChatError(error: unknown): string {
     details.push(`body=${error.body.replace(/\s+/g, " ").trim().slice(0, 200)}`);
   }
   return details.length > 0 ? `${message}（${details.join("；")}）` : message;
+}
+
+function usageNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function usageOf(payload: ChatCompletionPayload): ChatUsage | null {
+  const usage = payload.usage;
+  if (usage === undefined || usage === null) return null;
+  const promptTokens = usageNumber(usage.prompt_tokens);
+  const completionTokens = usageNumber(usage.completion_tokens);
+  const cacheReadTokens =
+    usageNumber(usage.cache_read_input_tokens) ||
+    usageNumber(usage.prompt_cache_hit_tokens) ||
+    usageNumber(usage.prompt_tokens_details?.cached_tokens);
+  const cacheCreateTokens = usageNumber(usage.cache_creation_input_tokens);
+  return { promptTokens, completionTokens, cacheCreateTokens, cacheReadTokens };
 }
 
 /** Minimal OpenAI-compatible chat client (JSON output expected from the model). */
@@ -139,6 +174,8 @@ export function makeChatFn(target: ChatTarget, options: ChatOptions = {}): ChatF
     if (payload.error?.message) {
       throw new ChatError(`LLM 返回错误: ${String(payload.error.message)}`, { body: text.slice(0, 500) });
     }
+    const usage = usageOf(payload);
+    if (usage !== null) options.onUsage?.(usage);
     const choice = payload.choices?.[0];
     const content = contentText(choice?.message?.content);
     if (content === null) {

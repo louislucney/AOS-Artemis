@@ -30,6 +30,35 @@ test("makeChatFn: POST chat/completions 并解析 content", async () => {
   assert.equal(requests[0].init.headers.authorization, "Bearer sk-test");
 });
 
+test("makeChatFn: usage 回调（可选，现有调用方不受影响）", async () => {
+  const usages = [];
+  const chat = makeChatFn(
+    { baseUrl: "https://api.example.com", apiKey: "k", model: "m" },
+    {
+      onUsage: (usage) => usages.push(usage),
+      fetchFn: async () =>
+        jsonResponse({
+          choices: [{ message: { content: "ok" } }],
+          usage: {
+            prompt_tokens: 12,
+            completion_tokens: 3,
+            prompt_tokens_details: { cached_tokens: 5 }
+          }
+        })
+    }
+  );
+  assert.equal(await chat([{ role: "user", content: "x" }]), "ok");
+  assert.deepEqual(usages, [
+    { promptTokens: 12, completionTokens: 3, cacheCreateTokens: 0, cacheReadTokens: 5 }
+  ]);
+
+  const noUsage = makeChatFn(
+    { baseUrl: "https://api.example.com", apiKey: "k", model: "m" },
+    { fetchFn: async () => jsonResponse({ choices: [{ message: { content: "ok" } }] }) }
+  );
+  assert.equal(await noUsage([{ role: "user", content: "x" }]), "ok");
+});
+
 test("makeChatFn: accepts OpenAI content parts and concatenates text", async () => {
   const chat = makeChatFn(
     { baseUrl: "https://api.example.com", apiKey: "k", model: "m" },

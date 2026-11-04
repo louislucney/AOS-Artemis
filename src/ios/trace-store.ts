@@ -31,6 +31,7 @@ export interface DiskIosTrace {
   result: { success: boolean; summary: string } | null;
   error: string | null;
   testSummary: Record<string, unknown> | null;
+  tokenUsage: IosTaskRecord["tokenUsage"] | null;
   vision: IosTaskRecord["vision"];
   visionDegraded: string | null;
   verification: IosTaskRecord["verification"];
@@ -250,6 +251,11 @@ export function readIosTrace(
     testSummary:
       status?.test_summary && typeof status.test_summary === "object"
         ? (status.test_summary as Record<string, unknown>)
+        : null,
+    tokenUsage: Array.isArray(status?.token_usage)
+      ? (status.token_usage as IosTaskRecord["tokenUsage"])
+      : Array.isArray(run?.token_usage)
+        ? (run.token_usage as IosTaskRecord["tokenUsage"])
         : null,
     vision: parseVision(run?.vision),
     visionDegraded: asString(run?.vision_degraded),

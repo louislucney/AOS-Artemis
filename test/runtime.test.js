@@ -173,6 +173,15 @@ test("runtime: iOS Appium URL 可按 host 覆盖", async () => {
   assert.equal(runtime.iosEnvironment().AOS_APPIUM_URL, "http://127.0.0.1:15038");
 });
 
+test("runtime: 不同 iOS Appium URL 互不污染", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const first = await loadTestRuntime(dir, { iosAppiumUrl: "http://127.0.0.1:15038" });
+  const second = await loadTestRuntime(dir, { iosAppiumUrl: "http://127.0.0.1:15039" });
+  assert.equal(first.runtime.iosEnvironment().AOS_APPIUM_URL, "http://127.0.0.1:15038");
+  assert.equal(second.runtime.iosEnvironment().AOS_APPIUM_URL, "http://127.0.0.1:15039");
+  assert.equal(process.env.AOS_APPIUM_URL, undefined);
+});
+
 test("runtime: iOS 签名配置合并项目 .env（进程 env 覆盖）", async () => {
   const dir = makeTempProject({
     config: baseConfig(),

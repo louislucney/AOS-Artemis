@@ -27,6 +27,7 @@ test("startDeviceGateway: 配置 Appium 时启动第二路 ssh -R", async () => 
       AOS_GATEWAY_APPIUM_PORT: "16038",
       AOS_GATEWAY_LOCAL_APPIUM_PORT: "4723"
     },
+    probeAppium: async () => true,
     spawnChild: (cmd, args) => {
       const child = new FakeChild();
       commands.push({ cmd, args });
@@ -40,6 +41,50 @@ test("startDeviceGateway: 配置 Appium 时启动第二路 ssh -R", async () => 
   assert.equal(gateway.snapshot().appiumUrl, "http://127.0.0.1:16038");
   await gateway.stop();
   assert.ok(children.every((child) => child.killed));
+});
+
+test("startDeviceGateway: Appium 不可达 → 不建第二路、appiumUrl:null", async () => {
+  let forwarded = 0;
+  const gateway = await startDeviceGateway({
+    env: {
+      AOS_GATEWAY_SSH_TARGET: "center.example",
+      AOS_GATEWAY_APPIUM_PORT: "16038",
+      AOS_GATEWAY_LOCAL_APPIUM_PORT: "4723"
+    },
+    probeAppium: async () => false,
+    spawnChild: () => {
+      forwarded += 1;
+      return new FakeChild();
+    }
+  });
+  assert.ok(gateway);
+  assert.equal(forwarded, 1);
+  assert.equal(gateway.snapshot().appiumUrl, null);
+  await gateway.stop();
+});
+
+test("startDeviceGateway: AOS_GATEWAY_APPIUM_URL 覆盖时仍先探测", async () => {
+  const probed = [];
+  const commands = [];
+  const gateway = await startDeviceGateway({
+    env: {
+      AOS_GATEWAY_SSH_TARGET: "center.example",
+      AOS_GATEWAY_APPIUM_URL: "http://10.0.0.5:4725"
+    },
+    probeAppium: async (url) => {
+      probed.push(url);
+      return true;
+    },
+    spawnChild: (cmd, args) => {
+      commands.push({ cmd, args });
+      return new FakeChild();
+    }
+  });
+  assert.ok(gateway);
+  assert.deepEqual(probed, ["http://10.0.0.5:4725"]);
+  assert.equal(commands.length, 1);
+  assert.equal(gateway.snapshot().appiumUrl, "http://10.0.0.5:4725");
+  await gateway.stop();
 });
 
 test("startDeviceGateway: 启动 ssh -R，退出/停止更新 ready", async () => {

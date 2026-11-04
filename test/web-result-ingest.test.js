@@ -76,7 +76,10 @@ function jobSpec(overrides = {}) {
     devicePinned: true,
     targetHostId: HOST,
     deviceSerial: "emulator-5554",
-    requirements: { platform: "android", deviceKind: "any" },
+    requirements: {
+      platform: overrides.platform ?? "android",
+      deviceKind: overrides.deviceKind ?? "any"
+    },
     deviceLeaseId: `${HOST}:emulator-5554`,
     excelAssetId: overrides.excelAssetId ?? "asset-placeholder",
     packageAssetId: "pkg-1",
@@ -132,10 +135,12 @@ async function setupProject(t, options = {}) {
     targetHostId: HOST,
     jobSpec: jobSpec({
       excelAssetId: options.excelAssetId ?? asset.id,
-      executionMode: options.executionMode ?? "maestro"
+      executionMode: options.executionMode ?? "maestro",
+      platform: options.platform ?? "android",
+      deviceKind: options.deviceKind ?? "any"
     }),
-    deviceSerial: "emulator-5554",
-    deviceLeaseId: `${HOST}:emulator-5554`
+    deviceSerial: options.deviceSerial ?? "emulator-5554",
+    deviceLeaseId: `${HOST}:${options.deviceSerial ?? "emulator-5554"}`
   });
   await store.updateRegressionTask(rootPath, task.id, {
     status: options.status ?? "running"
@@ -720,6 +725,61 @@ test("远程 LLM 结果：tokenUsage + 原始工件落到结果目录；缺工�
   const missingSaved = JSON.parse(await readFile(resultPathForJob(ctx.rootPath, missingJob.id), "utf8"));
   assert.equal(missingSaved.tokenTotals, null, "缺 tokenUsage 时不得按 0 计费");
   assert.equal(missingSaved.tokenArtifacts, null, "不得伪造本地工件路径");
+});
+
+test("远程 LLM iOS 结果：只要求 status.json，不因缺 data_engine.db 报 token-unavailable", async (t) => {
+  const ctx = await setupProject(t, {
+    executionMode: "llm",
+    platform: "ios",
+    deviceKind: "device",
+    deviceSerial: "00008110-001A"
+  });
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: ctx.task.id,
+    payload: passingPayload({
+      tokenUsage: [
+        {
+          caseId: "TC-1",
+          traceId: "ios-trace-1",
+          model: "fake-model",
+          promptTokens: 30,
+          completionTokens: 5,
+          cacheCreateTokens: 0,
+          cacheReadTokens: 2
+        }
+      ],
+      tokenArtifacts: {
+        statusJson: {
+          filename: "status.json",
+          base64: Buffer.from('{"status":"completed"}').toString("base64")
+        }
+      }
+    })
+  });
+  assert.equal(summary.taskStatus, "completed");
+  assert.ok(!summary.warnings.some((warning) => warning.includes("token-unavailable")));
+  const saved = JSON.parse(await readFile(resultPathForJob(ctx.rootPath, ctx.task.id), "utf8"));
+  assert.equal(saved.tokenArtifacts.statusJson, "artifacts/status.json");
+  assert.equal(saved.tokenArtifacts.dataEngineDb ?? null, null);
+
+  const missingJob = await newRunningJob(ctx, { executionMode: "llm" });
+  const missing = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: missingJob.id,
+    payload: passingPayload({
+      tokenArtifacts: {
+        dataEngineDb: {
+          filename: "data-engine.db",
+          base64: Buffer.from("sqlite-bytes").toString("base64")
+        }
+      }
+    })
+  });
+  assert.ok(
+    missing.warnings.some((warning) => warning.includes("token-unavailable")),
+    missing.warnings.join("；")
+  );
 });
 
 test("ingest：无 mapping / 无 excelAssetId 明确报错且不产生任何写回", async (t) => {

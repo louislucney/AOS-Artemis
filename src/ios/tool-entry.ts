@@ -257,6 +257,7 @@ interface StatusView {
   visionDegraded: string | null;
   runDir: string;
   testSummary: Record<string, unknown> | null;
+  tokenUsage?: { promptTokens: number; completionTokens: number; cacheCreateTokens: number; cacheReadTokens: number }[];
 }
 
 function statusPayloadOf(view: StatusView, extras: Record<string, unknown> = {}): Record<string, unknown> {
@@ -279,6 +280,7 @@ function statusPayloadOf(view: StatusView, extras: Record<string, unknown> = {})
     },
     recent_steps: view.steps.slice(-5),
     ...(view.testSummary ? { test_summary: view.testSummary } : {}),
+    ...(view.tokenUsage && view.tokenUsage.length > 0 ? { token_usage: view.tokenUsage } : {}),
     ...(view.vision ? { vision: view.vision } : {}),
     ...(view.visionDegraded ? { vision_degraded: view.visionDegraded } : {}),
     ...(view.result ? { result: view.result } : {}),
@@ -303,7 +305,8 @@ function statusPayload(record: IosTaskRecord): Record<string, unknown> {
     vision: record.vision,
     visionDegraded: record.visionDegraded,
     runDir: record.runDir,
-    testSummary: testSummaryFor(record)
+    testSummary: testSummaryFor(record),
+    tokenUsage: record.tokenUsage ?? []
   });
 }
 
@@ -323,7 +326,8 @@ function diskStatusPayload(trace: DiskIosTrace): Record<string, unknown> {
       vision: trace.vision,
       visionDegraded: trace.visionDegraded,
       runDir: trace.runDir,
-      testSummary: trace.testSummary
+      testSummary: trace.testSummary,
+      tokenUsage: trace.tokenUsage ?? undefined
     },
     {
       source: "disk",

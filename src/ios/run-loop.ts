@@ -6,9 +6,11 @@ import {
   isMissingContentError,
   makeChatFn,
   type ChatContent,
-  type ChatMessage
+  type ChatMessage,
+  type ChatUsage
 } from "../llm/chat.js";
 import type { LlmEntry } from "../llm/registry.js";
+import type { SecretEntry } from "../web/llm/secrets.js";
 import { logWarn } from "../log.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
@@ -20,6 +22,13 @@ import {
   matchScriptExpectations,
   parseScriptPlan
 } from "./script-plan.js";
+import {
+  redactIosNodes,
+  redactIosShot,
+  redactIosValue,
+  resolveIosInput,
+  iosRedactionConfig
+} from "./redaction.js";
 import { observeStep, type ObservationCursor, type StepObservation } from "./step-observe.js";
 import { toStepRecord } from "./step-record.js";
 import type { StartIosTaskDeps } from "./tool-entry.js";
@@ -106,7 +115,8 @@ async function executeAction(
   device: IosDevice,
   action: string,
   params: Record<string, unknown>,
-  lockedAppPackage: string | null
+  lockedAppPackage: string | null,
+  secrets: SecretEntry[] = []
 ): Promise<ActionOutcome> {
   const bundleId = typeof params.bundleId === "string" ? params.bundleId : null;
   const bundleAllowed = (): boolean =>
@@ -134,7 +144,8 @@ async function executeAction(
       if (typeof params.text !== "string") return { kind: "step", text: "参数错误：text 需要字符串 text" };
       const x = asNumber(params.x);
       const y = asNumber(params.y);
-      const result = await device.inputText(params.text, x !== null && y !== null ? { x, y } : undefined);
+      const text = resolveIosInput(params.text, secrets);
+      const result = await device.inputText(text, x !== null && y !== null ? { x, y } : undefined);
       return { kind: "step", text: `输入完成（${result.mode}）` };
     }
     case "launch": {
@@ -210,6 +221,10 @@ export async function runLoop(
   deps: StartIosTaskDeps
 ): Promise<void> {
   const env = deps.env ?? runtime.iosEnvironment();
+  const redaction = runtime.iosWebLlmRedaction()
+    ? iosRedactionConfig(runtime.project.rootDir)
+    : null;
+  record.redactionSecrets = redaction?.secrets ?? null;
   let device: IosDevice;
   try {
     const resolved = deps.device ?? (await runtime.iosDevice(record.udid));
@@ -222,10 +237,18 @@ export async function runLoop(
     finish(record, "failed", `无法解析 iOS 设备（${errorMessage(error)}）：${record.udid}`);
     return;
   }
+  const collectUsage = (usage: ChatUsage): void => {
+    record.tokenUsage = [...(record.tokenUsage ?? []), usage];
+  };
   const chat =
     deps.chat ??
-    makeChatFn({ baseUrl: entry.baseUrl ?? "", apiKey: entry.apiKey ?? "", model: entry.model });
-  const visionChat = deps.visionChat ?? (visionTarget ? makeChatFn(visionTarget.chat) : null);
+    makeChatFn(
+      { baseUrl: entry.baseUrl ?? "", apiKey: entry.apiKey ?? "", model: entry.model },
+      { onUsage: collectUsage }
+    );
+  const visionChat =
+    deps.visionChat ??
+    (visionTarget ? makeChatFn(visionTarget.chat, { onUsage: collectUsage }) : null);
   const mode: IosVisionMode = resolveVisionMode(env);
   const visionCapability = entryVisionCapability(runtime, env, entry);
   let mainVision =
@@ -251,7 +274,12 @@ export async function runLoop(
       } catch (error) {
         logWarn(`iOS 执行器读取 LLM 条目失败: ${errorMessage(error)}`);
       }
-      verifier = resolveVerifier(env, entries, { chat, model: entry.model, vision: mainVision });
+      verifier = resolveVerifier(
+        env,
+        entries,
+        { chat, model: entry.model, vision: mainVision },
+        collectUsage
+      );
     }
   }
   const feedbackEnabled = resolveLogFeedback(env);
@@ -348,14 +376,26 @@ export async function runLoop(
           scriptExpectations,
           scriptSatisfied,
           cursor,
-          vision: { mode, mainVision, visionChat }
+          vision: { mode, mainVision, visionChat },
+          redaction
         });
       } catch (error) {
         await finalize("failed", errorMessage(error));
         return;
       }
-      const { nodes, size, shot, scale, screen, scriptHits, noop, visionLines, visionContext } =
-        observation;
+      const {
+        nodes,
+        sourceNodes,
+        size,
+        shot,
+        promptShot,
+        scale,
+        screen,
+        scriptHits,
+        noop,
+        visionLines,
+        visionContext
+      } = observation;
       let perception = observation.perception;
       const instruction = record.instruction;
       record.instruction = null;
@@ -373,12 +413,17 @@ export async function runLoop(
       );
 
       let content!: string;
-      if (mode !== "off" && mainVision && shot) {
+      if (mode !== "off" && mainVision && promptShot) {
         messages.push({
           role: "user",
           content: [
             { type: "text", text: textPrompt },
-            { type: "image_url", image_url: { url: `data:image/png;base64,${shot.bytes.toString("base64")}` } }
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/png;base64,${promptShot.bytes.toString("base64")}`
+              }
+            }
           ] satisfies ChatContent
         });
         let visionError: unknown = null;
@@ -445,7 +490,7 @@ export async function runLoop(
             step,
             thought: "",
             action: "invalid",
-            params: { raw: content.slice(0, 200) },
+            params: redactIosValue({ raw: content.slice(0, 200) }, redaction?.secrets ?? []),
             outcome: "模型输出不是合法动作 JSON",
             shot: shot?.rel,
             screen,
@@ -464,39 +509,61 @@ export async function runLoop(
 
       let outcome: ActionOutcome;
       try {
-        outcome = await executeAction(device, parsed.action, parsed.params, record.lockedAppPackage);
+        outcome = await executeAction(
+          device,
+          parsed.action,
+          parsed.params,
+          record.lockedAppPackage,
+          redaction?.secrets ?? []
+        );
       } catch (error) {
         outcome = { kind: "step", text: `执行失败: ${errorMessage(error)}` };
       }
       if (outcome.kind === "done") {
         if (settleMs > 0) await sleep(settleMs);
-        const donePost = await captureStepShot(device, record, step, "post");
+        const capturedPost = await captureStepShot(device, record, step, "post");
         let doneNodes: IosUiNode[] | null = null;
-        if (scriptExpectations !== null) {
+        let doneRedactedNodes: IosUiNode[] | null = null;
+        if (scriptExpectations !== null || redaction !== null) {
           try {
             doneNodes = await device.nodes();
+            doneRedactedNodes =
+              redaction === null
+                ? doneNodes
+                : redactIosNodes(doneNodes, redaction.secrets).nodes;
           } catch {
             doneNodes = null;
+            doneRedactedNodes = null;
           }
         }
+        const donePost = redactIosShot({
+          runDir: record.runDir,
+          shot: capturedPost,
+          nodes: doneNodes ?? [],
+          config: redaction
+        });
         const doneHits =
-          doneNodes && scriptExpectations
-            ? matchScriptExpectations(scriptExpectations, scriptSatisfied, screenTextSummary(doneNodes))
+          doneRedactedNodes && scriptExpectations
+            ? matchScriptExpectations(
+                scriptExpectations,
+                scriptSatisfied,
+                screenTextSummary(doneRedactedNodes)
+              )
             : [];
         record.steps.push(
           toStepRecord({
             step,
-            thought: parsed.thought,
+            thought: redactIosValue(parsed.thought, redaction?.secrets ?? []),
             action: parsed.action,
-            params: parsed.params,
+            params: redactIosValue(parsed.params, redaction?.secrets ?? []),
             outcome: outcome.success ? "done" : "fail",
             shot: shot?.rel,
-            postShot: donePost?.rel,
+            postShot: donePost.shot?.rel,
             screen,
             scale,
             noop,
             scriptHits: [...scriptHits, ...doneHits],
-            texts: traceTexts(doneNodes ?? nodes),
+            texts: traceTexts(doneRedactedNodes ?? nodes),
             perception
           })
         );
@@ -509,12 +576,13 @@ export async function runLoop(
             verifier,
             record,
             device,
-            doneNodes ?? nodes,
-            outcome.summary,
-            donePost ? donePost.bytes : null,
+            doneRedactedNodes ?? nodes,
+            redactIosValue(outcome.summary, redaction?.secrets ?? []),
+            donePost.promptBytes,
             scriptAdherence?.unresolved ?? [],
             scriptAdherence?.deferred.total ?? 0,
-            record.preflight?.status === "unmatched" ? record.preflight : null
+            record.preflight?.status === "unmatched" ? record.preflight : null,
+            redaction
           );
           persistRun(record);
         }
@@ -538,16 +606,22 @@ export async function runLoop(
         return;
       }
       if (settleMs > 0) await sleep(settleMs);
-      const post = await captureStepShot(device, record, step, "post");
+      const capturedPost = await captureStepShot(device, record, step, "post");
+      const post = redactIosShot({
+        runDir: record.runDir,
+        shot: capturedPost,
+        nodes: sourceNodes,
+        config: redaction
+      });
       record.steps.push(
         toStepRecord({
           step,
-          thought: parsed.thought,
+          thought: redactIosValue(parsed.thought, redaction?.secrets ?? []),
           action: parsed.action,
-          params: parsed.params,
-          outcome: outcome.text,
+          params: redactIosValue(parsed.params, redaction?.secrets ?? []),
+          outcome: redactIosValue(outcome.text, redaction?.secrets ?? []),
           shot: shot?.rel,
-          postShot: post?.rel,
+          postShot: post.shot?.rel,
           screen,
           scale,
           noop,
