@@ -303,6 +303,15 @@ export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
   env.ARTEMIS_TRACES_DIR = projectTracesDir(config, rootDir, baseEnv);
   if (!env.PYTHONPATH) env.PYTHONPATH = config.artemis.repo;
 
+  // PATCH (aos-mcp): web LLM security hooks live inside the artemis repo;
+  // the secret file is project-scoped and written by the center LLM worker.
+  if (env.AOS_LLM_HOOKS === "1") {
+    env.AOS_LLM_SECRET_FILE =
+      env.AOS_LLM_SECRET_FILE ||
+      path.join(rootDir, ".artemis", "web", "llm-secrets.json");
+    env.AOS_LLM_HOOKS_STRICT = env.AOS_LLM_HOOKS_STRICT ?? "1";
+  }
+
   const keyEnvName = entry.provider === "google" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
   if (entry.apiKey) env[keyEnvName] = entry.apiKey;
   if (entry.provider !== "google" && entry.baseUrl) env.OPENAI_BASE_URL = entry.baseUrl;
@@ -330,7 +339,9 @@ export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
         baseUrl: entry.baseUrl ?? null,
         configDir,
         tracesDir: env.ARTEMIS_TRACES_DIR,
-        deviceSerial: config.artemis.deviceSerial ?? null
+        deviceSerial: config.artemis.deviceSerial ?? null,
+        llmHooks: env.AOS_LLM_HOOKS ?? null,
+        llmSecretFile: env.AOS_LLM_SECRET_FILE ?? null
       })
     )
     .digest("hex")

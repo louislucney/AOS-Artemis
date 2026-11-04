@@ -4,7 +4,7 @@ import { errorMessage } from "../../util.js";
 import { executeAndroidLlmCase } from "./artemis-case.js";
 import { ingestLlmResults } from "./ingest.js";
 import { loadLlmCases } from "./cases.js";
-import { loadWebSecrets } from "./secrets.js";
+import { loadWebSecrets, writeWebSecretFile } from "./secrets.js";
 import {
   runLlmWorkerLoop,
   runLlmWorkerOnce,
@@ -26,6 +26,12 @@ export async function runLlmWorkerCli(
 ): Promise<number> {
   const log = options.log ?? ((line) => console.log(line));
   const errorLog = options.errorLog ?? ((line) => console.error(line));
+  // LLM worker 强制启用 ARTEMIS hooks；hooks 缺失时 ARTEMIS 启动失败而不是裸跑。
+  if (process.env.AOS_LLM_HOOKS !== "0") {
+    process.env.AOS_LLM_HOOKS = "1";
+    process.env.AOS_LLM_HOOKS_ACTIVE = "1";
+    process.env.AOS_LLM_HOOKS_STRICT = process.env.AOS_LLM_HOOKS_STRICT ?? "1";
+  }
   const { store } = await createProjectStore();
   const runtimes = new Map<string, CliRuntimeBundle>();
   const controller = new AbortController();
@@ -58,6 +64,7 @@ export async function runLlmWorkerCli(
         loadWebSecrets({ store, rootPath: job.rootPath }),
         store.getWebProject(job.rootPath)
       ]);
+      await writeWebSecretFile({ rootPath: job.rootPath, secrets });
       return { runtime, secrets, appPackage: web?.appPackage ?? null };
     },
     loadCases: async (job) =>

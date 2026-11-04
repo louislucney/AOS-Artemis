@@ -1,7 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ProjectStore } from "../../db/types.js";
+import { writeFileAtomic } from "../../util.js";
 
 export type SecretKind = "account" | "password" | "token" | "otp" | "other";
 
@@ -96,6 +97,22 @@ export async function loadWebSecrets(input: {
     seen.add(key);
     return true;
   });
+}
+
+/** 写入 ARTEMIS hook 读取的 0600 secret map；只写 alias→value，不写日志。 */
+export async function writeWebSecretFile(input: {
+  rootPath: string;
+  secrets: SecretEntry[];
+}): Promise<string> {
+  const dir = path.join(input.rootPath, ".artemis", "web");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, "llm-secrets.json");
+  const payload: Record<string, string> = {};
+  for (const entry of input.secrets) payload[entry.alias] = entry.value;
+  await writeFileAtomic(file, `${JSON.stringify(payload, null, 2)}\n`);
+  await chmod(file, 0o600);
+  await chmod(dir, 0o700);
+  return file;
 }
 
 /** 精确值 + account-like 模式脱敏；unbound 非空时必须拒绝发给 LLM。 */
