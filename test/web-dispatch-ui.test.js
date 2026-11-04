@@ -252,9 +252,11 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
   assert.match(html, /id="web-job-submit"[^>]*data-busy-label="下发中…"/);
   assert.match(html, /\/panel\/api\/jobs\/preview/);
 
+  assert.match(html, /id="web-job-allow-partial"[^>]*checked/, "部分下发默认勾选");
+  assert.match(html, /未就绪用例写 SKIP/, "默认行为有文案说明");
   const ownScripts = inlineScripts(html).filter((code) => code.includes("/panel/api/jobs"));
   assert.equal(ownScripts.length, 1, "下发表单脚本存在");
-  assert.match(ownScripts[0], /Maestro 执行需要脚本集/, "无脚本时前端阻止提交");
+  assert.match(ownScripts[0], /allowPartialUnresolved\s*=/, "表单始终提交布尔值");
   assert.doesNotThrow(() => new Function(ownScripts[0]), "下发表单脚本可解析");
 });
 
@@ -460,7 +462,7 @@ test("POST /panel/api/jobs role gate: viewer 403, dispatcher/maintainer/admin al
   }
 });
 
-test("POST jobs: unresolved script 默认 409，显式 allowPartialUnresolved 放行", async (t) => {
+test("POST jobs: unresolved script 默认放行，显式 allowPartialUnresolved=false 严格", async (t) => {
   const { deps, store, rootPath, excel, pkg } = await setup(t);
   const incomplete = await createAsset(store, rootPath, "scripts", "incomplete.zip", "e", {
     sourceExcelAssetId: excel.id,
@@ -472,14 +474,14 @@ test("POST jobs: unresolved script 默认 409，显式 allowPartialUnresolved �
     ...autoBody(rootPath, { excel, pkg }),
     scriptSetId: incomplete.id
   };
-  const rejected = await postJob(deps, body);
-  assert.equal(rejected.status, 409);
-  assert.equal(JSON.parse(rejected.body).code, "script-set-incomplete");
-
-  const allowed = await postJob(deps, { ...body, allowPartialUnresolved: true });
+  const allowed = await postJob(deps, body);
   assert.equal(allowed.status, 200);
   const job = JSON.parse(allowed.body).job;
-  assert.equal(job.jobSpec.allowPartialUnresolved, true);
+  assert.equal(job.jobSpec.allowPartialUnresolved, true, "省略字段默认允许");
+
+  const rejected = await postJob(deps, { ...body, allowPartialUnresolved: false });
+  assert.equal(rejected.status, 409);
+  assert.equal(JSON.parse(rejected.body).code, "script-set-incomplete");
 });
 
 test("job detail shows device, package, cases, evidence links and writeback status", async (t) => {

@@ -1944,8 +1944,9 @@ function parseWebJobCreateForm(
   const scriptSetId = panelTextField(payload, "scriptSetId");
   const allowStaleScript =
     payload.allowStaleScript === true || payload.allowStaleScript === "true";
-  const allowPartialUnresolved =
-    payload.allowPartialUnresolved === true || payload.allowPartialUnresolved === "true";
+  const allowPartialUnresolved = !(
+    payload.allowPartialUnresolved === false || payload.allowPartialUnresolved === "false"
+  );
   return {
     ok: true,
     value: {

@@ -940,7 +940,7 @@ test("脚本集 platform 与任务平台不一致 → script-set-mismatch", asyn
   }
 });
 
-test("Maestro 无脚本 → script-set-missing；unresolved 未显式允许 → script-set-incomplete", async () => {
+test("Maestro 无脚本 → script-set-missing；unresolved 默认允许、显式 false 严格", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "script-preflight");
     const assets = await makeAssets(store, rootPath);
@@ -959,22 +959,24 @@ test("Maestro 无脚本 → script-set-missing；unresolved 未显式允许 → 
       platform: "android",
       unresolved: 1
     });
+    const allowed = await createWebJob(
+      jobInput(store, rootPath, assets, { scriptSetId: incomplete.id })
+    );
+    assert.equal(allowed.task.status, "pending");
+    assert.equal(allowed.task.jobSpec.allowPartialUnresolved, true, "省略字段默认允许部分下发");
+
     await assert.rejects(
-      createWebJob(jobInput(store, rootPath, assets, { scriptSetId: incomplete.id })),
+      createWebJob(
+        jobInput(store, rootPath, assets, {
+          scriptSetId: incomplete.id,
+          allowPartialUnresolved: false
+        })
+      ),
       (error) =>
         error instanceof WebJobDispatchError &&
         error.code === "script-set-incomplete" &&
         error.status === 409
     );
-
-    const allowed = await createWebJob(
-      jobInput(store, rootPath, assets, {
-        scriptSetId: incomplete.id,
-        allowPartialUnresolved: true
-      })
-    );
-    assert.equal(allowed.task.status, "pending");
-    assert.equal(allowed.task.jobSpec.allowPartialUnresolved, true);
   }
 });
 
