@@ -91,6 +91,18 @@ export async function executeAndroidLlmCase(
   const pollMs = input.pollMs ?? 2_000;
   const startedAt = input.now?.() ?? Date.now();
   const model = input.model ?? "Pro";
+  if (
+    process.env.AOS_LLM_HOOKS_REQUIRED === "1" &&
+    process.env.AOS_LLM_HOOKS_ACTIVE !== "1"
+  ) {
+    return {
+      caseId: input.testCase.caseId,
+      ...(input.testCase.name === undefined ? {} : { name: input.testCase.name }),
+      status: "ERROR",
+      durationMs: 0,
+      failureReason: "llm-secret-hook-unavailable"
+    };
+  }
   const secrets = input.secrets ?? [];
   const redacted = redactText(input.testCase.taskDesc, secrets);
   if (redacted.unbound.length > 0) {

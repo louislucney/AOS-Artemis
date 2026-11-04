@@ -1,3 +1,6 @@
+import { access } from "node:fs/promises";
+import path from "node:path";
+
 import { createProjectStore } from "../../db/index.js";
 import { defaultBuildRuntime, type CliRuntimeBundle } from "../../cli-runtime.js";
 import { errorMessage } from "../../util.js";
@@ -26,10 +29,10 @@ export async function runLlmWorkerCli(
 ): Promise<number> {
   const log = options.log ?? ((line) => console.log(line));
   const errorLog = options.errorLog ?? ((line) => console.error(line));
-  // LLM worker 强制启用 ARTEMIS hooks；hooks 缺失时 ARTEMIS 启动失败而不是裸跑。
+  // LLM worker 强制要求 ARTEMIS hooks；hook 文件缺失时所有 LLM 用例 fail-closed。
+  process.env.AOS_LLM_HOOKS_REQUIRED = "1";
   if (process.env.AOS_LLM_HOOKS !== "0") {
     process.env.AOS_LLM_HOOKS = "1";
-    process.env.AOS_LLM_HOOKS_ACTIVE = "1";
     process.env.AOS_LLM_HOOKS_STRICT = process.env.AOS_LLM_HOOKS_STRICT ?? "1";
   }
   const { store } = await createProjectStore();
@@ -64,6 +67,18 @@ export async function runLlmWorkerCli(
         loadWebSecrets({ store, rootPath: job.rootPath }),
         store.getWebProject(job.rootPath)
       ]);
+      const hookFile = path.join(
+        runtime.runtime.project.config.artemis.repo,
+        "artemis",
+        "security",
+        "install.py"
+      );
+      const hooksPresent = await access(hookFile).then(
+        () => true,
+        () => false
+      );
+      if (hooksPresent) process.env.AOS_LLM_HOOKS_ACTIVE = "1";
+      else delete process.env.AOS_LLM_HOOKS_ACTIVE;
       await writeWebSecretFile({ rootPath: job.rootPath, secrets });
       return { runtime, secrets, appPackage: web?.appPackage ?? null };
     },

@@ -3736,6 +3736,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **未完成**：ARTEMIS 进程内 H1–H4 hooks（观察/截图/动作/trace 脱敏与注入）、gateway `/install`、面板 LLM/gateway 状态、worker 心跳 `llm-worker-offline`、真实设备联调。
 - **安全闸（当前）**：`executeAndroidLlmCase` 在 secret 非空且 `AOS_LLM_HOOKS_ACTIVE!=1` 时返回 `ERROR llm-secret-hook-unavailable`，带账号用例在 hooks 接通前 fail-closed。
 - **Hooks 选定（2026-11-04 二评）**：**B 为主 + A 为辅 + C 为准入**。B 按 AGENTS patch artemis（观察层 hierarchy+screenshot 按 bounds 遮罩、storage/trace 清洗、动作注入）；A 只兜底 B 未覆盖的直接 LLM 创建路径（`ModelFactory.create_model`/`get_google_llm`，含 chunking/summarizer），带签名守卫；C 拒绝高风险用例 + 测试账号 allowlist，但不当作安全保证。B 铺开前先用真实设备验证 hierarchy bounds 缺失率。
+- **B 的落地方式**：artemis 是上游 submodule，下游改动以 `patches/artemis/0001-aos-web-llm-hooks.patch` 承载（`npm run artemis:patch` 应用，submodule 更新后重放）；parent pin 保持上游 commit，克隆不需要私有 submodule 提交。LLM worker 只在本机存在 `artemis/security/install.py` 时置 `AOS_LLM_HOOKS_ACTIVE=1`，否则所有 LLM 用例 fail-closed。
 - **状态**：实现中；P0 远程 Android、P0b 远程 iOS。实施计划：`docs/superpowers/plans/2026-11-04-web-llm-execution.md`。
 - **默认值表（唯一事实源）**：
 
