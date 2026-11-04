@@ -243,6 +243,7 @@ export async function generateScriptSetForProject(
         const normalizedSteps = normalized.normalized.get(entry.caseId);
         return {
           caseId: entry.caseId,
+          module: entry.module,
           steps: entry.steps,
           expected: entry.expected,
           preconditions: entry.preconditions,

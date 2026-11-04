@@ -99,6 +99,19 @@ test("script-set: 相同输入生成相同 zip/sha，manifest 可解析", () => 
   assert.equal(parsed.assertionDocHash, first.manifest.assertionDocHash);
 });
 
+test("script-set: manifest 携带 Excel 模块", () => {
+  const result = bundle({
+    cases: [
+      { ...CASES[0], module: "登录" },
+      { ...CASES[1], module: null }
+    ]
+  });
+  const first = result.manifest.cases.find((entry) => entry.caseId === "TC-1");
+  const second = result.manifest.cases.find((entry) => entry.caseId === "TC-2");
+  assert.equal(first.module, "登录");
+  assert.equal(second.module, null);
+});
+
 test("script-set: assertionDocHash 随预期变化", () => {
   const first = bundle();
   const changed = bundle({

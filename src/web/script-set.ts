@@ -18,6 +18,7 @@ export const SCRIPT_SET_GENERATOR_VERSION = 1;
 
 export interface ScriptSetCaseSummary {
   caseId: string;
+  module: string | null;
   status: ScriptGenResult["status"];
   flow: string | null;
   assertions: number;
@@ -193,13 +194,14 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
   const used = new Set<string>();
   const files: Array<{ path: string; content: string }> = [];
   const cases: ScriptSetCaseSummary[] = [];
-  for (const entry of generated.cases) {
+  for (const [index, entry] of generated.cases.entries()) {
     const flow = entry.status === "ready" ? allocateFlowPath(entry.caseId, used) : null;
     if (flow !== null && entry.yaml !== null) {
       files.push({ path: flow, content: entry.yaml });
     }
     cases.push({
       caseId: entry.caseId,
+      module: input.cases[index]?.module ?? null,
       status: entry.status,
       flow,
       assertions: entry.assertions,

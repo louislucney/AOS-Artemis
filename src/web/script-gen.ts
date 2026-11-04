@@ -29,6 +29,8 @@ export interface ScriptGenCaseInput {
   steps: string[];
   expected?: string | null;
   preconditions?: string[];
+  /** Excel 模块；写入 manifest 供 runner 过滤。 */
+  module?: string | null;
   /** Precomputed assertion document (same classifier); omit to classify here. */
   assertionDoc?: AssertionDoc;
   /** Optional LLM-normalized actions; per-step fallback to raw parsing when absent. */

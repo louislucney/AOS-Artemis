@@ -74,6 +74,13 @@ async function workspace(t, flowNames, options = {}) {
   return { root, jobDir, flowsDir };
 }
 
+async function writeManifest(jobDir, cases) {
+  await writeFile(
+    path.join(jobDir, "manifest.json"),
+    `${JSON.stringify({ schemaVersion: 1, cases }, null, 2)}\n`
+  );
+}
+
 function fakeExec(handler) {
   const calls = [];
   const exec = async (command, args, options = {}) => {
@@ -743,7 +750,64 @@ test("executeWebJob: 非法设备 serial 不执行命令", async (t) => {
   assert.equal(calls.length, 0);
 });
 
-test("executeWebJob: caseIds 只跑指定 flow；modules 暂不支持 → typed error", async (t) => {
+test("executeWebJob: manifest module/caseId 过滤只跑选中 flow", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml", "flow-b.yaml"]);
+  await writeManifest(jobDir, [
+    { caseId: "TC-1", module: "登录", flow: "flows/flow-a.yaml" },
+    { caseId: "TC-2", module: "支付", flow: "flows/flow-b.yaml" }
+  ]);
+  const { exec, calls } = execWithJunit(junit([xmlCase({ name: "flow-a" })]));
+  const filtered = await executeWebJob({
+    jobSpec: jobSpec({ caseFilter: { modules: ["登录"], caseIds: [] } }),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+  assert.equal(filtered.status, "passed");
+  assert.deepEqual(filtered.cases.map((entry) => entry.caseId), ["TC-1"]);
+  assert.ok(calls[0].args.includes(path.join(flowsDir, "flow-a.yaml")), "只把选中 flow 传给 Maestro");
+  assert.ok(!calls[0].args.includes(path.join(flowsDir, "flow-b.yaml")));
+  assert.notEqual(calls[0].args.at(-1), flowsDir + path.sep, "有过滤时不传整个目录");
+});
+
+test("executeWebJob: manifest caseId 支持中文/空格，结果保留原始 caseId", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  await writeManifest(jobDir, [
+    { caseId: "中文 用例", module: "登录", flow: "flows/flow-a.yaml" }
+  ]);
+  const { exec } = execWithJunit(junit([xmlCase({ name: "flow-a" })]));
+  const result = await executeWebJob({
+    jobSpec: jobSpec({ caseFilter: { modules: [], caseIds: ["中文 用例"] } }),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+  assert.equal(result.status, "passed");
+  assert.deepEqual(result.cases.map((entry) => entry.caseId), ["中文 用例"]);
+});
+
+test("executeWebJob: manifest 存在但模块无匹配 → case-filter-no-match", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  await writeManifest(jobDir, [
+    { caseId: "TC-1", module: "登录", flow: "flows/flow-a.yaml" }
+  ]);
+  const result = await executeWebJob({
+    jobSpec: jobSpec({ caseFilter: { modules: ["不存在"], caseIds: [] } }),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec: fakeExec(async () => ({ code: 0, stdout: "", stderr: "" })).exec,
+    env: {}
+  });
+  assert.equal(result.status, "error");
+  assert.equal(result.detail, "case-filter-no-match");
+});
+
+test("executeWebJob: caseIds 只跑指定 flow；无 manifest 时 modules → typed error", async (t) => {
   const { jobDir, flowsDir } = await workspace(t, ["TC-1.yaml", "TC-2.yaml"]);
   const { exec } = execWithJunit(junit([xmlCase({ name: "TC-1" })]));
   const filtered = await executeWebJob({

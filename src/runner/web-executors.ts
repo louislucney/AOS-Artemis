@@ -149,6 +149,52 @@ async function listTopLevelFlows(dir: string): Promise<string[]> {
     .sort((left, right) => left.localeCompare(right));
 }
 
+interface ManifestCase {
+  caseId: string;
+  module: string | null;
+  flowPath: string | null;
+}
+
+/** Plan 2 manifest 与 flows/ 同级；缺失/损坏时回退旧行为（按文件名 stem 匹配）。 */
+async function readScriptManifest(flowsDir: string): Promise<ManifestCase[] | null> {
+  const manifestPath = path.join(path.dirname(flowsDir), "manifest.json");
+  let raw: string;
+  try {
+    const info = await lstat(manifestPath);
+    if (!info.isFile() || info.size > 2 * 1024 * 1024) return null;
+    raw = await readFile(manifestPath, "utf-8");
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object") return null;
+  const cases = (parsed as { cases?: unknown }).cases;
+  if (!Array.isArray(cases)) return null;
+  const root = path.dirname(flowsDir);
+  const out: ManifestCase[] = [];
+  for (const entry of cases) {
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const caseId = typeof record.caseId === "string" ? record.caseId.trim() : "";
+    if (caseId === "") continue;
+    const module =
+      typeof record.module === "string" && record.module.trim() !== ""
+        ? record.module.trim()
+        : null;
+    const flowRaw = typeof record.flow === "string" ? record.flow.trim() : "";
+    const resolved = flowRaw === "" ? null : path.resolve(root, flowRaw);
+    const flowPath =
+      resolved !== null && isInside(flowsDir, resolved) ? resolved : null;
+    out.push({ caseId, module, flowPath });
+  }
+  return out.length === 0 ? null : out;
+}
+
 const HARD_ASSERTION_LINE = /^\s*-\s*assert(?:Visible|NotVisible|True|Condition)\b/gm;
 const ASSERTION_TEXT_LINE = /^\s*-\s*(assertVisible|assertNotVisible)\s*:\s*(.+?)\s*$/gm;
 
@@ -429,23 +475,51 @@ export async function executeWebJob(
   }
 
   const caseFilter = input.jobSpec.caseFilter;
-  if (caseFilter.modules.length > 0) {
-    return resultAt(startedAtMs, "error", [], "case-filter-modules-unsupported");
-  }
   const allFlowFiles = await listTopLevelFlows(flowsDir);
   if (allFlowFiles.length === 0) {
     return resultAt(startedAtMs, "error", [], "no-flow-files");
   }
+  const manifestCases = await readScriptManifest(flowsDir);
   const wantedCaseIds = new Set(
     caseFilter.caseIds.map((caseId) => caseId.trim()).filter((caseId) => caseId !== "")
   );
-  const flowFiles =
-    wantedCaseIds.size === 0
-      ? allFlowFiles
-      : allFlowFiles.filter((file) => wantedCaseIds.has(path.basename(file, path.extname(file))));
+  const wantedModules = new Set(
+    caseFilter.modules.map((module) => module.trim()).filter((module) => module !== "")
+  );
+  const hasFilters = wantedCaseIds.size > 0 || wantedModules.size > 0;
+  let flowFiles: string[];
+  if (manifestCases !== null) {
+    const wantedFlows = new Set<string>();
+    for (const entry of manifestCases) {
+      if (wantedCaseIds.size > 0 && !wantedCaseIds.has(entry.caseId)) continue;
+      if (
+        wantedModules.size > 0 &&
+        (entry.module === null || !wantedModules.has(entry.module))
+      ) {
+        continue;
+      }
+      if (entry.flowPath !== null) wantedFlows.add(entry.flowPath);
+    }
+    flowFiles = hasFilters
+      ? allFlowFiles.filter((file) => wantedFlows.has(path.resolve(file)))
+      : allFlowFiles;
+  } else {
+    if (wantedModules.size > 0) {
+      return resultAt(startedAtMs, "error", [], "case-filter-modules-unsupported");
+    }
+    flowFiles =
+      wantedCaseIds.size === 0
+        ? allFlowFiles
+        : allFlowFiles.filter((file) =>
+            wantedCaseIds.has(path.basename(file, path.extname(file)))
+          );
+  }
   if (flowFiles.length === 0) {
     return resultAt(startedAtMs, "error", [], "case-filter-no-match");
   }
+  const execTargets = hasFilters
+    ? flowFiles.map((file) => path.resolve(file))
+    : [`${flowsDir}${path.sep}`];
 
   const flowByStem = new Map<string, string>();
   const duplicateFlows: string[] = [];
@@ -461,6 +535,16 @@ export async function executeWebJob(
   if (flowByStem.size === 0) {
     return resultAt(startedAtMs, "error", [], "no-flow-files");
   }
+  const manifestByFlow = new Map<string, ManifestCase>();
+  for (const entry of manifestCases ?? []) {
+    if (entry.flowPath !== null) manifestByFlow.set(entry.flowPath, entry);
+  }
+  const caseIdByStem = new Map<string, string>();
+  for (const [stem, file] of flowByStem) {
+    const entry = manifestByFlow.get(path.resolve(file));
+    if (entry !== undefined) caseIdByStem.set(stem, entry.caseId);
+  }
+  const publicCaseId = (stem: string): string => caseIdByStem.get(stem) ?? stem;
   const stems = [...flowByStem.keys()].sort(
     (left, right) => right.length - left.length || left.localeCompare(right)
   );
@@ -495,7 +579,7 @@ export async function executeWebJob(
         junitPath,
         "--debug-output",
         debugDir,
-        `${flowsDir}${path.sep}`
+        ...execTargets
       ],
       { timeoutMs, env: input.env }
     );
@@ -562,7 +646,7 @@ export async function executeWebJob(
     if (usedStems.has(matched)) {
       warnings.push(`duplicate-testcase:${matched}`);
       cases.push({
-        caseId: `duplicate:${matched}#${index + 1}`,
+        caseId: `duplicate:${publicCaseId(matched)}#${index + 1}`,
         name,
         status: "ERROR",
         durationMs: raw.durationMs,
@@ -572,7 +656,7 @@ export async function executeWebJob(
     }
     usedStems.add(matched);
     const entry: WebJobExecutionCase = {
-      caseId: matched,
+      caseId: publicCaseId(matched),
       name,
       status: raw.status,
       durationMs: raw.durationMs,
@@ -593,7 +677,7 @@ export async function executeWebJob(
   for (const stem of duplicateFlows) {
     warnings.push(`duplicate-flow:${stem}`);
     cases.push({
-      caseId: `duplicate:${stem}#flow`,
+      caseId: `duplicate:${publicCaseId(stem)}#flow`,
       name: stem,
       status: "ERROR",
       durationMs: 0,
@@ -605,7 +689,7 @@ export async function executeWebJob(
     if (usedStems.has(stem)) continue;
     warnings.push(`flow-not-in-junit:${stem}`);
     cases.push({
-      caseId: stem,
+      caseId: publicCaseId(stem),
       name: stem,
       status: "ERROR",
       durationMs: 0,
