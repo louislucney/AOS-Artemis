@@ -3435,6 +3435,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 ### 13.280 新增（Web 下发预检：无脚本/未就绪脚本拒绝）
 
 > 2026-10-29。Plan 2A Phase 4：把“无脚本直到 runner 才报错”改成下发前拒绝；unresolved 默认阻止，显式允许才部分下发。
+> **2026-11-04 已被 §13.302 取代**：无脚本改为下发时惰性生成；unresolved 默认允许并写 SKIP；过期脚本自动重建。本节保留为历史记录。
 
 - **错误码**（`src/web/job-spec.ts`）：`script-set-missing`（400，Maestro 执行但未选 scripts 资产）；`script-set-incomplete`（409，scripts 资产 metadata `unresolved>0` 且未显式允许部分下发）。
 - **预检**（`src/web/jobs.ts` `createWebJob`）：加载脚本并完成 Excel/包/平台精确匹配后：
@@ -3674,13 +3675,16 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **计数**：卡片 subtitle 与分页显示 `本页 X 组 · Y 个文件`，不再把 13 个文件说成 13 项。
 - **测试**：`console-pages` 新增用例集 md/json/xlsx 分组断言；全量 3017 绿，lint 0 error。
 
-### 13.302 设计（未实现）：数据源限制移除与默认值单一事实源
+### 13.302 新增（数据源 P0：默认部分下发、来源解耦、脚本集惰性生成/重建、过滤生效）
 
-> 2026-11-04。外部评审「小修后通过（无 K）」后修订；本轮只落文档，代码未实现。完整方案见 `docs/superpowers/specs/2026-11-04-data-source-restrictions-design.md` v2。
+> 2026-11-04。外部评审「小修后通过（无 K）」后修订并实施 P0（R1/R2/R3/R4/R11）；完整方案见 `docs/superpowers/specs/2026-11-04-data-source-restrictions-design.md` v2。旧平台 spec（2026-10-28）的 `allowPartialUnresolved` 默认值已被本节取代。
 
-- **状态**：设计已评审，待实现；实现后在本节补实现记录与测试数。旧平台 spec（2026-10-28）的 `allowPartialUnresolved` 默认值已被本节取代。
-- **数据源归项目，执行归主机**：套件回归的来源读取不再依赖目标主机是否登记项目；目标主机未登记时仍禁止执行，但来源可见并显式示因（含 `sourceStore.error`，不回落空下拉）。
-- **脚本集惰性生成**：Web 测试不选脚本集也可下发；服务端按当前 Excel/包以 rules-only + bestEffort 生成；`runnable=0` 才拒绝。幂等由 `web_assets.dedupe_key` 唯一索引（生成脚本集 = sha256，普通上传 NULL）＋ 文件锁保证，不新增 PG advisory lock。
+- **状态**：P0 已实现；全量 3030 测试绿、lint 0 error。R5/R6/R7/R10 与 L2/L6 仍待排期。
+- **数据源归项目，执行归主机**：套件回归的来源读取不再依赖目标主机是否登记项目；目标主机未登记时仍禁止执行，但来源可见并显式示因（`DispatchPreview.sourceStore{tier,hostId,error}`，读取失败不回落空下拉）。目标主机登记项目时永远读目标 store，保持预览/执行一致。
+- **脚本集惰性生成**：Web 测试不选脚本集也可下发；`createWebJob` 在 maestro 且无脚本时按当前 Excel/包以 rules-only + bestEffort + precondition auto + inferNavigationTap 生成；`runnable=0` 才拒绝。生成失败映射 400 `script-generation-failed`，墙钟超时 400 `script-generation-timeout`（`AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` 默认 30000，0 关闭），未预期异常仍 500 并留审计。
+- **幂等**：`web_assets.dedupe_key` 可空列 + `(root_path,kind,dedupe_key)` 唯一索引；生成的脚本集写 sha256，普通上传保持 NULL（不改变“重复上传=新版本”语义）。`storeScriptSet` 在文件锁内查/插，Postgres 命中 23505 时读回已有行；不新增 PG advisory lock。生成 manifest 无时间戳/随机字段，同输入 sha 稳定（测试守卫）。
+- **过期重建**：显式脚本集与当前 Excel/包/平台不匹配（含未声明绑定）时，默认自动重建并替换；响应带 `rebuiltScriptSet{from,to}`、warning `script-set-rebuilt`，审计 `web.scripts.generate` 的 `trigger=rebuild`；重建失败 409 `script-set-rebuild-failed`。`allowStaleScript:true` 保留旧脚本并 warning `stale-script`。
+- **过滤生效**：脚本 manifest 的每个 case 带 `module` 与 `flow`；runner 从 `flowsDir` 父目录读 manifest，按 `caseIds`（原始 caseId，支持中文/空格）与 `modules` 过滤，并把选中的 flow 文件路径传给 Maestro（不再只过滤结果映射）；旧 manifest 回退 stem 匹配，无 manifest 的模块过滤仍显式 `case-filter-modules-unsupported`。
 - **默认值表（唯一事实源）**：
 
 | 配置 | 默认 | 显式值/说明 |
