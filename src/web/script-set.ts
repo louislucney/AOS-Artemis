@@ -61,7 +61,7 @@ export interface ScriptSetBundleInput {
   sourceExcelAssetId: string;
   packageAssetId: string;
   cases: ScriptGenCaseInput[];
-  preconditionMode?: PreconditionMode;
+  preconditionMode?: PreconditionMode | "auto";
   inferNavigationTap?: boolean;
   includeSoftText?: boolean;
   bestEffort?: boolean;
@@ -167,12 +167,18 @@ function sameMetadata(left: Record<string, unknown>, right: Record<string, unkno
 
 export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBundle {
   const generatorVersion = input.generatorVersion ?? SCRIPT_SET_GENERATOR_VERSION;
+  const preconditionMode: PreconditionMode =
+    input.preconditionMode === "auto"
+      ? input.bestEffort === true
+        ? "assume-prepared"
+        : "strict"
+      : input.preconditionMode ?? "strict";
   const generated = generateScriptSet({
     appId: input.appId,
     platform: input.platform,
     cases: input.cases,
     options: {
-      preconditionMode: input.preconditionMode,
+      preconditionMode,
       inferNavigationTap: input.inferNavigationTap,
       includeSoftText: input.includeSoftText,
       bestEffort: input.bestEffort
@@ -207,7 +213,7 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
     appId: input.appId,
     sourceExcelAssetId: input.sourceExcelAssetId,
     packageAssetId: input.packageAssetId,
-    preconditionMode: input.preconditionMode ?? "strict",
+    preconditionMode,
     inferNavigationTap: input.inferNavigationTap === true,
     includeSoftText: input.includeSoftText === true,
     bestEffort: input.bestEffort === true,

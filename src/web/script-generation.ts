@@ -30,7 +30,8 @@ export type ScriptGenerationErrorCode =
   | "excel-unreadable"
   | "no-cases"
   | "app-id-missing"
-  | "app-id-invalid";
+  | "app-id-invalid"
+  | "llm-not-configured";
 
 export class ScriptGenerationError extends Error {
   readonly code: ScriptGenerationErrorCode;
@@ -50,7 +51,7 @@ export interface GenerateScriptSetInput {
   platform: ScriptPlatform;
   /** 缺省用 Web 项目的 appPackage。 */
   appId?: string | null;
-  preconditionMode?: PreconditionMode;
+  preconditionMode?: PreconditionMode | "auto";
   inferNavigationTap?: boolean;
   includeSoftText?: boolean;
   /** Manual-document mode: unmapped steps become screenshots/manual markers. */

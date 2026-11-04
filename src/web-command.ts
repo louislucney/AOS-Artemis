@@ -71,7 +71,7 @@ export function printWebUsage(log: (line: string) => void): void {
 Usage:
   mobile-testing-mcp web scripts generate --project <dir> --excel <assetId> --package <assetId>
       --platform <android|ios> [--app-id <package|bundleId>]
-      [--strict|--assume-prepared] [--dry-run] [--json]
+      [--strict|--assume-prepared|--precondition-mode auto] [--best-effort] [--dry-run] [--json]
 
 说明:
   --project <dir>       项目根目录（缺省按 AOS_PROJECT_DIR / cwd）
@@ -81,36 +81,50 @@ Usage:
   --app-id              缺省用项目 appPackage；双端建议显式传
   --strict              前置条件非空 → unresolved（默认）
   --assume-prepared     前置条件视为环境已准备；clearState/stopApp=false，结果标注
+  --precondition-mode   strict | assume-prepared | auto（auto 在 --best-effort 下按环境已准备）
+  --best-effort         未识别步骤写 manual 标记+截图，不阻断其他步骤
   --dry-run             只生成 manifest，不写 scripts 资产
   --json                机器可读输出
   --help                本帮助
 
-exit codes: 0 成功；1 没有 ready 用例/脚本集不可用；2 参数/项目/资产/解析错误`);
+exit codes: 0 成功；1 没有可执行用例/脚本集不可用；2 参数/项目/资产/解析错误`);
 }
 
 function parsePlatform(value: string | null): ScriptPlatform | null {
   return value === "android" || value === "ios" ? value : null;
 }
 
-function parsePreconditionMode(flags: ParsedFlags): PreconditionMode | null {
+function parsePreconditionMode(flags: ParsedFlags): PreconditionMode | "auto" | null {
   if (flags.bool("strict") && flags.bool("assume-prepared")) return null;
   if (flags.bool("assume-prepared")) return "assume-prepared";
   if (flags.bool("strict")) return "strict";
   const value = flags.get("precondition-mode");
   if (value === null) return "strict";
-  return value === "strict" || value === "assume-prepared" ? value : null;
+  return value === "strict" || value === "assume-prepared" || value === "auto" ? value : null;
 }
 
 function summarizeCases(
-  manifest: { cases: Array<{ caseId: string; status: string; assertions: number; unresolved: Array<{ code: string; step: number | null }>; warnings: string[] }> },
+  manifest: {
+    cases: Array<{
+      caseId: string;
+      status: string;
+      partial?: boolean;
+      assertions: number;
+      unresolved: Array<{ code: string; step: number | null }>;
+      manualSteps?: Array<{ code: string; step: number }>;
+      warnings: string[];
+    }>;
+  },
   limit = 20
 ): string[] {
   const lines: string[] = [];
   for (const entry of manifest.cases.slice(0, limit)) {
     const issues = entry.unresolved.map((item) => `${item.code}${item.step === null ? "" : `:${item.step}`}`);
+    const manual = (entry.manualSteps ?? []).map((item) => `${item.code}:${item.step}`);
     const warnings = entry.warnings.length > 0 ? ` · warning ${entry.warnings.join(",")}` : "";
     lines.push(
-      `  ${entry.caseId} ${entry.status} · assertions ${entry.assertions}` +
+      `  ${entry.caseId} ${entry.partial === true ? "partial" : entry.status} · assertions ${entry.assertions}` +
+        (manual.length > 0 ? ` · manual ${manual.join(",")}` : "") +
         (issues.length > 0 ? ` · ${issues.join(",")}` : "") +
         warnings
     );
@@ -143,6 +157,7 @@ export async function runWebCommand(argv: string[], deps: WebCliDeps = {}): Prom
   if (preconditionMode === null) {
     return reportUsageError(errorLog, "--strict 与 --assume-prepared 不能同时使用");
   }
+  const bestEffort = flags.bool("best-effort");
 
   let store = deps.store;
   let ownsStore = false;
@@ -165,6 +180,7 @@ export async function runWebCommand(argv: string[], deps: WebCliDeps = {}): Prom
         platform,
         appId: flags.get("app-id"),
         preconditionMode,
+        bestEffort,
         dryRun: flags.bool("dry-run"),
         uploadedBy: "cli"
       });
@@ -183,6 +199,7 @@ export async function runWebCommand(argv: string[], deps: WebCliDeps = {}): Prom
       platform,
       appId: flags.get("app-id"),
       preconditionMode,
+      bestEffort,
       dryRun: flags.bool("dry-run"),
       uploadedBy: "cli"
     });
@@ -226,7 +243,12 @@ function printResult(
           appId: result.appId,
           platform: result.platform,
           ready: result.ready,
+          partial: result.partial,
+          runnable: result.runnable,
           unresolved: result.unresolved,
+          normalizer: result.normalizer,
+          llmCases: result.llmCases,
+          normalizerWarnings: result.normalizerWarnings,
           created: result.created,
           asset:
             result.asset === null
@@ -247,7 +269,9 @@ function printResult(
     log(
       `脚本生成${result.dryRun ? "（dry-run）" : ""} · 平台 ${result.platform} · appId ${result.appId}`
     );
-    log(`用例 ${result.manifest.counts.cases}：ready ${result.ready} / unresolved ${result.unresolved}`);
+    log(
+      `用例 ${result.manifest.counts.cases}：可执行 ${result.runnable}（完整 ${result.ready} / 部分 ${result.partial}）/ 未就绪 ${result.unresolved} · ${result.normalizer}`
+    );
     if (result.asset !== null) {
       log(
         `脚本集 v${result.asset.version} · ${result.asset.filename} · ${result.created ? "新建" : "复用"} · sha256 ${result.asset.sha256.slice(0, 12)}`
@@ -255,8 +279,8 @@ function printResult(
     }
     for (const line of summarizeCases(result.manifest)) log(line);
   }
-  if (result.ready === 0) {
-    errorLog("没有 ready 用例：脚本集不可下发；请检查前置条件/步骤解析或使用 --assume-prepared");
+  if (result.runnable === 0) {
+    errorLog("没有可执行用例：脚本集不可下发；请检查前置条件/步骤解析或使用 --best-effort");
     return 1;
   }
   return 0;
