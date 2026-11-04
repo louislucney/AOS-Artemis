@@ -777,7 +777,15 @@ test("executeWebJob: manifest caseId 支持中文/空格，结果保留原始 ca
   await writeManifest(jobDir, [
     { caseId: "中文 用例", module: "登录", flow: "flows/flow-a.yaml" }
   ]);
-  const { exec } = execWithJunit(junit([xmlCase({ name: "flow-a" })]));
+  const { exec } = fakeExec(async (command, args) => {
+    const index = args.indexOf("--output");
+    const output = args[index + 1];
+    await mkdir(path.dirname(output), { recursive: true });
+    await writeFile(output, junit([xmlCase({ name: "flow-a" })]));
+    await mkdir(path.join(jobDir, "maestro"), { recursive: true });
+    await writeFile(path.join(jobDir, "maestro", "flow-a.png"), "png");
+    return { code: 0, stdout: "", stderr: "" };
+  });
   const result = await executeWebJob({
     jobSpec: jobSpec({ caseFilter: { modules: [], caseIds: ["中文 用例"] } }),
     jobDir,
@@ -788,6 +796,9 @@ test("executeWebJob: manifest caseId 支持中文/空格，结果保留原始 ca
   });
   assert.equal(result.status, "passed");
   assert.deepEqual(result.cases.map((entry) => entry.caseId), ["中文 用例"]);
+  assert.deepEqual(result.cases[0].screenshotPaths, [
+    path.join(jobDir, "maestro", "flow-a.png")
+  ]);
 });
 
 test("executeWebJob: manifest 存在但模块无匹配 → case-filter-no-match", async (t) => {
@@ -805,6 +816,23 @@ test("executeWebJob: manifest 存在但模块无匹配 → case-filter-no-match"
   });
   assert.equal(result.status, "error");
   assert.equal(result.detail, "case-filter-no-match");
+});
+
+test("executeWebJob: 旧 manifest 无 module 字段 → 模块过滤报不支持", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  await writeManifest(jobDir, [
+    { caseId: "TC-1", flow: "flows/flow-a.yaml" }
+  ]);
+  const result = await executeWebJob({
+    jobSpec: jobSpec({ caseFilter: { modules: ["登录"], caseIds: [] } }),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec: fakeExec(async () => ({ code: 0, stdout: "", stderr: "" })).exec,
+    env: {}
+  });
+  assert.equal(result.status, "error");
+  assert.equal(result.detail, "case-filter-modules-unsupported");
 });
 
 test("executeWebJob: caseIds 只跑指定 flow；无 manifest 时 modules → typed error", async (t) => {

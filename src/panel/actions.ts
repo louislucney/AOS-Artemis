@@ -40,6 +40,7 @@ import {
   generateScriptSetForProject,
   ScriptGenerationError
 } from "../web/script-generation.js";
+import { ScriptGenerationTimeoutError } from "../web/script-gen.js";
 import { makeChatFn } from "../llm/chat.js";
 import { createLlmStepNormalizer, type StepNormalizer } from "../web/step-normalizer.js";
 import { ScriptSetStoreError } from "../web/script-set.js";
@@ -1281,6 +1282,13 @@ async function saveExcelMappingAction(
 }
 
 function scriptGenerationErrorResponse(error: unknown): PanelWebResponse | null {
+  if (error instanceof ScriptGenerationTimeoutError) {
+    return json(400, {
+      ok: false,
+      error: error.message,
+      code: "script-generation-timeout"
+    });
+  }
   if (error instanceof ScriptSetStoreError) {
     return json(error.code === "script-set-unusable" ? 409 : 400, {
       ok: false,
@@ -2057,6 +2065,28 @@ async function createWebJobAction(
         scriptWarning
     });
   } catch (error) {
+    const generationFailure =
+      error instanceof WebJobDispatchError &&
+      (error.code === "script-generation-failed" ||
+        error.code === "script-generation-timeout" ||
+        error.code === "script-set-rebuild-failed");
+    if (generationFailure) {
+      await recordAuditSafe(deps.store, rootPath, {
+        domain: "web",
+        action: "web.scripts.generate",
+        result: "failed",
+        actor,
+        summary: `下发时生成 Web 脚本集失败：${errorMessage(error)}`
+      });
+    } else if (!(error instanceof WebJobDispatchError)) {
+      await recordAuditSafe(deps.store, rootPath, {
+        domain: "web",
+        action: "action.jobs",
+        result: "failed",
+        actor,
+        summary: `下发任务异常：${errorMessage(error)}`
+      });
+    }
     if (error instanceof WebJobDispatchError) {
       return json(error.status, { ok: false, code: error.code, error: error.message });
     }

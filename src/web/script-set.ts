@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import type { ProjectStore, WebAssetRecord } from "../db/types.js";
 import { storeWebAsset } from "./assets.js";
+import { withFileLock } from "./lock.js";
 import {
   generateScriptSet,
   type PreconditionMode,
@@ -262,6 +264,13 @@ export function buildScriptSetBundle(input: ScriptSetBundleInput): ScriptSetBund
 }
 
 export async function storeScriptSet(input: StoreScriptSetInput): Promise<StoreScriptSetResult> {
+  const lockPath = path.join(input.rootPath, ".artemis", "web", "script-sets.lock");
+  return withFileLock(lockPath, () => storeScriptSetLocked(input));
+}
+
+async function storeScriptSetLocked(
+  input: StoreScriptSetInput
+): Promise<StoreScriptSetResult> {
   const sourceExcelAssetId = input.bundle.manifest.sourceExcelAssetId.trim();
   const packageAssetId = input.bundle.manifest.packageAssetId.trim();
   if (sourceExcelAssetId === "" || packageAssetId === "") {
@@ -283,11 +292,22 @@ export async function storeScriptSet(input: StoreScriptSetInput): Promise<StoreS
       .slice(0, 6)
       .map(([code, count]) => `${code}×${count}`)
       .join("、");
+    const details = input.bundle.manifest.cases
+      .filter((entry) => entry.unresolved.length > 0)
+      .slice(0, 20)
+      .map(
+        (entry) =>
+          `${entry.caseId}:${entry.unresolved
+            .slice(0, 3)
+            .map((unresolved) => unresolved.code)
+            .join("/")}`
+      )
+      .join("；");
     throw new ScriptSetStoreError(
       "script-set-unusable",
       `没有可执行用例（ready=${input.bundle.ready} / partial=${input.bundle.partial ?? 0} / unresolved=${input.bundle.unresolved}${
         summary === "" ? "" : `；主要原因：${summary}`
-      }），拒绝写脚本集。可勾选「仅预览」查看逐条原因；如需保留未映射步骤，可启用「尽力生成」`
+      }${details === "" ? "" : `；逐例：${details}`}），拒绝写脚本集。可勾选「仅预览」查看逐条原因；如需保留未映射步骤，可启用「尽力生成」`
     );
   }
   const metadata = metadataFor(input.bundle);

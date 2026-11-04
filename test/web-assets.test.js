@@ -694,6 +694,48 @@ test("PostgresStore (pg-mem): dedupeKey 幂等，不同 key 仍递增版本", as
   assert.equal(other.version, 2, "不同 dedupeKey 正常递增");
 });
 
+test("PostgresStore (pg-mem): 旧 web_assets schema 升级补 dedupe_key 后可幂等", async () => {
+  const mem = newDb({ noAstCoverageCheck: true });
+  const { Pool } = mem.adapters.createPg();
+  const pool = new Pool();
+  await pool.query(`CREATE TABLE web_assets (
+    id TEXT,
+    project_id TEXT,
+    root_path TEXT,
+    kind TEXT,
+    version INTEGER,
+    filename TEXT,
+    sha256 TEXT,
+    size INTEGER,
+    storage_path TEXT,
+    uploaded_by TEXT,
+    created_at TEXT,
+    metadata TEXT
+  )`);
+  const store = new PostgresStore(pool);
+  await store.init();
+  const key = "d".repeat(64);
+  const first = await store.createWebAsset({
+    rootPath: "/w/upgrade",
+    kind: "scripts",
+    filename: "a.zip",
+    sha256: key,
+    size: 1,
+    storagePath: "/w/upgrade/a.zip",
+    dedupeKey: key
+  });
+  const second = await store.createWebAsset({
+    rootPath: "/w/upgrade",
+    kind: "scripts",
+    filename: "b.zip",
+    sha256: key,
+    size: 1,
+    storagePath: "/w/upgrade/a.zip",
+    dedupeKey: key
+  });
+  assert.equal(second.id, first.id);
+});
+
 test("MemoryStore: dedupeKey 幂等", async () => {
   const store = new MemoryStore();
   const rootPath = "/w/dedupe-memory";

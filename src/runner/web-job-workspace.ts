@@ -165,8 +165,10 @@ async function extractScripts(input: {
   // Plan 2 脚本包把用例放在顶层 `flows/` 目录；解压到 flowsDir 的父目录，
   // 否则会得到 `flows/flows/<caseId>.yaml`，执行器只认顶层文件 → 0 用例。
   const fileEntries = entries.filter((entry) => !entry.endsWith("/"));
+  // 脚本包 = manifest.json（根）＋ flows/*.yaml；根 manifest 不能破坏 flows/ 展平判定。
   const hasFlowsFolder =
-    fileEntries.length > 0 && fileEntries.every((entry) => entry.startsWith("flows/"));
+    fileEntries.some((entry) => entry.startsWith("flows/")) &&
+    fileEntries.every((entry) => entry.startsWith("flows/") || entry === "manifest.json");
   const destination =
     hasFlowsFolder && path.basename(input.flowsDir) === "flows"
       ? path.dirname(input.flowsDir)

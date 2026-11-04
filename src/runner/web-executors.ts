@@ -161,7 +161,7 @@ async function readScriptManifest(flowsDir: string): Promise<ManifestCase[] | nu
   let raw: string;
   try {
     const info = await lstat(manifestPath);
-    if (!info.isFile() || info.size > 2 * 1024 * 1024) return null;
+    if (!info.isFile() || info.size > 16 * 1024 * 1024) return null;
     raw = await readFile(manifestPath, "utf-8");
   } catch {
     return null;
@@ -177,9 +177,11 @@ async function readScriptManifest(flowsDir: string): Promise<ManifestCase[] | nu
   if (!Array.isArray(cases)) return null;
   const root = path.dirname(flowsDir);
   const out: ManifestCase[] = [];
+  let hasModuleField = false;
   for (const entry of cases) {
     if (entry === null || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
+    if ("module" in record) hasModuleField = true;
     const caseId = typeof record.caseId === "string" ? record.caseId.trim() : "";
     if (caseId === "") continue;
     const module =
@@ -192,7 +194,8 @@ async function readScriptManifest(flowsDir: string): Promise<ManifestCase[] | nu
       resolved !== null && isInside(flowsDir, resolved) ? resolved : null;
     out.push({ caseId, module, flowPath });
   }
-  return out.length === 0 ? null : out;
+  // 旧 manifest（R11 之前）没有 module 字段：整体回退旧行为，模块过滤显式报不支持。
+  return out.length === 0 || !hasModuleField ? null : out;
 }
 
 const HARD_ASSERTION_LINE = /^\s*-\s*assert(?:Visible|NotVisible|True|Condition)\b/gm;
@@ -432,18 +435,21 @@ function aggregate(cases: WebJobExecutionCase[]): WebJobExecutionResult["status"
 function gatherScreenshots(
   files: string[],
   root: string,
-  cases: WebJobExecutionCase[]
+  cases: WebJobExecutionCase[],
+  stemByCaseId: Map<string, string> = new Map()
 ): void {
   const assigned = new Set<string>();
   for (const entry of cases) {
-    const needle = entry.caseId.toLowerCase();
+    const needles = [entry.caseId, stemByCaseId.get(entry.caseId)]
+      .filter((value): value is string => typeof value === "string" && value !== "")
+      .map((value) => value.toLowerCase());
     const matches: string[] = [];
     for (const file of files) {
       if (matches.length >= MAX_SCREENSHOTS_PER_CASE) break;
       if (assigned.has(file)) continue;
       if (!IMAGE_RE.test(file)) continue;
       const relative = path.relative(root, file).toLowerCase();
-      if (!relative.includes(needle)) continue;
+      if (!needles.some((needle) => relative.includes(needle))) continue;
       assigned.add(file);
       matches.push(file);
     }
@@ -625,6 +631,7 @@ export async function executeWebJob(
   const cases: WebJobExecutionCase[] = [];
   const warnings: string[] = [];
   const usedStems = new Set<string>();
+  const stemByCaseId = new Map<string, string>();
 
   rawCases.forEach((raw, index) => {
     const matched = matchesStem(raw, stems);
@@ -655,8 +662,10 @@ export async function executeWebJob(
       return;
     }
     usedStems.add(matched);
+    const outputCaseId = publicCaseId(matched);
+    stemByCaseId.set(outputCaseId, matched);
     const entry: WebJobExecutionCase = {
-      caseId: publicCaseId(matched),
+      caseId: outputCaseId,
       name,
       status: raw.status,
       durationMs: raw.durationMs,
@@ -698,7 +707,7 @@ export async function executeWebJob(
   }
 
   const debugFiles = await walkFiles(debugDir);
-  gatherScreenshots(debugFiles, jobDir, cases);
+  gatherScreenshots(debugFiles, jobDir, cases, stemByCaseId);
   const logPath =
     debugFiles.find((file) => /maestro\.log$/i.test(file)) ??
     debugFiles.find((file) => /\.log$/i.test(file));

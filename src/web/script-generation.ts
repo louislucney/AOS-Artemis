@@ -5,6 +5,7 @@ import type { ProjectStore, WebAssetRecord } from "../db/types.js";
 import { errorMessage } from "../util.js";
 import { findExcelMapping } from "./excel-mapping.js";
 import {
+  ExcelMappingError,
   parseExcel,
   readExcelHeaders,
   semanticFingerprint,
@@ -219,9 +220,13 @@ export async function generateScriptSetForProject(
       ...(format === undefined ? {} : { format })
     });
     if (parsed.cases.length === 0) {
+      const rejected = parsed.rejected
+        .slice(0, 5)
+        .map((entry) => `第 ${entry.row} 行 ${entry.reason}`)
+        .join("；");
       throw new ScriptGenerationError(
         "no-cases",
-        `Excel 没有可用用例（拒绝 ${parsed.rejected.length} 行）`
+        `Excel 没有可用用例（拒绝 ${parsed.rejected.length} 行${rejected === "" ? "" : `：${rejected}`}）`
       );
     }
 
@@ -335,9 +340,12 @@ export async function generateScriptSetForProject(
     ) {
       throw error;
     }
-    throw new ScriptGenerationError(
-      "excel-unreadable",
-      `解析 Excel 失败：${errorMessage(error)}`
-    );
+    if (error instanceof ExcelMappingError) {
+      throw new ScriptGenerationError(
+        "excel-unreadable",
+        `解析 Excel 失败：${errorMessage(error)}`
+      );
+    }
+    throw error;
   }
 }

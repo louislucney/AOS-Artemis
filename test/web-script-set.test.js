@@ -212,6 +212,24 @@ test("script-set: 写入 assets、metadata 与幂等复用", async (t) => {
   assert.equal((await store.listWebAssets(rootPath, "scripts")).length, 1);
 });
 
+test("script-set: 全不可用时错误带逐例 caseId", async (t) => {
+  const { store, rootPath } = await workspace(t);
+  const excel = await asset(store, rootPath, "excel", "cases.xlsx", "excel");
+  const pkg = await asset(store, rootPath, "package", "app.apk", "pkg");
+  await assert.rejects(
+    storeScriptSet({
+      store,
+      rootPath,
+      bundle: bundle({
+        sourceExcelAssetId: excel.id,
+        packageAssetId: pkg.id,
+        cases: [CASES[1]]
+      })
+    }),
+    /TC-2/
+  );
+});
+
 test("script-set: 新 Excel 绑定生成新版本，不复用旧资产", async (t) => {
   const { store, rootPath } = await workspace(t);
   const excel = await asset(store, rootPath, "excel", "cases.xlsx", "excel");

@@ -274,9 +274,20 @@ export async function computeDispatchPreview(
   let hostBlocked = hostParam !== "" && targetHost === null;
   if (targetHost !== null) {
     if (rootPath !== "") {
-      const targetProject = await targetStore.getProjectByPath(rootPath).catch(() => null);
+      let targetProject: Awaited<ReturnType<ProjectStore["getProjectByPath"]>> = null;
+      let targetReadError: string | null = null;
+      try {
+        targetProject = await targetStore.getProjectByPath(rootPath);
+      } catch (error) {
+        targetReadError = errorMessage(error);
+      }
       targetProjectFound = targetProject !== null;
-      if (targetProject === null) {
+      if (targetReadError !== null) {
+        warnings.push(
+          `目标主机来源读取失败（host=${targetHost.id}）：${targetReadError}`
+        );
+        hostBlocked = true;
+      } else if (targetProject === null) {
         warnings.push(
           `主机「${targetHost.id}」未登记项目「${rootPath}」：套件回归需要项目目录；请先在目标机接入项目（网页测试不需要登记）`
         );
@@ -575,6 +586,9 @@ export function renderDispatchPage(view: DispatchView): string {
     : `<option value="${escapeHtml(view.rootPath)}" selected>${escapeHtml(currentLabel)}</option>`;
   const projectOptionsHtml = currentOption + projectOptions;
   const noProjects = preview.selectedHostId !== null && preview.projects.length === 0;
+  // 目标主机没登记项目，但 owner store 仍可能有用例集：此时只禁用执行（hostBlocked），
+  // 不要把来源下拉一起禁用/说成“没有用例集”。
+  const noSources = noProjects && preview.setOptions.length === 0;
   const projectSelect = [
     `<p><label>项目 <select name="project" aria-label="项目">${projectOptionsHtml}</select></label> <span class="muted">先选主机，再选该主机上的项目。</span></p>`,
     noProjects
@@ -595,9 +609,13 @@ export function renderDispatchPage(view: DispatchView): string {
       ? `/panel?section=jobs${dispatchHostQuery}`
       : `/panel?project=${encodeURIComponent(view.rootPath)}&section=jobs${dispatchHostQuery}`;
   const hostProjectCallout = noProjects
-    ? `<div class="c-flow-callout"><div><strong>该主机未登记项目，套件回归没有可用用例集。</strong><p>Excel/APK 网页测试不需要在该主机登记项目，直接去网页测试即可；如果要在该主机跑套件回归，请先在该主机接入项目。</p></div><a class="c-button c-button-primary" href="${escapeHtml(webJobsHref)}">去网页测试 →</a></div>`
+    ? `<div class="c-flow-callout"><div><strong>${
+        noSources
+          ? "该主机未登记项目，套件回归没有可用用例集。"
+          : "该主机未登记项目，套件回归不能在该主机执行；来源仍可查看。"
+      }</strong><p>Excel/APK 网页测试不需要在该主机登记项目，直接去网页测试即可；如果要在该主机跑套件回归，请先在该主机接入项目。</p></div><a class="c-button c-button-primary" href="${escapeHtml(webJobsHref)}">去网页测试 →</a></div>`
     : "";
-  const sourceEmpty = noProjects
+  const sourceEmpty = noSources
     ? `<p class="muted">该主机未登记项目，套件回归没有可用用例集。网页测试不需要登记项目：<a href="${escapeHtml(webJobsHref)}">去网页测试</a>；或先在该主机接入项目。</p>`
     : "";
   const sourceBody = [
@@ -605,7 +623,7 @@ export function renderDispatchPage(view: DispatchView): string {
     `<label class="dispatch-option"><input type="radio" name="source" value="case-set"${mode === "case-set" ? " checked" : ""}> 用例库选用例集</label>`,
     `<label class="dispatch-option"><input type="radio" name="source" value="keyword"${mode === "keyword" ? " checked" : ""}> 功能关键词</label>`,
     "</fieldset>",
-    `<div id="dispatch-field-ref"><p><label>用例集 <select name="ref" aria-label="用例集"${noProjects ? " disabled" : ""}><option value="">（选择用例集）</option>${setOptions}</select></label></p></div>`,
+    `<div id="dispatch-field-ref"><p><label>用例集 <select name="ref" aria-label="用例集"${noSources ? " disabled" : ""}><option value="">（选择用例集）</option>${setOptions}</select></label></p></div>`,
     `<div id="dispatch-field-keyword"><p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label></p></div>`,
     sourceEmpty,
     view.rootPath === ""

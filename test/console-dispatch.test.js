@@ -285,6 +285,16 @@ test("computeDispatchPreview: 目标主机未登记项目时仍从 owner store �
     hostId: "host-a",
     error: null
   });
+
+  const html = renderDispatchPage({
+    rootPath,
+    rootLabel: "owner",
+    preview,
+    query: {}
+  });
+  assert.match(html, /owner 回归/, "来源渲染可见");
+  assert.doesNotMatch(html, /<select name="ref"[^>]*disabled/, "来源下拉不因目标主机未登记而禁用");
+  assert.match(html, /来源仍可查看/, "说明该主机不能执行但来源可见");
 });
 
 test("computeDispatchPreview: owner 来源读取失败显式示因，不伪装成空", async () => {

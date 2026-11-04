@@ -307,7 +307,7 @@ async function generateScriptForJob(input: {
       bestEffort: true,
       inferNavigationTap: true,
       uploadedBy: input.uploadedBy,
-      ...(input.timeoutMs === 0 ? {} : { timeoutMs: input.timeoutMs })
+      timeoutMs: input.timeoutMs
     });
     if (result.asset === null) {
       throw new WebJobDispatchError(
@@ -402,7 +402,7 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
       timeoutMs
     });
 
-  if (script !== null) {
+  if (script !== null && combination.executionMode === "maestro") {
     let matchFailure: WebJobDispatchError | null = null;
     try {
       assertScriptSetMatch({
@@ -476,7 +476,14 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
   }
 
   const allowPartialUnresolved = input.allowPartialUnresolved !== false;
-  if (script !== null && stats !== null) {
+  if (script !== null && stats !== null && combination.executionMode === "maestro") {
+    const runnableKnown = typeof script.metadata?.runnable === "number";
+    if (runnableKnown && stats.runnable <= 0) {
+      throw new WebJobDispatchError(
+        "script-set-incomplete",
+        `脚本集 ${script.id} 没有可执行用例（runnable=0）；请重新生成或修正脚本集`
+      );
+    }
     if (stats.unresolved > 0 && !allowPartialUnresolved) {
       throw new WebJobDispatchError(
         "script-set-incomplete",

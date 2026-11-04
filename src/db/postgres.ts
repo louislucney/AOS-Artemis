@@ -444,7 +444,6 @@ const SCHEMA = [
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS web_assets_root_kind_version_idx ON web_assets(root_path, kind, version)`,
   `CREATE INDEX IF NOT EXISTS web_assets_root_kind_sha_idx ON web_assets(root_path, kind, sha256)`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS web_assets_root_kind_dedupe_idx ON web_assets(root_path, kind, dedupe_key)`,
   `CREATE TABLE IF NOT EXISTS excel_mappings (
      id TEXT PRIMARY KEY,
      project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,

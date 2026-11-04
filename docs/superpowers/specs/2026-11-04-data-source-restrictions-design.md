@@ -1,6 +1,6 @@
 # 数据源限制评估与移除设计（v2）
 
-> 2026-11-04 · 状态：**P0 已实现（R1/R2/R3/R4/R11；全量 3030 测试绿）**；R5/R6/R7/R10 与 L2/L6 待排期
+> 2026-11-04 · 状态：**P0 已实现（R1/R2/R3/R4/R11；全量 3036 测试绿）**；R5/R6/R7/R10 与 L2/L6 待排期
 > 关联：`DESIGN.md` §13.155/§13.290/§13.293（主机与项目）、§13.295–§13.301（Web 手工 Excel/产物阅读器）、§13.302（默认值与数据源解耦决定）、`docs/superpowers/specs/2026-10-28-web-project-test-platform-design.md` §4.7/§6/§7。
 > v1 评审：2026-11-04「小修后通过（无 K）」；处置与反驳见 §10。
 
@@ -144,7 +144,7 @@ LLM 路径的 `normalizerWarnings` 可能因限流文本变化导致 sha 变化�
 
 1. 面板「允许部分下发」默认勾选；表单**始终提交布尔值**（未勾选发 `false`，不能靠省略字段表达严格）。
 2. `parseWebJobCreateForm`：省略字段 → `true`；显式 `false`/`"false"` → `false`。
-3. `createWebJob`：`unresolved>0` 且允许 → 继续；job spec 记录 `allowPartialUnresolved:true`；未就绪用例结果 `SKIP（脚本未就绪）`，任务 `partial`。
+3. `createWebJob`：`unresolved>0` 且允许 → 继续；job spec 记录 `allowPartialUnresolved:true`；未就绪用例结果 `SKIP（未执行）`，任务 `partial`。
 4. 不改变：`runnable=0` 仍拒绝（没有任何可执行用例）；PASS 仍需硬断言；unresolved 不计通过。
 
 **规范同步（评审 M2）**：2026-10-28 平台 spec 的 `allowPartialUnresolved:false` 标注 superseded，指向 `DESIGN.md` §13.302。省略字段的既有调用方行为从 409 变为创建 partial 任务，这是**行为变更**，不是“API 兼容”；文档与验收都按行为变更写。
@@ -245,7 +245,7 @@ resolveSourceStore(rootPath, targetHost):
 1. **R1**：ESSO-GU 手工 Excel + APK，不选脚本集直接下发 → 自动生成脚本集并创建任务；20 条 runnable 时不阻断。
 2. **R1 幂等**：同输入连续两次自动下发 → 第二次 `created:false`、资产 id 不变、`scripts` 资产数不增；并发两请求（fake store 模拟 23505）→ 仍只有一个 dedupe_key 行；同输入 `buildScriptSetBundle` 两次 sha 相等。
 3. **R1 超时**：假生成器超过 `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` → 400 `script-generation-timeout`，不建任务；未预期异常 → 500 且审计有堆栈。
-4. **R2**：默认（省略字段）1 条 unresolved → 任务创建成功，该用例 `SKIP（脚本未就绪）`，任务 `partial`；显式 `false` → 409；`runnable=0` → 400。
+4. **R2**：默认（省略字段）1 条 unresolved → 任务创建成功，该用例 `SKIP（未执行）`，任务 `partial`；显式 `false` → 409；`runnable=0` → 400。
 5. **R3**：`win-mini-01`（未登记 ESSO-GU）+ ESSO-GU → 来源仍列出 case set；确认按钮禁用并显示主机未登记原因；owner store 读取抛错 → 显示「来源读取失败」而不是空下拉；目标主机登记项目时仍读目标 store（预览/执行一致）。
 6. **R4**：换 Excel 版本后用旧脚本集 → 自动生成新脚本集并下发；响应含 `from/to`；审计 `trigger=rebuild`；显式 `allowStaleScript` 时仍可用旧脚本并记 `stale-script`。
 7. **R11**：模块过滤只跑匹配子集；中文/空格 caseId 过滤命中；0 条 → `case-filter-no-match`；旧 manifest 回退。
