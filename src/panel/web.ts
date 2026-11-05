@@ -1355,7 +1355,7 @@ function legacyPanelRedirect(url: URL): PanelWebResponse | null {
       changed = true;
     }
   }
-  if (view === "review" || view === "stats") {
+  if ((view === "review" || view === "stats") && section !== "tasks") {
     set("section", "tasks");
     changed = true;
   }
@@ -1380,7 +1380,8 @@ export async function handlePanelRequest(
   }
   if (url.pathname === "/panel/api/hosts") return handlePanelHostsRequest(deps);
   if (url.pathname !== "/panel" && url.pathname !== "/panel.json") return notFound();
-  if (options?.legacyRedirect === true) {
+  // 只重定向 HTML 页面；`/panel.json` 保留旧 view，避免脚本/集成方因 302 改变契约。
+  if (options?.legacyRedirect === true && url.pathname === "/panel") {
     const redirect = legacyPanelRedirect(url);
     if (redirect !== null) return redirect;
   }

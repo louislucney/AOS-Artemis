@@ -3776,7 +3776,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **测试资产**（`section=assets`）：`tab=overview|case-sets|excel|packages|materials|reference|scripts`。用例集并入资产中心（原 `library`），Excel/CSV 原件、安装包、测试资料、参考图、脚本集同页；资产行显示 used-by（被哪些任务/用例集引用）。
 - **新建测试**（`section=create`）：landing 选择套件回归（`type=suite`，复用四步下发向导）或网页测试（`type=web`，原 `jobs` 表单 + 任务列表）。
 - **任务与结果**（`section=tasks`）：套件回归与网页测试统一列表（类型徽标/状态/设备/门禁/失败域），详情按类型显示套件 rerun 或 Web clone；网页任务详情保留逐用例结果、参考图列、证据与 Excel 写回。`view=review|stats` 仍作为该页子视图。
-- **旧路由 302**（`handlePanelRequest` 的 `legacyRedirect`，HTTP 模式与独立 `panel --web` 均启用；`/panel` 与 `/panel.json` 同源）：
+- **旧路由 302**（`handlePanelRequest` 的 `legacyRedirect`，HTTP 模式与独立 `panel --web` 均启用；**只重定向 HTML `/panel`**，`/panel.json` 保留旧 `view` 契约，避免脚本/集成方因 302 改变行为）：
   - `section=library` → `section=assets&tab=case-sets`
   - `section=assets&kind=excel|package|materials|reference` → `section=assets&tab=<对应 tab>`（去掉 `kind`）
   - `section=dispatch` → `section=create&type=suite`

@@ -283,7 +283,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 | `events` **项目事件** | 执行事件流（run/case/artifact/log/feedback.request），类型/状态/消费筛选＋快捷「未消费/反馈请求」；消费态与 `aos_event_poll` 同源；`payload=1`/勾选「显示 payload」查看内容（最多 50 条），默认不回显 |
 | `ops` **运维与数据** | 存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
 
-**旧路由兼容**：`section=library`→`assets&tab=case-sets`、`section=assets&kind=<excel|package|materials|reference>`→`assets&tab=<tab>`、`section=dispatch`→`create&type=suite`、`section=jobs`（无 job）→`tasks`、`view=review|stats`→`tasks&view=<view>`，均 302 且保留 `project`/`host` 等参数；`section=jobs&job=<id>` 暂保留旧详情页。见 DESIGN §13.307。
+**旧路由兼容**：`section=library`→`assets&tab=case-sets`、`section=assets&kind=<excel|package|materials|reference>`→`assets&tab=<tab>`、`section=dispatch`→`create&type=suite`、`section=jobs`（无 job）→`tasks`、`view=review|stats`→`tasks&view=<view>`，均对 HTML `/panel` 302 且保留 `project`/`host` 等参数（`/panel.json` 保留旧 `view` 契约）；`section=jobs&job=<id>` 暂保留旧详情页。见 DESIGN §13.307。
 
 写动作经 `/panel/api/*`（创建任务/释放重跑/批量裁决/一键建单/计划 CRUD/隔离/导入/导出），统一**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，跨站 403）与**全量审计**；Excel/CSV 导入支持 multipart 上传（`.xlsx/.csv`≤20MB，单飞；CSV 支持 UTF-8/GB18030、引号与单元格内换行，源副本保存为 `.source.csv`）：面板表单提交到 `/panel/api/import?project=<项目根路径>[&host=<主机 id>]`，HTTP 模式与独立 `panel --web` 均经该项目运行时解析并登记为最新用例集。独立 `panel --web` 进程默认只读，`AOS_PANEL_ACTIONS=1` 且仅 loopback 时开放动作层；导入按项目根懒建并复用本进程 store 的 Runtime（失败不缓存、退出时释放），并同时启用依赖运行时的「一键建单/证据重试」动作。**跨主机保护**：`?host=` 指向非本机主机时导入返回 400（“跨主机导入请在该项目机上执行，或使用 HTTP 模式”），不会在面板机建项目行或写用例文件。
 
