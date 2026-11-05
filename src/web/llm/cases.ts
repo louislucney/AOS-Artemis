@@ -73,6 +73,7 @@ export async function loadLlmCases(input: {
     ...(entry.name.trim() === "" ? {} : { name: entry.name }),
     module: entry.module,
     expected: entry.expected,
+    reference: entry.reference,
     taskDesc: taskDescOf({
       name: entry.name,
       steps: entry.steps,

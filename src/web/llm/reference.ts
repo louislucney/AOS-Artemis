@@ -98,11 +98,17 @@ export function compareReference(input: {
   referencePath: string | null | undefined;
   screenshotPath: string | null | undefined;
   referenceAssetId?: string | null;
+  /** 参考图显式指定但未匹配时给出具体原因（缺省 reference-asset-missing）。 */
+  missingReason?: string | null;
   env?: NodeJS.ProcessEnv;
 }): ReferenceCheck {
   const referenceAssetId = input.referenceAssetId ?? undefined;
   if (input.referencePath === null || input.referencePath === undefined) {
-    return { status: "missing", reason: "reference-asset-missing" };
+    return {
+      status: "missing",
+      reason: input.missingReason ?? "reference-asset-missing",
+      ...(referenceAssetId === undefined ? {} : { referenceAssetId })
+    };
   }
   if (input.screenshotPath === null || input.screenshotPath === undefined) {
     return {

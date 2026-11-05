@@ -2,6 +2,7 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { createProjectStore } from "../../db/index.js";
+import type { WebAssetRecord } from "../../db/types.js";
 import { defaultBuildRuntime, type CliRuntimeBundle } from "../../cli-runtime.js";
 import { resolveHostIdentity } from "../../host/identity.js";
 import { errorMessage } from "../../util.js";
@@ -10,6 +11,7 @@ import { executeAndroidLlmCase } from "./artemis-case.js";
 import { executeIosLlmCase, iosAppUrl } from "./ios-case.js";
 import { ingestLlmResults } from "./ingest.js";
 import { loadLlmCases } from "./cases.js";
+import { resolveCaseReference } from "./reference-assets.js";
 import { loadWebSecrets, writeWebSecretFile } from "./secrets.js";
 import {
   runLlmWorkerLoop,
@@ -83,6 +85,7 @@ export async function runLlmWorkerCli(
     iosAppiumUrl: string | null;
     referencePath: string | null;
     referenceAssetId: string | null;
+    references: WebAssetRecord[];
   }
   const input: RunLlmWorkerOnceInput = {
     store,
@@ -100,13 +103,14 @@ export async function runLlmWorkerCli(
           : null;
       const iosAppiumUrl = runner?.gateway?.appiumUrl ?? null;
       const runtime = await runtimeFor(job.rootPath, iosAppiumUrl);
-      const [secrets, web, pkg, reference] = await Promise.all([
+      const [secrets, web, pkg, reference, references] = await Promise.all([
         loadWebSecrets({ store, rootPath: job.rootPath }),
         store.getWebProject(job.rootPath),
         store.getWebAsset(job.rootPath, job.spec.packageAssetId),
         job.spec.referenceAssetId === null
           ? Promise.resolve(null)
-          : store.getWebAsset(job.rootPath, job.spec.referenceAssetId).catch(() => null)
+          : store.getWebAsset(job.rootPath, job.spec.referenceAssetId).catch(() => null),
+        store.listWebAssets(job.rootPath, "reference").catch(() => [])
       ]);
       const hookFile = path.join(
         runtime.runtime.project.config.artemis.repo,
@@ -150,13 +154,20 @@ export async function runLlmWorkerCli(
         appPath,
         iosAppiumUrl,
         referencePath: reference?.storagePath ?? null,
-        referenceAssetId: reference?.id ?? null
+        referenceAssetId: reference?.id ?? null,
+        references
       };
     },
     loadCases: async (job) =>
       loadLlmCases({ store, rootPath: job.rootPath, job }),
     executeCase: async ({ job, testCase, prepared, signal }) => {
       const context = prepared as PreparedLlmJob;
+      const reference = resolveCaseReference({
+        requested: testCase.reference,
+        assets: context.references,
+        fallbackPath: context.referencePath,
+        fallbackAssetId: context.referenceAssetId
+      });
       if (job.spec.requirements.platform === "ios") {
         if (context.appPackage === null && context.appPath === null) {
           return {
@@ -194,8 +205,11 @@ export async function runLlmWorkerCli(
           appPath: context.appPath,
           secrets: context.secrets,
           redactionActive: true,
-          referencePath: context.referencePath,
-          referenceAssetId: context.referenceAssetId,
+          referencePath: reference.referencePath,
+          referenceAssetId: reference.referenceAssetId,
+          ...(reference.missingReason === undefined
+            ? {}
+            : { referenceMissingReason: reference.missingReason }),
           referenceGate: job.spec.referenceGate,
           signal
         });
@@ -208,8 +222,11 @@ export async function runLlmWorkerCli(
         appPackage: context.appPackage,
         appPath: context.appPath,
         secrets: context.secrets,
-        referencePath: context.referencePath,
-        referenceAssetId: context.referenceAssetId,
+        referencePath: reference.referencePath,
+        referenceAssetId: reference.referenceAssetId,
+        ...(reference.missingReason === undefined
+          ? {}
+          : { referenceMissingReason: reference.missingReason }),
         referenceGate: job.spec.referenceGate,
         signal
       });

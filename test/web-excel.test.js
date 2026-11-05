@@ -38,7 +38,8 @@ test("CANONICAL_FIELDS: 规范字段集合与顺序固定", () => {
     "module",
     "priority",
     "testData",
-    "testId"
+    "testId",
+    "reference"
   ]);
 });
 

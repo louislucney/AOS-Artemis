@@ -39,6 +39,8 @@ export interface ParsedExcelCase {
   priority: string | null;
   testData: string | null;
   testId: string | null;
+  /** 逐例参考图（资产 ID / 文件名 / 去扩展名）；空则回退 job 级 reference。 */
+  reference: string | null;
   rowNumber: number;
 }
 
@@ -381,6 +383,7 @@ export async function parseExcel(buffer: Buffer, input: ParseExcelInput): Promis
       priority: optionalText(values.get("priority")),
       testData: optionalText(values.get("testData")),
       testId: optionalText(values.get("testId")),
+      reference: optionalText(values.get("reference")),
       rowNumber
     });
   }

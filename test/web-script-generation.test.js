@@ -42,9 +42,8 @@ async function setup(t, options = {}) {
     kind: "excel",
     filename: "cases.xlsx",
     buffer: await workbookBuffer(
-      options.cases ?? [
-        ["TC-1", "1. 启动 App\n2. 点击“登录”", "页面显示“成功”", ""]
-      ]
+      options.cases ?? [["TC-1", "1. 启动 App\n2. 点击“登录”", "页面显示“成功”", ""]],
+      options.headers
     )
   });
   const pkg = await storeWebAsset({
@@ -107,6 +106,20 @@ test("loadLlmCases: Excel → taskDesc（含真实数据约束/模块）", async
   assert.match(cases[0].taskDesc, /【真实数据】/);
   assert.match(cases[0].taskDesc, /步骤：1\. 启动 App/);
   assert.equal(cases[0].module, null);
+});
+
+test("loadLlmCases: 参考图列进入逐例 reference", async (t) => {
+  const { store, rootPath, excel } = await setup(t, {
+    headers: ["用例编号", "步骤", "期望结果", "参考图"],
+    cases: [["TC-REF", "1. 启动 App", "显示首页", "login.png"]]
+  });
+  const cases = await loadLlmCases({
+    store,
+    rootPath,
+    job: { spec: { excelAssetId: excel.id } }
+  });
+  assert.equal(cases.length, 1);
+  assert.equal(cases[0].reference, "login.png");
 });
 
 test("script-generation: LLM normalizer 输出受控动作并记录 manifest", async (t) => {

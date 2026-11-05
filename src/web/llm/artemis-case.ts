@@ -35,6 +35,7 @@ export interface ExecuteAndroidLlmCaseInput {
   secrets?: SecretEntry[];
   referencePath?: string | null;
   referenceAssetId?: string | null;
+  referenceMissingReason?: string | null;
   referenceGate?: "off" | "report" | "unverified";
   pollMs?: number;
   signal?: AbortSignal;
@@ -237,6 +238,9 @@ export async function executeAndroidLlmCase(
   const reference = compareReference({
     referencePath: input.referencePath,
     referenceAssetId: input.referenceAssetId,
+    ...(input.referenceMissingReason === undefined
+      ? {}
+      : { missingReason: input.referenceMissingReason }),
     screenshotPath: await readAndroidLastScreenshot(dataEngineDbPath, traceId)
   });
   if (

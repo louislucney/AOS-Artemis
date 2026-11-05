@@ -9,7 +9,8 @@ export const CANONICAL_FIELDS = [
   "module",
   "priority",
   "testData",
-  "testId"
+  "testId",
+  "reference"
 ] as const;
 
 export type CanonicalField = (typeof CANONICAL_FIELDS)[number];
@@ -28,7 +29,8 @@ export const CANONICAL_FIELD_LABELS: Record<CanonicalField, string> = {
   module: "模块",
   priority: "优先级",
   testData: "测试数据",
-  testId: "测试编号"
+  testId: "测试编号",
+  reference: "参考图"
 };
 
 /**
@@ -44,7 +46,8 @@ export const COLUMN_ALIASES: Record<CanonicalField, readonly string[]> = {
   module: ["模块", "功能", "功能模块", "所属模块", "modules", "module", "feature"],
   priority: ["优先级", "优先", "priority", "prio"],
   testData: ["测试数据", "testdata", "data"],
-  testId: ["测试编号", "测试id", "测试用例id", "用例设计id", "testid"]
+  testId: ["测试编号", "测试id", "测试用例id", "用例设计id", "testid"],
+  reference: ["参考图", "参考截图", "期望截图", "基准图", "reference", "referenceimage", "refimage"]
 };
 
 /**
@@ -60,7 +63,8 @@ export const LEGACY_COLUMN_ALIASES: Record<CanonicalField, readonly string[]> = 
   module: ["模块", "功能", "功能模块", "所属模块", "modules", "module", "feature"],
   priority: [],
   testData: ["测试数据", "testdata", "data"],
-  testId: []
+  testId: [],
+  reference: []
 };
 
 /** 表头归一：NFKC + 去首尾空白 + 小写 + 去空白/下划线/连字符（`用例 编号`、`case_id` 等价）。 */

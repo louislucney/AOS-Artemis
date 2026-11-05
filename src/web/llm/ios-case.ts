@@ -35,6 +35,7 @@ export interface ExecuteIosLlmCaseInput {
   redactionActive?: boolean;
   referencePath?: string | null;
   referenceAssetId?: string | null;
+  referenceMissingReason?: string | null;
   referenceGate?: "off" | "report" | "unverified";
   pollMs?: number;
   signal?: AbortSignal;
@@ -263,6 +264,9 @@ export async function executeIosLlmCase(
   const reference = compareReference({
     referencePath: input.referencePath,
     referenceAssetId: input.referenceAssetId,
+    ...(input.referenceMissingReason === undefined
+      ? {}
+      : { missingReason: input.referenceMissingReason }),
     screenshotPath: lastIosScreenshot(traceDir)
   });
   const evidence = readRunEvidence(runPath);

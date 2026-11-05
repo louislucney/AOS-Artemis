@@ -34,6 +34,13 @@ test("compareReference：同图 passed，明显差异 failed，证据缺失不�
   assert.ok((failed.regions ?? 0) > 0);
 
   assert.equal(compareReference({ referencePath: null, screenshotPath: same }).status, "missing");
+  const notFound = compareReference({
+    referencePath: null,
+    screenshotPath: same,
+    missingReason: "reference-asset-not-found:login.png"
+  });
+  assert.equal(notFound.status, "missing");
+  assert.equal(notFound.reason, "reference-asset-not-found:login.png");
   assert.equal(
     compareReference({ referencePath: reference, screenshotPath: null }).status,
     "unverified"

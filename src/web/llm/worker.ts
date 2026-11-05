@@ -11,6 +11,8 @@ export interface LlmWorkerCase {
   taskDesc: string;
   /** Excel 预期列原文；用于 L1 文本检查。 */
   expected?: string | null;
+  /** Excel 参考图列：资产 ID / 文件名 / 去扩展名；缺省回退 job 级 reference。 */
+  reference?: string | null;
 }
 
 export interface LlmWorkerCaseResult {
