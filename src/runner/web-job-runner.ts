@@ -157,6 +157,32 @@ function readSpecAssets(raw: unknown): RunnerSpecAsset[] {
 const L2_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024;
 const L2_SCREENSHOT_TOTAL_BYTES = 6 * 1024 * 1024;
 
+async function wakeAndroidDevice(input: {
+  adbCommand: string;
+  serial: string;
+  exec: ExecFn;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const commands: string[][] = [
+    ["shell", "svc", "power", "stayon", "true"],
+    ["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+    ["shell", "input", "keyevent", "82"],
+    ["shell", "wm", "dismiss-keyguard"],
+    ["shell", "settings", "put", "system", "screen_off_timeout", "1800000"]
+  ];
+  for (const args of commands) {
+    try {
+      await input.exec(
+        input.adbCommand,
+        ["-s", input.serial, ...args],
+        { timeoutMs: 10_000, env: input.env }
+      );
+    } catch {
+      /* 设备可能不允许某条设置；继续执行，Maestro 仍会尝试 */
+    }
+  }
+}
+
 export async function executedPayload(
   executed: WebJobExecutionResult,
   jobDir: string,
@@ -344,6 +370,14 @@ export function createDefaultWebJobExecutor(
         );
       }
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
+      if (platform === "android") {
+        await wakeAndroidDevice({
+          adbCommand,
+          serial: deviceSerial,
+          exec,
+          env: childEnv
+        });
+      }
 
       const executed = await executeWebJob({
         jobSpec,
