@@ -185,7 +185,7 @@ test("壳层导航 / 用例库 / 档案 / 对比 / 搜索链接均保留 host", 
   );
   assert.match(
     library,
-    new RegExp(`${enc}&amp;section=library&amp;host=${HOST_B}`),
+    new RegExp(`${enc}&amp;section=assets&amp;host=${HOST_B}`),
     "壳层导航保留当前 host"
   );
   assert.match(

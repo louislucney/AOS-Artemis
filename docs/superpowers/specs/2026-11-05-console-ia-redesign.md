@@ -1,6 +1,6 @@
 # 控制台信息架构重构设计（测试资产 / 新建测试 / 任务与结果）
 
-> 2026-11-05 · 状态：设计稿（未开发）  
+> 2026-11-05 · 状态：Phase 1 主体已实现；Phase 2/3 待开发  
 > 关联：`PRODUCT.md`、`DESIGN.md`、`docs/superpowers/specs/2026-11-05-ios-artemis-runtime-design.md`、`.impeccable/critique/2026-11-05T02-16-03Z__src-console.md`
 
 ## 0. 一句话
@@ -410,3 +410,24 @@ QA 的实际顺序是：
 ---
 
 **结论**：这次不再按页面补入口，而是把控制台收敛为“资产 → 新建测试 → 任务结果”三段式。底层数据模型保持不变，变化集中在导航、页面组合、host 语义和动作分派。
+
+## 15. 实施状态（2026-11-05）
+
+### 已完成（Phase 1 主体）
+
+- 左侧一级导航新增“测试资产”，移除“用例库”一级入口。
+- `section=assets` 成为测试资产 hub：
+  - `tab=overview`：资产概览、计数、新建测试入口。
+  - `tab=case-sets`：复用原用例库内容，标题为“测试资产 · 用例集”。
+  - `tab=excel/packages/materials/reference/scripts`：各自只渲染对应资产表。
+  - 上传表单在所有 tab 常驻。
+  - 参考图上传链路修复，新增参考图资产表。
+- `section=assets&tab=case-sets` 通过 `loadLibraryView(..., embedded)` 复用用例库数据。
+- 用例库旧页面仍保留（`section=library`），但它不再出现在一级导航；后续 Phase 4 再做 302。
+- 资产 URL 不再伪造执行机 host：`resolveProjectKey` 对工作区项目使用登记 host 或 null。
+
+### 延后
+
+- `被使用` 列（used-by 聚合）尚未接入；Phase 1b 再做。
+- 旧 `section=library`、`section=assets&kind=...` 尚未 302；当前保留旧页面兼容。
+- 新建测试 hub（Phase 2）、任务与结果统一（Phase 3）未开始。

@@ -216,6 +216,7 @@ type PanelView =
       sets: CaseSetRecord[];
       quarantine: LibraryPageData["quarantine"];
       caseCandidates: LibraryPageData["caseCandidates"];
+      embedded?: boolean;
     }
   | {
       kind: "web-assets";
@@ -230,6 +231,8 @@ type PanelView =
       materials: WebAssetRecord[];
       references: WebAssetRecord[];
       uploadKind?: "excel" | "package" | "materials" | "reference";
+      tab?: "overview" | "case-sets" | "excel" | "packages" | "materials" | "reference" | "scripts";
+      sets?: CaseSetRecord[];
       mappings: ExcelMappingRecord[];
     }
   | {
@@ -389,6 +392,37 @@ function intParam(params: URLSearchParams, key: string): number | null {
   if (raw === null) return null;
   const value = Number(raw);
   return Number.isFinite(value) && Number.isInteger(value) ? value : null;
+}
+
+async function loadLibraryView(
+  projectStore: ProjectStore,
+  resolved: { rootPath: string; hostId: string | null; name: string },
+  embedded = false
+): Promise<Extract<PanelView, { kind: "library" }>> {
+  const recentRuns = await projectStore
+    .listSuiteRuns(resolved.rootPath, { limit: 5 })
+    .catch(() => []);
+  const candidateMap = new Map<string, LibraryPageData["caseCandidates"][number]>();
+  for (const run of recentRuns) {
+    const full = await projectStore.getSuiteRun(resolved.rootPath, run.id).catch(() => null);
+    const at = full?.finishedAt ?? full?.startedAt ?? run.finishedAt ?? run.startedAt ?? null;
+    for (const entry of full?.cases ?? []) {
+      if (entry.status === "passed") continue;
+      if (candidateMap.has(entry.caseId)) continue;
+      candidateMap.set(entry.caseId, { caseId: entry.caseId, name: entry.name, runId: run.id, at });
+    }
+    if (candidateMap.size >= 100) break;
+  }
+  return {
+    kind: "library",
+    rootPath: resolved.rootPath,
+    hostId: resolved.hostId,
+    rootLabel: resolved.name,
+    sets: await projectStore.listCaseSets(resolved.rootPath),
+    quarantine: await readQuarantineSummary(resolved.rootPath),
+    caseCandidates: [...candidateMap.values()],
+    ...(embedded ? { embedded: true } : {})
+  };
 }
 
 export async function resolveProjectKey(
@@ -689,14 +723,29 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     };
   }
   if (section === "assets") {
+    const tabRaw = trimmed(url.searchParams.get("tab"));
+    if (tabRaw === "case-sets") {
+      return await loadLibraryView(projectStore, resolved, true);
+    }
+    const tab =
+      tabRaw === "all"
+        ? undefined
+        : tabRaw === "excel" ||
+            tabRaw === "packages" ||
+            tabRaw === "materials" ||
+            tabRaw === "reference" ||
+            tabRaw === "scripts"
+          ? tabRaw
+          : "overview";
     const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
-    const [excelAssets, packages, scripts, materials, references, mappings] = await Promise.all([
+    const [excelAssets, packages, scripts, materials, references, mappings, sets] = await Promise.all([
       listWebAssets(projectStore, resolved.rootPath, "excel"),
       listWebAssets(projectStore, resolved.rootPath, "package"),
       listWebAssets(projectStore, resolved.rootPath, "scripts"),
       listWebAssets(projectStore, resolved.rootPath, "materials"),
       listWebAssets(projectStore, resolved.rootPath, "reference"),
-      listExcelMappings(projectStore, resolved.rootPath)
+      listExcelMappings(projectStore, resolved.rootPath),
+      projectStore.listCaseSets(resolved.rootPath)
     ]);
     const uploadKindRaw = trimmed(url.searchParams.get("kind"));
     const uploadKind =
@@ -716,6 +765,8 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       materials,
       references,
       uploadKind,
+      tab,
+      sets,
       mappings
     };
   }
@@ -795,29 +846,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     };
   }
   if (section === "library") {
-    const recentRuns = await projectStore
-      .listSuiteRuns(resolved.rootPath, { limit: 5 })
-      .catch(() => []);
-    const candidateMap = new Map<string, LibraryPageData["caseCandidates"][number]>();
-    for (const run of recentRuns) {
-      const full = await projectStore.getSuiteRun(resolved.rootPath, run.id).catch(() => null);
-      const at = full?.finishedAt ?? full?.startedAt ?? run.finishedAt ?? run.startedAt ?? null;
-      for (const entry of full?.cases ?? []) {
-        if (entry.status === "passed") continue;
-        if (candidateMap.has(entry.caseId)) continue;
-        candidateMap.set(entry.caseId, { caseId: entry.caseId, name: entry.name, runId: run.id, at });
-      }
-      if (candidateMap.size >= 100) break;
-    }
-    return {
-      kind: "library",
-      rootPath: resolved.rootPath,
-      hostId: resolved.hostId,
-      rootLabel: resolved.name,
-      sets: await projectStore.listCaseSets(resolved.rootPath),
-      quarantine: await readQuarantineSummary(resolved.rootPath),
-      caseCandidates: [...candidateMap.values()]
-    };
+    return await loadLibraryView(projectStore, resolved);
   }
   if (section === "archive") {
     const kindRaw = trimmed(url.searchParams.get("kind"));
@@ -3790,6 +3819,7 @@ function renderPanelHtml(
       sets: view.sets,
       quarantine: view.quarantine,
       caseCandidates: view.caseCandidates,
+      embedded: view.embedded,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });
@@ -3807,6 +3837,8 @@ function renderPanelHtml(
       materials: view.materials,
       references: view.references,
       uploadKind: view.uploadKind,
+      tab: view.tab,
+      sets: view.sets,
       mappings: view.mappings,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth

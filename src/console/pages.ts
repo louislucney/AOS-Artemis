@@ -40,6 +40,8 @@ export interface LibraryPageData {
   quarantine: { active: string[]; stale: number; invalid: number; exists: boolean };
   /** 最近失败用例候选（隔离点选；去重取最近）。 */
   caseCandidates: Array<{ caseId: string; name: string; runId: string; at: string | null }>;
+  /** true＝作为测试资产 hub 的“用例集”tab 嵌入，导航高亮测试资产。 */
+  embedded?: boolean;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
@@ -138,8 +140,8 @@ export function renderLibraryPage(data: LibraryPageData): string {
     : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var hostId=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function jsonPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var qForm=document.getElementById('quarantine-form');var qStatus=document.getElementById('quarantine-status');if(qForm){qForm.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(qForm);jsonPost('/panel/api/quarantine',{project:root,host:hostId,action:'add',caseId:(f.get('caseId')||'').trim(),owner:(f.get('owner')||'').trim(),until:(f.get('until')||'').trim()||undefined}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('已加入隔离 · 已写入审计');location.reload();}else{qStatus.textContent='加入失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){qStatus.textContent='加入失败：'+err;});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-quarantine]'):null;if(!b)return;var quarantineRemove=function(){jsonPost('/panel/api/quarantine',{project:root,host:hostId,action:'remove',caseId:b.getAttribute('data-quarantine')}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('已移除隔离 · 已写入审计');location.reload();}else if(qStatus){qStatus.textContent='移除失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){if(qStatus)qStatus.textContent='移除失败：'+err;});};window.aosInlineConfirm(b,'确认移除该隔离条目？',quarantineRemove);});var iForm=document.getElementById('import-form');var iStatus=document.getElementById('import-status');var iFile=document.getElementById('import-file');var iDrop=document.getElementById('import-drop');var iFileName=document.getElementById('import-file-name');function updateImportName(){if(!iFileName)return;var f=iFile&&iFile.files?iFile.files[0]:null;iFileName.textContent=f?f.name:'未选择文件';}function submitImport(){var fd=new FormData(iForm);if(hostId)fd.append('host',hostId);var file=fd.get('file');if(!file||!(file.name||'').toLowerCase().endsWith('.xlsx')){iStatus.textContent='请选择 .xlsx 文件';return;}if(file.size>20*1024*1024){iStatus.textContent='文件超过 20MB';return;}iStatus.textContent='导入中…';fetch('/panel/api/import?project='+encodeURIComponent(root)+(hostId?'&host='+encodeURIComponent(hostId):''),{method:'POST',headers:{'X-AOS-Console':'1'},body:fd}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok){window.aosFlash&&aosFlash('导入完成 · 已登记为最新用例集');location.reload();}else{iStatus.textContent='导入失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){iStatus.textContent='导入失败：'+err;});}if(iForm){iForm.addEventListener('submit',function(e){e.preventDefault();submitImport();});}if(iDrop&&iFile){iDrop.addEventListener('click',function(){iFile.click();});iDrop.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();iFile.click();}});['dragenter','dragover'].forEach(function(name){iDrop.addEventListener(name,function(e){e.preventDefault();iDrop.classList.add('is-dragover');});});['dragleave','drop'].forEach(function(name){iDrop.addEventListener(name,function(e){e.preventDefault();iDrop.classList.remove('is-dragover');});});iDrop.addEventListener('drop',function(e){var files=e.dataTransfer&&e.dataTransfer.files;if(!files||files.length===0)return;var file=files[0];if(!file.name.toLowerCase().endsWith('.xlsx')){iStatus.textContent='仅支持 .xlsx 文件';return;}if(file.size>20*1024*1024){iStatus.textContent='文件超过 20MB';return;}try{iFile.files=files;}catch(err){var dt=new DataTransfer();dt.items.add(file);iFile.files=dt.files;}updateImportName();submitImport();});iFile.addEventListener('click',function(e){e.stopPropagation();});iFile.addEventListener('change',updateImportName);}
 })();</script>`;
   return renderConsoleShell({
-    title: "用例库",
-    active: "library",
+    title: "测试资产 · 用例集",
+    active: "assets",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
     projectHostId: data.hostId ?? null,
@@ -171,6 +173,15 @@ export function renderLibraryPage(data: LibraryPageData): string {
   });
 }
 
+export type AssetsTab =
+  | "overview"
+  | "case-sets"
+  | "excel"
+  | "packages"
+  | "materials"
+  | "reference"
+  | "scripts";
+
 export interface WebAssetsPageData {
   rootPath: string;
   rootLabel: string;
@@ -184,6 +195,10 @@ export interface WebAssetsPageData {
   references?: WebAssetRecord[];
   /** 由 `?kind=package#asset-upload` / `?kind=materials#asset-upload` 预选上传类型。 */
   uploadKind?: "excel" | "package" | "materials" | "reference";
+  /** 测试资产 hub 的当前 tab；缺省＝旧版全量页（兼容旧链接）。 */
+  tab?: AssetsTab;
+  /** 概览的用例集数量（不渲染用例集表）。 */
+  sets?: CaseSetRecord[];
   mappings: ExcelMappingRecord[];
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
@@ -376,6 +391,149 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     ? ""
     : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function byId(id){return document.getElementById(id);}function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}function setBusy(btn,busy){if(!btn)return;if(busy){if(!btn.dataset.idleLabel)btn.dataset.idleLabel=btn.textContent;btn.disabled=true;if(btn.dataset.busyLabel)btn.textContent=btn.dataset.busyLabel;}else{btn.disabled=false;if(btn.dataset.idleLabel)btn.textContent=btn.dataset.idleLabel;}}var form=byId('script-gen-form');if(!form)return;var status=byId('script-gen-status');var box=byId('script-gen-result');var btn=byId('script-gen-submit');var dry=byId('script-gen-dry-run');if(dry){dry.addEventListener('change',function(){if(status)status.textContent='';});}form.addEventListener('submit',function(e){e.preventDefault();if(btn&&btn.disabled)return;var excel=byId('script-gen-excel'),pkg=byId('script-gen-package');if(!excel||!excel.value||!pkg||!pkg.value){if(status)status.textContent='请选择 Excel 与安装包';return;}var body={project:root,excelAssetId:excel.value,packageAssetId:pkg.value,platform:byId('script-gen-platform').value,appId:(byId('script-gen-app-id').value||'').trim(),preconditionMode:byId('script-gen-mode').value,bestEffort:!!byId('script-gen-best-effort').checked,useLlm:byId('script-gen-llm').value,dryRun:!!byId('script-gen-dry-run').checked};if(host)body.host=host;if(status)status.textContent='生成中…';setBusy(btn,true);fetch('/panel/api/projects/scripts/generate',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){setBusy(btn,false);if(!res.ok||!res.j||!res.j.ok){if(status)status.textContent='生成失败：'+((res.j&&res.j.error)||('HTTP '+res.status));return;}var j=res.j;if(status)status.textContent=(j.dryRun?'dry-run':'已生成')+' · 可执行 '+(j.runnable==null?j.ready:j.runnable)+'（完整 '+j.ready+' / 部分 '+(j.partial||0)+'）/ 未就绪 '+j.unresolved+' · '+esc(j.normalizer||'rules');var cases=(j.manifest&&j.manifest.cases)?j.manifest.cases:[];var rows=cases.slice(0,50).map(function(c){var issues=(c.unresolved||[]).map(function(u){return u.code+(u.step==null?'':':'+u.step);}).join(', ');var manual=(c.manualSteps||[]).map(function(m){return m.code+':'+m.step;}).join(', ');return '<tr><td><code>'+esc(c.caseId)+'</code></td><td>'+esc(c.partial?'partial':c.status)+'</td><td><code>'+esc(c.assertions)+'</code></td><td>'+esc(manual||'—')+'</td><td>'+esc(issues||'—')+'</td></tr>';}).join('');if(box)box.innerHTML='<div class="c-table-wrap"><table class="c-table"><caption>生成结果</caption><thead><tr><th>用例</th><th>状态</th><th>断言</th><th>手工步骤</th><th>unresolved</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+(j.asset?'<p class="muted">资产 v'+esc(j.asset.version)+' · '+esc(j.asset.filename)+'</p>':'<p class="muted">dry-run 未写资产</p>');}).catch(function(err){setBusy(btn,false);if(status)status.textContent='生成失败：'+err;});});})();</script>`;
 
+  const activeTab: AssetsTab = data.tab ?? "overview";
+  const legacy = data.tab === undefined;
+  const show = (tab: AssetsTab): boolean => legacy || activeTab === tab;
+  const tabHref = (tab: AssetsTab): string =>
+    `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets&tab=${tab}${hostQuery}`;
+  const tabLabels: Array<[AssetsTab, string]> = [
+    ["overview", "概览"],
+    ["case-sets", "用例集"],
+    ["excel", "Excel"],
+    ["packages", "安装包"],
+    ["materials", "测试资料"],
+    ["reference", "参考图"],
+    ["scripts", "脚本集"]
+  ];
+  const tabBar = `<nav class="c-flow-switch" aria-label="测试资产类型">${tabLabels
+    .map(([tab, label]) =>
+      tab === activeTab
+        ? `<span class="c-flow-option is-active" aria-current="page">${escapeHtml(label)}</span>`
+        : `<a class="c-flow-option" href="${escapeHtml(tabHref(tab))}">${escapeHtml(label)}</a>`
+    )
+    .join("")}</nav>`;
+  const uploadCard = `<div id="asset-upload">${cCard({
+    title: "上传测试资产",
+    subtitle: "Excel / 安装包 / 测试资料 / 参考图；上传后可在新建测试里选择",
+    body: uploadBody
+  })}</div>`;
+  const overviewCard = cCard({
+    title: "资产概览",
+    subtitle: "所有测试输入都在这里；用例集和网页测试资产不再分家",
+    body: [
+      '<div class="cards">',
+      `<div class="card"><div class="k">用例集</div><div class="v">${data.sets?.length ?? 0}</div><div class="muted"><a href="${escapeHtml(
+        tabHref("case-sets")
+      )}">查看用例集</a></div></div>`,
+      `<div class="card"><div class="k">Excel 文档</div><div class="v">${data.assets.length}</div><div class="muted"><a href="${escapeHtml(
+        tabHref("excel")
+      )}">查看 Excel</a></div></div>`,
+      `<div class="card"><div class="k">安装包</div><div class="v">${packages.length}</div><div class="muted"><a href="${escapeHtml(
+        tabHref("packages")
+      )}">查看安装包</a></div></div>`,
+      `<div class="card"><div class="k">测试资料</div><div class="v">${materials.length}</div><div class="muted"><a href="${escapeHtml(
+        tabHref("materials")
+      )}">查看资料</a></div></div>`,
+      `<div class="card"><div class="k">参考图</div><div class="v">${references.length}</div><div class="muted"><a href="${escapeHtml(
+        tabHref("reference")
+      )}">查看参考图</a></div></div>`,
+      `<div class="card"><div class="k">脚本集</div><div class="v">${scripts.length}</div><div class="muted"><a href="${escapeHtml(
+        tabHref("scripts")
+      )}">查看脚本集</a></div></div>`,
+      "</div>",
+      '<p class="muted">下一步：去 <a href="/panel?project=' +
+        encodeURIComponent(data.rootPath) +
+        '&section=create">新建测试</a> 选择套件回归或网页测试。</p>'
+    ].join("")
+  });
+  const excelCard = `<div id="excel-assets">${cCard({
+    title: "Excel 文档",
+    subtitle: `共 ${data.assets.length} 个 Excel 版本`,
+    body: cTable({
+      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "操作"],
+      rows: assetRows,
+      caption: "Excel 资产版本",
+      empty: "暂无 Excel 资产（上方上传）"
+    })
+  })}</div>`;
+  const mappingCard = cCard({
+    title: "列映射",
+    subtitle: "预览表头并保存规范字段映射（同指纹复用，不重复登记）",
+    body: mappingBody
+  });
+  const mappingsCard = cCard({
+    title: "已保存映射",
+    subtitle: `共 ${data.mappings.length} 条`,
+    body: cTable({
+      columns: ["资产", "工作表", "已映射字段", "指纹", "保存人", "保存时间"],
+      rows: mappingRows,
+      caption: "Excel 列映射",
+      empty: "暂无已保存映射（预览后保存生成）"
+    })
+  });
+  const packageCard = `<div id="package-assets">${cCard({
+    title: "安装包",
+    subtitle: `共 ${packages.length} 个 APK/IPA 版本`,
+    body: cTable({
+      columns: ["文件名", "版本", "大小", "sha256", "上传时间"],
+      rows: packageRows,
+      caption: "安装包资产版本",
+      empty: "暂无安装包资产（上方上传）"
+    })
+  })}</div>`;
+  const materialsCard = `<div id="materials-assets">${cCard({
+    title: "测试资料",
+    subtitle: `共 ${materials.length} 个资料版本`,
+    body: cTable({
+      columns: ["文件名", "版本", "大小", "secret", "sha256", "上传时间"],
+      rows: materialRows,
+      caption: "测试资料资产版本",
+      empty: "暂无测试资料（上方上传）"
+    })
+  })}</div>`;
+  const referenceCard = `<div id="reference-assets">${cCard({
+    title: "参考图（L2）",
+    subtitle: `共 ${references.length} 个参考图版本`,
+    body: cTable({
+      columns: ["文件名", "版本", "大小", "sha256", "上传时间"],
+      rows: referenceRows,
+      caption: "参考图资产版本",
+      empty: "暂无参考图（上方上传 .png/.jpg/.jpeg/.webp）"
+    })
+  })}</div>`;
+  const scriptsCard = cCard({
+    title: "脚本集",
+    subtitle: `共 ${scripts.length} 个 scripts 版本`,
+    body: cTable({
+      columns: ["文件名", "版本", "平台", "来源", "ready", "partial", "unresolved", "生成时间"],
+      rows: scriptRows,
+      caption: "生成的脚本集",
+      empty: "暂无脚本集（上方生成）"
+    })
+  });
+  const scriptGenCard = cCard({
+    title: "生成 Maestro 脚本",
+    subtitle: "从 Excel + 安装包生成 scripts 资产；dry-run 只出 manifest",
+    body: scriptGenBody
+  });
+
+  const sections: string[] = [
+    "<h1>测试资产</h1>",
+    tabBar,
+    archived
+      ? `<p>${cBadge({ label: "已归档", tone: "warning", title: "status=archived" })} 归档项目只读：上传与映射保存已禁用。</p>`
+      : "",
+    `<p class="muted">Excel、安装包（APK/IPA）、测试资料与 L2 参考图统一管理；用例集也在同一个资产中心。</p>`
+  ];
+  if (show("overview")) sections.push(overviewCard);
+  sections.push(uploadCard);
+  if (show("excel")) sections.push(excelCard, mappingCard, mappingsCard);
+  if (show("packages")) sections.push(packageCard);
+  if (show("materials")) sections.push(materialsCard);
+  if (show("reference")) sections.push(referenceCard);
+  if (show("scripts")) sections.push(scriptGenCard, scriptsCard);
+  sections.push(script, scriptGenScript);
+
   return renderConsoleShell({
     title: "测试资产",
     active: "assets",
@@ -384,89 +542,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     projectHostId: data.hostId ?? null,
     capabilities: data.capabilities,
     storeHealth: data.storeHealth,
-    body: [
-      "<h1>测试资产</h1>",
-      `<nav class="c-flow-switch" aria-label="测试资产类型"><a class="c-flow-option" href="${escapeHtml(
-        `/panel?project=${encodeURIComponent(data.rootPath)}&section=library${hostQuery}`
-      )}">用例集</a><span class="c-flow-option is-active" aria-current="page">测试资产（Excel / 安装包 / 资料 / 参考图）</span></nav>`,
-      archived
-        ? `<p>${cBadge({ label: "已归档", tone: "warning", title: "status=archived" })} 归档项目只读：上传与映射保存已禁用。</p>`
-        : "",
-      `<p class="muted">Excel、安装包（APK/IPA）、测试资料与 L2 参考图同页上传；Excel 原件按内容寻址保存，版本行只追加，解析结果由「用例库」侧引用。映射保存后按表头指纹复用。</p>`,
-      `<div id="asset-upload">${cCard({ title: "上传测试资产（Excel / 安装包 / 资料 / 参考图）", body: uploadBody })}</div>`,
-      `<div id="excel-assets">${cCard({
-        title: "资产版本",
-        subtitle: `共 ${data.assets.length} 个 Excel 版本`,
-        body: cTable({
-          columns: ["文件名", "版本", "大小", "sha256", "上传时间", "操作"],
-          rows: assetRows,
-          caption: "Excel 资产版本",
-          empty: "暂无 Excel 资产（上方上传）"
-        })
-      })}</div>`,
-      `<div id="package-assets">${cCard({
-        title: "安装包资产",
-        subtitle: `共 ${packages.length} 个 APK/IPA 版本`,
-        body: cTable({
-          columns: ["文件名", "版本", "大小", "sha256", "上传时间"],
-          rows: packageRows,
-          caption: "安装包资产版本",
-          empty: "暂无安装包资产（上方上传）"
-        })
-      })}</div>`,
-      `<div id="materials-assets">${cCard({
-        title: "测试资料资产",
-        subtitle: `共 ${materials.length} 个资料版本`,
-        body: cTable({
-          columns: ["文件名", "版本", "大小", "secret", "sha256", "上传时间"],
-          rows: materialRows,
-          caption: "测试资料资产版本",
-          empty: "暂无测试资料（上方上传）"
-        })
-      })}</div>`,
-      `<div id="reference-assets">${cCard({
-        title: "参考图资产（L2）",
-        subtitle: `共 ${references.length} 个参考图版本`,
-        body: cTable({
-          columns: ["文件名", "版本", "大小", "sha256", "上传时间"],
-          rows: referenceRows,
-          caption: "参考图资产版本",
-          empty: "暂无参考图（上方上传 .png/.jpg/.jpeg/.webp）"
-        })
-      })}</div>`,
-      cCard({
-        title: "生成 Maestro 脚本",
-        subtitle: "从 Excel + 安装包生成 scripts 资产；dry-run 只出 manifest",
-        body: scriptGenBody
-      }),
-      cCard({
-        title: "脚本集资产",
-        subtitle: `共 ${scripts.length} 个 scripts 版本`,
-        body: cTable({
-          columns: ["文件名", "版本", "平台", "来源", "ready", "partial", "unresolved", "生成时间"],
-          rows: scriptRows,
-          caption: "生成的脚本集",
-          empty: "暂无脚本集（上方生成）"
-        })
-      }),
-      cCard({
-        title: "列映射",
-        subtitle: "预览表头并保存规范字段映射（同指纹复用，不重复登记）",
-        body: mappingBody
-      }),
-      cCard({
-        title: "已保存映射",
-        subtitle: `共 ${data.mappings.length} 条`,
-        body: cTable({
-          columns: ["资产", "工作表", "已映射字段", "指纹", "保存人", "保存时间"],
-          rows: mappingRows,
-          caption: "Excel 列映射",
-          empty: "暂无已保存映射（预览后保存生成）"
-        })
-      }),
-      script,
-      scriptGenScript
-    ].join("\n")
+    body: sections.filter((part) => part !== "").join("\n")
   });
 }
 

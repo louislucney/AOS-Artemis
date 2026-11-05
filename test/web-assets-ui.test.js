@@ -123,8 +123,8 @@ async function setup(t, { hostId = null } = {}) {
   return { deps, rootPath, asset, escapedAsset, pkg, generated, materials, reference, mapping, store };
 }
 
-function assetsUrl(rootPath, hostId = null) {
-  const params = new URLSearchParams({ project: rootPath, section: "assets" });
+function assetsUrl(rootPath, hostId = null, tab = "all") {
+  const params = new URLSearchParams({ project: rootPath, section: "assets", tab });
   if (hostId !== null) params.set("host", hostId);
   return new URL(`http://x/panel?${params.toString()}`);
 }
@@ -176,7 +176,7 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /<time datetime="[^"]+"/, "上传时间");
 
   assert.ok(
-    html.indexOf('id="asset-upload"') < html.indexOf("资产版本"),
+    html.indexOf('id="asset-upload"') < html.indexOf('id="excel-assets"'),
     "上传卡在资产表之前（打开页面即可看到）"
   );
   assert.match(html, /id="asset-upload-form"/, "上传表单");
@@ -186,7 +186,7 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /<option value="package">安装包（APK\/IPA）<\/option>/, "安装包类型");
   assert.match(html, /<option value="materials">测试资料（materials）<\/option>/, "测试资料类型");
   assert.match(html, /<option value="reference">参考图（L2 reference）<\/option>/, "参考图类型");
-  assert.match(html, /参考图资产（L2）/);
+  assert.match(html, /参考图（L2）/);
   assert.match(html, /login\.png/);
   const scripts = inlineScripts(html).join("\n");
   assert.match(scripts, /kind==='reference'/, "上传脚本支持 reference");
@@ -258,6 +258,25 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /id="package-assets"/, "安装包资产锚点");
   assert.match(html, /id="excel-assets"/, "Excel 资产锚点");
   assert.doesNotThrow(() => new Function(ownScripts[0]), "资产页内联脚本可解析");
+});
+
+test("assets hub: overview / case-sets / packages tabs", async (t) => {
+  const { deps, rootPath } = await setup(t);
+  const overview = await handlePanelRequest(assetsUrl(rootPath, null, "overview"), deps);
+  assert.equal(overview.status, 200);
+  assert.match(overview.body, /资产概览/);
+  assert.match(overview.body, /新建测试/);
+  assert.doesNotMatch(overview.body, /id="excel-assets"/, "概览不直接铺 Excel 表");
+
+  const caseSets = await handlePanelRequest(assetsUrl(rootPath, null, "case-sets"), deps);
+  assert.equal(caseSets.status, 200);
+  assert.match(caseSets.body, /测试资产 · 用例集/);
+  assert.match(caseSets.body, /导入 Excel/);
+
+  const packages = await handlePanelRequest(assetsUrl(rootPath, null, "packages"), deps);
+  assert.equal(packages.status, 200);
+  assert.match(packages.body, /安装包资产版本/);
+  assert.doesNotMatch(packages.body, /id="excel-assets"/);
 });
 
 test("web assets page: kind=package 预选安装包上传", async (t) => {

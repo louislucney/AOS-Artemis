@@ -50,7 +50,7 @@ test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动�
 
 test("console shell: 默认 nav 覆盖控制台版块", () => {
   const keys = DEFAULT_CONSOLE_NAV.map((item) => item.key);
-  for (const expected of ["project", "review", "dispatch", "assets", "library", "archive", "ops", "usage"]) {
+  for (const expected of ["project", "review", "dispatch", "assets", "archive", "ops", "usage"]) {
     assert.ok(keys.includes(expected), expected);
   }
   for (const removed of ["overview", "tasks", "runners", "schedules", "stats", "audit"]) {

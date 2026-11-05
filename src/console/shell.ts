@@ -119,7 +119,6 @@ export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "jobs", label: "网页测试（安装包）", href: "/panel?section=jobs" },
   { key: "assets", label: "测试资产", href: "/panel?section=assets" },
   { key: "devices", label: "设备", href: "/panel?section=devices" },
-  { key: "library", label: "用例库", href: "/panel?section=library" },
   { key: "archive", label: "档案", href: "/panel?section=archive" },
   { key: "ops", label: "运维", href: "/panel?section=ops" },
   { key: "usage", label: "使用统计", href: "/usage" }
