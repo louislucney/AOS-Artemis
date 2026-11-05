@@ -54,6 +54,7 @@ import {
 import { parseMultipartUpload, UploadError } from "./upload.js";
 import { parseWebJobSpec, WebJobDispatchError, normalizeCaseFilter, type WebJobExecutionMode } from "../web/job-spec.js";
 import { createWebJob } from "../web/jobs.js";
+import { PenReferenceError, storePenReference, type PenReferenceResult } from "../web/pen-reference.js";
 import {
   compareOsVersions,
   parseOsVersion,
@@ -1097,15 +1098,35 @@ async function uploadAssetAction(
       kind === "excel"
         ? ((await scopedDeps.store.listWebAssets(resolved.rootPath, "excel"))[0] ?? null)
         : null;
-    const asset = await storeWebAsset({
-      store: scopedDeps.store,
-      rootPath: resolved.rootPath,
-      kind,
-      filename: upload.filename,
-      buffer: upload.content,
-      uploadedBy: actor,
-      metadata
-    });
+    let asset: Awaited<ReturnType<typeof storeWebAsset>>;
+    let penReference: PenReferenceResult | null = null;
+    if (kind === "reference" && upload.filename.toLowerCase().endsWith(".pen")) {
+      try {
+        penReference = await storePenReference({
+          store: scopedDeps.store,
+          rootPath: resolved.rootPath,
+          filename: upload.filename,
+          buffer: upload.content,
+          uploadedBy: actor
+        });
+        asset = penReference.assets[0]!;
+      } catch (error) {
+        if (error instanceof PenReferenceError) {
+          return json(400, { ok: false, code: error.code, error: error.message });
+        }
+        throw error;
+      }
+    } else {
+      asset = await storeWebAsset({
+        store: scopedDeps.store,
+        rootPath: resolved.rootPath,
+        kind,
+        filename: upload.filename,
+        buffer: upload.content,
+        uploadedBy: actor,
+        metadata
+      });
+    }
     let systemColumns: RebaseWorkbookJournalResult | null = null;
     if (kind === "excel") {
       try {
@@ -1135,13 +1156,19 @@ async function uploadAssetAction(
       action: "asset.upload",
       result: "ok",
       actor,
-      summary: `上传 Web 资产：${asset.kind} v${asset.version} ${asset.filename}（sha256 ${asset.sha256.slice(0, 12)}）${
-        systemColumns === null
-          ? ""
-          : `；系统列 ${systemColumns.mode}：重播种 ${systemColumns.rebased}、冻结 ${systemColumns.frozen}`
-      }`,
+      summary:
+        penReference === null
+          ? `上传 Web 资产：${asset.kind} v${asset.version} ${asset.filename}（sha256 ${asset.sha256.slice(0, 12)}）${
+              systemColumns === null
+                ? ""
+                : `；系统列 ${systemColumns.mode}：重播种 ${systemColumns.rebased}、冻结 ${systemColumns.frozen}`
+            }`
+          : `上传 .pen 参考图：${penReference.assets.length}/${penReference.screenCount} 屏（source sha256 ${penReference.sourceSha256.slice(0, 12)}）`,
       refs: {
         assetId: asset.id,
+        ...(penReference === null
+          ? {}
+          : { assetIds: penReference.assets.map((entry) => entry.id).join(","), sourceSha256: penReference.sourceSha256 }),
         kind: asset.kind,
         filename: asset.filename,
         sha256: asset.sha256,
@@ -1159,6 +1186,17 @@ async function uploadAssetAction(
     return json(200, {
       ok: true,
       asset,
+      ...(penReference === null
+        ? {}
+        : {
+            assets: penReference.assets,
+            pen: {
+              sourceSha256: penReference.sourceSha256,
+              screenCount: penReference.screenCount,
+              missing: penReference.missing,
+              warnings: penReference.warnings
+            }
+          }),
       ...(systemColumns === null ? {} : { systemColumns })
     });
   } catch (error) {

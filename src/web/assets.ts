@@ -25,7 +25,7 @@ const EXTENSIONS_BY_KIND: Record<WebAssetKind, readonly string[]> = {
   excel: [".xlsx", ".csv"],
   materials: [".zip", ".json", ".csv", ".txt"],
   package: [".apk", ".ipa"],
-  reference: [".png", ".jpg", ".jpeg", ".webp"],
+  reference: [".png", ".jpg", ".jpeg", ".webp", ".pen"],
   scripts: [".zip"]
 };
 

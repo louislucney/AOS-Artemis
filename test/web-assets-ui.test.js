@@ -191,9 +191,10 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   const scripts = inlineScripts(html).join("\n");
   assert.match(scripts, /kind==='reference'/, "上传脚本支持 reference");
   assert.match(scripts, /endsWith\('\.png'\)/, "文件识别支持 PNG");
+  assert.match(scripts, /endsWith\('\.pen'\)/, "文件识别支持 .pen 参考图");
   assert.match(
     html,
-    /type="file"[^>]*accept="\.xlsx,\.csv,\.apk,\.ipa,\.zip,\.json,\.txt,\.png,\.jpg,\.jpeg,\.webp"/,
+    /type="file"[^>]*accept="\.xlsx,\.csv,\.apk,\.ipa,\.zip,\.json,\.txt,\.png,\.jpg,\.jpeg,\.webp,\.pen"/,
     "允许 Excel/CSV/APK/IPA/测试资料/参考图"
   );
   assert.match(html, /id="asset-file"/, "文件控件");
