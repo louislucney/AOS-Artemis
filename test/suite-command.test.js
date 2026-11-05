@@ -568,6 +568,67 @@ test("suite text-weight-calibrate: CLI JSON, strict and missing manifest exits",
   assert.ok(JSON.parse(missing.logs.at(-1)).errors.length > 0);
 });
 
+test("suite reference-calibrate: CLI JSON, strict and missing manifest exits", async () => {
+  const { dir, runtime } = await setupRun({ cases: null });
+  const white = createImage(120, 240, [255, 255, 255, 255]);
+  const changed = createImage(120, 240, [255, 255, 255, 255]);
+  fillRect(changed, 20, 60, 80, 100, [0, 0, 0, 255]);
+  fs.writeFileSync(path.join(dir, "white.png"), toPng(white));
+  fs.writeFileSync(path.join(dir, "changed.png"), toPng(changed));
+  fs.writeFileSync(
+    path.join(dir, "reference-calibration.json"),
+    JSON.stringify({
+      pairs: [
+        { name: "clean", reference: "white.png", device: "white.png", expected: "passed" },
+        { name: "changed", reference: "white.png", device: "changed.png", expected: "failed" }
+      ]
+    })
+  );
+  fs.writeFileSync(
+    path.join(dir, "reference-impossible.json"),
+    JSON.stringify({
+      pairs: [
+        { name: "clean", reference: "white.png", device: "white.png", expected: "passed" },
+        { name: "impossible", reference: "white.png", device: "white.png", expected: "failed" }
+      ]
+    })
+  );
+
+  const normal = await runCli(runtime, [
+    "reference-calibrate",
+    "--manifest",
+    "reference-calibration.json",
+    "--json",
+    "--no-save"
+  ]);
+  assert.equal(normal.code, 0);
+  const payload = JSON.parse(normal.logs.at(-1));
+  assert.equal(payload.total, 2);
+  assert.equal(payload.checked, 2);
+  assert.equal(payload.best.missed, 0);
+  assert.ok(payload.recommendedEnv?.AOS_L2_PIXEL_THRESHOLD);
+
+  const strict = await runCli(runtime, [
+    "reference-calibrate",
+    "--manifest",
+    "reference-impossible.json",
+    "--json",
+    "--no-save",
+    "--strict"
+  ]);
+  assert.equal(strict.code, 1, "strict 把漏报判失败");
+
+  const missing = await runCli(runtime, [
+    "reference-calibrate",
+    "--manifest",
+    "missing.json",
+    "--json",
+    "--no-save"
+  ]);
+  assert.equal(missing.code, 2);
+  assert.ok(JSON.parse(missing.logs.at(-1)).errors.length > 0);
+});
+
 function verdictRun(overrides = {}) {
   return {
     trigger: "cli",

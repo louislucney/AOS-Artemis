@@ -81,6 +81,7 @@ import {
   UiSemanticsInitError
 } from "./ui/semantics-init.js";
 import { runTextWeightCalibration } from "./ui/text-calibrate.js";
+import { runReferenceCalibration } from "./web/reference-calibrate.js";
 import { compareParityDocs, readParityDoc } from "./figma/parity.js";
 import { readPenTextBounds } from "./pen/bounds.js";
 import type { WarningSummary } from "./design/warnings.js";
@@ -400,6 +401,8 @@ Usage:
   mobile-testing-mcp suite parity --a <tests.json> --b <tests.json> [--json] 对比两端人类层用例（semanticId/步骤/预期/屏幕），忽略 taskDesc/i18n/a11y）
   mobile-testing-mcp suite text-weight-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]
                                      离线字重校准：成对图片 → 混淆矩阵/高置信误报/delta 分布/阈值建议
+  mobile-testing-mcp suite reference-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]
+                                     离线 L2 参考图校准：成对图片 → 阈值网格混淆矩阵/漏报/误报/推荐值
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--case <caseId|semanticId|displayId>]... [--max <n>] [--stop-on-failure] [--device <serial>]
@@ -4006,6 +4009,58 @@ async function suiteUiLint(
   }
 }
 
+async function suiteReferenceCalibrate(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const manifest = flags.get("manifest");
+  if (manifest === null) {
+    io.errorLog("L2 参考图校准需要 --manifest <json>");
+    return 2;
+  }
+  const out = flags.get("out");
+  const report = await runReferenceCalibration({
+    manifestPath: path.resolve(runtime.project.rootDir, manifest),
+    outputDir: out
+      ? path.resolve(runtime.project.rootDir, out)
+      : path.join(designDir(runtime.configDirAbs), "reports"),
+    save: !flags.bool("no-save"),
+    strict: flags.bool("strict")
+  });
+  const exitCode = report.ok ? 0 : report.checked === 0 ? 2 : 1;
+  if (flags.bool("json")) {
+    io.log(JSON.stringify(report, null, 2));
+    return exitCode;
+  }
+  const metric = (entry: {
+    pixelThreshold: number;
+    minAreaRatio: number;
+    systemBandRatio: number;
+    caught: number;
+    missed: number;
+    clean: number;
+    falseAlarm: number;
+    balancedAccuracy: number;
+  }): string =>
+    `pixel=${entry.pixelThreshold} area=${entry.minAreaRatio} band=${entry.systemBandRatio} · caught=${entry.caught} missed=${entry.missed} clean=${entry.clean} falseAlarm=${entry.falseAlarm} · balanced=${entry.balancedAccuracy.toFixed(3)}`;
+  io.log(
+    `L2 参考图校准: 共 ${report.total} 对 · 可读 ${report.checked} · 跳过 ${report.skipped} · passed ${report.expected.passed} / failed ${report.expected.failed}`
+  );
+  if (report.current !== null) io.log(`  当前: ${metric(report.current)}`);
+  if (report.best !== null) {
+    io.log(`  推荐: ${metric(report.best)}`);
+    for (const [key, value] of Object.entries(report.recommendedEnv ?? {})) {
+      io.log(`  ${key}=${value}`);
+    }
+  } else {
+    io.errorLog("没有推荐阈值：样本需同时包含 expected=passed 与 expected=failed");
+  }
+  for (const error of report.errors) io.errorLog(`错误: ${error}`);
+  if (report.saved) io.log(`报告: ${report.saved}`);
+  return exitCode;
+}
+
 async function suiteTextWeightCalibrate(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -4153,7 +4208,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract", "ui-semantics", "ui-parity", "ui-lint", "parity", "text-weight-calibrate"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract", "ui-semantics", "ui-parity", "ui-lint", "parity", "text-weight-calibrate", "reference-calibrate"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -4262,6 +4317,9 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "ui-lint") return await suiteUiLint(built.runtime, flags, { log, errorLog });
     if (sub === "text-weight-calibrate") {
       return await suiteTextWeightCalibrate(built.runtime, flags, { log, errorLog });
+    }
+    if (sub === "reference-calibrate") {
+      return await suiteReferenceCalibrate(built.runtime, flags, { log, errorLog });
     }
     if (sub === "parity") return suiteParity(built.runtime, flags, { log, errorLog });
     if (sub === "runner") {
