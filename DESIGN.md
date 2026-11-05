@@ -3766,6 +3766,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 | `allowStaleScript` | `false` | 不匹配先自动重建；`true` → 旧脚本 + `stale-script` warning |
 | `l2Screenshots` | `false` | Maestro 最终截图上传（供中心 L2）；单图 2MB / 合计 6MB 上限 |
 | `AOS_WEB_INSTALL_TIMEOUT_MS` | `300000` | APK/IPA 安装（含设备端确认）超时；超时按 `exec-failed:timeout` 上报 |
+| `AOS_WEB_FORCE_INSTALL` | `0` | `1` 强制重装已存在的 Android 包；缺省已安装跳过（§13.308） |
 | `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` | `30000` | 请求内生成墙钟预算；超时 400 `script-generation-timeout` |
 
 - **过滤必须生效**：脚本集 manifest 携带 `module` 与 `caseId→flow`；runner 按 manifest 过滤模块/用例 ID，不再对模块直接报 `case-filter-modules-unsupported`；旧 manifest 回退 stem 匹配。
@@ -3791,3 +3792,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **统一任务详情**：`section=tasks&task=<id>` 按任务类型分派——套件回归渲染运行/引用/跨端差异与 rerun 等动作；网页测试渲染逐用例结果/参考图/证据/Excel 写回，并在终态且 dispatcher+ 时提供「重新下发网页测试」（`POST /panel/api/jobs/clone`）。`section=tasks&view=review|stats` 复用原裁决/统计视图。
 - **边界**：任务列表仍最多读取 100 条后在页面内分页（不分页查询存储层）；旧项目页 `?task=` / `?batch=` 详情仍保留兼容。
 - **测试**：`panel-legacy-redirect.test.js` 覆盖 library/dispatch/jobs/job 详情/裸 task/review/kind→tab 与参数保留；`console-pages` 覆盖新导航、未登记 CTA、任务分页与资产/新建/任务入口；`panel-web`/`web-dispatch-ui` 覆盖统一任务详情（套件与网页、clone 动作）。
+
+### 13.308 修复（Web job Android 安装识别：已安装跳过 / 失败后复查 / 回填包信息）
+
+> 2026-11-05。真机现场反馈：设备上已手动安装被测 APK，runner 仍反复执行 `adb install` 并等待设备确认；安装成功时 `adb install` 输出只有 `Success`，结果里的 `package.name/version` 为空，用户看不到“已识别到安装”。vivo 等机型还会因安装确认弹窗占用设备，影响后续 Maestro。
+
+- **已安装跳过**（`src/runner/web-job-workspace.ts`）：`installWebPackage` 新增 `expectedPackageName`（脚本包 `manifest.json` 的 `appId`）与 `skipIfInstalled`（默认 true）。Android 安装前先 `adb shell pm path <pkg>`，stdout 含 `package:` 即视为已安装，直接返回 `{ok:true, packageName, version, skipped:true}`，不再执行 `adb install`；`pm path` 对不存在的包也可能 exit 0，因此**只认 stdout**。包名按 Android 规则白名单校验，非法值忽略（不回退到任意字符串）。
+- **失败后复查**：`adb install` 返回非 0 或超时（`code=null`）时，若已知包名则再查一次 `pm path`；已存在（典型：用户手动点了安装/确认）返回 `{ok:true, recovered:true}`，不再把任务判为安装失败。成功路径会 `dumpsys package <pkg>` 取 `versionName` 回填结果；`skipIfInstalled:false`（`AOS_WEB_FORCE_INSTALL=1`）强制重装但仍回填包信息。
+- **runner 接线**（`src/runner/web-job-runner.ts`、`src/runner/web-agent.ts`）：执行器从 `manifest.json` 读取 `appId`（缺失/非法则不启用跳过），安装后通过新增 `onLog` 回调输出 `[web-runner] 设备 <serial> 已安装 <pkg> (<ver>)，跳过安装` / `已存在 …（安装命令未确认，按已安装继续）`，让执行机日志能直接看到识别结果；结果 payload 的 `package.name/version` 不再为空。
+- **环境变量**：`AOS_WEB_FORCE_INSTALL=1` 关闭“已安装跳过”，用于必须覆盖安装/降级验证的场景；缺省按已安装跳过。
+- **测试**：`test/web-job-workspace.test.js` 增加“已安装 → 不调用 install”“安装失败后复查已存在 → recovered”“强制安装 → 调用 install 并回填版本”；全量测试与 lint 保持绿。

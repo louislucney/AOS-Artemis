@@ -36,6 +36,8 @@ export interface DefaultWebJobExecutorOptions {
   requestTimeoutMs?: number;
   /** Maestro 执行超时（透传 `executeWebJob`）。 */
   timeoutMs?: number;
+  /** 执行过程日志（runner 控制台）。 */
+  onLog?: (message: string) => void;
 }
 
 /** 执行器 → 结果契约状态：`error` 必须原样上传，绝不降级成 failed。 */
@@ -128,6 +130,20 @@ function safeSlug(rootPath: string): string {
   const base = path.basename(path.resolve(rootPath)).trim();
   if (base === "" || base === "." || base === "..") return "project";
   return base;
+}
+
+const ANDROID_PACKAGE_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/;
+
+/** 脚本包 manifest 的 appId（根目录 manifest.json），缺失/非法返回 null。 */
+async function readManifestAppId(flowsDir: string): Promise<string | null> {
+  try {
+    const raw = await readFile(path.join(path.dirname(flowsDir), "manifest.json"), "utf-8");
+    const parsed = JSON.parse(raw) as { appId?: unknown };
+    const appId = typeof parsed.appId === "string" ? parsed.appId.trim() : "";
+    return ANDROID_PACKAGE_RE.test(appId) ? appId : null;
+  } catch {
+    return null;
+  }
 }
 
 function readSpecAssets(raw: unknown): RunnerSpecAsset[] {
@@ -280,6 +296,8 @@ export function createDefaultWebJobExecutor(
   const envTimeoutMs = positiveInt(env.AOS_WEB_JOB_TIMEOUT_MS);
   const executeTimeoutMs = options.timeoutMs ?? envTimeoutMs;
   const installTimeoutMs = positiveInt(env.AOS_WEB_INSTALL_TIMEOUT_MS) ?? 300_000;
+  const forceInstall = /^(1|true|yes|on)$/i.test((env.AOS_WEB_FORCE_INSTALL ?? "").trim());
+  const onLog = options.onLog ?? (() => undefined);
 
   return async (input) => {
     const jobId = input.task.id;
@@ -352,6 +370,7 @@ export function createDefaultWebJobExecutor(
       if (packagePath === undefined) throw new Error("web-job-package-missing");
       const flowsDir = prepared.flowsDir;
       if (flowsDir === null) throw new Error("web-job-scripts-missing");
+      const appId = platform === "android" ? await readManifestAppId(flowsDir) : null;
 
       const install = await installWebPackage({
         platform,
@@ -362,12 +381,26 @@ export function createDefaultWebJobExecutor(
         exec,
         env: childEnv,
         adbCommand,
-        timeoutMs: installTimeoutMs
+        timeoutMs: installTimeoutMs,
+        ...(appId === null ? {} : { expectedPackageName: appId }),
+        skipIfInstalled: !forceInstall
       });
       if (!install.ok) {
         throw new Error(
           `web-job-install-failed:${install.reason}${install.detail === undefined ? "" : `:${install.detail}`}`
         );
+      }
+      if (install.packageName !== null) {
+        const label = install.version === null
+          ? install.packageName
+          : `${install.packageName} (${install.version})`;
+        if (install.skipped === true) {
+          onLog(`设备 ${deviceSerial} 已安装 ${label}，跳过安装`);
+        } else if (install.recovered === true) {
+          onLog(`设备 ${deviceSerial} 已存在 ${label}（安装命令未确认，按已安装继续）`);
+        } else {
+          onLog(`设备 ${deviceSerial} 已安装 ${label}`);
+        }
       }
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
       if (platform === "android") {

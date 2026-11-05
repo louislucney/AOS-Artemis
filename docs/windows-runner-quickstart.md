@@ -70,6 +70,14 @@ curl.exe -L -H "Authorization: Bearer $token" -o maestro.zip "$base/panel/runner
 
 解压后把 Node、platform-tools、JDK 的 `bin` 和 `maestro/bin` 加入 PATH。中心页面会列出实际文件名和 SHA-256。
 
+## 3.2 已安装的包
+
+runner 默认读取脚本包 `manifest.json` 的 `appId`，执行 `adb shell pm path <appId>`：设备上已存在（例如你手动安装过）就跳过 `adb install`，日志显示 `设备 <serial> 已安装 <pkg> (<ver>)，跳过安装`；安装命令失败/超时后也会复查一次，已存在则按 `recovered` 继续。需要强制覆盖安装时设置：
+
+```powershell
+$env:AOS_WEB_FORCE_INSTALL="1"
+```
+
 ## 4. 配置 runner token
 
 `MOBILE_TESTING_RUNNER_JOB_TOKEN` 是执行机专用令牌，不是面板 token，也不是数据库连接串。

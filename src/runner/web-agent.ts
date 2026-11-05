@@ -707,6 +707,7 @@ export async function runWebRunnerCommand(
       requestTimeoutMs: runnerDataTimeoutMs(env),
       ...(executorFetch === undefined ? {} : { fetchImpl: executorFetch }),
       ...(deps.exec === undefined ? {} : { exec: deps.exec }),
+      onLog: (message: string) => io.log(`[web-runner] ${message}`),
       env
     });
     io.log(`[web-runner] 中心接口 ${panelBaseUrl}；工作目录 ${workRoot}`);

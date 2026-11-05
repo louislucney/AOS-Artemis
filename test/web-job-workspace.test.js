@@ -559,6 +559,84 @@ test("installWebPackage: Android 走 adb install -r，失败返回 typed reason"
   assert.match(failure.detail, /INSTALL_FAILED_INVALID_APK/);
 });
 
+test("installWebPackage: Android 已安装跳过安装；安装失败后复查已存在按 recovered 成功", async () => {
+  const installed = fakeExec((_command, args) => {
+    if (args[3] === "pm" && args[4] === "path") {
+      return { code: 0, stdout: "package:/data/app/~~abc/base.apk\n", stderr: "" };
+    }
+    if (args[3] === "dumpsys") {
+      return { code: 0, stdout: "versionName=1.4.1\n", stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const skipped = await installWebPackage({
+    platform: "android",
+    deviceSerial: "emulator-5554",
+    packagePath: "/tmp/app.apk",
+    expectedPackageName: "com.example.app",
+    exec: installed.exec,
+    env: { PATH: "/bin" }
+  });
+  assert.deepEqual(skipped, {
+    ok: true,
+    packageName: "com.example.app",
+    version: "1.4.1",
+    skipped: true
+  });
+  assert.equal(installed.calls.some((call) => call.args[2] === "install"), false);
+
+  const forced = fakeExec((_command, args) => {
+    if (args[3] === "pm" && args[4] === "path") {
+      return { code: 0, stdout: "package:/data/app/base.apk\n", stderr: "" };
+    }
+    if (args[3] === "dumpsys") {
+      return { code: 0, stdout: "versionName=1.4.1\n", stderr: "" };
+    }
+    return { code: 0, stdout: "Success\n", stderr: "" };
+  });
+  const reinstalled = await installWebPackage({
+    platform: "android",
+    deviceSerial: "emulator-5554",
+    packagePath: "/tmp/app.apk",
+    expectedPackageName: "com.example.app",
+    skipIfInstalled: false,
+    exec: forced.exec
+  });
+  assert.equal(forced.calls.some((call) => call.args[2] === "install"), true);
+  assert.deepEqual(reinstalled, {
+    ok: true,
+    packageName: "com.example.app",
+    version: "1.4.1"
+  });
+
+  let pathChecks = 0;
+  const recoveredExec = fakeExec((_command, args) => {
+    if (args[3] === "pm" && args[4] === "path") {
+      pathChecks += 1;
+      return pathChecks === 1
+        ? { code: 1, stdout: "", stderr: "not found" }
+        : { code: 0, stdout: "package:/data/app/base.apk\n", stderr: "" };
+    }
+    if (args[3] === "dumpsys") {
+      return { code: 0, stdout: "versionName=1.4.1\n", stderr: "" };
+    }
+    return { code: 1, stdout: "", stderr: "Failure [INSTALL_FAILED_ABORTED]" };
+  });
+  const recovered = await installWebPackage({
+    platform: "android",
+    deviceSerial: "emulator-5554",
+    packagePath: "/tmp/app.apk",
+    expectedPackageName: "com.example.app",
+    exec: recoveredExec.exec
+  });
+  assert.deepEqual(recovered, {
+    ok: true,
+    packageName: "com.example.app",
+    version: "1.4.1",
+    recovered: true
+  });
+});
+
 test("installWebPackage: iOS 模拟器走 simctl，真机走 devicectl", async () => {
   const simulator = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }));
   const simResult = await installWebPackage({
