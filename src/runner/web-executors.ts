@@ -45,6 +45,8 @@ export interface ExecuteWebJobInput {
   exec: ExecFn;
   env: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /** 已解析的 maestro 可执行文件；缺省 "maestro"（Windows .cmd/.bat 需显式路径）。 */
+  maestroCommand?: string;
 }
 
 export const WEB_JOB_DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
@@ -574,7 +576,7 @@ export async function executeWebJob(
   let execResult: ExecResult;
   try {
     execResult = await input.exec(
-      "maestro",
+      input.maestroCommand?.trim() || "maestro",
       [
         "test",
         "--udid",

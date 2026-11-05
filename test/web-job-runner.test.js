@@ -119,7 +119,7 @@ function fakeExec({ junitCases }) {
         stderr: ""
       };
     }
-    if (command === "maestro") {
+    if (command.includes("maestro")) {
       if (junitCases !== null) {
         const output = args[args.indexOf("--output") + 1];
         await mkdir(path.dirname(output), { recursive: true });
@@ -251,7 +251,8 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
 
   const adbCall = fake.calls.find((call) => call.command === "adb");
   assert.deepEqual(adbCall.args.slice(0, 4), ["-s", "emulator-5554", "install", "-r"]);
-  const maestroCall = fake.calls.find((call) => call.command === "maestro");
+  const maestroCall = fake.calls.find((call) => call.command.includes("maestro"));
+  assert.equal(maestroCall.command, "/opt/maestro", "使用 AOS_MAESTRO_PATH 解析结果");
   assert.deepEqual(maestroCall.args.slice(0, 4), ["test", "--udid", "emulator-5554", "--format"]);
   assert.equal(maestroCall.options.timeoutMs, 1234, "超时取未脱敏 env 的 AOS_WEB_JOB_TIMEOUT_MS");
   assert.equal(maestroCall.options.env.AOS_WEB_JOB_TIMEOUT_MS, undefined);

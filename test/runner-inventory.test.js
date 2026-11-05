@@ -374,6 +374,21 @@ test("resolveMaestroPath：AOS_MAESTRO_PATH → PATH → 常见安装位置；�
     resolveMaestroPath({}, (candidate) => candidate === homeCandidate),
     { path: homeCandidate, source: "candidate" }
   );
+
+  const winPath = path.join("C:\\tools", "maestro.cmd");
+  assert.deepEqual(
+    resolveMaestroPath(
+      { PATH: "C:\\tools" },
+      (candidate) => candidate === winPath,
+      "win32"
+    ),
+    { path: winPath, source: "path" }
+  );
+  const winHome = path.join(os.homedir(), ".maestro", "bin", "maestro.cmd");
+  assert.deepEqual(
+    resolveMaestroPath({}, (candidate) => candidate === winHome, "win32"),
+    { path: winHome, source: "candidate" }
+  );
   assert.deepEqual(
     resolveMaestroPath({}, (candidate) => candidate === "/usr/local/bin/maestro"),
     { path: "/usr/local/bin/maestro", source: "candidate" }

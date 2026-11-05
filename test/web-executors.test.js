@@ -141,6 +141,22 @@ test("executeWebJob: JUnit 三用例映射 PASS/FAIL/SKIP，任一失败任务 f
   assert.equal(calls.length, 1);
 });
 
+test("executeWebJob: maestroCommand 覆盖默认命令（Windows .cmd/.bat）", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  const { exec, calls } = execWithJunit(junit([xmlCase({ name: "flow-a", classname: "flows" })]));
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: { PATH: "/usr/bin" },
+    maestroCommand: "C:\\tools\\maestro.cmd"
+  });
+  assert.equal(result.status, "passed");
+  assert.equal(calls[0].command, "C:\\tools\\maestro.cmd");
+});
+
 test("executeWebJob: 按顶层 flow 统计硬断言条数并上报 assertionCount", async (t) => {
   const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml", "flow-b.yaml"], {
     contents: {

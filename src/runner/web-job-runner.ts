@@ -3,6 +3,7 @@ import path from "node:path";
 import { runnerDataTimeoutMs } from "./control/tls-fetch.js";
 
 import { defaultExec, type ExecFn } from "../device/adb.js";
+import { resolveMaestroPath } from "../device/maestro.js";
 import { errorMessage } from "../util.js";
 import { parseWebJobSpec } from "../web/job-spec.js";
 import { executeWebJob, type WebJobExecutionResult } from "./web-executors.js";
@@ -339,6 +340,7 @@ export function createDefaultWebJobExecutor(
         },
         exec,
         env: childEnv,
+        maestroCommand: resolveMaestroPath(childEnv).path ?? "maestro",
         ...(executeTimeoutMs === undefined ? {} : { timeoutMs: executeTimeoutMs })
       });
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");

@@ -22,11 +22,22 @@ export interface ResolvedAdb {
   source: "env" | "sdk" | "path" | "missing";
 }
 
+function windowsShellArgs(command: string, args: string[]): string[] {
+  return [command, ...args].map((arg) =>
+    /[\s"]/.test(arg) ? `"${arg.replace(/"/g, '""')}"` : arg
+  );
+}
+
 export const defaultExec: ExecFn = (command, args, options = {}) =>
   new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, args, { windowsHide: true, env: options.env ?? process.env });
+      const shell = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
+      child = spawn(
+        command,
+        shell ? windowsShellArgs(command, args) : args,
+        { windowsHide: true, env: options.env ?? process.env, ...(shell ? { shell: true } : {}) }
+      );
     } catch (error) {
       resolve({ code: null, stdout: "", stderr: "", error: errorMessage(error) });
       return;
