@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
@@ -260,3 +263,20 @@ test("切换器同路径两主机标签可区分（名称 · 主机名）", asyn
   assert.match(html, /app · Mac-B/);
 });
 
+test("工作区项目未登记到显式执行机 host 时，不伪造 host", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "aos-project-hosts-ws-"));
+  const rootPath = path.join(workspace, "app");
+  fs.mkdirSync(rootPath, { recursive: true });
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "app" });
+  const deps = {
+    store,
+    env: {},
+    workspaceRoot: workspace,
+    storeForHost: (hostId) => store.scopeHost(hostId)
+  };
+  const resolved = await resolveProjectKey(deps, rootPath, "h-runner");
+  assert.equal(resolved.rootPath, rootPath);
+  assert.equal(resolved.hostId, null, "本地项目不应被套上执行机 host");
+});

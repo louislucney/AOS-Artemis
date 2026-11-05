@@ -13,6 +13,7 @@ export type ConsoleNavKey =
   | "stats"
   | "dispatch"
   | "jobs"
+  | "assets"
   | "devices"
   | "library"
   | "archive"
@@ -100,6 +101,7 @@ const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
   "stats",
   "dispatch",
   "jobs",
+  "assets",
   "library",
   "archive",
   "runners",
@@ -113,8 +115,9 @@ export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "new-project", label: "新增项目", href: "/panel?new=1#new-project" },
   { key: "project", label: "项目", href: "/panel" },
   { key: "review", label: "结果", href: "/panel" },
-  { key: "dispatch", label: "下发", href: "/panel?section=dispatch" },
-  { key: "jobs", label: "网页测试", href: "/panel?section=jobs" },
+  { key: "dispatch", label: "套件回归", href: "/panel?section=dispatch" },
+  { key: "jobs", label: "网页测试（安装包）", href: "/panel?section=jobs" },
+  { key: "assets", label: "测试资产", href: "/panel?section=assets" },
   { key: "devices", label: "设备", href: "/panel?section=devices" },
   { key: "library", label: "用例库", href: "/panel?section=library" },
   { key: "archive", label: "档案", href: "/panel?section=archive" },
@@ -244,7 +247,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     ["t", "tasks", "任务"],
     ["v", "review", "失败分析"],
     ["y", "stats", "统计"],
-    ["d", "dispatch", "下发"],
+    ["d", "dispatch", "套件回归"],
     ["l", "library", "用例库"],
     ["f", "archive", "档案"],
     ["r", "runners", "执行机"],
@@ -267,7 +270,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   const switcher =
     switcherOptions.length === 0
       ? ""
-      : `<nav class="c-switcher" aria-label="项目切换"><select name="project-switcher" aria-label="切换项目" onchange="if(this.value)location.href=this.value"><option value="">切换项目…</option>${switcherOptions
+      : `<nav class="c-switcher" aria-label="项目切换"><select name="project-switcher" aria-label="切换项目" data-home="${escapeHtml(brandHref)}" onchange="location.href=this.value||this.dataset.home"><option value="">切换项目…</option>${switcherOptions
           .map(
             (option) =>
               `<option value="${escapeHtml(option.href)}"${option.current === true ? " selected" : ""}>${escapeHtml(option.label)}</option>`
@@ -298,13 +301,15 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   const livePollScript =
     input.autoRefreshSeconds === undefined
       ? ""
-      : `<script>(function(){var ms=${Math.max(1, Math.floor(input.autoRefreshSeconds))}*1000;var timer=null;var note=document.getElementById("aos-live-note");var toggle=document.getElementById("aos-live-toggle");function tick(){if(document.hidden)return;var cur=document.getElementById("console-main");if(cur&&cur.contains(document.activeElement)&&document.activeElement!==document.body)return;fetch(location.href).then(function(r){return r.ok?r.text():null;}).then(function(html){if(!html)return;var doc=new DOMParser().parseFromString(html,"text/html");var fresh=doc.getElementById("console-main");var now=document.getElementById("console-main");if(fresh&&now&&!now.contains(document.activeElement)){now.replaceChildren.apply(now,Array.prototype.slice.call(fresh.childNodes));try{window.aosOnRefresh&&window.aosOnRefresh();}catch(e){}}}).catch(function(){});}function start(){if(timer!==null)return;timer=setInterval(tick,ms);var t=document.getElementById("aos-live-toggle");if(t)t.textContent="暂停";}function stop(){if(timer!==null){clearInterval(timer);timer=null;}var t=document.getElementById("aos-live-toggle");if(t)t.textContent="继续";}var reduced=false;try{reduced=!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);}catch(e){}if(reduced){if(note)note.textContent="已按系统偏好关闭自动刷新";if(toggle)toggle.hidden=true;}else{start();document.addEventListener("click",function(e){if(!e.target||e.target.id!=="aos-live-toggle")return;if(timer===null){start();}else{stop();}});}})();</script>`;
+      : `<script>(function(){var ms=${Math.max(1, Math.floor(input.autoRefreshSeconds))}*1000;var timer=null;var note=document.getElementById("aos-live-note");var toggle=document.getElementById("aos-live-toggle");function tick(){if(document.hidden)return;var cur=document.getElementById("console-main");if(cur&&cur.contains(document.activeElement)&&document.activeElement!==document.body)return;fetch(location.href,{cache:"no-store",headers:{"X-AOS-No-Cache":"1"}}).then(function(r){return r.ok?r.text():null;}).then(function(html){if(!html)return;var doc=new DOMParser().parseFromString(html,"text/html");var fresh=doc.getElementById("console-main");var now=document.getElementById("console-main");if(fresh&&now&&!now.contains(document.activeElement)){now.replaceChildren.apply(now,Array.prototype.slice.call(fresh.childNodes));try{window.aosOnRefresh&&window.aosOnRefresh();}catch(e){}}var freshMeta=doc.querySelector(".c-topbar-meta");var nowMeta=document.querySelector(".c-topbar-meta");if(freshMeta&&nowMeta)nowMeta.replaceWith(freshMeta);var freshSwitcher=doc.querySelector(".c-switcher");var nowSwitcher=document.querySelector(".c-switcher");if(freshSwitcher&&nowSwitcher&&!nowSwitcher.contains(document.activeElement))nowSwitcher.replaceWith(freshSwitcher);}).catch(function(){});}function start(){if(timer!==null)return;timer=setInterval(tick,ms);var t=document.getElementById("aos-live-toggle");if(t)t.textContent="暂停";}function stop(){if(timer!==null){clearInterval(timer);timer=null;}var t=document.getElementById("aos-live-toggle");if(t)t.textContent="继续";}var reduced=false;try{reduced=!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);}catch(e){}if(reduced){if(note)note.textContent="已按系统偏好关闭自动刷新";if(toggle)toggle.hidden=true;}else{start();document.addEventListener("click",function(e){if(!e.target||e.target.id!=="aos-live-toggle")return;if(timer===null){start();}else{stop();}});}})();</script>`;
   const recordLastProject =
     project === null || project === ""
       ? ""
       : `<script>try{localStorage.setItem("aos-last-project",${JSON.stringify(project).replace(/</g, "\\u003c")});}catch(e){}</script>`;
   const inlineConfirmScript = `<script>(function(){window.aosInlineConfirm=function(button,message,onConfirm){var host=button.parentNode;var box=document.createElement('span');box.className='c-confirm-inline';box.setAttribute('role','status');var text=document.createElement('span');text.textContent=message;var yes=document.createElement('button');yes.type='button';yes.className='c-button c-button-primary';yes.textContent='确认';var no=document.createElement('button');no.type='button';no.className='c-button';no.textContent='取消';box.appendChild(text);box.appendChild(document.createTextNode(' '));box.appendChild(yes);box.appendChild(document.createTextNode(' '));box.appendChild(no);host.insertBefore(box,button.nextSibling);button.disabled=true;var closed=false;function close(){if(closed)return;closed=true;if(box.parentNode)box.parentNode.removeChild(box);button.disabled=false;document.removeEventListener('keydown',onKey,true);}function onKey(e){if(e.key==='Escape'){e.preventDefault();close();if(button.focus)button.focus();}}yes.addEventListener('click',function(){close();onConfirm();});no.addEventListener('click',function(){close();if(button.focus)button.focus();});document.addEventListener('keydown',onKey,true);yes.focus();};})();</script>`;
   const flashScript = `<script>(function(){window.aosFlash=function(message){try{sessionStorage.setItem("aos-flash",message);}catch(e){}};var raw=null;try{raw=sessionStorage.getItem("aos-flash");}catch(e){}if(raw){try{sessionStorage.removeItem("aos-flash");}catch(e){}var main=document.getElementById("console-main");if(main){var box=document.createElement("div");box.className="c-banner c-banner-accent";box.setAttribute("role","status");var text=document.createTextNode(raw);box.appendChild(text);var params=new URLSearchParams(location.search);var project=params.get("project");if(project){box.appendChild(document.createTextNode(" "));var host=params.get("host");var a=document.createElement("a");a.href="/panel?project="+encodeURIComponent(project)+"&section=audit"+(host?"&host="+encodeURIComponent(host):"");a.textContent="查看审计";box.appendChild(a);}var sheet=document.getElementById("console-shortcuts");main.insertBefore(box,sheet?sheet.nextSibling:main.firstChild);}}var dismiss=document.getElementById("capability-dismiss");if(dismiss){dismiss.addEventListener("click",function(){try{sessionStorage.setItem("aos-cap-dismissed","1");}catch(e){}var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);});}if(function(){try{return sessionStorage.getItem("aos-cap-dismissed")==="1";}catch(e){return false;}}()){var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);}})();</script>`;
+  // 返回/前进恢复 bfcache 时强制重载，避免旧项目/资产状态留在页面上。
+  const restoreScript = `<script>window.addEventListener("pageshow",function(e){if(e.persisted)location.reload();});</script>`;
   return [
     "<!doctype html>",
     '<html lang="zh-CN">',
@@ -335,6 +340,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     recordLastProject,
     inlineConfirmScript,
     flashScript,
+    restoreScript,
     "</body>",
     "</html>"
   ]

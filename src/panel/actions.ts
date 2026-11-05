@@ -698,7 +698,17 @@ export async function handlePanelActionRequest(
       }
     }
     if (request.url.pathname === "/panel/api/jobs") {
-      const response = await createWebJobAction(scopedDeps, resolved.rootPath, payload, actor);
+      // Web 测试资产属于中心项目；执行机 host 只作为 targetHostId，不要求项目在 runner 上登记。
+      // 但同一 rootPath 在多 host 有登记时，优先用目标 host 的 store，避免中心视角歧义。
+      let webStore = deps.store;
+      if (resolved.hostId !== null) {
+        const scoped = deps.storeForHost?.(resolved.hostId);
+        if (scoped && (await scoped.getProjectByPath(resolved.rootPath).catch(() => null)) !== null) {
+          webStore = scoped;
+        }
+      }
+      const webDeps: PanelWebDeps = { ...scopedDeps, store: webStore };
+      const response = await createWebJobAction(webDeps, resolved.rootPath, payload, actor);
       if (response.status === 200) scopedDeps.cache?.clear();
       const refs: Record<string, string | undefined> = {};
       try {
@@ -713,7 +723,15 @@ export async function handlePanelActionRequest(
       return response;
     }
     if (request.url.pathname === "/panel/api/jobs/clone") {
-      const response = await cloneWebJob(scopedDeps, resolved.rootPath, payload, actor);
+      let webStore = deps.store;
+      if (resolved.hostId !== null) {
+        const scoped = deps.storeForHost?.(resolved.hostId);
+        if (scoped && (await scoped.getProjectByPath(resolved.rootPath).catch(() => null)) !== null) {
+          webStore = scoped;
+        }
+      }
+      const webDeps: PanelWebDeps = { ...scopedDeps, store: webStore };
+      const response = await cloneWebJob(webDeps, resolved.rootPath, payload, actor);
       if (response.status === 200) scopedDeps.cache?.clear();
       await auditPanel(scopedDeps, resolved.rootPath, "action.jobs.clone", response, {
         taskId: String(payload.taskId ?? "")

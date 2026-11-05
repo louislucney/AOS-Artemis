@@ -10,6 +10,7 @@ import ExcelJS from "exceljs";
 import { MemoryStore } from "../dist/db/memory.js";
 import { computeDispatchPreview, dispatchFormSignature, dispatchPreviewId } from "../dist/console/dispatch.js";
 import { handlePanelActionRequest } from "../dist/panel/actions.js";
+import { storeWebAsset } from "../dist/web/assets.js";
 import { baseConfig, loadTestRuntime, makeTempProject } from "./helpers.js";
 
 async function setup() {
@@ -46,6 +47,65 @@ test("console actions: 同源守卫（cross-site 403；自定义头放行）", a
     deps
   );
   assert.equal(allowed.status, 404, "守卫通过后进入业务（未知任务 404）");
+});
+
+test("console actions: 网页测试不要求项目登记到执行机 host", async (t) => {
+  const { deps, rootPath, store } = await setup();
+  await store.createWebProject({
+    rootPath,
+    name: "p",
+    normalizedName: "p",
+    platforms: ["android"],
+    appPackage: "com.example.app"
+  });
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("用例");
+  sheet.addRow(["用例编号", "用例名称", "操作步骤", "预期结果"]);
+  sheet.addRow(["TC-1", "登录", "1. 打开", "1. 成功"]);
+  const excel = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
+  });
+  const pkg = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "package",
+    filename: "app.apk",
+    buffer: Buffer.from("fake-apk")
+  });
+  const response = await handlePanelActionRequest(
+    request("/panel/api/jobs", {
+      project: rootPath,
+      host: "h-runner",
+      assignment: "auto",
+      executionMode: "maestro",
+      excelAssetId: excel.id,
+      packageAssetId: pkg.id,
+      requirements: { platform: "android", deviceKind: "any" },
+      caseFilter: { modules: [], caseIds: [] }
+    }, {
+      headers: { "x-aos-console": "1" }
+    }),
+    {
+      ...deps,
+      workspaceRoot: join(rootPath, ".."),
+      localHostId: null,
+      storeForHost: (hostId) => store.scopeHost(hostId)
+    }
+  );
+  assert.equal(response.status, 200, response.body);
+  const body = JSON.parse(response.body);
+  assert.equal(body.ok, true);
+  assert.equal(typeof body.job.id, "string");
+  const created = await store.getRegressionTask(rootPath, body.job.id);
+  assert.equal(created.jobSpec.excelAssetId, excel.id);
+  assert.equal(created.jobSpec.packageAssetId, pkg.id);
+  t.after(async () => {
+    await store.deleteWebProject?.(rootPath).catch(() => undefined);
+  });
 });
 
 test("console actions: 套件任务不能走网页测试重新下发", async () => {

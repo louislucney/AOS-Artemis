@@ -147,6 +147,9 @@ export function renderLibraryPage(data: LibraryPageData): string {
     storeHealth: data.storeHealth,
     body: [
       "<h1>用例库</h1>",
+      `<nav class="c-flow-switch" aria-label="测试资产类型"><span class="c-flow-option is-active" aria-current="page">用例集</span><a class="c-flow-option" href="${escapeHtml(
+        `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets${hostQuery}`
+      )}">测试资产（Excel / 安装包 / 资料 / 参考图）</a></nav>`,
       `<p class="muted">安装包不随用例集保存。需要上传新安装包请去 <a href="${escapeHtml(
         `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets&kind=package${hostQuery}#asset-upload`
       )}">测试资产 → 安装包</a>；下发时在「网页测试（安装包）」选择。</p>`,
@@ -206,6 +209,7 @@ function mappingSummary(columnMap: Record<string, string>): string {
 /** 测试资产（Excel 原件版本 + 列映射）：上传/预览/保存均走面板动作 API；
  * 写动作按 capabilities.actions 与角色（maintainer/admin）收口，UI 只做可达性提示。 */
 export function renderWebAssetsPage(data: WebAssetsPageData): string {
+  const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
   const role = data.capabilities?.role;
   const roleAllowed = role === undefined || role === "maintainer" || role === "admin";
   const archived = data.projectStatus === "archived";
@@ -374,7 +378,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
 
   return renderConsoleShell({
     title: "测试资产",
-    active: "library",
+    active: "assets",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
     projectHostId: data.hostId ?? null,
@@ -382,11 +386,14 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     storeHealth: data.storeHealth,
     body: [
       "<h1>测试资产</h1>",
+      `<nav class="c-flow-switch" aria-label="测试资产类型"><a class="c-flow-option" href="${escapeHtml(
+        `/panel?project=${encodeURIComponent(data.rootPath)}&section=library${hostQuery}`
+      )}">用例集</a><span class="c-flow-option is-active" aria-current="page">测试资产（Excel / 安装包 / 资料 / 参考图）</span></nav>`,
       archived
         ? `<p>${cBadge({ label: "已归档", tone: "warning", title: "status=archived" })} 归档项目只读：上传与映射保存已禁用。</p>`
         : "",
-      `<p class="muted">Excel 与安装包（APK/IPA）同页上传；Excel 原件按内容寻址保存，版本行只追加，解析结果由「用例库」侧引用。映射保存后按表头指纹复用。</p>`,
-      `<div id="asset-upload">${cCard({ title: "上传测试资产（Excel / 安装包）", body: uploadBody })}</div>`,
+      `<p class="muted">Excel、安装包（APK/IPA）、测试资料与 L2 参考图同页上传；Excel 原件按内容寻址保存，版本行只追加，解析结果由「用例库」侧引用。映射保存后按表头指纹复用。</p>`,
+      `<div id="asset-upload">${cCard({ title: "上传测试资产（Excel / 安装包 / 资料 / 参考图）", body: uploadBody })}</div>`,
       `<div id="excel-assets">${cCard({
         title: "资产版本",
         subtitle: `共 ${data.assets.length} 个 Excel 版本`,
@@ -987,6 +994,12 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
   const packageAssetsHref = `/panel?project=${encodeURIComponent(
     data.rootPath
   )}&section=assets&kind=package${hostQuery}#asset-upload`;
+  const materialsAssetsHref = `/panel?project=${encodeURIComponent(
+    data.rootPath
+  )}&section=assets&kind=materials${hostQuery}#asset-upload`;
+  const referenceAssetsHref = `/panel?project=${encodeURIComponent(
+    data.rootPath
+  )}&section=assets&kind=reference${hostQuery}#asset-upload`;
   const packageHint =
     data.assets.some((asset) => asset.kind === "package")
       ? ""
@@ -1036,7 +1049,9 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
       data.assets,
       "materials",
       "不指定"
-    )}</select></label> ` +
+    )}</select></label> <a class="c-button" href="${escapeHtml(
+      materialsAssetsHref
+    )}">上传测试资料</a> ` +
       `<label>脚本集 <select id="web-job-scripts" name="scriptSetId" aria-label="脚本集资产"${disabledAttr}>${assetOptionsWithPlaceholder(
         data.assets,
         "scripts",
@@ -1046,7 +1061,9 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
       data.assets,
       "reference",
       "不指定"
-    )}</select></label> <span class="muted">用于 L2 参照物；不上传则仅 L1 文本检查。</span></p>`,
+    )}</select></label> <a class="c-button" href="${escapeHtml(
+      referenceAssetsHref
+    )}">上传参考图</a> <span class="muted">用于 L2 参照物；不上传则仅 L1 文本检查。</span></p>`,
     `<p><label>用例范围（模块，逗号分隔） <input id="web-job-case-modules" name="caseModules" aria-label="用例范围（模块）" placeholder="登录、支付"${disabledAttr}></label> ` +
       `<label>用例 ID（逗号分隔） <input id="web-job-case-ids" name="caseIds" aria-label="用例范围（用例 ID）" placeholder="TC-001,TC-002"${disabledAttr}></label></p>`,
     `<p><button id="web-job-check" class="c-button" type="button"${disabledAttr}>检查匹配</button> ` +

@@ -419,7 +419,11 @@ export async function resolveProjectKey(
     if (byName) return { rootPath: byName.rootPath, name: byName.name, hostId: byName.hostId };
     if (explicitHost !== null) {
       const workspace = resolveWorkspaceKey(deps, key);
-      return workspace ? { ...workspace, hostId: explicitHost } : null;
+      if (!workspace) return null;
+      // 不要把“执行机 host”误当成项目 host；工作区目录若已注册，沿用登记 host。
+      const registered = projects.filter((project) => project.rootPath === workspace.rootPath);
+      if (registered.length > 1) throw new AmbiguousProjectError(key, registered);
+      return { ...workspace, hostId: registered[0]?.hostId ?? null };
     }
   }
 
@@ -3512,10 +3516,11 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
     case "web-jobs":
     case "web-job":
       return "dispatch";
+    case "web-assets":
+      return "assets";
     case "devices":
       return "devices";
     case "library":
-    case "web-assets":
       return "library";
     case "archive":
       return "archive";

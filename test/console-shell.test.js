@@ -33,6 +33,14 @@ test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动�
   assert.match(html, /id="aos-live-toggle"/, "暂停/继续控制");
   assert.match(html, /clearInterval\(timer\)/, "暂停可生效");
   assert.match(html, /DOMParser/, "轮询替换 console-main 局部内容");
+  assert.match(
+    html,
+    /fetch\(location\.href,\{cache:"no-store",headers:\{"X-AOS-No-Cache":"1"\}\}\)/,
+    "轮询绕过浏览器与进程内缓存"
+  );
+  assert.match(html, /querySelector\("\.c-topbar-meta"\)/, "顶栏元信息随轮询刷新");
+  assert.match(html, /querySelector\("\.c-switcher"\)/, "项目切换器随轮询刷新");
+  assert.match(html, /pageshow.*e\.persisted.*location\.reload/, "bfcache 恢复强制重载");
   assert.match(html, /if\(reduced\)\{/, "缩小动画偏好分支");
   assert.match(html, /else\{start\(\)/, "未偏好时启动轮询");
   assert.match(html, /aosOnRefresh/, "替换后回调重绑钩子（任务动作不失效）");
@@ -42,7 +50,7 @@ test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动�
 
 test("console shell: 默认 nav 覆盖控制台版块", () => {
   const keys = DEFAULT_CONSOLE_NAV.map((item) => item.key);
-  for (const expected of ["project", "review", "dispatch", "library", "archive", "ops", "usage"]) {
+  for (const expected of ["project", "review", "dispatch", "assets", "library", "archive", "ops", "usage"]) {
     assert.ok(keys.includes(expected), expected);
   }
   for (const removed of ["overview", "tasks", "runners", "schedules", "stats", "audit"]) {
@@ -66,6 +74,12 @@ test("console shell: 项目导航项、切换器与任务锚点", () => {
   assert.match(html, /aria-current="page"[^>]*>项目</);
   assert.match(html, /c-switcher/);
   assert.match(html, /aria-label="切换项目"/);
+  assert.match(html, /data-home="\/panel"/, "占位项回控制台首页");
+  assert.match(
+    html,
+    /onchange="location\.href=this\.value\|\|this\.dataset\.home"/,
+    "选择「切换项目…」不再无响应"
+  );
   assert.match(html, /<option value="\/panel\?project=%2Fw%2Fa" selected>A<\/option>/, "当前项目预选");
   assert.match(
     html,
@@ -90,6 +104,16 @@ test("console shell: 独立统计进程（品牌指 /usage，隐藏全局搜索�
   assert.match(html, /class="c-brand"><a href="\/usage"/, "品牌链接不指向不存在的 /panel");
   assert.ok(!html.includes('role="search"'), "无面板路由时不做全局搜索");
   assert.ok(!html.includes('action="/panel"'), "无死链表单");
+
+  const switched = renderConsoleShell({
+    title: "使用统计",
+    active: "usage",
+    body: "",
+    nav: [{ key: "usage", label: "使用统计", href: "/usage" }],
+    brandHref: "/usage",
+    projectSwitcher: { options: [{ label: "A", href: "/usage?project=A", current: true }] }
+  });
+  assert.match(switched, /data-home="\/usage"/, "独立统计页的「切换项目…」回 /usage");
 });
 
 test("console shell: 窄屏布局（顶栏换行/主区收宽/表格容器）", () => {
