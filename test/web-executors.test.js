@@ -142,6 +142,75 @@ test("executeWebJob: JUnit 三用例映射 PASS/FAIL/SKIP，任一失败任务 f
   assert.equal(calls.filter((call) => call.command === "maestro").length, 1);
 });
 
+test("executeWebJob: Maestro driver 两包齐才加 --no-reinstall-driver", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  const content = junit([xmlCase({ name: "flow-a", classname: "flows" })]);
+  const execWithDriver = ({ app = true, server = true }) =>
+    fakeExec(async (command, args) => {
+      if (command === "adb" && args.includes("pm")) {
+        const pkg = args[args.length - 1];
+        const installed = pkg === "dev.mobile.maestro" ? app : server;
+        return {
+          code: installed ? 0 : 1,
+          stdout: installed ? `package:/data/app/${pkg}/base.apk` : "",
+          stderr: ""
+        };
+      }
+      if (command === "maestro") {
+        const output = args[args.indexOf("--output") + 1];
+        await mkdir(path.dirname(output), { recursive: true });
+        await writeFile(output, content);
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+  const ready = execWithDriver({});
+  await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec: ready.exec,
+    env: {},
+    adbCommand: "adb"
+  });
+  assert.equal(
+    ready.calls.find((call) => call.command === "maestro").args.includes("--no-reinstall-driver"),
+    true
+  );
+
+  const partial = execWithDriver({ server: false });
+  await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec: partial.exec,
+    env: {},
+    adbCommand: "adb"
+  });
+  assert.equal(
+    partial.calls.find((call) => call.command === "maestro").args.includes("--no-reinstall-driver"),
+    false
+  );
+
+  const forced = execWithDriver({});
+  await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec: forced.exec,
+    env: { AOS_MAESTRO_REINSTALL_DRIVER: "1" },
+    adbCommand: "adb"
+  });
+  assert.equal(
+    forced.calls.find((call) => call.command === "maestro").args.includes("--no-reinstall-driver"),
+    false
+  );
+});
+
 test("executeWebJob: maestroCommand 覆盖默认命令（Windows .cmd/.bat）", async (t) => {
   const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
   const { exec, calls } = execWithJunit(junit([xmlCase({ name: "flow-a", classname: "flows" })]));

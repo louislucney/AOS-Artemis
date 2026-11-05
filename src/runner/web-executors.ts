@@ -51,6 +51,8 @@ export interface ExecuteWebJobInput {
   maestroCommand?: string;
   /** 已解析的 adb 路径；失败诊断用，缺省 "adb"。 */
   adbCommand?: string;
+  /** 执行日志（driver 复用/缺失提示）。 */
+  onLog?: (message: string) => void;
 }
 
 export const WEB_JOB_DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
@@ -168,6 +170,35 @@ async function captureFailureDiagnostics(input: ExecuteWebJobInput): Promise<{
     if (logs !== null) await save(path.join(dir, "syslog.txt"), logs.stdout);
   }
   return { files, summary };
+}
+
+/** Maestro Android driver 由 app + server 两个包组成；都在时才跳过每次重装。 */
+async function maestroDriverState(
+  input: ExecuteWebJobInput
+): Promise<{ ready: boolean; missing: string[] }> {
+  if (input.device.platform !== "android" || input.adbCommand === undefined) {
+    return { ready: false, missing: [] };
+  }
+  if ((input.env.AOS_MAESTRO_REINSTALL_DRIVER ?? "").trim() === "1") {
+    return { ready: false, missing: [] };
+  }
+  const adb = input.adbCommand.trim() || "adb";
+  const installed = async (packageName: string): Promise<boolean> => {
+    try {
+      const result = await input.exec(
+        adb,
+        ["-s", input.device.serial, "shell", "pm", "path", packageName],
+        { timeoutMs: 15_000, env: input.env }
+      );
+      return result.code === 0 && /package:/.test(result.stdout);
+    } catch {
+      return false;
+    }
+  };
+  const packages = ["dev.mobile.maestro", "dev.mobile.maestro.test"];
+  const states = await Promise.all(packages.map((packageName) => installed(packageName)));
+  const missing = packages.filter((_packageName, index) => !states[index]);
+  return { ready: missing.length === 0, missing };
 }
 
 function tail(text: string): string {
@@ -655,24 +686,34 @@ export async function executeWebJob(
   await rm(debugDir, { recursive: true, force: true });
 
   const timeoutMs = resolveTimeout(input.timeoutMs, input.env);
+  const maestroArgs = [
+    "test",
+    "--udid",
+    input.device.serial,
+    "--format",
+    "JUNIT",
+    "--output",
+    junitPath,
+    "--debug-output",
+    debugDir,
+    ...execTargets
+  ];
+  const driver = await maestroDriverState(input);
+  if (driver.ready) {
+    maestroArgs.push("--no-reinstall-driver");
+    input.onLog?.("Maestro driver 已安装，跳过重装");
+  } else if (driver.missing.length > 0) {
+    input.onLog?.(`Maestro driver 缺失：${driver.missing.join(", ")}（交给 Maestro 安装）`);
+  } else if ((input.env.AOS_MAESTRO_REINSTALL_DRIVER ?? "").trim() === "1") {
+    input.onLog?.("AOS_MAESTRO_REINSTALL_DRIVER=1：强制重装 Maestro driver");
+  }
+
   let execResult: ExecResult;
   try {
-    execResult = await input.exec(
-      input.maestroCommand?.trim() || "maestro",
-      [
-        "test",
-        "--udid",
-        input.device.serial,
-        "--format",
-        "JUNIT",
-        "--output",
-        junitPath,
-        "--debug-output",
-        debugDir,
-        ...execTargets
-      ],
-      { timeoutMs, env: input.env }
-    );
+    execResult = await input.exec(input.maestroCommand?.trim() || "maestro", maestroArgs, {
+      timeoutMs,
+      env: input.env
+    });
   } catch (error) {
     const diagnostics = await captureFailureDiagnostics(input);
     return resultAt(

@@ -3822,3 +3822,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **展示口径**（`src/console/pages.ts`）：包资产按扩展名归平台（`.apk`→Android、`.ipa`→iOS；脚本集按 `metadata.platform`），**每个平台从 v1 独立编号**；安装包表新增「平台」列，版本列显示该平台内的序号，下拉选项显示 `Android v1 · app.apk` / `iOS v1 · app.ipa`。脚本集表同样按平台独立序号（平台列保持）。
 - **存储口径不动**：`web_assets.version` 仍是 `(root_path, kind)` 全局递增（PostgreSQL 唯一索引依赖），仅面板展示层按平台重算；API/审计里的 `version` 仍可作为唯一行标识。这样避免数据库迁移与并发唯一键风险。
 - **测试**：`test/web-assets-ui.test.js` 新增“同一项目上传 APK+IPA → 两者都是 v1，且带平台列”；全量测试与 lint 保持绿。
+
+### 13.311 修复（Maestro Android driver 复用：不再每次重装两个包）
+
+> 2026-11-05。现场反馈：手动安装 Maestro 安装包后，任务仍报 driver 不可用。核对 Maestro 2.12.1 包结构：Android driver 由两个 APK 组成——`maestro-app.apk`（`dev.mobile.maestro`）与 `maestro-server.apk`（`dev.mobile.maestro.test`），都打包在 `lib/maestro-client.jar`；`maestro test` 默认 **每次重装 driver+server**。在 vivo 等需要安装确认的机型上，重装弹窗/未确认会让 driver 处于半装/被杀状态，表现为 `DeviceServerDiedException`（`deviceInfo`/`viewHierarchy` 的 gRPC 超时）。
+
+- **driver 预检**（`src/runner/web-executors.ts`）：执行 Maestro 前用 `adb shell pm path dev.mobile.maestro` 与 `dev.mobile.maestro.test` 检查两个包；**都在时**给 `maestro test` 加 `--no-reinstall-driver`，跳过每次重装；缺任意一个时保持 Maestro 默认安装（会补装缺失包），并通过 runner 日志说明 `Maestro driver 缺失：…（交给 Maestro 安装）`。两个包都在时日志显示 `Maestro driver 已安装，跳过重装`。
+- **强制重装**：`AOS_MAESTRO_REINSTALL_DRIVER=1` 关闭复用（升级 Maestro/怀疑 driver 版本不匹配时用）；已加入 runner 子进程 env 白名单，变量本身不落结果。
+- **验证**：模拟器上手动确认 `dev.mobile.maestro`/`dev.mobile.maestro.test` 均存在时，Maestro 2.12.1 Settings smoke 正常；`--no-reinstall-driver` 在 driver 缺失时仍会触发安装，存在时跳过重装。真实 vivo 上应重点检查这两个包是否都存在（用户只点了一个 Maestro 安装包时，`dev.mobile.maestro.test` 很可能缺失）。
+- **测试**：`test/web-executors.test.js` 增加两包都在 → `--no-reinstall-driver`、缺 server → 不加、`AOS_MAESTRO_REINSTALL_DRIVER=1` → 不加；全量测试与 lint 保持绿。

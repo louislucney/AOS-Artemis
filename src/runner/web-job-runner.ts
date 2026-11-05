@@ -76,6 +76,7 @@ const CHILD_ENV_ALLOW = new Set([
   "ANDROID_SDK_ROOT",
   "ADB_SERVER_SOCKET",
   "AOS_MAESTRO_PATH",
+  "AOS_MAESTRO_REINSTALL_DRIVER",
   "AOS_ADB_PATH",
   "AOS_IDEVICESYSLOG_PATH",
   "AOS_RUNNER_WORK_DIR",
@@ -446,6 +447,7 @@ export function createDefaultWebJobExecutor(
         env: childEnv,
         maestroCommand,
         adbCommand,
+        onLog,
         ...(executeTimeoutMs === undefined ? {} : { timeoutMs: executeTimeoutMs })
       });
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
