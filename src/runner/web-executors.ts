@@ -821,10 +821,20 @@ export async function executeWebJob(
     warnings.push(`maestro-exit:${execResult.error ?? (execResult.code === null ? "null" : String(execResult.code))}`);
   }
 
+  const failedCase = cases.some(
+    (entry) => entry.status === "FAIL" || entry.status === "ERROR"
+  );
+  const diagnostics = execFailed || failedCase ? await captureFailureDiagnostics(input) : null;
+  const detail = warnings.length === 0 ? null : warnings.join("; ");
+  const withDiagnostics =
+    diagnostics?.summary === undefined || diagnostics.summary === null
+      ? detail
+      : `${detail === null ? "" : `${detail}\n`}--- ${diagnostics.summary}`;
   return resultAt(
     startedAtMs,
     execFailed ? "error" : aggregate(cases),
     cases,
-    warnings.length === 0 ? null : warnings.join("; ")
+    withDiagnostics,
+    diagnostics?.files
   );
 }

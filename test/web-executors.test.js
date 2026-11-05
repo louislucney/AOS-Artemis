@@ -93,6 +93,7 @@ function fakeExec(handler) {
 function execWithJunit(content, result = { code: 0, stdout: "", stderr: "" }) {
   return fakeExec(async (command, args) => {
     const index = args.indexOf("--output");
+    if (index < 0) return { code: 0, stdout: "", stderr: "" };
     const output = args[index + 1];
     await mkdir(path.dirname(output), { recursive: true });
     await writeFile(output, content);
@@ -138,7 +139,7 @@ test("executeWebJob: JUnit 三用例映射 PASS/FAIL/SKIP，任一失败任务 f
   assert.equal(new Date(result.finishedAt).toISOString(), result.finishedAt);
   assert.ok(new Date(result.finishedAt) >= new Date(result.startedAt));
   assert.equal(result.detail, null);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter((call) => call.command === "maestro").length, 1);
 });
 
 test("executeWebJob: maestroCommand 覆盖默认命令（Windows .cmd/.bat）", async (t) => {
