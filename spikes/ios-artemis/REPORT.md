@@ -1,6 +1,6 @@
 # iOS ARTEMIS Phase 0 Spike 报告
 
-> 2026-11-05 · Throwaway spike，不进入生产代码  
+> 2026-11-05 · Throwaway spike，不进入生产代码；设计评审后**暂停开发**  
 > 设计文档：`docs/superpowers/specs/2026-11-05-ios-artemis-runtime-design.md`
 
 ## 目标
@@ -80,6 +80,22 @@ node spikes/ios-artemis/run-spike.mjs
 - `spikes/ios-artemis/spike_controller.py`
 - `spikes/ios-artemis/run-spike.mjs`
 - 本报告
+
+## Android 隐式依赖（初步清单，Phase 1 完整审计）
+
+Spike 只验证到 `Agent.init` 的入口；以下位置已知或高度可疑，Phase 1 必须逐项确认“跳过 / 适配 / 不支持”：
+
+- `third_party/mobile_use/context.py`：`DevicePlatform` 只有 `ANDROID`
+- `artemis/sdk/agent.py`：`Agent.init` 强制 `ANDROID`；`_init_internal` 检查 `adb`、`_init_clients`、`_get_device_context`、`_ensure_device_unlocked`、`install_apk`、`clean`
+- `artemis/mcp/adb_server.py`：`_get_controller` 默认 `adb.device_list()`
+- `artemis/drivers/factory.py`：默认 `AndroidAdbDriver`
+- `artemis/controllers/unified_controller.py`：`open_url`/`erase_text`/`go_back` 使用 Android shell
+- `artemis/clients/screen_client_factory.py` + `runtime/helper_manager.py`：UIAutomator helper
+- `runtime/awake_service.py` / `device_pool.py` / `device_lock.py`：ADB 设备发现/保活/锁
+- `mcp_server/tools/`：diagnose、device_state、logcat、shell、video、app install
+- `data_engine` / `trace_store`：需验证 UI tree/OCR 与 iOS trace 的兼容性
+
+完整审计结论应在 Phase 1 第 0 步写入设计文档 §18.2，再决定是否继续。
 
 ## 未验证
 

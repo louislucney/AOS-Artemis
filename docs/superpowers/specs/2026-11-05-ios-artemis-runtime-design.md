@@ -1,6 +1,6 @@
 # iOS ARTEMIS 同级执行器设计（AOS iOS Agent Runtime）
 
-> 2026-11-05 · 状态：**设计完成 + Phase 0 Spike 完成；开发暂停**（等待 Android/P0b 真机稳定）  
+> 2026-11-05 · 状态：**设计完成 + Phase 0 Spike 完成 + 评审反馈已吸收；开发暂停**（等待 Android/P0b 真机稳定）  
 > 关联：`DESIGN.md` §13.306（Web LLM 执行接线）、`docs/superpowers/specs/2026-11-04-llm-execution-design.md`（R10 v3）、`docs/superpowers/plans/2026-11-04-web-llm-ios.md`（P0b）、`artemis/artemis/drivers/base.py`、`src/ios/`。
 
 ## 0. 决策摘要
@@ -167,7 +167,7 @@
 node dist/cli.js ios-device-service --port 15100 --appium-url http://127.0.0.1:15038
 ```
 
-默认绑定 `127.0.0.1`；`AOS_IOS_DEVICE_RPC_TOKEN` 可选，设置后要求 `Authorization: Bearer`。
+默认绑定 `127.0.0.1`；**默认生成 token**（`~/.aos/ios-device-rpc-token` 0600），要求 `Authorization: Bearer`。`AOS_IOS_DEVICE_RPC_TOKEN` 可显式指定；`AOS_IOS_DEVICE_RPC_ALLOW_INSECURE=1` 仅用于测试。
 
 设备服务**不**：
 - 不读取 Excel/taskDesc。
@@ -182,7 +182,7 @@ node dist/cli.js ios-device-service --port 15100 --appium-url http://127.0.0.1:1
 - `AOS_IOS_AGENT_RUNTIME=artemis`：`Runtime.maybeIosCall("mobile_run_task")` 不再拦截 iOS UDID，交给 ARTEMIS 子进程。Node executor 与 device service 共用 UDID 锁；切换期间不允许并发跑同一台设备。
 - ARTEMIS 子进程环境注入：
   - `AOS_IOS_DEVICE_RPC_URL`
-  - `AOS_IOS_DEVICE_RPC_TOKEN`（可选）
+  - `AOS_IOS_DEVICE_RPC_TOKEN`（默认由 device service 生成，0600）
   - `ARTEMIS_MOBILE_PLATFORM=ios`（或 `ARTEMIS_IOS_UDID`）
   - **不注入 `AOS_APPIUM_URL`**：Appium URL 由 worker 在 `initialize` 时传给 device service，避免服务级默认值选错 host。
 - `mobile_run_task` 参数：
@@ -199,6 +199,9 @@ node dist/cli.js ios-device-service --port 15100 --appium-url http://127.0.0.1:1
 
 - JSON-RPC 2.0 over HTTP/1.1，`POST /rpc`。
 - 默认 `127.0.0.1:15100`（`AOS_IOS_DEVICE_RPC_PORT`）。
+- **默认要求 token**：启动时生成随机 token 写入 `~/.aos/ios-device-rpc-token`（0600），ARTEMIS 子进程通过 `AOS_IOS_DEVICE_RPC_TOKEN` 获取；显式 `AOS_IOS_DEVICE_RPC_ALLOW_INSECURE=1` 才允许无 token（WARN）。
+- 请求体上限 1MB；响应错误只返回 sanitized `{code,message}`，堆栈只写服务日志。
+- 速率限制：`screen` 默认 20 次/秒、动作 50 次/秒；超限返回 `rate-limited`。
 - 请求：`{ "jsonrpc":"2.0", "id":"<uuid>", "method":"screen", "params":{...} }`
 - 响应：`{ "jsonrpc":"2.0", "id":"<uuid>", "result":{...} }` 或 `{ "error": { "code": "...", "message": "...", "data": {...} } }`
 - 超时：观察/动作默认 30s；启动/安装 120s。
@@ -211,7 +214,7 @@ node dist/cli.js ios-device-service --port 15100 --appium-url http://127.0.0.1:1
 | `initialize` | `{udid, appiumUrl, bundleId?, signing?, appium?}` | `{sessionId, info}` |
 | `shutdown` | `{sessionId}` | `{ok}` |
 | `info` | `{sessionId}` | `DeviceInfo` |
-| `screen` | `{sessionId, includeSource?, includeScreenshot?}` | `Observation` |
+| `screen` | `{sessionId, includeSource?, includeScreenshot?, visibleOnly?, includeFullSource?, maxElements?, maxDepth?, sourceTimeoutMs?}` | `Observation` |
 | `tap` | `{sessionId, x, y, durationMs?, times?}` | `{ok}` |
 | `longPress` | `{sessionId, x, y, durationMs?}` | `{ok}` |
 | `swipe` | `{sessionId, x1, y1, x2, y2, durationMs?}` | `{ok}` |
@@ -267,7 +270,16 @@ node dist/cli.js ios-device-service --port 15100 --appium-url http://127.0.0.1:1
 - 同一元素去重：相同 `bounds+text+resource_id` 只留一个；优先保留可点击/有 accessibility 的叶子。
 - 默认只给 `screenshotBase64`；`screenshotPath` 仅 `AOS_IOS_DEVICE_SCREENSHOT_MODE=file` 时出现，临时文件 0600、session 关闭即删。不把未脱敏截图长期留在 `.artemis/ios-device/`。
 
-### 6.4 错误码
+### 6.4 观察性能与超时
+
+- `screen` 默认 `visibleOnly=true`、`includeFullSource=false`、`maxElements=500`、`maxDepth=30`；只返回可见/可交互节点，避免长列表/WebView 的完整 source。
+- `sourceTimeoutMs` 默认 10s；RPC 观察超时 30s（只含 WDA 调用与归一化，不含 OCR）。
+- OCR 由 ARTEMIS 侧独立计时（`AOS_OCR_TIMEOUT_MS`，默认 15s），不占用 RPC 观察超时。
+- `screen` 结果按 `sessionId + screenshotSha256 + hierarchySha256` 缓存 500ms；同一动作后的连续观察可复用；跨动作不复用。
+- 大页面/WebView 先返回裁剪节点；需要完整层级时显式 `includeFullSource=true`，仍受 `maxElements` 上限。
+- 记录 `observationMs` / `sourceBytes` / `ocrMs`，用于 P95 验收。
+
+### 6.5 错误码
 
 | code | 含义 | ARTEMIS 映射 |
 |---|---|---|
@@ -338,7 +350,7 @@ interface OcrProvider {
 - 用 `fuse_ocr_with_xml` 把 OCR 结果与归一化 XML 融合；iOS 的 `hierarchyXml` 已是 Android 兼容结构。
 - L1 从融合后的文本通道取标签，而不是单独从 AX 取。
 - OCR 失败/未配置：降级为 AX，并在 trace/状态中写 `ios-ocr-degraded` warning；不能静默假装 OCR 成功。
-- **禁止 Android 用 Google Vision、iOS 用 Apple Vision** 这类混用；provider 必须项目级统一，否则跨端 L1 不可比。
+- **默认项目级统一 provider**；如果显式按平台覆盖（如 Android 用 Google Vision、iOS 用 Apple Vision），trace 必须记录 `ocrProvider` 与 `ocrParity:"platform-specific"`，且不承诺跨端 L1 等价。跨端 L1 验收只在 `ocrParity:"same-provider"` 时成立。
 
 建议：先用 `auto`，有现成 Google Vision key 就复用；没有 key 时用 `rapidocr` 做离线基线。Phase 2 用一组真实 UI 截图比较 `google-vision` 与 `rapidocr` 的中文/数字/小字号命中率，再定长期默认。
 
@@ -347,7 +359,7 @@ interface OcrProvider {
 Android 已有 `data_engine.db` + `status.json`。iOS ARTEMIS 路径目标：
 
 - `status.json`：必须。
-- `data_engine.db`：P1 目标；先验证 DataEngine 能接受 iOS 截图/层级/OCR，再把它变成 iOS LLM 的必需工件。
+- `data_engine.db`：Phase 1 先产出**最小兼容版**（`steps`/`images`/`meta` 表，`meta.data_engine_version="ios-partial"`，只写实际有的字段，不伪造 OCR/step）；读取方（面板/`suite`/`mobile_inspect_trace`）按版本标记降级，不把缺失字段当 PASS/FAIL。Phase 2 再替换为完整 DataEngine 输出。
 - `run.json`：ARTEMIS 原生 trace；若与 AOS iOS 现有 `run.json` 结构不同，AOS 结果适配层按平台读取，不强行合并。
 - **执行器标记**：trace 目录写 `meta.json` / `status.json` 字段 `executor: "ios-artemis" | "ios-node"`；AOS ingest、`mobile_inspect_trace`、面板、`suite` 按标记选 reader，并兼容无标记的旧 Node trace。回滚不迁移数据。
 - 截图：写入 ARTEMIS trace 目录；Python hooks 在写盘前脱敏。
@@ -415,6 +427,21 @@ interface DeviceCapabilities {
   - 文本输入走 `/keys` 或 WDA；不要用会回显明文的日志。
   - 系统弹窗/权限框的按钮文本也要脱敏后再进模型。
 
+### 9.1 执行路径与脱敏责任矩阵
+
+| 执行路径 | LLM 边界 | 观察/截图 | trace/落盘 | 输入注入 |
+|---|---|---|---|---|
+| `android-artemis` | ARTEMIS Python hooks | Python hooks | Python hooks | Python hooks + ARTEMIS 动作层 |
+| `ios-node`（P0b） | Node `src/ios/redaction.ts` + `ChatOptions` | Node | Node | Node（`resolveIosInput`） |
+| `ios-artemis`（本设计） | ARTEMIS Python hooks | Python hooks | Python hooks | Python hooks + device service 原样执行 |
+
+规则：
+
+- 一条执行路径只能有一个脱敏责任方；`executor` 标记必须与责任矩阵一致。
+- `AOS_IOS_AGENT_RUNTIME=artemis` 时，该 job 关闭 Node `iosWebLlmRedaction`，避免双重/漏脱敏。
+- Node device service 永远不持久化 action 参数；即使收到已解析 secret，也只内存处理、不落日志。
+- P0b Node 路径继续由 Node 脱敏；ARTEMIS 路径不依赖 `src/ios/redaction.ts`。
+
 ## 10. 部署与拓扑
 
 ### 10.1 第一版（中心设备服务）
@@ -472,8 +499,9 @@ Spike 已完成，报告：`spikes/ios-artemis/REPORT.md`。
 
 ### Phase 1：MVP（1–2 周）
 
-先做 **ARTEMIS 平台接缝 patch spike**，再做 Node Device Service：
+先做 **1 天 Android 隐式依赖审计**，再做 **ARTEMIS 平台接缝 patch spike**，最后做 Node Device Service：
 
+0. 审计 `Agent`/工具注册表/controller 的所有 Android 隐式依赖，产出清单（见 §18.2）；未审计完不建 Node 服务；
 1. `third_party/mobile_use` 增加 `DevicePlatform.IOS`；
 2. `Agent.init` 按 platform 分支，iOS 跳过 `which("adb")` / ADB clients，注入 `IosRemoteDriver` 或 controller；
 3. `_get_controller` 支持 iOS UDID + RPC URL；
@@ -481,7 +509,7 @@ Spike 已完成，报告：`spikes/ios-artemis/REPORT.md`。
 5. 用 fake LLM + fake RPC 跑通 `Agent.run_task` 最小任务；
 6. 通过后再建正式 Node Device Service（`initialize`/`info`/`screen`/`tap`/`longPress`/`swipe`/`inputText`/`pressKey`/`launchApp`/`terminateApp`/`currentApp`/`alerts`）；
 7. AOS routing flag + ARTEMIS env 注入；
-8. status.json/run.json 落盘；AOS 结果适配层能读；
+8. status.json/run.json 落盘；Phase 1 产出最小兼容 `data_engine.db`（`meta.data_engine_version="ios-partial"`），读取方按标记降级；AOS 结果适配层能读；
 9. fake Appium + fake RPC 单测。
 
 ### Phase 2：证据与行为对齐（2–3 周）
@@ -598,6 +626,61 @@ Spike 已完成，报告：`spikes/ios-artemis/REPORT.md`。
 - OCR 是否缓存：按 screenshot sha256 缓存，默认开启。
 - 观测缓存：同一步内 `screen` 结果可复用，跨动作不缓存。
 
+## 18. 评审反馈处置（2026-11-05）
+
+### 18.1 平台接缝 patch 的边界（重要）
+
+评审指出“不改 ARTEMIS submodule 核心”。本设计需要澄清：
+
+- **不改**：Planner / Operator / Checker / Explorer / DataEngine / Trace 的核心逻辑。
+- **需要窄 patch**：`DevicePlatform.IOS`、`Agent.init` 的平台分支、`_get_controller` 的 iOS 分支、`UnifiedMobileController` 的 iOS 子类覆盖。
+- 这些 patch 与现有 `patches/artemis/0001-aos-web-llm-hooks.patch` 同属下游适配层，建议新增 `patches/artemis/0002-ios-platform-seam.patch`。
+- 如果“零 submodule 修改”是硬约束，则本设计无法复用 ARTEMIS Agent，只能回到 TS agent 方案（行为漂移风险回归）。**Phase 1 启动前必须确认接受这层窄 patch。**
+
+### 18.2 Android 隐式依赖审计清单（Phase 1 第 0 步）
+
+已知但未完整审计的位置；Phase 1 必须逐项确认“跳过 / 适配 / 不支持”：
+
+| 位置 | 依赖 | 处理方向 |
+|---|---|---|
+| `third_party/mobile_use/context.py` | `DevicePlatform` 仅 `ANDROID` | 增加 `IOS` |
+| `artemis/sdk/agent.py::Agent.init` | 强制 `ANDROID` | 按 platform 分支 |
+| `Agent._init_internal` | `which("adb")`、`_init_clients`、`_get_device_context` | iOS 跳过 ADB，注入 RPC driver/controller |
+| `Agent._ensure_device_unlocked` | `dumpsys trust` | iOS 跳过或改为 WDA 状态检查 |
+| `Agent.install_apk` / locked package | ADB/APK | iOS 明确拒绝 `app_path`；bundle id 只做 launch |
+| `Agent.clean` | `_ui_adb_client.disconnect` | iOS 关闭 RPC session |
+| `mcp/adb_server.py::_get_controller` | `adb.device_list()` | 增加 iOS UDID/RPC 分支 |
+| `drivers/factory.py` | 默认 `AndroidAdbDriver` | 按 platform 返回 `IosRemoteDriver` |
+| `controllers/unified_controller.py` | `open_url`/`erase_text`/`go_back` 用 shell | iOS controller 覆盖 |
+| `clients/screen_client_factory.py` + `runtime/helper_manager.py` | UIAutomator helper | iOS 绕过，使用 RPC observation |
+| `runtime/awake_service.py` / `device_pool.py` / `device_lock.py` | ADB 设备发现/保活 | iOS 由 device service + UDID 锁替代 |
+| `mcp_server/tools/diagnose.py` / `device_state.py` | ADB/diagnose/截图命名 | iOS 走 device service；诊断能力显式降级 |
+| `tools/command_tool.py` / logcat / video / notifications | ADB shell/系统工具 | iOS capability 过滤，不注册 |
+| `data_engine` | UI tree/OCR schema | 用归一化 XML/OCR 喂入；Phase 1 先最小兼容 DB |
+| `trace_store` | 通用 | 验证 iOS `status.json`/trace 写入，不改 schema |
+
+### 18.3 反馈逐项处置
+
+| # | 反馈 | 结论 |
+|---|---|---|
+| 1 | `Agent.init` Android 硬编码不是小分支 | **接受**。Phase 1 先做 1 天审计（§18.2）；扩大平台接缝 patch spike；不接受零 submodule 修改的假设。 |
+| 2 | WDA source 性能/超时 | **接受**。`screen` 增加 visibleOnly/fullSource/maxElements/maxDepth/sourceTimeout；RPC 观察与 OCR 分开计时；500ms 缓存；验收 P95。 |
+| 3 | UDID 锁 TOCTOU | **接受**。PG advisory lock 优先，无 PG 用 `flock`；删除 pid+mtime+TTL 启发式；覆盖崩溃自动释放测试。 |
+| 4 | OCR provider 项目级统一过严 | **部分接受**。默认项目级统一；允许显式平台覆盖，但 trace 记录 `ocrProvider`/`ocrParity`，跨端 L1 等价只在 same-provider 时承诺。 |
+| 5 | `data_engine.db` Phase 2 缺口 | **接受**。Phase 1 产出最小兼容 DB（`ios-partial` 标记），读取方降级；不伪造缺失字段。 |
+| 6 | RPC 安全加固 | **接受**。默认 token（0600 文件）、错误 sanitized、速率限制、请求体上限。 |
+| 7 | P0b Node 脱敏 vs ARTEMIS Python 脱敏 | **接受**。增加 §9.1 责任矩阵；一条路径只能有一个脱敏责任方；artemis 路径关闭 Node 脱敏。 |
+
+### 18.4 更新后的启动门
+
+Phase 1 启动前必须完成：
+
+1. 平台接缝窄 patch 的批准（§18.1）；
+2. Android 隐式依赖审计清单签字（§18.2）；
+3. UDID 锁选型确认（PG advisory / flock）；
+4. OCR provider 策略确认（默认项目级；是否允许平台覆盖）；
+5. Phase 1 MVP 是否包含最小 `data_engine.db` 确认（默认包含）。
+
 ---
 
 **一句话总结**：iOS 不再维护第二套 agent；把 iOS 做成 ARTEMIS 的 `BaseDeviceDriver` 后端，用 Node 设备服务复用现有 Appium/WDA 能力，用同一套 OCR/checker/trace 产出证据。这样 Android 和 iOS 的差异只剩设备原语和显式 capability，而不是测试行为。
@@ -624,8 +707,9 @@ Spike 已完成，报告：`spikes/ios-artemis/REPORT.md`。
 1. Android 远程 LLM P0 真机端到端通过；
 2. iOS P0b 真机验收通过（Appium 隧道、bounds 样本、`.ipa`/预装、登录页脱敏、Excel 写回）；
 3. 确认长期 OCR provider（云 API 或本地 RapidOCR）与成本；
-4. 重新评审 Phase 1 的 ARTEMIS 平台接缝 patch 范围；
-5. 真实设备与 macOS runner 档期确认（已确认可随时提供，仍需排期）。
+4. 重新评审 Phase 1 的 ARTEMIS 平台接缝 patch 范围，并确认接受 §18.1 的窄 patch；
+5. 完成 §18.2 Android 隐式依赖审计并签字；
+6. 确认真实设备与 macOS runner 档期（已确认可随时提供，仍需排期）。
 
 暂停期间不做：
 
