@@ -299,10 +299,12 @@ test("panel --web: serves /panel on an ephemeral port and closes cleanly", async
       handle = webHandle;
       const html = await fetch(webHandle.url);
       assert.equal(html.status, 200);
+      assert.equal(html.headers.get("cache-control"), "no-store", "面板 HTML 不落浏览器缓存");
       assert.match(await html.text(), /多项目总览/);
 
       const res = await fetch(`http://127.0.0.1:${webHandle.port}/panel.json`);
       assert.equal(res.status, 200);
+      assert.equal(res.headers.get("cache-control"), "no-store", "面板 JSON 不落浏览器缓存");
       const payload = await res.json();
       assert.equal(payload.view, "overview");
       assert.ok(payload.projects.some((row) => row.name === "ws-app"));

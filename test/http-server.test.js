@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -109,6 +110,23 @@ test("http server: per-project routing and MCP over streamable HTTP", async () =
     // GET on /mcp/<project> is not supported in stateless mode
     const notAllowed = await fetch(`http://127.0.0.1:${handle.port}/mcp/demo`);
     assert.equal(notAllowed.status, 405);
+  } finally {
+    await handle.close();
+  }
+});
+
+test("http server: HTTP/1 keep-alive 65s（避免 Windows runner 5s 轮询撞默认 5s）", async () => {
+  const workspace = makeWorkspace();
+  const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+  try {
+    const keepAlive = await new Promise((resolve, reject) => {
+      const req = http.get(`http://127.0.0.1:${handle.port}/healthz`, (res) => {
+        res.resume();
+        resolve(res.headers["keep-alive"]);
+      });
+      req.on("error", reject);
+    });
+    assert.match(String(keepAlive ?? ""), /timeout=65/);
   } finally {
     await handle.close();
   }

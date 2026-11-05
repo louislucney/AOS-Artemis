@@ -23,6 +23,7 @@ import {
   createPanelWebCache,
   handlePanelRequest,
   panelCacheTtlFrom,
+  panelRequestNoCache,
   type PanelWebDeps
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
@@ -696,11 +697,12 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             url.pathname === "/panel/api/hosts")
         ) {
           const panelResponse = await handlePanelRequest(url, panelDepsFor(requestIdentity), {
+            noCache: panelRequestNoCache(req.headers),
             legacyRedirect: true
           });
           res.writeHead(panelResponse.status, {
             "Content-Type": panelResponse.contentType,
-            ...(url.pathname === "/panel" ? { "Cache-Control": "no-store" } : {}),
+            "Cache-Control": "no-store",
             ...(panelResponse.headers ?? {})
           });
           res.end(panelResponse.body);
@@ -996,6 +998,13 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
   const httpServer = tls === undefined
     ? createServer(handleRequest)
     : createHttp2SecureServer(secureOptions!, handleRequest as never);
+
+  // 默认 5s 会与 5s 轮询的 keep-alive 连接竞争，Windows runner 会偶发 fetch failed。
+  if (tls === undefined) {
+    const http1 = httpServer as unknown as { keepAliveTimeout: number; headersTimeout: number };
+    http1.keepAliveTimeout = 65_000;
+    http1.headersTimeout = 66_000;
+  }
 
   let tlsReloadTimer: NodeJS.Timeout | null = null;
   if (

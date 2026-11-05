@@ -21,6 +21,7 @@ import {
   createPanelWebCache,
   handlePanelRequest,
   panelCacheTtlFrom,
+  panelRequestNoCache,
   type PanelWebDeps
 } from "./panel/web.js";
 import { sweepStaleTasks, SWEEP_INTERVAL_MS } from "./tasks/sweeper.js";
@@ -310,9 +311,14 @@ async function runPanelWeb(options: {
             url.pathname === "/panel/api/hosts")
         ) {
           const response = await handlePanelRequest(url, deps, {
+            noCache: panelRequestNoCache(req.headers),
             legacyRedirect: true
           });
-          res.writeHead(response.status, { "Content-Type": response.contentType });
+          res.writeHead(response.status, {
+            "Content-Type": response.contentType,
+            "Cache-Control": "no-store",
+            ...(response.headers ?? {})
+          });
           res.end(response.body);
           return;
         }
