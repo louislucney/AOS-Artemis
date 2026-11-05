@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { readAndroidTraceObservations } from "../dist/artemis/android-trace.js";
+import { readAndroidLastScreenshot, readAndroidTraceObservations } from "../dist/artemis/android-trace.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { loadReconciliation } from "../dist/figma/reconciliation.js";
 import { runGeneratedTests } from "../dist/figma/suite-runner.js";
@@ -94,6 +94,22 @@ test("android trace: reads OCR labels and normalized taps from data_engine.db", 
 
   assert.equal(await readAndroidTraceObservations(dbPath, "unknown-trace"), null);
   assert.equal(await readAndroidTraceObservations(path.join(dir, "missing.db"), "trace-1"), null);
+});
+
+test("android trace: last screenshot prefers the newest post image", { skip: sqliteSkip }, async (t) => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const dbPath = path.join(dir, ".artemis", "traces", "data_engine.db");
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  makeArtemisDb(dbPath, "trace-shot");
+  const images = path.join(path.dirname(dbPath), "images");
+  fs.mkdirSync(images, { recursive: true });
+  fs.writeFileSync(path.join(images, "img3.jpg"), Buffer.from("jpg"));
+  assert.equal(
+    await readAndroidLastScreenshot(dbPath, "trace-shot"),
+    path.join(images, "img3.jpg")
+  );
+  assert.equal(await readAndroidLastScreenshot(dbPath, "unknown"), null);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 });
 
 test("android trace: schema 漂移（缺列/缺表）→ 明确降级为 null", { skip: sqliteSkip }, async () => {

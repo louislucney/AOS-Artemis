@@ -34,6 +34,14 @@ export type WebResultCaseStatus = "PASS" | "FAIL" | "SKIP" | "ERROR";
 /** runner 上报词汇只有四种；`UNVERIFIED` 由中心派生，runner 不得直接上报。 */
 export type WebResultVerdictStatus = WebResultCaseStatus | "UNVERIFIED";
 
+export interface WebResultReferenceCheck {
+  status: "passed" | "failed" | "unverified" | "missing";
+  regions?: number;
+  reason?: string;
+  referenceAssetId?: string;
+  screenshot?: string;
+}
+
 export interface WebResultCase {
   caseId: string;
   name: string;
@@ -54,6 +62,8 @@ export interface WebResultCase {
   assertions?: Array<{ type: "visible" | "notVisible"; text: string }>;
   /** runner 从顶层 flow 提取的 `# aos:manual` 未映射步骤；带 manual 的 PASS 必须降级 UNVERIFIED。 */
   manualSteps?: Array<{ step: number; reason: string }>;
+  /** L2 reference 对比（中心 report-only；不改 PASS/FAIL）。 */
+  reference?: WebResultReferenceCheck;
 }
 
 export type WebResultManualStatus = "NOT_IMPL" | "BLOCKED";
@@ -438,6 +448,36 @@ function parseCase(
       assertions.push({ type: entry.type, text: textValue });
     }
     parsed.assertions = assertions;
+  }
+  if (raw.reference !== undefined) {
+    if (!isRecord(raw.reference)) {
+      throw new WebResultError("invalid-result", `execution.cases[${index}].reference 必须是对象`);
+    }
+    const status = optionalText(raw.reference.status, `execution.cases[${index}].reference.status`);
+    if (!["passed", "failed", "unverified", "missing"].includes(status)) {
+      throw new WebResultError(
+        "invalid-result",
+        `execution.cases[${index}].reference.status 非法：${String(raw.reference.status)}`
+      );
+    }
+    const reference: WebResultReferenceCheck = {
+      status: status as WebResultReferenceCheck["status"]
+    };
+    const regions = numberField(raw.reference.regions, `execution.cases[${index}].reference.regions`);
+    if (regions !== undefined) reference.regions = regions;
+    const reason = optionalText(raw.reference.reason, `execution.cases[${index}].reference.reason`);
+    if (reason !== "") reference.reason = reason;
+    const referenceAssetId = optionalText(
+      raw.reference.referenceAssetId,
+      `execution.cases[${index}].reference.referenceAssetId`
+    );
+    if (referenceAssetId !== "") reference.referenceAssetId = referenceAssetId;
+    const screenshot = optionalText(
+      raw.reference.screenshot,
+      `execution.cases[${index}].reference.screenshot`
+    );
+    if (screenshot !== "") reference.screenshot = screenshot;
+    parsed.reference = reference;
   }
   if (raw.manualSteps !== undefined) {
     if (!Array.isArray(raw.manualSteps) || raw.manualSteps.length > 200) {

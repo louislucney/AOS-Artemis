@@ -1491,6 +1491,27 @@ export function renderWebJobPage(data: WebJobPageData): string {
                 : "error",
         title: entry.manualStatus?.reason === undefined ? undefined : entry.manualStatus.reason
       }),
+      entry.reference === undefined
+        ? "—"
+        : cBadge({
+            label:
+              entry.reference.status === "passed"
+                ? "L2 通过"
+                : entry.reference.status === "failed"
+                  ? `L2 差异${entry.reference.regions === undefined ? "" : ` ${entry.reference.regions}`}`
+                  : entry.reference.status === "missing"
+                    ? "L2 缺参考"
+                    : "L2 未验证",
+            tone:
+              entry.reference.status === "passed"
+                ? "success"
+                : entry.reference.status === "failed"
+                  ? "error"
+                  : entry.reference.status === "missing"
+                    ? "neutral"
+                    : "warning",
+            title: entry.reference.reason
+          }),
       entry.durationMs === undefined ? "—" : `${entry.durationMs} ms`,
       entry.failureReason === undefined
         ? entry.failureStep === undefined
@@ -1637,8 +1658,8 @@ export function renderWebJobPage(data: WebJobPageData): string {
             ? '<p id="job-result-empty" class="muted">尚无结果：执行机上传前不展示逐用例结果，也不虚构设备/包信息。</p>'
             : cTable({
                 columns: canManualStatus
-                  ? ["用例", "名称", "结果", "耗时", "失败信息", "trace", "人工状态"]
-                  : ["用例", "名称", "结果", "耗时", "失败信息", "trace"],
+                  ? ["用例", "名称", "结果", "参考图", "耗时", "失败信息", "trace", "人工状态"]
+                  : ["用例", "名称", "结果", "参考图", "耗时", "失败信息", "trace"],
                 rows: caseRows,
                 caption: "逐用例结果",
                 empty: "结果中没有用例"

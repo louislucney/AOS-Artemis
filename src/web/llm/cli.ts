@@ -81,6 +81,8 @@ export async function runLlmWorkerCli(
     appPackage: string | null;
     appPath: string | null;
     iosAppiumUrl: string | null;
+    referencePath: string | null;
+    referenceAssetId: string | null;
   }
   const input: RunLlmWorkerOnceInput = {
     store,
@@ -98,10 +100,13 @@ export async function runLlmWorkerCli(
           : null;
       const iosAppiumUrl = runner?.gateway?.appiumUrl ?? null;
       const runtime = await runtimeFor(job.rootPath, iosAppiumUrl);
-      const [secrets, web, pkg] = await Promise.all([
+      const [secrets, web, pkg, reference] = await Promise.all([
         loadWebSecrets({ store, rootPath: job.rootPath }),
         store.getWebProject(job.rootPath),
-        store.getWebAsset(job.rootPath, job.spec.packageAssetId)
+        store.getWebAsset(job.rootPath, job.spec.packageAssetId),
+        job.spec.referenceAssetId === null
+          ? Promise.resolve(null)
+          : store.getWebAsset(job.rootPath, job.spec.referenceAssetId).catch(() => null)
       ]);
       const hookFile = path.join(
         runtime.runtime.project.config.artemis.repo,
@@ -143,7 +148,9 @@ export async function runLlmWorkerCli(
         secrets,
         appPackage: web?.appPackage ?? null,
         appPath,
-        iosAppiumUrl
+        iosAppiumUrl,
+        referencePath: reference?.storagePath ?? null,
+        referenceAssetId: reference?.id ?? null
       };
     },
     loadCases: async (job) =>
@@ -187,6 +194,8 @@ export async function runLlmWorkerCli(
           appPath: context.appPath,
           secrets: context.secrets,
           redactionActive: true,
+          referencePath: context.referencePath,
+          referenceAssetId: context.referenceAssetId,
           signal
         });
       }
@@ -198,6 +207,8 @@ export async function runLlmWorkerCli(
         appPackage: context.appPackage,
         appPath: context.appPath,
         secrets: context.secrets,
+        referencePath: context.referencePath,
+        referenceAssetId: context.referenceAssetId,
         signal
       });
     },

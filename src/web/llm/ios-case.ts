@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { checkExpectedTexts, summaryStatus } from "./verify.js";
 import { redactText, type SecretEntry } from "./secrets.js";
+import { compareReference, lastIosScreenshot } from "./reference.js";
 import type { LlmWorkerCase, LlmWorkerCaseResult } from "./worker.js";
 
 export interface IosLlmToolCallResult {
@@ -32,6 +33,8 @@ export interface ExecuteIosLlmCaseInput {
   secrets?: SecretEntry[];
   /** runtime 已启用 Node 侧观察/截图脱敏；有 secret 但未启用时 fail-closed。 */
   redactionActive?: boolean;
+  referencePath?: string | null;
+  referenceAssetId?: string | null;
   pollMs?: number;
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
@@ -256,6 +259,11 @@ export async function executeIosLlmCase(
   const traceDir = input.traceDir(traceId);
   const statusJsonPath = path.join(traceDir, "status.json");
   const runPath = path.join(traceDir, "run.json");
+  const reference = compareReference({
+    referencePath: input.referencePath,
+    referenceAssetId: input.referenceAssetId,
+    screenshotPath: lastIosScreenshot(traceDir)
+  });
   const evidence = readRunEvidence(runPath);
   const labels = evidence.labels;
   const l1 = evidence.available
@@ -306,6 +314,7 @@ export async function executeIosLlmCase(
     durationMs: (input.now?.() ?? Date.now()) - startedAt,
     ...(failureReason === undefined ? {} : { failureReason }),
     traceId,
+    reference,
     tokenUsage: readTokenUsage(
       last?.token_usage,
       input.testCase.caseId,

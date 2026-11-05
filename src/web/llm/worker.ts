@@ -1,5 +1,6 @@
 import type { ProjectStore, RegressionTaskRecord } from "../../db/types.js";
 import { parseWebJobSpec, type WebJobSpec } from "../job-spec.js";
+import type { ReferenceCheck } from "./reference.js";
 
 export type LlmWorkerCaseStatus = "PASS" | "FAIL" | "SKIP" | "ERROR" | "UNVERIFIED";
 
@@ -22,6 +23,7 @@ export interface LlmWorkerCaseResult {
   tokenUsage?: unknown[];
   evidenceSteps?: unknown[];
   verification?: unknown;
+  reference?: ReferenceCheck;
   artifacts?: {
     statusJsonPath?: string;
     dataEngineDbPath?: string;

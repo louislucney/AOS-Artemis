@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { executeIosLlmCase, iosAppUrl } from "../dist/web/llm/ios-case.js";
+import { createImage, toPng } from "./helpers.js";
 
 function result(body) {
   return { content: [{ type: "text", text: JSON.stringify(body) }] };
@@ -249,6 +250,37 @@ test("executeIosLlmCase：run.json 缺失时不因 L1 误判 FAIL", async (t) =>
   assert.equal(out.status, "UNVERIFIED");
   assert.equal(out.failureReason, "ios-evidence-missing");
   assert.deepEqual(out.verification.deterministic, { passed: 0, failed: 0, skipped: 0 });
+});
+
+test("executeIosLlmCase：参考图对比 report-only，不改变 PASS", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "aos-ios-l2-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const png = toPng(createImage(40, 80, [255, 255, 255, 255]));
+  const reference = path.join(dir, "reference.png");
+  await writeFile(reference, png);
+  await mkdir(path.join(dir, "shots"), { recursive: true });
+  await writeFile(path.join(dir, "shots", "step-1-post.png"), png);
+  await writeFile(
+    path.join(dir, "run.json"),
+    JSON.stringify({ steps: [{ postShot: "shots/step-1-post.png" }] })
+  );
+  await writeFile(path.join(dir, "status.json"), "{}");
+  const out = await executeIosLlmCase({
+    proxy: {
+      async callTool(name) {
+        if (name === "mobile_run_task") return result({ trace_id: "ios-l2" });
+        return result({ status: "completed", test_summary: { passed: 1, failed: 0 } });
+      }
+    },
+    traceDir: () => dir,
+    testCase: { caseId: "TC-IOS-L2", taskDesc: "L2" },
+    deviceSerial: "00008110-001A",
+    referencePath: reference,
+    referenceAssetId: "ref-1"
+  });
+  assert.equal(out.status, "PASS");
+  assert.equal(out.reference.status, "passed");
+  assert.equal(out.reference.referenceAssetId, "ref-1");
 });
 
 test("executeIosLlmCase：summary 有未决项时不判 PASS（与 Android 同口径）", async (t) => {

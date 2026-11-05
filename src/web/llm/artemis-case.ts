@@ -1,7 +1,12 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { readAndroidTokenUsage, readAndroidTraceObservations } from "../../artemis/android-trace.js";
+import {
+  readAndroidLastScreenshot,
+  readAndroidTokenUsage,
+  readAndroidTraceObservations
+} from "../../artemis/android-trace.js";
+import { compareReference } from "./reference.js";
 import { redactText, type SecretEntry } from "./secrets.js";
 import { checkExpectedTexts, summaryStatus, type ExpectedTextCheck } from "./verify.js";
 import type { LlmWorkerCase, LlmWorkerCaseResult } from "./worker.js";
@@ -28,6 +33,8 @@ export interface ExecuteAndroidLlmCaseInput {
   appPath?: string | null;
   /** 已加载的项目 secret；taskDesc 进模型前先脱敏。 */
   secrets?: SecretEntry[];
+  referencePath?: string | null;
+  referenceAssetId?: string | null;
   pollMs?: number;
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
@@ -226,6 +233,11 @@ export async function executeAndroidLlmCase(
     caseStatus = "FAIL";
     failureReason = "artemis-task-not-completed";
   }
+  const reference = compareReference({
+    referencePath: input.referencePath,
+    referenceAssetId: input.referenceAssetId,
+    screenshotPath: await readAndroidLastScreenshot(dataEngineDbPath, traceId)
+  });
   const tokenRows = await readAndroidTokenUsage(dataEngineDbPath, traceId);
   const tokenUsage =
     tokenRows === null
@@ -250,6 +262,7 @@ export async function executeAndroidLlmCase(
     ...(failureReason === undefined ? {} : { failureReason }),
     traceId,
     ...(tokenUsage === undefined ? {} : { tokenUsage }),
+    reference,
     evidenceSteps: observations?.steps ?? [],
     artifacts: {
       ...(existsSync(statusJsonPath) ? { statusJsonPath } : {}),

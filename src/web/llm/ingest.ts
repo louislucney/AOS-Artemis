@@ -85,7 +85,8 @@ export async function ingestLlmResults(input: {
           status: entry.status,
           durationMs: entry.durationMs,
           ...(entry.failureReason === undefined ? {} : { failureReason: entry.failureReason }),
-          ...(entry.traceId === undefined ? {} : { traceId: entry.traceId })
+          ...(entry.traceId === undefined ? {} : { traceId: entry.traceId }),
+          ...(entry.reference === undefined ? {} : { reference: entry.reference })
         })),
         startedAt,
         finishedAt: iso(now),

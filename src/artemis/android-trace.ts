@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 import { logWarn } from "../log.js";
 
@@ -171,6 +172,36 @@ export async function readAndroidTokenUsage(
       });
     }
     return out.length === 0 ? null : out;
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+/** 最后一步的 post/pre 截图路径（images/ 与 data_engine.db 同级）；找不到返回 null。 */
+export async function readAndroidLastScreenshot(
+  dbPath: string,
+  traceId: string
+): Promise<string | null> {
+  if (!fs.existsSync(dbPath)) return null;
+  const db = await openReadOnlyDb(dbPath);
+  if (!db) return null;
+  try {
+    const rows = db
+      .prepare(
+        "SELECT post_image_name, pre_image_name FROM steps WHERE session_id = ? ORDER BY step_number DESC"
+      )
+      .all(traceId) as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      for (const key of ["post_image_name", "pre_image_name"] as const) {
+        const name = row[key];
+        if (typeof name !== "string" || name === "") continue;
+        const file = path.join(path.dirname(dbPath), "images", `${name}.jpg`);
+        if (fs.existsSync(file)) return file;
+      }
+    }
+    return null;
   } catch {
     return null;
   } finally {
