@@ -3852,7 +3852,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-11-05。失败时 logcat/截图只落在 runner job 目录，中心面板打不开；把诊断随结果上传，中心落盘并加入 evidence，形成可诊断闭环。
 
-- **runner**（`src/runner/web-job-runner.ts`）：`executedPayload` 读取 `executed.diagnostics`（logcat/window/screen/syslog），按文本 64KB、图片 2MB、合计 4MB 截断，编码为 `diagnostics: [{filename, base64}]` 随结果上传；不再把本地 job 相对路径塞进 evidence（中心会生成可访问路径）。
+- **runner**（`src/runner/web-job-runner.ts`）：`executedPayload` 读取 `executed.diagnostics`（logcat/window/screen/syslog）以及 `cases[].logPath`（Maestro 日志），按文本 64KB、图片 2MB、合计 4MB 截断，编码为 `diagnostics: [{filename, base64}]` 随结果上传；不再把本地 job 相对路径塞进 evidence（中心会生成可访问路径）。
 - **中心**（`src/web/results.ts`）：`parseWebJobResult` 解析 `diagnostics`（最多 10 个文件、合计 4MB；复用 `parseArtifact` 的 base64 校验）；`ingestWebJobResult` 落盘到 `<项目>/.artemis/web/results/<jobId>/diagnostics/`，把相对路径去重后加入 `evidence`；落盘失败只加 `diagnostics:` warning，不影响结果入库。
 - **访问**：evidence 路径为项目根相对（`.artemis/web/results/<jobId>/diagnostics/<file>`），走既有 `/panel/artifact` 只读路由；中心不再依赖 runner 本地目录。
 - **测试**：`test/web-result-ingest.test.js` 新增 diagnostics 落盘 + evidence + 文件内容校验；全量测试与 lint 保持绿。

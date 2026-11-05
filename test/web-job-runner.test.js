@@ -444,6 +444,33 @@ test("webRunnerChildEnv: 只保留工具/PATH 白名单，剔除令牌/DB/KEY", 
 });
 
 
+test("executedPayload: 失败诊断包含 maestro.log 并上传", async (t) => {
+  const dir = await tempDir(t);
+  const logPath = path.join(dir, "maestro", "maestro.log");
+  await mkdir(path.dirname(logPath), { recursive: true });
+  await writeFile(logPath, "driver says no");
+  const executed = {
+    status: "error",
+    cases: [
+      { caseId: "TC-1", name: "登录", status: "ERROR", durationMs: 0, logPath }
+    ],
+    startedAt: "2026-10-29T01:00:00.000Z",
+    finishedAt: "2026-10-29T01:01:00.000Z",
+    detail: "boom"
+  };
+  const device = { serial: "emulator-5554", model: "Pixel 7", osVersion: "14" };
+  const pkg = { name: "com.acme.app", version: "1.0.0", filename: "app.apk" };
+
+  const payload = await executedPayload(executed, dir, device, pkg, null);
+  assert.equal(payload.diagnostics.length, 1);
+  assert.equal(payload.diagnostics[0].filename, "maestro.log");
+  assert.equal(
+    Buffer.from(payload.diagnostics[0].base64, "base64").toString(),
+    "driver says no"
+  );
+  assert.equal(payload.evidence.some((entry) => entry.endsWith("maestro.log")), false);
+});
+
 test("executedPayload: l2Screenshots 开启时上传 PASS 用例最终截图", async (t) => {
   const dir = await tempDir(t);
   const shot = path.join(dir, "shot.png");

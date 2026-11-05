@@ -230,7 +230,6 @@ export async function executedPayload(
     for (const file of entry.screenshotPaths ?? []) {
       evidence.add(path.relative(jobDir, file));
     }
-    if (entry.logPath !== undefined) evidence.add(path.relative(jobDir, entry.logPath));
   }
 
   // L2 最终截图：只在显式开启时上传；PASS 优先占用预算，单图/总量均有上限。
@@ -262,10 +261,17 @@ export async function executedPayload(
     }
   }
 
+  const diagnosticFiles = new Set<string>(executed.diagnostics ?? []);
+  for (const entry of executed.cases) {
+    if (entry.logPath !== undefined) diagnosticFiles.add(entry.logPath);
+  }
   const diagnostics: Array<{ filename: string; base64: string }> = [];
+  const usedDiagnosticNames = new Set<string>();
   let diagnosticBytes = 0;
-  for (const file of executed.diagnostics ?? []) {
-    const filename = path.basename(file);
+  for (const file of diagnosticFiles) {
+    const base = path.basename(file);
+    const filename = usedDiagnosticNames.has(base) ? `${usedDiagnosticNames.size}-${base}` : base;
+    usedDiagnosticNames.add(filename);
     const isImage = /\.(png|jpe?g|webp)$/i.test(filename);
     const limit = isImage ? DIAGNOSTIC_IMAGE_MAX_BYTES : DIAGNOSTIC_TEXT_MAX_BYTES;
     try {
