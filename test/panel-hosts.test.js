@@ -165,7 +165,7 @@ test("GET /panel/api/hosts: PostgreSQL 投影只含展示字段（不含 env/工
   assert.doesNotMatch(serialized, /hw-secret|\/secret\/adb|identitySource|ipPrimary/);
 });
 
-test("GET /panel/api/hosts: 文件/会话内存模式返回空列表", async () => {
+test("GET /panel/api/hosts: 文件/会话内存模式也返回台账", async () => {
   const store = new MemoryStore();
   await store.upsertHost({ id: "h1", hostname: "mac", osPlatform: "darwin" });
   const res = await handlePanelRequest(new URL("http://127.0.0.1/panel/api/hosts"), {
@@ -173,7 +173,12 @@ test("GET /panel/api/hosts: 文件/会话内存模式返回空列表", async () 
     env: {}
   });
   assert.equal(res.status, 200);
-  assert.deepEqual(JSON.parse(String(res.body)), { ok: true, hosts: [] });
+  const payload = JSON.parse(String(res.body));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.hosts.length, 1);
+  assert.equal(payload.hosts[0].id, "h1");
+  assert.equal(payload.hosts[0].hostname, "mac");
+  assert.equal(payload.hosts[0].osPlatform, "darwin");
 });
 
 test("GET /panel/api/hosts: AOS_PANEL_ACTIONS=0 不影响只读主机列表", async () => {

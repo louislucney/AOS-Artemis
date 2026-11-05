@@ -2201,7 +2201,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 - **`/usage` 主机贯穿**：`handleUsageRequest` 解析 `?host=<machine_id>`，`UsageWebProjectView` 与 `UsageWebFiltersView` 增 `hostId`。传 host 时项目库按 `project.hostId === host` 过滤后再按路径/名称解析（同路径多主机不再误判 409）；未传 host 保持原规则（跨主机唯一匹配、多行 409 + 候选）。事件读取用 `store.scopeHost(project.hostId)`；`hostId === null` 的 legacy 行回退未绑定 store。选择器/筛选表单的隐藏 `host`、重置链接、`eventsPageHref` 上一页/下一页均保留 `host`，翻页与筛选不再丢失作用域。`/usage.json` 的 `filters.hostId` 与 `projects[].hostId` 同源暴露。
 - **`usage --all --json` 的 `readErrors`**：新增 `UsageReadError[]`（`projectId?/name/rootPath/hostId/error/candidates?`）。`--all` 中单个 legacy 未绑定主机且同路径歧义时，仍写 stderr 降级、其余项目照常聚合、exit 0，同时在 JSON 明确列出被跳过项目与候选主机；无降级时为 `[]`（显式 `--project`/默认当前项目仍 exit 2）。
-- **`GET /panel/api/hosts`**：`src/panel/web.ts` 新增 `handlePanelHostsRequest`/`panelHostApiRow`，HTTP 与独立 `panel --web` 在动作层之前路由（只读、无需 `AOS_PANEL_ACTIONS`；受 `AOS_PANEL_WEB` 与 HTTP 静态令牌闸门约束）。响应 `{ok:true,hosts:[...]}`，投影仅含 `id/label/owner/hostname/kind/osPlatform/osVersion/arch/capabilities/clientSeenAt/runnerSeenAt/lastSeenAt/queuePaused/registeredAt/expectedOs/expectedHostname`（不含 `env`、`hardwareId`、`username`、`ipPrimary`、工具路径与完整行）。`store.kind !== "postgres"`（文件台账/会话内存）返回 `{ok:true,hosts:[]}`，不报错。
+- **`GET /panel/api/hosts`**：`src/panel/web.ts` 新增 `handlePanelHostsRequest`/`panelHostApiRow`，HTTP 与独立 `panel --web` 在动作层之前路由（只读、无需 `AOS_PANEL_ACTIONS`；受 `AOS_PANEL_WEB` 与 HTTP 静态令牌闸门约束）。响应 `{ok:true,hosts:[...]}`，投影仅含 `id/label/owner/hostname/kind/osPlatform/osVersion/arch/capabilities/clientSeenAt/runnerSeenAt/lastSeenAt/queuePaused/registeredAt/expectedOs/expectedHostname`（不含 `env`、`hardwareId`、`username`、`ipPrimary`、工具路径与完整行）。文件台账/会话内存同样返回 `listHosts()`（空台账为 `hosts:[]`；读取失败 503），不再强制空列表。
 - **测试**：`test/usage-web.test.js` 新增 host 作用域分页/筛选/重置与 409 回归；`test/usage-command.test.js` 校验 `readErrors` 与空数组；`test/panel-hosts.test.js` 校验安全投影、单机空列表、动作开关无关；`test/panel-command.test.js` 与 `test/http-server.test.js` 覆盖独立/HTTP 路由。
 - **复审加固**：`/panel/api/hosts` 在 PostgreSQL 读取异常时返回 **503** `{ok:false,error:"主机台账读取失败"}`（不再把故障伪装成空主机表）；`AOS_PANEL_WEB=0` 对该 API 返回 JSON 404（而非 HTML）。`/usage` 的显式 `?host=` 在 PostgreSQL 下先校验 `listHosts`：未知主机 id → 404 `未知主机 "<id>"`（文件/会话内存保持宽松，读取失败不拦截）。面板导航「使用统计」在项目上下文携带 `?project=<rootPath>[&host=<hostId>]`；README 标注该端点同样受 `AOS_PANEL_WEB` 约束。
 
@@ -3806,3 +3806,11 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **可观测性**（`src/runner/web-executors.ts`）：Maestro 非 0 退出且无 JUnit 时，`detail` 保留 stderr 的**首尾**（各约 1.9KB，总预算 4KB），不再只截取尾部堆栈——根因（如 `DeviceServerDiedException`）在开头，堆栈尾在结尾，两者都保留；新增长 stderr 单测。失败时 best-effort 抓设备现场到 `<jobDir>/diagnostics/`：Android `adb logcat -d -t 400`（摘要并入 detail）、`dumpsys window windows`、`screencap`+`pull` 截图；iOS 模拟器 `simctl io screenshot` + `simctl spawn log show --last 2m`；路径随结果 `evidence` 回传，抓取失败不影响原始错误。新增诊断单测。
 - **环境变量**：`AOS_WEB_FORCE_INSTALL=1` 关闭“已安装跳过”（Android/iOS 通用），用于必须覆盖安装/降级验证的场景；缺省按版本比较跳过。
 - **测试**：`test/package-inspect.test.js` 增加文本/二进制 APK 的 `versionCode/versionName` 解析与 IPA/Info.plist 的 bundleId/版本解析；`test/web-job-workspace.test.js` 增加 Android“已安装同版本 → 不调用 install”“旧版本 → 升级”“失败后复查 → recovered”“强制安装”，以及 iOS 模拟器/真机“已安装同版本跳过”“旧版本升级 + 失败复查 recovered”；全量测试与 lint 保持绿。
+
+### 13.309 修复（文件台账模式 `GET /panel/api/hosts` 返回真实主机台账）
+
+> 2026-11-05。现场反馈：mac mini 以 `mac-mini-01` 连过（`hosts.runnerSeenAt` 有记录），但 `GET /panel/api/hosts` 返回空；原因是该接口对 `store.kind !== "postgres"` 直接返回 `{ok:true,hosts:[]}`。文件台账的 `hosts` 实际由 web-runner 心跳写入，已具备台账能力，强制空列表会让单机/文件模式看不到接入主机。
+
+- **接口**（`src/panel/web.ts`）：`handlePanelHostsRequest` 不再按存储类型短路；文件/内存/PostgreSQL 统一 `listHosts()` 并走 `panelHostApiRow` 安全投影；空台账仍为 `{ok:true,hosts:[]}`，读取失败统一 503（不伪装空台账）。
+- **影响**：`panel --web` 与 HTTP 模式在文件台账下也能看到 `mac-mini-01` / `win-mini-01` 等主机；`section=devices` 的设备卡片仍要求主机有设备/租约（零设备主机只在主机台账/全局总览出现）。
+- **测试**：`test/panel-hosts.test.js` 原“文件/会话内存模式返回空列表”改为断言 MemoryStore 台账被投影返回；`panel-command`/`http-server` 的空台账用例保持 `hosts:[]`。

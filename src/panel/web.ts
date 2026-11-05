@@ -1319,18 +1319,11 @@ export function panelHostApiRow(host: HostRecord): PanelHostApiRow {
 }
 
 /** 只读主机列表（设计稿 §12.2）：不受 `AOS_PANEL_ACTIONS` 影响；受 `AOS_PANEL_WEB` 约束。
- * 单机模式（file/memory）无中心主机台账 → `{ok:true,hosts:[]}`；
- * PostgreSQL 读取失败 → 503（不能伪装成空台账）。 */
+ * 文件台账也记录 web runner 心跳（`hosts`），因此与 PostgreSQL 一样返回 `listHosts()`；
+ * 空台账返回空数组，读取失败 → 503（不能伪装成空台账）。 */
 export async function handlePanelHostsRequest(deps: PanelWebDeps): Promise<PanelWebResponse> {
   const env = deps.env ?? process.env;
   if (!panelWebEnabled(env)) return notFound("not found", true);
-  if (deps.store.kind !== "postgres") {
-    return {
-      status: 200,
-      contentType: JSON_CONTENT_TYPE,
-      body: JSON.stringify({ ok: true, hosts: [] }, null, 2)
-    };
-  }
   let hosts: HostRecord[];
   try {
     hosts = await deps.store.listHosts();
