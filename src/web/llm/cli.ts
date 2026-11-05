@@ -196,6 +196,7 @@ export async function runLlmWorkerCli(
           redactionActive: true,
           referencePath: context.referencePath,
           referenceAssetId: context.referenceAssetId,
+          referenceGate: job.spec.referenceGate,
           signal
         });
       }
@@ -209,6 +210,7 @@ export async function runLlmWorkerCli(
         secrets: context.secrets,
         referencePath: context.referencePath,
         referenceAssetId: context.referenceAssetId,
+        referenceGate: job.spec.referenceGate,
         signal
       });
     },

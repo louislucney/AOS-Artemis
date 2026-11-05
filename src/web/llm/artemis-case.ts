@@ -35,6 +35,7 @@ export interface ExecuteAndroidLlmCaseInput {
   secrets?: SecretEntry[];
   referencePath?: string | null;
   referenceAssetId?: string | null;
+  referenceGate?: "off" | "report" | "unverified";
   pollMs?: number;
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
@@ -238,6 +239,14 @@ export async function executeAndroidLlmCase(
     referenceAssetId: input.referenceAssetId,
     screenshotPath: await readAndroidLastScreenshot(dataEngineDbPath, traceId)
   });
+  if (
+    input.referenceGate === "unverified" &&
+    reference.status === "failed" &&
+    caseStatus === "PASS"
+  ) {
+    caseStatus = "UNVERIFIED";
+    failureReason = `reference-mismatch:${reference.regions ?? 0}`;
+  }
   const tokenRows = await readAndroidTokenUsage(dataEngineDbPath, traceId);
   const tokenUsage =
     tokenRows === null

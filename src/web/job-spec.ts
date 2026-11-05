@@ -27,6 +27,8 @@ export interface WebJobAssignmentError {
   at: string;
 }
 
+export type WebJobReferenceGate = "off" | "report" | "unverified";
+
 export interface WebJobSpec {
   kind: "web-test";
   assignment: WebJobAssignmentMode;
@@ -40,6 +42,8 @@ export interface WebJobSpec {
   materialsAssetId: string | null;
   /** 可选 L2 reference 图片资产（job 级；P1 逐例绑定再扩展）。 */
   referenceAssetId: string | null;
+  /** L2 参考图差异策略；默认 report（只记录，不改判定）。 */
+  referenceGate: WebJobReferenceGate;
   scriptSetId: string | null;
   executionMode: WebJobExecutionMode;
   caseFilter: WebJobCaseFilter;
@@ -362,6 +366,10 @@ export function parseWebJobSpec(value: Record<string, unknown> | null): WebJobSp
     packageAssetId: value.packageAssetId,
     materialsAssetId: nonEmpty(value.materialsAssetId),
     referenceAssetId: nonEmpty(value.referenceAssetId),
+    referenceGate:
+      value.referenceGate === "off" || value.referenceGate === "unverified"
+        ? value.referenceGate
+        : "report",
     scriptSetId: nonEmpty(value.scriptSetId),
     executionMode: value.executionMode,
     caseFilter: normalizeCaseFilter(value.caseFilter),

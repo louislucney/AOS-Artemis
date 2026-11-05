@@ -1185,11 +1185,19 @@ test("createWebJob: L2 参考图资产写入 jobSpec 与快照", async () => {
       jobInput(store, rootPath, assets, { referenceAssetId: reference.id })
     );
     assert.equal(created.task.jobSpec.referenceAssetId, reference.id);
+    assert.equal(created.task.jobSpec.referenceGate, "report");
     assert.ok(
       created.task.jobSpec.assetSnapshot.some(
         (entry) => entry.kind === "reference" && entry.id === reference.id
       )
     );
+    const gated = await createWebJob(
+      jobInput(store, rootPath, assets, {
+        referenceAssetId: reference.id,
+        referenceGate: "unverified"
+      })
+    );
+    assert.equal(gated.task.jobSpec.referenceGate, "unverified");
   }
 });
 

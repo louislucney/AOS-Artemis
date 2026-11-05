@@ -2032,6 +2032,7 @@ interface PanelWebJobCreateInput extends PanelWebJobAssignment {
   packageAssetId: string;
   materialsAssetId: string | null;
   referenceAssetId: string | null;
+  referenceGate: "off" | "report" | "unverified";
   scriptSetId: string | null;
   retry: number;
   priority: number;
@@ -2084,6 +2085,11 @@ function parseWebJobCreateForm(
   }
   const materialsAssetId = panelTextField(payload, "materialsAssetId");
   const referenceAssetId = panelTextField(payload, "referenceAssetId");
+  const referenceGateRaw = panelTextField(payload, "referenceGate");
+  const referenceGate =
+    referenceGateRaw === "off" || referenceGateRaw === "unverified"
+      ? referenceGateRaw
+      : "report";
   const scriptSetId = panelTextField(payload, "scriptSetId");
   const allowStaleScript =
     payload.allowStaleScript === true || payload.allowStaleScript === "true";
@@ -2103,6 +2109,7 @@ function parseWebJobCreateForm(
       packageAssetId,
       materialsAssetId: materialsAssetId === "" ? null : materialsAssetId,
       referenceAssetId: referenceAssetId === "" ? null : referenceAssetId,
+      referenceGate,
       scriptSetId: scriptSetId === "" ? null : scriptSetId,
       retry,
       priority,
@@ -2142,6 +2149,7 @@ async function createWebJobAction(
       packageAssetId: input.packageAssetId,
       materialsAssetId: input.materialsAssetId,
       referenceAssetId: input.referenceAssetId,
+      referenceGate: input.referenceGate,
       scriptSetId: input.scriptSetId,
       executionMode: input.executionMode,
       caseFilter: input.caseFilter,
@@ -2726,6 +2734,7 @@ async function cloneWebJob(
       packageAssetId: spec.packageAssetId,
       materialsAssetId: spec.materialsAssetId,
       referenceAssetId: spec.referenceAssetId,
+      referenceGate: spec.referenceGate,
       scriptSetId: spec.scriptSetId,
       executionMode: spec.executionMode,
       caseFilter: spec.caseFilter,

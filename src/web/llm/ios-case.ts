@@ -35,6 +35,7 @@ export interface ExecuteIosLlmCaseInput {
   redactionActive?: boolean;
   referencePath?: string | null;
   referenceAssetId?: string | null;
+  referenceGate?: "off" | "report" | "unverified";
   pollMs?: number;
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
@@ -305,6 +306,14 @@ export async function executeIosLlmCase(
   } else {
     caseStatus = "UNVERIFIED";
     failureReason = evidence.available ? "ios-test-summary-missing" : "ios-evidence-missing";
+  }
+  if (
+    input.referenceGate === "unverified" &&
+    reference.status === "failed" &&
+    caseStatus === "PASS"
+  ) {
+    caseStatus = "UNVERIFIED";
+    failureReason = `reference-mismatch:${reference.regions ?? 0}`;
   }
 
   return {

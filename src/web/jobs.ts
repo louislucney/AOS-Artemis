@@ -45,6 +45,7 @@ export interface CreateWebJobInput extends WebJobContext {
   packageAssetId: string;
   materialsAssetId?: string | null;
   referenceAssetId?: string | null;
+  referenceGate?: "off" | "report" | "unverified";
   scriptSetId?: string | null;
   executionMode: WebJobExecutionMode;
   caseFilter: { modules: string[]; caseIds: string[] };
@@ -582,6 +583,10 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
     packageAssetId: pkg!.id,
     materialsAssetId: materials?.id ?? null,
     referenceAssetId: reference?.id ?? null,
+    referenceGate:
+      input.referenceGate === "off" || input.referenceGate === "unverified"
+        ? input.referenceGate
+        : "report",
     scriptSetId: script?.id ?? null,
     executionMode: combination.executionMode,
     caseFilter: normalizeCaseFilter(input.caseFilter),

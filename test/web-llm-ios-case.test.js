@@ -283,6 +283,40 @@ test("executeIosLlmCase：参考图对比 report-only，不改变 PASS", async (
   assert.equal(out.reference.referenceAssetId, "ref-1");
 });
 
+test("executeIosLlmCase：opt-in L2 gate 将 PASS 降为 UNVERIFIED", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "aos-ios-l2-gate-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const reference = path.join(dir, "reference.png");
+  await writeFile(reference, toPng(createImage(40, 80, [0, 0, 0, 255])));
+  await mkdir(path.join(dir, "shots"), { recursive: true });
+  await writeFile(
+    path.join(dir, "shots", "step-1-post.png"),
+    toPng(createImage(40, 80, [255, 255, 255, 255]))
+  );
+  await writeFile(
+    path.join(dir, "run.json"),
+    JSON.stringify({ steps: [{ postShot: "shots/step-1-post.png" }] })
+  );
+  await writeFile(path.join(dir, "status.json"), "{}");
+  const out = await executeIosLlmCase({
+    proxy: {
+      async callTool(name) {
+        if (name === "mobile_run_task") return result({ trace_id: "ios-l2-gate" });
+        return result({ status: "completed", test_summary: { passed: 1, failed: 0 } });
+      }
+    },
+    traceDir: () => dir,
+    testCase: { caseId: "TC-IOS-L2-GATE", taskDesc: "L2 gate" },
+    deviceSerial: "00008110-001A",
+    referencePath: reference,
+    referenceAssetId: "ref-1",
+    referenceGate: "unverified"
+  });
+  assert.equal(out.status, "UNVERIFIED");
+  assert.match(out.failureReason, /reference-mismatch/);
+  assert.equal(out.reference.status, "failed");
+});
+
 test("executeIosLlmCase：summary 有未决项时不判 PASS（与 Android 同口径）", async (t) => {
   const dir = await trace(t);
   const out = await executeIosLlmCase({
