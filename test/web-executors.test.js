@@ -282,6 +282,7 @@ test("executeWebJob: Android 预检失败给出 typed reason，且不调用 Maes
   const locked = await run({ locked: true });
   assert.match(locked.result.detail, /maestro-preflight:device-locked/);
   assert.equal(locked.fake.calls.some((call) => call.command === "maestro"), false);
+  assert.equal(locked.result.diagnostics?.some((file) => file.endsWith("window.txt")), true);
 
   const missingApp = await run({ app: false }, { expectedAppPackage: "com.example.app" });
   assert.match(missingApp.result.detail, /maestro-preflight:app-not-installed/);

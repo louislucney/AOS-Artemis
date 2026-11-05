@@ -3843,7 +3843,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
   - `dumpsys window` 无 `mDreamingLockscreen/mShowingLockscreen/isStatusBarKeyguard`（否则 `device-locked`）；
   - `pm path <expectedAppPackage>` 存在（否则 `app-not-installed`）；
   - `dumpsys package` 的 `versionCode` 不低于 APK 的 `expectedVersionCode`（否则 `app-version-mismatch`）。
-- **失败形态**：不调用 Maestro，直接返回 `{status:"error", detail:"maestro-preflight:<reason>: <detail>"}`；中心结果可读，不再等 120s。
+- **失败形态**：不调用 Maestro，直接返回 `{status:"error", detail:"maestro-preflight:<reason>: <detail>"}`；同时 best-effort 调用失败诊断抓取（logcat/window/截图），随结果上传（§13.313）；中心结果可读，不再等 120s。
 - **开关**：`AOS_PREFLIGHT=0` 跳过预检（应急/兼容）；`AOS_MAESTRO_INSTALL_DRIVER=1` 允许 driver 缺失时交给 Maestro 安装（首次装机）；`AOS_MAESTRO_REINSTALL_DRIVER=1` 仍强制重装。三者均加入 runner 子进程 env 白名单。
 - **数据来源**：`web-job-runner` 把 APK 解析出的 `appId` / `versionCode` 作为 `expectedAppPackage` / `expectedAppVersionCode` 传入；解析失败则不做 app 版本检查，避免误报。
 - **测试**：`test/web-executors.test.js` 覆盖 adb-offline / device-locked / app-not-installed / app-version-mismatch / `AOS_PREFLIGHT=0` 旁路 / 缺 driver 包；全量测试与 lint 保持绿。

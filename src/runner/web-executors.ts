@@ -799,11 +799,13 @@ export async function executeWebJob(
   const driver = await maestroDriverState(input);
   const preflight = await preflightAndroid(input, driver);
   if (!preflight.ok) {
+    const diagnostics = await captureFailureDiagnostics(input);
     return resultAt(
       startedAtMs,
       "error",
       [],
-      `maestro-preflight:${preflight.reason ?? "unknown"}${preflight.detail === undefined ? "" : `: ${preflight.detail}`}`
+      `maestro-preflight:${preflight.reason ?? "unknown"}${preflight.detail === undefined ? "" : `: ${preflight.detail}`}`,
+      diagnostics.files
     );
   }
   if (driver.ready) {
