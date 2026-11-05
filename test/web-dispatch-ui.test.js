@@ -280,7 +280,7 @@ test("jobs page without project: project picker instead of a broken form", async
   });
   assert.equal(response.status, 200);
   assert.match(response.body, /选择项目/);
-  assert.match(response.body, /section=jobs/);
+  assert.match(response.body, /section=create/);
   assert.ok(!response.body.includes('id="web-job-form"'), "无项目不渲染下发写表单");
 });
 
@@ -291,8 +291,11 @@ test("jobs page without project keeps host in project links", async (t) => {
     { ...deps, capabilities: capabilities("dispatcher") }
   );
   assert.equal(response.status, 200);
-  const href = `/panel?project=${encodeURIComponent(rootPath)}&amp;section=jobs&amp;host=host-a`;
-  assert.ok(response.body.includes(href), "选择项目时保留主机");
+  assert.ok(
+    response.body.includes(`project=${encodeURIComponent(rootPath)}`),
+    "项目链接指向工作区项目"
+  );
+  assert.match(response.body, /[?&](amp;)?host=host-a/, "项目链接保留主机");
 });
 
 test("jobs page: viewer is read-only, dispatcher and above get write controls", async (t) => {
@@ -361,7 +364,7 @@ test("POST /panel/api/jobs auto binds host+device and the page shows it", async 
     capabilities: capabilities("dispatcher")
   });
   assert.equal(page.status, 200);
-  assert.match(page.body, new RegExp(`job=${encodeURIComponent(payload.job.id)}`));
+  assert.match(page.body, new RegExp(`task=${encodeURIComponent(payload.job.id)}`));
   assert.match(page.body, /已绑定 host\/device/);
   assert.match(page.body, /<code>host-a<\/code>/);
   assert.match(page.body, /<code>emulator-5554<\/code>/);

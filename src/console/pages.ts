@@ -913,14 +913,15 @@ function webJobStatusTone(status: string): "neutral" | "accent" | "success" | "w
   return "neutral";
 }
 
-function jobsHref(
-  rootPath: string,
-  hostId: string | null,
-  extra: Record<string, string> = {}
-): string {
-  const params = new URLSearchParams({ project: rootPath, section: "jobs" });
+function webCreateHref(rootPath: string, hostId: string | null): string {
+  const params = new URLSearchParams({ project: rootPath, section: "create", type: "web" });
   if (hostId !== null) params.set("host", hostId);
-  for (const [key, value] of Object.entries(extra)) params.set(key, value);
+  return `/panel?${params.toString()}`;
+}
+
+function webTaskHref(rootPath: string, taskId: string, hostId: string | null): string {
+  const params = new URLSearchParams({ project: rootPath, section: "tasks", task: taskId });
+  if (hostId !== null) params.set("host", hostId);
   return `/panel?${params.toString()}`;
 }
 
@@ -1269,7 +1270,7 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
               : cTable({
                   columns: ["项目", "路径", "主机"],
                   rows: choices.map((choice) => [
-                    `<a href="${escapeHtml(jobsHref(choice.rootPath, data.hostId ?? choice.hostId))}"><code>${escapeHtml(
+                    `<a href="${escapeHtml(webCreateHref(choice.rootPath, data.hostId ?? choice.hostId))}"><code>${escapeHtml(
                       choice.name
                     )}</code></a>`,
                     `<code>${escapeHtml(choice.rootPath)}</code>`,
@@ -1284,7 +1285,7 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
   }
 
   const rows = data.jobs.map((entry) => {
-    const detailHref = jobsHref(data.rootPath, data.hostId ?? null, { job: entry.task.id });
+    const detailHref = webTaskHref(data.rootPath, entry.task.id, data.hostId ?? null);
     const gate = entry.result?.gate;
     const resultCell =
       gate === undefined
