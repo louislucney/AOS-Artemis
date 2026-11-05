@@ -4022,6 +4022,7 @@ async function suiteReferenceCalibrate(
   const out = flags.get("out");
   const report = await runReferenceCalibration({
     manifestPath: path.resolve(runtime.project.rootDir, manifest),
+    rootPath: runtime.project.rootDir,
     outputDir: out
       ? path.resolve(runtime.project.rootDir, out)
       : path.join(designDir(runtime.configDirAbs), "reports"),

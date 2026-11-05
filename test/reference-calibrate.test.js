@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -122,6 +122,46 @@ test("reference calibration：坏图/非法 expected 跳过并报告错误", asy
   assert.equal(missing.ok, false);
   assert.equal(missing.checked, 0);
   assert.ok(missing.errors.length > 0);
+});
+
+test("reference calibration：traceId 自动取最终截图（iOS postShot）", async (t) => {
+  const dir = await tempDir(t);
+  await writeFile(path.join(dir, "white.png"), toPng(whiteImage()));
+  const traceDir = path.join(dir, ".artemis", "traces", "ios-1");
+  await mkdir(path.join(traceDir, "shots"), { recursive: true });
+  await writeFile(path.join(traceDir, "shots", "step-1-post.png"), toPng(whiteImage()));
+  await writeFile(
+    path.join(traceDir, "run.json"),
+    JSON.stringify({ steps: [{ shot: "shots/step-1.png", postShot: "shots/step-1-post.png" }] })
+  );
+  const manifest = path.join(dir, "manifest.json");
+  await writeFile(
+    manifest,
+    JSON.stringify({
+      pairs: [{ name: "trace-clean", reference: "white.png", traceId: "ios-1", expected: "passed" }]
+    })
+  );
+  const report = await runReferenceCalibration({
+    manifestPath: manifest,
+    rootPath: dir,
+    save: false
+  });
+  assert.equal(report.checked, 1);
+  assert.equal(report.skipped, 0);
+  assert.ok(!report.errors.some((entry) => entry.includes("trace")));
+  assert.ok(!report.errors.some((entry) => entry.includes("不可读")));
+  assert.equal(report.current?.clean, 1);
+  assert.equal(report.best, null, "只有一类样本时不给推荐");
+
+  await writeFile(
+    manifest,
+    JSON.stringify({
+      pairs: [{ name: "bad", reference: "white.png", traceId: "../escape", expected: "passed" }]
+    })
+  );
+  const bad = await runReferenceCalibration({ manifestPath: manifest, rootPath: dir, save: false });
+  assert.equal(bad.checked, 0);
+  assert.ok(bad.errors.some((entry) => entry.includes("traceId")));
 });
 
 test("referenceDiffOptions：项目级 env 覆盖与非法值回退", () => {

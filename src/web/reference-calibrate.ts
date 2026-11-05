@@ -1,14 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { readAndroidLastScreenshot } from "../artemis/android-trace.js";
 import { decodeImage, diffScreens, type RgbaImage } from "../diff/engine.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
-import { DEFAULT_REFERENCE_DIFF } from "./llm/reference.js";
+import { DEFAULT_REFERENCE_DIFF, lastIosScreenshot } from "./llm/reference.js";
 
 export interface ReferenceCalibrationPair {
   name?: string;
   reference: string;
-  device: string;
+  /** 设备截图路径；与 traceId 二选一。 */
+  device?: string;
+  /** 项目 trace id；自动取最终截图（iOS run.json postShot/shot，Android data_engine.db）。 */
+  traceId?: string;
   expected: "passed" | "failed";
 }
 
@@ -49,6 +53,8 @@ export interface ReferenceCalibrationReport {
 
 export interface ReferenceCalibrationOptions {
   manifestPath: string;
+  /** traceId 样本的项目根（取 `.artemis/traces/<id>`）。 */
+  rootPath?: string;
   outputDir?: string;
   save?: boolean;
   /** 漏报（expected=failed 未检出）即失败。 */
@@ -77,12 +83,37 @@ function parseExpected(value: unknown, index: number, errors: string[]): "passed
   return null;
 }
 
-function loadPair(
+function validTraceId(value: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(value) && !value.includes("..");
+}
+
+async function finalTraceScreenshot(
+  rootPath: string,
+  traceId: string
+): Promise<{ path: string; source: string } | null> {
+  const tracesRoot = path.join(rootPath, ".artemis", "traces");
+  const traceDir = path.join(tracesRoot, traceId);
+  if (fs.existsSync(path.join(traceDir, "run.json"))) {
+    const ios = lastIosScreenshot(traceDir);
+    if (ios !== null) return { path: ios, source: "ios-run-json" };
+  }
+  for (const dbPath of [
+    path.join(traceDir, "data_engine.db"),
+    path.join(tracesRoot, "data_engine.db")
+  ]) {
+    const android = await readAndroidLastScreenshot(dbPath, traceId);
+    if (android !== null) return { path: android, source: "android-data-engine" };
+  }
+  return null;
+}
+
+async function loadPair(
   raw: Record<string, unknown>,
   index: number,
   baseDir: string,
+  rootPath: string | undefined,
   errors: string[]
-): LoadedPair | null {
+): Promise<LoadedPair | null> {
   const name =
     typeof raw.name === "string" && raw.name.trim() !== "" ? raw.name.trim() : `pair-${index + 1}`;
   const expected = parseExpected(raw.expected, index, errors);
@@ -91,12 +122,33 @@ function loadPair(
     errors.push(`${name}: 缺少 reference 图片路径`);
     return null;
   }
-  if (typeof raw.device !== "string" || raw.device.trim() === "") {
-    errors.push(`${name}: 缺少 device 图片路径`);
+  let devicePath: string;
+  let preferredSource: string;
+  if (typeof raw.device === "string" && raw.device.trim() !== "") {
+    devicePath = path.resolve(baseDir, raw.device);
+    preferredSource = raw.device;
+  } else if (typeof raw.traceId === "string" && raw.traceId.trim() !== "") {
+    const traceId = raw.traceId.trim();
+    if (!validTraceId(traceId)) {
+      errors.push(`${name}: traceId 含非法字符（${traceId}）`);
+      return null;
+    }
+    if (rootPath === undefined) {
+      errors.push(`${name}: traceId 样本需要项目根（CLI 传 --project）`);
+      return null;
+    }
+    const found = await finalTraceScreenshot(rootPath, traceId);
+    if (found === null) {
+      errors.push(`${name}: trace ${traceId} 未找到最终截图`);
+      return null;
+    }
+    devicePath = found.path;
+    preferredSource = `trace:${traceId}（${found.source}）`;
+  } else {
+    errors.push(`${name}: 缺少 device 图片路径或 traceId`);
     return null;
   }
   const referencePath = path.resolve(baseDir, raw.reference);
-  const devicePath = path.resolve(baseDir, raw.device);
   let reference: RgbaImage;
   let device: RgbaImage;
   try {
@@ -108,7 +160,7 @@ function loadPair(
   try {
     device = decodeImage(fs.readFileSync(devicePath));
   } catch (error) {
-    errors.push(`${name}: 设备图不可读（${devicePath}）：${errorMessage(error)}`);
+    errors.push(`${name}: 设备图不可读（${preferredSource}）：${errorMessage(error)}`);
     return null;
   }
   return { name, expected, reference, device };
@@ -208,14 +260,20 @@ export async function runReferenceCalibration(
 
   const baseDir = path.dirname(manifestPath);
   const pairs: LoadedPair[] = [];
-  rawPairs.forEach((raw, index) => {
+  for (const [index, raw] of rawPairs.entries()) {
     if (raw === null || typeof raw !== "object") {
       errors.push(`pairs[${index}] 不是对象`);
-      return;
+      continue;
     }
-    const pair = loadPair(raw as Record<string, unknown>, index, baseDir, errors);
+    const pair = await loadPair(
+      raw as Record<string, unknown>,
+      index,
+      baseDir,
+      options.rootPath,
+      errors
+    );
     if (pair !== null) pairs.push(pair);
-  });
+  }
 
   const expected = { passed: 0, failed: 0 };
   for (const pair of pairs) expected[pair.expected] += 1;
