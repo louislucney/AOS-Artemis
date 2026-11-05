@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { runnerDataTimeoutMs } from "./control/tls-fetch.js";
 
-import { defaultExec, type ExecFn } from "../device/adb.js";
+import { defaultExec, resolveAdbPath, type ExecFn } from "../device/adb.js";
 import { resolveMaestroPath } from "../device/maestro.js";
 import { errorMessage } from "../util.js";
 import { parseWebJobSpec } from "../web/job-spec.js";
@@ -248,6 +248,9 @@ export function createDefaultWebJobExecutor(
   const requestTimeoutMs = options.requestTimeoutMs ?? runnerDataTimeoutMs(env);
   const exec: ExecFn = options.exec ?? defaultExec;
   const childEnv = webRunnerChildEnv(env);
+  // 用父进程完整 env 解析工具绝对路径：不依赖子进程 env 的 PATH 大小写/白名单。
+  const maestroCommand = resolveMaestroPath(env).path ?? "maestro";
+  const adbCommand = resolveAdbPath(env, process.platform).path ?? "adb";
   const envTimeoutMs = positiveInt(env.AOS_WEB_JOB_TIMEOUT_MS);
   const executeTimeoutMs = options.timeoutMs ?? envTimeoutMs;
   const installTimeoutMs = positiveInt(env.AOS_WEB_INSTALL_TIMEOUT_MS) ?? 300_000;
@@ -332,6 +335,7 @@ export function createDefaultWebJobExecutor(
         deviceKind: input.device.kind === "simulator" ? "simulator" : "device",
         exec,
         env: childEnv,
+        adbCommand,
         timeoutMs: installTimeoutMs
       });
       if (!install.ok) {
@@ -352,7 +356,7 @@ export function createDefaultWebJobExecutor(
         },
         exec,
         env: childEnv,
-        maestroCommand: resolveMaestroPath(childEnv).path ?? "maestro",
+        maestroCommand,
         ...(executeTimeoutMs === undefined ? {} : { timeoutMs: executeTimeoutMs })
       });
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");

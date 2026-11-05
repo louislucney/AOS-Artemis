@@ -401,6 +401,8 @@ export interface InstallWebPackageInput {
   deviceKind?: "device" | "simulator";
   /** 提供时强制安装包位于该 job 目录内（防跨 job/任意路径安装）。 */
   jobDir?: string;
+  /** 已解析的 adb 路径；缺省 "adb"（Windows 建议传绝对路径）。 */
+  adbCommand?: string;
 }
 
 export type InstallWebPackageResult =
@@ -477,7 +479,7 @@ export async function installWebPackage(
   let command: string;
   let args: string[];
   if (input.platform === "android") {
-    command = "adb";
+    command = input.adbCommand?.trim() || "adb";
     args = ["-s", input.deviceSerial, "install", "-r", "-d", "-t", input.packagePath];
   } else if (input.platform === "ios") {
     const extension = path.extname(input.packagePath).toLowerCase();
