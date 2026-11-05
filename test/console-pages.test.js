@@ -457,4 +457,6 @@ test("console pages: 网页测试下发页始终提供上传新安装包入口",
   });
   assert.match(html, /上传新安装包/);
   assert.match(html, /section=assets&amp;kind=package/);
+  assert.match(html, /上传新 Excel/);
+  assert.match(html, /section=assets&amp;kind=excel/);
 });

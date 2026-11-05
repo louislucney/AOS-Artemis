@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -45,6 +46,23 @@ test("console actions: 同源守卫（cross-site 403；自定义头放行）", a
     deps
   );
   assert.equal(allowed.status, 404, "守卫通过后进入业务（未知任务 404）");
+});
+
+test("console actions: 套件任务不能走网页测试重新下发", async () => {
+  const { deps, rootPath, store } = await setup();
+  const task = await store.createRegressionTask({
+    rootPath,
+    refs: [],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  const response = await handlePanelActionRequest(
+    request("/panel/api/jobs/clone", { project: rootPath, taskId: task.id }),
+    deps
+  );
+  assert.equal(response.status, 400);
+  assert.match(JSON.parse(response.body).error, /不是网页测试任务/);
 });
 
 test("console actions: 释放/停止/重新派发三动作（claimed 可释放；停止中/终态拒绝；未知 404；落审计）", async () => {
@@ -368,7 +386,7 @@ test("console actions: 下发预览合同（previewId 复算；改端/范围变�
   });
   const preview = await computeDispatchPreview({ store, env: {} }, rootPath, params);
   const formSignature = dispatchFormSignature(params);
-  const previewId = dispatchPreviewId(preview, formSignature);
+  const previewId = dispatchPreviewId(preview, formSignature, rootPath);
 
   const ok = await handlePanelActionRequest(
     request("/panel/api/tasks", {
@@ -399,7 +417,11 @@ test("console actions: 下发预览合同（previewId 复算；改端/范围变�
 
   const keywordParams = new URLSearchParams({ source: "keyword", keyword: "登录", platforms: "android" });
   const keywordPreview = await computeDispatchPreview({ store, env: {} }, rootPath, keywordParams);
-  const keywordId = dispatchPreviewId(keywordPreview, dispatchFormSignature(keywordParams));
+  const keywordId = dispatchPreviewId(
+    keywordPreview,
+    dispatchFormSignature(keywordParams),
+    rootPath
+  );
   await store.recordCaseSet({
     rootPath,
     source: "figma:y",
@@ -493,4 +515,51 @@ test("console actions: 上传导入保留原文件名并追加年月日时分", 
   const sets = await store.listCaseSets(rootPath);
   assert.equal(sets.length, 1);
   assert.match(sets[0].basename, /^login-cases_\d{12}$/);
+});
+
+test("console actions: 从 Web Excel 资产导入用例库（同一 Excel 双向通用）", async () => {
+  const { deps, rootPath, store, runtime } = await setup();
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例名", "步骤", "预期"]);
+  sheet.addRow(["登录", "输入账号密码并点击登录", "进入首页"]);
+  const content = Buffer.from(await workbook.xlsx.writeBuffer());
+  const sha256 = createHash("sha256").update(content).digest("hex");
+  const storageDir = join(rootPath, ".artemis", "web", "assets", "excel");
+  await mkdir(storageDir, { recursive: true });
+  const storagePath = join(storageDir, `${sha256}.xlsx`);
+  await writeFile(storagePath, content);
+  await store.createWebProject({
+    rootPath,
+    name: "p",
+    normalizedName: "p",
+    platforms: ["android"]
+  });
+  const asset = await store.createWebAsset({
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    sha256,
+    size: content.length,
+    storagePath,
+    uploadedBy: "test",
+    metadata: {}
+  });
+
+  const response = await handlePanelActionRequest(
+    request("/panel/api/import", { project: rootPath, assetId: asset.id }),
+    { ...deps, runtimeFor: async () => runtime }
+  );
+  assert.equal(response.status, 200, response.body);
+  const sets = await store.listCaseSets(rootPath);
+  assert.equal(sets.length, 1, "资产导入生成用例集");
+  assert.equal(sets[0].basename, "cases", "用例集名取资产原始文件名");
+  const again = await handlePanelActionRequest(
+    request("/panel/api/import", { project: rootPath, assetId: asset.id }),
+    { ...deps, runtimeFor: async () => runtime }
+  );
+  assert.equal(again.status, 200, again.body);
+  assert.equal((await store.listCaseSets(rootPath)).length, 1, "同一资产重复导入不新增用例集");
+  const assets = await store.listWebAssets(rootPath, "excel");
+  assert.equal(assets.length, 1, "同一内容不重复登记 Web 资产");
 });

@@ -228,6 +228,7 @@ type PanelView =
       packages: WebAssetRecord[];
       scripts: WebAssetRecord[];
       materials: WebAssetRecord[];
+      references: WebAssetRecord[];
       uploadKind?: "excel" | "package" | "materials" | "reference";
       mappings: ExcelMappingRecord[];
     }
@@ -685,11 +686,12 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   }
   if (section === "assets") {
     const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
-    const [excelAssets, packages, scripts, materials, mappings] = await Promise.all([
+    const [excelAssets, packages, scripts, materials, references, mappings] = await Promise.all([
       listWebAssets(projectStore, resolved.rootPath, "excel"),
       listWebAssets(projectStore, resolved.rootPath, "package"),
       listWebAssets(projectStore, resolved.rootPath, "scripts"),
       listWebAssets(projectStore, resolved.rootPath, "materials"),
+      listWebAssets(projectStore, resolved.rootPath, "reference"),
       listExcelMappings(projectStore, resolved.rootPath)
     ]);
     const uploadKindRaw = trimmed(url.searchParams.get("kind"));
@@ -708,6 +710,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       packages,
       scripts,
       materials,
+      references,
       uploadKind,
       mappings
     };
@@ -1019,6 +1022,7 @@ function toJsonView(view: PanelView): Record<string, unknown> {
       packages: view.packages,
       scripts: view.scripts,
       materials: view.materials,
+      references: view.references,
       uploadKind: view.uploadKind,
       mappings: view.mappings
     };
@@ -2437,6 +2441,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         const cancelConfirm = `确认取消该任务？${running || stopping ? "执行机将在当前用例边界停止并确认（状态先为「停止中」，确认后「已取消」）。" : "任务尚未执行，将直接标记为「已取消」。"}取消为终态：不释放、不自动重试；需重跑请用「重新派发」或新建任务。`;
         const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生设备运行 ${detail.runs.length} 个保留）；状态先为「停止中」，执行机确认后转「已取消」。`;
         const rerunConfirm = "确认重新派发？将按原引用/端/基线创建一个新任务（当前任务保留）。";
+        const isWebTask = task.jobSpec !== null;
         const buttons = [
           cancellable
             ? `<button class="c-button c-button-danger" type="button" data-task-action="cancel" data-confirm="${escapeHtml(cancelConfirm)}">取消任务</button>`
@@ -2447,15 +2452,18 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
           stopping
             ? '<span class="muted">停止中：等待执行机确认（离线时为下次心跳读取）；确认后为「已取消」终态</span>'
             : "",
-          !running && !stopping && task.status !== "pending"
+          !isWebTask && !running && !stopping && task.status !== "pending"
             ? `<button class="c-button c-button-primary" type="button" data-task-action="rerun" data-confirm="${escapeHtml(rerunConfirm)}">重新派发</button>`
+            : "",
+          isWebTask && !running && !stopping && task.status !== "pending" && task.status !== "claimed"
+            ? `<button class="c-button c-button-primary" type="button" data-task-action="clone-web" data-confirm="确认按原 Excel/安装包/执行方式/设备要求重新下发一个网页测试任务？">重新下发网页测试</button>`
             : "",
           task.status === "pending" ? '<span class="muted">等待执行机领取</span>' : "",
           running ? '<span class="muted">运行中可直接释放回队列，或先「取消任务」等执行机确认</span>' : ""
         ]
           .filter((part) => part !== "")
           .join(" ");
-        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var hostId=${JSON.stringify(view.hostId).replace(/</g, "\\u003c")};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun',cancel:'/panel/api/tasks/cancel'};var noteEl=document.getElementById('task-cancel-note');function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId,host:hostId,note:action==='cancel'&&noteEl?noteEl.value:undefined})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':action==='cancel'?(res.j&&res.j.status==='cancelled'?'任务已取消':'已请求取消（等待执行机确认）')+' · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
+        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var hostId=${JSON.stringify(view.hostId).replace(/</g, "\\u003c")};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun','clone-web':'/panel/api/jobs/clone',cancel:'/panel/api/tasks/cancel'};var noteEl=document.getElementById('task-cancel-note');function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId,host:hostId,note:action==='cancel'&&noteEl?noteEl.value:undefined})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='clone-web'){var jobId=res.j.job&&res.j.job.id?res.j.job.id:(res.j.task&&res.j.task.id?res.j.task.id:'');window.aosFlash&&aosFlash('已重新下发网页测试 '+jobId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&section=jobs&job='+encodeURIComponent(jobId)+${JSON.stringify(hostSuffix(view.hostId))};return;}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':action==='cancel'?(res.j&&res.j.status==='cancelled'?'任务已取消':'已请求取消（等待执行机确认）')+' · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
         return [
           `<p id="task-actions">${badge} ${priorityBadge} ${buttons}${cancellable ? ' <label class="muted">取消备注 <input type="text" id="task-cancel-note" size="24" placeholder="可选（写入任务与审计）"></label>' : ""}</p>`,
           `<p id="task-action-status" role="status" class="c-banner" hidden></p>`,
@@ -3792,6 +3800,7 @@ function renderPanelHtml(
       packages: view.packages,
       scripts: view.scripts,
       materials: view.materials,
+      references: view.references,
       uploadKind: view.uploadKind,
       mappings: view.mappings,
       capabilities: deps.capabilities,

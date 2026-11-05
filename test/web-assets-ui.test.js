@@ -89,6 +89,23 @@ async function setup(t, { hostId = null } = {}) {
     uploadedBy: "alice",
     metadata: { secret: true }
   });
+  const reference = await store.createWebAsset({
+    rootPath,
+    kind: "reference",
+    filename: "login.png",
+    sha256: "g".repeat(64),
+    size: 64,
+    storagePath: path.join(
+      rootPath,
+      ".artemis",
+      "web",
+      "assets",
+      "reference",
+      `${"g".repeat(64)}.png`
+    ),
+    uploadedBy: "alice",
+    metadata: {}
+  });
   const mapping = await store.saveExcelMapping({
     rootPath,
     assetId: asset.id,
@@ -103,7 +120,7 @@ async function setup(t, { hostId = null } = {}) {
     workspaceRoot: workspace,
     buildStale: false
   };
-  return { deps, rootPath, asset, escapedAsset, pkg, generated, materials, mapping, store };
+  return { deps, rootPath, asset, escapedAsset, pkg, generated, materials, reference, mapping, store };
 }
 
 function assetsUrl(rootPath, hostId = null) {
@@ -123,12 +140,21 @@ async function xlsxBuffer(headers) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-function multipartBody(boundary, { project, filename = "cases.xlsx", content }) {
+function multipartBody(
+  boundary,
+  {
+    project,
+    filename = "cases.xlsx",
+    content,
+    kind = "excel",
+    contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  }
+) {
   return Buffer.concat([
     Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name="project"\r\n\r\n${project}\r\n` +
-        `--${boundary}\r\nContent-Disposition: form-data; name="kind"\r\n\r\nexcel\r\n` +
-        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n`,
+        `--${boundary}\r\nContent-Disposition: form-data; name="kind"\r\n\r\n${kind}\r\n` +
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`,
       "utf8"
     ),
     content,
@@ -159,6 +185,12 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /id="asset-kind"[^>]*aria-label="资产类型"/, "资产类型选择");
   assert.match(html, /<option value="package">安装包（APK\/IPA）<\/option>/, "安装包类型");
   assert.match(html, /<option value="materials">测试资料（materials）<\/option>/, "测试资料类型");
+  assert.match(html, /<option value="reference">参考图（L2 reference）<\/option>/, "参考图类型");
+  assert.match(html, /参考图资产（L2）/);
+  assert.match(html, /login\.png/);
+  const scripts = inlineScripts(html).join("\n");
+  assert.match(scripts, /kind==='reference'/, "上传脚本支持 reference");
+  assert.match(scripts, /endsWith\('\.png'\)/, "文件识别支持 PNG");
   assert.match(
     html,
     /type="file"[^>]*accept="\.xlsx,\.csv,\.apk,\.ipa,\.zip,\.json,\.txt,\.png,\.jpg,\.jpeg,\.webp"/,
@@ -307,6 +339,34 @@ test("project page links to assets and preserves host", async (t) => {
     /href="\/panel\?project=[^"]+&amp;section=assets&amp;host=host-a"[^>]*>测试资产/,
     "项目页入口携带项目与主机"
   );
+});
+
+test("web assets page: reference PNG uploads as reference kind", async (t) => {
+  const { deps, rootPath } = await setup(t);
+  const identity = { name: "alice", role: "maintainer", source: "user" };
+  const boundary = "----aosReferenceUi";
+  const rawBody = multipartBody(boundary, {
+    project: rootPath,
+    kind: "reference",
+    filename: "login.png",
+    contentType: "image/png",
+    content: Buffer.from("fake-png")
+  });
+  const upload = await handlePanelActionRequest(
+    {
+      method: "POST",
+      url: new URL("http://localhost/panel/api/projects/assets"),
+      body: {},
+      rawBody,
+      contentType: `multipart/form-data; boundary=${boundary}`,
+      identity
+    },
+    deps
+  );
+  assert.equal(upload.status, 200);
+  const body = JSON.parse(upload.body);
+  assert.equal(body.asset.kind, "reference");
+  assert.equal(body.asset.filename, "login.png");
 });
 
 test("web assets page: archived project shows status and disables writes", async (t) => {

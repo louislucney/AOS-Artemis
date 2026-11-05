@@ -10,6 +10,7 @@ import {
   createPanelWebCache,
   handlePanelRequest,
   panelCacheTtlFrom,
+  panelRequestNoCache,
   panelWebEnabled,
   schedulePlatforms,
   trendPassRateSvg
@@ -766,6 +767,46 @@ test("panel web: 进程内缓存 TTL（TTL 内命中、过期重算）", async (
   t += 2000;
   const third = JSON.parse((await handlePanelRequest(url, depsWithCache)).body);
   assert.notEqual(third.generatedAt, first.generatedAt, "TTL 过期后重算");
+  t += 1000;
+  const bypass = JSON.parse(
+    (await handlePanelRequest(url, depsWithCache, { noCache: true })).body
+  );
+  assert.notEqual(bypass.generatedAt, third.generatedAt, "noCache 绕过 TTL 缓存");
+});
+
+test("panel web: Web 任务不显示套件重新派发，改为重新下发网页测试", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const task = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [],
+    platforms: ["android"],
+    baseline: "none",
+    createdBy: "panel",
+    executionMode: "maestro",
+    jobSpec: {
+      kind: "web-test",
+      assignment: "auto",
+      requirements: { platform: "android", deviceKind: "any" }
+    }
+  });
+  await store.updateRegressionTask(projectDir, task.id, { status: "completed" });
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${encodeURIComponent(task.id)}`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /重新下发网页测试/);
+  assert.match(html.body, /data-task-action="clone-web"/);
+  assert.match(html.body, /panel\/api\/jobs\/clone/);
+  assert.doesNotMatch(html.body, /data-task-action="rerun"/);
+});
+
+test("panel web: no-cache 请求头识别（reload / 轮询）", () => {
+  assert.equal(panelRequestNoCache({ "cache-control": "max-age=0" }), true);
+  assert.equal(panelRequestNoCache({ "cache-control": "no-cache" }), true);
+  assert.equal(panelRequestNoCache({ pragma: "no-cache" }), true);
+  assert.equal(panelRequestNoCache({ "x-aos-no-cache": "1" }), true);
+  assert.equal(panelRequestNoCache({}), false);
 });
 
 test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404", async () => {
@@ -1948,7 +1989,6 @@ test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS
   assert.match(html.body, /if\(previewId!==null\)data\.previewId=previewId;/, "建单携带服务端预览回执");
   assert.match(html.body, /previewId=res\.j\.previewId/, "预览回执取自服务端响应");
   assert.doesNotMatch(html.body, /__aosIssuesPreviewed/, "布尔闸门已移除");
-  assert.doesNotMatch(html.body, /location\.reload\(\)/, "成功后保留结果面板（不再 reload）");
   assert.match(html.body, /重新生成时响应与 tests\.md 会附上轮案例问题提示/, "案例问题指引行更新");
   assert.doesNotMatch(html.body, /后续接线/, "移除「自动化（P3）…后续接线」指引行");
   const statsScripts = [...html.body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
@@ -1956,6 +1996,16 @@ test("panel web: stats 应用缺陷建单 UI（checkbox/已建单 chip/表单/JS
   );
   for (const code of statsScripts) {
     assert.doesNotThrow(() => new Function(code), "stats 页脚本可解析");
+  }
+  const pageScripts = statsScripts.filter(
+    (code) => !code.includes('addEventListener("pageshow"')
+  );
+  for (const code of pageScripts) {
+    assert.doesNotMatch(
+      code,
+      /location\.reload\(\)/,
+      "面板动作成功后不 reload（shell 的 pageshow 恢复脚本除外）"
+    );
   }
 });
 
@@ -2200,7 +2250,7 @@ test("panel web: 下发向导（?section=dispatch 只读预览）与 JSON 形状
     deps
   );
   assert.equal(html.status, 200);
-  assert.match(html.body, /下发回归/);
+  assert.match(html.body, /套件回归/);
   assert.match(html.body, /③ 预览回显/);
   assert.match(html.body, /id="dispatch-submit"/, "确认派发可操作（动作层已接线）");
   assert.match(html.body, /panel\/api\/tasks/);

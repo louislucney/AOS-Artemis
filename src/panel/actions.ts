@@ -712,6 +712,14 @@ export async function handlePanelActionRequest(
       await auditPanel(scopedDeps, resolved.rootPath, "action.jobs", response, refs);
       return response;
     }
+    if (request.url.pathname === "/panel/api/jobs/clone") {
+      const response = await cloneWebJob(scopedDeps, resolved.rootPath, payload, actor);
+      if (response.status === 200) scopedDeps.cache?.clear();
+      await auditPanel(scopedDeps, resolved.rootPath, "action.jobs.clone", response, {
+        taskId: String(payload.taskId ?? "")
+      });
+      return response;
+    }
     if (request.url.pathname === "/panel/api/verdicts") {
       const response = await saveVerdicts(scopedDeps, resolved.rootPath, payload);
       await auditPanel(scopedDeps, resolved.rootPath, "action.verdicts", response);
@@ -2560,6 +2568,67 @@ async function stopTask(
     status: updated.status,
     note: "已请求停止：执行机将在当前用例边界停止并确认（离线时为下次心跳读取）"
   });
+}
+
+/** Web 任务重新下发：复用原 jobSpec 的资产/执行方式/设备要求，重新走 createWebJob 校验。 */
+async function cloneWebJob(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>,
+  actor: string | null
+): Promise<PanelWebResponse> {
+  const sourceTaskId = typeof payload.taskId === "string" ? payload.taskId.trim() : "";
+  if (sourceTaskId === "") return json(400, { error: "缺少 taskId" });
+  const task = await deps.store.getRegressionTask(rootPath, sourceTaskId);
+  if (!task) return json(404, { error: `未知任务 "${sourceTaskId}"` });
+  if (task.jobSpec === null) {
+    return json(400, { error: "不是网页测试任务；请使用「重新派发」或新建套件任务" });
+  }
+  if (task.status === "claimed" || task.status === "running" || task.status === "stopping") {
+    return json(409, { error: "任务正在执行：请先停止/取消，再重新下发" });
+  }
+  const spec = parseWebJobSpec(task.jobSpec);
+  if (spec === null) {
+    return json(400, { error: "任务规格损坏，无法重新下发；请从网页测试表单重新创建" });
+  }
+  try {
+    const created = await createWebJob({
+      store: deps.store,
+      env: deps.env ?? process.env,
+      rootPath,
+      assignment: spec.assignment,
+      devicePinned: spec.devicePinned,
+      targetHostId: spec.targetHostId,
+      deviceSerial: spec.deviceSerial,
+      requirements: spec.requirements,
+      excelAssetId: spec.excelAssetId,
+      packageAssetId: spec.packageAssetId,
+      materialsAssetId: spec.materialsAssetId,
+      referenceAssetId: spec.referenceAssetId,
+      scriptSetId: spec.scriptSetId,
+      executionMode: spec.executionMode,
+      caseFilter: spec.caseFilter,
+      retry: spec.retry,
+      priority: task.priority,
+      createdBy: actor ?? "panel",
+      allowStaleScript: spec.allowStaleScript,
+      allowPartialUnresolved: spec.allowPartialUnresolved
+    });
+    deps.cache?.clear();
+    return json(200, {
+      ok: true,
+      job: { id: created.task.id },
+      task: created.task,
+      assignment: created.assignment,
+      pendingReason: created.pendingReason,
+      warnings: created.warnings
+    });
+  } catch (error) {
+    if (error instanceof WebJobDispatchError) {
+      return json(error.status, { error: error.message, code: error.code });
+    }
+    throw error;
+  }
 }
 
 async function rerunTask(
