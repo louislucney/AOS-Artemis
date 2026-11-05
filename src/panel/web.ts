@@ -136,6 +136,7 @@ export interface PanelWebResponse {
   status: number;
   contentType: string;
   body: string | Buffer;
+  headers?: Record<string, string>;
 }
 
 export interface PanelWebCache {
@@ -1316,10 +1317,62 @@ export async function handlePanelHostsRequest(deps: PanelWebDeps): Promise<Panel
   };
 }
 
+function legacyPanelRedirect(url: URL): PanelWebResponse | null {
+  const params = url.searchParams;
+  const next = new URL(url.toString());
+  const set = (key: string, value: string): void => {
+    next.searchParams.set(key, value);
+  };
+  const del = (...keys: string[]): void => {
+    for (const key of keys) next.searchParams.delete(key);
+  };
+  let changed = false;
+  const section = (params.get("section") ?? "").trim();
+  const view = (params.get("view") ?? "").trim();
+  if (section === "library") {
+    set("section", "assets");
+    set("tab", "case-sets");
+    del("kind");
+    changed = true;
+  } else if (section === "dispatch") {
+    set("section", "create");
+    set("type", "suite");
+    changed = true;
+  } else if (section === "jobs" && (params.get("job") ?? "").trim() === "") {
+    set("section", "tasks");
+    changed = true;
+  } else if (section === "assets" && (params.get("tab") ?? "").trim() === "") {
+    const kind = (params.get("kind") ?? "").trim();
+    const tab =
+      kind === "excel" || kind === "materials" || kind === "reference"
+        ? kind
+        : kind === "package"
+          ? "packages"
+          : null;
+    if (tab !== null) {
+      set("tab", tab);
+      del("kind");
+      changed = true;
+    }
+  }
+  if (view === "review" || view === "stats") {
+    set("section", "tasks");
+    changed = true;
+  }
+  if (!changed) return null;
+  const query = next.searchParams.toString();
+  return {
+    status: 302,
+    contentType: "text/plain; charset=utf-8",
+    body: "",
+    headers: { Location: `${next.pathname}${query === "" ? "" : `?${query}`}` }
+  };
+}
+
 export async function handlePanelRequest(
   url: URL,
   deps: PanelWebDeps,
-  options?: { noCache?: boolean }
+  options?: { noCache?: boolean; legacyRedirect?: boolean }
 ): Promise<PanelWebResponse> {
   const env = deps.env ?? process.env;
   if (!panelWebEnabled(env)) {
@@ -1327,6 +1380,10 @@ export async function handlePanelRequest(
   }
   if (url.pathname === "/panel/api/hosts") return handlePanelHostsRequest(deps);
   if (url.pathname !== "/panel" && url.pathname !== "/panel.json") return notFound();
+  if (options?.legacyRedirect === true) {
+    const redirect = legacyPanelRedirect(url);
+    if (redirect !== null) return redirect;
+  }
 
   // 角色影响能力/按钮可见性：缓存必须按角色隔离，避免 viewer 命中 admin 页面。
   const cacheKey = `${url.pathname}${url.search}|role=${deps.capabilities?.role ?? ""}`;

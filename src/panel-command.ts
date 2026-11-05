@@ -296,7 +296,10 @@ async function runPanelWeb(options: {
           const response = await handleArtifactRequest(url, deps, {
             accept: req.headers.accept ?? null
           });
-          res.writeHead(response.status, { "Content-Type": response.contentType });
+          res.writeHead(response.status, {
+            "Content-Type": response.contentType,
+            ...(response.headers ?? {})
+          });
           res.end(response.body);
           return;
         }
@@ -306,7 +309,9 @@ async function runPanelWeb(options: {
             url.pathname === "/panel.json" ||
             url.pathname === "/panel/api/hosts")
         ) {
-          const response = await handlePanelRequest(url, deps);
+          const response = await handlePanelRequest(url, deps, {
+            legacyRedirect: true
+          });
           res.writeHead(response.status, { "Content-Type": response.contentType });
           res.end(response.body);
           return;

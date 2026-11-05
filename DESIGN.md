@@ -3767,3 +3767,21 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 - **过滤必须生效**：脚本集 manifest 携带 `module` 与 `caseId→flow`；runner 按 manifest 过滤模块/用例 ID，不再对模块直接报 `case-filter-modules-unsupported`；旧 manifest 回退 stem 匹配。
 - **保留不动**：PASS 硬断言、manual/未验证 → UNVERIFIED、资产 sha、secret materials 0600/不进 CAS、iOS Maestro 上游仅模拟器。
+
+### 13.307 新增（控制台 IA 收口：测试资产 / 新建测试 / 任务与结果；旧路由 302）
+
+> 2026-11-05。用户反馈控制台按流水线分页，同一资产/任务散落在多个页面；按 `docs/superpowers/specs/2026-11-05-console-ia-redesign.md` 收口为三段式 IA，并保留旧链接可达。
+
+- **一级导航**：项目 / **测试资产** / **新建测试** / **任务与结果** / 设备 / 档案 / 运维（审计/事件在项目页签内）。项目级页面仍携带 `project`（项目根）与项目 host；执行机 host 只出现在新建测试与任务详情。
+- **测试资产**（`section=assets`）：`tab=overview|case-sets|excel|packages|materials|reference|scripts`。用例集并入资产中心（原 `library`），Excel/CSV 原件、安装包、测试资料、参考图、脚本集同页；资产行显示 used-by（被哪些任务/用例集引用）。
+- **新建测试**（`section=create`）：landing 选择套件回归（`type=suite`，复用四步下发向导）或网页测试（`type=web`，原 `jobs` 表单 + 任务列表）。
+- **任务与结果**（`section=tasks`）：套件回归与网页测试统一列表（类型徽标/状态/设备/门禁/失败域），详情按类型显示套件 rerun 或 Web clone；网页任务详情保留逐用例结果、参考图列、证据与 Excel 写回。`view=review|stats` 仍作为该页子视图。
+- **旧路由 302**（`handlePanelRequest` 的 `legacyRedirect`，HTTP 模式与独立 `panel --web` 均启用；`/panel` 与 `/panel.json` 同源）：
+  - `section=library` → `section=assets&tab=case-sets`
+  - `section=assets&kind=excel|package|materials|reference` → `section=assets&tab=<对应 tab>`（去掉 `kind`）
+  - `section=dispatch` → `section=create&type=suite`
+  - `section=jobs`（无 `job`）→ `section=tasks`
+  - `view=review|stats` → `section=tasks&view=<原 view>`
+  - 其余参数（`project`/`host`/`source`/`ref` 等）原样保留；`section=jobs&job=<id>` 暂保留旧详情页，待统一任务详情路由（`section=tasks&task=<id>`）落地后再 redirect。
+- **未完成**：统一任务详情 `section=tasks&task=<id>`（当前套件任务详情仍走 `?task=`、Web 任务仍走 `section=jobs&job=`）、任务列表分页、未登记项目注册 CTA。
+- **测试**：`panel-legacy-redirect.test.js` 覆盖 library/dispatch/jobs/review/kind→tab 与参数保留；`console-pages` 覆盖新导航与资产/新建/任务入口。

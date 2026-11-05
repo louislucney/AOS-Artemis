@@ -695,10 +695,13 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             url.pathname === "/panel.json" ||
             url.pathname === "/panel/api/hosts")
         ) {
-          const panelResponse = await handlePanelRequest(url, panelDepsFor(requestIdentity));
+          const panelResponse = await handlePanelRequest(url, panelDepsFor(requestIdentity), {
+            legacyRedirect: true
+          });
           res.writeHead(panelResponse.status, {
             "Content-Type": panelResponse.contentType,
-            ...(url.pathname === "/panel" ? { "Cache-Control": "no-store" } : {})
+            ...(url.pathname === "/panel" ? { "Cache-Control": "no-store" } : {}),
+            ...(panelResponse.headers ?? {})
           });
           res.end(panelResponse.body);
           return;
