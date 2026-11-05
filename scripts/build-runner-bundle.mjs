@@ -7,6 +7,10 @@ import process from "node:process";
 
 const root = process.cwd();
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const iosGuidePath = path.join(root, "docs", "runner-ios-real-device.md");
+const iosGuide = fs.existsSync(iosGuidePath)
+  ? fs.readFileSync(iosGuidePath, "utf8").trim()
+  : "";
 const outDir = path.join(root, "dist-runner");
 const toolchainDir = path.resolve(
   (process.env.AOS_RUNNER_TOOLCHAIN_DIR ?? "").trim() || path.join(root, "dist-toolchain")
@@ -202,6 +206,8 @@ exec node dist/cli.js web-runner "$@"
 ${installedNote}
 
 ${platformGuide}
+
+${iosGuide}
 
 > 解压完整包，不要只复制 \`dist\`；缺少 \`node_modules\` 时 runner 会提示安装包不完整。
 > 注意：\`MOBILE_TESTING_RUNNER_JOB_TOKEN\` 是执行机令牌，不是面板登录 token。
