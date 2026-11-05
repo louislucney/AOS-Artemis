@@ -232,7 +232,9 @@ export async function generateScriptSetForProject(
       );
     }
 
-    let appId = (input.appId ?? "").trim() || (webProject.appPackage ?? "").trim();
+    const projectAppId = (webProject.appPackage ?? "").trim();
+    let appId = (input.appId ?? "").trim();
+    let appIdWarning: string | null = null;
     if (appId === "") {
       try {
         assertInsideAssets(input.rootPath, pkg.storagePath);
@@ -240,11 +242,17 @@ export async function generateScriptSetForProject(
           await readFile(pkg.storagePath),
           pkg.filename
         );
-        if (inferred !== null) appId = inferred;
+        if (inferred !== null) {
+          appId = inferred;
+          if (projectAppId !== "" && projectAppId !== inferred) {
+            appIdWarning = `app-id-package-overrides-project:${projectAppId}->${inferred}`;
+          }
+        }
       } catch {
-        /* best-effort：推断失败保留手填/项目配置路径 */
+        /* best-effort：推断失败回退项目配置 */
       }
     }
+    if (appId === "") appId = projectAppId;
     if (appId === "") {
       throw new ScriptGenerationError(
         "app-id-missing",
@@ -270,6 +278,7 @@ export async function generateScriptSetForProject(
       input.platform,
       appId
     );
+    if (appIdWarning !== null) normalized.warnings.push(appIdWarning);
     const timeoutMs = resolveGenerationTimeoutMs(input.timeoutMs);
     const deadlineMs =
       timeoutMs === 0 ? undefined : Date.now() + timeoutMs;

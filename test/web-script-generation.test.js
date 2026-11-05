@@ -94,6 +94,29 @@ test("script-generation: 项目未配置 appPackage 时从 APK 推断", async (t
   assert.equal(result.appId, "com.example.inferred");
 });
 
+test("script-generation: 安装包 appId 优先于项目 appPackage 并告警", async (t) => {
+  const apk = new JSZip();
+  apk.file("AndroidManifest.xml", '<manifest package="com.example.uat"/>');
+  const { store, rootPath, excel, pkg } = await setup(t, {
+    appPackage: "com.example.prod",
+    packageBuffer: await apk.generateAsync({ type: "nodebuffer" })
+  });
+  const result = await generateScriptSetForProject({
+    store,
+    rootPath,
+    excelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    platform: "android",
+    dryRun: true
+  });
+  assert.equal(result.appId, "com.example.uat");
+  assert.ok(
+    result.normalizerWarnings.some((warning) =>
+      warning.includes("app-id-package-overrides-project:com.example.prod->com.example.uat")
+    )
+  );
+});
+
 test("loadLlmCases: Excel → taskDesc（含真实数据约束/模块）", async (t) => {
   const { store, rootPath, excel } = await setup(t);
   const cases = await loadLlmCases({
