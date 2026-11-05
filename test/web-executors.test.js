@@ -329,6 +329,45 @@ test("executeWebJob: 长 stderr 保留首尾，不丢根因", async (t) => {
   assert.match(result.detail, /TAIL-MARKER/);
 });
 
+test("executeWebJob: Maestro 失败抓 logcat/窗口/截图并写入 diagnostics", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  const { exec, calls } = fakeExec(async (command, args) => {
+    if (command === "maestro") {
+      return { code: 1, stdout: "", stderr: "maestro exploded" };
+    }
+    if (args.includes("logcat")) {
+      return { code: 0, stdout: "LOGCAT-ROOT-CAUSE", stderr: "" };
+    }
+    if (args.includes("dumpsys")) {
+      return { code: 0, stdout: "WINDOW-FOCUS", stderr: "" };
+    }
+    if (args.includes("pull")) {
+      return { code: 0, stdout: "1 file pulled", stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {},
+    adbCommand: "adb"
+  });
+
+  assert.equal(result.status, "error");
+  assert.match(result.detail, /LOGCAT-ROOT-CAUSE/);
+  assert.equal(result.diagnostics?.some((file) => file.endsWith("logcat.txt")), true);
+  assert.equal(result.diagnostics?.some((file) => file.endsWith("window.txt")), true);
+  assert.equal(result.diagnostics?.some((file) => file.endsWith("screen.png")), true);
+  assert.equal(
+    calls.some((call) => call.command === "adb" && call.args.includes("logcat")),
+    true
+  );
+});
+
 test("executeWebJob: 超时且无 JUnit → error 保留 timeout", async (t) => {
   const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
   const { exec } = fakeExec(async () => ({ code: null, stdout: "", stderr: "", error: "timeout" }));

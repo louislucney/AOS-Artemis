@@ -113,6 +113,15 @@ function fakeExec({ junitCases }) {
       return { code: 0, stdout: "", stderr: "" };
     }
     if (command === "adb") {
+      if (
+        args.includes("logcat") ||
+        args.includes("dumpsys") ||
+        args.includes("screencap") ||
+        args.includes("pull") ||
+        args.includes("rm")
+      ) {
+        return { code: 0, stdout: "", stderr: "" };
+      }
       return {
         code: 0,
         stdout: "Success\npackage:com.acme.web\nversionName=1.2.3\n",

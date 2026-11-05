@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ExecFn, ExecResult } from "../device/adb.js";
@@ -35,6 +35,8 @@ export interface WebJobExecutionResult {
   startedAt: string;
   finishedAt: string;
   detail: string | null;
+  /** 失败时抓取的设备诊断文件（logcat / window / screenshot）；路径相对 jobDir。 */
+  diagnostics?: string[];
 }
 
 export interface ExecuteWebJobInput {
@@ -47,6 +49,8 @@ export interface ExecuteWebJobInput {
   timeoutMs?: number;
   /** 已解析的 maestro 可执行文件；缺省 "maestro"（Windows .cmd/.bat 需显式路径）。 */
   maestroCommand?: string;
+  /** 已解析的 adb 路径；失败诊断用，缺省 "adb"。 */
+  adbCommand?: string;
 }
 
 export const WEB_JOB_DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
@@ -80,15 +84,90 @@ function resultAt(
   startedAtMs: number,
   status: WebJobExecutionResult["status"],
   cases: WebJobExecutionCase[],
-  detail: string | null
+  detail: string | null,
+  diagnostics?: string[]
 ): WebJobExecutionResult {
   return {
     status,
     cases,
     startedAt: iso(startedAtMs),
     finishedAt: iso(Date.now()),
-    detail: detail === null ? null : clip(detail, DETAIL_MAX)
+    detail: detail === null ? null : clip(detail, DETAIL_MAX),
+    ...(diagnostics === undefined || diagnostics.length === 0 ? {} : { diagnostics })
   };
+}
+
+/** Maestro 失败时抓设备现场：logcat/窗口状态/截图，best-effort，不影响原始错误。 */
+async function captureFailureDiagnostics(input: ExecuteWebJobInput): Promise<{
+  files: string[];
+  summary: string | null;
+}> {
+  const dir = path.join(input.jobDir, "diagnostics");
+  try {
+    await mkdir(dir, { recursive: true });
+  } catch {
+    return { files: [], summary: null };
+  }
+  const files: string[] = [];
+  const run = async (
+    command: string,
+    args: string[],
+    timeoutMs = 20_000
+  ): Promise<ExecResult | null> => {
+    try {
+      return await input.exec(command, args, { timeoutMs, env: input.env });
+    } catch {
+      return null;
+    }
+  };
+  const save = async (file: string, text: string): Promise<void> => {
+    if (text.trim() === "") return;
+    try {
+      await writeFile(file, text);
+      files.push(file);
+    } catch {
+      /* 诊断失败不影响主错误 */
+    }
+  };
+  let summary: string | null = null;
+  if (input.device.platform === "android") {
+    const adb = input.adbCommand?.trim() || "adb";
+    const base = ["-s", input.device.serial];
+    const logcat = await run(adb, [...base, "logcat", "-d", "-t", "400"]);
+    if (logcat !== null) {
+      await save(path.join(dir, "logcat.txt"), logcat.stdout);
+      if (logcat.stdout.trim() !== "") {
+        summary = `logcat:\n${logcat.stdout.trim().slice(-800)}`;
+      }
+    }
+    const window = await run(adb, [...base, "shell", "dumpsys", "window", "windows"]);
+    if (window !== null) await save(path.join(dir, "window.txt"), window.stdout);
+    const remote = "/sdcard/aos-diagnostic.png";
+    const shot = await run(adb, [...base, "shell", "screencap", "-p", remote]);
+    if (shot !== null && shot.code === 0) {
+      const local = path.join(dir, "screen.png");
+      const pulled = await run(adb, [...base, "pull", remote, local]);
+      if (pulled !== null && pulled.code === 0) files.push(local);
+    }
+    await run(adb, [...base, "shell", "rm", "-f", remote]);
+  } else if (input.device.platform === "ios" && input.device.kind === "simulator") {
+    const shot = path.join(dir, "screen.png");
+    const captured = await run("xcrun", [
+      "simctl",
+      "io",
+      input.device.serial,
+      "screenshot",
+      shot
+    ]);
+    if (captured !== null && captured.code === 0) files.push(shot);
+    const logs = await run(
+      "xcrun",
+      ["simctl", "spawn", input.device.serial, "log", "show", "--last", "2m", "--style", "compact"],
+      30_000
+    );
+    if (logs !== null) await save(path.join(dir, "syslog.txt"), logs.stdout);
+  }
+  return { files, summary };
 }
 
 function tail(text: string): string {
@@ -595,7 +674,14 @@ export async function executeWebJob(
       { timeoutMs, env: input.env }
     );
   } catch (error) {
-    return resultAt(startedAtMs, "error", [], `maestro-exec-failed: ${errorMessage(error)}`);
+    const diagnostics = await captureFailureDiagnostics(input);
+    return resultAt(
+      startedAtMs,
+      "error",
+      [],
+      `maestro-exec-failed: ${errorMessage(error)}`,
+      diagnostics.files
+    );
   }
 
   let junitContent: string | null = null;
@@ -617,7 +703,16 @@ export async function executeWebJob(
       execResult.error === "timeout"
         ? "maestro-timeout"
         : `maestro-no-junit: exit=${exit}${execResult.error === undefined ? "" : `: ${execResult.error}`}`;
-    return resultAt(startedAtMs, "error", [], stderr === "" ? reason : `${reason}: ${stderr}`);
+    const diagnostics = await captureFailureDiagnostics(input);
+    const withLogcat =
+      diagnostics.summary === null ? reason : `${reason}\n--- ${diagnostics.summary}`;
+    return resultAt(
+      startedAtMs,
+      "error",
+      [],
+      stderr === "" ? withLogcat : `${withLogcat}: ${stderr}`,
+      diagnostics.files
+    );
   }
   if (junitContent.trim() === "") {
     return resultAt(startedAtMs, "error", [], "junit-empty");

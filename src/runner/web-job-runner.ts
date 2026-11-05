@@ -226,6 +226,9 @@ export async function executedPayload(
     }
     if (entry.logPath !== undefined) evidence.add(path.relative(jobDir, entry.logPath));
   }
+  for (const file of executed.diagnostics ?? []) {
+    evidence.add(path.relative(jobDir, file));
+  }
 
   // L2 最终截图：只在显式开启时上传；PASS 优先占用预算，单图/总量均有上限。
   const screenshots = new Map<number, { filename: string; base64: string }>();
@@ -442,6 +445,7 @@ export function createDefaultWebJobExecutor(
         exec,
         env: childEnv,
         maestroCommand,
+        adbCommand,
         ...(executeTimeoutMs === undefined ? {} : { timeoutMs: executeTimeoutMs })
       });
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
