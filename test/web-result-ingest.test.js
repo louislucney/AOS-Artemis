@@ -23,6 +23,7 @@ import {
 } from "../dist/web/results.js";
 import { cellText, recoverPendingWriteback } from "../dist/web/writeback.js";
 import { workbookCopyPath } from "../dist/web/workbook.js";
+import { createImage, fillRect, toPng } from "./helpers.js";
 
 const TOKEN = "runner-job-token-0123456789abcdef";
 const HOST = "host-1";
@@ -43,11 +44,15 @@ async function tempDir(t, prefix = "aos-web-result-") {
   return dir;
 }
 
-async function writeWorkbook(filePath, rows = [["TC-1", "登录", "1. 打开", "1. 页面显示“登录”"], ["TC-2", "退出", "1. 退出", "1. 页面显示“退出”"], ["TC-3", "设置", "1. 设置", "1. 页面显示“设置”"]]) {
+async function writeWorkbook(
+  filePath,
+  rows = [["TC-1", "登录", "1. 打开", "1. 页面显示“登录”"], ["TC-2", "退出", "1. 退出", "1. 页面显示“退出”"], ["TC-3", "设置", "1. 设置", "1. 页面显示“设置”"]],
+  headers = ["用例编号", "用例名", "步骤", "期望结果"]
+) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("用例");
-  sheet.addRow(["用例编号", "用例名", "步骤", "期望结果"]);
+  sheet.addRow(headers);
   for (const row of rows) sheet.addRow(row);
   await workbook.xlsx.writeFile(filePath);
   return filePath;
@@ -108,7 +113,7 @@ async function setupProject(t, options = {}) {
   const { store, workspace, rootPath } = await makeStore();
   if (t) t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const original = path.join(rootPath, "cases.xlsx");
-  await writeWorkbook(original, options.rows);
+  await writeWorkbook(original, options.rows, options.headers);
   const buffer = await readFile(original);
   const asset = await storeWebAsset({
     store,
@@ -224,6 +229,131 @@ function passingPayload(overrides = {}) {
     ...overrides
   };
 }
+
+function oneCasePayload(screenshotBase64) {
+  return {
+    execution: {
+      status: "passed",
+      cases: [
+        {
+          caseId: "TC-1",
+          name: "登录",
+          status: "PASS",
+          durationMs: 900,
+          traceId: "trace-1",
+          assertionCount: 1,
+          ...(screenshotBase64 === undefined
+            ? {}
+            : { screenshot: { filename: "shot.png", base64: screenshotBase64 } })
+        }
+      ],
+      startedAt: STARTED,
+      finishedAt: FINISHED,
+      detail: null
+    },
+    device: { serial: "emulator-5554", model: "Pixel 7", osVersion: "14" },
+    package: { name: "com.acme.app", version: "1.2.3", filename: "app.apk" },
+    startedAt: STARTED,
+    finishedAt: FINISHED
+  };
+}
+
+async function createReferenceJob(ctx, overrides) {
+  const task = await ctx.store.createRegressionTask({
+    rootPath: ctx.rootPath,
+    refs: [],
+    platforms: ["android"],
+    baseline: "latest",
+    targetHostId: HOST,
+    jobSpec: jobSpec({
+      excelAssetId: ctx.asset.id,
+      executionMode: "maestro",
+      ...overrides
+    }),
+    deviceSerial: "emulator-5554"
+  });
+  await ctx.store.updateRegressionTask(ctx.rootPath, task.id, { status: "running" });
+  return task;
+}
+
+test("ingest：Maestro 逐例参考图（Excel 参考图列）优先于 job 级", async (t) => {
+  const ctx = await setupProject(t, {
+    headers: ["用例编号", "用例名", "步骤", "期望结果", "参考图"],
+    rows: [["TC-1", "登录", "1. 打开", "1. 页面显示“登录”", "login.png"]]
+  });
+  const white = createImage(120, 240, [255, 255, 255, 255]);
+  const reference = await storeWebAsset({
+    store: ctx.store,
+    rootPath: ctx.rootPath,
+    kind: "reference",
+    filename: "login.png",
+    buffer: toPng(white)
+  });
+  const job = await createReferenceJob(ctx, {
+    referenceGate: "report",
+    l2Screenshots: true
+  });
+  await ingestWebJobResult({
+    store: ctx.store,
+    jobId: job.id,
+    payload: oneCasePayload(toPng(white).toString("base64"))
+  });
+  const doc = JSON.parse(await readFile(resultPathForJob(ctx.rootPath, job.id), "utf8"));
+  assert.equal(doc.execution.cases[0].reference.status, "passed");
+  assert.equal(doc.execution.cases[0].reference.referenceAssetId, reference.id);
+});
+
+test("ingest：Maestro 最终截图 → L2 报告；opt-in 时差异把 PASS 降为 UNVERIFIED", async (t) => {
+  const ctx = await setupProject(t, { rows: [["TC-1", "登录", "1. 打开", "1. 页面显示“登录”"]] });
+  const white = createImage(120, 240, [255, 255, 255, 255]);
+  const changed = createImage(120, 240, [255, 255, 255, 255]);
+  fillRect(changed, 20, 60, 80, 100, [0, 0, 0, 255]);
+  const reference = await storeWebAsset({
+    store: ctx.store,
+    rootPath: ctx.rootPath,
+    kind: "reference",
+    filename: "login.png",
+    buffer: toPng(white)
+  });
+
+  const passing = await createReferenceJob(ctx, {
+    referenceAssetId: reference.id,
+    referenceGate: "report",
+    l2Screenshots: true
+  });
+  await ingestWebJobResult({
+    store: ctx.store,
+    jobId: passing.id,
+    payload: oneCasePayload(toPng(white).toString("base64"))
+  });
+  const passedDoc = JSON.parse(
+    await readFile(resultPathForJob(ctx.rootPath, passing.id), "utf8")
+  );
+  assert.equal(passedDoc.execution.cases[0].status, "PASS");
+  assert.equal(passedDoc.execution.cases[0].reference.status, "passed");
+  assert.equal(passedDoc.execution.cases[0].reference.referenceAssetId, reference.id);
+  assert.match(passedDoc.execution.cases[0].screenshotPaths[0], /screenshots\/TC-1-shot\.png$/);
+
+  const gated = await createReferenceJob(ctx, {
+    referenceAssetId: reference.id,
+    referenceGate: "unverified",
+    l2Screenshots: true
+  });
+  const summary = await ingestWebJobResult({
+    store: ctx.store,
+    jobId: gated.id,
+    payload: oneCasePayload(toPng(changed).toString("base64"))
+  });
+  assert.equal(summary.taskStatus, "partial");
+  assert.equal(summary.gate.unverified, 1);
+  const failedDoc = JSON.parse(
+    await readFile(resultPathForJob(ctx.rootPath, gated.id), "utf8")
+  );
+  assert.equal(failedDoc.execution.cases[0].status, "UNVERIFIED");
+  assert.equal(failedDoc.execution.cases[0].reference.status, "failed");
+  assert.ok(failedDoc.execution.cases[0].reference.regions > 0);
+  assert.match(failedDoc.execution.cases[0].failureReason, /reference-mismatch/);
+});
 
 test("ingest：PASS/FAIL/SKIP 聚合 failed，写回 8 列中的结果/时间/设备/包/trace，原件不变", async (t) => {
   const ctx = await setupProject(t);

@@ -16,6 +16,9 @@ import { classifyExpectedResult, type AssertionDoc } from "./assertions.js";
 import { decodeCsv, exportWorkbookCsv, type CsvEncoding, type CsvLineEnding } from "./csv.js";
 import { parseExcel, type ParsedExcelCase } from "./excel.js";
 import { parseWebJobSpec, type WebJobSpec } from "./job-spec.js";
+import { loadCaseReferences } from "./llm/cases.js";
+import { compareReference } from "./llm/reference.js";
+import { resolveCaseReference } from "./llm/reference-assets.js";
 import { withFileLock } from "./lock.js";
 import { writePlatformResults, type PlatformResultRow } from "./platform-result.js";
 import { deriveCaseVerdicts } from "./verdicts.js";
@@ -152,6 +155,8 @@ export interface NormalizedWebJobResultPayload {
     dataEngineDb?: NormalizedWebResultArtifact;
     statusJson?: NormalizedWebResultArtifact;
   };
+  /** 逐例最终截图（Maestro L2，可选；只在显式开启时由 runner 上传）。 */
+  caseScreenshots: Array<{ caseId: string; artifact: NormalizedWebResultArtifact }>;
   /** runner 上报的 execution.status（未上报则 undefined）；与用例聚合不同会告警。 */
   reportedStatus?: WebResultGate["result"];
   allowClearedRefresh: boolean;
@@ -730,6 +735,16 @@ function canonicalPayload(payload: NormalizedWebJobResultPayload): string {
       dataEngineDb: canonicalArtifact(payload.tokenArtifacts.dataEngineDb),
       statusJson: canonicalArtifact(payload.tokenArtifacts.statusJson)
     },
+    ...(payload.caseScreenshots.length === 0
+      ? {}
+      : {
+          caseScreenshots: payload.caseScreenshots.map((entry) => ({
+            caseId: entry.caseId,
+            filename: entry.artifact.filename,
+            sha256: entry.artifact.sha256,
+            size: entry.artifact.buffer.length
+          }))
+        }),
     allowClearedRefresh: payload.allowClearedRefresh
   };
   return stableStringify(value);
@@ -826,6 +841,21 @@ export function normalizeWebJobResultPayload(
   const detailRaw = optionalText(rawExecution.detail, "execution.detail");
   const tokenUsage = parseTokenUsage(raw.tokenUsage);
   const tokenArtifacts = parseTokenArtifacts(raw.tokenArtifacts);
+  const caseScreenshots: Array<{ caseId: string; artifact: NormalizedWebResultArtifact }> = [];
+  let screenshotBytes = 0;
+  rawExecution.cases.forEach((entry, index) => {
+    if (!isRecord(entry) || entry.screenshot === undefined || entry.screenshot === null) return;
+    const artifact = parseArtifact(entry.screenshot, `execution.cases[${index}].screenshot`);
+    if (artifact === undefined) return;
+    screenshotBytes += artifact.buffer.length;
+    if (caseScreenshots.length >= 100 || screenshotBytes > ARTIFACT_MAX_BYTES) {
+      throw new WebResultError(
+        "invalid-result",
+        `execution.cases[].screenshot 合计超过上限（${ARTIFACT_MAX_BYTES} 字节或 100 张）`
+      );
+    }
+    caseScreenshots.push({ caseId: cases[index]!.caseId, artifact });
+  });
   // runner 上传 body 不得解冻人工清空：只认内部调用参数；当前没有面板解冻入口。
   const allowClearedRefresh = false;
 
@@ -844,9 +874,111 @@ export function normalizeWebJobResultPayload(
     evidence: stringList(raw.evidence, "evidence"),
     tokenUsage,
     tokenArtifacts,
+    caseScreenshots,
     ...(reportedStatus === undefined ? {} : { reportedStatus }),
     allowClearedRefresh
   };
+}
+
+async function stageCaseScreenshots(input: {
+  rootPath: string;
+  resultDir: string;
+  cases: WebResultCase[];
+  artifacts: Array<{ caseId: string; artifact: NormalizedWebResultArtifact }>;
+}): Promise<{
+  paths: Map<string, { absolute: string; relative: string }>;
+  problems: string[];
+}> {
+  const paths = new Map<string, { absolute: string; relative: string }>();
+  const problems: string[] = [];
+  if (input.artifacts.length === 0) return { paths, problems };
+  const targetDir = path.join(input.resultDir, "screenshots");
+  try {
+    await mkdir(targetDir, { recursive: true });
+  } catch (error) {
+    problems.push(`截图目录创建失败：${errorMessage(error)}`);
+    return { paths, problems };
+  }
+  const byCase = new Map<string, NormalizedWebResultArtifact>();
+  for (const entry of input.artifacts) byCase.set(entry.caseId, entry.artifact);
+  for (const entry of input.cases) {
+    const artifact = byCase.get(entry.caseId);
+    if (artifact === undefined) continue;
+    const filename = `${safeArtifactFilename(entry.caseId, "case")}-${safeArtifactFilename(
+      artifact.filename,
+      "screenshot.png"
+    )}`;
+    const absolute = path.join(targetDir, filename);
+    try {
+      writeFileAtomic(absolute, artifact.buffer);
+      const relative = path.relative(input.rootPath, absolute).split(path.sep).join("/");
+      entry.screenshotPaths = [relative];
+      paths.set(entry.caseId, { absolute, relative });
+    } catch (error) {
+      problems.push(`用例 ${entry.caseId} 截图写入失败：${errorMessage(error)}`);
+    }
+  }
+  return { paths, problems };
+}
+
+async function applyMaestroReferenceChecks(input: {
+  store: ProjectStore;
+  rootPath: string;
+  spec: WebJobSpec;
+  cases: WebResultCase[];
+  screenshots: Map<string, { absolute: string; relative: string }>;
+}): Promise<string[]> {
+  const warnings: string[] = [];
+  const fallback =
+    input.spec.referenceAssetId === null
+      ? null
+      : await input.store
+          .getWebAsset(input.rootPath, input.spec.referenceAssetId)
+          .catch(() => null);
+  const assets = await input.store
+    .listWebAssets(input.rootPath, "reference")
+    .catch(() => [] as WebAssetRecord[]);
+  let references = new Map<string, string>();
+  try {
+    references = await loadCaseReferences({
+      store: input.store,
+      rootPath: input.rootPath,
+      job: { spec: input.spec }
+    });
+  } catch (error) {
+    warnings.push(`reference-map-unavailable: ${errorMessage(error)}`);
+  }
+  if (fallback === null && references.size === 0) return warnings;
+  for (const entry of input.cases) {
+    const requested = references.get(entry.caseId) ?? null;
+    if (requested === null && fallback === null) continue;
+    const resolved = resolveCaseReference({
+      requested,
+      assets,
+      fallbackPath: fallback?.storagePath ?? null,
+      fallbackAssetId: fallback?.id ?? null
+    });
+    const shot = input.screenshots.get(entry.caseId);
+    const reference = compareReference({
+      referencePath: resolved.referencePath,
+      referenceAssetId: resolved.referenceAssetId,
+      ...(resolved.missingReason === undefined ? {} : { missingReason: resolved.missingReason }),
+      screenshotPath: shot?.absolute ?? null
+    });
+    if (reference.screenshot !== undefined && shot !== undefined) {
+      reference.screenshot = shot.relative;
+    }
+    entry.reference = reference;
+    if (
+      input.spec.referenceGate === "unverified" &&
+      reference.status === "failed" &&
+      entry.status === "PASS"
+    ) {
+      entry.status = "UNVERIFIED";
+      entry.failureReason = `reference-mismatch:${reference.regions ?? 0}`;
+    }
+  }
+  return warnings;
 }
 
 interface WritebackTarget {
@@ -1255,6 +1387,33 @@ async function ingestUnderJobLock(
   const finalCases = derived.cases;
   warnings.push(...derived.warnings);
 
+  const resultDir = path.dirname(resultPath);
+  await mkdir(resultDir, { recursive: true });
+  const maxScreenshots = spec.executionMode === "maestro" ? payload.caseScreenshots : [];
+  if (spec.executionMode !== "maestro" && payload.caseScreenshots.length > 0) {
+    warnings.push(
+      `case-screenshot: 非 Maestro 结果包含 ${payload.caseScreenshots.length} 张截图，已忽略`
+    );
+  }
+  const stagedScreenshots = await stageCaseScreenshots({
+    rootPath,
+    resultDir,
+    cases: finalCases,
+    artifacts: maxScreenshots
+  });
+  warnings.push(...stagedScreenshots.problems.map((problem) => `case-screenshot: ${problem}`));
+  if (spec.executionMode === "maestro" && maxScreenshots.length > 0) {
+    warnings.push(
+      ...(await applyMaestroReferenceChecks({
+        store,
+        rootPath,
+        spec,
+        cases: finalCases,
+        screenshots: stagedScreenshots.paths
+      }))
+    );
+  }
+
   const counts = aggregateResultGate(finalCases);
   const gate: WebResultGate = {
     ...counts,
@@ -1278,8 +1437,6 @@ async function ingestUnderJobLock(
     );
   }
 
-  const resultDir = path.dirname(resultPath);
-  await mkdir(resultDir, { recursive: true });
   const staged = await stageTokenArtifacts(resultDir, payload.tokenArtifacts);
   warnings.push(...staged.problems.map((problem) => `token-artifact: ${problem}`));
   const tokenArtifacts = staged.paths;

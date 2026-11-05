@@ -1186,6 +1186,7 @@ test("createWebJob: L2 参考图资产写入 jobSpec 与快照", async () => {
     );
     assert.equal(created.task.jobSpec.referenceAssetId, reference.id);
     assert.equal(created.task.jobSpec.referenceGate, "report");
+    assert.equal(created.task.jobSpec.l2Screenshots, false);
     assert.ok(
       created.task.jobSpec.assetSnapshot.some(
         (entry) => entry.kind === "reference" && entry.id === reference.id
@@ -1198,6 +1199,13 @@ test("createWebJob: L2 参考图资产写入 jobSpec 与快照", async () => {
       })
     );
     assert.equal(gated.task.jobSpec.referenceGate, "unverified");
+    const screenshots = await createWebJob(
+      jobInput(store, rootPath, assets, {
+        referenceAssetId: reference.id,
+        l2Screenshots: true
+      })
+    );
+    assert.equal(screenshots.task.jobSpec.l2Screenshots, true);
   }
 });
 

@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { runnerDataTimeoutMs } from "./control/tls-fetch.js";
 
@@ -146,12 +147,16 @@ function readSpecAssets(raw: unknown): RunnerSpecAsset[] {
   });
 }
 
-function executedPayload(
+const L2_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024;
+const L2_SCREENSHOT_TOTAL_BYTES = 6 * 1024 * 1024;
+
+export async function executedPayload(
   executed: WebJobExecutionResult,
   jobDir: string,
   device: { serial: string; model: string | null; osVersion: string | null },
-  pkg: { name: string | null; version: string | null; filename: string }
-): Record<string, unknown> {
+  pkg: { name: string | null; version: string | null; filename: string },
+  jobSpec: ReturnType<typeof parseWebJobSpec>
+): Promise<Record<string, unknown>> {
   const evidence = new Set<string>();
   for (const entry of executed.cases) {
     for (const file of entry.screenshotPaths ?? []) {
@@ -159,20 +164,54 @@ function executedPayload(
     }
     if (entry.logPath !== undefined) evidence.add(path.relative(jobDir, entry.logPath));
   }
+
+  // L2 最终截图：只在显式开启时上传；PASS 优先占用预算，单图/总量均有上限。
+  const screenshots = new Map<number, { filename: string; base64: string }>();
+  if (jobSpec?.l2Screenshots === true && jobSpec.executionMode === "maestro") {
+    const candidates = executed.cases
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => (entry.screenshotPaths?.length ?? 0) > 0)
+      .sort(
+        (a, b) => Number(b.entry.status === "PASS") - Number(a.entry.status === "PASS")
+      );
+    let total = 0;
+    for (const { entry, index } of candidates) {
+      const paths = entry.screenshotPaths ?? [];
+      const file = paths[paths.length - 1];
+      if (file === undefined) continue;
+      try {
+        const buffer = await readFile(file);
+        if (buffer.length === 0 || buffer.length > L2_SCREENSHOT_MAX_BYTES) continue;
+        if (total + buffer.length > L2_SCREENSHOT_TOTAL_BYTES) continue;
+        total += buffer.length;
+        screenshots.set(index, {
+          filename: path.basename(file),
+          base64: buffer.toString("base64")
+        });
+      } catch {
+        /* 截图缺失/不可读：不上传，中心按 unverified 处理 */
+      }
+    }
+  }
+
   return {
     execution: {
       status: RESULT_STATUS_FROM_EXECUTOR[executed.status],
-      cases: executed.cases.map((entry) => ({
-        caseId: entry.caseId,
-        name: entry.name,
-        status: entry.status,
-        durationMs: entry.durationMs,
-        ...(entry.assertionCount === undefined ? {} : { assertionCount: entry.assertionCount }),
-        ...(entry.assertions === undefined ? {} : { assertions: entry.assertions }),
-        ...(entry.manualSteps === undefined ? {} : { manualSteps: entry.manualSteps }),
-        ...(entry.failureStep === undefined ? {} : { failureStep: entry.failureStep }),
-        ...(entry.failureReason === undefined ? {} : { failureReason: entry.failureReason })
-      })),
+      cases: executed.cases.map((entry, index) => {
+        const screenshot = screenshots.get(index);
+        return {
+          caseId: entry.caseId,
+          name: entry.name,
+          status: entry.status,
+          durationMs: entry.durationMs,
+          ...(entry.assertionCount === undefined ? {} : { assertionCount: entry.assertionCount }),
+          ...(entry.assertions === undefined ? {} : { assertions: entry.assertions }),
+          ...(entry.manualSteps === undefined ? {} : { manualSteps: entry.manualSteps }),
+          ...(entry.failureStep === undefined ? {} : { failureStep: entry.failureStep }),
+          ...(entry.failureReason === undefined ? {} : { failureReason: entry.failureReason }),
+          ...(screenshot === undefined ? {} : { screenshot })
+        };
+      }),
       startedAt: executed.startedAt,
       finishedAt: executed.finishedAt,
       detail: executed.detail
@@ -304,7 +343,7 @@ export function createDefaultWebJobExecutor(
       });
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
 
-      const payload = executedPayload(
+      const payload = await executedPayload(
         executed,
         prepared.jobDir,
         {
@@ -316,7 +355,8 @@ export function createDefaultWebJobExecutor(
           name: install.packageName,
           version: install.version,
           filename: path.basename(packagePath)
-        }
+        },
+        jobSpec
       );
       let resultResponse: Awaited<ReturnType<typeof fetch>>;
       try {

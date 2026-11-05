@@ -44,6 +44,8 @@ export interface WebJobSpec {
   referenceAssetId: string | null;
   /** L2 参考图差异策略；默认 report（只记录，不改判定）。 */
   referenceGate: WebJobReferenceGate;
+  /** Maestro：让执行机上传每例最终截图，供中心 L2 比对（默认关）。 */
+  l2Screenshots: boolean;
   scriptSetId: string | null;
   executionMode: WebJobExecutionMode;
   caseFilter: WebJobCaseFilter;
@@ -370,6 +372,7 @@ export function parseWebJobSpec(value: Record<string, unknown> | null): WebJobSp
       value.referenceGate === "off" || value.referenceGate === "unverified"
         ? value.referenceGate
         : "report",
+    l2Screenshots: value.l2Screenshots === true,
     scriptSetId: nonEmpty(value.scriptSetId),
     executionMode: value.executionMode,
     caseFilter: normalizeCaseFilter(value.caseFilter),

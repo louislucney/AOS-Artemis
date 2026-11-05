@@ -7,7 +7,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { runWebRunnerCommand } from "../dist/runner/web-agent.js";
-import { createDefaultWebJobExecutor, webRunnerChildEnv } from "../dist/runner/web-job-runner.js";
+import {
+  createDefaultWebJobExecutor,
+  executedPayload,
+  webRunnerChildEnv
+} from "../dist/runner/web-job-runner.js";
 import { zipBuffer } from "./fixtures/web-zip.mjs";
 
 const TOKEN = "runner-job-token-0123456789abcdef";
@@ -391,4 +395,37 @@ test("webRunnerChildEnv: 只保留工具/PATH 白名单，剔除令牌/DB/KEY", 
     ANDROID_HOME: "/sdk",
     LC_ALL: "zh_CN.UTF-8"
   });
+});
+
+
+test("executedPayload: l2Screenshots 开启时上传 PASS 用例最终截图", async (t) => {
+  const dir = await tempDir(t);
+  const shot = path.join(dir, "shot.png");
+  await writeFile(shot, Buffer.from("fake-png"));
+  const executed = {
+    status: "passed",
+    cases: [
+      { caseId: "TC-1", name: "登录", status: "PASS", durationMs: 10, screenshotPaths: [shot] }
+    ],
+    startedAt: "2026-10-29T01:00:00.000Z",
+    finishedAt: "2026-10-29T01:01:00.000Z",
+    detail: null
+  };
+  const device = { serial: "emulator-5554", model: "Pixel 7", osVersion: "14" };
+  const pkg = { name: "com.acme.app", version: "1.0.0", filename: "app.apk" };
+
+  const enabled = await executedPayload(executed, dir, device, pkg, {
+    l2Screenshots: true,
+    executionMode: "maestro"
+  });
+  assert.deepEqual(enabled.execution.cases[0].screenshot, {
+    filename: "shot.png",
+    base64: Buffer.from("fake-png").toString("base64")
+  });
+
+  const disabled = await executedPayload(executed, dir, device, pkg, {
+    l2Screenshots: false,
+    executionMode: "maestro"
+  });
+  assert.equal(disabled.execution.cases[0].screenshot, undefined);
 });

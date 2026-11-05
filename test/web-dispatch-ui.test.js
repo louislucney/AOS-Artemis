@@ -325,6 +325,18 @@ test("jobs page: viewer is read-only, dispatcher and above get write controls", 
   }
 });
 
+test("POST /panel/api/jobs: l2Screenshots 写入 job spec", async (t) => {
+  const { deps, store, rootPath, excel, pkg, script } = await setup(t);
+  const response = await postJob(
+    deps,
+    autoBody(rootPath, { excel, pkg, script }, { l2Screenshots: true })
+  );
+  assert.equal(response.status, 200);
+  const payload = JSON.parse(response.body);
+  const task = await store.getRegressionTask(rootPath, payload.job.id);
+  assert.equal(task.jobSpec.l2Screenshots, true);
+});
+
 test("POST /panel/api/jobs auto binds host+device and the page shows it", async (t) => {
   const { deps, store, rootPath, excel, pkg, materials, script } = await setup(t);
   let cleared = 0;

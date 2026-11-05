@@ -8,7 +8,8 @@ import {
   parseExcel,
   readExcelHeaders,
   semanticFingerprint,
-  suggestExcelMapping
+  suggestExcelMapping,
+  type ParsedExcelCase
 } from "../excel.js";
 import type { WebJobSpec } from "../job-spec.js";
 import type { LlmWorkerCase } from "./worker.js";
@@ -46,12 +47,11 @@ function taskDescOf(input: {
     .join("\n");
 }
 
-/** 从 job 的 Excel 资产解析 LLM 用例（module/caseId 过滤由 worker 统一做）。 */
-export async function loadLlmCases(input: {
+async function loadParsedCases(input: {
   store: ProjectStore;
   rootPath: string;
   job: { spec: Pick<WebJobSpec, "excelAssetId"> };
-}): Promise<LlmWorkerCase[]> {
+}): Promise<ParsedExcelCase[]> {
   const excel = await input.store.getWebAsset(input.rootPath, input.job.spec.excelAssetId);
   if (excel === null || excel.kind !== "excel") {
     throw new Error(`Excel 资产不存在或类型错误：${input.job.spec.excelAssetId}`);
@@ -68,7 +68,17 @@ export async function loadLlmCases(input: {
     mapping,
     ...(format === undefined ? {} : { format })
   });
-  return parsed.cases.map((entry) => ({
+  return parsed.cases;
+}
+
+/** 从 job 的 Excel 资产解析 LLM 用例（module/caseId 过滤由 worker 统一做）。 */
+export async function loadLlmCases(input: {
+  store: ProjectStore;
+  rootPath: string;
+  job: { spec: Pick<WebJobSpec, "excelAssetId"> };
+}): Promise<LlmWorkerCase[]> {
+  const cases = await loadParsedCases(input);
+  return cases.map((entry) => ({
     caseId: entry.caseId,
     ...(entry.name.trim() === "" ? {} : { name: entry.name }),
     module: entry.module,
@@ -82,6 +92,21 @@ export async function loadLlmCases(input: {
       testData: entry.testData
     })
   }));
+}
+
+/** 逐例参考图映射（Excel `参考图` 列）；Maestro 中心侧 L2 与 LLM 共用同一解析。 */
+export async function loadCaseReferences(input: {
+  store: ProjectStore;
+  rootPath: string;
+  job: { spec: Pick<WebJobSpec, "excelAssetId"> };
+}): Promise<Map<string, string>> {
+  const cases = await loadParsedCases(input);
+  const references = new Map<string, string>();
+  for (const entry of cases) {
+    const value = (entry.reference ?? "").trim();
+    if (value !== "") references.set(entry.caseId, value);
+  }
+  return references;
 }
 
 export async function packageFilename(

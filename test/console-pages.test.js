@@ -561,6 +561,8 @@ test("console pages: 网页测试下发页始终提供上传新安装包入口",
   assert.match(html, /section=assets&amp;tab=reference&amp;kind=reference/);
   assert.match(html, /id="web-job-reference-gate"/);
   assert.match(html, /referenceGate="unverified"/);
+  assert.match(html, /id="web-job-l2-screenshots"/);
+  assert.match(html, /out.l2Screenshots=true/);
 });
 
 test("console pages: 任务与结果同时渲染网页任务", () => {

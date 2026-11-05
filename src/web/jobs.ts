@@ -46,6 +46,8 @@ export interface CreateWebJobInput extends WebJobContext {
   materialsAssetId?: string | null;
   referenceAssetId?: string | null;
   referenceGate?: "off" | "report" | "unverified";
+  /** Maestro 最终截图上传（供中心 L2）；默认 false。 */
+  l2Screenshots?: boolean;
   scriptSetId?: string | null;
   executionMode: WebJobExecutionMode;
   caseFilter: { modules: string[]; caseIds: string[] };
@@ -587,6 +589,7 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
       input.referenceGate === "off" || input.referenceGate === "unverified"
         ? input.referenceGate
         : "report",
+    l2Screenshots: input.l2Screenshots === true,
     scriptSetId: script?.id ?? null,
     executionMode: combination.executionMode,
     caseFilter: normalizeCaseFilter(input.caseFilter),
