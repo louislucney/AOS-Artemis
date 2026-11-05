@@ -326,7 +326,11 @@ export function createDefaultWebJobExecutor(
         exec,
         env: childEnv
       });
-      if (!install.ok) throw new Error(`web-job-install-failed:${install.reason}`);
+      if (!install.ok) {
+        throw new Error(
+          `web-job-install-failed:${install.reason}${install.detail === undefined ? "" : `:${install.detail}`}`
+        );
+      }
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
 
       const executed = await executeWebJob({

@@ -81,7 +81,13 @@ export async function collectRunnerInventory(
     maestro:
       maestro.path === null
         ? false
-        : await versionProbe(exec, maestro.path, ["--version"], timeoutMs, env),
+        : await versionProbe(
+            exec,
+            maestro.path,
+            ["--version"],
+            Math.max(timeoutMs, 30_000),
+            env
+          ),
     devicectl: false
   };
 

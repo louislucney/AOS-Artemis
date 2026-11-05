@@ -536,7 +536,15 @@ test("installWebPackage: Android 走 adb install -r，失败返回 typed reason"
     env: { PATH: "/bin" }
   });
   assert.deepEqual(result, { ok: true, packageName: null, version: null });
-  assert.deepEqual(ok.calls[0].args, ["-s", "emulator-5554", "install", "-r", "/tmp/app.apk"]);
+  assert.deepEqual(ok.calls[0].args, [
+    "-s",
+    "emulator-5554",
+    "install",
+    "-r",
+    "-d",
+    "-t",
+    "/tmp/app.apk"
+  ]);
   assert.equal(ok.calls[0].command, "adb");
 
   const failed = fakeExec(() => ({ code: 1, stdout: "", stderr: "Failure [INSTALL_FAILED_INVALID_APK]" }));
@@ -546,7 +554,9 @@ test("installWebPackage: Android 走 adb install -r，失败返回 typed reason"
     packagePath: "/tmp/app.apk",
     exec: failed.exec
   });
-  assert.deepEqual(failure, { ok: false, reason: "install-failed" });
+  assert.equal(failure.ok, false);
+  assert.equal(failure.reason, "install-failed");
+  assert.match(failure.detail, /INSTALL_FAILED_INVALID_APK/);
 });
 
 test("installWebPackage: iOS 模拟器走 simctl，真机走 devicectl", async () => {

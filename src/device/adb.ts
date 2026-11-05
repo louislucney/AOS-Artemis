@@ -22,10 +22,9 @@ export interface ResolvedAdb {
   source: "env" | "sdk" | "path" | "missing";
 }
 
-function windowsShellArgs(command: string, args: string[]): string[] {
-  return [command, ...args].map((arg) =>
-    /[\s"]/.test(arg) ? `"${arg.replace(/"/g, '""')}"` : arg
-  );
+/** Windows `.cmd/.bat` 经 shell 执行时只引用参数；command 由 spawn 的 file 传入，不能重复。 */
+export function quoteWindowsArgs(args: string[]): string[] {
+  return args.map((arg) => (/[\s"]/.test(arg) ? `"${arg.replace(/"/g, '""')}"` : arg));
 }
 
 export const defaultExec: ExecFn = (command, args, options = {}) =>
@@ -35,7 +34,7 @@ export const defaultExec: ExecFn = (command, args, options = {}) =>
       const shell = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
       child = spawn(
         command,
-        shell ? windowsShellArgs(command, args) : args,
+        shell ? quoteWindowsArgs(args) : args,
         { windowsHide: true, env: options.env ?? process.env, ...(shell ? { shell: true } : {}) }
       );
     } catch (error) {

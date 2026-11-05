@@ -415,6 +415,8 @@ export type InstallWebPackageResult =
         | "invalid-package-path"
         | "ipa-extract-failed"
         | "invalid-ios-package";
+      /** adb/xcrun 原始输出的安全截断，便于定位 INSTALL_FAILED_*。 */
+      detail?: string;
     };
 
 /**
@@ -476,7 +478,7 @@ export async function installWebPackage(
   let args: string[];
   if (input.platform === "android") {
     command = "adb";
-    args = ["-s", input.deviceSerial, "install", "-r", input.packagePath];
+    args = ["-s", input.deviceSerial, "install", "-r", "-d", "-t", input.packagePath];
   } else if (input.platform === "ios") {
     const extension = path.extname(input.packagePath).toLowerCase();
     const kind = input.deviceKind ?? (extension === ".ipa" ? "device" : "simulator");
@@ -507,10 +509,21 @@ export async function installWebPackage(
 
   const result = await input.exec(command, args, options);
   if (result.code === null || result.code === undefined) {
-    return { ok: false, reason: "exec-failed" };
+    return {
+      ok: false,
+      reason: "exec-failed",
+      ...(result.error === undefined ? {} : { detail: result.error })
+    };
   }
-  if (result.code !== 0) return { ok: false, reason: "install-failed" };
   const combined = `${result.stdout}\n${result.stderr}`;
+  if (result.code !== 0) {
+    const detail = combined.replace(/\s+/g, " ").trim().slice(0, 800);
+    return {
+      ok: false,
+      reason: "install-failed",
+      ...(detail === "" ? {} : { detail })
+    };
+  }
   const packageMatch = /package:\s*([A-Za-z0-9_.]+)/.exec(combined);
   const versionMatch = /versionName[=:\s]+([^\s,]+)/.exec(combined);
   return {

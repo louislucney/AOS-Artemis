@@ -344,7 +344,7 @@ test("tools：maestro --version 探测（AOS_MAESTRO_PATH 优先且透传 env）
   assert.equal(inventory.tools.devicectl, false);
   const maestroCall = calls.find((call) => call.command === "/fake/bin/maestro");
   assert.deepEqual(maestroCall.args, ["--version"]);
-  assert.equal(maestroCall.options.timeoutMs, 5_000);
+  assert.equal(maestroCall.options.timeoutMs, 30_000, "Maestro JVM 冷启动给 30s");
   assert.equal(maestroCall.options.env.AOS_MAESTRO_PATH, "/fake/bin/maestro", "项目 env 透传");
   assert.equal(
     calls.some((call) => call.args?.includes("devicectl")),
