@@ -9,6 +9,7 @@ import { humanStepsHashFromParts, renderTestsWorkbook } from "../figma/test-xlsx
 import type { GeneratedTest } from "../figma/test-gen.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
+import { storeWebAsset } from "../web/assets.js";
 import { LEGACY_COLUMN_ALIASES } from "../web/excel-columns.js";
 import { readCaseSheet, type CaseSheet } from "./excel.js";
 
@@ -215,7 +216,7 @@ async function existingSets(runtime: Runtime, sourceId: string): Promise<Importe
 /** 把 Excel 测试文档导入用例库：按模块拆集、三件套归档、登记；同内容幂等 skip。 */
 export async function importTestDocument(
   runtime: Runtime,
-  args: { excelPath: string; columns?: ImportColumns },
+  args: { excelPath: string; columns?: ImportColumns; sourceName?: string },
   deps: { readSheet?: typeof readCaseSheet } = {}
 ): Promise<ImportResult> {
   const excelPath = path.resolve(runtime.project.rootDir, args.excelPath);
@@ -225,8 +226,8 @@ export async function importTestDocument(
   } catch (error) {
     return { ok: false, error: `无法读取测试文档：${errorMessage(error)}` };
   }
-  const baseName = path.basename(excelPath);
-  const documentSlug = slug(path.parse(excelPath).name);
+  const baseName = (args.sourceName ?? "").trim() || path.basename(excelPath);
+  const documentSlug = slug(path.parse(baseName).name);
   const sourceId = `imported:${baseName}@${sha8}`;
   const dir = caseSetsDir(runtime.configDirAbs);
   const skipped = await existingSets(runtime, sourceId);
@@ -295,7 +296,7 @@ export async function importTestDocument(
       steps,
       expected: pick(cells, "expected"),
       preconditions: pick(cells, "preconditions"),
-      module: pick(cells, "module") || path.parse(excelPath).name,
+      module: pick(cells, "module") || path.parse(baseName).name,
       displayId: pick(cells, "displayId"),
       testData: pick(cells, "testData")
     });
@@ -480,7 +481,7 @@ export async function importTestDocument(
       source: sourceId,
       designName: null,
       fingerprint,
-      basename: path.parse(excelPath).name,
+      basename: path.parse(baseName).name,
       createdAt: importedAt,
       features: sets.map((set) => ({
         key: set.featureKey,
@@ -496,9 +497,34 @@ export async function importTestDocument(
       domain: "import",
       action: "excel.imported",
       result: "ok",
-      summary: `导入 ${path.parse(excelPath).name}（${sets.length} 功能）`,
+      summary: `导入 ${path.parse(baseName).name}（${sets.length} 功能）`,
       refs: { file: excelPath, caseSetId: inserted.id }
     });
+    try {
+      const buffer = fs.readFileSync(sourceCopy);
+      const sha256 = createHash("sha256").update(buffer).digest("hex");
+      const existing = await runtime.store
+        .listWebAssets(runtime.project.rootDir, "excel")
+        .catch(() => []);
+      if (!existing.some((asset) => asset.sha256 === sha256)) {
+        await storeWebAsset({
+          store: runtime.store,
+          rootPath: runtime.project.rootDir,
+          kind: "excel",
+          filename: path.basename(excelPath),
+          buffer,
+          uploadedBy: "import",
+          metadata: {
+            source: "case-set-import",
+            sourceId,
+            sourceCopy,
+            caseSetId: inserted.id
+          }
+        });
+      }
+    } catch (error) {
+      importWarnings.push(`用例已导入，但登记为 Web 测试资产失败：${errorMessage(error)}`);
+    }
   } catch (error) {
     cleanupFiles(createdFiles);
     await recordAuditSafe(runtime.store, runtime.project.rootDir, {

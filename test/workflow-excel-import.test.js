@@ -47,6 +47,10 @@ test("importTestDocument: 单模块 → 三件套 + 源副本 + 登记（真实�
     importAudit.some((event) => event.action === "excel.imported" && event.result === "ok"),
     "导入落审计"
   );
+  const webAssets = await store.listWebAssets(runtime.project.rootDir, "excel");
+  assert.equal(webAssets.length, 1, "导入的 Excel 同时登记为 Web 测试资产");
+  assert.equal(webAssets[0].kind, "excel");
+  assert.equal(webAssets[0].filename, "cases.xlsx");
   const set = first.sets[0];
   assert.equal(set.caseCount, 1);
   assert.equal(set.feature, "cases");
