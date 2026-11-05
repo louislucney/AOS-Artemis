@@ -244,6 +244,14 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-main code{overflow-wrap:anywhere}
 .c-nav-item-disabled{color:var(--color-text-tertiary);cursor:not-allowed}
 .c-nav-item-disabled:hover{background:transparent;text-decoration:none;color:var(--color-text-tertiary)}
+.c-flow-callout{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 16px;padding:14px 18px;background:var(--color-accent-subtle);border:1px solid var(--color-accent-border);border-radius:var(--radius-md)}
+.c-flow-callout strong{display:block;font-size:var(--font-size-body)}
+.c-flow-callout p{margin:4px 0 0;color:var(--color-text-secondary);font-size:var(--font-size-callout);max-width:70ch}
+.c-flow-callout .c-button{flex:none}
+.c-flow-switch{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
+.c-flow-option{display:inline-flex;align-items:center;min-height:36px;padding:6px 14px;border:1px solid var(--color-border);border-radius:var(--radius-pill);font-size:var(--font-size-callout);font-weight:var(--font-weight-semibold);color:var(--color-text-secondary);white-space:nowrap}
+.c-flow-option.is-active{background:var(--color-accent);border-color:var(--color-accent);color:var(--color-text-primary)}
+a.c-flow-option:hover{background:var(--color-accent-hover);border-color:var(--color-accent-hover);color:var(--color-text-primary);text-decoration:none}
 .c-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
 .c-tabs a{padding:5px 14px;border:1px solid var(--color-border);border-radius:var(--radius-pill);font-size:var(--font-size-callout);font-weight:var(--font-weight-medium);color:var(--color-text-secondary)}
 .c-tabs a:hover{background:var(--color-accent-hover);text-decoration:none;color:var(--color-text-primary)}
@@ -272,13 +280,37 @@ details.c-details>summary{cursor:pointer;font-size:14px;font-weight:var(--font-w
 body.c-shortcuts-open #console-shortcuts{display:block}
 .c-kbd{display:inline-block;border:1px solid var(--color-border);border-radius:var(--radius-xs);padding:0 6px;font-family:var(--font-family-mono);font-size:11px;background:var(--color-surface-subtle)}
 .dispatch-option{display:inline-flex;align-items:center;gap:4px;margin-right:12px}
-.c-form{display:grid;gap:14px;max-width:960px}
-.c-form-row{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end}
-.c-form-field{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--color-text-secondary)}
-.c-form-field>input[type=text]{min-width:14rem}
+.c-main :where(input[type=text],input[type=number],input[type=search],input[type=date],input[type=datetime-local],input[type=url],input[type=email],input[type=password],input[type=tel],input[type=time],select,textarea){
+  font:inherit;font-size:var(--font-size-callout);line-height:1.3;color:var(--color-text-primary);
+  min-height:36px;padding:6px 10px;border:1px solid var(--color-border);border-radius:var(--radius-sm);
+  background:var(--color-surface-white);box-sizing:border-box;max-width:100%}
+.c-main :where(input[type=checkbox],input[type=radio]){accent-color:var(--color-link);width:16px;height:16px;margin:0;flex:none}
+.c-main :where(input,select,textarea):focus-visible{border-color:var(--color-link)}
+.c-main textarea{min-height:88px;resize:vertical}
+.c-main input[type=file]{font:inherit;font-size:var(--font-size-callout);color:var(--color-text-secondary);max-width:100%}
+.c-main input[type=file]::file-selector-button{appearance:none;border:1px solid var(--color-border);background:var(--color-surface-white);
+  border-radius:var(--radius-pill);padding:5px 12px;margin-right:10px;font:inherit;font-weight:var(--font-weight-semibold);
+  color:var(--color-text-primary);cursor:pointer}
+.c-main input[type=file]::file-selector-button:hover{background:var(--color-accent-hover);border-color:var(--color-accent-hover)}
+.c-form{display:grid;gap:18px;min-width:0;max-width:none}
+.c-form-row{display:grid;grid-template-columns:minmax(16rem,1fr) minmax(11rem,auto);gap:14px 24px;align-items:end}
+.c-form-field{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--color-text-secondary);min-width:0;white-space:nowrap}
+.c-form-field>input[type=text]{width:100%;min-width:0}
+.c-form-field>input[type=number]{width:6rem;min-width:0}
+.c-form-field>span{white-space:nowrap}
 .c-form-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0}
-.c-check-grid{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:4px}
-.c-check-grid>label{display:inline-flex;align-items:center;gap:5px}
+.c-check-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));gap:8px 16px;margin-top:6px}
+.c-check-grid>label{display:flex;align-items:center;gap:6px;min-height:32px;min-width:0}
+.c-form>p{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 20px;margin:0;min-width:0}
+.c-form>p>label{display:grid;gap:6px;flex:1 1 15rem;max-width:24rem;min-width:0;font-size:13px;color:var(--color-text-secondary)}
+.c-form>p>label> :where(input:not([type=checkbox]):not([type=radio]):not([type=file]),select,textarea){width:100%;min-width:0}
+.c-form>p>label.c-form-check{display:inline-flex;align-items:center;gap:6px;flex:0 1 auto;max-width:none;min-height:32px;white-space:nowrap}
+.c-form>p>button{flex:none}
+.c-form+.c-empty,.c-form+.c-table-wrap{margin-top:18px}
+@media (max-width:768px){
+  .c-form-row{grid-template-columns:1fr}
+  .c-form-field>input[type=number]{width:100%}
+}
 .c-main h1,.c-main h2,.c-main h3{overflow-wrap:anywhere}
 .c-main :where(td,th,summary){overflow-wrap:anywhere}
 .c-readiness-lead{color:var(--color-text-secondary);margin:0 0 10px;max-width:75ch}
