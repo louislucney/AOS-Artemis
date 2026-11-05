@@ -151,11 +151,22 @@ function evaluate(pairs: LoadedPair[], threshold: ReferenceThreshold): Reference
   };
 }
 
+function distanceToDefault(value: ReferenceThreshold): number {
+  return (
+    Math.abs(value.pixelThreshold - DEFAULT_REFERENCE_DIFF.pixelThreshold) +
+    Math.abs(value.minAreaRatio - DEFAULT_REFERENCE_DIFF.minAreaRatio) * 10 +
+    Math.abs(value.systemBandRatio - DEFAULT_REFERENCE_DIFF.systemBandRatio) * 10
+  );
+}
+
 function better(a: ReferenceThresholdResult, b: ReferenceThresholdResult): boolean {
   if (a.balancedAccuracy !== b.balancedAccuracy) return a.balancedAccuracy > b.balancedAccuracy;
   if (a.accuracy !== b.accuracy) return a.accuracy > b.accuracy;
-  if (a.falseAlarm !== b.falseAlarm) return a.falseAlarm < b.falseAlarm;
   if (a.missed !== b.missed) return a.missed < b.missed;
+  if (a.falseAlarm !== b.falseAlarm) return a.falseAlarm < b.falseAlarm;
+  if (distanceToDefault(a) !== distanceToDefault(b)) {
+    return distanceToDefault(a) < distanceToDefault(b);
+  }
   if (a.pixelThreshold !== b.pixelThreshold) return a.pixelThreshold > b.pixelThreshold;
   return a.minAreaRatio > b.minAreaRatio;
 }
