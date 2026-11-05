@@ -310,6 +310,25 @@ test("executeWebJob: 非零退出且无 JUnit 文件 → error，保留 stderr �
   assert.match(result.detail, /exit=1/);
 });
 
+test("executeWebJob: 长 stderr 保留首尾，不丢根因", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  const long = `ROOT-CAUSE: DeviceServerDied ${"x".repeat(6000)} TAIL-MARKER`;
+  const { exec } = fakeExec(async () => ({ code: 1, stdout: "", stderr: long }));
+
+  const result = await executeWebJob({
+    jobSpec: jobSpec(),
+    jobDir,
+    flowsDir,
+    device: device(),
+    exec,
+    env: {}
+  });
+
+  assert.equal(result.status, "error");
+  assert.match(result.detail, /ROOT-CAUSE/);
+  assert.match(result.detail, /TAIL-MARKER/);
+});
+
 test("executeWebJob: 超时且无 JUnit → error 保留 timeout", async (t) => {
   const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
   const { exec } = fakeExec(async () => ({ code: null, stdout: "", stderr: "", error: "timeout" }));

@@ -55,7 +55,6 @@ const MAX_WALK_FILES = 1_000;
 const MAX_WALK_DEPTH = 8;
 const MAX_SCREENSHOTS_PER_CASE = 5;
 const FAILURE_REASON_MAX = 2_000;
-const DETAIL_TAIL_MAX = 400;
 const DETAIL_MAX = 4_000;
 const CASE_NAME_MAX = 200;
 const DEVICE_SERIAL_RE = /^[A-Za-z0-9._:-]+$/;
@@ -95,7 +94,11 @@ function resultAt(
 function tail(text: string): string {
   const value = text.trim();
   if (value === "") return "";
-  return value.length <= DETAIL_TAIL_MAX ? value : `…${value.slice(-DETAIL_TAIL_MAX)}`;
+  if (value.length <= DETAIL_MAX) return value;
+  // 首尾都保留：根因通常在 stderr 开头，JVM/Kotlin 堆栈尾部用于定位崩溃点。
+  // 预留前缀（`maestro-no-junit: exit=...:`）预算，避免 resultAt 截断掉尾部标记。
+  const half = Math.floor((DETAIL_MAX - 200) / 2);
+  return `${value.slice(0, half)}\n…\n${value.slice(-half)}`;
 }
 
 function isInside(parent: string, child: string): boolean {
