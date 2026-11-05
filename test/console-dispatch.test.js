@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { computeDispatchPreview, dispatchFormSignature, dispatchPreviewId, renderDispatchPage } from "../dist/console/dispatch.js";
+import {
+  computeDispatchPreview,
+  dispatchFormSignature,
+  dispatchPreviewId,
+  precheckTask,
+  renderDispatchPage
+} from "../dist/console/dispatch.js";
 import { MemoryStore } from "../dist/db/memory.js";
 
 const ROOT = "/w/p";
@@ -50,6 +56,90 @@ test("computeDispatchPreview: 选份→条数与 runner 候选", async () => {
   assert.equal(preview.runnerCandidates.length, 1);
   assert.equal(preview.runnerCandidates[0].online, true, "刚心跳的 runner 视为在线");
   assert.deepEqual(preview.warnings, []);
+});
+
+test("computeDispatchPreview: 重复 platforms 参数保留两端", async () => {
+  const { store, setA } = await seed();
+  const params = new URLSearchParams({ source: "case-set", ref: setA.id });
+  params.append("platforms", "android");
+  params.append("platforms", "ios");
+  const preview = await computeDispatchPreview({ store, env: {}, now: () => NOW }, ROOT, params);
+  assert.deepEqual(preview.platforms, ["android", "ios"]);
+  const signature = dispatchFormSignature(params);
+  assert.match(signature, /android,ios/);
+
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId: dispatchPreviewId(preview, signature, ROOT),
+    formSignature: signature,
+    query: {}
+  });
+  assert.match(html, /name="platforms" value="android" checked/, "Android 保持选中");
+  assert.match(html, /name="platforms" value="ios" checked/, "iOS 保持选中");
+});
+
+test("computeDispatchPreview: runner 在线按 TTL（默认 90s）而非固定 5 分钟", async () => {
+  const { store, setA } = await seed();
+  const params = new URLSearchParams({ source: "case-set", ref: setA.id });
+  const stale = await computeDispatchPreview(
+    { store, env: {}, now: () => Date.now() + 120_000 },
+    ROOT,
+    params
+  );
+  assert.equal(stale.runnerCandidates[0].online, false, "120s 未心跳 → 失联");
+  const relaxed = await computeDispatchPreview(
+    { store, env: { AOS_RUNNER_TTL_MS: "300000" }, now: () => Date.now() + 120_000 },
+    ROOT,
+    params
+  );
+  assert.equal(relaxed.runnerCandidates[0].online, true, "TTL 可配后仍在线");
+});
+
+test("precheckTask: iOS 仅 darwin，不靠 kind=mac 放行", () => {
+  const bad = precheckTask(
+    {
+      id: "h-win-mac",
+      kind: "mac",
+      osPlatform: "win32",
+      capabilities: ["ios-simulator"],
+      online: true
+    },
+    ["ios"]
+  );
+  assert.equal(bad.ok, false);
+  assert.match(bad.reasons.join(" "), /iOS 需要 macOS/);
+  const good = precheckTask(
+    {
+      id: "h-mac",
+      kind: "mac",
+      osPlatform: "darwin",
+      capabilities: ["ios-simulator"],
+      online: true
+    },
+    ["ios"]
+  );
+  assert.equal(good.ok, true);
+});
+
+test("dispatchPreviewId: 绑定目标 host 与项目路径", () => {
+  const preview = {
+    refs: ["set-a"],
+    selectedHostId: "h-a",
+    source: { mode: "case-set", label: "a", caseCount: 1 }
+  };
+  const base = dispatchPreviewId(preview, "sig", "/w/p");
+  assert.notEqual(
+    dispatchPreviewId({ ...preview, selectedHostId: "h-b" }, "sig", "/w/p"),
+    base,
+    "换 host 必须换 previewId"
+  );
+  assert.notEqual(
+    dispatchPreviewId(preview, "sig", "/w/q"),
+    base,
+    "换项目路径必须换 previewId"
+  );
 });
 
 test("computeDispatchPreview: 关键词匹配多份 / 无 runner 警告 / 空关键词", async () => {
@@ -126,9 +216,14 @@ test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", asy
   assert.match(html, /host-a/);
   assert.match(
     html,
-    /aria-current="page"[^>]*href="[^"]*section=dispatch"|href="[^"]*section=dispatch"[^>]*aria-current="page"/,
-    "下发为当前导航项（含项目上下文）"
+    /aria-current="page"[^>]*href="[^"]*section=create"|href="[^"]*section=create"[^>]*aria-current="page"/,
+    "新建测试为当前导航项（含项目上下文）"
   );
+  assert.match(html, /class="c-flow-switch"/, "套件回归/网页测试分流");
+  assert.match(html, /网页测试（Excel\/安装包\/脚本）/, "网页测试入口常驻");
+  assert.match(html, /class="c-flow-callout"/, "安装包下发指引常驻");
+  assert.match(html, /要下发安装包（APK\/IPA）/, "安装包引导文案");
+  assert.match(html, /section=library#library-import/, "Excel 用例导入指引");
   assert.ok(!html.includes('http-equiv="refresh"'), "表单页不自动刷新");
 });
 
@@ -137,7 +232,7 @@ test("renderDispatchPage: 预览合同（预览数据岛与服务端同源）", 
   const params = new URLSearchParams({ source: "case-set", ref: setA.id, platforms: "android" });
   const preview = await computeDispatchPreview({ store, env: {}, now: () => NOW }, ROOT, params);
   const formSignature = dispatchFormSignature(params);
-  const previewId = dispatchPreviewId(preview, formSignature);
+  const previewId = dispatchPreviewId(preview, formSignature, ROOT);
   const html = renderDispatchPage({
     rootPath: ROOT,
     rootLabel: "p",
@@ -168,7 +263,7 @@ test("renderDispatchPage: 空预览（未引用份）→ ready:false＋空态横
     rootPath: ROOT,
     rootLabel: "p",
     preview,
-    previewId: dispatchPreviewId(preview, formSignature),
+    previewId: dispatchPreviewId(preview, formSignature, ROOT),
     formSignature,
     query: {}
   });

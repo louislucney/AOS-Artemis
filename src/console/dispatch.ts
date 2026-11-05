@@ -82,6 +82,8 @@ export interface DispatchView {
   storeHealth?: ConsoleShellInput["storeHealth"];
   /** `AOS_PANEL_PRIORITY=1` 时才放开优先级编辑（默认只读，防误操作插队）。 */
   priorityEditable?: boolean;
+  /** true＝作为“新建测试”hub 的套件 tab 嵌入。 */
+  embeddedCreate?: boolean;
 }
 
 function dispatchPlatforms(params: URLSearchParams): ("ios" | "android")[] {
@@ -607,7 +609,9 @@ export function renderDispatchPage(view: DispatchView): string {
   const webJobsHref =
     view.rootPath === ""
       ? `/panel?section=jobs${dispatchHostQuery}`
-      : `/panel?project=${encodeURIComponent(view.rootPath)}&section=jobs${dispatchHostQuery}`;
+      : `/panel?project=${encodeURIComponent(view.rootPath)}&section=${
+          view.embeddedCreate ? "create&type=web" : "jobs"
+        }${dispatchHostQuery}`;
   const hostProjectCallout = noProjects
     ? `<div class="c-flow-callout"><div><strong>${
         noSources
@@ -798,14 +802,25 @@ go.addEventListener('click',function(){
         dispatchConfirmScript,
       ].filter((part) => part !== "").join("\n");
 
-  const flowSwitch = `<nav class="c-flow-switch" aria-label="下发类型"><span class="c-flow-option is-active" aria-current="page">套件回归</span><a class="c-flow-option" href="${escapeHtml(webJobsHref)}">网页测试（Excel/安装包/脚本）</a></nav>`;
+  const createHref =
+    view.rootPath === ""
+      ? "/panel?section=create"
+      : `/panel?project=${encodeURIComponent(view.rootPath)}&section=create${dispatchHostQuery}`;
+  const flowSwitch = view.embeddedCreate
+    ? `<nav class="c-flow-switch" aria-label="新建测试类型"><a class="c-flow-option" href="${escapeHtml(
+        createHref
+      )}">新建测试</a><span class="c-flow-option is-active" aria-current="page">套件回归</span><a class="c-flow-option" href="${escapeHtml(
+        webJobsHref
+      )}">网页测试（Excel/安装包/脚本）</a></nav>`
+    : `<nav class="c-flow-switch" aria-label="下发类型"><span class="c-flow-option is-active" aria-current="page">套件回归</span><a class="c-flow-option" href="${escapeHtml(webJobsHref)}">网页测试（Excel/安装包/脚本）</a></nav>`;
   const installCallout = `<div class="c-flow-callout"><div><strong>要下发安装包（APK/IPA）？</strong><p>套件回归要求设备已预装 App；安装包、Excel 用例与 Maestro 脚本请用「网页测试」。</p></div><a class="c-button c-button-primary" href="${escapeHtml(webJobsHref)}">去网页测试上传/选择安装包 →</a></div>`;
-  const hostNavScript = `<script id="dispatch-host-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="host"]');if(!select)return;select.addEventListener('change',function(){var project=form.querySelector('select[name="project"]');var params=new URLSearchParams();params.set('section','dispatch');if(select.value)params.set('host',select.value);if(project&&project.value)params.set('project',project.value);location.href='/panel?'+params.toString();});})();</script>`;
-  const projectNavScript = `<script id="dispatch-project-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams();params.set('project',select.value);params.set('section','dispatch');if(host&&host.value)params.set('host',host.value);location.href='/panel?'+params.toString();});})();</script>`;
+  const sectionForNav = view.embeddedCreate ? "create&type=suite" : "dispatch";
+  const hostNavScript = `<script id="dispatch-host-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="host"]');if(!select)return;select.addEventListener('change',function(){var project=form.querySelector('select[name="project"]');var params=new URLSearchParams();params.set('section','${sectionForNav}');if(select.value)params.set('host',select.value);if(project&&project.value)params.set('project',project.value);location.href='/panel?'+params.toString();});})();</script>`;
+  const projectNavScript = `<script id="dispatch-project-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams();params.set('project',select.value);params.set('section','${sectionForNav}');if(host&&host.value)params.set('host',host.value);location.href='/panel?'+params.toString();});})();</script>`;
 
   return renderConsoleShell({
-    title: "套件回归",
-    active: "dispatch",
+    title: view.embeddedCreate ? "新建测试 · 套件回归" : "套件回归",
+    active: "create",
     meta: `项目 <code>${escapeHtml(view.rootLabel)}</code>`,
     project: view.rootPath,
     projectHostId: view.hostId,

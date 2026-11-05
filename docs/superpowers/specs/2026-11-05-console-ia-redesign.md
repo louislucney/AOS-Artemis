@@ -1,6 +1,6 @@
 # 控制台信息架构重构设计（测试资产 / 新建测试 / 任务与结果）
 
-> 2026-11-05 · 状态：Phase 1 主体已实现；Phase 2/3 待开发  
+> 2026-11-05 · 状态：Phase 1 + Phase 2 主体已实现；Phase 3 待开发  
 > 关联：`PRODUCT.md`、`DESIGN.md`、`docs/superpowers/specs/2026-11-05-ios-artemis-runtime-design.md`、`.impeccable/critique/2026-11-05T02-16-03Z__src-console.md`
 
 ## 0. 一句话
@@ -431,3 +431,23 @@ QA 的实际顺序是：
 - `被使用` 列（used-by 聚合）尚未接入；Phase 1b 再做。
 - 旧 `section=library`、`section=assets&kind=...` 尚未 302；当前保留旧页面兼容。
 - 新建测试 hub（Phase 2）、任务与结果统一（Phase 3）未开始。
+
+## 16. Phase 2 实施记录（2026-11-05）
+
+### 已完成
+
+- 一级导航新增“新建测试”，移除“套件回归”“网页测试（安装包）”两个创建入口。
+- `section=create` landing：套件回归 / 网页测试两张卡，带资产就绪提示与跳转。
+- `section=create&type=suite`：复用套件回归表单，作为“新建测试 · 套件回归”tab；表单提交仍走现有 `/panel/api/tasks`。
+- `section=create&type=web`：复用网页测试表单，作为“新建测试 · 网页测试”tab；表单提交仍走现有 `/panel/api/jobs`。
+- 旧 `section=dispatch`、`section=jobs` 仍可访问，页面高亮“新建测试”；后续 Phase 4 再做 302。
+- 项目页“新建任务”CTA、用例集“下发该用例集”链接改为 `section=create&type=suite`。
+- 空项目“去用例库”改为 `section=assets&tab=case-sets`。
+- 网页测试表单的“测试资料/参考图”旁补常驻上传链接。
+- 网页任务创建使用中心项目 store；执行机 host 只作为 targetHostId，不再要求项目登记到 runner。
+
+### 延后
+
+- 项目未登记时的显式“注册项目”CTA（当前仍由后端在创建时拒绝）。
+- 任务与结果统一（Phase 3）。
+- used-by、旧路由 302、资产删除/回收站。

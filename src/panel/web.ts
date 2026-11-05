@@ -30,6 +30,7 @@ import {
   readQuarantineSummary,
   renderArchivePage,
   renderAuditPage,
+  renderCreateTestPage,
   renderEventsPage,
   renderLibraryPage,
   renderOpsPage,
@@ -207,6 +208,17 @@ type PanelView =
       previewId: string;
       formSignature: string;
       query: Record<string, string>;
+      embeddedCreate?: "suite";
+    }
+  | {
+      kind: "create";
+      rootPath: string;
+      hostId: string | null;
+      rootLabel: string;
+      projectStatus: "active" | "archived" | null;
+      caseSetCount: number;
+      excelCount: number;
+      packageCount: number;
     }
   | {
       kind: "library";
@@ -248,6 +260,7 @@ type PanelView =
       nowMs: number;
       runnerTtlMs: number;
       projectChoices: Array<{ name: string; rootPath: string; hostId: string | null }>;
+      embeddedCreate?: "web";
     }
   | {
       kind: "web-job";
@@ -692,7 +705,34 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   }
   if (!resolved) throw new PanelNotFoundError(`未知项目 "${projectKey}"`);
 
-  const section = sectionParam;
+  let section = sectionParam;
+  let embeddedCreate: "suite" | "web" | null = null;
+  if (section === "create") {
+    const createType = trimmed(url.searchParams.get("type"));
+    if (createType === "suite") {
+      section = "dispatch";
+      embeddedCreate = "suite";
+    } else if (createType === "web") {
+      section = "jobs";
+      embeddedCreate = "web";
+    } else {
+      const [caseSets, assets, webProject] = await Promise.all([
+        projectStore.listCaseSets(resolved.rootPath).catch(() => []),
+        listWebAssets(projectStore, resolved.rootPath).catch(() => []),
+        projectStore.getWebProject(resolved.rootPath).catch(() => null)
+      ]);
+      return {
+        kind: "create",
+        rootPath: resolved.rootPath,
+        hostId: resolved.hostId,
+        rootLabel: resolved.name,
+        projectStatus: webProject?.status ?? null,
+        caseSetCount: caseSets.length,
+        excelCount: assets.filter((asset) => asset.kind === "excel").length,
+        packageCount: assets.filter((asset) => asset.kind === "package").length
+      };
+    }
+  }
   if (section === "dispatch") {
     const preview = await computeDispatchPreview(
       {
@@ -719,7 +759,8 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       preview,
       previewId: dispatchPreviewId(preview, formSignature, resolved.rootPath),
       formSignature,
-      query
+      query,
+      ...(embeddedCreate === "suite" ? { embeddedCreate: "suite" as const } : {})
     };
   }
   if (section === "assets") {
@@ -842,7 +883,8 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       leases,
       nowMs,
       runnerTtlMs: runnerTtlFrom(deps.env ?? process.env),
-      projectChoices: []
+      projectChoices: [],
+      ...(embeddedCreate === "web" ? { embeddedCreate: "web" as const } : {})
     };
   }
   if (section === "library") {
@@ -1039,6 +1081,16 @@ function toJsonView(view: PanelView): Record<string, unknown> {
       filter: view.filter,
       platform: view.platform,
       devices: view.devices
+    };
+  }
+  if (view.kind === "create") {
+    return {
+      ok: true,
+      view: "create",
+      project: view.rootPath,
+      caseSetCount: view.caseSetCount,
+      excelCount: view.excelCount,
+      packageCount: view.packageCount
     };
   }
   if (view.kind === "dispatch") return { ok: true, view: "dispatch", previewId: view.previewId, ...view.preview };
@@ -1254,7 +1306,7 @@ function projectHref(rootPath: string, hostId?: string | null): string {
 }
 
 function dispatchHref(rootPath: string, hostId?: string | null): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}&section=dispatch${hostSuffix(hostId)}`;
+  return `/panel?project=${encodeURIComponent(rootPath)}&section=create&type=suite${hostSuffix(hostId)}`;
 }
 
 function batchHref(rootPath: string, file: string, hostId?: string | null): string {
@@ -1647,7 +1699,7 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string, hostId
       ? ""
       : `<p class="muted">${activeLinks === "" ? "" : `执行中：${activeLinks}`}${activeLinks !== "" && pendingLinks !== "" ? "　" : ""}${pendingLinks === "" ? "" : `待领取：${pendingLinks}`}</p>`;
   const refs = detail.regressionRefs.length;
-  const libraryHref = `/panel?project=${encodeURIComponent(rootPath)}&section=library${hostSuffix(hostId)}`;
+  const libraryHref = `/panel?project=${encodeURIComponent(rootPath)}&section=assets&tab=case-sets${hostSuffix(hostId)}`;
   const dispatchHintHtml =
     refs === 0
       ? `<p>先生成或导入用例，再走下发向导。 <a href="${escapeHtml(libraryHref)}">去用例库</a></p>`
@@ -1682,7 +1734,7 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string, hostId
           ? `<a class="c-button c-button-primary" href="${escapeHtml(reviewHref(rootPath, hostId))}">先去裁决 ${detail.reviewQueue.undecided} 条 →</a> <a class="c-button" href="${escapeHtml(dispatchHref(rootPath, hostId))}">新建任务</a>`
         : detail.regressionRefs.length === 0
         ? `<a class="c-button c-button-primary" href="${escapeHtml(
-            `/panel?project=${encodeURIComponent(rootPath)}&section=library${hostSuffix(hostId)}`
+            `/panel?project=${encodeURIComponent(rootPath)}&section=assets&tab=case-sets${hostSuffix(hostId)}`
           )}">先去生成/导入用例 →</a>`
         : `<a class="c-button c-button-primary" href="${escapeHtml(dispatchHref(rootPath, hostId))}">新建任务</a>`,
       body:
@@ -2047,7 +2099,7 @@ function renderDiskAssets(detail: PanelProjectDetail): string {
 }
 
 function renderOnboarding(rootPath: string, hostId: string | null): string {
-  const libraryHref = `/panel?project=${encodeURIComponent(rootPath)}&section=library${hostSuffix(hostId)}`;
+  const libraryHref = `/panel?project=${encodeURIComponent(rootPath)}&section=assets&tab=case-sets${hostSuffix(hostId)}`;
   const opsHref = `/panel?project=${encodeURIComponent(rootPath)}&section=ops${hostSuffix(hostId)}`;
   return [
     '<section id="onboarding">',
@@ -3540,11 +3592,14 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
     case "overview":
     case "compare":
       return "overview";
+    case "create":
+      return "create";
     case "dispatch":
-      return "dispatch";
+      return view.embeddedCreate ? "create" : "dispatch";
     case "web-jobs":
+      return view.embeddedCreate ? "create" : "jobs";
     case "web-job":
-      return "dispatch";
+      return "jobs";
     case "web-assets":
       return "assets";
     case "devices":
@@ -3796,6 +3851,19 @@ function renderPanelHtml(
       storeHealth: currentShell.storeHealth
     });
   }
+  if (view.kind === "create") {
+    return renderCreateTestPage({
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      hostId: view.hostId,
+      projectStatus: view.projectStatus,
+      caseSetCount: view.caseSetCount,
+      excelCount: view.excelCount,
+      packageCount: view.packageCount,
+      capabilities: deps.capabilities,
+      storeHealth: currentShell.storeHealth
+    });
+  }
   if (view.kind === "dispatch") {
     return renderDispatchPage({
       rootPath: view.rootPath,
@@ -3808,6 +3876,7 @@ function renderPanelHtml(
       query: view.query,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth,
+      embeddedCreate: view.embeddedCreate === "suite",
       priorityEditable: (deps.env ?? process.env).AOS_PANEL_PRIORITY?.trim() === "1"
     });
   }
@@ -3857,6 +3926,7 @@ function renderPanelHtml(
       nowMs: view.nowMs,
       runnerTtlMs: view.runnerTtlMs,
       projectChoices: view.projectChoices,
+      embeddedCreate: view.embeddedCreate === "web",
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });

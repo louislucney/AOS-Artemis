@@ -50,7 +50,7 @@ test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动�
 
 test("console shell: 默认 nav 覆盖控制台版块", () => {
   const keys = DEFAULT_CONSOLE_NAV.map((item) => item.key);
-  for (const expected of ["project", "review", "dispatch", "assets", "archive", "ops", "usage"]) {
+  for (const expected of ["project", "review", "assets", "create", "archive", "ops", "usage"]) {
     assert.ok(keys.includes(expected), expected);
   }
   for (const removed of ["overview", "tasks", "runners", "schedules", "stats", "audit"]) {
@@ -207,13 +207,13 @@ test("console shell: 内联脚本可解析（防语法回归）", () => {
 
 test("console shell: 项目上下文与能力标记（导航禁用/横幅）", () => {
   const withProject = renderConsoleShell({
-    title: "下发",
-    active: "dispatch",
+    title: "新建测试",
+    active: "create",
     body: "",
     project: "/w/p",
     capabilities: { actions: true, usage: true, mode: "http" }
   });
-  assert.ok(withProject.includes("section=dispatch"), "带项目上下文");
+  assert.ok(withProject.includes("section=create"), "带项目上下文");
   assert.ok(withProject.includes("project=%2Fw%2Fp"), "项目参数编码");
   assert.ok(!withProject.includes('aria-disabled="true"'), "能力全开时无禁用项");
   const hostScoped = renderConsoleShell({

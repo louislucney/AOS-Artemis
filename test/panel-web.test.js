@@ -255,10 +255,14 @@ test("panel web: 项目详情（空态→批次→单次运行）与未知项目
   assert.ok(!projectHtml.body.includes("c-store-chip"), "顶栏不再有存储状态胶囊");
   assert.ok(!projectHtml.body.includes("最近写入"), "顶栏不再有最近写入");
   assert.match(projectHtml.body, /会话内存|文件台账/, "可持久行仍显示持久层");
-  assert.match(projectHtml.body, /&(amp;)?section=dispatch/, "下发入口");
   assert.match(
     projectHtml.body,
-    /href="\/panel\?project=[^"]+&amp;section=dispatch"/,
+    /&(amp;)?section=assets&amp;tab=case-sets/,
+    "空项目先引导到用例集"
+  );
+  assert.match(
+    projectHtml.body,
+    /href="\/panel\?project=[^"]+&amp;section=assets&amp;tab=case-sets"/,
     "主 CTA 携带项目上下文（不再回总站览）"
   );
 
@@ -296,7 +300,7 @@ test("panel web: 新建任务统一走顶部「下一步」卡（无重复空栏
   assert.match(html.body, /新建任务走下发向导/);
   assert.match(
     html.body,
-    /href="\/panel\?project=[^"]+&amp;section=dispatch"/,
+    /href="\/panel\?project=[^"]+&amp;section=create&amp;type=suite"/,
     "CTA 携带项目上下文直达向导"
   );
   assert.match(html.body, /当前有 1 份可引用的用例集/);

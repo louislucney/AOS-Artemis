@@ -128,7 +128,7 @@ test("console pages: 用例库（份列表＋隔离徽章＋失败用例候选�
   assert.match(html.body, /设计来源/, "设计源列（区别于 Excel 产物）");
   assert.match(html.body, />a\.xlsx<\/a>/, "Excel 文件名可点");
   assert.match(html.body, /\/panel\/artifact\?project=/, "Excel 走只读产物服务");
-  assert.match(html.body, /section=dispatch&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");
+  assert.match(html.body, /section=create&amp;type=suite&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");
   assert.match(html.body, /测试资产 → 安装包/, "用例库指明安装包上传入口");
   assert.match(html.body, /section=assets&amp;kind=package/, "安装包上传链接预选 package");
   assert.match(html.body, /id="import-form"/, "Excel 上传表单");
@@ -439,6 +439,26 @@ test("console pages: 批次详情展示台账 API 说明（清单已清理仍可
   const html = await handlePanelRequest(url(rootPath, "project", { batch: file }), deps);
   assert.equal(html.status, 200);
   assert.match(html.body, /API 说明已提供/);
+});
+
+test("console pages: 新建测试 landing 与套件/网页 tab", async () => {
+  const { deps, rootPath } = await setup();
+  const landing = await handlePanelRequest(url(rootPath, "create"), deps);
+  assert.equal(landing.status, 200);
+  assert.match(landing.body, /新建测试/);
+  assert.match(landing.body, /开始套件回归|先去导入用例集/);
+  assert.match(landing.body, /开始网页测试|先去上传资产/);
+
+  const suite = await handlePanelRequest(url(rootPath, "create", { type: "suite" }), deps);
+  assert.equal(suite.status, 200);
+  assert.match(suite.body, /新建测试 · 套件回归/);
+  assert.match(suite.body, /网页测试（Excel\/安装包\/脚本）/);
+
+  const web = await handlePanelRequest(url(rootPath, "create", { type: "web" }), deps);
+  assert.equal(web.status, 200);
+  assert.match(web.body, /新建测试 · 网页测试/);
+  assert.match(web.body, /上传新安装包/);
+  assert.match(web.body, /上传测试资料/);
 });
 
 test("console pages: 网页测试下发页始终提供上传新安装包入口", () => {

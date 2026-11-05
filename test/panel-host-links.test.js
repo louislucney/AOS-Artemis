@@ -191,7 +191,7 @@ test("壳层导航 / 用例库 / 档案 / 对比 / 搜索链接均保留 host", 
   assert.match(
     library,
     new RegExp(
-      `${enc}&amp;section=dispatch&amp;source=case-set&amp;ref=${encodeURIComponent(set.id)}&amp;host=${HOST_B}`
+      `${enc}&amp;section=create&amp;type=suite&amp;source=case-set&amp;ref=${encodeURIComponent(set.id)}&amp;host=${HOST_B}`
     ),
     "用例库下发链接带 host"
   );

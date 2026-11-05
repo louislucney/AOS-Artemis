@@ -87,7 +87,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
       relativeTime(set.createdAt),
       String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
       set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
-      `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch&source=case-set&ref=${encodeURIComponent(set.id)}${hostQuery}`)}">下发该用例集</a>`
+      `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=create&type=suite&source=case-set&ref=${encodeURIComponent(set.id)}${hostQuery}`)}">下发该用例集</a>`
     ];
   });
   const quarantine = data.quarantine;
@@ -546,6 +546,77 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   });
 }
 
+export interface CreateTestPageData {
+  rootPath: string;
+  rootLabel: string;
+  hostId?: string | null;
+  projectStatus?: "active" | "archived" | null;
+  caseSetCount: number;
+  excelCount: number;
+  packageCount: number;
+  capabilities?: ConsoleCapabilities;
+  storeHealth?: ConsoleShellInput["storeHealth"];
+}
+
+export function renderCreateTestPage(data: CreateTestPageData): string {
+  const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
+  const projectQuery = `project=${encodeURIComponent(data.rootPath)}`;
+  const assetsHref = `/panel?${projectQuery}&section=assets${hostQuery}`;
+  const suiteHref = `/panel?${projectQuery}&section=create&type=suite${hostQuery}`;
+  const webHref = `/panel?${projectQuery}&section=create&type=web${hostQuery}`;
+  const suiteReady = data.caseSetCount > 0;
+  const webReady = data.excelCount > 0 && data.packageCount > 0;
+  const suiteBody = [
+    `<p>用已有用例集在设备上跑回归；设备需<strong>预装 App</strong>，不在这里选安装包。</p>`,
+    `<p class="muted">用例集 ${data.caseSetCount} 份${suiteReady ? "" : " · 还没有用例集"}</p>`,
+    suiteReady
+      ? `<p><a class="c-button c-button-primary" href="${escapeHtml(suiteHref)}">开始套件回归</a></p>`
+      : `<p><a class="c-button c-button-primary" href="${escapeHtml(
+          `/panel?${projectQuery}&section=assets&tab=case-sets${hostQuery}`
+        )}">先去导入用例集</a></p>`,
+    `<p class="muted">执行机与设备在下一步选择。</p>`
+  ].join("");
+  const webBody = [
+    `<p>用 Excel + 安装包跑网页测试；可选 Maestro 脚本或中心 LLM 执行。</p>`,
+    `<p class="muted">Excel ${data.excelCount} 份 · 安装包 ${data.packageCount} 个${
+      webReady ? "" : " · 还缺 Excel 或安装包"
+    }</p>`,
+    webReady
+      ? `<p><a class="c-button c-button-primary" href="${escapeHtml(webHref)}">开始网页测试</a></p>`
+      : `<p><a class="c-button c-button-primary" href="${escapeHtml(
+          `/panel?${projectQuery}&section=assets${hostQuery}`
+        )}">先去上传资产</a></p>`,
+    `<p class="muted">安装包、测试资料、参考图都在测试资产里统一管理。</p>`
+  ].join("");
+  return renderConsoleShell({
+    title: "新建测试",
+    active: "create",
+    meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
+    projectHostId: data.hostId ?? null,
+    capabilities: data.capabilities,
+    storeHealth: data.storeHealth,
+    body: [
+      "<h1>新建测试</h1>",
+      `<p class="muted">先选测试类型，再选资产和执行机。测试资产统一在 <a href="${escapeHtml(
+        assetsHref
+      )}">测试资产</a> 管理。</p>`,
+      '<div class="cards">',
+      cCard({
+        title: "套件回归",
+        subtitle: "用例集 + 设备；设备预装 App",
+        body: suiteBody
+      }),
+      cCard({
+        title: "网页测试",
+        subtitle: "Excel + 安装包；Maestro / LLM",
+        body: webBody
+      }),
+      "</div>"
+    ].join("\n")
+  });
+}
+
 export interface WebJobListEntry {
   task: RegressionTaskRecord;
   spec: WebJobSpec | null;
@@ -597,6 +668,7 @@ export interface WebJobsPageData {
   nowMs: number;
   runnerTtlMs: number;
   projectChoices: Array<{ name: string; rootPath: string; hostId: string | null }>;
+  embeddedCreate?: boolean;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
@@ -1176,10 +1248,19 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
     ? ""
     : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function byId(id){return document.getElementById(id);}function value(id){var node=byId(id);return node&&typeof node.value==="string"?node.value.trim():"";}function list(id){var raw=value(id);return raw===""?[]:raw.split(",").map(function(part){return part.trim();}).filter(function(part){return part!=="";});}var form=byId("web-job-form");var status=byId("web-job-status");var busy=byId("web-job-submit");function setBusy(on){if(!busy)return;if(on){if(!busy.dataset.idleLabel)busy.dataset.idleLabel=busy.textContent;busy.disabled=true;busy.textContent=busy.dataset.busyLabel||"下发中…";}else{busy.disabled=false;busy.textContent=busy.dataset.idleLabel||"下发测试";}}function request(url,options){return fetch(url,options).then(function(r){return r.json().then(function(body){return {ok:r.ok,status:r.status,body:body};});});}function payload(){var assignment=value("web-job-assignment")==="manual"?"manual":"auto";var out={project:root,assignment:assignment,executionMode:value("web-job-mode")||"maestro",excelAssetId:value("web-job-excel"),packageAssetId:value("web-job-package"),requirements:{platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"},caseFilter:{modules:list("web-job-case-modules"),caseIds:list("web-job-case-ids")}};if(host)out.host=host;var materials=value("web-job-materials");if(materials!=="")out.materialsAssetId=materials;var reference=value("web-job-reference");if(reference!=="")out.referenceAssetId=reference;var scripts=value("web-job-scripts");if(scripts!=="")out.scriptSetId=scripts;if(byId("web-job-allow-stale")&&byId("web-job-allow-stale").checked)out.allowStaleScript=true;var partialNode=byId("web-job-allow-partial");if(partialNode)out.allowPartialUnresolved=partialNode.checked;var unverifiedNode=byId("web-job-allow-unverified");if(unverifiedNode)out.allowUnverified=unverifiedNode.checked;var models=list("web-job-model");if(models.length>0)out.requirements.deviceModel=models;var min=value("web-job-os-min");var max=value("web-job-os-max");if(min!==""||max!==""){out.requirements.osVersion={};if(min!=="")out.requirements.osVersion.min=min;if(max!=="")out.requirements.osVersion.max=max;}if(assignment==="manual"){out.targetHostId=value("web-job-host");var serial=value("web-job-device");if(serial!=="")out.deviceSerial=serial;}var retry=value("web-job-retry");if(retry!=="")out.retry=Number(retry);var priority=value("web-job-priority");if(priority!=="")out.priority=Number(priority);return out;}function checkMatches(){var target=byId("web-job-check-status");if(!target)return;var excel=value("web-job-excel");var pkg=value("web-job-package");if(!excel||!pkg){target.textContent="先选择 Excel 和安装包";return;}var params=new URLSearchParams({project:root,excelAssetId:excel,packageAssetId:pkg,platform:value("web-job-platform")||"android"});var modules=value("web-job-case-modules");if(modules!=="")params.set("caseModules",modules);var ids=value("web-job-case-ids");if(ids!=="")params.set("caseIds",ids);if(host)params.set("host",host);target.textContent="检查中…";request("/panel/api/jobs/script-preview?"+params.toString(),{headers:{"X-AOS-Console":"1"}}).then(function(res){if(res.ok&&res.body&&res.body.ok){var b=res.body;target.textContent="匹配 "+b.matched+" 条：可执行 "+b.runnable+"（完整 "+b.ready+" / 部分 "+b.partial+"）/ 未就绪 "+b.unresolved+(b.unresolved>0?"（将 SKIP）":"")+(b.matched===0?"；请检查模块/用例 ID":"");return;}target.textContent="检查失败："+((res.body&&res.body.error)||res.status);}).catch(function(err){target.textContent="检查失败："+err;});}function preview(){var target=byId("web-job-preview-result");if(!target)return;var params=new URLSearchParams({project:root,assignment:value("web-job-assignment")==="manual"?"manual":"auto",platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"});if(host)params.set("host",host);var models=value("web-job-model");if(models!=="")params.set("deviceModel",models);var min=value("web-job-os-min");if(min!=="")params.set("osMin",min);var max=value("web-job-os-max");if(max!=="")params.set("osMax",max);if(value("web-job-assignment")==="manual"){var targetHost=value("web-job-host");if(targetHost!=="")params.set("targetHostId",targetHost);var serial=value("web-job-device");if(serial!=="")params.set("deviceSerial",serial);}target.textContent="预览中…";request("/panel/api/jobs/preview?"+params.toString(),{headers:{"X-AOS-Console":"1"}}).then(function(res){if(res.ok&&res.body&&res.body.selection){var pick=res.body.selection;target.textContent="可选："+pick.hostId+" / "+pick.deviceSerial+"（分数 "+pick.score+"）";}else{target.textContent="无可用执行机："+((res.body&&res.body.message)||res.status);}}).catch(function(err){target.textContent="预览失败："+err;});}var previewBtn=byId("web-job-preview-submit");if(previewBtn)previewBtn.addEventListener("click",preview);var checkBtn=byId("web-job-check");if(checkBtn)checkBtn.addEventListener("click",checkMatches);["web-job-assignment","web-job-host","web-job-device","web-job-platform","web-job-kind","web-job-model","web-job-os-min","web-job-os-max"].forEach(function(id){var node=byId(id);if(node)node.addEventListener("change",preview);});if(form){form.addEventListener("submit",function(event){event.preventDefault();var out=payload();setBusy(true);request("/panel/api/jobs",{method:"POST",headers:{"Content-Type":"application/json","X-AOS-Console":"1"},body:JSON.stringify(out)}).then(function(res){if(res.ok&&res.body&&res.body.ok){window.aosFlash&&window.aosFlash("已下发："+((res.body&&res.body.message)||res.body.status));location.href="/panel?project="+encodeURIComponent(root)+"&section=jobs"+(host?"&host="+encodeURIComponent(host):"")+"&job="+encodeURIComponent(res.body.job.id);return;}setBusy(false);if(status)status.textContent="下发失败："+((res.body&&res.body.error)||res.status);}).catch(function(err){setBusy(false);if(status)status.textContent="下发失败："+err;});});}})();</script>`;
 
-  const flowSwitch = `<nav class="c-flow-switch" aria-label="下发类型"><a class="c-flow-option" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=dispatch${hostQuery.replace(/&/g, "&amp;")}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试</span></nav>`;
+  const createHref = `/panel?project=${encodeURIComponent(data.rootPath)}&section=create${hostQuery}`;
+  const suiteHref = `/panel?project=${encodeURIComponent(data.rootPath)}&section=create&type=suite${hostQuery}`;
+  const embedded = data.embeddedCreate === true;
+  const flowSwitch = embedded
+    ? `<nav class="c-flow-switch" aria-label="新建测试类型"><a class="c-flow-option" href="${escapeHtml(
+        createHref
+      )}">新建测试</a><a class="c-flow-option" href="${escapeHtml(
+        suiteHref
+      )}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试</span></nav>`
+    : `<nav class="c-flow-switch" aria-label="下发类型"><a class="c-flow-option" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=dispatch${hostQuery.replace(/&/g, "&amp;")}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试</span></nav>`;
   return renderConsoleShell({
-    title: "下发测试",
-    active: "jobs",
+    title: embedded ? "新建测试 · 网页测试" : "下发测试",
+    active: "create",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
     projectHostId: data.hostId ?? null,
@@ -1650,7 +1731,7 @@ export function renderAuditPage(data: AuditPageData): string {
       return `<a href="/panel?${base}&amp;task=${encodeURIComponent(value)}" title="taskId=${escapeHtml(value)}">任务 <code>${escapeHtml(short)}</code></a>`;
     }
     if (key === "caseSetId") {
-      return `<a href="/panel?${base}&amp;section=library" title="caseSetId=${escapeHtml(value)}">用例库 <code>${escapeHtml(short)}</code></a>`;
+      return `<a href="/panel?${base}&amp;section=assets&amp;tab=case-sets" title="caseSetId=${escapeHtml(value)}">用例库 <code>${escapeHtml(short)}</code></a>`;
     }
     if (key === "scheduleId") {
       return `<a href="/panel?${base}#schedules" title="scheduleId=${escapeHtml(value)}">计划 <code>${escapeHtml(short)}</code></a>`;
@@ -1676,13 +1757,13 @@ export function renderAuditPage(data: AuditPageData): string {
       return `<a href="/panel?${base}&amp;view=stats#issues">去建单</a>`;
     }
     if (event.action === "action.import") {
-      return `<a href="/panel?${base}&amp;section=library">去用例库导入</a>`;
+      return `<a href="/panel?${base}&amp;section=assets&amp;tab=case-sets">去用例库导入</a>`;
     }
     if (event.action === "action.verdicts") {
       return `<a href="/panel?${base}&amp;view=review">去归因队列</a>`;
     }
     if (event.action === "action.quarantine") {
-      return `<a href="/panel?${base}&amp;section=library">去隔离</a>`;
+      return `<a href="/panel?${base}&amp;section=assets&amp;tab=case-sets">去隔离</a>`;
     }
     return '<span class="muted">—</span>';
   };
