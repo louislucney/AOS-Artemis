@@ -559,13 +559,12 @@ test("installWebPackage: Android 走 adb install -r，失败返回 typed reason"
   assert.match(failure.detail, /INSTALL_FAILED_INVALID_APK/);
 });
 
-test("installWebPackage: Android 已安装跳过安装；安装失败后复查已存在按 recovered 成功", async () => {
+test("installWebPackage: Android 已安装跳过安装；版本旧才升级；失败后复查按 recovered 成功", async () => {
+  const installedDump = (versionCode, versionName) =>
+    `Package [com.example.app] (abc):\n  versionCode=${versionCode} minSdk=24 targetSdk=34\n  versionName=${versionName}\n`;
   const installed = fakeExec((_command, args) => {
-    if (args[3] === "pm" && args[4] === "path") {
-      return { code: 0, stdout: "package:/data/app/~~abc/base.apk\n", stderr: "" };
-    }
     if (args[3] === "dumpsys") {
-      return { code: 0, stdout: "versionName=1.4.1\n", stderr: "" };
+      return { code: 0, stdout: installedDump(14, "1.4.1"), stderr: "" };
     }
     return { code: 0, stdout: "", stderr: "" };
   });
@@ -574,6 +573,7 @@ test("installWebPackage: Android 已安装跳过安装；安装失败后复查�
     deviceSerial: "emulator-5554",
     packagePath: "/tmp/app.apk",
     expectedPackageName: "com.example.app",
+    expectedVersionCode: 14,
     exec: installed.exec,
     env: { PATH: "/bin" }
   });
@@ -585,12 +585,30 @@ test("installWebPackage: Android 已安装跳过安装；安装失败后复查�
   });
   assert.equal(installed.calls.some((call) => call.args[2] === "install"), false);
 
-  const forced = fakeExec((_command, args) => {
-    if (args[3] === "pm" && args[4] === "path") {
-      return { code: 0, stdout: "package:/data/app/base.apk\n", stderr: "" };
-    }
+  const older = fakeExec((_command, args) => {
     if (args[3] === "dumpsys") {
-      return { code: 0, stdout: "versionName=1.4.1\n", stderr: "" };
+      return { code: 0, stdout: installedDump(13, "1.3.9"), stderr: "" };
+    }
+    return { code: 0, stdout: "Success\n", stderr: "" };
+  });
+  const upgraded = await installWebPackage({
+    platform: "android",
+    deviceSerial: "emulator-5554",
+    packagePath: "/tmp/app.apk",
+    expectedPackageName: "com.example.app",
+    expectedVersionCode: 14,
+    exec: older.exec
+  });
+  assert.equal(older.calls.some((call) => call.args[2] === "install"), true);
+  assert.deepEqual(upgraded, {
+    ok: true,
+    packageName: "com.example.app",
+    version: "1.3.9"
+  });
+
+  const forced = fakeExec((_command, args) => {
+    if (args[3] === "dumpsys") {
+      return { code: 0, stdout: installedDump(14, "1.4.1"), stderr: "" };
     }
     return { code: 0, stdout: "Success\n", stderr: "" };
   });
@@ -599,6 +617,7 @@ test("installWebPackage: Android 已安装跳过安装；安装失败后复查�
     deviceSerial: "emulator-5554",
     packagePath: "/tmp/app.apk",
     expectedPackageName: "com.example.app",
+    expectedVersionCode: 14,
     skipIfInstalled: false,
     exec: forced.exec
   });
@@ -609,16 +628,13 @@ test("installWebPackage: Android 已安装跳过安装；安装失败后复查�
     version: "1.4.1"
   });
 
-  let pathChecks = 0;
+  let dumps = 0;
   const recoveredExec = fakeExec((_command, args) => {
-    if (args[3] === "pm" && args[4] === "path") {
-      pathChecks += 1;
-      return pathChecks === 1
-        ? { code: 1, stdout: "", stderr: "not found" }
-        : { code: 0, stdout: "package:/data/app/base.apk\n", stderr: "" };
-    }
     if (args[3] === "dumpsys") {
-      return { code: 0, stdout: "versionName=1.4.1\n", stderr: "" };
+      dumps += 1;
+      return dumps === 1
+        ? { code: 0, stdout: "Unable to find package: com.example.app\n", stderr: "" }
+        : { code: 0, stdout: installedDump(14, "1.4.1"), stderr: "" };
     }
     return { code: 1, stdout: "", stderr: "Failure [INSTALL_FAILED_ABORTED]" };
   });
@@ -627,6 +643,7 @@ test("installWebPackage: Android 已安装跳过安装；安装失败后复查�
     deviceSerial: "emulator-5554",
     packagePath: "/tmp/app.apk",
     expectedPackageName: "com.example.app",
+    expectedVersionCode: 14,
     exec: recoveredExec.exec
   });
   assert.deepEqual(recovered, {

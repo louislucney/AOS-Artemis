@@ -6,6 +6,7 @@ import { defaultExec, resolveAdbPath, type ExecFn } from "../device/adb.js";
 import { resolveMaestroPath } from "../device/maestro.js";
 import { errorMessage } from "../util.js";
 import { parseWebJobSpec } from "../web/job-spec.js";
+import { inspectAndroidPackage } from "../web/package-inspect.js";
 import { executeWebJob, type WebJobExecutionResult } from "./web-executors.js";
 import {
   cleanupWebJobWorkspace,
@@ -141,6 +142,18 @@ async function readManifestAppId(flowsDir: string): Promise<string | null> {
     const parsed = JSON.parse(raw) as { appId?: unknown };
     const appId = typeof parsed.appId === "string" ? parsed.appId.trim() : "";
     return ANDROID_PACKAGE_RE.test(appId) ? appId : null;
+  } catch {
+    return null;
+  }
+}
+
+/** APK 自身的 package/versionCode 优先于脚本 manifest；解析失败回退 manifest appId。 */
+async function readApkInfo(
+  packagePath: string
+): Promise<{ packageName: string | null; versionCode: number | null } | null> {
+  try {
+    const info = await inspectAndroidPackage(await readFile(packagePath));
+    return info === null ? null : { packageName: info.packageName, versionCode: info.versionCode };
   } catch {
     return null;
   }
@@ -370,7 +383,9 @@ export function createDefaultWebJobExecutor(
       if (packagePath === undefined) throw new Error("web-job-package-missing");
       const flowsDir = prepared.flowsDir;
       if (flowsDir === null) throw new Error("web-job-scripts-missing");
-      const appId = platform === "android" ? await readManifestAppId(flowsDir) : null;
+      const apkInfo = platform === "android" ? await readApkInfo(packagePath) : null;
+      const appId =
+        apkInfo?.packageName ?? (platform === "android" ? await readManifestAppId(flowsDir) : null);
 
       const install = await installWebPackage({
         platform,
@@ -383,6 +398,9 @@ export function createDefaultWebJobExecutor(
         adbCommand,
         timeoutMs: installTimeoutMs,
         ...(appId === null ? {} : { expectedPackageName: appId }),
+        ...(apkInfo?.versionCode === null || apkInfo?.versionCode === undefined
+          ? {}
+          : { expectedVersionCode: apkInfo.versionCode }),
         skipIfInstalled: !forceInstall
       });
       if (!install.ok) {

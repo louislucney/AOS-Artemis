@@ -9,7 +9,15 @@ const RES_XML_START_ELEMENT_TYPE = 0x0102;
 const UTF8_FLAG = 0x100;
 const NO_ENTRY = 0xffffffff;
 const TYPE_STRING = 0x03;
+const TYPE_INT_DEC = 0x10;
+const TYPE_INT_HEX = 0x11;
 const MAX_MANIFEST_BYTES = 5 * 1024 * 1024;
+
+export interface AndroidManifestInfo {
+  packageName: string | null;
+  versionCode: number | null;
+  versionName: string | null;
+}
 
 function u16(buffer: Buffer, offset: number): number {
   return buffer.readUInt16LE(offset);
@@ -73,10 +81,10 @@ function readStringPool(buffer: Buffer, offset: number): string[] {
 }
 
 /**
- * 解析 Android 二进制 XML（AXML）里 `<manifest package="...">` 的 package。
+ * 解析 Android 二进制 XML（AXML）里 `<manifest>` 的 package / versionCode / versionName。
  * 只读 string pool + 第一个 start element；遇到结构异常返回 null，不猜。
  */
-export function parseBinaryManifestPackage(buffer: Buffer): string | null {
+export function parseBinaryManifestInfo(buffer: Buffer): AndroidManifestInfo | null {
   if (buffer.length < 8 || u16(buffer, 0) !== 0x0003) return null;
   let strings: string[] = [];
   let offset = u16(buffer, 2);
@@ -99,32 +107,59 @@ export function parseBinaryManifestPackage(buffer: Buffer): string | null {
       const attributeCount = u16(buffer, offset + 28);
       if (attributeSize < 20 || attributeCount > 1000) return null;
       const base = offset + 16 + attributeStart;
+      let packageName: string | null = null;
+      let versionCode: number | null = null;
+      let versionName: string | null = null;
       for (let index = 0; index < attributeCount; index += 1) {
         const attr = base + index * attributeSize;
         if (attr + 20 > buffer.length) return null;
         const attrName = strings[u32(buffer, attr + 4)];
-        if (attrName !== "package") continue;
         const rawValue = u32(buffer, attr + 8);
-        if (rawValue !== NO_ENTRY && strings[rawValue] !== undefined) {
-          return strings[rawValue] ?? null;
-        }
         const dataType = buffer[attr + 15];
         const data = u32(buffer, attr + 16);
-        if (dataType === TYPE_STRING && strings[data] !== undefined) {
-          return strings[data] ?? null;
+        const stringValue =
+          rawValue !== NO_ENTRY && strings[rawValue] !== undefined
+            ? strings[rawValue] ?? null
+            : dataType === TYPE_STRING && strings[data] !== undefined
+              ? strings[data] ?? null
+              : null;
+        if (attrName === "package") {
+          packageName = stringValue;
+        } else if (attrName === "versionCode") {
+          versionCode =
+            dataType === TYPE_INT_DEC || dataType === TYPE_INT_HEX
+              ? data
+              : stringValue !== null && /^\d+$/.test(stringValue)
+                ? Number(stringValue)
+                : null;
+        } else if (attrName === "versionName") {
+          versionName = stringValue;
         }
-        return null;
       }
-      return null;
+      return { packageName, versionCode, versionName };
     }
     offset += size;
   }
   return null;
 }
 
-function parseTextManifestPackage(text: string): string | null {
-  const match = /<manifest\b[^>]*\bpackage\s*=\s*["']([^"']+)["']/i.exec(text);
-  return match?.[1]?.trim() ?? null;
+export function parseBinaryManifestPackage(buffer: Buffer): string | null {
+  return parseBinaryManifestInfo(buffer)?.packageName ?? null;
+}
+
+function parseTextManifestInfo(text: string): AndroidManifestInfo {
+  const tag = /<manifest\b[^>]*>/i.exec(text)?.[0] ?? text;
+  const attr = (name: string): string | null => {
+    const match = new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, "i").exec(tag);
+    return match?.[1]?.trim() ?? null;
+  };
+  const versionCodeRaw = attr("android:versionCode") ?? attr("versionCode");
+  return {
+    packageName: attr("package"),
+    versionCode:
+      versionCodeRaw !== null && /^\d+$/.test(versionCodeRaw) ? Number(versionCodeRaw) : null,
+    versionName: attr("android:versionName") ?? attr("versionName")
+  };
 }
 
 function parsePlistBundleId(text: string): string | null {
@@ -151,6 +186,31 @@ function validate(appId: string | null, platform: "android" | "ios"): string | n
   return trimmed;
 }
 
+/** 读取 APK 内 AndroidManifest.xml 的 package / versionCode / versionName；非 APK 返回 null。 */
+export async function inspectAndroidPackage(buffer: Buffer): Promise<AndroidManifestInfo | null> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    return null;
+  }
+  const manifest = zip.file("AndroidManifest.xml");
+  if (manifest === null) return null;
+  let data: Buffer;
+  try {
+    data = await manifest.async("nodebuffer");
+  } catch {
+    return null;
+  }
+  if (data.length === 0 || data.length > MAX_MANIFEST_BYTES) return null;
+  const head = data.subarray(0, 64).toString("utf8").trimStart();
+  const info = head.startsWith("<")
+    ? parseTextManifestInfo(data.toString("utf8"))
+    : parseBinaryManifestInfo(data);
+  if (info === null) return null;
+  return { ...info, packageName: validate(info.packageName, "android") };
+}
+
 /**
  * 从 APK/IPA 资产推断 appId（best-effort）：
  * - APK：AndroidManifest.xml（文本 XML 或二进制 AXML）的 package；
@@ -161,26 +221,13 @@ export async function inferAppIdFromPackage(
   buffer: Buffer,
   _filename: string
 ): Promise<string | null> {
+  const apk = await inspectAndroidPackage(buffer);
+  if (apk !== null) return apk.packageName;
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(buffer);
   } catch {
     return null;
-  }
-  const manifest = zip.file("AndroidManifest.xml");
-  if (manifest !== null) {
-    let data: Buffer;
-    try {
-      data = await manifest.async("nodebuffer");
-    } catch {
-      return null;
-    }
-    if (data.length === 0 || data.length > MAX_MANIFEST_BYTES) return null;
-    const head = data.subarray(0, 64).toString("utf8").trimStart();
-    const packageName = head.startsWith("<")
-      ? parseTextManifestPackage(data.toString("utf8"))
-      : parseBinaryManifestPackage(data);
-    return validate(packageName, "android");
   }
   const plistEntry = Object.keys(zip.files).find((name) =>
     /^Payload\/[^/]+\.app\/Info\.plist$/.test(name)

@@ -405,6 +405,8 @@ export interface InstallWebPackageInput {
   adbCommand?: string;
   /** 脚本 manifest 的 appId；提供时用于“已安装跳过”与安装后回填包名/版本。 */
   expectedPackageName?: string | null;
+  /** APK 的 versionCode；提供时只有设备上不低于该版本才跳过安装。 */
+  expectedVersionCode?: number | null;
   /** Android 已安装时跳过 adb install（默认 true）。 */
   skipIfInstalled?: boolean;
 }
@@ -479,36 +481,38 @@ function normalizeAndroidPackageName(value: string | null | undefined): string |
 }
 
 /**
- * `pm path` 在包不存在时也可能 exit 0，必须看 stdout 的 `package:`；
- * 已安装时再取 versionName 供结果回填。
+ * 与 ARTEMIS helper `installed_version` 同口径：`dumpsys package` 读 versionCode；
+ * 未安装时 dumpsys 也可能 exit 0，必须同时看 `Unable to find package` / versionCode。
  */
-async function inspectAndroidPackage(input: {
+async function inspectInstalledAndroidPackage(input: {
   adbCommand: string;
   deviceSerial: string;
   packageName: string;
   exec: ExecFn;
   env?: NodeJS.ProcessEnv;
-}): Promise<{ installed: boolean; version: string | null }> {
+}): Promise<{ installed: boolean; versionCode: number | null; versionName: string | null }> {
   const options = {
     timeoutMs: 15_000,
     ...(input.env === undefined ? {} : { env: input.env })
   };
-  const pathResult = await input.exec(
-    input.adbCommand,
-    ["-s", input.deviceSerial, "shell", "pm", "path", input.packageName],
-    options
-  );
-  if (pathResult.code !== 0 || !/package:/.test(pathResult.stdout)) {
-    return { installed: false, version: null };
-  }
   const dump = await input.exec(
     input.adbCommand,
     ["-s", input.deviceSerial, "shell", "dumpsys", "package", input.packageName],
     options
   );
-  const version =
-    dump.code === 0 ? (/versionName=([^\s]+)/.exec(dump.stdout)?.[1] ?? null) : null;
-  return { installed: true, version };
+  const output = dump.stdout;
+  if (dump.code !== 0 || /Unable to find package/i.test(output)) {
+    return { installed: false, versionCode: null, versionName: null };
+  }
+  const versionCode = /versionCode=(\d+)/.exec(output)?.[1];
+  const versionName = /versionName=([^\s]+)/.exec(output)?.[1] ?? null;
+  if (versionCode === undefined) {
+    if (!/^\s*Package \[/m.test(output)) {
+      return { installed: false, versionCode: null, versionName: null };
+    }
+    return { installed: true, versionCode: null, versionName };
+  }
+  return { installed: true, versionCode: Number(versionCode), versionName };
 }
 
 export async function installWebPackage(
@@ -532,21 +536,30 @@ export async function installWebPackage(
   let args: string[];
   const androidPackage =
     input.platform === "android" ? normalizeAndroidPackageName(input.expectedPackageName) : null;
+  const expectedVersionCode = input.platform === "android" ? (input.expectedVersionCode ?? null) : null;
+  const installedCoversExpected = (present: {
+    installed: boolean;
+    versionCode: number | null;
+  }): boolean => {
+    if (!present.installed) return false;
+    if (expectedVersionCode === null || present.versionCode === null) return true;
+    return present.versionCode >= expectedVersionCode;
+  };
   if (input.platform === "android") {
     command = input.adbCommand?.trim() || "adb";
     if (androidPackage !== null && input.skipIfInstalled !== false) {
-      const present = await inspectAndroidPackage({
+      const present = await inspectInstalledAndroidPackage({
         adbCommand: command,
         deviceSerial: input.deviceSerial,
         packageName: androidPackage,
         exec: input.exec,
         ...(input.env === undefined ? {} : { env: input.env })
       });
-      if (present.installed) {
+      if (installedCoversExpected(present)) {
         return {
           ok: true,
           packageName: androidPackage,
-          version: present.version,
+          version: present.versionName,
           skipped: true
         };
       }
@@ -582,18 +595,18 @@ export async function installWebPackage(
 
   const recoverInstalled = async (): Promise<InstallWebPackageResult | null> => {
     if (androidPackage === null) return null;
-    const present = await inspectAndroidPackage({
+    const present = await inspectInstalledAndroidPackage({
       adbCommand: command,
       deviceSerial: input.deviceSerial,
       packageName: androidPackage,
       exec: input.exec,
       ...(input.env === undefined ? {} : { env: input.env })
     });
-    return present.installed
+    return installedCoversExpected(present)
       ? {
           ok: true,
           packageName: androidPackage,
-          version: present.version,
+          version: present.versionName,
           recovered: true
         }
       : null;
@@ -623,7 +636,7 @@ export async function installWebPackage(
   const packageMatch = /package:\s*([A-Za-z0-9_.]+)/.exec(combined);
   const versionMatch = /versionName[=:\s]+([^\s,]+)/.exec(combined);
   if (androidPackage !== null) {
-    const present = await inspectAndroidPackage({
+    const present = await inspectInstalledAndroidPackage({
       adbCommand: command,
       deviceSerial: input.deviceSerial,
       packageName: androidPackage,
@@ -633,7 +646,7 @@ export async function installWebPackage(
     return {
       ok: true,
       packageName: androidPackage,
-      version: versionMatch?.[1] ?? present.version
+      version: versionMatch?.[1] ?? present.versionName
     };
   }
   return {

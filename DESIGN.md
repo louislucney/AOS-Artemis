@@ -3797,8 +3797,10 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-11-05。真机现场反馈：设备上已手动安装被测 APK，runner 仍反复执行 `adb install` 并等待设备确认；安装成功时 `adb install` 输出只有 `Success`，结果里的 `package.name/version` 为空，用户看不到“已识别到安装”。vivo 等机型还会因安装确认弹窗占用设备，影响后续 Maestro。
 
-- **已安装跳过**（`src/runner/web-job-workspace.ts`）：`installWebPackage` 新增 `expectedPackageName`（脚本包 `manifest.json` 的 `appId`）与 `skipIfInstalled`（默认 true）。Android 安装前先 `adb shell pm path <pkg>`，stdout 含 `package:` 即视为已安装，直接返回 `{ok:true, packageName, version, skipped:true}`，不再执行 `adb install`；`pm path` 对不存在的包也可能 exit 0，因此**只认 stdout**。包名按 Android 规则白名单校验，非法值忽略（不回退到任意字符串）。
-- **失败后复查**：`adb install` 返回非 0 或超时（`code=null`）时，若已知包名则再查一次 `pm path`；已存在（典型：用户手动点了安装/确认）返回 `{ok:true, recovered:true}`，不再把任务判为安装失败。成功路径会 `dumpsys package <pkg>` 取 `versionName` 回填结果；`skipIfInstalled:false`（`AOS_WEB_FORCE_INSTALL=1`）强制重装但仍回填包信息。
-- **runner 接线**（`src/runner/web-job-runner.ts`、`src/runner/web-agent.ts`）：执行器从 `manifest.json` 读取 `appId`（缺失/非法则不启用跳过），安装后通过新增 `onLog` 回调输出 `[web-runner] 设备 <serial> 已安装 <pkg> (<ver>)，跳过安装` / `已存在 …（安装命令未确认，按已安装继续）`，让执行机日志能直接看到识别结果；结果 payload 的 `package.name/version` 不再为空。
-- **环境变量**：`AOS_WEB_FORCE_INSTALL=1` 关闭“已安装跳过”，用于必须覆盖安装/降级验证的场景；缺省按已安装跳过。
-- **测试**：`test/web-job-workspace.test.js` 增加“已安装 → 不调用 install”“安装失败后复查已存在 → recovered”“强制安装 → 调用 install 并回填版本”；全量测试与 lint 保持绿。
+- **参考已有实现**：ARTEMIS `helper_manager.provision()`（`artemis/artemis/runtime/helper_manager.py`）已用同一套语义管理 accessibility helper——`installed_version()` 读 `dumpsys package` 的 `versionCode`，已是最新跳过、旧了才升级、比 bundle 新不动，`install=False` 时缺包显式失败。本修复对齐该口径，避免“装了就不管版本”的粗粒度跳过。
+- **APK 版本解析**（`src/web/package-inspect.ts`）：新增 `inspectAndroidPackage(buffer)`，从 APK 的 `AndroidManifest.xml`（文本 XML 或二进制 AXML）解析 `package/versionCode/versionName`；`inferAppIdFromPackage` 复用它。二进制 AXML 读取 `<manifest>` 的 `versionCode`（int，`0x10/0x11`）与 `versionName`（string）；结构异常返回 null，不猜。
+- **已安装判定与跳过**（`src/runner/web-job-workspace.ts`）：`installWebPackage` 新增 `expectedPackageName`、`expectedVersionCode`、`skipIfInstalled`（默认 true）。Android 安装前执行一次 `adb shell dumpsys package <pkg>`：`Unable to find package` / 非 0 / 无 `Package [` 视为未安装；已安装且 `versionCode >= APK versionCode`（任一方未知时保守按已安装）直接返回 `{ok:true, packageName, version, skipped:true}`，不再执行 `adb install`；已安装但更旧则继续升级安装。包名按 Android 规则白名单校验，非法值忽略。
+- **失败后复查**：`adb install` 返回非 0 或超时（`code=null`）时，若已知包名则再查一次 `dumpsys package`；满足上述版本条件（典型：用户手动点了安装/确认）返回 `{ok:true, recovered:true}`，不再把任务判为安装失败；设备上仍是旧版本则保留原始失败，不静默使用旧包。成功路径回填 `versionName`；`skipIfInstalled:false`（`AOS_WEB_FORCE_INSTALL=1`）强制重装但仍回填包信息。
+- **runner 接线**（`src/runner/web-job-runner.ts`、`src/runner/web-agent.ts`）：执行器优先解析 APK 自身的 `package/versionCode`（解析失败回退脚本 `manifest.json` 的 `appId`），安装后通过新增 `onLog` 回调输出 `[web-runner] 设备 <serial> 已安装 <pkg> (<ver>)，跳过安装` / `已存在 …（安装命令未确认，按已安装继续）`；结果 payload 的 `package.name/version` 不再为空。
+- **环境变量**：`AOS_WEB_FORCE_INSTALL=1` 关闭“已安装跳过”，用于必须覆盖安装/降级验证的场景；缺省按版本比较跳过。
+- **测试**：`test/package-inspect.test.js` 增加文本/二进制 APK 的 `versionCode/versionName` 解析；`test/web-job-workspace.test.js` 增加“已安装同版本 → 不调用 install”“已安装旧版本 → 升级”“失败后复查已存在 → recovered”“强制安装 → 调用 install 并回填版本”；全量测试与 lint 保持绿。
