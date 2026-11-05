@@ -417,6 +417,23 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     subtitle: "Excel / 安装包 / 测试资料 / 参考图；上传后可在新建测试里选择",
     body: uploadBody
   })}</div>`;
+  const figmaReferenceBody = [
+    `<form id="figma-reference-form" class="c-form" data-project="${escapeHtml(data.rootPath)}">`,
+    `<p><label>Figma URL <input id="figma-reference-url" name="figmaUrl" size="48" placeholder="https://www.figma.com/design/...?...node-id=..." aria-label="Figma URL"${disabledAttr}></label> ` +
+      `<label>节点 ID（可选） <input id="figma-reference-node" name="nodeId" placeholder="1:2" aria-label="Figma 节点 ID"${disabledAttr}></label> ` +
+      `<button id="figma-reference-submit" class="c-button" type="submit" data-busy-label="导入中…"${disabledAttr}>导入 Figma 参考图</button> <span id="figma-reference-status" role="status" class="muted"></span></p>`,
+    `<p class="muted">需要 <code>FIGMA_ACCESS_TOKEN</code>；只导入 URL 指定 node（或填节点 ID）的 PNG。导入后按参考图资产保存。</p>`,
+    `</form>`,
+    actionsReason
+  ].join("\n");
+  const figmaReferenceCard = cCard({
+    title: "从 Figma 导入参考图",
+    subtitle: "按 frame/node 渲染 PNG，保留 Figma URL 与 nodeId 来源",
+    body: figmaReferenceBody
+  });
+  const figmaReferenceScript = actionsOff
+    ? ""
+    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};var form=document.getElementById('figma-reference-form');if(!form)return;var status=document.getElementById('figma-reference-status');var btn=document.getElementById('figma-reference-submit');form.addEventListener('submit',function(e){e.preventDefault();var url=document.getElementById('figma-reference-url').value.trim();var node=document.getElementById('figma-reference-node').value.trim();if(!url){if(status)status.textContent='请填写 Figma URL';return;}if(btn)btn.disabled=true;fetch('/panel/api/projects/assets/figma',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:root,host:host,figmaUrl:url,nodeId:node})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已导入 Figma 参考图 '+res.j.asset.filename+' · 已写入审计');location.reload();return;}if(btn)btn.disabled=false;if(status)status.textContent='导入失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}).catch(function(err){if(btn)btn.disabled=false;if(status)status.textContent='导入失败：'+err;});});})();</script>`;
   const overviewCard = cCard({
     title: "资产概览",
     subtitle: "所有测试输入都在这里；用例集和网页测试资产不再分家",
@@ -530,9 +547,10 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   if (show("excel")) sections.push(excelCard, mappingCard, mappingsCard);
   if (show("packages")) sections.push(packageCard);
   if (show("materials")) sections.push(materialsCard);
-  if (show("reference")) sections.push(referenceCard);
+  if (show("reference")) sections.push(referenceCard, figmaReferenceCard);
   if (show("scripts")) sections.push(scriptGenCard, scriptsCard);
   sections.push(script, scriptGenScript);
+  if (show("reference")) sections.push(figmaReferenceScript);
 
   return renderConsoleShell({
     title: "测试资产",

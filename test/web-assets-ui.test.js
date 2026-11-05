@@ -242,8 +242,8 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /a&lt;b&gt;\.xlsx/, "文件名转义");
   assert.ok(!html.includes("a<b>.xlsx"), "原始文件名不直出");
 
-  const ownScripts = inlineScripts(html).filter((code) =>
-    code.includes("/panel/api/projects/assets")
+  const ownScripts = inlineScripts(html).filter(
+    (code) => code.includes("asset-upload-form") && code.includes("/panel/api/projects/assets")
   );
   assert.equal(ownScripts.length, 1, "资产页脚本存在");
   assert.match(ownScripts[0], /Excel 仅支持 \.xlsx\/\.csv/, "客户端校验 Excel 扩展名");
@@ -359,6 +359,16 @@ test("project page links to assets and preserves host", async (t) => {
     /href="\/panel\?project=[^"]+&amp;section=assets&amp;host=host-a"[^>]*>测试资产/,
     "项目页入口携带项目与主机"
   );
+});
+
+test("web assets page: reference tab offers Figma URL import", async (t) => {
+  const { deps, rootPath } = await setup(t);
+  const response = await handlePanelRequest(assetsUrl(rootPath, null, "reference"), deps);
+  assert.equal(response.status, 200);
+  assert.match(response.body, /id="figma-reference-form"/);
+  assert.match(response.body, /id="figma-reference-url"/);
+  assert.match(response.body, /id="figma-reference-node"/);
+  assert.match(response.body, /\/panel\/api\/projects\/assets\/figma/);
 });
 
 test("web assets page: reference PNG uploads as reference kind", async (t) => {

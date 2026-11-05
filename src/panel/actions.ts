@@ -55,6 +55,7 @@ import { parseMultipartUpload, UploadError } from "./upload.js";
 import { parseWebJobSpec, WebJobDispatchError, normalizeCaseFilter, type WebJobExecutionMode } from "../web/job-spec.js";
 import { createWebJob } from "../web/jobs.js";
 import { PenReferenceError, storePenReference, type PenReferenceResult } from "../web/pen-reference.js";
+import { FigmaReferenceError, storeFigmaReference } from "../web/figma-reference.js";
 import {
   compareOsVersions,
   parseOsVersion,
@@ -504,6 +505,9 @@ export async function handlePanelActionRequest(
     } else {
       payload = request.body as Record<string, unknown>;
     }
+  }
+  if (request.url.pathname === "/panel/api/projects/assets/figma") {
+    return await uploadFigmaReferenceAction(deps, payload, actor);
   }
   if (request.url.pathname === "/panel/api/projects/assets") {
     return await uploadAssetAction(deps, request, actor);
@@ -987,6 +991,67 @@ async function archiveProjectAction(
     summary: `归档 Web 项目：${resolved.name}（${resolved.rootPath}）`
   });
   return json(200, { ok: true });
+}
+
+async function uploadFigmaReferenceAction(
+  deps: PanelWebDeps,
+  payload: Record<string, unknown>,
+  actor: string
+): Promise<PanelWebResponse> {
+  const projectKey = typeof payload.project === "string" ? payload.project.trim() : "";
+  const figmaUrl = typeof payload.figmaUrl === "string" ? payload.figmaUrl.trim() : "";
+  if (projectKey === "" || figmaUrl === "") {
+    return json(400, { ok: false, error: "缺少 project 或 figmaUrl" });
+  }
+  const hostParam = typeof payload.host === "string" ? payload.host.trim() : "";
+  let resolved: { rootPath: string; name: string; hostId: string | null } | null;
+  try {
+    resolved = await resolveProjectKey(deps, projectKey, hostParam === "" ? undefined : hostParam);
+  } catch (error) {
+    if (error instanceof AmbiguousProjectError) {
+      return json(409, { error: error.message, candidates: error.candidates });
+    }
+    throw error;
+  }
+  if (!resolved) return json(404, { error: `未知项目 "${projectKey}"` });
+  const crossHost = crossHostWriteResponse(deps, resolved);
+  if (crossHost !== null) return crossHost;
+  const scopedDeps: PanelWebDeps = {
+    ...(resolved.hostId === null
+      ? deps
+      : { ...deps, store: deps.storeForHost?.(resolved.hostId) ?? deps.store }),
+    actor: deps.actor ?? actor
+  };
+  try {
+    await assertProjectActive(scopedDeps.store, resolved.rootPath);
+    const result = await storeFigmaReference({
+      store: scopedDeps.store,
+      rootPath: resolved.rootPath,
+      figmaUrl,
+      nodeId: typeof payload.nodeId === "string" ? payload.nodeId : null,
+      uploadedBy: actor
+    });
+    await recordAuditSafe(scopedDeps.store, resolved.rootPath, {
+      domain: "asset",
+      action: "asset.upload",
+      result: "ok",
+      actor,
+      summary: `导入 Figma 参考图：node ${result.nodeId}（${result.asset.filename}）`,
+      refs: {
+        assetId: result.asset.id,
+        kind: result.asset.kind,
+        fileKey: result.fileKey,
+        nodeId: result.nodeId
+      }
+    });
+    deps.cache?.clear();
+    return json(200, { ok: true, asset: result.asset, fileKey: result.fileKey, nodeId: result.nodeId });
+  } catch (error) {
+    if (error instanceof FigmaReferenceError) {
+      return json(400, { ok: false, code: error.code, error: error.message });
+    }
+    throw error;
+  }
 }
 
 async function uploadAssetAction(
