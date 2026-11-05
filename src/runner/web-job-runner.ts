@@ -188,6 +188,9 @@ function readSpecAssets(raw: unknown): RunnerSpecAsset[] {
 
 const L2_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024;
 const L2_SCREENSHOT_TOTAL_BYTES = 6 * 1024 * 1024;
+const DIAGNOSTIC_TEXT_MAX_BYTES = 64 * 1024;
+const DIAGNOSTIC_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+const DIAGNOSTIC_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
 
 async function wakeAndroidDevice(input: {
   adbCommand: string;
@@ -229,9 +232,6 @@ export async function executedPayload(
     }
     if (entry.logPath !== undefined) evidence.add(path.relative(jobDir, entry.logPath));
   }
-  for (const file of executed.diagnostics ?? []) {
-    evidence.add(path.relative(jobDir, file));
-  }
 
   // L2 最终截图：只在显式开启时上传；PASS 优先占用预算，单图/总量均有上限。
   const screenshots = new Map<number, { filename: string; base64: string }>();
@@ -262,6 +262,24 @@ export async function executedPayload(
     }
   }
 
+  const diagnostics: Array<{ filename: string; base64: string }> = [];
+  let diagnosticBytes = 0;
+  for (const file of executed.diagnostics ?? []) {
+    const filename = path.basename(file);
+    const isImage = /\.(png|jpe?g|webp)$/i.test(filename);
+    const limit = isImage ? DIAGNOSTIC_IMAGE_MAX_BYTES : DIAGNOSTIC_TEXT_MAX_BYTES;
+    try {
+      const buffer = await readFile(file);
+      if (buffer.length === 0) continue;
+      const slice = buffer.subarray(0, limit);
+      if (diagnosticBytes + slice.length > DIAGNOSTIC_TOTAL_MAX_BYTES) break;
+      diagnosticBytes += slice.length;
+      diagnostics.push({ filename, base64: slice.toString("base64") });
+    } catch {
+      /* 诊断文件不可读：跳过 */
+    }
+  }
+
   return {
     execution: {
       status: RESULT_STATUS_FROM_EXECUTOR[executed.status],
@@ -288,7 +306,8 @@ export async function executedPayload(
     package: pkg,
     startedAt: executed.startedAt,
     finishedAt: executed.finishedAt,
-    evidence: [...evidence]
+    evidence: [...evidence],
+    ...(diagnostics.length === 0 ? {} : { diagnostics })
   };
 }
 

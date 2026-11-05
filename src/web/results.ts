@@ -157,6 +157,8 @@ export interface NormalizedWebJobResultPayload {
   };
   /** 逐例最终截图（Maestro L2，可选；只在显式开启时由 runner 上传）。 */
   caseScreenshots: Array<{ caseId: string; artifact: NormalizedWebResultArtifact }>;
+  /** 失败诊断文件（logcat/window/screenshot 等；可选）。 */
+  diagnostics: NormalizedWebResultArtifact[];
   /** runner 上报的 execution.status（未上报则 undefined）；与用例聚合不同会告警。 */
   reportedStatus?: WebResultGate["result"];
   allowClearedRefresh: boolean;
@@ -300,6 +302,8 @@ const MAX_STRING = 2000;
 /** 单个 token 工件解码后上限（body 总上限见 `MAX_PANEL_RESULT_BODY_BYTES`）。 */
 export const ARTIFACT_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_ARTIFACT_NAME = 100;
+const DIAGNOSTIC_MAX_FILES = 10;
+const DIAGNOSTIC_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
 
 export function webJobResultsDir(rootPath: string, jobId: string): string {
   return path.join(path.resolve(rootPath), ".artemis", "web", "results", jobId);
@@ -859,6 +863,29 @@ export function normalizeWebJobResultPayload(
   // runner 上传 body 不得解冻人工清空：只认内部调用参数；当前没有面板解冻入口。
   const allowClearedRefresh = false;
 
+  const diagnostics: NormalizedWebResultArtifact[] = [];
+  if (raw.diagnostics !== undefined && raw.diagnostics !== null) {
+    if (!Array.isArray(raw.diagnostics) || raw.diagnostics.length > DIAGNOSTIC_MAX_FILES) {
+      throw new WebResultError(
+        "invalid-result",
+        `diagnostics 最多 ${DIAGNOSTIC_MAX_FILES} 个文件`
+      );
+    }
+    let diagnosticBytes = 0;
+    raw.diagnostics.forEach((entry, index) => {
+      const artifact = parseArtifact(entry, `diagnostics[${index}]`);
+      if (artifact === undefined) return;
+      diagnosticBytes += artifact.buffer.length;
+      if (diagnosticBytes > DIAGNOSTIC_TOTAL_MAX_BYTES) {
+        throw new WebResultError(
+          "invalid-result",
+          `diagnostics 合计超过上限 ${DIAGNOSTIC_TOTAL_MAX_BYTES} 字节`
+        );
+      }
+      diagnostics.push(artifact);
+    });
+  }
+
   return {
     execution: {
       status: gate.result,
@@ -875,6 +902,7 @@ export function normalizeWebJobResultPayload(
     tokenUsage,
     tokenArtifacts,
     caseScreenshots,
+    diagnostics,
     ...(reportedStatus === undefined ? {} : { reportedStatus }),
     allowClearedRefresh
   };
@@ -916,6 +944,37 @@ async function stageCaseScreenshots(input: {
       paths.set(entry.caseId, { absolute, relative });
     } catch (error) {
       problems.push(`用例 ${entry.caseId} 截图写入失败：${errorMessage(error)}`);
+    }
+  }
+  return { paths, problems };
+}
+
+async function stageDiagnostics(input: {
+  rootPath: string;
+  resultDir: string;
+  artifacts: NormalizedWebResultArtifact[];
+}): Promise<{ paths: string[]; problems: string[] }> {
+  const paths: string[] = [];
+  const problems: string[] = [];
+  if (input.artifacts.length === 0) return { paths, problems };
+  const targetDir = path.join(input.resultDir, "diagnostics");
+  try {
+    await mkdir(targetDir, { recursive: true });
+  } catch (error) {
+    problems.push(`诊断目录创建失败：${errorMessage(error)}`);
+    return { paths, problems };
+  }
+  const used = new Set<string>();
+  for (const [index, artifact] of input.artifacts.entries()) {
+    let filename = safeArtifactFilename(artifact.filename, `diagnostic-${index}`);
+    if (used.has(filename)) filename = `${index}-${filename}`;
+    used.add(filename);
+    const absolute = path.join(targetDir, filename);
+    try {
+      writeFileAtomic(absolute, artifact.buffer);
+      paths.push(path.relative(input.rootPath, absolute).split(path.sep).join("/"));
+    } catch (error) {
+      problems.push(`${filename}: ${errorMessage(error)}`);
     }
   }
   return { paths, problems };
@@ -1389,6 +1448,13 @@ async function ingestUnderJobLock(
 
   const resultDir = path.dirname(resultPath);
   await mkdir(resultDir, { recursive: true });
+  const stagedDiagnostics = await stageDiagnostics({
+    rootPath,
+    resultDir,
+    artifacts: payload.diagnostics
+  });
+  warnings.push(...stagedDiagnostics.problems.map((problem) => `diagnostics: ${problem}`));
+  const evidence = [...new Set([...payload.evidence, ...stagedDiagnostics.paths])];
   const maxScreenshots = spec.executionMode === "maestro" ? payload.caseScreenshots : [];
   if (spec.executionMode !== "maestro" && payload.caseScreenshots.length > 0) {
     warnings.push(
@@ -1639,7 +1705,7 @@ async function ingestUnderJobLock(
     package: payload.package,
     startedAt: payload.startedAt,
     finishedAt: payload.finishedAt,
-    evidence: payload.evidence,
+    evidence,
     tokenUsage: payload.tokenUsage.length > 0 ? payload.tokenUsage : null,
     tokenTotals,
     tokenArtifacts,

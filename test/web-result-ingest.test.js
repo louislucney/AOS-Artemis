@@ -1674,6 +1674,38 @@ test("normalize：assertionCount 必须是非负整数", () => {
   }
 });
 
+test("ingest：diagnostics 落盘并加入 evidence", async (t) => {
+  const ctx = await setupProject(t, {
+    rows: [
+      ["TC-1", "登录", "1. 打开", "1. 登录"],
+      ["TC-2", "退出", "1. 退出", "1. 首页"],
+      ["TC-3", "设置", "1. 设置", "1. 设置"]
+    ]
+  });
+  const job = await newRunningJob(ctx);
+  const log = Buffer.from("LOGCAT\nline2\n");
+  await ingestWebJobResult({
+    store: ctx.store,
+    jobId: job.id,
+    payload: resultPayload({
+      diagnostics: [
+        { filename: "logcat.txt", base64: log.toString("base64") },
+        { filename: "screen.png", base64: Buffer.from("png").toString("base64") }
+      ]
+    })
+  });
+
+  const doc = JSON.parse(await readFile(resultPathForJob(ctx.rootPath, job.id), "utf8"));
+  const paths = doc.evidence.filter((entry) => entry.includes("/diagnostics/"));
+  assert.equal(paths.length, 2);
+  for (const relative of paths) {
+    assert.equal(fs.existsSync(path.join(ctx.rootPath, relative)), true);
+  }
+  const logPath = paths.find((entry) => entry.endsWith("logcat.txt"));
+  assert.ok(logPath);
+  assert.equal(await readFile(path.join(ctx.rootPath, logPath), "utf8"), log.toString());
+});
+
 test("normalize：token 工件合计超过 16MB（2×8MB 上限）拒绝", () => {
   const payload = {
     execution: { status: "error", cases: [], startedAt: STARTED, finishedAt: FINISHED, detail: null },
