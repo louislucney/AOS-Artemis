@@ -227,6 +227,44 @@ function mappingSummary(columnMap: Record<string, string>): string {
     .join("<br>");
 }
 
+function assetPlatform(asset: WebAssetRecord): "android" | "ios" | null {
+  if (asset.kind === "scripts") {
+    const platform = asset.metadata?.platform;
+    return platform === "android" || platform === "ios" ? platform : null;
+  }
+  if (asset.kind !== "package") return null;
+  const extension = path.extname(asset.filename).toLowerCase();
+  return extension === ".apk" ? "android" : extension === ".ipa" ? "ios" : null;
+}
+
+/** APK/IPA（以及带 platform 元数据的脚本集）按平台各自编号；其它资产沿用全局 version。 */
+function assetVersionNumbers(assets: WebAssetRecord[]): Map<string, number> {
+  const buckets = new Map<string, WebAssetRecord[]>();
+  for (const asset of assets) {
+    const platform = assetPlatform(asset);
+    if (platform === null) continue;
+    const key = `${asset.kind}\u0000${platform}`;
+    const bucket = buckets.get(key) ?? [];
+    bucket.push(asset);
+    buckets.set(key, bucket);
+  }
+  const numbers = new Map<string, number>();
+  for (const bucket of buckets.values()) {
+    bucket
+      .slice()
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.version - right.version)
+      .forEach((asset, index) => numbers.set(asset.id, index + 1));
+  }
+  return numbers;
+}
+
+function assetVersionLabel(asset: WebAssetRecord, numbers: Map<string, number>): string {
+  const version = numbers.get(asset.id) ?? asset.version;
+  const platform = assetPlatform(asset);
+  if (platform === null) return `v${version}`;
+  return `${platform === "android" ? "Android" : "iOS"} v${version}`;
+}
+
 /** 测试资产（Excel 原件版本 + 列映射）：上传/预览/保存均走面板动作 API；
  * 写动作按 capabilities.actions 与角色（maintainer/admin）收口，UI 只做可达性提示。 */
 export function renderWebAssetsPage(data: WebAssetsPageData): string {
@@ -269,15 +307,22 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   const packages = data.packages ?? [];
   const scripts = data.scripts ?? [];
   const materials = data.materials ?? [];
+  const packageVersionNumbers = assetVersionNumbers(packages);
+  const scriptVersionNumbers = assetVersionNumbers(scripts);
   const packageOptions = packages
     .map(
       (asset) =>
-        `<option value="${escapeHtml(asset.id)}">v${asset.version} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
+        `<option value="${escapeHtml(asset.id)}">${escapeHtml(assetVersionLabel(asset, packageVersionNumbers))} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
     )
     .join("");
   const packageRows = packages.map((asset) => [
     `<code>${escapeHtml(asset.filename)}</code>`,
-    `<code>v${asset.version}</code>`,
+    assetPlatform(asset) === "android"
+      ? "Android"
+      : assetPlatform(asset) === "ios"
+        ? "iOS"
+        : '<span class="muted">—</span>',
+    `<code>v${packageVersionNumbers.get(asset.id) ?? asset.version}</code>`,
     formatBytes(asset.size),
     `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
     relativeTime(asset.createdAt),
@@ -292,7 +337,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     const unresolved = typeof metadata.unresolved === "number" ? String(metadata.unresolved) : "—";
     return [
       `<code>${escapeHtml(asset.filename)}</code>`,
-      `<code>v${asset.version}</code>`,
+      `<code>v${scriptVersionNumbers.get(asset.id) ?? asset.version}</code>`,
       `<code>${escapeHtml(platform)}</code>`,
       escapeHtml(origin),
       `<code>${escapeHtml(ready)}</code>`,
@@ -501,9 +546,9 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   });
   const packageCard = `<div id="package-assets">${cCard({
     title: "安装包",
-    subtitle: `共 ${packages.length} 个 APK/IPA 版本`,
+    subtitle: `共 ${packages.length} 个 APK/IPA 版本（Android/iOS 各自编号）`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用"],
+      columns: ["文件名", "平台", "版本", "大小", "sha256", "上传时间", "被使用"],
       rows: packageRows,
       caption: "安装包资产版本",
       empty: "暂无安装包资产（上方上传）"
@@ -1011,10 +1056,11 @@ function jobDeviceCell(entry: WebJobListEntry, runners: WebRunnerRecord[]): stri
 function assetOptions(assets: WebAssetRecord[], kind: WebAssetRecord["kind"], emptyLabel: string): string {
   const entries = assets.filter((asset) => asset.kind === kind);
   if (entries.length === 0) return `<option value="">${escapeHtml(emptyLabel)}</option>`;
+  const versionNumbers = assetVersionNumbers(entries);
   return entries
     .map(
       (asset) =>
-        `<option value="${escapeHtml(asset.id)}">v${asset.version} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
+        `<option value="${escapeHtml(asset.id)}">${escapeHtml(assetVersionLabel(asset, versionNumbers))} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
     )
     .join("");
 }
@@ -1025,12 +1071,13 @@ function assetOptionsWithPlaceholder(
   placeholder: string
 ): string {
   const entries = assets.filter((asset) => asset.kind === kind);
+  const versionNumbers = assetVersionNumbers(entries);
   return (
     `<option value="">${escapeHtml(placeholder)}</option>` +
     entries
       .map(
         (asset) =>
-          `<option value="${escapeHtml(asset.id)}">v${asset.version} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
+          `<option value="${escapeHtml(asset.id)}">${escapeHtml(assetVersionLabel(asset, versionNumbers))} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
       )
       .join("")
   );

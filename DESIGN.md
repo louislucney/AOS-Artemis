@@ -3814,3 +3814,11 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **接口**（`src/panel/web.ts`）：`handlePanelHostsRequest` 不再按存储类型短路；文件/内存/PostgreSQL 统一 `listHosts()` 并走 `panelHostApiRow` 安全投影；空台账仍为 `{ok:true,hosts:[]}`，读取失败统一 503（不伪装空台账）。
 - **影响**：`panel --web` 与 HTTP 模式在文件台账下也能看到 `mac-mini-01` / `win-mini-01` 等主机；`section=devices` 的设备卡片仍要求主机有设备/租约（零设备主机只在主机台账/全局总览出现）。
 - **测试**：`test/panel-hosts.test.js` 原“文件/会话内存模式返回空列表”改为断言 MemoryStore 台账被投影返回；`panel-command`/`http-server` 的空台账用例保持 `hosts:[]`。
+
+### 13.310 修复（安装包版本展示按平台分组）
+
+> 2026-11-05。现场反馈：资产中心的安装包表把 Android APK 与 iOS IPA 放进同一个 `kind=package` 序列，显示成 v1/v2，看起来像同一个包的两个版本；实际是两台平台的不同产物。
+
+- **展示口径**（`src/console/pages.ts`）：包资产按扩展名归平台（`.apk`→Android、`.ipa`→iOS；脚本集按 `metadata.platform`），**每个平台从 v1 独立编号**；安装包表新增「平台」列，版本列显示该平台内的序号，下拉选项显示 `Android v1 · app.apk` / `iOS v1 · app.ipa`。脚本集表同样按平台独立序号（平台列保持）。
+- **存储口径不动**：`web_assets.version` 仍是 `(root_path, kind)` 全局递增（PostgreSQL 唯一索引依赖），仅面板展示层按平台重算；API/审计里的 `version` 仍可作为唯一行标识。这样避免数据库迁移与并发唯一键风险。
+- **测试**：`test/web-assets-ui.test.js` 新增“同一项目上传 APK+IPA → 两者都是 v1，且带平台列”；全量测试与 lint 保持绿。

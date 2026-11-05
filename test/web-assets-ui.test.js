@@ -280,6 +280,35 @@ test("assets hub: overview / case-sets / packages tabs", async (t) => {
   assert.doesNotMatch(packages.body, /id="excel-assets"/);
 });
 
+test("assets hub: APK/IPA 按平台各自编号，不互相递增", async (t) => {
+  const { deps, rootPath, store } = await setup(t);
+  await store.createWebAsset({
+    rootPath,
+    kind: "package",
+    filename: "app.ipa",
+    sha256: "i".repeat(64),
+    size: 4096,
+    storagePath: path.join(
+      rootPath,
+      ".artemis",
+      "web",
+      "assets",
+      "package",
+      `${"i".repeat(64)}.ipa`
+    ),
+    uploadedBy: "alice",
+    metadata: {}
+  });
+
+  const response = await handlePanelRequest(assetsUrl(rootPath, null, "packages"), deps);
+  assert.equal(response.status, 200);
+  const html = String(response.body);
+  assert.match(html, /<th scope="col">平台<\/th>/);
+  assert.match(html, /app\.apk[\s\S]*?Android[\s\S]*?<code>v1<\/code>/);
+  assert.match(html, /app\.ipa[\s\S]*?iOS[\s\S]*?<code>v1<\/code>/);
+  assert.doesNotMatch(html, /app\.ipa[\s\S]{0,160}<code>v2<\/code>/);
+});
+
 test("web assets page: kind=package 预选安装包上传", async (t) => {
   const { deps, rootPath } = await setup(t);
   const response = await handlePanelRequest(
