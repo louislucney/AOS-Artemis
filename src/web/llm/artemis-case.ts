@@ -182,7 +182,12 @@ export async function executeAndroidLlmCase(
       ? (last.test_summary as Record<string, unknown>)
       : null;
   const statusJsonPath = path.join(traceDir, "status.json");
-  const dataEngineDbPath = path.join(traceDir, "data_engine.db");
+  // ARTEMIS 默认把 data_engine.db 放在 traces 根目录（跨 trace 共享，按 session_id 区分），
+  // 不是每个 trace 子目录；兼容旧的 per-trace 布局。
+  const localDb = path.join(traceDir, "data_engine.db");
+  const dataEngineDbPath = existsSync(localDb)
+    ? localDb
+    : path.join(path.dirname(traceDir), "data_engine.db");
   const observations = await readAndroidTraceObservations(dataEngineDbPath, traceId);
   const l1: ExpectedTextCheck =
     observations === null

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -79,6 +79,28 @@ test("executeAndroidLlmCase: failed summary → FAIL；无 summary → UNVERIFIE
     deviceSerial: "pixel-1"
   });
   assert.equal(bare.status, "UNVERIFIED");
+});
+
+test("executeAndroidLlmCase：优先使用 traces 根目录的 data_engine.db", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "aos-llm-traces-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const trace = path.join(root, "trace-root-db");
+  await mkdir(trace, { recursive: true });
+  await writeFile(path.join(trace, "status.json"), "{}");
+  await writeFile(path.join(root, "data_engine.db"), "");
+  const out = await executeAndroidLlmCase({
+    proxy: {
+      async callTool(name) {
+        if (name === "mobile_run_task") return result({ trace_id: "trace-root-db" });
+        return result({ status: "completed", test_summary: { passed: 1, failed: 0 } });
+      }
+    },
+    traceDir: () => trace,
+    testCase: { caseId: "TC-ROOT-DB", taskDesc: "根目录 DB" },
+    deviceSerial: "pixel-1"
+  });
+  assert.equal(out.status, "PASS");
+  assert.equal(out.artifacts.dataEngineDbPath, path.join(root, "data_engine.db"));
 });
 
 test("executeAndroidLlmCase：证据缺失时不因 L1 误判 FAIL", async (t) => {
