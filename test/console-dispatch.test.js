@@ -223,7 +223,7 @@ test("renderDispatchPage: 四段式＋禁用派发＋表单不自动刷新", asy
   assert.match(html, /网页测试（Excel\/安装包\/脚本）/, "网页测试入口常驻");
   assert.match(html, /class="c-flow-callout"/, "安装包下发指引常驻");
   assert.match(html, /要下发安装包（APK\/IPA）/, "安装包引导文案");
-  assert.match(html, /section=library#library-import/, "Excel 用例导入指引");
+  assert.match(html, /section=assets&amp;tab=case-sets#library-import/, "Excel 用例导入指引");
   assert.ok(!html.includes('http-equiv="refresh"'), "表单页不自动刷新");
 });
 

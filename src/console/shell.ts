@@ -140,10 +140,10 @@ function navHref(item: ConsoleNavItem, project: string | null, hostId: string | 
   const host = hostId ? `&host=${encodeURIComponent(hostId)}` : "";
   if (item.key === "project") return `/panel?project=${encodeURIComponent(project)}${host}`;
   if (item.key === "review") {
-    return `/panel?project=${encodeURIComponent(project)}&view=review${host}`;
+    return `/panel?project=${encodeURIComponent(project)}&section=tasks&view=review${host}`;
   }
   if (item.key === "stats") {
-    return `/panel?project=${encodeURIComponent(project)}&view=stats${host}`;
+    return `/panel?project=${encodeURIComponent(project)}&section=tasks&view=stats${host}`;
   }
   const params = new URLSearchParams({ project, section: item.key });
   if (item.key === "tasks") return `/panel?${params.toString()}${host}#tasks`;
@@ -164,8 +164,8 @@ export function renderGroupTabs(input: {
   const entries =
     input.group === "results"
       ? [
-          { key: "review", label: "失败分析", href: `${base}&view=review${host}` },
-          { key: "stats", label: "统计", href: `${base}&view=stats${host}` }
+          { key: "review", label: "失败分析", href: `${base}&section=tasks&view=review${host}` },
+          { key: "stats", label: "统计", href: `${base}&section=tasks&view=stats${host}` }
         ]
       : [
           { key: "ops", label: "数据", href: `${base}&section=ops${host}` },

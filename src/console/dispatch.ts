@@ -630,7 +630,7 @@ export function renderDispatchPage(view: DispatchView): string {
     sourceEmpty,
     view.rootPath === ""
       ? `<p class="muted">先选择项目；Excel 用例导入在用例库，网页测试资产在「网页测试」。</p>`
-      : `<p class="muted">Excel 用例还没进用例库？<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=library#library-import">去用例库导入 Excel</a>；网页测试的 Excel/安装包/脚本资产请走 <a href="${escapeHtml(webJobsHref)}">网页测试</a>，不要用套件下发。</p>`
+      : `<p class="muted">Excel 用例还没进用例库？<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=assets&amp;tab=case-sets#library-import">去用例库导入 Excel</a>；网页测试的 Excel/安装包/脚本资产请走 <a href="${escapeHtml(webJobsHref)}">网页测试</a>，不要用套件下发。</p>`
   ].join("\n");
 
   const paramsBody = [
@@ -757,7 +757,7 @@ go.addEventListener('click',function(){
         if(p.warnings&&p.warnings.length){flash+=' · '+p.warnings.join('；');}
         window.aosFlash&&aosFlash(flash);
         var host=payload.host||'';
-        location.href='/panel?project='+encodeURIComponent(island.project)+'&task='+encodeURIComponent(p.task.id)+(host?'&host='+encodeURIComponent(host):'');
+        location.href='/panel?project='+encodeURIComponent(island.project)+'&section=tasks&task='+encodeURIComponent(p.task.id)+(host?'&host='+encodeURIComponent(host):'');
       });})
       .catch(function(error){go.disabled=false;if(status)status.textContent='';showErr('创建失败：'+error.message);});
   });

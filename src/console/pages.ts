@@ -157,7 +157,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
         `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets${hostQuery}`
       )}">测试资产（Excel / 安装包 / 资料 / 参考图）</a></nav>`,
       `<p class="muted">安装包不随用例集保存。需要上传新安装包请去 <a href="${escapeHtml(
-        `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets&kind=package${hostQuery}#asset-upload`
+        `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets&tab=packages&kind=package${hostQuery}#asset-upload`
       )}">测试资产 → 安装包</a>；下发时在「网页测试（安装包）」选择。</p>`,
       cCard({
         title: "用例集",
@@ -168,7 +168,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
           caption: "用例集列表",
           empty: "暂无用例集（下方导入或先生成）"
         }),
-        actions: `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=dispatch${hostQuery}`)}">按用例集下发</a>`
+        actions: `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=create&type=suite${hostQuery}`)}">按用例集下发</a>`
       }),
       `<div id="library-import">${cCard({ title: "导入 Excel（用例文档）", body: importBody })}</div>`,
       cCard({ title: "隔离（quarantine）", body: quarantineBody }),
@@ -1334,20 +1334,20 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
     .join("");
   const excelAssetsHref = `/panel?project=${encodeURIComponent(
     data.rootPath
-  )}&section=assets&kind=excel${hostQuery}#asset-upload`;
+  )}&section=assets&tab=excel&kind=excel${hostQuery}#asset-upload`;
   const excelHint =
     data.assets.some((asset) => asset.kind === "excel")
       ? ""
-      : `<p class="muted">还没有 Excel 资产：<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=assets&amp;kind=excel${hostQuery.replace(/&/g, "&amp;")}#asset-upload">去测试资产上传 .xlsx/.csv</a> 上传后回到本页刷新。这里是 Web 测试资产，不是用例库导入的套件用例。</p>`;
+      : `<p class="muted">还没有 Excel 资产：<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=assets&amp;tab=excel&amp;kind=excel${hostQuery.replace(/&/g, "&amp;")}#asset-upload">去测试资产上传 .xlsx/.csv</a> 上传后回到本页刷新。这里是 Web 测试资产，不是用例库导入的套件用例。</p>`;
   const packageAssetsHref = `/panel?project=${encodeURIComponent(
     data.rootPath
-  )}&section=assets&kind=package${hostQuery}#asset-upload`;
+  )}&section=assets&tab=packages&kind=package${hostQuery}#asset-upload`;
   const materialsAssetsHref = `/panel?project=${encodeURIComponent(
     data.rootPath
-  )}&section=assets&kind=materials${hostQuery}#asset-upload`;
+  )}&section=assets&tab=materials&kind=materials${hostQuery}#asset-upload`;
   const referenceAssetsHref = `/panel?project=${encodeURIComponent(
     data.rootPath
-  )}&section=assets&kind=reference${hostQuery}#asset-upload`;
+  )}&section=assets&tab=reference&kind=reference${hostQuery}#asset-upload`;
   const packageHint =
     data.assets.some((asset) => asset.kind === "package")
       ? ""
@@ -1458,7 +1458,7 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
       )}">新建测试</a><a class="c-flow-option" href="${escapeHtml(
         suiteHref
       )}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试</span></nav>`
-    : `<nav class="c-flow-switch" aria-label="下发类型"><a class="c-flow-option" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=dispatch${hostQuery.replace(/&/g, "&amp;")}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试</span></nav>`;
+    : `<nav class="c-flow-switch" aria-label="下发类型"><a class="c-flow-option" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=create&amp;type=suite${hostQuery.replace(/&/g, "&amp;")}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试</span></nav>`;
   return renderConsoleShell({
     title: embedded ? "新建测试 · 网页测试" : "下发测试",
     active: "create",
@@ -1968,7 +1968,7 @@ export function renderAuditPage(data: AuditPageData): string {
   const refLink = (key: string, value: string): string => {
     const short = value.length > 12 ? `${value.slice(0, 12)}…` : value;
     if (key === "taskId") {
-      return `<a href="/panel?${base}&amp;task=${encodeURIComponent(value)}" title="taskId=${escapeHtml(value)}">任务 <code>${escapeHtml(short)}</code></a>`;
+      return `<a href="/panel?${base}&amp;section=tasks&amp;task=${encodeURIComponent(value)}" title="taskId=${escapeHtml(value)}">任务 <code>${escapeHtml(short)}</code></a>`;
     }
     if (key === "caseSetId") {
       return `<a href="/panel?${base}&amp;section=assets&amp;tab=case-sets" title="caseSetId=${escapeHtml(value)}">用例库 <code>${escapeHtml(short)}</code></a>`;
@@ -1988,19 +1988,19 @@ export function renderAuditPage(data: AuditPageData): string {
   const recoveryLink = (event: AuditEventRecord): string => {
     if (event.result !== "failed") return '<span class="muted">—</span>';
     if (event.action === "action.tasks") {
-      return `<a href="/panel?${base}&amp;section=dispatch">重新打开下发预览</a>`;
+      return `<a href="/panel?${base}&amp;section=create&amp;type=suite">重新打开下发预览</a>`;
     }
     if (event.action === "action.jobs") {
       return `<a href="/panel?${base}&amp;section=create&amp;type=web">重新打开下发表单</a>`;
     }
     if (event.action === "action.issues") {
-      return `<a href="/panel?${base}&amp;view=stats#issues">去建单</a>`;
+      return `<a href="/panel?${base}&amp;section=tasks&amp;view=stats#issues">去建单</a>`;
     }
     if (event.action === "action.import") {
       return `<a href="/panel?${base}&amp;section=assets&amp;tab=case-sets">去用例库导入</a>`;
     }
     if (event.action === "action.verdicts") {
-      return `<a href="/panel?${base}&amp;view=review">去归因队列</a>`;
+      return `<a href="/panel?${base}&amp;section=tasks&amp;view=review">去归因队列</a>`;
     }
     if (event.action === "action.quarantine") {
       return `<a href="/panel?${base}&amp;section=assets&amp;tab=case-sets">去隔离</a>`;
@@ -2261,7 +2261,7 @@ export function renderSearchPage(data: SearchPageData): string {
     `<code>${escapeHtml(entry.basename)}</code>`,
     escapeHtml(entry.source),
     escapeHtml(entry.features),
-    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&section=dispatch&source=case-set&ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId)}">下发该用例集</a>`
+    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&section=create&type=suite&source=case-set&ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId)}">下发该用例集</a>`
   ]);
   const taskRows = data.tasks.map((entry) => [
     projectLink(entry.project, entry.project, entry.hostId),

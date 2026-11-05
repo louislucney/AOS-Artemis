@@ -118,7 +118,7 @@ test("console pages: 用例库（份列表＋隔离徽章＋失败用例候选�
   assert.match(html.body, /登录回归/);
   assert.match(html.body, /隔离中 0/);
   assert.match(html.body, /按用例集下发/);
-  assert.match(html.body, /&amp;section=dispatch/, "链接实体转义（无裸 &）");
+  assert.match(html.body, /&amp;section=create&amp;type=suite/, "链接实体转义（无裸 &）");
   assert.match(html.body, /aosInlineConfirm\(b,'确认移除该隔离条目？'/, "隔离移除走站内确认");
   assert.doesNotMatch(html.body, /[^a-zA-Z_.]confirm\(/, "无原生 confirm 残留");
   assert.match(html.body, /c-table-wrap/, "表格横向滚动容器（窄屏不整页溢出）");
@@ -130,7 +130,11 @@ test("console pages: 用例库（份列表＋隔离徽章＋失败用例候选�
   assert.match(html.body, /\/panel\/artifact\?project=/, "Excel 走只读产物服务");
   assert.match(html.body, /section=create&amp;type=suite&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");
   assert.match(html.body, /测试资产 → 安装包/, "用例库指明安装包上传入口");
-  assert.match(html.body, /section=assets&amp;kind=package/, "安装包上传链接预选 package");
+  assert.match(
+    html.body,
+    /section=assets&amp;tab=packages&amp;kind=package/,
+    "安装包上传链接预选 package"
+  );
   assert.match(html.body, /id="import-form"/, "Excel 上传表单");
   assert.match(html.body, /id="import-drop" class="c-dropzone"/, "Excel 拖放区");
   assert.match(html.body, /id="import-file"/, "拖放区文件输入");
@@ -548,13 +552,13 @@ test("console pages: 网页测试下发页始终提供上传新安装包入口",
     projectChoices: []
   });
   assert.match(html, /上传新安装包/);
-  assert.match(html, /section=assets&amp;kind=package/);
+  assert.match(html, /section=assets&amp;tab=packages&amp;kind=package/);
   assert.match(html, /上传新 Excel/);
-  assert.match(html, /section=assets&amp;kind=excel/);
+  assert.match(html, /section=assets&amp;tab=excel&amp;kind=excel/);
   assert.match(html, /上传测试资料/);
-  assert.match(html, /section=assets&amp;kind=materials/);
+  assert.match(html, /section=assets&amp;tab=materials&amp;kind=materials/);
   assert.match(html, /上传参考图/);
-  assert.match(html, /section=assets&amp;kind=reference/);
+  assert.match(html, /section=assets&amp;tab=reference&amp;kind=reference/);
   assert.match(html, /id="web-job-reference-gate"/);
   assert.match(html, /referenceGate="unverified"/);
 });
