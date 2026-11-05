@@ -6,6 +6,8 @@ import JSZip from "jszip";
 import {
   inferAppIdFromPackage,
   inspectAndroidPackage,
+  inspectIosInfoPlist,
+  inspectIosPackage,
   parseBinaryManifestPackage
 } from "../dist/web/package-inspect.js";
 
@@ -149,4 +151,26 @@ test("inferAppIdFromPackage: IPA Info.plist", async () => {
   const ipa = await zip.generateAsync({ type: "nodebuffer" });
   assert.equal(await inferAppIdFromPackage(ipa, "app.ipa"), "com.example.ios");
   assert.equal(await inferAppIdFromPackage(Buffer.from("not-a-zip"), "app.apk"), null);
+});
+
+test("inspectIosPackage: IPA/Info.plist 读取 bundleId 与版本", async () => {
+  const plist =
+    `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>` +
+    `<key>CFBundleIdentifier</key><string>com.example.ios</string>` +
+    `<key>CFBundleShortVersionString</key><string>1.4.1</string>` +
+    `<key>CFBundleVersion</key><string>14</string></dict></plist>`;
+  const zip = new JSZip();
+  zip.file("Payload/Demo.app/Info.plist", plist);
+  const ipa = await zip.generateAsync({ type: "nodebuffer" });
+  assert.deepEqual(await inspectIosPackage(ipa), {
+    bundleId: "com.example.ios",
+    version: "1.4.1",
+    build: "14"
+  });
+  assert.deepEqual(inspectIosInfoPlist(Buffer.from(plist)), {
+    bundleId: "com.example.ios",
+    version: "1.4.1",
+    build: "14"
+  });
+  assert.equal(await inspectIosPackage(Buffer.from("not-a-zip")), null);
 });

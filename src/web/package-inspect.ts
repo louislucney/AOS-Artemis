@@ -162,10 +162,57 @@ function parseTextManifestInfo(text: string): AndroidManifestInfo {
   };
 }
 
-function parsePlistBundleId(text: string): string | null {
-  const match =
-    /<key>\s*CFBundleIdentifier\s*<\/key>\s*<string>\s*([^<]+?)\s*<\/string>/i.exec(text);
-  return match?.[1]?.trim() ?? null;
+export interface IosAppInfo {
+  bundleId: string | null;
+  version: string | null;
+  build: string | null;
+}
+
+function parsePlistInfo(xml: string): IosAppInfo {
+  const value = (key: string): string | null => {
+    const match = new RegExp(
+      `<key>\\s*${key}\\s*</key>\\s*<string>\\s*([^<]*?)\\s*</string>`,
+      "i"
+    ).exec(xml);
+    return match?.[1]?.trim() ?? null;
+  };
+  return {
+    bundleId: value("CFBundleIdentifier"),
+    version: value("CFBundleShortVersionString"),
+    build: value("CFBundleVersion")
+  };
+}
+
+/** 读取 Info.plist（XML 或 macOS plutil 可转换的二进制）中的 bundleId/版本号。 */
+export function inspectIosInfoPlist(buffer: Buffer): IosAppInfo | null {
+  if (buffer.length === 0 || buffer.length > MAX_MANIFEST_BYTES) return null;
+  const xml = buffer.subarray(0, 6).toString("ascii").startsWith("bplist")
+    ? plistToXml(buffer)
+    : buffer.toString("utf8");
+  return xml === null ? null : parsePlistInfo(xml);
+}
+
+/** 读取 .ipa 内 `Payload/*.app/Info.plist`；非 IPA 返回 null。 */
+export async function inspectIosPackage(buffer: Buffer): Promise<IosAppInfo | null> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    return null;
+  }
+  const entry = Object.keys(zip.files).find((name) =>
+    /^Payload\/[^/]+\.app\/Info\.plist$/.test(name)
+  );
+  if (entry === undefined) return null;
+  const file = zip.file(entry);
+  if (file === null) return null;
+  let plist: Buffer;
+  try {
+    plist = await file.async("nodebuffer");
+  } catch {
+    return null;
+  }
+  return inspectIosInfoPlist(plist);
 }
 
 function plistToXml(buffer: Buffer): string | null {
@@ -223,29 +270,6 @@ export async function inferAppIdFromPackage(
 ): Promise<string | null> {
   const apk = await inspectAndroidPackage(buffer);
   if (apk !== null) return apk.packageName;
-  let zip: JSZip;
-  try {
-    zip = await JSZip.loadAsync(buffer);
-  } catch {
-    return null;
-  }
-  const plistEntry = Object.keys(zip.files).find((name) =>
-    /^Payload\/[^/]+\.app\/Info\.plist$/.test(name)
-  );
-  if (plistEntry === undefined) return null;
-  const file = zip.file(plistEntry);
-  if (file === null) return null;
-  let plist: Buffer;
-  try {
-    plist = await file.async("nodebuffer");
-  } catch {
-    return null;
-  }
-  if (plist.length === 0 || plist.length > MAX_MANIFEST_BYTES) return null;
-  const xml =
-    plist.subarray(0, 8).toString("ascii").startsWith("bplist")
-      ? plistToXml(plist)
-      : plist.toString("utf8");
-  if (xml === null) return null;
-  return validate(parsePlistBundleId(xml), "ios");
+  const ios = await inspectIosPackage(buffer);
+  return ios === null ? null : validate(ios.bundleId, "ios");
 }

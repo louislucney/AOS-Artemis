@@ -6,6 +6,7 @@ import JSZip from "jszip";
 
 import type { ExecFn } from "../device/adb.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
+import { inspectIosInfoPlist, type IosAppInfo } from "../web/package-inspect.js";
 
 export type WebJobAssetKind = "excel" | "package" | "materials" | "scripts";
 
@@ -515,6 +516,114 @@ async function inspectInstalledAndroidPackage(input: {
   return { installed: true, versionCode: Number(versionCode), versionName };
 }
 
+async function readIosAppInfo(appPath: string): Promise<IosAppInfo | null> {
+  try {
+    return inspectIosInfoPlist(await readFile(path.join(appPath, "Info.plist")));
+  } catch {
+    return null;
+  }
+}
+
+function compareVersions(installed: string | null, expected: string | null): number | null {
+  if (installed === null || expected === null) return null;
+  const parse = (value: string): number[] => value.split(/[._-]/).map((part) => Number(part));
+  const left = parse(installed);
+  const right = parse(expected);
+  if (left.some(Number.isNaN) || right.some(Number.isNaN)) return null;
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const a = left[index] ?? 0;
+    const b = right[index] ?? 0;
+    if (a !== b) return a > b ? 1 : -1;
+  }
+  return 0;
+}
+
+function findIosApp(
+  node: unknown,
+  bundleId: string
+): { version: string | null; build: string | null } | null {
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = findIosApp(item, bundleId);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (node === null || typeof node !== "object") return null;
+  const record = node as Record<string, unknown>;
+  const id =
+    record.bundleIdentifier ?? record.bundleId ?? record.CFBundleIdentifier ?? record.identifier;
+  if (typeof id === "string" && id === bundleId) {
+    const pick = (keys: string[]): string | null => {
+      for (const key of keys) {
+        const value = record[key];
+        if (typeof value === "string" && value.trim() !== "") return value.trim();
+      }
+      return null;
+    };
+    return {
+      version: pick(["CFBundleShortVersionString", "shortVersion", "version"]),
+      build: pick(["CFBundleVersion", "bundleVersion", "buildVersion"])
+    };
+  }
+  for (const value of Object.values(record)) {
+    const found = findIosApp(value, bundleId);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+async function inspectInstalledIosApp(input: {
+  deviceKind: "device" | "simulator";
+  deviceSerial: string;
+  bundleId: string;
+  exec: ExecFn;
+  env?: NodeJS.ProcessEnv;
+}): Promise<{ installed: boolean; version: string | null; build: string | null }> {
+  const options = {
+    timeoutMs: 30_000,
+    ...(input.env === undefined ? {} : { env: input.env })
+  };
+  if (input.deviceKind === "simulator") {
+    const result = await input.exec(
+      "xcrun",
+      ["simctl", "get_app_container", input.deviceSerial, input.bundleId, "app"],
+      options
+    );
+    const container = result.stdout.trim();
+    if (result.code !== 0 || container === "") {
+      return { installed: false, version: null, build: null };
+    }
+    const info = await readIosAppInfo(container);
+    return { installed: true, version: info?.version ?? null, build: info?.build ?? null };
+  }
+  const result = await input.exec(
+    "xcrun",
+    [
+      "devicectl",
+      "device",
+      "info",
+      "apps",
+      "--device",
+      input.deviceSerial,
+      "--json-output",
+      "-"
+    ],
+    options
+  );
+  if (result.code !== 0) return { installed: false, version: null, build: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return { installed: false, version: null, build: null };
+  }
+  const app = findIosApp(parsed, input.bundleId);
+  return app === null
+    ? { installed: false, version: null, build: null }
+    : { installed: true, version: app.version, build: app.build };
+}
+
 export async function installWebPackage(
   input: InstallWebPackageInput
 ): Promise<InstallWebPackageResult> {
@@ -534,6 +643,8 @@ export async function installWebPackage(
   };
   let command: string;
   let args: string[];
+  let iosInfo: IosAppInfo | null = null;
+  let iosKind: "device" | "simulator" = "simulator";
   const androidPackage =
     input.platform === "android" ? normalizeAndroidPackageName(input.expectedPackageName) : null;
   const expectedVersionCode = input.platform === "android" ? (input.expectedVersionCode ?? null) : null;
@@ -568,11 +679,31 @@ export async function installWebPackage(
   } else if (input.platform === "ios") {
     const extension = path.extname(input.packagePath).toLowerCase();
     const kind = input.deviceKind ?? (extension === ".ipa" ? "device" : "simulator");
+    iosKind = kind;
     let installPath = input.packagePath;
     if (extension === ".ipa") {
       const app = await extractIosApp(input, options);
       if (!app.ok) return { ok: false, reason: app.reason };
       installPath = app.appPath;
+    }
+    iosInfo = await readIosAppInfo(installPath);
+    if (iosInfo?.bundleId && input.skipIfInstalled !== false) {
+      const present = await inspectInstalledIosApp({
+        deviceKind: kind,
+        deviceSerial: input.deviceSerial,
+        bundleId: iosInfo.bundleId,
+        exec: input.exec,
+        ...(input.env === undefined ? {} : { env: input.env })
+      });
+      const comparison = compareVersions(present.version, iosInfo.version);
+      if (present.installed && (comparison === null || comparison >= 0)) {
+        return {
+          ok: true,
+          packageName: iosInfo.bundleId,
+          version: present.version ?? iosInfo.version,
+          skipped: true
+        };
+      }
     }
     if (kind === "device") {
       command = "xcrun";
@@ -594,22 +725,42 @@ export async function installWebPackage(
   }
 
   const recoverInstalled = async (): Promise<InstallWebPackageResult | null> => {
-    if (androidPackage === null) return null;
-    const present = await inspectInstalledAndroidPackage({
-      adbCommand: command,
-      deviceSerial: input.deviceSerial,
-      packageName: androidPackage,
-      exec: input.exec,
-      ...(input.env === undefined ? {} : { env: input.env })
-    });
-    return installedCoversExpected(present)
-      ? {
-          ok: true,
-          packageName: androidPackage,
-          version: present.versionName,
-          recovered: true
-        }
-      : null;
+    if (input.platform === "android" && androidPackage !== null) {
+      const present = await inspectInstalledAndroidPackage({
+        adbCommand: command,
+        deviceSerial: input.deviceSerial,
+        packageName: androidPackage,
+        exec: input.exec,
+        ...(input.env === undefined ? {} : { env: input.env })
+      });
+      return installedCoversExpected(present)
+        ? {
+            ok: true,
+            packageName: androidPackage,
+            version: present.versionName,
+            recovered: true
+          }
+        : null;
+    }
+    if (input.platform === "ios" && iosInfo?.bundleId) {
+      const present = await inspectInstalledIosApp({
+        deviceKind: iosKind,
+        deviceSerial: input.deviceSerial,
+        bundleId: iosInfo.bundleId,
+        exec: input.exec,
+        ...(input.env === undefined ? {} : { env: input.env })
+      });
+      const comparison = compareVersions(present.version, iosInfo.version);
+      return present.installed && (comparison === null || comparison >= 0)
+        ? {
+            ok: true,
+            packageName: iosInfo.bundleId,
+            version: present.version ?? iosInfo.version,
+            recovered: true
+          }
+        : null;
+    }
+    return null;
   };
 
   const result = await input.exec(command, args, options);
@@ -648,6 +799,9 @@ export async function installWebPackage(
       packageName: androidPackage,
       version: versionMatch?.[1] ?? present.versionName
     };
+  }
+  if (iosInfo?.bundleId) {
+    return { ok: true, packageName: iosInfo.bundleId, version: iosInfo.version };
   }
   return {
     ok: true,

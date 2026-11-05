@@ -830,6 +830,154 @@ test("installWebPackage: iOS .ipa 解压 Payload/*.app 后安装（模拟器/真
   assert.equal(noJobDir.calls.length, 0);
 });
 
+test("installWebPackage: iOS 模拟器/真机已安装同版本跳过", async (t) => {
+  const jobDir = await tempDir(t, "aos-web-ios-skip-");
+  const packagePath = path.join(jobDir, "assets", "package", "Test.ipa");
+  await fs.promises.mkdir(path.dirname(packagePath), { recursive: true });
+  await fs.promises.writeFile(packagePath, "fake-ipa");
+  const plist = (version) =>
+    `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>` +
+    `<key>CFBundleIdentifier</key><string>com.example.ios</string>` +
+    `<key>CFBundleShortVersionString</key><string>${version}</string>` +
+    `<key>CFBundleVersion</key><string>14</string></dict></plist>`;
+  const container = path.join(jobDir, "installed", "Test.app");
+  await fs.promises.mkdir(container, { recursive: true });
+  await fs.promises.writeFile(path.join(container, "Info.plist"), plist("1.4.1"));
+
+  const simExec = fakeExec((_command, args) => {
+    if (args.includes("-d")) {
+      const dir = args[args.indexOf("-d") + 1];
+      const app = path.join(dir, "Payload", "Test.app");
+      fs.mkdirSync(app, { recursive: true });
+      fs.writeFileSync(path.join(app, "Info.plist"), plist("1.4.1"));
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    if (args[0] === "simctl" && args[1] === "get_app_container") {
+      return { code: 0, stdout: `${container}\n`, stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const sim = await installWebPackage({
+    platform: "ios",
+    deviceSerial: "SIM-UDID",
+    packagePath,
+    deviceKind: "simulator",
+    jobDir,
+    exec: simExec.exec
+  });
+  assert.deepEqual(sim, {
+    ok: true,
+    packageName: "com.example.ios",
+    version: "1.4.1",
+    skipped: true
+  });
+  assert.equal(
+    simExec.calls.some((call) => call.args[0] === "simctl" && call.args[1] === "install"),
+    false
+  );
+
+  const deviceExec = fakeExec((_command, args) => {
+    if (args.includes("-d")) {
+      const dir = args[args.indexOf("-d") + 1];
+      const app = path.join(dir, "Payload", "Test.app");
+      fs.mkdirSync(app, { recursive: true });
+      fs.writeFileSync(path.join(app, "Info.plist"), plist("1.4.1"));
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    if (args[0] === "devicectl" && args[1] === "device" && args[2] === "info") {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          result: {
+            apps: [
+              {
+                bundleIdentifier: "com.example.ios",
+                shortVersion: "1.4.1",
+                bundleVersion: "14"
+              }
+            ]
+          }
+        }),
+        stderr: ""
+      };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const real = await installWebPackage({
+    platform: "ios",
+    deviceSerial: "REAL-UDID",
+    packagePath,
+    deviceKind: "device",
+    jobDir,
+    exec: deviceExec.exec
+  });
+  assert.deepEqual(real, {
+    ok: true,
+    packageName: "com.example.ios",
+    version: "1.4.1",
+    skipped: true
+  });
+  assert.equal(
+    deviceExec.calls.some((call) => call.args[0] === "devicectl" && call.args[2] === "install"),
+    false
+  );
+});
+
+test("installWebPackage: iOS 旧版本升级；安装失败后复查已安装按 recovered", async (t) => {
+  const jobDir = await tempDir(t, "aos-web-ios-upgrade-");
+  const packagePath = path.join(jobDir, "assets", "package", "Test.ipa");
+  await fs.promises.mkdir(path.dirname(packagePath), { recursive: true });
+  await fs.promises.writeFile(packagePath, "fake-ipa");
+  const plist = (version) =>
+    `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>` +
+    `<key>CFBundleIdentifier</key><string>com.example.ios</string>` +
+    `<key>CFBundleShortVersionString</key><string>${version}</string>` +
+    `<key>CFBundleVersion</key><string>14</string></dict></plist>`;
+  const oldContainer = path.join(jobDir, "installed-old", "Test.app");
+  const newContainer = path.join(jobDir, "installed-new", "Test.app");
+  await fs.promises.mkdir(oldContainer, { recursive: true });
+  await fs.promises.mkdir(newContainer, { recursive: true });
+  await fs.promises.writeFile(path.join(oldContainer, "Info.plist"), plist("1.3.0"));
+  await fs.promises.writeFile(path.join(newContainer, "Info.plist"), plist("1.4.1"));
+
+  let checks = 0;
+  const exec = fakeExec((_command, args) => {
+    if (args.includes("-d")) {
+      const dir = args[args.indexOf("-d") + 1];
+      const app = path.join(dir, "Payload", "Test.app");
+      fs.mkdirSync(app, { recursive: true });
+      fs.writeFileSync(path.join(app, "Info.plist"), plist("1.4.1"));
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    if (args[0] === "simctl" && args[1] === "get_app_container") {
+      checks += 1;
+      return { code: 0, stdout: `${checks === 1 ? oldContainer : newContainer}\n`, stderr: "" };
+    }
+    if (args[0] === "simctl" && args[1] === "install") {
+      return { code: 1, stdout: "", stderr: "install failed" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const recovered = await installWebPackage({
+    platform: "ios",
+    deviceSerial: "SIM-UDID",
+    packagePath,
+    deviceKind: "simulator",
+    jobDir,
+    exec: exec.exec
+  });
+  assert.deepEqual(recovered, {
+    ok: true,
+    packageName: "com.example.ios",
+    version: "1.4.1",
+    recovered: true
+  });
+  assert.equal(
+    exec.calls.some((call) => call.args[0] === "simctl" && call.args[1] === "install"),
+    true
+  );
+});
+
 async function makeJob(store, rootPath, jobSpec, status = "claimed", hostId = null) {
   await store.upsertProject({ rootPath, name: path.basename(rootPath) });
   await store.createWebProject({
