@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import JSZip from "jszip";
 import { newDb } from "pg-mem";
 
 import { FileStore } from "../dist/db/file.js";
@@ -358,6 +359,33 @@ test("prepareWebJobWorkspace: manifest.json + flows/ 解压到 jobDir 根，mani
   assert.equal(fs.existsSync(path.join(prepared.flowsDir, "login.yaml")), true);
   assert.equal(fs.existsSync(path.join(prepared.flowsDir, "manifest.json")), false);
   assert.equal(fs.existsSync(path.join(prepared.flowsDir, "flows")), false);
+});
+
+test("prepareWebJobWorkspace: Windows 无 unzip 时用 JSZip 解压脚本包", async (t) => {
+  const root = await tempDir(t, "aos-web-job-ws-");
+  const zip = new JSZip();
+  zip.file("flows/login.yaml", "appId: demo\n");
+  zip.file("manifest.json", '{"cases":[]}\n');
+  const buffer = await zip.generateAsync({ type: "nodebuffer" });
+  let calls = 0;
+  const exec = async () => {
+    calls += 1;
+    return { code: null, stdout: "", stderr: "", error: "spawn unzip ENOENT" };
+  };
+  const prepared = await prepareWebJobWorkspace({
+    jobId: "job-win-zip",
+    projectSlug: "acme",
+    workRoot: path.join(root, "work"),
+    cacheRoot: path.join(root, "cache"),
+    assets: [asset({ kind: "scripts", filename: "scripts.zip", sha256: sha256(buffer) })],
+    download: async () => buffer,
+    exec,
+    platform: "win32"
+  });
+  assert.equal(calls, 0, "不应 spawn unzip");
+  assert.ok(prepared.flowsDir);
+  assert.match(await readFile(path.join(prepared.flowsDir, "login.yaml"), "utf-8"), /appId/);
+  assert.equal(fs.existsSync(path.join(prepared.jobDir, "manifest.json")), true);
 });
 
 test("prepareWebJobWorkspace + executeWebJob: 真实脚本包 manifest+flows 可直接执行", async (t) => {

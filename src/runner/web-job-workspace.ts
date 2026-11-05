@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { chmod, copyFile, link, lstat, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+import JSZip from "jszip";
 
 import type { ExecFn } from "../device/adb.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
@@ -24,6 +26,8 @@ export interface PrepareWebJobWorkspaceInput {
   download: (url: string) => Promise<Buffer>;
   exec: ExecFn;
   env?: NodeJS.ProcessEnv;
+  /** 测试/跨平台注入；缺省 process.platform。Windows 无 unzip，走 JSZip。 */
+  platform?: NodeJS.Platform;
 }
 
 export interface PreparedWebJobWorkspace {
@@ -135,26 +139,64 @@ async function cacheEntry(
   return cachePath;
 }
 
+async function listZipEntriesWithJszip(zipPath: string): Promise<string[]> {
+  const zip = await JSZip.loadAsync(await readFile(zipPath));
+  return Object.keys(zip.files);
+}
+
+async function extractZipWithJszip(zipPath: string, destination: string): Promise<void> {
+  const zip = await JSZip.loadAsync(await readFile(zipPath));
+  for (const [name, entry] of Object.entries(zip.files)) {
+    if (entry.dir) continue;
+    const target = path.resolve(destination, name);
+    const relative = path.relative(destination, target);
+    if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new WebJobWorkspaceError(
+        "script-extract-failed",
+        `脚本包包含越界条目（拒绝解压）：${name}`
+      );
+    }
+    await mkdir(path.dirname(target), { recursive: true });
+    const data = await entry.async("nodebuffer");
+    const mode = (entry as { unixPermissions?: number }).unixPermissions;
+    await writeFile(target, data, mode === undefined ? undefined : { mode });
+  }
+}
+
 async function extractScripts(input: {
   zipPath: string;
   flowsDir: string;
   exec: ExecFn;
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
 }): Promise<void> {
   const options = input.env === undefined
     ? { timeoutMs: EXTRACT_TIMEOUT_MS }
     : { timeoutMs: EXTRACT_TIMEOUT_MS, env: input.env };
-  const listing = await input.exec("unzip", ["-Z1", input.zipPath], options);
-  if (listing.code !== 0) {
-    throw new WebJobWorkspaceError(
-      "script-extract-failed",
-      `脚本包条目扫描失败：${listing.stderr || listing.stdout || listing.error || "unzip -Z1"}`
-    );
+  const platform = input.platform ?? process.platform;
+  let entries: string[];
+  if (platform === "win32") {
+    try {
+      entries = await listZipEntriesWithJszip(input.zipPath);
+    } catch (error) {
+      throw new WebJobWorkspaceError(
+        "script-extract-failed",
+        `脚本包条目扫描失败：${errorMessage(error)}`
+      );
+    }
+  } else {
+    const listing = await input.exec("unzip", ["-Z1", input.zipPath], options);
+    if (listing.code !== 0) {
+      throw new WebJobWorkspaceError(
+        "script-extract-failed",
+        `脚本包条目扫描失败：${listing.stderr || listing.stdout || listing.error || "unzip -Z1"}`
+      );
+    }
+    entries = listing.stdout
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== "");
   }
-  const entries = listing.stdout
-    .split(/\r?\n/)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry !== "");
   const unsafe = entries.find((entry) => isUnsafeZipEntry(entry));
   if (unsafe !== undefined) {
     throw new WebJobWorkspaceError(
@@ -174,6 +216,18 @@ async function extractScripts(input: {
       ? path.dirname(input.flowsDir)
       : input.flowsDir;
   await mkdir(input.flowsDir, { recursive: true });
+  if (platform === "win32") {
+    try {
+      await extractZipWithJszip(input.zipPath, destination);
+    } catch (error) {
+      if (error instanceof WebJobWorkspaceError) throw error;
+      throw new WebJobWorkspaceError(
+        "script-extract-failed",
+        `脚本包解压失败：${errorMessage(error)}`
+      );
+    }
+    return;
+  }
   const extracted = await input.exec(
     "unzip",
     ["-o", input.zipPath, "-d", destination],
@@ -259,7 +313,8 @@ export async function prepareWebJobWorkspace(
           zipPath: destination,
           flowsDir: target,
           exec: input.exec,
-          ...(input.env === undefined ? {} : { env: input.env })
+          ...(input.env === undefined ? {} : { env: input.env }),
+          ...(input.platform === undefined ? {} : { platform: input.platform })
         });
         flowsDir = target;
         continue;
