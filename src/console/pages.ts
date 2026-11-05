@@ -147,6 +147,9 @@ export function renderLibraryPage(data: LibraryPageData): string {
     storeHealth: data.storeHealth,
     body: [
       "<h1>用例库</h1>",
+      `<p class="muted">安装包不随用例集保存。需要上传新安装包请去 <a href="${escapeHtml(
+        `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets&kind=package${hostQuery}#asset-upload`
+      )}">测试资产 → 安装包</a>；下发时在「网页测试（安装包）」选择。</p>`,
       cCard({
         title: "用例集",
         subtitle: `共 ${data.sets.length} 份用例集 · 每份可打开 Excel（tests.xlsx）`,
@@ -959,10 +962,15 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
     data.assets.some((asset) => asset.kind === "excel")
       ? ""
       : `<p class="muted">还没有 Excel 资产：<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=assets&amp;kind=excel${hostQuery.replace(/&/g, "&amp;")}#asset-upload">去测试资产上传 .xlsx/.csv</a> 上传后回到本页刷新。这里是 Web 测试资产，不是用例库导入的套件用例。</p>`;
+  const packageAssetsHref = `/panel?project=${encodeURIComponent(
+    data.rootPath
+  )}&section=assets&kind=package${hostQuery}#asset-upload`;
   const packageHint =
     data.assets.some((asset) => asset.kind === "package")
       ? ""
-      : `<p class="muted">还没有安装包资产：<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=assets&amp;kind=package${hostQuery.replace(/&/g, "&amp;")}#asset-upload">去测试资产上传 .apk/.ipa</a> 上传后回到本页刷新。</p>`;
+      : `<p class="muted">还没有安装包资产：<a class="c-button" href="${escapeHtml(
+          packageAssetsHref
+        )}">去测试资产上传 .apk/.ipa</a> 上传后回到本页刷新。</p>`;
   const gatewayReady = data.runners.filter(
     (runner) => runner.gateway?.ready === true && runner.gateway.adbServer !== null
   ).length;
@@ -995,7 +1003,9 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
         data.assets,
         "package",
         "暂无安装包资产"
-      )}</select></label></p>`,
+      )}</select></label> <a class="c-button" href="${escapeHtml(
+        packageAssetsHref
+      )}">上传新安装包</a></p>`,
     excelHint,
     packageHint,
     `<p><label>测试资料 <select id="web-job-materials" name="materialsAssetId" aria-label="测试资料资产"${disabledAttr}>${assetOptionsWithPlaceholder(

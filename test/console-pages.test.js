@@ -8,6 +8,7 @@ import test from "node:test";
 import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { handlePanelRequest } from "../dist/panel/web.js";
+import { renderWebJobsPage } from "../dist/console/pages.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject } from "./helpers.js";
 
 async function setup() {
@@ -128,6 +129,8 @@ test("console pages: 用例库（份列表＋隔离徽章＋失败用例候选�
   assert.match(html.body, />a\.xlsx<\/a>/, "Excel 文件名可点");
   assert.match(html.body, /\/panel\/artifact\?project=/, "Excel 走只读产物服务");
   assert.match(html.body, /section=dispatch&amp;source=case-set&amp;ref=/, "预填下发链接（转义后）");
+  assert.match(html.body, /测试资产 → 安装包/, "用例库指明安装包上传入口");
+  assert.match(html.body, /section=assets&amp;kind=package/, "安装包上传链接预选 package");
   assert.match(html.body, /id="import-form"/, "Excel 上传表单");
   assert.match(html.body, /id="import-drop" class="c-dropzone"/, "Excel 拖放区");
   assert.match(html.body, /id="import-file"/, "拖放区文件输入");
@@ -436,4 +439,22 @@ test("console pages: 批次详情展示台账 API 说明（清单已清理仍可
   const html = await handlePanelRequest(url(rootPath, "project", { batch: file }), deps);
   assert.equal(html.status, 200);
   assert.match(html.body, /API 说明已提供/);
+});
+
+test("console pages: 网页测试下发页始终提供上传新安装包入口", () => {
+  const html = renderWebJobsPage({
+    rootPath: "/w/p",
+    rootLabel: "p",
+    hostId: null,
+    projectStatus: "active",
+    jobs: [],
+    assets: [],
+    runners: [],
+    leases: [],
+    nowMs: 0,
+    runnerTtlMs: 1,
+    projectChoices: []
+  });
+  assert.match(html, /上传新安装包/);
+  assert.match(html, /section=assets&amp;kind=package/);
 });
