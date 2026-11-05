@@ -1154,6 +1154,33 @@ export class FileStore implements ProjectStore {
   }
 
   async listProjects(): Promise<ProjectRecord[]> {
+    if (this.hostId !== null) {
+      const hostId = this.hostId;
+      const rows: ProjectRecord[] = [];
+      for (const rootPath of this.registry.keys()) {
+        try {
+          const bucket = await this.bucket(rootPath);
+          rows.push(
+            ...(await this.scopedMem(bucket, hostId).listProjects()).filter(
+              (record) => record.hostId === hostId
+            )
+          );
+        } catch {
+          /* 单个项目不可读不阻断主机项目列表 */
+        }
+      }
+      const seen = new Set<string>();
+      return rows
+        .filter((record) => {
+          const key = `${record.hostId ?? ""}\u0000${record.rootPath}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .sort(
+          (a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt) || a.name.localeCompare(b.name)
+        );
+    }
     return [...this.registry.values()]
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name))
       .map((entry) => ({

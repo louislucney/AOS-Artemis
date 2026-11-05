@@ -80,6 +80,31 @@ test("FileStore: scopeHost 两行往返且重启保留", async () => {
   }
 });
 
+test("FileStore: scopeHost listProjects 只返回该主机项目", async () => {
+  const home = await tempHome();
+  const rootA = await tempProject();
+  const rootB = await tempProject();
+  try {
+    const store = await FileStore.create({ homeDir: home });
+    await store.scopeHost("h-a").upsertProject({ rootPath: rootA, name: "a" });
+    await store.scopeHost("h-b").upsertProject({ rootPath: rootB, name: "b" });
+    const a = await store.scopeHost("h-a").listProjects();
+    assert.equal(a.length, 1);
+    assert.equal(a[0].rootPath, rootA);
+    assert.equal(a[0].hostId, "h-a");
+    const b = await store.scopeHost("h-b").listProjects();
+    assert.equal(b.length, 1);
+    assert.equal(b[0].rootPath, rootB);
+    const all = await store.listProjects();
+    assert.equal(all.length, 2);
+    assert.ok(all.every((project) => project.hostId === null), "未作用域列表保持 NULL-host 兼容");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(rootA, { recursive: true, force: true });
+    await rm(rootB, { recursive: true, force: true });
+  }
+});
+
 test("FileStore: 历史 NULL 行与单个已绑定行共存 → 加载时自动收敛为已绑定行", async () => {
   const home = await tempHome();
   const root = await tempProject();
