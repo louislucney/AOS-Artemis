@@ -19,7 +19,11 @@ export function resolveMaestroPath(
   const names =
     platform === "win32" ? ["maestro.exe", "maestro.cmd", "maestro.bat", "maestro"] : ["maestro"];
   const delimiter = platform === "win32" ? ";" : path.delimiter;
-  for (const dir of (env.PATH ?? "").split(delimiter)) {
+  const pathValue =
+    env.PATH ??
+    Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] ??
+    "";
+  for (const dir of pathValue.split(delimiter)) {
     const trimmed = dir.trim();
     if (trimmed === "") continue;
     for (const name of names) {

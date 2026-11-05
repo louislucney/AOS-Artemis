@@ -381,6 +381,19 @@ test("web-runner 启动：缺中心基址/RUNNER_JOB_TOKEN 明确 exit 2", async
   );
 });
 
+test("webRunnerChildEnv: Windows Path 归一到 PATH", () => {
+  const child = webRunnerChildEnv({
+    Path: "C:\\Windows\\system32",
+    Temp: "C:\\Temp",
+    "AOS_MAESTRO_PATH": "C:\\maestro\\maestro.bat",
+    MOBILE_TESTING_RUNNER_JOB_TOKEN: "secret"
+  });
+  assert.equal(child.PATH, "C:\\Windows\\system32");
+  assert.equal(child.TEMP, "C:\\Temp");
+  assert.equal(child.AOS_MAESTRO_PATH, "C:\\maestro\\maestro.bat");
+  assert.equal(child.MOBILE_TESTING_RUNNER_JOB_TOKEN, undefined);
+});
+
 test("webRunnerChildEnv: 只保留工具/PATH 白名单，剔除令牌/DB/KEY", () => {
   const child = webRunnerChildEnv({
     PATH: "/usr/bin",

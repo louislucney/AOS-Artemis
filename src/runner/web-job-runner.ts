@@ -81,18 +81,24 @@ const CHILD_ENV_ALLOW = new Set([
 const CHILD_ENV_DENY = /(TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|DATABASE_URL|_KEY$)/i;
 
 /** 子进程环境最小集：白名单 + 工具前缀；剔除 runner 令牌、DB URL 与任意 TOKEN/KEY 类变量。 */
+const CHILD_ENV_CANONICAL = new Map(
+  [...CHILD_ENV_ALLOW].map((key) => [key.toLowerCase(), key])
+);
+
 export function webRunnerChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue;
     if (CHILD_ENV_DENY.test(key)) continue;
+    const canonical = CHILD_ENV_CANONICAL.get(key.toLowerCase());
     const allowed =
-      CHILD_ENV_ALLOW.has(key) ||
+      canonical !== undefined ||
       key.startsWith("LC_") ||
       key.startsWith("ANDROID_") ||
       key.startsWith("MAESTRO_");
     if (!allowed) continue;
-    out[key] = value;
+    // Windows 环境变量大小写不敏感（常见 `Path`）；输出统一为白名单规范名，避免子进程丢 PATH。
+    out[canonical ?? key] = value;
   }
   return out;
 }

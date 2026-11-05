@@ -384,6 +384,15 @@ test("resolveMaestroPath：AOS_MAESTRO_PATH → PATH → 常见安装位置；�
     ),
     { path: winPath, source: "path" }
   );
+  assert.deepEqual(
+    resolveMaestroPath(
+      { Path: "C:\\tools" },
+      (candidate) => candidate === winPath,
+      "win32"
+    ),
+    { path: winPath, source: "path" },
+    "Windows 的 Path 大小写"
+  );
   const winHome = path.join(os.homedir(), ".maestro", "bin", "maestro.cmd");
   assert.deepEqual(
     resolveMaestroPath({}, (candidate) => candidate === winHome, "win32"),
