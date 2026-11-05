@@ -673,13 +673,15 @@ Spike 已完成，报告：`spikes/ios-artemis/REPORT.md`。
 
 ### 18.4 更新后的启动门
 
-Phase 1 启动前必须完成：
+2026-11-05 用户确认按以下默认方案执行（**开发仍暂停，待排期启动**）：
 
-1. 平台接缝窄 patch 的批准（§18.1）；
-2. Android 隐式依赖审计清单签字（§18.2）；
-3. UDID 锁选型确认（PG advisory / flock）；
-4. OCR provider 策略确认（默认项目级；是否允许平台覆盖）；
-5. Phase 1 MVP 是否包含最小 `data_engine.db` 确认（默认包含）。
+1. **平台接缝窄 patch**：接受。仅扩展 `DevicePlatform.IOS`、`Agent.init` 平台分支、`_get_controller` iOS 分支、iOS controller 覆盖；不改 planner/operator/checker/tools/data engine。
+2. **Android 隐式依赖审计**：接受 §18.2 清单；审计本身仍在 Phase 1 第 0 步执行并留档。
+3. **UDID 锁**：PG advisory lock 优先，无 PG 用 `flock`；不使用 pid+mtime 启发式。
+4. **OCR provider**：默认项目级统一；允许显式平台覆盖，但 trace 记录 `ocrProvider`/`ocrParity`，跨端 L1 等价只在 same-provider 时承诺。
+5. **最小 `data_engine.db`**：纳入 Phase 1，使用 `meta.data_engine_version="ios-partial"`，只写实际字段，读取方降级。
+
+注意：以上是“启动门确认”，不是“开始开发”。Phase 1 仍需等 Android/P0b 真机稳定后按 §17 恢复条件排期。
 
 ---
 
@@ -687,7 +689,7 @@ Phase 1 启动前必须完成：
 
 ## 17. 当前状态与恢复条件（2026-11-05）
 
-**状态：暂停开发。**
+**状态：暂停开发；Phase 1 启动门已确认，待排期。**
 
 已完成：
 
