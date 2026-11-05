@@ -623,6 +623,109 @@ export interface WebJobListEntry {
   result: WebJobResultDocument | null;
 }
 
+export interface TasksPageData {
+  rootPath: string;
+  rootLabel: string;
+  hostId?: string | null;
+  projectStatus?: "active" | "archived" | null;
+  tasks: WebJobListEntry[];
+  filter?: "all" | "active";
+  capabilities?: ConsoleCapabilities;
+  storeHealth?: ConsoleShellInput["storeHealth"];
+}
+
+export function renderTasksPage(data: TasksPageData): string {
+  const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
+  const projectQuery = `project=${encodeURIComponent(data.rootPath)}`;
+  const tasksUrl = (extra = ""): string => `/panel?${projectQuery}&section=tasks${extra}${hostQuery}`;
+  const createHref = `/panel?${projectQuery}&section=create${hostQuery}`;
+  const visible =
+    data.filter === "active"
+      ? data.tasks.filter((entry) =>
+          ["pending", "claimed", "running", "stopping"].includes(entry.task.status)
+        )
+      : data.tasks;
+  const rows = visible.map((entry) => {
+    const task = entry.task;
+    const isWeb = entry.spec !== null;
+    const type = isWeb
+      ? entry.spec?.executionMode === "llm"
+        ? "网页测试 · LLM"
+        : "网页测试 · Maestro"
+      : "套件回归";
+    const detail = isWeb
+      ? `/panel?${projectQuery}&section=jobs&job=${encodeURIComponent(task.id)}${hostQuery}`
+      : `/panel?${projectQuery}&task=${encodeURIComponent(task.id)}${hostQuery}`;
+    const input = isWeb
+      ? entry.spec?.assetSnapshot.find((asset) => asset.kind === "package")?.filename ??
+        entry.spec?.packageAssetId ??
+        "—"
+      : `${task.refs.length} 份用例集`;
+    const result = isWeb
+      ? entry.result === null
+        ? "—"
+        : entry.result.gate.result
+      : `${task.runIds.length} 次运行`;
+    return [
+      `<a href="${escapeHtml(detail)}"><code>${escapeHtml(task.id.slice(0, 12))}</code></a>`,
+      cBadge({ label: type, tone: isWeb ? "accent" : "neutral" }),
+      cBadge({
+        label: `P${task.priority}`,
+        tone: task.priority > 0 ? "warning" : "neutral",
+        title: "优先级（越大越先领取）"
+      }),
+      cBadge({ label: webJobStatusLabel(task.status), tone: webJobStatusTone(task.status) }),
+      escapeHtml(data.rootLabel),
+      `<span class="muted">${escapeHtml(task.claimedHostId ?? task.targetHostId ?? "—")} · ${escapeHtml(
+        task.deviceSerial ?? "—"
+      )}</span>`,
+      escapeHtml(input),
+      `<span title="${escapeHtml(task.createdAt)}">${relativeTime(task.createdAt)}</span>`,
+      escapeHtml(result),
+      `<a class="c-button" href="${escapeHtml(detail)}">详情</a>`
+    ];
+  });
+  const tabs = [
+    ["全部", tasksUrl(), data.filter !== "active"],
+    ["进行中", tasksUrl("&filter=active"), data.filter === "active"]
+  ] as const;
+  const tabBar = `<nav class="c-flow-switch" aria-label="任务视图">${tabs
+    .map(([label, href, active]) =>
+      active
+        ? `<span class="c-flow-option is-active" aria-current="page">${escapeHtml(label)}</span>`
+        : `<a class="c-flow-option" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`
+    )
+    .join("")}<a class="c-flow-option" href="${escapeHtml(
+    tasksUrl("&view=review")
+  )}">待处理失败</a></nav>`;
+  return renderConsoleShell({
+    title: "任务与结果",
+    active: "tasks",
+    meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
+    project: data.rootPath,
+    projectHostId: data.hostId ?? null,
+    capabilities: data.capabilities,
+    storeHealth: data.storeHealth,
+    body: [
+      "<h1>任务与结果</h1>",
+      tabBar,
+      `<p class="muted">套件回归与网页测试统一在这里查看；状态、执行机、输入和结果同表。 <a class="c-button" href="${escapeHtml(
+        createHref
+      )}">新建测试</a></p>`,
+      cCard({
+        title: "任务列表",
+        subtitle: `共 ${visible.length} 条${data.filter === "active" ? "（进行中）" : ""}`,
+        body: cTable({
+          columns: ["任务", "类型", "优先级", "状态", "项目", "执行机/设备", "输入", "创建", "结果", "操作"],
+          rows,
+          caption: "任务与结果",
+          empty: "还没有任务；点右上角「新建测试」开始。"
+        })
+      })
+    ].join("\n")
+  });
+}
+
 export interface DeviceListEntry {
   hostId: string;
   hostname: string;
@@ -1418,12 +1521,14 @@ export function renderWebJobPage(data: WebJobPageData): string {
     capabilities: data.capabilities,
     storeHealth: data.storeHealth,
     body: [
-      "<h1>下发任务详情</h1>",
-      `<p><a href="${escapeHtml(
-        jobsHref(data.rootPath, data.hostId ?? null)
-      )}">← 返回下发列表</a> · 任务 <code>${escapeHtml(data.task.id)}</code> · <a href="/panel?project=${encodeURIComponent(
+      "<h1>网页任务详情</h1>",
+      `<p><a href="/panel?project=${encodeURIComponent(
         data.rootPath
-      )}&amp;task=${encodeURIComponent(data.task.id)}${hostQuery}">打开回归任务</a></p>`,
+      )}&section=tasks${hostQuery}">← 返回任务与结果</a> · 任务 <code>${escapeHtml(
+        data.task.id
+      )}</code> · <a href="/panel?project=${encodeURIComponent(
+        data.rootPath
+      )}&amp;task=${encodeURIComponent(data.task.id)}${hostQuery}">打开关联回归任务</a></p>`,
       cCard({
         title: "概况",
         body: cTable({

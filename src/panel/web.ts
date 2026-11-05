@@ -31,6 +31,7 @@ import {
   renderArchivePage,
   renderAuditPage,
   renderCreateTestPage,
+  renderTasksPage,
   renderEventsPage,
   renderLibraryPage,
   renderOpsPage,
@@ -219,6 +220,15 @@ type PanelView =
       caseSetCount: number;
       excelCount: number;
       packageCount: number;
+    }
+  | {
+      kind: "tasks";
+      rootPath: string;
+      hostId: string | null;
+      rootLabel: string;
+      projectStatus: "active" | "archived" | null;
+      tasks: WebJobListEntry[];
+      filter: "all" | "active";
     }
   | {
       kind: "library";
@@ -890,6 +900,28 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   if (section === "library") {
     return await loadLibraryView(projectStore, resolved);
   }
+  if (section === "tasks") {
+    const filter = trimmed(url.searchParams.get("filter")) === "active" ? "active" : "all";
+    const tasks = await projectStore.listRegressionTasks(resolved.rootPath, 100).catch(() => []);
+    const entries: WebJobListEntry[] = await Promise.all(
+      tasks.map(async (task) => {
+        if (task.jobSpec === null) return { task, spec: null, result: null };
+        const spec = parseWebJobSpec(task.jobSpec);
+        const result = await readWebJobResult(resolved.rootPath, task.id).catch(() => null);
+        return { task, spec, result };
+      })
+    );
+    const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
+    return {
+      kind: "tasks",
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rootLabel: resolved.name,
+      projectStatus: webProject?.status ?? null,
+      tasks: entries,
+      filter
+    };
+  }
   if (section === "archive") {
     const kindRaw = trimmed(url.searchParams.get("kind"));
     const kind =
@@ -1081,6 +1113,23 @@ function toJsonView(view: PanelView): Record<string, unknown> {
       filter: view.filter,
       platform: view.platform,
       devices: view.devices
+    };
+  }
+  if (view.kind === "tasks") {
+    return {
+      ok: true,
+      view: "tasks",
+      project: view.rootPath,
+      filter: view.filter,
+      tasks: view.tasks.map((entry) => ({
+        id: entry.task.id,
+        status: entry.task.status,
+        type: entry.spec === null ? "suite" : "web",
+        executionMode: entry.spec?.executionMode ?? null,
+        packageAssetId: entry.spec?.packageAssetId ?? null,
+        refs: entry.task.refs.length,
+        result: entry.result?.gate.result ?? null
+      }))
     };
   }
   if (view.kind === "create") {
@@ -2497,7 +2546,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
             `<div class="c-banner c-banner-accent" role="status">已派发任务 <code>${escapeHtml(view.flash)}</code>；已写入审计（<a href="/panel?project=${encodeURIComponent(view.rootPath)}&section=audit${hostSuffix(view.hostId)}">查看审计</a>）。</div>`
           ]),
       "<header>",
-      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a></p>`,
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a> · <a href="/panel?project=${encodeURIComponent(view.rootPath)}&section=tasks${hostSuffix(view.hostId)}">任务与结果</a></p>`,
       `<h1>任务 <code>${escapeHtml(task.id)}</code></h1>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个设备运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
@@ -3594,12 +3643,14 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
       return "overview";
     case "create":
       return "create";
+    case "tasks":
+      return "tasks";
     case "dispatch":
       return view.embeddedCreate ? "create" : "dispatch";
     case "web-jobs":
       return view.embeddedCreate ? "create" : "jobs";
     case "web-job":
-      return "jobs";
+      return "tasks";
     case "web-assets":
       return "assets";
     case "devices":
@@ -3618,12 +3669,14 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
       return view.active === "tasks" || view.active === "runners" || view.active === "schedules"
         ? "project"
         : (view.active ?? "project");
-    case "review":
-      return "review";
-    case "stats":
-      return "review";
+    case "task":
+      return "tasks";
     case "batch":
-      return "project";
+      return "tasks";
+    case "review":
+      return "tasks";
+    case "stats":
+      return "tasks";
     case "search":
       return null;
     default:
@@ -3847,6 +3900,18 @@ function renderPanelHtml(
       filter: view.filter,
       platform: view.platform,
       nowMs: view.nowMs,
+      capabilities: deps.capabilities,
+      storeHealth: currentShell.storeHealth
+    });
+  }
+  if (view.kind === "tasks") {
+    return renderTasksPage({
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      hostId: view.hostId,
+      projectStatus: view.projectStatus,
+      tasks: view.tasks,
+      filter: view.filter,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });

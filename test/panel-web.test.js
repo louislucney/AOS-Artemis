@@ -1881,7 +1881,7 @@ test("panel web: 归因→建单断链接上（CTA＋锚点＋项目导航当前
   assert.match(review.body, /下一步：去建单（应用缺陷 1 条）→/, "归因页就地给建单出口");
   assert.match(review.body, /view=stats/, "CTA 指统计页");
   assert.match(review.body, /#issues/, "锚点直达建单块");
-  assert.match(review.body, /aria-current="page"[^>]*>结果</, "review 高亮「结果」导航");
+  assert.match(review.body, /aria-current="page"[^>]*>任务与结果</, "review 高亮「任务与结果」导航");
   assert.match(review.body, /<th scope="col">运行<\/th><th scope="col">时间<\/th>/, "行身份二列（运行短 id＋失败时间）");
 
   const stats = await handlePanelRequest(
@@ -1889,7 +1889,7 @@ test("panel web: 归因→建单断链接上（CTA＋锚点＋项目导航当前
     deps
   );
   assert.match(stats.body, /<h3 id="issues">/, "统计页建单块锚点");
-  assert.match(stats.body, /aria-current="page"[^>]*>结果</, "stats 高亮「结果」导航（同组合并）");
+  assert.match(stats.body, /aria-current="page"[^>]*>任务与结果</, "stats 高亮「任务与结果」导航");
 
   const projectHtml = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),

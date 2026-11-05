@@ -1,6 +1,6 @@
 # 控制台信息架构重构设计（测试资产 / 新建测试 / 任务与结果）
 
-> 2026-11-05 · 状态：Phase 1 + Phase 2 主体已实现；Phase 3 待开发  
+> 2026-11-05 · 状态：Phase 1–3 主体已实现；收尾项待办  
 > 关联：`PRODUCT.md`、`DESIGN.md`、`docs/superpowers/specs/2026-11-05-ios-artemis-runtime-design.md`、`.impeccable/critique/2026-11-05T02-16-03Z__src-console.md`
 
 ## 0. 一句话
@@ -451,3 +451,27 @@ QA 的实际顺序是：
 - 项目未登记时的显式“注册项目”CTA（当前仍由后端在创建时拒绝）。
 - 任务与结果统一（Phase 3）。
 - used-by、旧路由 302、资产删除/回收站。
+
+## 17. Phase 3 实施记录（2026-11-05）
+
+### 已完成
+
+- 一级导航新增“任务与结果”，移除“结果”入口；`view=review`/`view=stats` 仍可访问，但高亮“任务与结果”。
+- `section=tasks` 统一列表：套件回归 + 网页测试（Maestro/LLM）同表。
+  - 列：任务、类型、优先级、状态、项目、执行机/设备、输入、创建、结果、操作。
+  - 输入：套件显示用例集数量；网页显示安装包文件名。
+  - 结果：网页显示 gate；套件显示运行次数。
+- 过滤：`filter=active` 只看进行中；`section=tasks&view=review` 进入现有失败分析。
+- 任务详情：
+  - 套件任务继续走现有任务详情（`?task=`），高亮“任务与结果”。
+  - 网页任务继续走现有网页任务详情（`section=jobs&job=`），高亮“任务与结果”，返回链接改为“返回任务与结果”。
+- `section=tasks&task=<id>` 可进入套件任务详情；Web 任务在列表中直接链到网页任务详情。
+- 项目页任务列表、批次详情仍可用；批次/任务详情导航当前态归到“任务与结果”。
+
+### 延后
+
+- 旧 `section=dispatch` / `section=jobs` / `section=library` 的 302 尚未做。
+- used-by 聚合列。
+- 项目未登记时的显式“注册项目”CTA。
+- 任务列表服务端分页/搜索（当前 listRegressionTasks 上限 100）。
+- 网页任务详情与套件任务详情仍复用两个路由，Phase 4 可合并为单一详情页。

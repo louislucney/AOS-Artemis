@@ -116,9 +116,9 @@ const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
 export const DEFAULT_CONSOLE_NAV: ConsoleNavItem[] = [
   { key: "new-project", label: "新增项目", href: "/panel?new=1#new-project" },
   { key: "project", label: "项目", href: "/panel" },
-  { key: "review", label: "结果", href: "/panel" },
   { key: "assets", label: "测试资产", href: "/panel?section=assets" },
   { key: "create", label: "新建测试", href: "/panel?section=create" },
+  { key: "tasks", label: "任务与结果", href: "/panel?section=tasks" },
   { key: "devices", label: "设备", href: "/panel?section=devices" },
   { key: "archive", label: "档案", href: "/panel?section=archive" },
   { key: "ops", label: "运维", href: "/panel?section=ops" },

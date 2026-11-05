@@ -50,10 +50,10 @@ test("console shell: 自动刷新＝局部轮询（无整页刷新；缩小动�
 
 test("console shell: 默认 nav 覆盖控制台版块", () => {
   const keys = DEFAULT_CONSOLE_NAV.map((item) => item.key);
-  for (const expected of ["project", "review", "assets", "create", "archive", "ops", "usage"]) {
+  for (const expected of ["project", "assets", "create", "tasks", "archive", "ops", "usage"]) {
     assert.ok(keys.includes(expected), expected);
   }
-  for (const removed of ["overview", "tasks", "runners", "schedules", "stats", "audit"]) {
+  for (const removed of ["overview", "runners", "schedules", "stats", "audit"]) {
     assert.ok(!keys.includes(removed), `${removed} 已并入同级版块，不再占一级导航`);
   }
 });

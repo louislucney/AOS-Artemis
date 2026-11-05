@@ -8,7 +8,7 @@ import test from "node:test";
 import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { handlePanelRequest } from "../dist/panel/web.js";
-import { renderWebJobsPage } from "../dist/console/pages.js";
+import { renderTasksPage, renderWebJobsPage } from "../dist/console/pages.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject } from "./helpers.js";
 
 async function setup() {
@@ -441,6 +441,24 @@ test("console pages: 批次详情展示台账 API 说明（清单已清理仍可
   assert.match(html.body, /API 说明已提供/);
 });
 
+test("console pages: 任务与结果统一列出套件任务", async () => {
+  const { deps, rootPath, set } = await setup();
+  await deps.store.createRegressionTask({
+    rootPath,
+    refs: [{ caseSetId: set.id, featureKey: "login" }],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  const html = await handlePanelRequest(url(rootPath, "tasks"), deps);
+  assert.equal(html.status, 200);
+  assert.match(html.body, /任务与结果/);
+  assert.match(html.body, /套件回归/);
+  assert.match(html.body, /section=tasks/);
+  assert.match(html.body, /task=/);
+  assert.match(html.body, /新建测试/);
+});
+
 test("console pages: 新建测试 landing 与套件/网页 tab", async () => {
   const { deps, rootPath } = await setup();
   const landing = await handlePanelRequest(url(rootPath, "create"), deps);
@@ -483,4 +501,39 @@ test("console pages: 网页测试下发页始终提供上传新安装包入口",
   assert.match(html, /section=assets&amp;kind=materials/);
   assert.match(html, /上传参考图/);
   assert.match(html, /section=assets&amp;kind=reference/);
+});
+
+test("console pages: 任务与结果同时渲染网页任务", () => {
+  const html = renderTasksPage({
+    rootPath: "/w/p",
+    rootLabel: "p",
+    hostId: null,
+    projectStatus: "active",
+    filter: "all",
+    tasks: [
+      {
+        task: {
+          id: "web-task-1",
+          status: "completed",
+          priority: 2,
+          refs: [],
+          runIds: [],
+          claimedHostId: "h-runner",
+          targetHostId: "h-runner",
+          deviceSerial: "emulator-5554",
+          createdAt: "2026-11-05T00:00:00.000Z"
+        },
+        spec: {
+          executionMode: "llm",
+          packageAssetId: "pkg-1",
+          assetSnapshot: [{ kind: "package", filename: "app.apk" }]
+        },
+        result: { gate: { result: "passed" } }
+      }
+    ]
+  });
+  assert.match(html, /网页测试 · LLM/);
+  assert.match(html, /app\.apk/);
+  assert.match(html, /passed/);
+  assert.match(html, /section=jobs&amp;job=web-task-1/);
 });

@@ -680,7 +680,7 @@ test("job detail shows device, package, cases, evidence links and writeback stat
   assert.equal(response.status, 200);
   const html = response.body;
 
-  assert.match(html, /下发任务详情/);
+  assert.match(html, /网页任务详情/);
   assert.match(html, new RegExp(jobId));
   assert.match(html, /Pixel 7/);
   assert.match(html, /emulator-5554/);
