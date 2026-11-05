@@ -230,6 +230,7 @@ type PanelView =
       projectStatus: "active" | "archived" | null;
       tasks: WebJobListEntry[];
       filter: "all" | "active";
+      page?: number;
       query: string;
     }
   | {
@@ -970,6 +971,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       })
     );
     const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
+    const pageRaw = Number(trimmed(url.searchParams.get("page")) ?? "1");
     return {
       kind: "tasks",
       rootPath: resolved.rootPath,
@@ -978,6 +980,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       projectStatus: webProject?.status ?? null,
       tasks: entries,
       filter,
+      page: Number.isFinite(pageRaw) && pageRaw >= 1 ? Math.trunc(pageRaw) : 1,
       query: trimmed(url.searchParams.get("q")) ?? ""
     };
   }
@@ -4046,6 +4049,7 @@ function renderPanelHtml(
       projectStatus: view.projectStatus,
       tasks: view.tasks,
       filter: view.filter,
+      page: view.page,
       query: view.query,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth

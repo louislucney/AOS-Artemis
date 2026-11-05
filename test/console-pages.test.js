@@ -470,6 +470,8 @@ test("console pages: 新建测试 landing 与套件/网页 tab", async () => {
   const landing = await handlePanelRequest(url(rootPath, "create"), deps);
   assert.equal(landing.status, 200);
   assert.match(landing.body, /新建测试/);
+  assert.match(landing.body, /尚未登记网页测试项目/);
+  assert.match(landing.body, /new=1#new-project/);
   assert.match(landing.body, /开始套件回归|先去导入用例集/);
   assert.match(landing.body, /开始网页测试|先去上传资产/);
 
@@ -483,6 +485,52 @@ test("console pages: 新建测试 landing 与套件/网页 tab", async () => {
   assert.match(web.body, /新建测试 · 网页测试/);
   assert.match(web.body, /上传新安装包/);
   assert.match(web.body, /上传测试资料/);
+});
+
+test("console pages: 任务列表分页（25/页，保留搜索条件）", () => {
+  const tasks = Array.from({ length: 30 }, (_, index) => ({
+    task: {
+      id: `task-${String(index).padStart(2, "0")}`,
+      status: "completed",
+      priority: 0,
+      refs: [],
+      runIds: [],
+      claimedHostId: null,
+      targetHostId: null,
+      deviceSerial: null,
+      createdAt: "2026-11-05T00:00:00.000Z"
+    },
+    spec: null,
+    result: null
+  }));
+  const first = renderTasksPage({
+    rootPath: "/w/p",
+    rootLabel: "p",
+    tasks,
+    filter: "all",
+    query: "task",
+    page: 1
+  });
+  assert.match(first, /共 30 条/);
+  assert.match(first, /第 1\/2 页/);
+  assert.match(first, /task-00/);
+  assert.match(first, /task-24/);
+  assert.doesNotMatch(first, /section=tasks&amp;task=task-25/);
+  assert.match(first, /section=tasks[^"]*page=2/);
+  assert.match(first, /q=task/);
+
+  const second = renderTasksPage({
+    rootPath: "/w/p",
+    rootLabel: "p",
+    tasks,
+    filter: "all",
+    query: "task",
+    page: 2
+  });
+  assert.match(second, /第 2\/2 页/);
+  assert.doesNotMatch(second, /section=tasks&amp;task=task-24/);
+  assert.match(second, /section=tasks&amp;task=task-25/);
+  assert.match(second, /section=tasks&amp;task=task-29/);
 });
 
 test("console pages: 网页测试下发页始终提供上传新安装包入口", () => {

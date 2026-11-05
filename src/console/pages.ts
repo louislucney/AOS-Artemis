@@ -595,6 +595,16 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
   const webHref = `/panel?${projectQuery}&section=create&type=web${hostQuery}`;
   const suiteReady = data.caseSetCount > 0;
   const webReady = data.excelCount > 0 && data.packageCount > 0;
+  const canCreateProject =
+    data.capabilities?.role === undefined || data.capabilities.role === "admin";
+  const registrationNotice =
+    data.projectStatus === null
+      ? `<div class="c-banner c-banner-warn" role="status"><strong>尚未登记网页测试项目</strong>：网页测试需要项目应用包名/平台；下发前请先在中心登记。${
+          canCreateProject
+            ? ' <a class="c-button" href="/panel?new=1#new-project">新增项目</a>'
+            : ' <span class="muted">请联系管理员新增项目。</span>'
+        } 套件回归仍可使用已有用例集。</div>`
+      : "";
   const suiteBody = [
     `<p>用已有用例集在设备上跑回归；设备需<strong>预装 App</strong>，不在这里选安装包。</p>`,
     `<p class="muted">用例集 ${data.caseSetCount} 份${suiteReady ? "" : " · 还没有用例集"}</p>`,
@@ -627,6 +637,7 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
     storeHealth: data.storeHealth,
     body: [
       "<h1>新建测试</h1>",
+      registrationNotice,
       `<p class="muted">先选测试类型，再选资产和执行机。测试资产统一在 <a href="${escapeHtml(
         assetsHref
       )}">测试资产</a> 管理。</p>`,
@@ -660,6 +671,8 @@ export interface TasksPageData {
   tasks: WebJobListEntry[];
   filter?: "all" | "active";
   query?: string;
+  page?: number;
+  pageSize?: number;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
@@ -692,7 +705,33 @@ export function renderTasksPage(data: TasksPageData): string {
       .toLowerCase();
     return haystack.includes(query);
   });
-  const rows = visible.map((entry) => {
+  const pageSize = Math.max(1, data.pageSize ?? 25);
+  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  const page = Math.min(Math.max(1, Math.trunc(data.page ?? 1)), totalPages);
+  const pageItems = visible.slice((page - 1) * pageSize, page * pageSize);
+  const pageHref = (target: number): string => {
+    const params = new URLSearchParams();
+    params.set("project", data.rootPath);
+    params.set("section", "tasks");
+    if (data.hostId) params.set("host", data.hostId);
+    if (data.filter === "active") params.set("filter", "active");
+    if ((data.query ?? "").trim() !== "") params.set("q", data.query!.trim());
+    if (target > 1) params.set("page", String(target));
+    return `/panel?${params.toString()}`;
+  };
+  const pager =
+    totalPages > 1
+      ? `<nav class="c-flow-switch" aria-label="任务分页">${
+          page > 1
+            ? `<a class="c-flow-option" href="${escapeHtml(pageHref(page - 1))}">上一页</a>`
+            : '<span class="c-flow-option is-disabled">上一页</span>'
+        }<span class="c-flow-option is-active" aria-current="page">第 ${page}/${totalPages} 页</span>${
+          page < totalPages
+            ? `<a class="c-flow-option" href="${escapeHtml(pageHref(page + 1))}">下一页</a>`
+            : '<span class="c-flow-option is-disabled">下一页</span>'
+        }</nav>`
+      : "";
+  const rows = pageItems.map((entry) => {
     const task = entry.task;
     const isWeb = entry.spec !== null;
     const type = isWeb
@@ -768,14 +807,17 @@ export function renderTasksPage(data: TasksPageData): string {
       )}" placeholder="任务 ID / 状态 / 安装包 / 设备" aria-label="搜索任务"></label> <button class="c-button" type="submit">搜索</button></form>`,
       cCard({
         title: "任务列表",
-        subtitle: `共 ${visible.length} 条${data.filter === "active" ? "（进行中）" : ""}`,
+        subtitle: `共 ${visible.length} 条${data.filter === "active" ? "（进行中）" : ""}${
+          totalPages > 1 ? ` · 第 ${page}/${totalPages} 页` : ""
+        }`,
         body: cTable({
           columns: ["任务", "类型", "优先级", "状态", "项目", "执行机/设备", "输入", "创建", "结果", "操作"],
           rows,
           caption: "任务与结果",
           empty: "还没有任务；点右上角「新建测试」开始。"
         })
-      })
+      }),
+      pager
     ].join("\n")
   });
 }
