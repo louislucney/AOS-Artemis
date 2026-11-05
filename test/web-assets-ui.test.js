@@ -399,6 +399,48 @@ test("web assets page: reference PNG uploads as reference kind", async (t) => {
   assert.equal(body.asset.filename, "login.png");
 });
 
+test("web assets page: shows used-by counts from job specs", async (t) => {
+  const { deps, rootPath, asset, pkg, store } = await setup(t);
+  await store.createRegressionTask({
+    rootPath,
+    refs: [],
+    platforms: ["android"],
+    baseline: "latest",
+    executionMode: "maestro",
+    jobSpec: {
+      kind: "web-test",
+      assignment: "auto",
+      devicePinned: false,
+      targetHostId: null,
+      deviceSerial: null,
+      requirements: { platform: "android", deviceKind: "any" },
+      deviceLeaseId: null,
+      excelAssetId: asset.id,
+      packageAssetId: pkg.id,
+      materialsAssetId: null,
+      referenceAssetId: null,
+      scriptSetId: null,
+      executionMode: "maestro",
+      caseFilter: { modules: [], caseIds: [] },
+      retry: 0,
+      allowStaleScript: false,
+      allowPartialUnresolved: true,
+      assetSnapshot: [
+        {
+          id: pkg.id,
+          kind: "package",
+          filename: "app.apk",
+          sha256: "d".repeat(64),
+          size: 1024
+        }
+      ]
+    }
+  });
+  const response = await handlePanelRequest(assetsUrl(rootPath, null, "packages"), deps);
+  assert.equal(response.status, 200);
+  assert.match(response.body, /app\.apk[\s\S]*?<td>1<\/td>/);
+});
+
 test("web assets page: archived project shows status and disables writes", async (t) => {
   const { deps, rootPath, store } = await setup(t);
   await store.archiveWebProject(rootPath, "2026-10-28T00:00:00.000Z");

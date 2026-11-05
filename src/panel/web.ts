@@ -238,6 +238,7 @@ type PanelView =
       sets: CaseSetRecord[];
       quarantine: LibraryPageData["quarantine"];
       caseCandidates: LibraryPageData["caseCandidates"];
+      usage?: Record<string, number>;
       embedded?: boolean;
     }
   | {
@@ -255,6 +256,7 @@ type PanelView =
       uploadKind?: "excel" | "package" | "materials" | "reference";
       tab?: "overview" | "case-sets" | "excel" | "packages" | "materials" | "reference" | "scripts";
       sets?: CaseSetRecord[];
+      usage?: Record<string, number>;
       mappings: ExcelMappingRecord[];
     }
   | {
@@ -417,6 +419,28 @@ function intParam(params: URLSearchParams, key: string): number | null {
   return Number.isFinite(value) && Number.isInteger(value) ? value : null;
 }
 
+async function buildAssetUsage(
+  projectStore: ProjectStore,
+  rootPath: string
+): Promise<{ assets: Record<string, number>; caseSets: Record<string, number> }> {
+  const assets: Record<string, number> = {};
+  const caseSets: Record<string, number> = {};
+  const tasks = await projectStore.listRegressionTasks(rootPath, 200).catch(() => []);
+  for (const task of tasks) {
+    for (const ref of task.refs) {
+      caseSets[ref.caseSetId] = (caseSets[ref.caseSetId] ?? 0) + 1;
+    }
+    if (task.jobSpec !== null) {
+      const spec = parseWebJobSpec(task.jobSpec);
+      if (spec !== null) {
+        const ids = new Set(spec.assetSnapshot.map((asset) => asset.id));
+        for (const id of ids) assets[id] = (assets[id] ?? 0) + 1;
+      }
+    }
+  }
+  return { assets, caseSets };
+}
+
 async function loadLibraryView(
   projectStore: ProjectStore,
   resolved: { rootPath: string; hostId: string | null; name: string },
@@ -436,6 +460,7 @@ async function loadLibraryView(
     }
     if (candidateMap.size >= 100) break;
   }
+  const usage = await buildAssetUsage(projectStore, resolved.rootPath);
   return {
     kind: "library",
     rootPath: resolved.rootPath,
@@ -444,6 +469,7 @@ async function loadLibraryView(
     sets: await projectStore.listCaseSets(resolved.rootPath),
     quarantine: await readQuarantineSummary(resolved.rootPath),
     caseCandidates: [...candidateMap.values()],
+    usage: usage.caseSets,
     ...(embedded ? { embedded: true } : {})
   };
 }
@@ -789,6 +815,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
           ? tabRaw
           : "overview";
     const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
+    const usage = await buildAssetUsage(projectStore, resolved.rootPath);
     const [excelAssets, packages, scripts, materials, references, mappings, sets] = await Promise.all([
       listWebAssets(projectStore, resolved.rootPath, "excel"),
       listWebAssets(projectStore, resolved.rootPath, "package"),
@@ -818,6 +845,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       uploadKind,
       tab,
       sets,
+      usage: usage.assets,
       mappings
     };
   }
@@ -3953,6 +3981,7 @@ function renderPanelHtml(
       sets: view.sets,
       quarantine: view.quarantine,
       caseCandidates: view.caseCandidates,
+      usage: view.usage,
       embedded: view.embedded,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
@@ -3973,6 +4002,7 @@ function renderPanelHtml(
       uploadKind: view.uploadKind,
       tab: view.tab,
       sets: view.sets,
+      usage: view.usage,
       mappings: view.mappings,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth

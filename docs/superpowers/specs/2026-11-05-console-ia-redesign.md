@@ -428,7 +428,7 @@ QA 的实际顺序是：
 
 ### 延后
 
-- `被使用` 列（used-by 聚合）尚未接入；Phase 1b 再做。
+- ~~`被使用` 列（used-by 聚合）~~ → 2026-11-05 已接入：按任务 `jobSpec.assetSnapshot` 聚合 Web 资产引用，按 `refs.caseSetId` 聚合用例集引用；资产表/用例集表显示“被使用”。
 - 旧 `section=library`、`section=assets&kind=...` 尚未 302；当前保留旧页面兼容。
 - 新建测试 hub（Phase 2）、任务与结果统一（Phase 3）未开始。
 

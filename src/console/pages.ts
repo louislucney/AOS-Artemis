@@ -40,6 +40,8 @@ export interface LibraryPageData {
   quarantine: { active: string[]; stale: number; invalid: number; exists: boolean };
   /** 最近失败用例候选（隔离点选；去重取最近）。 */
   caseCandidates: Array<{ caseId: string; name: string; runId: string; at: string | null }>;
+  /** 资产 id → 被任务引用次数。 */
+  usage?: Record<string, number>;
   /** true＝作为测试资产 hub 的“用例集”tab 嵌入，导航高亮测试资产。 */
   embedded?: boolean;
   capabilities?: ConsoleCapabilities;
@@ -69,6 +71,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
   const actionsReason = actionsOff
     ? '<p class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式。</p>'
     : "";
+  const usage = data.usage ?? {};
   const rows = data.sets.map((set, index) => {
     const excel = set.features
       .map((feature) => {
@@ -87,6 +90,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
       relativeTime(set.createdAt),
       String(set.features.reduce((sum, feature) => sum + feature.caseCount, 0)),
       set.features.map((feature) => escapeHtml(feature.name)).join("、") || "—",
+      String(usage[set.id] ?? 0),
       `<a class="c-button" href="${escapeHtml(`/panel?project=${encodeURIComponent(data.rootPath)}&section=create&type=suite&source=case-set&ref=${encodeURIComponent(set.id)}${hostQuery}`)}">下发该用例集</a>`
     ];
   });
@@ -159,7 +163,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
         title: "用例集",
         subtitle: `共 ${data.sets.length} 份用例集 · 每份可打开 Excel（tests.xlsx）`,
         body: cTable({
-          columns: ["用例集", "Excel 文件", "设计来源", "登记时间", "用例数", "功能", "动作"],
+          columns: ["用例集", "Excel 文件", "设计来源", "登记时间", "用例数", "功能", "被使用", "动作"],
           rows,
           caption: "用例集列表",
           empty: "暂无用例集（下方导入或先生成）"
@@ -199,6 +203,8 @@ export interface WebAssetsPageData {
   tab?: AssetsTab;
   /** 概览的用例集数量（不渲染用例集表）。 */
   sets?: CaseSetRecord[];
+  /** 资产 id → 被任务引用次数。 */
+  usage?: Record<string, number>;
   mappings: ExcelMappingRecord[];
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
@@ -240,6 +246,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
         }</p>`
       : "";
 
+  const usage = data.usage ?? {};
   const assetName = new Map<string, string>();
   for (const asset of data.assets) {
     assetName.set(asset.id, `${asset.filename} v${asset.version}`);
@@ -250,6 +257,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     formatBytes(asset.size),
     `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
     relativeTime(asset.createdAt),
+    String(usage[asset.id] ?? 0),
     `<button class="c-button" type="button" data-import-excel="${escapeHtml(asset.id)}"${disabledAttr}>导入用例库</button>`
   ]);
   const assetOptions = data.assets
@@ -272,7 +280,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     `<code>v${asset.version}</code>`,
     formatBytes(asset.size),
     `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
-    relativeTime(asset.createdAt)
+    relativeTime(asset.createdAt),
+    String(usage[asset.id] ?? 0)
   ]);
   const scriptRows = scripts.map((asset) => {
     const metadata = asset.metadata ?? {};
@@ -289,7 +298,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       `<code>${escapeHtml(ready)}</code>`,
       `<code>${escapeHtml(partial)}</code>`,
       `<code>${escapeHtml(unresolved)}</code>`,
-      relativeTime(asset.createdAt)
+      relativeTime(asset.createdAt),
+      String(usage[asset.id] ?? 0)
     ];
   });
   const materialRows = materials.map((asset) => {
@@ -300,7 +310,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       formatBytes(asset.size),
       secret ? cBadge({ label: "secret", tone: "warning" }) : '<span class="muted">—</span>',
       `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
-      relativeTime(asset.createdAt)
+      relativeTime(asset.createdAt),
+      String(usage[asset.id] ?? 0)
     ];
   });
   const references = data.references ?? [];
@@ -467,7 +478,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "Excel 文档",
     subtitle: `共 ${data.assets.length} 个 Excel 版本`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "操作"],
+      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用", "操作"],
       rows: assetRows,
       caption: "Excel 资产版本",
       empty: "暂无 Excel 资产（上方上传）"
@@ -492,7 +503,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "安装包",
     subtitle: `共 ${packages.length} 个 APK/IPA 版本`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "sha256", "上传时间"],
+      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用"],
       rows: packageRows,
       caption: "安装包资产版本",
       empty: "暂无安装包资产（上方上传）"
@@ -502,7 +513,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "测试资料",
     subtitle: `共 ${materials.length} 个资料版本`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "secret", "sha256", "上传时间"],
+      columns: ["文件名", "版本", "大小", "secret", "sha256", "上传时间", "被使用"],
       rows: materialRows,
       caption: "测试资料资产版本",
       empty: "暂无测试资料（上方上传）"
@@ -512,7 +523,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "参考图（L2）",
     subtitle: `共 ${references.length} 个参考图版本`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "sha256", "上传时间"],
+      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用"],
       rows: referenceRows,
       caption: "参考图资产版本",
       empty: "暂无参考图（上方上传 .png/.jpg/.jpeg/.webp）"
@@ -522,7 +533,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "脚本集",
     subtitle: `共 ${scripts.length} 个 scripts 版本`,
     body: cTable({
-      columns: ["文件名", "版本", "平台", "来源", "ready", "partial", "unresolved", "生成时间"],
+      columns: ["文件名", "版本", "平台", "来源", "ready", "partial", "unresolved", "生成时间", "被使用"],
       rows: scriptRows,
       caption: "生成的脚本集",
       empty: "暂无脚本集（上方生成）"
