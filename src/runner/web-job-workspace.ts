@@ -471,7 +471,7 @@ export async function installWebPackage(
     }
   }
   const options = {
-    timeoutMs: input.timeoutMs ?? 120_000,
+    timeoutMs: input.timeoutMs ?? 300_000,
     ...(input.env === undefined ? {} : { env: input.env })
   };
   let command: string;

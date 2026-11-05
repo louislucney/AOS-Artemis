@@ -250,7 +250,15 @@ test("默认执行器：spec → 下载/解压/安装/Maestro → 上传 passed�
   assert.ok(downloadCalls.every((call) => call.headers.authorization === `Bearer ${TOKEN}`));
 
   const adbCall = fake.calls.find((call) => call.command === "adb");
-  assert.deepEqual(adbCall.args.slice(0, 4), ["-s", "emulator-5554", "install", "-r"]);
+  assert.deepEqual(adbCall.args.slice(0, 6), [
+    "-s",
+    "emulator-5554",
+    "install",
+    "-r",
+    "-d",
+    "-t"
+  ]);
+  assert.equal(adbCall.options.timeoutMs, 300_000, "安装默认给 5 分钟");
   const maestroCall = fake.calls.find((call) => call.command.includes("maestro"));
   assert.equal(maestroCall.command, "/opt/maestro", "使用 AOS_MAESTRO_PATH 解析结果");
   assert.deepEqual(maestroCall.args.slice(0, 4), ["test", "--udid", "emulator-5554", "--format"]);

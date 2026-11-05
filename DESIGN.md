@@ -3765,6 +3765,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 | 惰性生成 normalizer | `rules` | 不调 LLM；脚本页可选 LLM |
 | `allowStaleScript` | `false` | 不匹配先自动重建；`true` → 旧脚本 + `stale-script` warning |
 | `l2Screenshots` | `false` | Maestro 最终截图上传（供中心 L2）；单图 2MB / 合计 6MB 上限 |
+| `AOS_WEB_INSTALL_TIMEOUT_MS` | `300000` | APK/IPA 安装（含设备端确认）超时；超时按 `exec-failed:timeout` 上报 |
 | `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` | `30000` | 请求内生成墙钟预算；超时 400 `script-generation-timeout` |
 
 - **过滤必须生效**：脚本集 manifest 携带 `module` 与 `caseId→flow`；runner 按 manifest 过滤模块/用例 ID，不再对模块直接报 `case-filter-modules-unsupported`；旧 manifest 回退 stem 匹配。

@@ -244,6 +244,7 @@ export function createDefaultWebJobExecutor(
   const childEnv = webRunnerChildEnv(env);
   const envTimeoutMs = positiveInt(env.AOS_WEB_JOB_TIMEOUT_MS);
   const executeTimeoutMs = options.timeoutMs ?? envTimeoutMs;
+  const installTimeoutMs = positiveInt(env.AOS_WEB_INSTALL_TIMEOUT_MS) ?? 300_000;
 
   return async (input) => {
     const jobId = input.task.id;
@@ -324,7 +325,8 @@ export function createDefaultWebJobExecutor(
         jobDir: prepared.jobDir,
         deviceKind: input.device.kind === "simulator" ? "simulator" : "device",
         exec,
-        env: childEnv
+        env: childEnv,
+        timeoutMs: installTimeoutMs
       });
       if (!install.ok) {
         throw new Error(
