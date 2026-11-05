@@ -659,6 +659,7 @@ export interface TasksPageData {
   projectStatus?: "active" | "archived" | null;
   tasks: WebJobListEntry[];
   filter?: "all" | "active";
+  query?: string;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
@@ -668,12 +669,29 @@ export function renderTasksPage(data: TasksPageData): string {
   const projectQuery = `project=${encodeURIComponent(data.rootPath)}`;
   const tasksUrl = (extra = ""): string => `/panel?${projectQuery}&section=tasks${extra}${hostQuery}`;
   const createHref = `/panel?${projectQuery}&section=create${hostQuery}`;
-  const visible =
-    data.filter === "active"
-      ? data.tasks.filter((entry) =>
-          ["pending", "claimed", "running", "stopping"].includes(entry.task.status)
-        )
-      : data.tasks;
+  const query = (data.query ?? "").trim().toLowerCase();
+  const visible = data.tasks.filter((entry) => {
+    if (
+      data.filter === "active" &&
+      !["pending", "claimed", "running", "stopping"].includes(entry.task.status)
+    ) {
+      return false;
+    }
+    if (query === "") return true;
+    const haystack = [
+      entry.task.id,
+      entry.task.status,
+      entry.task.claimedHostId ?? "",
+      entry.task.targetHostId ?? "",
+      entry.task.deviceSerial ?? "",
+      entry.spec?.executionMode ?? "suite",
+      entry.spec?.packageAssetId ?? "",
+      ...(entry.spec?.assetSnapshot.map((asset) => asset.filename) ?? [])
+    ]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(query);
+  });
   const rows = visible.map((entry) => {
     const task = entry.task;
     const isWeb = entry.spec !== null;
@@ -741,6 +759,13 @@ export function renderTasksPage(data: TasksPageData): string {
       `<p class="muted">套件回归与网页测试统一在这里查看；状态、执行机、输入和结果同表。 <a class="c-button" href="${escapeHtml(
         createHref
       )}">新建测试</a></p>`,
+      `<form method="get" action="/panel" class="c-form" role="search"><input type="hidden" name="project" value="${escapeHtml(
+        data.rootPath
+      )}"><input type="hidden" name="section" value="tasks">${
+        data.hostId ? `<input type="hidden" name="host" value="${escapeHtml(data.hostId)}">` : ""
+      }<label>搜索任务 <input name="q" value="${escapeHtml(
+        data.query ?? ""
+      )}" placeholder="任务 ID / 状态 / 安装包 / 设备" aria-label="搜索任务"></label> <button class="c-button" type="submit">搜索</button></form>`,
       cCard({
         title: "任务列表",
         subtitle: `共 ${visible.length} 条${data.filter === "active" ? "（进行中）" : ""}`,

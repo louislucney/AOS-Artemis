@@ -229,6 +229,7 @@ type PanelView =
       projectStatus: "active" | "archived" | null;
       tasks: WebJobListEntry[];
       filter: "all" | "active";
+      query: string;
     }
   | {
       kind: "library";
@@ -947,7 +948,8 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       rootLabel: resolved.name,
       projectStatus: webProject?.status ?? null,
       tasks: entries,
-      filter
+      filter,
+      query: trimmed(url.searchParams.get("q")) ?? ""
     };
   }
   if (section === "archive") {
@@ -1149,6 +1151,7 @@ function toJsonView(view: PanelView): Record<string, unknown> {
       view: "tasks",
       project: view.rootPath,
       filter: view.filter,
+      query: view.query,
       tasks: view.tasks.map((entry) => ({
         id: entry.task.id,
         status: entry.task.status,
@@ -3940,6 +3943,7 @@ function renderPanelHtml(
       projectStatus: view.projectStatus,
       tasks: view.tasks,
       filter: view.filter,
+      query: view.query,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });

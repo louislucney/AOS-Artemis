@@ -443,7 +443,7 @@ test("console pages: 批次详情展示台账 API 说明（清单已清理仍可
 
 test("console pages: 任务与结果统一列出套件任务", async () => {
   const { deps, rootPath, set } = await setup();
-  await deps.store.createRegressionTask({
+  const task = await deps.store.createRegressionTask({
     rootPath,
     refs: [{ caseSetId: set.id, featureKey: "login" }],
     platforms: ["android"],
@@ -457,6 +457,12 @@ test("console pages: 任务与结果统一列出套件任务", async () => {
   assert.match(html.body, /section=tasks/);
   assert.match(html.body, /task=/);
   assert.match(html.body, /新建测试/);
+
+  const hit = await handlePanelRequest(url(rootPath, "tasks", { q: task.id.slice(0, 12) }), deps);
+  assert.match(hit.body, new RegExp(task.id.slice(0, 12)));
+  const miss = await handlePanelRequest(url(rootPath, "tasks", { q: "no-such-task" }), deps);
+  assert.match(miss.body, /共 0 条/);
+  assert.doesNotMatch(miss.body, new RegExp(task.id.slice(0, 12)));
 });
 
 test("console pages: 新建测试 landing 与套件/网页 tab", async () => {
