@@ -3831,3 +3831,19 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **强制重装**：`AOS_MAESTRO_REINSTALL_DRIVER=1` 关闭复用（升级 Maestro/怀疑 driver 版本不匹配时用）；已加入 runner 子进程 env 白名单，变量本身不落结果。
 - **验证**：模拟器上手动确认 `dev.mobile.maestro`/`dev.mobile.maestro.test` 均存在时，Maestro 2.12.1 Settings smoke 正常；`--no-reinstall-driver` 在 driver 缺失时仍会触发安装，存在时跳过重装。真实 vivo 上应重点检查这两个包是否都存在（用户只点了一个 Maestro 安装包时，`dev.mobile.maestro.test` 很可能缺失）。
 - **测试**：`test/web-executors.test.js` 增加两包都在 → `--no-reinstall-driver`、缺 server → 不加、`AOS_MAESTRO_REINSTALL_DRIVER=1` → 不加；全量测试与 lint 保持绿。
+
+### 13.312 新增（Android Web job 执行前预检门禁）
+
+> 2026-11-05。Maestro driver 在 vivo 上反复空跑 120s 才失败；把“设备/driver/app 是否就绪”前移到 Maestro 之前，失败直接给 typed reason。
+
+- **预检**（`src/runner/web-executors.ts`）：Android 且提供 `adbCommand` 时，执行 Maestro 前检查：
+  - `adb devices` 中目标 serial 为 `device`（否则 `adb-offline`）；
+  - `pm path dev.mobile.maestro` + `pm path dev.mobile.maestro.test` 都在（否则 `maestro-driver-missing`，detail 列出缺失包）；
+  - `dumpsys power` 非 Asleep/Dozing（否则 `device-asleep`）；
+  - `dumpsys window` 无 `mDreamingLockscreen/mShowingLockscreen/isStatusBarKeyguard`（否则 `device-locked`）；
+  - `pm path <expectedAppPackage>` 存在（否则 `app-not-installed`）；
+  - `dumpsys package` 的 `versionCode` 不低于 APK 的 `expectedVersionCode`（否则 `app-version-mismatch`）。
+- **失败形态**：不调用 Maestro，直接返回 `{status:"error", detail:"maestro-preflight:<reason>: <detail>"}`；中心结果可读，不再等 120s。
+- **开关**：`AOS_PREFLIGHT=0` 跳过预检（应急/兼容）；`AOS_MAESTRO_INSTALL_DRIVER=1` 允许 driver 缺失时交给 Maestro 安装（首次装机）；`AOS_MAESTRO_REINSTALL_DRIVER=1` 仍强制重装。三者均加入 runner 子进程 env 白名单。
+- **数据来源**：`web-job-runner` 把 APK 解析出的 `appId` / `versionCode` 作为 `expectedAppPackage` / `expectedAppVersionCode` 传入；解析失败则不做 app 版本检查，避免误报。
+- **测试**：`test/web-executors.test.js` 覆盖 adb-offline / device-locked / app-not-installed / app-version-mismatch / `AOS_PREFLIGHT=0` 旁路 / 缺 driver 包；全量测试与 lint 保持绿。

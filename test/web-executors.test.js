@@ -147,6 +147,18 @@ test("executeWebJob: Maestro driver 两包齐才加 --no-reinstall-driver", asyn
   const content = junit([xmlCase({ name: "flow-a", classname: "flows" })]);
   const execWithDriver = ({ app = true, server = true }) =>
     fakeExec(async (command, args) => {
+      if (command === "adb" && args.includes("devices")) {
+        return { code: 0, stdout: "List of devices attached\nemulator-5554\tdevice\n", stderr: "" };
+      }
+      if (command === "adb" && args.includes("dumpsys")) {
+        if (args.includes("power")) {
+          return { code: 0, stdout: "mWakefulness=Awake\n", stderr: "" };
+        }
+        if (args.includes("window")) {
+          return { code: 0, stdout: "mDreamingLockscreen=false\n", stderr: "" };
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      }
       if (command === "adb" && args.includes("pm")) {
         const pkg = args[args.length - 1];
         const installed = pkg === "dev.mobile.maestro" ? app : server;
@@ -181,7 +193,7 @@ test("executeWebJob: Maestro driver 两包齐才加 --no-reinstall-driver", asyn
   );
 
   const partial = execWithDriver({ server: false });
-  await executeWebJob({
+  const partialResult = await executeWebJob({
     jobSpec: jobSpec(),
     jobDir,
     flowsDir,
@@ -190,10 +202,8 @@ test("executeWebJob: Maestro driver 两包齐才加 --no-reinstall-driver", asyn
     env: {},
     adbCommand: "adb"
   });
-  assert.equal(
-    partial.calls.find((call) => call.command === "maestro").args.includes("--no-reinstall-driver"),
-    false
-  );
+  assert.match(partialResult.detail, /maestro-preflight:maestro-driver-missing/);
+  assert.equal(partial.calls.some((call) => call.command === "maestro"), false);
 
   const forced = execWithDriver({});
   await executeWebJob({
@@ -209,6 +219,84 @@ test("executeWebJob: Maestro driver 两包齐才加 --no-reinstall-driver", asyn
     forced.calls.find((call) => call.command === "maestro").args.includes("--no-reinstall-driver"),
     false
   );
+});
+
+test("executeWebJob: Android 预检失败给出 typed reason，且不调用 Maestro", async (t) => {
+  const { jobDir, flowsDir } = await workspace(t, ["flow-a.yaml"]);
+  const content = junit([xmlCase({ name: "flow-a", classname: "flows" })]);
+  const makeExec = ({ devices = true, locked = false, app = true, versionCode = 10 } = {}) =>
+    fakeExec(async (command, args) => {
+      if (command === "maestro") {
+        const output = args[args.indexOf("--output") + 1];
+        await mkdir(path.dirname(output), { recursive: true });
+        await writeFile(output, content);
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args.includes("devices")) {
+        return {
+          code: 0,
+          stdout: devices ? "List of devices attached\nemulator-5554\tdevice\n" : "List of devices attached\n",
+          stderr: ""
+        };
+      }
+      if (args.includes("pm")) {
+        const pkg = args[args.length - 1];
+        if (pkg === "com.example.app" && !app) return { code: 1, stdout: "", stderr: "" };
+        return { code: 0, stdout: `package:/data/app/${pkg}/base.apk\n`, stderr: "" };
+      }
+      if (args.includes("dumpsys")) {
+        if (args.includes("power")) return { code: 0, stdout: "mWakefulness=Awake\n", stderr: "" };
+        if (args.includes("window")) {
+          return {
+            code: 0,
+            stdout: locked ? "mShowingLockscreen=true\n" : "mDreamingLockscreen=false\n",
+            stderr: ""
+          };
+        }
+        if (args.includes("package")) {
+          return { code: 0, stdout: `versionCode=${versionCode}\n`, stderr: "" };
+        }
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+  const run = async (overrides, input = {}) => {
+    const fake = makeExec(overrides);
+    const result = await executeWebJob({
+      jobSpec: jobSpec(),
+      jobDir,
+      flowsDir,
+      device: device(),
+      exec: fake.exec,
+      env: {},
+      adbCommand: "adb",
+      ...input
+    });
+    return { result, fake };
+  };
+
+  const offline = await run({ devices: false });
+  assert.match(offline.result.detail, /maestro-preflight:adb-offline/);
+  assert.equal(offline.fake.calls.some((call) => call.command === "maestro"), false);
+
+  const locked = await run({ locked: true });
+  assert.match(locked.result.detail, /maestro-preflight:device-locked/);
+  assert.equal(locked.fake.calls.some((call) => call.command === "maestro"), false);
+
+  const missingApp = await run({ app: false }, { expectedAppPackage: "com.example.app" });
+  assert.match(missingApp.result.detail, /maestro-preflight:app-not-installed/);
+  assert.equal(missingApp.fake.calls.some((call) => call.command === "maestro"), false);
+
+  const oldApp = await run(
+    { versionCode: 9 },
+    { expectedAppPackage: "com.example.app", expectedAppVersionCode: 10 }
+  );
+  assert.match(oldApp.result.detail, /maestro-preflight:app-version-mismatch/);
+  assert.equal(oldApp.fake.calls.some((call) => call.command === "maestro"), false);
+
+  const bypass = await run({ locked: true }, { env: { AOS_PREFLIGHT: "0" } });
+  assert.equal(bypass.result.status, "passed");
+  assert.equal(bypass.fake.calls.some((call) => call.command === "maestro"), true);
 });
 
 test("executeWebJob: maestroCommand 覆盖默认命令（Windows .cmd/.bat）", async (t) => {
@@ -405,11 +493,24 @@ test("executeWebJob: Maestro 失败抓 logcat/窗口/截图并写入 diagnostics
     if (command === "maestro") {
       return { code: 1, stdout: "", stderr: "maestro exploded" };
     }
-    if (args.includes("logcat")) {
-      return { code: 0, stdout: "LOGCAT-ROOT-CAUSE", stderr: "" };
+    if (args.includes("devices")) {
+      return { code: 0, stdout: "List of devices attached\nemulator-5554\tdevice\n", stderr: "" };
+    }
+    if (args.includes("pm")) {
+      const pkg = args[args.length - 1];
+      return { code: 0, stdout: `package:/data/app/${pkg}/base.apk`, stderr: "" };
     }
     if (args.includes("dumpsys")) {
-      return { code: 0, stdout: "WINDOW-FOCUS", stderr: "" };
+      if (args.includes("power")) {
+        return { code: 0, stdout: "mWakefulness=Awake\n", stderr: "" };
+      }
+      if (args.includes("window")) {
+        return { code: 0, stdout: "mDreamingLockscreen=false\n", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    if (args.includes("logcat")) {
+      return { code: 0, stdout: "LOGCAT-ROOT-CAUSE", stderr: "" };
     }
     if (args.includes("pull")) {
       return { code: 0, stdout: "1 file pulled", stderr: "" };

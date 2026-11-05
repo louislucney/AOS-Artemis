@@ -113,9 +113,24 @@ function fakeExec({ junitCases }) {
       return { code: 0, stdout: "", stderr: "" };
     }
     if (command === "adb") {
+      if (args.includes("devices")) {
+        return { code: 0, stdout: "List of devices attached\nemulator-5554\tdevice\n", stderr: "" };
+      }
+      if (args.includes("pm")) {
+        const pkg = args[args.length - 1];
+        return { code: 0, stdout: `package:/data/app/${pkg}/base.apk\n`, stderr: "" };
+      }
+      if (args.includes("dumpsys")) {
+        if (args.includes("power")) {
+          return { code: 0, stdout: "mWakefulness=Awake\n", stderr: "" };
+        }
+        if (args.includes("window")) {
+          return { code: 0, stdout: "mDreamingLockscreen=false\n", stderr: "" };
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      }
       if (
         args.includes("logcat") ||
-        args.includes("dumpsys") ||
         args.includes("screencap") ||
         args.includes("pull") ||
         args.includes("rm")

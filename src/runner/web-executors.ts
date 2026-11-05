@@ -49,10 +49,14 @@ export interface ExecuteWebJobInput {
   timeoutMs?: number;
   /** 已解析的 maestro 可执行文件；缺省 "maestro"（Windows .cmd/.bat 需显式路径）。 */
   maestroCommand?: string;
-  /** 已解析的 adb 路径；失败诊断用，缺省 "adb"。 */
+  /** 已解析的 adb 路径；失败诊断/预检用，缺省 "adb"。 */
   adbCommand?: string;
   /** 执行日志（driver 复用/缺失提示）。 */
   onLog?: (message: string) => void;
+  /** 预期已安装的 Android appId（预检用）。 */
+  expectedAppPackage?: string | null;
+  /** 预期最低 versionCode（预检用）。 */
+  expectedAppVersionCode?: number | null;
 }
 
 export const WEB_JOB_DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
@@ -199,6 +203,100 @@ async function maestroDriverState(
   const states = await Promise.all(packages.map((packageName) => installed(packageName)));
   const missing = packages.filter((_packageName, index) => !states[index]);
   return { ready: missing.length === 0, missing };
+}
+
+interface MaestroPreflightResult {
+  ok: boolean;
+  reason?: string;
+  detail?: string;
+}
+
+/** Android 执行前门禁：设备在线、driver 两包、屏幕状态、app 版本。 */
+async function preflightAndroid(
+  input: ExecuteWebJobInput,
+  driver: { ready: boolean; missing: string[] }
+): Promise<MaestroPreflightResult> {
+  if (input.device.platform !== "android" || input.adbCommand === undefined) return { ok: true };
+  if ((input.env.AOS_PREFLIGHT ?? "").trim() === "0") return { ok: true };
+
+  const adb = input.adbCommand.trim() || "adb";
+  const run = async (args: string[]): Promise<ExecResult | null> => {
+    try {
+      return await input.exec(adb, args, { timeoutMs: 15_000, env: input.env });
+    } catch {
+      return null;
+    }
+  };
+  const detail = (result: ExecResult | null): string =>
+    result === null ? "adb exec failed" : `${result.stdout} ${result.stderr}`.trim().slice(0, 400);
+
+  const devices = await run(["devices"]);
+  if (devices === null || devices.code !== 0) {
+    return { ok: false, reason: "adb-offline", detail: detail(devices) };
+  }
+  const line = devices.stdout
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith(`${input.device.serial}\t`) || entry.startsWith(`${input.device.serial} `));
+  if (line === undefined || !/\sdevice$/.test(line)) {
+    return { ok: false, reason: "adb-offline", detail: line ?? `serial ${input.device.serial} not found` };
+  }
+
+  if (!driver.ready && driver.missing.length > 0) {
+    if ((input.env.AOS_MAESTRO_INSTALL_DRIVER ?? "").trim() !== "1") {
+      return {
+        ok: false,
+        reason: "maestro-driver-missing",
+        detail: driver.missing.join(", ")
+      };
+    }
+  }
+
+  const power = await run(["-s", input.device.serial, "shell", "dumpsys", "power"]);
+  if (power !== null && /mWakefulness=(Asleep|Dozing)/.test(power.stdout)) {
+    return { ok: false, reason: "device-asleep", detail: "screen is asleep" };
+  }
+  const window = await run(["-s", input.device.serial, "shell", "dumpsys", "window"]);
+  if (
+    window !== null &&
+    /(mDreamingLockscreen=true|mShowingLockscreen=true|isStatusBarKeyguard=true)/.test(window.stdout)
+  ) {
+    return { ok: false, reason: "device-locked", detail: "keyguard is showing" };
+  }
+
+  if (input.expectedAppPackage !== null && input.expectedAppPackage !== undefined) {
+    const app = await run(["-s", input.device.serial, "shell", "pm", "path", input.expectedAppPackage]);
+    if (app === null || app.code !== 0 || !/package:/.test(app.stdout)) {
+      return {
+        ok: false,
+        reason: "app-not-installed",
+        detail: `${input.expectedAppPackage}: ${detail(app)}`
+      };
+    }
+    if (input.expectedAppVersionCode !== null && input.expectedAppVersionCode !== undefined) {
+      const dump = await run([
+        "-s",
+        input.device.serial,
+        "shell",
+        "dumpsys",
+        "package",
+        input.expectedAppPackage
+      ]);
+      const match = dump === null ? null : /versionCode=(\d+)/.exec(dump.stdout);
+      if (match !== null) {
+        const installed = Number(match[1]);
+        if (installed < input.expectedAppVersionCode) {
+          return {
+            ok: false,
+            reason: "app-version-mismatch",
+            detail: `installed ${installed} < expected ${input.expectedAppVersionCode}`
+          };
+        }
+      }
+    }
+  }
+
+  return { ok: true };
 }
 
 function tail(text: string): string {
@@ -699,6 +797,15 @@ export async function executeWebJob(
     ...execTargets
   ];
   const driver = await maestroDriverState(input);
+  const preflight = await preflightAndroid(input, driver);
+  if (!preflight.ok) {
+    return resultAt(
+      startedAtMs,
+      "error",
+      [],
+      `maestro-preflight:${preflight.reason ?? "unknown"}${preflight.detail === undefined ? "" : `: ${preflight.detail}`}`
+    );
+  }
   if (driver.ready) {
     maestroArgs.push("--no-reinstall-driver");
     input.onLog?.("Maestro driver 已安装，跳过重装");

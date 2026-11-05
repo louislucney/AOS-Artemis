@@ -77,6 +77,8 @@ const CHILD_ENV_ALLOW = new Set([
   "ADB_SERVER_SOCKET",
   "AOS_MAESTRO_PATH",
   "AOS_MAESTRO_REINSTALL_DRIVER",
+  "AOS_MAESTRO_INSTALL_DRIVER",
+  "AOS_PREFLIGHT",
   "AOS_ADB_PATH",
   "AOS_IDEVICESYSLOG_PATH",
   "AOS_RUNNER_WORK_DIR",
@@ -448,6 +450,10 @@ export function createDefaultWebJobExecutor(
         maestroCommand,
         adbCommand,
         onLog,
+        ...(appId === null ? {} : { expectedAppPackage: appId }),
+        ...(apkInfo?.versionCode === null || apkInfo?.versionCode === undefined
+          ? {}
+          : { expectedAppVersionCode: apkInfo.versionCode }),
         ...(executeTimeoutMs === undefined ? {} : { timeoutMs: executeTimeoutMs })
       });
       if (input.shouldAbort?.() === true) throw new Error("web-job-aborted");
