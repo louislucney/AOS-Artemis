@@ -235,8 +235,14 @@ test("详情页下发/归因/统计/back-link 均带 host=h-b", async () => {
     (await handlePanelRequest(new URL(`http://x/panel?host=h-b&project=${enc}`), deps)).body
   );
   assert.match(projectHtml, new RegExp(`${enc}&amp;section=create&amp;type=suite&amp;host=h-b`));
-  assert.match(projectHtml, new RegExp(`${enc}&amp;view=review&amp;host=h-b`));
-  assert.match(projectHtml, new RegExp(`${enc}&amp;view=stats&amp;host=h-b`));
+  assert.match(
+    projectHtml,
+    new RegExp(`${enc}&amp;section=tasks&amp;view=review&amp;host=h-b`)
+  );
+  assert.match(
+    projectHtml,
+    new RegExp(`${enc}&amp;section=tasks&amp;view=stats&amp;host=h-b`)
+  );
 
   const reviewHtml = String(
     (await handlePanelRequest(new URL(`http://x/panel?host=h-b&project=${enc}&view=review`), deps))

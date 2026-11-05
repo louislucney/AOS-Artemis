@@ -3780,8 +3780,11 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
   - `section=library` → `section=assets&tab=case-sets`
   - `section=assets&kind=excel|package|materials|reference` → `section=assets&tab=<对应 tab>`（去掉 `kind`）
   - `section=dispatch` → `section=create&type=suite`
-  - `section=jobs`（无 `job`）→ `section=tasks`
+  - `section=jobs`（无 `job`）→ `section=create&type=web`（保留原下发表单 + 任务列表）
+  - `section=jobs&job=<id>` → `section=tasks&task=<id>`（删除 `job`）
+  - 无 `section` 且带 `task=<id>` → `section=tasks&task=<id>`
   - `view=review|stats` → `section=tasks&view=<原 view>`
-  - 其余参数（`project`/`host`/`source`/`ref` 等）原样保留；`section=jobs&job=<id>` 暂保留旧详情页，待统一任务详情路由（`section=tasks&task=<id>`）落地后再 redirect。
-- **未完成**：统一任务详情 `section=tasks&task=<id>`（当前套件任务详情仍走 `?task=`、Web 任务仍走 `section=jobs&job=`）、任务列表分页、未登记项目注册 CTA。
+  - 其余参数（`project`/`host`/`source`/`ref` 等）原样保留。
+- **统一任务详情**：`section=tasks&task=<id>` 按任务类型分派——套件回归渲染运行/引用/跨端差异与 rerun 等动作；网页测试渲染逐用例结果/参考图/证据/Excel 写回，并在终态且 dispatcher+ 时提供「重新下发网页测试」（`POST /panel/api/jobs/clone`）。`section=tasks&view=review|stats` 复用原裁决/统计视图。
+- **未完成**：任务列表分页、未登记项目注册 CTA。
 - **测试**：`panel-legacy-redirect.test.js` 覆盖 library/dispatch/jobs/review/kind→tab 与参数保留；`console-pages` 覆盖新导航与资产/新建/任务入口。

@@ -851,53 +851,54 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       mappings
     };
   }
+  const loadWebJob = async (jobId: string): Promise<PanelView> => {
+    const task = await projectStore
+      .getRegressionTask(resolved.rootPath, jobId)
+      .catch(() => null);
+    if (task === null || task.jobSpec === null) {
+      throw new PanelNotFoundError(`未知 Web 任务 "${jobId}"`);
+    }
+    const spec = parseWebJobSpec(task.jobSpec);
+    const result = await readWebJobResult(resolved.rootPath, task.id).catch(() => null);
+    const runners = await projectStore.listWebRunners().catch(() => []);
+    const boundHost = task.claimedHostId ?? task.targetHostId ?? spec?.targetHostId ?? null;
+    const serial = task.deviceSerial ?? spec?.deviceSerial ?? null;
+    const runner = runners.find((record) => record.hostId === boundHost) ?? null;
+    const inventory =
+      serial === null
+        ? null
+        : (runner?.devices.find((device) => device.serial === serial) ?? null);
+    const device =
+      result !== null && result.device !== undefined && result.device !== null
+        ? {
+            serial: result.device.serial ?? serial,
+            model: result.device.model ?? null,
+            osVersion: result.device.osVersion ?? null,
+            source: "result" as const
+          }
+        : inventory !== null
+          ? {
+              serial,
+              model: inventory.model ?? null,
+              osVersion: inventory.osVersion ?? null,
+              source: "inventory" as const
+            }
+          : { serial, model: null, osVersion: null, source: "unknown" as const };
+    return {
+      kind: "web-job",
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rootLabel: resolved.name,
+      task,
+      spec,
+      result,
+      device
+    };
+  };
   if (section === "jobs") {
     const nowMs = deps.now?.() ?? Date.now();
     const jobId = trimmed(url.searchParams.get("job"));
-    if (jobId !== null) {
-      const task = await projectStore
-        .getRegressionTask(resolved.rootPath, jobId)
-        .catch(() => null);
-      if (task === null || task.jobSpec === null) {
-        throw new PanelNotFoundError(`未知 Web 任务 "${jobId}"`);
-      }
-      const spec = parseWebJobSpec(task.jobSpec);
-      const result = await readWebJobResult(resolved.rootPath, task.id).catch(() => null);
-      const runners = await projectStore.listWebRunners().catch(() => []);
-      const boundHost = task.claimedHostId ?? task.targetHostId ?? spec?.targetHostId ?? null;
-      const serial = task.deviceSerial ?? spec?.deviceSerial ?? null;
-      const runner = runners.find((record) => record.hostId === boundHost) ?? null;
-      const inventory =
-        serial === null
-          ? null
-          : (runner?.devices.find((device) => device.serial === serial) ?? null);
-      const device =
-        result !== null && result.device !== undefined && result.device !== null
-          ? {
-              serial: result.device.serial ?? serial,
-              model: result.device.model ?? null,
-              osVersion: result.device.osVersion ?? null,
-              source: "result" as const
-            }
-          : inventory !== null
-            ? {
-                serial,
-                model: inventory.model ?? null,
-                osVersion: inventory.osVersion ?? null,
-                source: "inventory" as const
-              }
-            : { serial, model: null, osVersion: null, source: "unknown" as const };
-      return {
-        kind: "web-job",
-        rootPath: resolved.rootPath,
-        hostId: resolved.hostId,
-        rootLabel: resolved.name,
-        task,
-        spec,
-        result,
-        device
-      };
-    }
+    if (jobId !== null) return await loadWebJob(jobId);
     const tasks = await projectStore.listRegressionTasks(resolved.rootPath, 50).catch(() => []);
     const jobs: WebJobListEntry[] = [];
     for (const task of tasks) {
@@ -931,6 +932,33 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return await loadLibraryView(projectStore, resolved);
   }
   if (section === "tasks") {
+    const taskId = trimmed(url.searchParams.get("task"));
+    if (taskId !== null) {
+      const task = await projectStore
+        .getRegressionTask(resolved.rootPath, taskId)
+        .catch(() => null);
+      if (task === null) throw new PanelNotFoundError(`未知任务 "${taskId}"`);
+      if (task.jobSpec !== null) return await loadWebJob(taskId);
+      const detail = await buildPanelTaskDetail(panelDeps, resolved.rootPath, taskId);
+      if (!detail) throw new PanelNotFoundError(`未知任务 "${taskId}"`);
+      const dispatched = trimmed(url.searchParams.get("dispatched"));
+      return {
+        kind: "task",
+        rootPath: resolved.rootPath,
+        hostId: resolved.hostId,
+        detail,
+        ...(dispatched === null ? {} : { flash: dispatched })
+      };
+    }
+    const taskView = trimmed(url.searchParams.get("view"));
+    if (taskView === "review") {
+      const detail = await buildPanelReviewQueue(panelDeps, resolved.rootPath, { limit: 10 });
+      return { kind: "review", rootPath: resolved.rootPath, hostId: resolved.hostId, detail };
+    }
+    if (taskView === "stats") {
+      const detail = await buildPanelStatsView(panelDeps, resolved.rootPath);
+      return { kind: "stats", rootPath: resolved.rootPath, hostId: resolved.hostId, detail };
+    }
     const filter = trimmed(url.searchParams.get("filter")) === "active" ? "active" : "all";
     const tasks = await projectStore.listRegressionTasks(resolved.rootPath, 100).catch(() => []);
     const entries: WebJobListEntry[] = await Promise.all(
@@ -1338,7 +1366,18 @@ function legacyPanelRedirect(url: URL): PanelWebResponse | null {
     set("section", "create");
     set("type", "suite");
     changed = true;
-  } else if (section === "jobs" && (params.get("job") ?? "").trim() === "") {
+  } else if (section === "jobs") {
+    const job = (params.get("job") ?? "").trim();
+    if (job === "") {
+      set("section", "create");
+      set("type", "web");
+    } else {
+      set("section", "tasks");
+      set("task", job);
+      del("job");
+    }
+    changed = true;
+  } else if (section === "" && (params.get("task") ?? "").trim() !== "") {
     set("section", "tasks");
     changed = true;
   } else if (section === "assets" && (params.get("tab") ?? "").trim() === "") {
@@ -1452,15 +1491,21 @@ function batchHref(rootPath: string, file: string, hostId?: string | null): stri
 }
 
 function taskHref(rootPath: string, taskId: string, hostId?: string | null): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}&task=${encodeURIComponent(taskId)}${hostSuffix(hostId)}`;
+  return `/panel?project=${encodeURIComponent(rootPath)}&section=tasks&task=${encodeURIComponent(
+    taskId
+  )}${hostSuffix(hostId)}`;
 }
 
 function reviewHref(rootPath: string, hostId?: string | null): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}&view=review${hostSuffix(hostId)}`;
+  return `/panel?project=${encodeURIComponent(rootPath)}&section=tasks&view=review${hostSuffix(
+    hostId
+  )}`;
 }
 
 function statsHref(rootPath: string, hostId?: string | null): string {
-  return `/panel?project=${encodeURIComponent(rootPath)}&view=stats${hostSuffix(hostId)}`;
+  return `/panel?project=${encodeURIComponent(rootPath)}&section=tasks&view=stats${hostSuffix(
+    hostId
+  )}`;
 }
 
 function gateSpan(gate: "pass" | "fail" | null): string {
@@ -2686,7 +2731,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         ]
           .filter((part) => part !== "")
           .join(" ");
-        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var hostId=${JSON.stringify(view.hostId).replace(/</g, "\\u003c")};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun','clone-web':'/panel/api/jobs/clone',cancel:'/panel/api/tasks/cancel'};var noteEl=document.getElementById('task-cancel-note');function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId,host:hostId,note:action==='cancel'&&noteEl?noteEl.value:undefined})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='clone-web'){var jobId=res.j.job&&res.j.job.id?res.j.job.id:(res.j.task&&res.j.task.id?res.j.task.id:'');window.aosFlash&&aosFlash('已重新下发网页测试 '+jobId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&section=jobs&job='+encodeURIComponent(jobId)+${JSON.stringify(hostSuffix(view.hostId))};return;}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':action==='cancel'?(res.j&&res.j.status==='cancelled'?'任务已取消':'已请求取消（等待执行机确认）')+' · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
+        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var hostId=${JSON.stringify(view.hostId).replace(/</g, "\\u003c")};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun','clone-web':'/panel/api/jobs/clone',cancel:'/panel/api/tasks/cancel'};var noteEl=document.getElementById('task-cancel-note');function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId,host:hostId,note:action==='cancel'&&noteEl?noteEl.value:undefined})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='clone-web'){var jobId=res.j.job&&res.j.job.id?res.j.job.id:(res.j.task&&res.j.task.id?res.j.task.id:'');window.aosFlash&&aosFlash('已重新下发网页测试 '+jobId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&section=tasks&task='+encodeURIComponent(jobId)+${JSON.stringify(hostSuffix(view.hostId))};return;}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&section=tasks&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':action==='cancel'?(res.j&&res.j.status==='cancelled'?'任务已取消':'已请求取消（等待执行机确认）')+' · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
         return [
           `<p id="task-actions">${badge} ${priorityBadge} ${buttons}${cancellable ? ' <label class="muted">取消备注 <input type="text" id="task-cancel-note" size="24" placeholder="可选（写入任务与审计）"></label>' : ""}</p>`,
           `<p id="task-action-status" role="status" class="c-banner" hidden></p>`,
@@ -3227,7 +3272,7 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
       `<p class="muted">测试资产：<a href="${escapeHtml(
         `/panel?project=${encodeURIComponent(view.rootPath)}&section=assets${hostSuffix(view.hostId)}`
       )}">测试资产</a>（Excel 原件版本与列映射） · <a href="${escapeHtml(
-        `/panel?project=${encodeURIComponent(view.rootPath)}&section=jobs${hostSuffix(view.hostId)}`
+        `/panel?project=${encodeURIComponent(view.rootPath)}&section=create&type=web${hostSuffix(view.hostId)}`
       )}">下发测试</a>（Web 任务下发到远端执行机）</p>`,
       "</header>",
       "<main>",

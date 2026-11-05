@@ -429,7 +429,7 @@ test("panel web: 页面内联脚本可解析（项目/裁决/任务页，防语�
     baseline: "latest",
     createdBy: "cli"
   });
-  for (const suffix of ["", "&view=review", `&task=${task.id}`]) {
+  for (const suffix of ["", "&view=review", `&section=tasks&task=${task.id}`]) {
     const html = await handlePanelRequest(
       new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}${suffix}`),
       deps
@@ -441,7 +441,7 @@ test("panel web: 页面内联脚本可解析（项目/裁决/任务页，防语�
       assert.doesNotMatch(html.body, /<caption>最近运行<\/caption>/, "表题不与 h2 重复");
       assert.doesNotMatch(html.body, /<caption>执行机<\/caption>/, "表题不与 h2 重复");
     }
-    if (suffix.startsWith("&task=")) {
+    if (suffix.startsWith("&section=tasks&task=")) {
       assert.doesNotMatch(html.body, /<caption>跨端差异<\/caption>/, "表题不与 h2 重复");
     }
     const label = suffix === "" ? "项目页" : suffix === "&view=review" ? "裁决页" : "任务页";
@@ -795,12 +795,14 @@ test("panel web: Web 任务不显示套件重新派发，改为重新下发网�
   });
   await store.updateRegressionTask(projectDir, task.id, { status: "completed" });
   const html = await handlePanelRequest(
-    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${encodeURIComponent(task.id)}`),
+    new URL(
+      `http://x/panel?project=${encodeURIComponent(projectDir)}&section=tasks&task=${encodeURIComponent(task.id)}`
+    ),
     deps
   );
   assert.equal(html.status, 200);
-  assert.match(html.body, /重新下发网页测试/);
-  assert.match(html.body, /data-task-action="clone-web"/);
+  assert.match(html.body, /网页任务详情/);
+  assert.match(html.body, /id="web-job-clone"/);
   assert.match(html.body, /panel\/api\/jobs\/clone/);
   assert.doesNotMatch(html.body, /data-task-action="rerun"/);
 });

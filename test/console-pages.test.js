@@ -543,5 +543,5 @@ test("console pages: 任务与结果同时渲染网页任务", () => {
   assert.match(html, /网页测试 · LLM/);
   assert.match(html, /app\.apk/);
   assert.match(html, /passed/);
-  assert.match(html, /section=jobs&amp;job=web-task-1/);
+  assert.match(html, /section=tasks&amp;task=web-task-1/);
 });

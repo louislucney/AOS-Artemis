@@ -594,7 +594,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const projectSelect = [
     `<p><label>项目 <select name="project" aria-label="项目">${projectOptionsHtml}</select></label> <span class="muted">先选主机，再选该主机上的项目。</span></p>`,
     noProjects
-      ? `<p class="muted">该主机尚未登记项目：套件回归需要项目目录，请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>；如果是给手机下发网页测试，<strong>不需要登记项目</strong>，直接用 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=jobs${dispatchHostQuery.replace(/&/g, "&amp;")}">网页测试</a>。</p>`
+      ? `<p class="muted">该主机尚未登记项目：套件回归需要项目目录，请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>；如果是给手机下发网页测试，<strong>不需要登记项目</strong>，直接用 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=create&amp;type=web${dispatchHostQuery.replace(/&/g, "&amp;")}">网页测试</a>。</p>`
       : ""
   ]
     .filter((part) => part !== "")
@@ -608,10 +608,8 @@ export function renderDispatchPage(view: DispatchView): string {
 
   const webJobsHref =
     view.rootPath === ""
-      ? `/panel?section=jobs${dispatchHostQuery}`
-      : `/panel?project=${encodeURIComponent(view.rootPath)}&section=${
-          view.embeddedCreate ? "create&type=web" : "jobs"
-        }${dispatchHostQuery}`;
+      ? `/panel?section=create&type=web${dispatchHostQuery}`
+      : `/panel?project=${encodeURIComponent(view.rootPath)}&section=create&type=web${dispatchHostQuery}`;
   const hostProjectCallout = noProjects
     ? `<div class="c-flow-callout"><div><strong>${
         noSources

@@ -239,7 +239,10 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     navTargets.tasks = `${base}&section=tasks#tasks`;
     navTargets.runners = `${base}&section=runners#runners`;
     navTargets.schedules = `${base}&section=schedules#schedules`;
-    navTargets.stats = `${base}&view=stats`;
+    navTargets.stats = `${base}&section=tasks&view=stats`;
+    navTargets.review = `${base}&section=tasks&view=review`;
+    navTargets.dispatch = `${base}&section=create&type=suite`;
+    navTargets.library = `${base}&section=assets&tab=case-sets`;
     navTargets.audit = `${base}&section=audit`;
   }
   const shortcutKeys: Array<[string, ConsoleNavKey, string]> = [

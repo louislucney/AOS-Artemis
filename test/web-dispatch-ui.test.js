@@ -159,7 +159,7 @@ function jobsUrl(rootPath, hostId = null) {
 
 function jobDetailUrl(rootPath, jobId) {
   return new URL(
-    `http://x/panel?project=${encodeURIComponent(rootPath)}&section=jobs&job=${encodeURIComponent(jobId)}`
+    `http://x/panel?project=${encodeURIComponent(rootPath)}&section=tasks&task=${encodeURIComponent(jobId)}`
   );
 }
 
@@ -700,6 +700,7 @@ test("job detail shows device, package, cases, evidence links and writeback stat
   assert.match(html, /已写回/);
   assert.match(html, /结果 1\/2/);
   assert.match(html, /来源：结果上报/);
+  assert.doesNotMatch(html, /data-task-action="rerun"/, "网页任务不显示套件重新派发");
 
   const missing = JSON.parse(
     (await postJob(deps, autoBody(rootPath, { excel, pkg, script }))).body
@@ -935,5 +936,5 @@ test("job detail: unknown job is 404 and project page links to jobs", async (t) 
     { ...deps, capabilities: capabilities("dispatcher") }
   );
   assert.equal(projectPage.status, 200);
-  assert.match(projectPage.body, /section=jobs[^"]*"[^>]*>下发测试</);
+  assert.match(projectPage.body, /section=create[^"]*type=web[^"]*"[^>]*>下发测试</);
 });
