@@ -20,6 +20,8 @@ export interface RunRegressionArgs {
   scope?: string;
   all?: boolean;
   device?: string;
+  /** 可选 APK/IPA 本地路径或 URL；透传 mobile_run_task.app_path。 */
+  appPath?: string;
   columns?: ImportColumns;
 }
 
@@ -72,6 +74,7 @@ export async function runRegression(
   const excelPath = trimOrNull(args.excelPath);
   const scope = trimOrNull(args.scope);
   const requestedDevice = trimOrNull(args.device);
+  const appPath = trimOrNull(args.appPath);
   if (excelPath !== null && args.all === true) {
     return jsonResult({ ok: false, error: "用法错误：excelPath 与 all 不能同用" }, true);
   }
@@ -225,6 +228,7 @@ export async function runRegression(
             testsPath: target.jsonPath,
             deviceSerial: device,
             ...(target.caseIds !== undefined ? { caseIds: target.caseIds } : {}),
+            ...(appPath !== null ? { appPath } : {}),
             apiErrors: true,
             failOnApiErrors: false,
             stopOnFailure: false

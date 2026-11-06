@@ -272,6 +272,24 @@ test("jobs page: dispatch form with host, device and soft preferences", async (t
   assert.doesNotThrow(() => new Function(ownScripts[0]), "下发表单脚本可解析");
 });
 
+test("jobs page: AOS_MAESTRO_WEB=0 隐藏 Maestro 下发表单", async (t) => {
+  const { deps, rootPath } = await setup(t);
+  const previous = process.env.AOS_MAESTRO_WEB;
+  process.env.AOS_MAESTRO_WEB = "0";
+  try {
+    const response = await handlePanelRequest(jobsUrl(rootPath), {
+      ...deps,
+      capabilities: capabilities("dispatcher")
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.body, /Maestro 网页测试已禁用/);
+    assert.ok(!response.body.includes('id="web-job-form"'), "禁用时不渲染写表单");
+  } finally {
+    if (previous === undefined) delete process.env.AOS_MAESTRO_WEB;
+    else process.env.AOS_MAESTRO_WEB = previous;
+  }
+});
+
 test("jobs page without project: project picker instead of a broken form", async (t) => {
   const { deps } = await setup(t);
   const response = await handlePanelRequest(new URL("http://x/panel?section=jobs"), {

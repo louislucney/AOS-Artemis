@@ -560,10 +560,15 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             size: number;
             sha256: string;
           };
+          const role = (url.searchParams.get("role") ?? "").trim();
+          const adbHost = role === "adb-host";
+          const manifestName = adbHost ? "adb-host-manifest.json" : "manifest.json";
+          const bundleLabel = adbHost ? "adb-host bundle" : "runner bundle";
+          const buildHint = adbHost ? "npm run bundle:adb-host" : "npm run bundle:runner";
           let entries: BundleEntry[] = [];
           try {
             const parsed = JSON.parse(
-              fs.readFileSync(path.join(bundleDir, "manifest.json"), "utf8")
+              fs.readFileSync(path.join(bundleDir, manifestName), "utf8")
             ) as unknown;
             if (Array.isArray(parsed)) {
               entries = parsed.filter(
@@ -584,7 +589,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             res.end(
               JSON.stringify({
                 ok: false,
-                error: "runner bundle 尚未构建：请先运行 npm run bundle:runner"
+                error: `${bundleLabel} 尚未构建：请先运行 ${buildHint}`
               })
             );
             return;
@@ -609,7 +614,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
                   filename,
                   size,
                   sha256,
-                  url: `/panel/runner-bundle?platform=${encodeURIComponent(p)}&arch=${encodeURIComponent(a)}`
+                  url: `/panel/runner-bundle?${adbHost ? "role=adb-host&" : ""}platform=${encodeURIComponent(p)}&arch=${encodeURIComponent(a)}`
                 }))
               })
             );

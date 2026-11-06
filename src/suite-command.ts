@@ -285,6 +285,7 @@ function suiteRunOptions(
     stopOnFailure: flags.bool("stop-on-failure"),
     deviceSerial: flags.get("device") ?? undefined,
     lockedAppPackage: flags.get("app") ?? undefined,
+    appPath: flags.get("app-path") ?? undefined,
     model: flags.get("model") ?? undefined,
     uiDiff: flags.bool("ui-diff"),
     uiDiffMax: intOrNull(flags.get("ui-diff-max")) ?? undefined,
@@ -406,7 +407,7 @@ Usage:
 
 common: [--project <dir>] [--json]
 run:    [--tests <path>] [--case <caseId|semanticId|displayId>]... [--max <n>] [--stop-on-failure] [--device <serial>]
-        [--app <package>] [--model Flash|Pro] [--poll-timeout <ms>]
+        [--app <package>] [--app-path <apk|ipa|url>] [--model Flash|Pro] [--poll-timeout <ms>]
         [--ui-diff] [--ui-diff-max <n>]（访问屏逐屏设计对比；默认关闭，单例默认最多 10 屏）
         [--fail-on-ui]（窄门禁：非隔离用例 ui.status=failed → exit 2；unverified 不阻断）
         [--fail-on-ui-weight]（窄门禁：非隔离用例高置信字重 heavier → exit 2；默认关闭，待样本校准）
@@ -417,7 +418,7 @@ check:  [--tests <path>] [--strict] [--allow-pending-api] [--semantics <path>]
         [--fail-on-dynamic] [--dynamic-baseline <json>] [--update-dynamic-baseline]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
-        [--device <serial>] [--app <package>] [--model Flash|Pro] [--ui-diff] [--fail-on-ui] [--fail-on-ui-weight]
+        [--device <serial>] [--app <package>] [--app-path <apk|ipa|url>] [--model Flash|Pro] [--ui-diff] [--fail-on-ui] [--fail-on-ui-weight]
         [--allow-uncovered] [--no-quarantine] [--no-save] [--out <dir>]
 flake:  --cases <caseId|semanticId|displayId,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>]
         [--model Flash|Pro] [--poll-timeout <ms>] [--no-api-errors] [--fail-on-flaky] [--no-save] [--out <dir>]

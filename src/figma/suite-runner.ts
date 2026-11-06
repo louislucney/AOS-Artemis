@@ -117,6 +117,8 @@ export interface SuiteRunOptions {
   shouldAbort?: () => boolean;
   deviceSerial?: string;
   lockedAppPackage?: string;
+  /** 可选：Android APK/iOS IPA 的本地路径或 URL；透传 `mobile_run_task.app_path`，由 Artemis 安装。 */
+  appPath?: string;
   model?: string;
   /** Opt-in: compare screens visited by each case against per-screen design. */
   uiDiff?: boolean;
@@ -534,6 +536,7 @@ export async function runGeneratedTests(
       model: options.model ?? null,
       deviceSerial: options.deviceSerial ?? null,
       lockedAppPackage: options.lockedAppPackage ?? null,
+      appPath: options.appPath ?? null,
       quarantined,
       failOnApiErrors: options.failOnApiErrors === true,
       apiCatalog,

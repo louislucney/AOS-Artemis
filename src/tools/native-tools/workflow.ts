@@ -135,6 +135,10 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
         .string()
         .optional()
         .describe("目标设备 serial / UDID；缺省自动盘点（多于一台先问）"),
+      appPath: z
+        .string()
+        .optional()
+        .describe("可选：APK/IPA 本地路径或 URL；透传 mobile_run_task.app_path，由 Artemis 安装后再执行"),
       columns: z
         .object({
           name: z.string().optional(),

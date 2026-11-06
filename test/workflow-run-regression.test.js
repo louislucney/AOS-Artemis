@@ -165,6 +165,17 @@ test("run_regression: excelPath 导入并执行（来源/设备/清单路径回�
   assert.equal(calls.execute[0].options.deviceSerial, "dev-1");
 });
 
+test("run_regression: appPath 透传到 executeBatch options（APK 安装）", async () => {
+  const { deps, calls } = makeDeps();
+  const result = await runRegression(
+    stubRuntime(),
+    { excelPath: "qa/cases.xlsx", appPath: "/tmp/app-under-test.apk" },
+    deps
+  );
+  assert.equal(payloadOf(result).ok, true);
+  assert.equal(calls.execute[0].options.appPath, "/tmp/app-under-test.apk");
+});
+
 test("run_regression: 同内容二次导入 skipped 仍执行既有集", async () => {
   const { deps, calls } = makeDeps({
     importDocument: async () => ({ ...importResult(), status: "skipped" })

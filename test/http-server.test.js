@@ -1035,6 +1035,38 @@ test("http server: 按平台提供 runner 安装包下载", async () => {
       assert.match(response.headers.get("content-disposition") ?? "", /mobile-testing-runner-0\.1\.0-win32-x64\.zip/);
       assert.equal(Buffer.from(await response.arrayBuffer()).toString("utf8"), "fake-runner-bundle");
     } finally {
+      handle.httpServer.closeAllConnections?.();
+      await handle.close();
+    }
+  });
+});
+
+test("http server: role=adb-host 提供 MCP 原生 adb-host 小包", async () => {
+  const workspace = makeTempDir("aos-http-adb-host-ws-");
+  const bundleDir = makeTempDir("aos-http-adb-host-");
+  const filename = "mobile-testing-adb-host-0.1.0-win32-x64.zip";
+  fs.writeFileSync(path.join(bundleDir, filename), "fake-adb-host-bundle");
+  fs.writeFileSync(
+    path.join(bundleDir, "adb-host-manifest.json"),
+    JSON.stringify([
+      { platform: "win32", arch: "x64", filename, size: 22, sha256: "test" }
+    ])
+  );
+  await withEnv("AOS_RUNNER_BUNDLE_DIR", bundleDir, async () => {
+    const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${handle.port}/panel/runner-bundle?role=adb-host&platform=win32&arch=x64`
+      );
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type"), "application/zip");
+      assert.match(
+        response.headers.get("content-disposition") ?? "",
+        /mobile-testing-adb-host-0\.1\.0-win32-x64\.zip/
+      );
+      assert.equal(Buffer.from(await response.arrayBuffer()).toString("utf8"), "fake-adb-host-bundle");
+    } finally {
+      handle.httpServer.closeAllConnections?.();
       await handle.close();
     }
   });

@@ -93,6 +93,11 @@ for (const target of targets) {
   const staging = path.join(outDir, stem);
   const toolsDir = path.join(staging, "tools");
   fs.mkdirSync(staging, { recursive: true });
+  const nativeDoc = path.join(root, "docs", "android-mcp-native-testing.md");
+  if (fs.existsSync(nativeDoc)) {
+    fs.mkdirSync(path.join(staging, "docs"), { recursive: true });
+    fs.copyFileSync(nativeDoc, path.join(staging, "docs", "android-mcp-native-testing.md"));
+  }
   copy(path.join(root, "dist"), path.join(staging, "dist"));
   for (const file of ["package.json", "package-lock.json", "LICENSE"]) {
     if (fs.existsSync(path.join(root, file))) {
@@ -164,11 +169,60 @@ exec node dist/cli.js web-runner "$@"
   });
 
   const installedNote = withTools
-    ? "本包已内置 Node.js、adb、JDK、Maestro。"
-    : "本包是 app-only，需要系统已安装 Node.js、adb、JDK、Maestro。";
+    ? "本包内置 Node.js、adb、JDK、Maestro。**MCP 原生执行只需要 adb**；JDK/Maestro 仅供下面的 legacy Maestro web-runner 使用。"
+    : "本包是 app-only，需要系统已安装 Node.js、adb、JDK、Maestro。**MCP 原生执行只需要 adb**。";
+  const mcpGuide = [
+    "## 一、Android 真机（MCP 原生，推荐）",
+    "",
+    "**只需要 adb。** 不需要启动 `runner.cmd`，不需要 JDK/Maestro。",
+    "",
+    "1. 设备 USB 插在 Windows/macOS 宿主，确认已授权 USB 调试：",
+    "   ```powershell",
+    "   .\\tools\\platform-tools\\adb.exe devices",
+    "   ```",
+    "   能看到设备 serial（如 `10CF6609P900059    device`）。",
+    "",
+    "2. 停掉旧 adb server，再启动监听所有网卡的 server（Windows 示例）：",
+    "   ```powershell",
+    "   .\\tools\\platform-tools\\adb.exe kill-server",
+    "   .\\tools\\platform-tools\\adb.exe -a -P 5037 server nodaemon",
+    "   ```",
+    "   这个窗口保持开着。`-a` 不能省；否则只监听 `127.0.0.1`。",
+    "",
+    "3. 确认监听地址：",
+    "   ```powershell",
+    "   Get-NetTCPConnection -LocalPort 5037 -State Listen",
+    "   ```",
+    "   `LocalAddress` 必须是 `0.0.0.0`。如果启动时报 `10048`，说明 5037 被旧进程占用：先停 runner，查 `OwningProcess`，`Stop-Process -Id <PID> -Force`，再重试。",
+    "",
+    "4. 防火墙只放行 MCP 服务所在机器（管理员 PowerShell）：",
+    "   ```powershell",
+    "   New-NetFirewallRule -DisplayName \"adb-mac-aos\" `",
+    "     -Direction Inbound -Protocol TCP -LocalPort 5037 `",
+    "     -RemoteAddress <MCP服务IP> -Profile Any -Action Allow",
+    "   ```",
+    "   跨网/不想暴露端口时改用 SSH 隧道：`ssh -L 5037:127.0.0.1:5037 <用户>@<宿主IP>`，MCP 侧用 `tcp:127.0.0.1:5037`。",
+    "",
+    "5. 在 MCP 服务机器验证：",
+    "   ```bash",
+    "   adb -H <宿主IP> -P 5037 devices -l",
+    "   ```",
+    "   看到设备 serial 即成功。",
+    "",
+    "6. MCP 项目配置（二选一）：",
+    "   - 项目 `.env`：`ADB_SERVER_SOCKET=tcp:<宿主IP>:5037`",
+    "   - `aos.config.jsonc`：`\"deviceHosts\": { \"android\": { \"adbHost\": \"<宿主IP>:5037\" } }`",
+    "   重启 MCP 服务后，`doctor` / `aos_status.deviceHosts` 应显示 adb 宿主可达。",
+    "",
+    "7. 运行：`mobile_run_task`（单条）或 `run_regression`（Excel）。不再需要 Maestro。",
+    "",
+    "> 只做 MCP 原生时，不必下载这个 600MB 兼容包：面板「设备 → 接入执行机」的 **Windows adb-host 小包**（约 8MB，只含 platform-tools）就够用；也可从依赖工具页只取 platform-tools。完整排障见包内 `docs/android-mcp-native-testing.md`。",
+    "",
+    "> 下面的 Maestro web-runner 仅保留给已有脚本任务兼容；Android 新接入不再推荐。"
+  ].join("\n");
   const platformGuide =
     target.platform === "win32"
-      ? `## Windows
+      ? `## Legacy: Maestro web-runner（Windows）
 
 1. 解压本包。
 2. 设置环境变量：
@@ -179,7 +233,7 @@ exec node dist/cli.js web-runner "$@"
 3. 启动：\`.\\runner.cmd --name win-mini-01\`
 4. 打开中心「设备」页，确认机器出现。`
       : target.platform === "darwin"
-        ? `## macOS
+        ? `## Legacy: Maestro web-runner（macOS）
 
 1. 解压本包。
 2. 设置环境变量：
@@ -189,7 +243,7 @@ exec node dist/cli.js web-runner "$@"
    - \`MOBILE_TESTING_RUNNER_JOB_TOKEN=<runner-token>\`
 3. 启动：\`./runner.sh --name mac-mini-01\`
 4. 打开中心「设备」页，确认机器出现。`
-        : `## Linux
+        : `## Legacy: Maestro web-runner（Linux）
 
 1. 解压本包。
 2. 设置环境变量：
@@ -201,9 +255,16 @@ exec node dist/cli.js web-runner "$@"
 4. 打开中心「设备」页，确认机器出现。`;
   fs.writeFileSync(
     path.join(staging, "README.md"),
-    `# mobile-testing 执行机接入
+    `# mobile-testing Android 设备宿主接入
+
+本包有两种用途：
+
+- **MCP 原生（推荐）**：Mac 上的 MCP 服务通过 adb 直接操作设备；只使用 adb，不启动 runner，不需要 JDK/Maestro。
+- **Legacy Maestro web-runner**：只在已有网页测试任务需要兼容时使用。
 
 ${installedNote}
+
+${mcpGuide}
 
 ${platformGuide}
 

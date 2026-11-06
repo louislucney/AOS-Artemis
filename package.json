@@ -26,6 +26,7 @@
     "test:name": "npm run build && sh -c 'node --test --test-name-pattern \"$1\" test/*.test.js' --",
     "test:coverage": "npm run build && node --test --experimental-test-coverage test/*.test.js",
     "bundle:runner": "node scripts/build-runner-bundle.mjs",
+    "bundle:adb-host": "node scripts/build-adb-host-bundle.mjs",
     "toolchain:fetch": "node scripts/fetch-runner-toolchain.mjs",
     "artemis:patch": "node scripts/apply-artemis-patches.mjs"
   },

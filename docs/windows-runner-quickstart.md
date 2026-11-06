@@ -2,6 +2,8 @@
 
 本文只覆盖 **Windows + Android** 的 `web-runner`。iOS 模拟器需要 macOS + Xcode；Windows 不接 iOS。
 
+> 如果目标是 **MCP 原生执行**（`mobile_run_task` / `run_regression`，设备端只需 Artemis helper，不装 Maestro/JDK），Windows 只作为设备宿主：按 [android-mcp-native-testing.md](./android-mcp-native-testing.md) 暴露 adb server，不需要按本文安装/启动 web-runner。可直接下载面板的 **Windows adb-host 小包**（约 8MB，只含 platform-tools），不用下完整 runner 包。
+
 ## 1. 前置
 
 - Node.js >= 20

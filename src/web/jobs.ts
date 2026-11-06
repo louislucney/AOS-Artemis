@@ -351,9 +351,20 @@ async function generateScriptForJob(input: {
  * 创建 web 任务：校验组合/资产/脚本集，选机并预占设备。
  * manual 目标 host 离线或暂无候选时允许建 pending（保留 targetHostId，钉设备再保留 serial，无 lease）。
  */
+function maestroWebEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = (env.AOS_MAESTRO_WEB ?? "").trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+}
+
 export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJobResult> {
   const env = input.env ?? process.env;
   const combination = assertWebJobCombination(input);
+  if (combination.executionMode === "maestro" && !maestroWebEnabled(env)) {
+    throw new WebJobDispatchError(
+      "maestro-disabled",
+      "Maestro web-runner 已禁用（AOS_MAESTRO_WEB=0）；Android 请改用 run_regression / mobile_run_task"
+    );
+  }
 
   const webProject = await input.store.getWebProject(input.rootPath);
   if (webProject === null) {

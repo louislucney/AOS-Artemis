@@ -69,6 +69,8 @@ export interface CaseRunContext {
   model: string | null;
   deviceSerial: string | null;
   lockedAppPackage: string | null;
+  /** 可选 APK/IPA 路径或 URL；透传 mobile_run_task.app_path（由 Artemis 安装）。 */
+  appPath?: string | null;
   quarantined: boolean;
   failOnApiErrors: boolean;
   apiCatalog: ApiCatalog;
@@ -116,6 +118,7 @@ export async function executeCase(
   if (context.model) submitArgs.model = context.model;
   if (context.deviceSerial) submitArgs.device_serial = context.deviceSerial;
   if (context.lockedAppPackage) submitArgs.locked_app_package = context.lockedAppPackage;
+  if (context.appPath) submitArgs.app_path = context.appPath;
 
   let result: import("@modelcontextprotocol/sdk/types.js").CallToolResult;
   try {

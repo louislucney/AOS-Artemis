@@ -3856,3 +3856,32 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **中心**（`src/web/results.ts`）：`parseWebJobResult` 解析 `diagnostics`（最多 10 个文件、合计 4MB；复用 `parseArtifact` 的 base64 校验）；`ingestWebJobResult` 落盘到 `<项目>/.artemis/web/results/<jobId>/diagnostics/`，把相对路径去重后加入 `evidence`；落盘失败只加 `diagnostics:` warning，不影响结果入库。
 - **访问**：evidence 路径为项目根相对（`.artemis/web/results/<jobId>/diagnostics/<file>`），走既有 `/panel/artifact` 只读路由；中心不再依赖 runner 本地目录。
 - **测试**：`test/web-result-ingest.test.js` 新增 diagnostics 落盘 + evidence + 文件内容校验；全量测试与 lint 保持绿。
+
+### 13.314 新增（MCP 原生 adb-host 小包）
+
+> 2026-11-06。Android 真机接入改为 MCP 原生后，600MB 的 Maestro runner 兼容包对“只需要 adb”的场景过重；新增只含 platform-tools 的 adb-host 小包。
+
+- **构建**（`scripts/build-adb-host-bundle.mjs`）：`npm run bundle:adb-host` 从 `dist-toolchain` 取 platform-tools，产出 `dist-runner/mobile-testing-adb-host-<version>-win32-x64.zip`（约 8MB）与 `adb-host-manifest.json`；包内含 `platform-tools/`、`README.md`、`start-adb-host.ps1`、`firewall-add.ps1`/`firewall-remove.ps1`、`docs/android-mcp-native-testing.md`。当前只提供 Windows x64（macOS 本机可直接用系统 adb；远程 macOS 宿主后续按需扩展）。
+- **下载**（`src/http-server.ts`）：`GET /panel/runner-bundle?role=adb-host&platform=win32&arch=x64` 读取 `adb-host-manifest.json` 并流式返回；未构建时提示 `npm run bundle:adb-host`；`role` 缺省仍走 `manifest.json`（runner 兼容包）。
+- **面板**（`src/console/pages.ts`）：「设备 → 接入执行机」新增 adb-host 下载按钮（约 8MB），legacy runner 包单独标注；文案明确 MCP 原生不需要 Node/JDK/Maestro。
+- **边界**：adb-host 只启动 adb server（`adb -a -P 5037 server nodaemon`），不启动 web-runner；adb 无鉴权，仍需防火墙限定来源 IP 或 SSH 隧道。平台当前只构建 win32-x64；macOS/Linux 使用系统 adb 或 runner 兼容包。
+- **测试**：`test/http-server.test.js` 覆盖 `role=adb-host` 下载；`test/web-devices-ui.test.js` 覆盖面板文案；构建/测试/lint 保持绿。
+
+### 13.315 新增（原生回归 appPath：APK/IPA 安装透传）
+
+> 2026-11-06。MCP 原生回归（`run_regression` / `suite run`）此前假设被测 App 已由人工安装；Excel + 安装包的自动化链路缺少安装步骤。新增可选 `appPath`，透传 `mobile_run_task.app_path` 由 Artemis 安装。
+
+- **入口**：`run_regression` schema 新增 `appPath`（本地路径或 `http(s)://` URL）；CLI `suite run` / `suite loop` 新增 `--app-path <apk|ipa|url>`；`SuiteRunOptions.appPath` 统一承载。
+- **执行**（`src/figma/case-runner.ts`）：`executeCase` 在提交 `mobile_run_task` 时附带 `app_path`；`suite-runner` 把 `options.appPath` 传入每个用例上下文。已安装时可省略；重复传入由 Artemis 处理，不改变 PASS/FAIL 判定。
+- **边界**：`appPath` 不替代 `locked_app_package`（复位/锁定包名仍独立）；不写 job spec、不进 web 资产；iOS 真机仍受 Appium/WDA 路径约束（URL 由宿主侧安装）。
+- **测试**：`test/android-native-case-runner.test.js` 覆盖 `app_path` 透传；`test/workflow-run-regression.test.js` 覆盖 `appPath` 进入 execute options；全量测试与 lint 保持绿。
+
+### 13.316 新增（AOS_MAESTRO_WEB=0：禁用新建 Maestro web 任务）
+
+> 2026-11-06。Android 真机接入切到 MCP 原生后，仍可能从面板/API 新建 Maestro 网页测试任务；提供显式开关，默认兼容（开启），部署可关闭新入口，已有 legacy 任务继续执行。
+
+- **服务端**（`src/web/jobs.ts`）：`createWebJob` 在 `executionMode=maestro` 且 `AOS_MAESTRO_WEB` 为 `0/false/off/no` 时抛 `WebJobDispatchError("maestro-disabled")`（HTTP 409），文案指向 `run_regression` / `mobile_run_task`；LLM 模式与已有任务不受影响。
+- **面板**（`src/console/pages.ts`）：开关关闭时不渲染 `web-job-form`，只显示“Maestro 网页测试已禁用”的横幅；接入执行机页的 legacy runner 分区保留。
+- **错误码**（`src/web/job-spec.ts`）：新增 `maestro-disabled`（409）。
+- **边界**：只拦截“新建” Maestro 任务；`claimWebJob`/已有 pending/legacy 任务仍可执行；不删除 Maestro 代码。
+- **测试**：`test/web-job-queue.test.js` 覆盖 409；`test/web-dispatch-ui.test.js` 覆盖表单隐藏；全量测试与 lint 保持绿。

@@ -271,6 +271,26 @@ test("自动下发：iOS 只选 iPhone，写入 jobSpec/deviceSerial 并生成�
   }
 });
 
+test("AOS_MAESTRO_WEB=0：拒绝新建 Maestro 任务（409 maestro-disabled）", async () => {
+  for (const store of await makeStores()) {
+    const rootPath = await makeProject(store, "maestro-disabled");
+    const assets = await makeAssets(store, rootPath);
+    await online(store, "host-pixel", [android("pixel-7", "Pixel 7")]);
+
+    await assert.rejects(
+      createWebJob(
+        jobInput(store, rootPath, assets, {
+          env: { AOS_MAESTRO_WEB: "0" }
+        })
+      ),
+      (error) =>
+        error instanceof WebJobDispatchError &&
+        error.code === "maestro-disabled" &&
+        error.status === 409
+    );
+  }
+});
+
 test("manual 指定 host+device：校验归属、租约占用 409、成功后写入绑定", async () => {
   for (const store of await makeStores()) {
     const rootPath = await makeProject(store, "manual");

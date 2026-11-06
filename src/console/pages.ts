@@ -1218,18 +1218,22 @@ node dist/cli.js web-runner --name win-mini-01</code></pre>
   const aside = `<aside class="c-device-aside" id="runner-guide" aria-label="设备接入说明">
     <section class="c-card" id="runner-download">
       <h2 class="c-card-title">接入执行机</h2>
-      <p class="c-card-subtitle">让一台机器出现在设备列表，只需要一次心跳。</p>
-      <div class="c-download-grid" aria-label="执行机安装包下载">
-        <a class="c-button c-button-primary" href="/panel/runner-bundle?platform=win32&amp;arch=x64" download>Windows x64</a>
-        <a class="c-button" href="/panel/runner-bundle?platform=darwin&amp;arch=arm64" download>macOS Apple Silicon</a>
-        <a class="c-button" href="/panel/runner-bundle?platform=linux&amp;arch=x64" download>Linux x64</a>
+      <p class="c-card-subtitle"><strong>Android 真机推荐 MCP 原生执行</strong>（<code>mobile_run_task</code> / <code>run_regression</code>）：不需要 runner 包、JDK 或 Maestro，只需要一个可达的 adb server；接入与排障见 <code>docs/android-mcp-native-testing.md</code>。</p>
+      <p class="c-card-subtitle c-card-subtitle-tight"><strong>MCP 原生（推荐）</strong>：下载 adb-host 小包（只含 platform-tools）。</p>
+      <div class="c-download-grid" aria-label="adb-host 安装包下载">
+        <a class="c-button c-button-primary" href="/panel/runner-bundle?role=adb-host&amp;platform=win32&amp;arch=x64" download>Windows adb-host（约 8MB）</a>
       </div>
-      <p class="c-card-subtitle c-card-subtitle-tight">Windows/macOS 包已内置 Node、adb、JDK、Maestro；Linux 包为 app-only。也可以从下方依赖页单独下载工具。</p>
+      <p class="c-card-subtitle c-card-subtitle-tight"><strong>Legacy Maestro web-runner</strong>（仅已有网页测试任务兼容）：</p>
+      <div class="c-download-grid" aria-label="Legacy runner 安装包下载">
+        <a class="c-button" href="/panel/runner-bundle?platform=win32&amp;arch=x64" download>Windows runner（Legacy）</a>
+        <a class="c-button" href="/panel/runner-bundle?platform=darwin&amp;arch=arm64" download>macOS runner（Legacy）</a>
+        <a class="c-button" href="/panel/runner-bundle?platform=linux&amp;arch=x64" download>Linux runner（Legacy）</a>
+      </div>
+      <p class="c-card-subtitle c-card-subtitle-tight">Runner 包内置 Node、adb、JDK、Maestro；Linux 为 app-only。只做 MCP 原生时不需要这些。</p>
       <a class="c-button" href="/panel/runner-toolchain">下载 Mac/Windows 依赖工具</a>
       <ol class="c-setup-list">
-        <li>Windows/macOS 下载完整包；Linux 另装 Node.js、adb、JDK、Maestro</li>
-        <li>配置主机身份、中心地址与 runner token</li>
-        <li>运行 web-runner，设备自动上报</li>
+        <li>MCP 原生：下载 adb-host，启动 <code>adb -a</code>，配置 <code>ADB_SERVER_SOCKET</code></li>
+        <li>Legacy：下载 runner 包，配置主机身份、中心地址与 runner token，运行 web-runner</li>
       </ol>
       <pre class="c-command"><code>export MOBILE_TESTING_HOST_ID=win-mini-01
 export MOBILE_TESTING_RUNNER_CONTROL_URL=\
@@ -1404,7 +1408,15 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
   const gatewayReady = data.runners.filter(
     (runner) => runner.gateway?.ready === true && runner.gateway.adbServer !== null
   ).length;
-  const form = [
+  const maestroWebDisabled = ["0", "false", "off", "no"].includes(
+    (process.env.AOS_MAESTRO_WEB ?? "").trim().toLowerCase()
+  );
+  const form = maestroWebDisabled
+    ? [
+        `<div class="c-banner c-banner-warn" role="status"><strong>Maestro 网页测试已禁用</strong>（AOS_MAESTRO_WEB=0）：请使用 MCP 原生 <code>run_regression</code> / <code>mobile_run_task</code>。</div>`
+      ].join("\n")
+    : [
+    `<div class="c-banner c-banner-warn" role="status"><strong>Android 新接入请走 MCP 原生</strong>：用 <code>run_regression</code> / <code>mobile_run_task</code>；本页「网页测试 / Maestro」仅保留 legacy 兼容。只做 MCP 原生时不需要下载 runner 包。</div>`,
     `<form id="web-job-form" class="c-form" role="group" aria-label="下发参数" data-project="${escapeHtml(data.rootPath)}">`,
     `<p><label>执行方式 <select id="web-job-mode" name="executionMode" aria-label="执行方式"${disabledAttr}>`,
     '<option value="maestro">Maestro 脚本</option>',
@@ -1493,7 +1505,7 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
     actionsReason
   ].join("\n");
 
-  const script = actionsOff
+  const script = actionsOff || maestroWebDisabled
     ? ""
     : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function byId(id){return document.getElementById(id);}function value(id){var node=byId(id);return node&&typeof node.value==="string"?node.value.trim():"";}function list(id){var raw=value(id);return raw===""?[]:raw.split(",").map(function(part){return part.trim();}).filter(function(part){return part!=="";});}var form=byId("web-job-form");var status=byId("web-job-status");var busy=byId("web-job-submit");function setBusy(on){if(!busy)return;if(on){if(!busy.dataset.idleLabel)busy.dataset.idleLabel=busy.textContent;busy.disabled=true;busy.textContent=busy.dataset.busyLabel||"下发中…";}else{busy.disabled=false;busy.textContent=busy.dataset.idleLabel||"下发测试";}}function request(url,options){return fetch(url,options).then(function(r){return r.json().then(function(body){return {ok:r.ok,status:r.status,body:body};});});}function payload(){var assignment=value("web-job-assignment")==="manual"?"manual":"auto";var out={project:root,assignment:assignment,executionMode:value("web-job-mode")||"maestro",excelAssetId:value("web-job-excel"),packageAssetId:value("web-job-package"),requirements:{platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"},caseFilter:{modules:list("web-job-case-modules"),caseIds:list("web-job-case-ids")}};if(host)out.host=host;var materials=value("web-job-materials");if(materials!=="")out.materialsAssetId=materials;var reference=value("web-job-reference");if(reference!=="")out.referenceAssetId=reference;var scripts=value("web-job-scripts");if(scripts!=="")out.scriptSetId=scripts;if(byId("web-job-allow-stale")&&byId("web-job-allow-stale").checked)out.allowStaleScript=true;var partialNode=byId("web-job-allow-partial");if(partialNode)out.allowPartialUnresolved=partialNode.checked;var unverifiedNode=byId("web-job-allow-unverified");if(unverifiedNode)out.allowUnverified=unverifiedNode.checked;var refGateNode=byId("web-job-reference-gate");if(refGateNode&&refGateNode.checked)out.referenceGate="unverified";var l2ShotsNode=byId("web-job-l2-screenshots");if(l2ShotsNode&&l2ShotsNode.checked)out.l2Screenshots=true;var models=list("web-job-model");if(models.length>0)out.requirements.deviceModel=models;var min=value("web-job-os-min");var max=value("web-job-os-max");if(min!==""||max!==""){out.requirements.osVersion={};if(min!=="")out.requirements.osVersion.min=min;if(max!=="")out.requirements.osVersion.max=max;}if(assignment==="manual"){out.targetHostId=value("web-job-host");var serial=value("web-job-device");if(serial!=="")out.deviceSerial=serial;}var retry=value("web-job-retry");if(retry!=="")out.retry=Number(retry);var priority=value("web-job-priority");if(priority!=="")out.priority=Number(priority);return out;}function checkMatches(){var target=byId("web-job-check-status");if(!target)return;var excel=value("web-job-excel");var pkg=value("web-job-package");if(!excel||!pkg){target.textContent="先选择 Excel 和安装包";return;}var params=new URLSearchParams({project:root,excelAssetId:excel,packageAssetId:pkg,platform:value("web-job-platform")||"android"});var modules=value("web-job-case-modules");if(modules!=="")params.set("caseModules",modules);var ids=value("web-job-case-ids");if(ids!=="")params.set("caseIds",ids);if(host)params.set("host",host);target.textContent="检查中…";request("/panel/api/jobs/script-preview?"+params.toString(),{headers:{"X-AOS-Console":"1"}}).then(function(res){if(res.ok&&res.body&&res.body.ok){var b=res.body;target.textContent="匹配 "+b.matched+" 条：可执行 "+b.runnable+"（完整 "+b.ready+" / 部分 "+b.partial+"）/ 未就绪 "+b.unresolved+(b.unresolved>0?"（将 SKIP）":"")+(b.matched===0?"；请检查模块/用例 ID":"");return;}target.textContent="检查失败："+((res.body&&res.body.error)||res.status);}).catch(function(err){target.textContent="检查失败："+err;});}function preview(){var target=byId("web-job-preview-result");if(!target)return;var params=new URLSearchParams({project:root,assignment:value("web-job-assignment")==="manual"?"manual":"auto",platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"});if(host)params.set("host",host);var models=value("web-job-model");if(models!=="")params.set("deviceModel",models);var min=value("web-job-os-min");if(min!=="")params.set("osMin",min);var max=value("web-job-os-max");if(max!=="")params.set("osMax",max);if(value("web-job-assignment")==="manual"){var targetHost=value("web-job-host");if(targetHost!=="")params.set("targetHostId",targetHost);var serial=value("web-job-device");if(serial!=="")params.set("deviceSerial",serial);}target.textContent="预览中…";request("/panel/api/jobs/preview?"+params.toString(),{headers:{"X-AOS-Console":"1"}}).then(function(res){if(res.ok&&res.body&&res.body.selection){var pick=res.body.selection;target.textContent="可选："+pick.hostId+" / "+pick.deviceSerial+"（分数 "+pick.score+"）";}else{target.textContent="无可用执行机："+((res.body&&res.body.message)||res.status);}}).catch(function(err){target.textContent="预览失败："+err;});}var previewBtn=byId("web-job-preview-submit");if(previewBtn)previewBtn.addEventListener("click",preview);var checkBtn=byId("web-job-check");if(checkBtn)checkBtn.addEventListener("click",checkMatches);["web-job-assignment","web-job-host","web-job-device","web-job-platform","web-job-kind","web-job-model","web-job-os-min","web-job-os-max"].forEach(function(id){var node=byId(id);if(node)node.addEventListener("change",preview);});if(form){form.addEventListener("submit",function(event){event.preventDefault();var out=payload();setBusy(true);request("/panel/api/jobs",{method:"POST",headers:{"Content-Type":"application/json","X-AOS-Console":"1"},body:JSON.stringify(out)}).then(function(res){if(res.ok&&res.body&&res.body.ok){window.aosFlash&&window.aosFlash("已下发："+((res.body&&res.body.message)||res.body.status));location.href="/panel?project="+encodeURIComponent(root)+"&section=tasks&task="+encodeURIComponent(res.body.job.id)+(host?"&host="+encodeURIComponent(host):"");return;}setBusy(false);if(status)status.textContent="下发失败："+((res.body&&res.body.error)||res.status);}).catch(function(err){setBusy(false);if(status)status.textContent="下发失败："+err;});});}})();</script>`;
 

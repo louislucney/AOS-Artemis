@@ -17,6 +17,7 @@ import {
 } from "../dist/device/device-hosts.js";
 import { normalizeConfig } from "../dist/config/loader.js";
 import { makeResolver } from "../dist/config/validate.js";
+import { runnerInventoryEnv } from "../dist/workflow/devices.js";
 import { baseConfig, loadTestRuntime, makeTempProject, StubProxy } from "./helpers.js";
 
 function configWithDeviceHosts(hosts) {
@@ -68,6 +69,15 @@ test("resolveAndroidAdbSocket: config < dotenv < 进程 env", () => {
     makeResolver({ ADB_SERVER_SOCKET: "10.0.0.2:5037" }, { ADB_SERVER_SOCKET: "tcp:10.0.0.3:5037" })
   );
   assert.deepEqual(fromEnv, { socket: "tcp:10.0.0.3:5037", source: "env" });
+});
+
+test("runnerInventoryEnv: config deviceHosts → ADB_SERVER_SOCKET（远程设备盘点）", async () => {
+  const dir = makeTempProject({
+    config: baseConfig({ deviceHosts: { android: { adbHost: "192.168.1.60:5037" } } })
+  });
+  const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy({ running: true }) });
+  const env = runnerInventoryEnv(runtime);
+  assert.equal(env.ADB_SERVER_SOCKET, "tcp:192.168.1.60:5037");
 });
 
 test("resolveIosHost: env > dotenv > config，签名键逐项回退", () => {
