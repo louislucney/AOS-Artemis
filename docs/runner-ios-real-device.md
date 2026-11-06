@@ -1,5 +1,7 @@
 ## iOS 真机（仅 macOS 宿主；Appium/WDA）
 
+> **2026-11-06 更新**：Maestro web-runner 与执行机包已移除；本文仅作历史参考。iOS 真机请使用 `mobile_run_task` + AOS 服务 + Appium/WDA（Mac 宿主）。
+>
 > **边界**：本执行机包里的 `runner.sh` / `runner.cmd` 只执行 **Web job**（Android 设备 / iOS 模拟器）。**iOS 真机不由 web-runner 执行**；真机任务需要 AOS 服务 + Appium/WDA，并且只能在连接设备的 **macOS 宿主**上运行。Windows / Linux 执行机不接 iOS。
 >
 > 以下环境变量写在 **AOS 服务侧项目的 `.env`**，不是本 runner 的启动环境。iOS 真机执行器是 **LLM 驱动**（`taskDesc` → 模型决策动作），不是逐条执行 Maestro YAML；需要 active LLM。

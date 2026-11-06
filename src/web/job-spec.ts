@@ -1,4 +1,4 @@
-import type { RunnerDevice, WebAssetKind, WebAssetRecord } from "../db/types.js";
+import type { WebAssetKind, WebAssetRecord } from "../db/types.js";
 import type { WebDispatchRequirements } from "./dispatch.js";
 
 export const WEB_JOB_SPEC_KIND = "web-test" as const;
@@ -304,17 +304,6 @@ export function assertScriptSetMatch(input: ScriptSetMatchInput): void {
       `脚本集 ${input.script.id} 基于平台 ${expectedPlatform}，与任务平台 ${input.platform} 不一致（需重新发现或 allowStaleScript）`
     );
   }
-}
-
-/** Maestro 发现执行可用设备：Android 任意 / iOS 模拟器；都没有时只能产出 draft（本计划不下发发现任务）。 */
-export function maestroDiscoveryDevices(devices: RunnerDevice[]): RunnerDevice[] {
-  return devices.filter(
-    (device) => device.platform === "android" || (device.platform === "ios" && device.kind === "simulator")
-  );
-}
-
-export function canRunMaestroDiscovery(devices: RunnerDevice[]): boolean {
-  return maestroDiscoveryDevices(devices).length > 0;
 }
 
 function isRequirementsRecord(value: unknown): value is WebDispatchRequirements {

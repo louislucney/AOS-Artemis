@@ -1,5 +1,7 @@
-# Web Runner Android 测试闭环审计与补齐方案（待评审）
+# Web Runner Android 测试闭环审计与补齐方案（历史，已废弃）
 
+> **2026-11-06：Maestro web-runner 已移除，本文仅作历史审计记录；脚本 `check-android-runner-env.ps1` 已删除。Android 真机请用 `docs/android-mcp-native-testing.md`。**
+>
 > 日期：2026-11-05
 > 状态：待评审；本文档只做审计/方案，不新增生产代码
 > 范围：中心（macOS）→ Windows web-runner → vivo 真机 → Maestro 的 Android 下发/执行链路

@@ -129,7 +129,7 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 **同机双端共享设计源（可选）**：`aos.config.jsonc` 的 `design.sharedDir` 或 `AOS_SHARED_DESIGN_DIR`（env > 项目 `.env` > config）指向共享目录；服务把其中的 `flows.json` 作为 canonical 只读源（`figma_generate_tests`/`suite check`/runner/UI 核验同源），tests/台账仍写各项目本地。跨主机不要共享磁盘；现场提取仍写本地，确认后 promote 到共享目录。`suite check` 发现 `tests.json.flowsFingerprint` 与当前 flows 不一致会标 stale；`suite parity` 报 `flowsFingerprintStale`。`apiSpec` 含错误码/路径但 `error-codes.json` 缺规则时生成 `api-spec-error-codes-missing/gap` 警告（不改 taskDesc）。
 
-远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。**Android 真机走 MCP 原生执行**（`mobile_run_task`/`run_regression`，Artemis helper + uiautomator2 + OCR + LLM）的 DeepSeek 配置、Windows adb 暴露、远程 adb 接入、与 Maestro 的边界及排障见 [docs/android-mcp-native-testing.md](docs/android-mcp-native-testing.md)；只做 MCP 原生时可下载 adb-host 小包（约 8MB，`npm run bundle:adb-host` 或面板「设备 → 接入执行机」）。
+远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。**Android 真机走 MCP 原生执行**（`mobile_run_task`/`run_regression`，Artemis helper + uiautomator2 + OCR + LLM）的 DeepSeek 配置、Windows adb 暴露、远程 adb 接入、与 Maestro 移除记录及排障见 [docs/android-mcp-native-testing.md](docs/android-mcp-native-testing.md)；只做 MCP 原生时可下载 adb-host 小包（约 8MB，`npm run bundle:adb-host` 或面板「设备 → 接入执行机」）。
 
 ## 多机部署（中心 + 项目机）
 
@@ -432,9 +432,9 @@ sudo appium driver run xcuitest tunnel-creation
 
 #### iOS 真机接入步骤（Appium/WDA）
 
-> 适用范围：iPhone/iPad 真机。iOS **模拟器**仍走 idb/simctl；**Maestro web job** 的 iOS 执行目前只覆盖模拟器。真机不要走「网页测试/Maestro」表单，使用 `mobile_get_device_state` / `mobile_run_task` / `mobile_manage_task` / `mobile_inspect_trace`。
+> 适用范围：iPhone/iPad 真机。iOS 模拟器走 idb/simctl，iOS 真机走 Appium/WDA；统一使用 `mobile_get_device_state` / `mobile_run_task` / `mobile_manage_task` / `mobile_inspect_trace`。Maestro web job 已移除。
 >
-> 真机执行器是 **LLM 驱动**（`taskDesc` → 模型决策动作），不是逐条执行 Maestro YAML；需要 active LLM。若需要确定性的 Excel/Maestro 真机回归，目前尚未接线（Plan 2）。
+> 真机执行器是 **LLM 驱动**（`taskDesc` → 模型决策动作），需要 active LLM。Maestro 确定性回归路线已移除。
 
 **0. 前置检查**
 
@@ -566,13 +566,12 @@ sudo appium driver run xcuitest tunnel-creation
    - `mobile_inspect_trace(trace_id)` 查看步骤、截图、`logs/device.log`
    - 崩溃：`aos_crashes list/get/scan`（真机来源 `devicectl-systemCrashLogs`）
 
-**7. 与 Maestro web job 的边界**
+**7. 执行器边界**
 
 | 目标 | iOS 模拟器 | iOS 真机 |
 |---|---|---|
-| Maestro web job | ✅ 支持（`.ipa` 需 simulator build） | ❌ 未接线（Plan 2） |
-| `mobile_run_task` | ✅（idb/simctl 或 Appium） | ✅（Appium/WDA + LLM） |
-| 确定性 Excel/Maestro 脚本 | ✅ 模拟器 web job | ❌ 未接线 |
+| `mobile_run_task` | ✅（idb/simctl） | ✅（Appium/WDA + LLM） |
+| Maestro web job | 已移除 | 已移除 |
 | 安装识别/跳过 | ✅ `simctl get_app_container` | ✅ `devicectl device info apps` |
 | 设备日志 | simctl log | `idevicesyslog`（可缺省降级） |
 
@@ -593,9 +592,9 @@ sudo appium driver run xcuitest tunnel-creation
 
 **9. 当前边界**
 
-- iOS 真机不经过 Maestro web job；不要用网页测试表单下发 iOS 真机任务。
-- 真机 `mobile_run_task` 是 LLM 执行器；与 Android 的 Maestro 回归不是同一套确定性和产物。
-- 如果后续需要“iOS 真机 + Excel/Maestro 确定性回归”，需要单独的执行器接线（当前未实现）。
+- iOS 真机/模拟器均使用 `mobile_run_task`；Maestro web job 已移除。
+- 真机 `mobile_run_task` 是 LLM 执行器，非确定性回归。
+- 如果需要 iOS 确定性脚本回归，需另行接线 Appium/XCUITest，当前未实现。
 
 ### 设计 → 测试流水线（Figma → 真机）
 
@@ -734,7 +733,7 @@ pen.dev 写回/导出/agent（`pen_export`/`pen_import_assets`/`pen_apply_tokens
 - **文件命名**（缺口清单会按栈重命名建议文件名并给出目标目录）：
   - 资源：Android `ic_home.svg`（snake_case + `ic_` 前缀，提示需转 Vector XML/PNG）、Flutter `home_icon.svg`、RN/Web `home-icon.svg`
   - 组件：`HomeButton.tsx`（RN/Web）、`home_button.dart`（Flutter）、`HomeButton.kt`、`HomeButton.swift`
-  - 测试：`home-checkout.yaml`（RN/Maestro）、`home_checkout_test.dart`、`HomeCheckoutTest.kt`、`home-checkout.spec.ts`
+  - 测试：`home-checkout.yaml`（RN/UI YAML）、`home_checkout_test.dart`、`HomeCheckoutTest.kt`、`home-checkout.spec.ts`
 - 代码结构约定（供后续代码生成）
 
 检测结果可在 `aos_status.stack` 查看（含 `source: detected|config`、`evidence.path/kind`、`confidence` 与 `stackWarnings`），`gaps.json` 会记录 `detectedStacks` 与实际采用的 `rules`。纯 Dart 包（`pubspec.yaml` 未声明 Flutter）不会误判为 Flutter；显式传 `assetGlobs/tokenFiles` 可覆盖扫描范围，`aos.config.jsonc` 的 `project.stack` 可覆盖技术栈本身（单仓多应用/棕色地场景必须显式声明）。
