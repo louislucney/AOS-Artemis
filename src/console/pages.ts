@@ -1193,19 +1193,20 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
   const aside = `<aside class="c-device-aside" id="runner-guide" aria-label="设备接入说明">
     <section class="c-card" id="runner-download">
       <h2 class="c-card-title">接入设备（Android / iOS）</h2>
-      <p class="c-card-subtitle"><strong>Android 真机推荐 MCP 原生执行</strong>（<code>mobile_run_task</code> / <code>run_regression</code>）：不需要 runner 包、JDK 或 Maestro，只需要一个可达的 adb server；接入与排障见 <code>docs/android-mcp-native-testing.md</code>。</p>
-      <p class="c-card-subtitle c-card-subtitle-tight"><strong>Android MCP 原生（推荐）</strong>：下载 adb-host 小包（只含 platform-tools）。</p>
+      <p class="c-card-subtitle"><strong>Android 真机走 MCP 原生</strong>（<code>mobile_run_task</code> / <code>run_regression</code>）。如果手机直接插在 MCP 服务所在的 Mac 上，用系统 adb 即可，<strong>不需要下载 adb-host</strong>；只有手机插在另一台 Mac/Windows 宿主时才需要。</p>
+      <p class="c-card-subtitle c-card-subtitle-tight"><strong>远程 Android 设备宿主</strong>：下载对应平台的 adb-host 小包（只含 platform-tools）。</p>
       <div class="c-download-grid" aria-label="adb-host 安装包下载">
         <a class="c-button c-button-primary" href="/panel/runner-bundle?role=adb-host&amp;platform=win32&amp;arch=x64" download>Windows adb-host（约 8MB）</a>
+        <a class="c-button" href="/panel/runner-bundle?role=adb-host&amp;platform=darwin&amp;arch=arm64" download>macOS adb-host（约 16MB）</a>
       </div>
-      <p class="c-card-subtitle c-card-subtitle-tight">Maestro runner 已移除；历史 Web 任务/设备记录只读保留。MCP 原生只需要上面的 adb-host。</p>
-      <a class="c-button" href="/panel/runner-toolchain">下载 platform-tools / 依赖工具</a>
+      <p class="c-card-subtitle c-card-subtitle-tight">Maestro runner 已移除；历史 Web 任务/设备记录只读保留。</p>
+      <a class="c-button" href="/panel/runner-toolchain">单独下载 platform-tools / 依赖工具</a>
     </section>
     <section class="c-card" id="ios-device-guide" aria-label="iOS 设备接入说明">
       <h2 class="c-card-title">iOS 设备</h2>
-      <p class="c-card-subtitle"><strong>iOS 模拟器</strong>：只能在 MCP 服务所在的 macOS 上运行（Xcode + simctl/idb）；不需要额外安装包，启动模拟器后把 UDID 传给 <code>mobile_run_task</code> / <code>mobile_get_device_state</code>。</p>
-      <p class="c-card-subtitle"><strong>iOS 真机</strong>：在连接设备的 Mac 宿主上运行 Appium + xcuitest；项目 <code>.env</code> 配 <code>AOS_IOS_XCODE_ORG_ID</code>（必填）与 <code>AOS_APPIUM_URL</code>（可选，缺省托管启动）。iOS 18+ 需保持 Remote XPC 隧道：<code>sudo appium driver run xcuitest tunnel-creation</code>，主机重启/设备重连后需重跑。</p>
-      <p class="c-card-subtitle">用 <code>mobile_run_task</code> / <code>mobile_manage_task</code> / <code>mobile_inspect_trace</code> 执行与取证；<strong>Maestro 已移除，不要用网页测试表单下发 iOS</strong>。真机签名与隧道细节见 README「iOS 真机」与 <code>docs/接入指南.md</code> §3.7。</p>
+      <p class="c-card-subtitle"><strong>iOS 模拟器</strong>：只能在 MCP 服务所在的 Mac 上（simctl/idb），不需要安装包；启动模拟器后把 UDID 传给 <code>mobile_run_task</code>。</p>
+      <p class="c-card-subtitle"><strong>iOS 真机</strong>：在连接设备的 Mac 宿主运行 Appium/WDA；配 <code>AOS_IOS_XCODE_ORG_ID</code>（必填）与 <code>AOS_APPIUM_URL</code>（可选），iOS 18+ 保持 Remote XPC 隧道。用 <code>mobile_run_task</code> 执行。</p>
+      <p class="c-card-subtitle">iOS 不使用 adb-host；<strong>Maestro 已移除</strong>。签名/隧道细节见 README「iOS 真机」。</p>
     </section>
     <section class="c-card">
       <h2 class="c-card-title">状态口径</h2>

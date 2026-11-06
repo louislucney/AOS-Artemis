@@ -379,9 +379,9 @@ Android 真机现走 MCP 原生：
 - `run_regression`（Excel；`appPath` 可安装 APK）
 - `suite run`（tests.json）
 
-设备宿主只需要 adb（platform-tools）。面板「设备 → 接入执行机」下载 **Windows adb-host 小包**（约 8MB），启动 `adb -a -P 5037 server nodaemon`；项目配置 `ADB_SERVER_SOCKET=tcp:<宿主IP>:5037`。详细步骤见 [docs/android-mcp-native-testing.md](docs/android-mcp-native-testing.md)。
+设备宿主只需要 adb（platform-tools）。手机直接插 MCP 服务所在 Mac 时用系统 adb 即可；远程宿主才需要面板「设备 → 接入设备」下载 **Windows adb-host（约 8MB）或 macOS adb-host（约 16MB）**，启动 `adb -a -P 5037 server nodaemon`，项目配置 `ADB_SERVER_SOCKET=tcp:<宿主IP>:5037`。详细步骤见 [docs/android-mcp-native-testing.md](docs/android-mcp-native-testing.md)。
 
-构建 adb-host：`npm run toolchain:fetch && npm run bundle:adb-host`；中心 `GET /panel/runner-bundle?role=adb-host&platform=win32&arch=x64`。
+构建 adb-host：`npm run toolchain:fetch && npm run bundle:adb-host`；中心 `GET /panel/runner-bundle?role=adb-host&platform=win32&arch=x64` 或 `...&platform=darwin&arch=arm64`。
 
 ### Jira 接入（读取 / 回写 / CLI）
 

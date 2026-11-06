@@ -15,15 +15,22 @@
 
 ---
 
-## 0. 快速获取 adb-host 小包（Windows）
+## 0. 快速获取 adb-host 小包（Windows / macOS）
 
-只需要 adb 的场景不用下载 600MB 的 Maestro runner 兼容包：
+**手机直接插在 MCP 服务所在的 Mac 上时不需要本包**：系统 adb 即可，MCP 本机直接可见设备。
 
-- 面板「设备 → 接入执行机」→「Windows adb-host（约 8MB）」；
-- 或本地构建：`npm run bundle:adb-host`，产物在 `dist-runner/mobile-testing-adb-host-<version>-win32-x64.zip`；
-- 包内只有 `platform-tools/`、`start-adb-host.ps1`、防火墙脚本和本手册，不包含 Node/JDK/Maestro。
+只有手机插在另一台 Mac/Windows 宿主上时才需要：
 
-启动：解压后运行 `.\start-adb-host.ps1`，保持窗口开着；它等价于 `adb -a -P 5037 server nodaemon`。
+- 面板「设备 → 接入设备」→「Windows adb-host（约 8MB）」或「macOS adb-host（约 16MB）」；
+- 或本地构建：`npm run bundle:adb-host`，产物在 `dist-runner/mobile-testing-adb-host-<version>-win32-x64.zip` 与 `...-darwin-arm64.zip`；
+- 包内只有 `platform-tools/`、启动脚本和本手册，不包含 Node/JDK/Maestro。
+
+启动：
+
+- Windows：`.\start-adb-host.ps1`（防火墙脚本 `firewall-add.ps1`）。
+- macOS：`./start-adb-host.sh`（`lsof -nP -iTCP:5037 -sTCP:LISTEN` 确认监听）。
+
+两者都等价于 `adb -a -P 5037 server nodaemon`。
 
 ---
 

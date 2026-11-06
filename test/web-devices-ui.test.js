@@ -120,6 +120,9 @@ test("devices page: lists idle, busy and offline devices", async (t) => {
   assert.match(html, /href="\/panel\/runner-toolchain"/);
   assert.match(html, /iOS 设备/);
   assert.match(html, /Remote XPC/);
+  assert.match(html, /platform=win32&amp;arch=x64/, "Windows adb-host 下载");
+  assert.match(html, /platform=darwin&amp;arch=arm64/, "macOS adb-host 下载");
+  assert.match(html, /直接插在 MCP 服务所在的 Mac/, "本机 adb 说明");
   assert.match(html, /href="\/panel\?section=devices"/);
   assert.match(html, /emulator-5554/);
   assert.match(html, /emulator-5556/);

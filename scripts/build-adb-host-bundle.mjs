@@ -18,6 +18,13 @@ const targets = [
     platformKey: "win32-x64",
     archive: "zip",
     script: "start-adb-host.ps1"
+  },
+  {
+    platform: "darwin",
+    arch: "arm64",
+    platformKey: "darwin-arm64",
+    archive: "zip",
+    script: "start-adb-host.sh"
   }
 ];
 const platformArg = process.argv.find((arg) => arg.startsWith("--platform="))?.split("=")[1] ?? "";
@@ -67,6 +74,7 @@ function moveSingleTop(from, to, label) {
 }
 
 function renderReadme(target) {
+  if (target.platform === "darwin") return renderReadmeMac();
   const adb = ".\\platform-tools\\adb.exe";
   const start = ".\\start-adb-host.ps1";
   const firewall = `   \`\`\`powershell
@@ -164,6 +172,81 @@ function renderReadme(target) {
   ].join("\n");
 }
 
+function renderReadmeMac() {
+  return [
+    "# mobile-testing adb-host（macOS / MCP 原生）",
+    "",
+    "这个包提供 Android platform-tools（adb），用于 **远程 macOS 设备宿主**：手机插在这台 Mac 上，MCP 服务在另一台机器。",
+    "",
+    "**如果手机直接插在 MCP 服务所在的 Mac 上，不需要本包**：系统 adb 即可，MCP 本机直接可见设备。",
+    "",
+    "**不需要 Node.js、JDK、Maestro 或 runner。**",
+    "",
+    "## 1. 连接设备",
+    "",
+    "```bash",
+    "./platform-tools/adb devices",
+    "```",
+    "",
+    "看到设备 serial（如 `10CF6609P900059    device`）即可。",
+    "",
+    "## 2. 启动 adb server（监听所有网卡）",
+    "",
+    "```bash",
+    "chmod +x ./start-adb-host.sh   # 首次",
+    "./start-adb-host.sh",
+    "```",
+    "",
+    "窗口保持开着。脚本等价于：",
+    "",
+    "```bash",
+    "./platform-tools/adb kill-server",
+    "./platform-tools/adb -a -P 5037 server nodaemon",
+    "```",
+    "",
+    "确认监听：",
+    "",
+    "```bash",
+    "lsof -nP -iTCP:5037 -sTCP:LISTEN",
+    "```",
+    "",
+    "应显示 `*:5037` 或 `0.0.0.0:5037`；如果只有 `127.0.0.1:5037`，说明没带 `-a`。",
+    "",
+    "## 3. 网络与安全",
+    "",
+    "优先 SSH 隧道（MCP 侧 `ssh -L 5037:127.0.0.1:5037 <用户>@<这台Mac>`）；LAN 暴露时用 macOS 防火墙限制来源 IP。adb 没有鉴权。",
+    "",
+    "## 4. MCP 项目配置",
+    "",
+    "二选一：",
+    "",
+    "- 项目 `.env`：`ADB_SERVER_SOCKET=tcp:<这台Mac的IP>:5037`",
+    "- `aos.config.jsonc`：`\"deviceHosts\": { \"android\": { \"adbHost\": \"<这台Mac的IP>:5037\" } }`",
+    "",
+    "重启 MCP 服务后，`doctor` / `aos_status.deviceHosts` 应显示 adb 宿主可达。",
+    "",
+    "## 5. 运行",
+    "",
+    "`mobile_run_task`（单条）或 `run_regression`（Excel；`appPath` 可安装 APK）。不需要 Maestro。",
+    "",
+    "完整排障见包内 `docs/android-mcp-native-testing.md`。",
+    ""
+  ].join("\n");
+}
+
+function renderMacStart() {
+  return [
+    "#!/usr/bin/env sh",
+    "set -eu",
+    "ROOT=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"",
+    "ADB=\"$ROOT/platform-tools/adb\"",
+    "[ -x \"$ADB\" ] || { echo \"缺少 platform-tools/adb\"; exit 2; }",
+    "\"$ADB\" kill-server || true",
+    "exec \"$ADB\" -a -P 5037 server nodaemon",
+    ""
+  ].join("\n");
+}
+
 function renderWindowsStart() {
   return [
     "$ErrorActionPreference = \"Stop\"",
@@ -205,21 +288,28 @@ for (const target of selectedTargets) {
   }
 
   fs.writeFileSync(path.join(staging, "README.md"), renderReadme(target), "utf8");
-  fs.writeFileSync(path.join(staging, "start-adb-host.ps1"), renderWindowsStart(), "utf8");
-  fs.writeFileSync(
-    path.join(staging, "firewall-add.ps1"),
-    [
-      "param([Parameter(Mandatory=$true)][string]$AllowFrom)",
-      "New-NetFirewallRule -DisplayName \"adb-mac-aos\" -Direction Inbound -Protocol TCP -LocalPort 5037 -RemoteAddress $AllowFrom -Profile Any -Action Allow",
-      ""
-    ].join("\r\n"),
-    "utf8"
-  );
-  fs.writeFileSync(
-    path.join(staging, "firewall-remove.ps1"),
-    ["Remove-NetFirewallRule -DisplayName \"adb-mac-aos\" -ErrorAction SilentlyContinue", ""].join("\r\n"),
-    "utf8"
-  );
+  if (target.platform === "win32") {
+    fs.writeFileSync(path.join(staging, "start-adb-host.ps1"), renderWindowsStart(), "utf8");
+    fs.writeFileSync(
+      path.join(staging, "firewall-add.ps1"),
+      [
+        "param([Parameter(Mandatory=$true)][string]$AllowFrom)",
+        "New-NetFirewallRule -DisplayName \"adb-mac-aos\" -Direction Inbound -Protocol TCP -LocalPort 5037 -RemoteAddress $AllowFrom -Profile Any -Action Allow",
+        ""
+      ].join("\r\n"),
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(staging, "firewall-remove.ps1"),
+      ["Remove-NetFirewallRule -DisplayName \"adb-mac-aos\" -ErrorAction SilentlyContinue", ""].join("\r\n"),
+      "utf8"
+    );
+  } else {
+    fs.writeFileSync(path.join(staging, "start-adb-host.sh"), renderMacStart(), {
+      encoding: "utf8",
+      mode: 0o755
+    });
+  }
 
   const filename = `${stem}.${target.archive}`;
   const archive = path.join(outDir, filename);

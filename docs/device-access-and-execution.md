@@ -97,7 +97,7 @@ ssh -L 5037:127.0.0.1:5037 <用户>@<宿主IP>
 
 Mac 侧配置 `ADB_SERVER_SOCKET=tcp:127.0.0.1:5037`。
 
-**实验 LAN**（仅可信网络）：宿主执行 `adb -a -P 5037 server nodaemon`，防火墙只放行 MCP 服务 IP；Windows 可用 adb-host 小包（面板「设备 → 接入设备」下载，约 8MB）。确认 `LocalAddress=0.0.0.0`，不是 `127.0.0.1`。
+**实验 LAN**（仅可信网络）：宿主执行 `adb -a -P 5037 server nodaemon`，防火墙只放行 MCP 服务 IP；Windows/macOS 都可用 adb-host 小包（面板「设备 → 接入设备」下载，Windows 约 8MB / macOS 约 16MB）。确认监听 `0.0.0.0:5037`，不是 `127.0.0.1:5037`。
 
 ### 4.2 项目配置（二选一）
 
