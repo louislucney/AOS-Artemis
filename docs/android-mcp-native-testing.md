@@ -2,6 +2,8 @@
 
 本文说明如何用 **MCP 原生执行器**（`mobile_run_task` / `run_regression` / `suite run`）在 Android 真机上跑用例，以及 Maestro 路线移除后的迁移说明、远程 adb 接入方式和常见故障处理。
 
+> **先看**：[device-access-and-execution.md](./device-access-and-execution.md)。Android 直接插 Mac 时不需要本文的远程 adb 配置；本文重点覆盖远程 adb 与深度排障。
+
 适用场景：
 
 - 设备插在另一台机器（如 Windows `win-mini-01`），MCP 服务跑在 Mac/中心；

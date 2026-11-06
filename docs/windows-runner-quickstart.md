@@ -1,6 +1,8 @@
 # Windows adb-host 快速接入（Android 真机）
 
 > **Maestro web-runner 已于 2026-11-06 移除。** Windows 不再需要 Node/JDK/Maestro runner；Android 真机走 MCP 原生 `mobile_run_task` / `run_regression`，Windows 只作为**设备宿主**提供 adb。
+>
+> 场景总览见 [device-access-and-execution.md](./device-access-and-execution.md)：如果手机能直接插 MCP 服务所在的 Mac，不需要本文的 Windows adb-host。
 
 完整排障见 [android-mcp-native-testing.md](./android-mcp-native-testing.md)。
 

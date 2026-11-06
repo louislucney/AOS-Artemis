@@ -129,7 +129,7 @@ node dist/cli.js serve --http --port 8765 --workspace /srv/projects
 
 **同机双端共享设计源（可选）**：`aos.config.jsonc` 的 `design.sharedDir` 或 `AOS_SHARED_DESIGN_DIR`（env > 项目 `.env` > config）指向共享目录；服务把其中的 `flows.json` 作为 canonical 只读源（`figma_generate_tests`/`suite check`/runner/UI 核验同源），tests/台账仍写各项目本地。跨主机不要共享磁盘；现场提取仍写本地，确认后 promote 到共享目录。`suite check` 发现 `tests.json.flowsFingerprint` 与当前 flows 不一致会标 stale；`suite parity` 报 `flowsFingerprintStale`。`apiSpec` 含错误码/路径但 `error-codes.json` 缺规则时生成 `api-spec-error-codes-missing/gap` 警告（不改 taskDesc）。
 
-远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。细节见 `docs/接入指南.md` §3.7 与 ADR-0011。**Android 真机走 MCP 原生执行**（`mobile_run_task`/`run_regression`，Artemis helper + uiautomator2 + OCR + LLM）的 DeepSeek 配置、Windows adb 暴露、远程 adb 接入、与 Maestro 移除记录及排障见 [docs/android-mcp-native-testing.md](docs/android-mcp-native-testing.md)；只做 MCP 原生时可下载 adb-host 小包（约 8MB，`npm run bundle:adb-host` 或面板「设备 → 接入执行机」）。
+远程设备（Android 真机/USB、iOS 真机）必须在**服务端机器**可达；项目在其他机器时用 `aos.config.jsonc` 的 `deviceHosts` 声明远程宿主（iOS Appium 端点与签名覆盖、Android adb 端点；config < 项目 `.env` < 进程 env），`app_path` 可传 `http(s)://` 产物 URL（iOS 宿主侧下载安装、Android 服务端下载后安装）；`doctor`/`aos_status.deviceHosts` 会探活并给隧道指引。先看 [docs/device-access-and-execution.md](docs/device-access-and-execution.md)（Android 本机/远程、iOS 模拟器/真机的唯一决策入口）；**Android 真机走 MCP 原生执行**（`mobile_run_task`/`run_regression`），本机 USB 直接 adb 即可，远程才需要 `ADB_SERVER_SOCKET`/adb-host。细节见 `docs/接入指南.md` §3.7、ADR-0011 与 [android-mcp-native-testing.md](docs/android-mcp-native-testing.md)（远程 adb 深度排障）。
 
 ## 多机部署（中心 + 项目机）
 
@@ -190,7 +190,7 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 
 **已知限制**：文件台账为单主机视图（`host`/`queue`/默认项目机 runner/定时回归需中心 PG；项目机 runner 可走控制面）；中心清扫 `allHosts=true` 可能先于离线 runner 终结取消；旧 runner 行 `host_id NULL` 需升级重启后补齐（`AOS_HOST_STRICT` 只约束本版本的 claim/本地命令，旧 runner 需停用/升级，不会被开关拦截）；队列暂停是整机粒度；P4 跨主机逻辑项目分组与 HTTP 客户端记录未实现。完整清单见 DESIGN §13.165。
 
-**新机器接入步骤**：项目机（`suite runner`）接入见 [docs/空闲机器接入托管平台.md](docs/空闲机器接入托管平台.md)；Android 真机 MCP 原生（adb-host）见 [docs/android-mcp-native-testing.md](docs/android-mcp-native-testing.md)。Maestro web-runner 已移除。
+**新机器接入步骤**：设备接入先看 [docs/device-access-and-execution.md](docs/device-access-and-execution.md)（Android 本机/远程、iOS 模拟器/真机）；项目机（`suite runner`）接入见 [docs/空闲机器接入托管平台.md](docs/空闲机器接入托管平台.md)。Maestro web-runner 已移除。
 
 ## 鉴权（静态令牌 / 命名用户，P3d，§13.113 / §13.216 / §13.217）
 
