@@ -10,7 +10,7 @@ function setup(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-toolchain-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.mkdirSync(path.join(dir, "files"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "files", "node.zip"), "node-bytes");
+  fs.writeFileSync(path.join(dir, "files", "platform-tools.zip"), "adb-bytes");
   fs.writeFileSync(
     path.join(dir, "manifest.json"),
     JSON.stringify({
@@ -18,13 +18,13 @@ function setup(t) {
       entries: [
         {
           platform: "win32-x64",
-          tool: "node",
-          name: "Node.js test",
-          filename: "node.zip",
+          tool: "adb",
+          name: "Android platform-tools",
+          filename: "platform-tools.zip",
           size: 10,
           sha256: "abc",
-          sourceUrl: "https://example.invalid/node.zip",
-          downloadUrl: "/panel/runner-toolchain?file=node.zip"
+          sourceUrl: "https://example.invalid/platform-tools.zip",
+          downloadUrl: "/panel/runner-toolchain?file=platform-tools.zip"
         }
       ]
     })
@@ -41,7 +41,7 @@ test("runner toolchain: JSON、HTML 与文件下载", async (t) => {
   );
   assert.equal(json.status, 200);
   const parsed = JSON.parse(json.body);
-  assert.equal(parsed.entries[0].tool, "node");
+  assert.equal(parsed.entries[0].tool, "adb");
 
   const html = await handleRunnerToolchainRequest(
     new URL("http://x/panel/runner-toolchain"),
@@ -50,16 +50,16 @@ test("runner toolchain: JSON、HTML 与文件下载", async (t) => {
   );
   assert.equal(html.status, 200);
   assert.match(html.body, /Windows x64/);
-  assert.match(html.body, /Node\.js/);
+  assert.match(html.body, /platform-tools/);
 
   const file = await handleRunnerToolchainRequest(
-    new URL("http://x/panel/runner-toolchain?file=node.zip"),
+    new URL("http://x/panel/runner-toolchain?file=platform-tools.zip"),
     dir,
     "application/json"
   );
   assert.equal(file.status, 200);
-  assert.equal(file.streamPath, path.join(dir, "files", "node.zip"));
-  assert.equal(file.extraHeaders?.["Content-Disposition"], 'attachment; filename="node.zip"');
+  assert.equal(file.streamPath, path.join(dir, "files", "platform-tools.zip"));
+  assert.equal(file.extraHeaders?.["Content-Disposition"], 'attachment; filename="platform-tools.zip"');
 
   const unknown = await handleRunnerToolchainRequest(
     new URL("http://x/panel/runner-toolchain?file=missing.zip"),

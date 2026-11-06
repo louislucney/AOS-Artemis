@@ -1,134 +1,83 @@
-# Windows 执行机快速接入
+# Windows adb-host 快速接入（Android 真机）
 
-本文只覆盖 **Windows + Android** 的 `web-runner`。iOS 模拟器需要 macOS + Xcode；Windows 不接 iOS。
+> **Maestro web-runner 已于 2026-11-06 移除。** Windows 不再需要 Node/JDK/Maestro runner；Android 真机走 MCP 原生 `mobile_run_task` / `run_regression`，Windows 只作为**设备宿主**提供 adb。
 
-> 如果目标是 **MCP 原生执行**（`mobile_run_task` / `run_regression`，设备端只需 Artemis helper，不装 Maestro/JDK），Windows 只作为设备宿主：按 [android-mcp-native-testing.md](./android-mcp-native-testing.md) 暴露 adb server，不需要按本文安装/启动 web-runner。可直接下载面板的 **Windows adb-host 小包**（约 8MB，只含 platform-tools），不用下完整 runner 包。
+完整排障见 [android-mcp-native-testing.md](./android-mcp-native-testing.md)。
 
 ## 1. 前置
 
-- Node.js >= 20
-- Android platform-tools（`adb`）
-- Maestro CLI
-- Android 真机或模拟器已能被 `adb devices` 看到
+- Android 真机，USB 调试已授权
+- Windows 上下载 **adb-host 小包**（面板「设备 → 接入执行机」→「Windows adb-host」，约 8MB）
+- MCP 服务所在机器的 IP（用于防火墙限定来源）
 
-## 2. 命名
-
-`MOBILE_TESTING_HOST_ID` 是**你自己命名的主机身份**，集群内必须唯一；`--name` 只是面板显示名。
+## 2. 解压并启动 adb
 
 ```powershell
-$env:MOBILE_TESTING_HOST_ID="win-mini-01"
+Expand-Archive mobile-testing-adb-host-0.1.0-win32-x64.zip -DestinationPath .
+cd mobile-testing-adb-host-0.1.0-win32-x64
+.\start-adb-host.ps1
 ```
 
-不要复制其他机器的 host id。
-
-## 3. 下载安装包
-
-在面板登录后打开：
-
-```text
-设备 → 接入执行机 → Windows x64
-```
-
-或：
+这个窗口保持开着。脚本等价于：
 
 ```powershell
-$token = "<面板 MOBILE_TESTING_HTTP_TOKEN>"
-curl.exe -L `
-  -H "Authorization: Bearer $token" `
-  -o mobile-testing-runner-0.1.0-win32-x64.zip `
-  "http://<center-ip>:8765/panel/runner-bundle?platform=win32&arch=x64"
+.\platform-tools\adb.exe kill-server
+.\platform-tools\adb.exe -a -P 5037 server nodaemon
 ```
 
-包内含 `dist/`、`node_modules/`、`runner.cmd`、`README.md`，不需要再 npm install。
-
-解压：
+确认监听地址：
 
 ```powershell
-Expand-Archive mobile-testing-runner-0.1.0-win32-x64.zip -DestinationPath .
-cd mobile-testing-runner-0.1.0-win32-x64
+Get-NetTCPConnection -LocalPort 5037 -State Listen
 ```
 
-## 3.1 依赖工具
-
-Windows 完整 runner 包已内置 Node.js、adb、JDK、Maestro，正常情况下不需要单独下载。只有使用 Linux app-only 包或需要单独工具时才打开：
-
-
-```text
-设备 → 接入执行机 → 下载 Mac/Windows 依赖工具
-```
-
-或在 Windows 下载：
+`LocalAddress` 必须是 `0.0.0.0`。如果启动时报 `10048`，先停掉旧的 runner/adb 进程：
 
 ```powershell
-$base = "http://<center-ip>:8765"
-$token = "<面板 MOBILE_TESTING_HTTP_TOKEN>"
-
-# 示例：Node.js、adb、JDK、Maestro 的 Windows 包
-curl.exe -L -H "Authorization: Bearer $token" -o node.zip "$base/panel/runner-toolchain?file=node-v22.22.2-win-x64.zip"
-curl.exe -L -H "Authorization: Bearer $token" -o platform-tools.zip "$base/panel/runner-toolchain?file=platform-tools-latest-windows.zip"
-curl.exe -L -H "Authorization: Bearer $token" -o jdk.zip "$base/panel/runner-toolchain?file=OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip"
-curl.exe -L -H "Authorization: Bearer $token" -o maestro.zip "$base/panel/runner-toolchain?file=maestro-2.12.1.zip"
+Get-NetTCPConnection -LocalPort 5037 -State Listen | Select-Object LocalAddress,OwningProcess
+Stop-Process -Id <PID> -Force
 ```
 
-解压后把 Node、platform-tools、JDK 的 `bin` 和 `maestro/bin` 加入 PATH。中心页面会列出实际文件名和 SHA-256。
+## 3. 防火墙（仅可信网络）
 
-## 3.2 已安装的包
-
-runner 默认读取脚本包 `manifest.json` 的 `appId`，执行 `adb shell pm path <appId>`：设备上已存在（例如你手动安装过）就跳过 `adb install`，日志显示 `设备 <serial> 已安装 <pkg> (<ver>)，跳过安装`；安装命令失败/超时后也会复查一次，已存在则按 `recovered` 继续。需要强制覆盖安装时设置：
+管理员 PowerShell，只放行 MCP 服务 IP：
 
 ```powershell
-$env:AOS_WEB_FORCE_INSTALL="1"
+.\firewall-add.ps1 -AllowFrom <MCP服务IP>
 ```
 
-## 4. 配置 runner token
+跨网/不想暴露端口时改用 SSH 隧道：`ssh -L 5037:127.0.0.1:5037 <用户>@<宿主IP>`，MCP 侧用 `tcp:127.0.0.1:5037`。
 
-`MOBILE_TESTING_RUNNER_JOB_TOKEN` 是执行机专用令牌，不是面板 token，也不是数据库连接串。
-
-从 Mac 中心读取：
+## 4. Mac/MCP 服务验证
 
 ```bash
-cd <mac-repo>
-grep '^MOBILE_TESTING_RUNNER_JOB_TOKEN=' .local/center.env | cut -d= -f2-
+adb -H <宿主IP> -P 5037 devices -l
 ```
 
-在 Windows 设置：
+看到设备 serial 即成功。
 
-```powershell
-$env:MOBILE_TESTING_HOST_ID="win-mini-01"
-$env:MOBILE_TESTING_RUNNER_CONTROL_URL="http://<center-ip>:8765"
-$env:MOBILE_TESTING_PANEL_BASE_URL="http://<center-ip>:8765"
-$env:MOBILE_TESTING_RUNNER_JOB_TOKEN="<实际令牌，不带尖括号>"
+## 5. 项目配置
+
+二选一：
+
+```dotenv
+ADB_SERVER_SOCKET=tcp:<宿主IP>:5037
 ```
 
-## 5. 启动
-
-```powershell
-.\runner.cmd --name win-mini-01
+```jsonc
+{
+  "deviceHosts": {
+    "android": { "adbHost": "<宿主IP>:5037" }
+  }
+}
 ```
 
-启动后中心设备页应出现该主机和设备；若没有，先检查：
+重启 MCP 服务后，`doctor` / `aos_status.deviceHosts` 应显示 adb 宿主可达。
 
-```powershell
-Test-NetConnection <center-ip> -Port 8765
-curl.exe http://<center-ip>:8765/healthz
-adb devices
-```
+## 6. 运行
 
-## 6. 常见错误
+- 单条：`mobile_run_task`
+- Excel：`run_regression`（可选 `appPath` 安装 APK）
+- 已有 tests.json：`suite run`
 
-| 现象 | 原因 |
-|---|---|
-| 401 | runner token 错误、缺失，或用了面板 token |
-| 403 host mismatch | 中心配置了每主机 token，`MOBILE_TESTING_HOST_ID` 与 token 所属主机不一致 |
-| 设备列表为空 | adb 没看到设备，或 Maestro 不在 PATH |
-| 面板 401 | 浏览器登录需要面板 token，用户名任意、密码为 `MOBILE_TESTING_HTTP_TOKEN` |
-
-## 7. 更新
-
-中心重新构建后：
-
-```bash
-npm run bundle:runner
-```
-
-Windows 重新下载对应平台包并替换；`hostId` 保持不变即可继续领取任务。
+不再需要 `runner.cmd`、JDK 或 Maestro。

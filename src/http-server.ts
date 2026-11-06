@@ -28,11 +28,6 @@ import {
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
 import { handleRunnerJobRequest, matchRunnerJobPath } from "./panel/actions.js";
-import { matchRunnerControlPath } from "./runner/control/contract.js";
-import {
-  handleRunnerControlRequest,
-  runnerControlBodyLimit
-} from "./runner/control/http.js";
 import { handleSuiteControlRequest } from "./runner/control/suite-http.js";
 import { panelRoleFrom, panelRoleScopes } from "./panel/roles.js";
 import {
@@ -369,7 +364,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           let suiteBody: unknown;
           if (req.method === "POST" || req.method === "PATCH") {
             try {
-              suiteBody = await readBody(req, runnerControlBodyLimit());
+              suiteBody = await readBody(req, 1024 * 1024);
             } catch (error) {
               if (error instanceof BodyTooLargeError) {
                 res.writeHead(413, { "Content-Type": "application/json" });
@@ -391,37 +386,6 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           });
           res.writeHead(suiteResponse.status, { "Content-Type": suiteResponse.contentType });
           res.end(req.method === "HEAD" ? undefined : suiteResponse.body);
-          return;
-        }
-
-        if (matchRunnerControlPath(url.pathname) !== null) {
-          let controlBody: unknown;
-          if (req.method === "POST") {
-            try {
-              controlBody = await readBody(req, runnerControlBodyLimit());
-            } catch (error) {
-              if (error instanceof BodyTooLargeError) {
-                res.writeHead(413, { "Content-Type": "application/json" });
-                res.end('{"ok":false,"code":"body-too-large","error":"request body too large"}');
-                return;
-              }
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end('{"ok":false,"code":"invalid-body","error":"invalid request body"}');
-              return;
-            }
-          }
-          const controlResponse = await handleRunnerControlRequest({
-            method: req.method ?? "GET",
-            url,
-            headers: req.headers,
-            store,
-            env: process.env,
-            ...(controlBody === undefined ? {} : { body: controlBody })
-          });
-          res.writeHead(controlResponse.status, {
-            "Content-Type": controlResponse.contentType
-          });
-          res.end(req.method === "HEAD" ? undefined : controlResponse.body);
           return;
         }
 
@@ -561,10 +525,20 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             sha256: string;
           };
           const role = (url.searchParams.get("role") ?? "").trim();
-          const adbHost = role === "adb-host";
-          const manifestName = adbHost ? "adb-host-manifest.json" : "manifest.json";
-          const bundleLabel = adbHost ? "adb-host bundle" : "runner bundle";
-          const buildHint = adbHost ? "npm run bundle:adb-host" : "npm run bundle:runner";
+          if (role !== "adb-host") {
+            res.writeHead(410, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                ok: false,
+                error:
+                  "Maestro runner bundle 已移除；Android 真机请使用 MCP 原生（下载 role=adb-host 小包）"
+              })
+            );
+            return;
+          }
+          const manifestName = "adb-host-manifest.json";
+          const bundleLabel = "adb-host bundle";
+          const buildHint = "npm run bundle:adb-host";
           let entries: BundleEntry[] = [];
           try {
             const parsed = JSON.parse(
@@ -614,7 +588,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
                   filename,
                   size,
                   sha256,
-                  url: `/panel/runner-bundle?${adbHost ? "role=adb-host&" : ""}platform=${encodeURIComponent(p)}&arch=${encodeURIComponent(a)}`
+                  url: `/panel/runner-bundle?role=adb-host&platform=${encodeURIComponent(p)}&arch=${encodeURIComponent(a)}`
                 }))
               })
             );

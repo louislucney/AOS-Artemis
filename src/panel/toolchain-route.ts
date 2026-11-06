@@ -30,10 +30,7 @@ const PLATFORM_LABEL: Record<string, string> = {
   "win32-x64": "Windows x64"
 };
 const TOOL_LABEL: Record<string, string> = {
-  node: "Node.js",
-  adb: "Android platform-tools / adb",
-  jdk: "Temurin JDK",
-  maestro: "Maestro CLI"
+  adb: "Android platform-tools / adb"
 };
 
 function loadManifest(dir: string): ToolchainEntry[] | null {
@@ -52,6 +49,7 @@ function loadManifest(dir: string): ToolchainEntry[] | null {
         typeof value.filename === "string" &&
         typeof value.size === "number" &&
         typeof value.sha256 === "string" &&
+        value.tool === "adb" &&
         path.basename(value.filename) === value.filename
       );
     });
@@ -88,19 +86,17 @@ function renderPage(entries: ToolchainEntry[]): string {
     active: "devices",
     body: [
       "<h1>执行机依赖</h1>",
-      "<p class=\"muted\">Node.js、adb、JDK、Maestro 均为中心托管的官方安装包；不会在 runner 上自动联网下载。</p>",
+      "<p class=\"muted\">Android 真机 MCP 原生执行只需要 adb（platform-tools）；Maestro/JDK/Node runner 已移除。</p>",
       cards,
       cCard({
         title: "安装顺序",
         body: [
           "<ol>",
-          "<li>下载对应平台的 Node.js，解压后把 <code>bin</code>（Windows 为安装目录）加入 PATH。</li>",
-          "<li>解压 Android platform-tools，把 <code>platform-tools</code> 加入 PATH，确认 <code>adb devices</code>。</li>",
-          "<li>解压 JDK，把 <code>bin</code> 加入 PATH，确认 <code>java -version</code>。</li>",
-          "<li>解压 Maestro，把 <code>maestro/bin</code> 加入 PATH，确认 <code>maestro --version</code>。</li>",
-          "<li>再下载并解压对应平台的 runner 安装包。</li>",
+          "<li>下载对应平台的 Android platform-tools，解压后把 <code>platform-tools</code> 加入 PATH，确认 <code>adb devices</code>。</li>",
+          "<li>运行 <code>adb -a -P 5037 server nodaemon</code>，防火墙只放行 MCP 服务 IP（或改用 SSH 隧道）。</li>",
+          "<li>在 MCP 项目配置 <code>ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code>，用 <code>run_regression</code> / <code>mobile_run_task</code> 执行。</li>",
           "</ol>",
-          "<p class=\"muted\">macOS iOS 模拟器仍需 Xcode；Windows 的 Maestro 需要可用的 Java 环境，若 CLI 不支持原生 Windows，请在 WSL 中使用 Linux 工具链。</p>"
+          "<p class=\"muted\">也可以直接下载面板「设备 → 接入执行机」的 Windows adb-host 小包（约 8MB）。macOS 本机可直接使用系统 adb。</p>"
         ].join("")
       })
     ].join("\n")

@@ -2,7 +2,6 @@ import type { RunnerDevice, RunnerTools } from "../db/types.js";
 import { defaultExec, resolveAdbPath, type ExecFn } from "../device/adb.js";
 import { classifyIosSerial, listIosSimulators, resolveIdbPath, resolveXcrunPath } from "../device/ios.js";
 import { listAdbDevices } from "../device/logcat.js";
-import { resolveMaestroPath } from "../device/maestro.js";
 
 /** 设备盘点（心跳上报；`AOS_RUNNER_DEVICES` 非空 → 覆盖全部来源，真机 UDID 可显式列入）。 */
 export interface RunnerInventory {
@@ -71,23 +70,14 @@ export async function collectRunnerInventory(
       };
     })
   );
-  const maestro = resolveMaestroPath(env);
   const tools: RunnerTools = {
     adb: adbResult.ok,
     idb: false,
     simctl: false,
     ideviceId: false,
     appium,
-    maestro:
-      maestro.path === null
-        ? false
-        : await versionProbe(
-            exec,
-            maestro.path,
-            ["--version"],
-            Math.max(timeoutMs, 30_000),
-            env
-          ),
+    // Maestro 执行路线已移除；保留字段仅兼容历史 runner/tool 台账。
+    maestro: false,
     devicectl: false
   };
 

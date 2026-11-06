@@ -477,18 +477,19 @@ test("console pages: 新建测试 landing 与套件/网页 tab", async () => {
   assert.match(landing.body, /尚未登记网页测试项目/);
   assert.match(landing.body, /new=1#new-project/);
   assert.match(landing.body, /开始套件回归|先去导入用例集/);
-  assert.match(landing.body, /开始网页测试|先去上传资产/);
+  assert.match(landing.body, /MCP 原生接入|先去上传资产/);
 
   const suite = await handlePanelRequest(url(rootPath, "create", { type: "suite" }), deps);
   assert.equal(suite.status, 200);
   assert.match(suite.body, /新建测试 · 套件回归/);
-  assert.match(suite.body, /网页测试（Excel\/安装包\/脚本）/);
+  assert.match(suite.body, /MCP 原生接入/);
 
   const web = await handlePanelRequest(url(rootPath, "create", { type: "web" }), deps);
   assert.equal(web.status, 200);
   assert.match(web.body, /新建测试 · 网页测试/);
-  assert.match(web.body, /上传新安装包/);
-  assert.match(web.body, /上传测试资料/);
+  assert.match(web.body, /Maestro 网页测试已移除/);
+  assert.doesNotMatch(web.body, /id="web-job-form"/);
+  assert.doesNotMatch(web.body, /上传新安装包/);
 });
 
 test("console pages: 任务列表分页（25/页，保留搜索条件）", () => {
@@ -537,7 +538,7 @@ test("console pages: 任务列表分页（25/页，保留搜索条件）", () =>
   assert.match(second, /section=tasks&amp;task=task-29/);
 });
 
-test("console pages: 网页测试下发页始终提供上传新安装包入口", () => {
+test("console pages: 网页测试下发页显示 Maestro 已移除", () => {
   const html = renderWebJobsPage({
     rootPath: "/w/p",
     rootLabel: "p",
@@ -551,18 +552,9 @@ test("console pages: 网页测试下发页始终提供上传新安装包入口",
     runnerTtlMs: 1,
     projectChoices: []
   });
-  assert.match(html, /上传新安装包/);
-  assert.match(html, /section=assets&amp;tab=packages&amp;kind=package/);
-  assert.match(html, /上传新 Excel/);
-  assert.match(html, /section=assets&amp;tab=excel&amp;kind=excel/);
-  assert.match(html, /上传测试资料/);
-  assert.match(html, /section=assets&amp;tab=materials&amp;kind=materials/);
-  assert.match(html, /上传参考图/);
-  assert.match(html, /section=assets&amp;tab=reference&amp;kind=reference/);
-  assert.match(html, /id="web-job-reference-gate"/);
-  assert.match(html, /referenceGate="unverified"/);
-  assert.match(html, /id="web-job-l2-screenshots"/);
-  assert.match(html, /out.l2Screenshots=true/);
+  assert.match(html, /Maestro 网页测试已移除/);
+  assert.doesNotMatch(html, /id="web-job-form"/);
+  assert.doesNotMatch(html, /上传新安装包/);
 });
 
 test("console pages: 任务与结果同时渲染网页任务", () => {

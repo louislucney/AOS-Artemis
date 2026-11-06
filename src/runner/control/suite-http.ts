@@ -1,7 +1,7 @@
 import type { ProjectStore } from "../../db/types.js";
 import { errorMessage } from "../../util.js";
 import { authenticateRunner } from "./auth.js";
-import { RunnerControlError } from "./service.js";
+import { RunnerControlError } from "./errors.js";
 import { resolveSuiteResource } from "./suite-routes.js";
 import { SuiteControlService } from "./suite-service.js";
 

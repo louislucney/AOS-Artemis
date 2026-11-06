@@ -1,14 +1,6 @@
-import { loadProject } from "./config/loader.js";
-import { createProjectStore, type CreateStoreResult } from "./db/index.js";
-import type { ProjectStore } from "./db/types.js";
-import { generateScriptSetForProject, ScriptGenerationError } from "./web/script-generation.js";
 import { runLlmWorkerCli } from "./web/llm/cli.js";
-import { ScriptSetStoreError } from "./web/script-set.js";
-import type { PreconditionMode, ScriptPlatform } from "./web/script-gen.js";
 
 export interface WebCliDeps {
-  store?: ProjectStore;
-  createStore?: (databaseUrl: string | null) => Promise<CreateStoreResult>;
   env?: NodeJS.ProcessEnv;
   cwd?: string;
   log?: (line: string) => void;
@@ -67,74 +59,23 @@ function parseFlags(argv: string[]): ParsedFlags {
 }
 
 export function printWebUsage(log: (line: string) => void): void {
-  log(`mobile-testing-mcp web — Web 项目脚本工具
+  log(`mobile-testing-mcp web — Web/LLM 执行工具
 
 Usage:
-  mobile-testing-mcp web scripts generate --project <dir> --excel <assetId> --package <assetId>
-      --platform <android|ios> [--app-id <package|bundleId>]
-      [--strict|--assume-prepared|--precondition-mode auto] [--best-effort] [--dry-run] [--json]
   mobile-testing-mcp web llm-worker [--once] [--poll-ms <n>] [--max-jobs <n>]
       [--case-timeout-ms <n>] [--job-max-ms <n>]
       中心 LLM 执行器（P0 Android；需要中心 PG/控制面与 runner 设备网关）
 
 说明:
-  --project <dir>       项目根目录（缺省按 AOS_PROJECT_DIR / cwd）
-  --excel <assetId>     Excel/CSV 资产 id（项目资产版本）
-  --package <assetId>   安装包资产 id
-  --platform            android | ios；必须已在项目 platforms 中
-  --app-id              缺省用项目 appPackage；双端建议显式传
-  --strict              前置条件非空 → unresolved（默认）
-  --assume-prepared     前置条件视为环境已准备；clearState/stopApp=false，结果标注
-  --precondition-mode   strict | assume-prepared | auto（auto 在 --best-effort 下按环境已准备）
-  --best-effort         未识别步骤写 manual 标记+截图，不阻断其他步骤
-  --dry-run             只生成 manifest，不写 scripts 资产
-  --json                机器可读输出
-  --help                本帮助
+  Maestro 脚本生成 / web-runner 已移除；Android 真机请用 run_regression / mobile_run_task。
+  --once               只跑一轮
+  --poll-ms <n>        空闲轮询间隔
+  --max-jobs <n>       本轮最多处理任务数
+  --case-timeout-ms    单用例超时
+  --job-max-ms         单任务上限
+  --help               本帮助
 
-exit codes: 0 成功；1 没有可执行用例/脚本集不可用；2 参数/项目/资产/解析错误`);
-}
-
-function parsePlatform(value: string | null): ScriptPlatform | null {
-  return value === "android" || value === "ios" ? value : null;
-}
-
-function parsePreconditionMode(flags: ParsedFlags): PreconditionMode | "auto" | null {
-  if (flags.bool("strict") && flags.bool("assume-prepared")) return null;
-  if (flags.bool("assume-prepared")) return "assume-prepared";
-  if (flags.bool("strict")) return "strict";
-  const value = flags.get("precondition-mode");
-  if (value === null) return "strict";
-  return value === "strict" || value === "assume-prepared" || value === "auto" ? value : null;
-}
-
-function summarizeCases(
-  manifest: {
-    cases: Array<{
-      caseId: string;
-      status: string;
-      partial?: boolean;
-      assertions: number;
-      unresolved: Array<{ code: string; step: number | null }>;
-      manualSteps?: Array<{ code: string; step: number }>;
-      warnings: string[];
-    }>;
-  },
-  limit = 20
-): string[] {
-  const lines: string[] = [];
-  for (const entry of manifest.cases.slice(0, limit)) {
-    const issues = entry.unresolved.map((item) => `${item.code}${item.step === null ? "" : `:${item.step}`}`);
-    const manual = (entry.manualSteps ?? []).map((item) => `${item.code}:${item.step}`);
-    const warnings = entry.warnings.length > 0 ? ` · warning ${entry.warnings.join(",")}` : "";
-    lines.push(
-      `  ${entry.caseId} ${entry.partial === true ? "partial" : entry.status} · assertions ${entry.assertions}` +
-        (manual.length > 0 ? ` · manual ${manual.join(",")}` : "") +
-        (issues.length > 0 ? ` · ${issues.join(",")}` : "") +
-        warnings
-    );
-  }
-  if (manifest.cases.length > limit) lines.push(`  … 其余 ${manifest.cases.length - limit} 条见 --json`);
-  return lines;
+exit codes: 0 成功；1 执行失败；2 参数错误`);
 }
 
 export async function runWebCommand(argv: string[], deps: WebCliDeps = {}): Promise<number> {
@@ -161,149 +102,7 @@ export async function runWebCommand(argv: string[], deps: WebCliDeps = {}): Prom
       errorLog
     });
   }
-  if (flags.positional[0] !== "scripts" || flags.positional[1] !== "generate") {
-    errorLog(`未知 web 子命令 "${flags.positional.join(" ") || "(空)"}"`);
-    printWebUsage(errorLog);
-    return 2;
-  }
-
-  const excelAssetId = (flags.get("excel") ?? "").trim();
-  const packageAssetId = (flags.get("package") ?? "").trim();
-  const platform = parsePlatform(flags.get("platform"));
-  if (excelAssetId === "") return reportUsageError(errorLog, "缺少 --excel");
-  if (packageAssetId === "") return reportUsageError(errorLog, "缺少 --package");
-  if (platform === null) return reportUsageError(errorLog, "--platform 只能是 android 或 ios");
-  const preconditionMode = parsePreconditionMode(flags);
-  if (preconditionMode === null) {
-    return reportUsageError(errorLog, "--strict 与 --assume-prepared 不能同时使用");
-  }
-  const bestEffort = flags.bool("best-effort");
-
-  let store = deps.store;
-  let ownsStore = false;
-  try {
-    if (store === undefined) {
-      const projectDir = flags.get("project");
-      const env = projectDir
-        ? { ...(deps.env ?? process.env), AOS_PROJECT_DIR: projectDir.trim(), AOS_CONFIG: "" }
-        : (deps.env ?? process.env);
-      const project = loadProject({ env, ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }) });
-      const createStore = deps.createStore ?? createProjectStore;
-      const created = await createStore(null);
-      store = created.store;
-      ownsStore = true;
-      const result = await generateScriptSetForProject({
-        store,
-        rootPath: project.rootDir,
-        excelAssetId,
-        packageAssetId,
-        platform,
-        appId: flags.get("app-id"),
-        preconditionMode,
-        bestEffort,
-        inferNavigationTap: bestEffort,
-        dryRun: flags.bool("dry-run"),
-        uploadedBy: "cli"
-      });
-      return printResult(result, flags.bool("json"), log, errorLog);
-    }
-    const projectDir = flags.get("project");
-    const env = projectDir
-      ? { ...(deps.env ?? process.env), AOS_PROJECT_DIR: projectDir.trim(), AOS_CONFIG: "" }
-      : (deps.env ?? process.env);
-    const project = loadProject({ env, ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }) });
-    const result = await generateScriptSetForProject({
-      store,
-      rootPath: project.rootDir,
-      excelAssetId,
-      packageAssetId,
-      platform,
-      appId: flags.get("app-id"),
-      preconditionMode,
-      bestEffort,
-      inferNavigationTap: bestEffort,
-      dryRun: flags.bool("dry-run"),
-      uploadedBy: "cli"
-    });
-    return printResult(result, flags.bool("json"), log, errorLog);
-  } catch (error) {
-    if (error instanceof ScriptSetStoreError) {
-      errorLog(`生成失败：${error.message}`);
-      return error.code === "script-set-unusable" ? 1 : 2;
-    }
-    if (error instanceof ScriptGenerationError) {
-      errorLog(`生成失败：${error.message}`);
-      return 2;
-    }
-    errorLog(`生成失败：${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  } finally {
-    if (ownsStore && store !== undefined) {
-      await store.close().catch(() => undefined);
-    }
-  }
-}
-
-function reportUsageError(errorLog: (line: string) => void, message: string): number {
-  errorLog(message);
+  errorLog(`未知 web 子命令 "${flags.positional.join(" ") || "(空)"}"`);
   printWebUsage(errorLog);
   return 2;
-}
-
-function printResult(
-  result: Awaited<ReturnType<typeof generateScriptSetForProject>>,
-  jsonOutput: boolean,
-  log: (line: string) => void,
-  errorLog: (line: string) => void
-): number {
-  if (jsonOutput) {
-    log(
-      JSON.stringify(
-        {
-          ok: true,
-          dryRun: result.dryRun,
-          appId: result.appId,
-          platform: result.platform,
-          ready: result.ready,
-          partial: result.partial,
-          runnable: result.runnable,
-          unresolved: result.unresolved,
-          normalizer: result.normalizer,
-          llmCases: result.llmCases,
-          normalizerWarnings: result.normalizerWarnings,
-          created: result.created,
-          asset:
-            result.asset === null
-              ? null
-              : {
-                  id: result.asset.id,
-                  version: result.asset.version,
-                  filename: result.asset.filename,
-                  sha256: result.asset.sha256
-                },
-          manifest: result.manifest
-        },
-        null,
-        2
-      )
-    );
-  } else {
-    log(
-      `脚本生成${result.dryRun ? "（dry-run）" : ""} · 平台 ${result.platform} · appId ${result.appId}`
-    );
-    log(
-      `用例 ${result.manifest.counts.cases}：可执行 ${result.runnable}（完整 ${result.ready} / 部分 ${result.partial}）/ 未就绪 ${result.unresolved} · ${result.normalizer}`
-    );
-    if (result.asset !== null) {
-      log(
-        `脚本集 v${result.asset.version} · ${result.asset.filename} · ${result.created ? "新建" : "复用"} · sha256 ${result.asset.sha256.slice(0, 12)}`
-      );
-    }
-    for (const line of summarizeCases(result.manifest)) log(line);
-  }
-  if (result.runnable === 0) {
-    errorLog("没有可执行用例：脚本集不可下发；请检查前置条件/步骤解析或使用 --best-effort");
-    return 1;
-  }
-  return 0;
 }

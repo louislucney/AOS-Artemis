@@ -1,6 +1,6 @@
 # Android 真机：MCP 原生执行接入与排障
 
-本文说明如何用 **MCP 原生执行器**（`mobile_run_task` / `run_regression` / `suite run`）在 Android 真机上跑用例，以及它与 **Maestro web-runner** 的边界、远程 adb 接入方式和常见故障处理。
+本文说明如何用 **MCP 原生执行器**（`mobile_run_task` / `run_regression` / `suite run`）在 Android 真机上跑用例，以及 Maestro 路线移除后的迁移说明、远程 adb 接入方式和常见故障处理。
 
 适用场景：
 
@@ -9,7 +9,7 @@
 - 用例是自然语言/Excel 步骤，可以接受 LLM 规划带来的非确定性；
 - 不想在设备宿主上安装 JDK / Maestro / 两个 driver APK。
 
-不接受 LLM 非确定性、需要逐字脚本复现的稳定回归，仍应使用 Maestro web-runner（见文末对比）。
+不接受 LLM 非确定性、需要逐字脚本复现的稳定回归，当前没有 Maestro 路线；可评估 Appium/Espresso 或 ADB+OCR 兜底（见文末对比）。
 
 ---
 
@@ -46,7 +46,7 @@ MCP 服务（Mac）
 - 需要 active LLM（`mobile_run_task` / `run_regression` 都依赖它）；
 - 结果以 trace、步骤截图、`data_engine.db`、OCR 文本为主，不是 Maestro JUnit。
 
-### 1.2 Maestro web-runner（另一条）
+### 1.2 Maestro web-runner（已移除，历史）
 
 ```text
 Windows/macOS runner（host 级）
@@ -267,13 +267,13 @@ node dist/cli.js suite run --tests <tests.json> --device 10CF6609P900059 --proje
 
 ---
 
-## 6. Maestro 路径的已知坑
+## 6. Maestro 路径已移除（历史教训）
 
-> 部署侧可用 `AOS_MAESTRO_WEB=0` 禁用**新建** Maestro 网页测试任务（API 返回 `409 maestro-disabled`，面板隐藏表单）；已有 legacy 任务仍可执行。
+> 2026-11-06 已删除 Maestro web-runner、脚本生成与 runner 打包；以下仅记录迁移原因，不再提供操作步骤。
 
 
 
-如果仍要使用 web-runner + Maestro，先了解这些现场问题：
+迁移前遇到的现场问题：
 
 - **vivo / OEM 安装确认**：Maestro 2.12.1 的 driver 由两个 APK 组成（`dev.mobile.maestro`、`dev.mobile.maestro.test`），默认每次 `maestro test` 都重装；vivo 的安装确认弹窗会让 driver 处于半装/被杀状态，表现为 `DeviceServerDiedException`（`deviceInfo` / `viewHierarchy` 120 秒超时）。
 - **预检与复用**：runner 在两个包都存在时加 `--no-reinstall-driver`；缺包时默认拦截，`AOS_MAESTRO_INSTALL_DRIVER=1` 才允许 Maestro 自动安装；怀疑版本不匹配用 `AOS_MAESTRO_REINSTALL_DRIVER=1`；`AOS_PREFLIGHT=0` 只用于应急。
@@ -281,7 +281,7 @@ node dist/cli.js suite run --tests <tests.json> --device 10CF6609P900059 --proje
 - **文本选择器**：按真实 UI 文案写，留文案容易找不到。例如 ESSO-GU 登录页按钮实际是 `Register now`，不是 `Register`；优先用 `resource-id`（如 `.../id/btn_register`）。
 - **不要在任务运行中手动安装/卸载 driver 或 App**：会打断正在运行的 driver/应用，直接造成连接中断。
 
-结论：**受保护 App + vivo/安装确认严格的机型，优先用 MCP 原生路径**；Maestro 更适合干净、稳定、脚本化的设备池。
+结论：**受保护 App + vivo/安装确认严格的机型，优先用 MCP 原生路径**；Maestro 路线已移除。
 
 ---
 
@@ -295,7 +295,7 @@ node dist/cli.js suite run --tests <tests.json> --device 10CF6609P900059 --proje
 | `mobile_run_task` 返回 `needs-setup` / `setup_required` | 项目没有 active LLM | 配 §2 的三元组，重启服务，`doctor` 确认 |
 | `doctor` 看不到设备/宿主 | `ADB_SERVER_SOCKET` 未加载 | 检查项目 `.env`/`deviceHosts`，重启 MCP 服务 |
 | `ArtemisAccessibilityHelper` 安装失败 | OEM 安装确认/权限 | `mobile_diagnose(attempt_fix=true)`，手动确认安装后重试 |
-| Maestro `DeviceServerDiedException` | driver 重装/半装/OEM 冻结 | 按 §6；优先改用 MCP 原生路径 |
+| 历史 Maestro `DeviceServerDiedException` | driver 重装/半装/OEM 冻结 | Maestro 路线已移除；用 MCP 原生 |
 | Maestro 报 `Element not found` | 文案与 UI 不一致 | 用真实文案或 `resource-id`；先 `maestro hierarchy` 核对 |
 
 ---

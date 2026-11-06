@@ -309,12 +309,6 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   const materials = data.materials ?? [];
   const packageVersionNumbers = assetVersionNumbers(packages);
   const scriptVersionNumbers = assetVersionNumbers(scripts);
-  const packageOptions = packages
-    .map(
-      (asset) =>
-        `<option value="${escapeHtml(asset.id)}">${escapeHtml(assetVersionLabel(asset, packageVersionNumbers))} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
-    )
-    .join("");
   const packageRows = packages.map((asset) => [
     `<code>${escapeHtml(asset.filename)}</code>`,
     assetPlatform(asset) === "android"
@@ -415,24 +409,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     actionsReason
   ].join("\n");
 
-  const scriptGenDisabled =
-    actionsOff || data.assets.length === 0 || packages.length === 0 ? " disabled" : "";
   const scriptGenBody = [
-    `<form id="script-gen-form" class="c-form" data-project="${escapeHtml(data.rootPath)}">` +
-      `<p><label>Excel <select id="script-gen-excel" aria-label="生成脚本的 Excel 资产"${scriptGenDisabled}>` +
-      (assetOptions === "" ? '<option value="">暂无 Excel 资产</option>' : assetOptions) +
-      `</select></label> <label>安装包 <select id="script-gen-package" aria-label="生成脚本的安装包资产"${scriptGenDisabled}>` +
-      (packageOptions === "" ? '<option value="">暂无安装包资产</option>' : packageOptions) +
-      `</select></label></p>` +
-      `<p><label>平台 <select id="script-gen-platform" aria-label="脚本平台"${scriptGenDisabled}><option value="android">android</option><option value="ios">ios</option></select></label> ` +
-      `<label>appId <input id="script-gen-app-id" type="text" value="${escapeHtml(data.appPackage ?? "")}" placeholder="com.example.app" aria-label="appId"${scriptGenDisabled}></label> ` +
-      `<label>前置条件 <select id="script-gen-mode" aria-label="前置条件模式"${scriptGenDisabled}><option value="auto" selected>auto（手工文档按环境已准备）</option><option value="strict">strict</option><option value="assume-prepared">assume-prepared</option></select></label> ` +
-      `<label>AI 解析（有 LLM 时自动启用） <select id="script-gen-llm" aria-label="LLM 解析"${scriptGenDisabled}><option value="auto" selected>auto</option><option value="off">off</option><option value="require">require</option></select></label></p>` +
-      `<p><label class="c-form-check"><input id="script-gen-best-effort" type="checkbox" checked${scriptGenDisabled}> 尽力生成（未识别步骤标 UNVERIFIED，不阻断）</label> ` +
-      `<label class="c-form-check"><input id="script-gen-dry-run" type="checkbox"${scriptGenDisabled}> 仅预览（dry-run）</label> ` +
-      `<button id="script-gen-submit" class="c-button c-button-primary" type="submit" data-busy-label="生成中…"${scriptGenDisabled}>生成脚本</button> ` +
-      `<span id="script-gen-status" role="status" class="muted"></span></p></form>`,
-    `<div id="script-gen-result"><p class="muted">手工 Excel 默认尽力生成：识别不了的步骤会标 UNVERIFIED 并截图，不阻断其他步骤；不会伪造 PASS。前置条件 auto 在尽力模式下按测试环境已准备处理，并在 manifest/结果标注。</p></div>`,
+    `<p class="muted">Maestro 脚本生成已移除；Android 请使用 MCP 原生 <code>run_regression</code> / <code>mobile_run_task</code>。</p>`,
     actionsReason
   ].join("\n");
 
@@ -443,9 +421,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     ? ""
     : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};var fields=${fieldsJson};function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}function setBusy(btn,busy){if(!btn)return;if(busy){if(!btn.dataset.idleLabel)btn.dataset.idleLabel=btn.textContent;btn.disabled=true;if(btn.dataset.busyLabel)btn.textContent=btn.dataset.busyLabel;}else{btn.disabled=false;if(btn.dataset.idleLabel)btn.textContent=btn.dataset.idleLabel;}}function jsonPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var preview=null;var saveBtn=document.getElementById('mapping-save');if(saveBtn)saveBtn.disabled=true;var uForm=document.getElementById('asset-upload-form');var uStatus=document.getElementById('asset-upload-status');var uploadBtn=document.getElementById('asset-upload-submit');var input=document.getElementById('asset-file');var uDrop=document.getElementById('asset-drop');var uFileName=document.getElementById('asset-file-name');function uKind(){var kindSel=document.getElementById('asset-kind');var v=kindSel?kindSel.value:'';return v==='package'||v==='materials'||v==='reference'?v:'excel';}function uKindOf(file){var lower=file?String(file.name||'').toLowerCase():'';if(lower.endsWith('.apk')||lower.endsWith('.ipa'))return 'package';if(lower.endsWith('.png')||lower.endsWith('.jpg')||lower.endsWith('.jpeg')||lower.endsWith('.webp')||lower.endsWith('.pen'))return 'reference';if(lower.endsWith('.xlsx'))return 'excel';if(lower.endsWith('.zip')||lower.endsWith('.json')||lower.endsWith('.txt'))return 'materials';if(lower.endsWith('.csv')){var current=uKind();return current==='materials'?'materials':'excel';}return uKind();}function uSyncKind(file){var kind=uKindOf(file);var kindSel=document.getElementById('asset-kind');if(kindSel&&(kind==='package'||kind==='excel'||kind==='materials'||kind==='reference'))kindSel.value=kind;var secretRow=document.getElementById('asset-secret-row');if(secretRow)secretRow.hidden=kind!=='materials';return kind;}function uExtOk(name,kind){var lower=String(name||'').toLowerCase();if(kind==='package')return lower.endsWith('.apk')||lower.endsWith('.ipa');if(kind==='materials')return lower.endsWith('.zip')||lower.endsWith('.json')||lower.endsWith('.csv')||lower.endsWith('.txt');if(kind==='reference')return lower.endsWith('.png')||lower.endsWith('.jpg')||lower.endsWith('.jpeg')||lower.endsWith('.webp')||lower.endsWith('.pen');return lower.endsWith('.xlsx')||lower.endsWith('.csv');}var uKindSelect=document.getElementById('asset-kind');if(uKindSelect){uKindSelect.addEventListener('change',function(){var secretRow=document.getElementById('asset-secret-row');if(secretRow)secretRow.hidden=uKindSelect.value!=='materials';});}function uUpdateName(){if(!uFileName)return;var f=input&&input.files?input.files[0]:null;uFileName.textContent=f?f.name:'未选择文件';if(f)uSyncKind(f);}if(uForm){uForm.addEventListener('submit',function(e){e.preventDefault();if(uploadBtn&&uploadBtn.disabled)return;var file=input&&input.files?input.files[0]:null;var kind=uSyncKind(file);if(!file){if(uStatus)uStatus.textContent='请选择文件';return;}if(!uExtOk(file.name,kind)){if(uStatus)uStatus.textContent=kind==='package'?'安装包仅支持 .apk/.ipa':kind==='materials'?'测试资料仅支持 .zip/.json/.csv/.txt':kind==='reference'?'参考图仅支持 .png/.jpg/.jpeg/.webp/.pen':'Excel 仅支持 .xlsx/.csv';return;}var fd=new FormData();fd.append('project',root);fd.append('kind',kind);if(host)fd.append('host',host);var secret=document.getElementById('asset-secret');if(kind==='materials'&&secret&&secret.checked)fd.append('secret','true');fd.append('file',file);if(uStatus)uStatus.textContent='上传中…';setBusy(uploadBtn,true);fetch('/panel/api/projects/assets',{method:'POST',headers:{'X-AOS-Console':'1'},body:fd}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){var uploaded=res.j.assets&&res.j.assets.length?res.j.assets.length:1;window.aosFlash&&aosFlash('已上传 '+(uploaded>1?uploaded+' 个参考图':res.j.asset.filename+'（v'+res.j.asset.version+'）')+' · 已写入审计');setBusy(uploadBtn,false);var url=new URL(location.href);url.hash='';url.searchParams.set('_uploaded',String(Date.now()));location.href=url.toString();}else{setBusy(uploadBtn,false);if(uStatus)uStatus.textContent='上传失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){setBusy(uploadBtn,false);if(uStatus)uStatus.textContent='上传失败：'+err;});});}if(uDrop&&input){uDrop.addEventListener('click',function(){input.click();});uDrop.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();input.click();}});['dragenter','dragover'].forEach(function(name){uDrop.addEventListener(name,function(e){e.preventDefault();uDrop.classList.add('is-dragover');});});['dragleave','drop'].forEach(function(name){uDrop.addEventListener(name,function(e){e.preventDefault();uDrop.classList.remove('is-dragover');});});uDrop.addEventListener('drop',function(e){var files=e.dataTransfer&&e.dataTransfer.files;if(!files||files.length===0)return;var file=files[0];var kind=uSyncKind(file);if(!uExtOk(file.name,kind)){if(uStatus)uStatus.textContent=kind==='package'?'安装包仅支持 .apk/.ipa':kind==='materials'?'测试资料仅支持 .zip/.json/.csv/.txt':kind==='reference'?'参考图仅支持 .png/.jpg/.jpeg/.webp/.pen':'Excel 仅支持 .xlsx/.csv';return;}try{input.files=files;}catch(err){var dt=new DataTransfer();dt.items.add(file);input.files=dt.files;}uUpdateName();if(uStatus)uStatus.textContent='已选择文件，点击「上传资产」';});input.addEventListener('click',function(e){e.stopPropagation();});input.addEventListener('change',uUpdateName);uUpdateName();}var pForm=document.getElementById('mapping-preview-form');var sel=document.getElementById('asset-select');var pStatus=document.getElementById('mapping-status');var previewBox=document.getElementById('mapping-preview');var previewBtn=document.getElementById('mapping-preview-submit');var rowInput=document.getElementById('asset-header-row');function resetPreview(){preview=null;if(saveBtn)saveBtn.disabled=true;if(previewBox)previewBox.innerHTML='<p class="muted">选择资产并预览表头后，可确认建议映射并保存。</p>';if(pStatus)pStatus.textContent='';}if(sel)sel.addEventListener('change',resetPreview);if(rowInput){rowInput.addEventListener('change',resetPreview);rowInput.addEventListener('input',resetPreview);}if(pForm){pForm.addEventListener('submit',function(e){e.preventDefault();if(previewBtn&&previewBtn.disabled)return;if(!sel||!sel.value){if(pStatus)pStatus.textContent='请选择资产';return;}var headerRow=parseInt(rowInput&&rowInput.value?rowInput.value:'1',10);if(!headerRow||headerRow<1)headerRow=1;var requestedAsset=sel.value;var requestedHeaderRow=headerRow;preview=null;if(saveBtn)saveBtn.disabled=true;if(pStatus)pStatus.textContent='读取中…';setBusy(previewBtn,true);jsonPost('/panel/api/projects/excel/preview',{project:root,host:host,assetId:requestedAsset,headerRow:requestedHeaderRow}).then(function(res){if(sel.value!==requestedAsset||parseInt(rowInput&&rowInput.value?rowInput.value:'1',10)!==requestedHeaderRow){setBusy(previewBtn,false);return;}if(!res.ok||!res.j||!res.j.ok){setBusy(previewBtn,false);if(pStatus)pStatus.textContent='预览失败：'+((res.j&&res.j.error)||('HTTP '+res.status));return;}var j=res.j;var suggested=j.suggested||{};preview={assetId:requestedAsset,sheetName:j.sheetName,headerRow:requestedHeaderRow,columnMap:suggested};var rows=fields.map(function(f){var header=suggested[f.field]||'';return '<tr><td>'+esc(f.label)+'</td><td>'+(header?'<code>'+esc(header)+'</code>':'<span class="muted">—</span>')+'</td></tr>';});if(previewBox)previewBox.innerHTML='<div class="c-table-wrap"><table class="c-table"><caption>映射预览</caption><thead><tr><th scope="col">规范字段</th><th scope="col">建议表头</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div><p class="muted">工作表 '+esc(j.sheetName)+' · 表头行 '+requestedHeaderRow+' · 指纹 <code>'+esc(String(j.fingerprint||'').slice(0,12))+'</code></p>';if(pStatus)pStatus.textContent='预览完成，可保存';setBusy(previewBtn,false);if(saveBtn)saveBtn.disabled=false;}).catch(function(err){setBusy(previewBtn,false);if(pStatus)pStatus.textContent='预览失败：'+err;});});}if(saveBtn){saveBtn.addEventListener('click',function(){if(!preview){if(pStatus)pStatus.textContent='请先预览映射';return;}if(pStatus)pStatus.textContent='保存中…';setBusy(saveBtn,true);jsonPost('/panel/api/projects/excel/mapping',{project:root,host:host,assetId:preview.assetId,sheetName:preview.sheetName,headerRow:preview.headerRow,columnMap:preview.columnMap}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已保存列映射 · 已写入审计');location.reload();}else{setBusy(saveBtn,false);if(pStatus)pStatus.textContent='保存失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){setBusy(saveBtn,false);if(pStatus)pStatus.textContent='保存失败：'+err;});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-import-excel]'):null;if(!b)return;var id=b.getAttribute('data-import-excel');if(!id)return;b.disabled=true;jsonPost('/panel/api/import',{project:root,host:host,assetId:id}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已导入用例库 · 可到用例库下发');location.reload();}else{b.disabled=false;if(uStatus)uStatus.textContent='导入用例库失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){b.disabled=false;if(uStatus)uStatus.textContent='导入用例库失败：'+err;});});})();</script>`;
 
-  const scriptGenScript = actionsOff
-    ? ""
-    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function byId(id){return document.getElementById(id);}function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}function setBusy(btn,busy){if(!btn)return;if(busy){if(!btn.dataset.idleLabel)btn.dataset.idleLabel=btn.textContent;btn.disabled=true;if(btn.dataset.busyLabel)btn.textContent=btn.dataset.busyLabel;}else{btn.disabled=false;if(btn.dataset.idleLabel)btn.textContent=btn.dataset.idleLabel;}}var form=byId('script-gen-form');if(!form)return;var status=byId('script-gen-status');var box=byId('script-gen-result');var btn=byId('script-gen-submit');var dry=byId('script-gen-dry-run');if(dry){dry.addEventListener('change',function(){if(status)status.textContent='';});}form.addEventListener('submit',function(e){e.preventDefault();if(btn&&btn.disabled)return;var excel=byId('script-gen-excel'),pkg=byId('script-gen-package');if(!excel||!excel.value||!pkg||!pkg.value){if(status)status.textContent='请选择 Excel 与安装包';return;}var body={project:root,excelAssetId:excel.value,packageAssetId:pkg.value,platform:byId('script-gen-platform').value,appId:(byId('script-gen-app-id').value||'').trim(),preconditionMode:byId('script-gen-mode').value,bestEffort:!!byId('script-gen-best-effort').checked,useLlm:byId('script-gen-llm').value,dryRun:!!byId('script-gen-dry-run').checked};if(host)body.host=host;if(status)status.textContent='生成中…';setBusy(btn,true);fetch('/panel/api/projects/scripts/generate',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){setBusy(btn,false);if(!res.ok||!res.j||!res.j.ok){if(status)status.textContent='生成失败：'+((res.j&&res.j.error)||('HTTP '+res.status));return;}var j=res.j;if(status)status.textContent=(j.dryRun?'dry-run':'已生成')+' · 可执行 '+(j.runnable==null?j.ready:j.runnable)+'（完整 '+j.ready+' / 部分 '+(j.partial||0)+'）/ 未就绪 '+j.unresolved+' · '+esc(j.normalizer||'rules');var cases=(j.manifest&&j.manifest.cases)?j.manifest.cases:[];var rows=cases.slice(0,50).map(function(c){var issues=(c.unresolved||[]).map(function(u){return u.code+(u.step==null?'':':'+u.step);}).join(', ');var manual=(c.manualSteps||[]).map(function(m){return m.code+':'+m.step;}).join(', ');return '<tr><td><code>'+esc(c.caseId)+'</code></td><td>'+esc(c.partial?'partial':c.status)+'</td><td><code>'+esc(c.assertions)+'</code></td><td>'+esc(manual||'—')+'</td><td>'+esc(issues||'—')+'</td></tr>';}).join('');if(box)box.innerHTML='<div class="c-table-wrap"><table class="c-table"><caption>生成结果</caption><thead><tr><th>用例</th><th>状态</th><th>断言</th><th>手工步骤</th><th>unresolved</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+(j.asset?'<p class="muted">资产 v'+esc(j.asset.version)+' · '+esc(j.asset.filename)+'</p>':'<p class="muted">dry-run 未写资产</p>');}).catch(function(err){setBusy(btn,false);if(status)status.textContent='生成失败：'+err;});});})();</script>`;
+  const scriptGenScript = "";
 
   const activeTab: AssetsTab = data.tab ?? "overview";
   const legacy = data.tab === undefined;
@@ -459,7 +435,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     ["packages", "安装包"],
     ["materials", "测试资料"],
     ["reference", "参考图"],
-    ["scripts", "脚本集"]
+    ["scripts", "脚本集（历史）"]
   ];
   const tabBar = `<nav class="c-flow-switch" aria-label="测试资产类型">${tabLabels
     .map(([tab, label]) =>
@@ -510,9 +486,9 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       `<div class="card"><div class="k">参考图</div><div class="v">${references.length}</div><div class="muted"><a href="${escapeHtml(
         tabHref("reference")
       )}">查看参考图</a></div></div>`,
-      `<div class="card"><div class="k">脚本集</div><div class="v">${scripts.length}</div><div class="muted"><a href="${escapeHtml(
+      `<div class="card"><div class="k">历史脚本集</div><div class="v">${scripts.length}</div><div class="muted"><a href="${escapeHtml(
         tabHref("scripts")
-      )}">查看脚本集</a></div></div>`,
+      )}">查看历史脚本集</a></div></div>`,
       "</div>",
       '<p class="muted">下一步：去 <a href="/panel?project=' +
         encodeURIComponent(data.rootPath) +
@@ -575,8 +551,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     })
   })}</div>`;
   const scriptsCard = cCard({
-    title: "脚本集",
-    subtitle: `共 ${scripts.length} 个 scripts 版本`,
+    title: "历史脚本集",
+    subtitle: `共 ${scripts.length} 个 scripts 版本（只读保留）`,
     body: cTable({
       columns: ["文件名", "版本", "平台", "来源", "ready", "partial", "unresolved", "生成时间", "被使用"],
       rows: scriptRows,
@@ -585,8 +561,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     })
   });
   const scriptGenCard = cCard({
-    title: "生成 Maestro 脚本",
-    subtitle: "从 Excel + 安装包生成 scripts 资产；dry-run 只出 manifest",
+    title: "MCP 原生执行",
+    subtitle: "Maestro 脚本生成已移除；Android 请用 run_regression / mobile_run_task",
     body: scriptGenBody
   });
 
@@ -637,7 +613,6 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
   const projectQuery = `project=${encodeURIComponent(data.rootPath)}`;
   const assetsHref = `/panel?${projectQuery}&section=assets${hostQuery}`;
   const suiteHref = `/panel?${projectQuery}&section=create&type=suite${hostQuery}`;
-  const webHref = `/panel?${projectQuery}&section=create&type=web${hostQuery}`;
   const suiteReady = data.caseSetCount > 0;
   const webReady = data.excelCount > 0 && data.packageCount > 0;
   const canCreateProject =
@@ -661,12 +636,12 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
     `<p class="muted">执行机与设备在下一步选择。</p>`
   ].join("");
   const webBody = [
-    `<p>用 Excel + 安装包跑网页测试；可选 Maestro 脚本或中心 LLM 执行。</p>`,
+    `<p>Maestro 网页测试已移除；Android 真机请用 MCP 原生 <code>run_regression</code> / <code>mobile_run_task</code>。</p>`,
     `<p class="muted">Excel ${data.excelCount} 份 · 安装包 ${data.packageCount} 个${
       webReady ? "" : " · 还缺 Excel 或安装包"
     }</p>`,
     webReady
-      ? `<p><a class="c-button c-button-primary" href="${escapeHtml(webHref)}">开始网页测试</a></p>`
+      ? `<p><a class="c-button c-button-primary" href="/panel?section=devices#runner-guide">MCP 原生接入</a></p>`
       : `<p><a class="c-button c-button-primary" href="${escapeHtml(
           `/panel?${projectQuery}&section=assets${hostQuery}`
         )}">先去上传资产</a></p>`,
@@ -693,8 +668,8 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
         body: suiteBody
       }),
       cCard({
-        title: "网页测试",
-        subtitle: "Excel + 安装包；Maestro / LLM",
+        title: "网页测试（历史）",
+        subtitle: "Maestro 已移除；历史任务只读",
         body: webBody
       }),
       "</div>"
@@ -1187,23 +1162,22 @@ export function renderDevicesPage(data: DevicesPageData): string {
   const emptyState =
     total === 0
       ? `<section class="c-empty c-device-empty">
-          <h2>还没有执行机注册</h2>
-          <p>目标机器运行 <code>web-runner</code>，配置中心控制面地址与 <code>MOBILE_TESTING_RUNNER_JOB_TOKEN</code> 后自动出现；执行机不需要直连 PostgreSQL。</p>
+          <h2>还没有设备宿主</h2>
+          <p>Android 真机 MCP 原生只需要一个可达的 adb server；下载 adb-host 小包，启动 <code>adb -a</code> 后配置项目即可。Maestro runner 已移除。</p>
           <div class="c-empty-action">
-            <a class="c-button c-button-primary" href="#runner-download">下载执行机安装包</a>
+            <a class="c-button c-button-primary" href="#runner-download">下载 adb-host 小包</a>
             <details class="c-device-help">
               <summary class="c-button">查看接入说明</summary>
               <div class="c-device-help-body">
                 <ol>
-                  <li>在目标机下载 <a href="/panel/runner-toolchain">依赖工具</a>（Node.js、adb、JDK、Maestro）并加入 PATH。</li>
-                  <li>下载对应平台的 <a href="#runner-download">runner 安装包</a>并解压。</li>
-                  <li>设置 <code>MOBILE_TESTING_HOST_ID</code>、<code>MOBILE_TESTING_RUNNER_CONTROL_URL</code>、<code>MOBILE_TESTING_RUNNER_JOB_TOKEN</code>。</li>
-                  <li>运行 <code>runner.cmd</code>（Windows）或 <code>./runner.sh</code>（macOS/Linux）。</li>
+                  <li>下载 <a href="/panel/runner-toolchain">platform-tools</a>（adb）并加入 PATH。</li>
+                  <li>运行 <code>adb -a -P 5037 server nodaemon</code>（防火墙只放行 MCP 服务 IP，或改用 SSH 隧道）。</li>
+                  <li>在 MCP 项目配置 <code>ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code>。</li>
+                  <li>用 <code>run_regression</code> / <code>mobile_run_task</code> 执行；无需 runner。</li>
                 </ol>
-                <pre class="c-command"><code>export MOBILE_TESTING_HOST_ID=win-mini-01
-export MOBILE_TESTING_RUNNER_CONTROL_URL=http://&lt;center&gt;:8765
-export MOBILE_TESTING_RUNNER_JOB_TOKEN=&lt;runner-token&gt;
-node dist/cli.js web-runner --name win-mini-01</code></pre>
+                <pre class="c-command"><code>adb -a -P 5037 server nodaemon
+# 项目 .env
+ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
               </div>
             </details>
           </div>
@@ -1223,26 +1197,8 @@ node dist/cli.js web-runner --name win-mini-01</code></pre>
       <div class="c-download-grid" aria-label="adb-host 安装包下载">
         <a class="c-button c-button-primary" href="/panel/runner-bundle?role=adb-host&amp;platform=win32&amp;arch=x64" download>Windows adb-host（约 8MB）</a>
       </div>
-      <p class="c-card-subtitle c-card-subtitle-tight"><strong>Legacy Maestro web-runner</strong>（仅已有网页测试任务兼容）：</p>
-      <div class="c-download-grid" aria-label="Legacy runner 安装包下载">
-        <a class="c-button" href="/panel/runner-bundle?platform=win32&amp;arch=x64" download>Windows runner（Legacy）</a>
-        <a class="c-button" href="/panel/runner-bundle?platform=darwin&amp;arch=arm64" download>macOS runner（Legacy）</a>
-        <a class="c-button" href="/panel/runner-bundle?platform=linux&amp;arch=x64" download>Linux runner（Legacy）</a>
-      </div>
-      <p class="c-card-subtitle c-card-subtitle-tight">Runner 包内置 Node、adb、JDK、Maestro；Linux 为 app-only。只做 MCP 原生时不需要这些。</p>
-      <a class="c-button" href="/panel/runner-toolchain">下载 Mac/Windows 依赖工具</a>
-      <ol class="c-setup-list">
-        <li>MCP 原生：下载 adb-host，启动 <code>adb -a</code>，配置 <code>ADB_SERVER_SOCKET</code></li>
-        <li>Legacy：下载 runner 包，配置主机身份、中心地址与 runner token，运行 web-runner</li>
-      </ol>
-      <pre class="c-command"><code>export MOBILE_TESTING_HOST_ID=win-mini-01
-export MOBILE_TESTING_RUNNER_CONTROL_URL=\
-  http://&lt;center&gt;:8765
-export MOBILE_TESTING_RUNNER_JOB_TOKEN=\
-  &lt;runner-token&gt;
-
-node dist/cli.js web-runner \
-  --name win-mini-01</code></pre>
+      <p class="c-card-subtitle c-card-subtitle-tight">Maestro runner 已移除；历史 Web 任务/设备记录只读保留。MCP 原生只需要上面的 adb-host。</p>
+      <a class="c-button" href="/panel/runner-toolchain">下载 platform-tools / 依赖工具</a>
     </section>
     <section class="c-card">
       <h2 class="c-card-title">状态口径</h2>
@@ -1408,12 +1364,10 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
   const gatewayReady = data.runners.filter(
     (runner) => runner.gateway?.ready === true && runner.gateway.adbServer !== null
   ).length;
-  const maestroWebDisabled = ["0", "false", "off", "no"].includes(
-    (process.env.AOS_MAESTRO_WEB ?? "").trim().toLowerCase()
-  );
+  const maestroWebDisabled = true;
   const form = maestroWebDisabled
     ? [
-        `<div class="c-banner c-banner-warn" role="status"><strong>Maestro 网页测试已禁用</strong>（AOS_MAESTRO_WEB=0）：请使用 MCP 原生 <code>run_regression</code> / <code>mobile_run_task</code>。</div>`
+        `<div class="c-banner c-banner-warn" role="status"><strong>Maestro 网页测试已移除</strong>：请使用 MCP 原生 <code>run_regression</code> / <code>mobile_run_task</code>。</div>`
       ].join("\n")
     : [
     `<div class="c-banner c-banner-warn" role="status"><strong>Android 新接入请走 MCP 原生</strong>：用 <code>run_regression</code> / <code>mobile_run_task</code>；本页「网页测试 / Maestro」仅保留 legacy 兼容。只做 MCP 原生时不需要下载 runner 包。</div>`,

@@ -606,19 +606,16 @@ export function renderDispatchPage(view: DispatchView): string {
       ? `<p><label>优先级 <input type="number" name="priority" aria-label="优先级" min="0" max="100" step="1" value="${preview.priority}"></label> <span class="muted">0 为默认；数值越大越先领取（0–100）。</span></p>`
       : `<p>优先级 <span class="c-badge" title="优先级（越大越先领取）">P${preview.priority}</span> <span class="muted">只读（防误操作插队）：设置 <code>AOS_PANEL_PRIORITY=1</code> 后可编辑。</span></p>`;
 
-  const webJobsHref =
-    view.rootPath === ""
-      ? `/panel?section=create&type=web${dispatchHostQuery}`
-      : `/panel?project=${encodeURIComponent(view.rootPath)}&section=create&type=web${dispatchHostQuery}`;
+  const webJobsHref = "/panel?section=devices#runner-guide";
   const hostProjectCallout = noProjects
     ? `<div class="c-flow-callout"><div><strong>${
         noSources
           ? "该主机未登记项目，套件回归没有可用用例集。"
           : "该主机未登记项目，套件回归不能在该主机执行；来源仍可查看。"
-      }</strong><p>Excel/APK 网页测试不需要在该主机登记项目，直接去网页测试即可；如果要在该主机跑套件回归，请先在该主机接入项目。</p></div><a class="c-button c-button-primary" href="${escapeHtml(webJobsHref)}">去网页测试 →</a></div>`
+      }</strong><p>Android 真机请用 MCP 原生 <code>run_regression</code>（可用 appPath 安装 APK），不要求项目登记到执行机；如果要在该主机跑套件回归，请先在该主机接入项目。</p></div><a class="c-button c-button-primary" href="${escapeHtml(webJobsHref)}">MCP 原生接入 →</a></div>`
     : "";
   const sourceEmpty = noSources
-    ? `<p class="muted">该主机未登记项目，套件回归没有可用用例集。网页测试不需要登记项目：<a href="${escapeHtml(webJobsHref)}">去网页测试</a>；或先在该主机接入项目。</p>`
+    ? `<p class="muted">该主机未登记项目，套件回归没有可用用例集。MCP 原生不要求项目登记到执行机：<a href="${escapeHtml(webJobsHref)}">MCP 原生接入</a>；或先在该主机接入项目。</p>`
     : "";
   const sourceBody = [
     '<fieldset class="c-fieldset"><legend>来源</legend>',
@@ -630,7 +627,7 @@ export function renderDispatchPage(view: DispatchView): string {
     sourceEmpty,
     view.rootPath === ""
       ? `<p class="muted">先选择项目；Excel 用例导入在用例库，网页测试资产在「网页测试」。</p>`
-      : `<p class="muted">Excel 用例还没进用例库？<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=assets&amp;tab=case-sets#library-import">去用例库导入 Excel</a>；网页测试的 Excel/安装包/脚本资产请走 <a href="${escapeHtml(webJobsHref)}">网页测试</a>，不要用套件下发。</p>`
+      : `<p class="muted">Excel 用例还没进用例库？<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=assets&amp;tab=case-sets#library-import">去用例库导入 Excel</a>；Android 安装包/Excel 回归请用 MCP 原生 <code>run_regression</code>（appPath 安装 APK），不要用套件下发。</p>`
   ].join("\n");
 
   const paramsBody = [
@@ -790,7 +787,7 @@ go.addEventListener('click',function(){
               : preview.hostBlocked
                 ? `<p class="note">目标主机无法满足所选平台：请调整目标端或更换主机，刷新预览后再试。</p>`
                 : "",
-        `<p class="note">需要下发 APK/IPA 或 Excel 用例？<a href="${escapeHtml(webJobsHref)}">去网页测试（安装包/Excel）→</a></p>`,
+        `<p class="note">需要下发 APK/IPA 或 Excel 用例？Android 请用 MCP 原生 <code>run_regression</code>（<code>appPath</code> 安装 APK）→ <a href="${escapeHtml(webJobsHref)}">MCP 原生接入</a></p>`,
         `<p id="dispatch-status" role="status" class="muted"></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
         `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, hostId: preview.selectedHostId, hostLabel:
@@ -809,9 +806,9 @@ go.addEventListener('click',function(){
         createHref
       )}">新建测试</a><span class="c-flow-option is-active" aria-current="page">套件回归</span><a class="c-flow-option" href="${escapeHtml(
         webJobsHref
-      )}">网页测试（Excel/安装包/脚本）</a></nav>`
-    : `<nav class="c-flow-switch" aria-label="下发类型"><span class="c-flow-option is-active" aria-current="page">套件回归</span><a class="c-flow-option" href="${escapeHtml(webJobsHref)}">网页测试（Excel/安装包/脚本）</a></nav>`;
-  const installCallout = `<div class="c-flow-callout"><div><strong>要下发安装包（APK/IPA）？</strong><p>套件回归要求设备已预装 App；安装包、Excel 用例与 Maestro 脚本请用「网页测试」。</p></div><a class="c-button c-button-primary" href="${escapeHtml(webJobsHref)}">去网页测试上传/选择安装包 →</a></div>`;
+      )}">MCP 原生接入</a></nav>`
+    : `<nav class="c-flow-switch" aria-label="下发类型"><span class="c-flow-option is-active" aria-current="page">套件回归</span><a class="c-flow-option" href="${escapeHtml(webJobsHref)}">MCP 原生接入</a></nav>`;
+  const installCallout = `<div class="c-flow-callout"><div><strong>要下发安装包（APK/IPA）？</strong><p>套件回归要求设备已预装 App；Android 请用 MCP 原生 <code>run_regression</code> 的 <code>appPath</code> 安装包再执行。</p></div><a class="c-button c-button-primary" href="${escapeHtml(webJobsHref)}">MCP 原生接入 →</a></div>`;
   const sectionForNav = view.embeddedCreate ? "create&type=suite" : "dispatch";
   const hostNavScript = `<script id="dispatch-host-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="host"]');if(!select)return;select.addEventListener('change',function(){var project=form.querySelector('select[name="project"]');var params=new URLSearchParams();params.set('section','${sectionForNav}');if(select.value)params.set('host',select.value);if(project&&project.value)params.set('project',project.value);location.href='/panel?'+params.toString();});})();</script>`;
   const projectNavScript = `<script id="dispatch-project-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams();params.set('project',select.value);params.set('section','${sectionForNav}');if(host&&host.value)params.set('host',host.value);location.href='/panel?'+params.toString();});})();</script>`;

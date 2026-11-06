@@ -1,6 +1,6 @@
 import type { ProjectStore } from "../../db/types.js";
 import { leaseTokenMatches } from "./lease-token.js";
-import { RunnerControlError } from "./service.js";
+import { RunnerControlError } from "./errors.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)

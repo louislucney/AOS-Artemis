@@ -3878,6 +3878,8 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 ### 13.316 新增（AOS_MAESTRO_WEB=0：禁用新建 Maestro web 任务）
 
+> 后续 §13.317 已移除 Maestro 路线；本节保留为历史记录。
+
 > 2026-11-06。Android 真机接入切到 MCP 原生后，仍可能从面板/API 新建 Maestro 网页测试任务；提供显式开关，默认兼容（开启），部署可关闭新入口，已有 legacy 任务继续执行。
 
 - **服务端**（`src/web/jobs.ts`）：`createWebJob` 在 `executionMode=maestro` 且 `AOS_MAESTRO_WEB` 为 `0/false/off/no` 时抛 `WebJobDispatchError("maestro-disabled")`（HTTP 409），文案指向 `run_regression` / `mobile_run_task`；LLM 模式与已有任务不受影响。
@@ -3885,3 +3887,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **错误码**（`src/web/job-spec.ts`）：新增 `maestro-disabled`（409）。
 - **边界**：只拦截“新建” Maestro 任务；`claimWebJob`/已有 pending/legacy 任务仍可执行；不删除 Maestro 代码。
 - **测试**：`test/web-job-queue.test.js` 覆盖 409；`test/web-dispatch-ui.test.js` 覆盖表单隐藏；全量测试与 lint 保持绿。
+
+### 13.317 移除（Maestro web-runner / 脚本生成 / runner 打包）
+
+> 2026-11-06。Android 真机自动化切到 MCP 原生后，Maestro 路线的执行引擎、脚本中间层和 600MB runner 包不再保留；历史 Web 任务/结果/设备记录只读保留。
+
+- **删除**：`src/runner/web-agent.ts`、`web-job-runner.ts`、`web-executors.ts`、`web-job-workspace.ts`、`src/device/maestro.ts`、`src/web/script-gen.ts`、`script-generation.ts`、`script-set.ts`、`step-normalizer.ts`、`step-parse.ts`、`step-types.ts`、`src/web/dispatch.ts`（web job 选机）、`src/runner/control/{client,http,service,web-control,contract}.ts`（web runner 控制面）；`scripts/build-runner-bundle.mjs`、`scripts/check-android-runner-env.ps1`。
+- **入口**：`node dist/cli.js web-runner` 与 `web scripts generate` 移除；`web llm-worker` 保留。`createWebJob` 对 `executionMode=maestro` 永久返回 409 `maestro-disabled`；面板网页测试表单不再渲染（仅历史只读）。`/panel/runner-bundle` 仅接受 `role=adb-host`，旧 runner 下载返回 410。
+- **工具链**：`npm run toolchain:fetch` 只下载 Android platform-tools；删除 Node/JDK/Maestro 镜像；`bundle:runner` 删除，保留 `bundle:adb-host`（约 8MB）。
+- **保留**：Web 资产/结果/任务数据模型、Excel/安装包/参考图资产、`/panel/api/jobs/:id/spec` 等历史读取、`web llm-worker`、suite runner 控制面。
+- **测试**：删除 Maestro/脚本生成/web-runner 测试；`npm test` **3068/3068** 通过，`lint` 0 error。

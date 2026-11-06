@@ -37,14 +37,6 @@ import {
 } from "../web/excel-mapping.js";
 import { ExcelMappingError } from "../web/excel.js";
 import {
-  generateScriptSetForProject,
-  ScriptGenerationError
-} from "../web/script-generation.js";
-import { ScriptGenerationTimeoutError } from "../web/script-gen.js";
-import { makeChatFn } from "../llm/chat.js";
-import { createLlmStepNormalizer, type StepNormalizer } from "../web/step-normalizer.js";
-import { ScriptSetStoreError } from "../web/script-set.js";
-import {
   DEFAULT_SYSTEM_COLUMN_MODE,
   parseSystemColumnMode,
   rebaseWorkbookJournal,
@@ -473,9 +465,6 @@ export async function handlePanelActionRequest(
   if (request.url.pathname === "/panel/api/jobs/preview") {
     return await previewWebJobAction(deps, request);
   }
-  if (request.url.pathname === "/panel/api/jobs/script-preview") {
-    return await previewWebScriptAction(deps, request);
-  }
   if (request.method !== "POST" && !isExportDownload) {
     return json(405, { error: "method not allowed (POST)" });
   }
@@ -511,23 +500,6 @@ export async function handlePanelActionRequest(
   }
   if (request.url.pathname === "/panel/api/projects/assets") {
     return await uploadAssetAction(deps, request, actor);
-  }
-  if (request.url.pathname === "/panel/api/projects/scripts/generate") {
-    const projectKey = typeof payload.project === "string" ? payload.project.trim() : "";
-    const hostParam =
-      typeof payload.host === "string" && payload.host.trim() !== "" ? payload.host.trim() : undefined;
-    let resolved: { rootPath: string; hostId: string | null };
-    try {
-      const found = await resolveProjectKey(deps, projectKey, hostParam);
-      if (found === null) return json(404, { error: "未知项目" });
-      resolved = found;
-    } catch (error) {
-      if (error instanceof AmbiguousProjectError) {
-        return json(409, { error: error.message, candidates: error.candidates });
-      }
-      throw error;
-    }
-    return await generateScriptSetAction(deps, resolved, payload, actor);
   }
   if (request.url.pathname === "/panel/api/hosts/register") {
     const response = await registerHost(deps, payload);
@@ -1413,172 +1385,6 @@ async function saveExcelMappingAction(
   }
 }
 
-function scriptGenerationErrorResponse(error: unknown): PanelWebResponse | null {
-  if (error instanceof ScriptGenerationTimeoutError) {
-    return json(400, {
-      ok: false,
-      error: error.message,
-      code: "script-generation-timeout"
-    });
-  }
-  if (error instanceof ScriptSetStoreError) {
-    return json(error.code === "script-set-unusable" ? 409 : 400, {
-      ok: false,
-      error: error.message,
-      code: error.code
-    });
-  }
-  if (error instanceof ScriptGenerationError) {
-    const status =
-      error.code === "project-not-found" || error.code === "asset-not-found"
-        ? 404
-        : error.code === "project-archived"
-          ? 409
-          : 400;
-    return json(status, { ok: false, error: error.message, code: error.code });
-  }
-  return null;
-}
-
-async function generateScriptSetAction(
-  deps: PanelWebDeps,
-  resolved: { rootPath: string; hostId: string | null },
-  payload: Record<string, unknown>,
-  actor: string
-): Promise<PanelWebResponse> {
-  const crossHost = crossHostWriteResponse(deps, resolved);
-  if (crossHost !== null) return crossHost;
-  const rootPath = resolved.rootPath;
-  const excelAssetId = typeof payload.excelAssetId === "string" ? payload.excelAssetId.trim() : "";
-  const packageAssetId =
-    typeof payload.packageAssetId === "string" ? payload.packageAssetId.trim() : "";
-  const platform = payload.platform;
-  const appId = typeof payload.appId === "string" ? payload.appId.trim() : "";
-  const rawMode = payload.preconditionMode;
-  const preconditionMode =
-    rawMode === undefined || rawMode === null || rawMode === "strict"
-      ? "strict"
-      : rawMode === "assume-prepared"
-        ? "assume-prepared"
-        : rawMode === "auto"
-          ? "auto"
-          : null;
-  const rawLlm = payload.useLlm;
-  const useLlm =
-    rawLlm === undefined || rawLlm === null || rawLlm === "auto"
-      ? "auto"
-      : rawLlm === "off"
-        ? "off"
-        : rawLlm === "require"
-          ? "require"
-          : null;
-  const bestEffort = payload.bestEffort === true || payload.bestEffort === "true";
-  const dryRun = payload.dryRun === true || payload.dryRun === "true";
-  const refs = {
-    excelAssetId,
-    packageAssetId,
-    ...(typeof platform === "string" ? { platform } : {})
-  };
-  if (excelAssetId === "" || packageAssetId === "") {
-    return json(400, { ok: false, error: "缺少 excelAssetId 或 packageAssetId" });
-  }
-  if (platform !== "android" && platform !== "ios") {
-    return json(400, { ok: false, error: "platform 只能是 android 或 ios" });
-  }
-  if (preconditionMode === null) {
-    return json(400, {
-      ok: false,
-      error: "preconditionMode 只能是 strict、assume-prepared 或 auto"
-    });
-  }
-  if (useLlm === null) {
-    return json(400, { ok: false, error: "useLlm 只能是 auto、off 或 require" });
-  }
-  const resolveStepNormalizer = async (): Promise<{
-    normalizer: StepNormalizer | null;
-    model: string | null;
-  }> => {
-    if (useLlm === "off") return { normalizer: null, model: null };
-    const runtime = deps.runtimeFor ? await deps.runtimeFor(rootPath) : null;
-    const entry = runtime === null ? null : await runtime.activeEntry();
-    const baseUrl = entry?.baseUrl ?? "";
-    const apiKey = entry?.apiKey ?? "";
-    if (entry === null || baseUrl === "" || apiKey === "" || entry.model.trim() === "") {
-      if (useLlm === "require") {
-        throw new ScriptGenerationError(
-          "llm-not-configured",
-          "未配置可用 LLM；可切到规则解析（useLlm=off）或先配置项目 LLM"
-        );
-      }
-      return { normalizer: null, model: null };
-    }
-    return {
-      normalizer: createLlmStepNormalizer({
-        chat: makeChatFn(
-          { baseUrl, apiKey, model: entry.model },
-          { temperature: 0 }
-        ),
-        model: entry.model
-      }),
-      model: entry.model
-    };
-  };
-  try {
-    await assertProjectActive(deps.store, rootPath);
-    const llm = await resolveStepNormalizer();
-    const result = await generateScriptSetForProject({
-      store: deps.store,
-      rootPath,
-      excelAssetId,
-      packageAssetId,
-      platform,
-      appId: appId === "" ? null : appId,
-      preconditionMode,
-      bestEffort,
-      ...(llm.normalizer === null ? {} : { normalizer: llm.normalizer }),
-      inferNavigationTap: bestEffort,
-      dryRun,
-      uploadedBy: actor
-    });
-    await recordAuditSafe(deps.store, rootPath, {
-      domain: "web",
-      action: "web.scripts.generate",
-      result: "ok",
-      actor,
-      summary: `生成 Web 脚本集${dryRun ? "（dry-run）" : result.created ? "" : "（复用）"}：可执行 ${result.runnable}（完整 ${result.ready} / 部分 ${result.partial}）/ 未就绪 ${result.unresolved} · ${result.normalizer}${llm.model === null ? "" : `(${llm.model})`}`,
-      refs
-    });
-    deps.cache?.clear();
-    return json(200, {
-      ok: true,
-      dryRun: result.dryRun,
-      ready: result.ready,
-      partial: result.partial,
-      runnable: result.runnable,
-      unresolved: result.unresolved,
-      normalizer: result.normalizer,
-      llmCases: result.llmCases,
-      llmModel: llm.model,
-      normalizerWarnings: result.normalizerWarnings,
-      created: result.created,
-      asset: result.asset,
-      manifest: result.manifest
-    });
-  } catch (error) {
-    const response = scriptGenerationErrorResponse(error);
-    if (response === null) throw error;
-    await recordAuditSafe(deps.store, rootPath, {
-      domain: "web",
-      action: "web.scripts.generate",
-      result: "failed",
-      actor,
-      summary: `生成 Web 脚本集失败：${errorMessage(error)}`,
-      refs
-    });
-    return response;
-  }
-}
-
 async function auditPanel(  deps: PanelWebDeps,
   rootPath: string,
   action: string,
@@ -2347,119 +2153,6 @@ async function previewWebJobAction(
 }
 
 /** 只读过滤预览：dry-run 生成（不写资产），返回匹配数与未就绪计数。 */
-async function previewWebScriptAction(
-  deps: PanelWebDeps,
-  request: PanelActionRequest
-): Promise<PanelWebResponse> {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return json(405, { ok: false, error: "method not allowed (GET)" });
-  }
-  const params = request.url.searchParams;
-  const projectKey = (params.get("project") ?? "").trim();
-  if (projectKey === "") return json(400, { ok: false, error: "缺少 project" });
-  const hostParam = (params.get("host") ?? "").trim();
-  let resolved: Awaited<ReturnType<typeof resolveProjectKey>>;
-  try {
-    resolved = await resolveProjectKey(
-      deps,
-      projectKey,
-      hostParam === "" ? undefined : hostParam
-    );
-  } catch (error) {
-    if (error instanceof AmbiguousProjectError) {
-      return json(409, { ok: false, error: error.message });
-    }
-    throw error;
-  }
-  if (resolved === null) {
-    return json(404, { ok: false, error: `未知项目 "${projectKey}"` });
-  }
-  const excelAssetId = (params.get("excelAssetId") ?? "").trim();
-  const packageAssetId = (params.get("packageAssetId") ?? "").trim();
-  if (excelAssetId === "" || packageAssetId === "") {
-    return json(400, { ok: false, error: "缺少 excelAssetId/packageAssetId" });
-  }
-  const platformRaw = (params.get("platform") ?? "").trim();
-  if (platformRaw !== "" && platformRaw !== "android" && platformRaw !== "ios") {
-    return json(400, { ok: false, error: "platform 须为 android/ios" });
-  }
-  const platform = platformRaw === "ios" ? "ios" : "android";
-  const readList = (name: string): string[] =>
-    panelStringList(
-      params
-        .getAll(name)
-        .flatMap((value) => value.split(","))
-        .map((value) => value.trim())
-        .filter((value) => value !== "")
-    );
-  const caseFilter = normalizeCaseFilter({
-    modules: readList("caseModules"),
-    caseIds: readList("caseIds")
-  });
-  const store =
-    resolved.hostId === null
-      ? deps.store
-      : (deps.storeForHost?.(resolved.hostId) ?? deps.store);
-  const webProject = await store.getWebProject(resolved.rootPath);
-  if (webProject === null) {
-    return json(404, { ok: false, error: "不是托管 Web 项目" });
-  }
-  if (webProject.status !== "active") {
-    return json(409, { ok: false, error: `项目已归档（status=${webProject.status}）` });
-  }
-  try {
-    const result = await generateScriptSetForProject({
-      store,
-      rootPath: resolved.rootPath,
-      excelAssetId,
-      packageAssetId,
-      platform,
-      appId: webProject.appPackage ?? null,
-      preconditionMode: "auto",
-      bestEffort: true,
-      inferNavigationTap: true,
-      dryRun: true
-    });
-    const modules = new Set(caseFilter.modules);
-    const caseIds = new Set(caseFilter.caseIds);
-    const matchedCases = result.manifest.cases.filter(
-      (entry) =>
-        (modules.size === 0 || (entry.module !== null && modules.has(entry.module))) &&
-        (caseIds.size === 0 || caseIds.has(entry.caseId))
-    );
-    const ready = matchedCases.filter(
-      (entry) => entry.status === "ready" && !entry.partial
-    ).length;
-    const partial = matchedCases.filter(
-      (entry) => entry.status === "ready" && entry.partial
-    ).length;
-    const unresolved = matchedCases.filter((entry) => entry.status === "unresolved").length;
-    const unresolvedByCode: Record<string, number> = {};
-    for (const entry of matchedCases) {
-      for (const item of entry.unresolved) {
-        unresolvedByCode[item.code] = (unresolvedByCode[item.code] ?? 0) + 1;
-      }
-    }
-    return json(200, {
-      ok: true,
-      dryRun: true,
-      matched: matchedCases.length,
-      filteredOut: result.manifest.cases.length - matchedCases.length,
-      ready,
-      partial,
-      unresolved,
-      runnable: ready + partial,
-      unresolvedByCode,
-      normalizer: result.normalizer,
-      warnings: result.normalizerWarnings
-    });
-  } catch (error) {
-    const response = scriptGenerationErrorResponse(error);
-    if (response !== null) return response;
-    throw error;
-  }
-}
-
 async function saveVerdicts(
   deps: PanelWebDeps,
   rootPath: string,

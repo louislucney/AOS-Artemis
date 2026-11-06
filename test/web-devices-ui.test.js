@@ -185,16 +185,17 @@ test("devices page: json exposes counts and device state without secrets", async
 });
 
 
-test("devices page: 空状态使用宽布局与新版 runner token 名称", async (t) => {
+test("devices page: 空状态使用宽布局与 adb-host 接入说明", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "aos-web-devices-empty-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
   const store = new MemoryStore();
   const html = await page(store, workspace);
   assert.match(html, /c-device-empty/);
-  assert.match(html, /还没有执行机注册/);
+  assert.match(html, /还没有设备宿主/);
   assert.match(html, /<details class="c-device-help">/);
   assert.match(html, /<summary class="c-button">查看接入说明<\/summary>/);
   assert.doesNotMatch(html, /href="\/panel\?section=runners">查看接入说明/);
-  assert.match(html, /MOBILE_TESTING_RUNNER_JOB_TOKEN/);
+  assert.match(html, /ADB_SERVER_SOCKET/);
+  assert.match(html, /adb-host/);
   assert.doesNotMatch(html, /AOS_RUNNER_JOB_TOKEN/);
 });

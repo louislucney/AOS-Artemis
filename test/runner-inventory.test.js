@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveMaestroPath } from "../dist/device/maestro.js";
 import { collectRunnerInventory } from "../dist/runner/inventory.js";
 
 function makeExec(routes) {
@@ -321,91 +320,6 @@ test("ios 真机：ideviceinfo 缺失/失败 → model/osVersion 为 null，设�
   assert.ok(device, "设备仍保留");
   assert.equal(device.model, null);
   assert.equal(device.osVersion, null);
-});
-
-test("tools：maestro --version 探测（AOS_MAESTRO_PATH 优先且透传 env）；非 darwin 不探测 devicectl", async () => {
-  const { exec, calls } = makeExec([
-    {
-      match: (command, args) => command === "adb" && args[0] === "devices",
-      result: { code: 0, stdout: "", stderr: "" }
-    },
-    {
-      match: (command) => command === "/fake/bin/maestro",
-      result: { code: 0, stdout: "1.0.0", stderr: "" }
-    }
-  ]);
-  const inventory = await collectRunnerInventory({
-    exec,
-    platform: "linux",
-    env: { AOS_MAESTRO_PATH: "/fake/bin/maestro" }
-  });
-
-  assert.equal(inventory.tools.maestro, true);
-  assert.equal(inventory.tools.devicectl, false);
-  const maestroCall = calls.find((call) => call.command === "/fake/bin/maestro");
-  assert.deepEqual(maestroCall.args, ["--version"]);
-  assert.equal(maestroCall.options.timeoutMs, 30_000, "Maestro JVM 冷启动给 30s");
-  assert.equal(maestroCall.options.env.AOS_MAESTRO_PATH, "/fake/bin/maestro", "项目 env 透传");
-  assert.equal(
-    calls.some((call) => call.args?.includes("devicectl")),
-    false,
-    "非 darwin 不探测 devicectl"
-  );
-});
-
-test("resolveMaestroPath：AOS_MAESTRO_PATH → PATH → 常见安装位置；缺失 null", () => {
-  assert.deepEqual(
-    resolveMaestroPath({ AOS_MAESTRO_PATH: " /custom/maestro " }, () => true),
-    { path: "/custom/maestro", source: "env" }
-  );
-
-  const pathEnv = { PATH: ["/empty", "/custom/bin"].join(path.delimiter) };
-  assert.deepEqual(
-    resolveMaestroPath(pathEnv, (candidate) => candidate === path.join("/custom/bin", "maestro")),
-    { path: path.join("/custom/bin", "maestro"), source: "path" }
-  );
-  assert.deepEqual(
-    resolveMaestroPath({ PATH: "/opt/homebrew/bin" }, (candidate) => candidate === "/opt/homebrew/bin/maestro"),
-    { path: "/opt/homebrew/bin/maestro", source: "path" }
-  );
-
-  const homeCandidate = path.join(os.homedir(), ".maestro", "bin", "maestro");
-  assert.deepEqual(
-    resolveMaestroPath({}, (candidate) => candidate === homeCandidate),
-    { path: homeCandidate, source: "candidate" }
-  );
-
-  const winPath = path.join("C:\\tools", "maestro.cmd");
-  assert.deepEqual(
-    resolveMaestroPath(
-      { PATH: "C:\\tools" },
-      (candidate) => candidate === winPath,
-      "win32"
-    ),
-    { path: winPath, source: "path" }
-  );
-  assert.deepEqual(
-    resolveMaestroPath(
-      { Path: "C:\\tools" },
-      (candidate) => candidate === winPath,
-      "win32"
-    ),
-    { path: winPath, source: "path" },
-    "Windows 的 Path 大小写"
-  );
-  const winHome = path.join(os.homedir(), ".maestro", "bin", "maestro.cmd");
-  assert.deepEqual(
-    resolveMaestroPath({}, (candidate) => candidate === winHome, "win32"),
-    { path: winHome, source: "candidate" }
-  );
-  assert.deepEqual(
-    resolveMaestroPath({}, (candidate) => candidate === "/usr/local/bin/maestro"),
-    { path: "/usr/local/bin/maestro", source: "candidate" }
-  );
-  assert.deepEqual(resolveMaestroPath({ PATH: "/nowhere" }, () => false), {
-    path: null,
-    source: "missing"
-  });
 });
 
 test("android：多设备元数据探测并发（心跳耗时 ~单次超时，而非设备数累加）", async () => {

@@ -1,9 +1,5 @@
 import type { ProjectStore, RegressionTaskRecord, WebAssetRecord, WebRunnerRecord } from "../db/types.js";
 import { deviceLeaseTtlMs } from "../db/types.js";
-import { errorMessage } from "../util.js";
-import { ScriptGenerationTimeoutError } from "./script-gen.js";
-import { generateScriptSetForProject, ScriptGenerationError } from "./script-generation.js";
-import { ScriptSetStoreError } from "./script-set.js";
 import { loadLlmCases } from "./llm/cases.js";
 import { getLlmWorkerStatus, llmWorkerTtlFrom } from "./llm/heartbeat.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
@@ -17,7 +13,6 @@ import {
 import {
   WEB_JOB_REASSIGN_LIMIT,
   WebJobDispatchError,
-  assertScriptSetMatch,
   assertWebJobCombination,
   buildAssetSnapshot,
   normalizeCaseFilter,
@@ -256,113 +251,17 @@ async function createPendingTask(
   });
 }
 
-const DEFAULT_SCRIPT_GEN_TIMEOUT_MS = 30_000;
-
-function scriptGenerationTimeoutMs(
-  env: NodeJS.ProcessEnv,
-  explicit: number | undefined
-): number {
-  if (explicit !== undefined && Number.isFinite(explicit) && explicit >= 0) {
-    return Math.floor(explicit);
-  }
-  const raw = Number.parseInt(env.AOS_WEB_SCRIPT_GEN_TIMEOUT_MS ?? "", 10);
-  if (Number.isFinite(raw) && raw >= 0) return raw;
-  return DEFAULT_SCRIPT_GEN_TIMEOUT_MS;
-}
-
-function scriptStats(asset: WebAssetRecord): {
-  ready: number;
-  partial: number;
-  unresolved: number;
-  runnable: number;
-} {
-  const num = (key: string): number => {
-    const value = asset.metadata?.[key];
-    return typeof value === "number" && Number.isFinite(value) ? value : 0;
-  };
-  return {
-    ready: num("ready"),
-    partial: num("partial"),
-    unresolved: num("unresolved"),
-    runnable: num("runnable")
-  };
-}
-
-interface GeneratedScript {
-  asset: WebAssetRecord;
-  created: boolean;
-  ready: number;
-  partial: number;
-  unresolved: number;
-  runnable: number;
-}
-
-async function generateScriptForJob(input: {
-  store: ProjectStore;
-  rootPath: string;
-  excelAssetId: string;
-  packageAssetId: string;
-  platform: "android" | "ios";
-  appPackage: string | null;
-  uploadedBy: string | null;
-  timeoutMs: number;
-}): Promise<GeneratedScript> {
-  try {
-    const result = await generateScriptSetForProject({
-      store: input.store,
-      rootPath: input.rootPath,
-      excelAssetId: input.excelAssetId,
-      packageAssetId: input.packageAssetId,
-      platform: input.platform,
-      appId: input.appPackage,
-      preconditionMode: "auto",
-      bestEffort: true,
-      inferNavigationTap: true,
-      uploadedBy: input.uploadedBy,
-      timeoutMs: input.timeoutMs
-    });
-    if (result.asset === null) {
-      throw new WebJobDispatchError(
-        "script-generation-failed",
-        "脚本生成未返回 assets 资产（dry-run 不应发生在下发路径）"
-      );
-    }
-    return {
-      asset: result.asset,
-      created: result.created,
-      ready: result.ready,
-      partial: result.partial,
-      unresolved: result.unresolved,
-      runnable: result.runnable
-    };
-  } catch (error) {
-    if (error instanceof WebJobDispatchError) throw error;
-    if (error instanceof ScriptGenerationTimeoutError) {
-      throw new WebJobDispatchError("script-generation-timeout", error.message);
-    }
-    if (error instanceof ScriptGenerationError || error instanceof ScriptSetStoreError) {
-      throw new WebJobDispatchError("script-generation-failed", error.message);
-    }
-    throw error;
-  }
-}
-
 /**
  * 创建 web 任务：校验组合/资产/脚本集，选机并预占设备。
  * manual 目标 host 离线或暂无候选时允许建 pending（保留 targetHostId，钉设备再保留 serial，无 lease）。
  */
-function maestroWebEnabled(env: NodeJS.ProcessEnv): boolean {
-  const raw = (env.AOS_MAESTRO_WEB ?? "").trim().toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
-}
-
 export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJobResult> {
   const env = input.env ?? process.env;
   const combination = assertWebJobCombination(input);
-  if (combination.executionMode === "maestro" && !maestroWebEnabled(env)) {
+  if (combination.executionMode === "maestro") {
     throw new WebJobDispatchError(
       "maestro-disabled",
-      "Maestro web-runner 已禁用（AOS_MAESTRO_WEB=0）；Android 请改用 run_regression / mobile_run_task"
+      "Maestro 执行路线已移除；Android 请改用 run_regression / mobile_run_task"
     );
   }
 
@@ -415,16 +314,6 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
       ? input.referenceAssetId.trim()
       : null
   );
-  const scriptId =
-    typeof input.scriptSetId === "string" && input.scriptSetId.trim() !== ""
-      ? input.scriptSetId.trim()
-      : null;
-  let script: WebAssetRecord | null = await loadAsset(
-    input.store,
-    input.rootPath,
-    "scripts",
-    scriptId
-  );
   const warnings: string[] = [];
   if (combination.executionMode === "llm") {
     const worker = await getLlmWorkerStatus({
@@ -455,131 +344,11 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
       warnings.push("llm-no-expectation");
     }
   }
-  let autoGenerated = false;
-  let rebuiltFrom: string | null = null;
-  let scriptCreated = false;
-  let stats = script === null ? null : scriptStats(script);
-  const timeoutMs = scriptGenerationTimeoutMs(env, input.scriptGenerationTimeoutMs);
-  const generate = async (): Promise<GeneratedScript> =>
-    generateScriptForJob({
-      store: input.store,
-      rootPath: input.rootPath,
-      excelAssetId: excel!.id,
-      packageAssetId: pkg!.id,
-      platform: combination.requirements.platform,
-      appPackage: webProject.appPackage ?? null,
-      uploadedBy: input.createdBy ?? null,
-      timeoutMs
-    });
-
-  if (script !== null && combination.executionMode === "maestro") {
-    let matchFailure: WebJobDispatchError | null = null;
-    try {
-      assertScriptSetMatch({
-        script,
-        excelAssetId: excel!.id,
-        packageAssetId: pkg!.id,
-        platform: combination.requirements.platform,
-        allowStaleScript: false
-      });
-    } catch (error) {
-      if (
-        error instanceof WebJobDispatchError &&
-        (error.code === "script-set-mismatch" || error.code === "script-set-unverified")
-      ) {
-        matchFailure = error;
-      } else {
-        throw error;
-      }
-    }
-    if (matchFailure !== null) {
-      if (input.allowStaleScript === true) {
-        warnings.push("stale-script");
-      } else {
-        const previous = script.id;
-        let generated: GeneratedScript;
-        try {
-          generated = await generate();
-        } catch (error) {
-          throw new WebJobDispatchError(
-            "script-set-rebuild-failed",
-            `脚本集 ${previous} 过期且重建失败：${errorMessage(error)}`
-          );
-        }
-        script = generated.asset;
-        scriptCreated = generated.created;
-        stats = {
-          ready: generated.ready,
-          partial: generated.partial,
-          unresolved: generated.unresolved,
-          runnable: generated.runnable
-        };
-        rebuiltFrom = previous;
-        warnings.push("script-set-rebuilt");
-        try {
-          assertScriptSetMatch({
-            script,
-            excelAssetId: excel!.id,
-            packageAssetId: pkg!.id,
-            platform: combination.requirements.platform,
-            allowStaleScript: false
-          });
-        } catch (error) {
-          throw new WebJobDispatchError(
-            "script-set-rebuild-failed",
-            `重建后的脚本集仍与任务资产不匹配：${errorMessage(error)}`
-          );
-        }
-      }
-    }
-  } else if (combination.executionMode === "maestro") {
-    const generated = await generate();
-    script = generated.asset;
-    scriptCreated = generated.created;
-    autoGenerated = true;
-    stats = {
-      ready: generated.ready,
-      partial: generated.partial,
-      unresolved: generated.unresolved,
-      runnable: generated.runnable
-    };
-  }
-
   const allowPartialUnresolved = input.allowPartialUnresolved !== false;
-  if (script !== null && stats !== null && combination.executionMode === "maestro") {
-    const runnableKnown = typeof script.metadata?.runnable === "number";
-    if (runnableKnown && stats.runnable <= 0) {
-      throw new WebJobDispatchError(
-        "script-set-incomplete",
-        `脚本集 ${script.id} 没有可执行用例（runnable=0）；请重新生成或修正脚本集`
-      );
-    }
-    if (stats.unresolved > 0 && !allowPartialUnresolved) {
-      throw new WebJobDispatchError(
-        "script-set-incomplete",
-        `脚本集 ${script.id} 有 ${stats.unresolved} 个 unresolved 用例；显式关闭了部分下发，请重新生成/修正 Excel，或允许部分下发`
-      );
-    }
-    if (stats.unresolved > 0 && (autoGenerated || rebuiltFrom !== null)) {
-      warnings.push(`script-set-unresolved:${stats.unresolved}`);
-    }
-  }
-  const scriptInfo: WebJobScriptInfo | null =
-    script === null || stats === null
-      ? null
-      : {
-          id: script.id,
-          autoGenerated,
-          rebuiltFrom,
-          created: scriptCreated,
-          ready: stats.ready,
-          partial: stats.partial,
-          unresolved: stats.unresolved,
-          runnable: stats.runnable
-        };
+  const scriptInfo: WebJobScriptInfo | null = null;
 
   const snapshot: WebAssetSnapshot[] = buildAssetSnapshot(
-    [excel!, pkg!, materials, reference, script].filter(
+    [excel!, pkg!, materials, reference].filter(
       (asset): asset is WebAssetRecord => asset !== null
     )
   );
@@ -601,7 +370,7 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
         ? input.referenceGate
         : "report",
     l2Screenshots: input.l2Screenshots === true,
-    scriptSetId: script?.id ?? null,
+    scriptSetId: null,
     executionMode: combination.executionMode,
     caseFilter: normalizeCaseFilter(input.caseFilter),
     retry,

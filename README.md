@@ -108,7 +108,7 @@ MOBILE_TESTING_DATABASE_URL='postgres://aos:aos_local_dev@127.0.0.1:5432/mobile-
 若本机没有 PostgreSQL：`brew install postgresql@17 && brew services start postgresql@17`（默认 5432；被占用时可在 `/opt/homebrew/var/postgresql@17/postgresql.conf` 改 `port`）。
 切换实例只需替换 `MOBILE_TESTING_DATABASE_URL`（表结构首次连接自动创建）。
 
-> **缺省即持久**：未配置 `MOBILE_TESTING_DATABASE_URL` 时，台账落**项目文件台账**（`.artemis/ledger/`：state.json/usage.jsonl/audit.jsonl/journal.jsonl，随项目保留、重启不丢）；PostgreSQL 用于集中跨进程/跨项目查询。项目机 runner 与定时回归默认仍需中心 PG（文件台账不支持多进程）；项目机/web-runner 配 `MOBILE_TESTING_RUNNER_CONTROL_URL` 后走中心 HTTP 控制面；仅文件台账目录不可写才退回会话内存（doctor/aos_status 会如实标注）。
+> **缺省即持久**：未配置 `MOBILE_TESTING_DATABASE_URL` 时，台账落**项目文件台账**（`.artemis/ledger/`：state.json/usage.jsonl/audit.jsonl/journal.jsonl，随项目保留、重启不丢）；PostgreSQL 用于集中跨进程/跨项目查询。项目机 runner 与定时回归默认仍需中心 PG（文件台账不支持多进程）；项目机 runner 配 `MOBILE_TESTING_RUNNER_CONTROL_URL` 后走中心 HTTP 控制面；仅文件台账目录不可写才退回会话内存（doctor/aos_status 会如实标注）。
 
 ## HTTP 模式（远程/多项目）
 
@@ -188,9 +188,9 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 | `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板开放优先级编辑 |
 | `AOS_HOST_STRICT` | 0 | `=1`/`=true` 时严格主机模式：**本版本**的领取与本地手动执行/取消在无主机身份时拒绝。旧 runner 二进制仍按自己的 SQL 连 PG，需停用/升级，不会被此开关拦截（见 DESIGN §13.165/§13.166） |
 
-**已知限制**：文件台账为单主机视图（`host`/`queue`/默认项目机 runner/定时回归需中心 PG；项目机/web-runner 可走控制面）；中心清扫 `allHosts=true` 可能先于离线 runner 终结取消；旧 runner 行 `host_id NULL` 需升级重启后补齐（`AOS_HOST_STRICT` 只约束本版本的 claim/本地命令，旧 runner 需停用/升级，不会被开关拦截）；队列暂停是整机粒度；P4 跨主机逻辑项目分组与 HTTP 客户端记录未实现。完整清单见 DESIGN §13.165。
+**已知限制**：文件台账为单主机视图（`host`/`queue`/默认项目机 runner/定时回归需中心 PG；项目机 runner 可走控制面）；中心清扫 `allHosts=true` 可能先于离线 runner 终结取消；旧 runner 行 `host_id NULL` 需升级重启后补齐（`AOS_HOST_STRICT` 只约束本版本的 claim/本地命令，旧 runner 需停用/升级，不会被开关拦截）；队列暂停是整机粒度；P4 跨主机逻辑项目分组与 HTTP 客户端记录未实现。完整清单见 DESIGN §13.165。
 
-**新机器接入步骤**：项目机（`suite runner`）与 Web 执行机（`web-runner`）的完整接入流程见 [docs/空闲机器接入托管平台.md](docs/空闲机器接入托管平台.md)；Windows + Android 快速接入见 [docs/windows-runner-quickstart.md](docs/windows-runner-quickstart.md)。
+**新机器接入步骤**：项目机（`suite runner`）接入见 [docs/空闲机器接入托管平台.md](docs/空闲机器接入托管平台.md)；Android 真机 MCP 原生（adb-host）见 [docs/android-mcp-native-testing.md](docs/android-mcp-native-testing.md)。Maestro web-runner 已移除。
 
 ## 鉴权（静态令牌 / 命名用户，P3d，§13.113 / §13.216 / §13.217）
 
@@ -274,8 +274,8 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 
 | 版块 | 内容与动作 |
 |---|---|
-| `assets` **测试资产** | `tab=overview\|case-sets\|excel\|packages\|materials\|reference\|scripts`：用例集（原用例库；来源/条数/功能、**行内「下发该用例集」**、Excel/CSV 上传导入 ≤20MB、隔离 owner 签字）与 Excel/CSV/安装包/测试资料/参考图/脚本集同页；资产行显示 used-by；Excel/CSV 版本表（文件名/版本/大小/sha 短摘要/上传时间；CSV 自动记录 `format/encoding`，执行时转规范 XLSX）＋上传（multipart `POST /panel/api/projects/assets`；可选 `systemColumns=inherit` 在重上传时按上一版本 journal 重播种系统格，缺省 `human` 全部冻结）＋列映射预览与保存（`/panel/api/projects/excel/preview\|mapping`）＋**生成 Maestro 脚本**（选 Excel/安装包/平台/appId/前置模式；dry-run 只出 manifest；`POST /panel/api/projects/scripts/generate`）＋脚本集资产表（平台/来源/ready/partial/unresolved）；**手工 Excel 默认尽力生成**：识别不了的步骤写 manual 标记+截图、继续执行其余步骤（结果为 `UNVERIFIED`，不会假绿）；配置 active LLM 时自动启用受控 JSON 规范化，无 LLM 仍走规则；写动作需 maintainer/admin |
-| `create` **新建测试** | landing 选套件回归或网页测试（项目未登记 Web 项目时给出「新增项目」CTA，套件回归不受影响）：**套件**走四步下发向导（来源→参数→预览回显→确认；先选执行机、再选项目；两段确认；优先级默认 `P0` 只读，`AOS_PANEL_PRIORITY=1` 开放 0–100；领取顺序 `priority DESC, created_at ASC`）；**网页测试**（`type=web`）为托管 Web 项目的下发表单（执行方式/平台/设备形态/Excel·package·materials·reference（PNG/JPG/JPEG/WEBP、`.pen` 自动按顶层 screen 渲染成多张参考图，或 Figma URL 按 node 拉取 PNG；L2 像素对比默认 report-only；可勾选“参考图差异时判 UNVERIFIED”作为 opt-in 门禁，见结果“参考图”列；Excel 增「参考图」列可逐例绑定资产 ID/文件名/去扩展名，缺省回退 job 级 reference；Maestro 可勾选「上传最终截图用于 L2（Maestro）」让执行机回传每例最终截图（PASS 优先，单图 2MB/合计 6MB 上限））·scripts 资产/用例范围/自动或手动＋钉设备/型号与系统软偏好/重试/优先级/允许旧脚本/允许部分下发）；任务列表与详情见 `tasks`（状态、`已绑定`/`钉住等待`/`已释放`、设备模型与 OS、结果门禁、逐用例/证据/参考图/Excel 写回）；`POST /panel/api/jobs` 需 dispatcher+，`GET /panel/api/jobs/preview` 与 `GET /panel/api/jobs/script-preview` 只读（后者返回过滤匹配数/未就绪数，dry-run 不写资产）；Maestro 无脚本 → 下发时按当前 Excel/包自动生成（失败 400 `script-generation-failed`，超时 400 `script-generation-timeout`）；`unresolved` 默认允许并逐例写 `SKIP（未执行）`，显式 `allowPartialUnresolved:false` 才 409；过期脚本自动重建（失败 409 `script-set-rebuild-failed`）；动作只建任务/预占，**执行需另配 `web-runner`** |
+| `assets` **测试资产** | `overview\|case-sets\|excel\|packages\|materials\|reference\|scripts`（scripts 为历史只读）；用例集、Excel/CSV、安装包、测试资料、参考图统一管理；Excel 列映射/导入/上传需 maintainer+。**Maestro 脚本生成已移除**。 |
+| `create` **新建测试** | 套件回归四步下发向导；**Android 真机用 MCP 原生 `run_regression` / `mobile_run_task`（`appPath` 安装 APK）**；Maestro 网页测试入口已移除，历史 Web 任务只读。 |
 | `tasks` **任务与结果** | 套件回归与网页测试统一列表（类型徽标/状态/设备/门禁/失败域），25 条/页分页并保留搜索/筛选；统一详情 `section=tasks&task=<id>` 按类型渲染（套件：运行/引用/跨端+rerun；网页：逐用例/参考图/证据/写回+重新下发）；`view=review\|stats` 为待处理失败与统计子视图 |
 | `devices` **设备台账** | 全局只读设备列表：执行机在线/离线、平台、模拟器/真机、型号/系统版本、`空闲`/`占用`/`离线`、当前 job 与租约到期、最后心跳、工具；按 `state=idle|busy|offline`、`platform=android|ios` 过滤；空闲＝在线且无有效租约/执行中 job；页面只读、不展示 token/secret |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
@@ -369,50 +369,19 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
   注意：**必须显式绑定目标项目**（`--project /srv/projects/<项目>`；缺省会落在服务仓库自身）——启动日志 `[runner] 启动：… project=…` 可核对；默认中心 PG 以**服务级环境**提供（systemd `Environment=`／launchd `EnvironmentVariables`，**不要**放进项目 `.env`）；配置 `MOBILE_TESTING_RUNNER_CONTROL_URL` + `MOBILE_TESTING_RUNNER_JOB_TOKEN` 时改用中心 HTTP 控制面（本地 FileStore + suite 资源 API，不需要 PG）。单项目**勿双开同名 runner**；产物令牌 `AOS_RUNNER_ARTIFACT_TOKEN` 可选（未设＝内网无鉴权，暴露范围与风险见上文与 DESIGN §13.109/§13.113）。
 - **定时回归**：`node dist/cli.js suite schedule add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（runner 到点**自动建任务并执行**；引用按功能实时取最新用例集；**同名拒绝**；`list/show/enable/disable/remove` 管理，`--json` 可选）；`AOS_RUNNER_SCHEDULES=0` 关闭触发。注意：platforms 需与项目内至少一台 runner 的设备端匹配，否则任务会**逐窗口累积 pending**（在面板任务列表关注）。（**默认严格子集**下如此；开启 `AOS_RUNNER_PARTIAL_CLAIM=1` 后，**仅当无任一在线 runner 可全覆盖时**按交集端部分领取执行、缺端不补跑，见 DESIGN §13.116）面板项目页「定时回归」区块与任务页「来源」可见；面板计划表单的「端」按项目检测栈过滤（iOS 项目只显示 ios，Flutter/RN 显示双端，Web 不显示移动端表单）。见 DESIGN §13.110。
 
-### 远端 Web 测试执行机（web-runner）
+### Android 真机（MCP 原生；Maestro runner 已移除）
 
-**服务端完整安装包**：先 `npm run toolchain:fetch`，再 `npm run bundle:runner`，生成三个平台包（Windows/macOS 已内置 Node/adb/JDK/Maestro；Linux 为 app-only）：
+Maestro web-runner、脚本生成、runner 打包与 `web-runner` CLI 已于 2026-11-06 移除；历史 Web 任务/设备记录只读保留。
 
-```text
-dist-runner/mobile-testing-runner-<version>-win32-x64.zip
-dist-runner/mobile-testing-runner-<version>-darwin-arm64.tar.gz
-dist-runner/mobile-testing-runner-<version>-linux-x64.tar.gz
-```
+Android 真机现走 MCP 原生：
 
-面板「设备 → 接入执行机」按平台下载，也可直接：
+- `mobile_run_task`（单条）
+- `run_regression`（Excel；`appPath` 可安装 APK）
+- `suite run`（tests.json）
 
-```text
-GET /panel/runner-bundle?platform=win32&arch=x64
-GET /panel/runner-bundle?platform=darwin&arch=arm64
-GET /panel/runner-bundle?platform=linux&arch=x64
-```
+设备宿主只需要 adb（platform-tools）。面板「设备 → 接入执行机」下载 **Windows adb-host 小包**（约 8MB），启动 `adb -a -P 5037 server nodaemon`；项目配置 `ADB_SERVER_SOCKET=tcp:<宿主IP>:5037`。详细步骤见 [docs/android-mcp-native-testing.md](docs/android-mcp-native-testing.md)。
 
-需面板鉴权。Windows/macOS 包含 `dist` + `node_modules` + `tools/`（Node、platform-tools、JDK、Maestro）+ `runner.cmd`/`runner.sh` + `README.md`，解压后直接运行，无需 npm install，也无需另装工具；Linux 包为 app-only。
-
-**MCP 原生 adb-host 小包**：只做 `mobile_run_task` / `run_regression` 时不需要上面的完整 runner 包。`npm run bundle:adb-host` 生成 `dist-runner/mobile-testing-adb-host-<version>-win32-x64.zip`（约 8MB，只含 platform-tools + 启动/防火墙脚本 + 手册）；面板「设备 → 接入执行机」或 `GET /panel/runner-bundle?role=adb-host&platform=win32&arch=x64` 下载。它与 Maestro web-runner 无关，不启动 runner、不需要 Node/JDK/Maestro。
-
-依赖工具同时可单独下载（面板「设备 → 接入执行机 → 下载 Mac/Windows 依赖工具」，或 `GET /panel/runner-toolchain`）：Node.js、Android platform-tools/adb、Temurin JDK、Maestro，按 `darwin-arm64`/`win32-x64` 分组，均带 SHA-256。工具包在 `dist-toolchain/`（gitignore），`AOS_RUNNER_TOOLCHAIN_DIR` 可改目录。macOS 的 iOS 模拟器仍需 Xcode，不能由中心镜像。自定义目录用 `AOS_RUNNER_BUNDLE_DIR`。构建产物在 `dist-runner/`（gitignore）。
-
-网页测试任务（Excel 用例 + 安装包 + Maestro 脚本 zip）由 **host 级** `web-runner` 领取执行：不要求项目目录；与 `suite runner` 不同，`web-runner` 按**设备**并行（同一设备同一时刻一个任务，靠设备租约）。配置 `MOBILE_TESTING_RUNNER_CONTROL_URL`（或 `--control-url`）后走中心 HTTP **runner 控制面**（`/panel/api/runners/*`，ADR-0012），执行机不需要也不应持有中心 PG 连接串；未配置控制面时保留直连中心 PG 的兼容路径。
-
-```bash
-node dist/cli.js web-runner --name <n> [--control-url <url>] [--panel-base-url <url>] [--artifact-base-url <url>] [--once]
-# 推荐：MOBILE_TESTING_RUNNER_CONTROL_URL=http://<中心>:8765（或 --control-url），设置后不需要 MOBILE_TESTING_DATABASE_URL
-# 回退：未设置控制面时仍可用中心 PG（MOBILE_TESTING_DATABASE_URL）
-# 两种模式都需要中心基址与 MOBILE_TESTING_RUNNER_JOB_TOKEN（≥16）；--once 只跑一轮
-```
-
-- **能力与选机**：adb 设备 + **iOS 模拟器**；`maestro` 必须可用（`AOS_MAESTRO_PATH` 可覆盖解析）。**iOS Maestro 只允许模拟器**（`deviceKind:"simulator"`；`any`/真机在下发阶段被 `ios-maestro-requires-simulator` 拒绝）。**iOS 真机只支持 `executionMode=llm`（P0b 代码已接线，真机验收待做）**。中心按平台/设备形态/工具/型号/系统版本选机并**预占租约**（TTL＝`AOS_DEVICE_LEASE_MS`，默认 90s）；执行前 runner 二次盘点，设备消失/不可用/被他人租约占住就跳过并释放领取与租约。
-- **设备租约令牌**：web claim 返回 `leaseToken`（HMAC，绑定 host/task/serial）；续租/释放必须回传，服务端常数时间比较。它与控制面鉴权 token 分离，避免仅凭 taskId/serial 释放租约。
-- **token 文件写入**：`node scripts/write-runner-tokens.mjs --file ~/.aos/runner-tokens.json < tokens.json` 会校验 hostId/token（≥16）、以 0600 临时文件 + rename 原子替换；非法输入 exit 2 且不覆盖原文件。
-- **中心访问令牌**：控制面（心跳/领取/租约/任务生命周期）与 spec / 资产下载 / 结果上传优先认每主机 token（中心 `AOS_RUNNER_HOST_TOKENS=[{hostId,token}]` 或 `AOS_RUNNER_HOST_TOKENS_FILE` 文件（权限 0600、mtime 热加载、优先于 env；建议临时文件+rename 原子替换）；`X-AOS-Host-Id` 必须匹配 token 所属主机，否则 403；token ≥16），未配置时回退全局 `MOBILE_TESTING_RUNNER_JOB_TOKEN`（≥16 字符，中心与 runner 配同一值；未配置/过短 503，缺失或错误 401），且请求必须带 `X-AOS-Host-Id`（控制面以 token + host 绑定；job 数据面要求它等于该 job 的领取/目标主机，否则 403）。该 token 不放行其它路径，也不回退管理员令牌。缺中心基址/令牌时 `web-runner` 启动即 exit 2。
-- **环境变量**：`MOBILE_TESTING_RUNNER_CONTROL_URL`（中心 HTTP 控制面，或 `--control-url`；web-runner/suite runner 设置后不连 PG；旧名 `AOS_RUNNER_CONTROL_URL` 兼容）、`MOBILE_TESTING_PANEL_BASE_URL`（中心基址，缺省回退控制面；旧名 `AOS_PANEL_BASE_URL` 兼容）、`MOBILE_TESTING_RUNNER_JOB_TOKEN`（或中心配置每主机 `AOS_RUNNER_HOST_TOKENS` 后用该主机 token）、`AOS_RUNNER_TLS_CA`/`AOS_RUNNER_TLS_CERT`/`AOS_RUNNER_TLS_KEY`（中心 HTTPS/mTLS）、`AOS_RUNNER_WORK_DIR`（默认 `~/.aos/web-runner`）、`AOS_RUNNER_CACHE_DIR`（默认 `<workRoot>/cache`）、`AOS_RUNNER_HTTP_TIMEOUT_MS`（控制面单次请求超时 15000；数据面 spec/资产/结果默认 300000；新名优先）、`AOS_RUNNER_INSTANCE_ID`（runner 自动分配，勿手工复用）、`AOS_RUNNER_TTL_MS`（执行机在线判定，90000）、`AOS_DEVICE_LEASE_MS`（预占/续租，90000）、`AOS_RUNNER_HEARTBEAT_MS`（心跳，30000）、`AOS_RUNNER_POLL_MS`（空闲轮询，5000）、`AOS_WEB_JOB_TIMEOUT_MS`（Maestro 执行超时，900000）、`AOS_WEB_INSTALL_TIMEOUT_MS`（APK/IPA 安装超时，300000）、`AOS_WEB_FORCE_INSTALL`（`=1` 强制重装已存在的 Android/iOS 包；缺省按 APK/IPA 的包名与版本检测，已安装且不旧则跳过）、`AOS_MAESTRO_REINSTALL_DRIVER`（`=1` 强制 Maestro 重装 Android driver；缺省两包 `dev.mobile.maestro`/`dev.mobile.maestro.test` 都在时加 `--no-reinstall-driver`）、`AOS_PREFLIGHT`（`=0` 跳过 Android 执行前预检）、`AOS_MAESTRO_INSTALL_DRIVER`（`=1` 允许 driver 缺失时交给 Maestro 安装）、`AOS_MAESTRO_WEB`（`=0` 禁用**新建** Maestro web 任务，API 409 `maestro-disabled`、面板隐藏表单；已有 legacy 任务仍可执行；默认开启）、`MOBILE_TESTING_HOST_ID`（主机身份）。
-- **工作目录与资产**：job 目录＝`<workRoot>/<project>/<jobId>`；资产按 sha256 进本机 CAS（同内容复用），`secret:true` 的 materials 只落 `secrets/`（0600，不进 CAS）；Excel 只作附件；脚本 zip 解压到 `job/flows`，顶层 `<caseId>.yaml` 即一个用例（`subflows/` 不算用例）；iOS `.ipa` 会先解压出 `Payload/*.app`（缺失/多个直接失败），再用 simctl/devicectl 安装 `.app`。
-- **执行链路**：内置执行器依次完成「拉 spec → 下载资产（sha256 校验）→ 安装 → Maestro → 上传结果」；任一步（含结果上传）失败都会抛错，任务由 runner 释放回池重试（次数上限见下），**不会本地写成功**；上传成功后清理 job 目录（CAS 缓存保留），子进程只拿 PATH/工具白名单 env（不传 runner 令牌/DB URL/KEY）；Maestro 超时从主进程的 `AOS_WEB_JOB_TIMEOUT_MS` 读取后显式传入子进程（变量本身不进入子环境）。
-- **次数/过滤/回收**：`jobSpec.retry>0` 时上限＝retry+1，否则 `AOS_RUNNER_MAX_ATTEMPTS`（默认 3）；达上限写 `failed`（`assignmentError.code=max-attempts`）不再回池。`caseFilter.caseIds` 按 flow stem 过滤（`modules` 暂不支持）；失联领取按 `MOBILE_TESTING_RUNNER_STALE_CLAIM_MS`（默认 15min）回收；队列暂停 host 不参与选机/回池。结果为逐用例 `PASS/FAIL/SKIP/ERROR`，中心聚合后写 `result.json` 并回写 Excel 工作副本（`执行｜结果/设备与系统/安装包/开始时间/结束时间/traceId`），**原件 sha256 不变**；空结果/超时/非 0 退出绝不假 PASS（上传 `execution.status:"error"` → 中心 `taskStatus:"error"`/`dbStatus:"failed"`）。`executionMode=llm` 由中心 `web llm-worker` 领取；runner 直跑入口仍返回 `llm-execution-not-wired`（不会静默改走 Maestro）。
-- **脚本生成**：`node dist/cli.js web scripts generate --project <dir> --excel <assetId> --package <assetId> --platform <android|ios> [--app-id <id>] [--strict|--assume-prepared|--precondition-mode auto] [--best-effort] [--dry-run] [--json]`。从项目 Excel/CSV 资产（用已保存列映射，缺省建议映射）生成 Maestro flow + `manifest.json`，写成不可变 `scripts` 资产（metadata 绑定 Excel/包/平台/生成器版本/断言哈希；同输入幂等复用）。`appId` 缺省用项目 `appPackage`，项目也未配置时 best-effort 从 APK/IPA 的 manifest/Info.plist 推断（失败才报 `app-id-missing`）；`--dry-run` 只出 manifest 不写资产；`strict`（默认）下前置条件非空即 unresolved，`assume-prepared` 保留前台/登录态并标注假设；`--best-effort` 把未识别步骤写 manual 标记+截图、继续生成可执行 flow；`--precondition-mode auto` 在 `--best-effort` 下按测试环境已准备处理。面板「测试资产」页同一表单调用 `POST /panel/api/projects/scripts/generate`（maintainer+），默认勾选「尽力生成」、前置条件 `auto`、AI 解析 `auto`。下发前预检：Maestro 无脚本 → 下发时按当前 Excel/包以规则解析自动生成（`bestEffort`、前置 `auto`；失败 400 `script-generation-failed`，超时 400 `script-generation-timeout`），不再要求先手动生成；`unresolved` 默认允许并写 `SKIP（未执行）`，面板取消勾选“允许部分下发”才严格 409；LLM 模式无预期列需勾选“无预期列也执行（全部 UNVERIFIED）”；脚本资产过期时自动重建（失败 409 `script-set-rebuild-failed`），`allowStaleScript` 保留为“故意用旧脚本”。详见 DESIGN §13.277–§13.280、§13.295、§13.302。
-- **Web LLM 执行（P0 实现中）**：先 `npm run artemis:patch` 应用 ARTEMIS 安全 hooks（submodule 更新后需重跑）。`node dist/cli.js web llm-worker [--once] [--poll-ms <n>] [--max-jobs <n>] [--case-timeout-ms <n>] [--job-max-ms <n>]`。中心领取 `executionMode=llm` 任务，经 ARTEMIS 在远程 Android 设备上执行 Excel/CSV 的 taskDesc；runner 只做设备网关：`AOS_GATEWAY_SSH_TARGET` + `AOS_GATEWAY_ADB_PORT`（默认 15037）/`AOS_GATEWAY_LOCAL_ADB_PORT`（默认 5037）。结果走 center-only `UNVERIFIED`/Excel 写回；Android APK 通过 ARTEMIS `app_path` 在任务前安装；账号/密码/token 在 Node 入口与 ARTEMIS hooks 双重脱敏，未绑定账号 fail-closed。**iOS P0b**：runner 增加 Appium 反向隧道（`AOS_GATEWAY_APPIUM_PORT` 中心侧默认 15038、`AOS_GATEWAY_LOCAL_APPIUM_PORT` runner 侧默认 4723、`AOS_GATEWAY_APPIUM_URL` 为外部已可达的完整 URL（设置后不建隧道）；未设置覆盖时建隧道前探测 `/status`，不可达则 `appiumUrl:null`）；中心按 host 覆盖 `AOS_APPIUM_URL`，iOS 观察/截图/输入/落盘在 Node 侧脱敏（无 bbox 默认丢弃截图，`AOS_IOS_REDACTION_STRICT=0` 保留中心证据但不发模型；`AOS_WEB_LLM_MAX_STEPS`/`AOS_WEB_LLM_MAX_TOKENS_PER_CASE` 限制单例步数与 token）；iOS 只接受 `.ipa` 的 HTTP(S) URL 或预装 `locked_app_package`，不把中心路径交给远程 Appium。真机验收（Appium 4723、bounds 覆盖率、`.ipa` URL、登录页脱敏）仍待设备接入。**ARTEMIS 进程内 hooks 与 gateway 安装控制面尚未完成，暂不要在生产开启 LLM 执行。**
-- **Excel/CSV 判定与写回**：`.xlsx` 与 `.csv` 都可作为用例源（CSV 原件只读，自动生成 XLSX 工作副本与结果 CSV；GB18030/UTF-8、引号/单元格内换行保真）。工作副本在原件列后写 `AOS Result` / `IOS Result`（只写本平台一列）、8 列摘要，并在末尾写隐藏列 `__aos_assertions`（人工 Expected Result 归一化后的断言 JSON）。**PASS 需要 flow 通过 + 断言文档有可执行断言且无 manual/ambiguous + runner 上报 `assertionCount>0`**；否则写 `UNVERIFIED`，任务为 `partial`，不会 `completed`。Excel 中属于本次范围但结果缺失的用例写 `SKIP（未执行）`，不保留上一轮 PASS。详见 DESIGN §13.266–§13.268。
+构建 adb-host：`npm run toolchain:fetch && npm run bundle:adb-host`；中心 `GET /panel/runner-bundle?role=adb-host&platform=win32&arch=x64`。
 
 ### Jira 接入（读取 / 回写 / CLI）
 

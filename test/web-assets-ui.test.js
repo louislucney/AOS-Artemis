@@ -206,20 +206,9 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /accounts\.json/, "测试资料文件名");
   assert.match(html, /app\.apk/, "安装包文件名");
   assert.match(html, /\/panel\/api\/projects\/assets/, "multipart 上传端点");
-  assert.match(html, /生成 Maestro 脚本/, "脚本生成卡片");
-  assert.match(html, /id="script-gen-form"/, "脚本生成表单");
-  assert.match(html, /id="script-gen-best-effort"[^>]*checked/, "尽力生成默认开启");
-  assert.match(html, /id="script-gen-llm"/, "LLM 解析选择");
-  assert.match(html, /<option value="auto"[^>]*>auto（手工文档按环境已准备）<\/option>/, "前置条件 auto");
-  assert.match(html, /<option value="off">off<\/option>/, "LLM off");
-  assert.match(html, /<option value="require">require<\/option>/, "LLM require");
-  assert.match(html, /手工步骤/, "结果表显示手工步骤");
-  assert.match(html, /不会伪造 PASS/, "说明不会假绿");
-  assert.match(html, /\/panel\/api\/projects\/scripts\/generate/, "脚本生成端点");
-  assert.match(html, new RegExp(`<option value="${pkg.id}"`), "安装包选项");
-  assert.match(html, /aos-scripts-android-abc\.zip/, "脚本集列表");
-  assert.match(html, /<th scope="col">partial<\/th>/, "脚本集列表显示 partial");
-  assert.match(html, /<td><code>2<\/code><\/td>/, "脚本集 partial 计数");
+  assert.match(html, /Maestro 脚本生成已移除/, "脚本生成卡片已移除");
+  assert.doesNotMatch(html, /id="script-gen-form"/, "不再提供脚本生成表单");
+  assert.doesNotMatch(html, /\/panel\/api\/projects\/scripts\/generate/, "不再提供脚本生成端点");
 
 
   assert.match(html, /id="asset-select"/, "资产选择");

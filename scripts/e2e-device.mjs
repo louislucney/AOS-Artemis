@@ -3,6 +3,12 @@
  * Real-device E2E acceptance script (manual run).
  *
  *   node scripts/e2e-device.mjs "Open Settings and report the battery level"
+ *   node scripts/e2e-device.mjs --device 10CF6609P900059 \
+ *     --package com.exxonmobil.mobil.gusp.uat \
+ *     --app /path/to/app.apk \
+ *     "Open the app, tap Register now, and report what you see"
+ *
+ * Env fallback: AOS_E2E_DEVICE / AOS_E2E_PACKAGE / AOS_E2E_APP_PATH.
  *
  * Prerequisites:
  *   - project .env configured (or run `mobile-testing-mcp doctor`)
@@ -12,6 +18,7 @@
  * Exits: 0 = task completed, 1 = task failed, 2 = setup required, 3 = usage/infra error.
  */
 import path from "node:path";
+import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -19,9 +26,23 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
+const parsedArgs = parseArgs({
+  args: process.argv.slice(2),
+  allowPositionals: true,
+  options: {
+    task: { type: "string" },
+    device: { type: "string" },
+    package: { type: "string" },
+    app: { type: "string" }
+  }
+});
 const taskDesc =
-  process.argv[2] ??
+  parsedArgs.values.task ??
+  parsedArgs.positionals[0] ??
   "Open the Settings app, go to Battery, and report the current battery percentage.";
+const deviceSerial = parsedArgs.values.device ?? process.env.AOS_E2E_DEVICE ?? "";
+const lockedAppPackage = parsedArgs.values.package ?? process.env.AOS_E2E_PACKAGE ?? "";
+const appPath = parsedArgs.values.app ?? process.env.AOS_E2E_APP_PATH ?? "";
 const projectDir = process.env.AOS_PROJECT_DIR ?? repoRoot;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -45,6 +66,9 @@ await client.connect(
 
 try {
   console.log(`[1/4] 项目: ${projectDir}`);
+  console.log(
+    `[1/4] 设备=${deviceSerial === "" ? "自动" : deviceSerial} 包=${lockedAppPackage === "" ? "-" : lockedAppPackage} app=${appPath === "" ? "-" : appPath}`
+  );
   const list = parse(await client.callTool({ name: "llm_list", arguments: {} }));
   if (list.setupRequired) {
     console.error("[setup_required]", list.setup?.message);
@@ -63,7 +87,13 @@ try {
   const run = parse(
     await client.callTool({
       name: "mobile_run_task",
-      arguments: { task_desc: taskDesc, model: "Flash" }
+      arguments: {
+        task_desc: taskDesc,
+        model: "Flash",
+        ...(deviceSerial !== "" ? { device_serial: deviceSerial } : {}),
+        ...(lockedAppPackage !== "" ? { locked_app_package: lockedAppPackage } : {}),
+        ...(appPath !== "" ? { app_path: appPath } : {})
+      }
     })
   );
   const traceId = run.trace_id ?? run.traceId;

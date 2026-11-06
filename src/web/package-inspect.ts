@@ -2,7 +2,13 @@ import { spawnSync } from "node:child_process";
 
 import JSZip from "jszip";
 
-import { isValidAppId } from "./script-gen.js";
+type AppIdPlatform = "android" | "ios";
+const ANDROID_APP_ID = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+const IOS_APP_ID = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+
+export function isValidAppId(appId: string, platform: AppIdPlatform): boolean {
+  return (platform === "android" ? ANDROID_APP_ID : IOS_APP_ID).test(appId.trim());
+}
 
 const RES_STRING_POOL_TYPE = 0x0001;
 const RES_XML_START_ELEMENT_TYPE = 0x0102;

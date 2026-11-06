@@ -113,7 +113,7 @@ Excel（.xlsx）
 ### Phase 2：默认口径与兼容
 
 - [ ] 文档/面板把 MCP 原生标为 Android 默认；Maestro 标 legacy（已完成文档与 panel 文案，待 review）。
-- [x] 明确“不要再创建新的 Android 网页测试任务”；已有 web 任务保留兼容（`AOS_MAESTRO_WEB=0`：API 409、面板隐藏表单；当前部署已开启该开关）。
+- [x] Maestro 路线已移除：web-runner/脚本生成/runner 打包/CLI 删除；`createWebJob` 对 maestro 返回 409，面板表单隐藏，历史 Web 任务/结果只读。
 - [x] 补一次 `run_regression`/`mobile_run_task` 的集成测试或 smoke 说明（不依赖真实设备的部分用现有 fake）。
 
 ### Phase 3：移除 Maestro（可选，需单独批准）
@@ -149,7 +149,7 @@ Excel（.xlsx）
 | D1 | 设备怎么接：手机插 Mac / Windows adb / SSH 隧道 | POC 先插 Mac；生产用 SSH 隧道或限定来源 IP 的 LAN |
 | D2 | Maestro 代码：保留 legacy / 立即删除 | 保留 legacy，Phase 3 再删 |
 | D3 | 是否做 device-host 小包 | 已实现 Windows adb-host 小包（约 8MB），面板可下载 |
-| D4 | 面板“网页测试”入口 | 已实现 `AOS_MAESTRO_WEB=0`（API 409、表单隐藏）；当前部署已关闭新建 |
+| D4 | 面板“网页测试”入口 | 已移除；历史只读 |
 | D5 | Excel 首批范围 | 先 TC_01，跑通后 TC_01–TC_20 |
 
 > **模型选择不是待定项**：按现有 MCP 能力由测试人员在项目内选择（`llm_list` / `llm_switch` / `aos_configure`）；`run_regression` 使用当前 active LLM，切换后下一个任务生效。POC 默认的 DeepSeek V4 Flash 只是当前配置示例。

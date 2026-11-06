@@ -326,13 +326,13 @@ test("仅按主机进入且该主机无项目：空态而非 404", async () => {
   assert.equal(res.status, 200);
   const html = String(res.body);
   assert.match(html, /该主机尚未登记项目/);
-  assert.match(html, /不需要登记项目/, "说明网页测试不需要项目登记");
+  assert.match(html, /不要求项目登记/, "说明 MCP 原生不要求项目登记");
   assert.match(html, /套件回归没有可用用例集/, "来源空态解释原因");
-  assert.match(html, /去网页测试/, "来源空态给出网页测试出口");
+  assert.match(html, /MCP 原生接入/, "来源空态给出 MCP 原生出口");
   assert.match(html, /<select name="ref"[^>]*disabled/, "无项目时禁用用例集选择");
   assert.match(html, /<select name="project" aria-label="项目">/);
   assert.match(html, /id="dispatch-submit"[^>]*disabled/);
-  assert.match(html, /section=create&amp;type=web&amp;host=h-empty/, "网页测试链接保留主机");
+  assert.match(html, /section=devices#runner-guide/, "MCP 原生链接指向设备接入");
 });
 
 test("legacy NULL-host 项目不挂到任何主机的项目下拉", async () => {
