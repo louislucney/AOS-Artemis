@@ -1174,6 +1174,7 @@ export function renderDevicesPage(data: DevicesPageData): string {
                   <li>运行 <code>adb -a -P 5037 server nodaemon</code>（防火墙只放行 MCP 服务 IP，或改用 SSH 隧道）。</li>
                   <li>在 MCP 项目配置 <code>ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code>。</li>
                   <li>用 <code>run_regression</code> / <code>mobile_run_task</code> 执行；无需 runner。</li>
+                  <li>iOS 模拟器：在 MCP 所在 macOS 启动模拟器；iOS 真机：Mac 宿主运行 Appium/WDA + Remote XPC 隧道，然后同样用 <code>mobile_run_task</code>。</li>
                 </ol>
                 <pre class="c-command"><code>adb -a -P 5037 server nodaemon
 # 项目 .env
@@ -1191,19 +1192,25 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
         });
   const aside = `<aside class="c-device-aside" id="runner-guide" aria-label="设备接入说明">
     <section class="c-card" id="runner-download">
-      <h2 class="c-card-title">接入执行机</h2>
+      <h2 class="c-card-title">接入设备（Android / iOS）</h2>
       <p class="c-card-subtitle"><strong>Android 真机推荐 MCP 原生执行</strong>（<code>mobile_run_task</code> / <code>run_regression</code>）：不需要 runner 包、JDK 或 Maestro，只需要一个可达的 adb server；接入与排障见 <code>docs/android-mcp-native-testing.md</code>。</p>
-      <p class="c-card-subtitle c-card-subtitle-tight"><strong>MCP 原生（推荐）</strong>：下载 adb-host 小包（只含 platform-tools）。</p>
+      <p class="c-card-subtitle c-card-subtitle-tight"><strong>Android MCP 原生（推荐）</strong>：下载 adb-host 小包（只含 platform-tools）。</p>
       <div class="c-download-grid" aria-label="adb-host 安装包下载">
         <a class="c-button c-button-primary" href="/panel/runner-bundle?role=adb-host&amp;platform=win32&amp;arch=x64" download>Windows adb-host（约 8MB）</a>
       </div>
       <p class="c-card-subtitle c-card-subtitle-tight">Maestro runner 已移除；历史 Web 任务/设备记录只读保留。MCP 原生只需要上面的 adb-host。</p>
       <a class="c-button" href="/panel/runner-toolchain">下载 platform-tools / 依赖工具</a>
     </section>
+    <section class="c-card" id="ios-device-guide" aria-label="iOS 设备接入说明">
+      <h2 class="c-card-title">iOS 设备</h2>
+      <p class="c-card-subtitle"><strong>iOS 模拟器</strong>：只能在 MCP 服务所在的 macOS 上运行（Xcode + simctl/idb）；不需要额外安装包，启动模拟器后把 UDID 传给 <code>mobile_run_task</code> / <code>mobile_get_device_state</code>。</p>
+      <p class="c-card-subtitle"><strong>iOS 真机</strong>：在连接设备的 Mac 宿主上运行 Appium + xcuitest；项目 <code>.env</code> 配 <code>AOS_IOS_XCODE_ORG_ID</code>（必填）与 <code>AOS_APPIUM_URL</code>（可选，缺省托管启动）。iOS 18+ 需保持 Remote XPC 隧道：<code>sudo appium driver run xcuitest tunnel-creation</code>，主机重启/设备重连后需重跑。</p>
+      <p class="c-card-subtitle">用 <code>mobile_run_task</code> / <code>mobile_manage_task</code> / <code>mobile_inspect_trace</code> 执行与取证；<strong>Maestro 已移除，不要用网页测试表单下发 iOS</strong>。真机签名与隧道细节见 README「iOS 真机」与 <code>docs/接入指南.md</code> §3.7。</p>
+    </section>
     <section class="c-card">
       <h2 class="c-card-title">状态口径</h2>
       <dl class="c-status-legend">
-        <div><dt>空闲</dt><dd>执行机在线、无有效租约、无进行中的 Web job</dd></div>
+        <div><dt>空闲</dt><dd>执行机在线、无有效租约、无进行中的任务</dd></div>
         <div><dt>占用</dt><dd>存在未过期租约，或任务正在执行</dd></div>
         <div><dt>离线</dt><dd>执行机心跳超过 TTL 未更新</dd></div>
       </dl>
@@ -1214,7 +1221,7 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
     <div class="c-page-head">
       <div>
         <h1>设备</h1>
-        <p class="c-page-lede">按执行机、状态与平台查看设备容量；空闲设备可立即领取 Web 任务。</p>
+        <p class="c-page-lede">Android 走 adb-host / MCP 原生，iOS 走 Mac 宿主（模拟器 simctl/idb、真机 Appium/WDA）；Maestro 已移除。</p>
       </div>
       <div class="c-page-actions">
         <a class="c-button" href="${escapeHtml(devicesHref(data.platform, data.filter))}">刷新</a>

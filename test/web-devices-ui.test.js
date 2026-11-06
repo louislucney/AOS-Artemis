@@ -116,8 +116,10 @@ test("devices page: lists idle, busy and offline devices", async (t) => {
   assert.match(html, /<h1>设备<\/h1>/);
   assert.match(html, /c-device-layout/);
   assert.match(html, /c-filterbar/);
-  assert.match(html, /接入执行机/);
+  assert.match(html, /接入设备（Android \/ iOS）/);
   assert.match(html, /href="\/panel\/runner-toolchain"/);
+  assert.match(html, /iOS 设备/);
+  assert.match(html, /Remote XPC/);
   assert.match(html, /href="\/panel\?section=devices"/);
   assert.match(html, /emulator-5554/);
   assert.match(html, /emulator-5556/);
