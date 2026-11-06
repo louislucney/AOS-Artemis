@@ -249,11 +249,12 @@ function renderMacStart() {
 
 function renderWindowsStart() {
   return [
-    "$ErrorActionPreference = \"Stop\"",
+    "$ErrorActionPreference = \"Continue\"",
     "$root = Split-Path -Parent $MyInvocation.MyCommand.Path",
     "$adb = Join-Path $root \"platform-tools\\adb.exe\"",
     "if (!(Test-Path $adb)) { Write-Error \"缺少 platform-tools\\adb.exe\"; exit 2 }",
-    "& $adb kill-server",
+    "# 没有旧 server 时 kill-server 会报 10061；忽略它，直接启动新 server。",
+    "& $adb kill-server 2>$null | Out-Null",
     "& $adb -a -P 5037 server nodaemon",
     ""
   ].join("\r\n");
