@@ -676,13 +676,16 @@ async function suiteRunTask(
     }
   }
 
-  const taskApp = await materializeTaskApp(runtime, task, bundle);
+  const taskApp =
+    flags.get("app-path") !== null
+      ? ({ ok: true, path: null } as const)
+      : await materializeTaskApp(runtime, task, bundle);
   if (!taskApp.ok) {
     io.errorLog(taskApp.error);
     return 2;
   }
   const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
-  if (taskApp.path !== null && flags.get("app-path") === null) {
+  if (taskApp.path !== null) {
     baseOptions.appPath = taskApp.path;
     say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);
   }
