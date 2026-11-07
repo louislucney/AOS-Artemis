@@ -269,6 +269,7 @@ test("devices page: preserves project context and offers dispatch action", async
   assert.match(html, /当前项目：/);
   assert.match(html, /去下发/);
   assert.match(html, /section=create&amp;type=suite/);
+  assert.doesNotMatch(html, /&amp;amp;section=create/, "去下发链接只转义一次");
   assert.match(html, /project=/);
   assert.match(html, /host-a/);
 });

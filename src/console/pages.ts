@@ -844,13 +844,15 @@ export function renderDevicesPage(data: DevicesPageData): string {
         ? null
         : `/panel?project=${encodeURIComponent(
             data.rootPath
-          )}&amp;section=create&amp;type=suite&amp;source=case-set&amp;host=${encodeURIComponent(
+          )}&section=create&type=suite&source=case-set&host=${encodeURIComponent(
             device.hostId
-          )}&amp;platforms=${encodeURIComponent(device.platform)}`;
+          )}&platforms=${encodeURIComponent(device.platform)}`;
     const action =
       dispatchHref === null
         ? '<span class="muted">—</span>'
-        : `<a class="c-button" href="${escapeHtml(dispatchHref)}">去下发</a>`;
+        : `<a class="c-button" href="${escapeHtml(
+            dispatchHref
+          )}" title="进入套件回归；设备由执行机自动选择">去下发</a>`;
     return [
       host,
       deviceLabel,

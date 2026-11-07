@@ -936,6 +936,14 @@ test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404"
   assert.match(archive.body, /关联过滤/);
   assert.match(archive.body, /清除关联过滤/);
   assert.match(archive.body, /run-.*\.json/, "任务档案包含运行清单");
+  const missingArchive = await handlePanelRequest(
+    new URL(
+      `http://x/panel?project=${encodeURIComponent(projectDir)}&section=archive&task=missing-task`
+    ),
+    deps
+  );
+  assert.equal(missingArchive.status, 200);
+  assert.match(missingArchive.body, /0 组 · 0 个文件/, "未知任务过滤不返回全量");
   const review = await handlePanelRequest(
     new URL(
       `http://x/panel?project=${encodeURIComponent(projectDir)}&section=tasks&view=review&task=${encodeURIComponent(task.id)}`

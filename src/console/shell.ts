@@ -318,6 +318,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
   const flashScript = `<script>(function(){window.aosFlash=function(message){try{sessionStorage.setItem("aos-flash",message);}catch(e){}};var raw=null;try{raw=sessionStorage.getItem("aos-flash");}catch(e){}if(raw){try{sessionStorage.removeItem("aos-flash");}catch(e){}var main=document.getElementById("console-main");if(main){var box=document.createElement("div");box.className="c-banner c-banner-accent";box.setAttribute("role","status");var text=document.createTextNode(raw);box.appendChild(text);var params=new URLSearchParams(location.search);var project=params.get("project");if(project){box.appendChild(document.createTextNode(" "));var host=params.get("host");var a=document.createElement("a");a.href="/panel?project="+encodeURIComponent(project)+"&section=audit"+(host?"&host="+encodeURIComponent(host):"");a.textContent="查看审计";box.appendChild(a);}var sheet=document.getElementById("console-shortcuts");main.insertBefore(box,sheet?sheet.nextSibling:main.firstChild);}}var dismiss=document.getElementById("capability-dismiss");if(dismiss){dismiss.addEventListener("click",function(){try{sessionStorage.setItem("aos-cap-dismissed","1");}catch(e){}var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);});}if(function(){try{return sessionStorage.getItem("aos-cap-dismissed")==="1";}catch(e){return false;}}()){var b=document.getElementById("capability-banner");if(b)b.parentNode.removeChild(b);}})();</script>`;
   // 返回/前进恢复 bfcache 时强制重载，避免旧项目/资产状态留在页面上。
   const restoreScript = `<script>window.addEventListener("pageshow",function(e){if(e.persisted)location.reload();});</script>`;
+  const tableHintScript = `<script>(function(){function sync(){document.querySelectorAll(".c-table-wrap").forEach(function(wrap){var hint=wrap.previousElementSibling;if(!hint||!hint.classList||!hint.classList.contains("c-table-scroll-hint"))return;hint.style.display=wrap.scrollWidth>wrap.clientWidth+1?"block":"none";});}sync();window.addEventListener("resize",sync);var main=document.getElementById("console-main");if(main&&window.MutationObserver){new MutationObserver(sync).observe(main,{childList:true,subtree:true});}})();</script>`;
   return [
     "<!doctype html>",
     '<html lang="zh-CN">',
@@ -349,6 +350,7 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
     inlineConfirmScript,
     flashScript,
     restoreScript,
+    tableHintScript,
     "</body>",
     "</html>"
   ]

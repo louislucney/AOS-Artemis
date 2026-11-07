@@ -931,6 +931,12 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         }
       }
     }
+    if (
+      (taskFilterId !== null || runFilterId !== null || caseFilterId !== null) &&
+      needles.length === 0
+    ) {
+      needles.push("__aos_archive_no_match__");
+    }
     const fetched = await listArtifacts(resolved.rootPath, {
       ...(kind === undefined ? {} : { kind }),
       ...(q === null ? {} : { q }),
@@ -1986,14 +1992,23 @@ function renderBatches(detail: PanelProjectDetail, rootPath: string, hostId: str
     .join("\n");
 }
 
-function renderStandalones(detail: PanelProjectDetail): string {
+function renderStandalones(
+  detail: PanelProjectDetail,
+  rootPath: string,
+  hostId: string | null
+): string {
   const outcomeLabel: Record<PanelStandaloneRow["outcome"], string> = {
     passed: '<span class="ok">通过</span>',
     failed: '<span class="err">失败</span>',
     pending: "运行中"
   };
   const rows = detail.standalones.map((row) => [
-    `<code>${escapeHtml(row.traceId)}</code>`,
+    `<a href="/panel?project=${encodeURIComponent(
+      rootPath
+    )}&amp;section=archive&amp;q=${encodeURIComponent(row.traceId)}${hostSuffix(hostId).replace(
+      /&/g,
+      "&amp;"
+    )}"><code>${escapeHtml(row.traceId)}</code></a>`,
     escapeHtml(row.caseId ?? "—"),
     outcomeLabel[row.outcome],
     escapeHtml(row.status),
@@ -2797,7 +2812,9 @@ function renderReviewPage(view: {
       ? [
           '<section id="queue">',
           "<h2>失败用例</h2>",
-          `<p class="empty">暂无失败用例（最近 10 次运行无失败，或尚无运行记录）。 <a class="c-button c-button-primary" href="/panel?project=${encodeURIComponent(
+          `<p class="empty">暂无套件回归失败用例（最近 10 次运行无失败，或尚无运行记录；单次运行失败见 <a href="${escapeHtml(
+            projectHref(view.rootPath, view.hostId)
+          )}#standalones">项目页「单次运行」</a>）。 <a class="c-button c-button-primary" href="/panel?project=${encodeURIComponent(
             view.rootPath
           )}&amp;section=create&amp;type=suite${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">新建测试</a></p>`,
           "</section>"
@@ -3266,12 +3283,14 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
       renderRunners(detail, view.rootPath, view.hostId),
       renderSchedules(view.rootPath, detail, view.hostId),
       ...(emptyProject ? ["</details>"] : []),
+      detail.standalones.length > 0
+        ? renderStandalones(detail, view.rootPath, view.hostId)
+        : "",
       '<details class="c-details">',
-      "<summary>环境自查与明细（接入自检 / 运行时细节 / 磁盘文件 / 单次运行）</summary>",
+      "<summary>环境自查与明细（接入自检 / 运行时细节 / 磁盘文件）</summary>",
       renderIntegration(detail),
       renderDeepSection(detail),
       renderDiskAssets(detail),
-      renderStandalones(detail),
       "</details>",
       "</main>"
     ].join("\n"),

@@ -286,7 +286,7 @@ details.c-details>summary{cursor:pointer;font-size:14px;font-weight:var(--font-w
 body.c-shortcuts-open #console-shortcuts{display:block}
 .c-kbd{display:inline-block;border:1px solid var(--color-border);border-radius:var(--radius-xs);padding:0 6px;font-family:var(--font-family-mono);font-size:11px;background:var(--color-surface-subtle)}
 .dispatch-option{display:inline-flex;align-items:center;gap:4px;margin-right:12px}
-.c-main :where(input[type=text],input[type=number],input[type=search],input[type=date],input[type=datetime-local],input[type=url],input[type=email],input[type=password],input[type=tel],input[type=time],select,textarea){
+.c-main :where(input:not([type]),input[type=text],input[type=number],input[type=search],input[type=date],input[type=datetime-local],input[type=url],input[type=email],input[type=password],input[type=tel],input[type=time],select,textarea){
   font:inherit;font-size:var(--font-size-callout);line-height:1.3;color:var(--color-text-primary);
   min-height:36px;padding:6px 10px;border:1px solid var(--color-border);border-radius:var(--radius-sm);
   background:var(--color-surface-white);box-sizing:border-box;max-width:100%}
