@@ -371,6 +371,7 @@ async function buildFleetView(
   const queue = { pending: 0, claimed: 0, running: 0, stopping: 0 };
   try {
     for (const task of await deps.store.listRegressionTasks(rootPath, 200)) {
+      if (task.jobSpec !== null) continue;
       if (task.status === "pending") queue.pending += 1;
       else if (task.status === "claimed") queue.claimed += 1;
       else if (task.status === "running") queue.running += 1;
@@ -1042,7 +1043,7 @@ async function buildMachineRows(
     let pending = 0;
     try {
       pending = (await deps.store.listRegressionTasks(rootPath, 200)).filter(
-        (task) => task.status === "pending"
+        (task) => task.jobSpec === null && task.status === "pending"
       ).length;
     } catch {
       /* ignore */
@@ -1317,8 +1318,8 @@ export async function buildPanelProjectDetail(
   const taskRows: PanelTaskRow[] = [];
   let regressionTaskRecords: RegressionTaskRecord[] = [];
   try {
-    regressionTaskRecords = await deps.store.listRegressionTasks(rootPath, 20);
-    for (const task of regressionTaskRecords) {
+    regressionTaskRecords = await deps.store.listRegressionTasks(rootPath, 100);
+    for (const task of regressionTaskRecords.filter((entry) => entry.jobSpec === null).slice(0, 20)) {
       taskRows.push({
         id: task.id,
         status: task.status,

@@ -49,8 +49,8 @@ async function setup(t) {
     platforms: ["android"],
     projectId: project.id
   });
-  await store.upsertWebRunner({
-    hostId: "host-a",
+  await store.upsertRunner({
+    rootPath,
     name: "runner-a",
     hostname: "host-a.local",
     platforms: ["android"],
@@ -58,23 +58,29 @@ async function setup(t) {
       device("emulator-5554", "Pixel 7", "14"),
       device("emulator-5556", "Pixel 8", "15")
     ],
-    tools: tools({ adb: true, maestro: true }),
-    artifactBaseUrl: null,
+    tools: tools({ adb: true }),
+    hostId: "host-a",
     version: "0.1.0",
     instanceId: "inst-a",
     lastSeenAt: SEEN
   });
-  await store.upsertWebRunner({
-    hostId: "host-b",
+  const runnerB = await store.upsertRunner({
+    rootPath,
     name: "runner-b",
     hostname: "host-b.local",
     platforms: ["android"],
     devices: [device("R58M12345", "Galaxy S23", "15")],
-    tools: tools({ adb: true, maestro: true }),
-    artifactBaseUrl: null,
+    tools: tools({ adb: true }),
+    hostId: "host-b",
     version: "0.1.0",
     instanceId: "inst-b",
     lastSeenAt: new Date(NOW - 10 * 60_000).toISOString()
+  });
+  await store.markRunnerStopped({
+    rootPath,
+    runnerId: runnerB.id,
+    instanceId: "inst-b",
+    at: new Date(NOW - 10 * 60_000).toISOString()
   });
   const task = await store.createRegressionTask({
     rootPath,
@@ -82,8 +88,7 @@ async function setup(t) {
     platforms: ["android"],
     baseline: "latest",
     targetHostId: "host-a",
-    deviceSerial: "emulator-5556",
-    jobSpec: { kind: "web-test", deviceSerial: "emulator-5556", targetHostId: "host-a" }
+    deviceSerial: "emulator-5556"
   });
   await store.updateRegressionTask(rootPath, task.id, { status: "running" });
   await store.acquireDeviceLeases({
@@ -153,16 +158,15 @@ test("devices page: idle/platform filters only hide non-matching rows", async (t
   assert.match(ios, /当前筛选下没有设备/);
 });
 
-test("devices page: a pinned pending job without a lease does not mark the device busy", async (t) => {
+test("devices page: pending suite task without a lease does not mark the device busy", async (t) => {
   const { store, rootPath, workspace } = await setup(t);
-  const pending = await store.createRegressionTask({
+  await store.createRegressionTask({
     rootPath,
     refs: [],
     platforms: ["android"],
     baseline: "latest",
     targetHostId: "host-a",
-    deviceSerial: "emulator-5554",
-    jobSpec: { kind: "web-test", deviceSerial: "emulator-5554", targetHostId: "host-a" }
+    deviceSerial: "emulator-5554"
   });
   const response = await handlePanelRequest(
     new URL("http://x/panel.json?section=devices"),
@@ -171,7 +175,7 @@ test("devices page: a pinned pending job without a lease does not mark the devic
   const body = JSON.parse(response.body);
   const idle = body.devices.find((entry) => entry.serial === "emulator-5554");
   assert.equal(idle.state, "idle");
-  assert.equal(idle.jobTaskId, pending.id);
+  assert.equal(idle.jobTaskId, null);
   assert.equal(body.counts.idle, 1);
   assert.equal(body.counts.busy, 1);
 });
@@ -209,7 +213,7 @@ test("devices page: 空状态使用宽布局与 adb-host 接入说明", async (t
   assert.doesNotMatch(html, /AOS_RUNNER_JOB_TOKEN/);
 });
 
-test("devices page: suite runner appears alongside legacy web runners", async (t) => {
+test("devices page: suite runner devices appear", async (t) => {
   const { store, rootPath, workspace } = await setup(t);
   await store.upsertRunner({
     rootPath,
@@ -230,6 +234,14 @@ test("devices page: suite runner appears alongside legacy web runners", async (t
 
 test("devices page: duplicate serial prefers the newer online suite runner", async (t) => {
   const { store, rootPath, workspace } = await setup(t);
+  const hostA = (await store.listRunners(rootPath)).find((runner) => runner.hostId === "host-a");
+  assert.ok(hostA);
+  await store.markRunnerStopped({
+    rootPath,
+    runnerId: hostA.id,
+    instanceId: "inst-a",
+    at: new Date(NOW - 60_000).toISOString()
+  });
   await store.upsertRunner({
     rootPath,
     name: "win-runner-01",

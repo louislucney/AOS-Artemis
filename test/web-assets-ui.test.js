@@ -417,7 +417,7 @@ test("web assets page: reference PNG uploads as reference kind", async (t) => {
   assert.equal(body.asset.filename, "login.png");
 });
 
-test("web assets page: shows used-by counts from job specs", async (t) => {
+test("web assets page: legacy web jobs do not count as asset usage", async (t) => {
   const { deps, rootPath, asset, pkg, store } = await setup(t);
   await store.createRegressionTask({
     rootPath,
@@ -456,7 +456,7 @@ test("web assets page: shows used-by counts from job specs", async (t) => {
   });
   const response = await handlePanelRequest(assetsUrl(rootPath, null, "packages"), deps);
   assert.equal(response.status, 200);
-  assert.match(response.body, /app\.apk[\s\S]*?<td>1<\/td>/);
+  assert.match(response.body, /app\.apk[\s\S]*?<td>0<\/td>/);
 });
 
 test("web assets page: archived project shows status and disables writes", async (t) => {

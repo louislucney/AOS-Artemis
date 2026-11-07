@@ -3938,7 +3938,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > 2026-11-07。Maestro 已移除，但面板仍保留“网页测试（历史）”“MCP 原生执行”卡片、`type=web` 死页面、Web 任务列表与历史脚本集 tab，用户会误以为下发任务已消失。统一收口为只保留套件回归入口；历史 Web 任务数据不删除，但不再从面板展示。
 
 - **入口**：`/panel?...&section=create&type=web` 与旧 `/panel?...&section=jobs` 均 302 到套件回归（`type=suite`）/任务列表；`section=create` 落地页只保留「套件回归」卡片。
-- **页面**：删除 `renderWebJobsPage` / `renderWebJobPage` 与 `web-jobs`/`web-job` 视图；`section=tasks` 只列出 `jobSpec=null` 的套件任务，旧 Web 任务详情返回 404；资产页移除「脚本集（历史）」tab 与脚本生成卡片；设备页移除 Maestro 文案。
+- **页面**：删除 `renderWebJobsPage` / `renderWebJobPage` 与 `web-jobs`/`web-job` 视图；`section=tasks`、项目概览任务、全局搜索只列出 `jobSpec=null` 的套件任务，旧 Web 任务详情返回 404；资产页移除「脚本集（历史）」tab 与脚本生成卡片；设备页只合并 suite runner（不再合并历史 Web runner），移除 Maestro 文案。
 - **动作**：删除 `/panel/api/jobs/clone`（网页测试重新下发）与任务详情的 `clone-web` 按钮；任务详情只保留暂停/停止/释放/重新派发（套件）。
 - **保留**：`src/web/` 的 Web 资产/结果/任务数据模型、`/panel/api/jobs` 历史读取与 web LLM worker 后端不动；历史任务/结果仍在存储中，只是面板不展示。
 - **测试**：`test/console-pages.test.js`、`test/panel-web.test.js`、`test/panel-console-actions.test.js`、`test/panel-legacy-redirect.test.js`、`test/web-assets-ui.test.js` 同步覆盖；全量 `3094/3094` 通过，lint 0 error。

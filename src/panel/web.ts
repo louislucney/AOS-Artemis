@@ -56,7 +56,6 @@ import {
 import { storeKindLabel } from "../db/labels.js";
 import { listWebAssets } from "../web/assets.js";
 import { listExcelMappings } from "../web/excel-mapping.js";
-import { parseWebJobSpec } from "../web/job-spec.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import type { WarningSummary } from "../design/warnings.js";
 import {
@@ -396,13 +395,6 @@ async function buildAssetUsage(
     for (const ref of task.refs) {
       caseSets[ref.caseSetId] = (caseSets[ref.caseSetId] ?? 0) + 1;
     }
-    if (task.jobSpec !== null) {
-      const spec = parseWebJobSpec(task.jobSpec);
-      if (spec !== null) {
-        const ids = new Set(spec.assetSnapshot.map((asset) => asset.id));
-        for (const id of ids) assets[id] = (assets[id] ?? 0) + 1;
-      }
-    }
   }
   return { assets, caseSets };
 }
@@ -529,12 +521,9 @@ function resolveWorkspaceKey(
 async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   const nowMs = deps.now?.() ?? Date.now();
   const runnerTtlMs = runnerTtlFrom(deps.env ?? process.env);
-  const [webRunners, projects, leases, active, pending] = await Promise.all([
-    deps.store.listWebRunners().catch(() => []),
+  const [projects, leases] = await Promise.all([
     deps.store.listProjects().catch(() => []),
-    deps.store.listDeviceLeases().catch(() => []),
-    deps.store.listActiveWebJobs().catch(() => []),
-    deps.store.listPendingWebJobs().catch(() => [])
+    deps.store.listDeviceLeases().catch(() => [])
   ]);
   const suiteRunners: WebRunnerRecord[] = [];
   for (const project of projects) {
@@ -557,42 +546,11 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
       });
     }
   }
-  const runnersByHost = new Map<string, WebRunnerRecord>();
-  for (const runner of [...webRunners, ...suiteRunners]) {
-    const existing = runnersByHost.get(runner.hostId);
-    if (
-      existing === undefined ||
-      Date.parse(runner.lastSeenAt) > Date.parse(existing.lastSeenAt)
-    ) {
-      runnersByHost.set(runner.hostId, runner);
-    }
-  }
-  const runners = [...runnersByHost.values()];
+  const runners = suiteRunners;
   const liveLeases = leases.filter((lease) => {
     const expires = Date.parse(lease.expiresAt);
     return Number.isFinite(expires) && expires > nowMs;
   });
-  const jobByKey = new Map<
-    string,
-    { task: RegressionTaskRecord; rootPath: string; status: "claimed" | "running" | "pending" }
-  >();
-  for (const entry of pending) {
-    const hostId = entry.task.targetHostId;
-    const serial = entry.task.deviceSerial;
-    if (hostId !== null && serial !== null) {
-      jobByKey.set(`${hostId}\u0000${serial}`, { ...entry, status: "pending" });
-    }
-  }
-  for (const entry of active) {
-    const hostId = entry.task.claimedHostId ?? entry.task.targetHostId;
-    const serial = entry.task.deviceSerial;
-    if (hostId !== null && serial !== null) {
-      jobByKey.set(`${hostId}\u0000${serial}`, {
-        ...entry,
-        status: entry.task.status === "running" ? "running" : "claimed"
-      });
-    }
-  }
   const rawDevices: DeviceListEntry[] = [];
   for (const runner of runners) {
     const online = isRunnerOnline(runner.lastSeenAt, nowMs, runnerTtlMs);
@@ -600,8 +558,7 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
       const lease = liveLeases.find(
         (entry) => entry.hostId === runner.hostId && entry.serial === device.serial
       );
-      const job = jobByKey.get(`${runner.hostId}\u0000${device.serial}`);
-      const busy = online && (lease !== undefined || (job !== undefined && job.status !== "pending"));
+      const busy = online && lease !== undefined;
       const state: DeviceListEntry["state"] = !online ? "offline" : busy ? "busy" : "idle";
       rawDevices.push({
         hostId: runner.hostId,
@@ -619,10 +576,10 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
         idle: state === "idle",
         leaseTaskId: lease?.taskId ?? null,
         leaseExpiresAt: lease?.expiresAt ?? null,
-        jobTaskId: job?.task.id ?? null,
-        jobStatus: job?.status ?? null,
-        jobRootPath: job?.rootPath ?? null,
-        jobProjectName: job?.rootPath ? path.basename(job.rootPath) : null
+        jobTaskId: lease?.taskId ?? null,
+        jobStatus: lease === undefined ? null : "claimed",
+        jobRootPath: null,
+        jobProjectName: null
       });
     }
   }
@@ -3786,6 +3743,7 @@ async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPag
     }
     const tasks = await projectStore.listRegressionTasks(project.rootPath, 50).catch(() => []);
     for (const task of tasks) {
+      if (task.jobSpec !== null) continue;
       if (!task.id.toLowerCase().includes(needle)) continue;
       if (data.tasks.length >= 20) {
         data.truncated = true;
