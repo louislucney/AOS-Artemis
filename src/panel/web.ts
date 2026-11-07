@@ -630,7 +630,7 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
       });
     }
   }
-  const devices: DeviceListEntry[] = [];
+  const rawDevices: DeviceListEntry[] = [];
   for (const runner of runners) {
     const online = isRunnerOnline(runner.lastSeenAt, nowMs, runnerTtlMs);
     for (const device of runner.devices) {
@@ -640,7 +640,7 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
       const job = jobByKey.get(`${runner.hostId}\u0000${device.serial}`);
       const busy = online && (lease !== undefined || (job !== undefined && job.status !== "pending"));
       const state: DeviceListEntry["state"] = !online ? "offline" : busy ? "busy" : "idle";
-      devices.push({
+      rawDevices.push({
         hostId: runner.hostId,
         hostname: runner.hostname,
         hostOnline: online,
@@ -663,6 +663,27 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
       });
     }
   }
+  const bySerial = new Map<string, DeviceListEntry>();
+  for (const device of rawDevices) {
+    const existing = bySerial.get(device.serial);
+    if (existing === undefined) {
+      bySerial.set(device.serial, device);
+      continue;
+    }
+    const existingOnline = existing.state !== "offline";
+    const candidateOnline = device.state !== "offline";
+    if (candidateOnline && !existingOnline) {
+      bySerial.set(device.serial, device);
+      continue;
+    }
+    if (
+      candidateOnline === existingOnline &&
+      Date.parse(device.lastSeenAt) > Date.parse(existing.lastSeenAt)
+    ) {
+      bySerial.set(device.serial, device);
+    }
+  }
+  const devices = [...bySerial.values()];
   const platform = (url.searchParams.get("platform") ?? "all").trim();
   const filter = (url.searchParams.get("state") ?? "all").trim();
   const visible = devices.filter(

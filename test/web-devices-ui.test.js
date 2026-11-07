@@ -227,3 +227,25 @@ test("devices page: suite runner appears alongside legacy web runners", async (t
   assert.match(html, /CN2368578W1/);
   assert.match(html, /10CF6609P900059/);
 });
+
+test("devices page: duplicate serial prefers the newer online suite runner", async (t) => {
+  const { store, rootPath, workspace } = await setup(t);
+  await store.upsertRunner({
+    rootPath,
+    name: "win-runner-01",
+    hostname: "CN2368578W1",
+    platforms: ["android"],
+    devices: [device("emulator-5554", "Pixel 7", "14")],
+    tools: tools({ adb: true }),
+    hostId: "win-runner-01",
+    instanceId: "inst-win",
+    lastSeenAt: new Date(NOW - 1_000).toISOString()
+  });
+  const html = await page(store, workspace);
+  const index = html.indexOf("emulator-5554");
+  assert.ok(index >= 0);
+  const segment = html.slice(Math.max(0, index - 600), index + 200);
+  assert.match(segment, /win-runner-01/);
+  assert.doesNotMatch(segment, /host-a/);
+  assert.match(html, /emulator-5556/);
+});
