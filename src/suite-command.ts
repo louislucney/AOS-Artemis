@@ -256,6 +256,15 @@ function normalizeRootPath(input: string): string {
   return stripped === "" ? "/" : stripped;
 }
 
+function localIpv4Address(): string | null {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) return entry.address;
+    }
+  }
+  return null;
+}
+
 async function knownRootPaths(store: ProjectStore, hostId: string): Promise<string[]> {
   const projects = (await store.listProjects()).filter((project) => project.hostId === hostId);
   return [...new Set(projects.map((project) => project.rootPath))].sort();
@@ -676,6 +685,11 @@ async function suiteRunTask(
     }
   }
 
+  try {
+    await runtime.refreshCenterLlm();
+  } catch (error) {
+    io.errorLog(`中心 LLM 刷新失败（继续使用当前条目）：${errorMessage(error)}`);
+  }
   const taskApp =
     flags.get("app-path") !== null
       ? ({ ok: true, path: null } as const)
@@ -3514,7 +3528,8 @@ async function suiteRunnerCommand(
         env
       });
       artifactBaseUrl =
-        env.AOS_RUNNER_ADVERTISE_URL?.trim() || `http://${os.hostname()}:${artifactServer.port}`;
+        env.AOS_RUNNER_ADVERTISE_URL?.trim() ||
+        `http://${localIpv4Address() ?? os.hostname()}:${artifactServer.port}`;
       if (artifactHost === "0.0.0.0" || artifactHost === "::") {
         io.log(
           `[runner] 注意: 产物服务监听 ${artifactHost}（无鉴权只读；范围 .artemis 含 logs/crashes）——仅限受控内网`

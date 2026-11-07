@@ -491,6 +491,23 @@ export class Runtime {
     }
   }
 
+  /** 每次任务执行前重新拉取中心 LLM 代理配置（跨机 runner 无需重启即可拿到新中心地址）。 */
+  async refreshCenterLlm(): Promise<void> {
+    const centerEnv = { ...this.project.dotenvValues, ...this._baseEnv };
+    if ((centerEnv.AOS_LLM_FROM_CENTER ?? "").trim() !== "1") return;
+    const center = await fetchCenterLlm({
+      env: centerEnv,
+      hostId: this.hostIdentity?.id ?? null
+    });
+    if (center.entry === null) {
+      if (center.error !== null) logWarn(`中心 LLM 刷新失败：${center.error}`);
+      return;
+    }
+    this.transientEntry = center.entry;
+    this.activeCache = null;
+    this.writeActiveConfig(center.entry);
+  }
+
   /** Write <configDir>/artemis.jsonc (unified format, merged over the artemis
    * base config) and drop the legacy llm-config.override.jsonc, whose format
    * artemis' loader silently ignores. */
