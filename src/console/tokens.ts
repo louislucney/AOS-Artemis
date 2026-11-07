@@ -36,6 +36,7 @@ h1{font-size:var(--font-size-title-2);font-weight:var(--font-weight-semibold);ma
 h2{font-size:var(--font-size-title-3);font-weight:var(--font-weight-semibold);margin:0 0 10px}
 h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margin:0 0 8px}
 [hidden]{display:none!important}
+section[id],details[id],div[id]{scroll-margin-top:84px}
 
 /* ── CSDC 毛玻璃顶栏 ─────────────────────────────────────────────── */
 .c-topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;padding:12px 36px;

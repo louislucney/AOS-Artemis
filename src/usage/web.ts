@@ -423,9 +423,17 @@ function renderTable(
   const head = headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("");
   const captionHtml = caption === undefined ? "" : `<caption>${escapeHtml(caption)}</caption>`;
   const body = rows
-    .map((row) => `<tr>${row.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`)
+    .map(
+      (row) =>
+        `<tr>${row
+          .map(
+            (value, index) =>
+              `<td data-label="${escapeHtml(headers[index] ?? "")}">${escapeHtml(value)}</td>`
+          )
+          .join("")}</tr>`
+    )
     .join("");
-  return `<div class="c-table-scroll-hint" aria-hidden="true">左右滑动查看完整表格</div><div class="c-table-wrap"><table class="c-table">${captionHtml}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="c-table-scroll-hint" aria-hidden="true">左右滑动查看完整表格</div><div class="c-table-wrap c-table-mobile-cards"><table class="c-table">${captionHtml}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderSwitcher(view: UsageWebView): string {

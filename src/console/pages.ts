@@ -371,7 +371,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     `<form id="asset-upload-form" class="c-form" data-project="${escapeHtml(data.rootPath)}">`,
     `<p><label>类型 <select id="asset-kind" aria-label="资产类型"${disabledAttr}><option value="excel"${uploadKind === "excel" ? " selected" : ""}>Excel 用例</option><option value="package"${uploadKind === "package" ? " selected" : ""}>安装包（APK/IPA）</option><option value="materials"${uploadKind === "materials" ? " selected" : ""}>测试资料（materials）</option><option value="reference"${uploadKind === "reference" ? " selected" : ""}>参考图（L2 reference）</option></select></label> <span class="muted">Excel 支持 .xlsx/.csv；安装包支持 .apk/.ipa；测试资料支持 .zip/.json/.csv/.txt；参考图支持 .png/.jpg/.jpeg/.webp/.pen。</span></p>`,
     `<div id="asset-drop" class="c-dropzone" tabindex="0" role="button" aria-label="拖放 Excel、CSV、安装包或测试资料文件，或点击选择">`,
-    `<input id="asset-file" class="c-dropzone-input" type="file" name="file" accept=".xlsx,.csv,.apk,.ipa,.zip,.json,.txt,.png,.jpg,.jpeg,.webp,.pen" aria-label="Excel、CSV、安装包或测试资料文件"${disabledAttr}>`,
+    `<input id="asset-file" class="c-dropzone-input" type="file" name="file" tabindex="-1" accept=".xlsx,.csv,.apk,.ipa,.zip,.json,.txt,.png,.jpg,.jpeg,.webp,.pen" aria-label="Excel、CSV、安装包或测试资料文件"${disabledAttr}>`,
     `<span class="c-dropzone-title">拖入 Excel / CSV / APK / IPA / 测试资料 / 参考图</span>`,
     `<span class="c-dropzone-hint">或点击选择文件；安装包 .apk/.ipa；测试资料 .zip/.json/.csv/.txt；参考图 .png/.jpg/.jpeg/.webp/.pen</span>`,
     `<span id="asset-file-name" class="c-dropzone-file">未选择文件</span>`,
