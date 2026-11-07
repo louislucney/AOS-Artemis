@@ -3974,3 +3974,12 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **移动卡片/主机历史**：设备与对比宽表在 ≤640px 改为 `td[data-label]` 卡片行；概览接入主机按 hostname 合并，优先在线/已登记/最新并显示 `+N 历史`；审计失败 `action.config` 恢复入口指向运维配置。
 - **响应式/可达性**：移动导航改为换行展示（不再隐藏设备/档案/运维/使用统计）；dropzone 加 `:focus-visible`；减少动态时保留手动「刷新」；表格 `overflow-wrap` 从 `anywhere` 改 `break-word`，避免 `android`/项目名被拆成一字一行；对比表固定最小宽度 + 横向滚动。
 - **测试**：`test/console-dispatch.test.js`（安装包/表单）、`test/panel-console-actions.test.js`（跨机 runner 下发、appAssetId）、`test/panel-compare.test.js`（Web 任务不计入积压）、`test/panel-web.test.js`（批次/轨迹/失败分析链接）、`test/web-devices-ui.test.js`（项目上下文/去下发）；全量 `3101/3101`，lint 0 error。
+
+### 13.324 修复（定向下发 legacy 项目 + 中心 LLM 代理公开地址）
+
+> 2026-11-07。第一次真机 smoke（ESSO-GU My SMILES × win-runner-01）暴露两个跨机问题：中心项目是 legacy（host_id=NULL）时，`POST /panel/api/tasks` 用显式执行机仍被“未归属主机的历史数据”拒绝；`/llm` 代理地址按请求 Host 推导，runner 经回环/转发时拿到 `127.0.0.1`，跨机不可达。另 smoke 结果 3/3 failed、`unclassified`，失败证据只在 runner 本地（`artifactBaseUrl=null`），中心任务页只能显示 Windows 路径。
+
+- **定向下发**：`createTask` 的 legacy 拒绝仅在**未显式指定 host**时生效；显式 host（如 `win-runner-01`）走跨 root runner 校验：中心 owner 项目存在 + 该 host 已注册 suite runner → 写中心 store、`targetHostId=<runner host>`。
+- **中心公开地址**：`AOS_CENTER_PUBLIC_URL` 覆盖 suite 控制面的 `publicBaseUrl`；`/llm` 返回该地址下的代理 URL，避免 runner 拿到回环地址。`.env.example`/README 增加说明。
+- **smoke 结论**：任务 `aad7c37e-…` 已由 win-runner-01 领取并回写 3 条失败（`imp-4ee495af-19/20/21`，`unclassified`）；中心侧无 manifest/trace（runner 未广告 artifactBaseUrl），需要 runner 重启/配置 `AOS_RUNNER_ADVERTISE_URL` 或更新 runner 包后才能打开证据。
+- **测试**：`npm test` 3101/3101、lint 0 error、类型测试通过。
