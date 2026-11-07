@@ -208,3 +208,22 @@ test("devices page: 空状态使用宽布局与 adb-host 接入说明", async (t
   assert.match(html, /adb-host/);
   assert.doesNotMatch(html, /AOS_RUNNER_JOB_TOKEN/);
 });
+
+test("devices page: suite runner appears alongside legacy web runners", async (t) => {
+  const { store, rootPath, workspace } = await setup(t);
+  await store.upsertRunner({
+    rootPath,
+    name: "win-runner-01",
+    hostname: "CN2368578W1",
+    platforms: ["android"],
+    devices: [device("10CF6609P900059", "V2453A", "16")],
+    tools: tools({ adb: true }),
+    hostId: "win-runner-01",
+    instanceId: "inst-win",
+    lastSeenAt: SEEN
+  });
+  const html = await page(store, workspace);
+  assert.match(html, /win-runner-01/);
+  assert.match(html, /CN2368578W1/);
+  assert.match(html, /10CF6609P900059/);
+});

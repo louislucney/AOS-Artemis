@@ -566,12 +566,45 @@ function resolveWorkspaceKey(
 async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   const nowMs = deps.now?.() ?? Date.now();
   const runnerTtlMs = runnerTtlFrom(deps.env ?? process.env);
-  const [runners, leases, active, pending] = await Promise.all([
+  const [webRunners, projects, leases, active, pending] = await Promise.all([
     deps.store.listWebRunners().catch(() => []),
+    deps.store.listProjects().catch(() => []),
     deps.store.listDeviceLeases().catch(() => []),
     deps.store.listActiveWebJobs().catch(() => []),
     deps.store.listPendingWebJobs().catch(() => [])
   ]);
+  const suiteRunners: WebRunnerRecord[] = [];
+  for (const project of projects) {
+    const records = await deps.store.listRunners(project.rootPath).catch(() => []);
+    for (const runner of records) {
+      suiteRunners.push({
+        id: runner.id,
+        hostId: runner.hostId ?? runner.name,
+        name: runner.name,
+        hostname: runner.hostname,
+        platforms: runner.platforms,
+        devices: runner.devices,
+        tools: runner.tools,
+        artifactBaseUrl: runner.artifactBaseUrl,
+        version: runner.version,
+        instanceId: runner.instanceId ?? "",
+        gateway: null,
+        lastSeenAt: runner.lastSeenAt,
+        createdAt: runner.createdAt
+      });
+    }
+  }
+  const runnersByHost = new Map<string, WebRunnerRecord>();
+  for (const runner of [...webRunners, ...suiteRunners]) {
+    const existing = runnersByHost.get(runner.hostId);
+    if (
+      existing === undefined ||
+      Date.parse(runner.lastSeenAt) > Date.parse(existing.lastSeenAt)
+    ) {
+      runnersByHost.set(runner.hostId, runner);
+    }
+  }
+  const runners = [...runnersByHost.values()];
   const liveLeases = leases.filter((lease) => {
     const expires = Date.parse(lease.expiresAt);
     return Number.isFinite(expires) && expires > nowMs;
