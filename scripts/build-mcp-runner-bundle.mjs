@@ -569,6 +569,7 @@ for (const target of selectedTargets) {
   manifest.push({
     platform: target.platform,
     arch: target.arch,
+    variant: "online",
     filename,
     size: fs.statSync(archive).size,
     sha256,
@@ -585,15 +586,42 @@ if (partial) {
       fs.readFileSync(path.join(outDir, "mcp-runner-manifest.json"), "utf8")
     );
     if (Array.isArray(existing)) {
-      const replaced = new Set(manifest.map((entry) => `${entry.platform}-${entry.arch}`));
+      const replaced = new Set(
+        manifest.map((entry) => `${entry.platform}-${entry.arch}-${entry.variant ?? "online"}`)
+      );
       finalManifest = [
-        ...existing.filter((entry) => !replaced.has(`${entry.platform}-${entry.arch}`)),
+        ...existing.filter(
+          (entry) =>
+            !replaced.has(`${entry.platform}-${entry.arch}-${entry.variant ?? "online"}`)
+        ),
         ...manifest
       ];
     }
   } catch {
     /* partial build without prior manifest */
   }
+}
+const offlineFilename = `mobile-testing-mcp-runner-${pkg.version}-win32-x64-offline.zip`;
+const offlinePath = path.join(outDir, offlineFilename);
+if (fs.existsSync(offlinePath)) {
+  finalManifest = finalManifest.filter(
+    (entry) =>
+      !(
+        entry.platform === "win32" &&
+        entry.arch === "x64" &&
+        (entry.variant ?? "online") === "offline"
+      )
+  );
+  finalManifest.push({
+    platform: "win32",
+    arch: "x64",
+    variant: "offline",
+    filename: offlineFilename,
+    size: fs.statSync(offlinePath).size,
+    sha256: hashFile(offlinePath),
+    includesTools: true,
+    url: "/panel/runner-bundle?role=mcp-runner&platform=win32&arch=x64&variant=offline"
+  });
 }
 fs.writeFileSync(
   path.join(outDir, "mcp-runner-manifest.json"),

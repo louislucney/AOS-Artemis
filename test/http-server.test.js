@@ -1033,13 +1033,37 @@ test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => 
   const bundleDir = makeTempDir("aos-http-mcp-runner-");
   const winFile = "mobile-testing-mcp-runner-0.1.0-win32-x64.zip";
   const macFile = "mobile-testing-mcp-runner-0.1.0-darwin-arm64.tar.gz";
+  const offlineFile = "mobile-testing-mcp-runner-0.1.0-win32-x64-offline.zip";
   fs.writeFileSync(path.join(bundleDir, winFile), "fake-mcp-runner-win");
   fs.writeFileSync(path.join(bundleDir, macFile), "fake-mcp-runner-mac");
+  fs.writeFileSync(path.join(bundleDir, offlineFile), "fake-mcp-runner-offline");
   fs.writeFileSync(
     path.join(bundleDir, "mcp-runner-manifest.json"),
     JSON.stringify([
-      { platform: "win32", arch: "x64", filename: winFile, size: 19, sha256: "test" },
-      { platform: "darwin", arch: "arm64", filename: macFile, size: 19, sha256: "test" }
+      {
+        platform: "win32",
+        arch: "x64",
+        variant: "online",
+        filename: winFile,
+        size: 19,
+        sha256: "test"
+      },
+      {
+        platform: "darwin",
+        arch: "arm64",
+        variant: "online",
+        filename: macFile,
+        size: 19,
+        sha256: "test"
+      },
+      {
+        platform: "win32",
+        arch: "x64",
+        variant: "offline",
+        filename: offlineFile,
+        size: 20,
+        sha256: "test"
+      }
     ])
   );
   await withEnv("AOS_RUNNER_BUNDLE_DIR", bundleDir, async () => {
@@ -1066,6 +1090,20 @@ test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => 
         /mobile-testing-mcp-runner-0\.1\.0-darwin-arm64\.tar\.gz/
       );
       assert.equal(Buffer.from(await mac.arrayBuffer()).toString("utf8"), "fake-mcp-runner-mac");
+
+      const offline = await fetch(
+        `http://127.0.0.1:${handle.port}/panel/runner-bundle?role=mcp-runner&platform=win32&arch=x64&variant=offline`
+      );
+      assert.equal(offline.status, 200);
+      assert.equal(offline.headers.get("content-type"), "application/zip");
+      assert.match(
+        offline.headers.get("content-disposition") ?? "",
+        /mobile-testing-mcp-runner-0\.1\.0-win32-x64-offline\.zip/
+      );
+      assert.equal(
+        Buffer.from(await offline.arrayBuffer()).toString("utf8"),
+        "fake-mcp-runner-offline"
+      );
     } finally {
       handle.httpServer.closeAllConnections?.();
       await handle.close();

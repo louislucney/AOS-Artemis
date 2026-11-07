@@ -540,6 +540,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           type BundleEntry = {
             platform: string;
             arch: string;
+            variant?: string;
             filename: string;
             size: number;
             sha256: string;
@@ -606,9 +607,15 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
           }
           const platform = (url.searchParams.get("platform") ?? "").trim();
           const arch = (url.searchParams.get("arch") ?? "").trim();
+          const variant = ((url.searchParams.get("variant") ?? "").trim() || "online");
           const selected =
             platform !== "" && arch !== ""
-              ? entries.find((entry) => entry.platform === platform && entry.arch === arch)
+              ? entries.find(
+                  (entry) =>
+                    entry.platform === platform &&
+                    entry.arch === arch &&
+                    (entry.variant ?? "online") === variant
+                )
               : entries.length === 1
                 ? entries[0]
                 : undefined;
@@ -618,14 +625,17 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               JSON.stringify({
                 ok: false,
                 error: "请指定 platform 与 arch",
-                available: entries.map(({ platform: p, arch: a, filename, size, sha256 }) => ({
-                  platform: p,
-                  arch: a,
-                  filename,
-                  size,
-                  sha256,
-                  url: `/panel/runner-bundle?role=${encodeURIComponent(role)}&platform=${encodeURIComponent(p)}&arch=${encodeURIComponent(a)}`
-                }))
+                available: entries.map(
+                  ({ platform: p, arch: a, variant: v, filename, size, sha256 }) => ({
+                    platform: p,
+                    arch: a,
+                    variant: v ?? "online",
+                    filename,
+                    size,
+                    sha256,
+                    url: `/panel/runner-bundle?role=${encodeURIComponent(role)}&platform=${encodeURIComponent(p)}&arch=${encodeURIComponent(a)}&variant=${encodeURIComponent(v ?? "online")}`
+                  })
+                )
               })
             );
             return;

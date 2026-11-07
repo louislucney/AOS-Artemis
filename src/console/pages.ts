@@ -1201,6 +1201,10 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
         <a class="c-button c-button-primary" href="/panel/runner-bundle?role=mcp-runner&amp;platform=win32&amp;arch=x64" download>Windows MCP runner（Android）</a>
         <a class="c-button c-button-primary" href="/panel/runner-bundle?role=mcp-runner&amp;platform=darwin&amp;arch=arm64" download>macOS MCP runner（iOS/Android）</a>
       </div>
+      <p class="c-card-subtitle c-card-subtitle-tight">公司网络无法访问 PyPI 时，用 Windows 离线版（内置依赖，约 300MB；解压后约 850MB）。</p>
+      <div class="c-download-grid" aria-label="Windows 离线 runner 下载">
+        <a class="c-button" href="/panel/runner-bundle?role=mcp-runner&amp;platform=win32&amp;arch=x64&amp;variant=offline" download>Windows 离线版（内置依赖，约 300MB）</a>
+      </div>
       <p class="c-card-subtitle c-card-subtitle-tight">只把手机插在远端、由中心直接连 adb 时，仍可用 adb-host 小包（只含 platform-tools）。</p>
       <div class="c-download-grid" aria-label="adb-host 安装包下载">
         <a class="c-button" href="/panel/runner-bundle?role=adb-host&amp;platform=win32&amp;arch=x64" download>Windows adb-host（约 8MB）</a>

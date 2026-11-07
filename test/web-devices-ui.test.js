@@ -122,6 +122,7 @@ test("devices page: lists idle, busy and offline devices", async (t) => {
   assert.match(html, /Remote XPC/);
   assert.match(html, /role=mcp-runner&amp;platform=win32&amp;arch=x64/, "Windows MCP runner 下载");
   assert.match(html, /role=mcp-runner&amp;platform=darwin&amp;arch=arm64/, "macOS MCP runner 下载");
+  assert.match(html, /variant=offline/, "Windows 离线 runner 下载");
   assert.match(html, /platform=win32&amp;arch=x64/, "Windows adb-host 下载");
   assert.match(html, /platform=darwin&amp;arch=arm64/, "macOS adb-host 下载");
   assert.match(html, /MCP runner/);
