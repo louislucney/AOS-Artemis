@@ -1639,9 +1639,9 @@ function renderMachinesSection(view: PanelOverview): string {
       ? cBadge({ label: "已登记", tone: "neutral" })
       : cBadge({ label: "未登记", tone: "neutral" });
     return [
-      `<code>${escapeHtml(machine.hostname)}</code>${
-        machine.label === null ? "" : ` <span class="muted">${escapeHtml(machine.label)}</span>`
-      } ${registration}`,
+      `<code>${escapeHtml(machine.id)}</code> <span class="muted">${escapeHtml(
+        machine.hostname
+      )}${machine.label === null ? "" : ` · ${escapeHtml(machine.label)}`}</span> ${registration}`,
       escapeHtml(system),
       `${ide} / ${runner}`,
       ip,
@@ -2750,10 +2750,11 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
 function renderReviewPage(view: {
   rootPath: string;
   hostId: string | null;
-  detail: { items: PanelReviewItem[]; warnings: string[] };
+  detail: { items: PanelReviewItem[]; standalones?: PanelStandaloneRow[]; warnings: string[] };
   taskId?: string;
 }): string {
   const { items, warnings } = view.detail;
+  const standalones = view.detail.standalones ?? [];
   const appDefects = items.filter((item) => item.verdict === "app-defect");
   const canVerdict =
     currentShell.capabilities?.actions !== false &&
@@ -2812,9 +2813,13 @@ function renderReviewPage(view: {
       ? [
           '<section id="queue">',
           "<h2>失败用例</h2>",
-          `<p class="empty">暂无套件回归失败用例（最近 10 次运行无失败，或尚无运行记录；单次运行失败见 <a href="${escapeHtml(
-            projectHref(view.rootPath, view.hostId)
-          )}#standalones">项目页「单次运行」</a>）。 <a class="c-button c-button-primary" href="/panel?project=${encodeURIComponent(
+          `<p class="empty">暂无套件回归失败用例（最近 10 次运行无失败，或尚无运行记录）${
+            standalones.length > 0
+              ? "；单次运行失败见下方"
+              : `；单次运行失败见 <a href="${escapeHtml(
+                  projectHref(view.rootPath, view.hostId)
+                )}#standalones">项目页「单次运行」</a>`
+          }。 <a class="c-button c-button-primary" href="/panel?project=${encodeURIComponent(
             view.rootPath
           )}&amp;section=create&amp;type=suite${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">新建测试</a></p>`,
           "</section>"
@@ -2927,6 +2932,29 @@ function renderReviewPage(view: {
             `<p><a class="c-button c-button-primary" href="${escapeHtml(statsHref(view.rootPath, view.hostId))}#issues">下一步：去建单（应用缺陷 ${appDefects.length} 条）→</a></p>`
           ]),
       ...body,
+      ...(standalones.length === 0
+        ? []
+        : [
+            cCard({
+              title: "单次运行失败",
+              subtitle: "不属于套件回归的单条 mobile_run_task / suite run --tests；只读，先看 trace 再决定重跑或补用例",
+              body: renderTable(
+                ["trace", "用例", "状态", "模型", "提交"],
+                standalones.map((row) => [
+                  `<a href="/panel?project=${encodeURIComponent(
+                    view.rootPath
+                  )}&amp;section=archive&amp;q=${encodeURIComponent(row.traceId)}${hostSuffix(
+                    view.hostId
+                  ).replace(/&/g, "&amp;")}"><code>${escapeHtml(row.traceId)}</code></a>`,
+                  escapeHtml(row.caseId ?? "—"),
+                  escapeHtml(row.status),
+                  escapeHtml(row.model ?? "—"),
+                  relativeTime(row.submittedAt)
+                ]),
+                "暂无单次运行失败"
+              )
+            })
+          ]),
       '<section id="run-hint">',
       "<h2>动作指引</h2>",
       '<p class="muted">重跑：<code>node dist/cli.js suite run --task &lt;task-id&gt; --device &lt;serial&gt;</code>（整任务）或 <code>node dist/cli.js suite run --tests &lt;tests.json&gt; --case &lt;caseId&gt; --device &lt;serial&gt;</code>（单用例）。</p>',
@@ -3429,7 +3457,7 @@ function renderCompareTodoCell(project: PanelCompareProject): string {
   const open = backlog.pending + backlog.claimed + backlog.running;
   return [
     `<div>未裁决失败 ${project.pendingVerdicts} 条 · 未建单缺陷 ${project.unissuedAppDefects} 项</div>`,
-    `<div>任务积压 ${open}（待 ${backlog.pending} / 领 ${backlog.claimed} / 跑 ${backlog.running}） · 失败 ${backlog.failed}</div>`
+    `<div>任务积压 ${open}（待 ${backlog.pending} / 领 ${backlog.claimed} / 跑 ${backlog.running}） · 套件失败 ${backlog.failed} · 单次失败 ${project.standalonesFailed}</div>`
   ].join("");
 }
 

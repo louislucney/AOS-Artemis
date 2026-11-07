@@ -275,6 +275,23 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   for (const asset of data.assets) {
     assetName.set(asset.id, `${asset.filename} v${asset.version}`);
   }
+  const assetOpenHref = (asset: WebAssetRecord): string | null => {
+    const abs = path.isAbsolute(asset.storagePath)
+      ? asset.storagePath
+      : path.resolve(data.rootPath, asset.storagePath);
+    const rel = path.relative(data.rootPath, abs);
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+    const params = new URLSearchParams({ project: data.rootPath, path: rel });
+    if (data.hostId) params.set("host", data.hostId);
+    return `/panel/artifact?${params.toString()}`;
+  };
+  const assetOpenCell = (asset: WebAssetRecord): string => {
+    if (asset.metadata?.secret === true) return '<span class="muted">secret</span>';
+    const href = assetOpenHref(asset);
+    return href === null
+      ? '<span class="muted">—</span>'
+      : `<a class="c-button" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">打开</a>`;
+  };
   const assetRows = data.assets.map((asset) => [
     `<code>${escapeHtml(asset.filename)}</code>`,
     `<code>v${asset.version}</code>`,
@@ -282,7 +299,9 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
     relativeTime(asset.createdAt),
     String(usage[asset.id] ?? 0),
-    `<button class="c-button" type="button" data-import-excel="${escapeHtml(asset.id)}"${disabledAttr}>导入用例库</button>`
+    `${assetOpenCell(asset)} <button class="c-button" type="button" data-import-excel="${escapeHtml(
+      asset.id
+    )}"${disabledAttr}>导入用例库</button>`
   ]);
   const assetOptions = data.assets
     .map(
@@ -304,7 +323,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     formatBytes(asset.size),
     `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
     relativeTime(asset.createdAt),
-    String(usage[asset.id] ?? 0)
+    String(usage[asset.id] ?? 0),
+    assetOpenCell(asset)
   ]);
   const materialRows = materials.map((asset) => {
     const secret = asset.metadata?.secret === true;
@@ -315,7 +335,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       secret ? cBadge({ label: "secret", tone: "warning" }) : '<span class="muted">—</span>',
       `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
       relativeTime(asset.createdAt),
-      String(usage[asset.id] ?? 0)
+      String(usage[asset.id] ?? 0),
+      assetOpenCell(asset)
     ];
   });
   const references = data.references ?? [];
@@ -324,7 +345,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     `<code>v${asset.version}</code>`,
     formatBytes(asset.size),
     `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
-    relativeTime(asset.createdAt)
+    relativeTime(asset.createdAt),
+    assetOpenCell(asset)
   ]);
   const mappingRows = data.mappings.map((mapping) => [
     `<code>${escapeHtml(
@@ -478,7 +500,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "安装包",
     subtitle: `共 ${packages.length} 个 APK/IPA 版本（Android/iOS 各自编号）`,
     body: cTable({
-      columns: ["文件名", "平台", "版本", "大小", "sha256", "上传时间", "被使用"],
+      columns: ["文件名", "平台", "版本", "大小", "sha256", "上传时间", "被使用", "打开"],
       rows: packageRows,
       caption: "安装包资产版本",
       empty: "暂无安装包资产（上方上传）"
@@ -488,7 +510,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "测试资料",
     subtitle: `共 ${materials.length} 个资料版本`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "secret", "sha256", "上传时间", "被使用"],
+      columns: ["文件名", "版本", "大小", "secret", "sha256", "上传时间", "被使用", "打开"],
       rows: materialRows,
       caption: "测试资料资产版本",
       empty: "暂无测试资料（上方上传）"
@@ -498,7 +520,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "参考图（L2）",
     subtitle: `共 ${references.length} 个参考图版本`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用"],
+      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用", "打开"],
       rows: referenceRows,
       caption: "参考图资产版本",
       empty: "暂无参考图（上方上传 .png/.jpg/.jpeg/.webp）"
@@ -1602,6 +1624,8 @@ export interface OpsPageData {
 export function renderOpsPage(data: OpsPageData): string {
   const actionsOff =
     data.capabilities?.actions === false || data.capabilities?.scopes?.export === false;
+  const canConfig =
+    data.capabilities?.role === undefined || data.capabilities.role === "admin";
   const exportLink = (what: string, format: string, label: string): string => {
     const href = escapeHtml(
       `/panel/api/export?project=${encodeURIComponent(data.rootPath)}&what=${what}&format=${format}${
@@ -1639,6 +1663,10 @@ export function renderOpsPage(data: OpsPageData): string {
                 data.llm.maskedKey
               }</p>`
             : `<p class="muted">当前项目还没有 LLM 条目；首次配置需填写 API key。</p>`,
+          canConfig
+            ? ""
+            : `<p class="muted">项目配置需要 admin 角色；当前角色只读，请让管理员修改。</p>`,
+          `<fieldset${canConfig ? "" : " disabled"}>`,
           `<form id="ops-config-form" class="c-form" data-project="${escapeHtml(data.rootPath)}">`,
           `<p><label>LLM 名称 <input name="name" value="${escapeHtml(
             data.llm?.name ?? ""
@@ -1656,6 +1684,7 @@ export function renderOpsPage(data: OpsPageData): string {
           `<script>(function(){var form=document.getElementById('ops-config-form');if(!form)return;var root=${JSON.stringify(
             data.rootPath
           ).replace(/</g, "\\u003c")};var status=document.getElementById('ops-config-status');form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var body={project:root};['name','model','baseUrl','apiKey','figmaToken','jiraSite','jiraEmail','jiraApiToken'].forEach(function(key){var value=String(f.get(key)||'').trim();if(value!=='')body[key]=value;});if(Object.keys(body).length===1){status.textContent='没有填写任何配置';return;}status.textContent='保存中…';fetch('/panel/api/projects/config',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('配置已保存 · 已写入审计');location.reload();return;}status.textContent='保存失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}).catch(function(err){status.textContent='保存失败：'+err;});});})();</script>`,
+          `</fieldset>`,
           `<p><a class="c-button" href="/panel?project=${encodeURIComponent(
             data.rootPath
           )}#integration">查看项目接入状态</a> <a class="c-button" href="/panel?project=${encodeURIComponent(

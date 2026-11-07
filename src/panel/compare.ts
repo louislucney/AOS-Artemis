@@ -1,4 +1,5 @@
 import { collectVerdictExits } from "../tasks/verdict-exits.js";
+import { outcomeOf } from "../tasks/outcome.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import { errorMessage } from "../util.js";
 import type { SuiteRunRecord, ProjectStore } from "../db/types.js";
@@ -45,6 +46,8 @@ export interface PanelCompareProject {
   pendingVerdicts: number;
   unissuedAppDefects: number;
   taskBacklog: { pending: number; claimed: number; running: number; failed: number };
+  /** 单次运行（mobile_run_task / suite run --tests）失败数；与套件任务分开口径。 */
+  standalonesFailed: number;
   runners: { online: number; devices: number };
   schedules: { enabled: number; lastFiredAt: string | null };
   error: string | null;
@@ -116,6 +119,7 @@ function emptyCompareRow(row: PanelProjectRow, hostLabel: string): PanelCompareP
     pendingVerdicts: 0,
     unissuedAppDefects: 0,
     taskBacklog: { pending: 0, claimed: 0, running: 0, failed: 0 },
+    standalonesFailed: 0,
     runners: { online: 0, devices: 0 },
     schedules: { enabled: 0, lastFiredAt: null },
     error: null
@@ -193,6 +197,12 @@ async function buildCompareRow(
       else if (task.status === "failed") taskBacklog.failed += 1;
     }
     base.taskBacklog = taskBacklog;
+    try {
+      const taskStats = await store.listTasks(row.rootPath, 200);
+      base.standalonesFailed = taskStats.filter((task) => outcomeOf(task.status) === "failed").length;
+    } catch {
+      base.standalonesFailed = 0;
+    }
 
     const ttlMs = runnerTtlFrom(deps.env ?? process.env);
     const runners = await store.listRunners(row.rootPath, PANEL_COMPARE_RUNNER_LIMIT);

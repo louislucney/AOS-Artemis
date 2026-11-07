@@ -183,8 +183,8 @@ export function hostDisplayLabel(hostId: string | null, machines: PanelMachineRo
   const machine = machines.find((entry) => entry.id === hostId);
   if (!machine) return hostId.slice(0, 8);
   return machine.label !== null && machine.label !== ""
-    ? `${machine.label}（${machine.hostname}）`
-    : machine.hostname;
+    ? `${machine.id}（${machine.hostname} · ${machine.label}）`
+    : `${machine.id}（${machine.hostname}）`;
 }
 
 export interface PanelAssetStat {
@@ -1531,7 +1531,11 @@ export async function buildPanelReviewQueue(
   deps: PanelDeps,
   rootPath: string,
   options: { limit?: number; taskId?: string } = {}
-): Promise<{ items: PanelReviewItem[]; warnings: string[] }> {
+): Promise<{
+  items: PanelReviewItem[];
+  standalones: PanelStandaloneRow[];
+  warnings: string[];
+}> {
   const warnings: string[] = [];
   const limit = Math.max(Math.trunc(options.limit ?? 10), 1);
   let runs: Awaited<ReturnType<ProjectStore["listSuiteRuns"]>> = [];
@@ -1602,7 +1606,16 @@ export async function buildPanelReviewQueue(
     if (aRank !== bRank) return aRank - bRank;
     return b.createdAt < a.createdAt ? -1 : b.createdAt > a.createdAt ? 1 : 0;
   });
-  return { items, warnings };
+  let standalones: PanelStandaloneRow[] = [];
+  try {
+    standalones = (await deps.store.listTasks(rootPath, 200))
+      .map(standaloneRow)
+      .filter((row) => row.outcome === "failed")
+      .slice(0, 10);
+  } catch (error) {
+    warnings.push(`单次运行读取失败：${errorMessage(error)}`);
+  }
+  return { items, standalones, warnings };
 }
 
 /** 统计下钻（DESIGN：回归服务 §5.8）：聚合 + 改进出口三清单（按（份,用例）取最新裁决）。

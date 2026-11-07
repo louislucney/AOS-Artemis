@@ -2214,7 +2214,11 @@ test("panel web: compare 口径说明行与列组（迷你图/域 chips/待办/�
   assert.match(html.body, /<span class="chip" title="应用缺陷">应用缺陷 × 3<\/span>/, "失败域 top3 chips（中文＋title 原文）");
   assert.match(html.body, /<span class="chip" title="环境">环境 × 1<\/span>/, "失败域 chips 带 title 原文");
   assert.match(html.body, /未裁决失败 0 条 · 未建单缺陷 0 项/, "待办：未裁决/未建单");
-  assert.match(html.body, /任务积压 0（待 0 \/ 领 0 \/ 跑 0） · 失败 0/, "待办：积压 p+c+r / 失败数");
+  assert.match(
+    html.body,
+    /任务积压 0（待 0 \/ 领 0 \/ 跑 0） · 套件失败 0 · 单次失败 0/,
+    "待办：套件/单次失败分口径"
+  );
   assert.match(html.body, /执行机 在线 0 · 设备 0/, "运行：执行机");
   assert.match(html.body, /定时任务 启用 0 · 最近触发 —/, "运行：定时回归");
 });

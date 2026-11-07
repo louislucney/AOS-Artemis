@@ -20,7 +20,11 @@ const MIME_BY_EXT: Record<string, string> = {
   ".xml": "application/xml; charset=utf-8",
   ".csv": "text/csv; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".apk": "application/vnd.android.package-archive",
+  ".ipa": "application/octet-stream",
+  ".zip": "application/zip",
+  ".pen": "application/octet-stream"
 };
 
 const MAX_INDEX_ENTRIES = 500;

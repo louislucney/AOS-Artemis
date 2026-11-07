@@ -632,7 +632,9 @@ export function renderDispatchPage(view: DispatchView): string {
   const runnerBadges = preview.runnerCandidates
     .map(
       (runner) =>
-        `${cBadge({ label: runner.online ? "在线" : "失联", tone: runner.online ? "success" : "warning" })} <code>${escapeHtml(runner.host)}</code>`
+        `${cBadge({ label: runner.online ? "在线" : "失联", tone: runner.online ? "success" : "warning" })} <code>${escapeHtml(
+          runner.hostId === null ? runner.host : `${runner.hostId}（${runner.host}）`
+        )}</code>`
     )
     .join(" · ");
   const warnings = preview.warnings
@@ -641,7 +643,9 @@ export function renderDispatchPage(view: DispatchView): string {
   const hostOptions = preview.hosts
     .map((host) => {
       const title =
-        host.label === null ? host.hostname : `${host.label}（${host.hostname}）`;
+        host.label === null
+          ? `${host.id}（${host.hostname}）`
+          : `${host.id}（${host.hostname} · ${host.label}）`;
       const meta = [
         host.kind,
         host.online ? "在线" : "离线",

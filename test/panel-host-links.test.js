@@ -405,7 +405,7 @@ test("功能对齐按 (host, path) 识别项目：同路径两主机并列不折
   assert.equal(group.entries.length, 3, "A/B 同 App 同路径、C 另一路径，三台主机各自一条");
   assert.deepEqual(
     group.entries.map((entry) => entry.project),
-    ["app · MAC-A", "app · MAC-B", "app · MAC-C"],
+    ["app · h-a（MAC-A）", "app · h-b（MAC-B）", "app · h-c（MAC-C）"],
     "按 hostId 稳定排序，不折叠任何主机"
   );
   assert.equal(view.featureAlignment.unmatched, 0);
