@@ -445,6 +445,8 @@ export interface RegressionTaskRecord {
   deviceSerial: string | null;
   /** 预占租约主键 `<hostId>:<serial>`（`device_leases` 无独立 id 列）。 */
   deviceLeaseId: string | null;
+  /** 可选安装包资产 id（package）；runner 执行前下载安装，不再要求设备预装。 */
+  appAssetId: string | null;
 }
 
 /** 旧 `stopped` 行对外统一读作 `cancelled`（`cancelSource=panel` 仅作历史来源标注）。 */
@@ -462,7 +464,8 @@ export function normalizeRegressionTask(record: RegressionTaskRecord): Regressio
     jobSpec: record.jobSpec ?? null,
     executionMode: record.executionMode === "llm" ? "llm" : "maestro",
     deviceSerial: record.deviceSerial ?? null,
-    deviceLeaseId: record.deviceLeaseId ?? null
+    deviceLeaseId: record.deviceLeaseId ?? null,
+    appAssetId: record.appAssetId ?? null
   };
 }
 
@@ -873,6 +876,7 @@ export interface CreateRegressionTaskInput {
   executionMode?: "maestro" | "llm";
   deviceSerial?: string | null;
   deviceLeaseId?: string | null;
+  appAssetId?: string | null;
 }
 
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */
@@ -925,7 +929,14 @@ export interface ProjectStore {
     }>;
     /** flows.json 内容（可选；runner 用于设计上下文/UI diff）。 */
     flows?: { path: string; content: string } | null;
-  } | null>;
+    /** 任务选择的安装包元数据（runner 通过控制面下载；不含中心路径）。 */
+    appAsset?: { id: string; filename: string; sha256: string; size: number } | null;
+  }>;
+  /** runner 控制面：下载任务选择的安装包（仅远程 client 实现）。 */
+  downloadTaskApp?(
+    rootPath: string,
+    id: string
+  ): Promise<{ filename: string; sha256: string; size: number; buffer: Buffer } | null>;
   listRegressionTasks(rootPath: string, limit?: number): Promise<RegressionTaskRecord[]>;
   /** 只取 `stopping`（可选 deadline：`cancel_requested_at <= deadline OR IS NULL`）；
    * `limit` 缺省 1000。后台清扫专用，避免全表读取。 */

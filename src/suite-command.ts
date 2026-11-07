@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -384,7 +384,7 @@ Usage:
   mobile-testing-mcp suite reconcile list|confirm|reject [options]
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
   mobile-testing-mcp suite task create|list|show|release|cancel [options]
-                                     回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none]（引用取该功能最新用例集）
+                                     回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none] [--app-asset <id>]（引用取该功能最新用例集；--app-asset 执行前安装）
                                      中心模式：create|list|cancel --host <id|hostname> [--project <rootPath>]（只连 PG，不构建本机 Runtime）
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
                                      cancel <taskId> [--note <text>]：取消任务（pending → 已取消；执行中 → 停止中，待执行机确认）
@@ -503,6 +503,64 @@ export function materializeTaskDocuments(
   return paths;
 }
 
+function writeFileAtomicBuffer(target: string, buffer: Buffer): void {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const tmp = `${target}.part-${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, buffer);
+    fs.renameSync(tmp, target);
+  } finally {
+    try {
+      if (fs.existsSync(tmp)) fs.rmSync(tmp, { force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+async function materializeTaskApp(
+  runtime: Runtime,
+  task: { appAssetId: string | null },
+  bundle: Awaited<ReturnType<NonNullable<ProjectStore["getTaskBundle"]>>> | null
+): Promise<{ ok: true; path: string | null } | { ok: false; error: string }> {
+  if (task.appAssetId === null) return { ok: true, path: null };
+  const cacheDir = path.join(runtime.project.rootDir, ".artemis", "cache", "apps");
+  const targetFor = (filename: string, sha256: string): string => {
+    const ext = path.extname(filename).toLowerCase();
+    const suffix = /^\.(apk|ipa)$/.test(ext) ? ext : ".apk";
+    return path.join(cacheDir, `${sha256 || "app"}${suffix}`);
+  };
+  const appAsset = bundle?.appAsset ?? null;
+  if (appAsset !== null && typeof runtime.store.downloadTaskApp === "function") {
+    try {
+      const downloaded = await runtime.store.downloadTaskApp(
+        runtime.project.rootDir,
+        appAsset.id
+      );
+      if (downloaded === null) return { ok: false, error: "控制面返回的安装包为空" };
+      const actual = createHash("sha256").update(downloaded.buffer).digest("hex");
+      if (appAsset.sha256 !== "" && actual !== appAsset.sha256) {
+        return { ok: false, error: `安装包校验失败：期望 ${appAsset.sha256}，实际 ${actual}` };
+      }
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const target = targetFor(downloaded.filename, actual);
+      if (!fs.existsSync(target)) writeFileAtomicBuffer(target, downloaded.buffer);
+      return { ok: true, path: target };
+    } catch (error) {
+      return { ok: false, error: `安装包下载失败：${errorMessage(error)}` };
+    }
+  }
+  const asset = await runtime.store.getWebAsset(runtime.project.rootDir, task.appAssetId).catch(() => null);
+  if (asset === null || asset.kind !== "package") {
+    return { ok: false, error: `安装包资产不可用：${task.appAssetId}` };
+  }
+  const resolved = path.resolve(asset.storagePath);
+  if (!fs.existsSync(resolved)) {
+    return { ok: false, error: `安装包文件不存在：${asset.filename}` };
+  }
+  return { ok: true, path: resolved };
+}
+
 async function suiteRunTask(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -618,7 +676,16 @@ async function suiteRunTask(
     }
   }
 
+  const taskApp = await materializeTaskApp(runtime, task, bundle);
+  if (!taskApp.ok) {
+    io.errorLog(taskApp.error);
+    return 2;
+  }
   const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
+  if (taskApp.path !== null && flags.get("app-path") === null) {
+    baseOptions.appPath = taskApp.path;
+    say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);
+  }
   const quarantine = loadSuiteQuarantine(
     runtime,
     flags.bool("no-quarantine"),
@@ -2491,9 +2558,19 @@ async function suiteTaskCreate(
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none]"
+      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>]"
     );
     return 2;
+  }
+  const appAssetId = (flags.get("app-asset") ?? "").trim() || null;
+  if (appAssetId !== null) {
+    const asset = await runtime.store
+      .getWebAsset(runtime.project.rootDir, appAssetId)
+      .catch(() => null);
+    if (asset === null || asset.kind !== "package") {
+      io.errorLog(`未知安装包资产 "${appAssetId}"（需先上传 package 资产）`);
+      return 2;
+    }
   }
   const resolved = resolveTaskRefsFromSets(
     await runtime.store.listCaseSets(runtime.project.rootDir),
@@ -2516,7 +2593,8 @@ async function suiteTaskCreate(
     createdBy: "cli",
     targetHostId: projectRecord?.hostId ?? localHostId,
     createdHostId: localHostId,
-    priority
+    priority,
+    appAssetId
   });
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
@@ -2863,14 +2941,14 @@ async function suiteTaskCreateOnHost(
   const rootPath = rawProject === null ? null : normalizeRootPath(rawProject);
   if (rootPath === null || rootPath === "") {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>]"
     );
     return 2;
   }
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>]"
     );
     return 2;
   }
@@ -2888,6 +2966,14 @@ async function suiteTaskCreateOnHost(
   if (targeting === null) return 2;
   const priority = parseTaskPriority(flags, io);
   if (priority === null) return 2;
+  const appAssetId = (flags.get("app-asset") ?? "").trim() || null;
+  if (appAssetId !== null) {
+    const asset = await scoped.getWebAsset(rootPath, appAssetId).catch(() => null);
+    if (asset === null || asset.kind !== "package") {
+      io.errorLog(`未知安装包资产 "${appAssetId}"（需先在目标项目上传 package 资产）`);
+      return 2;
+    }
+  }
   const precheck = precheckTask(
     {
       id: host.id,
@@ -2911,7 +2997,8 @@ async function suiteTaskCreateOnHost(
     createdBy: "cli",
     targetHostId: hostId,
     createdHostId,
-    priority
+    priority,
+    appAssetId
   });
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));

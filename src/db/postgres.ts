@@ -243,7 +243,8 @@ const SCHEMA = [
      job_spec TEXT,
      execution_mode TEXT NOT NULL DEFAULT 'maestro',
      device_serial TEXT,
-     device_lease_id TEXT
+     device_lease_id TEXT,
+     app_asset_id TEXT
     )`,
   `CREATE TABLE IF NOT EXISTS suite_runs (
      id TEXT PRIMARY KEY,
@@ -515,6 +516,7 @@ const MIGRATIONS = [
      ON regression_tasks(status, execution_mode, target_host_id, device_serial)`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_serial TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_lease_id TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_asset_id TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_host_id TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS channel TEXT`,
@@ -1061,8 +1063,9 @@ export class PostgresStore implements ProjectStore {
     await this.pool.query(
       `INSERT INTO regression_tasks
          (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids,
-          target_host_id, created_host_id, priority, job_spec, execution_mode, device_serial, device_lease_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          target_host_id, created_host_id, priority, job_spec, execution_mode, device_serial, device_lease_id,
+          app_asset_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       [
         id,
         project?.id ?? null,
@@ -1079,7 +1082,8 @@ export class PostgresStore implements ProjectStore {
         input.jobSpec === undefined || input.jobSpec === null ? null : JSON.stringify(input.jobSpec),
         input.executionMode === "llm" ? "llm" : "maestro",
         input.deviceSerial ?? null,
-        input.deviceLeaseId ?? null
+        input.deviceLeaseId ?? null,
+        input.appAssetId ?? null
       ]
     );
     return {
@@ -1111,7 +1115,8 @@ export class PostgresStore implements ProjectStore {
       jobSpec: input.jobSpec ?? null,
       executionMode: input.executionMode === "llm" ? "llm" : "maestro",
       deviceSerial: input.deviceSerial ?? null,
-      deviceLeaseId: input.deviceLeaseId ?? null
+      deviceLeaseId: input.deviceLeaseId ?? null,
+      appAssetId: input.appAssetId ?? null
     };
   }
 
@@ -2752,8 +2757,8 @@ export class PostgresStore implements ProjectStore {
         `INSERT INTO regression_tasks
            (id, project_id, created_at, created_by, refs, platforms, baseline, status, claimed_by, claimed_at,
             run_ids, attempts, cancel_source, cancelled_by, cancelled_host_id, cancelled_at, cancel_note,
-            cancel_requested_at, job_spec, device_serial, device_lease_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+            cancel_requested_at, job_spec, device_serial, device_lease_id, app_asset_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
          ON CONFLICT (id) DO NOTHING
          RETURNING id`,
         [
@@ -2777,7 +2782,8 @@ export class PostgresStore implements ProjectStore {
           entry.cancelRequestedAt,
           entry.jobSpec === null || entry.jobSpec === undefined ? null : JSON.stringify(entry.jobSpec),
           entry.deviceSerial ?? null,
-          entry.deviceLeaseId ?? null
+          entry.deviceLeaseId ?? null,
+          entry.appAssetId ?? null
         ]
       );
       regressionTasks.inserted += Number(inserted.rowCount ?? 0);
@@ -3744,7 +3750,8 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     jobSpec: parseJobSpec(row.job_spec),
     executionMode: row.execution_mode === "llm" ? "llm" : "maestro",
     deviceSerial: nullableString(row.device_serial),
-    deviceLeaseId: nullableString(row.device_lease_id)
+    deviceLeaseId: nullableString(row.device_lease_id),
+    appAssetId: nullableString(row.app_asset_id)
   });
 }
 

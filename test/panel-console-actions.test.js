@@ -563,3 +563,67 @@ test("console actions: 从 Web Excel 资产导入用例库（同一 Excel 双向
   const assets = await store.listWebAssets(rootPath, "excel");
   assert.equal(assets.length, 1, "同一内容不重复登记 Web 资产");
 });
+
+test("console actions: 安装包 appAssetId 写入任务；非法/平台不匹配拒绝", async () => {
+  const { deps, rootPath, store } = await setup();
+  const set = await store.recordCaseSet({
+    rootPath,
+    source: "figma:x",
+    basename: "登录回归",
+    features: [
+      { key: "f-1", name: "登录", caseCount: 1, screens: [], jsonPath: "/x/a.json", mdPath: "/x/a.md", xlsxPath: "/x/a.xlsx" }
+    ]
+  });
+  const pkg = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "package",
+    filename: "app-release.apk",
+    buffer: Buffer.from("apk-bytes")
+  });
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: set.id,
+    platforms: "android",
+    appAssetId: pkg.id
+  });
+  const preview = await computeDispatchPreview({ store, env: {} }, rootPath, params);
+  const ok = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: set.id,
+      platforms: ["android"],
+      appAssetId: pkg.id,
+      previewId: dispatchPreviewId(preview, dispatchFormSignature(params), rootPath)
+    }),
+    deps
+  );
+  assert.equal(ok.status, 200);
+  assert.equal(JSON.parse(ok.body).task.appAssetId, pkg.id);
+
+  const missing = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: set.id,
+      platforms: ["android"],
+      appAssetId: "missing"
+    }),
+    deps
+  );
+  assert.equal(missing.status, 400);
+
+  const wrongPlatform = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: set.id,
+      platforms: ["ios"],
+      appAssetId: pkg.id
+    }),
+    deps
+  );
+  assert.equal(wrongPlatform.status, 400);
+  assert.match(JSON.parse(wrongPlatform.body).error, /Android/);
+});

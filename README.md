@@ -146,7 +146,7 @@ node dist/cli.js host register <id|hostname> --label <名> --owner <人> \
 
 # 中心：定向创建回归任务（必须给目标机上的项目根路径）
 node dist/cli.js suite task create --host <id|hostname> --project <rootPath> \
-        --ref <featureKey>... [--platform ios|android]... [--baseline latest|none]
+        --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>]
 node dist/cli.js suite task list --host <id|hostname> [--project <rootPath>]
 node dist/cli.js suite task cancel <taskId> --host <id|hostname> --project <rootPath> [--note <text>]
 
@@ -275,7 +275,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 | 版块 | 内容与动作 |
 |---|---|
 | `assets` **测试资产** | `overview\|case-sets\|excel\|packages\|materials\|reference`；用例集、Excel/CSV、安装包、测试资料、参考图统一管理；Excel 列映射/导入/上传需 maintainer+。Maestro 脚本集入口已移除。 |
-| `create` **新建测试** | 只保留套件回归四步下发向导；**Android 真机用 MCP 原生 `run_regression` / `mobile_run_task`（`appPath` 安装 APK）**；旧网页测试入口自动跳回套件回归。 |
+| `create` **新建测试** | 只保留套件回归四步下发向导；「② 参数」可选安装包（APK/IPA），执行机领取后先安装再跑用例，不要求设备预装；旧网页测试入口自动跳回套件回归。 |
 | `tasks` **任务与结果** | 套件回归任务列表（状态/设备/门禁/失败域），25 条/页分页并保留搜索/筛选；详情 `section=tasks&task=<id>` 展示运行/引用/跨端+重新派发；`view=review\|stats` 为待处理失败与统计子视图。历史 Web 任务数据保留但不在面板展示 |
 | `devices` **设备台账** | 全局只读设备列表（suite runner）：执行机在线/离线、平台、模拟器/真机、型号/系统版本、`空闲`/`占用`/`离线`、当前任务（设备租约）与到期、最后心跳、工具；按 `state=idle|busy|offline`、`platform=android|ios` 过滤；空闲＝在线且无有效租约；页面只读、不展示 token/secret |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
@@ -673,7 +673,7 @@ node dist/cli.js suite report [--limit N] [--case <caseId|semanticId|displayId>]
                            [--update-tests [--tests-xlsx <path>]]
 node dist/cli.js suite feedback [--min-failures N]
 node dist/cli.js suite reconcile list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>] [--json]
-node dist/cli.js suite task create --ref <featureKey>... [--platform ios|android]... [--baseline latest|none]
+node dist/cli.js suite task create --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>]
 node dist/cli.js suite task list|show <id> [--json]
 node dist/cli.js suite task create|list|cancel --host <id|hostname> --project <rootPath> ...   # 中心模式（仅 PG）
 node dist/cli.js suite queue status|pause|resume [--host <id|hostname>] [--note <text>] [--json]

@@ -143,6 +143,56 @@ export class SuiteStoreClient {
     return await this.request("GET", "/default-project");
   }
 
+  async downloadTaskApp(
+    rootPath: string,
+    taskId: string
+  ): Promise<{ filename: string; sha256: string; size: number; buffer: Buffer } | null> {
+    let response: Awaited<ReturnType<typeof fetch>>;
+    try {
+      response = await this.fetchImpl(
+        `${this.baseUrl}/panel/api/runners/suite/tasks/${encodeURIComponent(
+          taskId
+        )}/app?rootPath=${encodeURIComponent(this.root(rootPath))}`,
+        {
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${this.token}`,
+            "x-aos-host-id": this.hostId,
+            ...(this.instanceId === "" ? {} : { "x-mobile-testing-instance-id": this.instanceId })
+          },
+          signal: AbortSignal.timeout(Math.max(this.timeoutMs, 600_000))
+        }
+      );
+    } catch (error) {
+      throw new SuiteStoreHttpError(
+        0,
+        "network-error",
+        `安装包下载失败：${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      let message = `安装包下载失败（HTTP ${response.status}）`;
+      try {
+        const parsed = JSON.parse(text) as { error?: unknown };
+        if (typeof parsed.error === "string") message = parsed.error;
+      } catch {
+        /* keep default */
+      }
+      throw new SuiteStoreHttpError(response.status, "app-download-failed", message);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length === 0) return null;
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const match = /filename="([^"]+)"/.exec(disposition);
+    return {
+      filename: match?.[1] ?? "app.apk",
+      sha256: response.headers.get("x-aos-sha256") ?? "",
+      size: buffer.length,
+      buffer
+    };
+  }
+
   async getLlm(rootPath: string): Promise<RunnerLlmConfig> {
     return await this.request(
       "GET",

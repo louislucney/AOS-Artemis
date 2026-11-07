@@ -552,7 +552,7 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
   const suiteHref = `/panel?${projectQuery}&section=create&type=suite${hostQuery}`;
   const suiteReady = data.caseSetCount > 0;
   const suiteBody = [
-    `<p>用已有用例集在设备上跑回归；设备需<strong>预装 App</strong>，不在这里选安装包。</p>`,
+    `<p>用已有用例集在设备上跑回归；可在下一步<strong>选择安装包</strong>，执行机自动安装；不选则要求设备已安装。</p>`,
     `<p class="muted">用例集 ${data.caseSetCount} 份${suiteReady ? "" : " · 还没有用例集"}</p>`,
     suiteReady
       ? `<p><a class="c-button c-button-primary" href="${escapeHtml(suiteHref)}">开始套件回归</a></p>`
@@ -577,7 +577,7 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
       '<div class="cards">',
       cCard({
         title: "套件回归",
-        subtitle: "用例集 + 设备；设备预装 App",
+        subtitle: "用例集 + 设备；可选安装包",
         body: suiteBody
       }),
       "</div>"

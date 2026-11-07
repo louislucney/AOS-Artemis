@@ -3942,3 +3942,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **动作**：删除 `/panel/api/jobs/clone`（网页测试重新下发）与任务详情的 `clone-web` 按钮；任务详情只保留暂停/停止/释放/重新派发（套件）。
 - **保留**：`src/web/` 的 Web 资产/结果/任务数据模型、`/panel/api/jobs` 历史读取与 web LLM worker 后端不动；历史任务/结果仍在存储中，只是面板不展示。
 - **测试**：`test/console-pages.test.js`、`test/panel-web.test.js`、`test/panel-console-actions.test.js`、`test/panel-legacy-redirect.test.js`、`test/web-assets-ui.test.js` 同步覆盖；全量 `3094/3094` 通过，lint 0 error。
+
+### 13.322 新增（套件回归可选安装包：任务级 appAssetId + runner 预装）
+
+> 2026-11-07。套件回归此前要求设备预装 App，用户新建任务时无法选择安装包。新增任务级可选安装包：面板「② 参数」从项目 package 资产选择 APK/IPA，任务落 `appAssetId`；runner 领取后通过中心控制面下载并校验 sha256，再以 `app_path` 交给 Artemis 安装后执行。未选择时保持旧行为（设备需已安装）。
+
+- **数据**（`RegressionTaskRecord.appAssetId`、`CreateRegressionTaskInput.appAssetId`）：PG `regression_tasks.app_asset_id` 迁移；Memory/File 默认 null；任务包（`getTaskBundle`）附 `appAsset {id,filename,sha256,size}`，不泄露中心路径。
+- **面板**（`src/console/dispatch.ts`、`src/panel/actions.ts`）：下发预览读取项目 package 资产，新增「安装包（可选）」下拉并进入表单签名/预览过期校验；`POST /panel/api/tasks` 校验资产属于项目且 kind=package、APK↔Android / IPA↔iOS 与目标端匹配，随后写 `appAssetId`。
+- **控制面**（`src/runner/control/suite-service.ts`、`suite-routes.ts`、`suite-http.ts`、`src/http-server.ts`）：新增 `GET /panel/api/runners/suite/tasks/:id/app?rootPath=…`，runner token + host 鉴权、任务可见性校验、资产 realpath 越界校验；返回二进制流 + `X-Aos-Sha256`。`SuiteStoreClient.downloadTaskApp` 带 token 下载。
+- **执行**（`src/suite-command.ts` `materializeTaskApp`）：任务有 `appAssetId` 时优先经控制面下载到 `<project>/.artemis/cache/apps/<sha>.<apk|ipa>`（sha256 不匹配即失败）；本机中心模式回退 `getWebAsset.storagePath`；设置 `SuiteRunOptions.appPath`，CLI 显式 `--app-path` 优先。下载/校验失败在执行前退出 2，不进入用例。
+- **CLI**：`suite task create [--host …] [--project …] --app-asset <id>`；未知/非 package 资产 exit 2。
+- **测试**：`test/console-dispatch.test.js`（预览/表单/签名/未知资产）、`test/panel-console-actions.test.js`（落任务/平台校验）、`test/runner-control-suite.test.js`（bundle appAsset + 二进制下载 + 客户端方法）；全量 `3097/3097`、lint 0 error。

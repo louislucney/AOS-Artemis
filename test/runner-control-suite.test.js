@@ -12,6 +12,7 @@ import { createAosHttpServer } from "../dist/http-server.js";
 import { buildRemoteSuiteRuntime } from "../dist/cli-runtime.js";
 import { SuiteStoreClient } from "../dist/runner/control/suite-client.js";
 import { createHybridSuiteStore } from "../dist/runner/control/suite-store.js";
+import { storeWebAsset } from "../dist/web/assets.js";
 import { baseConfig, makeTempProject } from "./helpers.js";
 
 const HOST = "suite-control-host";
@@ -634,12 +635,20 @@ test("suite control: default project + bundle documents allow a different runner
     ]
   });
   const [caseSet] = await central.store.listCaseSets(central.rootPath);
+  const app = await storeWebAsset({
+    store: central.store,
+    rootPath: central.rootPath,
+    kind: "package",
+    filename: "app-release.apk",
+    buffer: Buffer.from("fake-apk-bytes")
+  });
   const task = await central.store.createRegressionTask({
     rootPath: central.rootPath,
     refs: [{ caseSetId: caseSet.id, featureKey: "login" }],
     platforms: ["android"],
     baseline: "latest",
-    targetHostId: HOST
+    targetHostId: HOST,
+    appAssetId: app.id
   });
   const localDir = makeTempProject({ config: baseConfig() });
   const workspaceRoot = await makeWorkspace();
@@ -672,6 +681,16 @@ test("suite control: default project + bundle documents allow a different runner
         assert.equal(bundlePayload.value.documents.length, 1);
         assert.match(bundlePayload.value.documents[0].content, /TC_01/);
         assert.match(bundlePayload.value.flows.content, /screens/);
+        assert.equal(bundlePayload.value.appAsset.id, app.id);
+        assert.equal(bundlePayload.value.appAsset.filename, "app-release.apk");
+
+        const appResponse = await fetch(
+          `${baseUrl}/panel/api/runners/suite/tasks/${encodeURIComponent(task.id)}/app?rootPath=${encodeURIComponent(central.rootPath)}`,
+          { headers }
+        );
+        assert.equal(appResponse.status, 200);
+        assert.equal(appResponse.headers.get("x-aos-sha256"), app.sha256);
+        assert.equal(Buffer.from(await appResponse.arrayBuffer()).toString(), "fake-apk-bytes");
 
         const env = {
           AOS_HOST_ID: HOST,
@@ -687,6 +706,10 @@ test("suite control: default project + bundle documents allow a different runner
           assert.equal(remoteTask?.id, task.id);
           const remoteBundle = await built.runtime.store.getTaskBundle?.(localDir, task.id);
           assert.equal(remoteBundle?.documents?.length, 1);
+          assert.equal(remoteBundle?.appAsset?.id, app.id);
+          const downloaded = await built.runtime.store.downloadTaskApp?.(localDir, task.id);
+          assert.equal(downloaded?.filename, "app-release.apk");
+          assert.equal(downloaded?.buffer.toString(), "fake-apk-bytes");
           const projectAfter = await central.store.getProjectByPath(central.rootPath);
           assert.equal(projectAfter?.name, path.basename(central.rootPath));
         } finally {

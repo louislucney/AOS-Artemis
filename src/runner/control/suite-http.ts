@@ -20,6 +20,10 @@ export interface SuiteControlHttpResponse {
   status: number;
   contentType: string;
   body: string;
+  /** 二进制文件响应（安装包下载）：由 HTTP 层流式返回。 */
+  streamPath?: string;
+  streamSize?: number;
+  headers?: Record<string, string>;
 }
 
 const JSON_TYPE = "application/json; charset=utf-8";
@@ -57,6 +61,28 @@ export async function handleSuiteControlRequest(
       instanceId,
       input.publicBaseUrl ?? ""
     );
+    if (route.op === "getTaskApp") {
+      const value = (await service.execute(route.op, route.args)) as {
+        filename: string;
+        sha256: string;
+        size: number;
+        filePath: string;
+      };
+      return {
+        status: 200,
+        contentType: value.filename.toLowerCase().endsWith(".ipa")
+          ? "application/octet-stream"
+          : "application/vnd.android.package-archive",
+        body: "",
+        streamPath: value.filePath,
+        streamSize: value.size,
+        headers: {
+          "Content-Length": String(value.size),
+          "Content-Disposition": `attachment; filename="${value.filename.replace(/["\\\r\n]/g, "_")}"`,
+          "X-Aos-Sha256": value.sha256
+        }
+      };
+    }
     return json(200, { ok: true, value: await service.execute(route.op, route.args) });
   } catch (error) {
     if (error instanceof RunnerControlError) {

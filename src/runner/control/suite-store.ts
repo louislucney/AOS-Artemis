@@ -14,6 +14,7 @@ export function createHybridSuiteStore(
   const overrides: Overrides = {
     getRegressionTask: (rootPath, id) => client.getRegressionTask(rootPath, id),
     getTaskBundle: (rootPath, id) => client.getTaskBundle(rootPath, id),
+    downloadTaskApp: (rootPath, id) => client.downloadTaskApp(rootPath, id),
     updateRegressionTask: (rootPath, id, patch) =>
       client.updateRegressionTask(rootPath, id, patch),
     listCaseSets: (rootPath, limit) => client.listCaseSets(rootPath, limit),

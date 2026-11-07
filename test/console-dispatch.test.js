@@ -426,3 +426,49 @@ test("computeDispatchPreview: owner 来源读取失败显式示因，不伪装�
   assert.equal(preview.sourceStore.tier, "owner");
   assert.equal(preview.sourceStore.error, "source-read-failed");
 });
+
+test("dispatch preview: 可选安装包并进入表单/签名", async () => {
+  const { store, setA } = await seed();
+  const pkg = await store.createWebAsset({
+    rootPath: ROOT,
+    kind: "package",
+    filename: "app-release.apk",
+    sha256: "a".repeat(64),
+    size: 1234,
+    storagePath: "/w/p/.artemis/web/assets/package/app.apk"
+  });
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: setA.id,
+    platforms: "android",
+    appAssetId: pkg.id
+  });
+  const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
+  assert.equal(preview.appAssetId, pkg.id);
+  assert.equal(preview.appPackages.length, 1);
+  assert.equal(preview.appPackages[0].filename, "app-release.apk");
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId: dispatchPreviewId(preview, dispatchFormSignature(params), ROOT),
+    formSignature: dispatchFormSignature(params),
+    query: Object.fromEntries(params)
+  });
+  assert.match(html, /name="appAssetId"/);
+  assert.match(html, /app-release\.apk/);
+  assert.match(html, /执行机在跑用例前安装/);
+  assert.match(dispatchFormSignature(params), new RegExp(pkg.id));
+});
+
+test("dispatch preview: 未知安装包给警告且不选中", async () => {
+  const { store, setA } = await seed();
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: setA.id,
+    appAssetId: "missing-asset"
+  });
+  const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
+  assert.equal(preview.appAssetId, null);
+  assert.match(preview.warnings.join(" "), /安装包不存在|安装包.*已删除/);
+});

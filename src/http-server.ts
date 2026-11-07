@@ -404,7 +404,23 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             publicBaseUrl: `${proto}://${hostHeader}`,
             ...(suiteBody === undefined ? {} : { body: suiteBody })
           });
-          res.writeHead(suiteResponse.status, { "Content-Type": suiteResponse.contentType });
+          res.writeHead(suiteResponse.status, {
+            "Content-Type": suiteResponse.contentType,
+            ...(suiteResponse.headers ?? {})
+          });
+          if (suiteResponse.streamPath !== undefined) {
+            if (req.method === "HEAD") {
+              res.end();
+              return;
+            }
+            const stream = fs.createReadStream(suiteResponse.streamPath);
+            stream.on("error", () => {
+              if (!res.headersSent) res.writeHead(500);
+              res.end();
+            });
+            stream.pipe(res);
+            return;
+          }
           res.end(req.method === "HEAD" ? undefined : suiteResponse.body);
           return;
         }

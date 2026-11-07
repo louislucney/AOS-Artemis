@@ -1502,6 +1502,9 @@ async function checkDispatchPreviewFreshness(
     : [];
   params.set("platforms", platforms.join(","));
   params.set("baseline", payload.baseline === "none" ? "none" : "latest");
+  if (typeof payload.appAssetId === "string" && payload.appAssetId.trim() !== "") {
+    params.set("appAssetId", payload.appAssetId.trim());
+  }
   const host = typeof payload.host === "string" ? payload.host.trim() : "";
   if (host !== "") params.set("host", host);
   const preview = await computeDispatchPreview(
@@ -1643,6 +1646,23 @@ async function createTask(
   if (priority === null) {
     return json(400, { error: "优先级须为 0–100 的整数（priority）" });
   }
+  const rawAppAssetId =
+    typeof payload.appAssetId === "string" ? payload.appAssetId.trim() : "";
+  let appAssetId: string | null = null;
+  if (rawAppAssetId !== "") {
+    const asset = await targetStore.getWebAsset(rootPath, rawAppAssetId).catch(() => null);
+    if (asset === null || asset.kind !== "package") {
+      return json(400, { error: `未知安装包资产 "${rawAppAssetId}"（请刷新预览后重选）` });
+    }
+    const lower = asset.filename.toLowerCase();
+    if (lower.endsWith(".apk") && !uniquePlatforms.includes("android")) {
+      return json(400, { error: "所选 APK 与目标端不匹配：需要勾选 Android" });
+    }
+    if (lower.endsWith(".ipa") && !uniquePlatforms.includes("ios")) {
+      return json(400, { error: "所选 IPA 与目标端不匹配：需要勾选 iOS" });
+    }
+    appAssetId = rawAppAssetId;
+  }
 
   let warnings: string[] = [];
   if (targetHost !== null) {
@@ -1678,7 +1698,8 @@ async function createTask(
     createdBy: "panel",
     targetHostId,
     createdHostId: dispatcherHostId,
-    priority
+    priority,
+    appAssetId
   });
   return json(200, { ok: true, task, ...(warnings.length > 0 ? { warnings } : {}) });
 }

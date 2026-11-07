@@ -154,12 +154,25 @@ export class SuiteControlService {
     } catch {
       flows = null;
     }
+    let appAsset: { id: string; filename: string; sha256: string; size: number } | null = null;
+    if (task.appAssetId !== null) {
+      const asset = await this.store.getWebAsset(rootPath, task.appAssetId).catch(() => null);
+      if (asset !== null && asset.kind === "package") {
+        appAsset = {
+          id: asset.id,
+          filename: asset.filename,
+          sha256: asset.sha256,
+          size: asset.size
+        };
+      }
+    }
     return {
       task,
       project,
       caseSets: selected,
       documents,
-      flows
+      flows,
+      appAsset
     };
   }
 
@@ -169,6 +182,40 @@ export class SuiteControlService {
     await this.assertRunnerProject(rootPath, this.hostId);
     await assertTaskVisible(this.store, rootPath, taskId, this.hostId);
     return await this.store.getRegressionTask(rootPath, taskId);
+  }
+
+  async getTaskApp(args: Record<string, unknown>): Promise<{
+    filename: string;
+    sha256: string;
+    size: number;
+    filePath: string;
+  }> {
+    const rootPath = requireString(args, "rootPath");
+    const taskId = requireString(args, "taskId");
+    await this.assertRunnerProject(rootPath, this.hostId);
+    await assertTaskVisible(this.store, rootPath, taskId, this.hostId);
+    const task = await this.store.getRegressionTask(rootPath, taskId);
+    if (task === null || task.appAssetId === null) {
+      throw new RunnerControlError("not-found", `任务 ${taskId} 未选择安装包`);
+    }
+    const asset = await this.store.getWebAsset(rootPath, task.appAssetId);
+    if (asset === null || asset.kind !== "package") {
+      throw new RunnerControlError("not-found", `安装包资产 ${task.appAssetId} 不可用`);
+    }
+    const assetsRoot = path.join(path.resolve(rootPath), ".artemis", "web", "assets");
+    let realRoot: string;
+    let realFile: string;
+    try {
+      realRoot = fs.realpathSync(assetsRoot);
+      realFile = fs.realpathSync(path.resolve(asset.storagePath));
+    } catch {
+      throw new RunnerControlError("not-found", `安装包文件不可用：${asset.filename}`);
+    }
+    if (realFile !== realRoot && !realFile.startsWith(realRoot + path.sep)) {
+      throw new RunnerControlError("forbidden", `安装包路径越界：${asset.filename}`);
+    }
+    const stat = fs.statSync(realFile);
+    return { filename: asset.filename, sha256: asset.sha256, size: stat.size, filePath: realFile };
   }
 
   async updateTask(args: Record<string, unknown>): Promise<unknown> {
@@ -460,6 +507,8 @@ export class SuiteControlService {
         return await this.getTaskBundle(args);
       case "getTask":
         return await this.getTask(args);
+      case "getTaskApp":
+        return await this.getTaskApp(args);
       case "updateTask":
         return await this.updateTask(args);
       case "listCaseSets":
