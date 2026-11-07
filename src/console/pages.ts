@@ -158,7 +158,7 @@ export function renderLibraryPage(data: LibraryPageData): string {
       )}">测试资产（Excel / 安装包 / 资料 / 参考图）</a></nav>`,
       `<p class="muted">安装包不随用例集保存。需要上传新安装包请去 <a href="${escapeHtml(
         `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets&tab=packages&kind=package${hostQuery}#asset-upload`
-      )}">测试资产 → 安装包</a>；下发时在「网页测试（安装包）」选择。</p>`,
+      )}">测试资产 → 安装包</a>；套件回归使用设备上已安装的 App。</p>`,
       cCard({
         title: "用例集",
         subtitle: `共 ${data.sets.length} 份用例集 · 每份可打开 Excel（tests.xlsx）`,
@@ -492,7 +492,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       "</div>",
       '<p class="muted">下一步：去 <a href="/panel?project=' +
         encodeURIComponent(data.rootPath) +
-        '&section=create">新建测试</a> 选择套件回归或网页测试。</p>'
+        '&section=create">新建测试</a> 开始套件回归。</p>'
     ].join("")
   });
   const excelCard = `<div id="excel-assets">${cCard({
@@ -614,16 +614,6 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
   const assetsHref = `/panel?${projectQuery}&section=assets${hostQuery}`;
   const suiteHref = `/panel?${projectQuery}&section=create&type=suite${hostQuery}`;
   const suiteReady = data.caseSetCount > 0;
-  const canCreateProject =
-    data.capabilities?.role === undefined || data.capabilities.role === "admin";
-  const registrationNotice =
-    data.projectStatus === null
-      ? `<div class="c-banner c-banner-warn" role="status"><strong>尚未登记网页测试项目</strong>：网页测试需要项目应用包名/平台；下发前请先在中心登记。${
-          canCreateProject
-            ? ' <a class="c-button" href="/panel?new=1#new-project">新增项目</a>'
-            : ' <span class="muted">请联系管理员新增项目。</span>'
-        } 套件回归仍可使用已有用例集。</div>`
-      : "";
   const suiteBody = [
     `<p>用已有用例集在设备上跑回归；设备需<strong>预装 App</strong>，不在这里选安装包。</p>`,
     `<p class="muted">用例集 ${data.caseSetCount} 份${suiteReady ? "" : " · 还没有用例集"}</p>`,
@@ -633,18 +623,6 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
           `/panel?${projectQuery}&section=assets&tab=case-sets${hostQuery}`
         )}">先去导入用例集</a></p>`,
     `<p class="muted">执行机与设备在下一步选择。</p>`
-  ].join("");
-  const mcpBody = [
-    `<p><strong>MCP 原生接入</strong>不经过网页测试表单：单条用 <code>mobile_run_task</code>，Excel 用 <code>run_regression</code>，已有用例集用套件回归。</p>`,
-    `<p class="muted">执行机需在线并已接入 Android 设备；LLM 由中心配置。</p>`,
-    `<p><a class="c-button c-button-primary" href="/panel?section=devices#runner-guide">查看执行机与设备</a> <a class="c-button" href="${escapeHtml(
-      assetsHref
-    )}">上传资产</a></p>`
-  ].join("");
-  const webBody = [
-    `<p>Maestro 网页测试已移除；历史任务只读。</p>`,
-    `<p class="muted">Excel ${data.excelCount} 份 · 安装包 ${data.packageCount} 个</p>`,
-    `<p class="muted">Android 真机请走上方「MCP 原生执行」；安装包、测试资料、参考图都在测试资产里统一管理。</p>`
   ].join("");
   return renderConsoleShell({
     title: "新建测试",
@@ -656,8 +634,7 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
     storeHealth: data.storeHealth,
     body: [
       "<h1>新建测试</h1>",
-      registrationNotice,
-      `<p class="muted">先选测试类型，再选资产和执行机。测试资产统一在 <a href="${escapeHtml(
+      `<p class="muted">目前新建测试只有套件回归：用例集 + 设备。测试资产统一在 <a href="${escapeHtml(
         assetsHref
       )}">测试资产</a> 管理。</p>`,
       '<div class="cards">',
@@ -665,16 +642,6 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
         title: "套件回归",
         subtitle: "用例集 + 设备；设备预装 App",
         body: suiteBody
-      }),
-      cCard({
-        title: "MCP 原生执行",
-        subtitle: "mobile_run_task / run_regression；不需要网页测试表单",
-        body: mcpBody
-      }),
-      cCard({
-        title: "网页测试（历史）",
-        subtitle: "Maestro 已移除；历史任务只读",
-        body: webBody
       }),
       "</div>"
     ].join("\n")

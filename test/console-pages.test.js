@@ -469,15 +469,15 @@ test("console pages: 任务与结果统一列出套件任务", async () => {
   assert.doesNotMatch(miss.body, new RegExp(task.id.slice(0, 12)));
 });
 
-test("console pages: 新建测试 landing 与套件/网页 tab", async () => {
+test("console pages: 新建测试 landing 只保留套件回归入口", async () => {
   const { deps, rootPath } = await setup();
   const landing = await handlePanelRequest(url(rootPath, "create"), deps);
   assert.equal(landing.status, 200);
   assert.match(landing.body, /新建测试/);
-  assert.match(landing.body, /尚未登记网页测试项目/);
-  assert.match(landing.body, /new=1#new-project/);
   assert.match(landing.body, /开始套件回归|先去导入用例集/);
-  assert.match(landing.body, /MCP 原生接入|先去上传资产/);
+  assert.doesNotMatch(landing.body, /MCP 原生执行/);
+  assert.doesNotMatch(landing.body, /网页测试（历史）/);
+  assert.doesNotMatch(landing.body, /尚未登记网页测试项目/);
 
   const suite = await handlePanelRequest(url(rootPath, "create", { type: "suite" }), deps);
   assert.equal(suite.status, 200);
