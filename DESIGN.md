@@ -3982,4 +3982,5 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **定向下发**：`createTask` 的 legacy 拒绝仅在**未显式指定 host**时生效；显式 host（如 `win-runner-01`）走跨 root runner 校验：中心 owner 项目存在 + 该 host 已注册 suite runner → 写中心 store、`targetHostId=<runner host>`。
 - **中心公开地址**：`AOS_CENTER_PUBLIC_URL` 覆盖 suite 控制面的 `publicBaseUrl`；`/llm` 返回该地址下的代理 URL，避免 runner 拿到回环地址。`.env.example`/README 增加说明。
 - **smoke 结论**：任务 `aad7c37e-…` 已由 win-runner-01 领取并回写 3 条失败（`imp-4ee495af-19/20/21`，`unclassified`）；中心侧无 manifest/trace（runner 未广告 artifactBaseUrl），需要 runner 重启/配置 `AOS_RUNNER_ADVERTISE_URL` 或更新 runner 包后才能打开证据。
+- **远端证据标注**：任务详情检测 Windows/UNC manifestPath，显示「执行机本地清单 / 执行机本地 trace」并提示配置 `AOS_RUNNER_ADVERTISE_URL`；不再生成中心 404 的批次/trace 链接。
 - **测试**：`npm test` 3101/3101、lint 0 error、类型测试通过。
