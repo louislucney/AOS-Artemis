@@ -319,21 +319,17 @@ export async function ensureArtemisDeps(options: EnsureDepsOptions): Promise<Ens
 
   // No bundle configured: install only makes sense through plain `uv sync`.
   if (!source?.url) {
-    if (state.status === "missing") {
-      return {
-        status: "skipped",
-        message:
-          "未配置 artemis 依赖包地址（AOS_ARTEMIS_DEPS_URL 或 aos.config.jsonc 的 artemis.depsUrl）。\n" +
-          "Run: cd <artemis> && uv sync    （或用 scripts/artemis-deps.sh 构建依赖包后配置地址）"
-      };
-    }
     if (allowOnline) {
-      return await onlineSync("未配置依赖包，使用标准 uv 工作流");
+      return await onlineSync(
+        state.status === "missing"
+          ? "未配置依赖包，首次安装走 uv sync"
+          : "未配置依赖包，使用标准 uv 工作流"
+      );
     }
     return {
       status: "skipped",
       message:
-        "依赖已过期且未配置依赖包、已禁用在线回退（AOS_DEPS_NO_ONLINE=1）。\n" +
+        "未配置依赖包且已禁用在线回退（AOS_DEPS_NO_ONLINE=1）。\n" +
         "Run: cd <artemis> && uv sync    （或重新构建并配置依赖包）"
     };
   }

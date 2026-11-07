@@ -95,12 +95,28 @@ function makeExec({ offlineCode = 0, onlineCode = 0, record } = {}) {
   };
 }
 
-test("deps: missing venv + no source → skipped with guidance", async () => {
+test("deps: missing venv + no source → online uv sync when allowed", async () => {
+  const repo = makeRepo();
+  const calls = [];
+  const result = await ensureArtemisDeps({
+    repoDir: repo,
+    source: null,
+    cacheRoot: tmp("aos-dep-cache-"),
+    exec: makeExec({ record: calls }),
+    log: silent
+  });
+  assert.equal(result.status, "installed", result.message);
+  assert.ok(calls.some((call) => call.args[0] === "sync" && !call.args.includes("--offline")));
+  assert.equal(depsStatus(repo).status, "ready");
+});
+
+test("deps: missing venv + no source + online disabled → skipped with guidance", async () => {
   const repo = makeRepo();
   const result = await ensureArtemisDeps({
     repoDir: repo,
     source: null,
     cacheRoot: tmp("aos-dep-cache-"),
+    allowOnline: false,
     exec: makeExec(),
     log: silent
   });

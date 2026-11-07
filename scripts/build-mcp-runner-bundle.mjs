@@ -27,6 +27,11 @@ const targets = [
     platformTools: "platform-tools-latest-darwin.zip"
   }
 ];
+const bundleCenterUrl =
+  (process.env.AOS_MCP_RUNNER_CENTER_URL ?? "").trim() || "http://<中心IP>:8765";
+const bundleCenterProject =
+  (process.env.AOS_MCP_RUNNER_CENTER_PROJECT ?? "").trim() || "/path/to/center/project";
+const bundleHostId = (process.env.AOS_MCP_RUNNER_HOST_ID ?? "").trim();
 const platformArg = process.argv.find((arg) => arg.startsWith("--platform="))?.split("=")[1] ?? "";
 const selectedTargets =
   platformArg === ""
@@ -80,7 +85,9 @@ function shouldCopyArtemis(src) {
   return true;
 }
 
-function writeProject(staging) {
+function writeProject(staging, target) {
+  const hostId =
+    bundleHostId || (target.platform === "win32" ? "win-runner-01" : "mac-runner-01");
   const projectDir = path.join(staging, "project");
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(
@@ -91,12 +98,12 @@ function writeProject(staging) {
   fs.writeFileSync(
     path.join(projectDir, ".env.example"),
     [
-      "# 中心控制面（HTTP 模式）",
-      "# MOBILE_TESTING_RUNNER_CONTROL_URL=http://<中心IP>:8765",
-      "# MOBILE_TESTING_RUNNER_JOB_TOKEN=",
-      "# MOBILE_TESTING_HOST_ID=win-runner-01",
+      "# 中心控制面（编辑 URL、填 runner token；token 向中心管理员获取）",
+      `MOBILE_TESTING_RUNNER_CONTROL_URL=${bundleCenterUrl}`,
+      "MOBILE_TESTING_RUNNER_JOB_TOKEN=",
+      `MOBILE_TESTING_HOST_ID=${hostId}`,
       "# 中心项目根路径（runner 本地路径与中心不同时填写，用于取中心 LLM）",
-      "# AOS_CENTER_PROJECT_ROOT=/Users/you/AOS/ESSO-GU",
+      `AOS_CENTER_PROJECT_ROOT=${bundleCenterProject}`,
       "",
       "# runner 不需要本机 LLM key：从中心 LLM 代理获取（AOS_LLM_FROM_CENTER=1，真实 key 不出中心）",
       "# 仅当中心不可用、需要本机兜底时才填下面四项",
@@ -136,6 +143,8 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
       'if not exist "project\\.env" copy "project\\.env.example" "project\\.env" >nul',
+      'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
+      'if errorlevel 1 echo [提示] project\\.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。',
       "echo [1/2] 检查环境并安装 Artemis 依赖（首次较慢，需要网络）...",
       "node dist\\cli.js doctor --install-deps",
       "echo.",
@@ -157,10 +166,44 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
       'if not exist "project\\.env" (',
-      "  echo [提示] 缺少 project\\.env：先运行 setup.cmd，再填入 AOS_LLM_API_KEY。",
+      "  echo [提示] 缺少 project\\.env：先运行 setup.cmd，再填入中心 runner token。",
       "  exit /b 2",
       ")",
+      'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
+      'if errorlevel 1 echo [提示] project\\.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。',
       "node dist\\cli.js doctor",
+      ""
+    ].join("\r\n"),
+    "utf8"
+  );
+  const defaultUrl = bundleCenterUrl.includes("<") ? "http://127.0.0.1:8765" : bundleCenterUrl;
+  const defaultProject = bundleCenterProject.includes("<")
+    ? "/path/to/center/project"
+    : bundleCenterProject;
+  const defaultHost = bundleHostId || "win-runner-01";
+  fs.writeFileSync(
+    path.join(staging, "configure.cmd"),
+    [
+      "@echo off",
+      "chcp 65001 >nul",
+      "setlocal",
+      'cd /d "%~dp0"',
+      `set "DEFAULT_URL=${defaultUrl}"`,
+      `set "DEFAULT_PROJECT=${defaultProject}"`,
+      `set "DEFAULT_HOST=${defaultHost}"`,
+      "set /p CENTER_URL=Center URL [%DEFAULT_URL%]: ",
+      'if "%CENTER_URL%"=="" set "CENTER_URL=%DEFAULT_URL%"',
+      "set /p CENTER_TOKEN=Runner token: ",
+      "set /p CENTER_ROOT=Center project root [%DEFAULT_PROJECT%]: ",
+      'if "%CENTER_ROOT%"=="" set "CENTER_ROOT=%DEFAULT_PROJECT%"',
+      "set /p HOST_ID=Host ID [%DEFAULT_HOST%]: ",
+      'if "%HOST_ID%"=="" set "HOST_ID=%DEFAULT_HOST%"',
+      '> "project\\.env" echo MOBILE_TESTING_RUNNER_CONTROL_URL=%CENTER_URL%',
+      '>> "project\\.env" echo MOBILE_TESTING_RUNNER_JOB_TOKEN=%CENTER_TOKEN%',
+      '>> "project\\.env" echo MOBILE_TESTING_HOST_ID=%HOST_ID%',
+      '>> "project\\.env" echo AOS_CENTER_PROJECT_ROOT=%CENTER_ROOT%',
+      "echo 已写入 project\\.env",
+      'if "%CENTER_TOKEN%"=="" echo [提示] runner token 为空；请重新运行 configure.cmd。',
       ""
     ].join("\r\n"),
     "utf8"
@@ -211,6 +254,40 @@ function writeWindowsLaunchers(staging) {
 }
 
 function writeMacLaunchers(staging) {
+  const defaultUrl = bundleCenterUrl.includes("<") ? "http://127.0.0.1:8765" : bundleCenterUrl;
+  const defaultProject = bundleCenterProject.includes("<")
+    ? "/path/to/center/project"
+    : bundleCenterProject;
+  const defaultHost = bundleHostId || "mac-runner-01";
+  const configure = `#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+cd "$ROOT"
+DEFAULT_URL="${defaultUrl}"
+DEFAULT_PROJECT="${defaultProject}"
+DEFAULT_HOST="${defaultHost}"
+printf "Center URL [%s]: " "$DEFAULT_URL"
+read CENTER_URL
+CENTER_URL="\${CENTER_URL:-$DEFAULT_URL}"
+printf "Runner token: "
+read CENTER_TOKEN
+printf "Center project root [%s]: " "$DEFAULT_PROJECT"
+read CENTER_ROOT
+CENTER_ROOT="\${CENTER_ROOT:-$DEFAULT_PROJECT}"
+printf "Host ID [%s]: " "$DEFAULT_HOST"
+read HOST_ID
+HOST_ID="\${HOST_ID:-$DEFAULT_HOST}"
+{
+  echo "MOBILE_TESTING_RUNNER_CONTROL_URL=$CENTER_URL"
+  echo "MOBILE_TESTING_RUNNER_JOB_TOKEN=$CENTER_TOKEN"
+  echo "MOBILE_TESTING_HOST_ID=$HOST_ID"
+  echo "AOS_CENTER_PROJECT_ROOT=$CENTER_ROOT"
+} > project/.env
+echo "已写入 project/.env"
+if [ -z "$CENTER_TOKEN" ]; then
+  echo "[提示] runner token 为空；请重新运行 configure.command。"
+fi
+`;
   const setup = `#!/bin/sh
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -221,6 +298,9 @@ export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
 [ -f "$ROOT/project/.env" ] || cp "$ROOT/project/.env.example" "$ROOT/project/.env"
+if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' "$ROOT/project/.env"; then
+  echo "[提示] project/.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。"
+fi
 node dist/cli.js doctor --install-deps
 echo
 echo "完成。LLM 由中心提供，无需填写 key；运行 doctor.command 体检。"
@@ -235,8 +315,11 @@ export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
 if [ ! -f "$ROOT/project/.env" ]; then
-  echo "[提示] 缺少 project/.env：先运行 setup.command，再填入 AOS_LLM_API_KEY。"
+  echo "[提示] 缺少 project/.env：先运行 setup.command，再填入中心 runner token。"
   exit 2
+fi
+if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' "$ROOT/project/.env"; then
+  echo "[提示] project/.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。"
 fi
 node dist/cli.js doctor
 `;
@@ -274,6 +357,7 @@ export MOBILE_TESTING_HOST_ID
 node dist/cli.js suite runner --project "$AOS_PROJECT_DIR" --name "$MOBILE_TESTING_HOST_ID"
 `;
   for (const [name, body] of [
+    ["configure.command", configure],
     ["setup.command", setup],
     ["doctor.command", doctor],
     ["smoke.command", smoke],
@@ -317,8 +401,8 @@ function writeBundleReadme(staging, target) {
       "## 启动",
       "",
       target.platform === "win32"
-        ? "1. `setup.cmd`（首次安装 Artemis 依赖）\n2. 配置中心 runner URL/token（见下方「中心」）；**不需要填 LLM key**\n3. `doctor.cmd` 确认全绿\n4. `smoke.cmd [设备序列号] [任务描述]`\n5. `runner.cmd` 常驻领取中心任务"
-        : "1. `./setup.command`（首次安装 Artemis 依赖）\n2. 配置中心 runner URL/token（见下方「中心」）；**不需要填 LLM key**\n3. `./doctor.command` 确认全绿\n4. `./smoke.command [设备UDID] [任务描述]`\n5. `./runner.command` 常驻领取中心任务",
+        ? "1. `configure.cmd` 填中心 URL/token/项目路径（或直接编辑 `project\\.env`）\n2. `setup.cmd`（首次安装 Artemis 依赖）\n3. `doctor.cmd` 确认全绿（**不需要填 LLM key**）\n4. `smoke.cmd [设备序列号] [任务描述]`\n5. `runner.cmd` 常驻领取中心任务"
+        : "1. `./configure.command` 填中心 URL/token/项目路径（或直接编辑 `project/.env`）\n2. `./setup.command`（首次安装 Artemis 依赖）\n3. `./doctor.command` 确认全绿（**不需要填 LLM key**）\n4. `./smoke.command [设备UDID] [任务描述]`\n5. `./runner.command` 常驻领取中心任务",
       "",
       "## 设备",
       "",
@@ -384,7 +468,7 @@ for (const target of selectedTargets) {
   }
   extract(platformTools, toolsDir);
 
-  writeProject(staging);
+  writeProject(staging, target);
   if (target.platform === "win32") writeWindowsLaunchers(staging);
   else writeMacLaunchers(staging);
   writeBundleReadme(staging, target);
