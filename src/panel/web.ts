@@ -2383,7 +2383,7 @@ function renderRunners(detail: PanelProjectDetail, rootPath: string, hostId: str
   const artifactNote =
     missingArtifact === 0
       ? ""
-      : `<p class="note">${missingArtifact} 台执行机未广播产物基址：远端任务的批次/trace 无法在中心打开。更新 runner，或设置 <code>AOS_RUNNER_ADVERTISE_URL</code> 后重启。</p>`;
+      : `<p class="note">${missingArtifact} 台执行机未广播产物基址：远端任务的批次/trace 无法在中心打开。若 runner 已是 0.2.0+：检查本机 8770 是否被占用、<code>AOS_RUNNER_ARTIFACT_PORT</code> 是否被设为 0，并设置 <code>AOS_RUNNER_ADVERTISE_URL</code>（如 <code>http://192.168.3.21:8770</code>）后重启；中心需能访问该地址。</p>`;
   const rows = detail.runners.map((runner) => [
     `${cBadge({ label: runner.online ? "在线" : "失联", tone: runner.online ? "success" : "warning" })} <code>${escapeHtml(runner.name)}</code>`,
     escapeHtml(runner.hostname),
