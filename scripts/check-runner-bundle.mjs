@@ -66,6 +66,14 @@ export function checkBundleFiles(files, platform) {
   if (!setup.includes("doctor --install-deps")) {
     errors.push(`${setupName} 未执行 doctor --install-deps`);
   }
+  const runnerName = platform === "win32" ? "runner.cmd" : "runner.command";
+  const runner = text(files, runnerName);
+  if (!runner.includes("doctor --install-deps")) {
+    errors.push(`${runnerName} 未包含首次依赖安装`);
+  }
+  if (!runner.includes("MOBILE_TESTING_RUNNER_JOB_TOKEN")) {
+    errors.push(`${runnerName} 未检查 runner token`);
+  }
   const configureName = platform === "win32" ? "configure.cmd" : "configure.command";
   const configure = text(files, configureName);
   if (/AOS_CENTER_PROJECT_ROOT|Center project root|CENTER_ROOT/.test(configure)) {

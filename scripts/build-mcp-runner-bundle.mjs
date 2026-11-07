@@ -235,6 +235,23 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
       'if "%MOBILE_TESTING_HOST_ID%"=="" set "MOBILE_TESTING_HOST_ID=win-runner-01"',
+      'if not exist "project\\.env" (',
+      "  echo [runner] 缺少 project\\.env；先运行 configure.cmd。",
+      "  exit /b 2",
+      ")",
+      'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
+      "if errorlevel 1 (",
+      "  echo [runner] project\\.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；先运行 configure.cmd。",
+      "  exit /b 2",
+      ")",
+      'if not exist "artemis\\.venv\\Scripts\\python.exe" (',
+      "  echo [runner] 首次启动：安装 Artemis 依赖（可能需要几分钟）...",
+      "  node dist\\cli.js doctor --install-deps",
+      '  if not exist "artemis\\.venv\\Scripts\\python.exe" (',
+      "    echo [runner] Artemis 依赖未安装；先运行 setup.cmd 查看详情。",
+      "    exit /b 2",
+      "  )",
+      ")",
       'node dist\\cli.js suite runner --project "%AOS_PROJECT_DIR%" --name "%MOBILE_TESTING_HOST_ID%"',
       ""
     ].join("\r\n"),
@@ -335,6 +352,22 @@ export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
 : "\${MOBILE_TESTING_HOST_ID:=mac-runner-01}"
 export MOBILE_TESTING_HOST_ID
+if [ ! -f "$ROOT/project/.env" ]; then
+  echo "[runner] 缺少 project/.env；先运行 configure.command。"
+  exit 2
+fi
+if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' "$ROOT/project/.env"; then
+  echo "[runner] project/.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；先运行 configure.command。"
+  exit 2
+fi
+if [ ! -x "$ROOT/artemis/.venv/bin/python" ]; then
+  echo "[runner] 首次启动：安装 Artemis 依赖（可能需要几分钟）..."
+  node dist/cli.js doctor --install-deps || true
+  if [ ! -x "$ROOT/artemis/.venv/bin/python" ]; then
+    echo "[runner] Artemis 依赖未安装；先运行 setup.command 查看详情。"
+    exit 2
+  fi
+fi
 node dist/cli.js suite runner --project "$AOS_PROJECT_DIR" --name "$MOBILE_TESTING_HOST_ID"
 `;
   for (const [name, body] of [
@@ -382,8 +415,8 @@ function writeBundleReadme(staging, target) {
       "## 启动",
       "",
       target.platform === "win32"
-        ? "1. `configure.cmd` 填中心 URL/token（或直接编辑 `project\\.env`）\n2. `setup.cmd`（首次安装 Artemis 依赖）\n3. `doctor.cmd` 确认全绿（**不需要填 LLM key**）\n4. `smoke.cmd [设备序列号] [任务描述]`\n5. `runner.cmd` 常驻领取中心任务"
-        : "1. `./configure.command` 填中心 URL/token（或直接编辑 `project/.env`）\n2. `./setup.command`（首次安装 Artemis 依赖）\n3. `./doctor.command` 确认全绿（**不需要填 LLM key**）\n4. `./smoke.command [设备UDID] [任务描述]`\n5. `./runner.command` 常驻领取中心任务",
+        ? "1. `configure.cmd` 填中心 URL/token（或直接编辑 `project\\.env`）\n2. `runner.cmd` 常驻领取；首次会自动安装 Artemis 依赖（也可先 `setup.cmd`）\n3. `doctor.cmd` / `smoke.cmd` 可选：体检与单条验证（**不需要填 LLM key**）"
+        : "1. `./configure.command` 填中心 URL/token（或直接编辑 `project/.env`）\n2. `./runner.command` 常驻领取；首次会自动安装 Artemis 依赖（也可先 `setup.command`）\n3. `./doctor.command` / `./smoke.command` 可选：体检与单条验证（**不需要填 LLM key**）",
       "",
       "## 设备",
       "",

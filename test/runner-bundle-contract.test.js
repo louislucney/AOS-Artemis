@@ -25,7 +25,15 @@ function validWinFiles() {
       ].join("\r\n")
     ],
     ["doctor.cmd", "node dist\\cli.js doctor\r\n"],
-    ["runner.cmd", "node dist\\cli.js suite runner\r\n"],
+    [
+      "runner.cmd",
+      [
+        'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
+        'if not exist "artemis\\.venv\\Scripts\\python.exe" node dist\\cli.js doctor --install-deps',
+        "node dist\\cli.js suite runner",
+        ""
+      ].join("\r\n")
+    ],
     [
       "project/.env.example",
       [
@@ -109,7 +117,16 @@ test("runner bundle contract: valid macOS package passes", () => {
       ["printf \"Center URL: \"", "read CENTER_URL", "printf \"Runner token: \"", "read CENTER_TOKEN", ""].join("\n")
     ],
     ["doctor.command", "#!/bin/sh\nnode dist/cli.js doctor\n"],
-    ["runner.command", "#!/bin/sh\nnode dist/cli.js suite runner\n"],
+    [
+      "runner.command",
+      [
+        "#!/bin/sh",
+        "if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' project/.env; then exit 2; fi",
+        "if [ ! -x artemis/.venv/bin/python ]; then node dist/cli.js doctor --install-deps || true; fi",
+        "node dist/cli.js suite runner",
+        ""
+      ].join("\n")
+    ],
     [
       "project/.env.example",
       [
@@ -134,4 +151,13 @@ test("runner bundle contract: no direct PostgreSQL prompt", () => {
   const result = checkBundleFiles(files, "win32");
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((error) => error.includes("PostgreSQL")));
+});
+
+test("runner bundle contract: runner must self-check token and first-run deps", () => {
+  const files = validWinFiles();
+  files.set("runner.cmd", "node dist\\cli.js suite runner\r\n");
+  const result = checkBundleFiles(files, "win32");
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.includes("首次依赖安装")));
+  assert.ok(result.errors.some((error) => error.includes("runner token")));
 });
